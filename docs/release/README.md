@@ -1254,6 +1254,26 @@ ssh -t ServerDominguez \
   'sudo /var/lib/nexus-release-bootstrap/<sha>/source/scripts/remote-rollback-drill-legacy-staging-install.sh activate-from-phase-a <resolution-sha256-or-none>'
 ```
 
+One reviewed pre-layout marker,
+`ed2eec72158f249cf42b3a8aa7babd41c194e5f753bf087a03425ec10ff15752`,
+records detection after the 120-second recovery deadline and therefore must
+not be labeled `reconciled_no_mutation`. After upgrading Phase A from the
+protected source that contains this compatibility control, the owner instead
+runs the root-only, exact-digest command below. It acquires the release/Sonar
+mutex, re-proves current PM2 and release health without mutation, records
+`owner_acknowledged_sla_miss` with a conservative PM2-start lower bound, and
+durably archives the incident before removing the marker:
+
+```bash
+ssh -t ServerDominguez \
+  'sudo /usr/local/sbin/nexus-release-promotion-control resolve-historical-prelayout-boot-sla-incident ed2eec72158f249cf42b3a8aa7babd41c194e5f753bf087a03425ec10ff15752'
+```
+
+The v4 activation accepts exactly one Phase-A receipt-bound resolution archive:
+the canonical no-mutation archive or this historical SLA-incident archive. It
+rejects missing, forged, stale, or simultaneous archives. No NOPASSWD sudo
+authority is added for the historical command.
+
 When the closure is absent,
 `npm run release:drill-staging -- --acknowledge-first-drill-bootstrap` prints
 that reviewed owner action and exits without attempting sudo. After the owner

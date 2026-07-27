@@ -1079,7 +1079,7 @@ PY
       <"$ACTIVE_RECEIPT" \
       || die "cannot copy the provision receipt into the guest"
     ssh "${ssh_options[@]}" dominguez@127.0.0.1 \
-      "umask 077; mkdir '$remote_root/bundle'; tar --no-same-owner --no-same-permissions -xf - -C '$remote_root/bundle'" \
+      "umask 077; mkdir '$remote_root/bundle'; tar --no-same-owner --same-permissions -xf - -C '$remote_root/bundle'" \
       < <(tar -C "$BUNDLE_ROOT" -cf - .) \
       || die "cannot copy the verified offline bundle into the guest"
     ssh "${ssh_options[@]}" dominguez@127.0.0.1 \

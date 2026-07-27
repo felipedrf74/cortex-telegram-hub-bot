@@ -417,6 +417,7 @@ esac
 function installedV4PrelayoutFixture(
   label: string,
   powerLossAfter = '',
+  resolutionMode: 'none' | 'incident' | 'both' = 'none',
 ) {
   const state = fixture();
   const bootstrap = installerBootstrap(state, label, 'v4-prelayout');
@@ -483,6 +484,54 @@ esac
     ],
   }, null, 2)}\n`, { mode: 0o600 });
   fs.chmodSync(phaseAReceipt, 0o600);
+  const resolvedMarkerSha256 = resolutionMode === 'none'
+    ? 'none'
+    : '1'.repeat(64);
+  if (resolvedMarkerSha256 !== 'none') {
+    const incidents = path.join(promotionState, 'boot-recovery-incidents');
+    fs.mkdirSync(incidents, { mode: 0o700 });
+    const liveHealthProof = {
+      schema: 'nexus.release-live-prelayout-health-proof.v1',
+      status: 'verified_no_mutation',
+      phaseA: {
+        receiptSha256: sha256(fs.readFileSync(phaseAReceipt)),
+      },
+      mutationOperations: [],
+      verifiedAt: new Date().toISOString(),
+    };
+    const incident = path.join(
+      incidents,
+      `${resolvedMarkerSha256}.prelayout-sla-resolution.json`,
+    );
+    fs.writeFileSync(incident, `${JSON.stringify({
+      schema: 'nexus.release-prelayout-boot-sla-incident-resolution.v1',
+      status: 'owner_acknowledged_sla_miss',
+      markerSha256: resolvedMarkerSha256,
+      targetSeconds: 120,
+      targetMet: false,
+      minimumOutageMilliseconds: 121_000,
+      exactHealthyTimeKnown: false,
+      basis: 'pm2_main_process_start_lower_bound',
+      phaseAReceiptSha256: liveHealthProof.phaseA.receiptSha256,
+      liveHealthProof,
+      acknowledgedAt: new Date().toISOString(),
+    }, null, 2)}\n`, { mode: 0o600 });
+    fs.chmodSync(incident, 0o600);
+    if (resolutionMode === 'both') {
+      const canonical = path.join(
+        incidents,
+        `${resolvedMarkerSha256}.prelayout-resolution.json`,
+      );
+      fs.writeFileSync(canonical, `${JSON.stringify({
+        schema: 'nexus.release-prelayout-boot-recovery-resolution.v1',
+        status: 'reconciled_no_mutation',
+        markerSha256: resolvedMarkerSha256,
+        liveHealthProof,
+        resolvedAt: new Date().toISOString(),
+      }, null, 2)}\n`, { mode: 0o600 });
+      fs.chmodSync(canonical, 0o600);
+    }
+  }
   const sqliteTarget = path.join(
     targetRoot,
     'usr/local/libexec/nexus-application-dr/application-dr-sqlite.py',
@@ -530,12 +579,12 @@ esac
   const installed = spawnSync('bash', [
     sourceInstaller,
     'activate-from-phase-a',
-    'none',
+    resolvedMarkerSha256,
   ], { encoding: 'utf8', env });
   expect(
     installed.status,
     `${installed.stdout}\n${installed.stderr}`,
-  ).toBe(powerLossAfter ? 197 : 0);
+  ).toBe(powerLossAfter ? 197 : resolutionMode === 'both' ? 1 : 0);
   const fixed = (relative: string) => path.join(targetRoot, relative);
   const fixedInstaller = fixed(
     'usr/local/sbin/nexus-rollback-drill-v4-prelayout-staging-install',
@@ -2463,6 +2512,29 @@ esac
       'inspect',
     ], { encoding: 'utf8', env: inspectEnv }).status).not.toBe(0);
     fs.chmodSync(promotionRecoveryDropIn, 0o644);
+  }, 30_000);
+
+  it('admits one Phase A-bound SLA incident archive and rejects ambiguity', () => {
+    const incident = installedV4PrelayoutFixture(
+      'v4-prelayout-incident-resolution',
+      '',
+      'incident',
+    );
+    expect(incident.installed.status, incident.installed.stderr).toBe(0);
+    expect(JSON.parse(incident.installed.stdout)).toMatchObject({
+      ok: true,
+      installed: true,
+      promotable: false,
+    });
+
+    const ambiguous = installedV4PrelayoutFixture(
+      'v4-prelayout-ambiguous-resolution',
+      '',
+      'both',
+    );
+    expect(ambiguous.installed.status).not.toBe(0);
+    expect(`${ambiguous.installed.stdout}${ambiguous.installed.stderr}`)
+      .toContain('governed pre-layout recovery resolution');
   }, 30_000);
 
   it('recovers V4 activation after the promotion dependency is durably installed', () => {

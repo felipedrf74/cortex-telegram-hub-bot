@@ -38,12 +38,19 @@ PM2_ATTESTATION="${NEXUS_PROMOTION_PM2_ATTESTATION:-/var/lib/nexus-release-promo
 ROOT_PM2_BIN="${NEXUS_PROMOTION_PM2_BIN:-/usr/local/bin/pm2}"
 ROOT_NODE_BIN="${NEXUS_PROMOTION_NODE_BIN:-/usr/bin/node}"
 PHASE_A_RECEIPT="${NEXUS_LAYOUT_PHASE_A_RECEIPT:-$STATE_ROOT/layout-activation/phase-a-receipt.v1.json}"
+PHASE_A_PREDECESSOR_RECEIPT="${NEXUS_LAYOUT_PHASE_A_PREDECESSOR_RECEIPT:-$STATE_ROOT/layout-activation/phase-a-predecessor-receipt.v1.json}"
+PHASE_A_JOURNAL="${NEXUS_LAYOUT_PHASE_A_JOURNAL:-$STATE_ROOT/layout-activation/phase-a-install-in-progress.v1.json}"
+PHASE_A_RECOVERY_FAILED="${NEXUS_LAYOUT_PHASE_A_RECOVERY_FAILED:-$STATE_ROOT/layout-activation/phase-a-recovery-failed.v1.json}"
+PHASE_B_JOURNAL="${NEXUS_LAYOUT_PHASE_B_JOURNAL:-$STATE_ROOT/layout-activation/phase-b-handover-in-progress.v1.json}"
+PHASE_B_RECEIPT="${NEXUS_LAYOUT_PHASE_B_RECEIPT:-$STATE_ROOT/layout-activation/phase-b-receipt.v1.json}"
 PM2_INSTALL_JOURNAL="${NEXUS_PROMOTION_PM2_INSTALL_JOURNAL:-/var/lib/nexus-release-promotion/pm2-install-in-progress.v1.json}"
 PM2_TRUSTED_LOCK="${NEXUS_PROMOTION_PM2_TRUSTED_LOCK:-/usr/local/share/nexus-release/pm2-package-lock.json}"
 BOOT_HEALTH_BIN="${NEXUS_PROMOTION_BOOT_HEALTH_BIN:-/usr/local/sbin/nexus-release-boot-health}"
 BOOT_RECOVERY="$STATE_ROOT/boot-recovery-in-progress.v1.json"
 BOOT_PENDING="$STATE_ROOT/boot-health-pending.v1.json"
 BOOT_PROOF="$STATE_ROOT/boot-health-proof.v1.json"
+RELEASE_SONAR_LOCK="${NEXUS_PROMOTION_RELEASE_SONAR_LOCK:-/run/lock/nexus-release-sonar.lock}"
+HISTORICAL_PRELAYOUT_MARKER_SHA256="ed2eec72158f249cf42b3a8aa7babd41c194e5f753bf087a03425ec10ff15752"
 COMPAT_HOME="${NEXUS_PROMOTION_COMPAT_HOME:-/home/dominguez}"
 COMPAT_PRODUCTION="${NEXUS_PROMOTION_COMPAT_PRODUCTION:-/home/dominguez/telegram-hub-bot}"
 COMPAT_STAGING="${NEXUS_PROMOTION_COMPAT_STAGING:-/home/dominguez/telegram-hub-bot-staging}"
@@ -831,6 +838,37 @@ acquire_control_lock() {
   flock -x 9
 }
 
+acquire_release_sonar_lock() {
+  local worker_gid expected_uid expected_gid identity
+  command -v flock >/dev/null 2>&1 || {
+    echo "flock is required for release/Sonar serialization" >&2
+    return 1
+  }
+  worker_gid="$(/usr/bin/id -g "$WORKER_USER")"
+  if [ "${NEXUS_RELEASE_TEST_MODE:-0}" = "1" ]; then
+    expected_uid="$EUID"
+    expected_gid="$(/usr/bin/id -g)"
+  else
+    expected_uid=0
+    expected_gid="$worker_gid"
+  fi
+  [ -f "$RELEASE_SONAR_LOCK" ] && [ ! -L "$RELEASE_SONAR_LOCK" ] \
+    && [ "$(stat -c '%h' "$RELEASE_SONAR_LOCK")" = 1 ] || {
+    echo "release/Sonar mutex is unavailable or unsafe" >&2
+    return 75
+  }
+  identity="$(stat -c '%u:%g:%a' "$RELEASE_SONAR_LOCK")"
+  [ "$identity" = "$expected_uid:$expected_gid:660" ] || {
+    echo "release/Sonar mutex identity differs" >&2
+    return 75
+  }
+  exec 8<>"$RELEASE_SONAR_LOCK"
+  flock -n -x 8 || {
+    echo "release or Sonar activity blocks historical incident handling" >&2
+    return 75
+  }
+}
+
 validate_authorization_input() {
   local input="$1" mode uid
   [ -n "$input" ] && [ -f "$input" ] && [ ! -L "$input" ] || {
@@ -1241,6 +1279,82 @@ try{
 NODE
 }
 
+validate_historical_prelayout_boot_marker() {
+  local expected_digest="$1"
+  "$SYSTEM_NODE_BIN" - "$BOOT_RECOVERY" "$expected_digest" \
+    "${NEXUS_RELEASE_TEST_MODE:-0}" "$HISTORICAL_PRELAYOUT_MARKER_SHA256" \
+    "${NEXUS_PROMOTION_TEST_HISTORICAL_PRELAYOUT_MARKER_SHA256:-}" \
+    "${NEXUS_PROMOTION_TEST_BOOT_TIME_EPOCH:-}" \
+    "${NEXUS_PROMOTION_TEST_UPTIME_SECONDS:-}" <<'NODE'
+const crypto=require('crypto');const fs=require('fs');
+const [file,expectedDigest,testMode,productionDigest,testDigest,
+ testBootTime,testUptime]=process.argv.slice(2);
+const rootUid=testMode==='1'?process.getuid():0;
+const rootGid=testMode==='1'?process.getgid():0;
+const allowedDigest=testMode==='1'?testDigest:productionDigest;
+if(!/^[a-f0-9]{64}$/u.test(expectedDigest)
+ ||allowedDigest!==expectedDigest)process.exit(1);
+const descriptor=fs.openSync(
+ file,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0),
+);
+try{
+ const before=fs.fstatSync(descriptor),body=fs.readFileSync(descriptor);
+ const after=fs.fstatSync(descriptor),value=JSON.parse(body);
+ const digest=crypto.createHash('sha256').update(body).digest('hex');
+ const keys=['activeTransactionId','bootDetectedAt','bootDetectedEpoch','bootId',
+  'outageBootId','outageStartedAt','outageStartedEpoch',
+  'outageStartedMonotonic','recoveryDeadlineEpoch','schema','status',
+  'timingSource'];
+ const currentBootId=testMode==='1'
+  ?(process.env.NEXUS_PROMOTION_TEST_BOOT_ID||'test-boot')
+  :fs.readFileSync('/proc/sys/kernel/random/boot_id','utf8').trim();
+ const bootTimeRaw=testMode==='1'
+  ?testBootTime
+  :(fs.readFileSync('/proc/stat','utf8').match(/^btime ([0-9]+)$/mu)?.[1]??'');
+ const uptimeRaw=testMode==='1'
+  ?testUptime
+  :fs.readFileSync('/proc/uptime','utf8').trim().split(/\s+/u)[0];
+ const bootTime=Number(bootTimeRaw),uptime=Number(uptimeRaw);
+ const canonicalTimestamp=(value,epoch)=>(
+  typeof value==='string'&&Number.isSafeInteger(epoch)
+  &&new Date(epoch*1000).toISOString()===value
+ );
+ const markerMtimeEpoch=Math.floor(before.mtimeMs/1000);
+ const detectionMonotonic=value.bootDetectedEpoch-bootTime;
+ if(!before.isFile()||before.nlink!==1||before.uid!==rootUid
+  ||before.gid!==rootGid||(before.mode&0o7777)!==0o600
+  ||before.size<=0||before.size>2*1024*1024
+  ||before.dev!==after.dev||before.ino!==after.ino
+  ||before.size!==after.size||before.mtimeMs!==after.mtimeMs
+  ||digest!==expectedDigest
+  ||JSON.stringify(Object.keys(value).sort())!==JSON.stringify(keys.sort())
+  ||value.schema!=='nexus.release-boot-recovery.v1'
+  ||value.status!=='in_progress'||value.bootId!==currentBootId
+  ||value.outageBootId!==currentBootId
+  ||value.timingSource!=='boot_detection'||value.activeTransactionId!==null
+  ||!canonicalTimestamp(value.bootDetectedAt,value.bootDetectedEpoch)
+  ||!canonicalTimestamp(value.outageStartedAt,value.outageStartedEpoch)
+  ||!Number.isSafeInteger(value.outageStartedMonotonic)
+  ||value.outageStartedMonotonic<0
+  ||!Number.isSafeInteger(value.recoveryDeadlineEpoch)
+  ||value.recoveryDeadlineEpoch!==value.outageStartedEpoch+120
+  ||value.bootDetectedEpoch<=value.recoveryDeadlineEpoch
+  ||!Number.isSafeInteger(bootTime)||bootTime<0
+  ||!Number.isFinite(uptime)||uptime<=0
+  ||value.outageStartedEpoch-value.outageStartedMonotonic!==bootTime
+  ||markerMtimeEpoch!==value.bootDetectedEpoch
+  ||!Number.isSafeInteger(detectionMonotonic)
+  ||detectionMonotonic<=value.outageStartedMonotonic+120
+  ||detectionMonotonic>Math.floor(uptime)+1)process.exit(1);
+ process.stdout.write(JSON.stringify({
+  marker:value,kernelBootTimeEpoch:bootTime,
+  markerFileMtimeEpoch:markerMtimeEpoch,
+  derivedDetectionMonotonicSeconds:detectionMonotonic,
+ }));
+}finally{fs.closeSync(descriptor);}
+NODE
+}
+
 assert_no_unfinished_staging_transaction() {
   "$SYSTEM_NODE_BIN" - "$STATE_ROOT/staging" "${NEXUS_RELEASE_TEST_MODE:-0}" <<'NODE'
 const fs=require('fs');const path=require('path');
@@ -1266,21 +1380,26 @@ NODE
 }
 
 validate_live_prelayout_proof() {
-  local marker_json="$1" proof_json="$2" worker_uid worker_gid
+  local marker_json="$1" proof_json="$2" mode="${3:-canonical}"
+  local kernel_boot_time="${4:-}" detection_monotonic="${5:-}"
+  local worker_uid worker_gid
   worker_uid="$(/usr/bin/id -u "$WORKER_USER")"
   worker_gid="$(/usr/bin/id -g "$WORKER_USER")"
   "$SYSTEM_NODE_BIN" - "$marker_json" "$proof_json" \
     "$COMPAT_PRODUCTION" "$COMPAT_STAGING" "$PHASE_A_RECEIPT" \
     "${NEXUS_RELEASE_TEST_MODE:-0}" "$worker_uid" "$worker_gid" \
-    /home/linuxbrew/.linuxbrew/Cellar/node <<'NODE'
+    /home/linuxbrew/.linuxbrew/Cellar/node "$mode" "$kernel_boot_time" \
+    "$detection_monotonic" "$PHASE_A_PREDECESSOR_RECEIPT" <<'NODE'
 const crypto=require('crypto');const fs=require('fs');const path=require('path');
 const [markerRaw,proofRaw,productionBase,stagingBase,phaseAReceipt,testMode,
- workerUidRaw,workerGidRaw,legacyNodeRoot]
+ workerUidRaw,workerGidRaw,legacyNodeRoot,mode,kernelBootTimeRaw,
+ detectionMonotonicRaw,predecessorReceipt]
  =process.argv.slice(2);
 const marker=JSON.parse(markerRaw),proof=JSON.parse(proofRaw);
 const digest=/^[a-f0-9]{64}$/u,sha=/^[a-f0-9]{40}$/u,digits=/^[0-9]+$/u;
 const rootUid=testMode==='1'?process.getuid():0,rootGid=testMode==='1'?process.getgid():0;
 const workerUid=Number(workerUidRaw),workerGid=Number(workerGidRaw);
+if(!['canonical','historical_sla_incident'].includes(mode))process.exit(1);
 const receiptFd=fs.openSync(phaseAReceipt,
  fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0));
 let receiptBody,receipt;
@@ -1291,6 +1410,18 @@ try{
   ||(before.mode&0o7777)!==0o600||before.dev!==after.dev||before.ino!==after.ino
   ||before.size!==after.size||before.mtimeMs!==after.mtimeMs)process.exit(1);
 }finally{fs.closeSync(receiptFd);}
+const readSafe=(file,maximum,expectedMode)=>{
+ const fd=fs.openSync(file,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0));
+ try{
+  const before=fs.fstatSync(fd),body=fs.readFileSync(fd),after=fs.fstatSync(fd);
+  if(!before.isFile()||before.nlink!==1||before.uid!==rootUid
+   ||before.gid!==rootGid||(before.mode&0o7777)!==expectedMode
+   ||before.size<=0||before.size>maximum||before.dev!==after.dev
+   ||before.ino!==after.ino||before.size!==after.size
+   ||before.mtimeMs!==after.mtimeMs)process.exit(1);
+  return body;
+ }finally{fs.closeSync(fd);}
+};
 const requiredChecks=new Set(['phase_a_service_receipt',
  'legacy_real_systemd_daemon_identity',
  'future_root_pm2_attestation','four_exact_pm2_apps_stable','production_authenticated_readiness',
@@ -1304,6 +1435,22 @@ const role=(value,name,base)=>value?.name===name&&value.base===base
  &&digest.test(value.markerSha256||'')
  &&digest.test(value.installedAttestationSha256||'');
 const service=proof.pm2Dominguez;
+const serviceStartMicros=service?.execMainStartTimestampMonotonic;
+const kernelBootTime=Number(kernelBootTimeRaw);
+const detectionMonotonic=Number(detectionMonotonicRaw);
+const minimumOutageMilliseconds=Number.isSafeInteger(serviceStartMicros)
+ ?Math.floor((serviceStartMicros-marker.outageStartedMonotonic*1_000_000)/1000)
+ :Number.NaN;
+const canonicalServiceTiming=mode==='canonical'
+ &&Number.isSafeInteger(serviceStartMicros)
+ &&serviceStartMicros>0
+ &&serviceStartMicros<=(marker.outageStartedMonotonic+1)*1_000_000;
+const historicalServiceTiming=mode==='historical_sla_incident'
+ &&Number.isSafeInteger(kernelBootTime)&&kernelBootTime>=0
+ &&Number.isSafeInteger(detectionMonotonic)&&detectionMonotonic>0
+ &&Number.isSafeInteger(serviceStartMicros)&&serviceStartMicros>0
+ &&minimumOutageMilliseconds>120_000
+ &&serviceStartMicros<=detectionMonotonic*1_000_000;
 const executablePath=service?.executable?.path??'';
 const relativeExecutable=path.relative(legacyNodeRoot,executablePath).split(path.sep);
 const checks=[
@@ -1318,10 +1465,7 @@ const checks=[
  ['service_authority',service?.activeState==='active'&&service?.subState==='running'
    &&Number.isSafeInteger(service.mainPid)&&service.mainPid>0
    &&service.controlGroup==='/system.slice/pm2-dominguez.service'
-   &&Number.isSafeInteger(service.execMainStartTimestampMonotonic)
-   &&service.execMainStartTimestampMonotonic>0
-   &&service.execMainStartTimestampMonotonic
-     <=(marker.outageStartedMonotonic+1)*1_000_000
+   &&(canonicalServiceTiming||historicalServiceTiming)
    &&service.nRestarts===0&&digest.test(service.unitRuntimeSha256||'')],
  ['legacy_observed_executable',
    service?.executable?.classification==='worker_owned_legacy_observation'
@@ -1358,8 +1502,48 @@ const checks=[
  ['staging_role',role(proof.staging,'staging',stagingBase)],
  ['verified_at',Number.isFinite(Date.parse(proof.verifiedAt||''))],
 ];
+if(mode==='historical_sla_incident'){
+ const completedAt=Date.parse(receipt.completedAt??'');
+ const upgradedAt=Date.parse(receipt.upgradedAt??'');
+ const detectedAt=Date.parse(marker.bootDetectedAt??'');
+ const serviceStartedAt=kernelBootTime*1000+serviceStartMicros/1000;
+ const upgrade=receipt.phaseAUpgrade;
+ const predecessorBody=readSafe(predecessorReceipt,2*1024*1024,0o600);
+ const predecessor=JSON.parse(predecessorBody);
+ checks.push(
+  ['historical_marker_timeline',
+   marker.bootDetectedEpoch-marker.outageStartedEpoch>120
+    &&marker.recoveryDeadlineEpoch===marker.outageStartedEpoch+120
+    &&detectionMonotonic===marker.bootDetectedEpoch-kernelBootTime],
+  ['historical_phase_a_timeline',
+   Number.isFinite(completedAt)&&Number.isFinite(upgradedAt)
+    &&completedAt>=serviceStartedAt&&completedAt<=detectedAt
+    &&upgradedAt>detectedAt],
+  ['historical_phase_a_upgrade',
+   receipt.existingServiceIdentity?.runtimeUnchanged===true
+    &&digest.test(receipt.existingServiceIdentity?.beforeSha256??'')
+    &&digest.test(receipt.existingServiceIdentity?.afterSha256??'')
+    &&digest.test(receipt.existingServiceIdentity?.runtimeSha256??'')
+    &&upgrade?.performed===true
+    &&upgrade.predecessorReceiptPath===predecessorReceipt
+    &&digest.test(upgrade.predecessorReceiptSha256??'')
+    &&sha.test(upgrade.predecessorSourceSha??'')
+    &&crypto.createHash('sha256').update(predecessorBody).digest('hex')
+      ===upgrade.predecessorReceiptSha256
+    &&predecessor.schema==='nexus.release-layout-phase-a-receipt.v1'
+    &&predecessor.status==='completed'
+    &&predecessor.sourceSha===upgrade.predecessorSourceSha],
+  ['historical_verification_time',
+   Number.isFinite(Date.parse(proof.verifiedAt??''))
+    &&Date.parse(proof.verifiedAt)>=detectedAt],
+ );
+}
 const failed=checks.find(([,passed])=>!passed);
 if(failed){process.stderr.write(`live pre-layout proof check failed: ${failed[0]}\n`);process.exit(1);}
+if(mode==='historical_sla_incident')process.stdout.write(JSON.stringify({
+ minimumOutageMilliseconds,phaseAReceiptSha256:
+  crypto.createHash('sha256').update(receiptBody).digest('hex'),
+}));
 NODE
 }
 
@@ -1393,6 +1577,85 @@ try{
   ||!/^[a-f0-9]{64}$/u.test(proof?.phaseA?.receiptSha256||'')
   ||!Number.isFinite(Date.parse(value.resolvedAt||'')))process.exit(1);
 }finally{fs.closeSync(fd);}
+NODE
+}
+
+validate_historical_prelayout_resolution_archive() {
+  local archive="$1" expected_digest="$2" expected_marker_bundle="${3:-}"
+  "$SYSTEM_NODE_BIN" - "$archive" "$expected_digest" \
+    "$expected_marker_bundle" "${NEXUS_RELEASE_TEST_MODE:-0}" <<'NODE'
+const fs=require('fs');
+const [file,digest,expectedBundleRaw,testMode]=process.argv.slice(2);
+const rootUid=testMode==='1'?process.getuid():0;
+const rootGid=testMode==='1'?process.getgid():0;
+const canonical=(value)=>value===null||typeof value!=='object'?JSON.stringify(value)
+ :Array.isArray(value)?`[${value.map(canonical).join(',')}]`
+ :`{${Object.keys(value).sort().map((key)=>`${JSON.stringify(key)}:${
+  canonical(value[key])}`).join(',')}}`;
+const descriptor=fs.openSync(
+ file,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0),
+);
+try{
+ const before=fs.fstatSync(descriptor),body=fs.readFileSync(descriptor);
+ const after=fs.fstatSync(descriptor),value=JSON.parse(body);
+ const expectedBundle=expectedBundleRaw?JSON.parse(expectedBundleRaw):null;
+ const marker=value.marker,proof=value.liveHealthProof;
+ const keys=['acknowledgedAt','basis','derivedDetectionMonotonicSeconds',
+  'exactHealthyTimeKnown','kernelBootTimeEpoch','liveHealthProof','marker',
+  'markerFileMtimeEpoch','markerSha256','minimumOutageMilliseconds',
+  'phaseAReceiptSha256','schema','status','targetMet','targetSeconds'];
+ const markerKeys=['activeTransactionId','bootDetectedAt','bootDetectedEpoch',
+  'bootId','outageBootId','outageStartedAt','outageStartedEpoch',
+  'outageStartedMonotonic','recoveryDeadlineEpoch','schema','status',
+  'timingSource'];
+ if(!before.isFile()||before.nlink!==1||before.uid!==rootUid
+  ||before.gid!==rootGid||(before.mode&0o7777)!==0o600
+  ||before.size<=0||before.size>2*1024*1024
+  ||before.dev!==after.dev||before.ino!==after.ino
+  ||before.size!==after.size||before.mtimeMs!==after.mtimeMs
+  ||JSON.stringify(Object.keys(value).sort())!==JSON.stringify(keys.sort())
+  ||value.schema!=='nexus.release-prelayout-boot-sla-incident-resolution.v1'
+  ||value.status!=='owner_acknowledged_sla_miss'
+  ||value.markerSha256!==digest
+  ||value.targetSeconds!==120||value.targetMet!==false
+  ||value.exactHealthyTimeKnown!==false
+  ||value.basis!=='pm2_main_process_start_lower_bound'
+  ||!Number.isSafeInteger(value.minimumOutageMilliseconds)
+  ||value.minimumOutageMilliseconds<=120_000
+  ||!Number.isSafeInteger(value.kernelBootTimeEpoch)
+  ||value.kernelBootTimeEpoch<0
+  ||!Number.isSafeInteger(value.markerFileMtimeEpoch)
+  ||!Number.isSafeInteger(value.derivedDetectionMonotonicSeconds)
+  ||JSON.stringify(Object.keys(marker??{}).sort())
+    !==JSON.stringify(markerKeys.sort())
+  ||marker.schema!=='nexus.release-boot-recovery.v1'
+  ||marker.status!=='in_progress'||marker.timingSource!=='boot_detection'
+  ||marker.activeTransactionId!==null
+  ||marker.recoveryDeadlineEpoch!==marker.outageStartedEpoch+120
+  ||marker.bootDetectedEpoch<=marker.recoveryDeadlineEpoch
+  ||marker.outageStartedEpoch-marker.outageStartedMonotonic
+    !==value.kernelBootTimeEpoch
+  ||value.markerFileMtimeEpoch!==marker.bootDetectedEpoch
+  ||value.derivedDetectionMonotonicSeconds
+    !==marker.bootDetectedEpoch-value.kernelBootTimeEpoch
+  ||proof?.schema!=='nexus.release-live-prelayout-health-proof.v1'
+  ||proof?.status!=='verified_no_mutation'
+  ||!Array.isArray(proof.mutationOperations)
+  ||proof.mutationOperations.length!==0
+  ||!/^[a-f0-9]{64}$/u.test(value.phaseAReceiptSha256??'')
+  ||proof.phaseA?.receiptSha256!==value.phaseAReceiptSha256
+  ||!Number.isFinite(Date.parse(value.acknowledgedAt??''))
+  ||!Number.isFinite(Date.parse(proof.verifiedAt??''))
+  ||Date.parse(value.acknowledgedAt)<Date.parse(proof.verifiedAt)
+  ||(expectedBundle
+   &&canonical(marker)!==canonical(expectedBundle.marker))
+  ||(expectedBundle
+   &&(value.kernelBootTimeEpoch!==expectedBundle.kernelBootTimeEpoch
+    ||value.markerFileMtimeEpoch!==expectedBundle.markerFileMtimeEpoch
+    ||value.derivedDetectionMonotonicSeconds
+      !==expectedBundle.derivedDetectionMonotonicSeconds)))process.exit(1);
+ process.stdout.write(JSON.stringify(value));
+}finally{fs.closeSync(descriptor);}
 NODE
 }
 
@@ -1497,6 +1760,168 @@ NODE
   fi
   durable_remove "$BOOT_RECOVERY" 600
   printf '{"ok":true,"schema":"nexus.release-prelayout-boot-recovery-resolution.v1","status":"reconciled_no_mutation","markerSha256":"%s","idempotent":false}\n' \
+    "$expected_digest"
+}
+
+resolve_historical_prelayout_boot_sla_incident() {
+  local expected_digest="$1" allowed_digest archive_dir archive marker_bundle
+  local marker_json proof_json metrics_json repeated_marker archive_json
+  local temporary
+  [[ "$expected_digest" =~ ^[a-f0-9]{64}$ ]] || {
+    echo "historical pre-layout incident resolution requires the exact marker SHA-256" >&2
+    return 64
+  }
+  if [ "${NEXUS_RELEASE_TEST_MODE:-0}" = "1" ]; then
+    allowed_digest="${NEXUS_PROMOTION_TEST_HISTORICAL_PRELAYOUT_MARKER_SHA256:-}"
+  else
+    allowed_digest="$HISTORICAL_PRELAYOUT_MARKER_SHA256"
+  fi
+  [ "$expected_digest" = "$allowed_digest" ] || {
+    echo "historical pre-layout incident marker is not owner-reviewed" >&2
+    return 73
+  }
+  archive_dir="$STATE_ROOT/boot-recovery-incidents"
+  archive="$archive_dir/${expected_digest}.prelayout-sla-resolution.json"
+  if [ ! -e "$BOOT_RECOVERY" ] && [ ! -L "$BOOT_RECOVERY" ]; then
+    [ -f "$archive" ] && [ ! -L "$archive" ] || {
+      echo "no unresolved reviewed historical pre-layout incident exists" >&2
+      return 75
+    }
+    validate_historical_prelayout_resolution_archive \
+      "$archive" "$expected_digest" >/dev/null || {
+      echo "historical pre-layout incident archive is invalid" >&2
+      return 73
+    }
+    printf '{"ok":true,"schema":"nexus.release-prelayout-boot-sla-incident-resolution.v1","status":"owner_acknowledged_sla_miss","markerSha256":"%s","targetMet":false,"idempotent":true}\n' \
+      "$expected_digest"
+    return 0
+  fi
+  [ -f "$BOOT_RECOVERY" ] && [ ! -L "$BOOT_RECOVERY" ] || {
+    echo "pre-layout boot recovery marker is unsafe" >&2
+    return 73
+  }
+  marker_bundle="$(validate_historical_prelayout_boot_marker "$expected_digest")" || {
+    echo "pre-layout boot recovery marker is not the reviewed historical SLA incident" >&2
+    return 73
+  }
+  marker_json="$("$SYSTEM_NODE_BIN" - "$marker_bundle" <<'NODE'
+const value=JSON.parse(process.argv[2]);process.stdout.write(JSON.stringify(value.marker));
+NODE
+)"
+  for forbidden in "$BOOT_PENDING" "$BOOT_PROOF" "$STATE_ROOT/active.json" \
+    "$STATE_ROOT/layout-migration-in-progress.v1.json" "$LAYOUT_ACTIVATION_ACTIVE" \
+    "$LAYOUT_ATTESTATION" "$LAYOUT_RESULT" "$LAYOUT_TERMINAL_JOURNAL" \
+    "$LAYOUT_REQUEST" "$LAYOUT_DRILL" "$PHASE_A_JOURNAL" \
+    "$PHASE_A_RECOVERY_FAILED" "$PHASE_B_JOURNAL" "$PHASE_B_RECEIPT" \
+    "$PM2_INSTALL_JOURNAL"; do
+    [ ! -e "$forbidden" ] && [ ! -L "$forbidden" ] || {
+      echo "release, PM2, or layout authority changed; historical incident resolution refused" >&2
+      return 75
+    }
+  done
+  assert_no_unfinished_staging_transaction || {
+    echo "an unfinished or unsafe staging transaction blocks historical incident resolution" >&2
+    return 75
+  }
+  if [ -e "$archive" ] || [ -L "$archive" ]; then
+    [ -f "$archive" ] && [ ! -L "$archive" ] || {
+      echo "historical pre-layout incident archive is unsafe" >&2
+      return 73
+    }
+    archive_json="$(validate_historical_prelayout_resolution_archive \
+      "$archive" "$expected_digest" "$marker_bundle")" || {
+      echo "historical pre-layout incident archive differs from current authority" >&2
+      return 73
+    }
+    proof_json="$("$BOOT_HEALTH_BIN" verify-live-prelayout)" || {
+      echo "fresh live pre-layout PM2 and release verification failed" >&2
+      return 1
+    }
+    metrics_json="$(validate_live_prelayout_proof "$marker_json" "$proof_json" \
+      historical_sla_incident \
+      "$("$SYSTEM_NODE_BIN" -e 'process.stdout.write(String(JSON.parse(process.argv[1]).kernelBootTimeEpoch))' "$marker_bundle")" \
+      "$("$SYSTEM_NODE_BIN" -e 'process.stdout.write(String(JSON.parse(process.argv[1]).derivedDetectionMonotonicSeconds))' "$marker_bundle")")" || {
+      echo "live historical pre-layout verification proof is invalid" >&2
+      return 73
+    }
+    "$SYSTEM_NODE_BIN" - "$archive_json" "$metrics_json" <<'NODE' || {
+const archive=JSON.parse(process.argv[2]),metrics=JSON.parse(process.argv[3]);
+if(archive.minimumOutageMilliseconds!==metrics.minimumOutageMilliseconds
+ ||archive.phaseAReceiptSha256!==metrics.phaseAReceiptSha256)process.exit(1);
+NODE
+      echo "historical incident archive no longer matches live Phase A evidence" >&2
+      return 73
+    }
+    repeated_marker="$(validate_historical_prelayout_boot_marker "$expected_digest")" || {
+      echo "historical pre-layout marker changed during archive recovery" >&2
+      return 73
+    }
+    [ "$repeated_marker" = "$marker_bundle" ] || {
+      echo "historical pre-layout authority changed during archive recovery" >&2
+      return 73
+    }
+    durable_remove "$BOOT_RECOVERY" 600
+    printf '{"ok":true,"schema":"nexus.release-prelayout-boot-sla-incident-resolution.v1","status":"owner_acknowledged_sla_miss","markerSha256":"%s","targetMet":false,"idempotent":false,"resumedArchive":true}\n' \
+      "$expected_digest"
+    return 0
+  fi
+  proof_json="$("$BOOT_HEALTH_BIN" verify-live-prelayout)" || {
+    echo "live pre-layout PM2 and release verification failed" >&2
+    return 1
+  }
+  metrics_json="$(validate_live_prelayout_proof "$marker_json" "$proof_json" \
+    historical_sla_incident \
+    "$("$SYSTEM_NODE_BIN" -e 'process.stdout.write(String(JSON.parse(process.argv[1]).kernelBootTimeEpoch))' "$marker_bundle")" \
+    "$("$SYSTEM_NODE_BIN" -e 'process.stdout.write(String(JSON.parse(process.argv[1]).derivedDetectionMonotonicSeconds))' "$marker_bundle")")" || {
+    echo "live historical pre-layout verification proof is invalid" >&2
+    return 73
+  }
+  repeated_marker="$(validate_historical_prelayout_boot_marker "$expected_digest")" || {
+    echo "historical pre-layout marker changed during live verification" >&2
+    return 73
+  }
+  [ "$repeated_marker" = "$marker_bundle" ] || {
+    echo "historical pre-layout authority changed during live verification" >&2
+    return 73
+  }
+  install -d -m 700 "$archive_dir"
+  root_own "$archive_dir"
+  temporary="$(durable_staging_file "$archive" 600)"
+  "$SYSTEM_NODE_BIN" - "$temporary" "$expected_digest" "$marker_bundle" \
+    "$proof_json" "$metrics_json" <<'NODE'
+const fs=require('fs');
+const [output,markerSha256,bundleRaw,proofRaw,metricsRaw]=process.argv.slice(2);
+const bundle=JSON.parse(bundleRaw),metrics=JSON.parse(metricsRaw);
+fs.writeFileSync(output,`${JSON.stringify({
+ schema:'nexus.release-prelayout-boot-sla-incident-resolution.v1',
+ status:'owner_acknowledged_sla_miss',markerSha256,
+ marker:bundle.marker,kernelBootTimeEpoch:bundle.kernelBootTimeEpoch,
+ markerFileMtimeEpoch:bundle.markerFileMtimeEpoch,
+ derivedDetectionMonotonicSeconds:bundle.derivedDetectionMonotonicSeconds,
+ targetSeconds:120,targetMet:false,
+ minimumOutageMilliseconds:metrics.minimumOutageMilliseconds,
+ exactHealthyTimeKnown:false,basis:'pm2_main_process_start_lower_bound',
+ phaseAReceiptSha256:metrics.phaseAReceiptSha256,
+ liveHealthProof:JSON.parse(proofRaw),acknowledgedAt:new Date().toISOString(),
+},null,2)}\n`,{mode:0o600,flag:'w'});
+NODE
+  chmod 600 "$temporary"; root_own "$temporary"
+  durable_publish "$temporary" "$archive" 600
+  validate_historical_prelayout_resolution_archive \
+    "$archive" "$expected_digest" "$marker_bundle" >/dev/null || {
+    echo "published historical pre-layout incident archive is invalid" >&2
+    return 73
+  }
+  repeated_marker="$(validate_historical_prelayout_boot_marker "$expected_digest")" || {
+    echo "historical pre-layout marker changed during durable publication" >&2
+    return 73
+  }
+  [ "$repeated_marker" = "$marker_bundle" ] || {
+    echo "historical pre-layout authority changed during durable publication" >&2
+    return 73
+  }
+  durable_remove "$BOOT_RECOVERY" 600
+  printf '{"ok":true,"schema":"nexus.release-prelayout-boot-sla-incident-resolution.v1","status":"owner_acknowledged_sla_miss","markerSha256":"%s","targetMet":false,"idempotent":false}\n' \
     "$expected_digest"
 }
 
@@ -2372,6 +2797,14 @@ process.stdout.write(String(x.targetMet));
     ensure_state_root; acquire_control_lock
     resolve_prelayout_boot_recovery "$1"
     ;;
+  resolve-historical-prelayout-boot-sla-incident)
+    [ "$#" -eq 1 ] || {
+      echo "resolve-historical-prelayout-boot-sla-incident requires the exact marker SHA-256" >&2
+      exit 64
+    }
+    ensure_state_root; acquire_control_lock; acquire_release_sonar_lock
+    resolve_historical_prelayout_boot_sla_incident "$1"
+    ;;
   fetch)
     transaction_id="${1:-}"; artifact="${2:-}"; validate_id "$transaction_id"; ensure_state_root
     authority="$(authority_path "$transaction_id")"; [ -f "$authority" ] || { echo "promotion transaction is unknown" >&2; exit 1; }
@@ -2389,7 +2822,7 @@ process.stdout.write(String(x.targetMet));
     cat "$file"
     ;;
   *)
-    echo "Usage: nexus-release-promotion-control <version|assert-idle|assert-layout-ready|assert-layout-boot-ready|assert-boot-recovery-prepared|prepare-runtime-target|prepare-staging-runtime-target|seal-runtime|seal-staging-runtime|verify-staging-runtime|attest-staging-runtime|fetch-staging-evidence|launch|status|ensure-started|recover|retry-escrow|recover-all|boot-postcheck|resolve-boot-sla-incident|resolve-prelayout-boot-recovery|fetch>" >&2
+    echo "Usage: nexus-release-promotion-control <version|assert-idle|assert-layout-ready|assert-layout-boot-ready|assert-boot-recovery-prepared|prepare-runtime-target|prepare-staging-runtime-target|seal-runtime|seal-staging-runtime|verify-staging-runtime|attest-staging-runtime|fetch-staging-evidence|launch|status|ensure-started|recover|retry-escrow|recover-all|boot-postcheck|resolve-boot-sla-incident|resolve-prelayout-boot-recovery|resolve-historical-prelayout-boot-sla-incident|fetch>" >&2
     exit 64
     ;;
 esac

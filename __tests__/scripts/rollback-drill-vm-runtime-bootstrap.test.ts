@@ -691,6 +691,160 @@ describe("offline rollback-drill VM runtime bootstrap", () => {
     expect(existsSync(join(targetParent, manifestSha))).toBe(false);
   });
 
+  it("stages signed bundle parents as 0755 under umask 077 and rejects mode drift", () => {
+    const root = temporaryRoot();
+    const source = join(root, "uploaded-bundle");
+    const destination = join(root, "protected-bundle");
+    const relative = "payload/pm2-closure/node_modules/pm2/package.json";
+    const sourceFile = join(source, relative);
+    mkdirSync(join(source, "payload/pm2-closure/node_modules/pm2"), {
+      recursive: true,
+      mode: 0o755,
+    });
+    for (const directory of [
+      source,
+      join(source, "payload"),
+      join(source, "payload/pm2-closure"),
+      join(source, "payload/pm2-closure/node_modules"),
+      join(source, "payload/pm2-closure/node_modules/pm2"),
+    ]) {
+      chmodSync(directory, 0o755);
+    }
+    writeFileSync(
+      sourceFile,
+      JSON.stringify({ name: "pm2", version: "6.0.14" }),
+      { mode: 0o644 },
+    );
+    mkdirSync(destination, { mode: 0o700 });
+
+    const entry = JSON.stringify({
+      path: relative,
+      type: "file",
+      mode: 0o644,
+      size: statSync(sourceFile).size,
+      sha256: sha256(readFileSync(sourceFile)),
+    });
+    const stageFile = (target: string) =>
+      spawnSync(
+        "python3",
+        [
+          "-c",
+          [
+            "import importlib.util,json,os,pathlib,sys",
+            "spec=importlib.util.spec_from_file_location('runtime_manifest',sys.argv[1])",
+            "module=importlib.util.module_from_spec(spec)",
+            "spec.loader.exec_module(module)",
+            "os.umask(0o077)",
+            "source=module.open_real_directory(pathlib.Path(sys.argv[2]),'test source')",
+            "try:module.copy_signed_regular(source,pathlib.Path(sys.argv[3]),json.loads(sys.argv[4]))",
+            "finally:os.close(source)",
+          ].join("\n"),
+          helper,
+          source,
+          target,
+          entry,
+        ],
+        { encoding: "utf8" },
+      );
+
+    const staged = stageFile(destination);
+    expect(staged.status, `${staged.stdout}${staged.stderr}`).toBe(0);
+    expect(statSync(destination).mode & 0o777).toBe(0o700);
+    for (const directory of [
+      join(destination, "payload"),
+      join(destination, "payload/pm2-closure"),
+      join(destination, "payload/pm2-closure/node_modules"),
+      join(destination, "payload/pm2-closure/node_modules/pm2"),
+    ]) {
+      expect(statSync(directory).mode & 0o777).toBe(0o755);
+    }
+
+    const drifted = join(root, "protected-bundle-mode-drift");
+    mkdirSync(join(drifted, "payload"), { recursive: true, mode: 0o700 });
+    chmodSync(join(drifted, "payload"), 0o700);
+    const rejected = stageFile(drifted);
+    expect(rejected.status).not.toBe(0);
+    expect(rejected.stderr).toContain(
+      "staged bundle parent directory mode is unsafe",
+    );
+
+    const linked = join(root, "protected-bundle-linked-parent");
+    mkdirSync(linked, { mode: 0o700 });
+    symlinkSync(root, join(linked, "payload"));
+    const linkedRejected = stageFile(linked);
+    expect(linkedRejected.status).not.toBe(0);
+    expect(linkedRejected.stderr).toContain(
+      "staged bundle parent is not one owned real directory",
+    );
+  });
+
+  it.runIf(process.platform === "linux")(
+    "preserves signed bundle modes through restrictive guest tar transport",
+    () => {
+      const root = temporaryRoot();
+      const source = join(root, "registered-bundle");
+      const target = join(root, "guest-upload");
+      const archive = join(root, "bundle.tar");
+      const nested = join(source, "payload/pm2-closure/bin");
+      mkdirSync(nested, { recursive: true, mode: 0o755 });
+      for (const directory of [
+        source,
+        join(source, "payload"),
+        join(source, "payload/pm2-closure"),
+        nested,
+      ]) {
+        chmodSync(directory, 0o755);
+      }
+      writeFileSync(join(nested, "pm2"), "#!/usr/bin/env node\n", {
+        mode: 0o755,
+      });
+      writeFileSync(join(source, "manifest.json"), "signed-manifest", {
+        mode: 0o400,
+      });
+      writeFileSync(join(source, "payload/package-lock.json"), "{}", {
+        mode: 0o644,
+      });
+      chmodSync(join(nested, "pm2"), 0o755);
+      chmodSync(join(source, "manifest.json"), 0o400);
+      chmodSync(join(source, "payload/package-lock.json"), 0o644);
+
+      const packed = spawnSync(
+        "tar",
+        ["-C", source, "-cf", archive, "."],
+        { encoding: "utf8" },
+      );
+      expect(packed.status, packed.stderr).toBe(0);
+      const transported = spawnSync(
+        "bash",
+        [
+          "-c",
+          [
+            "set -euo pipefail",
+            "umask 077",
+            'mkdir "$TARGET"',
+            'tar --no-same-owner --same-permissions -xf "$ARCHIVE" -C "$TARGET"',
+          ].join("\n"),
+        ],
+        {
+          encoding: "utf8",
+          env: { ...process.env, TARGET: target, ARCHIVE: archive },
+        },
+      );
+      expect(
+        transported.status,
+        `${transported.stdout}${transported.stderr}`,
+      ).toBe(0);
+      expect(statSync(join(target, "payload")).mode & 0o777).toBe(0o755);
+      expect(
+        statSync(join(target, "payload/pm2-closure/bin/pm2")).mode & 0o777,
+      ).toBe(0o755);
+      expect(
+        statSync(join(target, "payload/package-lock.json")).mode & 0o777,
+      ).toBe(0o644);
+      expect(statSync(join(target, "manifest.json")).mode & 0o777).toBe(0o400);
+    },
+  );
+
   it("binds Noble Python identity to the exact guest, image, dpkg evidence, and host key", () => {
     const root = temporaryRoot();
     const receiptPath = join(root, "active.json");
@@ -2242,6 +2396,10 @@ exit "$status"
       "pin-owner-key <public-key.pem> <expected-sha256>",
     );
     expect(hostSealer).toContain("register-bundle");
+    expect(hostSealer).toContain(
+      "tar --no-same-owner --same-permissions -xf -",
+    );
+    expect(hostSealer).not.toContain("--no-same-permissions");
     expect(hostSealer).toContain("collect-runtime-readiness");
     expect(hostSealer).toContain("-F /dev/null");
     expect(hostSealer).toContain("ClearAllForwardings=yes");
