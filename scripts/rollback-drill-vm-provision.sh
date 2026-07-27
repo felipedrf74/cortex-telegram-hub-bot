@@ -12,6 +12,7 @@ ACTIVE_RECEIPT="$STATE_ROOT/active.json"
 LAYOUT_TRUST_MANIFEST="$STATE_ROOT/release-layout-evidence-trust.v1.json"
 INSTALL_JOURNAL="$STATE_ROOT/install-in-progress.v1"
 PROVISION_JOURNAL="$STATE_ROOT/provision-in-progress.v1"
+RETIREMENT_JOURNAL="$STATE_ROOT/set-retirement-in-progress.v1.json"
 CONTROL_LOCK="$STATE_ROOT/control.lock"
 EXPECTED_USER="nexus-drill-vm"
 IMAGE_ORIGIN="https://cloud-images.ubuntu.com/noble/current"
@@ -405,6 +406,8 @@ assert_template_static
   || die "installer journal is present; owner inspection is required"
 [[ ! -e "$PROVISION_JOURNAL" && ! -L "$PROVISION_JOURNAL" ]] \
   || die "provision journal is present; owner inspection is required"
+[[ ! -e "$RETIREMENT_JOURNAL" && ! -L "$RETIREMENT_JOURNAL" ]] \
+  || die "set-retirement journal is present; run the exact-source recovery command"
 [[ ! -e "$ACTIVE_RECEIPT" && ! -L "$ACTIVE_RECEIPT" ]] \
   || die "an active guest set already exists; replacement is not automatic"
 [[ ! -e "$LAYOUT_TRUST_MANIFEST" && ! -L "$LAYOUT_TRUST_MANIFEST" ]] \

@@ -213,7 +213,7 @@ describe('rollback-drill KVM provisioner', () => {
     expect(installer).toContain(
       'active guest set binds a different guest recovery unit; replacement is not automatic',
     );
-    expect(installer).toContain('"installedAssets":16');
+    expect(installer).toContain('"installedAssets":17');
     expect(installer).toContain('--groups kvm');
     expect(installer).toContain(
       'must belong only to its private group and kvm',
