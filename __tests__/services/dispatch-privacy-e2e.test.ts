@@ -49,7 +49,10 @@ const { mockConfig, mockAuditState, mockAuditInsert, mockRequestContext } = vi.h
 }));
 
 vi.mock('../../src/config', () => ({ config: mockConfig }));
-vi.mock('../../src/services/database', () => {
+vi.mock('../../src/services/database', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/database')>(
+    '../../src/services/database',
+  );
   const requiredColumns = [
     'ts', 'user_id', 'tenant_id', 'provider', 'model', 'model_digest',
     'task_label', 'prompt_tokens', 'completion_tokens', 'duration_ms',
@@ -70,7 +73,10 @@ vi.mock('../../src/services/database', () => {
       };
     },
   };
-  return { getDb: () => db };
+  return {
+    ...actual,
+    getDb: () => db,
+  };
 });
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },

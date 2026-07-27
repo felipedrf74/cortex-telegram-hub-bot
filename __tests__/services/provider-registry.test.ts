@@ -140,6 +140,7 @@ vi.mock('../../src/services/provider-fallback', () => ({
     HALF_OPEN: 'half-open',
     OPEN: 'open',
   },
+  MidLoopProviderFallbackError: class extends Error {},
   TaskRoutingProvider: MockTaskRoutingProvider,
   resolveTaskType: vi.fn(),
   shouldBypassOllamaForToolOrWrite: vi.fn(),

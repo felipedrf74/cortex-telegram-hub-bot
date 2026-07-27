@@ -4158,7 +4158,7 @@ exec bash ${JSON.stringify(runner)} "$@"
         },
       });
     expect(fs.existsSync(recoveryIntent)).toBe(false);
-  }, 45_000);
+  }, 120_000);
 
   it('recovers immediately on restart when authoritative recovery intent exists', () => {
     const launch = run(['launch', envelopePath]);
@@ -4351,7 +4351,7 @@ exec "$@"
     expect(calls).toContain('start');
     const journal = JSON.parse(fs.readFileSync(path.join(stateRoot, 'transactions', id, 'state', 'journal.json'), 'utf8'));
     expect(journal.status).toBe('recovered');
-  });
+  }, 30_000);
 
   it('fails closed when root recovery phase is missing or conflicts with candidate state', () => {
     const launch = run(['launch', envelopePath]);

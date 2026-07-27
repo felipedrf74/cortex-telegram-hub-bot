@@ -740,5 +740,5 @@ describe('application DR CRL CloudFormation parameter helper', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 });

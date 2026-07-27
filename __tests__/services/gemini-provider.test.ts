@@ -33,6 +33,7 @@ vi.mock('../../src/services/anthropic', () => ({
   DOMAIN_SYSTEM_PROMPTS: {},
   buildReplyLanguageInstruction: vi.fn().mockReturnValue(''),
   callDomain: vi.fn(),
+  callStructuredGeneration: vi.fn(),
   classifyAndExtractImage: vi.fn(),
   classifyMessage: vi.fn(),
   continueWithToolResults: vi.fn(),

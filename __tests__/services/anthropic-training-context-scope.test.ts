@@ -19,7 +19,8 @@ vi.mock('../../src/services/training-signals', () => ({
   formatTrainingContextForPrompt: vi.fn(() => '<training-context />'),
 }));
 
-vi.mock('../../src/state/content-references', () => ({
+vi.mock('../../src/state/content-references', async () => ({
+  ...(await vi.importActual('../../src/state/content-references')),
   buildKnowledgePromptBlock: (...args: unknown[]) => mockBuildKnowledgePromptBlock(...args),
 }));
 

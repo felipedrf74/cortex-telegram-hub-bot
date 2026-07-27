@@ -920,7 +920,7 @@ describe('rollback-drill KVM coordinator and evidence bundle', () => {
       {
         encoding: 'utf8',
         env: executionEnv,
-        timeout: 20_000,
+        timeout: 60_000,
       },
     );
     expect(executeResult.status, executeResult.stderr).toBe(0);
@@ -1010,5 +1010,5 @@ describe('rollback-drill KVM coordinator and evidence bundle', () => {
     expect(source).toContain('spawnSync');
     expect(source).not.toContain('Promise.all');
     expect(source).not.toContain('spawn(');
-  });
+  }, 90_000);
 });

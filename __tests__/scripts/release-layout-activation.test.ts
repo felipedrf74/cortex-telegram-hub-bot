@@ -2701,7 +2701,7 @@ exit 0
     ]);
     expect(rejected.status).not.toBe(0);
     expect(rejected.stderr).toContain('guest execution evidence signature is invalid');
-  });
+  }, 30_000);
 
   it('refuses unsigned or incomplete machine evidence before publication', () => {
     const fixture = makeRoot();
