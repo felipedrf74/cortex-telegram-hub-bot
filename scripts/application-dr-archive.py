@@ -514,7 +514,7 @@ def bootstrap_identity(
     }
 
 
-def validate_paths(archive: Path, destination: Path) -> None:
+def validate_paths(archive: Path, destination: Path) -> os.stat_result:
     if not archive.is_absolute() or archive == Path("/"):
         fail("archive must be an absolute non-root path")
     if archive.is_symlink() or archive.resolve(strict=True) != archive or not archive.is_file():
@@ -525,10 +525,15 @@ def validate_paths(archive: Path, destination: Path) -> None:
         fail("destination must be an absolute non-root path")
     if destination.is_symlink() or destination.resolve(strict=True) != destination:
         fail("destination must be a canonical non-symlink directory")
+    destination_identity = destination.stat()
     if not destination.is_dir() or any(destination.iterdir()):
         fail("destination must be an empty directory")
-    if stat.S_IMODE(destination.stat().st_mode) != 0o700:
-        fail("destination must have mode 0700")
+    if (
+        destination_identity.st_uid != os.geteuid()
+        or stat.S_IMODE(destination_identity.st_mode) != 0o700
+    ):
+        fail("destination must be owned by the invoking user and have mode 0700")
+    return destination_identity
 
 
 def validate_member(member: tarfile.TarInfo, seen: set[str]) -> None:
@@ -546,7 +551,7 @@ def validate_member(member: tarfile.TarInfo, seen: set[str]) -> None:
 
 
 def extract(archive: Path, destination: Path) -> dict[str, object]:
-    validate_paths(archive, destination)
+    destination_identity = validate_paths(archive, destination)
     seen: set[str] = set()
     with tarfile.open(archive, mode="r:gz") as source:
         members = source.getmembers()
@@ -557,6 +562,11 @@ def extract(archive: Path, destination: Path) -> dict[str, object]:
         # Keep extraction compatible with Python 3.11 as well as ServerDominguez
         # Python 3.12 instead of relying only on the newer `filter=` argument.
         source.extractall(destination, members=members)
+    if not same_directory(
+        destination_identity,
+        os.stat(destination, follow_symlinks=False),
+    ):
+        fail("destination identity changed during extraction")
     for required in REQUIRED_PATHS:
         if not (destination / required).exists():
             fail(f"rollback bundle is missing required path: {required}")
@@ -582,12 +592,19 @@ def extract(archive: Path, destination: Path) -> dict[str, object]:
             path = Path(root, directory)
             if path.is_symlink():
                 fail(f"symlink appeared after extraction: {path.relative_to(destination)}")
+            os.chown(path, os.geteuid(), os.getegid(), follow_symlinks=False)
             path.chmod(0o700)
         for filename in files:
             path = Path(root, filename)
             if path.is_symlink():
                 fail(f"symlink appeared after extraction: {path.relative_to(destination)}")
+            os.chown(path, os.geteuid(), os.getegid(), follow_symlinks=False)
             path.chmod(0o600)
+    if not same_directory(
+        destination_identity,
+        os.stat(destination, follow_symlinks=False),
+    ):
+        fail("destination identity changed during normalization")
     return {
         "schemaVersion": "NexusReleaseRollbackEscrowV1",
         "archivedVersion": version,
