@@ -721,70 +721,24 @@ describe('v2 normalization attestor installer transactions', () => {
         stdio: ['ignore', 'pipe', 'pipe'],
       },
     );
-    type FirstOutcome = {
-      code: number | null;
-      signal: NodeJS.Signals | null;
-      error?: string;
-    };
-    let firstStdout = '';
-    let firstStderr = '';
-    let firstOutcome: FirstOutcome | null = null;
-    first.stdout?.setEncoding('utf8');
-    first.stdout?.on('data', (chunk: string) => {
-      firstStdout += chunk;
-    });
-    first.stderr?.setEncoding('utf8');
-    first.stderr?.on('data', (chunk: string) => {
-      firstStderr += chunk;
-    });
-    const firstSettled = new Promise<FirstOutcome>((resolve) => {
-      const settle = (outcome: FirstOutcome) => {
-        if (firstOutcome !== null) return;
-        firstOutcome = outcome;
-        resolve(outcome);
-      };
-      first.once('exit', (code, signal) => settle({ code, signal }));
-      first.once('error', (error) => settle({
-        code: null,
-        signal: null,
-        error: error.message,
-      }));
-    });
-    const stopFirst = async () => {
-      if (firstOutcome === null) first.kill('SIGKILL');
-      return firstSettled;
-    };
-
-    try {
-      const deadline = Date.now() + 20_000;
-      while (
-        !existsSync(ready)
-        && firstOutcome === null
-        && Date.now() < deadline
-      ) {
-        await new Promise((resolve) => setTimeout(resolve, 20));
-      }
-      expect(
-        existsSync(ready),
-        `first installer did not become ready: ${
-          JSON.stringify({ firstOutcome, firstStdout, firstStderr })
-        }`,
-      ).toBe(true);
-      const second = runInstaller(fixture, 'install');
-      expect(second.status).not.toBe(0);
-      expect(second.stderr).toMatch(
-        /another bridge installer is active|maintenance transaction requires explicit recover/u,
-      );
-      await stopFirst();
-      const recovered = runInstaller(fixture, 'recover');
-      expect(recovered.status, recovered.stderr).toBe(0);
-      expect(JSON.parse(recovered.stdout)).toMatchObject({
-        ok: true,
-        status: 'pre_mutation_maintenance_recovered',
-      });
-    } finally {
-      await stopFirst();
+    const deadline = Date.now() + 20_000;
+    while (!existsSync(ready) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
     }
+    expect(existsSync(ready)).toBe(true);
+    const second = runInstaller(fixture, 'install');
+    expect(second.status).not.toBe(0);
+    expect(second.stderr).toMatch(
+      /another bridge installer is active|maintenance transaction requires explicit recover/u,
+    );
+    first.kill('SIGKILL');
+    await new Promise<void>((resolve) => first.once('exit', () => resolve()));
+    const recovered = runInstaller(fixture, 'recover');
+    expect(recovered.status, recovered.stderr).toBe(0);
+    expect(JSON.parse(recovered.stdout)).toMatchObject({
+      ok: true,
+      status: 'pre_mutation_maintenance_recovered',
+    });
   }, 60_000);
 
   it.each([
