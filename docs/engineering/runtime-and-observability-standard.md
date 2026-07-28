@@ -210,8 +210,8 @@ Production rollback is **always available**. The default release contract is:
    remain blocked without their explicit governed review and recovery proof.
 4. **Rollback restores the predecessor runtime.** If PM2 identity, loopback
    health, authenticated staging smoke, or the 60-second production soak
-   fails, atomically restore `current`, reload the exact predecessor, and
-   verify health. Candidate and recovery health waits are bounded, and
+   fails, atomically restore `current`, recreate the exact predecessor
+   processes, and verify health. Candidate and recovery health waits are bounded, and
    recovery duration is recorded against the 120-second objective.
 5. **Promotion is a durable user transaction.** Persist predecessor and
    candidate identity before `current` or PM2 mutation, then run through
