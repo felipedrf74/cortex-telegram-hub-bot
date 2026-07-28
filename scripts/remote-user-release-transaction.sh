@@ -295,9 +295,31 @@ start_runtime() {
   local runtime="$1"
   local sha="$2"
   local digest="$3"
-  [ -f "$runtime/ecosystem.release.config.js" ] || die "runtime ecosystem configuration is missing"
-  pm2_env "$runtime" "$sha" "$digest" startOrReload "$runtime/ecosystem.release.config.js" \
-    --only "$(IFS=,; echo "${APP_NAMES[*]}")" --update-env
+  local mode="${4:-reload}"
+  local app_csv
+  [ -f "$runtime/ecosystem.release.config.js" ] \
+    && [ ! -L "$runtime/ecosystem.release.config.js" ] \
+    || die "runtime ecosystem configuration is missing or unsafe"
+  app_csv="$(IFS=,; echo "${APP_NAMES[*]}")"
+  case "$mode" in
+    reload)
+      pm2_env "$runtime" "$sha" "$digest" startOrReload \
+        "$runtime/ecosystem.release.config.js" --only "$app_csv" --update-env
+      ;;
+    replace)
+      # The first lean predecessor predates the artifact-digest field in its
+      # ecosystem file. A reload merges the candidate-only field into that
+      # legacy process. Recreate only the selected apps during rollback so
+      # their environment is derived from the exact predecessor invocation.
+      pm2_env "$runtime" "$sha" "$digest" delete "${APP_NAMES[@]}" \
+        >/dev/null 2>&1 || true
+      pm2_env "$runtime" "$sha" "$digest" start \
+        "$runtime/ecosystem.release.config.js" --only "$app_csv"
+      ;;
+    *)
+      die "unsupported PM2 runtime start mode"
+      ;;
+  esac
   "$TIMEOUT_BIN" --foreground 10s "$PM2_BIN" save --force >/dev/null
 }
 
@@ -466,7 +488,7 @@ process.stdout.write(`${x.runtimeSha||""} ${x.artifactDigest||""}\n`);
   [[ "$predecessor_digest" =~ ^[0-9a-f]{64}$ ]] || return 1
   local rollback_deadline=$(( $(date +%s) + ROLLBACK_OBJECTIVE_SECONDS ))
   switch_current "$PREDECESSOR"
-  start_runtime "$PREDECESSOR" "$predecessor_sha" "$predecessor_digest"
+  start_runtime "$PREDECESSOR" "$predecessor_sha" "$predecessor_digest" replace
   [ "$(date +%s)" -le "$rollback_deadline" ] || return 1
   wait_healthy "$PREDECESSOR" "$predecessor_sha" "$predecessor_digest" \
     "$ROLLBACK_HEALTH_BUDGET_SECONDS" allow-missing

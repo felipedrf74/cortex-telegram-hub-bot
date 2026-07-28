@@ -662,7 +662,21 @@ db.close();
     expect(remote).toContain('mv -Tf "$temporary" "$CURRENT_LINK"');
     expect(remote).toContain('restore_predecessor');
     expect(remote).toContain('startOrReload');
-    expect(remote).not.toContain('"$PM2_BIN" delete');
+    expect(remote).toContain('local mode="${4:-reload}"');
+    expect(remote).toContain(
+      'start_runtime "$PREDECESSOR" "$predecessor_sha" "$predecessor_digest" replace',
+    );
+    expect(remote).toContain(
+      'pm2_env "$runtime" "$sha" "$digest" delete "${APP_NAMES[@]}"',
+    );
+    expect(remote).toContain(
+      'pm2_env "$runtime" "$sha" "$digest" start \\\n'
+      + '        "$runtime/ecosystem.release.config.js" --only "$app_csv"',
+    );
+    expect(remote.match(/\bdelete "\$\{APP_NAMES\[@\]\}"/g)).toHaveLength(1);
+    expect(remote.indexOf(
+      'start_runtime "$RELEASE_DIR" "$RUNTIME_SHA" "$ARTIFACT_DIGEST"',
+    )).toBeGreaterThan(remote.indexOf('start_runtime()'));
     expect(remote).toContain('local budget_seconds="${4:-45}"');
     expect(remote).toContain(
       'wait_healthy "$PREDECESSOR" "$predecessor_sha" "$predecessor_digest" \\\n    "$ROLLBACK_HEALTH_BUDGET_SECONDS" allow-missing',
