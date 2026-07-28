@@ -52,7 +52,10 @@ import { isPendingChatWorkCancellationTurn } from '../../services/chat-pending-c
 // its stage inside its chat-pipeline stage module.
 import { recordChatStage } from '../../services/chat-stage-trace';
 import { runChatMessagePipeline } from './chat-pipeline/runner';
-import { isLoopbackRequest } from '../secret-guards';
+import {
+  isExplicitLocalChatEvalDockerBridgeRequest,
+  isLoopbackRequest,
+} from '../secret-guards';
 import {
   ChatLiveEvalContractError,
   hasChatLiveEvalHeaders,
@@ -436,7 +439,10 @@ export function registerChatMessageRoutes(
             userId,
             tenantId,
             principalEmail: getUserById(userId)?.email ?? null,
-            isLoopback: isLoopbackRequest(req),
+            isLoopback: (
+              isLoopbackRequest(req)
+              || isExplicitLocalChatEvalDockerBridgeRequest(req)
+            ),
           })
         : null;
     } catch (error) {

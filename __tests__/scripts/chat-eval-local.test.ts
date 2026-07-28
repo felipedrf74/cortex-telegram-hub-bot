@@ -10,6 +10,7 @@ const PROMOTE = join(ROOT, 'scripts', 'promote-exact-release.sh');
 const MANIFEST_TOOL = join(ROOT, 'scripts', 'release-checksum-manifest.mjs');
 const CHAT_EVAL_COMPOSE = join(ROOT, 'docker-compose.chat-eval-local.yml');
 const LOCAL_UP = join(ROOT, 'scripts', 'local-up.sh');
+const CHAT_MESSAGE_ROUTES = join(ROOT, 'src', 'api', 'routes', 'chat-message-routes.ts');
 
 function runScript(args: string[], env: NodeJS.ProcessEnv = {}) {
   return spawnSync('bash', [CHAT_EVAL_LOCAL, ...args], {
@@ -125,6 +126,7 @@ describe('chat-eval-local dry run', () => {
     const script = readFileSync(CHAT_EVAL_LOCAL, 'utf8');
     const compose = readFileSync(CHAT_EVAL_COMPOSE, 'utf8');
     const localUp = readFileSync(LOCAL_UP, 'utf8');
+    const chatMessageRoutes = readFileSync(CHAT_MESSAGE_ROUTES, 'utf8');
     const boot = script.indexOf('./scripts/local-up.sh');
     const attestation = script.indexOf('attest_zero_cloud_profile', boot);
     const evalRun = script.indexOf('scripts/run-chat-eval-live.ts', attestation);
@@ -136,6 +138,7 @@ describe('chat-eval-local dry run', () => {
     expect(compose).toContain('NEXUS_MODEL_FIXTURE_MODE: "0"');
     expect(compose).toContain('CONTENT_ENGINE_FIXTURE_MODE: "0"');
     expect(compose).toContain('NEXUS_CHAT_EVAL_ALLOW_DOCKER_HOST_BRIDGE: "1"');
+    expect(chatMessageRoutes).toContain('isExplicitLocalChatEvalDockerBridgeRequest(req)');
     expect(compose).toContain('OLLAMA_ENABLED: "true"');
     expect(compose).toContain('OLLAMA_BASE_URL:');
     expect(compose.match(/^\s+AI_(?:CLASSIFY|CHAT|TOOL_USE)_PRIMARY: "ollama"/gm)).toHaveLength(3);
