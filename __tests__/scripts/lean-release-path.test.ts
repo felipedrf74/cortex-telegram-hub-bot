@@ -662,6 +662,7 @@ db.close();
     expect(remote).toContain('mv -Tf "$temporary" "$CURRENT_LINK"');
     expect(remote).toContain('restore_predecessor');
     expect(remote).toContain('startOrReload');
+    expect(remote).not.toContain('"$PM2_BIN" delete');
     expect(remote).toContain('local mode="${4:-reload}"');
     expect(remote).toContain(
       'start_runtime "$PREDECESSOR" "$predecessor_sha" "$predecessor_digest" replace',
