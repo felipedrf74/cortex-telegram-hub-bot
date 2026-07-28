@@ -13,7 +13,7 @@
   },
   "retirementMappings": [
     {
-      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "tests": [
         "__tests__/scripts/application-disaster-recovery.test.ts",
         "__tests__/scripts/application-dr-backup-descriptor.test.ts",
@@ -40,7 +40,7 @@
       "reason": "The AWS disaster-recovery implementation is retired with its tests after local backup and restore coverage replaces it."
     },
     {
-      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "tests": [
         "__tests__/scripts/quality-sonar-cloudformation.test.ts",
         "__tests__/scripts/quality-sonar-live-readiness.test.ts",
@@ -57,7 +57,7 @@
       "reason": "AWS and root-install Sonar controls are retired while the in-place local Sonar contract remains covered."
     },
     {
-      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "tests": [
         "__tests__/scripts/persistent-promotion-transaction.test.ts",
         "__tests__/scripts/protected-main-ci-evidence.test.ts",
@@ -84,7 +84,7 @@
       "reason": "Signed, shadow-evidence, root-promotion, and duplicate release controls are retired in favor of the checksum-bound lean release path."
     },
     {
-      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "test": "__tests__/scripts/production-shape-migration-rehearsal.test.ts",
       "requiredChangedPaths": [
         "scripts/lib/release-artifact-manifest.mjs"
@@ -96,7 +96,7 @@
       "reason": "The artifact-embedded production-shape rehearsal is retired from the lean runtime; the release checkpoint now fails irreversible migrations closed while the lean transaction verifies migration-backed startup and rollback readiness."
     },
     {
-      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "test": "__tests__/scripts/release-artifact-manifest.test.ts",
       "baselineOwnerPaths": ["scripts/release-evidence.mjs"],
       "requiredRemovedPaths": ["scripts/release-evidence.mjs"],
@@ -107,7 +107,7 @@
       "reason": "The retained artifact manifest test replaces its exact baseline release-evidence owner after that signing-era implementation is removed."
     },
     {
-      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "tests": [
         "__tests__/scripts/rollback-drill-check.test.ts",
         "__tests__/scripts/rollback-drill-kvm-coordinator.test.ts",
@@ -130,7 +130,7 @@
       "reason": "KVM and legacy-layout rollback drills are retired while the lean predecessor rollback transaction remains covered."
     },
     {
-      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "test": "__tests__/scripts/exact-promotion-operational-safety.test.ts",
       "requiredRemovedPaths": ["scripts/env-parity-check.sh"],
       "requiredChangedPaths": ["scripts/promote-exact-release.sh"],
@@ -138,14 +138,14 @@
       "reason": "The exact promotion safety contract is replaced by the lean promotion path after the old parity wrapper is retired."
     },
     {
-      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "test": "__tests__/scripts/quality-sonar-install-transaction.test.ts",
       "requiredRemovedPaths": ["scripts/quality-sonar-install-transaction.py"],
       "replacementTests": ["__tests__/scripts/quality-sonar-local.test.ts"],
       "reason": "The root Sonar installation transaction is retired while the exact in-place local Sonar contract remains covered."
     },
     {
-      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "test": "__tests__/scripts/release-backup-runtime-artifact.test.ts",
       "requiredRemovedPaths": [
         "scripts/remote-create-release-backup.sh",
@@ -158,7 +158,7 @@
       "reason": "The old remote release backup wrappers are replaced by the lean pre-promotion and local backup contracts."
     },
     {
-      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "test": "__tests__/scripts/release-exact-attestations.test.ts",
       "requiredRemovedPaths": [
         "scripts/release-installed-tree-attestation.mjs",
@@ -168,7 +168,7 @@
       "reason": "The separate installed-tree and staging attestations are replaced by exact checksum parity in the lean release path."
     },
     {
-      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "test": "__tests__/scripts/release-focused-verify.test.ts",
       "requiredRemovedPaths": [
         "scripts/release-focused-verify.sh",
@@ -181,21 +181,21 @@
       "reason": "The duplicate focused release wrappers are replaced by affected verification and the explicit lean checkpoint."
     },
     {
-      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "test": "__tests__/scripts/release-gates.test.ts",
       "requiredChangedPaths": ["scripts/lib/release-gates.sh"],
       "replacementTests": ["__tests__/scripts/lean-release-path.test.ts"],
       "reason": "The legacy multi-lock gate suite is replaced by the single-lock lean release transaction contract."
     },
     {
-      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "test": "__tests__/scripts/release-layout-activation.test.ts",
       "requiredRemovedPaths": ["scripts/remote-release-layout-activation-control.sh"],
       "replacementTests": ["__tests__/scripts/lean-release-path.test.ts"],
       "reason": "The legacy layout activation controller is retired while atomic current-selector promotion remains covered."
     },
     {
-      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "test": "__tests__/scripts/release-layout-fault-producers.test.ts",
       "requiredRemovedPaths": [
         "scripts/release-layout-fault-drill-controller.mjs",
@@ -206,7 +206,7 @@
       "reason": "The layout fault producer chain is retired while predecessor rollback remains covered by the lean transaction."
     },
     {
-      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "test": "__tests__/scripts/release-quality-evidence.test.ts",
       "requiredRemovedPaths": [
         "scripts/lib/release-plan-authoritative-evidence.mjs",
@@ -217,7 +217,7 @@
       "reason": "The separate release quality evidence request is replaced by checksum manifest identities and checkpoint results."
     },
     {
-      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "test": "__tests__/scripts/release-runtime-safeguards.test.ts",
       "requiredRemovedPaths": [
         "scripts/env-parity-check.sh",
@@ -228,14 +228,14 @@
       "reason": "The old distributed readiness wrappers are replaced by the bounded lean staging and promotion transaction."
     },
     {
-      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "test": "__tests__/scripts/release-sequence.test.ts",
       "requiredRemovedPaths": ["scripts/release-sequence.mjs"],
       "replacementTests": ["__tests__/scripts/lean-release-path.test.ts"],
       "reason": "The multi-workflow sequence coordinator is replaced by the single explicit lean release checkpoint."
     },
     {
-      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "test": "__tests__/scripts/release-signing-resume-helpers.test.ts",
       "requiredRemovedPaths": [
         "scripts/release-signing-provenance-receipt.mjs",
@@ -246,7 +246,7 @@
       "reason": "Signing resume helpers are retired after the compact checksum manifest replaces separate protected signatures."
     },
     {
-      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "test": "__tests__/scripts/release-sonar-mutex.test.ts",
       "requiredChangedPaths": ["scripts/lib/release-gates.sh"],
       "replacementTests": [
@@ -256,28 +256,28 @@
       "reason": "The release-Sonar mutex contract is replaced by advisory local Sonar and the single lean release lock."
     },
     {
-      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "test": "__tests__/scripts/release-staging-resume.test.ts",
       "requiredRemovedPaths": ["scripts/remote-release-selector-switch.py"],
       "replacementTests": ["__tests__/scripts/lean-release-path.test.ts"],
       "reason": "The old staging selector resume helper is replaced by the durable user-owned staging transaction."
     },
     {
-      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "test": "__tests__/scripts/release-staging-transfer-integrity.test.ts",
       "requiredChangedPaths": ["scripts/release-operator.sh"],
       "replacementTests": ["__tests__/scripts/lean-release-path.test.ts"],
       "reason": "The old transfer verifier is replaced by one checksum-bound upload and offline staging installation."
     },
     {
-      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "test": "__tests__/scripts/remote-release-capacity.test.ts",
       "requiredRemovedPaths": ["scripts/remote-release-capacity.sh"],
       "replacementTests": ["__tests__/scripts/lean-release-path.test.ts"],
       "reason": "The standalone capacity wrapper is retired while the lean server transaction retains bounded preflight checks."
     },
     {
-      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "test": "__tests__/scripts/restore-runtime-artifact.test.ts",
       "requiredRemovedPaths": ["scripts/restore.sh"],
       "replacementTests": [
@@ -287,14 +287,14 @@
       "reason": "The legacy restore wrapper is replaced by predecessor rollback and verified local database restore coverage."
     },
     {
-      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "test": "__tests__/scripts/rollback-versioned-runtime.test.ts",
       "requiredRemovedPaths": ["scripts/rollback.sh"],
       "replacementTests": ["__tests__/scripts/lean-release-path.test.ts"],
       "reason": "The standalone versioned rollback wrapper is replaced by automatic predecessor restoration in the lean transaction."
     },
     {
-      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "test": "__tests__/scripts/v2-normalization-attestor-bridge.test.ts",
       "requiredRemovedPaths": [
         "scripts/remote-v2-normalization-attestor-install.sh",
@@ -304,7 +304,7 @@
       "reason": "The V2 normalization bridge is retired after checksum-bound staging and promotion replace its attestation path."
     },
     {
-      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "test": "__tests__/scripts/release-runtime-dependencies.test.ts",
       "requiredChangedPaths": [
         "scripts/build-release-runtime-dependencies.sh",
@@ -317,7 +317,7 @@
       "reason": "The retained runtime dependency contract now covers the lean offline artifact without legacy verifier behavior."
     },
     {
-      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "test": "__tests__/services/content-live-evaluation-runtime.test.ts",
       "requiredChangedPaths": ["src/services/content-live-evaluation-runtime.ts"],
       "replacementTests": [
@@ -327,7 +327,7 @@
       "reason": "The retained content runtime contract removes AWS recovery wiring while preserving local evaluation behavior."
     },
     {
-      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "test": "__tests__/scripts/local-full-vitest-receipt.test.ts",
       "requiredRemovedPaths": ["scripts/local-full-vitest-receipt.mjs"],
       "requiredChangedPaths": [".husky/pre-push"],
@@ -338,7 +338,7 @@
       "reason": "The local full-suite receipt is retired because hooks no longer execute or reuse a complete Vitest run."
     },
     {
-      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "test": "__tests__/scripts/local-release-hooks.test.ts",
       "requiredRemovedPaths": ["scripts/local-full-vitest-receipt.mjs"],
       "requiredChangedPaths": [".husky/pre-push"],
@@ -349,7 +349,7 @@
       "reason": "The local release hook contract is rewritten for affected tests after the full-suite receipt is retired."
     },
     {
-      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "test": "__tests__/scripts/changed-coverage-gate.test.ts",
       "requiredChangedPaths": [
         "scripts/changed-coverage-gate.mjs",
@@ -362,7 +362,7 @@
       "reason": "The separate coverage shard runner is retired while the selected-test invocation now emits the changed-line coverage consumed by the retained analyzer."
     },
     {
-      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "test": "__tests__/scripts/migration-safety-check.test.ts",
       "requiredRemovedPaths": [
         "scripts/release-verify.sh",
@@ -376,7 +376,7 @@
       "reason": "The duplicate release migration wrappers are retired while the migration policy suite and lean release checkpoint retain migration enforcement."
     },
     {
-      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "test": "__tests__/scripts/staging-smoke-ollama-integration.test.ts",
       "requiredRemovedPaths": [
         "scripts/release-manifest-v2.mjs",
@@ -393,7 +393,7 @@
       "reason": "The signed-manifest root staging path is replaced one-for-one by the protected checksum release and user-owned remote transaction."
     },
     {
-      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "test": "__tests__/security/github-workflow-pinning.test.ts",
       "requiredRemovedPaths": [
         ".github/workflows/release.yml",
@@ -407,7 +407,7 @@
       "reason": "The signed release workflows are retired while immutable workflow actions and the exact protected-main checksum release remain pinned."
     },
     {
-      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "test": "__tests__/services/science-policy-gate-wiring.test.ts",
       "requiredRemovedPaths": [
         "scripts/cannot-skip-gate-dashboard.mjs",
@@ -417,7 +417,7 @@
       "reason": "The 42-gate dashboard contract is retired while the retained test continues to pin science-policy enforcement in CI and pre-commit."
     },
     {
-      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "test": "__tests__/scripts/chat-eval-local.test.ts",
       "requiredRemovedPaths": ["scripts/remote-promotion-*"],
       "requiredChangedPaths": ["scripts/promote-exact-release.sh"],
@@ -428,7 +428,7 @@
       "reason": "The retained chat evaluation gate now precedes the lean durable server transaction instead of the retired root promotion locks."
     },
     {
-      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "test": "__tests__/scripts/ollama-observation-collector.test.ts",
       "requiredRemovedPaths": [
         "ops/ollama/LARGE_MODEL_CLEANUP.md",
@@ -442,7 +442,7 @@
       "reason": "The multi-window Ollama observation, cleanup, and zero-swap chain is retired in favor of one exact-release-bound, dry-run-first finalization transaction."
     },
     {
-      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "test": "__tests__/scripts/ollama-large-model-cleanup.test.ts",
       "requiredRemovedPaths": [
         "ops/ollama/LARGE_MODEL_CLEANUP.md",

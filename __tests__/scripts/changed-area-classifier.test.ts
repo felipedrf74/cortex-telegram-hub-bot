@@ -17,7 +17,7 @@ import {
   parseGitNameStatusRecordsZ,
 } from '../../scripts/lib/git-changed-paths.mjs';
 
-const RETIREMENT_BASE_SHA = '5aeba7f098677158764949bb9c6cfc96aa569726';
+const RETIREMENT_BASE_SHA = '7b724f185580b18ce722a396b6e01d5ae268d3c1';
 
 function classify(files: string[]) {
   return JSON.parse(execFileSync('bash', [
