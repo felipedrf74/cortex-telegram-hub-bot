@@ -379,6 +379,19 @@ describe('handleSimpleDomain', () => {
     expect(mockCallDomain).toHaveBeenCalledOnce();
   });
 
+  it('anchors a direct today-workout answer without replacing provider detail', async () => {
+    mockCallDomain.mockResolvedValue({
+      text: 'Keep the long run easy and conversational.',
+      toolCalls: [],
+      stopReason: 'end_turn',
+    } as any);
+
+    const result = await handleSimpleDomain('triathlon', "What's today's workout?", 5, 15);
+
+    expect(result.text).toContain("Today's workout");
+    expect(result.text).toContain('Keep the long run easy and conversational.');
+  });
+
   it('adds the explicit request locale to the provider prompt without changing user text', async () => {
     mockCallDomain.mockResolvedValue({
       text: 'Ideas de contenido.',

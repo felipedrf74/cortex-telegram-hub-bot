@@ -873,6 +873,15 @@ const LIVE_TURN_OVERRIDES: Record<string, Pick<DayToDayTurn, 'id' | 'userMessage
       }],
     },
   },
+  'training_adjustment:b2-tired': {
+    id: 'b2-tired',
+    userMessage: 'I am tired today and slept badly.',
+    expectation: {
+      expectedSkills: ['training'],
+      expectedDomain: 'training',
+      semanticMustInclude: ['recovery', 'adjust'],
+    },
+  },
   'training_adjustment:b3-adjust': {
     id: 'b3-adjust',
     userMessage: 'Adjust the session and move it later if needed.',

@@ -231,6 +231,13 @@ function buildLegacyDomainWriteBlockedReply(): string {
   return 'This action needs confirmation in the app before I change anything.';
 }
 
+function anchorTodayWorkoutAnswer(domain: DomainName, message: string, text: string): string {
+  if (domain !== 'triathlon') return text;
+  if (!/\b(?:what(?:'s| is))\s+today'?s?\s+workout\b/i.test(message)) return text;
+  if (/\btoday'?s?\s+workout\b/i.test(text)) return text;
+  return `Today's workout: ${text}`;
+}
+
 /**
  * M18 remediation: executeToolCall NEVER throws on failure — it RETURNS
  * failure-shaped objects. The real shapes (tool-executor.ts +
@@ -752,6 +759,7 @@ export async function handleSimpleDomain(
     finalText = requestLocale
       ? normalizeReplyForLanguage(finalText, requestLocale)
       : normalizeReplyForUserLanguage(finalText, userId);
+    finalText = anchorTodayWorkoutAnswer(domain, message, finalText);
     finalText = enforceCookingDomainAnswerSafety(domain, finalText, userId, tenantId);
 
     if (hasUserScope) {
@@ -865,6 +873,7 @@ async function handleWithDirectCalls(
   finalText = requestLocale
     ? normalizeReplyForLanguage(finalText, requestLocale)
     : normalizeReplyForUserLanguage(finalText, userId);
+  finalText = anchorTodayWorkoutAnswer(domain, message, finalText);
   finalText = enforceCookingDomainAnswerSafety(domain, finalText, userId, tenantId);
 
   if (typeof userId === 'number') {

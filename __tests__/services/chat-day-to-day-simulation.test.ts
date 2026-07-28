@@ -138,6 +138,13 @@ describe('chat day-to-day simulation harness', () => {
             involvedSkills: ['tasks'],
           });
         }
+        if (req.clientMessageId?.includes('b2-tired')) {
+          return liveEnvelopeResult({
+            text: 'Poor sleep makes recovery the constraint, so adjust the Training session.',
+            domain: 'training',
+            involvedSkills: ['training'],
+          });
+        }
         return liveEnvelopeResult({ text: 'Safe English response for the requested turn.' });
       },
       readSideEffect,
@@ -184,6 +191,11 @@ describe('chat day-to-day simulation harness', () => {
     expect(capturedLocales.find((turn) => turn.id.includes('a4-confirm-delete-eval-target'))?.text)
       .toBe('Confirm this decision');
     expect(isAcceptCurrentDecisionShortcut('Confirm this decision')).toBe(true);
+    const tiredTurn = result.scenarios
+      .find((scenario) => scenario.scenarioId === 'training_adjustment')!
+      .turns.find((turn) => turn.turnId === 'b2-tired')!;
+    expect(tiredTurn.passed).toBe(true);
+    expect(tiredTurn.response.domain).toBe('training');
     const mutationTurns = result.scenarios
       .find((scenario) => scenario.scenarioId === 'morning_planning')!
       .turns.filter((turn) => turn.turnId.includes('eval-target'));
