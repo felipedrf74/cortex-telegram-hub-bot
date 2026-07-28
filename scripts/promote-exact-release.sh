@@ -11,6 +11,7 @@ ARTIFACT_DIGEST="${4:?artifact digest is required}"
 TRANSACTION_ID="${5:?transaction ID is required}"
 MANIFEST="${6:?release manifest is required}"
 MANIFEST_SHA256="${7:?release manifest digest is required}"
+EXPECTED_PREDECESSOR_DIGEST="${8:?expected predecessor digest is required}"
 STABILITY_SECONDS="${NEXUS_RELEASE_PRODUCTION_STABILITY_SECONDS:-60}"
 UNIT="nexus-release-production-${RUNTIME_SHA:0:12}"
 REMOTE_SCRIPT="$SOURCE_BUNDLE/scripts/remote-user-release-transaction.sh"
@@ -21,6 +22,8 @@ REMOTE_SCRIPT="$SOURCE_BUNDLE/scripts/remote-user-release-transaction.sh"
 [[ "$RUNTIME_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "invalid runtime SHA" >&2; exit 64; }
 [[ "$ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]] || { echo "invalid artifact digest" >&2; exit 64; }
 [[ "$MANIFEST_SHA256" =~ ^[0-9a-f]{64}$ ]] || { echo "invalid release manifest digest" >&2; exit 64; }
+[[ "$EXPECTED_PREDECESSOR_DIGEST" =~ ^[0-9a-f]{64}$ ]] \
+  || { echo "invalid expected predecessor digest" >&2; exit 64; }
 [[ "$TRANSACTION_ID" =~ ^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}$ ]] || {
   echo "invalid transaction ID" >&2
   exit 64
@@ -42,6 +45,16 @@ const sha=value?.releaseImpact?.deployedSha;
 if(!/^[0-9a-f]{40}$/.test(sha||""))process.exit(1);
 process.stdout.write(sha);' "$MANIFEST_PREFLIGHT"
 )"
+node - "$ROOT/docs/release/release-state.json" \
+  "$EXPECTED_PREDECESSOR_SHA" "$EXPECTED_PREDECESSOR_DIGEST" <<'NODE'
+const fs = require('node:fs');
+const [file, expectedSha, expectedDigest] = process.argv.slice(2);
+const value = JSON.parse(fs.readFileSync(file, 'utf8'));
+if (value?.backend?.runtimeSha !== expectedSha
+    || value?.backend?.artifactDigest !== expectedDigest) {
+  process.exit(1);
+}
+NODE
 
 ssh "$SERVER" systemd-run --user --quiet --collect \
   --unit "$UNIT" \
@@ -49,7 +62,7 @@ ssh "$SERVER" systemd-run --user --quiet --collect \
   --property TimeoutStartSec=8min \
   /bin/bash "$REMOTE_SCRIPT" promote /home/dominguez/telegram-hub-bot \
   "$SOURCE_BUNDLE" "$RUNTIME_SHA" "$ARTIFACT_DIGEST" "$TRANSACTION_ID" \
-  "$STABILITY_SECONDS" "$EXPECTED_PREDECESSOR_SHA"
+  "$STABILITY_SECONDS" "$EXPECTED_PREDECESSOR_SHA" "$EXPECTED_PREDECESSOR_DIGEST"
 
 deadline=$((SECONDS + 600))
 while [ "$SECONDS" -lt "$deadline" ]; do
@@ -58,17 +71,18 @@ while [ "$SECONDS" -lt "$deadline" ]; do
     set +e
     printf '%s' "$state" | node -e '
 let body="";process.stdin.on("data",chunk=>body+=chunk);process.stdin.on("end",()=>{
- const x=JSON.parse(body),[id,sha,digest,predecessorSha]=process.argv.slice(1);
+ const x=JSON.parse(body),[id,sha,digest,predecessorSha,predecessorDigest]=process.argv.slice(1);
  if(x.schema!=="nexus.lean-release-transaction.v1"||x.role!=="production"
    ||x.transactionId!==id||x.runtimeSha!==sha||x.artifactDigest!==digest)process.exit(3);
  if(x.status==="passed"&&x.phase==="completed"){
    if(x.predecessorSha!==predecessorSha
-     ||!/^[0-9a-f]{64}$/.test(x.predecessorDigest||""))process.exit(2);
+     ||x.predecessorDigest!==predecessorDigest)process.exit(2);
    process.exit(0);
  }
  if(x.status==="failed")process.exit(2);
  process.exit(4);
-});' "$TRANSACTION_ID" "$RUNTIME_SHA" "$ARTIFACT_DIGEST" "$EXPECTED_PREDECESSOR_SHA"
+});' "$TRANSACTION_ID" "$RUNTIME_SHA" "$ARTIFACT_DIGEST" \
+      "$EXPECTED_PREDECESSOR_SHA" "$EXPECTED_PREDECESSOR_DIGEST"
     state_status=$?
     set -e
     case "$state_status" in

@@ -24,6 +24,7 @@ DRY_RUN=false
 EXPECTED_SHA=""
 STAGING_FAULT_AFTER_SWITCH=false
 CANONICAL_DEPLOYED_SHA=""
+CANONICAL_DEPLOYED_DIGEST=""
 
 usage() {
   cat <<'USAGE'
@@ -80,11 +81,13 @@ write_local_state() {
   local staging_state="${2:-}"
   local production_state="${3:-}"
   node - "$STATE_FILE" "$phase" "$RUNTIME_SHA" "$ARTIFACT_DIGEST" "$ARTIFACT_NAME" \
-    "$MANIFEST" "$MANIFEST_SHA256" "$CANONICAL_DEPLOYED_SHA" "$CHECKPOINT_RUN" \
+    "$MANIFEST" "$MANIFEST_SHA256" "$CANONICAL_DEPLOYED_SHA" \
+    "$CANONICAL_DEPLOYED_DIGEST" "$CHECKPOINT_RUN" \
     "$SERVER" "$staging_state" "$production_state" <<'NODE'
 const fs=require('node:fs');const path=require('node:path');
 const [file,phase,runtimeSha,artifactDigest,artifactName,manifest,manifestSha256,
- deployedSha,checkpointRun,server,stagingPath,productionPath]=process.argv.slice(2);
+ deployedSha,deployedArtifactDigest,checkpointRun,server,
+ stagingPath,productionPath]=process.argv.slice(2);
 const read=(filename)=>{
  if(!filename)return null;
  const value=JSON.parse(fs.readFileSync(filename,'utf8'));
@@ -92,7 +95,7 @@ const read=(filename)=>{
 };
 const body=Buffer.from(`${JSON.stringify({
  schema:'nexus.lean-release-state.v1',phase,runtimeSha,artifactDigest,artifactName,
- manifest:path.resolve(manifest),manifestSha256,deployedSha,
+ manifest:path.resolve(manifest),manifestSha256,deployedSha,deployedArtifactDigest,
  checkpointRun:Number(checkpointRun),server,
  staging:read(stagingPath),production:read(productionPath),updatedAt:new Date().toISOString(),
 },null,2)}\n`);
@@ -135,11 +138,17 @@ require_exact_checkout() {
     echo "release target is not the exact current protected origin/main SHA" >&2
     exit 1
   }
-  CANONICAL_DEPLOYED_SHA="$(
-    node -e 'const x=require("./docs/release/release-state.json");process.stdout.write(x.backend.runtimeSha)'
-  )"
+  read -r CANONICAL_DEPLOYED_SHA CANONICAL_DEPLOYED_DIGEST < <(
+    node -e '
+const x=require("./docs/release/release-state.json");
+process.stdout.write(`${x.backend.runtimeSha} ${x.backend.artifactDigest}`)'
+  )
   [[ "$CANONICAL_DEPLOYED_SHA" =~ ^[0-9a-f]{40}$ ]] || {
     echo "canonical protected release-state SHA is invalid" >&2
+    exit 1
+  }
+  [[ "$CANONICAL_DEPLOYED_DIGEST" =~ ^[0-9a-f]{64}$ ]] || {
+    echo "canonical protected release-state artifact digest is invalid" >&2
     exit 1
   }
   git merge-base --is-ancestor "$CANONICAL_DEPLOYED_SHA" "$RUNTIME_SHA" || {
@@ -304,6 +313,7 @@ for(const [key,value] of [
  ['RUNTIME_SHA',x.runtimeSha],['ARTIFACT_DIGEST',x.artifactDigest],
  ['ARTIFACT_NAME',x.artifactName],['MANIFEST',x.manifest],
  ['MANIFEST_SHA256',x.manifestSha256],['STATE_DEPLOYED_SHA',x.deployedSha],
+ ['STATE_DEPLOYED_DIGEST',x.deployedArtifactDigest],
  ['CHECKPOINT_RUN',x.checkpointRun],['STATE_PHASE',x.phase],
  ['STATE_SERVER',x.server],
 ])console.log(`${key}=${quote(value)}`);
@@ -313,12 +323,14 @@ NODE
     && "$ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$
     && "$MANIFEST_SHA256" =~ ^[0-9a-f]{64}$
     && "$STATE_DEPLOYED_SHA" =~ ^[0-9a-f]{40}$
+    && "$STATE_DEPLOYED_DIGEST" =~ ^[0-9a-f]{64}$
     && "$CHECKPOINT_RUN" =~ ^[1-9][0-9]*$ ]] || {
     echo "prepared release state identity is invalid" >&2
     exit 1
   }
   [ "$MANIFEST" = "$MANIFEST_ROOT/$RUNTIME_SHA.json" ] \
-    && [ "$STATE_DEPLOYED_SHA" = "$CANONICAL_DEPLOYED_SHA" ] || {
+    && [ "$STATE_DEPLOYED_SHA" = "$CANONICAL_DEPLOYED_SHA" ] \
+    && [ "$STATE_DEPLOYED_DIGEST" = "$CANONICAL_DEPLOYED_DIGEST" ] || {
     echo "prepared release state manifest or deployed identity is invalid" >&2
     exit 1
   }
@@ -460,7 +472,8 @@ REMOTE_QUARANTINE_BUNDLE
     fi
 
     if [ "$REMOTE_BUNDLE_REUSED" != true ]; then
-      rsync -a --delete --chmod=D700,Fu+rw,go-rwx "$BUNDLE/" "$SERVER:$REMOTE_TEMP/"
+      rsync -a --delete --chmod=Du=rwx,Dgo=,Fu=rw,Fgo= \
+        "$BUNDLE/" "$SERVER:$REMOTE_TEMP/"
       ssh "$SERVER" bash -s -- "$REMOTE_TEMP" "$REMOTE_BUNDLE" "$RUNTIME_SHA" "$ARTIFACT_DIGEST" <<'REMOTE_PUBLISH'
 set -euo pipefail
 temporary="$1"; bundle="$2"; sha="$3"; digest="$4"
@@ -493,6 +506,41 @@ REMOTE_REMOVE_QUARANTINE
     rm -f -- "$STAGING_STATE" "$STAGING_STATE.next"
     REMOTE_STAGING_STATE="$(ssh "$SERVER" \
       cat /home/dominguez/.local/state/nexus-release/staging.json 2>/dev/null || true)"
+    EXPECTED_STAGING_PREDECESSOR_SHA="$CANONICAL_DEPLOYED_SHA"
+    EXPECTED_STAGING_PREDECESSOR_DIGEST="$CANONICAL_DEPLOYED_DIGEST"
+    if [ -n "$REMOTE_STAGING_STATE" ]; then
+      set +e
+      STAGING_PREDECESSOR_IDENTITY="$(
+        printf '%s' "$REMOTE_STAGING_STATE" | node -e '
+let body="";process.stdin.on("data",chunk=>body+=chunk);process.stdin.on("end",()=>{
+ const x=JSON.parse(body);
+ if(x.schema!=="nexus.lean-release-transaction.v1"||x.role!=="staging")process.exit(1);
+ let sha="",digest="";
+ if(x.status==="passed"&&x.phase==="completed"){
+   sha=x.runtimeSha;digest=x.artifactDigest;
+ }else if(x.status==="failed"&&x.phase==="rolled_back"
+   &&x.healthResult==="failed"&&x.rollbackResult==="restored"
+   &&Number.isSafeInteger(x.rollbackDurationMs)&&x.rollbackDurationMs>=0
+   &&Number.isSafeInteger(x.rollbackObjectiveSeconds)
+   &&x.rollbackDurationMs<=x.rollbackObjectiveSeconds*1000){
+   sha=x.predecessorSha;digest=x.predecessorDigest;
+ }else if(x.status==="failed"
+   &&x.message==="transaction stopped before runtime mutation"
+   &&["starting","preparing"].includes(x.phase)&&x.healthResult==="pending"
+   &&x.rollbackResult===null&&x.candidateRemoved===false){
+   sha=x.predecessorSha;digest=x.predecessorDigest;
+ }else process.exit(1);
+ if(!/^[0-9a-f]{40}$/.test(sha||"")||!/^[0-9a-f]{64}$/.test(digest||""))process.exit(1);
+ process.stdout.write(`${sha} ${digest}`);
+});'
+      )"
+      staging_predecessor_status=$?
+      set -e
+      if [ "$staging_predecessor_status" -eq 0 ]; then
+        read -r EXPECTED_STAGING_PREDECESSOR_SHA \
+          EXPECTED_STAGING_PREDECESSOR_DIGEST <<<"$STAGING_PREDECESSOR_IDENTITY"
+      fi
+    fi
     RESUME_TRANSACTION_ID=""
     if [ -n "$REMOTE_STAGING_STATE" ]; then
       set +e
@@ -507,6 +555,9 @@ let body="";process.stdin.on("data",chunk=>body+=chunk);process.stdin.on("end",(
  if(x.status==="running"){process.stdout.write(x.transactionId);process.exit(4);}
  if(x.status==="failed"&&x.phase==="rolled_back"&&x.rollbackResult==="restored"
    &&x.faultInjection==="staging-health"&&x.candidateRemoved===true)process.exit(5);
+ if(x.status==="failed"&&x.message==="transaction stopped before runtime mutation"
+   &&["starting","preparing"].includes(x.phase)&&x.healthResult==="pending"
+   &&x.rollbackResult===null&&x.candidateRemoved===false)process.exit(5);
  process.exit(2);
 });' "$RUNTIME_SHA" "$ARTIFACT_DIGEST")"
       resume_status=$?
@@ -543,7 +594,8 @@ let body="";process.stdin.on("data",chunk=>body+=chunk);process.stdin.on("end",(
           /bin/bash "$REMOTE_BUNDLE/scripts/remote-user-release-transaction.sh" \
           stage /home/dominguez/telegram-hub-bot-staging "$REMOTE_BUNDLE" "$RUNTIME_SHA" \
           "$ARTIFACT_DIGEST" "$TRANSACTION_ID" \
-          "${NEXUS_RELEASE_STAGING_STABILITY_SECONDS:-15}"
+          "${NEXUS_RELEASE_STAGING_STABILITY_SECONDS:-15}" \
+          "$EXPECTED_STAGING_PREDECESSOR_SHA" "$EXPECTED_STAGING_PREDECESSOR_DIGEST"
         if poll_remote_transaction staging "$TRANSACTION_ID" "$STAGING_STATE"; then
           echo "staging fault drill unexpectedly passed" >&2
           exit 1
@@ -579,7 +631,8 @@ NODE
         /bin/bash "$REMOTE_BUNDLE/scripts/remote-user-release-transaction.sh" \
         stage /home/dominguez/telegram-hub-bot-staging "$REMOTE_BUNDLE" "$RUNTIME_SHA" \
         "$ARTIFACT_DIGEST" "$TRANSACTION_ID" \
-        "${NEXUS_RELEASE_STAGING_STABILITY_SECONDS:-15}"
+        "${NEXUS_RELEASE_STAGING_STABILITY_SECONDS:-15}" \
+        "$EXPECTED_STAGING_PREDECESSOR_SHA" "$EXPECTED_STAGING_PREDECESSOR_DIGEST"
       poll_remote_transaction staging "$TRANSACTION_ID" "$STAGING_STATE"
     fi
     write_local_state staged "$STAGING_STATE"
@@ -660,17 +713,18 @@ process.stdout.write(sha);' "$CHAT_PREFLIGHT"
       set +e
       RESUME_TRANSACTION_ID="$(printf '%s' "$REMOTE_PRODUCTION_STATE" | node -e '
 let body="";process.stdin.on("data",chunk=>body+=chunk);process.stdin.on("end",()=>{
- const x=JSON.parse(body),[sha,digest,predecessorSha]=process.argv.slice(1);
+ const x=JSON.parse(body),[sha,digest,predecessorSha,predecessorDigest]=process.argv.slice(1);
  if(x.schema!=="nexus.lean-release-transaction.v1"||x.role!=="production"
    ||x.runtimeSha!==sha||x.artifactDigest!==digest)process.exit(3);
  if(x.status==="passed"&&x.phase==="completed"){
    if(x.predecessorSha!==predecessorSha
-     ||!/^[0-9a-f]{64}$/.test(x.predecessorDigest||""))process.exit(2);
+     ||x.predecessorDigest!==predecessorDigest)process.exit(2);
    process.stdout.write(x.transactionId);process.exit(0);
  }
  if(x.status==="running"){process.stdout.write(x.transactionId);process.exit(4);}
  process.exit(2);
-});' "$RUNTIME_SHA" "$ARTIFACT_DIGEST" "$EXPECTED_PREDECESSOR_SHA")"
+});' "$RUNTIME_SHA" "$ARTIFACT_DIGEST" "$EXPECTED_PREDECESSOR_SHA" \
+        "$CANONICAL_DEPLOYED_DIGEST")"
       resume_status=$?
       set -e
       case "$resume_status" in
@@ -691,7 +745,7 @@ let body="";process.stdin.on("data",chunk=>body+=chunk);process.stdin.on("end",(
       TRANSACTION_ID="$(transaction_id)"
       "$ROOT/scripts/promote-exact-release.sh" \
         "$SERVER" "$REMOTE_BUNDLE" "$RUNTIME_SHA" "$ARTIFACT_DIGEST" "$TRANSACTION_ID" \
-        "$MANIFEST" "$MANIFEST_SHA256" \
+        "$MANIFEST" "$MANIFEST_SHA256" "$CANONICAL_DEPLOYED_DIGEST" \
         > "$PRODUCTION_STATE"
       chmod 600 "$PRODUCTION_STATE"
     else

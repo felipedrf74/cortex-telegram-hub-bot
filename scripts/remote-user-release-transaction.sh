@@ -12,6 +12,7 @@ ARTIFACT_DIGEST="${5:-}"
 TRANSACTION_ID="${6:-}"
 STABILITY_SECONDS="${7:-60}"
 EXPECTED_PREDECESSOR_SHA="${8:-}"
+EXPECTED_PREDECESSOR_DIGEST="${9:-}"
 
 TRANSFER_ROOT=/home/dominguez/.local/share/nexus-release
 STATE_ROOT=/home/dominguez/.local/state/nexus-release
@@ -50,7 +51,7 @@ case "$COMMAND" in
     RETAIN_RELEASES=5
     ;;
   *)
-    die "usage: remote-user-release-transaction.sh <stage|promote> <base> <bundle> <sha> <digest> <transaction-id> [stability-seconds] [expected-predecessor-sha]"
+    die "usage: remote-user-release-transaction.sh <stage|promote> <base> <bundle> <sha> <digest> <transaction-id> [stability-seconds] <expected-predecessor-sha> <expected-predecessor-digest>"
     ;;
 esac
 
@@ -64,13 +65,10 @@ esac
   || die "stability seconds must be between 1 and 300"
 [ "$ROLE" != production ] || [ "$STABILITY_SECONDS" -ge 60 ] \
   || die "production stability seconds must be at least 60"
-if [ "$ROLE" = production ]; then
-  [[ "$EXPECTED_PREDECESSOR_SHA" =~ ^[0-9a-f]{40}$ ]] \
-    || die "expected production predecessor SHA is invalid"
-else
-  [ -z "$EXPECTED_PREDECESSOR_SHA" ] \
-    || die "staging must not receive a production predecessor SHA"
-fi
+[[ "$EXPECTED_PREDECESSOR_SHA" =~ ^[0-9a-f]{40}$ ]] \
+  || die "expected $ROLE predecessor SHA is invalid"
+[[ "$EXPECTED_PREDECESSOR_DIGEST" =~ ^[0-9a-f]{64}$ ]] \
+  || die "expected $ROLE predecessor digest is invalid"
 case "$FAULT_INJECTION" in
   "") ;;
   staging-health)
@@ -239,22 +237,38 @@ verify_installed_runtime() {
   local runtime="$1"
   local sha="$2"
   local digest="$3"
-  local computed_digest
   local verified_sha verified_digest
   [ -d "$runtime" ] && [ ! -L "$runtime" ] \
     && [ -f "$runtime/ecosystem.release.config.js" ] \
     && [ ! -L "$runtime/ecosystem.release.config.js" ] \
     || return 1
-  computed_digest="$(
-    "$NODE_BIN" "$runtime/scripts/release-artifact-manifest.mjs" \
-      --root "$runtime" --digest
-  )" || return 1
-  [ "$computed_digest" = "$digest" ] || return 1
-  (
-    cd "$runtime"
-    "$NODE_BIN" scripts/release-runtime-dependencies.mjs verify-extracted \
-      --root "$runtime" --python-bin "$PYTHON_BIN"
-  ) >/dev/null || return 1
+  if [ -e "$runtime/.nexus-installed-runtime.json" ] \
+      || [ -L "$runtime/.nexus-installed-runtime.json" ] \
+      || [ -e "$runtime/scripts/release-installed-tree-attestation.mjs" ] \
+      || [ -L "$runtime/scripts/release-installed-tree-attestation.mjs" ]; then
+    [ -f "$runtime/.nexus-installed-runtime.json" ] \
+      && [ ! -L "$runtime/.nexus-installed-runtime.json" ] \
+      && [ -f "$runtime/scripts/release-installed-tree-attestation.mjs" ] \
+      && [ ! -L "$runtime/scripts/release-installed-tree-attestation.mjs" ] \
+      || return 1
+    "$NODE_BIN" "$SOURCE_BUNDLE/scripts/release-artifact-manifest.mjs" \
+      --verify-installed-source "$runtime" \
+      --expected-runtime-sha "$sha" \
+      --expected-digest "$digest" \
+      --require-declared-file scripts/release-installed-tree-attestation.mjs \
+      >/dev/null || return 1
+    "$NODE_BIN" "$runtime/scripts/release-installed-tree-attestation.mjs" validate \
+      --root "$runtime" --runtime-sha "$sha" --artifact-digest "$digest" \
+      >/dev/null || return 1
+  else
+    "$NODE_BIN" "$SOURCE_BUNDLE/scripts/release-artifact-manifest.mjs" \
+      --verify-installed-source "$runtime" \
+      --expected-runtime-sha "$sha" \
+      --expected-digest "$digest" >/dev/null || return 1
+    "$NODE_BIN" "$SOURCE_BUNDLE/scripts/release-runtime-dependencies.mjs" \
+      verify-extracted --root "$runtime" --python-bin "$PYTHON_BIN" \
+      >/dev/null || return 1
+  fi
   read -r verified_sha verified_digest < <(
     read_installed_release_identity "$runtime"
   )
@@ -518,8 +532,10 @@ fi
 read -r PREDECESSOR_SHA PREDECESSOR_DIGEST < <(
   read_installed_release_identity "$PREDECESSOR"
 ) || die "$ROLE predecessor marker identity is not rollback-ready"
-[ "$ROLE" != production ] || [ "$PREDECESSOR_SHA" = "$EXPECTED_PREDECESSOR_SHA" ] \
-  || die "observed production predecessor SHA does not match canonical deployed SHA"
+[ "$PREDECESSOR_SHA" = "$EXPECTED_PREDECESSOR_SHA" ] \
+  || die "observed $ROLE predecessor SHA does not match protected release state"
+[ "$PREDECESSOR_DIGEST" = "$EXPECTED_PREDECESSOR_DIGEST" ] \
+  || die "observed $ROLE predecessor digest does not match protected release state"
 verify_installed_runtime "$PREDECESSOR" "$PREDECESSOR_SHA" "$PREDECESSOR_DIGEST" \
   || die "$ROLE predecessor artifact or dependency identity is not rollback-ready"
 # The first predecessor may be the exact pre-lean release, whose PM2
