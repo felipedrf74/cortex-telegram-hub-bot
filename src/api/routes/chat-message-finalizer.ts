@@ -387,6 +387,9 @@ export function finalizeChatAnswerMetadata(input: FinalizeChatAnswerMetadataInpu
         type: (input.existingMetadata?.type as string | undefined) ?? 'nexus_answer',
         chatReasoning: composed.contract,
         ...(turnContract ? { chatTurnContract: turnContract } : {}),
+        ...(input.routingDecision && input.routingDecision.involvedSkills.length > 1
+          ? { involvedSkills: [...input.routingDecision.involvedSkills] }
+          : {}),
         groundingFacts: metadataGroundingFacts(composed.contract.groundingFacts),
         finalAnswerComposition: {
           version: composed.composerVersion,
@@ -470,6 +473,7 @@ export interface FinalizeChatMessageResponseContext {
   groundingFacts?: NexusGroundingFact[];
   locale?: string | null;
   fallback?: Partial<NexusAnswerContract['fallback']>;
+  routingDecision?: ReturnType<typeof analyzeChatSkillOrchestration>;
   /** Stage family for gate policy resolution. Unknown → full gate. */
   stageFamily?: string;
   /** Request start (ms epoch) — see FinalizeChatAnswerMetadataInput. */
@@ -508,6 +512,7 @@ export function finalizeChatMessageResponse<T extends {
     tracker: input.tracker,
     latencyTier: input.latencyTier,
     existingMetadata,
+    routingDecision: input.routingDecision,
     groundingFacts: input.groundingFacts,
     actionability: input.actionability,
     verificationStatus: input.verificationStatus,

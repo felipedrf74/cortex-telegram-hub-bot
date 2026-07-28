@@ -51,6 +51,7 @@ import {
   resetChatQualityGateOutcomeCountersForTests,
 } from '../../src/services/chat-hybrid-metrics';
 import { upsertTask } from '../../src/services/task-store/unified-task-store';
+import { analyzeChatSkillOrchestration } from '../../src/services/chat-skill-orchestrator';
 
 const USER_ID = 42;
 const TENANT_ID = 42;
@@ -181,6 +182,20 @@ describe('gate policy table', () => {
 });
 
 describe('contract_only families — heuristics skipped, enrichment still applied', () => {
+  it('preserves sanitized multi-skill routing evidence in the final envelope', () => {
+    const routingDecision = analyzeChatSkillOrchestration({
+      message: 'Move my workout because the client call moved earlier.',
+      routedDomain: 'secretary',
+    });
+    const response = finalizeChatMessageResponse(
+      baseResponse({ routeMethod: 'fast-path' }),
+      baseCtx({ stageFamily: 'fast_path', routingDecision }),
+    );
+
+    expect((response.metadata as Record<string, unknown>).involvedSkills)
+      .toEqual(routingDecision.involvedSkills);
+  });
+
   it('records detected response language for the final user-visible turn', () => {
     const response = finalizeChatMessageResponse(
       baseResponse({

@@ -147,6 +147,7 @@ export const legacyTailStage: ChatStage = {
         fallbackConfidence: route.confidence,
         actionability: 'answer_only',
         verificationStatus: 'not_required',
+        routingDecision,
         stageFamily: 'domain_shortcut',
         requestStartedAt,
       });

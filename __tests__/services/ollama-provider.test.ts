@@ -253,6 +253,20 @@ describe('OllamaProvider — classify', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it('allows classification only under the explicit offline evaluation role', async () => {
+    fetchMock
+      .mockResolvedValueOnce(makeChatResponse({ content: '{"domain":"content","confidence":0.91}' }))
+      .mockResolvedValueOnce(makeTagsResponse());
+    const result = await new OllamaProvider().classify(
+      'write a launch hook',
+      undefined,
+      { source: 'evaluation' },
+    );
+    expect(result).toMatchObject({ domain: 'content', confidence: 0.91 });
+    expect(assertBudgetMock).toHaveBeenCalled();
+    expect(rateLimitMock).toHaveBeenCalled();
+  });
+
   it('rejects an ineligible request before consuming local rate-limit capacity', async () => {
     assertBudgetMock.mockImplementationOnce(() => {
       throw new Error('AI_PLAN_REQUIRED');

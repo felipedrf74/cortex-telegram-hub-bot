@@ -836,6 +836,7 @@ const LIVE_TURN_OVERRIDES: Record<string, Pick<DayToDayTurn, 'id' | 'userMessage
     userMessage: 'Delete only the task NEXUS_CHAT_EVAL_M2_TARGET. Do not delete any other task.',
     expectation: {
       expectedSkills: ['tasks'],
+      expectedDomain: 'tasks',
       semanticMustInclude: ['NEXUS_CHAT_EVAL_M2_TARGET', 'confirm'],
       requiresConfirmation: true,
     },
@@ -847,6 +848,8 @@ const LIVE_TURN_OVERRIDES: Record<string, Pick<DayToDayTurn, 'id' | 'userMessage
     userMessage: 'Confirm this decision',
     expectation: {
       expectedSkills: ['tasks'],
+      expectedDomain: 'tasks',
+      semanticMustInclude: ['NEXUS_CHAT_EVAL_M2_TARGET'],
       expectedToolStatuses: ['succeeded'],
       expectsVerifiedMutation: true,
       expectedSideEffects: [{

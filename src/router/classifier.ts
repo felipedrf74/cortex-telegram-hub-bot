@@ -21,6 +21,7 @@ import {
   isManifestClassifierPromptEnabled,
   resolveManifestSkillForDomain,
 } from './classifier-prompt-builder';
+import { isCurrentChatLiveEvalLocalEngine } from '../services/chat-live-evaluation-context';
 
 export interface ConversationContext {
   domain: DomainName;
@@ -322,10 +323,14 @@ export async function classifyWithClaude(
       const raw = await routingProvider.classify(
         liveMessage,
         activeContext ?? undefined,
-        // O3-A19: explicit live source on the user-facing path so any
-        // future code that reads ClassifyOptions sees a default-safe
-        // signal (never accidentally shadow-trigger from the live path).
-        { userId, tenantId, source: 'live' },
+        // O3-A19: ordinary user-facing traffic remains explicitly live. Only
+        // an authenticated local-engine AsyncLocalStorage scope receives the
+        // evaluation role; an environment flag alone cannot grant it.
+        {
+          userId,
+          tenantId,
+          source: isCurrentChatLiveEvalLocalEngine() ? 'evaluation' : 'live',
+        },
       );
       // Defensive guard (Codex Mac sync round-1 fix): routing-provider
       // implementations are typed to always return ClassificationResult

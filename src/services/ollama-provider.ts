@@ -884,8 +884,16 @@ export class OllamaProvider implements AIProvider {
 
       const result = await this.callOllamaForTask({
         taskType: 'classify',
-        workloadRole: options?.source === 'shadow' ? 'classifier_shadow' : undefined,
-        category: options?.source === 'shadow' ? 'classify_shadow' : 'classify_message',
+        workloadRole: options?.source === 'shadow'
+          ? 'classifier_shadow'
+          : options?.source === 'evaluation'
+            ? 'offline_evaluation'
+            : undefined,
+        category: options?.source === 'shadow'
+          ? 'classify_shadow'
+          : options?.source === 'evaluation'
+            ? 'classify_evaluation'
+            : 'classify_message',
         request: { ...baseRequest, messages },
         userId: options?.userId,
         tenantId: options?.tenantId,

@@ -17,6 +17,7 @@ import { isAcceptCurrentDecisionShortcut } from '../../src/api/routes/chat-pipel
 
 function liveEnvelopeResult(input: {
   text: string;
+  domain?: ChatEvalTurnResult['domain'];
   actionStatus?: string;
   skillsUsed?: string[];
   involvedSkills?: string[];
@@ -29,13 +30,13 @@ function liveEnvelopeResult(input: {
     ok: true,
     statusCode: 200,
     text: input.text,
-    domain: 'secretary',
+    domain: input.domain ?? 'secretary',
     routeMethod: 'context',
     metadata,
     envelope: {
       id: 'live-1',
       text: input.text,
-      domain: 'secretary',
+      domain: input.domain ?? 'secretary',
       routeMethod: 'context',
       confidence: 0.9,
       buttons: null,
@@ -124,6 +125,7 @@ describe('chat day-to-day simulation harness', () => {
         if (req.clientMessageId?.includes('a3-delete-eval-target')) {
           return liveEnvelopeResult({
             text: 'Confirm deleting only NEXUS_CHAT_EVAL_M2_TARGET.',
+            domain: 'tasks',
             actionStatus: 'needs_confirmation',
             involvedSkills: ['tasks'],
           });
@@ -131,6 +133,7 @@ describe('chat day-to-day simulation harness', () => {
         if (req.clientMessageId?.includes('a4-confirm-delete-eval-target')) {
           return liveEnvelopeResult({
             text: 'Deleted and verified NEXUS_CHAT_EVAL_M2_TARGET.',
+            domain: 'tasks',
             actionStatus: 'verified_success',
             involvedSkills: ['tasks'],
           });
@@ -181,6 +184,16 @@ describe('chat day-to-day simulation harness', () => {
     expect(capturedLocales.find((turn) => turn.id.includes('a4-confirm-delete-eval-target'))?.text)
       .toBe('Confirm this decision');
     expect(isAcceptCurrentDecisionShortcut('Confirm this decision')).toBe(true);
+    const mutationTurns = result.scenarios
+      .find((scenario) => scenario.scenarioId === 'morning_planning')!
+      .turns.filter((turn) => turn.turnId.includes('eval-target'));
+    expect(mutationTurns).toHaveLength(2);
+    expect(mutationTurns.flatMap((turn) => turn.failures)).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'wrong_skill_routing' }),
+        expect.objectContaining({ type: 'response_correctness' }),
+      ]),
+    );
     expect(readSideEffect).toHaveBeenCalledWith('tasks_list', { pageSize: 200 });
     expect(capturedLocales.find((turn) => turn.id.includes('c1-fueling-before'))).toMatchObject({
       locale: 'pt-BR',

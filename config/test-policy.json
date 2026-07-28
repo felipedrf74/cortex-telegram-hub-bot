@@ -1950,7 +1950,7 @@
       ],
       "mutationTargets": [
         {
-          "pattern": "src/services/ai-provider.ts:482-482",
+          "pattern": "src/services/ai-provider.ts:484-484",
           "anchor": "this.onFallback?.(err as Error, 'classify')",
           "behavior": "Classification fallback reports the exact method and preserves active context and scoped call options.",
           "replacementTest": "__tests__/services/ai-provider.test.ts",
@@ -1958,7 +1958,7 @@
           "minimumMutants": 1
         },
         {
-          "pattern": "src/services/ai-provider.ts:498-498",
+          "pattern": "src/services/ai-provider.ts:500-500",
           "anchor": "this.onFallback?.(err as Error, 'callDomain')",
           "behavior": "Domain fallback reports the exact method and preserves every routing, history, state, and options argument.",
           "replacementTest": "__tests__/services/ai-provider.test.ts",
@@ -1966,7 +1966,7 @@
           "minimumMutants": 1
         },
         {
-          "pattern": "src/services/ai-provider.ts:515-515",
+          "pattern": "src/services/ai-provider.ts:517-517",
           "anchor": "this.onFallback?.(err as Error, 'continueWithToolResults')",
           "behavior": "Tool-result continuation fallback reports the exact method and preserves the full conversation and scoped options.",
           "replacementTest": "__tests__/services/ai-provider.test.ts",
