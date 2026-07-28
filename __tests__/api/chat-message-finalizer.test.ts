@@ -235,6 +235,28 @@ describe('contract_only families — heuristics skipped, enrichment still applie
 });
 
 describe('full_gate families — adversarial hallucinated success is caught', () => {
+  it('keeps the requested today-workout subject explicit in the final iOS envelope', () => {
+    const providerText = 'Keep the run easy and conversational.';
+    const response = finalizeChatMessageResponse(
+      baseResponse({
+        text: providerText,
+        domain: 'triathlon',
+        routeMethod: 'keyword',
+        metadata: { type: 'legacy_domain_answer' },
+      }),
+      baseCtx({
+        normalizedText: "What's today's workout?",
+        stageFamily: 'legacy_response',
+        actionability: 'answer_only',
+        verificationStatus: 'not_required',
+      }),
+    );
+
+    expect(response.text).toContain("Today's workout");
+    expect(response.text).toContain(providerText);
+    expect(JSON.stringify(response.responseBlocks)).toContain("Today's workout");
+  });
+
   it('gates the ChatCoreV2 local-answer family (hallucinated write claim downgraded)', () => {
     const text = 'I scheduled it for 2:00. It is confirmed on your side.';
     const response = finalizeChatMessageResponse(
