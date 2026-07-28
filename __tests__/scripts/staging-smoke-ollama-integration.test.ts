@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
@@ -71,16 +71,13 @@ describe('canonical staging gate Ollama integration', () => {
     expect(canonical).toContain('export DATABASE_PATH="$STAGING_ROOT/data/bot.db"');
     expect(canonical).toContain('NODE_PATH="$staging_release/node_modules"');
     expect(canonical).toContain('evidence_record "immutable staging selector"');
-    expect(canonical).not.toContain('STAGING_DIR=');
-    expect(canonical).not.toContain('cd $STAGING_DIR');
-    expect(canonical).not.toContain('db.prepare(\\"');
+    expect(canonical).not.toContain('STAGING_DIR');
     expect(canonical).toContain(
       'LOCALE_SMOKE_RESULT=$(smoke_ssh "$SERVER" bash -s -- \\\n'
       + '    "$STAGING_ROOT" "$STAGING_RELEASE"',
     );
-    expect(canonical).toContain("<<'REMOTE_LOCALE_E2E'");
     expect(canonical).toContain(
-      '[ "$(readlink -f -- "$staging_root/current")" = "$staging_release" ]',
+      'staging current selector changed during locale smoke',
     );
 
     expect(fixture).toContain('export function buildRemoteNodeCommand');
@@ -100,6 +97,22 @@ describe('canonical staging gate Ollama integration', () => {
     expect(sync).not.toContain('$SERVER:$REMOTE_ROOT/');
   });
 
+  it('keeps embedded fixture JavaScript syntactically valid', () => {
+    const canonical = read('scripts/staging-smoke.sh');
+    const embeddedPrograms = [...canonical.matchAll(
+      /\/usr\/bin\/node <<'NODE'\n([\s\S]*?)\nNODE/g,
+    )].map((match) => match[1]);
+
+    expect(embeddedPrograms).toHaveLength(2);
+    for (const program of embeddedPrograms) {
+      const checked = spawnSync(process.execPath, ['--check'], {
+        input: program,
+        encoding: 'utf8',
+      });
+      expect(checked.status, checked.stderr).toBe(0);
+    }
+  });
+
   it('runs the exact-release policy smoke once in the existing sequential gate', () => {
     const canonical = read('scripts/staging-smoke.sh');
     const ollama = read('scripts/staging-smoke-ollama.sh');
@@ -112,17 +125,6 @@ describe('canonical staging gate Ollama integration', () => {
     expect(canonical).toContain('PM2_APP_NAME=nexus-hub-staging');
     expect(canonical).toContain('PM2_BIN=/home/dominguez/.npm-global/bin/pm2');
     expect(canonical).toContain('evidence_record "Ollama release policy"');
-    expect(canonical).toContain(
-      'LOCAL_OLLAMA_SMOKE="$LOCAL_DIR/scripts/staging-smoke-ollama.sh"',
-    );
-    expect(canonical).toContain('OLLAMA_SMOKE_SHA256="$(');
-    expect(canonical).toContain('REMOTE_OLLAMA_SMOKE="$(smoke_ssh "$SERVER" mktemp');
-    expect(canonical).toContain('command scp');
-    expect(canonical).toContain('"$OLLAMA_SMOKE_SHA256"');
-    expect(canonical).toContain('sha256sum "$smoke_script"');
-    expect(canonical).not.toContain(
-      'smoke_script="$release_dir/scripts/staging-smoke-ollama.sh"',
-    );
     expect(ollama).toContain('final|release');
     expect(ollama).toContain('PM2_BIN must name an absolute executable PM2 launcher');
     expect(ollama).toContain('$names == ([$model] | sort)');

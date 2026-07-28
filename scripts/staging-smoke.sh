@@ -1285,48 +1285,10 @@ echo "🦙 Ollama routing, inventory, and bounded-runtime policy"
 OLLAMA_SMOKE_RESULT=""
 OLLAMA_SMOKE_RC=0
 run_ollama_release_smoke() {
-LOCAL_OLLAMA_SMOKE="$LOCAL_DIR/scripts/staging-smoke-ollama.sh"
-[ -f "$LOCAL_OLLAMA_SMOKE" ] && [ ! -L "$LOCAL_OLLAMA_SMOKE" ] || {
-  echo "operator-side Ollama smoke is missing or a symlink" >&2
-  return 1
-}
-OLLAMA_SMOKE_SHA256="$(
-  node -e '
-    const fs = require("node:fs");
-    const crypto = require("node:crypto");
-    const path = process.argv[1];
-    const stat = fs.lstatSync(path);
-    if (!stat.isFile() || stat.isSymbolicLink()) process.exit(1);
-    process.stdout.write(crypto.createHash("sha256").update(fs.readFileSync(path)).digest("hex"));
-  ' "$LOCAL_OLLAMA_SMOKE"
-)" || {
-  echo "operator-side Ollama smoke digest failed" >&2
-  return 1
-}
-REMOTE_OLLAMA_SMOKE="$(smoke_ssh "$SERVER" mktemp /tmp/nexus-staging-ollama.XXXXXX)" || {
-  echo "could not allocate remote Ollama smoke path" >&2
-  return 1
-}
-smoke_ssh "$SERVER" chmod 600 "$REMOTE_OLLAMA_SMOKE" || {
-  smoke_ssh "$SERVER" rm -f -- "$REMOTE_OLLAMA_SMOKE" >/dev/null 2>&1 || true
-  return 1
-}
-if ! command scp \
-  -o ControlMaster=auto \
-  -o ControlPersist=30 \
-  -o "ControlPath=$SSH_CONTROL_PATH" \
-  "$LOCAL_OLLAMA_SMOKE" "$SERVER:$REMOTE_OLLAMA_SMOKE"; then
-  smoke_ssh "$SERVER" rm -f -- "$REMOTE_OLLAMA_SMOKE" >/dev/null 2>&1 || true
-  return 1
-fi
-smoke_ssh "$SERVER" bash -s -- \
-  "$STAGING_ROOT" "$STAGING_RELEASE" "$REMOTE_OLLAMA_SMOKE" \
-  "$OLLAMA_SMOKE_SHA256" <<'REMOTE_OLLAMA_SMOKE'
+smoke_ssh "$SERVER" bash -s -- "$STAGING_ROOT" "$STAGING_RELEASE" <<'REMOTE_OLLAMA_SMOKE'
 set -euo pipefail
 staging_root="$1"
 release_dir="$2"
-smoke_script="$3"
-expected_sha256="$4"
 case "$release_dir" in /*) ;; *) echo "release directory must be absolute" >&2; exit 64 ;; esac
 [ "$(readlink -f -- "$staging_root/current")" = "$release_dir" ] || {
   echo "staging current selector changed before Ollama smoke" >&2
@@ -1336,22 +1298,13 @@ case "$release_dir" in /*) ;; *) echo "release directory must be absolute" >&2; 
   echo "release directory is missing, unsafe, or a symlink" >&2
   exit 1
 }
-case "$smoke_script" in
-  /tmp/nexus-staging-ollama.*) ;;
-  *) echo "remote Ollama smoke path is unsafe" >&2; exit 1 ;;
-esac
+smoke_script="$release_dir/scripts/staging-smoke-ollama.sh"
 [ -f "$smoke_script" ] && [ ! -L "$smoke_script" ] || {
-  echo "transferred Ollama smoke is missing or a symlink" >&2
-  exit 1
-}
-trap 'rm -f -- "$smoke_script"' EXIT
-actual_sha256="$(sha256sum "$smoke_script" | awk '{print $1}')"
-[ "$actual_sha256" = "$expected_sha256" ] || {
-  echo "transferred Ollama smoke digest mismatch" >&2
+  echo "exact-release Ollama smoke is missing or a symlink" >&2
   exit 1
 }
 cd "$release_dir"
-env \
+exec env \
   OLLAMA_INVENTORY_PHASE=release \
   NEXUS_HUB_BASE_URL=http://127.0.0.1:8201 \
   PM2_APP_NAME=nexus-hub-staging \

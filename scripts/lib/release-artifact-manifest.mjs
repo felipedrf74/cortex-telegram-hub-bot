@@ -30,6 +30,7 @@ export const RELEASE_RUNTIME_FILES = Object.freeze([
   'scripts/lib/release-artifact-manifest.mjs',
   'scripts/release-runtime-dependencies.mjs',
   'scripts/remote-user-release-transaction.sh',
+  'scripts/staging-smoke-ollama.sh',
 ]);
 
 export function sha256(value) {
