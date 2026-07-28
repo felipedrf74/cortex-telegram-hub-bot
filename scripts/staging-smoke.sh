@@ -613,7 +613,7 @@ const db = new Database(process.env.DATABASE_PATH || process.env.DB_PATH || './d
 const now = new Date().toISOString();
 
 function tableExists(name) {
-  return Boolean(db.prepare(\"SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?\").get(name));
+  return Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?").get(name));
 }
 
 function columnsFor(name) {
@@ -840,13 +840,20 @@ if [ "$LOCALE_FIDELITY_ENABLED" = "0" ]; then
 else
   LOCALE_SMOKE_RESULT=""
   LOCALE_SMOKE_RC=0
-  LOCALE_SMOKE_RESULT=$(smoke_ssh "$SERVER" "
-    set -e
-    cd $STAGING_DIR
-    set -a
-    . ./.env
-    set +a
-    node <<'NODE'
+  LOCALE_SMOKE_RESULT=$(smoke_ssh "$SERVER" bash -s -- \
+    "$STAGING_ROOT" "$STAGING_RELEASE" 2>&1 <<'REMOTE_LOCALE_E2E'
+set -eo pipefail
+staging_root="$1"
+staging_release="$2"
+[ "$(readlink -f -- "$staging_root/current")" = "$staging_release" ]
+cd "$staging_release"
+set -a
+. "$staging_root/.env"
+set +a
+export DATABASE_PATH="$staging_root/data/bot.db"
+export DB_PATH="$staging_root/data/bot.db"
+export NODE_PATH="$staging_release/node_modules"
+/usr/bin/node <<'NODE'
 const Database = require('better-sqlite3');
 const { signIosJwt } = require('./dist/services/ios-jwt');
 const { checkStagingLocaleWritePreview } = require('./dist/services/chat-language-detector');
@@ -861,7 +868,7 @@ const db = new Database(process.env.DATABASE_PATH || process.env.DB_PATH || './d
 const now = new Date().toISOString();
 
 function columnsFor(name) {
-  const exists = db.prepare(\"SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?\").get(name);
+  const exists = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?").get(name);
   if (!exists) return new Set();
   return new Set(db.prepare('PRAGMA table_info(' + name + ')').all().map((row) => row.name));
 }
@@ -974,7 +981,12 @@ main().catch((err) => {
   process.exit(1);
 });
 NODE
-  " 2>&1) || LOCALE_SMOKE_RC=$?
+[ "$(readlink -f -- "$staging_root/current")" = "$staging_release" ] || {
+  echo "staging current selector changed during locale smoke" >&2
+  exit 1
+}
+REMOTE_LOCALE_E2E
+  ) || LOCALE_SMOKE_RC=$?
 
   LOCALE_SMOKE_DETAIL="$(printf '%s' "$LOCALE_SMOKE_RESULT" | tail -c 700 | tr '\n' ' ')"
   if [ "$LOCALE_SMOKE_RC" -eq 0 ]; then

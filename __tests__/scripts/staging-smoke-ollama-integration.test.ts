@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
@@ -71,7 +71,14 @@ describe('canonical staging gate Ollama integration', () => {
     expect(canonical).toContain('export DATABASE_PATH="$STAGING_ROOT/data/bot.db"');
     expect(canonical).toContain('NODE_PATH="$staging_release/node_modules"');
     expect(canonical).toContain('evidence_record "immutable staging selector"');
-    expect(canonical).not.toContain('STAGING_DIR=');
+    expect(canonical).not.toContain('STAGING_DIR');
+    expect(canonical).toContain(
+      'LOCALE_SMOKE_RESULT=$(smoke_ssh "$SERVER" bash -s -- \\\n'
+      + '    "$STAGING_ROOT" "$STAGING_RELEASE"',
+    );
+    expect(canonical).toContain(
+      'staging current selector changed during locale smoke',
+    );
 
     expect(fixture).toContain('export function buildRemoteNodeCommand');
     expect(fixture).toContain('cd "$staging_release"');
@@ -88,6 +95,22 @@ describe('canonical staging gate Ollama integration', () => {
     expect(sync).toContain("--exclude='data/***'");
     expect(sync).toContain("--exclude='node_modules/***'");
     expect(sync).not.toContain('$SERVER:$REMOTE_ROOT/');
+  });
+
+  it('keeps embedded fixture JavaScript syntactically valid', () => {
+    const canonical = read('scripts/staging-smoke.sh');
+    const embeddedPrograms = [...canonical.matchAll(
+      /\/usr\/bin\/node <<'NODE'\n([\s\S]*?)\nNODE/g,
+    )].map((match) => match[1]);
+
+    expect(embeddedPrograms).toHaveLength(2);
+    for (const program of embeddedPrograms) {
+      const checked = spawnSync(process.execPath, ['--check'], {
+        input: program,
+        encoding: 'utf8',
+      });
+      expect(checked.status, checked.stderr).toBe(0);
+    }
   });
 
   it('runs the exact-release policy smoke once in the existing sequential gate', () => {

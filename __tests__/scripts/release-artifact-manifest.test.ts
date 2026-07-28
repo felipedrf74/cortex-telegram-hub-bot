@@ -45,12 +45,12 @@ describe('release artifact manifest', () => {
       'scripts/lib/release-artifact-manifest.mjs',
       'scripts/release-runtime-dependencies.mjs',
       'scripts/remote-user-release-transaction.sh',
+      'scripts/staging-smoke-ollama.sh',
     ]));
     expect(RELEASE_RUNTIME_FILES).not.toEqual(expect.arrayContaining([
       'scripts/promote-exact-release.sh',
       'scripts/release-manifest-v2.mjs',
       'scripts/remote-promotion-transaction.sh',
-      'scripts/staging-smoke-ollama.sh',
     ]));
   });
 
