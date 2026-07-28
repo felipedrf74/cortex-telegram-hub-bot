@@ -13,7 +13,6 @@ import {
   resolveRetirementMapping,
   retirementOwnerCandidates,
 } from './lib/test-groups.mjs';
-import { isTestCleanupChange } from './mutation-gate.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -38,7 +37,7 @@ export function classifyDeletedTests(
   readAtBase,
   retirementMappings = [],
   existsCurrent = (file) => fs.existsSync(path.join(root, file)),
-  readCurrent = (file) => (
+  _readCurrent = (file) => (
     existsCurrent(file) ? fs.readFileSync(path.join(root, file), 'utf8') : ''
   ),
   baseSha = null,
@@ -57,15 +56,12 @@ export function classifyDeletedTests(
       || !/^__tests__\/.+\.test\.ts$/.test(previousFile)
       || !currentFile) continue;
     const previous = readAtBase(previousFile);
-    const current = record.status.startsWith('D') ? '' : readCurrent(currentFile);
-    const cleanupDetected = record.status.startsWith('D')
-      || record.status.startsWith('R')
-      || isTestCleanupChange({
-        status: record.status,
-        file: currentFile,
-        previous: previousFile,
-      }, current, previous);
-    if (!cleanupDetected) continue;
+    // This classifier deliberately runs before npm ci. Treat every surviving
+    // modification, deletion, and rename as a conservative mutation-lane
+    // candidate without importing the TypeScript AST runtime. The mutation
+    // job installs dependencies and performs exact evidence comparison; it
+    // exits successfully without Stryker when the modification only adds or
+    // preserves evidence.
     const ownerPaths = retirementOwnerCandidates(previousFile, previous);
     const owners = ownerPaths.filter((owner) => removed.has(owner) || readAtBase(owner).length > 0);
     const removedOwners = owners.filter((owner) => removed.has(owner));

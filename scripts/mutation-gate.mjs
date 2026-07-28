@@ -2,8 +2,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
-import ts from 'typescript';
 import { cleanGitEnv, resolveExactCommit } from './lib/git-ref.mjs';
 import {
   globToRegExp,
@@ -41,7 +41,31 @@ const TEST_MODIFIERS = new Set([
 const ASSERTION_FUNCTIONS = new Set(['assert', 'expect', 'expectTypeOf']);
 const MUTATION_STATUSES = new Set(['Killed', 'Survived', 'Timeout', 'NoCoverage']);
 const DETECTED_MUTATION_STATUSES = new Set(['Killed', 'Timeout']);
-const printer = ts.createPrinter({ removeComments: true, newLine: ts.NewLineKind.LineFeed });
+const requireFromMutationGate = createRequire(import.meta.url);
+let ts;
+let printer;
+
+function loadTypeScriptEvidenceRuntime() {
+  if (ts && printer) return;
+  try {
+    ts = requireFromMutationGate('typescript');
+  } catch (error) {
+    if (
+      error?.code === 'MODULE_NOT_FOUND'
+      && String(error.message).includes('typescript')
+    ) {
+      const unavailable = new Error(
+        'TypeScript test-evidence analysis requires installed dependencies; '
+        + 'run it only after npm ci',
+        { cause: error },
+      );
+      unavailable.code = 'NEXUS_TYPESCRIPT_EVIDENCE_UNAVAILABLE';
+      throw unavailable;
+    }
+    throw error;
+  }
+  printer = ts.createPrinter({ removeComments: true, newLine: ts.NewLineKind.LineFeed });
+}
 
 function git(args, options = {}) {
   const { env: overrides = {}, ...spawnOptions } = options;
@@ -77,6 +101,7 @@ export function isCriticalModule(file, patterns) {
 }
 
 function canonicalNode(node, sourceFile) {
+  loadTypeScriptEvidenceRuntime();
   return printer.printNode(ts.EmitHint.Unspecified, node, sourceFile).replace(/\s+/g, ' ').trim();
 }
 
@@ -295,6 +320,7 @@ function controlFlowFingerprint(node, sourceFile) {
 }
 
 export function extractTestEvidence(source, fileName = 'mutation-gate-input.test.ts') {
+  loadTypeScriptEvidenceRuntime();
   const sourceFile = ts.createSourceFile(
     fileName,
     source,

@@ -171,11 +171,11 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "scripts/test-cleanup-classifier.mjs:59-66",
-            "anchor": "|| isTestCleanupChange({",
-            "behavior": "The protected CI classifier must detect removed evidence in a retained modified test before choosing the mutation lane.",
+            "pattern": "scripts/test-cleanup-classifier.mjs:55-57",
+            "anchor": "if (!/^[DMR]/.test(record.status)",
+            "behavior": "The protected CI bootstrap must conservatively route retained modified, deleted, or renamed tests to exact cleanup analysis after dependency installation.",
             "replacementTest": "__tests__/scripts/ci-required-test-sharding.test.ts",
-            "ownerTestNamePattern": "classifies retained test evidence removal before deciding the mutation lane$",
+            "ownerTestNamePattern": "classifies test changes conservatively before dependency installation$",
             "minimumMutants": 1
           }
         ],
@@ -191,7 +191,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "scripts/mutation-gate.mjs:356-364",
+            "pattern": "scripts/mutation-gate.mjs:380-390",
             "anchor": "hasRemovedEvidence(previousEvidence.assertions, currentEvidence.assertions)",
             "behavior": "The retained mutation contract distinguishes removed assertions and structure from corrected expectations and expanded cases.",
             "replacementTest": "__tests__/scripts/mutation-gate.test.ts",

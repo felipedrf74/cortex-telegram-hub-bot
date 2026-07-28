@@ -85,13 +85,17 @@ describe('lean required CI contracts', () => {
     expect(mutationGate).not.toContain("split('\\n').filter(Boolean)");
   });
 
-  it('classifies retained test evidence removal before deciding the mutation lane', () => {
+  it('classifies test changes conservatively before dependency installation', () => {
     expect(workflow).toContain(
       'node scripts/test-cleanup-classifier.mjs --base "$BASE_REF" --field requiresMutation',
     );
     const classifier = readFileSync('scripts/test-cleanup-classifier.mjs', 'utf8');
-    expect(classifier).toContain('isTestCleanupChange');
+    expect(classifier).not.toContain("from './mutation-gate.mjs'");
+    expect(classifier).toContain('runs before npm ci');
     expect(classifier).toContain('/^[DMR]/');
+    expect(mutationGate).not.toContain("import ts from 'typescript'");
+    expect(mutationGate).toContain("requireFromMutationGate('typescript')");
+    expect(mutationGate).toContain('NEXUS_TYPESCRIPT_EVIDENCE_UNAVAILABLE');
 
     const test = '__tests__/services/retained-contract.test.ts';
     const result = classifyDeletedTests(
