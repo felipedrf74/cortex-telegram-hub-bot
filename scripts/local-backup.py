@@ -377,7 +377,13 @@ def verify_freshness(config: dict[str, str], max_age_hours: int) -> dict[str, ob
     installed = receipt.get("installed")
     if not isinstance(installed, dict) or not installed:
         fail("last-success receipt has no installed backup")
-    selected = Path(next(iter(installed.values())))
+    selected_tier = (
+        "pre-promotion" if receipt.get("kind") == "pre-promotion" else "hourly"
+    )
+    selected_value = installed.get(selected_tier)
+    if not isinstance(selected_value, str) or not selected_value:
+        fail(f"last-success receipt has no {selected_tier} backup")
+    selected = Path(selected_value)
     if not selected.is_file() or sha256(selected) != receipt.get("encryptedSha256"):
         fail("last successful backup no longer matches its receipt")
     return {
