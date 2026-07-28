@@ -31,27 +31,35 @@ vi.mock('../../src/config', async () => {
   };
 });
 
-vi.mock('../../src/services/database', () => ({
-  getDb: () => testDb,
-  initDatabase: vi.fn(),
-  closeDatabase: vi.fn(),
-  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
-  assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
-  withDatabaseForTest: vi.fn(),
-  withDatabaseForTestAsync: vi.fn(),
-}));
+vi.mock('../../src/services/database', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/database')>('../../src/services/database');
+  return {
+    ...actual,
+    getDb: () => testDb,
+    initDatabase: vi.fn(),
+    closeDatabase: vi.fn(),
+    findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+    assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
+    withDatabaseForTest: vi.fn(),
+    withDatabaseForTestAsync: vi.fn(),
+  };
+});
 
-vi.mock('../../src/services/usage-metering', () => ({
-  getDailyUsage: vi.fn(() => ({
-    date: '2026-07-27',
-    messageCount: 3,
-    totalTokens: 120,
-    inputTokens: 80,
-    outputTokens: 40,
-    apiCalls: 3,
-  })),
-  getUsageRange: vi.fn(() => []),
-}));
+vi.mock('../../src/services/usage-metering', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/usage-metering')>('../../src/services/usage-metering');
+  return {
+    ...actual,
+    getDailyUsage: vi.fn(() => ({
+      date: '2026-07-27',
+      messageCount: 3,
+      totalTokens: 120,
+      inputTokens: 80,
+      outputTokens: 40,
+      apiCalls: 3,
+    })),
+    getUsageRange: vi.fn(() => []),
+  };
+});
 
 vi.mock('../../src/api/tenant-route-scope', () => ({
   ensureValidTenantRouteScope: vi.fn(() => true),

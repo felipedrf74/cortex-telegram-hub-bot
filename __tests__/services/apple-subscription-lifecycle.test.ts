@@ -41,14 +41,18 @@ vi.mock('../../src/config', () => ({
   },
 }));
 
-vi.mock('../../src/services/database', () => ({
-  getDb: () => testDb,
-  initDatabase: vi.fn(),
-  closeDatabase: vi.fn(),
-  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
-  assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
-  withDatabaseForTestAsync: vi.fn(),
-}));
+vi.mock('../../src/services/database', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/database')>('../../src/services/database');
+  return {
+    ...actual,
+    getDb: () => testDb,
+    initDatabase: vi.fn(),
+    closeDatabase: vi.fn(),
+    findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+    assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
+    withDatabaseForTestAsync: vi.fn(),
+  };
+});
 
 vi.mock('../../src/utils/logger', () => ({
   logger: {
@@ -62,11 +66,15 @@ vi.mock('../../src/utils/logger', () => ({
   LOGGER_REDACTION_PATHS: [],
 }));
 
-vi.mock('../../src/services/email-sender', () => ({
-  sendPaymentReceipt: vi.fn(async () => true),
-  sendPaymentFailed: vi.fn(async () => true),
-  sendCancellationConfirmation: vi.fn(async () => true),
-}));
+vi.mock('../../src/services/email-sender', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/email-sender')>('../../src/services/email-sender');
+  return {
+    ...actual,
+    sendPaymentReceipt: vi.fn(async () => true),
+    sendPaymentFailed: vi.fn(async () => true),
+    sendCancellationConfirmation: vi.fn(async () => true),
+  };
+});
 
 function createSchema(db: Database.Database): void {
   db.exec(`

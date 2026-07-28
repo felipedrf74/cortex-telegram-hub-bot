@@ -465,6 +465,33 @@ describe('billing routes', () => {
         resource: 'billing.apple_verify.subscription',
         details: expect.objectContaining({ environment: 'Sandbox' }),
       }));
+
+      // Missing provenance remains grantable, but the audit record must make
+      // that absence explicit instead of inventing Production.
+      mockLogAudit.mockClear();
+      hoisted.signedApplePayload = {
+        bundleId: 'me.nexushub.app',
+        productId: 'me.nexushub.pro.monthly',
+        transactionId: '2000000123456794',
+        originalTransactionId: '2000000123456794',
+        expiresDate,
+      };
+      mockHandleAppleTransaction.mockReturnValueOnce({
+        plan: 'pro',
+        period: 'monthly',
+        environment: '',
+        transferredFromUserId: null,
+      });
+
+      const noEnvironment = await dispatch('POST', '/apple-verify', {
+        jwsTransaction: buildFakeJws(hoisted.signedApplePayload),
+      }, 42);
+
+      expect(noEnvironment.statusCode).toBe(200);
+      expect(mockLogAudit).toHaveBeenCalledWith(expect.objectContaining({
+        resource: 'billing.apple_verify.subscription',
+        details: expect.objectContaining({ environment: 'unknown' }),
+      }));
     } finally {
       if (originalNodeEnv === undefined) {
         delete process.env.NODE_ENV;

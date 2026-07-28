@@ -21,20 +21,24 @@ vi.mock('@google/genai', () => ({
   },
 }));
 
-vi.mock('../../src/services/anthropic', () => ({
-  getDomainSystemPrompt: vi.fn().mockReturnValue('You are a helpful coach.'),
-  getClassifierSystemPrompt: vi.fn().mockReturnValue('Classify into: secretary, triathlon.'),
-  getOllamaClassifierSystemPromptCompact: vi.fn().mockReturnValue(null),
-  DOMAIN_SYSTEM_PROMPTS: {},
-  buildReplyLanguageInstruction: vi.fn().mockReturnValue(''),
-  callDomain: vi.fn(),
-  classifyAndExtractImage: vi.fn(),
-  classifyMessage: vi.fn(),
-  continueWithToolResults: vi.fn(),
-  getToolsForDomainCached: vi.fn().mockReturnValue([]),
-  resolveReplyLanguage: vi.fn().mockReturnValue('en'),
-  TOOLS: [],
-}));
+vi.mock('../../src/services/anthropic', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/anthropic')>('../../src/services/anthropic');
+  return {
+    ...actual,
+    getDomainSystemPrompt: vi.fn().mockReturnValue('You are a helpful coach.'),
+    getClassifierSystemPrompt: vi.fn().mockReturnValue('Classify into: secretary, triathlon.'),
+    getOllamaClassifierSystemPromptCompact: vi.fn().mockReturnValue(null),
+    DOMAIN_SYSTEM_PROMPTS: {},
+    buildReplyLanguageInstruction: vi.fn().mockReturnValue(''),
+    callDomain: vi.fn(),
+    classifyAndExtractImage: vi.fn(),
+    classifyMessage: vi.fn(),
+    continueWithToolResults: vi.fn(),
+    getToolsForDomainCached: vi.fn().mockReturnValue([]),
+    resolveReplyLanguage: vi.fn().mockReturnValue('en'),
+    TOOLS: [],
+  };
+});
 
 vi.mock('../../src/config', () => ({
   config: {
@@ -64,27 +68,39 @@ vi.mock('../../src/services/cost-guardrail', async () => {
   return { ...actual, assertAiBudgetReservationForProvider: vi.fn() };
 });
 
-vi.mock('../../src/services/database', () => ({
-  getDb: () => ({ prepare: () => ({ run: vi.fn() }) }),
-  initDatabase: vi.fn(),
-  closeDatabase: vi.fn(),
-  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
-  assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
-  withDatabaseForTestAsync: vi.fn(),
-}));
+vi.mock('../../src/services/database', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/database')>('../../src/services/database');
+  return {
+    ...actual,
+    getDb: () => ({ prepare: () => ({ run: vi.fn() }) }),
+    initDatabase: vi.fn(),
+    closeDatabase: vi.fn(),
+    findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+    assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
+    withDatabaseForTestAsync: vi.fn(),
+  };
+});
 
-vi.mock('../../src/portal/telemetry', () => ({
-  pushEvent: vi.fn(),
-  registerJob: vi.fn(),
-  wrapJob: vi.fn((_name: string, fn: unknown) => fn),
-  setDbProvider: vi.fn(),
-}));
+vi.mock('../../src/portal/telemetry', async () => {
+  const actual = await vi.importActual<typeof import('../../src/portal/telemetry')>('../../src/portal/telemetry');
+  return {
+    ...actual,
+    pushEvent: vi.fn(),
+    registerJob: vi.fn(),
+    wrapJob: vi.fn((_name: string, fn: unknown) => fn),
+    setDbProvider: vi.fn(),
+  };
+});
 
 const mockGetUserLanguageById = vi.fn<(userId: number) => string>();
 
-vi.mock('../../src/services/user-service', () => ({
-  getUserLanguageById: (userId: number) => mockGetUserLanguageById(userId),
-}));
+vi.mock('../../src/services/user-service', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/user-service')>('../../src/services/user-service');
+  return {
+    ...actual,
+    getUserLanguageById: (userId: number) => mockGetUserLanguageById(userId),
+  };
+});
 
 import {
   GEMINI_SAFETY_BLOCK_MESSAGE,

@@ -36,41 +36,69 @@ const mockContinueFn = vi.fn();
 const mockGetActiveProvider = vi.fn();
 const mockEnsureActiveProvider = vi.fn();
 
-vi.mock('../../src/services/provider-registry', () => ({
-  getActiveProvider: (...args: unknown[]) => mockGetActiveProvider(...args),
-  ensureActiveProvider: (...args: unknown[]) => mockEnsureActiveProvider(...args),
-}));
+vi.mock('../../src/services/provider-registry', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/provider-registry')>('../../src/services/provider-registry');
+  return {
+    ...actual,
+    getActiveProvider: (...args: unknown[]) => mockGetActiveProvider(...args),
+    ensureActiveProvider: (...args: unknown[]) => mockEnsureActiveProvider(...args),
+  };
+});
 
-vi.mock('../../src/services/anthropic', () => ({
-  callDomain: vi.fn(),
-  continueWithToolResults: vi.fn(),
-}));
+vi.mock('../../src/services/anthropic', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/anthropic')>('../../src/services/anthropic');
+  return {
+    ...actual,
+    callDomain: vi.fn(),
+    continueWithToolResults: vi.fn(),
+  };
+});
 
-vi.mock('../../src/state/conversation', () => ({
-  getConversationHistory: vi.fn().mockReturnValue([]),
-  addToConversation: vi.fn(),
-}));
+vi.mock('../../src/state/conversation', async () => {
+  const actual = await vi.importActual<typeof import('../../src/state/conversation')>('../../src/state/conversation');
+  return {
+    ...actual,
+    getConversationHistory: vi.fn().mockReturnValue([]),
+    addToConversation: vi.fn(),
+  };
+});
 
-vi.mock('../../src/state/todos', () => ({
-  listTodos: vi.fn().mockReturnValue([]),
-}));
+vi.mock('../../src/state/todos', async () => {
+  const actual = await vi.importActual<typeof import('../../src/state/todos')>('../../src/state/todos');
+  return {
+    ...actual,
+    listTodos: vi.fn().mockReturnValue([]),
+  };
+});
 
-vi.mock('../../src/state/shared-memory', () => ({
-  getSharedMemorySummary: vi.fn().mockReturnValue(''),
-  getSharedMemory: vi.fn().mockReturnValue([]),
-  getSharedMemoryByScope: vi.fn().mockReturnValue({ userPrivate: [], tenantShared: [] }),
-}));
+vi.mock('../../src/state/shared-memory', async () => {
+  const actual = await vi.importActual<typeof import('../../src/state/shared-memory')>('../../src/state/shared-memory');
+  return {
+    ...actual,
+    getSharedMemorySummary: vi.fn().mockReturnValue(''),
+    getSharedMemory: vi.fn().mockReturnValue([]),
+    getSharedMemoryByScope: vi.fn().mockReturnValue({ userPrivate: [], tenantShared: [] }),
+  };
+});
 
-vi.mock('../../src/services/tool-executor', () => ({
-  executeToolCall: vi.fn(),
-}));
+vi.mock('../../src/services/tool-executor', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/tool-executor')>('../../src/services/tool-executor');
+  return {
+    ...actual,
+    executeToolCall: vi.fn(),
+  };
+});
 
-vi.mock('../../src/utils/date-parser', () => ({
-  now: vi.fn(),
-  formatDateTime: vi.fn((d: string) => d),
-  startOfDay: vi.fn().mockReturnValue('2026-07-27T00:00:00'),
-  endOfDay: vi.fn().mockReturnValue('2026-07-27T23:59:59'),
-}));
+vi.mock('../../src/utils/date-parser', async () => {
+  const actual = await vi.importActual<typeof import('../../src/utils/date-parser')>('../../src/utils/date-parser');
+  return {
+    ...actual,
+    now: vi.fn(),
+    formatDateTime: vi.fn((d: string) => d),
+    startOfDay: vi.fn().mockReturnValue('2026-07-27T00:00:00'),
+    endOfDay: vi.fn().mockReturnValue('2026-07-27T23:59:59'),
+  };
+});
 
 vi.mock('../../src/utils/logger', () => ({
   logger: {

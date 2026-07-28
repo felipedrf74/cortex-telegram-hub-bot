@@ -29,9 +29,13 @@ const { privateKey: TEST_P8_PEM } = (() => {
   return { privateKey: pair.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString() };
 })();
 
-vi.mock('../../src/services/database', () => ({
-  getDb: () => testDb,
-}));
+vi.mock('../../src/services/database', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/database')>('../../src/services/database');
+  return {
+    ...actual,
+    getDb: () => testDb,
+  };
+});
 
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
