@@ -359,7 +359,8 @@ poll_remote_transaction() {
     if ssh "$SERVER" test -f "/home/dominguez/.local/state/nexus-release/$role.json"; then
       ssh "$SERVER" cat "/home/dominguez/.local/state/nexus-release/$role.json" > "$output.next"
       if node - "$output.next" "$role" "$id" "$RUNTIME_SHA" "$ARTIFACT_DIGEST" <<'NODE'
-const x=require(process.argv[2]);
+const fs=require('node:fs');
+const x=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));
 const [role,id,sha,digest]=process.argv.slice(3);
 if(x.schema!=='nexus.lean-release-transaction.v1'||x.role!==role
  ||x.transactionId!==id||x.runtimeSha!==sha||x.artifactDigest!==digest)process.exit(1);

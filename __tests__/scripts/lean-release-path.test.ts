@@ -608,6 +608,11 @@ db.close();
     expect(operator.match(
       /ssh "\$SERVER" cat "\/home\/dominguez\/\.local\/state\/nexus-release\/\$role\.json" > "\$output\.next"/g,
     )).toHaveLength(1);
+    expect(operator).toContain(
+      "const fs=require('node:fs');\n"
+      + "const x=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));\n"
+      + 'const [role,id,sha,digest]=process.argv.slice(3);',
+    );
     expect(operator).toContain('systemd-run --user');
     expect(operator).toContain(
       '--verify-bundle "$REMOTE_BUNDLE"',
