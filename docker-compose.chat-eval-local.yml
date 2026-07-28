@@ -25,6 +25,7 @@ services:
     environment:
       NEXUS_LOCAL_ALLOW_MODEL_CALLS: "1"
       NEXUS_MODEL_FIXTURE_MODE: "0"
+      NEXUS_CHAT_EVAL_ALLOW_DOCKER_GATEWAY: "1"
       OLLAMA_ENABLED: "true"
       OLLAMA_BASE_URL: "${NEXUS_CHAT_EVAL_OLLAMA_BASE_URL:-http://host.docker.internal:11434}"
       AI_CLASSIFY_PRIMARY: "ollama"

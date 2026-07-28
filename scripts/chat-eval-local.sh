@@ -154,6 +154,7 @@ attest_zero_cloud_profile() {
   docker compose "${compose_args[@]}" exec -T nexus-hub sh -eu -c '
     [ "${NEXUS_LOCAL_ALLOW_MODEL_CALLS:-}" = "1" ]
     [ "${NEXUS_MODEL_FIXTURE_MODE:-}" != "1" ]
+    [ "${NEXUS_CHAT_EVAL_ALLOW_DOCKER_GATEWAY:-}" = "1" ]
     [ "${OLLAMA_ENABLED:-}" = "true" ]
     [ "${AI_CLASSIFY_PRIMARY:-}" = "ollama" ]
     [ "${AI_CLASSIFY_FALLBACK:-}" = "none" ]

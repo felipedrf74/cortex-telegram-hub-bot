@@ -135,8 +135,12 @@ function assertLocalRuntime(input: {
   env: NodeJS.ProcessEnv;
   principalEmail: string;
   isLoopback: boolean;
+  isLocalDockerGateway: boolean;
 }): void {
-  if (!input.isLoopback) {
+  const explicitlyAllowedDockerGateway = input.isLocalDockerGateway
+    && normalizedEnv(input.env, 'NODE_ENV') === 'development'
+    && input.env.NEXUS_CHAT_EVAL_ALLOW_DOCKER_GATEWAY === '1';
+  if (!input.isLoopback && !explicitlyAllowedDockerGateway) {
     failDisabled('Local chat evaluation is restricted to loopback requests.');
   }
   if (
@@ -203,6 +207,7 @@ export function resolveChatLiveEvalRequest(input: {
   tenantId: number;
   principalEmail: string | null;
   isLoopback: boolean;
+  isLocalDockerGateway?: boolean;
   env?: NodeJS.ProcessEnv;
 }): ChatLiveEvalRequestContext | null {
   const values = Object.fromEntries(CONTRACT_HEADERS.map((name) => [name, header(input.readHeader, name)]));
@@ -241,7 +246,12 @@ export function resolveChatLiveEvalRequest(input: {
   }
 
   if (mode === 'local_engine') {
-    assertLocalRuntime({ env, principalEmail: input.principalEmail!, isLoopback: input.isLoopback });
+    assertLocalRuntime({
+      env,
+      principalEmail: input.principalEmail!,
+      isLoopback: input.isLoopback,
+      isLocalDockerGateway: input.isLocalDockerGateway === true,
+    });
   } else {
     assertRealRuntime({
       env,
