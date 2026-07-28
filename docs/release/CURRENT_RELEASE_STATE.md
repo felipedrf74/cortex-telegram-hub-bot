@@ -36,10 +36,50 @@ Machine-readable truth: `docs/release/release-state.json`.
 - Distribution attestation SHA-256:
   `35ebc4d1e2a27fc9d09e8ad089409191fc3b01b5e352bcc81c3ee53ff564452d`
 - Xcode 26.6 / iPhoneOS 26.5 produced the validated Apple Distribution binary.
-- Build 259 is available to the `Nexus Hub Betinha` internal TestFlight group
-  and is `Waiting for Review` in App Store Connect with automatic release after
-  approval. Builds 54-57 remain retained; physical-device smoke for
-  build 259 remains open.
+- Build 259 is available to the `Nexus Hub Betinha` internal TestFlight group.
+  Builds 54-57 remain retained; physical-device smoke for build 259 remains
+  open.
+- App Store review outcome for build 259: **rejected on 2026-07-24** under
+  Guideline 2.1(b) (subscription products were not submitted with the version,
+  while the client rendered an empty StoreKit catalog as indefinite loading)
+  and Guideline 5.1.1(v) (the existing deletion flow was not discoverable from
+  the ACCOUNT section). `release-state.json` still records
+  `appStoreReviewState` as `waiting_for_review` and automatic release after
+  approval; refreshing those fields is a pending owner action, not a verified
+  state this summary may assert.
+
+## In-Flight Remediation, Not Released
+
+- Branch: `claude/appstore-review-fixes-20260727`, on both the backend and the
+  iOS repository, cut from their respective `main` heads.
+- Status: **locally compiled, not staged, not promoted, not resubmitted.** No
+  release candidate, signing run, staging attestation, iOS archive, or release
+  verification verdict exists for this work.
+- Locally observed on 2026-07-27:
+  - iOS Release simulator build: succeeded with
+    `CURRENT_PROJECT_VERSION = 59`.
+  - iOS unit tests: not executed because the managed runner could not connect
+    to CoreSimulator; `xcodebuild test` exited 70 before test bootstrap.
+  - Backend TypeScript: `npx tsc --noEmit` exited 0 under Node 22.23.1.
+  - Backend changed/new focused Vitest gate: passed for every selected test
+    file that does not require a local listener.
+  - Backend migration safety: `node scripts/migration-safety-check.mjs`
+    passed.
+  - Backend full Vitest: not green in the managed runner. The dominant failure
+    was sandbox-denied local listening on `127.0.0.1` or `0.0.0.0`; this result
+    cannot be promoted as release evidence and requires an unrestricted rerun.
+- Owner-side steps that no code change can satisfy — App Store Connect product
+  and agreement configuration, reviewer demo-account entitlement, review notes,
+  the deletion screen recording, and the production freeze during review — are
+  in `docs/release/app-store-submission-runbook.md`.
+- Behavior change to expect on promote, beyond the two rejection fixes:
+  `revokeOneThirdPartyProvider` in `src/services/user-data-export.ts` now runs
+  `clearGarminSession` and the local `getTokens` read inside its error
+  boundary. `DELETE /api/v1/connections/:provider` consequently no longer
+  returns HTTP 500 when a local credential read throws during revocation; it
+  completes the disconnect and reports `revocation.status = "failed"` in the
+  success payload. Contract-wise this is additive — the response shape is
+  unchanged — but a monitored 500 on that route will stop firing.
 
 ## Release Process
 

@@ -110,6 +110,18 @@ vi.mock('../../src/services/openai-provider', () => ({
 }));
 
 vi.mock('../../src/services/gemini-provider', () => ({
+  GEMINI_HARM_BLOCK_THRESHOLD: 'BLOCK_MEDIUM_AND_ABOVE',
+  GEMINI_HARM_CATEGORY: {
+    HARASSMENT: 'HARM_CATEGORY_HARASSMENT',
+    HATE_SPEECH: 'HARM_CATEGORY_HATE_SPEECH',
+    SEXUALLY_EXPLICIT: 'HARM_CATEGORY_SEXUALLY_EXPLICIT',
+    DANGEROUS_CONTENT: 'HARM_CATEGORY_DANGEROUS_CONTENT',
+  },
+  GEMINI_SAFETY_BLOCK_ERROR_CODE: 'GEMINI_SAFETY_BLOCKED',
+  GEMINI_SAFETY_BLOCK_MESSAGE: 'I cannot help with that request.',
+  GEMINI_SAFETY_BLOCK_MESSAGE_PT: 'Não posso ajudar com esse pedido.',
+  GEMINI_SAFETY_BLOCK_STOP_REASON: 'safety_blocked',
+  GEMINI_SAFETY_SETTINGS: [],
   GeminiProvider: MockGeminiProvider,
   _sleep: vi.fn(),
   completeOneShot: vi.fn(),
@@ -118,9 +130,13 @@ vi.mock('../../src/services/gemini-provider', () => ({
   completeVisionOneShot: vi.fn(),
   completeVisionOneShotWithFallback: vi.fn(),
   computeGeminiCost: vi.fn(),
+  detectGeminiSafetyBlock: vi.fn(),
   isGeminiProviderConfigured: () => state.geminiConfigured,
+  isGeminiSafetyFinishReason: vi.fn(),
+  renderGeminiSafetyBlockMessage: vi.fn(),
   resolveGeminiCostModelKey: vi.fn(),
   scrubSearchGroundingPromptForPrivacy: vi.fn(),
+  withGeminiSafetySettings: vi.fn(),
 }));
 
 vi.mock('../../src/services/ollama-provider', () => ({

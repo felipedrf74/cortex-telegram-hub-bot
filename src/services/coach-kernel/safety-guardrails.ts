@@ -123,7 +123,38 @@ export interface SafetyEvaluationInput {
     | 'fever_or_systemic_illness'
     | 'red_s_high_risk'
     | 'unexplained_performance_collapse';
+  /**
+   * Inferred (free-text) red flags — the chat path. Uses the SAME trigger
+   * vocabulary as `typedRedFlagTrigger` and the SAME referral copy, but
+   * every finding is emitted at `warn`, never `block`. That preserves the
+   * safety-wiring v2.1 contract ("typed input hard-pauses, inferred input
+   * warns"): an ambiguous sentence in ordinary chat surfaces a referral,
+   * it never pauses a prescription.
+   *
+   * Populated by `detectInferredRedFlagTriggers` / `evaluateChatMessageSafety`.
+   * Structured intake must keep using `typedRedFlagTrigger`.
+   */
+  inferredRedFlagTriggers?: ReadonlyArray<NonNullable<SafetyEvaluationInput['typedRedFlagTrigger']>>;
+  /**
+   * Which medical-question pattern set applies to `userQuestionText`.
+   *
+   * `intake` (the default, and the only value the plan-generation path
+   * uses) keeps the original broad `MEDICAL_QUESTION_PATTERNS`. That set
+   * was written for a structured intake form, where a sentence is already
+   * known to be about the athlete's body, so "do i have…" / "should i
+   * take…" are safe cues.
+   *
+   * `chat` swaps in `CHAT_MEDICAL_QUESTION_PATTERNS` — the prescriptive /
+   * diagnostic subset. Open chat is full of "should I take a rest day?",
+   * "do I have a session tomorrow?" and "scan my week", none of which are
+   * medical questions, and surfacing a clinical referral on them is a
+   * visible product regression.
+   */
+  questionTier?: MedicalQuestionTier;
 }
+
+/** Which medical-question vocabulary applies — see `questionTier`. */
+export type MedicalQuestionTier = 'intake' | 'chat';
 
 const REFERRAL_BASE =
   'I can adjust the plan, but I am not a clinician. ' +
@@ -277,8 +308,50 @@ const MEDICAL_QUESTION_PATTERNS: ReadonlyArray<RegExp> = [
   /\b(blood test|lab work|labs?)\b/i,
 ];
 
-function buildMedicalQuestionFinding(text: string): SafetyFinding | null {
-  for (const pattern of MEDICAL_QUESTION_PATTERNS) {
+/**
+ * Chat-tier medical-question vocabulary.
+ *
+ * `MEDICAL_QUESTION_PATTERNS` above is an INTAKE-form vocabulary: every
+ * sentence reaching it is already known to be about the athlete's body, so
+ * loose cues are safe there. Open chat is not that surface. Verified
+ * against the live patterns, the intake set warns on "should I take a rest
+ * day tomorrow?", "should i take an extra gel", "do I have a session
+ * tomorrow?", "can you scan my week" and "what treatment temperature for
+ * the sous vide?" — five ordinary product turns.
+ *
+ * So the chat tier keeps only vocabulary that is prescriptive or
+ * diagnostic on its own: name a drug, a procedure, a lab, or ask for a
+ * diagnosis. Everything softer is dropped — genuine red flags reach the
+ * user through `detectInferredRedFlagTriggers`, which matches on the
+ * symptom itself ("chest pain", "fainted", "fracture") rather than on the
+ * question framing.
+ *
+ * pt-PT / pt-BR spellings are listed because the chat path folds accents
+ * before matching (`foldSafetyText`), and PT is a shipping locale.
+ */
+const CHAT_MEDICAL_QUESTION_PATTERNS: ReadonlyArray<RegExp> = [
+  // Asking for a diagnosis. Also covers pt "diagnóstico" post-folding.
+  /\b(diagnos\w+)/i,
+  // Asking for a prescription.
+  /\b(prescribe[sd]?|prescribing|prescription|receitar|receita medica)\b/i,
+  // Naming a drug or drug class.
+  /\b(medications?|medicamentos?|antibiotics?|antibioticos?|pain[- ]?killers?|analgesicos?|ibuprofen|ibuprofeno|naproxen|nsaids?|paracetamol|acetaminophen|codeine|codeina|cortisone|cortisona|corticosteroids?|corticoides?)\b/i,
+  // Naming a clinical procedure or imaging study.
+  /\b(injections?|injecao|injecoes|surgery|surgical|cirurgia|mri|ressonancia|x[- ]?rays?|raios?[- ]?x|ct scans?|tomografia|ultrasound|ecografia)\b/i,
+  // Naming a lab investigation.
+  /\b(blood tests?|blood work|lab work|analises? (ao|de) sangue)\b/i,
+  // "should I take an anti-inflammatory" is a medication question;
+  // "add anti-inflammatory foods" is an ordinary nutrition answer. Only
+  // the ingestion framing counts, so the word alone never trips a referral.
+  /\b(take|taking|took|tomar|tomei|tomo|tomando)\b[^.?!\n]{0,40}\banti[- ]?inflam{1,2}at(ory|ories|orio|orios)\b/i,
+];
+
+function buildMedicalQuestionFinding(
+  text: string,
+  tier: MedicalQuestionTier = 'intake',
+): SafetyFinding | null {
+  const patterns = tier === 'chat' ? CHAT_MEDICAL_QUESTION_PATTERNS : MEDICAL_QUESTION_PATTERNS;
+  for (const pattern of patterns) {
     if (pattern.test(text)) {
       return {
         domain: 'direct_medical_question',
@@ -438,6 +511,24 @@ function buildTypedRedFlagFinding(
   }
 }
 
+/**
+ * Inferred-tier counterpart of `buildTypedRedFlagFinding`. Reuses the typed
+ * builder verbatim — same domain, same referral copy, same recommended
+ * action — and only downgrades severity to `warn` so the free-text path can
+ * never hard-pause a plan. Keeping one copy source means a wording fix lands
+ * on both tiers at once.
+ */
+function buildInferredRedFlagFinding(
+  trigger: NonNullable<SafetyEvaluationInput['typedRedFlagTrigger']>,
+): SafetyFinding {
+  const typed = buildTypedRedFlagFinding(trigger);
+  return {
+    ...typed,
+    severity: 'warn',
+    triggerSummary: `inferred free text: ${trigger}`,
+  };
+}
+
 export function evaluateSafetyContext(input: SafetyEvaluationInput): SafetyEvaluationResult {
   const findings: SafetyFinding[] = [];
   // R4 P1 fix — typed red-flag triggers FIRST and unconditional.
@@ -449,6 +540,9 @@ export function evaluateSafetyContext(input: SafetyEvaluationInput): SafetyEvalu
   if (input.typedRedFlagTrigger) {
     findings.push(buildTypedRedFlagFinding(input.typedRedFlagTrigger));
   }
+  for (const inferred of input.inferredRedFlagTriggers ?? []) {
+    findings.push(buildInferredRedFlagFinding(inferred));
+  }
   if (input.acuteSessionPain) findings.push(buildAcutePainFinding(input.acuteSessionPain));
   if (input.fatiguePattern) {
     const f = buildFatigueFinding(input.fatiguePattern);
@@ -456,7 +550,7 @@ export function evaluateSafetyContext(input: SafetyEvaluationInput): SafetyEvalu
   }
   if (input.selfReportedFlags) findings.push(...buildSelfReportedFinding(input.selfReportedFlags));
   if (input.userQuestionText) {
-    const med = buildMedicalQuestionFinding(input.userQuestionText);
+    const med = buildMedicalQuestionFinding(input.userQuestionText, input.questionTier ?? 'intake');
     if (med) findings.push(med);
   }
   const supp = buildSupplementFinding(input);
@@ -493,3 +587,183 @@ function severityRank(s: SafetySeverity): number {
 export const COACH_NON_DIAGNOSTIC_DISCLAIMER =
   'I am a training coach, not a clinician. For symptoms, pain, or anything that worries you, ' +
   'please consult a qualified medical or sports-medicine professional.';
+
+/** Portuguese rendering of `COACH_NON_DIAGNOSTIC_DISCLAIMER`. */
+export const COACH_NON_DIAGNOSTIC_DISCLAIMER_PT =
+  'Sou um treinador, não um profissional de saúde. Para sintomas, dores, ou qualquer coisa que ' +
+  'preocupe, procure um médico ou profissional de medicina desportiva.';
+
+export type CoachSafetyLocale = 'pt' | 'en';
+
+/** Map any BCP-47-ish language tag to the two disclaimer renderings. */
+export function resolveCoachSafetyLocale(language: string | null | undefined): CoachSafetyLocale {
+  return typeof language === 'string' && language.trim().toLowerCase().startsWith('pt') ? 'pt' : 'en';
+}
+
+export function renderCoachNonDiagnosticDisclaimer(locale: CoachSafetyLocale): string {
+  return locale === 'pt' ? COACH_NON_DIAGNOSTIC_DISCLAIMER_PT : COACH_NON_DIAGNOSTIC_DISCLAIMER;
+}
+
+// ─── Inferred (free-text) red-flag detection — chat path ─────────────
+//
+// The deterministic guardrails above were only reachable from structured
+// intake and plan generation. Ordinary chat is where an athlete actually
+// types "my chest hurt during the run", so the same rules have to be
+// reachable from free text. Detection is deliberately phrase-level and
+// conservative: a single body-part word ("chest press", "peito") must
+// never trip a referral, so every rule requires an explicit symptom
+// phrase. Matching runs on accent-folded lowercase text so pt-PT/pt-BR
+// spellings hit the same rule.
+
+/** Lowercase + strip diacritics so `dor torácica` and `dor toracica` match one pattern. */
+function foldSafetyText(text: string): string {
+  return text.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+}
+
+const INFERRED_RED_FLAG_TEXT_RULES: ReadonlyArray<{
+  trigger: NonNullable<SafetyEvaluationInput['typedRedFlagTrigger']>;
+  pattern: RegExp;
+}> = [
+  {
+    trigger: 'chest_pain',
+    pattern:
+      /\b(chest pain|pain in (my |the )?chest|chest tightness|tightness in (my |the )?chest|chest pressure|pressure in (my |the )?chest|dor no peito|dor toracica|aperto no peito|pressao no peito)\b/,
+  },
+  {
+    trigger: 'fainting',
+    pattern: /\b(fainted|fainting|passed out|blacked out|syncope|desmaiei|desmaio|desmaiar)\b/,
+  },
+  {
+    trigger: 'severe_dizziness',
+    pattern:
+      /\b(severe dizziness|severely dizzy|very dizzy|room (was |is )?spinning|vertigo|tontura forte|tontura intensa|vertigem)\b/,
+  },
+  {
+    trigger: 'acute_injury',
+    pattern:
+      /\b(tore (my|a)|torn (acl|mcl|meniscus|muscle|tendon|ligament)|pulled (a )?muscle|sprained|sprain|fractured|fracture|broken bone|rompi|torci o|distensao|lesao aguda)\b/,
+  },
+  {
+    trigger: 'worsening_localized_pain',
+    pattern:
+      /\b(pain (is |keeps )?(getting|got) worse|worsening pain|pain that keeps getting worse|dor (esta )?piorando|dor piorou|dor cada vez pior)\b/,
+  },
+  {
+    trigger: 'fever_or_systemic_illness',
+    pattern: /\b(fever|feverish|febre|febril)\b/,
+  },
+  {
+    trigger: 'red_s_high_risk',
+    pattern:
+      /\b(red-s\b|relative energy deficiency|low energy availability|amenorrh?ea|amenorreia|lost my period|stopped menstruating|parei de menstruar)\b/,
+  },
+];
+
+/**
+ * Detect inferred red flags in free-text. Returns the deduplicated trigger
+ * vocabulary shared with structured intake — see `inferredRedFlagTriggers`.
+ */
+export function detectInferredRedFlagTriggers(
+  text: string,
+): Array<NonNullable<SafetyEvaluationInput['typedRedFlagTrigger']>> {
+  if (!text || text.trim().length === 0) return [];
+  const folded = foldSafetyText(text);
+  const triggers: Array<NonNullable<SafetyEvaluationInput['typedRedFlagTrigger']>> = [];
+  for (const rule of INFERRED_RED_FLAG_TEXT_RULES) {
+    if (rule.pattern.test(folded) && !triggers.includes(rule.trigger)) {
+      triggers.push(rule.trigger);
+    }
+  }
+  return triggers;
+}
+
+/**
+ * Chat-path entry point for the deterministic guardrails.
+ *
+ * Runs `evaluateSafetyContext` over one or more free-text values (the
+ * user's message, and optionally the drafted answer) at the CHAT tier:
+ * inferred red flags, the prescriptive/diagnostic medical-question subset
+ * (`CHAT_MEDICAL_QUESTION_PATTERNS`, NOT the broad intake set), and the
+ * supplement / anti-doping rule. Every finding it can produce is `warn` or
+ * `inform`; the free-text tier never emits `block`.
+ *
+ * Callers attach `buildCoachSafetyNotice(...)` to the answer. They must not
+ * feed the result into plan pausing — that stays a structured-intake
+ * decision (see safety-wiring.ts).
+ */
+export function evaluateChatMessageSafety(...values: Array<string | null | undefined>): SafetyEvaluationResult {
+  const text = values
+    .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+    .join('\n');
+  if (!text) return { status: 'pass', findings: [], topMessage: '' };
+  const inferredRedFlagTriggers = detectInferredRedFlagTriggers(text);
+  return evaluateSafetyContext({
+    // The existing question/supplement patterns are written against folded
+    // lowercase text, so folding here also makes them reachable for pt-*.
+    userQuestionText: foldSafetyText(text),
+    questionTier: 'chat',
+    ...(inferredRedFlagTriggers.length > 0 ? { inferredRedFlagTriggers } : {}),
+  });
+}
+
+/** True when the answer already carries a non-diagnostic / referral line. */
+export function answerCarriesNonDiagnosticDisclaimer(text: string): boolean {
+  const folded = foldSafetyText(text ?? '');
+  return folded.includes('not a clinician')
+    || folded.includes('nao um profissional de saude')
+    || folded.includes('nao sou medico');
+}
+
+/**
+ * The highest-severity finding the caller should surface, or null.
+ *
+ * `inform`-level findings are deliberately NOT surfaced by default. The
+ * supplement/anti-doping rule fires on very common nutrition words
+ * ("protein", "caffeine"), so promoting it into every answer would train
+ * users to ignore the safety block entirely. Genuinely prescriptive
+ * supplement questions ("should I take X") still land at `warn` through
+ * the direct-medical-question rule.
+ */
+export function selectSurfacedSafetyFinding(
+  evaluation: SafetyEvaluationResult,
+  minSeverity: SafetySeverity = 'warn',
+): SafetyFinding | null {
+  const eligible = evaluation.findings
+    .filter((finding) => severityRank(finding.severity) <= severityRank(minSeverity))
+    .sort((a, b) => severityRank(a.severity) - severityRank(b.severity));
+  return eligible[0] ?? null;
+}
+
+/**
+ * Build the safety block appended to a coach / training / readiness /
+ * nutrition answer. Returns an empty string when there is nothing to add,
+ * so callers can concatenate unconditionally.
+ *
+ * `includeDisclaimer` forces the non-diagnostic line on even when no rule
+ * fired — that is how a health-guidance surface satisfies "every coach
+ * response carries the disclaimer". `alreadyDisclaimed` suppresses the
+ * duplicate when the model already produced its own referral line.
+ */
+export function buildCoachSafetyNotice(
+  evaluation: SafetyEvaluationResult,
+  locale: CoachSafetyLocale,
+  options?: {
+    includeDisclaimer?: boolean;
+    alreadyDisclaimed?: boolean;
+    minSeverity?: SafetySeverity;
+  },
+): string {
+  const parts: string[] = [];
+  const surfaced = selectSurfacedSafetyFinding(evaluation, options?.minSeverity ?? 'warn');
+  if (surfaced) parts.push(surfaced.referralCopy);
+  const includeDisclaimer = options?.includeDisclaimer ?? surfaced !== null;
+  // Every referralCopy already ends with REFERRAL_BASE ("I am not a
+  // clinician…"), so a surfaced finding makes the standalone disclaimer
+  // redundant.
+  const alreadyDisclaimed = options?.alreadyDisclaimed === true
+    || (surfaced !== null && answerCarriesNonDiagnosticDisclaimer(surfaced.referralCopy));
+  if (includeDisclaimer && !alreadyDisclaimed) {
+    parts.push(renderCoachNonDiagnosticDisclaimer(locale));
+  }
+  return parts.join('\n\n');
+}

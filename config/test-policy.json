@@ -530,6 +530,60 @@
     "cleanupMappings": [
       {"test":"__tests__/api/chat-message-tier-gate.test.ts","replacementTests":["__tests__/api/chat-message-tier-gate.test.ts"],"sources":["src/api/routes/chat-message-tier-gate.ts"],"reason":"Converted the positive Telegram-id fallback assertion into an explicit verified-iOS-JWT users.id-only contract that proves the legacy identity fallback is never called."},
       {"test":"__tests__/api/webhooks.test.ts","replacementTests":["__tests__/api/webhooks.test.ts"],"sources":["src/api/routes/webhooks.ts"],"reason":"Replaced the ambient-config Todoist signer helper with an explicit per-router secret fixture while retaining coverage for the production no-option configured-secret path."},
+      {
+        "test": "__tests__/api/security-launch-blockers.test.ts",
+        "replacementTests": [
+          "__tests__/api/security-launch-blockers.test.ts",
+          "__tests__/api/billing-routes.test.ts"
+        ],
+        "sources": [
+          "src/api/routes/billing.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/api/routes/billing.ts:550-550",
+            "anchor": "environment: env || 'unknown',",
+            "behavior": "A production App Review purchase carrying the verified Sandbox environment is granted and records that exact provenance in the billing audit trail.",
+            "replacementTest": "__tests__/api/billing-routes.test.ts",
+            "ownerTestName": "billing routes grants a Sandbox Apple transaction under NODE_ENV=production and records its provenance",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "Replaced the source-literal production environment denial assertion with a production-mode route test that grants Apple's Sandbox review transaction while retaining strict JWS verification coverage."
+      },
+      {
+        "test": "__tests__/domains/domain-handler.test.ts",
+        "replacementTests": [
+          "__tests__/domains/domain-handler.test.ts",
+          "__tests__/services/coach-kernel-chat-safety-wiring.test.ts"
+        ],
+        "sources": [
+          "src/domains/domain-handler.ts"
+        ],
+        "reason": "Re-pinned exact training answer assertions to preserve their original content while requiring the production coach disclaimer and deterministic safety notice."
+      },
+      {
+        "test": "__tests__/integration/message-flow.test.ts",
+        "replacementTests": [
+          "__tests__/integration/message-flow.test.ts",
+          "__tests__/services/coach-kernel-chat-safety-wiring.test.ts"
+        ],
+        "sources": [
+          "src/domains/domain-handler.ts"
+        ],
+        "reason": "Re-pinned end-to-end training response and conversation assertions to the original answer content plus the newly required coach safety disclosure."
+      },
+      {
+        "test": "__tests__/services/stripe-service.test.ts",
+        "replacementTests": [
+          "__tests__/services/stripe-service.test.ts",
+          "__tests__/services/apple-subscription-lifecycle.test.ts"
+        ],
+        "sources": [
+          "src/services/stripe-service.ts"
+        ],
+        "reason": "Expanded the prior cross-account Apple receipt assertion into active-owner denial and terminal-owner recovery contracts while retaining ownership, entitlement, provenance, and lifecycle coverage."
+      },
       {"test":"__tests__/portal/portal-eval-history-routes.test.ts","replacementTests":["__tests__/portal/portal-eval-history-routes.test.ts"],"sources":["src/portal/eval-history-routes.ts"],"reason":"Replaced incomplete module stubs with import-and-override factories and pinned pre-authorization rate-limit ordering while retaining eval persistence, validation, error handling, and frozen-baseline behavior."},
       {"test":"__tests__/services/chat-evaluation-harness.test.ts","replacementTests":["__tests__/services/chat-evaluation-harness.test.ts","__tests__/services/chat-day-to-day-simulation.test.ts"],"sources":["src/services/chat-evaluation-harness.ts","src/services/chat-day-to-day-simulation.ts","src/services/chat-eval-executor.ts"],"reason":"Replaced fabricated catalog scores and partial statuses with executed day-to-day profile evidence, explicit catalog-only accounting, and matching-mode executor enforcement."},
       {"test":"__tests__/services/registry-channel-smoke-builder.test.ts","replacementTests":["__tests__/services/registry-channel-smoke-builder.test.ts","__tests__/scripts/telegram-purge-gate.test.ts"],"sources":["src/services/registry-channel-smoke-builder.ts"],"reason":"Retired legacy Telegram smoke-channel construction while retaining coverage for all five live channel types and assigning the removed surface to the repository-wide purge gate."},
@@ -2197,7 +2251,7 @@
         "sources": ["src/services/usage-metering.ts", "src/portal/snapshot-builder.ts", "src/services/gemini-provider.ts", "src/services/openai-provider.ts"],
         "mutationTargets": [
           {
-            "pattern": "src/services/gemini-provider.ts:659-659",
+            "pattern": "src/services/gemini-provider.ts:917-917",
             "anchor": "hasUnboundedProviderInjectedContext: true",
             "behavior": "Grounded Gemini calls reserve budget under the unbounded provider-context risk policy.",
             "replacementTest": "__tests__/services/gemini-provider.test.ts",

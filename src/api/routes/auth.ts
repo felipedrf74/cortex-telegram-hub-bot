@@ -31,6 +31,7 @@ import {
   createAppleWebAuthPendingSession,
   consumeAppleWebAuthCompletion,
 } from '../../services/apple-web-sign-in';
+import { storeAppleRefreshTokenForUser } from '../../services/apple-token-revocation';
 import {
   resolveGoogleIdentityUser,
   verifyGoogleIdentityToken,
@@ -460,7 +461,16 @@ export function authRoutes(): Router {
   // ── Sign in with Apple ─────────────────────────────────────────────
   router.post('/register/apple', asyncHandler(async (req: Request, res: Response) => {
     const language = resolveAuthLanguage(req);
-    const { identityToken, rawNonce, deviceId, deviceName, firstName, lastName, inviteCode, acceptedLegal } = req.body;
+    // `authorizationCode` is OPTIONAL. It is the Apple authorization code the
+    // client gets alongside the identity token; exchanging it is the only way
+    // to obtain a refresh token, and a refresh token is the only way to honour
+    // App Store Review Guideline 5.1.1(v) (revoke the Apple token on account
+    // deletion). Clients shipped before this field existed do not send it and
+    // must keep signing in exactly as before.
+    const {
+      identityToken, rawNonce, deviceId, deviceName, firstName, lastName,
+      inviteCode, acceptedLegal, authorizationCode,
+    } = req.body;
     if (!identityToken || !rawNonce || !deviceId) {
       sendError(res, 'BAD_REQUEST', authCopy(language,
         'identityToken, rawNonce e deviceId são obrigatórios',
@@ -564,6 +574,12 @@ export function authRoutes(): Router {
       }
 
       consumeInviteAndGrantBeta(user.id, inviteCode);
+      // Never throws and never blocks sign-in: a missing code, unset Apple
+      // revocation credentials, or an Apple outage all resolve to a recorded
+      // non-'stored' outcome. Awaited (not fired-and-forgotten) because Apple
+      // authorization codes expire in ~5 minutes and an unhandled rejection
+      // after the response would be invisible.
+      await storeAppleRefreshTokenForUser({ userId: user.id, appleUserId, authorizationCode });
       issueTokensAndRegisterDevice(req, res, user.id, deviceId, deviceName || null, null, user, legalAcceptance, 'ios_register_apple');
     } catch (err: any) {
       if (err instanceof ClosedBetaInviteRequiredError) {

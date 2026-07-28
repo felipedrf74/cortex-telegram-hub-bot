@@ -65,6 +65,8 @@ import {
 } from './api-usage-fallback';
 import { resolveApiUsageAttribution } from './api-usage-attribution';
 import { assertAiBudgetReservationForProvider } from './cost-guardrail';
+import { resolveCoachSafetyLocale, type CoachSafetyLocale } from './coach-kernel/safety-guardrails';
+import { getUserLanguageById } from './user-service';
 
 // ─── Client (lazy init — only created if API key is set) ────────────
 
@@ -83,6 +85,237 @@ function getClient(): GoogleGenerativeAI {
 /** Check if Gemini is configured (has API key) */
 export function isGeminiProviderConfigured(): boolean {
   return !!config.gemini.apiKey;
+}
+
+// ─── Provider safety policy ─────────────────────────────────────────
+//
+// App Review guidelines 1.1 / 1.2: every generation call has to declare a
+// deliberate content-safety posture instead of inheriting whatever the SDK
+// happens to default to. Declared once here and applied at EVERY
+// `getGenerativeModel` call site through `withGeminiSafetySettings`.
+//
+// Category values mirror @google/genai's `HarmCategory` / `HarmBlockThreshold`
+// string enums. They are declared locally rather than imported from the SDK
+// for the same reason `FunctionCallingMode` and `SchemaType` are declared in
+// gemini-adapter.ts: this module talks to the adapter, not to the SDK.
+
+export const GEMINI_HARM_CATEGORY = {
+  HARASSMENT: 'HARM_CATEGORY_HARASSMENT',
+  HATE_SPEECH: 'HARM_CATEGORY_HATE_SPEECH',
+  SEXUALLY_EXPLICIT: 'HARM_CATEGORY_SEXUALLY_EXPLICIT',
+  DANGEROUS_CONTENT: 'HARM_CATEGORY_DANGEROUS_CONTENT',
+} as const;
+
+export const GEMINI_HARM_BLOCK_THRESHOLD = {
+  BLOCK_LOW_AND_ABOVE: 'BLOCK_LOW_AND_ABOVE',
+  BLOCK_MEDIUM_AND_ABOVE: 'BLOCK_MEDIUM_AND_ABOVE',
+  BLOCK_ONLY_HIGH: 'BLOCK_ONLY_HIGH',
+  BLOCK_NONE: 'BLOCK_NONE',
+} as const;
+
+/**
+ * The one safety posture every Gemini call runs under.
+ *
+ * `BLOCK_MEDIUM_AND_ABOVE` on all four categories. Harassment, hate speech
+ * and sexually explicit content have no legitimate use in any Nexus surface.
+ * Dangerous content stays at the same threshold rather than being relaxed:
+ * the app's own deterministic guardrails
+ * (`coach-kernel/safety-guardrails.ts`) own the legitimate
+ * training/nutrition edge cases, so the provider filter does not need to be
+ * loosened to keep coaching answers working.
+ */
+export const GEMINI_SAFETY_SETTINGS: ReadonlyArray<{ category: string; threshold: string }> = [
+  { category: GEMINI_HARM_CATEGORY.HARASSMENT, threshold: GEMINI_HARM_BLOCK_THRESHOLD.BLOCK_MEDIUM_AND_ABOVE },
+  { category: GEMINI_HARM_CATEGORY.HATE_SPEECH, threshold: GEMINI_HARM_BLOCK_THRESHOLD.BLOCK_MEDIUM_AND_ABOVE },
+  { category: GEMINI_HARM_CATEGORY.SEXUALLY_EXPLICIT, threshold: GEMINI_HARM_BLOCK_THRESHOLD.BLOCK_MEDIUM_AND_ABOVE },
+  { category: GEMINI_HARM_CATEGORY.DANGEROUS_CONTENT, threshold: GEMINI_HARM_BLOCK_THRESHOLD.BLOCK_MEDIUM_AND_ABOVE },
+];
+
+/**
+ * Merge the safety policy into a `generationConfig` bag.
+ *
+ * The compat adapter spreads `generationConfig` straight into the
+ * @google/genai `GenerateContentConfig`, where `safetySettings` is a
+ * top-level field — so this is the supported way to declare the policy
+ * without widening the adapter's option shape.
+ */
+export function withGeminiSafetySettings(
+  generationConfig: Record<string, unknown>,
+): Record<string, unknown> {
+  return { ...generationConfig, safetySettings: GEMINI_SAFETY_SETTINGS };
+}
+
+// ─── Safety-blocked completions ─────────────────────────────────────
+
+/**
+ * `finishReason` values that mean "the provider refused to return this
+ * completion". They produce an EMPTY candidate, so without this check the
+ * caller silently ships a blank or truncated answer.
+ */
+const GEMINI_SAFETY_FINISH_REASONS: ReadonlySet<string> = new Set([
+  'SAFETY',
+  'PROHIBITED_CONTENT',
+  'BLOCKLIST',
+  'SPII',
+  'IMAGE_SAFETY',
+]);
+
+/** Normalized stop reason handed back to callers for a provider safety block. */
+export const GEMINI_SAFETY_BLOCK_STOP_REASON = 'SAFETY_BLOCKED';
+
+/**
+ * Machine code carried on the thrown error so the API edge can classify a
+ * provider refusal. The one-shot helpers throw rather than return, so this
+ * error never renders as product copy — the user-facing strings are the
+ * `GEMINI_SAFETY_BLOCK_MESSAGE*` constants below.
+ */
+export const GEMINI_SAFETY_BLOCK_ERROR_CODE = 'AI_SAFETY_BLOCKED';
+
+/**
+ * User-facing refusal copy for a provider safety block on the CHAT path.
+ *
+ * This string is returned as the answer text, so it is product copy, not a
+ * developer fallback: nothing downstream re-renders it. The app ships EN,
+ * pt-PT and pt-BR, so it is resolved per user through
+ * `renderGeminiSafetyBlockMessage` before it reaches the turn.
+ */
+export const GEMINI_SAFETY_BLOCK_MESSAGE =
+  "I can't help with that request — the safety filter on the AI model blocked the response. " +
+  'Try rephrasing it, and if this is about symptoms, pain, or anything urgent, please contact a ' +
+  'qualified professional directly.';
+
+/** Portuguese rendering of `GEMINI_SAFETY_BLOCK_MESSAGE` (pt-PT / pt-BR). */
+export const GEMINI_SAFETY_BLOCK_MESSAGE_PT =
+  'Não consigo ajudar com esse pedido — o filtro de segurança do modelo de IA bloqueou a resposta. ' +
+  'Tente reformular e, se isto for sobre sintomas, dores, ou algo urgente, procure diretamente um ' +
+  'profissional qualificado.';
+
+/** Resolve the refusal copy for a locale, using the shared coach-safety locale map. */
+export function renderGeminiSafetyBlockMessage(locale: CoachSafetyLocale): string {
+  return locale === 'pt' ? GEMINI_SAFETY_BLOCK_MESSAGE_PT : GEMINI_SAFETY_BLOCK_MESSAGE;
+}
+
+/**
+ * Best-effort language lookup for the safety-refusal copy. A lookup
+ * failure falls back to English rather than failing the turn — the refusal
+ * still has to reach the user.
+ */
+function resolveSafetyCopyLocale(userId: number | undefined): CoachSafetyLocale {
+  if (typeof userId !== 'number' || !Number.isFinite(userId) || userId <= 0) return 'en';
+  try {
+    return resolveCoachSafetyLocale(getUserLanguageById(userId));
+  } catch {
+    return 'en';
+  }
+}
+
+export function isGeminiSafetyFinishReason(finishReason: string | undefined | null): boolean {
+  if (!finishReason) return false;
+  return GEMINI_SAFETY_FINISH_REASONS.has(String(finishReason).trim().toUpperCase());
+}
+
+/**
+ * Detect a provider-side safety block on a completed response. Checks both
+ * the candidate `finishReason` and `promptFeedback.blockReason` — the second
+ * one fires when the PROMPT was rejected and no candidate is returned at all.
+ */
+export function detectGeminiSafetyBlock(
+  result: GenerateContentResult,
+): { finishReason: string; categories: string[] } | null {
+  type SafetyRating = { category?: string; blocked?: boolean };
+  type PromptFeedback = { blockReason?: string; safetyRatings?: SafetyRating[] };
+  const response = result.response as unknown as {
+    candidates?: Array<{ finishReason?: string; safetyRatings?: SafetyRating[] }>;
+    promptFeedback?: PromptFeedback;
+  };
+  const candidate = response?.candidates?.[0];
+  // The compat adapter forwards only `candidates` + `usageMetadata` onto
+  // `response`, so prompt-level feedback has to be read off the raw SDK
+  // payload it also attaches. Both are checked so this keeps working if the
+  // adapter ever starts forwarding the field.
+  const promptFeedback: PromptFeedback | undefined = response?.promptFeedback
+    ?? (result as unknown as { rawResponse?: { promptFeedback?: PromptFeedback } }).rawResponse?.promptFeedback;
+
+  const candidateReason = String(candidate?.finishReason ?? '').trim().toUpperCase();
+  if (isGeminiSafetyFinishReason(candidateReason)) {
+    return {
+      finishReason: candidateReason,
+      categories: blockedSafetyCategories(candidate, promptFeedback),
+    };
+  }
+  // `promptFeedback.blockReason` is only populated when the PROMPT itself was
+  // rejected — in that case there is no candidate at all, so the finishReason
+  // check above can't see it.
+  const promptBlockReason = String(promptFeedback?.blockReason ?? '').trim().toUpperCase();
+  if (promptBlockReason && promptBlockReason !== 'BLOCKED_REASON_UNSPECIFIED') {
+    return {
+      finishReason: promptBlockReason,
+      categories: blockedSafetyCategories(candidate, promptFeedback),
+    };
+  }
+  return null;
+}
+
+/**
+ * Chat-path counterpart of `throwGeminiSafetyBlock`.
+ *
+ * `callDomain` / `continueWithToolResults` return a structured
+ * `AICallResult`, so a block is expressed as a normal result carrying the
+ * `SAFETY_BLOCKED` stop reason instead of an exception. Throwing here would
+ * hand the turn to the Anthropic fallback and quietly undo the decision the
+ * provider just made.
+ *
+ * The returned text IS what the user sees — no downstream renderer switches
+ * on `GEMINI_SAFETY_BLOCK_STOP_REASON` — so the copy is localized here.
+ */
+function buildGeminiSafetyBlockedCallResult(
+  block: { finishReason: string; categories: string[] },
+  domain: DomainName,
+  userId?: number,
+): AICallResult {
+  logger.warn(
+    { domain, finishReason: block.finishReason, blockedCategories: block.categories },
+    'Gemini domain response blocked by provider safety filter',
+  );
+  return {
+    text: renderGeminiSafetyBlockMessage(resolveSafetyCopyLocale(userId)),
+    toolCalls: [],
+    stopReason: GEMINI_SAFETY_BLOCK_STOP_REASON,
+  };
+}
+
+function blockedSafetyCategories(
+  candidate: { safetyRatings?: Array<{ category?: string; blocked?: boolean }> } | undefined,
+  promptFeedback: { safetyRatings?: Array<{ category?: string; blocked?: boolean }> } | undefined,
+): string[] {
+  const ratings = [...(candidate?.safetyRatings ?? []), ...(promptFeedback?.safetyRatings ?? [])];
+  return [...new Set(
+    ratings.filter((rating) => rating?.blocked && typeof rating.category === 'string')
+      .map((rating) => String(rating.category)),
+  )];
+}
+
+/**
+ * Throw a mapped, NON-retryable safety error. Used by the one-shot helpers,
+ * which return a bare string and therefore have no way to hand the caller a
+ * structured "blocked" signal. Mirrors the shape the grounded-search path
+ * already throws for incomplete responses.
+ */
+function throwGeminiSafetyBlock(
+  block: { finishReason: string; categories: string[] },
+  category: string,
+): never {
+  const err = new Error(`Gemini response blocked by provider safety filter: ${block.finishReason}`);
+  (err as any).provider = 'gemini';
+  (err as any).code = GEMINI_SAFETY_BLOCK_ERROR_CODE;
+  (err as any).finishReason = block.finishReason;
+  (err as any).safetyBlocked = true;
+  (err as any).retryable = false;
+  logger.warn(
+    { category, finishReason: block.finishReason, blockedCategories: block.categories },
+    'Gemini completion blocked by provider safety filter',
+  );
+  throw err;
 }
 
 // ─── Cost per million tokens ────────────────────────────────────────
@@ -328,6 +561,24 @@ function rethrowUsagePersistenceFailure(error: unknown): void {
   }
 }
 
+/**
+ * A provider-side safety block is a DECISION, not an outage.
+ *
+ * The one-shot helpers surface it as a mapped `safetyBlocked` error. Without
+ * this guard the fallback wrappers would treat it like any other Gemini
+ * failure and re-ask the same blocked prompt on the Gemini fallback model,
+ * then OpenAI, then the Anthropic thunk — none of which can detect a peer
+ * provider's refusal. The block would then prevent nothing while costing
+ * three extra paid calls, so it is rethrown immediately, exactly like a
+ * usage-persistence failure.
+ */
+function rethrowProviderSafetyBlock(error: unknown): void {
+  const mapped = error as { safetyBlocked?: boolean; code?: string };
+  if (mapped?.safetyBlocked === true || mapped?.code === GEMINI_SAFETY_BLOCK_ERROR_CODE) {
+    throw error;
+  }
+}
+
 // ─── One-shot completion (no tools, no domain) ──────────────────────
 
 /**
@@ -392,11 +643,11 @@ export async function completeOneShot(
   const genModel = client.getGenerativeModel({
     model,
     systemInstruction: systemPrompt,
-    generationConfig: {
+    generationConfig: withGeminiSafetySettings({
       maxOutputTokens: maxTokens,
       temperature,
       ...(options?.jsonMode ? { responseMimeType: 'application/json' } : {}),
-    },
+    }),
   });
 
   const maxCostUsd = computeProviderCallCostUpperBoundUsd({
@@ -438,6 +689,13 @@ export async function completeOneShot(
     options?.userId ?? 0,
     options?.tenantId ?? options?.userId ?? 0,
   );
+
+  // A safety-blocked candidate carries no text. Returning '' here used to
+  // look like a successful empty answer; surface it as a mapped,
+  // non-retryable error so the caller can fall back or explain instead of
+  // shipping a blank message.
+  const safetyBlock = detectGeminiSafetyBlock(result);
+  if (safetyBlock) throwGeminiSafetyBlock(safetyBlock, category);
 
   return extractText(result);
 }
@@ -637,10 +895,10 @@ export async function completeOneShotWithSearch(
   const genModel = client.getGenerativeModel({
     model,
     systemInstruction: safeSystemPrompt,
-    generationConfig: {
+    generationConfig: withGeminiSafetySettings({
       maxOutputTokens: maxTokens,
       temperature,
-    },
+    }),
     tools: [{ googleSearch: {} }] as any,
   });
 
@@ -755,10 +1013,10 @@ export async function completeVisionOneShot(
   const genModel = client.getGenerativeModel({
     model,
     systemInstruction: systemPrompt,
-    generationConfig: {
+    generationConfig: withGeminiSafetySettings({
       maxOutputTokens: maxTokens,
       temperature,
-    },
+    }),
   });
 
   const maxCostUsd = computeProviderCallCostUpperBoundUsd({
@@ -807,6 +1065,13 @@ export async function completeVisionOneShot(
     options?.tenantId ?? options?.userId ?? 0,
   );
 
+  // A safety-blocked candidate carries no text. Returning '' here used to
+  // look like a successful empty answer; surface it as a mapped,
+  // non-retryable error so the caller can fall back or explain instead of
+  // shipping a blank message.
+  const safetyBlock = detectGeminiSafetyBlock(result);
+  if (safetyBlock) throwGeminiSafetyBlock(safetyBlock, category);
+
   return extractText(result);
 }
 
@@ -846,6 +1111,7 @@ export async function completeVisionOneShotWithFallback(
       return { text, provider: 'gemini' };
     } catch (err) {
       rethrowUsagePersistenceFailure(err);
+      rethrowProviderSafetyBlock(err);
       const { status, code } = extractGeminiErrorInfo(err);
       const attempts = (err as { geminiOneShotAttempts?: number })?.geminiOneShotAttempts ?? 1;
       logger.warn({
@@ -949,6 +1215,7 @@ export async function completeOneShotWithFallback(
       return { text, provider: 'gemini' };
     } catch (err) {
       rethrowUsagePersistenceFailure(err);
+      rethrowProviderSafetyBlock(err);
       const { status, code } = extractGeminiErrorInfo(err);
       const attempts = (err as { geminiOneShotAttempts?: number })?.geminiOneShotAttempts ?? 1;
       const fallbackModel = resolveGeminiOneShotFallbackModel(primaryModel);
@@ -965,6 +1232,7 @@ export async function completeOneShotWithFallback(
           return { text, provider: 'gemini' };
         } catch (fallbackErr) {
           rethrowUsagePersistenceFailure(fallbackErr);
+          rethrowProviderSafetyBlock(fallbackErr);
           const fallbackInfo = extractGeminiErrorInfo(fallbackErr);
           logger.warn({ err: fallbackErr, category, primaryModel, fallbackModel, status: fallbackInfo.status, code: fallbackInfo.code, attempts }, 'Gemini fallback model also failed, trying OpenAI fallback');
         }
@@ -1204,11 +1472,11 @@ export class GeminiProvider implements AIProvider {
     return getClient().getGenerativeModel({
       model: modelName,
       systemInstruction: systemPrompt,
-      generationConfig: {
+      generationConfig: withGeminiSafetySettings({
         maxOutputTokens,
         ...(structuredJson ? { responseMimeType: 'application/json' } : {}),
         ...(structuredJsonSchema !== undefined ? { responseJsonSchema: structuredJsonSchema } : {}),
-      },
+      }),
       ...(useTools && filteredTools.length > 0 ? {
         tools: [{ functionDeclarations: toGeminiFunctionDeclarations(filteredTools) }],
         toolConfig: { functionCallingConfig: { mode: FunctionCallingMode.AUTO } },
@@ -1307,7 +1575,7 @@ ${message}`;
       const model = getClient().getGenerativeModel({
         model: config.gemini.classifierModel,
         systemInstruction: classifierSystemPrompt,
-        generationConfig: { maxOutputTokens: classifierMaxOutputTokens },
+        generationConfig: withGeminiSafetySettings({ maxOutputTokens: classifierMaxOutputTokens }),
       });
 
       const maxCostUsd = computeProviderCallCostUpperBoundUsd({
@@ -1461,6 +1729,9 @@ ${message}`;
       { userId: opts.userId, tenantId: opts.tenantId },
     );
 
+    const safetyBlock = detectGeminiSafetyBlock(result);
+    if (safetyBlock) return buildGeminiSafetyBlockedCallResult(safetyBlock, domain, opts.userId);
+
     return {
       text: extractText(result),
       toolCalls: extractFunctionCalls(result, this.nextToolCallId),
@@ -1577,6 +1848,9 @@ ${message}`;
       opts.maxTokensOverride,
       { userId: opts.userId, tenantId: opts.tenantId },
     );
+
+    const safetyBlock = detectGeminiSafetyBlock(result);
+    if (safetyBlock) return buildGeminiSafetyBlockedCallResult(safetyBlock, domain, opts.userId);
 
     return {
       text: extractText(result),

@@ -193,8 +193,16 @@ describe('Apple App Store Server Notifications JWS verification', () => {
         provider_customer_id TEXT,
         current_period_start TEXT,
         current_period_end TEXT,
+        environment TEXT,
         cancel_at_period_end INTEGER DEFAULT 0,
         updated_at TEXT
+      );
+      CREATE TABLE apple_webhook_events (
+        notification_uuid TEXT PRIMARY KEY,
+        notification_type TEXT NOT NULL,
+        subtype            TEXT,
+        environment        TEXT,
+        processed_at       TEXT NOT NULL DEFAULT (datetime('now'))
       );
       CREATE TABLE nexus_point_credits (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
