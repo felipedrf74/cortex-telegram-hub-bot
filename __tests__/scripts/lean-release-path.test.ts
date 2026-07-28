@@ -770,19 +770,21 @@ db.close();
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus release lock '));
     roots.push(root);
     const gate = path.resolve('scripts/lib/release-gates.sh');
-    const result = spawnSync('bash', [
-      '-c',
-      [
+    const result = spawnSync('/bin/bash', [
+      '-s',
+      '--',
+      gate,
+      root,
+    ], {
+      encoding: 'utf8',
+      input: [
         'set -euo pipefail',
         'source "$1"',
         'release_acquire_local_lock "$2" release',
         'release_cleanup_all_locks',
         'test ! -e "$2/.local/release/locks/release.lock"',
       ].join('\n'),
-      'release-lock-test',
-      gate,
-      root,
-    ], { encoding: 'utf8' });
+    });
 
     expect(result.status, result.stderr).toBe(0);
   });
@@ -790,15 +792,17 @@ db.close();
   it('cleans an empty release lock set under macOS Bash nounset semantics', () => {
     const gate = path.resolve('scripts/lib/release-gates.sh');
     const result = spawnSync('/bin/bash', [
-      '-c',
-      [
+      '-s',
+      '--',
+      gate,
+    ], {
+      encoding: 'utf8',
+      input: [
         'set -euo pipefail',
         'source "$1"',
         'release_cleanup_all_locks',
       ].join('\n'),
-      'release-empty-lock-test',
-      gate,
-    ], { encoding: 'utf8' });
+    });
 
     expect(result.status, result.stderr).toBe(0);
   });
