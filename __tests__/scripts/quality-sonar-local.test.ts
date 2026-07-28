@@ -232,6 +232,12 @@ describe('lean advisory SonarQube operations', () => {
       expect(workflow).toContain(
         '--runtime-sha "$GITHUB_SHA"',
       );
+      expect(workflow).toContain(
+        'if [ -s .local/coverage/selected/lcov.info ]; then',
+      );
+      expect(workflow).toContain(
+        'advisory Sonar coverage is unavailable for this SHA',
+      );
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
