@@ -5,6 +5,7 @@ import type {
   ChatLiveEvalRequestContext,
   ChatLiveEvalScenarioId,
 } from './chat-live-evaluation-contract';
+import { runWithApiUsageAttribution } from './api-usage-attribution';
 
 export const CHAT_LIVE_EVAL_SEED_PROFILE_VERSION = 'single-tenant-live-v2';
 
@@ -72,7 +73,14 @@ export function runWithChatLiveEvalContext<T>(
   context: ChatLiveEvalRequestContext,
   fn: () => T,
 ): T {
-  return activeContext.run(context, fn);
+  return activeContext.run(context, () => runWithApiUsageAttribution({
+    requestSource: 'interactive',
+    baseCategory: context.targetBaseCategory,
+    jobName: context.scenarioId
+      ? `chat_live_eval:${context.scenarioId}`
+      : null,
+    runId: context.runId,
+  }, fn));
 }
 
 export function getCurrentChatLiveEvalSeedBlock(): string {
