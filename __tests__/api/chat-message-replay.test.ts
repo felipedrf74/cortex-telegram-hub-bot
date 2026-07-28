@@ -32,6 +32,10 @@ import { createMigratedTestDatabase } from '../../src/testing/migrated-test-data
 import Database from 'better-sqlite3';
 import type { Request } from 'express';
 import { readFileSync } from 'node:fs';
+import {
+  CHAT_LIVE_EVAL_CONTRACT_VERSION,
+  CHAT_LIVE_EVAL_LOCAL_BUDGET,
+} from '../../src/services/chat-live-evaluation-contract';
 
 let testDb: Database.Database;
 
@@ -141,7 +145,11 @@ vi.mock('../../src/services/user-service', () => ({
   getPreferredDisplayNameById: vi.fn(() => 'Test User'),
   getUserTimezone: () => 'Europe/Lisbon',
   getUserTimezoneById: () => 'Europe/Lisbon',
-  getUserById: (userId: number) => ({ id: userId, tier: 'pro' }),
+  getUserById: (userId: number) => ({
+    id: userId,
+    tier: 'pro',
+    email: 'nexushubbot@gmail.com',
+  }),
   getUserByTelegramId: (userId: number) => ({ id: userId, tier: 'pro' }),
 }));
 
@@ -410,6 +418,7 @@ async function postMessage(
   requestId: string,
   body: Record<string, unknown>,
   headers: Record<string, string> = {},
+  remoteAddress = '127.0.0.1',
 ): Promise<MockRes> {
   const router = chatRoutes();
   const req = {
@@ -425,8 +434,8 @@ async function postMessage(
     params: {},
     body,
     headers,
-    ip: '127.0.0.1',
-    socket: { remoteAddress: '127.0.0.1' },
+    ip: remoteAddress,
+    socket: { remoteAddress },
     header(name: string) {
       return headers[name.toLowerCase()] ?? headers[name];
     },
@@ -612,6 +621,50 @@ describe('POST /api/v1/chat/message replay net', () => {
       statusCode: 400,
       body: { error: { code: 'BAD_REQUEST', message: 'text or attachments are required' } },
     });
+  });
+
+  it('accepts governed local eval turns from the direct Docker bridge gateway', async () => {
+    const env = {
+      NODE_ENV: 'development',
+      NEXUS_CHAT_EVAL_ALLOW_DOCKER_GATEWAY: '1',
+      NEXUS_LOCAL_ALLOW_MODEL_CALLS: '1',
+      OLLAMA_ENABLED: 'true',
+      AI_CLASSIFY_PRIMARY: 'ollama',
+      AI_CLASSIFY_FALLBACK: 'none',
+      AI_CHAT_PRIMARY: 'ollama',
+      AI_CHAT_FALLBACK: 'none',
+      AI_TOOL_USE_PRIMARY: 'ollama',
+      AI_TOOL_USE_FALLBACK: 'none',
+      ANTHROPIC_ENABLED: 'false',
+      GEMINI_API_KEY: '',
+      GOOGLE_API_KEY: '',
+      OPENAI_API_KEY: '',
+      ANTHROPIC_API_KEY: '',
+    };
+    for (const [key, value] of Object.entries(env)) vi.stubEnv(key, value);
+    const headers = {
+      'x-nexus-chat-eval-contract': CHAT_LIVE_EVAL_CONTRACT_VERSION,
+      'x-nexus-chat-eval-mode': 'local_engine',
+      'x-nexus-chat-eval-run-id': 'chat-eval-docker-turn-test',
+      'x-nexus-chat-eval-total-budget-usd': String(CHAT_LIVE_EVAL_LOCAL_BUDGET.totalCeilingUsd),
+      'x-nexus-chat-eval-target-budget-usd': String(CHAT_LIVE_EVAL_LOCAL_BUDGET.targetCeilingUsd),
+      'x-nexus-chat-eval-judge-budget-usd': String(CHAT_LIVE_EVAL_LOCAL_BUDGET.judgeCeilingUsd),
+      'x-nexus-chat-eval-scenario-id': 'morning_planning',
+    };
+
+    try {
+      const res = await postMessage(
+        'req-local-eval-docker-gateway',
+        { text: 'Help me plan this morning.' },
+        headers,
+        '172.18.0.1',
+      );
+
+      expect(res.statusCode).toBe(200);
+      expect((res.body as any)?.error?.code).not.toBe('CHAT_LIVE_EVAL_DISABLED');
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('pins the legacy secretary route envelope and stage order', async () => {

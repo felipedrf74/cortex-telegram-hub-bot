@@ -134,6 +134,8 @@ describe('chat-eval-local dry run', () => {
     expect(script).toContain('export NEXUS_CHAT_EVAL_ZERO_CLOUD_PROFILE=1');
     expect(compose.match(/^\s+NEXUS_LOCAL_ALLOW_MODEL_CALLS:/gm)).toHaveLength(2);
     expect(compose).toContain('NEXUS_MODEL_FIXTURE_MODE: "0"');
+    expect(compose).toContain('NEXUS_CHAT_EVAL_ALLOW_DOCKER_GATEWAY: "1"');
+    expect(compose).toContain('LOCAL_LLM_EVALUATION_MODE: "true"');
     expect(compose).toContain('CONTENT_ENGINE_FIXTURE_MODE: "0"');
     expect(compose).toContain('OLLAMA_ENABLED: "true"');
     expect(compose).toContain('OLLAMA_BASE_URL:');
@@ -141,6 +143,8 @@ describe('chat-eval-local dry run', () => {
     expect(compose.match(/^\s+AI_(?:CLASSIFY|CHAT|TOOL_USE)_FALLBACK: "none"/gm)).toHaveLength(3);
     expect(compose.match(/^\s+(?:ANTHROPIC|GEMINI|GOOGLE|OPENAI)_API_KEY: ""/gm)).toHaveLength(8);
     expect(script).toContain('curl -fsS "${OLLAMA_BASE_URL%/}/api/tags"');
+    expect(script).toContain('[ "${NEXUS_CHAT_EVAL_ALLOW_DOCKER_GATEWAY:-}" = "1" ]');
+    expect(script).toContain('[ "${LOCAL_LLM_EVALUATION_MODE:-}" = "true" ]');
     expect(localUp).toContain('NEXUS_CHAT_EVAL_ZERO_CLOUD_PROFILE');
     expect(localUp).toContain('COMPOSE_ARGS+=(-f docker-compose.chat-eval-local.yml)');
     expect(boot).toBeGreaterThan(-1);

@@ -42,6 +42,8 @@ import {
   acquireAiBudgetReservation,
   _resetUserCostLocksForTests,
 } from '../../src/services/cost-guardrail';
+import { resolveApiUsageAttribution } from '../../src/services/api-usage-attribution';
+import { runWithContext } from '../../src/utils/request-context';
 
 function acquire(userId: number) {
   return acquireAiBudgetReservation({
@@ -117,6 +119,39 @@ describe('cost guardrail SQLite advisory lock', () => {
     const afterRelease = testDb.prepare('SELECT COUNT(*) AS count FROM cost_guardrail_locks')
       .get() as { count: number };
     expect(afterRelease.count).toBe(0);
+  });
+
+  it('keeps lazy reservation attribution visible after await until explicit release', async () => {
+    await runWithContext({
+      requestId: 'req-live-eval-attribution',
+      source: 'http',
+      userId: 42,
+      tenantId: 42,
+    }, async () => {
+      const previousAttribution = resolveApiUsageAttribution('chat_secretary', 42);
+      const release = await acquireAiBudgetReservation({
+        userId: 42,
+        requestSource: 'interactive',
+        baseCategory: 'chat_live_eval_local',
+        jobName: 'chat_live_eval:morning_planning',
+        runId: 'chat-eval-attribution-test',
+        estimatedCostUsd: 0,
+        exactHardCostEstimate: true,
+        hardRunCostLimitUsd: 0.000001,
+      });
+      try {
+        expect(resolveApiUsageAttribution('chat_secretary', 42)).toEqual({
+          requestSource: 'interactive',
+          jobName: 'chat_live_eval:morning_planning',
+          baseCategory: 'chat_live_eval_local',
+          runId: 'chat-eval-attribution-test',
+        });
+      } finally {
+        release();
+      }
+
+      expect(resolveApiUsageAttribution('chat_secretary', 42)).toEqual(previousAttribution);
+    });
   });
 
   it('ships the advisory lock table in a migration, not only runtime bootstrap', () => {

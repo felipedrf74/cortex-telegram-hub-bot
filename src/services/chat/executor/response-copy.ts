@@ -100,7 +100,13 @@ export function successCopy(
       ? `✅ Criei a tarefa “${title}” com ${names.length} subtarefa(s):\n${bullets}${failed}`
       : `✅ Created task “${title}” with ${names.length} subtasks:\n${bullets}${failed}`;
   }
-  if (first?.step.action === 'update_task' || first?.step.action === 'complete_task' || first?.step.action === 'delete_task' || first?.step.action === 'create_checklist' || first?.step.action === 'set_task_reminder') {
+  if (first?.step.action === 'delete_task') {
+    const title = String((first.step.args as any).title || (first.result as any)?.title || 'task');
+    return input.locale?.startsWith('pt')
+      ? `Feito — apaguei a tarefa “${title}” e verifiquei a alteração.`
+      : `Done — I deleted the task “${title}” and verified the change.`;
+  }
+  if (first?.step.action === 'update_task' || first?.step.action === 'complete_task' || first?.step.action === 'create_checklist' || first?.step.action === 'set_task_reminder') {
     return input.locale?.startsWith('pt') ? 'Feito — atualizei a tarefa e verifiquei a alteração.' : 'Done — I updated the task and verified the change.';
   }
   if (first?.step.action === 'content_script_create' || first?.step.action === 'content_brief_create') {
@@ -618,9 +624,9 @@ export function refusalCopyForReason(reason: string, input: ChatPlannerInput): s
     return contentPublicationUnsupportedCopy(input);
   }
   if (reason === 'prompt_injection_marker_detected') {
-    if (isPt) return 'Não vou seguir instruções embutidas em mensagens. Reformule o pedido sem usar comandos como "ignore o anterior".';
-    if (isEs) return 'No voy a seguir instrucciones embebidas en mensajes. Reformula la solicitud sin comandos como "ignora lo anterior".';
-    return "I won't follow embedded instructions in messages. Try rephrasing without commands like \"ignore previous\".";
+    if (isPt) return 'Não vou seguir instruções embutidas. Não posso revelar contexto oculto nem aceder a dados de outro utilizador ou tenant; só posso usar dados autorizados neste espaço de trabalho.';
+    if (isEs) return 'No voy a seguir instrucciones embebidas. No puedo revelar contexto oculto ni acceder a datos de otro usuario o tenant; solo puedo usar datos autorizados en este espacio de trabajo.';
+    return "I won't follow embedded instructions. I cannot reveal hidden context or access another user or tenant; I can only use authorized data in this workspace.";
   }
   if (reason === 'sensitive_data_exfiltration_detected') {
     if (isPt) return 'Não posso compartilhar esse tipo de detalhe. Posso ajudar com algo mais específico?';

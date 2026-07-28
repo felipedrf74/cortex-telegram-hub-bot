@@ -22,7 +22,7 @@ import { tryFastpath } from '../services/secretary-fastpath';
 import { analyzeIntent } from '../services/secretary-tools';
 import type { AICallResult, AIToolResultMessage, CallDomainOptions } from '../services/ai-provider';
 import { buildAIUnavailableResponse, canUseDirectAnthropicFallback } from './ai-unavailable';
-import { normalizeReplyForUserLanguage } from '../services/reply-language-normalizer';
+import { normalizeReplyForLanguage, normalizeReplyForUserLanguage } from '../services/reply-language-normalizer';
 import {
   buildSharedDecisionContext,
   buildSharedDecisionContracts,
@@ -54,6 +54,26 @@ import {
 import { selectSecretaryReasoningOutcome } from '../services/chat-core-v2/secretary-reasoning-coordinator';
 import { createSecretaryDecisionPreview } from '../services/chat-core-v2/secretary-decision-preview';
 import { getCurrentChatLiveEvalSeedBlock } from '../services/chat-live-evaluation-context';
+import {
+  buildChatReplyLanguagePromptBlock,
+  getCurrentChatRequestLocale,
+} from '../services/chat-request-locale-context';
+import type { Lang } from '../utils/i18n';
+
+function requestLocaleToSecretaryLanguage(locale: string | null): Lang | undefined {
+  if (!locale) return undefined;
+  if (locale.toLowerCase() === 'pt-pt') return 'pt-PT';
+  if (locale.toLowerCase().startsWith('pt')) return 'pt-BR';
+  if (locale.toLowerCase().startsWith('es')) return 'es-ES';
+  return 'en-US';
+}
+
+function normalizeSecretaryReplyForRequest(text: string, userId?: number): string {
+  const requestLocale = getCurrentChatRequestLocale();
+  return requestLocale
+    ? normalizeReplyForLanguage(text, requestLocale)
+    : normalizeReplyForUserLanguage(text, userId);
+}
 
 // Codex QA round 5: untrusted text from user-controlled sources (task
 // titles, reminder messages, calendar summaries) was previously
@@ -691,13 +711,16 @@ function secretaryStateContextCopy(language: string) {
 
 export async function handleSecretary(message: string, userId?: number, tenantId?: number): Promise<DomainResponse> {
   const hasUserScope = typeof userId === 'number';
+  const requestLocale = getCurrentChatRequestLocale();
 
   // ── Layer 1: Command Fastpath ──────────────────────────────────
   // Intercept deterministic data-read patterns before any AI call.
   // Identical Telegram-HTML output to the AI path; users can't tell the
   // difference. Errors fall through to the AI path automatically.
   // See src/services/secretary-fastpath.ts for the pattern dictionary.
-  const fastpath = hasUserScope ? await tryFastpath(userId, message, undefined, tenantId ?? userId) : { matched: false, response: null };
+  const fastpath = hasUserScope
+    ? await tryFastpath(userId, message, requestLocaleToSecretaryLanguage(requestLocale), tenantId ?? userId)
+    : { matched: false, response: null };
   if (fastpath.matched && fastpath.response && hasUserScope) {
     // Record in conversation history so the next AI turn has context
     // about what the user just asked. Tag the assistant message with the
@@ -757,11 +780,15 @@ export async function handleSecretary(message: string, userId?: number, tenantId
   if (reasoningMode === 'active' && !snapshot) {
     return { text: structuredReasoningUnavailableReply(userId), domain: DOMAIN };
   }
-  const stateContext = reasoningMode === 'active' && snapshot
+  const stateContextWithoutReplyLanguage = reasoningMode === 'active' && snapshot
     // Active v1 has one evidence authority. The legacy presentation string is
     // deliberately excluded so every factual claim must bind to snapshot IDs.
     ? buildSecretaryReasoningPrompt(snapshot)
     : baseStateContext;
+  const replyLanguageBlock = buildChatReplyLanguagePromptBlock();
+  const stateContext = replyLanguageBlock
+    ? `${stateContextWithoutReplyLanguage}\n\n${replyLanguageBlock}`
+    : stateContextWithoutReplyLanguage;
 
   // ── Provider routing — TASK-17 Option B fix ────────────────────
   //
@@ -809,7 +836,7 @@ export async function handleSecretary(message: string, userId?: number, tenantId
       }),
     });
     const finalization = await persistSecretaryPreviewIfNeeded(selected, snapshot, userId, scopedTenantId);
-    const finalText = normalizeReplyForUserLanguage(finalization.text, userId);
+    const finalText = normalizeSecretaryReplyForRequest(finalization.text, userId);
     if (hasUserScope) {
       addScopedConversation(userId, 'user', message, tenantId);
       addScopedConversation(userId, 'assistant', finalText, tenantId);
@@ -944,7 +971,7 @@ export async function handleSecretary(message: string, userId?: number, tenantId
     finalText += '\n\n_⚠️ Response was cut short due to length. Try asking about a specific area (e.g. "just show my tasks" or "just calendar")._';
   }
 
-  finalText = normalizeReplyForUserLanguage(finalText, userId);
+  finalText = normalizeSecretaryReplyForRequest(finalText, userId);
 
   if (shadowRun) {
     const shadow = await shadowRun;
@@ -1015,7 +1042,7 @@ async function handleSecretaryWithDirectAnthropic(
     const finalization = typeof uid === 'number'
       ? await persistSecretaryPreviewIfNeeded(selected, reasoningSession.snapshot, uid, tenantId ?? uid)
       : selected;
-    const text = normalizeReplyForUserLanguage(finalization.text, uid);
+    const text = normalizeSecretaryReplyForRequest(finalization.text, uid);
     if (typeof uid === 'number') {
       addScopedConversation(uid, 'user', message, tenantId);
       addScopedConversation(uid, 'assistant', text, tenantId);
@@ -1109,7 +1136,7 @@ async function handleSecretaryWithDirectAnthropic(
     finalText = finalized.text;
   }
 
-  finalText = normalizeReplyForUserLanguage(finalText, uid);
+  finalText = normalizeSecretaryReplyForRequest(finalText, uid);
 
   if (shadowRun) {
     const shadow = await shadowRun;

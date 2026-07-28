@@ -33,6 +33,27 @@ function noStore(res: Response): void {
   res.setHeader('Vary', 'Authorization');
 }
 
+/**
+ * Docker Desktop reaches a loopback-bound published port through the private
+ * bridge gateway. Inspect the direct socket only: forwarded headers are
+ * intentionally ignored so callers cannot assert local origin themselves.
+ */
+export function isPrivateDockerGatewayRequest(req: Pick<Request, 'socket'>): boolean {
+  const rawAddress = String(req.socket?.remoteAddress ?? '');
+  const address = rawAddress.startsWith('::ffff:') ? rawAddress.slice(7) : rawAddress;
+  const octets = address.split('.').map((value) => Number(value));
+  if (
+    octets.length !== 4
+    || octets.some((value) => !Number.isInteger(value) || value < 0 || value > 255)
+    || octets[3] !== 1
+  ) {
+    return false;
+  }
+  return octets[0] === 10
+    || (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31)
+    || (octets[0] === 192 && octets[1] === 168);
+}
+
 function resolveRequest(
   req: Request,
   phase: ChatLiveEvalPhase,
@@ -46,6 +67,7 @@ function resolveRequest(
     tenantId,
     principalEmail: getUserById(userId)?.email ?? null,
     isLoopback: isLoopbackRequest(req),
+    isLocalDockerGateway: isPrivateDockerGatewayRequest(req),
   });
   if (!context) {
     throw new ChatLiveEvalContractError(

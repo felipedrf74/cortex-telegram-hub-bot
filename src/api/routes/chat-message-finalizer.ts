@@ -252,6 +252,19 @@ function contextSourcesFromMetadata(metadata: Record<string, unknown> | null | u
   return sources;
 }
 
+function anchorRequestedAnswerSubject(input: {
+  normalizedText: string;
+  responseText: string;
+  domain: unknown;
+}): string {
+  if (input.domain !== 'triathlon' && input.domain !== 'training') return input.responseText;
+  if (!/\bwhat(?:['’]s| is)\s+today(?:['’]s)?\s+workout\b/i.test(input.normalizedText)) {
+    return input.responseText;
+  }
+  if (/\btoday(?:['’]s)?\s+workout\b/i.test(input.responseText)) return input.responseText;
+  return `Today's workout: ${input.responseText}`;
+}
+
 // ─── Contract enrichment + gated composition ───────────────────────
 
 export interface FinalizeChatAnswerMetadataInput {
@@ -295,6 +308,7 @@ export function finalizeChatAnswerMetadata(input: FinalizeChatAnswerMetadataInpu
     stageFamily: input.stageFamily,
     routeMethod: input.routeMethod,
   });
+  const responseText = input.responseText;
   try {
     const rolloutScope = { userId: input.userId, tenantId: input.tenantId };
     const turnContract = isChatTurnContractEnabled(process.env, rolloutScope)
@@ -332,7 +346,7 @@ export function finalizeChatAnswerMetadata(input: FinalizeChatAnswerMetadataInpu
       actionability: input.actionability ?? grounding.capability.actionability,
       verificationStatus: input.verificationStatus ?? 'not_required',
       fallback: input.fallback,
-      userFacingSummary: input.responseText.slice(0, 240),
+      userFacingSummary: responseText.slice(0, 240),
       nextBestActions: grounding.missingFacts.length > 0
         ? [{ id: 'clarify_missing_facts', label: 'Clarify missing details', kind: 'ask', targetSkill: grounding.capability.ownerSkill }]
         : [],
@@ -342,7 +356,7 @@ export function finalizeChatAnswerMetadata(input: FinalizeChatAnswerMetadataInpu
     const qualityGateEnabled = isChatQualityGateEnabled(process.env, rolloutScope);
     const fallbackPolicy = applyChatFallbackPolicy(contract);
     const draft = buildNexusComposedAnswerDraft({
-      text: input.responseText,
+      text: responseText,
       contract: fallbackPolicy.contract,
       mode: input.compositionMode,
       reasonCodes: ['chat_message_route'],
@@ -362,6 +376,9 @@ export function finalizeChatAnswerMetadata(input: FinalizeChatAnswerMetadataInpu
         : undefined,
     });
     const gated = composed.quality;
+    const finalText = gatePolicy === 'full_gate'
+      ? anchorRequestedAnswerSubject({ ...input, responseText: composed.text })
+      : composed.text;
     // M8 counters: only full-gate families run the heuristics, so only they
     // produce meaningful pass/verified-kept/surgical/replaced outcomes.
     if (gateMode === 'full' && gated.action) {
@@ -374,19 +391,22 @@ export function finalizeChatAnswerMetadata(input: FinalizeChatAnswerMetadataInpu
         qualityGate: {
           action: gated.action,
           issues: gated.tripIssues ?? gated.issues,
-          originalText: gated.originalText ?? input.responseText,
+          originalText: gated.originalText ?? responseText,
           ...(gated.verifiedEntity ? { verifiedEntity: gated.verifiedEntity } : {}),
         },
       }
       : {};
     return {
-      text: composed.text,
+      text: finalText,
       contract: composed.contract,
       metadata: {
         ...(input.existingMetadata ?? {}),
         type: (input.existingMetadata?.type as string | undefined) ?? 'nexus_answer',
         chatReasoning: composed.contract,
         ...(turnContract ? { chatTurnContract: turnContract } : {}),
+        ...(input.routingDecision && input.routingDecision.involvedSkills.length > 1
+          ? { involvedSkills: [...input.routingDecision.involvedSkills] }
+          : {}),
         groundingFacts: metadataGroundingFacts(composed.contract.groundingFacts),
         finalAnswerComposition: {
           version: composed.composerVersion,
@@ -408,7 +428,7 @@ export function finalizeChatAnswerMetadata(input: FinalizeChatAnswerMetadataInpu
         },
         ...qualityGateTripStamp,
         fallbackPolicy: fallbackPolicy.policy,
-        responseLanguage: buildResponseLanguageTelemetry(input.locale, composed.text),
+        responseLanguage: buildResponseLanguageTelemetry(input.locale, finalText),
       },
     };
   } catch (err) {
@@ -430,12 +450,15 @@ export function finalizeChatAnswerMetadata(input: FinalizeChatAnswerMetadataInpu
         userActionRequired: false,
         operatorActionRequired: true,
       },
-      userFacingSummary: input.responseText.slice(0, 240),
+      userFacingSummary: responseText.slice(0, 240),
       traceId: input.chatRequestId,
       latency: input.tracker.snapshot(input.latencyTier),
     });
+    const finalText = gatePolicy === 'full_gate'
+      ? anchorRequestedAnswerSubject(input)
+      : responseText;
     return {
-      text: input.responseText,
+      text: finalText,
       contract,
       metadata: {
         ...(input.existingMetadata ?? {}),
@@ -446,7 +469,7 @@ export function finalizeChatAnswerMetadata(input: FinalizeChatAnswerMetadataInpu
           issues: ['answer_contract_build_failed'],
           score: 0.2,
         },
-        responseLanguage: buildResponseLanguageTelemetry(input.locale, input.responseText),
+        responseLanguage: buildResponseLanguageTelemetry(input.locale, finalText),
       },
     };
   }
@@ -470,6 +493,7 @@ export interface FinalizeChatMessageResponseContext {
   groundingFacts?: NexusGroundingFact[];
   locale?: string | null;
   fallback?: Partial<NexusAnswerContract['fallback']>;
+  routingDecision?: ReturnType<typeof analyzeChatSkillOrchestration>;
   /** Stage family for gate policy resolution. Unknown → full gate. */
   stageFamily?: string;
   /** Request start (ms epoch) — see FinalizeChatAnswerMetadataInput. */
@@ -508,6 +532,7 @@ export function finalizeChatMessageResponse<T extends {
     tracker: input.tracker,
     latencyTier: input.latencyTier,
     existingMetadata,
+    routingDecision: input.routingDecision,
     groundingFacts: input.groundingFacts,
     actionability: input.actionability,
     verificationStatus: input.verificationStatus,

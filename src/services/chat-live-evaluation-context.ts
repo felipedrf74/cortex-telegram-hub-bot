@@ -81,6 +81,18 @@ export function getCurrentChatLiveEvalSeedBlock(): string {
 }
 
 /**
+ * Returns true only inside the authenticated local-engine request scope that
+ * the chat eval route established. An environment variable alone cannot
+ * manufacture this request-local authority.
+ */
+export function isCurrentChatLiveEvalLocalEngine(): boolean {
+  const context = activeContext.getStore();
+  return context?.mode === 'local_engine'
+    && context.providerPolicy === 'ollama_only_zero_cloud'
+    && context.productionDataUsed === false;
+}
+
+/**
  * Exposes the single server-owned mutation target only while an authenticated
  * morning-planning eval turn is inside its AsyncLocalStorage scope. Ordinary
  * chat traffic can never use the marker to manufacture a trusted task id.

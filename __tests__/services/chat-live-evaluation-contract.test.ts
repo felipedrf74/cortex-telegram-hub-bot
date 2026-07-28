@@ -72,6 +72,7 @@ function resolve(input: {
   tenantId?: number;
   email?: string | null;
   isLoopback?: boolean;
+  isLocalDockerGateway?: boolean;
   headerOverrides?: Record<string, string>;
 }) {
   const phase = input.phase ?? 'turn';
@@ -84,6 +85,7 @@ function resolve(input: {
       ? (input.mode === 'local_engine' ? 'nexushubbot@gmail.com' : 'chat-eval@staging.invalid')
       : input.email,
     isLoopback: input.isLoopback ?? input.mode === 'local_engine',
+    isLocalDockerGateway: input.isLocalDockerGateway ?? false,
     env: input.env ?? (input.mode === 'local_engine' ? localEnv() : realEnv()),
   });
 }
@@ -173,6 +175,17 @@ describe('chat live-evaluation contract', () => {
     });
 
     expect(() => resolve({ mode: 'local_engine', isLoopback: false })).toThrow(/loopback/i);
+    expect(() => resolve({
+      mode: 'local_engine',
+      isLoopback: false,
+      isLocalDockerGateway: true,
+    })).toThrow(/loopback/i);
+    expect(resolve({
+      mode: 'local_engine',
+      isLoopback: false,
+      isLocalDockerGateway: true,
+      env: localEnv({ NEXUS_CHAT_EVAL_ALLOW_DOCKER_GATEWAY: '1' }),
+    })).toMatchObject({ mode: 'local_engine', providerPolicy: 'ollama_only_zero_cloud' });
     expect(() => resolve({
       mode: 'local_engine',
       env: localEnv({ OPENAI_API_KEY: 'configured' }),

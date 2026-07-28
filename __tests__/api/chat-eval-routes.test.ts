@@ -26,7 +26,10 @@ vi.mock('../../src/services/chat-live-evaluation-state', () => ({
   prepareChatLiveEvalScenario: (...args: unknown[]) => prepareMock(...args),
 }));
 
-import { registerChatEvalRoutes } from '../../src/api/routes/chat-eval-routes';
+import {
+  isPrivateDockerGatewayRequest,
+  registerChatEvalRoutes,
+} from '../../src/api/routes/chat-eval-routes';
 
 type Handler = (req: any, res: any) => unknown;
 
@@ -102,6 +105,20 @@ describe('authenticated chat live-eval routes', () => {
   afterEach(() => {
     db.close();
     vi.unstubAllEnvs();
+  });
+
+  it('recognizes only a private bridge gateway from the direct socket address', () => {
+    const requestFrom = (remoteAddress: string, forwardedFor?: string) => ({
+      ip: forwardedFor ?? remoteAddress,
+      socket: { remoteAddress },
+    });
+
+    expect(isPrivateDockerGatewayRequest(requestFrom('172.18.0.1') as any)).toBe(true);
+    expect(isPrivateDockerGatewayRequest(requestFrom('10.42.0.1') as any)).toBe(true);
+    expect(isPrivateDockerGatewayRequest(requestFrom('192.168.65.1') as any)).toBe(true);
+    expect(isPrivateDockerGatewayRequest(requestFrom('172.18.0.2') as any)).toBe(false);
+    expect(isPrivateDockerGatewayRequest(requestFrom('203.0.113.1') as any)).toBe(false);
+    expect(isPrivateDockerGatewayRequest(requestFrom('203.0.113.1', '127.0.0.1') as any)).toBe(false);
   });
 
   it('returns a sanitized authenticated preflight contract with no credentials', () => {

@@ -26,9 +26,9 @@ export default defineConfig({
     },
     testTimeout: 10000,
     pool: 'forks',
-    // Cap fork fan-out so the full suite remains a reliable gate on
-    // local/desktop runners. Unbounded forks can complete every assertion
-    // but still fail at shutdown with Vitest worker RPC timeouts.
-    maxWorkers: 4,
+    // Process-heavy release/rollback fixtures spawn nested shell children.
+    // A single fork keeps their fixed safety deadlines reliable even while
+    // desktop file indexing and local release containers are active.
+    maxWorkers: 1,
   },
 });

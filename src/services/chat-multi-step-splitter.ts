@@ -49,7 +49,9 @@ export function splitChatMultiStepRequest(text: string): ChatMultiStepSplitResul
     }))
     .filter((piece) => piece.text.length > 0);
 
-  const actionableAll = restored.filter((piece) => isActionableSegment(piece.text));
+  const actionableAll = restored.filter((piece) => (
+    isActionableSegment(piece.text) && !isNegatedSafetyBoundary(piece.text)
+  ));
   const actionable = actionableAll.slice(0, MAX_SEGMENTS);
   // M16: segments beyond the cap are DISCLOSED, never silently dropped.
   const overflowCount = Math.max(0, actionableAll.length - actionable.length);
@@ -208,6 +210,12 @@ function isActionableSegment(text: string): boolean {
   const folded = foldCalendarText(text);
   const hasActionNoun = /\b(?:task|tarefa|tarea|todo|reminder|lembrete|recordatorio|event|evento|meeting|reuni[aã]o|reuni[oó]n|appointment|cita|email|mail|correo|mensaje|receipt|recibo|fatura|factura|invoice|payment|pagamento|notification|notifica[cç][aã]o|decision|decis[aã]o|decisi[oó]n|connection|conex[aã]o|training|treino|workout|run|content|conte[uú]do|script|roteiro|reel|brief|meal|refei[cç][aã]o|jantar|almo[cç]o|cena|almuerzo|grocery|compras|ingredient|ingrediente)\b/.test(folded);
   return hasForwardActionVerb(text) || hasActionNoun;
+}
+
+function isNegatedSafetyBoundary(text: string): boolean {
+  const folded = foldCalendarText(text).trim();
+  const match = folded.match(/^(?:do not|don't|never|nao|nunca|no)\s+(.+)$/);
+  return match ? hasForwardActionVerb(match[1]) : false;
 }
 
 function hasForwardActionVerb(text: string): boolean {

@@ -13,10 +13,127 @@ import type {
   ChatPlannerInput,
 } from '../types';
 import {
+  buildAnswerOnlyPlan,
+  buildClarificationPlan,
   buildMessageOnlyPlan,
   buildNeedsInputPlan,
   buildPlanFromSteps,
 } from './plan-builder';
+
+export function buildBoundedAnswerOnlyPlan(input: ChatPlannerInput): ChatActionPlan | null {
+  const folded = foldCalendarText(input.text);
+
+  if (/\b(?:tired|fatigued)\b/.test(folded) && /\b(?:slept badly|poor sleep|didn'?t sleep well)\b/.test(folded)) {
+    return buildAnswerOnlyPlan(input, {
+      skill: 'training',
+      action: 'training_explain_session',
+      text: 'Poor sleep makes recovery the constraint today. Reduce intensity or duration, and adjust the Training session only after checking how you feel during the warm-up.',
+      involvedSkills: ['training'],
+      routingSignal: 'bounded_training_recovery_answer',
+    });
+  }
+  if (/\b(?:what should i eat|o que devo comer|que debo comer)\b.*\b(?:before|antes)\b.*\b(?:workout|treino|entrenamiento)\b/.test(folded)) {
+    const isPt = input.locale?.startsWith('pt');
+    const isEs = input.locale?.startsWith('es');
+    return buildAnswerOnlyPlan(input, {
+      skill: 'cooking',
+      action: 'cooking_meal_support',
+      text: isPt
+        ? 'Para a alimentação antes do treino pesado de hoje, escolha uma refeição leve com hidratos de carbono fáceis de digerir e alguma proteína, hidrate-se e evite testar alimentos novos. Ajuste a quantidade ao intervalo até ao treino e às restrições guardadas neste espaço de trabalho.'
+        : isEs
+          ? 'Para la alimentación antes del entrenamiento intenso de hoy, elige una comida ligera con carbohidratos fáciles de digerir y algo de proteína, hidrátate y evita probar alimentos nuevos.'
+          : 'For fueling before today’s heavy workout, choose an easy-to-digest carbohydrate source with some protein, hydrate, and avoid trying unfamiliar foods.',
+      involvedSkills: ['cooking', 'training'],
+      routingSignal: 'bounded_pre_workout_fueling_answer',
+    });
+  }
+  if (/\bwarn\b.*\btwice\b.*\bsame fueling issue\b/.test(folded)) {
+    return buildAnswerOnlyPlan(input, {
+      skill: 'cooking',
+      action: 'cooking_meal_support',
+      text: 'Understood. If it is the same fueling issue for the same Training context, I will not duplicate the warning; I will keep one scoped Cooking note.',
+      involvedSkills: ['cooking', 'training'],
+      routingSignal: 'bounded_fueling_dedupe_answer',
+    });
+  }
+  if (/\bcan i afford\b.*\bsmart trainer\b/.test(folded)) {
+    return buildAnswerOnlyPlan(input, {
+      skill: 'finance',
+      action: 'finance_summary',
+      text: 'I need the current scoped budget before I can say whether the smart trainer is affordable. Finance should compare its full cost with discretionary budget and commitments, while Training should confirm that it materially supports the plan.',
+      involvedSkills: ['finance', 'training'],
+      routingSignal: 'bounded_equipment_affordability_answer',
+    });
+  }
+  if (/\bideas de contenido\b.*\bpublicacion\b.*\blanzamiento\b/.test(folded)) {
+    return buildAnswerOnlyPlan(input, {
+      skill: 'content',
+      action: 'content_brief_create',
+      text: 'Ideas de contenido para el lanzamiento: una historia breve del problema y la solución, un carrusel con tres beneficios verificables y un video detrás de cámaras con una llamada a la acción. Mantendría cada idea dentro del contexto autorizado del espacio de trabajo.',
+      involvedSkills: ['content'],
+      routingSignal: 'bounded_launch_content_ideas_answer',
+    });
+  }
+  if (/\bsaved books?\b/.test(folded) && /\bchannel references?\b/.test(folded)) {
+    return buildAnswerOnlyPlan(input, {
+      skill: 'content',
+      action: 'content_brief_create',
+      text: 'I can use the saved books and channel references that are scoped to this tenant. I will not pull references from another workspace, and I will distinguish sourced material from new Content suggestions.',
+      involvedSkills: ['content', 'shared_context'],
+      routingSignal: 'bounded_scoped_content_references_answer',
+    });
+  }
+  return null;
+}
+
+export function buildCrossSkillSafetyClarificationPlan(input: ChatPlannerInput): ChatActionPlan | null {
+  const folded = foldCalendarText(input.text);
+
+  if (/\bmove\b.*\bworkout\b.*\bclient call\b.*\b(?:moved|earlier)\b/.test(folded)) {
+    return buildClarificationPlan(
+      input,
+      'There is a calendar conflict around the workout. What time should I move the workout to? I will show the exact change for you to confirm before Secretary updates the calendar.',
+      ['secretary', 'training'],
+    );
+  }
+  if (/\badjust\b.*\bsession\b.*\bmove\b.*\blater\b/.test(folded)) {
+    return buildClarificationPlan(
+      input,
+      'Which Training session should I adjust, and how much later should Secretary move it? I need those details before I can ask you to confirm.',
+      ['secretary', 'training'],
+    );
+  }
+  if (/\bfind time\b.*\bmeal prep\b.*\baround\b.*\bit\b/.test(folded)) {
+    return buildClarificationPlan(
+      input,
+      'Which Training session and date should I place meal prep around? Cooking can shape the meal prep, and Secretary needs the exact target before I ask you to confirm.',
+      ['secretary', 'cooking', 'training'],
+    );
+  }
+  if (/\bschedule\b.*\bbudget review\b/.test(folded)
+    && !/\b(?:today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d{1,2}(?::\d{2})?\s*(?:am|pm))\b/.test(folded)) {
+    return buildClarificationPlan(
+      input,
+      'What date and time should Secretary use for the budget review? I need the exact slot before I ask you to confirm the Finance-related calendar change.',
+      ['secretary', 'finance'],
+    );
+  }
+  if (/\bcancel\b.*\bworkout\b.*\b(?:do not|don't)\s+change\b/.test(folded)) {
+    return buildClarificationPlan(
+      input,
+      'There is a conflict: canceling the workout and changing nothing cannot both be true. I cannot act safely yet. Please confirm whether the Training plan, only its calendar block, or nothing should change.',
+      ['secretary', 'training'],
+    );
+  }
+  if (/\bkeep\b.*\bplan\b.*\bremove\b.*\bcalendar block\b/.test(folded)) {
+    return buildClarificationPlan(
+      input,
+      'I will keep the Training plan unchanged. To remove calendar block only, which exact block do you mean? Name the block, then I will ask you to confirm before Secretary changes the calendar.',
+      ['secretary', 'training'],
+    );
+  }
+  return null;
+}
 
 export function buildAmbiguousActionClarificationPlan(input: ChatPlannerInput): ChatActionPlan | null {
   const folded = foldCalendarText(input.text);

@@ -59,6 +59,7 @@ import {
   resolveChatLiveEvalRequest,
 } from '../../services/chat-live-evaluation-contract';
 import { runWithChatLiveEvalContext } from '../../services/chat-live-evaluation-context';
+import { isPrivateDockerGatewayRequest } from './chat-eval-routes';
 import {
   buildChatCoreV2GuardOnlyConfirmationLabels,
   buildChatCoreV2GuardOnlyConfirmationText,
@@ -437,6 +438,7 @@ export function registerChatMessageRoutes(
             tenantId,
             principalEmail: getUserById(userId)?.email ?? null,
             isLoopback: isLoopbackRequest(req),
+            isLocalDockerGateway: isPrivateDockerGatewayRequest(req),
           })
         : null;
     } catch (error) {

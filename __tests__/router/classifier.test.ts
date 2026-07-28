@@ -855,6 +855,30 @@ describe('routeMessage — Three-Tier Routing Integration', () => {
       expect(result.domain).toBe('triathlon');
       expect(mockClassifyMessage).not.toHaveBeenCalled();
     });
+
+    it('recovery follow-ups stay in the active triathlon context without invoking the classifier', async () => {
+      const context = { domain: 'triathlon' as const, lastAssistantMessage: "Today's workout is heavy." };
+
+      const result = await routeMessage('I am tired today and slept badly.', context);
+      expect(result).toMatchObject({ method: 'context', domain: 'triathlon' });
+      expect(mockClassifyMessage).not.toHaveBeenCalled();
+    });
+
+    it('saved-reference follow-ups stay in the active content context without invoking the classifier', async () => {
+      const context = { domain: 'content' as const, lastAssistantMessage: 'Here are launch content ideas.' };
+
+      const result = await routeMessage('Use my saved books and channel references.', context);
+      expect(result).toMatchObject({ method: 'context', domain: 'content' });
+      expect(mockClassifyMessage).not.toHaveBeenCalled();
+    });
+
+    it('an explicit fueling dedupe question escapes an unrelated active context token-zero', async () => {
+      const context = { domain: 'secretary' as const, lastAssistantMessage: 'Which calendar block should I use?' };
+
+      const result = await routeMessage('Do not warn me twice if it is the same fueling issue.', context);
+      expect(result).toMatchObject({ method: 'keyword', domain: 'cooking' });
+      expect(mockClassifyMessage).not.toHaveBeenCalled();
+    });
   });
 
   describe('Tier 2 keyword matching (no active context)', () => {
