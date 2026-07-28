@@ -768,6 +768,13 @@ db.close();
     );
     expect(remote).toContain('PRE_PROMOTION_BACKUP=passed');
     expect(remote).toContain('authenticated_runtime_smoke');
+    expect(remote).toContain(
+      '"$NODE_BIN" --env-file="$BASE_DIR/.env" \\\n'
+      + '        dist/tools/portal-session-token.js',
+    );
+    expect(remote).not.toMatch(
+      /(?:^|\n)\s*(?:source|\.)\s+["']?\$BASE_DIR\/\.env["']?/,
+    );
     expect(remote).toContain('marker.packageVersion');
     expect(remote).toContain(
       '[ "$(readlink -f "$CURRENT_LINK")" = "$RELEASE_DIR" ] || return 1',
