@@ -389,7 +389,11 @@ NODE
   if [ "$auth_mode" = true ]; then
     token="$(
       cd "$RELEASE_DIR"
-      "$NODE_BIN" dist/tools/portal-session-token.js \
+      # The user systemd transaction runs with a deliberately minimal
+      # environment. Let Node parse the base environment for this one
+      # subprocess instead of shell-sourcing a secret-bearing file.
+      "$NODE_BIN" --env-file="$BASE_DIR/.env" \
+        dist/tools/portal-session-token.js \
         --actor "$ROLE-release-smoke@nexushub.me" \
         --scope admin \
         --ttl-ms 300000 \
