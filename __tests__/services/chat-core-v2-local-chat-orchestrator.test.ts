@@ -55,6 +55,7 @@ vi.mock('../../src/services/chat-core-v2/canary-turn-log', async () => {
 import {
   COMPOSED_ANSWER_DRAFT_SCHEMA_VERSION,
 } from '../../src/services/chat-core-v2/answer-composition';
+import { COACH_NON_DIAGNOSTIC_DISCLAIMER } from '../../src/services/coach-kernel/safety-guardrails';
 import {
   isChatCoreV2LocalChatVisibleEnabled,
   resolveChatCoreV2LocalChatLlmMode,
@@ -644,6 +645,144 @@ describe('ChatCoreV2 local chat orchestrator', () => {
       'chat_core_v2_cooking',
       [expect.stringContaining('peanut butter cookies')],
     );
+
+    releaseFirst();
+    await first;
+  });
+
+  // The coach/health-guidance safety pass shipped on the local-LLM branch
+  // only, so an answer produced by the cloud-allowlist branch — whose packet
+  // domain can be `training` — reached the user with no non-diagnostic
+  // disclaimer and no deterministic referral.
+  it('carries the coach non-diagnostic disclaimer on a training-domain cloud fallback answer', async () => {
+    const env = baseEnv({
+      CHAT_CORE_V2_ALLOW_CLOUD_FALLBACK: 'true',
+      CHAT_CORE_V2_LOCAL_INFERENCE_MAX_CONCURRENCY: '1',
+      CHAT_CORE_V2_QUEUE_FALLBACK_MODE: 'cloud_allowlist',
+      CHAT_CORE_V2_QUEUE_CLOUD_AFTER_QUEUED_COUNT: '0',
+    });
+    let releaseFirst!: () => void;
+    mocks.dispatchLocalReasoning.mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => { releaseFirst = resolve; });
+      return {
+        text: 'First answer.',
+        providerMetadata: { providerUsed: 'ollama', modelUsed: 'qwen2.5:3b-instruct-q4_K_M' },
+      };
+    });
+    mocks.dispatchCloudAllowlistAnswer.mockResolvedValue({
+      text: 'Keep Thursday easy and hold the long ride on Sunday.',
+      providerMetadata: {
+        providerUsed: 'gemini',
+        modelUsed: 'gemini-2.5-pro',
+        cloudAllowlistPrivacyAction: 'packet_only',
+      },
+    });
+
+    const first = runChatCoreV2LocalChatTurn({
+      normalizedText: 'How do I stay focused?',
+      userId: 42,
+      tenantId: 84,
+      requestId: 'req-cloud-coach-first',
+      locale: 'en',
+      surface: 'ios',
+      env,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const packet = {
+      schemaVersion: 'cloud_allowlist_packet@1.0.0' as const,
+      intent: 'answer' as const,
+      capabilityId: 'chat.general_answer',
+      domain: 'training' as const,
+      hmacEntityIds: [],
+      evidenceFingerprints: ['evidence:week-shape'],
+      locale: 'en',
+      complexityScore: 0.2,
+      escalationReason: 'cloud_allowlist_candidate' as const,
+    };
+    const second = await runChatCoreV2LocalChatTurn({
+      normalizedText: 'Give me a small next action.',
+      userId: 42,
+      tenantId: 84,
+      requestId: 'req-cloud-coach-second',
+      locale: 'en',
+      surface: 'ios',
+      cloudAllowlistPacket: { ok: true, packet },
+      env,
+    });
+
+    expect(second?.response.routeMethod).toBe('chat-core-v2-cloud-allowlist');
+    expect(second?.response.text).toContain('Keep Thursday easy');
+    expect(second?.response.text).toContain(COACH_NON_DIAGNOSTIC_DISCLAIMER);
+    expect(second?.response.metadata).toEqual(expect.objectContaining({
+      chatCoreV2ResponseReasonCodes: expect.arrayContaining(['coach_safety_disclaimer_appended']),
+    }));
+
+    releaseFirst();
+    await first;
+  });
+
+  it('surfaces a free-text red flag from a non-health cloud fallback answer', async () => {
+    const env = baseEnv({
+      CHAT_CORE_V2_ALLOW_CLOUD_FALLBACK: 'true',
+      CHAT_CORE_V2_LOCAL_INFERENCE_MAX_CONCURRENCY: '1',
+      CHAT_CORE_V2_QUEUE_FALLBACK_MODE: 'cloud_allowlist',
+      CHAT_CORE_V2_QUEUE_CLOUD_AFTER_QUEUED_COUNT: '0',
+    });
+    let releaseFirst!: () => void;
+    mocks.dispatchLocalReasoning.mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => { releaseFirst = resolve; });
+      return {
+        text: 'First answer.',
+        providerMetadata: { providerUsed: 'ollama', modelUsed: 'qwen2.5:3b-instruct-q4_K_M' },
+      };
+    });
+    mocks.dispatchCloudAllowlistAnswer.mockResolvedValue({
+      text: 'You noted you fainted after the last session, so keep the week light.',
+      providerMetadata: {
+        providerUsed: 'gemini',
+        modelUsed: 'gemini-2.5-pro',
+        cloudAllowlistPrivacyAction: 'packet_only',
+      },
+    });
+
+    const first = runChatCoreV2LocalChatTurn({
+      normalizedText: 'How do I stay focused?',
+      userId: 42,
+      tenantId: 84,
+      requestId: 'req-cloud-redflag-first',
+      locale: 'en',
+      surface: 'ios',
+      env,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const packet = {
+      schemaVersion: 'cloud_allowlist_packet@1.0.0' as const,
+      intent: 'answer' as const,
+      capabilityId: 'content.brainstorm',
+      domain: 'content' as const,
+      hmacEntityIds: [],
+      evidenceFingerprints: ['evidence:week-shape'],
+      locale: 'en',
+      complexityScore: 0.2,
+      escalationReason: 'cloud_allowlist_candidate' as const,
+    };
+    const second = await runChatCoreV2LocalChatTurn({
+      normalizedText: 'Give me a small next action.',
+      userId: 42,
+      tenantId: 84,
+      requestId: 'req-cloud-redflag-second',
+      locale: 'en',
+      surface: 'ios',
+      cloudAllowlistPacket: { ok: true, packet },
+      env,
+    });
+
+    expect(second?.response.text).toMatch(/immediate medical evaluation/i);
+    expect(second?.response.metadata).toEqual(expect.objectContaining({
+      chatCoreV2ResponseReasonCodes: expect.arrayContaining(['coach_safety_referral_appended']),
+    }));
 
     releaseFirst();
     await first;

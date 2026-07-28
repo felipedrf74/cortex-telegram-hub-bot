@@ -16,6 +16,7 @@ review cadence through compact path rules plus explicit exceptions.
 | Human release summary and operator commands | `docs/release/CURRENT_RELEASE_STATE.md`, `docs/release/README.md` |
 | Compact checksum release contract | `docs/release/release-evidence-contract.md` |
 | State-coupled migration release contract | `docs/release/migration-irreversible.md` |
+| App Store submission and review configuration | `docs/release/app-store-submission-runbook.md` |
 | Test tiers and dispositions | `config/test-policy.json` |
 | Documentation status, ownership, and review | `config/documentation-policy.json` |
 | Engineering standards | `docs/engineering/ENGINEERING_STANDARDS_INDEX.md` |

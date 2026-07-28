@@ -63,6 +63,13 @@ import {
   renderCookingSafetyPromptBlockForUser,
   type CookingSafetyEvaluation,
 } from '../cooking-safety-policy';
+import {
+  answerCarriesNonDiagnosticDisclaimer,
+  buildCoachSafetyNotice,
+  evaluateChatMessageSafety,
+  resolveCoachSafetyLocale,
+  selectSurfacedSafetyFinding,
+} from '../coach-kernel/safety-guardrails';
 
 export type ChatCoreV2LocalChatLlmMode = 'off' | 'shadow' | 'canary' | 'on';
 
@@ -314,10 +321,30 @@ export async function runChatCoreV2LocalChatTurn(
           });
         }
       }
-      const cloudDraft = buildDraftFromPlainText(guarded.text, locale, [
+      const cloudBaseDraft = buildDraftFromPlainText(guarded.text, locale, [
         'cloud_allowlist',
         guarded.rewritten ? 'anti_claim_guard_rewritten' : 'packet_only_answer',
       ]);
+      // Same coach/health-guidance pass as the local-LLM branch below.
+      // This branch also returns a user-facing answer whose domain can be
+      // `training`, so leaving it out would make the "coach answers always
+      // carry the non-diagnostic disclaimer" policy true only half the time.
+      // Applied to the ALREADY-truncated draft text, so the referral copy
+      // can never be the part that gets cut at the 1600-char cap.
+      const cloudCoachSafety = applyCoachSafetyToLocalAnswer(
+        input,
+        locale,
+        cloudAllowlistPacket.packet.domain ?? 'chat',
+        cloudBaseDraft.text,
+      );
+      const cloudDraft: ComposedAnswerDraft = {
+        ...cloudBaseDraft,
+        text: cloudCoachSafety.text,
+        reasonCodes: [
+          ...cloudBaseDraft.reasonCodes,
+          ...(cloudCoachSafety.reasonCode ? [cloudCoachSafety.reasonCode] : []),
+        ],
+      };
       const composed = composeChatCoreV2FinalAnswer({
         draft: cloudDraft,
         expectedLocale: locale,
@@ -486,13 +513,24 @@ export async function runChatCoreV2LocalChatTurn(
     }
     const guarded = applyNoUnverifiedSuccessClaimGuard(draft.text, locale, input.normalizedText);
     const localeChecked = await maybeRepairLocaleDrift(provider, input, locale, guarded.text, env);
+    // Guardrail copy is appended AFTER the locale-drift repair on purpose:
+    // the deterministic referral copy is English-sourced, and letting the
+    // drift repairer see it would send the safety line back through the
+    // model for a rewrite.
+    const coachSafety = applyCoachSafetyToLocalAnswer(
+      input,
+      locale,
+      resolveLocalAnswerResponseDomain(input, recipeRequest),
+      localeChecked.text,
+    );
     const guardedDraft: ComposedAnswerDraft = {
       ...draft,
-      text: localeChecked.text,
+      text: coachSafety.text,
       reasonCodes: [
         ...draft.reasonCodes,
         ...(guarded.rewritten ? ['anti_claim_guard_rewritten'] : []),
         ...(localeChecked.reasonCode ? [localeChecked.reasonCode] : []),
+        ...(coachSafety.reasonCode ? [coachSafety.reasonCode] : []),
       ],
     };
     const composed = composeChatCoreV2FinalAnswer({
@@ -747,6 +785,84 @@ function buildCookingSafetyBlockedLocalResponse(
     modelMetadata: providerMetadata,
     degraded: false,
   };
+}
+
+// ─── Coach / health-guidance answer safety ───────────────────────────
+//
+// App Review guideline 1.4.1. The deterministic guardrails in
+// coach-kernel/safety-guardrails.ts were reachable only from structured
+// intake and plan generation, so a symptom typed into ordinary chat
+// bypassed them entirely. Same two-tier policy as the legacy domain path in
+// src/domains/domain-handler.ts: coach/training answers always carry the
+// non-diagnostic disclaimer, nutrition answers carry it when a rule fires,
+// and a free-text red flag surfaces the referral in ANY domain.
+const LOCAL_CHAT_COACH_DISCLAIMER_DOMAINS: ReadonlySet<ChatCoreV2Domain | 'chat'> =
+  new Set<ChatCoreV2Domain | 'chat'>(['training']);
+const LOCAL_CHAT_SAFETY_SURFACING_DOMAINS: ReadonlySet<ChatCoreV2Domain | 'chat'> =
+  new Set<ChatCoreV2Domain | 'chat'>(['training', 'cooking']);
+
+function applyCoachSafetyToLocalAnswer(
+  input: ChatCoreV2LocalChatTurnInput,
+  locale: ChatCoreV2Locale,
+  responseDomain: ChatCoreV2Domain | 'chat',
+  answerText: string,
+): { text: string; reasonCode: string | null } {
+  if (!answerText || answerText.trim().length === 0) return { text: answerText, reasonCode: null };
+  const alwaysDisclaim = LOCAL_CHAT_COACH_DISCLAIMER_DOMAINS.has(responseDomain);
+  const safetySurfacingDomain = LOCAL_CHAT_SAFETY_SURFACING_DOMAINS.has(responseDomain);
+  try {
+    const evaluation = evaluateChatMessageSafety(input.normalizedText, answerText);
+    const surfaced = selectSurfacedSafetyFinding(evaluation);
+    const inferredRedFlag = surfaced !== null && surfaced.triggerSummary.startsWith('inferred free text:');
+    const surfaceFinding = surfaced !== null && (safetySurfacingDomain || inferredRedFlag);
+    if (!surfaceFinding && !alwaysDisclaim) return { text: answerText, reasonCode: null };
+
+    const notice = buildCoachSafetyNotice(
+      surfaceFinding ? evaluation : { status: 'pass', findings: [], topMessage: '' },
+      resolveCoachSafetyLocale(locale),
+      {
+        includeDisclaimer: true,
+        alreadyDisclaimed: answerCarriesNonDiagnosticDisclaimer(answerText),
+      },
+    );
+    if (!notice) return { text: answerText, reasonCode: null };
+    if (surfaceFinding && surfaced) {
+      logger.info(
+        {
+          requestId: input.requestId,
+          userId: input.userId,
+          tenantId: input.tenantId,
+          responseDomain,
+          safetyDomain: surfaced.domain,
+          safetySeverity: surfaced.severity,
+        },
+        'COACH_SAFETY_GUARDRAIL_SURFACED',
+      );
+    }
+    return {
+      text: `${answerText.trimEnd()}\n\n${notice}`,
+      reasonCode: surfaceFinding ? 'coach_safety_referral_appended' : 'coach_safety_disclaimer_appended',
+    };
+  } catch (err) {
+    logger.warn(
+      {
+        requestId: input.requestId,
+        userId: input.userId,
+        tenantId: input.tenantId,
+        err: err instanceof Error ? err.message : String(err),
+      },
+      'Chat Core v2 coach safety evaluation failed',
+    );
+    if (!alwaysDisclaim || answerCarriesNonDiagnosticDisclaimer(answerText)) {
+      return { text: answerText, reasonCode: null };
+    }
+    const notice = buildCoachSafetyNotice(
+      { status: 'pass', findings: [], topMessage: '' },
+      resolveCoachSafetyLocale(locale),
+      { includeDisclaimer: true },
+    );
+    return { text: `${answerText.trimEnd()}\n\n${notice}`, reasonCode: 'coach_safety_disclaimer_appended' };
+  }
 }
 
 function extractDraftTextForSafety(result: LocalReasoningResult, fallback: string): string {

@@ -22,6 +22,7 @@ import { connectionRoutes } from './routes/connections';
 import { wearableRoutes } from './routes/wearable';
 import { usageRoutes } from './routes/usage';
 import { clientErrorsRoutes } from './routes/client-errors';
+import { aiReportsRoutes } from './routes/ai-reports';
 import { auditTrailRoutes } from './routes/audit-trail';
 import { skillsRoutes } from './routes/skills';
 import { signalsRoutes } from './routes/signals';
@@ -114,6 +115,7 @@ export function createApiRouter(): Router {
         onboarding: 'GET/POST /api/v1/onboarding',
         settings: 'GET/PATCH /api/v1/settings',
         clientErrors: 'POST /api/v1/client-errors',
+        aiReports: 'POST /api/v1/ai-reports — report objectionable or inaccurate AI output',
         auditTrail: 'GET /api/v1/audit-trail/me',
         skills: 'GET /api/v1/skills/catalog, POST/DELETE /api/v1/skills/override (owner only)',
         signals: 'GET /api/v1/signals/active — active cross-skill training signals for the current user',
@@ -202,7 +204,7 @@ export function createApiRouter(): Router {
         return;
       }
 
-      const { notificationType, data } = outerPayload;
+      const { notificationType, subtype, notificationUUID, data } = outerPayload;
       const signedTransactionInfo = data?.signedTransactionInfo;
 
       if (!notificationType || !signedTransactionInfo) {
@@ -234,7 +236,14 @@ export function createApiRouter(): Router {
         return;
       }
 
-      const processed = handleAppleNotification(notificationType, signedTransactionInfo);
+      // notificationUUID drives replay de-duplication and `environment` is
+      // recorded as provenance; both live on the outer (already verified)
+      // envelope, so they are threaded through rather than re-decoded.
+      const processed = handleAppleNotification(notificationType, signedTransactionInfo, {
+        notificationUUID: typeof notificationUUID === 'string' ? notificationUUID : null,
+        subtype: typeof subtype === 'string' ? subtype : null,
+        environment: typeof data?.environment === 'string' ? data.environment : null,
+      });
 
       res.status(200).json({ handled: processed });
     } catch (err: any) {
@@ -315,6 +324,11 @@ export function createApiRouter(): Router {
   // iOS / web crash reports. JWT + rate-limit protected via the middleware
   // chain above. Reads are admin-only and exposed via the portal, not here.
   router.use('/client-errors', clientErrorsRoutes());
+
+  // App Review guideline 1.2: in-app reporting for objectionable or
+  // inaccurate AI output. Write-only from iOS; reads are an operator concern
+  // and stay in the portal.
+  router.use('/ai-reports', aiReportsRoutes());
 
   // GDPR self-service audit trail (audit P0-10): users can view their own
   // audit history (Article 15). Read-only, scoped to the authenticated

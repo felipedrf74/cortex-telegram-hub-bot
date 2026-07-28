@@ -465,7 +465,22 @@ export function settingsRoutes(): Router {
       });
 
       logger.info({ userId, platform: 'ios' }, 'Account deleted (GDPR Article 17)');
-      sendSuccess(res, { deleted: true, message: 'All data has been permanently deleted.' });
+      // `deleted` and `message` are unchanged for existing clients. The
+      // notice is additive: deleting the account destroys the local
+      // `subscriptions` row but does NOT cancel a store-managed
+      // subscription, which keeps billing until the user cancels it in the
+      // store. The code lets a client localize; the message is the fallback
+      // for clients that don't.
+      sendSuccess(res, {
+        deleted: true,
+        message: 'All data has been permanently deleted.',
+        subscriptionNotice: {
+          code: 'STORE_SUBSCRIPTION_NOT_CANCELLED',
+          message: 'Deleting your account does not cancel a subscription purchased through the App Store. '
+            + 'Cancel it in Settings > your Apple Account > Subscriptions to stop future billing.',
+          managementUrl: 'https://apps.apple.com/account/subscriptions',
+        },
+      });
     } catch (err: any) {
       logger.error({ err }, 'iOS account deletion failed');
       sendInternalError(res, 'Unable to delete the account right now.');

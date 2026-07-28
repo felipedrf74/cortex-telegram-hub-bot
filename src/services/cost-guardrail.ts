@@ -251,6 +251,55 @@ function legacyDailyCapUsd(plan: BillingPlan | 'system', configuredCapUsd: numbe
   return configuredCapUsd;
 }
 
+/**
+ * Last-known billing identity for a quota read that failed closed.
+ *
+ * Failing closed must keep AI spend blocked, but it must not tell a paying
+ * subscriber they are on no plan. `GET /api/v1/usage` spreads
+ * `buildQuotaUsagePayload` verbatim and the iOS client assigns `plan`
+ * unconditionally, so a transient entitlement/metering error that reported
+ * 'none' downgraded a paying account on the very next poll — undoing the same
+ * fix already applied to `GET /api/v1/billing/status`. Centralising it here
+ * covers every caller of the payload builder instead of one route at a time.
+ *
+ * Only a currently-active paid row overrides 'none': Free, expired, cancelled
+ * and system-pool reads keep the fail-closed answer. The row is read directly
+ * rather than through stripe-service so that the degraded path stays free of
+ * that module's dependency graph, and the whole lookup is wrapped — if the
+ * database is what broke, the fallback must not throw on top of it.
+ */
+function lastKnownPaidPlanForFailedQuotaRead(
+  userId: number,
+  requestSource: AiRequestSource,
+  now: Date,
+): string | null {
+  if (requestSource === 'system') return null;
+  if (!Number.isInteger(userId) || userId <= 0) return null;
+  try {
+    const row = getDb().prepare(
+      'SELECT plan, status, current_period_end FROM subscriptions WHERE user_id = ?',
+    ).get(userId) as { plan?: string | null; status?: string | null; current_period_end?: string | null } | undefined;
+    if (!row) return null;
+    if (row.plan !== 'pro' && row.plan !== 'max') return null;
+    if (!['active', 'trialing'].includes(String(row.status))) return null;
+    // Same expiry rule as getSubscriptionStatus: a lapsed period is not an
+    // active plan. Legacy rows can hold SQLite's space-separated timestamp
+    // instead of ISO-8601, so both forms are parsed.
+    const periodEnd = typeof row.current_period_end === 'string' ? row.current_period_end.trim() : '';
+    if (periodEnd) {
+      const parsed = Date.parse(
+        /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(periodEnd)
+          ? `${periodEnd.replace(' ', 'T')}Z`
+          : periodEnd,
+      );
+      if (Number.isFinite(parsed) && parsed <= now.getTime()) return null;
+    }
+    return row.plan;
+  } catch {
+    return null;
+  }
+}
+
 export function getDailyQuotaStatus(
   userId: number,
   options: { requestSource?: AiRequestSource; now?: Date } = {},
@@ -461,7 +510,10 @@ export function getDailyQuotaStatus(
   } catch {
     return {
       over: isPaidAiCostControlsEnforcementEnabled(), spentUsd: 0, capUsd: DEFAULT_DAILY_CAP_USD,
-      plan: 'none', usageLevel: 'none', usageFraction: 0,
+      // Billing identity survives a failed quota read; AI access does not.
+      // `aiAccessAllowed`, `blockReason` and the caps below stay fail-closed.
+      plan: lastKnownPaidPlanForFailedQuotaRead(userId, requestSource, now) ?? 'none',
+      usageLevel: 'none', usageFraction: 0,
       callsToday: 0, boostAvailable: false,
       limitUsd: DEFAULT_DAILY_CAP_USD,
       usedUsd: 0,

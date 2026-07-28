@@ -21,7 +21,10 @@ import {
   createPortalSession,
   handleAppleTransaction,
   claimWebsiteStripeSubscriptionForUser,
+  deriveAppleAppAccountToken,
   isAppleTransactionAlreadyClaimedError,
+  isUnknownAppleProductError,
+  APPLE_SUBSCRIPTION_PRODUCT_IDS,
 } from '../../services/stripe-service';
 import { verifyAppleJws } from '../../services/apple-jws-verifier';
 import { safeCheckoutUrl } from './public-billing';
@@ -68,21 +71,39 @@ function buildBillingStatusPayload(userId: number): Record<string, unknown> {
   const status = getSubscriptionStatus(userId);
   const usage = isUserOverDailyCap(userId);
   const entitlement = usage.entitlement;
-  const canonicalProductActive = entitlement
-    ? !['free', 'error'].includes(entitlement.source)
-      && (entitlement.status === 'active' || entitlement.status === 'trialing')
+  // A transient failure inside the entitlement/quota resolver must never
+  // downgrade a paying account. When the resolver failed closed it returns no
+  // entitlement (or source 'error') and a plan of 'none'; billing identity then
+  // falls back to the last known subscription row instead of reporting Free.
+  const entitlementResolved = !!entitlement && entitlement.source !== 'error';
+  const canonicalProductActive = entitlementResolved
+    ? !['free', 'error'].includes(entitlement!.source)
+      && (entitlement!.status === 'active' || entitlement!.status === 'trialing')
     : status.isActive;
-  const canonicalIsPro = entitlement
-    ? canonicalProductActive && (entitlement.plan === 'pro' || entitlement.plan === 'max')
+  const canonicalIsPro = entitlementResolved
+    ? canonicalProductActive && (entitlement!.plan === 'pro' || entitlement!.plan === 'max')
     : status.isPro;
+  const canonicalPlan = entitlementResolved ? entitlement!.plan : status.plan;
+  const canonicalStatus = entitlementResolved
+    ? (entitlement!.status === 'none' ? 'inactive' : entitlement!.status)
+    : status.status;
   return {
     ...status,
-    // Do not let stale/manual subscription rows keep `isPro=true` after the
-    // canonical entitlement has resolved the account to Free. iOS uses these
-    // compatibility booleans as a fallback while additive fields roll out.
+    ...buildQuotaUsagePayload(usage),
+    // Canonical billing identity is written LAST. The quota payload carries its
+    // own `plan` (and emits 'none' whenever the quota read fails), which must
+    // never clobber the entitlement answer for a paying user. Deriving plan and
+    // status from the same source as isActive/isPro also stops the payload
+    // contradicting itself, e.g. status 'expired' alongside isPro true.
+    plan: canonicalPlan,
+    status: canonicalStatus,
     isActive: canonicalProductActive,
     isPro: canonicalIsPro,
-    ...buildQuotaUsagePayload(usage),
+    // Opaque per-user token the client attaches to a StoreKit purchase as
+    // `Product.PurchaseOption.appAccountToken`. Apple echoes it back in server
+    // notifications, which is what lets the webhook recover a purchase whose
+    // apple-verify call never landed.
+    appAccountToken: deriveAppleAppAccountToken(userId),
   };
 }
 
@@ -306,7 +327,7 @@ export function billingRoutes(): Router {
    * Verification steps (consumer-grade, not beta):
    *   1. Structural: valid 3-part JWS, parseable JSON payload
    *   2. Bundle ID: must match our app's bundle identifier
-   *   3. Environment: production transactions only (sandbox allowed in dev)
+   *   3. Environment: recorded as provenance, never used to deny
    *   4. Product ID: must be in our known product allowlist
    *   5. Expiry: reject transactions that expired before today
    *   6. Transaction ID: must be a plausible Apple transaction ID format
@@ -371,18 +392,16 @@ export function billingRoutes(): Router {
         return;
       }
 
-      // ── Step 3: Environment check ──
-      // In production, only accept 'Production' environment.
-      // In development (NODE_ENV !== 'production'), also accept 'Sandbox' and 'Xcode'.
-      const env = payload.environment || '';
-      const allowedEnvs = isProduction
-        ? ['Production']
-        : ['Production', 'Sandbox', 'Xcode'];
-      if (env && !allowedEnvs.includes(env)) {
-        logger.warn({ userId, environment: env }, 'Apple verify: environment rejected');
-        sendError(res, 'INVALID_ENVIRONMENT', `Transaction environment '${env}' not accepted`, 403);
-        return;
-      }
+      // ── Step 3: Environment provenance ──
+      // The environment claim is NEVER a gate. App Review buys against the
+      // StoreKit sandbox even on an App-Store-Connect-distributed build, so
+      // denying 'Sandbox' in production rejected every reviewer purchase — and
+      // the client calls transaction.finish() regardless of our answer, so the
+      // rejection was terminal. The claim is recorded on the subscription row
+      // and in the audit trail instead. Strict expiry (step 6) is what bounds
+      // abuse: sandbox subscriptions expire in minutes. JWS signature
+      // verification (step 1b) stays keyed on isProduction and stays strict.
+      const env = typeof payload.environment === 'string' ? payload.environment : '';
 
       // ── Step 4: Extract and validate required fields ──
       const transactionId = payload.transactionId || payload.originalTransactionId;
@@ -394,8 +413,12 @@ export function billingRoutes(): Router {
         return;
       }
 
-      // Transaction ID format: Apple uses numeric strings (e.g., "2000000123456789")
-      if (!/^\d{5,25}$/.test(String(originalTransactionId))) {
+      // Transaction ID format: Apple uses long numeric strings (e.g.
+      // "2000000123456789"). Xcode's StoreKit Testing mints short sequential
+      // ids, so outside production any numeric id is accepted; production keeps
+      // the 5-digit floor.
+      const transactionIdPattern = isProduction ? /^\d{5,25}$/ : /^\d{1,25}$/;
+      if (!transactionIdPattern.test(String(originalTransactionId))) {
         logger.warn({ userId, transactionId: originalTransactionId }, 'Apple verify: suspicious transaction ID format');
         sendError(res, 'INVALID_TRANSACTION', 'Transaction ID format is not valid', 400);
         return;
@@ -403,8 +426,7 @@ export function billingRoutes(): Router {
 
       // ── Step 5: Product ID allowlist ──
       const knownProducts = [
-        'me.nexushub.pro.monthly', 'me.nexushub.pro.yearly',
-        'me.nexushub.max.monthly', 'me.nexushub.max.yearly',
+        ...APPLE_SUBSCRIPTION_PRODUCT_IDS,
         ...listNexusPointPackages().map((pkg) => pkg.productId),
       ];
       if (!knownProducts.includes(productId)) {
@@ -429,6 +451,7 @@ export function billingRoutes(): Router {
       }
 
       // ── Step 7: Process the verified transaction ──
+      const tenantId = (req as any).tenantId || userId;
       if (isNexusPointProductId(productId)) {
         const grant = grantNexusPoints({
           userId,
@@ -449,6 +472,20 @@ export function billingRoutes(): Router {
           creditId: grant.creditId,
           environment: env || 'unknown',
         }, 'Apple Nexus Points transaction verified and processed');
+        logAudit({
+          tenantId,
+          userId,
+          actorId: userId,
+          action: 'create',
+          resource: 'billing.apple_verify.nexus_points',
+          details: {
+            productId,
+            originalTransactionId: String(originalTransactionId),
+            environment: env || 'unknown',
+            granted: grant.granted,
+            creditId: grant.creditId,
+          },
+        });
 
         sendSuccess(res, {
           ...buildBillingStatusPayload(userId),
@@ -462,11 +499,15 @@ export function billingRoutes(): Router {
         return;
       }
 
+      let grant;
       try {
         const currentPeriodStart = payload.purchaseDate
           ? new Date(payload.purchaseDate).toISOString()
           : null;
-        handleAppleTransaction(userId, String(originalTransactionId), productId, expiresDate, currentPeriodStart);
+        grant = handleAppleTransaction(userId, String(originalTransactionId), productId, expiresDate, currentPeriodStart, {
+          environment: env,
+          appAccountToken: payload.appAccountToken,
+        });
       } catch (err) {
         if (isAppleTransactionAlreadyClaimedError(err)) {
           sendError(
@@ -477,6 +518,10 @@ export function billingRoutes(): Router {
           );
           return;
         }
+        if (isUnknownAppleProductError(err)) {
+          sendError(res, 'UNKNOWN_PRODUCT', `Product ID '${productId}' is not a known Nexus Hub product`, 400);
+          return;
+        }
         throw err;
       }
 
@@ -485,7 +530,28 @@ export function billingRoutes(): Router {
         productId,
         transactionId: originalTransactionId,
         environment: env || 'unknown',
+        transferredFromUserId: grant.transferredFromUserId,
       }, 'Apple transaction verified and processed');
+      // `create` rather than a billing-specific AuditAction: the action union in
+      // audit-trail.ts is closed and the resource carries the specificity.
+      logAudit({
+        tenantId,
+        userId,
+        actorId: userId,
+        action: 'create',
+        resource: 'billing.apple_verify.subscription',
+        details: {
+          productId,
+          plan: grant.plan,
+          period: grant.period,
+          originalTransactionId: String(originalTransactionId),
+          // Provenance: a Sandbox/Xcode entitlement in production is legitimate
+          // during App Review, but it must be visible in the audit trail.
+          environment: env || 'unknown',
+          expiresDate,
+          transferredFromUserId: grant.transferredFromUserId,
+        },
+      });
 
       sendSuccess(res, buildBillingStatusPayload(userId));
     } catch (err: any) {

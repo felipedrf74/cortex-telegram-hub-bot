@@ -26,6 +26,9 @@ vi.mock('../../src/config', () => ({
       priceMaxMonthlyBrl: 'price_max_brl',
       priceMaxYearlyBrl: '',
     },
+    ios: {
+      jwtSecret: 'test-ios-jwt-secret-at-least-32-bytes-long',
+    },
   },
 }));
 
@@ -77,6 +80,7 @@ function createSchema(db: Database.Database): void {
       provider_customer_id TEXT,
       current_period_start TEXT,
       current_period_end TEXT,
+      environment TEXT,
       cancel_at_period_end INTEGER DEFAULT 0,
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now'))
@@ -103,7 +107,27 @@ function createSchema(db: Database.Database): void {
       event_type TEXT NOT NULL,
       processed_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
+
+    CREATE TABLE apple_webhook_events (
+      notification_uuid TEXT PRIMARY KEY,
+      notification_type TEXT NOT NULL,
+      subtype TEXT,
+      environment TEXT,
+      processed_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
   `);
+}
+
+/**
+ * Build the inner `signedTransactionInfo` JWS of an App Store Server
+ * Notification. Only the payload segment is read by the handler — the outer
+ * envelope's signature is verified in the route, not here.
+ */
+function appleTransactionJws(payload: Record<string, unknown>): string {
+  const header = Buffer.from(JSON.stringify({ alg: 'ES256' })).toString('base64url');
+  const body = Buffer.from(JSON.stringify({ bundleId: 'me.nexushub.app', ...payload })).toString('base64url');
+  const sig = Buffer.from('stub-signature').toString('base64url');
+  return `${header}.${body}.${sig}`;
 }
 
 describe('stripe service billing reconciliation', () => {
@@ -171,10 +195,10 @@ describe('stripe service billing reconciliation', () => {
     expect(checkout.user_id).toBe(userId);
   });
 
-  it('does not let another user claim an existing Apple original transaction id', async () => {
+  it('rejects an Apple original transaction id claimed by another active account', async () => {
     const {
       handleAppleTransaction,
-      AppleTransactionAlreadyClaimedError,
+      isAppleTransactionAlreadyClaimedError,
     } = await import('../../src/services/stripe-service');
     const userOne = Number(testDb.prepare('INSERT INTO users (email, email_verified) VALUES (?, 1)').run('apple-one@example.com').lastInsertRowid);
     const userTwo = Number(testDb.prepare('INSERT INTO users (email, email_verified) VALUES (?, 1)').run('apple-two@example.com').lastInsertRowid);
@@ -182,17 +206,128 @@ describe('stripe service billing reconciliation', () => {
     handleAppleTransaction(userOne, '2000000123456789', 'me.nexushub.pro.monthly', new Date(Date.now() + 86400000).toISOString());
 
     expect(() => handleAppleTransaction(
-      userTwo,
-      '2000000123456789',
-      'me.nexushub.max.monthly',
-      new Date(Date.now() + 86400000).toISOString(),
-    )).toThrow(AppleTransactionAlreadyClaimedError);
+        userTwo,
+        '2000000123456789',
+        'me.nexushub.max.monthly',
+        new Date(Date.now() + 86400000).toISOString(),
+      ))
+      .toThrowError(expect.objectContaining({ name: 'AppleTransactionAlreadyClaimedError' }));
 
-    expect(testDb.prepare('SELECT COUNT(*) AS count FROM subscriptions WHERE user_id = ?').get(userTwo)).toMatchObject({ count: 0 });
-    expect(testDb.prepare('SELECT plan, provider FROM subscriptions WHERE user_id = ?').get(userOne)).toMatchObject({
+    try {
+      handleAppleTransaction(
+        userTwo,
+        '2000000123456789',
+        'me.nexushub.max.monthly',
+        new Date(Date.now() + 86400000).toISOString(),
+      );
+    } catch (err) {
+      expect(isAppleTransactionAlreadyClaimedError(err)).toBe(true);
+    }
+    expect(testDb.prepare('SELECT plan, status, provider FROM subscriptions WHERE user_id = ?').get(userOne)).toMatchObject({
       plan: 'pro',
+      status: 'active',
       provider: 'apple',
     });
+    expect(testDb.prepare('SELECT * FROM subscriptions WHERE user_id = ?').get(userTwo)).toBeUndefined();
+  });
+
+  it('recovers an Apple original transaction id from a terminal prior account', async () => {
+    const { handleAppleTransaction } = await import('../../src/services/stripe-service');
+    const userOne = Number(testDb.prepare('INSERT INTO users (email, email_verified) VALUES (?, 1)').run('apple-stale@example.com').lastInsertRowid);
+    const userTwo = Number(testDb.prepare('INSERT INTO users (email, email_verified) VALUES (?, 1)').run('apple-restore@example.com').lastInsertRowid);
+    const originalTransactionId = '2000000123456790';
+
+    handleAppleTransaction(
+      userOne,
+      originalTransactionId,
+      'me.nexushub.pro.monthly',
+      new Date(Date.now() + 86400000).toISOString(),
+    );
+    testDb.prepare(`
+      UPDATE subscriptions
+         SET status = 'expired',
+             current_period_end = ?
+       WHERE user_id = ?
+    `).run(new Date(Date.now() - 86400000).toISOString(), userOne);
+
+    const result = handleAppleTransaction(
+      userTwo,
+      originalTransactionId,
+      'me.nexushub.max.monthly',
+      new Date(Date.now() + 86400000).toISOString(),
+    );
+
+    expect(result).toMatchObject({ plan: 'max', period: 'monthly', transferredFromUserId: userOne });
+    expect(testDb.prepare('SELECT plan, status, provider FROM subscriptions WHERE user_id = ?').get(userTwo)).toMatchObject({
+      plan: 'max',
+      status: 'active',
+      provider: 'apple',
+    });
+    expect(testDb.prepare('SELECT status, provider_subscription_id FROM subscriptions WHERE user_id = ?').get(userOne)).toMatchObject({
+      status: 'inactive',
+      provider_subscription_id: null,
+    });
+  });
+
+  it('persists the Apple environment claim as provenance on the grant', async () => {
+    const { handleAppleTransaction } = await import('../../src/services/stripe-service');
+    const userId = Number(testDb.prepare('INSERT INTO users (email, email_verified) VALUES (?, 1)').run('apple-sandbox@example.com').lastInsertRowid);
+
+    handleAppleTransaction(
+      userId,
+      '2000000123456799',
+      'me.nexushub.pro.monthly',
+      new Date(Date.now() + 86400000).toISOString(),
+      null,
+      { environment: 'Sandbox', appAccountToken: '01000000-0000-0000-0000-000000000000' },
+    );
+
+    expect(testDb.prepare('SELECT status, environment, provider_customer_id FROM subscriptions WHERE user_id = ?').get(userId)).toMatchObject({
+      status: 'active',
+      environment: 'Sandbox',
+      provider_customer_id: '01000000-0000-0000-0000-000000000000',
+    });
+  });
+
+  it('refuses to grant a plan for an unmapped Apple product id', async () => {
+    const {
+      handleAppleTransaction,
+      UnknownAppleProductError,
+      resolveAppleProduct,
+    } = await import('../../src/services/stripe-service');
+    const userId = Number(testDb.prepare('INSERT INTO users (email, email_verified) VALUES (?, 1)').run('apple-unknown@example.com').lastInsertRowid);
+
+    // Substring matching used to default every unrecognised id to Pro monthly.
+    expect(resolveAppleProduct('me.nexushub.pro.weekly')).toBeNull();
+    expect(resolveAppleProduct('com.attacker.max.yearly')).toBeNull();
+    expect(resolveAppleProduct('me.nexushub.max.yearly')).toEqual({ plan: 'max', period: 'yearly' });
+
+    expect(() => handleAppleTransaction(
+      userId,
+      '2000000123456800',
+      'me.nexushub.pro.weekly',
+      new Date(Date.now() + 86400000).toISOString(),
+    )).toThrow(UnknownAppleProductError);
+    expect((testDb.prepare('SELECT COUNT(*) AS count FROM subscriptions').get() as any).count).toBe(0);
+  });
+
+  it('round-trips a user id through the derived appAccountToken and rejects forgeries', async () => {
+    const {
+      deriveAppleAppAccountToken,
+      resolveUserIdFromAppleAppAccountToken,
+    } = await import('../../src/services/stripe-service');
+
+    const token = deriveAppleAppAccountToken(4242);
+    expect(token).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+    expect(resolveUserIdFromAppleAppAccountToken(token)).toBe(4242);
+    expect(deriveAppleAppAccountToken(4242)).toBe(token);
+
+    // Flipping the embedded user id invalidates the HMAC tag.
+    const forged = `01001091-${token!.slice(9)}`;
+    expect(resolveUserIdFromAppleAppAccountToken(forged)).toBeNull();
+    expect(resolveUserIdFromAppleAppAccountToken('not-a-uuid')).toBeNull();
+    expect(resolveUserIdFromAppleAppAccountToken(null)).toBeNull();
+    expect(deriveAppleAppAccountToken(0)).toBeNull();
   });
 
   it('derives a date-safe Apple monthly period start at month end', async () => {
@@ -372,6 +507,137 @@ describe('stripe service billing reconciliation', () => {
     expect(hasProcessedStripeWebhookEvent('evt_123')).toBe(true);
     markStripeWebhookEventProcessed('evt_123', 'checkout.session.completed');
     expect((testDb.prepare('SELECT COUNT(*) AS count FROM stripe_webhook_events').get() as any).count).toBe(1);
+  });
+
+  it('de-duplicates replayed Apple notificationUUIDs', async () => {
+    const { handleAppleNotification, handleAppleTransaction } = await import('../../src/services/stripe-service');
+    const userId = Number(testDb.prepare('INSERT INTO users (email, email_verified) VALUES (?, 1)').run('apple-replay@example.com').lastInsertRowid);
+    handleAppleTransaction(userId, '2000000123456801', 'me.nexushub.pro.monthly', new Date(Date.now() + 86400000).toISOString());
+
+    const context = { notificationUUID: 'c0ffee00-1111-2222-3333-444444444444', environment: 'Sandbox' };
+    expect(handleAppleNotification('EXPIRED', appleTransactionJws({
+      originalTransactionId: '2000000123456801',
+      productId: 'me.nexushub.pro.monthly',
+    }), context)).toBe(true);
+    expect(testDb.prepare('SELECT status FROM subscriptions WHERE user_id = ?').get(userId)).toMatchObject({ status: 'expired' });
+
+    // Apple retries until it gets a 200, so the same UUID arrives again.
+    testDb.prepare("UPDATE subscriptions SET status = 'active' WHERE user_id = ?").run(userId);
+    expect(handleAppleNotification('EXPIRED', appleTransactionJws({
+      originalTransactionId: '2000000123456801',
+      productId: 'me.nexushub.pro.monthly',
+    }), context)).toBe(false);
+    expect(testDb.prepare('SELECT status FROM subscriptions WHERE user_id = ?').get(userId)).toMatchObject({ status: 'active' });
+    expect((testDb.prepare('SELECT COUNT(*) AS count FROM apple_webhook_events').get() as any).count).toBe(1);
+  });
+
+  it('applies DID_CHANGE_RENEWAL_STATUS without changing subscription status', async () => {
+    const { handleAppleNotification, handleAppleTransaction } = await import('../../src/services/stripe-service');
+    const userId = Number(testDb.prepare('INSERT INTO users (email, email_verified) VALUES (?, 1)').run('apple-renewal@example.com').lastInsertRowid);
+    handleAppleTransaction(userId, '2000000123456802', 'me.nexushub.pro.monthly', new Date(Date.now() + 86400000).toISOString());
+
+    const jws = appleTransactionJws({
+      originalTransactionId: '2000000123456802',
+      productId: 'me.nexushub.pro.monthly',
+      environment: 'Production',
+    });
+
+    expect(handleAppleNotification('DID_CHANGE_RENEWAL_STATUS', jws, {
+      notificationUUID: 'aaaa0001-0000-0000-0000-000000000000',
+      subtype: 'AUTO_RENEW_DISABLED',
+    })).toBe(true);
+    expect(testDb.prepare('SELECT status, cancel_at_period_end, environment FROM subscriptions WHERE user_id = ?').get(userId)).toMatchObject({
+      status: 'active',
+      cancel_at_period_end: 1,
+      environment: 'Production',
+    });
+
+    expect(handleAppleNotification('DID_CHANGE_RENEWAL_STATUS', jws, {
+      notificationUUID: 'aaaa0002-0000-0000-0000-000000000000',
+      subtype: 'AUTO_RENEW_ENABLED',
+    })).toBe(true);
+    expect(testDb.prepare('SELECT status, cancel_at_period_end FROM subscriptions WHERE user_id = ?').get(userId)).toMatchObject({
+      status: 'active',
+      cancel_at_period_end: 0,
+    });
+
+    expect(handleAppleNotification('DID_CHANGE_RENEWAL_STATUS', jws, {
+      notificationUUID: 'aaaa0003-0000-0000-0000-000000000000',
+      subtype: 'SOMETHING_ELSE',
+    })).toBe(false);
+  });
+
+  it('recovers a subscription from a notification when apple-verify never landed', async () => {
+    const { handleAppleNotification, deriveAppleAppAccountToken } = await import('../../src/services/stripe-service');
+    const userId = Number(testDb.prepare('INSERT INTO users (email, email_verified) VALUES (?, 1)').run('apple-recover@example.com').lastInsertRowid);
+    const expiresDate = Date.now() + 30 * 86400000;
+
+    expect(handleAppleNotification('SUBSCRIBED', appleTransactionJws({
+      originalTransactionId: '2000000123456803',
+      productId: 'me.nexushub.max.yearly',
+      appAccountToken: deriveAppleAppAccountToken(userId),
+      environment: 'Sandbox',
+      expiresDate,
+    }), { notificationUUID: 'bbbb0001-0000-0000-0000-000000000000' })).toBe(true);
+
+    expect(testDb.prepare('SELECT plan, period, status, provider, provider_subscription_id, environment FROM subscriptions WHERE user_id = ?').get(userId)).toMatchObject({
+      plan: 'max',
+      period: 'yearly',
+      status: 'active',
+      provider: 'apple',
+      provider_subscription_id: '2000000123456803',
+      environment: 'Sandbox',
+    });
+  });
+
+  it('refuses to invent a subscription row from an unmappable notification', async () => {
+    const { handleAppleNotification, deriveAppleAppAccountToken } = await import('../../src/services/stripe-service');
+    const userId = Number(testDb.prepare('INSERT INTO users (email, email_verified) VALUES (?, 1)').run('apple-noinvent@example.com').lastInsertRowid);
+    const appAccountToken = deriveAppleAppAccountToken(userId);
+
+    // No appAccountToken: nothing identifies the owner.
+    expect(handleAppleNotification('SUBSCRIBED', appleTransactionJws({
+      originalTransactionId: '2000000123456804',
+      productId: 'me.nexushub.pro.monthly',
+    }), { notificationUUID: 'cccc0001-0000-0000-0000-000000000000' })).toBe(false);
+
+    // Terminal events never create a row.
+    expect(handleAppleNotification('REFUND', appleTransactionJws({
+      originalTransactionId: '2000000123456805',
+      productId: 'me.nexushub.pro.monthly',
+      appAccountToken,
+    }), { notificationUUID: 'cccc0002-0000-0000-0000-000000000000' })).toBe(false);
+
+    // An unmapped product id must not silently become Pro.
+    expect(handleAppleNotification('SUBSCRIBED', appleTransactionJws({
+      originalTransactionId: '2000000123456806',
+      productId: 'me.nexushub.pro.weekly',
+      appAccountToken,
+    }), { notificationUUID: 'cccc0003-0000-0000-0000-000000000000' })).toBe(false);
+
+    expect((testDb.prepare('SELECT COUNT(*) AS count FROM subscriptions').get() as any).count).toBe(0);
+  });
+
+  it('never overwrites an active Stripe subscription from an Apple notification', async () => {
+    const { handleAppleNotification, deriveAppleAppAccountToken } = await import('../../src/services/stripe-service');
+    const userId = Number(testDb.prepare('INSERT INTO users (email, email_verified) VALUES (?, 1)').run('apple-vs-stripe@example.com').lastInsertRowid);
+    testDb.prepare(`
+      INSERT INTO subscriptions (
+        user_id, plan, period, status, provider, provider_subscription_id
+      ) VALUES (?, 'max', 'monthly', 'active', 'stripe', 'sub_live')
+    `).run(userId);
+
+    expect(handleAppleNotification('SUBSCRIBED', appleTransactionJws({
+      originalTransactionId: '2000000123456807',
+      productId: 'me.nexushub.pro.monthly',
+      appAccountToken: deriveAppleAppAccountToken(userId),
+    }), { notificationUUID: 'dddd0001-0000-0000-0000-000000000000' })).toBe(false);
+
+    expect(testDb.prepare('SELECT plan, provider, provider_subscription_id FROM subscriptions WHERE user_id = ?').get(userId)).toMatchObject({
+      plan: 'max',
+      provider: 'stripe',
+      provider_subscription_id: 'sub_live',
+    });
   });
 
   it('reports expired active or trialing rows as inactive for billing status', async () => {

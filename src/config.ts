@@ -333,6 +333,33 @@ export const config = {
       process.env.APPLE_WEB_REDIRECT_URI ||
       `${process.env.OAUTH_REDIRECT_BASE || 'https://api.nexushub.me'}/oauth/apple/callback`,
   },
+  // ── Sign in with Apple token revocation (Guideline 5.1.1(v)) ──────
+  //
+  // Apple requires an app offering Sign in with Apple to revoke the user's
+  // Apple token on account deletion. Revocation is authenticated with an
+  // ES256 client-secret JWT built from an Apple "Sign in with Apple" private
+  // key (a DIFFERENT key from the APNs one — same .p8 shape, different
+  // capability), so these deliberately do NOT reuse config.apns.
+  //
+  // APPLE_SIGN_IN_PRIVATE_KEY_P8 accepts the same three shapes as
+  // APNS_AUTH_KEY_P8: raw .p8 contents, a path on disk, or a single-line
+  // value with escaped newlines.
+  //
+  // All three are optional. When any is unset the feature degrades to the
+  // same `local_only` outcome unconfigured providers already record, and
+  // account deletion still completes. There is no boot-time invariant here
+  // on purpose — production does not have these values yet.
+  appleSignIn: {
+    // The Apple team id is identical to the one APNs already uses, so
+    // APNS_TEAM_ID is the fallback — it is the variable that actually exists
+    // in this deployment. Mirrors the clientId/APNS_BUNDLE_ID fallback below.
+    teamId: process.env.APPLE_SIGN_IN_TEAM_ID || process.env.APNS_TEAM_ID || '',
+    keyId: process.env.APPLE_SIGN_IN_KEY_ID || '',
+    privateKey: process.env.APPLE_SIGN_IN_PRIVATE_KEY_P8 || '',
+    // The OAuth client_id used for native iOS Sign in with Apple. This is the
+    // App ID (bundle identifier), which is also the identity-token audience.
+    clientId: process.env.APPLE_SIGN_IN_CLIENT_ID || process.env.APNS_BUNDLE_ID || 'me.nexushub.app',
+  },
   outlook: {
     clientId: process.env.OUTLOOK_CLIENT_ID || '',
     clientSecret: process.env.OUTLOOK_CLIENT_SECRET || '',
