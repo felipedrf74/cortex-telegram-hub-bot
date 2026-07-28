@@ -638,6 +638,7 @@ export class TaskRoutingProvider implements AIProvider {
   readonly name: string;
   private breakers = new Map<string, CircuitBreaker>();
   private metrics = new Map<string, ProviderMetrics>();
+  private configuredProviderNames = new Set<string>();
   private onFallback?: (event: FallbackEvent) => void;
 
   constructor(
@@ -661,6 +662,7 @@ export class TaskRoutingProvider implements AIProvider {
         providers.add((optionalPair.fallback as AIProvider).name);
       }
     }
+    this.configuredProviderNames = providers;
     this.name = `routing(${[...providers].join(',')})`;
   }
 
@@ -1352,7 +1354,16 @@ export class TaskRoutingProvider implements AIProvider {
       circuit: { state: CircuitState; failures: number };
       metrics: ProviderMetrics;
     }> = {};
-    const allNames = new Set([...this.breakers.keys(), ...this.metrics.keys()]);
+    // Include providers before their first routed call. A freshly restarted
+    // process has no breaker/metric entries yet, but the configured circuit
+    // state is still CLOSED with zero activity; omitting those providers made
+    // /health/detailed unable to prove the deployed routing topology during
+    // the mandatory post-deploy smoke.
+    const allNames = new Set([
+      ...this.configuredProviderNames,
+      ...this.breakers.keys(),
+      ...this.metrics.keys(),
+    ]);
     for (const name of allNames) {
       const breaker = this.breakers.get(name);
       const metrics = this.metrics.get(name);
