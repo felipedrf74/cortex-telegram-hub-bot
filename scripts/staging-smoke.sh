@@ -30,7 +30,8 @@
 set -euo pipefail
 
 SERVER="${DEPLOY_SERVER:-dominguez@serverdominguez}"
-STAGING_DIR="${STAGING_PATH:-/home/dominguez/telegram-hub-bot-staging}"
+STAGING_ROOT="${STAGING_PATH:-/home/dominguez/telegram-hub-bot-staging}"
+STAGING_RELEASE=""
 VERBOSE=false
 
 # Every remote check remains sequential, but they reuse one authenticated SSH
@@ -56,9 +57,87 @@ cleanup_smoke_transport() {
 }
 trap cleanup_smoke_transport EXIT
 
+resolve_staging_release() {
+  smoke_ssh "$SERVER" bash -s -- "$STAGING_ROOT" <<'REMOTE_RESOLVE_STAGING'
+set -euo pipefail
+staging_root="$1"
+case "$staging_root" in /*) ;; *) echo "staging root must be absolute" >&2; exit 64 ;; esac
+[ "$staging_root" != / ] && [ -d "$staging_root" ] && [ ! -L "$staging_root" ] || {
+  echo "staging root is missing, unsafe, or symbolic" >&2
+  exit 1
+}
+[ -d "$staging_root/releases" ] && [ ! -L "$staging_root/releases" ] || {
+  echo "staging releases directory is missing or unsafe" >&2
+  exit 1
+}
+[ -f "$staging_root/.env" ] && [ ! -L "$staging_root/.env" ] || {
+  echo "staging base environment is missing or unsafe" >&2
+  exit 1
+}
+[ -d "$staging_root/data" ] && [ ! -L "$staging_root/data" ] || {
+  echo "staging base data directory is missing or unsafe" >&2
+  exit 1
+}
+[ -f "$staging_root/data/bot.db" ] && [ ! -L "$staging_root/data/bot.db" ] || {
+  echo "staging base database is missing or unsafe" >&2
+  exit 1
+}
+[ -L "$staging_root/current" ] || {
+  echo "staging current selector is not a symlink" >&2
+  exit 1
+}
+staging_release="$(readlink -f -- "$staging_root/current")"
+case "$staging_release" in
+  "$staging_root"/releases/*) ;;
+  *) echo "staging current selector escapes releases" >&2; exit 1 ;;
+esac
+[ -d "$staging_release" ] && [ ! -L "$staging_release" ] || {
+  echo "exact staging release is missing or unsafe" >&2
+  exit 1
+}
+for required in dist node_modules scripts; do
+  [ -d "$staging_release/$required" ] && [ ! -L "$staging_release/$required" ] || {
+    echo "exact staging release is missing $required" >&2
+    exit 1
+  }
+done
+[ -L "$staging_release/.env" ] \
+  && [ "$(readlink -f -- "$staging_release/.env")" = "$staging_root/.env" ] || {
+  echo "exact staging release does not source the base environment" >&2
+  exit 1
+}
+[ -L "$staging_release/data" ] \
+  && [ "$(readlink -f -- "$staging_release/data")" = "$staging_root/data" ] || {
+  echo "exact staging release does not use the base data directory" >&2
+  exit 1
+}
+printf '%s\n' "$staging_release"
+REMOTE_RESOLVE_STAGING
+}
+
+assert_staging_selector() {
+  smoke_ssh "$SERVER" bash -s -- "$STAGING_ROOT" "$STAGING_RELEASE" <<'REMOTE_ASSERT_STAGING'
+set -euo pipefail
+staging_root="$1"
+expected_release="$2"
+[ -L "$staging_root/current" ]
+actual_release="$(readlink -f -- "$staging_root/current")"
+[ "$actual_release" = "$expected_release" ] || {
+  echo "staging current selector changed during smoke operation" >&2
+  exit 1
+}
+REMOTE_ASSERT_STAGING
+}
+
 if [ "${1:-}" = "-v" ]; then
   VERBOSE=true
 fi
+
+STAGING_RELEASE="$(resolve_staging_release)" || {
+  echo "❌ Could not resolve a safe immutable staging/current release" >&2
+  exit 1
+}
+assert_staging_selector
 
 echo "═══════════════════════════════════════════════"
 echo "  🧪 Nexus Hub Staging Smoke Test"
@@ -97,34 +176,49 @@ evidence_record() {
 # signed ps_ sessions, in which case the legacy PORTAL_TOKEN must not be used.
 # Tokens are read/minted only inside the remote shell and passed to curl via a
 # 0600 header file so they never appear in local ssh or remote curl argv.
-PORTAL_REQUIRE_SESSION_AUTH=$(smoke_ssh "$SERVER" "grep -oP '(?<=^PORTAL_REQUIRE_SESSION_AUTH=).+' $STAGING_DIR/.env 2>/dev/null" || true)
+PORTAL_REQUIRE_SESSION_AUTH=$(smoke_ssh "$SERVER" bash -s -- "$STAGING_ROOT" "$STAGING_RELEASE" <<'REMOTE_PORTAL_AUTH_MODE'
+set -euo pipefail
+staging_root="$1"
+staging_release="$2"
+[ "$(readlink -f -- "$staging_root/current")" = "$staging_release" ]
+grep -oP '(?<=^PORTAL_REQUIRE_SESSION_AUTH=).+' "$staging_root/.env" 2>/dev/null || true
+[ "$(readlink -f -- "$staging_root/current")" = "$staging_release" ]
+REMOTE_PORTAL_AUTH_MODE
+)
 
 portal_auth_curl() {
   local url="$1"
-  smoke_ssh "$SERVER" bash -s -- "$STAGING_DIR" "$PORTAL_REQUIRE_SESSION_AUTH" "$url" <<'REMOTE_PORTAL_CURL'
-set -e
-STAGING_DIR="$1"
-PORTAL_REQUIRE_SESSION_AUTH="$2"
-URL="$3"
+  smoke_ssh "$SERVER" bash -s -- \
+    "$STAGING_ROOT" "$STAGING_RELEASE" "$PORTAL_REQUIRE_SESSION_AUTH" "$url" <<'REMOTE_PORTAL_CURL'
+set -eo pipefail
+STAGING_ROOT="$1"
+STAGING_RELEASE="$2"
+PORTAL_REQUIRE_SESSION_AUTH="$3"
+URL="$4"
+[ "$(readlink -f -- "$STAGING_ROOT/current")" = "$STAGING_RELEASE" ]
 HEADER_FILE=$(mktemp)
 cleanup() { rm -f "$HEADER_FILE"; }
 trap cleanup EXIT
 chmod 600 "$HEADER_FILE"
 if [ "$PORTAL_REQUIRE_SESSION_AUTH" = "true" ]; then
-  cd "$STAGING_DIR"
+  cd "$STAGING_RELEASE"
   set -a
-  . ./.env
+  . "$STAGING_ROOT/.env"
   set +a
-  STAGING_SESSION=$(node dist/tools/portal-session-token.js --actor staging-smoke@nexushub.me --scope admin --ttl-ms 600000 --json \
-    | node -e "let b=''; process.stdin.on('data', c => b += c); process.stdin.on('end', () => { const j = JSON.parse(b); process.stdout.write(j.token || ''); });")
+  export DATABASE_PATH="$STAGING_ROOT/data/bot.db"
+  export DB_PATH="$STAGING_ROOT/data/bot.db"
+  export NODE_PATH="$STAGING_RELEASE/node_modules"
+  STAGING_SESSION=$(/usr/bin/node "$STAGING_RELEASE/dist/tools/portal-session-token.js" --actor staging-smoke@nexushub.me --scope admin --ttl-ms 600000 --json \
+    | /usr/bin/node -e "let b=''; process.stdin.on('data', c => b += c); process.stdin.on('end', () => { const j = JSON.parse(b); process.stdout.write(j.token || ''); });")
   [ -n "$STAGING_SESSION" ] || exit 1
   printf 'x-portal-session: %s\n' "$STAGING_SESSION" > "$HEADER_FILE"
 else
-  STAGING_TOKEN=$(grep -oP '(?<=^PORTAL_TOKEN=).+' "$STAGING_DIR/.env" 2>/dev/null || true)
+  STAGING_TOKEN=$(grep -oP '(?<=^PORTAL_TOKEN=).+' "$STAGING_ROOT/.env" 2>/dev/null || true)
   [ -n "$STAGING_TOKEN" ] || exit 1
   printf 'Authorization: Bearer %s\n' "$STAGING_TOKEN" > "$HEADER_FILE"
 fi
 curl -sf -H @"$HEADER_FILE" "$URL" 2>/dev/null
+[ "$(readlink -f -- "$STAGING_ROOT/current")" = "$STAGING_RELEASE" ]
 REMOTE_PORTAL_CURL
 }
 
@@ -492,13 +586,20 @@ if [ "$TRAINING_E2E_ENABLED" = "0" ]; then
 else
   TRAINING_SMOKE_RESULT=""
   TRAINING_SMOKE_RC=0
-  TRAINING_SMOKE_RESULT=$(smoke_ssh "$SERVER" "
-    set -e
-    cd $STAGING_DIR
-    set -a
-    . ./.env
-    set +a
-    node <<'NODE'
+  TRAINING_SMOKE_RESULT=$(smoke_ssh "$SERVER" bash -s -- \
+    "$STAGING_ROOT" "$STAGING_RELEASE" 2>&1 <<'REMOTE_TRAINING_E2E'
+set -eo pipefail
+staging_root="$1"
+staging_release="$2"
+[ "$(readlink -f -- "$staging_root/current")" = "$staging_release" ]
+cd "$staging_release"
+set -a
+. "$staging_root/.env"
+set +a
+export DATABASE_PATH="$staging_root/data/bot.db"
+export DB_PATH="$staging_root/data/bot.db"
+export NODE_PATH="$staging_release/node_modules"
+/usr/bin/node <<'NODE'
 const Database = require('better-sqlite3');
 const { signIosJwt } = require('./dist/services/ios-jwt');
 
@@ -696,7 +797,12 @@ main().catch((err) => {
   process.exit(1);
 });
 NODE
-  " 2>&1) || TRAINING_SMOKE_RC=$?
+[ "$(readlink -f -- "$staging_root/current")" = "$staging_release" ] || {
+  echo "staging current selector changed during training smoke" >&2
+  exit 1
+}
+REMOTE_TRAINING_E2E
+  ) || TRAINING_SMOKE_RC=$?
 
   TRAINING_SMOKE_DETAIL="$(printf '%s' "$TRAINING_SMOKE_RESULT" | tail -c 700 | tr '\n' ' ')"
   if [ "$TRAINING_SMOKE_RC" -eq 0 ]; then
@@ -887,20 +993,31 @@ fi
 echo ""
 echo "🗃  6/6 — DB integrity"
 DB_CHECK_RC=0
-DB_CHECK=$(smoke_ssh "$SERVER" bash -s -- "$STAGING_DIR" 2>&1 <<'REMOTE_DB_CHECK'
+DB_CHECK=$(smoke_ssh "$SERVER" bash -s -- "$STAGING_ROOT" "$STAGING_RELEASE" 2>&1 <<'REMOTE_DB_CHECK'
 set -euo pipefail
-cd "$1"
-exec /usr/bin/node <<'NODE'
-const db = require('better-sqlite3')('data/bot.db', { readonly: true });
+staging_root="$1"
+staging_release="$2"
+[ "$(readlink -f -- "$staging_root/current")" = "$staging_release" ]
+cd "$staging_release"
+NODE_PATH="$staging_release/node_modules" /usr/bin/node - "$staging_root/data/bot.db" <<'NODE'
+const Database = require('better-sqlite3');
+const db = new Database(process.argv[2], { readonly: true, fileMustExist: true });
 const result = db.pragma('integrity_check');
-console.log(JSON.stringify(result));
+const foreignKeys = db.pragma('foreign_key_check');
+db.close();
+console.log(JSON.stringify({ integrity: result, foreignKeys }));
 NODE
+[ "$(readlink -f -- "$staging_root/current")" = "$staging_release" ] || {
+  echo "staging current selector changed during database smoke" >&2
+  exit 1
+}
 REMOTE_DB_CHECK
 ) || DB_CHECK_RC=$?
 if [ "$DB_CHECK_RC" -ne 0 ]; then
   DB_CHECK="FAILED (staging DB integrity transport status $DB_CHECK_RC)"
 fi
-if echo "$DB_CHECK" | grep -q '"integrity_check":"ok"'; then
+if printf '%s' "$DB_CHECK" | grep -Fq '"integrity_check":"ok"' \
+    && printf '%s' "$DB_CHECK" | grep -Fq '"foreignKeys":[]'; then
   echo "  ✅ Staging DB integrity_check: ok"
   PASS=$((PASS + 1))
   evidence_record "Staging DB integrity" "passed" "integrity_check=ok"
@@ -938,11 +1055,11 @@ fi
 DOMAIN_PROBES_ENABLED="${NEXUS_SMOKE_DOMAIN_PROBES:-1}"
 if [ -n "${NEXUS_SMOKE_CLASSIFIER_BASE_SHA:-}" ]; then
   [ "$DOMAIN_PROBES_ENABLED" = "1" ] || {
-    echo "  ❌ signed release domain probes cannot be disabled"
+    echo "  ❌ protected release domain probes cannot be disabled"
     exit 1
   }
   [ -x "$LOCAL_DIR/scripts/changed-area-classifier.sh" ] || {
-    echo "  ❌ signed release changed-area classifier is missing or not executable"
+    echo "  ❌ protected release changed-area classifier is missing or not executable"
     exit 1
   }
 fi
@@ -954,7 +1071,7 @@ if [ "$DOMAIN_PROBES_ENABLED" = "1" ] && [ -x "$LOCAL_DIR/scripts/changed-area-c
   if [ -n "${NEXUS_SMOKE_CLASSIFIER_BASE_SHA:-}" ]; then
     [[ "$CLASSIFIER_BASE_SHA" =~ ^[0-9a-f]{40}$ ]] \
       && git -C "$LOCAL_DIR" merge-base --is-ancestor "$CLASSIFIER_BASE_SHA" HEAD || {
-      echo "  ❌ signed release classifier base is invalid or not an ancestor"
+      echo "  ❌ protected release classifier base is invalid or not an ancestor"
       exit 1
     }
   fi
@@ -981,7 +1098,7 @@ if [ "$DOMAIN_PROBES_ENABLED" = "1" ] && [ -x "$LOCAL_DIR/scripts/changed-area-c
           }
         });
       ' "$CLASSIFIER_BASE_SHA" "$CLASSIFIER_HEAD"; then
-      echo "  ❌ signed release changed-area classification failed or drifted"
+      echo "  ❌ protected release changed-area classification failed or drifted"
       exit 1
     fi
   fi
@@ -1001,7 +1118,7 @@ if [ "$DOMAIN_PROBES_ENABLED" = "1" ] && [ -x "$LOCAL_DIR/scripts/changed-area-c
     ' 2>/dev/null)" || FLAGS_STATUS=$?
     if [ "$FLAGS_STATUS" -ne 0 ]; then
       if [ -n "${NEXUS_SMOKE_CLASSIFIER_BASE_SHA:-}" ]; then
-        echo "  ❌ signed release classifier flags could not be parsed"
+        echo "  ❌ protected release classifier flags could not be parsed"
         exit 1
       fi
       echo "  ⚠️ classifier flags could not be parsed — skipping standalone domain probes"
@@ -1029,14 +1146,23 @@ if [ "$DOMAIN_PROBES_ENABLED" = "1" ] && [ -x "$LOCAL_DIR/scripts/changed-area-c
       test_ios_401 "domain secretary /api/v1/plan/today" "http://localhost:8201/api/v1/plan/today"
     fi
     if [ "$MIGRATION_FLAG" = "true" ]; then
-      MIG_COUNT=$(smoke_ssh "$SERVER" bash -s -- "$STAGING_DIR" 2>&1 <<'REMOTE_MIGRATION_COUNT'
+      MIG_COUNT=$(smoke_ssh "$SERVER" bash -s -- "$STAGING_ROOT" "$STAGING_RELEASE" 2>&1 <<'REMOTE_MIGRATION_COUNT'
 set -euo pipefail
-cd "$1"
-exec /usr/bin/node <<'NODE'
-const db = require('better-sqlite3')('data/bot.db', { readonly: true });
+staging_root="$1"
+staging_release="$2"
+[ "$(readlink -f -- "$staging_root/current")" = "$staging_release" ]
+cd "$staging_release"
+NODE_PATH="$staging_release/node_modules" /usr/bin/node - "$staging_root/data/bot.db" <<'NODE'
+const Database = require('better-sqlite3');
+const db = new Database(process.argv[2], { readonly: true, fileMustExist: true });
 const result = db.prepare('SELECT COUNT(*) AS c FROM _migrations').get();
+db.close();
 console.log(result.c);
 NODE
+[ "$(readlink -f -- "$staging_root/current")" = "$staging_release" ] || {
+  echo "staging current selector changed during migration smoke" >&2
+  exit 1
+}
 REMOTE_MIGRATION_COUNT
 ) || MIG_COUNT="ERR"
       if [[ "$MIG_COUNT" =~ ^[0-9]+$ ]] && [ "$MIG_COUNT" -gt 0 ]; then
@@ -1147,10 +1273,15 @@ echo "🦙 Ollama routing, inventory, and bounded-runtime policy"
 OLLAMA_SMOKE_RESULT=""
 OLLAMA_SMOKE_RC=0
 run_ollama_release_smoke() {
-smoke_ssh "$SERVER" bash -s -- "$STAGING_DIR" <<'REMOTE_OLLAMA_SMOKE'
+smoke_ssh "$SERVER" bash -s -- "$STAGING_ROOT" "$STAGING_RELEASE" <<'REMOTE_OLLAMA_SMOKE'
 set -euo pipefail
-release_dir="$1"
+staging_root="$1"
+release_dir="$2"
 case "$release_dir" in /*) ;; *) echo "release directory must be absolute" >&2; exit 64 ;; esac
+[ "$(readlink -f -- "$staging_root/current")" = "$release_dir" ] || {
+  echo "staging current selector changed before Ollama smoke" >&2
+  exit 1
+}
 [ "$release_dir" != / ] && [ -d "$release_dir" ] && [ ! -L "$release_dir" ] || {
   echo "release directory is missing, unsafe, or a symlink" >&2
   exit 1
@@ -1162,7 +1293,7 @@ smoke_script="$release_dir/scripts/staging-smoke-ollama.sh"
 }
 cd "$release_dir"
 exec env \
-  OLLAMA_INVENTORY_PHASE=governed \
+  OLLAMA_INVENTORY_PHASE=release \
   NEXUS_HUB_BASE_URL=http://127.0.0.1:8201 \
   PM2_APP_NAME=nexus-hub-staging \
   PM2_BIN=/home/dominguez/.npm-global/bin/pm2 \
@@ -1181,6 +1312,16 @@ else
   FAILED_TESTS+=("Ollama release policy")
   evidence_record "Ollama release policy" "failed" "$OLLAMA_SMOKE_DETAIL"
   [ "$VERBOSE" = true ] && printf '     Detail: %s\n' "$OLLAMA_SMOKE_RESULT"
+fi
+
+if assert_staging_selector; then
+  PASS=$((PASS + 1))
+  evidence_record "immutable staging selector" "passed" "release=$STAGING_RELEASE"
+else
+  echo "  ❌ Staging current selector changed during smoke operation"
+  FAIL=$((FAIL + 1))
+  FAILED_TESTS+=("immutable staging selector")
+  evidence_record "immutable staging selector" "failed" "expected_release=$STAGING_RELEASE"
 fi
 
 # ── Smoke-evidence JSON ───────────────────────────────

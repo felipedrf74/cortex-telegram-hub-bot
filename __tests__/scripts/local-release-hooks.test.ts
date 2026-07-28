@@ -48,13 +48,6 @@ function fixture(): {
   const preCommit = path.join(root, '.husky/pre-commit');
   fs.copyFileSync('.husky/pre-commit', preCommit);
   fs.chmodSync(preCommit, 0o755);
-  const receiptLogger = `#!/usr/bin/env node
-import fs from 'node:fs';
-fs.appendFileSync(
-  process.env.NEXUS_HOOK_LOG,
-  \`\${JSON.stringify({ kind: 'receipt', args: process.argv.slice(2) })}\\n\`,
-);
-`;
   const riskLogger = `#!/usr/bin/env bash
 node scripts/hook-risk-logger.mjs "$@"
 `;
@@ -76,7 +69,6 @@ fs.appendFileSync(
   write(path.join(root, 'scripts/risk-gate.sh'), riskLogger, 0o755);
   write(path.join(root, 'scripts/hook-risk-logger.mjs'), riskLoggerModule);
   write(path.join(root, 'scripts/hook-npm-logger.mjs'), npmLoggerModule);
-  write(path.join(root, 'scripts/local-full-vitest-receipt.mjs'), receiptLogger, 0o755);
   write(path.join(root, 'bin/npm'), npmLogger, 0o755);
   return {
     head: git('rev-parse', 'HEAD'),
@@ -134,11 +126,11 @@ describe('local release Git hooks', () => {
     expect(result.status, result.stderr).toBe(0);
     expect(records(state.log)).toEqual([{
       kind: 'risk',
-      args: ['--staged', '--local-reuse-context', 'pre-commit'],
+      args: ['--staged'],
     }]);
   });
 
-  it('binds branch, lightweight-tag, and annotated-tag pushes to the exact commit', () => {
+  it('checks type or build once without running Vitest during pre-push', () => {
     const state = fixture();
     const git = (...args: string[]) => execFileSync('git', args, {
       cwd: state.root,
@@ -154,27 +146,7 @@ describe('local release Git hooks', () => {
       `refs/heads/main ${state.head} refs/heads/review ${zero}\n`,
     );
     expect(branch.status, branch.stderr).toBe(0);
-    expect(records(state.log)).toEqual([
-      {
-        kind: 'receipt',
-        args: ['check-pushed-candidate', '--pushed-sha', state.head],
-      },
-      {
-        kind: 'risk',
-        args: [
-          '--base',
-          'main',
-          '--local-reuse-context',
-          'pre-push',
-          '--local-pushed-sha',
-          state.head,
-        ],
-      },
-      {
-        kind: 'receipt',
-        args: ['check-pushed-candidate', '--pushed-sha', state.head],
-      },
-    ]);
+    expect(records(state.log)).toEqual([{ kind: 'npm', args: ['run', 'typecheck'] }]);
 
     fs.rmSync(state.log);
     const main = invoke(
@@ -184,29 +156,7 @@ describe('local release Git hooks', () => {
       `refs/heads/main ${state.head} refs/heads/main ${zero}\n`,
     );
     expect(main.status, main.stderr).toBe(0);
-    expect(records(state.log)).toEqual([
-      { kind: 'npm', args: ['run', 'build'] },
-      {
-        kind: 'receipt',
-        args: ['check-pushed-candidate', '--pushed-sha', state.head],
-      },
-      {
-        kind: 'risk',
-        args: [
-          '--base',
-          'main',
-          '--local-reuse-context',
-          'pre-push',
-          '--local-pushed-sha',
-          state.head,
-          '--skip-typecheck',
-        ],
-      },
-      {
-        kind: 'receipt',
-        args: ['check-pushed-candidate', '--pushed-sha', state.head],
-      },
-    ]);
+    expect(records(state.log)).toEqual([{ kind: 'npm', args: ['run', 'build'] }]);
 
     fs.rmSync(state.log);
     git('tag', 'lightweight');
@@ -217,8 +167,7 @@ describe('local release Git hooks', () => {
       `refs/tags/lightweight ${state.head} refs/tags/lightweight ${zero}\n`,
     );
     expect(lightweight.status, lightweight.stderr).toBe(0);
-    expect(records(state.log).find((record) => record.kind === 'risk')?.args)
-      .toContain(state.head);
+    expect(records(state.log)).toEqual([{ kind: 'npm', args: ['run', 'typecheck'] }]);
 
     fs.rmSync(state.log);
     git('tag', '-a', 'annotated', '-m', 'annotated fixture');
@@ -230,8 +179,7 @@ describe('local release Git hooks', () => {
       `refs/tags/annotated ${tagObject} refs/tags/annotated ${zero}\n`,
     );
     expect(annotated.status, annotated.stderr).toBe(0);
-    expect(records(state.log).find((record) => record.kind === 'risk')?.args)
-      .toContain(state.head);
+    expect(records(state.log)).toEqual([{ kind: 'npm', args: ['run', 'typecheck'] }]);
   });
 
   it('accepts an up-to-date retry and rejects ambiguous ref updates', () => {

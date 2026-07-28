@@ -8,100 +8,7 @@ import {
 } from './irreversible-migration-policy.mjs';
 import { migrationSafetyGovernanceReasons } from './migration-safety-policy-classifier.mjs';
 
-const BOOTSTRAP_FULL_SUITE_PATHS = new Set([
-  'config/test-policy.json',
-  'config/irreversible-migrations.json',
-  'config/production-migration-lineages.json',
-  'scripts/changed-area-classifier.sh',
-  'scripts/changed-area-classifier.mjs',
-  'scripts/resolve-ci-change-base.sh',
-  'scripts/lib/changed-area-classifier.mjs',
-  'scripts/lib/git-changed-paths.mjs',
-  'scripts/lib/irreversible-migration-policy.mjs',
-  'scripts/lib/migration-safety-policy-classifier.mjs',
-  'scripts/lib/production-migration-lineage.mjs',
-  'scripts/lib/production-shape-migration-rehearsal-evidence.mjs',
-  'scripts/lib/test-policy.mjs',
-  'scripts/migration-safety-check.mjs',
-  'scripts/production-shape-migration-rehearsal.mjs',
-  'scripts/validate-production-shape-migration-rehearsal.mjs',
-  'scripts/release-test-gate.sh',
-  'scripts/release-verify.sh',
-  'scripts/protected-main-ci-evidence.mjs',
-]);
-
 const MIGRATION_POLICY_GOVERNANCE_PATHS = new Set(migrationSafetyGovernanceReasons.keys());
-
-export const CANNOT_SKIP_GATE_NAMES = Object.freeze([
-  'tenant-auth-security',
-  'memory-retrieval-isolation',
-  'prompt-injection-defense',
-  'calendar-agenda-lifecycle',
-  'provider-routing-fallback',
-  'migration-rollback-review',
-  'irreversible-migration-manual-approval',
-  'science-policy-version-check',
-  'exact-release-promotion-rehearsal',
-  'hook-validation-on-feature-branch',
-  'ci-workflow-validation-on-PR',
-  'test-config-mock-completeness-audit',
-  'test-infrastructure-full-suite',
-  'unresolved-change-impact-full-verification',
-  'attachment-tenant-isolation',
-  'model-routing-cost-attribution',
-  'personalization-scope-isolation',
-  'content-agent-neutrality',
-  'logger-redaction-pii-scan',
-  'scheduler-tenant-scope-and-failure',
-  'notification-apns-delivery-and-tenant',
-  'health-integration-tenant-isolation',
-  'auth-rate-limit-and-lockout',
-  'audit-trail-emission-and-scope',
-  'deploy-config-health-rehearsal',
-  'event-backbone-jobs-sync-tenant-isolation',
-  'ios-navigation-responsiveness',
-  'ios-contract-decoder-resilience',
-  'ios-notification-decision-center',
-  'apple-notifications-jws-verify',
-  'training-routes-entitlement',
-  'training-plan-create-e2e',
-  'content-engine-prompt-cleanliness',
-  'voice-evolution-multi-tenant',
-  'video-study-prompt-cleanliness',
-  'channel-learner-prompt-cleanliness',
-  'cost-guardrail-global-rest',
-  'cache-coherence-registry',
-  'cached-route-handler',
-  'garmin-tenant-leak-and-apple-health-cascade',
-  'google-drive-tenant-leak',
-  'registry-real-eval-quality-gates',
-]);
-
-const cannotSkipGateNameSet = new Set(CANNOT_SKIP_GATE_NAMES);
-
-export function globToRegExp(glob) {
-  let source = '';
-  for (let index = 0; index < glob.length; index += 1) {
-    const character = glob[index];
-    const next = glob[index + 1];
-    if (character === '*' && next === '*') {
-      if (glob[index + 2] === '/') {
-        source += '(?:.*/)?';
-        index += 2;
-      } else {
-        source += '.*';
-        index += 1;
-      }
-    } else if (character === '*') {
-      source += '[^/]*';
-    } else if (character === '?') {
-      source += '[^/]';
-    } else {
-      source += character.replace(/[|\\{}()[\]^$+?.]/g, '\\$&');
-    }
-  }
-  return new RegExp(`^${source}$`);
-}
 
 export function normalizeChangedFiles(inputFiles) {
   const normalized = [];
@@ -120,6 +27,15 @@ export function normalizeChangedFiles(inputFiles) {
   return [...new Set(normalized)].sort();
 }
 
+export function assertResolvedChangeImpact(impactResolved, baseRef) {
+  if (!impactResolved) {
+    throw new Error(
+      `Changed-file impact is unresolved because base '${baseRef}' is not an ancestor of HEAD. `
+      + 'Use an exact ancestor SHA; automatic full-suite fallback is intentionally disabled.',
+    );
+  }
+}
+
 function matches(files, pattern) {
   const regex = pattern instanceof RegExp ? pattern : new RegExp(pattern);
   return files.some((file) => regex.test(file));
@@ -127,17 +43,6 @@ function matches(files, pattern) {
 
 function dedupe(values) {
   return [...new Set(values.filter(Boolean))];
-}
-
-function loadFullSuiteTriggers(root, policyPath) {
-  const policy = JSON.parse(fs.readFileSync(
-    policyPath ?? path.join(root, 'config/test-policy.json'),
-    'utf8',
-  ));
-  if (!Array.isArray(policy.fullSuiteTriggers)) {
-    throw new Error('fullSuiteTriggers is missing');
-  }
-  return policy.fullSuiteTriggers;
 }
 
 function isIrreversibleMigration(files, root, fileExists, readText, policyPath) {
@@ -176,8 +81,6 @@ export function classifyChangedFiles({
   impactResolved = true,
   testTopologyChanged = false,
   generatedAt = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
-  fullSuiteTriggers,
-  policyPath,
   irreversiblePolicyPath = path.join(root, 'config/irreversible-migrations.json'),
   fileExists = fs.existsSync,
   readText = (file) => fs.readFileSync(file),
@@ -242,7 +145,6 @@ export function classifyChangedFiles({
   };
   let docsOnly = true;
   let nonDoc = false;
-  let sciencePolicyJson = false;
   let iosNotification = false;
   let voiceEvolutionMultiTenant = false;
   let videoStudyPromptCleanliness = false;
@@ -314,8 +216,6 @@ export function classifyChangedFiles({
   flags.portal = has(/^src\/portal\/|^__tests__\/portal\/|^scripts\/cooking-portal-browser-smoke\.ts$/);
   const irreversiblePolicyChanged = files.some((file) => MIGRATION_POLICY_GOVERNANCE_PATHS.has(file));
   flags.migration ||= has(/^migrations\//) || irreversiblePolicyChanged;
-  sciencePolicyJson = has(/^src\/services\/coach-kernel\/knowledge\/entities\/(?:training-principles\.json|\.science-policy-hash)$/)
-    || has(/^scripts\/ci\/science-policy-version-check\.mjs$/);
   flags.pythonEngine ||= has(/^content-engine\//);
   flags.appleNotificationWebhook = has(/^src\/api\/router\.ts$|^src\/api\/routes\/billing\.ts$|^src\/services\/apple-jws-verifier\.ts$|^__tests__\/security\/billing-apple-notifications-jws-verify\.test\.ts$/);
   globalCostGuardrailRest = has(/^src\/services\/cost-guardrail\.ts$|^src\/api\/routes\/(?:chat-message-request|training-plan-routes|training|content-script-routes|finance)\.ts$|^__tests__\/security\/cost-guardrail-global-rest\.test\.ts$/);
@@ -326,14 +226,13 @@ export function classifyChangedFiles({
   registryRealEval = has(/^src\/services\/chat\/registry\/|^src\/services\/registry-(?:driven-eval-scenarios|real-eval-scoring|telemetry-report|adversarial-discovery|adversarial-example-proposer|readable-intents-proposer|cross-tenant-alert-hook)\.ts$|^src\/services\/build-llm-safe-prompt-slice\.ts$|^src\/services\/skills\/|^__tests__\/services\/(?:chat-action-registry-|registry-(?:driven-eval|real-eval|telemetry-report|adversarial|readable-intents|cross-tenant))|^__tests__\/scripts\/registry-feedback-report\.test\.ts$|^scripts\/registry-feedback-report\.ts$/);
 
   flags.releaseOperator = has(/^config\/production-migration-lineages\.json$/)
-    || has(/^scripts\/(?:release-operator|request-release-quality-evidence|promote-exact-release|build-release-runtime-dependencies|env-parity-check|remote-release-preflight|remote-release-readiness|remote-prepare-release-backup|remote-create-release-backup|remote-production-shape-migration-rehearsal|remote-start-sanitized-pm2|remote-promotion-(?:control|worker-control|systemd-install|transaction)|remote-release-capacity|rollback|restore)\.sh$/)
-    || has(/^scripts\/(?:release-artifact-manifest|release-bundle|release-manifest-v2|release-plan-evaluator|release-quality-evidence|release-runtime-dependencies|release-sequence|trusted-release-signer|protected-main-ci-evidence|complete-promotion-migration-gate|production-shape-migration-rehearsal|validate-production-shape-migration-rehearsal|rollback-drill-kvm-(?:coordinator|inputs))\.mjs$/)
-    || has(/^scripts\/systemd\/nexus-release-promotion/)
-    || has(/^scripts\/lib\/(?:release-artifact-manifest|release-plan-authoritative-evidence|release-plan-evaluation|production-migration-lineage|production-shape-migration-rehearsal-evidence|rollback-drill-kvm-evidence)\.mjs$/);
-  flags.operationsTooling = has(/^ops\/(?:sonarqube|application-dr|ollama|cloudflared|rollback-drill-vm)\//)
-    || has(/^scripts\/(?:(?:quality-sonar|application-dr|rollback-drill-vm)-|cloudflared-systemd-migrate|ollama-(?:large-model-cleanup|observation-collector|service-envelope-check|soak-evidence|zero-swap-transition))/)
+    || has(/^scripts\/(?:release-operator|promote-exact-release|build-release-runtime-dependencies|remote-user-release-transaction)\.sh$/)
+    || has(/^scripts\/(?:release-artifact-manifest|release-bundle|release-checksum-manifest|release-runtime-dependencies)\.mjs$/)
+    || has(/^scripts\/lib\/(?:release-artifact-manifest|production-migration-lineage)\.mjs$/);
+  flags.operationsTooling = has(/^ops\/(?:sonarqube|ollama|cloudflared)\//)
+    || has(/^scripts\/(?:quality-sonar-|cloudflared-systemd-migrate|ollama-(?:lean-finalize|service-envelope-check|systemd-dropin-transaction|install-state-check))/)
     || has(/^scripts\/lib\/ollama-service-envelope\.mjs$/)
-    || has(/^__tests__\/scripts\/(?:quality-sonar|application-(?:disaster-recovery|dr-[a-z-]+)|cloudflared-systemd-migration|rollback-drill-vm-(?:provisioner|transaction-failures)|ollama-(?:large-model-cleanup|observation-collector|systemd-envelope))\.test\.ts$/);
+    || has(/^__tests__\/scripts\/(?:quality-sonar|cloudflared-systemd-migration|ollama-lean-finalize)\.test\.ts$/);
   if (has(/^scripts\/lib\/release-gates\.sh$/)) {
     flags.runtimeInfra = true;
     flags.deployConfig = true;
@@ -386,73 +285,14 @@ export function classifyChangedFiles({
   flags.irreversibleMigration = flags.migration
     && (irreversiblePolicyChanged
       || isIrreversibleMigration(files, root, fileExists, readText, irreversiblePolicyPath));
-  try {
-    const triggers = fullSuiteTriggers ?? loadFullSuiteTriggers(root, policyPath);
-    const matchers = triggers.map(globToRegExp);
-    flags.fullSuiteTrigger = flags.testTopologyChange
-      || files.some((file) => BOOTSTRAP_FULL_SUITE_PATHS.has(file)
-        || matchers.some((matcher) => matcher.test(file)));
-  } catch {
-    flags.fullSuiteTrigger = true;
-  }
 
   const tiers = ['T0'];
-  const cannotSkip = [];
-  const addGate = (condition, gate) => {
-    if (!cannotSkipGateNameSet.has(gate)) {
-      throw new Error(`Cannot-skip gate is not registered: ${gate}`);
-    }
-    if (condition) cannotSkip.push(gate);
-  };
-  addGate(flags.authOrTenant, 'tenant-auth-security');
-  addGate(flags.memoryOrRetrieval, 'memory-retrieval-isolation');
-  addGate(flags.prompt, 'prompt-injection-defense');
-  addGate(flags.calendar, 'calendar-agenda-lifecycle');
-  addGate(flags.providerRouting, 'provider-routing-fallback');
-  addGate(flags.migration, 'migration-rollback-review');
-  addGate(flags.irreversibleMigration, 'irreversible-migration-manual-approval');
-  addGate(sciencePolicyJson, 'science-policy-version-check');
-  addGate(flags.releaseOperator, 'exact-release-promotion-rehearsal');
-  addGate(flags.hook, 'hook-validation-on-feature-branch');
-  addGate(flags.ciWorkflow, 'ci-workflow-validation-on-PR');
-  addGate(flags.testConfig, 'test-config-mock-completeness-audit');
-  addGate(flags.fullSuiteTrigger, 'test-infrastructure-full-suite');
-  addGate(!impactResolved, 'unresolved-change-impact-full-verification');
-  addGate(flags.attachment, 'attachment-tenant-isolation');
-  addGate(flags.modelRouting, 'model-routing-cost-attribution');
-  addGate(flags.personalizationScope, 'personalization-scope-isolation');
-  addGate(flags.contentAgent, 'content-agent-neutrality');
-  addGate(flags.logger, 'logger-redaction-pii-scan');
-  addGate(flags.scheduler, 'scheduler-tenant-scope-and-failure');
-  addGate(flags.notification, 'notification-apns-delivery-and-tenant');
-  addGate(flags.healthIntegration, 'health-integration-tenant-isolation');
-  addGate(flags.rateLimit, 'auth-rate-limit-and-lockout');
-  addGate(flags.audit, 'audit-trail-emission-and-scope');
-  addGate(flags.deployConfig, 'deploy-config-health-rehearsal');
-  addGate(flags.eventBackbone, 'event-backbone-jobs-sync-tenant-isolation');
-  addGate(flags.iosNavigation, 'ios-navigation-responsiveness');
-  addGate(flags.iosDto, 'ios-contract-decoder-resilience');
-  addGate(iosNotification, 'ios-notification-decision-center');
-  addGate(flags.appleNotificationWebhook, 'apple-notifications-jws-verify');
-  addGate(flags.trainingEntitlement, 'training-routes-entitlement');
-  addGate(flags.training, 'training-plan-create-e2e');
-  addGate(flags.contentPromptCleanliness, 'content-engine-prompt-cleanliness');
-  addGate(voiceEvolutionMultiTenant, 'voice-evolution-multi-tenant');
-  addGate(videoStudyPromptCleanliness, 'video-study-prompt-cleanliness');
-  addGate(channelLearnerPromptCleanliness, 'channel-learner-prompt-cleanliness');
-  addGate(globalCostGuardrailRest, 'cost-guardrail-global-rest');
-  addGate(cacheCoherenceRegistry, 'cache-coherence-registry');
-  addGate(cachedRouteHandler, 'cached-route-handler');
-  addGate(garminAppleHealthCascade, 'garmin-tenant-leak-and-apple-health-cascade');
-  addGate(googleDriveTenantLeak, 'google-drive-tenant-leak');
-  addGate(registryRealEval, 'registry-real-eval-quality-gates');
 
   if (nonDoc) tiers.push('T1');
   if (flags.apiRoute || flags.portal || flags.pythonEngine || flags.iosUi || flags.training
     || flags.cooking || flags.content || flags.secretary || flags.eventBackbone) tiers.push('T2');
   if (flags.testConfig) tiers.push('T3-recommended');
   if (flags.packageJson) tiers.push('T3-recommended');
-  if (flags.fullSuiteTrigger) tiers.push('T3-required');
   if (flags.backendSrc || flags.migration || flags.pythonEngine || flags.deployConfig
     || flags.releaseOperator) tiers.push('T4');
   tiers.push('T5-on-promote', 'T6-postdeploy');
@@ -462,9 +302,10 @@ export function classifyChangedFiles({
   const pytestGlobs = [];
   const addVitest = (condition, ...globs) => { if (condition) vitestGlobs.push(...globs); };
   if (nonDoc) {
-    if (flags.testConfig || flags.packageJson || flags.highFanIn) {
-      vitestMode = 'full';
-    } else if (flags.backendSrc || flags.backendTest || flags.deployConfig || flags.releaseOperator || flags.operationsTooling) {
+    vitestMode = 'focused';
+    if (flags.backendSrc || flags.backendTest || flags.deployConfig || flags.releaseOperator
+      || flags.operationsTooling || flags.runtimeInfra || flags.testConfig || flags.packageJson
+      || flags.highFanIn) {
       vitestMode = 'focused';
       addVitest(flags.training, '__tests__/services/training-*.test.ts', '__tests__/services/coach-kernel-*.test.ts', '__tests__/api/training-*.test.ts', '__tests__/integration/training-plan-create-cycle.test.ts');
       addVitest(flags.trainingEntitlement, '__tests__/security/training-routes-entitlement.test.ts');
@@ -524,51 +365,16 @@ export function classifyChangedFiles({
       addVitest(
         flags.releaseOperator,
         '__tests__/scripts/release-artifact-manifest.test.ts',
-        '__tests__/scripts/release-manifest-v2.test.ts',
-        '__tests__/scripts/trusted-release-signing.test.ts',
-        '__tests__/scripts/release-runtime-safeguards.test.ts',
-        '__tests__/scripts/exact-promotion-operational-safety.test.ts',
-        '__tests__/scripts/release-exact-attestations.test.ts',
-        '__tests__/scripts/release-backup-runtime-artifact.test.ts',
-        '__tests__/scripts/production-shape-migration-rehearsal.test.ts',
-        '__tests__/scripts/rollback-versioned-runtime.test.ts',
-        '__tests__/scripts/pm2-sanitized-start.test.ts',
-        '__tests__/scripts/release-evidence-container.test.ts',
-        '__tests__/scripts/release-sequence.test.ts',
-        '__tests__/scripts/persistent-promotion-transaction.test.ts',
-        '__tests__/scripts/remote-release-capacity.test.ts',
         '__tests__/scripts/release-runtime-dependencies.test.ts',
-        '__tests__/scripts/release-plan-evaluator.test.ts',
-        '__tests__/scripts/release-quality-evidence.test.ts',
-        '__tests__/scripts/rollback-drill-check.test.ts',
-        '__tests__/scripts/rollback-drill-kvm-coordinator.test.ts',
-        '__tests__/scripts/rollback-drill-kvm-inputs.test.ts',
-        '__tests__/scripts/protected-main-ci-evidence.test.ts',
+        '__tests__/scripts/lean-release-path.test.ts',
       );
       addVitest(
         flags.operationsTooling,
-        '__tests__/scripts/quality-sonar-operations.test.ts',
-        '__tests__/scripts/application-disaster-recovery.test.ts',
-        '__tests__/scripts/application-dr-*.test.ts',
         '__tests__/scripts/cloudflared-systemd-migration.test.ts',
-        '__tests__/scripts/ollama-observation-collector.test.ts',
-        '__tests__/scripts/ollama-large-model-cleanup.test.ts',
-        '__tests__/scripts/ollama-systemd-envelope.test.ts',
-        '__tests__/scripts/rollback-drill-vm-provisioner.test.ts',
-        '__tests__/scripts/rollback-drill-vm-transaction-failures.test.ts',
+        '__tests__/scripts/ollama-lean-finalize.test.ts',
       );
       if (flags.contentPromptCleanliness) pytestGlobs.push('content-engine/tests/test_prompt_cleanliness.py');
-      if (vitestGlobs.length === 0) vitestMode = 'changed-only';
     }
-  }
-  if (flags.runtimeInfra || flags.fullSuiteTrigger || !impactResolved) {
-    vitestMode = 'full';
-    vitestGlobs = [];
-  }
-  if (flags.migration && vitestMode === 'skip') vitestMode = 'changed-only';
-  if (flags.prompt && vitestMode === 'skip') {
-    vitestMode = 'focused';
-    vitestGlobs.push('__tests__/security/**/*.test.ts', '__tests__/services/prompt-cleanliness.test.ts');
   }
   if (flags.contentPromptCleanliness) pytestGlobs.push('content-engine/tests/test_prompt_cleanliness.py');
   if (flags.pythonEngine) pytestGlobs.push('content-engine/tests');
@@ -612,7 +418,7 @@ export function classifyChangedFiles({
     pytest: { globs: dedupe(pytestGlobs) },
     xctest: { mode: xctestMode, classes: dedupe(xctestClasses) },
     stagingSmoke: { generic: stagingGeneric, domains: dedupe(smokeDomains) },
-    cannotSkip: dedupe(cannotSkip),
+    cannotSkip: [],
     flags,
   };
 }
@@ -633,10 +439,7 @@ export function formatClassifierMarkdown(result) {
     `- mode: \`${result.vitest.mode}\``,
   ];
   if (result.vitest.mode === 'skip') lines.push(`- reason: ${result.vitest.skipReason}`);
-  else if (result.vitest.mode === 'changed-only') lines.push(`- recommendation: \`npx vitest run --changed ${result.baseRef}\``);
-  else if (result.vitest.mode === 'focused') {
-    lines.push('- focused globs:', ...result.vitest.globs.map((glob) => `  - \`${glob}\``));
-  } else lines.push('- run: `npx vitest run` (full)');
+  else lines.push('- focused groups select core contracts, static dependents, and owner tests');
   lines.push('', '## Pytest');
   lines.push(...(result.pytest.globs.length > 0 ? result.pytest.globs.map((glob) => `- \`${glob}\``) : ['- (none)']));
   lines.push('', '## XCTest', `- mode: \`${result.xctest.mode}\``);
@@ -645,8 +448,6 @@ export function formatClassifierMarkdown(result) {
   if (result.stagingSmoke.domains.length > 0) {
     lines.push('- domain smokes:', ...result.stagingSmoke.domains.map((domain) => `  - \`npm run ${domain}\``));
   } else lines.push('- domain smokes: none required');
-  lines.push('', '## Cannot-skip safety gates');
-  lines.push(...(result.cannotSkip.length > 0 ? result.cannotSkip.map((gate) => `- ${gate}`) : ['- (none triggered by this diff)']));
   lines.push('', '## Changed files');
   lines.push(...(result.changedFiles.length > 0 ? result.changedFiles.map((file) => `- \`${file}\``) : ['(none — clean tree)']));
   return `${lines.join('\n')}\n`;

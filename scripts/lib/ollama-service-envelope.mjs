@@ -12,6 +12,7 @@ export const OLLAMA_ENVELOPE = Object.freeze({
 });
 
 const REQUIRED_ENVIRONMENT = Object.freeze({
+  OLLAMA_HOST: '127.0.0.1:11434',
   OLLAMA_CONTEXT_LENGTH: OLLAMA_ENVELOPE.contextLength,
   OLLAMA_MAX_QUEUE: OLLAMA_ENVELOPE.maxQueue,
   OLLAMA_NUM_PARALLEL: OLLAMA_ENVELOPE.numParallel,
@@ -63,8 +64,8 @@ function durationToUsec(value) {
 }
 
 export function parseAndValidateOllamaEnvelope(stdout, expectedSwapBytes) {
-  if (![0, OLLAMA_ENVELOPE.memorySwapBaselineBytes].includes(expectedSwapBytes)) {
-    fail('expected swap must be either the 512 MiB baseline or zero');
+  if (expectedSwapBytes !== OLLAMA_ENVELOPE.memorySwapBaselineBytes) {
+    fail('expected swap must be the fixed 512 MiB baseline');
   }
   const properties = parseProperties(stdout);
   const environment = properties.get('Environment');

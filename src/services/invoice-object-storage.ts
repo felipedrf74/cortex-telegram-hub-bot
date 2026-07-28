@@ -3,13 +3,11 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { Readable } from 'node:stream';
 import { DateTime } from 'luxon';
-import { GetObjectCommand, HeadObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { config } from '../config';
 import { getPortugueseMonthFolder } from './invoice-filer';
 
-export type InvoiceStorageBackend = 'minio' | 'filesystem';
+export type InvoiceStorageBackend = 'filesystem';
 
 export interface StoredInvoiceObject {
   objectKey: string;
@@ -19,32 +17,8 @@ export interface StoredInvoiceObject {
   storageBackend: InvoiceStorageBackend;
 }
 
-let s3Client: S3Client | null = null;
-
-function configuredBackend(): InvoiceStorageBackend {
-  return config.invoiceObjectStorage.backend === 'minio' ? 'minio' : 'filesystem';
-}
-
 export function isInvoiceObjectStorageConfigured(): boolean {
-  if (!config.invoiceObjectStorage.enabled) return false;
-  if (configuredBackend() !== 'minio') return true;
-  const minio = config.invoiceObjectStorage.minio;
-  return Boolean(minio.endpoint && minio.bucket && minio.accessKeyId && minio.secretAccessKey);
-}
-
-function getS3Client(): S3Client {
-  if (s3Client) return s3Client;
-  const minio = config.invoiceObjectStorage.minio;
-  s3Client = new S3Client({
-    endpoint: minio.endpoint,
-    region: minio.region,
-    forcePathStyle: minio.forcePathStyle,
-    credentials: {
-      accessKeyId: minio.accessKeyId,
-      secretAccessKey: minio.secretAccessKey,
-    },
-  });
-  return s3Client;
+  return config.invoiceObjectStorage.enabled;
 }
 
 function safeKeyPart(value: string, fallback: string): string {
@@ -154,10 +128,6 @@ export function sha256Hex(buffer: Buffer): string {
   return crypto.createHash('sha256').update(buffer).digest('hex');
 }
 
-function sha256Base64(buffer: Buffer): string {
-  return crypto.createHash('sha256').update(buffer).digest('base64');
-}
-
 export async function putInvoiceObject(
   buffer: Buffer,
   objectKey: string,
@@ -171,71 +141,34 @@ export async function putInvoiceObject(
   }
   assertSafeObjectKey(objectKey);
 
-  const backend = configuredBackend();
   const checksum = sha256Hex(buffer);
-
-  if (backend === 'minio') {
-    const minio = config.invoiceObjectStorage.minio;
-    await getS3Client().send(new PutObjectCommand({
-      Bucket: minio.bucket,
-      Key: objectKey,
-      Body: buffer,
-      ContentType: mime,
-      ChecksumSHA256: sha256Base64(buffer),
-    }));
-    await getS3Client().send(new HeadObjectCommand({
-      Bucket: minio.bucket,
-      Key: objectKey,
-    }));
-  } else {
-    assertFilesystemGuardrails(objectKey, buffer.length);
-    const targetPath = filesystemPathForKey(objectKey);
-    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-    fs.writeFileSync(targetPath, buffer);
-  }
+  assertFilesystemGuardrails(objectKey, buffer.length);
+  const targetPath = filesystemPathForKey(objectKey);
+  fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+  fs.writeFileSync(targetPath, buffer);
 
   return {
     objectKey,
     checksum,
     mime,
     bytes: buffer.length,
-    storageBackend: backend,
+    storageBackend: 'filesystem',
   };
-}
-
-async function streamToBuffer(stream: unknown): Promise<Buffer> {
-  if (Buffer.isBuffer(stream)) return stream;
-  if (stream instanceof Uint8Array) return Buffer.from(stream);
-  if (stream instanceof Readable) {
-    const chunks: Buffer[] = [];
-    for await (const chunk of stream) {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-    }
-    return Buffer.concat(chunks);
-  }
-  if (stream && typeof (stream as any).transformToByteArray === 'function') {
-    return Buffer.from(await (stream as any).transformToByteArray());
-  }
-  throw new Error('Unsupported invoice object stream');
 }
 
 export async function getInvoiceObjectBuffer(
   objectKey: string,
-  storageBackend: string | null | undefined = configuredBackend(),
+  storageBackend: string | null | undefined = 'filesystem',
 ): Promise<Buffer> {
   assertSafeObjectKey(objectKey);
-  const backend = storageBackend === 'minio' ? 'minio' : 'filesystem';
-  if (backend === 'minio') {
-    if (!isInvoiceObjectStorageConfigured()) {
-      throw new Error('Invoice object storage is not configured.');
-    }
-    const response = await getS3Client().send(new GetObjectCommand({
-      Bucket: config.invoiceObjectStorage.minio.bucket,
-      Key: objectKey,
-    }));
-    return streamToBuffer(response.Body);
+  // Historical `legacy_scp` rows were always resolved through the local
+  // filesystem fallback. Preserve that read compatibility while retiring only
+  // the unused MinIO/S3 implementation.
+  if (storageBackend != null
+      && storageBackend !== 'filesystem'
+      && storageBackend !== 'legacy_scp') {
+    throw new Error(`Unsupported invoice object storage backend: ${storageBackend}`);
   }
-
   return fs.readFileSync(filesystemPathForKey(objectKey));
 }
 

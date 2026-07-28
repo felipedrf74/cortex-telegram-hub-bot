@@ -43,17 +43,12 @@ const PRODUCTION_RUNTIME_IDENTITY = Object.freeze({
   retainedModelDigest: '357c53fb659c5076de1d65ccb0b397446227b71a42be9d1603d46168015c9e4b',
 });
 const PRODUCTION_ASSET_LAYOUT = Object.freeze([
-  ['scripts/ollama-observation-collector.mjs', '/usr/local/sbin/nexus-ollama-observation-collector.mjs', 0o700],
-  ['scripts/ollama-soak-evidence.mjs', '/usr/local/sbin/ollama-soak-evidence.mjs', 0o700],
-  ['scripts/ollama-large-model-cleanup.mjs', '/usr/local/sbin/nexus-ollama-large-model-cleanup.mjs', 0o700],
-  ['scripts/ollama-zero-swap-transition.mjs', '/usr/local/sbin/nexus-ollama-zero-swap-transition.mjs', 0o700],
+  ['scripts/ollama-lean-finalize.mjs', '/usr/local/sbin/nexus-ollama-lean-finalize.mjs', 0o700],
   ['scripts/ollama-service-envelope-check.mjs', '/usr/local/sbin/nexus-ollama-service-envelope-check.mjs', 0o700],
   ['scripts/lib/ollama-service-envelope.mjs', '/usr/local/sbin/lib/ollama-service-envelope.mjs', 0o700],
   ['scripts/ollama-systemd-dropin-transaction.mjs', '/usr/local/sbin/nexus-ollama-systemd-dropin-transaction.mjs', 0o700],
   ['scripts/ollama-install-state-check.mjs', '/usr/local/sbin/nexus-ollama-install-state-check.mjs', 0o700],
-  ['scripts/ollama-observation-control.mjs', '/usr/local/sbin/nexus-ollama-observation-control.mjs', 0o700],
   ['scripts/systemd/00-nexus-ollama-install-guard.conf', '/etc/systemd/system/ollama.service.d/00-nexus-ollama-install-guard.conf', 0o644],
-  ['scripts/systemd/nexus-ollama-observation@.service', '/etc/systemd/system/nexus-ollama-observation@.service', 0o644],
 ]);
 
 function fail(message, exitCode = 1) {

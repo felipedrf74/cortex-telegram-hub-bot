@@ -10,6 +10,7 @@ import {
   root,
   walkTestFiles,
 } from './lib/test-policy.mjs';
+import { loadTestGroups } from './lib/test-groups.mjs';
 
 const [tier, ...args] = process.argv.slice(2);
 const policy = loadTestPolicy();
@@ -18,11 +19,14 @@ const partitions = partitionTestFiles(allFiles, policy);
 const vitest = path.join(root, 'node_modules/vitest/vitest.mjs');
 const valueOf = (name, fallback = null) => {
   const index = args.indexOf(name);
-  return index === -1 ? fallback : args[index + 1];
+  if (index !== -1) return args[index + 1];
+  const assignment = args.find((argument) => argument.startsWith(`${name}=`));
+  return assignment === undefined ? fallback : assignment.slice(name.length + 1);
 };
 const reporter = valueOf('--reporter', 'dot');
 const jsonOutput = valueOf('--json-output');
 const shard = valueOf('--shard');
+const coverageBase = valueOf('--coverage-base');
 const coverage = args.includes('--coverage');
 const listOnly = args.includes('--list');
 const noCache = args.includes('--no-cache');
@@ -113,6 +117,25 @@ function reporterArgs() {
   return resolved;
 }
 
+function coverageArgs() {
+  if (!coverage) return [];
+  if (coverageBase && !/^[0-9a-f]{40}$/.test(coverageBase)) {
+    throw new Error('--coverage-base must be an exact 40-character commit SHA');
+  }
+  return [
+    '--coverage',
+    ...(coverageBase ? [`--coverage.changed=${coverageBase}`] : []),
+    '--coverage.reporter=json',
+    '--coverage.reporter=json-summary',
+    '--coverage.reporter=lcov',
+    '--coverage.reportsDirectory=.local/coverage/selected',
+    '--coverage.thresholds.lines=0',
+    '--coverage.thresholds.branches=0',
+    '--coverage.thresholds.functions=0',
+    '--coverage.thresholds.statements=0',
+  ];
+}
+
 function childStatus(code, signal) {
   if (Number.isInteger(code)) return code;
   return 128 + ({ SIGHUP: 1, SIGINT: 2, SIGKILL: 9, SIGTERM: 15 }[signal] ?? 1);
@@ -124,12 +147,17 @@ function waitForChild(child) {
   });
 }
 
-async function runVitest(files, extra = [], envOverrides = {}) {
+async function runVitest(files, extra = [], envOverrides = {}, { maxSeconds = null } = {}) {
   if (files.length === 0) throw new Error(`No tests resolved for tier ${tier}`);
   if (listOnly) {
     process.stdout.write(`${files.join('\n')}\n`);
     process.exit(0);
   }
+  if (maxSeconds !== null
+      && (!Number.isSafeInteger(maxSeconds) || maxSeconds <= 0 || maxSeconds > 300)) {
+    throw new Error(`Invalid elapsed-time target for tier ${tier}`);
+  }
+  const startedAt = process.hrtime.bigint();
   const template = prepareMigratedDatabaseTemplate(root);
   let status = 1;
   try {
@@ -138,7 +166,7 @@ async function runVitest(files, extra = [], envOverrides = {}) {
       'run',
       ...reporterArgs(),
       ...(noCache ? ['--no-cache'] : []),
-      ...(coverage ? ['--coverage'] : []),
+      ...coverageArgs(),
       ...extra,
       ...files,
     ], {
@@ -155,11 +183,35 @@ async function runVitest(files, extra = [], envOverrides = {}) {
   } finally {
     template.cleanup();
   }
+  const elapsedSeconds = Number(process.hrtime.bigint() - startedAt) / 1_000_000_000;
+  if (maxSeconds !== null) {
+    const formatted = elapsedSeconds.toFixed(3);
+    if (elapsedSeconds > maxSeconds) {
+      process.stderr.write(
+        `Core safety pack exceeded its cold ${maxSeconds}s target: ${formatted}s\n`,
+      );
+      status = 1;
+    } else {
+      process.stdout.write(
+        `Core safety pack cold duration: ${formatted}s (target <= ${maxSeconds}s)\n`,
+      );
+    }
+  }
   process.exit(status);
 }
 
-if (tier === 'fast' || tier === 'critical') {
+if (tier === 'fast') {
   await runVitest(requestedSubset(matchFiles(partitions.deterministic, policy.tiers[tier].include)));
+}
+
+if (tier === 'core') {
+  const groupPolicy = loadTestGroups();
+  await runVitest(
+    requestedSubset(groupPolicy.core.tests),
+    [],
+    {},
+    { maxSeconds: groupPolicy.core.targetSeconds },
+  );
 }
 
 if (tier === 'evaluate') {
@@ -167,7 +219,15 @@ if (tier === 'evaluate') {
 }
 
 if (tier === 'changed') {
-  const base = valueOf('--base', 'origin/main');
+  const requestedBase = valueOf('--base', 'origin/main');
+  const resolvedBase = spawnSync('git', [
+    'rev-parse', '--verify', `${requestedBase}^{commit}`,
+  ], { cwd: root, encoding: 'utf8' });
+  const base = resolvedBase.stdout.trim();
+  if (resolvedBase.status !== 0 || !/^[0-9a-f]{40}$/.test(base)) {
+    process.stderr.write(resolvedBase.stderr || `Test base does not resolve: ${requestedBase}\n`);
+    process.exit(2);
+  }
   const classifierFile = path.join(root, '.local/test-selection-classifier.json');
   fs.mkdirSync(path.dirname(classifierFile), { recursive: true });
   const classifier = spawnSync('bash', ['scripts/changed-area-classifier.sh', '--json', '--base', base], {
@@ -177,6 +237,11 @@ if (tier === 'changed') {
   if (classifier.status !== 0) {
     process.stderr.write(classifier.stderr);
     process.exit(classifier.status ?? 1);
+  }
+  const classification = JSON.parse(classifier.stdout);
+  if (classification.vitest?.mode === 'skip') {
+    process.stdout.write(`Vitest skipped: ${classification.vitest.skipReason ?? 'no affected tests'}\n`);
+    process.exit(0);
   }
   fs.writeFileSync(classifierFile, classifier.stdout);
   const selection = spawnSync(process.execPath, [

@@ -1,20 +1,15 @@
-name: nexus-sonarqube-advisory
+name: sonarqube
 
 services:
-  postgres:
-    image: "${POSTGRES_IMAGE:?run scripts/quality-sonar-resolve-images.sh --check}"
-    user: "999:999"
-    # The root systemd wrapper is the only start authority. Docker daemon
-    # restart must not bypass the same-boot capacity/Ollama evidence gate.
-    restart: "no"
+  db:
+    image: postgres:16@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+    restart: unless-stopped
     environment:
-      POSTGRES_DB: "${SONAR_DB_NAME:?set SONAR_DB_NAME in the external secrets file}"
-      POSTGRES_USER: "${SONAR_DB_USER:?set SONAR_DB_USER in the external secrets file}"
-      POSTGRES_PASSWORD: "${SONAR_DB_PASSWORD:?set SONAR_DB_PASSWORD in the external secrets file}"
+      POSTGRES_USER: "${POSTGRES_USER:?set POSTGRES_USER in .env}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}"
+      POSTGRES_DB: "${POSTGRES_DB:?set POSTGRES_DB in .env}"
     cpus: 1.0
     mem_limit: 2g
-    mem_reservation: 512m
-    pids_limit: 1024
     shm_size: 256m
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
@@ -23,13 +18,7 @@ services:
       retries: 12
       start_period: 20s
     volumes:
-      - type: bind
-        source: /srv/sonarqube/data/postgresql
-        target: /var/lib/postgresql/data
-        bind:
-          create_host_path: false
-    networks:
-      - sonar_backend
+      - postgresql_data:/var/lib/postgresql/data
     security_opt:
       - no-new-privileges:true
     logging:
@@ -39,29 +28,22 @@ services:
         max-file: "5"
 
   sonarqube:
-    image: "${SONARQUBE_IMAGE:?run scripts/quality-sonar-resolve-images.sh --check}"
-    user: "1000:1000"
-    restart: "no"
+    image: sonarqube:26.7.0.124771-community@sha256:160bd2f6a3485bd09b655ef22dd63c02bd1fa7ba82aa5d9973fd010b8bcca0b3
+    restart: unless-stopped
     depends_on:
-      postgres:
+      db:
         condition: service_healthy
     environment:
-      SONAR_JDBC_URL: "jdbc:postgresql://postgres:5432/${SONAR_DB_NAME}"
-      SONAR_JDBC_USERNAME: "${SONAR_DB_USER}"
-      SONAR_JDBC_PASSWORD: "${SONAR_DB_PASSWORD}"
-      SONAR_AUTH_JWTBASE64HS256SECRET: "${SONAR_AUTH_JWTBASE64HS256SECRET:?set the JWT secret in the external secrets file}"
+      SONAR_JDBC_URL: "jdbc:postgresql://db:5432/${POSTGRES_DB}"
+      SONAR_JDBC_USERNAME: "${POSTGRES_USER}"
+      SONAR_JDBC_PASSWORD: "${POSTGRES_PASSWORD}"
       SONAR_TELEMETRY_ENABLE: "false"
     ports:
       - "127.0.0.1:9000:9000"
     cpus: 2.0
     mem_limit: 6g
-    mem_reservation: 4g
     pids_limit: 16384
-    oom_score_adj: 500
     stop_grace_period: 1h
-    read_only: true
-    tmpfs:
-      - /tmp:rw,exec,nosuid,nodev,size=512m,mode=1777
     ulimits:
       nofile:
         soft: 131072
@@ -70,38 +52,19 @@ services:
         soft: 8192
         hard: 8192
     volumes:
-      - type: bind
-        source: /srv/sonarqube/data/sonarqube
-        target: /opt/sonarqube/data
-        bind:
-          create_host_path: false
-      - type: bind
-        source: /srv/sonarqube/data/extensions
-        target: /opt/sonarqube/extensions
-        bind:
-          create_host_path: false
-      - type: bind
-        source: /srv/sonarqube/data/logs
-        target: /opt/sonarqube/logs
-        bind:
-          create_host_path: false
-      - type: bind
-        source: /srv/sonarqube/data/temp
-        target: /opt/sonarqube/temp
-        bind:
-          create_host_path: false
-    networks:
-      - sonar_backend
+      - sonarqube_data:/opt/sonarqube/data
+      - sonarqube_extensions:/opt/sonarqube/extensions
+      - sonarqube_logs:/opt/sonarqube/logs
     security_opt:
       - no-new-privileges:true
-    cap_drop:
-      - ALL
     logging:
       driver: local
       options:
         max-size: 10m
         max-file: "5"
 
-networks:
-  sonar_backend:
-    internal: true
+volumes:
+  postgresql_data:
+  sonarqube_data:
+  sonarqube_extensions:
+  sonarqube_logs:

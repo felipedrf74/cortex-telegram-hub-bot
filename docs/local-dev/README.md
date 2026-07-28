@@ -251,9 +251,9 @@ new AI calls until UTC midnight. Raise the cap in your private
   replacement for `staging-smoke.sh`. Both exist; staging-smoke runs
   against the remote Linux box and has additional PM2 + remote-DB
   checks. The local smoke catches "does my change even boot."
-- `release:prepare`, `release:staging`, and `release:promote` are untouched by
-  this sandbox. Signed evidence and exact-artifact readiness still gate
-  production promotion.
+- `release:prepare`, `release:promote`, and `release:status` are untouched by
+  this sandbox. The compact checksum manifest, exact artifact, successful
+  staging transaction, and explicit owner approval still gate production.
 - The pre-commit hook prints a soft warning if the sandbox is down.
   It doesn't block commits.
 

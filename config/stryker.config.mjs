@@ -16,21 +16,23 @@ for (const key of ['high', 'low', 'break']) {
 if (testFiles !== undefined && (!Array.isArray(testFiles) || testFiles.length === 0)) {
   throw new Error('NEXUS_MUTATION_TEST_FILES must contain governed retained tests');
 }
+if (mutationScope === 'test-cleanup' && testFiles === undefined) {
+  throw new Error('test-cleanup mutation scope requires explicit governed retained tests');
+}
 
 export default {
   testRunner: 'vitest',
   mutate,
   ...(testFiles === undefined ? {} : { testFiles }),
   vitest: {
-    related: true,
+    related: mutationScope !== 'test-cleanup',
     configFile: 'config/vitest.stryker.config.ts',
   },
-  // Static module-initialization mutants require the entire related suite for
-  // every candidate and dominated more than 90% of the measured cleanup-lane
-  // runtime. Keep them in the non-release weekly lane; the PR gate still
-  // scores all covered runtime mutants owned by removed assertions.
-  ignoreStatic: mutationScope === 'test-cleanup',
-  coverageAnalysis: 'perTest',
+  // Exact cleanup owners can execute governed behavior in child processes.
+  // Disable coverage-based test selection for that bounded lane so the active
+  // mutant reaches the child; source-scoped batches keep execution small.
+  ignoreStatic: false,
+  coverageAnalysis: mutationScope === 'test-cleanup' ? 'off' : 'perTest',
   reporters: ['clear-text', 'progress', 'json'],
   jsonReporter: {
     fileName: '.local/mutation/mutation-report.json',

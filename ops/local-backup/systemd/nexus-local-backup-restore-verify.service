@@ -1,0 +1,16 @@
+[Unit]
+Description=Verify restore of the newest Nexus Hub local backup
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/usr/local/libexec/nexus-local-backup/local-backup.py restore-verify
+UMask=0077
+Nice=10
+IOSchedulingClass=idle
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+ReadWritePaths=/srv/nexus-backups/application
+TimeoutStartSec=30min

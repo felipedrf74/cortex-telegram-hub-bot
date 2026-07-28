@@ -5,71 +5,65 @@ description: Prepare, inspect, stage, promote, or recover an exact Nexus Hub bac
 
 # Nexus Release Operator
 
-Start with `git status --short --branch` and `docs/release/release-state.json`.
+Start with `git status --short --branch` and
+`docs/release/release-state.json`. Operate from a clean checkout whose HEAD is
+the exact current protected `origin/main` SHA.
 
-Use the stable commands:
+The only supported commands are:
 
 ```bash
 npm run release:status
-npm run release:prepare -- --base <sha> --backend-only
-npm run release:staging -- --manifest <path>
-npm run release:promote -- --manifest <path>
-npm run release:resume -- --backend-only
+npm run release:prepare
+npm run release:prepare -- --checkpoint-run <run-id>
+NEXUS_RELEASE_OWNER_AUTHORIZED=1 \
+  npm run release:promote -- --confirm <full-sha>:<artifact-sha256>
 ```
 
-Prefer `release:resume` for the sequential production path. If a current
-protected-main reuse activation exists, store it as a private mode-0600 regular
-file and add `--protected-reuse-activation <absolute-path>` on the first
-invocation. The coordinator snapshots and digest-binds it before RC intent;
-unsafe initial input records full-RC fallback, while later addition,
-substitution, or snapshot drift is blocking.
+The explicit GitHub release checkpoint reuses the protected-main artifact. It
+combines the already-passing selected tests with only the untested deterministic
+remainder across four shards, runs Python and migration work only when
+applicable, and publishes `nexus.release-checksum-manifest.v1`. The manifest is
+unsigned: trust comes from exact workflow/SHA binding, authenticated GitHub
+artifact download, SHA-256 verification, branch protection, and explicit owner
+approval. It also records the sorted test groups from the cumulative deployed
+SHA to target SHA diff. Promotion requires an exact-SHA passing local
+`local_engine` chat evaluation only when those cumulative groups include
+`chat-secretary`; unrelated releases skip it automatically, with no bypass.
 
-The coordinator owns protected signing dispatch and staging signing
-correlation. It persists the unique request and run identity before waiting;
-the staging run title includes the exact raw request SHA-256, and the downloaded
-signed payload must canonically equal those checkpointed request bytes. Resume
-must reconcile or watch that exact request/run, never dispatch a replacement. The
-staging operator's internal `--no-sign-request`, `--request-id`, and
-`--coordinator-checkpoint` controls are coordinator-only. An already-active
-exact staging release may resume only through that private checkpoint and
-must first pass the root-installed control v3 pre-switch binding for installed
-and recovery identity. Only root-sealed, artifact-bound preflight/readiness
-scripts may then run, with generated evidence outside the immutable release
-tree; authenticated smoke and PM2 identity repeat without reinstalling or
-restarting.
+`release:prepare` verifies the manifest and original artifact locally, stores
+the manifest SHA-256, uploads the bundle once, and submits the staging phase
+through `systemd-run --user`.
+It stops after staging with `ownerApprovalRequired: true`. `release:promote`
+requires the exact SHA and digest confirmation and submits a separate
+user-owned production transaction. Losing the Mac or SSH session does not stop
+either active server phase.
 
-The checkpoint lock is a persistent mode-0600 regular file held with OS
-`lockf -k` on macOS or `flock` on Linux. Never delete a presumed stale lock
-directory/file or start a second coordinator; lock contention, inode drift,
-and lock-holder loss are fail-closed.
+Never accept an operator-supplied manifest. Before promotion, revalidate the
+exact checkpoint run and re-download its exact named manifest artifact. Cached
+and re-downloaded bytes and SHA-256 must agree. Run the conditional exact-SHA
+chat preflight before the first production SSH, including resume-state queries,
+and repeat it independently in the new-transaction helper. The observed
+production predecessor SHA must equal the manifest's canonical protected
+release-state SHA before mutation.
 
-For a shared backend/iOS contract candidate, replace `--backend-only` with
-`--includes-ios --ios-sha <ios-sha> --ios-build-number <build> --ios-contract-result passed`
-for preparation and the RC workflow. Those values are untrusted intent until
-the protected signer validates the exact signed iOS Contract Evidence
-attestation. Derive the evidence request from the downloaded RC bundle; it
-contains the canonical candidate fixture bytes and digest that iOS must decode.
-Run the protected Xcode Cloud `App Store Release` workflow for the same iOS
-SHA/build and extract its signed distribution envelope. Request signing with
-`--includes-ios`, `--ios-attestation <compatibility-json>`, and
-`--ios-distribution-attestation <distribution-json>`; an omitted scope, either
-attestation, or an exact SHA/build/fixture/archive match failure is hard.
-
-- Treat `ReleaseManifestV2` plus its artifact digest as the promotion identity.
-- Never reuse evidence after governed artifact or test-policy drift.
-- Keep evidence under `.local/release/` and CI artifacts.
-- Preserve fail-closed backup and exact rollback behavior.
-- Do not deploy, push, expire TestFlight builds, or delete remote branches without explicit authorization.
-- If backend/iOS contracts changed, require the exact iOS SHA, positive build
-  number, and passed contract result in the manifest, all derived by protected
-  tooling from signed iOS CI evidence rather than owner-entered signing fields.
-  The manifest must also bind the exact backend candidate fixture and contract
-  subject digests. Every governed selector must pass; failures and skips are
-  not passing evidence. Separately require the Xcode Cloud-signed clean source,
-  archive, exported App Store artifact, production signing, toolchain, and CI
-  identity proof for the same SHA/build. Compatibility is not archive proof,
-  and archive proof is not decoder compatibility.
-  Never relabel a shared release as backend-only to bypass this gate.
+- Treat the full source SHA plus artifact SHA-256 as the promotion identity.
+- Never rebuild, install dependencies, run tests, or run Sonar on the server.
+- Keep local evidence under ignored `.local/release/`; remote state lives under
+  `/home/dominguez/.local/state/nexus-release/`.
+- Use the existing production and staging layouts under
+  `/home/dominguez/telegram-hub-bot{,-staging}`.
+- Preserve the pre-promotion SQLite backup, atomic `current` switch, PM2
+  `startOrReload`, 60-second production soak, and automatic exact-predecessor
+  rollback.
+- Do not run Sonar concurrently with staging or production; both use the same
+  user-owned remote mutex.
+- Do not restore signing workflows, `ReleaseManifestV2`, root promotion
+  controls, KVM drills, AWS release dependencies, or duplicate state stores.
+- Do not deploy, push, expire TestFlight builds, or delete remote branches
+  without explicit authorization.
+- If a backend/iOS contract changes, prove compatibility through the canonical
+  iOS release process before owner approval. Do not mislabel a shared contract
+  release to bypass that proof.
 
 Before handoff, run `npm run docs:audit`, the selected risk gate, and the
 `verifiable-reward-check` skill. Report missing staging, device, or owner proof

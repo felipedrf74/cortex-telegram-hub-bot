@@ -3,37 +3,23 @@ name: CI — Risk-based parallel matrix
 # release-pipeline-risk-based-optimization (2026-05-03):
 # Refactored from the serial `lint → test → build` chain into a parallel
 # matrix that runs typecheck, focused tests, migration check, Python
-# compile, and build concurrently. Full coverage is now driven by
-# `nightly.yml` and `workflow_dispatch`, NOT every push.
+# compile, and build concurrently. Complete deterministic verification is
+# owned exclusively by the explicit release-checkpoint workflow.
 #
 # Decisions encoded here:
 #   1. lint, focused-tests, migrations, python-test, build run IN
 #      PARALLEL after install. None depend on each other.
-#   2. focused-tests delegates to scripts/risk-gate.sh. Main pushes are
-#      focused; full breadth lives on v* RC tags, nightly, and manual full.
+#   2. focused-tests delegates to scripts/risk-gate.sh. PRs and main use one
+#      affected-group run; full breadth lives only in the explicit checkpoint.
 #   3. python-test runs the full content-engine pytest suite when
 #      content-engine/** changed.
 #   4. build runs unconditionally as a "does dist still build" check.
 #
-# Manual full-suite + coverage:
-#   gh workflow run "CI — Risk-based parallel matrix" -f mode=full
-
 on:
   push:
     branches: [main, develop]
   pull_request:
     branches: [main, develop]
-  workflow_dispatch:
-    inputs:
-      mode:
-        description: 'Test mode: focused (default for PRs), full (full vitest), full+coverage (nightly)'
-        required: false
-        default: 'focused'
-        type: choice
-        options:
-          - focused
-          - full
-          - full+coverage
 
 permissions:
   contents: read
@@ -64,6 +50,7 @@ jobs:
       docs_only: ${{ steps.classify.outputs.docs_only }}
       base_sha: ${{ steps.classify.outputs.base_sha }}
       test_cleanup: ${{ steps.classify.outputs.test_cleanup }}
+      selected_groups: ${{ steps.classify.outputs.selected_groups }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
@@ -83,34 +70,17 @@ jobs:
         run: |
           BASE_REF=""
           # github.event.before is the only push identity that covers every
-          # commit in a multi-commit delivery. The resolver also rejects zero,
-          # missing, unresolved, and non-ancestor identities; those all select
-          # the full lane below instead of attempting an unsafe partial diff.
+          # commit in a multi-commit delivery. Missing or unsafe ancestry is a
+          # classification error; ordinary CI never substitutes the full suite.
           if ! BASE_REF="$(bash scripts/resolve-ci-change-base.sh)"; then
             BASE_REF=""
           fi
-          if [ -z "$BASE_REF" ]; then
-            echo "Change base is missing or unsafe; failing closed to full verification."
-          fi
+          test -n "$BASE_REF" || {
+            echo "Change base is missing or unsafe; refusing partial classification." >&2
+            exit 1
+          }
           echo "base_sha=$BASE_REF" >> "$GITHUB_OUTPUT"
-          TEST_CLEANUP=false
-          if [ -n "$BASE_REF" ] && git diff --numstat "$BASE_REF" HEAD -- '__tests__/**' \
-            | awk '$2 > 0 { found=1 } END { exit found ? 0 : 1 }'; then
-            TEST_CLEANUP=true
-          fi
-
-          # Manual mode override
-          MODE_OVERRIDE='${{ github.event.inputs.mode }}'
-          if [ -z "$BASE_REF" ] || [ "$MODE_OVERRIDE" = "full" ] || [ "$MODE_OVERRIDE" = "full+coverage" ]; then
-            echo "Full verification selected (mode=${MODE_OVERRIDE:-focused}, base=${BASE_REF:-unresolved})."
-            echo "vitest_mode=full" >> "$GITHUB_OUTPUT"
-            echo "vitest_globs=" >> "$GITHUB_OUTPUT"
-            echo "run_python_test=true" >> "$GITHUB_OUTPUT"
-            echo "run_migrations=true" >> "$GITHUB_OUTPUT"
-            echo "docs_only=false" >> "$GITHUB_OUTPUT"
-            echo "test_cleanup=$TEST_CLEANUP" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
+          TEST_CLEANUP="$(node scripts/test-cleanup-classifier.mjs --base "$BASE_REF" --field requiresMutation)"
           chmod +x scripts/changed-area-classifier.sh
           JSON="$(scripts/changed-area-classifier.sh --base "$BASE_REF" --format json)"
           echo "$JSON" > /tmp/classifier.json
@@ -120,12 +90,14 @@ jobs:
           PY="$(jq -r '.flags.pythonEngine' /tmp/classifier.json)"
           MIG="$(jq -r '.flags.migration' /tmp/classifier.json)"
           DOCS_ONLY="$(jq -r '.flags.docsOnly' /tmp/classifier.json)"
+          SELECTED_GROUPS="$(jq -c '.vitest.groups' /tmp/classifier.json)"
           echo "vitest_mode=$MODE" >> "$GITHUB_OUTPUT"
           echo "vitest_globs=$GLOBS" >> "$GITHUB_OUTPUT"
           echo "run_python_test=$PY" >> "$GITHUB_OUTPUT"
           echo "run_migrations=$MIG" >> "$GITHUB_OUTPUT"
           echo "docs_only=$DOCS_ONLY" >> "$GITHUB_OUTPUT"
           echo "test_cleanup=$TEST_CLEANUP" >> "$GITHUB_OUTPUT"
+          echo "selected_groups=$SELECTED_GROUPS" >> "$GITHUB_OUTPUT"
 
   mutation_cleanup:
     name: 🧬 Test-cleanup mutation protection
@@ -142,7 +114,7 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
       - run: npm ci
-      - name: Mutate affected critical source dependencies
+      - name: Mutate the deleted test's mapped behavior owner
         run: npm run test:mutation -- --base '${{ needs.classify.outputs.base_sha }}' --scope test-cleanup
       - name: Upload mutation plan and score
         if: always()
@@ -154,33 +126,6 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  changed_coverage:
-    name: 📈 Changed-module coverage
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    needs: classify
-    if: ${{ github.event_name == 'pull_request' && needs.classify.outputs.docs_only != 'true' }}
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-      - run: npm ci
-      - name: Enforce changed and critical coverage ratchets
-        run: npm run test:coverage:changed -- --base '${{ needs.classify.outputs.base_sha }}'
-      - name: Upload changed coverage evidence
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: changed-coverage-${{ github.run_id }}-${{ github.run_attempt }}
-          path: .local/coverage/changed/
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 30
-
   # ═══════════════════════════════════════════════════
   # LINT & TYPE CHECK (parallel — no `needs` chain)
   # ═══════════════════════════════════════════════════
@@ -188,7 +133,7 @@ jobs:
     name: 🔍 Lint & Type Check
     runs-on: ubuntu-latest
     needs: classify
-    if: needs.classify.outputs.docs_only != 'true'
+    if: ${{ needs.classify.outputs.docs_only != 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
@@ -245,81 +190,12 @@ jobs:
         run: scripts/closed-beta-identity-scan.sh --strict
 
   # ═══════════════════════════════════════════════════
-  # FOCUSED OR FULL VITEST (driven by classifier)
+  # SINGLE FOCUSED VITEST INVOCATION (driven by group classifier)
   # ═══════════════════════════════════════════════════
-  test_full_shard:
-    name: 🧪 Full test shard ${{ matrix.shard }}/4
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    needs: classify
-    if: ${{ needs.classify.outputs.vitest_mode == 'full' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2, 3, 4]
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-        with:
-          fetch-depth: 0
-
-      - name: Verify exact checked-out source
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          EXPECTED_SHA: ${{ github.sha }}
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          HEAD_SHA="$(git rev-parse HEAD)"
-          test "$HEAD_SHA" = "$EXPECTED_SHA"
-          if [ "$EVENT_NAME" = "pull_request" ]; then
-            test -n "$PR_HEAD_SHA"
-            test "$(git rev-parse 'HEAD^2')" = "$PR_HEAD_SHA"
-            git merge-base --is-ancestor "$PR_HEAD_SHA" "$HEAD_SHA"
-          fi
-
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: 'npm'
-
-      - run: npm ci
-
-      - name: Run full Vitest shard
-        env:
-          NODE_ENV: test
-          TELEGRAM_BOT_TOKEN: test_token
-          TELEGRAM_ALLOWED_USER_IDS: '123456789'
-          ANTHROPIC_API_KEY: sk-ant-test-key
-          DATABASE_PATH: ':memory:'
-          NEXUS_RISK_GATE_JSON_OUTPUT: .local/ci-evidence/vitest-results-${{ matrix.shard }}.json
-        run: |
-          BASE='${{ needs.classify.outputs.base_sha }}'
-          ARGS=(
-            --full
-            --vitest-shard "${{ matrix.shard }}/4"
-            --skip-typecheck
-            --skip-python
-            --skip-migrations
-          )
-          if [ -n "$BASE" ]; then
-            ARGS=(--base "$BASE" "${ARGS[@]}")
-          fi
-          scripts/risk-gate.sh "${ARGS[@]}"
-
-      - name: Upload exact protected-main shard result
-        if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: protected-main-vitest-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}
-          path: .local/ci-evidence/vitest-results-${{ matrix.shard }}.json
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 14
-
   docs_and_secrets:
     name: 📚 Docs & secrets
     runs-on: ubuntu-latest
     needs: classify
-    if: needs.classify.outputs.docs_only == 'true'
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
@@ -341,7 +217,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     needs: classify
-    if: ${{ needs.classify.outputs.vitest_mode != 'skip' && needs.classify.outputs.vitest_mode != 'full' }}
+    if: ${{ needs.classify.outputs.vitest_mode == 'focused' || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
@@ -350,6 +226,7 @@ jobs:
       - name: Verify exact checked-out source
         env:
           EVENT_NAME: ${{ github.event_name }}
+          PROTECTED_MAIN: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
           EXPECTED_SHA: ${{ github.sha }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
@@ -369,6 +246,7 @@ jobs:
       - run: npm ci
 
       - name: Run focused Vitest gate
+        if: ${{ needs.classify.outputs.vitest_mode == 'focused' }}
         env:
           NODE_ENV: test
           TELEGRAM_BOT_TOKEN: test_token
@@ -376,17 +254,39 @@ jobs:
           ANTHROPIC_API_KEY: sk-ant-test-key
           DATABASE_PATH: ':memory:'
           NEXUS_RISK_GATE_JSON_OUTPUT: .local/ci-evidence/vitest-results-selected.json
+          NEXUS_TEST_SELECTION_OUTPUT: .local/ci-evidence/test-selection.json
         run: |
           BASE='${{ needs.classify.outputs.base_sha }}'
           test -n "$BASE"
           scripts/risk-gate.sh \
             --base "$BASE" \
+            --coverage \
             --skip-typecheck \
             --skip-python \
             --skip-migrations
 
+      - name: Bind exact-SHA coverage for advisory Sonar
+        if: ${{ needs.classify.outputs.vitest_mode == 'focused' }}
+        run: |
+          node scripts/quality-sonar-coverage-manifest.mjs \
+            --runtime-sha "$GITHUB_SHA" \
+            --coverage-dir .local/coverage/selected \
+            --output .local/coverage/selected/sonar-coverage-evidence.json
+
+      - name: Record docs-only exact selection without Vitest
+        if: ${{ needs.classify.outputs.vitest_mode == 'skip' }}
+        run: |
+          mkdir -p .local/ci-evidence
+          BASE='${{ needs.classify.outputs.base_sha }}'
+          test -n "$BASE"
+          scripts/changed-area-classifier.sh --base "$BASE" --json > .local/ci-evidence/classifier.json
+          node scripts/select-vitest-files.mjs \
+            --base "$BASE" \
+            --classifier .local/ci-evidence/classifier.json \
+            --output .local/ci-evidence/test-selection.json >/dev/null
+
       - name: Upload exact protected-main selected result
-        if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        if: ${{ always() && needs.classify.outputs.vitest_mode == 'focused' && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: protected-main-vitest-${{ github.run_id }}-${{ github.run_attempt }}-selected
@@ -395,37 +295,56 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      - name: Upload exact protected-main test selection
+        if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: protected-main-test-selection-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .local/ci-evidence/test-selection.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload selected-test coverage
+        if: ${{ always() && needs.classify.outputs.vitest_mode == 'focused' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: selected-coverage-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .local/coverage/selected/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+
   test:
     # Keep this aggregate check-run name stable because the main-branch
-    # ruleset requires the exact `🧪 Tests` context. Full mode succeeds only
-    # after all four shards pass. Pull requests also bind changed-module
-    # coverage and any applicable test-cleanup mutation gate into this one
-    # required context, so an optional-looking lane cannot fail independently
-    # while the branch-protection check remains green.
+    # ruleset requires the exact `🧪 Tests` context. Pull requests bind the
+    # single selected-test run and any applicable test-cleanup mutation gate
+    # into this required context.
     name: 🧪 Tests
     runs-on: ubuntu-latest
-    needs: [classify, mutation_cleanup, changed_coverage, test_full_shard, test_focused]
+    needs: [classify, docs_and_secrets, mutation_cleanup, test_focused, python-test, migrations, science_policy]
     if: ${{ always() }}
     steps:
       - name: Verify selected test lane
         env:
           EVENT_NAME: ${{ github.event_name }}
+          PROTECTED_MAIN: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
           CLASSIFY_RESULT: ${{ needs.classify.result }}
           VITEST_MODE: ${{ needs.classify.outputs.vitest_mode }}
           DOCS_ONLY: ${{ needs.classify.outputs.docs_only }}
           TEST_CLEANUP: ${{ needs.classify.outputs.test_cleanup }}
           MUTATION_RESULT: ${{ needs.mutation_cleanup.result }}
-          COVERAGE_RESULT: ${{ needs.changed_coverage.result }}
-          FULL_RESULT: ${{ needs.test_full_shard.result }}
+          DOCS_RESULT: ${{ needs.docs_and_secrets.result }}
+          PYTHON_REQUIRED: ${{ needs.classify.outputs.run_python_test }}
+          PYTHON_RESULT: ${{ needs.python-test.result }}
+          MIGRATIONS_REQUIRED: ${{ needs.classify.outputs.run_migrations }}
+          MIGRATIONS_RESULT: ${{ needs.migrations.result }}
+          SCIENCE_POLICY_RESULT: ${{ needs.science_policy.result }}
           FOCUSED_RESULT: ${{ needs.test_focused.result }}
         run: |
           test "$CLASSIFY_RESULT" = "success"
 
-          if [ "$EVENT_NAME" = "pull_request" ] && [ "$DOCS_ONLY" != "true" ]; then
-            test "$COVERAGE_RESULT" = "success"
-          else
-            test "$COVERAGE_RESULT" = "skipped"
-          fi
+          test "$DOCS_RESULT" = "success"
 
           if [ "$EVENT_NAME" = "pull_request" ] && [ "$TEST_CLEANUP" = "true" ]; then
             test "$MUTATION_RESULT" = "success"
@@ -433,17 +352,33 @@ jobs:
             test "$MUTATION_RESULT" = "skipped"
           fi
 
+          if [ "$PYTHON_REQUIRED" = "true" ]; then
+            test "$PYTHON_RESULT" = "success"
+          else
+            test "$PYTHON_RESULT" = "skipped"
+          fi
+
+          if [ "$MIGRATIONS_REQUIRED" = "true" ]; then
+            test "$MIGRATIONS_RESULT" = "success"
+          else
+            test "$MIGRATIONS_RESULT" = "skipped"
+          fi
+
+          if [ "$DOCS_ONLY" = "true" ]; then
+            test "$SCIENCE_POLICY_RESULT" = "skipped"
+          else
+            test "$SCIENCE_POLICY_RESULT" = "success"
+          fi
+
           case "$VITEST_MODE" in
             skip)
-              test "$FULL_RESULT" = "skipped"
-              test "$FOCUSED_RESULT" = "skipped"
+              if [ "$PROTECTED_MAIN" = "true" ]; then
+                test "$FOCUSED_RESULT" = "success"
+              else
+                test "$FOCUSED_RESULT" = "skipped"
+              fi
               ;;
-            full)
-              test "$FULL_RESULT" = "success"
-              test "$FOCUSED_RESULT" = "skipped"
-              ;;
-            focused|changed-only)
-              test "$FULL_RESULT" = "skipped"
+            focused)
               test "$FOCUSED_RESULT" = "success"
               ;;
             *)
@@ -459,7 +394,7 @@ jobs:
     name: 🔨 Build
     runs-on: ubuntu-24.04
     needs: classify
-    if: needs.classify.outputs.docs_only != 'true'
+    if: ${{ needs.classify.outputs.docs_only != 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
     outputs:
       artifact_name: ${{ steps.runtime_artifact.outputs.artifact_name }}
       artifact_digest: ${{ steps.runtime_artifact.outputs.digest }}
@@ -482,6 +417,7 @@ jobs:
 
       - name: Bind the Ubuntu 24.04 x86-64 runtime artifact identity
         id: runtime_artifact
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
         run: |
           test "$(uname -m)" = 'x86_64'
           . /etc/os-release
@@ -508,6 +444,7 @@ jobs:
 
       - name: Upload exact runtime release bundle
         id: upload_runtime_bundle
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ steps.runtime_artifact.outputs.artifact_name }}
@@ -521,12 +458,14 @@ jobs:
           retention-days: 30
 
       - name: Download and verify the uploaded exact runtime bundle
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: ${{ steps.runtime_artifact.outputs.artifact_name }}
           path: .local/ci-evidence/downloaded-runtime-bundle
 
       - name: Prove uploaded bundle bytes match the recorded digest
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
         run: |
           node scripts/release-artifact-manifest.mjs \
             --verify-bundle .local/ci-evidence/downloaded-runtime-bundle \
@@ -631,48 +570,3 @@ jobs:
           else
             node scripts/migration-safety-check.mjs
           fi
-
-  protected_main_evidence:
-    name: 🧾 Protected-main release reuse shadow
-    runs-on: ubuntu-latest
-    needs: [classify, test, lint, build, python-test, science_policy, migrations]
-    if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.classify.result == 'success' && needs.classify.outputs.docs_only != 'true' }}
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-        with:
-          # Evidence independently proves the classifier base is an ancestor
-          # of the exact main SHA, including multi-commit pushes.
-          fetch-depth: 0
-
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          pattern: protected-main-vitest-${{ github.run_id }}-${{ github.run_attempt }}-*
-          path: .local/ci-evidence/vitest-results
-          merge-multiple: true
-
-      - name: Write exact protected-main shadow evidence
-        env:
-          NEXUS_CI_NEEDS_JSON: ${{ toJSON(needs) }}
-        run: |
-          node scripts/protected-main-ci-evidence.mjs write \
-            --head "$GITHUB_SHA" \
-            --base '${{ needs.classify.outputs.base_sha }}' \
-            --mode '${{ needs.classify.outputs.vitest_mode }}' \
-            --vitest-results-dir .local/ci-evidence/vitest-results \
-            --build-artifact-name '${{ needs.build.outputs.artifact_name }}' \
-            --build-artifact-digest '${{ needs.build.outputs.artifact_digest }}' \
-            --python-version '${{ needs.build.outputs.python_version }}' \
-            --out .local/ci-evidence/protected-main-ci-evidence.json
-
-      - name: Upload protected-main shadow evidence
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: protected-main-ci-evidence-${{ github.run_id }}-${{ github.run_attempt }}
-          path: .local/ci-evidence/protected-main-ci-evidence.json
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 30

@@ -2,8 +2,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
-import ts from 'typescript';
 import { cleanGitEnv, resolveExactCommit } from './lib/git-ref.mjs';
 import {
   globToRegExp,
@@ -11,6 +11,17 @@ import {
   resolveTestDisposition,
   root,
 } from './lib/test-policy.mjs';
+import {
+  loadTestGroups,
+  resolveRetirementMapping,
+  retirementOwnerCandidates,
+} from './lib/test-groups.mjs';
+import {
+  gitMergeBaseArgs,
+  gitNameStatusDiffArgs,
+  gitNameStatusRecordsToChanges,
+  parseGitNameStatusRecordsZ,
+} from './lib/git-changed-paths.mjs';
 
 const SOURCE_EXTENSIONS = ['', '.ts', '.tsx', '.js', '.mjs', '/index.ts', '/index.tsx'];
 const MUTATION_SCOPES = new Set(['test-cleanup', 'changed-critical']);
@@ -30,7 +41,31 @@ const TEST_MODIFIERS = new Set([
 const ASSERTION_FUNCTIONS = new Set(['assert', 'expect', 'expectTypeOf']);
 const MUTATION_STATUSES = new Set(['Killed', 'Survived', 'Timeout', 'NoCoverage']);
 const DETECTED_MUTATION_STATUSES = new Set(['Killed', 'Timeout']);
-const printer = ts.createPrinter({ removeComments: true, newLine: ts.NewLineKind.LineFeed });
+const requireFromMutationGate = createRequire(import.meta.url);
+let ts;
+let printer;
+
+function loadTypeScriptEvidenceRuntime() {
+  if (ts && printer) return;
+  try {
+    ts = requireFromMutationGate('typescript');
+  } catch (error) {
+    if (
+      error?.code === 'MODULE_NOT_FOUND'
+      && String(error.message).includes('typescript')
+    ) {
+      const unavailable = new Error(
+        'TypeScript test-evidence analysis requires installed dependencies; '
+        + 'run it only after npm ci',
+        { cause: error },
+      );
+      unavailable.code = 'NEXUS_TYPESCRIPT_EVIDENCE_UNAVAILABLE';
+      throw unavailable;
+    }
+    throw error;
+  }
+  printer = ts.createPrinter({ removeComments: true, newLine: ts.NewLineKind.LineFeed });
+}
 
 function git(args, options = {}) {
   const { env: overrides = {}, ...spawnOptions } = options;
@@ -66,6 +101,7 @@ export function isCriticalModule(file, patterns) {
 }
 
 function canonicalNode(node, sourceFile) {
+  loadTypeScriptEvidenceRuntime();
   return printer.printNode(ts.EmitHint.Unspecified, node, sourceFile).replace(/\s+/g, ' ').trim();
 }
 
@@ -284,6 +320,7 @@ function controlFlowFingerprint(node, sourceFile) {
 }
 
 export function extractTestEvidence(source, fileName = 'mutation-gate-input.test.ts') {
+  loadTypeScriptEvidenceRuntime();
   const sourceFile = ts.createSourceFile(
     fileName,
     source,
@@ -350,7 +387,7 @@ export function isTestCleanupChange(change, current, previous) {
     || previousEvidence.declarationCount > currentEvidence.declarationCount
     || hasRemovedEvidence(previousEvidence.assertions, currentEvidence.assertions)
     || hasEvidenceCardinalityDecrease(previousEvidence.eachRows, currentEvidence.eachRows)
-    || hasRemovedEvidence(previousEvidence.controlFlow, currentEvidence.controlFlow);
+    || hasEvidenceCardinalityDecrease(previousEvidence.controlFlow, currentEvidence.controlFlow);
 }
 
 export function parseMutationTarget(target) {
@@ -408,6 +445,37 @@ export function buildWeeklyMutationSelection(
     return result.stdout;
   },
 ) {
+  if (plan?.scope === 'test-cleanup') {
+    const ranges = Array.isArray(plan.governedRanges) ? plan.governedRanges : [];
+    const plannedTargets = [...new Set(plan.targets ?? [])].sort();
+    const mutationBatches = (plan.governedSources ?? []).map((source, index) => {
+      const targets = (plan.targets ?? []).filter((target) => (
+        (parseMutationTarget(target)?.file ?? target) === source
+      ));
+      const testFiles = [...new Set(ranges
+        .filter((range) => parseMutationTarget(range.pattern)?.file === source)
+        .map((range) => range.replacementTest)
+        .filter((testFile) => typeof testFile === 'string' && testFile.length > 0))]
+        .sort();
+      if (targets.length === 0) {
+        throw new Error(`cleanup mutation source has no exact target: ${source}`);
+      }
+      if (testFiles.length === 0) {
+        throw new Error(`cleanup mutation source has no retained owner test: ${source}`);
+      }
+      return {
+        index,
+        sources: [source],
+        targets,
+        testFiles,
+      };
+    });
+    const batchedTargets = mutationBatches.flatMap((batch) => batch.targets).sort();
+    if (JSON.stringify(batchedTargets) !== JSON.stringify(plannedTargets)) {
+      throw new Error('cleanup mutation batches do not cover every exact planned target');
+    }
+    return { ...plan, mutationBatches };
+  }
   if (plan?.scope !== 'changed-critical') {
     return {
       ...plan,
@@ -458,9 +526,15 @@ export function buildWeeklyMutationSelection(
   };
 }
 
-export function resolveEmptyRangeFallback({ generatedMutants, targets, sources }) {
+export function resolveEmptyRangeFallback({
+  generatedMutants,
+  targets,
+  sources,
+  scope = 'changed-critical',
+}) {
   if (
-    generatedMutants === 0
+    scope === 'changed-critical'
+    && generatedMutants === 0
     && Array.isArray(targets)
     && targets.length > 0
     && targets.every((target) => parseMutationTarget(target) !== null)
@@ -513,11 +587,22 @@ function ownerTestNameMatches(testName, target) {
   return new RegExp(target.ownerTestNamePattern).test(testName);
 }
 
+function readGovernedMutationSource(candidate) {
+  const sourceRoot = process.env.NEXUS_MUTATION_SOURCE_ROOT;
+  if (sourceRoot === undefined) return fs.readFileSync(candidate, 'utf8');
+
+  const relative = path.relative(root, path.resolve(candidate));
+  if (path.isAbsolute(relative) || relative === '..' || relative.startsWith(`..${path.sep}`)) {
+    throw new Error(`Mutation source escaped the Stryker sandbox: ${candidate}`);
+  }
+  return fs.readFileSync(path.join(sourceRoot, relative), 'utf8');
+}
+
 export function validateGovernedMutationTarget(
   target,
   mapping,
   exists = fs.existsSync,
-  readSource = (candidate) => fs.readFileSync(candidate, 'utf8'),
+  readSource = readGovernedMutationSource,
 ) {
   if (!target || typeof target !== 'object' || Array.isArray(target)) {
     return ['mutation target must be a structured ownership entry'];
@@ -689,6 +774,7 @@ export function buildStrykerEnvironment(baseEnvironment, invocationEnvironment) 
   const environment = {
     ...baseEnvironment,
     NODE_ENV: 'test',
+    NEXUS_MUTATION_SOURCE_ROOT: root,
     ...invocationEnvironment,
   };
   if (!Object.hasOwn(invocationEnvironment, 'NEXUS_MUTATION_TEST_FILES')) {
@@ -699,17 +785,20 @@ export function buildStrykerEnvironment(baseEnvironment, invocationEnvironment) 
 
 export function validateMutationExecutionReport(
   report,
-  { targets, testFiles = [] },
+  { targets, testFiles = [], scope = 'changed-critical' },
 ) {
   const errors = [];
   const config = report?.config;
+  const cleanup = scope === 'test-cleanup';
   if (!config || typeof config !== 'object' || Array.isArray(config)) {
     return ['Stryker report is missing its effective config'];
   }
   if (JSON.stringify(config.mutate) !== JSON.stringify(targets)) {
     errors.push('Stryker report mutate targets differ from the batch execution targets');
   }
-  if (testFiles.length > 0) {
+  if (cleanup && testFiles.length === 0) {
+    errors.push('test-cleanup execution requires explicit governed owner tests');
+  } else if (testFiles.length > 0) {
     if (JSON.stringify(config.testFiles) !== JSON.stringify(testFiles)) {
       errors.push('Stryker report testFiles differ from the batch owner-test mapping');
     }
@@ -722,11 +811,17 @@ export function validateMutationExecutionReport(
   if (config.testRunner !== 'vitest') {
     errors.push(`Stryker report testRunner must be vitest, found ${String(config.testRunner)}`);
   }
+  if (config.ignoreStatic !== false) {
+    errors.push(`Stryker report ignoreStatic must be false, found ${String(config.ignoreStatic)}`);
+  }
   if (
-    config.vitest?.related !== true
+    config.vitest?.related !== !cleanup
     || config.vitest?.configFile !== 'config/vitest.stryker.config.ts'
   ) {
     errors.push('Stryker report Vitest binding differs from the governed sequential config');
+  }
+  if (config.coverageAnalysis !== (cleanup ? 'off' : 'perTest')) {
+    errors.push('Stryker report coverage analysis differs from the governed scope');
   }
   return errors;
 }
@@ -1025,7 +1120,7 @@ export function resolveReferencedSourcePaths(testFile, source, exists = fs.exist
 export function validateCleanupMapping(
   mapping,
   exists = fs.existsSync,
-  readSource = (candidate) => fs.readFileSync(candidate, 'utf8'),
+  readSource = readGovernedMutationSource,
 ) {
   if (!mapping || typeof mapping !== 'object') return ['mapping is missing'];
   const errors = [];
@@ -1085,30 +1180,65 @@ export function resolveDeletedTestCleanupMappings(
   changes,
   cleanupMappings,
   exists = fs.existsSync,
-  readSource = (candidate) => fs.readFileSync(candidate, 'utf8'),
+  readSource = readGovernedMutationSource,
+  retirementMappings = [],
+  readRetiredTestSource = () => '',
+  baseSha = null,
 ) {
   const mappingByTest = new Map(cleanupMappings.map((mapping) => [mapping.test, mapping]));
   const resolved = [];
+  const retirements = [];
   const unmapped = [];
   const invalid = [];
+  const removedPaths = changes
+    .filter((change) => change.status.startsWith('D'))
+    .map((change) => change.previous ?? change.file);
+  const changedPaths = changes
+    .filter((change) => !change.status.startsWith('D'))
+    .map((change) => change.file);
+  const existsCurrent = (file) => exists(path.join(root, file));
 
   for (const change of changes) {
-    if (!change.status.startsWith('D') || !change.file.startsWith('__tests__/') || !change.file.endsWith('.test.ts')) {
+    const previousFile = change.previous ?? change.file;
+    if (
+      !change.status.startsWith('D')
+      || !previousFile.startsWith('__tests__/')
+      || !previousFile.endsWith('.test.ts')
+    ) {
       continue;
     }
-    const previousFile = change.previous ?? change.file;
+    const retirement = resolveRetirementMapping({
+      baseSha,
+      testFile: previousFile,
+      mappings: retirementMappings,
+      removedPaths,
+      changedPaths,
+      ownerPaths: retirementOwnerCandidates(previousFile, readRetiredTestSource(previousFile)),
+      existsCurrent,
+    });
+    if (retirement) {
+      retirements.push({
+        test: previousFile,
+        currentTest: change.status.startsWith('R') ? change.file : null,
+        status: change.status,
+        reason: retirement.reason.trim(),
+        replacementTests: [...new Set(retirement.replacementTests)].sort(),
+      });
+      continue;
+    }
     const mapping = mappingByTest.get(change.file) ?? mappingByTest.get(previousFile);
     if (!mapping) {
-      unmapped.push(change.file);
+      unmapped.push(previousFile);
       continue;
     }
     const errors = validateCleanupMapping(mapping, exists, readSource);
-    if (errors.length > 0) invalid.push({ test: change.file, errors });
+    if (errors.length > 0) invalid.push({ test: previousFile, errors });
     else resolved.push(mapping);
   }
 
   return {
     resolved: resolved.sort((a, b) => a.test.localeCompare(b.test)),
+    retirements: retirements.sort((a, b) => a.test.localeCompare(b.test)),
     unmapped: [...new Set(unmapped)].sort(),
     invalid,
   };
@@ -1120,12 +1250,17 @@ function readAtBase(base, file) {
 }
 
 function parseChangedFiles(base) {
-  const result = git(['diff', '--name-status', '--find-renames', base, 'HEAD']);
-  if (result.status !== 0) throw new Error(result.stderr || `Unable to diff ${base}..HEAD`);
-  return result.stdout.trim().split('\n').filter(Boolean).map((line) => {
-    const [status, first, second] = line.split('\t');
-    return { status, file: second ?? first, previous: second ? first : null };
-  });
+  const mergeBase = git(gitMergeBaseArgs(base));
+  if (mergeBase.status !== 0 || !/^[0-9a-f]{40}\n?$/.test(mergeBase.stdout)) {
+    throw new Error(mergeBase.stderr || `Unable to resolve merge base for ${base}...HEAD`);
+  }
+  const exactBase = mergeBase.stdout.trim();
+  const result = git(gitNameStatusDiffArgs(exactBase));
+  if (result.status !== 0) throw new Error(result.stderr || `Unable to diff ${exactBase}...HEAD`);
+  return {
+    base: exactBase,
+    changes: gitNameStatusRecordsToChanges(parseGitNameStatusRecordsZ(result.stdout)),
+  };
 }
 
 export function buildMutationPlan({
@@ -1134,6 +1269,7 @@ export function buildMutationPlan({
   patterns,
   scope = 'changed-critical',
   cleanupMappings = [],
+  retirementMappings = [],
   mutationExceptions = [],
   ownerTestMappings = [],
   testPolicy = loadTestPolicy(),
@@ -1142,7 +1278,7 @@ export function buildMutationPlan({
     exists(path.join(root, file)) ? fs.readFileSync(path.join(root, file), 'utf8') : ''
   ),
   readPrevious = readAtBase,
-  readSource = (candidate) => fs.readFileSync(candidate, 'utf8'),
+  readSource = readGovernedMutationSource,
   now = Date.now(),
 }) {
   if (!MUTATION_SCOPES.has(scope)) {
@@ -1163,9 +1299,25 @@ export function buildMutationPlan({
   const unmappedRetainedCleanupTests = [];
   const testEvidenceParseDiagnostics = [];
   const governedRangeByPattern = new Map();
-  const deletedTestAudit = resolveDeletedTestCleanupMappings(changes, cleanupMappings, exists, readSource);
+  const deletedTestAudit = resolveDeletedTestCleanupMappings(
+    changes,
+    cleanupMappings,
+    exists,
+    readSource,
+    retirementMappings,
+    (file) => readPrevious(base, file),
+    base,
+  );
   const invalidCleanupMappings = [...deletedTestAudit.invalid];
   const mappingByTest = new Map(cleanupMappings.map((mapping) => [mapping.test, mapping]));
+  const retiredTests = new Set(deletedTestAudit.retirements.map((retirement) => retirement.test));
+  const retirementRemovedPaths = changes
+    .filter((change) => change.status.startsWith('D'))
+    .map((change) => change.previous ?? change.file);
+  const retirementChangedPaths = changes
+    .filter((change) => !change.status.startsWith('D'))
+    .map((change) => change.file);
+  const existsCurrent = (file) => exists(path.join(root, file));
 
   for (const change of changes) {
     if (
@@ -1176,10 +1328,14 @@ export function buildMutationPlan({
     ) {
       addCandidateTarget(change.file);
     }
-    if (!change.file.startsWith('__tests__/') || !change.file.endsWith('.test.ts')) continue;
-
-    const current = readCurrent(change.file);
     const previousFile = change.previous ?? change.file;
+    if (
+      (!change.file.startsWith('__tests__/') || !change.file.endsWith('.test.ts'))
+      && (!previousFile.startsWith('__tests__/') || !previousFile.endsWith('.test.ts'))
+    ) {
+      continue;
+    }
+    const current = readCurrent(change.file);
     const previous = readPrevious(base, previousFile);
     const currentDiagnostics = extractTestEvidence(current, change.file).parseDiagnostics;
     const previousDiagnostics = extractTestEvidence(previous, previousFile).parseDiagnostics;
@@ -1190,19 +1346,45 @@ export function buildMutationPlan({
         previous: previousDiagnostics,
       });
     }
-    const protectsRemovedAssertions = isTestCleanupChange(change, current, previous);
+    const protectsRemovedAssertions = change.status.startsWith('R')
+      || isTestCleanupChange(change, current, previous);
     if (protectsRemovedAssertions) cleanupTests.push(change.file);
 
-    // Pull requests that remove assertions mutate only the critical source
-    // dependencies owned by those cleaned-up tests. Direct production edits
-    // belong to the weekly changed-critical lane and must not balloon this
-    // gate into a second full mutation run.
+    // Pull requests that remove assertions mutate only the explicitly mapped
+    // source ranges owned by those cleaned-up tests. Direct production edits
+    // belong to the optional changed-critical lane and must not expand this
+    // targeted cleanup gate.
     if (scope !== 'test-cleanup' || !protectsRemovedAssertions) continue;
+    if (
+      !retiredTests.has(previousFile)
+      && (change.status.startsWith('M') || change.status.startsWith('R'))
+    ) {
+      const retirement = resolveRetirementMapping({
+        baseSha: base,
+        testFile: previousFile,
+        mappings: retirementMappings,
+        removedPaths: retirementRemovedPaths,
+        changedPaths: retirementChangedPaths,
+        ownerPaths: retirementOwnerCandidates(previousFile, previous),
+        existsCurrent,
+      });
+      if (retirement) {
+        deletedTestAudit.retirements.push({
+          test: previousFile,
+          currentTest: change.file,
+          status: change.status,
+          reason: retirement.reason.trim(),
+          replacementTests: [...new Set(retirement.replacementTests)].sort(),
+        });
+        retiredTests.add(previousFile);
+      }
+    }
+    if (retiredTests.has(previousFile)) continue;
 
     const exactMapping = mappingByTest.get(change.file) ?? mappingByTest.get(previousFile);
     const mappings = exactMapping ? [exactMapping] : [];
     if (mappings.length === 0) {
-      if (!change.status.startsWith('D')) unmappedRetainedCleanupTests.push(change.file);
+      if (!change.status.startsWith('D')) unmappedRetainedCleanupTests.push(previousFile);
       continue;
     }
     for (const mapping of mappings) {
@@ -1219,14 +1401,13 @@ export function buildMutationPlan({
       // literals in deleted QA suites are fixtures, not behavior ownership.
       const dependencies = new Set(mapping.sources);
       for (const dependency of dependencies) {
-        if (!isCriticalModule(dependency, patterns)) continue;
         const governedMutationTargets = (mapping.mutationTargets ?? [])
           .filter((target) => parseMutationTarget(mutationTargetPattern(target))?.file === dependency);
         if (governedMutationTargets.length === 0) {
           invalidCleanupMappings.push({
             test: change.file,
             mapping: mapping.test,
-            errors: [`critical cleanup source requires a governed mutation range: ${dependency}`],
+            errors: [`cleanup source requires a governed mutation range: ${dependency}`],
           });
           continue;
         }
@@ -1329,8 +1510,13 @@ export function buildMutationPlan({
     .map((target) => governedRangeByPattern.get(target))
     .filter(Boolean)
     .sort((left, right) => left.pattern.localeCompare(right.pattern));
+  const retirementReplacementTests = deletedTestAudit.retirements
+    .flatMap((retirement) => retirement.replacementTests);
   const testFiles = scope === 'test-cleanup'
-    ? [...new Set(governedRanges.map(({ replacementTest }) => replacementTest))]
+    ? [...new Set([
+        ...governedRanges.map(({ replacementTest }) => replacementTest),
+        ...retirementReplacementTests,
+      ])]
       .filter((file) => exists(path.join(root, file)))
       .sort()
     : [];
@@ -1348,6 +1534,8 @@ export function buildMutationPlan({
     scope,
     cleanupTests: [...new Set(cleanupTests)].sort(),
     cleanupMappings: deletedTestAudit.resolved,
+    retirementMappings: deletedTestAudit.retirements
+      .sort((left, right) => left.test.localeCompare(right.test)),
     unmappedDeletedTests: deletedTestAudit.unmapped,
     unmappedRetainedCleanupTests: [...new Set(unmappedRetainedCleanupTests)].sort(),
     testEvidenceParseDiagnostics,
@@ -1402,13 +1590,15 @@ function main() {
   }
 
   const policy = loadTestPolicy();
-  const changes = parseChangedFiles(exactBase);
+  const groupPolicy = loadTestGroups();
+  const changeSet = parseChangedFiles(exactBase);
   const preliminaryPlan = buildMutationPlan({
-    base: exactBase,
-    changes,
+    base: changeSet.base,
+    changes: changeSet.changes,
     patterns: policy.mutation.criticalModulePatterns,
     scope,
     cleanupMappings: policy.mutation.cleanupMappings,
+    retirementMappings: groupPolicy.retirementMappings ?? [],
     mutationExceptions: policy.mutation.exceptions,
     ownerTestMappings: policy.mutation.ownerTestMappings ?? [],
     testPolicy: policy,
@@ -1504,6 +1694,7 @@ function main() {
       const executionBindingErrors = validateMutationExecutionReport(report, {
         targets: executionTargets,
         testFiles: batch.testFiles ?? plan.testFiles,
+        scope,
       });
       if (executionBindingErrors.length > 0) {
         batch.status = 'failed';
@@ -1519,6 +1710,7 @@ function main() {
         generatedMutants,
         targets: executionTargets,
         sources: batch.sources,
+        scope,
       });
       if (fallback) {
         const emptyRangeReport = `batches/${String(batch.index).padStart(3, '0')}-empty-range-report.json`;

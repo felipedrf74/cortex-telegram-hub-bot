@@ -1,0 +1,11 @@
+[Unit]
+Description=Hourly Nexus Hub local SQLite backup
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=5m
+Unit=nexus-local-backup.service
+
+[Install]
+WantedBy=timers.target

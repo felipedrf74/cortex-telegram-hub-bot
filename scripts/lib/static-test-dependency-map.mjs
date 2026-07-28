@@ -175,13 +175,20 @@ function resolveSpecifier(importer, specifier, repositoryFiles) {
     .find((candidate) => repositoryFiles.has(candidate)) ?? null;
 }
 
-export function staticTestDependencyImpact(sourceRoot, base) {
-  const changed = changedFilesSince(sourceRoot, base);
+export function staticTestDependencyImpact(sourceRoot, base, changedFilesOverride = null) {
+  const changed = Array.isArray(changedFilesOverride)
+    ? [...new Set(changedFilesOverride)].sort()
+    : changedFilesSince(sourceRoot, base);
   const tracked = trackedFiles(sourceRoot);
   const trackedSet = new Set(tracked);
-  const removedTestFiles = removedTestFilesSince(sourceRoot, base);
+  const removedTestFiles = Array.isArray(changedFilesOverride)
+    ? changed.filter((file) => (
+      /^__tests__\/.+\.test\.ts$/.test(file)
+      && !fs.existsSync(path.join(sourceRoot, ...file.split('/')))
+    ))
+    : removedTestFilesSince(sourceRoot, base);
   const repositoryFiles = new Set([...tracked, ...changed]);
-  const reverseDependencies = new Map();
+  const directTestImporters = new Map();
   const nonLiteralImporters = new Set();
 
   for (const importer of tracked) {
@@ -190,41 +197,28 @@ export function staticTestDependencyImpact(sourceRoot, base) {
     if (!fs.existsSync(absolute) || !fs.lstatSync(absolute).isFile()) continue;
     const source = fs.readFileSync(absolute, 'utf8');
     if (hasNonLiteralModuleLoad(source)) nonLiteralImporters.add(importer);
+    // Owner groups cover production fan-out. Only direct test imports belong
+    // in this bounded supplement, so production cycles cannot widen selection.
+    if (!/^__tests__\/.+\.test\.ts$/.test(importer)) continue;
     for (const specifier of importSpecifiers(source)) {
       const dependency = resolveSpecifier(importer, specifier, repositoryFiles);
       if (!dependency) continue;
-      const importers = reverseDependencies.get(dependency) ?? new Set();
+      const importers = directTestImporters.get(dependency) ?? new Set();
       importers.add(importer);
-      reverseDependencies.set(dependency, importers);
+      directTestImporters.set(dependency, importers);
     }
   }
 
   const affectedTests = new Set();
   const unresolvedProductionFiles = [];
-  const nonLiteralTests = [...nonLiteralImporters]
-    .filter((file) => /^__tests__\/.+\.test\.ts$/.test(file));
-  const hasUnknownProductionTopology = [...nonLiteralImporters]
-    .some((file) => /^src\/.+\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/.test(file));
   for (const seed of changed) {
-    const queue = [seed];
-    const affected = new Set([seed]);
-    while (queue.length > 0) {
-      const dependency = queue.shift();
-      for (const importer of reverseDependencies.get(dependency) ?? []) {
-        if (affected.has(importer)) continue;
-        affected.add(importer);
-        queue.push(importer);
-      }
-    }
-    const tests = [...new Set([
-      ...[...affected].filter((file) => (
-        /^__tests__\/.+\.test\.ts$/.test(file) && trackedSet.has(file)
-      )),
-      ...(/^src\/.+\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/.test(seed) ? nonLiteralTests : []),
-    ])];
+    const tests = new Set(
+      [...(directTestImporters.get(seed) ?? [])]
+        .filter((test) => trackedSet.has(test)),
+    );
     for (const test of tests) affectedTests.add(test);
     if (/^src\/.+\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/.test(seed)
-        && (tests.length === 0 || nonLiteralImporters.has(seed) || hasUnknownProductionTopology)) {
+        && (tests.size === 0 || nonLiteralImporters.has(seed))) {
       unresolvedProductionFiles.push(seed);
     }
   }

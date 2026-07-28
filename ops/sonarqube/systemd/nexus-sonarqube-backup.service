@@ -1,18 +1,14 @@
 [Unit]
-Description=Encrypted off-host SonarQube PostgreSQL backup
-After=docker.service nexus-sonarqube-install-recovery.service nexus-sonarqube.service
+Description=Local SonarQube PostgreSQL backup
+After=docker.service
 Requires=docker.service
-Wants=nexus-sonarqube-install-recovery.service
-ConditionPathExists=!/var/lib/nexus-release-promotion/sonarqube-install-control/asset-install-in-progress.v2
-ConditionPathExists=!/var/lib/nexus-release-promotion/sonarqube-install-control/directory-install-in-progress.v1.json
-ConditionPathExists=!/var/lib/nexus-release-promotion/sonarqube-install-control/recovery-anchor-unenrollment-in-progress.v1.json
 StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot
 User=root
 Group=root
-ExecStart=/usr/local/sbin/quality-sonar-backup --config /etc/sonarqube/backup.env
+ExecStart=/usr/local/sbin/quality-sonar-backup --config /etc/nexus-sonarqube-backup.env
 Restart=on-failure
 RestartSec=15min
 TimeoutStartSec=30min
@@ -20,3 +16,8 @@ TimeoutStopSec=2min
 UMask=0077
 Nice=10
 IOSchedulingClass=idle
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+ReadOnlyPaths=/home/dominguez/sonarqube
+ReadWritePaths=/srv/nexus-backups/sonarqube /run/lock/nexus-release-sonar.lock

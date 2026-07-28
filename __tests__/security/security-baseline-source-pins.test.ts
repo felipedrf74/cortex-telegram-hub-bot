@@ -28,6 +28,8 @@ describe('Nexus security baseline source pins', () => {
       'WebSocket',
       'iOS local data',
       'VPS exposure',
+      'No AWS or off-host backup service is a runtime or release dependency',
+      'Same-disk recovery is explicitly accepted',
     ]) {
       expect(threatModel).toContain(required);
     }
@@ -45,6 +47,7 @@ describe('Nexus security baseline source pins', () => {
       'CI/supply chain',
       'VPS/Cloudflare',
       'Incident/privacy',
+      'no AWS/off-host dependency is claimed',
     ]) {
       expect(matrix).toContain(surface);
     }
@@ -82,7 +85,7 @@ describe('Nexus security baseline source pins', () => {
     for (const blockedItem of [
       'Cloudflare firewall/origin lock-down',
       'VPS UFW/fail2ban/SSH/systemd/PM2 permission changes',
-      'Backup encryption/off-host copy/restore drill',
+      'Off-host backup durability',
       'Secret rotation for JWT/provider/Stripe/Cloudflare/Resend/Telegram/model keys',
       'Route-by-route mass-assignment allowlist migration',
       'Step-up auth for destructive/sensitive actions',
@@ -113,6 +116,11 @@ describe('Nexus security baseline source pins', () => {
       expect(implementationStatus).toContain(coveredItem);
     }
     expect(implementationStatus.match(/BLOCKED_WITH_EXACT_REASON/g)?.length).toBeGreaterThanOrEqual(14);
+    expect(implementationStatus).toContain('ACCEPTED_RESIDUAL_RISK');
+    expect(implementationStatus).toContain('No AWS or off-host service is required');
+    expect(threatModel).not.toContain(
+      'ServerDominguez to encrypted S3-compatible application and Sonar backup storage',
+    );
     expect(index).toContain('docs/security/nexus-security-threat-model.md');
     expect(index).toContain('docs/security/security-control-matrix.md');
     expect(engineeringIndex).toContain('../security/security-control-matrix.md');

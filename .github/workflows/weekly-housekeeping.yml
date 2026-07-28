@@ -2,10 +2,8 @@ name: Weekly — Release pipeline housekeeping
 
 # release-pipeline-risk-based-optimization (2026-05-03) — Round 4.
 #
-# Once per week (Sundays 06:00 UTC) the housekeeping script runs:
-#   1. Prune ignored local smoke/evaluation evidence
-#   2. Regenerate and validate the project map
-#   3. Enforce the documentation policy
+# Once per week (Sundays 06:00 UTC), validate the project map and canonical
+# documentation policy without invoking retired release cleanup machinery.
 #
 # This is the lazy operator's friend: stuff that needs to happen
 # periodically but doesn't otherwise have an explicit owner.
@@ -39,10 +37,8 @@ jobs:
 
       - run: npm ci
 
-      - name: Run housekeeping (dry-run)
-        run: |
-          chmod +x scripts/release-pipeline-housekeeping.sh
-          scripts/release-pipeline-housekeeping.sh
+      - name: Verify project map freshness
+        run: npm run project:map:check
 
-      - name: Show docs:audit summary
-        run: node scripts/audit-docs.mjs --json | head -200
+      - name: Enforce documentation policy
+        run: npm run docs:audit

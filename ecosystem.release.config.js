@@ -7,7 +7,9 @@ if (!releaseDir) throw new Error('NEXUS_RELEASE_DIR is required');
 const role = process.env.NEXUS_RELEASE_ROLE || 'staging';
 const staging = role === 'staging';
 const baseDir = process.env.NEXUS_RELEASE_BASE_DIR
-  || (staging ? '/srv/nexus-release/staging' : '/srv/nexus-release/production');
+  || (staging
+    ? '/home/dominguez/telegram-hub-bot-staging'
+    : '/home/dominguez/telegram-hub-bot');
 const backendPort = staging ? '8201' : '8200';
 const contentPort = staging ? '8101' : '8100';
 const policyEnvironmentNames = Object.freeze([
@@ -67,6 +69,8 @@ module.exports = {
       NEXUS_BACKEND_PORT: backendPort,
       DATABASE_PATH: path.join(baseDir, 'data/bot.db'),
       NEXUS_RELEASE_SHA: process.env.NEXUS_RELEASE_SHA || 'unknown',
+      NEXUS_RELEASE_ARTIFACT_SHA256:
+        process.env.NEXUS_RELEASE_ARTIFACT_SHA256 || 'unknown',
       GIT_COMMIT: process.env.NEXUS_RELEASE_SHA || 'unknown',
       ...policyEnvironment,
     },
@@ -81,7 +85,7 @@ module.exports = {
     listen_timeout: 60000,
   }, {
     name: staging ? 'content-engine-staging' : 'content-engine',
-    script: path.join(releaseDir, 'content-engine/.venv/bin/python3.12'),
+    script: '/usr/bin/python3.12',
     args: 'main.py',
     cwd: path.join(releaseDir, 'content-engine'),
     interpreter: 'none',
@@ -93,10 +97,13 @@ module.exports = {
     env: {
       ENV: role,
       PYTHONDONTWRITEBYTECODE: '1',
+      PYTHONPATH: path.join(releaseDir, 'content-engine/vendor'),
       CONTENT_ENGINE_PORT: contentPort,
       NEXUS_BACKEND_BASE_URL: `http://127.0.0.1:${backendPort}`,
       NEXUS_BACKEND_PORT: backendPort,
       NEXUS_RELEASE_SHA: process.env.NEXUS_RELEASE_SHA || 'unknown',
+      NEXUS_RELEASE_ARTIFACT_SHA256:
+        process.env.NEXUS_RELEASE_ARTIFACT_SHA256 || 'unknown',
       GIT_COMMIT: process.env.NEXUS_RELEASE_SHA || 'unknown',
     },
     error_file: path.join(baseDir, 'logs/content-engine-error.log'),

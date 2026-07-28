@@ -417,19 +417,10 @@ export const config = {
   },
   invoiceObjectStorage: {
     enabled: (process.env.INVOICE_OBJECT_STORAGE_ENABLED || 'true') === 'true',
-    backend: (process.env.INVOICE_OBJECT_STORAGE_BACKEND || (process.env.INVOICE_MINIO_ENDPOINT ? 'minio' : 'filesystem')).toLowerCase(),
     filesystemDir: process.env.INVOICE_OBJECT_STORAGE_DIR || './data/invoice-objects',
     maxObjectBytes: optionalInt('INVOICE_OBJECT_MAX_BYTES', 10 * 1024 * 1024, { min: 1 }),
     minFreeBytes: optionalInt('INVOICE_OBJECT_MIN_FREE_BYTES', 512 * 1024 * 1024, { min: 0 }),
     tenantMaxBytes: optionalInt('INVOICE_OBJECT_TENANT_MAX_BYTES', 5 * 1024 * 1024 * 1024, { min: 0 }),
-    minio: {
-      endpoint: process.env.INVOICE_MINIO_ENDPOINT || '',
-      region: process.env.INVOICE_MINIO_REGION || 'us-east-1',
-      bucket: process.env.INVOICE_MINIO_BUCKET || 'nexus-invoices',
-      accessKeyId: process.env.INVOICE_MINIO_ACCESS_KEY_ID || '',
-      secretAccessKey: process.env.INVOICE_MINIO_SECRET_ACCESS_KEY || '',
-      forcePathStyle: (process.env.INVOICE_MINIO_FORCE_PATH_STYLE || 'true') !== 'false',
-    },
   },
   // ── Sentry Error Tracking ────────────────────────────────────────────
   // Cloud-based error monitoring alongside our existing SQLite + operator

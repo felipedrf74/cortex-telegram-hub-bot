@@ -160,17 +160,12 @@ validate_root_path_chain "$SOURCE_ROOT" "reviewed Ollama bootstrap source"
 validate_root_path_chain "$SOURCE_ARCHIVE" "reviewed Ollama bootstrap archive"
 reviewed_assets=(
   install-ollama.sh
-  ollama-observation-collector.mjs
-  ollama-soak-evidence.mjs
-  ollama-large-model-cleanup.mjs
-  ollama-zero-swap-transition.mjs
+  ollama-lean-finalize.mjs
   ollama-service-envelope-check.mjs
   lib/ollama-service-envelope.mjs
   ollama-systemd-dropin-transaction.mjs
   ollama-install-state-check.mjs
-  ollama-observation-control.mjs
   systemd/00-nexus-ollama-install-guard.conf
-  systemd/nexus-ollama-observation@.service
 )
 for reviewed_asset in "${reviewed_assets[@]}"; do
   validate_root_path_chain "$SCRIPT_DIR/$reviewed_asset" "reviewed Ollama asset ($reviewed_asset)"
@@ -279,7 +274,7 @@ echo "  ollama daemon: MODEL=${PRIMARY_MODEL} NUM_PARALLEL=${OLLAMA_NUM_PARALLEL
 
 # Prevalidate every destination boundary before the transaction helper records
 # exact predecessors and replaces any operational asset. The shared mutex
-# keeps releases, Sonar, and observations out of this maintenance transaction.
+# keeps releases, Sonar, and Ollama finalization out of this maintenance transaction.
 log "Prevalidating transactional Ollama operational assets"
 validate_root_directory /usr/local/sbin "Ollama executable directory"
 ensure_root_directory /usr/local/sbin/lib "Ollama executable library directory" 755
@@ -289,18 +284,15 @@ ensure_root_directory \
   "Ollama systemd drop-in directory" 755
 ensure_root_directory /var/lib/nexus-release "Nexus release state directory" 755
 ensure_root_directory \
-  /var/lib/nexus-release/ollama-observations \
-  "Ollama observation directory" 700
-ensure_root_directory \
   /var/lib/nexus-release/ollama-install \
   "Ollama install state directory" 700
 
 shared_mutex=/run/lock/nexus-release-sonar.lock
 [ -f "$shared_mutex" ] && [ ! -L "$shared_mutex" ] \
   && [ "$(stat -c '%U:%G:%a' -- "$shared_mutex")" = root:dominguez:660 ] \
-  || fail "shared release/Sonar/observation mutex is missing or unsafe" 75
+  || fail "shared release/Sonar/Ollama mutex is missing or unsafe" 75
 exec 8<>"$shared_mutex"
-flock -n 8 || fail "release, Sonar, or an Ollama observation is active" 75
+flock -n 8 || fail "release, Sonar, or Ollama finalization is active" 75
 
 install_lock=/var/lib/nexus-release/ollama-install/.install.lock
 if [ -L "$install_lock" ]; then
@@ -521,5 +513,8 @@ echo
 echo "Next steps (operator):"
 echo "  1. Verify in browser: curl -s http://127.0.0.1:11434/api/ps"
 echo "  2. Run scripts/staging-smoke-ollama.sh with HEALTH_TOKEN configured."
-echo "  3. Operational rollback: set OLLAMA_ENABLED=false and restart Nexus Hub;"
+echo "  3. After the exact staging and production release passes, run:"
+echo "     sudo /usr/local/sbin/nexus-ollama-lean-finalize.mjs --dry-run"
+echo "     then apply only with the owner-authorized printed plan digest."
+echo "  4. Operational rollback: set OLLAMA_ENABLED=false and restart Nexus Hub;"
 echo "     approved Gemini/cloud routing remains available."

@@ -10,6 +10,10 @@ import {
   walkTestFiles,
 } from './lib/test-policy.mjs';
 import { staticTestDependencyImpact } from './lib/static-test-dependency-map.mjs';
+import {
+  contractTestsForGroups,
+  loadTestGroups,
+} from './lib/test-groups.mjs';
 
 const args = process.argv.slice(2);
 const valueOf = (name) => {
@@ -20,7 +24,7 @@ const base = valueOf('--base');
 const classifierPath = valueOf('--classifier');
 const sourceRoot = path.resolve(valueOf('--source-root') ?? root);
 const json = args.includes('--json');
-const coverageSelection = args.includes('--coverage');
+const outputPath = valueOf('--output');
 
 if (!base || !classifierPath) {
   console.error('Usage: select-vitest-files.mjs --base <sha> --classifier <json> [--source-root <dir>] [--coverage] [--json]');
@@ -29,82 +33,64 @@ if (!base || !classifierPath) {
 
 const classifier = JSON.parse(fs.readFileSync(classifierPath, 'utf8'));
 const policy = loadTestPolicy();
+const groupPolicy = loadTestGroups(sourceRoot);
 const discoveredFiles = walkTestFiles(sourceRoot);
 const allFiles = partitionTestFiles(discoveredFiles, policy).deterministic;
-const focused = matchFiles(allFiles, classifier.vitest?.globs ?? []);
-const critical = matchFiles(allFiles, policy.tiers.critical.include);
-const dependencyImpact = staticTestDependencyImpact(sourceRoot, base);
+const dependencyImpact = staticTestDependencyImpact(
+  sourceRoot,
+  base,
+  classifier.changedFiles,
+);
 const changed = dependencyImpact.tests.filter((file) => allFiles.includes(file));
+const changedTests = dependencyImpact.changedFiles.filter((file) => allFiles.includes(file));
 const removed = dependencyImpact.removedTestFiles;
 const removedDigest = createHash('sha256').update(JSON.stringify(removed)).digest('hex');
+const groups = classifier.vitest?.groups ?? classifier.testGroups?.selected ?? [];
+const contracts = classifier.vitest?.mode === 'skip'
+  ? []
+  : contractTestsForGroups(groups, groupPolicy, allFiles);
+const groupTests = classifier.vitest?.mode === 'skip'
+  ? []
+  : groups.flatMap((name) => matchFiles(allFiles, groupPolicy.groups[name]?.tests ?? []));
+const unresolved = dependencyImpact.unresolvedProductionFiles;
+const selected = classifier.vitest?.mode === 'skip'
+  ? []
+  : [...new Set([...contracts, ...groupTests, ...changed, ...changedTests])]
+  .filter((file) => allFiles.includes(file))
+  .sort();
+const selection = {
+  schema: 'nexus.test-selection.v2',
+  base,
+  policyVersion: groupPolicy.version,
+  policyDigest: groupPolicy.digest,
+  docsOnly: classifier.flags?.docsOnly === true,
+  groups: [...groups].sort(),
+  core: groupPolicy.core.tests.filter((file) => allFiles.includes(file)).sort(),
+  contracts,
+  groupTests: [...new Set(groupTests)].sort(),
+  dependents: [...changed].sort(),
+  changedTests: [...changedTests].sort(),
+  removed,
+  removedDigest,
+  unresolved,
+  unresolvedDigest: createHash('sha256').update(JSON.stringify(unresolved)).digest('hex'),
+  impactResolved: classifier.flags?.impactResolved === true && removed.length === 0,
+  selected,
+};
 
-// Shared fixtures, test policy/configuration, package infrastructure, and
-// unresolved high-fan-in changes are deliberately fail-closed. Do not reduce
-// a classifier-mandated full run back to a changed/critical subset.
-if (classifier.vitest?.mode === 'full' && !coverageSelection) {
-  if (json) {
-    process.stdout.write(`${JSON.stringify({
-      base,
-      changed: [],
-      focused: [],
-      cannotSkip: [],
-      critical,
-      removed,
-      removedDigest,
-      unresolved: [],
-      unresolvedDigest: createHash('sha256').update('[]').digest('hex'),
-      impactResolved: classifier.flags?.impactResolved === true && removed.length === 0,
-      selected: allFiles,
-      escalated: 'classifier-full',
-    }, null, 2)}\n`);
-  } else {
-    process.stdout.write(`${allFiles.join('\n')}\n`);
+if (outputPath) {
+  const absolute = path.resolve(sourceRoot, outputPath);
+  const localRoot = path.join(sourceRoot, '.local');
+  const relative = path.relative(localRoot, absolute);
+  if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`)) {
+    throw new Error('--output must stay below .local/');
   }
-  // Do not call process.exit() immediately after a large write: when stdout is
-  // a pipe, Node can otherwise discard bytes still buffered beyond 64 KiB.
-  process.exitCode = 0;
-} else {
-  emitSelection();
+  fs.mkdirSync(path.dirname(absolute), { recursive: true });
+  fs.writeFileSync(absolute, `${JSON.stringify(selection, null, 2)}\n`, { mode: 0o600 });
 }
 
-// This selection runs inside the protected signer as well as RC planning.
-// Candidate files are inert data: build a transitive graph from literal local
-// imports and Git history without loading Vitest, setup files, or test modules.
-// Unresolved impact is per changed production file. One domain's focused globs
-// must never mask an unrelated unmapped module in the same release diff.
-// A future governed per-file fallback map may resolve individual paths; until
-// then static unresolved paths deliberately escalate the RC to full.
-function emitSelection() {
-  const unresolved = dependencyImpact.unresolvedProductionFiles;
-  const selected = [...new Set([...changed, ...focused, ...critical])]
-    .filter((file) => allFiles.includes(file))
-    .sort();
-
-  if (json) {
-    process.stdout.write(`${JSON.stringify({
-      base,
-      changed: [...changed].sort(),
-      focused: [...focused].sort(),
-      cannotSkip: [...focused].sort(),
-      critical: [...critical].sort(),
-      removed,
-      removedDigest,
-      unresolved,
-      unresolvedDigest: createHash('sha256').update(JSON.stringify(unresolved)).digest('hex'),
-      impactResolved: classifier.flags?.impactResolved === true
-        && unresolved.length === 0
-        && removed.length === 0,
-      selected,
-    }, null, 2)}\n`);
-  } else {
-    // Correctness escalation and coverage measurement are different jobs. A
-    // shared-fixture or classifier change still forces the separately sharded
-    // full correctness suite, while the coverage lane measures the dependency,
-    // critical, and cannot-skip union. Uncovered changed lines still fail the
-    // ratchet, so this does not turn unresolved production impact into success.
-    const plainSelection = coverageSelection
-      ? selected
-      : (unresolved.length > 0 || removed.length > 0 ? allFiles : selected);
-    process.stdout.write(plainSelection.length ? `${plainSelection.join('\n')}\n` : '');
-  }
+if (json) {
+  process.stdout.write(`${JSON.stringify(selection, null, 2)}\n`);
+} else {
+  process.stdout.write(selected.length ? `${selected.join('\n')}\n` : '');
 }

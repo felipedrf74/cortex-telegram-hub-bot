@@ -59,11 +59,13 @@
     ]
   },
   "releaseProcess": {
-    "manifestSchema": "nexus.release-manifest.v2",
+    "currentProductionEvidenceSchema": "nexus.release-manifest.v2",
+    "targetManifestSchema": "nexus.release-checksum-manifest.v1",
+    "leanActivation": "pending_first_staging_and_production_proof",
     "exactArtifactPath": "proven",
     "stagingRehearsals": 10,
     "ownerAuthorizedProductionReleases": 6,
-    "legacyWrappers": "retired",
+    "legacyWrappers": "installed_until_first_lean_proof",
     "firstProofRelease": {
       "version": "4.14.219",
       "runtimeSha": "aeb5e9df57f6c9d72442093d6f93cc720694e9ee",

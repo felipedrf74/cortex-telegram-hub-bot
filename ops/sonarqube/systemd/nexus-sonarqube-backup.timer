@@ -1,10 +1,5 @@
 [Unit]
-Description=Daily encrypted SonarQube PostgreSQL backup
-After=nexus-sonarqube-install-recovery.service
-Wants=nexus-sonarqube-install-recovery.service
-ConditionPathExists=!/var/lib/nexus-release-promotion/sonarqube-install-control/asset-install-in-progress.v2
-ConditionPathExists=!/var/lib/nexus-release-promotion/sonarqube-install-control/directory-install-in-progress.v1.json
-ConditionPathExists=!/var/lib/nexus-release-promotion/sonarqube-install-control/recovery-anchor-unenrollment-in-progress.v1.json
+Description=Daily local SonarQube PostgreSQL backup
 
 [Timer]
 OnCalendar=*-*-* 03:15:00 UTC

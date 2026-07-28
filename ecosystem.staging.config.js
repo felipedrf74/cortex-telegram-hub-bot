@@ -19,7 +19,7 @@
 //
 // Usage:
 //   pm2 start ecosystem.staging.config.js   # First-time start
-//   npm run release:staging -- --manifest <path>  # Governed staging switch
+//   npm run release:prepare                       # Governed staging switch
 //   pm2 logs nexus-hub-staging              # Tail staging logs
 
 module.exports = {

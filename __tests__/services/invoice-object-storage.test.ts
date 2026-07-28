@@ -19,14 +19,6 @@ vi.mock('../../src/config', () => ({
       maxObjectBytes: 1024 * 1024,
       minFreeBytes: 0,
       tenantMaxBytes: 0,
-      minio: {
-        endpoint: '',
-        region: 'us-east-1',
-        bucket: '',
-        accessKeyId: '',
-        secretAccessKey: '',
-        forcePathStyle: true,
-      },
     },
   },
 }));
@@ -71,6 +63,11 @@ describe('invoice object storage filesystem backend', () => {
       stored.checksum,
       stored.storageBackend,
     );
+    const legacyRoundTrip = await verifyInvoiceObjectChecksum(
+      stored.objectKey,
+      stored.checksum,
+      'legacy_scp',
+    );
 
     expect(stored).toMatchObject({
       objectKey: 'invoices/7/9/2026/Abr-2026/Fatura_Abril.pdf',
@@ -79,6 +76,7 @@ describe('invoice object storage filesystem backend', () => {
       storageBackend: 'filesystem',
     });
     expect(roundTrip).toEqual(buffer);
+    expect(legacyRoundTrip).toEqual(buffer);
     expect(fs.existsSync(path.join(testConfig.storageDir, stored.objectKey))).toBe(true);
   });
 
@@ -93,5 +91,15 @@ describe('invoice object storage filesystem backend', () => {
     await expect(
       verifyInvoiceObjectChecksum(stored.objectKey, 'not-the-real-checksum', stored.storageBackend),
     ).rejects.toThrow(/checksum mismatch/);
+  });
+
+  it('rejects records that refer to the retired MinIO backend', async () => {
+    await expect(
+      verifyInvoiceObjectChecksum(
+        'invoices/7/9/2026/Abr-2026/safe.pdf',
+        null,
+        'minio',
+      ),
+    ).rejects.toThrow('Unsupported invoice object storage backend: minio');
   });
 });

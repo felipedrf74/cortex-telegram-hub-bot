@@ -6,12 +6,13 @@ umask 077
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOCK_FILE="$ROOT/ops/sonarqube/images.lock.env"
+COMPOSE_FILE="$ROOT/ops/sonarqube/compose.yaml"
 ACTION=check
 CURL_BIN="$(command -v curl 2>/dev/null || true)"
 NODE_BIN="$(command -v node 2>/dev/null || true)"
 
 SONAR_TAG=26.7.0.124771-community
-POSTGRES_TAG=17
+POSTGRES_TAG=16
 
 usage() {
   cat <<'EOF'
@@ -67,6 +68,10 @@ verify_lock() {
     echo "PostgreSQL image is not pinned by digest" >&2
     return 1
   }
+  [ "$(grep -Fxc "    image: $sonar_image" "$COMPOSE_FILE")" -eq 1 ] \
+    || { echo "SonarQube Compose image differs from the immutable lock" >&2; return 1; }
+  [ "$(grep -Fxc "    image: $postgres_image" "$COMPOSE_FILE")" -eq 1 ] \
+    || { echo "PostgreSQL Compose image differs from the immutable lock" >&2; return 1; }
 }
 
 registry_digest() {
@@ -99,7 +104,8 @@ postgres_digest="$(registry_digest postgres "$POSTGRES_TAG")"
 if [ "$ACTION" = write ]; then
   mkdir -p "$(dirname "$LOCK_FILE")"
   tmp_lock="$(mktemp "$(dirname "$LOCK_FILE")/.images.lock.XXXXXX")"
-  cleanup() { rm -f "$tmp_lock"; }
+  tmp_compose="$(mktemp "$(dirname "$COMPOSE_FILE")/.compose.XXXXXX")"
+  cleanup() { rm -f "$tmp_lock" "$tmp_compose"; }
   trap cleanup EXIT
   cat >"$tmp_lock" <<EOF
 # Generated and verified by scripts/quality-sonar-resolve-images.sh.
@@ -109,8 +115,30 @@ SONARQUBE_IMAGE=sonarqube:$SONAR_TAG@$sonar_digest
 POSTGRES_IMAGE_TAG=$POSTGRES_TAG
 POSTGRES_IMAGE=postgres:$POSTGRES_TAG@$postgres_digest
 EOF
+  python3 - "$COMPOSE_FILE" "$tmp_compose" \
+    "sonarqube:$SONAR_TAG@$sonar_digest" \
+    "postgres:$POSTGRES_TAG@$postgres_digest" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+source, target = map(Path, sys.argv[1:3])
+sonar, postgres = sys.argv[3:]
+body = source.read_text(encoding="utf-8")
+body, postgres_count = re.subn(
+    r"(?m)^    image: postgres:[^\n]+$", f"    image: {postgres}", body
+)
+body, sonar_count = re.subn(
+    r"(?m)^    image: sonarqube:[^\n]+$", f"    image: {sonar}", body
+)
+if postgres_count != 1 or sonar_count != 1:
+    raise SystemExit("Compose does not contain exactly one pinned image per service")
+target.write_text(body, encoding="utf-8")
+PY
   chmod 0644 "$tmp_lock"
+  chmod 0644 "$tmp_compose"
   mv "$tmp_lock" "$LOCK_FILE"
+  mv "$tmp_compose" "$COMPOSE_FILE"
   trap - EXIT
   echo "sonar_image_lock_written path=$LOCK_FILE"
   exit 0
