@@ -311,16 +311,25 @@ function validateManifest(
   if (typeof value.migrations?.required !== 'boolean'
       || !['passed', 'skipped'].includes(value.migrations?.status)
       || typeof value.migrations?.approvalRequired !== 'boolean'
+      || typeof value.migrations?.governanceReviewRequired !== 'boolean'
       || (value.migrations.required
         && (value.migrations.status !== 'passed'
           || (value.migrations.approvalRequired
             && !/^[0-9a-f]{64}$/.test(value.migrations.reviewSubjectSha256 ?? ''))
           || (!value.migrations.approvalRequired
-            && value.migrations.reviewSubjectSha256 !== null)))
+            && value.migrations.reviewSubjectSha256 !== null)
+          || (value.migrations.governanceReviewRequired
+            && !/^[0-9a-f]{64}$/.test(
+              value.migrations.governanceReviewSubjectSha256 ?? '',
+            ))
+          || (!value.migrations.governanceReviewRequired
+            && value.migrations.governanceReviewSubjectSha256 !== null)))
       || (!value.migrations.required
         && (value.migrations.status !== 'skipped'
           || value.migrations.approvalRequired
-          || value.migrations.reviewSubjectSha256 !== null))) {
+          || value.migrations.governanceReviewRequired
+          || value.migrations.reviewSubjectSha256 !== null
+          || value.migrations.governanceReviewSubjectSha256 !== null))) {
     fail('release checksum manifest migration result is invalid');
   }
   if (bundle) {
@@ -612,18 +621,25 @@ function writeManifest() {
   const migrationRequired = valueOf('--migration-required') === 'true';
   const migrationStatus = valueOf('--migration-status');
   let migrationApprovalRequired = false;
+  let governanceReviewRequired = false;
   let reviewSubject = null;
+  let governanceReviewSubject = null;
   if (migrationRequired) {
     if (migrationStatus !== 'passed') fail('required migration safety result did not pass');
     const migration = readJson(valueOf('--migration-result'), 'migration result');
     if (migration.ok !== true) fail('migration safety result did not pass');
     reviewSubject = migration.requiredReviewSubject?.sha256 ?? null;
     migrationApprovalRequired = migration.authorization?.approvalRequired === true;
-    if (migrationApprovalRequired) {
-      const supplied = valueOf('--migration-review-sha256');
+    governanceReviewRequired = migration.authorization?.governanceReviewRequired === true;
+    const supplied = valueOf('--migration-review-sha256');
+    if (migrationApprovalRequired || governanceReviewRequired) {
       if (supplied !== reviewSubject) {
-        fail('irreversible migration review subject was not explicitly approved');
+        fail('migration review subject was not explicitly approved');
       }
+      if (governanceReviewRequired) governanceReviewSubject = reviewSubject;
+      if (!migrationApprovalRequired) reviewSubject = null;
+    } else if (reviewSubject !== null || supplied) {
+      fail('compatible migration result unexpectedly supplied review evidence');
     }
   } else if (migrationStatus !== 'skipped'
       || valueOf('--migration-result')
@@ -675,7 +691,9 @@ function writeManifest() {
       required: migrationRequired,
       status: migrationStatus,
       approvalRequired: migrationApprovalRequired,
+      governanceReviewRequired,
       reviewSubjectSha256: reviewSubject,
+      governanceReviewSubjectSha256: governanceReviewSubject,
     },
   };
   validateManifest(manifest, { bundle });

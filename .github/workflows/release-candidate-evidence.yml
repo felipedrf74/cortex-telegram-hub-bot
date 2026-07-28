@@ -115,11 +115,11 @@ jobs:
           else
             echo 'python_required=true' >> "$GITHUB_OUTPUT"
           fi
-          if git diff --quiet "$DEPLOYED_SHA" "$RUNTIME_SHA" -- migrations/; then
-            echo 'migration_required=false' >> "$GITHUB_OUTPUT"
-          else
-            echo 'migration_required=true' >> "$GITHUB_OUTPUT"
-          fi
+          migration_required="$(
+            jq -r '.flags.migration' .local/release/checkpoint/release-impact.json
+          )"
+          [[ "$migration_required" == true || "$migration_required" == false ]]
+          echo "migration_required=$migration_required" >> "$GITHUB_OUTPUT"
 
   vitest-remainder:
     name: Deterministic remainder shard ${{ matrix.shard }}/4
@@ -227,10 +227,15 @@ jobs:
           required="$(jq -r '.requiredReviewSubject.sha256 // ""' .local/release/checkpoint/migration-result.json)"
           if [ -n "$required" ]; then
             test "$APPROVED_REVIEW_SHA256" = "$required"
-            echo "Irreversible migrations remain blocked in the lean release path until the canonical promotion rehearsal and database-restore contract is implemented." >&2
-            exit 1
+            if [ "$(jq -r '.authorization.approvalRequired' .local/release/checkpoint/migration-result.json)" = true ]; then
+              echo "Irreversible migration SQL remains blocked in the lean release path until the canonical promotion rehearsal and database-restore contract is implemented." >&2
+              exit 1
+            fi
+            test "$(jq -r '.authorization.governanceReviewRequired' .local/release/checkpoint/migration-result.json)" = true
           else
             test -z "$APPROVED_REVIEW_SHA256"
+            test "$(jq -r '.authorization.approvalRequired' .local/release/checkpoint/migration-result.json)" = false
+            test "$(jq -r '.authorization.governanceReviewRequired' .local/release/checkpoint/migration-result.json)" = false
           fi
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

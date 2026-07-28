@@ -31,11 +31,14 @@ function classify(files: string[]) {
 describe('lean changed-area classification', () => {
   it.each([
     ['src/api/auth-middleware.ts', 'platform-security'],
+    ['src/services/apple-token-revocation.ts', 'platform-security'],
+    ['__tests__/services/apple-token-revocation.test.ts', 'platform-security'],
     ['src/services/chat-answer-contract.ts', 'chat-secretary'],
     ['src/services/training-plans.ts', 'training'],
     ['src/services/google-calendar.ts', 'calendar-health'],
     ['src/services/content-workflow.ts', 'content'],
     ['src/services/invoice-filer.ts', 'finance-billing'],
+    ['__tests__/services/apple-subscription-lifecycle.test.ts', 'finance-billing'],
     ['src/services/notification-orchestrator.ts', 'tasks-notifications'],
     ['src/services/gemini-provider.ts', 'providers-integrations'],
     ['src/portal/server.ts', 'portal-skills'],
@@ -121,6 +124,14 @@ describe('lean changed-area classification', () => {
       'migrations',
       'release-ops',
     ]));
+  });
+
+  it('keeps migration-governance scripts in the conditional migration gate', () => {
+    const result = classify(['scripts/migration-safety-check.mjs']);
+    expect(result.flags.migration).toBe(true);
+    expect(result.vitest.mode).toBe('focused');
+    expect(result.vitest.groups).toContain('release-ops');
+    expect(result.vitest.mode).not.toBe('full');
   });
 
   it.each([

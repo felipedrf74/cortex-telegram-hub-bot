@@ -551,6 +551,12 @@ const {
   finalRehearsalEvidence,
   backupEvidence,
 } = checkChangedIrreversible(errors);
+const governanceChanges = irreversible.filter(({ file }) => (
+  migrationSafetyGovernanceReasons.has(file)
+));
+const irreversibleSchemaMigrations = irreversible.filter(({ file }) => (
+  !migrationSafetyGovernanceReasons.has(file)
+));
 
 const payload = {
   ok: errors.length === 0,
@@ -578,12 +584,15 @@ const payload = {
   changedOnly,
   approvalMode,
   irreversibleChangedMigrations: irreversible,
+  governanceChanges,
+  irreversibleSchemaMigrations,
   policyIdentityIssues: irreversiblePolicy.integrityIssues,
   requiredReviewSubject: irreversible.length > 0 ? reviewSubject(irreversible) : null,
   authorization: {
-    approvalRequired: irreversible.length > 0,
-    backupRequired: irreversible.length > 0,
-    authorizesPromotion: irreversible.length > 0
+    approvalRequired: irreversibleSchemaMigrations.length > 0,
+    governanceReviewRequired: governanceChanges.length > 0,
+    backupRequired: irreversibleSchemaMigrations.length > 0,
+    authorizesPromotion: irreversibleSchemaMigrations.length > 0
       && approvalMode === 'promotion'
       && errors.length === 0,
   },

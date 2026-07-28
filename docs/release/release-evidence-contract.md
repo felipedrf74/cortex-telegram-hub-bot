@@ -22,7 +22,7 @@ Required fields:
 | `selectedGroups` | Sorted, deduplicated protected-main test groups; empty only for a docs-only SHA |
 | `fullSuite` | Exact deterministic inventory plus selected/remainder partition proof and four ordered, passing remainder-shard receipts |
 | `python` | `passed` when required, otherwise `skipped` |
-| `migrations` | `passed` when compatible migration files changed, otherwise `skipped`; any irreversible scan blocks checkpoint completion and cannot authorize promotion |
+| `migrations` | `passed` when compatible migration files changed, otherwise `skipped`; governance-only changes bind an exact review-subject SHA-256, while irreversible migration SQL blocks checkpoint completion |
 
 The partition commits the deterministic, protected-main selected, and
 checkpoint remainder file counts and inventory SHA-256 values. Manifest

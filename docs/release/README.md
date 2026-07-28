@@ -17,10 +17,11 @@ closeout, and backup retention jobs are not release gates.
   and proves that selected plus remainder is a disjoint, gap-free inventory.
 - Python runs only when `content-engine/` changed since the deployed SHA.
 - Migration sequence and cumulative application run only when `migrations/`
-  changed since the deployed SHA. The lean path blocks an irreversible
-  migration even when its exact review-subject digest is supplied; it cannot
-  promote one until the canonical rehearsal and database-restore contract is
-  implemented.
+  changed since the deployed SHA. A migration-governance-only change requires
+  its exact review-subject digest at checkpoint dispatch. The lean path still
+  blocks irreversible migration SQL even when that digest is supplied; it
+  cannot promote one until the canonical rehearsal and database-restore
+  contract is implemented.
 - Staging and production must pass health, exact `current`/completion-marker
   binding, an authenticated snapshot whose version equals that marker's
   `packageVersion`, read-only SQLite integrity and foreign-key checks, and
@@ -47,7 +48,8 @@ The workflow:
    groups, then subtracts the exact protected-main selection and runs the deterministic
    remainder over four non-overlapping shards;
 4. proves the selected/remainder union, then runs conditional Python and
-   migration safety, failing closed if the candidate is irreversible;
+   migration safety, accepting only exact-digest-reviewed governance-only
+   changes and failing closed if the candidate contains irreversible SQL;
 5. downloads and verifies the original protected-main bundle;
 6. publishes `release-checkpoint-<sha>/release-manifest.json`.
 
@@ -210,10 +212,12 @@ deadline and records its measured duration.
   duration is recorded against the 120-second objective.
 - If automatic predecessor recovery also fails, the transaction state is
   `rollback_failed`; do not retry promotion until service health is restored.
-- An irreversible migration is not promotable through the lean path. Supplying
-  its exact generated review-subject SHA-256 proves review identity but does not
-  replace the rehearsal, stopped-state backup, or database-restore contract in
-  `docs/release/migration-irreversible.md`.
+- A governance-only migration-safety change is promotable only when the
+  checkpoint input exactly matches its generated review-subject SHA-256; that
+  digest is recorded separately in the compact manifest. Irreversible
+  migration SQL is not promotable through the lean path. Supplying its exact
+  review subject does not replace the rehearsal, stopped-state backup, or
+  database-restore contract in `docs/release/migration-irreversible.md`.
 
 ## Advisory quality and timing
 

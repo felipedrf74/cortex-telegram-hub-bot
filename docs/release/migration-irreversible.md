@@ -61,9 +61,13 @@ The changed-only migration gate has three deliberately distinct modes:
 
 - `--approval-mode scan` is non-authorizing. It validates migration sequence,
   cumulative apply, registered SQL identities, and the exact changed-path
-  subject, then returns `authorization.approvalRequired: true` and
-  `authorizesPromotion: false`. It never treats a missing approval or backup as
-  evidence and cannot be used by release preparation or promotion.
+  subject. Irreversible SQL returns `authorization.approvalRequired: true`;
+  governance-only changes return
+  `authorization.governanceReviewRequired: true`. Both return
+  `authorizesPromotion: false`. The lean checkpoint may accept a
+  governance-only subject only when its dispatch input matches the generated
+  SHA-256 exactly; it never treats that identity as approval for irreversible
+  SQL or as backup evidence.
 - `--approval-mode review` validates the governed SQL identities, the exact
   sorted set of irreversible/governance paths, each changed path's candidate
   SHA-256 (or deletion marker), and an owner approval artifact under
