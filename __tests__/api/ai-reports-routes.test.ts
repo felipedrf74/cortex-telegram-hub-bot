@@ -47,9 +47,10 @@ async function dispatchReport(
   userId: number | undefined,
   body: any,
   tenantId = userId,
+  routerOverride?: any,
 ): Promise<MockRes> {
   const { aiReportsRoutes } = await import('../../src/api/routes/ai-reports');
-  const router = aiReportsRoutes();
+  const router = routerOverride ?? aiReportsRoutes();
   const req = mockReq(userId, body, tenantId);
   (req as any).method = 'POST';
   (req as any).url = '/';
@@ -104,6 +105,34 @@ afterEach(() => {
 });
 
 describe('POST /api/v1/ai-reports', () => {
+  it('rate-limits repeated database-write attempts per authenticated user', async () => {
+    const { aiReportsRoutes } = await import('../../src/api/routes/ai-reports');
+    const { config } = await import('../../src/config');
+    const router = aiReportsRoutes();
+    const limit = config.ios?.rateLimit ?? 60;
+
+    for (let index = 0; index < limit; index += 1) {
+      const res = await dispatchReport(1, {
+        messageId: `rate-limit-${index}`,
+        reason: 'other',
+        content: 'Bounded report.',
+      }, 1, router);
+      expect(res.statusCode).toBe(200);
+    }
+
+    const limited = await dispatchReport(1, {
+      messageId: 'rate-limit-rejected',
+      reason: 'other',
+      content: 'This report must not reach the database.',
+    }, 1, router);
+
+    expect(limited.statusCode).toBe(429);
+    expect(limited.body.error.code).toBe('RATE_LIMITED');
+    expect(testDb.prepare(
+      'SELECT COUNT(*) AS n FROM ai_output_reports WHERE message_id = ?',
+    ).get('rate-limit-rejected')).toEqual({ n: 0 });
+  });
+
   it('persists a report and returns { reported, reportId }', async () => {
     const res = await dispatchReport(1, {
       messageId: 'msg-42',

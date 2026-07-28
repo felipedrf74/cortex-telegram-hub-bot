@@ -18,12 +18,14 @@
  * `services/user-data-export.ts` — no hand-maintained list to update.
  *
  * Auth: JWT-protected (mounted under the protected router).
- * Rate limit: inherits from the global rate-limiter.
+ * Rate limit: global limiter plus a route-local per-user defense.
  */
 
-import { Router, Response } from 'express';
+import { Router, Response, type Request } from 'express';
+import { rateLimit } from 'express-rate-limit';
 import { randomUUID } from 'node:crypto';
 import { AuthenticatedRequest } from '../auth-middleware';
+import { config } from '../../config';
 import { logger } from '../../utils/logger';
 import { getDb } from '../../services/database';
 import { sendSuccess, sendError, sendInternalError, asyncHandler } from '../response-helpers';
@@ -61,6 +63,26 @@ function asReason(value: unknown): AiReportReason | null {
 
 export function aiReportsRoutes(): Router {
   const router = Router();
+  const reportRateLimitMiddleware = rateLimit({
+    windowMs: 60 * 1000,
+    limit: config.ios?.rateLimit ?? 60,
+    keyGenerator: (req: Request) => {
+      const { userId } = req as AuthenticatedRequest;
+      return `user:${userId}`;
+    },
+    // The parent API router remains authoritative for normal rate-limit
+    // headers. This route-local limiter makes the database-mutating handler
+    // independently safe and legible to static analysis.
+    legacyHeaders: false,
+    standardHeaders: false,
+    handler: (_req, res, _next, options) => {
+      const retryAfter = Math.ceil(options.windowMs / 1000);
+      res.setHeader('Retry-After', retryAfter);
+      res.status(options.statusCode).json({
+        error: { code: 'RATE_LIMITED', message: 'Too many requests. Slow down.', retryAfter },
+      });
+    },
+  });
 
   router.use((req, res, next) => {
     const { userId } = req as AuthenticatedRequest;
@@ -82,7 +104,7 @@ export function aiReportsRoutes(): Router {
    *
    * Returns: { reported: true, reportId: string }
    */
-  router.post('/', asyncHandler(async (req, res: Response) => {
+  router.post('/', reportRateLimitMiddleware, asyncHandler(async (req, res: Response) => {
     const { userId, tenantId } = req as AuthenticatedRequest;
     const body = (req.body || {}) as AiReportBody;
 
