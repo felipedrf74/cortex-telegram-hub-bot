@@ -71,6 +71,7 @@ vi.mock('../../src/utils/logger', () => ({
 }));
 
 import { usageRoutes } from '../../src/api/routes/usage';
+import { getDailyQuotaStatus } from '../../src/services/cost-guardrail';
 
 interface MockResponse {
   statusCode: number;
@@ -169,6 +170,31 @@ describe('GET /api/v1/usage billing identity when the quota read fails closed', 
     expect(res.body.data.plan).not.toBe('none');
     // Billing identity survives; AI spend stays blocked.
     expect(res.body.data.aiAccessAllowed).toBe(false);
+  });
+
+  it('preserves an active Pro row whose legacy period end is absent', async () => {
+    testDb.prepare('INSERT INTO users (id, email, email_verified) VALUES (54, ?, 1)').run('pro@example.com');
+    testDb.prepare(`
+      INSERT INTO subscriptions (user_id, plan, period, status, provider, current_period_end)
+      VALUES (54, 'pro', 'monthly', 'active', 'stripe', NULL)
+    `).run();
+
+    const res = await getUsage(54);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.data.blockReason).toBe('entitlement_error');
+    expect(res.body.data.plan).toBe('pro');
+    expect(res.body.data.aiAccessAllowed).toBe(false);
+  });
+
+  it('does not recover a paid identity for system or invalid-user quota reads', () => {
+    const system = getDailyQuotaStatus(0, { requestSource: 'system' });
+    expect(system.plan).toBe('none');
+    expect(system.aiAccessAllowed).toBe(false);
+
+    const invalidInteractive = getDailyQuotaStatus(0, { requestSource: 'interactive' });
+    expect(invalidInteractive.plan).toBe('none');
+    expect(invalidInteractive.aiAccessAllowed).toBe(false);
   });
 
   it('keeps reporting "none" when there is no active paid subscription to fall back to', async () => {
