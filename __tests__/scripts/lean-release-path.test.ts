@@ -807,6 +807,28 @@ db.close();
     expect(result.status, result.stderr).toBe(0);
   });
 
+  it('reads protected release identity under macOS Bash errexit semantics', () => {
+    const gate = path.resolve('scripts/lib/release-gates.sh');
+    const state = path.resolve('docs/release/release-state.json');
+    const result = spawnSync('/bin/bash', [
+      '-s',
+      '--',
+      gate,
+      state,
+    ], {
+      encoding: 'utf8',
+      input: [
+        'set -euo pipefail',
+        'source "$1"',
+        'read -r sha digest < <(release_read_deployed_identity "$2")',
+        '[[ "$sha" =~ ^[0-9a-f]{40}$ ]]',
+        '[[ "$digest" =~ ^[0-9a-f]{64}$ ]]',
+      ].join('\n'),
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+  });
+
   it('runs only the deterministic remainder across four shards and reuses the main artifact', () => {
     const workflow = fs.readFileSync('.github/workflows/release-candidate-evidence.yml', 'utf8');
 
