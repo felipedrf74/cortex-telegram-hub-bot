@@ -272,7 +272,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "scripts/ollama-systemd-dropin-transaction.mjs:305-305",
+            "pattern": "scripts/ollama-systemd-dropin-transaction.mjs:306-306",
             "anchor": "observedDigest !== identity.retainedModelDigest",
             "behavior": "The retained install transaction refuses to commit if the independently observed 3B model digest changes.",
             "replacementTest": "__tests__/scripts/ollama-lean-systemd.test.ts",
@@ -280,7 +280,7 @@
             "minimumMutants": 1
           },
           {
-            "pattern": "scripts/ollama-systemd-dropin-transaction.mjs:921-921",
+            "pattern": "scripts/ollama-systemd-dropin-transaction.mjs:922-922",
             "anchor": "journal.priorService.enabledState === 'enabled'",
             "behavior": "Rollback restores the exact predecessor enablement instead of leaving the candidate service enabled.",
             "replacementTest": "__tests__/scripts/ollama-lean-systemd.test.ts",
@@ -288,7 +288,7 @@
             "minimumMutants": 1
           },
           {
-            "pattern": "scripts/ollama-systemd-dropin-transaction.mjs:926-926",
+            "pattern": "scripts/ollama-systemd-dropin-transaction.mjs:927-927",
             "anchor": "journal.priorService.activeState === 'active'",
             "behavior": "Rollback restores the exact predecessor active state instead of leaving the candidate service running.",
             "replacementTest": "__tests__/scripts/ollama-lean-systemd.test.ts",
@@ -296,7 +296,7 @@
             "minimumMutants": 1
           },
           {
-            "pattern": "scripts/ollama-systemd-dropin-transaction.mjs:1128-1128",
+            "pattern": "scripts/ollama-systemd-dropin-transaction.mjs:1129-1129",
             "anchor": "state.activeState !== 'active' || state.enabledState !== 'enabled'",
             "behavior": "A durable installer receipt is committed only after the exact candidate service is both active and enabled.",
             "replacementTest": "__tests__/scripts/ollama-lean-systemd.test.ts",
