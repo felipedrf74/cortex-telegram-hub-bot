@@ -104,9 +104,10 @@ Production Node modules and Python site-packages are built once in protected
 CI and stored as two digest-bound archives. The transaction only verifies and
 safely extracts those archives, recomputes an expanded-tree receipt, and
 verifies that receipt before PM2. It does not run npm, pip, venv creation,
-Vitest, a build, or Sonar. It atomically switches `current`, reloads the
-staging PM2 processes, proves artifact parity, migration-backed startup, exact
-selector and package-version identity through an authenticated runtime smoke,
+Vitest, a build, or Sonar. It atomically switches `current`, recreates only the
+two staging PM2 processes from the exact selected runtime, proves artifact
+parity, migration-backed startup, exact selector and package-version identity
+through an authenticated runtime smoke,
 read-only SQLite integrity and foreign-key integrity, and predecessor rollback
 readiness, then records:
 
@@ -170,7 +171,8 @@ The production transaction:
 5. runs only
    `sudo -n /usr/bin/systemctl start nexus-local-backup-pre-promotion.service`;
 6. atomically switches `current`;
-7. reloads the two production PM2 processes with the exact release SHA;
+7. recreates the two production PM2 processes from the exact release directory
+   and release SHA;
 8. after candidate health passes, proves the authenticated snapshot version,
    exact `current` target, completion marker, and read-only SQLite integrity and
    foreign-key results;
