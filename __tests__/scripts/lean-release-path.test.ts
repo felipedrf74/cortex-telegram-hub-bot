@@ -678,6 +678,9 @@ db.close();
     expect(remote).toContain(
       'PM2 reload commands can update environment variables while retaining the',
     );
+    expect(remote).toContain(
+      'start_runtime "$RELEASE_DIR" "$RUNTIME_SHA" "$ARTIFACT_DIGEST"',
+    );
     expect(remote.indexOf(
       'start_runtime "$RELEASE_DIR" "$RUNTIME_SHA" "$ARTIFACT_DIGEST"',
     )).toBeGreaterThan(remote.indexOf('start_runtime()'));
