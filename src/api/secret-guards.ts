@@ -65,6 +65,22 @@ function isLoopbackIp(ip: string): boolean {
   );
 }
 
+function isPrivateIpv4(ip: string): boolean {
+  const normalized = ip.startsWith('::ffff:') ? ip.slice('::ffff:'.length) : ip;
+  const octets = normalized.split('.').map((value) => Number.parseInt(value, 10));
+  if (
+    octets.length !== 4
+    || octets.some((value) => !Number.isInteger(value) || value < 0 || value > 255)
+  ) {
+    return false;
+  }
+  return (
+    octets[0] === 10
+    || (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31)
+    || (octets[0] === 192 && octets[1] === 168)
+  );
+}
+
 export function extractBearerToken(authHeader: string | undefined): string | null {
   if (!authHeader) return null;
   const [scheme, token] = authHeader.split(' ', 2);
@@ -540,6 +556,21 @@ export function requirePortalTokenByMethod(req: Request, res: Response, next: Ne
 
 export function isLoopbackRequest(req: Request): boolean {
   return isLoopbackIp(extractRemoteIp(req));
+}
+
+/**
+ * Docker Desktop presents a request made to a host-loopback published port as
+ * the private bridge gateway inside the container. Permit that topology only
+ * for the explicit development chat-eval overlay. The live-eval contract
+ * still independently requires a dedicated authenticated principal,
+ * non-production mode, exact budgets, and Ollama-only zero-cloud routing.
+ */
+export function isExplicitLocalChatEvalDockerBridgeRequest(req: Request): boolean {
+  return (
+    process.env.NODE_ENV === 'development'
+    && process.env.NEXUS_CHAT_EVAL_ALLOW_DOCKER_HOST_BRIDGE === '1'
+    && isPrivateIpv4(extractRemoteIp(req))
+  );
 }
 
 export function getPortalAuthContext(req: Request): PortalAuthContext | undefined {

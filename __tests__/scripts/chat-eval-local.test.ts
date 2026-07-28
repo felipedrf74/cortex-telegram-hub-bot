@@ -135,6 +135,7 @@ describe('chat-eval-local dry run', () => {
     expect(compose.match(/^\s+NEXUS_LOCAL_ALLOW_MODEL_CALLS:/gm)).toHaveLength(2);
     expect(compose).toContain('NEXUS_MODEL_FIXTURE_MODE: "0"');
     expect(compose).toContain('CONTENT_ENGINE_FIXTURE_MODE: "0"');
+    expect(compose).toContain('NEXUS_CHAT_EVAL_ALLOW_DOCKER_HOST_BRIDGE: "1"');
     expect(compose).toContain('OLLAMA_ENABLED: "true"');
     expect(compose).toContain('OLLAMA_BASE_URL:');
     expect(compose.match(/^\s+AI_(?:CLASSIFY|CHAT|TOOL_USE)_PRIMARY: "ollama"/gm)).toHaveLength(3);

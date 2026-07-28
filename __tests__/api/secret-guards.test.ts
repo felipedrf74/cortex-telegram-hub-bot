@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { NextFunction, Request, Response } from 'express';
 
 let portalTokenValue = '';
@@ -855,5 +855,47 @@ describe('secret guards portal scope enforcement', () => {
 
     expect(next).not.toHaveBeenCalled();
     expect(res.statusCode).toBe(401);
+  });
+});
+
+describe('local chat-eval Docker bridge guard', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  function requestFrom(ip: string): Request {
+    return {
+      ip,
+      socket: { remoteAddress: ip },
+    } as unknown as Request;
+  }
+
+  it('accepts a private Docker bridge only in the explicit development overlay', async () => {
+    vi.stubEnv('NODE_ENV', 'development');
+    vi.stubEnv('NEXUS_CHAT_EVAL_ALLOW_DOCKER_HOST_BRIDGE', '1');
+    const { isExplicitLocalChatEvalDockerBridgeRequest } = await import(
+      '../../src/api/secret-guards'
+    );
+
+    expect(isExplicitLocalChatEvalDockerBridgeRequest(requestFrom('172.20.0.1'))).toBe(true);
+    expect(isExplicitLocalChatEvalDockerBridgeRequest(requestFrom('::ffff:192.168.65.1'))).toBe(true);
+  });
+
+  it('rejects disabled, production, loopback, and public sources', async () => {
+    const { isExplicitLocalChatEvalDockerBridgeRequest } = await import(
+      '../../src/api/secret-guards'
+    );
+
+    vi.stubEnv('NODE_ENV', 'development');
+    vi.stubEnv('NEXUS_CHAT_EVAL_ALLOW_DOCKER_HOST_BRIDGE', '0');
+    expect(isExplicitLocalChatEvalDockerBridgeRequest(requestFrom('172.20.0.1'))).toBe(false);
+
+    vi.stubEnv('NEXUS_CHAT_EVAL_ALLOW_DOCKER_HOST_BRIDGE', '1');
+    vi.stubEnv('NODE_ENV', 'production');
+    expect(isExplicitLocalChatEvalDockerBridgeRequest(requestFrom('172.20.0.1'))).toBe(false);
+
+    vi.stubEnv('NODE_ENV', 'development');
+    expect(isExplicitLocalChatEvalDockerBridgeRequest(requestFrom('127.0.0.1'))).toBe(false);
+    expect(isExplicitLocalChatEvalDockerBridgeRequest(requestFrom('203.0.113.10'))).toBe(false);
   });
 });

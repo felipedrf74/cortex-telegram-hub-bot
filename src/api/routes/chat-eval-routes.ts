@@ -2,7 +2,10 @@
 
 import type { Request, Response, Router } from 'express';
 import type { AuthenticatedRequest } from '../auth-middleware';
-import { isLoopbackRequest } from '../secret-guards';
+import {
+  isExplicitLocalChatEvalDockerBridgeRequest,
+  isLoopbackRequest,
+} from '../secret-guards';
 import { getDb } from '../../services/database';
 import { getUserById } from '../../services/user-service';
 import {
@@ -45,7 +48,10 @@ function resolveRequest(
     userId,
     tenantId,
     principalEmail: getUserById(userId)?.email ?? null,
-    isLoopback: isLoopbackRequest(req),
+    isLoopback: (
+      isLoopbackRequest(req)
+      || isExplicitLocalChatEvalDockerBridgeRequest(req)
+    ),
   });
   if (!context) {
     throw new ChatLiveEvalContractError(
