@@ -159,11 +159,19 @@ describe('Integration: Pattern match → domain handler', () => {
     // Step 2: Call the domain handler with stripped message
     const response = await handleTriathlon(route.strippedMessage, 123456789);
     expect(response.domain).toBe('triathlon');
-    expect(response.text).toBe('Here is your training plan for the week.');
+    // Training answers carry the non-diagnostic coach disclaimer
+    // (App Review 1.4.1) — see applyCoachAnswerSafety in domain-handler.ts.
+    expect(response.text).toContain('Here is your training plan for the week.');
+    expect(response.text).toMatch(/not a clinician|não um profissional de saúde/);
 
     // Step 3: Verify conversation was stored
     expect(mockAddToConversation).toHaveBeenCalledWith(expect.any(Number), 'triathlon', 'user', 'upper body push day');
-    expect(mockAddToConversation).toHaveBeenCalledWith(expect.any(Number), 'triathlon', 'assistant', 'Here is your training plan for the week.');
+    expect(mockAddToConversation).toHaveBeenCalledWith(
+      expect.any(Number),
+      'triathlon',
+      'assistant',
+      expect.stringContaining('Here is your training plan for the week.'),
+    );
   });
 
   it('routes /todo command through secretary domain end-to-end', async () => {
@@ -636,7 +644,13 @@ describe('Integration: Conversation history management', () => {
 
     expect(mockAddToConversation).toHaveBeenCalledTimes(2);
     expect(mockAddToConversation).toHaveBeenNthCalledWith(1, expect.any(Number), 'triathlon', 'user', 'plan my run for tomorrow');
-    expect(mockAddToConversation).toHaveBeenNthCalledWith(2, expect.any(Number), 'triathlon', 'assistant', 'Your training is set for tomorrow.');
+    expect(mockAddToConversation).toHaveBeenNthCalledWith(
+      2,
+      expect.any(Number),
+      'triathlon',
+      'assistant',
+      expect.stringContaining('Your training is set for tomorrow.'),
+    );
   });
 
   it('stores tool annotations in assistant messages when tools were used', async () => {
@@ -783,7 +797,7 @@ describe('Integration: Edge cases', () => {
     });
 
     const response = await handleSimpleDomain('triathlon', 'what is RPE?');
-    expect(response.text).toBe('I can help with that directly.');
+    expect(response.text).toContain('I can help with that directly.');
     expect(mockExecuteToolCall).not.toHaveBeenCalled();
     expect(mockContinueWithToolResults).not.toHaveBeenCalled();
   });

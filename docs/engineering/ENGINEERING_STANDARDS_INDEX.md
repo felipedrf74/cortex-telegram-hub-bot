@@ -37,7 +37,7 @@ non-trivial changes.
 | Project map | `../project-map.json` | Generated module, route, migration, capability, skill, test, asset, owner, and canonical-doc map. |
 | Release runbook | `../release/README.md` | Exact-artifact operator commands and production sequence. |
 | Current release summary | `../release/CURRENT_RELEASE_STATE.md` | Compact human pointer to the machine-readable runtime truth. |
-| Signed release evidence contract | `../release/release-evidence-contract.md` | Artifact-bound RC, signing, staging, promotion, and rollback evidence. |
+| Checksum release evidence contract | `../release/release-evidence-contract.md` | Artifact-bound protected-main/checkpoint, staging, promotion, and rollback evidence. |
 | State-coupled migration contract | `../release/migration-irreversible.md` | Snapshot rollback and rehearsal gates for irreversible or state-coupled schema cutovers. |
 
 ## Related cross-repo standards

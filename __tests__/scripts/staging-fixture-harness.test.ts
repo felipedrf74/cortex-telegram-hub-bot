@@ -1,5 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 import vm from 'node:vm';
+import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import {
   STAGING_FIXTURE_USER_ID_MAX,
   STAGING_FIXTURE_USER_ID_MIN,
@@ -9,7 +13,68 @@ import {
   validateStagingFixtureJwtPayload,
 } from '../../src/services/staging-fixture-safety';
 
+const fixtureRoots: string[] = [];
+
+function immutableStagingFixture() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-staging-current-'));
+  fixtureRoots.push(root);
+  const release = path.join(root, 'releases', 'a'.repeat(40));
+  fs.mkdirSync(path.join(release, 'dist'), { recursive: true });
+  fs.mkdirSync(path.join(release, 'node_modules'));
+  fs.mkdirSync(path.join(release, 'scripts'));
+  fs.mkdirSync(path.join(root, 'data'));
+  fs.writeFileSync(path.join(root, '.env'), 'FIXTURE_ENV_FROM_BASE=yes\nDATABASE_PATH=/unsafe/env.db\n');
+  fs.writeFileSync(path.join(root, 'data', 'bot.db'), '');
+  fs.symlinkSync(path.join(root, '.env'), path.join(release, '.env'));
+  fs.symlinkSync(path.join(root, 'data'), path.join(release, 'data'));
+  fs.symlinkSync(release, path.join(root, 'current'));
+  return { root, release };
+}
+
 describe('staging fixture harness safety boundaries', () => {
+  it('runs fixture Node from the exact current release with base env/data and detects selector drift', async () => {
+    const { buildRemoteNodeCommand } = await import('../../scripts/staging-fixture-seed.mjs');
+    const first = immutableStagingFixture();
+    const command = buildRemoteNodeCommand(first.root, { nodeBin: process.execPath });
+    const probe = spawnSync('/bin/sh', ['-c', command], {
+      input: `process.stdout.write(JSON.stringify({
+        cwd: process.cwd(),
+        databasePath: process.env.DATABASE_PATH,
+        dbPath: process.env.DB_PATH,
+        fromBase: process.env.FIXTURE_ENV_FROM_BASE,
+        nodePath: process.env.NODE_PATH,
+      }));`,
+      encoding: 'utf8',
+    });
+
+    expect(probe.status, probe.stderr).toBe(0);
+    const canonicalRoot = fs.realpathSync(first.root);
+    const canonicalRelease = fs.realpathSync(first.release);
+    expect(JSON.parse(probe.stdout)).toEqual({
+      cwd: canonicalRelease,
+      databasePath: path.join(canonicalRoot, 'data', 'bot.db'),
+      dbPath: path.join(canonicalRoot, 'data', 'bot.db'),
+      fromBase: 'yes',
+      nodePath: path.join(canonicalRelease, 'node_modules'),
+    });
+
+    const second = immutableStagingFixture();
+    const replacement = path.join(second.root, 'releases', 'replacement');
+    fs.mkdirSync(replacement);
+    const drift = spawnSync('/bin/sh', [
+      '-c',
+      buildRemoteNodeCommand(second.root, { nodeBin: process.execPath }),
+    ], {
+      input: `const fs = require('node:fs');
+        fs.unlinkSync(${JSON.stringify(path.join(second.root, 'current'))});
+        fs.symlinkSync(${JSON.stringify(replacement)}, ${JSON.stringify(path.join(second.root, 'current'))});`,
+      encoding: 'utf8',
+    });
+
+    expect(drift.status).toBe(74);
+    expect(drift.stderr).toContain('staging current selector changed during fixture operation');
+  });
+
   it('refuses production and non-staging hostnames before network work', async () => {
     const { validateStagingTarget, resolveTargetUrl } = await import('../../scripts/staging-fixture-harness.mjs');
 
@@ -119,4 +184,10 @@ describe('staging fixture harness safety boundaries', () => {
       reason: 'production_reserved_user',
     });
   });
+});
+
+afterAll(() => {
+  while (fixtureRoots.length > 0) {
+    fs.rmSync(fixtureRoots.pop()!, { recursive: true, force: true });
+  }
 });

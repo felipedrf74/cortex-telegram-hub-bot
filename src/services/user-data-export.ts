@@ -14,6 +14,10 @@ import { getTransactions, getTaxEvents, getAnnualTaxSummary } from './finance-tr
 import type { Transaction, TaxEvent, AnnualTaxSummary } from './finance-tracker';
 import { getTokens, type OAuthProvider } from './oauth-store';
 import { clearGarminSession } from './garmin-session-store';
+import {
+  appleSignInIdentityExistsForUser,
+  revokeAppleSignInTokenForUser,
+} from './apple-token-revocation';
 import { logger } from '../utils/logger';
 import { randomUUID } from 'node:crypto';
 import { decryptTrainingProfileSnapshot } from './training-profile-snapshot-encryption';
@@ -73,32 +77,53 @@ type OAuthRevocationResult = {
   statusCode?: number;
 };
 
-type RevocableProvider = OAuthProvider | 'garmin';
+type RevocableProvider = OAuthProvider | 'garmin' | 'apple';
+
+/**
+ * A provider that stops answering must not stall Article 17 erasure. Without
+ * a signal a hung endpoint holds the deletion request open until the HTTP
+ * layer gives up, which surfaces to the client as a failed deletion.
+ */
+const THIRD_PARTY_REVOCATION_TIMEOUT_MS = 5000;
 
 async function postFormRevocation(url: string, body: URLSearchParams): Promise<{ statusCode: number; ok: boolean }> {
   const response = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body,
+    signal: AbortSignal.timeout(THIRD_PARTY_REVOCATION_TIMEOUT_MS),
   });
   return { statusCode: response.status, ok: response.ok || (response.status >= 400 && response.status < 500) };
 }
 
+/**
+ * Every branch runs inside the error boundary — including the local session
+ * and token reads — so no revocation path can escape as an exception and turn
+ * account deletion into an HTTP 500.
+ */
 async function revokeOneThirdPartyProvider(userId: number, provider: RevocableProvider): Promise<OAuthRevocationResult> {
-  if (provider === 'garmin') {
-    // The Garmin integration in this codebase has no stable public revoke
-    // endpoint; remove the durable local session and record that this
-    // provider is local-only.
-    clearGarminSession(userId);
-    return { provider, attempted: true, status: 'local_only' };
-  }
-
-  const tokens = getTokens(userId, provider);
-  if (!tokens) {
-    return { provider, attempted: false, status: 'local_only' };
-  }
-
   try {
+    if (provider === 'garmin') {
+      // The Garmin integration in this codebase has no stable public revoke
+      // endpoint; remove the durable local session and record that this
+      // provider is local-only.
+      clearGarminSession(userId);
+      return { provider, attempted: true, status: 'local_only' };
+    }
+
+    if (provider === 'apple') {
+      // App Store Review Guideline 5.1.1(v). Degrades to local_only when the
+      // client never sent an authorization code or the Apple revocation env
+      // vars are unset — see src/services/apple-token-revocation.ts.
+      const outcome = await revokeAppleSignInTokenForUser(userId);
+      return { provider, ...outcome };
+    }
+
+    const tokens = getTokens(userId, provider);
+    if (!tokens) {
+      return { provider, attempted: false, status: 'local_only' };
+    }
+
     if (provider === 'google') {
       const token = tokens.refreshToken || tokens.accessToken;
       const result = await postFormRevocation('https://oauth2.googleapis.com/revoke', new URLSearchParams({ token }));
@@ -164,11 +189,35 @@ export async function revokeThirdPartyOAuthTokensForUser(userId: number): Promis
     results.push(await revokeOneThirdPartyProvider(userId, 'garmin'));
   }
 
+  // Apple is not an entry in `user_oauth_tokens` — Sign in with Apple has its
+  // own encrypted refresh-token store — so it is probed explicitly. Apple
+  // users with no captured authorization code still get an explicit
+  // `local_only` record rather than being silently omitted.
+  if (appleSignInIdentityExistsForUser(userId)) {
+    results.push(await revokeOneThirdPartyProvider(userId, 'apple'));
+  }
+
   return results;
 }
 
 export async function deleteAllUserDataForAccountDeletion(userId: number): Promise<Record<string, number>> {
-  await revokeThirdPartyOAuthTokensForUser(userId);
+  try {
+    // The per-provider outcomes are the ONLY evidence that revocation ran:
+    // the credentials are erased microseconds later, and the Apple call in
+    // particular cannot be exercised against the live endpoint from a test.
+    // `provider`, `attempted`, `status`, and `statusCode` carry no secrets.
+    const revocations = await revokeThirdPartyOAuthTokensForUser(userId);
+    logger.info(
+      { userId, revocations, event: 'account_deletion.revocation' },
+      'Third-party revocation completed before account deletion',
+    );
+  } catch (err) {
+    // Article 17 erasure must not depend on a third party staying reachable.
+    // Per-provider failures already degrade to a recorded outcome inside
+    // `revokeOneThirdPartyProvider`; this boundary covers the surrounding
+    // schema probes so a deletion can never 500 on the revocation phase.
+    logger.warn({ err, userId }, 'Third-party revocation phase failed before account deletion');
+  }
   return deleteAllUserData(userId);
 }
 
@@ -758,6 +807,7 @@ export const ACCOUNT_DELETION_TABLES: Array<{ table: string; column: string }> =
   { table: 'garmin_user_tokens', column: 'user_id' },
   { table: 'agent_signals', column: 'user_id' },
   { table: 'user_oauth_tokens', column: 'user_id' },
+  { table: 'apple_sign_in_refresh_tokens', column: 'user_id' },
   { table: 'oauth_ios_nonce_sessions', column: 'user_id' },
   { table: 'user_skill_overrides', column: 'user_id' },
   { table: 'api_usage', column: 'user_id' },

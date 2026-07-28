@@ -1,12 +1,8 @@
-name: Nightly — Full regression + coverage
+name: Nightly — Advisory maintenance
 
 # release-pipeline-risk-based-optimization (2026-05-03):
-# Coverage upload + full vitest now run nightly + on-demand instead of on
-# every PR. The risk-based ci.yml runs focused tests on PRs; nightly is
-# where the breadth lives.
-#
-# Manual run:
-#   gh workflow run "Nightly — Full regression + coverage"
+# The complete deterministic suite belongs to the explicit release checkpoint
+# (or a deliberate manual invocation), never a calendar-triggered release gate.
 
 on:
   schedule:
@@ -21,8 +17,8 @@ env:
   NODE_VERSION: '22.23.1'
 
 jobs:
-  full-vitest-coverage:
-    name: 🧪 Full vitest + coverage
+  test-policy-contract:
+    name: 🧭 Test-group policy contract
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -34,122 +30,11 @@ jobs:
 
       - run: npm ci
 
-      - name: Download recent timing history (advisory)
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Validate group routing without running the product suite
         run: |
-          mkdir -p .local/test-profile/timing-history
-          mkdir -p .local/test-profile/timing-history-downloads
-          if ! gh api \
-            "repos/$GITHUB_REPOSITORY/actions/workflows/nightly.yml/runs?branch=main&status=success&per_page=10" \
-            --jq '.workflow_runs[].id' > .local/test-profile/timing-history-run-ids.txt; then
-            echo "::warning::Nightly timing history is unavailable; current timing remains advisory."
-            exit 0
-          fi
-          considered=0
-          selected=0
-          while IFS= read -r run_id; do
-            [ -n "$run_id" ] || continue
-            [ "$run_id" != "$GITHUB_RUN_ID" ] || continue
-            [[ "$run_id" =~ ^[1-9][0-9]*$ ]] || continue
-            [ "$considered" -lt 10 ] || break
-            considered=$((considered + 1))
-            run_download=".local/test-profile/timing-history-downloads/$run_id"
-            mkdir -p "$run_download"
-            artifacts_json="$run_download/artifacts.json"
-            if ! gh api \
-              "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/artifacts?per_page=100" \
-              > "$artifacts_json"; then
-              echo "::warning::Could not inspect timing artifacts for prior run $run_id."
-              continue
-            fi
-            selection_json="$run_download/selection.json"
-            if ! artifact_id="$(node scripts/test-timing-history-artifact.mjs select \
-              --run-id "$run_id" \
-              --artifacts "$artifacts_json" \
-              --output "$selection_json")"; then
-              echo "::warning::Prior run $run_id has no unique bounded timing artifact."
-              continue
-            fi
-            archive="$run_download/artifact.zip"
-            if ! gh api \
-              -H "Accept: application/vnd.github+json" \
-              "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" \
-              > "$archive"; then
-              echo "::warning::Could not download timing artifact for prior run $run_id."
-              continue
-            fi
-            inventory=".local/test-profile/timing-history/$run_id/test-inventory.json"
-            if ! node scripts/test-timing-history-artifact.mjs extract \
-              --archive "$archive" \
-              --output "$inventory"; then
-              echo "::warning::Prior run $run_id timing inventory failed bounded extraction."
-              continue
-            fi
-            selected=$((selected + 1))
-          done < .local/test-profile/timing-history-run-ids.txt
-          echo "Selected $selected bounded timing artifact(s) from $considered prior successful nightly run(s)."
-
-      - name: TypeScript type check
-        run: npx tsc --noEmit
-
-      - name: Full vitest with coverage
-        env:
-          NODE_ENV: test
-          TELEGRAM_BOT_TOKEN: test_token
-          TELEGRAM_ALLOWED_USER_IDS: '123456789'
-          ANTHROPIC_API_KEY: sk-ant-test-key
-          DATABASE_PATH: ':memory:'
-        run: |
-          mkdir -p .local/test-profile
-          node scripts/run-test-tier.mjs deterministic \
-            --reporter default \
-            --json-output .local/test-profile/vitest-results.json \
-            --coverage
-          node scripts/test-inventory.mjs \
-            --timings .local/test-profile/vitest-results.json \
-            --timing-history-dir .local/test-profile/timing-history \
-            --timing-scope deterministic \
-            --timing-mode advisory \
-            --enforce-evidence
-
-      - name: Write qualifying nightly full-suite evidence
-        env:
-          GITHUB_WORKFLOW: Nightly — Full regression + coverage
-        run: |
-          node scripts/release-test-evidence.mjs write-nightly \
-            --head "$GITHUB_SHA" \
-            --vitest-results .local/test-profile/vitest-results.json \
-            --out .local/test-profile/nightly-full-suite-evidence.json
-
-      - name: Upload qualifying nightly full-suite evidence
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: nightly-full-suite-evidence-${{ github.run_id }}-${{ github.run_attempt }}
-          path: .local/test-profile/nightly-full-suite-evidence.json
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 7
-
-      - name: Upload coverage report
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: coverage-report
-          path: coverage/
-          retention-days: 14
-
-      - name: Upload test timing and disposition inventory
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: test-inventory-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            .local/test-profile/vitest-results.json
-            .local/test-inventory/test-inventory.json
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 30
+          node -e "const p=require('./config/test-groups.json'); if (!p.core.tests.length || Object.keys(p.groups).length !== 12) process.exit(1)"
+          scripts/changed-area-classifier.sh --json --files src/services/content-radar-engine.ts >/tmp/classifier.json
+          test "$(jq -r '.vitest.mode' /tmp/classifier.json)" = focused
 
   python-full-compile:
     name: 🐍 Content Engine full compile

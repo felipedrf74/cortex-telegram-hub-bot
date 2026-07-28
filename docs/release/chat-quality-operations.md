@@ -45,10 +45,12 @@ One page for operating the production chat-quality loop (M22).
 ## Evaluation evidence
 
 - Local release evidence must run from a clean, committed checkout of the
-  exact SHA being promoted. Run `./scripts/local-up.sh`, followed by
-  `./scripts/chat-eval-local.sh`. The eval overlay enforces Ollama-only routing,
-  blanks cloud credentials, and records a `local_engine` run for the exact-SHA
-  promotion gate. If Ollama is not on the default host endpoint, set
+  exact SHA being promoted when the checkpoint manifest's cumulative
+  `releaseImpact.groups` includes `chat-secretary`. Run `./scripts/local-up.sh`,
+  followed by `./scripts/chat-eval-local.sh`. The eval overlay enforces
+  Ollama-only routing, blanks cloud credentials, and records a `local_engine`
+  run for that exact-SHA promotion gate. Non-chat releases skip this gate
+  automatically; there is no operator bypass. If Ollama is not on the default host endpoint, set
   `NEXUS_CHAT_EVAL_OLLAMA_BASE_URL`; this does not permit a cloud provider.
 - The first live baseline runs only on staging against a dedicated synthetic
   user/tenant. Set the staging server's `CHAT_EVAL_DEDICATED_TENANT_ID` to that

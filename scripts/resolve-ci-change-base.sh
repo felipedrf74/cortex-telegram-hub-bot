@@ -2,8 +2,9 @@
 set -euo pipefail
 
 # Resolve the only safe comparison base for CI change classification.
-# An empty result is intentional: callers must fail closed to full
-# verification whenever the pushed/PR range cannot be proved.
+# An empty result is intentional: callers must reject classification whenever
+# the pushed/PR range cannot be proved. Automatic full-suite fallback is
+# intentionally disabled.
 
 ROOT="${NEXUS_CI_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 EVENT_NAME="${EVENT_NAME:-}"

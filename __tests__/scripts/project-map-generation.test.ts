@@ -293,7 +293,9 @@ describe('project map generation', () => {
     expect(workflow).toContain('name: Project map freshness');
     expect(workflow).toContain('run: npm run project:map:check');
     expect(workflow).toMatch(/docs_and_secrets:[\s\S]*?- run: npm ci[\s\S]*?audit-docs\.mjs --strict/);
-    expect(housekeeping).toMatch(/setup-node@[a-f0-9]+[\s\S]*?- run: npm ci[\s\S]*?audit-docs\.mjs/);
+    expect(housekeeping).toMatch(
+      /setup-node@[a-f0-9]+[\s\S]*?- run: npm ci[\s\S]*?run: npm run project:map:check[\s\S]*?run: npm run docs:audit/,
+    );
     expect(skill).not.toContain('929-file');
   });
 });

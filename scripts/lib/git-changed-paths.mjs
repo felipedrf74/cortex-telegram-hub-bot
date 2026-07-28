@@ -28,6 +28,22 @@ export function parseGitNameStatusRecordsZ(value) {
   return records;
 }
 
+export function gitMergeBaseArgs(base, head = 'HEAD') {
+  return ['merge-base', base, head];
+}
+
+export function gitNameStatusDiffArgs(base, head = 'HEAD') {
+  return ['diff', '--name-status', '-z', '--find-renames', `${base}...${head}`];
+}
+
+export function gitNameStatusRecordsToChanges(records) {
+  return records.map((record) => ({
+    status: record.status,
+    file: record.paths.at(-1),
+    previous: /^[RC]/.test(record.status) ? record.paths[0] : null,
+  }));
+}
+
 export function parseGitPathsZ(value) {
   return splitNul(value);
 }

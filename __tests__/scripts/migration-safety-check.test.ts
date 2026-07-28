@@ -193,21 +193,6 @@ describe('migration-safety-check', () => {
     expect(payload.policyIdentityIssues).toEqual([]);
   });
 
-  it.each([
-    'scripts/release-verify.sh',
-    'scripts/release-test-gate.sh',
-  ])('enforces changed irreversible migration policy from release entrypoint %s', (file) => {
-    const source = readFileSync(file, 'utf8');
-    expect(source).toContain('migration-safety-check.mjs');
-    expect(source).toContain('--base "$BASE_SHA"');
-    expect(source).toContain('--changed-only');
-    expect(source).toContain('--approval-mode review');
-    expect(source).toContain('--review-evidence');
-    expect(source).toContain('git rev-parse --verify --quiet --end-of-options "${BASE_REF}^{commit}"');
-    expect(source.indexOf('git rev-parse --verify --quiet --end-of-options "${BASE_REF}^{commit}"'))
-      .toBeLessThan(source.indexOf('migration-safety-check.mjs'));
-  });
-
   it('keeps ordinary CI and local risk checks non-authorizing', () => {
     const ci = readFileSync('.github/workflows/ci.yml', 'utf8');
     const riskGate = readFileSync('scripts/risk-gate.sh', 'utf8');
@@ -219,42 +204,6 @@ describe('migration-safety-check', () => {
     expect(riskGate).toContain('--approval-mode scan');
     expect(riskGate).not.toContain('--approval-mode review');
     expect(preCommit).not.toContain('NEXUS_MIGRATION_REVIEW_EVIDENCE');
-  });
-
-  it.each([
-    {
-      file: 'scripts/release-verify.sh',
-      trailingArgs: ['--skip-pytest', '--skip-vitest'],
-      messagePrefix: 'Release verification',
-    },
-    {
-      file: 'scripts/release-test-gate.sh',
-      trailingArgs: [],
-      messagePrefix: 'Release test',
-    },
-  ])('rejects an unresolved base before running release entrypoint $file', ({ file, trailingArgs, messagePrefix }) => {
-    const result = spawnSync(
-      'bash',
-      [
-        file,
-        '--base', 'refs/heads/nexus-missing-release-base',
-        ...trailingArgs,
-      ],
-      { cwd: root, encoding: 'utf8' },
-    );
-
-    expect(result.status).toBe(64);
-    expect(result.stderr).toContain(`${messagePrefix} base does not resolve`);
-    expect(result.stdout).not.toContain('Nexus release verify');
-  });
-
-  it.each([
-    'scripts/release-verify.sh',
-    'scripts/release-test-gate.sh',
-  ])('rejects a missing --base value at release entrypoint %s', (file) => {
-    const result = spawnSync('bash', [file, '--base'], { cwd: root, encoding: 'utf8' });
-    expect(result.status).toBe(64);
-    expect(result.stderr).toContain('--base requires a ref');
   });
 
   it('blocks changed irreversible migrations without digest-bound review evidence', { timeout: 30_000 }, () => {
@@ -298,13 +247,19 @@ describe('migration-safety-check', () => {
     const payload = JSON.parse(result.stdout) as {
       approvalMode: string;
       checks: { reviewApproval: null; exactBackupEvidence: null };
-      authorization: { approvalRequired: boolean; backupRequired: boolean; authorizesPromotion: boolean };
+      authorization: {
+        approvalRequired: boolean;
+        governanceReviewRequired: boolean;
+        backupRequired: boolean;
+        authorizesPromotion: boolean;
+      };
       requiredReviewSubject: { sha256: string };
     };
     expect(payload.approvalMode).toBe('scan');
     expect(payload.checks).toMatchObject({ reviewApproval: null, exactBackupEvidence: null });
     expect(payload.authorization).toEqual({
       approvalRequired: true,
+      governanceReviewRequired: false,
       backupRequired: true,
       authorizesPromotion: false,
     });
@@ -325,6 +280,25 @@ describe('migration-safety-check', () => {
       const before = invoke();
       expect(before.status, `${before.stdout}${before.stderr}`).toBe(0);
       const beforeSubject = JSON.parse(before.stdout).requiredReviewSubject;
+      const beforePayload = JSON.parse(before.stdout) as {
+        governanceChanges: Array<{ file: string; reason: string }>;
+        irreversibleSchemaMigrations: unknown[];
+        authorization: {
+          approvalRequired: boolean;
+          governanceReviewRequired: boolean;
+          backupRequired: boolean;
+        };
+      };
+      expect(beforePayload.governanceChanges).toEqual([{
+        file: 'scripts/migration-safety-check.mjs',
+        reason: 'POLICY_GATE_CHANGED',
+      }]);
+      expect(beforePayload.irreversibleSchemaMigrations).toEqual([]);
+      expect(beforePayload.authorization).toMatchObject({
+        approvalRequired: false,
+        governanceReviewRequired: true,
+        backupRequired: false,
+      });
 
       writeFileSync(governedPath, 'export const policyVersion = 2;\n');
       const after = invoke();
@@ -603,6 +577,10 @@ describe('migration-safety-check', () => {
     ['config/irreversible-migrations.json', 'POLICY_REGISTRY_CHANGED'],
     ['config/production-migration-lineages.json', 'POLICY_PRODUCTION_LINEAGE_CHANGED'],
     ['.github/workflows/ci.yml', 'POLICY_CI_ENTRYPOINT_CHANGED'],
+    [
+      '.github/workflows/release-candidate-evidence.yml',
+      'POLICY_RELEASE_CHECKPOINT_ENTRYPOINT_CHANGED',
+    ],
     ['.husky/pre-commit', 'POLICY_HOOK_ENTRYPOINT_CHANGED'],
     ['scripts/lib/irreversible-migration-policy.mjs', 'POLICY_ENFORCEMENT_CHANGED'],
     ['scripts/lib/production-migration-lineage.mjs', 'POLICY_PRODUCTION_LINEAGE_ENFORCEMENT_CHANGED'],
@@ -612,10 +590,7 @@ describe('migration-safety-check', () => {
     ['scripts/changed-area-classifier.mjs', 'POLICY_CLASSIFIER_ENTRYPOINT_CHANGED'],
     ['scripts/lib/changed-area-classifier.mjs', 'POLICY_CLASSIFIER_CHANGED'],
     ['scripts/risk-gate.sh', 'POLICY_RELEASE_ENTRYPOINT_CHANGED'],
-    ['scripts/release-verify.sh', 'POLICY_RELEASE_ENTRYPOINT_CHANGED'],
-    ['scripts/release-test-gate.sh', 'POLICY_RELEASE_ENTRYPOINT_CHANGED'],
     ['scripts/promote-exact-release.sh', 'POLICY_PROMOTION_ENTRYPOINT_CHANGED'],
-    ['scripts/remote-create-release-backup.sh', 'POLICY_BACKUP_EVIDENCE_CHANGED'],
     ['scripts/remote-production-shape-migration-rehearsal.sh', 'POLICY_REHEARSAL_ENTRYPOINT_CHANGED'],
     ['scripts/production-shape-migration-rehearsal.mjs', 'POLICY_REHEARSAL_CHANGED'],
     ['scripts/validate-production-shape-migration-rehearsal.mjs', 'POLICY_REHEARSAL_EVIDENCE_CHANGED'],

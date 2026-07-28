@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: backend runtime + on-call lead
-Last verified: 2026-07-22
+Last verified: 2026-07-27
 Update policy: update when health-check shape changes, when alert
 producers change, when log/metric semantics change, or when the release
 process model changes. Incident response and recovery detail lives in
@@ -197,125 +197,41 @@ the durable alert-contract rules are:
 Production rollback is **always available**. The default release contract is:
 
 1. **Use the exact-artifact operator path:** `npm run release:status`,
-   `release:prepare`, `release:staging`, then owner-authorized
-   `release:promote`. The signed `ReleaseManifestV2`, staging attestation, and
-   installed-runtime digest must all bind the same runtime SHA and bundle.
-2. **Install before cutover.** Node/Python dependencies and native modules are
-   prepared in a versioned staging release while production stays online.
-   Promotion copies that already installed directory; it does not rebuild or
-   install dependencies while production is stopped.
-3. **Back up the exact predecessor.** Immutable runtime content is prepared
-   live. During the brief write drain, both independent PM2 apps stop, SQLite
-   is checkpointed and integrity-checked, and the database snapshot is added
-   to the verified release backup. For an irreversible migration, the helper's
-   archive path, SHA-256, size, versions, and timestamp are captured in the
-   ignored strict migration evidence record and revalidated before candidate
-   mutation begins.
-4. **Rollback restores exact bytes and state.** If symlink, PM2 identity,
-   loopback health, public health, or snapshot-version readiness fails, restore
-   the exact backup and previous release directory automatically. Revalidate
-   archive path, size, whole-archive SHA-256, and stopped-state database SHA-256
-   before data mutation; reject traversal, duplicate paths, links, devices, or
-   unsupported archive members. A changed or irreversible migration still
-   requires explicit owner approval.
-5. **Promotion is a durable server transaction.** Before the first PM2
-   mutation, persist a root-owned immutable request, predecessor identity, and
-   recovery intent. A Mac/SSH disconnect must not interrupt the transaction.
-   Reboot recovery completes before normal PM2 startup, and failed readiness
-   restores healthy predecessor service within 120 seconds. Use the Linux
-   monotonic clock for the same-boot 60-second candidate boundary and total
-   120-second budget; persist cutover, actual-unavailability, candidate-healthy,
-   and predecessor-recovered timestamps. Reboot wall timing is diagnostic and
-   requires the staging reboot drill before the bound is considered proven.
-6. **Runtime immutability is root-verified.** The production base is
-   root-owned/sticky, its `releases/` child is root-owned and application
-   non-writable, and a narrow root operation creates the exact target without
-   following or replacing links. Root-installed code verifies predecessor and
-   candidate artifact/installed-tree digests and safe dependency links, seals
-   all runtime entries read-only, and verifies again before candidate code runs.
+   `release:prepare`, then owner-authorized `release:promote`. The compact
+   checksum manifest and staging/production transaction state must bind the
+   same protected-main SHA and artifact digest.
+2. **Build dependencies once.** Protected-main CI creates digest-bound Node and
+   Python dependency archives. Server transactions only verify and safely
+   extract them, verify the expanded-tree receipt, and never run npm, pip,
+   venv creation, tests, or a build.
+3. **Back up before mutation.** The root-owned local backup service creates and
+   verifies an encrypted SQLite recovery point before production `current` or
+   PM2 changes. A nonzero result aborts promotion. Irreversible migrations
+   remain blocked without their explicit governed review and recovery proof.
+4. **Rollback restores the predecessor runtime.** If PM2 identity, loopback
+   health, authenticated staging smoke, or the 60-second production soak
+   fails, atomically restore `current`, reload the exact predecessor, and
+   verify health. Candidate and recovery health waits are bounded, and
+   recovery duration is recorded against the 120-second objective.
+5. **Promotion is a durable user transaction.** Persist predecessor and
+   candidate identity before `current` or PM2 mutation, then run through
+   `systemd-run --user` with lingering enabled. A Mac or SSH disconnect must
+   not interrupt the server phase. The transaction journal records start,
+   completion, health, rollback, and recovery-duration evidence.
+6. **Runtime bytes are verified.** Use the existing user-owned
+   `/home/dominguez/telegram-hub-bot{,-staging}` layouts. Verify the pristine
+   bundle before copying, reject unsafe archive members, hash the expanded
+   dependency tree, and verify that receipt before candidate code runs.
 7. **The soak is evidence, not downtime.** Preserve the exact 60-second
-   stability soak. Record service unavailability separately from total cutover
-   duration so the soak is never shortened to improve a headline metric.
-8. **Capacity and rollback freshness fail closed.** Staging and promotion
-   require a rollback drill no more than 30 days old, at least 12 GiB available
-   memory, load-15 below 6, no sustained swap pressure or recent OOM/restart
-   delta, and no active Sonar Compute Engine analysis.
-9. **Advisory workloads prove host headroom before activation.** SonarQube
-   start requires a checksummed, same-boot preflight no more than two hours old
-   with at least 16 GiB available memory, load-15 below 6, zero swap delta,
-   zero recent OOMs, stable PM2/health, and complete listener/route/firewall
-   snapshots captured after Docker client/server installation. It also
-   requires the exact successful 24h staging then 24h production small-model
-   soak and cleanup evidence chain. Each window is backed by canonical,
-   mode-0600 path+SHA-256 health/request records that cover the full interval,
-   preserve the retained-model digest, and report zero health failures,
-   OOMs, restart deltas, pressure, or large/unapproved-model requests. The
-   installer repeats a live one-second capacity/PM2 check before its first host
-   mutation, and stack start repeats it directly before Compose. Both gates
-   reject Docker socket/group/ACL authority for `dominguez` or
-   `nexus-release`, known automatic-updater containers or systemd units, and
-   any missing or ambiguous daemon-wide user-namespace mapping. Because the
-   production host already uses IDs 999/1000, fresh Docker must use
-   `userns-remap: default` with one non-overlapping 65536-ID `dockremap` range
-   and the incompatible containerd image store disabled. Container IDs
-   999/1000 remain internal; bind directories below the root-controlled
-   `/srv/sonarqube/data` boundary use the derived high host IDs. Installer,
-   preflight, and every start re-prove the daemon setting, live userns option,
-   subordinate ranges, namespaced storage root, protected-account isolation,
-   and exact mapped owners.
-   The one-time pre-Docker maintenance baseline separately proves absence
-   before and after its full sample across the Docker CLI/socket/config,
-   bounded Docker/containerd package records, exact Docker/containerd systemd
-   units, and a bounded `dockerd`/`containerd` process scan. Standalone
-   containerd is not allowed on ServerDominguez during this phase; approving
-   another container runtime requires revisiting host placement rather than
-   weakening this absence proof.
-10. **Legacy repository-sync wrappers are retired.** The deleted `deploy.sh`,
-   `deploy-staging.sh`, and `promote-to-prod.sh` paths must not be restored or
-   invoked. The signed root-owned promotion transaction is the sole path that
-   may mutate runtime selectors, PM2 state, or the production database during
-   promotion or predecessor recovery. `scripts/rollback.sh` and
-   `scripts/restore.sh` retain read-only dry-run inventory only; their apply
-   modes are retired and must not be used as an emergency mutation path.
-11. **Release-layout activation is boot-recoverable and evidence-gated.**
-    The future `/srv/nexus-release` authority may be installed only by the
-    exact protected-main two-phase activation transaction. Phase A must leave
-    the running PM2 and ingress process identity unchanged, retire the legacy
-    v2 adapter from its exact receipt-bound canonical target plan before
-    replacing its control, retain the shared application-DR SQLite helper
-    unchanged, and arm a boot-first installer recovery unit plus PM2 guard
-    before any control replacement. The journal must bind every active adapter
-    byte, predecessor disposition, service state, and plan digest, and must
-    checkpoint asset retirement before withdrawing the v2 receipt. Phase B may
-    hand over boot authority only after the signed layout transaction publishes
-    terminal evidence, and it must not restart either service. The migration
-    must preserve `/home/dominguez`, protect complete role predecessors below a
-    root-only transaction, capture an exact stopped-boundary SQLite copy after
-    process quiescence, preserve a healthy bound live database during recovery,
-    and keep recovered roots pinned while runtime and database bytes are
-    re-attested. Missing compatibility bind mounts on clean boot are
-    reconstructed only from cross-bound terminal evidence. The exact reviewed
-    source control must prove the root-owned PM2 closure before replacing an
-    older installed interface, and the installed control must return the same
-    proof afterward. KVM provisioning must publish a root-owned mode-0600 trust
-    manifest that independently binds the active provision receipt/set,
-    QEMU/runner identities, fixed scenario-to-guest mapping, one dedicated
-    hypervisor Ed25519 key, three pairwise-distinct guest Ed25519 keys, and
-    each guest SSH host-key digest. A random plan challenge must bind all three
-    real fault outcomes, but the plan may not choose the trusted keys or guest
-    mapping. The broker verifies the root trust and nested signatures before
-    and after copying authority and once more immediately before the systemd
-    transaction enters `running`. A durable submitted journal whose active
-    marker was interrupted may be reconciled only when it is the sole
-    nonterminal orphan, its full admission identity revalidates, and its
-    acceptance instant falls inside the signed request lifetime. The same
-    accepted bytes may resume after current wall-clock expiry; ambiguous,
-    out-of-window, or unsafe orphan state blocks recovery. The Phase A boot
-    recovery sandbox may write only the named recovery families including
-    `/etc/nexus-release`; the Phase B recovery sandbox may write the required
-    `/etc/systemd/system` drop-ins, never a broad `/etc` path. Do not install
-    or run the one-time migration until ServerDominguez retains those live
-    prerequisites and explicit owner authorization.
+   production stability soak. Record service unavailability separately from
+   total cutover duration so the soak is never shortened for a headline.
+8. **Advisory work stays outside release.** Manual Sonar analysis and release
+   use the same user-owned remote mutex and cannot overlap. Sonar does not gate
+   CI, staging, or production and never starts tests.
+9. **Legacy release machinery stays retired.** Do not restore repository-sync
+   deploy wrappers, signed manifest/staging workflows, root promotion/recovery
+   control, KVM fault drills, `/srv/nexus-release` activation, duplicate state
+   stores, or AWS release dependencies. Git history is their recovery source.
 
 ## 9. Incident runbook (must)
 
@@ -328,10 +244,11 @@ When production is degraded:
    alert payload is sanitized too aggressively.
 4. **`pm2 logs content-engine --lines 200`** if the independent Python process
    is the suspect.
-5. **Use exact release evidence first.** Run `npm run release:status` against
-   the manifest and inspect the current release/backup identity before
-   submitting an owner-authorized signed root-owned predecessor-recovery
-   transaction.
+5. **Use exact release evidence first.** Run `npm run release:status` and
+   inspect the compact checksum manifest, transaction journal, current release,
+   and backup identity. A failed candidate transaction restores its recorded
+   predecessor automatically; if that recovery failed, stop and repair service
+   health before submitting another owner-authorized user transaction.
 6. **Update `docs/release/CURRENT_RELEASE_STATE.md`** with the incident
    timeline within 24 h.
 7. **Record durable follow-up in the canonical project tracker** for every
@@ -377,34 +294,26 @@ When production is degraded:
    settings do not inherit defaults during this promotion check.
 6. **Ollama has a hard host envelope.** Bind loopback-only with one loaded
    model, one parallel request, queue depth four, 4096 context, 2 CPU quota,
-   `MemoryHigh=4G`, `MemoryMax=6G`, and at most 512 MiB swap. Move swap to zero
-   only after the additional healthy observation window. Staging, production,
-   cleanup, Sonar enablement, and zero-swap authorization must use the
-   root-installed durable systemd one-shot, which holds the shared
-   release/Sonar mutex while it owns exactly one foreground observation
-   collector. A Mac/SSH disconnect cannot terminate it, it never restarts
-   automatically, and a pending reboot or queued governed-service transition
-   blocks the window. Hand-authored aggregates are not evidence. Its
-   root-owned request/journal binds the exact phase, deployed PM2 SHA, prior
-   evidence digest and predecessor control request, boot, and final result
-   digest. The request UUID, request-file SHA-256, and expected runtime SHA
-   recur in the result, request aggregate, and every raw sample; every sampled
-   PM2 process must equal that SHA. Production preserves the exact staging
-   control binding, cleanup preserves both staging and production bindings,
-   and zero-swap preserves the cleanup's production binding. The canonical
-   mode-0600 result must resolve to a bounded
-   raw hash chain captured on one boot and to exact-window read-only SQLite
-   `api_usage` counts by provider/model with fail-closed pricing/local-unit
-   persistence. The production window must reference and revalidate the prior
-   staging result; the zero-swap window must bind the exact cleanup result.
+   `MemoryHigh=4G`, `MemoryMax=6G`, and exactly 512 MiB swap. The old staged
+   observation, cleanup, and zero-swap chain is retired. After one exact
+   release has passed both staging and production, run the root-installed
+   `nexus-ollama-lean-finalize.mjs` command first in dry-run mode. Apply
+   requires the exact printed plan digest plus explicit owner authorization.
+   The command holds both the user release mutex and root Sonar lock, refuses
+   active Sonar Compute Engine work, and binds the same passing lean release
+   SHA and artifact digest across both transaction states, current symlinks,
+   and all four PM2 processes. It accepts only the audited four-tag full-digest
+   inventory, refuses a loaded deletion target, and removes only Gemma 2B,
+   Qwen 27B, and Qwen 35B after the fixed envelope restarts and the retained
+   3B model passes a bounded inference smoke. Restart or smoke failure restores
+   the exact predecessor drop-in. A root-only receipt records before/after
+   release, PM2, Sonar, envelope, model, and rollback evidence.
    The envelope installer accepts only an owner-digest-verified
    Git archive whose PAX commit equals the SHA-named root bootstrap, restores
    all replaced operational assets and the exact prior service state on
    failure, and must not install a binary or pull a mutable model tag.
    It requires the reviewed Ollama binary and systemd service-fragment digests,
-   and transaction commit independently queries the bounded loopback tags
-   endpoint, requires exactly one matching retained tag/digest, and binds the
-   observed response digest into the root-only receipt.
+   and transaction commit independently verifies the retained tag/digest.
    A permanent root-owned install-state guard is bootstrapped and loaded before
    the first journal write, so a power loss before candidate publication still
    blocks Ollama startup until exact recovery.
@@ -413,10 +322,8 @@ When production is degraded:
    override receives only a one-use restart authorization bound to the
    transaction, candidate digest, current boot, and live rollback-helper PID;
    reboot or replay remains blocked.
-   The fixed envelope and root-owned operational tools must be installed before
-   the first staging observation. Sonar authorization must recheck the live
-   sole retained tag/digest and effective envelope immediately before Compose,
-   after verifying encrypted off-host backup readiness.
+   The fixed envelope and finalizer must be installed before the small-only
+   release. Sonar remains advisory and uses the same release mutex.
 7. **Captured coach evaluations are local-only by default.** A cloud comparison
    requires an explicit cloud mode plus the per-run
    `--operator-authorize-private-cloud` acknowledgement. The script classifies
@@ -449,17 +356,19 @@ After every production promote, within 1 h:
 - [ ] Status portal `/portal/health` is accessible.
 
 The exact promotion command enforces immediate loopback/public readiness and
-automatic rollback. The operator completes the longer observation window and
-records evidence under ignored `.local/release/` paths or CI artifacts.
+automatic rollback. No additional Ollama observation window delays customer
+availability; the separately authorized finalizer records its root-only
+receipt after the production soak.
 
 ## 13. Data shape and disposability (must)
 
 1. **SQLite is the system of record.** It must be backed up before any
    migration and by an hourly online recovery-point timer.
-2. **Release backups live under the governed remote backup directory**
-   (`/home/dominguez/backups/nexushub/` in the current single-VPS deployment)
-   with version/timestamp identity. Routine database backups retain their
-   separately governed lifecycle.
+2. **Recovery points live under the governed local backup directory**
+   (`/srv/nexus-backups/application/` in the current single-VPS deployment)
+   with timestamp identity. Keep 24 hourly, 30 daily, 4 weekly, and 10
+   pre-promotion encrypted points. This is operational rollback protection,
+   not protection against full server or NVMe loss.
 3. **Cold-restart recovers all behavior** within 30 s. Caches are
    rebuilt; OAuth tokens decrypt on first use; cron scheduler picks up
    from last-run timestamps.

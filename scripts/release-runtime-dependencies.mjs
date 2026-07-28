@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const RUNTIME_DEPENDENCY_SCHEMA = 'nexus.release-runtime-dependencies.v1';
+export const RUNTIME_DEPENDENCY_SCHEMA = 'nexus.release-runtime-dependencies.v2';
 const args = process.argv.slice(2);
 const command = args[0] ?? '';
 const valueOf = (name, fallback = '') => {
@@ -28,10 +28,6 @@ export function canonicalJson(value) {
 
 function sha256(value) {
   return createHash('sha256').update(value).digest('hex');
-}
-
-function compareCodeUnits(left, right) {
-  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function regularFileIdentity(absolute, relative) {
@@ -59,16 +55,10 @@ export function buildRuntimeDependencyLock(rootInput, target) {
     path.join(deps, 'node_modules.tar.gz'),
     'dist/runtime-dependencies/node_modules.tar.gz',
   );
-  const wheelRoot = path.join(deps, 'python-wheelhouse');
-  const wheelNames = fs.readdirSync(wheelRoot).sort(compareCodeUnits);
-  if (wheelNames.length === 0) fail('Python wheelhouse is empty');
-  const wheels = wheelNames.map((name) => {
-    if (!/^[A-Za-z0-9_.+-]+\.whl$/.test(name)) fail(`unsafe Python wheel filename: ${name}`);
-    return regularFileIdentity(
-      path.join(wheelRoot, name),
-      `dist/runtime-dependencies/python-wheelhouse/${name}`,
-    );
-  });
+  const pythonArchive = regularFileIdentity(
+    path.join(deps, 'python-site-packages.tar.gz'),
+    'dist/runtime-dependencies/python-site-packages.tar.gz',
+  );
   return {
     schema: RUNTIME_DEPENDENCY_SCHEMA,
     target,
@@ -77,13 +67,17 @@ export function buildRuntimeDependencyLock(rootInput, target) {
       pythonRequirementsSha256: sha256(fs.readFileSync(path.join(resolvedRoot, 'content-engine/requirements.txt'))),
     },
     nodeArchive,
-    pythonWheels: wheels,
+    pythonArchive,
   };
 }
 
 export function validateRuntimeDependencyLock(lock, rootInput) {
   const resolvedRoot = path.resolve(rootInput);
-  exactKeys(lock, ['schema', 'target', 'inputs', 'nodeArchive', 'pythonWheels'], 'runtime dependency lock');
+  exactKeys(
+    lock,
+    ['schema', 'target', 'inputs', 'nodeArchive', 'pythonArchive'],
+    'runtime dependency lock',
+  );
   exactKeys(lock.target, ['os', 'osVersion', 'architecture', 'node', 'python'], 'runtime dependency target');
   exactKeys(lock.inputs, ['packageLockSha256', 'pythonRequirementsSha256'], 'runtime dependency inputs');
   if (lock.schema !== RUNTIME_DEPENDENCY_SCHEMA
@@ -99,16 +93,18 @@ export function validateRuntimeDependencyLock(lock, rootInput) {
     pythonRequirementsSha256: sha256(fs.readFileSync(path.join(resolvedRoot, 'content-engine/requirements.txt'))),
   };
   if (canonicalJson(lock.inputs) !== canonicalJson(expectedInputs)) fail('runtime dependency input digest mismatch');
-  const identities = [lock.nodeArchive, ...(lock.pythonWheels ?? [])];
-  if (identities.length < 2) fail('runtime dependency lock has no Python wheels');
   const expectedNodePath = 'dist/runtime-dependencies/node_modules.tar.gz';
+  const expectedPythonPath = 'dist/runtime-dependencies/python-site-packages.tar.gz';
   if (lock.nodeArchive?.path !== expectedNodePath) fail('runtime dependency Node archive path is invalid');
+  if (lock.pythonArchive?.path !== expectedPythonPath) {
+    fail('runtime dependency Python archive path is invalid');
+  }
+  const identities = [lock.nodeArchive, lock.pythonArchive];
   const seen = new Set();
   for (const identity of identities) {
     exactKeys(identity, ['path', 'size', 'sha256'], 'runtime dependency file identity');
     if (seen.has(identity.path)
-        || (identity.path !== expectedNodePath
-          && !/^dist\/runtime-dependencies\/python-wheelhouse\/[A-Za-z0-9_.+-]+\.whl$/.test(identity.path))) {
+        || ![expectedNodePath, expectedPythonPath].includes(identity.path)) {
       fail(`runtime dependency path is unsafe or duplicated: ${identity.path}`);
     }
     seen.add(identity.path);
@@ -117,9 +113,6 @@ export function validateRuntimeDependencyLock(lock, rootInput) {
     const observed = regularFileIdentity(absolute, identity.path);
     if (canonicalJson(observed) !== canonicalJson(identity)) fail(`runtime dependency digest mismatch: ${identity.path}`);
   }
-  const sortedWheels = [...lock.pythonWheels]
-    .sort((left, right) => compareCodeUnits(left.path, right.path));
-  if (canonicalJson(sortedWheels) !== canonicalJson(lock.pythonWheels)) fail('runtime dependency wheels are not sorted');
   return lock;
 }
 
@@ -143,20 +136,16 @@ function loadAndVerify() {
   return lock;
 }
 
-function assertNodeInstallPlatform(lock) {
+function assertRuntimePlatform(lock, pythonBin) {
   if (process.platform !== 'linux' || process.arch !== 'x64' || process.version !== lock.target.node) {
-    fail('installed runtime Node platform does not match the dependency artifact');
+    fail('runtime Node platform does not match the dependency artifact');
   }
   const osRelease = fs.readFileSync('/etc/os-release', 'utf8');
   if (!/^ID=ubuntu$/m.test(osRelease) || !/^VERSION_ID="?24\.04"?$/m.test(osRelease)) {
-    fail('installed runtime OS does not match Ubuntu 24.04');
+    fail('runtime OS does not match Ubuntu 24.04');
   }
-}
-
-function assertInstallPlatform(lock, pythonBin) {
-  assertNodeInstallPlatform(lock);
   const python = execFileSync(pythonBin, ['--version'], { encoding: 'utf8' }).trim();
-  if (python !== lock.target.python) fail('installed runtime Python patch does not match the dependency artifact');
+  if (python !== lock.target.python) fail('runtime Python patch does not match the dependency artifact');
 }
 
 function lexicalPathExists(target) {
@@ -169,85 +158,172 @@ function lexicalPathExists(target) {
   }
 }
 
-export function extractNodeModules(lock, destinationRoot, pythonBin = 'python') {
-  const nodeModules = path.join(destinationRoot, 'node_modules');
-  if (lexicalPathExists(nodeModules)) {
-    fail('network-independent Node extraction requires an absent dependency tree');
+export function expandedRuntimeTreeIdentity(rootInput) {
+  const resolvedRoot = path.resolve(rootInput);
+  const entries = [];
+  const visit = (absolute) => {
+    const stat = fs.lstatSync(absolute);
+    const relative = path.relative(resolvedRoot, absolute).split(path.sep).join('/');
+    if (stat.isSymbolicLink()) {
+      const target = fs.readlinkSync(absolute);
+      if (path.isAbsolute(target)) fail(`expanded runtime contains an absolute link: ${relative}`);
+      const resolvedTarget = path.resolve(path.dirname(absolute), target);
+      if (!resolvedTarget.startsWith(`${resolvedRoot}${path.sep}`)) {
+        fail(`expanded runtime link escapes its root: ${relative}`);
+      }
+      try {
+        fs.statSync(absolute);
+      } catch {
+        fail(`expanded runtime contains a dangling link: ${relative}`);
+      }
+      entries.push({ path: relative, type: 'symlink', target });
+      return;
+    }
+    if (stat.isDirectory()) {
+      entries.push({ path: relative, type: 'directory', mode: stat.mode & 0o777 });
+      for (const name of fs.readdirSync(absolute).sort()) visit(path.join(absolute, name));
+      return;
+    }
+    if (!stat.isFile()) fail(`expanded runtime contains an unsupported entry: ${relative}`);
+    entries.push({
+      path: relative,
+      type: 'file',
+      mode: stat.mode & 0o777,
+      size: stat.size,
+      sha256: sha256(fs.readFileSync(absolute)),
+    });
+  };
+  for (const relative of ['node_modules', 'content-engine/vendor']) {
+    const absolute = path.join(resolvedRoot, relative);
+    if (!fs.lstatSync(absolute).isDirectory()) {
+      fail(`expanded runtime dependency root is invalid: ${relative}`);
+    }
+    visit(absolute);
   }
-  const archive = path.join(destinationRoot, lock.nodeArchive.path);
+  return {
+    entries: entries.length,
+    files: entries.filter((entry) => entry.type === 'file').length,
+    links: entries.filter((entry) => entry.type === 'symlink').length,
+    sha256: sha256(canonicalJson(entries)),
+  };
+}
+
+export function extractRuntimeArchive(
+  archive,
+  destinationRoot,
+  expectedPrefix,
+  pythonBin = 'python3',
+) {
+  const extractionTarget = path.join(destinationRoot, expectedPrefix);
+  if (lexicalPathExists(extractionTarget)) {
+    fail(`runtime extraction requires an absent target: ${expectedPrefix}`);
+  }
   const extractionProgram = String.raw`
 import pathlib, posixpath, sys, tarfile
-archive, destination = sys.argv[1:]
+archive, destination, expected_prefix = sys.argv[1:]
+prefix = pathlib.PurePosixPath(expected_prefix)
 with tarfile.open(archive, mode='r:gz') as handle:
     for member in handle.getmembers():
         name = pathlib.PurePosixPath(member.name)
-        if name.is_absolute() or '..' in name.parts or not name.parts or name.parts[0] != 'node_modules':
-            raise SystemExit('unsafe node archive member')
+        if (name.is_absolute() or '..' in name.parts or not name.parts
+                or name.parts[:len(prefix.parts)] != prefix.parts):
+            raise SystemExit('unsafe runtime archive member')
         if member.isdev() or member.isfifo():
-            raise SystemExit('unsupported node archive member')
+            raise SystemExit('unsupported runtime archive member')
         if member.issym() or member.islnk():
             target = pathlib.PurePosixPath(member.linkname)
             if target.is_absolute():
-                raise SystemExit('absolute node archive link')
+                raise SystemExit('absolute runtime archive link')
             resolved = pathlib.PurePosixPath(posixpath.normpath(str(name.parent / target)))
-            if '..' in resolved.parts or not resolved.parts or resolved.parts[0] != 'node_modules':
-                raise SystemExit('escaping node archive link')
+            if ('..' in resolved.parts or not resolved.parts
+                    or resolved.parts[:len(prefix.parts)] != prefix.parts):
+                raise SystemExit('escaping runtime archive link')
     handle.extractall(destination, filter='data')
 `;
-  execFileSync(pythonBin, ['-c', extractionProgram, archive, destinationRoot], { stdio: 'inherit' });
-  if (!fs.statSync(nodeModules).isDirectory()) fail('Node dependency archive did not create node_modules');
+  execFileSync(
+    pythonBin,
+    ['-c', extractionProgram, archive, destinationRoot, expectedPrefix],
+    { stdio: 'inherit' },
+  );
+  if (!fs.statSync(extractionTarget).isDirectory()) {
+    fail(`runtime archive did not create ${expectedPrefix}`);
+  }
 }
 
-function extractNode() {
-  const lock = loadAndVerify();
-  assertNodeInstallPlatform(lock);
-  extractNodeModules(lock, root);
-  process.stdout.write(`${JSON.stringify({
-    ok: true,
-    schema: 'nexus.network-independent-node-extraction.v1',
-    dependencyLockDigest: sha256(canonicalJson(lock)),
-  })}\n`);
+export function extractRuntimeDependencies(
+  lock,
+  destinationRoot,
+  pythonBin = '/usr/bin/python3.12',
+) {
+  assertRuntimePlatform(lock, pythonBin);
+  extractRuntimeArchive(
+    path.join(destinationRoot, lock.nodeArchive.path),
+    destinationRoot,
+    'node_modules',
+    pythonBin,
+  );
+  extractRuntimeArchive(
+    path.join(destinationRoot, lock.pythonArchive.path),
+    destinationRoot,
+    'content-engine/vendor',
+    pythonBin,
+  );
 }
 
-function install() {
+function extractRuntime() {
   const lock = loadAndVerify();
   const pythonBin = valueOf('--python-bin', '/usr/bin/python3.12');
-  assertInstallPlatform(lock, pythonBin);
-  const nodeModules = path.join(root, 'node_modules');
-  const venv = path.join(root, 'content-engine/.venv');
-  if (lexicalPathExists(nodeModules) || lexicalPathExists(venv)) {
-    fail('network-independent install requires absent dependency trees');
-  }
-  extractNodeModules(lock, root, pythonBin);
-  execFileSync(pythonBin, ['-m', 'venv', venv], { stdio: 'inherit' });
-  const pip = path.join(venv, 'bin/pip');
-  const wheelhouse = path.join(root, 'dist/runtime-dependencies/python-wheelhouse');
-  const pipArgs = [
-    'install', '--no-index', '--only-binary=:all:', '--no-cache-dir',
-    `--find-links=${wheelhouse}`, '-r', path.join(root, 'content-engine/requirements.txt'),
-  ];
-  const result = spawnSync(pip, pipArgs, {
-    cwd: root,
-    stdio: 'inherit',
-    env: {
-      ...process.env,
-      PIP_CONFIG_FILE: '/dev/null',
-      PIP_NO_INDEX: '1',
-      PIP_DISABLE_PIP_VERSION_CHECK: '1',
-    },
-  });
-  if (result.status !== 0) fail(`offline Python dependency install failed: ${result.status ?? 'signal'}`);
-  execFileSync(pip, ['check'], { cwd: root, stdio: 'inherit', env: { ...process.env, PIP_NO_INDEX: '1' } });
+  extractRuntimeDependencies(lock, root, pythonBin);
+  const expandedTree = expandedRuntimeTreeIdentity(root);
   const evidence = {
-    schema: 'nexus.network-independent-install.v1',
+    schema: 'nexus.network-independent-runtime-extraction.v1',
     status: 'passed',
     dependencyLockDigest: sha256(canonicalJson(lock)),
     packageLockSha256: inputIdentity('package-lock.json'),
     pythonRequirementsSha256: inputIdentity('content-engine/requirements.txt'),
-    installedAt: new Date().toISOString(),
+    expandedTree,
+    extractedAt: new Date().toISOString(),
   };
-  fs.writeFileSync(path.join(root, '.network-independent-install.json'), `${JSON.stringify(evidence, null, 2)}\n`, { mode: 0o600 });
+  fs.writeFileSync(
+    path.join(root, '.network-independent-extraction.json'),
+    `${JSON.stringify(evidence, null, 2)}\n`,
+    { mode: 0o600 },
+  );
   process.stdout.write(`${JSON.stringify(evidence)}\n`);
+}
+
+function verifyExtractedRuntime() {
+  const lock = loadAndVerify();
+  const pythonBin = valueOf('--python-bin', '/usr/bin/python3.12');
+  assertRuntimePlatform(lock, pythonBin);
+  const receiptPath = path.join(root, '.network-independent-extraction.json');
+  const receiptStat = fs.lstatSync(receiptPath);
+  if (!receiptStat.isFile() || receiptStat.isSymbolicLink() || receiptStat.size > 64 * 1024) {
+    fail('expanded runtime receipt is unsafe');
+  }
+  const receipt = JSON.parse(fs.readFileSync(receiptPath, 'utf8'));
+  exactKeys(
+    receipt,
+    [
+      'schema', 'status', 'dependencyLockDigest', 'packageLockSha256',
+      'pythonRequirementsSha256', 'expandedTree', 'extractedAt',
+    ],
+    'expanded runtime receipt',
+  );
+  if (receipt.schema !== 'nexus.network-independent-runtime-extraction.v1'
+      || receipt.status !== 'passed'
+      || receipt.dependencyLockDigest !== sha256(canonicalJson(lock))
+      || receipt.packageLockSha256 !== inputIdentity('package-lock.json')
+      || receipt.pythonRequirementsSha256 !== inputIdentity('content-engine/requirements.txt')
+      || !Number.isFinite(Date.parse(receipt.extractedAt ?? ''))
+      || canonicalJson(receipt.expandedTree) !== canonicalJson(expandedRuntimeTreeIdentity(root))) {
+    fail('expanded runtime receipt does not match the extracted dependency tree');
+  }
+  process.stdout.write(`${JSON.stringify({
+    ok: true,
+    schema: receipt.schema,
+    expandedTree: receipt.expandedTree,
+  })}\n`);
 }
 
 if (process.argv[1]
@@ -256,7 +332,7 @@ if (process.argv[1]
   else if (command === 'verify') {
     const lock = loadAndVerify();
     process.stdout.write(`${JSON.stringify({ ok: true, digest: sha256(canonicalJson(lock)) })}\n`);
-  } else if (command === 'extract-node') extractNode();
-  else if (command === 'install') install();
-  else fail('Usage: release-runtime-dependencies.mjs <write-lock|verify|extract-node|install> --root <release>');
+  } else if (command === 'extract-runtime') extractRuntime();
+  else if (command === 'verify-extracted') verifyExtractedRuntime();
+  else fail('Usage: release-runtime-dependencies.mjs <write-lock|verify|extract-runtime|verify-extracted> --root <release>');
 }

@@ -1,8 +1,6 @@
-name: Weekly — Changed critical mutation score
+name: Manual — Test rationalization mutation evidence
 
 on:
-  schedule:
-    - cron: '35 5 * * 1'
   workflow_dispatch:
     inputs:
       base_sha:
@@ -17,8 +15,8 @@ env:
   NODE_VERSION: '22.23.1'
 
 jobs:
-  changed-critical-mutation:
-    name: Mutation score — changed critical modules
+  test-cleanup-mutation:
+    name: Mutation score — deleted test behavior owners
     runs-on: ubuntu-latest
     # Advisory only: execute every changed critical range in sequential
     # one-source processes. Start conservatively, then ratchet this timeout
@@ -33,20 +31,20 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
       - run: npm ci
-      - name: Resolve the weekly source window
+      - name: Resolve the rationalization source window
         id: base
         env:
           INPUT_BASE: ${{ inputs.base_sha }}
         run: |
           BASE="$INPUT_BASE"
           if [ -z "$BASE" ]; then
-            BASE="$(git rev-list -1 --before='7 days ago' HEAD)"
+            BASE="$(git rev-parse HEAD^)"
           fi
           test -n "$BASE"
           git rev-parse --verify "${BASE}^{commit}"
           echo "sha=$BASE" >> "$GITHUB_OUTPUT"
-      - name: Run changed-critical mutation gate
-        run: npm run test:mutation -- --base '${{ steps.base.outputs.sha }}' --scope changed-critical
+      - name: Run mapped test-cleanup mutation gate
+        run: npm run test:mutation -- --base '${{ steps.base.outputs.sha }}' --scope test-cleanup
       - name: Upload mutation plan and score
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

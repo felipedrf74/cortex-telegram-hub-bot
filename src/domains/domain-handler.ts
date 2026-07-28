@@ -44,6 +44,13 @@ import {
   renderCookingSafetyBlockedResponse,
   renderCookingSafetyPromptBlock,
 } from '../services/cooking-safety-policy';
+import {
+  answerCarriesNonDiagnosticDisclaimer,
+  buildCoachSafetyNotice,
+  evaluateChatMessageSafety,
+  resolveCoachSafetyLocale,
+  selectSurfacedSafetyFinding,
+} from '../services/coach-kernel/safety-guardrails';
 import type { AIToolResultMessage } from '../services/ai-provider';
 import { logger } from '../utils/logger';
 import { AITimeoutError } from '../utils/timeout';
@@ -760,6 +767,7 @@ export async function handleSimpleDomain(
       ? normalizeReplyForLanguage(finalText, requestLocale)
       : normalizeReplyForUserLanguage(finalText, userId);
     finalText = anchorTodayWorkoutAnswer(domain, message, finalText);
+    finalText = applyCoachAnswerSafety(domain, message, finalText, userId);
     finalText = enforceCookingDomainAnswerSafety(domain, finalText, userId, tenantId);
 
     if (hasUserScope) {
@@ -874,6 +882,7 @@ async function handleWithDirectCalls(
     ? normalizeReplyForLanguage(finalText, requestLocale)
     : normalizeReplyForUserLanguage(finalText, userId);
   finalText = anchorTodayWorkoutAnswer(domain, message, finalText);
+  finalText = applyCoachAnswerSafety(domain, message, finalText, userId);
   finalText = enforceCookingDomainAnswerSafety(domain, finalText, userId, tenantId);
 
   if (typeof userId === 'number') {
@@ -885,6 +894,91 @@ async function handleWithDirectCalls(
   }
 
   return { text: finalText, domain };
+}
+
+// ─── Coach / health-guidance answer safety ───────────────────────────
+//
+// App Review guideline 1.4.1: every surface that produces training,
+// readiness/recovery, or nutrition guidance has to say it is not
+// clinical advice, and a symptom described in ordinary chat has to reach
+// the deterministic guardrails. Both were previously true only for the
+// structured plan-generation path — `COACH_NON_DIAGNOSTIC_DISCLAIMER`
+// had zero production consumers and `evaluateSafetyContext` was never
+// invoked from chat.
+//
+// The rule is domain-capability driven, never per-user / per-skill /
+// per-dish: a domain either produces health guidance or it does not.
+//
+// Two tiers, because the disclaimer copy is coach-framed:
+//   - COACH_DISCLAIMER_DOMAINS always carry it. These are the surfaces that
+//     prescribe training and interpret readiness/recovery from HRV + sleep.
+//   - SAFETY_SURFACING_DOMAINS additionally include nutrition. A plain
+//     recipe does not need "I am a training coach, not a clinician", but a
+//     nutrition turn that touches under-fueling, RED-S, or a medical
+//     question does — so findings are surfaced there and the disclaimer
+//     rides along with them.
+const COACH_DISCLAIMER_DOMAINS: ReadonlySet<DomainName> = new Set<DomainName>(['triathlon']);
+const SAFETY_SURFACING_DOMAINS: ReadonlySet<DomainName> = new Set<DomainName>(['triathlon', 'cooking']);
+
+/**
+ * Run the deterministic guardrails over the turn and attach the referral
+ * + non-diagnostic disclaimer to the answer.
+ *
+ * Surfacing policy:
+ *   - a finding from the free-text red-flag lexicon is surfaced in ANY
+ *     domain (chest pain in a secretary turn still matters);
+ *   - other findings are surfaced only in health-guidance domains, because
+ *     the medical-question / supplement patterns match ordinary product
+ *     words ("scan", "labs") and would otherwise fire on invoice turns;
+ *   - the disclaimer is appended whenever a finding is surfaced, and
+ *     unconditionally on coach/training answers.
+ */
+function applyCoachAnswerSafety(
+  domain: DomainName,
+  message: string,
+  finalText: string,
+  userId?: number,
+): string {
+  if (!finalText || finalText.trim().length === 0) return finalText;
+  const alwaysDisclaim = COACH_DISCLAIMER_DOMAINS.has(domain);
+  const safetySurfacingDomain = SAFETY_SURFACING_DOMAINS.has(domain);
+  const locale = () => resolveCoachSafetyLocale(
+    typeof userId === 'number' ? getSafetyCopyLanguage(userId) : null,
+  );
+  try {
+    const evaluation = evaluateChatMessageSafety(message, finalText);
+    const surfaced = selectSurfacedSafetyFinding(evaluation);
+    const inferredRedFlag = surfaced !== null && surfaced.triggerSummary.startsWith('inferred free text:');
+    const surfaceFinding = surfaced !== null && (safetySurfacingDomain || inferredRedFlag);
+    if (!surfaceFinding && !alwaysDisclaim) return finalText;
+
+    const notice = buildCoachSafetyNotice(
+      surfaceFinding ? evaluation : { status: 'pass', findings: [], topMessage: '' },
+      locale(),
+      {
+        includeDisclaimer: true,
+        alreadyDisclaimed: answerCarriesNonDiagnosticDisclaimer(finalText),
+      },
+    );
+    if (!notice) return finalText;
+    if (surfaceFinding && surfaced) {
+      logger.info(
+        { domain, userId, safetyDomain: surfaced.domain, safetySeverity: surfaced.severity },
+        'COACH_SAFETY_GUARDRAIL_SURFACED',
+      );
+    }
+    return `${finalText.trimEnd()}\n\n${notice}`;
+  } catch (err) {
+    // Never fail a turn because the guardrail evaluation threw — but never
+    // drop the disclaimer on a coach answer either.
+    logger.warn({ err, domain, userId }, 'Coach answer safety evaluation failed');
+    if (!alwaysDisclaim || answerCarriesNonDiagnosticDisclaimer(finalText)) return finalText;
+    return `${finalText.trimEnd()}\n\n${buildCoachSafetyNotice(
+      { status: 'pass', findings: [], topMessage: '' },
+      locale(),
+      { includeDisclaimer: true },
+    )}`;
+  }
 }
 
 function enforceCookingDomainAnswerSafety(
@@ -911,14 +1005,15 @@ function enforceCookingDomainAnswerSafety(
       },
       'COOKING_SAFETY_BLOCKED',
     );
-    return renderCookingSafetyBlockedResponse(getCookingSafetyLocale(userId));
+    return renderCookingSafetyBlockedResponse(getSafetyCopyLanguage(userId));
   } catch (err) {
     logger.warn({ err, userId, tenantId: resolvedTenantId }, 'Cooking domain answer safety check failed; returning safe refusal');
-    return renderCookingSafetyBlockedResponse(getCookingSafetyLocale(userId));
+    return renderCookingSafetyBlockedResponse(getSafetyCopyLanguage(userId));
   }
 }
 
-function getCookingSafetyLocale(userId: number): string | undefined {
+/** Preferred language for deterministic safety copy; undefined when unknown. */
+function getSafetyCopyLanguage(userId: number): string | undefined {
   try {
     return getUserLanguageById(userId);
   } catch {

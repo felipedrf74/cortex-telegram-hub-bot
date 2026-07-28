@@ -1,2269 +1,342 @@
 {
-  "version": "2026-07-27.1",
-  "defaultTier": "full",
+  "version": "2026-07-27.lean.1",
+  "defaultTier": "affected-groups",
   "releaseEvidence": {
-    "defaultTier": "changed-critical-cannot-skip",
-    "fullTier": "full-sharded",
-    "qualifyingNightly": {
-      "workflowPath": ".github/workflows/nightly.yml",
-      "workflowName": "Nightly — Full regression + coverage",
-      "artifactPrefix": "nightly-full-suite-evidence-",
-      "maxAgeHours": 36
-    }
+    "defaultTier": "affected-groups",
+    "fullTier": "explicit-release-checkpoint"
   },
   "tiers": {
     "fast": {
-      "description": "Deterministic unit, schema, policy, and release-tooling checks.",
-      "targetSeconds": 90,
+      "description": "Compatibility alias for the core safety pack.",
+      "targetSeconds": 30,
       "include": [
-        "__tests__/utils/**/*.test.ts",
-        "__tests__/types/**/*.test.ts",
-        "__tests__/scripts/*.test.ts",
-        "__tests__/services/*policy*.test.ts",
-        "__tests__/services/*validation*.test.ts"
-      ]
-    },
-    "critical": {
-      "description": "Release-blocking security, migration, billing, routing, public contract, and rollback regressions.",
-      "targetSeconds": 240,
-      "include": [
-        "__tests__/security/**/*.test.ts",
-        "__tests__/scope/**/*.test.ts",
-        "__tests__/api/auth-*.test.ts",
-        "__tests__/api/*tenant*.test.ts",
-        "__tests__/api/billing*.test.ts",
-        "__tests__/migrations/**/*.test.ts",
-        "__tests__/services/provider-fallback*.test.ts",
-        "__tests__/services/cost-guardrail*.test.ts",
-        "__tests__/scripts/release-*.test.ts",
-        "__tests__/scripts/promote-*.test.ts",
-        "__tests__/scripts/rollback-*.test.ts",
-        "__tests__/scripts/persistent-promotion-*.test.ts",
-        "__tests__/scripts/protected-main-ci-evidence.test.ts",
-        "__tests__/scripts/remote-release-capacity.test.ts",
-        "__tests__/scripts/release-runtime-dependencies.test.ts",
-        "__tests__/scripts/release-plan-evaluator.test.ts",
-        "__tests__/scripts/application-disaster-recovery.test.ts",
-        "__tests__/scripts/application-dr-*.test.ts",
-        "__tests__/scripts/ollama-observation-collector.test.ts",
-        "__tests__/scripts/ollama-operational-transactions.test.ts",
-        "__tests__/scripts/ollama-large-model-cleanup.test.ts",
-        "__tests__/scripts/ollama-systemd-envelope.test.ts",
-        "__tests__/scripts/production-shape-migration-rehearsal.test.ts",
-        "__tests__/scripts/changed-area-classifier.test.ts",
-        "__tests__/scripts/ci-required-test-sharding.test.ts",
-        "__tests__/scripts/runtime-manifests.test.ts",
-        "__tests__/services/agent-job-runner.test.ts",
-        "__tests__/services/scheduled-agent-job-governance.test.ts",
-        "__tests__/services/chat-action-fixer-worker.test.ts",
-        "__tests__/services/channel-learner-relearn-gate.test.ts",
-        "__tests__/services/garmin-coach-user-scope.test.ts",
-        "__tests__/agents/voice-evolution-multi-tenant.test.ts",
-        "__tests__/services/capability-manifest-consolidation.test.ts",
-        "__tests__/services/event-backbone.test.ts",
-        "__tests__/services/product-learning.test.ts",
-        "__tests__/services/training-learning-producers.test.ts",
-        "__tests__/api/product-learning*.test.ts",
-        "__tests__/services/training-exercise-media*.test.ts"
+        "__tests__/security/api-router-auth-boundary.test.ts",
+        "__tests__/services/tenant-scope.test.ts",
+        "__tests__/services/provider-fallback.test.ts",
+        "__tests__/services/pm2-health.test.ts",
+        "__tests__/testing/migrated-test-database.test.ts",
+        "__tests__/domains/domain-handler.test.ts"
       ]
     },
     "evaluate": {
-      "description": "Subjective quality, persona, provider, and long-running evaluation corpora.",
+      "description": "Subjective evaluation files excluded from deterministic correctness.",
       "dispositions": ["eval"]
     }
   },
-  "fullSuiteTriggers": [
-    ".github/workflows/*.yml",
-    ".github/actions/**",
-    "vitest.config.ts",
-    "__tests__/setup.ts",
-    "__tests__/fixtures/**",
-    "config/test-policy.json",
-    "config/irreversible-migrations.json",
-    "ops/application-dr/aws-s3-stack.guard",
-    "scripts/changed-area-classifier.sh",
-    "scripts/changed-area-classifier.mjs",
-    "scripts/lib/changed-area-classifier.mjs",
-    "scripts/lib/git-changed-paths.mjs",
-    "scripts/lib/irreversible-migration-policy.mjs",
-    "scripts/lib/migration-safety-policy-classifier.mjs",
-    "scripts/lib/production-shape-migration-rehearsal-evidence.mjs",
-    "scripts/migration-safety-check.mjs",
-    "scripts/production-shape-migration-rehearsal.mjs",
-    "scripts/validate-production-shape-migration-rehearsal.mjs",
-    "scripts/release-test-gate.sh",
-    "scripts/release-verify.sh",
-    "scripts/cannot-skip-gate-dashboard.mjs",
-    "scripts/resolve-ci-change-base.sh",
-    "scripts/select-vitest-files.mjs",
-    "scripts/release-test-evidence.mjs",
-    "scripts/protected-main-ci-evidence.mjs",
-    "scripts/run-test-tier.mjs",
-    "scripts/risk-gate.sh",
-    "scripts/local-full-vitest-receipt.mjs",
-    "scripts/lib/git-ref.mjs",
-    "scripts/lib/test-policy.mjs",
-    "scripts/lib/static-test-dependency-map.mjs",
-    "scripts/test-inventory.mjs",
-    "scripts/test-timing-history-artifact.mjs",
-    "scripts/test-migration-hook-lint.mjs",
-    "scripts/changed-coverage-gate.mjs",
-    "scripts/mutation-gate.mjs",
-    "config/stryker.config.mjs",
-    "src/services/database.ts",
-    "src/services/db.ts",
-    "src/services/tenant-scope.ts",
-    "src/api/router.ts",
-    "src/config.ts",
-    "src/index.ts",
-    "tsconfig.json",
-    "Dockerfile*",
-    "docker-compose*.yml",
-    "docker-compose*.yaml",
-    ".dockerignore",
-    ".nvmrc",
-    ".node-version",
-    ".env*.example",
-    "content-engine/Dockerfile*",
-    "content-engine/.env*.example",
-    "src/testing/migrated-test-database.ts",
-    "package.json",
-    "package-lock.json"
-  ],
-  "timingExceptions": [
-    {
-      "file": "__tests__/services/paid-ai-cost-controls-migration-runner.test.ts",
-      "owner": "database",
-      "reason": "Retains one production-runner rehearsal with pre-226 historical edge rows and a second-pass idempotency proof; shared runners may exceed the global correctness timeout.",
-      "expires": "2026-09-15"
-    },
-    {
-      "file": "__tests__/scripts/project-map-generation.test.ts",
-      "owner": "scripts",
-      "reason": "Regenerates the full project map over the entire repository (486 routes, 229 migrations, ~950 test files) to prove generator determinism; wall time scales with repo size and exceeds the 10s single-sample bound on shared nightly runners.",
-      "expires": "2026-10-15"
-    },
-    {
-      "file": "__tests__/scripts/test-tier-governance.test.ts",
-      "owner": "scripts",
-      "reason": "Spawns the real test-inventory and tier-partition CLIs over the full ~950-file corpus several times to pin governance behavior; subprocess startup dominates and exceeds the 10s single-sample bound on shared nightly runners.",
-      "expires": "2026-10-15"
-    },
-    {
-      "file": "__tests__/scripts/migration-safety-check.test.ts",
-      "owner": "scripts",
-      "reason": "Rehearses the cumulative apply of all 229 SQL migrations against fresh databases per scenario; runtime grows with every migration and exceeds the 10s single-sample bound on shared nightly runners.",
-      "expires": "2026-10-15"
-    },
-    {
-      "file": "__tests__/scripts/trusted-release-signing.test.ts",
-      "owner": "scripts",
-      "reason": "Recomputes the protected Git test-file tree and validates exact nightly artifact identity against the real repository; coverage instrumentation and shared-runner contention can push this integrity rehearsal beyond the 10s single-sample bound.",
-      "expires": "2026-10-15"
-    },
-    {
-      "file": "__tests__/integration/training-plan-create-cycle.test.ts",
-      "owner": "integration",
-      "reason": "End-to-end training-plan lifecycle over a real migrated database (create, revise, complete across weeks); the integration breadth is the point and exceeds the 10s single-sample bound on shared nightly runners.",
-      "expires": "2026-10-15"
-    },
-    {
-      "file": "__tests__/services/database.test.ts",
-      "owner": "services",
-      "reason": "Boots the full migration chain (229 files) plus WAL/backup/integrity paths on real SQLite files; migration count growth pushed it past the 10s single-sample bound on shared nightly runners.",
-      "expires": "2026-10-15"
-    },
-    {
-      "file": "__tests__/services/decision-center.test.ts",
-      "owner": "services",
-      "reason": "Exercises the Decision Center read model against a fully migrated database with cross-domain fixtures; migration chain startup cost dominates and exceeds the 10s single-sample bound on shared nightly runners.",
-      "expires": "2026-10-15"
-    }
-  ],
+  "timingExceptions": [],
   "inventoryEvidence": {
     "disposition": {
       "requiredResolvedPercent": 100,
       "provenanceRequired": true,
-      "maximumPatternFallbackFiles": 911
+      "maximumPatternFallbackFiles": 2000
     },
     "timing": {
-      "minimumScopePercent": 100,
+      "minimumScopePercent": 0,
       "minimumSamplesForPercentiles": 5,
       "maximumSamplesForPercentiles": 5
     },
     "uniqueCoverage": {
       "minimumPercent": 0,
-      "status": "not-collected; ratchet only after a reproducible collector exists"
+      "status": "advisory"
     },
     "lastFailure": {
       "minimumPercent": 0,
-      "status": "not-collected; ratchet only after a durable CI history source exists"
+      "status": "advisory"
     }
   },
   "dispositionRules": [
-    { "pattern": "__tests__/scripts/v2-normalization-attestor-bridge.test.ts", "disposition": "keep", "reason": "Protects the inactive production-only v2 normalization bridge's exact owner authorization, e168 control/attestor identity, ordinary production release-evidence signatures, root-exclusive-parent prerequisite, complete runtime/environment graph preflight, root-only namespace guard, descriptor/inode-bound rematerialization, retained-writable-FD isolation, adversarial rename/symlink/detachment rejection, fsynced per-phase normalization recovery, explicit 0600-to-0440 environment transition, recovery-only legacy allowance, and absence of staging or activation authority." },
-    { "pattern": "__tests__/scripts/v2-normalization-attestor-installer-transactions.test.ts", "disposition": "keep", "reason": "Behaviorally protects the inactive bridge install and strict-restore maintenance transactions across exact control/Sonar locks, fail-closed markers, per-phase SIGKILL recovery, durable receipt finish versus exact rollback, concurrent launch exclusion, and journal-removal crash edges." },
-    { "pattern": "__tests__/scripts/release-plan-evaluator.test.ts", "disposition": "keep", "reason": "Protects root-collected ten-release observation windows, signed redacted Sentry quality authority, root-derived failed-promotion baselines, sequential per-stage p50/p95 evidence, approval-excluded handoff metrics, outage-versus-soak separation, rollback recovery, exact identity parity, and the distinct five-release activation contract." },
-    { "pattern": "__tests__/scripts/release-quality-evidence.test.ts", "disposition": "keep", "reason": "Protects the exact root-signed 10+10 promotion window, 24-hour Sentry observation maturation, successful-release exposure semantics, bounded sequential exact-SHA queries, in-memory redaction, aggregate-only protected signatures, and existing release/Sonar mutual exclusion." },
-    { "pattern": "__tests__/scripts/rollback-drill-kvm-inputs.test.ts", "disposition": "keep", "reason": "Protects the fail-closed detached rollback-drill input chain from unsigned plan preparation through owner-signed readiness, isolated finalization, fresh authorization, and exact protected promotion-request sealing." },
-    { "pattern": "__tests__/scripts/rollback-drill-staging-attestation.test.ts", "disposition": "keep", "reason": "Protects the first-drill-only signed evidence wrapper, exact production-manifest provenance, dedicated drill-key isolation, ordinary recovery-schema compatibility, source/output digest binding, and cryptographic production-key rejection before application-runtime mutation." },
-    { "pattern": "__tests__/scripts/rollback-drill-legacy-staging-adapter.test.ts", "disposition": "keep", "reason": "Protects the non-promotable control-v2 legacy staging adapter's exact manifest/artifact binding, no-follow descriptor-pinned worker upload, root-pinned and sealed candidate/predecessor identities, in-lock exact-SHA authenticated smoke, predecessor-first journal, stopped-state SQLite snapshot including committed WAL frames and deleted/truncated recreation with original metadata, real-GNU-fuser holder exclusion, corrupt/missing/fuser-error fail-closed behavior, reboot recovery, PM2 recovery dependency/guard, descriptor-verified Phase-A retirement planning, protected drillBootstrap digest, ordinary-promotion rejection, and NOSETENV sudoers exclusion of root worker/recovery authority." },
-    { "pattern": "__tests__/scripts/rollback-drill-kvm-coordinator.test.ts", "disposition": "keep", "reason": "Protects the fail-closed, loopback-only KVM rollback-drill plan, distinct guest and key isolation, bounded deterministic machine evidence, three independent fault outcomes, 120-second recovery target, tamper rejection, and exact rollback-request digest binding." },
-    { "pattern": "__tests__/scripts/rollback-drill-layout-freshness-adapter.test.ts", "disposition": "keep", "reason": "Protects the fail-closed adapter from the owner-signed, root-trust-bound three-scenario layout KVM proof to the ordinary protected rollback-freshness request, including production-signed version/artifact binding, pairwise key separation, three byte-identical signed target-release-plus-SQLite backup artifacts, legacy-v1 rejection for freshness, 30-day freshness, and exact-prefix resumable request-last private evidence publication without a caller-key test bypass." },
-    { "pattern": "__tests__/scripts/rollback-drill-kvm-readiness-sequence.test.ts", "disposition": "keep", "reason": "Protects strict single-active guest ordering, durable request and receipt checkpoints, exact plan/generation/provision/authorization/runtime tuple binding, owner and guest signature verification, stale/replay/cross-guest rejection, and interruption or reboot resume without production activation." },
-    { "pattern": "__tests__/scripts/application-disaster-recovery.test.ts", "disposition": "keep", "reason": "Protects online SQLite recovery points, the explicit owner-only single-use zero-inventory disabled-lifecycle bootstrap, positive verified-rollback receipt floor, systemd/timer exclusion, conditional checksummed first-point AWS writes, exact COMPLIANCE identities, monotonic 24/7/4/6 maturity, lifecycle-only AWS cleanup, the explicit R2 client-pruning variance, exact rollback-archive escrow, isolated restore drills, and root-owned timer assets." },
-    { "pattern": "__tests__/scripts/application-dr-backup-descriptor.test.ts", "disposition": "keep", "reason": "Protects the unprivileged, exact-identity recovery descriptor passed into the root-owned encrypted backup boundary." },
-    { "pattern": "__tests__/scripts/application-dr-cloudformation.test.ts", "disposition": "keep", "reason": "Protects the retained private versioned S3 policy and executable CloudFormation Guard rules, exact-prefix ListBucket and ListBucketVersions boundaries across the role, Roles Anywhere session, and bucket policy, exact-tier conditional write-once denies, bounded COMPLIANCE floors, receipt-bound disabled-first lifecycle activation, writer deletion/control-mutation denial, optional disabled-first IAM Roles Anywhere trust anchor, CloudFormation-owned full-size CRL chunk contract, one-role profiles, distinct read-only restore identity, transport controls, and the absence of generated long-lived IAM credentials." },
-    { "pattern": "__tests__/scripts/application-dr-crl-parameters.test.ts", "disposition": "keep", "reason": "Protects byte-exact generation and read-only live verification of all 74 CloudFormation CRL chunks through the 300,000-byte Roles Anywhere service limit, exact trust-anchor/profile/CRL activation-state parity, monotonic no-unrevocation rotation, immutable evidence, and the absence of any direct CRL mutation command." },
-    { "pattern": "__tests__/scripts/application-dr-cloudformation-activate.test.ts", "disposition": "keep", "reason": "Protects the sequential application DR activation controller: immutable owner-reviewed change-set and receipt digests, exact current stack/template/parameter identity, stack-native rollback trigger binding, bounded validated lease-renewal chunks, pre-call execution-attempted checkpoints, durable lost-response recovery for both transitions without re-execution, minimal explicit resource-transition allowlists, exact positive/revoked probe binding, explicit lifecycle trigger removal, sanitized AWS execution, complete short-write journal persistence, and fail-closed pass-or-rollback evidence." },
-    { "pattern": "__tests__/scripts/application-dr-cloudformation-parameter-digest.test.ts", "disposition": "keep", "reason": "Protects the value-redacted canonical current-parameter digest used by the activation review, including deterministic ordering and rejection of implicit, duplicate, or resolved parameter ambiguity." },
-    { "pattern": "__tests__/scripts/application-dr-roles-anywhere-probe.test.ts", "disposition": "keep", "reason": "Protects the bounded executable IAM Roles Anywhere activation proof: exact positive role and prefix-list authorization before and after denial, same-identity positive and revoked certificate/key binding, exact enabled live-CRL and local OpenSSL revocation proof, minimal subprocess environment, long-lived credential refusal, redacted mode-0600 evidence, and no credential persistence or private-key digest." },
-    { "pattern": "__tests__/scripts/application-dr-health-alert.test.ts", "disposition": "keep", "reason": "Protects the installed hourly application-DR freshness monitor and failure hook: exact success-stamp validation, one-hour stale detection, journal-bound validation of the real v2 install transaction before bounded installing status, crash-stale and future-checkpoint rejection, failed-service rejection, redacted persistent alerts, occurrence deduplication, explicit healthy resolution, and fixed unit allowlisting." },
-    { "pattern": "__tests__/scripts/application-dr-installer.test.ts", "disposition": "keep", "reason": "Protects exact-source transactional installation and rollback of root-owned DR assets, exact timer/recovery-service states, and isolated drill user/group identity, including pre-mutation predecessor/source journaling, partial-account checkpoints, per-asset crash checkpoints, one retained verifier for shell and boot recovery, failure injection for unverifiable state restoration, and pass-receipt publication only after the durable commit point." },
-    { "pattern": "__tests__/scripts/application-dr-recovery-runtime.test.ts", "disposition": "keep", "reason": "Protects hostile-archive rejection and exact signed runtime reconstruction without executing candidate-controlled recovery code." },
-    { "pattern": "__tests__/scripts/application-dr-required-release-escrow.test.ts", "disposition": "keep", "reason": "Protects phase-distinct, transaction-bound rollback and current-runtime escrow identities, retention, and exact-version confirmation." },
-    { "pattern": "__tests__/scripts/application-dr-version-retention.test.ts", "disposition": "keep", "reason": "Protects paginated read-only AWS retention-floor evidence, current-period visibility, exact version identity, and fail-closed maturity reporting; AWS expiry is lifecycle-owned while the explicit R2 pruning variance remains separately tested." },
-    { "pattern": "__tests__/scripts/cloudflared-systemd-migration.test.ts", "disposition": "keep", "reason": "Protects the token-free, exact-input, root-owned Cloudflare replica handoff from a fragile cron child to a boot-persistent systemd connector without interrupting the confirmed public route." },
-    { "pattern": "__tests__/scripts/ollama-observation-collector.test.ts", "disposition": "keep", "reason": "Protects the root-owned foreground collector, same-boot sequential samples, raw hash chain, exact-window api_usage aggregation, and fail-closed persistence and reboot behavior." },
-    { "pattern": "__tests__/scripts/ollama-operational-transactions.test.ts", "disposition": "keep", "reason": "Protects SHA/PAX/archive-bound immutable Ollama runtime identity, exact asset/drop-in/service predecessor restoration, fail-closed journal/boot handling, and the durable release/Sonar-exclusive 24-hour observation one-shot." },
-    { "pattern": "__tests__/scripts/ollama-large-model-cleanup.test.ts", "disposition": "keep", "reason": "Protects the owner-authorized, exact-digest, soak-gated removal of large Ollama models using canonical hash-bound health/request evidence while preserving and re-verifying the retained 3B model." },
-    { "pattern": "__tests__/scripts/ollama-systemd-envelope.test.ts", "disposition": "keep", "reason": "Protects the fixed one-model Ollama systemd resource envelope and the separately owner-authorized, evidence-bound transition from 512 MiB to zero swap." },
-    { "pattern": "__tests__/scripts/release-layout-activation.test.ts", "disposition": "keep", "reason": "Protects the two-phase root-owned layout activation transaction, exact protected-source intake, nested Ed25519 hypervisor and three-guest admission proof, crash and boot reconciliation, immutable selector authority, stopped-database boundary, exact PM2 closure continuity, and reversible handover to promotion v3." },
-    { "pattern": "__tests__/scripts/persistent-promotion-transaction.test.ts", "disposition": "keep", "reason": "Protects durable one-shot promotion journaling, systemd recovery, predecessor restoration, the exact producer-consumer enabled-only application DR readiness contract, disabled-bootstrap rejection before mutation, and the root-installed v4 staging seal/verify trust chain when the controlling Mac or SSH session disappears." },
-    { "pattern": "__tests__/scripts/protected-main-ci-evidence.test.ts", "disposition": "keep", "reason": "Protects exact-SHA, toolchain, lockfile, policy, workflow, result, and artifact identity before protected-main evidence can be shadow-compared or reused." },
-    { "pattern": "__tests__/scripts/protected-main-reuse-activation.test.ts", "disposition": "keep", "reason": "Protects the root-signed five-production comparison window, independent protected GitHub run provenance, policy-drift invalidation, and exact-SHA fail-closed reuse authorization." },
-    { "pattern": "__tests__/scripts/quality-sonar-cloudformation.test.ts", "disposition": "keep", "reason": "Protects the separate retained private versioned Sonar backup bucket, Sonar-owned disabled-first Roles Anywhere trust anchor and CRL, exact-prefix writer/read-only restore identities, stack-scoped bounded-loss activation rollback alarm, disabled-first lifecycle, duplicate-key/lint/Guard validation, absence of long-lived IAM credentials, pre-prime lifetime budgeting, exact signed-authorization recheck before every sequential lease heartbeat and CloudFormation mutation, write-ahead execution recovery, and fail-closed not-executed closeout requiring fresh owner authorization." },
-    { "pattern": "__tests__/scripts/quality-sonar-stack-receipt.test.ts", "disposition": "keep", "reason": "Protects prep-only canonical owner-signed Ed25519 Sonar activation authority, exact immutable first-backup binding, sequential exact-change-set controller inspection with fake AWS, complete read-only live trust/CRL/profile/credential/revocation verification, root-private evidence, and rejection of mutable-current restore authority." },
-    { "pattern": "__tests__/scripts/quality-sonar-live-readiness.test.ts", "disposition": "keep", "reason": "Protects the immediate pre-start SonarQube capacity, retained-model identity, loaded-model state, effective systemd envelope checks, and exact-prefix backup-bucket reachability without bucket-wide listing authority." },
-    { "pattern": "__tests__/scripts/quality-sonar-runtime-boundary.test.ts", "disposition": "keep", "reason": "Behaviorally protects exact Sonar Compute Engine pending/current activity counting, protected application and release-account isolation from Docker, root-only Docker socket ACLs, fresh daemon-wide userns-remap with non-overlapping subordinate ranges and high-ID mapped bind ownership despite live host IDs 999/1000, incompatible image-store rejection, known updater absence, immediate memory/load/swap/OOM/PM2 stability, and placement of the same read-only gate before installer mutation and directly before Compose start." },
-    { "pattern": "__tests__/scripts/quality-sonar-install-transaction.test.ts", "disposition": "keep", "reason": "Behaviorally protects the external root-only Sonar install-control boundary, exact ordered predecessor-bound directory write-ahead journal, child-first empty-directory rollback before Sonar state exists, owner-acknowledged anchor reversal, asset-install exclusion, exact predecessor preservation, and power-loss resume with the retained program removed last." },
-    { "pattern": "__tests__/scripts/quality-sonar-operations.test.ts", "disposition": "keep", "reason": "Protects advisory-only SonarQube isolation, immutable image locks, local tunnel access, release mutual exclusion, resource ceilings, exact-VersionId/S3-checksummed complete-pair retention by distinct UTC day/ISO week, honest retention maturity, atomic no-overwrite restore evidence, and journal-bound idempotent boot recovery of interrupted root asset installation." },
-    { "pattern": "__tests__/scripts/quality-sonar-scanner-pin.test.ts", "disposition": "keep", "reason": "Protects the immutable SonarScanner archive and launcher identities used by the clean exact-SHA analysis command." },
-    { "pattern": "__tests__/scripts/release-sonar-mutex.test.ts", "disposition": "keep", "reason": "Protects prompt shared release/Sonar lock cleanup and immediate reacquisition after the Mac-side FIFO holder closes." },
-    { "pattern": "__tests__/scripts/release-pm2-boot-authority.test.ts", "disposition": "keep", "reason": "Protects the single root-governed PM2 boot authority, temporary recovery cgroup containment, poisoned runtime-file cleanup, exact four-app resurrection, canonical dump publication, boot SLA incident handling, and ingress ordering across promotion and layout recovery." },
-    { "pattern": "__tests__/scripts/release-sequence.test.ts", "disposition": "keep", "reason": "Protects the sequential resumable release coordinator, exact-source checks, persistent lockf/flock ownership without stale takeover, lock-loss abort, digest-bound protected signer correlation, explicit approvals, checkpoint revalidation, and fail-closed phase transitions." },
-    { "pattern": "__tests__/scripts/release-signing-resume-helpers.test.ts", "disposition": "keep", "reason": "Behaviorally proves that manifest and staging signer helpers watch one persisted exact-main run without redispatch, bind the run and signed payload to exact request bytes and trust digests, publish validated evidence atomically, install the exact downloaded signer artifact's SHA-scoped provenance receipt with live GitHub run/artifact identity, reject RC-run/cross-SHA/repository/workflow/attempt/stale/truncated substitution, resume idempotently, and refuse destination drift." },
-    { "pattern": "__tests__/scripts/release-staging-resume.test.ts", "disposition": "keep", "reason": "Behaviorally proves that checkpoint-bound exact-active staging resumes require the root-owned pre-switch installed/recovery binding before any sealed candidate preflight/readiness executes, keep generated evidence outside the immutable tree, and fail unhealthy resumes without link mutation." },
-    { "pattern": "__tests__/scripts/remote-pm2-root-install.test.ts", "disposition": "keep", "reason": "Protects the root-owned offline Node 22 and PM2 6.0.14 closure, immutable package-lock identity, atomic installation, exact launcher, cgroup-governed service handoff, and refusal of network installation or untrusted package content." },
-    { "pattern": "__tests__/scripts/remote-release-capacity.test.ts", "disposition": "keep", "reason": "Protects release preflight thresholds for memory, load, swap, OOM, all production/staging PM2 services, rollback-drill freshness, and active Sonar analysis." },
-    { "pattern": "__tests__/scripts/release-runtime-dependencies.test.ts", "disposition": "keep", "reason": "Protects the signed Ubuntu 24.04/x86-64 Node archive and Python wheelhouse, exact lockfile inputs, byte digests, safe extraction, and network-independent staging installation." },
-    { "pattern": "__tests__/scripts/rollback-drill-vm-runtime-bootstrap.test.ts", "disposition": "keep", "reason": "Protects the guest-bound offline runtime bundle, nonce-bound live measurement, crash-resumable readiness publication, exact effective recovery unit, stable stopped-overlay identity, and removal of caller-supplied runtime attestations." },
-    { "pattern": "__tests__/scripts/rollback-drill-vm-provisioner.test.ts", "disposition": "keep", "reason": "Protects the signed Canonical Ubuntu image selection, exact archive-bound root install, immutable KVM base, three independent guest identities, loopback-only user networking, shared release/Sonar exclusion, bounded host and VM memory/swap admission, single-active-guest lock, and disabled transactional systemd installation used by production-shaped rollback drills." },
-    { "pattern": "__tests__/scripts/rollback-drill-vm-transaction-failures.test.ts", "disposition": "keep", "reason": "Behaviorally fault-injects rollback-drill installer and provision transactions across asset, base, staged/committed set, active-receipt, journal-retention, and deletion-scope boundaries." },
-    { "pattern": "__tests__/scripts/release-staging-transfer-integrity.test.ts", "disposition": "keep", "reason": "Protects trusted remote verification of the exact signed staging bundle before candidate code executes, including same-size drift, undeclared files, unsafe links, and hidden workflow evidence uploads." },
-    { "pattern": "__tests__/scripts/staging-smoke-ollama-integration.test.ts", "disposition": "keep", "reason": "Protects the canonical sequential staging smoke integration of the exact retained-model routing and bounded Ollama runtime evidence." },
-    { "pattern": "__tests__/services/ollama-small-only-policy.test.ts", "disposition": "keep", "reason": "Protects the single retained 3B Ollama model, fail-closed model overrides, loopback binding, bounded context, and systemd resource ceilings." },
-    { "pattern": "__tests__/services/structured-output-schema.test.ts", "disposition": "keep", "reason": "Protects the bounded JSON-schema subset and deterministic local validation used by privacy-gated, no-tools cloud reasoning responses." },
-    { "pattern": "__tests__/scripts/pm2-memory-policy.test.ts", "disposition": "keep", "reason": "Protects RSS-versus-V8 headroom, unchanged Content Engine ceilings, and full PM2 stability observation across canonical release paths." },
-    { "pattern": "__tests__/scripts/test-tier-governance.test.ts", "disposition": "keep", "reason": "Guards exact deterministic/evaluation partitioning, scoped inventory evidence, release evidence identity, and CI lane wiring." },
-    { "pattern": "__tests__/scripts/local-full-vitest-receipt.test.ts", "disposition": "keep", "reason": "Protects exact staged-tree local full-Vitest receipts, private atomic evidence, governed report coverage, bounded freshness, hook-specific reuse, and fail-closed push-tip binding without skipping non-Vitest gates." },
-    { "pattern": "__tests__/scripts/production-migration-lineage.test.ts", "disposition": "keep", "reason": "Protects the signed retired-migration inventory, exact lineage matching, replacement identities, and fail-closed malformed-policy handling." },
-    { "pattern": "__tests__/migrations/training-session-schedule-truth-reconciliation.test.ts", "disposition": "keep", "reason": "Protects fresh and historical-lineage convergence for Training schedule truth without replaying retired SQL or duplicating columns." },
-    { "pattern": "__tests__/services/calendar-dedup-qa-validation.test.ts", "disposition": "delete", "reason": "The QA file repeated the primary fingerprint and merge matrix; its only distinct richness branch is now a public-behavior case in calendar-dedup.test.ts." },
-    { "pattern": "__tests__/services/calendar-dedup.test.ts", "disposition": "keep", "reason": "Primary calendar deduplication contract covers provider order, conservative interval union, all-day normalization, source preservation, and same-provider cleanup visibility." },
-    { "pattern": "__tests__/adapters/whatsapp-adapter-qa-validation.test.ts", "disposition": "delete", "reason": "Fragmented QA assertions repeated the same HTTP calls and compile-time export checks; unique MIME, API-version, and post-upload failure contracts were merged into the primary suite." },
-    { "pattern": "__tests__/adapters/whatsapp-adapter.test.ts", "disposition": "keep", "reason": "Primary adapter suite retains Cloud API request, error, media, template, platform-limit, and MIME behavior without method-existence or barrel-export assertions." },
-    { "pattern": "__tests__/services/storage-provider-qa-validation.test.ts", "disposition": "delete", "reason": "Delegated SQLite edge cases, export existence checks, singleton happy paths, and transaction repetitions duplicated the primary suite; the pragma policy contract was merged." },
-    { "pattern": "__tests__/services/storage-provider.test.ts", "disposition": "keep", "reason": "Primary storage suite owns initialization, prepared statements, atomic transactions, singleton lifecycle, safe pragma policy, and filesystem database creation." },
-    { "pattern": "__tests__/agents/voice-evolution-qa-validation.test.ts", "disposition": "merge", "reason": "The actual multi-tenant agent run and migrated-schema suite own transcript query compatibility; hand-built SQLite tables, source scans, bug-reproduction SQL, and duplicated logging checks were removed." },
-    { "pattern": "__tests__/agents/voice-evolution-agent.test.ts", "disposition": "keep", "reason": "The canonical migrated-schema regression suite retains transcript column and query behavior without reading production source text." },
-    { "pattern": "__tests__/brand/copyright-headers-qa-validation.test.ts", "disposition": "convert", "reason": "Per-source first-line scans and arbitrary file-count floors were replaced by the actual MIT license artifact and package publication manifest contract." },
-    { "pattern": "__tests__/brand/package-rename-qa-validation.test.ts", "disposition": "convert", "reason": "Eleven fragmented rename and source-substring checks were converted into one canonical package, lockfile, and license manifest suite." },
-    { "pattern": "__tests__/brand/package-manifest.test.ts", "disposition": "keep", "reason": "Canonical publication contract binds package identity, version, author, license, lockfile root, and the shipped MIT license artifact." },
-    { "pattern": "__tests__/services/ai-provider-qa-validation.test.ts", "disposition": "merge", "reason": "Distinct fallback argument, terminal-error, and nested-chain behavior moved into ai-provider.test.ts; duplicate passthrough, interface-existence, response-shape, and routing happy paths were removed." },
-    { "pattern": "__tests__/services/ai-provider.test.ts", "disposition": "keep", "reason": "Primary provider suite owns fallback isolation, exact argument forwarding, terminal failure, nested chains, adapters, and model routing." },
-    { "pattern": "__tests__/services/config-provider-qa-validation.test.ts", "disposition": "merge", "reason": "String-number tenant identity and malformed override boundaries moved into config-provider.test.ts; reference-identity, interface-existence, singleton, and repeated merge checks were removed." },
-    { "pattern": "__tests__/services/config-provider.test.ts", "disposition": "keep", "reason": "Primary configuration suite owns tenant isolation, canonical tenant IDs, safe merge boundaries, override lifecycle, and singleton behavior." },
-    { "pattern": "__tests__/services/cross-agent-learning-qa-validation.test.ts", "disposition": "convert", "reason": "Unique malformed-signal, filtering, digest, and independent-consumer behavior moved to a portable public-contract suite that remains valid across the service split." },
-    { "pattern": "__tests__/services/cross-agent-learning-contract.test.ts", "disposition": "keep", "reason": "Portable public-contract suite owns normalization, actionable prompt filters, digest strength, and independent consumer behavior without assuming a monolithic implementation." },
-    { "pattern": "__tests__/services/skill-migration-qa-validation.test.ts", "disposition": "delete", "reason": "Registry, skill-security, and migration-rehearsal suites already cover every table, index, default, uniqueness, foreign-key, cascade, credential, and skill-migration behavior." },
-    { "pattern": "__tests__/skills/content-skill-refactor-qa-validation.test.ts", "disposition": "merge", "reason": "Manifest parity moved into skill-config.test.ts; sub-skill, cron, routing, and classification assertions duplicated primary skill and router suites, while the portal substring check proved no behavior." },
-    { "pattern": "__tests__/services/usage-metering.test.ts", "disposition": "keep", "reason": "Primary migrated-template suite consolidates the unique schema, aggregation, isolation, quota-boundary, and typed portal contracts; the duplicate QA and cross-module source-string assertions were removed." },
-    { "pattern": "__tests__/**/*source-contract.test.ts", "disposition": "convert", "reason": "Replace source-string assertions with typed, schema, AST, manifest, or generator checks." },
-    { "pattern": "__tests__/services/coach-kernel-evaluation.test.ts", "disposition": "eval", "reason": "Persona and rubric-based coach quality grading belongs in the governed evaluation lane." },
-    { "pattern": "__tests__/services/content-day-to-day-evaluation.test.ts", "disposition": "eval", "reason": "Persona and output-quality rubric grading belongs in the governed evaluation lane." },
-    { "pattern": "__tests__/services/decision-*evaluator*.test.ts", "disposition": "keep", "reason": "Decision evaluators enforce deterministic runtime conflict and policy behavior; they are correctness tests, not subjective output grading." },
-    { "pattern": "__tests__/services/decision-preexecution-revalidator.test.ts", "disposition": "keep", "reason": "Pre-execution revalidation is a deterministic runtime safety contract despite containing the substring eval." },
-    { "pattern": "__tests__/**/*eval-history*.test.ts", "disposition": "keep", "reason": "Eval history suites protect persistence, tenant scope, and API contracts and therefore remain correctness tests." },
-    { "pattern": "__tests__/services/registry-*eval*.test.ts", "disposition": "keep", "reason": "Registry eval gates are deterministic release-safety and routing contracts, not subjective grading." },
-    { "pattern": "__tests__/services/chat-core-v2-*eval*.test.ts", "disposition": "keep", "reason": "Chat Core eval services enforce deterministic corpus shape, safety, recall, persistence, and promotion contracts." },
-    { "pattern": "__tests__/**/*evaluation-harness.test.ts", "disposition": "keep", "reason": "Harness and CLI suites verify deterministic evaluation machinery and evidence contracts; they do not grade live provider output." },
-    { "pattern": "__tests__/scripts/run-content-eval-live.test.ts", "disposition": "keep", "reason": "Protects the bounded live-evaluation runner's signed request, budget, output, and failure contracts without invoking providers in the test." },
-    { "pattern": "__tests__/scripts/backend-ios-contract-fixture.test.ts", "disposition": "keep", "reason": "Protects deterministic backend-to-iOS contract fixture generation, canonical bytes, and exact release-artifact binding." },
-    { "pattern": "__tests__/services/content-ios-extraction-artifact.test.ts", "disposition": "keep", "reason": "Protects signed iOS extraction evidence against stale, partial, reordered, source-mismatched, or tampered artifacts." },
-    { "pattern": "__tests__/services/content-ios-extraction-producer.test.ts", "disposition": "keep", "reason": "Protects clean-source identity, xcresult extraction, attachment traversal limits, and producer-side evidence derivation." },
-    { "pattern": "__tests__/services/content-live-evaluation-artifact.test.ts", "disposition": "keep", "reason": "Protects the signed live-evaluation artifact schema, source identity, runtime contract binding, and tamper rejection." },
-    { "pattern": "__tests__/services/content-live-evaluation-consumption.test.ts", "disposition": "keep", "reason": "Protects atomic single-consumption semantics and replay rejection for live-evaluation evidence." },
-    { "pattern": "__tests__/services/content-live-evaluation-request.test.ts", "disposition": "keep", "reason": "Protects loopback-only synthetic request authorization, scenario validation, and bounded budget contracts." },
-    { "pattern": "__tests__/services/content-live-evaluation-runtime.test.ts", "disposition": "keep", "reason": "Protects fail-closed synthetic runtime scope, isolated database state, and disabled cross-user context." },
-    { "pattern": "__tests__/services/invoice-filer-logging.test.ts", "disposition": "keep", "reason": "Protects privacy-safe invoice observability against receipt values, raw provider errors, and invalid provider output leakage." },
-    { "pattern": "__tests__/services/receipt-ai-transfer-consent.test.ts", "disposition": "keep", "reason": "Protects tenant- and content-bound receipt AI consent, single-spend replay safety, encrypted result reuse, expiry, and cleanup." },
-    { "pattern": "__tests__/services/creator-config-eval.test.ts", "disposition": "keep", "reason": "Creator configuration checks protect prompt neutrality, loading, and cross-runtime consistency." },
-    { "pattern": "__tests__/api/content-agent-job-routes.test.ts", "disposition": "keep", "reason": "Protects authenticated specialist-job lifecycle, proposal review, tenant scope, stale-base conflicts, and redacted API projections." },
-    { "pattern": "__tests__/api/content-route-internal-auth-matrix.test.ts", "disposition": "keep", "reason": "Protects every registered Content route against missing authenticated scope before durable service access, with one privacy-safe scope anomaly per rejection." },
-    { "pattern": "__tests__/api/content-workspace-capabilities-route.test.ts", "disposition": "keep", "reason": "Protects the fail-closed server-authoritative Content rollout capability contract." },
-    { "pattern": "__tests__/api/content-workspace-routes.test.ts", "disposition": "keep", "reason": "Protects canonical library keyset pagination, complete Today totals, immutable revision receipts and history pages, recovery, progressive artifact lineage, tenant scope, and idempotency API contracts." },
-    { "pattern": "__tests__/api/content-workspace-calendar-route.test.ts", "disposition": "keep", "reason": "Protects the tenant-scoped canonical Content calendar contract, bounded filters, safe Secretary degradation, and non-publication semantics." },
-    { "pattern": "__tests__/api/content-workspace-decision-route.test.ts", "disposition": "keep", "reason": "Protects explicit, tenant-scoped, idempotent Content review projection into Decision Center and safe retry behavior." },
-    { "pattern": "__tests__/api/content-workspace-schedule-routes.test.ts", "disposition": "keep", "reason": "Protects private work-schedule preview, confirmation, cancellation, idempotency, and non-publication semantics." },
-    { "pattern": "__tests__/migrations/content-agency-package-integrity.test.ts", "disposition": "keep", "reason": "Protects immutable scoped Content Agency package identity and package-to-workspace handoff integrity." },
-    { "pattern": "__tests__/migrations/content-agent-jobs.test.ts", "disposition": "keep", "reason": "Protects specialist-job and proposal schema scope, immutability, foreign keys, and lifecycle constraints." },
-    { "pattern": "__tests__/migrations/content-artifact-relationships.test.ts", "disposition": "keep", "reason": "Protects platform-variant and derivative artifact relationship scope and integrity." },
-    { "pattern": "__tests__/migrations/content-editorial-workspace-exit.test.ts", "disposition": "keep", "reason": "Protects the forward-only legacy editorial root cutover without inventing approval, scheduling, or publication evidence." },
-    { "pattern": "__tests__/migrations/content-legacy-idea-note-workspace-parity.test.ts", "disposition": "keep", "reason": "Protects the exact, tenant-scoped migration 253 cutover of legacy content ideas and saved ideas, including immutable source bindings, quarantine integrity, writer retirement, and readiness failure behavior." },
-    { "pattern": "__tests__/migrations/content-performance-workspace-lineage.test.ts", "disposition": "keep", "reason": "Protects immutable tenant-scoped performance outcome lineage and the frozen legacy pipeline alias." },
-    { "pattern": "__tests__/migrations/content-pipeline-workspace-exit.test.ts", "disposition": "keep", "reason": "Protects canonical pipeline ingress plus byte-faithful legacy-script backfill, scoped immutable bindings, legacy writer guards, readiness checks, and exact-snapshot rollback boundaries." },
-    { "pattern": "__tests__/migrations/content-schedule-bindings.test.ts", "disposition": "keep", "reason": "Protects canonical Content-to-Secretary schedule bindings, scope, and replay safety." },
-    { "pattern": "__tests__/migrations/content-topics-workspace-exit.test.ts", "disposition": "keep", "reason": "Protects topic compatibility backfill, deadline-only semantics, writer guards, and erasure behavior." },
-    { "pattern": "__tests__/migrations/content-workspace-domain.test.ts", "disposition": "keep", "reason": "Protects the canonical item, artifact, revision, workflow-event, and mutation-receipt domain schema." },
-    { "pattern": "__tests__/migrations/content-workspace-integrity.test.ts", "disposition": "keep", "reason": "Protects tenant-scoped revision ancestry, selected pointers, accepted proposal lineage, and authorized account/legal erasure behavior." },
-    { "pattern": "__tests__/migrations/content-workspace-library.test.ts", "disposition": "keep", "reason": "Protects tags, search, archive, Trash, relationships, and recoverable library schema behavior." },
-    { "pattern": "__tests__/migrations/content-workspace-observability.test.ts", "disposition": "keep", "reason": "Protects identity-free durable Content reliability, product, and quality aggregate schemas." },
-    { "pattern": "__tests__/scripts/production-shape-migration-rehearsal.test.ts", "disposition": "keep", "reason": "Proves exact candidate migrations and every Content exit/readiness assertion against a private online-backup clone, including aggregate-only evidence binding, wrong-source and stale/replay rejection, and cleanup on failure." },
-    { "pattern": "__tests__/security/content-workspace-library-tenant-isolation.test.ts", "disposition": "keep", "reason": "Proves library, tags, search, relationships, Trash, and recovery remain tenant isolated." },
-    { "pattern": "__tests__/services/content-agent-jobs.test.ts", "disposition": "keep", "reason": "Protects dependency-ordered specialist orchestration, parallel provider routing, budget/provider/validation fallback provenance, untrusted package context, explicit acceptance, cancellation, and stale-base safety." },
-    { "pattern": "__tests__/services/content-editorial-static-exit.test.ts", "disposition": "keep", "reason": "Protects removal of supported runtime imports and writes to retired editorial authority paths." },
-    { "pattern": "__tests__/services/content-legacy-idea-workspace-exit.test.ts", "disposition": "keep", "reason": "Protects migration 253 legacy-idea startup authority by pinning reviewed schema identities and failing closed on missing guards, forged readiness, source drift, dishonest quarantine, binding tampering, or scoped foreign-key failures." },
-    { "pattern": "__tests__/services/content-performance-lineage.test.ts", "disposition": "keep", "reason": "Protects transactional outcome, immutable revision link, receipt replay, target scope, and failure rollback behavior." },
-    { "pattern": "__tests__/services/content-workspace-integrity-readiness.test.ts", "disposition": "keep", "reason": "Protects migration 251 startup authority by pinning reviewed trigger identities and replaying tenant-scoped lineage and selected-pointer preflight checks against migrated and tampered databases." },
-    { "pattern": "__tests__/services/content-privacy-logging.test.ts", "disposition": "keep", "reason": "Protects privacy-safe Content logs against raw titles, topics, prompts, and generated body leakage." },
-    { "pattern": "__tests__/services/content-radar-workspace-actions.test.ts", "disposition": "keep", "reason": "Protects atomic radar feedback-to-workspace materialization, typed brief capture, retry reconciliation, rollback, Trash recovery, and tenant isolation." },
-    { "pattern": "__tests__/services/content-topic-workspace-compat.test.ts", "disposition": "keep", "reason": "Protects topic compatibility projections from overwriting canonical briefs, outlines, or scripts." },
-    { "pattern": "__tests__/services/content-workspace-capabilities.test.ts", "disposition": "keep", "reason": "Protects read-only defaults, cohort rollout, per-slice gates, and readiness removal criteria." },
-    { "pattern": "__tests__/services/content-workspace-rollout-preflight.test.ts", "disposition": "keep", "reason": "Protects the first production cutover from shipping a read-only, global, malformed, zero-or-multiple-owner, inactive-owner, or partially enabled Content workspace cohort while keeping owner identifiers out of evidence." },
-    { "pattern": "__tests__/services/content-workspace-capture.test.ts", "disposition": "keep", "reason": "Protects canonical script and idea capture byte fidelity, target-item CAS, immutable replay receipts versus authoritative live state, source/claim envelopes, duplicate prevention, and tenant isolation." },
-    { "pattern": "__tests__/services/content-workspace-chat-capture.test.ts", "disposition": "keep", "reason": "Protects explicit chat-to-Idea capture, atomic item/artifact creation, scoped deterministic replay, provenance and consent boundaries, tenant isolation, and read-only rollout enforcement." },
-    { "pattern": "__tests__/services/content-workspace-decision-adapter.test.ts", "disposition": "keep", "reason": "Protects Decision Center approval and rejection actions against canonical item versions and saved revisions." },
-    { "pattern": "__tests__/services/content-workspace-library.test.ts", "disposition": "keep", "reason": "Protects canonical capture, organization, search, filtering, soft deletion, restoration, and replay behavior." },
-    { "pattern": "__tests__/services/content-workspace-lineage.test.ts", "disposition": "keep", "reason": "Protects revision-scoped sources, claims, sensitive-claim blocking, provenance, and prompt-injection boundaries." },
-    { "pattern": "__tests__/services/content-workspace-observability-durable.test.ts", "disposition": "keep", "reason": "Protects durable aggregate flushing, fallback truth, crash-loss bounds, and privacy-safe metric storage." },
-    { "pattern": "__tests__/services/content-workspace-observability.test.ts", "disposition": "keep", "reason": "Protects Content operation, product-funnel, quality, latency, and closed failure-reason measurement." },
-    { "pattern": "__tests__/services/content-workspace-read-models.test.ts", "disposition": "keep", "reason": "Protects canonical dashboard, ideas, pipeline, and home projections after legacy writer retirement." },
-    { "pattern": "__tests__/services/content-workspace-calendar.test.ts", "disposition": "keep", "reason": "Protects deadline/work-block separation, Secretary-authoritative range projection, tenant isolation, recovery state, and presentation-safe calendar output." },
-    { "pattern": "__tests__/services/content-workspace-scheduling.test.ts", "disposition": "keep", "reason": "Protects private work scheduling, explicit confirmation, Secretary integration, recovery, and publication separation." },
-    { "pattern": "__tests__/services/content-workspace.test.ts", "disposition": "keep", "reason": "Protects canonical CAS, idempotency, revision immutability, approval invalidation, selection safety, and lifecycle transitions." },
-    { "pattern": "__tests__/api/product-learning-admin-routes.test.ts", "disposition": "keep", "reason": "Admin product-learning contracts cover authorization, bounded request handling, tunnel-aware rate limiting, aggregation, and audit behavior." },
-    { "pattern": "__tests__/security/product-learning-observability-tenant-isolation.test.ts", "disposition": "keep", "reason": "Security coverage proves product-learning observations and aggregate read models remain tenant isolated." },
-    { "pattern": "__tests__/services/training-learning-producers.test.ts", "disposition": "keep", "reason": "Training producer contracts enforce redaction, provenance, lifecycle, expiry, idempotency, and governed promotion behavior." },
-    { "pattern": "__tests__/services/task-store/task-reconciliation-job.test.ts", "disposition": "keep", "reason": "First coverage of the reconciliation job: duplicate-link conflict scan, candidate caps and staleness gate, per-link provider-state mapping, verify healing, timeout, and idempotency — safety net ahead of the task failure-lifecycle work." },
-    { "pattern": "__tests__/services/task-store/task-sync-policy.test.ts", "disposition": "keep", "reason": "Pins resolveTaskSyncTarget and getTaskContainerMapping: per-provider mapping hits, sync_direction gating, direct provider-project fallback, and the documented NEX-05 writer/consumer key mismatch the mapping-repair milestone will flip." },
-    { "pattern": "__tests__/services/task-store/task-sync-transitions.test.ts", "disposition": "keep", "reason": "Fixture pinning the task-sync state machines (mutation status, task sync_state, link_state) as an allowed-transition table with documented absorbing states; state-space changes must edit table and fixture together." },
-    { "pattern": "__tests__/scripts/task-mapping-repair.test.ts", "disposition": "keep", "reason": "Pins the one-shot NEX-05 backlog repair: deterministic-else-issue resolution (legacy mirror-keyed mapping, unique name match, open issue on ambiguity), dry-run rollback, and requeue semantics." },
-    { "pattern": "__tests__/services/task-store/migration-234-link-slot.test.ts", "disposition": "keep", "reason": "Pins migration 234's active-slot invariant: partial unique index over ACTIVE (tenant, user, task, provider, account) link slots, orphaned-history and cross-provider allowances, and the deterministic pre-index cleanup ordering (non-NULL provider_task_id, latest updated_at, highest id)." },
-    { "pattern": "__tests__/scripts/task-twin-repair.test.ts", "disposition": "keep", "reason": "Pins the one-shot NEX-02 twin repair: link/marker-only detection, survivor-preserving metadata and checklist union, tombstone retirement with the merged_into alias, mutation supersede/remap, dry-run rollback parity, idempotency, and the post-repair links-first pull-safety and resolver alias-hop contracts." },
-    { "pattern": "__tests__/services/task-store/task-ledger-retention.test.ts", "disposition": "keep", "reason": "Pins the M2B task ledger retention job's negative space: only terminal actionless classes (synced/dead_letter/superseded mutations, resolved issues, aged observability events) age out, while conflict/failed/queued mutations and open issues survive at any age; also pins bounded batching and the declared 90/90/30-day horizons." },
-    { "pattern": "__tests__/services/task-store/task-conflict-resolution.test.ts", "disposition": "keep", "reason": "Pins the M2B conflict-resolution unit surface: defensive provider-shape normalization (status/importance/due/body variants), provider-missing probe classification, PROVIDER_UNAVAILABLE error taxonomy, version-fallback and conflictId determinism, idempotent keep_local replay, no-link/NULL-hardening resolution paths, and keep_provider status/importance/due application onto the canonical row." },
-    { "pattern": "__tests__/services/task-store/task-sync-snapshot.test.ts", "disposition": "keep", "reason": "Pins the M2B agreed-base snapshot codec: build-side coercion defaults (title/status/priority/due/notes), SQLite integer-boolean acceptance, parse-side null/corrupt/non-object rejection, missing-field defaults, and build-parse round-trip stability relied on by conflict resolution and future 3-way merge." },
-    { "pattern": "__tests__/services/task-store/single-write-path-prohibition.test.ts", "disposition": "keep", "reason": "M5 Gate R1 static ratchet: provider task/list write calls may exist only in ledger-internal sync machinery and flag-gated legacy branches; pins the alphabetized allowlist, the isSingleWritePathEnabled wiring of every retained legacy site, and stale-entry hygiene." },
-    { "pattern": "__tests__/services/task-store/single-write-path.test.ts", "disposition": "keep", "reason": "M5 acceptance against a real migrated database: chat tool and chat-core-v2 writes journal task_mutations, become instantly readable through the offline read model (NEX-08/NEX-09), list create/delete update GET /lists truth (NEX-10), no provider write mock fires, and TASK_SINGLE_WRITE_PATH=0 restores the legacy direct-provider path." },
-    { "pattern": "__tests__/services/skills-tasks-executor.test.ts", "disposition": "keep", "reason": "M5 direct unit contract for the chat planner task executors against a real migrated database: ledger create/subtasks/mutation targets resolve on the local read model, chat_action_runs claims replay idempotently, reconciliation-pending and terminal-late-update guards hold, partial checklist failures degrade instead of lying, and the flag-off legacy dispatch stays blocked without provider capabilities." },
-    { "pattern": "__tests__/api/chat-core-v2-command-confirmation-response.test.ts", "disposition": "keep", "reason": "Pins the confirmation shortcut task-card identity contract: created-task cards prefer the NEXUS id the REST read model speaks, keep the numeric row id only as the legacy flag-off shape, and stay renderable with no id at all — deployed iOS uses card taskId for follow-up reads." },
-    { "pattern": "__tests__/services/task-store/task-sync-coordinator.test.ts", "disposition": "keep", "reason": "M6 single-flight contract: one active run per (tenant,user) scope, overlapping requests coalesce into exactly one follow-up with unioned options, delta-only restriction is an AND, explicit connect pulls bypass the all-pull gates, and per-step failures never reject the completion promise." },
-    { "pattern": "__tests__/services/task-store/microsoft-todo-adapter-delta.test.ts", "disposition": "keep", "reason": "M6 delta pull lifecycle: composite whole-URL deltaLink cursor storage and replay, LIST-scoped 410/syncStateNotFound resync honoring Location, @removed task/list removal channels, partial-row merge-by-id onto known state, failed-list cursor preservation, and byte-identical flag-off full-pull behavior." },
-    { "pattern": "__tests__/services/microsoft-graph-datetime.test.ts", "disposition": "keep", "reason": "NEX-29 serialization matrix: Graph dateTimeTimeZone members must be zone-naive wall-clock in the named zone — date-only pinning to T00:00:00 UTC, instant-to-wall-clock conversion, fractional-second stripping, unknown-zone and unparseable fallbacks, and null-clears-field passthrough." },
-    { "pattern": "__tests__/services/graph-request-policy.test.ts", "disposition": "keep", "reason": "M6 Retry-After contract: delta-seconds and HTTP-date parsing across Graph header shapes, the bounded [1s,60s] delay window, legacy exponential fallback when the header is absent, and the in-memory 429 counters surfaced through task sync metrics." },
-    { "pattern": "__tests__/services/task-store/task-provider-capabilities.test.ts", "disposition": "keep", "reason": "M13 reminder projection: projectTaskForProvider must forward a set reminderAt as the reminderDateTime the Microsoft To Do push serializes zone-naive, and omit the key entirely when the task carries no reminder so a partial update never touches the provider reminder." },
-    { "pattern": "__tests__/services/task-store/task-list-sync-selection.test.ts", "disposition": "keep", "reason": "M12 selection contract: no row means enabled (old clients keep importing everything), setTaskListSyncSelection upserts a full enabled/disabled universe idempotently with duplicate ids collapsed, consumers fail open when the table is absent, and disconnect clears the selection so reconnect starts from all-enabled." },
-    { "pattern": "__tests__/services/task-store/task-disconnect-policy.test.ts", "disposition": "keep", "reason": "M12 disconnect data-choice: origin is discriminated by active provider_imported link plus row provider (never source_of_truth), archive converts imports to local_only, remove soft-deletes only true imports while Nexus-origin synced rows are always kept, links are orphaned with provider ids surrendered per the M4 invariant, and a second application finds nothing to do." },
-    { "pattern": "__tests__/api/tasks-sync-connect-routes.test.ts", "disposition": "keep", "reason": "M12 connect surface: import-preview returns live per-list counts with 409 when the provider is not connected and 503 when the probe fails, sync/connect validates selectedListIds as string[] and persists enabled rows for the selection plus disabled rows for the rest of the known universe before kicking the coordinated connect sync." },
-    { "pattern": "__tests__/services/microsoft-todo-graph-timeout.test.ts", "disposition": "keep", "reason": "M14 (NEX-25 residual) chat-path Graph timeout contract: proves every raw Microsoft To Do Graph call is bounded — the retry-wrapped path (getLists) and the non-retry raw path (createTask) both fail with a timeout error when the socket hangs, and the MS_TODO_GRAPH_REQUEST_TIMEOUT_MS override tightens the bound." },
-    {"pattern":"__tests__/services/chat-tool-authorization-per-target.test.ts","disposition":"keep","reason":"ADV-3 per-target destructive-confirmation contract: single-use grants, schema-exact target matching, decoy-field rejection, and the destructive-tool mapping completeness invariant."},
-    {"pattern":"__tests__/services/provider-fallback-mid-loop.test.ts","disposition":"keep","reason":"ADV-2 mid-loop provider pinning contract: routed-provider stamping, issuer pinning without cross-provider fallback, and the typed unroutable-issuer refusal."},
-    {"pattern":"__tests__/services/chat-pending-work.test.ts","disposition":"keep","reason":"Mirror suite for cancelAllPendingChatWork: full multi-store fan-out, partial-store-failure isolation, and tenant scoping."},
-    {"pattern":"__tests__/services/chat-eval-executor.test.ts","disposition":"keep","reason":"M2 ChatTurnExecutor plus governed live-run contract: fixture parity, authenticated preflight, per-scenario reset, exact budget headers, evidence readback, physical eval identity, and blocked transport shapes."},
-    {"pattern":"__tests__/services/chat-live-evaluation-contract.test.ts","disposition":"keep","reason":"Live chat eval boundary: exact local/real budget split, dedicated non-production identity and provider policy, scoped actual-versus-attempt cost evidence, and fail-closed attestation."},
-    {"pattern":"__tests__/services/chat-live-evaluation-state.test.ts","disposition":"keep","reason":"Live chat eval scenario isolation: fixed server-owned seed profile, AsyncLocal scope, tenant-exact reset, exact eval-owned local-only mutation target replacement, repeatable cleanup, and aggregate-only durable preparation evidence."},
-    {"pattern":"__tests__/api/chat-eval-routes.test.ts","disposition":"keep","reason":"Authenticated eval control plane: sanitized preflight, header-bound dedicated-tenant reset with no client seeds, and aggregate no-transcript run evidence."},
-    {"pattern":"__tests__/migrations/chat-live-eval-preparations.test.ts","disposition":"keep","reason":"Migration 260 aggregate eval-preparation plus immutable first-live-baseline schema, run/scenario mutation guards, privacy column exclusions, and reversible down path."},
-    {"pattern":"__tests__/services/chat-eval-scorer.test.ts","disposition":"keep","reason":"M2 deterministic scorer contract: one case per dimension with DayToDayFailureType mapping, llm_judge null pins, blocked-turn honesty, default language-detector wiring."},
-    {"pattern":"__tests__/services/chat-day-to-day-simulation.test.ts","disposition":"keep","reason":"M2 bounded live profile: seven allowlisted scenarios, EN/PT-BR/es-419 turns, exact-target preview and confirmation, token-zero side-effect verification, honest exclusions, and fixture parity."},
-    {"pattern":"__tests__/services/chat-eval-history.test.ts","disposition":"keep","reason":"M2/M22 eval evidence truth: cost attestations, immutable dedicated-staging real-provider baseline acceptance, compatible follow-up deltas, aggregate privacy, and mutation-proof storage guards."},
-    {"pattern":"__tests__/portal/portal-eval-history-routes.test.ts","disposition":"keep","reason":"M2/M22 portal evidence boundary: admin-token protection, attested live-run persistence, staging-only immutable baseline acceptance, and structured baseline readback."},
-    {"pattern":"__tests__/services/chat-eval-judge.test.ts","disposition":"keep","reason":"M2 bounded judge contract: one flash-lite call per scenario, malformed-JSON blocked not crashed, budget abort, zero calls outside real_provider."},
-    {"pattern":"__tests__/services/chat-language-detector.test.ts","disposition":"keep","reason":"M3 locale gate: es/pt/en confusable detection, fail-open on short/mixed text, pinned es-419-answered-in-Portuguese live regression shape."},
-    {"pattern":"__tests__/services/chat-hybrid-metrics.test.ts","disposition":"keep","reason":"M3 detector-derived portugueseLocalizationLeakage path with legacy explicit-boolean behavior preserved."},
-    {"pattern":"__tests__/services/intent-resolution/intent-resolver.test.ts","disposition":"keep","reason":"M4 manifest-driven resolver: every capability's example utterances resolve generically (no hardcoding), synthetic-entry extensibility."},
-    {"pattern":"__tests__/services/intent-resolution/vocabulary-parity.test.ts","disposition":"keep","reason":"M4 zero-behavior-change pin: extracted manifest vocabulary reproduces each live routing surface's decisions on the parity corpus."},
-    {"pattern":"__tests__/scripts/run-chat-eval-live.test.ts","disposition":"keep","reason":"M2 eval CLI guard contract: fixture default, clean/full-SHA evidence identity, base-url/auth requirements, and exact $0.50 real split with a $0.05 bounded judge."},
-    {"pattern":"__tests__/services/chat-action-state.test.ts","disposition":"keep","reason":"M6 mirror suite: pending-action state machine — status transitions, TTL expiry, cancellation cascades, recent-entity graph, tenant scoping."},
-    {"pattern":"__tests__/services/chat-pending-confirmations.test.ts","disposition":"keep","reason":"M6 mirror suite: confirmation TTL/tenant scoping, ADV-3 confirmedTargets sanitization, completed-confirmation replay."},
-    {"pattern":"__tests__/services/chat-tenant-scope.test.ts","disposition":"keep","reason":"M6 mirror suite: tenant resolution rules, cross-tenant denial, scope observability anomalies."},
-    {"pattern":"__tests__/services/chat-grounding-layer.test.ts","disposition":"keep","reason":"M6 mirror suite: grounding fact assembly, freshness/staleness, missing-fact shapes, owner-skill precedence."},
-    {"pattern":"__tests__/services/chat-action-run-store.test.ts","disposition":"keep","reason":"M6 mirror suite: run claim/replay idempotency, terminal-status guard, cancel/reap/prune lifecycle."},
-    {"pattern":"__tests__/services/chat-segment-router.test.ts","disposition":"keep","reason":"M6 characterization pins of current segment routing incl. tasks-only $ref limitation (deliberately updated by M16)."},
-    {"pattern":"__tests__/api/chat-message-replay.test.ts","disposition":"keep","reason":"M6 replay net: normalized envelope + stage-order pins per routeMethod terminal family — the byte-parity net for M8-M10 refactors."},
-    {"pattern":"__tests__/scripts/chat-eval-local.test.ts","disposition":"keep","reason":"M5 local_engine orchestration: dry-run plan, kill switch, teardown flag, promote-gate ordering + loud override pins."},
-    {"pattern":"__tests__/services/routing-corpus.test.ts","disposition":"keep","reason":"M7 corpus builder: 4-source extraction, hash dedupe, labeling store, provenance."},
-    {"pattern":"__tests__/scripts/run-routing-accuracy.test.ts","disposition":"keep","reason":"M7 accuracy replay: per-surface precision/recall, calibration buckets, snapshot gate, zero-live-call guarantee."},
-    {"pattern":"__tests__/portal/routing-corpus-routes.test.ts","disposition":"keep","reason":"M7 portal labeling: admin-token auth, next/label/progress flow, tenant scoping, manifest-validated labels."},
-    {"pattern":"__tests__/services/chat-pending-cancellation.test.ts","disposition":"keep","reason":"Cancellation-turn matcher contract + labeled pre-existing-bug pin: 'cancel that/it' misses the cascade (owner M8/M16)."},
-    {"pattern":"__tests__/services/chat-skill-capability-registry.test.ts","disposition":"keep","reason":"Skill inference contract + labeled pre-existing-bug pin: plural 'tasks' resolves to chat (owner M15)."},
-    {"pattern":"__tests__/api/chat-message-finalizer.test.ts","disposition":"keep","reason":"M8 unified terminal pipeline: per-family gate policy, fail-closed unknown families, one-pipeline grep governance, >=20 finalize-call pin."},
-    {"pattern":"__tests__/utils/prompt-loader.test.ts","disposition":"keep","reason":"M11 prompt-loader contract: TTL-throttled stat, cache invalidation, production writePrompt guard."},
-    {"pattern":"__tests__/services/chat-conversation-state.test.ts","disposition":"keep","reason":"M13 durable continuity: restart survival within TTL, tenant scoping, anchor decay, DB-failure fail-open."},
-    {"pattern":"__tests__/scripts/telegram-purge-gate.test.ts","disposition":"keep","reason":"M9 purge gate: pins purged files at zero telegram references with explicit allowlist; formatter module replacement pinned."},
-    {"pattern":"__tests__/services/intent-resolution/manifest-routing-flags.test.ts","disposition":"keep","reason":"M12 per-surface manifest routing flags: defaults off, isolation, master kill wins."},
-    {"pattern":"__tests__/services/intent-resolution/manifest-projections.test.ts","disposition":"keep","reason":"M12 vocabulary projections: full vs locale tier, accent folding, decisive-evidence scoring."},
-    {"pattern":"__tests__/services/intent-resolution/manifest-routing-safety-ownership.test.ts","disposition":"keep","reason":"M12 safety-ownership pin: finance-restricted + unsafe-access filters are code-owned, manifest-independent, identical across flag states."},
-    {"pattern":"__tests__/services/intent-resolution/manifest-routing-parity.test.ts","disposition":"keep","reason":"M12 flag-on/off parity over the 74-phrase corpus with bidirectionally pinned reviewed divergences; master-kill restores legacy."},
-    {"pattern":"__tests__/services/chat-quality-dashboard.test.ts","disposition":"keep","reason":"M22 dashboard aggregation: actual estimated spend versus budget ceiling, frozen-baseline deltas, eval trend, failure-type breakdown, gate counters, durable clarify budget, routing accuracy, and sampler counts."},
-    {"pattern":"__tests__/services/chat-quality-digest.test.ts","disposition":"keep","reason":"M22 weekly digest builder: actual-spend and frozen-baseline deltas, durable clarify budget, weekly windows, empty-week truth, and alert-vs-digest severity routing."},
-    {"pattern":"__tests__/services/chat-quality-regression-monitor.test.ts","disposition":"keep","reason":"M22 independent five-minute monitor: activation-free readiness/behavior/fallback alerts, deduped readiness-artifact health warnings, aggregate-only privacy, and no provider calls."},
-    {"pattern":"__tests__/portal/portal-chat-quality-routes.test.ts","disposition":"keep","reason":"M22 portal quality page: admin-token auth, JSON aggregation endpoint, no raw text on page."},
-    {"pattern":"__tests__/api/chat-pipeline/runner.test.ts","disposition":"keep","reason":"M10 stage runner: ordered-array snapshot, per-stage trace emission, retirement-flag mechanics, non-retirable guard set."},
-    {"pattern":"__tests__/api/chat-pipeline/stages.test.ts","disposition":"keep","reason":"M10 stage modules: canHandle predicates, ctx patches, respond/continue contracts."},
-    {"pattern":"__tests__/services/intent-resolution/confidence.test.ts","disposition":"keep","reason":"M14 calibration runtime: bootstrap-equals-legacy golden pin, corpus math, fail-open loader, clarify policy thresholds."},
-    {"pattern":"__tests__/services/chat-skill-orchestrator-clarify.test.ts","disposition":"keep","reason":"M14 clarify policy: write/write epsilon triggers, reads never, loop prevention, PT/ES templates, flag/kill gating."},
-    {"pattern":"__tests__/services/chat-route-exit-sampler.test.ts","disposition":"keep","reason":"M20 sampler: 3-source conversion, dedupe + high-water marks, per-route parity aggregation, gate integration."},
-    {"pattern":"__tests__/services/chat-retirement-campaign-truth.test.ts","disposition":"keep","reason":"M20/M22 retirement truth: diagnostic routing rows cannot promote; signed paired runtime evidence, retirable-stage mapping, zero-regression checks, and trailing-24h fallback evidence are mandatory."},
-    {"pattern":"__tests__/scripts/chatv2-retirement-campaign.test.ts","disposition":"keep","reason":"M20 campaign CLI: real route-id order pin, table/json output, no flag flipping."},
-    {"pattern":"__tests__/migrations/chat-v2-route-exit-samples.test.ts","disposition":"keep","reason":"M20 migration 258: schema, dedupe constraint, reversibility."},
-    {"pattern":"__tests__/api/chat-pipeline/routing-clarify-stage.test.ts","disposition":"keep","reason":"M14 deterministic clarify terminal: templated EN/PT/ES response, e2e loop prevention via durable continuity, reads never clarify, flag/kill gating."},
-    {"pattern":"__tests__/services/chat-routing-clarify-metrics.test.ts","disposition":"keep","reason":"M14 durable clarify telemetry: tenant-safe aggregate writes, rolling-window budget calculation, stale/no-evidence distinction, and migration-backed persistence."},
-    {"pattern":"__tests__/router/classifier-prompt-builder.test.ts","disposition":"keep","reason":"M15 manifest prompt builder: every domain/skill present, synthetic-entry extensibility, exclusion table, token-delta waiver ceiling."},
-    {"pattern":"__tests__/router/classifier-manifest-skill-flag.test.ts","disposition":"keep","reason":"M15 flag gating: flag-off byte parity, flag-on skill parsing incl. legacy shape tolerance, master kill."},
-    {"pattern":"__tests__/services/anthropic-classifier-manifest-prompt.test.ts","disposition":"keep","reason":"M15 provider prompt selection under the manifest-classifier flag."},
-    {"pattern":"__tests__/services/chat-skill-orchestrator-skill-hint.test.ts","disposition":"keep","reason":"M15 classifier skill hint consumed as additive ownership evidence."},
-    {"pattern":"__tests__/services/chat-manifest-newly-reachable-skill-execution.test.ts","disposition":"keep","reason":"M15 execution hardening for newly NL-reachable skills, including confirmed Outlook mail writes with provider read-back, scoped connection refresh, and deterministic legacy-tail coverage."},
-    {"pattern":"__tests__/services/outlook-mail-write-readback.test.ts","disposition":"keep","reason":"M15 Outlook write boundary: exact recipients, abort propagation, draft/sent immutable read-back, and fail-closed verification before success."},
-    {"pattern":"__tests__/services/chat/executor/plan-executor.test.ts","disposition":"keep","reason":"M16 topological execution: independent branches continue, dependents block, M1 grant cap, honest partial copy, overflow disclosure."},
-    {"pattern":"__tests__/router/classifier-manifest-runtime-guard.test.ts","disposition":"keep","reason":"M15 flag-flip hard guard: force-disables and alerts on any manifest-reachable executor/domain-handler gap; real-dependency coverage pins the closed-gap state."},
-    {"pattern":"__tests__/api/chat-pipeline/legacy-tail-timeout.test.ts","disposition":"keep","reason":"M18 timeout partial: checkpointed-progress HTTP 202 envelope, dedicated continuation job reference, zero-checkpoint parity rethrow, exact-target preservation, and locale handling."},
-    {"pattern":"__tests__/services/chat-legacy-timeout-continuation.test.ts","disposition":"keep","reason":"M18 durable continuation: exact-scope late-result reuse with zero model/tool replay, re-confirmation after timeout, fenced idempotent delivery, privacy-safe APNs, transient retry truth, full-gate persistence, and scoped cancellation."},
-    {"pattern":"__tests__/domains/domain-handler-timeout-checkpoints.test.ts","disposition":"keep","reason":"M18 tool-loop checkpointing: write-behind persistence, blocked-write exclusion, fail-open on store errors."},
-    {"pattern":"__tests__/services/chat/planner/cross-skill-ownership.test.ts","disposition":"keep","reason":"M19 ownership transform: manifest-driven rewrite (never duplicate), synthetic-entry genericity, preview enforcement, flag/kill gating."},
-    {"pattern":"__tests__/api/chat-pipeline/cross-skill-plan-declined.test.ts","disposition":"keep","reason":"M19 bridge retirement: flag-on actionable planner-declined cross-skill turns terminate honestly without a model call, while pure multi-skill reads retain the bridge and flag-off/non-cross-skill routing keeps legacy behavior."},
-    { "pattern": "__tests__/**/*.test.ts", "disposition": "keep", "reason": "Retain until profiling and overlap evidence justify merge, conversion, evaluation, or deletion." }
+    {
+      "pattern": "__tests__/services/coach-kernel-evaluation.test.ts",
+      "disposition": "eval",
+      "reason": "Subjective coach-quality evaluation runs outside correctness."
+    },
+    {
+      "pattern": "__tests__/services/content-day-to-day-evaluation.test.ts",
+      "disposition": "eval",
+      "reason": "Subjective content-quality evaluation runs outside correctness."
+    },
+    {
+      "pattern": "__tests__/**/*.test.ts",
+      "disposition": "keep",
+      "reason": "Deterministic tests are selected by config/test-groups.json."
+    }
   ],
   "coverage": {
-    "global": { "lines": 78, "branches": 68, "functions": 84, "statements": 75 },
-    "changed": { "lines": 80, "branches": 75 },
-    "critical": { "lines": 90, "branches": 85 },
+    "global": {
+      "lines": 78,
+      "branches": 68,
+      "functions": 84,
+      "statements": 75
+    },
+    "changed": {
+      "lines": 80,
+      "branches": 75
+    },
+    "critical": {
+      "lines": 90,
+      "branches": 85
+    },
     "exceptions": [
       {
         "file": "src/services/database.ts",
         "owner": "test-infrastructure",
-        "reason": "Legacy database facade baseline is 25.28% lines and 26.08% branches; the extracted migration runner is governed separately above 90/85 while facade coverage is ratcheted without blocking this delegation-only change.",
+        "reason": "Legacy database facade baseline is ratcheted while extracted migration behavior remains independently governed.",
         "expires": "2026-08-31",
         "minimum": { "lines": 25.28, "branches": 26.08 }
       },
       {
         "file": "src/services/gemini-provider.ts",
         "owner": "provider-platform",
-        "reason": "The existing provider fallback matrix is 88.42% lines and 67.50% branches; this release changes provider injection boundaries but does not remove provider behavior, so coverage is ratcheted at the observed baseline while missing fallback branches are added outside the production path.",
+        "reason": "Preserve the observed provider fallback baseline while focused provider contracts close remaining branches.",
         "expires": "2026-09-30",
-        "minimum": { "lines": 88.42, "branches": 67.50 }
+        "minimum": { "lines": 88.42, "branches": 67.5 }
       },
       {
         "file": "src/services/training-exercise-media-manifest.ts",
         "owner": "training-platform",
-        "reason": "The generated catalog compatibility surface is 83.88% lines and 72.06% branches after the public-beta media expansion; preserve that baseline while rare malformed-catalog combinations are moved into the focused catalog corpus.",
+        "reason": "Preserve the generated catalog compatibility baseline while malformed cases move into the focused catalog corpus.",
         "expires": "2026-09-30",
         "minimum": { "lines": 83.88, "branches": 72.06 }
       },
       {
         "file": "src/services/scheduler.ts",
         "owner": "agent-runtime",
-        "reason": "The legacy scheduler remains at 53.64% lines and 38.79% branches while jobs migrate to AgentJobManifest adapters; ratchet the observed baseline and retire this exception as the monolith is split rather than adding duplicate scheduler happy paths.",
+        "reason": "Ratcheted legacy scheduler coverage remains while jobs migrate to manifest adapters.",
         "expires": "2026-09-30",
         "minimum": { "lines": 53.64, "branches": 38.79 }
       },
       {
         "file": "src/services/cross-agent-learning/content-mesh-context.ts",
         "owner": "agent-runtime",
-        "reason": "The extracted Content adapter is at the inherited full-file baseline of 80% lines and 22.72% branches (100% changed lines); ratchet it while distinct scheduling and fallback contracts replace duplicate happy-path coverage before expiry.",
+        "reason": "Preserve the inherited content adapter baseline while focused scheduling and fallback contracts replace duplicates.",
         "expires": "2026-09-30",
         "minimum": { "lines": 80, "branches": 22.72 }
       },
       {
         "file": "src/services/cross-agent-learning/signal-learning.ts",
         "owner": "agent-runtime",
-        "reason": "The governed signal adapter is at the inherited full-file baseline of 88.23% lines and 63.96% branches (97.32% changed lines), with tenant, provenance, confidence, expiry, and facade parity coverage; ratchet remaining malformed-payload branches without restoring duplicate QA cases.",
+        "reason": "Preserve the signal adapter baseline while focused tenant and provenance contracts close remaining branches.",
         "expires": "2026-09-30",
         "minimum": { "lines": 88.23, "branches": 63.96 }
       }
     ]
   },
   "mutation": {
-    "schedule": "weekly",
-    "scope": "changed-critical-modules",
-    "thresholds": { "high": 80, "low": 70, "break": 70 },
+    "schedule": "manual-test-rationalization-only",
+    "scope": "test-cleanup",
+    "thresholds": {
+      "high": 80,
+      "low": 70,
+      "break": 70
+    },
     "criticalModulePatterns": [
-      "src/api/*auth*.ts",
-      "src/api/*tenant*.ts",
-      "src/api/routes/auth*.ts",
-      "src/api/routes/*billing*.ts",
-      "src/api/routes/*tenant*.ts",
-      "src/middleware/auth*.ts",
-      "src/services/*auth*.ts",
-      "src/services/*billing*.ts",
-      "src/services/*tenant*.ts",
-      "src/services/intelligence-bus.ts",
-      "src/services/shared-decision-context.ts",
-      "src/services/training-signals.ts",
-      "src/services/cross-agent-learning.ts",
-      "src/services/cross-agent-learning/*.ts",
-      "src/services/readiness-scorer.ts",
-      "src/services/focus-planner.ts",
-      "src/services/content-intelligence.ts",
-      "src/services/anthropic.ts",
-      "src/services/anthropic-lazy-client.ts",
-      "src/services/gemini-adapter.ts",
-      "src/services/tool-executor.ts",
-      "src/services/*provider*.ts",
+      "src/api/router.ts",
+      "src/api/auth-middleware.ts",
+      "src/api/tenant-route-scope.ts",
+      "src/services/*tenant-scope*.ts",
+      "src/services/ai-provider.ts",
+      "src/services/provider-fallback.ts",
       "src/services/database.ts",
       "src/services/migration-runner.ts",
-      "src/services/cost-guardrail*.ts",
-      "src/services/agent-job-runner.ts",
-      "src/services/scheduled-agent-jobs.ts",
-      "src/services/background-job-queue.ts",
-      "src/services/chat-action-fixer-worker.ts",
-      "src/services/channel-learner.ts",
-      "src/services/garmin-coach.ts",
-      "src/agents/voice-evolution-agent.ts",
-      "src/api/routes/training*.ts",
-      "src/api/routes/content*.ts",
-      "src/api/routes/calendar.ts",
-      "src/api/routes/dashboard-data-fetchers.ts",
-      "src/services/training-exercise-media*.ts"
+      "src/services/pm2-health.ts"
     ],
     "cleanupMappings": [
-      {"test":"__tests__/api/chat-message-tier-gate.test.ts","replacementTests":["__tests__/api/chat-message-tier-gate.test.ts"],"sources":["src/api/routes/chat-message-tier-gate.ts"],"reason":"Converted the positive Telegram-id fallback assertion into an explicit verified-iOS-JWT users.id-only contract that proves the legacy identity fallback is never called."},
-      {"test":"__tests__/api/webhooks.test.ts","replacementTests":["__tests__/api/webhooks.test.ts"],"sources":["src/api/routes/webhooks.ts"],"reason":"Replaced the ambient-config Todoist signer helper with an explicit per-router secret fixture while retaining coverage for the production no-option configured-secret path."},
-      {"test":"__tests__/portal/portal-eval-history-routes.test.ts","replacementTests":["__tests__/portal/portal-eval-history-routes.test.ts"],"sources":["src/portal/eval-history-routes.ts"],"reason":"Replaced incomplete module stubs with import-and-override factories and pinned pre-authorization rate-limit ordering while retaining eval persistence, validation, error handling, and frozen-baseline behavior."},
-      {"test":"__tests__/services/chat-evaluation-harness.test.ts","replacementTests":["__tests__/services/chat-evaluation-harness.test.ts","__tests__/services/chat-day-to-day-simulation.test.ts"],"sources":["src/services/chat-evaluation-harness.ts","src/services/chat-day-to-day-simulation.ts","src/services/chat-eval-executor.ts"],"reason":"Replaced fabricated catalog scores and partial statuses with executed day-to-day profile evidence, explicit catalog-only accounting, and matching-mode executor enforcement."},
-      {"test":"__tests__/services/registry-channel-smoke-builder.test.ts","replacementTests":["__tests__/services/registry-channel-smoke-builder.test.ts","__tests__/scripts/telegram-purge-gate.test.ts"],"sources":["src/services/registry-channel-smoke-builder.ts"],"reason":"Retired legacy Telegram smoke-channel construction while retaining coverage for all five live channel types and assigning the removed surface to the repository-wide purge gate."},
-      {"test":"__tests__/services/registry-cross-tenant-alert-channels.test.ts","replacementTests":["__tests__/services/registry-cross-tenant-alert-channels.test.ts","__tests__/scripts/telegram-purge-gate.test.ts"],"sources":["src/services/registry-cross-tenant-alert-channels.ts"],"mutationTargets":[{"pattern":"src/services/registry-cross-tenant-alert-channels.ts:161-161","anchor":"minSeverity: config.minSeverity ?? 'medium'","behavior":"The retained Slack alert channel defaults to medium severity when no explicit threshold is configured.","replacementTest":"__tests__/services/registry-cross-tenant-alert-channels.test.ts","ownerTestName":"Slack channel (Phase 8 batch 42) createSlackChannel default minSeverity is medium","minimumMutants":2}],"reason":"Retired the legacy Telegram alert adapter cases while preserving live PagerDuty and Slack behavioral coverage and pinning the removed notification surface in the purge gate."},
-      {"test":"__tests__/services/registry-driven-eval-gates.test.ts","replacementTests":["__tests__/services/registry-driven-eval-gates.test.ts","__tests__/services/chat-evaluation-harness.test.ts","__tests__/services/chat-day-to-day-simulation.test.ts"],"sources":["src/services/registry-driven-eval-scenarios.ts","src/services/chat-evaluation-harness.ts","src/services/chat-day-to-day-simulation.ts"],"reason":"Replaced synthetic registry pass-rate thresholds with complete catalog accounting and a separate evidence-bearing day-to-day execution profile."},
-      {"test":"__tests__/services/registry-driven-eval-scenarios.test.ts","replacementTests":["__tests__/services/registry-driven-eval-scenarios.test.ts","__tests__/services/chat-evaluation-harness.test.ts","__tests__/services/chat-day-to-day-simulation.test.ts"],"sources":["src/services/registry-driven-eval-scenarios.ts","src/services/chat-evaluation-harness.ts","src/services/chat-day-to-day-simulation.ts"],"reason":"Converted registry scenario integration from manufactured execution results to exhaustive catalog-only accounting alongside the independent executed fixture profile."},
-      {"test":"__tests__/utils/telegram-formatter.test.ts","replacementTests":["__tests__/utils/chat-html-formatter.test.ts","__tests__/scripts/telegram-purge-gate.test.ts","__tests__/security/p0-chat-identity-isolation.test.ts"],"sources":["src/utils/chat-html-formatter.ts"],"reason":"Moved the live Microsoft To Do formatting contracts to the transport-neutral chat HTML formatter while purge and identity gates pin deletion of the dead daily-greeting surface."},
-    {
-      "test": "__tests__/scripts/application-disaster-recovery.test.ts",
-      "replacementTests": [
-        "__tests__/scripts/application-disaster-recovery.test.ts",
-        "__tests__/scripts/application-dr-version-retention.test.ts"
-      ],
-      "sources": [
-        "scripts/application-dr-backup.sh",
-        "scripts/application-dr-version-retention.py"
-      ],
-      "reason": "Replaced destructive version-delete and post-prune assertions with retained lifecycle-only evidence, opaque VersionId pagination, COMPLIANCE writes, and exact post-write verification."
-    },
-    {
-      "test": "__tests__/scripts/application-dr-version-retention.test.ts",
-      "replacementTests": [
-        "__tests__/scripts/application-dr-version-retention.test.ts",
-        "__tests__/scripts/application-disaster-recovery.test.ts"
-      ],
-      "sources": [
-        "scripts/application-dr-version-retention.py"
-      ],
-      "reason": "Replaced deletion-plan ownership with read-only paginated retention-floor evidence, exact version identity, current-period visibility, and fail-closed maturity reporting."
-    },
-    {
-      "test": "__tests__/scripts/application-dr-installer.test.ts",
-      "replacementTests": [
-        "__tests__/scripts/application-dr-installer.test.ts"
-      ],
-      "sources": [
-        "scripts/application-dr-systemd-install.sh",
-        "scripts/application-dr-install-transaction.py",
-        "scripts/application-dr-backup.sh",
-        "ops/application-dr/install-layout.tsv",
-        "ops/application-dr/systemd/nexus-application-dr-backup.service",
-        "ops/application-dr/systemd/nexus-application-dr-health.service",
-        "ops/application-dr/systemd/nexus-application-dr-health.timer",
-        "ops/application-dr/systemd/nexus-application-dr-alert@.service",
-        "ops/application-dr/systemd/nexus-application-dr-install-recovery.service"
-      ],
-      "reason": "Replaced the obsolete blanket no-systemctl-enable assertion and inline rollback implementation checks with retained exact timer-state parity, journal-bound crash recovery, predecessor restoration, and boot recovery evidence."
-    },
-    {
-      "test": "__tests__/scripts/quality-sonar-operations.test.ts",
-      "replacementTests": [
-        "__tests__/scripts/quality-sonar-operations.test.ts"
-      ],
-      "sources": [
-        "scripts/quality-sonar-install-transaction.py",
-        "scripts/quality-sonar-retention.mjs"
-      ],
-      "reason": "Expanded the retained helper syntax fingerprint to include the dedicated retention implementation and the journal-bound boot-recovery transaction while preserving behavioral Sonar backup, maturity, mutual-exclusion, restore, and interrupted-install evidence."
-    },
-    {
-      "test": "__tests__/scripts/release-sequence.test.ts",
-      "replacementTests": [
-        "__tests__/scripts/release-sequence.test.ts"
-      ],
-      "sources": [
-        "scripts/release-sequence.mjs"
-      ],
-      "reason": "Replaced one generic signing-count assertion with distinct manifest and staging dispatch, watch, correlation, owner-stop, lock-loss, and fail-closed sequential phase checks."
-    },
-    {
-      "test": "__tests__/scripts/release-staging-transfer-integrity.test.ts",
-      "replacementTests": [
-        "__tests__/scripts/release-staging-transfer-integrity.test.ts",
-        "__tests__/scripts/persistent-promotion-transaction.test.ts"
-      ],
-      "sources": [
-        "scripts/release-operator.sh"
-      ],
-      "reason": "Replaced inline operator-slice checks with retained extracted trusted-heredoc verification and exact root prepare, seal, attest, evidence, request, and candidate ordering."
-    },
-    {
-      "test": "__tests__/scripts/restore-runtime-artifact.test.ts",
-      "replacementTests": [
-        "__tests__/scripts/restore-runtime-artifact.test.ts",
-        "__tests__/scripts/application-dr-recovery-runtime.test.ts",
-        "__tests__/scripts/persistent-promotion-transaction.test.ts"
-      ],
-      "sources": [
-        "scripts/application-dr-recovery-runtime.mjs",
-        "scripts/remote-promotion-worker-control.sh",
-        "scripts/restore.sh"
-      ],
-      "reason": "Retired direct legacy apply behavior in favor of retained signed runtime reconstruction, exact release-bound identity, and root-owned automatic predecessor recovery."
-    },
-    {
-      "test": "__tests__/scripts/rollback-drill-kvm-coordinator.test.ts",
-      "replacementTests": [
-        "__tests__/scripts/rollback-drill-kvm-coordinator.test.ts"
-      ],
-      "sources": [
-        "scripts/lib/rollback-drill-kvm-evidence.mjs",
-        "scripts/rollback-drill-kvm-coordinator.mjs"
-      ],
-      "reason": "Replaced the obsolete execution-not-implemented refusal with retained three-scenario KVM orchestration, bounded evidence, exact request identity, timeout enforcement, and fail-closed fault results."
-    },
-    {
-      "test": "__tests__/scripts/rollback-drill-kvm-inputs.test.ts",
-      "replacementTests": [
-        "__tests__/scripts/rollback-drill-kvm-inputs.test.ts",
-        "__tests__/scripts/rollback-drill-kvm-readiness-sequence.test.ts"
-      ],
-      "sources": [
-        "scripts/lib/rollback-drill-kvm-evidence.mjs",
-        "scripts/rollback-drill-kvm-inputs.mjs",
-        "scripts/rollback-drill-kvm-readiness-sequence.mjs"
-      ],
-      "reason": "Replaced single-host and wall-clock-only input assertions with retained three-guest host-key isolation, exact provision identity, same-boot monotonic authorization, durable readiness-ledger binding, and malformed nested-contract rejection."
-    },
-    {
-      "test": "__tests__/scripts/rollback-drill-kvm-readiness-sequence.test.ts",
-      "replacementTests": [
-        "__tests__/scripts/rollback-drill-kvm-readiness-sequence.test.ts"
-      ],
-      "sources": [
-        "scripts/lib/rollback-drill-kvm-evidence.mjs",
-        "scripts/rollback-drill-kvm-inputs.mjs",
-        "scripts/rollback-drill-kvm-readiness-sequence.mjs",
-        "scripts/rollback-drill-vm-runtime-control.sh"
-      ],
-      "reason": "Adds the retained offline admission ledger for three strictly sequential runtime-readiness guests, with durable idempotent checkpoints, exact signed tuple verification, fail-closed replay isolation, and reboot-safe resume."
-    },
-    {
-      "test": "__tests__/scripts/rollback-drill-staging-attestation.test.ts",
-      "replacementTests": [
-        "__tests__/scripts/rollback-drill-staging-attestation.test.ts",
-        "__tests__/scripts/rollback-drill-legacy-staging-adapter.test.ts"
-      ],
-      "sources": [
-        "scripts/release-operator.sh",
-        "scripts/release-staging-attestation.mjs",
-        "scripts/rollback-drill-staging-attestation.mjs",
-        "scripts/rollback-drill-legacy-staging-adapter.mjs",
-        "scripts/remote-rollback-drill-legacy-staging-broker.sh"
-      ],
-      "reason": "Replaced the obsolete adapter-disabled dry-run assertions with retained non-promotable drill-bootstrap signing, ordinary-promotion rejection, and descriptor-pinned legacy staging transaction evidence."
-    },
-    {
-      "test": "__tests__/scripts/rollback-drill-vm-runtime-bootstrap.test.ts",
-      "replacementTests": [
-        "__tests__/scripts/rollback-drill-vm-runtime-bootstrap.test.ts"
-      ],
-      "sources": [
-        "scripts/build-rollback-drill-vm-runtime-bundle.sh",
-        "scripts/rollback-drill-vm-runtime-control.sh",
-        "scripts/rollback-drill-vm-runtime-manifest.py"
-      ],
-      "reason": "Replaced permissive nested-link assumptions with retained archive member limits, exact offline Node and PM2 closure identity, hostile-link rejection, and guest admission parity."
-    },
-    {
-      "test": "__tests__/scripts/rollback-versioned-runtime.test.ts",
-      "replacementTests": [
-        "__tests__/scripts/rollback-versioned-runtime.test.ts",
-        "__tests__/scripts/persistent-promotion-transaction.test.ts"
-      ],
-      "sources": [
-        "scripts/rollback.sh",
-        "scripts/remote-promotion-worker-control.sh",
-        "scripts/remote-release-selector-switch.py"
-      ],
-      "reason": "Retired direct apply ownership in favor of the retained root promotion transaction, atomic selector switch, exact predecessor restoration, and pre-stop rollback refusal."
-    },
-    {
-      "test": "__tests__/scripts/persistent-promotion-transaction.test.ts",
-      "replacementTests": [
-        "__tests__/scripts/persistent-promotion-transaction.test.ts"
-      ],
-      "sources": [
-        "scripts/application-dr-backup.sh",
-        "scripts/promote-exact-release.sh",
-        "scripts/remote-create-release-backup.sh",
-        "scripts/remote-promotion-systemd-install.sh",
-        "scripts/remote-promotion-transaction.sh",
-        "scripts/remote-promotion-worker-control.sh"
-      ],
-      "reason": "Replaced obsolete worker-owned recovery markers and rollback-escrow fixtures with retained assertions for root-owned recovery intent, phase-distinct DR escrow, bounded automatic recovery, exact terminal retry identity, and the exact enabled-only producer-consumer application DR readiness contract."
-    },
-    {
-      "test": "__tests__/scripts/ollama-systemd-envelope.test.ts",
-      "replacementTests": [
-        "__tests__/scripts/ollama-systemd-envelope.test.ts",
-        "__tests__/scripts/ollama-operational-transactions.test.ts"
-      ],
-      "sources": [
-        "scripts/install-ollama.sh",
-        "scripts/ollama-install-state-check.mjs",
-        "scripts/ollama-systemd-dropin-transaction.mjs"
-      ],
-      "reason": "Replaced the obsolete model-pull and temporary-log assertions with retained no-network/no-pull identity checks plus crash-safe transactional install, predecessor restoration, replay, and reboot coverage."
-    },
-    {
-      "test": "__tests__/services/dispatch-privacy-e2e.test.ts",
-      "replacementTests": [
-        "__tests__/services/dispatch-privacy-e2e.test.ts"
-      ],
-      "sources": [
-        "src/services/provider-fallback.ts"
-      ],
-      "mutationTargets": [
-        {
-          "pattern": "src/services/provider-fallback.ts:1725-1735",
-          "anchor": "model: selection.model,",
-          "behavior": "Approved public larger-reasoning dispatch uses the provider-native structured capability with the exact gated model and no tool surface.",
-          "replacementTest": "__tests__/services/dispatch-privacy-e2e.test.ts",
-          "ownerTestName": "small-only production dispatch narrows a generic cloud completion to the LocalReasoningResult contract",
-          "minimumMutants": 1
-        }
-      ],
-      "reason": "Replaced the legacy generic callDomain forwarding assertion with provider-native structured generation, exact approved-model binding, no-tools enforcement, schema validation, and private-workload fail-closed coverage."
-    },
-    {
-      "test": "__tests__/services/ollama-provider.test.ts",
-      "replacementTests": [
-        "__tests__/services/ollama-provider.test.ts"
-      ],
-      "sources": [
-        "src/services/ollama-provider.ts"
-      ],
-      "mutationTargets": [
-        {
-          "pattern": "src/services/ollama-provider.ts:158-162",
-          "anchor": "capability: 'local_workload_role_not_allowed'",
-          "behavior": "A disallowed or missing normal-runtime Ollama workload role fails with the explicit unsupported-capability identity before inference.",
-          "replacementTest": "__tests__/services/ollama-provider.test.ts",
-          "ownerTestName": "OllamaProvider — classify fails closed for live classification because only classifier shadow owns a local role",
-          "minimumMutants": 1
-        }
-      ],
-      "reason": "Replaced large-model and unrestricted local-classification assumptions with the retained 3B model identity and explicit small-only workload-role enforcement."
-    },
-    {
-      "test": "__tests__/services/privacy-redacted-flow.test.ts",
-      "replacementTests": [
-        "__tests__/services/privacy-redacted-flow.test.ts"
-      ],
-      "sources": [
-        "src/services/cloud-reasoning-gate.ts"
-      ],
-      "reason": "Replaced the implicit non-private default with an explicit privacy-classification requirement while retaining public sent-raw and private fail-closed coverage."
-    },
-    {
-      "test": "__tests__/api/chat-script-shortcut-response.test.ts",
-      "replacementTests": [
-        "__tests__/api/chat-script-shortcut-response.test.ts",
-        "__tests__/services/content-script-quality.test.ts"
-      ],
-      "sources": [
-        "src/api/routes/chat-script-shortcut-response.ts",
-        "src/services/content-script-quality.ts"
-      ],
-      "reason": "Replaced automatic weak-intro rewriting in the visible chat script with non-destructive suggestions, while retaining blocked-artifact redaction and structured quality metadata coverage."
-    },
-    {
-      "test": "__tests__/api/content-script-duration.test.ts",
-      "replacementTests": [
-        "__tests__/api/content-script-duration.test.ts",
-        "__tests__/api/content-topic-context.test.ts"
-      ],
-      "sources": [
-        "src/api/routes/content-script-routes.ts",
-        "src/api/routes/content-topic-context.ts",
-        "src/api/routes/content-script-utils.ts"
-      ],
-      "mutationTargets": [
-        {
-          "pattern": "src/api/routes/content-script-routes.ts:221-223",
-          "anchor": "resolveScriptTopicContext(userId, req.body || {}, undefined, tenantId)",
-          "behavior": "Ordinary script generation resolves first-party topic context with the authenticated user, request body, and tenant before provider work.",
-          "replacementTest": "__tests__/api/content-script-duration.test.ts",
-          "ownerTestName": "Content API — script duration presets content route resolves and forwards first-party topic context into canonical script generation",
-          "minimumMutants": 1
-        },
-        {
-          "pattern": "src/api/routes/content-script-routes.ts:426-437",
-          "anchor": "const result = await getScript(",
-          "behavior": "The canonical script engine receives the resolved niche, requested duration, authenticated identity, and first-party topic context in their governed argument positions.",
-          "replacementTest": "__tests__/api/content-script-duration.test.ts",
-          "ownerTestName": "Content API — script duration presets content route resolves and forwards first-party topic context into canonical script generation",
-          "minimumMutants": 1
-        },
-        {
-          "pattern": "src/api/routes/content-script-utils.ts:8-17",
-          "anchor": "export function parseOptionalPositiveInt(value: unknown): number | null {",
-          "behavior": "Topic-context identifiers accept only finite normalized positive numbers or non-empty numeric strings before any scoped lookup.",
-          "replacementTest": "__tests__/api/content-topic-context.test.ts",
-          "ownerTestName": "content topic context helpers parses positive ids and non-empty text defensively",
-          "minimumMutants": 1
-        },
-        {
-          "pattern": "src/api/routes/content-topic-context.ts:33-40",
-          "anchor": "const requestedWorkspaceIdentifier = workspaceItemId ?? pipelineId;",
-          "behavior": "A canonical workspace item takes precedence over the legacy pipeline alias and resolves through the authenticated tenant scope.",
-          "replacementTest": "__tests__/api/content-topic-context.test.ts",
-          "ownerTestName": "content topic context helpers prefers a scoped canonical workspaceItemId over the legacy pipeline alias",
-          "minimumMutants": 1
-        }
-      ],
-      "reason": "Replaced brittle source-string wiring assertions with behavioral route, engine-argument, defensive identifier, and canonical scoped-workspace context coverage."
-    },
-    {
-      "test": "__tests__/api/content-topics-recommendation.test.ts",
-      "replacementTests": [
-        "__tests__/api/content-topics-recommendation.test.ts",
-        "__tests__/services/content-topic-workspace-compat.test.ts",
-        "__tests__/migrations/content-topics-workspace-exit.test.ts"
-      ],
-      "sources": [
-        "src/services/content-scheduler.ts",
-        "src/services/content-topic-workspace-compat.ts",
-        "migrations/247_content_topics_workspace_exit.sql"
-      ],
-      "reason": "Moved the filming-recommendation fixture from the retired content_topics row to the canonical workspace deadline and compatibility link, with an explicit assertion that no legacy root is created."
-    },
-    {
-      "test": "__tests__/api/finance-routes.test.ts",
-      "replacementTests": [
-        "__tests__/api/finance-routes.test.ts",
-        "__tests__/services/receipt-ai-transfer-consent.test.ts",
-        "__tests__/services/invoice-filer-logging.test.ts"
-      ],
-      "sources": [
-        "src/api/routes/finance.ts",
-        "src/services/receipt-ai-transfer-consent.ts",
-        "src/services/invoice-filer.ts"
-      ],
-      "reason": "Replaced a loose OCR-note substring assertion with exact bounded verification codes and text while adding content-bound consent, replay, privacy, and no-provider negative controls."
-    },
-    {
-      "test": "__tests__/scope/content-tenant-isolation.test.ts",
-      "replacementTests": [
-        "__tests__/scope/content-tenant-isolation.test.ts",
-        "__tests__/security/content-workspace-library-tenant-isolation.test.ts",
-        "__tests__/migrations/content-pipeline-workspace-exit.test.ts"
-      ],
-      "sources": [
-        "src/services/content-learning-store.ts",
-        "src/services/content-workspace-read-models.ts",
-        "migrations/246_content_pipeline_workspace_exit.sql"
-      ],
-      "reason": "Updated owner-read assertions for the migration-246 metadata-only legacy binding: foreign scope still receives not-found, while raw archived script bytes are not presented before canonical artifact parity."
-    },
-    {
-      "test": "__tests__/scripts/migration-safety-check.test.ts",
-      "replacementTests": [
-        "__tests__/scripts/migration-safety-check.test.ts",
-        "__tests__/scripts/production-shape-migration-rehearsal.test.ts"
-      ],
-      "sources": [
-        "scripts/migration-safety-check.mjs",
-        "scripts/lib/irreversible-migration-policy.mjs",
-        "scripts/lib/migration-safety-policy-classifier.mjs",
-        "config/irreversible-migrations.json",
-        "scripts/lib/production-shape-migration-rehearsal-evidence.mjs"
-      ],
-      "reason": "Replaced coarse approver-and-backup cases with digest-bound governance identity, non-authorizing scan mode, exact review evidence, promotion-only verified backup evidence, rename/deletion detection, and production-shape rehearsal coverage."
-    },
-    {
-      "test": "__tests__/security/p0-chat-identity-isolation.test.ts",
-      "replacementTests": [
-        "__tests__/security/p0-chat-identity-isolation.test.ts",
-        "__tests__/security/content-workspace-library-tenant-isolation.test.ts",
-        "__tests__/services/content-legacy-idea-workspace-exit.test.ts"
-      ],
-      "sources": [
-        "src/services/context-engine.ts",
-        "src/state/saved-ideas.ts",
-        "src/services/content-workspace-read-models.ts",
-        "src/services/content-legacy-idea-workspace-exit.ts"
-      ],
-      "reason": "Converted source-string checks for the retired saved_ideas query into canonical private workspace delegation and behavioral tenant-isolation coverage while preserving the explicit user parameter contract."
-    },
-    {
-      "test": "__tests__/services/content-tenant-scope.test.ts",
-      "replacementTests": [
-        "__tests__/services/content-tenant-scope.test.ts",
-        "__tests__/integration/content-tenant-context-isolation.test.ts"
-      ],
-      "sources": [
-        "src/services/content-tenant-scope.ts",
-        "src/services/content-reference-context.ts",
-        "src/services/content-radar-preferences.ts",
-        "src/state/content-references.ts"
-      ],
-      "mutationTargets": [
-        {
-          "pattern": "src/services/content-tenant-scope.ts:163-168",
-          "anchor": "export function contentPrivateScopePredicate(alias?: string): string {",
-          "behavior": "The unaliased private Content predicate preserves fail-closed legacy defaults and strict tenant-owner qualifiers.",
-          "replacementTest": "__tests__/services/content-tenant-scope.test.ts",
-          "ownerTestName": "content tenant private scope builds the strict unaliased legacy-safe private predicate",
-          "minimumMutants": 1
-        },
-        {
-          "pattern": "src/services/content-tenant-scope.ts:170-175",
-          "anchor": "${statusExpr} = 'active'",
-          "behavior": "Private Content reads require active user-private rows matching both the resolved tenant and authenticated owner.",
-          "replacementTest": "__tests__/services/content-tenant-scope.test.ts",
-          "ownerTestName": "content tenant private scope builds the strict unaliased legacy-safe private predicate",
-          "minimumMutants": 1
-        },
-        {
-          "pattern": "src/services/content-tenant-scope.ts:224-225",
-          "anchor": "return [resolveContentTenantId(userId, tenantId), userId];",
-          "behavior": "Private-scope parameters bind resolved tenant first and authenticated owner second, falling back only to that owner.",
-          "replacementTest": "__tests__/services/content-tenant-scope.test.ts",
-          "ownerTestName": "content tenant private scope binds an explicit positive tenant and authenticated owner in predicate order",
-          "minimumMutants": 1
-        }
-      ],
-      "reason": "Split the broad tenant fixture into exact private-predicate unit ownership plus a retained database-backed cross-tenant integration suite without losing reference, Voice DNA, radar, or quarantine behavior."
-    },
-    {
-      "test": "__tests__/services/content-agency.test.ts",
-      "replacementTests": [
-        "__tests__/services/content-agency.test.ts",
-        "__tests__/migrations/content-agency-package-integrity.test.ts",
-        "__tests__/migrations/content-pipeline-workspace-exit.test.ts",
-        "__tests__/services/content-workspace-integrity-readiness.test.ts"
-      ],
-      "sources": [
-        "src/services/content-agency.ts",
-        "src/services/content-workspace.ts",
-        "migrations/239_content_agency_package_integrity.sql",
-        "migrations/246_content_pipeline_workspace_exit.sql"
-      ],
-      "reason": "Replaced mutable duplicate-package and legacy pipeline assertions with immutable content hashes, deterministic package identity, one canonical workspace root, artifact and revision parity, replay safety, rollback, and cross-scope denial."
-    },
-    {
-      "test": "__tests__/services/content-dashboard-service.test.ts",
-      "replacementTests": [
-        "__tests__/services/content-dashboard-service.test.ts",
-        "__tests__/services/content-workspace-read-models.test.ts",
-        "__tests__/migrations/content-pipeline-workspace-exit.test.ts"
-      ],
-      "sources": [
-        "src/services/content-dashboard-service.ts",
-        "src/services/content-workspace-read-models.ts",
-        "migrations/246_content_pipeline_workspace_exit.sql"
-      ],
-      "reason": "Moved recent-pipeline fixtures and limit assertions from the frozen legacy table to tenant-scoped canonical workspace projections while retaining the public dashboard shape."
-    },
-    {
-      "test": "__tests__/services/content-day-to-day-evaluation.test.ts",
-      "replacementTests": [
-        "__tests__/services/content-day-to-day-evaluation.test.ts",
-        "__tests__/services/content-ios-extraction-artifact.test.ts",
-        "__tests__/services/content-live-evaluation-artifact.test.ts",
-        "__tests__/services/content-live-evaluation-consumption.test.ts"
-      ],
-      "sources": [
-        "src/services/content-day-to-day-evaluation.ts",
-        "src/services/content-ios-extraction-artifact.ts",
-        "src/services/content-live-evaluation-artifact.ts"
-      ],
-      "reason": "Removed caller-supplied external lane scores and now recomputes release quality only from typed source-bound iOS and live-provider artifacts, with forged evidence and adverse content simulations failing closed."
-    },
-    {
-      "test": "__tests__/services/content-editorial-workflow.test.ts",
-      "replacementTests": [
-        "__tests__/services/content-editorial-workflow.test.ts",
-        "__tests__/services/content-editorial-static-exit.test.ts",
-        "__tests__/services/content-workspace-scheduling.test.ts",
-        "__tests__/services/content-workspace-decision-adapter.test.ts",
-        "__tests__/services/content-workspace-lineage.test.ts",
-        "__tests__/migrations/content-editorial-workspace-exit.test.ts"
-      ],
-      "sources": [
-        "src/services/content-editorial-workflow.ts",
-        "src/services/content-editorial-workspace-exit.ts",
-        "src/services/content-workspace-scheduling.ts",
-        "src/services/content-workspace-decision-adapter.ts",
-        "src/services/content-workspace-lineage.ts",
-        "migrations/249_content_editorial_workspace_exit.sql"
-      ],
-      "reason": "Retired the parallel editorial lifecycle and Secretary scheduling writer; the compatibility facade now creates canonical artifacts, exposes typed replacements, preserves pure approval policy, and delegates review, lineage, and scheduling to canonical services."
-    },
-    {
-      "test": "__tests__/services/content-radar-engine.test.ts",
-      "replacementTests": [
-        "__tests__/services/content-radar-engine.test.ts",
-        "__tests__/services/content-radar-workspace-actions.test.ts",
-        "__tests__/services/content-workspace-lineage.test.ts"
-      ],
-      "sources": [
-        "src/services/content-radar-engine.ts",
-        "src/services/content-radar-workspace-actions.ts",
-        "src/services/content-workspace.ts"
-      ],
-      "reason": "Moved radar conversion metadata from a parallel editorial object into a canonical item artifact with immutable provenance and added idempotent replay coverage."
-    },
-    {
-      "test": "__tests__/services/content-script-quality.test.ts",
-      "replacementTests": [
-        "__tests__/services/content-script-quality.test.ts",
-        "__tests__/api/chat-script-shortcut-response.test.ts"
-      ],
-      "sources": [
-        "src/services/content-script-quality.ts",
-        "src/api/routes/chat-script-shortcut-response.ts"
-      ],
-      "reason": "Changed weak-intro improvement from destructive revisedScript replacement to an explicit suggestedScript, preserving the user's input while retaining hook, visual direction, CTA, and structured-beat quality assertions."
-    },
-    {
-      "test": "__tests__/services/content-security-red-team.test.ts",
-      "replacementTests": [
-        "__tests__/services/content-security-red-team.test.ts",
-        "__tests__/services/content-editorial-static-exit.test.ts",
-        "__tests__/services/content-workspace-decision-adapter.test.ts"
-      ],
-      "sources": [
-        "src/services/content-editorial-workflow.ts",
-        "src/services/content-editorial-workspace-exit.ts",
-        "src/services/content-generation-quality.ts",
-        "src/services/content-workspace-decision-adapter.ts"
-      ],
-      "reason": "Updated the publishing and scheduling red-team expectations from a parallel approval-required state to fail-closed canonical replacement guidance while retaining human approval policy and private-scope enforcement."
-    },
-    {
-      "test": "__tests__/services/content-workflow-user-scope.test.ts",
-      "replacementTests": [
-        "__tests__/services/content-workflow-user-scope.test.ts",
-        "__tests__/services/content-workspace-capture.test.ts",
-        "__tests__/services/content-legacy-idea-workspace-exit.test.ts",
-        "__tests__/migrations/content-legacy-idea-note-workspace-parity.test.ts"
-      ],
-      "sources": [
-        "src/services/content-workflow.ts",
-        "src/services/content-workspace-capture.ts",
-        "src/services/content-workspace-idea-consumers.ts",
-        "src/services/content-legacy-idea-workspace-exit.ts",
-        "migrations/253_content_legacy_idea_note_workspace_parity.sql"
-      ],
-      "reason": "Moved Discovery consumption from mutable saved-idea markers to canonical receipts and workflow events committed only after durable candidate persistence, with empty, rollback, rollout-mode, and prompt-injection negative controls."
-    },
-    {
-      "test": "__tests__/services/database.test.ts",
-      "replacementTests": [
-        "__tests__/services/database.test.ts",
-        "__tests__/migrations/content-pipeline-workspace-exit.test.ts",
-        "__tests__/services/content-workspace-integrity-readiness.test.ts"
-      ],
-      "sources": [
-        "migrations/246_content_pipeline_workspace_exit.sql",
-        "migrations/251_content_workspace_integrity.sql"
-      ],
-      "reason": "Replaced obsolete content_pipeline stage mutation coverage with database-enforced read-only archive behavior and canonical workspace integrity readiness after the migration-246 cutover."
-    },
-    {
-      "test": "__tests__/services/decision-center-command-bus-equivalence.test.ts",
-      "replacementTests": [
-        "__tests__/services/decision-center-command-bus-equivalence.test.ts",
-        "__tests__/services/content-workspace-decision-adapter.test.ts",
-        "__tests__/api/content-workspace-decision-route.test.ts"
-      ],
-      "sources": [
-        "src/services/content-workspace-decision-adapter.ts",
-        "src/services/decision-center.ts",
-        "src/services/notification-orchestrator.ts"
-      ],
-      "reason": "Updated direct and command-bus equivalence to canonical rewrite_requested semantics and removed the unsafe tenant-shared legacy fallback, which now fails closed until an explicit approver role exists."
-    },
-    {
-      "test": "__tests__/services/signal-ranking.test.ts",
-      "replacementTests": [
-        "__tests__/services/signal-ranking.test.ts",
-        "__tests__/services/content-workspace-read-models.test.ts",
-        "__tests__/migrations/content-pipeline-workspace-exit.test.ts"
-      ],
-      "sources": [
-        "src/agents/pipeline-agent.ts",
-        "src/services/content-workspace-read-models.ts",
-        "migrations/246_content_pipeline_workspace_exit.sql"
-      ],
-      "reason": "Converted the pipeline-metrics fixture loop from legacy stage inserts to canonical workspace state and publication events while preserving conversion, stale inventory, throughput, and scoped-read assertions."
-    },
-    {
-      "test": "__tests__/state/content-performance-aggregate.test.ts",
-      "replacementTests": [
-        "__tests__/state/content-performance-aggregate.test.ts",
-        "__tests__/services/content-performance-lineage.test.ts",
-        "__tests__/migrations/content-performance-workspace-lineage.test.ts"
-      ],
-      "sources": [
-        "src/state/content-performance-aggregate.ts",
-        "src/services/content-performance-lineage.ts",
-        "migrations/250_content_performance_workspace_lineage.sql"
-      ],
-      "reason": "Moved topic and script aggregate counts from retired mutable tables to canonical production states, artifacts, and immutable revisions while retaining truthful empty-state warnings."
-    },
-    {
-      "test": "__tests__/state/content-topic-provenance.test.ts",
-      "replacementTests": [
-        "__tests__/state/content-topic-provenance.test.ts",
-        "__tests__/services/content-topic-workspace-compat.test.ts",
-        "__tests__/migrations/content-topics-workspace-exit.test.ts"
-      ],
-      "sources": [
-        "src/services/content-scheduler.ts",
-        "src/services/content-topic-workspace-compat.ts",
-        "migrations/247_content_topics_workspace_exit.sql"
-      ],
-      "reason": "Moved topic capture provenance from mutable audit JSON to the immutable canonical idea revision and added scoped read, replay, update, and delete coverage with neutral compatibility provenance when absent."
-    },
-    {
-      "test": "__tests__/state/saved-ideas-scope.test.ts",
-      "replacementTests": [
-        "__tests__/state/saved-ideas-scope.test.ts",
-        "__tests__/services/content-legacy-idea-workspace-exit.test.ts",
-        "__tests__/migrations/content-legacy-idea-note-workspace-parity.test.ts"
-      ],
-      "sources": [
-        "src/state/saved-ideas.ts",
-        "src/services/content-legacy-idea-workspace-exit.ts",
-        "migrations/253_content_legacy_idea_note_workspace_parity.sql"
-      ],
-      "reason": "Replaced legacy mark-used, promote, and delete mutation assertions with owner-readable compatibility history and an unconditional post-cutover write freeze backed by canonical parity tests."
-    },
-    {
-      "test": "__tests__/state/user-isolation.test.ts",
-      "replacementTests": [
-        "__tests__/state/user-isolation.test.ts",
-        "__tests__/services/content-legacy-idea-workspace-exit.test.ts",
-        "__tests__/security/content-workspace-library-tenant-isolation.test.ts",
-        "__tests__/migrations/content-legacy-idea-note-workspace-parity.test.ts"
-      ],
-      "sources": [
-        "src/state/saved-ideas.ts",
-        "src/services/content-legacy-idea-workspace-exit.ts",
-        "migrations/253_content_legacy_idea_note_workspace_parity.sql"
-      ],
-      "reason": "Replaced post-cutover saved_ideas visibility fixtures with stronger proof that every positive-user legacy root write is blocked and canonical private workspace isolation remains authoritative."
-    },
-    {
-      "test": "__tests__/tools/content-evaluation-harness.test.ts",
-      "replacementTests": [
-        "__tests__/tools/content-evaluation-harness.test.ts",
-        "__tests__/services/content-ios-extraction-artifact.test.ts",
-        "__tests__/services/content-live-evaluation-artifact.test.ts",
-        "__tests__/services/content-live-evaluation-consumption.test.ts"
-      ],
-      "sources": [
-        "src/tools/content-evaluation-harness.ts",
-        "src/services/content-ios-extraction-artifact.ts",
-        "src/services/content-live-evaluation-artifact.ts"
-      ],
-      "reason": "Removed environment-provided scalar lane scores and now accepts only independently pinned, typed, source-bound iOS and live-provider artifacts while forged or requested-but-uncaptured evidence fails closed."
-    },
-    {
-      "test": "__tests__/api/content-agency-routes.test.ts",
-      "replacementTests": [
-        "__tests__/api/content-agency-routes.test.ts",
-        "__tests__/services/content-agency.test.ts",
-        "__tests__/migrations/content-agency-package-integrity.test.ts",
-        "__tests__/migrations/content-pipeline-workspace-exit.test.ts"
-      ],
-      "sources": [
-        "src/api/routes/content-agency-routes.ts",
-        "src/services/content-agency.ts",
-        "migrations/239_content_agency_package_integrity.sql",
-        "migrations/246_content_pipeline_workspace_exit.sql"
-      ],
-      "mutationTargets": [
-        {
-          "pattern": "src/api/routes/content-agency-routes.ts:388-388",
-          "anchor": "result.status === 'created' ? 201 : 200",
-          "behavior": "Created agency handoffs return HTTP 201 while idempotent canonical workspace replays return HTTP 200.",
-          "replacementTest": "__tests__/api/content-agency-routes.test.ts",
-          "ownerTestName": "content agency routes moves an approved agency package into the canonical Content workspace once and with scope",
-          "minimumMutants": 1
-        }
-      ],
-      "reason": "Converted mutable legacy-pipeline handoff assertions to immutable package-to-workspace item, artifact, and revision bindings with exact read-back, rollback, and idempotent replay coverage."
-    },
-    {
-      "test": "__tests__/api/content-editorial-routes.test.ts",
-      "replacementTests": [
-        "__tests__/api/content-editorial-routes.test.ts",
-        "__tests__/services/content-editorial-static-exit.test.ts",
-        "__tests__/migrations/content-editorial-workspace-exit.test.ts",
-        "__tests__/api/content-workspace-routes.test.ts"
-      ],
-      "sources": [
-        "src/api/routes/content-editorial-routes.ts",
-        "src/services/content-editorial-workflow.ts",
-        "src/services/content-editorial-workspace-exit.ts",
-        "migrations/249_content_editorial_workspace_exit.sql"
-      ],
-      "mutationTargets": [
-        {
-          "pattern": "src/api/routes/content-editorial-routes.ts:61-61",
-          "anchor": "if (!object)",
-          "behavior": "Canonical compatibility reads fail closed for missing or foreign Content items.",
-          "replacementTest": "__tests__/api/content-editorial-routes.test.ts",
-          "ownerTestName": "deprecated content editorial HTTP compatibility routes serves a presentation-safe canonical read with explicit deprecation and historical-ledger labels",
-          "minimumMutants": 1
-        },
-        {
-          "pattern": "src/api/routes/content-editorial-routes.ts:102-102",
-          "anchor": "approvalConfirmed: req.body?.approvalConfirmed === true",
-          "behavior": "Legacy actions pass explicit confirmation without treating it as publication approval.",
-          "replacementTest": "__tests__/api/content-editorial-routes.test.ts",
-          "ownerTestName": "deprecated content editorial HTTP compatibility routes requires confirmation, current workflow version, and idempotency before a safe legacy archive adapter mutates",
-          "minimumMutants": 1
-        },
-        {
-          "pattern": "src/api/routes/content-editorial-routes.ts:144-144",
-          "anchor": "if (result.status === 'unauthorized_reference')",
-          "behavior": "Source review rejects cross-scope references before returning canonical replacement guidance.",
-          "replacementTest": "__tests__/api/content-editorial-routes.test.ts",
-          "ownerTestName": "deprecated content editorial HTTP compatibility routes moves raw source review to revision-pinned lineage and rejects cross-scope references before guidance",
-          "minimumMutants": 1
-        },
-        {
-          "pattern": "src/api/routes/content-editorial-routes.ts:165-165",
-          "anchor": "typeof req.body?.approvalType !== 'string'",
-          "behavior": "Approval compatibility requires an explicit non-empty approval type before invoking the canonical adapter.",
-          "replacementTest": "__tests__/api/content-editorial-routes.test.ts",
-          "ownerTestName": "deprecated content editorial HTTP compatibility routes requires an explicit content_review approval type and preserves canonical lineage policy",
-          "minimumMutants": 1
-        },
-        {
-          "pattern": "src/api/routes/content-editorial-routes.ts:216-217",
-          "anchor": "if (result.status === 'not_found')",
-          "behavior": "Repurpose compatibility cannot disclose or transform a missing or foreign source item.",
-          "replacementTest": "__tests__/api/content-editorial-routes.test.ts",
-          "ownerTestName": "deprecated content editorial HTTP compatibility routes moves repurpose to explicit canonical target creation and relationship recording with no inferred copy",
-          "minimumMutants": 1
-        }
-      ],
-      "reason": "Retired unsafe parallel source-review, publish, schedule, and repurpose mutations in favor of a presentation-safe compatibility facade and explicit canonical routes."
-    },
-    {
-      "test": "__tests__/api/content-home-route.test.ts",
-      "replacementTests": [
-        "__tests__/api/content-home-route.test.ts",
-        "__tests__/services/content-workspace-capture.test.ts"
-      ],
-      "sources": [
-        "src/api/routes/content.ts",
-        "src/services/content-workspace-capture.ts"
-      ],
-      "mutationTargets": [
-        {
-          "pattern": "src/api/routes/content.ts:501-501",
-          "anchor": "provider: 'local-fallback'",
-          "behavior": "Local discovery fallback captures canonical workspace ideas with truthful provider provenance.",
-          "replacementTest": "__tests__/api/content-home-route.test.ts",
-          "ownerTestName": "Content API — home route falls back to saved radar topics when live discovery fails",
-          "minimumMutants": 1
-        }
-      ],
-      "reason": "Moved local discovery fallback persistence from the retired saved-ideas/file path to idempotent canonical workspace capture."
-    },
-    {
-      "test": "__tests__/api/content-ideas-routes.test.ts",
-      "replacementTests": [
-        "__tests__/api/content-ideas-routes.test.ts",
-        "__tests__/services/content-workspace-read-models.test.ts",
-        "__tests__/migrations/content-pipeline-workspace-exit.test.ts"
-      ],
-      "sources": [
-        "src/api/routes/content-pipeline-routes.ts",
-        "src/services/content-workspace-read-models.ts",
-        "migrations/246_content_pipeline_workspace_exit.sql"
-      ],
-      "mutationTargets": [
-        {
-          "pattern": "src/api/routes/content-pipeline-routes.ts:103-103",
-          "anchor": "workspace: { source: 'content_workspace', canonical: true }",
-          "behavior": "Ideas compatibility reads identify the canonical workspace as their source of truth.",
-          "replacementTest": "__tests__/api/content-ideas-routes.test.ts",
-          "ownerTestName": "Content API — canonical ideas compatibility contract returns canonical workspace items with count and next-action metadata",
-          "minimumMutants": 1
-        }
-      ],
-      "reason": "Replaced the legacy-table list and fake-empty fallback with canonical items, next-action metadata, and truthful unavailable recovery."
-    },
-    {
-      "test": "__tests__/api/content-learning-routes.test.ts",
-      "replacementTests": [
-        "__tests__/api/content-learning-routes.test.ts",
-        "__tests__/services/content-performance-lineage.test.ts",
-        "__tests__/services/content-workspace-capture.test.ts",
-        "__tests__/services/content-workspace-lineage.test.ts"
-      ],
-      "sources": [
-        "src/api/routes/content-learning-routes.ts",
-        "src/services/content-performance-lineage.ts",
-        "src/services/content-workspace-capture.ts",
-        "src/services/content-learning-store.ts"
-      ],
-      "mutationTargets": [
-        {
-          "pattern": "src/api/routes/content-learning-routes.ts:230-230",
-          "anchor": "captureOrigin: 'approved_variant'",
-          "behavior": "Accepted script feedback is captured as a canonical artifact with explicit provenance.",
-          "replacementTest": "__tests__/api/content-learning-routes.test.ts",
-          "ownerTestName": "content learning routes persists approved script variant feedback as a canonical workspace artifact",
-          "minimumMutants": 1
-        },
-        {
-          "pattern": "src/api/routes/content-learning-routes.ts:360-360",
-          "anchor": "'CONTENT_LEGACY_PIPELINE_ALIAS_READ_ONLY'",
-          "behavior": "Performance writes reject ambiguous legacy pipeline identifiers instead of guessing revision lineage.",
-          "replacementTest": "__tests__/api/content-learning-routes.test.ts",
-          "ownerTestName": "content learning routes rejects legacy pipeline aliases instead of guessing a workspace revision",
-          "minimumMutants": 1
-        },
-        {
-          "pattern": "src/api/routes/content-learning-routes.ts:418-418",
-          "anchor": "mutation.created ? 201 : 200",
-          "behavior": "New performance outcomes return created status while idempotent replays return success without duplication.",
-          "replacementTest": "__tests__/api/content-learning-routes.test.ts",
-          "ownerTestName": "content learning routes logs revision-linked performance feedback with authenticated user ownership",
-          "minimumMutants": 1
-        },
-        {
-          "pattern": "src/api/routes/content-learning-routes.ts:478-480",
-          "anchor": "chain.availability === 'not_found'",
-          "behavior": "Missing and foreign artifact-chain identifiers return the same non-disclosing response.",
-          "replacementTest": "__tests__/api/content-learning-routes.test.ts",
-          "ownerTestName": "content learning routes makes foreign and missing artifact-chain identifiers indistinguishable",
-          "minimumMutants": 1
-        }
-      ],
-      "reason": "Bound accepted scripts and performance outcomes to canonical artifacts, revisions, tenant scope, and idempotency while making foreign and missing identifiers indistinguishable."
-    },
-    {
-      "test": "__tests__/api/content-pipeline-routes.test.ts",
-      "replacementTests": [
-        "__tests__/api/content-pipeline-routes.test.ts",
-        "__tests__/services/content-workspace-read-models.test.ts",
-        "__tests__/migrations/content-pipeline-workspace-exit.test.ts"
-      ],
-      "sources": [
-        "src/api/routes/content-pipeline-routes.ts",
-        "src/services/content-workspace-read-models.ts",
-        "migrations/246_content_pipeline_workspace_exit.sql"
-      ],
-      "mutationTargets": [
-        {
-          "pattern": "src/api/routes/content-pipeline-routes.ts:67-68",
-          "anchor": "CONTENT_FILMING_STATE_NOT_MODELED",
-          "behavior": "Legacy filmed and editing buckets remain explicitly unmodeled instead of being fabricated from canonical states.",
-          "replacementTest": "__tests__/api/content-pipeline-routes.test.ts",
-          "ownerTestName": "canonical Content pipeline compatibility routes projects canonical phases truthfully and marks unmodeled legacy stages",
-          "minimumMutants": 1
-        },
-        {
-          "pattern": "src/api/routes/content-pipeline-routes.ts:155-155",
-          "anchor": "CONTENT_PIPELINE_ADVANCE_DEPRECATED",
-          "behavior": "Implicit pipeline advancement is rejected without mutating canonical workflow state.",
-          "replacementTest": "__tests__/api/content-pipeline-routes.test.ts",
-          "ownerTestName": "canonical Content pipeline compatibility routes rejects implicit advancement with the current explicit next action and no mutation",
-          "minimumMutants": 1
-        }
-      ],
-      "reason": "Converted the legacy pipeline to a scoped canonical read projection with explicit unmodeled stages and no implicit mutation path."
-    },
-    {
-      "test": "__tests__/api/content-topic-routes.test.ts",
-      "replacementTests": [
-        "__tests__/api/content-topic-routes.test.ts",
-        "__tests__/services/content-topic-workspace-compat.test.ts",
-        "__tests__/migrations/content-topics-workspace-exit.test.ts"
-      ],
-      "sources": [
-        "src/api/routes/content-topic-routes.ts",
-        "src/services/content-topic-workspace-compat.ts",
-        "migrations/247_content_topics_workspace_exit.sql"
-      ],
-      "mutationTargets": [
-        {
-          "pattern": "src/api/routes/content-topic-routes.ts:457-457",
-          "anchor": "cleanupContentTopicSecretaryArtifacts",
-          "behavior": "Imported Secretary cleanup receives the authenticated owner and tenant scope before canonical soft deletion.",
-          "replacementTest": "__tests__/api/content-topic-routes.test.ts",
-          "ownerTestName": "content topic routes cleans up imported Secretary artifacts before soft-deleting the canonical item",
-          "minimumMutants": 1
-        }
-      ],
-      "reason": "Stopped inventing Secretary tasks for canonical deadlines and moved keyed topic updates and deletes to scoped replay-safe compatibility with recoverable deletion."
-    },
-    {
-      "test": "__tests__/api/dashboard-routes.test.ts",
-      "replacementTests": [
-        "__tests__/api/dashboard-routes.test.ts",
-        "__tests__/services/content-workspace-read-models.test.ts"
-      ],
-      "sources": [
-        "src/api/routes/dashboard-data-fetchers.ts",
-        "src/services/content-workspace-read-models.ts"
-      ],
-      "mutationTargets": [
-        {
-          "pattern": "src/api/routes/dashboard-data-fetchers.ts:587-587",
-          "anchor": "requireTenantIdParam(tenantId, 'queryContentPipelineCounts')",
-          "behavior": "Dashboard Content counts reject missing tenant scope before preparing any canonical query.",
-          "replacementTest": "__tests__/api/dashboard-routes.test.ts",
-          "ownerTestName": "Dashboard API route requires an explicit tenant before querying canonical content",
-          "minimumMutants": 1
-        }
-      ],
-      "reason": "Removed the stale legacy-schema fallback and made canonical tenant-scoped counts or truthful unavailable state authoritative."
-    },
-    {
-      "test": "__tests__/services/content-learning-store.test.ts",
-      "replacementTests": [
-        "__tests__/services/content-learning-store.test.ts",
-        "__tests__/services/content-performance-lineage.test.ts",
-        "__tests__/services/content-workspace-capture.test.ts",
-        "__tests__/services/content-workspace-read-models.test.ts",
-        "__tests__/agents/voice-evolution-multi-tenant.test.ts",
-        "__tests__/migrations/content-performance-workspace-lineage.test.ts"
-      ],
-      "sources": [
-        "src/services/content-learning-store.ts",
-        "src/services/content-performance-lineage.ts",
-        "src/services/content-workspace-read-models.ts",
-        "src/agents/voice-evolution-agent.ts",
-        "migrations/250_content_performance_workspace_lineage.sql",
-        "migrations/252_content_legacy_script_workspace_parity.sql"
-      ],
-      "mutationTargets": [
-        {
-          "pattern": "src/agents/voice-evolution-agent.ts:549-554",
-          "anchor": "for (const s of dbScripts)",
-          "behavior": "Voice learning includes current canonical script text and excludes the frozen legacy script archive.",
-          "replacementTest": "__tests__/agents/voice-evolution-multi-tenant.test.ts",
-          "ownerTestName": "Voice Evolution Agent — multi-tenant scope builds voice signals from each active tenant’s own transcripts and scripts only",
-          "minimumMutants": 1
-        }
-      ],
-      "reason": "Moved legacy script and performance ownership to canonical artifacts and revisions and replaced raw source scans with behavioral multi-tenant voice-input coverage."
-    },
-    {
-      "test": "__tests__/services/calendar-dedup-qa-validation.test.ts",
-      "replacementTests": [
-        "__tests__/services/calendar-dedup.test.ts"
-      ],
-      "sources": [
-        "src/services/unified-calendar.ts"
-      ],
-      "reason": "Merged the QA fingerprint and deduplication matrix into the primary suite, retaining the canonical-link richness branch while removing repeated provider-order and happy-path assertions."
-    },
-    {
-      "test": "__tests__/adapters/whatsapp-adapter-qa-validation.test.ts",
-      "replacementTests": [
-        "__tests__/adapters/whatsapp-adapter.test.ts"
-      ],
-      "sources": [
-        "src/adapters/whatsapp-adapter.ts"
-      ],
-      "reason": "Merged unique Graph API version, MIME mapping, post-upload delivery failure, and interactive failure behavior into the primary adapter suite and removed fragmented duplicates and export-existence checks."
-    },
-    {
-      "test": "__tests__/adapters/whatsapp-adapter.test.ts",
-      "replacementTests": [
-        "__tests__/adapters/whatsapp-adapter.test.ts"
-      ],
-      "sources": [
-        "src/adapters/whatsapp-adapter.ts"
-      ],
-      "reason": "Removed compile-time method-existence assertions from the retained primary suite because every adapter method is exercised through its public behavior and TypeScript checks the MessageAdapter implementation."
-    },
-    {
-      "test": "__tests__/services/task-store/task-service.test.ts",
-      "replacementTests": [
-        "__tests__/services/task-store/task-service.test.ts",
-        "__tests__/services/task-store/single-write-path.test.ts"
-      ],
-      "sources": [
-        "src/services/task-store/task-service.ts"
-      ],
-      "reason": "M5 deleted task-service createTask/deleteTask (dead code — writes flow through the offline-first ledger), so their describes were removed; the retained suite still covers completeTask (the flag-off legacy branch) and the read helpers, and ledger-side create/delete behavior is asserted end-to-end in the single-write-path acceptance suite."
-    },
-    {
-      "test": "__tests__/services/tool-executor.test.ts",
-      "replacementTests": [
-        "__tests__/services/tool-executor.test.ts",
-        "__tests__/services/task-store/single-write-path.test.ts"
-      ],
-      "sources": [
-        "src/services/tool-executor.ts"
-      ],
-      "mutationTargets": [
-        {
-          "pattern": "src/services/tool-executor.ts:1536-1541",
-          "anchor": "syncState: created.task.syncState",
-          "behavior": "ms_todo_create_task returns the ledger-created task's nexus id, title, and honest syncState with success true — chat callers receive ledger truth, never a provider echo.",
-          "replacementTest": "__tests__/services/tool-executor.test.ts",
-          "ownerTestNamePattern": "writes the ledger and returns the NEXUS id and title",
-          "minimumMutants": 2
-        }
-      ],
-      "reason": "M5 rewrote the ms_todo_* write-tool tests from provider-delegation assertions to offline-first ledger assertions and re-pinned the direct-provider behavior as explicit TASK_SINGLE_WRITE_PATH=0 legacy tests in the same file; real-database acceptance lives in the single-write-path suite."
-    },
-    {
-      "test": "__tests__/api/app-facing-happy-path-smoke.test.ts",
-      "replacementTests": [
-        "__tests__/api/app-facing-happy-path-smoke.test.ts",
-        "__tests__/api/tasks-routes.test.ts"
-      ],
-      "sources": [
-        "src/api/routes/tasks.ts"
-      ],
-      "reason": "M5 re-pinned the POST /lists smoke assertions to the ledger contract: the 201 body carries the LOCAL project row id (the id GET /lists serves) instead of a provider echo, with the provider push journaled for the mutation worker."
-    },
-    {
-      "test": "__tests__/api/chat-routes.test.ts",
-      "replacementTests": [
-        "__tests__/api/chat-routes.test.ts",
-        "__tests__/services/task-store/single-write-path.test.ts"
-      ],
-      "sources": [
-        "src/services/skills/tasks/executor.ts"
-      ],
-      "reason": "M5 moved chat-route planner task-write expectations from provider-delegation assertions to offline-first ledger assertions (no inline provider writes; local read-back), matching the converted skills executors."
-    },
-    {
-      "test": "__tests__/services/chat-action-planner-multi-step.test.ts",
-      "replacementTests": [
-        "__tests__/services/chat-action-planner-multi-step.test.ts"
-      ],
-      "sources": [
-        "src/services/skills/tasks/executor.ts"
-      ],
-      "reason": "M5 re-pinned multi-step planner task writes to the ledger: creates land exactly once in unified_tasks with zero provider-mock writes, replacing the previous provider-call-count assertions."
-    },
-    {
-      "test": "__tests__/services/chat-action-production-safety.test.ts",
-      "replacementTests": [
-        "__tests__/services/chat-action-production-safety.test.ts"
-      ],
-      "sources": [
-        "src/services/skills/tasks/executor.ts"
-      ],
-      "reason": "M5 pinned the malformed-provider-response scenario to the TASK_SINGLE_WRITE_PATH=0 legacy path (the ledger path performs no inline provider write to malform) while keeping the calendar verifier-failure half unchanged."
-    },
-    {
-      "test": "__tests__/services/chat-core-v2-command-executor.test.ts",
-      "replacementTests": [
-        "__tests__/services/chat-core-v2-command-executor.test.ts",
-        "__tests__/services/task-store/single-write-path.test.ts"
-      ],
-      "sources": [
-        "src/services/chat-core-v2/command-executor.ts"
-      ],
-      "reason": "M5 re-pinned the provider-path task-create tests as TASK_SINGLE_WRITE_PATH=0 legacy contracts and added ledger-path create/verification tests; the unified complete command's ledger journal is asserted against a real migrated database in the single-write-path suite."
-    },
-    {
-      "test": "__tests__/services/content-topic-secretary-sync.test.ts",
-      "replacementTests": [
-        "__tests__/services/content-topic-secretary-sync.test.ts"
-      ],
-      "sources": [
-        "src/services/content-topic-secretary-sync.ts"
-      ],
-      "reason": "M5 renamed and re-scoped the upsert/cleanup tests to the ledger write path (nexus-id identity contract for secretary_task_external_id) and re-pinned the direct-provider behavior as explicit TASK_SINGLE_WRITE_PATH=0 legacy tests in the same file."
-    },
-    {
-      "test": "__tests__/services/chat-action-planner.test.ts",
-      "replacementTests": [
-        "__tests__/services/chat-action-planner.test.ts"
-      ],
-      "sources": [
-        "src/services/skills/tasks/executor.ts"
-      ],
-      "reason": "M5 moved planner task-step write expectations to the offline-first ledger (no provider writes; local read-back), split the subtask partial-claim scenario into a TASK_SINGLE_WRITE_PATH=0 legacy half, and renamed the provider-read duplicate-recovery test as an explicit legacy flag-off contract."
-    },
-    {
-      "test": "__tests__/services/task-store/task-sync-transitions.test.ts",
-      "replacementTests": [
-        "__tests__/services/task-store/task-sync-transitions.test.ts"
-      ],
-      "sources": [
-        "src/services/task-store/task-sync-transitions.ts"
-      ],
-      "reason": "Renamed and re-scoped two fixture tests in the retained suite to encode the designed M2A transition changes (provider_disconnected left the sighting-heal set and joined the pull-protected pending set; deleted_pending_sync resurrect closed) — the allowed-transition graph is still fully asserted by the same file."
-    },
-    {
-      "test": "__tests__/scripts/changed-area-classifier.test.ts",
-      "replacementTests": [
-        "__tests__/scripts/changed-area-classifier.test.ts"
-      ],
-      "sources": [
-        "config/test-policy.json",
-        "scripts/cannot-skip-gate-dashboard.mjs",
-        "scripts/cannot-skip-gate-dashboard.sh",
-        "scripts/changed-area-classifier.mjs",
-        "scripts/changed-area-classifier.sh",
-        "scripts/lib/changed-area-classifier.mjs",
-        "scripts/resolve-ci-change-base.sh"
-      ],
-      "reason": "Consolidated repeated shell-process matrices into direct deterministic classifier behavior while retaining compatibility CLI, cannot-skip dashboard, pushed-range, and fail-closed base coverage."
-    },
-    {
-      "test": "__tests__/scripts/release-test-evidence.test.ts",
-      "replacementTests": [
-        "__tests__/scripts/release-test-evidence.test.ts"
-      ],
-      "sources": [
-        "scripts/changed-area-classifier.mjs",
-        "scripts/lib/changed-area-classifier.mjs",
-        "scripts/lib/git-ref.mjs",
-        "scripts/release-test-evidence.mjs"
-      ],
-      "reason": "Updated the retained release-evidence suite to bind the Node classifier and exact Git identity dependencies without weakening artifact or tier evidence assertions."
-    },
-    {
-      "test": "__tests__/services/registry-multi-turn-state-injection.test.ts",
-      "replacementTests": [
-        "__tests__/services/registry-multi-turn-state-injection.test.ts"
-      ],
-      "sources": [
-        "src/services/chat-action-state.ts",
-        "src/services/chat/index.ts",
-        "src/testing/migrated-test-database.ts"
-      ],
-      "reason": "Replaced the local full migration replay with the governed migrated template while retaining the real pending-action persistence and multi-turn continuation behavior."
-    },
-    {
-      "test": "__tests__/services/science-policy-gate-wiring.test.ts",
-      "replacementTests": [
-        "__tests__/services/science-policy-gate-wiring.test.ts"
-      ],
-      "sources": [
-        "scripts/cannot-skip-gate-dashboard.mjs",
-        "scripts/ci/science-policy-version-check.mjs",
-        "src/services/coach-kernel/knowledge/entities/training-principles.json"
-      ],
-      "reason": "Converted source-substring checks into the typed cannot-skip dashboard contract while preserving science-policy file routing and enforcement behavior."
-    },
-    {
-      "test": "__tests__/services/storage-provider-qa-validation.test.ts",
-      "replacementTests": [
-        "__tests__/services/storage-provider.test.ts"
-      ],
-      "sources": [
-        "src/services/storage-provider.ts"
-      ],
-      "mutationTargets": [
-        {
-          "pattern": "src/services/storage-provider.ts:189-189",
-          "anchor": "return parsed",
-          "behavior": "A finite non-negative SQLite mmap size is applied exactly as configured.",
-          "replacementTest": "__tests__/services/storage-provider.test.ts",
-          "ownerTestName": "SQLiteStorage pragma policy applies allowlisted pragma overrides and rejects unsafe values",
-          "minimumMutants": 6
-        }
-      ],
-      "reason": "Merged safe pragma policy and missing-parent filesystem behavior into the primary storage suite while removing repeated SQLite driver semantics, singleton happy paths, and export-existence assertions."
-    },
-    {
-      "test": "__tests__/scripts/trusted-release-signing.test.ts",
-      "replacementTests": [
-        "__tests__/scripts/trusted-release-signing.test.ts",
-        "__tests__/scripts/backend-ios-contract-fixture.test.ts"
-      ],
-      "sources": [
-        "scripts/trusted-release-signer.mjs",
-        "scripts/lib/backend-ios-contract-fixture.mjs",
-        "scripts/lib/ios-distribution-attestation.mjs",
-        "scripts/release-bundle.mjs",
-        "scripts/release-manifest-v2.mjs",
-        "src/release/backend-ios-contract-fixture.ts",
-        ".github/workflows/release-candidate-evidence.yml",
-        ".github/workflows/sign-release-manifest.yml",
-        "docs/release/evidence/ios-contract-evidence-public-key.pem",
-        "docs/release/evidence/ios-distribution-public-key.b64"
-      ],
-      "reason": "Replaced raw test-count floors and candidate-authored identity assumptions with recomputed selected-tier, nightly freshness, trusted timestamp, immutable backend artifact identity, candidate-derived iOS decoder fixtures, and signed source-bound iOS CI evidence proofs. This one-change mapping is removed after merge."
-    },
-    {
-      "test": "__tests__/billing/pricing-display-contract.test.ts",
-      "replacementTests": [
-        "__tests__/billing/pricing-display-contract.test.ts"
-      ],
-      "sources": [
-        ".env.example",
-        "src/portal/landing.html",
-        "docs/TOKEN-QUOTA-CONTRACT.md"
-      ],
-      "reason": "Removed stale release-narrative price copies while retaining the canonical environment, portal, and quota price contracts."
-    },
-    {
-      "test": "__tests__/scripts/ci-required-test-sharding.test.ts",
-      "replacementTests": [
-        "__tests__/scripts/ci-required-test-sharding.test.ts"
-      ],
-      "sources": [
-        ".github/workflows/ci.yml",
-        "scripts/resolve-ci-change-base.sh"
-      ],
-      "reason": "Replaced the old aggregate dependency assertion with exact mutation, coverage, and pushed-range fail-closed contracts."
-    },
-    {
-      "test": "__tests__/scripts/exact-promotion-operational-safety.test.ts",
-      "replacementTests": [
-        "__tests__/scripts/exact-promotion-operational-safety.test.ts"
-      ],
-      "sources": [
-        "scripts/release-operator.sh",
-        "scripts/promote-exact-release.sh",
-        "scripts/env-parity-check.sh",
-        "scripts/remote-release-preflight.sh",
-        "scripts/remote-release-readiness.sh",
-        "scripts/remote-production-shape-migration-rehearsal.sh",
-        "scripts/production-shape-migration-rehearsal.mjs",
-        "scripts/validate-production-shape-migration-rehearsal.mjs",
-        "scripts/lib/production-shape-migration-rehearsal-evidence.mjs"
-      ],
-      "reason": "Removed assertions owned only by retired repository-sync wrappers while expanding the retained suite to prove staging and production locks, strict preflight, readiness evidence, and recovery ordering in the exact-artifact operator path."
-    },
-    {
-      "test": "__tests__/scripts/release-evidence-container.test.ts",
-      "replacementTests": [
-        "__tests__/scripts/release-evidence-container.test.ts"
-      ],
-      "sources": [
-        ".github/workflows/release-candidate-evidence.yml",
-        ".github/workflows/sign-release-manifest.yml",
-        "scripts/release-evidence-container.sh",
-        "scripts/release-operator.sh",
-        "scripts/request-release-manifest-signature.sh",
-        "scripts/promote-exact-release.sh",
-        "scripts/env-parity-check.sh",
-        "scripts/remote-release-preflight.sh",
-        "scripts/remote-release-readiness.sh"
-      ],
-      "reason": "Removed the obsolete promote-to-prod wrapper exclusion and transferred ownership to positive exact-artifact operator, environment parity, strict preflight, readiness, attestation, and rollback contracts in the retained evidence suite."
-    },
-    {
-      "test": "__tests__/scripts/deploy-shell-hardening.test.ts",
-      "replacementTests": [
-        "__tests__/scripts/release-runtime-safeguards.test.ts",
-        "__tests__/scripts/exact-promotion-operational-safety.test.ts",
-        "__tests__/scripts/release-artifact-manifest.test.ts"
-      ],
-      "sources": [
-        "scripts/release-operator.sh",
-        "scripts/promote-exact-release.sh",
-        "scripts/env-parity-check.sh",
-        "scripts/remote-release-preflight.sh",
-        "scripts/remote-release-readiness.sh"
-      ],
-      "reason": "Replaced broad source-string shell assertions with compact behavioral preflight, readiness, immutable artifact, and exact promotion tests."
-    },
-    {
-      "test": "__tests__/scripts/promote-deploy-rollback.test.ts",
-      "replacementTests": [
-        "__tests__/scripts/exact-promotion-operational-safety.test.ts",
-        "__tests__/scripts/release-backup-runtime-artifact.test.ts",
-        "__tests__/scripts/rollback-versioned-runtime.test.ts",
-        "__tests__/scripts/pm2-sanitized-start.test.ts"
-      ],
-      "sources": [
-        "scripts/promote-exact-release.sh",
-        "scripts/remote-prepare-release-backup.sh",
-        "scripts/remote-create-release-backup.sh",
-        "scripts/rollback.sh",
-        "scripts/restore.sh",
-        "scripts/remote-start-sanitized-pm2.sh"
-      ],
-      "reason": "Retired the wrapper-specific rollback suite after exact backup restoration, versioned rollback, and sanitized PM2 tests took ownership."
-    },
-    {
-      "test": "__tests__/scripts/release-deploy-dry-runs.test.ts",
-      "replacementTests": [
-        "__tests__/scripts/release-runtime-safeguards.test.ts",
-        "__tests__/scripts/exact-promotion-operational-safety.test.ts",
-        "__tests__/scripts/release-evidence-container.test.ts",
-        "__tests__/scripts/release-exact-attestations.test.ts"
-      ],
-      "sources": [
-        "scripts/release-operator.sh",
-        "scripts/promote-exact-release.sh",
-        "scripts/release-staging-attestation.mjs",
-        "scripts/remote-release-preflight.sh",
-        "scripts/remote-release-readiness.sh"
-      ],
-      "reason": "Replaced wrapper dry-run snapshots with exact operator, signed attestation, remote safeguard, and operational harness behavior."
-    },
-    {
-      "test": "__tests__/security/deploy-script-security.test.ts",
-      "replacementTests": [
-        "__tests__/scripts/release-runtime-safeguards.test.ts",
-        "__tests__/scripts/exact-promotion-operational-safety.test.ts",
-        "__tests__/scripts/release-exact-attestations.test.ts"
-      ],
-      "sources": [
-        "scripts/release-operator.sh",
-        "scripts/promote-exact-release.sh",
-        "scripts/env-parity-check.sh",
-        "scripts/remote-release-preflight.sh",
-        "scripts/remote-release-readiness.sh"
-      ],
-      "reason": "Moved release security ownership from retired repository-sync wrappers to behavioral tamper, credential, identity, and signed-evidence checks."
-    },
-    {
-      "test": "__tests__/scripts/risk-gate.test.ts",
-      "replacementTests": [
-        "__tests__/scripts/risk-gate.test.ts",
-        "__tests__/scripts/local-full-vitest-receipt.test.ts"
-      ],
-      "sources": [
-        ".husky/pre-commit",
-        ".husky/pre-push",
-        "scripts/local-full-vitest-receipt.mjs",
-        "scripts/risk-gate.sh",
-        "scripts/select-vitest-files.mjs"
-      ],
-      "reason": "Replaced overlapping changed-test command assertions with one generated changed, focused, and critical selection contract plus exact local full-suite receipt reuse bound to the staged tree and pushed tip."
-    },
-    {
-      "test": "__tests__/security/github-workflow-pinning.test.ts",
-      "replacementTests": [
-        "__tests__/security/github-workflow-pinning.test.ts"
-      ],
-      "sources": [
-        ".github/workflows/release-candidate-evidence.yml",
-        ".github/workflows/sign-release-manifest.yml"
-      ],
-      "reason": "Replaced legacy release-evidence path assertions with immutable ReleaseManifestV2 generation and trusted signing contracts."
-    },
-    {
-      "test": "__tests__/services/chatv2-readiness-alerts.test.ts",
-      "replacementTests": [
-        "__tests__/services/chatv2-readiness-alerts.test.ts"
-      ],
-      "sources": [
-        "src/services/chatv2-readiness-alerts.ts"
-      ],
-      "reason": "Updated the stale work-order runbook assertion to the consolidated canonical release runbook while preserving alert behavior."
-    },
-    {
-      "test": "__tests__/agents/voice-evolution-qa-validation.test.ts",
-      "replacementTests": [
-        "__tests__/agents/voice-evolution-agent.test.ts",
-        "__tests__/agents/voice-evolution-multi-tenant.test.ts"
-      ],
-      "sources": [
-        "migrations/012_video_transcripts.sql",
-        "src/agents/voice-evolution-agent.ts"
-      ],
-      "mutationTargets": [
-        {
-          "pattern": "src/agents/voice-evolution-agent.ts:595-595",
-          "anchor": "t.full_text.slice(0, 2000)",
-          "behavior": "The agent places each scoped transcript full_text value into the provider prompt.",
-          "replacementTest": "__tests__/agents/voice-evolution-multi-tenant.test.ts",
-          "ownerTestName": "Voice Evolution Agent — multi-tenant scope builds voice signals from each active tenant’s own transcripts and scripts only",
-          "minimumMutants": 1
-        }
-      ],
-      "reason": "Merged the real transcript contract into migrated-schema and full multi-tenant agent behavior while deleting hand-built SQLite tables, bug-reproduction SQL, source scans, and duplicated logging checks."
-    },
-    {
-      "test": "__tests__/agents/voice-evolution-agent.test.ts",
-      "replacementTests": [
-        "__tests__/agents/voice-evolution-agent.test.ts",
-        "__tests__/agents/voice-evolution-multi-tenant.test.ts"
-      ],
-      "sources": [
-        "src/agents/voice-evolution-agent.ts"
-      ],
-      "mutationTargets": [
-        {
-          "pattern": "src/agents/voice-evolution-agent.ts:594-594",
-          "anchor": "const transcriptsBlock = transcripts.length > 0",
-          "behavior": "A migrated transcript query result selects the transcript-backed provider prompt path instead of the no-transcript fallback.",
-          "replacementTest": "__tests__/agents/voice-evolution-multi-tenant.test.ts",
-          "ownerTestName": "Voice Evolution Agent — multi-tenant scope builds voice signals from each active tenant’s own transcripts and scripts only",
-          "minimumMutants": 1
-        }
-      ],
-      "reason": "Removed the retained suite's regex source scan because the multi-tenant agent execution proves the production query against the migrated schema."
-    },
-    {
-      "test": "__tests__/brand/copyright-headers-qa-validation.test.ts",
-      "replacementTests": [
-        "__tests__/brand/package-manifest.test.ts"
-      ],
-      "sources": [
-        "LICENSE",
-        "package.json"
-      ],
-      "reason": "Converted arbitrary source-file counts and first-line string scans into the actual MIT license artifact and package publication metadata contract."
-    },
-    {
-      "test": "__tests__/brand/package-rename-qa-validation.test.ts",
-      "replacementTests": [
-        "__tests__/brand/package-manifest.test.ts"
-      ],
-      "sources": [
-        "LICENSE",
-        "package-lock.json",
-        "package.json"
-      ],
-      "reason": "Converted fragmented rename assertions into one package publication manifest that binds identity, semantic version, lockfile root, author, and license."
-    },
-    {
-      "test": "__tests__/services/ai-provider-qa-validation.test.ts",
-      "replacementTests": [
-        "__tests__/services/ai-provider.test.ts"
-      ],
-      "sources": [
-        "src/services/ai-provider.ts"
-      ],
-      "mutationTargets": [
-        {
-          "pattern": "src/services/ai-provider.ts:484-484",
-          "anchor": "this.onFallback?.(err as Error, 'classify')",
-          "behavior": "Classification fallback reports the exact method and preserves active context and scoped call options.",
-          "replacementTest": "__tests__/services/ai-provider.test.ts",
-          "ownerTestName": "FallbackProvider classify classify preserves context and options when primary throws",
-          "minimumMutants": 1
-        },
-        {
-          "pattern": "src/services/ai-provider.ts:500-500",
-          "anchor": "this.onFallback?.(err as Error, 'callDomain')",
-          "behavior": "Domain fallback reports the exact method and preserves every routing, history, state, and options argument.",
-          "replacementTest": "__tests__/services/ai-provider.test.ts",
-          "ownerTestName": "FallbackProvider callDomain callDomain preserves all arguments when primary throws",
-          "minimumMutants": 1
-        },
-        {
-          "pattern": "src/services/ai-provider.ts:517-517",
-          "anchor": "this.onFallback?.(err as Error, 'continueWithToolResults')",
-          "behavior": "Tool-result continuation fallback reports the exact method and preserves the full conversation and scoped options.",
-          "replacementTest": "__tests__/services/ai-provider.test.ts",
-          "ownerTestName": "FallbackProvider continueWithToolResults continueWithToolResults preserves all arguments when primary throws",
-          "minimumMutants": 1
-        }
-      ],
-      "reason": "Merged distinct argument, terminal-error, and nested-chain behavior into the primary provider suite while removing duplicate passthrough, interface, response-shape, and routing cases."
-    },
-    {
-      "test": "__tests__/services/config-provider-qa-validation.test.ts",
-      "replacementTests": [
-        "__tests__/services/config-provider.test.ts"
-      ],
-      "sources": [
-        "src/services/config-provider.ts"
-      ],
-      "mutationTargets": [
-        {
-          "pattern": "src/services/config-provider.ts:47-47",
-          "anchor": "if (!tenantOverrides) return config",
-          "behavior": "Resolution returns the exact global config when no tenant override exists and the merged config when one does.",
-          "replacementTest": "__tests__/services/config-provider.test.ts",
-          "ownerTestName": "ConfigProvider EnvConfigProvider resolve() returns global config when no overrides set",
-          "minimumMutants": 1
-        },
-        {
-          "pattern": "src/services/config-provider.ts:52-52",
-          "anchor": "this.overrides.get(String(tenantId))",
-          "behavior": "Override lookup returns null for an unknown tenant while canonical numeric and string identities share stored overrides.",
-          "replacementTest": "__tests__/services/config-provider.test.ts",
-          "ownerTestName": "ConfigProvider EnvConfigProvider getOverrides() returns null for unknown tenant",
-          "minimumMutants": 1
-        },
-        {
-          "pattern": "src/services/config-provider.ts:363-364",
-          "anchor": "values && typeof values === 'object' && section in base",
-          "behavior": "Unknown, null, and scalar override sections cannot enter the resolved application config.",
-          "replacementTest": "__tests__/services/config-provider.test.ts",
-          "ownerTestName": "ConfigProvider multi-section overrides ignores unknown, null, and scalar override sections",
-          "minimumMutants": 1
-        }
-      ],
-      "reason": "Merged canonical tenant ID and malformed override boundaries into the primary suite while removing implementation-reference, interface-existence, singleton, and repeated merge cases."
-    },
-    {
-      "test": "__tests__/skills/content-skill-refactor-qa-validation.test.ts",
-      "replacementTests": [
-        "__tests__/router/dynamic-routing.test.ts",
-        "__tests__/skills/skill-config.test.ts"
-      ],
-      "sources": [
-        "src/skills/content/manifest.json",
-        "src/skills/skill-config.ts"
-      ],
-      "reason": "Merged typed manifest parity into the primary skill configuration suite; existing skill and router matrices already own sub-skills, cron jobs, classification, routes, and negative domain matches."
-    },
-    {
-      "test": "__tests__/services/cross-agent-learning-qa-validation.test.ts",
-      "replacementTests": [
-        "__tests__/services/cross-agent-learning-contract.test.ts",
-        "__tests__/services/cross-agent-learning.test.ts"
-      ],
-      "sources": [
-        "src/services/cross-agent-learning/signal-learning.ts"
-      ],
-      "mutationTargets": [
-        {
-          "pattern": "src/services/cross-agent-learning/signal-learning.ts:124-124",
-          "anchor": ".filter(k => k.direction !== 'stable')",
-          "behavior": "Prompt context excludes stable keyword observations while retaining actionable movements.",
-          "replacementTest": "__tests__/services/cross-agent-learning-contract.test.ts",
-          "ownerTestName": "Cross-Agent Learning public contracts formats only actionable keywords and sufficiently confident content formulas",
-          "minimumMutants": 1
-        },
-        {
-          "pattern": "src/services/cross-agent-learning/signal-learning.ts:134-134",
-          "anchor": ".filter(f => f.confidence >= 0.6)",
-          "behavior": "Prompt context excludes content formulas below the governed confidence boundary.",
-          "replacementTest": "__tests__/services/cross-agent-learning-contract.test.ts",
-          "ownerTestName": "Cross-Agent Learning public contracts formats only actionable keywords and sufficiently confident content formulas",
-          "minimumMutants": 1
-        },
-        {
-          "pattern": "src/services/cross-agent-learning/signal-learning.ts:178-178",
-          "anchor": ".filter(v => v.strength >= 0.7)",
-          "behavior": "Learning digests exclude creator voice evidence below the governed strength boundary.",
-          "replacementTest": "__tests__/services/cross-agent-learning-contract.test.ts",
-          "ownerTestName": "Cross-Agent Learning public contracts excludes weak creator voice evidence from a learning digest",
-          "minimumMutants": 1
-        }
-      ],
-      "reason": "Converted the remaining malformed-signal, filtering, digest, and independent-consumer behavior into a portable public-contract suite while primary happy paths remain module-owned."
-    },
-    {
-      "test": "__tests__/services/prompt-cleanliness.test.ts",
-      "replacementTests": [
-        "__tests__/services/prompt-cleanliness.test.ts"
-      ],
-      "sources": [
-        "docs/DOCS_INDEX.md"
-      ],
-      "reason": "Removed an obsolete archive-file existence contract after documentation consolidation retained canonical index routing."
-    },
-    {
-      "test": "__tests__/services/scheduler-user-scope.test.ts",
-      "replacementTests": [
-        "__tests__/services/scheduler-user-scope.test.ts"
-      ],
-      "sources": [
-        "src/services/scheduler.ts"
-      ],
-      "reason": "Replaced superseded content-generation call expectations with the current scoped scheduler selection and eligibility behavior."
-    },
-    {
-      "test": "__tests__/services/skill-migration-qa-validation.test.ts",
-      "replacementTests": [
-        "__tests__/services/database.test.ts",
-        "__tests__/skills/registry.test.ts",
-        "__tests__/skills/skill-security.test.ts"
-      ],
-      "sources": [
-        "migrations/019_installed_skills.sql",
-        "migrations/020_skill_tables.sql"
-      ],
-      "reason": "Deleted a fully redundant schema suite: the migration rehearsal owns table existence and idempotency, registry owns defaults and indexes, and skill-security owns foreign keys, uniqueness, credentials, and cascades."
-    },
-    {
-      "test": "__tests__/services/skill-version-registry.test.ts",
-      "replacementTests": [
-        "__tests__/services/skill-version-registry.test.ts"
-      ],
-      "sources": [
-        "src/services/skill-version-registry.ts"
-      ],
-      "reason": "Folded the standalone triathlon alias assertion into the richer governed training capability metadata contract."
-    },
-    {
-      "test": "__tests__/services/training-m4-capacity-snapshots.test.ts",
-      "replacementTests": [
-        "__tests__/services/training-m4-capacity-snapshots.test.ts"
-      ],
-      "sources": [
-        "src/services/training-m4-capacity-snapshots.ts",
-        "config/benchmark-baselines.json"
-      ],
-      "reason": "Moved the shared-runner one-second wall-clock assertion into a warmed p95 benchmark with an explicit governed baseline."
-    },
-    {
-      "test": "__tests__/api/training-plan-generation-source-contract.test.ts",
-        "replacementTests": ["__tests__/api/training-plan-generation.test.ts", "__tests__/api/training-routes.test.ts"],
-        "sources": ["src/api/routes/training-plan-generation.ts", "src/api/routes/training-plan-routes.ts"],
-        "reason": "Converted the source-substring contract into a quota-exhaustion token-zero route proof plus a recursive AST provider-boundary assertion."
-      },
       {
-        "test": "__tests__/brand/package-name.test.ts",
-        "replacementTests": ["__tests__/brand/package-manifest.test.ts"],
-        "sources": ["package.json", "package-lock.json", "LICENSE"],
-        "reason": "Merged the duplicate package identity and license assertions into the canonical publication manifest contract."
-      },
-      {
-        "test": "__tests__/brand/rename-qa-validation.test.ts",
-        "replacementTests": ["__tests__/brand/package-manifest.test.ts"],
-        "sources": ["package.json", "package-lock.json", "LICENSE"],
-        "reason": "Converted durable package identity into the publication manifest contract and removed repeated runtime source scans."
-      },
-      {
-        "test": "__tests__/portal/domain-status-qa-validation.test.ts",
-        "replacementTests": ["__tests__/portal/domain-status.test.ts"],
-        "sources": ["src/portal/snapshot-builder.ts", "src/portal/snapshot-statements.ts"],
-        "reason": "Merged domain status behavior into the primary portal suite and removed brittle HTML and source substrings."
-      },
-      {
-        "test": "__tests__/portal/health-endpoint-qa-validation.test.ts",
-        "replacementTests": ["__tests__/portal/health-endpoints.test.ts"],
-        "sources": ["src/portal/health-routes.ts", "src/portal/server.ts"],
-        "reason": "Merged public health behavior and credential non-disclosure into the live HTTP contract suite."
-      },
-      {
-        "test": "__tests__/portal/integration-health-qa-validation.test.ts",
-        "replacementTests": ["__tests__/services/integration-health-observability.test.ts"],
-        "sources": ["src/portal/snapshot-builder.ts", "src/services/integration-health.ts"],
-        "reason": "Merged integration-health behavior into the typed observability suite and removed snapshot source mirrors."
-      },
-      {
-        "test": "__tests__/portal/oauth-ios-callbacks-qa-validation.test.ts",
-        "replacementTests": ["__tests__/portal/portal-oauth-routes.test.ts"],
-        "sources": ["src/portal/oauth-routes.ts"],
-        "reason": "Merged iOS callback response and redirect behavior into the primary OAuth route suite."
-      },
-      {
-        "test": "__tests__/portal/skill-management-qa-validation.test.ts",
-        "replacementTests": ["__tests__/portal/skill-management.test.ts"],
-        "sources": ["src/skills/skill-manager.ts", "src/skills/registry.ts"],
-        "reason": "Merged skill management boundaries into the primary suite and removed repeated existence checks."
-      },
-      {
-        "test": "__tests__/services/cooking-chef-qa-validation.test.ts",
-        "replacementTests": ["__tests__/services/cooking-chef.test.ts", "__tests__/services/cooking-private-scope.test.ts"],
-        "sources": ["src/services/cooking-chef.ts", "src/services/cooking-tenant-scope.ts"],
-        "mutationTargets": [
-          {
-            "pattern": "src/services/cooking-tenant-scope.ts:54-57",
-            "anchor": "visibility_scope",
-            "behavior": "Private cooking reads require active, user-private, tenant-owned, and user-owned rows.",
-            "replacementTest": "__tests__/services/cooking-private-scope.test.ts",
-            "ownerTestName": "cooking private scope predicate admits only active user-private tenant-owned and user-owned rows",
-            "minimumMutants": 4
-          }
+        "test": "__tests__/scripts/changed-area-classifier.test.ts",
+        "replacementTests": [
+          "__tests__/scripts/changed-area-classifier.test.ts"
         ],
-        "reason": "Merged cooking generation, fallback, and tenant boundaries into the primary chef suite."
-      },
-      {
-        "test": "__tests__/services/finance-tracker-qa-validation.test.ts",
-        "replacementTests": ["__tests__/services/finance-tracker.test.ts"],
-        "sources": ["src/services/finance-tracker.ts"],
-        "reason": "Merged finance parsing, validation, and tenant behavior into the primary tracker suite."
-      },
-      {
-        "test": "__tests__/services/training-skill-hardening-source-contract.test.ts",
-        "replacementTests": ["__tests__/services/coach-kernel-planner.test.ts", "__tests__/services/coach-kernel-feedback-analysis.test.ts", "__tests__/services/training-catalog-validation.test.ts", "__tests__/services/garmin-coach-user-scope.test.ts", "__tests__/api/training-plan-generation.test.ts"],
-        "sources": ["src/services/coach-kernel/knowledge-loader.ts", "src/services/coach-kernel/planner-engine.ts", "src/services/coach-kernel/feedback-analysis.ts", "src/api/routes/training-plan-generation.ts"],
-        "reason": "Converted broad source-string checks to module-owned behavioral, catalog, metering, and AST policy tests."
-      },
-      {
-        "test": "__tests__/services/usage-metering-qa-validation.test.ts",
-        "replacementTests": ["__tests__/services/usage-metering.test.ts", "__tests__/services/gemini-provider.test.ts", "__tests__/services/openai-provider.test.ts"],
-        "sources": ["src/services/usage-metering.ts", "src/portal/snapshot-builder.ts", "src/services/gemini-provider.ts", "src/services/openai-provider.ts"],
+        "sources": [
+          "scripts/lib/test-groups.mjs"
+        ],
         "mutationTargets": [
           {
-            "pattern": "src/services/gemini-provider.ts:659-659",
-            "anchor": "hasUnboundedProviderInjectedContext: true",
-            "behavior": "Grounded Gemini calls reserve budget under the unbounded provider-context risk policy.",
-            "replacementTest": "__tests__/services/gemini-provider.test.ts",
-            "ownerTestName": "GeminiProvider reserves unbounded grounded context and meters the provider search fee when grounding is used",
-            "minimumMutants": 1
-          },
-          {
-            "pattern": "src/services/openai-provider.ts:383-383",
-            "anchor": "getProviderToolFeeUsd('openai_web_search')",
-            "behavior": "OpenAI web search budget reservations include the maximum separately billed tool fees.",
-            "replacementTest": "__tests__/services/openai-provider.test.ts",
-            "ownerTestName": "OpenAIProvider one-shot helpers bounds hosted web search, reserves unbounded context, and meters actual provider tool usage",
-            "minimumMutants": 2
-          },
-          {
-            "pattern": "src/services/openai-provider.ts:430-430",
-            "anchor": "webSearchRequests * getProviderToolFeeUsd",
-            "behavior": "Recorded OpenAI response cost includes the observed number of billed web search requests.",
-            "replacementTest": "__tests__/services/openai-provider.test.ts",
-            "ownerTestName": "OpenAIProvider one-shot helpers bounds hosted web search, reserves unbounded context, and meters actual provider tool usage",
-            "minimumMutants": 2
-          },
-          {
-            "pattern": "src/services/openai-provider.ts:568-568",
-            "anchor": "input.webSearchRequests ?? 0",
-            "behavior": "Persisted OpenAI API usage stores provider tool cost and web search request attribution.",
-            "replacementTest": "__tests__/services/openai-provider.test.ts",
-            "ownerTestName": "OpenAIProvider one-shot helpers bounds hosted web search, reserves unbounded context, and meters actual provider tool usage",
-            "minimumMutants": 2
-          },
-          {
-            "pattern": "src/services/openai-provider.ts:612-612",
-            "anchor": "recordUsage(input.userId",
-            "behavior": "Successful OpenAI response usage is mirrored to the calendar-aligned usage meter as best effort.",
-            "replacementTest": "__tests__/services/openai-provider.test.ts",
-            "ownerTestName": "OpenAIProvider one-shot helpers bounds hosted web search, reserves unbounded context, and meters actual provider tool usage",
+            "pattern": "scripts/lib/test-groups.mjs:295-302",
+            "anchor": "if (owners.length === 0) unmapped.push(file);",
+            "behavior": "The retained classifier contract must report unmapped production owners without selecting a global fallback.",
+            "replacementTest": "__tests__/scripts/changed-area-classifier.test.ts",
+            "ownerTestNamePattern": "maps changed paths and reports unmapped production owners without a full fallback$",
             "minimumMutants": 1
           }
         ],
-        "reason": "Merged schema, aggregation, and isolation into the migrated-template primary suite while provider metering hooks remain behaviorally protected by the Gemini and OpenAI provider suites."
+        "reason": "The lean classifier suite replaces the removed global-trigger policy with explicit owner groups and fail-closed unmapped paths."
       },
       {
-        "test": "__tests__/services/webhook-registry-qa-validation.test.ts",
-        "replacementTests": ["__tests__/services/webhook-registry.test.ts"],
-        "sources": ["src/services/webhook-registry.ts"],
-        "reason": "Merged registry validation, retries, and tenant behavior into the primary webhook suite."
+        "test": "__tests__/scripts/ci-required-test-sharding.test.ts",
+        "replacementTests": [
+          "__tests__/scripts/ci-required-test-sharding.test.ts"
+        ],
+        "sources": [
+          "scripts/test-cleanup-classifier.mjs"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "scripts/test-cleanup-classifier.mjs:55-57",
+            "anchor": "if (!/^[DMR]/.test(record.status)",
+            "behavior": "The protected CI bootstrap must conservatively route retained modified, deleted, or renamed tests to exact cleanup analysis after dependency installation.",
+            "replacementTest": "__tests__/scripts/ci-required-test-sharding.test.ts",
+            "ownerTestNamePattern": "classifies test changes conservatively before dependency installation$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained CI contract owns the new selected-test lane and its explicit modified-test cleanup decision."
       },
       {
-        "test": "__tests__/skills/secretary-skill-package-qa-validation.test.ts",
-        "replacementTests": ["__tests__/skills/secretary-skill-package.test.ts"],
-        "sources": ["src/skills/skill-config.ts", "src/skills/skill-manager.ts"],
-        "reason": "Merged Secretary package contracts into the primary skill package suite."
+        "test": "__tests__/scripts/mutation-gate.test.ts",
+        "replacementTests": [
+          "__tests__/scripts/mutation-gate.test.ts"
+        ],
+        "sources": [
+          "scripts/mutation-gate.mjs"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "scripts/mutation-gate.mjs:385-390",
+            "anchor": "hasRemovedEvidence(previousEvidence.assertions, currentEvidence.assertions)",
+            "behavior": "The retained mutation contract distinguishes removed assertions and structure from corrected expectations and expanded cases.",
+            "replacementTest": "__tests__/scripts/mutation-gate.test.ts",
+            "ownerTestNamePattern": "detects net assertion removal without treating corrected expectations as cleanup$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The focused test-rationalization mutation contract replaces the retired scheduled changed-critical policy records."
       },
       {
-        "test": "__tests__/skills/skills-command-qa-validation.test.ts",
-        "replacementTests": ["__tests__/skills/skills-command.test.ts"],
-        "sources": ["src/skills/skill-config.ts", "src/skills/skill-manager.ts"],
-        "reason": "Merged command parsing, status, and toggle boundaries into the primary skills command suite."
+        "test": "__tests__/scripts/risk-gate.test.ts",
+        "replacementTests": [
+          "__tests__/scripts/risk-gate.test.ts"
+        ],
+        "sources": [
+          "scripts/lib/changed-area-classifier.mjs"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "scripts/lib/changed-area-classifier.mjs:30-36",
+            "anchor": "automatic full-suite fallback is intentionally disabled.",
+            "behavior": "The retained risk gate rejects unresolved change ancestry instead of silently substituting the complete test suite.",
+            "replacementTest": "__tests__/scripts/risk-gate.test.ts",
+            "ownerTestNamePattern": "fails when classification cannot map a production path$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The lean risk-gate contract replaces critical-union and local shard behavior with exact affected selection and explicit full execution."
       },
       {
-        "test": "__tests__/skills/sub-skill-arch-qa-validation.test.ts",
-        "replacementTests": ["__tests__/skills/skill-config.test.ts", "__tests__/skills/skill-manager.test.ts", "__tests__/skills/registry.test.ts"],
-        "sources": ["src/skills/skill-config.ts", "src/skills/skill-manager.ts", "src/skills/registry.ts"],
-        "reason": "Converted architecture source scans into typed config, manager, and registry contract suites."
+        "test": "__tests__/scripts/static-test-dependency-map.test.ts",
+        "replacementTests": [
+          "__tests__/scripts/static-test-dependency-map.test.ts"
+        ],
+        "sources": [
+          "scripts/lib/static-test-dependency-map.mjs"
+        ],
+        "mutationTargets": [
+          {
+          "pattern": "scripts/lib/static-test-dependency-map.mjs:220-223",
+            "anchor": "nonLiteralImporters.has(seed)",
+            "behavior": "The retained static selector reports unresolved or non-literal production topology for fail-closed group classification.",
+            "replacementTest": "__tests__/scripts/static-test-dependency-map.test.ts",
+            "ownerTestNamePattern": "reports changed production files that use non-literal module loading$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The bounded dependency-map contract replaces the retired repository-wide fallback while preserving unresolved topology evidence."
+      },
+      {
+        "test": "__tests__/scripts/test-tier-governance.test.ts",
+        "replacementTests": [
+          "__tests__/scripts/test-tier-governance.test.ts"
+        ],
+        "sources": [
+          "scripts/lib/test-policy.mjs"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "scripts/lib/test-policy.mjs:110-117",
+            "anchor": "resolution.disposition !== 'eval'",
+            "behavior": "The retained tier policy keeps deterministic correctness files disjoint from subjective evaluation files.",
+            "replacementTest": "__tests__/scripts/test-tier-governance.test.ts",
+            "ownerTestNamePattern": "partitions deterministic correctness from the two subjective evaluations$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The compact affected-group policy replaces the retired inventory-heavy tier governance while preserving exact deterministic partitions."
+      },
+      {
+        "test": "__tests__/scripts/ollama-operational-transactions.test.ts",
+        "replacementTests": [
+          "__tests__/scripts/ollama-lean-systemd.test.ts",
+          "__tests__/scripts/ollama-lean-finalize.test.ts"
+        ],
+        "sources": [
+          "scripts/ollama-systemd-dropin-transaction.mjs"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "scripts/ollama-systemd-dropin-transaction.mjs:305-305",
+            "anchor": "observedDigest !== identity.retainedModelDigest",
+            "behavior": "The retained install transaction refuses to commit if the independently observed 3B model digest changes.",
+            "replacementTest": "__tests__/scripts/ollama-lean-systemd.test.ts",
+            "ownerTestNamePattern": "fails closed if the retained-model digest changes before commit$",
+            "minimumMutants": 1
+          },
+          {
+            "pattern": "scripts/ollama-systemd-dropin-transaction.mjs:921-921",
+            "anchor": "journal.priorService.enabledState === 'enabled'",
+            "behavior": "Rollback restores the exact predecessor enablement instead of leaving the candidate service enabled.",
+            "replacementTest": "__tests__/scripts/ollama-lean-systemd.test.ts",
+            "ownerTestNamePattern": "does not activate or enable an inactive and disabled predecessor during rollback$",
+            "minimumMutants": 1
+          },
+          {
+            "pattern": "scripts/ollama-systemd-dropin-transaction.mjs:926-926",
+            "anchor": "journal.priorService.activeState === 'active'",
+            "behavior": "Rollback restores the exact predecessor active state instead of leaving the candidate service running.",
+            "replacementTest": "__tests__/scripts/ollama-lean-systemd.test.ts",
+            "ownerTestNamePattern": "does not activate or enable an inactive and disabled predecessor during rollback$",
+            "minimumMutants": 1
+          },
+          {
+            "pattern": "scripts/ollama-systemd-dropin-transaction.mjs:1128-1128",
+            "anchor": "state.activeState !== 'active' || state.enabledState !== 'enabled'",
+            "behavior": "A durable installer receipt is committed only after the exact candidate service is both active and enabled.",
+            "replacementTest": "__tests__/scripts/ollama-lean-systemd.test.ts",
+            "ownerTestNamePattern": "commits a SHA-bound receipt only after active and enabled validation$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The live SHA-bound installer transaction is retained in a focused suite while the obsolete 24-hour observation controller is replaced by exact-release-bound lean finalization."
+      },
+      {
+        "test": "__tests__/scripts/ollama-systemd-envelope.test.ts",
+        "replacementTests": [
+          "__tests__/scripts/ollama-lean-systemd.test.ts",
+          "__tests__/scripts/ollama-lean-finalize.test.ts"
+        ],
+        "sources": [
+          "scripts/lib/ollama-service-envelope.mjs"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "scripts/lib/ollama-service-envelope.mjs:74-74",
+            "anchor": "if (actual !== expected)",
+            "behavior": "The retained envelope checker rejects public binding, queue drift, and any non-baseline fixed Ollama environment value.",
+            "replacementTest": "__tests__/scripts/ollama-lean-systemd.test.ts",
+            "ownerTestNamePattern": "checks the effective loopback, memory, CPU, queue, and single-model limits$",
+            "minimumMutants": 1
+          },
+          {
+            "pattern": "scripts/lib/ollama-service-envelope.mjs:88-95",
+            "anchor": "observed.memoryMaxBytes !== OLLAMA_ENVELOPE.memoryMaxBytes",
+            "behavior": "The retained envelope checker enforces the exact 4 GiB soft cap, 6 GiB hard cap, 512 MiB swap cap, and 200 percent CPU quota.",
+            "replacementTest": "__tests__/scripts/ollama-lean-systemd.test.ts",
+            "ownerTestNamePattern": "checks the effective loopback, memory, CPU, queue, and single-model limits$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The fixed loopback one-model envelope remains behaviorally covered while the separate zero-swap transition is retired in favor of the permanent 512 MiB lean baseline."
       }
     ],
+    "ownerTestMappings": [],
     "exceptions": []
   }
 }

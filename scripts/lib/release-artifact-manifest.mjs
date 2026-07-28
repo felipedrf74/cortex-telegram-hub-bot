@@ -20,36 +20,16 @@ export const RELEASE_RUNTIME_ROOTS = Object.freeze([
 export const RELEASE_RUNTIME_FILES = Object.freeze([
   'package.json',
   'package-lock.json',
-  'ecosystem.config.js',
-  'ecosystem.staging.config.js',
   'ecosystem.release.config.js',
   'content-engine/main.py',
   'content-engine/config.py',
   'content-engine/requirements.txt',
   'content-engine/requirements-dev.txt',
   'content-engine/pyproject.toml',
-  'scripts/release-installed-tree-attestation.mjs',
-  'scripts/release-recovery-runtime-identity.mjs',
+  'scripts/release-artifact-manifest.mjs',
+  'scripts/lib/release-artifact-manifest.mjs',
   'scripts/release-runtime-dependencies.mjs',
-  'scripts/env-parity-check.sh',
-  'scripts/lib/release-gates.sh',
-  'scripts/promote-exact-release.sh',
-  'scripts/remote-release-capacity.sh',
-  'scripts/remote-release-preflight.sh',
-  'scripts/remote-release-readiness.sh',
-  'scripts/release-operator.sh',
-  'scripts/remote-create-release-backup.sh',
-  'scripts/remote-production-shape-migration-rehearsal.sh',
-  'scripts/production-shape-migration-rehearsal.mjs',
-  'scripts/validate-production-shape-migration-rehearsal.mjs',
-  'scripts/lib/irreversible-migration-policy.mjs',
-  'scripts/lib/production-migration-lineage.mjs',
-  'scripts/lib/production-shape-migration-rehearsal-evidence.mjs',
-  'scripts/remote-prepare-release-backup.sh',
-  'scripts/remote-start-sanitized-pm2.sh',
-  'scripts/staging-smoke-ollama.sh',
-  'scripts/restore.sh',
-  'scripts/rollback.sh',
+  'scripts/remote-user-release-transaction.sh',
 ]);
 
 export function sha256(value) {
@@ -312,7 +292,7 @@ export function buildReleaseArtifactManifest(rootInput = process.cwd()) {
   };
 }
 
-export function verifyReleaseBundle(bundleRootInput, expectedRuntimeSha = '') {
+function verifyDeclaredReleaseFiles(bundleRootInput, expectedRuntimeSha = '') {
   const bundleRoot = path.resolve(bundleRootInput);
   const manifestPath = path.join(bundleRoot, 'artifact-manifest.json');
   const markerPath = path.join(bundleRoot, '.complete.json');
@@ -362,6 +342,26 @@ export function verifyReleaseBundle(bundleRootInput, expectedRuntimeSha = '') {
       || (expectedRuntimeSha && marker.runtimeSha !== expectedRuntimeSha)) {
     throw new Error('release bundle completion marker identity mismatch');
   }
+  return {
+    manifest: { ...declared, files },
+    marker,
+    digest,
+    bundleRoot,
+  };
+}
+
+export function verifyInstalledReleaseSource(releaseRootInput, expectedRuntimeSha = '') {
+  return verifyDeclaredReleaseFiles(releaseRootInput, expectedRuntimeSha);
+}
+
+export function verifyReleaseBundle(bundleRootInput, expectedRuntimeSha = '') {
+  const verified = verifyDeclaredReleaseFiles(bundleRootInput, expectedRuntimeSha);
+  const {
+    bundleRoot,
+    digest,
+    marker,
+    manifest,
+  } = verified;
   const actualEntries = new Set();
   const walk = (dir) => {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -374,10 +374,14 @@ export function verifyReleaseBundle(bundleRootInput, expectedRuntimeSha = '') {
     }
   };
   walk(bundleRoot);
-  const expectedEntries = new Set([...files.map((entry) => entry.path), 'artifact-manifest.json', '.complete.json']);
+  const expectedEntries = new Set([
+    ...manifest.files.map((entry) => entry.path),
+    'artifact-manifest.json',
+    '.complete.json',
+  ]);
   if (canonicalJson([...actualEntries].sort(compareCodeUnits))
       !== canonicalJson([...expectedEntries].sort(compareCodeUnits))) {
     throw new Error('release bundle contains undeclared or missing files');
   }
-  return { manifest: { ...declared, files }, marker, digest, bundleRoot };
+  return { manifest, marker, digest, bundleRoot };
 }

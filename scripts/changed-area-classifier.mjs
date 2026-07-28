@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  assertResolvedChangeImpact,
   classifyChangedFiles,
   formatClassifierMarkdown,
 } from './lib/changed-area-classifier.mjs';
@@ -14,12 +15,14 @@ import {
   parseGitNameStatusRecordsZ,
   parseGitPathsZ,
 } from './lib/git-changed-paths.mjs';
+import {
+  classifyTestGroups,
+  isDocsOnly,
+  loadTestGroups,
+} from './lib/test-groups.mjs';
 
 const scriptRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const root = path.resolve(process.env.NEXUS_CLASSIFIER_REPO_ROOT || scriptRoot);
-const policyPath = process.env.NEXUS_TEST_POLICY_PATH
-  ? path.resolve(process.env.NEXUS_TEST_POLICY_PATH)
-  : path.join(root, 'config/test-policy.json');
 const irreversiblePolicyPath = process.env.NEXUS_IRREVERSIBLE_MIGRATIONS_PATH
   ? path.resolve(process.env.NEXUS_IRREVERSIBLE_MIGRATIONS_PATH)
   : path.join(root, 'config/irreversible-migrations.json');
@@ -152,6 +155,7 @@ try {
       ? (options.baseRef || 'explicit-files')
       : resolveBase(options.baseRef);
   const impactResolved = options.stagedOnly || explicit ? true : isAncestor(baseRef);
+  assertResolvedChangeImpact(impactResolved, baseRef);
   const changes = options.stagedOnly
     ? collectStagedChanges()
     : explicit
@@ -162,16 +166,47 @@ try {
     }
     : collectGitChanges(baseRef);
   const head = git(['rev-parse', 'HEAD'], { allowFailure: true }) ?? 'unknown';
-  const result = classifyChangedFiles({
+  const legacyResult = classifyChangedFiles({
     files: changes.files,
     root,
-    policyPath,
     irreversiblePolicyPath,
     baseRef,
     head,
     impactResolved,
     testTopologyChanged: changes.testTopologyChanged,
   });
+  const groupPolicy = loadTestGroups(root);
+  const grouped = classifyTestGroups(legacyResult.changedFiles, groupPolicy);
+  if (grouped.unmapped.length > 0) {
+    throw new Error(
+      `Test-group policy has no owner for: ${grouped.unmapped.join(', ')}. `
+      + 'Add an explicit path mapping in config/test-groups.json.',
+    );
+  }
+  const docsOnly = isDocsOnly(legacyResult.changedFiles);
+  const result = {
+    ...legacyResult,
+    version: '2',
+    vitest: {
+      mode: docsOnly || grouped.groups.length === 0 ? 'skip' : 'focused',
+      groups: grouped.groups,
+      globs: [],
+      skipReason: docsOnly ? 'docs-only diff' : 'no Vitest-owned group changed',
+    },
+    testGroups: {
+      version: groupPolicy.version,
+      policyDigest: groupPolicy.digest,
+      selected: grouped.groups,
+    },
+    cannotSkip: [],
+    flags: {
+      ...legacyResult.flags,
+      docsOnly,
+      pythonEngine: grouped.groups.includes('content-engine'),
+      migration: legacyResult.flags.migration || grouped.groups.includes('migrations'),
+      fullSuiteTrigger: false,
+    },
+  };
   process.stdout.write(options.format === 'json'
     ? `${JSON.stringify(result, null, 2)}\n`
     : formatClassifierMarkdown(result));

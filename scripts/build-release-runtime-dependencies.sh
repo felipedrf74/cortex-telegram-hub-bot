@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the exact Ubuntu 24.04/x86-64 production dependency payload once in RC.
+# Build the exact Ubuntu 24.04/x86-64 dependency payload once on protected main.
 set -euo pipefail
 umask 077
 
@@ -24,7 +24,13 @@ python_version="$($PYTHON_BIN --version)"
 }
 
 rm -rf dist/runtime-dependencies
-mkdir -p dist/runtime-dependencies/python-wheelhouse
+mkdir -p dist/runtime-dependencies
+python_stage="$(mktemp -d)"
+cleanup() {
+  rm -rf -- "$python_stage"
+}
+trap cleanup EXIT
+mkdir -p "$python_stage/content-engine/vendor"
 
 # The workflow has already completed tests/build from `npm ci`. Prune that
 # lockfile-derived tree once, then archive it with normalized metadata so the
@@ -39,11 +45,16 @@ node_archive_bytes="$(stat -c '%s' dist/runtime-dependencies/node_modules.tar.gz
 printf '{"schema":"nexus.release-optimization-telemetry.v1","metric":"node-archive","gzipLevel":6,"elapsedMs":%s,"bytes":%s,"advisory":true}\n' \
   "$compression_elapsed_ms" "$node_archive_bytes"
 
-"$PYTHON_BIN" -m pip download \
+"$PYTHON_BIN" -m pip install \
   --disable-pip-version-check \
+  --no-compile \
   --only-binary=:all: \
-  --dest dist/runtime-dependencies/python-wheelhouse \
+  --target "$python_stage/content-engine/vendor" \
   --requirement content-engine/requirements.txt
+find "$python_stage/content-engine/vendor" -type d -name __pycache__ -prune -exec rm -rf -- {} +
+tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
+  -C "$python_stage" -cf - content-engine/vendor \
+  | gzip -n -6 > dist/runtime-dependencies/python-site-packages.tar.gz
 
 node scripts/release-runtime-dependencies.mjs write-lock \
   --root "$ROOT" \

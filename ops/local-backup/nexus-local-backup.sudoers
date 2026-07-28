@@ -1,0 +1,4 @@
+# The release account may request exactly one root-owned encrypted backup.
+# It cannot run the backup utility directly or start any other unit.
+Cmnd_Alias NEXUS_PRE_PROMOTION_BACKUP = /usr/bin/systemctl start nexus-local-backup-pre-promotion.service
+dominguez ALL=(root) NOPASSWD: NEXUS_PRE_PROMOTION_BACKUP

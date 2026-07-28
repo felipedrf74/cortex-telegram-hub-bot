@@ -211,16 +211,33 @@ reviewed package in the staging database:
 ```bash
 scripts/changed-area-classifier.sh --json
 scripts/risk-gate.sh
-npm run release:staging -- --manifest .local/release/manifests/<runtime-sha>.json
+npm run release:prepare
+npm run --silent release:status
+RELEASE_STATE=.local/release/release.json
+RELEASE_CONFIRM="$(
+  node -e '
+const x=require(process.argv[1]);
+if(x.schema!=="nexus.lean-release-state.v1"
+  ||x.phase!=="staged"
+  ||!/^[0-9a-f]{40}$/.test(x.runtimeSha)
+  ||!/^[0-9a-f]{64}$/.test(x.artifactDigest))process.exit(1);
+process.stdout.write(`${x.runtimeSha}:${x.artifactDigest}`);
+' "$RELEASE_STATE"
+)"
 
 ssh "${DEPLOY_SERVER:-dominguez@serverdominguez}" bash -s <<'REMOTE_STAGING_MEDIA'
   set -euo pipefail
-  cd /home/dominguez/telegram-hub-bot-staging
-  set -a; source .env; set +a
+  BASE=/home/dominguez/telegram-hub-bot-staging
+  RUNTIME="$(realpath -e "$BASE/current")"
+  case "$RUNTIME" in "$BASE"/releases/*) ;; *) exit 1 ;; esac
+  SELECTOR="$RUNTIME"
+  cd "$RUNTIME"
+  set -a; source "$BASE/.env"; set +a
   NEXUS_STAGING=1 \
   TRAINING_EXERCISE_MEDIA_SEED_APPLY_ACK=staging-only-reviewed-manifest \
     node dist/tools/training-exercise-media-seed.js \
       --apply --activate --target=staging
+  test "$(realpath -e "$BASE/current")" = "$SELECTOR"
 REMOTE_STAGING_MEDIA
 ```
 
@@ -251,14 +268,16 @@ the production flag remains off:
 TRAINING_EXERCISE_MEDIA_CATALOG_ROOT="$PHASE0_ROOT" \
   npm run --silent training:exercise-media:verify:activation
 ./scripts/staging-smoke.sh
-npm run release:promote -- --dry-run --manifest .local/release/manifests/<runtime-sha>.json
+npm run release:promote -- \
+  --dry-run --confirm "$RELEASE_CONFIRM"
 ```
 
 Only the normal, explicit production-promotion approval may run:
 
 ```bash
 NEXUS_RELEASE_OWNER_AUTHORIZED=1 \
-  npm run release:promote -- --manifest .local/release/manifests/<runtime-sha>.json
+  npm run release:promote -- \
+    --confirm "$RELEASE_CONFIRM"
 ```
 
 Production metadata publication uses a distinct fail-closed authorization path.
@@ -274,8 +293,12 @@ code/review cycle and a new approval:
 ```bash
 ssh "${DEPLOY_SERVER:-dominguez@serverdominguez}" bash -s <<'REMOTE_PRODUCTION_MEDIA'
   set -euo pipefail
-  cd /home/dominguez/telegram-hub-bot
-  set -a; source .env; set +a
+  BASE=/home/dominguez/telegram-hub-bot
+  RUNTIME="$(realpath -e "$BASE/current")"
+  case "$RUNTIME" in "$BASE"/releases/*) ;; *) exit 1 ;; esac
+  SELECTOR="$RUNTIME"
+  cd "$RUNTIME"
+  set -a; source "$BASE/.env"; set +a
 
   MANIFEST="training-exercise-media-v1-materialized-91829bc7100c-c7d8b39afcc6"
   PACKAGE="51c1089cceb8a916abf200b5cb3688b19f5f7553990467ee0f8ef01c7c4f74bb"
@@ -315,6 +338,7 @@ ssh "${DEPLOY_SERVER:-dominguez@serverdominguez}" bash -s <<'REMOTE_PRODUCTION_M
      and .publicationState == "ACTIVE"
      and .staged == true and .activated == true' \
     /tmp/training-media-production-activate.json
+  test "$(realpath -e "$BASE/current")" = "$SELECTOR"
 REMOTE_PRODUCTION_MEDIA
 ```
 

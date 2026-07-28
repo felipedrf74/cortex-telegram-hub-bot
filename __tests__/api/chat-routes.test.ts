@@ -1410,7 +1410,12 @@ describe('Chat API routes', () => {
         decisionId: expect.any(String),
       },
     });
-    expect(JSON.stringify(messageRes.body)).not.toMatch(/auth\.scope|chat\.skill_capability_registry|raw|debug|<b>|<\/b>/i);
+    // Opaque signed tokens are base64url and can randomly contain the three
+    // letters "raw". Redact only those values before scanning the rest of the
+    // response for leaked internal/debug vocabulary.
+    const responseWithoutOpaqueTokens = JSON.stringify(messageRes.body, (key, value) =>
+      key === 'confirmationToken' || key === 'confirmation_token' ? '[redacted-token]' : value);
+    expect(responseWithoutOpaqueTokens).not.toMatch(/auth\.scope|chat\.skill_capability_registry|raw|debug|<b>|<\/b>/i);
     expect(mockRouteMessage).not.toHaveBeenCalled();
   });
 
@@ -1463,7 +1468,9 @@ describe('Chat API routes', () => {
       attendees: ['ana@example.com'],
     });
     expect(calendarMocks.getEventsForSources).toHaveBeenCalledTimes(2);
-    expect(JSON.stringify(accept.body)).not.toMatch(/auth\.scope|chat\.skill_capability_registry|raw|debug|<b>|<\/b>|Resposta estruturada/i);
+    const acceptWithoutOpaqueTokens = JSON.stringify(accept.body, (key, value) =>
+      key === 'confirmationToken' || key === 'confirmation_token' ? '[redacted-token]' : value);
+    expect(acceptWithoutOpaqueTokens).not.toMatch(/auth\.scope|chat\.skill_capability_registry|raw|debug|<b>|<\/b>|Resposta estruturada/i);
   });
 
   it('gates iOS task creation behind a confirmation token and replays idempotently', async () => {

@@ -64,174 +64,53 @@ logs, command output, chat, or release evidence.
 
 ## Backup Protection And Restore Drill
 
-- Backups containing SQLite, provider tokens, or logs must not be group/world
-  readable.
-- Encrypt backups before off-host transfer.
-- The root-owned `nexus-application-dr-backup.timer` creates an online SQLite
-  recovery point hourly and encrypts it with an off-host `age` recipient before
-  S3-compatible upload. After each tier matures, maintain verified steady-state
-  minimum floors of 24 hourly, 7 daily, 4 weekly, and 6 monthly database points.
-  Before maturity, report warming explicitly; never claim the full floor early.
-- Escrow every exact-release rollback archive off-host for 90 days; keep the
-  existing latest-ten local policy. Each promotion additionally requires a
-  pre-mutation candidate recovery-runtime object plus database point and a
-  newly encrypted phase-distinct post-soak candidate recovery-runtime object
-  plus refreshed database point. A missing timer run, failed upload, or
-  unverified remote metadata is an alert, not a silent RPO exception.
-- Keep the private `age` identity off ServerDominguez. Bucket credentials are
-  prefix-scoped IAM Roles Anywhere sessions from two distinct private-CA leaf
-  certificates; plaintext never leaves the private temporary directory. The
-  managed CloudFormation identity plane must start disabled, bind exact account,
-  trust-anchor, issuer CN, subject CN, one-role profile, and session-policy
-  limits, and enable only after owner-approved key custody and revocation tests.
-  Keep the CloudFormation-owned CRL current because IAM Roles Anywhere does not
-  query OCSP or CRL distribution points. Generate every rotation with
-  `scripts/application-dr-crl-parameters.mjs`: its 74 explicit chunks cover
-  the 300,000-byte service limit without exceeding CloudFormation's 4,096-byte
-  per-parameter limit, bind the exact SHA-256, prohibit `UsePreviousValue`, and
-  enforce increasing CRL number plus a superset of revoked serials. Rotate only
-  through the sequential disable, update-and-verify, re-enable-and-verify
-  change-set path. Each verification must bind the exact trust anchor and both
-  profile ARNs/IDs and require the trust anchor, both profiles, and CRL to share
-  the expected enabled state; normal operators and runtime roles have no direct
-  CRL mutation path.
-- Default object-store controls are enabled S3 versioning plus at least 90-day
-  S3 Object Lock for release objects. AWS database recovery points are
-  write-once first points protected by tier-specific COMPLIANCE locks and
-  lifecycle expiry; observed 24/7/4/6 counts are minimum floors and take time
-  to mature. A fresh AWS namespace may use the distinct single-use bootstrap
-  evidence only while lifecycle has never been enabled, the receipt parameter
-  remains empty, and complete object/version/delete-marker inventories are
-  zero. A completed identity-plane update may precede this backup. The first
-  backup is an explicit owner-run command with `--bootstrap-first-backup`,
-  one exact `--bootstrap-rollback-bundle`, and its
-  `--bootstrap-rollback-sha256`; systemd and the timer cannot supply those
-  arguments. The expected SHA must come from root promotion transaction/backup
-  evidence or a separately owner-reviewed root-side strict-normalization
-  receipt, never a fresh application-account hash. Keep the timer disabled
-  while it repeats both live empty-prefix listings under its lock, snapshots
-  and verifies exactly that rollback identity, and creates an exclusive
-  root-owned receipt. Lifecycle
-  activation must carry that owner-reviewed exact receipt digest, and every
-  later backup requires ordinary enabled v2 evidence plus a final
-  `lifecyclePhase=enabled bootstrapReceipt=not-applicable` verification before
-  the timer is enabled.
-  A partial bootstrap never retries on the now-nonempty prefix. Cloudflare R2
-  is accepted only through
-  the owner-approved `r2-approved-variance`, with current private control-plane
-  evidence for an exact releases-prefix bucket lock of at least 90 days. The
-  mode-0600 v2 control evidence must be refreshed within 30 days. AWS evidence
-  must bind conditional first-point writes, the exact 2/8/35/190 database lock
-  floors, enabled 3/9/36/191 plus 92-day lifecycle cleanup, and S3 Lifecycle as
-  cleanup owner. R2 evidence must state that database versioning and Object Lock
-  are unavailable and that client-side count pruning is the approved variance;
-  never claim R2 versioning.
-- Scope AWS backup IAM and its Roles Anywhere session and bucket policies to
-  exact-prefix `s3:ListBucket` plus `s3:ListBucketVersions`, and exact-tier
-  Get/Head/conditional Put plus bounded Object Lock actions. Explicitly deny
-  `DeleteObject`, `DeleteObjectVersion`, legal-hold changes, and bucket-policy,
-  lifecycle, versioning, or Object Lock mutation to the backup principal. AWS
-  bucket policy must deny governed writes from every principal except the exact
-  backup role, even when another same-account identity policy is overly broad.
-  AWS retention must exhaust direct key/version-marker pages with CLI
-  auto-pagination disabled and emit read-only consecutive-period floor
-  evidence. It must checksum-HEAD every selected exact VersionId and verify its
-  metadata, calendar identity, COMPLIANCE mode, and tier deadline. First
-  24/7/4/6 maturity creates a monotonic root-owned seal; later regression is a
-  failure. S3 Lifecycle is its only cleanup actor. The separate R2 variance
-  retains its unversioned DeleteObject pruning and must never be selected for
-  AWS.
-  `PutObjectRetention` is required to attach each initial lock. A compromised
-  writer could repeatedly extend objects to the tier's one-day upper bound and
-  cause storage-cost growth, but cannot shorten retention, delete versions,
-  alter legal holds, or mutate bucket controls. Alert on unexpected retention
-  changes and disable the Roles Anywhere profile and trust anchor during
-  credential response.
-- Retain release versions under COMPLIANCE lock for at least 90 days, with
-  lifecycle expiration after the lock window.
-  Bind the two current-runtime keys to the exact transaction and phases:
-  `+escrow-<id>+phase-pre-mutation...` and
-  `+escrow-<id>+phase-post-soak...`. They preserve the same plaintext runtime
-  identity but require distinct keys and freshly encrypted ciphertext. The
-  post-soak phase also writes the predecessor rollback bundle under a distinct
-  `+rollback-escrow-<id>+phase-post-soak` key, preventing an older timer object
-  from shortening the promotion's required 90-day recovery window. The
-  one-day lock headroom and exact-version retention extension support a delayed
-  checkpoint resume without weakening that floor. Protect each exact pair with
-  a conditional write, then re-HEAD and re-download the exact AWS VersionId.
-  Confirmation records `escrowId`,
-  `escrowPhase`, plaintext/encrypted SHA-256, encrypted byte size,
-  `recoveryRuntimeDigest`, release-manifest/staging digests, `confirmedAt`,
-  `retainUntil`, and `objectVersionId`, with `retainUntil` at least 90 days
-  after `confirmedAt`. The pre/post database points likewise bind fresh
-  plaintext/encrypted identity and exact AWS versions, and post-soak candidate
-  readiness brackets the network work. R2 must emit null for unavailable
-  deadline/version fields and name the approved unversioned variance
-  explicitly.
-- Quarterly restore drill:
-  1. Use `scripts/application-dr-restore-drill.sh` on an isolated host with the
-     newest hourly point and a compatible exact-release escrow object. On AWS,
-     pin both objects to the exact retained VersionIds; use no version argument
-     only for the explicit R2 variance.
-  2. Verify encrypted and plaintext digests, SQLite integrity/foreign keys, and
-     safe exact-release extraction into a private scratch path.
-  3. Install only the exact release's embedded Node/Python dependency payload
-     as the dedicated nologin account, with no credentials and no network.
-  4. Boot and authenticate-smoke only through the root-owned private-namespace
-     harness on its one-use token and dedicated loopback port; prove an invalid
-     token is rejected and never point the harness at live paths.
-  5. Require conservative storage-timestamp age <= 1 hour. Treat the monotonic
-     download-through-smoke measurement <= 30 minutes as a technical restore
-     window, not a customer RTO.
-  6. After stop, snapshot the scratch SQLite database through the online backup
-     API, recheck integrity/foreign keys, and require the exact terminal
-     migration lineage so committed WAL state cannot be omitted.
-  7. Destroy restored plaintext and retain only private mode-0600 evidence. If
-     process cleanup fails, preserve and report the private manual-cleanup
-     target instead of deleting a potentially live tree.
-
-Installation, credentials, bucket lifecycle/object-lock policy, and every real
-restore require a separate owner-approved operations window. The complete
-layout and drill contract are in `ops/application-dr/OPERATIONS.txt`.
-Repository harness implementation does not change the current
-`MANUAL_REQUIRED` site-readiness status until provisioning and one retained
-quarterly drill are complete.
+- Keep all backup directories and receipts root-owned mode 0700/0600. Never
+  include database bytes, provider tokens, or decrypted content in release
+  evidence or logs.
+- `nexus-local-backup.timer` uses SQLite's online backup API hourly, checks
+  integrity and foreign keys, encrypts with `age`, and keeps 24 hourly,
+  30 daily, and 4 weekly recovery points under
+  `/srv/nexus-backups/application`.
+- Promotion must run exactly
+  `sudo -n /usr/bin/systemctl start
+  nexus-local-backup-pre-promotion.service` before changing PM2 or the
+  production `current` symlink. The narrow sudoers rule permits no other
+  root command. A failed backup aborts promotion.
+- Keep the latest ten pre-promotion recovery points. The weekly restore
+  verifier decrypts the newest hourly point into a private temporary path,
+  verifies SQLite integrity and foreign keys, writes a root-only receipt, and
+  removes plaintext.
+- The `age` private identity is stored on ServerDominguez root-owned mode 0600
+  because this is intentionally same-host recovery. That protects at-rest
+  database bytes from non-root accounts, but does not protect against complete
+  server or NVMe loss.
+- A real restore must always target a new path. Validate the restored database,
+  stop production, preserve the failed database, atomically install the
+  verified replacement, and restart only during an owner-approved incident
+  window.
+- Exact release directories remain the rollback source and keep the newest
+  five production and three staging releases. These backups are not a second
+  artifact store.
+- Operational commands and the accepted single-host limitation are documented
+  in `ops/local-backup/README.md`.
 
 ## Advisory SonarQube Host Boundary
 
 - SonarQube Community Build is advisory and is never a merge, signing,
   staging, or promotion dependency while it shares ServerDominguez.
-- Install official Docker Engine/Compose only in an approved maintenance
-  window after capturing listeners, firewall rules, routing, Tailscale,
-  Cloudflare, PM2 identity, health, memory, swap, and recent OOM evidence with
-  `scripts/quality-sonar-preflight.sh`.
-- Use only the reviewed immutable images in
-  `ops/sonarqube/images.lock.env`. Do not use Watchtower, automatic image
-  upgrades, or application-account Docker-group membership.
+- Docker and the authoritative Compose project already exist under
+  `/home/dominguez/sonarqube`. Update that project in place; do not create a
+  second stack, migrate volumes, or change Docker daemon ownership.
+- Use only the reviewed immutable images in `ops/sonarqube/compose.yaml`. Do
+  not use Watchtower, automatic image upgrades, or application-account
+  Docker-group membership.
 - Keep PostgreSQL container-internal and publish Sonar only on
   `127.0.0.1:9000`; use an SSH tunnel for the UI, scanner, and IDE Connected
-  Mode. Abort when available memory is below 16 GiB or host pressure/restarts
-  are present. The root stack wrapper rejects both rendered and running
-  Docker state unless PostgreSQL is exactly 1 CPU/2 GiB and SonarQube is
-  exactly 2 CPUs/6 GiB.
-- Keep persistent state in the explicit bind paths below the root-controlled
-  `/srv/sonarqube/data` boundary; Docker must not create the paths and the
-  stack wrapper verifies their fixed numeric service ownership and modes.
-- Every start requires a passing checksummed preflight from the current boot
-  no more than two hours old plus the digest-bound successful 24h staging/24h
-  production small-model soak and cleanup result. The root verifier reopens
-  the canonical mode-0600 path+SHA-256 health/request files, validates their
-  exact windows and retained-model digest, and rejects any health failure,
-  OOM, restart delta, pressure, or large/unapproved-model request. Start evidence must contain
-  a post-install Docker client/server snapshot, so the pre-Docker firewall
-  baseline cannot be reused. The scan, stack lifecycle,
-  and release transaction share `/run/lock/nexus-release-sonar.lock`.
-  Compose restart policy stays disabled; only the root systemd wrapper may
-  start the containers after those checks.
-- Immediately before Compose, the root wrapper must verify the live sole 3B
-  tag at the cleanup-bound digest, no unapproved loaded model, the exact
-  loopback/single-model/queue/context/CPU/memory envelope, a usable age
-  recipient, and authenticated access to the configured backup bucket.
+  Mode. PostgreSQL remains 1 CPU/2 GiB and Sonar remains 2 CPUs/6 GiB. Preserve
+  the existing named volumes and `unless-stopped` policy.
+- The scan, backup, restore drill, and release transaction share
+  `/run/lock/nexus-release-sonar.lock`; a Sonar operation exits instead of
+  waiting behind a production release.
 - Give the deploy account only the exact sudoers command that returns
   `nexus.sonarqube-release-state.v1` for `nexus-hub-backend`. Keep the dedicated
   project monitor token root-owned mode 0600 and out of command output. Its
@@ -241,21 +120,14 @@ quarterly drill are complete.
   between sequential before/after application samples and require no more
   than 5% regression in either p50 or p95. Failure stops Sonar rollout, not a
   production release.
-- Back up Sonar PostgreSQL daily as an encrypted off-host custom-format dump,
-  retaining one complete data/checksum pair for each of 7 distinct UTC days
-  and 4 distinct ISO weeks. Retries and manual runs are collapsed within their
-  period, and the post-prune inventory is re-listed. Every selected pair must
-  then pass exact-VersionId, metadata digest, checksum-object, and S3 SHA-256
-  attestation before the receipt records observed period counts or whether
-  each target has accrued. The asset
-  installer leaves the timer disabled; the owner-only
-  `quality-sonar-backup --enable-timer` path must complete one remote backup
-  before enabling it. Failed attempts retry every 15 minutes without waiting
-  behind a release, and
+- Back up Sonar PostgreSQL daily as a root-only custom-format dump under
+  `/srv/nexus-backups/sonarqube`, retaining the latest seven dumps and their
+  SHA-256 pairs. Installation leaves the timer disabled; create and verify
+  the first dump before explicitly enabling it. Failed attempts retry every
+  15 minutes without waiting behind a release, and
   `quality-sonar-backup --verify-freshness --max-age-hours 26` must validate
-  the root-owned success receipt. Exercise restore/reindex quarterly on an
-  isolated Docker host and publish each result as a new file beneath the
-  root-owned mode-0700 `/var/lib/nexus-sonarqube/restore-evidence` boundary.
+  the root-owned success receipt. Exercise a database restore into a disposable
+  PostgreSQL container and publish each result as a new root-only file.
 - Move SonarQube off the production host before making its quality gate
   required. Operational templates and exact commands live under
   `ops/sonarqube/`.

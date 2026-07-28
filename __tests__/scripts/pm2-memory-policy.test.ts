@@ -20,6 +20,7 @@ type Pm2App = {
   name: string;
   max_memory_restart: string;
   node_args?: string;
+  script?: string;
   env?: Record<string, string>;
   error_file?: string;
   out_file?: string;
@@ -78,8 +79,8 @@ function loadConfig(file: string, env: NodeJS.ProcessEnv = process.env): Pm2App[
 function loadReleaseConfigWithDefaultBase(role: 'production' | 'staging'): Pm2App[] {
   const configPath = join(ROOT, 'ecosystem.release.config.js');
   const baseDir = role === 'staging'
-    ? '/srv/nexus-release/staging'
-    : '/srv/nexus-release/production';
+    ? '/home/dominguez/telegram-hub-bot-staging'
+    : '/home/dominguez/telegram-hub-bot';
   const env = {
     ...process.env,
     NEXUS_RELEASE_DIR: ROOT,
@@ -120,9 +121,11 @@ function oldSpaceMebibytes(args: string | undefined): number {
 }
 
 describe('PM2 backend memory policy', () => {
-  it('defaults exact-release state to the root-governed production and staging bases', () => {
+  it('defaults exact-release state to the live production and staging bases', () => {
     for (const role of ['production', 'staging'] as const) {
-      const baseDir = `/srv/nexus-release/${role}`;
+      const baseDir = role === 'staging'
+        ? '/home/dominguez/telegram-hub-bot-staging'
+        : '/home/dominguez/telegram-hub-bot';
       const apps = loadReleaseConfigWithDefaultBase(role);
       const backend = apps.find((app) => app.name.startsWith('nexus-hub'));
       const content = apps.find((app) => app.name.startsWith('content-engine'));
@@ -132,6 +135,8 @@ describe('PM2 backend memory policy', () => {
       expect(backend?.out_file).toBe(`${baseDir}/logs/out.log`);
       expect(content?.error_file).toBe(`${baseDir}/logs/content-engine-error.log`);
       expect(content?.out_file).toBe(`${baseDir}/logs/content-engine-out.log`);
+      expect(content?.script).toBe('/usr/bin/python3.12');
+      expect(content?.env?.PYTHONPATH).toBe(`${ROOT}/content-engine/vendor`);
     }
   });
 
@@ -201,13 +206,16 @@ describe('PM2 backend memory policy', () => {
     }
   });
 
-  it('observes a full 60-second stability boundary by default in every canonical release path', () => {
-    const readiness = readFileSync(join(ROOT, 'scripts', 'remote-release-readiness.sh'), 'utf8');
+  it('observes the full 60-second production stability boundary', () => {
+    const transaction = readFileSync(
+      join(ROOT, 'scripts', 'remote-user-release-transaction.sh'),
+      'utf8',
+    );
     const staging = readFileSync(join(ROOT, 'scripts', 'release-operator.sh'), 'utf8');
     const production = readFileSync(join(ROOT, 'scripts', 'promote-exact-release.sh'), 'utf8');
 
-    expect(readiness).toContain("'') STABILITY_SECONDS=60 ;;");
-    expect(staging).toContain('${NEXUS_RELEASE_STAGING_STABILITY_SECONDS:-60}');
+    expect(transaction).toContain('STABILITY_SECONDS="${7:-60}"');
+    expect(staging).toContain('${NEXUS_RELEASE_STAGING_STABILITY_SECONDS:-15}');
     expect(production).toContain('${NEXUS_RELEASE_PRODUCTION_STABILITY_SECONDS:-60}');
   });
 });

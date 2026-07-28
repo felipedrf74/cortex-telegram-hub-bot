@@ -498,6 +498,45 @@ describe('Settings language route', () => {
     expect(JSON.parse(audit.details).tableCounts).toBeDefined();
   });
 
+  it('returns store-subscription guidance alongside the deletion result', async () => {
+    const res = await dispatchAccountDelete(1);
+
+    expect(res.statusCode).toBe(200);
+    // The existing contract must not shift — older clients read these two.
+    expect(res.body.data.deleted).toBe(true);
+    expect(res.body.data.message).toBe('All data has been permanently deleted.');
+    // Deleting the account destroys the local subscriptions row but cannot
+    // cancel a store-managed subscription, so the API says so itself instead
+    // of relying on every client to know.
+    expect(res.body.data.subscriptionNotice).toEqual({
+      code: 'STORE_SUBSCRIPTION_NOT_CANCELLED',
+      message: expect.stringContaining('does not cancel'),
+      managementUrl: 'https://apps.apple.com/account/subscriptions',
+    });
+  });
+
+  it('completes account deletion when a third-party revocation call fails', async () => {
+    testDb.prepare(`
+      INSERT INTO user_oauth_tokens (user_id, provider, access_token, refresh_token, token_type, scopes)
+      VALUES (1, 'google', 'google-access', 'google-refresh', 'Bearer', '[]')
+    `).run();
+    testDb.prepare('UPDATE users SET apple_user_id = ? WHERE id = 1').run('apple-sub-1');
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      throw new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+    }));
+
+    try {
+      const res = await dispatchAccountDelete(1);
+
+      expect(res.statusCode).toBe(200);
+      expect(res.body.data.deleted).toBe(true);
+      expect(testDb.prepare('SELECT id FROM users WHERE id = 1').get()).toBeUndefined();
+      expect(testDb.prepare('SELECT 1 FROM user_oauth_tokens WHERE user_id = 1').get()).toBeUndefined();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('does not report account deletion success when a Content delete fails', async () => {
     await seedCanonicalContentItem({ tenantId: 1, userId: 1, title: 'Deletion must roll back' });
     testDb.exec(`

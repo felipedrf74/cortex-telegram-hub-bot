@@ -16,7 +16,7 @@
 #
 # Environment:
 #   DEPLOY_SERVER   — SSH connection string (default: dominguez@serverdominguez)
-#   DEPLOY_PATH     — Remote project path (default: /home/dominguez/telegram-hub-bot)
+#   DEPLOY_PATH     — Remote release root (default: /home/dominguez/telegram-hub-bot)
 #
 # Usage:
 #   ./scripts/sync-from-server.sh           # Full sync
@@ -25,12 +25,75 @@
 set -euo pipefail
 
 SERVER="${DEPLOY_SERVER:-dominguez@serverdominguez}"
-REMOTE_DIR="${DEPLOY_PATH:-/home/dominguez/telegram-hub-bot}"
+REMOTE_ROOT="${DEPLOY_PATH:-/home/dominguez/telegram-hub-bot}"
+REMOTE_RELEASE=""
 LOCAL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 DRY_RUN="${1:-}"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 SYNC_BRANCH="server-sync/${TIMESTAMP}"
 TEMP_DIR="/tmp/nexushub-server-sync-${TIMESTAMP}"
+
+resolve_remote_release() {
+  command ssh "$SERVER" bash -s -- "$REMOTE_ROOT" <<'REMOTE_RESOLVE_RELEASE'
+set -euo pipefail
+release_root="$1"
+case "$release_root" in /*) ;; *) echo "release root must be absolute" >&2; exit 64 ;; esac
+[ "$release_root" != / ] && [ -d "$release_root" ] && [ ! -L "$release_root" ] || {
+  echo "release root is missing, unsafe, or symbolic" >&2
+  exit 1
+}
+[ -d "$release_root/releases" ] && [ ! -L "$release_root/releases" ] || {
+  echo "release set is missing or unsafe" >&2
+  exit 1
+}
+[ -f "$release_root/.env" ] && [ ! -L "$release_root/.env" ] || {
+  echo "base environment is missing or unsafe" >&2
+  exit 1
+}
+[ -d "$release_root/data" ] && [ ! -L "$release_root/data" ] || {
+  echo "base data directory is missing or unsafe" >&2
+  exit 1
+}
+[ -L "$release_root/current" ] || {
+  echo "current release selector is not a symlink" >&2
+  exit 1
+}
+release_dir="$(readlink -f -- "$release_root/current")"
+case "$release_dir" in
+  "$release_root"/releases/*) ;;
+  *) echo "current release selector escapes releases" >&2; exit 1 ;;
+esac
+[ -d "$release_dir" ] && [ ! -L "$release_dir" ] || {
+  echo "current release is missing or unsafe" >&2
+  exit 1
+}
+[ -L "$release_dir/.env" ] \
+  && [ "$(readlink -f -- "$release_dir/.env")" = "$release_root/.env" ] || {
+  echo "current release environment does not resolve to the base environment" >&2
+  exit 1
+}
+[ -L "$release_dir/data" ] \
+  && [ "$(readlink -f -- "$release_dir/data")" = "$release_root/data" ] || {
+  echo "current release data does not resolve to the base data directory" >&2
+  exit 1
+}
+printf '%s\n' "$release_dir"
+REMOTE_RESOLVE_RELEASE
+}
+
+assert_remote_selector() {
+  command ssh "$SERVER" bash -s -- "$REMOTE_ROOT" "$REMOTE_RELEASE" <<'REMOTE_ASSERT_RELEASE'
+set -euo pipefail
+release_root="$1"
+expected_release="$2"
+[ -L "$release_root/current" ]
+actual_release="$(readlink -f -- "$release_root/current")"
+[ "$actual_release" = "$expected_release" ] || {
+  echo "current release selector changed during server sync" >&2
+  exit 1
+}
+REMOTE_ASSERT_RELEASE
+}
 
 echo ""
 echo "═══════════════════════════════════════════════"
@@ -42,7 +105,7 @@ echo ""
 cd "$LOCAL_DIR"
 ORIGINAL_BRANCH=$(git branch --show-current)
 echo "📌 Current branch: $ORIGINAL_BRANCH"
-echo "📡 Server: $SERVER:$REMOTE_DIR"
+echo "📡 Server release root: $SERVER:$REMOTE_ROOT"
 echo ""
 
 # ── 2. Check for uncommitted local changes ──────────
@@ -57,10 +120,25 @@ if [ -n "$(git status --porcelain)" ]; then
 fi
 
 # ── 3. Fetch server files to temp directory ─────────
+REMOTE_RELEASE="$(resolve_remote_release)" || {
+  echo "❌ Could not resolve a safe immutable production current release." >&2
+  exit 1
+}
+assert_remote_selector
+echo "🎯 Exact server release: $REMOTE_RELEASE"
 echo "📥 Fetching source files from server..."
 mkdir -p "$TEMP_DIR"
 
 rsync -avz --delete \
+  --exclude='.env' \
+  --exclude='.env.*' \
+  --exclude='data/***' \
+  --exclude='logs/***' \
+  --exclude='node_modules/***' \
+  --exclude='.local/***' \
+  --exclude='content-engine/.venv/***' \
+  --exclude='content-engine/__pycache__/***' \
+  --exclude='content-engine/data/***' \
   --include='src/***' \
   --include='prompts/***' \
   --include='migrations/***' \
@@ -72,11 +150,14 @@ rsync -avz --delete \
   --include='CHANGELOG.md' \
   --include='DOCUMENTATION.md' \
   --include='DEVELOPMENT.md' \
-  --exclude='content-engine/.venv/***' \
-  --exclude='content-engine/__pycache__/***' \
-  --exclude='content-engine/data/***' \
   --exclude='*' \
-  "$SERVER:$REMOTE_DIR/" "$TEMP_DIR/" 2>&1 | tail -5
+  "$SERVER:$REMOTE_RELEASE/" "$TEMP_DIR/" 2>&1 | tail -5
+
+if ! assert_remote_selector; then
+  echo "❌ Production current changed while source files were being synchronized." >&2
+  rm -rf -- "$TEMP_DIR"
+  exit 1
+fi
 
 echo "   ✅ Server files fetched to $TEMP_DIR"
 echo ""
@@ -152,7 +233,7 @@ echo ""
 git add .
 git commit -m "sync: pull production server changes ($TIMESTAMP)
 
-Server changes synced from $SERVER:$REMOTE_DIR
+Server changes synced from $SERVER:$REMOTE_RELEASE
 Changed files: ${#CHANGED_FILES[@]}
 New files: ${#NEW_FILES[@]}"
 

@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 const ROOT = join(__dirname, '..', '..');
 const CHAT_EVAL_LOCAL = join(ROOT, 'scripts', 'chat-eval-local.sh');
 const PROMOTE = join(ROOT, 'scripts', 'promote-exact-release.sh');
+const MANIFEST_TOOL = join(ROOT, 'scripts', 'release-checksum-manifest.mjs');
 const CHAT_EVAL_COMPOSE = join(ROOT, 'docker-compose.chat-eval-local.yml');
 const LOCAL_UP = join(ROOT, 'scripts', 'local-up.sh');
 
@@ -153,48 +154,57 @@ describe('chat-eval-local dry run', () => {
 });
 
 describe('promote-exact-release chat-eval gate', () => {
-  it('gates on the latest local_engine run before any lock or SSH work', () => {
+  it('gates on the latest local_engine run before the durable server transaction', () => {
     const raw = readFileSync(PROMOTE, 'utf8');
+    const gateRaw = readFileSync(MANIFEST_TOOL, 'utf8');
     const gate = raw.indexOf('chat-eval gate');
-    const localLock = raw.indexOf('release_acquire_local_lock');
-    const remoteLock = raw.indexOf('release_acquire_remote_lock');
-    const cleanTree = raw.indexOf('release_require_clean_tree');
+    const submit = raw.indexOf('ssh "$SERVER" systemd-run --user');
 
-    expect(gate).toBeGreaterThan(-1);
-    expect(cleanTree).toBeGreaterThan(-1);
-    expect(gate).toBeGreaterThan(cleanTree);
-    expect(gate).toBeLessThan(localLock);
-    expect(gate).toBeLessThan(remoteLock);
+    expect(raw).toContain('preflight-chat');
+    expect(submit).toBeGreaterThan(-1);
+    expect(raw.indexOf('preflight-chat')).toBeLessThan(submit);
     // Insertion recency, immune to report-clock rollbacks.
-    expect(raw).toContain('WHERE mode = ? ORDER BY created_at DESC, id DESC LIMIT 1');
-    expect(raw).not.toContain('ORDER BY generated_at DESC, id DESC LIMIT 1');
-    expect(raw).toContain('scripts/chat-eval-local.sh');
+    expect(gateRaw).toContain('WHERE mode = ? AND git_commit = ?');
+    expect(gateRaw).toContain('ORDER BY created_at DESC, id DESC LIMIT 1');
+    expect(gateRaw).not.toContain('ORDER BY generated_at DESC, id DESC LIMIT 1');
+    expect(gateRaw).toContain('scripts/chat-eval-local.sh');
+    expect(gateRaw).toContain("manifest.releaseImpact.groups.includes('chat-secretary')");
+    expect(gate).toBe(-1);
   });
 
   it('refuses stale runs recorded on a different SHA than the one being promoted', () => {
     const raw = readFileSync(PROMOTE, 'utf8');
+    const gateRaw = readFileSync(MANIFEST_TOOL, 'utf8');
 
     // The gate selects git_commit and receives RUNTIME_SHA as an argument.
-    expect(raw).toContain('SELECT id, run_id, passed, git_commit, generated_at, created_at FROM chat_eval_runs');
-    expect(raw).toContain('"$CHAT_EVAL_GATE_DB" "$RUNTIME_SHA"');
-    expect(raw).toContain('recordedCommit !== runtimeSha');
-    expect(raw).toContain('re-run ./scripts/chat-eval-local.sh');
+    expect(gateRaw).toContain(
+      "'SELECT id, run_id, passed, git_commit, generated_at, created_at '",
+    );
+    expect(gateRaw).toContain(").get('local_engine', manifest.sourceSha)");
+    expect(gateRaw).toContain('recordedCommit !== manifest.sourceSha');
+    expect(gateRaw).toContain('scripts/chat-eval-local.sh');
   });
 
   it('works from any cwd and explains split-brain CHAT_EVAL_DB_PATH on a missing DB', () => {
-    const raw = readFileSync(PROMOTE, 'utf8');
+    const raw = readFileSync(MANIFEST_TOOL, 'utf8');
 
-    expect(raw).toContain('NODE_PATH="$ROOT/node_modules" node -e');
+    expect(raw).toContain("require('node:sqlite')");
     expect(raw).toContain('CHAT_EVAL_DB_PATH');
     expect(raw).toContain('.env.local-configured');
     expect(raw).toContain('split-brain');
   });
 
-  it('requires a loud explicit override env to skip the gate', () => {
+  it('has no bypass and skips automatically only when cumulative impact excludes chat', () => {
     const raw = readFileSync(PROMOTE, 'utf8');
+    const gateRaw = readFileSync(MANIFEST_TOOL, 'utf8');
 
-    expect(raw).toContain('NEXUS_PROMOTE_SKIP_CHAT_EVAL');
-    expect(raw).toContain('SKIPPING the local_engine chat-eval promote gate');
-    expect(raw).toContain('local_engine chat-eval gate refused promotion');
+    expect(raw).not.toContain('NEXUS_PROMOTE_SKIP_CHAT_EVAL');
+    expect(gateRaw).not.toContain('NEXUS_PROMOTE_SKIP_CHAT_EVAL');
+    expect(gateRaw).toContain(
+      'cumulative release impact does not include chat-secretary',
+    );
+    expect(raw.indexOf('release-checksum-manifest.mjs" preflight-chat')).toBeLessThan(
+      raw.indexOf('ssh "$SERVER" systemd-run --user'),
+    );
   });
 });

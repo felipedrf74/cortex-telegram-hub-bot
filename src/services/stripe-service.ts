@@ -11,6 +11,7 @@
  * table, orchestrated by Stripe webhook events.
  */
 
+import crypto from 'crypto';
 import StripeLib from 'stripe';
 import { config } from '../config';
 import { getDb } from './database';
@@ -697,6 +698,40 @@ export function claimWebsiteStripeSubscriptionForUser(userId: number): boolean {
 // signed JWS transaction. We decode the payload (trusting the Apple
 // certificate chain) and UPSERT to the same subscriptions table.
 
+/**
+ * Apple subscription catalog. This used to be substring matching that fell
+ * through to Pro monthly for every unrecognised id, so a typo or a not-yet-
+ * mapped product silently granted Pro. The map is now exhaustive and unknown
+ * ids resolve to null — callers must refuse the grant rather than guess.
+ */
+const APPLE_SUBSCRIPTION_PRODUCTS: Readonly<Record<string, { plan: string; period: string }>> = {
+  'me.nexushub.pro.monthly': { plan: 'pro', period: 'monthly' },
+  'me.nexushub.pro.yearly':  { plan: 'pro', period: 'yearly' },
+  'me.nexushub.max.monthly': { plan: 'max', period: 'monthly' },
+  'me.nexushub.max.yearly':  { plan: 'max', period: 'yearly' },
+};
+
+/** Product allowlist shared with the apple-verify route. */
+export const APPLE_SUBSCRIPTION_PRODUCT_IDS: readonly string[] = Object.freeze(
+  Object.keys(APPLE_SUBSCRIPTION_PRODUCTS),
+);
+
+export function resolveAppleProduct(productId: string): { plan: string; period: string } | null {
+  return APPLE_SUBSCRIPTION_PRODUCTS[productId] ?? null;
+}
+
+export class UnknownAppleProductError extends Error {
+  constructor(public readonly productId: string) {
+    super('UNKNOWN_APPLE_PRODUCT');
+    this.name = 'UnknownAppleProductError';
+  }
+}
+
+export function isUnknownAppleProductError(err: unknown): err is UnknownAppleProductError {
+  return err instanceof UnknownAppleProductError
+    || (err instanceof Error && err.name === 'UnknownAppleProductError');
+}
+
 export class AppleTransactionAlreadyClaimedError extends Error {
   constructor(public readonly originalTransactionId: string) {
     super('APPLE_TRANSACTION_ALREADY_CLAIMED');
@@ -704,9 +739,145 @@ export class AppleTransactionAlreadyClaimedError extends Error {
   }
 }
 
-export function isAppleTransactionAlreadyClaimedError(err: unknown): err is AppleTransactionAlreadyClaimedError {
+export function isAppleTransactionAlreadyClaimedError(
+  err: unknown,
+): err is AppleTransactionAlreadyClaimedError {
   return err instanceof AppleTransactionAlreadyClaimedError
     || (err instanceof Error && err.name === 'AppleTransactionAlreadyClaimedError');
+}
+
+// ── appAccountToken ─────────────────────────────────────────────────
+// StoreKit lets the client attach an opaque UUID to a purchase. Apple echoes
+// it in the transaction JWS *and* in every App Store Server Notification for
+// that subscription, which is the only way to map a notification back to a
+// Nexus user when `apple-verify` never succeeded (network drop, 5xx, app kill).
+//
+// The token is derived, not stored, so no extra table or purchase-time write is
+// needed. Layout (16 bytes rendered as a UUID): 1 version byte, 4 big-endian
+// user-id bytes, 11 bytes of HMAC-SHA256 tag over the first 5. The tag makes
+// the token unguessable and lets the server reject a fabricated mapping. It is
+// not a credential: recovery still requires an Apple-signed notification, and
+// the worst a forged token could do is donate someone else's purchase away.
+//
+// Rotating IOS_API_JWT_SECRET invalidates outstanding tokens. That is safe —
+// the client re-reads the token from GET /billing/status on every launch, and
+// notifications for an already-verified transaction still resolve by
+// originalTransactionId.
+//
+// IOS_API_JWT_SECRET is the ONLY accepted key. A source-literal fallback would
+// make every token derivable — and therefore forgeable — by anyone who can read
+// this repo, on any host that never set the env var (its default is empty).
+// Without the secret the token is simply unavailable, so a misconfigured host
+// loses notification-based recovery instead of accepting spoofed user mappings.
+
+const APPLE_APP_ACCOUNT_TOKEN_VERSION = 0x01;
+
+function appleAppAccountTokenTag(body: Buffer): Buffer | null {
+  const key = config.ios.jwtSecret;
+  if (!key) return null;
+  return crypto.createHmac('sha256', key).update(body).digest().subarray(0, 11);
+}
+
+export function deriveAppleAppAccountToken(userId: number): string | null {
+  if (!Number.isInteger(userId) || userId <= 0 || userId > 0xffffffff) return null;
+  const body = Buffer.alloc(5);
+  body.writeUInt8(APPLE_APP_ACCOUNT_TOKEN_VERSION, 0);
+  body.writeUInt32BE(userId, 1);
+  const tag = appleAppAccountTokenTag(body);
+  if (!tag) return null;
+  const hex = Buffer.concat([body, tag]).toString('hex');
+  return [
+    hex.slice(0, 8), hex.slice(8, 12), hex.slice(12, 16), hex.slice(16, 20), hex.slice(20, 32),
+  ].join('-');
+}
+
+export function resolveUserIdFromAppleAppAccountToken(token: unknown): number | null {
+  if (typeof token !== 'string' || !config.ios.jwtSecret) return null;
+  const hex = token.replace(/-/g, '').toLowerCase();
+  if (!/^[0-9a-f]{32}$/.test(hex)) return null;
+  const bytes = Buffer.from(hex, 'hex');
+  if (bytes.readUInt8(0) !== APPLE_APP_ACCOUNT_TOKEN_VERSION) return null;
+  const userId = bytes.readUInt32BE(1);
+  const expected = deriveAppleAppAccountToken(userId)?.replace(/-/g, '');
+  if (!expected || expected.length !== hex.length) return null;
+  return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(hex)) ? userId : null;
+}
+
+export interface AppleTransactionContext {
+  /** Apple's `environment` claim ('Production' | 'Sandbox' | 'Xcode'). Provenance only. */
+  environment?: string | null;
+  /** Opaque per-user token echoed by Apple so notifications can be mapped back. */
+  appAccountToken?: string | null;
+}
+
+export interface AppleTransactionResult {
+  plan: string;
+  period: string;
+  environment: string | null;
+  /** Set when this grant took the transaction away from a previous account. */
+  transferredFromUserId: number | null;
+}
+
+function normalizeAppleEnvironment(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function upsertAppleSubscription(input: {
+  userId: number;
+  plan: string;
+  period: string;
+  originalTransactionId: string;
+  currentPeriodStart: string | null;
+  currentPeriodEnd: string | null;
+  environment: string | null;
+  appAccountToken: string | null;
+}): void {
+  getDb().prepare(`
+    INSERT INTO subscriptions (user_id, plan, period, status, provider, provider_subscription_id, provider_customer_id, current_period_start, current_period_end, environment, cancel_at_period_end, updated_at)
+    VALUES (?, ?, ?, 'active', 'apple', ?, ?, ?, ?, ?, 0, datetime('now'))
+    ON CONFLICT(user_id) DO UPDATE SET
+      plan = excluded.plan,
+      period = excluded.period,
+      status = 'active',
+      provider = 'apple',
+      provider_subscription_id = excluded.provider_subscription_id,
+      -- This column holds the Apple appAccountToken, but a pre-existing Stripe
+      -- row keeps its Stripe customer id here. Overwriting that would strip the
+      -- only handle back to the Stripe customer, so it is only written when the
+      -- row is already Apple's or the slot is empty.
+      provider_customer_id = CASE
+        WHEN subscriptions.provider_customer_id IS NULL OR subscriptions.provider = 'apple'
+          THEN COALESCE(excluded.provider_customer_id, subscriptions.provider_customer_id)
+        ELSE subscriptions.provider_customer_id
+      END,
+      current_period_start = COALESCE(excluded.current_period_start, current_period_start),
+      current_period_end = excluded.current_period_end,
+      environment = COALESCE(excluded.environment, environment),
+      -- The transaction JWS carries no autoRenewStatus, so DID_CHANGE_RENEWAL_STATUS
+      -- stays the only authority for turning cancellation ON: a restore must not
+      -- silently re-enable auto-renew inside an already-cancelled period. A
+      -- genuinely NEW period is different — it can only exist because the
+      -- subscription actually renewed or was resubscribed, and Apple does not
+      -- always pair that with an AUTO_RENEW_ENABLED notification. Leaving the
+      -- flag latched there tells a paying subscriber their plan is ending forever.
+      cancel_at_period_end = CASE
+        WHEN excluded.current_period_end IS NOT NULL
+         AND (subscriptions.current_period_end IS NULL
+              OR excluded.current_period_end > subscriptions.current_period_end)
+          THEN 0
+        ELSE subscriptions.cancel_at_period_end
+      END,
+      updated_at = datetime('now')
+  `).run(
+    input.userId,
+    input.plan,
+    input.period,
+    input.originalTransactionId,
+    input.appAccountToken,
+    input.currentPeriodStart,
+    input.currentPeriodEnd,
+    input.environment,
+  );
 }
 
 export function handleAppleTransaction(
@@ -715,50 +886,104 @@ export function handleAppleTransaction(
   productId: string,
   expiresDate: string | null,
   currentPeriodStart: string | null = null,
-): void {
-  const { plan, period } = resolveAppleProduct(productId);
+  context: AppleTransactionContext = {},
+): AppleTransactionResult {
+  const resolved = resolveAppleProduct(productId);
+  if (!resolved) {
+    logger.warn({ userId, productId, originalTransactionId }, 'Apple IAP transaction refused: unmapped product id');
+    throw new UnknownAppleProductError(productId);
+  }
+  const { plan, period } = resolved;
   const resolvedPeriodStart = currentPeriodStart ?? deriveApplePeriodStart(expiresDate, period);
+  const environment = normalizeAppleEnvironment(context.environment);
+  const appAccountToken = typeof context.appAccountToken === 'string' && context.appAccountToken.trim()
+    ? context.appAccountToken.trim()
+    : null;
 
   const db = getDb();
-  const existingOwner = db.prepare(`
-    SELECT user_id
+  const previousOwner = db.prepare(`
+    SELECT user_id, status, current_period_end
     FROM subscriptions
     WHERE provider = 'apple'
       AND provider_subscription_id = ?
       AND user_id != ?
     LIMIT 1
-  `).get(originalTransactionId, userId) as { user_id: number } | undefined;
+  `).get(originalTransactionId, userId) as {
+    user_id: number;
+    status: string;
+    current_period_end: string | null;
+  } | undefined;
 
-  if (existingOwner) {
-    logger.warn(
-      { userId, existingUserId: existingOwner.user_id, originalTransactionId, productId },
-      'Apple IAP transaction rejected because it is already attached to another account',
-    );
-    throw new AppleTransactionAlreadyClaimedError(originalTransactionId);
+  // A stale App Review account must not make restore a permanent dead end, but
+  // a valid StoreKit transaction is a bearer proof of purchase, not proof that
+  // the current Nexus user owns the account that already holds it. Transfer is
+  // therefore limited to a terminal or time-expired prior entitlement. An
+  // active prior holder keeps the grant and receives a stable 409.
+  if (previousOwner) {
+    const previousPeriodEndMs = previousOwner.current_period_end
+      ? Date.parse(previousOwner.current_period_end)
+      : NaN;
+    const previousPeriodEnded = Number.isFinite(previousPeriodEndMs)
+      && previousPeriodEndMs <= Date.now();
+    const previousStatusTerminal = ['inactive', 'expired', 'refunded'].includes(previousOwner.status);
+    if (!previousStatusTerminal && !previousPeriodEnded) {
+      logger.warn(
+        {
+          userId,
+          existingUserId: previousOwner.user_id,
+          originalTransactionId,
+          productId,
+          environment,
+        },
+        'Apple IAP transaction rejected because an active entitlement is attached to another account',
+      );
+      throw new AppleTransactionAlreadyClaimedError(originalTransactionId);
+    }
   }
 
-  db.prepare(`
-    INSERT INTO subscriptions (user_id, plan, period, status, provider, provider_subscription_id, current_period_start, current_period_end, updated_at)
-    VALUES (?, ?, ?, 'active', 'apple', ?, ?, ?, datetime('now'))
-    ON CONFLICT(user_id) DO UPDATE SET
-      plan = excluded.plan,
-      period = excluded.period,
-      status = 'active',
-      provider = 'apple',
-      provider_subscription_id = excluded.provider_subscription_id,
-      current_period_start = COALESCE(excluded.current_period_start, current_period_start),
-      current_period_end = excluded.current_period_end,
-      updated_at = datetime('now')
-  `).run(userId, plan, period, originalTransactionId, resolvedPeriodStart, expiresDate);
+  const applyGrant = db.transaction(() => {
+    if (previousOwner) {
+      db.prepare(`
+        UPDATE subscriptions
+           SET status = 'inactive',
+               provider_subscription_id = NULL,
+               cancel_at_period_end = 1,
+               updated_at = datetime('now')
+         WHERE provider = 'apple'
+           AND provider_subscription_id = ?
+           AND user_id != ?
+      `).run(originalTransactionId, userId);
+    }
+    upsertAppleSubscription({
+      userId,
+      plan,
+      period,
+      originalTransactionId,
+      currentPeriodStart: resolvedPeriodStart,
+      currentPeriodEnd: expiresDate,
+      environment,
+      appAccountToken,
+    });
+  });
+  applyGrant();
 
-  logger.info({ userId, productId, originalTransactionId }, 'Apple IAP transaction verified — subscription active');
-}
+  if (previousOwner) {
+    logger.warn(
+      { userId, previousUserId: previousOwner.user_id, originalTransactionId, productId, environment },
+      'Apple IAP transaction transferred to the newest authenticated claimant',
+    );
+  }
+  logger.info(
+    { userId, productId, originalTransactionId, environment },
+    'Apple IAP transaction verified — subscription active',
+  );
 
-function resolveAppleProduct(productId: string): { plan: string; period: string } {
-  if (productId.includes('max') && productId.includes('yearly'))  return { plan: 'max', period: 'yearly' };
-  if (productId.includes('max'))                                   return { plan: 'max', period: 'monthly' };
-  if (productId.includes('yearly'))                                return { plan: 'pro', period: 'yearly' };
-  return { plan: 'pro', period: 'monthly' };
+  return {
+    plan,
+    period,
+    environment,
+    transferredFromUserId: previousOwner?.user_id ?? null,
+  };
 }
 
 function deriveApplePeriodStart(expiresDate: string | null, period: string | null | undefined): string | null {
@@ -801,19 +1026,104 @@ const APPLE_NOTIFICATION_STATUS_MAP: Record<string, string> = {
   GRACE_PERIOD_EXPIRED:  'expired',
 };
 
+// DID_CHANGE_RENEWAL_STATUS is auto-renew being toggled, not a status change.
+// The subtype carries the direction; the subscription stays exactly as active
+// (or as expired) as it already was.
+const APPLE_RENEWAL_STATUS_SUBTYPES: Record<string, number> = {
+  AUTO_RENEW_DISABLED: 1,
+  AUTO_RENEW_ENABLED:  0,
+};
+
+export interface AppleNotificationContext {
+  /** Apple's per-notification UUID, used for replay de-duplication. */
+  notificationUUID?: string | null;
+  /** Notification subtype, e.g. AUTO_RENEW_DISABLED. */
+  subtype?: string | null;
+  /** Environment from the outer payload; the inner transaction claim wins. */
+  environment?: string | null;
+}
+
+export function hasProcessedAppleNotification(notificationUUID: string): boolean {
+  if (!notificationUUID) return false;
+  const db = getDb();
+  const row = db.prepare('SELECT 1 FROM apple_webhook_events WHERE notification_uuid = ?').get(notificationUUID);
+  return !!row;
+}
+
+export function markAppleNotificationProcessed(input: {
+  notificationUUID: string;
+  notificationType: string;
+  subtype?: string | null;
+  environment?: string | null;
+}): void {
+  if (!input.notificationUUID) return;
+  const db = getDb();
+  db.prepare(`
+    INSERT OR IGNORE INTO apple_webhook_events (notification_uuid, notification_type, subtype, environment, processed_at)
+    VALUES (?, ?, ?, ?, datetime('now'))
+  `).run(
+    input.notificationUUID,
+    input.notificationType || 'unknown',
+    input.subtype ?? null,
+    normalizeAppleEnvironment(input.environment),
+  );
+}
+
 /**
  * Handle an Apple App Store Server Notification V2.
  *
+ * Apple can deliver the same notificationUUID several times. The UUID is
+ * recorded in `apple_webhook_events` (mirroring `stripe_webhook_events`) so a
+ * duplicate delivery cannot re-apply a lifecycle transition.
+ *
+ * The ledger guards against genuine duplicate deliveries only — it is not a
+ * retry mechanism. The route answers HTTP 200 for every outcome, including a
+ * throw, precisely so Apple never sees a non-200, which also means Apple will
+ * never retry a notification that threw here. A throw simply loses that
+ * notification; reconciliation for it comes from the next lifecycle event or
+ * from the client's own apple-verify call, not from an Apple retry.
+ *
  * @param notificationType - The notification type from Apple's payload
  * @param signedTransactionInfo - JWS-encoded transaction info (inner JWS)
+ * @param context - notificationUUID / subtype / environment from the outer payload
  * @returns true if the notification was processed, false if skipped
  */
 export function handleAppleNotification(
   notificationType: string,
   signedTransactionInfo: string,
+  context: AppleNotificationContext = {},
 ): boolean {
+  const notificationUUID = typeof context.notificationUUID === 'string' && context.notificationUUID.trim()
+    ? context.notificationUUID.trim()
+    : null;
+
+  if (notificationUUID && hasProcessedAppleNotification(notificationUUID)) {
+    logger.info({ notificationType, notificationUUID }, 'Apple notification: duplicate notificationUUID ignored');
+    return false;
+  }
+
+  const processed = applyAppleNotification(notificationType, signedTransactionInfo, context);
+
+  if (notificationUUID) {
+    markAppleNotificationProcessed({
+      notificationUUID,
+      notificationType,
+      subtype: context.subtype ?? null,
+      environment: context.environment ?? null,
+    });
+  }
+
+  return processed;
+}
+
+function applyAppleNotification(
+  notificationType: string,
+  signedTransactionInfo: string,
+  context: AppleNotificationContext,
+): boolean {
+  const isRenewalStatusChange = notificationType === 'DID_CHANGE_RENEWAL_STATUS';
   const newStatus = APPLE_NOTIFICATION_STATUS_MAP[notificationType];
-  if (!newStatus) {
+  if (!newStatus && !isRenewalStatusChange) {
     logger.info({ notificationType }, 'Apple notification: unhandled type, skipping');
     return false;
   }
@@ -909,6 +1219,13 @@ export function handleAppleNotification(
   let periodStart = payload.purchaseDate
     ? new Date(payload.purchaseDate).toISOString()
     : null;
+  // The inner transaction JWS is Apple-signed, so its environment claim beats
+  // the outer envelope's. Both are provenance only — never an access gate.
+  const environment = normalizeAppleEnvironment(payload.environment)
+    ?? normalizeAppleEnvironment(context.environment);
+  const appAccountToken = typeof payload.appAccountToken === 'string' && payload.appAccountToken.trim()
+    ? payload.appAccountToken.trim()
+    : null;
 
   const db = getDb();
   if (!periodStart && expiresDate) {
@@ -920,27 +1237,157 @@ export function handleAppleNotification(
     periodStart = deriveApplePeriodStart(expiresDate, subscription?.period);
   }
 
+  if (isRenewalStatusChange) {
+    const cancelAtPeriodEnd = APPLE_RENEWAL_STATUS_SUBTYPES[String(context.subtype ?? '')];
+    if (cancelAtPeriodEnd === undefined) {
+      logger.warn({ notificationType, subtype: context.subtype }, 'Apple notification: renewal status change without a known subtype');
+      return false;
+    }
+    const renewalUpdate = db.prepare(`
+      UPDATE subscriptions
+      SET cancel_at_period_end = ?, environment = COALESCE(?, environment), updated_at = datetime('now')
+      WHERE provider_subscription_id = ? AND provider = 'apple'
+    `).run(cancelAtPeriodEnd, environment, String(originalTransactionId));
+    if (renewalUpdate.changes === 0) {
+      logger.warn({ notificationType, subtype: context.subtype, originalTransactionId }, 'Apple notification: renewal status change for an unknown transaction');
+      return false;
+    }
+    logger.info({ notificationType, subtype: context.subtype, originalTransactionId, environment }, 'Apple Server Notification processed');
+    return true;
+  }
+
   // Update subscription status based on the notification type.
-  // For renewals, also update the expiry date.
-  if (newStatus === 'active' && expiresDate) {
-    db.prepare(`
-      UPDATE subscriptions
-      SET status = 'active', current_period_start = COALESCE(?, current_period_start), current_period_end = ?, updated_at = datetime('now')
-      WHERE provider_subscription_id = ? AND provider = 'apple'
-    `).run(periodStart, expiresDate, String(originalTransactionId));
-  } else {
-    db.prepare(`
-      UPDATE subscriptions
-      SET status = ?, updated_at = datetime('now')
-      WHERE provider_subscription_id = ? AND provider = 'apple'
-    `).run(newStatus, String(originalTransactionId));
+  // For renewals, also update the expiry date. A strictly newer period end can
+  // only come from an actual renewal or a RESUBSCRIBE, neither of which Apple
+  // reliably pairs with DID_CHANGE_RENEWAL_STATUS/AUTO_RENEW_ENABLED — so a
+  // stale cancellation flag is cleared here rather than latched forever.
+  const update = newStatus === 'active' && expiresDate
+    ? db.prepare(`
+        UPDATE subscriptions
+        SET status = 'active',
+            current_period_start = COALESCE(?, current_period_start),
+            cancel_at_period_end = CASE
+              WHEN current_period_end IS NULL OR ? > current_period_end THEN 0
+              ELSE cancel_at_period_end
+            END,
+            current_period_end = ?,
+            environment = COALESCE(?, environment),
+            updated_at = datetime('now')
+        WHERE provider_subscription_id = ? AND provider = 'apple'
+      `).run(periodStart, expiresDate, expiresDate, environment, String(originalTransactionId))
+    : db.prepare(`
+        UPDATE subscriptions
+        SET status = ?, environment = COALESCE(?, environment), updated_at = datetime('now')
+        WHERE provider_subscription_id = ? AND provider = 'apple'
+      `).run(newStatus, environment, String(originalTransactionId));
+
+  if (update.changes === 0 && !recoverAppleSubscriptionFromNotification({
+    notificationType,
+    newStatus,
+    originalTransactionId: String(originalTransactionId),
+    productId: payload.productId ? String(payload.productId) : null,
+    expiresDate,
+    periodStart,
+    environment,
+    appAccountToken,
+  })) {
+    return false;
   }
 
   logger.info({
     notificationType,
     newStatus,
     originalTransactionId,
+    environment,
   }, 'Apple Server Notification processed');
 
+  return true;
+}
+
+/**
+ * Recover a subscription whose `apple-verify` call never landed.
+ *
+ * Before appAccountToken existed the webhook could only UPDATE, so a purchase
+ * whose verify call failed (network drop, 5xx, app killed mid-purchase) was
+ * only recoverable through a manual Restore. When the client attached an
+ * appAccountToken we can resolve the owner from the notification itself and
+ * write the row Apple already believes exists.
+ *
+ * Only a grant-shaped notification may create a row. A terminal event
+ * (expiry/refund/revoke) for an unknown transaction has nothing to activate,
+ * and writing it would take the user row away from whichever provider
+ * currently owns it.
+ *
+ * @returns true if a row was created
+ */
+function recoverAppleSubscriptionFromNotification(input: {
+  notificationType: string;
+  newStatus: string;
+  originalTransactionId: string;
+  productId: string | null;
+  expiresDate: string | null;
+  periodStart: string | null;
+  environment: string | null;
+  appAccountToken: string | null;
+}): boolean {
+  if (input.newStatus !== 'active') {
+    logger.warn({
+      notificationType: input.notificationType,
+      originalTransactionId: input.originalTransactionId,
+    }, 'Apple notification: no matching subscription row for a terminal event');
+    return false;
+  }
+
+  const userId = resolveUserIdFromAppleAppAccountToken(input.appAccountToken);
+  if (!userId) {
+    logger.warn({
+      notificationType: input.notificationType,
+      originalTransactionId: input.originalTransactionId,
+      hasAppAccountToken: !!input.appAccountToken,
+    }, 'Apple notification: cannot map an unknown transaction back to a user');
+    return false;
+  }
+
+  const resolved = input.productId ? resolveAppleProduct(input.productId) : null;
+  if (!resolved) {
+    logger.warn({
+      notificationType: input.notificationType,
+      productId: input.productId,
+      userId,
+    }, 'Apple notification: refusing to create a subscription for an unmapped product id');
+    return false;
+  }
+
+  const db = getDb();
+  const existing = db.prepare(
+    'SELECT provider, status FROM subscriptions WHERE user_id = ?',
+  ).get(userId) as { provider: string | null; status: string | null } | undefined;
+  if (existing && existing.provider !== 'apple' && ['active', 'trialing'].includes(String(existing.status))) {
+    logger.warn({
+      notificationType: input.notificationType,
+      userId,
+      existingProvider: existing.provider,
+    }, 'Apple notification: refusing to overwrite an active non-Apple subscription');
+    return false;
+  }
+
+  upsertAppleSubscription({
+    userId,
+    plan: resolved.plan,
+    period: resolved.period,
+    originalTransactionId: input.originalTransactionId,
+    currentPeriodStart: input.periodStart ?? deriveApplePeriodStart(input.expiresDate, resolved.period),
+    currentPeriodEnd: input.expiresDate,
+    environment: input.environment,
+    appAccountToken: input.appAccountToken,
+  });
+
+  logger.warn({
+    notificationType: input.notificationType,
+    userId,
+    productId: input.productId,
+    originalTransactionId: input.originalTransactionId,
+    environment: input.environment,
+  }, 'Apple notification: recovered a subscription that never completed apple-verify');
   return true;
 }

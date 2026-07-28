@@ -40,11 +40,14 @@ With an ignored local deliverable summary:
 node scripts/reward-check.mjs --area auto --handoff .local/reward-handoff.md --advisory
 ```
 
-Enforced release mode validates the exact signed artifact manifest:
+Enforced release mode validates the compact checksum manifest and completed
+staging transaction:
 
 ```bash
 node scripts/reward-check.mjs --area release --enforce \
-  --release-manifest .local/release/release-manifest-v2.json --require-staging
+  --release-manifest .local/release/manifests/<sha>.json \
+  --staging-attestation .local/release/transactions/staging-<sha>-<digest>.json \
+  --require-staging
 ```
 
 ## Existing signals to reuse
@@ -58,7 +61,7 @@ duplicating their logic:
 - `npm run docs:audit`
 - `npm run verify` or focused evidence named by the handoff
 - `scripts/verify-deliverable.mjs`
-- signed release manifest identity, staging smoke, production health, and
+- checksum manifest identity, staging smoke, production health, and
   rollback drill evidence when area is `release`
 - iOS build/test evidence when backend work is paired with an iOS surface
 

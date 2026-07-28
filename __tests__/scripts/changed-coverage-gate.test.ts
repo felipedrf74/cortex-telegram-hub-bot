@@ -1,63 +1,119 @@
 import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
   aggregateCoverage,
+  analyzeExistingCoverage,
   changedExecutableCoverage,
-  coverageShardCount,
   parseAddedLines,
-  preserveCoverageShardFailure,
   resolveExactCommit,
   thresholdFailures,
   validateCoverageException,
 } from '../../scripts/changed-coverage-gate.mjs';
 
-const temporaryDirectories: string[] = [];
-
-afterEach(() => {
-  for (const directory of temporaryDirectories.splice(0)) {
-    fs.rmSync(directory, { recursive: true, force: true });
-  }
-});
-
 describe('changed-module coverage gate', () => {
-  it('bounds coverage memory by splitting large selections into at most four shards', () => {
-    expect(coverageShardCount(1)).toBe(1);
-    expect(coverageShardCount(200)).toBe(1);
-    expect(coverageShardCount(201)).toBe(2);
-    expect(coverageShardCount(727)).toBe(4);
-    expect(coverageShardCount(930)).toBe(4);
-    expect(() => coverageShardCount(0)).toThrow('positive integer');
+  it('analyzes the existing selected-test report without a second test invocation', () => {
+    const source = fs.readFileSync('scripts/changed-coverage-gate.mjs', 'utf8');
+    expect(source).not.toContain('node_modules/vitest');
+    expect(source).not.toContain('--shard=');
+
+    const result = analyzeExistingCoverage({
+      base: 'a'.repeat(40),
+      head: 'b'.repeat(40),
+      files: ['src/example.ts'],
+      criticalFiles: ['src/example.ts'],
+      coverageByFile: new Map([['src/example.ts', {
+        statementMap: {
+          0: { start: { line: 10 }, end: { line: 10 } },
+          1: { start: { line: 11 }, end: { line: 11 } },
+        },
+        s: { 0: 1, 1: 0 },
+        branchMap: {},
+        b: {},
+        fnMap: {},
+        f: {},
+      }]]),
+      changedLineSets: new Map([['src/example.ts', new Set([10, 11])]]),
+      policy: {
+        coverage: {
+          changed: { lines: 50, branches: 0 },
+          critical: { lines: 50, branches: 0 },
+          exceptions: [],
+        },
+      },
+      selectedTests: ['__tests__/example.test.ts'],
+    });
+    expect(result).toMatchObject({
+      schema: 'nexus.changed-coverage-result.v3',
+      analysisOnly: true,
+      selectedTestCount: 1,
+      verdict: 'PASS',
+      missing: [],
+    });
+    expect(result.changedCoverage.lines).toEqual({ total: 2, covered: 1, pct: 50 });
   });
 
-  it('preserves opaque shard failures and completed blobs for CI diagnosis', () => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'changed-coverage-failure-'));
-    temporaryDirectories.push(directory);
-    const outputDir = path.join(directory, 'output');
-    const blobDir = path.join(directory, 'blobs');
-    fs.mkdirSync(blobDir, { recursive: true });
-    fs.writeFileSync(path.join(blobDir, 'blob-1.json'), '{"complete":true}\n');
-
-    const failure = preserveCoverageShardFailure({
-      outputDir,
-      blobDir,
-      shard: 1,
-      shardCount: 4,
-      result: { status: 1, signal: null },
-      reason: 'Changed coverage shard 1/4 exited with status 1',
+  it('keeps exception ratchets on the same selected-test coverage record', () => {
+    const file = 'src/services/database.ts';
+    const result = analyzeExistingCoverage({
+      base: 'a'.repeat(40),
+      head: 'b'.repeat(40),
+      files: [file],
+      criticalFiles: [file],
+      coverageByFile: new Map([[file, {
+        statementMap: {
+          0: { start: { line: 1 }, end: { line: 1 } },
+          1: { start: { line: 2 }, end: { line: 2 } },
+        },
+        s: { 0: 1, 1: 0 },
+        branchMap: {},
+        b: {},
+        fnMap: {},
+        f: {},
+      }]]),
+      changedLineSets: new Map([[file, new Set([1])]]),
+      policy: {
+        coverage: {
+          changed: { lines: 80, branches: 75 },
+          critical: { lines: 90, branches: 85 },
+          exceptions: [{
+            file,
+            owner: 'test-infrastructure',
+            reason: 'The selected run must preserve the observed full-file floor.',
+            expires: '2099-12-31',
+            minimum: { lines: 75, branches: 0 },
+          }],
+        },
+      },
+      selectedTests: ['__tests__/services/database.test.ts'],
     });
+    expect(result.failures).toContain(
+      'coverage exception src/services/database.ts lines 50% is below 75%',
+    );
+    expect(result.verdict).toBe('FAIL');
+  });
 
-    expect(failure).toMatchObject({
-      schema: 'nexus.changed-coverage-failure.v1',
-      shard: 1,
-      shardCount: 4,
-      status: 1,
-      signal: null,
-      blobFiles: ['blob-1.json'],
+  it('records deletion-only files without demanding nonexistent executable coverage', () => {
+    const result = analyzeExistingCoverage({
+      base: 'a'.repeat(40),
+      head: 'b'.repeat(40),
+      files: ['src/retired.ts'],
+      coverageRequiredFiles: [],
+      criticalFiles: [],
+      coverageByFile: new Map(),
+      changedLineSets: new Map([['src/retired.ts', new Set()]]),
+      policy: {
+        coverage: {
+          changed: { lines: 80, branches: 75 },
+          critical: { lines: 90, branches: 85 },
+          exceptions: [],
+        },
+      },
+      selectedTests: ['__tests__/replacement.test.ts'],
     });
-    expect(fs.existsSync(path.join(outputDir, 'failed-shards/blobs/blob-1.json'))).toBe(true);
-    expect(JSON.parse(fs.readFileSync(path.join(outputDir, 'failure.json'), 'utf8'))).toEqual(failure);
+    expect(result.files).toEqual(['src/retired.ts']);
+    expect(result.coverageRequiredFiles).toEqual([]);
+    expect(result.missing).toEqual([]);
+    expect(result.verdict).toBe('PASS');
   });
 
   it('extracts only added-side lines from zero-context git hunks', () => {

@@ -74,8 +74,6 @@ const STAGE_B_ENV_SURFACES = [
   'scripts/debug-env.js',
   'scripts/decision-center-ios-smoke.sh',
   'scripts/full-nexus-local-engine.sh',
-  'scripts/release-evidence-container.sh',
-  'scripts/release-verify-container.sh',
   'scripts/seed-training-catalog.ts',
   'scripts/training-e2e-live-calendar.ts',
 ];
