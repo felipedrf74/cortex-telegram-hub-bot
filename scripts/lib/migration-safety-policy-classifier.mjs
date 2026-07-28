@@ -12,6 +12,10 @@ export const migrationSafetyGovernanceReasons = new Map([
   ['config/irreversible-migrations.json', 'POLICY_REGISTRY_CHANGED'],
   ['config/production-migration-lineages.json', 'POLICY_PRODUCTION_LINEAGE_CHANGED'],
   ['.github/workflows/ci.yml', 'POLICY_CI_ENTRYPOINT_CHANGED'],
+  [
+    '.github/workflows/release-candidate-evidence.yml',
+    'POLICY_RELEASE_CHECKPOINT_ENTRYPOINT_CHANGED',
+  ],
   ['.husky/pre-commit', 'POLICY_HOOK_ENTRYPOINT_CHANGED'],
   ['scripts/lib/irreversible-migration-policy.mjs', 'POLICY_ENFORCEMENT_CHANGED'],
   ['scripts/lib/production-migration-lineage.mjs', 'POLICY_PRODUCTION_LINEAGE_ENFORCEMENT_CHANGED'],

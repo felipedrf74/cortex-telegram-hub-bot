@@ -148,6 +148,44 @@ describe('same-host Nexus backups', () => {
     }
   });
 
+  it('verifies the hourly receipt when an existing daily point is retained', () => {
+    const fixture = createFixture();
+    try {
+      const now = new Date();
+      const dailyName = [
+        'nexus-db-',
+        now.getUTCFullYear(),
+        String(now.getUTCMonth() + 1).padStart(2, '0'),
+        String(now.getUTCDate()).padStart(2, '0'),
+        '.sqlite.age',
+      ].join('');
+      const dailyDirectory = join(fixture.backupRoot, 'daily');
+      mkdirSync(dailyDirectory, { recursive: true, mode: 0o700 });
+      const daily = join(dailyDirectory, dailyName);
+      writeFileSync(daily, 'retained-daily-point', { mode: 0o600 });
+      writeFileSync(
+        `${daily}.sha256`,
+        `49969c8d90b57d48cb9c0dbc2fd7034ec79dc42ae253b7c2134a75ef4ed68036  ${dailyName}\n`,
+        { mode: 0o600 },
+      );
+
+      const created = run(fixture, 'backup');
+      expect(created.status, created.stderr).toBe(0);
+      const receipt = JSON.parse(created.stdout);
+      expect(receipt.installed.daily).toBe(daily);
+      expect(receipt.installed.hourly).not.toBe(daily);
+
+      const freshness = run(fixture, 'verify-freshness', '--max-age-hours', '26');
+      expect(freshness.status, freshness.stderr).toBe(0);
+      expect(JSON.parse(freshness.stdout)).toMatchObject({
+        schema: 'nexus.local-backup-freshness.v1',
+        status: 'passed',
+      });
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
   it('prunes every local tier to its explicit count limit', () => {
     const fixture = createFixture();
     try {

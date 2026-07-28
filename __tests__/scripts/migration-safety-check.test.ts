@@ -247,13 +247,19 @@ describe('migration-safety-check', () => {
     const payload = JSON.parse(result.stdout) as {
       approvalMode: string;
       checks: { reviewApproval: null; exactBackupEvidence: null };
-      authorization: { approvalRequired: boolean; backupRequired: boolean; authorizesPromotion: boolean };
+      authorization: {
+        approvalRequired: boolean;
+        governanceReviewRequired: boolean;
+        backupRequired: boolean;
+        authorizesPromotion: boolean;
+      };
       requiredReviewSubject: { sha256: string };
     };
     expect(payload.approvalMode).toBe('scan');
     expect(payload.checks).toMatchObject({ reviewApproval: null, exactBackupEvidence: null });
     expect(payload.authorization).toEqual({
       approvalRequired: true,
+      governanceReviewRequired: false,
       backupRequired: true,
       authorizesPromotion: false,
     });
@@ -274,6 +280,25 @@ describe('migration-safety-check', () => {
       const before = invoke();
       expect(before.status, `${before.stdout}${before.stderr}`).toBe(0);
       const beforeSubject = JSON.parse(before.stdout).requiredReviewSubject;
+      const beforePayload = JSON.parse(before.stdout) as {
+        governanceChanges: Array<{ file: string; reason: string }>;
+        irreversibleSchemaMigrations: unknown[];
+        authorization: {
+          approvalRequired: boolean;
+          governanceReviewRequired: boolean;
+          backupRequired: boolean;
+        };
+      };
+      expect(beforePayload.governanceChanges).toEqual([{
+        file: 'scripts/migration-safety-check.mjs',
+        reason: 'POLICY_GATE_CHANGED',
+      }]);
+      expect(beforePayload.irreversibleSchemaMigrations).toEqual([]);
+      expect(beforePayload.authorization).toMatchObject({
+        approvalRequired: false,
+        governanceReviewRequired: true,
+        backupRequired: false,
+      });
 
       writeFileSync(governedPath, 'export const policyVersion = 2;\n');
       const after = invoke();
@@ -552,6 +577,10 @@ describe('migration-safety-check', () => {
     ['config/irreversible-migrations.json', 'POLICY_REGISTRY_CHANGED'],
     ['config/production-migration-lineages.json', 'POLICY_PRODUCTION_LINEAGE_CHANGED'],
     ['.github/workflows/ci.yml', 'POLICY_CI_ENTRYPOINT_CHANGED'],
+    [
+      '.github/workflows/release-candidate-evidence.yml',
+      'POLICY_RELEASE_CHECKPOINT_ENTRYPOINT_CHANGED',
+    ],
     ['.husky/pre-commit', 'POLICY_HOOK_ENTRYPOINT_CHANGED'],
     ['scripts/lib/irreversible-migration-policy.mjs', 'POLICY_ENFORCEMENT_CHANGED'],
     ['scripts/lib/production-migration-lineage.mjs', 'POLICY_PRODUCTION_LINEAGE_ENFORCEMENT_CHANGED'],

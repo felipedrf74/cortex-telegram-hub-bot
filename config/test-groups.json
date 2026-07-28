@@ -1,5 +1,5 @@
 {
-  "version": "2026-07-28.1",
+  "version": "2026-07-28.2",
   "core": {
     "targetSeconds": 30,
     "tests": [
@@ -472,6 +472,7 @@
         "src/services/account-*.ts",
         "src/services/apple-jws-verifier.ts",
         "src/services/apple-sign-in-nonce.ts",
+        "src/services/apple-token-revocation.ts",
         "src/services/apple-web-sign-in.ts",
         "src/services/audit-*.ts",
         "src/services/cache-*.ts",
@@ -501,6 +502,7 @@
         "__tests__/services/codex-qa-regressions.test.ts",
         "__tests__/services/config-runtime-validation.test.ts",
         "__tests__/services/dispatch-privacy-e2e.test.ts",
+        "__tests__/services/apple-token-revocation.test.ts",
         "__tests__/services/privacy-redacted-flow.test.ts",
         "__tests__/services/prompt-cleanliness.test.ts",
         "__tests__/services/prompt-sanitizer.test.ts",
@@ -697,6 +699,7 @@
         "__tests__/billing/**/*.test.ts",
         "__tests__/services/paid-ai-budget.test.ts",
         "__tests__/services/paid-ai-cost-controls-migration.test.ts",
+        "__tests__/services/apple-subscription-lifecycle.test.ts",
         "__tests__/**/*finance*.test.ts",
         "__tests__/**/*fiscal*.test.ts",
         "__tests__/**/*invoice*.test.ts",

@@ -268,10 +268,14 @@ jobs:
       - name: Bind exact-SHA coverage for advisory Sonar
         if: ${{ needs.classify.outputs.vitest_mode == 'focused' }}
         run: |
-          node scripts/quality-sonar-coverage-manifest.mjs \
-            --runtime-sha "$GITHUB_SHA" \
-            --coverage-dir .local/coverage/selected \
-            --output .local/coverage/selected/sonar-coverage-evidence.json
+          if [ -s .local/coverage/selected/lcov.info ]; then
+            node scripts/quality-sonar-coverage-manifest.mjs \
+              --runtime-sha "$GITHUB_SHA" \
+              --coverage-dir .local/coverage/selected \
+              --output .local/coverage/selected/sonar-coverage-evidence.json
+          else
+            echo "No instrumented JavaScript source changed; advisory Sonar coverage is unavailable for this SHA."
+          fi
 
       - name: Record docs-only exact selection without Vitest
         if: ${{ needs.classify.outputs.vitest_mode == 'skip' }}

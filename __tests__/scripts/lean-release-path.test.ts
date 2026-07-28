@@ -19,7 +19,7 @@ function sha256(body: Buffer | string) {
   return createHash('sha256').update(body).digest('hex');
 }
 
-function fixture(options: { docsOnly?: boolean } = {}) {
+function fixture(options: { docsOnly?: boolean; governanceReview?: boolean } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-lean-release-'));
   roots.push(root);
   const bundle = path.join(root, 'bundle');
@@ -92,14 +92,18 @@ function fixture(options: { docsOnly?: boolean } = {}) {
     }));
   }
   const migrations = path.join(root, 'migration-result.json');
+  const governanceSubject = options.governanceReview ? 'd'.repeat(64) : null;
   fs.writeFileSync(migrations, JSON.stringify({
     ok: true,
-    authorization: { approvalRequired: false },
-    requiredReviewSubject: null,
+    authorization: {
+      approvalRequired: false,
+      governanceReviewRequired: options.governanceReview === true,
+    },
+    requiredReviewSubject: governanceSubject ? { sha256: governanceSubject } : null,
   }));
   return {
     root, bundle, shards, selection, selectedResult, policy, migrations, digest, runtimeSha,
-    deployedSha,
+    deployedSha, governanceSubject,
     deterministic,
     output: path.join(root, 'release-manifest.json'),
   };
@@ -111,7 +115,7 @@ afterEach(() => {
 
 describe('lean exact-artifact release path', () => {
   it('writes a compact manifest bound to four complete shards and the original bundle', () => {
-    const value = fixture();
+    const value = fixture({ governanceReview: true });
     execFileSync(process.execPath, [
       manifestScript, 'write',
       '--source-sha', value.runtimeSha,
@@ -132,6 +136,7 @@ describe('lean exact-artifact release path', () => {
       '--migration-required', 'true',
       '--migration-status', 'passed',
       '--migration-result', value.migrations,
+      '--migration-review-sha256', value.governanceSubject!,
       '--output', value.output,
     ]);
 
@@ -166,7 +171,14 @@ describe('lean exact-artifact release path', () => {
         },
       },
       python: { required: false, status: 'skipped' },
-      migrations: { required: true, status: 'passed', approvalRequired: false },
+      migrations: {
+        required: true,
+        status: 'passed',
+        approvalRequired: false,
+        governanceReviewRequired: true,
+        reviewSubjectSha256: null,
+        governanceReviewSubjectSha256: value.governanceSubject,
+      },
     });
     expect(manifest.fullSuite.shards.map((entry: { shard: string }) => entry.shard))
       .toEqual(['1/4', '2/4', '3/4', '4/4']);
@@ -738,6 +750,9 @@ db.close();
     expect(workflow).toContain('--policy-file config/test-groups.json');
     expect(workflow).toContain('node scripts/changed-area-classifier.mjs');
     expect(workflow).toContain('--base "$DEPLOYED_SHA"');
+    expect(workflow).toContain(
+      "jq -r '.flags.migration' .local/release/checkpoint/release-impact.json",
+    );
     expect(workflow).toContain('release_groups: ${{ steps.impact.outputs.release_groups }}');
     expect(workflow).not.toContain('deployed_sha:\n        description:');
     expect(workflow).not.toContain('inputs.deployed_sha');
@@ -761,7 +776,13 @@ db.close();
       'pip install -r content-engine/requirements.txt -r content-engine/requirements-dev.txt',
     );
     expect(workflow).toContain(
-      'Irreversible migrations remain blocked in the lean release path',
+      'Irreversible migration SQL remains blocked in the lean release path',
+    );
+    expect(workflow).toContain(
+      "test \"$APPROVED_REVIEW_SHA256\" = \"$required\"",
+    );
+    expect(workflow).toContain(
+      "'.authorization.governanceReviewRequired'",
     );
   });
 

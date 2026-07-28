@@ -203,7 +203,7 @@ try {
       ...legacyResult.flags,
       docsOnly,
       pythonEngine: grouped.groups.includes('content-engine'),
-      migration: grouped.groups.includes('migrations'),
+      migration: legacyResult.flags.migration || grouped.groups.includes('migrations'),
       fullSuiteTrigger: false,
     },
   };
