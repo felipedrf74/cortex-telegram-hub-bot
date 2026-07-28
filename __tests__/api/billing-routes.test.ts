@@ -12,6 +12,38 @@ const mockLogAudit = vi.fn();
 const mockRecordCurrentLegalConsentForUser = vi.fn();
 const mockGetEffectiveEntitlement = vi.fn();
 
+// A genuinely Apple-signed JWS cannot be minted in a test. Setting
+// `hoisted.signedApplePayload` stands in for one; leaving it null keeps the
+// real structural + signature verifier in play.
+const hoisted = vi.hoisted(() => ({ signedApplePayload: null as Record<string, unknown> | null }));
+
+// appAccountToken derivation is keyed strictly on IOS_API_JWT_SECRET — there is
+// no source-literal fallback, because one would make every token forgeable by
+// anyone who can read the repo. The test env does not set that secret, so it is
+// supplied here; without it the route correctly returns a null token.
+vi.mock('../../src/config', async () => {
+  const actual = await vi.importActual<typeof import('../../src/config')>('../../src/config');
+  return {
+    ...actual,
+    config: {
+      ...actual.config,
+      ios: { ...actual.config.ios, jwtSecret: 'test-ios-jwt-secret-at-least-32-bytes-long' },
+    },
+  };
+});
+
+vi.mock('../../src/services/apple-jws-verifier', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/apple-jws-verifier')>('../../src/services/apple-jws-verifier');
+  return {
+    ...actual,
+    verifyAppleJws: (jws: string, options?: any) => (
+      hoisted.signedApplePayload
+        ? { header: { alg: 'ES256', x5c: ['stub'] }, payload: hoisted.signedApplePayload }
+        : (actual.verifyAppleJws as any)(jws, options)
+    ),
+  };
+});
+
 vi.mock('../../src/services/stripe-service', async () => {
   const actual = await vi.importActual<typeof import('../../src/services/stripe-service')>('../../src/services/stripe-service');
   return {
@@ -228,6 +260,7 @@ function legalAcceptance() {
 
 describe('billing routes', () => {
   beforeEach(() => {
+    hoisted.signedApplePayload = null;
     mockHandleAppleTransaction.mockReset();
     mockCreateCheckoutSessionForPlan.mockReset();
     mockCreatePortalSession.mockReset();
@@ -361,7 +394,7 @@ describe('billing routes', () => {
     expect(JSON.stringify(res.body)).not.toContain('sqlite write exploded');
   });
 
-  it('rejects Apple subscription transactions already claimed by another account', async () => {
+  it('rejects an Apple subscription claimed by another active account', async () => {
     const claimed = new Error('APPLE_TRANSACTION_ALREADY_CLAIMED');
     claimed.name = 'AppleTransactionAlreadyClaimedError';
     mockHandleAppleTransaction.mockImplementationOnce(() => {
@@ -383,6 +416,140 @@ describe('billing routes', () => {
     expect(res.body.ok).toBe(false);
     expect(res.body.error.code).toBe('APPLE_TRANSACTION_ALREADY_CLAIMED');
     expect(res.body.error.message).toContain('already attached');
+    expect(mockLogAudit).not.toHaveBeenCalled();
+  });
+
+  it('grants a Sandbox Apple transaction under NODE_ENV=production and records its provenance', async () => {
+    // App Review purchases carry environment 'Sandbox' even on an
+    // App-Store-Connect-distributed build. Rejecting them 403'd every reviewer
+    // purchase after the client had already called transaction.finish(), so
+    // nothing unlocked and the purchase was consumed. Guideline 2.1 blocker.
+    const originalNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    try {
+      const expiresDate = Date.now() + 7 * 86400000;
+      const purchaseDate = Date.now();
+      hoisted.signedApplePayload = {
+        bundleId: 'me.nexushub.app',
+        productId: 'me.nexushub.pro.monthly',
+        transactionId: '2000000123456793',
+        originalTransactionId: '2000000123456793',
+        environment: 'Sandbox',
+        appAccountToken: '01000000-6bd0-3a2e-4a24-8f1c9b0d5e77',
+        purchaseDate,
+        expiresDate,
+      };
+      mockHandleAppleTransaction.mockReturnValueOnce({
+        plan: 'pro',
+        period: 'monthly',
+        environment: 'Sandbox',
+        transferredFromUserId: null,
+      });
+
+      const res = await dispatch('POST', '/apple-verify', {
+        jwsTransaction: buildFakeJws(hoisted.signedApplePayload),
+      }, 42);
+
+      expect(res.statusCode).toBe(200);
+      expect(res.body.ok).toBe(true);
+      expect(mockHandleAppleTransaction).toHaveBeenCalledWith(
+        42,
+        '2000000123456793',
+        'me.nexushub.pro.monthly',
+        new Date(expiresDate).toISOString(),
+        new Date(purchaseDate).toISOString(),
+        { environment: 'Sandbox', appAccountToken: '01000000-6bd0-3a2e-4a24-8f1c9b0d5e77' },
+      );
+      expect(mockLogAudit).toHaveBeenCalledWith(expect.objectContaining({
+        action: 'create',
+        resource: 'billing.apple_verify.subscription',
+        details: expect.objectContaining({ environment: 'Sandbox' }),
+      }));
+    } finally {
+      if (originalNodeEnv === undefined) {
+        delete process.env.NODE_ENV;
+      } else {
+        process.env.NODE_ENV = originalNodeEnv;
+      }
+    }
+  });
+
+  it('refuses a transaction whose product id is not mapped to a plan', async () => {
+    const unknown = new Error('UNKNOWN_APPLE_PRODUCT');
+    unknown.name = 'UnknownAppleProductError';
+    mockHandleAppleTransaction.mockImplementationOnce(() => {
+      throw unknown;
+    });
+
+    const jwsTransaction = buildFakeJws({
+      bundleId: 'me.nexushub.app',
+      productId: 'me.nexushub.pro.monthly',
+      transactionId: '2000000123456795',
+      originalTransactionId: '2000000123456795',
+      environment: 'Production',
+      expiresDate: Date.now() + 7 * 86400000,
+    });
+
+    const res = await dispatch('POST', '/apple-verify', { jwsTransaction }, 99);
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error.code).toBe('UNKNOWN_PRODUCT');
+  });
+
+  it('exposes a stable appAccountToken for StoreKit purchases', async () => {
+    const first = await dispatch('GET', '/status', undefined, 42);
+    const second = await dispatch('GET', '/status', undefined, 42);
+    const other = await dispatch('GET', '/status', undefined, 43);
+
+    expect(first.body.data.appAccountToken).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+    );
+    expect(second.body.data.appAccountToken).toBe(first.body.data.appAccountToken);
+    expect(other.body.data.appAccountToken).not.toBe(first.body.data.appAccountToken);
+  });
+
+  it('preserves last-known billing state when the entitlement read fails', async () => {
+    const { getSubscriptionStatus } = await import('../../src/services/stripe-service');
+    const { isUserOverDailyCap } = await import('../../src/services/cost-guardrail');
+    vi.mocked(getSubscriptionStatus).mockReturnValueOnce({
+      plan: 'max',
+      period: 'monthly',
+      status: 'active',
+      provider: 'apple',
+      currentPeriodEnd: '2030-01-01T00:00:00.000Z',
+      cancelAtPeriodEnd: false,
+      isActive: true,
+      isPro: true,
+    });
+    // The quota resolver fails closed: plan 'none', no entitlement. That must
+    // not downgrade a paying account's billing identity.
+    vi.mocked(isUserOverDailyCap).mockReturnValueOnce({
+      plan: 'none',
+      entitlement: null,
+      over: true,
+      usageLevel: 'none',
+      usageFraction: 0,
+      dailyUsageFraction: 0,
+      monthlyUsageFraction: 0,
+      aiAccessAllowed: false,
+      blockReason: 'entitlement_error',
+      boostAvailable: false,
+      pointsPurchaseAvailable: false,
+      nexusPointsBalance: 0,
+      resetAt: '2026-05-21T00:00:00.000Z',
+      dailyResetAt: '2026-05-21T00:00:00.000Z',
+      monthlyResetAt: '2026-06-01T00:00:00.000Z',
+    } as any);
+
+    const res = await dispatch('GET', '/status', undefined, 42);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.data).toMatchObject({
+      plan: 'max',
+      status: 'active',
+      isActive: true,
+      isPro: true,
+    });
   });
 
   it('returns Nexus Points availability in billing status', async () => {

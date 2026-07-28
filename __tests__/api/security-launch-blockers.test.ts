@@ -9,6 +9,8 @@
  *   3. GDPR: delete table list covers all content-learning tables
  */
 
+import fs from 'fs';
+import path from 'path';
 import { describe, it, expect } from 'vitest';
 
 // ═══════════════════════════════════════════════════════════════════
@@ -70,6 +72,7 @@ describe('Apple billing JWS validation', () => {
     const badIds = ['fake123', 'abc', '', '12 34', '!@#$'];
     for (const id of badIds) {
       expect(/^\d{5,25}$/.test(id)).toBe(false);
+      expect(/^\d{1,25}$/.test(id)).toBe(false);
     }
   });
 
@@ -77,6 +80,17 @@ describe('Apple billing JWS validation', () => {
     const validIds = ['2000000123456789', '12345', '1000000000000000000000000'];
     for (const id of validIds) {
       expect(/^\d{5,25}$/.test(id)).toBe(true);
+    }
+  });
+
+  it('accepts short StoreKit Testing transaction IDs outside production only', () => {
+    // Xcode's local StoreKit configuration mints short sequential ids. The
+    // production pattern keeps the 5-digit floor; the dev pattern does not, so
+    // a local `.storekit` run can still verify against the backend.
+    const storeKitTestingIds = ['0', '1', '42'];
+    for (const id of storeKitTestingIds) {
+      expect(/^\d{5,25}$/.test(id)).toBe(false);
+      expect(/^\d{1,25}$/.test(id)).toBe(true);
     }
   });
 
@@ -92,17 +106,23 @@ describe('Apple billing JWS validation', () => {
     expect(expiryMs < Date.now() - 86400000).toBe(false);
   });
 
-  it('rejects sandbox environment in production mode', () => {
-    const isProduction = true;
-    const allowedEnvs = isProduction ? ['Production'] : ['Production', 'Sandbox', 'Xcode'];
-    expect(allowedEnvs.includes('Sandbox')).toBe(false);
+  it('never denies an Apple transaction on its environment claim', () => {
+    // App Review buys against the StoreKit sandbox even on an App-Store-Connect
+    // distributed build. The old `allowedEnvs` gate therefore 403'd every
+    // reviewer purchase in production while the client had already called
+    // transaction.finish(), consuming the purchase with nothing unlocked.
+    // Environment is provenance only now; re-introducing the gate is a
+    // guaranteed Guideline 2.1 rejection.
+    const source = fs.readFileSync(path.resolve(__dirname, '../../src/api/routes/billing.ts'), 'utf8');
+    expect(source).not.toContain('INVALID_ENVIRONMENT');
+    expect(source).not.toContain('allowedEnvs');
   });
 
-  it('allows sandbox environment in development mode', () => {
-    const isProduction = false;
-    const allowedEnvs = isProduction ? ['Production'] : ['Production', 'Sandbox', 'Xcode'];
-    expect(allowedEnvs.includes('Sandbox')).toBe(true);
-    expect(allowedEnvs.includes('Xcode')).toBe(true);
+  it('keeps JWS signature verification keyed on production', () => {
+    // Dropping the environment gate must not soften the separate x5c control.
+    const source = fs.readFileSync(path.resolve(__dirname, '../../src/api/routes/billing.ts'), 'utf8');
+    expect(source).toContain('verifyAppleJws(jwsTransaction, { requireX5c: isProduction })');
+    expect(source).toContain("sigErr?.message !== 'APPLE_JWS_MISSING_X5C' || isProduction");
   });
 
   it('round-trips a valid JWS payload correctly', () => {

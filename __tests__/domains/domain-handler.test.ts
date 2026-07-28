@@ -374,7 +374,11 @@ describe('handleSimpleDomain', () => {
     } as any);
 
     const result = await handleSimpleDomain('triathlon', 'When is my next race?');
-    expect(result).toEqual({ text: 'Your next race is in 3 weeks.', domain: 'triathlon' });
+    // Training answers now carry the non-diagnostic coach disclaimer
+    // (App Review 1.4.1) — see applyCoachAnswerSafety in domain-handler.ts.
+    expect(result.domain).toBe('triathlon');
+    expect(result.text).toContain('Your next race is in 3 weeks.');
+    expect(result.text).toMatch(/não um profissional de saúde|not a clinician/);
     expect(mockCallDomain).toHaveBeenCalledOnce();
   });
 
@@ -452,7 +456,8 @@ describe('handleSimpleDomain', () => {
 
     const result = await handleSimpleDomain('triathlon', 'hello', 5, 15);
 
-    expect(result).toEqual({ text: 'Recovered.', domain: 'triathlon' });
+    expect(result.domain).toBe('triathlon');
+    expect(result.text).toContain('Recovered.');
     expect(mockEnsureActiveProvider).toHaveBeenCalledOnce();
   });
 
@@ -473,7 +478,7 @@ describe('handleSimpleDomain', () => {
     } as any);
 
     const result = await handleSimpleDomain('triathlon', 'What is on my calendar?', 5, 15);
-    expect(result.text).toBe('You have a team call this week.');
+    expect(result.text).toContain('You have a team call this week.');
     expect(mockExecuteTool).toHaveBeenCalledWith('get_calendar_events', { start_date: '2026-03-30', end_date: '2026-04-06' }, 15);
     expect(mockContinue).toHaveBeenCalledOnce();
   });
@@ -560,7 +565,8 @@ describe('handleSimpleDomain', () => {
       (c) => c[2] === 'assistant',
     );
     // search_notes should appear only once despite being called twice
-    expect(storedCall![3]).toBe('[Tools: search_notes]\nFound notes.');
+    expect(storedCall![3]).toContain('[Tools: search_notes]\nFound notes.');
+    expect(storedCall![3].match(/search_notes/g)).toHaveLength(1);
   });
 
   it('stops at maxIterations and surfaces a cap-reached notice (Codex QA round 5)', async () => {

@@ -59,6 +59,10 @@ vi.mock('../../src/config', () => ({
       enabled: true,
       masterKey: 'test-export-master-key-for-tests!',
     },
+    // Sign in with Apple revocation starts UNCONFIGURED, which is production
+    // truth today. Tests that need the configured path opt in explicitly via
+    // configureAppleRevocationCredentials().
+    appleSignIn: { teamId: '', keyId: '', privateKey: '', clientId: 'me.nexushub.app' },
   },
 }));
 
@@ -70,6 +74,8 @@ import {
   revokeThirdPartyOAuthTokensForUser,
 } from '../../src/services/user-data-export';
 import { logAudit, getAuditTrail } from '../../src/services/audit-trail';
+import { config } from '../../src/config';
+import { encryptValue } from '../../src/utils/encryption';
 import { encryptTrainingProfileSnapshot } from '../../src/services/training-profile-snapshot-encryption';
 import { createContentArtifact, createContentWorkspaceItem } from '../../src/services/content-workspace';
 import { recordContentPerformanceOutcome } from '../../src/services/content-performance-lineage';
@@ -119,6 +125,44 @@ function seedCanonicalPerformanceTarget(input: {
     artifactId: artifact.id,
     revisionId: artifact.currentRevisionId!,
   };
+}
+
+const EXPORT_MASTER_KEY = 'test-export-master-key-for-tests!';
+const APPLE_TEST_P8_PEM = createSignInWithAppleTestKey();
+
+function createSignInWithAppleTestKey(): string {
+  const { privateKey } = require('node:crypto').generateKeyPairSync('ec', { namedCurve: 'P-256' });
+  return privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
+}
+
+function configureAppleRevocationCredentials(): void {
+  config.appleSignIn.teamId = 'TEAM123456';
+  config.appleSignIn.keyId = 'KEY7890123';
+  config.appleSignIn.privateKey = APPLE_TEST_P8_PEM;
+}
+
+function clearAppleRevocationCredentials(): void {
+  config.appleSignIn.teamId = '';
+  config.appleSignIn.keyId = '';
+  config.appleSignIn.privateKey = '';
+}
+
+/** Mark a seeded user as having signed in with Apple. */
+function markUserAsAppleSignIn(db: Database.Database, telegramId: number): void {
+  db.prepare('UPDATE users SET apple_user_id = ? WHERE telegram_id = ?')
+    .run(`apple-sub-${telegramId}`, telegramId);
+}
+
+/** Seed the encrypted Apple refresh token that makes remote revocation possible. */
+function seedAppleRefreshToken(
+  db: Database.Database,
+  userId: number,
+  refreshToken = 'apple-refresh-secret',
+): void {
+  db.prepare(`
+    INSERT INTO apple_sign_in_refresh_tokens (user_id, apple_user_id, client_id, encrypted_refresh_token)
+    VALUES (?, ?, 'me.nexushub.app', ?)
+  `).run(userId, `apple-sub-${userId}`, encryptValue(refreshToken, EXPORT_MASTER_KEY, userId));
 }
 
 // ── Helper: seed a user record ──
@@ -1254,9 +1298,11 @@ describe('deleteAllUserData', () => {
 describe('account deletion OAuth revocation', () => {
   beforeEach(() => {
     testDb = createMigratedTestDatabase();
+    clearAppleRevocationCredentials();
   });
   afterEach(() => {
     vi.unstubAllGlobals();
+    clearAppleRevocationCredentials();
     testDb.close();
   });
 
@@ -1306,6 +1352,187 @@ describe('account deletion OAuth revocation', () => {
     expect(fetchMock).toHaveBeenCalledOnce();
     expect(counts.user_oauth_tokens).toBe(1);
     expect(testDb.prepare('SELECT 1 FROM user_oauth_tokens WHERE user_id = 1').get()).toBeUndefined();
+  });
+
+  it('bounds every third-party revocation with an abort signal', async () => {
+    seedUser(testDb, 1);
+    testDb.prepare(`
+      INSERT INTO user_oauth_tokens (user_id, provider, access_token, refresh_token, token_type, scopes)
+      VALUES (1, 'google', 'google-access', 'google-refresh', 'Bearer', '[]')
+    `).run();
+    const fetchMock = vi.fn(async () => new Response('', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await revokeThirdPartyOAuthTokensForUser(1);
+
+    expect((fetchMock.mock.calls[0][1] as RequestInit).signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('completes deletion when a third-party revocation endpoint hangs and aborts', async () => {
+    seedUser(testDb, 1);
+    testDb.prepare(`
+      INSERT INTO user_oauth_tokens (user_id, provider, access_token, refresh_token, token_type, scopes)
+      VALUES (1, 'google', 'google-access', 'google-refresh', 'Bearer', '[]')
+    `).run();
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      throw new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+    }));
+
+    const counts = await deleteAllUserDataForAccountDeletion(1);
+
+    expect(counts.user_oauth_tokens).toBe(1);
+    expect(counts.users).toBe(1);
+    expect(testDb.prepare('SELECT 1 FROM users WHERE telegram_id = 1').get()).toBeUndefined();
+  });
+});
+
+// ── Sign in with Apple revocation (Guideline 5.1.1(v)) ──
+
+describe('account deletion Apple token revocation', () => {
+  beforeEach(() => {
+    testDb = createMigratedTestDatabase();
+    clearAppleRevocationCredentials();
+    seedUser(testDb, 1);
+    markUserAsAppleSignIn(testDb, 1);
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    clearAppleRevocationCredentials();
+    testDb.close();
+  });
+
+  it('revokes the Apple token remotely BEFORE erasing the local credential', async () => {
+    seedAppleRefreshToken(testDb, 1);
+    configureAppleRevocationCredentials();
+    let credentialPresentAtRevokeTime: boolean | null = null;
+    const fetchMock = vi.fn(async () => {
+      credentialPresentAtRevokeTime = !!testDb
+        .prepare('SELECT 1 FROM apple_sign_in_refresh_tokens WHERE user_id = 1').get();
+      return new Response('', { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const counts = await deleteAllUserDataForAccountDeletion(1);
+
+    expect(String(fetchMock.mock.calls[0][0])).toBe('https://appleid.apple.com/auth/revoke');
+    expect(String((fetchMock.mock.calls[0][1] as RequestInit).body)).toContain('apple-refresh-secret');
+    expect(credentialPresentAtRevokeTime).toBe(true);
+    expect(counts.apple_sign_in_refresh_tokens).toBe(1);
+    expect(testDb.prepare('SELECT 1 FROM apple_sign_in_refresh_tokens WHERE user_id = 1').get()).toBeUndefined();
+    expect(testDb.prepare('SELECT 1 FROM users WHERE telegram_id = 1').get()).toBeUndefined();
+  });
+
+  it('inventories the Apple credential as user-owned deletable data', () => {
+    seedAppleRefreshToken(testDb, 1);
+
+    expect(getAccountDeletionInventoryForUser(1).deletableTables.apple_sign_in_refresh_tokens).toBe(1);
+  });
+
+  it('reports apple as local_only when the Apple revocation env vars are unset', async () => {
+    seedAppleRefreshToken(testDb, 1);
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    const revocations = await revokeThirdPartyOAuthTokensForUser(1);
+
+    expect(revocations).toEqual([
+      expect.objectContaining({ provider: 'apple', attempted: false, status: 'local_only' }),
+    ]);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('still deletes the account when the Apple revocation env vars are unset', async () => {
+    seedAppleRefreshToken(testDb, 1);
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    const counts = await deleteAllUserDataForAccountDeletion(1);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(counts.apple_sign_in_refresh_tokens).toBe(1);
+    expect(counts.users).toBe(1);
+  });
+
+  it('records apple as local_only for an Apple user whose client never sent an authorization code', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    configureAppleRevocationCredentials();
+
+    const revocations = await revokeThirdPartyOAuthTokensForUser(1);
+
+    expect(revocations).toEqual([
+      expect.objectContaining({ provider: 'apple', attempted: false, status: 'local_only' }),
+    ]);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('still deletes the account when Apple rejects or drops the revocation call', async () => {
+    seedAppleRefreshToken(testDb, 1);
+    configureAppleRevocationCredentials();
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('appleid unreachable'); }));
+
+    const revocations = await revokeThirdPartyOAuthTokensForUser(1);
+    expect(revocations).toEqual([
+      expect.objectContaining({ provider: 'apple', attempted: true, status: 'failed' }),
+    ]);
+
+    const counts = await deleteAllUserDataForAccountDeletion(1);
+    expect(counts.apple_sign_in_refresh_tokens).toBe(1);
+    expect(counts.users).toBe(1);
+    expect(testDb.prepare('SELECT 1 FROM users WHERE telegram_id = 1').get()).toBeUndefined();
+  });
+
+  // Apple returns HTTP 400 for BOTH "this token is no longer accepted" and
+  // "your client credentials are wrong". Reporting the second as success would
+  // make the most likely first-deploy misconfiguration invisible, which is the
+  // one thing the un-testable live call cannot afford.
+  it('reports a misconfigured Apple client as failed, not already_revoked', async () => {
+    seedAppleRefreshToken(testDb, 1);
+    configureAppleRevocationCredentials();
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      '{"error":"invalid_client"}',
+      { status: 400 },
+    )));
+
+    await expect(revokeThirdPartyOAuthTokensForUser(1)).resolves.toEqual([
+      expect.objectContaining({ provider: 'apple', attempted: true, status: 'failed', statusCode: 400 }),
+    ]);
+  });
+
+  it('still reports a token Apple no longer accepts as already_revoked', async () => {
+    seedAppleRefreshToken(testDb, 1);
+    configureAppleRevocationCredentials();
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      '{"error":"invalid_grant"}',
+      { status: 400 },
+    )));
+
+    await expect(revokeThirdPartyOAuthTokensForUser(1)).resolves.toEqual([
+      expect.objectContaining({ provider: 'apple', attempted: true, status: 'already_revoked', statusCode: 400 }),
+    ]);
+  });
+
+  it('still deletes the account when the Apple revocation call times out', async () => {
+    seedAppleRefreshToken(testDb, 1);
+    configureAppleRevocationCredentials();
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      throw new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+    }));
+
+    const counts = await deleteAllUserDataForAccountDeletion(1);
+
+    expect(counts.apple_sign_in_refresh_tokens).toBe(1);
+    expect(testDb.prepare('SELECT 1 FROM apple_sign_in_refresh_tokens WHERE user_id = 1').get()).toBeUndefined();
+    expect(testDb.prepare('SELECT 1 FROM users WHERE telegram_id = 1').get()).toBeUndefined();
+  });
+
+  it('leaves non-Apple users out of the Apple revocation path entirely', async () => {
+    testDb.prepare('UPDATE users SET apple_user_id = NULL WHERE telegram_id = 1').run();
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(revokeThirdPartyOAuthTokensForUser(1)).resolves.toEqual([]);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 

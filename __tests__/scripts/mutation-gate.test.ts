@@ -1214,7 +1214,7 @@ describe('changed-critical mutation gate', () => {
       '__tests__/services/openai-provider.test.ts',
     ]));
     expect(mapping?.mutationTargets?.map(({ pattern }) => pattern)).toEqual([
-      'src/services/gemini-provider.ts:659-659',
+      'src/services/gemini-provider.ts:917-917',
       'src/services/openai-provider.ts:383-383',
       'src/services/openai-provider.ts:430-430',
       'src/services/openai-provider.ts:568-568',

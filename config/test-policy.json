@@ -2197,7 +2197,7 @@
         "sources": ["src/services/usage-metering.ts", "src/portal/snapshot-builder.ts", "src/services/gemini-provider.ts", "src/services/openai-provider.ts"],
         "mutationTargets": [
           {
-            "pattern": "src/services/gemini-provider.ts:659-659",
+            "pattern": "src/services/gemini-provider.ts:917-917",
             "anchor": "hasUnboundedProviderInjectedContext: true",
             "behavior": "Grounded Gemini calls reserve budget under the unbounded provider-context risk policy.",
             "replacementTest": "__tests__/services/gemini-provider.test.ts",
