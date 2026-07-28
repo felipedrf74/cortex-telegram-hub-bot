@@ -831,12 +831,27 @@ const SINGLE_TENANT_LIVE_TURNS: Partial<Record<DayToDayScenarioId, readonly stri
 // fixture remains stable while every persisted live baseline carries actual
 // EN, es-419, and pt-BR observations.
 const LIVE_TURN_OVERRIDES: Record<string, Pick<DayToDayTurn, 'id' | 'userMessage' | 'expectation'>> = {
+  'morning_planning:a2-move-workout': {
+    id: 'a2-move-workout',
+    userMessage: 'Move my workout because the client call moved earlier.',
+    expectation: {
+      expectedSkills: ['secretary', 'training'],
+      expectedDomain: 'secretary',
+      semanticMustInclude: ['conflict', 'workout', 'confirm'],
+      requiresConfirmation: false,
+      requiresClarification: true,
+    },
+  },
   'morning_planning:a3-confirm': {
     id: 'a3-delete-eval-target',
     userMessage: 'Delete only the task NEXUS_CHAT_EVAL_M2_TARGET. Do not delete any other task.',
     expectation: {
       expectedSkills: ['tasks'],
+      expectedDomain: 'tasks',
       semanticMustInclude: ['NEXUS_CHAT_EVAL_M2_TARGET', 'confirm'],
+      requiresToolCall: false,
+      expectedToolStatuses: [],
+      expectsVerifiedMutation: false,
       requiresConfirmation: true,
     },
   },
@@ -847,6 +862,8 @@ const LIVE_TURN_OVERRIDES: Record<string, Pick<DayToDayTurn, 'id' | 'userMessage
     userMessage: 'Confirm this decision',
     expectation: {
       expectedSkills: ['tasks'],
+      expectedDomain: 'tasks',
+      semanticMustInclude: ['NEXUS_CHAT_EVAL_M2_TARGET'],
       expectedToolStatuses: ['succeeded'],
       expectsVerifiedMutation: true,
       expectedSideEffects: [{
@@ -854,6 +871,48 @@ const LIVE_TURN_OVERRIDES: Record<string, Pick<DayToDayTurn, 'id' | 'userMessage
         params: { pageSize: 200 },
         mustNotIncludeText: ['NEXUS_CHAT_EVAL_M2_TARGET'],
       }],
+    },
+  },
+  'training_adjustment:b2-tired': {
+    id: 'b2-tired',
+    userMessage: 'I am tired today and slept badly.',
+    expectation: {
+      expectedSkills: ['training'],
+      expectedDomain: 'training',
+      semanticMustInclude: ['recovery', 'adjust'],
+    },
+  },
+  'training_adjustment:b3-adjust': {
+    id: 'b3-adjust',
+    userMessage: 'Adjust the session and move it later if needed.',
+    expectation: {
+      expectedSkills: ['secretary', 'training'],
+      expectedDomain: 'secretary',
+      semanticMustInclude: ['Training', 'later', 'confirm'],
+      requiresConfirmation: false,
+      requiresClarification: true,
+    },
+  },
+  'cooking_fueling:c2-meal-prep': {
+    id: 'c2-meal-prep',
+    userMessage: 'Find time for meal prep around it.',
+    expectation: {
+      expectedSkills: ['secretary', 'cooking', 'training'],
+      expectedDomain: 'secretary',
+      semanticMustInclude: ['meal prep', 'Training', 'confirm'],
+      requiresConfirmation: false,
+      requiresClarification: true,
+    },
+  },
+  'finance_schedule:d2-review': {
+    id: 'd2-review',
+    userMessage: 'Schedule a budget review before I decide.',
+    expectation: {
+      expectedSkills: ['secretary', 'finance'],
+      expectedDomain: 'secretary',
+      semanticMustInclude: ['budget review', 'confirm'],
+      requiresConfirmation: false,
+      requiresClarification: true,
     },
   },
   'cooking_fueling:c1-fueling-before': {
@@ -874,6 +933,17 @@ const LIVE_TURN_OVERRIDES: Record<string, Pick<DayToDayTurn, 'id' | 'userMessage
       expectedDomain: 'content',
       semanticMustInclude: ['contenido', 'ideas'],
       expectedLanguage: 'es-419',
+    },
+  },
+  'frustrated_contradictory:l2-frustrated': {
+    id: 'l2-frustrated',
+    userMessage: 'You are not listening. I said keep the plan and remove the calendar block.',
+    expectation: {
+      expectedSkills: ['secretary', 'training'],
+      expectedDomain: 'secretary',
+      semanticMustInclude: ['keep the Training plan', 'remove calendar block', 'confirm'],
+      requiresConfirmation: false,
+      requiresClarification: true,
     },
   },
 };

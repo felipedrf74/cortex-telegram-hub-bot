@@ -527,7 +527,7 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
   // "what's my day", "o que tenho hoje", "/day", "today", "hoje", "mostra meu dia"
   {
     id: 'day_overview',
-    pattern: /^(?:what(?:'s| is)(?: on)? my (?:day|schedule)(?: today)?|what do i have today|(?:o que|como)(?: está| é)?(?: o)? meu dia|(?:show|mostra) (?:my |meu |o )?(?:day|dia)|\/day|today|hoje|o que tenho hoje|o que tenho na agenda hoje|qual(?:'s)? (?:my |a minha )?agenda(?: today| hoje)?)[\s?!.]*$/i,
+    pattern: /^(?:what(?:'s| is)(?: on)? my (?:day|schedule)(?: today)?|what do i (?:have|need to do) today|(?:o que|como)(?: está| é)?(?: o)? meu dia|(?:show|mostra) (?:my |meu |o )?(?:day|dia)|\/day|today|hoje|o que tenho hoje|o que tenho na agenda hoje|qual(?:'s)? (?:my |a minha )?agenda(?: today| hoje)?)[\s?!.]*$/i,
     handler: async (userId, _match, lang, tenantId) => {
       const c = copyForLang(lang);
       const tasksOk = isSubmoduleEnabled('secretary', 'tasks');
@@ -558,7 +558,9 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
       const todayStr = day
         .setLocale(localeForLang(lang))
         .toFormat(lang.startsWith('pt') ? 'cccc, dd LLLL yyyy' : 'cccc, LLLL dd yyyy');
-      let msg = `📅 <b>${todayStr}</b>\n\n`;
+      let msg = lang.startsWith('pt')
+        ? `Hoje — calendário e prioridade:\n📅 <b>${todayStr}</b>\n\n`
+        : `Today's calendar and priority plan:\n📅 <b>${todayStr}</b>\n\n`;
 
       // Calendar events block
       if (events.length > 0) {

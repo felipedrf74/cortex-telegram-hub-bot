@@ -5,7 +5,6 @@ import type {
   ChatLiveEvalRequestContext,
   ChatLiveEvalScenarioId,
 } from './chat-live-evaluation-contract';
-import { runWithApiUsageAttribution } from './api-usage-attribution';
 
 export const CHAT_LIVE_EVAL_SEED_PROFILE_VERSION = 'single-tenant-live-v2';
 
@@ -73,19 +72,24 @@ export function runWithChatLiveEvalContext<T>(
   context: ChatLiveEvalRequestContext,
   fn: () => T,
 ): T {
-  return activeContext.run(context, () => runWithApiUsageAttribution({
-    requestSource: 'interactive',
-    baseCategory: context.targetBaseCategory,
-    jobName: context.scenarioId
-      ? `chat_live_eval:${context.scenarioId}`
-      : null,
-    runId: context.runId,
-  }, fn));
+  return activeContext.run(context, fn);
 }
 
 export function getCurrentChatLiveEvalSeedBlock(): string {
   const context = activeContext.getStore();
   return context?.scenarioId ? buildChatLiveEvalSeedBlock(context.scenarioId) : '';
+}
+
+/**
+ * Returns true only inside the authenticated local-engine request scope that
+ * the chat eval route established. An environment variable alone cannot
+ * manufacture this request-local authority.
+ */
+export function isCurrentChatLiveEvalLocalEngine(): boolean {
+  const context = activeContext.getStore();
+  return context?.mode === 'local_engine'
+    && context.providerPolicy === 'ollama_only_zero_cloud'
+    && context.productionDataUsed === false;
 }
 
 /**

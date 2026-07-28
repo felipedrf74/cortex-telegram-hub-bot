@@ -313,7 +313,7 @@ export interface ClassifyOptions {
   userId?: number;
   tenantId?: number;
   requestId?: string;
-  source?: 'live' | 'shadow';
+  source?: 'live' | 'shadow' | 'evaluation';
   recordUsage?: boolean;
   timeoutMs?: number;
   abortSignal?: AbortSignal;
@@ -331,7 +331,9 @@ export interface AIProvider {
    * callers omit it; providers default to live behavior (write api_usage,
    * respect rate limits, no cancellation signal). Shadow callers in
    * `classify-shadow.ts` set `source: 'shadow'` and pass an
-   * `abortSignal` for caller-side timeout cancellation.
+   * `abortSignal` for caller-side timeout cancellation. The governed
+   * local-engine harness uses `source: 'evaluation'`; providers must still
+   * independently enforce their evaluation-mode capability gate.
    */
   classify(
     message: string,

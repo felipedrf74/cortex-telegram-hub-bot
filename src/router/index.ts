@@ -126,6 +126,7 @@ const CONTEXT_FOLLOW_UP_PATTERNS = [
 
 const CONTENT_REFINEMENT_PATTERNS = [
   /\b(make it|make this|rewrite|shorten|translate|adapt|turn it into|rework|make it shorter|make this shorter)\b/i,
+  /\b(saved\s+books?|channel\s+references?|saved\s+references?|reference\s+library)\b/i,
   /\b(reescrev(?:e|a)|encurt(?:a|e)|resume|resuma|traduz|adapta|transforma|melhora|faz)\b/i,
   /\b(in\s+portuguese|in\s+english|portugu[eê]s|portugues|ingl[eê]s|european\s+portuguese|portugu[eê]s\s+europeu|mais\s+curt[oa]|mais\s+long[oa])\b/i,
 ];
@@ -143,6 +144,7 @@ const SECRETARY_REFINEMENT_PATTERNS = [
 
 const TRIATHLON_REFINEMENT_PATTERNS = [
   /\b(make it easier|make it harder|make it shorter|make it longer|move it to|swap it for|change the session|change the workout|keep the same plan|after the workout|before the workout|after the ride|before the run)\b/i,
+  /\b(tired|fatigued|slept\s+badly|poor\s+sleep|didn'?t\s+sleep\s+well|low\s+energy)\b/i,
   /\b(deixa mais leve|deixa mais forte|deixa mais curto|deixa mais longo|muda para|troca por|altera o treino|mant[eé]m o plano|depois do treino|antes do treino|depois da corrida|antes da bike)\b/i,
 ];
 

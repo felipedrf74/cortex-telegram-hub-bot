@@ -26,6 +26,7 @@ import {
 export {
   CHAT_LIVE_EVAL_SEED_PROFILE_VERSION,
   getCurrentChatLiveEvalSeedBlock,
+  isCurrentChatLiveEvalLocalEngine,
   runWithChatLiveEvalContext,
 } from './chat-live-evaluation-context';
 

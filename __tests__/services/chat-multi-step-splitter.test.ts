@@ -39,6 +39,15 @@ describe('chat multi-step splitter', () => {
     expect(split.overflowCount).toBe(0);
   });
 
+  it('does not treat a negated safety boundary as a second action', () => {
+    const split = splitChatMultiStepRequest(
+      'Delete only the task NEXUS_CHAT_EVAL_M2_TARGET. Do not delete any other task.',
+    );
+    expect(split.classification).toBe('single');
+    expect(split.segments).toHaveLength(1);
+    expect(split.segments[0].text).toContain('NEXUS_CHAT_EVAL_M2_TARGET');
+  });
+
   // M16: segments beyond the cap are counted, never silently dropped — the
   // response layer discloses the overflow to the user.
   it('caps at 5 segments and reports the overflow count', () => {

@@ -147,6 +147,7 @@ export const legacyTailStage: ChatStage = {
         fallbackConfidence: route.confidence,
         actionability: 'answer_only',
         verificationStatus: 'not_required',
+        routingDecision,
         stageFamily: 'domain_shortcut',
         requestStartedAt,
       });
@@ -226,6 +227,7 @@ export const legacyTailStage: ChatStage = {
             });
           },
         },
+        { locale: chatCoreV2RouteLocale },
       ));
     } catch (err) {
       if (!(err instanceof ChatDomainTimeoutError) || err.checkpoints.length === 0) throw err;

@@ -154,7 +154,37 @@ export function buildMessageOnlyPlan(input: ChatPlannerInput, text: string, sign
   };
 }
 
-export function buildClarificationPlan(input: ChatPlannerInput, question: string): ChatActionPlan {
+export function buildAnswerOnlyPlan(input: ChatPlannerInput, opts: {
+  skill: ChatActionSkill;
+  action: ChatActionName;
+  text: string;
+  involvedSkills: string[];
+  routingSignal: string;
+}): ChatActionPlan {
+  const step: ChatPlanStep = {
+    stepId: `step-${randomUUID()}`,
+    skill: opts.skill,
+    type: 'answer',
+    action: opts.action,
+    risk: 'read_only',
+    riskClass: 'R0',
+    provider: 'nexus',
+    args: { text: opts.text },
+    requiredArgsPresent: true,
+    idempotencyKey: buildStepIdempotencyKey(input, opts.action, { text: input.text }),
+    verification: { required: false, method: 'none' },
+  };
+  return {
+    ...buildPlanFromSteps(input, [step], [opts.routingSignal], 0.99),
+    involvedSkills: [...new Set(opts.involvedSkills)],
+  };
+}
+
+export function buildClarificationPlan(
+  input: ChatPlannerInput,
+  question: string,
+  involvedSkills?: string[],
+): ChatActionPlan {
   return {
     schemaVersion: 1,
     userId: String(input.userId),
@@ -179,6 +209,7 @@ export function buildClarificationPlan(input: ChatPlannerInput, question: string
       idempotencyKey: buildStepIdempotencyKey(input, 'schedule_event', { text: input.text }),
       verification: { required: false, method: 'none' },
     }],
+    ...(involvedSkills?.length ? { involvedSkills: [...new Set(involvedSkills)] } : {}),
     requiresConfirmation: false,
     clarificationQuestion: question,
     clarificationReason: 'ambiguous_intent',

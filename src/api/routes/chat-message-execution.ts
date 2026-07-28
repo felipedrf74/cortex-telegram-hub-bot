@@ -9,6 +9,7 @@ import type { RouteResult } from '../../router';
 import type { ChatDomainHandler } from './chat-message-context';
 import type { ChatResponseBlock } from '../../services/chat-response-blocks';
 import type { ChatResponseCard } from '../../services/chat-response-cards';
+import { runWithChatRequestLocale } from '../../services/chat-request-locale-context';
 
 export const CHAT_DOMAIN_HANDLER_TIMEOUT_MS = 40_000;
 
@@ -161,8 +162,14 @@ export async function executeChatDomainHandler(
       error: unknown,
     ): void;
   },
+  requestContext?: {
+    locale?: string | null;
+  },
 ): Promise<ChatDomainExecutionResult> {
-  const handlerPromise = handler(message, userId, tenantId);
+  const handlerPromise = runWithChatRequestLocale(
+    requestContext?.locale,
+    () => handler(message, userId, tenantId),
+  );
   let timeout: ReturnType<typeof setTimeout> | undefined;
   const timeoutPromise = new Promise<never>((_, reject) => {
     timeout = setTimeout(() => {

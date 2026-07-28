@@ -1,6 +1,10 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { AsyncLocalStorage } from 'async_hooks';
+import {
+  getCurrentContext,
+  type RequestContext,
+} from '../utils/request-context';
 
 export type AiRequestSource = 'interactive' | 'automation' | 'system';
 
@@ -12,6 +16,7 @@ export interface ApiUsageAttribution {
 }
 
 const apiUsageContext = new AsyncLocalStorage<Partial<ApiUsageAttribution>>();
+const apiUsageContextByRequest = new WeakMap<RequestContext, Partial<ApiUsageAttribution>>();
 
 function clean(value: string | null | undefined, maxLength = 160): string | null {
   if (typeof value !== 'string') return null;
@@ -44,11 +49,28 @@ export function enterApiUsageAttribution(
   attribution: Partial<ApiUsageAttribution>,
 ): () => void {
   const previous = apiUsageContext.getStore();
-  apiUsageContext.enterWith({ ...(previous ?? {}), ...attribution });
+  const requestContext = getCurrentContext();
+  const previousRequestContext = requestContext
+    ? apiUsageContextByRequest.get(requestContext)
+    : undefined;
+  const entered = {
+    ...(previousRequestContext ?? {}),
+    ...(previous ?? {}),
+    ...attribution,
+  };
+  apiUsageContext.enterWith(entered);
+  if (requestContext) apiUsageContextByRequest.set(requestContext, entered);
   let restored = false;
   return () => {
     if (restored) return;
     restored = true;
+    if (requestContext) {
+      if (previousRequestContext) {
+        apiUsageContextByRequest.set(requestContext, previousRequestContext);
+      } else {
+        apiUsageContextByRequest.delete(requestContext);
+      }
+    }
     apiUsageContext.enterWith(previous ?? {});
   };
 }
@@ -61,7 +83,12 @@ export function resolveApiUsageAttribution(
   const definedExplicit = Object.fromEntries(
     Object.entries(explicit ?? {}).filter(([, value]) => value !== undefined),
   ) as Partial<ApiUsageAttribution>;
-  const current = { ...(apiUsageContext.getStore() ?? {}), ...definedExplicit };
+  const requestContext = getCurrentContext();
+  const current = {
+    ...(apiUsageContext.getStore() ?? {}),
+    ...(requestContext ? apiUsageContextByRequest.get(requestContext) ?? {} : {}),
+    ...definedExplicit,
+  };
   const requestSource = current.requestSource
     ?? (Number.isFinite(userId) && userId > 0 ? 'interactive' : 'system');
   return {
@@ -73,5 +100,11 @@ export function resolveApiUsageAttribution(
 }
 
 export function getCurrentApiUsageAttribution(): Partial<ApiUsageAttribution> | undefined {
-  return apiUsageContext.getStore();
+  const requestContext = getCurrentContext();
+  const requestAttribution = requestContext
+    ? apiUsageContextByRequest.get(requestContext)
+    : undefined;
+  const asyncContext = apiUsageContext.getStore();
+  if (!requestAttribution && !asyncContext) return undefined;
+  return { ...(asyncContext ?? {}), ...(requestAttribution ?? {}) };
 }

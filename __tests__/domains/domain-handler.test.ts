@@ -96,6 +96,7 @@ import { executeToolCall } from '../../src/services/tool-executor';
 import { now } from '../../src/utils/date-parser';
 import { callDomain, continueWithToolResults } from '../../src/services/anthropic';
 import { setCookingPreferenceMemory } from '../../src/services/cooking-preferences';
+import { runWithChatRequestLocale } from '../../src/services/chat-request-locale-context';
 
 // Use the provider-routed mocks (domain-handler now calls getActiveProvider().callDomain)
 const mockCallDomain = mockCallDomainFn;
@@ -380,6 +381,39 @@ describe('handleSimpleDomain', () => {
     expect(result.text).toContain('Your next race is in 3 weeks.');
     expect(result.text).toMatch(/não um profissional de saúde|not a clinician/);
     expect(mockCallDomain).toHaveBeenCalledOnce();
+  });
+
+  it('anchors a direct today-workout answer without replacing provider detail', async () => {
+    mockCallDomain.mockResolvedValue({
+      text: 'Keep the long run easy and conversational.',
+      toolCalls: [],
+      stopReason: 'end_turn',
+    } as any);
+
+    const result = await handleSimpleDomain('triathlon', "What's today's workout?", 5, 15);
+
+    expect(result.text).toContain("Today's workout");
+    expect(result.text).toContain('Keep the long run easy and conversational.');
+  });
+
+  it('adds the explicit request locale to the provider prompt without changing user text', async () => {
+    mockCallDomain.mockResolvedValue({
+      text: 'Ideas de contenido.',
+      toolCalls: [],
+      stopReason: 'end_turn',
+    } as any);
+
+    await runWithChatRequestLocale('es-419', () => (
+      handleSimpleDomain('content', 'Dame ideas de contenido', 5, 42)
+    ));
+
+    expect(mockCallDomain).toHaveBeenCalledWith(
+      'content',
+      expect.any(Array),
+      'Dame ideas de contenido',
+      expect.stringContaining('requested_locale="es-419"'),
+      expect.any(Object),
+    );
   });
 
   it('returns an honest unavailable response when no routed provider exists and Anthropic direct fallback is disabled', async () => {

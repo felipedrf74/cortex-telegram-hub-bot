@@ -17,6 +17,20 @@ import {
   buildPlanFromSteps,
 } from './plan-builder';
 
+const ACTION_SKILL_TO_CANONICAL_SKILL: Partial<Record<ChatActionSkill, string>> = {
+  secretary_calendar: 'secretary',
+  secretary_reminders: 'secretary',
+  mail: 'secretary',
+  tasks: 'secretary',
+  training: 'training',
+  content: 'content',
+  cooking: 'cooking',
+  finance: 'finance',
+  connections: 'connections',
+  notifications: 'notifications',
+  decision_center: 'decision_center',
+};
+
 // Phase 2 batch 7 (2026-05-15): top-of-planner prompt-injection refusal.
 // Emits a refusal-shape step (`requiredArgsPresent: false`,
 // `args.rejectedRequest = <original text>`) instead of letting a mutation
@@ -88,12 +102,14 @@ function buildSafetyRefusalPlan(
     },
     requiredArgsPresent: false,
   });
-  return buildPlanFromSteps(
+  const plan = buildPlanFromSteps(
     input,
     [step],
     routingSignals,
     0.55,
   );
+  plan.involvedSkills = [ACTION_SKILL_TO_CANONICAL_SKILL[primary.skill] ?? primary.skill];
+  return plan;
 }
 
 function containsSensitiveDataExfiltrationRequest(text: string): boolean {
@@ -121,6 +137,7 @@ function containsBulkDestructiveRequest(text: string): boolean {
 // task-title unsafe checks, which catch destructive natural-language vocabulary.
 export function containsPromptInjectionMarker(title: string): boolean {
   return /\bignore\s+(?:previous|all|prior)\s+instructions?\b/i.test(title)
+    || /\bignore\s+(?:tenant|workspace|authorization|access|security)\s+(?:rules?|boundar(?:y|ies)|checks?|policy|policies)\b/i.test(title)
     || /\bignore\s+(?:all\s+)?access\s+checks?\b/i.test(title)
     || /\bbypass\s+(?:all\s+)?access\s+checks?\b/i.test(title)
     || /\benable\s+every\s+skill\b/i.test(title)
@@ -131,6 +148,7 @@ export function containsPromptInjectionMarker(title: string): boolean {
     || /\[\/?(?:INST|SYS|SYSTEM)\]/i.test(title)
     || /<\|(?:system|user|assistant)\|>/i.test(title)
     || /\bsystem\s+prompt\s*:/i.test(title)
+    || /\b(?:print|show|reveal|expose|dump)\b[^.\n]{0,80}\bhidden\s+(?:tool|system|developer|model)\s+(?:context|prompt|instructions?|reasoning)\b/i.test(title)
     // Phase 2 batch 7 (2026-05-15): Portuguese injection markers. The same
     // refusal contract applies: these phrasings target the LLM rather than
     // describing what the user wants. Limited to forms that are unambiguous

@@ -7,6 +7,7 @@ import {
 } from '../../src/services/chat-live-evaluation-contract';
 import {
   CHAT_LIVE_EVAL_SEED_PROFILE_VERSION,
+  isCurrentChatLiveEvalLocalEngine,
   getCurrentChatLiveEvalSeedBlock,
   prepareChatLiveEvalScenario,
   runWithChatLiveEvalContext,
@@ -15,7 +16,6 @@ import {
   buildConfirmedDestructiveTargetsForPlanSteps,
   buildDeterministicChatActionPlan,
 } from '../../src/services/chat';
-import { getCurrentApiUsageAttribution } from '../../src/services/api-usage-attribution';
 
 function context(scenarioId: ChatLiveEvalRequestContext['scenarioId'] = 'morning_planning'): ChatLiveEvalRequestContext {
   return {
@@ -35,23 +35,17 @@ function context(scenarioId: ChatLiveEvalRequestContext['scenarioId'] = 'morning
 describe('chat live-evaluation scenario state', () => {
   it('injects fixed server-owned synthetic context only inside the scenario async scope', async () => {
     expect(getCurrentChatLiveEvalSeedBlock()).toBe('');
-    expect(getCurrentApiUsageAttribution()).toBeUndefined();
+    expect(isCurrentChatLiveEvalLocalEngine()).toBe(false);
     await runWithChatLiveEvalContext(context(), async () => {
-      await Promise.resolve();
       const block = getCurrentChatLiveEvalSeedBlock();
       expect(block).toContain(CHAT_LIVE_EVAL_SEED_PROFILE_VERSION);
       expect(block).toContain('09:00 standup');
       expect(block).toContain('14:00 client call');
       expect(block).not.toContain('chat-eval-state-test');
-      expect(getCurrentApiUsageAttribution()).toEqual({
-        requestSource: 'interactive',
-        baseCategory: 'chat_live_eval_local',
-        jobName: 'chat_live_eval:morning_planning',
-        runId: 'chat-eval-state-test',
-      });
+      expect(isCurrentChatLiveEvalLocalEngine()).toBe(true);
     });
     expect(getCurrentChatLiveEvalSeedBlock()).toBe('');
-    expect(getCurrentApiUsageAttribution()).toBeUndefined();
+    expect(isCurrentChatLiveEvalLocalEngine()).toBe(false);
   });
 
   it('resets only the dedicated authenticated scope and records aggregate preparation evidence', () => {
