@@ -12,11 +12,13 @@ const classify = vi.hoisted(() => vi.fn(async () => ({
   confidence: 0.91,
 })));
 
-vi.mock('../../src/services/provider-registry', () => ({
+vi.mock('../../src/services/provider-registry', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../src/services/provider-registry')>(),
   getActiveProvider: () => ({ name: 'ollama', classify }),
 }));
 
-vi.mock('../../src/services/anthropic', () => ({
+vi.mock('../../src/services/anthropic', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../src/services/anthropic')>(),
   classifyMessage: vi.fn(),
 }));
 
