@@ -31,6 +31,7 @@ const RECEIPT_SCHEMA = 'nexus.ollama-systemd-install-receipt.v1';
 const ROLLBACK_SCHEMA = 'nexus.ollama-systemd-install-rollback.v1';
 const TERMINAL_STATUSES = new Set(['commit_complete', 'rollback_complete']);
 const MAX_BYTES = 1024 * 1024;
+const MAX_SYSTEMCTL_EXECUTABLE_BYTES = 4 * 1024 * 1024;
 const MAX_RUNTIME_BINARY_BYTES = 256 * 1024 * 1024;
 const PRODUCTION_TAGS_URL = 'http://127.0.0.1:11434/api/tags';
 const PRODUCTION_RUNTIME_IDENTITY = Object.freeze({
@@ -1200,7 +1201,10 @@ function options() {
   }
   validateSecureDirectory(backups, 'Ollama install backup directory', 0o700);
   validateTargetParent(dropIn);
-  validateRegular(systemctl, 'systemctl executable', { owner: null });
+  validateRegular(systemctl, 'systemctl executable', {
+    owner: null,
+    maximum: MAX_SYSTEMCTL_EXECUTABLE_BYTES,
+  });
   return {
     stateRoot,
     backups,
