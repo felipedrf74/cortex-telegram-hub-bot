@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Small shared guards used by local verification and the lean release operator.
 
+declare -a RELEASE_LOCAL_LOCK_DIRS=()
+
 release_require_git_worktree() {
   local root="$1"
   [ "$(git -C "$root" rev-parse --is-inside-work-tree 2>/dev/null)" = true ] || {
@@ -61,14 +63,17 @@ release_acquire_local_lock() {
     printf 'createdAt=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   } > "$lock_dir/owner"
   chmod 600 "$lock_dir/owner"
-  RELEASE_LOCAL_LOCK_DIRS="${RELEASE_LOCAL_LOCK_DIRS:-} $lock_dir"
+  RELEASE_LOCAL_LOCK_DIRS+=("$lock_dir")
 }
 
 release_cleanup_all_locks() {
   local lock_dir
-  for lock_dir in ${RELEASE_LOCAL_LOCK_DIRS:-}; do
+  if [ "${#RELEASE_LOCAL_LOCK_DIRS[@]}" -eq 0 ]; then
+    return 0
+  fi
+  for lock_dir in "${RELEASE_LOCAL_LOCK_DIRS[@]}"; do
     rm -f -- "$lock_dir/owner"
     rmdir "$lock_dir" 2>/dev/null || true
   done
-  RELEASE_LOCAL_LOCK_DIRS=""
+  RELEASE_LOCAL_LOCK_DIRS=()
 }

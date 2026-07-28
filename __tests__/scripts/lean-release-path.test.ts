@@ -35,9 +35,11 @@ function fixture(options: { docsOnly?: boolean; governanceReview?: boolean } = {
   }];
   const digest = releaseArtifactDigest(files);
   const runtimeSha = 'a'.repeat(40);
-  const deployedSha = JSON.parse(
+  const protectedReleaseState = JSON.parse(
     fs.readFileSync(path.resolve('docs/release/release-state.json'), 'utf8'),
-  ).backend.runtimeSha;
+  );
+  const deployedSha = protectedReleaseState.backend.runtimeSha;
+  const deployedDigest = protectedReleaseState.backend.artifactDigest;
   fs.writeFileSync(path.join(bundle, 'artifact-manifest.json'), `${JSON.stringify({
     schema: RELEASE_ARTIFACT_SCHEMA,
     generatedAt: new Date().toISOString(),
@@ -103,7 +105,7 @@ function fixture(options: { docsOnly?: boolean; governanceReview?: boolean } = {
   }));
   return {
     root, bundle, shards, selection, selectedResult, policy, migrations, digest, runtimeSha,
-    deployedSha, governanceSubject,
+    deployedSha, deployedDigest, governanceSubject,
     deterministic,
     output: path.join(root, 'release-manifest.json'),
   };
@@ -505,7 +507,7 @@ describe('lean exact-artifact release path', () => {
       phase: 'completed',
       status: 'passed',
       predecessorSha: value.deployedSha,
-      predecessorDigest: 'f'.repeat(64),
+      predecessorDigest: value.deployedDigest,
     });
     fs.mkdirSync(fakeBin);
     fs.writeFileSync(path.join(fakeBin, 'ssh'), `#!/usr/bin/env bash
@@ -525,6 +527,7 @@ esac
       transactionId,
       value.output,
       sha256(fs.readFileSync(value.output)),
+      value.deployedDigest,
     ];
     const environment = {
       ...process.env,
@@ -699,20 +702,48 @@ db.close();
     expect(remote).toContain(
       '[ "$PREDECESSOR_SHA" = "$EXPECTED_PREDECESSOR_SHA" ]',
     );
+    expect(remote).toContain(
+      '[ "$PREDECESSOR_DIGEST" = "$EXPECTED_PREDECESSOR_DIGEST" ]',
+    );
     expect(remote.indexOf(
       '[ "$PREDECESSOR_SHA" = "$EXPECTED_PREDECESSOR_SHA" ]',
     )).toBeLessThan(remote.indexOf('switch_current "$RELEASE_DIR"'));
-    expect(promote).toContain('"$STABILITY_SECONDS" "$EXPECTED_PREDECESSOR_SHA"');
+    expect(promote).toContain(
+      '"$STABILITY_SECONDS" "$EXPECTED_PREDECESSOR_SHA" "$EXPECTED_PREDECESSOR_DIGEST"',
+    );
     expect(remote).toContain('read_installed_release_identity');
     expect(remote).toContain('verify_installed_runtime');
     expect(remote).toContain(
       'health_once "$PREDECESSOR" "$PREDECESSOR_SHA" "$PREDECESSOR_DIGEST"',
     );
     expect(remote).toContain(
-      '--root "$runtime" --digest',
+      '--verify-installed-source "$runtime"',
     );
     expect(remote).toContain(
-      'scripts/release-runtime-dependencies.mjs verify-extracted',
+      '--require-declared-file scripts/release-installed-tree-attestation.mjs',
+    );
+    expect(remote).toContain(
+      '"$runtime/scripts/release-installed-tree-attestation.mjs" validate',
+    );
+    expect(remote).toContain(
+      '"$SOURCE_BUNDLE/scripts/release-runtime-dependencies.mjs" \\\n'
+      + '      verify-extracted',
+    );
+    expect(operator).toContain('--chmod=Du=rwx,Dgo=,Fu=rw,Fgo=');
+    expect(operator).toContain(
+      'x.message==="transaction stopped before runtime mutation"',
+    );
+    expect(operator).toContain(
+      'EXPECTED_STAGING_PREDECESSOR_SHA="$CANONICAL_DEPLOYED_SHA"',
+    );
+    expect(operator).toContain(
+      'sha=x.runtimeSha;digest=x.artifactDigest',
+    );
+    expect(operator).toContain(
+      'sha=x.predecessorSha;digest=x.predecessorDigest',
+    );
+    expect(operator).toContain(
+      'x.rollbackDurationMs<=x.rollbackObjectiveSeconds*1000',
     );
     expect(remote).toContain('PRE_PROMOTION_BACKUP=passed');
     expect(remote).toContain('authenticated_runtime_smoke');
@@ -733,6 +764,43 @@ db.close();
       remote.match(/ROLLBACK_HEALTH_BUDGET_SECONDS=(\d+)/)?.[1],
     );
     expect(candidateBudget + recoveryBudget).toBeLessThanOrEqual(120);
+  });
+
+  it('cleans a release lock when the checkout path contains spaces', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus release lock '));
+    roots.push(root);
+    const gate = path.resolve('scripts/lib/release-gates.sh');
+    const result = spawnSync('bash', [
+      '-c',
+      [
+        'set -euo pipefail',
+        'source "$1"',
+        'release_acquire_local_lock "$2" release',
+        'release_cleanup_all_locks',
+        'test ! -e "$2/.local/release/locks/release.lock"',
+      ].join('\n'),
+      'release-lock-test',
+      gate,
+      root,
+    ], { encoding: 'utf8' });
+
+    expect(result.status, result.stderr).toBe(0);
+  });
+
+  it('cleans an empty release lock set under macOS Bash nounset semantics', () => {
+    const gate = path.resolve('scripts/lib/release-gates.sh');
+    const result = spawnSync('/bin/bash', [
+      '-c',
+      [
+        'set -euo pipefail',
+        'source "$1"',
+        'release_cleanup_all_locks',
+      ].join('\n'),
+      'release-empty-lock-test',
+      gate,
+    ], { encoding: 'utf8' });
+
+    expect(result.status, result.stderr).toBe(0);
   });
 
   it('runs only the deterministic remainder across four shards and reuses the main artifact', () => {

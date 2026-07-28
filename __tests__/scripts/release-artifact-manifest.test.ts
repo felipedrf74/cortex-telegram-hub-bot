@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   RELEASE_RUNTIME_FILES,
   buildReleaseArtifactManifest,
+  verifyInstalledReleaseSource,
   verifyReleaseBundle,
 } from '../../scripts/lib/release-artifact-manifest.mjs';
 
@@ -99,6 +100,23 @@ describe('release artifact manifest', () => {
     fs.writeFileSync(path.join(bundle, 'undeclared.txt'), 'unexpected\n');
     expect(() => verifyReleaseBundle(bundle, 'a'.repeat(40))).toThrow(
       'undeclared or missing files',
+    );
+    expect(verifyInstalledReleaseSource(bundle, 'a'.repeat(40)).digest)
+      .toBe(manifest.digest);
+    const undeclaredCompatibilityScript = spawnSync(process.execPath, [
+      path.resolve('scripts/release-artifact-manifest.mjs'),
+      '--verify-installed-source', bundle,
+      '--expected-runtime-sha', 'a'.repeat(40),
+      '--expected-digest', manifest.digest,
+      '--require-declared-file', 'scripts/release-installed-tree-attestation.mjs',
+    ], { encoding: 'utf8' });
+    expect(undeclaredCompatibilityScript.status).toBe(1);
+    expect(undeclaredCompatibilityScript.stderr).toContain(
+      'required installed release file is not declared by artifact manifest',
+    );
+    fs.appendFileSync(path.join(bundle, 'dist/index.js'), 'tampered\n');
+    expect(() => verifyInstalledReleaseSource(bundle, 'a'.repeat(40))).toThrow(
+      'artifact byte identity mismatch',
     );
   });
 

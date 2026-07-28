@@ -292,7 +292,7 @@ export function buildReleaseArtifactManifest(rootInput = process.cwd()) {
   };
 }
 
-export function verifyReleaseBundle(bundleRootInput, expectedRuntimeSha = '') {
+function verifyDeclaredReleaseFiles(bundleRootInput, expectedRuntimeSha = '') {
   const bundleRoot = path.resolve(bundleRootInput);
   const manifestPath = path.join(bundleRoot, 'artifact-manifest.json');
   const markerPath = path.join(bundleRoot, '.complete.json');
@@ -342,6 +342,26 @@ export function verifyReleaseBundle(bundleRootInput, expectedRuntimeSha = '') {
       || (expectedRuntimeSha && marker.runtimeSha !== expectedRuntimeSha)) {
     throw new Error('release bundle completion marker identity mismatch');
   }
+  return {
+    manifest: { ...declared, files },
+    marker,
+    digest,
+    bundleRoot,
+  };
+}
+
+export function verifyInstalledReleaseSource(releaseRootInput, expectedRuntimeSha = '') {
+  return verifyDeclaredReleaseFiles(releaseRootInput, expectedRuntimeSha);
+}
+
+export function verifyReleaseBundle(bundleRootInput, expectedRuntimeSha = '') {
+  const verified = verifyDeclaredReleaseFiles(bundleRootInput, expectedRuntimeSha);
+  const {
+    bundleRoot,
+    digest,
+    marker,
+    manifest,
+  } = verified;
   const actualEntries = new Set();
   const walk = (dir) => {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -354,10 +374,14 @@ export function verifyReleaseBundle(bundleRootInput, expectedRuntimeSha = '') {
     }
   };
   walk(bundleRoot);
-  const expectedEntries = new Set([...files.map((entry) => entry.path), 'artifact-manifest.json', '.complete.json']);
+  const expectedEntries = new Set([
+    ...manifest.files.map((entry) => entry.path),
+    'artifact-manifest.json',
+    '.complete.json',
+  ]);
   if (canonicalJson([...actualEntries].sort(compareCodeUnits))
       !== canonicalJson([...expectedEntries].sort(compareCodeUnits))) {
     throw new Error('release bundle contains undeclared or missing files');
   }
-  return { manifest: { ...declared, files }, marker, digest, bundleRoot };
+  return { manifest, marker, digest, bundleRoot };
 }
