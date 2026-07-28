@@ -86,8 +86,10 @@ describe('lean risk gate', () => {
     ], { encoding: 'utf8' });
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain('classifier failed');
+    expect(() => assertResolvedChangeImpact(true, 'trusted-base')).not.toThrow();
     expect(() => assertResolvedChangeImpact(false, 'untrusted-base')).toThrow(
-      /automatic full-suite fallback is intentionally disabled/,
+      "Changed-file impact is unresolved because base 'untrusted-base' is not an ancestor of HEAD. "
+      + 'Use an exact ancestor SHA; automatic full-suite fallback is intentionally disabled.',
     );
   });
 

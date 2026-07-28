@@ -237,6 +237,77 @@ describe('changed-critical mutation gate', () => {
     });
   });
 
+  it('isolates exact cleanup ranges and owner tests by source without concurrent mutation lanes', () => {
+    const plan = buildWeeklyMutationSelection({
+      schema: 'nexus.mutation-plan.v5',
+      base: 'fixture-base',
+      head: 'fixture-head',
+      scope: 'test-cleanup',
+      targets: [
+        'scripts/lib/test-groups.mjs:295-302',
+        'scripts/lib/test-groups.mjs:310-312',
+        'scripts/mutation-gate.mjs:385-390',
+      ],
+      governedSources: [
+        'scripts/lib/test-groups.mjs',
+        'scripts/mutation-gate.mjs',
+      ],
+      governedRanges: [
+        {
+          pattern: 'scripts/lib/test-groups.mjs:295-302',
+          replacementTest: '__tests__/scripts/changed-area-classifier.test.ts',
+        },
+        {
+          pattern: 'scripts/lib/test-groups.mjs:310-312',
+          replacementTest: '__tests__/scripts/test-tier-governance.test.ts',
+        },
+        {
+          pattern: 'scripts/mutation-gate.mjs:385-390',
+          replacementTest: '__tests__/scripts/mutation-gate.test.ts',
+        },
+      ],
+      testFiles: [
+        '__tests__/scripts/changed-area-classifier.test.ts',
+        '__tests__/scripts/mutation-gate.test.ts',
+        '__tests__/scripts/retirement-only.test.ts',
+      ],
+    });
+
+    expect(plan.mutationBatches).toEqual([
+      {
+        index: 0,
+        sources: ['scripts/lib/test-groups.mjs'],
+        targets: [
+          'scripts/lib/test-groups.mjs:295-302',
+          'scripts/lib/test-groups.mjs:310-312',
+        ],
+        testFiles: [
+          '__tests__/scripts/changed-area-classifier.test.ts',
+          '__tests__/scripts/test-tier-governance.test.ts',
+        ],
+      },
+      {
+        index: 1,
+        sources: ['scripts/mutation-gate.mjs'],
+        targets: ['scripts/mutation-gate.mjs:385-390'],
+        testFiles: ['__tests__/scripts/mutation-gate.test.ts'],
+      },
+    ]);
+    expect(plan.mutationBatches.flatMap((batch) => batch.targets).sort()).toEqual(
+      [...plan.targets].sort(),
+    );
+    expect(() => buildWeeklyMutationSelection({
+      schema: 'nexus.mutation-plan.v5',
+      base: 'fixture-base',
+      head: 'fixture-head',
+      scope: 'test-cleanup',
+      targets: ['scripts/unowned-cleanup.mjs:1-1'],
+      governedSources: ['scripts/unowned-cleanup.mjs'],
+      governedRanges: [],
+      testFiles: [],
+    })).toThrow('cleanup mutation source has no retained owner test');
+  });
+
   it('cannot inherit a stale owner-test selector into an unmapped batch', () => {
     const invocation = buildStrykerInvocation({
       config: 'config/stryker.config.mjs',
@@ -269,6 +340,8 @@ describe('changed-critical mutation gate', () => {
         testFiles,
         concurrency: 1,
         testRunner: 'vitest',
+        ignoreStatic: false,
+        coverageAnalysis: 'perTest',
         vitest: {
           related: true,
           configFile: 'config/vitest.stryker.config.ts',
@@ -276,6 +349,51 @@ describe('changed-critical mutation gate', () => {
       },
     };
     expect(validateMutationExecutionReport(report, { targets, testFiles })).toEqual([]);
+    const cleanupReport = {
+      config: {
+        ...report.config,
+        coverageAnalysis: 'off',
+        vitest: {
+          related: false,
+          configFile: 'config/vitest.stryker.config.ts',
+        },
+      },
+    };
+    expect(validateMutationExecutionReport(
+      cleanupReport,
+      { targets, testFiles, scope: 'test-cleanup' },
+    )).toEqual([]);
+    expect(validateMutationExecutionReport({
+      config: {
+        ...cleanupReport.config,
+        ignoreStatic: true,
+      },
+    }, { targets, testFiles, scope: 'test-cleanup' })).toContain(
+      'Stryker report ignoreStatic must be false, found true',
+    );
+    expect(validateMutationExecutionReport({
+      config: {
+        ...cleanupReport.config,
+        coverageAnalysis: 'perTest',
+      },
+    }, { targets, testFiles, scope: 'test-cleanup' })).toContain(
+      'Stryker report coverage analysis differs from the governed scope',
+    );
+    expect(validateMutationExecutionReport({
+      config: {
+        ...cleanupReport.config,
+        vitest: {
+          related: true,
+          configFile: 'config/vitest.stryker.config.ts',
+        },
+      },
+    }, { targets, testFiles, scope: 'test-cleanup' })).toContain(
+      'Stryker report Vitest binding differs from the governed sequential config',
+    );
+    expect(validateMutationExecutionReport(
+      cleanupReport,
+      { targets, testFiles: [], scope: 'test-cleanup' },
+    )).toContain('test-cleanup execution requires explicit governed owner tests');
     expect(validateMutationExecutionReport({
       config: {
         ...report.config,
@@ -412,6 +530,12 @@ describe('changed-critical mutation gate', () => {
       reason: 'full-file-no-generated-mutants',
       targets: ['src/services/database.ts'],
     });
+    expect(resolveEmptyRangeFallback({
+      generatedMutants: 0,
+      targets: ['src/services/database.ts:2-4'],
+      sources: ['src/services/database.ts'],
+      scope: 'test-cleanup',
+    })).toBeNull();
     expect(resolveEmptyRangeFallback({
       generatedMutants: 1,
       targets: ['src/services/database.ts:2-4'],
@@ -1651,14 +1775,20 @@ describe('changed-critical mutation gate', () => {
       });
       expect(weekly.concurrency).toBe(1);
       expect(weekly.ignoreStatic).toBe(false);
+      expect(weekly.coverageAnalysis).toBe('perTest');
+
+      process.env.NEXUS_MUTATION_SCOPE = 'test-cleanup';
+      await expect(import(`${configUrl}?missing-cleanup-owner=${Date.now()}`)).rejects.toThrow(
+        'test-cleanup mutation scope requires explicit governed retained tests',
+      );
 
       process.env.NEXUS_MUTATION_TEST_FILES = JSON.stringify(['__tests__/services/database.test.ts']);
-      process.env.NEXUS_MUTATION_SCOPE = 'test-cleanup';
       const cleanup = (await import(`${configUrl}?cleanup=${Date.now()}`)).default;
       expect(cleanup.testFiles).toEqual(['__tests__/services/database.test.ts']);
-      expect(cleanup.ignoreStatic).toBe(true);
+      expect(cleanup.ignoreStatic).toBe(false);
+      expect(cleanup.coverageAnalysis).toBe('off');
       expect(cleanup.vitest).toEqual({
-        related: true,
+        related: false,
         configFile: 'config/vitest.stryker.config.ts',
       });
       expect(cleanup.concurrency).toBe(1);

@@ -445,6 +445,37 @@ export function buildWeeklyMutationSelection(
     return result.stdout;
   },
 ) {
+  if (plan?.scope === 'test-cleanup') {
+    const ranges = Array.isArray(plan.governedRanges) ? plan.governedRanges : [];
+    const plannedTargets = [...new Set(plan.targets ?? [])].sort();
+    const mutationBatches = (plan.governedSources ?? []).map((source, index) => {
+      const targets = (plan.targets ?? []).filter((target) => (
+        (parseMutationTarget(target)?.file ?? target) === source
+      ));
+      const testFiles = [...new Set(ranges
+        .filter((range) => parseMutationTarget(range.pattern)?.file === source)
+        .map((range) => range.replacementTest)
+        .filter((testFile) => typeof testFile === 'string' && testFile.length > 0))]
+        .sort();
+      if (targets.length === 0) {
+        throw new Error(`cleanup mutation source has no exact target: ${source}`);
+      }
+      if (testFiles.length === 0) {
+        throw new Error(`cleanup mutation source has no retained owner test: ${source}`);
+      }
+      return {
+        index,
+        sources: [source],
+        targets,
+        testFiles,
+      };
+    });
+    const batchedTargets = mutationBatches.flatMap((batch) => batch.targets).sort();
+    if (JSON.stringify(batchedTargets) !== JSON.stringify(plannedTargets)) {
+      throw new Error('cleanup mutation batches do not cover every exact planned target');
+    }
+    return { ...plan, mutationBatches };
+  }
   if (plan?.scope !== 'changed-critical') {
     return {
       ...plan,
@@ -495,9 +526,15 @@ export function buildWeeklyMutationSelection(
   };
 }
 
-export function resolveEmptyRangeFallback({ generatedMutants, targets, sources }) {
+export function resolveEmptyRangeFallback({
+  generatedMutants,
+  targets,
+  sources,
+  scope = 'changed-critical',
+}) {
   if (
-    generatedMutants === 0
+    scope === 'changed-critical'
+    && generatedMutants === 0
     && Array.isArray(targets)
     && targets.length > 0
     && targets.every((target) => parseMutationTarget(target) !== null)
@@ -748,17 +785,20 @@ export function buildStrykerEnvironment(baseEnvironment, invocationEnvironment) 
 
 export function validateMutationExecutionReport(
   report,
-  { targets, testFiles = [] },
+  { targets, testFiles = [], scope = 'changed-critical' },
 ) {
   const errors = [];
   const config = report?.config;
+  const cleanup = scope === 'test-cleanup';
   if (!config || typeof config !== 'object' || Array.isArray(config)) {
     return ['Stryker report is missing its effective config'];
   }
   if (JSON.stringify(config.mutate) !== JSON.stringify(targets)) {
     errors.push('Stryker report mutate targets differ from the batch execution targets');
   }
-  if (testFiles.length > 0) {
+  if (cleanup && testFiles.length === 0) {
+    errors.push('test-cleanup execution requires explicit governed owner tests');
+  } else if (testFiles.length > 0) {
     if (JSON.stringify(config.testFiles) !== JSON.stringify(testFiles)) {
       errors.push('Stryker report testFiles differ from the batch owner-test mapping');
     }
@@ -771,11 +811,17 @@ export function validateMutationExecutionReport(
   if (config.testRunner !== 'vitest') {
     errors.push(`Stryker report testRunner must be vitest, found ${String(config.testRunner)}`);
   }
+  if (config.ignoreStatic !== false) {
+    errors.push(`Stryker report ignoreStatic must be false, found ${String(config.ignoreStatic)}`);
+  }
   if (
-    config.vitest?.related !== true
+    config.vitest?.related !== !cleanup
     || config.vitest?.configFile !== 'config/vitest.stryker.config.ts'
   ) {
     errors.push('Stryker report Vitest binding differs from the governed sequential config');
+  }
+  if (config.coverageAnalysis !== (cleanup ? 'off' : 'perTest')) {
+    errors.push('Stryker report coverage analysis differs from the governed scope');
   }
   return errors;
 }
@@ -1648,6 +1694,7 @@ function main() {
       const executionBindingErrors = validateMutationExecutionReport(report, {
         targets: executionTargets,
         testFiles: batch.testFiles ?? plan.testFiles,
+        scope,
       });
       if (executionBindingErrors.length > 0) {
         batch.status = 'failed';
@@ -1663,6 +1710,7 @@ function main() {
         generatedMutants,
         targets: executionTargets,
         sources: batch.sources,
+        scope,
       });
       if (fallback) {
         const emptyRangeReport = `batches/${String(batch.index).padStart(3, '0')}-empty-range-report.json`;

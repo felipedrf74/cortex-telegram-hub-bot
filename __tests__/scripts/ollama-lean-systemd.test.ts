@@ -29,9 +29,14 @@ function executable(file: string, source: string) {
 }
 
 function runNode(file: string, args: string[], env: NodeJS.ProcessEnv) {
+  const activeMutant = (
+    globalThis as typeof globalThis & { __stryker__?: { activeMutant?: string } }
+  ).__stryker__?.activeMutant;
   return spawnSync(process.execPath, [file, ...args], {
     cwd: process.cwd(),
-    env,
+    env: activeMutant === undefined
+      ? env
+      : { ...env, __STRYKER_ACTIVE_MUTANT__: activeMutant },
     encoding: 'utf8',
     timeout: 30_000,
     maxBuffer: 4 * 1024 * 1024,
@@ -90,13 +95,15 @@ describe('lean Ollama installer and fixed systemd envelope', () => {
     executable(systemctl, `#!/usr/bin/env node
 const host = process.env.FAKE_OLLAMA_HOST || '127.0.0.1:11434';
 const queue = process.env.FAKE_OLLAMA_QUEUE || '4';
+const memoryHigh = process.env.FAKE_MEMORY_HIGH || '4294967296';
 const memoryMax = process.env.FAKE_MEMORY_MAX || '6442450944';
+const memorySwap = process.env.FAKE_MEMORY_SWAP || '536870912';
 const cpuQuota = process.env.FAKE_CPU_QUOTA || '2s';
 process.stdout.write([
   'Environment=OLLAMA_HOST=' + host + ' OLLAMA_CONTEXT_LENGTH=4096 OLLAMA_MAX_QUEUE=' + queue + ' OLLAMA_NUM_PARALLEL=1 OLLAMA_MAX_LOADED_MODELS=1',
-  'MemoryHigh=4294967296',
+  'MemoryHigh=' + memoryHigh,
   'MemoryMax=' + memoryMax,
-  'MemorySwapMax=536870912',
+  'MemorySwapMax=' + memorySwap,
   'CPUQuotaPerSecUSec=' + cpuQuota,
   '',
 ].join('\\n'));
@@ -142,6 +149,14 @@ process.stdout.write([
     expect(queueDrift.status).not.toBe(0);
     expect(queueDrift.stderr).toContain('OLLAMA_MAX_QUEUE must be exactly 4');
 
+    const memoryHighDrift = runNode(
+      ENVELOPE_CHECKER,
+      ['--systemctl-bin', systemctl],
+      { ...environment, FAKE_MEMORY_HIGH: '5368709120' },
+    );
+    expect(memoryHighDrift.status).not.toBe(0);
+    expect(memoryHighDrift.stderr).toContain('MemoryHigh must be exactly 4 GiB');
+
     const memoryDrift = runNode(
       ENVELOPE_CHECKER,
       ['--systemctl-bin', systemctl],
@@ -149,6 +164,14 @@ process.stdout.write([
     );
     expect(memoryDrift.status).not.toBe(0);
     expect(memoryDrift.stderr).toContain('MemoryMax must be exactly 6 GiB');
+
+    const memorySwapDrift = runNode(
+      ENVELOPE_CHECKER,
+      ['--systemctl-bin', systemctl],
+      { ...environment, FAKE_MEMORY_SWAP: '0' },
+    );
+    expect(memorySwapDrift.status).not.toBe(0);
+    expect(memorySwapDrift.stderr).toContain('MemorySwapMax must be exactly 536870912 bytes');
 
     const cpuDrift = runNode(
       ENVELOPE_CHECKER,
@@ -402,6 +425,12 @@ process.exit(64);
     expect(refused.status).not.toBe(0);
     expect(refused.stderr).toContain('service is not active and enabled');
     fs.writeFileSync(activeState, 'active\n');
+
+    fs.writeFileSync(enabledState, 'disabled\n');
+    const disabled = runNode(TRANSACTION, ['commit'], environment());
+    expect(disabled.status).not.toBe(0);
+    expect(disabled.stderr).toContain('service is not active and enabled');
+    fs.writeFileSync(enabledState, 'enabled\n');
 
     const committed = runNode(TRANSACTION, ['commit'], environment());
     expect(committed.status, committed.stderr).toBe(0);

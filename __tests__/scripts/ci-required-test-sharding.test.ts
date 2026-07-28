@@ -101,7 +101,12 @@ describe('lean required CI contracts', () => {
 
     const test = '__tests__/services/retained-contract.test.ts';
     const result = classifyDeletedTests(
-      [{ status: 'M', paths: [test] }],
+      [
+        { status: 'A', paths: ['__tests__/services/added.test.ts'] },
+        { status: 'M', paths: ['archive/__tests__/services/prefix.test.ts'] },
+        { status: 'M', paths: ['__tests__/services/suffix.test.ts.backup'] },
+        { status: 'M', paths: [test] },
+      ],
       () => "it('owns two guarantees', () => { expect(owner).toBe('user'); expect(status).toBe('ready'); });",
       [],
       () => true,
