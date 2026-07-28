@@ -79,7 +79,7 @@ describe('Ollama small-only policy', () => {
     expect(source).toContain('Required small-only inference round-trip');
     expect(source).toContain('length == 1 and .[0].name == $model');
     expect(source).toContain('OLLAMA_INVENTORY_PHASE');
-    expect(source).toContain('strict|pre_cleanup');
+    expect(source).toContain('final|release');
     expect(source).toContain('[$model, $remove1, $remove2, $remove3]');
     expect(source).toContain('.providers.gemini.circuit.state == "CLOSED"');
     expect(source).toContain('.providers.ollama.circuit.state == "CLOSED"');

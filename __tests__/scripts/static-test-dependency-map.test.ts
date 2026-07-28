@@ -9,16 +9,9 @@ const roots: string[] = [];
 
 function cleanGitEnv() {
   const env = { ...process.env };
-  for (const key of [
-    'GIT_DIR',
-    'GIT_WORK_TREE',
-    'GIT_INDEX_FILE',
-    'GIT_PREFIX',
-    'GIT_COMMON_DIR',
-    'GIT_OBJECT_DIRECTORY',
-    'GIT_ALTERNATE_OBJECT_DIRECTORIES',
-    'GIT_NAMESPACE',
-  ]) delete env[key];
+  for (const name of Object.keys(env)) {
+    if (name.startsWith('GIT_')) delete env[name];
+  }
   return env;
 }
 
@@ -34,23 +27,29 @@ function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-static-test-map-'));
   roots.push(root);
   fs.mkdirSync(path.join(root, 'src'), { recursive: true });
-  fs.mkdirSync(path.join(root, '__tests__'), { recursive: true });
   fs.mkdirSync(path.join(root, '__tests__/misc'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'config'), { recursive: true });
   fs.writeFileSync(path.join(root, 'src/leaf.ts'), 'export const leaf = 1;\n');
-  fs.writeFileSync(path.join(root, 'src/middle.ts'), `import {
-  leaf,
-} from './leaf';
-export const middle = leaf;
-`);
-  fs.writeFileSync(path.join(root, '__tests__/leaf.test.ts'), `import {
-  middle,
-} from '../src/middle';
-export { leaf } from '../src/leaf';
-void import('../src/leaf');
-require.resolve('../src/leaf');
-void middle;
-`);
-  fs.writeFileSync(path.join(root, '__tests__/misc/unrelated.test.ts'), 'export {};\n');
+  fs.writeFileSync(path.join(root, 'src/middle.ts'), `
+    import { leaf } from './leaf';
+    export const middle = leaf;
+  `);
+  fs.writeFileSync(path.join(root, '__tests__/leaf.test.ts'), `
+    import { leaf } from '../src/leaf';
+    void leaf;
+  `);
+  fs.writeFileSync(path.join(root, '__tests__/misc/core.test.ts'), 'export {};\n');
+  fs.writeFileSync(path.join(root, 'config/test-groups.json'), JSON.stringify({
+    version: 'fixture-v1',
+    core: { targetSeconds: 30, tests: ['__tests__/misc/core.test.ts'] },
+    groups: {
+      fixture: {
+        paths: ['src/**'],
+        tests: ['__tests__/misc/**/*.test.ts'],
+        contracts: ['__tests__/misc/core.test.ts'],
+      },
+    },
+  }));
   git(root, 'init', '-q');
   git(root, 'config', 'user.email', 'fixture@example.com');
   git(root, 'config', 'user.name', 'Fixture');
@@ -59,12 +58,31 @@ void middle;
   return { root, base: git(root, 'rev-parse', 'HEAD') };
 }
 
+function select(root: string, base: string, changedFiles: string[]) {
+  const classifierPath = path.join(root, 'classifier.json');
+  fs.writeFileSync(classifierPath, JSON.stringify({
+    baseRef: base,
+    changedFiles,
+    vitest: { mode: 'focused', groups: ['fixture'] },
+    flags: { docsOnly: false, impactResolved: true },
+  }));
+  const result = spawnSync(process.execPath, [
+    'scripts/select-vitest-files.mjs',
+    '--base', base,
+    '--classifier', classifierPath,
+    '--source-root', root,
+    '--json',
+  ], { cwd: process.cwd(), encoding: 'utf8', env: cleanGitEnv() });
+  expect(result.status, result.stderr).toBe(0);
+  return JSON.parse(result.stdout);
+}
+
 afterEach(() => {
-  while (roots.length) fs.rmSync(roots.pop()!, { recursive: true, force: true });
+  while (roots.length > 0) fs.rmSync(roots.pop()!, { recursive: true, force: true });
 });
 
-describe('static release test dependency mapping', () => {
-  it('cannot redirect a foreign fixture into the repository exported by a Git hook', () => {
+describe('static selected-test dependency mapping', () => {
+  it('ignores inherited Git hook variables instead of redirecting repository reads', () => {
     const sentinel = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-hook-git-sentinel-'));
     roots.push(sentinel);
     fs.writeFileSync(path.join(sentinel, 'sentinel.txt'), 'sentinel\n');
@@ -73,258 +91,175 @@ describe('static release test dependency mapping', () => {
     git(sentinel, 'config', 'user.name', 'Sentinel');
     git(sentinel, 'add', '.');
     git(sentinel, 'commit', '-qm', 'sentinel');
-
-    const sentinelGitDir = path.join(sentinel, '.git');
-    const sentinelConfig = path.join(sentinelGitDir, 'config');
-    const sentinelIndex = path.join(sentinelGitDir, 'index');
-    const configBefore = fs.readFileSync(sentinelConfig);
-    const indexBefore = fs.readFileSync(sentinelIndex);
-    const headBefore = git(sentinel, 'rev-parse', 'HEAD');
-    const localKeys = ['GIT_DIR', 'GIT_INDEX_FILE', 'GIT_PREFIX'] as const;
-    const previous = Object.fromEntries(localKeys.map((key) => [key, process.env[key]]));
-
+    const sentinelHead = git(sentinel, 'rev-parse', 'HEAD');
+    const previous = {
+      GIT_DIR: process.env.GIT_DIR,
+      GIT_INDEX_FILE: process.env.GIT_INDEX_FILE,
+      GIT_PREFIX: process.env.GIT_PREFIX,
+    };
     try {
-      process.env.GIT_DIR = sentinelGitDir;
-      process.env.GIT_INDEX_FILE = sentinelIndex;
+      process.env.GIT_DIR = path.join(sentinel, '.git');
+      process.env.GIT_INDEX_FILE = path.join(sentinel, '.git/index');
       process.env.GIT_PREFIX = '';
       const { root, base } = fixture();
       fs.writeFileSync(path.join(root, 'src/leaf.ts'), 'export const leaf = 2;\n');
-      git(root, 'add', '.');
-      git(root, 'commit', '-qm', 'change leaf');
-      expect(staticTestDependencyImpact(root, base)).toMatchObject({
+      expect(staticTestDependencyImpact(root, base, ['src/leaf.ts'])).toMatchObject({
         tests: ['__tests__/leaf.test.ts'],
         unresolvedProductionFiles: [],
       });
     } finally {
-      for (const key of localKeys) {
-        const value = previous[key];
-        if (value === undefined) delete process.env[key];
-        else process.env[key] = value;
+      for (const [name, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
       }
     }
-
-    expect(fs.readFileSync(sentinelConfig)).toEqual(configBefore);
-    expect(fs.readFileSync(sentinelIndex)).toEqual(indexBefore);
-    expect(git(sentinel, 'rev-parse', 'HEAD')).toBe(headBefore);
-    expect(git(sentinel, 'config', '--bool', 'core.bare')).toBe('false');
+    expect(git(sentinel, 'rev-parse', 'HEAD')).toBe(sentinelHead);
   });
 
-  it('maps transitive multiline imports, exports, literal dynamic imports, and require.resolve without executing code', () => {
+  it('maps direct static test dependents without executing application code', () => {
     const { root, base } = fixture();
-    fs.writeFileSync(path.join(root, 'src/leaf.ts'), 'throw new Error("must never execute");\n');
-    git(root, 'add', '.');
+    fs.writeFileSync(path.join(root, '__tests__/leaf.test.ts'), `
+      import { middle } from '../src/middle';
+      export { leaf } from '../src/leaf';
+      void import('../src/leaf');
+      require.resolve('../src/leaf');
+      void middle;
+    `);
+    fs.writeFileSync(path.join(root, 'src/leaf.ts'), 'throw new Error("never execute");\n');
+    git(root, 'add', 'src/leaf.ts');
     git(root, 'commit', '-qm', 'change leaf');
-
     expect(staticTestDependencyImpact(root, base)).toMatchObject({
       tests: ['__tests__/leaf.test.ts'],
       unresolvedProductionFiles: [],
     });
   });
 
-  it('reports an unmapped production module so release planning can fail closed to full', () => {
+  it('does not turn unrelated dynamic imports into a repository-wide dependent union', () => {
     const { root, base } = fixture();
-    fs.writeFileSync(path.join(root, 'src/unmapped.ts'), 'export const unmapped = true;\n');
-    git(root, 'add', '.');
-    git(root, 'commit', '-qm', 'unmapped production module');
+    fs.writeFileSync(path.join(root, '__tests__/dynamic.test.ts'), `
+      const target = '../src/other';
+      void import(target);
+    `);
+    git(root, 'add', '__tests__/dynamic.test.ts');
+    git(root, 'commit', '-qm', 'add dynamic test');
+    fs.writeFileSync(path.join(root, 'src/leaf.ts'), 'export const leaf = 3;\n');
+    expect(staticTestDependencyImpact(root, base, ['src/leaf.ts']).tests).toEqual([
+      '__tests__/leaf.test.ts',
+    ]);
+  });
 
-    expect(staticTestDependencyImpact(root, base)).toMatchObject({
+  it('reports changed production files that use non-literal module loading', () => {
+    const { root, base } = fixture();
+    fs.writeFileSync(path.join(root, 'src/loader.ts'), `
+      export async function load(name) {
+        return import('./' + name);
+      }
+    `);
+    git(root, 'add', 'src/loader.ts');
+    git(root, 'commit', '-qm', 'add loader');
+    fs.writeFileSync(path.join(root, 'src/loader.ts'), `
+      export async function load(name) {
+        return import('./' + name + '.js');
+      }
+    `);
+    expect(staticTestDependencyImpact(root, base, ['src/loader.ts'])).toMatchObject({
       tests: [],
-      unresolvedProductionFiles: ['src/unmapped.ts'],
+      unresolvedProductionFiles: ['src/loader.ts'],
     });
   });
 
-  it('reports changed production modules with non-literal module loading', () => {
+  it('does not traverse production cycles into unrelated transitive tests', () => {
     const { root, base } = fixture();
-    fs.writeFileSync(path.join(root, 'src/middle.ts'), `import { leaf } from './leaf';
-export const middle = (name: string) => require(name) ?? leaf;
-`);
-    git(root, 'add', '.');
-    git(root, 'commit', '-qm', 'dynamic load');
-
-    expect(staticTestDependencyImpact(root, base)).toMatchObject({
-      tests: ['__tests__/leaf.test.ts'],
-      unresolvedProductionFiles: ['src/middle.ts'],
-      nonLiteralImporters: expect.arrayContaining(['src/middle.ts']),
-    });
-  });
-
-  it('never omits a separate test that uses a computed module load', () => {
-    const { root, base } = fixture();
-    fs.writeFileSync(path.join(root, '__tests__/dynamic.test.ts'), `import { expect, it } from 'vitest';
-it('loads the selected module', async () => {
-  const target = '../src/leaf';
-  expect((await import(target)).leaf).toBeDefined();
-});
-`);
-    fs.writeFileSync(path.join(root, 'src/leaf.ts'), 'export const leaf = 2;\n');
-    git(root, 'add', '.');
-    git(root, 'commit', '-qm', 'change leaf with dynamic coverage');
-
-    expect(staticTestDependencyImpact(root, base)).toMatchObject({
-      tests: ['__tests__/dynamic.test.ts', '__tests__/leaf.test.ts'],
-      unresolvedProductionFiles: [],
-      nonLiteralImporters: expect.arrayContaining(['__tests__/dynamic.test.ts']),
-    });
-  });
-
-  it('does not let one focused domain mask an unrelated unmapped production file', () => {
-    const { root, base } = fixture();
-    fs.writeFileSync(path.join(root, 'src/leaf.ts'), 'export const leaf = 2;\n');
-    fs.writeFileSync(path.join(root, 'src/unmapped.ts'), 'export const unmapped = true;\n');
-    git(root, 'add', '.');
-    git(root, 'commit', '-qm', 'mixed mapped and unmapped changes');
-    const classifierPath = path.join(root, 'classifier.json');
-    fs.writeFileSync(classifierPath, JSON.stringify({
-      vitest: { mode: 'focused', globs: ['__tests__/leaf.test.ts'] },
-      flags: { impactResolved: true, fullSuiteTrigger: false },
-    }));
-    const result = spawnSync(process.execPath, [
-      'scripts/select-vitest-files.mjs',
-      '--base', base,
-      '--classifier', classifierPath,
-      '--source-root', root,
-      '--json',
-    ], { cwd: process.cwd(), encoding: 'utf8', env: cleanGitEnv() });
-
-    expect(result.status, result.stderr).toBe(0);
-    expect(JSON.parse(result.stdout)).toMatchObject({
-      changed: ['__tests__/leaf.test.ts'],
-      focused: ['__tests__/leaf.test.ts'],
-      unresolved: ['src/unmapped.ts'],
-      impactResolved: false,
-    });
-    const plain = spawnSync(process.execPath, [
-      'scripts/select-vitest-files.mjs',
-      '--base', base,
-      '--classifier', classifierPath,
-      '--source-root', root,
-    ], { cwd: process.cwd(), encoding: 'utf8', env: cleanGitEnv() });
-    expect(plain.status, plain.stderr).toBe(0);
-    expect(plain.stdout.trim().split('\n').sort()).toEqual([
-      '__tests__/leaf.test.ts',
-      '__tests__/misc/unrelated.test.ts',
+    fs.writeFileSync(path.join(root, 'src/cycle-a.ts'), `
+      import { cycleB } from './cycle-b';
+      export const cycleA = cycleB + 1;
+    `);
+    fs.writeFileSync(path.join(root, 'src/cycle-b.ts'), `
+      import { cycleA } from './cycle-a';
+      export const cycleB = cycleA + 1;
+    `);
+    fs.writeFileSync(path.join(root, '__tests__/cycle-a-direct.test.ts'), `
+      import { cycleA } from '../src/cycle-a';
+      void cycleA;
+    `);
+    fs.writeFileSync(path.join(root, '__tests__/cycle-b-transitive.test.ts'), `
+      import { cycleB } from '../src/cycle-b';
+      void cycleB;
+    `);
+    git(root, 'add', 'src/cycle-a.ts', 'src/cycle-b.ts',
+      '__tests__/cycle-a-direct.test.ts', '__tests__/cycle-b-transitive.test.ts');
+    git(root, 'commit', '-qm', 'add production cycle');
+    fs.writeFileSync(path.join(root, 'src/cycle-a.ts'), `
+      import { cycleB } from './cycle-b';
+      export const cycleA = cycleB + 2;
+    `);
+    expect(staticTestDependencyImpact(root, base, ['src/cycle-a.ts']).tests).toEqual([
+      '__tests__/cycle-a-direct.test.ts',
     ]);
   });
 
-  it('keeps full correctness escalation separate from bounded coverage selection', () => {
+  it('uses the classifier changed-file inventory identically for dirty, staged, and committed changes', () => {
     const { root, base } = fixture();
     fs.writeFileSync(path.join(root, 'src/leaf.ts'), 'export const leaf = 2;\n');
-    git(root, 'add', '.');
-    git(root, 'commit', '-qm', 'change leaf under test infrastructure');
-    const classifierPath = path.join(root, 'classifier.json');
-    fs.writeFileSync(classifierPath, JSON.stringify({
-      vitest: { mode: 'full', globs: [] },
-      flags: { impactResolved: true, fullSuiteTrigger: true },
-    }));
 
-    const correctness = spawnSync(process.execPath, [
-      'scripts/select-vitest-files.mjs',
-      '--base', base,
-      '--classifier', classifierPath,
-      '--source-root', root,
-    ], { cwd: process.cwd(), encoding: 'utf8', env: cleanGitEnv() });
-    expect(correctness.status, correctness.stderr).toBe(0);
-    expect(correctness.stdout.trim().split('\n').sort()).toEqual([
+    const dirty = select(root, base, ['src/leaf.ts']);
+    expect(dirty.dependents).toEqual(['__tests__/leaf.test.ts']);
+    expect(dirty.selected).toEqual([
       '__tests__/leaf.test.ts',
-      '__tests__/misc/unrelated.test.ts',
+      '__tests__/misc/core.test.ts',
     ]);
 
-    const coverage = spawnSync(process.execPath, [
-      'scripts/select-vitest-files.mjs',
-      '--base', base,
-      '--classifier', classifierPath,
-      '--source-root', root,
-      '--coverage',
-    ], { cwd: process.cwd(), encoding: 'utf8', env: cleanGitEnv() });
-    expect(coverage.status, coverage.stderr).toBe(0);
-    expect(coverage.stdout.trim()).toBe('__tests__/leaf.test.ts');
+    git(root, 'add', 'src/leaf.ts');
+    const staged = select(root, base, ['src/leaf.ts']);
+    expect(staged.dependents).toEqual(dirty.dependents);
+    expect(staged.selected).toEqual(dirty.selected);
+
+    git(root, 'commit', '-qm', 'change leaf');
+    const committed = select(root, base, ['src/leaf.ts']);
+    expect(committed.dependents).toEqual(dirty.dependents);
+    expect(committed.selected).toEqual(dirty.selected);
   });
 
-  it('separates a deleted test from the runnable changed-test selection and fails closed to all remaining tests', () => {
+  it('selects a changed test itself even when it is outside the owning group pack', () => {
+    const { root, base } = fixture();
+    const test = '__tests__/new-contract.test.ts';
+    fs.writeFileSync(path.join(root, test), 'export {};\n');
+    const selection = select(root, base, [test]);
+    expect(selection.changedTests).toEqual([test]);
+    expect(selection.selected).toContain(test);
+  });
+
+  it('records a removed test without silently adding a full-suite fallback', () => {
     const { root, base } = fixture();
     fs.rmSync(path.join(root, '__tests__/leaf.test.ts'));
-    git(root, 'add', '-A');
-    git(root, 'commit', '-qm', 'delete retired test');
-
-    expect(staticTestDependencyImpact(root, base)).toMatchObject({
-      tests: [],
-      removedTestFiles: ['__tests__/leaf.test.ts'],
-    });
-
-    const classifierPath = path.join(root, 'classifier.json');
-    fs.writeFileSync(classifierPath, JSON.stringify({
-      vitest: { mode: 'changed-only', globs: [] },
-      flags: { impactResolved: true, fullSuiteTrigger: false },
-    }));
-    const json = spawnSync(process.execPath, [
-      'scripts/select-vitest-files.mjs',
-      '--base', base,
-      '--classifier', classifierPath,
-      '--source-root', root,
-      '--json',
-    ], { cwd: process.cwd(), encoding: 'utf8', env: cleanGitEnv() });
-    expect(json.status, json.stderr).toBe(0);
-    expect(JSON.parse(json.stdout)).toMatchObject({
-      changed: [],
-      removed: ['__tests__/leaf.test.ts'],
-      impactResolved: false,
-      selected: [],
-    });
-
-    const plain = spawnSync(process.execPath, [
-      'scripts/select-vitest-files.mjs',
-      '--base', base,
-      '--classifier', classifierPath,
-      '--source-root', root,
-    ], { cwd: process.cwd(), encoding: 'utf8', env: cleanGitEnv() });
-    expect(plain.status, plain.stderr).toBe(0);
-    expect(plain.stdout.trim()).toBe('__tests__/misc/unrelated.test.ts');
+    const selection = select(root, base, ['__tests__/leaf.test.ts']);
+    expect(selection.removed).toEqual(['__tests__/leaf.test.ts']);
+    expect(selection.changedTests).toEqual([]);
+    expect(selection.selected).toEqual(['__tests__/misc/core.test.ts']);
   });
 
-  it('treats a test rename as a removal plus a runnable new test and still fails closed to all remaining tests', () => {
+  it('treats a rename as one removed test and one runnable changed test', () => {
     const { root, base } = fixture();
     fs.renameSync(
       path.join(root, '__tests__/leaf.test.ts'),
       path.join(root, '__tests__/leaf-renamed.test.ts'),
     );
-    git(root, 'add', '-A');
-    git(root, 'commit', '-qm', 'rename test');
-
-    expect(staticTestDependencyImpact(root, base)).toMatchObject({
-      tests: ['__tests__/leaf-renamed.test.ts'],
-      removedTestFiles: ['__tests__/leaf.test.ts'],
-    });
-
-    const classifierPath = path.join(root, 'classifier.json');
-    fs.writeFileSync(classifierPath, JSON.stringify({
-      vitest: { mode: 'changed-only', globs: [] },
-      flags: { impactResolved: true, fullSuiteTrigger: false },
-    }));
-    const json = spawnSync(process.execPath, [
-      'scripts/select-vitest-files.mjs',
-      '--base', base,
-      '--classifier', classifierPath,
-      '--source-root', root,
-      '--json',
-    ], { cwd: process.cwd(), encoding: 'utf8', env: cleanGitEnv() });
-    expect(json.status, json.stderr).toBe(0);
-    expect(JSON.parse(json.stdout)).toMatchObject({
-      changed: ['__tests__/leaf-renamed.test.ts'],
-      removed: ['__tests__/leaf.test.ts'],
-      impactResolved: false,
-      selected: ['__tests__/leaf-renamed.test.ts'],
-    });
-
-    const plain = spawnSync(process.execPath, [
-      'scripts/select-vitest-files.mjs',
-      '--base', base,
-      '--classifier', classifierPath,
-      '--source-root', root,
-    ], { cwd: process.cwd(), encoding: 'utf8', env: cleanGitEnv() });
-    expect(plain.status, plain.stderr).toBe(0);
-    expect(plain.stdout.trim().split('\n').sort()).toEqual([
+    const selection = select(root, base, [
+      '__tests__/leaf.test.ts',
       '__tests__/leaf-renamed.test.ts',
-      '__tests__/misc/unrelated.test.ts',
     ]);
+    expect(selection.removed).toEqual(['__tests__/leaf.test.ts']);
+    expect(selection.changedTests).toEqual(['__tests__/leaf-renamed.test.ts']);
+    expect(selection.selected).toContain('__tests__/leaf-renamed.test.ts');
+    expect(selection.selected).toContain('__tests__/misc/core.test.ts');
+  });
+
+  it('reports an unmapped production topology while group classification remains independently fail-closed', () => {
+    const { root, base } = fixture();
+    fs.writeFileSync(path.join(root, 'src/unmapped.ts'), 'export const value = true;\n');
+    expect(staticTestDependencyImpact(root, base, ['src/unmapped.ts'])).toMatchObject({
+      tests: [],
+      unresolvedProductionFiles: ['src/unmapped.ts'],
+    });
   });
 });

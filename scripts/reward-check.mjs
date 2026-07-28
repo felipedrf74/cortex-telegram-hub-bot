@@ -82,7 +82,7 @@ Options:
   --output <path>
   --changed-files <path>
   --release-manifest <path>
-  --staging-attestation <path>
+  --staging-attestation <lean staging transaction JSON>
   --require-staging`;
 }
 
@@ -487,13 +487,13 @@ function iosEvidenceCheck(handoffText) {
 function releaseEvidenceCheck(context, handoffText) {
   if (context.releaseManifest) {
     const args = context.requireStaging ? [
-      path.join(context.cwd, 'scripts/release-staging-attestation.mjs'),
-      'validate',
-      '--attestation', context.stagingAttestation || '.local/release/staging/missing.signed.json',
+      path.join(context.cwd, 'scripts/release-checksum-manifest.mjs'),
+      'validate-state',
       '--manifest', context.releaseManifest,
-      '--validate-release-manifest',
+      '--state', context.stagingAttestation || '.local/release/staging/missing.json',
+      '--role', 'staging',
     ] : [
-      path.join(context.cwd, 'scripts/release-manifest-v2.mjs'),
+      path.join(context.cwd, 'scripts/release-checksum-manifest.mjs'),
       'validate', '--manifest', context.releaseManifest,
     ];
     return runCommandCheck({

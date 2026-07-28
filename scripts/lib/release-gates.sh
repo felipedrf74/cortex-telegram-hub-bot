@@ -1,508 +1,74 @@
 #!/usr/bin/env bash
-# Shared release/deploy guard helpers. Source from bash scripts after
-# LOCAL_DIR/ROOT is known; all helpers fail closed.
+# Small shared guards used by local verification and the lean release operator.
 
 release_require_git_worktree() {
   local root="$1"
-  local inside
-  if ! inside="$(git -C "$root" rev-parse --is-inside-work-tree 2>/dev/null)"; then
-    echo "❌ Git worktree probe failed for $root" >&2
-    echo "   Check .git/config; core.bare must be false for release scripts." >&2
+  [ "$(git -C "$root" rev-parse --is-inside-work-tree 2>/dev/null)" = true ] || {
+    echo "not a usable Git worktree: $root" >&2
     return 1
-  fi
-  if [ "$inside" != "true" ]; then
-    echo "❌ $root is not a usable git worktree (rev-parse returned '$inside')" >&2
-    return 1
-  fi
+  }
 }
 
 release_git_status_porcelain() {
-  local root="$1"
-  shift
-  git -C "$root" status --porcelain "$@"
+  git -C "$1" status --porcelain --untracked-files=normal
 }
 
 release_require_clean_tree() {
   local root="$1"
   local status
-  if ! status="$(release_git_status_porcelain "$root")"; then
-    echo "❌ Could not read git status for $root; refusing to continue." >&2
-    return 1
-  fi
-  if [ -n "$status" ]; then
+  status="$(release_git_status_porcelain "$root")" || return 1
+  [ -z "$status" ] || {
     printf '%s\n' "$status"
     return 2
-  fi
+  }
 }
 
 release_require_tracked_clean_file() {
   local root="$1"
-  local rel_path="$2"
-  if ! git -C "$root" ls-files --error-unmatch -- "$rel_path" >/dev/null 2>&1; then
-    echo "❌ Required release trust-anchor file is not tracked: $rel_path" >&2
-    return 1
-  fi
-  if ! git -C "$root" diff --quiet HEAD -- "$rel_path"; then
-    echo "❌ Required release trust-anchor file is modified vs HEAD: $rel_path" >&2
-    return 1
-  fi
-}
-
-release_lock_root() {
-  local root="$1"
-  printf '%s/.local/release/locks' "$root"
-}
-
-release_current_host() {
-  hostname 2>/dev/null || printf unknown
-}
-
-release_lock_owner_value() {
-  local owner_file="$1"
-  local key="$2"
-  awk -F= -v key="$key" '$1 == key { print substr($0, index($0, "=") + 1); exit }' "$owner_file" 2>/dev/null
-}
-
-release_write_local_lock_owner() {
-  local lock_dir="$1"
-  local current_pid="${BASHPID:-$$}"
-  local tmp_owner="$lock_dir/owner.tmp.$current_pid"
-  {
-    printf 'pid=%s\n' "$current_pid"
-    printf 'user=%s\n' "${USER:-${LOGNAME:-unknown}}"
-    printf 'host=%s\n' "$(release_current_host)"
-    printf 'script=%s\n' "$(basename "$0")"
-    printf 'createdAt=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  } > "$tmp_owner"
-  mv "$tmp_owner" "$lock_dir/owner"
-}
-
-release_epoch_from_iso8601() {
-  local value="$1"
-  date -u -d "$value" +%s 2>/dev/null \
-    || date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$value" +%s 2>/dev/null \
-    || printf 0
-}
-
-release_path_mtime_epoch() {
-  local value="$1"
-  stat -c %Y "$value" 2>/dev/null \
-    || stat -f %m "$value" 2>/dev/null \
-    || printf 0
-}
-
-release_write_reclaim_marker_owner() {
-  local marker_dir="$1"
-  local current_pid="${BASHPID:-$$}"
-  local tmp_owner="$marker_dir/owner.tmp.$current_pid"
-  {
-    printf 'pid=%s\n' "$current_pid"
-    printf 'host=%s\n' "$(release_current_host)"
-    printf 'createdAt=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  } > "$tmp_owner"
-  mv "$tmp_owner" "$marker_dir/owner"
-}
-
-release_reclaim_marker_is_stale() {
-  local marker_dir="$1"
-  local owner_file="$marker_dir/owner"
-  local max_age="${NEXUS_RECLAIM_MARKER_MAX_AGE_S:-60}"
-  local created_at created_epoch now_epoch owner_pid owner_host current_host
-  [ -d "$marker_dir" ] || return 0
-  case "$max_age" in
-    ''|*[!0-9]*) max_age=60 ;;
-  esac
-  if [ ! -f "$owner_file" ]; then
-    created_epoch="$(release_path_mtime_epoch "$marker_dir")"
-    now_epoch="$(date -u +%s)"
-    if [ "$created_epoch" -gt 0 ] && [ $((now_epoch - created_epoch)) -gt "$max_age" ]; then
-      return 0
-    fi
-    return 1
-  fi
-
-  created_at="$(release_lock_owner_value "$owner_file" createdAt)"
-  created_epoch="$(release_epoch_from_iso8601 "$created_at")"
-  now_epoch="$(date -u +%s)"
-  if [ "$created_epoch" -gt 0 ] && [ $((now_epoch - created_epoch)) -gt "$max_age" ]; then
-    return 0
-  fi
-
-  owner_pid="$(release_lock_owner_value "$owner_file" pid)"
-  owner_host="$(release_lock_owner_value "$owner_file" host)"
-  current_host="$(release_current_host)"
-  case "$owner_pid" in
-    ''|*[!0-9]*) return 0 ;;
-  esac
-  if [ "$owner_host" = "$current_host" ] && ! kill -0 "$owner_pid" 2>/dev/null; then
-    return 0
-  fi
-  return 1
-}
-
-release_acquire_reclaim_marker() {
-  local marker_dir="$1"
-  local stale_marker current_pid
-  if mkdir "$marker_dir" 2>/dev/null; then
-    release_write_reclaim_marker_owner "$marker_dir"
-    return 0
-  fi
-  if [ -d "$marker_dir" ] && release_reclaim_marker_is_stale "$marker_dir"; then
-    current_pid="${BASHPID:-$$}"
-    stale_marker="${marker_dir}.stale.$current_pid"
-    if mv "$marker_dir" "$stale_marker" 2>/dev/null; then
-      rm -rf "$stale_marker"
-      if mkdir "$marker_dir" 2>/dev/null; then
-        release_write_reclaim_marker_owner "$marker_dir"
-        return 0
-      fi
-    fi
-  fi
-  return 1
-}
-
-release_local_lock_is_stale() {
-  local lock_dir="$1"
-  local owner_file="$lock_dir/owner"
-  local owner_pid owner_host current_host max_age created_epoch now_epoch
-  if [ ! -f "$owner_file" ]; then
-    max_age="${NEXUS_LOCAL_LOCK_MAX_AGE_S:-1800}"
-    case "$max_age" in
-      ''|*[!0-9]*) max_age=1800 ;;
-    esac
-    created_epoch="$(release_path_mtime_epoch "$lock_dir")"
-    now_epoch="$(date -u +%s)"
-    if [ "$created_epoch" -gt 0 ] && [ $((now_epoch - created_epoch)) -gt "$max_age" ]; then
-      return 0
-    fi
-    return 1
-  fi
-  owner_pid="$(release_lock_owner_value "$owner_file" pid)"
-  owner_host="$(release_lock_owner_value "$owner_file" host)"
-  current_host="$(release_current_host)"
-  case "$owner_pid" in
-    ''|*[!0-9]*)
-      return 1
-      ;;
-  esac
-  [ -n "$owner_host" ] || return 1
-  [ "$owner_host" = "$current_host" ] || return 1
-  kill -0 "$owner_pid" 2>/dev/null && return 1
-  return 0
+  local relative="$2"
+  git -C "$root" ls-files --error-unmatch -- "$relative" >/dev/null 2>&1 \
+    && git -C "$root" diff --quiet HEAD -- "$relative"
 }
 
 release_acquire_local_lock() {
   local root="$1"
   local name="$2"
-  local lock_root lock_dir
-  lock_root="$(release_lock_root "$root")"
+  local lock_root lock_dir owner_pid owner_host current_host
+  [[ "$name" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]] || {
+    echo "invalid local lock name" >&2
+    return 64
+  }
+  lock_root="$root/.local/release/locks"
+  install -d -m 700 "$root/.local" "$root/.local/release" "$lock_root"
   lock_dir="$lock_root/$name.lock"
-  mkdir -p "$lock_root"
-  if mkdir "$lock_dir" 2>/dev/null; then
-    release_write_local_lock_owner "$lock_dir"
-    release_register_local_lock "$lock_dir"
-    return 0
-  fi
-  if [ -d "$lock_dir" ] && release_local_lock_is_stale "$lock_dir"; then
-    local reclaim_marker
-    reclaim_marker="$lock_dir/.reclaiming"
-    if ! release_acquire_reclaim_marker "$reclaim_marker"; then
-      echo "❌ Lost race reclaiming stale local release lock: $lock_dir" >&2
-      return 73
-    fi
-    if ! release_local_lock_is_stale "$lock_dir"; then
-      rm -rf "$reclaim_marker" 2>/dev/null || true
-      echo "❌ Local release lock became active during reclaim: $lock_dir" >&2
-      return 73
-    fi
-    echo "🟡 Reclaiming stale local release lock: $lock_dir" >&2
-    sed 's/^/   /' "$lock_dir/owner" >&2 || true
-    release_write_local_lock_owner "$lock_dir"
-    rm -rf "$reclaim_marker" 2>/dev/null || true
-    release_register_local_lock "$lock_dir"
-    return 0
-  fi
-  echo "❌ Local release lock already exists: $lock_dir" >&2
-  if [ -f "$lock_dir/owner" ]; then
-    sed 's/^/   /' "$lock_dir/owner" >&2 || true
-  fi
-  return 73
-}
-
-release_append_lock_entry() {
-  local variable_name="$1"
-  local entry="$2"
-  local current
-  eval "current=\"\${$variable_name:-}\""
-  if [ -n "$current" ]; then
-    printf -v "$variable_name" '%s\n%s' "$current" "$entry"
-  else
-    printf -v "$variable_name" '%s' "$entry"
-  fi
-}
-
-release_register_local_lock() {
-  local lock_dir="$1"
-  release_append_lock_entry RELEASE_LOCAL_LOCKS "$lock_dir"
-}
-
-release_cleanup_local_locks() {
-  local lock_dir
-  while IFS= read -r lock_dir; do
-    [ -n "$lock_dir" ] || continue
-    rm -rf "$lock_dir"
-  done <<< "${RELEASE_LOCAL_LOCKS:-}"
-  RELEASE_LOCAL_LOCKS=""
-}
-
-release_acquire_remote_lock() {
-  local server="$1"
-  local remote_dir="$2"
-  local name="$3"
-  local token lock_dir max_age marker_max_age
-  token="$(date -u +%Y%m%dT%H%M%SZ)-$$"
-  lock_dir="$remote_dir/.local/release/locks/$name.lock"
-  max_age="${NEXUS_REMOTE_LOCK_MAX_AGE_S:-1800}"
-  marker_max_age="${NEXUS_RECLAIM_MARKER_MAX_AGE_S:-60}"
-  if ssh "$server" bash -s -- "$remote_dir" "$name" "$token" "$(basename "$0")" "$max_age" "$marker_max_age" <<'REMOTE_LOCK'
-set -euo pipefail
-
-remote_dir="$1"
-name="$2"
-token="$3"
-script_name="$4"
-max_age="$5"
-marker_max_age="$6"
-lock_root="$remote_dir/.local/release/locks"
-lock_dir="$lock_root/$name.lock"
-
-write_owner() {
-  tmp_owner="$lock_dir/owner.tmp.$$"
-  {
-    printf 'token=%s\n' "$token"
-    printf 'pid=%s\n' "$$"
-    printf 'host=%s\n' "$(hostname 2>/dev/null || printf unknown)"
-    printf 'user=%s\n' "${USER:-${LOGNAME:-unknown}}"
-    printf 'script=%s\n' "$script_name"
-    printf 'createdAt=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  } > "$tmp_owner"
-  mv "$tmp_owner" "$lock_dir/owner"
-}
-
-owner_value() {
-  local owner_file="$1"
-  local key="$2"
-  awk -F= -v key="$key" '$1 == key { print substr($0, index($0, "=") + 1); exit }' "$owner_file" 2>/dev/null || true
-}
-
-lock_owner_value() {
-  owner_value "$lock_dir/owner" "$1"
-}
-
-epoch_from_iso8601() {
-  local value="$1"
-  date -u -d "$value" +%s 2>/dev/null \
-    || date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$value" +%s 2>/dev/null \
-    || printf 0
-}
-
-path_mtime_epoch() {
-  local value="$1"
-  stat -c %Y "$value" 2>/dev/null \
-    || stat -f %m "$value" 2>/dev/null \
-    || printf 0
-}
-
-write_reclaim_marker_owner() {
-  local marker_dir="$1"
-  local tmp_owner="$marker_dir/owner.tmp.$$"
-  {
-    printf 'pid=%s\n' "$$"
-    printf 'host=%s\n' "$(hostname 2>/dev/null || printf unknown)"
-    printf 'createdAt=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  } > "$tmp_owner"
-  mv "$tmp_owner" "$marker_dir/owner"
-}
-
-reclaim_marker_is_stale() {
-  local marker_dir="$1"
-  local owner_file="$marker_dir/owner"
-  local created_at created_epoch now_epoch owner_host owner_pid current_host
-  [ -d "$marker_dir" ] || return 0
-  case "$marker_max_age" in
-    ''|*[!0-9]*) marker_max_age=60 ;;
-  esac
-  if [ ! -f "$owner_file" ]; then
-    created_epoch="$(path_mtime_epoch "$marker_dir")"
-    now_epoch="$(date -u +%s)"
-    if [ "$created_epoch" -gt 0 ] && [ $((now_epoch - created_epoch)) -gt "$marker_max_age" ]; then
-      return 0
-    fi
-    return 1
-  fi
-
-  created_at="$(owner_value "$owner_file" createdAt)"
-  created_epoch="$(epoch_from_iso8601 "$created_at")"
-  now_epoch="$(date -u +%s)"
-  if [ -n "$created_at" ] && [ $((now_epoch - created_epoch)) -gt "$marker_max_age" ]; then
-    return 0
-  fi
-
-  owner_host="$(owner_value "$owner_file" host)"
-  owner_pid="$(owner_value "$owner_file" pid)"
   current_host="$(hostname 2>/dev/null || printf unknown)"
-  case "$owner_pid" in
-    ''|*[!0-9]*) return 0 ;;
-  esac
-  if [ "$owner_host" = "$current_host" ] && ! kill -0 "$owner_pid" 2>/dev/null; then
-    return 0
-  fi
-  return 1
-}
-
-acquire_reclaim_marker() {
-  local marker_dir="$1"
-  local stale_marker
-  if mkdir "$marker_dir" 2>/dev/null; then
-    write_reclaim_marker_owner "$marker_dir"
-    return 0
-  fi
-  if [ -d "$marker_dir" ] && reclaim_marker_is_stale "$marker_dir"; then
-    stale_marker="${marker_dir}.stale.$$"
-    if mv "$marker_dir" "$stale_marker" 2>/dev/null; then
-      rm -rf "$stale_marker"
-      if mkdir "$marker_dir" 2>/dev/null; then
-        write_reclaim_marker_owner "$marker_dir"
-        return 0
-      fi
+  if [ -d "$lock_dir" ] && [ ! -L "$lock_dir" ] && [ -f "$lock_dir/owner" ]; then
+    owner_pid="$(awk -F= '$1=="pid"{print $2}' "$lock_dir/owner")"
+    owner_host="$(awk -F= '$1=="host"{print $2}' "$lock_dir/owner")"
+    if [[ "$owner_pid" =~ ^[0-9]+$ ]] && [ "$owner_host" = "$current_host" ] \
+      && ! kill -0 "$owner_pid" 2>/dev/null; then
+      rm -f -- "$lock_dir/owner"
+      rmdir "$lock_dir" 2>/dev/null || true
     fi
   fi
-  return 1
-}
-
-mkdir -p "$lock_root"
-if mkdir "$lock_dir" 2>/dev/null; then
-  write_owner
-  exit 0
-fi
-
-stale=0
-if [ -f "$lock_dir/owner" ]; then
-  created_at="$(lock_owner_value createdAt)"
-  created_epoch="$(epoch_from_iso8601 "$created_at")"
-  now_epoch="$(date -u +%s)"
-  case "$max_age" in
-    ''|*[!0-9]*) max_age=1800 ;;
-  esac
-  if [ -n "$created_at" ] && [ $((now_epoch - created_epoch)) -gt "$max_age" ]; then
-    stale=1
-  fi
-
-  # The owner PID belongs to the short-lived SSH acquisition shell, not to
-  # the local deploy process that continues holding the lock. Reclaiming as
-  # soon as that remote shell exits makes every active lock immediately
-  # stealable. Remote locks therefore expire only by their bounded age; the
-  # normal local EXIT trap removes them at the end of a successful or failed
-  # operator invocation.
-fi
-
-if [ "$stale" = "1" ]; then
-  reclaim_marker="$lock_dir/.reclaiming"
-  if ! acquire_reclaim_marker "$reclaim_marker"; then
-    echo "REMOTE_LOCK_EXISTS:$lock_dir"
-    [ -f "$lock_dir/owner" ] && sed 's/^/   /' "$lock_dir/owner" || true
-    exit 73
-  fi
-  trap 'rm -rf "$reclaim_marker" 2>/dev/null || true' EXIT
-  echo "🟡 Reclaiming stale remote release lock: $lock_dir" >&2
-  [ -f "$lock_dir/owner" ] && sed 's/^/   /' "$lock_dir/owner" >&2 || true
-  write_owner
-  rm -rf "$reclaim_marker" 2>/dev/null || true
-  trap - EXIT
-  exit 0
-fi
-
-echo "REMOTE_LOCK_EXISTS:$lock_dir"
-[ -f "$lock_dir/owner" ] && sed 's/^/   /' "$lock_dir/owner" || true
-exit 73
-REMOTE_LOCK
-  then
-    :
-  else
-    return $?
-  fi
-  release_append_lock_entry RELEASE_REMOTE_LOCKS "$server|$lock_dir|$token"
-}
-
-release_cleanup_remote_locks() {
-  local entry server remainder lock_dir token
-  while IFS= read -r entry; do
-    [ -n "$entry" ] || continue
-    server="${entry%%|*}"
-    remainder="${entry#*|}"
-    lock_dir="${remainder%%|*}"
-    token="${remainder#*|}"
-    [ -n "$server" ] && [ -n "$lock_dir" ] && [ -n "$token" ] || continue
-    ssh "$server" bash -s -- "$lock_dir" "$token" >/dev/null 2>&1 <<'REMOTE_CLEANUP' || true
-set -euo pipefail
-lock_dir="$1"
-expected_token="$2"
-[ -n "$lock_dir" ] && [ -n "$expected_token" ] || exit 0
-[ -f "$lock_dir/owner" ] || exit 0
-actual_token="$(awk -F= '$1 == "token" { print substr($0, index($0, "=") + 1); exit }' "$lock_dir/owner")"
-[ "$actual_token" = "$expected_token" ] || exit 0
-rm -rf "$lock_dir"
-REMOTE_CLEANUP
-  done <<< "${RELEASE_REMOTE_LOCKS:-}"
-  RELEASE_REMOTE_LOCKS=""
-}
-
-release_acquire_remote_sonar_lock() {
-  local server="$1" lock_root ready errors pid
-  [ -z "${RELEASE_REMOTE_SONAR_LOCK_PID:-}" ] || {
-    echo "shared release/Sonar mutex is already held by this process" >&2
+  mkdir "$lock_dir" 2>/dev/null || {
+    echo "local release lock is already held: $lock_dir" >&2
     return 73
   }
-  lock_root="$(mktemp -d "${TMPDIR:-/tmp}/nexus-release-sonar.XXXXXX")"
-  mkfifo "$lock_root/hold"
-  chmod 700 "$lock_root"
-  chmod 600 "$lock_root/hold"
-  ready="$lock_root/ready"; errors="$lock_root/errors"
-  : > "$ready"; : > "$errors"; chmod 600 "$ready" "$errors"
-  exec 8<>"$lock_root/hold"
-  ssh -o BatchMode=yes -o ConnectTimeout=10 "$server" \
-    'command -v flock >/dev/null && test -f /run/lock/nexus-release-sonar.lock && test ! -L /run/lock/nexus-release-sonar.lock && test "$(stat -c "%U:%G:%a" /run/lock/nexus-release-sonar.lock)" = root:dominguez:660 && exec sh -c '\''exec 7<>/run/lock/nexus-release-sonar.lock; flock -n 7 || exit 75; printf "NEXUS_MUTEX_ACQUIRED\n"; cat >/dev/null'\''' \
-    < "$lock_root/hold" > "$ready" 2> "$errors" 8>&- &
-  pid=$!
-  for _ in $(seq 1 100); do
-    if grep -qx 'NEXUS_MUTEX_ACQUIRED' "$ready"; then
-      RELEASE_REMOTE_SONAR_LOCK_PID="$pid"
-      RELEASE_REMOTE_SONAR_LOCK_ROOT="$lock_root"
-      return 0
-    fi
-    if ! kill -0 "$pid" 2>/dev/null; then break; fi
-    sleep 0.1
-  done
-  exec 8>&-
-  wait "$pid" 2>/dev/null || true
-  echo "shared remote release/Sonar mutex is unavailable" >&2
-  sed -n '1,3p' "$errors" >&2 || true
-  rm -rf "$lock_root"
-  return 75
-}
-
-release_cleanup_remote_sonar_lock() {
-  if [ -n "${RELEASE_REMOTE_SONAR_LOCK_PID:-}" ]; then
-    exec 8>&-
-    wait "$RELEASE_REMOTE_SONAR_LOCK_PID" 2>/dev/null || true
-  fi
-  [ -z "${RELEASE_REMOTE_SONAR_LOCK_ROOT:-}" ] || rm -rf "$RELEASE_REMOTE_SONAR_LOCK_ROOT"
-  RELEASE_REMOTE_SONAR_LOCK_PID=""
-  RELEASE_REMOTE_SONAR_LOCK_ROOT=""
+  {
+    printf 'pid=%s\n' "${BASHPID:-$$}"
+    printf 'host=%s\n' "$current_host"
+    printf 'createdAt=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  } > "$lock_dir/owner"
+  chmod 600 "$lock_dir/owner"
+  RELEASE_LOCAL_LOCK_DIRS="${RELEASE_LOCAL_LOCK_DIRS:-} $lock_dir"
 }
 
 release_cleanup_all_locks() {
-  release_cleanup_remote_sonar_lock
-  release_cleanup_remote_locks
-  release_cleanup_local_locks
+  local lock_dir
+  for lock_dir in ${RELEASE_LOCAL_LOCK_DIRS:-}; do
+    rm -f -- "$lock_dir/owner"
+    rmdir "$lock_dir" 2>/dev/null || true
+  done
+  RELEASE_LOCAL_LOCK_DIRS=""
 }

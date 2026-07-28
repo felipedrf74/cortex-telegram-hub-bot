@@ -41,18 +41,58 @@ function shellQuote(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`;
 }
 
+export function buildRemoteNodeCommand(stagingPath, {
+  nodeBin = '/usr/bin/node',
+} = {}) {
+  if (typeof nodeBin !== 'string' || !nodeBin.startsWith('/')) {
+    throw new TypeError('Remote Node binary must be an absolute path');
+  }
+  const remoteScript = [
+    'set -eo pipefail',
+    `staging_root=${shellQuote(stagingPath)}`,
+    'case "$staging_root" in /*) ;; *) echo "staging root must be absolute" >&2; exit 64 ;; esac',
+    '[ "$staging_root" != / ] && [ -d "$staging_root" ] && [ ! -L "$staging_root" ]',
+    'staging_root="$(readlink -f -- "$staging_root")"',
+    '[ -d "$staging_root/releases" ] && [ ! -L "$staging_root/releases" ]',
+    '[ -f "$staging_root/.env" ] && [ ! -L "$staging_root/.env" ]',
+    '[ -d "$staging_root/data" ] && [ ! -L "$staging_root/data" ]',
+    '[ -f "$staging_root/data/bot.db" ] && [ ! -L "$staging_root/data/bot.db" ]',
+    '[ -L "$staging_root/current" ]',
+    'staging_release="$(readlink -f -- "$staging_root/current")"',
+    'case "$staging_release" in "$staging_root"/releases/*) ;; *) echo "staging current selector escapes releases" >&2; exit 1 ;; esac',
+    '[ -d "$staging_release" ] && [ ! -L "$staging_release" ]',
+    '[ -d "$staging_release/dist" ] && [ ! -L "$staging_release/dist" ]',
+    '[ -d "$staging_release/node_modules" ] && [ ! -L "$staging_release/node_modules" ]',
+    '[ -d "$staging_release/scripts" ] && [ ! -L "$staging_release/scripts" ]',
+    '[ -L "$staging_release/.env" ]',
+    '[ "$(readlink -f -- "$staging_release/.env")" = "$staging_root/.env" ]',
+    '[ -L "$staging_release/data" ]',
+    '[ "$(readlink -f -- "$staging_release/data")" = "$staging_root/data" ]',
+    'cd "$staging_release"',
+    'set -a',
+    '. "$staging_root/.env"',
+    'set +a',
+    'export DATABASE_PATH="$staging_root/data/bot.db"',
+    'export DB_PATH="$staging_root/data/bot.db"',
+    'export NODE_PATH="$staging_release/node_modules"',
+    'node_status=0',
+    `${shellQuote(nodeBin)} || node_status=$?`,
+    'selector_after="$(readlink -f -- "$staging_root/current")"',
+    'if [ "$selector_after" != "$staging_release" ]; then',
+    '  echo "staging current selector changed during fixture operation" >&2',
+    '  exit 74',
+    'fi',
+    'exit "$node_status"',
+  ].join('\n');
+
+  return `/bin/bash -c ${shellQuote(remoteScript)}`;
+}
+
 export function runRemoteNode(script, {
   server = process.env.DEPLOY_SERVER || 'dominguez@serverdominguez',
   stagingPath = process.env.STAGING_PATH || '/home/dominguez/telegram-hub-bot-staging',
 } = {}) {
-  const command = [
-    'set -e',
-    `cd ${shellQuote(stagingPath)}`,
-    'set -a',
-    '. ./.env',
-    'set +a',
-    'node',
-  ].join(' && ');
+  const command = buildRemoteNodeCommand(stagingPath);
 
   return execFileSync('ssh', [server, command], {
     input: script,

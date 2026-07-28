@@ -43,15 +43,17 @@ Machine-readable truth: `docs/release/release-state.json`.
 
 ## Release Process
 
-Ten signed staging attestations and six owner-authorized production releases
-now prove the signed `ReleaseManifestV2`, immutable staging install, exact-artifact
-promotion, atomic PM2 switch, and automatic exact rollback path.
-The exact-artifact test, manifest, versioned-release, and documentation path is
-the canonical release process. Its legacy repository-sync wrappers are now
-retired. The signed root-owned promotion transaction is the sole runtime or
-database mutation path for promotion and predecessor recovery. The legacy
-`scripts/rollback.sh` and `scripts/restore.sh` commands remain available only
-for read-only dry-run inventory; their apply modes are retired.
+The production identity above was delivered by the historical signed-manifest
+path. The repository now defines the lean successor: reuse the exact
+protected-main artifact, run one four-shard release checkpoint, stage it, stop
+for explicit owner approval, and promote with a user-owned one-shot transaction
+plus automatic predecessor recovery.
+
+The first lean production proof has not yet happened, so this file deliberately
+retains the last observed production identity instead of claiming the new path
+is active. After that proof, update the machine-readable state with the
+checkpoint run, compact manifest digest, staging transaction, production
+transaction, backup receipt, and measured health/soak timing.
 
 Every future production deployment, remote branch cleanup, and TestFlight
 expiry still requires explicit owner authorization.

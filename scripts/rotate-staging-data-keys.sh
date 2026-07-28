@@ -16,6 +16,12 @@ readonly EXPECTED_ROTATOR_SHA256='2efff86ae28c043a7622ed0fa0df8ab738a96115c03374
 
 STAGING_ROOT=''
 PRODUCTION_ROOT=''
+STAGING_CURRENT_RELEASE=''
+STAGING_RELEASE_SHA=''
+STAGING_RELEASE_ARTIFACT_SHA256=''
+PRODUCTION_CURRENT_RELEASE=''
+PRODUCTION_RELEASE_SHA=''
+PRODUCTION_RELEASE_ARTIFACT_SHA256=''
 BACKUP_DIR=''
 BACKUP_DB=''
 STAGING_ENV=''
@@ -26,11 +32,15 @@ NEXT_ENV=''
 NEXT_AGENTS_ENV=''
 ECOSYSTEM=''
 ROTATOR=''
+CONTENT_ROOT=''
+CONTENT_PYTHON=''
 DB_PATH=''
 PM2=''
 SANITIZED_PATH=''
 SAFE_PM2_HOME=''
 OPERATOR=''
+RELEASE_LOCK_FILE=''
+RELEASE_LOCK_FD=''
 
 SERVICES_STOPPED=0
 APPLY_ATTEMPTED=0
@@ -88,6 +98,93 @@ canonical_file() {
     if (!stat.isFile()) process.exit(2);
     process.stdout.write(fs.realpathSync(value));
   ' "$1"
+}
+
+resolve_current_release_identity() {
+  local root="$1"
+  local label="$2"
+  local releases_root current_link release
+
+  releases_root="$(canonical_directory "$root/releases")" \
+    || die "$label releases root cannot be resolved"
+  current_link="$root/current"
+  [[ -d "$root/releases" && ! -L "$root/releases" ]] \
+    || die "$label releases root must be a non-symlink directory"
+  [[ -L "$current_link" ]] || die "$label current selector must be a symlink"
+  release="$(canonical_directory "$current_link")" \
+    || die "$label current selector cannot be resolved"
+  [[ "$(dirname -- "$release")" == "$releases_root" ]] \
+    || die "$label current selector must resolve to one direct child of releases"
+  [[ -d "$release" && ! -L "$release" ]] \
+    || die "$label current release must be a non-symlink directory"
+  [[ -f "$release/.complete.json" && ! -L "$release/.complete.json" ]] \
+    || die "$label current release completion marker is missing or symbolic"
+
+  node - "$release" "$label" <<'NODE'
+const fs = require('node:fs');
+const path = require('node:path');
+const [release, label] = process.argv.slice(2);
+const markerPath = path.join(release, '.complete.json');
+const markerStat = fs.lstatSync(markerPath);
+const marker = JSON.parse(fs.readFileSync(markerPath, 'utf8'));
+if (!markerStat.isFile() || markerStat.isSymbolicLink()
+    || marker?.schema !== 'nexus.release-bundle.v1'
+    || !/^[0-9a-f]{40}$/u.test(marker.runtimeSha ?? '')
+    || !/^[0-9a-f]{64}$/u.test(marker.artifactDigest ?? '')
+    || path.basename(release)
+      !== `${marker.runtimeSha}-${marker.artifactDigest.slice(0, 12)}`) {
+  throw new Error(`${label} current release identity is invalid`);
+}
+process.stdout.write(`${release}\t${marker.runtimeSha}\t${marker.artifactDigest}`);
+NODE
+}
+
+assert_current_release_unchanged() {
+  local root="$1"
+  local expected_release="$2"
+  local expected_sha="$3"
+  local expected_digest="$4"
+  local label="$5"
+  local observed observed_release observed_sha observed_digest
+
+  observed="$(resolve_current_release_identity "$root" "$label")" \
+    || die "$label current release identity is unavailable"
+  IFS=$'\t' read -r observed_release observed_sha observed_digest <<<"$observed"
+  [[ "$observed_release" == "$expected_release" \
+    && "$observed_sha" == "$expected_sha" \
+    && "$observed_digest" == "$expected_digest" ]] \
+    || die "$label current release changed during data-key rotation"
+}
+
+assert_all_current_releases_unchanged() {
+  assert_current_release_unchanged \
+    "$STAGING_ROOT" "$STAGING_CURRENT_RELEASE" "$STAGING_RELEASE_SHA" \
+    "$STAGING_RELEASE_ARTIFACT_SHA256" staging
+  assert_current_release_unchanged \
+    "$PRODUCTION_ROOT" "$PRODUCTION_CURRENT_RELEASE" "$PRODUCTION_RELEASE_SHA" \
+    "$PRODUCTION_RELEASE_ARTIFACT_SHA256" production
+}
+
+acquire_release_lock() {
+  local lock_directory
+  lock_directory="$(dirname -- "$RELEASE_LOCK_FILE")"
+  [[ -d "$lock_directory" && ! -L "$lock_directory" ]] \
+    || die 'shared release lock directory is unavailable or symbolic'
+  [[ -f "$RELEASE_LOCK_FILE" && ! -L "$RELEASE_LOCK_FILE" ]] \
+    || die 'shared release lock is unavailable or symbolic'
+  [[ "$(stat -c '%U:%a' -- "$RELEASE_LOCK_FILE")" == "$OPERATOR:600" ]] \
+    || die 'shared release lock owner or mode is unsafe'
+  exec {RELEASE_LOCK_FD}<>"$RELEASE_LOCK_FILE"
+  flock -n "$RELEASE_LOCK_FD" \
+    || die 'a release, Sonar scan, or another data-key rotation is active'
+}
+
+release_release_lock() {
+  if [[ -n "$RELEASE_LOCK_FD" ]]; then
+    flock -u "$RELEASE_LOCK_FD" >/dev/null 2>&1 || true
+    exec {RELEASE_LOCK_FD}>&- 2>/dev/null || true
+    RELEASE_LOCK_FD=''
+  fi
 }
 
 verify_exact_rotator_artifact() {
@@ -391,6 +488,22 @@ sanitized_pm2() {
     "$PM2" "$@"
 }
 
+staging_release_pm2() {
+  env -i \
+    HOME="$HOME" \
+    USER="$OPERATOR" \
+    LOGNAME="$OPERATOR" \
+    PATH="$SANITIZED_PATH" \
+    PM2_HOME="$SAFE_PM2_HOME" \
+    NEXUS_RELEASE_DIR="$STAGING_CURRENT_RELEASE" \
+    NEXUS_RELEASE_BASE_DIR="$STAGING_ROOT" \
+    NEXUS_RELEASE_ROLE=staging \
+    NEXUS_RELEASE_SHA="$STAGING_RELEASE_SHA" \
+    NEXUS_RELEASE_ARTIFACT_SHA256="$STAGING_RELEASE_ARTIFACT_SHA256" \
+    GIT_COMMIT="$STAGING_RELEASE_SHA" \
+    "$PM2" "$@"
+}
+
 secure_existing_pm2_resurrection_permissions() {
   local file
   [[ -d "$SAFE_PM2_HOME" && ! -L "$SAFE_PM2_HOME" ]] \
@@ -440,6 +553,44 @@ assert_pm2_stopped() {
   [[ "$(pm2_status "$name")" == 'stopped' ]] || die "$name did not reach PM2 stopped state"
 }
 
+assert_pm2_release_identity() {
+  local release="$1"
+  local sha="$2"
+  local digest="$3"
+  local backend_name="$4"
+  local content_name="$5"
+
+  sanitized_pm2 jlist 2>/dev/null | node -e '
+    let input = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk) => { input += chunk; });
+    process.stdin.on("end", () => {
+      const [release, sha, digest, backendName, contentName] = process.argv.slice(1);
+      const processes = JSON.parse(input);
+      const required = [
+        [backendName, release],
+        [contentName, `${release}/content-engine`],
+      ];
+      for (const [name, cwd] of required) {
+        const matches = processes.filter((entry) => entry.name === name);
+        if (matches.length !== 1) process.exit(2);
+        const environment = matches[0]?.pm2_env ?? {};
+        if (environment.status !== "online"
+            || environment.pm_cwd !== cwd
+            || (name === backendName
+              && environment.pm_exec_path !== `${release}/dist/index.js`)
+            || (name === contentName
+              && (environment.pm_exec_path !== "/usr/bin/python3.12"
+                || environment.PYTHONPATH !== `${release}/content-engine/vendor`))
+            || environment.NEXUS_RELEASE_SHA !== sha
+            || environment.NEXUS_RELEASE_ARTIFACT_SHA256 !== digest) {
+          process.exit(3);
+        }
+      }
+    });
+  ' "$release" "$sha" "$digest" "$backend_name" "$content_name"
+}
+
 assert_no_rotation_variables_in_pm2() {
   sanitized_pm2 jlist 2>/dev/null | node -e '
     let input = "";
@@ -466,17 +617,21 @@ assert_no_rotation_variables_in_pm2() {
 }
 
 stop_staging_services() {
+  assert_all_current_releases_unchanged
   # Set the state before the first stop so a partial PM2 failure still causes
   # the EXIT trap to restart the unchanged pre-apply runtime.
   SERVICES_STOPPED=1
   sanitized_pm2 stop "$CONTENT_APP" >/dev/null 2>&1
   sanitized_pm2 stop "$BACKEND_APP" >/dev/null 2>&1
+  assert_all_current_releases_unchanged
 }
 
 stop_staging_services_quietly() {
+  (assert_all_current_releases_unchanged) >/dev/null 2>&1 || return 1
   sanitized_pm2 stop "$CONTENT_APP" >/dev/null 2>&1 || true
   sanitized_pm2 stop "$BACKEND_APP" >/dev/null 2>&1 || true
   SERVICES_STOPPED=1
+  (assert_all_current_releases_unchanged) >/dev/null 2>&1 || return 1
 }
 
 verify_no_staging_writer_quietly() {
@@ -501,25 +656,42 @@ verify_no_staging_writer_quietly() {
 
 start_old_staging_services() {
   clear_rotation_variables
+  (assert_all_current_releases_unchanged) || return 1
   if ! (
-    cd -- "$STAGING_ROOT"
-    sanitized_pm2 start "$ECOSYSTEM" >/dev/null 2>&1
+    assert_all_current_releases_unchanged
+    cd -- "$STAGING_CURRENT_RELEASE"
+    staging_release_pm2 startOrReload "$ECOSYSTEM" \
+      --only "$BACKEND_APP,$CONTENT_APP" --update-env >/dev/null 2>&1
+    assert_all_current_releases_unchanged
   ); then
     return 1
   fi
   SERVICES_STOPPED=0
+  (assert_all_current_releases_unchanged) || return 1
+  assert_pm2_release_identity \
+    "$STAGING_CURRENT_RELEASE" "$STAGING_RELEASE_SHA" \
+    "$STAGING_RELEASE_ARTIFACT_SHA256" "$BACKEND_APP" "$CONTENT_APP" || return 1
 }
 
 recreate_staging_services() {
   clear_rotation_variables
+  assert_all_current_releases_unchanged
   sanitized_pm2 delete "$CONTENT_APP" >/dev/null 2>&1 || true
+  assert_all_current_releases_unchanged
   sanitized_pm2 delete "$BACKEND_APP" >/dev/null 2>&1 || true
+  assert_all_current_releases_unchanged
   (
-    cd -- "$STAGING_ROOT"
-    sanitized_pm2 start "$ECOSYSTEM" >/dev/null 2>&1
+    cd -- "$STAGING_CURRENT_RELEASE"
+    staging_release_pm2 startOrReload "$ECOSYSTEM" \
+      --only "$BACKEND_APP,$CONTENT_APP" --update-env >/dev/null 2>&1
   )
   SERVICES_STOPPED=0
+  assert_all_current_releases_unchanged
   assert_no_rotation_variables_in_pm2
+  assert_pm2_release_identity \
+    "$STAGING_CURRENT_RELEASE" "$STAGING_RELEASE_SHA" \
+    "$STAGING_RELEASE_ARTIFACT_SHA256" "$BACKEND_APP" "$CONTENT_APP" \
+    || die 'recreated staging PM2 processes do not match the exact current release'
 }
 
 assert_ports_closed() {
@@ -669,7 +841,7 @@ NODE
 
 create_consistent_backup() {
   local error_file="$BACKUP_DIR/backup-error.txt"
-  if ! node - "$STAGING_ROOT" "$DB_PATH" "$BACKUP_DB" 2>"$error_file" <<'NODE'
+  if ! node - "$STAGING_CURRENT_RELEASE" "$DB_PATH" "$BACKUP_DB" 2>"$error_file" <<'NODE'
 const fs = require('node:fs');
 const path = require('node:path');
 const [root, sourcePath, backupPath] = process.argv.slice(2);
@@ -705,7 +877,7 @@ NODE
 }
 
 check_database_integrity() {
-  node - "$STAGING_ROOT" "$DB_PATH" <<'NODE'
+  node - "$STAGING_CURRENT_RELEASE" "$DB_PATH" <<'NODE'
 const path = require('node:path');
 const [root, databasePath] = process.argv.slice(2);
 const Database = require(path.join(root, 'node_modules', 'better-sqlite3'));
@@ -800,8 +972,13 @@ print_manual_rollback_steps() {
   printf '  unset OLD_OAUTH_ENCRYPTION_KEY OLD_GARMIN_ENCRYPTION_KEY OLD_HEALTH_DATA_ENCRYPTION_KEY OLD_FINANCE_ENCRYPTION_KEY NEW_OAUTH_ENCRYPTION_KEY NEW_GARMIN_ENCRYPTION_KEY NEW_HEALTH_DATA_ENCRYPTION_KEY NEW_FINANCE_ENCRYPTION_KEY PEER_OAUTH_ENCRYPTION_KEY PEER_GARMIN_ENCRYPTION_KEY PEER_HEALTH_DATA_ENCRYPTION_KEY PEER_FINANCE_ENCRYPTION_KEY\n' >&2
   printf '  env -i HOME=%s USER=%s LOGNAME=%s PATH=%s PM2_HOME=%s %s delete %s %s\n' \
     "$(quoted "$HOME")" "$(quoted "$OPERATOR")" "$(quoted "$OPERATOR")" "$(quoted "$SANITIZED_PATH")" "$(quoted "$SAFE_PM2_HOME")" "$(quoted "$PM2")" "$(quoted "$CONTENT_APP")" "$(quoted "$BACKEND_APP")" >&2
-  printf '  cd -- %s && env -i HOME=%s USER=%s LOGNAME=%s PATH=%s PM2_HOME=%s %s start %s\n' \
-    "$(quoted "$STAGING_ROOT")" "$(quoted "$HOME")" "$(quoted "$OPERATOR")" "$(quoted "$OPERATOR")" "$(quoted "$SANITIZED_PATH")" "$(quoted "$SAFE_PM2_HOME")" "$(quoted "$PM2")" "$(quoted "$ECOSYSTEM")" >&2
+  printf '  cd -- %s && env -i HOME=%s USER=%s LOGNAME=%s PATH=%s PM2_HOME=%s NEXUS_RELEASE_DIR=%s NEXUS_RELEASE_BASE_DIR=%s NEXUS_RELEASE_ROLE=staging NEXUS_RELEASE_SHA=%s NEXUS_RELEASE_ARTIFACT_SHA256=%s GIT_COMMIT=%s %s startOrReload %s --only %s,%s --update-env\n' \
+    "$(quoted "$STAGING_CURRENT_RELEASE")" "$(quoted "$HOME")" "$(quoted "$OPERATOR")" \
+    "$(quoted "$OPERATOR")" "$(quoted "$SANITIZED_PATH")" "$(quoted "$SAFE_PM2_HOME")" \
+    "$(quoted "$STAGING_CURRENT_RELEASE")" "$(quoted "$STAGING_ROOT")" \
+    "$(quoted "$STAGING_RELEASE_SHA")" "$(quoted "$STAGING_RELEASE_ARTIFACT_SHA256")" \
+    "$(quoted "$STAGING_RELEASE_SHA")" "$(quoted "$PM2")" "$(quoted "$ECOSYSTEM")" \
+    "$(quoted "$BACKEND_APP")" "$(quoted "$CONTENT_APP")" >&2
   printf 'Do not delete %s or %s until rollback and decryption checks are complete.\n' "$BACKUP_DIR" "$quarantine" >&2
 }
 
@@ -812,6 +989,7 @@ on_exit() {
 
   if [[ "$COMPLETED" -eq 1 || "$status" -eq 0 ]]; then
     clear_rotation_variables
+    release_release_lock
     return
   fi
 
@@ -836,6 +1014,7 @@ on_exit() {
       printf 'Protected rollback directory: %s\n' "$BACKUP_DIR" >&2
     fi
   fi
+  release_release_lock
 }
 
 if [[ "${ROTATION_SCRIPT_LIBRARY_MODE:-0}" == '1' ]]; then
@@ -877,11 +1056,23 @@ require_command install
 require_command cmp
 require_command mktemp
 require_command sha256sum
-
+require_command flock
 OPERATOR="$(id -un)"
+[[ -n "${HOME:-}" && "$HOME" == /* ]] || die 'operator HOME is unavailable or not absolute'
+RELEASE_LOCK_FILE="$HOME/.local/state/nexus-release/.release.lock"
 STAGING_ROOT="$(canonical_directory "$STAGING_ROOT")" || die 'staging root is unavailable'
 PRODUCTION_ROOT="$(canonical_directory "$PRODUCTION_ROOT")" || die 'production root is unavailable'
 [[ "$STAGING_ROOT" != "$PRODUCTION_ROOT" ]] || die 'staging and production roots must differ'
+
+acquire_release_lock
+staging_identity="$(resolve_current_release_identity "$STAGING_ROOT" staging)" \
+  || die 'staging current release identity is unavailable'
+IFS=$'\t' read -r STAGING_CURRENT_RELEASE STAGING_RELEASE_SHA \
+  STAGING_RELEASE_ARTIFACT_SHA256 <<<"$staging_identity"
+production_identity="$(resolve_current_release_identity "$PRODUCTION_ROOT" production)" \
+  || die 'production current release identity is unavailable'
+IFS=$'\t' read -r PRODUCTION_CURRENT_RELEASE PRODUCTION_RELEASE_SHA \
+  PRODUCTION_RELEASE_ARTIFACT_SHA256 <<<"$production_identity"
 
 STAGING_ENV="$STAGING_ROOT/.env"
 STAGING_AGENTS_ENV="$STAGING_ROOT/.env.agents"
@@ -889,8 +1080,10 @@ PRODUCTION_ENV="$PRODUCTION_ROOT/.env"
 PRODUCTION_AGENTS_ENV="$PRODUCTION_ROOT/.env.agents"
 NEXT_ENV="$STAGING_ROOT/.env.next"
 NEXT_AGENTS_ENV="$STAGING_ROOT/.env.agents.next"
-ECOSYSTEM="$STAGING_ROOT/ecosystem.staging.config.js"
-ROTATOR="$STAGING_ROOT/dist/tools/rotate-data-encryption-keys.js"
+ECOSYSTEM="$STAGING_CURRENT_RELEASE/ecosystem.release.config.js"
+ROTATOR="$STAGING_CURRENT_RELEASE/dist/tools/rotate-data-encryption-keys.js"
+CONTENT_ROOT="$STAGING_CURRENT_RELEASE/content-engine"
+CONTENT_PYTHON='/usr/bin/python3.12'
 
 assert_private_regular_file "$STAGING_ENV" 'staging .env'
 assert_private_regular_file "$STAGING_AGENTS_ENV" 'staging .env.agents'
@@ -899,8 +1092,16 @@ assert_private_regular_file "$PRODUCTION_AGENTS_ENV" 'production .env.agents'
 [[ ! -e "$NEXT_ENV" && ! -e "$NEXT_AGENTS_ENV" ]] || die 'a stale next dotenv file already exists'
 
 verify_exact_rotator_artifact "$ROTATOR" "$EXPECTED_ROTATOR_SHA256"
-[[ -f "$STAGING_ROOT/node_modules/better-sqlite3/package.json" ]] || die 'deployed better-sqlite3 dependency is missing'
+[[ -f "$STAGING_CURRENT_RELEASE/node_modules/better-sqlite3/package.json" ]] \
+  || die 'deployed better-sqlite3 dependency is missing'
 [[ -f "$ECOSYSTEM" && ! -L "$ECOSYSTEM" ]] || die 'staging ecosystem artifact is missing or is a symlink'
+[[ -d "$CONTENT_ROOT" && ! -L "$CONTENT_ROOT" ]] \
+  || die 'staging content-engine root is unavailable or is a symlink'
+[[ -x "$CONTENT_PYTHON" ]] || die 'staging content-engine Python executable is unavailable'
+[[ -d "$CONTENT_ROOT/vendor" && ! -L "$CONTENT_ROOT/vendor" ]] \
+  || die 'staging content-engine vendor dependencies are unavailable or symbolic'
+[[ -f "$CONTENT_ROOT/main.py" && ! -L "$CONTENT_ROOT/main.py" ]] \
+  || die 'staging content-engine entrypoint is unavailable or is a symlink'
 node --check "$ROTATOR" >/dev/null 2>&1 || die 'deployed dist rotator fails JavaScript syntax validation'
 node "$ROTATOR" --help >/dev/null 2>&1 || die 'deployed dist rotator help preflight failed'
 node - "$ROTATOR" "$ACKNOWLEDGEMENT" <<'NODE' || die 'deployed dist rotator API preflight failed'
@@ -910,7 +1111,13 @@ if (rotator.SERVICE_STOPPED_ACKNOWLEDGEMENT !== acknowledgement) process.exit(2)
 if (typeof rotator.runDataEncryptionKeyRotation !== 'function') process.exit(3);
 NODE
 
-node - "$STAGING_ROOT" "$ECOSYSTEM" <<'NODE' || die 'staging ecosystem paths do not bind to the supplied live root'
+NEXUS_RELEASE_DIR="$STAGING_CURRENT_RELEASE" \
+NEXUS_RELEASE_BASE_DIR="$STAGING_ROOT" \
+NEXUS_RELEASE_ROLE=staging \
+NEXUS_RELEASE_SHA="$STAGING_RELEASE_SHA" \
+NEXUS_RELEASE_ARTIFACT_SHA256="$STAGING_RELEASE_ARTIFACT_SHA256" \
+  node - "$STAGING_CURRENT_RELEASE" "$ECOSYSTEM" <<'NODE' \
+  || die 'staging ecosystem paths do not bind to the exact current release'
 const path = require('node:path');
 const [root, ecosystemPath] = process.argv.slice(2);
 const ecosystem = require(ecosystemPath);
@@ -920,6 +1127,8 @@ const content = apps.find((app) => app.name === 'content-engine-staging');
 if (!backend || !content) process.exit(2);
 if (path.resolve(backend.cwd) !== path.resolve(root)) process.exit(3);
 if (path.resolve(content.cwd) !== path.resolve(root, 'content-engine')) process.exit(4);
+if (content.script !== '/usr/bin/python3.12') process.exit(5);
+if (content.env?.PYTHONPATH !== path.resolve(root, 'content-engine/vendor')) process.exit(6);
 NODE
 
 PM2="${PM2_BIN:-$HOME/.npm-global/bin/pm2}"
@@ -933,6 +1142,15 @@ secure_existing_pm2_resurrection_permissions
 
 assert_pm2_online "$CONTENT_APP"
 assert_pm2_online "$BACKEND_APP"
+assert_pm2_release_identity \
+  "$STAGING_CURRENT_RELEASE" "$STAGING_RELEASE_SHA" \
+  "$STAGING_RELEASE_ARTIFACT_SHA256" "$BACKEND_APP" "$CONTENT_APP" \
+  || die 'staging PM2 processes do not match the exact current release identity'
+assert_pm2_release_identity \
+  "$PRODUCTION_CURRENT_RELEASE" "$PRODUCTION_RELEASE_SHA" \
+  "$PRODUCTION_RELEASE_ARTIFACT_SHA256" nexus-hub content-engine \
+  || die 'production peer PM2 processes do not match its exact current release identity'
+assert_all_current_releases_unchanged
 
 configured_database="$(read_effective_key "$STAGING_ENV" DATABASE_PATH DATABASE_PATH 2>/dev/null || true)"
 if [[ -z "$configured_database" ]]; then
@@ -957,7 +1175,7 @@ DB_PATH="$(canonical_file "$configured_database")" || die 'staging database path
 staging_finance_count="$(dotenv_assignment_count "$STAGING_ENV" FINANCE_ENCRYPTION_KEY)"
 case "$staging_finance_count" in
   0)
-    assert_staging_finance_surface_empty "$STAGING_ROOT" "$DB_PATH" \
+    assert_staging_finance_surface_empty "$STAGING_CURRENT_RELEASE" "$DB_PATH" \
       || die 'staging Finance key is missing but the encrypted Finance surface is not safely empty'
     STAGING_FINANCE_BOOTSTRAP_ALLOWED=1
     ;;
@@ -1030,10 +1248,12 @@ install -m 600 -- "$STAGING_AGENTS_ENV" "$BACKUP_DIR/.env.agents.before"
 cmp -s -- "$STAGING_ENV" "$BACKUP_DIR/.env.before" || die 'staging .env rollback copy mismatch'
 cmp -s -- "$STAGING_AGENTS_ENV" "$BACKUP_DIR/.env.agents.before" || die 'staging .env.agents rollback copy mismatch'
 
+assert_all_current_releases_unchanged
 write_next_env "$STAGING_ENV" "$NEXT_ENV" initialize
 write_next_env "$STAGING_AGENTS_ENV" "$NEXT_AGENTS_ENV" if-present
 validate_next_env "$NEXT_ENV" initialize
 validate_next_env "$NEXT_AGENTS_ENV" if-present
+assert_all_current_releases_unchanged
 
 backend_out_log="$STAGING_ROOT/logs/out.log"
 backend_error_log="$STAGING_ROOT/logs/error.log"
@@ -1083,6 +1303,7 @@ cmp -s -- "$STAGING_AGENTS_ENV" "$BACKUP_DIR/.env.agents.before" || die 'staging
 apply_result="$BACKUP_DIR/apply-result.json"
 apply_error="$BACKUP_DIR/apply-error.txt"
 APPLY_ATTEMPTED=1
+assert_all_current_releases_unchanged
 if ! run_rotator \
   --environment=staging \
   --database="$DB_PATH" \
@@ -1094,13 +1315,17 @@ if ! run_rotator \
 fi
 apply_counts="$(validate_rotation_result "$apply_result" apply yes)" || die 'apply JSON failed strict validation'
 APPLY_CONFIRMED=1
+assert_all_current_releases_unchanged
 printf 'Apply: passed strict JSON validation (nonempty/needs/already-new/undecryptable/applied=%s).\n' "$apply_counts"
 
 validate_next_env "$NEXT_ENV" initialize
 validate_next_env "$NEXT_AGENTS_ENV" if-present
+assert_all_current_releases_unchanged
 mv -f -- "$NEXT_ENV" "$STAGING_ENV"
+assert_all_current_releases_unchanged
 mv -f -- "$NEXT_AGENTS_ENV" "$STAGING_AGENTS_ENV"
 ENV_ACTIVATED=1
+assert_all_current_releases_unchanged
 assert_private_regular_file "$STAGING_ENV" 'activated staging .env'
 assert_private_regular_file "$STAGING_AGENTS_ENV" 'activated staging .env.agents'
 printf 'Environment activation: both next files atomically renamed into place.\n'
@@ -1110,6 +1335,7 @@ recreate_staging_services
 wait_for_staging_health || die 'staging services did not become online and healthy after recreation'
 assert_pm2_online "$CONTENT_APP"
 assert_pm2_online "$BACKEND_APP"
+assert_all_current_releases_unchanged
 printf 'Runtime: staging apps recreated from ecosystem config in a sanitized environment; both health checks passed.\n'
 
 check_database_integrity || die 'post-rotation database integrity_check failed'
@@ -1147,6 +1373,7 @@ printf 'Log scan: 0 new decryption-failure signatures.\n'
 # the existing state and only enforce private permissions. The production
 # wrapper later recreates and saves all production entries from env-i.
 secure_existing_pm2_resurrection_permissions
+assert_all_current_releases_unchanged
 COMPLETED=1
 clear_rotation_variables
 printf 'Rotation complete: all staging checks passed.\n'

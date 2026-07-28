@@ -120,14 +120,13 @@ trap 'exit 143' TERM
 assert_no_release() {
   local lock
   for lock in \
-    "$ROOT/.local/release/locks/prod-deploy.lock" \
-    "$ROOT/.local/release/locks/staging-deploy.lock"; do
+    "$ROOT/.local/release/locks/release.lock"; do
     [ ! -d "$lock" ] || { echo "Advisory scan aborted: local release lock is active" >&2; return 1; }
   done
   "$SSH_BIN" -o BatchMode=yes -o ConnectTimeout=5 "$RELEASE_LOCK_HOST" \
-    'test ! -d /home/dominguez/telegram-hub-bot/.local/release/locks/prod-deploy.lock && test ! -d /home/dominguez/telegram-hub-bot-staging/.local/release/locks/staging-deploy.lock' \
+    'state=/home/dominguez/.local/state/nexus-release; test -d "$state" && test -f "$state/.release.lock" && test ! -L "$state/.release.lock" && for role in staging production; do file="$state/$role.json"; test ! -f "$file" || ! grep -Eq '"'"'"status"[[:space:]]*:[[:space:]]*"running"'"'"' "$file"; done' \
     >/dev/null 2>&1 || {
-      echo "Advisory scan aborted: remote release lock state is active or unavailable" >&2
+      echo "Advisory scan aborted: a remote release is active or lock state is unavailable" >&2
       return 1
     }
 }
@@ -142,13 +141,13 @@ acquire_remote_release_sonar_mutex() {
   : >"$errors"
   chmod 0600 "$ready" "$errors"
   # fd 9 is the sole writer keeping the remote `cat` alive. Closing it on any
-  # local exit closes SSH stdin and releases flock automatically, including
-  # scanner failure. A release transaction acquires this same host mutex
-  # before capacity/CE checks, eliminating the former check-then-act race.
+  # local exit closes SSH stdin and releases both remote flocks automatically.
+  # Scans and releases take the user lock first and the root/group lock second,
+  # preventing both release overlap and root backup/restore overlap.
   exec 9<>"$fifo"
   remote_mutex_open=true
   "$SSH_BIN" -o BatchMode=yes -o ConnectTimeout=5 "$RELEASE_LOCK_HOST" \
-    'mutex=/run/lock/nexus-release-sonar.lock; command -v flock >/dev/null && test -f "$mutex" && test ! -L "$mutex" && test "$(stat -c "%U:%G" "$mutex")" = root:dominguez && test "$(stat -c "%a" "$mutex")" = 660 && exec 8<>"$mutex" && exec flock -n 8 sh -c '\''printf "NEXUS_MUTEX_ACQUIRED\n"; cat >/dev/null'\''' \
+    'state=/home/dominguez/.local/state/nexus-release; mutex="$state/.release.lock"; root_mutex=/run/lock/nexus-release-sonar.lock; command -v flock >/dev/null && install -d -m 700 "$state" && touch "$mutex" && chmod 600 "$mutex" && test -f "$mutex" && test ! -L "$mutex" && test -f "$root_mutex" && test ! -L "$root_mutex" && test "$(stat -c "%U:%G:%a" "$root_mutex")" = root:dominguez:660 && exec 8<>"$mutex" && exec 7<>"$root_mutex" && flock -n 8 && flock -n 7 && printf "NEXUS_MUTEX_ACQUIRED\n" && cat >/dev/null' \
     <"$fifo" >"$ready" 2>"$errors" 9>&- &
   remote_mutex_pid=$!
   for _ in $(seq 1 50); do

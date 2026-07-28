@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: Felipe Dominguez
-Last verified: 2026-07-22
+Last verified: 2026-07-27
 Update policy: update when a deployed surface, identity boundary, provider
 integration, or release/deploy path changes.
 
@@ -22,8 +22,8 @@ runtime, CI/CD, backups, observability, and incident response.
 - Session material: iOS access/refresh tokens, device rows, OAuth states,
   portal/operator tokens, webhook secrets, JWT signing keys.
 - Operational authority: production deploy access, PM2 process control,
-  Cloudflare tunnel/API tokens, GitHub Actions, root-owned promotion journals,
-  off-host recovery credentials and encryption recipients, backups, logs,
+  Cloudflare tunnel/API tokens, GitHub Actions, user-owned release transaction
+  state, the root-owned local-backup identity/configuration, backups, logs, and
   Sentry.
 - Trust signals: audit trail, provider sync truth, model/tool verification
   status, release evidence, incident evidence.
@@ -39,12 +39,13 @@ runtime, CI/CD, backups, observability, and incident response.
 - Backend services to SQLite and filesystem-backed provider/session stores.
 - GitHub Actions to build/test/deploy credentials.
 - Production runtime to logs, Sentry, backups, and operator alert channels.
-- The Mac release coordinator to the root-owned ServerDominguez promotion
+- The Mac release coordinator to the user-owned ServerDominguez promotion
   transaction. A dropped SSH session must not weaken approval or recovery.
 - Docker Engine to the advisory SonarQube/PostgreSQL containers. Docker is
   root-equivalent host authority even though Sonar binds only to loopback.
-- ServerDominguez to encrypted S3-compatible application and Sonar backup
-  storage; the application host holds only public `age` recipients.
+- The production database and Sonar PostgreSQL volumes to root-owned encrypted
+  backup storage on the same ServerDominguez disk. This is an isolation and
+  corruption boundary, not a host-loss boundary.
 
 ## Attacker-Controlled Inputs
 
@@ -54,9 +55,9 @@ runtime, CI/CD, backups, observability, and incident response.
   transcripts, competitor examples, scraped web pages, URLs, redirects.
 - iOS deep links, APNs payload fields, local UserDefaults values, fixture flags.
 - CI inputs from pull requests, workflow files, package manifests, migrations.
-- Promotion transaction requests, Sonar scanner inputs, S3 object metadata,
-  rollback archives, and restore-drill harness output. Each is untrusted until
-  exact identity, ownership, digest, and namespace checks pass.
+- Promotion transaction requests, Sonar scanner inputs, local encrypted backup
+  archives/checksums, rollback archives, and restore-verification output. Each
+  is untrusted until exact identity, ownership, digest, and path checks pass.
 
 ## Security Invariants
 
@@ -75,20 +76,28 @@ runtime, CI/CD, backups, observability, and incident response.
   stale caches before rendering user data.
 - Backups and audit evidence preserve incident accountability while minimizing
   access to sensitive user data.
-- Production promotion authority, transaction state, predecessor identity, and
-  recovery decisions remain root-owned and immutable to the application
-  account. The mandatory 60-second soak and <=120-second automatic rollback
-  target cannot be weakened by request input.
+- Production promotion requires an exact protected-main SHA/digest
+  confirmation and explicit owner environment flag. Mode-0600 user-owned
+  transaction state records the predecessor before mutation; the only
+  privileged release action is the fixed root-owned pre-promotion backup unit.
+  The mandatory 60-second soak and <=120-second automatic rollback target
+  cannot be weakened by request input.
 - Advisory SonarQube cannot block or overlap a release on the shared host, has
   no public listener or host PostgreSQL port, and becomes a required gate only
   after moving off production.
-- Sonar persistent state uses explicit root-controlled host bind paths; startup
+- Sonar persistent state uses the existing private Docker named volumes; startup
   rejects stale/different-boot capacity evidence, incomplete firewall/routing
   snapshots, host pressure, or an unbound small-model soak/cleanup result. A
   dedicated project-scoped monitor helper reveals only the active-task count.
-- Application recovery points are SQLite-consistent, encrypted before
-  off-host transfer, namespace- and digest-bound, and restored only into an
-  isolated scratch runtime during drills.
+- Application recovery points are SQLite-consistent, encrypted with `age`,
+  checksum-bound, retained locally as 24 hourly, 30 daily, and four weekly
+  copies, and restored only into a private scratch path during weekly
+  verification. Sonar PostgreSQL keeps seven local daily dumps and verifies
+  restore separately.
+- No AWS or off-host backup service is a runtime or release dependency.
+  Same-disk recovery is explicitly accepted for the current project size: it
+  protects against bad releases, operator error, and database corruption, but
+  total NVMe or ServerDominguez loss can destroy both primary data and backups.
 
 ## Priority Failure Modes
 
@@ -102,8 +111,8 @@ runtime, CI/CD, backups, observability, and incident response.
 | P1 | Mobile local data exposure | iOS local data exposure through iCloud-synced secrets, stale user cache after account switch, debug auth token in release. |
 | P2 | Observability/privacy leak | Sentry/logs include emails, health, finance, calendar text, raw model output, provider errors. |
 | P2 | Infra exposure | VPS exposure through API/staging ports reachable directly, SMB/RDP/SSH broad exposure, backups world/group-readable. |
-| P1 | Release authority or recovery bypass | Application user forges a transaction, mutable predecessor journal, disconnect prevents rollback, reboot starts PM2 before recovery, or soak/recovery deadlines are bypassed. |
-| P1 | Backup recovery failure | Stale/missing hourly point, plaintext off-host upload, hostile rollback archive, untested key custody, or a drill that touches production paths. |
+| P1 | Release authority or recovery bypass | Operator state or exact identity is tampered, a disconnect interrupts a non-systemd phase, rollback readiness is missing, or soak/recovery deadlines are bypassed. |
+| P1 | Backup recovery failure | Stale/missing local point, unreadable `age` identity, checksum drift, hostile rollback archive, a restore that touches production paths, or total host/NVMe loss under the accepted same-disk residual risk. |
 | P2 | Advisory tooling impacts production | Sonar/Docker listener exposure, container escape/root socket access, Compute Engine overlap, resource pressure, or unreviewed automatic image upgrade. |
 | P3 | Maturity gaps | Missing tabletop drill, incomplete control matrix, advisory-only supply-chain checks. |
 
@@ -123,5 +132,8 @@ runtime, CI/CD, backups, observability, and incident response.
 
 - Direct production firewall, Cloudflare, SSH, APNs, provider, or payment
   changes require a separate approved operations window.
+- Moving backup durability to a USB SSD, NAS, or another non-AWS host is a
+  future resilience decision. Until then, do not describe local recovery
+  points as disaster recovery for complete server loss.
 - This model is a security scan source of truth; individual findings must still
   be validated at source level before being treated as exploitable.

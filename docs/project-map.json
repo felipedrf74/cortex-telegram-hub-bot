@@ -5,10 +5,10 @@
     "generatorVersion": 4,
     "authoritativeFreshness": "sourceDigest",
     "sourceDigestAlgorithm": "sha256-path-git-mode-content-v2",
-    "sourceDigest": "a75a8ce353e814ba541778d307154cc39d4b1ffcfc19c05df0cd8416270c598e",
-    "baseCommit": "ca2ac5cd2d180d7897d33aa1f249f63bf0ed18ed",
-    "baseCommitTimestamp": "2026-07-28T08:49:44+01:00",
-    "trackedFiles": 3151,
+    "sourceDigest": "a06ea616d81fa8f6a0ee06c10e557dafff76f049d78a3806a2192705994ef428",
+    "baseCommit": "5aeba7f098677158764949bb9c6cfc96aa569726",
+    "baseCommitTimestamp": "2026-07-28T09:52:25+01:00",
+    "trackedFiles": 2935,
     "sourceFiles": 1086
   },
   "navigation": {
@@ -4826,7 +4826,7 @@
     }
   ],
   "tests": {
-    "files": 1133,
+    "files": 1075,
     "policy": "config/test-policy.json",
     "inventoryArtifact": ".local/test-inventory/test-inventory.json",
     "topLevelOwners": {
@@ -4845,7 +4845,7 @@
       "regression": 1,
       "router": 6,
       "scope": 1,
-      "scripts": 116,
+      "scripts": 58,
       "sdk": 1,
       "security": 22,
       "services": 680,
@@ -5261,13 +5261,13 @@
         "canonicalPath": "knowledge/skills/secretary-SKILL.md"
       },
       {
-        "path": "ops/ollama/LARGE_MODEL_CLEANUP.md",
+        "path": "ops/local-backup/README.md",
         "status": "supporting",
         "active": true,
         "owner": "release operations lead",
         "reviewedOn": "2026-07-22",
         "reviewDueOn": "2026-10-20",
-        "canonicalPath": "ops/ollama/LARGE_MODEL_CLEANUP.md"
+        "canonicalPath": "ops/local-backup/README.md"
       },
       {
         "path": "ops/sonarqube/README.md",
@@ -5547,11 +5547,6 @@
       "generated": true
     },
     {
-      "path": "package-lock.json",
-      "bytes": 326506,
-      "generated": false
-    },
-    {
       "path": "catalog/training/exercise-media/v1/media-localizations.json",
       "bytes": 315882,
       "generated": false
@@ -5559,6 +5554,11 @@
     {
       "path": "src/portal/portal.html",
       "bytes": 312168,
+      "generated": false
+    },
+    {
+      "path": "package-lock.json",
+      "bytes": 301511,
       "generated": false
     },
     {

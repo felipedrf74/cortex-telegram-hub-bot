@@ -15,8 +15,6 @@
  *   - .github/workflows/ci.yml has a step that invokes the script.
  *   - .husky/pre-commit invokes the script when training-principles
  *     or its pin file is staged.
- *   - scripts/cannot-skip-gate-dashboard.sh registers the gate so the
- *     gate-status dashboard surfaces it.
  */
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
@@ -32,7 +30,6 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
-import { buildCannotSkipDashboard } from '../../scripts/cannot-skip-gate-dashboard.mjs';
 
 const REPO_ROOT = resolve(__dirname, '../..');
 const SOURCE_SCRIPT = resolve(REPO_ROOT, 'scripts/ci/science-policy-version-check.mjs');
@@ -47,7 +44,6 @@ const SOURCE_PIN_PATH = resolve(
 const CI_YAML = resolve(REPO_ROOT, '.github/workflows/ci.yml');
 const HUSKY_PRE_COMMIT = resolve(REPO_ROOT, '.husky/pre-commit');
 const RISK_GATE = resolve(REPO_ROOT, 'scripts/risk-gate.sh');
-const DASHBOARD = resolve(REPO_ROOT, 'scripts/cannot-skip-gate-dashboard.sh');
 
 let fixtureRoot = '';
 let fixtureScript = '';
@@ -145,7 +141,7 @@ describe('R4 P2 — science-policy gate wiring', () => {
   });
 });
 
-describe('R4 P2 — CI workflow + pre-commit hook + cannot-skip dashboard register the gate', () => {
+describe('R4 P2 — CI workflow and pre-commit hook register the gate', () => {
   it('ci.yml has a job step that invokes the science-policy gate script', () => {
     const yaml = readFileSync(CI_YAML, 'utf8');
     expect(yaml).toMatch(/science-policy-version-check\.mjs/);
@@ -172,20 +168,7 @@ describe('R4 P2 — CI workflow + pre-commit hook + cannot-skip dashboard regist
       expect(source).toContain('unset "$git_environment_name"');
       expect(source).toContain('export GIT_NO_REPLACE_OBJECTS=1');
     }
-    expect(hook).toContain('scripts/risk-gate.sh "${ARGS[@]}"');
+    expect(hook).toContain('scripts/risk-gate.sh --staged');
   });
 
-  it('cannot-skip-gate dashboard registers the science-policy check', () => {
-    const dashboard = buildCannotSkipDashboard({
-      baseRef: 'test',
-      now: new Date('2026-07-15T00:00:00.000Z'),
-    });
-    expect(dashboard.gates).toContainEqual(expect.objectContaining({
-      gate: 'science-policy-version-check',
-      representativeFile: 'src/services/coach-kernel/knowledge/entities/training-principles.json',
-      cannotSkipFires: true,
-      expectedTestRouteFires: true,
-      pass: true,
-    }));
-  });
 });

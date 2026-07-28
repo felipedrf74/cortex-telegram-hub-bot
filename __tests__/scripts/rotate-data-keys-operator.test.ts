@@ -67,6 +67,54 @@ function sourceAndVerifyDigest(script: string, productionPair: boolean): void {
   })).toBe('verified');
 }
 
+function sourceAndVerifyCurrentRelease(script: string): void {
+  const body = String.raw`
+    set -euo pipefail
+    ROTATION_SCRIPT_LIBRARY_MODE=1 source "$1"
+    root="$(mktemp -d)"
+    root="$(cd -P -- "$root" && pwd -P)"
+    trap 'rm -rf "$root"' EXIT
+    mkdir -p "$root/releases"
+    sha='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+    digest='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+    release="$root/releases/$sha-bbbbbbbbbbbb"
+    mkdir "$release"
+    node -e '
+      const fs = require("node:fs");
+      fs.writeFileSync(process.argv[1], JSON.stringify({
+        schema: "nexus.release-bundle.v1",
+        runtimeSha: process.argv[2],
+        artifactDigest: process.argv[3],
+      }));
+    ' "$release/.complete.json" "$sha" "$digest"
+    ln -s "$release" "$root/current"
+    identity="$(resolve_current_release_identity "$root" fixture)"
+    [ "$identity" = "$release	$sha	$digest" ]
+    assert_current_release_unchanged "$root" "$release" "$sha" "$digest" fixture
+
+    replacement_sha='cccccccccccccccccccccccccccccccccccccccc'
+    replacement="$root/releases/$replacement_sha-bbbbbbbbbbbb"
+    mkdir "$replacement"
+    node -e '
+      const fs = require("node:fs");
+      fs.writeFileSync(process.argv[1], JSON.stringify({
+        schema: "nexus.release-bundle.v1",
+        runtimeSha: process.argv[2],
+        artifactDigest: process.argv[3],
+      }));
+    ' "$replacement/.complete.json" "$replacement_sha" "$digest"
+    ln -sfn "$replacement" "$root/current"
+    if (assert_current_release_unchanged \
+      "$root" "$release" "$sha" "$digest" fixture) >/dev/null 2>&1; then
+      exit 18
+    fi
+    printf verified
+  `;
+  expect(execFileSync('bash', ['-c', body, 'operator-test', script], {
+    encoding: 'utf8',
+  })).toBe('verified');
+}
+
 function jwt(exp: number): string {
   const segment = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
   return `${segment({ alg: 'HS256', typ: 'JWT' })}.${segment({ exp })}.${'s'.repeat(43)}`;
@@ -121,6 +169,63 @@ describe('data-key rotation operators', () => {
   it('rejects rotator digest mismatches in both library-mode wrappers', () => {
     sourceAndVerifyDigest(PRODUCTION, true);
     sourceAndVerifyDigest(STAGING, false);
+  });
+
+  it('pins the current symlink to one immutable release identity', () => {
+    sourceAndVerifyCurrentRelease(PRODUCTION);
+    sourceAndVerifyCurrentRelease(STAGING);
+
+    for (const script of [PRODUCTION, STAGING]) {
+      const source = readFileSync(script, 'utf8');
+      expect(source).toContain('resolve_current_release_identity');
+      expect(source).toContain('assert_all_current_releases_unchanged');
+      expect(source).toContain('.local/state/nexus-release/.release.lock');
+      expect(source).toContain('flock -n "$RELEASE_LOCK_FD"');
+      expect(source).toContain('canonical_directory "$current_link"');
+      expect(source).toContain('"$root/releases"');
+      expect(source).toContain("marker?.schema !== 'nexus.release-bundle.v1'");
+      expect(source).toContain('NEXUS_RELEASE_SHA');
+      expect(source).toContain('NEXUS_RELEASE_ARTIFACT_SHA256');
+      expect(source).toContain('environment.NEXUS_RELEASE_SHA !== sha');
+      expect(source).toContain('environment.NEXUS_RELEASE_ARTIFACT_SHA256 !== digest');
+      expect(source.match(/assert_all_current_releases_unchanged/g)?.length ?? 0)
+        .toBeGreaterThanOrEqual(8);
+    }
+  });
+
+  it('keeps protected state at the base root and executes code from current', () => {
+    const staging = readFileSync(STAGING, 'utf8');
+    expect(staging).toContain('STAGING_ENV="$STAGING_ROOT/.env"');
+    expect(staging).toContain('STAGING_AGENTS_ENV="$STAGING_ROOT/.env.agents"');
+    expect(staging).toContain('backup_parent="$STAGING_ROOT/.local/rotation-backups"');
+    expect(staging).toContain('ECOSYSTEM="$STAGING_CURRENT_RELEASE/ecosystem.release.config.js"');
+    expect(staging).toContain('ROTATOR="$STAGING_CURRENT_RELEASE/dist/tools/rotate-data-encryption-keys.js"');
+    expect(staging).toContain('CONTENT_ROOT="$STAGING_CURRENT_RELEASE/content-engine"');
+    expect(staging).toContain("CONTENT_PYTHON='/usr/bin/python3.12'");
+    expect(staging).toContain('environment.PYTHONPATH !== `${release}/content-engine/vendor`');
+    expect(staging).toContain('"$CONTENT_ROOT/vendor"');
+    expect(staging).toContain('$STAGING_CURRENT_RELEASE/node_modules/better-sqlite3/package.json');
+    expect(staging).toContain('node - "$STAGING_CURRENT_RELEASE" "$DB_PATH"');
+    expect(staging).toContain('assert_staging_finance_surface_empty "$STAGING_CURRENT_RELEASE"');
+    expect(staging).not.toContain('node - "$STAGING_ROOT" "$DB_PATH"');
+    expect(staging).not.toContain('ECOSYSTEM="$STAGING_ROOT/ecosystem.staging.config.js"');
+    expect(staging).not.toContain('ROTATOR="$STAGING_ROOT/dist/');
+
+    const production = readFileSync(PRODUCTION, 'utf8');
+    expect(production).toContain('PRODUCTION_ENV="$PRODUCTION_ROOT/.env"');
+    expect(production).toContain('PRODUCTION_AGENTS_ENV="$PRODUCTION_ROOT/.env.agents"');
+    expect(production).toContain('LOCAL_STATE_ROOT="$PRODUCTION_ROOT/.local"');
+    expect(production).toContain('ECOSYSTEM="$PRODUCTION_CURRENT_RELEASE/ecosystem.release.config.js"');
+    expect(production).toContain('ROTATOR="$PRODUCTION_CURRENT_RELEASE/dist/tools/rotate-data-encryption-keys.js"');
+    expect(production).toContain('CONTENT_ROOT="$PRODUCTION_CURRENT_RELEASE/content-engine"');
+    expect(production).toContain("CONTENT_PYTHON='/usr/bin/python3.12'");
+    expect(production).toContain('environment.PYTHONPATH !== `${release}/content-engine/vendor`');
+    expect(production).toContain('"$CONTENT_ROOT/vendor"');
+    expect(production).toContain('$PRODUCTION_CURRENT_RELEASE/node_modules/better-sqlite3/package.json');
+    expect(production).toContain('node - "$PRODUCTION_CURRENT_RELEASE" "$DB_PATH"');
+    expect(production).not.toContain('node - "$PRODUCTION_ROOT" "$DB_PATH"');
+    expect(production).not.toContain('ECOSYSTEM="$PRODUCTION_ROOT/ecosystem.config.js"');
+    expect(production).not.toContain('ROTATOR="$PRODUCTION_ROOT/dist/');
   });
 
   it('matches the reviewed compiled rotator whenever the build artifact is present', () => {

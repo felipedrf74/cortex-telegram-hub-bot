@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: Felipe Dominguez
-Last verified: 2026-05-14
+Last verified: 2026-07-27
 Update policy: update when route families, mobile storage, provider integrations,
 or release gates change.
 
@@ -20,11 +20,16 @@ or release gates change.
 | Content engine | FastAPI security, Pydantic, httpx timeouts | Loopback bind; internal shared secret; input validation; request IDs; provider timeout/degraded states. | Python compile/tests, internal-route auth tests, content eval gates. |
 | AI/tool calls | OWASP LLM/prompt-injection concepts, ASVS data protection | Untrusted provider/transcript labels; no model-only mutations; tool allowlists; read-back verification; raw output sanitization. | Prompt/tool-injection tests, action verification tests, content/chat evals. |
 | SSRF/scraping | OWASP SSRF, Playwright security, WHATWG URL | HTTPS allowlist; block localhost/private/metadata IPs; redirect revalidation; isolated browser contexts; no persistent foreign auth state. | SSRF URL corpus tests, Playwright source pins. |
-| SQLite/backups | SQLite security, OWASP SQLi/Crypto/Secrets | Prepared statements; scoped predicates; backup permission hardening; encryption/off-host review; restore drills. | Migration rehearsal, backup tests, restore checklist. |
+| SQLite/backups | SQLite security, OWASP SQLi/Crypto/Secrets | Prepared statements; scoped predicates; root-owned `age` encryption; checksum-bound local retention; pre-promotion point; private scratch restore verification. Same-disk host-loss risk is explicit and accepted; no AWS/off-host dependency is claimed. | Migration rehearsal, local backup tests, weekly restore verifier, release receipt. |
 | Logs/Sentry | OWASP Logging/Error Handling, Sentry scrubbing, Pino redaction | Token/email/health/finance/calendar/model-output redaction; `sendDefaultPii=false`; event processor tests. | Log sanitizer tests, Sentry redaction tests. |
 | CI/supply chain | CodeQL, Dependabot, npm audit, pip-audit, Scorecard, OIDC | Static analysis; dependency audit; least-privilege workflow permissions; secret scanning/push protection policy. | `security.yml`, Dependabot config, CI source pins. |
 | VPS/Cloudflare | CIS, Cloudflare Tunnel firewall, UFW/fail2ban | Origin ports loopback/firewalled; staging/admin Access; SSH key-only; SMB/RDP restricted/closed; WAF/security headers. | Infra checklist and approved ops window evidence. |
 | Incident/privacy | NIST 800-61, OWASP IR, GDPR/ICO | Incident runbooks; breach evidence checklist; provider revocation; DSR export/delete audit rows; tabletop and restore drills. | Incident runbook, privacy map, quarterly drill record. |
+
+The current recovery boundary is intentionally local to ServerDominguez. It
+covers release mistakes and database corruption but not complete NVMe or host
+loss. A USB SSD, NAS, or another non-AWS host can be added later without making
+AWS part of CI, release, SonarQube, or production operation.
 
 ## Sensitive Action Step-Up Candidates
 

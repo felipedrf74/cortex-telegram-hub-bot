@@ -20,10 +20,10 @@ EXPECTED_PM2_NAME="${PM2_APP_NAME:-nexus-hub}"
 PM2_BIN="${PM2_BIN:-$(command -v pm2 2>/dev/null || true)}"
 SMALL_ONLY_MODEL="qwen2.5:3b-instruct-q4_K_M"
 DISALLOWED_REASONING_MODEL_TOKEN_PATTERN='(^|[^a-z0-9])(flash|nano|mini|haiku|lite|classifier|fast)([^a-z0-9]|$)'
-INVENTORY_PHASE="${OLLAMA_INVENTORY_PHASE:-strict}"
+INVENTORY_PHASE="${OLLAMA_INVENTORY_PHASE:-final}"
 case "${INVENTORY_PHASE}" in
-  strict|pre_cleanup|governed) ;;
-  *) printf 'FAIL: OLLAMA_INVENTORY_PHASE must be strict, pre_cleanup, or governed\n' >&2; exit 2 ;;
+  final|release) ;;
+  *) printf 'FAIL: OLLAMA_INVENTORY_PHASE must be final or release\n' >&2; exit 2 ;;
 esac
 
 # Read the health token without sourcing the full application environment.
@@ -91,18 +91,12 @@ check "GET /api/version" curl -fsS "${OLLAMA_BASE_URL}/api/version"
 check "GET /api/ps" curl -fsS "${OLLAMA_BASE_URL}/api/ps"
 
 echo "→ Small-only model inventory"
-if [ "${INVENTORY_PHASE}" = strict ]; then
+if [ "${INVENTORY_PHASE}" = final ]; then
   inventory_filter='.models | length == 1 and .[0].name == $model'
-elif [ "${INVENTORY_PHASE}" = pre_cleanup ]; then
-  # The two 24-hour routing soaks happen before owner-authorized deletion.
-  # During that explicit phase the three known deletion targets may remain on
-  # disk, but no alias/extra tag is accepted and the loaded-model check below
-  # still permits only the retained 3B model.
-  inventory_filter='[.models[].name] | sort == ([$model, $remove1, $remove2, $remove3] | sort)'
 else
-  # The canonical release gate has to remain valid on both sides of the
-  # owner-authorized cleanup. It accepts exactly the reviewed four-tag
-  # pre-cleanup inventory or the sole retained tag, never a partial/extra set.
+  # The release gate is valid before and after the separately authorized
+  # finalizer. It accepts the exact audited four-tag inventory or the sole
+  # retained tag, never a partial or extra set.
   inventory_filter='([.models[].name] | sort) as $names
     | ($names == ([$model] | sort)
       or $names == ([$model, $remove1, $remove2, $remove3] | sort))'

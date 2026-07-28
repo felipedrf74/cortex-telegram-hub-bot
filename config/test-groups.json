@@ -1,0 +1,909 @@
+{
+  "version": "2026-07-28.1",
+  "core": {
+    "targetSeconds": 30,
+    "tests": [
+      "__tests__/security/api-router-auth-boundary.test.ts",
+      "__tests__/services/tenant-scope.test.ts",
+      "__tests__/services/provider-fallback.test.ts",
+      "__tests__/services/pm2-health.test.ts",
+      "__tests__/testing/migrated-test-database.test.ts",
+      "__tests__/domains/domain-handler.test.ts"
+    ]
+  },
+  "retirementMappings": [
+    {
+      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "tests": [
+        "__tests__/scripts/application-disaster-recovery.test.ts",
+        "__tests__/scripts/application-dr-backup-descriptor.test.ts",
+        "__tests__/scripts/application-dr-cloudformation-activate.test.ts",
+        "__tests__/scripts/application-dr-cloudformation-parameter-digest.test.ts",
+        "__tests__/scripts/application-dr-cloudformation.test.ts",
+        "__tests__/scripts/application-dr-crl-parameters.test.ts",
+        "__tests__/scripts/application-dr-health-alert.test.ts",
+        "__tests__/scripts/application-dr-installer.test.ts",
+        "__tests__/scripts/application-dr-recovery-runtime.test.ts",
+        "__tests__/scripts/application-dr-required-release-escrow.test.ts",
+        "__tests__/scripts/application-dr-roles-anywhere-probe.test.ts",
+        "__tests__/scripts/application-dr-version-retention.test.ts"
+      ],
+      "requiredRemovedPaths": [
+        "ops/application-dr/**",
+        "scripts/application-dr-*",
+        "scripts/aws-credential-process-boundary.py"
+      ],
+      "replacementTests": [
+        "__tests__/scripts/local-backup.test.ts",
+        "__tests__/services/content-live-evaluation-runtime.test.ts"
+      ],
+      "reason": "The AWS disaster-recovery implementation is retired with its tests after local backup and restore coverage replaces it."
+    },
+    {
+      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "tests": [
+        "__tests__/scripts/quality-sonar-cloudformation.test.ts",
+        "__tests__/scripts/quality-sonar-live-readiness.test.ts",
+        "__tests__/scripts/quality-sonar-operations.test.ts",
+        "__tests__/scripts/quality-sonar-runtime-boundary.test.ts",
+        "__tests__/scripts/quality-sonar-stack-receipt.test.ts"
+      ],
+      "requiredRemovedPaths": [
+        "ops/sonarqube/aws-*",
+        "scripts/quality-sonar-cloudformation-*",
+        "scripts/quality-sonar-stack.sh"
+      ],
+      "replacementTests": ["__tests__/scripts/quality-sonar-local.test.ts"],
+      "reason": "AWS and root-install Sonar controls are retired while the in-place local Sonar contract remains covered."
+    },
+    {
+      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "tests": [
+        "__tests__/scripts/persistent-promotion-transaction.test.ts",
+        "__tests__/scripts/protected-main-ci-evidence.test.ts",
+        "__tests__/scripts/protected-main-reuse-activation.test.ts",
+        "__tests__/scripts/release-evidence-container.test.ts",
+        "__tests__/scripts/release-evidence-keygen.test.ts",
+        "__tests__/scripts/release-manifest-v2.test.ts",
+        "__tests__/scripts/release-plan-evaluator.test.ts",
+        "__tests__/scripts/release-pm2-boot-authority.test.ts",
+        "__tests__/scripts/release-test-evidence.test.ts",
+        "__tests__/scripts/trusted-release-signing.test.ts",
+        "__tests__/scripts/v2-normalization-attestor-installer-transactions.test.ts"
+      ],
+      "requiredRemovedPaths": [
+        ".github/workflows/sign-*.yml",
+        "scripts/notification-release-gate.sh",
+        "scripts/protected-main-*",
+        "scripts/release-evidence-*",
+        "scripts/release-manifest-v2.mjs",
+        "scripts/remote-promotion-*",
+        "scripts/trusted-release-*"
+      ],
+      "replacementTests": ["__tests__/scripts/lean-release-path.test.ts"],
+      "reason": "Signed, shadow-evidence, root-promotion, and duplicate release controls are retired in favor of the checksum-bound lean release path."
+    },
+    {
+      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "test": "__tests__/scripts/release-artifact-manifest.test.ts",
+      "baselineOwnerPaths": ["scripts/release-evidence.mjs"],
+      "requiredRemovedPaths": ["scripts/release-evidence.mjs"],
+      "replacementTests": [
+        "__tests__/scripts/release-artifact-manifest.test.ts",
+        "__tests__/scripts/lean-release-path.test.ts"
+      ],
+      "reason": "The retained artifact manifest test replaces its exact baseline release-evidence owner after that signing-era implementation is removed."
+    },
+    {
+      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "tests": [
+        "__tests__/scripts/rollback-drill-check.test.ts",
+        "__tests__/scripts/rollback-drill-kvm-coordinator.test.ts",
+        "__tests__/scripts/rollback-drill-kvm-inputs.test.ts",
+        "__tests__/scripts/rollback-drill-kvm-readiness-sequence.test.ts",
+        "__tests__/scripts/rollback-drill-layout-freshness-adapter.test.ts",
+        "__tests__/scripts/rollback-drill-legacy-staging-adapter.test.ts",
+        "__tests__/scripts/rollback-drill-staging-attestation.test.ts",
+        "__tests__/scripts/rollback-drill-vm-provisioner.test.ts",
+        "__tests__/scripts/rollback-drill-vm-runtime-bootstrap.test.ts",
+        "__tests__/scripts/rollback-drill-vm-set-retirement.test.ts",
+        "__tests__/scripts/rollback-drill-vm-transaction-failures.test.ts"
+      ],
+      "requiredRemovedPaths": [
+        "ops/rollback-drill-vm/**",
+        "scripts/rollback-drill-*",
+        "scripts/remote-rollback-drill-*"
+      ],
+      "replacementTests": ["__tests__/scripts/lean-release-path.test.ts"],
+      "reason": "KVM and legacy-layout rollback drills are retired while the lean predecessor rollback transaction remains covered."
+    },
+    {
+      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "test": "__tests__/scripts/exact-promotion-operational-safety.test.ts",
+      "requiredRemovedPaths": ["scripts/env-parity-check.sh"],
+      "requiredChangedPaths": ["scripts/promote-exact-release.sh"],
+      "replacementTests": ["__tests__/scripts/lean-release-path.test.ts"],
+      "reason": "The exact promotion safety contract is replaced by the lean promotion path after the old parity wrapper is retired."
+    },
+    {
+      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "test": "__tests__/scripts/quality-sonar-install-transaction.test.ts",
+      "requiredRemovedPaths": ["scripts/quality-sonar-install-transaction.py"],
+      "replacementTests": ["__tests__/scripts/quality-sonar-local.test.ts"],
+      "reason": "The root Sonar installation transaction is retired while the exact in-place local Sonar contract remains covered."
+    },
+    {
+      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "test": "__tests__/scripts/release-backup-runtime-artifact.test.ts",
+      "requiredRemovedPaths": [
+        "scripts/remote-create-release-backup.sh",
+        "scripts/remote-prepare-release-backup.sh"
+      ],
+      "replacementTests": [
+        "__tests__/scripts/lean-release-path.test.ts",
+        "__tests__/scripts/local-backup.test.ts"
+      ],
+      "reason": "The old remote release backup wrappers are replaced by the lean pre-promotion and local backup contracts."
+    },
+    {
+      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "test": "__tests__/scripts/release-exact-attestations.test.ts",
+      "requiredRemovedPaths": [
+        "scripts/release-installed-tree-attestation.mjs",
+        "scripts/release-staging-attestation.mjs"
+      ],
+      "replacementTests": ["__tests__/scripts/lean-release-path.test.ts"],
+      "reason": "The separate installed-tree and staging attestations are replaced by exact checksum parity in the lean release path."
+    },
+    {
+      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "test": "__tests__/scripts/release-focused-verify.test.ts",
+      "requiredRemovedPaths": [
+        "scripts/release-focused-verify.sh",
+        "scripts/release-verify.sh"
+      ],
+      "replacementTests": [
+        "__tests__/scripts/lean-release-path.test.ts",
+        "__tests__/scripts/risk-gate.test.ts"
+      ],
+      "reason": "The duplicate focused release wrappers are replaced by affected verification and the explicit lean checkpoint."
+    },
+    {
+      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "test": "__tests__/scripts/release-gates.test.ts",
+      "requiredChangedPaths": ["scripts/lib/release-gates.sh"],
+      "replacementTests": ["__tests__/scripts/lean-release-path.test.ts"],
+      "reason": "The legacy multi-lock gate suite is replaced by the single-lock lean release transaction contract."
+    },
+    {
+      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "test": "__tests__/scripts/release-layout-activation.test.ts",
+      "requiredRemovedPaths": ["scripts/remote-release-layout-activation-control.sh"],
+      "replacementTests": ["__tests__/scripts/lean-release-path.test.ts"],
+      "reason": "The legacy layout activation controller is retired while atomic current-selector promotion remains covered."
+    },
+    {
+      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "test": "__tests__/scripts/release-layout-fault-producers.test.ts",
+      "requiredRemovedPaths": [
+        "scripts/release-layout-fault-drill-controller.mjs",
+        "scripts/release-layout-fault-drill-guest.mjs",
+        "scripts/release-layout-fault-drill.mjs"
+      ],
+      "replacementTests": ["__tests__/scripts/lean-release-path.test.ts"],
+      "reason": "The layout fault producer chain is retired while predecessor rollback remains covered by the lean transaction."
+    },
+    {
+      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "test": "__tests__/scripts/release-quality-evidence.test.ts",
+      "requiredRemovedPaths": [
+        "scripts/lib/release-plan-authoritative-evidence.mjs",
+        "scripts/release-quality-evidence.mjs",
+        "scripts/request-release-quality-evidence.sh"
+      ],
+      "replacementTests": ["__tests__/scripts/lean-release-path.test.ts"],
+      "reason": "The separate release quality evidence request is replaced by checksum manifest identities and checkpoint results."
+    },
+    {
+      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "test": "__tests__/scripts/release-runtime-safeguards.test.ts",
+      "requiredRemovedPaths": [
+        "scripts/env-parity-check.sh",
+        "scripts/remote-release-preflight.sh",
+        "scripts/remote-release-readiness.sh"
+      ],
+      "replacementTests": ["__tests__/scripts/lean-release-path.test.ts"],
+      "reason": "The old distributed readiness wrappers are replaced by the bounded lean staging and promotion transaction."
+    },
+    {
+      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "test": "__tests__/scripts/release-sequence.test.ts",
+      "requiredRemovedPaths": ["scripts/release-sequence.mjs"],
+      "replacementTests": ["__tests__/scripts/lean-release-path.test.ts"],
+      "reason": "The multi-workflow sequence coordinator is replaced by the single explicit lean release checkpoint."
+    },
+    {
+      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "test": "__tests__/scripts/release-signing-resume-helpers.test.ts",
+      "requiredRemovedPaths": [
+        "scripts/release-signing-provenance-receipt.mjs",
+        "scripts/request-release-manifest-signature.sh",
+        "scripts/request-staging-attestation.sh"
+      ],
+      "replacementTests": ["__tests__/scripts/lean-release-path.test.ts"],
+      "reason": "Signing resume helpers are retired after the compact checksum manifest replaces separate protected signatures."
+    },
+    {
+      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "test": "__tests__/scripts/release-sonar-mutex.test.ts",
+      "requiredChangedPaths": ["scripts/lib/release-gates.sh"],
+      "replacementTests": [
+        "__tests__/scripts/lean-release-path.test.ts",
+        "__tests__/scripts/quality-sonar-local.test.ts"
+      ],
+      "reason": "The release-Sonar mutex contract is replaced by advisory local Sonar and the single lean release lock."
+    },
+    {
+      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "test": "__tests__/scripts/release-staging-resume.test.ts",
+      "requiredRemovedPaths": ["scripts/remote-release-selector-switch.py"],
+      "replacementTests": ["__tests__/scripts/lean-release-path.test.ts"],
+      "reason": "The old staging selector resume helper is replaced by the durable user-owned staging transaction."
+    },
+    {
+      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "test": "__tests__/scripts/release-staging-transfer-integrity.test.ts",
+      "requiredChangedPaths": ["scripts/release-operator.sh"],
+      "replacementTests": ["__tests__/scripts/lean-release-path.test.ts"],
+      "reason": "The old transfer verifier is replaced by one checksum-bound upload and offline staging installation."
+    },
+    {
+      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "test": "__tests__/scripts/remote-release-capacity.test.ts",
+      "requiredRemovedPaths": ["scripts/remote-release-capacity.sh"],
+      "replacementTests": ["__tests__/scripts/lean-release-path.test.ts"],
+      "reason": "The standalone capacity wrapper is retired while the lean server transaction retains bounded preflight checks."
+    },
+    {
+      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "test": "__tests__/scripts/restore-runtime-artifact.test.ts",
+      "requiredRemovedPaths": ["scripts/restore.sh"],
+      "replacementTests": [
+        "__tests__/scripts/lean-release-path.test.ts",
+        "__tests__/scripts/local-backup.test.ts"
+      ],
+      "reason": "The legacy restore wrapper is replaced by predecessor rollback and verified local database restore coverage."
+    },
+    {
+      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "test": "__tests__/scripts/rollback-versioned-runtime.test.ts",
+      "requiredRemovedPaths": ["scripts/rollback.sh"],
+      "replacementTests": ["__tests__/scripts/lean-release-path.test.ts"],
+      "reason": "The standalone versioned rollback wrapper is replaced by automatic predecessor restoration in the lean transaction."
+    },
+    {
+      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "test": "__tests__/scripts/v2-normalization-attestor-bridge.test.ts",
+      "requiredRemovedPaths": [
+        "scripts/remote-v2-normalization-attestor-install.sh",
+        "scripts/trusted-release-runtime-attestation-v2-bridge.mjs"
+      ],
+      "replacementTests": ["__tests__/scripts/lean-release-path.test.ts"],
+      "reason": "The V2 normalization bridge is retired after checksum-bound staging and promotion replace its attestation path."
+    },
+    {
+      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "test": "__tests__/scripts/release-runtime-dependencies.test.ts",
+      "requiredChangedPaths": [
+        "scripts/build-release-runtime-dependencies.sh",
+        "scripts/release-runtime-dependencies.mjs"
+      ],
+      "replacementTests": [
+        "__tests__/scripts/release-runtime-dependencies.test.ts",
+        "__tests__/scripts/lean-release-path.test.ts"
+      ],
+      "reason": "The retained runtime dependency contract now covers the lean offline artifact without legacy verifier behavior."
+    },
+    {
+      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "test": "__tests__/services/content-live-evaluation-runtime.test.ts",
+      "requiredChangedPaths": ["src/services/content-live-evaluation-runtime.ts"],
+      "replacementTests": [
+        "__tests__/services/content-live-evaluation-runtime.test.ts",
+        "__tests__/scripts/local-backup.test.ts"
+      ],
+      "reason": "The retained content runtime contract removes AWS recovery wiring while preserving local evaluation behavior."
+    },
+    {
+      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "test": "__tests__/scripts/local-full-vitest-receipt.test.ts",
+      "requiredRemovedPaths": ["scripts/local-full-vitest-receipt.mjs"],
+      "requiredChangedPaths": [".husky/pre-push"],
+      "replacementTests": [
+        "__tests__/scripts/local-release-hooks.test.ts",
+        "__tests__/scripts/risk-gate.test.ts"
+      ],
+      "reason": "The local full-suite receipt is retired because hooks no longer execute or reuse a complete Vitest run."
+    },
+    {
+      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "test": "__tests__/scripts/local-release-hooks.test.ts",
+      "requiredRemovedPaths": ["scripts/local-full-vitest-receipt.mjs"],
+      "requiredChangedPaths": [".husky/pre-push"],
+      "replacementTests": [
+        "__tests__/scripts/local-release-hooks.test.ts",
+        "__tests__/scripts/risk-gate.test.ts"
+      ],
+      "reason": "The local release hook contract is rewritten for affected tests after the full-suite receipt is retired."
+    },
+    {
+      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "test": "__tests__/scripts/changed-coverage-gate.test.ts",
+      "requiredChangedPaths": [
+        "scripts/changed-coverage-gate.mjs",
+        ".github/workflows/ci.yml"
+      ],
+      "replacementTests": [
+        "__tests__/scripts/changed-coverage-gate.test.ts",
+        "__tests__/scripts/ci-required-test-sharding.test.ts"
+      ],
+      "reason": "The separate coverage shard runner is retired while the selected-test invocation now emits the changed-line coverage consumed by the retained analyzer."
+    },
+    {
+      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "test": "__tests__/scripts/migration-safety-check.test.ts",
+      "requiredRemovedPaths": [
+        "scripts/release-verify.sh",
+        "scripts/release-test-gate.sh",
+        "scripts/remote-create-release-backup.sh"
+      ],
+      "replacementTests": [
+        "__tests__/scripts/migration-safety-check.test.ts",
+        "__tests__/scripts/lean-release-path.test.ts"
+      ],
+      "reason": "The duplicate release migration wrappers are retired while the migration policy suite and lean release checkpoint retain migration enforcement."
+    },
+    {
+      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "test": "__tests__/scripts/staging-smoke-ollama-integration.test.ts",
+      "requiredRemovedPaths": [
+        "scripts/release-manifest-v2.mjs",
+        "scripts/remote-promotion-transaction.sh"
+      ],
+      "requiredChangedPaths": [
+        "scripts/staging-smoke.sh",
+        "scripts/remote-user-release-transaction.sh"
+      ],
+      "replacementTests": [
+        "__tests__/scripts/staging-smoke-ollama-integration.test.ts",
+        "__tests__/scripts/lean-release-path.test.ts"
+      ],
+      "reason": "The signed-manifest root staging path is replaced one-for-one by the protected checksum release and user-owned remote transaction."
+    },
+    {
+      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "test": "__tests__/security/github-workflow-pinning.test.ts",
+      "requiredRemovedPaths": [
+        ".github/workflows/release.yml",
+        ".github/workflows/sign-release-manifest.yml",
+        ".github/workflows/sign-staging-attestation.yml"
+      ],
+      "replacementTests": [
+        "__tests__/security/github-workflow-pinning.test.ts",
+        "__tests__/scripts/lean-release-path.test.ts"
+      ],
+      "reason": "The signed release workflows are retired while immutable workflow actions and the exact protected-main checksum release remain pinned."
+    },
+    {
+      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "test": "__tests__/services/science-policy-gate-wiring.test.ts",
+      "requiredRemovedPaths": [
+        "scripts/cannot-skip-gate-dashboard.mjs",
+        "scripts/cannot-skip-gate-dashboard.sh"
+      ],
+      "replacementTests": ["__tests__/services/science-policy-gate-wiring.test.ts"],
+      "reason": "The 42-gate dashboard contract is retired while the retained test continues to pin science-policy enforcement in CI and pre-commit."
+    },
+    {
+      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "test": "__tests__/scripts/chat-eval-local.test.ts",
+      "requiredRemovedPaths": ["scripts/remote-promotion-*"],
+      "requiredChangedPaths": ["scripts/promote-exact-release.sh"],
+      "replacementTests": [
+        "__tests__/scripts/chat-eval-local.test.ts",
+        "__tests__/scripts/lean-release-path.test.ts"
+      ],
+      "reason": "The retained chat evaluation gate now precedes the lean durable server transaction instead of the retired root promotion locks."
+    },
+    {
+      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "test": "__tests__/scripts/ollama-observation-collector.test.ts",
+      "requiredRemovedPaths": [
+        "ops/ollama/LARGE_MODEL_CLEANUP.md",
+        "scripts/ollama-observation-*",
+        "scripts/ollama-soak-evidence.mjs",
+        "scripts/ollama-large-model-cleanup.mjs",
+        "scripts/ollama-zero-swap-transition.mjs",
+        "scripts/systemd/nexus-ollama-observation@.service"
+      ],
+      "replacementTests": ["__tests__/scripts/ollama-lean-finalize.test.ts"],
+      "reason": "The multi-window Ollama observation, cleanup, and zero-swap chain is retired in favor of one exact-release-bound, dry-run-first finalization transaction."
+    },
+    {
+      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "test": "__tests__/scripts/ollama-large-model-cleanup.test.ts",
+      "requiredRemovedPaths": [
+        "ops/ollama/LARGE_MODEL_CLEANUP.md",
+        "scripts/ollama-observation-*",
+        "scripts/ollama-soak-evidence.mjs",
+        "scripts/ollama-large-model-cleanup.mjs",
+        "scripts/ollama-zero-swap-transition.mjs",
+        "scripts/systemd/nexus-ollama-observation@.service"
+      ],
+      "replacementTests": ["__tests__/scripts/ollama-lean-finalize.test.ts"],
+      "reason": "The large-model cleanup contract is replaced by the exact-release-bound, dry-run-first Ollama finalization transaction."
+    }
+  ],
+  "groups": {
+    "platform-security": {
+      "paths": [
+        "src/api/*.ts",
+        "src/api/route-helpers/**",
+        "src/generated/**",
+        "src/security/**",
+        "src/storage/**",
+        "src/testing/**",
+        "src/utils/**",
+        "src/config.ts",
+        "src/boot.ts",
+        "src/index.ts",
+        "src/services/account-*.ts",
+        "src/services/apple-jws-verifier.ts",
+        "src/services/apple-sign-in-nonce.ts",
+        "src/services/apple-web-sign-in.ts",
+        "src/services/audit-*.ts",
+        "src/services/cache-*.ts",
+        "src/services/database.ts",
+        "src/services/entitlement.ts",
+        "src/services/error-*.ts",
+        "src/services/identity-question-detector.ts",
+        "src/services/internal-attribution.ts",
+        "src/services/ios-*.ts",
+        "src/services/legal-consent.ts",
+        "src/services/llm-prompt-safety.ts",
+        "src/services/owner-bootstrap-preflight.ts",
+        "src/services/password-reset.ts",
+        "src/services/runtime-*.ts",
+        "src/services/staging-fixture-safety.ts",
+        "src/services/structured-output-schema.ts",
+        "src/services/tenant-*.ts",
+        "src/services/token-estimator.ts",
+        "src/services/user-*.ts"
+      ],
+      "tests": [
+        "__tests__/__mocks__/**",
+        "__tests__/helpers/**",
+        "__tests__/setup.ts",
+        "__tests__/utils/**",
+        "__tests__/api/*auth*.test.ts",
+        "__tests__/services/codex-qa-regressions.test.ts",
+        "__tests__/services/config-runtime-validation.test.ts",
+        "__tests__/services/dispatch-privacy-e2e.test.ts",
+        "__tests__/services/privacy-redacted-flow.test.ts",
+        "__tests__/services/prompt-cleanliness.test.ts",
+        "__tests__/services/prompt-sanitizer.test.ts",
+        "__tests__/services/sensitive-log-sinks.test.ts",
+        "__tests__/services/tier-gate-integration.test.ts",
+        "__tests__/services/transport-boundary.test.ts",
+        "__tests__/services/v26-hardening.test.ts",
+        "__tests__/scope/**/*.test.ts",
+        "__tests__/security/**/*.test.ts",
+        "__tests__/state/**/*.test.ts",
+        "__tests__/storage/**/*.test.ts",
+        "__tests__/testing/**/*.test.ts",
+        "__tests__/utils/**/*.test.ts"
+      ],
+      "contracts": [
+        "__tests__/security/api-router-auth-boundary.test.ts",
+        "__tests__/services/tenant-scope.test.ts"
+      ]
+    },
+    "chat-secretary": {
+      "paths": [
+        "data/classifier-golden-set.json",
+        "prompts/chat-action-fixer.md",
+        "prompts/classifier.md",
+        "prompts/classifier-manifest.md",
+        "prompts/cross-skill-and-memory.md",
+        "prompts/secretary.md",
+        "knowledge/skills/secretary-SKILL.md",
+        "src/domains/secretary.ts",
+        "src/api/routes/chat*.ts",
+        "src/api/routes/secretary*.ts",
+        "src/services/chat/**",
+        "src/services/chat-*.ts",
+        "src/services/chat-core-v2/**",
+        "src/services/chatv2-*.ts",
+        "src/services/classify-shadow.ts",
+        "src/services/conflict-resolver.ts",
+        "src/services/context-*.ts",
+        "src/services/intelligence-bus.ts",
+        "src/services/intent-resolution/**",
+        "src/services/reply-language-normalizer.ts",
+        "src/services/routing-accuracy.ts",
+        "src/services/routing-corpus.ts",
+        "src/services/shared-decision-context.ts",
+        "src/services/secretary-*.ts",
+        "src/state/**"
+      ],
+      "tests": [
+        "__tests__/chat-test-phase/**",
+        "__tests__/fixtures/secretary-reasoning/**",
+        "__tests__/api/chat*.test.ts",
+        "__tests__/services/intelligence-bus-contract.test.ts",
+        "__tests__/services/intent-resolution/**/*.test.ts",
+        "__tests__/services/option-3-classifier.test.ts",
+        "__tests__/services/past-tense-detector-*.test.ts",
+        "__tests__/services/pt-pt-vs-pt-br-routing.test.ts",
+        "__tests__/services/routing-*.test.ts",
+        "__tests__/domains/secretary.test.ts",
+        "__tests__/integration/message-flow.test.ts",
+        "__tests__/services/chat*.test.ts",
+        "__tests__/services/*context*.test.ts",
+        "__tests__/services/secretary*.test.ts"
+      ],
+      "contracts": [
+        "__tests__/services/chat-tool-auth-fail-closed.test.ts",
+        "__tests__/services/chat-answer-contract.test.ts",
+        "__tests__/services/secretary-fastpath.test.ts"
+      ]
+    },
+    "training": {
+      "paths": [
+        "catalog/training/**",
+        "prompts/triathlon.md",
+        "prompts/triathlon/**",
+        "src/cli/training-*.ts",
+        "src/domains/triathlon.ts",
+        "src/api/routes/training*.ts",
+        "src/services/coach-*.ts",
+        "src/services/coach-kernel/**",
+        "src/services/adherence-*.ts",
+        "src/services/missed-session-*.ts",
+        "src/services/progression-*.ts",
+        "src/services/symptom-aware-preference.ts",
+        "src/services/training-*.ts",
+        "src/services/travel-windows.ts",
+        "src/services/week-equipment-override.ts",
+        "src/services/weekly-plan-orchestrator.ts",
+        "src/skills/training/**"
+      ],
+      "tests": [
+        "__tests__/fixtures/training*/**",
+        "__tests__/fixtures/training-exercise-media*",
+        "__tests__/integration/training-e2e-harness.ts",
+        "__tests__/services/energy-reserve.test.ts",
+        "__tests__/services/science-policy-gate-wiring.test.ts",
+        "__tests__/services/travel-windows-and-equipment.test.ts",
+        "__tests__/api/training*.test.ts",
+        "__tests__/integration/training*.test.ts",
+        "__tests__/services/coach*.test.ts",
+        "__tests__/services/training*.test.ts",
+        "__tests__/skills/training*.test.ts"
+      ],
+      "contracts": [
+        "__tests__/services/training-plan-creation-validation.test.ts",
+        "__tests__/services/coach-kernel-safety-guardrails.test.ts",
+        "__tests__/security/training-routes-entitlement.test.ts"
+      ]
+    },
+    "calendar-health": {
+      "paths": [
+        "src/api/routes/calendar*.ts",
+        "src/api/routes/*health*.ts",
+        "src/api/routes/garmin*.ts",
+        "src/services/*calendar*.ts",
+        "src/services/apple-health-*.ts",
+        "src/services/garmin*.ts",
+        "src/services/health-*.ts",
+        "src/services/integration-health.ts",
+        "src/services/readiness-*.ts",
+        "src/services/wearable/**"
+      ],
+      "tests": [
+        "__tests__/**/*calendar*.test.ts",
+        "__tests__/**/*garmin*.test.ts",
+        "__tests__/**/*health*.test.ts",
+        "__tests__/**/*readiness*.test.ts",
+        "__tests__/**/*wearable*.test.ts"
+      ],
+      "contracts": [
+        "__tests__/services/calendar-conflict-analysis.test.ts",
+        "__tests__/services/training-calendar-scope-tenant-isolation.test.ts",
+        "__tests__/services/pm2-health.test.ts"
+      ]
+    },
+    "content": {
+      "paths": [
+        "knowledge/skills/content-creation-SKILL.md",
+        "prompts/channel-learner.md",
+        "prompts/content.md",
+        "prompts/creator-config.md",
+        "prompts/topic-generation.md",
+        "src/agents/**",
+        "src/commands/books.ts",
+        "src/domains/content-creator.ts",
+        "src/api/routes/content*.ts",
+        "src/services/content-*.ts",
+        "src/services/cross-agent-learning/**",
+        "src/services/cross-agent-learning.ts",
+        "src/services/channel-learner.ts",
+        "src/services/eval-criteria.ts",
+        "src/services/gap-detector.ts",
+        "src/services/photo-extraction.ts",
+        "src/services/quality-scorer.ts",
+        "src/services/video-study.ts",
+        "src/services/voice-*.ts",
+        "src/skills/content/**"
+      ],
+      "tests": [
+        "__tests__/fixtures/content*.ts",
+        "__tests__/commands/books-personal-note-scope.test.ts",
+        "__tests__/agents/**/*.test.ts",
+        "__tests__/api/content*.test.ts",
+        "__tests__/integration/content*.test.ts",
+        "__tests__/services/content*.test.ts",
+        "__tests__/services/channel-learner-*.test.ts",
+        "__tests__/services/creator-config-eval.test.ts",
+        "__tests__/services/cross-agent-learning-contract.test.ts",
+        "__tests__/services/script-pipeline.test.ts",
+        "__tests__/services/video-study-prompt-cleanliness.test.ts",
+        "__tests__/services/*voice*.test.ts"
+      ],
+      "contracts": [
+        "__tests__/services/content-tenant-scope.test.ts",
+        "__tests__/services/content-generation-quality.test.ts",
+        "__tests__/integration/content-tenant-context-isolation.test.ts"
+      ]
+    },
+    "finance-billing": {
+      "paths": [
+        "prompts/finance.md",
+        "src/domains/finance.ts",
+        "src/api/routes/billing*.ts",
+        "src/api/routes/finance*.ts",
+        "src/services/finance-*.ts",
+        "src/services/fiscal-*.ts",
+        "src/services/invoice-*.ts",
+        "src/services/money.ts",
+        "src/services/nexus-points.ts",
+        "src/services/receipt-ai-transfer-consent.ts",
+        "src/services/stripe-*.ts",
+        "src/skills/finance/**"
+      ],
+      "tests": [
+        "__tests__/billing/**/*.test.ts",
+        "__tests__/services/paid-ai-budget.test.ts",
+        "__tests__/services/paid-ai-cost-controls-migration.test.ts",
+        "__tests__/**/*finance*.test.ts",
+        "__tests__/**/*fiscal*.test.ts",
+        "__tests__/**/*invoice*.test.ts",
+        "__tests__/**/*stripe*.test.ts"
+      ],
+      "contracts": [
+        "__tests__/security/finance-collector-tenant-safety.test.ts",
+        "__tests__/api/invoices-tenant-isolation.test.ts",
+        "__tests__/billing/pricing-display-contract.test.ts"
+      ]
+    },
+    "tasks-notifications": {
+      "paths": [
+        "src/api/routes/decisions*.ts",
+        "src/api/routes/notifications*.ts",
+        "src/api/routes/tasks*.ts",
+        "src/services/agent-job-*.ts",
+        "src/services/apns-*.ts",
+        "src/services/app-summary-read-models.ts",
+        "src/services/background-job-queue.ts",
+        "src/services/*cache-invalidator.ts",
+        "src/services/coordination-cache-invalidator.ts",
+        "src/services/daily-brief-orchestrator.ts",
+        "src/services/decision-*.ts",
+        "src/services/delta-sync.ts",
+        "src/services/dashboard-home-view-state.ts",
+        "src/services/event-*.ts",
+        "src/services/focus-*.ts",
+        "src/services/notification-*.ts",
+        "src/services/plan-*.ts",
+        "src/services/product-*.ts",
+        "src/services/report-*.ts",
+        "src/services/resource-budgets.ts",
+        "src/services/scheduled-*.ts",
+        "src/services/scheduler.ts",
+        "src/services/signals-observability.ts",
+        "src/services/task-*.ts",
+        "src/services/task-store/**"
+      ],
+      "tests": [
+        "__tests__/fixtures/decision-center/**",
+        "__tests__/**/*decision*.test.ts",
+        "__tests__/**/*notification*.test.ts",
+        "__tests__/**/*scheduler*.test.ts",
+        "__tests__/**/*task*.test.ts",
+        "__tests__/services/completion-feedback-v2-and-events.test.ts",
+        "__tests__/services/home-orchestration-focus.test.ts",
+        "__tests__/services/signal-ranking.test.ts",
+        "__tests__/services/surface-cache-invalidators.test.ts"
+      ],
+      "contracts": [
+        "__tests__/services/decision-center.test.ts",
+        "__tests__/services/notification-orchestrator.test.ts",
+        "__tests__/services/scheduler-user-scope.test.ts"
+      ]
+    },
+    "providers-integrations": {
+      "paths": [
+        "src/adapters/**",
+        "src/api/routes/connections*.ts",
+        "src/services/ai-*.ts",
+        "src/services/amazon-*.ts",
+        "src/services/api-usage-*.ts",
+        "src/services/autoresearch.ts",
+        "src/services/build-llm-safe-prompt-slice.ts",
+        "src/services/cloud-reasoning-gate.ts",
+        "src/services/cost-guardrail.ts",
+        "src/services/email-sender.ts",
+        "src/services/*provider*.ts",
+        "src/services/anthropic*.ts",
+        "src/services/gemini*.ts",
+        "src/services/google-*.ts",
+        "src/services/graph-request-policy.ts",
+        "src/services/integration-*.ts",
+        "src/services/local-llm-*.ts",
+        "src/services/microsoft-*.ts",
+        "src/services/model-*.ts",
+        "src/services/oauth-*.ts",
+        "src/services/ollama-*.ts",
+        "src/services/openai-*.ts",
+        "src/services/outlook-*.ts",
+        "src/services/unified-mail-pressure.ts",
+        "src/services/persisted-model-overrides.ts",
+        "src/services/registry-*.ts",
+        "src/services/scraper-mfa-reply.ts",
+        "src/services/tool-executor.ts",
+        "src/services/uber-collector.ts",
+        "src/services/usage-metering.ts",
+        "src/services/webhook-registry.ts",
+        "src/services/youtube-*.ts"
+      ],
+      "tests": [
+        "__tests__/adapters/**/*.test.ts",
+        "__tests__/services/autoresearch-*.test.ts",
+        "__tests__/services/cost-*.test.ts",
+        "__tests__/services/uber-collector-date.test.ts",
+        "__tests__/**/*anthropic*.test.ts",
+        "__tests__/**/*gemini*.test.ts",
+        "__tests__/**/*google*.test.ts",
+        "__tests__/**/*microsoft*.test.ts",
+        "__tests__/**/*oauth*.test.ts",
+        "__tests__/**/*ollama*.test.ts",
+        "__tests__/**/*provider*.test.ts",
+        "__tests__/**/*tool-executor*.test.ts"
+      ],
+      "contracts": [
+        "__tests__/services/provider-fallback.test.ts",
+        "__tests__/services/domain-provider-router.test.ts",
+        "__tests__/services/ollama-small-only-policy.test.ts"
+      ]
+    },
+    "portal-skills": {
+      "paths": [
+        "knowledge/skills/nexushub-adaptation-guide.md",
+        "prompts/cooking.md",
+        "src/domains/**",
+        "src/api/routes/**",
+        "src/portal/**",
+        "src/router/**",
+        "src/sdk/**",
+        "src/skills/**",
+        "src/services/capability-manifest.ts",
+        "src/services/cooking-*.ts",
+        "src/services/home-day-dial.ts",
+        "src/services/founders.ts",
+        "src/services/onboarding*.ts",
+        "src/services/portal-session-*.ts",
+        "src/services/recurrence-utils.ts",
+        "src/services/screen-contract-meta.ts",
+        "src/services/session-analytics.ts",
+        "src/services/script-generation.ts",
+        "src/services/skill-*.ts",
+        "src/services/skills/**",
+        "src/services/swr-refresh-observability.ts",
+        "src/services/waitlist-*.ts"
+      ],
+      "tests": [
+        "__tests__/domains/**/*.test.ts",
+        "__tests__/regression/skill-extraction.test.ts",
+        "__tests__/services/capability-manifest-consolidation.test.ts",
+        "__tests__/portal/**/*.test.ts",
+        "__tests__/router/**/*.test.ts",
+        "__tests__/sdk/**/*.test.ts",
+        "__tests__/skills/**/*.test.ts"
+      ],
+      "contracts": [
+        "__tests__/domains/domain-handler.test.ts",
+        "__tests__/portal/portal-security.test.ts",
+        "__tests__/skills/skill-security.test.ts"
+      ]
+    },
+    "release-ops": {
+      "paths": [
+        ".dockerignore",
+        ".env*.example",
+        ".github/**",
+        ".gitignore",
+        ".husky/**",
+        ".nvmrc",
+        ".rsyncignore",
+        "Dockerfile*",
+        "cliff.toml",
+        "config/**",
+        "docker-compose*.yml",
+        "ecosystem*.js",
+        "ops/**",
+        "scripts/**",
+        "src/release/**",
+        "src/tools/**",
+        "src/services/backup.ts",
+        "src/services/migration-runner.ts",
+        "src/services/operator-alerts.ts",
+        "src/services/pm2-health.ts",
+        "package.json",
+        "package-lock.json",
+        "tsconfig.json",
+        "vitest.config.ts"
+      ],
+      "tests": [
+        "__tests__/brand/**/*.test.ts",
+        "__tests__/cli/**/*.test.ts",
+        "__tests__/lib/**",
+        "__tests__/scripts/**",
+        "__tests__/tools/**",
+        "__tests__/scripts/changed-area-classifier.test.ts",
+        "__tests__/scripts/ci-required-test-sharding.test.ts",
+        "__tests__/scripts/lean-release-path.test.ts",
+        "__tests__/scripts/local-release-hooks.test.ts",
+        "__tests__/scripts/release-artifact-manifest.test.ts",
+        "__tests__/scripts/release-runtime-dependencies.test.ts",
+        "__tests__/scripts/risk-gate.test.ts",
+        "__tests__/scripts/test-tier-governance.test.ts",
+        "__tests__/services/python-engine-hardening.test.ts"
+      ],
+      "contracts": [
+        "__tests__/scripts/changed-area-classifier.test.ts",
+        "__tests__/scripts/risk-gate.test.ts",
+        "__tests__/scripts/ci-required-test-sharding.test.ts"
+      ]
+    },
+    "content-engine": {
+      "paths": ["content-engine/**", "tests/**/*.py"],
+      "tests": [],
+      "contracts": []
+    },
+    "migrations": {
+      "paths": [
+        "migrations/**",
+        "config/irreversible-migrations.json",
+        "config/production-migration-lineages.json"
+      ],
+      "tests": [
+        "__tests__/migrations/**/*.test.ts",
+        "__tests__/services/database-migration-prefix-collisions.test.ts",
+        "__tests__/services/migration-cascade-invariants.test.ts",
+        "__tests__/services/migration-runner-functions.test.ts",
+        "__tests__/services/paid-ai-cost-controls-migration-runner.test.ts"
+      ],
+      "contracts": ["__tests__/migrations/migration-115-event-outbox-canceled-status.test.ts"]
+    }
+  }
+}

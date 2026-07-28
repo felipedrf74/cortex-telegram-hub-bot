@@ -30,6 +30,8 @@ import {
   validateMutationReport,
 } from '../../scripts/mutation-gate.mjs';
 
+const RETIREMENT_BASE_SHA = '5aeba7f098677158764949bb9c6cfc96aa569726';
+
 const currentGovernedRanges = [
   {
     pattern: 'src/services/cooking-tenant-scope.ts:54-57',
@@ -540,6 +542,11 @@ describe('changed-critical mutation gate', () => {
       "it('uses corrected threshold', () => { if (score > 10) consume(); });",
     )).toBe(false);
     expect(isTestCleanupChange(
+      { status: 'M', file: '__tests__/expanded-matrix.test.ts' },
+      "it('checks every item', () => { for (const item of ['a', 'b', 'c']) consume(item); });",
+      "it('checks every item', () => { for (const item of ['a', 'b']) consume(item); });",
+    )).toBe(false);
+    expect(isTestCleanupChange(
       { status: 'M', file: '__tests__/assert-message.test.ts' },
       "it('uses corrected message', () => { assert(ok, 'new message'); });",
       "it('uses corrected message', () => { assert(ok, 'old message'); });",
@@ -616,39 +623,60 @@ describe('changed-critical mutation gate', () => {
 
     expect(isCriticalModule('src/api/auth-middleware.ts', policy.mutation.criticalModulePatterns)).toBe(true);
     expect(isCriticalModule('src/api/tenant-route-scope.ts', policy.mutation.criticalModulePatterns)).toBe(true);
-    expect(isCriticalModule('src/services/intelligence-bus.ts', policy.mutation.criticalModulePatterns)).toBe(true);
-    expect(isCriticalModule('src/services/training-signals.ts', policy.mutation.criticalModulePatterns)).toBe(true);
-    expect(isCriticalModule('src/services/anthropic.ts', policy.mutation.criticalModulePatterns)).toBe(true);
-    expect(isCriticalModule('src/services/tool-executor.ts', policy.mutation.criticalModulePatterns)).toBe(true);
-    expect(isCriticalModule('src/api/routes/training.ts', policy.mutation.criticalModulePatterns)).toBe(true);
-    expect(isCriticalModule('src/api/routes/content-intelligence-routes.ts', policy.mutation.criticalModulePatterns)).toBe(true);
+    expect(isCriticalModule('src/services/content-tenant-scope.ts', policy.mutation.criticalModulePatterns)).toBe(true);
+    expect(isCriticalModule('src/services/database.ts', policy.mutation.criticalModulePatterns)).toBe(true);
+    expect(isCriticalModule('src/services/migration-runner.ts', policy.mutation.criticalModulePatterns)).toBe(true);
+    expect(isCriticalModule('src/services/pm2-health.ts', policy.mutation.criticalModulePatterns)).toBe(true);
+    expect(isCriticalModule('src/services/training-signals.ts', policy.mutation.criticalModulePatterns)).toBe(false);
   });
 
-  it('keeps exact observed coverage ratchets independent from mutation policy', () => {
+  it('keeps targeted mutation evidence independent from ordinary CI coverage', () => {
     const policy = JSON.parse(fs.readFileSync('config/test-policy.json', 'utf8')) as {
-      coverage: { exceptions: Array<{ file: string; minimum: { lines: number; branches: number } }> };
+      coverage: {
+        exceptions: Array<{
+          file: string;
+          minimum: { lines: number; branches: number };
+        }>;
+      };
       mutation: {
+        schedule: string;
+        scope: string;
+        thresholds: { high: number; low: number; break: number };
+        cleanupMappings: Array<unknown>;
         minimumMutants?: Record<string, number>;
-        cleanupMappings: Array<{ mutationTargets?: Array<{ minimumMutants: number }> }>;
         respectCoverageExceptions?: boolean;
       };
     };
+
+    expect(policy.coverage.exceptions).toHaveLength(6);
     const minimumFor = (file: string) => policy.coverage.exceptions.find(
       (exception) => exception.file === file,
     )?.minimum;
-
-    expect(minimumFor('src/services/database.ts')).toEqual({ lines: 25.28, branches: 26.08 });
-    expect(minimumFor('src/services/gemini-provider.ts')).toEqual({ lines: 88.42, branches: 67.5 });
+    expect(minimumFor('src/services/database.ts')).toEqual({
+      lines: 25.28,
+      branches: 26.08,
+    });
+    expect(minimumFor('src/services/gemini-provider.ts')).toEqual({
+      lines: 88.42,
+      branches: 67.5,
+    });
     expect(minimumFor('src/services/training-exercise-media-manifest.ts')).toEqual({
       lines: 83.88,
       branches: 72.06,
     });
-    expect(minimumFor('src/services/scheduler.ts')).toEqual({ lines: 53.64, branches: 38.79 });
+    expect(minimumFor('src/services/scheduler.ts')).toEqual({
+      lines: 53.64,
+      branches: 38.79,
+    });
+    expect(policy.mutation.schedule).toBe('manual-test-rationalization-only');
+    expect(policy.mutation.scope).toBe('test-cleanup');
+    expect(policy.mutation.thresholds).toEqual({ high: 80, low: 70, break: 70 });
+    expect(policy.mutation.cleanupMappings.length).toBeGreaterThan(0);
+    for (const mapping of policy.mutation.cleanupMappings) {
+      expect(validateCleanupMapping(mapping), JSON.stringify(mapping)).toEqual([]);
+    }
     expect(policy.mutation.respectCoverageExceptions).toBeUndefined();
     expect(policy.mutation.minimumMutants).toBeUndefined();
-    expect(policy.mutation.cleanupMappings.flatMap(
-      ({ mutationTargets = [] }) => mutationTargets,
-    ).reduce((sum, target) => sum + target.minimumMutants, 0)).toBe(59);
   });
 
   it('maps deleted-test source text back to repository source dependencies', () => {
@@ -694,7 +722,7 @@ describe('changed-critical mutation gate', () => {
     ]);
   });
 
-  it('requires deleted-test mappings to retained tests and real governed sources', () => {
+  it('requires every surviving deleted-test cleanup to provide an explicit mapping', () => {
     const policy = JSON.parse(fs.readFileSync('config/test-policy.json', 'utf8')) as {
       mutation: { cleanupMappings: Array<Record<string, unknown>> };
     };
@@ -709,15 +737,209 @@ describe('changed-critical mutation gate', () => {
     );
     expect(missing.unmapped).toEqual(['__tests__/security/removed-contract.test.ts']);
     expect(missing.resolved).toEqual([]);
+  });
 
-    const mapped = policy.mutation.cleanupMappings[0];
-    const resolved = resolveDeletedTestCleanupMappings(
-      [{ status: 'D', file: mapped.test, previous: null }],
-      policy.mutation.cleanupMappings,
-    );
-    expect(resolved.unmapped).toEqual([]);
-    expect(resolved.invalid).toEqual([]);
-    expect(resolved.resolved).toEqual([mapped]);
+  it('accepts only an exact-diff retirement and selects its replacement evidence', () => {
+    const deletedTest = '__tests__/scripts/legacy-release.test.ts';
+    const replacementTest = '__tests__/scripts/lean-release-path.test.ts';
+    const retiredSource = 'scripts/legacy-release.mjs';
+    const files = new Set([replacementTest]);
+    const relative = (candidate: string) => path.relative(path.resolve('.'), candidate)
+      .split(path.sep).join('/');
+    const exists = (candidate: string) => files.has(relative(candidate));
+    const retirementMappings = [{
+      baseSha: RETIREMENT_BASE_SHA,
+      test: deletedTest,
+      requiredRemovedPaths: [retiredSource],
+      replacementTests: [replacementTest],
+      reason: 'The deleted legacy release contract is replaced by the retained lean release evidence.',
+    }];
+    const shared = {
+      base: RETIREMENT_BASE_SHA,
+      patterns: ['src/services/database.ts'],
+      scope: 'test-cleanup' as const,
+      cleanupMappings: [],
+      retirementMappings,
+      exists,
+      readCurrent: () => '',
+      readPrevious: (_base: string, file: string) => (
+        file === deletedTest ? "it('protects legacy release', () => expect(ready).toBe(true));" : ''
+      ),
+    };
+
+    const approved = buildMutationPlan({
+      ...shared,
+      changes: [
+        { status: 'D', file: deletedTest, previous: null },
+        { status: 'D', file: retiredSource, previous: null },
+      ],
+    });
+    expect(approved.retirementMappings).toEqual([expect.objectContaining({
+      test: deletedTest,
+      replacementTests: [replacementTest],
+    })]);
+    expect(approved.unmappedDeletedTests).toEqual([]);
+    expect(approved.targets).toEqual([]);
+    expect(approved.testFiles).toEqual([replacementTest]);
+    expect(mutationPlanExitCode(approved)).toBe(0);
+
+    const historicalOnly = buildMutationPlan({
+      ...shared,
+      changes: [{ status: 'D', file: deletedTest, previous: null }],
+    });
+    expect(historicalOnly.retirementMappings).toEqual([]);
+    expect(historicalOnly.unmappedDeletedTests).toEqual([deletedTest]);
+    expect(historicalOnly.testFiles).toEqual([]);
+    expect(mutationPlanExitCode(historicalOnly)).toBe(3);
+
+    const missingReplacement = buildMutationPlan({
+      ...shared,
+      exists: () => false,
+      changes: [
+        { status: 'D', file: deletedTest, previous: null },
+        { status: 'D', file: retiredSource, previous: null },
+      ],
+    });
+    expect(missingReplacement.retirementMappings).toEqual([]);
+    expect(missingReplacement.unmappedDeletedTests).toEqual([deletedTest]);
+    expect(mutationPlanExitCode(missingReplacement)).toBe(3);
+
+    const futureBase = buildMutationPlan({
+      ...shared,
+      base: 'b'.repeat(40),
+      changes: [
+        { status: 'D', file: deletedTest, previous: null },
+        { status: 'D', file: retiredSource, previous: null },
+      ],
+    });
+    expect(futureBase.retirementMappings).toEqual([]);
+    expect(futureBase.unmappedDeletedTests).toEqual([deletedTest]);
+    expect(mutationPlanExitCode(futureBase)).toBe(3);
+  });
+
+  it('fails pure renames closed unless exact baseline retirement evidence also removes an owner', () => {
+    const previousTest = '__tests__/scripts/legacy-contract.test.ts';
+    const replacementTest = '__tests__/scripts/lean-contract.test.ts';
+    const retiredSource = 'scripts/legacy-contract.mjs';
+    const files = new Set([replacementTest]);
+    const relative = (candidate: string) => path.relative(path.resolve('.'), candidate)
+      .split(path.sep).join('/');
+    const exists = (candidate: string) => files.has(relative(candidate));
+    const changes = [
+      { status: 'R100', file: replacementTest, previous: previousTest },
+      { status: 'D', file: retiredSource, previous: null },
+    ];
+    const shared = {
+      base: RETIREMENT_BASE_SHA,
+      changes,
+      patterns: ['src/services/database.ts'],
+      scope: 'test-cleanup' as const,
+      cleanupMappings: [],
+      exists,
+      readCurrent: (file: string) => (
+        file === replacementTest
+          ? "it('protects behavior', () => expect(ready).toBe(true));"
+          : ''
+      ),
+      readPrevious: (_base: string, file: string) => (
+        file === previousTest
+          ? "import '../../scripts/legacy-contract.mjs';\nit('protects behavior', () => expect(ready).toBe(true));"
+          : ''
+      ),
+    };
+    const pureRename = buildMutationPlan({ ...shared, retirementMappings: [] });
+    expect(pureRename.cleanupTests).toEqual([replacementTest]);
+    expect(pureRename.retirementMappings).toEqual([]);
+    expect(pureRename.unmappedDeletedTests).toEqual([]);
+    expect(pureRename.unmappedRetainedCleanupTests).toEqual([previousTest]);
+    expect(pureRename.targets).toEqual([]);
+    expect(mutationPlanExitCode(pureRename)).toBe(3);
+
+    const cleanupShared = {
+      ...shared,
+      readPrevious: (_base: string, file: string) => (
+        file === previousTest
+          ? "import '../../scripts/legacy-contract.mjs';\nit('protects behavior', () => { expect(owner).toBe('user'); expect(ready).toBe(true); });"
+          : ''
+      ),
+    };
+    const approved = buildMutationPlan({
+      ...cleanupShared,
+      retirementMappings: [{
+        baseSha: RETIREMENT_BASE_SHA,
+        test: previousTest,
+        baselineOwnerPaths: [retiredSource],
+        requiredRemovedPaths: [retiredSource],
+        requiredChangedPaths: [replacementTest],
+        replacementTests: [replacementTest],
+        reason: 'The renamed contract replaces the retired implementation in this exact change.',
+      }],
+    });
+    expect(approved.retirementMappings).toEqual([expect.objectContaining({
+      test: previousTest,
+      currentTest: replacementTest,
+      status: 'R100',
+    })]);
+    expect(approved.unmappedDeletedTests).toEqual([]);
+    expect(approved.testFiles).toEqual([replacementTest]);
+    expect(mutationPlanExitCode(approved)).toBe(0);
+
+    const unmapped = buildMutationPlan({ ...cleanupShared, retirementMappings: [] });
+    expect(unmapped.unmappedRetainedCleanupTests).toEqual([previousTest]);
+    expect(mutationPlanExitCode(unmapped)).toBe(3);
+  });
+
+  it('authorizes modified cleanup only from its exact retirement diff', () => {
+    const changedTest = '__tests__/scripts/legacy-gate.test.ts';
+    const retiredSource = 'scripts/legacy-gate.mjs';
+    const files = new Set([changedTest]);
+    const relative = (candidate: string) => path.relative(path.resolve('.'), candidate)
+      .split(path.sep).join('/');
+    const exists = (candidate: string) => files.has(relative(candidate));
+    const mapping = {
+      baseSha: RETIREMENT_BASE_SHA,
+      test: changedTest,
+      requiredRemovedPaths: [retiredSource],
+      requiredChangedPaths: [changedTest],
+      replacementTests: [changedTest],
+      reason: 'The retained gate now covers the lean path after its legacy implementation is retired.',
+    };
+    const shared = {
+      base: RETIREMENT_BASE_SHA,
+      patterns: ['src/services/database.ts'],
+      scope: 'test-cleanup' as const,
+      cleanupMappings: [],
+      retirementMappings: [mapping],
+      exists,
+      readCurrent: () => "it('protects lean gate', () => expect(status).toBe('ready'));",
+      readPrevious: () => (
+        "it('protects legacy gate', () => { expect(owner).toBe('user'); expect(status).toBe('ready'); });"
+      ),
+    };
+
+    const approved = buildMutationPlan({
+      ...shared,
+      changes: [
+        { status: 'M', file: changedTest, previous: null },
+        { status: 'D', file: retiredSource, previous: null },
+      ],
+    });
+    expect(approved.retirementMappings).toEqual([expect.objectContaining({
+      test: changedTest,
+      currentTest: changedTest,
+      status: 'M',
+    })]);
+    expect(approved.unmappedRetainedCleanupTests).toEqual([]);
+    expect(approved.testFiles).toEqual([changedTest]);
+    expect(mutationPlanExitCode(approved)).toBe(0);
+
+    const unrelated = buildMutationPlan({
+      ...shared,
+      changes: [{ status: 'M', file: changedTest, previous: null }],
+    });
+    expect(unrelated.retirementMappings).toEqual([]);
+    expect(unrelated.unmappedRetainedCleanupTests).toEqual([changedTest]);
+    expect(mutationPlanExitCode(unrelated)).toBe(3);
   });
 
   it('validates governed ranges, in-range anchors, behavior ownership, and retained tests', () => {
@@ -953,6 +1175,52 @@ describe('changed-critical mutation gate', () => {
     expect(weekly.testFiles).toEqual([]);
   });
 
+  it('keeps mapped non-critical cleanup sources in targeted mutation scope', () => {
+    const deletedTest = '__tests__/services/deleted-content-contract.test.ts';
+    const replacementTest = '__tests__/services/content-workflow.test.ts';
+    const source = 'src/services/content-workflow.ts';
+    const files = new Set([replacementTest, source]);
+    const relative = (candidate: string) => path.relative(path.resolve('.'), candidate)
+      .split(path.sep).join('/');
+    const exists = (candidate: string) => files.has(relative(candidate));
+    const plan = buildMutationPlan({
+      base: 'fixture-base',
+      changes: [{ status: 'D', file: deletedTest, previous: null }],
+      patterns: ['src/services/database.ts'],
+      scope: 'test-cleanup',
+      cleanupMappings: [{
+        test: deletedTest,
+        replacementTests: [replacementTest],
+        sources: [source],
+        mutationTargets: [{
+          pattern: `${source}:5-5`,
+          anchor: 'ownedContentBehavior',
+          behavior: 'The retained content contract owns the selected workflow decision.',
+          replacementTest,
+          ownerTestName: 'content workflow preserves the selected decision',
+          minimumMutants: 1,
+        }],
+        reason: 'The retained content contract replaces the deleted focused behavior.',
+      }],
+      exists,
+      readCurrent: () => '',
+      readPrevious: () => "it('removed', () => expect(result).toBe('ready'));",
+      readSource: () => [
+        'line 1',
+        'line 2',
+        'line 3',
+        'line 4',
+        'ownedContentBehavior',
+      ].join('\n'),
+    });
+
+    expect(plan.targets).toEqual([`${source}:5-5`]);
+    expect(plan.governedSources).toEqual([source]);
+    expect(plan.testFiles).toEqual([replacementTest]);
+    expect(plan.minimumMutants).toBe(1);
+    expect(mutationPlanExitCode(plan)).toBe(0);
+  });
+
   it('does not let a historical replacement mapping authorize a later retained-test cleanup', () => {
     const changedTest = '__tests__/services/changed-provider.test.ts';
     const ownerTest = '__tests__/services/owner-provider.test.ts';
@@ -994,7 +1262,7 @@ describe('changed-critical mutation gate', () => {
     expect(mutationPlanExitCode(plan)).toBe(3);
   });
 
-  it('does not union historical mappings for a modified shared replacement suite', () => {
+  it('does not authorize a modified retained suite from historical global mappings', () => {
     const policy = JSON.parse(fs.readFileSync('config/test-policy.json', 'utf8')) as {
       mutation: {
         criticalModulePatterns: string[];
@@ -1005,17 +1273,11 @@ describe('changed-critical mutation gate', () => {
       '__tests__/api/training-plan-generation.test.ts',
       '__tests__/brand/package-manifest.test.ts',
     ];
-    const expectedHistoricalOwners = new Map([
-      ['__tests__/api/training-plan-generation.test.ts', 2],
-      ['__tests__/brand/package-manifest.test.ts', 4],
-    ]);
+    expect(policy.mutation.cleanupMappings.filter(
+      (mapping) => cases.includes(String(mapping.test)),
+    )).toEqual([]);
 
     for (const testFile of cases) {
-      const historicalOwners = policy.mutation.cleanupMappings.filter((mapping) => (
-        (mapping.replacementTests as string[] | undefined)?.includes(testFile)
-      ));
-      expect(historicalOwners, testFile).toHaveLength(expectedHistoricalOwners.get(testFile));
-
       const plan = buildMutationPlan({
         base: 'fixture-base',
         changes: [{ status: 'M', file: testFile, previous: null }],
@@ -1184,43 +1446,19 @@ describe('changed-critical mutation gate', () => {
     expect(mutationPlanExitCode(plan)).toBe(3);
   });
 
-  it('maps removed provider metering assertions to both provider implementations and suites', () => {
+  it('does not carry retired provider-specific cleanup mappings in the global policy', () => {
     const policy = JSON.parse(fs.readFileSync('config/test-policy.json', 'utf8')) as {
       mutation: {
-        cleanupMappings: Array<{
-          test: string;
-          sources: string[];
-          replacementTests: string[];
-          mutationTargets?: Array<{
-            pattern: string;
-            anchor: string;
-            behavior: string;
-            replacementTest: string;
-            minimumMutants: number;
-          }>;
-        }>;
+        cleanupMappings: Array<Record<string, unknown>>;
       };
     };
-    const mapping = policy.mutation.cleanupMappings.find(
-      ({ test }) => test === '__tests__/services/usage-metering-qa-validation.test.ts',
-    );
-
-    expect(mapping?.sources).toEqual(expect.arrayContaining([
-      'src/services/gemini-provider.ts',
-      'src/services/openai-provider.ts',
-    ]));
-    expect(mapping?.replacementTests).toEqual(expect.arrayContaining([
-      '__tests__/services/gemini-provider.test.ts',
-      '__tests__/services/openai-provider.test.ts',
-    ]));
-    expect(mapping?.mutationTargets?.map(({ pattern }) => pattern)).toEqual([
-      'src/services/gemini-provider.ts:659-659',
-      'src/services/openai-provider.ts:383-383',
-      'src/services/openai-provider.ts:430-430',
-      'src/services/openai-provider.ts:568-568',
-      'src/services/openai-provider.ts:612-612',
-    ]);
-    expect(mapping?.mutationTargets?.reduce((sum, target) => sum + target.minimumMutants, 0)).toBe(8);
+    expect(policy.mutation.cleanupMappings.filter((mapping) => (
+      Array.isArray(mapping.sources)
+      && mapping.sources.some((source) => (
+        source === 'src/services/gemini-provider.ts'
+        || source === 'src/services/openai-provider.ts'
+      ))
+    ))).toEqual([]);
   });
 
   it('accepts the governed 12-mutant, three-source cleanup report', () => {

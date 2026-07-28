@@ -1,120 +1,120 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import { classifyDeletedTests } from '../../scripts/test-cleanup-classifier.mjs';
 
 const workflow = readFileSync('.github/workflows/ci.yml', 'utf8');
-const nightlyWorkflow = readFileSync('.github/workflows/nightly.yml', 'utf8');
-const securityWorkflow = readFileSync('.github/workflows/security.yml', 'utf8');
+const nightly = readFileSync('.github/workflows/nightly.yml', 'utf8');
+const mutation = readFileSync('.github/workflows/mutation-weekly.yml', 'utf8');
+const security = readFileSync('.github/workflows/security.yml', 'utf8');
 const baseResolver = readFileSync('scripts/resolve-ci-change-base.sh', 'utf8');
+const cleanupClassifier = readFileSync('scripts/test-cleanup-classifier.mjs', 'utf8');
+const mutationGate = readFileSync('scripts/mutation-gate.mjs', 'utf8');
 
-describe('required CI test sharding', () => {
-  it('runs full mode in four fail-complete shards', () => {
-    expect(workflow).toContain('test_full_shard:');
-    expect(workflow).toContain('fail-fast: false');
-    expect(workflow).toContain('shard: [1, 2, 3, 4]');
-    expect(workflow).toContain('--vitest-shard "${{ matrix.shard }}/4"');
-    expect(workflow).toContain('timeout-minutes: 25');
-    expect(workflow).toContain('name: Verify exact checked-out source');
-    expect(workflow.match(/test "\$HEAD_SHA" = "\$EXPECTED_SHA"/g)).toHaveLength(2);
-    expect(workflow).toContain("git rev-parse 'HEAD^2'");
-    expect(workflow).toContain('git merge-base --is-ancestor "$PR_HEAD_SHA" "$HEAD_SHA"');
+describe('lean required CI contracts', () => {
+  it('preserves the protected check names', () => {
+    expect(workflow.match(/^\s{4}name: 🧪 Tests$/gm)).toHaveLength(1);
+    expect(workflow.match(/^\s{4}name: 🔍 Lint & Type Check$/gm)).toHaveLength(1);
+    expect(workflow.match(/^\s{4}name: 🔨 Build$/gm)).toHaveLength(1);
   });
 
-  it('keeps focused mode on the risk gate', () => {
+  it('runs selected tests once on pull requests and main', () => {
     expect(workflow).toContain('test_focused:');
-    expect(workflow).toContain("needs.classify.outputs.vitest_mode != 'full'");
-    expect(workflow).toContain('name: Run focused Vitest gate');
+    expect(workflow).toContain("needs.classify.outputs.vitest_mode == 'focused'");
     expect(workflow).toContain('scripts/risk-gate.sh \\');
+    expect(workflow).not.toContain('changed_coverage:');
+    expect(workflow).not.toContain('changed-coverage-gate.mjs');
+    expect(workflow).not.toContain('test_full_shard:');
+    expect(workflow).not.toContain('--full');
+    expect(workflow).not.toContain('workflow_dispatch:');
   });
 
-  it('uses exact cached installs without duplicating the required security audit', () => {
+  it('publishes exact selected-test metadata for the protected main SHA', () => {
+    expect(workflow).toContain('NEXUS_TEST_SELECTION_OUTPUT: .local/ci-evidence/test-selection.json');
+    expect(workflow).toContain('protected-main-test-selection-${{ github.run_id }}-${{ github.run_attempt }}');
+    expect(workflow).toContain('Record docs-only exact selection without Vitest');
+    expect(workflow).not.toContain('selection_metadata:');
+    expect(workflow).toContain("PROTECTED_MAIN: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}");
+    expect(workflow).toContain('if [ "$PROTECTED_MAIN" = "true" ]; then');
+    expect(workflow).toContain('test "$FOCUSED_RESULT" = "skipped"');
+    expect(workflow).toContain('test_focused:');
+    expect(workflow).toMatch(/test_focused:[\s\S]*?\n\s{6}- run: npm ci/);
+  });
+
+  it('binds lightweight docs and secret checks into every required test result', () => {
+    expect(workflow).toContain('docs_and_secrets:');
+    expect(workflow).toContain('cache: npm');
+    expect(workflow).toContain('- run: npm ci');
+    expect(workflow).toContain('node scripts/changed-secret-scan.mjs --base "$BASE"');
+    expect(workflow).toContain('test "$DOCS_RESULT" = "success"');
+  });
+
+  it('retains exact checkout, dependency, documentation, and migration safety contracts', () => {
     expect(workflow).toContain("NPM_CONFIG_AUDIT: 'false'");
     expect(workflow).toContain("NPM_CONFIG_FUND: 'false'");
-    expect(workflow).toContain("NPM_CONFIG_PREFER_OFFLINE: 'true'");
-    expect(workflow).toContain("PIP_DISABLE_PIP_VERSION_CHECK: '1'");
-    expect(workflow).toContain('content-engine/requirements-dev.txt');
-    expect(securityWorkflow).toContain('name: Dependency audit');
-    expect(securityWorkflow).toContain('npm audit --audit-level=high --omit=dev');
-  });
-
-  it('keeps interpreted CodeQL source extraction independent from install and build work', () => {
-    const codeqlJob = securityWorkflow.match(
-      /  codeql:\n(?<body>[\s\S]*?)(?=\n  dependency-audit:)/,
-    )?.groups?.body ?? '';
-
-    expect(codeqlJob).toContain('languages: javascript-typescript');
-    expect(codeqlJob).toContain('actions/setup-node@');
-    expect(codeqlJob).toContain('Initialize broad required CodeQL scan');
-    expect(codeqlJob).toContain('Initialize manual deployed-source shadow');
-    expect(codeqlJob).toContain('config-file: ./.github/codeql/deployed-source-shadow.yml');
-    expect(codeqlJob).toContain("github.event_name == 'workflow_dispatch'");
-    expect(codeqlJob).toContain('scope:deployed-source-shadow');
-    expect(codeqlJob).not.toContain('npm ci');
-    expect(codeqlJob).not.toContain('npm run build');
-    expect(codeqlJob).toContain('upload: always');
-    expect(codeqlJob).toContain('upload-database: false');
-    expect(codeqlJob).toContain('wait-for-processing: true');
-    expect(codeqlJob.indexOf('github/codeql-action/init@'))
-      .toBeLessThan(codeqlJob.indexOf('github/codeql-action/analyze@'));
-  });
-
-  it('fails CI when the generated project map drifts', () => {
     expect(workflow).toContain('name: Project map freshness');
     expect(workflow).toContain('run: npm run project:map:check');
-    expect(workflow).toMatch(/docs_and_secrets:[\s\S]*?- run: npm ci[\s\S]*?audit-docs\.mjs --strict/);
-  });
+    expect(workflow).toContain('EXPECTED_SHA: ${{ github.sha }}');
+    expect(workflow).toContain('test "$HEAD_SHA" = "$EXPECTED_SHA"');
+    expect(workflow).toContain("git rev-parse 'HEAD^2'");
 
-  it('installs locked Node dependencies before migration rehearsals', () => {
     const migrationJob = workflow.match(
       /  migrations:\n(?<body>[\s\S]*?)(?=\n  [a-z_]+:|$)/,
     )?.groups?.body ?? '';
-    const nightlyMigrationJob = nightlyWorkflow.match(
-      /  migration-rehearsal:\n(?<body>[\s\S]*?)(?=\n  [a-z_-]+:)/,
-    )?.groups?.body ?? '';
+    expect(migrationJob.indexOf('actions/setup-node@')).toBeGreaterThan(-1);
+    expect(migrationJob.indexOf('- run: npm ci'))
+      .toBeGreaterThan(migrationJob.indexOf('actions/setup-node@'));
+    expect(migrationJob.indexOf('node scripts/migration-safety-check.mjs'))
+      .toBeGreaterThan(migrationJob.indexOf('- run: npm ci'));
 
-    for (const job of [migrationJob, nightlyMigrationJob]) {
-      const setupNode = job.indexOf('actions/setup-node@');
-      const install = job.indexOf('- run: npm ci');
-      const migrationCheck = job.indexOf('node scripts/migration-safety-check.mjs');
-      expect(setupNode).toBeGreaterThan(-1);
-      expect(install).toBeGreaterThan(setupNode);
-      expect(migrationCheck).toBeGreaterThan(install);
-    }
+    expect(security).toContain('name: Dependency audit');
+    expect(security).toContain('npm audit --audit-level=high --omit=dev');
   });
 
-  it('classifies the complete pushed range and propagates one exact base', () => {
-    const classifyJob = workflow.match(/  classify:\n(?<body>[\s\S]*?)(?=\n  mutation_cleanup:)/)?.groups?.body ?? '';
-    const setupNode = classifyJob.indexOf('actions/setup-node@');
-    const runClassifier = classifyJob.indexOf('- name: Run classifier');
-
+  it('classifies the complete pushed range from one exact base', () => {
     expect(workflow).toContain('PUSH_BEFORE_SHA: ${{ github.event.before }}');
     expect(workflow).toContain('BASE_REF="$(bash scripts/resolve-ci-change-base.sh)"');
     expect(workflow).toContain('base_sha: ${{ steps.classify.outputs.base_sha }}');
-    expect(workflow).toContain("BASE='${{ needs.classify.outputs.base_sha }}'");
     expect(baseResolver).toContain('merge-base --is-ancestor "$PUSH_BEFORE_SHA" HEAD');
-    expect(baseResolver).toContain('PUSH_BEFORE_SHA="${PUSH_BEFORE_SHA:-}"');
     expect(baseResolver).toContain('ZERO_SHA="0000000000000000000000000000000000000000"');
-    expect(setupNode).toBeGreaterThan(-1);
-    expect(setupNode).toBeLessThan(runClassifier);
-    expect(classifyJob).toContain('node-version: ${{ env.NODE_VERSION }}');
     expect(workflow).not.toContain('BASE_REF="HEAD~1"');
-    expect(workflow).not.toContain('BASE="HEAD~1"');
+    for (const source of [cleanupClassifier, mutationGate]) {
+      expect(source).toContain('gitMergeBaseArgs');
+      expect(source).toContain('gitNameStatusDiffArgs');
+      expect(source).toContain('parseGitNameStatusRecordsZ');
+    }
+    expect(mutationGate).not.toContain("split('\\n').filter(Boolean)");
   });
 
-  it('preserves one required aggregate Tests context and fails closed by mode', () => {
-    expect(workflow.match(/^\s{4}name: 🧪 Tests$/gm)).toHaveLength(1);
+  it('classifies retained test evidence removal before deciding the mutation lane', () => {
     expect(workflow).toContain(
-      'needs: [classify, mutation_cleanup, changed_coverage, test_full_shard, test_focused]',
+      'node scripts/test-cleanup-classifier.mjs --base "$BASE_REF" --field requiresMutation',
     );
-    expect(workflow).toContain('if: ${{ always() }}');
-    expect(workflow).toContain('MUTATION_RESULT: ${{ needs.mutation_cleanup.result }}');
-    expect(workflow).toContain('COVERAGE_RESULT: ${{ needs.changed_coverage.result }}');
-    expect(workflow).toContain('test "$COVERAGE_RESULT" = "success"');
-    expect(workflow).toContain('test "$MUTATION_RESULT" = "success"');
-    expect(workflow).toContain('test "$COVERAGE_RESULT" = "skipped"');
-    expect(workflow).toContain('test "$MUTATION_RESULT" = "skipped"');
-    expect(workflow).toContain('FULL_RESULT: ${{ needs.test_full_shard.result }}');
-    expect(workflow).toContain('FOCUSED_RESULT: ${{ needs.test_focused.result }}');
-    expect(workflow).toContain('Unexpected Vitest mode');
-    expect(workflow).not.toContain('continue-on-error:');
+    const classifier = readFileSync('scripts/test-cleanup-classifier.mjs', 'utf8');
+    expect(classifier).toContain('isTestCleanupChange');
+    expect(classifier).toContain('/^[DMR]/');
+
+    const test = '__tests__/services/retained-contract.test.ts';
+    const result = classifyDeletedTests(
+      [{ status: 'M', paths: [test] }],
+      () => "it('owns two guarantees', () => { expect(owner).toBe('user'); expect(status).toBe('ready'); });",
+      [],
+      () => true,
+      () => "it('owns one guarantee', () => { expect(status).toBe('ready'); });",
+    );
+    expect(result.requiresMutation).toBe(true);
+    expect(result.tests).toEqual([
+      expect.objectContaining({
+        file: test,
+        status: 'M',
+        requiresMutation: true,
+      }),
+    ]);
+  });
+
+  it('keeps full and mutation suites outside scheduled CI', () => {
+    expect(nightly).not.toContain('run-test-tier.mjs deterministic');
+    expect(nightly).not.toContain('release-test-evidence.mjs');
+    expect(mutation).not.toContain('schedule:');
+    expect(mutation).toContain('--scope test-cleanup');
   });
 });

@@ -21,13 +21,12 @@ truth is `docs/release/release-state.json`; operator commands are in
 
 ```bash
 npm run test:changed -- --base origin/main
-npm run test:critical
-npm run test:release -- --base origin/main
+npm run test:full
 npm run docs:audit
 ```
 
-The complete deterministic suite is sharded and reserved for nightly, manual,
-and test-infrastructure changes. Evaluation corpora run separately from
+The complete deterministic suite is sharded and reserved for the explicit
+release checkpoint or deliberate manual diagnosis. Evaluation corpora run separately from
 correctness gates. Generated profiles, inventories, smoke evidence, reward
 runs, and release manifests belong under ignored `.local/` paths or CI
 artifacts.

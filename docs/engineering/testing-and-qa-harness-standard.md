@@ -88,86 +88,40 @@ make behavior depend on mock evaluation order.
 
 ## 4. Risk-based test selection (must)
 
-`scripts/changed-area-classifier.sh` supplies changed-area risk and cannot-skip
-classification. `scripts/select-vitest-files.mjs` combines that result with an
-inert static source-to-test dependency graph and `config/test-policy.json`.
-Candidate code is parsed as data and never evaluated to select tests.
+`scripts/changed-area-classifier.sh` maps each changed production path to the
+owner groups in `config/test-groups.json`. `scripts/select-vitest-files.mjs`
+then builds one deduplicated selection:
+
+`core safety ∪ owner-group tests ∪ direct static test dependents ∪ changed tests`.
+
+An unmapped production path is a classification error. It never silently
+falls back to the complete suite. Python and migration checks remain
+conditional on their own changed areas.
 
 The stable commands are:
 
 | Command | Contract |
 |---|---|
-| `npm run test:fast` | Deterministic unit, schema, policy, and release-tooling subset; target ≤90 s. |
-| `npm run test:changed -- --base <sha>` | Static changed dependencies ∪ critical ∪ cannot-skip/focused risks; unresolved production impact fails closed to all Vitest files. |
-| `npm run test:critical` | Auth, tenant, migration, billing, provider fallback, public contract, release-safety, and production-regression set. |
-| `npm run test:release -- --base <sha>` | Local diagnostic release gate: Node/toolchain check, production build (including the default-project typecheck), migration rehearsal, selected Vitest, full Content Engine pytest, artifact validation, and inventory. The canonical production path is `npm run release:resume`. |
+| `npm test` / `npm run verify` | Affected groups against `origin/main`; this is the normal developer gate. |
+| `npm run test:fast` | Six-file core-safety pack; cold target ≤30 s. |
+| `npm run test:changed -- --base <sha>` | Core, mapped owner groups, exact direct static test dependents, and directly changed tests in one Vitest invocation. |
+| `npm run test:full` | Complete deterministic suite, explicit/manual only. |
 | `npm run test:full:sharded` | Complete deterministic Vitest suite across four local shards; files with the `eval` disposition are excluded. |
 | `npm run test:evaluate` | Exactly the files with the `eval` disposition: persona, provider-quality, subjective product, and long-running evaluation corpora. Runs on the scheduled/manual `evaluation.yml` workflow, outside release correctness evidence. |
 | `npm run test:profile` | Full machine-readable timings and inventory under ignored `.local/`. |
 
-These governed selections feed the Git hooks, CI matrix dispatch, and signed
-exact-artifact evidence used by `scripts/release-operator.sh`.
+Pre-commit runs the staged selection once. Pre-push performs ref safety and
+type/build checks without repeating Vitest. PR and protected-main CI collect
+coverage from the same selected invocation; there is no second coverage lane.
 
-The classifier maps changed files to:
+The complete four-shard suite runs once in the explicit production release
+checkpoint. It is not scheduled nightly and it is never an automatic response
+to an ordinary code, test-infrastructure, or lockfile change.
 
-- Recommended risk tier (T0–T6)
-- Vitest mode and focused/cannot-skip globs
-- XCTest mode (skip/focused) and class names
-- Staging smoke domains (generic 17 + per-domain smokes)
-- Cannot-skip safety gates (tenant-auth-security, etc.)
-
-The exact release operator supplies staging smoke with the base SHA from the
-validated signed RC selection. A smoke run from an exact protected-main
-checkout must not reclassify against `origin/main` and silently produce an
-empty domain diff. Repeated assertions for one endpoint may reuse one response
-and one private SSH transport, but every assertion remains independently
-recorded and no staging acceptance check may be cached across releases.
-
-**Cannot-skip gates take precedence over minimization.** The release-candidate
-workflow runs the exact `changed ∪ critical ∪ cannot-skip` selection only when
-a successful full nightly no more than 36 hours old is an ancestor of the
-candidate, used the same test-policy digest, and proves the complete Vitest
-file set. Missing/stale/mismatched nightly proof, test-infrastructure changes,
-removed tests, or unresolved production impact force the complete four-shard
-suite. The full suite is therefore nightly/manual/conditional, not a routine
-gate for every production artifact.
-
-Protected-main CI also emits a separate exact-SHA shadow record containing its
-workflow/run identity, Node and Python toolchains, lockfile and test-policy
-digests, per-job results, selected-file identity, and build artifact digest.
-The RC workflow compares that record with the normal RC result. Activation
-requires exactly five consecutive production comparisons with exact agreement.
-A root-owned ServerDominguez evaluator derives them from signed manifests,
-signed staging attestations, and the latest completed root promotion
-journals/results, then signs the bounded request with the server-only provenance
-key. The existing protected operational signer independently verifies all five
-protected-main and RC GitHub runs/artifacts before issuing the activation
-envelope. Reuse applies only to later exact SHAs and is reverified by the
-protected manifest signer. Any missing, stale, expired, ambiguous, locally
-authored, policy-drifted, or mismatched field retains the existing RC Vitest
-fallback. This extends current release evidence rather than creating a
-competing release lane. At implementation time only one eligible production
-comparison exists, so activation remains off.
-
-Weekly Stryker mutation analysis remains advisory and outside signing,
-staging, and promotion. Mutation output may drive a focused regression test or
-test-removal decision, but it is not release evidence and never substitutes for
-the deterministic suite. The weekly plan retains every added line in each
-changed critical source, coalesces adjacent lines into exact Stryker ranges,
-and runs one source per process in a single sequential lane. The persisted
-batch plan must reach `complete` for every source before the advisory verdict
-is valid; a crash, timeout, missing report, deletion-only fallback failure, or
-pending batch leaves the sweep failed rather than silently sampling or
-deferring coverage. If exact changed ranges generate no Stryker mutants, that
-source is rerun in its own full-file process and both reports are retained.
-Its timeout is ratcheted only from measured successful sweeps and does not
-affect customer release readiness.
-
-A critical source may declare an explicit retained owner-test mapping when its
-transitive Vitest graph is unstable or needlessly broad. The mapping is
-validated fail-closed, applies only to that source's sequential batch, and
-never relaxes the global mutation threshold or the zero-`NoCoverage`
-requirement.
+Test deletion or rename requires targeted mutation evidence when the protected
+behavior survives. An entire retired subsystem avoids irrelevant mutation work
+only through an explicit mapping that proves all required implementation paths
+were removed and names replacement contract tests that exist in the candidate.
 
 ## 5. Two-user / two-tenant matrix (must)
 
@@ -714,9 +668,13 @@ device proof. The recommended additions to lock these in:
 
 Tests are rationalized by behavior and risk, never by a target file count. A
 test may be removed only when it is obsolete or duplicates another test,
-protects no unique regression, and both focused verification and the remaining
-full suite pass. Deleting or renaming any test therefore forces the complete
-four-shard suite.
+protects no unique regression, and its retained replacement owns the behavior.
+A deletion requires an explicit replacement/retirement mapping and focused
+mutation evidence; a rename is always treated as mutation-relevant. Retiring an
+entire subsystem is exempt from mutation only through an auditable mapping that
+proves every required implementation path was removed and every replacement
+test exists. Test cleanup never triggers the complete suite automatically; the
+four-shard suite remains the single explicit production-release checkpoint.
 
 Additionally:
 
@@ -734,7 +692,7 @@ Tests added/modified: <count> in <files>
 Tests run locally:
   - typecheck: <pass | fail>
   - focused vitest: <count pass / count total>
-  - release Vitest tier: <changed-critical-cannot-skip | full-sharded>
+  - release Vitest tier: <affected-groups | explicit-release-checkpoint>
   - selected/full vitest: <count pass / count total>
   - iOS xcodebuild: <pass | fail>
   - iOS focused XCTest: <count pass / count total>

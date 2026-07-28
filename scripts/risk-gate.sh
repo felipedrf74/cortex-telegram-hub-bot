@@ -1,45 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Git hooks can export repository-local or configuration-injection GIT_*
-# variables. Verification creates independent fixture repositories, so remove
-# every inherited Git control before the first child process and disable
-# replacement objects explicitly.
 while IFS= read -r git_environment_name; do
   unset "$git_environment_name"
 done < <(compgen -e | LC_ALL=C sort | grep '^GIT_' || true)
 export GIT_NO_REPLACE_OBJECTS=1
 
-# Local receipts are advisory same-user evidence, not a hostile-host trust
-# boundary. Legitimate child-process customization must not block the ordinary
-# risk gate, but it makes an exact reusable receipt ineligible.
-LOCAL_RECEIPT_ENV_SAFE=true
-LOCAL_RECEIPT_UNSAFE_ENV_NAMES=()
-for injection_environment_name in \
-  BASH_ENV \
-  DYLD_INSERT_LIBRARIES \
-  DYLD_LIBRARY_PATH \
-  LD_PRELOAD \
-  NODE_OPTIONS \
-  NODE_PATH \
-  PYTHONHOME \
-  PYTHONPATH; do
-  if [ -n "${!injection_environment_name:-}" ]; then
-    LOCAL_RECEIPT_ENV_SAFE=false
-    LOCAL_RECEIPT_UNSAFE_ENV_NAMES+=("$injection_environment_name")
-  fi
-done
-LOCAL_RECEIPT_CI=false
-for ci_environment_name in CI GITHUB_ACTIONS; do
-  ci_environment_value="${!ci_environment_name:-}"
-  case "$ci_environment_value" in
-    ""|0|false|FALSE|False|no|NO|No|off|OFF|Off) ;;
-    *) LOCAL_RECEIPT_CI=true ;;
-  esac
-done
-
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-source "$ROOT/scripts/lib/release-gates.sh"
 cd "$ROOT"
 
 BASE_REF=""
@@ -50,33 +17,10 @@ FORCE_FULL=false
 SKIP_TYPECHECK=false
 SKIP_PYTHON=false
 SKIP_MIGRATIONS=false
-VITEST_SHARD=""
+COVERAGE=false
 REPORTER="${NEXUS_RISK_GATE_REPORTER:-dot}"
 JSON_OUTPUT="${NEXUS_RISK_GATE_JSON_OUTPUT:-}"
-JSON_OUTPUT_EXPLICIT=false
-LOCAL_REUSE_CONTEXT=""
-LOCAL_PUSHED_SHA=""
-LOCAL_RECEIPT_PREPARED=false
-LOCAL_RECEIPT_RECORDED=false
-LOCAL_RECEIPT_HELPER="$ROOT/scripts/local-full-vitest-receipt.mjs"
-LOCAL_RECEIPT_REPORT=".local/risk-gate/full-vitest-results.json"
-
-if [ -n "$JSON_OUTPUT" ]; then
-  JSON_OUTPUT_EXPLICIT=true
-  case "$JSON_OUTPUT" in
-    .local/*)
-      if [[ "$JSON_OUTPUT" == *"/../"* \
-         || "$JSON_OUTPUT" == *"/./"* \
-         || "$JSON_OUTPUT" == *"//"* \
-         || "$JSON_OUTPUT" == *$'\n'* \
-         || "$JSON_OUTPUT" == *$'\r'* ]]; then
-        echo "NEXUS_RISK_GATE_JSON_OUTPUT must be a canonical path under .local/." >&2
-        exit 64
-      fi
-      ;;
-    *) echo "NEXUS_RISK_GATE_JSON_OUTPUT must stay under .local/" >&2; exit 64 ;;
-  esac
-fi
+SELECTION_OUTPUT="${NEXUS_TEST_SELECTION_OUTPUT:-.local/test-selection.json}"
 
 usage() {
   cat <<'EOF'
@@ -84,60 +28,41 @@ Usage:
   scripts/risk-gate.sh [--base <ref>] [--files <comma-list>|--staged] [--dry-run]
 
 Options:
-  --base <ref>        Base ref for classifier + vitest --changed.
-  --files <list>      Comma-separated file list for hook callers.
-  --staged            Classify the exact staged index, preserving rename sides.
-  --full              Force full Vitest regardless of classifier output.
-  --skip-typecheck    Skip tsc; useful when CI has a separate typecheck job.
-  --skip-python       Skip pytest execution even if content-engine changed.
-  --skip-migrations   Skip changed-migration policy even if migrations changed.
-  --vitest-shard I/N  Run one full-suite Vitest shard (for parallel CI only).
-  --local-reuse-context <pre-commit|pre-push>
-                       Hook-internal exact local full-suite receipt context.
-  --local-pushed-sha <sha>
-                       Hook-internal exact non-delete pre-push SHA.
-  --dry-run           Print the selected commands without executing them.
+  --base <ref>        Exact base ref for changed-file classification.
+  --files <list>      Comma-separated file list for focused verification.
+  --staged            Classify the exact staged index, including rename sides.
+  --full              Run the complete deterministic Vitest suite manually.
+  --skip-typecheck    Skip tsc when another job already owns type checking.
+  --skip-python       Skip conditional content-engine pytest.
+  --skip-migrations   Skip conditional migration safety checks.
+  --coverage          Collect coverage in the same selected Vitest invocation.
+  --dry-run           Print commands without executing them.
 
 Env:
-  NEXUS_FORCE_FULL_GATE=1       Force full Vitest.
-  NEXUS_RISK_GATE_REPORTER=dot  Vitest reporter.
-  NEXUS_RISK_GATE_JSON_OUTPUT=.local/...  Exact Vitest JSON result for CI evidence.
+  NEXUS_RISK_GATE_REPORTER=dot
+  NEXUS_RISK_GATE_JSON_OUTPUT=.local/...
+  NEXUS_TEST_SELECTION_OUTPUT=.local/...
 EOF
 }
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --base) BASE_REF="$2"; shift 2 ;;
-    --files) EXPLICIT_FILES="$2"; shift 2 ;;
+    --base)
+      [ $# -ge 2 ] || { echo "--base requires a ref." >&2; exit 64; }
+      BASE_REF="$2"
+      shift 2
+      ;;
+    --files)
+      [ $# -ge 2 ] || { echo "--files requires a comma-separated list." >&2; exit 64; }
+      EXPLICIT_FILES="$2"
+      shift 2
+      ;;
     --staged) STAGED_ONLY=true; shift ;;
     --full) FORCE_FULL=true; shift ;;
     --skip-typecheck) SKIP_TYPECHECK=true; shift ;;
     --skip-python) SKIP_PYTHON=true; shift ;;
     --skip-migrations) SKIP_MIGRATIONS=true; shift ;;
-    --local-reuse-context)
-      if [ $# -lt 2 ]; then
-        echo "--local-reuse-context requires a value." >&2
-        exit 64
-      fi
-      LOCAL_REUSE_CONTEXT="$2"
-      shift 2
-      ;;
-    --local-pushed-sha)
-      if [ $# -lt 2 ]; then
-        echo "--local-pushed-sha requires a value." >&2
-        exit 64
-      fi
-      LOCAL_PUSHED_SHA="$2"
-      shift 2
-      ;;
-    --vitest-shard)
-      if [ $# -lt 2 ]; then
-        echo "--vitest-shard requires an I/N value." >&2
-        exit 64
-      fi
-      VITEST_SHARD="$2"
-      shift 2
-      ;;
+    --coverage) COVERAGE=true; shift ;;
     --dry-run) DRY_RUN=true; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown arg: $1" >&2; usage >&2; exit 64 ;;
@@ -149,33 +74,30 @@ if [ "$STAGED_ONLY" = "true" ] && { [ -n "$BASE_REF" ] || [ -n "$EXPLICIT_FILES"
   exit 64
 fi
 
-case "$LOCAL_REUSE_CONTEXT" in
-  "")
-    if [ -n "$LOCAL_PUSHED_SHA" ]; then
-      echo "--local-pushed-sha requires --local-reuse-context pre-push." >&2
-      exit 64
-    fi
-    ;;
-  pre-commit)
-    if [ -n "$LOCAL_PUSHED_SHA" ]; then
-      echo "--local-pushed-sha is invalid for pre-commit." >&2
-      exit 64
-    fi
-    ;;
-  pre-push)
-    if ! [[ "$LOCAL_PUSHED_SHA" =~ ^[0-9a-f]{40}$ ]]; then
-      echo "--local-reuse-context pre-push requires one exact non-delete SHA." >&2
-      exit 64
-    fi
-    ;;
-  *)
-    echo "Invalid --local-reuse-context '$LOCAL_REUSE_CONTEXT'." >&2
-    exit 64
-    ;;
-esac
+validate_local_output() {
+  local name="$1"
+  local value="$2"
+  [ -z "$value" ] && return
+  case "$value" in
+    .local/*)
+      if [[ "$value" == *"/../"* \
+         || "$value" == *"/./"* \
+         || "$value" == *"//"* \
+         || "$value" == *$'\n'* \
+         || "$value" == *$'\r'* ]]; then
+        echo "$name must be a canonical path under .local/." >&2
+        exit 64
+      fi
+      ;;
+    *) echo "$name must stay under .local/." >&2; exit 64 ;;
+  esac
+}
+
+validate_local_output NEXUS_RISK_GATE_JSON_OUTPUT "$JSON_OUTPUT"
+validate_local_output NEXUS_TEST_SELECTION_OUTPUT "$SELECTION_OUTPUT"
 
 if [ "$DRY_RUN" != "true" ]; then
-  release_require_git_worktree "$ROOT"
+  git rev-parse --is-inside-work-tree >/dev/null
 fi
 
 run_cmd() {
@@ -185,212 +107,124 @@ run_cmd() {
   fi
 }
 
-json_get() {
-  local expr="$1"
-  node -e '
-    const fs = require("fs");
-    const data = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-    const expr = process.argv[2].split(".");
-    let value = data;
-    for (const part of expr) value = value?.[part];
-    if (Array.isArray(value)) process.stdout.write(value.length ? `${value.join("\n")}\n` : "");
-    else if (value === null || value === undefined) process.stdout.write("");
-    else process.stdout.write(String(value));
-  ' "$CLASSIFIER_JSON_FILE" "$expr"
-}
-
-resolve_base_for_changed() {
-  local candidate=""
-  local resolved=""
-  if [ -n "$BASE_REF" ]; then
-    candidate="$BASE_REF"
-  else
-    candidate="$(json_get "baseRef")"
-  fi
-  # Explicit/staged modes report a sentinel label as baseRef; any non-revision
-  # value crashes `vitest --changed` and migration-safety-check. Candidate
-  # staged work in either mode is always relative to HEAD.
-  if [ -n "$candidate" ]; then
-    resolved="$(git rev-parse --verify --quiet "${candidate}^{commit}" 2>/dev/null || true)"
-  fi
-  if [[ "$resolved" =~ ^[0-9a-f]{40}$ ]]; then
-    printf '%s' "$resolved"
-    return
-  fi
-  git rev-parse --verify 'HEAD^{commit}'
-}
-
 CLASSIFIER_JSON_FILE="$(mktemp)"
 trap 'rm -f "$CLASSIFIER_JSON_FILE"' EXIT
 
 classifier_args=(--format json)
-if [ -n "$BASE_REF" ]; then
-  classifier_args+=(--base "$BASE_REF")
-fi
-if [ -n "$EXPLICIT_FILES" ]; then
-  classifier_args+=(--files "$EXPLICIT_FILES")
-fi
-if [ "$STAGED_ONLY" = "true" ]; then
-  classifier_args+=(--staged)
-fi
+[ -z "$BASE_REF" ] || classifier_args+=(--base "$BASE_REF")
+[ -z "$EXPLICIT_FILES" ] || classifier_args+=(--files "$EXPLICIT_FILES")
+[ "$STAGED_ONLY" != "true" ] || classifier_args+=(--staged)
 
 if ! scripts/changed-area-classifier.sh "${classifier_args[@]}" > "$CLASSIFIER_JSON_FILE"; then
   echo "❌ classifier failed — refusing an incomplete local safety gate" >&2
   exit 1
 fi
 
+json_get() {
+  node -e '
+    const fs = require("fs");
+    const data = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+    let value = data;
+    for (const part of process.argv[2].split(".")) value = value?.[part];
+    if (Array.isArray(value)) process.stdout.write(value.length ? `${value.join("\n")}\n` : "");
+    else if (value !== null && value !== undefined) process.stdout.write(String(value));
+  ' "$CLASSIFIER_JSON_FILE" "$1"
+}
+
+resolve_base() {
+  local candidate="${BASE_REF:-$(json_get "baseRef")}"
+  local resolved=""
+  if [ -n "$candidate" ]; then
+    resolved="$(git rev-parse --verify --quiet "${candidate}^{commit}" 2>/dev/null || true)"
+  fi
+  if [[ "$resolved" =~ ^[0-9a-f]{40}$ ]]; then
+    printf '%s' "$resolved"
+  else
+    git rev-parse --verify 'HEAD^{commit}'
+  fi
+}
+
 VITEST_MODE="$(json_get "vitest.mode")"
-BASE_FOR_CHANGED="$(resolve_base_for_changed)"
+BASE_FOR_CHANGED="$(resolve_base)"
 PYTHON_ENGINE="$(json_get "flags.pythonEngine")"
 MIGRATION_CHANGED="$(json_get "flags.migration")"
-CANNOT_SKIP="$(json_get "cannotSkip")"
-
-if [ "${NEXUS_FORCE_FULL_GATE:-0}" = "1" ] || [ "$FORCE_FULL" = "true" ]; then
-  VITEST_MODE="full"
-fi
-
-if [ -n "$VITEST_SHARD" ]; then
-  if ! [[ "$VITEST_SHARD" =~ ^[1-9][0-9]*/[1-9][0-9]*$ ]]; then
-    echo "Invalid --vitest-shard value '$VITEST_SHARD' (expected I/N)." >&2
-    exit 64
-  fi
-  SHARD_INDEX="${VITEST_SHARD%/*}"
-  SHARD_TOTAL="${VITEST_SHARD#*/}"
-  if [ "$SHARD_INDEX" -gt "$SHARD_TOTAL" ]; then
-    echo "Invalid --vitest-shard value '$VITEST_SHARD' (index exceeds total)." >&2
-    exit 64
-  fi
-  if [ "$VITEST_MODE" != "full" ]; then
-    echo "--vitest-shard requires full Vitest mode." >&2
-    exit 64
-  fi
-fi
+[ "$FORCE_FULL" != "true" ] || VITEST_MODE="full"
 
 echo "═══════════════════════════════════════════════"
-echo "  Nexus risk gate"
+echo "  Nexus lean risk gate"
 echo "═══════════════════════════════════════════════"
-echo "base: ${BASE_FOR_CHANGED:-unknown}"
+echo "base: $BASE_FOR_CHANGED"
 echo "vitest mode: $VITEST_MODE"
-if [ -n "$VITEST_SHARD" ]; then
-  echo "vitest shard: $VITEST_SHARD"
-fi
-if [ -n "$CANNOT_SKIP" ]; then
-  echo "cannot-skip gates:"
-  printf '  - %s\n' $CANNOT_SKIP
-fi
-
-REUSE_FULL_VITEST=false
-if [ "$DRY_RUN" != "true" ] \
-   && [ "$VITEST_MODE" = "full" ] \
-   && [ -z "$VITEST_SHARD" ] \
-   && [ "$REPORTER" = "dot" ] \
-   && [ "$JSON_OUTPUT_EXPLICIT" != "true" ] \
-   && [ "$LOCAL_RECEIPT_ENV_SAFE" = "true" ] \
-   && [ "$LOCAL_RECEIPT_CI" != "true" ]; then
-  if [ -n "$LOCAL_REUSE_CONTEXT" ]; then
-    receipt_check_args=(check --context "$LOCAL_REUSE_CONTEXT")
-    if [ "$LOCAL_REUSE_CONTEXT" = "pre-push" ]; then
-      receipt_check_args+=(--pushed-sha "$LOCAL_PUSHED_SHA")
-    fi
-    if node "$LOCAL_RECEIPT_HELPER" "${receipt_check_args[@]}"; then
-      REUSE_FULL_VITEST=true
-    else
-      echo "🧪 exact local full-suite receipt is unavailable; running Vitest"
-    fi
-  fi
-  if [ "$REUSE_FULL_VITEST" != "true" ]; then
-    if node "$LOCAL_RECEIPT_HELPER" snapshot; then
-      LOCAL_RECEIPT_PREPARED=true
-      JSON_OUTPUT="$LOCAL_RECEIPT_REPORT"
-    else
-      echo "🧪 candidate is not receipt-eligible; running Vitest without reusable evidence"
-    fi
-  fi
-fi
-if [ "$VITEST_MODE" = "full" ] && [ "$LOCAL_RECEIPT_ENV_SAFE" != "true" ]; then
-  printf '🧪 exact local full-suite receipt disabled by test environment: %s\n' \
-    "${LOCAL_RECEIPT_UNSAFE_ENV_NAMES[*]}"
-fi
-if [ "$VITEST_MODE" = "full" ] && [ "$LOCAL_RECEIPT_CI" = "true" ]; then
-  echo "🧪 exact local full-suite receipt disabled in CI"
-fi
 
 if [ "$SKIP_TYPECHECK" != "true" ]; then
   run_cmd npx tsc --noEmit
 fi
 
-if printf '%s\n' "$CANNOT_SKIP" | grep -qx 'notification-apns-delivery-and-tenant'; then
-  run_cmd scripts/notification-release-gate.sh
-fi
-
 case "$VITEST_MODE" in
   skip)
-    REASON="$(json_get "vitest.skipReason")"
-    echo "🧪 Vitest skipped: ${REASON:-classifier selected skip}"
+    echo "🧪 Vitest skipped: $(json_get "vitest.skipReason")"
     ;;
   full)
-    if [ "$REUSE_FULL_VITEST" = "true" ]; then
-      echo "🧪 Full Vitest reused from the exact local candidate receipt"
-    else
-      tier_args=(node scripts/run-test-tier.mjs deterministic --reporter "$REPORTER")
-      if [ -n "$JSON_OUTPUT" ]; then tier_args+=(--json-output "$JSON_OUTPUT"); fi
-      if [ "$LOCAL_RECEIPT_PREPARED" = "true" ]; then tier_args+=(--no-cache); fi
-      if [ -n "$VITEST_SHARD" ]; then
-        run_cmd "${tier_args[@]}" --shard "$VITEST_SHARD"
-      else
-        run_cmd "${tier_args[@]}"
-      fi
-      if [ "$LOCAL_RECEIPT_PREPARED" = "true" ]; then
-        node "$LOCAL_RECEIPT_HELPER" record
-        LOCAL_RECEIPT_RECORDED=true
-      fi
-    fi
+    tier_args=(node scripts/run-test-tier.mjs deterministic --reporter "$REPORTER")
+    [ -z "$JSON_OUTPUT" ] || tier_args+=(--json-output "$JSON_OUTPUT")
+    run_cmd "${tier_args[@]}"
     ;;
-  changed-only|focused)
+  focused)
     if [ "$DRY_RUN" = "true" ]; then
       echo "▶ node scripts/select-vitest-files.mjs --base $BASE_FOR_CHANGED --classifier <classifier-json>"
-      echo "▶ npx vitest run --reporter=$REPORTER <changed+focused+critical-union>"
+      if [ "$COVERAGE" = "true" ]; then
+        echo "▶ npx vitest run --reporter=$REPORTER --coverage.changed=$BASE_FOR_CHANGED <core+owning-group-tests+static-dependents+changed-tests>"
+      else
+        echo "▶ npx vitest run --reporter=$REPORTER <core+owning-group-tests+static-dependents+changed-tests>"
+      fi
+      if [ "$COVERAGE" = "true" ]; then
+        echo "▶ node scripts/changed-coverage-gate.mjs --base $BASE_FOR_CHANGED --classifier <classifier-json> --selection $SELECTION_OUTPUT --coverage-dir .local/coverage/selected"
+      fi
     else
       SELECTED_FILES=()
       while IFS= read -r selected_file; do
-        [ -n "$selected_file" ] && SELECTED_FILES+=("$selected_file")
+        [ -z "$selected_file" ] || SELECTED_FILES+=("$selected_file")
       done < <(node scripts/select-vitest-files.mjs \
         --base "$BASE_FOR_CHANGED" \
-        --classifier "$CLASSIFIER_JSON_FILE")
+        --classifier "$CLASSIFIER_JSON_FILE" \
+        --output "$SELECTION_OUTPUT")
       if [ "${#SELECTED_FILES[@]}" -eq 0 ]; then
-        echo "⚠️  changed/focused/critical union was empty — escalating to full Vitest"
-        tier_args=(node scripts/run-test-tier.mjs deterministic --reporter "$REPORTER")
-        if [ -n "$JSON_OUTPUT" ]; then tier_args+=(--json-output "$JSON_OUTPUT"); fi
-        run_cmd "${tier_args[@]}"
-      else
-        tier_args=(node scripts/run-test-tier.mjs deterministic --reporter "$REPORTER")
-        if [ -n "$JSON_OUTPUT" ]; then tier_args+=(--json-output "$JSON_OUTPUT"); fi
-        run_cmd "${tier_args[@]}" "${SELECTED_FILES[@]}"
+        echo "❌ focused selection was empty — refusing an untested change" >&2
+        exit 1
+      fi
+      tier_args=(node scripts/run-test-tier.mjs deterministic --reporter "$REPORTER")
+      [ -z "$JSON_OUTPUT" ] || tier_args+=(--json-output "$JSON_OUTPUT")
+      [ "$COVERAGE" != "true" ] || tier_args+=(--coverage --coverage-base "$BASE_FOR_CHANGED")
+      run_cmd "${tier_args[@]}" "${SELECTED_FILES[@]}"
+      if [ "$COVERAGE" = "true" ]; then
+        run_cmd node scripts/changed-coverage-gate.mjs \
+          --base "$BASE_FOR_CHANGED" \
+          --classifier "$CLASSIFIER_JSON_FILE" \
+          --selection "$SELECTION_OUTPUT" \
+          --coverage-dir .local/coverage/selected
       fi
     fi
     ;;
   *)
-    echo "⚠️  unknown vitest mode '$VITEST_MODE' — escalating to full Vitest"
-    tier_args=(node scripts/run-test-tier.mjs deterministic --reporter "$REPORTER")
-    if [ -n "$JSON_OUTPUT" ]; then tier_args+=(--json-output "$JSON_OUTPUT"); fi
-    run_cmd "${tier_args[@]}"
+    echo "❌ unknown vitest mode '$VITEST_MODE' — refusing ambiguous selection" >&2
+    exit 1
     ;;
 esac
 
 if [ "$PYTHON_ENGINE" = "true" ] && [ "$SKIP_PYTHON" != "true" ]; then
   PYTHON_BIN="${CONTENT_ENGINE_PYTHON:-}"
   if [ -z "$PYTHON_BIN" ]; then
-    if [ -x "$ROOT/content-engine/.venv-codex313/bin/python" ]; then
-      PYTHON_BIN="$ROOT/content-engine/.venv-codex313/bin/python"
-    elif [ -x "$ROOT/content-engine/.venv313/bin/python" ]; then
-      PYTHON_BIN="$ROOT/content-engine/.venv313/bin/python"
-    elif [ -x "$ROOT/content-engine/.venv/bin/python" ]; then
-      PYTHON_BIN="$ROOT/content-engine/.venv/bin/python"
-    else
-      PYTHON_BIN="python3"
-    fi
+    for candidate in \
+      "$ROOT/content-engine/.venv-codex313/bin/python" \
+      "$ROOT/content-engine/.venv313/bin/python" \
+      "$ROOT/content-engine/.venv/bin/python"; do
+      if [ -x "$candidate" ]; then
+        PYTHON_BIN="$candidate"
+        break
+      fi
+    done
   fi
-  run_cmd "$PYTHON_BIN" -m pytest "$ROOT/content-engine/tests"
+  run_cmd "${PYTHON_BIN:-python3}" -m pytest "$ROOT/content-engine/tests"
 fi
 
 if [ "$MIGRATION_CHANGED" = "true" ] && [ "$SKIP_MIGRATIONS" != "true" ]; then
@@ -398,18 +232,6 @@ if [ "$MIGRATION_CHANGED" = "true" ] && [ "$SKIP_MIGRATIONS" != "true" ]; then
     --base "$BASE_FOR_CHANGED" \
     --changed-only \
     --approval-mode scan
-fi
-
-if [ "${NEXUS_RISK_GATE_ASSERT_CANNOT_SKIP_DASHBOARD:-0}" = "1" ] && [ -n "$CANNOT_SKIP" ]; then
-  run_cmd scripts/cannot-skip-gate-dashboard.sh --base "$BASE_FOR_CHANGED"
-fi
-
-if [ "$REUSE_FULL_VITEST" = "true" ] || [ "$LOCAL_RECEIPT_RECORDED" = "true" ]; then
-  if [ -z "$LOCAL_REUSE_CONTEXT" ]; then
-    receipt_check_args=(check --context pre-commit)
-  fi
-  node "$LOCAL_RECEIPT_HELPER" "${receipt_check_args[@]}"
-  echo "🧪 Exact local full-suite receipt rechecked after all non-Vitest gates"
 fi
 
 echo "✅ risk gate complete"
