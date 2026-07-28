@@ -139,9 +139,7 @@ require_exact_checkout() {
     exit 1
   }
   read -r CANONICAL_DEPLOYED_SHA CANONICAL_DEPLOYED_DIGEST < <(
-    node -e '
-const x=require("./docs/release/release-state.json");
-process.stdout.write(`${x.backend.runtimeSha} ${x.backend.artifactDigest}`)'
+    release_read_deployed_identity "$ROOT/docs/release/release-state.json"
   )
   [[ "$CANONICAL_DEPLOYED_SHA" =~ ^[0-9a-f]{40}$ ]] || {
     echo "canonical protected release-state SHA is invalid" >&2

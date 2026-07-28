@@ -15,6 +15,21 @@ release_git_status_porcelain() {
   git -C "$1" status --porcelain --untracked-files=normal
 }
 
+release_read_deployed_identity() {
+  local state_file="$1"
+  node - "$state_file" <<'NODE'
+const fs = require('node:fs');
+const state = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+const sha = state?.backend?.runtimeSha;
+const digest = state?.backend?.artifactDigest;
+if (!/^[0-9a-f]{40}$/.test(sha || '')
+    || !/^[0-9a-f]{64}$/.test(digest || '')) {
+  process.exit(1);
+}
+process.stdout.write(`${sha} ${digest}\n`);
+NODE
+}
+
 release_require_clean_tree() {
   local root="$1"
   local status
