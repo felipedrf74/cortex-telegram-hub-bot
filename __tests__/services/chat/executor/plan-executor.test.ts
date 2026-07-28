@@ -282,6 +282,146 @@ describe('M16 plan-executor topological execution', () => {
     expect(response.text).toContain('1. Criar a tarefa “comprar leite”');
   });
 
+  it.each([
+    {
+      locale: 'es-419',
+      action: 'create_task',
+      args: { title: 'revisión del planificador de humo' },
+      expectedText: '¿Confirmas que quieres crear la tarea “revisión del planificador de humo”?',
+      expectedTitle: 'Confirmación necesaria',
+    },
+    {
+      locale: 'es-419',
+      action: 'delete_task',
+      args: { taskId: 'tarea-eliminar' },
+      expectedText: '¿Confirmas que quieres eliminar la tarea “tarea-eliminar”?',
+      expectedTitle: 'Confirmación necesaria',
+    },
+    {
+      locale: 'es-419',
+      action: 'complete_task',
+      args: { title: 'tarea-completar' },
+      expectedText: '¿Confirmas que quieres completar la tarea “tarea-completar”?',
+      expectedTitle: 'Confirmación necesaria',
+    },
+    {
+      locale: 'es-419',
+      action: 'update_task',
+      args: {},
+      expectedText: '¿Confirmas que quieres cambiar la tarea “synthetic multi-step”?',
+      expectedTitle: 'Confirmación necesaria',
+    },
+    {
+      locale: 'pt-BR',
+      action: 'create_task',
+      args: { title: 'tarefa-criar' },
+      expectedText: 'Confirma que queres criar a tarefa “tarefa-criar”?',
+      expectedTitle: 'Confirmação necessária',
+    },
+    {
+      locale: 'pt-BR',
+      action: 'delete_task',
+      args: { taskId: 'tarefa-apagar' },
+      expectedText: 'Confirma que queres apagar a tarefa “tarefa-apagar”?',
+      expectedTitle: 'Confirmação necessária',
+    },
+    {
+      locale: 'pt-BR',
+      action: 'complete_task',
+      args: { title: 'tarefa-concluir' },
+      expectedText: 'Confirma que queres concluir a tarefa “tarefa-concluir”?',
+      expectedTitle: 'Confirmação necessária',
+    },
+    {
+      locale: 'pt-BR',
+      action: 'update_task',
+      args: {},
+      expectedText: 'Confirma que queres alterar a tarefa “synthetic multi-step”?',
+      expectedTitle: 'Confirmação necessária',
+    },
+    {
+      locale: 'en-US',
+      action: 'create_task',
+      args: { title: 'task-create' },
+      expectedText: 'Confirm that you want to create the task “task-create”?',
+      expectedTitle: 'Confirmation needed',
+    },
+    {
+      locale: 'en-US',
+      action: 'delete_task',
+      args: { taskId: 'task-delete' },
+      expectedText: 'Confirm that you want to delete the task “task-delete”?',
+      expectedTitle: 'Confirmation needed',
+    },
+    {
+      locale: 'en-US',
+      action: 'complete_task',
+      args: { title: 'task-complete' },
+      expectedText: 'Confirm that you want to complete the task “task-complete”?',
+      expectedTitle: 'Confirmation needed',
+    },
+    {
+      locale: 'en-US',
+      action: 'update_task',
+      args: {},
+      expectedText: 'Confirm that you want to change the task “synthetic multi-step”?',
+      expectedTitle: 'Confirmation needed',
+    },
+  ] as const)(
+    'localizes $locale $action confirmation without changing its meaning',
+    async ({ locale, action, args, expectedText, expectedTitle }) => {
+      const plan = makePlan([
+        makeStep({
+          stepId: 'step_1',
+          action,
+          type: action,
+          args,
+        }),
+      ], { requiresConfirmation: true, locale });
+
+      const response = await executeChatActionPlan(
+        plan,
+        { ...INPUT, locale },
+        {} as never,
+        {},
+      );
+
+      expect(executeStepMock).not.toHaveBeenCalled();
+      expect(response.metadata.actionStatus).toBe('needs_confirmation');
+      expect(response.text).toBe(expectedText);
+      expect(response.metadata.actionConfirmation).toMatchObject({
+        title: expectedTitle,
+        message: response.text,
+      });
+    },
+  );
+
+  it.each([
+    ['pt-BR', 'Confirmação necessária'],
+    ['es-419', 'Confirmación necesaria'],
+  ] as const)('localizes a %s mid-run confirmation title', async (locale, expectedTitle) => {
+    executeStepMock.mockResolvedValue({
+      step: makeStep({ stepId: 'step_1', args: { title: 'target' } }),
+      status: 'needs_confirmation',
+      error: 'confirmation_required',
+    });
+    const plan = makePlan([
+      makeStep({ stepId: 'step_1', args: { title: 'target' } }),
+    ], { locale });
+
+    const response = await executeChatActionPlan(
+      plan,
+      { ...INPUT, locale },
+      {} as never,
+      { confirmed: true },
+    );
+
+    expect(response.metadata.actionStatus).toBe('needs_confirmation');
+    expect(response.metadata.actionConfirmation).toMatchObject({
+      title: expectedTitle,
+    });
+  });
+
   it('still stops the whole run when a step needs a mid-run user decision', async () => {
     executeStepMock.mockImplementation(async (step) => (
       step.stepId === 'step_1'

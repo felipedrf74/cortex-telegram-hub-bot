@@ -575,9 +575,33 @@ export function confirmationCopy(plan: ChatActionPlan, input: ChatPlannerInput):
   if (first?.action === 'create_task' || first?.action === 'delete_task' || first?.action === 'complete_task' || first?.action === 'update_task') {
     const title = typeof (first.args as any).title === 'string' ? (first.args as any).title : typeof (first.args as any).taskId === 'string' ? (first.args as any).taskId : input.text;
     if (input.locale?.startsWith('pt')) {
-      return `Confirma que queres ${first.action === 'delete_task' ? 'apagar' : first.action === 'complete_task' ? 'concluir' : 'alterar'} a tarefa “${title}”?`;
+      const verb = first.action === 'create_task'
+        ? 'criar'
+        : first.action === 'delete_task'
+          ? 'apagar'
+          : first.action === 'complete_task'
+            ? 'concluir'
+            : 'alterar';
+      return `Confirma que queres ${verb} a tarefa “${title}”?`;
     }
-    return `Confirm that you want to ${first.action === 'delete_task' ? 'delete' : first.action === 'complete_task' ? 'complete' : 'change'} the task “${title}”?`;
+    if (input.locale?.startsWith('es')) {
+      const verb = first.action === 'create_task'
+        ? 'crear'
+        : first.action === 'delete_task'
+          ? 'eliminar'
+          : first.action === 'complete_task'
+            ? 'completar'
+            : 'cambiar';
+      return `¿Confirmas que quieres ${verb} la tarea “${title}”?`;
+    }
+    const verb = first.action === 'create_task'
+      ? 'create'
+      : first.action === 'delete_task'
+        ? 'delete'
+        : first.action === 'complete_task'
+          ? 'complete'
+          : 'change';
+    return `Confirm that you want to ${verb} the task “${title}”?`;
   }
   if (first?.action === 'set_reminder') {
     const args = first.args as any;

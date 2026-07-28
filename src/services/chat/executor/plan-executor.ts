@@ -174,7 +174,11 @@ export async function executeChatActionPlan(
       type: multiStepType(plan, 'chat_action_needs_confirmation'),
       actionStatus: 'needs_confirmation',
       actionConfirmation: {
-        title: input.locale?.startsWith('pt') ? 'Confirmação necessária' : 'Confirmation needed',
+        title: input.locale?.startsWith('pt')
+          ? 'Confirmação necessária'
+          : input.locale?.startsWith('es')
+            ? 'Confirmación necesaria'
+            : 'Confirmation needed',
         message: confirmationCopy(plan, input),
         destructive: plan.steps.some((step) => step.risk === 'destructive'),
         variant: confirmationVariant(plan),

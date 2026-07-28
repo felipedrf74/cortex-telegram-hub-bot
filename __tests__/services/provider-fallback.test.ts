@@ -641,6 +641,44 @@ describe('ProviderMetrics tracking', () => {
     });
   });
 
+  it('reports configured provider circuits before the first routed call', () => {
+    const gemini = createMockProvider('gemini');
+    const ollama = createMockProvider('ollama');
+    const freshProvider = new TaskRoutingProvider({
+      classify: { primary: gemini },
+      chat: { primary: gemini },
+      'tool-use': { primary: gemini },
+      scriptGeneration: { primary: ollama, fallback: 'approved_cloud_reasoning' },
+      localReasoning: { primary: ollama, fallback: 'approved_cloud_reasoning' },
+      circuitBreaker: { failureThreshold: 3, cooldownMs: 60000 },
+    });
+
+    expect(freshProvider.getProviderHealth()).toEqual({
+      gemini: {
+        circuit: { state: 'CLOSED', failures: 0 },
+        metrics: {
+          usageCount: 0,
+          failureCount: 0,
+          fallbackTriggerCount: 0,
+          circuitOpenCount: 0,
+          lastSuccessAt: null,
+          lastFailureAt: null,
+        },
+      },
+      ollama: {
+        circuit: { state: 'CLOSED', failures: 0 },
+        metrics: {
+          usageCount: 0,
+          failureCount: 0,
+          fallbackTriggerCount: 0,
+          circuitOpenCount: 0,
+          lastSuccessAt: null,
+          lastFailureAt: null,
+        },
+      },
+    });
+  });
+
   it('increments usageCount on successful primary call', async () => {
     primary.classify.mockResolvedValue(CLASSIFY_OK);
     await provider.classify('hello');
