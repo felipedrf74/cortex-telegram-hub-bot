@@ -415,6 +415,22 @@ process.exit(64);
     fs.rmSync(root, { recursive: true, force: true });
   });
 
+  it('accepts the reviewed production-sized systemctl executable', () => {
+    const productionSystemctlBytes = 1_501_304;
+    const currentBytes = fs.statSync(systemctl).size;
+    const commentOverheadBytes = Buffer.byteLength('\n/**/\n');
+    expect(currentBytes + commentOverheadBytes).toBeLessThan(productionSystemctlBytes);
+    fs.appendFileSync(
+      systemctl,
+      `\n/*${'x'.repeat(productionSystemctlBytes - currentBytes - commentOverheadBytes)}*/\n`,
+    );
+    expect(fs.statSync(systemctl).size).toBe(productionSystemctlBytes);
+    expect(productionSystemctlBytes).toBeGreaterThan(1024 * 1024);
+
+    const started = begin();
+    expect(started.status, started.stderr).toBe(0);
+  });
+
   it('commits a SHA-bound receipt only after active and enabled validation', () => {
     const started = begin();
     expect(started.status, started.stderr).toBe(0);
