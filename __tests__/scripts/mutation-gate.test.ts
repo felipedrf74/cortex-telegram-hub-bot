@@ -248,11 +248,13 @@ describe('changed-critical mutation gate', () => {
     const environment = buildStrykerEnvironment({
       NODE_ENV: 'production',
       NEXUS_MUTATION_TEST_FILES: '["__tests__/stale-owner.test.ts"]',
+      NEXUS_MUTATION_SOURCE_ROOT: '/tmp/stale-mutation-source',
       RETAINED_VALUE: 'retained',
     }, invocation.env);
 
     expect(environment).toMatchObject({
       NODE_ENV: 'test',
+      NEXUS_MUTATION_SOURCE_ROOT: path.resolve('.'),
       RETAINED_VALUE: 'retained',
     });
     expect(environment).not.toHaveProperty('NEXUS_MUTATION_TEST_FILES');

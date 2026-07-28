@@ -550,11 +550,22 @@ function ownerTestNameMatches(testName, target) {
   return new RegExp(target.ownerTestNamePattern).test(testName);
 }
 
+function readGovernedMutationSource(candidate) {
+  const sourceRoot = process.env.NEXUS_MUTATION_SOURCE_ROOT;
+  if (sourceRoot === undefined) return fs.readFileSync(candidate, 'utf8');
+
+  const relative = path.relative(root, path.resolve(candidate));
+  if (path.isAbsolute(relative) || relative === '..' || relative.startsWith(`..${path.sep}`)) {
+    throw new Error(`Mutation source escaped the Stryker sandbox: ${candidate}`);
+  }
+  return fs.readFileSync(path.join(sourceRoot, relative), 'utf8');
+}
+
 export function validateGovernedMutationTarget(
   target,
   mapping,
   exists = fs.existsSync,
-  readSource = (candidate) => fs.readFileSync(candidate, 'utf8'),
+  readSource = readGovernedMutationSource,
 ) {
   if (!target || typeof target !== 'object' || Array.isArray(target)) {
     return ['mutation target must be a structured ownership entry'];
@@ -726,6 +737,7 @@ export function buildStrykerEnvironment(baseEnvironment, invocationEnvironment) 
   const environment = {
     ...baseEnvironment,
     NODE_ENV: 'test',
+    NEXUS_MUTATION_SOURCE_ROOT: root,
     ...invocationEnvironment,
   };
   if (!Object.hasOwn(invocationEnvironment, 'NEXUS_MUTATION_TEST_FILES')) {
@@ -1062,7 +1074,7 @@ export function resolveReferencedSourcePaths(testFile, source, exists = fs.exist
 export function validateCleanupMapping(
   mapping,
   exists = fs.existsSync,
-  readSource = (candidate) => fs.readFileSync(candidate, 'utf8'),
+  readSource = readGovernedMutationSource,
 ) {
   if (!mapping || typeof mapping !== 'object') return ['mapping is missing'];
   const errors = [];
@@ -1122,7 +1134,7 @@ export function resolveDeletedTestCleanupMappings(
   changes,
   cleanupMappings,
   exists = fs.existsSync,
-  readSource = (candidate) => fs.readFileSync(candidate, 'utf8'),
+  readSource = readGovernedMutationSource,
   retirementMappings = [],
   readRetiredTestSource = () => '',
   baseSha = null,
@@ -1220,7 +1232,7 @@ export function buildMutationPlan({
     exists(path.join(root, file)) ? fs.readFileSync(path.join(root, file), 'utf8') : ''
   ),
   readPrevious = readAtBase,
-  readSource = (candidate) => fs.readFileSync(candidate, 'utf8'),
+  readSource = readGovernedMutationSource,
   now = Date.now(),
 }) {
   if (!MUTATION_SCOPES.has(scope)) {

@@ -206,6 +206,8 @@ describe('lean changed-area classification', () => {
         base,
         '--classifier',
         classifierPath,
+        '--source-root',
+        process.env.NEXUS_MUTATION_SOURCE_ROOT ?? path.resolve('.'),
         '--json',
       ], { encoding: 'utf8' }));
       expect(selection.schema).toBe('nexus.test-selection.v2');
