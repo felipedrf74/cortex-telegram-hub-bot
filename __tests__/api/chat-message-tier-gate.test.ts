@@ -72,7 +72,6 @@ describe('chat message tier gate', () => {
 
   it('allows the message when no user can be resolved', () => {
     mockGetUserById.mockReturnValue(null);
-    mockGetUserByTelegramId.mockReturnValue(null);
 
     const res = mockRes();
     expect(sendChatTierRequiredIfNeeded(res, 42, 'content')).toBe(false);
@@ -100,15 +99,17 @@ describe('chat message tier gate', () => {
     expect(res.status).not.toHaveBeenCalled();
   });
 
-  it('falls back to telegram id lookup when the direct user id lookup misses', () => {
+  it('never falls back to telegram id lookup — userId comes from the verified iOS JWT keyed to users.id', () => {
+    // M9 follow-through: a telegram-id fallback here could resolve a
+    // DIFFERENT user whose telegram_id collides with an iOS users.id.
     mockGetUserById.mockReturnValue(null);
     mockGetUserByTelegramId.mockReturnValue({ id: 7, tier: 'owner' });
-    mockGetEffectiveEntitlement.mockReturnValue({ plan: 'owner' });
 
     const res = mockRes();
     expect(sendChatTierRequiredIfNeeded(res, 99, 'finance')).toBe(false);
 
-    expect(mockCheckSkillAccess).toHaveBeenCalledWith({ id: 7, tier: 'owner' }, 'finance');
+    expect(mockGetUserByTelegramId).not.toHaveBeenCalled();
+    expect(mockCheckSkillAccess).not.toHaveBeenCalled();
     expect(res.status).not.toHaveBeenCalled();
   });
 

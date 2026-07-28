@@ -1241,6 +1241,80 @@ describe('paid AI budget enforcement', () => {
     });
   });
 
+  it('enforces exact chat-eval hard ceilings and provider policy even while paid controls are observe-only', async () => {
+    addPaidUser(911, 'max');
+    expect(estimateAiBudgetReservationUsd({
+      userId: 911,
+      requestSource: 'interactive',
+      baseCategory: 'chat_live_eval_local',
+      runId: 'chat-eval-local-observe-only',
+      estimatedCostUsd: 0,
+      exactHardCostEstimate: true,
+      hardRunCostLimitUsd: 0.000001,
+    })).toBe(0);
+
+    await withAiBudgetReservation({
+      userId: 911,
+      requestSource: 'interactive',
+      baseCategory: 'chat_live_eval_local',
+      jobName: 'chat_live_eval:morning_planning',
+      runId: 'chat-eval-local-observe-only',
+      estimatedCostUsd: 0,
+      exactHardCostEstimate: true,
+      hardRunCostLimitUsd: 0.000001,
+    }, async () => {
+      expect(() => assertAiBudgetReservationForProvider({
+        userId: 911,
+        category: 'chat_secretary',
+        provider: 'ollama',
+        model: 'qwen-test',
+        maxCostUsd: 0,
+      })).not.toThrow();
+      expect(() => assertAiBudgetReservationForProvider({
+        userId: 911,
+        category: 'chat_secretary',
+        provider: 'openai',
+        model: 'gpt-test',
+        maxCostUsd: 0,
+      })).toThrowError(AiBudgetError);
+    });
+
+    expect(db.prepare(`
+      SELECT provider, reserved_cost_usd
+        FROM ai_provider_attempt_reservations
+       WHERE run_id = 'chat-eval-local-observe-only'
+    `).all()).toEqual([{ provider: 'ollama', reserved_cost_usd: 0 }]);
+  });
+
+  it('allows only metered cloud providers inside the real chat-eval target split', async () => {
+    addPaidUser(912, 'max');
+    await withAiBudgetReservation({
+      userId: 912,
+      requestSource: 'interactive',
+      baseCategory: 'chat_live_eval_real',
+      jobName: 'chat_live_eval:morning_planning',
+      runId: 'chat-eval-real-provider-policy',
+      estimatedCostUsd: 0,
+      exactHardCostEstimate: true,
+      hardRunCostLimitUsd: 0.45,
+    }, async () => {
+      expect(() => assertAiBudgetReservationForProvider({
+        userId: 912,
+        category: 'chat_secretary',
+        provider: 'ollama',
+        model: 'qwen-test',
+        maxCostUsd: 0,
+      })).toThrowError(AiBudgetError);
+      expect(() => assertAiBudgetReservationForProvider({
+        userId: 912,
+        category: 'chat_secretary',
+        provider: 'gemini',
+        model: 'gemini-test',
+        maxCostUsd: 0.02,
+      })).not.toThrow();
+    });
+  });
+
   it('rejects an unreviewed dated live-eval model before any provider callback can run', async () => {
     process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
     addPaidUser(84);

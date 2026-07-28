@@ -1,0 +1,47 @@
+{
+  "version": "routing-calibration@1.0.0",
+  "provenance": {
+    "source": "bootstrap",
+    "corpusSize": 0,
+    "generatedAt": "2026-07-21T00:00:00.000Z"
+  },
+  "orchestrator": {
+    "branches": {
+      "no_primary_domain": 0.4,
+      "scheduling_cross_skill": 0.96,
+      "scheduling": 0.92,
+      "destructive": 0.9,
+      "ambiguous_reference": 0.72,
+      "default": 0.84
+    },
+    "overrideThreshold": 0.86
+  },
+  "classifier": {
+    "lowConfidenceFloor": 0.6,
+    "pinnedConfidenceMin": 0.51
+  },
+  "intentResolver": {
+    "scoreBuckets": [
+      {
+        "minScore": 5,
+        "calibratedPrecision": 0.95
+      },
+      {
+        "minScore": 2,
+        "calibratedPrecision": 0.75
+      },
+      {
+        "minScore": 1,
+        "calibratedPrecision": 0.6
+      },
+      {
+        "minScore": 0,
+        "calibratedPrecision": 0.4
+      }
+    ]
+  },
+  "clarify": {
+    "epsilon": 0.05,
+    "actionableFloor": 0.6
+  }
+}

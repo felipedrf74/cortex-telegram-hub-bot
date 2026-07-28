@@ -5,6 +5,7 @@ import { randomUUID } from 'crypto';
 import { recordChatActionTelemetry } from '../../chat-action-state';
 import { buildBlocksFromMarkdown } from '../../chat-response-blocks';
 import { buildMultiStepSummary } from '../../chat-multi-step-dag';
+import { buildResponseLanguageTelemetry } from '../../chat-language-detector';
 import { logger } from '../../../utils/logger';
 import type {
   ChatActionPlan,
@@ -97,6 +98,7 @@ export function buildActionResponse(
       effectiveConfidence: plan.effectiveConfidence ?? plan.confidence,
       telemetry: safeTelemetry(responseTelemetry),
       involvedSkills: [...new Set(plan.steps.map((step) => step.skill))],
+      responseLanguage: buildResponseLanguageTelemetry(input.locale, text),
       // Developer trace is persisted server-side through action runs/logs; normal UI gets only this safe summary.
     },
     timestamp: new Date().toISOString(),

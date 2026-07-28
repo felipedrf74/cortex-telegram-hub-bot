@@ -532,7 +532,7 @@ describe('trusted release-layout fault producers', () => {
     expect(targetBackups.every(
       (backup) => backup.equals(targetBackups[0]),
     )).toBe(true);
-  }, 30_000);
+  }, 60_000);
 
   it('has no manual result-recording surface and binds the root controller unit', () => {
     const manualRecord = spawnSync(

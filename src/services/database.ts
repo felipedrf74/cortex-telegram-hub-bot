@@ -51,6 +51,18 @@ export function initDatabase(): Database.Database {
     logger.error({ err }, 'iOS auth refresh-token hash backfill failed — investigate before next deploy');
   }
 
+  // M21 Stage C: archive telegram identities at boot (pragma-guarded,
+  // idempotent — see migration 259 header for why this is not SQL).
+  try {
+    const { backfillTelegramIdentityArchive } = require('./user-service');
+    const archive = backfillTelegramIdentityArchive();
+    if (archive.archivedRows > 0) {
+      logger.info(archive, 'Telegram identity archive backfill copied rows');
+    }
+  } catch (err) {
+    logger.warn({ err }, 'Telegram identity archive backfill failed — non-critical, retried next boot');
+  }
+
   // Load persisted model overrides from kv_store after migrations create the
   // table. This is fail-closed: an invalid local-model selector must prevent
   // startup rather than silently falling back to another routing state.

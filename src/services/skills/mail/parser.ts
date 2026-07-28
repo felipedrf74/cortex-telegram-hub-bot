@@ -41,7 +41,10 @@ export function parseMailActionStep(
       skill: 'mail',
       action: 'send_email',
       risk: 'external_side_effect',
-      provider: provider ?? 'gmail',
+      // Generic writes default to Outlook because the current Google OAuth
+      // grant is gmail.readonly. Explicit Gmail requests remain explicit and
+      // are blocked truthfully by the executor until write scopes exist.
+      provider: provider ?? 'outlook_mail',
       args: { rawRequest: input.text },
       requiredArgsPresent: false,
     });
@@ -62,7 +65,7 @@ export function parseMailActionStep(
       skill: 'mail',
       action: 'draft_email',
       risk: 'safe_write',
-      provider: provider ?? 'gmail',
+      provider: provider ?? 'outlook_mail',
       args: { rawRequest: input.text },
       requiredArgsPresent: false,
     });

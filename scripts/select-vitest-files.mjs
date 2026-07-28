@@ -64,6 +64,9 @@ if (classifier.vitest?.mode === 'full' && !coverageSelection) {
   // a pipe, Node can otherwise discard bytes still buffered beyond 64 KiB.
   process.exitCode = 0;
 } else {
+  emitSelection();
+}
+
 // This selection runs inside the protected signer as well as RC planning.
 // Candidate files are inert data: build a transitive graph from literal local
 // imports and Git history without loading Vitest, setup files, or test modules.
@@ -71,36 +74,37 @@ if (classifier.vitest?.mode === 'full' && !coverageSelection) {
 // must never mask an unrelated unmapped module in the same release diff.
 // A future governed per-file fallback map may resolve individual paths; until
 // then static unresolved paths deliberately escalate the RC to full.
-const unresolved = dependencyImpact.unresolvedProductionFiles;
-const selected = [...new Set([...changed, ...focused, ...critical])]
-  .filter((file) => allFiles.includes(file))
-  .sort();
+function emitSelection() {
+  const unresolved = dependencyImpact.unresolvedProductionFiles;
+  const selected = [...new Set([...changed, ...focused, ...critical])]
+    .filter((file) => allFiles.includes(file))
+    .sort();
 
-if (json) {
-  process.stdout.write(`${JSON.stringify({
-    base,
-    changed: [...changed].sort(),
-    focused: [...focused].sort(),
-    cannotSkip: [...focused].sort(),
-    critical: [...critical].sort(),
-    removed,
-    removedDigest,
-    unresolved,
-    unresolvedDigest: createHash('sha256').update(JSON.stringify(unresolved)).digest('hex'),
-    impactResolved: classifier.flags?.impactResolved === true
-      && unresolved.length === 0
-      && removed.length === 0,
-    selected,
-  }, null, 2)}\n`);
-} else {
-  // Correctness escalation and coverage measurement are different jobs. A
-  // shared-fixture or classifier change still forces the separately sharded
-  // full correctness suite, while the coverage lane measures the dependency,
-  // critical, and cannot-skip union. Uncovered changed lines still fail the
-  // ratchet, so this does not turn unresolved production impact into success.
-  const plainSelection = coverageSelection
-    ? selected
-    : (unresolved.length > 0 || removed.length > 0 ? allFiles : selected);
-  process.stdout.write(plainSelection.length ? `${plainSelection.join('\n')}\n` : '');
-}
+  if (json) {
+    process.stdout.write(`${JSON.stringify({
+      base,
+      changed: [...changed].sort(),
+      focused: [...focused].sort(),
+      cannotSkip: [...focused].sort(),
+      critical: [...critical].sort(),
+      removed,
+      removedDigest,
+      unresolved,
+      unresolvedDigest: createHash('sha256').update(JSON.stringify(unresolved)).digest('hex'),
+      impactResolved: classifier.flags?.impactResolved === true
+        && unresolved.length === 0
+        && removed.length === 0,
+      selected,
+    }, null, 2)}\n`);
+  } else {
+    // Correctness escalation and coverage measurement are different jobs. A
+    // shared-fixture or classifier change still forces the separately sharded
+    // full correctness suite, while the coverage lane measures the dependency,
+    // critical, and cannot-skip union. Uncovered changed lines still fail the
+    // ratchet, so this does not turn unresolved production impact into success.
+    const plainSelection = coverageSelection
+      ? selected
+      : (unresolved.length > 0 || removed.length > 0 ? allFiles : selected);
+    process.stdout.write(plainSelection.length ? `${plainSelection.join('\n')}\n` : '');
+  }
 }

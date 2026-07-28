@@ -1,4 +1,25 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import Database from 'better-sqlite3';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
+
+let testDb: Database.Database;
+
+// M13: chat-message-context is now write-through durable (chat_conversation_state).
+// The database mock serves a fully migrated :memory: copy so the durable
+// fallback paths run against the real schema.
+vi.mock('../../src/services/database', () => ({
+  getDb: () => testDb,
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+  applyMigrationFileForTest: vi.fn(),
+  assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
+  filterAlreadyAppliedAddColumnStatements: vi.fn((sql: string) => sql),
+  runMigrationsForTest: vi.fn(),
+  stripWrappingTransactionStatements: vi.fn((sql: string) => sql),
+  withDatabaseForTest: vi.fn(),
+  withDatabaseForTestAsync: vi.fn(),
+}));
 
 const mockGetLastAssistantMessage = vi.fn();
 const mockGetLastCoachState = vi.fn();
@@ -41,15 +62,18 @@ import {
   buildDefaultButtonsForChatDomain,
   clearChatActiveDomain,
   getChatDomainHandler,
+  getDurableChatContinuity,
   getLastChatActiveDomain,
   rememberChatActiveDomain,
   resetChatMessageContextForTests,
   resolveChatActiveContext,
   setLastActiveDomain,
 } from '../../src/api/routes/chat-message-context';
+import { storeChatMessage } from '../../src/services/chat-history-store';
 
 describe('chat message context helpers', () => {
   beforeEach(() => {
+    testDb = createMigratedTestDatabase();
     resetChatMessageContextForTests();
     mockGetLastAssistantMessage.mockReset();
     mockGetLastCoachState.mockReset();
@@ -154,5 +178,80 @@ describe('chat message context helpers', () => {
     });
 
     expect(buildDefaultButtonsForChatDomain('triathlon', 'en-US', 42, requestStartedAt)).toBeNull();
+  });
+
+  describe('M13 durable continuity', () => {
+    const now = Date.parse('2026-07-20T12:00:00.000Z');
+
+    it('returns the active domain after a simulated restart within TTL, null after TTL', () => {
+      rememberChatActiveDomain(42, 'secretary', now - 1000, 7);
+
+      // Restart seam: only the in-process read cache is wiped; the durable
+      // chat_conversation_state row survives.
+      resetChatMessageContextForTests();
+      expect(getLastChatActiveDomain(42, now, 7)).toBe('secretary');
+
+      resetChatMessageContextForTests();
+      expect(getLastChatActiveDomain(42, now - 1000 + CHAT_ACTIVE_DOMAIN_TTL_MS, 7)).toBeNull();
+    });
+
+    it('never leaks continuity across tenants for the same user', () => {
+      rememberChatActiveDomain(42, 'finance', now - 1000, 7);
+      resetChatMessageContextForTests();
+
+      expect(getLastChatActiveDomain(42, now, 9)).toBeNull();
+      expect(getLastChatActiveDomain(42, now)).toBeNull();
+      expect(getDurableChatContinuity(42, 9, now)).toBeNull();
+      expect(getLastChatActiveDomain(42, now, 7)).toBe('finance');
+    });
+
+    it('recovers lastAssistantMessage from chat-history-store after restart when the conversation store misses', () => {
+      // messages.user_id has an FK to users(id).
+      testDb.prepare(
+        "INSERT INTO users (id, first_name, status) VALUES (42, 'Test', 'active')",
+      ).run();
+      storeChatMessage({
+        tenantId: 7,
+        userId: 42,
+        messageId: 'assistant-msg-1',
+        role: 'assistant',
+        text: 'Durable secretary answer',
+      });
+      rememberChatActiveDomain(42, 'secretary', now - 1000, 7, {
+        lastAssistantMessageId: 'assistant-msg-1',
+      });
+
+      resetChatMessageContextForTests();
+      mockGetLastAssistantMessage.mockReturnValue(null);
+
+      expect(resolveChatActiveContext(42, now, 7)).toEqual({
+        domain: 'secretary',
+        lastAssistantMessage: 'Durable secretary answer',
+      });
+    });
+
+    it('exposes anchor entities through getDurableChatContinuity', () => {
+      rememberChatActiveDomain(42, 'secretary', now - 1000, 7, {
+        anchorEntityIds: ['task-9'],
+      });
+
+      const continuity = getDurableChatContinuity(42, 7, now);
+      expect(continuity?.domain).toBe('secretary');
+      expect(continuity?.anchorEntities.map((anchor) => anchor.entityId)).toEqual(['task-9']);
+    });
+
+    it('keeps the turn on the Map when the durable write fails', () => {
+      const realDb = testDb;
+      testDb = new Proxy(realDb, {
+        get() {
+          throw new Error('db down (simulated)');
+        },
+      }) as typeof realDb;
+
+      expect(() => rememberChatActiveDomain(42, 'triathlon', now - 1000, 7)).not.toThrow();
+      expect(getLastChatActiveDomain(42, now, 7)).toBe('triathlon');
+
+      testDb = realDb;
+    });
   });
 });

@@ -28,7 +28,8 @@ vi.mock('../../src/services/operator-alerts', () => ({
   retryOperatorAlertDelivery: vi.fn(),
 }));
 
-vi.mock('../../src/services/chat-history-store', () => ({
+vi.mock('../../src/services/chat-history-store', async () => ({
+  ...(await vi.importActual('../../src/services/chat-history-store')),
   DEFAULT_CHAT_VISIBILITY_SCOPE: 'all',
   claimUserChatMessage: vi.fn(),
   clearChatHistory: vi.fn(),

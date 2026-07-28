@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const AGENT_JOB_MANIFEST_SCHEMA = 'nexus.agent-job-manifest.v3';
-export const AGENT_JOB_MANIFEST_VERSION = '2026-07-17.2';
+export const AGENT_JOB_MANIFEST_VERSION = '2026-07-22.2';
 
 const GEMINI_ONE_SHOT_PROVIDER_ROUTE = 'gemini-primary-openai-fallback-anthropic-gated-last-resort';
 
@@ -98,7 +98,7 @@ const providerCapableHandler = (policyOwner, tenantScope, inputFingerprint, over
   ...overrides,
 });
 
-// This is intentionally an explicit 55-job audit, not a domain-wide default.
+// This is intentionally an explicit 57-job audit, not a domain-wide default.
 // Adding a scheduler registration without a reviewed policy makes generation
 // fail. Provider usage means model-provider capability; calendar, mail, task,
 // Garmin, and invoice integrations remain described by their job policies but
@@ -141,6 +141,8 @@ export const JOB_POLICIES = Object.freeze({
   chat_action_run_retention: noProvider('chat-reliability', 'platform-tenant-scoped-rows'),
   chat_action_run_zombie_reaper: noProvider('chat-reliability', 'durable-queue-tenant-user', { retryPolicy: 'next-scheduled-run-after-lease-reap' }),
   chat_v2_auto_revert_eval: noProvider('chat-core-v2', 'active-chat-v2-tenant-loop', { outputPolicy: 'deterministic-policy-and-audited-mode-write' }),
+  chat_quality_regression_monitor: noProvider('ai-quality', 'platform-quality-metrics', { retryPolicy: 'next-scheduled-run', outputPolicy: 'deduped-warning-critical-operator-alerts' }),
+  chat_quality_weekly_digest: noProvider('ai-quality', 'platform-quality-metrics', { retryPolicy: 'next-scheduled-run', outputPolicy: 'deduped-info-operator-alert' }),
   chat_v2_gate_check: noProvider('chat-core-v2', 'platform-shadow-metrics'),
   classify_shadow_prune: noProvider('chat-core-v2', 'platform-retention'),
   conflict_detection: noProvider('secretary', 'active-tenant-loop', { outputPolicy: 'tenant-scoped-decision-intent' }),
@@ -265,6 +267,35 @@ export const DIRECT_EVENT_EFFECT_POLICIES = Object.freeze({
 });
 
 export const QUEUED_JOB_HANDLER_POLICIES = Object.freeze({
+  chat_core_v2_background_command: noProviderHandler('chat-reliability', 'durable-queue-tenant-user-command-envelope', {
+    runtimeGroup: 'event-backbone-default',
+    retryPolicy: 'durable-queue-bounded-retry-and-dead-letter',
+    costPolicy: 'no-model-provider-cost-command-execution-only',
+    latencyPolicy: 'command-executor-owned-bounded-provider-timeout',
+    outputPolicy: 'command-readback-event-ledger-and-apns',
+    inputFingerprint: {
+      enforcement: 'not-applicable-no-provider',
+      evidence: 'signed command envelope plus tenant/user/job idempotency key',
+      tests: ['__tests__/services/chat-core-v2-background-command.test.ts'],
+      unchangedInputProviderCalls: 0,
+    },
+  }),
+  chat_legacy_timeout_continuation: noProviderHandler('chat-reliability', 'durable-queue-tenant-user-source-run', {
+    runtimeGroup: 'event-backbone-default',
+    retryPolicy: 'durable-queue-max-2-with-dead-letter',
+    costPolicy: 'no-model-provider-cost-late-foreground-delivery-only',
+    latencyPolicy: 'late-foreground-result-or-15m-honest-failure-deadline',
+    outputPolicy: 'full-chat-quality-gate-durable-message-and-apns',
+    inputFingerprint: {
+      enforcement: 'not-applicable-no-provider',
+      evidence: 'tenant/user/source-run fence; late-result reuse; no provider/domain/tool imports',
+      tests: [
+        '__tests__/services/chat-legacy-timeout-continuation.test.ts',
+        '__tests__/api/chat-pipeline/legacy-tail-timeout.test.ts',
+      ],
+      unchangedInputProviderCalls: 0,
+    },
+  }),
   project_read_models: noProviderHandler('app-read-models', 'durable-queue-tenant-user', {
     runtimeGroup: 'event-backbone-default',
     outputPolicy: 'tenant-scoped-summary-projection-and-decision-audit',

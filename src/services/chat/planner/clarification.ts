@@ -2,6 +2,58 @@
 
 import { findChatActionDefinition } from '../registry';
 import type { ChatPlannerInput, ChatPlanStep } from '../types';
+import { loadCapabilityManifest } from '../../capability-manifest';
+
+// ─── M14: routing clarify question (manifest displayNames) ──────────
+//
+// One templated question for the flag-gated routing clarify policy
+// (chat-skill-orchestrator resolveRoutingClarifyDecision). Locale handling
+// follows this module's convention: prefix match on the BCP-47-ish locale
+// (pt* → PT, es* → ES, everything else → EN). The templates are intentionally
+// rigid so isRoutingClarifyQuestion can deterministically recognize a
+// previously asked clarify question (loop prevention: a clarify-response turn
+// must never re-clarify).
+
+const ROUTING_CLARIFY_TEMPLATES: RegExp[] = [
+  /^Did you mean .+ or .+\?$/,
+  /^Queres dizer .+ ou .+\?$/,
+  /^¿Te refieres a .+ o a .+\?$/,
+];
+
+/** Manifest displayName for a runtime routing domain (first uiSkillMetadata entry). */
+function displayNameForRoutingDomain(domain: string): string {
+  try {
+    const entry = loadCapabilityManifest().capabilities
+      .find((capability) => capability.runtimeRouting.domain === domain);
+    const displayName = entry?.uiSkillMetadata?.[0]?.displayName;
+    if (displayName) return displayName;
+  } catch {
+    // Manifest unavailable (isolated tests) — fall through to the fallback.
+  }
+  return domain.charAt(0).toUpperCase() + domain.slice(1);
+}
+
+/**
+ * Render the single templated routing clarify question ("Did you mean X or
+ * Y?") from manifest displayNames, in EN/PT/ES per the locale conventions of
+ * this module.
+ */
+export function buildRoutingClarifyQuestion(
+  domains: readonly [string, string],
+  locale?: string | null,
+): string {
+  const [first, second] = domains.map((domain) => displayNameForRoutingDomain(domain));
+  if (locale?.startsWith('pt')) return `Queres dizer ${first} ou ${second}?`;
+  if (locale?.startsWith('es')) return `¿Te refieres a ${first} o a ${second}?`;
+  return `Did you mean ${first} or ${second}?`;
+}
+
+/** True when the text is a routing clarify question this module rendered. */
+export function isRoutingClarifyQuestion(text: string): boolean {
+  const trimmed = (text ?? '').trim();
+  if (trimmed.length === 0) return false;
+  return ROUTING_CLARIFY_TEMPLATES.some((template) => template.test(trimmed));
+}
 
 export function missingRequiredFieldsForStep(step: ChatPlanStep): string[] {
   const definition = findChatActionDefinition(step.skill, step.action);

@@ -53,6 +53,7 @@ import {
 } from '../services/chat-core-v2/secretary-candidate-schema';
 import { selectSecretaryReasoningOutcome } from '../services/chat-core-v2/secretary-reasoning-coordinator';
 import { createSecretaryDecisionPreview } from '../services/chat-core-v2/secretary-decision-preview';
+import { getCurrentChatLiveEvalSeedBlock } from '../services/chat-live-evaluation-context';
 
 // Codex QA round 5: untrusted text from user-controlled sources (task
 // titles, reminder messages, calendar summaries) was previously
@@ -155,6 +156,18 @@ export function _resetStateContextCacheForTesting(): void {
   _stateContextCache.clear();
 }
 
+/** Clear only one authenticated tenant/user cache scope for eval isolation. */
+export function clearSecretaryStateContextCacheForScope(userId: number, tenantId: number): number {
+  const prefix = `${tenantId}:${userId}:`;
+  let cleared = 0;
+  for (const key of _stateContextCache.keys()) {
+    if (!key.startsWith(prefix)) continue;
+    _stateContextCache.delete(key);
+    cleared += 1;
+  }
+  return cleared;
+}
+
 /**
  * Layer 2: Smart Context Selection.
  *
@@ -254,6 +267,10 @@ async function buildStateContext(message: string = '', userId?: number, tenantId
   const scopedTenantKey = scopedTenantId ?? 'anon';
   const appendPromptContext = async (baseContext: string, cacheHit: boolean): Promise<string> => {
     if (!hasUserScope) return baseContext;
+    const appendEvalSeed = (value: string): string => {
+      const evalSeedBlock = getCurrentChatLiveEvalSeedBlock();
+      return evalSeedBlock ? `${value}\n${evalSeedBlock}` : value;
+    };
     if (!needs.planner) {
       // Codex QA round 2: even when the planner context is skipped,
       // mutating turns still need the pre-call <missing_facts> block
@@ -273,7 +290,7 @@ async function buildStateContext(message: string = '', userId?: number, tenantId
         estimatedContextChars: augmented.length,
         estimatedInputTokens: Math.ceil(augmented.length / 4),
       }, 'Secretary state context assembled without broad prompt context');
-      return augmented;
+      return appendEvalSeed(augmented);
     }
     const promptContext = await buildChatPromptContextBlock({
       domain: DOMAIN,
@@ -293,7 +310,7 @@ async function buildStateContext(message: string = '', userId?: number, tenantId
       estimatedContextChars: combined.length,
       estimatedInputTokens: Math.ceil(combined.length / 4),
     }, 'Secretary state context assembled from cache');
-    return combined;
+    return appendEvalSeed(combined);
   };
 
   // Codex QA round 3: subskill toggles weren't part of the cache key,
@@ -885,9 +902,13 @@ export async function handleSecretary(message: string, userId?: number, tenantId
     );
 
     logger.debug({ iteration: iterations, msgCount: toolConversation.length }, 'Calling continueWithToolResults');
+    // ADV-2: echo the issuing provider back so the routing layer pins the
+    // continuation to it — open tool_use ids must never reach a different
+    // provider (secretary is the cross-provider domain by default).
     result = await provider.continueWithToolResults(DOMAIN, history, message, stateContext, toolConversation, {
       userId,
       tenantId,
+      toolLoopProviderName: result.routedProviderName,
     });
     finalText = result.text;
     logger.debug({ iteration: iterations, hasText: !!finalText, toolCalls: result.toolCalls.length }, 'Continue result');

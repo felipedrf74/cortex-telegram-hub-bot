@@ -3,6 +3,30 @@
 import type { ChatCoreV2Intent } from './route-decision';
 import type { ChatCoreV2Domain, UnsupportedReason } from './types';
 import { hasCalendarWriteIntent } from '../calendar-natural-language-parser';
+import { isManifestRoutingEnabled } from '../intent-resolution/manifest-routing-flags';
+import { manifestDomainMatchesLocaleTier } from '../intent-resolution/manifest-projections';
+
+// ─── M12 manifest convergence (flag: AI_ROUTING_MANIFEST_SHADOW) ─
+//
+// MISROUTE-FIX CONVENTION (flag on): fix a misroute with ONE manifest
+// vocabulary edit (config/capability-manifest.json routingVocabulary) plus ONE
+// corpus fixture — never by adding a new inline regex to this file. The inline
+// per-domain regexes below remain the flag-OFF legacy path only.
+//
+// Flag-on scope: guessDomains and the per-domain READ-SHORTCUT domain signals
+// are compiled from the manifest vocabulary's LOCALE TIER
+// (manifestDomainMatchesLocaleTier) — the per-language keyword lists this
+// surface's legacy vocabulary was extracted into. The fragment tier (verbatim
+// regexes from the richer surfaces) is deliberately excluded here: M12 parity
+// measurement showed the fragment union over-matches this surface.
+// Read-QUESTION matchers (what/which/show/...), action-intent regexes, and
+// the tasks-vs-secretary discriminators stay code-owned (the manifest's axis
+// is domain vocabulary — it has no intent-kind or v2-subdomain dimension).
+//
+// SAFETY FILTERS ARE CODE-OWNED POLICY, NEVER MANIFEST-DRIVEN:
+// FINANCE_RESTRICTED_ACTION_RE and the unsafe-access filter below must keep
+// working even with an empty or edited manifest vocabulary. Pinned by
+// __tests__/services/intent-resolution/manifest-routing-safety-ownership.test.ts.
 
 export interface ChatCoreV2ShadowRouteGuess {
   intent: ChatCoreV2Intent;
@@ -11,6 +35,25 @@ export interface ChatCoreV2ShadowRouteGuess {
   capabilityIds: string[];
   unsupportedReason?: UnsupportedReason;
 }
+
+/**
+ * M12 — explicit DOMAIN SET mapping between Chat Core v2 domains and the
+ * CapabilityManifest (legacy runtime) domain space. Both `secretary` and
+ * `tasks` project from the manifest `secretary` capability; the split between
+ * them is a v2 domain-model refinement expressed by the code-owned
+ * discriminators in guessDomains, not by manifest vocabulary.
+ */
+export const SHADOW_DOMAIN_TO_MANIFEST_DOMAIN: Record<ChatCoreV2Domain, string> = {
+  secretary: 'secretary',
+  tasks: 'secretary',
+  training: 'triathlon',
+  content: 'content',
+  cooking: 'cooking',
+  finance: 'finance',
+  connections: 'connections',
+  notifications: 'notifications',
+  decision_center: 'decision_center',
+};
 
 const FINANCE_RESTRICTED_ACTION_RE =
   /\b(pay|payment|send\s+money|transfer|wire|invoice|tax|pagar|paga|pague|pagamento|transferir|transfere|enviar\s+dinheiro|fatura|factura|boleto|imposto|impuesto|pago)\b/i;
@@ -135,15 +178,70 @@ export function classifyShadowRoute(text: string): ChatCoreV2ShadowRouteGuess {
   };
 }
 
-function guessDomains(text: string): ChatCoreV2Domain[] {
+// Code-owned v2 sub-domain discriminators: the manifest `secretary` capability
+// covers both v2 `secretary` and v2 `tasks`; these narrow regexes decide which
+// v2 domain(s) a secretary-vocabulary match belongs to. They are NOT domain
+// vocabulary and stay inline when the manifest flag is on.
+const SECRETARY_SUBDOMAIN_DISCRIMINATOR_RE = /\b(agenda|calendar|meeting|schedule|secretary)\b/i;
+const TASKS_SUBDOMAIN_DISCRIMINATOR_RE = /\b(task|tasks|todo|to-do|tarefas?|tareas?)\b/i;
+
+// Code-owned precedence matcher (M12): an explicit content-creation ask
+// (creation verb + content artifact noun — derived from the classifier's
+// CONTENT_INTENT tier) must beat SUBJECT-MATTER-ONLY vocabulary from other
+// domains, e.g. "Write a short script about recovery after hard intervals"
+// is a content ask, not a training one. Intent-kind precedence is not a
+// manifest axis, so this stays inline like the other precedence matchers.
+const CONTENT_CREATION_INTENT_RE =
+  /\b(write|create|generate|make|draft|outline|rewrite|improve|give|suggest|organi[sz]e|prioriti[sz]e|escrev(?:e|a)|cria|crie|gera|gerar|faz|faça|rascunha|reescreve|melhora|escribe|escribir|crea|crear|genera|redacta|redactar)\b[\s\S]{0,80}\b(script|caption|hooks?|titles?|thumbnails?|reels?|videos?|posts?|content|newsletter|roteiros?|legendas?|ganchos?|t[ií]tulos?|miniaturas?|v[ií]deos?|conte[uú]do|guiones?|leyendas?|contenido)\b/i;
+
+// Direct training-noun evidence, shared between the legacy guessDomains
+// branch and the manifest-path content-creation filter so the two stay in
+// sync. Training subject vocabulary (recovery, intervals, intensity, ...)
+// that only exists in the training READ-signal list / manifest locale tier
+// deliberately does NOT count as direct evidence here.
+const TRAINING_DIRECT_NOUN_RES: RegExp[] = [
+  /\b(training|workouts?|run|session)\b/i,
+  /\b(treinos?|treinar|corrida|sess(?:ao|ão|oes|ões))\b/i,
+  /\b(entrenamientos?|entrenar|carrera|sesiones?|sesión)\b/i,
+];
+
+function hasDirectTrainingNoun(text: string): boolean {
+  return TRAINING_DIRECT_NOUN_RES.some((pattern) => pattern.test(text));
+}
+
+function guessDomainsViaManifest(text: string): ChatCoreV2Domain[] {
   const domains: ChatCoreV2Domain[] = [];
-  if (/\b(agenda|calendar|meeting|schedule|secretary)\b/i.test(text)) domains.push('secretary');
-  if (/\b(task|tasks|todo|to-do|tarefas?|tareas?)\b/i.test(text)) domains.push('tasks');
+  const secretaryVocabulary = manifestDomainMatchesLocaleTier(SHADOW_DOMAIN_TO_MANIFEST_DOMAIN.secretary, text);
+  if (secretaryVocabulary && SECRETARY_SUBDOMAIN_DISCRIMINATOR_RE.test(text)) domains.push('secretary');
+  if (secretaryVocabulary && TASKS_SUBDOMAIN_DISCRIMINATOR_RE.test(text)) domains.push('tasks');
+  const oneToOne: ChatCoreV2Domain[] = [
+    'training', 'content', 'cooking', 'finance', 'connections', 'notifications', 'decision_center',
+  ];
+  for (const domain of oneToOne) {
+    if (manifestDomainMatchesLocaleTier(SHADOW_DOMAIN_TO_MANIFEST_DOMAIN[domain], text)) domains.push(domain);
+  }
+  // Content-creation precedence: when the ask is explicitly "make content"
+  // and the ONLY training evidence is subject vocabulary (no direct training
+  // noun), training must not lead — or even appear in — the domain set.
+  // domains[0] is the primary for v2 consumers (command-preview-route,
+  // action-gateway, unsupported-fallback firstDomain).
   if (
-    /\b(training|workouts?|run|session)\b/i.test(text)
-    || /\b(treinos?|treinar|corrida|sess(?:ao|ão|oes|ões))\b/i.test(text)
-    || /\b(entrenamientos?|entrenar|carrera|sesiones?|sesión)\b/i.test(text)
-  ) domains.push('training');
+    domains.includes('training')
+    && domains.includes('content')
+    && CONTENT_CREATION_INTENT_RE.test(text)
+    && !hasDirectTrainingNoun(text)
+  ) {
+    return domains.filter((domain) => domain !== 'training');
+  }
+  return domains;
+}
+
+function guessDomains(text: string): ChatCoreV2Domain[] {
+  if (isManifestRoutingEnabled('shadow')) return guessDomainsViaManifest(text);
+  const domains: ChatCoreV2Domain[] = [];
+  if (SECRETARY_SUBDOMAIN_DISCRIMINATOR_RE.test(text)) domains.push('secretary');
+  if (TASKS_SUBDOMAIN_DISCRIMINATOR_RE.test(text)) domains.push('tasks');
+  if (hasDirectTrainingNoun(text)) domains.push('training');
   if (
     /\b(content|script|post|pipeline|caption|hook|reel|video|newsletter)\b/i.test(text)
     || /\b(pillar|pillars|desk|filming|film|publish|published|performance|performing|performed|learnings?|format|formats?)\b/i.test(text)
@@ -167,28 +265,37 @@ function guessDomains(text: string): ChatCoreV2Domain[] {
 }
 
 function isContentReadShortcut(text: string): boolean {
-  const hasContentSignal =
-    /\b(content|script|post|pipeline|caption|hook|hooks|reel|video|newsletter|pillar|pillars|desk|filming|film|publish|published|performance|performing|performed|learnings?|format|formats?)\b/i.test(text)
-    || /\b(conte[uú]do|roteiros?|legendas?|t[ií]tulos?|ganchos?|pilares?|mesa|publicar|publica(?:cao|ção|coes|ções)|filmar|filmagens?|performou|funcionando|aprend(?:endo|er)|formato)\b/i.test(text)
-    || /\b(contenido|guiones?|leyendas?|t[ií]tulos?|ganchos?|pilares?|publicar|publicaci[oó]n|filmaciones?|funcionando|aprend(?:iendo|er)|formato)\b/i.test(text);
+  const hasContentSignal = isManifestRoutingEnabled('shadow')
+    ? manifestDomainMatchesLocaleTier(SHADOW_DOMAIN_TO_MANIFEST_DOMAIN.content, text)
+    : (
+      /\b(content|script|post|pipeline|caption|hook|hooks|reel|video|newsletter|pillar|pillars|desk|filming|film|publish|published|performance|performing|performed|learnings?|format|formats?)\b/i.test(text)
+      || /\b(conte[uú]do|roteiros?|legendas?|t[ií]tulos?|ganchos?|pilares?|mesa|publicar|publica(?:cao|ção|coes|ções)|filmar|filmagens?|performou|funcionando|aprend(?:endo|er)|formato)\b/i.test(text)
+      || /\b(contenido|guiones?|leyendas?|t[ií]tulos?|ganchos?|pilares?|publicar|publicaci[oó]n|filmaciones?|funcionando|aprend(?:iendo|er)|formato)\b/i.test(text)
+    );
   if (!hasContentSignal) return false;
   return /\b(what|which|how\s+should|show|list|review|ready|next|best|winning|working|tracking|o\s+que|qual|quais|como\s+devo|mostra|mostrar|pront[oa]s?|melhor|vencendo|funcionando|acompanhand[oa]|qué|que|cu[aá]l|cu[aá]les|c[oó]mo\s+debo|listo|mejor|ganando)\b/i.test(text);
 }
 
 function isFinanceReadShortcut(text: string): boolean {
-  const hasFinanceReadSignal =
-    /\b(bills?|invoices?|subscriptions?|renewals?|renew|missing|due|month|finance|financial)\b/i.test(text)
-    || /\b(contas?|faturas?|facturas?|assinaturas?|subscri(?:c(?:ao|ão)|coes|ções)|renova(?:r|m|cao|ção|coes|ções)|faltam|falta|m[eê]s|financeir[oa])\b/i.test(text)
-    || /\b(facturas?|suscripciones?|renovaciones?|renuevan|faltan|falta|mes|financier[oa])\b/i.test(text);
+  const hasFinanceReadSignal = isManifestRoutingEnabled('shadow')
+    ? manifestDomainMatchesLocaleTier(SHADOW_DOMAIN_TO_MANIFEST_DOMAIN.finance, text)
+    : (
+      /\b(bills?|invoices?|subscriptions?|renewals?|renew|missing|due|month|finance|financial)\b/i.test(text)
+      || /\b(contas?|faturas?|facturas?|assinaturas?|subscri(?:c(?:ao|ão)|coes|ções)|renova(?:r|m|cao|ção|coes|ções)|faltam|falta|m[eê]s|financeir[oa])\b/i.test(text)
+      || /\b(facturas?|suscripciones?|renovaciones?|renuevan|faltan|falta|mes|financier[oa])\b/i.test(text)
+    );
   if (!hasFinanceReadSignal) return false;
   return /\b(what|which|show|list|summary|quais?|que|o\s+que|mostra|mostrar|resumo|qué|cu[aá]les|resumen)\b/i.test(text);
 }
 
 function isTrainingReadShortcut(text: string): boolean {
-  const hasTrainingSignal =
-    /\b(training|workouts?|runs?|sessions?|active\s+plan|current\s+plan|adherence|intensity|recovery|soreness|sore|easy)\b/i.test(text)
-    || /\b(treinos?|treinar|corrida|sess(?:ao|ão|oes|ões)|plano\s+(?:ativo|atual|de\s+treino)|ades[aã]o|intensidade|recupera(?:cao|ção)|dor\s+muscular|dolorida|leve)\b/i.test(text)
-    || /\b(entrenamientos?|entrenar|carrera|sesiones?|sesión|plan\s+(?:activo|actual|de\s+entrenamiento)|adherencia|intensidad|recuperaci[oó]n|dolor|suave)\b/i.test(text);
+  const hasTrainingSignal = isManifestRoutingEnabled('shadow')
+    ? manifestDomainMatchesLocaleTier(SHADOW_DOMAIN_TO_MANIFEST_DOMAIN.training, text)
+    : (
+      /\b(training|workouts?|runs?|sessions?|active\s+plan|current\s+plan|adherence|intensity|recovery|soreness|sore|easy)\b/i.test(text)
+      || /\b(treinos?|treinar|corrida|sess(?:ao|ão|oes|ões)|plano\s+(?:ativo|atual|de\s+treino)|ades[aã]o|intensidade|recupera(?:cao|ção)|dor\s+muscular|dolorida|leve)\b/i.test(text)
+      || /\b(entrenamientos?|entrenar|carrera|sesiones?|sesión|plan\s+(?:activo|actual|de\s+entrenamiento)|adherencia|intensidad|recuperaci[oó]n|dolor|suave)\b/i.test(text)
+    );
   if (!hasTrainingSignal) return false;
 
   return /\b(?:what|which|show|list|how\s+many|do\s+i\s+have|does\s+my|is\s+there|any|current|active)\b/i.test(text)

@@ -17,6 +17,13 @@ export interface RouteResult {
   method: 'pattern' | 'keyword' | 'classifier' | 'context';
   confidence: number;
   strippedMessage: string;
+  /**
+   * M15 (flag AI_CLASSIFY_MANIFEST_PROMPT): manifest-validated
+   * chatActionSkill hint from the classifier. Only ever present on
+   * `method: 'classifier'` routes with the flag on; consumed by the chat
+   * skill orchestrator as an ownership hint.
+   */
+  skill?: string;
 }
 
 const CONTEXT_OVERRIDE_SAFE_KEYWORD_DOMAINS = new Set<DomainName>([
@@ -362,5 +369,7 @@ export async function routeMessage(
     method: 'classifier',
     confidence: classification.confidence,
     strippedMessage: message,
+    // M15: propagate the manifest-validated skill hint (absent flag-off).
+    ...(classification.skill !== undefined ? { skill: classification.skill } : {}),
   };
 }

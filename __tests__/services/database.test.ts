@@ -14,6 +14,7 @@ import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
 import {
+  closeDatabase,
   getDb,
   runMigrationsForTest,
   stripWrappingTransactionStatements,
@@ -198,6 +199,12 @@ describe('Database Migrations', () => {
     expect(withDatabaseForTest(db, () => getDb())).toBe(db);
     await expect(withDatabaseForTestAsync(db, async () => getDb())).resolves.toBe(db);
 
+    expect(() => getDb()).toThrow('Database not initialized');
+  });
+
+  it('closes safely before initialization and remains idempotent', () => {
+    expect(() => closeDatabase()).not.toThrow();
+    expect(() => closeDatabase()).not.toThrow();
     expect(() => getDb()).toThrow('Database not initialized');
   });
 

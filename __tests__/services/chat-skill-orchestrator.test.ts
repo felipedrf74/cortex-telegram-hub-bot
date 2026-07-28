@@ -101,3 +101,78 @@ describe('chat skill orchestrator', () => {
     expect(block).not.toMatch(/\bGPT\b|\bClaude\b|\bGemini\b/);
   });
 });
+
+// ─── M19 bridge retirement (flag AI_CROSS_SKILL_EXECUTION) ─
+//
+// Flag ON retires the prompt stopgap for actionable turns covered by the plan
+// path or its deterministic declined terminal. Uncovered multi-skill reads
+// retain the bridge so a secondary skill cannot disappear silently. Flag OFF
+// and master-killed behavior remain byte-identical to the pre-rollout prompt.
+
+import { vi, afterEach } from 'vitest';
+import { CROSS_SKILL_EXECUTION_ENV_VAR } from '../../src/services/chat/planner/cross-skill-ownership';
+
+describe('M19 cross_skill_bridge retirement', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  const CROSS_SKILL_MESSAGE = 'Create an expense for 45 EUR and schedule a reminder Friday';
+
+  function crossSkillDecision() {
+    const decision = analyzeChatSkillOrchestration({
+      message: CROSS_SKILL_MESSAGE,
+      routedDomain: 'finance',
+      userId: 42,
+      tenantId: 42,
+    });
+    expect(decision.intentKinds).toContain('cross_skill');
+    expect(decision.intentKinds).toContain('action');
+    return decision;
+  }
+
+  it('renders the bridge with the flag OFF and retires it with the flag ON', () => {
+    vi.stubEnv(CROSS_SKILL_EXECUTION_ENV_VAR, '');
+    const flagOff = buildChatSkillRoutingPromptBlock(crossSkillDecision());
+    vi.stubEnv(CROSS_SKILL_EXECUTION_ENV_VAR, 'true');
+    const flagOn = buildChatSkillRoutingPromptBlock(crossSkillDecision());
+    expect(flagOff).toContain('<cross_skill_bridge');
+    expect(flagOn).not.toContain('<cross_skill_bridge');
+    // Everything outside the retired bridge stays intact.
+    expect(flagOn).toContain('<chat_skill_routing');
+    expect(flagOn).toContain('<ownership_rules>');
+  });
+
+  it('restores the legacy bridge when the manifest-routing master kill wins', () => {
+    vi.stubEnv(CROSS_SKILL_EXECUTION_ENV_VAR, 'true');
+    vi.stubEnv('AI_ROUTING_MANIFEST_KILL', 'true');
+    expect(buildChatSkillRoutingPromptBlock(crossSkillDecision())).toContain('<cross_skill_bridge');
+  });
+
+  it('keeps the bridge for flag-on multi-skill reads that the plan path does not execute', () => {
+    vi.stubEnv(CROSS_SKILL_EXECUTION_ENV_VAR, 'true');
+    const decision = analyzeChatSkillOrchestration({
+      message: 'Compare my training spend with meal costs',
+      routedDomain: 'finance',
+      userId: 42,
+      tenantId: 42,
+    });
+    expect(decision.intentKinds).toContain('cross_skill');
+    expect(decision.intentKinds).not.toContain('action');
+    expect(buildChatSkillRoutingPromptBlock(decision)).toContain('<cross_skill_bridge');
+  });
+
+  it('single-skill decisions are byte-identical in both flag states (never rendered a bridge)', () => {
+    const message = 'Summarize my unread emails';
+    vi.stubEnv(CROSS_SKILL_EXECUTION_ENV_VAR, '');
+    const flagOff = buildChatSkillRoutingPromptBlock(analyzeChatSkillOrchestration({
+      message, routedDomain: 'secretary', userId: 42, tenantId: 42,
+    }));
+    vi.stubEnv(CROSS_SKILL_EXECUTION_ENV_VAR, 'true');
+    const flagOn = buildChatSkillRoutingPromptBlock(analyzeChatSkillOrchestration({
+      message, routedDomain: 'secretary', userId: 42, tenantId: 42,
+    }));
+    expect(flagOn).toBe(flagOff);
+    expect(flagOn).not.toContain('<cross_skill_bridge');
+  });
+});

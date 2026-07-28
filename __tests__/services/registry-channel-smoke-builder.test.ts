@@ -110,31 +110,24 @@ describe('buildSmokeChannelSetFromEnv (Phase 12 batch 65)', () => {
     expect(ids).toEqual(['pagerduty', 'slack-eu', 'slack-us']);
   });
 
-  it('requires BOTH telegram env vars set per region (paired keys)', () => {
-    // Only botToken set → telegram not constructed.
-    const channels = buildSmokeChannelSetFromEnv({ SMOKE_TELEGRAM_BOT_TOKEN: 't' });
-    expect(channels.find((c) => c.id.startsWith('telegram'))).toBeUndefined();
-  });
-
-  it('constructs telegram with both env vars present', () => {
+  it('ignores legacy chat-bot smoke env vars (channel removed in the M21 messaging purge)', () => {
     const channels = buildSmokeChannelSetFromEnv({
       SMOKE_TELEGRAM_BOT_TOKEN: 't',
       SMOKE_TELEGRAM_CHAT_ID: '12345',
     });
-    expect(channels.find((c) => c.id === 'telegram')).toBeDefined();
+    expect(channels).toEqual([]);
   });
 
-  it('supports all 6 channel-types simultaneously', () => {
+  it('supports all 5 channel-types simultaneously', () => {
     const channels = buildSmokeChannelSetFromEnv({
       SMOKE_PAGERDUTY_ROUTING_KEY: 'pd',
       SMOKE_SLACK_WEBHOOK_URL: 'slack-url',
-      SMOKE_TELEGRAM_BOT_TOKEN: 't', SMOKE_TELEGRAM_CHAT_ID: '1',
       SMOKE_DISCORD_WEBHOOK_URL: 'discord-url',
       SMOKE_DATADOG_API_KEY: 'dd-key', SMOKE_DATADOG_SITE: 'datadoghq.com',
       SMOKE_OPSGENIE_API_KEY: 'og-key',
     });
     const ids = channels.map((c) => c.id).sort();
-    expect(ids).toEqual(['datadog', 'discord', 'opsgenie', 'pagerduty', 'slack', 'telegram']);
+    expect(ids).toEqual(['datadog', 'discord', 'opsgenie', 'pagerduty', 'slack']);
   });
 
   it('handles 3 regions across one channel-type', () => {

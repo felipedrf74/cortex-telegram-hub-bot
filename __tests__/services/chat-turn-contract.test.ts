@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
 import { CHAT_BILINGUAL_EVAL_FIXTURES } from '../../src/services/chat-bilingual-eval-fixtures';
-import { inferChatTurnContract } from '../../src/services/chat-turn-contract';
+import {
+  assessChatTurnGroundingCertainty,
+  inferChatTurnContract,
+} from '../../src/services/chat-turn-contract';
 
 function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
@@ -281,5 +284,59 @@ describe('chat turn contract', () => {
       expect(contract.routeKind, message).toBe('internet_research');
       expect(contract.groundingRequired, message).toBe('web');
     }
+  });
+});
+
+// ─── M17: fail-safe grounding uncertainty signal ─────────────────────
+//
+// assessChatTurnGroundingCertainty derives an HONEST uncertainty verdict
+// from what the contract already computes (ambiguity reasons, calibrated
+// confidence, clarification route). It never mutates the contract, so the
+// stamped chatTurnContract metadata stays byte-identical for every turn.
+describe('assessChatTurnGroundingCertainty (M17)', () => {
+  it('marks a clarification-route turn without grounding as uncertain', () => {
+    const contract = inferChatTurnContract({
+      message: 'hmm not sure which of those',
+      routedDomain: 'cooking',
+    });
+
+    expect(contract.routeKind).toBe('clarification');
+    expect(contract.groundingRequired).toBe('none');
+
+    const certainty = assessChatTurnGroundingCertainty(contract);
+    expect(certainty.uncertain).toBe(true);
+    expect(certainty.reasons).toContain('clarification_route');
+  });
+
+  it('marks ambiguity-bearing turns as uncertain via the contract signals', () => {
+    const contract = inferChatTurnContract({
+      message: 'create a task called clear the garage',
+    });
+
+    expect(contract.ambiguityReasons.length).toBeGreaterThan(0);
+
+    const certainty = assessChatTurnGroundingCertainty(contract);
+    expect(certainty.uncertain).toBe(true);
+    expect(certainty.reasons).toEqual(expect.arrayContaining([
+      'ambiguity_signals_present',
+      'low_contract_confidence',
+    ]));
+  });
+
+  it('keeps confident generic advice certain so grounding-none exclusion is unchanged', () => {
+    for (const [message, routedDomain] of [
+      ['Explain deductible expense categories', 'finance'],
+      ['Me indique uma receita de legumes assados para 3 pessoas', 'cooking'],
+    ] as const) {
+      const contract = inferChatTurnContract({ message, routedDomain });
+      expect(contract.groundingRequired, message).toBe('none');
+      expect(assessChatTurnGroundingCertainty(contract).uncertain, message).toBe(false);
+    }
+  });
+
+  it('keeps confident local reads certain (already grounded)', () => {
+    const contract = inferChatTurnContract({ message: 'show my latest tasks' });
+    expect(contract.groundingRequired).toBe('local');
+    expect(assessChatTurnGroundingCertainty(contract).uncertain).toBe(false);
   });
 });

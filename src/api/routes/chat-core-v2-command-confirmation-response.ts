@@ -1,5 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
+import { randomUUID } from 'crypto';
+
 import type {
   ChatCoreV2CommandExecutionResult,
   PendingChatCoreV2Command,
@@ -52,7 +54,7 @@ export function buildChatCoreV2CommandConfirmationShortcutResponse(input: {
 }): ChatCoreV2CommandConfirmationShortcutResponse {
   const { pending, execution, requestStartedAt } = input;
   return {
-    id: `msg-${requestStartedAt}`,
+    id: `msg-${randomUUID()}`,
     text: execution.response.text,
     domain: 'secretary',
     routeMethod: 'chat-core-v2-command-confirmation',

@@ -41,7 +41,8 @@ vi.mock('../../src/utils/date-parser', () => ({
   endOfDay: vi.fn(),
 }));
 
-vi.mock('../../src/utils/telegram-formatter', () => ({
+vi.mock('../../src/utils/chat-html-formatter', async () => ({
+  ...(await vi.importActual('../../src/utils/chat-html-formatter')),
   escapeHtml: (value: string) => value,
   splitMessage: (value: string) => [value],
 }));

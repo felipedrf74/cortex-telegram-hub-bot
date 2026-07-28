@@ -18,6 +18,15 @@ export interface AICallResult {
   toolCalls: AIToolCall[];
   stopReason: string;
   /**
+   * ADV-2: which concrete provider actually answered this call, stamped by
+   * the TaskRoutingProvider dispatch layer (authoritative — it knows whether
+   * the primary or the fallback ran). Tool-loop callers pass this back as
+   * `CallDomainOptions.toolLoopProviderName` on continuation calls so open
+   * tool_use ids never get handed to a provider that did not issue them.
+   * Internal routing field — not serialized to clients.
+   */
+  routedProviderName?: string;
+  /**
    * Optional per-call metadata surfaced for evaluation visibility (see
    * WO-ollama-local-llm). When LOCAL_LLM_SHOW_PROVIDER_METADATA=true,
    * iOS/portal responses expose this; otherwise it's stripped at the
@@ -68,8 +77,10 @@ export interface AICallResult {
     think?: boolean;
     numCtx?: number;
     numPredict?: number;
-    // Phase K — quality-gate decision carry-through, set by
-    // chat-message-routes.ts after applyChatResponseQualityGate runs.
+    // Phase K — quality-gate decision carry-through, set by the unified
+    // finalizer (src/api/routes/chat-message-finalizer.ts) after
+    // applyChatResponseQualityGate runs (M8: routes no longer call the
+    // gate directly).
     qualityGateSkipped?: boolean;
     qualityGateReason?: string;
   };
@@ -196,6 +207,14 @@ export interface CallDomainOptions {
   maxTokensOverride?: number;
   userId?: number;
   tenantId?: number;
+  /**
+   * ADV-2: name of the provider that issued the tool_use ids in the open
+   * tool loop (from the previous result's `routedProviderName`). When set,
+   * continuation dispatch pins to that provider — no cross-provider fallback
+   * mid-loop — and refuses with MidLoopProviderFallbackError if that
+   * provider is no longer routable.
+   */
+  toolLoopProviderName?: string;
   /**
    * Explicit per-call model override. Used by `cloud-reasoning-gate.ts`
    * to ensure the selected approved reasoning model (e.g.,

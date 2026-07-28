@@ -6,7 +6,7 @@
 
 import { getDb } from '../services/database';
 import { writeGovernedSignal } from '../services/intelligence-bus';
-import { escapeHtml } from '../utils/telegram-formatter';
+import { escapeHtml } from '../utils/chat-html-formatter';
 import { logger } from '../utils/logger';
 import { getCurrentRequestId, generateRequestId } from '../utils/request-context';
 import { config } from '../config';

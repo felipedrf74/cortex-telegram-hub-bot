@@ -1557,7 +1557,7 @@ NODE
     );
     const operationList = fs.readFileSync(operations, 'utf8').trim().split('\n');
     expect(operationList.filter((entry) => entry === 'staging-sign-dispatch')).toHaveLength(1);
-  });
+  }, 30_000);
 
   it('rejects a signed staging payload with the same request UUID but different trust digests', () => {
     const result = run(

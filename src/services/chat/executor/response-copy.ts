@@ -5,6 +5,10 @@ import { DateTime } from 'luxon';
 import type { ChatActionRunStatus } from '../../chat-action-run-store';
 import { formatCurrencyAmount } from '../../finance-tracker';
 import type { ChatActionPlan, ChatPlannerInput, ChatPlanStep } from '../types';
+import {
+  executableSkillsForPlan,
+  isCrossSkillExecutionEnabled,
+} from '../planner/cross-skill-ownership';
 
 export function successCopy(
   input: ChatPlannerInput,
@@ -287,22 +291,250 @@ export function partialCopy(input: ChatPlannerInput): string {
     : 'I completed part of the request, but could not verify everything. I will not claim full success.';
 }
 
+// ─── M16: multi-step honest composition ────────────────────────────
+
+/**
+ * Overflow disclosure — the splitter caps a request at 5 actionable
+ * segments; segments beyond the cap are disclosed, never silently dropped.
+ */
+export function overflowDisclosureCopy(plan: ChatActionPlan, input: ChatPlannerInput): string | null {
+  const overflow = plan.multiStepOverflowCount ?? 0;
+  if (overflow <= 0) return null;
+  const total = plan.steps.length + overflow;
+  if (input.locale?.startsWith('pt')) {
+    return `Encontrei ${total} pedidos; vou tratar apenas dos primeiros ${plan.steps.length} — pede-me os restantes depois.`;
+  }
+  if (input.locale?.startsWith('es')) {
+    return `Encontré ${total} solicitudes; solo voy a tratar las primeras ${plan.steps.length} — pídeme el resto después.`;
+  }
+  return `I found ${total} requests; I'm only handling the first ${plan.steps.length} — ask me for the rest afterwards.`;
+}
+
+/**
+ * Confirmation preview for multi-step plans: enumerates the INTERPRETED
+ * step list so a low-confidence split is visible to the user before
+ * anything executes.
+ */
+export function multiStepPreviewCopy(plan: ChatActionPlan, input: ChatPlannerInput): string {
+  // M19 (flag AI_CROSS_SKILL_EXECUTION, default OFF → byte-identical copy):
+  // a plan spanning >=2 skills renders its preview GROUPED by skill so the
+  // one confirmation shows which skill runs which step.
+  if (isCrossSkillExecutionEnabled()) {
+    const grouped = crossSkillGroupedPreviewLines(plan, input);
+    if (grouped) return renderMultiStepPreview(plan, input, grouped);
+  }
+  const lines = plan.steps.map((step, index) => `${index + 1}. ${plannedActionLabel(step, input)}`);
+  return renderMultiStepPreview(plan, input, lines);
+}
+
+function crossSkillGroupedPreviewLines(plan: ChatActionPlan, input: ChatPlannerInput): string[] | null {
+  const skills = executableSkillsForPlan(plan.steps);
+  if (skills.length < 2) return null;
+  const lines: string[] = [];
+  const seen = new Set<string>();
+  for (const skill of plan.steps.map((step) => step.skill)) {
+    if (seen.has(skill)) continue;
+    seen.add(skill);
+    lines.push(`${skillGroupLabel(skill, input)}:`);
+    plan.steps.forEach((step, index) => {
+      if (step.skill !== skill) return;
+      lines.push(`${index + 1}. ${plannedActionLabel(step, input)}`);
+    });
+  }
+  return lines;
+}
+
+function skillGroupLabel(skill: string, input: ChatPlannerInput): string {
+  const isPt = input.locale?.startsWith('pt');
+  const isEs = input.locale?.startsWith('es');
+  const labels: Record<string, { en: string; pt: string; es: string }> = {
+    secretary_calendar: { en: 'Secretary — Calendar', pt: 'Secretária — Agenda', es: 'Secretaría — Agenda' },
+    secretary_reminders: { en: 'Secretary — Reminders', pt: 'Secretária — Lembretes', es: 'Secretaría — Recordatorios' },
+    mail: { en: 'Secretary — Mail', pt: 'Secretária — Email', es: 'Secretaría — Correo' },
+    tasks: { en: 'Secretary — Tasks', pt: 'Secretária — Tarefas', es: 'Secretaría — Tareas' },
+    training: { en: 'Training', pt: 'Treino', es: 'Entrenamiento' },
+    content: { en: 'Content', pt: 'Conteúdo', es: 'Contenido' },
+    cooking: { en: 'Cooking', pt: 'Cozinha', es: 'Cocina' },
+    finance: { en: 'Finance', pt: 'Finanças', es: 'Finanzas' },
+    connections: { en: 'Connections', pt: 'Ligações', es: 'Conexiones' },
+    notifications: { en: 'Notifications', pt: 'Notificações', es: 'Notificaciones' },
+    decision_center: { en: 'Decision Center', pt: 'Central de Decisões', es: 'Centro de Decisiones' },
+  };
+  const entry = labels[skill];
+  if (!entry) return skill;
+  return isPt ? entry.pt : isEs ? entry.es : entry.en;
+}
+
+function renderMultiStepPreview(plan: ChatActionPlan, input: ChatPlannerInput, lines: string[]): string {
+  const overflow = overflowDisclosureCopy(plan, input);
+  if (input.locale?.startsWith('pt')) {
+    return [
+      `Interpretei ${plan.steps.length} passos:`,
+      ...lines,
+      '',
+      ...(overflow ? [overflow] : []),
+      'Confirmas que queres que eu execute estes passos?',
+    ].join('\n');
+  }
+  if (input.locale?.startsWith('es')) {
+    return [
+      `Interpreté ${plan.steps.length} pasos:`,
+      ...lines,
+      '',
+      ...(overflow ? [overflow] : []),
+      '¿Confirmas que quieres que ejecute estos pasos?',
+    ].join('\n');
+  }
+  return [
+    `I understood ${plan.steps.length} steps:`,
+    ...lines,
+    '',
+    ...(overflow ? [overflow] : []),
+    'Confirm that you want me to run these steps?',
+  ].join('\n');
+}
+
+/**
+ * Honest partial composition: enumerate done / failed / blocked with
+ * per-branch reasons. Never claims success for a failed or blocked step.
+ */
+export function multiStepOutcomeCopy(
+  input: ChatPlannerInput,
+  plan: ChatActionPlan,
+  results: Array<{ step: ChatPlanStep; status: ChatActionRunStatus; error?: string }>,
+): string {
+  const isPt = input.locale?.startsWith('pt');
+  const isEs = input.locale?.startsWith('es');
+  const byStepId = new Map(results.map((result) => [result.step.stepId, result]));
+  const succeeded = results.filter((result) => result.status === 'verified_success').length;
+  const lines = plan.steps.map((step, index) => {
+    const result = byStepId.get(step.stepId);
+    const label = plannedActionLabel(step, input);
+    return `${index + 1}. ${label} — ${stepOutcomeLabel(result, input)}`;
+  });
+  const firstError = results.find((result) => result.status === 'failed' || result.status === 'blocked')?.error;
+  // Wording note: the header deliberately avoids first-person completion
+  // claims ("I completed...") — a partial outcome must not read as a full
+  // success claim to the success-claim heuristics (chat-success-claim-policy)
+  // while still being specific about what was verified.
+  const header = isPt
+    ? `Resultado — ${succeeded} de ${plan.steps.length} passos verificados:`
+    : isEs
+      ? `Resultado — ${succeeded} de ${plan.steps.length} pasos verificados:`
+      : `Here's the outcome — ${succeeded} of ${plan.steps.length} steps verified:`;
+  const overflow = overflowDisclosureCopy(plan, input);
+  return [
+    header,
+    ...lines,
+    '',
+    failureCopy(input, firstError),
+    ...(overflow ? [overflow] : []),
+  ].join('\n');
+}
+
+function stepOutcomeLabel(
+  result: { status: ChatActionRunStatus; error?: string } | undefined,
+  input: ChatPlannerInput,
+): string {
+  const isPt = input.locale?.startsWith('pt');
+  const isEs = input.locale?.startsWith('es');
+  const status = result?.status ?? 'pending';
+  if (status === 'verified_success') {
+    return isPt ? 'feito e verificado' : isEs ? 'hecho y verificado' : 'done and verified';
+  }
+  if (status === 'blocked') {
+    if (result?.error === 'dependency_failed') {
+      return isPt
+        ? 'não executado (dependia de um passo que falhou)'
+        : isEs
+          ? 'no ejecutado (dependía de un paso que falló)'
+          : 'not run (it depended on a step that failed)';
+    }
+    return isPt ? 'bloqueado' : isEs ? 'bloqueado' : 'blocked';
+  }
+  if (status === 'failed') {
+    return isPt ? 'falhou' : isEs ? 'falló' : 'failed';
+  }
+  if (status === 'partial_success' || status === 'verified_pending') {
+    return isPt
+      ? 'tentado, mas sem verificação completa'
+      : isEs
+        ? 'intentado, pero sin verificación completa'
+        : 'attempted, but not fully verified';
+  }
+  return isPt ? 'não executado' : isEs ? 'no ejecutado' : 'not run';
+}
+
+/**
+ * Future-tense per-step label for previews and outcome enumerations.
+ * Compact by design — the full arg detail lives in actionResults metadata.
+ */
+export function plannedActionLabel(step: ChatPlanStep, input: ChatPlannerInput): string {
+  const isPt = input.locale?.startsWith('pt');
+  const isEs = input.locale?.startsWith('es');
+  const args = step.args as Record<string, unknown>;
+  const quoted = (value: unknown): string | null =>
+    typeof value === 'string' && value.trim() ? `“${value.trim()}”` : null;
+  const chained = (value: unknown): boolean =>
+    !!value && typeof value === 'object' && typeof (value as { $ref?: unknown }).$ref === 'string';
+  switch (step.action) {
+    case 'create_task':
+    case 'create_task_with_subtasks':
+    case 'create_checklist': {
+      const title = quoted(args.title);
+      if (isPt) return title ? `Criar a tarefa ${title}` : 'Criar uma tarefa';
+      if (isEs) return title ? `Crear la tarea ${title}` : 'Crear una tarea';
+      return title ? `Create task ${title}` : 'Create a task';
+    }
+    case 'complete_task': {
+      const ref = chained(args.taskId);
+      if (isPt) return ref ? 'Concluir a tarefa criada no passo anterior' : `Concluir a tarefa ${quoted(args.taskId) ?? ''}`.trim();
+      if (isEs) return ref ? 'Completar la tarea creada en el paso anterior' : `Completar la tarea ${quoted(args.taskId) ?? ''}`.trim();
+      return ref ? 'Complete the task created in the earlier step' : `Complete task ${quoted(args.taskId) ?? ''}`.trim();
+    }
+    case 'delete_task': {
+      const ref = chained(args.taskId);
+      if (isPt) return ref ? 'Apagar a tarefa criada no passo anterior' : `Apagar a tarefa ${quoted(args.taskId) ?? ''}`.trim();
+      if (isEs) return ref ? 'Eliminar la tarea creada en el paso anterior' : `Eliminar la tarea ${quoted(args.taskId) ?? ''}`.trim();
+      return ref ? 'Delete the task created in the earlier step' : `Delete task ${quoted(args.taskId) ?? ''}`.trim();
+    }
+    case 'schedule_event': {
+      const title = quoted(args.title) ?? (chained(args.title)
+        ? (isPt ? 'o item do passo anterior' : isEs ? 'el elemento del paso anterior' : 'the item from the earlier step')
+        : null);
+      if (isPt) return title ? `Agendar ${title} no calendário` : 'Agendar um evento';
+      if (isEs) return title ? `Agendar ${title} en el calendario` : 'Agendar un evento';
+      return title ? `Schedule ${title} on the calendar` : 'Schedule an event';
+    }
+    case 'delete_event':
+      return isPt ? 'Apagar o evento' : isEs ? 'Eliminar el evento' : 'Delete the event';
+    case 'move_event':
+    case 'update_event':
+      return isPt ? 'Atualizar o evento' : isEs ? 'Actualizar el evento' : 'Update the event';
+    case 'set_reminder': {
+      const message = quoted(args.message);
+      if (isPt) return message ? `Criar o lembrete ${message}` : 'Criar um lembrete';
+      if (isEs) return message ? `Crear el recordatorio ${message}` : 'Crear un recordatorio';
+      return message ? `Set reminder ${message}` : 'Set a reminder';
+    }
+    default:
+      return `${step.skill}.${step.action}`;
+  }
+}
+
 export function unsupportedChatExecutorReason(step: ChatPlanStep): string {
   switch (step.action) {
-    case 'draft_email':
-      return 'email_draft_requires_provider_draft_read_back_contract';
-    case 'send_email':
-      return 'email_send_requires_outbound_confirmation_and_provider_read_back_contract';
     case 'training_adjust_plan':
       return 'training_plan_adjust_requires_preview_contract_before_chat_execution';
-    case 'connections_retry_sync':
-      return 'connections_retry_sync_requires_provider_specific_sync_contract';
     default:
       return 'executor_not_enabled_for_chat_yet';
   }
 }
 
 export function confirmationCopy(plan: ChatActionPlan, input: ChatPlannerInput): string {
+  // M16: multi-step plans preview the full interpreted step list (plus any
+  // overflow disclosure) instead of describing only the first step.
+  if (plan.steps.length > 1) return multiStepPreviewCopy(plan, input);
   const first = plan.steps[0];
   if (first?.action === 'content_schedule_work') {
     const args = first.args as any;

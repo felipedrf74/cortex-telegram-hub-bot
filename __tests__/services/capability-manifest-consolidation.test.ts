@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { CAPABILITY_SKILL_METADATA } from '../../src/generated/capability-skill-metadata';
 import { DEFAULT_SKILLS } from '../../src/skills/skill-config';
 import {
@@ -12,7 +12,9 @@ import {
   getCapabilityUiSkillMetadata,
   getTrainingCapabilityMetadata,
   loadCapabilityManifest,
+  resetCapabilityManifestForTest,
 } from '../../src/services/capability-manifest';
+import { normalizeUtterance } from '../../src/services/intent-resolution/vocabulary';
 import { SKILL_METADATA, getChatActionRegistry } from '../../src/services/chat/registry';
 import {
   getChatSkillCapabilityRegistry,
@@ -188,6 +190,83 @@ describe('CapabilityManifest high-level consolidation', () => {
     for (const references of Object.values(coverage)) {
       expect(references.length).toBeGreaterThan(0);
       for (const reference of references) expect(fs.existsSync(path.resolve(reference)), reference).toBe(true);
+    }
+  });
+
+  it('governs the shadow routing vocabulary shape for every capability', () => {
+    const manifest = loadCapabilityManifest();
+    const allowedLocales = ['en', 'pt', 'es'];
+    const seenExamples = new Set<string>();
+    for (const entry of manifest.capabilities) {
+      const vocabulary = entry.routingVocabulary;
+      expect(vocabulary, entry.id).toBeDefined();
+      expect(typeof vocabulary!.locales).toBe('object');
+      const localeKeys = Object.keys(vocabulary!.locales);
+      expect(localeKeys.length).toBeGreaterThan(0);
+      let matcherCount = 0;
+      for (const locale of localeKeys) {
+        expect(allowedLocales).toContain(locale);
+        const terms = vocabulary!.locales[locale as 'en' | 'pt' | 'es']!;
+        expect(Array.isArray(terms)).toBe(true);
+        expect(terms.length).toBeGreaterThan(0);
+        for (const term of terms) {
+          expect(typeof term).toBe('string');
+          expect(term.trim().length).toBeGreaterThan(0);
+          expect(() => new RegExp(`\\b(?:${term})\\b`, 'i'), `${entry.id}/${locale}/${term}`).not.toThrow();
+          matcherCount += 1;
+        }
+      }
+      for (const fragment of vocabulary!.regexFragments ?? []) {
+        expect(typeof fragment).toBe('string');
+        expect(() => new RegExp(fragment, 'i'), `${entry.id} fragment`).not.toThrow();
+        matcherCount += 1;
+      }
+      expect(matcherCount, entry.id).toBeGreaterThan(0);
+      const examples = vocabulary!.exampleUtterances ?? [];
+      expect(examples.length, entry.id).toBeGreaterThan(0);
+      for (const utterance of examples) {
+        const normalized = utterance.trim().toLowerCase();
+        expect(normalized.length).toBeGreaterThan(0);
+        expect(seenExamples.has(normalized), `duplicate example: ${utterance}`).toBe(false);
+        seenExamples.add(normalized);
+      }
+    }
+  });
+
+  it('dedupes routing-vocabulary examples with the SAME normalization as the shadow resolver (collapsed internal whitespace)', () => {
+    // The resolver (intent-resolution/vocabulary.ts normalizeUtterance) treats
+    // "a  b" and "a b" as the same utterance; manifest validation must reject
+    // duplicates under that identity too, not only trim+lowercase.
+    const manifestPath = path.resolve(process.cwd(), 'config/capability-manifest.json');
+    const parsed = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    const entry = parsed.capabilities.find((candidate: { routingVocabulary?: { exampleUtterances?: string[] } }) =>
+      candidate.routingVocabulary?.exampleUtterances?.some((utterance) => utterance.includes(' ')));
+    expect(entry).toBeDefined();
+    const original = entry.routingVocabulary.exampleUtterances.find((utterance: string) => utterance.includes(' '));
+    const whitespaceVariant = `  ${original.toUpperCase().replace(/ /, '   ')} `;
+    expect(normalizeUtterance(whitespaceVariant)).toBe(normalizeUtterance(original));
+    entry.routingVocabulary.exampleUtterances.push(whitespaceVariant);
+
+    const readFileSpy = vi.spyOn(fs, 'readFileSync').mockReturnValueOnce(JSON.stringify(parsed));
+    try {
+      resetCapabilityManifestForTest();
+      expect(() => loadCapabilityManifest()).toThrow(/duplicate capability routing vocabulary example/);
+    } finally {
+      readFileSpy.mockRestore();
+      resetCapabilityManifestForTest();
+    }
+  });
+
+  it('keeps intentionally-divergent safety filters OUT of the shared routing vocabulary', () => {
+    // FINANCE_RESTRICTED_ACTION_RE-style payment/transfer verbs and the
+    // unsafe access-control detector stay owned by their surfaces; the shared
+    // vocabulary must not absorb them as finance/any-domain keywords.
+    const manifest = loadCapabilityManifest();
+    const serialized = JSON.stringify(
+      manifest.capabilities.map((entry) => entry.routingVocabulary ?? null),
+    ).toLowerCase();
+    for (const safetyToken of ['send\\\\s+money', 'transferir', 'bypass', 'wipe\\\\s+all', 'delete\\\\s+all']) {
+      expect(serialized, safetyToken).not.toContain(safetyToken.toLowerCase());
     }
   });
 

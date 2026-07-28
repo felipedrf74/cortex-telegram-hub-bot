@@ -3,6 +3,41 @@
 import type { DomainName } from '../domains/types';
 import type { RouteResult } from '../router';
 import type { ConversationContext } from '../router/classifier';
+import type Database from 'better-sqlite3';
+import { isManifestRoutingEnabled } from './intent-resolution/manifest-routing-flags';
+import { manifestDomainMatches } from './intent-resolution/manifest-projections';
+import { resolveIntent } from './intent-resolution/intent-resolver';
+import {
+  calibrateIntentResolverScore,
+  getClarifyPolicy,
+  getOrchestratorBranchConfidence,
+  getOrchestratorOverrideThreshold,
+  isRoutingClarifyEnabled,
+} from './intent-resolution/confidence';
+import {
+  buildRoutingClarifyQuestion,
+  isRoutingClarifyQuestion,
+} from './chat/planner/clarification';
+import { recordRoutingClarifyDecision } from './chat-hybrid-metrics';
+import { recordChatRoutingClarifyDecisionPersisted } from './chat-routing-clarify-metrics';
+import { isCrossSkillExecutionEnabled } from './chat/planner/cross-skill-ownership';
+import { logger } from '../utils/logger';
+
+// ─── M12 manifest convergence (flag: AI_ROUTING_MANIFEST_ORCHESTRATOR) ─
+//
+// MISROUTE-FIX CONVENTION (flag on): fix a misroute with ONE manifest
+// vocabulary edit (config/capability-manifest.json routingVocabulary) plus ONE
+// corpus fixture — never by adding a new inline regex to this file. The inline
+// SKILL_PATTERNS below remain the flag-OFF legacy path only.
+//
+// Flag-on scope (deliberate): SKILL_PATTERNS (domain vocabulary) become
+// projections of the compiled manifest vocabulary. SCHEDULING_PATTERNS,
+// ACTION/DESTRUCTIVE/EXPLANATION/etc. remain code-owned INTENT-KIND policy
+// matchers — the manifest's axis is capability/domain vocabulary and has no
+// intent-kind dimension, so projecting scheduling from it would collapse
+// "any secretary term" into "scheduling intent" and break routing parity.
+// The >=0.86 override semantics and all thresholds are unchanged (M14 owns
+// thresholds).
 
 export type NexusSkillId =
   | 'secretary'
@@ -29,6 +64,18 @@ export type ChatIntentKind =
   | 'explanation'
   | 'stale_context';
 
+/**
+ * M14 — deterministic clarify decision (flag AI_ROUTING_CLARIFY, default
+ * OFF). Emitted when the top-2 calibrated manifest candidates are within
+ * epsilon and the turn is an actionable WRITE. Reads never clarify.
+ */
+export interface ChatRoutingClarifyDecision {
+  question: string;
+  candidateDomains: [DomainName, DomainName];
+  calibratedScores: [number, number];
+  reason: 'ambiguous_write_intents';
+}
+
 export interface ChatSkillRoutingDecision {
   primaryDomain: DomainName | null;
   involvedSkills: NexusSkillId[];
@@ -53,6 +100,8 @@ export interface ChatSkillRoutingDecision {
     ambiguousReference: boolean;
     tenantBoundaryMention: boolean;
   };
+  /** Always null when AI_ROUTING_CLARIFY is off (the default). */
+  clarify: ChatRoutingClarifyDecision | null;
 }
 
 export interface ChatSkillRouteOverride {
@@ -82,6 +131,23 @@ const V2_DOMAIN_TO_LEGACY_DOMAIN: Record<string, DomainName> = {
   cooking: 'cooking',
   finance: 'finance',
   content: 'content',
+};
+
+// M15: manifest chatActionSkill → orchestrator skill vocabulary. The
+// classifier's skill hint lives in the manifest action-skill space
+// (secretary_calendar, mail, tasks, …); the orchestrator reasons in
+// NexusSkillId space. Action skills without an orchestrator counterpart
+// (connections, notifications, decision_center) are deliberately unmapped —
+// the hint is ignored for them (their routing is domain-level only).
+const CLASSIFIER_ACTION_SKILL_TO_ORCHESTRATOR_SKILL: Record<string, NexusSkillId> = {
+  secretary_calendar: 'secretary',
+  secretary_reminders: 'secretary',
+  mail: 'secretary',
+  tasks: 'secretary',
+  training: 'training',
+  content: 'content',
+  cooking: 'cooking',
+  finance: 'finance',
 };
 
 const SKILL_PATTERNS: Array<{ skill: NexusSkillId; pattern: RegExp }> = [
@@ -148,9 +214,38 @@ export function analyzeChatSkillOrchestration(input: {
   routedDomain?: DomainName | null;
   userId?: number | null;
   tenantId?: number | null;
+  /**
+   * M14: BCP-47-ish locale for the templated clarify question (EN/PT/ES).
+   * Optional and additive — callers that do not pass it get EN templates.
+   */
+  locale?: string | null;
+  /**
+   * M14: increment the clarify budget counters for this evaluation.
+   * ONLY the /message pipeline's deciding call (the pre_routing stage) passes
+   * true — exactly once per pipeline turn. Every other caller (legacy-tail
+   * routed overlay, WebSocket, context engine, day-to-day simulation,
+   * routing-accuracy replays, divergence shadow) must leave it unset so
+   * offline/duplicate evaluations can never skew the ≤10% budget telemetry.
+   */
+  countClarifyTelemetry?: boolean;
+  /** Database supplied only by the live deciding pipeline call. */
+  clarifyTelemetryDb?: Database.Database;
+  /**
+   * M15 (flag AI_CLASSIFY_MANIFEST_PROMPT): manifest-validated
+   * chatActionSkill hint from the classifier ({domain, skill, confidence}
+   * output shape). Consumed as an OWNERSHIP hint only: when present and it
+   * maps to an orchestrator skill, that skill joins involvedSkills and a
+   * reason code records the hint. Absent (the flag-off default) → byte
+   * identical behavior.
+   */
+  classifierSkillHint?: string | null;
 }): ChatSkillRoutingDecision {
   const message = input.message.trim();
   const involved = resolveInvolvedSkills(message, input.activeContext, input.routedDomain);
+  const hintedSkill = input.classifierSkillHint
+    ? CLASSIFIER_ACTION_SKILL_TO_ORCHESTRATOR_SKILL[input.classifierSkillHint] ?? null
+    : null;
+  if (hintedSkill && !involved.includes(hintedSkill)) involved.push(hintedSkill);
   const intentKinds = resolveIntentKinds(message, involved);
   const destructive = DESTRUCTIVE_PATTERNS.some((pattern) => pattern.test(message));
   const explicitConfirmation = destructive && EXPLICIT_CONFIRMATION_PATTERNS.some((pattern) => pattern.test(message));
@@ -162,6 +257,7 @@ export function analyzeChatSkillOrchestration(input: {
   const crossSkill = involved.filter((skill) => skill !== 'shared_context' && skill !== 'tools').length > 1;
   let primaryDomain = resolvePrimaryDomain({ message, involved, scheduling, routedDomain: input.routedDomain });
   const reasonCodes = buildReasonCodes({ scheduling, crossSkill, destructive, staleContextRisk, ambiguousReference, tenantBoundaryMention });
+  if (hintedSkill) reasonCodes.push('classifier_skill_ownership_hint');
 
   if (tenantBoundaryMention) {
     reasonCodes.push('tenant_boundary_requires_confirmation');
@@ -169,6 +265,34 @@ export function analyzeChatSkillOrchestration(input: {
 
   if (!primaryDomain && input.routedDomain) {
     primaryDomain = input.routedDomain;
+  }
+
+  // M14 clarify policy (flag-gated, default OFF → clarify stays null and the
+  // decision is byte-identical to pre-M14 output).
+  const clarify = resolveRoutingClarifyDecision({
+    message,
+    writeIntent: intentKinds.includes('action'),
+    explicitConfirmation,
+    locale: input.locale,
+    lastAssistantMessage: input.activeContext?.lastAssistantMessage ?? null,
+  });
+  if (clarify) reasonCodes.push('clarify_ambiguous_write_intents');
+  // Budget telemetry: counted ONLY when the caller explicitly opts in — the
+  // /message pipeline's pre_routing stage (the deciding call that feeds the
+  // deterministic routing_clarify terminal) passes countClarifyTelemetry:
+  // true exactly once per turn. No heuristic: other callers that happen to
+  // pass routedDomain (context engine, simulations, WebSocket) never count.
+  if (isRoutingClarifyEnabled() && input.countClarifyTelemetry === true) {
+    recordRoutingClarifyDecision(clarify !== null);
+    if (input.clarifyTelemetryDb) {
+      try {
+        recordChatRoutingClarifyDecisionPersisted(input.clarifyTelemetryDb, clarify !== null);
+      } catch (err) {
+        // Quality telemetry must not turn a user request into a 500. The
+        // dashboard exposes missing/stale evidence as no-evidence, not PASS.
+        logger.warn({ err }, 'routing clarify durable metric write failed');
+      }
+    }
   }
 
   return {
@@ -197,6 +321,70 @@ export function analyzeChatSkillOrchestration(input: {
       ambiguousReference,
       tenantBoundaryMention,
     },
+    clarify,
+  };
+}
+
+// ─── M14 deterministic clarify policy ───────────────────────────────
+//
+// Approved policy: clarify on ≤~10% of turns, WRITES ONLY, never reads, one
+// templated question max. Trigger: the top-2 calibrated manifest candidates
+// (intent-resolution resolver rawScores mapped through the calibration
+// table's score buckets) are within the calibrated epsilon AND both clear the
+// actionable floor.
+//
+// RENDERING IS A PIPELINE TERMINAL, NOT A PROMPT HINT: when the pre_routing
+// decision carries clarify (flag-on), the /message pipeline's dedicated
+// routing_clarify stage responds DIRECTLY with the templated question
+// (contract_only finalizer family) — the model is never reached, so the
+// stored assistant message IS the template. Loop prevention is therefore
+// deterministic: the continuity state's lastAssistantMessage (rebuilt each
+// turn from chat-conversation-state via resolveChatActiveContext) is matched
+// against the rigid clarify templates — a turn that answers a clarify
+// question can never be re-clarified.
+
+const CLARIFY_ACTIONABLE_DOMAINS = new Set<DomainName>(
+  Object.values(SKILL_TO_DOMAIN) as DomainName[],
+);
+
+export function resolveRoutingClarifyDecision(input: {
+  message: string;
+  /** True when the orchestrator detected an actionable WRITE intent this turn. */
+  writeIntent: boolean;
+  /** Explicit-confirmation turns are continuations of a staged action — never derail them. */
+  explicitConfirmation: boolean;
+  locale?: string | null;
+  lastAssistantMessage?: string | null;
+  env?: Record<string, string | undefined>;
+}): ChatRoutingClarifyDecision | null {
+  if (!isRoutingClarifyEnabled(input.env)) return null;
+  if (!input.writeIntent) return null; // reads NEVER clarify
+  if (input.explicitConfirmation) return null;
+  if (input.lastAssistantMessage && isRoutingClarifyQuestion(input.lastAssistantMessage)) {
+    return null; // clarify-response turn — max one clarify per exchange
+  }
+
+  const actionable: Array<{ domain: DomainName; calibrated: number }> = [];
+  const seen = new Set<DomainName>();
+  for (const candidate of resolveIntent(input.message)) {
+    const domain = candidate.domain as DomainName;
+    if (!CLARIFY_ACTIONABLE_DOMAINS.has(domain) || seen.has(domain)) continue;
+    seen.add(domain);
+    actionable.push({ domain, calibrated: calibrateIntentResolverScore(candidate.rawScore) });
+    if (actionable.length === 2) break;
+  }
+  if (actionable.length < 2) return null;
+
+  const { epsilon, actionableFloor } = getClarifyPolicy();
+  const [top, second] = actionable;
+  if (top.calibrated < actionableFloor || second.calibrated < actionableFloor) return null;
+  if (top.calibrated - second.calibrated > epsilon) return null;
+
+  return {
+    question: buildRoutingClarifyQuestion([top.domain, second.domain], input.locale),
+    candidateDomains: [top.domain, second.domain],
+    calibratedScores: [top.calibrated, second.calibrated],
+    reason: 'ambiguous_write_intents',
   };
 }
 
@@ -221,7 +409,9 @@ export function applyChatSkillRoutingDecision(
     return route;
   }
 
-  const canOverride = decision.confidence >= 0.86 && (
+  // M14: the legacy 0.86 constant now routes through the calibration table
+  // (bootstrap table preserves 0.86 exactly).
+  const canOverride = decision.confidence >= getOrchestratorOverrideThreshold() && (
     decision.intentKinds.includes('scheduling')
     || decision.intentKinds.includes('cross_skill')
     || decision.reasonCodes.includes('skill_ownership_override')
@@ -237,7 +427,9 @@ export function applyChatSkillRoutingDecision(
   };
 }
 
-export function buildChatSkillRoutingPromptBlock(decision: ChatSkillRoutingDecision): string {
+export function buildChatSkillRoutingPromptBlock(
+  decision: ChatSkillRoutingDecision,
+): string {
   const lines: string[] = [];
   lines.push(`<chat_skill_routing primary_domain="${decision.primaryDomain ?? 'none'}" confidence="${decision.confidence.toFixed(2)}">`);
   lines.push(`<intent kinds="${decision.intentKinds.join(',')}" involved_skills="${decision.involvedSkills.join(',')}" reason_codes="${decision.reasonCodes.join(',')}" />`);
@@ -257,13 +449,23 @@ export function buildChatSkillRoutingPromptBlock(decision: ChatSkillRoutingDecis
   if (decision.context.shouldRefreshBeforeAnswer) {
     lines.push(`<context_refresh stale_risk="${decision.context.staleContextRisk}" ambiguous_reference="${decision.context.ambiguousReference}" tenant_boundary="${decision.context.tenantBoundaryMention}" />`);
   }
-  // Codex QA round 9: explicit prompt bridge for split-intent turns.
-  // Even though the model only has the routed domain's tools, it can
-  // still NAME the action the other skill should perform and ask the
-  // user to confirm or queue it. This is a stopgap behavior bridge
-  // until the architectural handoff_to_domain tool lands.
+  // Codex QA round 9: explicit prompt bridge for split-intent turns. With
+  // AI_CROSS_SKILL_EXECUTION ON, the two planner passes own ACTIONABLE
+  // multi-skill requests and cross_skill_plan_declined catches any such
+  // request they decline. Multi-skill reads/comparisons are deliberately not
+  // intercepted by that terminal and still have only the primary domain's
+  // tools, so they retain this bridge until a real multi-owner read executor
+  // covers them. The master kill restores the entire legacy prompt path.
   const crossSkill = decision.intentKinds.includes('cross_skill');
-  if (crossSkill && decision.involvedSkills.length > 1) {
+  const actionableCrossSkillCovered = decision.intentKinds.some((kind) => (
+    kind === 'action'
+    || kind === 'scheduling'
+    || kind === 'plan_creation'
+    || kind === 'cancellation'
+    || kind === 'edit_update'
+  ));
+  const bridgeRetiredForTurn = isCrossSkillExecutionEnabled() && actionableCrossSkillCovered;
+  if (!bridgeRetiredForTurn && crossSkill && decision.involvedSkills.length > 1) {
     const otherSkills = decision.involvedSkills
       .filter((s) => s !== 'shared_context' && s !== 'tools')
       .filter((s, _, arr) => arr.length > 1)
@@ -286,6 +488,11 @@ export function buildChatSkillRoutingPromptBlock(decision: ChatSkillRoutingDecis
       lines.push('</cross_skill_bridge>');
     }
   }
+  // M14: clarify is deliberately NOT rendered into the prompt. The clarify
+  // decision is a DETERMINISTIC pipeline terminal (the routing_clarify stage
+  // responds with the template directly, contract_only family) — a prompt
+  // hint would create a second, model-paraphrasable mechanism and break the
+  // template-based loop prevention.
   lines.push(`Explanation: ${decision.explanation}`);
   lines.push('</chat_skill_routing>');
   return lines.join('\n');
@@ -311,8 +518,16 @@ function resolveInvolvedSkills(
   routedDomain?: DomainName | null,
 ): NexusSkillId[] {
   const skills = new Set<NexusSkillId>();
-  for (const { skill, pattern } of SKILL_PATTERNS) {
-    if (pattern.test(message)) skills.add(skill);
+  if (isManifestRoutingEnabled('orchestrator')) {
+    // Same skill set, evidence sourced from the shared manifest vocabulary.
+    for (const { skill } of SKILL_PATTERNS) {
+      const domain = SKILL_TO_DOMAIN[skill];
+      if (domain && manifestDomainMatches(domain, message)) skills.add(skill);
+    }
+  } else {
+    for (const { skill, pattern } of SKILL_PATTERNS) {
+      if (pattern.test(message)) skills.add(skill);
+    }
   }
   if (activeContext?.domain && DOMAIN_TO_SKILL[activeContext.domain]) {
     skills.add(DOMAIN_TO_SKILL[activeContext.domain]);
@@ -385,6 +600,10 @@ function resolvePrimaryDomain(input: {
   return input.routedDomain ?? null;
 }
 
+// M14: branch ORDER is unchanged legacy policy; the branch VALUES route
+// through the calibration table (bootstrap reproduces 0.4/0.96/0.92/0.9/
+// 0.72/0.84 exactly, so behavior is byte-identical until a corpus-mode
+// regeneration replaces them with empirical precision).
 function resolveConfidence(input: {
   scheduling: boolean;
   crossSkill: boolean;
@@ -392,12 +611,12 @@ function resolveConfidence(input: {
   ambiguousReference: boolean;
   primaryDomain: DomainName | null;
 }): number {
-  if (!input.primaryDomain) return 0.4;
-  if (input.scheduling && input.crossSkill) return 0.96;
-  if (input.scheduling) return 0.92;
-  if (input.destructive) return 0.9;
-  if (input.ambiguousReference) return 0.72;
-  return 0.84;
+  if (!input.primaryDomain) return getOrchestratorBranchConfidence('no_primary_domain');
+  if (input.scheduling && input.crossSkill) return getOrchestratorBranchConfidence('scheduling_cross_skill');
+  if (input.scheduling) return getOrchestratorBranchConfidence('scheduling');
+  if (input.destructive) return getOrchestratorBranchConfidence('destructive');
+  if (input.ambiguousReference) return getOrchestratorBranchConfidence('ambiguous_reference');
+  return getOrchestratorBranchConfidence('default');
 }
 
 function buildReasonCodes(input: {

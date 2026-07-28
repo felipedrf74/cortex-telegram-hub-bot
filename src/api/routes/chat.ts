@@ -6,6 +6,7 @@ import { isValidTenantUserId, recordTenantScopeAnomaly } from '../../services/te
 import { registerChatCallbackRoutes } from './chat-callback-routes';
 import { clearChatActiveDomain, registerChatMessageRoutes } from './chat-message-routes';
 import { registerChatHistoryRoutes } from './chat-history-routes';
+import { registerChatEvalRoutes } from './chat-eval-routes';
 
 function ensureValidChatRouteScope(
   res: Response,
@@ -44,6 +45,7 @@ export function chatRoutes(): Router {
   const router = Router();
 
   registerChatMessageRoutes(router, ensureValidChatRouteScope);
+  registerChatEvalRoutes(router, ensureValidChatRouteScope);
   registerChatCallbackRoutes(router, ensureValidChatRouteScope);
   registerChatHistoryRoutes(router, ensureValidChatRouteScope, {
     clearActiveDomain: clearChatActiveDomain,

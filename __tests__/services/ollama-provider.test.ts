@@ -327,6 +327,28 @@ describe('OllamaProvider — classify', () => {
   });
 });
 
+describe('OllamaProvider — scoped state context', () => {
+  it('sends trusted state context in the request instead of only counting its tokens', async () => {
+    fetchMock
+      .mockResolvedValueOnce(makeChatResponse({ content: 'Grounded answer' }))
+      .mockResolvedValueOnce(makeTagsResponse());
+    const p = new OllamaProvider();
+
+    await p.callDomain('content', [], 'What is next?', 'SYNTHETIC_EVAL_FACT', {
+      userId: 42,
+      tenantId: 42,
+    });
+
+    const request = JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit)?.body)) as {
+      messages: Array<{ role: string; content: string }>;
+    };
+    const userMessage = request.messages.find((message) => message.role === 'user')?.content ?? '';
+    expect(userMessage).toContain('SYNTHETIC_EVAL_FACT');
+    expect(userMessage).toContain('What is next?');
+    expect(userMessage).toContain('NEXUS_STATE_BEGIN');
+  });
+});
+
 describe('OllamaProvider — explicit workload roles', () => {
   it('allows validated local chat in normal runtime without evaluation mode', async () => {
     const mod = await import('../../src/config');

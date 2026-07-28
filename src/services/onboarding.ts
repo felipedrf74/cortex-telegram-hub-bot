@@ -10,7 +10,7 @@
 
 import { getDb } from './database';
 import { logger } from '../utils/logger';
-import { getUserById, getUserByTelegramId } from './user-service';
+import { getUserById } from './user-service';
 import { checkSkillAccess } from './skill-tiers';
 import { entitlementPlanToSkillTier, getEffectiveEntitlement } from './entitlement';
 import {
@@ -573,7 +573,7 @@ export function startOrResume(userId: number, rawQuestionnaireId: string): Onboa
  *     is AHEAD of the server we throw OnboardingStepMismatchError so the
  *     route can return a 409 with the server's real step and the client
  *     can reconcile. When `expectedStepIndex` is omitted, behavior is
- *     unchanged (used by Telegram handlers that drive the flow linearly).
+ *     unchanged (legacy linear-flow callers drove the flow without it).
  *
  *  2. The session UPDATE + profile INSERT now run in a single SQLite
  *     transaction. Previously a crash between the two statements could
@@ -1062,7 +1062,9 @@ function questionnairesForSkill(skill: string): string[] {
  */
 export function getEnabledQuestionnaires(userId: number): string[] {
   try {
-    const user = getUserById(userId) || getUserByTelegramId(userId);
+    // userId is the verified canonical users.id from the iOS JWT — no legacy
+    // identity fallback (M21 purge; same rationale as the chat/WS removals).
+    const user = getUserById(userId);
     if (!user) return [];
     const entitlement = getEffectiveEntitlement(user.id);
     if (entitlement.isOwner) return getAvailableQuestionnaires();

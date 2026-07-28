@@ -22,11 +22,12 @@
 
 import { Router, Request, Response } from 'express';
 import express from 'express';
+import { ipKeyGenerator, rateLimit } from 'express-rate-limit';
 import crypto from 'crypto';
 import StripeLib from 'stripe';
 import { logger } from '../../utils/logger';
 import { config } from '../../config';
-import { webhookRateLimitMiddleware } from '../rate-limiter';
+import { extractClientIp, webhookRateLimitMiddleware } from '../rate-limiter';
 import { getDb } from '../../services/database';
 import { syncProvider } from '../../services/task-store/sync-engine';
 import { findNexusUserByTodoistId } from '../../services/task-store/todoist-adapter';
@@ -98,8 +99,36 @@ export function verifyTodoistSignature(rawBody: Buffer, signature: string, secre
 
 // ─── Router factory ────────────────────────────────────────────────
 
-export function createWebhookRouter(): Router {
+export interface WebhookRouterOptions {
+  readonly todoistWebhookSecret?: string;
+}
+
+// Keep this limiter route-local and directly constructed from
+// express-rate-limit so static analysis can prove that untrusted requests are
+// bounded before raw-body parsing and HMAC authorization. The 120/minute
+// ceiling matches the shared infrastructure-webhook budget.
+export const todoistWebhookRateLimitMiddleware = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 120,
+  keyGenerator: (req: Request) => `ip:${ipKeyGenerator(extractClientIp(req))}`,
+  legacyHeaders: true,
+  standardHeaders: false,
+  handler: (_req, res, _next, options) => {
+    const retryAfter = Math.max(1, Math.ceil(options.windowMs / 1000));
+    res.setHeader('Retry-After', retryAfter);
+    res.status(options.statusCode).json({
+      error: { code: 'RATE_LIMITED', message: 'Too many webhook deliveries from this IP.' },
+    });
+  },
+});
+
+export function createWebhookRouter(options: WebhookRouterOptions = {}): Router {
   const router = Router();
+  // Snapshot immutable process config when the router is built. Tests may
+  // inject a fixed secret so their signer and verifier share one explicit
+  // input; production's no-option path keeps the configured fail-closed
+  // contract.
+  const todoistWebhookSecret = options.todoistWebhookSecret ?? config.todoist?.webhookSecret ?? '';
 
   // Raw-body parser scoped to ONLY the webhook routes — global express.json()
   // would consume the bytes before we get a chance to HMAC them.
@@ -183,13 +212,13 @@ export function createWebhookRouter(): Router {
 
   // ── POST /webhooks/todoist ─────────────────────────────────────
 
-  router.post('/todoist', rawJson, async (req: Request, res: Response) => {
+  router.post('/todoist', todoistWebhookRateLimitMiddleware, rawJson, async (req: Request, res: Response) => {
     const rawBody = req.body as Buffer;
     const signature = (req.headers['x-todoist-hmac-sha256'] as string) || '';
     const deliveryId = (req.headers['x-todoist-delivery-id'] as string) || '';
 
     // 1. Verify signature against the raw bytes
-    const secret = config.todoist.webhookSecret;
+    const secret = todoistWebhookSecret;
     if (!secret) {
       logger.warn('Todoist webhook received but TODOIST_WEBHOOK_SECRET not set — rejecting');
       res.status(503).json({ error: 'webhook secret not configured' });
@@ -258,7 +287,7 @@ export async function processTodoistEvent(payload: any): Promise<void> {
   let nexusUserId = findNexusUserByTodoistId(todoistUserId);
 
   if (!nexusUserId) {
-    nexusUserId = await scanOAuthForTodoistUser(todoistUserId);
+    nexusUserId = await resolveNexusUserByTodoistSyncProbe(todoistUserId);
     if (!nexusUserId) {
       logger.info({ todoistUserId }, 'No Nexus user found for Todoist webhook — ignoring');
       return;
@@ -285,7 +314,7 @@ export async function processTodoistEvent(payload: any): Promise<void> {
  * a sync probe to see which one matches. This is slow (one HTTP call per
  * user) but only runs once per Todoist user per restart, so it's tolerable.
  */
-async function scanOAuthForTodoistUser(todoistUserId: number): Promise<number | undefined> {
+async function resolveNexusUserByTodoistSyncProbe(todoistUserId: number): Promise<number | undefined> {
   try {
     const db = getDb();
     const rows = db.prepare(

@@ -123,6 +123,17 @@ export const TRAINING_ACTIONS: ChatActionDefinition[] = [
       confirmationPolicy: 'clarify',
       executor: 'training.planBuilderHandoff',
       verifier: 'none',
+      // M19 remediation (2026-07-21): deliberately NO outputRefs here.
+      // M16's data-need chaining consumes registry outputRefs
+      // UNCONDITIONALLY (no flag), so declaring `{ title: 'plan.title' }`
+      // changed default multi-step behavior: "cria um plano de treino e
+      // adiciona à minha lista" auto-titled the list entry instead of
+      // producing the missing-title clarification. The executor still
+      // emits `plan.title` (inert without a registry consumer), the
+      // cross-skill $ref chaining is exercised via a definition mock in
+      // chat-segment-router.test.ts, and SHIPPING this row is a
+      // flag-flip-time decision for AI_CROSS_SKILL_EXECUTION. Parity pin:
+      // codex-qa-regressions.test.ts "training outputRefs flag-off parity".
       // Phase 12 batch 63: typed extractor wraps extractTrainingPlanSlots
       // so callers can read sport / goal / durationWeeks / weeklyVolumeKm /
       // startDate directly from the registry entry instead of calling the

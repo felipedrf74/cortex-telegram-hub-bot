@@ -41,8 +41,7 @@ function safeEnv(): NodeJS.ProcessEnv {
     CONTENT_ENGINE_PORT: '18102',
     TMPDIR: tmpdir(),
     DATABASE_PATH: path.join(runtimeRoot, 'content-live-eval-unit.db'),
-    TELEGRAM_LEGACY_DELIVERY: 'false',
-    TELEGRAM_BOT_TOKEN: 'content-live-eval-disabled',
+    NEXUS_CONTENT_LIVE_EVAL_DELIVERY_DISABLED: '1',
     BACKUP_ENABLED: 'false',
     PORTAL_ALLOW_LOCAL_BYPASS: 'true',
     OPENAI_API_KEY: 'provider-key-is-allowed-at-this-boundary',
@@ -118,6 +117,8 @@ describe('Content live-evaluation runtime isolation', () => {
     ['TODOIST_CLIENT_SECRET', 'task-secret'],
     ['INVOICE_MINIO_SECRET_ACCESS_KEY', 'object-store-secret'],
     ['APNS_KEY_ID', 'push-key'],
+    ['TELEGRAM_BOT_TOKEN', 'legacy-token'],
+    ['TELEGRAM_ALLOWED_USER_IDS', '100000001'],
   ])('fails before startup when inherited connector env %s is present', (key, value) => {
     const env = safeEnv();
     env[key] = value;
@@ -132,6 +133,12 @@ describe('Content live-evaluation runtime isolation', () => {
     const jobsEnabled = safeEnv();
     jobsEnabled.NEXUS_BACKGROUND_JOBS_ENABLED = '1';
     expect(() => assertContentLiveEvalRuntimeEnvironment(jobsEnabled)).toThrow('CONTENT_LIVE_EVAL_BACKGROUND_SERVICES_MUST_BE_DISABLED');
+  });
+
+  it('requires the transport-neutral delivery-disable guard', () => {
+    const env = safeEnv();
+    delete env.NEXUS_CONTENT_LIVE_EVAL_DELIVERY_DISABLED;
+    expect(() => assertContentLiveEvalRuntimeEnvironment(env)).toThrow('CONTENT_LIVE_EVAL_DELIVERY_MUST_BE_DISABLED');
   });
 });
 

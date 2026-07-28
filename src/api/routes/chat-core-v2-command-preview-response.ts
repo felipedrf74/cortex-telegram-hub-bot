@@ -1,5 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
+import { randomUUID } from 'crypto';
+
 import type { ChatCoreV2CommandPreviewRouteResult } from '../../services/chat-core-v2';
 import type { ChatResponseCard } from '../../services/chat-response-cards';
 
@@ -109,7 +111,7 @@ export function buildChatCoreV2CommandPreviewShortcutResponse(
   return {
     conversationDomain,
     response: {
-      id: `msg-${requestStartedAt}`,
+      id: `msg-${randomUUID()}`,
       text: result.response.text,
       domain: conversationDomain,
       routeMethod: 'chat-core-v2-command-preview',

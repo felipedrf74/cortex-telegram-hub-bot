@@ -28,7 +28,7 @@ import {
   formatAllTasks,
   splitMessage,
   escapeHtml,
-} from '../../utils/telegram-formatter';
+} from '../../utils/chat-html-formatter';
 import {
   startOfDay,
   endOfDay,

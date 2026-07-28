@@ -115,6 +115,12 @@ export interface AiBudgetRequest {
   /** Pre-multiplier expected provider cost. Rolling p95 is used when absent. */
   estimatedCostUsd?: number;
   /**
+   * Use the explicit estimate verbatim (including zero) for a signed
+   * chat-live-evaluation hard ceiling. This avoids replacing an Ollama
+   * zero-cost attempt with the normal conservative cloud-call default.
+   */
+  exactHardCostEstimate?: boolean;
+  /**
    * Optional signed, run-scoped hard ceiling used by explicitly authorized
    * local evaluation workloads. Unlike quota forecasts, this is rechecked
    * against durable api_usage before every concrete provider attempt.
@@ -923,6 +929,15 @@ function getCurrentRunSpentUsd(request: AiBudgetRequest): number {
 
 export function estimateAiBudgetReservationUsd(request: AiBudgetRequest): number {
   const explicit = Number(request.estimatedCostUsd);
+  if (
+    request.exactHardCostEstimate === true
+    && (request.baseCategory === 'chat_live_eval_local' || request.baseCategory === 'chat_live_eval_real')
+    && request.hardRunCostLimitUsd !== undefined
+    && Number.isFinite(explicit)
+    && explicit >= 0
+  ) {
+    return Number(explicit.toFixed(8));
+  }
   const validExplicit = Number.isFinite(explicit) && explicit > 0 ? explicit : null;
   const rollingP95 = getRollingP95CostUsd(request);
   const workloadDefault = WORKLOAD_DEFAULT_ESTIMATED_COST_USD
@@ -1546,8 +1561,12 @@ export function assertAiBudgetReservationForProvider(input: {
   /** Provider can inject tokenized context without an exact request cap. */
   hasUnboundedProviderInjectedContext?: boolean;
 }): void {
-  if (!isPaidAiCostControlsEnforcementEnabled()) return;
   const active = currentActiveAiBudgetReservation();
+  if (!isPaidAiCostControlsEnforcementEnabled()) {
+    const hasHardCeiling = active?.hardRunCostLimitUsd !== undefined
+      || active?.hardJobCostLimitUsd !== undefined;
+    if (!hasHardCeiling) return;
+  }
   const userMatches = active?.requestSource === 'system'
     || active?.userId === input.userId;
   const lockUserId = active?.requestSource === 'system' ? 0 : active?.userId;
@@ -1582,9 +1601,9 @@ export function assertAiBudgetReservationForProvider(input: {
     ...(active.hardRunCostLimitUsd !== undefined ? { hardRunCostLimitUsd: active.hardRunCostLimitUsd } : {}),
     ...(active.hardJobCostLimitUsd !== undefined ? { hardJobCostLimitUsd: active.hardJobCostLimitUsd } : {}),
   };
+  const provider = String(input.provider || '').trim().toLowerCase();
+  const model = String(input.model || '').trim();
   if (active.baseCategory === 'content_live_eval') {
-    const provider = String(input.provider || '').trim().toLowerCase();
-    const model = String(input.model || '').trim();
     if (
       !isContentLiveEvalProviderCategory(input.category)
       || !provider
@@ -1598,6 +1617,19 @@ export function assertAiBudgetReservationForProvider(input: {
       recordAiBudgetDeferral(request, decision);
       throw new AiBudgetError(decision);
     }
+  }
+  if (
+    (active.baseCategory === 'chat_live_eval_local'
+      && (provider !== 'ollama' || Number(input.maxCostUsd) !== 0))
+    || (active.baseCategory === 'chat_live_eval_real'
+      && !['anthropic', 'gemini', 'openai'].includes(provider))
+  ) {
+    const decision = serviceDegradedDecision(
+      request,
+      'Chat live evaluation was stopped because its governed provider policy did not match. No model call was made.',
+    );
+    recordAiBudgetDeferral(request, decision);
+    throw new AiBudgetError(decision);
   }
   if (input.hasUnboundedProviderInjectedContext && active.requestSource !== 'interactive') {
     const decision = serviceDegradedDecision(
@@ -1622,14 +1654,15 @@ export function assertAiBudgetReservationForProvider(input: {
   // into the canonical estimator for every source. These reservations are not
   // multiplied again; rolling p95/default forecasts retain the 125% reserve.
   request.estimatedCostUsd = hardMaximum;
+  if (active.baseCategory === 'chat_live_eval_local' || active.baseCategory === 'chat_live_eval_real') {
+    request.exactHardCostEstimate = true;
+  }
   const decision = checkAiBudget(request);
   if (!decision.allowed) {
     recordAiBudgetDeferral(request, decision);
     throw new AiBudgetError(decision);
   }
   if (active.hardRunCostLimitUsd !== undefined || active.hardJobCostLimitUsd !== undefined) {
-    const provider = String(input.provider || '').trim().toLowerCase();
-    const model = String(input.model || '').trim();
     const attemptReservation = provider && model
       ? reserveHardProviderAttempt({
         request,

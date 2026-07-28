@@ -18,6 +18,7 @@ import type {
   ChatActionSkill,
   ChatProvider,
 } from './registry/types';
+import type { ChatConfirmedDestructiveTarget } from '../chat-tool-authorization';
 
 export type ChatActionStatus = ChatActionRunStatus;
 
@@ -41,6 +42,12 @@ export interface ChatActionPlan {
   clarificationQuestion?: string;
   clarificationReason?: ChatClarificationReason;
   intentClass?: string;
+  /**
+   * M16: actionable requests found beyond the multi-step segment cap. When
+   * set (> 0), response copy must disclose that only the first N segments
+   * are being run — the overflow is never silently dropped.
+   */
+  multiStepOverflowCount?: number;
   confidence: number;
   effectiveConfidence?: number;
   telemetry?: ChatActionTelemetry;
@@ -131,4 +138,8 @@ export interface ChatActionPlannerDeps {
 export interface ChatActionExecutionOptions {
   confirmed?: boolean;
   confirmationSource?: 'explicit_current_turn' | 'pending_confirmation' | 'none';
+  /** Exact server-staged grants carried from the pending confirmation. */
+  confirmedTargets?: ChatConfirmedDestructiveTarget[];
+  /** @internal Prevents recursive authorization-context installation. */
+  authorizationContextBound?: boolean;
 }

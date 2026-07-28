@@ -1,5 +1,4 @@
 # Lower this monthly by >=10 until <100. Baseline recalibrated on
-# 2026-06-06 to the actual production/main v4.14.205 surface after the
-# recent task/calendar/training changes left main failing strict CI. Four
-# training-plan-persistence mocks were completed before this recalibration.
-partialMockCount=999
+# 2026-07-22 after the chat rollout resolved 80 newly incomplete factories
+# and one adjacent formatter factory, improving the ratchet by ten.
+partialMockCount=989

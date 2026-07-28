@@ -17,6 +17,7 @@
 
 import { describe, expect, it, vi } from 'vitest';
 import {
+  buildConfirmedDestructiveTargetsForPlanSteps,
   executeChatActionPlan,
   type ChatActionPlan,
   type ChatPlannerInput,
@@ -30,6 +31,48 @@ import {
 const NOW = '2026-05-16T12:00:00+01:00';
 
 describe('chat tool authorization AsyncLocalStorage scoping', () => {
+  it('derives exact tool + target grants from the planner registry contract', () => {
+    const targets = buildConfirmedDestructiveTargetsForPlanSteps([
+      {
+        stepId: 'delete-event-a',
+        skill: 'secretary_calendar',
+        action: 'delete_event',
+        type: 'delete_event',
+        risk: 'destructive',
+        args: {
+          eventId: 'evt-A',
+          // A decoy identifier must never become the confirmation target.
+          taskId: 'task-B',
+        },
+        requiredArgsPresent: true,
+        idempotencyKey: 'delete-event-a',
+        verification: { required: true, method: 'provider_read_back' },
+      },
+    ] as ChatActionPlan['steps']);
+
+    expect(targets).toEqual([
+      { tool: 'delete_calendar_event', targetId: 'evt-A' },
+    ]);
+  });
+
+  it('fails closed when a risky planner step lacks its exact target argument', () => {
+    const targets = buildConfirmedDestructiveTargetsForPlanSteps([
+      {
+        stepId: 'delete-event-unresolved',
+        skill: 'secretary_calendar',
+        action: 'delete_event',
+        type: 'delete_event',
+        risk: 'destructive',
+        args: { title: 'Standup' },
+        requiredArgsPresent: false,
+        idempotencyKey: 'delete-event-unresolved',
+        verification: { required: true, method: 'provider_read_back' },
+      },
+    ] as ChatActionPlan['steps']);
+
+    expect(targets).toEqual([]);
+  });
+
   it('runWithChatToolAuthorization establishes the auth context for its callback', async () => {
     let captured: ReturnType<typeof getCurrentChatToolAuthorizationContext>;
     await runWithChatToolAuthorization(

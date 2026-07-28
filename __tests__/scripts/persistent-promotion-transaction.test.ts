@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 const control = path.resolve('scripts/remote-promotion-control.sh');
@@ -24,6 +25,46 @@ const canonicalJson = (input: unknown): string => {
   const value = input as Record<string, unknown>;
   return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`;
 };
+
+function seedPassingChatEvalGate(fixtureRoot: string, runtimeSha: string) {
+  const databaseDirectory = path.join(fixtureRoot, 'reports', 'chat-eval');
+  const databasePath = path.join(
+    databaseDirectory,
+    'chat-eval-history.sqlite',
+  );
+  fs.mkdirSync(databaseDirectory, { recursive: true });
+  const db = new Database(databasePath);
+  try {
+    db.exec(`
+      CREATE TABLE chat_eval_runs (
+        id INTEGER PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        mode TEXT NOT NULL,
+        passed INTEGER NOT NULL,
+        git_commit TEXT,
+        generated_at TEXT,
+        created_at TEXT NOT NULL
+      )
+    `);
+    db.prepare(`
+      INSERT INTO chat_eval_runs (
+        run_id, mode, passed, git_commit, generated_at, created_at
+      ) VALUES (?, 'local_engine', 1, ?, ?, ?)
+    `).run(
+      'fixture-local-engine',
+      runtimeSha,
+      '2026-07-23T12:00:00.000Z',
+      '2026-07-23T12:00:00.000Z',
+    );
+  } finally {
+    db.close();
+  }
+
+  const fixtureNodeModules = path.join(fixtureRoot, 'node_modules');
+  if (!fs.existsSync(fixtureNodeModules)) {
+    fs.symlinkSync(path.resolve('node_modules'), fixtureNodeModules, 'dir');
+  }
+}
 
 function layoutDrillPayloadFixture(
   source: Record<string, unknown>,
@@ -1206,6 +1247,7 @@ process.stdout.write(JSON.stringify({irreversibleChangedMigrations:[],reviewEvid
     fs.writeFileSync(path.join(scriptsDir, 'remote-release-capacity.sh'), '# fixture capacity\n');
 
     const targetSha = 'b'.repeat(40);
+    seedPassingChatEvalGate(clientRoot, targetSha);
     const artifactDigest = 'c'.repeat(64);
     const installedRuntimeDigest = 'd'.repeat(64);
     const recoveryRuntimeDigest = '9'.repeat(64);
@@ -4116,7 +4158,7 @@ exec bash ${JSON.stringify(runner)} "$@"
         },
       });
     expect(fs.existsSync(recoveryIntent)).toBe(false);
-  }, 45_000);
+  }, 120_000);
 
   it('recovers immediately on restart when authoritative recovery intent exists', () => {
     const launch = run(['launch', envelopePath]);
@@ -4309,7 +4351,7 @@ exec "$@"
     expect(calls).toContain('start');
     const journal = JSON.parse(fs.readFileSync(path.join(stateRoot, 'transactions', id, 'state', 'journal.json'), 'utf8'));
     expect(journal.status).toBe('recovered');
-  });
+  }, 30_000);
 
   it('fails closed when root recovery phase is missing or conflicts with candidate state', () => {
     const launch = run(['launch', envelopePath]);

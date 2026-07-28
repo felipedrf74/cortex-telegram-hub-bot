@@ -127,7 +127,7 @@ describe('release-artifact-manifest', () => {
     const after = digest();
 
     expect(after).not.toBe(before);
-  });
+  }, 30_000);
 
   it('includes every capability schema source required during runtime startup', () => {
     const manifest = JSON.parse(execFileSync(

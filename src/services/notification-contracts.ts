@@ -13,8 +13,7 @@ export type NotificationDeliveryChannel =
   | 'push'
   | 'digest'
   | 'local'
-  | 'portal_operator'
-  | 'legacy_telegram';
+  | 'portal_operator';
 
 export interface NotificationContract {
   topic: {

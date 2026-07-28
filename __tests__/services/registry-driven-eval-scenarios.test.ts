@@ -10,9 +10,8 @@
 //  • Required-dimension mapping: red-team examples require injection-
 //    resistance + tenant isolation; ambiguous examples require clarification
 //    quality; golden destructive actions require confirmation correctness.
-//  • Run integration: scenarios pass through runChatEvaluationSuite without
-//    errors (we don't pin pass/fail outcomes, just that the harness accepts
-//    them).
+//  • Harness integration: every generated row is reported as catalog-only;
+//    registry definitions never receive fabricated execution scores.
 
 import { describe, expect, it } from 'vitest';
 
@@ -25,6 +24,7 @@ import {
 import {
   runChatEvaluationSuite,
 } from '../../src/services/chat-evaluation-harness';
+import { DAY_TO_DAY_SCENARIOS } from '../../src/services/chat-day-to-day-simulation';
 
 describe('registry-driven eval scenarios — shape and coverage', () => {
   it('produces at least one scenario per active action with golden examples', () => {
@@ -115,15 +115,24 @@ describe('registry-driven eval scenarios — shape and coverage', () => {
 });
 
 describe('registry-driven scenarios — integration with runChatEvaluationSuite', () => {
-  it('the harness accepts registry-driven scenarios and produces a result envelope', () => {
+  it('accounts for every registry row without mislabeling it as executed evidence', async () => {
     const scenarios = buildRegistryDrivenEvalScenarios({
       tags: ['golden'],
       perActionMax: 1,
     });
     expect(scenarios.length).toBeGreaterThan(0);
-    const result = runChatEvaluationSuite({ scenarios });
-    expect(result.scenarioCount).toBe(scenarios.length);
-    expect(result.scenarios.length).toBe(scenarios.length);
+    const result = await runChatEvaluationSuite({ scenarios });
+    expect(result.catalogCoverage).toMatchObject({
+      total: scenarios.length,
+      executed: 0,
+      excluded: scenarios.length,
+      reasonCode: 'catalog_only_no_executable_profile_v1',
+    });
+    expect(result.catalogCoverage.ids).toEqual(scenarios.map((scenario) => scenario.id));
+    expect(result.scenarioCount).toBe(DAY_TO_DAY_SCENARIOS.length);
+    expect(result.scenarios).toHaveLength(DAY_TO_DAY_SCENARIOS.length);
+    const catalogIds = new Set<string>(scenarios.map((scenario) => scenario.id));
+    expect(result.scenarios.some((scenario) => catalogIds.has(scenario.id))).toBe(false);
     expect(typeof result.averageScore).toBe('number');
     expect(result.statusCounts).toHaveProperty('pass');
     expect(result.statusCounts).toHaveProperty('partial');

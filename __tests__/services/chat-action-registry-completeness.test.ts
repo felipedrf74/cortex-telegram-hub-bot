@@ -7,6 +7,7 @@ import {
   type ChatActionDefinition,
   type ChatActionRiskClass,
 } from '../../src/services/chat/registry';
+import { CONFIRMED_TARGET_FIELDS } from '../../src/services/chat-tool-authorization';
 
 function expectedRiskClassForRisk(risk: ChatActionDefinition['risk']): ChatActionRiskClass {
   if (risk === 'read_only') return 'R0';
@@ -91,6 +92,28 @@ describe('chat-action-registry completeness', () => {
     const allowed = new Set(['none', 'clarify', 'confirm', 'strong_confirm']);
     for (const entry of registry) {
       expect(allowed.has(entry.confirmationPolicy)).toBe(true);
+    }
+  });
+
+  it('every destructive, financial, admin-security, or external-send action declares an exact confirmation target', () => {
+    const exactTargetRisks = new Set(['destructive', 'financial', 'admin_security', 'external_side_effect']);
+    for (const entry of registry) {
+      if (!exactTargetRisks.has(entry.risk)) continue;
+      expect(
+        entry.confirmationTarget,
+        `${entry.skill}.${entry.action}: exact confirmation target missing`,
+      ).toMatchObject({
+        tool: expect.any(String),
+        argumentField: expect.any(String),
+      });
+      expect(
+        [...entry.requiredFields, ...entry.optionalFields],
+        `${entry.skill}.${entry.action}: confirmation target must name a declared argument`,
+      ).toContain(entry.confirmationTarget?.argumentField);
+      expect(
+        CONFIRMED_TARGET_FIELDS[entry.confirmationTarget?.tool ?? ''],
+        `${entry.skill}.${entry.action}: confirmation tool must have an authorization target mapping`,
+      ).toBeDefined();
     }
   });
 

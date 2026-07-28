@@ -65,8 +65,6 @@ fi
 docker run --rm \
   ${git_mount[@]+"${git_mount[@]}"} \
   -e CI=1 \
-  -e TELEGRAM_BOT_TOKEN=test_token \
-  -e TELEGRAM_ALLOWED_USER_IDS=123456789 \
   -e OWNER_TELEGRAM_ID=123456789 \
   -e DATABASE_PATH=:memory: \
   "$IMAGE" "${cmd[@]}" ${VERIFY_ARGS[@]+"${VERIFY_ARGS[@]}"}

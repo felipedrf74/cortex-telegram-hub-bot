@@ -61,6 +61,44 @@ export function inferChatTurnContract(input: ChatTurnContractInput): ChatTurnCon
   };
 }
 
+// ─── M17: fail-safe grounding uncertainty signal ─────────────────────
+//
+// Derives an HONEST uncertainty verdict from signals the contract already
+// computes — no new heuristics, no contract mutation (the stamped
+// chatTurnContract metadata stays byte-identical for every turn):
+//   * ambiguity_signals_present — inferAmbiguityReasons found conflicts
+//     (deictic reference, provider-label vs calendar semantics, destructive
+//     verb inside a literal title span, repair without an active skill);
+//   * low_contract_confidence  — the calibrated confidence the contract
+//     itself assigns when ambiguity reasons exist (< 0.8);
+//   * clarification_route      — the contract concluded the turn needs a
+//     clarifying question, which by construction means the request could
+//     not be resolved confidently from the message alone.
+//
+// Consumers (domain-handler scoped-context gating) use this to include
+// scoped local state for uncertain turns instead of answering blind, while
+// HIGH-certainty groundingRequired='none' turns keep today's exclusion.
+export interface ChatTurnGroundingCertainty {
+  uncertain: boolean;
+  reasons: string[];
+}
+
+export function assessChatTurnGroundingCertainty(contract: ChatTurnContract): ChatTurnGroundingCertainty {
+  const reasons: string[] = [];
+  if (contract.ambiguityReasons.length > 0) reasons.push('ambiguity_signals_present');
+  // NOTE (M17 review): 'low_contract_confidence' is currently redundant BY
+  // CONSTRUCTION — the contract assigns confidence 0.72 iff ambiguityReasons
+  // is non-empty and 0.9 otherwise (see inferChatTurnContract above), so
+  // this branch fires exactly when 'ambiguity_signals_present' fires. The
+  // reason is kept deliberately as future-proofing: if the confidence
+  // computation ever diversifies (calibration, per-skill priors, model
+  // scores), low confidence becomes an independent uncertainty signal and
+  // consumers keying on this reason string keep working unchanged.
+  if (contract.confidence < 0.8) reasons.push('low_contract_confidence');
+  if (contract.routeKind === 'clarification') reasons.push('clarification_route');
+  return { uncertain: reasons.length > 0, reasons };
+}
+
 export function fold(text: string): string {
   return text
     .normalize('NFD')

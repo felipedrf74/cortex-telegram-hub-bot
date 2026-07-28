@@ -35,9 +35,9 @@ describe('runtime manifests', () => {
       sharedRunnerJobs: 8,
       eventHandlers: 1,
       directEventEffects: 2,
-      queuedJobHandlers: 7,
+      queuedJobHandlers: 9,
     });
-    expect(result).toMatchObject({ jobs: 55, scheduledJobs: 55 });
+    expect(result).toMatchObject({ jobs: 57, scheduledJobs: 57 });
   });
 
   it('keeps parent skill and domain metadata byte-identical to CapabilityManifest generation', () => {
@@ -81,16 +81,17 @@ describe('runtime manifests', () => {
       ok: true,
       output: 'config/agent-job-manifest.json',
       schema: 'nexus.agent-job-manifest.v3',
-      jobs: 55,
+      jobs: 57,
       eventHandlers: 1,
       directEventEffects: 2,
-      queuedJobHandlers: 7,
+      queuedJobHandlers: 9,
     });
     expect(fs.readFileSync(manifestPath, 'utf8')).toBe(before);
 
     const manifest = JSON.parse(before);
     expect(manifest.schema).toBe('nexus.agent-job-manifest.v3');
-    expect(manifest.jobs).toHaveLength(55);
+    expect(manifest.version).toBe('2026-07-22.2');
+    expect(manifest.jobs).toHaveLength(57);
     for (const job of manifest.jobs) {
       expect(job).toMatchObject({
         id: expect.any(String),
@@ -180,7 +181,7 @@ describe('runtime manifests', () => {
   });
 
   it('fails closed when runtime registration drifts from the exact manifest identity', () => {
-    expect(loadAgentJobManifest().jobs).toHaveLength(55);
+    expect(loadAgentJobManifest().jobs).toHaveLength(57);
     expect(() => assertAgentJobRuntimeRegistration({
       id: 'tuesday_reels',
       name: 'Tuesday Reel Topics',
@@ -214,7 +215,7 @@ describe('runtime manifests', () => {
   it('fails closed when event or durable queued-job runtime handler registries drift', () => {
     const manifest = loadAgentJobManifest();
     expect(manifest.eventHandlers).toHaveLength(1);
-    expect(manifest.queuedJobHandlers).toHaveLength(7);
+    expect(manifest.queuedJobHandlers).toHaveLength(9);
     expect(manifest.eventHandlers[0]).toMatchObject({
       id: 'default_event_router',
       eventType: '*',
@@ -251,6 +252,8 @@ describe('runtime manifests', () => {
       .toThrow(/direct event effect runtime parity mismatch/);
 
     const defaultQueuedHandlers = [
+      'chat_core_v2_background_command',
+      'chat_legacy_timeout_continuation',
       'project_read_models',
       'deliver_notification',
       'training_summary_projector',
@@ -266,7 +269,21 @@ describe('runtime manifests', () => {
     ], 'chat-action-fixer')).not.toThrow();
     expect(manifest.queuedJobHandlers
       .filter((handler) => handler.providerUsage === 'governed-provider-capable')
-      .map((handler) => handler.jobType)).toEqual(['chat_action_fixer_review']);
+      .map((handler) => handler.jobType)).toEqual([
+        'chat_action_fixer_review',
+      ]);
+    expect(manifest.queuedJobHandlers.find(
+      (handler) => handler.jobType === 'chat_legacy_timeout_continuation',
+    )).toMatchObject({
+      providerUsage: 'none',
+      providerRouting: 'not-applicable-no-model-provider',
+      costPolicy: 'no-model-provider-cost-late-foreground-delivery-only',
+      latencyPolicy: 'late-foreground-result-or-15m-honest-failure-deadline',
+      inputFingerprint: {
+        enforcement: 'not-applicable-no-provider',
+        unchangedInputProviderCalls: 0,
+      },
+    });
   });
 
   it('loads governed capability metadata through the runtime registry', () => {

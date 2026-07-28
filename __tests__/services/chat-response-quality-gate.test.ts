@@ -28,11 +28,33 @@
  * texts that include a concrete time anchor.
  */
 
-import { describe, it, expect } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
+import type Database from 'better-sqlite3';
+
+let testDb: Database.Database | null = null;
+
+// M8 gate redesign: token-zero verification reads go through the unified
+// task store, so the shared migrated :memory: DB pattern applies. Tests
+// that never pass a `verification` scope never touch the DB.
+vi.mock('../../src/services/database', async () => ({
+  ...(await vi.importActual('../../src/services/database')),
+  getDb: () => {
+    if (!testDb) throw new Error('testDb not initialized');
+    return testDb;
+  },
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+  assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
+  withDatabaseForTestAsync: vi.fn(),
+}));
+
 import {
   applyChatResponseQualityGate,
   detectChatResponseQualityIssues,
 } from '../../src/services/chat-response-quality-gate';
+import { upsertTask } from '../../src/services/task-store/unified-task-store';
 import type { NexusAnswerContract } from '../../src/services/chat-answer-contract';
 
 // ─── Test scaffolding ─────────────────────────────────────────────
@@ -276,5 +298,543 @@ describe('qualityGateReason metadata', () => {
     expect(result.status).toBe('pass');
     expect(result.qualityGateSkipped).toBe(true);
     expect(result.qualityGateReason).toBe('creative_text_owner:cooking:execute');
+  });
+});
+
+// ─── M8 gate on-trip redesign ─────────────────────────────────────
+//
+// (a) token-zero verification first: an 'unverified_success_claim' about
+//     an identifiable entity is checked against SQLite before any rewrite;
+//     confirmed claims KEEP the original text with verificationStatus
+//     'verified'. Id-or-exact-title match only — ambiguity falls through.
+// (b) surgical downgrade: only the offending sentence(s) are removed.
+// (c) full canned repair only when the entire answer is claim material.
+// (d) every trip records { originalText, issues, action } on the result so
+//     the finalizer can persist it under metadata.qualityGate.
+
+const USER_ID = 42;
+const TENANT_ID = 42;
+
+function seedUser(): void {
+  testDb!.prepare(`
+    INSERT INTO users (
+      id, telegram_id, first_name, language, timezone, tier, status,
+      auth_provider, daily_message_limit, daily_token_limit, daily_cost_limit_usd
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(USER_ID, USER_ID, 'Test', 'en', 'Europe/Lisbon', 'pro', 'active', 'telegram', 40, 100000, 1);
+}
+
+function seedTask(title: string, status: 'pending' | 'completed' = 'pending', externalId = `ext-${title}`): void {
+  upsertTask(USER_ID, {
+    provider: 'nexus',
+    externalId,
+    title,
+    status,
+    priority: 0,
+  }, TENANT_ID);
+}
+
+describe('M8 — token-zero verification keeps true claims', () => {
+  beforeEach(() => {
+    testDb = createMigratedTestDatabase();
+    seedUser();
+  });
+
+  afterEach(() => {
+    testDb?.close();
+    testDb = null;
+  });
+
+  it('keeps the original text when the created task exists with an exact title match', () => {
+    seedTask('Email Maria');
+    const text = 'I created the task "Email Maria" for you.';
+    const contract = makeContract({
+      ownerSkill: 'tasks',
+      actionability: 'execute',
+      intent: 'tasks.create',
+      language: 'en',
+      verificationStatus: 'pending',
+    });
+
+    const result = applyChatResponseQualityGate({
+      text,
+      contract,
+      verification: { userId: USER_ID, tenantId: TENANT_ID },
+    });
+
+    expect(result.status).toBe('pass');
+    expect(result.text).toBe(text);
+    expect(result.action).toBe('verified_kept');
+    expect(result.contract.verificationStatus).toBe('verified');
+    expect(result.issues).toEqual([]);
+    expect(result.tripIssues).toContain('unverified_success_claim');
+    expect(result.originalText).toBe(text);
+  });
+
+  it('keeps a completion claim only when the matched task is actually completed', () => {
+    seedTask('Email Maria', 'completed');
+    const text = 'I marked the task "Email Maria" as completed.';
+    const contract = makeContract({
+      ownerSkill: 'tasks',
+      actionability: 'execute',
+      intent: 'tasks.adjust',
+      language: 'en',
+      verificationStatus: 'pending',
+    });
+
+    const result = applyChatResponseQualityGate({
+      text,
+      contract,
+      verification: { userId: USER_ID, tenantId: TENANT_ID },
+    });
+
+    expect(result.action).toBe('verified_kept');
+    expect(result.text).toBe(text);
+  });
+
+  it('does NOT verify a completion claim when the task is still pending', () => {
+    seedTask('Email Maria', 'pending');
+    const text = 'I marked the task "Email Maria" as completed.';
+    const contract = makeContract({
+      ownerSkill: 'tasks',
+      actionability: 'execute',
+      intent: 'tasks.adjust',
+      language: 'en',
+      verificationStatus: 'pending',
+    });
+
+    const result = applyChatResponseQualityGate({
+      text,
+      contract,
+      verification: { userId: USER_ID, tenantId: TENANT_ID },
+    });
+
+    expect(result.action).not.toBe('verified_kept');
+    expect(result.text).not.toBe(text);
+    expect(result.issues).toContain('unverified_success_claim');
+  });
+
+  it('falls through on a name collision (two tasks share the exact title)', () => {
+    seedTask('Email Maria', 'pending', 'ext-1');
+    seedTask('Email Maria', 'pending', 'ext-2');
+    const text = 'I created the task "Email Maria" for you.';
+    const contract = makeContract({
+      ownerSkill: 'tasks',
+      actionability: 'execute',
+      intent: 'tasks.create',
+      language: 'en',
+      verificationStatus: 'pending',
+    });
+
+    const result = applyChatResponseQualityGate({
+      text,
+      contract,
+      verification: { userId: USER_ID, tenantId: TENANT_ID },
+    });
+
+    expect(result.action).not.toBe('verified_kept');
+    expect(result.status).toBe('repaired');
+  });
+
+  it('does not attempt verification when no verification scope is provided', () => {
+    const text = 'I created the task "Email Maria" for you.';
+    const contract = makeContract({
+      ownerSkill: 'tasks',
+      actionability: 'execute',
+      intent: 'tasks.create',
+      language: 'en',
+      verificationStatus: 'pending',
+    });
+
+    const result = applyChatResponseQualityGate({ text, contract });
+    expect(result.action).not.toBe('verified_kept');
+    expect(result.issues).toContain('unverified_success_claim');
+  });
+});
+
+describe('M8 — surgical downgrade preserves innocent sentences', () => {
+  it('removes only the offending sentence and keeps the rest', () => {
+    const text = 'Here is your plan for the afternoon. I scheduled it for 2:00. Let me know if you want a different slot.';
+    const contract = makeContract({
+      ownerSkill: 'secretary',
+      actionability: 'execute',
+      intent: 'secretary.schedule',
+      language: 'en',
+      verificationStatus: 'pending',
+    });
+
+    const result = applyChatResponseQualityGate({ text, contract });
+
+    expect(result.status).toBe('repaired');
+    expect(result.action).toBe('surgical_downgrade');
+    expect(result.text).toContain('Here is your plan for the afternoon.');
+    expect(result.text).toContain('Let me know if you want a different slot.');
+    expect(result.text).not.toContain('I scheduled it for 2:00');
+    expect(result.originalText).toBe(text);
+    expect(result.issues).toContain('unverified_success_claim');
+  });
+
+  it('replaces the whole answer only when every sentence is claim material', () => {
+    const text = 'I scheduled it for 2:00.';
+    const contract = makeContract({
+      ownerSkill: 'secretary',
+      actionability: 'execute',
+      intent: 'secretary.schedule',
+      language: 'en',
+      verificationStatus: 'pending',
+    });
+
+    const result = applyChatResponseQualityGate({ text, contract });
+
+    expect(result.status).toBe('repaired');
+    expect(result.action).toBe('replaced');
+    expect(result.text).not.toContain('I scheduled it for 2:00');
+    expect(result.text).toContain('cannot honestly say');
+    expect(result.originalText).toBe(text);
+  });
+
+  it('records { originalText, issues, action } on every trip', () => {
+    const text = 'I scheduled it for 2:00.';
+    const contract = makeContract({
+      ownerSkill: 'secretary',
+      actionability: 'execute',
+      intent: 'secretary.schedule',
+      language: 'en',
+      verificationStatus: 'pending',
+    });
+
+    const result = applyChatResponseQualityGate({ text, contract });
+    expect(result.originalText).toBe(text);
+    expect(result.tripIssues).toEqual(result.issues);
+    expect(['surgical_downgrade', 'replaced', 'verified_kept']).toContain(result.action);
+  });
+
+  it('a clean pass reports action "pass" with no originalText', () => {
+    const contract = makeContract({ ownerSkill: 'secretary', actionability: 'answer_only', language: 'en' });
+    const result = applyChatResponseQualityGate({
+      text: 'You can review the agenda whenever you like.',
+      contract,
+    });
+    expect(result.action).toBe('pass');
+    expect(result.originalText).toBeUndefined();
+  });
+});
+
+// ─── Adversarial-review fix: line-aware surgical downgrade ────────
+
+describe('surgical downgrade preserves markdown line structure', () => {
+  it('keeps a numbered list intact and removes only the offending item', () => {
+    const text = [
+      'Here is your afternoon plan.',
+      '1. Review the budget draft.',
+      '2. I scheduled it for 2:00.',
+      '3. Prepare the client notes.',
+    ].join('\n');
+    const contract = makeContract({
+      ownerSkill: 'secretary',
+      actionability: 'execute',
+      intent: 'secretary.schedule',
+      language: 'en',
+      verificationStatus: 'pending',
+    });
+
+    const result = applyChatResponseQualityGate({ text, contract });
+
+    expect(result.status).toBe('repaired');
+    expect(result.action).toBe('surgical_downgrade');
+    const lines = result.text.split('\n');
+    expect(lines).toContain('Here is your afternoon plan.');
+    expect(lines).toContain('1. Review the budget draft.');
+    expect(lines).toContain('3. Prepare the client notes.');
+    expect(result.text).not.toContain('I scheduled it for 2:00');
+  });
+
+  it('removes only the offending sentence WITHIN a list line, keeping the marker', () => {
+    const text = [
+      'Plan for today:',
+      '- Prepare the deck for the review. I scheduled it for 2:00.',
+      '- Send the agenda draft.',
+    ].join('\n');
+    const contract = makeContract({
+      ownerSkill: 'secretary',
+      actionability: 'execute',
+      intent: 'secretary.schedule',
+      language: 'en',
+      verificationStatus: 'pending',
+    });
+
+    const result = applyChatResponseQualityGate({ text, contract });
+
+    expect(result.action).toBe('surgical_downgrade');
+    const lines = result.text.split('\n');
+    expect(lines).toContain('- Prepare the deck for the review.');
+    expect(lines).toContain('- Send the agenda draft.');
+    expect(result.text).not.toContain('I scheduled it for 2:00');
+  });
+
+  it('collapses the blank-line run left behind by a fully-dropped paragraph', () => {
+    const text = 'Here is the summary you asked for.\n\nI scheduled it for 2:00.\n\nLet me know what to adjust.';
+    const contract = makeContract({
+      ownerSkill: 'secretary',
+      actionability: 'execute',
+      intent: 'secretary.schedule',
+      language: 'en',
+      verificationStatus: 'pending',
+    });
+
+    const result = applyChatResponseQualityGate({ text, contract });
+
+    expect(result.action).toBe('surgical_downgrade');
+    expect(result.text).not.toContain('I scheduled it for 2:00');
+    expect(result.text).not.toContain('\n\n\n');
+    expect(result.text).toContain('Here is the summary you asked for.');
+    expect(result.text).toContain('Let me know what to adjust.');
+  });
+});
+
+// ─── Adversarial-review fix: distinct non-claim trip actions ──────
+
+describe('non-claim trips get distinct action labels', () => {
+  it('raw internal content only → action "sanitized"', () => {
+    const contract = makeContract({
+      ownerSkill: 'secretary',
+      actionability: 'answer_only',
+      language: 'en',
+    });
+    const result = applyChatResponseQualityGate({
+      text: 'Your summary is ready. TypeError: cannot read properties of undefined.',
+      contract,
+    });
+
+    expect(result.status).toBe('repaired');
+    expect(result.action).toBe('sanitized');
+    expect(result.issues).toContain('raw_internal_content');
+    expect(result.text).not.toContain('TypeError');
+  });
+
+  it('recipe structure repair → action "recipe_restructured"', () => {
+    const contract = makeContract({
+      ownerSkill: 'cooking',
+      actionability: 'answer_only',
+      expectedResponseShape: 'recipe',
+      language: 'en',
+    });
+    const result = applyChatResponseQualityGate({
+      text: 'Just mix 500g chicken with soy sauce and fry it.',
+      contract,
+    });
+
+    expect(result.status).toBe('repaired');
+    expect(result.action).toBe('recipe_restructured');
+    expect(result.issues).toContain('recipe_missing_structure');
+  });
+});
+
+// ─── Adversarial-review fix: verified_kept is turn-scoped ─────────
+
+describe('token-zero verification requires turn recency', () => {
+  beforeEach(() => {
+    testDb = createMigratedTestDatabase();
+    seedUser();
+  });
+
+  afterEach(() => {
+    testDb?.close();
+    testDb = null;
+  });
+
+  function backdateAllTasks(): void {
+    testDb!.prepare(
+      "UPDATE unified_tasks SET created_at = datetime('now', '-7 days'), updated_at = datetime('now', '-7 days'), synced_at = datetime('now', '-7 days') WHERE user_id = ?",
+    ).run(USER_ID);
+  }
+
+  it('does NOT verify a creation claim against a week-old task with the exact title (surgical path)', () => {
+    seedTask('Email Maria');
+    backdateAllTasks();
+    const text = 'Here is your plan for today. I created the task "Email Maria" for you. Anything else?';
+    const contract = makeContract({
+      ownerSkill: 'tasks',
+      actionability: 'execute',
+      intent: 'tasks.create',
+      language: 'en',
+      verificationStatus: 'pending',
+    });
+
+    const result = applyChatResponseQualityGate({
+      text,
+      contract,
+      verification: { userId: USER_ID, tenantId: TENANT_ID, requestStartedAt: Date.now() },
+    });
+
+    expect(result.action).not.toBe('verified_kept');
+    expect(result.action).toBe('surgical_downgrade');
+    expect(result.contract.verificationStatus).not.toBe('verified');
+    expect(result.text).toContain('Here is your plan for today.');
+    expect(result.text).not.toContain('I created the task "Email Maria" for you.');
+  });
+
+  it('verifies a creation claim when the row was written within the request window', () => {
+    seedTask('Email Maria');
+    const text = 'I created the task "Email Maria" for you.';
+    const contract = makeContract({
+      ownerSkill: 'tasks',
+      actionability: 'execute',
+      intent: 'tasks.create',
+      language: 'en',
+      verificationStatus: 'pending',
+    });
+
+    const result = applyChatResponseQualityGate({
+      text,
+      contract,
+      verification: { userId: USER_ID, tenantId: TENANT_ID, requestStartedAt: Date.now() },
+    });
+
+    expect(result.action).toBe('verified_kept');
+    expect(result.text).toBe(text);
+    expect(result.contract.verificationStatus).toBe('verified');
+  });
+
+  it('applies the same recency requirement to "task #N" id-claims', () => {
+    seedTask('Email Maria');
+    const row = testDb!.prepare('SELECT id FROM unified_tasks WHERE user_id = ? LIMIT 1').get(USER_ID) as { id: number };
+    backdateAllTasks();
+    const text = `I updated task #${row.id} with the new due date.`;
+    const contract = makeContract({
+      ownerSkill: 'tasks',
+      actionability: 'execute',
+      intent: 'tasks.adjust',
+      language: 'en',
+      verificationStatus: 'pending',
+    });
+
+    const result = applyChatResponseQualityGate({
+      text,
+      contract,
+      verification: { userId: USER_ID, tenantId: TENANT_ID, requestStartedAt: Date.now() },
+    });
+
+    expect(result.action).not.toBe('verified_kept');
+    expect(result.contract.verificationStatus).not.toBe('verified');
+  });
+});
+
+// ─── M16: honest partial multi-step reports pass the gate ──────────
+
+describe('M16 — partial-failure multi-step answers are not clobbered by the gate', () => {
+  it('e2e: a LIVE partial_success planner envelope survives the gate through the PRODUCTION mapping', async () => {
+    // Adversarial-review fix (M16/M8 seam): this test drives the REAL
+    // mapping layers instead of a hand-built contract. The executor
+    // (buildExecutedChatActionResponse) composes the honest partial answer
+    // and stamps metadata; the pipeline seam
+    // (actionabilityForReasoningStatus / verificationForReasoningMetadata)
+    // derives the contract fields the finalizer passes to the full gate.
+    // Before the fix, 'partial_success' fell through to
+    // answer_only/not_required and the gate rewrote the live partial answer.
+    const { buildExecutedChatActionResponse } = await import('../../src/services/chat/executor/result-response');
+    const { actionabilityForReasoningStatus, verificationForReasoningMetadata } = await import('../../src/api/routes/chat-pipeline/support');
+
+    const step = (stepId: string, title: string) => ({
+      stepId,
+      skill: 'tasks',
+      type: 'provider_write',
+      action: 'create_task',
+      risk: 'safe_write',
+      provider: 'nexus',
+      args: { title },
+      requiredArgsPresent: true,
+      idempotencyKey: `idem-${stepId}`,
+      verification: { required: true, method: 'local_read_back', expectedFields: {} },
+    }) as never;
+    const plan = {
+      schemaVersion: 1,
+      userId: String(USER_ID),
+      tenantId: String(TENANT_ID),
+      conversationId: 'conv-gate-e2e',
+      messageId: 'msg-gate-e2e',
+      locale: 'en-US',
+      timezone: 'UTC',
+      channel: 'ios',
+      createdAt: '2026-07-20T12:00:00.000Z',
+      planner: 'deterministic',
+      steps: [step('step_1', 'alpha'), step('step_2', 'beta'), step('step_3', 'gamma')],
+      requiresConfirmation: true,
+      confidence: 0.9,
+    } as never;
+    const input = {
+      text: 'create task alpha, create task beta and create task gamma',
+      userId: USER_ID,
+      tenantId: TENANT_ID,
+      conversationId: 'conv-gate-e2e',
+      messageId: 'msg-gate-e2e',
+      channel: 'ios',
+      locale: 'en-US',
+      timezone: 'UTC',
+      persistRuns: false,
+    } as never;
+    const planSteps = (plan as { steps: unknown[] }).steps;
+    const results = [
+      { step: planSteps[0], status: 'verified_success', result: { task: { id: 't-1' } } },
+      { step: planSteps[1], status: 'failed', error: 'provider_rejected' },
+      { step: planSteps[2], status: 'verified_success', result: { task: { id: 't-3' } } },
+    ] as never;
+
+    const envelope = buildExecutedChatActionResponse(input, plan, results);
+    const metadata = envelope.metadata as Record<string, unknown>;
+    const status = String(metadata.actionStatus);
+    expect(status).toBe('partial_success');
+    // The executor stamps the contract verification vocabulary so both
+    // mapping layers agree.
+    expect(metadata.verificationStatus).toBe('partial_failure');
+
+    const actionability = actionabilityForReasoningStatus(status);
+    const verificationStatus = verificationForReasoningMetadata(metadata, status);
+    expect(actionability).toBe('execute');
+    expect(verificationStatus).toBe('partial_failure');
+
+    const contract = makeContract({
+      ownerSkill: 'tasks',
+      intent: 'tasks.create',
+      language: 'en',
+      actionability,
+      verificationStatus,
+    });
+
+    const result = applyChatResponseQualityGate({ text: envelope.text, contract });
+
+    expect(result.status).toBe('pass');
+    expect(result.issues).not.toContain('unverified_success_claim');
+    expect(result.text).toBe(envelope.text);
+    // The succeeded-step lines survive verbatim.
+    expect(result.text).toContain('done and verified');
+    expect(result.text).toContain('2 of 3 steps verified');
+  });
+
+  it('e2e: a LIVE verified_success planner status maps to execute/verified (never answer_only/not_required)', async () => {
+    const { actionabilityForReasoningStatus, verificationForReasoningMetadata } = await import('../../src/api/routes/chat-pipeline/support');
+    expect(actionabilityForReasoningStatus('verified_success')).toBe('execute');
+    // Envelope value ('verified_success') and status fallback both resolve
+    // to the contract vocabulary 'verified'.
+    expect(verificationForReasoningMetadata({ verificationStatus: 'verified_success' }, 'verified_success')).toBe('verified');
+    expect(verificationForReasoningMetadata(undefined, 'verified_success')).toBe('verified');
+  });
+
+  it('still trips on a FULL success claim when verification reports pending', () => {
+    // Control: the partial_failure exemption is narrow. The same claim
+    // language without the partial_failure verification status still trips.
+    const text = 'Done — I completed 3 steps and verified the result.';
+    const contract = makeContract({
+      ownerSkill: 'tasks',
+      actionability: 'execute',
+      intent: 'tasks.create',
+      language: 'en',
+      verificationStatus: 'pending',
+    });
+
+    const result = applyChatResponseQualityGate({ text, contract });
+
+    expect(result.issues).toContain('unverified_success_claim');
+    expect(result.text).not.toBe(text);
   });
 });

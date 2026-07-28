@@ -1,6 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import type { ChatHybridActionGateMetrics } from './chat-evaluation-harness';
+import { detectResponseLanguage, expectedLanguageForLocale } from './chat-language-detector';
 
 export interface ChatHybridActionMetricCase {
   id: string;
@@ -26,6 +27,14 @@ export interface ChatHybridActionMetricCase {
   falseSuccessWithoutReadBack?: boolean;
   debugInternalLeakage?: boolean;
   portugueseLocalizationLeakage?: boolean;
+  /**
+   * BCP-47-ish prompt locale (e.g. 'es-419', 'pt-BR', 'en-US'). When set and
+   * `actualResponseText` is present, portuguese localization leakage is
+   * derived deterministically from chat-language-detector instead of relying
+   * on the caller pre-computing the `portugueseLocalizationLeakage` boolean.
+   * An explicit boolean always wins, so existing corpora keep their behavior.
+   */
+  promptLocale?: string | null;
   claimedSuccess?: boolean;
   verifierReadBackOk?: boolean;
   actualResponseText?: string | null;
@@ -139,8 +148,32 @@ export function computeHybridActionMetricsFromCorpus(cases: ChatHybridActionMetr
     falseSuccessWithoutReadBackCount: falseSuccessWithoutReadBackCases.length,
     falsePositiveOnRefusalCount: falsePositiveOnRefusalCases.length,
     debugInternalLeakageCount: debugInternalLeakageCases.length,
-    portugueseLocalizationLeakageCount: cases.filter((testCase) => testCase.portugueseLocalizationLeakage === true).length,
+    portugueseLocalizationLeakageCount: cases.filter(isPortugueseLocalizationLeakage).length,
   };
+}
+
+/**
+ * Portuguese localization leakage: the reply came back in Portuguese for a
+ * prompt whose locale expected another language (the recurring es-419 → pt
+ * failure class from live eval evidence).
+ *
+ * Resolution order (additive — existing corpora unchanged):
+ *   1. explicit `portugueseLocalizationLeakage` boolean (legacy path) wins;
+ *   2. otherwise, when `promptLocale` + `actualResponseText` are present,
+ *      derive via the deterministic detector (fail-open: 'unknown' detection
+ *      or an unmapped/pt locale never counts as leakage);
+ *   3. otherwise, not leakage.
+ */
+function isPortugueseLocalizationLeakage(testCase: ChatHybridActionMetricCase): boolean {
+  if (typeof testCase.portugueseLocalizationLeakage === 'boolean') {
+    return testCase.portugueseLocalizationLeakage;
+  }
+  if (typeof testCase.promptLocale === 'string' && typeof testCase.actualResponseText === 'string') {
+    const expected = expectedLanguageForLocale(testCase.promptLocale);
+    if (expected === 'pt' || expected === 'unknown') return false;
+    return detectResponseLanguage(testCase.actualResponseText).language === 'pt';
+  }
+  return false;
 }
 
 const DEBUG_LEAKAGE_PATTERNS = [
@@ -172,6 +205,76 @@ const DEBUG_LEAKAGE_PATTERNS = [
   /\bprovider debug\b/i,
   /\bfallback policy\b/i,
 ];
+
+// ─── M8: runtime quality-gate outcome counters (additive) ──────────
+//
+// In-process counters for the unified finalizer's gate outcomes:
+// pass / verified-kept / surgical / replaced. Deterministic, no I/O —
+// consumers snapshot via the getter (portal/evidence surfaces).
+
+export type ChatQualityGateOutcome =
+  | 'pass'
+  | 'verified_kept'
+  | 'surgical_downgrade'
+  | 'replaced'
+  | 'sanitized'
+  | 'recipe_restructured';
+
+const chatQualityGateOutcomeCounters: Record<ChatQualityGateOutcome, number> = {
+  pass: 0,
+  verified_kept: 0,
+  surgical_downgrade: 0,
+  replaced: 0,
+  sanitized: 0,
+  recipe_restructured: 0,
+};
+
+export function recordChatQualityGateOutcome(outcome: ChatQualityGateOutcome): void {
+  if (!(outcome in chatQualityGateOutcomeCounters)) return;
+  chatQualityGateOutcomeCounters[outcome] += 1;
+}
+
+export function getChatQualityGateOutcomeCounters(): Readonly<Record<ChatQualityGateOutcome, number>> {
+  return { ...chatQualityGateOutcomeCounters };
+}
+
+export function resetChatQualityGateOutcomeCountersForTests(): void {
+  for (const key of Object.keys(chatQualityGateOutcomeCounters) as ChatQualityGateOutcome[]) {
+    chatQualityGateOutcomeCounters[key] = 0;
+  }
+}
+
+// ─── M14: routing clarify budget counters (additive) ───────────────
+//
+// In-process counters for the flag-gated deterministic clarify policy so the
+// approved ≤10% clarify budget is observable: clarifiedTurns/evaluatedTurns.
+// evaluatedTurns counts routed-overlay orchestrator evaluations (the call
+// that carries routedDomain — once per chat turn); pre-routing overlay calls
+// and offline replays are not counted. Deterministic, no I/O.
+
+export interface RoutingClarifyCounters {
+  evaluatedTurns: number;
+  clarifiedTurns: number;
+}
+
+const routingClarifyCounters: RoutingClarifyCounters = {
+  evaluatedTurns: 0,
+  clarifiedTurns: 0,
+};
+
+export function recordRoutingClarifyDecision(clarified: boolean): void {
+  routingClarifyCounters.evaluatedTurns += 1;
+  if (clarified) routingClarifyCounters.clarifiedTurns += 1;
+}
+
+export function getRoutingClarifyCounters(): Readonly<RoutingClarifyCounters> {
+  return { ...routingClarifyCounters };
+}
+
+export function resetRoutingClarifyCountersForTests(): void {
+  routingClarifyCounters.evaluatedTurns = 0;
+  routingClarifyCounters.clarifiedTurns = 0;
+}
 
 function valuesEqual(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);

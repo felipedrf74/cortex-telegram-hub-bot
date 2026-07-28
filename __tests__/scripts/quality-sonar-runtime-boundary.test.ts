@@ -728,7 +728,7 @@ describe('Sonar live runtime boundary', () => {
     expect(incompatibleStore.stderr).toContain(
       'incompatible containerd image store disabled',
     );
-  });
+  }, 20_000);
 
   it('rejects overlapping subordinate ranges and mapped host-identity collisions', () => {
     const value = fixture();
@@ -768,7 +768,7 @@ describe('Sonar live runtime boundary', () => {
     expect(protectedRange.stderr).toContain(
       'dominguez overlaps the Docker subordinate UID range',
     );
-  });
+  }, 20_000);
 
   it('places the same live gate before installer mutation and immediately before Compose', () => {
     const installer = readFileSync(

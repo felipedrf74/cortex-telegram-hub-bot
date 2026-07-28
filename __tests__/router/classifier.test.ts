@@ -9,7 +9,7 @@
  * Plus full integration tests for routeMessage()
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { patternMatch, keywordMatch, classifyWithClaude } from '../../src/router/classifier';
 import { routeMessage, isSystemCommand } from '../../src/router/index';
 
@@ -450,13 +450,39 @@ vi.mock('../../src/utils/logger', () => ({
   LOGGER_REDACTION_PATHS: [],
 }));
 
+// M13: the low-confidence pin's durable-backed active-domain read. Mocked so
+// this suite never touches the database module.
+const mockGetActiveChatDomain = vi.hoisted(
+  () => vi.fn((_userId: number, _now?: number, _tenantId?: number): string | null => null),
+);
+vi.mock('../../src/services/chat-conversation-state', async () => ({
+  ...(await vi.importActual('../../src/services/chat-conversation-state')),
+  getActiveChatDomain: (userId: number, now?: number, tenantId?: number) =>
+    mockGetActiveChatDomain(userId, now, tenantId),
+}));
+
 import { classifyMessage } from '../../src/services/anthropic';
 
 const mockClassifyMessage = vi.mocked(classifyMessage);
 
 describe('classifyWithClaude — Tier 3 AI Classification', () => {
+  // M15: this suite pins the LEGACY (flag-off) classify behavior — verbatim
+  // classify input, no candidate shortlist, no skill field. Force the flag
+  // off so the pins stay deterministic when the environment runs with
+  // AI_CLASSIFY_MANIFEST_PROMPT=true (flag-on behavior is covered by
+  // classifier-manifest-skill-flag.test.ts).
+  let savedManifestPromptFlag: string | undefined;
   beforeEach(() => {
+    savedManifestPromptFlag = process.env.AI_CLASSIFY_MANIFEST_PROMPT;
+    delete process.env.AI_CLASSIFY_MANIFEST_PROMPT;
     mockClassifyMessage.mockReset();
+    mockGetActiveChatDomain.mockReset();
+    mockGetActiveChatDomain.mockReturnValue(null);
+  });
+
+  afterEach(() => {
+    if (savedManifestPromptFlag === undefined) delete process.env.AI_CLASSIFY_MANIFEST_PROMPT;
+    else process.env.AI_CLASSIFY_MANIFEST_PROMPT = savedManifestPromptFlag;
   });
 
   it('returns the domain and confidence from the Claude classifier', async () => {
@@ -504,6 +530,40 @@ describe('classifyWithClaude — Tier 3 AI Classification', () => {
     );
 
     expect(result).toEqual({ domain: 'content', confidence: 0.51 });
+  });
+
+  it('M13: pins to the durable active domain on low confidence when no in-arg context exists', async () => {
+    mockClassifyMessage.mockResolvedValue({ domain: 'secretary', confidence: 0.3 });
+    mockGetActiveChatDomain.mockReturnValue('content');
+
+    const result = await classifyWithClaude('make it shorter', null, 42, 7);
+
+    expect(mockGetActiveChatDomain).toHaveBeenCalledWith(42, expect.any(Number), 7);
+    expect(result).toEqual({ domain: 'content', confidence: 0.51 });
+  });
+
+  it('M13: keeps the raw low-confidence result when the durable store has no fresh pin', async () => {
+    mockClassifyMessage.mockResolvedValue({ domain: 'secretary', confidence: 0.3 });
+    mockGetActiveChatDomain.mockReturnValue(null);
+
+    const result = await classifyWithClaude('make it shorter', null, 42, 7);
+
+    expect(result).toEqual({ domain: 'secretary', confidence: 0.3 });
+  });
+
+  it('M13: the explicit in-arg activeContext outranks the durable pin', async () => {
+    mockClassifyMessage.mockResolvedValue({ domain: 'secretary', confidence: 0.22 });
+    mockGetActiveChatDomain.mockReturnValue('finance');
+
+    const result = await classifyWithClaude(
+      'make it shorter',
+      { domain: 'content', lastAssistantMessage: 'Here are 10 video ideas.' },
+      42,
+      7,
+    );
+
+    expect(result).toEqual({ domain: 'content', confidence: 0.51 });
+    expect(mockGetActiveChatDomain).not.toHaveBeenCalled();
   });
 });
 

@@ -860,7 +860,8 @@ describe('rollback drill layout freshness adapter', () => {
   it('rejects an invalid owner signature before publishing evidence', () => {
     const value = fixture();
     const envelope = JSON.parse(fs.readFileSync(value.faultFile, 'utf8'));
-    envelope.signature = `${envelope.signature.slice(0, 4)}A${
+    const replacement = envelope.signature[4] === 'A' ? 'B' : 'A';
+    envelope.signature = `${envelope.signature.slice(0, 4)}${replacement}${
       envelope.signature.slice(5)
     }`;
     writeJson(value.faultFile, envelope);

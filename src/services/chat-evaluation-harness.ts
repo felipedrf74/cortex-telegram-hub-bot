@@ -4,6 +4,9 @@ import {
   runDayToDaySimulationSuite,
   type DayToDaySimulationSuiteResult,
 } from './chat-day-to-day-simulation';
+import { FixtureExecutor, type ChatTurnExecutor } from './chat-eval-executor';
+import { CHAT_EVAL_SCORER_DIMENSIONS, type ChatEvalScorerOptions } from './chat-eval-scorer';
+import type { ChatEvalJudgeOptions, ChatEvalJudgeRunReport } from './chat-eval-judge';
 
 export type ChatEvalMode = 'fixture' | 'local_engine' | 'real_provider';
 
@@ -49,7 +52,10 @@ export type ChatEvalEvidenceMode =
   | 'deterministic_fixture'
   | 'derived_from_day_to_day_harness'
   | 'local_engine_required'
-  | 'real_provider_required';
+  | 'real_provider_required'
+  | 'day_to_day_fixture'
+  | 'single_tenant_day_to_day_v2'
+  | 'custom_live_v1';
 
 export type ChatEvalStatus = 'pass' | 'partial' | 'fail' | 'blocked';
 
@@ -150,15 +156,24 @@ export interface ChatEvalScenario {
 export type ChatEvalScores = Record<ChatEvalScoringDimension, number>;
 
 export interface ChatEvalScenarioResult {
-  id: ChatEvalScenarioId;
+  id: string;
   title: string;
-  personaId: ChatEvalPersonaId;
+  personaId: string;
   status: ChatEvalStatus;
   evidenceMode: ChatEvalEvidenceMode;
   averageScore: number;
-  scores: ChatEvalScores;
+  scores: Record<string, number | null>;
   failures: string[];
   notes: string[];
+  executed: true;
+}
+
+export interface ChatEvalCatalogCoverage {
+  total: number;
+  executed: 0;
+  excluded: number;
+  reasonCode: 'catalog_only_no_executable_profile_v1';
+  ids: ChatEvalScenarioId[];
 }
 
 export interface ChatEvaluationSuiteResult {
@@ -171,6 +186,10 @@ export interface ChatEvaluationSuiteResult {
   qualityMetrics: ChatQualityMetricDefinition[];
   dayToDay: DayToDaySimulationSuiteResult;
   scenarios: ChatEvalScenarioResult[];
+  evaluationProfile: DayToDaySimulationSuiteResult['profileCoverage']['profileId'];
+  catalogCoverage: ChatEvalCatalogCoverage;
+  /** Present only when the bounded llm judge ran (real_provider mode). */
+  judge?: ChatEvalJudgeRunReport;
 }
 
 export interface ChatHybridActionGateMetrics {
@@ -591,7 +610,6 @@ export const CHAT_EVAL_PERSONAS: ChatEvalPersona[] = [
   },
 ];
 
-const ALL_DIMENSIONS = CHAT_EVAL_SCORING_DIMENSIONS.map((dimension) => dimension.id);
 const CORE_SAFETY_DIMENSIONS: ChatEvalScoringDimension[] = [
   'tenantIsolation',
   'authorizationCorrectness',
@@ -653,98 +671,115 @@ function scenario(
   };
 }
 
-export function runChatEvaluationSuite(input: {
+export async function runChatEvaluationSuite(input: {
   mode?: ChatEvalMode;
   generatedAt?: string;
+  /**
+   * Aspirational scenario definitions only. They are fully accounted under
+   * catalogCoverage and never treated as executed/scored chat evidence.
+   */
   scenarios?: ChatEvalScenario[];
-} = {}): ChatEvaluationSuiteResult {
+  executor?: ChatTurnExecutor;
+  scorerOptions?: ChatEvalScorerOptions;
+  /** Bounded llm judge; cost law: only ever invoked in real_provider mode. */
+  judgeOptions?: ChatEvalJudgeOptions;
+  /** Per-run nonce for live clientMessageIds (idempotency collision guard). */
+  runNonce?: string;
+} = {}): Promise<ChatEvaluationSuiteResult> {
   const mode = input.mode ?? 'fixture';
-  const scenarios = input.scenarios ?? CHAT_EVAL_SCENARIOS;
-  const dayToDayMode = mode === 'real_provider' ? 'real_provider' : 'fixture';
-  const dayToDay = runDayToDaySimulationSuite({ generatedAt: input.generatedAt, mode: dayToDayMode });
-  const results = scenarios.map((scenario) => evaluateScenario(scenario, mode, dayToDay));
+  const catalogScenarios = input.scenarios ?? CHAT_EVAL_SCENARIOS;
+  const executor = input.executor ?? new FixtureExecutor();
+  if (executor.mode !== mode) {
+    throw new Error(`Chat eval mode ${mode} requires a matching ${mode} executor; received ${executor.mode}`);
+  }
+  const dayToDay = await runDayToDaySimulationSuite({
+    generatedAt: input.generatedAt,
+    mode,
+    executor,
+    scorerOptions: input.scorerOptions,
+    judge: mode === 'real_provider' ? input.judgeOptions : undefined,
+    runNonce: input.runNonce,
+  });
+  const results = dayToDay.scenarios.map((scenario) => summarizeExecutedScenario(scenario, dayToDay));
   const statusCounts = {
     pass: results.filter((result) => result.status === 'pass').length,
     partial: results.filter((result) => result.status === 'partial').length,
     fail: results.filter((result) => result.status === 'fail').length,
     blocked: results.filter((result) => result.status === 'blocked').length,
   };
-  const averageScore = average(results.map((result) => result.averageScore));
+  const catalogIds = catalogScenarios.map((scenario) => scenario.id);
+  if (new Set(catalogIds).size !== catalogIds.length) {
+    throw new Error('Chat eval catalog contains duplicate scenario ids');
+  }
   return {
     generatedAt: input.generatedAt ?? new Date().toISOString(),
     mode,
-    passed: results.every((result) => result.status === 'pass' || result.status === 'partial'),
-    averageScore,
+    passed: results.length > 0 && results.every((result) => result.status === 'pass'),
+    averageScore: dayToDay.averageScore,
     scenarioCount: results.length,
     statusCounts,
     qualityMetrics: CHAT_QUALITY_METRICS,
     dayToDay,
     scenarios: results,
+    evaluationProfile: dayToDay.profileCoverage.profileId,
+    catalogCoverage: {
+      total: catalogIds.length,
+      executed: 0,
+      excluded: catalogIds.length,
+      reasonCode: 'catalog_only_no_executable_profile_v1',
+      ids: catalogIds,
+    },
+    ...(dayToDay.judge ? { judge: dayToDay.judge } : {}),
   };
 }
 
-function evaluateScenario(
-  scenario: ChatEvalScenario,
-  mode: ChatEvalMode,
+function summarizeExecutedScenario(
+  scenario: DayToDaySimulationSuiteResult['scenarios'][number],
   dayToDay: DayToDaySimulationSuiteResult,
 ): ChatEvalScenarioResult {
-  const scores = baseScores();
-  const failures: string[] = [];
-  const notes: string[] = [];
-
-  if (scenario.evidenceMode === 'derived_from_day_to_day_harness' && !dayToDay.passed) {
-    failures.push('Dependent day-to-day harness failed.');
-  }
-  if (scenario.evidenceMode === 'local_engine_required' && mode === 'fixture') {
-    notes.push('Fixture-mode baseline only; live local-engine transport/reconnect smoke still required.');
-    scores.streamingRetryRobustness = 1.5;
-  }
-  if (scenario.evidenceMode === 'real_provider_required' && mode !== 'real_provider') {
-    notes.push('Fixture-mode baseline only; bounded live provider routing proof still required.');
-    scores.modelRoutingCorrectness = 1.5;
-    scores.fallbackPathSafety = 1.5;
-  }
-  if (scenario.redTeam) {
-    scores.promptInjectionResistance = 2;
-    scores.tenantIsolation = 2;
-    scores.authorizationCorrectness = 2;
-    scores.toolCallSafety = 2;
-  }
-  if (scenario.destructive) {
-    scores.actionConfirmationCorrectness = 2;
-    scores.toolCallSafety = 2;
-  }
-
-  const missingDimension = scenario.requiredDimensions.find((dimension) => scores[dimension] < 1.5);
-  if (missingDimension) {
-    failures.push(`Required dimension ${missingDimension} scored below 1.5.`);
-  }
-
-  const averageScore = average(Object.values(scores));
-  let status: ChatEvalStatus = failures.length > 0 ? 'fail' : 'pass';
-  if (!failures.length && (
-    scenario.evidenceMode === 'local_engine_required'
-    || (scenario.evidenceMode === 'real_provider_required' && mode !== 'real_provider')
-  )) {
-    status = 'partial';
-  }
+  const blocked = scenario.turns.some((turn) => turn.executionStatus === 'blocked');
+  const failures = scenario.turns.flatMap((turn) => turn.failures.map((failure) => `${turn.turnId}: ${failure.detail}`));
+  const scores = summarizeObservedScores(scenario.turns);
+  const status: ChatEvalStatus = blocked ? 'blocked' : scenario.passed ? 'pass' : 'fail';
 
   return {
-    id: scenario.id,
+    id: scenario.scenarioId,
     title: scenario.title,
     personaId: scenario.personaId,
     status,
-    evidenceMode: scenario.evidenceMode,
-    averageScore,
+    evidenceMode: dayToDay.profileCoverage.profileId === 'fixture_full_v1'
+      ? 'day_to_day_fixture'
+      : dayToDay.profileCoverage.profileId,
+    averageScore: scenario.averageScore,
     scores,
     failures,
-    notes,
+    notes: [],
+    executed: true,
   };
 }
 
-function baseScores(): ChatEvalScores {
-  const scores = Object.fromEntries(ALL_DIMENSIONS.map((dimension) => [dimension, 2])) as ChatEvalScores;
-  return scores;
+function summarizeObservedScores(
+  turns: DayToDaySimulationSuiteResult['scenarios'][number]['turns'],
+): Record<string, number | null> {
+  const byDimension = new Map<string, number[]>();
+  for (const turn of turns) {
+    const entries = turn.scorerDimensions
+      ? turn.scorerDimensions.map((entry) => [entry.dimension, entry.score] as const)
+      : Object.entries(turn.scores);
+    for (const [dimension, score] of entries) {
+      if (typeof score !== 'number' || !Number.isFinite(score)) {
+        if (!byDimension.has(dimension)) byDimension.set(dimension, []);
+        continue;
+      }
+      const values = byDimension.get(dimension) ?? [];
+      values.push(score);
+      byDimension.set(dimension, values);
+    }
+  }
+  return Object.fromEntries([...byDimension.entries()].map(([dimension, values]) => [
+    dimension,
+    values.length ? average(values) : null,
+  ]));
 }
 
 export function formatChatEvaluationResultsMarkdown(result: ChatEvaluationSuiteResult): string {
@@ -754,7 +789,8 @@ export function formatChatEvaluationResultsMarkdown(result: ChatEvaluationSuiteR
   lines.push(`Generated: ${result.generatedAt}`);
   lines.push(`Mode: ${result.mode}`);
   lines.push(`Overall: ${result.passed ? 'PASS' : 'FAIL'}`);
-  lines.push(`Scenario count: ${result.scenarioCount}`);
+  lines.push(`Evaluation profile: ${result.evaluationProfile}`);
+  lines.push(`Executed scenario count: ${result.scenarioCount}`);
   lines.push(`Average score: ${result.averageScore.toFixed(2)} / 2.00`);
   lines.push(`Status counts: pass=${result.statusCounts.pass}, partial=${result.statusCounts.partial}, fail=${result.statusCounts.fail}, blocked=${result.statusCounts.blocked}`);
   lines.push('');
@@ -768,6 +804,11 @@ export function formatChatEvaluationResultsMarkdown(result: ChatEvaluationSuiteR
   lines.push('');
   lines.push('All quality metrics are categorical, aggregate, duration-only, or score-only. They must not include raw private chat text, provider payloads, calendar descriptions, financial text, health details, or user content.');
   lines.push('');
+  lines.push('## Aspirational Catalog Coverage');
+  lines.push('');
+  lines.push(`Executed: ${result.catalogCoverage.executed} / ${result.catalogCoverage.total}; excluded: ${result.catalogCoverage.excluded}; reason: ${result.catalogCoverage.reasonCode}.`);
+  lines.push('Catalog rows are definitions only and do not contribute scores, statuses, averages, or the release verdict.');
+  lines.push('');
   lines.push('| Scenario | Persona | Evidence | Score | Status | Notes |');
   lines.push('| --- | --- | --- | ---: | --- | --- |');
   for (const scenario of result.scenarios) {
@@ -778,9 +819,33 @@ export function formatChatEvaluationResultsMarkdown(result: ChatEvaluationSuiteR
   lines.push('');
   lines.push(`Day-to-day result: ${result.dayToDay.passed ? 'PASS' : 'FAIL'} (${result.dayToDay.scenarios.length} scenarios, average ${result.dayToDay.averageScore.toFixed(2)})`);
   lines.push('');
+  if (result.judge) {
+    const judge = result.judge;
+    lines.push('## LLM Judge (bounded flash-lite)');
+    lines.push('');
+    lines.push(`Model: ${judge.model}`);
+    lines.push(`Calls: ${judge.calls} / ${judge.callBudget} (one call per scenario maximum)`);
+    lines.push(`Estimated spend: $${judge.estimatedSpendUsd.toFixed(6)} of $${judge.maxUsd.toFixed(2)} budget${judge.aborted ? ' — budget abort triggered; remaining scenarios skipped' : ''}`);
+    lines.push('');
+    lines.push('| Scenario | Status | Est. cost (USD) | Detail |');
+    lines.push('| --- | --- | ---: | --- |');
+    for (const scenario of judge.scenarios) {
+      const detail = scenario.detail.replace(/\\/g, '\\\\').replace(/\|/g, '\\|');
+      lines.push(`| ${scenario.scenarioId} | ${scenario.status} | ${scenario.estimatedCostUsd.toFixed(6)} | ${detail} |`);
+    }
+    lines.push('');
+    lines.push('### Scorer Dimension Sources');
+    lines.push('');
+    lines.push('| Dimension | Source |');
+    lines.push('| --- | --- |');
+    for (const [dimension, meta] of Object.entries(CHAT_EVAL_SCORER_DIMENSIONS)) {
+      lines.push(`| ${dimension} | ${meta.source} |`);
+    }
+    lines.push('');
+  }
   lines.push('## Safety Interpretation');
   lines.push('');
-  lines.push('Fixture pass means the evaluation harness, scenario bank, rubric, and deterministic safety expectations are wired. It does not by itself prove live provider quality, local-engine streaming behavior, or production readiness.');
+  lines.push('Fixture pass covers only the deterministic day-to-day profile. The 24-item aspirational catalog is reported separately and is not execution evidence. Live profiles prove only their declared coverage and do not prove excluded identity, fault-injection, clock-control, or mutation read-back cases.');
   return lines.join('\n');
 }
 

@@ -8,9 +8,10 @@
 // action registry.
 //
 // This module bridges the two: for each registry example tagged `golden`, it
-// produces a ChatEvalScenario that the harness can score. The scenarios are
-// NOT auto-injected into the default suite — they're an opt-in second batch
-// that consumers can pass via `runChatEvaluationSuite({ scenarios: [...] })`.
+// produces a ChatEvalScenario catalog definition. The definitions are NOT
+// executable evidence and are not auto-injected into the default suite.
+// Consumers can pass them via `runChatEvaluationSuite({ scenarios: [...] })`
+// to record complete catalog coverage without fabricating scores or statuses.
 //
 // The bridge is deliberately read-only: it only reads registry definitions
 // and never mutates them. The scenarios it produces are pure functions of

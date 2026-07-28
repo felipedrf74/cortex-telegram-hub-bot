@@ -1,5 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
+import { randomUUID } from 'crypto';
+
 import type { InlineButton } from '../../adapters/message-adapter';
 import type { DomainName } from '../../domains/types';
 import { getCached, setCache } from '../../services/cache-store';
@@ -94,7 +96,7 @@ export async function tryBuildFastPathChatResponse(
   }
 
   const response: ChatMessageRouteResponse = {
-    id: `msg-${Date.now()}`,
+    id: `msg-${randomUUID()}`,
     text: resolvedFastPath.text,
     domain: resolvedFastPath.domain,
     routeMethod: 'fast-path',
@@ -136,7 +138,7 @@ export function tryBuildAuthenticatedIdentityResponse(
     conversationDomain: 'secretary',
     cacheable: false,
     response: {
-      id: `msg-${Date.now()}`,
+      id: `msg-${randomUUID()}`,
       text,
       domain: 'secretary',
       routeMethod: 'authenticated-identity',
@@ -170,7 +172,7 @@ export function tryBuildTrainingPlanShortcutResponse(
   const lang = getUserLanguageById(userId);
   const isPT = lang.startsWith('pt');
   const response: ChatMessageRouteResponse = {
-    id: `msg-${Date.now()}`,
+    id: `msg-${randomUUID()}`,
     text: isPT
       ? '🏋️ Para criar um plano de treino personalizado, vá à aba **Treino** e toque em **Criar plano**.\n\nO plano será gerado com base no seu perfil e agenda os treinos automaticamente no calendário.'
       : '🏋️ To create a personalized training plan, go to the **Training** tab and tap **Create Plan**.\n\nThe plan will be generated based on your profile and automatically schedule workouts in your calendar.',

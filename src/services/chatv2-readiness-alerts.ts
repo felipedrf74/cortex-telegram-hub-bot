@@ -190,6 +190,45 @@ export async function recordChatV2ReadinessOperatorAlerts(
   };
 }
 
+// ─── M22: immediate parity/fallback regression path (additive) ─────
+//
+// The full alert set (buildChatV2ReadinessAlertInputs) stays owner-driven via
+// scripts/chatv2-readiness-alerts.ts --write-alerts. The weekly chat-quality
+// digest additionally emits ONLY the parity/fallback subset immediately:
+// legacy-retirement parity gates and the legacy_fallback_rate gate. Missing
+// phases are NOT treated as immediate regressions (absence of evidence is
+// weekly-digest material, not a page).
+
+const PARITY_FALLBACK_GATE_IDS = new Set(['legacy_fallback_rate']);
+
+export function selectChatV2ParityFallbackRegressionAlerts(
+  inputs: RecordOperatorAlertInput[],
+): RecordOperatorAlertInput[] {
+  return inputs.filter((input) => {
+    const metadata = input.metadata ?? {};
+    const gateId = typeof metadata.gateId === 'string' ? metadata.gateId : '';
+    if (gateId === 'missing_phase') return false;
+    const phase = metadata.phase;
+    return phase === 'legacyRetirement' || PARITY_FALLBACK_GATE_IDS.has(gateId);
+  });
+}
+
+export async function recordChatV2ParityFallbackRegressionAlerts(
+  report: ChatV2CompletionReadinessReportLike,
+  options: ChatV2ReadinessAlertOptions = {},
+): Promise<ChatV2ReadinessAlertRecordResult> {
+  // Lazy import mirrors recordChatV2ReadinessOperatorAlerts: dry-run callers
+  // can build payloads without loading backend config or opening the DB.
+  const { recordOperatorAlert } = await import('./operator-alerts');
+  const alertInputs = selectChatV2ParityFallbackRegressionAlerts(
+    buildChatV2ReadinessAlertInputs(report, options),
+  );
+  return {
+    alertInputs,
+    results: alertInputs.map((input) => recordOperatorAlert(input)),
+  };
+}
+
 function normalizeGate(gate: ChatV2ReadinessGateLike): ChatV2ReadinessDashboardGate {
   return {
     gateId: String(gate.gateId || 'unknown_gate').slice(0, 120),

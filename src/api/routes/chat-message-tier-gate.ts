@@ -2,7 +2,7 @@
 
 import type { Response } from 'express';
 import { checkSkillAccess } from '../../services/skill-tiers';
-import { getUserById, getUserByTelegramId } from '../../services/user-service';
+import { getUserById } from '../../services/user-service';
 import { entitlementPlanToSkillTier, getEffectiveEntitlement } from '../../services/entitlement';
 import { logger } from '../../utils/logger';
 
@@ -12,7 +12,10 @@ export function sendChatTierRequiredIfNeeded(
   domain: string,
 ): boolean {
   try {
-    const user = getUserById(userId) || getUserByTelegramId(userId);
+    // userId comes from the verified iOS JWT and is keyed to users.id.
+    // No telegram-id fallback (M9): a telegram_id collision with a
+    // different user's id must never resolve to that other user.
+    const user = getUserById(userId);
     if (!user) return false;
 
     const entitlement = getEffectiveEntitlement(user.id);

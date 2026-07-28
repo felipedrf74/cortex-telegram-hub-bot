@@ -650,6 +650,83 @@ describe('migration-safety-check', () => {
     }]);
   });
 
+  it('compares an in-progress merge to main while preserving incoming-main deletion detection', { timeout: 30_000 }, () => {
+    const fixture = createGovernedMigrationRepo();
+    try {
+      const branchOnlyMigration = 'migrations/002_branch_only.sql';
+      const mainMigration = 'migrations/002_main.sql';
+      const finalMigration = 'migrations/003_branch_only.sql';
+
+      fixture.git('switch', '-c', 'feature');
+      writeFileSync(
+        join(fixture.repo, branchOnlyMigration),
+        'CREATE TABLE branch_only_value (id INTEGER PRIMARY KEY);\n',
+      );
+      fixture.git('add', branchOnlyMigration);
+      fixture.git('commit', '-m', 'fixture: add branch-only migration');
+      const featureHead = fixture.git('rev-parse', 'HEAD');
+
+      fixture.git('switch', 'main');
+      writeFileSync(
+        join(fixture.repo, mainMigration),
+        'CREATE TABLE main_value (id INTEGER PRIMARY KEY);\n',
+      );
+      fixture.git('add', mainMigration);
+      fixture.git('commit', '-m', 'fixture: add main migration');
+
+      fixture.git('switch', 'feature');
+      fixture.git('merge', '--no-commit', 'main');
+      fixture.git('mv', branchOnlyMigration, finalMigration);
+
+      const result = spawnSync(
+        'node',
+        [
+          migrationSafetyScript,
+          '--root', fixture.repo,
+          '--base', featureHead,
+          '--changed-only',
+          '--approval-mode', 'scan',
+          '--json',
+        ],
+        { encoding: 'utf8', env: fixture.gitEnv },
+      );
+
+      expect(result.status, `${result.stdout}${result.stderr}`).toBe(0);
+      expect(result.stderr).toBe('');
+      const payload = JSON.parse(result.stdout) as {
+        irreversibleChangedMigrations: Array<{ file: string; reason: string }>;
+      };
+      expect(payload.irreversibleChangedMigrations).not.toContainEqual({
+        file: branchOnlyMigration,
+        reason: 'DELETED_OR_RENAMED',
+      });
+
+      fixture.git('rm', '--force', mainMigration);
+      const droppedIncomingMain = spawnSync(
+        'node',
+        [
+          migrationSafetyScript,
+          '--root', fixture.repo,
+          '--base', featureHead,
+          '--changed-only',
+          '--approval-mode', 'scan',
+          '--json',
+        ],
+        { encoding: 'utf8', env: fixture.gitEnv },
+      );
+      expect(droppedIncomingMain.status).toBe(1);
+      const droppedPayload = JSON.parse(droppedIncomingMain.stdout) as {
+        irreversibleChangedMigrations: Array<{ file: string; reason: string }>;
+      };
+      expect(droppedPayload.irreversibleChangedMigrations).toContainEqual({
+        file: mainMigration,
+        reason: 'DELETED_OR_RENAMED',
+      });
+    } finally {
+      rmSync(fixture.repo, { recursive: true, force: true });
+    }
+  });
+
   it.each(['rename', 'deletion'])(
     'fails closed for a governed same-prefix %s discovered from Git',
     { timeout: 30_000 },

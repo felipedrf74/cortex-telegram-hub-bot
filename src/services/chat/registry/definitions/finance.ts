@@ -173,6 +173,10 @@ export const FINANCE_ACTIONS: ChatActionDefinition[] = [
       providerDependencies: ['nexus'],
       risk: 'financial',
       confirmationPolicy: 'strong_confirm',
+      confirmationTarget: {
+        tool: 'finance_mark_tax_paid',
+        argumentField: 'month',
+      },
       executor: 'stripe.safeMutation',
       verifier: 'provider_read_back',
       typedSlotExtractors: [noopSlotExtractor],

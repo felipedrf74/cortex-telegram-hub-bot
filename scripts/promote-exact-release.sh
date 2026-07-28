@@ -76,6 +76,62 @@ node "$ROOT/scripts/rollback-drill-check.mjs" validate \
   --max-age-days 30 \
   --json >/dev/null
 
+# Chat-eval promote gate: the latest recorded local_engine chat evaluation
+# run must exist and have passed before any production mutation. Produce one
+# with scripts/chat-eval-local.sh. This runs locally, before any lock or SSH.
+CHAT_EVAL_GATE_DB="${CHAT_EVAL_DB_PATH:-$ROOT/reports/chat-eval/chat-eval-history.sqlite}"
+if [ "${NEXUS_PROMOTE_SKIP_CHAT_EVAL:-0}" = "1" ]; then
+  echo "WARNING: NEXUS_PROMOTE_SKIP_CHAT_EVAL=1 — SKIPPING the local_engine chat-eval promote gate" >&2
+  echo "WARNING: this promotion carries NO chat evaluation evidence; record the justification with the release evidence" >&2
+else
+  # NODE_PATH makes better-sqlite3 resolvable from any invocation cwd.
+  NODE_PATH="$ROOT/node_modules" node -e '
+    const fs = require("fs");
+    const dbPath = process.argv[1];
+    const runtimeSha = String(process.argv[2] || "");
+    const fail = (message) => { console.error(`chat-eval gate: ${message}`); process.exit(1); };
+    if (!fs.existsSync(dbPath)) {
+      fail(
+        `no chat-eval history database at ${dbPath}. ` +
+        "The gate reads CHAT_EVAL_DB_PATH (default reports/chat-eval/chat-eval-history.sqlite); " +
+        "scripts/chat-eval-local.sh may have persisted to a different, .env.local-configured CHAT_EVAL_DB_PATH " +
+        "(split-brain). Align CHAT_EVAL_DB_PATH for both, then run scripts/chat-eval-local.sh first",
+      );
+    }
+    const Database = require("better-sqlite3");
+    const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+    let row;
+    try {
+      row = db.prepare(
+        "SELECT id, run_id, passed, git_commit, generated_at, created_at FROM chat_eval_runs " +
+        "WHERE mode = ? ORDER BY created_at DESC, id DESC LIMIT 1",
+      ).get("local_engine");
+    } catch (error) {
+      fail(`unable to read chat-eval history (${error.message}); rerun scripts/chat-eval-local.sh`);
+    } finally {
+      db.close();
+    }
+    if (!row) fail("no local_engine chat-eval run recorded; run scripts/chat-eval-local.sh first");
+    if (Number(row.passed) !== 1) {
+      fail(`latest local_engine run ${row.run_id} (${row.created_at}) FAILED; fix chat quality or rerun scripts/chat-eval-local.sh`);
+    }
+    // Exact-run guard: release evidence is valid only when it carries the full
+    // commit identity produced by the clean evidence checkout. Legacy empty or
+    // abbreviated rows are not promotable; rerun the local evaluator.
+    const recordedCommit = typeof row.git_commit === "string" ? row.git_commit.trim() : "";
+    if (!/^[0-9a-f]{40}$/.test(recordedCommit)) {
+      fail(`chat-eval run ${row.run_id} has no full exact git commit; re-run ./scripts/chat-eval-local.sh`);
+    }
+    if (recordedCommit !== runtimeSha) {
+      fail(`chat-eval run was recorded on ${recordedCommit}, promoting ${runtimeSha} — re-run ./scripts/chat-eval-local.sh`);
+    }
+    console.error(`chat-eval gate: latest local_engine run ${row.run_id} passed (${row.created_at}, commit ${recordedCommit})`);
+  ' "$CHAT_EVAL_GATE_DB" "$RUNTIME_SHA" || {
+    echo "local_engine chat-eval gate refused promotion (loud override: NEXUS_PROMOTE_SKIP_CHAT_EVAL=1)" >&2
+    exit 1
+  }
+fi
+
 # Serialize exact promotion and emergency-recovery operator paths through the
 # same lock name.
 # The remote lock is the cross-worktree/cross-operator authority; the local

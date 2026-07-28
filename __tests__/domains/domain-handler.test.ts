@@ -246,6 +246,21 @@ describe('buildSimpleStateContext', () => {
     expect(ctx).not.toContain('[Shared] local finance state');
   });
 
+  it('includes scoped Nexus context for an uncertain clarification turn instead of answering blind (M17)', async () => {
+    vi.mocked(listTodos).mockReturnValue([
+      { id: 9, title: 'Prep salmon bowls', priority: 'medium', due_date: null, domain: 'cooking', description: null, status: 'pending', tags: null, created_at: '', updated_at: '', completed_at: null },
+    ] as any);
+    vi.mocked(getSharedMemorySummary).mockReturnValue('[Shared] local cooking preference');
+
+    // Clarification route with groundingRequired 'none' — the contract itself
+    // says the turn is ambiguous, so answering without scoped state is blind.
+    const ctx = await buildSimpleStateContext('cooking', 42, 'hmm not sure which of those');
+
+    expect(ctx).toContain('Cooking to-dos');
+    expect(ctx).toContain('Prep salmon bowls');
+    expect(ctx).toContain('[Shared] local cooking preference');
+  });
+
   it('includes scoped Nexus context when Cooking asks for local meal-plan state', async () => {
     vi.mocked(listTodos).mockReturnValue([
       { id: 4, title: 'Plan local meals', priority: 'medium', due_date: null, domain: 'cooking', description: null, status: 'pending', tags: null, created_at: '', updated_at: '', completed_at: null },

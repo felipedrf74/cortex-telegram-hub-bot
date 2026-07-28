@@ -70,15 +70,20 @@ describe('ChatActionPlanner multi-step DAG', () => {
     testDb?.close();
   });
 
-  it('turns two safe-write segments into a stable sequential DAG that requires confirmation', async () => {
+  it('turns two safe-write segments into a stable DAG of independent siblings that requires confirmation', async () => {
     const plan = await buildChatActionPlan(baseInput);
 
+    // M16 pin flip (was: dependsOnStepIds ['step_1']): 'and' is a relaxed
+    // sibling connective when NO data flow links the steps — "Create task Buy
+    // milk and create task Call mom" are independent requests, so a failure
+    // of the first must not block the second. Sequencing connectives
+    // ('then'/'and then') and $ref data flow still chain.
     expect(plan).toMatchObject({
       planner: 'mixed',
       requiresConfirmation: true,
       steps: [
         { stepId: 'step_1', skill: 'tasks', action: 'create_task', requiredArgsPresent: true },
-        { stepId: 'step_2', skill: 'tasks', action: 'create_task', requiredArgsPresent: true, dependsOnStepIds: ['step_1'] },
+        { stepId: 'step_2', skill: 'tasks', action: 'create_task', requiredArgsPresent: true, dependsOnStepIds: undefined },
       ],
     });
     expect(plan?.debug?.routingSignals).toEqual(expect.arrayContaining([
@@ -98,7 +103,12 @@ describe('ChatActionPlanner multi-step DAG', () => {
     expect(plan?.requiresConfirmation).toBe(true);
   });
 
-  it('emits multi-step result metadata and stops after the first blocked dependency', async () => {
+  // M16 pin flip (was: 'stops after the first blocked dependency' with
+  // step_3 left 'pending' and aggregate status 'blocked'): a failed/blocked
+  // step now blocks ONLY its dependents; independent branches keep
+  // executing, and the mixed outcome is reported honestly as
+  // partial_success with a per-step enumeration.
+  it('emits multi-step result metadata, blocks only dependents, and continues independent branches', async () => {
     const sourcePlan: ChatActionPlan = {
       schemaVersion: 1,
       userId: '42',
@@ -126,17 +136,21 @@ describe('ChatActionPlanner multi-step DAG', () => {
     }, {});
 
     expect(response.metadata.type).toBe('chat_action_multi_step_result');
-    expect(response.metadata.actionStatus).toBe('blocked');
+    expect(response.metadata.actionStatus).toBe('partial_success');
     expect(response.metadata.multiStepSummary).toMatchObject({
       totalSteps: 3,
-      succeeded: 1,
+      succeeded: 2,
       blocked: 1,
       perStep: [
         { stepId: 'step_1', status: 'verified_success' },
         { stepId: 'step_2', status: 'blocked', error: 'dependency_failed' },
-        { stepId: 'step_3', status: 'pending' },
+        { stepId: 'step_3', status: 'verified_success' },
       ],
     });
+    // Honest partial composition: the answer enumerates each branch and
+    // never claims success for the blocked step.
+    expect(response.text).toContain('2 of 3');
+    expect(response.text).toContain('not run');
   });
 
   it('resolves task pronouns through step refs before executing dependent mutations', async () => {
@@ -187,6 +201,41 @@ describe('ChatActionPlanner multi-step DAG', () => {
     ).get() as { count: number };
     expect(completeMutation.count).toBe(1);
     expect(response.metadata.multiStepSummary).toMatchObject({ totalSteps: 2, succeeded: 2 });
+  });
+
+  // M16: a low-confidence split NEVER silently executes — it always lands in
+  // the preview/confirm flow, and the preview enumerates the interpreted
+  // step list so the user can see exactly what will run.
+  it('routes low_confidence_multi to a preview that enumerates the interpreted steps', async () => {
+    const plan = await buildChatActionPlan({ ...baseInput, messageId: 'msg-low-confidence' });
+
+    expect(plan?.requiresConfirmation).toBe(true);
+    expect(plan?.debug?.routingSignals).toEqual(expect.arrayContaining([
+      'multi_step_low_confidence_preview',
+    ]));
+
+    const response = await executeChatActionPlan(plan!, { ...baseInput, messageId: 'msg-low-confidence' }, {});
+
+    expect(response.metadata.actionStatus).toBe('needs_confirmation');
+    expect(response.text).toContain('I understood 2 steps:');
+    expect(response.text).toContain('1. Create task “Buy milk”');
+    expect(response.text).toContain('2. Create task “Call mom”');
+  });
+
+  // M16: more than 5 actionable segments — execute the first 5, DISCLOSE the
+  // overflow instead of silently dropping requests 6+.
+  it('caps at 5 steps and discloses the overflow in the preview', async () => {
+    const text = 'Create task one, create task two, create task three, create task four, create task five, create task six, create task seven';
+    const plan = await buildChatActionPlan({ ...baseInput, text, messageId: 'msg-overflow' });
+
+    expect(plan?.steps).toHaveLength(5);
+    expect(plan?.multiStepOverflowCount).toBe(2);
+    expect(plan?.debug?.routingSignals).toEqual(expect.arrayContaining(['multi_step_overflow:2']));
+
+    const response = await executeChatActionPlan(plan!, { ...baseInput, text, messageId: 'msg-overflow' }, {});
+
+    expect(response.metadata.actionStatus).toBe('needs_confirmation');
+    expect(response.text).toContain("I found 7 requests; I'm only handling the first 5");
   });
 
   it('requires clarification before executing any multi-step plan with unresolved steps', async () => {

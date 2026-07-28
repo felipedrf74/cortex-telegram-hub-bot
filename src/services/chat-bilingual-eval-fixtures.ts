@@ -159,6 +159,85 @@ export const CHAT_BILINGUAL_EVAL_FIXTURES: ChatBilingualEvalFixture[] = [
   ]),
 ];
 
+/**
+ * es-419 vs pt-BR confusable prompt/response pairs for the locale-fidelity
+ * gate (Milestone 3). Each fixture carries the prompt in its locale, the
+ * correct on-locale response, and the sibling-language leak shape the
+ * detector must flag. The es-419 leak shapes pin the recurring failure class
+ * observed in the only live eval evidence collected (es-419 prompts answered
+ * in Portuguese — see portugueseLocalizationLeakage in chat-hybrid-metrics).
+ */
+export interface ChatLocaleConfusableEvalFixture {
+  scenario: string;
+  promptLocale: 'es-419' | 'pt-BR';
+  expectedResponseLanguage: 'es' | 'pt';
+  prompt: string;
+  onLocaleResponse: string;
+  crossLocaleLeakResponse: string;
+}
+
+export const CHAT_LOCALE_CONFUSABLE_EVAL_FIXTURES: ChatLocaleConfusableEvalFixture[] = [
+  ...confusablePair('task_create_short_ack', {
+    es: ['Crea una tarea para comprar leche mañana', 'Listo, creé la tarea para comprar leche mañana.'],
+    pt: ['Cria uma tarefa para comprar leite amanhã', 'Pronto, criei a tarefa para comprar leite amanhã.'],
+  }),
+  ...confusablePair('known_leak_planner_review', {
+    // Pinned live-eval leak shape: es-419 prompt answered in Portuguese.
+    es: ['Crea una tarea llamada revisión del planificador', 'Creé la tarea llamada revisión del planificador.'],
+    pt: ['Cria uma tarefa chamada revisão do planejador', 'Criei a tarefa chamada revisão do planificador. Precisa de mais alguma coisa?'],
+  }),
+  ...confusablePair('meeting_date_confirmation', {
+    es: ['Agenda una reunión con Ana el viernes a las 10', 'Agendé la reunión con Ana para el viernes a las 10 de la mañana.'],
+    pt: ['Agenda uma reunião com a Ana na sexta às 10', 'Agendei a reunião com a Ana para sexta-feira às 10 da manhã.'],
+  }),
+  ...confusablePair('overdue_task_list', {
+    es: ['Muéstrame las tareas atrasadas', 'Tienes 3 tareas atrasadas: revisión del informe, pagar la factura y llamar al médico.'],
+    pt: ['Mostra as tarefas atrasadas', 'Você tem 3 tarefas atrasadas: revisão do relatório, pagar a fatura e ligar para o médico.'],
+  }),
+  ...confusablePair('task_completion_ack', {
+    es: ['Marca esta tarea como completada', 'Hecho, marqué la tarea como completada.'],
+    pt: ['Marca esta tarefa como concluída', 'Feito, marquei a tarefa como concluída.'],
+  }),
+  ...confusablePair('agenda_day_summary', {
+    es: ['¿Qué tengo en la agenda hoy?', 'Hoy tienes dos reuniones y una ventana libre después del almuerzo.'],
+    pt: ['O que tenho na agenda hoje?', 'Hoje você tem duas reuniões e uma janela livre depois do almoço.'],
+  }),
+  ...confusablePair('weekday_reminder', {
+    es: ['Recuérdame pagar el alquiler el lunes', 'Listo, te recordaré pagar el alquiler el lunes también.'],
+    pt: ['Lembra-me de pagar o aluguel na segunda', 'Pronto, vou lembrar você de pagar o aluguel na segunda-feira também.'],
+  }),
+  ...confusablePair('task_not_found_repair', {
+    es: ['Completa la tarea informe mensual', 'No encontré ninguna tarea con ese nombre. ¿Puedes darme más detalles?'],
+    pt: ['Conclui a tarefa relatório mensal', 'Não encontrei nenhuma tarefa com esse nome. Pode dar mais detalhes?'],
+  }),
+];
+
+function confusablePair(
+  scenario: string,
+  variants: { es: [string, string]; pt: [string, string] },
+): ChatLocaleConfusableEvalFixture[] {
+  const [esPrompt, esResponse] = variants.es;
+  const [ptPrompt, ptResponse] = variants.pt;
+  return [
+    {
+      scenario: `${scenario}_es419`,
+      promptLocale: 'es-419',
+      expectedResponseLanguage: 'es',
+      prompt: esPrompt,
+      onLocaleResponse: esResponse,
+      crossLocaleLeakResponse: ptResponse,
+    },
+    {
+      scenario: `${scenario}_ptbr`,
+      promptLocale: 'pt-BR',
+      expectedResponseLanguage: 'pt',
+      prompt: ptPrompt,
+      onLocaleResponse: ptResponse,
+      crossLocaleLeakResponse: esResponse,
+    },
+  ];
+}
+
 function skill(
   skillName: ChatBilingualEvalFixture['skill'],
   shape: NexusChatExpectedResponseShape,

@@ -10,10 +10,12 @@ import {
   realpathSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
 const ROOT = join(__dirname, '..', '..');
@@ -86,6 +88,43 @@ exec "$@"
 `,
     { mode: 0o755 },
   );
+}
+
+function seedPassingChatEvalGate(rootPath: string, runtimeSha: string) {
+  const databaseDirectory = join(rootPath, 'reports', 'chat-eval');
+  const databasePath = join(databaseDirectory, 'chat-eval-history.sqlite');
+  mkdirSync(databaseDirectory, { recursive: true });
+  const db = new Database(databasePath);
+  try {
+    db.exec(`
+      CREATE TABLE chat_eval_runs (
+        id INTEGER PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        mode TEXT NOT NULL,
+        passed INTEGER NOT NULL,
+        git_commit TEXT,
+        generated_at TEXT,
+        created_at TEXT NOT NULL
+      )
+    `);
+    db.prepare(`
+      INSERT INTO chat_eval_runs (
+        run_id, mode, passed, git_commit, generated_at, created_at
+      ) VALUES (?, 'local_engine', 1, ?, ?, ?)
+    `).run(
+      'fixture-local-engine',
+      runtimeSha,
+      '2026-07-23T12:00:00.000Z',
+      '2026-07-23T12:00:00.000Z',
+    );
+  } finally {
+    db.close();
+  }
+
+  const fixtureNodeModules = join(rootPath, 'node_modules');
+  if (!existsSync(fixtureNodeModules)) {
+    symlinkSync(join(ROOT, 'node_modules'), fixtureNodeModules, 'dir');
+  }
 }
 
 function runExpiredUnsignedResumeFixture(
@@ -174,6 +213,7 @@ release_cleanup_all_locks() { return 0; }
     encoding: 'utf8',
     env: gitEnv,
   }).stdout.trim();
+  seedPassingChatEvalGate(fixture, runtimeSha);
   const predecessorRuntime = `${productionBase}/releases/${predecessorSha}-${predecessorArtifactDigest.slice(0, 12)}`;
   const productionRelease = `${productionBase}/releases/${runtimeSha}-${artifactDigest.slice(0, 12)}`;
 
@@ -381,6 +421,15 @@ exit 95
 }
 
 describe('exact production promotion operational safety', () => {
+  it('requires a nonempty full exact-SHA chat-eval record with no legacy prefix acceptance', () => {
+    const raw = source(PROMOTE);
+
+    expect(raw).toContain('if (!/^[0-9a-f]{40}$/.test(recordedCommit))');
+    expect(raw).toContain('recordedCommit !== runtimeSha');
+    expect(raw).not.toContain('runtimeSha.startsWith(recordedCommit)');
+    expect(raw).not.toContain('Rows with an empty git_commit stay accepted');
+  });
+
   it('locks staging and permits an already-active release only through a bound resume before rsync', () => {
     const operator = source(RELEASE_OPERATOR);
     const staging = operator.indexOf('  staging)');
@@ -1120,6 +1169,7 @@ exit 95
         encoding: 'utf8',
         env: gitEnv,
       }).stdout.trim();
+      seedPassingChatEvalGate(fixture, runtimeSha);
       const productionRelease = `${productionBase}/releases/${runtimeSha}-${artifactDigest.slice(0, 12)}`;
       mkdirSync(join(fixture, '.local'), { recursive: true });
       const localFixtureRoot = realpathSync(join(fixture, '.local'));

@@ -1,5 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
+import { randomUUID } from 'crypto';
+
 import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
@@ -109,16 +111,23 @@ export function registerChatCallbackRoutes(
             timestamp,
           });
         }
+        // M11: single hoisted fallback id — the old per-field
+        // `chat-callback:${Date.now()}` fallbacks could collide across
+        // concurrent requests within the same millisecond AND diverge
+        // between requestId/id/traceId of the same evidence row.
+        const evidenceId = typeof messageId === 'string' && messageId.trim()
+          ? messageId
+          : `chat-callback:${randomUUID()}`;
         safeRecordChatV2DeterministicReadEvidence({
           tenantId,
           userId,
-          requestId: typeof messageId === 'string' && messageId.trim() ? messageId : `chat-callback:${Date.now()}`,
+          requestId: evidenceId,
           normalizedMessage: command,
           tokenZeroSurface: 'button',
           tokenZeroPreserved: true,
           tenantUserIsolationPassed: true,
           response: {
-            id: typeof messageId === 'string' && messageId.trim() ? messageId : `chat-callback:${Date.now()}`,
+            id: evidenceId,
             text: fastPath.text,
             domain: fastPath.domain,
             routeMethod: 'fast-path',
@@ -134,7 +143,7 @@ export function registerChatCallbackRoutes(
                 actionability: 'answer_only',
                 verificationStatus: 'not_required',
                 confidence: 1,
-                traceId: typeof messageId === 'string' && messageId.trim() ? messageId : `chat-callback:${Date.now()}`,
+                traceId: evidenceId,
               }),
             },
           },

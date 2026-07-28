@@ -2,6 +2,7 @@
 
 import { foldCalendarText } from '../../calendar-natural-language-parser';
 import { makeStep } from '../../skills/step-builder';
+import { getCurrentChatLiveEvalMutationTarget } from '../../chat-live-evaluation-context';
 import type { ChatActionRisk } from '../registry';
 import type { ChatActionPlan, ChatPlannerInput } from '../types';
 import { buildPlanFromSteps } from './plan-builder';
@@ -88,15 +89,24 @@ function buildTaskMutationPlan(
   action: 'delete_task' | 'update_task' | 'set_task_reminder',
   risk: ChatActionRisk,
 ): ChatActionPlan {
+  const evalTarget = action === 'delete_task'
+    ? getCurrentChatLiveEvalMutationTarget()
+    : null;
+  const exactEvalTarget = evalTarget
+    && foldCalendarText(input.text).includes(foldCalendarText(evalTarget.title))
+    ? evalTarget
+    : null;
   const step = makeStep(input, {
     skill: 'tasks',
     action,
     risk,
     provider: 'nexus',
-    args: action === 'set_task_reminder'
+    args: exactEvalTarget
+      ? { taskId: exactEvalTarget.taskId, title: exactEvalTarget.title }
+      : action === 'set_task_reminder'
       ? { taskId: null, reminderAt: null }
       : { taskId: null },
-    requiredArgsPresent: false,
+    requiredArgsPresent: Boolean(exactEvalTarget),
   });
   return buildPlanFromSteps(input, [step], [`task_${action}_intent`, 'deterministic_task_parser'], 0.76);
 }

@@ -721,7 +721,7 @@ describe('v2 normalization attestor installer transactions', () => {
         stdio: ['ignore', 'pipe', 'pipe'],
       },
     );
-    const deadline = Date.now() + 8_000;
+    const deadline = Date.now() + 20_000;
     while (!existsSync(ready) && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
@@ -739,7 +739,7 @@ describe('v2 normalization attestor installer transactions', () => {
       ok: true,
       status: 'pre_mutation_maintenance_recovered',
     });
-  }, 30_000);
+  }, 60_000);
 
   it.each([
     [

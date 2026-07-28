@@ -115,6 +115,18 @@ export function resolveCurrentTenantIdForUser(userId: number): number {
 
 // ─── User CRUD ──────────────────────────────────────────────────────
 
+/**
+ * DEPRECATED REMNANT (M21 telegram purge, 2026-07): the JWT-userId fallback
+ * call sites (chat/WS in M9; dashboard-home-input, skills getCaller, and
+ * onboarding in M21) were removed — verified iOS JWTs always carry the
+ * canonical users.id. This lookup remains ONLY for:
+ *  - the owner bootstrap path (seedOwnerUser / getOwnerBootstrapUser), which
+ *    still keys the persisted owner row by users.telegram_id;
+ *  - the owner-gated skills override target contract (skills.ts);
+ *  - the garmin-session-store legacy resolution fallback.
+ * Migration 258 archives users.telegram_id (archive-first, column kept).
+ * Remove this together with the owner-gated identity migration.
+ */
 export function getUserByTelegramId(telegramId: number): User | null {
   const db = getDb();
   const row = db.prepare('SELECT * FROM users WHERE telegram_id = ?').get(telegramId) as User | undefined;
@@ -900,6 +912,17 @@ export function deleteInviteCode(code: string): boolean {
  * Auto-create or upgrade the owner user from explicit OWNER_TELEGRAM_ID when
  * no persisted owner record already exists.
  * Call once at startup. Safe to call multiple times (idempotent).
+ *
+ * FINAL TELEGRAM REMNANT (M21 telegram purge, 2026-07): this bootstrap
+ * still SEEDS and READS users.telegram_id because production's persisted
+ * owner row is keyed by that column and OWNER_TELEGRAM_ID is the only
+ * configured owner identity. Refactoring to a non-telegram key is NOT
+ * provably safe here: entitlement (isOwnerUserRef requireConfiguredIdentity),
+ * oauth-store/microsoft-auth/google-auth owner refs, and the strict
+ * production assert (assertOwnerBootstrapReadyForRuntime) all resolve
+ * through this identity. It stays until the owner-gated identity migration
+ * introduces a canonical owner key and re-keys the persisted row
+ * (archive-first groundwork: migrations/259_telegram_identity_archive.sql).
  */
 export function seedOwnerUser(): void {
   try {
@@ -994,4 +1017,29 @@ export function seedOwnerUser(): void {
   } catch (err) {
     logger.warn({ err }, 'Failed to seed owner user');
   }
+}
+
+// ─── M21 Stage C: telegram identity archive backfill ─────────────────
+//
+// Migration 258 creates telegram_identity_archive but deliberately does NOT
+// backfill it in SQL: migration rehearsals replay against historically
+// divergent users schemas (the 226 repair rehearsal rebuilds users without
+// telegram_id), and SQLite cannot reference a column conditionally. This
+// runtime step is pragma-guarded and idempotent (INSERT OR IGNORE on the
+// user_id primary key) — it archives every non-null users.telegram_id only
+// when both the column and the archive table actually exist.
+export function backfillTelegramIdentityArchive(): { archivedRows: number } {
+  const db = getDb();
+  const archiveTable = db.prepare(
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'telegram_identity_archive'",
+  ).get();
+  if (!archiveTable) return { archivedRows: 0 };
+  const hasColumn = (db.prepare("SELECT name FROM pragma_table_info('users')").all() as Array<{ name: string }>)
+    .some((column) => column.name === 'telegram_id');
+  if (!hasColumn) return { archivedRows: 0 };
+  const result = db.prepare(`
+    INSERT OR IGNORE INTO telegram_identity_archive (user_id, telegram_id)
+    SELECT id, telegram_id FROM users WHERE telegram_id IS NOT NULL
+  `).run();
+  return { archivedRows: Number(result.changes ?? 0) };
 }

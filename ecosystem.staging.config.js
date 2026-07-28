@@ -17,13 +17,6 @@
 //   - Tests, migrations, and hotfixes are verified on staging first. Exact
 //     promotion then copies the already prepared immutable release to prod.
 //
-// Telegram bot token caveat: Telegram allows only ONE long-polling consumer
-// per bot token. Staging needs its OWN bot token (create a second @BotFather
-// bot, e.g. "Nexus Hub Staging") OR you can run staging in a "no Telegram"
-// mode (set TELEGRAM_BOT_TOKEN to empty in .env.staging — the bot will fail
-// to start but the portal + content-engine + crons still come up). This
-// covers ~95% of staging use cases without needing a second bot.
-//
 // Usage:
 //   pm2 start ecosystem.staging.config.js   # First-time start
 //   npm run release:staging -- --manifest <path>  # Governed staging switch
@@ -50,8 +43,9 @@ module.exports = {
       node_args: '--max-old-space-size=768',
       env: {
         NODE_ENV: 'staging',
-        // Tell the bot it's the staging instance — code can branch on this
-        // (e.g. skip Telegram alerts, log a "STAGING" prefix in messages).
+        // Tell the backend it's the staging instance — code can branch on
+        // this (e.g. relax production-only env requirements, log a
+        // "STAGING" prefix in messages).
         STAGING: 'true',
         // Different ports than prod so both can run side-by-side
         PORTAL_PORT: '8201',
@@ -61,11 +55,11 @@ module.exports = {
         AI_CALL_TIMEOUT_MS: '180000',
         // Staging DB lives inside the staging install — fully isolated
         DATABASE_PATH: '/home/dominguez/telegram-hub-bot-staging/data/bot.db',
-        // The rest of the env (TELEGRAM_BOT_TOKEN, ANTHROPIC_API_KEY, etc.)
+        // The rest of the env (ANTHROPIC_API_KEY, OAuth secrets, etc.)
         // comes from /home/dominguez/telegram-hub-bot-staging/.env which
         // dotenv loads automatically at startup. KEEP staging credentials
         // separate from prod credentials so a leaked staging .env can't
-        // touch the production Telegram bot or ship invoices.
+        // touch production connectors or ship invoices.
       },
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
       error_file: '/home/dominguez/telegram-hub-bot-staging/logs/error.log',

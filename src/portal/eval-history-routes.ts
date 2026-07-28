@@ -1,12 +1,18 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import express, { type Express, type Request, type Response } from 'express';
+import { ipKeyGenerator, rateLimit } from 'express-rate-limit';
+import { extractClientIp } from '../api/rate-limiter';
 import { requirePortalAdminToken } from '../api/secret-guards';
 import { getDb } from '../services/database';
 import {
+  acceptFrozenRealProviderBaseline,
+  ChatEvalBaselineAcceptanceError,
   listChatEvalRuns,
   persistChatEvalRun,
+  readFrozenRealProviderBaselineState,
   type PersistChatEvalRunOptions,
+  type ChatEvalRunCostAttestation,
 } from '../services/chat-eval-history';
 import type { ChatEvaluationSuiteResult } from '../services/chat-evaluation-harness';
 import { sendPortalInternalError } from './http';
@@ -22,21 +28,40 @@ interface EvalHistoryRequestBody {
   budgetUsd?: number;
   productionDataUsed?: boolean;
   realProviderCalls?: boolean | number;
+  costAttestation?: ChatEvalRunCostAttestation | null;
+  preflightAttestation?: Record<string, unknown> | null;
 }
 
 export function registerPortalEvalHistoryRoutes(app: Express): void {
-  app.get('/api/portal/eval-history', requirePortalAdminToken, (req: Request, res: Response) => {
+  const routeRateLimitMiddleware = rateLimit({
+    windowMs: 60 * 1000,
+    limit: 120,
+    keyGenerator: (req: Request) => `ip:${ipKeyGenerator(extractClientIp(req))}`,
+    legacyHeaders: false,
+    standardHeaders: false,
+    handler: (_req, res, _next, options) => {
+      const retryAfter = Math.max(1, Math.ceil(options.windowMs / 1000));
+      res.setHeader('Retry-After', retryAfter);
+      res.status(options.statusCode).json({
+        error: { code: 'RATE_LIMITED', message: 'Too many chat-eval history requests. Slow down.', retryAfter },
+      });
+    },
+  });
+
+  app.get('/api/portal/eval-history', routeRateLimitMiddleware, requirePortalAdminToken, (req: Request, res: Response) => {
     try {
       const limit = parseLimit(req.query.limit);
       const mode = parseMode(req.query.mode);
-      const runs = listChatEvalRuns(getDb(), { limit, mode });
-      res.json({ ok: true, runs });
+      const db = getDb();
+      const runs = listChatEvalRuns(db, { limit, mode });
+      const frozenBaseline = readFrozenRealProviderBaselineState(db);
+      res.json({ ok: true, runs, frozenBaseline });
     } catch (err) {
       sendPortalInternalError(res, err, 'Portal request failed', 'Portal: eval history request failed');
     }
   });
 
-  app.post('/api/portal/eval-history', requirePortalAdminToken, express.json({ limit: '2mb' }), (req: Request, res: Response) => {
+  app.post('/api/portal/eval-history', routeRateLimitMiddleware, requirePortalAdminToken, express.json({ limit: '2mb' }), (req: Request, res: Response) => {
     try {
       const body = normalizeBody(req.body);
       if (!body || !isChatEvaluationSuiteResult(body.result)) {
@@ -61,7 +86,22 @@ export function registerPortalEvalHistoryRoutes(app: Express): void {
         budgetUsd: typeof body.budgetUsd === 'number' && Number.isFinite(body.budgetUsd) ? body.budgetUsd : null,
         productionDataUsed: body.productionDataUsed === true,
         realProviderCalls: normalizeRealProviderCalls(body.realProviderCalls),
+        costAttestation: normalizeCostAttestation(body.costAttestation),
+        preflightAttestation: normalizePreflightAttestation(body.preflightAttestation),
       };
+      if (body.result.mode !== 'fixture' && (
+        !options.costAttestation?.attested
+        || !options.preflightAttestation
+      )) {
+        res.status(400).json({
+          ok: false,
+          error: {
+            code: 'INVALID_EVAL_EVIDENCE',
+            message: 'live eval results require attested cost and authenticated preflight evidence',
+          },
+        });
+        return;
+      }
       const persisted = persistChatEvalRun(body.result, options);
       res.json({
         ok: true,
@@ -73,6 +113,88 @@ export function registerPortalEvalHistoryRoutes(app: Express): void {
       sendPortalInternalError(res, err, 'Portal request failed', 'Portal: eval history persist failed');
     }
   });
+
+  app.post(
+    '/api/portal/eval-history/frozen-baseline',
+    routeRateLimitMiddleware,
+    requirePortalAdminToken,
+    express.json({ limit: '32kb' }),
+    (req: Request, res: Response) => {
+      try {
+        const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body)
+          ? req.body as Record<string, unknown>
+          : {};
+        const accepted = acceptFrozenRealProviderBaseline(getDb(), {
+          runId: stringValue(body.runId),
+          evidenceJsonPath: stringValue(body.evidenceJsonPath),
+          evidenceMarkdownPath: stringValue(body.evidenceMarkdownPath),
+          runtime: {
+            nodeEnv: process.env.NODE_ENV,
+            nexusEnv: process.env.NEXUS_ENV,
+            staging: process.env.STAGING,
+          },
+        });
+        res.json({ ok: true, ...accepted });
+      } catch (err) {
+        if (err instanceof ChatEvalBaselineAcceptanceError) {
+          res.status(err.status).json({
+            ok: false,
+            error: { code: err.code, message: err.message },
+          });
+          return;
+        }
+        sendPortalInternalError(res, err, 'Portal request failed', 'Portal: frozen eval baseline acceptance failed');
+      }
+    },
+  );
+}
+
+function normalizeCostAttestation(value: unknown): ChatEvalRunCostAttestation | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const candidate = value as Record<string, unknown>;
+  const numericKeys = [
+    'totalCeilingUsd', 'targetCeilingUsd', 'judgeCeilingUsd',
+    'targetActualSpendUsd', 'targetReservedAttemptCeilingUsd', 'targetCommittedCeilingUsd',
+    'judgeEstimatedSpendUsd', 'totalEstimatedActualSpendUsd', 'totalConservativeCommitmentUsd',
+    'targetUsageCallCount', 'targetProviderAttemptCount', 'unresolvedPricingCount',
+  ];
+  if (
+    candidate.contractVersion !== 'chat-live-eval-v1'
+    || typeof candidate.attested !== 'boolean'
+    || !Array.isArray(candidate.reasons)
+    || !Array.isArray(candidate.targetProviders)
+    || !candidate.preparation
+    || typeof candidate.preparation !== 'object'
+    || numericKeys.some((key) => typeof candidate[key] !== 'number' || !Number.isFinite(candidate[key]) || Number(candidate[key]) < 0)
+  ) return null;
+  return candidate as unknown as ChatEvalRunCostAttestation;
+}
+
+function normalizePreflightAttestation(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const candidate = value as Record<string, unknown>;
+  if (
+    candidate.contractVersion !== 'chat-live-eval-v1'
+    || (candidate.mode !== 'local_engine' && candidate.mode !== 'real_provider')
+    || typeof candidate.runId !== 'string'
+    || typeof candidate.providerPolicy !== 'string'
+    || candidate.productionDataUsed !== false
+    || typeof candidate.seedProfileVersion !== 'string'
+    || !Array.isArray(candidate.supportedScenarioIds)
+  ) return null;
+  return {
+    contractVersion: candidate.contractVersion,
+    mode: candidate.mode,
+    runId: candidate.runId.slice(0, 160),
+    budget: candidate.budget,
+    targetBaseCategory: candidate.targetBaseCategory,
+    providerPolicy: candidate.providerPolicy,
+    productionDataUsed: false,
+    seedProfileVersion: candidate.seedProfileVersion,
+    supportedScenarioIds: candidate.supportedScenarioIds
+      .filter((item): item is string => typeof item === 'string')
+      .slice(0, 32),
+  };
 }
 
 function normalizeBody(body: unknown): EvalHistoryRequestBody | null {
@@ -118,4 +240,8 @@ function normalizeRealProviderCalls(value: unknown): boolean | number | undefine
 
 function stringOrUndefined(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function stringValue(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
 }

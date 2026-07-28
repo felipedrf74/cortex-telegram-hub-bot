@@ -26,7 +26,7 @@
     "test:coverage": "node scripts/run-test-tier.mjs deterministic --coverage --reporter default",
     "test:coverage:changed": "node scripts/changed-coverage-gate.mjs",
     "test:ui": "vitest --ui",
-    "eval:training": "TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-training-eval-token-disabled} TELEGRAM_ALLOWED_USER_IDS=${TELEGRAM_ALLOWED_USER_IDS:-1} npm run build && TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-training-eval-token-disabled} TELEGRAM_ALLOWED_USER_IDS=${TELEGRAM_ALLOWED_USER_IDS:-1} node dist/tools/training-eval-harness.js",
+    "eval:training": "npm run build && node dist/tools/training-eval-harness.js",
     "eval:content": "npm run build && node dist/tools/content-evaluation-harness.js",
     "eval:content:ios-extraction": "npx tsx scripts/create-content-ios-extraction-artifact.ts",
     "smoke:content:local": "scripts/with-smoke-evidence.sh content-full-nexus-local scripts/content-full-nexus-local-smoke.sh",
@@ -51,6 +51,8 @@
     "project:map:check": "node scripts/generate-project-map.mjs --check",
     "capabilities:generate": "node scripts/generate-capability-skill-metadata.mjs",
     "capabilities:check": "node scripts/generate-capability-skill-metadata.mjs --check",
+    "classifier:prompt": "npx tsx scripts/generate-classifier-prompt.ts",
+    "classifier:prompt:check": "npx tsx scripts/generate-classifier-prompt.ts --check",
     "manifests:validate": "node scripts/validate-runtime-manifests.mjs",
     "reward:check": "node scripts/reward-check.mjs",
     "reward:check:json": "node scripts/reward-check.mjs --json",
@@ -114,7 +116,6 @@
     "release:major": "scripts/release-prep.sh --major"
   },
   "keywords": [
-    "telegram",
     "bot",
     "ai",
     "claude",

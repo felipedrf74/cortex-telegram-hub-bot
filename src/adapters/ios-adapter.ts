@@ -20,7 +20,7 @@ export interface CollectedMessage {
 /**
  * iOS Adapter — collects messages in memory for API response.
  *
- * Unlike TelegramAdapter/WhatsAppAdapter that push messages to a chat,
+ * Unlike push-style adapters (e.g. WhatsAppAdapter) that send messages to a chat,
  * IOSAdapter accumulates messages in a buffer. After the domain handler
  * finishes, the API route reads the buffer and returns it as JSON.
  *

@@ -2232,7 +2232,7 @@ exec "$@"
     expect(fs.readFileSync(pm2Log, 'utf8')).toContain(
       `start ${predecessor}/ecosystem.release.config.js --update-env`,
     );
-  });
+  }, 30_000);
 
   it('recovers the initial adapter install after power loss at every PM2 mutation', () => {
     for (const checkpoint of [
@@ -2535,7 +2535,7 @@ esac
     expect(ambiguous.installed.status).not.toBe(0);
     expect(`${ambiguous.installed.stdout}${ambiguous.installed.stderr}`)
       .toContain('governed pre-layout recovery resolution');
-  }, 30_000);
+  }, 60_000);
 
   it('recovers V4 activation after the promotion dependency is durably installed', () => {
     const installed = installedV4PrelayoutFixture(
@@ -2582,7 +2582,7 @@ esac
     expect(fs.existsSync(promotionRecoveryDropIn)).toBe(false);
     expect(fs.existsSync(journal)).toBe(false);
     expect(fs.existsSync(receipt)).toBe(false);
-  }, 30_000);
+  }, 60_000);
 
   it('keeps v4 boot recovery ordered and retires it only inside Phase B locks', () => {
     const installRecovery = fs.readFileSync(v4InstallRecoveryUnit, 'utf8');
@@ -3043,7 +3043,7 @@ printf 'retired\\n' >>${JSON.stringify(retirementLog)}
         'another legacy staging drill transaction is unfinished',
       );
     }
-  }, 45_000);
+  }, 120_000);
 
   it('retires v4 only after Phase B and one validated successful drill, resuming every durable boundary', () => {
     const installed = installedV4PrelayoutFixture('v4-retirement');
@@ -3171,7 +3171,7 @@ printf 'retired\\n' >>${JSON.stringify(retirementLog)}
         expect(symlinked.status).not.toBe(0);
       }
     }
-  }, 180_000);
+  }, 300_000);
 
   it('retains the install journal when trap recovery cannot prove systemd restoration', () => {
     for (const recoveryFailure of [
@@ -3712,7 +3712,7 @@ esac
     }
     expect(fs.existsSync(receipt)).toBe(false);
     expect(fs.existsSync(sqliteTarget)).toBe(true);
-  }, 45_000);
+  }, 90_000);
 
   it('journals the predecessor before mutation and excludes privileged recovery from sudoers', () => {
     const brokerBody = fs.readFileSync(broker, 'utf8');

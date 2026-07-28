@@ -36,11 +36,6 @@ if (activate && !write) {
 }
 
 async function main(): Promise<void> {
-  if (!write) {
-    process.env.TELEGRAM_BOT_TOKEN ||= 'dry-run-training-catalog-seed';
-    process.env.TELEGRAM_ALLOWED_USER_IDS ||= '0';
-  }
-
   const {
     assertCatalogPromotable,
     buildRepoTrainingCatalogSnapshot,

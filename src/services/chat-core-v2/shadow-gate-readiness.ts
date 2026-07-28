@@ -219,6 +219,9 @@ const ALLOWED_CONTEXT_PACK_KEYS = new Set([
   'guessedIntent',
   'guessedDomains',
   'guessedCapabilities',
+  // Milestone 4: additive resolver-vs-surface divergence telemetry. Structured
+  // identifiers/counters only — validated by isSafeRoutingDivergence below.
+  'routingDivergence',
 ]);
 
 const ALLOWED_RESPONSE_KEYS = new Set([
@@ -243,7 +246,74 @@ function isAllowlistedShadowContextPack(contextPack: Record<string, unknown>): b
   for (const [key, value] of Object.entries(contextPack)) {
     if (value === undefined) continue;
     if (!ALLOWED_CONTEXT_PACK_KEYS.has(key)) return false;
+    if (key === 'routingDivergence') {
+      if (!isSafeRoutingDivergence(value)) return false;
+      continue;
+    }
     if (!isSafeShadowScalarOrArray(key, value)) return false;
+  }
+  return true;
+}
+
+/**
+ * Milestone 4: strict shape check for the additive routingDivergence field.
+ * Only enum-safe identifier strings (same charset as every other shadow
+ * field — no whitespace, so raw message text can never pass), finite numbers,
+ * booleans, and null are allowed, under a fixed nested key allowlist.
+ */
+const ALLOWED_ROUTING_DIVERGENCE_KEYS = new Set([
+  'divergenceVersion',
+  'resolverVersion',
+  'topCandidate',
+  'candidateCount',
+  'surfaces',
+  'agreement',
+]);
+const ALLOWED_ROUTING_DIVERGENCE_TOP_KEYS = new Set([
+  'capabilityId',
+  'domain',
+  'skill',
+  'rawScore',
+  'matchedEvidenceCount',
+]);
+const ALLOWED_ROUTING_DIVERGENCE_SURFACE_KEYS = new Set([
+  'classifierKeywordDomain',
+  'orchestratorPrimaryDomain',
+  'registryActionSkills',
+  'shadowRouteIntent',
+  'shadowRouteDomains',
+]);
+const ALLOWED_ROUTING_DIVERGENCE_AGREEMENT_KEYS = new Set([
+  'classifierKeyword',
+  'orchestratorPrimary',
+  'registrySubset',
+  'shadowRoute',
+]);
+
+function isSafeRoutingDivergence(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  const safeLeaf = (key: string, leaf: unknown): boolean =>
+    leaf === null || isSafeShadowScalarOrArray(key, leaf);
+  const safeSection = (section: unknown, allowedKeys: Set<string>, allowNull: boolean): boolean => {
+    if (section === null) return allowNull;
+    if (!section || typeof section !== 'object' || Array.isArray(section)) return false;
+    return Object.entries(section as Record<string, unknown>).every(
+      ([key, leaf]) => leaf === undefined || (allowedKeys.has(key) && safeLeaf(key, leaf)),
+    );
+  };
+  for (const [key, leaf] of Object.entries(record)) {
+    if (leaf === undefined) continue;
+    if (!ALLOWED_ROUTING_DIVERGENCE_KEYS.has(key)) return false;
+    if (key === 'topCandidate') {
+      if (!safeSection(leaf, ALLOWED_ROUTING_DIVERGENCE_TOP_KEYS, true)) return false;
+    } else if (key === 'surfaces') {
+      if (!safeSection(leaf, ALLOWED_ROUTING_DIVERGENCE_SURFACE_KEYS, false)) return false;
+    } else if (key === 'agreement') {
+      if (!safeSection(leaf, ALLOWED_ROUTING_DIVERGENCE_AGREEMENT_KEYS, false)) return false;
+    } else if (!safeLeaf(key, leaf)) {
+      return false;
+    }
   }
   return true;
 }

@@ -33,6 +33,13 @@ export interface DomainResponse {
 export interface ClassificationResult {
   domain: DomainName;
   confidence: number;
+  /**
+   * M15 (flag AI_CLASSIFY_MANIFEST_PROMPT): optional manifest chatActionSkill
+   * of `domain` proposed by the classifier as an ownership hint. Absent on
+   * the legacy prompt path (flag off) and whenever the model omits it —
+   * parsing tolerates the old {domain, confidence} shape.
+   */
+  skill?: string;
 }
 
 export interface Todo {

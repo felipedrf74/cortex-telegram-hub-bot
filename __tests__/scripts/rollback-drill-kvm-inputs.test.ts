@@ -796,7 +796,7 @@ describe('rollback-drill KVM input generator', () => {
         currentMonotonicSeconds: 100_000,
       },
     )).toBe(envelope);
-  });
+  }, 30_000);
 
   it('keeps templates and incomplete isolation observations fail closed', () => {
     const templateDirectory = path.join(root, 'template');

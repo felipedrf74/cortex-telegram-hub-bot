@@ -23,10 +23,6 @@
  *     SMOKE_SLACK_WEBHOOK_URL                      (base)
  *     SMOKE_SLACK_WEBHOOK_URL_<REGION>             (per-region)
  *
- *   Telegram (needs BOTH token + chat id, paired per region)
- *     SMOKE_TELEGRAM_BOT_TOKEN + SMOKE_TELEGRAM_CHAT_ID                     (base)
- *     SMOKE_TELEGRAM_BOT_TOKEN_<REGION> + SMOKE_TELEGRAM_CHAT_ID_<REGION>   (per-region)
- *
  *   Discord
  *     SMOKE_DISCORD_WEBHOOK_URL                    (base)
  *     SMOKE_DISCORD_WEBHOOK_URL_<REGION>           (per-region)

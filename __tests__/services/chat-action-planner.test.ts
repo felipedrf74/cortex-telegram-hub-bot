@@ -2048,22 +2048,40 @@ describe('ChatActionPlanner', () => {
   });
 
   it('source-pins action-planner ordering before REST and WebSocket generic routing', () => {
-    const restSource = fs.readFileSync(path.resolve(__dirname, '../../src/api/routes/chat-message-routes.ts'), 'utf-8');
+    // M10: the REST /message checkpoint ordering now lives in the stage
+    // pipeline's PLAIN ORDERED ARRAY (chat-pipeline/runner.ts). The pinned
+    // invariants are unchanged: pending-work cancel runs before the action
+    // gateway, and the deterministic action planner runs before the read
+    // fast path.
+    const pipelineDir = path.resolve(__dirname, '../../src/api/routes/chat-pipeline');
+    const runnerSource = fs.readFileSync(path.join(pipelineDir, 'runner.ts'), 'utf-8');
     const wsSource = fs.readFileSync(path.resolve(__dirname, '../../src/api/websocket.ts'), 'utf-8');
 
-    const actionInvocation = restSource.search(/await\s+tryHandleChatActionPlan\s*\(/);
-    const fastPathInvocation = restSource.search(/await\s+tryBuildFastPathChatResponse\s*\(/);
-    const cancelInvocation = restSource.indexOf('if (normalizedText && normalizedAttachments.length === 0 && isPendingChatWorkCancellationTurn(normalizedText))');
-    const zeroPendingCancelResponse = restSource.indexOf('pending-action-cancel-empty');
-    const actionGatewayInvocation = restSource.indexOf('runChatCoreV2ActionGateway({');
+    const arrayStart = runnerSource.indexOf('CHAT_MESSAGE_STAGES: readonly ChatStage[] = [');
+    expect(arrayStart).toBeGreaterThanOrEqual(0);
+    const stageArray = runnerSource.slice(arrayStart);
+    const cancelInvocation = stageArray.indexOf('pendingWorkCancelStage');
+    const actionGatewayInvocation = stageArray.indexOf('actionGatewayStage');
+    const actionInvocation = stageArray.indexOf("createActionPlannerStage('deterministic')");
+    const fastPathInvocation = stageArray.indexOf('fastPathStage');
     expect(actionInvocation).toBeGreaterThanOrEqual(0);
     expect(fastPathInvocation).toBeGreaterThanOrEqual(0);
     expect(cancelInvocation).toBeGreaterThanOrEqual(0);
-    expect(zeroPendingCancelResponse).toBeGreaterThan(cancelInvocation);
     expect(actionGatewayInvocation).toBeGreaterThanOrEqual(0);
     expect(cancelInvocation).toBeLessThan(actionGatewayInvocation);
-    expect(zeroPendingCancelResponse).toBeLessThan(actionGatewayInvocation);
     expect(actionInvocation).toBeLessThan(fastPathInvocation);
+
+    // The stage modules still invoke the pinned primitives.
+    const cancelStage = fs.readFileSync(path.join(pipelineDir, 'stages/pending-work-cancel.ts'), 'utf-8');
+    expect(cancelStage).toContain('isPendingChatWorkCancellationTurn(ctx.normalizedText)');
+    expect(cancelStage).toContain('pending-action-cancel-empty');
+    const gatewayStage = fs.readFileSync(path.join(pipelineDir, 'stages/action-gateway.ts'), 'utf-8');
+    expect(gatewayStage).toContain('runChatCoreV2ActionGateway({');
+    const plannerStage = fs.readFileSync(path.join(pipelineDir, 'stages/action-planner.ts'), 'utf-8');
+    expect(plannerStage).toMatch(/await\s+tryHandleChatActionPlan\s*\(/);
+    const fastPathStageSource = fs.readFileSync(path.join(pipelineDir, 'stages/fast-path.ts'), 'utf-8');
+    expect(fastPathStageSource).toMatch(/await\s+tryBuildFastPathChatResponse\s*\(/);
+
     expect(wsSource).toMatch(/tryHandleChatActionPlan\s*\(/);
     expect(wsSource).not.toMatch(/tryBuildFastPathChatResponse\s*\(/);
   });

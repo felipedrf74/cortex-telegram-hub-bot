@@ -67,6 +67,25 @@ export function executeTrainingExplainSessionStep(
   }
 }
 
+// M19: provisional plan title exposed for cross-step $ref chaining. Derived
+// deterministically from the collected slots; generic when slots are absent.
+// M19 remediation (2026-07-21): the registry no longer DECLARES
+// `outputRefs: { title: 'plan.title' }` on training_plan_create — M16's
+// data-need chaining consumes outputRefs unconditionally, which broke
+// flag-off parity (auto-titling instead of the missing-title
+// clarification). This emission is inert without that registry consumer and
+// stays so the flag-flip-time decision to ship the row needs no executor
+// change; the chaining is covered via a definition mock in
+// chat-segment-router.test.ts.
+function provisionalTrainingPlanTitle(args: Record<string, unknown>): string {
+  const goal = typeof args.goal === 'string' && args.goal.trim() ? args.goal.trim() : null;
+  const sport = typeof args.sport === 'string' && args.sport.trim() ? args.sport.trim() : null;
+  if (sport && goal) return `${sport} plan — ${goal}`;
+  if (goal) return `Training plan — ${goal}`;
+  if (sport) return `${sport} training plan`;
+  return 'Training plan';
+}
+
 export function executeTrainingPlanCreateStep(
   step: ChatPlanStep,
   plan: ChatActionPlan,
@@ -84,6 +103,7 @@ export function executeTrainingPlanCreateStep(
         missingSlots: missing,
         collectedSlots: args,
         openSurface: 'training_plan_builder',
+        plan: { title: provisionalTrainingPlanTitle(args) },
         verified: false,
       },
     };
@@ -109,6 +129,7 @@ export function executeTrainingPlanCreateStep(
       missingSlots: missing,
       collectedSlots: args,
       openSurface: 'training_plan_builder',
+      plan: { title: provisionalTrainingPlanTitle(args) },
     },
     providerObjectId: pending.id,
     verification: { verified: false, reason: 'ui_handoff_required', pendingActionId: pending.id },
@@ -121,6 +142,7 @@ export function executeTrainingPlanCreateStep(
       missingSlots: missing,
       collectedSlots: args,
       openSurface: 'training_plan_builder',
+      plan: { title: provisionalTrainingPlanTitle(args) },
       verified: false,
     },
   };

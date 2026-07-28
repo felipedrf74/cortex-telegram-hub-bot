@@ -8,7 +8,19 @@ import { logger } from '../utils/logger';
 import { config } from '../config';
 import { runOllamaShadowClassification } from '../services/classify-shadow';
 import { rethrowAiUsageFailClosedError } from '../services/api-usage-fallback';
+import { getActiveChatDomain } from '../services/chat-conversation-state';
 import { getCurrentContext } from '../utils/request-context';
+import { isManifestRoutingEnabled } from '../services/intent-resolution/manifest-routing-flags';
+import { resolveIntent } from '../services/intent-resolution/intent-resolver';
+import {
+  getClassifierLowConfidenceFloor,
+  getClassifierPinnedConfidenceMin,
+} from '../services/intent-resolution/confidence';
+import {
+  buildClassifierCandidateShortlist,
+  isManifestClassifierPromptEnabled,
+  resolveManifestSkillForDomain,
+} from './classifier-prompt-builder';
 
 export interface ConversationContext {
   domain: DomainName;
@@ -131,7 +143,41 @@ const TRAINING_INTENT_PATTERNS: RegExp[] = [
   /\b(dieta\s+carn[ií]vora|macros?\s+para\s+(?:cut|bulk|ganhar\s+massa|secar)|calorias?\s+de\s+manuten[çc][aã]o|nutri[çc][aã]o\s+esportiva|nutri[çc][aã]o\s+de\s+performance)\b/i,
 ];
 
+// ─── M12 manifest convergence (flag: AI_ROUTING_MANIFEST_CLASSIFIER) ─
+//
+// MISROUTE-FIX CONVENTION (flag on): fix a misroute with ONE manifest
+// vocabulary edit (config/capability-manifest.json routingVocabulary —
+// for this surface: an exampleUtterance) plus ONE corpus fixture — never a
+// new inline regex.
+//
+// Flag-on scope (measured, deliberate): the manifest resolver decides the
+// domain whenever its evidence is DECISIVE — the message normalizes to a
+// seeded example utterance. Below that bar the legacy tiers still decide,
+// because M12 parity measurement showed the fragment-union evidence cannot
+// reproduce keywordMatch's tier interleaving at weak scores (identical
+// resolver scores map to different legacy outcomes, e.g. cooking:2 is a
+// legacy cooking hit for "how should i fuel after a long ride?" but a legacy
+// null for "Do not warn me twice if it is the same fueling issue."). Full
+// keyword delegation needs per-surface vocabulary tiers in the manifest
+// schema — out of M12 scope.
+const MANIFEST_KEYWORD_DOMAINS = new Set<string>(['content', 'secretary', 'finance', 'cooking', 'triathlon']);
+
+function keywordMatchViaManifestExample(message: string): DomainName | null {
+  const exampleCandidate = resolveIntent(message).find(
+    (candidate) => candidate.matchedEvidence.includes('example_utterance'),
+  );
+  if (exampleCandidate && MANIFEST_KEYWORD_DOMAINS.has(exampleCandidate.domain)) {
+    return exampleCandidate.domain as DomainName;
+  }
+  return null;
+}
+
 export function keywordMatch(message: string): DomainName | null {
+  if (isManifestRoutingEnabled('classifier')) {
+    const manifestDecision = keywordMatchViaManifestExample(message);
+    if (manifestDecision) return manifestDecision;
+    // Fall through: legacy tiers keep deciding sub-decisive evidence.
+  }
   // Explicit "make content" asks should beat subject-matter vocabulary
   // from other domains, e.g. "Write a script about recovery intervals".
   if (CONTENT_INTENT_PATTERNS.some((pattern) => pattern.test(message))) {
@@ -208,11 +254,31 @@ export function buildClassifierHints(): string {
  * have a user in scope (tests, scheduled jobs) can omit it and the
  * row falls back to `user_id = 0` as before.
  */
+export interface ClassifyWithClaudeOptions {
+  /**
+   * M13 durable-pin scope decision (adversarial-review follow-up, 2026-07):
+   * the low-confidence fallback below may consult the DURABLE per-user
+   * active-domain pin (chat_conversation_state) when the caller passed no
+   * in-arg activeContext. Surfaces that reach routeMessage today are the
+   * iOS chat route (src/api/routes/chat-message-routes.ts) and the iOS
+   * websocket chat path (src/api/websocket.ts) — both are the same
+   * user-facing chat surface, so the durable pin applies to the shared
+   * router fallback. Telegram inbound was removed (Phase 0/Telegram
+   * deprecation), so no non-chat surface reaches this today. A future
+   * non-chat surface (scheduler, batch classification, admin tooling) can
+   * opt out by passing `allowDurableDomainPinFallback: false` so a stale
+   * interactive-chat pin never bleeds into non-chat classification.
+   * Defaults to true (current chat behavior).
+   */
+  allowDurableDomainPinFallback?: boolean;
+}
+
 export async function classifyWithClaude(
   message: string,
   activeContext?: ConversationContext | null,
   userId?: number,
   tenantId?: number,
+  options?: ClassifyWithClaudeOptions,
 ): Promise<ClassificationResult> {
   // Phase K Codex round-11 fix (F-new-4): the legacy
   // services/anthropic.classifyMessage path uses
@@ -232,6 +298,20 @@ export async function classifyWithClaude(
   // provider is initialized (early boot, tests, scheduled jobs running
   // before provider-registry init).
   let result: ClassificationResult;
+  // M15 (flag AI_CLASSIFY_MANIFEST_PROMPT, default OFF): append the
+  // deterministic candidate shortlist (resolveIntent top-k with matched
+  // evidence) to the LIVE classify input only. Kept small — the approved
+  // cost waiver covers the static manifest prompt expansion plus this
+  // shortlist. The shadow path below still receives the ORIGINAL message so
+  // shadow telemetry stays comparable across flag states.
+  let liveMessage = message;
+  if (isManifestClassifierPromptEnabled()) {
+    const shortlist = buildClassifierCandidateShortlist(
+      message,
+      { activeDomain: activeContext?.domain ?? null },
+    );
+    if (shortlist) liveMessage = `${message}\n\n${shortlist}`;
+  }
   // Option 3: measure live classify duration so the shadow path can
   // compare it to the small-model Ollama latency. Captured even when
   // shadow is disabled (cheap; harmless).
@@ -240,7 +320,7 @@ export async function classifyWithClaude(
   if (routingProvider) {
     try {
       const raw = await routingProvider.classify(
-        message,
+        liveMessage,
         activeContext ?? undefined,
         // O3-A19: explicit live source on the user-facing path so any
         // future code that reads ClassifyOptions sees a default-safe
@@ -267,12 +347,35 @@ export async function classifyWithClaude(
         { err: err instanceof Error ? err.message : String(err) },
         'Routing-provider classify failed — falling back to legacy classifyMessage',
       );
-      result = await classifyMessage(message, activeContext ?? undefined, userId, tenantId);
+      result = await classifyMessage(liveMessage, activeContext ?? undefined, userId, tenantId);
     }
   } else {
-    result = await classifyMessage(message, activeContext ?? undefined, userId, tenantId);
+    result = await classifyMessage(liveMessage, activeContext ?? undefined, userId, tenantId);
   }
   const liveDurationMs = Date.now() - liveStart;
+
+  // M15 output validation: keep the optional skill field ONLY when the
+  // manifest prompt flag is on AND the skill is a manifest chatActionSkill of
+  // the classified domain. Providers pass the model's skill through raw; this
+  // is the single sanitization point. With the flag OFF the skill is stripped
+  // unconditionally (the legacy prompt never asks for one, and a stray value
+  // must not leak into the orchestrator hint), so flag-off results stay
+  // byte-identical to pre-M15 behavior.
+  if (result.skill !== undefined) {
+    const validSkill = isManifestClassifierPromptEnabled() && typeof result.skill === 'string'
+      ? resolveManifestSkillForDomain(result.domain, result.skill)
+      : null;
+    if (validSkill) {
+      result = { ...result, skill: validSkill };
+    } else {
+      logger.debug(
+        { domain: result.domain, rejectedSkill: result.skill },
+        'Dropping classifier skill field (flag off or not a manifest chatActionSkill of the domain)',
+      );
+      const { skill: _invalidSkill, ...rest } = result;
+      result = rest;
+    }
+  }
 
   // Option 3 (O3-A1): fire-and-forget Ollama shadow classify.
   //
@@ -314,12 +417,27 @@ export async function classifyWithClaude(
     );
   }
 
-  if (activeContext && result.confidence < 0.6) {
-    logger.warn(
-      { requested: result.domain, confidence: result.confidence, fallbackDomain: activeContext.domain },
-      'Low-confidence classifier result — preserving active conversation domain',
-    );
-    return { domain: activeContext.domain, confidence: Math.max(result.confidence, 0.51) };
+  // M14: the low-confidence floor (legacy 0.6) and the pinned-domain minimum
+  // (legacy 0.51) now route through the calibration table; the bootstrap
+  // table reproduces both constants exactly.
+  if (result.confidence < getClassifierLowConfidenceFloor()) {
+    // M13 read-site swap: the low-confidence pin now reads the durable-backed
+    // active-domain store. Within the TTL this is identical to the legacy
+    // in-arg activeContext (callers derive it from the same store); after a
+    // restart the durable row keeps the pin alive even when callers could not
+    // rebuild activeContext. The explicit in-arg still wins when provided.
+    // Durable fallback is gated on userId presence AND the opt-out flag —
+    // see ClassifyWithClaudeOptions.allowDurableDomainPinFallback.
+    const allowDurablePin = options?.allowDurableDomainPinFallback ?? true;
+    const pinnedDomain = activeContext?.domain
+      ?? (allowDurablePin && typeof userId === 'number' ? getActiveChatDomain(userId, Date.now(), tenantId) : null);
+    if (pinnedDomain) {
+      logger.warn(
+        { requested: result.domain, confidence: result.confidence, fallbackDomain: pinnedDomain },
+        'Low-confidence classifier result — preserving active conversation domain',
+      );
+      return { domain: pinnedDomain, confidence: Math.max(result.confidence, getClassifierPinnedConfidenceMin()) };
+    }
   }
   logger.debug({ result }, 'Routing-provider classification result');
   return result;

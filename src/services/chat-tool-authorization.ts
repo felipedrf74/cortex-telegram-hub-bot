@@ -7,11 +7,24 @@ import {
   type ContentIdeaCaptureConsentReceipt,
 } from './content-workspace-chat-consent';
 
+// ADV-3: a confirmation is a bounded grant, not a turn-wide blank check. Each
+// entry authorizes ONE destructive/external-send call; `tool`/`targetId`
+// narrow which call may claim it. When the confirming surface cannot type the
+// target (free-text "yes"), the context omits the list and the confirmation
+// collapses to a single untyped grant.
+export interface ChatConfirmedDestructiveTarget {
+  tool?: string;
+  targetId?: string;
+}
+
 export interface ChatToolAuthorizationContext {
   userId: number;
   tenantId: number;
   confirmedDestructiveAction: boolean;
   confirmationSource: 'explicit_current_turn' | 'pending_confirmation' | 'none';
+  // undefined/null = one untyped single-use grant; [] = confirmation covered
+  // no destructive work, so every destructive call re-confirms.
+  confirmedDestructiveTargets?: ChatConfirmedDestructiveTarget[] | null;
   requireConfirmationForWrites?: boolean;
   contentIdeaCaptureConsent?: ContentIdeaCaptureConsentReceipt | null;
 }
@@ -27,6 +40,75 @@ export interface ChatToolAuthorizationResult {
 export type ChatToolRisk = 'read' | 'write' | 'destructive' | 'external_send';
 
 const storage = new AsyncLocalStorage<ChatToolAuthorizationContext>();
+
+// Grant consumption is keyed on the context object itself, so it lives and
+// dies with the turn that created the context. Consumption happens at
+// authorize time, before execution: a destructive call that later fails has
+// still spent its grant, and a retry must re-confirm (conservative on purpose
+// — destructive retries should never be silently replayable).
+const consumedGrantIndexes = new WeakMap<ChatToolAuthorizationContext, Set<number>>();
+
+const UNTYPED_SINGLE_GRANT: ChatConfirmedDestructiveTarget[] = [{}];
+
+// Targeted grants match ONLY the tool's schema-declared target field(s)
+// (see the tool input_schema definitions in anthropic.ts). Matching against
+// arbitrary id-like input keys would let a model smuggle the confirmed id in
+// a decoy field while pointing the real target field elsewhere. Fail-closed:
+// a targeted grant never matches a tool without a mapping here, and the
+// per-target test suite asserts every destructive/external-send tool has one.
+export const CONFIRMED_TARGET_FIELDS: Record<string, readonly string[]> = {
+  ms_todo_delete_list: ['list_id'],
+  ms_todo_delete_task: ['task_id'],
+  delete_calendar_event: ['event_id'],
+  shared_memory_remove: ['key'],
+  shared_memory_set: ['key'],
+  finance_delete_transaction: ['transaction_id'],
+  finance_mark_tax_paid: ['month'],
+  cooking_delete_recipe: ['recipe_id'],
+  cooking_delete_meal: ['date'],
+  cooking_delete_pantry_item: ['item_id'],
+  send_outlook_email: ['to'],
+  reply_outlook_email: ['message_id'],
+};
+
+function extractTargetIdCandidates(
+  toolName: string,
+  input: Record<string, unknown> | null | undefined,
+): string[] {
+  const fields = CONFIRMED_TARGET_FIELDS[toolName];
+  if (!fields || !input) return [];
+  const candidates: string[] = [];
+  for (const field of fields) {
+    const value = input[field];
+    if (typeof value === 'string' && value.trim()) candidates.push(value.trim());
+    else if (typeof value === 'number' && Number.isFinite(value)) candidates.push(String(value));
+  }
+  return candidates;
+}
+
+function consumeConfirmedDestructiveGrant(
+  context: ChatToolAuthorizationContext,
+  toolName: string,
+  input: Record<string, unknown> | null | undefined,
+): boolean {
+  const grants = context.confirmedDestructiveTargets ?? UNTYPED_SINGLE_GRANT;
+  if (grants.length === 0) return false;
+  let consumed = consumedGrantIndexes.get(context);
+  if (!consumed) {
+    consumed = new Set<number>();
+    consumedGrantIndexes.set(context, consumed);
+  }
+  const candidates = extractTargetIdCandidates(toolName, input);
+  for (let i = 0; i < grants.length; i += 1) {
+    if (consumed.has(i)) continue;
+    const grant = grants[i];
+    if (grant.tool != null && grant.tool !== toolName) continue;
+    if (grant.targetId != null && !candidates.includes(String(grant.targetId))) continue;
+    consumed.add(i);
+    return true;
+  }
+  return false;
+}
 
 const EXTERNAL_SEND_TOOLS = new Set([
   'send_outlook_email',
@@ -225,6 +307,21 @@ export function authorizeChatToolCall(
       confirmationRequired: true,
       toolRisk: risk,
     };
+  }
+
+  // ADV-3: confirmed destructive/external-send calls must each claim a grant.
+  // Plain writes stay under the boolean — they are reversible and a confirmed
+  // turn may legitimately perform several of them.
+  if (risk === 'destructive' || risk === 'external_send') {
+    if (!consumeConfirmedDestructiveGrant(current, toolName, input)) {
+      return {
+        allowed: false,
+        code: 'CONFIRMATION_REQUIRED',
+        message: `${toolName} requires its own explicit confirmation for this target`,
+        confirmationRequired: true,
+        toolRisk: risk,
+      };
+    }
   }
 
   return { allowed: true, toolRisk: risk };

@@ -1,6 +1,6 @@
 {
   "schema": "nexus.capability-manifest.v2",
-  "version": "2026-07-15.1",
+  "version": "2026-07-20.1",
   "schemaReferences": {
     "nexus.chat-turn.input.v1": {
       "format": "typescript",
@@ -16,27 +16,87 @@
     }
   },
   "evaluationCoverage": {
-    "allergy-safety": ["__tests__/services/cooking-allergen-vocabulary.test.ts"],
-    "auditability": ["__tests__/services/audit-trail.test.ts"],
-    "capacity": ["__tests__/services/training-m4-capacity-snapshots.test.ts"],
-    "choice-contract": ["__tests__/services/decision-action-contract.test.ts"],
-    "consent": ["__tests__/services/health-consent.test.ts", "__tests__/api/connections-routes.test.ts"],
-    "delivery-contract": ["__tests__/api/notifications-routes.test.ts"],
-    "device-smoke": ["scripts/testflight-evidence.sh"],
-    "expiry": ["__tests__/api/decision-cursor.test.ts"],
-    "media-contract": ["__tests__/services/training-exercise-media-manifest.test.ts"],
-    "precision": ["__tests__/api/finance-money-precision.test.ts"],
-    "preferences": ["__tests__/services/cooking-preferences.test.ts", "__tests__/services/notification-orchestrator.test.ts"],
-    "provenance": ["__tests__/services/content-reference-provenance.test.ts"],
-    "public-contract": ["__tests__/services/chat-answer-contract.test.ts"],
-    "quality": ["__tests__/services/content-generation-quality.test.ts"],
-    "quiet-hours": ["__tests__/services/notification-orchestrator.test.ts"],
-    "routing": ["__tests__/router/dynamic-routing.test.ts"],
-    "safety": ["__tests__/services/chat-core-v2-training-safety-policy.test.ts"],
-    "tenant-isolation": ["__tests__/security/chat-fastpath-tenant-leak.test.ts"]
+    "allergy-safety": [
+      "__tests__/services/cooking-allergen-vocabulary.test.ts"
+    ],
+    "auditability": [
+      "__tests__/services/audit-trail.test.ts"
+    ],
+    "capacity": [
+      "__tests__/services/training-m4-capacity-snapshots.test.ts"
+    ],
+    "choice-contract": [
+      "__tests__/services/decision-action-contract.test.ts"
+    ],
+    "consent": [
+      "__tests__/services/health-consent.test.ts",
+      "__tests__/api/connections-routes.test.ts"
+    ],
+    "delivery-contract": [
+      "__tests__/api/notifications-routes.test.ts"
+    ],
+    "device-smoke": [
+      "scripts/testflight-evidence.sh"
+    ],
+    "expiry": [
+      "__tests__/api/decision-cursor.test.ts"
+    ],
+    "media-contract": [
+      "__tests__/services/training-exercise-media-manifest.test.ts"
+    ],
+    "precision": [
+      "__tests__/api/finance-money-precision.test.ts"
+    ],
+    "preferences": [
+      "__tests__/services/cooking-preferences.test.ts",
+      "__tests__/services/notification-orchestrator.test.ts"
+    ],
+    "provenance": [
+      "__tests__/services/content-reference-provenance.test.ts"
+    ],
+    "public-contract": [
+      "__tests__/services/chat-answer-contract.test.ts"
+    ],
+    "quality": [
+      "__tests__/services/content-generation-quality.test.ts"
+    ],
+    "quiet-hours": [
+      "__tests__/services/notification-orchestrator.test.ts"
+    ],
+    "routing": [
+      "__tests__/router/dynamic-routing.test.ts"
+    ],
+    "safety": [
+      "__tests__/services/chat-core-v2-training-safety-policy.test.ts"
+    ],
+    "tenant-isolation": [
+      "__tests__/security/chat-fastpath-tenant-leak.test.ts"
+    ]
   },
-  "chatResponsePolicyOrder": ["secretary", "tasks", "training", "content", "cooking", "finance", "connections", "notifications", "decision_center"],
-  "chatUiSkillOrder": ["secretary_calendar", "secretary_reminders", "mail", "tasks", "training", "content", "cooking", "finance", "connections", "notifications", "decision_center"],
+  "chatResponsePolicyOrder": [
+    "secretary",
+    "tasks",
+    "training",
+    "content",
+    "cooking",
+    "finance",
+    "connections",
+    "notifications",
+    "decision_center"
+  ],
+  "chatUiSkillOrder": [
+    "secretary_calendar",
+    "secretary_reminders",
+    "mail",
+    "tasks",
+    "training",
+    "content",
+    "cooking",
+    "finance",
+    "connections",
+    "notifications",
+    "decision_center"
+  ],
   "capabilities": [
     {
       "id": "secretary",
@@ -44,27 +104,78 @@
       "version": "2.0.0",
       "lifecycle": "active",
       "owner": "secretary",
-      "runtimeRouting": { "domain": "secretary", "chatOwnerSkill": "secretary" },
-      "schemas": { "input": "nexus.chat-turn.input.v1", "output": "nexus.chat-turn.output.v1" },
+      "runtimeRouting": {
+        "domain": "secretary",
+        "chatOwnerSkill": "secretary",
+        "chatActionOwnership": [
+          {
+            "category": "calendar_placement",
+            "ownerSkill": "secretary_calendar",
+            "ownerAction": "schedule_event",
+            "evidence": [
+              "\\b(?:add|put|place|book|schedule|move|drop)\\b[\\s\\S]{0,60}\\b(?:to|on|in|into|onto)\\s+(?:my\\s+|the\\s+)?(?:calendar|agenda)\\b",
+              "\\b(?:adiciona[r]?|p[oõ]e|poe|mete[r]?|coloca[r]?|marca[r]?|agenda[r]?|move[r]?)\\b[\\s\\S]{0,60}\\b(?:na|no|para\\s+a|para\\s+o|à|ao)\\s+(?:minha\\s+|meu\\s+)?(?:agenda|calend[aá]rio)\\b",
+              "\\b(?:agrega[r]?|añade|anade|pon(?:er)?|mete[r]?|programa[r]?|apunta[r]?)\\b[\\s\\S]{0,60}\\b(?:a|en)\\s+(?:mi\\s+|el\\s+|la\\s+)?(?:calendario|agenda)\\b"
+            ]
+          }
+        ]
+      },
+      "schemas": {
+        "input": "nexus.chat-turn.input.v1",
+        "output": "nexus.chat-turn.output.v1"
+      },
       "requiredTier": "free",
       "memoryScope": "tenant-user",
       "providerPolicy": "routed",
       "costBudget": "standard",
       "latencyBudgetMs": 180000,
-      "supportedChannels": ["telegram", "rest", "ios"],
-      "requiredEvaluations": ["routing", "tenant-isolation", "public-contract"],
-      "restrictedPlanAccess": { "free": true, "beta": true },
+      "supportedChannels": [
+        "telegram",
+        "rest",
+        "ios"
+      ],
+      "requiredEvaluations": [
+        "routing",
+        "tenant-isolation",
+        "public-contract"
+      ],
+      "restrictedPlanAccess": {
+        "free": true,
+        "beta": true
+      },
       "onboardingQuestionnaires": [],
-      "chatOwnerSkills": ["secretary", "tasks"],
-      "chatActionSkills": ["secretary_calendar", "secretary_reminders", "mail", "tasks"],
-      "chatOwnerUiSkills": { "secretary": "secretary_calendar", "tasks": "tasks" },
+      "chatOwnerSkills": [
+        "secretary",
+        "tasks"
+      ],
+      "chatActionSkills": [
+        "secretary_calendar",
+        "secretary_reminders",
+        "mail",
+        "tasks"
+      ],
+      "chatOwnerUiSkills": {
+        "secretary": "secretary_calendar",
+        "tasks": "tasks"
+      },
       "responsePolicies": [
         {
           "skill": "secretary",
-          "genericAnswerExamples": ["how should I think about prioritizing a busy day?"],
-          "localReadExamples": ["what should I do next today?", "show my agenda", "do I have free time?"],
-          "internetEligibleExamples": ["what public holiday affects my agenda next week?"],
-          "actionExamples": ["schedule focus time", "move my meeting"],
+          "genericAnswerExamples": [
+            "how should I think about prioritizing a busy day?"
+          ],
+          "localReadExamples": [
+            "what should I do next today?",
+            "show my agenda",
+            "do I have free time?"
+          ],
+          "internetEligibleExamples": [
+            "what public holiday affects my agenda next week?"
+          ],
+          "actionExamples": [
+            "schedule focus time",
+            "move my meeting"
+          ],
           "defaultGenericShape": "direct_answer",
           "defaultLocalShape": "agenda_summary",
           "defaultGrounding": "none",
@@ -72,10 +183,21 @@
         },
         {
           "skill": "tasks",
-          "genericAnswerExamples": ["how should I break a big task down?"],
-          "localReadExamples": ["what tasks are overdue?", "what should I complete first?"],
-          "internetEligibleExamples": ["what is a good GTD workflow?"],
-          "actionExamples": ["create a task", "mark this task done", "delete all my tasks"],
+          "genericAnswerExamples": [
+            "how should I break a big task down?"
+          ],
+          "localReadExamples": [
+            "what tasks are overdue?",
+            "what should I complete first?"
+          ],
+          "internetEligibleExamples": [
+            "what is a good GTD workflow?"
+          ],
+          "actionExamples": [
+            "create a task",
+            "mark this task done",
+            "delete all my tasks"
+          ],
           "defaultGenericShape": "direct_answer",
           "defaultLocalShape": "task_options",
           "defaultGrounding": "none",
@@ -83,39 +205,163 @@
         }
       ],
       "uiSkillMetadata": [
-        { "skill": "secretary_calendar", "displayName": "Secretary", "responseCardType": "calendar_action", "latencyBudgetMs": 2500, "privacyPolicy": "private_detail" },
-        { "skill": "secretary_reminders", "displayName": "Reminders", "responseCardType": "calendar_action", "latencyBudgetMs": 1200, "privacyPolicy": "private_detail" },
-        { "skill": "mail", "displayName": "Mail", "responseCardType": "mail_action", "latencyBudgetMs": 2200, "privacyPolicy": "private_detail" },
-        { "skill": "tasks", "displayName": "Tasks", "responseCardType": "task_action", "latencyBudgetMs": 1800, "privacyPolicy": "private_detail" }
-      ]
+        {
+          "skill": "secretary_calendar",
+          "displayName": "Secretary",
+          "responseCardType": "calendar_action",
+          "latencyBudgetMs": 2500,
+          "privacyPolicy": "private_detail"
+        },
+        {
+          "skill": "secretary_reminders",
+          "displayName": "Reminders",
+          "responseCardType": "calendar_action",
+          "latencyBudgetMs": 1200,
+          "privacyPolicy": "private_detail"
+        },
+        {
+          "skill": "mail",
+          "displayName": "Mail",
+          "responseCardType": "mail_action",
+          "latencyBudgetMs": 2200,
+          "privacyPolicy": "private_detail"
+        },
+        {
+          "skill": "tasks",
+          "displayName": "Tasks",
+          "responseCardType": "task_action",
+          "latencyBudgetMs": 1800,
+          "privacyPolicy": "private_detail"
+        }
+      ],
+      "routingVocabulary": {
+        "locales": {
+          "en": [
+            "agenda",
+            "calendar",
+            "meeting",
+            "schedule",
+            "secretary",
+            "task",
+            "tasks",
+            "todo",
+            "to-do"
+          ],
+          "pt": [
+            "tarefas?"
+          ],
+          "es": [
+            "tareas?"
+          ]
+        },
+        "regexFragments": [
+          "\\b(tasks?|to-?dos?|remind(?:ers?)?|(?:my\\s+)?calendar|schedule|meetings?|appointments?|(?:my\\s+)?emails?|inbox|overdue|due\\s+(?:today|tomorrow|this\\s+week)|planning|digest|unread|mark\\s+(?:as\\s+)?(?:done|complete)|pending|priority|deadline|tarefas?|lembretes?|agend(?:a|ar)|reuni[oõ]es?|compromissos?|e-?mails?|caixa\\s+de\\s+entrada|atrasad[ao]s?|pra\\s+hoje|pendentes?|prioridade|prazo)\\b",
+          "\\b(create|add|schedule|move|reschedule|delete|remove|cancel|summari[sz]e|review|list|show)\\b[\\s\\S]{0,80}\\b(task|tasks|to-?do|to-?dos|calendar|meeting|meetings|appointment|appointments|event|events|focus\\s+block|reminder|reminders|agenda|email|emails|inbox)\\b",
+          "\\b(cria|crie|adiciona|adicione|marca|agenda|move|muda|remarca|reagenda|apaga|remove|cancela|resume|revisa|lista|mostra)\\b[\\s\\S]{0,80}\\b(tarefa|tarefas|agenda|calend[aá]rio|reuni[aã]o|reuni[oõ]es|compromisso|compromissos|evento|eventos|bloco\\s+de\\s+foco|lembrete|lembretes|e-?mail|e-?mails|caixa\\s+de\\s+entrada)\\b",
+          "\\b(remind\\s+me\\s+to|set\\s+(?:me\\s+)?a\\s+reminder\\s+to|create\\s+(?:me\\s+)?a\\s+reminder\\s+to|create\\s+(?:a\\s+)?task\\s+to|add\\s+(?:a\\s+)?task\\s+to|add\\s+this\\s+to\\s+my\\s+to-?do(?:\\s+list)?|schedule\\s+time\\s+to)\\b",
+          "\\b(me\\s+lembra\\s+de|cria\\s+(?:um\\s+)?lembrete\\s+para|define\\s+(?:um\\s+)?lembrete\\s+para|cria\\s+(?:uma\\s+)?tarefa\\s+para|adiciona\\s+(?:uma\\s+)?tarefa\\s+para|adiciona\\s+isso\\s+na\\s+minha\\s+lista|agenda\\s+tempo\\s+para)\\b",
+          "\\b(schedule|book|move|reschedule|reserve|set\\s+aside|find)\\b[\\s\\S]{0,80}\\b(filming|recording|editing|publish(?:ing)?|shoot|video|reel)\\b[\\s\\S]{0,40}\\b(block|time|slot|window|session)\\b",
+          "\\b(schedule|book|move|reschedule|reserve|set\\s+aside|find)\\b[\\s\\S]{0,80}\\b(block|time|slot|window|session)\\b[\\s\\S]{0,40}\\b(filming|recording|editing|publish(?:ing)?|shoot|video|reel)\\b",
+          "\\b(agenda|marca|move|muda|remarca|reagenda|reserva|separa)\\b[\\s\\S]{0,80}\\b(grava[çc][aã]o|filmagem|edi[çc][aã]o|publica(?:r|[çc][aã]o)|v[ií]deo|reel)\\b[\\s\\S]{0,40}\\b(bloco|hor[aá]rio|janela|sess[aã]o|tempo)\\b",
+          "\\b(agenda|marca|move|muda|remarca|reagenda|reserva|separa)\\b[\\s\\S]{0,80}\\b(bloco|hor[aá]rio|janela|sess[aã]o|tempo)\\b[\\s\\S]{0,40}\\b(grava[çc][aã]o|filmagem|edi[çc][aã]o|publica(?:r|[çc][aã]o)|v[ií]deo|reel)\\b",
+          "\\b(schedule|book|move|reschedule|reserve|set\\s+aside|find|protect)\\b[\\s\\S]{0,80}\\b(sponsor(?:ed)?\\s+post|sponsor\\s+deliverable|publish(?:ing)?|post|upload|recording|filming|editing|video|reel)\\b[\\s\\S]{0,80}\\b(tomorrow|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday|next\\s+week|next\\s+month|morning|afternoon|evening|at\\s+\\d)\\b",
+          "\\b(agenda|marca|move|muda|remarca|reagenda|reserva|separa|protege)\\b[\\s\\S]{0,80}\\b(publica(?:r|[çc][aã]o)|post\\s+patrocinado|entrega\\s+de\\s+patroc[ií]nio|upload|grava[çc][aã]o|filmagem|edi[çc][aã]o|v[ií]deo|reel)\\b[\\s\\S]{0,80}\\b(hoje|amanh[ãa]|segunda|ter[çc]a|quarta|quinta|sexta|s[áa]bado|domingo|pr[oó]xima\\s+semana|pr[oó]ximo\\s+m[eê]s|manh[ãa]|tarde|noite|[àa]s?\\s*\\d)\\b",
+          "\\b(schedule|book|move|reschedule|reserve|set\\s+aside|find|protect)\\b[\\s\\S]{0,80}\\b(invoice|receipt|receipts|bill|bills|tax|taxes|darf|subscription|subscriptions|accountant)\\b[\\s\\S]{0,80}\\b(tomorrow|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday|next\\s+week|next\\s+month|morning|afternoon|evening|at\\s+\\d)\\b",
+          "\\b(agenda|marca|move|muda|remarca|reagenda|reserva|separa|protege)\\b[\\s\\S]{0,80}\\b(fatura|faturas|recibo|recibos|conta|contas|imposto|darf|assinatura|assinaturas|contador|contabilista)\\b[\\s\\S]{0,80}\\b(hoje|amanh[ãa]|segunda|ter[çc]a|quarta|quinta|sexta|s[áa]bado|domingo|pr[oó]xima\\s+semana|pr[oó]ximo\\s+m[eê]s|manh[ãa]|tarde|noite|[àa]s?\\s*\\d)\\b",
+          "\\b(send|pay|file|review|renew|cancel|follow\\s+up\\s+on|follow\\s+up\\s+with)\\b[\\s\\S]{0,80}\\b(invoice|receipt|receipts|bill|bills|tax|darf|subscription|subscriptions|accountant)\\b[\\s\\S]{0,80}\\b(tomorrow|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday|next\\s+week|next\\s+month|morning|afternoon|evening|at\\s+\\d)\\b",
+          "\\b(envia|paga|lan[çc]a|rev[eê]|renova|cancela|faz\\s+follow-?up(?:\\s+com)?|cobra)\\b[\\s\\S]{0,80}\\b(fatura|faturas|recibo|recibos|conta|contas|imposto|darf|assinatura|assinaturas|contador|contabilista)\\b[\\s\\S]{0,80}\\b(hoje|amanh[ãa]|segunda|ter[çc]a|quarta|quinta|sexta|s[áa]bado|domingo|pr[oó]xima\\s+semana|pr[oó]ximo\\s+m[eê]s|manh[ãa]|tarde|noite|[àa]s?\\s*\\d)\\b",
+          "\\b(schedule|calendar|agenda|meeting|task|reminder|remind\\s+me|set\\s+(?:a\\s+)?reminder|lembra-?me|me\\s+lembra|me\\s+lembre|follow[- ]?up|daily\\s+plan|weekly\\s+plan|plan\\s+my\\s+(?:day|week)|move|reschedule|defer|fit|find\\s+time|availability|today|tomorrow|agenda|calend[aá]rio|reuni[aã]o|lembrete|prioriza|organiza|encaixa)\\b",
+          "\\b(plan\\s+my\\s+(?:day|week)|plan\\s+(?:the\\s+)?week|schedule|calendar|agenda|find\\s+time|fit\\s+(?:it|this|that|time)|make\\s+time|time[- ]?block|block\\s+time|move|reschedule|reflow|defer|push|shift|clear\\s+(?:my\\s+)?calendar)\\b",
+          "\\b(prioriti[sz]e\\s+(?:my\\s+)?(?:day|week)|what\\s+do\\s+i\\s+need\\s+to\\s+do\\s+today|what\\s+should\\s+i\\s+do\\s+today|what\\s+changed\\s+since\\s+yesterday)\\b",
+          "\\b(agenda|marca|remarca|reagenda|planeia|planejar|organiza|encaixa|arranja\\s+tempo|prioriza|muda\\s+(?:isso|isto)|move\\s+(?:isso|isto))\\b",
+          "\\b(?:do\\s+i\\s+have|what\\s+(?:tasks?|todos?)|which\\s+(?:tasks?|todos?)|show\\s+me|list|tenho|que\\s+tenho|quais?\\s+(?:tarefas?|tareas?)|tengo|qu[eé]\\s+(?:tareas?|pendientes?))\\b.*\\b(?:tasks?|todos?|to-dos?|tarefas?|tareas?|complete|concluir|completar|completadas?)\\b",
+          "\\b(create|add|new)\\b.*\\b(task|todo|to-do|tarefas?|tareas?)\\b|\\b(criar|cria|crie|adicionar|adiciona|nova?|crear|crea|agregar|añadir|anadir)\\b.*\\b(tasks?|todos?|to-dos?|tarefas?|tareas?)\\b|\\b(task|todo|to-do)\\b.*\\b(tomorrow|today|later)\\b",
+          "\\b(complete|done|finish|mark)\\b.*\\b(task|todo|to-do)\\b|\\b(concluir|completar|terminar|marcar)\\b.*\\b(?:tarefas?|tareas?)\\b|\\b(?:marca|marcar|marque)\\b.*\\b(?:tareas?)\\b",
+          "\\b(plan|organize|optimise|optimize|schedule)\\b.*\\b(week|day|training|task|meeting|meal)\\b",
+          "\\b(calendar|calendario|agenda|evento|event)\\b",
+          "\\b(remind\\s+me|reminder|lembrete|lembra-?me|lembre-?me|lembrar|avisa-?me|avise-?me|avisame|alerta-?me|recordatorio|recuerdame|recu[eé]rdame)\\b",
+          "^\\s*(?:avisa|alerta)\\b(?!\\s+(?:que|es)\\b)",
+          "\\b(email|mail|gmail|outlook mail|inbox|caixa de entrada)\\b",
+          "\\b(task|todo|tarefa|subtarefa|checklist|lembrete|reminder)\\b"
+        ],
+        "exampleUtterances": [
+          "Create a task to buy milk tomorrow",
+          "remind me tomorrow to call mom",
+          "What tasks do I have today?",
+          "Tenho tarefas para concluir hoje?",
+          "move my 3pm meeting to Friday"
+        ]
+      }
     },
     {
       "id": "triathlon",
-      "aliases": ["training"],
+      "aliases": [
+        "training"
+      ],
       "version": "3.0.0",
       "lifecycle": "active",
       "owner": "training",
-      "runtimeRouting": { "domain": "triathlon", "chatOwnerSkill": "training" },
-      "schemas": { "input": "nexus.chat-turn.input.v1", "output": "nexus.chat-turn.output.v1" },
+      "runtimeRouting": {
+        "domain": "triathlon",
+        "chatOwnerSkill": "training"
+      },
+      "schemas": {
+        "input": "nexus.chat-turn.input.v1",
+        "output": "nexus.chat-turn.output.v1"
+      },
       "requiredTier": "pro",
       "memoryScope": "tenant-user",
       "providerPolicy": "routed",
       "costBudget": "standard",
       "latencyBudgetMs": 180000,
-      "supportedChannels": ["telegram", "rest", "ios"],
-      "requiredEvaluations": ["safety", "capacity", "media-contract", "device-smoke"],
-      "restrictedPlanAccess": { "free": false, "beta": true },
-      "onboardingQuestionnaires": ["fitness", "triathlon-gym", "triathlon-running", "triathlon-cycling", "triathlon-swim"],
-      "chatOwnerSkills": ["training"],
-      "chatActionSkills": ["training"],
-      "chatOwnerUiSkills": { "training": "training" },
+      "supportedChannels": [
+        "telegram",
+        "rest",
+        "ios"
+      ],
+      "requiredEvaluations": [
+        "safety",
+        "capacity",
+        "media-contract",
+        "device-smoke"
+      ],
+      "restrictedPlanAccess": {
+        "free": false,
+        "beta": true
+      },
+      "onboardingQuestionnaires": [
+        "fitness",
+        "triathlon-gym",
+        "triathlon-running",
+        "triathlon-cycling",
+        "triathlon-swim"
+      ],
+      "chatOwnerSkills": [
+        "training"
+      ],
+      "chatActionSkills": [
+        "training"
+      ],
+      "chatOwnerUiSkills": {
+        "training": "training"
+      },
       "responsePolicies": [
         {
           "skill": "training",
-          "genericAnswerExamples": ["how should I structure a simple strength plan?"],
-          "localReadExamples": ["what is my training plan today?", "am I recovered enough?"],
-          "internetEligibleExamples": ["latest marathon taper guidance"],
-          "actionExamples": ["create a training plan", "move this workout"],
+          "genericAnswerExamples": [
+            "how should I structure a simple strength plan?"
+          ],
+          "localReadExamples": [
+            "what is my training plan today?",
+            "am I recovered enough?"
+          ],
+          "internetEligibleExamples": [
+            "latest marathon taper guidance"
+          ],
+          "actionExamples": [
+            "create a training plan",
+            "move this workout"
+          ],
           "defaultGenericShape": "training_advice",
           "defaultLocalShape": "training_advice",
           "defaultGrounding": "none",
@@ -123,7 +369,13 @@
         }
       ],
       "uiSkillMetadata": [
-        { "skill": "training", "displayName": "Training", "responseCardType": "training_action", "latencyBudgetMs": 2200, "privacyPolicy": "private_detail" }
+        {
+          "skill": "training",
+          "displayName": "Training",
+          "responseCardType": "training_action",
+          "latencyBudgetMs": 2200,
+          "privacyPolicy": "private_detail"
+        }
       ],
       "trainingCapabilities": {
         "catalog": {
@@ -142,6 +394,69 @@
           "authoritativeClientModification": "NARROW_ONLY",
           "storageMigration": "migrations/231_training_m4_capacity_snapshots.sql"
         }
+      },
+      "routingVocabulary": {
+        "locales": {
+          "en": [
+            "training",
+            "workouts?",
+            "run",
+            "session",
+            "runs?",
+            "sessions?",
+            "active\\s+plan",
+            "current\\s+plan",
+            "adherence",
+            "intensity",
+            "recovery",
+            "soreness",
+            "sore",
+            "easy"
+          ],
+          "pt": [
+            "treinos?",
+            "treinar",
+            "corrida",
+            "sess(?:ao|ão|oes|ões)",
+            "plano\\s+(?:ativo|atual|de\\s+treino)",
+            "ades[aã]o",
+            "intensidade",
+            "recupera(?:cao|ção)",
+            "dor\\s+muscular",
+            "dolorida",
+            "leve"
+          ],
+          "es": [
+            "entrenamientos?",
+            "entrenar",
+            "carrera",
+            "sesiones?",
+            "sesión",
+            "plan\\s+(?:activo|actual|de\\s+entrenamiento)",
+            "adherencia",
+            "intensidad",
+            "recuperaci[oó]n",
+            "dolor",
+            "suave"
+          ]
+        },
+        "regexFragments": [
+          "\\b(workout|gym(?:\\s+session)?|running\\s+plan|cycling\\s+plan|sets?\\s*[x×]\\s*\\d|training(?:\\s+plan)?|deload|squat|deadlift|bench\\s+press|heart\\s+rate|RPE|RIR|tempo\\s+run|intervals?|FTP|soreness|recovery(?:\\s+day)?|readiness|body\\s+battery|muscle|hypertrophy|endurance|coach\\s*(?:report|briefing|rec)|lower\\s+body|upper\\s+body|periodization|mesocycle|microcycle|training\\s+week|log\\s+(?:workout|session)|workout\\s+plan|auto.?adjust|session\\s+complete|my\\s+plan|adherence|treino|corrida|pedal(?:ada)?|muscula[çc][aã]o|agachamento|supino|levantamento\\s+terra|frequ[eê]ncia\\s+card[ií]aca|dor\\s+muscular|recupera[çc][aã]o|prontid[aã]o|bateria\\s+corporal|s[eé]ries?\\s*[x×]\\s*\\d|academia|plano\\s+de\\s+treino|plano\\s+da\\s+semana|semana\\s+de\\s+treino|treino\\s+de\\s+(?:hoje|amanh[ãa]))\\b",
+          "\\b(how\\s+much|how\\s+many|set|adjust|calculate|dial\\s+in|review|optimi[sz]e|what\\s+should\\s+my|what\\s+are\\s+my|help\\s+me\\s+hit)\\b[\\s\\S]{0,80}\\b(protein(?:\\s+(?:intake|target))?|macros?|calories?|carbs?|fat|electrolytes?|creatine|supplements?)\\b",
+          "\\b(carnivore\\s+diet|cutting\\s+macros?|bulking\\s+macros?|maintenance\\s+calories?|sports?\\s+nutrition|performance\\s+nutrition)\\b",
+          "\\b(quanto|quanta|quantos|quantas|define|ajusta|calcula|alinha|revisa|otimiza|qual\\s+(?:deve\\s+ser|é)\\s+(?:a\\s+)?minha|me\\s+ajuda\\s+a\\s+bater)\\b[\\s\\S]{0,80}\\b(prote[ií]na(?:\\s+(?:di[aá]ria|alvo))?|macros?|calorias?|carbo(?:idratos)?|gordura|eletr[oó]litos?|creatina|suplementos?)\\b",
+          "\\b(dieta\\s+carn[ií]vora|macros?\\s+para\\s+(?:cut|bulk|ganhar\\s+massa|secar)|calorias?\\s+de\\s+manuten[çc][aã]o|nutri[çc][aã]o\\s+esportiva|nutri[çc][aã]o\\s+de\\s+performance)\\b",
+          "\\b(training|workouts?|gym|lift|strength|run(?:ning)?|ride|cycling|bike|recovery|session|deload|treino|corrida|pedal|muscula[cç][aã]o|recupera[cç][aã]o)\\b",
+          "\\b(move|reschedule|change|make|lighter|reduce|mover|remarcar|mudar|alterar|reduzir|reduz|tornar|deixar|cambiar|hacer|bajar)\\b.*\\b(workout|training|session|treino|sess(?:ao|ão)|entrenamiento|sesion|sesión)\\b|\\b(workout|training|session|treino|sess(?:ao|ão)|entrenamiento|sesion|sesión)\\b.*\\b(lighter|easier|easy|reduce|mais\\s+leve|leve|suave|menos\\s+intens[ao]|mas\\s+suave|más\\s+suave)\\b",
+          "\\b(treino|training|plan[o]? de treino|corrida|gym|ginasio)\\b"
+        ],
+        "exampleUtterances": [
+          "I need to plan my workout",
+          "gym session at 6am",
+          "how much protein should I eat?",
+          "What is my next training session?",
+          "Torna o treino de amanhã mais leve"
+        ]
       }
     },
     {
@@ -150,27 +465,63 @@
       "version": "2.0.0",
       "lifecycle": "active",
       "owner": "content",
-      "runtimeRouting": { "domain": "content", "chatOwnerSkill": "content" },
-      "schemas": { "input": "nexus.chat-turn.input.v1", "output": "nexus.chat-turn.output.v1" },
+      "runtimeRouting": {
+        "domain": "content",
+        "chatOwnerSkill": "content"
+      },
+      "schemas": {
+        "input": "nexus.chat-turn.input.v1",
+        "output": "nexus.chat-turn.output.v1"
+      },
       "requiredTier": "pro",
       "memoryScope": "tenant-user",
       "providerPolicy": "routed",
       "costBudget": "metered",
       "latencyBudgetMs": 180000,
-      "supportedChannels": ["telegram", "rest", "ios", "portal"],
-      "requiredEvaluations": ["quality", "provenance", "tenant-isolation"],
-      "restrictedPlanAccess": { "free": false, "beta": true },
+      "supportedChannels": [
+        "telegram",
+        "rest",
+        "ios",
+        "portal"
+      ],
+      "requiredEvaluations": [
+        "quality",
+        "provenance",
+        "tenant-isolation"
+      ],
+      "restrictedPlanAccess": {
+        "free": false,
+        "beta": true
+      },
       "onboardingQuestionnaires": [],
-      "chatOwnerSkills": ["content"],
-      "chatActionSkills": ["content"],
-      "chatOwnerUiSkills": { "content": "content" },
+      "chatOwnerSkills": [
+        "content"
+      ],
+      "chatActionSkills": [
+        "content"
+      ],
+      "chatOwnerUiSkills": {
+        "content": "content"
+      },
       "responsePolicies": [
         {
           "skill": "content",
-          "genericAnswerExamples": ["give me title ideas", "rewrite this hook"],
-          "localReadExamples": ["what content drafts are ready?", "what voice card are we using?"],
-          "internetEligibleExamples": ["fresh research for this topic", "latest trend about AI"],
-          "actionExamples": ["generate a draft", "expand this section"],
+          "genericAnswerExamples": [
+            "give me title ideas",
+            "rewrite this hook"
+          ],
+          "localReadExamples": [
+            "what content drafts are ready?",
+            "what voice card are we using?"
+          ],
+          "internetEligibleExamples": [
+            "fresh research for this topic",
+            "latest trend about AI"
+          ],
+          "actionExamples": [
+            "generate a draft",
+            "expand this section"
+          ],
           "defaultGenericShape": "content_draft",
           "defaultLocalShape": "content_draft",
           "defaultGrounding": "none",
@@ -178,8 +529,93 @@
         }
       ],
       "uiSkillMetadata": [
-        { "skill": "content", "displayName": "Content", "responseCardType": "content_action", "latencyBudgetMs": 2400, "privacyPolicy": "private_detail" }
-      ]
+        {
+          "skill": "content",
+          "displayName": "Content",
+          "responseCardType": "content_action",
+          "latencyBudgetMs": 2400,
+          "privacyPolicy": "private_detail"
+        }
+      ],
+      "routingVocabulary": {
+        "locales": {
+          "en": [
+            "content",
+            "script",
+            "post",
+            "pipeline",
+            "caption",
+            "hook",
+            "reel",
+            "video",
+            "newsletter",
+            "pillar",
+            "pillars",
+            "desk",
+            "filming",
+            "film",
+            "publish",
+            "published",
+            "performance",
+            "performing",
+            "performed",
+            "learnings?",
+            "format",
+            "formats?",
+            "hooks"
+          ],
+          "pt": [
+            "conte[uú]do",
+            "roteiros?",
+            "legendas?",
+            "t[ií]tulos?",
+            "ganchos?",
+            "pilares?",
+            "mesa",
+            "publicar",
+            "publica(?:cao|ção|coes|ções)",
+            "filmagens?",
+            "filmar",
+            "performou",
+            "funcionando",
+            "aprend(?:endo|er)",
+            "formato"
+          ],
+          "es": [
+            "contenido",
+            "guiones?",
+            "leyendas?",
+            "t[ií]tulos?",
+            "ganchos?",
+            "pilares?",
+            "publicar",
+            "publicaci[oó]n",
+            "filmaciones?",
+            "funcionando",
+            "aprend(?:iendo|er)",
+            "formato"
+          ]
+        },
+        "regexFragments": [
+          "\\b(youtube|instagram|reels?|thumbnail|video\\s+(?:idea|script)|content\\s+(?:strategy|calendar|idea)|caption|hashtag|subscribers?|audience|viral|hook|CTA|engagement|script|title\\s+ideas?|v[ií]deo|roteiro|legenda|inscritos|miniatura|conte[uú]do|id[eé]ia\\s+de\\s+(?:v[ií]deo|conte[uú]do)|calend[aá]rio\\s+(?:de\\s+)?conte[uú]do|engajamento|t[ií]tulos?)\\b",
+          "\\b(write|create|generate|make|draft|outline|rewrite|improve|give|suggest|organi[sz]e|prioriti[sz]e)\\b[\\s\\S]{0,80}\\b(script|caption|hook|hooks|title|titles|thumbnail|thumbnails|reel|reels|video|videos|post|posts|content)\\b",
+          "\\b(escrev(?:e|a)|cria|crie|gera|gerar|faz|faça|rascunha|reescreve|melhora)\\b[\\s\\S]{0,80}\\b(roteiro|legenda|gancho|ganchos|t[íi]tulo|t[íi]tulos|miniatura|miniaturas|reel|reels|v[ií]deo|v[ií]deos|post|posts|conte[uú]do)\\b",
+          "\\b(help\\s+me\\s+script|write|draft|outline)\\b[\\s\\S]{0,40}\\b(intro|opening|outro|hook)\\b",
+          "\\b(me\\s+ajuda\\s+a\\s+escrever|escrev(?:e|a)|cria|gera)\\b[\\s\\S]{0,40}\\b(intro|abertura|gancho|encerramento)\\b",
+          "\\b(id[eé]ias?\\s+de\\s+conte[uú]do|id[eé]ias?\\s+para\\s+um?\\s+v[ií]deo|hooks?\\s+para\\s+um?\\s+v[ií]deo|t[íi]tulos?\\s+melhores?\\s+para\\s+um?\\s+v[ií]deo|[âa]ngulos?\\s+de\\s+thumbnail|feedback\\s+neste?\\s+roteiro|planej(?:ar|a)\\s+uma\\s+grava[çc][aã]o|formatos?\\s+de\\s+conte[uú]do)\\b",
+          "\\b(content\\s+ideas?|ideas?\\s+for\\s+(?:a\\s+)?video|better\\s+titles?\\s+for\\s+(?:a\\s+)?video|organi[sz]e\\s+my\\s+content\\s+ideas|what\\s+(?:content\\s+is\\s+already\\s+ready|is\\s+already)\\s+on\\s+my\\s+desk(?:\\s+for\\s+content)?|what\\s+performed\\s+best|what\\s+are\\s+we\\s+learning(?:\\s+this\\s+week)?|what\\s+hook(?:s)?\\s+are\\s+working|what\\s+format\\s+is\\s+(?:winning|working)|filming\\s+day|schedule\\s+filming\\s+around\\s+my\\s+week|plan\\s+filming\\s+around\\s+my\\s+week|what\\s+should\\s+i\\s+publish\\s+next|what\\s+should\\s+i\\s+work\\s+on\\s+next\\s+for\\s+content)\\b",
+          "\\b(content|script|post|publish|publishing|video|film(?:ing)?|edit(?:ing)?|campaign|creator|thumbnail|hook|roteiro|conte[uú]do|publicar|grava[cç][aã]o|edi[cç][aã]o)\\b",
+          "\\b(create|draft|write|prepare)\\b.*\\b(?:content\\s+)?brief(?:ing)?\\b|\\bbrief(?:ing)?\\b.*\\b(content|post|script|reel|video|newsletter)\\b|\\b(criar|cria|preparar|prepara|escrever|escreve)\\b.*\\bbrief(?:ing)?\\s+de\\s+conte[uú]do\\b|\\b(crear|preparar|escribir|redactar)\\b.*\\bbrief(?:ing)?\\s+de\\s+contenido\\b",
+          "\\b(content|conteudo|contenido|script|roteiro|guion|guión|reel|post|video|publication|publicacao|publicaci[oó]n|publish|publicar|upload|queue|tiktok|youtube|brief)\\b"
+        ],
+        "exampleUtterances": [
+          "plan my youtube content",
+          "give me 3 content ideas for a video about recovery after training",
+          "me dá 3 ideias de conteúdo para um vídeo sobre recuperação depois do treino",
+          "what format is winning",
+          "o que está pronto na minha mesa de conteúdo"
+        ]
+      }
     },
     {
       "id": "finance",
@@ -187,27 +623,61 @@
       "version": "1.0.0",
       "lifecycle": "active",
       "owner": "finance",
-      "runtimeRouting": { "domain": "finance", "chatOwnerSkill": "finance" },
-      "schemas": { "input": "nexus.chat-turn.input.v1", "output": "nexus.chat-turn.output.v1" },
+      "runtimeRouting": {
+        "domain": "finance",
+        "chatOwnerSkill": "finance"
+      },
+      "schemas": {
+        "input": "nexus.chat-turn.input.v1",
+        "output": "nexus.chat-turn.output.v1"
+      },
       "requiredTier": "pro",
       "memoryScope": "tenant-user",
       "providerPolicy": "routed",
       "costBudget": "restricted",
       "latencyBudgetMs": 180000,
-      "supportedChannels": ["telegram", "rest", "ios"],
-      "requiredEvaluations": ["precision", "tenant-isolation", "auditability"],
-      "restrictedPlanAccess": { "free": false, "beta": true },
+      "supportedChannels": [
+        "telegram",
+        "rest",
+        "ios"
+      ],
+      "requiredEvaluations": [
+        "precision",
+        "tenant-isolation",
+        "auditability"
+      ],
+      "restrictedPlanAccess": {
+        "free": false,
+        "beta": true
+      },
       "onboardingQuestionnaires": [],
-      "chatOwnerSkills": ["finance"],
-      "chatActionSkills": ["finance"],
-      "chatOwnerUiSkills": { "finance": "finance" },
+      "chatOwnerSkills": [
+        "finance"
+      ],
+      "chatActionSkills": [
+        "finance"
+      ],
+      "chatOwnerUiSkills": {
+        "finance": "finance"
+      },
       "responsePolicies": [
         {
           "skill": "finance",
-          "genericAnswerExamples": ["explain what a deductible expense is"],
-          "localReadExamples": ["how much did I spend this month?", "what bills are due?"],
-          "internetEligibleExamples": ["current exchange rate", "latest tax deadline"],
-          "actionExamples": ["categorize this receipt", "mark this bill paid"],
+          "genericAnswerExamples": [
+            "explain what a deductible expense is"
+          ],
+          "localReadExamples": [
+            "how much did I spend this month?",
+            "what bills are due?"
+          ],
+          "internetEligibleExamples": [
+            "current exchange rate",
+            "latest tax deadline"
+          ],
+          "actionExamples": [
+            "categorize this receipt",
+            "mark this bill paid"
+          ],
           "defaultGenericShape": "finance_summary",
           "defaultLocalShape": "finance_summary",
           "defaultGrounding": "none",
@@ -215,8 +685,92 @@
         }
       ],
       "uiSkillMetadata": [
-        { "skill": "finance", "displayName": "Finance", "responseCardType": "finance_action", "latencyBudgetMs": 2200, "privacyPolicy": "sensitive_redacted" }
-      ]
+        {
+          "skill": "finance",
+          "displayName": "Finance",
+          "responseCardType": "finance_action",
+          "latencyBudgetMs": 2200,
+          "privacyPolicy": "sensitive_redacted"
+        }
+      ],
+      "routingVocabulary": {
+        "locales": {
+          "en": [
+            "finance",
+            "financial",
+            "budget",
+            "spend",
+            "spending",
+            "income",
+            "expense",
+            "expenses",
+            "balance",
+            "summary",
+            "bills?",
+            "invoices?",
+            "subscriptions?",
+            "renewals?",
+            "renew",
+            "missing",
+            "due",
+            "month"
+          ],
+          "pt": [
+            "financeir[oa]s?",
+            "resumo",
+            "or[çc]amento",
+            "gasto",
+            "gastos",
+            "despesa",
+            "despesas",
+            "renda",
+            "entradas",
+            "saldo",
+            "contas?",
+            "faturas?",
+            "facturas?",
+            "assinaturas?",
+            "subscri(?:c(?:ao|ão)|coes|ções)",
+            "renova(?:r|m|cao|ção|coes|ções)",
+            "faltam",
+            "falta",
+            "m[eê]s",
+            "financeir[oa]"
+          ],
+          "es": [
+            "financier[oa]s?",
+            "resumen",
+            "presupuesto",
+            "gasto",
+            "gastos",
+            "ingreso",
+            "ingresos",
+            "saldo",
+            "facturas?",
+            "suscripciones?",
+            "renovaciones?",
+            "renuevan",
+            "faltan",
+            "falta",
+            "mes",
+            "financier[oa]"
+          ]
+        },
+        "regexFragments": [
+          "\\b(despesas?|gastos?|or[çc]amento|imposto|carn[eê]-le[aã]o|DARF|receita\\s+federal|nota\\s+fiscal|budget|expenses?|spending|tax(?:es)?|income\\s+tax|financial|freelancer?\\s+tax|dedu[çc][aã]o|faturamento|receipt|receipts|invoice|invoices|merchant|bill|bills|accountant|contador|contabilista|NF(?:-?e)?)\\b",
+          "\\b(create|add|log|record|categori[sz]e|analy[sz]e)\\b[\\s\\S]{0,80}\\b(expense|expenses|receipt|receipts|invoice|invoices|bill|bills|subscription|subscriptions|budget|tax(?:es)?)\\b",
+          "\\b(cria|crie|adiciona|adicione|registra|registre|lan[çc]a|lan[cç]ar|cadastra|categoriza|categorize|analisa)\\b[\\s\\S]{0,80}\\b(despesa|despesas|gasto|gastos|recibo|recibos|fatura|faturas|nota\\s+fiscal|assinatura|assinaturas|or[çc]amento|imposto|impostos)\\b",
+          "\\b(despesa\\s+manual|gasto\\s+manual|resumo\\s+financeiro|or[çc]amento\\s+restante|conta\\s+fiscal|contas\\s+fiscais|assinaturas?\\s+para\\s+renovar|recibos?\\s+ou\\s+faturas?\\s+ainda\\s+faltam|o\\s+que\\s+devo\\s+enviar\\s+ao\\s+meu\\s+contabilista|o\\s+que\\s+devo\\s+mandar\\s+ao\\s+meu\\s+contador|quanto\\s+gastei\\s+este\\s+mes|que\\s+faturas\\s+registei\\s+este\\s+mes|what\\s+subscriptions?\\s+renew\\s+soon|which\\s+subscriptions?\\s+renew\\s+soon|what\\s+bills?\\s+are\\s+still\\s+missing\\s+this\\s+month|what\\s+should\\s+i\\s+send\\s+to\\s+my\\s+accountant|how\\s+much\\s+did\\s+i\\s+spend\\s+this\\s+month|what\\s+invoices?\\s+did\\s+i\\s+file\\s+this\\s+month)\\b",
+          "\\b(finance|budget|afford|bill|invoice|receipts?|tax|subscription|expense|purchase|payment|transaction|money|cash|conta|or[cç]amento|fatura|recibos?|imposto|assinatura|comprar|despesas?|gastos?)\\b",
+          "\\b(finance|financas|financeiro|financeira|pagamento|stripe|invoice|fatura|recibo|receipt)\\b"
+        ],
+        "exampleUtterances": [
+          "what subscriptions renew soon",
+          "what bills are still missing this month",
+          "mostra o resumo financeiro do mês",
+          "que faturas faltam este mes"
+        ]
+      }
     },
     {
       "id": "cooking",
@@ -224,27 +778,64 @@
       "version": "1.1.0",
       "lifecycle": "active",
       "owner": "cooking",
-      "runtimeRouting": { "domain": "cooking", "chatOwnerSkill": "cooking" },
-      "schemas": { "input": "nexus.chat-turn.input.v1", "output": "nexus.chat-turn.output.v1" },
+      "runtimeRouting": {
+        "domain": "cooking",
+        "chatOwnerSkill": "cooking"
+      },
+      "schemas": {
+        "input": "nexus.chat-turn.input.v1",
+        "output": "nexus.chat-turn.output.v1"
+      },
       "requiredTier": "pro",
       "memoryScope": "tenant-user",
       "providerPolicy": "routed",
       "costBudget": "standard",
       "latencyBudgetMs": 180000,
-      "supportedChannels": ["telegram", "rest", "ios", "portal"],
-      "requiredEvaluations": ["preferences", "allergy-safety", "routing"],
-      "restrictedPlanAccess": { "free": false, "beta": true },
-      "onboardingQuestionnaires": ["diet"],
-      "chatOwnerSkills": ["cooking"],
-      "chatActionSkills": ["cooking"],
-      "chatOwnerUiSkills": { "cooking": "cooking" },
+      "supportedChannels": [
+        "telegram",
+        "rest",
+        "ios",
+        "portal"
+      ],
+      "requiredEvaluations": [
+        "preferences",
+        "allergy-safety",
+        "routing"
+      ],
+      "restrictedPlanAccess": {
+        "free": false,
+        "beta": true
+      },
+      "onboardingQuestionnaires": [
+        "diet"
+      ],
+      "chatOwnerSkills": [
+        "cooking"
+      ],
+      "chatActionSkills": [
+        "cooking"
+      ],
+      "chatOwnerUiSkills": {
+        "cooking": "cooking"
+      },
       "responsePolicies": [
         {
           "skill": "cooking",
-          "genericAnswerExamples": ["suggest an oven-baked vegetable recipe", "how do I store grated carrots?"],
-          "localReadExamples": ["what meals did I plan this week?", "what is on my grocery list?"],
-          "internetEligibleExamples": ["latest food safety guidance for leftovers"],
-          "actionExamples": ["create a grocery list", "add this dinner to my plan"],
+          "genericAnswerExamples": [
+            "suggest an oven-baked vegetable recipe",
+            "how do I store grated carrots?"
+          ],
+          "localReadExamples": [
+            "what meals did I plan this week?",
+            "what is on my grocery list?"
+          ],
+          "internetEligibleExamples": [
+            "latest food safety guidance for leftovers"
+          ],
+          "actionExamples": [
+            "create a grocery list",
+            "add this dinner to my plan"
+          ],
           "defaultGenericShape": "recipe",
           "defaultLocalShape": "direct_answer",
           "defaultGrounding": "none",
@@ -252,8 +843,71 @@
         }
       ],
       "uiSkillMetadata": [
-        { "skill": "cooking", "displayName": "Cooking", "responseCardType": "cooking_action", "latencyBudgetMs": 2000, "privacyPolicy": "private_detail" }
-      ]
+        {
+          "skill": "cooking",
+          "displayName": "Cooking",
+          "responseCardType": "cooking_action",
+          "latencyBudgetMs": 2000,
+          "privacyPolicy": "private_detail"
+        }
+      ],
+      "routingVocabulary": {
+        "locales": {
+          "en": [
+            "cooking",
+            "cook",
+            "recipe",
+            "recipes",
+            "meals?",
+            "grocery",
+            "groceries",
+            "ingredients?",
+            "dinner",
+            "lunch"
+          ],
+          "pt": [
+            "cozinhar",
+            "receitas?",
+            "jantar",
+            "almo[cç]o",
+            "ingredientes?",
+            "refei(?:cao|ção|coes|ções)",
+            "forno",
+            "prato"
+          ],
+          "es": [
+            "cocinar",
+            "recetas?",
+            "cena",
+            "almuerzo",
+            "ingredientes?",
+            "comida",
+            "horno",
+            "plato"
+          ]
+        },
+        "regexFragments": [
+          "\\b(recipe|recipes|meal\\s+plan|meal\\s+prep|shopping\\s+list|cook(?:ing)?|ingredient|groceries|what\\s+(?:to|should\\s+I)\\s+(?:cook|eat|make)|dinner\\s+ideas?|breakfast\\s+ideas?|lunch\\s+ideas?|receita|cardápio|lista\\s+de\\s+compras|cozinhar|refeição|jantar|almoço|café\\s+da\\s+manhã)\\b",
+          "\\b(recipe|recipes|meal\\s+plan|meal\\s+prep|shopping\\s+list|batch\\s+cook(?:ing)?|dinner|breakfast|lunch|snack|menu|grocer(?:y|ies)|what\\s+(?:to|should\\s+I)\\s+(?:cook|eat|make)|jantar|almo[cç]o|caf[eé]\\s+da\\s+manh[aã]|lanche|refei[çc][aã]o|lista\\s+de\\s+compras|receita)\\b",
+          "caf[eé]\\s+da\\s+manh[aã]|almo[cç]o|jantar|lanche|refei[çc][aã]o|lista\\s+de\\s+compras|receita",
+          "\\b(?:me\\s+)?(sugere?|passa|adapta|monta|cria)\\b[\\s\\S]{0,80}\\b(jantar|almo[cç]o|caf[eé]\\s+da\\s+manh[aã]|refei[çc][aã]o|lanche|snack|menu|lista\\s+de\\s+compras|receita)\\b",
+          "\\b(o\\s+que\\s+eu\\s+devo\\s+comer|ideia\\s+de\\s+almo[cç]o|batch\\s+cooking|lista\\s+de\\s+compras|sugere?\\s+uma\\s+receita|snack\\s+para\\s+recupera[çc][aã]o)\\b",
+          "\\b(what\\s+should\\s+i\\s+eat\\s+before|high\\s+protein\\s+breakfast|weekly\\s+menu|monday\\s+to\\s+sunday\\s+menu|menu\\s+focused\\s+on\\s+performance|grocery\\s+list\\s+by\\s+aisle|meal\\s+ideas?|protein-?rich\\s+(?:breakfast|lunch|dinner|snack)|meal\\s+prep\\s+ideas?)\\b",
+          "\\b(carnivore\\s+breakfast|breakfast\\s+ideas?|fuel\\s+after|refuel\\s+after|fuel\\s+on\\s+travel\\s+days?|travel\\s+day\\s+fuel|post-?workout\\s+meal|pre-?workout\\s+meal|pre-?workout\\s+snacks?|post-?workout\\s+snacks?|snacks?\\s+(?:for|before|after)\\s+(?:a|the|my)?\\s*(?:hard\\s+)?(?:workout|training|ride)|adapt\\s+my\\s+meals?|lighter\\s+recovery\\s+day|recovery\\s+day\\s+meal|batch-?cook\\s+plan|prep\\s+my\\s+meals)\\b",
+          "\\b(caf[eé]\\s+da\\s+manh[aã]\\s+carn[ií]voro|alimenta[çc][aã]o\\s+p[oó]s-?treino|alimenta[çc][aã]o\\s+em\\s+dias?\\s+de\\s+viagem|snacks?\\s+para\\s+antes\\s+do\\s+treino|lanche(?:s)?\\s+pr[eé]-?treino|o\\s+que\\s+comer\\s+antes|o\\s+que\\s+comer\\s+depois|adapta\\s+minhas\\s+refei[çc][aã]es|dia\\s+de\\s+recupera[çc][aã]o|plano\\s+de\\s+batch\\s+cook|preparar\\s+refei[çc][aã]es|plano\\s+alimentar|ideias?\\s+de\\s+refei[çc][aã]es?|jantar\\s+rico\\s+em\\s+prote[ií]na)\\b",
+          "\\b(store|preserve|keep|refrigerat(?:e|ed|ing)|freeze|thaw|fridge|freezer|shelf\\s+life|last(?:ing)?|conserv(?:e|es|ed|ing|ar|o|a)|guard(?:ar|o|a)|armazen(?:ar|o|a)|refriger(?:ar|o|a)|congel(?:ar|o|a)|geladeira|frigor[ií]fico|frigorifico|durar|estraga(?:r)?)\\b[\\s\\S]{0,60}\\b(food|meal|ingredient|ingredients|vegetable|vegetables|fruit|fruits|leftovers?|comida|ingrediente|ingredientes|legume|legumes|vegetal|vegetais|fruta|frutas|sobras|cenoura|carrot|banana|alface|frango|arroz|queijo|ovo|ovos)\\b",
+          "\\b(ralar|ralada|grate|grated)\\b[\\s\\S]{0,30}\\b(cenoura|carrot)\\b[\\s\\S]{0,60}\\b(guard(?:ar|o|a)|conserv(?:ar|o|a)|armazen(?:ar|o|a)|geladeira|fridge|refrigerator|refriger(?:ar|o|a)|durar|last)\\b",
+          "\\b(cook(?:ing)?|meal|meal\\s+prep|food|fuel(?:ing)?|recipe|grocery|groceries|shopping\\s+list|lunch|dinner|breakfast|cozin|refei[cç][aã]o|mercado|compras)\\b",
+          "\\b(add|buy|create|adicionar|adiciona|acrescentar|acrescenta|comprar|compra|agregar|añadir|anadir|crear)\\b.*\\b(grocery|groceries|ingredient|ingredients|shopping|compras|ingredientes?|lista\\s+de\\s+compras|lista\\s+de\\s+la\\s+compra)\\b",
+          "\\b(cozinha|meal|refeicao|jantar|almoco|ceia|lanche|comida|grocery|compras|fueling|recipe|receita|receitas|dinner|lunch|breakfast|snack|ingredient|ingredients)\\b"
+        ],
+        "exampleUtterances": [
+          "I need a carnivore meal plan",
+          "what should I eat before a hard workout tomorrow morning?",
+          "O que devo cozinhar para o jantar?",
+          "cria uma lista de compras para 3 almoços ricos em proteína"
+        ]
+      }
     },
     {
       "id": "connections",
@@ -261,27 +915,60 @@
       "version": "1.0.0",
       "lifecycle": "active",
       "owner": "connections",
-      "runtimeRouting": { "domain": "connections", "chatOwnerSkill": null },
-      "schemas": { "input": "nexus.chat-turn.input.v1", "output": "nexus.chat-turn.output.v1" },
+      "runtimeRouting": {
+        "domain": "connections",
+        "chatOwnerSkill": null
+      },
+      "schemas": {
+        "input": "nexus.chat-turn.input.v1",
+        "output": "nexus.chat-turn.output.v1"
+      },
       "requiredTier": "free",
       "memoryScope": "tenant-user",
       "providerPolicy": "routed",
       "costBudget": "standard",
       "latencyBudgetMs": 180000,
-      "supportedChannels": ["telegram", "rest", "ios"],
-      "requiredEvaluations": ["consent", "tenant-isolation", "routing"],
-      "restrictedPlanAccess": { "free": false, "beta": false },
+      "supportedChannels": [
+        "telegram",
+        "rest",
+        "ios"
+      ],
+      "requiredEvaluations": [
+        "consent",
+        "tenant-isolation",
+        "routing"
+      ],
+      "restrictedPlanAccess": {
+        "free": false,
+        "beta": false
+      },
       "onboardingQuestionnaires": [],
-      "chatOwnerSkills": ["connections"],
-      "chatActionSkills": ["connections"],
-      "chatOwnerUiSkills": { "connections": "connections" },
+      "chatOwnerSkills": [
+        "connections"
+      ],
+      "chatActionSkills": [
+        "connections"
+      ],
+      "chatOwnerUiSkills": {
+        "connections": "connections"
+      },
       "responsePolicies": [
         {
           "skill": "connections",
-          "genericAnswerExamples": ["what is Google Calendar used for in Nexus?"],
-          "localReadExamples": ["is Gmail connected?", "why is Apple Health unavailable?"],
-          "internetEligibleExamples": ["current Google OAuth status page"],
-          "actionExamples": ["retry sync", "open connection settings"],
+          "genericAnswerExamples": [
+            "what is Google Calendar used for in Nexus?"
+          ],
+          "localReadExamples": [
+            "is Gmail connected?",
+            "why is Apple Health unavailable?"
+          ],
+          "internetEligibleExamples": [
+            "current Google OAuth status page"
+          ],
+          "actionExamples": [
+            "retry sync",
+            "open connection settings"
+          ],
           "defaultGenericShape": "connection_status",
           "defaultLocalShape": "connection_status",
           "defaultGrounding": "none",
@@ -289,8 +976,36 @@
         }
       ],
       "uiSkillMetadata": [
-        { "skill": "connections", "displayName": "Connections", "responseCardType": "provider_status", "latencyBudgetMs": 1500, "privacyPolicy": "safe_preview" }
-      ]
+        {
+          "skill": "connections",
+          "displayName": "Connections",
+          "responseCardType": "provider_status",
+          "latencyBudgetMs": 1500,
+          "privacyPolicy": "safe_preview"
+        }
+      ],
+      "routingVocabulary": {
+        "locales": {
+          "en": [
+            "connections?",
+            "connect",
+            "integrations?",
+            "providers?"
+          ],
+          "pt": [
+            "conex(?:ão|ões|ao|oes)",
+            "integra(?:ção|ções|cao|coes)"
+          ]
+        },
+        "regexFragments": [
+          "\\b(reconnect|retry|sync|reauth)\\b.*\\b(connections?|integrations?|providers?|google|outlook|garmin|apple health|strava|todoist|notion)\\b|\\b(connections?|integrations?|providers?|google|outlook|garmin|apple health|strava|todoist|notion)\\b.*\\b(reconnect|retry|sync|reauth)\\b",
+          "\\b(connection|conexao|ligacao|google|outlook|garmin|health)\\b"
+        ],
+        "exampleUtterances": [
+          "reconnect my google calendar integration",
+          "retry the garmin sync connection"
+        ]
+      }
     },
     {
       "id": "notifications",
@@ -298,27 +1013,59 @@
       "version": "1.0.0",
       "lifecycle": "active",
       "owner": "notifications",
-      "runtimeRouting": { "domain": "notifications", "chatOwnerSkill": null },
-      "schemas": { "input": "nexus.chat-turn.input.v1", "output": "nexus.chat-turn.output.v1" },
+      "runtimeRouting": {
+        "domain": "notifications",
+        "chatOwnerSkill": null
+      },
+      "schemas": {
+        "input": "nexus.chat-turn.input.v1",
+        "output": "nexus.chat-turn.output.v1"
+      },
       "requiredTier": "free",
       "memoryScope": "tenant-user",
       "providerPolicy": "deterministic-first",
       "costBudget": "minimal",
       "latencyBudgetMs": 30000,
-      "supportedChannels": ["rest", "ios"],
-      "requiredEvaluations": ["preferences", "quiet-hours", "delivery-contract"],
-      "restrictedPlanAccess": { "free": false, "beta": false },
+      "supportedChannels": [
+        "rest",
+        "ios"
+      ],
+      "requiredEvaluations": [
+        "preferences",
+        "quiet-hours",
+        "delivery-contract"
+      ],
+      "restrictedPlanAccess": {
+        "free": false,
+        "beta": false
+      },
       "onboardingQuestionnaires": [],
-      "chatOwnerSkills": ["notifications"],
-      "chatActionSkills": ["notifications"],
-      "chatOwnerUiSkills": { "notifications": "notifications" },
+      "chatOwnerSkills": [
+        "notifications"
+      ],
+      "chatActionSkills": [
+        "notifications"
+      ],
+      "chatOwnerUiSkills": {
+        "notifications": "notifications"
+      },
       "responsePolicies": [
         {
           "skill": "notifications",
-          "genericAnswerExamples": ["how do quiet hours work?"],
-          "localReadExamples": ["why did I miss this notification?", "show my alert settings"],
-          "internetEligibleExamples": ["current APNs status"],
-          "actionExamples": ["turn on decision alerts", "test push notification"],
+          "genericAnswerExamples": [
+            "how do quiet hours work?"
+          ],
+          "localReadExamples": [
+            "why did I miss this notification?",
+            "show my alert settings"
+          ],
+          "internetEligibleExamples": [
+            "current APNs status"
+          ],
+          "actionExamples": [
+            "turn on decision alerts",
+            "test push notification"
+          ],
           "defaultGenericShape": "notification_summary",
           "defaultLocalShape": "notification_summary",
           "defaultGrounding": "none",
@@ -326,8 +1073,35 @@
         }
       ],
       "uiSkillMetadata": [
-        { "skill": "notifications", "displayName": "Notifications", "responseCardType": "notification_action", "latencyBudgetMs": 1400, "privacyPolicy": "safe_preview" }
-      ]
+        {
+          "skill": "notifications",
+          "displayName": "Notifications",
+          "responseCardType": "notification_action",
+          "latencyBudgetMs": 1400,
+          "privacyPolicy": "safe_preview"
+        }
+      ],
+      "routingVocabulary": {
+        "locales": {
+          "en": [
+            "notifications?",
+            "alerts?",
+            "reminders?"
+          ],
+          "pt": [
+            "notifica(?:ção|ções|cao|coes)",
+            "lembretes?"
+          ]
+        },
+        "regexFragments": [
+          "\\b(snooze|pause|adiar|pausar|suspender)\\b.*\\b(notifications?|alerts?|reminders?|notifica(?:cao|coes|ção|ções)|alertas?|lembretes?)\\b",
+          "\\b(notification|notificacao|notificacoes|alerta|push)\\b"
+        ],
+        "exampleUtterances": [
+          "snooze my notifications for an hour",
+          "pausar notificações até amanhã"
+        ]
+      }
     },
     {
       "id": "decision_center",
@@ -335,27 +1109,60 @@
       "version": "1.0.0",
       "lifecycle": "active",
       "owner": "decision-center",
-      "runtimeRouting": { "domain": "decision_center", "chatOwnerSkill": null },
-      "schemas": { "input": "nexus.chat-turn.input.v1", "output": "nexus.chat-turn.output.v1" },
+      "runtimeRouting": {
+        "domain": "decision_center",
+        "chatOwnerSkill": null
+      },
+      "schemas": {
+        "input": "nexus.chat-turn.input.v1",
+        "output": "nexus.chat-turn.output.v1"
+      },
       "requiredTier": "free",
       "memoryScope": "tenant-user",
       "providerPolicy": "deterministic-first",
       "costBudget": "minimal",
       "latencyBudgetMs": 30000,
-      "supportedChannels": ["telegram", "rest", "ios"],
-      "requiredEvaluations": ["provenance", "expiry", "choice-contract"],
-      "restrictedPlanAccess": { "free": false, "beta": false },
+      "supportedChannels": [
+        "telegram",
+        "rest",
+        "ios"
+      ],
+      "requiredEvaluations": [
+        "provenance",
+        "expiry",
+        "choice-contract"
+      ],
+      "restrictedPlanAccess": {
+        "free": false,
+        "beta": false
+      },
       "onboardingQuestionnaires": [],
-      "chatOwnerSkills": ["decision_center"],
-      "chatActionSkills": ["decision_center"],
-      "chatOwnerUiSkills": { "decision_center": "decision_center" },
+      "chatOwnerSkills": [
+        "decision_center"
+      ],
+      "chatActionSkills": [
+        "decision_center"
+      ],
+      "chatOwnerUiSkills": {
+        "decision_center": "decision_center"
+      },
       "responsePolicies": [
         {
           "skill": "decision_center",
-          "genericAnswerExamples": ["how should I compare two options?"],
-          "localReadExamples": ["what decisions are waiting?", "why does it say all clear?"],
-          "internetEligibleExamples": ["decision framework examples from current sources"],
-          "actionExamples": ["choose this option", "snooze this decision"],
+          "genericAnswerExamples": [
+            "how should I compare two options?"
+          ],
+          "localReadExamples": [
+            "what decisions are waiting?",
+            "why does it say all clear?"
+          ],
+          "internetEligibleExamples": [
+            "decision framework examples from current sources"
+          ],
+          "actionExamples": [
+            "choose this option",
+            "snooze this decision"
+          ],
           "defaultGenericShape": "decision_summary",
           "defaultLocalShape": "decision_summary",
           "defaultGrounding": "none",
@@ -363,8 +1170,39 @@
         }
       ],
       "uiSkillMetadata": [
-        { "skill": "decision_center", "displayName": "Decision Center", "responseCardType": "decision_action", "latencyBudgetMs": 1800, "privacyPolicy": "safe_preview" }
-      ]
+        {
+          "skill": "decision_center",
+          "displayName": "Decision Center",
+          "responseCardType": "decision_action",
+          "latencyBudgetMs": 1800,
+          "privacyPolicy": "safe_preview"
+        }
+      ],
+      "routingVocabulary": {
+        "locales": {
+          "en": [
+            "decision",
+            "choice",
+            "decision\\s+center"
+          ],
+          "pt": [
+            "escolhas?"
+          ],
+          "es": [
+            "elecci(?:on|ón|ones)"
+          ]
+        },
+        "regexFragments": [
+          "\\b(?:decision center|(?:decision|choice|decis(?:ao|oes|ão|ões|ion|ión|iones)|escolhas?|elecci(?:on|ón|ones)))\\b",
+          "\\b(dismiss|close|ignore|drop|snooze|postpone|dispensar|dispensa|dispense|descartar|descarta|descarte|ignorar|ignora|ignore|fechar|fecha|feche|adiar|adia|adie|pausar|pausa|pause|posponer|posp[oó]n|postergar|faz(?:er)?\\s+snooze)\\b.*\\b(?:decision|choice|decis(?:ao|oes|ão|ões|ion|ión|iones)|escolhas?|elecci(?:on|ón|ones))\\b",
+          "\\b(decision|decisao|escolha|snooze|adiar)\\b"
+        ],
+        "exampleUtterances": [
+          "Faz snooze da decisão dec_123 até amanhã",
+          "Dispense decisão dec_123",
+          "show my pending decisions"
+        ]
+      }
     }
   ]
 }

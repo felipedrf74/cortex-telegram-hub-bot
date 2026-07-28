@@ -18,6 +18,8 @@ import {
   buildChatSkillRoutingPromptBlock,
 } from './chat-skill-orchestrator';
 import { buildChatGroundingEnvelope, type ChatGroundingEnvelope } from './chat-grounding-layer';
+import { getDurableChatContinuity } from './chat-conversation-state';
+import { getChatMessageMetadataById } from './chat-history-store';
 import { getPreferredDisplayNameById } from './user-service';
 import { sanitizeForPromptInterpolation } from '../utils/prompt-sanitizer';
 
@@ -131,6 +133,165 @@ const DEFAULT_CONTEXT_BUDGET_CHARS = 2600;
 const MAX_ITEM_CONTENT_CHARS = 700;
 const LOW_CONFIDENCE_THRESHOLD = 0.5;
 
+// ─── M17: previous-turn grounding feedback (token-zero local read) ───
+//
+// The M8 finalizer persists every quality-gate trip under
+// metadata.qualityGate on the assistant message, and M13 durable
+// continuity keeps last_assistant_message_id + anchor entities per
+// (tenant, user). Reading both lets the CURRENT turn's context selection
+// prioritize the entity the gate flagged on the PREVIOUS turn — same
+// budget, zero provider calls, zero added prompt text.
+
+export interface PreviousTurnGroundingFeedback {
+  gateAction: string | null;
+  gateIssueCodes: string[];
+  /** Entity titles the previous turn's gate flagged (verified entity or quoted claim spans). */
+  flaggedEntityTerms: string[];
+  /** Raw anchor entity ids referenced by recent turns (30-min decay applied upstream). */
+  anchorEntityIds: string[];
+}
+
+const FLAGGED_ENTITY_QUOTE_RE = /["'“”‘’]([^"'“”‘’\n]{2,80})["'“”‘’]/g;
+
+export function readPreviousTurnGroundingFeedback(
+  userId: number,
+  tenantId?: number | null,
+): PreviousTurnGroundingFeedback | null {
+  try {
+    const scopedTenantId = typeof tenantId === 'number' ? tenantId : undefined;
+    const continuity = getDurableChatContinuity(userId, scopedTenantId);
+    if (!continuity) return null;
+    const anchorEntityIds = continuity.anchorEntities.map((anchor) => anchor.entityId);
+    let gateAction: string | null = null;
+    const gateIssueCodes: string[] = [];
+    const flaggedEntityTerms = new Set<string>();
+    if (continuity.lastAssistantMessageId) {
+      const metadata = getChatMessageMetadataById(userId, continuity.lastAssistantMessageId, scopedTenantId);
+      const qualityGate = metadata?.qualityGate;
+      if (qualityGate && typeof qualityGate === 'object' && !Array.isArray(qualityGate)) {
+        const gate = qualityGate as Record<string, unknown>;
+        if (typeof gate.action === 'string') gateAction = gate.action;
+        if (Array.isArray(gate.issues)) {
+          for (const issue of gate.issues) {
+            if (typeof issue === 'string') gateIssueCodes.push(issue);
+          }
+        }
+        const verifiedEntity = gate.verifiedEntity;
+        if (verifiedEntity && typeof verifiedEntity === 'object'
+          && typeof (verifiedEntity as { title?: unknown }).title === 'string') {
+          flaggedEntityTerms.add((verifiedEntity as { title: string }).title);
+        }
+        if (typeof gate.originalText === 'string') {
+          for (const match of gate.originalText.matchAll(FLAGGED_ENTITY_QUOTE_RE)) {
+            const term = String(match[1] ?? '').trim();
+            if (term && /\w/.test(term)) flaggedEntityTerms.add(term);
+          }
+        }
+      }
+    }
+    if (gateAction === null && gateIssueCodes.length === 0
+      && flaggedEntityTerms.size === 0 && anchorEntityIds.length === 0) {
+      return null;
+    }
+    return {
+      gateAction,
+      gateIssueCodes,
+      flaggedEntityTerms: [...flaggedEntityTerms],
+      anchorEntityIds,
+    };
+  } catch {
+    // Fail open: feedback is an advisory ranking signal only.
+    return null;
+  }
+}
+
+// ─── M17: deterministic turn-relevance ranking inside the budget ─────
+
+const TURN_RANK_STOPWORDS = new Set([
+  'the', 'and', 'for', 'with', 'that', 'this', 'these', 'those', 'from',
+  'should', 'would', 'could', 'have', 'has', 'was', 'were', 'you', 'your',
+  'how', 'what', 'when', 'where', 'why', 'did', 'does', 'are', 'can',
+  'will', 'get', 'got', 'one', 'ones', 'about', 'into', 'over', 'please',
+  'como', 'para', 'que', 'com', 'sem', 'uma', 'meu', 'minha', 'meus',
+  'minhas', 'hoje', 'por', 'los', 'las', 'del', 'una', 'este', 'esta',
+  'isso', 'nao', 'qual', 'quais', 'pode', 'devo',
+]);
+
+function foldForTurnRank(text: string): string {
+  return text.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase();
+}
+
+function tokensForTurnRank(text: string): Set<string> {
+  return new Set(
+    foldForTurnRank(text)
+      .split(/[^a-z0-9]+/)
+      .filter((token) => token.length >= 3 && !TURN_RANK_STOPWORDS.has(token)),
+  );
+}
+
+// Source priority for ranking only (rendering/attribution unchanged):
+// conversation continuity outranks derived peer context, which outranks
+// free-form memory, which outranks the advisory daily cache.
+const TURN_RANK_SOURCE_WEIGHT: Partial<Record<ChatContextSource, number>> = {
+  conversation_history: 1,
+  shared_decision_context: 0.85,
+  shared_memory: 0.7,
+  daily_context: 0.55,
+};
+
+interface TurnRankInput {
+  message: string;
+  feedback: PreviousTurnGroundingFeedback | null;
+  nowMs?: number;
+}
+
+/**
+ * Deterministic relevance score for a candidate context item against the
+ * current turn: keyword/entity overlap with the message + recency + source
+ * priority + previous-turn gate feedback, with the legacy heuristic
+ * relevanceScore as a stable tiebreak component. Pure function — no I/O.
+ */
+function scoreTurnRelevance(
+  item: ChatContextItem,
+  messageTokens: Set<string>,
+  feedback: PreviousTurnGroundingFeedback | null,
+  nowMs: number,
+): number {
+  const contentTokens = tokensForTurnRank(item.content);
+  let overlapCount = 0;
+  for (const token of messageTokens) {
+    if (contentTokens.has(token)) overlapCount += 1;
+  }
+  const overlap = messageTokens.size > 0
+    ? Math.min(1, overlapCount / Math.min(6, Math.max(1, messageTokens.size)))
+    : 0;
+
+  const observedMs = item.observedAt ? Date.parse(item.observedAt) : Number.NaN;
+  const ageMs = Number.isFinite(observedMs) ? Math.max(0, nowMs - observedMs) : null;
+  const recency = ageMs === null
+    ? 0.5
+    : ageMs <= 10 * 60 * 1000
+      ? 1
+      : ageMs <= 24 * 60 * 60 * 1000
+        ? 0.6
+        : 0.3;
+
+  const sourceWeight = TURN_RANK_SOURCE_WEIGHT[item.source] ?? 0.5;
+
+  let feedbackBoost = 0;
+  if (feedback) {
+    const contentFolded = foldForTurnRank(item.content);
+    const terms = [...feedback.flaggedEntityTerms, ...feedback.anchorEntityIds];
+    const mentionsFlaggedEntity = terms.some((term) => {
+      const folded = foldForTurnRank(term).trim();
+      return folded.length >= 2 && contentFolded.includes(folded);
+    });
+    if (mentionsFlaggedEntity) feedbackBoost = 0.4;
+  }
+
+  return 0.45 * overlap + 0.15 * recency + 0.25 * sourceWeight + feedbackBoost + 0.1 * item.relevanceScore;
+}
+
 export async function buildChatPromptContext(input: BuildChatPromptContextInput): Promise<ChatPromptContext> {
   const budgetChars = input.budgetChars ?? DEFAULT_CONTEXT_BUDGET_CHARS;
   const intent = analyzeChatContextIntent(input.message, input.domain);
@@ -140,6 +301,10 @@ export async function buildChatPromptContext(input: BuildChatPromptContextInput)
     userId: input.userId,
     tenantId: input.tenantId,
   });
+  // M19: bridge retirement is decided by AI_CROSS_SKILL_EXECUTION inside
+  // buildChatSkillRoutingPromptBlock. The /message pipeline's deterministic
+  // cross_skill_plan_declined terminal protects planner-declined actionable
+  // turns from reaching this single-owner model path.
   const scope = resolveChatTenantScope({
     userId: input.userId,
     tenantId: input.tenantId,
@@ -205,7 +370,14 @@ export async function buildChatPromptContext(input: BuildChatPromptContextInput)
     tenantId: scope.tenantId,
     intent,
   });
-  const selected = applyContextBudget(selection.items, budgetChars);
+  // M17: previous-turn grounding feedback (quality-gate trips + anchor
+  // entities) informs the CURRENT turn's context selection. Local read
+  // only; ranking reallocates the existing budget without growing it.
+  const previousTurnFeedback = readPreviousTurnGroundingFeedback(scope.userId, scope.tenantId);
+  const selected = applyContextBudget(selection.items, budgetChars, {
+    message: input.message,
+    feedback: previousTurnFeedback,
+  });
   const weakSignals = buildWeakContextSignals(intent, selected);
   const block = renderChatPromptContextBlock({
     tenantId: scope.tenantId,
@@ -705,7 +877,11 @@ function hasUnsafeAmbiguousTarget(items: ChatContextItem[]): boolean {
   return count > 1 || /\b(or|and)\b/.test(historyText) && /\b(which|one|item|block|plan|session|event)\b/.test(historyText);
 }
 
-function applyContextBudget(items: ChatContextItem[], budgetChars: number): ChatContextItem[] {
+function applyContextBudget(
+  items: ChatContextItem[],
+  budgetChars: number,
+  turnRank?: TurnRankInput,
+): ChatContextItem[] {
   // Codex QA round 3: critical items used to bypass the budget
   // entirely, so a single 4000-char conversation message could blow
   // a 500-char budget. New policy:
@@ -721,7 +897,25 @@ function applyContextBudget(items: ChatContextItem[], budgetChars: number): Chat
   const MIN_CRITICAL_CONTENT = 80;
 
   const critical = sorted.filter((i) => i.critical);
-  const nonCritical = sorted.filter((i) => !i.critical);
+  let nonCritical = sorted.filter((i) => !i.critical);
+
+  // M17: rank non-critical candidates by deterministic relevance to the
+  // CURRENT turn (keyword/entity overlap + recency + source priority +
+  // previous-turn gate feedback) instead of first-come fill. The budget
+  // itself is untouched — ranking only decides WHICH items make the cut.
+  // Ties keep the legacy critical/priority/relevance ordering (stable).
+  if (turnRank) {
+    const messageTokens = tokensForTurnRank(turnRank.message);
+    const nowMs = turnRank.nowMs ?? Date.now();
+    nonCritical = nonCritical
+      .map((item, index) => ({
+        item,
+        index,
+        score: scoreTurnRelevance(item, messageTokens, turnRank.feedback, nowMs),
+      }))
+      .sort((a, b) => (b.score !== a.score ? b.score - a.score : a.index - b.index))
+      .map((entry) => entry.item);
+  }
 
   // Distribute the critical-content portion of the budget fairly.
   // The floor (MIN_CRITICAL_CONTENT * count) wins when budget is too

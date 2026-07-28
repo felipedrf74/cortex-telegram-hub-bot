@@ -1,5 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
+import { randomUUID } from 'crypto';
+
 import type { Response } from 'express';
 import { buildAITemporarilyBusyResponse } from '../../domains/ai-unavailable';
 import { keywordMatch } from '../../router';
@@ -18,6 +20,7 @@ import {
   persistExchange,
   syncConversationStateForShortcut,
 } from './chat-persistence';
+import { finalizeChatMessageResponse } from './chat-message-finalizer';
 
 export async function sendRetryableChatFailureResponseIfNeeded(opts: {
   err: unknown;
@@ -47,7 +50,7 @@ export async function sendRetryableChatFailureResponseIfNeeded(opts: {
   const degradedDomain = keywordMatch(normalizedText) || getLastChatActiveDomain(userId, Date.now(), validatedTenantId) || 'secretary';
   const degraded = await buildAITemporarilyBusyResponse(degradedDomain, userId, validatedTenantId);
   const timestamp = new Date().toISOString();
-  const assistantMessageId = `msg-${Date.now()}`;
+  const assistantMessageId = `msg-${randomUUID()}`;
   const tracker = createChatLatencyTracker(Date.now());
   tracker.mark('retryable_provider_failure');
   const grounding = buildChatGroundingEnvelope({
@@ -86,7 +89,12 @@ export async function sendRetryableChatFailureResponseIfNeeded(opts: {
     'iOS chat/message degraded after retryable AI provider failure',
   );
 
-  const response = {
+  // The degraded contract is hand-rolled above (buildNexusAnswerContract with
+  // actionability 'degraded' + applyChatFallbackPolicy). Routing the envelope
+  // through the finalizer with the 'degraded_response' PASSTHROUGH family
+  // keeps this terminal visible to the one-terminal-pipeline governance scan
+  // without re-gating or re-stamping the hand-rolled contract.
+  const response = finalizeChatMessageResponse({
     id: assistantMessageId,
     text: degraded.text,
     domain: degraded.domain,
@@ -103,13 +111,21 @@ export async function sendRetryableChatFailureResponseIfNeeded(opts: {
       fallbackPolicy: fallbackPolicy.policy,
     },
     timestamp,
-  };
+  }, {
+    normalizedText,
+    userId,
+    tenantId: validatedTenantId,
+    chatRequestId,
+    tracker,
+    latencyTier: 'tier4_long_running',
+    stageFamily: 'degraded_response',
+  });
   // Codex QA round 4: preserve the original claimed user-message id so
   // iOS retry can find the completed (degraded) assistant by the same
   // key the route claimed at acceptance. Fall back to a fresh id only
   // when the caller didn't pass one (legacy paths).
   const persistedUserMessageId = userMessageId
-    ?? (clientMessageId ? `msg-user-${clientMessageId}` : `msg-user-${Date.now()}`);
+    ?? (clientMessageId ? `msg-user-${clientMessageId}` : `msg-user-${randomUUID()}`);
   persistExchange(userId, persistedUserMessageId, normalizedText, assistantMessageId, response, validatedTenantId);
   syncConversationStateForShortcut(userId, degraded.domain, normalizedText, degraded.text, validatedTenantId);
   res.json(response);

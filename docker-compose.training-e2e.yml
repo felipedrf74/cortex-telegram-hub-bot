@@ -71,9 +71,6 @@ services:
       OAUTH_ENCRYPTION_KEY: ${NEXUS_TRAINING_E2E_OAUTH_KEY:-nexus-training-e2e-oauth-key-2026-06-strong-32-byte}
       FINANCE_ENCRYPTION_ENABLED: "false"
       BACKUP_ENABLED: "false"
-      TELEGRAM_LEGACY_DELIVERY: "false"
-      TELEGRAM_BOT_TOKEN: "training-e2e-telegram-disabled"
-      TELEGRAM_ALLOWED_USER_IDS: "100000001"
       OWNER_TELEGRAM_ID: "100000001"
       CONTENT_ENGINE_ENABLED: "true"
       CONTENT_ENGINE_BASE_URL: "http://content-engine:8100"
