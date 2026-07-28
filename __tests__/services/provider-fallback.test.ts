@@ -191,6 +191,44 @@ describe('TaskRoutingProvider', () => {
     expect(provider.name).toContain('gemini');
   });
 
+  it('reports every configured provider as an idle closed circuit before the first call', () => {
+    expect(provider.getProviderHealth()).toEqual({
+      anthropic: {
+        circuit: { state: 'CLOSED', failures: 0 },
+        metrics: {
+          usageCount: 0,
+          failureCount: 0,
+          fallbackTriggerCount: 0,
+          circuitOpenCount: 0,
+          lastSuccessAt: null,
+          lastFailureAt: null,
+        },
+      },
+      openai: {
+        circuit: { state: 'CLOSED', failures: 0 },
+        metrics: {
+          usageCount: 0,
+          failureCount: 0,
+          fallbackTriggerCount: 0,
+          circuitOpenCount: 0,
+          lastSuccessAt: null,
+          lastFailureAt: null,
+        },
+      },
+      gemini: {
+        circuit: { state: 'CLOSED', failures: 0 },
+        metrics: {
+          usageCount: 0,
+          failureCount: 0,
+          fallbackTriggerCount: 0,
+          circuitOpenCount: 0,
+          lastSuccessAt: null,
+          lastFailureAt: null,
+        },
+      },
+    });
+  });
+
   // ─── classify (routes to "classify" task type) ─────────────────
 
   describe('classify', () => {

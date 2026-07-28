@@ -282,6 +282,26 @@ describe('M16 plan-executor topological execution', () => {
     expect(response.text).toContain('1. Criar a tarefa “comprar leite”');
   });
 
+  it('localizes an es-419 task confirmation without falling back to English', async () => {
+    const plan = makePlan([
+      makeStep({ stepId: 'step_1', args: { title: 'revisión del planificador de humo' } }),
+    ], { requiresConfirmation: true, locale: 'es-419' });
+
+    const response = await executeChatActionPlan(plan, {
+      ...INPUT,
+      text: 'Crea una tarea llamada revisión del planificador de humo',
+      locale: 'es-419',
+    }, {} as never, {});
+
+    expect(response.metadata.actionStatus).toBe('needs_confirmation');
+    expect(response.text).toBe('¿Confirmas que quieres crear la tarea “revisión del planificador de humo”?');
+    expect(response.metadata.actionConfirmation).toMatchObject({
+      title: 'Confirmación necesaria',
+      message: '¿Confirmas que quieres crear la tarea “revisión del planificador de humo”?',
+    });
+    expect(response.text).not.toMatch(/\b(?:confirm|want|task|change)\b/i);
+  });
+
   it('still stops the whole run when a step needs a mid-run user decision', async () => {
     executeStepMock.mockImplementation(async (step) => (
       step.stepId === 'step_1'

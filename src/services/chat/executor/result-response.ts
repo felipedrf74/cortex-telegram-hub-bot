@@ -21,6 +21,7 @@ import {
 } from './response-builder';
 import {
   confirmationCopy,
+  confirmationTitle,
   failureCopy,
   multiStepOutcomeCopy,
   overflowDisclosureCopy,
@@ -48,7 +49,7 @@ export function buildExecutedChatActionResponse(
       type: multiStepType(plan, 'chat_action_needs_confirmation'),
       actionStatus: 'needs_confirmation',
       actionConfirmation: {
-        title: input.locale?.startsWith('pt') ? 'Confirmação necessária' : 'Confirmation needed',
+        title: confirmationTitle(input),
         message: failureCopy(input, needsConfirmation.error),
         destructive: plan.steps.some((step) => step.risk === 'destructive'),
         variant: confirmationVariant(plan),

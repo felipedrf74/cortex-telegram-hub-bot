@@ -662,6 +662,17 @@ export class TaskRoutingProvider implements AIProvider {
       }
     }
     this.name = `routing(${[...providers].join(',')})`;
+
+    // Operational health must describe the configured routing graph even
+    // before the first provider call. Lazily creating these rows made a
+    // freshly booted /health/detailed response report `providers: {}`,
+    // which could not prove the staged Gemini/Ollama circuits were closed.
+    // Initializing in-memory breaker/metric state performs no provider call
+    // and preserves the normal zero-usage semantics.
+    for (const providerName of providers) {
+      this.getBreaker(providerName);
+      this.getMetrics(providerName);
+    }
   }
 
   private getBreaker(providerName: string): CircuitBreaker {

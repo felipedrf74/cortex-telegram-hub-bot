@@ -28,6 +28,7 @@ import {
 } from './response-builder';
 import {
   confirmationCopy,
+  confirmationTitle,
   refusalCopyForReason,
   refusalReasonForPlan,
 } from './response-copy';
@@ -174,7 +175,7 @@ export async function executeChatActionPlan(
       type: multiStepType(plan, 'chat_action_needs_confirmation'),
       actionStatus: 'needs_confirmation',
       actionConfirmation: {
-        title: input.locale?.startsWith('pt') ? 'Confirmação necessária' : 'Confirmation needed',
+        title: confirmationTitle(input),
         message: confirmationCopy(plan, input),
         destructive: plan.steps.some((step) => step.risk === 'destructive'),
         variant: confirmationVariant(plan),

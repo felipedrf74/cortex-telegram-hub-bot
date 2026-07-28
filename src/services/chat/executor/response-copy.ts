@@ -567,6 +567,12 @@ export function confirmationCopy(plan: ChatActionPlan, input: ChatPlannerInput):
         : '';
       return `Confirma que queres criar “${title}” no ${provider} em ${start.setLocale('pt').toFormat("cccc, d 'de' LLLL")}, das ${start.toFormat('HH:mm')} às ${end.toFormat('HH:mm')}.${inviteNote}`;
     }
+    if (input.locale?.startsWith('es')) {
+      const inviteNote = attendeeCount > 0
+        ? ` Esto puede enviar una invitación a ${attendeeCount} participante(s).`
+        : '';
+      return `¿Confirmas que quieres crear “${title}” en ${provider} el ${start.setLocale('es').toFormat("cccc, d 'de' LLLL")}, de ${start.toFormat('HH:mm')} a ${end.toFormat('HH:mm')}?${inviteNote}`;
+    }
     const inviteNote = attendeeCount > 0
       ? ` This may send an invite to ${attendeeCount} attendee(s).`
       : '';
@@ -575,15 +581,33 @@ export function confirmationCopy(plan: ChatActionPlan, input: ChatPlannerInput):
   if (first?.action === 'create_task' || first?.action === 'delete_task' || first?.action === 'complete_task' || first?.action === 'update_task') {
     const title = typeof (first.args as any).title === 'string' ? (first.args as any).title : typeof (first.args as any).taskId === 'string' ? (first.args as any).taskId : input.text;
     if (input.locale?.startsWith('pt')) {
-      return `Confirma que queres ${first.action === 'delete_task' ? 'apagar' : first.action === 'complete_task' ? 'concluir' : 'alterar'} a tarefa “${title}”?`;
+      const verb = first.action === 'create_task' ? 'criar'
+        : first.action === 'delete_task' ? 'apagar'
+          : first.action === 'complete_task' ? 'concluir'
+            : 'alterar';
+      return `Confirma que queres ${verb} a tarefa “${title}”?`;
     }
-    return `Confirm that you want to ${first.action === 'delete_task' ? 'delete' : first.action === 'complete_task' ? 'complete' : 'change'} the task “${title}”?`;
+    if (input.locale?.startsWith('es')) {
+      const verb = first.action === 'create_task' ? 'crear'
+        : first.action === 'delete_task' ? 'eliminar'
+          : first.action === 'complete_task' ? 'completar'
+            : 'actualizar';
+      return `¿Confirmas que quieres ${verb} la tarea “${title}”?`;
+    }
+    const verb = first.action === 'create_task' ? 'create'
+      : first.action === 'delete_task' ? 'delete'
+        : first.action === 'complete_task' ? 'complete'
+          : 'change';
+    return `Confirm that you want to ${verb} the task “${title}”?`;
   }
   if (first?.action === 'set_reminder') {
     const args = first.args as any;
     const remindAt = DateTime.fromISO(String(args.remindAt)).setZone(input.timezone);
     if (input.locale?.startsWith('pt')) {
       return `Confirma que queres criar o lembrete “${String(args.message || input.text)}” para ${remindAt.toFormat('dd/LL HH:mm')}?`;
+    }
+    if (input.locale?.startsWith('es')) {
+      return `¿Confirmas que quieres crear el recordatorio “${String(args.message || input.text)}” para el ${remindAt.toFormat('dd/LL HH:mm')}?`;
     }
     return `Confirm that you want to create the reminder “${String(args.message || input.text)}” for ${remindAt.toFormat('LLL d, HH:mm')}?`;
   }
@@ -596,12 +620,24 @@ export function confirmationCopy(plan: ChatActionPlan, input: ChatPlannerInput):
     if (input.locale?.startsWith('pt')) {
       return `Confirma que queres trocar ${original} por ${suggested} no ${mealType} de ${date}? Vou criar uma cópia da receita para esta refeição e atualizar a lista de compras.`;
     }
+    if (input.locale?.startsWith('es')) {
+      return `¿Confirmas que quieres cambiar ${original} por ${suggested} en ${mealType} del ${date}? Crearé una copia de la receta para esta comida y actualizaré la lista de compras.`;
+    }
     return `Confirm replacing ${original} with ${suggested} in ${mealType} on ${date}? I’ll create a meal-specific recipe copy and update the shopping list.`;
   }
   if (input.locale?.startsWith('pt')) {
     return `Preciso da tua confirmação antes de ${first?.action === 'send_email' ? 'enviar' : 'executar'} esta ação.`;
   }
+  if (input.locale?.startsWith('es')) {
+    return `Necesito tu confirmación antes de ${first?.action === 'send_email' ? 'enviar' : 'ejecutar'} esta acción.`;
+  }
   return `I need your confirmation before I ${first?.action === 'send_email' ? 'send' : 'run'} this action.`;
+}
+
+export function confirmationTitle(input: ChatPlannerInput): string {
+  if (input.locale?.startsWith('pt')) return 'Confirmação necessária';
+  if (input.locale?.startsWith('es')) return 'Confirmación necesaria';
+  return 'Confirmation needed';
 }
 
 export function defaultClarification(input: ChatPlannerInput): string {
