@@ -89,6 +89,8 @@ describe('lean required CI contracts', () => {
     expect(workflow).toContain(
       'node scripts/test-cleanup-classifier.mjs --base "$BASE_REF" --field requiresMutation',
     );
+    expect(workflow).toContain('SELECTED_GROUPS="$(jq -c \'.vitest.groups\' /tmp/classifier.json)"');
+    expect(workflow).not.toMatch(/^\s*GROUPS="/m);
     const classifier = readFileSync('scripts/test-cleanup-classifier.mjs', 'utf8');
     expect(classifier).not.toContain("from './mutation-gate.mjs'");
     expect(classifier).toContain('runs before npm ci');

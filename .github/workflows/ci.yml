@@ -90,14 +90,14 @@ jobs:
           PY="$(jq -r '.flags.pythonEngine' /tmp/classifier.json)"
           MIG="$(jq -r '.flags.migration' /tmp/classifier.json)"
           DOCS_ONLY="$(jq -r '.flags.docsOnly' /tmp/classifier.json)"
-          GROUPS="$(jq -c '.vitest.groups' /tmp/classifier.json)"
+          SELECTED_GROUPS="$(jq -c '.vitest.groups' /tmp/classifier.json)"
           echo "vitest_mode=$MODE" >> "$GITHUB_OUTPUT"
           echo "vitest_globs=$GLOBS" >> "$GITHUB_OUTPUT"
           echo "run_python_test=$PY" >> "$GITHUB_OUTPUT"
           echo "run_migrations=$MIG" >> "$GITHUB_OUTPUT"
           echo "docs_only=$DOCS_ONLY" >> "$GITHUB_OUTPUT"
           echo "test_cleanup=$TEST_CLEANUP" >> "$GITHUB_OUTPUT"
-          echo "selected_groups=$GROUPS" >> "$GITHUB_OUTPUT"
+          echo "selected_groups=$SELECTED_GROUPS" >> "$GITHUB_OUTPUT"
 
   mutation_cleanup:
     name: 🧬 Test-cleanup mutation protection
