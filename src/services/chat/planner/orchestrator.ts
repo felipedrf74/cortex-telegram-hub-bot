@@ -16,6 +16,8 @@ import { buildTargetedClarificationQuestion } from './clarification';
 import { shouldRunActionPlannerBeforeReadOnlyFastPaths } from './preflight-gates';
 import {
   buildAmbiguousActionClarificationPlan,
+  buildBoundedAnswerOnlyPlan,
+  buildCrossSkillSafetyClarificationPlan,
   buildPendingCancellationPlan,
   buildRecentEntityFollowUpPlan,
 } from './preflight-plans';
@@ -36,6 +38,9 @@ export async function buildChatActionPlan(input: ChatPlannerInput): Promise<Chat
   // Publication requests must fail closed before a pending Content brief can
   // absorb words such as "hook" or "tomorrow" as harmless specifications.
   const publicationBoundary = buildDeterministicChatActionPlan(input);
+  if (publicationBoundary?.steps.some((step) => typeof step.args?.rejectionReason === 'string')) {
+    return publicationBoundary;
+  }
   if (publicationBoundary?.steps[0]?.action === 'content_publish_now') {
     return publicationBoundary;
   }
@@ -63,6 +68,12 @@ export async function buildChatActionPlan(input: ChatPlannerInput): Promise<Chat
   // additional spec (audience, platform-specific tone, length target).
   const contentPendingContinuation = buildPendingContentSpecContinuation(input, PENDING_CONTINUATION_HELPERS);
   if (contentPendingContinuation) return contentPendingContinuation;
+
+  const boundedAnswer = buildBoundedAnswerOnlyPlan(input);
+  if (boundedAnswer) return boundedAnswer;
+
+  const crossSkillSafetyClarification = buildCrossSkillSafetyClarificationPlan(input);
+  if (crossSkillSafetyClarification) return crossSkillSafetyClarification;
 
   const multiStep = await tryBuildMultiStepChatActionPlan(input, singleActionPlanner);
   if (multiStep) return multiStep;

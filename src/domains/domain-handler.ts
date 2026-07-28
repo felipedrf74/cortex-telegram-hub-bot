@@ -22,7 +22,7 @@ import {
   callDomain as callDirectAnthropicDomain,
   continueWithToolResults as continueDirectAnthropicWithToolResults,
 } from '../services/anthropic';
-import { normalizeReplyForUserLanguage } from '../services/reply-language-normalizer';
+import { normalizeReplyForLanguage, normalizeReplyForUserLanguage } from '../services/reply-language-normalizer';
 import {
   formatAthleteProfileBlock,
   getMissingProfileFields,
@@ -54,6 +54,10 @@ import { getChatToolRisk } from '../services/chat-tool-authorization';
 import { getCurrentRequestId } from '../utils/request-context';
 import { recordLegacyToolLoopCheckpoint } from '../services/chat-action-run-store';
 import { getCurrentChatLiveEvalSeedBlock } from '../services/chat-live-evaluation-context';
+import {
+  buildChatReplyLanguagePromptBlock,
+  getCurrentChatRequestLocale,
+} from '../services/chat-request-locale-context';
 
 // ─── Phase 3 Slice A — Chat-triggered onboarding ────────────────────
 //
@@ -598,7 +602,11 @@ export async function handleSimpleDomain(
   // Phase 3 Slice A: pass the incoming message so the triathlon
   // branch of buildSimpleStateContext can run the sport classifier
   // and inject the onboarding-pending block when appropriate.
-  const stateContext = await buildSimpleStateContext(domain, userId, message, tenantId);
+  const baseStateContext = await buildSimpleStateContext(domain, userId, message, tenantId);
+  const replyLanguageBlock = buildChatReplyLanguagePromptBlock();
+  const stateContext = replyLanguageBlock
+    ? `${baseStateContext}\n\n${replyLanguageBlock}`
+    : baseStateContext;
 
   try {
     // Get the active routing provider (handles fallback + circuit breaker)
@@ -740,7 +748,10 @@ export async function handleSimpleDomain(
       finalText = buildLegacyDomainWriteBlockedReply();
     }
 
-    finalText = normalizeReplyForUserLanguage(finalText, userId);
+    const requestLocale = getCurrentChatRequestLocale();
+    finalText = requestLocale
+      ? normalizeReplyForLanguage(finalText, requestLocale)
+      : normalizeReplyForUserLanguage(finalText, userId);
     finalText = enforceCookingDomainAnswerSafety(domain, finalText, userId, tenantId);
 
     if (hasUserScope) {
@@ -850,7 +861,10 @@ async function handleWithDirectCalls(
     finalText = buildLegacyDomainWriteBlockedReply();
   }
 
-  finalText = normalizeReplyForUserLanguage(finalText, userId);
+  const requestLocale = getCurrentChatRequestLocale();
+  finalText = requestLocale
+    ? normalizeReplyForLanguage(finalText, requestLocale)
+    : normalizeReplyForUserLanguage(finalText, userId);
   finalText = enforceCookingDomainAnswerSafety(domain, finalText, userId, tenantId);
 
   if (typeof userId === 'number') {

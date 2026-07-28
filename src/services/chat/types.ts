@@ -38,6 +38,13 @@ export interface ChatActionPlan {
   createdAt: string;
   planner: 'deterministic' | 'llm_structured' | 'mixed';
   steps: ChatPlanStep[];
+  /**
+   * Canonical product skills involved in a deterministic coordination or
+   * clarification turn. Used when one non-executable planner step cannot
+   * itself represent every semantic owner (for example Training content
+   * plus Secretary calendar placement).
+   */
+  involvedSkills?: string[];
   requiresConfirmation: boolean;
   clarificationQuestion?: string;
   clarificationReason?: ChatClarificationReason;

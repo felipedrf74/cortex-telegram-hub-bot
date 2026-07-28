@@ -21,6 +21,7 @@ import {
   buildChatTimeoutPartialReplyText,
   executeChatDomainHandler,
 } from '../../src/api/routes/chat-message-execution';
+import { getCurrentChatRequestLocale } from '../../src/services/chat-request-locale-context';
 
 describe('chat message execution helpers', () => {
   afterEach(() => {
@@ -42,6 +43,24 @@ describe('chat message execution helpers', () => {
 
     expect(handler).toHaveBeenCalledWith('What is next?', 42, 1001);
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('scopes the explicit app locale through the asynchronous domain handler', async () => {
+    const handler = vi.fn(async () => ({
+      text: `locale=${getCurrentChatRequestLocale()}`,
+      domain: 'content' as const,
+    }));
+
+    await expect(executeChatDomainHandler(
+      handler,
+      'Dame ideas de contenido',
+      42,
+      1001,
+      undefined,
+      undefined,
+      undefined,
+      { locale: 'es-419' },
+    )).resolves.toMatchObject({ text: 'locale=es-419' });
   });
 
   it('fails with the existing iOS-safe timeout before the client gives up', async () => {

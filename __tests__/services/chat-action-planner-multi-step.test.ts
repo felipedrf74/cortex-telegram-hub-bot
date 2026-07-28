@@ -289,4 +289,117 @@ describe('ChatActionPlanner multi-step DAG', () => {
       ],
     });
   });
+
+  it.each([
+    {
+      label: 'workout conflict without a destination time',
+      text: 'Move my workout because the client call moved earlier.',
+      skills: ['secretary', 'training'],
+      terms: ['conflict', 'workout', 'confirm'],
+    },
+    {
+      label: 'training adjustment without a session target',
+      text: 'Adjust the session and move it later if needed.',
+      skills: ['secretary', 'training'],
+      terms: ['Training', 'later', 'confirm'],
+    },
+    {
+      label: 'meal prep placement with an unresolved reference',
+      text: 'Find time for meal prep around it.',
+      skills: ['secretary', 'cooking', 'training'],
+      terms: ['meal prep', 'Training', 'confirm'],
+    },
+    {
+      label: 'budget review without a date or time',
+      text: 'Schedule a budget review before I decide.',
+      skills: ['secretary', 'finance'],
+      terms: ['budget review', 'confirm'],
+    },
+    {
+      label: 'contradictory workout cancellation',
+      text: 'This is wrong. Cancel the workout, but do not change anything, and just fix it now.',
+      skills: ['secretary', 'training'],
+      terms: ['conflict', 'confirm', 'cannot'],
+    },
+    {
+      label: 'calendar-only removal without an exact block',
+      text: 'You are not listening. I said keep the plan and remove the calendar block.',
+      skills: ['secretary', 'training'],
+      terms: ['keep the Training plan', 'remove calendar block', 'confirm'],
+    },
+  ])('asks a targeted, non-executable clarification for $label', async ({ text, skills, terms }) => {
+    const input = { ...baseInput, text, messageId: `safe-${skills.join('-')}-${terms.length}` };
+    const plan = await buildChatActionPlan(input);
+    const response = await executeChatActionPlan(plan!, input, {});
+
+    expect(plan?.steps).toHaveLength(1);
+    expect(plan?.steps[0]).toMatchObject({
+      type: 'clarification',
+      risk: 'ambiguous',
+      requiredArgsPresent: false,
+    });
+    expect(response.metadata.actionStatus).toBe('needs_clarification');
+    expect(response.metadata.involvedSkills).toEqual(skills);
+    for (const term of terms) expect(response.text).toContain(term);
+  });
+
+  it.each([
+    {
+      text: 'I am tired today and slept badly.',
+      locale: 'en-US',
+      domain: 'training',
+      skills: ['training'],
+      terms: ['recovery', 'adjust'],
+    },
+    {
+      text: 'O que devo comer antes do treino pesado de hoje? Use apenas o contexto deste espaço de trabalho.',
+      locale: 'pt-BR',
+      domain: 'cooking',
+      skills: ['cooking', 'training'],
+      terms: ['treino', 'alimentação'],
+    },
+    {
+      text: 'Do not warn me twice if it is the same fueling issue.',
+      locale: 'en-US',
+      domain: 'cooking',
+      skills: ['cooking', 'training'],
+      terms: ['same', 'not duplicate', 'fueling'],
+    },
+    {
+      text: 'Can I afford the new smart trainer for my workouts?',
+      locale: 'en-US',
+      domain: 'finance',
+      skills: ['finance', 'training'],
+      terms: ['budget', 'training'],
+    },
+    {
+      text: 'Dame ideas de contenido para la publicación del lanzamiento usando solo el contexto autorizado.',
+      locale: 'es-419',
+      domain: 'content',
+      skills: ['content'],
+      terms: ['contenido', 'ideas'],
+    },
+    {
+      text: 'Use my saved books and channel references.',
+      locale: 'en-US',
+      domain: 'content',
+      skills: ['content', 'shared_context'],
+      terms: ['references', 'scoped'],
+    },
+  ])('serves a bounded answer-only intent without a model or mutation: $text', async ({ text, locale, domain, skills, terms }) => {
+    const input = { ...baseInput, text, locale, messageId: `answer-${domain}-${terms.length}` };
+    const plan = await buildChatActionPlan(input);
+    const response = await executeChatActionPlan(plan!, input, {});
+
+    expect(plan?.steps).toHaveLength(1);
+    expect(plan?.steps[0]).toMatchObject({
+      type: 'answer',
+      risk: 'read_only',
+      requiredArgsPresent: true,
+    });
+    expect(response.domain).toBe(domain);
+    expect(response.metadata.actionStatus).toBe('verified_success');
+    expect(response.metadata.involvedSkills).toEqual(skills);
+    for (const term of terms) expect(response.text.toLowerCase()).toContain(term.toLowerCase());
+  });
 });

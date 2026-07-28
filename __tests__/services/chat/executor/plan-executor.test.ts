@@ -186,6 +186,30 @@ describe('M16 plan-executor topological execution', () => {
     expect(response.metadata.multiStepSummary).toMatchObject({ succeeded: 0, failed: 1, blocked: 1 });
   });
 
+  it('names the verified task deletion target in the success copy', async () => {
+    executeStepMock.mockImplementation(async (step) => ({
+      step,
+      status: 'verified_success',
+      result: { deleted: true },
+    }));
+    const plan = makePlan([
+      makeStep({
+        stepId: 'step_delete',
+        action: 'delete_task',
+        type: 'delete_task',
+        risk: 'destructive',
+        args: { taskId: 'task-1', title: 'NEXUS_CHAT_EVAL_M2_TARGET' },
+      }),
+    ], { requiresConfirmation: true });
+
+    const response = await executeChatActionPlan(plan, INPUT, {} as never, { confirmed: true });
+
+    expect(response.metadata.actionStatus).toBe('verified_success');
+    expect(response.text).toContain('deleted the task');
+    expect(response.text).toContain('NEXUS_CHAT_EVAL_M2_TARGET');
+    expect(response.text).toContain('verified');
+  });
+
   it('M1/ADV-3 interaction: grants stay capped at the previewed risky steps under continue-on-failure', async () => {
     const observedGrantCounts: Array<number | null> = [];
     const destructiveExecutions: string[] = [];

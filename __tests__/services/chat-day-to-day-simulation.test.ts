@@ -188,6 +188,9 @@ describe('chat day-to-day simulation harness', () => {
       .find((scenario) => scenario.scenarioId === 'morning_planning')!
       .turns.filter((turn) => turn.turnId.includes('eval-target'));
     expect(mutationTurns).toHaveLength(2);
+    const previewTurn = mutationTurns.find((turn) => turn.turnId.includes('a3-delete-eval-target'));
+    expect(previewTurn?.scorerDimensions?.find((dimension) => dimension.dimension === 'side_effect_verification'))
+      .toMatchObject({ passed: null, detail: 'no side-effect expectation' });
     expect(mutationTurns.flatMap((turn) => turn.failures)).not.toEqual(
       expect.arrayContaining([
         expect.objectContaining({ type: 'wrong_skill_routing' }),

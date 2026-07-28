@@ -97,7 +97,9 @@ export function buildActionResponse(
       actionPlanner: plan.planner,
       effectiveConfidence: plan.effectiveConfidence ?? plan.confidence,
       telemetry: safeTelemetry(responseTelemetry),
-      involvedSkills: [...new Set(plan.steps.map((step) => step.skill))],
+      involvedSkills: plan.involvedSkills?.length
+        ? [...new Set(plan.involvedSkills)]
+        : [...new Set(plan.steps.map((step) => step.skill))],
       responseLanguage: buildResponseLanguageTelemetry(input.locale, text),
       // Developer trace is persisted server-side through action runs/logs; normal UI gets only this safe summary.
     },

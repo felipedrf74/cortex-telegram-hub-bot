@@ -231,6 +231,7 @@ describe('secretary-fastpath / pattern matching', () => {
   it.each([
     ["what's my day?", 'day_overview'],
     ['what is my day', 'day_overview'],
+    ['What do I need to do today?', 'day_overview'],
     ['o que tenho hoje', 'day_overview'],
     ['/day', 'day_overview'],
     ['today', 'day_overview'],
@@ -366,6 +367,15 @@ describe('secretary-fastpath / pattern matching', () => {
 // ════════════════════════════════════════════════════════════════════
 
 describe('secretary-fastpath / day_overview handler', () => {
+  it('answers the natural-language day-planning question with explicit calendar and priority framing', async () => {
+    const result = await tryFastpath(UID, 'What do I need to do today?', 'en-US');
+
+    expect(result.matched).toBe(true);
+    expect(result.response?.text.toLowerCase()).toContain('today');
+    expect(result.response?.text.toLowerCase()).toContain('calendar');
+    expect(result.response?.text.toLowerCase()).toContain('priority');
+  });
+
   it('returns formatted HTML with calendar events', async () => {
     vi.mocked(calendar.getEvents).mockResolvedValue([
       {

@@ -227,6 +227,7 @@ export const legacyTailStage: ChatStage = {
             });
           },
         },
+        { locale: chatCoreV2RouteLocale },
       ));
     } catch (err) {
       if (!(err instanceof ChatDomainTimeoutError) || err.checkpoints.length === 0) throw err;
