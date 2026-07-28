@@ -85,6 +85,18 @@
     },
     {
       "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
+      "test": "__tests__/scripts/production-shape-migration-rehearsal.test.ts",
+      "requiredChangedPaths": [
+        "scripts/lib/release-artifact-manifest.mjs"
+      ],
+      "replacementTests": [
+        "__tests__/scripts/lean-release-path.test.ts",
+        "__tests__/scripts/migration-safety-check.test.ts"
+      ],
+      "reason": "The artifact-embedded production-shape rehearsal is retired from the lean runtime; the release checkpoint now fails irreversible migrations closed while the lean transaction verifies migration-backed startup and rollback readiness."
+    },
+    {
+      "baseSha": "5aeba7f098677158764949bb9c6cfc96aa569726",
       "test": "__tests__/scripts/release-artifact-manifest.test.ts",
       "baselineOwnerPaths": ["scripts/release-evidence.mjs"],
       "requiredRemovedPaths": ["scripts/release-evidence.mjs"],
