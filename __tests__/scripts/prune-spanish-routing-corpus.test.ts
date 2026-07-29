@@ -15,7 +15,7 @@ import {
   hashRoutingUtterance,
 } from '../../src/services/routing-corpus';
 
-const SECRET = 'routing-corpus-test-secret';
+const SECRET = 'test-only-key';
 const RUNTIME_SHA = 'b'.repeat(40);
 const ARTIFACT_DIGEST = 'c'.repeat(64);
 
