@@ -576,8 +576,10 @@ pm2_blocker_paths_are_equivalent() {
   local backup_identity live_identity
   if [ -L "$backup_path" ] || [ -L "$live_path" ]; then
     [ -L "$backup_path" ] && [ -L "$live_path" ] \
-      && [ "$(readlink -- "$backup_path")" = "$(readlink -- "$live_path")" ]
-    return
+      || return 1
+    [ "$(readlink -- "$backup_path")" = "$(readlink -- "$live_path")" ] \
+      || return 1
+    return 0
   fi
   if [ -f "$backup_path" ] && [ -f "$live_path" ]; then
     backup_identity="$("$STAT_BIN" -Lc '%u:%g:%a:%F' -- "$backup_path")" \
@@ -585,8 +587,10 @@ pm2_blocker_paths_are_equivalent() {
     live_identity="$("$STAT_BIN" -Lc '%u:%g:%a:%F' -- "$live_path")" \
       || return 1
     [ "$backup_identity" = "$live_identity" ] \
-      && "$CMP_BIN" -s -- "$backup_path" "$live_path"
-    return
+      || return 1
+    "$CMP_BIN" -s -- "$backup_path" "$live_path" \
+      || return 1
+    return 0
   fi
   if [ -d "$backup_path" ] && [ -d "$live_path" ]; then
     backup_identity="$("$STAT_BIN" -Lc '%u:%g:%a:%F' -- "$backup_path")" \
@@ -594,8 +598,10 @@ pm2_blocker_paths_are_equivalent() {
     live_identity="$("$STAT_BIN" -Lc '%u:%g:%a:%F' -- "$live_path")" \
       || return 1
     [ "$backup_identity" = "$live_identity" ] \
-      && "$DIFF_BIN" -qr -- "$backup_path" "$live_path" >/dev/null
-    return
+      || return 1
+    "$DIFF_BIN" -qr -- "$backup_path" "$live_path" >/dev/null \
+      || return 1
+    return 0
   fi
   return 1
 }
