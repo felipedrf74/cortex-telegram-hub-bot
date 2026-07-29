@@ -237,8 +237,8 @@ The previous signed `ReleaseManifestV2`, separate signing workflows, staging
 signatures, evidence-shadow activation, duplicate RC build/test path,
 root-owned promotion control, KVM fault-drill environment, layout migration,
 and legacy rollback/restore scripts are retired. Git history is the recovery
-source for their code; installed old server units are removed only after the
-lean path completes its first staging and production proof.
+source for their code. The installed legacy units were removed after the lean
+path completed its first staging and production proof.
 
 After that proof, inspect the exact allowlisted retirement plan:
 
@@ -247,18 +247,79 @@ sudo scripts/retire-legacy-release-machinery.sh
 ```
 
 Then apply it with the exact passing production identity and explicit owner
-authorization:
+authorization. Run this from the reviewed checkout on ServerDominguez. The
+named root transaction is detached from SSH; do not add `--wait` or `--pipe`:
 
 ```bash
-sudo /usr/bin/env NEXUS_RELEASE_OWNER_AUTHORIZED=1 \
-  scripts/retire-legacy-release-machinery.sh \
-  --apply --confirm <full-sha>:<artifact-sha256>
+RETIREMENT_IDENTITY='<full-sha>:<artifact-sha256>'
+(
+set -euo pipefail
+RETIREMENT_UNIT="nexus-release-retirement-$(date -u +%Y%m%dT%H%M%SZ)"
+RETIREMENT_SERVICE="${RETIREMENT_UNIT}.service"
+RETIREMENT_CHECKOUT="$(pwd -P)"
+
+sudo /usr/bin/systemd-run \
+  --unit="$RETIREMENT_UNIT" \
+  --no-block \
+  --property=Type=exec \
+  --property=RemainAfterExit=yes \
+  --working-directory="$RETIREMENT_CHECKOUT" \
+  --setenv=NEXUS_RELEASE_OWNER_AUTHORIZED=1 \
+  "$RETIREMENT_CHECKOUT/scripts/retire-legacy-release-machinery.sh" \
+  --apply --confirm "$RETIREMENT_IDENTITY"
+
+RETIREMENT_TERMINAL=false
+for ((attempt=1; attempt<=90; attempt++)); do
+  RETIREMENT_ACTIVE="$(
+    sudo /usr/bin/systemctl show "$RETIREMENT_SERVICE" \
+      --property=ActiveState --value 2>/dev/null || true
+  )"
+  RETIREMENT_SUB="$(
+    sudo /usr/bin/systemctl show "$RETIREMENT_SERVICE" \
+      --property=SubState --value 2>/dev/null || true
+  )"
+  case "$RETIREMENT_ACTIVE:$RETIREMENT_SUB" in
+    active:exited|failed:*)
+      RETIREMENT_TERMINAL=true
+      break
+      ;;
+    *) sleep 2 ;;
+  esac
+done
+
+sudo /usr/bin/systemctl show "$RETIREMENT_SERVICE" \
+  --property=ActiveState,SubState,Result,ExecMainStatus,InvocationID \
+  --no-pager
+sudo /usr/bin/journalctl --unit="$RETIREMENT_SERVICE" \
+  --output=short-iso --no-pager
+
+if [ "$RETIREMENT_TERMINAL" != true ]; then
+  echo "retirement transaction is still running; leave it detached and inspect again" >&2
+  exit 1
+fi
+
+test "$(sudo /usr/bin/systemctl show "$RETIREMENT_SERVICE" \
+  --property=ActiveState --value)" = active
+test "$(sudo /usr/bin/systemctl show "$RETIREMENT_SERVICE" \
+  --property=SubState --value)" = exited
+test "$(sudo /usr/bin/systemctl show "$RETIREMENT_SERVICE" \
+  --property=Result --value)" = success
+test "$(sudo /usr/bin/systemctl show "$RETIREMENT_SERVICE" \
+  --property=ExecMainStatus --value)" = 0
+sudo /usr/bin/systemctl stop "$RETIREMENT_SERVICE"
+)
 ```
 
 The retirement command fails closed unless the passing production transaction,
 completion marker, `current` symlink, PM2 cwd/SHA identity, and both production
-health endpoints still agree. It removes only its audited legacy allowlists.
-It preserves `/var/lib/nexus-release`, every AWS unit/configuration path,
-Ollama, SonarQube, and the lean transaction state.
+health endpoints still agree. It also refuses direct apply outside the named
+detached service, holds both release/Sonar locks, and keeps a persistent
+blocker backup guarded until the canonical PM2 handoff succeeds. It removes
+only its audited legacy allowlists.
+It preserves `/var/lib/nexus-release`, Ollama, SonarQube, and the lean
+transaction state, and intentionally never mutates AWS paths. The separately
+authorized AWS closeout removed the server AWS callers, configuration, and
+credentials; only the compliance-locked application bucket remains until its
+retention can be reverified after `2027-02-03T16:24:28Z`.
 
 AWS is not part of release, backup, SonarQube, or promotion.

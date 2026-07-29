@@ -966,6 +966,10 @@ db.close();
 
   it('retires only audited legacy release machinery after an exact lean proof', () => {
     const retirement = fs.readFileSync('scripts/retire-legacy-release-machinery.sh', 'utf8');
+    const releaseReadme = fs.readFileSync('docs/release/README.md', 'utf8');
+    const retirementApply = releaseReadme.match(
+      /```bash\nRETIREMENT_IDENTITY=[\s\S]*?\n```/,
+    )?.[0] ?? '';
 
     expect(() => execFileSync('bash', ['-n', 'scripts/retire-legacy-release-machinery.sh']))
       .not.toThrow();
@@ -977,7 +981,21 @@ db.close();
     );
     expect(retirement).toContain("prePromotionBackup:'passed'");
     expect(retirement).toContain('state.releaseDir!==currentTarget');
-    expect(retirement).toContain('systemctl is-active --quiet pm2-dominguez.service');
+    expect(retirement).toContain(
+      '"$SYSTEMCTL_BIN" is-active --quiet "$CANONICAL_PM2_UNIT"',
+    );
+    expect(retirement).toContain(
+      '"$SYSTEMCTL_BIN" is-active --quiet "$TEMPORARY_PM2_UNIT"',
+    );
+    expect(retirement).toContain(
+      'USER_RELEASE_LOCK=/home/dominguez/.local/state/nexus-release/.release.lock',
+    );
+    expect(retirement).toContain(
+      'ROOT_SONAR_LOCK=/run/lock/nexus-release-sonar.lock',
+    );
+    expect(retirement).toContain('assert_detached_systemd_transaction');
+    expect(retirement).toContain('assert_canonical_pm2_unit_ready');
+    expect(retirement).toContain('handoff_pm2_authority');
     expect(retirement).toContain('/etc/systemd/system/pm2-dominguez.service.d/');
     expect(retirement).toContain('/usr/local/sbin/nexus-release-promotion-control');
     expect(retirement).toContain('/var/lib/nexus-release-promotion');
@@ -986,5 +1004,26 @@ db.close();
     expect(retirement).not.toMatch(/LEGACY_STATE=\([^)]*\/var\/lib\/nexus-release\s/m);
     expect(retirement).not.toContain('ollama rm');
     expect(retirement).not.toContain('docker compose');
+    expect(retirementApply).toContain('sudo /usr/bin/systemd-run');
+    expect(retirementApply).toContain('--no-block');
+    expect(retirementApply).toContain('--property=RemainAfterExit=yes');
+    expect(retirementApply).toContain('sudo /usr/bin/systemctl show');
+    expect(retirementApply).toContain('sudo /usr/bin/journalctl');
+    expect(retirementApply).toContain('set -euo pipefail');
+    expect(retirementApply).toContain('RETIREMENT_TERMINAL=false');
+    expect(retirementApply).toContain(
+      'if [ "$RETIREMENT_TERMINAL" != true ]; then',
+    );
+    expect(retirementApply.indexOf('RETIREMENT_TERMINAL=false')).toBeLessThan(
+      retirementApply.indexOf('sudo /usr/bin/systemctl stop'),
+    );
+    expect(retirementApply.indexOf('property=ExecMainStatus --value)" = 0')).toBeLessThan(
+      retirementApply.indexOf('sudo /usr/bin/systemctl stop'),
+    );
+    expect(retirementApply).not.toContain('--wait');
+    expect(retirementApply).not.toContain('--pipe');
+    expect(releaseReadme).not.toContain(
+      'sudo /usr/bin/env NEXUS_RELEASE_OWNER_AUTHORIZED=1',
+    );
   });
 });

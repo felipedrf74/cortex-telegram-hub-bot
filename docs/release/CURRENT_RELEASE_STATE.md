@@ -7,12 +7,9 @@ Machine-readable truth: `docs/release/release-state.json`.
 - Backend version: `4.14.231`
 - Runtime commit: `13ecc9da8aff96c8bcf512b2143ffdcf0c891467`
 - Artifact digest: `027b75e8e5d964f62786a316b4e0c872b210442fa9fdd1e1895a1f12ed0495b6`
-- Installed-tree digest:
-  `950ca632781787d4e4e8ddad0c585627d5b176c7daa66dcb129236930f3ec27d`
-- Training catalog package:
-  `51c1089cceb8a916abf200b5cb3688b19f5f7553990467ee0f8ef01c7c4f74bb`
-- Training release subject:
-  `27b97ebc96e1b3bb1ee3612e63c5609b5572c9d4b58e59b8ea3e77642fb1cea3`
+- Installed-tree digest: `950ca632781787d4e4e8ddad0c585627d5b176c7daa66dcb129236930f3ec27d`
+- Training catalog package: `51c1089cceb8a916abf200b5cb3688b19f5f7553990467ee0f8ef01c7c4f74bb`
+- Training release subject: `27b97ebc96e1b3bb1ee3612e63c5609b5572c9d4b58e59b8ea3e77642fb1cea3`
 - Production transaction `20260729T085630Z-0a6de404352f` completed at
   `2026-07-29T08:57:45.631Z`.
 - Backend and content health, exact PM2 runtime identity, artifact parity,
@@ -27,12 +24,10 @@ Machine-readable truth: `docs/release/release-state.json`.
 
 - Protected-main run: `30386227503`
 - Release-checkpoint run: `30386840581`
-- Compact manifest SHA-256:
-  `4dfe4cbce805bcb59b79e5cf294c7b53536cc3e63df00dfadc81364ea88fb33c`
+- Compact manifest SHA-256: `4dfe4cbce805bcb59b79e5cf294c7b53536cc3e63df00dfadc81364ea88fb33c`
 - Staging transaction: `20260728T182335Z-209f1e16c020`
 - Production transaction: `20260729T085630Z-0a6de404352f`
-- Encrypted backup SHA-256:
-  `717184285f9a957c7de2222e8a31581c6b3928894b02cc2651675788c1eb4245`
+- Encrypted backup SHA-256: `717184285f9a957c7de2222e8a31581c6b3928894b02cc2651675788c1eb4245`
 - Evidence remains under ignored `.local/release/` paths, server transaction
   state, and restricted CI artifacts; this summary is not reusable promotion
   evidence.
@@ -47,7 +42,16 @@ Machine-readable truth: `docs/release/release-state.json`.
   ran only the disjoint remainder, so the exact union stayed complete without
   rerunning the selected partition.
 - The protected-main artifact was reused unchanged. Staging and production ran
-  no build, dependency installation, Vitest, Python, or Sonar work.
+  no build, dependency installation, Vitest, Python test suite, or Sonar work.
+
+## ServerDominguez Services
+
+- Ollama is healthy on `127.0.0.1:11434`; `qwen2.5:3b-instruct-q4_K_M`
+  (`357c53fb659c5076de1d65ccb0b397446227b71a42be9d1603d46168015c9e4b`) is
+  the sole retained/loaded model; the three larger/unused models are removed.
+- SonarQube Community Build `26.7.0.124771` is healthy, private, capped, and
+  advisory. Baseline analysis of `f0d4047def0c5838d562f06326d2e6949fe49770`
+  passed quality gate `OK`; its local backup and isolated restore drill passed.
 
 ## iOS / TestFlight
 
@@ -58,8 +62,7 @@ Machine-readable truth: `docs/release/release-state.json`.
 - Build 259 remains available to the `Nexus Hub Betinha` internal TestFlight
   group. Physical-device smoke remains open.
 - App Store review was rejected on 2026-07-24 under Guidelines 2.1(b) and
-  5.1.1(v). The machine state still says `waiting_for_review`; refreshing that
-  iOS-only state remains a separate owner action.
+  5.1.1(v); no resubmission was performed as part of this backend release.
 - No iOS build, TestFlight submission, or iOS-main merge was performed as part
   of this backend release.
 
@@ -72,7 +75,24 @@ four-shard remainder checkpoint, one immutable artifact, exact staging,
 explicit owner approval, and one user-owned production transaction with backup,
 health checks, a 60-second soak, and automatic predecessor recovery.
 
-Legacy server release machinery remains installed pending its separately
-authorized audited retirement. Every future production deployment, remote
-branch cleanup, and TestFlight expiry still requires explicit owner
-authorization.
+The canonical PM2 handoff and exact KVM cleanup transaction
+`nexus-release-retirement-20260729T113728Z.service` passed. The final audit
+planned no changes, found no retired UID/GID ownership, preserved lean/Sonar
+state, and verified exact PM2/runtime identity plus four healthy endpoints.
+Legacy retirement is complete. Future production, branch deletion, TestFlight
+expiry, and post-retention bucket deletion require explicit owner authorization.
+
+## Operational Closeout
+
+- AWS export and restore proof passed for all 17 versions. Both Nexus stacks,
+  the empty Sonar bucket, and Cost Anomaly monitor/subscription are deleted.
+- ServerDominguez AWS writers were removed at `2026-07-29T11:33:44Z`; the
+  export was preserved and all four application processes remained healthy.
+- Only the compliance-locked application bucket is intentionally retained; its
+  17 versions remain immutable through `2027-02-03T16:24:28Z`; writer access is
+  revoked and deletion waits for an exact retention check after that timestamp.
+- Owned IAM roles, Roles Anywhere trust anchors/profiles, CloudWatch alarms,
+  and Cost Anomaly resources are gone; paid Cost Explorer granularity is off.
+- Failed-health recovery and operator-disconnect drills wait for the next
+  genuine candidate; the passing candidate correctly refuses fault injection.
+- One of ten releases is measured; no p50 or p95 target is stable yet.
