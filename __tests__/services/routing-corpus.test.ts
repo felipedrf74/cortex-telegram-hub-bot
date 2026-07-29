@@ -24,6 +24,7 @@ import {
   hashRoutingUtterance,
   labelRoutingCorpusItem,
   listLabeledRoutingCorpusItems,
+  pruneSpanishSyntheticRoutingCorpusFixtures,
 } from '../../src/services/routing-corpus';
 
 const SECRET = 'routing-corpus-test-secret';
@@ -200,14 +201,38 @@ describe('routing corpus builder', () => {
     expect(item.tenant_id).toBe(4);
   });
 
-  it('imports every synthetic fixture prompt as pending with null user', () => {
+  it('imports exactly the 224 supported English and Portuguese synthetic prompts', () => {
     const summary = buildRoutingCorpus({ db, secret: SECRET, vocabulary: SYNTHETIC_VOCABULARY });
 
-    // pt + en per bilingual fixture, one prompt per confusable fixture,
-    // minus hash-level duplicates across fixture prompts.
-    const maxExpected = CHAT_BILINGUAL_EVAL_FIXTURES.length * 2 + CHAT_LOCALE_CONFUSABLE_EVAL_FIXTURES.length;
-    expect(summary.perSource.bilingual_fixture).toBeGreaterThan(0);
-    expect(summary.perSource.bilingual_fixture).toBeLessThanOrEqual(maxExpected);
+    const englishPrompts = CHAT_BILINGUAL_EVAL_FIXTURES.map((fixture) => fixture.en);
+    const portuguesePrompts = [
+      ...CHAT_BILINGUAL_EVAL_FIXTURES.map((fixture) => fixture.pt),
+      ...CHAT_LOCALE_CONFUSABLE_EVAL_FIXTURES
+        .filter((fixture) => fixture.promptLocale === 'pt-BR')
+        .map((fixture) => fixture.prompt),
+    ];
+    const supportedPrompts = [...englishPrompts, ...portuguesePrompts];
+    expect(new Set(englishPrompts.map((prompt) => prompt.trim().toLowerCase())).size).toBe(109);
+    expect(new Set(portuguesePrompts.map((prompt) => prompt.trim().toLowerCase())).size).toBe(115);
+    const uniqueSupportedPrompts = new Set(
+      supportedPrompts.map((prompt) => prompt.trim().toLowerCase()),
+    );
+    expect(uniqueSupportedPrompts.size).toBe(224);
+    expect(summary.perSource.bilingual_fixture).toBe(224);
+
+    for (const prompt of supportedPrompts) {
+      const row = db.prepare(
+        'SELECT source FROM routing_corpus_items WHERE utterance_hash = ?',
+      ).get(hashRoutingUtterance(SECRET, prompt)) as { source: string } | undefined;
+      expect(row?.source, prompt).toBe('bilingual_fixture');
+    }
+    for (const fixture of CHAT_LOCALE_CONFUSABLE_EVAL_FIXTURES) {
+      if (fixture.promptLocale !== 'es-419') continue;
+      const row = db.prepare(
+        'SELECT 1 FROM routing_corpus_items WHERE utterance_hash = ?',
+      ).get(hashRoutingUtterance(SECRET, fixture.prompt));
+      expect(row, fixture.scenario).toBeUndefined();
+    }
 
     const fixturePrompt = CHAT_BILINGUAL_EVAL_FIXTURES[0];
     const item = db.prepare('SELECT * FROM routing_corpus_items WHERE utterance_hash = ?')
@@ -237,6 +262,137 @@ describe('routing corpus builder', () => {
     const supported = db.prepare('SELECT * FROM routing_corpus_items WHERE utterance_hash = ?')
       .get(hashRoutingUtterance(SECRET, 'minhas tarefas de hoje'));
     expect(supported).toBeUndefined();
+  });
+});
+
+describe('routing corpus unsupported Spanish synthetic cleanup', () => {
+  let db: Database.Database;
+
+  const spanishFixtures = CHAT_LOCALE_CONFUSABLE_EVAL_FIXTURES
+    .filter((fixture) => fixture.promptLocale === 'es-419');
+
+  function seedSpanishFixtures(limit = spanishFixtures.length): void {
+    const insert = db.prepare(`
+      INSERT INTO routing_corpus_items (
+        tenant_id, user_id, utterance_hash, utterance_text, source, label_status
+      ) VALUES (0, NULL, ?, ?, 'bilingual_fixture', 'pending')
+    `);
+    for (const fixture of spanishFixtures.slice(0, limit)) {
+      insert.run(hashRoutingUtterance(SECRET, fixture.prompt), fixture.prompt);
+    }
+  }
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    ensureRoutingCorpusTables(db);
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  it('prunes exactly eight pending synthetic rows and is idempotent at zero', () => {
+    expect(spanishFixtures).toHaveLength(8);
+    seedSpanishFixtures();
+
+    const first = pruneSpanishSyntheticRoutingCorpusFixtures({ db, secret: SECRET });
+    expect(first).toEqual({
+      status: 'pruned',
+      expectedFixtures: 8,
+      deletedItems: 8,
+      deletedCacheEntries: 0,
+    });
+    expect(db.prepare('SELECT COUNT(*) AS count FROM routing_corpus_items').get())
+      .toEqual({ count: 0 });
+
+    const second = pruneSpanishSyntheticRoutingCorpusFixtures({ db, secret: SECRET });
+    expect(second).toEqual({
+      status: 'already_absent',
+      expectedFixtures: 8,
+      deletedItems: 0,
+      deletedCacheEntries: 0,
+    });
+  });
+
+  it('preserves user, manual, and history rows that merely look Spanish', () => {
+    seedSpanishFixtures();
+    const insert = db.prepare(`
+      INSERT INTO routing_corpus_items (
+        tenant_id, user_id, utterance_hash, utterance_text, source, label_status
+      ) VALUES (?, ?, ?, ?, ?, 'pending')
+    `);
+    const preserved = [
+      { tenantId: 7, userId: 11, text: 'Muéstrame mis proyectos activos', source: 'history_unmatched' },
+      { tenantId: 0, userId: null, text: 'Crea una nota manual', source: 'manual' },
+      { tenantId: 9, userId: 12, text: 'Agenda una llamada para mañana', source: 'classify_shadow_disagreement' },
+    ] as const;
+    for (const row of preserved) {
+      insert.run(
+        row.tenantId,
+        row.userId,
+        hashRoutingUtterance(SECRET, row.text),
+        row.text,
+        row.source,
+      );
+    }
+
+    pruneSpanishSyntheticRoutingCorpusFixtures({ db, secret: SECRET });
+
+    const remaining = db.prepare(
+      'SELECT utterance_text AS text, source FROM routing_corpus_items ORDER BY id',
+    ).all();
+    expect(remaining).toEqual(preserved.map(({ text, source }) => ({ text, source })));
+  });
+
+  it('refuses partial or labeled fixture sets without deleting anything', () => {
+    seedSpanishFixtures(7);
+    expect(() => pruneSpanishSyntheticRoutingCorpusFixtures({ db, secret: SECRET }))
+      .toThrow(/partial Spanish synthetic fixture set/i);
+    expect(db.prepare('SELECT COUNT(*) AS count FROM routing_corpus_items').get())
+      .toEqual({ count: 7 });
+
+    db.exec('DELETE FROM routing_corpus_items');
+    seedSpanishFixtures();
+    const firstHash = hashRoutingUtterance(SECRET, spanishFixtures[0].prompt);
+    db.prepare(`
+      UPDATE routing_corpus_items
+      SET label_status = 'labeled', label_domain = 'secretary', labeled_at = datetime('now')
+      WHERE utterance_hash = ?
+    `).run(firstHash);
+
+    expect(() => pruneSpanishSyntheticRoutingCorpusFixtures({ db, secret: SECRET }))
+      .toThrow(/pending and unlabeled/i);
+    expect(db.prepare('SELECT COUNT(*) AS count FROM routing_corpus_items').get())
+      .toEqual({ count: 8 });
+  });
+
+  it('refuses an accepted snapshot and deletes only matching cache rows otherwise', () => {
+    seedSpanishFixtures();
+    db.prepare(`
+      INSERT INTO accepted_accuracy_snapshots (snapshot_json, accepted)
+      VALUES ('{}', 1)
+    `).run();
+    expect(() => pruneSpanishSyntheticRoutingCorpusFixtures({ db, secret: SECRET }))
+      .toThrow(/accepted routing accuracy snapshot/i);
+    expect(db.prepare('SELECT COUNT(*) AS count FROM routing_corpus_items').get())
+      .toEqual({ count: 8 });
+
+    db.exec('DELETE FROM accepted_accuracy_snapshots');
+    const insertCache = db.prepare(`
+      INSERT INTO routing_llm_classify_cache (utterance_hash, domain, confidence)
+      VALUES (?, 'secretary', 0.9)
+    `);
+    for (const fixture of spanishFixtures) {
+      insertCache.run(hashRoutingUtterance(SECRET, fixture.prompt));
+    }
+    const unrelatedHash = hashRoutingUtterance(SECRET, 'Show my tasks');
+    insertCache.run(unrelatedHash);
+
+    const result = pruneSpanishSyntheticRoutingCorpusFixtures({ db, secret: SECRET });
+    expect(result.deletedCacheEntries).toBe(8);
+    expect(db.prepare(
+      'SELECT utterance_hash AS hash FROM routing_llm_classify_cache',
+    ).all()).toEqual([{ hash: unrelatedHash }]);
   });
 });
 

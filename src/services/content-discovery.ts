@@ -17,6 +17,10 @@ import { withAiBudgetReservation } from './cost-guardrail';
 import { rethrowAiUsageFailClosedError } from './api-usage-fallback';
 import { isPaidAiCostControlsEnforcementEnabled } from './entitlement';
 import { captureDiscoveredIdea } from './content-workspace-capture';
+import {
+  assertContentOutputLanguageFields,
+  normalizeContentOutputLanguage,
+} from './content-output-language';
 
 const client = createLazyAnthropicClient();
 
@@ -98,7 +102,7 @@ export async function runContentDiscovery(options: RunContentDiscoveryOptions): 
   const today = now();
   const dateStr = today.toFormat('yyyy-MM-dd');
   const dayName = today.toFormat('cccc');
-  const targetLanguage = getUserLanguage(userId);
+  const targetLanguage = normalizeContentOutputLanguage(getUserLanguage(userId));
   const systemPrompt = buildDiscoverySystemPrompt(targetLanguage);
 
   const userMessage = `Today is ${dayName}, ${today.toFormat('LLLL dd, yyyy')}.
@@ -261,6 +265,11 @@ Remember: follow the creator configuration for audience fit, but keep the ideas 
     searchCount,
     provider: usedProvider,
   } = providerResult;
+  assertContentOutputLanguageFields(
+    targetLanguage,
+    fullContent.split('\n'),
+    'content-discovery',
+  );
 
   // Extract idea titles (lines starting with "## Idea" or "### Ideia" — model may use either format or language)
   const ideas = fullContent

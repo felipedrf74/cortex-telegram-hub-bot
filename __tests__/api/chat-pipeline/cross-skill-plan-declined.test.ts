@@ -168,7 +168,7 @@ describe('cross_skill_plan_declined stage', () => {
 
   it.each([
     ['pt-BR', 'não executei nenhuma das ações'],
-    ['es-419', 'no ejecuté ninguna de las acciones'],
+    ['es-419', 'I did not run any action'],
   ])('renders deterministic %s disclosure copy', async (locale, expected) => {
     vi.stubEnv('AI_CROSS_SKILL_EXECUTION', 'true');
     const { ctx, json } = makeCtx(locale);

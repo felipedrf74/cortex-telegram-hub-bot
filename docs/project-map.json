@@ -5,11 +5,11 @@
     "generatorVersion": 4,
     "authoritativeFreshness": "sourceDigest",
     "sourceDigestAlgorithm": "sha256-path-git-mode-content-v2",
-    "sourceDigest": "298c62380dc31a4bf1f4018d1ef256672f2fa85d838232cb3922a6bf6708800b",
-    "baseCommit": "138ad8c691e41e4632d4eb46451902fe31f4a4f8",
-    "baseCommitTimestamp": "2026-07-29T13:45:23+01:00",
-    "trackedFiles": 2953,
-    "sourceFiles": 1089
+    "sourceDigest": "ef6e1241a1e60afb31898628e693abfbaaa4c24713fc82007202402280027e58",
+    "baseCommit": "072b54f55ab9d6e855e83d5da4e106d9b40fbade",
+    "baseCommitTimestamp": "2026-07-29T15:53:02+01:00",
+    "trackedFiles": 2960,
+    "sourceFiles": 1090
   },
   "navigation": {
     "agentBootloader": "AGENTS.md",
@@ -99,7 +99,7 @@
     {
       "path": "src/services",
       "owner": "backend",
-      "files": 781
+      "files": 782
     },
     {
       "path": "src/skills",
@@ -4837,7 +4837,7 @@
     }
   ],
   "tests": {
-    "files": 1083,
+    "files": 1088,
     "policy": "config/test-policy.json",
     "inventoryArtifact": ".local/test-inventory/test-inventory.json",
     "topLevelOwners": {
@@ -4847,7 +4847,7 @@
       "billing": 1,
       "brand": 1,
       "cli": 1,
-      "commands": 1,
+      "commands": 2,
       "domains": 5,
       "integration": 3,
       "lib": 1,
@@ -4856,10 +4856,10 @@
       "regression": 1,
       "router": 7,
       "scope": 1,
-      "scripts": 58,
+      "scripts": 60,
       "sdk": 1,
       "security": 22,
-      "services": 685,
+      "services": 687,
       "skills": 11,
       "state": 17,
       "storage": 1,
@@ -5558,7 +5558,7 @@
     },
     {
       "path": "src/services/decision-center.ts",
-      "bytes": 500874,
+      "bytes": 500823,
       "generated": false
     },
     {
@@ -5583,7 +5583,7 @@
     },
     {
       "path": "__tests__/api/chat-routes.test.ts",
-      "bytes": 283669,
+      "bytes": 285169,
       "generated": false
     },
     {

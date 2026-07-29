@@ -30,16 +30,17 @@
       "expected_response_substring": ["manteiga de girassol"]
     },
     {
-      "id": "cooking-substitution-es-cena",
-      "user_text": "Sustituye champiñones por calabacín en la cena de mañana",
-      "locale": "es-ES",
+      "id": "cooking-substitution-pt-br-jantar",
+      "user_text": "Troca cogumelos por abobrinha no jantar de amanhã",
+      "locale": "pt-BR",
       "expected_action": "cooking_substitute_ingredient",
       "expected_slots": {
         "mealType": "dinner",
-        "originalIngredient": "champiñones",
-        "suggestedIngredient": "calabacín"
+        "originalIngredient": "cogumelos",
+        "suggestedIngredient": "abobrinha"
       },
-      "expected_verifier": "needs_confirmation"
+      "expected_verifier": "needs_confirmation",
+      "expected_response_substring": ["abobrinha"]
     },
     {
       "id": "cooking-substitution-past-tense-negative",

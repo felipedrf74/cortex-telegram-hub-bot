@@ -11,13 +11,12 @@
  *   t('rate_limited', 'en-US', { limit: '40' }) → 'You've reached your daily limit of 40 messages.'
  */
 
-export type Lang = 'pt-BR' | 'pt-PT' | 'en-US' | 'es-ES';
+export type Lang = 'pt-BR' | 'pt-PT' | 'en-US';
 
 type MessageEntry = {
   'pt-BR': string;
   'pt-PT'?: string;
   'en-US': string;
-  'es-ES'?: string;
 };
 
 const MESSAGES: Record<string, MessageEntry> = {
@@ -303,18 +302,51 @@ export function t(key: string, lang: Lang, vars?: Record<string, string>): strin
  * Detect language from Telegram's language_code field.
  * Falls back to PT-BR (primary audience).
  *
- * Phase 16 batch 80 (2026-05-16): Spanish (`es-*`) now returns its own
- * `'es-ES'` code instead of collapsing to `'pt-BR'`. The earlier collapse
- * silently disabled every `input.locale?.startsWith('es')` branch added to
- * the planner in Phases 10-15 for Telegram-originated traffic. iOS was
- * unaffected because it sends `Accept-Language: es-*` directly.
+ * Spanish was retired as a product locale in July 2026. Legacy `es-*`
+ * clients remain compatible but receive the English fallback.
  */
 export function detectLanguageFromTelegram(langCode?: string): Lang {
   if (!langCode) return 'pt-BR';
-  const normalized = langCode.toLowerCase();
-  if (normalized.startsWith('pt-pt') || normalized.startsWith('pt_pt')) return 'pt-PT';
-  if (normalized.startsWith('pt')) return 'pt-BR';
-  if (normalized.startsWith('en')) return 'en-US';
-  if (normalized.startsWith('es')) return 'es-ES';
-  return 'en-US'; // Default to English for other languages
+  return normalizeSupportedLang(langCode, 'en-US');
+}
+
+/** True for legacy locale labels that must resolve to English without persistence. */
+export function isRetiredSpanishLocaleSignal(value: unknown): boolean {
+  if (typeof value !== 'string') return false;
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) return false;
+  const comparable = normalized
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+  return normalized.split(/[-_]/)[0] === 'es'
+    || comparable === 'spanish'
+    || comparable === 'espanol'
+    || comparable === 'castellano';
+}
+
+/** Coerce stored or request locale values into the supported product set. */
+export function normalizeSupportedLang(
+  value: unknown,
+  fallback: Lang = 'en-US',
+): Lang {
+  if (typeof value !== 'string') return fallback;
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) return fallback;
+  const comparable = normalized
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+  if (
+    /^pt[-_]pt(?:[-_]|$)/.test(normalized)
+    || comparable.includes('portugues de portugal')
+    || comparable.includes('portugues europeu')
+    || comparable.includes('european portuguese')
+  ) return 'pt-PT';
+  if (
+    /^pt(?:[-_]|$)/.test(normalized)
+    || comparable.includes('portugues brasileiro')
+    || comparable.includes('brazilian portuguese')
+  ) return 'pt-BR';
+  if (/^en(?:[-_]|$)/.test(normalized) || comparable === 'english') return 'en-US';
+  if (isRetiredSpanishLocaleSignal(value)) return 'en-US';
+  return fallback;
 }

@@ -62,6 +62,7 @@ import {
 } from './chat-pending-confirmations';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
 import { logger } from '../utils/logger';
+import { normalizeSupportedLang } from '../utils/i18n';
 import { getDecisionConflictPolicyV1Mode, isDecisionCenterCommandBusEnabled, isDecisionCenterFatigueCapsEnabled, isDecisionCenterGuidanceSkillEnabled, isDecisionCenterGuidanceV1Enabled, isDecisionChoiceOptionsEnabled, isDecisionConflictPolicyV1Enabled, isDecisionEvidenceFreshnessGateEnabled, isDecisionFeedbackSuppressionEnabled, isDecisionFlowV1EnforceEnabled, isDecisionHumanReviewGateEnabled, isDecisionLowRiskAutoResolutionEnabled, isDecisionReconnectAffordanceEnabled, isDecisionRefreshEnabled, isDecisionRollbackSnapshotProtectionEnabled, isDecisionSemanticDedupEnabled, isDecisionSemanticSupersedeEnabled, isDecisionSkillCardsEnabled, isDecisionStreakV1Enabled, isDecisionTypeSuppressionEnabled, isTrainingDecisionFlowV1EnforceEnabled } from './runtime-flags';
 import { buildDecisionConflictSummary, type ConflictEvaluation, type DecisionConflictSummary } from './decision-conflict-evaluator';
 import {
@@ -5748,12 +5749,7 @@ function validateDecisionTimezone(timezone?: string | null): string | undefined 
 
 function validateDecisionLocale(locale?: string | null): string | undefined {
   if (typeof locale !== 'string' || !locale.trim()) return undefined;
-  const trimmed = locale.trim();
-  try {
-    return Intl.DateTimeFormat.supportedLocalesOf([trimmed])[0] ?? undefined;
-  } catch {
-    return undefined;
-  }
+  return normalizeSupportedLang(locale, 'en-US');
 }
 
 function secretaryCandidateSlots(

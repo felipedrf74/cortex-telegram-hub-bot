@@ -98,11 +98,12 @@ const PT_WORDS_STRONG = new Set([
   'lembrete', 'atrasadas', 'atrasados', 'depois', 'fazer', 'pode', 'quer',
   'encontrei', 'nenhuma', 'nenhum', 'seu', 'sua', 'seus', 'suas', 'leite',
   'almoço', 'manhã', 'têm', 'possui', 'ligar', 'esse', 'essa', 'isso',
+  'das', 'fontes', 'atuais', 'notícias', 'mais', 'resumo',
 ]);
 
 const PT_WORDS_WEAK = new Set([
-  'com', 'em', 'uma', 'um', 'dia', 'dos', 'das', 'da', 'os', 'as', 'ou',
-  'tem', 'sim', 'sem', 'mais', 'duas', 'dois', 'criada', 'criado', 'livre',
+  'com', 'em', 'uma', 'um', 'dia', 'dos', 'da', 'os', 'as', 'ou',
+  'tem', 'sim', 'sem', 'duas', 'dois', 'criada', 'criado', 'livre',
   'e', 'o', 'a',
 ]);
 
@@ -147,29 +148,53 @@ interface LanguageScores {
   en: number;
 }
 
-function scoreText(text: string): { scores: LanguageScores; wordCount: number } {
+function scoreText(text: string): {
+  scores: LanguageScores;
+  strongScores: LanguageScores;
+  wordCount: number;
+} {
   const lower = text.toLowerCase();
   const scores: LanguageScores = { es: 0, pt: 0, en: 0 };
+  const strongScores: LanguageScores = { es: 0, pt: 0, en: 0 };
 
-  scores.pt += (lower.match(PT_ORTHOGRAPHY) ?? []).length * 3;
-  scores.es += (lower.match(ES_ORTHOGRAPHY) ?? []).length * 3;
+  const ptOrthographyScore = (lower.match(PT_ORTHOGRAPHY) ?? []).length * 3;
+  const esOrthographyScore = (lower.match(ES_ORTHOGRAPHY) ?? []).length * 3;
+  scores.pt += ptOrthographyScore;
+  strongScores.pt += ptOrthographyScore;
+  scores.es += esOrthographyScore;
+  strongScores.es += esOrthographyScore;
 
   const words = lower.match(/[a-záéíóúàâêôãõçñü'’-]+/g) ?? [];
   for (const rawWord of words) {
     const word = rawWord.replace(/’/g, "'");
-    if (PT_WORDS_STRONG.has(word)) scores.pt += 2;
+    if (PT_WORDS_STRONG.has(word)) {
+      scores.pt += 2;
+      strongScores.pt += 2;
+    }
     else if (PT_WORDS_WEAK.has(word)) scores.pt += 1;
-    else if (PT_CLITIC.test(word)) scores.pt += 2;
+    else if (PT_CLITIC.test(word)) {
+      scores.pt += 2;
+      strongScores.pt += 2;
+    }
 
-    if (ES_WORDS_STRONG.has(word)) scores.es += 2;
+    if (ES_WORDS_STRONG.has(word)) {
+      scores.es += 2;
+      strongScores.es += 2;
+    }
     else if (ES_WORDS_WEAK.has(word)) scores.es += 1;
-    else if (ES_SUFFIXES.some((suffix) => suffix.test(word))) scores.es += 2;
+    else if (ES_SUFFIXES.some((suffix) => suffix.test(word))) {
+      scores.es += 2;
+      strongScores.es += 2;
+    }
 
-    if (EN_WORDS_STRONG.has(word)) scores.en += 2;
+    if (EN_WORDS_STRONG.has(word)) {
+      scores.en += 2;
+      strongScores.en += 2;
+    }
     else if (EN_WORDS_WEAK.has(word)) scores.en += 1;
   }
 
-  return { scores, wordCount: words.length };
+  return { scores, strongScores, wordCount: words.length };
 }
 
 const UNKNOWN: ResponseLanguageDetection = { language: 'unknown', confidence: 0 };
@@ -185,13 +210,56 @@ const SHORT_TEXT_MIN_SIGNAL = 5;
 const MIXED_RUNNER_UP_RATIO = 0.6;
 const MIXED_RUNNER_UP_MIN = 3;
 
+/**
+ * Input-only compatibility signal for short Spanish requests. Unlike the
+ * response detector, this may use a small exact vocabulary because choosing
+ * English is a safe compatibility fallback and does not rewrite user data.
+ */
+export function detectRetiredSpanishInputSignal(text: string): boolean {
+  if (!text || !text.trim()) return false;
+  const normalized = text
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[¿¡!?.,;:]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!normalized) return false;
+  if (
+    /[¿¡ñ]/i.test(text)
+    || /^(?:hola|buenos dias|buenas tardes|buenas noches|gracias|quiero ayuda)$/.test(normalized)
+    || /\b(?:crea|cancela|elimina)\s+(?:(?:un|una|el|la|los|las|mi|mis|tu|tus|este|esta)\s+)?(?:tarea|tareas|evento|eventos|recordatorio|recordatorios|cita|citas|correo|correos|notificacion|notificaciones)\b/.test(normalized)
+  ) {
+    return true;
+  }
+  const tokens = new Set(normalized.match(/\b[a-z0-9-]+\b/g) ?? []);
+  const exclusiveHits = [
+    'hola',
+    'gracias',
+    'quiero',
+    'necesito',
+    'ayuda',
+    'tengo',
+    'tienes',
+    'puedes',
+    'dame',
+    'dime',
+    'muestra',
+    'busca',
+    'crea',
+    'cancela',
+    'elimina',
+  ].reduce((count, token) => count + (tokens.has(token) ? 1 : 0), 0);
+  return exclusiveHits >= 2;
+}
+
 export function detectResponseLanguage(text: string): ResponseLanguageDetection {
   if (!text || !text.trim()) return { ...UNKNOWN };
 
-  const { scores, wordCount } = scoreText(text);
+  const { scores, strongScores, wordCount } = scoreText(text);
   if (wordCount === 0) return { ...UNKNOWN };
 
-  const ranked = (Object.entries(scores) as Array<[DetectedResponseLanguage, number]>)
+  const ranked = (Object.entries(scores) as Array<[keyof LanguageScores, number]>)
     .sort((left, right) => right[1] - left[1]);
   const [topLanguage, topScore] = ranked[0];
   const runnerUpScore = ranked[1][1];
@@ -202,6 +270,12 @@ export function detectResponseLanguage(text: string): ResponseLanguageDetection 
     : Math.min(0.4, (topScore / signal) * 0.4);
 
   if (topScore < MIN_SIGNAL) return { language: 'unknown', confidence: lowConfidence };
+  // Weak articles/prepositions can repeat in text from another language.
+  // Never name a language unless its winning score includes at least one
+  // discriminative feature; callers may then safely block any named mismatch.
+  if (strongScores[topLanguage] === 0) {
+    return { language: 'unknown', confidence: lowConfidence };
+  }
   if (wordCount <= SHORT_TEXT_WORD_LIMIT && topScore < SHORT_TEXT_MIN_SIGNAL) {
     return { language: 'unknown', confidence: lowConfidence };
   }
@@ -215,10 +289,55 @@ export function detectResponseLanguage(text: string): ResponseLanguageDetection 
   return { language: topLanguage, confidence };
 }
 
+/**
+ * Exact unambiguous acknowledgements that are intentionally too short for
+ * the statistical detector. Terminal output boundaries use this zero-spend
+ * seam to contain obvious cross-locale replies while general telemetry keeps
+ * failing open on arbitrary short text.
+ */
+export function detectStrictShortResponseLanguage(
+  text: string,
+  expectedLanguage?: DetectedResponseLanguage,
+): Exclude<DetectedResponseLanguage, 'unknown'> | null {
+  const sentences = text
+    .trim()
+    .toLowerCase()
+    .split(/[.!?…]+/)
+    .map((sentence) => sentence.replace(/\s+/g, ' ').trim())
+    .filter(Boolean);
+  if (sentences.some((sentence) =>
+    /^(?:aquí (?:tienes|está)|listo|hech[oa]|sí(?:,? claro)?|claro,? aquí (?:tienes|está)|hola|buenos días|buenas tardes|buenas noches|gracias(?: por esperar)?|quiero ayuda)$/.test(sentence)
+  )) {
+    return 'es';
+  }
+  if (
+    expectedLanguage === 'en'
+    && sentences.some((sentence) => /^(?:entendid[oa]|de acuerdo)$/.test(sentence))
+  ) {
+    // These acknowledgements are shared across Spanish and Portuguese. They
+    // are safe under a Portuguese contract but are definitely not English.
+    return 'es';
+  }
+  if (sentences.some((sentence) =>
+    /^(?:aqui está|pront[oa]|feit[oa]|sim(?:,? claro)?|claro,? aqui está)$/.test(sentence)
+  )) {
+    return 'pt';
+  }
+  if (sentences.some((sentence) =>
+    /^(?:here you go|done|ready|yes(?:,? of course)?|of course,? here it is)$/.test(sentence)
+  )) {
+    return 'en';
+  }
+  return null;
+}
+
 export function expectedLanguageForLocale(locale: string | null | undefined): DetectedResponseLanguage {
   if (!locale) return 'unknown';
   const primary = locale.trim().toLowerCase().split(/[-_]/)[0];
-  if (primary === 'es') return 'es';
+  // Spanish is no longer a supported response locale. Old clients may still
+  // send es-* during the compatibility window, so the observable contract is
+  // the same English fallback used at the request boundary.
+  if (primary === 'es') return 'en';
   if (primary === 'pt') return 'pt';
   if (primary === 'en') return 'en';
   return 'unknown';
@@ -227,10 +346,10 @@ export function expectedLanguageForLocale(locale: string | null | undefined): De
 /**
  * Blocking-check core for the locale-fidelity gate.
  *
- * Returns ok:true whenever detection (or the locale mapping) is 'unknown' —
- * the gate must fail open on uncertainty so one-word answers like "OK" never
- * trip it. It only returns ok:false when the detector confidently names a
- * language that contradicts the prompt locale.
+ * Returns ok:true whenever detection (or the locale mapping) is 'unknown'.
+ * The detector itself fails open on one-word answers and weak-only lexical
+ * coincidences; once it names a language from discriminative evidence, any
+ * contradiction is a blocking mismatch.
  */
 export function checkResponseLocaleFidelity(
   promptLocale: string | null | undefined,

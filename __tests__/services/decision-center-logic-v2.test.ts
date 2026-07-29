@@ -429,6 +429,24 @@ describe('Decision Center Logic v2', () => {
     expect(portuguese).not.toContain('Sun, May');
   });
 
+  it('projects a persisted historical Spanish decision locale to the English output contract', () => {
+    const english = formatDecisionWindow(
+      '2026-05-17T08:00:00.000Z',
+      '2026-05-17T10:00:00.000Z',
+      'UTC',
+      'en-US',
+    );
+    const historicalSpanish = formatDecisionWindow(
+      '2026-05-17T08:00:00.000Z',
+      '2026-05-17T10:00:00.000Z',
+      'UTC',
+      'es-ES',
+    );
+
+    expect(historicalSpanish).toBe(english);
+    expect(historicalSpanish).toContain('Sun, May');
+  });
+
   it('autopilot safely retries sync but does not move workouts or approve content by default', () => {
     const sync = buildDecisionLogicV2({
       sourceSkill: 'secretary',

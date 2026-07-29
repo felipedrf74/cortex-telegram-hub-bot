@@ -70,6 +70,7 @@ import {
   setLastActiveDomain,
 } from '../../src/api/routes/chat-message-context';
 import { storeChatMessage } from '../../src/services/chat-history-store';
+import { runWithChatRequestLocale } from '../../src/services/chat-request-locale-context';
 
 describe('chat message context helpers', () => {
   beforeEach(() => {
@@ -140,6 +141,51 @@ describe('chat message context helpers', () => {
     expect(handler).toBeTypeOf('function');
     await expect(handler?.('What is today?', 42)).resolves.toEqual({ text: 'Done', domain: 'secretary' });
     expect(getChatDomainHandler('unknown')).toBeUndefined();
+  });
+
+  it('projects Spanish-authored manifest-tail reads to English instead of Portuguese', async () => {
+    const cases = [
+      ['connections', 'Mostrar el estado de mis conexiones', 'I could not check Connections'],
+      ['notifications', 'Mostrar mis notificaciones', 'I could not check Notifications'],
+      ['decision_center', 'Mostrar el estado de mis decisiones', 'I could not check Decision Center'],
+    ] as const;
+
+    for (const [domain, message, expectedText] of cases) {
+      const handler = getChatDomainHandler(domain);
+      await expect(handler?.(message)).resolves.toMatchObject({
+        domain,
+        text: expect.stringContaining(expectedText),
+      });
+    }
+  });
+
+  it('keeps genuine Portuguese manifest-tail reads in Portuguese', async () => {
+    const cases = [
+      ['connections', 'Mostrar o estado das minhas conexões', 'Não consegui verificar as conexões'],
+      ['notifications', 'Mostrar as minhas notificações', 'Não consegui verificar as notificações'],
+      ['decision_center', 'Mostrar o estado das minhas decisões', 'Não consegui verificar as decisões'],
+    ] as const;
+
+    for (const [domain, message, expectedText] of cases) {
+      const handler = getChatDomainHandler(domain);
+      await expect(handler?.(message)).resolves.toMatchObject({
+        domain,
+        text: expect.stringContaining(expectedText),
+      });
+    }
+  });
+
+  it('uses the supported request locale for otherwise ambiguous Portuguese manifest-tail reads', async () => {
+    const handler = getChatDomainHandler('connections');
+    const result = await runWithChatRequestLocale(
+      'pt-BR',
+      () => handler?.('mostrar estado', undefined, undefined),
+    );
+
+    expect(result).toMatchObject({
+      domain: 'connections',
+      text: expect.stringContaining('Não consegui verificar as conexões'),
+    });
   });
 
   it('builds localized secretary default action buttons', () => {

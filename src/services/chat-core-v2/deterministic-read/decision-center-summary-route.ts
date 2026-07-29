@@ -92,7 +92,6 @@ function buildDecisionCenterSummaryText(
   if (data.openCount === 0) {
     if (normalizedLocale === 'pt-BR') return 'O Decision Center está sem pendências agora.';
     if (normalizedLocale === 'pt-PT') return 'O Decision Center não tem pendências neste momento.';
-    if (normalizedLocale === 'es') return 'El Decision Center está al día ahora.';
     return 'Decision Center is clear right now.';
   }
 
@@ -116,7 +115,6 @@ function buildDecisionCenterSummaryHeader(
   const detail = parts.length > 0 ? ` ${joinParts(parts, locale)}` : '';
   if (locale === 'pt-BR') return `O Decision Center tem ${data.openCount} ${plural(data.openCount, 'decisão aberta', 'decisões abertas')}.${detail}`;
   if (locale === 'pt-PT') return `O Decision Center tem ${data.openCount} ${plural(data.openCount, 'decisão aberta', 'decisões abertas')}.${detail}`;
-  if (locale === 'es') return `Decision Center tiene ${data.openCount} ${plural(data.openCount, 'decisión abierta', 'decisiones abiertas')}.${detail}`;
   return `Decision Center has ${data.openCount} open ${data.openCount === 1 ? 'decision' : 'decisions'}.${detail}`;
 }
 
@@ -130,11 +128,6 @@ function decisionCountPhrase(
     if (kind === 'today') return `${count} ${plural(count, 'para hoje', 'para hoje')}`;
     return `${count} ${plural(count, 'tratada hoje', 'tratadas hoje')}`;
   }
-  if (locale === 'es') {
-    if (kind === 'urgent') return `${count} ${plural(count, 'urgente', 'urgentes')}`;
-    if (kind === 'today') return `${count} ${plural(count, 'para hoy', 'para hoy')}`;
-    return `${count} ${plural(count, 'gestionada hoy', 'gestionadas hoy')}`;
-  }
   if (kind === 'urgent') return `${count} urgent`;
   if (kind === 'today') return `${count} for today`;
   return `${count} handled today`;
@@ -143,19 +136,16 @@ function decisionCountPhrase(
 function decisionListLabel(locale: ChatCoreV2NormalizedLocale): string {
   if (locale === 'pt-BR') return 'Principais decisões:';
   if (locale === 'pt-PT') return 'Decisões principais:';
-  if (locale === 'es') return 'Decisiones principales:';
   return 'Top decisions:';
 }
 
 function decisionUrgencySuffix(urgency: string, locale: ChatCoreV2NormalizedLocale): string {
   if (urgency === 'urgent') {
     if (locale === 'pt-BR' || locale === 'pt-PT') return ' (urgente)';
-    if (locale === 'es') return ' (urgente)';
     return ' (urgent)';
   }
   if (urgency === 'today') {
     if (locale === 'pt-BR' || locale === 'pt-PT') return ' (hoje)';
-    if (locale === 'es') return ' (hoy)';
     return ' (today)';
   }
   return '';
@@ -163,7 +153,6 @@ function decisionUrgencySuffix(urgency: string, locale: ChatCoreV2NormalizedLoca
 
 function decisionActionSuffix(actionLabel: string, locale: ChatCoreV2NormalizedLocale): string {
   if (locale === 'pt-BR' || locale === 'pt-PT') return ` - precisa de: ${actionLabel}`;
-  if (locale === 'es') return ` - necesita: ${actionLabel}`;
   return ` - needs: ${actionLabel}`;
 }
 

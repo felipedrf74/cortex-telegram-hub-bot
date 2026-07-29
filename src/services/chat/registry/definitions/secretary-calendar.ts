@@ -125,9 +125,10 @@ export const SECRETARY_CALENDAR_ACTIONS: ChatActionDefinition[] = [
           expectedAction: 'delete_event',
         },
         {
-          // Phase 12 batch 64 (2026-05-16): Spanish golden example.
+          // Phase 12 batch 64 (2026-05-16): Spanish-authored compatibility input; English response contract.
           text: 'Crea un evento llamado sync el viernes a las 14h',
-          locale: 'es',
+          requestLocale: 'es',
+          responseLocale: 'en',
           tags: ['golden'],
           expectedSlots: { title: 'sync' },
           expectedAction: 'schedule_event',
@@ -189,9 +190,10 @@ export const SECRETARY_CALENDAR_ACTIONS: ChatActionDefinition[] = [
           expectedAction: null,
         },
         {
-          // Phase 13 batch 68 (2026-05-16): Spanish golden example.
+          // Phase 13 batch 68 (2026-05-16): Spanish-authored compatibility input; English response contract.
           text: 'Cambia la reunión del lunes al martes',
-          locale: 'es',
+          requestLocale: 'es',
+          responseLocale: 'en',
           tags: ['golden'],
           expectedAction: 'update_event',
         },
@@ -243,9 +245,10 @@ export const SECRETARY_CALENDAR_ACTIONS: ChatActionDefinition[] = [
           expectedAction: null,
         },
         {
-          // Phase 13 batch 68 (2026-05-16): Spanish golden example.
+          // Phase 13 batch 68 (2026-05-16): Spanish-authored compatibility input; English response contract.
           text: 'Mueve la reunión al jueves',
-          locale: 'es',
+          requestLocale: 'es',
+          responseLocale: 'en',
           tags: ['golden'],
           expectedAction: 'move_event',
         },
@@ -328,9 +331,10 @@ export const SECRETARY_CALENDAR_ACTIONS: ChatActionDefinition[] = [
           expectedAction: null,
         },
         {
-          // Phase 12 batch 64 (2026-05-16): Spanish golden example.
+          // Phase 12 batch 64 (2026-05-16): Spanish-authored compatibility input; English response contract.
           text: 'Cancela la reunión con Pedro',
-          locale: 'es',
+          requestLocale: 'es',
+          responseLocale: 'en',
           tags: ['golden'],
           expectedAction: 'delete_event',
         },
@@ -388,9 +392,10 @@ export const SECRETARY_CALENDAR_ACTIONS: ChatActionDefinition[] = [
           expectedAction: null,
         },
         {
-          // Phase 14 batch 73 (2026-05-16): Spanish golden example.
+          // Phase 14 batch 73 (2026-05-16): Spanish-authored compatibility input; English response contract.
           text: 'Estoy libre el viernes a las 15',
-          locale: 'es',
+          requestLocale: 'es',
+          responseLocale: 'en',
           tags: ['golden'],
           expectedAction: 'check_calendar_conflicts',
         },
@@ -466,9 +471,10 @@ export const SECRETARY_CALENDAR_ACTIONS: ChatActionDefinition[] = [
           expectedAction: null,
         },
         {
-          // Phase 12 batch 64 (2026-05-16): Spanish golden example.
+          // Phase 12 batch 64 (2026-05-16): Spanish-authored compatibility input; English response contract.
           text: 'Qué tengo el viernes',
-          locale: 'es',
+          requestLocale: 'es',
+          responseLocale: 'en',
           tags: ['golden'],
           expectedAction: 'summarize_agenda',
         },

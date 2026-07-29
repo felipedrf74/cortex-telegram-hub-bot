@@ -1,5 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
+import { normalizeSupportedLang } from '../../utils/i18n';
+
 export type ShortcutLanguage = 'pt-BR' | 'pt-PT' | 'en-US';
 
 export type ScriptGenerationMode = 'quick' | 'standard' | 'deep';
@@ -25,12 +27,8 @@ export type FinanceStateShortcut =
 const MAX_SHORTCUT_PARSE_CHARS = 4_096;
 
 export function normalizeScriptLanguage(language?: string | null): ShortcutLanguage {
-  const normalized = String(language || 'pt-BR').trim().toLowerCase();
-  if (normalized.startsWith('en')) return 'en-US';
-  if (normalized === 'pt-pt' || normalized.includes('pt-pt') || normalized.includes('portugal') || normalized.includes('europe')) {
-    return 'pt-PT';
-  }
-  return 'pt-BR';
+  if (typeof language !== 'string' || !language.trim()) return 'pt-BR';
+  return normalizeSupportedLang(language, 'en-US');
 }
 
 export function resolveRequestedScriptLanguage(message: string, fallbackLanguage?: string | null): ShortcutLanguage {

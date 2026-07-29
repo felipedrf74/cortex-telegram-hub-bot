@@ -8,6 +8,8 @@ import { classifyShadowRoute } from '../src/services/chat-core-v2/shadow-route-c
 
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 
+const SUPPORTED_CHAT_TEST_PHASE_LOCALES = new Set(['en-US', 'pt-BR', 'pt-PT']);
+
 export type ChatTestScenario = {
   id: string;
   user_text: string;
@@ -89,6 +91,18 @@ export function parseFixtureText(text: string): ChatTestFixture {
     if (!scenario || typeof scenario !== 'object') throw new Error('Scenario must be an object');
     if (!scenario.id || typeof scenario.id !== 'string') throw new Error('Scenario missing string id');
     if (!scenario.user_text || typeof scenario.user_text !== 'string') throw new Error(`Scenario ${scenario.id} missing string user_text`);
+    if (
+      scenario.locale !== undefined
+      && (
+        typeof scenario.locale !== 'string'
+        || !SUPPORTED_CHAT_TEST_PHASE_LOCALES.has(scenario.locale)
+      )
+    ) {
+      throw new Error(
+        `Scenario ${scenario.id} uses unsupported locale ${String(scenario.locale)}; `
+        + 'operational response evals support en-US, pt-BR, and pt-PT only',
+      );
+    }
   }
   return parsed;
 }

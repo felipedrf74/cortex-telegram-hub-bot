@@ -54,7 +54,7 @@ export interface RegistryDrivenScenarioOptions {
    * active (they would otherwise inflate the en bucket). When unset,
    * all locales are included.
    */
-  locales?: Array<'en' | 'pt' | 'es' | 'mixed'>;
+  locales?: Array<'en' | 'pt' | 'mixed'>;
 }
 
 /**

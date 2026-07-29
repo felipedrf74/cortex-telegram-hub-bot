@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 
 import { parseContentStateShortcut, parseFinanceStateShortcut } from '../../src/api/routes/chat-shortcut-parsers';
@@ -5,7 +6,13 @@ import { detectChatCoreV2WriteIntent } from '../../src/services/chat-core-v2/act
 import {
   CHAT_V2_PHASE7_TARGET_ROUTE_READINESS,
   CHAT_V2_LEGACY_PARITY_ROUTE_CORPUS_META,
+  CHAT_V2_LEGACY_PARITY_ROUTE_CORPUS_META_V1_HISTORICAL,
+  CHAT_V2_LEGACY_PARITY_ROUTE_PROMPT_VERSION,
+  CHAT_V2_LEGACY_PARITY_ROUTE_PROMPT_VERSION_V1_HISTORICAL,
   CHAT_V2_LEGACY_PARITY_ROUTE_PROMPTS,
+  CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_CORPUS_META,
+  CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_PROMPTS,
+  CHAT_V2_LEGACY_PARITY_ROUTE_PROMPTS_V1_HISTORICAL,
   CHAT_V2_LEGACY_PARITY_WRITE_ROUTE_IDS,
 } from '../../src/services/chat-legacy-parity-route-prompts';
 import { inferChatTurnContract } from '../../src/services/chat-turn-contract';
@@ -15,6 +22,16 @@ function route(id: string) {
   if (!found) throw new Error(`missing route prompt:${id}`);
   return found;
 }
+
+function sha256(value: unknown): string {
+  return createHash('sha256').update(JSON.stringify(value)).digest('hex');
+}
+
+const RETIRED_SPANISH_MIXED_PROMPTS = new Set([
+  'Crea tarea write audit com subtasks preview confirm block',
+  'Cancela decision dec_route_gate confirmation',
+  'Remove todas las tareas now',
+]);
 
 describe('ChatV2 legacy parity route prompts', () => {
   it('keeps the Phase 7 route set unique and fully represented', () => {
@@ -34,13 +51,19 @@ describe('ChatV2 legacy parity route prompts', () => {
     ].sort());
   });
 
-  it('uses a held-out multilingual/adversarial corpus, not only happy-path English samples', () => {
+  it('uses a versioned compatibility corpus without rewriting historical v1 evidence', () => {
     expect(CHAT_V2_LEGACY_PARITY_ROUTE_CORPUS_META).toMatchObject({
       schemaVersion: 'chat_v2_legacy_parity_route_corpus_meta.v1',
-      frozenBeforeImplementation: true,
+      frozenBeforeImplementation: false,
       mutationPolicy: 'claude_or_manual_signoff_required_before_runtime_replacement',
       reviewRubricVersion: 'chat_v2_legacy_parity_review_rubric.v2',
     });
+    expect(CHAT_V2_LEGACY_PARITY_ROUTE_PROMPT_VERSION).toBe(
+      'chat_v2_legacy_parity_route_prompts@1.5.0',
+    );
+    expect(CHAT_V2_LEGACY_PARITY_ROUTE_CORPUS_META.corpusId).toBe(
+      'chatv2_phase7_route_replacement_supported_locales_v2',
+    );
 
     for (const routePrompt of CHAT_V2_LEGACY_PARITY_ROUTE_PROMPTS) {
       expect(routePrompt.evidenceTrack, routePrompt.routeId).toMatch(/parity|bundle|research/);
@@ -48,10 +71,33 @@ describe('ChatV2 legacy parity route prompts', () => {
     }
 
     const prompts = CHAT_V2_LEGACY_PARITY_ROUTE_PROMPTS.flatMap((item) => item.prompts);
-    const languages = new Set(prompts.map((prompt) => prompt.language));
-    for (const language of ['en', 'pt-BR', 'pt-PT', 'pt-AO', 'es', 'es-419', 'mixed']) {
-      expect(languages.has(language as never), `missing ${language}`).toBe(true);
+    const responseLanguages = new Set(prompts.map((prompt) => prompt.language));
+    const requestLanguages = new Set(prompts.map((prompt) => prompt.requestLanguage));
+    for (const language of ['en', 'pt-BR', 'pt-PT', 'pt-AO', 'mixed']) {
+      expect(responseLanguages.has(language as never), `missing response ${language}`).toBe(true);
     }
+    expect(responseLanguages.has('es' as never)).toBe(false);
+    expect(responseLanguages.has('es-419' as never)).toBe(false);
+    expect(requestLanguages.has('es' as never)).toBe(false);
+    expect(requestLanguages.has('es-419' as never)).toBe(false);
+
+    expect(CHAT_V2_LEGACY_PARITY_ROUTE_PROMPT_VERSION_V1_HISTORICAL).toBe(
+      'chat_v2_legacy_parity_route_prompts@1.4.0',
+    );
+    expect(CHAT_V2_LEGACY_PARITY_ROUTE_CORPUS_META_V1_HISTORICAL.corpusId).toBe(
+      'chatv2_phase7_route_replacement_heldout',
+    );
+    expect(
+      CHAT_V2_LEGACY_PARITY_ROUTE_PROMPTS_V1_HISTORICAL
+        .flatMap((item) => item.prompts)
+        .some((prompt) => prompt.language === 'es' || prompt.language === 'es-419'),
+    ).toBe(true);
+    expect(sha256(CHAT_V2_LEGACY_PARITY_ROUTE_PROMPTS_V1_HISTORICAL)).toBe(
+      '1481be040b73f482f5213d2b6b005abfaa86afa4bd5f879e694f5ce15fbca0da',
+    );
+    expect(sha256(CHAT_V2_LEGACY_PARITY_ROUTE_CORPUS_META_V1_HISTORICAL)).toBe(
+      'cc6fec4c51283d20a843da0cea3d6b815d482b01512acd2380ffee0f4a9330de',
+    );
 
     const tags = new Set(prompts.flatMap((prompt) => prompt.tags ?? []));
     for (const tag of [
@@ -66,6 +112,110 @@ describe('ChatV2 legacy parity route prompts', () => {
       'write_read_collision',
     ]) {
       expect(tags.has(tag), `missing ${tag}`).toBe(true);
+    }
+  });
+
+  it('derives retirement proof only from the immutable v1.4 EN/PT projection', () => {
+    expect(CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_CORPUS_META).toMatchObject({
+      version: CHAT_V2_LEGACY_PARITY_ROUTE_PROMPT_VERSION_V1_HISTORICAL,
+      frozenBeforeImplementation: true,
+      projectionPolicy: 'immutable_v1_4_en_pt_br_pt_pt_only',
+    });
+    expect(CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_PROMPTS).toHaveLength(
+      CHAT_V2_LEGACY_PARITY_ROUTE_PROMPTS_V1_HISTORICAL.length,
+    );
+
+    for (const retirementRoute of CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_PROMPTS) {
+      const historicalRoute = CHAT_V2_LEGACY_PARITY_ROUTE_PROMPTS_V1_HISTORICAL
+        .find((routePrompt) => routePrompt.routeId === retirementRoute.routeId)!;
+      expect(retirementRoute.prompts.length, retirementRoute.routeId).toBeGreaterThan(0);
+      for (const prompt of retirementRoute.prompts) {
+        expect(['en', 'pt-BR', 'pt-PT'], `${retirementRoute.routeId}:${prompt.text}`)
+          .toContain(prompt.language);
+        expect(historicalRoute.prompts).toContain(prompt);
+      }
+    }
+
+    expect(sha256(CHAT_V2_LEGACY_PARITY_ROUTE_PROMPTS_V1_HISTORICAL)).toBe(
+      '1481be040b73f482f5213d2b6b005abfaa86afa4bd5f879e694f5ce15fbca0da',
+    );
+    expect(sha256(CHAT_V2_LEGACY_PARITY_ROUTE_CORPUS_META_V1_HISTORICAL)).toBe(
+      'cc6fec4c51283d20a843da0cea3d6b815d482b01512acd2380ffee0f4a9330de',
+    );
+  });
+
+  it('replaces every retired Spanish-authored slot one-for-one with an explicit EN/PT prompt', () => {
+    const expectedRetiredCounts: Record<string, number> = {
+      general_action_planner: 11,
+      chat_reasoning_engine_v1: 13,
+      training_plan_shortcut: 13,
+      selective_internet_research: 13,
+      decision_confirmation_shortcut: 13,
+      destructive_confirmation_hold: 11,
+      classifier_route_skill_orchestration: 10,
+      domain_handler_execution: 10,
+      chat_message_shortcut_after_route: 0,
+    };
+    let pairedCount = 0;
+
+    for (const historicalRoute of CHAT_V2_LEGACY_PARITY_ROUTE_PROMPTS_V1_HISTORICAL) {
+      const supportedRoute = route(historicalRoute.routeId);
+      expect(supportedRoute.prompts).toHaveLength(historicalRoute.prompts.length);
+
+      const retiredRows = historicalRoute.prompts
+        .map((prompt, index) => ({ prompt, index }))
+        .filter(({ prompt }) =>
+          prompt.language === 'es'
+          || prompt.language === 'es-419'
+          || RETIRED_SPANISH_MIXED_PROMPTS.has(prompt.text)
+        );
+      expect(retiredRows, historicalRoute.routeId).toHaveLength(
+        expectedRetiredCounts[historicalRoute.routeId],
+      );
+      pairedCount += retiredRows.length;
+
+      for (const { prompt, index } of retiredRows) {
+        const replacement = supportedRoute.prompts[index]!;
+        expect(['en', 'pt-BR', 'pt-PT'], `${historicalRoute.routeId}:${prompt.text}`)
+          .toContain(replacement.language);
+        expect(replacement.requestLanguage, `${historicalRoute.routeId}:${prompt.text}`)
+          .toBe(replacement.language);
+        expect(replacement.text, `${historicalRoute.routeId}:${prompt.text}`).not.toBe(prompt.text);
+        expect(replacement.tags, `${historicalRoute.routeId}:${prompt.text}`).toEqual(prompt.tags);
+      }
+    }
+
+    expect(pairedCount).toBe(94);
+    const activeTexts = new Set(
+      CHAT_V2_LEGACY_PARITY_ROUTE_PROMPTS.flatMap((item) =>
+        item.prompts.map((prompt) => prompt.text)),
+    );
+    const retiredTexts = CHAT_V2_LEGACY_PARITY_ROUTE_PROMPTS_V1_HISTORICAL
+      .flatMap((item) => item.prompts)
+      .filter((prompt) =>
+        prompt.language === 'es'
+        || prompt.language === 'es-419'
+        || RETIRED_SPANISH_MIXED_PROMPTS.has(prompt.text))
+      .map((prompt) => prompt.text);
+    expect(retiredTexts).toHaveLength(94);
+    for (const retiredText of retiredTexts) {
+      expect(activeTexts.has(retiredText), retiredText).toBe(false);
+    }
+  });
+
+  it('keeps training semantics and cardinality while replacing retired request text', () => {
+    const historical = CHAT_V2_LEGACY_PARITY_ROUTE_PROMPTS_V1_HISTORICAL
+      .find((item) => item.routeId === 'training_plan_shortcut')!;
+    const supported = route('training_plan_shortcut');
+    for (let index = 49; index <= 61; index += 1) {
+      expect(supported.prompts[index]!.text).not.toBe(historical.prompts[index]!.text);
+      expect(['en', 'pt-BR', 'pt-PT']).toContain(supported.prompts[index]!.language);
+      expect(supported.prompts[index]!.requestLanguage).toBe(
+        supported.prompts[index]!.language,
+      );
+      expect(supported.prompts[index]!.text).toMatch(
+        /training|workout|treino|plano|sess(?:ão|ões)/i,
+      );
     }
   });
 
@@ -87,7 +237,7 @@ describe('ChatV2 legacy parity route prompts', () => {
           .filter((prompt) => prompt.tags?.includes(tag))
           .map((prompt) => prompt.language),
       );
-      for (const language of ['en', 'pt-BR', 'pt-PT', 'es']) {
+      for (const language of ['en', 'pt-BR', 'pt-PT']) {
         expect(languages.has(language as never), `missing ${tag}:${language}`).toBe(true);
       }
     }
@@ -172,12 +322,77 @@ describe('ChatV2 legacy parity route prompts', () => {
     }
   });
 
+  it('preserves decision action semantics and entity ids in every compatibility request', () => {
+    const historical = CHAT_V2_LEGACY_PARITY_ROUTE_PROMPTS_V1_HISTORICAL
+      .find((item) => item.routeId === 'decision_confirmation_shortcut')!;
+    const supported = route('decision_confirmation_shortcut');
+    const expected = new Map<number, string>([
+      [2, 'dec_123'],
+      [31, 'dec_123'],
+      [32, 'dec_123'],
+      [33, 'dec_launch_review'],
+      [34, 'dec_launch_review'],
+      [35, 'dec_launch_review'],
+      [36, 'dec_budget_hold'],
+      [37, 'dec_route_gate'],
+      [38, 'dec_route_gate'],
+      [39, 'dec_route_gate'],
+      [40, 'dec_budget_hold'],
+      [45, 'dec_route_gate'],
+      [48, 'dec_security_review'],
+    ]);
+
+    const retiredIndexes = historical.prompts
+      .map((prompt, index) => ({ prompt, index }))
+      .filter(({ prompt }) =>
+        prompt.language === 'es'
+        || prompt.language === 'es-419'
+        || RETIRED_SPANISH_MIXED_PROMPTS.has(prompt.text)
+      )
+      .map(({ index }) => index);
+    expect(retiredIndexes).toEqual([...expected.keys()]);
+
+    for (const [index, decisionId] of expected) {
+      const replacement = supported.prompts[index]!;
+      expect(['en', 'pt-BR', 'pt-PT'], historical.prompts[index]!.text)
+        .toContain(replacement.language);
+      expect(replacement.requestLanguage, historical.prompts[index]!.text)
+        .toBe(replacement.language);
+      expect(replacement.text, historical.prompts[index]!.text).not.toBe(
+        historical.prompts[index]!.text,
+      );
+      expect(replacement.text, historical.prompts[index]!.text).toContain(decisionId);
+      expect(replacement.tags, historical.prompts[index]!.text).toEqual(
+        historical.prompts[index]!.tags,
+      );
+    }
+  });
+
+  it('preserves cancel-vs-delete and single-vs-whole-list hypothetical semantics', () => {
+    const historical = CHAT_V2_LEGACY_PARITY_ROUTE_PROMPTS_V1_HISTORICAL
+      .find((item) => item.routeId === 'destructive_confirmation_hold')!;
+    const supported = route('destructive_confirmation_hold');
+
+    expect(supported.prompts[10]!.text).not.toBe(historical.prompts[10]!.text);
+    expect(supported.prompts[10]!.text).toMatch(/cancel|cancelar/i);
+    expect(supported.prompts[10]!.text).toMatch(/without deleting|sem apagar/i);
+    expect(supported.prompts[48]!.text).not.toBe(historical.prompts[48]!.text);
+    expect(supported.prompts[48]!.text).toMatch(/one task|uma tarefa/i);
+    expect(supported.prompts[48]!.text).toMatch(/whole list|lista inteira/i);
+  });
+
   it('defines classifier-route readiness owners, language recall floors, and unresolved clarifier coverage', () => {
     const readiness = CHAT_V2_PHASE7_TARGET_ROUTE_READINESS.classifier_route_skill_orchestration;
     const classifier = route('classifier_route_skill_orchestration');
     const promptTexts = new Set(classifier.prompts.map((prompt) => prompt.text));
 
     expect(readiness.answerQualityReviewRequired).toBe(true);
+    expect(Object.keys(readiness.recallAt8LanguageThresholds).sort()).toEqual([
+      'en',
+      'mixed',
+      'pt-BR',
+      'pt-PT',
+    ]);
     for (const [language, threshold] of Object.entries(readiness.recallAt8LanguageThresholds)) {
       expect(threshold, language).toBeGreaterThanOrEqual(language === 'mixed' ? 0.9 : 0.95);
     }
@@ -193,6 +408,7 @@ describe('ChatV2 legacy parity route prompts', () => {
     expect(classifier.prompts.some((prompt) => prompt.tags?.includes('write_read_collision'))).toBe(true);
     expect(readiness.blockers.join(' ')).toMatch(/recall@8/i);
     expect(readiness.blockers.join(' ')).toMatch(/no reviewed labels/i);
+    expect(readiness.blockers.join(' ')).not.toMatch(/\bes(?:-419)?\b/i);
   });
 
   it('defines domain-handler adapter order and per-domain signed parity floors', () => {

@@ -34,15 +34,12 @@ export function buildBoundedAnswerOnlyPlan(input: ChatPlannerInput): ChatActionP
   }
   if (/\b(?:what should i eat|o que devo comer|que debo comer)\b.*\b(?:before|antes)\b.*\b(?:workout|treino|entrenamiento)\b/.test(folded)) {
     const isPt = input.locale?.startsWith('pt');
-    const isEs = input.locale?.startsWith('es');
     return buildAnswerOnlyPlan(input, {
       skill: 'cooking',
       action: 'cooking_meal_support',
       text: isPt
         ? 'Para a alimentação antes do treino pesado de hoje, escolha uma refeição leve com hidratos de carbono fáceis de digerir e alguma proteína, hidrate-se e evite testar alimentos novos. Ajuste a quantidade ao intervalo até ao treino e às restrições guardadas neste espaço de trabalho.'
-        : isEs
-          ? 'Para la alimentación antes del entrenamiento intenso de hoy, elige una comida ligera con carbohidratos fáciles de digerir y algo de proteína, hidrátate y evita probar alimentos nuevos.'
-          : 'For fueling before today’s heavy workout, choose an easy-to-digest carbohydrate source with some protein, hydrate, and avoid trying unfamiliar foods.',
+        : 'For fueling before today’s heavy workout, choose an easy-to-digest carbohydrate source with some protein, hydrate, and avoid trying unfamiliar foods.',
       involvedSkills: ['cooking', 'training'],
       routingSignal: 'bounded_pre_workout_fueling_answer',
     });
@@ -69,7 +66,7 @@ export function buildBoundedAnswerOnlyPlan(input: ChatPlannerInput): ChatActionP
     return buildAnswerOnlyPlan(input, {
       skill: 'content',
       action: 'content_brief_create',
-      text: 'Ideas de contenido para el lanzamiento: una historia breve del problema y la solución, un carrusel con tres beneficios verificables y un video detrás de cámaras con una llamada a la acción. Mantendría cada idea dentro del contexto autorizado del espacio de trabajo.',
+      text: 'Content ideas for the launch: a brief problem-and-solution story, a carousel with three verifiable benefits, and a behind-the-scenes video with a call to action. I would keep each idea within the workspace’s authorized context.',
       involvedSkills: ['content'],
       routingSignal: 'bounded_launch_content_ideas_answer',
     });

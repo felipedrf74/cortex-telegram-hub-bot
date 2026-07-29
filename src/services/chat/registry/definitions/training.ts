@@ -53,9 +53,10 @@ export const TRAINING_ACTIONS: ChatActionDefinition[] = [
           expectedAction: 'training_explain_session',
         },
         {
-          // Phase 14 batch 73 (2026-05-16): Spanish golden example.
+          // Phase 14 batch 73 (2026-05-16): Spanish-authored compatibility input; English response contract.
           text: 'Explica la sesión de entrenamiento de hoy',
-          locale: 'es',
+          requestLocale: 'es',
+          responseLocale: 'en',
           tags: ['golden'],
           expectedAction: 'training_explain_session',
         },
@@ -96,9 +97,10 @@ export const TRAINING_ACTIONS: ChatActionDefinition[] = [
           expectedAction: 'training_coach_report',
         },
         {
-          // Phase 14 batch 73 (2026-05-16): Spanish golden example.
+          // Phase 14 batch 73 (2026-05-16): Spanish-authored compatibility input; English response contract.
           text: 'Dame un informe del coach',
-          locale: 'es',
+          requestLocale: 'es',
+          responseLocale: 'en',
           tags: ['golden'],
           expectedAction: 'training_coach_report',
         },
@@ -214,9 +216,10 @@ export const TRAINING_ACTIONS: ChatActionDefinition[] = [
           expectedAction: null,
         },
         {
-          // Phase 13 batch 68 (2026-05-16): Spanish golden example.
+          // Phase 13 batch 68 (2026-05-16): Spanish-authored compatibility input; English response contract.
           text: 'Crea un plan de entrenamiento para correr 10 km en 12 semanas',
-          locale: 'es',
+          requestLocale: 'es',
+          responseLocale: 'en',
           tags: ['golden'],
           expectedSlots: { sport: 'running', goal: '10k', durationWeeks: 12 },
           expectedAction: 'training_plan_create',
@@ -261,9 +264,10 @@ export const TRAINING_ACTIONS: ChatActionDefinition[] = [
           expectedAction: null,
         },
         {
-          // Phase 14 batch 73 (2026-05-16): Spanish golden example.
+          // Phase 14 batch 73 (2026-05-16): Spanish-authored compatibility input; English response contract.
           text: 'Muestra cómo quedaría reorganizado el plan de entrenamiento',
-          locale: 'es',
+          requestLocale: 'es',
+          responseLocale: 'en',
           tags: ['golden'],
           expectedAction: 'training_reflow_preview',
         },
@@ -307,9 +311,10 @@ export const TRAINING_ACTIONS: ChatActionDefinition[] = [
           expectedAction: null,
         },
         {
-          // Phase 14 batch 73 (2026-05-16): Spanish golden example.
+          // Phase 14 batch 73 (2026-05-16): Spanish-authored compatibility input; English response contract.
           text: 'Aplica el reorganizado al plan',
-          locale: 'es',
+          requestLocale: 'es',
+          responseLocale: 'en',
           tags: ['golden'],
           expectedAction: 'training_reflow_confirm',
         },
@@ -371,9 +376,10 @@ export const TRAINING_ACTIONS: ChatActionDefinition[] = [
           expectedAction: null,
         },
         {
-          // Phase 14 batch 73 (2026-05-16): Spanish golden example.
+          // Phase 14 batch 73 (2026-05-16): Spanish-authored compatibility input; English response contract.
           text: 'Ajusta mi plan de entrenamiento para incluir más rodajes largos',
-          locale: 'es',
+          requestLocale: 'es',
+          responseLocale: 'en',
           tags: ['golden'],
           expectedAction: 'training_adjust_plan',
         },

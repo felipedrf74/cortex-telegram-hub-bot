@@ -9,7 +9,7 @@ import { loadCapabilityManifest } from '../../capability-manifest';
 // One templated question for the flag-gated routing clarify policy
 // (chat-skill-orchestrator resolveRoutingClarifyDecision). Locale handling
 // follows this module's convention: prefix match on the BCP-47-ish locale
-// (pt* → PT, es* → ES, everything else → EN). The templates are intentionally
+// (pt* → PT, everything else → EN). The templates are intentionally
 // rigid so isRoutingClarifyQuestion can deterministically recognize a
 // previously asked clarify question (loop prevention: a clarify-response turn
 // must never re-clarify).
@@ -35,7 +35,7 @@ function displayNameForRoutingDomain(domain: string): string {
 
 /**
  * Render the single templated routing clarify question ("Did you mean X or
- * Y?") from manifest displayNames, in EN/PT/ES per the locale conventions of
+ * Y?") from manifest displayNames, in EN/PT per the locale conventions of
  * this module.
  */
 export function buildRoutingClarifyQuestion(
@@ -44,7 +44,6 @@ export function buildRoutingClarifyQuestion(
 ): string {
   const [first, second] = domains.map((domain) => displayNameForRoutingDomain(domain));
   if (locale?.startsWith('pt')) return `Queres dizer ${first} ou ${second}?`;
-  if (locale?.startsWith('es')) return `¿Te refieres a ${first} o a ${second}?`;
   return `Did you mean ${first} or ${second}?`;
 }
 

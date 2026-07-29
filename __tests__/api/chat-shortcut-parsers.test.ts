@@ -8,6 +8,7 @@ import {
   resolveContentShortcutLanguage,
   resolveFinanceShortcutLanguage,
   resolveRequestedScriptLanguage,
+  normalizeScriptLanguage,
 } from '../../src/api/routes/chat-shortcut-parsers';
 
 describe('chat shortcut parsers', () => {
@@ -37,6 +38,8 @@ describe('chat shortcut parsers', () => {
     expect(resolveRequestedScriptLanguage('gera um roteiro em português europeu', 'en-US')).toBe('pt-PT');
     expect(resolveRequestedScriptLanguage('write a script in English', 'pt-BR')).toBe('en-US');
     expect(resolveRequestedScriptLanguage('gera um roteiro', 'pt-PT')).toBe('pt-PT');
+    expect(normalizeScriptLanguage('es-419')).toBe('en-US');
+    expect(normalizeScriptLanguage('de-DE')).toBe('en-US');
   });
 
   it('detects content shortcut language from English wording when no explicit qualifier exists', () => {

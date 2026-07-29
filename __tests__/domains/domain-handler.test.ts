@@ -411,7 +411,7 @@ describe('handleSimpleDomain', () => {
       'content',
       expect.any(Array),
       'Dame ideas de contenido',
-      expect.stringContaining('requested_locale="es-419"'),
+      expect.stringContaining('requested_locale="en-US"'),
       expect.any(Object),
     );
   });

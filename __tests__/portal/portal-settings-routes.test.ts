@@ -195,6 +195,27 @@ describe('portal settings routes', () => {
     }), 'Portal: settings update rejected');
   });
 
+  it('does not audit or acknowledge a retired Spanish language option rejected by the provider', () => {
+    const provider = makeDatabaseProvider({
+      setSetting: vi.fn(() => {
+        throw new Error('Invalid option for setting: language');
+      }),
+    });
+    hoisted.getConfigProvider.mockReturnValue(provider);
+    const req = { body: { id: 'language', value: 'es-ES' } };
+    const { app, routes } = makeApp();
+    registerPortalSettingsRoutes(app as any);
+    const handler = routes.get('PUT /api/settings')?.[2]!;
+    const { payload, res } = makeResponse();
+
+    handler(req, res);
+
+    expect(provider.setSetting).toHaveBeenCalledWith('language', 'es-ES');
+    expect(hoisted.logPortalAdminMutation).not.toHaveBeenCalled();
+    expect(payload.statusCode).toBe(400);
+    expect(payload.body).toEqual({ error: 'Invalid setting update' });
+  });
+
   it('deletes settings and returns the refreshed setting list', () => {
     const provider = makeDatabaseProvider();
     hoisted.getConfigProvider.mockReturnValue(provider);

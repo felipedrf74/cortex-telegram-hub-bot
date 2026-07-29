@@ -218,7 +218,8 @@ vi.mock('../../src/api/routes/chat-fastpath', () => ({
     `u:${userId ?? 'unknown'}:t:${tenantId ?? userId ?? 'unknown'}:fastpath:pending-tasks`,
 }));
 
-vi.mock('../../src/services/anthropic', () => ({
+vi.mock('../../src/services/anthropic', async () => ({
+  ...(await vi.importActual('../../src/services/anthropic')),
   classifyAndExtractImage: (...args: unknown[]) => mockClassifyAndExtractImage(...args),
 }));
 
@@ -1248,6 +1249,38 @@ describe('Chat API routes', () => {
     });
     expect(evidenceRows[0].sample_hmac).toMatch(/^hmac:write:[a-f0-9]{64}$/);
     expect(JSON.stringify(evidenceRows[0])).not.toContain('ChatCoreV2 confirmation bridge');
+  });
+
+  it('preserves the resolved English locale from a Spanish-authored preview through confirmation', async () => {
+    process.env.CHAT_CORE_V2_ACTION_GATEWAY_MODE = 'enforce';
+    process.env.CHAT_CORE_V2_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_WRITES_ENABLED = 'true';
+    process.env.CHAT_CORE_V2_CONFIRMATIONS_ENABLED = 'true';
+    mockGetUserLanguage.mockReturnValue('pt-BR');
+
+    const preview = await dispatch('POST', '/message', 7001, {
+      text: 'Crea una tarea llamada locale continuity bridge',
+      clientMessageId: 'chatcore-v2-locale-continuity-1',
+    }, {
+      'x-language': 'es-419',
+    });
+
+    expect(preview.statusCode, JSON.stringify(preview.body)).toBe(202);
+    expect(preview.body.routeMethod).toBe('chat-core-v2-command-preview');
+    expect(String(preview.body.text)).toContain('I would prepare');
+    expect(String(preview.body.text)).not.toContain('Eu prepararia');
+    const token = preview.body.metadata.pendingConfirmation.confirmation_token;
+
+    const confirmed = await dispatch('POST', '/confirm-action', 7001, {
+      confirmation_token: token,
+      intent_class: 'tasks.create',
+      idempotencyKey: 'chatcore-v2-locale-continuity-confirm',
+    });
+
+    expect(confirmed.statusCode, JSON.stringify(confirmed.body)).toBe(200);
+    expect(String(confirmed.body.text)).toContain('Done');
+    expect(String(confirmed.body.text)).not.toContain('Pronto');
+    expect(String(confirmed.body.text)).not.toContain('Tarefa');
   });
 
   it('routes enabled natural-language task reads through ChatCoreV2 deterministic read without disabling slash token-zero reads', async () => {
@@ -2556,13 +2589,13 @@ describe('Chat API routes', () => {
     });
   });
 
-  it('routes regional Spanish research turns with a hard Spanish response contract', async () => {
+  it('routes legacy Spanish research turns with the English fallback contract', async () => {
     process.env.CHAT_CORE_V2_ORCHESTRATOR_MODE = 'canary';
     process.env.CHAT_CORE_V2_CANARY_ENABLED_TENANT_IDS = '7001';
 
     mockRouteMessage.mockClear();
     mockCompleteOneShotWithSearch.mockResolvedValueOnce({
-      text: 'La inflación reciente en América Latina varía según el país y debe revisarse con fuentes actuales.',
+      text: 'Recent inflation in Latin America varies by country and should be checked against current sources.',
       sources: ['https://example.com/inflacion-latam'],
     });
 
@@ -2574,15 +2607,15 @@ describe('Chat API routes', () => {
 
     expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
     expect(messageRes.body.routeMethod).toBe('chat-core-v2-internet-research');
-    expect(messageRes.body.text).toContain('Fuentes consultadas: https://example.com/inflacion-latam');
+    expect(messageRes.body.text).toContain('Sources consulted: https://example.com/inflacion-latam');
     expect(messageRes.body.metadata.chatTurnContract).toMatchObject({
       routeKind: 'internet_research',
       groundingRequired: 'web',
-      language: 'es',
+      language: 'en',
     });
     expect(mockRouteMessage).not.toHaveBeenCalled();
     expect(mockCompleteOneShotWithSearch).toHaveBeenCalledWith(
-      expect.stringContaining('Answer in Spanish. This is a hard contract'),
+      expect.stringContaining('Answer in English'),
       expect.stringContaining('Search noticias recientes sobre inflación'),
       'chat_internet_research',
       expect.objectContaining({
@@ -2591,8 +2624,8 @@ describe('Chat API routes', () => {
       }),
     );
     const systemPrompt = mockCompleteOneShotWithSearch.mock.calls[0]?.[0];
-    expect(systemPrompt).toContain('Output language: Spanish');
-    expect(systemPrompt).toContain('do not answer Spanish prompts in Portuguese');
+    expect(systemPrompt).toContain('Output language: English');
+    expect(systemPrompt).toContain('Spanish-authored input still receives English output');
   });
 
   it('applies coach callbacks and clears buttons from the persisted message', async () => {
@@ -2836,7 +2869,7 @@ describe('Chat API routes', () => {
       degraded: false,
     });
     expect(mockCompleteOneShotWithFallback).toHaveBeenCalledWith(
-      expect.stringContaining('Reply in English unless the user explicitly asks to switch languages.'),
+      expect.stringContaining('Spanish-authored instructions remain on the English response contract.'),
       expect.stringContaining('make it shorter'),
       'content_chat_refine',
       expect.any(Function),
@@ -7113,7 +7146,7 @@ describe('Chat API routes', () => {
     expect(mockRouteMessage).not.toHaveBeenCalled();
   });
 
-  it('accepts numeric regional language tags like es-419 for ChatCoreV2 route locale', async () => {
+  it('maps numeric regional Spanish tags to the English ChatCoreV2 locale', async () => {
     process.env.CHAT_CORE_V2_ORCHESTRATOR_MODE = 'canary';
     process.env.CHAT_CORE_V2_CANARY_ENABLED_TENANT_IDS = '7001';
 
@@ -7133,8 +7166,8 @@ describe('Chat API routes', () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.body.routeMethod).toBe('confirmation-required');
-    expect(String(res.body.text)).toContain('Antes de hacer un cambio destructivo');
-    expect(String(res.body.text)).not.toContain('Before I make');
+    expect(String(res.body.text)).toContain('Before I make a destructive change');
+    expect(String(res.body.text)).not.toContain('Antes de hacer');
     expect(res.body.metadata.pendingConfirmation.decisionId).toMatch(/^nc_/);
     expect(mockRouteMessage).not.toHaveBeenCalled();
   });

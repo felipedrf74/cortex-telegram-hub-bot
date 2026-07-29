@@ -178,6 +178,6 @@ describe('cooking-safety-policy', () => {
       dietaryRestrictions: ['vegan'],
     })).toContain('Treat these as hard constraints');
     expect(renderCookingSafetyBlockedResponse('pt-BR')).toContain('preferência de segurança culinária');
-    expect(renderCookingSafetyBlockedResponse('es')).toContain('preferencia de seguridad culinaria');
+    expect(renderCookingSafetyBlockedResponse('es')).toContain('cooking safety preference');
   });
 });

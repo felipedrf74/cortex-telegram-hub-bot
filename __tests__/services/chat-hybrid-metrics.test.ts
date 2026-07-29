@@ -28,7 +28,7 @@ describe('computeHybridActionMetricsFromCorpus portuguese localization leakage',
         actualResponseText: 'Criei a tarefa chamada revisão do planificador. Precisa de mais alguma coisa?',
       }),
       baseCase({
-        id: 'es419-on-locale',
+        id: 'es419-retired-spanish-output',
         promptLocale: 'es-419',
         actualResponseText: 'Listo, creé la tarea llamada revisión del planificador.',
       }),
@@ -67,7 +67,7 @@ describe('computeHybridActionMetricsFromCorpus portuguese localization leakage',
     expect(metrics.portugueseLocalizationLeakageCount).toBe(0);
   });
 
-  it('flags every cross-locale leak shape in the es-419 confusable corpus', () => {
+  it('retains the historical es-419 detector corpus for Portuguese-leak monitoring', () => {
     const es419 = CHAT_LOCALE_CONFUSABLE_EVAL_FIXTURES.filter((fixture) => fixture.promptLocale === 'es-419');
     expect(es419.length).toBeGreaterThanOrEqual(5);
 
@@ -78,11 +78,11 @@ describe('computeHybridActionMetricsFromCorpus portuguese localization leakage',
     })));
     expect(leaked.portugueseLocalizationLeakageCount).toBe(es419.length);
 
-    const clean = computeHybridActionMetricsFromCorpus(es419.map((fixture) => baseCase({
-      id: `${fixture.scenario}-on-locale`,
+    const nonPortuguese = computeHybridActionMetricsFromCorpus(es419.map((fixture) => baseCase({
+      id: `${fixture.scenario}-historical-spanish`,
       promptLocale: fixture.promptLocale,
       actualResponseText: fixture.onLocaleResponse,
     })));
-    expect(clean.portugueseLocalizationLeakageCount).toBe(0);
+    expect(nonPortuguese.portugueseLocalizationLeakageCount).toBe(0);
   });
 });

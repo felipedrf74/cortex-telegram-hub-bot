@@ -1,16 +1,67 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+const cacheMocks = vi.hoisted(() => ({
+  getCached: vi.fn(),
+  setCache: vi.fn(),
+}));
+
+vi.mock('../../src/services/cache-store', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/cache-store')>(
+    '../../src/services/cache-store',
+  );
+  return {
+    ...actual,
+    getCached: (...args: unknown[]) => cacheMocks.getCached(...args),
+    setCache: (...args: unknown[]) => cacheMocks.setCache(...args),
+  };
+});
+
 import {
+  buildScriptCacheKey,
   contentEngineApiBaseUrl,
   deepSearch,
   ForwardedAiBudgetError,
+  getScript,
   getSources,
 } from '../../src/services/content-engine';
+
+beforeEach(() => {
+  cacheMocks.getCached.mockReset();
+  cacheMocks.getCached.mockReturnValue(null);
+  cacheMocks.setCache.mockReset();
+});
 
 afterEach(() => {
   vi.unstubAllGlobals();
 });
 
 describe('content-engine client base URL', () => {
+  it('projects retired Spanish and unsupported direct script locales to English cache scope', () => {
+    const spanishKey = buildScriptCacheKey(
+      'safe topic',
+      'general',
+      8,
+      'YouTube',
+      null,
+      'draft',
+      null,
+      'es-ES',
+    );
+    const unsupportedKey = buildScriptCacheKey(
+      'safe topic',
+      'general',
+      8,
+      'YouTube',
+      null,
+      'draft',
+      null,
+      'de-DE',
+    );
+
+    expect(spanishKey).toContain('lang:en-US');
+    expect(unsupportedKey).toContain('lang:en-US');
+  });
+
   it('appends the API prefix to Docker service base URLs', () => {
     expect(contentEngineApiBaseUrl('http://content-engine:8100')).toBe(
       'http://content-engine:8100/api/v1',
@@ -95,5 +146,87 @@ describe('content-engine client base URL', () => {
       monthlyResetAt: '2026-08-01T00:00:00.000Z',
       retryAfterSeconds: 2_678_400,
     });
+  });
+
+  it('rejects unsupported provider script language before the result can be returned or cached', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      topic: 'Safe topic',
+      script: 'Aquí tienes el guion completo para organizar todas tus tareas.',
+      hook: '¿Quieres empezar ahora?',
+      title_options: ['Cómo organizar tus tareas'],
+      sources_used: [],
+      estimated_duration: '1:00',
+      duration_ms: 100,
+      caption: 'Guarda esta guía para mañana.',
+      cta: 'Comparte este vídeo con alguien.',
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(getScript(
+      'Safe topic',
+      'general',
+      1,
+      'Reel',
+      'quick',
+      null,
+      'en-US',
+      'structured',
+      42,
+      undefined,
+      null,
+      'detailed',
+      false,
+      null,
+      null,
+      42,
+    )).rejects.toMatchObject({
+      code: 'CONTENT_OUTPUT_LOCALE_MISMATCH',
+      boundary: 'content-engine-script',
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(cacheMocks.setCache).not.toHaveBeenCalled();
+  });
+
+  it('revalidates an unsupported stale cache entry before returning it', async () => {
+    cacheMocks.getCached.mockReturnValue({
+      topic: 'Safe topic',
+      script: 'Aquí tienes el guion completo para organizar todas tus tareas.',
+      hook: '¿Quieres empezar ahora?',
+      title_options: ['Cómo organizar tus tareas'],
+      sources_used: [],
+      estimated_duration: '1:00',
+      duration_ms: 100,
+      caption: 'Guarda esta guía para mañana.',
+      cta: 'Comparte este vídeo con alguien.',
+    });
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(getScript(
+      'Safe topic',
+      'general',
+      1,
+      'Reel',
+      'quick',
+      null,
+      'en-US',
+      'structured',
+      42,
+      undefined,
+      null,
+      'detailed',
+      false,
+      null,
+      null,
+      42,
+    )).rejects.toMatchObject({
+      code: 'CONTENT_OUTPUT_LOCALE_MISMATCH',
+      boundary: 'content-engine-script-cache',
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(cacheMocks.setCache).not.toHaveBeenCalled();
   });
 });

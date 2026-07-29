@@ -4,7 +4,6 @@
  * M10 stage: attachment turns (image/receipt/etc.). Verbatim move.
  */
 
-import { getUserLanguageById } from '../../../../services/user-service';
 import { logger } from '../../../../utils/logger';
 import { buildChatAttachmentResponse } from '../../chat-message-attachments';
 import { finalizeChatMessageResponse } from '../../chat-message-finalizer';
@@ -26,20 +25,19 @@ export const attachmentStage: ChatStage = {
     const {
       res, userId, tenantId, normalizedText, normalizedAttachments,
       scopedClientMessageId, userMessageId, requestStartedAt, chatRequestId,
-      latency, ensureModelBudget,
+      latency, ensureModelBudget, chatCoreV2RouteLocale,
     } = preparedChatTurnCtx(ctx);
 
     recordChatStage(chatRequestId, 'attachment');
     if (!await ensureModelBudget('iOS chat attachment blocked by AI budget')) return { kind: 'respond' };
 
     const attachment = normalizedAttachments[0];
-    const lang = getUserLanguageById(userId) || 'pt-BR';
     const result = await buildChatAttachmentResponse({
       attachment,
       normalizedText,
       userId,
       tenantId,
-      language: lang,
+      language: chatCoreV2RouteLocale,
     });
     rememberChatActiveDomain(userId, result.conversationDomain, Date.now(), tenantId);
     const response = finalizeChatMessageResponse(result.response, {
@@ -51,6 +49,7 @@ export const attachmentStage: ChatStage = {
       latencyTier: result.degraded ? 'tier4_long_running' : 'tier2_verified_write',
       fallbackDomain: result.conversationDomain,
       fallbackRouteMethod: 'attachment',
+      locale: chatCoreV2RouteLocale,
       stageFamily: 'attachment',
       requestStartedAt,
       actionability: result.degraded ? 'degraded' : 'answer_only',

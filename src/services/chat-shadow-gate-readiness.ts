@@ -253,7 +253,7 @@ function countUnsafeRawFields(value: unknown, path: string[]): number {
 }
 
 const RAW_FIELD_KEY_RE = /(raw|message|prompt|history|recentTurns|body|content|text|title|subject)/i;
-const SAFE_METADATA_FIELD_RE = /(?:IdentifierKind|Kind|Count|Ids?|Hash|Hashes|Fingerprint|Fingerprints|Capabilities?|CapabilityId|ReasonCode)$/i;
+const SAFE_METADATA_FIELD_RE = /(?:IdentifierKind|Kind|Count|Ids?|Hash|Hashes|Fingerprint|Fingerprints|Capabilities?|CapabilityId|ReasonCode|Version|Policy)$/i;
 const SAFE_SHADOW_TOKEN_RE = /^(?:hmac:[a-z0-9_-]+:)?[a-f0-9]{64}$|^[a-z][a-z0-9_.-]{1,80}$/i;
 
 function stableStringify(value: unknown): string {

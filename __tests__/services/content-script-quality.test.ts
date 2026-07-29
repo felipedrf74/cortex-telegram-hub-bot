@@ -131,4 +131,113 @@ describe('content script quality report', () => {
     expect(report.structuredOutput.beatByBeatScript.join('\n')).toContain('proof loops');
     expect(report.structuredOutput.beatByBeatScript.join('\n')).not.toContain('worth acting on');
   });
+
+  it.each([
+    {
+      language: 'pt-BR',
+      hook: 'O erro em fluxo criativo não é falta de esforço; é falta da prova que faz as pessoas se importarem.',
+      cta: 'Salve isto e teste o primeiro passo hoje.',
+      title: 'O erro em fluxo criativo que ninguém percebe',
+      sourceNote: 'Pesquisa de retenção: Use como contexto de apoio.',
+      proofFallback: 'Adicione um exemplo concreto, demonstração, fonte ou prova de antes e depois antes de publicar.',
+      longCta: 'Escolha uma ação deste vídeo e meça o resultado nesta semana.',
+      heading: 'PRIMEIROS 3 SEGUNDOS:',
+      visual: 'Primeiro quadro:',
+    },
+    {
+      language: 'pt-PT',
+      hook: 'O erro em fluxo criativo não é a falta de esforço; é a falta da prova que faz as pessoas interessarem-se.',
+      cta: 'Guarda isto e testa o primeiro passo hoje.',
+      title: 'O erro em fluxo criativo que ninguém nota',
+      sourceNote: 'Pesquisa de retenção: Usa como contexto de apoio.',
+      proofFallback: 'Adiciona um exemplo concreto, demonstração, fonte ou prova de antes e depois antes de publicar.',
+      longCta: 'Escolhe uma ação deste vídeo e mede o resultado esta semana.',
+      heading: 'PRIMEIROS 3 SEGUNDOS:',
+      visual: 'Primeiro plano:',
+    },
+  ] as const)(
+    'keeps every synthesized fallback in $language when hook and CTA are missing',
+    ({ language, hook, cta, title, sourceNote, proofFallback, longCta, heading, visual }) => {
+      const topic = 'fluxo criativo';
+      const sources = [{ title: 'Pesquisa de retenção' }];
+      const preflightBrief = buildScriptPreflightBrief({
+        topic,
+        format: 'Reel',
+        language,
+        sources,
+      });
+      const report = analyzeAndImproveScript({
+        topic,
+        script: '',
+        hook: '',
+        cta: '',
+        titleOptions: [],
+        format: 'Reel',
+        sources,
+        // The language carried by a preflight brief must be sufficient for
+        // callers that construct the brief before running quality analysis.
+        preflightBrief,
+      });
+      const noSourcePreflight = buildScriptPreflightBrief({
+        topic,
+        format: 'YouTube',
+        language,
+      });
+      const longFormReport = analyzeAndImproveScript({
+        topic,
+        script: '',
+        hook: '',
+        cta: '',
+        titleOptions: [],
+        format: 'YouTube',
+        language,
+        preflightBrief: noSourcePreflight,
+      });
+      const synthesizedText = JSON.stringify({
+        preflightBrief,
+        noSourcePreflight,
+        structuredOutput: report.structuredOutput,
+        suggestedScript: report.suggestedScript,
+        longFormStructuredOutput: longFormReport.structuredOutput,
+        longFormSuggestedScript: longFormReport.suggestedScript,
+      });
+
+      expect(preflightBrief.language).toBe(language);
+      expect(report.structuredOutput.firstThreeSeconds).toBe(hook);
+      expect(report.structuredOutput.cta).toBe(cta);
+      expect(report.structuredOutput.titleOptions[0]).toBe(title);
+      expect(report.structuredOutput.proofSourceNotes).toContain(sourceNote);
+      expect(report.structuredOutput.visualDirection[0]).toContain(visual);
+      expect(report.suggestedScript).toContain(heading);
+      expect(noSourcePreflight.proofLibrary).toEqual([proofFallback]);
+      expect(longFormReport.structuredOutput.cta).toBe(longCta);
+      expect(synthesizedText).toContain(topic);
+      expect(synthesizedText).toContain('Pesquisa de retenção');
+
+      for (const retiredEnglishFallback of [
+        'specific audience for this topic',
+        'worth acting on',
+        'Add one concrete example',
+        'Use a clear creator voice',
+        'Deliver the title/thumbnail promise',
+        'The fluxo criativo mistake',
+        'Save this and test',
+        'Pick one action from this video',
+        'In under a minute',
+        'Show the audience',
+        'Name the specific tension',
+        'First frame: creator',
+        'Title/thumbnail promise should match',
+        'Cut dead air aggressively',
+        'Compress the intro',
+        'Use as supporting context',
+        'Review factual claims',
+        'VISUAL DIRECTION:',
+        'EDIT NOTES:',
+        'RISK / CLAIM NOTES:',
+      ]) {
+        expect(synthesizedText).not.toContain(retiredEnglishFallback);
+      }
+    },
+  );
 });

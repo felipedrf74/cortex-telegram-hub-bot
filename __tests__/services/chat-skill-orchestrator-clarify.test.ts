@@ -186,11 +186,11 @@ describe('flag ON — clarify triggers', () => {
     expect(decision.clarify).toBeNull();
   });
 
-  it('renders PT and ES templated questions using clarification locale conventions', () => {
+  it('renders PT questions and projects retired ES locales to English', () => {
     const pt = analyzeChatSkillOrchestration({ message: AMBIGUOUS_WRITE, locale: 'pt-BR', userId: 42, tenantId: 42 });
     expect(pt.clarify!.question).toBe('Queres dizer Finance ou Training?');
     const es = analyzeChatSkillOrchestration({ message: AMBIGUOUS_WRITE, locale: 'es-419', userId: 42, tenantId: 42 });
-    expect(es.clarify!.question).toBe('¿Te refieres a Finance o a Training?');
+    expect(es.clarify!.question).toBe('Did you mean Finance or Training?');
   });
 
   it('never renders a clarify block into the prompt — clarify is a pipeline terminal, not a prompt hint', () => {
@@ -228,10 +228,10 @@ describe('clarify question rendering helpers (manifest displayNames)', () => {
   it('uses manifest displayNames for the real domains', () => {
     expect(buildRoutingClarifyQuestion(['triathlon', 'finance'], 'en-US')).toBe('Did you mean Training or Finance?');
     expect(buildRoutingClarifyQuestion(['secretary', 'content'], 'pt-BR')).toBe('Queres dizer Secretary ou Content?');
-    expect(buildRoutingClarifyQuestion(['cooking', 'finance'], 'es-419')).toBe('¿Te refieres a Cooking o a Finance?');
+    expect(buildRoutingClarifyQuestion(['cooking', 'finance'], 'es-419')).toBe('Did you mean Cooking or Finance?');
   });
 
-  it('detects its own templates for loop prevention in all three locales', () => {
+  it('detects active templates and the legacy Spanish template for loop prevention', () => {
     expect(isRoutingClarifyQuestion('Did you mean Training or Finance?')).toBe(true);
     expect(isRoutingClarifyQuestion('Queres dizer Secretary ou Content?')).toBe(true);
     expect(isRoutingClarifyQuestion('¿Te refieres a Cooking o a Finance?')).toBe(true);

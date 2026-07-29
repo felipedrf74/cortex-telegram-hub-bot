@@ -43,9 +43,10 @@ export const NOTIFICATION_ACTIONS: ChatActionDefinition[] = [
           expectedAction: 'notification_explain',
         },
         {
-          // Phase 14 batch 73 (2026-05-16): Spanish golden example.
+          // Phase 14 batch 73 (2026-05-16): Spanish-authored compatibility input; English response contract.
           text: 'Por qué recibí esta notificación',
-          locale: 'es',
+          requestLocale: 'es',
+          responseLocale: 'en',
           tags: ['golden'],
           expectedAction: 'notification_explain',
         },
@@ -86,9 +87,10 @@ export const NOTIFICATION_ACTIONS: ChatActionDefinition[] = [
           expectedAction: 'notification_update_preference',
         },
         {
-          // Phase 14 batch 73 (2026-05-16): Spanish golden example.
+          // Phase 14 batch 73 (2026-05-16): Spanish-authored compatibility input; English response contract.
           text: 'Desactiva las notificaciones de marketing',
-          locale: 'es',
+          requestLocale: 'es',
+          responseLocale: 'en',
           tags: ['golden'],
           expectedAction: 'notification_update_preference',
         },
@@ -130,9 +132,10 @@ export const NOTIFICATION_ACTIONS: ChatActionDefinition[] = [
           expectedAction: null,
         },
         {
-          // Phase 14 batch 73 (2026-05-16): Spanish golden example.
+          // Phase 14 batch 73 (2026-05-16): Spanish-authored compatibility input; English response contract.
           text: 'Crea una notificación cuando llegue un correo de Pedro',
-          locale: 'es',
+          requestLocale: 'es',
+          responseLocale: 'en',
           tags: ['golden'],
           expectedAction: 'notification_create_intent',
         },

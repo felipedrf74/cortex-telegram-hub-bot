@@ -13,6 +13,7 @@
 
 import { config } from '../config';
 import { logger } from '../utils/logger';
+import { isRetiredSpanishLocaleSignal } from '../utils/i18n';
 
 // ─── Tenant Config Shape ──────────────────────────────────────────
 
@@ -95,6 +96,25 @@ export interface SettingState {
 }
 
 /**
+ * Compatibility projection for persisted settings whose historical value is
+ * no longer a supported product option. Keep the stored row untouched so
+ * operational history remains auditable; only the effective runtime/UI value
+ * is projected.
+ */
+function effectivePersistedSettingValue(
+  settingId: string,
+  value: unknown,
+): unknown {
+  if (
+    settingId === 'language'
+    && isRetiredSpanishLocaleSignal(value)
+  ) {
+    return 'en-US';
+  }
+  return value;
+}
+
+/**
  * SQLite-backed ConfigProvider with persistent per-tenant overrides.
  * Mutates the live config object on set so existing code picks up changes.
  */
@@ -121,7 +141,7 @@ export class DatabaseConfigProvider implements ConfigProvider {
       section: 'app', key: 'language', type: 'string',
       label: 'Language', description: 'Primary language for bot responses',
       defaultValue: 'pt-BR',
-      options: ['pt-BR', 'en-US', 'es-ES'],
+      options: ['pt-BR', 'pt-PT', 'en-US'],
       category: 'general',
     },
     'log_level': {
@@ -190,7 +210,9 @@ export class DatabaseConfigProvider implements ConfigProvider {
       const row = db.prepare(
         'SELECT value FROM kv_store WHERE key = ?'
       ).get(`config:${tenantId}:${settingId}`) as { value: string } | undefined;
-      if (row) return JSON.parse(row.value);
+      if (row) {
+        return effectivePersistedSettingValue(settingId, JSON.parse(row.value));
+      }
     } catch { /* DB not ready */ }
 
     return schema.defaultValue;
@@ -199,6 +221,9 @@ export class DatabaseConfigProvider implements ConfigProvider {
   setSetting(settingId: string, value: any, tenantId: TenantId = 'default'): void {
     const schema = DatabaseConfigProvider.SETTINGS_SCHEMA[settingId];
     if (!schema) throw new Error(`Unknown setting: ${settingId}`);
+    if (settingId === 'language' && schema.options && !schema.options.includes(value)) {
+      throw new Error(`Invalid option for setting: ${settingId}`);
+    }
 
     if (schema.envVar && process.env[schema.envVar] !== undefined) {
       logger.warn({ settingId, envVar: schema.envVar },
@@ -252,7 +277,7 @@ export class DatabaseConfigProvider implements ConfigProvider {
             'SELECT value FROM kv_store WHERE key = ?'
           ).get(`config:${tenantId}:${id}`) as { value: string } | undefined;
           if (row) {
-            value = JSON.parse(row.value);
+            value = effectivePersistedSettingValue(id, JSON.parse(row.value));
             source = 'database';
           } else {
             value = schema.defaultValue;
@@ -296,7 +321,7 @@ export class DatabaseConfigProvider implements ConfigProvider {
         if (!schema) continue;
         if (schema.envVar && process.env[schema.envVar] !== undefined) continue;
 
-        const value = JSON.parse(row.value);
+        const value = effectivePersistedSettingValue(settingId, JSON.parse(row.value));
         this.patchLiveConfig(schema.section, schema.key, value);
       }
 

@@ -26,6 +26,9 @@ describe('chat context compiler', () => {
     expect(first.systemPrompt).toContain('<response_contract>');
     expect(first.userPrompt.trim().endsWith('</user_message>')).toBe(true);
     expect(first.userPrompt).toContain('latest safety guidance for chicken leftovers');
+    expect(first.systemPrompt).toContain('Answer in English. This is a hard response contract.');
+    expect(first.systemPrompt).toContain('Spanish-authored input still receives English output.');
+    expect(first.systemPrompt).not.toContain('asks for another language');
   });
 
   it('truncates oversized dynamic sections and reports token estimates', () => {
@@ -66,5 +69,17 @@ describe('chat context compiler', () => {
     expect(compiled.userPrompt).toContain('<local_facts>');
     expect(compiled.userPrompt).toContain('Tasks: Finish proposal');
     expect(compiled.systemPrompt).toContain('combine them with current web sources');
+  });
+
+  it('limits mixed research output to the supported English/Portuguese mix', () => {
+    const compiled = buildChatResearchContext({
+      message: 'Search noticias actuales and fontes oficiais',
+      language: 'mixed',
+      skill: 'chat',
+      expectedResponseShape: 'direct_answer',
+    });
+
+    expect(compiled.systemPrompt).toContain('Preserve only the English/Portuguese language mix');
+    expect(compiled.systemPrompt).toContain('Render Spanish-authored portions in English');
   });
 });

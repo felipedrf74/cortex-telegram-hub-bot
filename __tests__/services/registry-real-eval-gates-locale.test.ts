@@ -3,13 +3,12 @@
 // Phase 7 close-out added the cross-cutting real-eval gates (golden ≥95%,
 // adversarial ≥95%, prompt-injection ≥95%, per-skill ≥90%). Those gates
 // don't distinguish locale, so a regression that broke only the PT or
-// ES path could slip through if the EN majority of scenarios still
+// PT path could slip through if the EN majority of scenarios still
 // passed at the 95% threshold.
 //
 // This batch adds per-locale sub-gates:
 //   • en golden ≥ 95%
 //   • pt golden ≥ 90% (lower bar — PT/PT-BR variants harder to keep at 95%)
-//   • es golden ≥ 85% (hard gate after Phase 15 registry completion)
 //   • Adversarial / prompt-injection by locale — informational
 //   • Multi-turn (turns.length ≥ 2) golden ≥ 90% — pending-continuation health
 
@@ -31,8 +30,6 @@ import { buildRegistryDrivenEvalScenarios } from '../../src/services/registry-dr
 
 const EN_GOLDEN_THRESHOLD = 0.95;
 const PT_GOLDEN_THRESHOLD = 0.90;
-const ES_GOLDEN_THRESHOLD = 0.85;
-
 describe('per-locale real-eval gates (Phase 11 batch 60)', () => {
   it('en golden scenarios pass at >= 95% under real-eval scoring', () => {
     const scenarios = buildRegistryDrivenEvalScenarios({ tags: ['golden'], locales: ['en'] });
@@ -56,29 +53,15 @@ describe('per-locale real-eval gates (Phase 11 batch 60)', () => {
     ).toBeGreaterThanOrEqual(PT_GOLDEN_THRESHOLD);
   });
 
-  it('es golden scenarios pass at >= 85% under real-eval scoring', () => {
-    // Phase 15 completed Spanish examples for all active actions, so ES is
-    // now a release gate instead of an informational count.
-    const scenarios = buildRegistryDrivenEvalScenarios({ tags: ['golden'], locales: ['es'] });
-    if (scenarios.length === 0) return;
-    const batch = scoreRegistryScenariosBatch(scenarios, { locale: 'es-ES' });
-    const rate = batch.passed / batch.scenarios.length;
-    expect(
-      rate,
-      `ES golden real-eval pass rate ${(rate * 100).toFixed(1)}% < ${(ES_GOLDEN_THRESHOLD * 100).toFixed(0)}% (${batch.failed}/${batch.scenarios.length} failed)`,
-    ).toBeGreaterThanOrEqual(ES_GOLDEN_THRESHOLD);
-  });
-
   it('mixed-locale scenarios run cleanly (no locale-filter side effects)', () => {
     const uncappedOptions = { tags: ['golden'], perActionMax: Number.MAX_SAFE_INTEGER } as const;
     const allLocales = buildRegistryDrivenEvalScenarios(uncappedOptions);
     const enOnly = buildRegistryDrivenEvalScenarios({ ...uncappedOptions, locales: ['en'] });
     const ptOnly = buildRegistryDrivenEvalScenarios({ ...uncappedOptions, locales: ['pt'] });
-    const esOnly = buildRegistryDrivenEvalScenarios({ ...uncappedOptions, locales: ['es'] });
     // The sum of locale-filtered counts must be <= the no-filter count.
     // Strict equality isn't required because the no-filter set may
     // include examples without a locale field (mixed/legacy).
-    expect(enOnly.length + ptOnly.length + esOnly.length).toBeLessThanOrEqual(allLocales.length);
+    expect(enOnly.length + ptOnly.length).toBeLessThanOrEqual(allLocales.length);
   });
 });
 

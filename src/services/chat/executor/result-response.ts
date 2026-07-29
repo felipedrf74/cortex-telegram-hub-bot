@@ -50,9 +50,7 @@ export function buildExecutedChatActionResponse(
       actionConfirmation: {
         title: input.locale?.startsWith('pt')
           ? 'Confirmação necessária'
-          : input.locale?.startsWith('es')
-            ? 'Confirmación necesaria'
-            : 'Confirmation needed',
+          : 'Confirmation needed',
         message: failureCopy(input, needsConfirmation.error),
         destructive: plan.steps.some((step) => step.risk === 'destructive'),
         variant: confirmationVariant(plan),

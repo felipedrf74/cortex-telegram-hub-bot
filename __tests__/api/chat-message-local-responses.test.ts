@@ -72,8 +72,8 @@ describe('chat message local response helpers', () => {
     mockGetCached.mockReturnValue(cached);
 
     expect(isCacheableChatCommand('/day')).toBe(true);
-    expect(getCachedChatCommandResponse(42, '/day', 1001)).toBe(cached);
-    expect(mockGetCached).toHaveBeenCalledWith('chat-cmd:1001:42:/day');
+    expect(getCachedChatCommandResponse(42, '/day', 1001, 'en-US')).toBe(cached);
+    expect(mockGetCached).toHaveBeenCalledWith('chat-cmd:1001:42:en:/day');
 
     mockGetCached.mockClear();
     expect(isCacheableChatCommand('tell me about my day')).toBe(false);
@@ -93,8 +93,8 @@ describe('chat message local response helpers', () => {
       timestamp: '2026-04-24T10:15:00.000Z',
     };
 
-    maybeCacheChatCommandResponse(42, '/todo', response, 1001);
-    expect(mockSetCache).toHaveBeenCalledWith('chat-cmd:1001:42:/todo', response, 60);
+    maybeCacheChatCommandResponse(42, '/todo', response, 1001, 'en-US');
+    expect(mockSetCache).toHaveBeenCalledWith('chat-cmd:1001:42:en:/todo', response, 60);
 
     mockSetCache.mockClear();
     maybeCacheChatCommandResponse(42, 'create a task', response, 1001);
@@ -116,8 +116,33 @@ describe('chat message local response helpers', () => {
     maybeCacheChatCommandResponse(42, '/day', response, 1001);
     maybeCacheChatCommandResponse(42, '/day', response, 1002);
 
-    expect(mockSetCache).toHaveBeenNthCalledWith(1, 'chat-cmd:1001:42:/day', response, 60);
-    expect(mockSetCache).toHaveBeenNthCalledWith(2, 'chat-cmd:1002:42:/day', response, 60);
+    expect(mockSetCache).toHaveBeenNthCalledWith(1, 'chat-cmd:1001:42:en:/day', response, 60);
+    expect(mockSetCache).toHaveBeenNthCalledWith(2, 'chat-cmd:1002:42:en:/day', response, 60);
+  });
+
+  it('keeps deterministic command cache entries isolated by resolved response locale', () => {
+    const response = {
+      id: 'msg-fast',
+      text: 'Tasks',
+      domain: 'secretary' as const,
+      routeMethod: 'fast-path',
+      confidence: 1,
+      buttons: null,
+      metadata: null,
+      timestamp: '2026-04-24T10:15:00.000Z',
+    };
+
+    maybeCacheChatCommandResponse(42, '/day', response, 1001, 'en-US');
+    maybeCacheChatCommandResponse(42, '/day', response, 1001, 'pt-BR');
+
+    expect(mockSetCache).toHaveBeenNthCalledWith(1, 'chat-cmd:1001:42:en:/day', response, 60);
+    expect(mockSetCache).toHaveBeenNthCalledWith(2, 'chat-cmd:1001:42:pt-BR:/day', response, 60);
+
+    mockGetCached.mockReturnValue(response);
+    getCachedChatCommandResponse(42, '/day', 1001, 'en-US');
+    getCachedChatCommandResponse(42, '/day', 1001, 'pt-BR');
+    expect(mockGetCached).toHaveBeenNthCalledWith(1, 'chat-cmd:1001:42:en:/day');
+    expect(mockGetCached).toHaveBeenNthCalledWith(2, 'chat-cmd:1001:42:pt-BR:/day');
   });
 
   it('maps deterministic fast-path results into the iOS chat response envelope', async () => {
@@ -191,6 +216,39 @@ describe('chat message local response helpers', () => {
     });
   });
 
+  it('uses the resolved English response locale for Secretary fast paths over a stored Portuguese profile', async () => {
+    mockTryDeterministicChatCommand.mockResolvedValue(null);
+    mockGetUserLanguageById.mockReturnValue('pt-BR');
+    mockTrySecretaryFastpath.mockImplementation(async (
+      _userId: number,
+      _text: string,
+      locale: string,
+    ) => ({
+      matched: true,
+      patternId: 'list_calendar_events',
+      response: {
+        text: locale.startsWith('pt') ? 'Aqui está a sua agenda.' : 'Here is your agenda.',
+        domain: 'secretary',
+      },
+    }));
+
+    const result = await tryBuildFastPathChatResponse(
+      'Muestra mi agenda',
+      'muestra mi agenda',
+      42,
+      42,
+      'en-US',
+    );
+
+    expect(mockTrySecretaryFastpath).toHaveBeenCalledWith(
+      42,
+      'Muestra mi agenda',
+      'en-US',
+      42,
+    );
+    expect(result?.response.text).toBe('Here is your agenda.');
+  });
+
   it('answers identity questions from the authenticated user profile, not a founder prompt default', () => {
     mockGetUserLanguageById.mockReturnValue('pt-PT');
     mockGetPreferredDisplayNameById.mockReturnValue('Jaqueline');
@@ -225,6 +283,21 @@ describe('chat message local response helpers', () => {
     expect(result?.response.text).toContain('authenticated session');
   });
 
+  it('uses the resolved English response locale for identity over a stored Portuguese profile', () => {
+    mockGetUserLanguageById.mockReturnValue('pt-BR');
+    mockGetPreferredDisplayNameById.mockReturnValue('Jacqueline');
+
+    const result = tryBuildAuthenticatedIdentityResponse(
+      '¿Quién soy?',
+      '¿quién soy?',
+      85,
+      'en-US',
+    );
+
+    expect(result?.response.text).toContain('authenticated session');
+    expect(result?.response.text).not.toContain('sessão autenticada');
+  });
+
   it('builds localized token-zero training-plan shortcuts', () => {
     mockGetUserLanguageById.mockReturnValue('pt-PT');
 
@@ -246,5 +319,19 @@ describe('chat message local response helpers', () => {
     const english = tryBuildTrainingPlanShortcutResponse('Create training plan', 'create training plan', 42);
     expect(english?.response.text).toContain('personalized training plan');
     expect(tryBuildTrainingPlanShortcutResponse('How is my day?', 'how is my day?', 42)).toBeNull();
+  });
+
+  it('uses the resolved English response locale for the training shortcut over a stored Portuguese profile', () => {
+    mockGetUserLanguageById.mockReturnValue('pt-BR');
+
+    const result = tryBuildTrainingPlanShortcutResponse(
+      'Create training plan',
+      'create training plan',
+      42,
+      'en-US',
+    );
+
+    expect(result?.response.text).toContain('personalized training plan');
+    expect(result?.response.text).not.toContain('plano de treino personalizado');
   });
 });

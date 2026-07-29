@@ -11,8 +11,9 @@
  * as the variant table:
  *   - guard: the late checkpoint additionally requires
  *     !bypassReadFastPathsForWriteIntent; the early one does not.
- *   - probe input: early passes locale=getUserLanguageById(userId) and NO
- *     surface; late passes surface:'ios' and locale=chatCoreV2RouteLocale.
+ *   - probe input: both pass the request-resolved
+ *     locale=chatCoreV2RouteLocale; early passes NO surface while late passes
+ *     surface:'ios'.
  *   - trace name: chat_core_v2_deterministic_read_early vs
  *     chat_core_v2_deterministic_read (both pinned by the stage trace).
  *   - latency mark: only the early checkpoint marks
@@ -23,7 +24,7 @@
  *   - log line: distinct messages/fields per checkpoint.
  */
 
-import { getUserLanguageById, getUserTimezoneById } from '../../../../services/user-service';
+import { getUserTimezoneById } from '../../../../services/user-service';
 import { logger } from '../../../../utils/logger';
 import {
   tryBuildChatCoreV2DeterministicReadRoute,
@@ -73,7 +74,7 @@ export function createChatCoreV2DeterministicReadStage(variant: DeterministicRea
           normalizedText,
           userId,
           tenantId,
-          locale: getUserLanguageById(userId),
+          locale: chatCoreV2RouteLocale,
           timezone: getUserTimezoneById(userId),
           now: new Date(requestStartedAt),
         })

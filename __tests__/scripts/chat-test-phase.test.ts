@@ -30,6 +30,38 @@ describe('chat-test-phase runner', () => {
     expect(fixture.scenarios[0]?.expected_action).toBe('create_task');
   });
 
+  it('rejects retired or unsupported response locales in operational fixtures', () => {
+    expect(() => parseFixtureText(JSON.stringify({
+      suite: 'unsupported-locale',
+      expected_pass_rate: 1,
+      scenarios: [{
+        id: 'legacy-spanish-output',
+        user_text: 'Publica este reel mañana',
+        locale: 'es-ES',
+      }],
+    }))).toThrow(/unsupported locale/i);
+  });
+
+  it('keeps every checked-in operational fixture on an EN/PT response locale', () => {
+    const fixtureDirectory = path.resolve(process.cwd(), '__tests__/chat-test-phase');
+    const unsupported: string[] = [];
+    for (const fileName of fs.readdirSync(fixtureDirectory).filter((name) => name.endsWith('.json'))) {
+      const fixture = JSON.parse(
+        fs.readFileSync(path.join(fixtureDirectory, fileName), 'utf8'),
+      ) as { scenarios?: Array<{ id?: string; locale?: string }> };
+      for (const scenario of fixture.scenarios ?? []) {
+        if (
+          scenario.locale
+          && !['en-US', 'pt-BR', 'pt-PT'].includes(scenario.locale)
+        ) {
+          unsupported.push(`${fileName}:${scenario.id ?? 'unknown'}:${scenario.locale}`);
+        }
+      }
+    }
+
+    expect(unsupported).toEqual([]);
+  });
+
   it('evaluates action, verifier, slots, and response substrings', () => {
     const result = evaluateScenarioResponse(
       {

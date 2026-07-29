@@ -60,7 +60,7 @@ describe('chat message execution helpers', () => {
       undefined,
       undefined,
       { locale: 'es-419' },
-    )).resolves.toMatchObject({ text: 'locale=es-419' });
+    )).resolves.toMatchObject({ text: 'locale=en-US' });
   });
 
   it('fails with the existing iOS-safe timeout before the client gives up', async () => {
@@ -237,7 +237,8 @@ describe('chat message execution helpers', () => {
 
     const es = buildChatTimeoutPartialReplyText('es-419', ['search_notes']);
     expect(es).toContain('search notes');
-    expect(es).toContain('continuar');
+    expect(es).toContain('continue');
+    expect(es).not.toContain('continuar');
 
     const queued = buildChatTimeoutPartialReplyText('en-US', ['search_notes'], true);
     expect(queued).toContain('in-flight request');
@@ -251,8 +252,9 @@ describe('chat message execution helpers', () => {
     expect(queuedPt).toContain('se concluir ou parar');
 
     const queuedEs = buildChatTimeoutPartialReplyText('es-419', ['search_notes'], true);
-    expect(queuedEs).toContain('solicitud en curso');
-    expect(queuedEs).toContain('si termina o se detiene');
+    expect(queuedEs).toContain('in-flight request');
+    expect(queuedEs).toContain('whether it completes or stops');
+    expect(queuedEs).not.toContain('solicitud en curso');
 
     // Unknown locale falls back to English.
     expect(buildChatTimeoutPartialReplyText(null, ['search_notes'])).toContain('search notes');

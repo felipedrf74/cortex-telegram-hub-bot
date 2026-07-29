@@ -61,4 +61,49 @@ describe('content engine profile payload', () => {
     expect(claims?.userId).toBe(7);
     expect(claims?.tenantId).toBe(44);
   });
+
+  it.each([
+    ['es-419', 'pt-PT', 'en-US'],
+    ['Spanish', 'pt-BR', 'en-US'],
+    ['fr-FR', 'pt-PT', 'en-US'],
+    ['European Portuguese', 'en-US', 'pt-PT'],
+    ['Brazilian Portuguese', 'en-US', 'pt-BR'],
+  ])(
+    'projects stored creator language %s with hint %s to canonical output %s',
+    async (storedLanguage, languageHint, expectedLanguage) => {
+      mockGetContentCreatorProfile.mockReturnValueOnce({
+        languagePreference: storedLanguage,
+        audience: 'founders',
+        pillars: ['Cost control'],
+        niches: ['creator ops'],
+        voiceRules: ['proof first'],
+        preferredFormats: ['YouTube'],
+        dislikedTopics: [],
+        bannedTopics: [],
+        contentGoals: ['make content viable'],
+        voiceExamples: ['Short example'],
+      });
+      const { buildCurrentCreatorProfilePayload } = await import('../../src/services/content-engine-profile-payload');
+
+      const payload = await runWithContext(
+        { source: 'http', userId: 7, tenantId: 44 },
+        () => buildCurrentCreatorProfilePayload(languageHint),
+      );
+
+      expect(payload.language).toBe(expectedLanguage);
+      expect(payload.creator_profile).toContain(`Primary output language: ${expectedLanguage}.`);
+      expect(payload.creator_profile).not.toContain(`Primary output language: ${storedLanguage}.`);
+    },
+  );
+
+  it('projects a legacy Spanish language hint to English without an authenticated profile', async () => {
+    const { buildCurrentCreatorProfilePayload } = await import('../../src/services/content-engine-profile-payload');
+
+    const payload = await runWithContext(
+      { source: 'http' },
+      () => buildCurrentCreatorProfilePayload('es-ES'),
+    );
+
+    expect(payload).toEqual({ language: 'en-US' });
+  });
 });

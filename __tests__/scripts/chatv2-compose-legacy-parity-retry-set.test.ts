@@ -7,11 +7,11 @@ import path from 'path';
 import { promisify } from 'util';
 
 import {
+  buildChatV2RetirementObserverCorpusBinding,
   CHAT_V2_LEGACY_PARITY_REVIEW_RUBRIC_VERSION,
 } from '../../src/services/chat-legacy-parity-labels';
 import {
-  CHAT_V2_LEGACY_PARITY_ROUTE_CORPUS_META,
-  CHAT_V2_LEGACY_PARITY_ROUTE_PROMPT_VERSION,
+  CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_CORPUS_META,
 } from '../../src/services/chat-legacy-parity-route-prompts';
 
 const execFileAsync = promisify(execFile);
@@ -20,7 +20,54 @@ const CLI_PROCESS_TIMEOUT_MS = 30_000;
 const CLI_TEST_TIMEOUT_MS = CLI_PROCESS_TIMEOUT_MS + 15_000;
 
 describe('chatv2-compose-legacy-parity-retry-set CLI', () => {
-  it('composes one matched comparable row per frozen sample while keeping committed rows HMAC-only', async () => {
+  it('accepts the exact v1.4 retirement manifest emitted by the runtime observer', async () => {
+    const tempDir = mkdtempSync(path.join(tmpdir(), 'chatv2-compose-parity-'));
+    const localReviewDir = makeLocalReviewDir();
+    const retirementManifest = {
+      routePromptVersion: CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_CORPUS_META.version,
+      routeCorpusId: CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_CORPUS_META.corpusId,
+      routeCorpusFrozenAt: CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_CORPUS_META.frozenAt,
+      routeCorpusFrozenBeforeImplementation:
+        CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_CORPUS_META.frozenBeforeImplementation,
+      routeCorpusMutationPolicy:
+        CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_CORPUS_META.mutationPolicy,
+      routeCorpusProjectionPolicy:
+        CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_CORPUS_META.projectionPolicy,
+    };
+    try {
+      const sourceA = writeSource(tempDir, 'source-a', [
+        observation(sampleHmac('a'), true, 'matched'),
+        observation(sampleHmac('b'), true, 'matched'),
+      ], retirementManifest);
+      const sourceB = writeSource(tempDir, 'source-b', [
+        observation(sampleHmac('a'), true, 'matched'),
+        observation(sampleHmac('b'), true, 'matched'),
+      ], retirementManifest);
+
+      const { stdout } = await execFileAsync('npx', [
+        'tsx',
+        'scripts/chatv2-compose-legacy-parity-retry-set.ts',
+        `--sources=${sourceA},${sourceB}`,
+        '--min-samples-per-route=2',
+        `--out=${path.join(tempDir, 'composed.ndjson')}`,
+        `--raw-review-artifact=${path.join(localReviewDir, 'composed.review.json')}`,
+      ], {
+        cwd: repoRoot,
+        env: { ...process.env, CHAT_V2_EVIDENCE_HMAC_SECRET: 'test-secret' },
+        timeout: CLI_PROCESS_TIMEOUT_MS,
+      });
+
+      expect(JSON.parse(stdout)).toMatchObject({
+        schemaVersion: 'chat_v2_legacy_parity_retry_selection_result.v1',
+        rows: 2,
+      });
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+      rmSync(localReviewDir, { recursive: true, force: true });
+    }
+  }, CLI_TEST_TIMEOUT_MS);
+
+  it('composes one matched comparable row per governed sample while keeping committed rows HMAC-only', async () => {
     const tempDir = mkdtempSync(path.join(tmpdir(), 'chatv2-compose-parity-'));
     const localReviewDir = makeLocalReviewDir();
     try {
@@ -87,10 +134,16 @@ describe('chatv2-compose-legacy-parity-retry-set CLI', () => {
 
       const reviewRows = JSON.parse(readFileSync(rawReviewOutPath, 'utf8')) as Array<{
         sampleHmac: string;
+        requestLanguage: string;
+        expectedResponseLanguage: string;
         promptText: string;
         legacyRawResponse: { body: { text: string } };
       }>;
       expect(reviewRows).toHaveLength(2);
+      expect(reviewRows[0]).toMatchObject({
+        requestLanguage: 'en',
+        expectedResponseLanguage: 'en',
+      });
       expect(reviewRows[0]?.promptText).toContain('private prompt');
       expect(reviewRows[0]?.legacyRawResponse.body.text).toContain('raw legacy answer');
     } finally {
@@ -177,7 +230,7 @@ describe('chatv2-compose-legacy-parity-retry-set CLI', () => {
     }
   }, CLI_TEST_TIMEOUT_MS);
 
-  it('rejects a retry set when any frozen sample never has a comparable match', async () => {
+  it('rejects a retry set when any governed sample never has a comparable match', async () => {
     const tempDir = mkdtempSync(path.join(tmpdir(), 'chatv2-compose-parity-'));
     const localReviewDir = makeLocalReviewDir();
     try {
@@ -246,6 +299,90 @@ describe('chatv2-compose-legacy-parity-retry-set CLI', () => {
       rmSync(localReviewDir, { recursive: true, force: true });
     }
   }, CLI_TEST_TIMEOUT_MS);
+
+  it.each([
+    {
+      name: 'the active v1.5 diagnostic corpus',
+      manifestOverrides: {
+        routePromptVersion: 'chat_v2_legacy_parity_route_prompts@1.5.0',
+        routeCorpusId: 'chatv2_phase7_route_replacement_supported_locales_v2',
+        routeCorpusFrozenBeforeImplementation: false,
+        routeCorpusProjectionPolicy: 'active_v1_5_diagnostic_only_not_retirement_evidence',
+      },
+      reason: 'manifest_prompt_version_mismatch',
+    },
+    {
+      name: 'a diagnostic-corpus freeze claim',
+      manifestOverrides: { routeCorpusFrozenBeforeImplementation: false },
+      reason: 'manifest_corpus_freeze_claim_mismatch',
+    },
+    {
+      name: 'a wrong corpus frozen-at identity',
+      manifestOverrides: { routeCorpusFrozenAt: '2026-07-29T00:00:00.000Z' },
+      reason: 'manifest_corpus_frozen_at_mismatch',
+    },
+    {
+      name: 'a wrong corpus mutation policy',
+      manifestOverrides: { routeCorpusMutationPolicy: 'unreviewed_runtime_replacement_allowed' },
+      reason: 'manifest_corpus_mutation_policy_mismatch',
+    },
+    {
+      name: 'a missing corpus mutation policy',
+      manifestOverrides: { routeCorpusMutationPolicy: undefined },
+      reason: 'manifest_corpus_mutation_policy_mismatch',
+    },
+    {
+      name: 'a wrong corpus projection policy',
+      manifestOverrides: { routeCorpusProjectionPolicy: 'active_v1_5_diagnostic_only' },
+      reason: 'manifest_corpus_projection_policy_mismatch',
+    },
+    {
+      name: 'a missing corpus projection policy',
+      manifestOverrides: { routeCorpusProjectionPolicy: undefined },
+      reason: 'manifest_corpus_projection_policy_mismatch',
+    },
+    {
+      name: 'a valid-looking non-current corpus hash',
+      manifestOverrides: { routeCorpusSha256: 'c'.repeat(64) },
+      reason: 'manifest_corpus_hash_mismatch',
+    },
+    {
+      name: 'a missing request/response language sample identity policy',
+      manifestOverrides: { sampleIdentityPolicy: undefined },
+      reason: 'manifest_sample_identity_policy_mismatch',
+    },
+  ])('rejects retry source metadata with $name', async ({ manifestOverrides, reason }) => {
+    const tempDir = mkdtempSync(path.join(tmpdir(), 'chatv2-compose-parity-'));
+    const localReviewDir = makeLocalReviewDir();
+    try {
+      const sourceA = writeSource(tempDir, 'source-a', [
+        observation(sampleHmac('a'), true, 'matched'),
+        observation(sampleHmac('b'), true, 'matched'),
+      ], manifestOverrides);
+      const sourceB = writeSource(tempDir, 'source-b', [
+        observation(sampleHmac('a'), true, 'matched'),
+        observation(sampleHmac('b'), true, 'matched'),
+      ]);
+
+      await expect(execFileAsync('npx', [
+        'tsx',
+        'scripts/chatv2-compose-legacy-parity-retry-set.ts',
+        `--sources=${sourceA},${sourceB}`,
+        '--min-samples-per-route=2',
+        `--out=${path.join(tempDir, 'composed.ndjson')}`,
+        `--raw-review-artifact=${path.join(localReviewDir, 'composed.review.json')}`,
+      ], {
+        cwd: repoRoot,
+        env: { ...process.env, CHAT_V2_EVIDENCE_HMAC_SECRET: 'test-secret' },
+        timeout: CLI_PROCESS_TIMEOUT_MS,
+      })).rejects.toMatchObject({
+        stderr: expect.stringContaining(reason),
+      });
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+      rmSync(localReviewDir, { recursive: true, force: true });
+    }
+  }, CLI_TEST_TIMEOUT_MS);
 });
 
 function writeSource(
@@ -264,12 +401,18 @@ function writeSource(
     schemaVersion: 'chat_v2_legacy_parity_observer_manifest.v1',
     generatedAt: '2026-06-02T00:00:00.000Z',
     evidenceSource: 'runtime_route',
-    routePromptVersion: CHAT_V2_LEGACY_PARITY_ROUTE_PROMPT_VERSION,
-    routeCorpusId: CHAT_V2_LEGACY_PARITY_ROUTE_CORPUS_META.corpusId,
-    routeCorpusFrozenAt: CHAT_V2_LEGACY_PARITY_ROUTE_CORPUS_META.frozenAt,
-    routeCorpusFrozenBeforeImplementation: true,
-    routeCorpusMutationPolicy: CHAT_V2_LEGACY_PARITY_ROUTE_CORPUS_META.mutationPolicy,
-    routeCorpusSha256: 'f'.repeat(64),
+    routePromptVersion: CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_CORPUS_META.version,
+    routeCorpusId: CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_CORPUS_META.corpusId,
+    routeCorpusFrozenAt: CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_CORPUS_META.frozenAt,
+    routeCorpusFrozenBeforeImplementation:
+      CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_CORPUS_META.frozenBeforeImplementation,
+    routeCorpusMutationPolicy:
+      CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_CORPUS_META.mutationPolicy,
+    routeCorpusProjectionPolicy:
+      CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_CORPUS_META.projectionPolicy,
+    routeCorpusSha256: buildChatV2RetirementObserverCorpusBinding([
+      'selective_internet_research',
+    ]).routeCorpusSha256,
     reviewRubricVersion: CHAT_V2_LEGACY_PARITY_REVIEW_RUBRIC_VERSION,
     comparatorVersion: 'chat_v2_legacy_parity_comparator.v3',
     stateFixtureHash: `sha256:${'e'.repeat(64)}`,
@@ -292,6 +435,7 @@ function writeSource(
     rawReviewArtifactLocalOnly: true,
     rawReviewArtifactContainsRawPromptOrResponse: true,
     rawReviewArtifactSchemaVersion: 'chat_v2_legacy_parity_raw_review_row.v1',
+    sampleIdentityPolicy: 'route_index_request_language_expected_response_language_v1',
     tokenFilesAreLocalOnly: true,
     ...manifestOverrides,
   }, null, 2)}\n`);
@@ -317,9 +461,10 @@ function rawReviewRow(row: ReturnType<typeof observation>, index: number) {
   return {
     schemaVersion: 'chat_v2_legacy_parity_raw_review_row.v1',
     routeId: row.routeId,
-    sampleKey: `selective_internet_research:${index}:en`,
+    sampleKey: `selective_internet_research:${index}:request=en:response=en`,
     sampleHmac: row.sampleHmac,
-    language: 'en',
+    requestLanguage: 'en',
+    expectedResponseLanguage: 'en',
     promptText: `private prompt ${index}`,
     legacyRawResponse: {
       status: row.matched ? 200 : 503,

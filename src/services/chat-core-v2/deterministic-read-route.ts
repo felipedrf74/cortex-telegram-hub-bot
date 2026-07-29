@@ -253,17 +253,6 @@ function domainReadHeading(
     if (domain === 'notifications') return 'Notificacoes';
     return 'Centro de decisoes';
   }
-  if (normalizedLocale === 'es') {
-    if (domain === 'secretary') return 'Agenda';
-    if (domain === 'tasks') return 'Tareas';
-    if (domain === 'training') return 'Entrenamiento';
-    if (domain === 'content') return 'Contenido';
-    if (domain === 'cooking') return 'Cocina';
-    if (domain === 'finance') return 'Finanzas';
-    if (domain === 'connections') return 'Conexiones';
-    if (domain === 'notifications') return 'Notificaciones';
-    return 'Centro de decisiones';
-  }
   if (domain === 'secretary') return 'Agenda';
   if (domain === 'tasks') return 'Tasks';
   if (domain === 'training') return 'Training';

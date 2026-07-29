@@ -11,6 +11,9 @@ import {
   recordChatV2LegacyRouteExitEvidence,
   recordChatV2LegacyVerifyRunEvidence,
 } from '../../src/services/chat-legacy-retirement-evidence';
+import {
+  CHAT_V2_RETIREMENT_OBSERVER_CORPUS_BINDING,
+} from '../../src/services/chat-legacy-parity-labels';
 
 let testDb: Database.Database;
 const PEER_REVIEW_SIGNOFF_HASH = 'c'.repeat(64);
@@ -74,10 +77,10 @@ describe('chat-legacy-retirement-evidence', () => {
     });
 
     expect(loadChatV2LegacyRetirementReadinessInput().routeSamples).toEqual([]);
-    expect(loadChatV2LegacyRetirementReadinessInput(10, ['local_sandbox_seed']).routeSamples).toHaveLength(1);
+    expect(loadChatV2LegacyRetirementReadinessInput(10, ['local_sandbox_seed']).routeSamples).toEqual([]);
   });
 
-  it('evaluates local legacy retirement readiness when parity/fallback/verify gates pass', () => {
+  it('never treats local sandbox parity/fallback/verify rows as retirement proof', () => {
     vi.stubEnv('CHAT_V2_LEGACY_RETIREMENT_EVIDENCE_ENABLED', 'true');
 
     for (const routeId of ['domain-handler', 'legacy-classifier']) {
@@ -100,38 +103,23 @@ describe('chat-legacy-retirement-evidence', () => {
     });
 
     const result = evaluateRecordedChatV2LegacyRetirementReadiness(10, ['local_sandbox_seed']);
-    expect(result.passed).toBe(true);
-    expect(result.gates.map((gate) => [gate.gateId, gate.passed])).toEqual([
-      ['route_exit_replacements', true],
-      ['route_shadow_parity', true],
-      ['route_independent_peer_review', true],
-      ['route_safety_regressions', true],
-      ['route_quality_regressions', true],
-      ['route_degraded_not_comparable', true],
-      ['legacy_fallback_rate', true],
-      ['full_verify_clean', true],
-    ]);
+    expect(result.passed).toBe(false);
+    expect(result.gates.find((gate) => gate.gateId === 'route_exit_replacements'))
+      .toMatchObject({ passed: false });
   });
 
   it('does not let newer inventory-only rows mask imported parity evidence', () => {
     vi.stubEnv('CHAT_V2_LEGACY_RETIREMENT_EVIDENCE_ENABLED', 'true');
 
     recordChatV2LegacyRouteExitEvidence(routeEvidence({
-      routeId: 'domain-handler',
+      routeId: 'domain_handler_execution',
       shadowParityRate: 0.98,
-      sampleCount: 60,
-      safeMetadata: {
-        parityObservationImport: true,
-        evaluator: 'claude',
-        peerReviewSignoffHash: PEER_REVIEW_SIGNOFF_HASH,
-        safetyRegressionCount: 0,
-        qualityRegressionCount: 0,
-        degradedNotComparableCount: 0,
-      },
+      sampleCount: 50,
+      safeMetadata: validImportedMetadata(50, 49),
     }));
     recordChatV2LegacyRouteExitEvidence(routeEvidence({
       requestId: 'req-inventory',
-      routeId: 'domain-handler',
+      routeId: 'domain_handler_execution',
       replaced: false,
       tested: false,
       shadowParityRate: 0,
@@ -152,11 +140,11 @@ describe('chat-legacy-retirement-evidence', () => {
     const input = loadChatV2LegacyRetirementReadinessInput();
     expect(input.routeSamples).toEqual([
       expect.objectContaining({
-        routeId: 'domain-handler',
+        routeId: 'domain_handler_execution',
         replaced: true,
         tested: true,
         shadowParityRate: 0.98,
-        sampleCount: 60,
+        sampleCount: 50,
       }),
     ]);
     expect(evaluateRecordedChatV2LegacyRetirementReadiness().passed).toBe(true);
@@ -166,12 +154,20 @@ describe('chat-legacy-retirement-evidence', () => {
     vi.stubEnv('CHAT_V2_LEGACY_RETIREMENT_EVIDENCE_ENABLED', 'true');
 
     recordChatV2LegacyRouteExitEvidence(routeEvidence({
-      routeId: 'domain-handler',
+      routeId: 'domain_handler_execution',
       shadowParityRate: 0.98,
       sampleCount: 60,
       safeMetadata: {
         parityLabelImport: true,
         evaluator: 'runtime_tool',
+        sampleCount: 60,
+        matchingCount: 59,
+        parityRate: 59 / 60,
+        reviewRubricVersion: 'chat_v2_legacy_parity_review_rubric.v2',
+        safetyRegressionCount: 0,
+        qualityRegressionCount: 0,
+        degradedNotComparableCount: 0,
+        ...CHAT_V2_RETIREMENT_OBSERVER_CORPUS_BINDING,
       },
     }));
     recordChatV2LegacyFallbackRateEvidence({
@@ -187,13 +183,36 @@ describe('chat-legacy-retirement-evidence', () => {
     expect(result.passed).toBe(false);
     expect(result.gates.find((gate) => gate.gateId === 'route_independent_peer_review')).toMatchObject({
       passed: false,
-      reasonCode: 'missing_independent_peer_review',
+      reasonCode: 'missing_peer_review_samples',
     });
   });
 });
 
 function rowCount(): number {
   return (testDb.prepare('SELECT COUNT(*) AS count FROM chat_v2_legacy_retirement_evidence').get() as { count: number }).count;
+}
+
+function validImportedMetadata(sampleCount: number, matchingCount: number): Record<string, unknown> {
+  return {
+    schemaVersion: 'chat_v2_legacy_parity_evidence_safe_metadata.v1',
+    parityLabelImport: true,
+    evaluator: 'claude',
+    peerReviewSignoffHash: PEER_REVIEW_SIGNOFF_HASH,
+    sampleCount,
+    matchingCount,
+    parityRate: matchingCount / sampleCount,
+    safetyRegressionCount: 0,
+    qualityRegressionCount: 0,
+    degradedNotComparableCount: 0,
+    reviewRubricVersion: 'chat_v2_legacy_parity_review_rubric.v2',
+    reviewCompletenessChecked: true,
+    rawReviewArtifactCompletenessChecked: true,
+    observedRouteSampleCount: sampleCount,
+    observerManifestSha256: '1'.repeat(64),
+    observerObservationsSha256: '2'.repeat(64),
+    rawReviewArtifactSha256: '3'.repeat(64),
+    ...CHAT_V2_RETIREMENT_OBSERVER_CORPUS_BINDING,
+  };
 }
 
 function routeEvidence(

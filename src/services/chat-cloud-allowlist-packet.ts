@@ -230,7 +230,6 @@ function normalizeLocale(value: string): string {
   if (/^pt[-_]?pt$/i.test(raw)) return 'pt-PT';
   if (/^pt\b/i.test(raw)) return 'pt-BR';
   if (/^en\b/i.test(raw)) return 'en';
-  if (/^es\b/i.test(raw)) return 'es';
   return 'en';
 }
 

@@ -43,7 +43,8 @@ export const SECRETARY_REMINDER_ACTIONS: ChatActionDefinition[] = [
       },
       {
         text: 'Recuérdame a las 15:30 llamar al dentista',
-        locale: 'es',
+        requestLocale: 'es',
+        responseLocale: 'en',
         tags: ['golden'],
         expectedAction: 'set_reminder',
       },

@@ -142,7 +142,6 @@ function buildTrainingSessionExplainText(
   if (!data.hasActivePlan) {
     if (normalizedLocale === 'pt-BR') return 'Você ainda não tem um plano de treino ativo.';
     if (normalizedLocale === 'pt-PT') return 'Ainda não tens um plano de treino ativo.';
-    if (normalizedLocale === 'es') return 'Aún no tienes un plan de entrenamiento activo.';
     return 'You do not have an active training plan yet.';
   }
 
@@ -174,13 +173,11 @@ function buildTrainingHeader(
 
   if (locale === 'pt-BR') return `Plano de treino: ${planName}. Esta semana tem ${sessionText}.${descriptorText}${statusText}`;
   if (locale === 'pt-PT') return `Plano de treino: ${planName}. Esta semana tem ${sessionText}.${descriptorText}${statusText}`;
-  if (locale === 'es') return `Plan de entrenamiento: ${planName}. Esta semana tiene ${sessionText}.${descriptorText}${statusText}`;
   return `Training plan: ${planName}. This week has ${sessionText}.${descriptorText}${statusText}`;
 }
 
 function sessionCountPhrase(count: number, locale: ChatCoreV2NormalizedLocale): string {
   if (locale === 'pt-BR' || locale === 'pt-PT') return `${count} ${plural(count, 'sessão', 'sessões')}`;
-  if (locale === 'es') return `${count} ${plural(count, 'sesión', 'sesiones')}`;
   return `${count} ${plural(count, 'session', 'sessions')}`;
 }
 
@@ -194,11 +191,6 @@ function progressPhrase(
     if (kind === 'skipped') return `${count} ${plural(count, 'saltada', 'saltadas')}`;
     return `${count} ${plural(count, 'pendente', 'pendentes')}`;
   }
-  if (locale === 'es') {
-    if (kind === 'completed') return `${count} ${plural(count, 'completada', 'completadas')}`;
-    if (kind === 'skipped') return `${count} ${plural(count, 'saltada', 'saltadas')}`;
-    return `${count} ${plural(count, 'pendiente', 'pendientes')}`;
-  }
   if (kind === 'completed') return `${count} completed`;
   if (kind === 'skipped') return `${count} skipped`;
   return `${count} pending`;
@@ -206,32 +198,27 @@ function progressPhrase(
 
 function weekPhrase(week: number, durationWeeks: number, locale: ChatCoreV2NormalizedLocale): string {
   if (locale === 'pt-BR' || locale === 'pt-PT') return `semana ${week}/${durationWeeks}`;
-  if (locale === 'es') return `semana ${week}/${durationWeeks}`;
   return `week ${week}/${durationWeeks}`;
 }
 
 function focusPhrase(focus: string, locale: ChatCoreV2NormalizedLocale): string {
   if (locale === 'pt-BR' || locale === 'pt-PT') return `foco: ${focus}`;
-  if (locale === 'es') return `enfoque: ${focus}`;
   return `focus: ${focus}`;
 }
 
 function intensityPhrase(intensityPct: number, locale: ChatCoreV2NormalizedLocale): string {
   if (locale === 'pt-BR' || locale === 'pt-PT') return `intensidade ${intensityPct}%`;
-  if (locale === 'es') return `intensidad ${intensityPct}%`;
   return `${intensityPct}% intensity`;
 }
 
 function adherencePhrase(adherenceRate: number, locale: ChatCoreV2NormalizedLocale): string {
   if (locale === 'pt-BR' || locale === 'pt-PT') return `${adherenceRate}% de adesão`;
-  if (locale === 'es') return `${adherenceRate}% de adherencia`;
   return `${adherenceRate}% adherence`;
 }
 
 function sessionListLabel(locale: ChatCoreV2NormalizedLocale): string {
   if (locale === 'pt-BR') return 'Sessões principais:';
   if (locale === 'pt-PT') return 'Sessões principais:';
-  if (locale === 'es') return 'Sesiones principales:';
   return 'Key sessions:';
 }
 
@@ -249,26 +236,21 @@ function sessionSuffix(
   return parts.length > 0 ? ` (${parts.join(', ')})` : '';
 }
 
-function durationPhrase(minutes: number, locale: ChatCoreV2NormalizedLocale): string {
-  if (locale === 'pt-BR' || locale === 'pt-PT') return `${minutes} min`;
-  if (locale === 'es') return `${minutes} min`;
+function durationPhrase(minutes: number, _locale: ChatCoreV2NormalizedLocale): string {
   return `${minutes} min`;
 }
 
 function statusLabel(status: string, locale: ChatCoreV2NormalizedLocale): string | null {
   if (status === 'pending' || status === 'scheduled' || status === 'reflowed' || status === 'moved') {
     if (locale === 'pt-BR' || locale === 'pt-PT') return 'por fazer';
-    if (locale === 'es') return 'pendiente';
     return 'pending';
   }
   if (status === 'completed') {
     if (locale === 'pt-BR' || locale === 'pt-PT') return 'concluída';
-    if (locale === 'es') return 'completada';
     return 'completed';
   }
   if (status === 'skipped') {
     if (locale === 'pt-BR' || locale === 'pt-PT') return 'saltada';
-    if (locale === 'es') return 'saltada';
     return 'skipped';
   }
   return null;
@@ -286,22 +268,12 @@ function localizeDay(day: string, locale: ChatCoreV2NormalizedLocale): string {
     saturday: 'sábado',
     sunday: 'domingo',
   };
-  const es: Record<string, string> = {
-    monday: 'lunes',
-    tuesday: 'martes',
-    wednesday: 'miércoles',
-    thursday: 'jueves',
-    friday: 'viernes',
-    saturday: 'sábado',
-    sunday: 'domingo',
-  };
-  return locale === 'es' ? es[normalized] ?? day : pt[normalized] ?? day;
+  return pt[normalized] ?? day;
 }
 
 function trainingFallback(locale: ChatCoreV2NormalizedLocale, kind: 'plan'): string {
   if (kind === 'plan') {
     if (locale === 'pt-BR' || locale === 'pt-PT') return 'plano ativo';
-    if (locale === 'es') return 'plan activo';
   }
   return 'active plan';
 }

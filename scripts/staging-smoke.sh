@@ -819,16 +819,19 @@ REMOTE_TRAINING_E2E
 fi
 
 echo ""
-echo "🌐 Locale-fidelity chat smoke (es-419 + pt-BR canned turns)"
-# Milestone 3 locale-fidelity gate: send one es-419 and one pt-BR canned chat
-# turn through the real staging chat endpoint and assert the reply language
+echo "🌐 Locale-fidelity chat smoke (EN + PT + legacy ES→EN fallback)"
+# Supported-locale gate: send en-US and pt-BR turns plus one legacy es-419
+# compatibility turn through the real staging chat endpoint. The legacy turn
+# must follow the English fallback contract; Spanish is not a supported reply
+# locale. Assert reply language
 # with the deterministic detector shipped in dist/services/chat-language-
 # detector.js (zero-LLM check; the reply itself may spend planner tokens on
 # staging, which is acceptable for this gate). The check fails OPEN on
 # 'unknown' detections (short acks like "OK") — it only fails the smoke when
 # the detector confidently names a language that contradicts the prompt
-# locale (the recurring es-419 → Portuguese leak). Uses an isolated staging
-# fixture user like the training preview E2E. The signed release gate treats
+# locale. Uses an isolated staging fixture user like the training preview E2E.
+# The persisted es-ES value intentionally exercises compatibility coercion;
+# it is never rewritten or treated as a selectable locale. The signed gate treats
 # NEXUS_SMOKE_LOCALE_FIDELITY=0 as a failure rather than accepting missing
 # locale evidence.
 LOCALE_FIDELITY_ENABLED="${NEXUS_SMOKE_LOCALE_FIDELITY:-1}"
@@ -928,7 +931,8 @@ db.transaction(() => {
 })();
 
 const TURNS = [
-  { locale: 'es-419', text: 'Crea una tarea llamada revisión del planificador de humo' },
+  { locale: 'es-419', expectedLocale: 'en-US', text: 'Crea una tarea llamada staging legacy locale smoke' },
+  { locale: 'en-US', expectedLocale: 'en-US', text: 'Create a task called staging English locale smoke' },
   { locale: 'pt-BR', text: 'Cria uma tarefa chamada revisão do planejador de fumaça' },
 ];
 
@@ -953,9 +957,17 @@ async function runTurn(turn) {
   const raw = await response.text();
   let json = null;
   try { json = raw ? JSON.parse(raw) : null; } catch {}
-  const contract = checkStagingLocaleWritePreview(turn.locale, response.status, json);
+  const storedLanguage = db.prepare('SELECT language FROM users WHERE id = ?')
+    .get(userId)?.language ?? null;
+  if (turn.locale === 'es-419' && storedLanguage !== 'es-ES') {
+    throw new Error('legacy Spanish preference was rewritten during compatibility smoke');
+  }
+  const expectedLocale = turn.expectedLocale || turn.locale;
+  const contract = checkStagingLocaleWritePreview(expectedLocale, response.status, json);
   return {
-    locale: turn.locale,
+    requestedLocale: turn.locale,
+    expectedLocale,
+    storedLanguage,
     httpStatus: response.status,
     ok: contract.ok,
     httpStatusAccepted: contract.httpStatusAccepted,
@@ -990,7 +1002,7 @@ REMOTE_LOCALE_E2E
 
   LOCALE_SMOKE_DETAIL="$(printf '%s' "$LOCALE_SMOKE_RESULT" | tail -c 700 | tr '\n' ' ')"
   if [ "$LOCALE_SMOKE_RC" -eq 0 ]; then
-    echo "  ✅ Locale-fidelity chat smoke — es-419 and pt-BR replies match prompt locale"
+    echo "  ✅ Locale-fidelity chat smoke — EN/PT supported; legacy es-419 falls back to EN"
     PASS=$((PASS + 1))
     evidence_record "locale fidelity chat smoke" "passed" "$LOCALE_SMOKE_DETAIL"
   else

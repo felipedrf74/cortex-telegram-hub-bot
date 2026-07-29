@@ -22,6 +22,11 @@ import {
 } from './chat-research-answer-quality';
 import { ApiUsagePersistenceError } from './api-usage-fallback';
 import { isPaidAiCostControlsEnforcementEnabled } from './entitlement';
+import {
+  checkResponseLocaleFidelity,
+  detectStrictShortResponseLanguage,
+  expectedLanguageForLocale,
+} from './chat-language-detector';
 
 const anthropicWebSearchClient = createLazyAnthropicClient({ maxRetries: 2 });
 
@@ -93,16 +98,42 @@ export async function buildChatInternetResearchAnswer(
       },
       input.language,
     );
+    const sources = dedupeSources(result.sources).slice(0, 6);
+    const context = {
+      tokenEstimate: compiledContext.tokenEstimate,
+      cacheablePrefixHash: compiledContext.cacheablePrefixHash,
+      localContextIncluded: false as const,
+      safeQueryPolicy: safeQuery.policy,
+    };
+    const localeFidelity = checkResponseLocaleFidelity(input.language, result.text);
+    const strictShortLanguage = detectStrictShortResponseLanguage(
+      result.text,
+      localeFidelity.expected,
+    );
+    if (hasResearchResponseLocaleMismatch(input.language, result.text)) {
+      logger.warn(
+        {
+          userId: input.userId,
+          tenantId: input.tenantId,
+          expectedLanguage: localeFidelity.expected,
+          detectedLanguage: strictShortLanguage ?? localeFidelity.detected,
+          confidence: strictShortLanguage ? 1 : localeFidelity.confidence,
+        },
+        'Chat internet research response failed locale fidelity',
+      );
+      return {
+        text: appendSourceNote(localized.languageMismatch, sources, localized.sourceLabel),
+        sources,
+        degraded: true,
+        degradedReason: 'response_locale_mismatch',
+        context,
+      };
+    }
     return {
-      text: appendSourceNote(result.text, result.sources, localized.sourceLabel),
-      sources: dedupeSources(result.sources).slice(0, 6),
+      text: appendSourceNote(result.text, sources, localized.sourceLabel),
+      sources,
       degraded: false,
-      context: {
-        tokenEstimate: compiledContext.tokenEstimate,
-        cacheablePrefixHash: compiledContext.cacheablePrefixHash,
-        localContextIncluded: false,
-        safeQueryPolicy: safeQuery.policy,
-      },
+      context,
     };
   } catch (err) {
     rethrowUsagePersistenceFailure(err);
@@ -252,6 +283,15 @@ function ensureUsableResearchResult(
   if (isResearchProviderRefusal(text)) {
     throw new Error('research_provider_refusal');
   }
+  // A named response-language contradiction is terminal and is repaired by
+  // the caller. Do not classify it as an incomplete answer and retry a paid
+  // provider call for text that must never be surfaced.
+  if (hasResearchResponseLocaleMismatch(language, text)) {
+    return {
+      ...result,
+      text,
+    };
+  }
   const completeness = assessChatResearchAnswerCompleteness(text);
   if (!completeness.ok) {
     throw new Error(`research_provider_incomplete_answer:${completeness.reason}`);
@@ -260,6 +300,25 @@ function ensureUsableResearchResult(
     ...result,
     text,
   };
+}
+
+function hasResearchResponseLocaleMismatch(
+  language: NexusChatLanguage,
+  text: string,
+): boolean {
+  const fidelity = checkResponseLocaleFidelity(language, text);
+  if (!fidelity.ok) return true;
+  const strictShortLanguage = detectStrictShortResponseLanguage(text, fidelity.expected);
+  if (
+    language === 'mixed'
+    && (strictShortLanguage === 'es' || fidelity.detected === 'es')
+  ) {
+    return true;
+  }
+  const expected = expectedLanguageForLocale(language);
+  return strictShortLanguage !== null
+    && expected !== 'unknown'
+    && strictShortLanguage !== expected;
 }
 
 function canUseOpenAIWebSearchFallback(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -375,19 +434,14 @@ function researchLocalization(language: NexusChatLanguage): {
   sourceLabel: string;
   privateContextBlocked: string;
   webUnavailable: string;
+  languageMismatch: string;
 } {
-  if (language === 'es') {
-    return {
-      sourceLabel: 'Fuentes consultadas',
-      privateContextBlocked: 'No puedo enviar contexto privado de Nexus a la búsqueda web. Puedo responder con datos locales verificados o reformular la búsqueda sin esos detalles.',
-      webUnavailable: 'Necesito consultar fuentes web actuales para responder con confianza, pero la búsqueda web no está disponible ahora. Inténtalo de nuevo en unos instantes o pide una respuesta general sin datos actuales.',
-    };
-  }
   if (language === 'pt') {
     return {
       sourceLabel: 'Fontes consultadas',
       privateContextBlocked: 'Não posso enviar contexto privado do Nexus para pesquisa web. Posso responder com dados locais verificados ou reformular a pesquisa sem esses detalhes.',
       webUnavailable: 'Eu precisaria consultar fontes atuais para responder isso com confiança, mas a pesquisa web não está disponível agora. Tente novamente em instantes ou peça uma resposta geral sem dados atuais.',
+      languageMismatch: 'Encontrei fontes atuais, mas não consegui apresentar a resposta com segurança em português. Tenta novamente dentro de instantes.',
     };
   }
   if (language === 'mixed') {
@@ -395,12 +449,14 @@ function researchLocalization(language: NexusChatLanguage): {
       sourceLabel: 'Sources consulted',
       privateContextBlocked: 'I cannot send private Nexus context to web search. I can answer from verified local data or reformulate the research without those details.',
       webUnavailable: 'I need current web sources to answer that confidently, but web research is unavailable right now. Try again shortly, or ask for a general answer without current data.',
+      languageMismatch: 'I found current sources but could not safely present the answer in the requested language. Try again shortly.',
     };
   }
   return {
     sourceLabel: 'Sources consulted',
     privateContextBlocked: 'I cannot send private Nexus context to web search. I can answer from verified local data or reformulate the research without those details.',
     webUnavailable: 'I need current web sources to answer that confidently, but web research is unavailable right now. Try again shortly, or ask for a general answer without current data.',
+    languageMismatch: 'I found current sources but could not safely present the answer in English. Try again shortly.',
   };
 }
 

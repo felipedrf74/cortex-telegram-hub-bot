@@ -113,6 +113,27 @@ describe('canonical staging gate Ollama integration', () => {
     }
   });
 
+  it('proves a persisted legacy Spanish preference falls back to English without rewriting it', () => {
+    const canonical = read('scripts/staging-smoke.sh');
+    const legacyTurn = canonical.indexOf(
+      "{ locale: 'es-419', expectedLocale: 'en-US'",
+    );
+    const englishTurn = canonical.indexOf(
+      "{ locale: 'en-US', expectedLocale: 'en-US'",
+    );
+    const portugueseTurn = canonical.indexOf("{ locale: 'pt-BR'");
+
+    expect(legacyTurn).toBeGreaterThan(0);
+    expect(legacyTurn).toBeLessThan(englishTurn);
+    expect(legacyTurn).toBeLessThan(portugueseTurn);
+    expect(canonical).toContain(
+      "if (turn.locale === 'es-419' && storedLanguage !== 'es-ES')",
+    );
+    expect(canonical).toContain(
+      "throw new Error('legacy Spanish preference was rewritten during compatibility smoke')",
+    );
+  });
+
   it('runs the exact-release policy smoke once in the existing sequential gate', () => {
     const canonical = read('scripts/staging-smoke.sh');
     const ollama = read('scripts/staging-smoke-ollama.sh');

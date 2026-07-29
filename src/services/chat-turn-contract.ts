@@ -133,9 +133,10 @@ function inferLanguage(text: string): NexusChatLanguage {
       'esse',
       'semana',
     ].includes(word));
-    if (ptOnlyHits.length === 0) return hasEn ? 'mixed' : 'es';
-    if (hasPt || hasEn) return 'mixed';
-    return 'es';
+    // Spanish remains detectable for safety/routing tolerance, but it is no
+    // longer a supported response language. Use the English fallback instead
+    // of leaking Portuguese or emitting a retired language contract.
+    return 'en';
   }
   if (hasPt && hasEn) {
     const nonProviderEnglishHits = [...enKeywords].filter((word) => !['calendar', 'connection', 'notification', 'decision'].includes(word));

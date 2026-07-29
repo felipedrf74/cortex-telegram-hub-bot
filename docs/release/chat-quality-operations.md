@@ -2,9 +2,26 @@
 
 Status: current
 Owner: Felipe
-Last verified: 2026-07-22
+Last verified: 2026-07-29
 
 One page for operating the production chat-quality loop (M22).
+
+## Supported response locales
+
+- Nexus chat supports English (`en-US`) and Portuguese (`pt-BR`, `pt-PT`).
+  Spanish is retired as a product response locale. Legacy `es-*` request
+  headers, Telegram locale values, and persisted `users.language='es-ES'`
+  preferences resolve to English without rewriting the stored row.
+- Spanish-authored user content and historical telemetry/evidence remain
+  readable and byte-preserved. Input-side Spanish safety recognizers remain
+  defense in depth; they do not make Spanish a selectable response locale.
+- Input-side routing aliases may continue recognizing Spanish-authored text
+  so legacy clients degrade safely to an English response. Registry examples,
+  release gates, and newly built golden corpus rows cover only supported
+  English and Portuguese output locales. Frozen historical release/eval
+  evidence is never rewritten. ChatV2 readiness reports expose historical
+  Spanish rows in a separate audit section; those rows never count toward
+  current English or Portuguese gates.
 
 ## Surfaces
 
@@ -88,13 +105,14 @@ One page for operating the production chat-quality loop (M22).
   when live-eval contract version, seed-profile version, and scenario-set
   hash match the frozen identity; incompatible evidence is labeled and emits
   no delta. Never use production or Felipe's real account.
-- Each live scenario is reset and seeded server-side before its turns. The v2
-  single-tenant profile runs 7 scenarios/18 turns, including one server-seeded
-  local-only task deletion that requires exact-target confirmation and passes
-  only after token-zero `/tasks/snapshot` read-back; reset removes only the
-  eval-owned task id and dependent rows within the dedicated scope. A run is
-  invalid if the authenticated preflight, preparation evidence, exact provider
-  budget, zero-production-data assertion, or final clean-SHA attestation fails.
+- Each live scenario is reset and seeded server-side before its turns. The
+  `single_tenant_day_to_day_v3` profile runs 7 scenarios/18 turns, including
+  one server-seeded local-only task deletion that requires exact-target
+  confirmation and passes only after token-zero `/tasks/snapshot` read-back;
+  reset removes only the eval-owned task id and dependent rows within the
+  dedicated scope. A run is invalid if the authenticated preflight, preparation
+  evidence, exact provider budget, zero-production-data assertion, or final
+  clean-SHA attestation fails.
 
 ## Weekly ritual
 
@@ -109,13 +127,60 @@ One page for operating the production chat-quality loop (M22).
    diagnostic only; a candidate must show PASS from signed paired behavior
    evidence (at least 50 samples, at least 0.95 parity, independent signoff,
    zero safety/quality/degraded regressions), an explicit retirable stage,
-   and a trailing-24h fallback rate at or below 2%.
+   and a trailing-24h fallback rate at or below 2%. Qualifying retirement
+   observations use only the immutable English/Portuguese projection of the
+   pre-implementation `chat_v2_legacy_parity_route_prompts@1.4.0` corpus.
+   Spanish, mixed, and pt-AO rows are excluded from that projection. The active
+   `1.5.0` supported-locale corpus is diagnostic/coverage-only because it was
+   authored during this implementation; it cannot qualify retirement evidence.
 6. If readiness, signed-behavior, or route-fallback regressions fired, stop the affected soak
    and follow the alert runbook link before any further ChatV2 promotion.
 
 ## Owner-gated steps (never automated)
 
 - Corpus labeling passes (`/routing-corpus`).
+- The one-time production removal of the eight exact retired Spanish
+  synthetic corpus fixtures. First deploy
+  `routing-corpus-builder@1.1.0`. Using the exact runtime SHA and artifact
+  digest attested by the passing production transaction and production health,
+  inspect the read-only plan:
+
+  ```text
+  npx tsx scripts/prune-spanish-routing-corpus.ts \
+    --inspect \
+    --db=<production-db-path> \
+    --runtime-sha=<deployed-full-sha> \
+    --artifact-digest=<deployed-artifact-sha256>
+  ```
+
+  Review the exact eight HMAC/text-digest row identities, cache identities,
+  accepted-snapshot count, canonical database path, release identity, and
+  `planDigest` in that output. Obtain Felipe's explicit approval for that exact
+  plan digest. Only then apply it:
+
+  ```text
+  NEXUS_RELEASE_OWNER_AUTHORIZED=1 \
+  npx tsx scripts/prune-spanish-routing-corpus.ts \
+    --apply \
+    --db=<production-db-path> \
+    --backup-dir=<protected-backup-directory> \
+    --runtime-sha=<deployed-full-sha> \
+    --artifact-digest=<deployed-artifact-sha256> \
+    --ack-plan=<sha256:plan-digest>
+  ```
+
+  Both modes require `CLASSIFY_SHADOW_HASH_SECRET`. Apply refuses before
+  creating the backup directory unless the owner authorization and exact plan
+  acknowledgement are both present. It re-inspects after backup and refuses
+  mutation if the state or release binding changed. The operation accepts only
+  all eight exact pending synthetic rows or zero, refuses
+  partial/labeled/snapshot-bound state, deletes matching cache hashes only, and
+  runs `PRAGMA integrity_check`. Its backup directory must be owned by the
+  operator with mode `0700`; the command creates and verifies the SQLite backup
+  with mode `0600` and checks that backup's integrity before opening the prune
+  transaction.
+  Re-run `npx tsx scripts/build-routing-corpus.ts` afterward. The supported
+  fixture queue is 224 unique items (109 English, 115 Portuguese).
 - `npx tsx scripts/run-routing-accuracy.ts --refresh-llm` (the only networked
   routing-accuracy path).
 - `npx tsx scripts/run-routing-accuracy.ts --gate --accept-snapshot`

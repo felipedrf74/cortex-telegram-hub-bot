@@ -232,9 +232,362 @@ describe('contract_only families — heuristics skipped, enrichment still applie
     expect(metadata.qualityGate).toBeUndefined();
     expect(response.responseBlocks).toBeDefined();
   });
+
+  it('does not treat Spanish-authored task titles as the language of deterministic English framing', () => {
+    const text = 'Tasks: Comprar leche para mañana; Llamar a mamá; Revisar reunión del lunes.';
+    const response = finalizeChatMessageResponse(
+      baseResponse({ text, routeMethod: 'fast-path' }),
+      baseCtx({
+        normalizedText: 'show my tasks',
+        stageFamily: 'fast_path',
+        locale: 'en-US',
+      }),
+    );
+
+    expect(response.text).toBe(text);
+    expect(response.metadata).not.toHaveProperty('responseLanguageGuard');
+  });
 });
 
 describe('full_gate families — adversarial hallucinated success is caught', () => {
+  it('replaces confidently Spanish model output when the retired locale resolves to English', () => {
+    const spanishText = 'Aquí tienes un resumen claro de tus prioridades para hoy y de las próximas reuniones.';
+    const response = finalizeChatMessageResponse(
+      baseResponse({
+        text: spanishText,
+        routeMethod: 'keyword',
+        metadata: { type: 'legacy_domain_answer' },
+      }),
+      baseCtx({
+        normalizedText: 'resume mis prioridades de hoy',
+        stageFamily: 'legacy_response',
+        locale: 'es-419',
+        actionability: 'answer_only',
+        verificationStatus: 'not_required',
+      }),
+    );
+
+    expect(response.text).toBe('I could not safely present that response in English. Please try again.');
+    expect(response.text).not.toContain('Aquí tienes');
+    expect(JSON.stringify(response.responseBlocks)).not.toContain('Aquí tienes');
+    const metadata = response.metadata as Record<string, any>;
+    expect(metadata.chatReasoning).toMatchObject({
+      language: 'en',
+      fallbackUsed: true,
+      fallback: {
+        fallbackType: 'deterministic_summary',
+        fallbackReason: 'response_locale_mismatch_blocked',
+        retryable: true,
+      },
+    });
+    expect(metadata.responseQuality).toMatchObject({
+      status: 'repaired',
+      issues: expect.arrayContaining(['response_locale_mismatch']),
+    });
+    expect(metadata.responseLanguageGuard).toMatchObject({
+      action: 'replaced',
+      reason: 'response_locale_mismatch',
+      expected: 'en',
+      detected: 'es',
+    });
+    expect(metadata.responseLanguage).toMatchObject({
+      expected: 'en',
+      detected: 'en',
+      matchesExpected: true,
+    });
+  });
+
+  it('replaces confidently Portuguese output when a retired Spanish locale resolves to English', () => {
+    const portugueseText = 'Não vou alterar nenhum dado. Posso ajudar a organizar as prioridades quando você quiser.';
+    const response = finalizeChatMessageResponse(
+      baseResponse({
+        text: portugueseText,
+        routeMethod: 'keyword',
+        metadata: { type: 'legacy_domain_answer' },
+      }),
+      baseCtx({
+        normalizedText: 'resume mis prioridades de hoy',
+        stageFamily: 'legacy_response',
+        locale: 'es-419',
+        actionability: 'execute',
+        verificationStatus: 'pending',
+      }),
+    );
+
+    expect(response.text).toBe('I could not safely present that response in English. Please try again.');
+    expect(response.text).not.toContain('Não vou alterar');
+    expect(JSON.stringify(response.responseBlocks)).not.toContain('Não vou alterar');
+    expect(response.metadata).toMatchObject({
+      chatReasoning: {
+        language: 'en',
+        fallbackUsed: true,
+        actionability: 'blocked',
+        verificationStatus: 'blocked',
+        fallback: {
+          fallbackReason: 'response_locale_mismatch_blocked',
+        },
+      },
+      responseQuality: {
+        issues: expect.arrayContaining([
+          'fallback_not_allowed_for_operation',
+          'success_requires_verifier',
+          'response_locale_mismatch',
+        ]),
+      },
+      responseLanguageGuard: {
+        action: 'replaced',
+        reason: 'response_locale_mismatch',
+        expected: 'en',
+        detected: 'pt',
+      },
+      responseLanguage: {
+        expected: 'en',
+        detected: 'en',
+        matchesExpected: true,
+      },
+    });
+  });
+
+  it('replaces confidently Spanish model output under the Portuguese response contract', () => {
+    const response = finalizeChatMessageResponse(
+      baseResponse({
+        text: 'Aquí tienes un resumen claro de tus prioridades para hoy.',
+        routeMethod: 'keyword',
+        metadata: { type: 'legacy_domain_answer' },
+      }),
+      baseCtx({
+        normalizedText: 'resume as minhas prioridades de hoje',
+        stageFamily: 'legacy_response',
+        locale: 'pt-BR',
+        actionability: 'answer_only',
+        verificationStatus: 'not_required',
+      }),
+    );
+
+    expect(response.text).toBe(
+      'Não consegui apresentar essa resposta com segurança em português. Tente novamente.',
+    );
+    expect(response.text).not.toContain('Aquí tienes');
+    expect(response.metadata).toMatchObject({
+      chatReasoning: {
+        language: 'pt',
+        fallbackUsed: true,
+      },
+      responseLanguageGuard: {
+        action: 'replaced',
+        expected: 'pt',
+        detected: 'es',
+      },
+      responseLanguage: {
+        expected: 'pt',
+        detected: 'pt',
+        matchesExpected: true,
+      },
+    });
+  });
+
+  it('replaces confidently English model output under the Portuguese response contract', () => {
+    const response = finalizeChatMessageResponse(
+      baseResponse({
+        text: 'Here is a clear answer with the current priorities and the next steps for your day.',
+        routeMethod: 'keyword',
+        metadata: { type: 'legacy_domain_answer' },
+      }),
+      baseCtx({
+        normalizedText: 'resume as minhas prioridades de hoje',
+        stageFamily: 'legacy_response',
+        locale: 'pt-BR',
+        actionability: 'answer_only',
+        verificationStatus: 'not_required',
+      }),
+    );
+
+    expect(response.text).toBe(
+      'Não consegui apresentar essa resposta com segurança em português. Tente novamente.',
+    );
+    expect(response.metadata).toMatchObject({
+      responseLanguageGuard: {
+        action: 'replaced',
+        reason: 'response_locale_mismatch',
+        expected: 'pt',
+        detected: 'en',
+      },
+      responseLanguage: {
+        expected: 'pt',
+        detected: 'pt',
+        matchesExpected: true,
+      },
+    });
+  });
+
+  it('fails closed on a short unambiguous Spanish model reply', () => {
+    const response = finalizeChatMessageResponse(
+      baseResponse({
+        text: 'Aquí tienes.',
+        routeMethod: 'keyword',
+        metadata: { type: 'legacy_domain_answer' },
+      }),
+      baseCtx({
+        normalizedText: 'resume mis prioridades',
+        stageFamily: 'legacy_response',
+        locale: 'es-419',
+        actionability: 'answer_only',
+        verificationStatus: 'not_required',
+      }),
+    );
+
+    expect(response.text).toBe('I could not safely present that response in English. Please try again.');
+    expect(response.metadata).toMatchObject({
+      responseLanguageGuard: {
+        action: 'replaced',
+        expected: 'en',
+        detected: 'es',
+      },
+      qualityGate: {
+        action: 'replaced',
+        issues: ['response_locale_mismatch'],
+        originalText: '[response-language mismatch withheld]',
+      },
+      responseQuality: {
+        qualityGateReason: 'response_locale_mismatch',
+      },
+    });
+  });
+
+  it.each([
+    'Gracias.',
+    'Entendido.',
+    'De acuerdo.',
+    'Here you go. Gracias por esperar.',
+  ])('fails closed on retired Spanish short or mixed model output: %s', (text) => {
+    const response = finalizeChatMessageResponse(
+      baseResponse({
+        text,
+        routeMethod: 'keyword',
+        metadata: { type: 'legacy_domain_answer' },
+      }),
+      baseCtx({
+        normalizedText: 'show my priorities',
+        stageFamily: 'legacy_response',
+        locale: 'en-US',
+        actionability: 'answer_only',
+        verificationStatus: 'not_required',
+      }),
+    );
+
+    expect(response.text).toBe('I could not safely present that response in English. Please try again.');
+    expect(response.text).not.toBe(text);
+    expect(response.metadata).toMatchObject({
+      responseLanguageGuard: {
+        action: 'replaced',
+        expected: 'en',
+        detected: 'es',
+      },
+    });
+  });
+
+  it('fails closed on a detector-named Spanish reply with moderate evidence', () => {
+    const response = finalizeChatMessageResponse(
+      baseResponse({
+        text: 'Tienes tres tareas atrasadas.',
+        routeMethod: 'keyword',
+        metadata: { type: 'legacy_domain_answer' },
+      }),
+      baseCtx({
+        normalizedText: 'muéstrame mis tareas',
+        stageFamily: 'legacy_response',
+        locale: 'es-419',
+        actionability: 'answer_only',
+        verificationStatus: 'not_required',
+      }),
+    );
+
+    expect(response.text).toBe('I could not safely present that response in English. Please try again.');
+    expect(response.metadata).toMatchObject({
+      responseLanguageGuard: {
+        action: 'replaced',
+        expected: 'en',
+        detected: 'es',
+      },
+    });
+  });
+
+  it('keeps supported English framing around Spanish-authored entity titles', () => {
+    const text = 'Here are your tasks: Comprar leche para mañana; Llamar a mamá; Revisar reunión del lunes.';
+    const response = finalizeChatMessageResponse(
+      baseResponse({
+        text,
+        routeMethod: 'keyword',
+        metadata: { type: 'legacy_domain_answer' },
+      }),
+      baseCtx({
+        normalizedText: 'show my tasks',
+        stageFamily: 'legacy_response',
+        locale: 'en-US',
+        actionability: 'answer_only',
+        verificationStatus: 'not_required',
+      }),
+    );
+
+    expect(response.text).toBe(text);
+    expect(response.metadata).not.toHaveProperty('responseLanguageGuard');
+  });
+
+  it('does not treat a bare entity label as supported framing around Spanish prose', () => {
+    const leakedText = 'Tasks: Aquí tienes un resumen claro; revisa tus prioridades para hoy.';
+    const response = finalizeChatMessageResponse(
+      baseResponse({
+        text: leakedText,
+        routeMethod: 'keyword',
+        metadata: { type: 'legacy_domain_answer' },
+      }),
+      baseCtx({
+        normalizedText: 'show my tasks',
+        stageFamily: 'legacy_response',
+        locale: 'en-US',
+        actionability: 'answer_only',
+        verificationStatus: 'not_required',
+      }),
+    );
+
+    expect(response.text).toBe('I could not safely present that response in English. Please try again.');
+    expect(response.text).not.toContain('Aquí tienes');
+    expect(response.metadata).toMatchObject({
+      responseLanguageGuard: {
+        action: 'replaced',
+        reason: 'response_locale_mismatch',
+        expected: 'en',
+        detected: 'es',
+      },
+    });
+  });
+
+  it('blocks Spanish model output under a mixed EN/PT compatibility contract', () => {
+    const response = finalizeChatMessageResponse(
+      baseResponse({
+        text: 'La respuesta está en español y resume claramente las prioridades actuales.',
+        routeMethod: 'keyword',
+        metadata: { type: 'legacy_domain_answer' },
+      }),
+      baseCtx({
+        normalizedText: 'summarize prioridades atuais',
+        stageFamily: 'legacy_response',
+        locale: 'mixed',
+        actionability: 'answer_only',
+        verificationStatus: 'not_required',
+      }),
+    );
+
+    expect(response.text).toBe('I could not safely present that response in English. Please try again.');
+    expect(response.metadata).toMatchObject({
+      responseLanguageGuard: {
+        action: 'replaced',
+        expected: 'en',
+        detected: 'es',
+      },
+    });
+  });
+
   it('keeps the requested today-workout subject explicit in the final iOS envelope', () => {
     const providerText = 'Keep the run easy and conversational.';
     const response = finalizeChatMessageResponse(
@@ -432,6 +785,18 @@ describe('passthrough families', () => {
     const response = finalizeChatMessageResponse(envelope, baseCtx({ stageFamily: 'idempotent_replay' }));
     expect(response).toBe(envelope); // same reference, untouched
   });
+
+  it('does not rewrite a historical Spanish idempotent replay', () => {
+    const envelope = baseResponse({
+      routeMethod: 'idempotent-replay',
+      text: 'Aquí tienes el resultado guardado de la solicitud original.',
+    });
+    const response = finalizeChatMessageResponse(
+      envelope,
+      baseCtx({ stageFamily: 'idempotent_replay', locale: 'es-419' }),
+    );
+    expect(response).toBe(envelope);
+  });
 });
 
 describe('gate outcome counters', () => {
@@ -478,6 +843,27 @@ describe('gate outcome counters', () => {
       baseCtx({ actionability: 'execute', verificationStatus: 'pending' }),
     );
     expect(getChatQualityGateOutcomeCounters().verified_kept).toBe(1);
+  });
+
+  it('counts a response-language replacement as replaced instead of pass', () => {
+    finalizeChatMessageResponse(
+      baseResponse({
+        text: 'Aquí tienes un resumen claro de tus prioridades para hoy.',
+        routeMethod: 'keyword',
+      }),
+      baseCtx({
+        normalizedText: 'resume mis prioridades',
+        stageFamily: 'legacy_response',
+        locale: 'es-419',
+        actionability: 'answer_only',
+        verificationStatus: 'not_required',
+      }),
+    );
+
+    expect(getChatQualityGateOutcomeCounters()).toMatchObject({
+      pass: 0,
+      replaced: 1,
+    });
   });
 });
 
@@ -590,5 +976,54 @@ describe('governance — the /message stage pipeline has ONE terminal pipeline',
       .map((match) => match[1]!.trim())
       .filter((arg) => !arg.startsWith('{'));
     expect(terminalCalls).toEqual(['response']);
+  });
+
+  it('threads the resolved route locale into every model-backed stage finalizer', () => {
+    for (const stageFile of [
+      'v2-local-answer.ts',
+      'internet-research.ts',
+      'attachment.ts',
+      'legacy-tail.ts',
+    ]) {
+      const source = fs.readFileSync(
+        path.join(pipelineDir, 'stages', stageFile),
+        'utf8',
+      );
+      expect(source, stageFile).toMatch(
+        /finalizeChatMessageResponse\([\s\S]*?locale:\s*chatCoreV2RouteLocale/,
+      );
+    }
+  });
+
+  it('threads the resolved route locale through token-zero builders, cache keys, and finalizers', () => {
+    const stageExpectations = {
+      'cached-command.ts': [
+        /getCachedChatCommandResponse\([\s\S]*?chatCoreV2RouteLocale/,
+        /finalizeChatMessageResponse\([\s\S]*?locale:\s*chatCoreV2RouteLocale/,
+      ],
+      'fast-path.ts': [
+        /tryBuildFastPathChatResponse\([\s\S]*?chatCoreV2RouteLocale/,
+        /maybeCacheChatCommandResponse\([\s\S]*?chatCoreV2RouteLocale/,
+        /finalizeChatMessageResponse\([\s\S]*?locale:\s*chatCoreV2RouteLocale/,
+      ],
+      'authenticated-identity.ts': [
+        /tryBuildAuthenticatedIdentityResponse\([\s\S]*?chatCoreV2RouteLocale/,
+        /finalizeChatMessageResponse\([\s\S]*?locale:\s*chatCoreV2RouteLocale/,
+      ],
+      'training-plan-shortcut.ts': [
+        /tryBuildTrainingPlanShortcutResponse\([\s\S]*?chatCoreV2RouteLocale/,
+        /finalizeChatMessageResponse\([\s\S]*?locale:\s*chatCoreV2RouteLocale/,
+      ],
+    } as const;
+
+    for (const [stageFile, expectations] of Object.entries(stageExpectations)) {
+      const source = fs.readFileSync(
+        path.join(pipelineDir, 'stages', stageFile),
+        'utf8',
+      );
+      for (const expectation of expectations) {
+        expect(source, stageFile).toMatch(expectation);
+      }
+    }
   });
 });

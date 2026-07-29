@@ -3,6 +3,7 @@
 import { getContentCreatorProfile } from '../state/content-creator-profile';
 import { logger } from '../utils/logger';
 import { getCurrentContext } from '../utils/request-context';
+import { normalizeContentOutputLanguage } from './content-output-language';
 import { createInternalAttributionToken } from './internal-attribution';
 
 export function buildCurrentCreatorProfilePayload(
@@ -16,14 +17,17 @@ export function buildCurrentCreatorProfilePayload(
   internal_attribution_token?: string;
 } {
   const context = getCurrentContext();
-  const fallbackLanguage = String(languageHint || 'en-US').trim() || 'en-US';
+  const fallbackLanguage = normalizeContentOutputLanguage(languageHint);
   if (!context?.userId) {
     return { language: fallbackLanguage };
   }
   const tenantId = context.tenantId ?? context.userId;
   try {
     const profile = getContentCreatorProfile(context.userId, tenantId);
-    const language = profile.languagePreference?.trim() || fallbackLanguage;
+    const language = normalizeContentOutputLanguage(
+      profile.languagePreference,
+      fallbackLanguage,
+    );
     const lines = [
       'Creator scope: current authenticated Nexus Hub user only.',
       `Primary output language: ${language}.`,

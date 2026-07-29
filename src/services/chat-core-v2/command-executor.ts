@@ -1624,40 +1624,33 @@ function buildTaskCreateResultResponse(input: {
   locale?: string | null;
 }): ChatCoreV2Response {
   const isPT = String(input.locale ?? '').toLowerCase().startsWith('pt');
-  const isES = String(input.locale ?? '').toLowerCase().startsWith('es');
   const verified = input.status === 'verified';
   const subtasks = input.subtasks?.map((subtask) => String(subtask).trim()).filter(Boolean) ?? [];
   const summary = verified
     ? subtasks.length > 0
       ? isPT
         ? `Feito — criei a tarefa "${input.title}" com ${subtasks.length} subtarefa(s).`
-        : isES
-          ? `Listo — creé la tarea "${input.title}" con ${subtasks.length} subtarea(s).`
-          : `Done — I created the task "${input.title}" with ${subtasks.length} subtask(s).`
+        : `Done — I created the task "${input.title}" with ${subtasks.length} subtask(s).`
       : isPT
         ? `Feito — criei a tarefa "${input.title}".`
-        : isES
-          ? `Listo — creé la tarea "${input.title}".`
-          : `Done — I created the task "${input.title}".`
+        : `Done — I created the task "${input.title}".`
     : isPT
       ? `Enviei o pedido, mas ainda não consegui verificar se "${input.title}" foi criada.`
-      : isES
-        ? `Envié la solicitud, pero todavía no pude verificar si "${input.title}" se creó.`
-        : `I sent the request, but I could not verify that "${input.title}" was created yet.`;
+      : `I sent the request, but I could not verify that "${input.title}" was created yet.`;
   return buildChatCoreV2CommandResultResponse({
     capability: input.capability,
     commandId: input.command.commandId,
     title: verified
-      ? isPT ? 'Tarefa criada' : isES ? 'Tarea creada' : 'Task created'
-      : isPT ? 'Verificação pendente' : isES ? 'Verificación pendiente' : 'Verification pending',
+      ? isPT ? 'Tarefa criada' : 'Task created'
+      : isPT ? 'Verificação pendente' : 'Verification pending',
     summary,
     status: input.status,
     locale: input.locale,
     sourceEntityIds: typeof input.taskId === 'number' ? [`task:${input.taskId}`] : input.command.basedOn.entityIds,
     diff: [
-      { label: isPT ? 'Tarefa' : isES ? 'Tarea' : 'Task', after: input.title },
+      { label: isPT ? 'Tarefa' : 'Task', after: input.title },
       ...(subtasks.length > 0
-        ? [{ label: isPT ? 'Subtarefas' : isES ? 'Subtareas' : 'Subtasks', after: subtasks.join(', ') }]
+        ? [{ label: isPT ? 'Subtarefas' : 'Subtasks', after: subtasks.join(', ') }]
         : []),
     ],
   });
@@ -1674,44 +1667,37 @@ function buildTaskCompleteResultResponse(input: {
   locale?: string | null;
 }): ChatCoreV2Response {
   const isPT = String(input.locale ?? '').toLowerCase().startsWith('pt');
-  const isES = String(input.locale ?? '').toLowerCase().startsWith('es');
   const completedCount = input.completedCount && input.completedCount > 1 ? input.completedCount : 1;
   const verified = input.status === 'verified';
   const summary = verified
     ? completedCount > 1
       ? isPT
         ? `Feito — marquei ${completedCount} tarefas chamadas "${input.title}" como concluídas.`
-        : isES
-          ? `Listo — marqué ${completedCount} tareas llamadas "${input.title}" como completadas.`
-          : `Done — I marked ${completedCount} tasks named "${input.title}" as done.`
+        : `Done — I marked ${completedCount} tasks named "${input.title}" as done.`
       : isPT
         ? `Feito — marquei "${input.title}" como concluída.`
-        : isES
-          ? `Listo — marqué "${input.title}" como completada.`
-          : `Done — I marked "${input.title}" as done.`
+        : `Done — I marked "${input.title}" as done.`
     : isPT
       ? `Enviei o pedido, mas ainda não consegui verificar se "${input.title}" foi concluída.`
-      : isES
-        ? `Envié la solicitud, pero todavía no pude verificar si "${input.title}" se completó.`
-        : `I sent the request, but I could not verify that "${input.title}" was completed yet.`;
-  const beforeStatus = isPT ? 'Pendente' : isES ? 'Pendiente' : 'Pending';
+      : `I sent the request, but I could not verify that "${input.title}" was completed yet.`;
+  const beforeStatus = isPT ? 'Pendente' : 'Pending';
   const afterStatus = verified
-    ? isPT ? 'Concluída' : isES ? 'Completada' : 'Done'
-    : isPT ? 'Verificação pendente' : isES ? 'Verificación pendiente' : 'Verification pending';
+    ? isPT ? 'Concluída' : 'Done'
+    : isPT ? 'Verificação pendente' : 'Verification pending';
   return buildChatCoreV2CommandResultResponse({
     capability: input.capability,
     commandId: input.command.commandId,
     title: verified
-      ? isPT ? 'Tarefa concluída' : isES ? 'Tarea completada' : 'Task completed'
-      : isPT ? 'Verificação pendente' : isES ? 'Verificación pendiente' : 'Verification pending',
+      ? isPT ? 'Tarefa concluída' : 'Task completed'
+      : isPT ? 'Verificação pendente' : 'Verification pending',
     summary,
     status: input.status,
     locale: input.locale,
     sourceEntityIds: (input.taskIds && input.taskIds.length > 0 ? input.taskIds : [input.taskId])
       .map((taskId) => `task:${taskId}`),
     diff: [
-      { label: isPT ? 'Tarefa' : isES ? 'Tarea' : 'Task', after: input.title },
-      { label: isPT ? 'Estado' : isES ? 'Estado' : 'Status', before: beforeStatus, after: afterStatus },
+      { label: isPT ? 'Tarefa' : 'Task', after: input.title },
+      { label: isPT ? 'Estado' : 'Status', before: beforeStatus, after: afterStatus },
     ],
   });
 }
@@ -1856,19 +1842,12 @@ function decisionDomainActionCopy(
         afterStatus: 'Aprovado',
         effect: 'Aprovação confirmada na origem',
       }
-      : locale === 'es'
-        ? {
-          title: verified ? 'Contenido aprobado' : 'Verificación pendiente',
-          summary: verified ? `Listo — aprobé "${title}".` : `Todavía no pude confirmar la aprobación de "${title}".`,
-          afterStatus: 'Aprobado',
-          effect: 'Aprobación confirmada en el origen',
-        }
-        : {
-          title: verified ? 'Content approved' : 'Verification pending',
-          summary: verified ? `Done — I approved "${title}".` : `I could not confirm approval of "${title}" yet.`,
-          afterStatus: 'Approved',
-          effect: 'Approval confirmed in source state',
-        };
+      : {
+        title: verified ? 'Content approved' : 'Verification pending',
+        summary: verified ? `Done — I approved "${title}".` : `I could not confirm approval of "${title}" yet.`,
+        afterStatus: 'Approved',
+        effect: 'Approval confirmed in source state',
+      };
   }
   if (actionId === 'request_rewrite') {
     return isPT
@@ -1878,19 +1857,12 @@ function decisionDomainActionCopy(
         afterStatus: 'Alterações pedidas',
         effect: 'Pedido confirmado na origem',
       }
-      : locale === 'es'
-        ? {
-          title: verified ? 'Cambios solicitados' : 'Verificación pendiente',
-          summary: verified ? `Listo — pedí cambios para "${title}".` : `Todavía no pude confirmar los cambios para "${title}".`,
-          afterStatus: 'Cambios solicitados',
-          effect: 'Solicitud confirmada en el origen',
-        }
-        : {
-          title: verified ? 'Changes requested' : 'Verification pending',
-          summary: verified ? `Done — I requested changes for "${title}".` : `I could not confirm the change request for "${title}" yet.`,
-          afterStatus: 'Changes requested',
-          effect: 'Request confirmed in source state',
-        };
+      : {
+        title: verified ? 'Changes requested' : 'Verification pending',
+        summary: verified ? `Done — I requested changes for "${title}".` : `I could not confirm the change request for "${title}" yet.`,
+        afterStatus: 'Changes requested',
+        effect: 'Request confirmed in source state',
+      };
   }
   return isPT
     ? {
@@ -1901,23 +1873,14 @@ function decisionDomainActionCopy(
       afterStatus: 'Correção aceite',
       effect: 'Registo atualizado sem ação externa',
     }
-    : locale === 'es'
-      ? {
-        title: verified ? 'Corrección aceptada' : 'Verificación pendiente',
-        summary: verified
-          ? `Acepté la corrección para "${title}". No se ejecutó ninguna acción externa; el siguiente intento requiere una nueva confirmación.`
-          : `Todavía no pude confirmar la corrección para "${title}".`,
-        afterStatus: 'Corrección aceptada',
-        effect: 'Registro actualizado sin acción externa',
-      }
-      : {
-        title: verified ? 'Correction accepted' : 'Verification pending',
-        summary: verified
-          ? `I accepted the correction for "${title}". No provider action ran; a fresh confirmation is required before any retry.`
-          : `I could not confirm the correction for "${title}" yet.`,
-        afterStatus: 'Correction accepted',
-        effect: 'Review state recorded without a provider action',
-      };
+    : {
+      title: verified ? 'Correction accepted' : 'Verification pending',
+      summary: verified
+        ? `I accepted the correction for "${title}". No provider action ran; a fresh confirmation is required before any retry.`
+        : `I could not confirm the correction for "${title}" yet.`,
+      afterStatus: 'Correction accepted',
+      effect: 'Review state recorded without a provider action',
+    };
 }
 
 function decisionDismissResultCopy(
@@ -1939,14 +1902,6 @@ function decisionDismissResultCopy(
       summary: verified
         ? `Feito — dispensei "${title}" do Decision Center.`
         : `Enviei o pedido, mas ainda não consegui verificar se "${title}" foi dispensada do Decision Center.`,
-    };
-  }
-  if (locale === 'es') {
-    return {
-      title: verified ? 'Decisión descartada' : 'Verificación pendiente',
-      summary: verified
-        ? `Listo — descarté "${title}" del Decision Center.`
-        : `Envié la solicitud, pero todavía no pude verificar si "${title}" se descartó del Decision Center.`,
     };
   }
   return {
@@ -1973,9 +1928,6 @@ function decisionStatusCopy(locale: ChatCoreV2Locale): {
   if (locale === 'pt-PT') {
     return { decision: 'Decisão', status: 'Estado', effect: 'Efeito', active: 'Ativa', dismissed: 'Dispensada', removed: 'Removida da fila ativa', verificationPending: 'Verificação pendente', verificationPendingEffect: 'Sem confirmação de remoção' };
   }
-  if (locale === 'es') {
-    return { decision: 'Decisión', status: 'Estado', effect: 'Efecto', active: 'Activa', dismissed: 'Descartada', removed: 'Retirada de la cola activa', verificationPending: 'Verificación pendiente', verificationPendingEffect: 'Sin confirmación de retirada' };
-  }
   return { decision: 'Decision', status: 'Status', effect: 'Effect', active: 'Active', dismissed: 'Dismissed', removed: 'Removed from active queue', verificationPending: 'Verification pending', verificationPendingEffect: 'Removal not confirmed' };
 }
 
@@ -2001,14 +1953,6 @@ function decisionSnoozeResultCopy(
         : `Enviei o pedido, mas ainda não consegui verificar se "${title}" foi adiada no Decision Center.`,
     };
   }
-  if (locale === 'es') {
-    return {
-      title: verified ? 'Decisión pausada' : 'Verificación pendiente',
-      summary: verified
-        ? `Listo — pausé "${title}" en Decision Center durante ${duration}.`
-        : `Envié la solicitud, pero todavía no pude verificar si "${title}" se pausó en Decision Center.`,
-    };
-  }
   return {
     title: verified ? 'Decision snoozed' : 'Verification pending',
     summary: verified
@@ -2032,9 +1976,6 @@ function decisionSnoozeStatusCopy(locale: ChatCoreV2Locale): {
   if (locale === 'pt-PT') {
     return { decision: 'Decisão', status: 'Estado', until: 'Até', active: 'Ativa', snoozed: 'Adiada', verificationPending: 'Verificação pendente', verificationPendingEffect: 'Sem confirmação de adiamento' };
   }
-  if (locale === 'es') {
-    return { decision: 'Decisión', status: 'Estado', until: 'Hasta', active: 'Activa', snoozed: 'Pausada', verificationPending: 'Verificación pendiente', verificationPendingEffect: 'Sin confirmación de pausa' };
-  }
   return { decision: 'Decision', status: 'Status', until: 'Until', active: 'Active', snoozed: 'Snoozed', verificationPending: 'Verification pending', verificationPendingEffect: 'Snooze not confirmed' };
 }
 
@@ -2053,12 +1994,6 @@ function notificationSnoozeResultCopy(
     return {
       title: 'Notificação pausada',
       summary: `Feito — pausei "${title}" durante ${duration}.`,
-    };
-  }
-  if (locale === 'es') {
-    return {
-      title: 'Notificación pausada',
-      summary: `Listo — pausé "${title}" durante ${duration}.`,
     };
   }
   return {
@@ -2080,9 +2015,6 @@ function notificationStatusCopy(locale: ChatCoreV2Locale): {
   if (locale === 'pt-PT') {
     return { notification: 'Notificação', status: 'Estado', until: 'Até', unread: 'Por ler', snoozed: 'Pausada' };
   }
-  if (locale === 'es') {
-    return { notification: 'Notificación', status: 'Estado', until: 'Hasta', unread: 'Sin leer', snoozed: 'Pausada' };
-  }
   return { notification: 'Notification', status: 'Status', until: 'Until', unread: 'Unread', snoozed: 'Snoozed' };
 }
 
@@ -2091,11 +2023,9 @@ function formatSnoozeDuration(minutes: number, locale: ChatCoreV2Locale): string
   if (safeMinutes % 60 === 0) {
     const hours = safeMinutes / 60;
     if (locale === 'en') return hours === 1 ? '1 hour' : `${hours} hours`;
-    if (locale === 'es') return hours === 1 ? '1 hora' : `${hours} horas`;
     return hours === 1 ? '1 hora' : `${hours} horas`;
   }
   if (locale === 'en') return safeMinutes === 1 ? '1 minute' : `${safeMinutes} minutes`;
-  if (locale === 'es') return safeMinutes === 1 ? '1 minuto' : `${safeMinutes} minutos`;
   return safeMinutes === 1 ? '1 minuto' : `${safeMinutes} minutos`;
 }
 

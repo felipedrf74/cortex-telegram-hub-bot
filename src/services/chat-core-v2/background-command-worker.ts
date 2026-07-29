@@ -44,6 +44,7 @@ import {
 import { recordChatV2CommandEvent } from './command-events';
 import { resolveKeepAliveForRole } from './model-residency-policy';
 import type { AICommandEnvelope, ChatCoreV2Domain } from './types';
+import { normalizeSupportedLang } from '../../utils/i18n';
 
 export interface ProcessBackgroundChatCommandResult {
   outcome: 'verified' | 'failed' | 'stale_completed';
@@ -120,6 +121,10 @@ export async function processBackgroundChatCommandJob(
   // them directly (explicit, no number leakage).
   const tenantIdStr = String(payload.tenantId);
   const userIdStr = String(payload.userId);
+  // Persisted jobs may outlive a product-locale retirement. Project their
+  // effective execution locale at the consumer boundary without rewriting
+  // the immutable queued payload or its historical evidence.
+  const executionLocale = normalizeSupportedLang(payload.locale, 'en-US');
 
   // ── STALE-ENVELOPE check: skip + mark COMPLETED (not failed). ──
   if (isStaleEnvelope(payload.expiresAt, now)) {
@@ -174,7 +179,7 @@ export async function processBackgroundChatCommandJob(
     capabilityId: payload.capabilityId,
     userId: Number(payload.userId),
     tenantId: Number(payload.tenantId),
-    locale: payload.locale,
+    locale: executionLocale,
     now,
   });
 

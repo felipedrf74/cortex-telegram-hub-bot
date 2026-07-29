@@ -145,6 +145,13 @@ describe('chat day-to-day simulation harness', () => {
             involvedSkills: ['training'],
           });
         }
+        if (req.clientMessageId?.includes('c1-ideas')) {
+          return liveEnvelopeResult({
+            text: 'Aqui estão ideias de conteúdo seguras para a publicação do lançamento.',
+            domain: 'content',
+            involvedSkills: ['content'],
+          });
+        }
         return liveEnvelopeResult({ text: 'Safe English response for the requested turn.' });
       },
       readSideEffect,
@@ -154,7 +161,7 @@ describe('chat day-to-day simulation harness', () => {
 
     expect(result.mode).toBe('local_engine');
     expect(result.profileCoverage).toMatchObject({
-      profileId: 'single_tenant_day_to_day_v2',
+      profileId: 'single_tenant_day_to_day_v3',
       declaredScenarioCount: 12,
       executedScenarioCount: 7,
       executedTurnCount: 18,
@@ -215,14 +222,16 @@ describe('chat day-to-day simulation harness', () => {
       text: expect.stringMatching(/treino/i),
     });
     expect(capturedLocales.find((turn) => turn.id.includes('c1-ideas'))).toMatchObject({
-      locale: 'es-419',
-      text: expect.stringMatching(/contenido/i),
+      locale: 'pt-PT',
+      text: expect.stringMatching(/conteúdo/i),
     });
-    expect(result.scenarios.flatMap((scenario) => scenario.turns.map((turn) => turn.expectedLanguage)))
-      .toEqual(expect.arrayContaining(['en', 'pt-BR', 'es-419']));
+    const expectedLanguages = result.scenarios
+      .flatMap((scenario) => scenario.turns.map((turn) => turn.expectedLanguage));
+    expect(expectedLanguages).toEqual(expect.arrayContaining(['en', 'pt-BR', 'pt-PT']));
+    expect(expectedLanguages.some((language) => /^es(?:-|$)/i.test(language ?? ''))).toBe(false);
   });
 
-  it('selects the same v2 mutation profile in real-provider mode without spending in tests', async () => {
+  it('selects the same v3 mutation profile in real-provider mode without spending in tests', async () => {
     const captured: string[] = [];
     const complete = vi.fn(async () => {
       throw new Error('judge completion must not run in this test');
@@ -248,7 +257,7 @@ describe('chat day-to-day simulation harness', () => {
     });
 
     expect(result.profileCoverage).toMatchObject({
-      profileId: 'single_tenant_day_to_day_v2',
+      profileId: 'single_tenant_day_to_day_v3',
       executedScenarioCount: 7,
       executedTurnCount: 18,
     });

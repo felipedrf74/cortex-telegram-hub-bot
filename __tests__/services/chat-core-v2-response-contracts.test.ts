@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   CHAT_CORE_V2_CAPABILITIES,
+  CHAT_CORE_V2_SUPPORTED_LOCALES,
   buildChatCoreV2ActionPreviewResponse,
   buildChatCoreV2ClarificationResponse,
   buildChatCoreV2CommandResultResponse,
@@ -53,10 +54,14 @@ function commandEnvelope(overrides: Partial<AICommandEnvelope> = {}): AICommandE
 }
 
 describe('Chat Core v2 response contracts', () => {
+  it('exposes only active product response locales', () => {
+    expect(CHAT_CORE_V2_SUPPORTED_LOCALES).toEqual(['en', 'pt-PT', 'pt-BR']);
+  });
+
   it('normalizes supported locales without changing user-provided copy', () => {
     expect(normalizeChatCoreV2Locale('pt-BR')).toBe('pt-BR');
     expect(normalizeChatCoreV2Locale('pt')).toBe('pt-PT');
-    expect(normalizeChatCoreV2Locale('es-ES')).toBe('es');
+    expect(normalizeChatCoreV2Locale('es-ES')).toBe('en');
     expect(normalizeChatCoreV2Locale('fr')).toBe('en');
 
     const capability = getChatCoreV2Capability('tasks.create') as CapabilityDefinition;

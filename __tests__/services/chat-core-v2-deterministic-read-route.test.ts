@@ -890,7 +890,7 @@ describe('Chat Core v2 deterministic read route', () => {
       ['Qual é meu treino hoje?', 'pt-BR', 'Você ainda não tem um plano de treino ativo.'],
       ['Qual é o meu treino hoje?', 'pt-PT', 'Ainda não tens um plano de treino ativo.'],
       ['Tenho algum plano de treino ativo agora?', 'pt-BR', 'Você ainda não tem um plano de treino ativo.'],
-      ['Tengo entrenamiento hoy?', 'es', 'Aún no tienes un plan de entrenamiento activo.'],
+      ['Tengo entrenamiento hoy?', 'es', 'You do not have an active training plan yet.'],
     ] as const) {
       const result = tryBuildChatCoreV2DeterministicReadRoute({
         normalizedText,
@@ -1288,6 +1288,27 @@ describe('Chat Core v2 deterministic read route', () => {
       },
     });
     expect(result?.contextPack.contextHash).toMatch(/^[a-f0-9]{16}$/);
+  });
+
+  it('renders a retired Spanish-authored task read in the resolved English locale', () => {
+    vi.mocked(listTasksForUser).mockReturnValue([
+      task({ id: 1, title: 'Review proposal', dueDate: '2026-05-24', priority: 3 }),
+    ]);
+
+    const result = tryBuildChatCoreV2DeterministicReadRoute({
+      normalizedText: 'Muestra mis tareas de hoy',
+      userId: 42,
+      tenantId: 84,
+      locale: 'en-US',
+      timezone: 'Europe/Lisbon',
+      now: FIXED_NOW,
+      env: ENABLED_ENV,
+    });
+
+    expect(result?.response.locale).toBe('en');
+    expect(result?.response.text).toContain('You have 1 open task.');
+    expect(result?.response.text).not.toContain('Você tem');
+    expect(result?.response.text).not.toContain('Tens');
   });
 
   it('answers Secretary agenda summary questions from the tenant-scoped agenda ledger', () => {

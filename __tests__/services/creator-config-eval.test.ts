@@ -119,6 +119,8 @@ describe('creator-config: prompts keep owner profile out of shared app-facing de
     expect(topicGen).not.toContain('{{CREATOR_CONFIG}}');
     expect(topicGen).not.toContain('Felipe');
     expect(topicGen).not.toContain('The Operator');
+    expect(topicGen).toContain('{{OUTPUT_LANGUAGE_CONTRACT}}');
+    expect(topicGen.toLowerCase()).not.toContain('mirror the language');
   });
 
   it('content.md does NOT duplicate worldview inline', () => {

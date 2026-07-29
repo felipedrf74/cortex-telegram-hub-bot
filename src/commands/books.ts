@@ -18,6 +18,7 @@ import {
   AiBudgetError,
   withAiBudgetReservation,
 } from '../services/cost-guardrail';
+import { normalizeContentOutputLanguage } from '../services/content-output-language';
 import { createInternalAttributionToken } from '../services/internal-attribution';
 import { getContentCreatorProfile } from '../state/content-creator-profile';
 import {
@@ -129,11 +130,11 @@ async function extractAndStore(title: string, author: string, scope?: PortalBook
     // services/content-engine.ts. (Quarter audit item.)
     const requestId = getCurrentRequestId() || generateRequestId();
     let creatorProfile: string | undefined;
-    let language = 'en-US';
+    let language: ReturnType<typeof normalizeContentOutputLanguage> = 'en-US';
     if (scope) {
       try {
         const profile = getContentCreatorProfile(scope.userId, scope.tenantId);
-        language = profile.languagePreference?.trim() || language;
+        language = normalizeContentOutputLanguage(profile.languagePreference, language);
         creatorProfile = [
           'Creator scope: current authenticated Nexus Hub user only.',
           `Primary output language: ${language}.`,

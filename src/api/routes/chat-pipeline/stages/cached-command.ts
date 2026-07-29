@@ -29,10 +29,15 @@ export const cachedCommandStage: ChatStage = {
     const {
       res, userId, tenantId, normalizedText, normalizedTextLower,
       scopedClientMessageId, userMessageId, chatRequestId, latency,
-      recordDeterministicReadEvidence,
+      chatCoreV2RouteLocale, recordDeterministicReadEvidence,
     } = preparedChatTurnCtx(ctx);
 
-    const cached = getCachedChatCommandResponse(userId, normalizedTextLower, tenantId);
+    const cached = getCachedChatCommandResponse(
+      userId,
+      normalizedTextLower,
+      tenantId,
+      chatCoreV2RouteLocale,
+    );
     if (!cached) return { kind: 'continue' };
 
     recordChatStage(chatRequestId, 'cached_command');
@@ -49,6 +54,7 @@ export const cachedCommandStage: ChatStage = {
       compositionMode: 'templated',
       groundingFacts: [deterministicReadGroundingFact('chat.fast_path_cache')],
       stageFamily: 'cached_command',
+      locale: chatCoreV2RouteLocale,
     });
     persistExchange(userId, userMessageId, normalizedText, cachedResponse.id, cachedResponse, tenantId, {
       clientMessageId: scopedClientMessageId,

@@ -8,7 +8,7 @@ import type {
   NotificationSourceSkill,
 } from './notification-orchestrator';
 import { apnsBodyMoved, apnsBodyNeedsChoice } from './secretary-apns-anchoring';
-import type { Lang } from '../utils/i18n';
+import { normalizeSupportedLang, type Lang } from '../utils/i18n';
 import type { NormalizedDecisionAction } from './decision-action-contract';
 import type { ConflictComparisonAction, ConflictEvaluation } from './decision-conflict-evaluator';
 
@@ -1553,12 +1553,10 @@ function normalizeDecisionTimezone(timezone?: string | null): string {
 }
 
 function normalizeDecisionLocale(locale?: string | null): string {
-  const candidate = typeof locale === 'string' && locale.trim() ? locale.trim() : 'en-US';
-  try {
-    return Intl.DateTimeFormat.supportedLocalesOf([candidate])[0] ?? 'en-US';
-  } catch {
-    return 'en-US';
-  }
+  // Decision records and user rows can outlive a product-locale retirement.
+  // Project the effective renderer locale without rewriting persisted context
+  // or historical evidence.
+  return normalizeSupportedLang(locale, 'en-US');
 }
 
 function isValidWindow(startAt?: string | null, endAt?: string | null): boolean {

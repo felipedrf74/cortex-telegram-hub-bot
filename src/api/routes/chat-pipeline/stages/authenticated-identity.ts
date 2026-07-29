@@ -30,10 +30,15 @@ export const authenticatedIdentityStage: ChatStage = {
     const {
       res, userId, tenantId, normalizedText, normalizedTextLower,
       scopedClientMessageId, userMessageId, chatRequestId, latency,
-      recordDeterministicReadEvidence,
+      chatCoreV2RouteLocale, recordDeterministicReadEvidence,
     } = preparedChatTurnCtx(ctx);
 
-    const identityResponse = tryBuildAuthenticatedIdentityResponse(normalizedText, normalizedTextLower, userId);
+    const identityResponse = tryBuildAuthenticatedIdentityResponse(
+      normalizedText,
+      normalizedTextLower,
+      userId,
+      chatCoreV2RouteLocale,
+    );
     if (!identityResponse) return { kind: 'continue' };
 
     recordChatStage(chatRequestId, 'authenticated_identity');
@@ -52,6 +57,7 @@ export const authenticatedIdentityStage: ChatStage = {
       compositionMode: 'templated',
       groundingFacts: [deterministicReadGroundingFact('auth.session')],
       stageFamily: 'authenticated_identity',
+      locale: chatCoreV2RouteLocale,
     });
     rememberChatActiveDomain(userId, conversationDomain, Date.now(), tenantId);
     persistExchange(userId, userMessageId, normalizedText, response.id, response, tenantId, {

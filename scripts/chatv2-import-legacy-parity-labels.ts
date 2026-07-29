@@ -9,15 +9,19 @@ import dotenv from 'dotenv';
 import {
   CHAT_V2_LEGACY_PARITY_REVIEW_RUBRIC_VERSION,
   buildChatV2LegacyParityEvidenceInput,
+  buildChatV2RetirementObserverCorpusBinding,
+  deleteExactCurrentChatV2RetirementEvidenceRows,
   validateChatV2LegacyParityLabel,
   validateChatV2LegacyParityObservation,
   type ChatV2LegacyParityLabel,
   type ChatV2LegacyParityObservation,
+  type ChatV2RetirementObserverCorpusBinding,
 } from '../src/services/chat-legacy-parity-labels';
 import {
-  CHAT_V2_LEGACY_PARITY_ROUTE_CORPUS_META,
-  CHAT_V2_LEGACY_PARITY_ROUTE_PROMPT_VERSION,
+  CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_CORPUS_META,
+  CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_PROMPTS,
 } from '../src/services/chat-legacy-parity-route-prompts';
+import { buildLegacyParitySampleHmac } from '../src/services/chat-legacy-parity-observation-harness';
 
 dotenv.config({ quiet: true });
 dotenv.config({ path: '.env.local', override: false, quiet: true });
@@ -28,6 +32,9 @@ const peerReviewSignoffPath = readArg('--peer-review-signoff');
 const observationsPath = readArg('--observations');
 const manifestPath = readArg('--manifest');
 const rawReviewArtifactPath = readArg('--raw-review-artifact');
+const SAMPLE_IDENTITY_POLICY = 'route_index_request_language_expected_response_language_v1';
+const REQUEST_LANGUAGES = new Set(['en', 'pt-BR', 'pt-PT']);
+const EXPECTED_RESPONSE_LANGUAGES = new Set(['en', 'pt-BR', 'pt-PT']);
 const shouldWrite = hasFlag('--write');
 const shouldReplace = hasFlag('--replace-route-labels');
 const requestId = readArg('--request-id') ?? `legacy-parity-import-${new Date().toISOString()}`;
@@ -89,14 +96,18 @@ if (!labelsPath) {
 	      ensureLegacySchema(db);
 	      const tx = db.transaction(() => {
 	        if (shouldReplace) {
-	          db.prepare(`
-	            DELETE FROM chat_v2_legacy_retirement_evidence
-	            WHERE evidence_kind = 'route_exit'
-	              AND safe_metadata_json LIKE '%"parityLabelImport":true%'
-	          `).run();
+            deleteExactCurrentChatV2RetirementEvidenceRows(db, {
+              evidenceSource: 'runtime_route',
+              routeIds: parsed.labels.map((label) => label.routeId),
+              importMarker: 'parityLabelImport',
+            });
 	        }
 	        for (const label of parsed.labels) {
-	          const evidence = buildChatV2LegacyParityEvidenceInput({ label, requestId: `${requestId}:${label.routeId}` });
+	          const evidence = buildChatV2LegacyParityEvidenceInput({
+              label,
+              requestId: `${requestId}:${label.routeId}`,
+              observerCorpusBinding: provenance.observerCorpusBinding,
+            });
 	          const safeMetadataJson = JSON.stringify({
               ...evidence.safeMetadata,
               reviewCompletenessChecked: provenance.reviewCompletenessChecked ?? false,
@@ -265,6 +276,7 @@ function validateRuntimeReviewCompletenessIfNeeded(input: {
   rawReviewArtifactSha256?: string;
   rawReviewArtifactCompletenessChecked?: boolean;
   routeSampleCounts?: Record<string, number>;
+  observerCorpusBinding?: ChatV2RetirementObserverCorpusBinding;
 } | {
   ok: false;
   reason: string;
@@ -316,17 +328,44 @@ function validateRuntimeReviewCompletenessIfNeeded(input: {
   if (manifest.rawReviewArtifactSchemaVersion !== 'chat_v2_legacy_parity_raw_review_row.v1') {
     return { ok: false, reason: 'review_manifest_raw_artifact_schema_mismatch' };
   }
-  if (manifest.routePromptVersion !== CHAT_V2_LEGACY_PARITY_ROUTE_PROMPT_VERSION) {
+  if (manifest.routePromptVersion !== CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_CORPUS_META.version) {
     return { ok: false, reason: 'review_manifest_route_prompt_version_mismatch' };
   }
-  if (manifest.routeCorpusId !== CHAT_V2_LEGACY_PARITY_ROUTE_CORPUS_META.corpusId) {
+  if (manifest.routeCorpusId !== CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_CORPUS_META.corpusId) {
     return { ok: false, reason: 'review_manifest_route_corpus_id_mismatch' };
   }
-  if (manifest.routeCorpusFrozenBeforeImplementation !== true) {
-    return { ok: false, reason: 'review_manifest_corpus_not_frozen' };
+  if (
+    manifest.routeCorpusFrozenBeforeImplementation
+    !== CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_CORPUS_META.frozenBeforeImplementation
+  ) {
+    return { ok: false, reason: 'review_manifest_corpus_freeze_claim_mismatch' };
   }
-  if (typeof manifest.routeCorpusSha256 !== 'string' || !/^[a-f0-9]{64}$/i.test(manifest.routeCorpusSha256)) {
-    return { ok: false, reason: 'review_manifest_missing_corpus_hash' };
+  if (
+    manifest.routeCorpusMutationPolicy
+    !== CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_CORPUS_META.mutationPolicy
+  ) {
+    return { ok: false, reason: 'review_manifest_corpus_mutation_policy_mismatch' };
+  }
+  if (
+    manifest.routeCorpusProjectionPolicy
+    !== CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_CORPUS_META.projectionPolicy
+  ) {
+    return { ok: false, reason: 'review_manifest_corpus_projection_policy_mismatch' };
+  }
+  if (manifest.sampleIdentityPolicy !== SAMPLE_IDENTITY_POLICY) {
+    return { ok: false, reason: 'review_manifest_sample_identity_policy_mismatch' };
+  }
+  const manifestRoutes = Array.isArray(manifest.routeIds)
+    ? manifest.routeIds.filter((item): item is string => typeof item === 'string').sort()
+    : [];
+  let observerCorpusBinding: ChatV2RetirementObserverCorpusBinding;
+  try {
+    observerCorpusBinding = buildChatV2RetirementObserverCorpusBinding(manifestRoutes);
+  } catch {
+    return { ok: false, reason: 'review_manifest_route_mismatch' };
+  }
+  if (manifest.routeCorpusSha256 !== observerCorpusBinding.routeCorpusSha256) {
+    return { ok: false, reason: 'review_manifest_route_corpus_hash_mismatch' };
   }
   if (manifest.reviewRubricVersion !== CHAT_V2_LEGACY_PARITY_REVIEW_RUBRIC_VERSION) {
     return { ok: false, reason: 'review_manifest_rubric_mismatch' };
@@ -349,9 +388,6 @@ function validateRuntimeReviewCompletenessIfNeeded(input: {
   const manifestSha256 = crypto.createHash('sha256').update(manifestRaw).digest('hex');
 
   const observationRoutes = [...new Set(parsedObservations.observations.map((row) => row.routeId))].sort();
-  const manifestRoutes = Array.isArray(manifest.routeIds)
-    ? manifest.routeIds.filter((item): item is string => typeof item === 'string').sort()
-    : [];
   if (JSON.stringify(observationRoutes) !== JSON.stringify(manifestRoutes)) {
     return { ok: false, reason: 'review_manifest_route_mismatch' };
   }
@@ -366,6 +402,18 @@ function validateRuntimeReviewCompletenessIfNeeded(input: {
   const routeSampleCounts: Record<string, number> = {};
   for (const [routeId, samples] of uniqueSamplesByRoute.entries()) {
     routeSampleCounts[routeId] = samples.size;
+    const projectedPromptCount =
+      CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_PROMPTS
+        .find((route) => route.routeId === routeId)?.prompts.length;
+    if (projectedPromptCount == null) {
+      return { ok: false, reason: `review_manifest_route_mismatch:${routeId}` };
+    }
+    if (samples.size > projectedPromptCount) {
+      return {
+        ok: false,
+        reason: `review_samples_exceed_frozen_projection:${routeId}`,
+      };
+    }
   }
 
   const rawReviewValidation = validateRawReviewArtifactCompleteness({
@@ -405,6 +453,7 @@ function validateRuntimeReviewCompletenessIfNeeded(input: {
     rawReviewArtifactSha256: rawReviewValidation.rawReviewArtifactSha256,
     rawReviewArtifactCompletenessChecked: true,
     routeSampleCounts,
+    observerCorpusBinding,
   };
 }
 
@@ -456,6 +505,40 @@ function validateRawReviewArtifactCompleteness(input: {
     }
     if (typeof row.promptText !== 'string') {
       return { ok: false, reason: `raw_review_artifact_missing_prompt:${index}` };
+    }
+    if (typeof row.requestLanguage !== 'string' || !REQUEST_LANGUAGES.has(row.requestLanguage)) {
+      return { ok: false, reason: `raw_review_artifact_invalid_request_language:${index}` };
+    }
+    if (
+      typeof row.expectedResponseLanguage !== 'string'
+      || !EXPECTED_RESPONSE_LANGUAGES.has(row.expectedResponseLanguage)
+    ) {
+      return { ok: false, reason: `raw_review_artifact_invalid_expected_response_language:${index}` };
+    }
+    if (Object.prototype.hasOwnProperty.call(row, 'language')) {
+      return { ok: false, reason: `raw_review_artifact_ambiguous_language_field:${index}` };
+    }
+    if (
+      typeof row.sampleKey !== 'string'
+      || !row.sampleKey.startsWith(`${row.routeId}:`)
+      || !row.sampleKey.endsWith(
+        `:request=${row.requestLanguage}:response=${row.expectedResponseLanguage}`,
+      )
+    ) {
+      return { ok: false, reason: `raw_review_artifact_sample_language_binding_mismatch:${index}` };
+    }
+    const hmacSecret = process.env.CHAT_V2_EVIDENCE_HMAC_SECRET || process.env.IOS_API_JWT_SECRET;
+    if (!hmacSecret) {
+      return { ok: false, reason: 'raw_review_artifact_sample_identity_secret_missing' };
+    }
+    const expectedSampleHmac = buildLegacyParitySampleHmac({
+      hmacSecret,
+      routeId: row.routeId,
+      sampleKey: row.sampleKey,
+      evidenceSource: observation.evidenceSource ?? 'runtime_route',
+    });
+    if (row.sampleHmac !== expectedSampleHmac) {
+      return { ok: false, reason: `raw_review_artifact_sample_hmac_mismatch:${index}` };
     }
     if (!row.legacyRawResponse || typeof row.legacyRawResponse !== 'object' || Array.isArray(row.legacyRawResponse)) {
       return { ok: false, reason: `raw_review_artifact_missing_legacy_response:${index}` };

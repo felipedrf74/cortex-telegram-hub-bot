@@ -35,10 +35,16 @@ export const fastPathStage: ChatStage = {
     const {
       res, userId, tenantId, normalizedText, normalizedTextLower,
       scopedClientMessageId, userMessageId, chatRequestId, latency,
-      recordDeterministicReadEvidence,
+      chatCoreV2RouteLocale, recordDeterministicReadEvidence,
     } = preparedChatTurnCtx(ctx);
 
-    const fastPath = await tryBuildFastPathChatResponse(normalizedText, normalizedTextLower, userId, tenantId);
+    const fastPath = await tryBuildFastPathChatResponse(
+      normalizedText,
+      normalizedTextLower,
+      userId,
+      tenantId,
+      chatCoreV2RouteLocale,
+    );
     if (!fastPath) return { kind: 'continue' };
 
     recordChatStage(chatRequestId, 'fast_path');
@@ -57,11 +63,18 @@ export const fastPathStage: ChatStage = {
       compositionMode: 'templated',
       groundingFacts: [deterministicReadGroundingFact('chat.fast_path')],
       stageFamily: 'fast_path',
+      locale: chatCoreV2RouteLocale,
     });
     // Track domain for conversation continuity even on fast-path.
     rememberChatActiveDomain(userId, conversationDomain, Date.now(), tenantId);
     // Cache deterministic responses for the next 60 seconds.
-    maybeCacheChatCommandResponse(userId, normalizedTextLower, response, tenantId);
+    maybeCacheChatCommandResponse(
+      userId,
+      normalizedTextLower,
+      response,
+      tenantId,
+      chatCoreV2RouteLocale,
+    );
     persistExchange(userId, userMessageId, normalizedText, response.id, response, tenantId, {
       clientMessageId: scopedClientMessageId,
       requestId: chatRequestId,

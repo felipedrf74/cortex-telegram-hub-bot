@@ -62,15 +62,12 @@ export function parseBulkDestructiveRefusal(input: ChatPlannerInput): ChatAction
 
 export function buildIncompleteCalendarCreatePlan(input: ChatPlannerInput): ChatActionPlan {
   const isPortuguese = input.locale?.startsWith('pt');
-  const isSpanish = input.locale?.startsWith('es');
   return buildNeedsInputPlan(input, {
     skill: 'secretary_calendar',
     action: 'schedule_event',
     question: isPortuguese
       ? 'Para agendar isso, preciso do horário e do título do evento.'
-      : isSpanish
-        ? 'Para programar eso, necesito la hora y el título del evento.'
-        : 'To schedule that, I need the event time and title.',
+      : 'To schedule that, I need the event time and title.',
     args: { rawRequest: input.text },
     routingSignals: ['calendar_write_intent_incomplete', 'deterministic_calendar_parser'],
   });

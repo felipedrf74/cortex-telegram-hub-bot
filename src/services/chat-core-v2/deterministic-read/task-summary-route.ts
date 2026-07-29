@@ -116,7 +116,6 @@ function buildTaskSummaryText(data: ChatCoreV2TaskSummaryData, locale: string | 
   if (data.pendingCount === 0) {
     if (normalizedLocale === 'pt-BR') return 'Você não tem tarefas abertas agora.';
     if (normalizedLocale === 'pt-PT') return 'Não tens tarefas abertas neste momento.';
-    if (normalizedLocale === 'es') return 'No tienes tareas abiertas ahora.';
     return 'You have no open tasks right now.';
   }
 
@@ -135,7 +134,6 @@ function buildTaskSummaryHeader(data: ChatCoreV2TaskSummaryData, locale: ChatCor
   const detail = parts.length > 0 ? ` ${joinParts(parts, locale)}` : '';
   if (locale === 'pt-BR') return `Você tem ${data.pendingCount} ${plural(data.pendingCount, 'tarefa aberta', 'tarefas abertas')}.${detail}`;
   if (locale === 'pt-PT') return `Tens ${data.pendingCount} ${plural(data.pendingCount, 'tarefa aberta', 'tarefas abertas')}.${detail}`;
-  if (locale === 'es') return `Tienes ${data.pendingCount} ${plural(data.pendingCount, 'tarea abierta', 'tareas abiertas')}.${detail}`;
   return `You have ${data.pendingCount} open ${data.pendingCount === 1 ? 'task' : 'tasks'}.${detail}`;
 }
 
@@ -149,11 +147,6 @@ function countPhrase(
     if (kind === 'overdue') return `${count} ${plural(count, 'atrasada', 'atrasadas')}`;
     return `${count} ${plural(count, 'com prioridade alta', 'com prioridade alta')}`;
   }
-  if (locale === 'es') {
-    if (kind === 'today') return `${count} ${plural(count, 'para hoy', 'para hoy')}`;
-    if (kind === 'overdue') return `${count} ${plural(count, 'atrasada', 'atrasadas')}`;
-    return `${count} ${plural(count, 'de alta prioridad', 'de alta prioridad')}`;
-  }
   if (kind === 'today') return `${count} due today`;
   if (kind === 'overdue') return `${count} overdue`;
   return `${count} high priority`;
@@ -162,19 +155,16 @@ function countPhrase(
 function taskListLabel(locale: ChatCoreV2NormalizedLocale): string {
   if (locale === 'pt-BR') return 'Principais tarefas:';
   if (locale === 'pt-PT') return 'Tarefas principais:';
-  if (locale === 'es') return 'Tareas principales:';
   return 'Top tasks:';
 }
 
 function taskSuffix(task: ChatCoreV2TaskSummaryItem, locale: ChatCoreV2NormalizedLocale): string {
   if (task.bucket === 'today') {
     if (locale === 'pt-BR' || locale === 'pt-PT') return ' (hoje)';
-    if (locale === 'es') return ' (hoy)';
     return ' (today)';
   }
   if (task.bucket === 'overdue') {
     if (locale === 'pt-BR' || locale === 'pt-PT') return ' (atrasada)';
-    if (locale === 'es') return ' (atrasada)';
     return ' (overdue)';
   }
   return '';

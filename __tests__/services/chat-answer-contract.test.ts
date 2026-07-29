@@ -185,7 +185,7 @@ describe('nexus chat answer contract', () => {
     }
   });
 
-  it('quality gate repairs Spanish unverified success claims in Spanish', () => {
+  it('keeps Spanish success-claim detection as input safety while repairing in English', () => {
     const contract = buildNexusAnswerContract({
       intent: 'cooking.answer',
       ownerSkill: 'cooking',
@@ -193,7 +193,7 @@ describe('nexus chat answer contract', () => {
       routeKind: 'generic_skill_answer',
       groundingRequirement: 'none',
       expectedResponseShape: 'direct_answer',
-      language: 'es',
+      language: 'es' as never,
       actionability: 'answer_only',
       verificationStatus: 'not_required',
       groundingFacts: [{
@@ -212,12 +212,12 @@ describe('nexus chat answer contract', () => {
 
     expect(result.status).toBe('repaired');
     expect(result.issues).toContain('unverified_success_claim');
-    expect(result.text).toContain('Entendí la petición');
-    expect(result.text).toContain('No ejecuté');
-    expect(result.text).not.toContain('I understood');
+    expect(contract.language).toBe('en');
+    expect(result.text).toContain('I understood');
+    expect(result.text).toContain('I did not claim success');
   });
 
-  it('quality gate allows Spanish negated pending-action text', () => {
+  it('still allows a Spanish-authored negated pending-action payload', () => {
     const contract = buildNexusAnswerContract({
       intent: 'secretary.clarify',
       ownerSkill: 'secretary',
@@ -225,7 +225,7 @@ describe('nexus chat answer contract', () => {
       routeKind: 'clarification',
       groundingRequirement: 'none',
       expectedResponseShape: 'direct_answer',
-      language: 'es',
+      language: 'es' as never,
       actionability: 'clarify',
       verificationStatus: 'pending',
       groundingFacts: [{

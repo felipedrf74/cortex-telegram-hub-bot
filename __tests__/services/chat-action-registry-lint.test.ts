@@ -60,6 +60,8 @@ type RawExample = {
   expectedSlots?: Record<string, unknown>;
   tags?: string[];
   locale?: string;
+  requestLocale?: string;
+  responseLocale?: string;
 };
 
 function isPlaceholderEmail(match: string): boolean {
@@ -198,19 +200,33 @@ describe('chat-action-registry lint', () => {
     });
   });
 
-  describe('examples — locale tag (when present) is one of the documented codes', () => {
-    it('locale tag, when present, is en/pt/es/mixed', () => {
-      const allowed = new Set(['en', 'pt', 'es', 'mixed']);
+  describe('examples — locale tag (when present) is one of the supported codes', () => {
+    it('locale tag, when present, is en/pt/mixed', () => {
+      const allowed = new Set(['en', 'pt', 'mixed']);
       for (const entry of registry) {
         const examples = (entry.examples ?? []) as RawExample[];
         for (const example of examples) {
           if (example.locale === undefined) continue;
           expect(
             allowed.has(example.locale),
-            `${entry.skill}.${entry.action}: example locale "${example.locale}" is not one of en/pt/es/mixed`,
+            `${entry.skill}.${entry.action}: example locale "${example.locale}" is not one of en/pt/mixed`,
           ).toBe(true);
         }
       }
+    });
+
+    it('keeps Spanish-authored inputs separate from supported response locales', () => {
+      let compatibilityCount = 0;
+      for (const entry of registry) {
+        const examples = (entry.examples ?? []) as RawExample[];
+        for (const example of examples) {
+          if (example.requestLocale !== 'es') continue;
+          compatibilityCount += 1;
+          expect(example.locale, `${entry.skill}.${entry.action}:${example.text}`).toBeUndefined();
+          expect(example.responseLocale, `${entry.skill}.${entry.action}:${example.text}`).toBe('en');
+        }
+      }
+      expect(compatibilityCount).toBe(52);
     });
   });
 

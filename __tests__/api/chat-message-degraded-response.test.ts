@@ -22,7 +22,8 @@ vi.mock('../../src/api/routes/chat-message-context', () => ({
   getLastChatActiveDomain: (...args: unknown[]) => mockGetLastChatActiveDomain(...args),
 }));
 
-vi.mock('../../src/api/routes/chat-content-refinement', () => ({
+vi.mock('../../src/api/routes/chat-content-refinement', async () => ({
+  ...(await vi.importActual('../../src/api/routes/chat-content-refinement')),
   isRetryableAIProviderError: (...args: unknown[]) => mockIsRetryableAIProviderError(...args),
 }));
 

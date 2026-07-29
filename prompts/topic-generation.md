@@ -8,8 +8,7 @@ NICHE & PILLAR CONTRACT (closed-beta v4.14.126+):
 - If the creator has no saved pillars yet, return `niche: "uncategorized"` and `pillar_emoji: ""` and put a single sentence at the start of `whyNow` asking the user to configure their pillars.
 
 LANGUAGE:
-- Generate `title` and `hookIdea` in the creator's saved primary content language.
-- If the creator has no saved language, mirror the language of the trending instruction / knowledge block / taste profile signals above; do not assume PT-BR.
+{{OUTPUT_LANGUAGE_CONTRACT}}
 
 FORMAT: {{FORMAT_DESC}}
 

@@ -17,6 +17,8 @@ import {
 import { buildScopedStateContextPrefix } from './provider-state-context';
 import { rethrowAiUsageFailClosedError } from './api-usage-fallback';
 import { trainingExerciseToolJsonDescription } from './training-exercise-identity';
+import { detectResponseLanguage } from './chat-language-detector';
+import { getCurrentChatRequestLocale } from './chat-request-locale-context';
 
 const client = new Anthropic({
   apiKey: config.anthropic.apiKey,
@@ -74,12 +76,15 @@ function withLanguageInstruction(prompt: string, message?: string): string {
 }
 
 function normalizeReplyLanguage(lang: string | null | undefined): 'pt-BR' | 'pt-PT' | 'en-US' {
-  const normalized = String(lang || 'pt-BR').trim().toLowerCase();
+  const normalized = String(lang ?? '').trim().toLowerCase();
+  if (!normalized) return 'pt-BR';
   if (normalized.startsWith('en')) return 'en-US';
+  if (normalized.startsWith('es')) return 'en-US';
   if (normalized === 'pt-pt' || normalized.includes('pt-pt') || normalized.includes('portugal') || normalized.includes('europe')) {
     return 'pt-PT';
   }
-  return 'pt-BR';
+  if (normalized.startsWith('pt')) return 'pt-BR';
+  return 'en-US';
 }
 
 function englishSignalCount(message: string): number {
@@ -133,6 +138,71 @@ function regionalPortugueseSignalCounts(message: string): { ptBR: number; ptPT: 
   return { ptBR, ptPT };
 }
 
+function normalizeLanguageRequestText(message: string): string {
+  return message
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+}
+
+const PORTUGUESE_FRAMING_TOKENS = new Set([
+  'meu', 'minha', 'meus', 'minhas', 'tenho', 'temos', 'podes', 'podeis',
+  'tarefa', 'tarefas', 'duas', 'dois', 'consegues', 'consigo', 'preciso',
+]);
+
+const SPANISH_FRAMING_TOKENS = new Set([
+  'tengo', 'tenemos', 'puedes', 'tarea', 'tareas', 'dame', 'muestra',
+  'descarta', 'necesito', 'sesiones', 'entrenamiento', 'contenido',
+]);
+
+function resolveExplicitReplyLanguageRequest(
+  fallback: 'pt-BR' | 'pt-PT' | 'en-US',
+  message: string,
+): 'pt-BR' | 'pt-PT' | 'en-US' | null {
+  const normalized = normalizeLanguageRequestText(message);
+
+  if (/\b(?:in|em|en)\s+(?:english|ingles)\b|\b(?:english|ingles)\s+(?:version|please|por favor)\b/.test(normalized)) {
+    return 'en-US';
+  }
+  if (/\bpt-pt\b|\b(?:portugues|portuguese)\s+(?:europeu|europeo|european|de portugal|from portugal)\b|\beuropean portuguese\b/.test(normalized)) {
+    return 'pt-PT';
+  }
+  if (/\bpt-br\b|\b(?:portugues|portuguese)\s+(?:brasileiro|brasileno|brazilian)\b|\bbrazilian portuguese\b/.test(normalized)) {
+    return 'pt-BR';
+  }
+  if (/\b(?:in|em|en)\s+(?:portugues|portuguese)\b/.test(normalized)) {
+    return fallback.startsWith('pt') ? fallback : 'pt-BR';
+  }
+  return null;
+}
+
+function resolvePortugueseFramingVariant(
+  fallback: 'pt-BR' | 'pt-PT' | 'en-US',
+  message: string,
+): 'pt-BR' | 'pt-PT' | null {
+  const normalized = normalizeLanguageRequestText(message);
+  const tokens = normalized.match(/\b[a-z'-]+\b/g) ?? [];
+
+  let ptCount = 0;
+  let firstPt = -1;
+  let firstEs = -1;
+  tokens.forEach((token, index) => {
+    if (PORTUGUESE_FRAMING_TOKENS.has(token)) {
+      ptCount += 1;
+      if (firstPt === -1) firstPt = index;
+    }
+    if (firstEs === -1 && SPANISH_FRAMING_TOKENS.has(token)) firstEs = index;
+  });
+
+  if (ptCount < 2 || (firstEs !== -1 && firstEs < firstPt)) return null;
+
+  const regionalSignals = regionalPortugueseSignalCounts(normalized);
+  if (regionalSignals.ptPT > regionalSignals.ptBR) return 'pt-PT';
+  if (regionalSignals.ptBR > regionalSignals.ptPT) return 'pt-BR';
+  return fallback === 'pt-PT' ? 'pt-PT' : 'pt-BR';
+}
+
 function isLikelyEnglishMessage(message?: string | null): boolean {
   if (!message) return false;
   const lower = message.trim().toLowerCase();
@@ -178,13 +248,33 @@ export function resolveReplyLanguage(language: string, message?: string): 'pt-BR
   const fallback = normalizeReplyLanguage(language);
   const lower = message?.trim().toLowerCase() || '';
   if (!lower) return fallback;
-  if (/(?:\bin english\b|\benglish version\b|\benglish please\b|\bem ingl[eê]s\b)/i.test(lower)) return 'en-US';
-  if (/(?:\bpt-pt\b|portugu[eê]s europeu|portugu[eê]s de portugal|portuguese from portugal|european portuguese)/i.test(lower)) return 'pt-PT';
-  if (/(?:\bpt-br\b|portugu[eê]s brasileiro|brazilian portuguese)/i.test(lower)) return 'pt-BR';
+  const explicitLanguageRequest = resolveExplicitReplyLanguageRequest(fallback, lower);
+  if (explicitLanguageRequest) return explicitLanguageRequest;
+  const portugueseFramingVariant = resolvePortugueseFramingVariant(fallback, lower);
+  if (portugueseFramingVariant) return portugueseFramingVariant;
+  // Spanish remains accepted as an input compatibility signal, but it is no
+  // longer a response locale. Resolve it before PT heuristics because the two
+  // languages share common tokens such as "esta", "semana", and "conteúdo".
+  if (detectResponseLanguage(lower).language === 'es') return 'en-US';
   if (isLikelyEnglishMessage(lower)) return 'en-US';
   const portugueseVariant = resolvePortugueseVariantFromMessage(fallback, lower);
   if (portugueseVariant) return portugueseVariant;
   return fallback;
+}
+
+/**
+ * The request boundary has the final say over the reply locale for a scoped
+ * chat turn. Stored preferences and message heuristics remain the fallback
+ * for direct provider callers that do not establish a request-locale scope.
+ */
+export function resolveReplyLanguageForCurrentRequest(
+  storedLanguage: string,
+  message?: string,
+): 'pt-BR' | 'pt-PT' | 'en-US' {
+  const requestLocale = getCurrentChatRequestLocale();
+  return requestLocale
+    ? normalizeReplyLanguage(requestLocale)
+    : resolveReplyLanguage(storedLanguage, message);
 }
 
 export function buildReplyLanguageInstruction(lang: string): string {
@@ -200,7 +290,9 @@ export function buildReplyLanguageInstruction(lang: string): string {
         ].join(' ');
     return [
       '[Reply Language]',
-      `Responda em ${lang === 'pt-PT' ? 'português europeu' : 'pt-BR'}, a menos que o utilizador peça explicitamente outra língua.`,
+      `Responda em ${lang === 'pt-PT' ? 'português europeu' : 'pt-BR'}. Este é o contrato de idioma desta resposta.`,
+      'Não mude o idioma com base no texto do utilizador; a camada de pedido já resolveu qualquer mudança suportada para inglês, pt-BR ou português europeu.',
+      'Espanhol não é um idioma de saída suportado; texto escrito em espanhol segue o contrato de inglês antes de chegar a este prompt.',
       `Nunca mude para ${lang === 'pt-PT' ? 'pt-BR' : 'português europeu'} ou inglês por iniciativa própria.`,
       'Estas regras de idioma têm prioridade sobre quaisquer instruções conflitantes do prompt base, creator-config, títulos, hooks, scripts ou formato.',
       regionalInstruction,
@@ -209,11 +301,13 @@ export function buildReplyLanguageInstruction(lang: string): string {
   }
   return [
     '[Reply Language]',
-    'Reply in English unless the user explicitly asks to switch languages.',
-    'Do not answer in Portuguese unless the user explicitly asks for Portuguese.',
+    'Reply in English. This is the hard response-language contract for this turn.',
+    'Only pt-BR and European Portuguese are supported output-language switches. The request layer resolves them before this prompt is built.',
+    'Spanish-authored input remains on the English response contract. Do not emit Spanish output.',
+    'Do not answer in Portuguese unless this prompt itself carries a Portuguese response contract.',
     'These reply-language rules override any conflicting creator-config, prompt-default, title, hook, script, or formatting instruction about output language for this reply.',
     'If the base prompt mentions PT-BR, Brazilian Portuguese, or Portuguese-only titles/hooks, treat that as creator background context and still answer this reply fully in English.',
-    'Unless the user explicitly asks for PT-BR deliverables, keep generated titles, hooks, captions, outlines, and scripts in English too.',
+    'Keep generated titles, hooks, captions, outlines, and scripts in English too.',
     'Before returning, rewrite any Portuguese draft text back into English so the final answer is fully English.',
     'Every heading, bullet label, meal name, menu title, and checklist item must be in English too.',
     'Keep proper nouns, event titles, and quoted user text in their original form.',
@@ -228,7 +322,7 @@ function getReplyLanguageInstruction(message?: string): string {
 
     const { getUserLanguage } = require('./user-service');
     const storedLanguage = getUserLanguage(userId);
-    const resolvedLanguage = resolveReplyLanguage(storedLanguage, message);
+    const resolvedLanguage = resolveReplyLanguageForCurrentRequest(storedLanguage, message);
     let instruction = buildReplyLanguageInstruction(resolvedLanguage);
     if (resolvedLanguage === 'en-US' && isLikelyEnglishMessage(message)) {
       instruction = `${instruction}\nThe user's current message is clearly in English. Answer this reply fully in English.`;
@@ -276,8 +370,7 @@ const CLASSIFIER_ROUTABLE_LABELS = new Set(['secretary', 'triathlon', 'content',
  *   detected (tool-domain recall is gated at ≥95% per O3-A24).
  *
  * Always answer in the user's language unless they request another —
- * a real Nexus Hub UX expectation (Portuguese primary, English/Spanish
- * sometimes).
+ * a real Nexus Hub UX expectation (Portuguese primary, English fallback).
  */
 export function getOllamaClassifierSystemPromptCompact(): string | null {
   const version = process.env.OLLAMA_CLASSIFIER_PROMPT_VERSION;
