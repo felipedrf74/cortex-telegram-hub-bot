@@ -1921,10 +1921,10 @@ const EXPECTED_ENVELOPES: Record<string, unknown> = {
           "draftSchemaVersion": "nexus_composed_answer_draft.v1"
         },
         "responseLanguage": {
-          "expected": "unknown",
+          "expected": "en",
           "detected": "en",
           "confidence": 0.8,
-          "matchesExpected": null
+          "matchesExpected": true
         },
         "responseQuality": {
           "status": "pass",
@@ -2070,10 +2070,10 @@ const EXPECTED_ENVELOPES: Record<string, unknown> = {
           "draftSchemaVersion": "nexus_composed_answer_draft.v1"
         },
         "responseLanguage": {
-          "expected": "unknown",
+          "expected": "en",
           "detected": "en",
           "confidence": 0.8,
-          "matchesExpected": null
+          "matchesExpected": true
         },
         "responseQuality": {
           "status": "pass",
@@ -2221,10 +2221,10 @@ const EXPECTED_ENVELOPES: Record<string, unknown> = {
           "draftSchemaVersion": "nexus_composed_answer_draft.v1"
         },
         "responseLanguage": {
-          "expected": "unknown",
+          "expected": "en",
           "detected": "en",
           "confidence": 0.9375,
-          "matchesExpected": null
+          "matchesExpected": true
         },
         "responseQuality": {
           "status": "pass",
@@ -2759,10 +2759,10 @@ const EXPECTED_ENVELOPES: Record<string, unknown> = {
           "draftSchemaVersion": "nexus_composed_answer_draft.v1"
         },
         "responseLanguage": {
-          "expected": "unknown",
+          "expected": "en",
           "detected": "en",
           "confidence": 0.9523809523809523,
-          "matchesExpected": null
+          "matchesExpected": true
         },
         "responseQuality": {
           "status": "pass",

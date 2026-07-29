@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { execFile } from 'child_process';
+import { createHmac } from 'crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
@@ -18,6 +19,77 @@ afterEach(async () => {
 });
 
 describe('chatv2-observe-legacy-parity CLI', () => {
+  it('uses only the immutable v1.4 EN/PT projection for runtime retirement observations', async () => {
+    const tempDir = makeRepoLocalTempDir();
+    const legacy = await startParityServer('legacy');
+    const chatV2 = await startParityServer('chatv2');
+    const outPath = path.join(tempDir, 'observations.ndjson');
+    const fixtureHash = `sha256:${'9'.repeat(64)}`;
+
+    try {
+      await execFileAsync('npx', [
+        'tsx',
+        'scripts/chatv2-observe-legacy-parity.ts',
+        `--legacy-base-url=${legacy.baseUrl}`,
+        `--chatv2-base-url=${chatV2.baseUrl}`,
+        `--legacy-token-file=${path.join(tempDir, 'legacy-token.json')}`,
+        `--chatv2-token-file=${path.join(tempDir, 'chatv2-token.json')}`,
+        '--evidence-source=runtime_route',
+        '--samples-per-route=4',
+        '--routes=classifier_route_skill_orchestration',
+        `--fixture-hash=${fixtureHash}`,
+        '--allow-raw-review-artifact',
+        `--out=${outPath}`,
+      ], {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          CHAT_V2_EVIDENCE_HMAC_SECRET: 'test-secret',
+        },
+        timeout: 30000,
+      });
+
+      expect(legacy.chatLanguages).toEqual(['en', 'pt-BR', 'pt-PT', 'en']);
+      expect(chatV2.chatLanguages).toEqual(['en', 'pt-BR', 'pt-PT', 'en']);
+
+      const reviewRows = JSON.parse(readFileSync(outPath.replace(/\.ndjson$/i, '.review.json'), 'utf8')) as Array<{
+        sampleKey: string;
+        sampleHmac: string;
+        requestLanguage: string;
+        expectedResponseLanguage: string;
+        language?: string;
+      }>;
+      const fourthHeldOutRow = reviewRows[3]!;
+      const expectedSampleKey =
+        'classifier_route_skill_orchestration:3:request=en:response=en';
+      const expectedSampleHmac = `hmac:legacy-parity:${createHmac('sha256', 'test-secret')
+        .update(`runtime_route:classifier_route_skill_orchestration:${expectedSampleKey}`)
+        .digest('hex')}`;
+      expect(fourthHeldOutRow).toMatchObject({
+        sampleKey: expectedSampleKey,
+        sampleHmac: expectedSampleHmac,
+        requestLanguage: 'en',
+        expectedResponseLanguage: 'en',
+      });
+      expect(fourthHeldOutRow).not.toHaveProperty('language');
+
+      const manifest = JSON.parse(readFileSync(outPath.replace(/\.ndjson$/i, '.manifest.json'), 'utf8')) as {
+        routeCorpusFrozenBeforeImplementation: boolean;
+        routeCorpusMutationPolicy: string;
+        routeCorpusProjectionPolicy: string;
+        sampleIdentityPolicy: string;
+      };
+      expect(manifest).toMatchObject({
+        routeCorpusFrozenBeforeImplementation: true,
+        routeCorpusMutationPolicy: 'claude_or_manual_signoff_required_before_runtime_replacement',
+        routeCorpusProjectionPolicy: 'immutable_v1_4_en_pt_br_pt_pt_only',
+        sampleIdentityPolicy: 'route_index_request_language_expected_response_language_v1',
+      });
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it('keeps committed observations HMAC-only while writing local raw review rows when explicitly requested', async () => {
     const tempDir = makeRepoLocalTempDir();
     const legacy = await startParityServer('legacy');
@@ -258,7 +330,7 @@ describe('chatv2-observe-legacy-parity CLI', () => {
           CHAT_V2_EVIDENCE_HMAC_SECRET: 'test-secret',
         },
         timeout: 30000,
-      })).rejects.toThrow(/requires 51 distinct held-out prompts; found 50/);
+      })).rejects.toThrow(/requires 51 distinct held-out prompts; found 28/);
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
@@ -411,7 +483,8 @@ function makeRepoLocalTempDir(): string {
 async function startParityServer(
   kind: 'legacy' | 'chatv2',
   opts: { chatDelayMs?: number } = {},
-): Promise<{ baseUrl: string }> {
+): Promise<{ baseUrl: string; chatLanguages: string[] }> {
+  const chatLanguages: string[] = [];
   const server = createServer(async (req, res) => {
     if (req.method === 'POST' && req.url === '/api/v1/auth/register') {
       writeJson(res, {
@@ -440,6 +513,7 @@ async function startParityServer(
     }
 
     if (req.method === 'POST' && req.url === '/api/v1/chat/message') {
+      chatLanguages.push(String(req.headers['x-language'] ?? ''));
       const payload = await readJsonBody(req);
       if (opts.chatDelayMs && opts.chatDelayMs > 0) {
         await new Promise((resolve) => setTimeout(resolve, opts.chatDelayMs));
@@ -468,7 +542,7 @@ async function startParityServer(
   servers.push(server);
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('Unable to bind test server');
-  return { baseUrl: `http://127.0.0.1:${address.port}` };
+  return { baseUrl: `http://127.0.0.1:${address.port}`, chatLanguages };
 }
 
 async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {

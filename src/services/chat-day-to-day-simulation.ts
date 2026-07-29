@@ -247,7 +247,7 @@ export interface DayToDayTurnExclusion extends DayToDayProfileExclusion {
 }
 
 export interface DayToDayProfileCoverage {
-  profileId: 'fixture_full_v1' | 'single_tenant_day_to_day_v2' | 'custom_live_v1';
+  profileId: 'fixture_full_v1' | 'single_tenant_day_to_day_v3' | 'custom_live_v1';
   declaredScenarioCount: number;
   declaredTurnCount: number;
   executedScenarioCount: number;
@@ -829,7 +829,7 @@ const SINGLE_TENANT_LIVE_TURNS: Partial<Record<DayToDayScenarioId, readonly stri
 
 // Locale variants are live-profile-only so the historical deterministic
 // fixture remains stable while every persisted live baseline carries actual
-// EN, es-419, and pt-BR observations.
+// EN, pt-PT, and pt-BR observations.
 const LIVE_TURN_OVERRIDES: Record<string, Pick<DayToDayTurn, 'id' | 'userMessage' | 'expectation'>> = {
   'morning_planning:a2-move-workout': {
     id: 'a2-move-workout',
@@ -927,12 +927,12 @@ const LIVE_TURN_OVERRIDES: Record<string, Pick<DayToDayTurn, 'id' | 'userMessage
   },
   'content_creator_day:c1-ideas': {
     id: 'c1-ideas',
-    userMessage: 'Dame ideas de contenido para la publicación del lanzamiento usando solo el contexto autorizado.',
+    userMessage: 'Dá-me ideias de conteúdo para a publicação do lançamento usando apenas o contexto autorizado.',
     expectation: {
       expectedSkills: ['content'],
       expectedDomain: 'content',
-      semanticMustInclude: ['contenido', 'ideas'],
-      expectedLanguage: 'es-419',
+      semanticMustInclude: ['conteúdo', 'ideias'],
+      expectedLanguage: 'pt-PT',
     },
   },
   'frustrated_contradictory:l2-frustrated': {
@@ -1063,7 +1063,7 @@ function selectDayToDayProfile(
   if (new Set(classifiedIds).size !== classifiedIds.length
     || declaredIds.length !== DAY_TO_DAY_SCENARIOS.length
     || declaredIds.some((id) => !classifiedIds.includes(id))) {
-    throw new Error('single_tenant_day_to_day_v2 profile drift: every built-in scenario must have one disposition');
+    throw new Error('single_tenant_day_to_day_v3 profile drift: every built-in scenario must have one disposition');
   }
 
   const selected = declaredScenarios.flatMap((scenario) => {
@@ -1078,7 +1078,7 @@ function selectDayToDayProfile(
           : turn;
       });
     if (turns.length !== turnIds.length) {
-      throw new Error(`single_tenant_day_to_day_v2 profile drift: ${scenario.id} turn allowlist no longer matches`);
+      throw new Error(`single_tenant_day_to_day_v3 profile drift: ${scenario.id} turn allowlist no longer matches`);
     }
     return [{ ...scenario, turns }];
   });
@@ -1086,7 +1086,7 @@ function selectDayToDayProfile(
   return {
     scenarios: selected,
     coverage: {
-      profileId: 'single_tenant_day_to_day_v2',
+      profileId: 'single_tenant_day_to_day_v3',
       declaredScenarioCount: declaredScenarios.length,
       declaredTurnCount,
       executedScenarioCount: selected.length,

@@ -39,7 +39,10 @@ describe('content script route contract utilities', () => {
   it('prefers explicit language and safely falls back to the user preference', () => {
     expect(resolveScriptTargetLanguage('pt-PT', 12, () => 'en')).toBe('pt-PT');
     expect(resolveScriptTargetLanguage('  pt-BR  ', 12, () => 'en')).toBe('pt-BR');
-    expect(resolveScriptTargetLanguage(undefined, 12, () => 'en')).toBe('en');
+    expect(resolveScriptTargetLanguage(undefined, 12, () => 'en')).toBe('en-US');
+    expect(resolveScriptTargetLanguage('es-ES', 12, () => 'pt-BR')).toBe('en-US');
+    expect(resolveScriptTargetLanguage(undefined, 12, () => 'es-419')).toBe('en-US');
+    expect(resolveScriptTargetLanguage('de-DE', 12, () => 'pt-BR')).toBe('en-US');
     expect(resolveScriptTargetLanguage(undefined, 12, () => null)).toBe('pt-BR');
     expect(resolveScriptTargetLanguage(undefined, 12, () => {
       throw new Error('user preferences unavailable');

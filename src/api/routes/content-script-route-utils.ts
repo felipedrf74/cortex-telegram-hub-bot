@@ -25,6 +25,7 @@ import {
   isMockContentSource,
   type ContentOperationKind,
 } from '../../services/content-token-economy';
+import { normalizeSupportedLang } from '../../utils/i18n';
 
 export type ScriptRenderMode = 'structured' | 'chat';
 export type ScriptFormat = 'YouTube' | 'Reel';
@@ -113,11 +114,11 @@ export function resolveScriptTargetLanguage(
   readUserLanguage: (userId: number) => string | undefined | null,
 ): string {
   if (typeof language === 'string' && language.trim().length > 0) {
-    return language.trim();
+    return normalizeSupportedLang(language, 'en-US');
   }
 
   try {
-    return readUserLanguage(userId) || 'pt-BR';
+    return normalizeSupportedLang(readUserLanguage(userId), 'pt-BR');
   } catch {
     return 'pt-BR';
   }

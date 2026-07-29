@@ -9,15 +9,17 @@ import dotenv from 'dotenv';
 import {
   aggregateChatV2LegacyParityObservations,
   buildChatV2LegacyParityEvidenceInput,
+  buildChatV2RetirementObserverCorpusBinding,
+  deleteExactCurrentChatV2RetirementEvidenceRows,
   normalizeChatV2LegacyParityOwnerLabel,
   CHAT_V2_LEGACY_PARITY_REVIEW_RUBRIC_VERSION,
+  type ChatV2RetirementObserverCorpusBinding,
   validateChatV2LegacyParityObservation,
   type ChatV2LegacyParityObservation,
 } from '../src/services/chat-legacy-parity-labels';
 import {
-  CHAT_V2_LEGACY_PARITY_ROUTE_CORPUS_META,
-  CHAT_V2_LEGACY_PARITY_ROUTE_PROMPT_VERSION,
-  CHAT_V2_LEGACY_PARITY_ROUTE_PROMPTS,
+  CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_CORPUS_META,
+  CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_PROMPTS,
 } from '../src/services/chat-legacy-parity-route-prompts';
 
 dotenv.config({ quiet: true });
@@ -32,9 +34,14 @@ const minSamples = parseNumberArg('--min-samples') ?? 50;
 const minParity = parseNumberArg('--min-parity') ?? 0.95;
 const manifestPath = readArg('--manifest');
 const qaReviewId = readArg('--qa-review-id');
+const SAMPLE_IDENTITY_POLICY = 'route_index_request_language_expected_response_language_v1';
 
-const PHASE7_ROUTE_IDS = new Set(CHAT_V2_LEGACY_PARITY_ROUTE_PROMPTS.map((route) => route.routeId));
-const PHASE7_ROUTE_METADATA = new Map(CHAT_V2_LEGACY_PARITY_ROUTE_PROMPTS.map((route) => [route.routeId, route]));
+const PHASE7_ROUTE_IDS = new Set(
+  CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_PROMPTS.map((route) => route.routeId),
+);
+const PHASE7_ROUTE_METADATA = new Map(
+  CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_PROMPTS.map((route) => [route.routeId, route]),
+);
 const routeScope = parseRouteScopeArg('--routes');
 
 if (!observationsPath) {
@@ -122,28 +129,19 @@ if (!observationsPath) {
         const importEvidenceSource = parsed.observations[0]?.evidenceSource ?? 'runtime_route';
         const tx = db.transaction(() => {
           if (shouldReplace) {
-            if (routeScope.size > 0) {
-              const scopedRoutes = [...routeScope].sort();
-              db.prepare(`
-                DELETE FROM chat_v2_legacy_retirement_evidence
-	                WHERE evidence_kind = 'route_exit'
-	                  AND evidence_source = ?
-	                  AND route_id IN (${scopedRoutes.map(() => '?').join(',')})
-	                  AND safe_metadata_json LIKE '%"parityObservationImport":true%'
-	              `).run(importEvidenceSource, ...scopedRoutes);
-	            } else {
-	              db.prepare(`
-	                DELETE FROM chat_v2_legacy_retirement_evidence
-	                WHERE evidence_kind = 'route_exit'
-	                  AND evidence_source = ?
-	                  AND safe_metadata_json LIKE '%"parityObservationImport":true%'
-	              `).run(importEvidenceSource);
-	            }
+            deleteExactCurrentChatV2RetirementEvidenceRows(db, {
+              evidenceSource: importEvidenceSource,
+              routeIds: routeScope.size > 0
+                ? [...routeScope]
+                : accepted.map((aggregate) => aggregate.routeId),
+              importMarker: 'parityObservationImport',
+            });
           }
           for (const aggregate of accepted) {
             const evidence = buildChatV2LegacyParityEvidenceInput({
               label: aggregate.label,
               requestId: `${requestId}:${aggregate.routeId}`,
+              observerCorpusBinding: provenance.observerCorpusBinding,
             });
 	            const safeMetadataJson = JSON.stringify({
 	              ...evidence.safeMetadata,
@@ -232,7 +230,12 @@ function validateRuntimeProvenanceIfNeeded(input: {
   observations: ChatV2LegacyParityObservation[];
   manifestPath?: string;
   qaReviewId?: string;
-}): { ok: true; observerManifestHash?: string; qaReviewId?: string } | { ok: false; reason: string } {
+}): {
+  ok: true;
+  observerManifestHash?: string;
+  qaReviewId?: string;
+  observerCorpusBinding?: ChatV2RetirementObserverCorpusBinding;
+} | { ok: false; reason: string } {
   const sources = new Set(input.observations.map((row) => row.evidenceSource ?? 'runtime_route'));
   if (sources.size !== 1) return { ok: false, reason: 'mixed_evidence_sources' };
   const [source] = [...sources];
@@ -282,17 +285,44 @@ function validateRuntimeProvenanceIfNeeded(input: {
   if (manifest.rawPromptOrResponseStored !== false) {
     return { ok: false, reason: 'observer_manifest_raw_storage_not_false' };
   }
-  if (manifest.routePromptVersion !== CHAT_V2_LEGACY_PARITY_ROUTE_PROMPT_VERSION) {
+  if (manifest.routePromptVersion !== CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_CORPUS_META.version) {
     return { ok: false, reason: 'observer_manifest_route_prompt_version_mismatch' };
   }
-  if (manifest.routeCorpusId !== CHAT_V2_LEGACY_PARITY_ROUTE_CORPUS_META.corpusId) {
+  if (manifest.routeCorpusId !== CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_CORPUS_META.corpusId) {
     return { ok: false, reason: 'observer_manifest_route_corpus_id_mismatch' };
   }
-  if (manifest.routeCorpusFrozenBeforeImplementation !== true) {
-    return { ok: false, reason: 'observer_manifest_corpus_not_frozen' };
+  if (
+    manifest.routeCorpusFrozenBeforeImplementation
+    !== CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_CORPUS_META.frozenBeforeImplementation
+  ) {
+    return { ok: false, reason: 'observer_manifest_corpus_freeze_claim_mismatch' };
   }
-  if (typeof manifest.routeCorpusSha256 !== 'string' || !/^[a-f0-9]{64}$/i.test(manifest.routeCorpusSha256)) {
-    return { ok: false, reason: 'observer_manifest_missing_corpus_hash' };
+  if (
+    manifest.routeCorpusMutationPolicy
+    !== CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_CORPUS_META.mutationPolicy
+  ) {
+    return { ok: false, reason: 'observer_manifest_corpus_mutation_policy_mismatch' };
+  }
+  if (
+    manifest.routeCorpusProjectionPolicy
+    !== CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_CORPUS_META.projectionPolicy
+  ) {
+    return { ok: false, reason: 'observer_manifest_corpus_projection_policy_mismatch' };
+  }
+  if (manifest.sampleIdentityPolicy !== SAMPLE_IDENTITY_POLICY) {
+    return { ok: false, reason: 'observer_manifest_sample_identity_policy_mismatch' };
+  }
+  const manifestRouteIds = Array.isArray(manifest.routeIds)
+    ? manifest.routeIds.filter((item): item is string => typeof item === 'string').sort()
+    : [];
+  let observerCorpusBinding: ChatV2RetirementObserverCorpusBinding;
+  try {
+    observerCorpusBinding = buildChatV2RetirementObserverCorpusBinding(manifestRouteIds);
+  } catch {
+    return { ok: false, reason: 'observer_manifest_route_mismatch' };
+  }
+  if (manifest.routeCorpusSha256 !== observerCorpusBinding.routeCorpusSha256) {
+    return { ok: false, reason: 'observer_manifest_route_corpus_hash_mismatch' };
   }
   if (manifest.reviewRubricVersion !== CHAT_V2_LEGACY_PARITY_REVIEW_RUBRIC_VERSION) {
     return { ok: false, reason: 'observer_manifest_rubric_mismatch' };
@@ -314,9 +344,6 @@ function validateRuntimeProvenanceIfNeeded(input: {
   if (routeIds.some((routeId) => !PHASE7_ROUTE_IDS.has(routeId))) {
     return { ok: false, reason: 'runtime_route_contains_unapproved_route' };
   }
-  const manifestRouteIds = Array.isArray(manifest.routeIds)
-    ? manifest.routeIds.filter((item): item is string => typeof item === 'string').sort()
-    : [];
 	  if (JSON.stringify(manifestRouteIds) !== JSON.stringify(routeIds)) {
 	    return { ok: false, reason: 'observer_manifest_route_mismatch' };
 	  }
@@ -363,6 +390,7 @@ function validateRuntimeProvenanceIfNeeded(input: {
     ok: true,
     observerManifestHash: hmacToken('legacy-parity-observer-manifest', manifestRaw),
     qaReviewId: input.qaReviewId,
+    observerCorpusBinding,
   };
 }
 
@@ -385,6 +413,16 @@ function validateRuntimeAggregateCompletenessIfNeeded(
   const requiredRouteIds = scopedRouteIds.size > 0 ? scopedRouteIds : PHASE7_ROUTE_IDS;
   const observedRouteIds = new Set(observations.map((row) => row.routeId));
   const acceptedRouteIds = new Set(accepted.map((aggregate) => aggregate.routeId));
+  for (const routeId of observedRouteIds) {
+    const observedCount = observations.filter((row) => row.routeId === routeId).length;
+    const projectedPromptCount = PHASE7_ROUTE_METADATA.get(routeId)?.prompts.length;
+    if (projectedPromptCount != null && observedCount > projectedPromptCount) {
+      return {
+        ok: false,
+        reason: `runtime_route_samples_exceed_frozen_projection:${routeId}`,
+      };
+    }
+  }
   if (scopedRouteIds.size > 0) {
     const outOfScope = [...observedRouteIds].filter((routeId) => !scopedRouteIds.has(routeId));
     if (outOfScope.length > 0) return { ok: false, reason: `runtime_route_scope_contains_extra_routes:${outOfScope.join(',')}` };

@@ -230,6 +230,57 @@ describe('chat legacy timeout continuation', () => {
     expect(mocks.push).toHaveBeenCalledTimes(1);
   });
 
+  it.each(['es', 'es-419'])(
+    'suppresses a persisted Spanish late result for retired %s jobs without rewriting the evidence',
+    async (legacyLocale) => {
+      const sourceRunId = `run-timeout-late-${legacyLocale}`;
+      const spanishResult = 'Listo, creé la tarea llamada revisión del planificador.';
+      const queued = enqueue({ sourceRunId, locale: legacyLocale });
+      expect(attachLateChatLegacyTimeoutResult({
+        jobId: queued.jobId,
+        tenantId: 42,
+        userId: 42,
+        sourceRunId,
+        result: { text: spanishResult, domain: 'secretary' },
+        now: NOW,
+      })).toBe(true);
+      expect(readJob(queued.jobId).payload).toMatchObject({
+        locale: legacyLocale,
+        lateResult: { text: spanishResult },
+      });
+
+      await processChatLegacyTimeoutContinuationJob(readJob(queued.jobId), {
+        now: new Date('2026-07-22T10:00:20.000Z'),
+        pushNotification: mocks.push,
+      });
+
+      expect(mocks.executeChatDomainHandler).not.toHaveBeenCalled();
+      expect(mocks.withAiBudgetReservation).not.toHaveBeenCalled();
+      expect(mocks.finalizeChatAnswerMetadata).toHaveBeenCalledWith(expect.objectContaining({
+        locale: 'en-US',
+        responseText: expect.stringContaining('could not safely present its saved result in English'),
+        existingMetadata: expect.objectContaining({
+          lateResultLocaleFallback: {
+            applied: true,
+            effectiveLocale: 'en-US',
+            reason: 'retired_spanish_response',
+          },
+        }),
+      }));
+      expect(mocks.storeChatMessage).toHaveBeenCalledWith(expect.objectContaining({
+        text: expect.stringContaining('could not safely present its saved result in English'),
+      }));
+      expect(mocks.push).toHaveBeenCalledWith(42, expect.objectContaining({
+        title: 'Background result needs review',
+        body: 'Open Nexus to review the request status.',
+      }));
+      expect(readJob(queued.jobId).payload).toMatchObject({
+        locale: legacyLocale,
+        lateResult: { text: spanishResult },
+      });
+    },
+  );
+
   it('leaves a pure transient APNs result undelivered and retries it under a new queue lease', async () => {
     const queued = enqueue({ sourceRunId: 'run-timeout-apns-retry' });
     attachLateChatLegacyTimeoutResult({
@@ -398,6 +449,41 @@ describe('chat legacy timeout continuation', () => {
     }));
     expect(JSON.stringify(readJob(queued.jobId).payload)).not.toContain('secret details');
   });
+
+  it.each(['es', 'es-419'])(
+    'renders and pushes a persisted %s failure in English without rewriting its stored locale',
+    async (legacyLocale) => {
+      const sourceRunId = `run-timeout-${legacyLocale}`;
+      const queued = enqueue({ sourceRunId, locale: legacyLocale });
+      expect(markChatLegacyTimeoutForegroundFailure({
+        jobId: queued.jobId,
+        tenantId: 42,
+        userId: 42,
+        sourceRunId,
+        error: new Error('provider failed'),
+        now: NOW,
+      })).toBe(true);
+      expect(readJob(queued.jobId).payload).toMatchObject({ locale: legacyLocale });
+
+      await processChatLegacyTimeoutContinuationJob(readJob(queued.jobId), {
+        now: new Date('2026-07-22T10:00:20.000Z'),
+        pushNotification: mocks.push,
+      });
+
+      expect(mocks.finalizeChatAnswerMetadata).toHaveBeenCalledWith(expect.objectContaining({
+        locale: 'en-US',
+        responseText: expect.stringContaining('I could not finish the background continuation safely'),
+      }));
+      expect(mocks.storeChatMessage).toHaveBeenCalledWith(expect.objectContaining({
+        text: expect.stringContaining('I could not finish the background continuation safely'),
+      }));
+      expect(mocks.push).toHaveBeenCalledWith(42, expect.objectContaining({
+        title: 'Background continuation stopped',
+        body: 'Open Nexus to review the request status.',
+      }));
+      expect(readJob(queued.jobId).payload).toMatchObject({ locale: legacyLocale });
+    },
+  );
 
   it('fails honestly at the durable deadline instead of starting a second provider call', async () => {
     const queued = enqueue();

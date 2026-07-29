@@ -7,19 +7,20 @@ import {
 } from '../../src/services/chat-request-locale-context';
 
 describe('chat request locale context', () => {
-  it('scopes a valid request locale and restores the outer context', () => {
+  it('coerces legacy Spanish to English and restores the outer context', () => {
     expect(getCurrentChatRequestLocale()).toBeNull();
 
     runWithChatRequestLocale('es-419', () => {
-      expect(getCurrentChatRequestLocale()).toBe('es-419');
-      expect(buildChatReplyLanguagePromptBlock()).toContain('Reply only in Spanish');
+      expect(getCurrentChatRequestLocale()).toBe('en-US');
+      expect(buildChatReplyLanguagePromptBlock()).toContain('Reply only in English');
     });
 
     expect(getCurrentChatRequestLocale()).toBeNull();
   });
 
-  it('uses Portuguese for pt-BR and rejects unsupported locale values', () => {
+  it('uses Portuguese or English for supported locales and rejects unsupported values', () => {
     expect(buildChatReplyLanguagePromptBlock('pt-BR')).toContain('Reply only in Portuguese');
+    expect(buildChatReplyLanguagePromptBlock('en-US')).toContain('Reply only in English');
     expect(buildChatReplyLanguagePromptBlock('fr-FR')).toBe('');
   });
 });

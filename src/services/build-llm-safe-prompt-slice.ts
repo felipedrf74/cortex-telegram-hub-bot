@@ -20,7 +20,7 @@ export interface LlmSafeSlotDescriptor {
 
 export interface LlmSafeExample {
   text: string;
-  locale?: 'en' | 'pt' | 'es' | 'mixed';
+  locale?: 'en' | 'pt' | 'mixed';
   expectedSlots?: Record<string, unknown>;
 }
 

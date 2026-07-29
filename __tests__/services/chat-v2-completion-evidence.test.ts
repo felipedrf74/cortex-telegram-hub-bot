@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildNexusAnswerContract } from '../../src/services/chat-answer-contract';
 import { buildChatShadowSampleEvidenceHash } from '../../src/services/chat-shadow-gate-readiness';
 import {
+  CHAT_V2_RESPONSE_LOCALE_EVIDENCE_VERSION,
   evaluateRecordedChatV2AnswerCanaryExit,
   evaluateRecordedChatV2ShadowGateReadiness,
   loadChatV2AnswerCanaryEvaluationInput,
@@ -73,6 +74,12 @@ describe('chat-v2-completion-evidence', () => {
     expect(row.message_identifier_kind).toBe('hmac');
     expect(JSON.stringify(row)).not.toContain(rawMessage);
     expect(row.raw_field_audit_count).toBe(0);
+    expect(JSON.parse(row.safe_metadata_json)).toMatchObject({
+      responseLocaleEvidence: {
+        version: CHAT_V2_RESPONSE_LOCALE_EVIDENCE_VERSION,
+        effectiveLocale: 'pt-BR',
+      },
+    });
 
     const samples = loadChatV2ShadowGateSamples();
     expect(samples).toHaveLength(1);
@@ -116,6 +123,42 @@ describe('chat-v2-completion-evidence', () => {
 
     expect(loadChatV2ShadowGateSamples()).toEqual([]);
     expect(loadChatV2ShadowGateSamples(10, ['local_sandbox_seed'])).toHaveLength(1);
+  });
+
+  it('loads only exact current response-locale evidence for EN, PT, and mixed gate buckets', () => {
+    vi.stubEnv('CHAT_V2_SHADOW_EVIDENCE_ENABLED', 'true');
+    const cases = [
+      { requestId: 'current-en', userLanguage: 'en', responseLocale: 'en' },
+      { requestId: 'current-pt', userLanguage: 'pt-BR', responseLocale: 'pt-BR' },
+      { requestId: 'current-mixed', userLanguage: 'mixed', responseLocale: 'en' },
+    ] as const;
+    for (const testCase of cases) {
+      recordChatV2CompletionEvidence({
+        tenantId: 7,
+        userId: 42,
+        requestId: testCase.requestId,
+        normalizedMessage: `message-${testCase.requestId}`,
+        userLanguage: testCase.userLanguage,
+        responseLocale: testCase.responseLocale,
+        response: responseEnvelope({ text: `Response ${testCase.requestId}` }),
+      });
+    }
+
+    expect(loadChatV2ShadowGateSamples(10).map((sample) => sample.language).sort()).toEqual([
+      'en',
+      'mixed',
+      'pt-BR',
+    ]);
+
+    testDb.prepare(`
+      UPDATE chat_v2_completion_evidence
+      SET safe_metadata_json = '{}'
+      WHERE request_id = 'current-en'
+    `).run();
+    expect(loadChatV2ShadowGateSamples(10).map((sample) => sample.language).sort()).toEqual([
+      'mixed',
+      'pt-BR',
+    ]);
   });
 
   it('records canary evidence separately without inventing manual acceptance labels', () => {

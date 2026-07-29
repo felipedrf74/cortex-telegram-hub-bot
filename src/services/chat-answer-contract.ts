@@ -48,7 +48,7 @@ export type NexusChatExpectedResponseShape =
   | 'notification_summary'
   | 'decision_summary'
   | 'direct_answer';
-export type NexusChatLanguage = 'pt' | 'en' | 'es' | 'mixed';
+export type NexusChatLanguage = 'pt' | 'en' | 'mixed';
 
 export interface NexusGroundingFact {
   statement: string;
@@ -164,7 +164,7 @@ export function buildNexusAnswerContract(input: {
     routeKind: input.routeKind ?? inferRouteKind(input.actionability, input.missingFacts),
     groundingRequirement: input.groundingRequirement ?? inferGroundingRequirement(input.actionability, input.missingFacts, input.ownerSkill),
     expectedResponseShape: input.expectedResponseShape ?? 'direct_answer',
-    language: input.language ?? 'en',
+    language: normalizeNexusChatLanguage(input.language),
     ambiguityReasons: [...new Set((input.ambiguityReasons ?? []).filter(Boolean))],
     routeMethod: normalizeShortText(input.routeMethod, 'unknown'),
     confidence: clamp01(input.confidence ?? 0.5),
@@ -192,6 +192,11 @@ export function buildNexusAnswerContract(input: {
       stageTimingsMs: {},
     },
   };
+}
+
+function normalizeNexusChatLanguage(language: unknown): NexusChatLanguage {
+  if (language === 'pt' || language === 'mixed') return language;
+  return 'en';
 }
 
 export function metadataGroundingFacts(facts: NexusGroundingFact[]): Array<{ statement: string; source: string; field?: string }> {

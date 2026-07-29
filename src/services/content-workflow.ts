@@ -24,6 +24,13 @@ import { readSignals } from './intelligence-bus';
 import { loadPromptWithConfig } from '../utils/prompt-loader';
 import { sanitizeForPromptInterpolation } from '../utils/prompt-sanitizer';
 import { getUserLanguage } from './user-service';
+import {
+  checkResponseLocaleFidelity,
+  detectStrictShortResponseLanguage,
+  expectedLanguageForLocale,
+} from './chat-language-detector';
+import { normalizeContentOutputLanguage } from './content-output-language';
+import type { Lang } from '../utils/i18n';
 import { buildAuthorizedContentReferenceContext } from './content-reference-context';
 import {
   contentScopeForInsert,
@@ -294,6 +301,7 @@ function buildTopicSystemPrompt(format: 'reel' | 'youtube', isTrending: boolean,
   return loadPromptWithConfig('topic-generation', {
     FORMAT_DESC: formatDesc,
     TRENDING_INSTRUCTION: trendingInstr,
+    OUTPUT_LANGUAGE_CONTRACT: buildTopicOutputLanguageContract(resolveTopicOutputLanguage(userId)),
     KNOWLEDGE_BLOCK: knowledgeBlock ? knowledgeBlock + '\n' : '',
     TASTE_PROFILE: tasteBlock ? tasteBlock + '\n' : '',
   });
@@ -305,6 +313,7 @@ function buildWeeklyPackageSystemPrompt(userId: number, tenantId: number): strin
   const basePrompt = loadPromptWithConfig('topic-generation', {
     FORMAT_DESC: 'one weekly package containing YouTube videos (8-15 minutes) and Instagram Reels / YouTube Shorts (30-60 seconds)',
     TRENDING_INSTRUCTION: 'Focus on EVERGREEN topics that remain useful for months. The package must contain distinct ideas across its long-form and short-form sections.',
+    OUTPUT_LANGUAGE_CONTRACT: buildTopicOutputLanguageContract(resolveTopicOutputLanguage(userId)),
     KNOWLEDGE_BLOCK: knowledgeBlock ? knowledgeBlock + '\n' : '',
     TASTE_PROFILE: tasteBlock ? tasteBlock + '\n' : '',
   });
@@ -576,6 +585,32 @@ function normalizeTopicCandidate(value: any): TopicCandidate {
   };
 }
 
+function resolveTopicOutputLanguage(userId: number): Lang {
+  if (userId <= 0) return 'pt-BR';
+  return normalizeContentOutputLanguage(getUserLanguage(userId), 'en-US');
+}
+
+function buildTopicOutputLanguageContract(language: Lang): string {
+  if (language === 'en-US') {
+    return 'Generate all user-facing topic fields only in English. This includes title, whyNow, and hookIdea. Spanish-authored source material does not change this contract. Do not emit Spanish output.';
+  }
+  const languageLabel = language === 'pt-PT' ? 'European Portuguese' : 'Brazilian Portuguese';
+  return `Generate all user-facing topic fields only in ${languageLabel}. This includes title, whyNow, and hookIdea. Source material in another language does not change this contract. Do not emit Spanish output.`;
+}
+
+function hasTopicOutputLocaleMismatch(language: Lang, candidate: TopicCandidate): boolean {
+  const userFacingText = [candidate.title, candidate.whyNow, candidate.hookIdea]
+    .filter(Boolean)
+    .join('\n');
+  const fidelity = checkResponseLocaleFidelity(language, userFacingText);
+  if (!fidelity.ok) return true;
+  const expectedLanguage = expectedLanguageForLocale(language);
+  const strictLanguage = detectStrictShortResponseLanguage(userFacingText, expectedLanguage);
+  return strictLanguage !== null
+    && expectedLanguage !== 'unknown'
+    && strictLanguage !== expectedLanguage;
+}
+
 export function hasValidLiveTopicFields(value: any): boolean {
   const nonEmpty = (field: unknown): field is string => typeof field === 'string' && field.trim().length > 0;
   const angleTags = new Set([
@@ -719,6 +754,14 @@ async function generateTopicCandidateBatch(
     const parsed = JSON.parse(jsonMatch[0]);
     if (!Array.isArray(parsed)) throw new Error('Topic response root must be an array');
     const candidates = parsed.slice(0, count).map(normalizeTopicCandidate);
+    const outputLanguage = resolveTopicOutputLanguage(userId);
+    if (candidates.some((candidate) => hasTopicOutputLocaleMismatch(outputLanguage, candidate))) {
+      logger.warn(
+        { format, expectedLanguage: outputLanguage, candidateCount: candidates.length },
+        'Topic candidate batch failed output-language validation; nothing accepted',
+      );
+      return { candidates: [], discoveryIdeas: [] };
+    }
     const deduped = await deduplicateTopicCandidates(candidates, userId, tenantId);
     return {
       candidates: deduped,
@@ -1023,15 +1066,33 @@ export async function generateWeeklyPackage(
     return { youtube: [], reels: [] };
   }
 
+  const normalizedYoutube = parsed.youtube.slice(0, youtubeCount).map(normalizeTopicCandidate);
+  const normalizedReels = parsed.reels.slice(0, reelCount).map(normalizeTopicCandidate);
+  const outputLanguage = resolveTopicOutputLanguage(userId);
+  if (
+    normalizedYoutube.some((candidate) => hasTopicOutputLocaleMismatch(outputLanguage, candidate))
+    || normalizedReels.some((candidate) => hasTopicOutputLocaleMismatch(outputLanguage, candidate))
+  ) {
+    logger.warn(
+      {
+        expectedLanguage: outputLanguage,
+        youtubeCount: normalizedYoutube.length,
+        reelCount: normalizedReels.length,
+      },
+      'Weekly content package failed output-language validation; nothing persisted',
+    );
+    return { youtube: [], reels: [] };
+  }
+
   const ytTopics = await deduplicateTopicCandidates(
-    parsed.youtube.slice(0, youtubeCount).map(normalizeTopicCandidate),
+    normalizedYoutube,
     userId,
     tenantId,
     [],
     { allowDifferentAngles: false },
   );
   const reelTopics = await deduplicateTopicCandidates(
-    parsed.reels.slice(0, reelCount).map(normalizeTopicCandidate),
+    normalizedReels,
     userId,
     tenantId,
     ytTopics,

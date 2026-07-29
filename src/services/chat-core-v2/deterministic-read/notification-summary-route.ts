@@ -108,7 +108,6 @@ function buildNotificationsSummaryText(
   if (data.unreadCount === 0) {
     if (normalizedLocale === 'pt-BR') return 'Você não tem notificações não lidas agora.';
     if (normalizedLocale === 'pt-PT') return 'Não tens notificações por ler neste momento.';
-    if (normalizedLocale === 'es') return 'No tienes notificaciones sin leer ahora.';
     return 'You have no unread notifications right now.';
   }
 
@@ -133,7 +132,6 @@ function buildNotificationsSummaryHeader(
 
   if (locale === 'pt-BR') return `Você tem ${data.unreadCount} ${plural(data.unreadCount, 'notificação não lida', 'notificações não lidas')}.${detail}`;
   if (locale === 'pt-PT') return `Tens ${data.unreadCount} ${plural(data.unreadCount, 'notificação por ler', 'notificações por ler')}.${detail}`;
-  if (locale === 'es') return `Tienes ${data.unreadCount} ${plural(data.unreadCount, 'notificación sin leer', 'notificaciones sin leer')}.${detail}`;
   return `You have ${data.unreadCount} unread ${data.unreadCount === 1 ? 'notification' : 'notifications'}.${detail}`;
 }
 
@@ -147,11 +145,6 @@ function notificationCountPhrase(
     if (kind === 'action_required') return `${count} ${plural(count, 'com ação necessária', 'com ação necessária')}`;
     return `${count} ${plural(count, 'lembrete', 'lembretes')}`;
   }
-  if (locale === 'es') {
-    if (kind === 'urgent') return `${count} ${plural(count, 'urgente', 'urgentes')}`;
-    if (kind === 'action_required') return `${count} ${plural(count, 'con acción necesaria', 'con acción necesaria')}`;
-    return `${count} ${plural(count, 'recordatorio', 'recordatorios')}`;
-  }
   if (kind === 'urgent') return `${count} urgent`;
   if (kind === 'action_required') return `${count} needing action`;
   return `${count} ${count === 1 ? 'reminder' : 'reminders'}`;
@@ -160,14 +153,12 @@ function notificationCountPhrase(
 function notificationListLabel(locale: ChatCoreV2NormalizedLocale): string {
   if (locale === 'pt-BR') return 'Principais notificações:';
   if (locale === 'pt-PT') return 'Notificações principais:';
-  if (locale === 'es') return 'Notificaciones principales:';
   return 'Top notifications:';
 }
 
 function notificationPrioritySuffix(priority: string, locale: ChatCoreV2NormalizedLocale): string {
   if (priority === 'critical' || priority === 'time_sensitive') {
     if (locale === 'pt-BR' || locale === 'pt-PT') return ' (urgente)';
-    if (locale === 'es') return ' (urgente)';
     return ' (urgent)';
   }
   return '';
@@ -175,7 +166,6 @@ function notificationPrioritySuffix(priority: string, locale: ChatCoreV2Normaliz
 
 function notificationActionSuffix(actionLabel: string, locale: ChatCoreV2NormalizedLocale): string {
   if (locale === 'pt-BR' || locale === 'pt-PT') return ` - ação: ${actionLabel}`;
-  if (locale === 'es') return ` - acción: ${actionLabel}`;
   return ` - action: ${actionLabel}`;
 }
 

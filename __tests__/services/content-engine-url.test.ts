@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  buildScriptCacheKey,
   contentEngineApiBaseUrl,
   deepSearch,
   ForwardedAiBudgetError,
@@ -11,6 +12,32 @@ afterEach(() => {
 });
 
 describe('content-engine client base URL', () => {
+  it('projects retired Spanish and unsupported direct script locales to English cache scope', () => {
+    const spanishKey = buildScriptCacheKey(
+      'safe topic',
+      'general',
+      8,
+      'YouTube',
+      null,
+      'draft',
+      null,
+      'es-ES',
+    );
+    const unsupportedKey = buildScriptCacheKey(
+      'safe topic',
+      'general',
+      8,
+      'YouTube',
+      null,
+      'draft',
+      null,
+      'de-DE',
+    );
+
+    expect(spanishKey).toContain('lang:en-US');
+    expect(unsupportedKey).toContain('lang:en-US');
+  });
+
   it('appends the API prefix to Docker service base URLs', () => {
     expect(contentEngineApiBaseUrl('http://content-engine:8100')).toBe(
       'http://content-engine:8100/api/v1',

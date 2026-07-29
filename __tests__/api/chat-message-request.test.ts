@@ -78,6 +78,27 @@ describe('chat message request-boundary helpers', () => {
     expect(mockLoggerDebug).not.toHaveBeenCalled();
   });
 
+  it.each([
+    'es',
+    'es-ES',
+    'es-419',
+    ['es-419'],
+    'Spanish',
+    'Español',
+    'Castellano',
+  ])(
+    'does not rewrite the stored profile for a retired Spanish compatibility header: %j',
+    (headerValue) => {
+      mockGetUserLanguage.mockReturnValue('pt-BR');
+
+      persistChatLanguagePreference({ header: () => headerValue }, 42);
+
+      expect(mockGetUserLanguage).not.toHaveBeenCalled();
+      expect(mockSetUserLanguage).not.toHaveBeenCalled();
+      expect(mockLoggerDebug).not.toHaveBeenCalled();
+    },
+  );
+
   it('does not block chat when language preference persistence fails', () => {
     mockGetUserLanguage.mockImplementationOnce(() => {
       throw new Error('database locked');

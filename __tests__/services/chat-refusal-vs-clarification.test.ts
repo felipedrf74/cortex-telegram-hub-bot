@@ -151,10 +151,10 @@ describe('refusal vs clarification distinction in executeChatActionPlan', () => 
     expect(response.text).toMatch(/não vou seguir instruções/i);
   });
 
-  it('emits Spanish refusal copy for es-ES users (Phase 16 batch 80)', async () => {
+  it('emits English refusal copy for retired es-ES locales', async () => {
     const { plan, input } = makeRefusedPlan('prompt_injection_marker_detected', 'es-ES');
     const response = await executeChatActionPlan(plan, input, {} as never);
-    expect(response.text).toMatch(/no voy a seguir instrucciones/i);
+    expect(response.text).toMatch(/won't follow embedded instructions/i);
   });
 
   it('honors refused metadata.actionStatus over the persisted blocked status', async () => {

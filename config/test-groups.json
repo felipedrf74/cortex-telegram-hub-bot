@@ -1,5 +1,5 @@
 {
-  "version": "2026-07-28.2",
+  "version": "2026-07-29.1",
   "core": {
     "targetSeconds": 30,
     "tests": [
@@ -12,6 +12,120 @@
     ]
   },
   "retirementMappings": [
+    {
+      "baseSha": "f0d4047def0c5838d562f06326d2e6949fe49770",
+      "test": "__tests__/services/chat-answer-contract.test.ts",
+      "requiredChangedPaths": [
+        "src/services/chat-answer-contract.ts",
+        "src/services/chat-response-quality-gate.ts"
+      ],
+      "replacementTests": [
+        "__tests__/services/chat-answer-contract.test.ts",
+        "__tests__/services/chat-locale-detection-es.test.ts"
+      ],
+      "reason": "The retained answer-contract suite now owns EN/PT output repair while the supported-locale boundary proves legacy Spanish locale signals fall back to English."
+    },
+    {
+      "baseSha": "f0d4047def0c5838d562f06326d2e6949fe49770",
+      "test": "__tests__/services/chat-core-v2-locale-policy.test.ts",
+      "requiredChangedPaths": [
+        "src/services/chat-core-v2/response-contracts.ts"
+      ],
+      "replacementTests": [
+        "__tests__/services/chat-core-v2-locale-policy.test.ts",
+        "__tests__/services/chat-locale-detection-es.test.ts"
+      ],
+      "reason": "The retained Chat Core locale suite owns EN/PT templates and English normalization after the Spanish response locale is retired, with legacy signals pinned at the supported-locale boundary."
+    },
+    {
+      "baseSha": "f0d4047def0c5838d562f06326d2e6949fe49770",
+      "test": "__tests__/services/chat-day-to-day-simulation.test.ts",
+      "requiredChangedPaths": [
+        "src/services/chat-day-to-day-simulation.ts"
+      ],
+      "replacementTests": [
+        "__tests__/services/chat-day-to-day-simulation.test.ts",
+        "__tests__/services/chat-locale-detection-es.test.ts"
+      ],
+      "reason": "The retained day-to-day simulation now exercises EN, pt-BR, and pt-PT while the supported-locale boundary owns legacy Spanish-to-English compatibility."
+    },
+    {
+      "baseSha": "f0d4047def0c5838d562f06326d2e6949fe49770",
+      "test": "__tests__/services/chat-turn-context.test.ts",
+      "requiredChangedPaths": [
+        "src/services/chat-turn-context.ts"
+      ],
+      "replacementTests": [
+        "__tests__/services/chat-turn-context.test.ts",
+        "__tests__/services/chat-locale-detection-es.test.ts"
+      ],
+      "reason": "The retained turn-context suite owns supported EN/PT cohorts and English coercion, while the supported-locale boundary proves legacy Spanish signals remain compatible."
+    },
+    {
+      "baseSha": "f0d4047def0c5838d562f06326d2e6949fe49770",
+      "test": "__tests__/services/registry-examples-as-living-corpus-shadow.test.ts",
+      "requiredChangedPaths": [
+        "src/services/registry-driven-eval-scenarios.ts",
+        "src/services/chat/registry/definitions/*.ts",
+        "src/services/chat/registry/types.ts"
+      ],
+      "replacementTests": [
+        "__tests__/services/registry-examples-as-living-corpus-shadow.test.ts",
+        "__tests__/services/registry-examples-end-to-end-routing.test.ts"
+      ],
+      "reason": "The living-corpus suite owns supported EN/PT response evaluation, while the end-to-end registry suite deterministically routes all 52 retained Spanish-authored compatibility inputs under the English response contract."
+    },
+    {
+      "baseSha": "f0d4047def0c5838d562f06326d2e6949fe49770",
+      "test": "__tests__/services/registry-examples-end-to-end-routing.test.ts",
+      "requiredChangedPaths": [
+        "src/services/chat/registry/definitions/*.ts",
+        "src/services/chat/registry/types.ts"
+      ],
+      "replacementTests": [
+        "__tests__/services/registry-examples-end-to-end-routing.test.ts"
+      ],
+      "reason": "The retained end-to-end registry suite owns deterministic EN/PT golden routing plus all 52 Spanish-authored compatibility inputs, each explicitly bound to an English response contract."
+    },
+    {
+      "baseSha": "f0d4047def0c5838d562f06326d2e6949fe49770",
+      "test": "__tests__/services/registry-real-eval-gates-locale.test.ts",
+      "requiredChangedPaths": [
+        "src/services/registry-driven-eval-scenarios.ts",
+        "src/services/chat/registry/definitions/*.ts",
+        "src/services/chat/registry/types.ts"
+      ],
+      "replacementTests": [
+        "__tests__/services/registry-real-eval-gates-locale.test.ts",
+        "__tests__/services/registry-examples-end-to-end-routing.test.ts"
+      ],
+      "reason": "The locale eval gate owns supported EN/PT release quality, while the end-to-end registry suite directly proves Spanish-authored requests still route to their declared action with English output."
+    },
+    {
+      "baseSha": "f0d4047def0c5838d562f06326d2e6949fe49770",
+      "test": "__tests__/services/registry-shadow-smoke-corpus.test.ts",
+      "requiredChangedPaths": [
+        "src/services/chat/registry/definitions/*.ts",
+        "src/services/chat/registry/types.ts"
+      ],
+      "replacementTests": [
+        "__tests__/services/registry-shadow-smoke-corpus.test.ts",
+        "__tests__/services/registry-examples-end-to-end-routing.test.ts"
+      ],
+      "reason": "The registry shadow corpus proves generated product fixtures use supported response locales only, while the end-to-end registry suite exercises the retained Spanish-authored inputs as English-response routing compatibility cases."
+    },
+    {
+      "baseSha": "f0d4047def0c5838d562f06326d2e6949fe49770",
+      "test": "__tests__/services/routing-corpus.test.ts",
+      "requiredChangedPaths": [
+        "src/services/routing-corpus.ts"
+      ],
+      "replacementTests": [
+        "__tests__/services/routing-corpus.test.ts",
+        "__tests__/services/chat-locale-detection-es.test.ts"
+      ],
+      "reason": "The retained routing-corpus suite owns the exact EN/PT fixture set and guarded Spanish synthetic cleanup, while the supported-locale boundary pins legacy Spanish-to-English fallback."
+    },
     {
       "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "tests": [
@@ -663,6 +777,7 @@
       "tests": [
         "__tests__/fixtures/content*.ts",
         "__tests__/commands/books-personal-note-scope.test.ts",
+        "__tests__/commands/books-profile-locale.test.ts",
         "__tests__/agents/**/*.test.ts",
         "__tests__/api/content*.test.ts",
         "__tests__/integration/content*.test.ts",

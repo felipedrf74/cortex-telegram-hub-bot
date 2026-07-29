@@ -551,9 +551,6 @@ function unverifiedActionRepairText(language: NexusAnswerContract['language']): 
   if (language === 'pt' || language === 'mixed') {
     return 'Entendi o pedido, mas não posso afirmar que a ação foi concluída sem verificação do Nexus. Não executei nem confirmei sucesso sem uma leitura de validação.';
   }
-  if (language === 'es') {
-    return 'Entendí la petición, pero no puedo afirmar que la acción se haya completado sin verificación de Nexus. No ejecuté ni confirmé éxito sin una lectura de validación.';
-  }
   return 'I understood the request, but I cannot honestly say the action is done until Nexus verifies the change. I did not claim success without a read-back.';
 }
 
@@ -639,9 +636,6 @@ function looksLikeRecipe(text: string): boolean {
 function scopedReadRepairText(language: NexusAnswerContract['language']): string {
   if (language === 'pt') {
     return 'Preciso consultar os dados atuais do Nexus antes de afirmar esses detalhes com segurança. Posso verificar a seção certa e responder com base nela.';
-  }
-  if (language === 'es') {
-    return 'Necesito consultar los datos actuales de Nexus antes de afirmar esos detalles con seguridad. Puedo revisar la sección correcta y responder con base en ella.';
   }
   return 'I need a current scoped read before I can state those details confidently. Ask me to check the relevant Nexus section, and I will ground the answer first.';
 }

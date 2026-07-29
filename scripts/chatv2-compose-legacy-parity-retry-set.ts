@@ -3,7 +3,7 @@
 
 /**
  * Compose a reviewable parity set from repeated distinct-endpoint observation
- * runs over the same frozen corpus and fixture.
+ * runs over the same governed corpus and fixture.
  *
  * This is intentionally conservative:
  * - all source manifests must describe the same route set, corpus hash,
@@ -19,6 +19,7 @@ import path from 'path';
 import dotenv from 'dotenv';
 
 import {
+  buildChatV2RetirementObserverCorpusBinding,
   CHAT_V2_LEGACY_PARITY_REVIEW_RUBRIC_VERSION,
   validateChatV2LegacyParityObservation,
   type ChatV2LegacyParityObservation,
@@ -32,6 +33,9 @@ dotenv.config({ quiet: true });
 dotenv.config({ path: '.env.local', override: false, quiet: true });
 
 type AnyRecord = Record<string, unknown>;
+const SAMPLE_IDENTITY_POLICY = 'route_index_request_language_expected_response_language_v1';
+const REQUEST_LANGUAGES = new Set(['en', 'pt-BR', 'pt-PT', 'es', 'es-419', 'mixed']);
+const EXPECTED_RESPONSE_LANGUAGES = new Set(['en', 'pt-BR', 'pt-PT', 'mixed']);
 
 type SourceArtifact = {
   observationsPath: string;
@@ -221,12 +225,34 @@ function validateManifest(
   if (manifest.rawReviewArtifactSchemaVersion !== 'chat_v2_legacy_parity_raw_review_row.v1') throw new Error('manifest_raw_artifact_schema_mismatch');
   if (manifest.routePromptVersion !== CHAT_V2_LEGACY_PARITY_ROUTE_PROMPT_VERSION) throw new Error('manifest_prompt_version_mismatch');
   if (manifest.routeCorpusId !== CHAT_V2_LEGACY_PARITY_ROUTE_CORPUS_META.corpusId) throw new Error('manifest_corpus_id_mismatch');
-  if (manifest.routeCorpusFrozenBeforeImplementation !== true) throw new Error('manifest_corpus_not_frozen');
+  if (
+    manifest.routeCorpusFrozenBeforeImplementation
+    !== CHAT_V2_LEGACY_PARITY_ROUTE_CORPUS_META.frozenBeforeImplementation
+  ) {
+    throw new Error('manifest_corpus_freeze_claim_mismatch');
+  }
+  if (manifest.routeCorpusMutationPolicy !== CHAT_V2_LEGACY_PARITY_ROUTE_CORPUS_META.mutationPolicy) {
+    throw new Error('manifest_corpus_mutation_policy_mismatch');
+  }
+  if (manifest.sampleIdentityPolicy !== SAMPLE_IDENTITY_POLICY) {
+    throw new Error('manifest_sample_identity_policy_mismatch');
+  }
   if (manifest.reviewRubricVersion !== CHAT_V2_LEGACY_PARITY_REVIEW_RUBRIC_VERSION) throw new Error('manifest_rubric_mismatch');
   if (manifest.observationRows !== observations.length) throw new Error('manifest_row_count_mismatch');
   if (manifest.observationsSha256 !== observationsSha256) throw new Error('manifest_observation_hash_mismatch');
-  if (typeof manifest.routeCorpusSha256 !== 'string' || !/^[a-f0-9]{64}$/i.test(manifest.routeCorpusSha256)) {
-    throw new Error('manifest_missing_corpus_hash');
+  const manifestRouteIds = sortedStrings(manifest.routeIds);
+  let observerCorpusBinding;
+  try {
+    observerCorpusBinding = buildChatV2RetirementObserverCorpusBinding(manifestRouteIds);
+  } catch {
+    throw new Error('manifest_route_mismatch');
+  }
+  if (manifest.routeCorpusSha256 !== observerCorpusBinding.routeCorpusSha256) {
+    throw new Error('manifest_corpus_hash_mismatch');
+  }
+  const observationRouteIds = [...new Set(observations.map((row) => row.routeId))].sort();
+  if (JSON.stringify(manifestRouteIds) !== JSON.stringify(observationRouteIds)) {
+    throw new Error('manifest_route_mismatch');
   }
   if (typeof manifest.stateFixtureHash !== 'string' || !/^sha256:[a-f0-9]{64}$/i.test(manifest.stateFixtureHash)) {
     throw new Error('manifest_missing_fixture_hash');
@@ -247,6 +273,27 @@ function validateRawReviewRows(rows: AnyRecord[], observations: ChatV2LegacyPari
     const observation = observationsByHmac.get(row.sampleHmac)!;
     if (observation.routeId !== row.routeId) throw new Error(`raw_review_route_mismatch:${index}`);
     if (typeof row.promptText !== 'string') throw new Error(`raw_review_missing_prompt:${index}`);
+    if (typeof row.requestLanguage !== 'string' || !REQUEST_LANGUAGES.has(row.requestLanguage)) {
+      throw new Error(`raw_review_invalid_request_language:${index}`);
+    }
+    if (
+      typeof row.expectedResponseLanguage !== 'string'
+      || !EXPECTED_RESPONSE_LANGUAGES.has(row.expectedResponseLanguage)
+    ) {
+      throw new Error(`raw_review_invalid_expected_response_language:${index}`);
+    }
+    if (Object.prototype.hasOwnProperty.call(row, 'language')) {
+      throw new Error(`raw_review_ambiguous_language_field:${index}`);
+    }
+    if (
+      typeof row.sampleKey !== 'string'
+      || !row.sampleKey.startsWith(`${row.routeId}:`)
+      || !row.sampleKey.endsWith(
+        `:request=${row.requestLanguage}:response=${row.expectedResponseLanguage}`,
+      )
+    ) {
+      throw new Error(`raw_review_sample_language_binding_mismatch:${index}`);
+    }
     if (!row.legacyRawResponse || typeof row.legacyRawResponse !== 'object' || Array.isArray(row.legacyRawResponse)) {
       throw new Error(`raw_review_missing_legacy_response:${index}`);
     }

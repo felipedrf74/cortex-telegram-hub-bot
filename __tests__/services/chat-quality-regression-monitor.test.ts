@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
+import { CHAT_V2_RETIREMENT_OBSERVER_CORPUS_BINDING } from '../../src/services/chat-legacy-parity-labels';
+import {
+  CHAT_V2_RESPONSE_LOCALE_EVIDENCE_VERSION,
+} from '../../src/services/chat-v2-completion-evidence';
 import { runChatQualityRegressionMonitor } from '../../src/services/chat-quality-regression-monitor';
 import type {
   ChatV2CompletionReadinessReportLike,
@@ -31,7 +35,7 @@ function insertSignedBehaviorRegression(): void {
     `hmac:test:${'b'.repeat(64)}`,
     JSON.stringify({
       schemaVersion: 'chat_v2_legacy_parity_evidence_safe_metadata.v1',
-      parityObservationImport: true,
+      parityLabelImport: true,
       evaluator: 'manual',
       peerReviewSignoffHash: 'a'.repeat(64),
       matchingCount: 47,
@@ -39,7 +43,16 @@ function insertSignedBehaviorRegression(): void {
       safetyRegressionCount: 0,
       qualityRegressionCount: 0,
       degradedNotComparableCount: 0,
+      reviewRubricVersion: 'chat_v2_legacy_parity_review_rubric.v2',
+      parityRate: 0.94,
+      reviewCompletenessChecked: true,
+      rawReviewArtifactCompletenessChecked: true,
+      observedRouteSampleCount: 50,
+      observerManifestSha256: '1'.repeat(64),
+      observerObservationsSha256: '2'.repeat(64),
+      rawReviewArtifactSha256: '3'.repeat(64),
       forbiddenRawText: 'never surface me',
+      ...CHAT_V2_RETIREMENT_OBSERVER_CORPUS_BINDING,
     }),
     NOW.toISOString(),
   );
@@ -54,6 +67,10 @@ function makeCompleteReadinessReport(
     schemaVersion: 'chat_v2_completion_readiness_report.v1',
     generatedAt,
     evidenceSources: ['runtime_route'],
+    evidenceContract: {
+      retirementObserverCorpusBinding: CHAT_V2_RETIREMENT_OBSERVER_CORPUS_BINDING,
+      responseLocaleEvidenceVersion: CHAT_V2_RESPONSE_LOCALE_EVIDENCE_VERSION,
+    },
     shadow: passingPhase(),
     answerCanary: passingPhase(),
     deterministicRead: passingPhase(),

@@ -59,7 +59,6 @@ export interface BuildChatCoreV2BackgroundQueuedShortcutResponseResult {
 function acknowledgementText(locale: string | null | undefined): string {
   const normalized = String(locale ?? '').toLowerCase();
   if (normalized.startsWith('pt')) return 'Estou a tratar disso — aviso-te assim que terminar.';
-  if (normalized.startsWith('es')) return 'Estoy en ello — te aviso en cuanto termine.';
   return "I'm on it — I'll let you know as soon as it's done.";
 }
 

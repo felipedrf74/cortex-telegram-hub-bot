@@ -67,7 +67,7 @@ import {
 } from '../../services/legal-consent';
 import { cancelPendingChatActionsForAccountSwitch } from '../../services/chat-action-state';
 import { normalizeLangHeader } from '../../services/secretary-fastpath';
-import type { Lang } from '../../utils/i18n';
+import { normalizeSupportedLang, type Lang } from '../../utils/i18n';
 
 // Apple JWKS cache
 let appleJwksCache: { keys: any[]; fetchedAt: number } | null = null;
@@ -450,7 +450,7 @@ export function authRoutes(): Router {
       id: user.id,
       firstName: user.first_name || 'User',
       lastName: user.last_name || undefined,
-      language: user.language || 'en',
+      language: normalizeSupportedLang(user.language, 'en-US'),
       email: user.email || null,
       emailVerified: Boolean(user.email_verified),
       tier: entitlementPlanToSkillTier(entitlement.plan),

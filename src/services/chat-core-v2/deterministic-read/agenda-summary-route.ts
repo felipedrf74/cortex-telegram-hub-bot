@@ -117,7 +117,6 @@ function buildAgendaSummaryText(data: ChatCoreV2AgendaSummaryData, locale: strin
   if (data.activeCount === 0) {
     if (normalizedLocale === 'pt-BR') return 'Sua agenda da Secretary está livre agora.';
     if (normalizedLocale === 'pt-PT') return 'A tua agenda da Secretary está livre neste momento.';
-    if (normalizedLocale === 'es') return 'Tu agenda de Secretary está libre ahora.';
     return 'Your Secretary agenda is clear right now.';
   }
 
@@ -136,7 +135,6 @@ function buildAgendaSummaryHeader(data: ChatCoreV2AgendaSummaryData, locale: Cha
 
   if (locale === 'pt-BR') return `A Secretary tem ${data.activeCount} ${plural(data.activeCount, 'item ativo', 'itens ativos')} na agenda.${detail}`;
   if (locale === 'pt-PT') return `A Secretary tem ${data.activeCount} ${plural(data.activeCount, 'item ativo', 'itens ativos')} na agenda.${detail}`;
-  if (locale === 'es') return `Secretary tiene ${data.activeCount} ${plural(data.activeCount, 'elemento activo', 'elementos activos')} en la agenda.${detail}`;
   return `Secretary has ${data.activeCount} active agenda ${data.activeCount === 1 ? 'item' : 'items'}.${detail}`;
 }
 
@@ -150,11 +148,6 @@ function agendaCountPhrase(
     if (kind === 'unscheduled') return `${count} ${plural(count, 'sem horário definido', 'sem horário definido')}`;
     return `${count} ${plural(count, 'precisa de verificação', 'precisam de verificação')}`;
   }
-  if (locale === 'es') {
-    if (kind === 'today') return `${count} ${plural(count, 'para hoy', 'para hoy')}`;
-    if (kind === 'unscheduled') return `${count} ${plural(count, 'sin horario definido', 'sin horario definido')}`;
-    return `${count} ${plural(count, 'necesita verificación', 'necesitan verificación')}`;
-  }
   if (kind === 'today') return `${count} for today`;
   if (kind === 'unscheduled') return `${count} not timed yet`;
   return `${count} needing verification`;
@@ -163,19 +156,18 @@ function agendaCountPhrase(
 function agendaListLabel(locale: ChatCoreV2NormalizedLocale): string {
   if (locale === 'pt-BR') return 'Principais itens:';
   if (locale === 'pt-PT') return 'Itens principais:';
-  if (locale === 'es') return 'Elementos principales:';
   return 'Top agenda items:';
 }
 
 function agendaItemSuffix(item: ChatCoreV2AgendaSummaryItem, locale: ChatCoreV2NormalizedLocale): string {
   const parts: string[] = [];
   if (item.bucket === 'today') {
-    parts.push(locale === 'en' ? 'today' : locale === 'es' ? 'hoy' : 'hoje');
+    parts.push(locale === 'en' ? 'today' : 'hoje');
   } else if (item.bucket === 'unscheduled') {
-    parts.push(locale === 'en' ? 'not timed yet' : locale === 'es' ? 'sin horario' : 'sem horário');
+    parts.push(locale === 'en' ? 'not timed yet' : 'sem horário');
   }
   if (providerNeedsAttention(item.providerSyncState)) {
-    parts.push(locale === 'en' ? 'needs verification' : locale === 'es' ? 'necesita verificación' : 'precisa de verificação');
+    parts.push(locale === 'en' ? 'needs verification' : 'precisa de verificação');
   }
   return parts.length > 0 ? ` (${parts.join(', ')})` : '';
 }

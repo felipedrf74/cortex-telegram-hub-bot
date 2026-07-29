@@ -49,11 +49,9 @@ function goldenExamples(): Array<{ entry: ChatActionDefinition; example: Registr
 }
 
 function plannerInputFor(example: RegistryExample, index: number): ChatPlannerInput {
-  const locale = example.locale === 'es'
-    ? 'es-ES'
-    : example.locale === 'en'
-      ? 'en-US'
-      : 'pt-PT';
+  const locale = example.responseLocale === 'en' || example.locale === 'en'
+    ? 'en-US'
+    : 'pt-PT';
   return {
     ...BASE_INPUT,
     text: example.turns?.[0] ?? example.text,

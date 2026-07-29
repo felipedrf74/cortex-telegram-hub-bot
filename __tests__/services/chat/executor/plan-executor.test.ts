@@ -287,29 +287,29 @@ describe('M16 plan-executor topological execution', () => {
       locale: 'es-419',
       action: 'create_task',
       args: { title: 'revisión del planificador de humo' },
-      expectedText: '¿Confirmas que quieres crear la tarea “revisión del planificador de humo”?',
-      expectedTitle: 'Confirmación necesaria',
+      expectedText: 'Confirm that you want to create the task “revisión del planificador de humo”?',
+      expectedTitle: 'Confirmation needed',
     },
     {
       locale: 'es-419',
       action: 'delete_task',
       args: { taskId: 'tarea-eliminar' },
-      expectedText: '¿Confirmas que quieres eliminar la tarea “tarea-eliminar”?',
-      expectedTitle: 'Confirmación necesaria',
+      expectedText: 'Confirm that you want to delete the task “tarea-eliminar”?',
+      expectedTitle: 'Confirmation needed',
     },
     {
       locale: 'es-419',
       action: 'complete_task',
       args: { title: 'tarea-completar' },
-      expectedText: '¿Confirmas que quieres completar la tarea “tarea-completar”?',
-      expectedTitle: 'Confirmación necesaria',
+      expectedText: 'Confirm that you want to complete the task “tarea-completar”?',
+      expectedTitle: 'Confirmation needed',
     },
     {
       locale: 'es-419',
       action: 'update_task',
       args: {},
-      expectedText: '¿Confirmas que quieres cambiar la tarea “synthetic multi-step”?',
-      expectedTitle: 'Confirmación necesaria',
+      expectedText: 'Confirm that you want to change the task “synthetic multi-step”?',
+      expectedTitle: 'Confirmation needed',
     },
     {
       locale: 'pt-BR',
@@ -398,7 +398,7 @@ describe('M16 plan-executor topological execution', () => {
 
   it.each([
     ['pt-BR', 'Confirmação necessária'],
-    ['es-419', 'Confirmación necesaria'],
+    ['es-419', 'Confirmation needed'],
   ] as const)('localizes a %s mid-run confirmation title', async (locale, expectedTitle) => {
     executeStepMock.mockResolvedValue({
       step: makeStep({ stepId: 'step_1', args: { title: 'target' } }),

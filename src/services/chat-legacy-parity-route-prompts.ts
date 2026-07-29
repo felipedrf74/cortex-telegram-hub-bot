@@ -30,7 +30,19 @@ export type ChatV2LegacyParityRoutePromptTag =
   | 'low_confidence_clarification'
   | 'write_read_collision';
 
-export type ChatV2LegacyParityRoutePrompt = {
+export type ChatV2LegacyParitySupportedLanguage =
+  | 'en'
+  | 'pt-BR'
+  | 'pt-PT'
+  | 'pt-AO'
+  | 'mixed';
+
+export type ChatV2LegacyParityHistoricalLanguage =
+  | ChatV2LegacyParitySupportedLanguage
+  | 'es'
+  | 'es-419';
+
+type ChatV2LegacyParityRoutePromptForLanguage<Language extends string> = {
   routeId: string;
   oldOwner: string;
   replacement: string;
@@ -39,11 +51,35 @@ export type ChatV2LegacyParityRoutePrompt = {
   runtimeCoupling?: 'independent_read_route' | 'global_write_firewall' | 'classifier_domain_owner';
   minSamplesPerSubcase?: Record<string, number>;
   prompts: Array<{
-    language: 'en' | 'pt-BR' | 'pt-PT' | 'pt-AO' | 'es' | 'es-419' | 'mixed';
+    language: Language;
     text: string;
     tags?: ChatV2LegacyParityRoutePromptTag[];
   }>;
 };
+
+export type ChatV2LegacyParityRoutePrompt =
+  Omit<
+    ChatV2LegacyParityHistoricalRoutePrompt,
+    'prompts'
+  > & {
+    prompts: Array<
+      Omit<
+        ChatV2LegacyParityHistoricalRoutePrompt['prompts'][number],
+        'language'
+      > & {
+        /** Supported assistant response language used by parity scoring. */
+        language: ChatV2LegacyParitySupportedLanguage;
+        /** Supported language of the active authored user request. */
+        requestLanguage: ChatV2LegacyParitySupportedLanguage;
+      }
+    >;
+  };
+
+export type ChatV2LegacyParityHistoricalRoutePrompt =
+  ChatV2LegacyParityRoutePromptForLanguage<ChatV2LegacyParityHistoricalLanguage>;
+
+export type ChatV2LegacyParityRetirementRoutePrompt =
+  ChatV2LegacyParityRoutePromptForLanguage<'en' | 'pt-BR' | 'pt-PT'>;
 
 export type ChatV2Phase7TargetRouteId =
   | 'classifier_route_skill_orchestration'
@@ -71,7 +107,7 @@ export interface ChatV2Phase7PerDomainParityFloor {
 export interface ChatV2Phase7ClassifierRouteReadiness {
   routeId: 'classifier_route_skill_orchestration';
   answerQualityReviewRequired: true;
-  recallAt8LanguageThresholds: Record<'en' | 'pt-BR' | 'pt-PT' | 'es' | 'es-419' | 'mixed', number>;
+  recallAt8LanguageThresholds: Record<'en' | 'pt-BR' | 'pt-PT' | 'mixed', number>;
   promptOwnership: Array<{
     promptText: string;
     owner: ChatV2Phase7PromptOwner;
@@ -91,29 +127,30 @@ export interface ChatV2Phase7DomainHandlerReadiness {
   blockers: string[];
 }
 
-export const CHAT_V2_LEGACY_PARITY_ROUTE_PROMPT_VERSION =
+export const CHAT_V2_LEGACY_PARITY_ROUTE_PROMPT_VERSION_V1_HISTORICAL =
   'chat_v2_legacy_parity_route_prompts@1.4.0';
 
-export const CHAT_V2_LEGACY_PARITY_ROUTE_CORPUS_META = {
+export const CHAT_V2_LEGACY_PARITY_ROUTE_CORPUS_META_V1_HISTORICAL = {
   schemaVersion: 'chat_v2_legacy_parity_route_corpus_meta.v1',
   corpusId: 'chatv2_phase7_route_replacement_heldout',
-  version: CHAT_V2_LEGACY_PARITY_ROUTE_PROMPT_VERSION,
-    frozenAt: '2026-06-02T00:00:00.000Z',
+  version: CHAT_V2_LEGACY_PARITY_ROUTE_PROMPT_VERSION_V1_HISTORICAL,
+  frozenAt: '2026-06-02T00:00:00.000Z',
   frozenBeforeImplementation: true,
   mutationPolicy: 'claude_or_manual_signoff_required_before_runtime_replacement',
   reviewRubricVersion: 'chat_v2_legacy_parity_review_rubric.v2',
-    notes: [
-      'Route prompts are a held-out evidence corpus for replacement decisions, not implementation fixtures.',
-      'Do not add happy-path-only prompts after implementation work without a separately signed corpus-change review.',
-      'Write routes are coupled by the global action-gateway enforce switch and must use fresh isolated seeded users.',
-      'answer_quality_research routes require distinct public-query prompts for runtime evidence; repeated prompt padding is not valid retirement evidence.',
-      'independent_read_route prompts must be large enough for route-scoped >=50-row parity packages without prompt repetition.',
-      'write_firewall_bundle route prompts must be large enough for coupled >=50-row write-gateway packages without prompt repetition.',
-      'classifier/domain-handler prompts are coverage inputs only; they do not import labels or prove replaceability.',
-    ],
-  } as const;
+  notes: [
+    'Route prompts are a held-out evidence corpus for replacement decisions, not implementation fixtures.',
+    'Do not add happy-path-only prompts after implementation work without a separately signed corpus-change review.',
+    'Write routes are coupled by the global action-gateway enforce switch and must use fresh isolated seeded users.',
+    'answer_quality_research routes require distinct public-query prompts for runtime evidence; repeated prompt padding is not valid retirement evidence.',
+    'independent_read_route prompts must be large enough for route-scoped >=50-row parity packages without prompt repetition.',
+    'write_firewall_bundle route prompts must be large enough for coupled >=50-row write-gateway packages without prompt repetition.',
+    'classifier/domain-handler prompts are coverage inputs only; they do not import labels or prove replaceability.',
+  ],
+} as const;
 
-export const CHAT_V2_LEGACY_PARITY_ROUTE_PROMPTS: ChatV2LegacyParityRoutePrompt[] = [
+export const CHAT_V2_LEGACY_PARITY_ROUTE_PROMPTS_V1_HISTORICAL:
+  ChatV2LegacyParityHistoricalRoutePrompt[] = [
   {
     routeId: 'general_action_planner',
     oldOwner: 'chat-action-planner.ts',
@@ -716,6 +753,263 @@ export const CHAT_V2_LEGACY_PARITY_ROUTE_PROMPTS: ChatV2LegacyParityRoutePrompt[
   },
 ];
 
+/**
+ * Qualifying retirement evidence is a deterministic projection of the
+ * immutable, pre-implementation v1.4 corpus. No prompt is added, translated,
+ * relabelled, or rewritten here: unsupported response locales are excluded.
+ * This preserves the held-out provenance while preventing Spanish, mixed, or
+ * pt-AO rows from inflating the EN/PT retirement floors.
+ */
+export const CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_CORPUS_META = {
+  schemaVersion: 'chat_v2_legacy_parity_route_corpus_projection_meta.v1',
+  corpusId: 'chatv2_phase7_route_replacement_heldout_supported_locale_projection_v1',
+  version: CHAT_V2_LEGACY_PARITY_ROUTE_PROMPT_VERSION_V1_HISTORICAL,
+  baseCorpusId: CHAT_V2_LEGACY_PARITY_ROUTE_CORPUS_META_V1_HISTORICAL.corpusId,
+  baseCorpusSha256: '1481be040b73f482f5213d2b6b005abfaa86afa4bd5f879e694f5ce15fbca0da',
+  frozenAt: CHAT_V2_LEGACY_PARITY_ROUTE_CORPUS_META_V1_HISTORICAL.frozenAt,
+  frozenBeforeImplementation: true,
+  projectionPolicy: 'immutable_v1_4_en_pt_br_pt_pt_only',
+  mutationPolicy: CHAT_V2_LEGACY_PARITY_ROUTE_CORPUS_META_V1_HISTORICAL.mutationPolicy,
+  reviewRubricVersion: CHAT_V2_LEGACY_PARITY_ROUTE_CORPUS_META_V1_HISTORICAL.reviewRubricVersion,
+  notes: [
+    'Qualifying retirement evidence uses only exact en, pt-BR, and pt-PT prompts from immutable v1.4.',
+    'Spanish, es-419, mixed, and pt-AO prompts remain historical audit/input-compatibility evidence and never count toward EN/PT retirement floors.',
+    'The projection does not add, translate, relabel, or rewrite prompts.',
+    'Per-route sample counts may remain below the >=50 retirement floor; repeated prompt padding is forbidden.',
+  ],
+} as const;
+
+const RETIREMENT_RESPONSE_LANGUAGES = new Set(['en', 'pt-BR', 'pt-PT']);
+
+export const CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_PROMPTS:
+  ChatV2LegacyParityRetirementRoutePrompt[] =
+  CHAT_V2_LEGACY_PARITY_ROUTE_PROMPTS_V1_HISTORICAL.map((route) => ({
+    ...route,
+    prompts: route.prompts.filter((prompt): prompt is typeof prompt & {
+      language: 'en' | 'pt-BR' | 'pt-PT';
+    } => RETIREMENT_RESPONSE_LANGUAGES.has(prompt.language)),
+  }));
+
+export const CHAT_V2_LEGACY_PARITY_ROUTE_PROMPT_VERSION =
+  'chat_v2_legacy_parity_route_prompts@1.5.0';
+
+export const CHAT_V2_LEGACY_PARITY_ROUTE_CORPUS_META = {
+  schemaVersion: 'chat_v2_legacy_parity_route_corpus_meta.v1',
+  corpusId: 'chatv2_phase7_route_replacement_supported_locales_v2',
+  version: CHAT_V2_LEGACY_PARITY_ROUTE_PROMPT_VERSION,
+  frozenAt: '2026-07-29T00:00:00.000Z',
+  frozenBeforeImplementation: false,
+  mutationPolicy: 'claude_or_manual_signoff_required_before_runtime_replacement',
+  reviewRubricVersion: 'chat_v2_legacy_parity_review_rubric.v2',
+  notes: [
+    'The active corpus uses explicit newly authored English and Portuguese semantic replacements for retired Spanish and selected mixed prompts.',
+    'The historical v1 corpus remains separately exported and immutable for audit of already-issued evidence.',
+    'This active corpus was authored during the locale-retirement implementation, is diagnostic and coverage-only, and must never support legacy retirement evidence.',
+    'Do not add happy-path-only prompts after replacement work without a separately signed corpus-change review.',
+    'Write routes are coupled by the global action-gateway enforce switch and must use fresh isolated seeded users.',
+    'answer_quality_research routes require distinct public-query prompts for runtime evidence; repeated prompt padding is not valid retirement evidence.',
+    'independent_read_route prompts must be large enough for route-scoped >=50-row parity packages without prompt repetition.',
+    'write_firewall_bundle route prompts must be large enough for coupled >=50-row write-gateway packages without prompt repetition.',
+    'classifier/domain-handler prompts are coverage inputs only; they do not import labels or prove replaceability.',
+  ],
+} as const;
+
+const RETIRED_SPANISH_MIXED_PROMPTS = new Set([
+  'Crea tarea write audit com subtasks preview confirm block',
+  'Cancela decision dec_route_gate confirmation',
+  'Remove todas las tareas now',
+]);
+
+type SupportedLocaleReplacementPrompt = {
+  readonly language: 'en' | 'pt-BR' | 'pt-PT';
+  readonly text: string;
+};
+
+const SUPPORTED_LOCALE_REPLACEMENT_PROMPTS = {
+  general_action_planner: {
+    4: { language: 'en', text: 'Create a task named planner verification' },
+    5: { language: 'pt-BR', text: 'Crie uma tarefa chamada revisão do planejador' },
+    10: { language: 'pt-PT', text: 'Conclui a tarefa duplicate title audit agora' },
+    21: { language: 'en', text: 'Create a task named review parity evidence' },
+    22: { language: 'pt-BR', text: 'Crie uma tarefa para verificar o firewall de escrita' },
+    23: { language: 'pt-PT', text: 'Cria uma tarefa chamada rever o pacote de evidências' },
+    34: { language: 'en', text: 'Complete the task titled duplicate title review' },
+    35: { language: 'pt-BR', text: 'Conclua a tarefa duplicate title follow up' },
+    42: { language: 'pt-PT', text: 'Verifica as minhas tarefas e cria a tarefa evidência pendente se não existir' },
+    43: { language: 'en', text: 'Check my tasks and add one named missing evidence if it does not exist' },
+    49: { language: 'pt-BR', text: 'Renomeie a tarefa verificação do planejador para planejador revisado' },
+  },
+  chat_reasoning_engine_v1: {
+    3: { language: 'en', text: 'Create a parity reasoning task with subtasks alpha, beta, and gamma' },
+    26: { language: 'pt-BR', text: 'Crie a tarefa ensaio canário e inclua ativar, monitorar e reverter como subtarefas' },
+    27: { language: 'pt-PT', text: 'Cria a tarefa pacote de evidência com uma checklist de prompts, observações e etiquetas' },
+    28: { language: 'en', text: 'Create a write audit task with preview, confirmation, and blocking subtasks' },
+    29: { language: 'pt-BR', text: 'Crie a tarefa revisão de paridade, incluindo manifesto, revisão e assinatura como subtarefas' },
+    30: { language: 'pt-PT', text: 'Cria a tarefa verificação do contrato com subtarefas de idioma, fontes e segurança' },
+    31: { language: 'en', text: 'Create a rollback rehearsal task with prepare, execute, and validate subtasks' },
+    32: { language: 'pt-BR', text: 'Crie uma tarefa de monitoramento do canário com checklist de métricas, alertas e reversão' },
+    33: { language: 'pt-PT', text: 'Cria uma tarefa de revisão de respostas com subtarefas de idioma, citações e segurança' },
+    37: { language: 'en', text: 'Create a write audit task with subtasks preview, confirm, and block' },
+    42: { language: 'pt-BR', text: 'Crie a tarefa validação de fixture com subtarefas usuário ativo, estado vazio e nomes duplicados' },
+    43: { language: 'en', text: 'Create a legacy-versus-v2 comparison task with checklist collect, review, and import' },
+    48: { language: 'pt-PT', text: 'Cria uma tarefa de monitorização de fallback com subtarefas taxa da rota, taxa de erro e fuga' },
+  },
+  training_plan_shortcut: {
+    49: { language: 'en', text: 'Which training session is scheduled for me today?' },
+    50: { language: 'pt-BR', text: 'Que treinos estão previstos no meu plano nesta semana?' },
+    51: { language: 'pt-PT', text: 'Apresenta o plano de treino que tenho ativo.' },
+    52: { language: 'en', text: 'Which week am I currently in on my training plan?' },
+    53: { language: 'pt-BR', text: 'Quais treinos do plano ainda preciso concluir?' },
+    54: { language: 'pt-PT', text: 'Que treinos já concluí durante esta semana?' },
+    55: { language: 'en', text: 'What is the focus this week in my active training plan?' },
+    56: { language: 'pt-BR', text: 'Quantos treinos estão programados no meu plano ativo para esta semana?' },
+    57: { language: 'pt-PT', text: 'Tenho algum treino planeado para hoje?' },
+    58: { language: 'en', text: 'Is a training plan currently active for my account?' },
+    59: { language: 'pt-BR', text: 'Exiba os detalhes da sessão de treino marcada para hoje.' },
+    60: { language: 'pt-PT', text: 'Mostra uma lista das minhas próximas sessões de treino.' },
+    61: { language: 'en', text: 'Is there currently an active training plan assigned to me?' },
+  },
+  selective_internet_research: {
+    30: { language: 'en', text: 'Search recent sources for advances in generative artificial intelligence reported this week.' },
+    31: { language: 'pt-PT', text: 'Pesquisa fontes atuais sobre preços e autonomia de bicicletas elétricas urbanas na Europa.' },
+    32: { language: 'en', text: 'Find the current weather forecast for Madrid Barajas Airport.' },
+    33: { language: 'pt-BR', text: 'Pesquise fontes públicas sobre os requisitos de entrada em Portugal para turistas em 2026.' },
+    34: { language: 'en', text: 'Find recent sports sources for the latest score of the Spain national football team.' },
+    35: { language: 'pt-PT', text: 'Pesquisa fontes médicas atuais sobre sinais de alarme associados a dor no joelho ao correr.' },
+    36: { language: 'en', text: 'Search recent sources about inflation in Latin America this week.' },
+    37: { language: 'pt-BR', text: 'Pesquise fontes atuais sobre o preço de painéis solares residenciais no México.' },
+    38: { language: 'pt-PT', text: 'Pesquisa a previsão meteorológica atual para a Cidade do México durante o fim de semana.' },
+    39: { language: 'en', text: 'Search public sources for Schengen visa requirements for Mexican citizens in 2026.' },
+    40: { language: 'pt-BR', text: 'Procure fontes esportivas sobre o resultado recente da final da Copa Libertadores.' },
+    41: { language: 'pt-PT', text: 'Procura estudos científicos atuais sobre a segurança da creatina monohidratada em adultos saudáveis.' },
+    51: { language: 'en', text: 'Search current sources for the euro-to-dollar exchange rate today.' },
+  },
+  decision_confirmation_shortcut: {
+    2: { language: 'pt-BR', text: 'Descarte a decisão dec_123' },
+    31: { language: 'en', text: 'Dismiss decision dec_123 after confirmation' },
+    32: { language: 'pt-PT', text: 'Cancela a confirmação pendente da decisão dec_123' },
+    33: { language: 'en', text: 'Dismiss the decision dec_launch_review' },
+    34: { language: 'pt-BR', text: 'Descarte a decisão dec_launch_review até uma nova revisão' },
+    35: { language: 'pt-PT', text: 'Cancela a confirmação pendente da decisão dec_launch_review' },
+    36: { language: 'en', text: 'Dismiss decision dec_budget_hold once the review is complete' },
+    37: { language: 'pt-BR', text: 'Descarte a decisão dec_route_gate' },
+    38: { language: 'pt-PT', text: 'Descarta a decisão dec_route_gate até segunda-feira' },
+    39: { language: 'en', text: 'Cancel the confirmation for decision dec_route_gate' },
+    40: { language: 'pt-BR', text: 'Descarte a decisão dec_budget_hold por enquanto' },
+    45: { language: 'pt-PT', text: 'Cancela a confirmação da decisão dec_route_gate agora' },
+    48: { language: 'en', text: 'Dismiss decision dec_security_review while keeping its note' },
+  },
+  destructive_confirmation_hold: {
+    10: { language: 'en', text: 'How can I cancel that without deleting anything?' },
+    11: { language: 'pt-BR', text: 'Cancele isso' },
+    12: { language: 'pt-PT', text: 'Elimina todas as tarefas da minha lista' },
+    21: { language: 'en', text: 'Delete every task I have' },
+    22: { language: 'pt-BR', text: 'Apague a minha lista inteira de tarefas' },
+    24: { language: 'pt-PT', text: 'Remove já todas as tarefas' },
+    32: { language: 'en', text: 'Do not erase all of my tasks' },
+    33: { language: 'pt-BR', text: 'Não exclua a minha lista inteira de tarefas' },
+    42: { language: 'pt-PT', text: 'Cancela a ação anterior' },
+    43: { language: 'en', text: 'Cancel that pending action' },
+    48: { language: 'pt-BR', text: 'Como apago uma tarefa sem remover a lista inteira?' },
+  },
+  classifier_route_skill_orchestration: {
+    3: { language: 'en', text: 'What could I cook for dinner tonight?' },
+    8: { language: 'pt-BR', text: 'Há alguma tarefa que eu precise concluir hoje?' },
+    13: { language: 'pt-PT', text: 'Dá-me uma sugestão geral para o jantar de hoje.' },
+    19: { language: 'en', text: 'Which content pillar would be best to review now?' },
+    25: { language: 'pt-BR', text: 'Qual detalhe do meu treino devo examinar primeiro?' },
+    31: { language: 'pt-PT', text: 'Que contas estão em falta este mês?' },
+    37: { language: 'en', text: 'What events are on my calendar today?' },
+    42: { language: 'pt-BR', text: 'Preciso de ajuda com o assunto mencionado antes' },
+    46: { language: 'pt-PT', text: 'Devo atualizar a tarefa ou apenas consultar o estado dela?' },
+    48: { language: 'en', text: 'What should I review first if I am unsure of the domain?' },
+  },
+  domain_handler_execution: {
+    3: { language: 'en', text: 'Suggest a simple recipe for a meal for two people.' },
+    8: { language: 'pt-BR', text: 'Sugira uma ideia geral de jantar para uma noite atarefada.' },
+    17: { language: 'pt-PT', text: 'Que conteúdo da minha mesa está pronto para ser revisto?' },
+    18: { language: 'en', text: 'Which content pillar appears most ready right now?' },
+    27: { language: 'pt-BR', text: 'Que sessão de treino devo revisar durante o dia de hoje?' },
+    28: { language: 'pt-PT', text: 'Mostra o próximo ponto de treino que requer atenção.' },
+    37: { language: 'en', text: 'Which invoices remain missing this month?' },
+    38: { language: 'pt-BR', text: 'Quais renovações de assinatura devo analisar em breve?' },
+    47: { language: 'pt-PT', text: 'Que reuniões estão marcadas na minha agenda para hoje?' },
+    48: { language: 'en', text: 'Which reminders require attention this morning?' },
+  },
+} satisfies Record<string, Record<number, SupportedLocaleReplacementPrompt>>;
+
+const supportedLocaleReplacementPromptsByRoute =
+  SUPPORTED_LOCALE_REPLACEMENT_PROMPTS as Record<
+    string,
+    Record<number, SupportedLocaleReplacementPrompt>
+  >;
+const historicalRoutePromptsById = new Map(
+  CHAT_V2_LEGACY_PARITY_ROUTE_PROMPTS_V1_HISTORICAL
+    .map((route) => [route.routeId, route] as const),
+);
+
+let supportedLocaleReplacementCount = 0;
+for (const [routeId, replacements] of Object.entries(
+  supportedLocaleReplacementPromptsByRoute,
+)) {
+  const historicalRoute = historicalRoutePromptsById.get(routeId);
+  if (!historicalRoute) {
+    throw new Error(`Unknown supported-locale replacement route: ${routeId}`);
+  }
+  for (const rawIndex of Object.keys(replacements)) {
+    const index = Number(rawIndex);
+    if (
+      !Number.isInteger(index)
+      || index < 0
+      || index >= historicalRoute.prompts.length
+    ) {
+      throw new Error(`Out-of-range supported-locale replacement: ${routeId}:${rawIndex}`);
+    }
+    supportedLocaleReplacementCount += 1;
+  }
+}
+if (supportedLocaleReplacementCount !== 94) {
+  throw new Error(
+    `Expected exactly 94 supported-locale replacements, found ${supportedLocaleReplacementCount}`,
+  );
+}
+
+/**
+ * Build the active diagnostic corpus without mutating the frozen v1 evidence
+ * set. Every retired Spanish or selected mixed slot has one index-bound
+ * semantic replacement. Replacement language drives both the authored request
+ * locale and the required assistant response locale.
+ */
+export const CHAT_V2_LEGACY_PARITY_ROUTE_PROMPTS: ChatV2LegacyParityRoutePrompt[] =
+  CHAT_V2_LEGACY_PARITY_ROUTE_PROMPTS_V1_HISTORICAL.map((route) => ({
+    ...route,
+    prompts: route.prompts.map((prompt, index) => {
+      const replacement =
+        supportedLocaleReplacementPromptsByRoute[route.routeId]?.[index];
+      const isRetiredPrompt =
+        prompt.language === 'es'
+        || prompt.language === 'es-419'
+        || RETIRED_SPANISH_MIXED_PROMPTS.has(prompt.text);
+      if (isRetiredPrompt !== Boolean(replacement)) {
+        throw new Error(
+          `${replacement ? 'Extra' : 'Missing'} supported-locale replacement: ${route.routeId}:${index}`,
+        );
+      }
+      if (replacement) {
+        return {
+          ...prompt,
+          ...replacement,
+          requestLanguage: replacement.language,
+        };
+      }
+      return {
+        ...prompt,
+        requestLanguage: prompt.language as ChatV2LegacyParitySupportedLanguage,
+        language: prompt.language as ChatV2LegacyParitySupportedLanguage,
+      };
+    }),
+  }));
+
 export const CHAT_V2_PHASE7_TARGET_ROUTE_READINESS: {
   classifier_route_skill_orchestration: ChatV2Phase7ClassifierRouteReadiness;
   domain_handler_execution: ChatV2Phase7DomainHandlerReadiness;
@@ -727,8 +1021,6 @@ export const CHAT_V2_PHASE7_TARGET_ROUTE_READINESS: {
       en: 0.98,
       'pt-BR': 0.98,
       'pt-PT': 0.98,
-      es: 0.95,
-      'es-419': 0.95,
       mixed: 0.9,
     },
     promptOwnership: [
@@ -751,12 +1043,6 @@ export const CHAT_V2_PHASE7_TARGET_ROUTE_READINESS: {
         notes: 'Generic cooking answer in pt-PT; must stay non-hardcoded and answer-only.',
       },
       {
-        promptText: 'Qué puedo cocinar para cenar?',
-        owner: 'local_chat_classifier',
-        expectedOutcome: 'answer_only',
-        notes: 'Spanish generic cooking answer; locale fidelity is part of review.',
-      },
-      {
         promptText: 'What recipe posso fazer hoje?',
         owner: 'local_chat_classifier',
         expectedOutcome: 'answer_only',
@@ -774,18 +1060,12 @@ export const CHAT_V2_PHASE7_TARGET_ROUTE_READINESS: {
         expectedOutcome: 'read_model_answer',
         notes: 'Portuguese secretary/task read collision; deterministic read owns the scoped task facts.',
       },
-      {
-        promptText: 'Tengo tareas para completar hoy?',
-        owner: 'deterministic_read',
-        expectedOutcome: 'read_model_answer',
-        notes: 'Spanish secretary/task read collision; deterministic read owns the scoped task facts.',
-      },
     ],
     requiredMissingCoverage: [
       'owner_boundary_review',
     ],
     blockers: [
-      'No signed recall@8 evidence for en, pt-BR, pt-PT, es, es-419, and mixed at the required thresholds.',
+      'No signed recall@8 evidence for en, pt-BR, pt-PT, and mixed at the required thresholds.',
       'Held-out prompts now include read/write collision and low-confidence clarification probes, but no reviewed labels prove the expected owner or clarification outcome.',
       'Read/write collision coverage still needs cross-domain owner review before legacy classifier ownership can be disabled.',
     ],

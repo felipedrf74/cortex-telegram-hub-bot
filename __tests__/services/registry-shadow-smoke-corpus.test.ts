@@ -45,9 +45,9 @@ describe('registry-shadow smoke corpus (Phase 14 batch 74)', () => {
     expect(missing.length).toBeLessThanOrEqual(5);
   });
 
-  it('produces at least 30 fixtures with locale es (Phase 12-14 ES expansion)', () => {
+  it('does not generate fixtures for the deprecated Spanish product locale', () => {
     const es = generated.filter((f) => f.locale === 'es-ES');
-    expect(es.length).toBeGreaterThanOrEqual(30);
+    expect(es).toEqual([]);
   });
 
   it('produces at least 60 fixtures with locale pt', () => {

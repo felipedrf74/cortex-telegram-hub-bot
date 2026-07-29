@@ -3,7 +3,9 @@ import { describe, expect, it } from 'vitest';
 import {
   checkStagingLocaleWritePreview,
   checkResponseLocaleFidelity,
+  detectRetiredSpanishInputSignal,
   detectResponseLanguage,
+  detectStrictShortResponseLanguage,
   expectedLanguageForLocale,
 } from '../../src/services/chat-language-detector';
 import { CHAT_LOCALE_CONFUSABLE_EVAL_FIXTURES } from '../../src/services/chat-bilingual-eval-fixtures';
@@ -94,11 +96,53 @@ describe('detectResponseLanguage', () => {
   });
 });
 
+describe('strict retired-Spanish compatibility signals', () => {
+  it.each([
+    'Hola',
+    'Buenos días',
+    'Gracias',
+    'Quiero ayuda',
+    '¿Qué tareas tengo?',
+    'Crea una tarea llamada comprar leche',
+    'Cancela la tarea comprar leche',
+    'Elimina la tarea comprar leche',
+  ])('recognizes short Spanish-authored input without reclassifying output telemetry: %s', (text) => {
+    expect(detectRetiredSpanishInputSignal(text)).toBe(true);
+  });
+
+  it.each([
+    'Olá',
+    'Bom dia',
+    'Obrigado',
+    'Quero ajuda',
+    'Mostra a tarefa Gracias',
+    'Here is the task titled Gracias',
+  ])('does not treat Portuguese/English framing or an entity title as Spanish input: %s', (text) => {
+    expect(detectRetiredSpanishInputSignal(text)).toBe(false);
+  });
+
+  it.each([
+    'Gracias.',
+    'Aquí tienes.',
+    'Here you go. Gracias por esperar.',
+  ])('names unambiguous Spanish short/sentence output under an English contract: %s', (text) => {
+    expect(detectStrictShortResponseLanguage(text, 'en')).toBe('es');
+  });
+
+  it.each(['Entendido.', 'De acuerdo.'])(
+    'blocks shared Iberian acknowledgements under English but permits Portuguese: %s',
+    (text) => {
+      expect(detectStrictShortResponseLanguage(text, 'en')).toBe('es');
+      expect(detectStrictShortResponseLanguage(text, 'pt')).toBeNull();
+    },
+  );
+});
+
 describe('expectedLanguageForLocale', () => {
   it('maps locales to expected response languages', () => {
-    expect(expectedLanguageForLocale('es-419')).toBe('es');
-    expect(expectedLanguageForLocale('es-ES')).toBe('es');
-    expect(expectedLanguageForLocale('es')).toBe('es');
+    expect(expectedLanguageForLocale('es-419')).toBe('en');
+    expect(expectedLanguageForLocale('es-ES')).toBe('en');
+    expect(expectedLanguageForLocale('es')).toBe('en');
     expect(expectedLanguageForLocale('pt-BR')).toBe('pt');
     expect(expectedLanguageForLocale('pt-PT')).toBe('pt');
     expect(expectedLanguageForLocale('pt_br')).toBe('pt');
@@ -117,15 +161,19 @@ describe('checkResponseLocaleFidelity', () => {
       'Criei a tarefa chamada revisão do planificador. Precisa de mais alguma coisa?',
     );
     expect(result.ok).toBe(false);
-    expect(result.expected).toBe('es');
+    expect(result.expected).toBe('en');
     expect(result.detected).toBe('pt');
   });
 
-  it('passes on-locale Spanish responses to es-419 prompts', () => {
-    const result = checkResponseLocaleFidelity('es-419', 'Listo, creé la tarea llamada revisión del planificador.');
-    expect(result.ok).toBe(true);
-    expect(result.expected).toBe('es');
-    expect(result.detected).toBe('es');
+  it('requires the English compatibility fallback for retired es-* locales', () => {
+    const spanish = checkResponseLocaleFidelity('es-419', 'Listo, creé la tarea llamada revisión del planificador.');
+    const english = checkResponseLocaleFidelity('es-419', 'I prepared the task called planner review. Confirm to create it.');
+    expect(spanish.ok).toBe(false);
+    expect(spanish.expected).toBe('en');
+    expect(spanish.detected).toBe('es');
+    expect(english.ok).toBe(true);
+    expect(english.expected).toBe('en');
+    expect(english.detected).toBe('en');
   });
 
   it('fails-open (ok:true) when detection is unknown, e.g. one-word answers', () => {
@@ -135,6 +183,25 @@ describe('checkResponseLocaleFidelity', () => {
       expect(result.detected, text).toBe('unknown');
       expect(result.confidence, text).toBeLessThan(0.5);
     }
+  });
+
+  it('does not name a language from a repeated weak article in an English reply', () => {
+    const result = checkResponseLocaleFidelity(
+      'en-US',
+      'A bounded lower-cost search still returns a complete grounded answer.',
+    );
+    expect(result.detected).toBe('unknown');
+    expect(result.ok).toBe(true);
+  });
+
+  it('rejects every named Spanish mismatch even when its evidence is moderate', () => {
+    const result = checkResponseLocaleFidelity('es-419', 'Tienes tres tareas atrasadas.');
+    expect(result).toMatchObject({
+      ok: false,
+      expected: 'en',
+      detected: 'es',
+    });
+    expect(result.confidence).toBeLessThan(0.8);
   });
 
   it('fails-open when the locale itself is unmapped', () => {
@@ -152,13 +219,13 @@ describe('checkResponseLocaleFidelity', () => {
 });
 
 describe('checkStagingLocaleWritePreview', () => {
-  const spanishPreview = {
-    text: 'Listo, preparé la tarea para comprar leche mañana. Confirma para crearla.',
+  const englishPreview = {
+    text: 'I prepared the task to buy milk tomorrow. Confirm to create it.',
     metadata: { actionStatus: 'needs_confirmation' },
   };
 
   it.each([200, 202])('accepts intended HTTP %i write previews with an explicit confirmation status', (httpStatus) => {
-    const result = checkStagingLocaleWritePreview('es-419', httpStatus, spanishPreview);
+    const result = checkStagingLocaleWritePreview('es-419', httpStatus, englishPreview);
 
     expect(result.ok).toBe(true);
     expect(result.httpStatusAccepted).toBe(true);
@@ -168,11 +235,11 @@ describe('checkStagingLocaleWritePreview', () => {
 
   it('fails closed when actionStatus is absent or claims the write already succeeded', () => {
     const missing = checkStagingLocaleWritePreview('es-419', 202, {
-      text: spanishPreview.text,
+      text: englishPreview.text,
       metadata: {},
     });
     const mutated = checkStagingLocaleWritePreview('es-419', 200, {
-      text: spanishPreview.text,
+      text: englishPreview.text,
       metadata: { actionStatus: 'verified_success' },
     });
 
@@ -183,7 +250,7 @@ describe('checkStagingLocaleWritePreview', () => {
   });
 
   it('rejects non-200/202 responses and cross-locale leakage', () => {
-    const wrongStatus = checkStagingLocaleWritePreview('es-419', 201, spanishPreview);
+    const wrongStatus = checkStagingLocaleWritePreview('es-419', 201, englishPreview);
     const leaked = checkStagingLocaleWritePreview('es-419', 202, {
       text: 'Pronto, preparei a tarefa para comprar leite amanhã. Confirme para criar.',
       metadata: { actionStatus: 'needs_confirmation' },
@@ -197,28 +264,30 @@ describe('checkStagingLocaleWritePreview', () => {
 });
 
 describe('confusable fixture corpus', () => {
-  it('has at least 10 es-419/pt-BR confusable prompt-response pairs', () => {
+  it('retains the historical es-419/pt-BR detector fixtures for safety analysis', () => {
     expect(CHAT_LOCALE_CONFUSABLE_EVAL_FIXTURES.length).toBeGreaterThanOrEqual(10);
     const locales = new Set(CHAT_LOCALE_CONFUSABLE_EVAL_FIXTURES.map((fixture) => fixture.promptLocale));
     expect(locales.has('es-419')).toBe(true);
     expect(locales.has('pt-BR')).toBe(true);
   });
 
-  it('accepts every on-locale response and rejects every cross-locale leak response', () => {
-    for (const fixture of CHAT_LOCALE_CONFUSABLE_EVAL_FIXTURES) {
+  it('uses only the supported pt-BR half as a locale-fidelity product gate', () => {
+    const supportedFixtures = CHAT_LOCALE_CONFUSABLE_EVAL_FIXTURES
+      .filter((fixture) => fixture.promptLocale === 'pt-BR');
+    expect(supportedFixtures).toHaveLength(8);
+
+    for (const fixture of supportedFixtures) {
       const onLocale = checkResponseLocaleFidelity(fixture.promptLocale, fixture.onLocaleResponse);
       expect(onLocale.ok, `${fixture.scenario} on-locale`).toBe(true);
 
       const leaked = checkResponseLocaleFidelity(fixture.promptLocale, fixture.crossLocaleLeakResponse);
       expect(leaked.ok, `${fixture.scenario} leak`).toBe(false);
-      expect(leaked.detected, `${fixture.scenario} leak detected`).toBe(
-        fixture.promptLocale === 'es-419' ? 'pt' : 'es',
-      );
+      expect(leaked.detected, `${fixture.scenario} leak detected`).toBe('es');
     }
   });
 
-  it('keeps expectedResponseLanguage consistent with the locale mapping', () => {
-    for (const fixture of CHAT_LOCALE_CONFUSABLE_EVAL_FIXTURES) {
+  it('keeps supported fixture expectations consistent with the locale mapping', () => {
+    for (const fixture of CHAT_LOCALE_CONFUSABLE_EVAL_FIXTURES.filter(({ promptLocale }) => promptLocale === 'pt-BR')) {
       expect(expectedLanguageForLocale(fixture.promptLocale)).toBe(fixture.expectedResponseLanguage);
     }
   });

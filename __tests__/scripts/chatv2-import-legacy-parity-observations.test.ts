@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import Database from 'better-sqlite3';
 import { execFileSync } from 'child_process';
 import { createHash } from 'crypto';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
@@ -8,11 +7,15 @@ import path from 'path';
 
 import {
   CHAT_V2_LEGACY_PARITY_REVIEW_RUBRIC_VERSION,
+  normalizeChatV2LegacyParityOwnerLabel,
 } from '../../src/services/chat-legacy-parity-labels';
 import {
-  CHAT_V2_LEGACY_PARITY_ROUTE_CORPUS_META,
-  CHAT_V2_LEGACY_PARITY_ROUTE_PROMPT_VERSION,
+  CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_CORPUS_META as CHAT_V2_LEGACY_PARITY_ROUTE_CORPUS_META,
+  CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_PROMPTS as CHAT_V2_LEGACY_PARITY_ROUTE_PROMPTS,
 } from '../../src/services/chat-legacy-parity-route-prompts';
+
+const CHAT_V2_LEGACY_PARITY_ROUTE_PROMPT_VERSION =
+  CHAT_V2_LEGACY_PARITY_ROUTE_CORPUS_META.version;
 
 const repoRoot = path.resolve(__dirname, '../..');
 
@@ -35,6 +38,7 @@ afterEach(() => {
 
 describe('chatv2-import-legacy-parity-observations CLI', () => {
   it('keeps full Phase 7 runtime imports as the default completeness gate', () => {
+    writeRuntimeObservationArtifacts('chat_message_shortcut_after_route', 50);
     let stderr = '';
     try {
       execFileSync('npx', [
@@ -61,113 +65,16 @@ describe('chatv2-import-legacy-parity-observations CLI', () => {
     expect(stderr).toContain('general_action_planner');
   });
 
-  it('imports an explicitly scoped single-route runtime observation set without claiming full retirement', () => {
-    const output = execFileSync('npx', [
-      'tsx',
-      'scripts/chatv2-import-legacy-parity-observations.ts',
-      '--write',
-      `--observations=${observationsPath}`,
-      `--manifest=${manifestPath}`,
-      '--qa-review-id=runtime-tool-research-scope',
-      '--routes=selective_internet_research',
-      `--db=${dbPath}`,
-    ], {
-      cwd: repoRoot,
-      env: {
-        ...process.env,
-        CHAT_V2_EVIDENCE_HMAC_SECRET: 'test-secret',
-      },
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-
-    const result = JSON.parse(output) as {
-      acceptedRoutes: Array<{ routeId: string; sampleCount: number; matchingCount: number }>;
-      routeScope: string[];
-    };
-    expect(result.routeScope).toEqual(['selective_internet_research']);
-    expect(result.acceptedRoutes).toEqual([
-      expect.objectContaining({
-        routeId: 'selective_internet_research',
-        sampleCount: 50,
-        matchingCount: 50,
-      }),
-    ]);
-
-    const db = new Database(dbPath);
+  it('rejects a scoped package that pads the frozen supported-locale projection to 50 rows', () => {
+    let stderr = '';
     try {
-      const rows = db.prepare('SELECT route_id, safe_metadata_json FROM chat_v2_legacy_retirement_evidence').all() as Array<{
-        route_id: string;
-        safe_metadata_json: string;
-      }>;
-      expect(rows).toHaveLength(1);
-      expect(rows[0]?.route_id).toBe('selective_internet_research');
-	      const metadata = JSON.parse(rows[0]!.safe_metadata_json);
-	      expect(metadata).toMatchObject({
-	        parityObservationImport: true,
-	        routeScopedObservationImport: true,
-	        routeScope: ['selective_internet_research'],
-	        evaluator: 'runtime_tool',
-	      });
-	      expect(metadata).not.toHaveProperty('parityLabelImport');
-    } finally {
-      db.close();
+      runScopedImport();
+    } catch (err) {
+      stderr = String((err as { stderr?: Buffer }).stderr ?? '');
     }
-  });
-
-  it('does not delete independently signed label rows when replacing scoped runtime observations', () => {
-    runScopedImport();
-
-    const db = new Database(dbPath);
-    try {
-      db.prepare(`
-        INSERT INTO chat_v2_legacy_retirement_evidence (
-          evidence_source, evidence_kind, request_id, sample_hmac, sample_identifier_kind,
-          route_id, replaced, tested, shadow_parity_rate, route_sample_count,
-          raw_field_audit_count, safe_metadata_json
-        ) VALUES (
-          'runtime_route', 'route_exit', 'signed-label-review', ?, 'hmac',
-          'selective_internet_research', 0, 1, 0, 50,
-          0, ?
-        )
-      `).run(
-        `hmac:legacy-route:${'9'.repeat(64)}`,
-        JSON.stringify({
-          schemaVersion: 'chat_v2_legacy_parity_evidence_safe_metadata.v1',
-          parityLabelImport: true,
-          evaluator: 'claude',
-          peerReviewSignoffHash: 'a'.repeat(64),
-          safetyRegressionCount: 1,
-          qualityRegressionCount: 0,
-          degradedNotComparableCount: 0,
-          reviewRubricVersion: CHAT_V2_LEGACY_PARITY_REVIEW_RUBRIC_VERSION,
-        }),
-      );
-    } finally {
-      db.close();
-    }
-
-    runScopedImport('--replace-route-labels');
-
-    const verifyDb = new Database(dbPath);
-    try {
-      const rows = verifyDb.prepare(`
-        SELECT safe_metadata_json FROM chat_v2_legacy_retirement_evidence
-        WHERE route_id = 'selective_internet_research'
-        ORDER BY id ASC
-      `).all() as Array<{ safe_metadata_json: string }>;
-      const metadata = rows.map((row) => JSON.parse(row.safe_metadata_json));
-      expect(metadata.filter((row) => row.parityObservationImport === true)).toHaveLength(1);
-      expect(metadata.filter((row) => row.parityLabelImport === true)).toEqual([
-        expect.objectContaining({
-          evaluator: 'claude',
-          peerReviewSignoffHash: 'a'.repeat(64),
-          safetyRegressionCount: 1,
-        }),
-      ]);
-    } finally {
-      verifyDb.close();
-    }
+    expect(stderr).toContain(
+      'runtime_route_samples_exceed_frozen_projection:selective_internet_research',
+    );
   });
 
   it('rejects answer-quality research runtime evidence that reuses prompts to pad sample count', () => {
@@ -183,6 +90,83 @@ describe('chatv2-import-legacy-parity-observations CLI', () => {
     }
 
     expect(stderr).toContain('observer_manifest_distinct_prompt_count_below_samples:selective_internet_research');
+  });
+
+  it.each([
+    {
+      name: 'the unprojected historical v1.4 corpus',
+      manifestOverrides: {
+        routePromptVersion: 'chat_v2_legacy_parity_route_prompts@1.4.0',
+        routeCorpusId: 'chatv2_phase7_route_replacement_heldout',
+        routeCorpusSha256: '1'.repeat(64),
+      },
+      reason: 'observer_manifest_route_corpus_id_mismatch',
+    },
+    {
+      name: 'the post-implementation v1.5 diagnostic corpus',
+      manifestOverrides: {
+        routePromptVersion: 'chat_v2_legacy_parity_route_prompts@1.5.0',
+        routeCorpusId: 'chatv2_phase7_route_replacement_supported_locales_v2',
+        routeCorpusFrozenBeforeImplementation: false,
+        routeCorpusSha256: '1'.repeat(64),
+      },
+      reason: 'observer_manifest_route_prompt_version_mismatch',
+    },
+    {
+      name: 'a valid-looking non-current corpus hash',
+      manifestOverrides: {
+        routeCorpusSha256: 'c'.repeat(64),
+      },
+      reason: 'observer_manifest_route_corpus_hash_mismatch',
+    },
+    {
+      name: 'a false post-implementation freeze claim',
+      manifestOverrides: {
+        routeCorpusFrozenBeforeImplementation: false,
+      },
+      reason: 'observer_manifest_corpus_freeze_claim_mismatch',
+    },
+    {
+      name: 'a wrong corpus mutation policy',
+      manifestOverrides: {
+        routeCorpusMutationPolicy: 'unreviewed_runtime_replacement_allowed',
+      },
+      reason: 'observer_manifest_corpus_mutation_policy_mismatch',
+    },
+    {
+      name: 'a missing corpus mutation policy',
+      manifestOverrides: {
+        routeCorpusMutationPolicy: undefined,
+      },
+      reason: 'observer_manifest_corpus_mutation_policy_mismatch',
+    },
+    {
+      name: 'a wrong supported-locale projection policy',
+      manifestOverrides: {
+        routeCorpusProjectionPolicy: 'translated_or_relabelled_rows_allowed',
+      },
+      reason: 'observer_manifest_corpus_projection_policy_mismatch',
+    },
+    {
+      name: 'a missing request/response language sample identity policy',
+      manifestOverrides: {
+        sampleIdentityPolicy: undefined,
+      },
+      reason: 'observer_manifest_sample_identity_policy_mismatch',
+    },
+  ])('rejects $name', ({ manifestOverrides, reason }) => {
+    writeRuntimeObservationArtifacts('selective_internet_research', 50, {
+      ...manifestOverrides,
+    });
+
+    let stderr = '';
+    try {
+      runScopedImport();
+    } catch (err) {
+      stderr = String((err as { stderr?: Buffer }).stderr ?? '');
+    }
+
+    expect(stderr).toContain(reason);
   });
 });
 
@@ -213,14 +197,17 @@ function writeRuntimeObservationArtifacts(
   sampleCount: number,
   manifestOverrides: Record<string, unknown> = {},
 ): void {
+  const routeMetadata = CHAT_V2_LEGACY_PARITY_ROUTE_PROMPTS
+    .find((route) => route.routeId === routeId);
+  if (!routeMetadata) throw new Error(`Unknown retirement route fixture: ${routeId}`);
   const rows = Array.from({ length: sampleCount }, (_, index) => ({
     schemaVersion: 'chat_v2_legacy_parity_observation.v1',
     routeId,
     sampleHmac: `hmac:legacy-parity:${String(index).padStart(64, 'a').slice(0, 64)}`,
     matched: true,
     tested: true,
-    oldOwner: 'research router',
-    replacement: 'ChatV2 read/answer planner evidence policy',
+    oldOwner: normalizeChatV2LegacyParityOwnerLabel(routeMetadata.oldOwner),
+    replacement: normalizeChatV2LegacyParityOwnerLabel(routeMetadata.replacement),
     evaluator: 'runtime_tool',
     evidenceSource: 'runtime_route',
     reasonCode: 'matched',
@@ -238,10 +225,13 @@ function writeRuntimeObservationArtifacts(
     rawReviewArtifactSchemaVersion: 'chat_v2_legacy_parity_raw_review_row.v1',
     routePromptVersion: CHAT_V2_LEGACY_PARITY_ROUTE_PROMPT_VERSION,
     routeCorpusId: CHAT_V2_LEGACY_PARITY_ROUTE_CORPUS_META.corpusId,
-    routeCorpusFrozenBeforeImplementation: true,
-    routeCorpusSha256: 'c'.repeat(64),
+    routeCorpusFrozenBeforeImplementation: CHAT_V2_LEGACY_PARITY_ROUTE_CORPUS_META.frozenBeforeImplementation,
+    routeCorpusMutationPolicy: CHAT_V2_LEGACY_PARITY_ROUTE_CORPUS_META.mutationPolicy,
+    routeCorpusProjectionPolicy: CHAT_V2_LEGACY_PARITY_ROUTE_CORPUS_META.projectionPolicy,
+    routeCorpusSha256: currentRouteCorpusSha256([routeId]),
     reviewRubricVersion: CHAT_V2_LEGACY_PARITY_REVIEW_RUBRIC_VERSION,
     comparatorVersion: 'chat_v2_legacy_parity_comparator.v3',
+    sampleIdentityPolicy: 'route_index_request_language_expected_response_language_v1',
     stateFixtureHash: `sha256:${'d'.repeat(64)}`,
     stateFixtureContract: 'shared_read_only_seeded_snapshot',
     writeFixtureSeeding: null,
@@ -260,4 +250,24 @@ function writeRuntimeObservationArtifacts(
     tokenFilesAreLocalOnly: true,
     ...manifestOverrides,
   }, null, 2));
+}
+
+function currentRouteCorpusSha256(routeIds: string[]): string {
+  const included = new Set(routeIds);
+  return createHash('sha256')
+    .update(JSON.stringify(sortJson({
+      meta: CHAT_V2_LEGACY_PARITY_ROUTE_CORPUS_META,
+      routes: CHAT_V2_LEGACY_PARITY_ROUTE_PROMPTS.filter((route) => included.has(route.routeId)),
+    })))
+    .digest('hex');
+}
+
+function sortJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortJson);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, nested]) => [key, sortJson(nested)]),
+  );
 }

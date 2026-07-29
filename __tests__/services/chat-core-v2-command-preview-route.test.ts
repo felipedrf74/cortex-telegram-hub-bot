@@ -651,7 +651,7 @@ describe('Chat Core v2 command preview route', () => {
     });
   });
 
-  it('builds Spanish task-create previews from llamada/llamado phrasing', () => {
+  it('parses Spanish task-create input but renders the English fallback preview', () => {
     const result = buildPreviewForLocale('Crea una tarea llamada Revisar métricas mañana a las 09:00', 'es-ES', CONFIRMATIONS_ENABLED_ENV);
 
     expect(result).not.toBeNull();
@@ -661,11 +661,11 @@ describe('Chat Core v2 command preview route', () => {
       title: 'Revisar métricas',
       dueDateTime: '2026-05-25T09:00:00.000+01:00',
     });
-    expect(result?.response.locale).toBe('es');
+    expect(result?.response.locale).toBe('en');
     expect(result?.response.text).toContain('Revisar métricas');
     expect(result?.response.cards[0]).toMatchObject({
       type: 'task_preview_card',
-      title: 'Vista previa de la tarea: Revisar métricas',
+      title: 'Task preview: Revisar métricas',
       capabilityId: 'tasks.create',
       confirmationToken: result?.confirmationToken,
     });
@@ -711,7 +711,7 @@ describe('Chat Core v2 command preview route', () => {
     });
   });
 
-  it('builds Spanish task-create-with-subtasks previews from multi-line llamada phrasing', () => {
+  it('parses Spanish task-with-subtasks input but renders the English fallback preview', () => {
     const result = buildPreviewForLocale(`Crea una tarea llamada Preparar viaje:
 pasaporte
 hotel
@@ -724,14 +724,14 @@ seguro`, 'es-ES', CONFIRMATIONS_ENABLED_ENV);
       title: 'Preparar viaje',
       subtasks: ['pasaporte', 'hotel', 'seguro'],
     });
-    expect(result?.response.locale).toBe('es');
-    expect(result?.response.text).toBe('Revisa y confirma para crear la tarea "Preparar viaje" con 3 subtarea(s).');
+    expect(result?.response.locale).toBe('en');
+    expect(result?.response.text).toBe('Review and confirm to create the task "Preparar viaje" with 3 subtask(s).');
     expect(result?.response.cards[0]).toMatchObject({
       type: 'task_preview_card',
-      title: 'Vista previa de la tarea: Preparar viaje',
+      title: 'Task preview: Preparar viaje',
       diff: [
-        { label: 'Tarea', after: 'Preparar viaje' },
-        { label: 'Subtareas', after: 'pasaporte, hotel, seguro' },
+        { label: 'Task', after: 'Preparar viaje' },
+        { label: 'Subtasks', after: 'pasaporte, hotel, seguro' },
       ],
     });
   });
@@ -1335,7 +1335,7 @@ seguro`, 'es-ES', CONFIRMATIONS_ENABLED_ENV);
     });
     expect(spanish?.capabilityId).toBe('decision_center.dismiss');
     expect(spanish?.command.payload).toMatchObject({ decisionId: 'dec_123' });
-    expect(spanish?.response.locale).toBe('es');
+    expect(spanish?.response.locale).toBe('en');
 
     const mixed = tryBuildChatCoreV2CommandPreviewRoute({
       normalizedText: 'Dismiss decisão dec_123',
@@ -1440,8 +1440,8 @@ seguro`, 'es-ES', CONFIRMATIONS_ENABLED_ENV);
     });
     expect(spanish?.capabilityId).toBe('decision_center.snooze');
     expect(spanish?.command.payload).toMatchObject({ decisionId: 'dec_123' });
-    expect(spanish?.response.locale).toBe('es');
-    expect(spanish?.response.text).toBe('Pausaría "Schedule decision" en Decision Center durante 1 hora. No cambiaría nada más.');
+    expect(spanish?.response.locale).toBe('en');
+    expect(spanish?.response.text).toBe('I would snooze "Schedule decision" in Decision Center for 1 hour. Nothing else would change.');
   });
 
   it('issues a confirmation token for decision-snooze when v2 confirmations are enabled', () => {

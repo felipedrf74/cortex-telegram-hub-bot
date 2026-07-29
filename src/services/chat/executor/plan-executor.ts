@@ -176,9 +176,7 @@ export async function executeChatActionPlan(
       actionConfirmation: {
         title: input.locale?.startsWith('pt')
           ? 'Confirmação necessária'
-          : input.locale?.startsWith('es')
-            ? 'Confirmación necesaria'
-            : 'Confirmation needed',
+          : 'Confirmation needed',
         message: confirmationCopy(plan, input),
         destructive: plan.steps.some((step) => step.risk === 'destructive'),
         variant: confirmationVariant(plan),

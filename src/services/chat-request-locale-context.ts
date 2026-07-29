@@ -6,7 +6,8 @@ const activeLocale = new AsyncLocalStorage<string | null>();
 
 function normalizeChatRequestLocale(locale: string | null | undefined): string | null {
   const normalized = String(locale ?? '').trim();
-  return /^(?:en|pt|es)(?:-[a-z0-9]{2,3})?$/i.test(normalized)
+  if (/^es(?:-[a-z0-9]{2,3})?$/i.test(normalized)) return 'en-US';
+  return /^(?:en|pt)(?:-[a-z0-9]{2,3})?$/i.test(normalized)
     ? normalized
     : null;
 }
@@ -30,9 +31,7 @@ export function buildChatReplyLanguagePromptBlock(
   const primary = normalized.split('-')[0]?.toLowerCase();
   const instruction = primary === 'pt'
     ? 'Reply only in Portuguese. Use the requested regional variety when one is specified.'
-    : primary === 'es'
-      ? 'Reply only in Spanish. Use neutral Latin American Spanish for es-419.'
-      : 'Reply only in English.';
+    : 'Reply only in English.';
   return [
     `<reply_language requested_locale="${normalized}">`,
     instruction,

@@ -131,7 +131,7 @@ describe('past-tense detector — multi-sentence scope', () => {
     expect(step?.skill).toBe('secretary_calendar');
     expect(step?.action).toBe('schedule_event');
     expect(step?.requiredArgsPresent).toBe(false);
-    expect(plan?.clarificationQuestion).toMatch(locale === 'es-ES' ? /hora|título/i : /horário|título/i);
+    expect(plan?.clarificationQuestion).toMatch(locale === 'es-ES' ? /time|title/i : /horário|título/i);
     expect(step?.args).toMatchObject({ rawRequest: text });
   });
 

@@ -7,7 +7,7 @@
  * Offline candidate export into routing_corpus_items ('pending'):
  *   a. classify-shadow disagreement rows (text recovered via HMAC match);
  *   b. online-eval sampler captures (text recovered via turn_id → messages);
- *   c. bilingual + locale-confusable eval fixture prompts (synthetic);
+ *   c. supported English + Portuguese eval fixture prompts (synthetic);
  *   d. recent chat-history turns whose routed domain matched no registry
  *      skill vocabulary for the utterance.
  *

@@ -2,6 +2,7 @@
 
 import crypto from 'crypto';
 import { config } from '../config';
+import { normalizeSupportedLang } from '../utils/i18n';
 import { logger } from '../utils/logger';
 import { getCurrentRequestId, generateRequestId } from '../utils/request-context';
 import type { AgentSignal } from './intelligence-bus';
@@ -335,10 +336,8 @@ const MODE_CONFIG: Record<ScriptGenerationMode, { cacheTtl: number; signalDays: 
 };
 
 function normalizeScriptLanguage(language?: string | null): string {
-  const normalized = String(language || 'pt-BR').trim().toLowerCase();
-  if (normalized.startsWith('en')) return 'en-US';
-  if (normalized === 'pt-pt' || normalized.includes('european')) return 'pt-PT';
-  return 'pt-BR';
+  if (typeof language !== 'string' || !language.trim()) return 'pt-BR';
+  return normalizeSupportedLang(language, 'en-US');
 }
 
 function normalizeScriptRenderMode(renderMode?: string | null): ScriptRenderMode {

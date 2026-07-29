@@ -133,13 +133,11 @@ function buildConnectionsStatusHeader(
   if (data.connectedCount === 0 && data.attentionCount === 0) {
     if (locale === 'pt-BR') return 'Nenhuma integração está conectada no momento.';
     if (locale === 'pt-PT') return 'Não tens integrações ligadas neste momento.';
-    if (locale === 'es') return 'No tienes integraciones conectadas ahora.';
     return 'No integrations are connected right now.';
   }
 
   if (locale === 'pt-BR') return `Suas conexões têm ${data.connectedCount} ${plural(data.connectedCount, 'integração ativa', 'integrações ativas')}.${detail}`;
   if (locale === 'pt-PT') return `As tuas ligações têm ${data.connectedCount} ${plural(data.connectedCount, 'integração ativa', 'integrações ativas')}.${detail}`;
-  if (locale === 'es') return `Tus conexiones tienen ${data.connectedCount} ${plural(data.connectedCount, 'integración activa', 'integraciones activas')}.${detail}`;
   return `Your connections have ${data.connectedCount} active ${data.connectedCount === 1 ? 'integration' : 'integrations'}.${detail}`;
 }
 
@@ -160,12 +158,6 @@ function connectionCountPhrase(
     if (kind === 'limited') return `${count} ${plural(count, 'com dados limitados', 'com dados limitados')}`;
     return `${count} ${plural(count, 'pendente', 'pendentes')}`;
   }
-  if (locale === 'es') {
-    if (kind === 'attention') return `${count} ${plural(count, 'necesita atención', 'necesitan atención')}`;
-    if (kind === 'connected') return `${count} ${plural(count, 'conectada', 'conectadas')}`;
-    if (kind === 'limited') return `${count} ${plural(count, 'con datos limitados', 'con datos limitados')}`;
-    return `${count} ${plural(count, 'pendiente', 'pendientes')}`;
-  }
   if (kind === 'attention') return `${count} needing attention`;
   if (kind === 'connected') return `${count} connected`;
   if (kind === 'limited') return `${count} limited`;
@@ -175,7 +167,6 @@ function connectionCountPhrase(
 function connectionListLabel(locale: ChatCoreV2NormalizedLocale): string {
   if (locale === 'pt-BR') return 'Principais integrações:';
   if (locale === 'pt-PT') return 'Integrações principais:';
-  if (locale === 'es') return 'Integraciones principales:';
   return 'Top integrations:';
 }
 
@@ -194,13 +185,6 @@ function connectionStateLabel(state: string, locale: ChatCoreV2NormalizedLocale)
     if (state === 'pending') return 'pendente';
     return 'desligada';
   }
-  if (locale === 'es') {
-    if (state === 'connected') return 'conectada';
-    if (state === 'degraded') return 'datos limitados';
-    if (state === 'revoked') return 'necesita reconexión';
-    if (state === 'pending') return 'pendiente';
-    return 'desconectada';
-  }
   if (state === 'connected') return 'connected';
   if (state === 'degraded') return 'limited data';
   if (state === 'revoked') return 'needs reconnect';
@@ -209,7 +193,7 @@ function connectionStateLabel(state: string, locale: ChatCoreV2NormalizedLocale)
 }
 
 function connectionCapabilitiesSuffix(capabilities: string[], locale: ChatCoreV2NormalizedLocale): string {
-  const label = locale === 'en' ? 'supports' : locale === 'es' ? 'admite' : 'suporta';
+  const label = locale === 'en' ? 'supports' : 'suporta';
   return ` (${label}: ${capabilities.join(', ')})`;
 }
 

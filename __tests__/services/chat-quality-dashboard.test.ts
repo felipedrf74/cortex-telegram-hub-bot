@@ -39,6 +39,10 @@ import {
   recordChatQualityGateOutcome,
   resetChatQualityGateOutcomeCountersForTests,
 } from '../../src/services/chat-hybrid-metrics';
+import { CHAT_V2_RETIREMENT_OBSERVER_CORPUS_BINDING } from '../../src/services/chat-legacy-parity-labels';
+import {
+  CHAT_V2_RESPONSE_LOCALE_EVIDENCE_VERSION,
+} from '../../src/services/chat-v2-completion-evidence';
 import { recordChatRoutingClarifyDecisionPersisted } from '../../src/services/chat-routing-clarify-metrics';
 import { ensureRoutingCorpusTables } from '../../src/services/routing-corpus';
 import { storeAcceptedAccuracySnapshot, type RoutingAccuracyReport } from '../../src/services/routing-accuracy';
@@ -169,6 +173,10 @@ function makeReadinessReport(): ChatV2CompletionReadinessReportLike {
     schemaVersion: 'chat_v2_completion_readiness_report.v1',
     generatedAt: '2026-07-19T09:00:00.000Z',
     evidenceSources: ['runtime_route'],
+    evidenceContract: {
+      retirementObserverCorpusBinding: CHAT_V2_RETIREMENT_OBSERVER_CORPUS_BINDING,
+      responseLocaleEvidenceVersion: CHAT_V2_RESPONSE_LOCALE_EVIDENCE_VERSION,
+    },
     shadow: { passed: true, gates: [{ gateId: 'shadow_sample_count', passed: true, sampleCount: 100, observed: 100, threshold: 50 }] },
     answerCanary: passingPhase(),
     deterministicRead: passingPhase(),
@@ -349,7 +357,7 @@ describe('chat quality dashboard', () => {
       `hmac:test:${'e'.repeat(64)}`,
       JSON.stringify({
         schemaVersion: 'chat_v2_legacy_parity_evidence_safe_metadata.v1',
-        parityObservationImport: true,
+        parityLabelImport: true,
         evaluator: 'manual',
         peerReviewSignoffHash: 'f'.repeat(64),
         sampleCount: 50,
@@ -357,6 +365,15 @@ describe('chat quality dashboard', () => {
         safetyRegressionCount: 0,
         qualityRegressionCount: 0,
         degradedNotComparableCount: 0,
+        reviewRubricVersion: 'chat_v2_legacy_parity_review_rubric.v2',
+        parityRate: 0.96,
+        reviewCompletenessChecked: true,
+        rawReviewArtifactCompletenessChecked: true,
+        observedRouteSampleCount: 50,
+        observerManifestSha256: '1'.repeat(64),
+        observerObservationsSha256: '2'.repeat(64),
+        rawReviewArtifactSha256: '3'.repeat(64),
+        ...CHAT_V2_RETIREMENT_OBSERVER_CORPUS_BINDING,
       }),
       NOW.toISOString(),
     );

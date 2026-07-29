@@ -27,6 +27,7 @@ import {
   resolveScriptRenderMode,
   resolveScriptStyle,
   resolveScriptTargetLanguage,
+  type ContentScriptEngineResult,
 } from './content-script-route-utils';
 import { resolveScriptTopicContext } from './content-topic-context';
 import { getAllKnowledge } from '../../state/content-references';
@@ -88,6 +89,11 @@ import {
 import { CONTENT_LIVE_EVAL_HARD_MAX_USD_PER_SAMPLE } from '../../services/content-live-evaluation-artifact';
 import { isLoopbackRequest } from '../secret-guards';
 import { getDb } from '../../services/database';
+import {
+  checkResponseLocaleFidelity,
+  detectStrictShortResponseLanguage,
+  expectedLanguageForLocale,
+} from '../../services/chat-language-detector';
 
 type ResolveContentLanguage = (req: Pick<AuthenticatedRequest, 'header'>, userId: number) => Lang;
 type EnsureValidContentRouteScope = (
@@ -456,6 +462,28 @@ export function registerContentScriptRoutes(
         }, providerCall),
         liveEvalContext ? SYNTHETIC_EVALUATION_SCRIPT_EXECUTION_POLICY : undefined,
       );
+      if (hasContentScriptResultLocaleMismatch(targetLanguage, result)) {
+        generationObservation.complete('blocked', 'output_safety_block');
+        recordContentWorkspaceQualitySignal('generation_output_blocked');
+        logger.warn(
+          { userId, tenantId, expectedLanguage: targetLanguage },
+          'Content script output withheld because it violated the supported-language contract',
+        );
+        sendError(
+          res,
+          'CONTENT_SCRIPT_LOCALE_MISMATCH',
+          requestLanguage.startsWith('pt')
+            ? 'O roteiro gerado não respeitou o idioma pedido e foi retido. Tente novamente.'
+            : 'The generated script did not match the requested language and was withheld. Please retry.',
+          502,
+          {
+            contentMutationApplied: false,
+            displayWithheld: true,
+            retryable: true,
+          },
+        );
+        return;
+      }
       const elapsedMs = Date.now() - startMs;
       // 2026-05-18 phase2-qa P1: previously `cacheHit = elapsedMs < 500` —
       // a TIMING HEURISTIC that fakes "cache hit" for any sub-500ms
@@ -784,7 +812,9 @@ export function registerContentScriptRoutes(
         `Topic: ${topic}`,
         'Find a compact, publish-safe source package for refreshing an existing content draft.',
         'Return 3 to 5 short source notes. No long quotes, no raw article text, no private data.',
-        requestLanguage.startsWith('pt') ? 'Escreva as notas no idioma do usuário.' : 'Write source notes in the user language.',
+        requestLanguage === 'en-US'
+          ? 'Write every source note in English. Spanish-authored topic or script text does not change this output contract.'
+          : `Escreva todas as notas em ${requestLanguage === 'pt-PT' ? 'português europeu' : 'pt-BR'}. Não produza texto em espanhol.`,
       ].join('\n');
       const { text, sources, researchProvider } = await withAiBudgetReservation({
         userId,
@@ -793,7 +823,12 @@ export function registerContentScriptRoutes(
         jobName: 'content_research_refresh',
         runId: getCurrentRequestId() ?? null,
       }, async () => {
-        const systemPrompt = 'Nexus Content research refresh. Summarize sources compactly; do not generate a script.';
+        const systemPrompt = [
+          'Nexus Content research refresh. Summarize sources compactly; do not generate a script.',
+          requestLanguage === 'en-US'
+            ? 'Return source notes only in English. Do not emit Spanish output.'
+            : `Return source notes only in ${requestLanguage === 'pt-PT' ? 'European Portuguese' : 'pt-BR'}. Do not emit Spanish output.`,
+        ].join('\n');
         const providerOptions = { maxTokens: 900, temperature: 0.2, userId, tenantId: routeTenantId };
         let openAiAttempted = false;
         const completeWithBoundedOpenAi = async () => {
@@ -843,6 +878,18 @@ export function registerContentScriptRoutes(
         }
         throw geminiError;
       });
+      if (hasContentOutputLocaleMismatch(requestLanguage, text)) {
+        sendError(
+          res,
+          'CONTENT_RESEARCH_LOCALE_MISMATCH',
+          requestLanguage.startsWith('pt')
+            ? 'As notas de pesquisa não respeitaram o idioma pedido. O roteiro original foi preservado.'
+            : 'The research notes did not match the requested language. The original script was preserved.',
+          502,
+          { originalPreserved: true },
+        );
+        return;
+      }
       const refreshedSummary = compactSourceSummary([
         ...sanitizeSourceSummary([text]),
         ...sources.slice(0, 4).map((source) => `Source: ${source}`),
@@ -1011,6 +1058,18 @@ async function handleScriptEditRoute(
       );
       return;
     }
+    if (edited && hasContentOutputLocaleMismatch(requestLanguage, edited)) {
+      sendError(
+        res,
+        'CONTENT_SCRIPT_EDIT_LOCALE_MISMATCH',
+        requestLanguage.startsWith('pt')
+          ? 'A edição gerada não respeitou o idioma pedido. O roteiro original foi preservado.'
+          : 'The generated edit did not match the requested language. The original script was preserved.',
+        502,
+        { originalPreserved: true },
+      );
+      return;
+    }
     sendSuccess(res, buildScriptEditResponse({
       topic,
       baseScript: currentScript,
@@ -1045,8 +1104,40 @@ function buildScriptEditSystemPrompt(kind: ScriptEditKind, language: Lang): stri
     kind === 'expand'
       ? 'Return only the expanded script section/body.'
       : 'Return only the rewritten content requested by the action.',
-    language.startsWith('pt') ? 'Responda no idioma do usuário.' : 'Use the user language.',
+    language === 'en-US'
+      ? 'Reply only in English. Spanish-authored draft or instruction text does not change this contract. Do not emit Spanish output.'
+      : `Responda apenas em ${language === 'pt-PT' ? 'português europeu' : 'pt-BR'}. O texto de entrada não altera este contrato. Não produza texto em espanhol.`,
   ].join('\n');
+}
+
+function hasContentScriptResultLocaleMismatch(
+  language: string,
+  result: Pick<
+    ContentScriptEngineResult,
+    'script' | 'hook' | 'title_options' | 'hashtags' | 'caption' | 'cta'
+  >,
+): boolean {
+  const userFacingText = [
+    result.script,
+    result.hook,
+    ...(result.title_options ?? []),
+    ...(result.hashtags ?? []),
+    result.caption,
+    result.cta,
+  ]
+    .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+    .join('\n');
+  return hasContentOutputLocaleMismatch(language, userFacingText);
+}
+
+function hasContentOutputLocaleMismatch(language: string, text: string): boolean {
+  const fidelity = checkResponseLocaleFidelity(language, text);
+  if (!fidelity.ok) return true;
+  const expectedLanguage = expectedLanguageForLocale(language);
+  const strictLanguage = detectStrictShortResponseLanguage(text, expectedLanguage);
+  return strictLanguage !== null
+    && expectedLanguage !== 'unknown'
+    && strictLanguage !== expectedLanguage;
 }
 
 function buildScriptEditUserPrompt(input: {

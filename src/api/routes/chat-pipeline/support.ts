@@ -33,6 +33,8 @@ import {
   type ChatCoreV2LocalChatRecentTurn,
 } from '../../../services/chat-core-v2';
 import { getDb } from '../../../services/database';
+import { detectRetiredSpanishInputSignal } from '../../../services/chat-language-detector';
+import { isRetiredSpanishLocaleSignal } from '../../../utils/i18n';
 
 export function normalizeIdempotencyKey(value: unknown): string | null {
   if (typeof value !== 'string') return null;
@@ -68,14 +70,21 @@ export function anchorEntityIdsFromPlanSteps(
   return [...ids];
 }
 
-export function safeGetChatEvidenceLanguage(req: Request, userId: number): string | null {
+export function safeGetChatEvidenceLanguage(
+  req: Request,
+  userId: number,
+  resolvedResponseLocale?: string | null,
+): string | null {
   try {
     const rawHeader = req.header?.('x-language');
     const headerValue = Array.isArray(rawHeader) ? rawHeader[0] : rawHeader;
     if (typeof headerValue === 'string' && /^mixed$/i.test(headerValue.trim())) {
       return 'mixed';
     }
-    return getUserLanguageById(userId);
+    return chooseChatCoreV2Locale({
+      explicitLocaleOverride: resolvedResponseLocale,
+      userLocale: getUserLanguageById(userId),
+    });
   } catch {
     return null;
   }
@@ -87,7 +96,8 @@ function safeGetChatCoreV2HeaderLocale(req: Request): string | null {
     const headerValue = Array.isArray(rawHeader) ? rawHeader[0] : rawHeader;
     if (typeof headerValue !== 'string') return null;
     const trimmed = headerValue.trim();
-    return /^(?:en|pt|es)(?:-[a-z0-9]{2,3})?$/i.test(trimmed) ? trimmed : null;
+    if (isRetiredSpanishLocaleSignal(trimmed)) return 'en-US';
+    return /^(?:en|pt)(?:-[a-z0-9]{2,3})?$/i.test(trimmed) ? trimmed : null;
   } catch {
     return null;
   }
@@ -178,7 +188,9 @@ function detectChatCoreV2MessageLanguage(text: string): string | null {
   ]);
   const enHits = countHits(['what', 'how', 'when', 'show', 'create', 'mark', 'cancel', 'recipe', 'task', 'calendar']);
 
-  if (hasEsSignal || esHits >= 2) return enHits > 0 ? 'mixed' : 'es';
+  if (detectRetiredSpanishInputSignal(text) || hasEsSignal || esHits >= 2) {
+    return enHits > 0 ? 'mixed' : 'es';
+  }
   if (ptPtHits > 0 || (hasPtAccent && !ptBrHits)) {
     return 'pt-PT';
   }
@@ -474,19 +486,15 @@ export function actionGatewayStopText(
   if (result.kind === 'needs_clarification') return result.question;
   const normalizedLocale = String(locale ?? '').toLowerCase();
   const isPT = normalizedLocale.startsWith('pt');
-  const isES = normalizedLocale.startsWith('es');
   if (result.kind === 'blocked_legacy_fallback') {
     if (isPT) return 'Preciso confirmar exatamente o que devo alterar antes de executar essa ação.';
-    if (isES) return 'Necesito confirmar exactamente qué debo cambiar antes de ejecutar esa acción.';
     return 'I need to confirm exactly what to change before I run that action.';
   }
   if (result.reason === 'write_intent_negated_or_hypothetical') {
     if (isPT) return 'Não executei nenhuma ação. Posso ajudar a preparar uma prévia se quiseres.';
-    if (isES) return 'No ejecuté ninguna acción. Puedo ayudarte a preparar una vista previa si quieres.';
     return 'I did not run any action. I can help prepare a preview if you want.';
   }
   if (isPT) return 'Ainda não consigo executar essa ação com segurança. Posso ajudar a preparar uma prévia ou pedir mais detalhes.';
-  if (isES) return 'Todavía no puedo ejecutar esa acción con seguridad. Puedo preparar una vista previa o pedir más detalles.';
   return 'I cannot run that action safely yet. I can prepare a preview or ask for more details.';
 }
 
@@ -505,15 +513,6 @@ export function destructiveConfirmationCopy(locale: string | null | undefined): 
       declineLabel: 'Não executar',
       openDecisionLabel: 'Abrir decisão',
       text: 'Antes de fazer uma alteração destrutiva, preciso de confirmação explícita. Confirme a ação exata que quer que eu faça, incluindo o item/plano/evento afetado. Não vou apagar, cancelar, enviar ou limpar nada sem essa confirmação.',
-    };
-  }
-  if (normalizedLocale.startsWith('es')) {
-    return {
-      title: 'Confirmación necesaria',
-      confirmLabel: 'Confirmar',
-      declineLabel: 'No ejecutar',
-      openDecisionLabel: 'Abrir decisión',
-      text: 'Antes de hacer un cambio destructivo, necesito una confirmación explícita. Confirma la acción exacta que quieres que haga, incluyendo el elemento, plan, evento o mensaje afectado. No voy a borrar, cancelar, enviar ni limpiar nada sin esa confirmación.',
     };
   }
   return {
@@ -552,9 +551,6 @@ export function buildChatCoreV2GuardOnlyConfirmationText(locale: string | null |
   if (normalizedLocale.startsWith('pt')) {
     return 'Mantive a ação pausada e não alterei nada. Diz-me o item exato e preparo uma prévia segura.';
   }
-  if (normalizedLocale === 'es') {
-    return 'Mantuve la acción en pausa y no cambié nada. Dime el elemento exacto y preparo una vista previa segura.';
-  }
   return 'I kept the action paused and did not change anything. Tell me the exact item and I will prepare a safe preview.';
 }
 
@@ -568,13 +564,6 @@ export function buildChatCoreV2GuardOnlyConfirmationLabels(locale: string | null
     return {
       title: 'Confirmação necessária',
       actionLabel: 'Manter pausado',
-      cancelLabel: 'Cancelar',
-    };
-  }
-  if (normalizedLocale === 'es') {
-    return {
-      title: 'Confirmación necesaria',
-      actionLabel: 'Mantener pausado',
       cancelLabel: 'Cancelar',
     };
   }

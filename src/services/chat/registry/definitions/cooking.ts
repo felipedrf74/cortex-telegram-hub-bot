@@ -73,9 +73,10 @@ export const COOKING_ACTIONS: ChatActionDefinition[] = [
           expectedAction: 'cooking_meal_support',
         },
         {
-          // Phase 14 batch 73 (2026-05-16): Spanish golden example.
+          // Phase 14 batch 73 (2026-05-16): Spanish-authored compatibility input; English response contract.
           text: '¿Qué hago para cenar esta noche?',
-          locale: 'es',
+          requestLocale: 'es',
+          responseLocale: 'en',
           tags: ['golden'],
           expectedAction: 'cooking_meal_support',
         },
@@ -137,9 +138,10 @@ export const COOKING_ACTIONS: ChatActionDefinition[] = [
           expectedAction: 'cooking_grocery_list',
         },
         {
-          // Phase 13 batch 68 (2026-05-16): Spanish golden example.
+          // Phase 13 batch 68 (2026-05-16): Spanish-authored compatibility input; English response contract.
           text: 'Necesito una lista de la compra',
-          locale: 'es',
+          requestLocale: 'es',
+          responseLocale: 'en',
           tags: ['golden'],
           expectedAction: 'cooking_grocery_list',
         },
@@ -202,9 +204,10 @@ export const COOKING_ACTIONS: ChatActionDefinition[] = [
           expectedAction: 'cooking_meal_plan',
         },
         {
-          // Phase 13 batch 68 (2026-05-16): Spanish golden example.
+          // Phase 13 batch 68 (2026-05-16): Spanish-authored compatibility input; English response contract.
           text: 'Planea las comidas de la próxima semana',
-          locale: 'es',
+          requestLocale: 'es',
+          responseLocale: 'en',
           tags: ['golden'],
           expectedAction: 'cooking_meal_plan',
         },
@@ -268,7 +271,8 @@ export const COOKING_ACTIONS: ChatActionDefinition[] = [
         },
         {
           text: 'Sustituye champiñones por calabacín en la cena de mañana',
-          locale: 'es',
+          requestLocale: 'es',
+          responseLocale: 'en',
           tags: ['golden'],
           expectedAction: 'cooking_substitute_ingredient',
           expectedSlots: {
@@ -321,9 +325,10 @@ export const COOKING_ACTIONS: ChatActionDefinition[] = [
           expectedAction: 'cooking_fueling_support',
         },
         {
-          // Phase 14 batch 73 (2026-05-16): Spanish golden example.
+          // Phase 14 batch 73 (2026-05-16): Spanish-authored compatibility input; English response contract.
           text: '¿Qué desayuno antes del entrenamiento?',
-          locale: 'es',
+          requestLocale: 'es',
+          responseLocale: 'en',
           tags: ['golden'],
           expectedAction: 'cooking_fueling_support',
         },

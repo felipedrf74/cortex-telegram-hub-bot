@@ -12,7 +12,9 @@ import type {
 export const CHAT_CORE_V2_RESPONSE_SCHEMA_VERSION = 'chat_response_v2@1.0.0';
 export const CHAT_CORE_V2_CARD_SCHEMA_VERSION = 'chat_card_v2@1.0.0';
 
-export type ChatCoreV2Locale = 'en' | 'pt-PT' | 'pt-BR' | 'es';
+export const CHAT_CORE_V2_SUPPORTED_LOCALES = ['en', 'pt-PT', 'pt-BR'] as const;
+
+export type ChatCoreV2Locale = typeof CHAT_CORE_V2_SUPPORTED_LOCALES[number];
 
 export type ChatCoreV2ResponseKind =
   | 'message'
@@ -229,23 +231,12 @@ const LABELS: Record<ChatCoreV2Locale, Record<ChatCoreV2ResponseActionKind | 're
     review_preview: 'Revise isso antes de eu alterar qualquer coisa.',
     unsupported: 'Ainda não consigo fazer isso diretamente. Posso ajudar a preparar o próximo passo.',
   },
-  es: {
-    confirm: 'Confirmar',
-    cancel: 'Cancelar',
-    edit: 'Editar',
-    undo: 'Deshacer',
-    view: 'Ver',
-    retry: 'Intentar de nuevo',
-    review_preview: 'Revísalo antes de cambiar nada.',
-    unsupported: 'Todavía no puedo hacerlo directamente. Puedo ayudarte a preparar el siguiente paso.',
-  },
 };
 
 export function normalizeChatCoreV2Locale(language: string | null | undefined): ChatCoreV2Locale {
   const normalized = String(language ?? '').trim().toLowerCase();
   if (normalized.startsWith('pt-br')) return 'pt-BR';
   if (normalized.startsWith('pt')) return 'pt-PT';
-  if (normalized.startsWith('es')) return 'es';
   return 'en';
 }
 

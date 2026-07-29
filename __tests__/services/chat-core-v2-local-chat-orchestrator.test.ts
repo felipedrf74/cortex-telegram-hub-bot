@@ -918,7 +918,14 @@ describe('ChatCoreV2 local chat orchestrator', () => {
     expect(result?.degraded).toBe(false);
     expect(result?.response.text).toContain('prioridade pequena');
     expect(mocks.dispatchLocalReasoning).toHaveBeenCalledWith(expect.objectContaining({
-      outputSchema: expect.objectContaining({ additionalProperties: false }),
+      outputSchema: expect.objectContaining({
+        additionalProperties: false,
+        properties: expect.objectContaining({
+          locale: expect.objectContaining({
+            enum: ['en', 'pt-PT', 'pt-BR'],
+          }),
+        }),
+      }),
     }));
   });
 

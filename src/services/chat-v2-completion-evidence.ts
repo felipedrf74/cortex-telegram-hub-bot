@@ -25,10 +25,16 @@ import {
   type ChatCloudAllowlistPacket,
 } from './chat-cloud-allowlist-packet';
 import { safeRecordChatV2CloudAllowlistEvidence } from './chat-cloud-allowlist-evidence';
+import {
+  normalizeChatCoreV2TemplateLocale,
+} from './chat-core-v2/locale-policy';
+import type { ChatCoreV2Locale } from './chat-core-v2/response-contracts';
 import { logger } from '../utils/logger';
 
 export type ChatV2CompletionEvidenceKind = 'shadow' | 'answer_canary';
 export type ChatV2CompletionEvidenceSource = 'runtime_route' | 'local_sandbox_seed';
+export const CHAT_V2_RESPONSE_LOCALE_EVIDENCE_VERSION =
+  'chat_v2_response_locale_evidence.v1';
 
 export interface ChatV2ResponseEnvelopeLike {
   id?: unknown;
@@ -46,6 +52,7 @@ export interface ChatV2CompletionEvidenceInput {
   normalizedMessage: string;
   evidenceSource?: ChatV2CompletionEvidenceSource;
   userLanguage?: string | null;
+  responseLocale?: string | null;
   response: ChatV2ResponseEnvelopeLike;
   firstProgressMs?: number | null;
   unsupportedClaimProbe?: boolean;
@@ -108,6 +115,9 @@ export function recordChatV2CompletionEvidence(input: ChatV2CompletionEvidenceIn
   const finalCapabilityId = deriveFinalCapabilityId(contract, response);
   const candidateCapabilities = deriveCandidateCapabilities({ contract, response, metadata, finalCapabilityId });
   const language = normalizeEvidenceLanguage(input.userLanguage, contract?.language);
+  const effectiveResponseLocale = normalizeChatCoreV2TemplateLocale(
+    input.responseLocale ?? input.userLanguage ?? contract?.language,
+  );
   const messageHmac = hmacToken('message', `${input.tenantId}:${input.userId}:${input.normalizedMessage}`);
   const shadowSample = bindShadowEvidenceHash({
     sampleId: messageHmac,
@@ -126,6 +136,7 @@ export function recordChatV2CompletionEvidence(input: ChatV2CompletionEvidenceIn
     composition,
     candidateCapabilities,
     unsupportedClaimProbe: input.unsupportedClaimProbe === true,
+    effectiveResponseLocale,
   });
   const rawFieldAuditCount = countUnsafeChatShadowRawFields(safeMetadata);
   const routeOwner = stringOrNull(contract?.ownerSkill)
@@ -301,6 +312,7 @@ export function loadChatV2ShadowGateSamples(
     FROM chat_v2_completion_evidence
     WHERE evidence_kind = 'shadow'
       AND evidence_source IN (${sourceFilter.placeholders})
+      AND ${currentChatV2ResponseLocaleEvidenceSql()}
     ORDER BY datetime(created_at) DESC, id DESC
     LIMIT ?
   `).all(...sourceFilter.values, Math.max(1, Math.floor(limit))) as Array<{
@@ -345,6 +357,7 @@ export function loadChatV2AnswerCanaryEvaluationInput(
     FROM chat_v2_completion_evidence
     WHERE evidence_kind = 'answer_canary'
       AND evidence_source IN (${sourceFilter.placeholders})
+      AND ${currentChatV2ResponseLocaleEvidenceSql()}
     ORDER BY datetime(created_at) DESC, id DESC
     LIMIT ?
   `).all(...sourceFilter.values, Math.max(1, Math.floor(limit))) as Array<{
@@ -444,6 +457,28 @@ function buildEvidenceSourceFilter(sources: readonly ChatV2CompletionEvidenceSou
   };
 }
 
+export function currentChatV2ResponseLocaleEvidenceSql(
+  safeMetadataColumn: 'safe_metadata_json' = 'safe_metadata_json',
+  localeColumn: 'locale' = 'locale',
+): string {
+  const version = CHAT_V2_RESPONSE_LOCALE_EVIDENCE_VERSION;
+  return `(
+    json_valid(${safeMetadataColumn}) = 1
+    AND json_extract(${safeMetadataColumn}, '$.responseLocaleEvidence.version') = '${version}'
+    AND (
+      (lower(trim(${localeColumn})) = 'en'
+        AND json_extract(${safeMetadataColumn}, '$.responseLocaleEvidence.effectiveLocale') = 'en')
+      OR (lower(trim(${localeColumn})) IN ('pt-br', 'pt_br')
+        AND json_extract(${safeMetadataColumn}, '$.responseLocaleEvidence.effectiveLocale') = 'pt-BR')
+      OR (lower(trim(${localeColumn})) IN ('pt-pt', 'pt_pt')
+        AND json_extract(${safeMetadataColumn}, '$.responseLocaleEvidence.effectiveLocale') = 'pt-PT')
+      OR (lower(trim(${localeColumn})) = 'mixed'
+        AND json_extract(${safeMetadataColumn}, '$.responseLocaleEvidence.effectiveLocale')
+          IN ('en', 'pt-BR', 'pt-PT'))
+    )
+  )`;
+}
+
 function bindShadowEvidenceHash(sample: ChatShadowGateSample): ChatShadowGateSample {
   return {
     ...sample,
@@ -522,6 +557,7 @@ function buildSafeMetadata(input: {
   composition: Record<string, unknown> | null;
   candidateCapabilities: string[];
   unsupportedClaimProbe: boolean;
+  effectiveResponseLocale: ChatCoreV2Locale;
 }): Record<string, unknown> {
   const contract = input.contract;
   return {
@@ -548,6 +584,10 @@ function buildSafeMetadata(input: {
     } : null,
     unsupportedClaimProbe: input.unsupportedClaimProbe,
     candidateCapabilities: input.candidateCapabilities,
+    responseLocaleEvidence: {
+      version: CHAT_V2_RESPONSE_LOCALE_EVIDENCE_VERSION,
+      effectiveLocale: input.effectiveResponseLocale,
+    },
   };
 }
 

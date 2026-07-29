@@ -44,7 +44,10 @@ describe('chat content refinement helpers', () => {
 
   it('builds language-aware prompt text for refinement requests', () => {
     expect(buildContentRefinementSystemPrompt('pt-PT')).toContain('português europeu');
-    expect(buildContentRefinementSystemPrompt('en-US')).toContain('Reply in English');
+    const englishPrompt = buildContentRefinementSystemPrompt('en-US');
+    expect(englishPrompt).toContain('Reply in English.');
+    expect(englishPrompt).toContain('Spanish-authored instructions remain on the English response contract.');
+    expect(englishPrompt).not.toContain('asks to switch languages');
 
     const prompt = buildContentRefinementUserPrompt('Draft body', 'Trim this', 'en-US');
     expect(prompt).toContain('User instruction:');
@@ -61,6 +64,19 @@ describe('chat content refinement helpers', () => {
     expect(buildHeuristicContentRefinementFallback('One. Two. Three.', 'make it shorter', 'en-US')).toContain('conservative shorter version');
     expect(buildHeuristicContentRefinementFallback('Um. Dois. Três.', 'encurta', 'pt-PT')).toContain('versão mais curta');
     expect(buildHeuristicContentRefinementFallback('One. Two. Three.', 'translate to English', 'en-US')).toBeNull();
+  });
+
+  it('does not echo a historical cross-language draft when live refinement is unavailable', () => {
+    expect(
+      buildHeuristicContentRefinementFallback('Aquí tienes.', 'make it shorter', 'en-US'),
+    ).toBeNull();
+    expect(
+      buildHeuristicContentRefinementFallback(
+        'The task is ready and your meeting is scheduled for tomorrow.',
+        'encurta',
+        'pt-PT',
+      ),
+    ).toBeNull();
   });
 
   it('sanitizes generated script bodies before chat delivery', () => {

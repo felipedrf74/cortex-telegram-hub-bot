@@ -40,7 +40,7 @@ import {
   isOwnerBootstrapTelegramId,
   getOwnerBootstrapTelegramId, isOwnerUserRef,
   assertOwnerBootstrapReadyForRuntime,
-  touchUser, getUserLanguage, setUserLanguage, listUsers, setUserStatus,
+  touchUser, getUserLanguage, getUserLanguageById, setUserLanguage, listUsers, setUserStatus,
   setUserTier, seedOwnerUser,
   createEmailUser,
   sanitizeDisplayName, getPreferredDisplayName,
@@ -258,6 +258,16 @@ describe('user-service', () => {
 
       setUserLanguage(user.id, 'en-US');
       expect(getUserLanguage(user.id)).toBe('en-US');
+    });
+
+    it('coerces a persisted legacy Spanish preference to English without rewriting the row', () => {
+      const user = createEmailUser('legacy-spanish@example.com', 'hash', { firstName: 'Legacy' });
+      testDb.prepare("UPDATE users SET language = 'es-ES' WHERE id = ?").run(user.id);
+
+      expect(getUserLanguage(user.id)).toBe('en-US');
+      expect(getUserLanguageById(user.id)).toBe('en-US');
+      expect((testDb.prepare('SELECT language FROM users WHERE id = ?').get(user.id) as { language: string }).language)
+        .toBe('es-ES');
     });
   });
 

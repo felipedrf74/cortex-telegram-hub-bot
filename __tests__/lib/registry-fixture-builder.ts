@@ -30,7 +30,7 @@ export interface RegistryFixtureBuilderOptions {
 
 type RegistryExample = {
   text: string;
-  locale?: 'en' | 'pt' | 'es' | 'mixed';
+  locale?: 'en' | 'pt' | 'mixed';
   expectedSlots?: Record<string, unknown>;
   expectedAction?: ChatActionName | null;
   tags?: ExampleTag[];
@@ -41,7 +41,6 @@ type RegistryExample = {
 const LOCALE_MAP: Record<string, string> = {
   en: 'en-US',
   pt: 'pt-PT',
-  es: 'es-ES',
   mixed: 'en-US',
 };
 

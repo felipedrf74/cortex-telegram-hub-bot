@@ -5,6 +5,12 @@ import fs from 'fs';
 import path from 'path';
 import Database from 'better-sqlite3';
 import dotenv from 'dotenv';
+import {
+  validateCurrentChatV2LegacyRetirementEvidenceRow,
+} from '../src/services/chat-legacy-parity-labels';
+import {
+  currentChatV2ResponseLocaleEvidenceSql,
+} from '../src/services/chat-v2-completion-evidence';
 
 dotenv.config({ quiet: true });
 dotenv.config({ path: '.env.local', override: false, quiet: true });
@@ -327,20 +333,25 @@ function buildParityBlocker(row: InventoryRow, coverage: RouteCoverage, parity?:
 function loadImportedParityLabels(db: Database.Database): Record<string, ImportedParityLabel> {
   if (!tableExists(db, 'chat_v2_legacy_retirement_evidence')) return {};
   const rows = db.prepare(`
-    SELECT route_id, replaced, tested, shadow_parity_rate, route_sample_count,
-           evidence_source, safe_metadata_json, datetime(created_at) AS created_at, id
+    SELECT evidence_source, evidence_kind, sample_identifier_kind,
+           route_id, replaced, tested, shadow_parity_rate, route_sample_count,
+           raw_field_audit_count, safe_metadata_json,
+           datetime(created_at) AS created_at, id
     FROM chat_v2_legacy_retirement_evidence
     WHERE evidence_kind = 'route_exit'
       AND route_id IS NOT NULL
       AND raw_field_audit_count = 0
     ORDER BY route_id, datetime(created_at) DESC, id DESC
   `).all() as Array<{
+    evidence_kind: string;
+    sample_identifier_kind: string;
     route_id: string;
     replaced: number | null;
     tested: number | null;
     shadow_parity_rate: number | null;
     route_sample_count: number | null;
     evidence_source: string;
+    raw_field_audit_count: number;
     safe_metadata_json: string | null;
     created_at: string;
     id: number;
@@ -349,13 +360,12 @@ function loadImportedParityLabels(db: Database.Database): Record<string, Importe
   const byRoute: Record<string, ImportedParityLabel> = {};
   for (const row of rows) {
     if (byRoute[row.route_id]) continue;
-    const metadata = parseSafeMetadata(row.safe_metadata_json);
-    if (metadata?.status === 'inventory_only_not_retired') continue;
-    if (metadata?.parityLabelImport !== true) continue;
-    const sampleCount = Math.max(0, Math.floor(Number(row.route_sample_count ?? 0)));
-    const shadowParityRate = clamp01(Number(row.shadow_parity_rate ?? 0));
-    const matchingCount = integerFromUnknown(metadata.matchingCount)
-      ?? Math.round(sampleCount * shadowParityRate);
+    const validation = validateCurrentChatV2LegacyRetirementEvidenceRow(row);
+    if (!validation.ok || validation.metadata.parityLabelImport !== true) continue;
+    const metadata = validation.metadata;
+    const sampleCount = validation.sampleCount;
+    const shadowParityRate = validation.parityRate;
+    const matchingCount = validation.matchingCount;
     byRoute[row.route_id] = {
       replaced: row.replaced === 1,
       tested: row.tested === 1,
@@ -388,6 +398,7 @@ function addCompletionCoverage(db: Database.Database, coverage: Record<string, R
     FROM chat_v2_completion_evidence
     WHERE evidence_source = 'runtime_route'
       AND evidence_kind = 'shadow'
+      AND ${currentChatV2ResponseLocaleEvidenceSql()}
     GROUP BY route_owner, route_method, final_capability_id, response_contract_valid
   `).all() as Array<{
     route_owner: string;

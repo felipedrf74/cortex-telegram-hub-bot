@@ -56,7 +56,12 @@ import {
   type ChatResponseBlock,
 } from '../../services/chat-response-blocks';
 import { recordChatQualityGateOutcome } from '../../services/chat-hybrid-metrics';
-import { buildResponseLanguageTelemetry } from '../../services/chat-language-detector';
+import {
+  buildResponseLanguageTelemetry,
+  checkResponseLocaleFidelity,
+  detectResponseLanguage,
+  detectStrictShortResponseLanguage,
+} from '../../services/chat-language-detector';
 import type { analyzeChatSkillOrchestration } from '../../services/chat-skill-orchestrator';
 
 // ─── Gate policy table ─────────────────────────────────────────────
@@ -217,8 +222,112 @@ export function normalizeNexusAnswerLanguage(locale: string | null | undefined):
   if (normalized === 'mixed') return 'mixed';
   if (normalized.startsWith('pt')) return 'pt';
   if (normalized.startsWith('en')) return 'en';
-  if (normalized.startsWith('es')) return 'es';
+  if (normalized.startsWith('es')) return 'en';
   return undefined;
+}
+
+const SUPPORTED_LANGUAGE_MISMATCH_FALLBACK = {
+  en: 'I could not safely present that response in English. Please try again.',
+  pt: 'Não consegui apresentar essa resposta com segurança em português. Tente novamente.',
+} as const;
+
+interface SupportedLanguageMismatchGuardResult {
+  text: string;
+  contract: NexusAnswerContract;
+  trip: {
+    action: 'replaced';
+    reason: 'response_locale_mismatch';
+    expected: 'en' | 'pt';
+    detected: 'en' | 'pt' | 'es';
+    confidence: number;
+  } | null;
+}
+
+function hasSupportedEntityListFraming(text: string, expected: 'en' | 'pt'): boolean {
+  const colonIndex = text.indexOf(':');
+  if (colonIndex <= 0 || colonIndex > 100) return false;
+  const prefix = text.slice(0, colonIndex).trim();
+  const values = text.slice(colonIndex + 1).trim();
+  const listSeparators = (values.match(/[;,]/g) ?? []).length;
+  if (listSeparators === 0) return false;
+
+  const prefixDetection = detectResponseLanguage(prefix);
+  return prefixDetection.language === expected;
+}
+
+/**
+ * Enforce the supported EN/PT response contract at the single terminal
+ * boundary for model-authored/full-gate responses. Long replies require a
+ * detector-named contradiction backed by discriminative language evidence;
+ * this avoids treating weak shared words as the framing language. A small
+ * exact set of unambiguous short replies closes the detector's intentional
+ * short-text fail-open seam.
+ * Contradictions are replaced locally without another provider call.
+ */
+function enforceSupportedResponseLanguageContract(
+  text: string,
+  contract: NexusAnswerContract,
+): SupportedLanguageMismatchGuardResult {
+  const fidelity = checkResponseLocaleFidelity(contract.language, text);
+  const shortDetected = detectStrictShortResponseLanguage(text, fidelity.expected);
+  const detected = shortDetected ?? fidelity.detected;
+  const confidence = shortDetected ? 1 : fidelity.confidence;
+  const mixedSpanishMismatch = contract.language === 'mixed' && detected === 'es';
+  const expected = mixedSpanishMismatch ? 'en' : fidelity.expected;
+  if (expected !== 'en' && expected !== 'pt') {
+    return { text, contract, trip: null };
+  }
+  if (
+    detected === 'unknown'
+    || detected === expected
+    || (
+      !mixedSpanishMismatch
+      && !shortDetected
+      && hasSupportedEntityListFraming(text, expected)
+    )
+  ) {
+    return { text, contract, trip: null };
+  }
+  const fallbackText = SUPPORTED_LANGUAGE_MISMATCH_FALLBACK[expected];
+
+  const guardedContract: NexusAnswerContract = {
+    ...contract,
+    language: expected,
+    fallbackUsed: true,
+    fallback: {
+      fallbackType: 'deterministic_summary',
+      fallbackReason: 'response_locale_mismatch_blocked',
+      retryable: true,
+      sourceFreshness: contract.staleness,
+      userActionRequired: true,
+      operatorActionRequired: true,
+    },
+    userFacingSummary: fallbackText,
+    nextBestActions: [
+      ...contract.nextBestActions.filter((action) => (
+        action.id !== 'retry_in_english'
+        && action.id !== 'retry_in_portuguese'
+        && action.id !== 'retry_in_supported_language'
+      )),
+      {
+        id: 'retry_in_supported_language',
+        label: expected === 'pt' ? 'Tentar novamente em português' : 'Try again in English',
+        kind: 'retry',
+        targetSkill: contract.ownerSkill,
+      },
+    ],
+  };
+  return {
+    text: fallbackText,
+    contract: guardedContract,
+    trip: {
+      action: 'replaced',
+      reason: 'response_locale_mismatch',
+      expected,
+      detected,
+      confidence,
+    },
+  };
 }
 
 function contextSourcesFromMetadata(metadata: Record<string, unknown> | null | undefined): Array<{ source: string; freshness?: string; confidence?: number; reason?: string }> {
@@ -376,58 +485,82 @@ export function finalizeChatAnswerMetadata(input: FinalizeChatAnswerMetadataInpu
         : undefined,
     });
     const gated = composed.quality;
-    const finalText = gatePolicy === 'full_gate'
+    const composedText = gatePolicy === 'full_gate'
       ? anchorRequestedAnswerSubject({ ...input, responseText: composed.text })
       : composed.text;
+    const outputGuard = gatePolicy === 'full_gate'
+      ? enforceSupportedResponseLanguageContract(composedText, composed.contract)
+      : { text: composedText, contract: composed.contract, trip: null };
+    const finalText = outputGuard.text;
+    const effectiveFallbackPolicy = outputGuard.trip
+      ? applyChatFallbackPolicy(outputGuard.contract)
+      : fallbackPolicy;
+    const finalContract = outputGuard.trip
+      ? effectiveFallbackPolicy.contract
+      : outputGuard.contract;
     // M8 counters: only full-gate families run the heuristics, so only they
     // produce meaningful pass/verified-kept/surgical/replaced outcomes.
-    if (gateMode === 'full' && gated.action) {
-      recordChatQualityGateOutcome(gated.action);
+    if (gateMode === 'full' && (outputGuard.trip || gated.action)) {
+      recordChatQualityGateOutcome(outputGuard.trip ? 'replaced' : gated.action!);
     }
     // M8 (d): every trip persists { originalText, issues, action } under
     // metadata.qualityGate — operator-visible, never user-visible text.
-    const qualityGateTripStamp = gated.action && gated.action !== 'pass'
+    const effectiveGateAction = outputGuard.trip ? 'replaced' : gated.action;
+    const qualityGateTripStamp = effectiveGateAction && effectiveGateAction !== 'pass'
       ? {
         qualityGate: {
-          action: gated.action,
-          issues: gated.tripIssues ?? gated.issues,
-          originalText: gated.originalText ?? responseText,
+          action: effectiveGateAction,
+          issues: outputGuard.trip
+            ? ['response_locale_mismatch']
+            : gated.tripIssues ?? gated.issues,
+          originalText: outputGuard.trip
+            ? '[response-language mismatch withheld]'
+            : gated.originalText ?? responseText,
           ...(gated.verifiedEntity ? { verifiedEntity: gated.verifiedEntity } : {}),
         },
       }
       : {};
     return {
       text: finalText,
-      contract: composed.contract,
+      contract: finalContract,
       metadata: {
         ...(input.existingMetadata ?? {}),
         type: (input.existingMetadata?.type as string | undefined) ?? 'nexus_answer',
-        chatReasoning: composed.contract,
+        chatReasoning: finalContract,
         ...(turnContract ? { chatTurnContract: turnContract } : {}),
         ...(input.routingDecision && input.routingDecision.involvedSkills.length > 1
           ? { involvedSkills: [...input.routingDecision.involvedSkills] }
           : {}),
-        groundingFacts: metadataGroundingFacts(composed.contract.groundingFacts),
+        groundingFacts: metadataGroundingFacts(finalContract.groundingFacts),
         finalAnswerComposition: {
           version: composed.composerVersion,
-          ok: composed.ok,
-          issues: composed.issues,
+          ok: outputGuard.trip ? false : composed.ok,
+          issues: outputGuard.trip
+            ? [...new Set([...composed.issues, 'response_locale_mismatch'])]
+            : composed.issues,
           mode: draft.mode,
           draftSchemaVersion: draft.schemaVersion,
         },
         responseQuality: {
-          status: gated.status,
-          issues: [...fallbackPolicy.issues, ...gated.issues],
-          score: gated.score,
+          status: outputGuard.trip ? 'repaired' : gated.status,
+          issues: [
+            ...effectiveFallbackPolicy.issues,
+            ...gated.issues,
+            ...(outputGuard.trip ? ['response_locale_mismatch'] : []),
+          ],
+          score: outputGuard.trip ? Math.min(gated.score, 0.5) : gated.score,
           qualityGateDisabled: !qualityGateEnabled,
           // Phase K (2026-05-26) observability — surface the gate's
           // skip decision so audit_trail / portal show whether the
           // creative-text-owner short-circuit fired for this turn.
-          qualityGateSkipped: gated.qualityGateSkipped === true,
-          qualityGateReason: gated.qualityGateReason ?? (qualityGateEnabled ? 'pass' : 'gate_disabled'),
+          qualityGateSkipped: outputGuard.trip ? false : gated.qualityGateSkipped === true,
+          qualityGateReason: outputGuard.trip
+            ? 'response_locale_mismatch'
+            : gated.qualityGateReason ?? (qualityGateEnabled ? 'pass' : 'gate_disabled'),
         },
         ...qualityGateTripStamp,
-        fallbackPolicy: fallbackPolicy.policy,
+        ...(outputGuard.trip ? { responseLanguageGuard: outputGuard.trip } : {}),
+        fallbackPolicy: effectiveFallbackPolicy.policy,
         responseLanguage: buildResponseLanguageTelemetry(input.locale, finalText),
       },
     };
@@ -439,6 +572,7 @@ export function finalizeChatAnswerMetadata(input: FinalizeChatAnswerMetadataInpu
     const contract = buildNexusAnswerContract({
       intent: 'chat.answer',
       ownerSkill: 'chat',
+      language: normalizeNexusAnswerLanguage(input.locale),
       routeMethod: input.routeMethod,
       confidence: Math.min(input.confidence, 0.5),
       actionability: 'answer_only',
@@ -454,21 +588,34 @@ export function finalizeChatAnswerMetadata(input: FinalizeChatAnswerMetadataInpu
       traceId: input.chatRequestId,
       latency: input.tracker.snapshot(input.latencyTier),
     });
-    const finalText = gatePolicy === 'full_gate'
+    const composedText = gatePolicy === 'full_gate'
       ? anchorRequestedAnswerSubject(input)
       : responseText;
+    const outputGuard = gatePolicy === 'full_gate'
+      ? enforceSupportedResponseLanguageContract(composedText, contract)
+      : { text: composedText, contract, trip: null };
+    const finalText = outputGuard.text;
+    const guardedFallbackPolicy = outputGuard.trip
+      ? applyChatFallbackPolicy(outputGuard.contract)
+      : null;
+    const finalContract = guardedFallbackPolicy?.contract ?? outputGuard.contract;
     return {
       text: finalText,
-      contract,
+      contract: finalContract,
       metadata: {
         ...(input.existingMetadata ?? {}),
         type: (input.existingMetadata?.type as string | undefined) ?? 'nexus_answer',
-        chatReasoning: contract,
+        chatReasoning: finalContract,
         responseQuality: {
           status: 'blocked',
-          issues: ['answer_contract_build_failed'],
+          issues: [
+            'answer_contract_build_failed',
+            ...(outputGuard.trip ? ['response_locale_mismatch'] : []),
+          ],
           score: 0.2,
         },
+        ...(outputGuard.trip ? { responseLanguageGuard: outputGuard.trip } : {}),
+        ...(guardedFallbackPolicy ? { fallbackPolicy: guardedFallbackPolicy.policy } : {}),
         responseLanguage: buildResponseLanguageTelemetry(input.locale, finalText),
       },
     };

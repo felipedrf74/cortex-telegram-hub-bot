@@ -11,6 +11,9 @@ import {
   type ChatShadowGateSample,
   type NexusChatShadowLanguage,
 } from '../src/services/chat-shadow-gate-readiness';
+import {
+  CHAT_V2_RESPONSE_LOCALE_EVIDENCE_VERSION,
+} from '../src/services/chat-v2-completion-evidence';
 import type { NexusAnswerCompositionMode } from '../src/services/chat-final-answer-composer';
 
 dotenv.config({ quiet: true });
@@ -163,6 +166,10 @@ function insertEvidencePair(db: Database.Database, sample: SeedSample, source: E
     routeOwner: sample.routeOwner,
     routeMethod: sample.routeMethod,
     capabilityId: sample.finalCapabilityId,
+    responseLocaleEvidence: {
+      version: CHAT_V2_RESPONSE_LOCALE_EVIDENCE_VERSION,
+      effectiveLocale: sample.language === 'mixed' ? 'en' : sample.language,
+    },
   });
 
   const insert = db.prepare(`

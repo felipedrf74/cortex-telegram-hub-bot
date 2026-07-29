@@ -329,6 +329,52 @@ describe('§5.E type-boundary conversions (string↔number at all four crossings
     void job;
   });
 
+  it.each(['es', 'es-419'])(
+    'projects a persisted %s locale to English at execution without rewriting the queued payload',
+    async (legacyLocale) => {
+      mockExecuteCommand.mockImplementation(async (input: { locale?: string | null }) => ({
+        ok: true,
+        status: 'verified',
+        commandId: 'cmd_bg_1',
+        executorVersion: 'v',
+        gateVerdict: { ok: true },
+        response: {
+          text: input.locale === 'en-US' ? 'Task created' : 'Tarea creada',
+          cards: [],
+          reasonCodes: [],
+          schemaVersion: 'v',
+          kind: 'command_result',
+          locale: input.locale,
+        },
+      }));
+      const queued = enqueueBackgroundChatCommand({
+        tenantId: 7,
+        userId: 7,
+        jobType: 'composer',
+        capabilityId: 'tasks.create',
+        command: taskCreateCommand(),
+        turnId: 'turn_1',
+        locale: legacyLocale,
+        env: { ...ENABLED_ENV },
+        db: testDb,
+      });
+      expect((queued.payload as Record<string, unknown>).locale).toBe(legacyLocale);
+
+      await processBackgroundChatCommandJob(claimOne(), { now: NOW });
+
+      expect(mockExecuteCommand).toHaveBeenCalledWith(expect.objectContaining({
+        locale: 'en-US',
+      }));
+      expect(mockSendPushNotification).toHaveBeenCalledWith(7, expect.objectContaining({
+        body: 'Task created',
+      }));
+      const stored = testDb.prepare(
+        'SELECT payload_json FROM background_jobs WHERE job_id = ?',
+      ).get(queued.jobId) as { payload_json: string };
+      expect(JSON.parse(stored.payload_json)).toMatchObject({ locale: legacyLocale });
+    },
+  );
+
   it('crossing 4: recordChatV2CommandEvent persists STRING ids', async () => {
     mockExecuteCommand.mockResolvedValue({ ok: true, status: 'verified', commandId: 'cmd_bg_1', executorVersion: 'v', gateVerdict: { ok: true }, response: { text: 'done', cards: [], reasonCodes: [], schemaVersion: 'v', kind: 'command_result', locale: 'en' } });
     enqueueBackgroundChatCommand({

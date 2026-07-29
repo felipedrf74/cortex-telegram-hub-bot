@@ -37,49 +37,41 @@ const TEMPLATE_CATALOG: Record<ChatCoreV2TemplateKey, TemplateEntry> = {
     en: "I can't do that directly yet. I can help prepare the steps or create a reminder.",
     'pt-PT': 'Ainda não consigo fazer isso diretamente. Posso ajudar a preparar os passos ou criar um lembrete.',
     'pt-BR': 'Ainda não consigo fazer isso diretamente. Posso ajudar a preparar os passos ou criar um lembrete.',
-    es: 'Todavía no puedo hacerlo directamente. Puedo ayudarte a preparar los pasos o crear un recordatorio.',
   },
   needs_clarification: {
     en: 'I need one detail before I can continue: {question}',
     'pt-PT': 'Preciso de um detalhe antes de continuar: {question}',
     'pt-BR': 'Preciso de um detalhe antes de continuar: {question}',
-    es: 'Necesito un detalle antes de continuar: {question}',
   },
   action_preview: {
     en: 'I can do this: {summary}',
     'pt-PT': 'Posso fazer isto: {summary}',
     'pt-BR': 'Posso fazer isto: {summary}',
-    es: 'Puedo hacer esto: {summary}',
   },
   action_completed: {
     en: 'Done - {summary}',
     'pt-PT': 'Feito - {summary}',
     'pt-BR': 'Feito - {summary}',
-    es: 'Hecho - {summary}',
   },
   action_cancelled: {
     en: 'Cancelled. Nothing changed.',
     'pt-PT': 'Cancelado. Nada mudou.',
     'pt-BR': 'Cancelado. Nada mudou.',
-    es: 'Cancelado. No ha cambiado nada.',
   },
   stale_preview: {
     en: 'This changed since I prepared the preview. I refreshed the proposal - please review it again.',
     'pt-PT': 'Isto mudou desde que preparei a pré-visualização. Atualizei a proposta - revê-a outra vez.',
     'pt-BR': 'Isso mudou desde que preparei a prévia. Atualizei a proposta - revise novamente.',
-    es: 'Esto cambió desde que preparé la vista previa. Actualicé la propuesta - revísala de nuevo.',
   },
   budget_limited: {
     en: 'I stopped before using more AI budget. Try a narrower request or use a deterministic action.',
     'pt-PT': 'Parei antes de usar mais orçamento de IA. Tenta um pedido mais específico ou uma ação determinística.',
     'pt-BR': 'Parei antes de usar mais orçamento de IA. Tente um pedido mais específico ou uma ação determinística.',
-    es: 'Me detuve antes de usar más presupuesto de IA. Prueba una petición más específica o una acción determinista.',
   },
   waiting_for_confirmation: {
     en: 'Review the preview and confirm when you are ready.',
     'pt-PT': 'Revê a pré-visualização e confirma quando estiveres pronto.',
     'pt-BR': 'Revise a prévia e confirme quando estiver pronto.',
-    es: 'Revisa la vista previa y confirma cuando estés listo.',
   },
 };
 
@@ -101,12 +93,10 @@ export function chatCoreV2Text(
   ptPt: string,
   ptBr: string,
   en: string,
-  es?: string,
 ): string {
   const normalized = normalizeChatCoreV2TemplateLocale(locale);
   if (normalized === 'pt-BR') return ptBr;
   if (normalized === 'pt-PT') return ptPt;
-  if (normalized === 'es') return es ?? en;
   return en;
 }
 
@@ -149,6 +139,5 @@ function interpolate(template: string, params: Record<string, string | number | 
 
 function toIntlLocale(locale: ChatCoreV2Locale): string {
   if (locale === 'en') return 'en-US';
-  if (locale === 'es') return 'es-ES';
   return locale;
 }

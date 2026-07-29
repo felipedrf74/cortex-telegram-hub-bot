@@ -45,9 +45,10 @@ export const CONNECTIONS_ACTIONS: ChatActionDefinition[] = [
           expectedAction: 'connections_status',
         },
         {
-          // Phase 14 batch 73 (2026-05-16): Spanish golden example.
+          // Phase 14 batch 73 (2026-05-16): Spanish-authored compatibility input; English response contract.
           text: 'Cómo está mi conexión con Google',
-          locale: 'es',
+          requestLocale: 'es',
+          responseLocale: 'en',
           tags: ['golden'],
           expectedSlots: { provider: 'google' },
           expectedAction: 'connections_status',
@@ -84,9 +85,10 @@ export const CONNECTIONS_ACTIONS: ChatActionDefinition[] = [
           expectedAction: 'connections_retry_sync',
         },
         {
-          // Phase 14 batch 73 (2026-05-16): Spanish golden example.
+          // Phase 14 batch 73 (2026-05-16): Spanish-authored compatibility input; English response contract.
           text: 'Reconecta Garmin',
-          locale: 'es',
+          requestLocale: 'es',
+          responseLocale: 'en',
           tags: ['golden'],
           expectedSlots: { provider: 'garmin' },
           expectedAction: 'connections_retry_sync',
@@ -123,9 +125,10 @@ export const CONNECTIONS_ACTIONS: ChatActionDefinition[] = [
           expectedAction: 'connections_reconnect_guidance',
         },
         {
-          // Phase 14 batch 73 (2026-05-16): Spanish golden example.
+          // Phase 14 batch 73 (2026-05-16): Spanish-authored compatibility input; English response contract.
           text: 'Cómo me reconecto a Garmin',
-          locale: 'es',
+          requestLocale: 'es',
+          responseLocale: 'en',
           tags: ['golden'],
           expectedSlots: { provider: 'garmin' },
           expectedAction: 'connections_reconnect_guidance',

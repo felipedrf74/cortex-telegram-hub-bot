@@ -5,6 +5,7 @@ import { randomUUID } from 'crypto';
 import type { InlineButton } from '../../adapters/message-adapter';
 import type { DomainName } from '../../domains/types';
 import { getCached, setCache } from '../../services/cache-store';
+import { normalizeChatCoreV2TemplateLocale } from '../../services/chat-core-v2/locale-policy';
 import { resolveChatTenantId } from '../../services/chat-tenant-scope';
 import { tryFastpath } from '../../services/secretary-fastpath';
 import { getPreferredDisplayNameById, getUserLanguageById } from '../../services/user-service';
@@ -44,9 +45,22 @@ const CHAT_CMD_TTL = 60; // seconds
 import { isAuthenticatedIdentityQuestion } from '../../services/identity-question-detector';
 export { isAuthenticatedIdentityQuestion };
 
-function cacheKey(userId: number, normalizedTextLower: string, tenantId?: number): string {
+function resolveLocalResponseLocale(
+  userId: number,
+  responseLocale?: string,
+): ReturnType<typeof normalizeChatCoreV2TemplateLocale> {
+  return normalizeChatCoreV2TemplateLocale(responseLocale ?? getUserLanguageById(userId));
+}
+
+function cacheKey(
+  userId: number,
+  normalizedTextLower: string,
+  tenantId?: number,
+  responseLocale?: string,
+): string {
   const scopedTenantId = resolveChatTenantId(userId, tenantId);
-  return `chat-cmd:${scopedTenantId}:${userId}:${normalizedTextLower}`;
+  const locale = resolveLocalResponseLocale(userId, responseLocale);
+  return `chat-cmd:${scopedTenantId}:${userId}:${locale}:${normalizedTextLower}`;
 }
 
 export function isCacheableChatCommand(normalizedTextLower: string): boolean {
@@ -57,11 +71,14 @@ export function getCachedChatCommandResponse(
   userId: number,
   normalizedTextLower: string,
   tenantId?: number,
+  responseLocale?: string,
 ): ChatMessageRouteResponse | null {
   if (!isCacheableChatCommand(normalizedTextLower)) {
     return null;
   }
-  return getCached<ChatMessageRouteResponse>(cacheKey(userId, normalizedTextLower, tenantId)) ?? null;
+  return getCached<ChatMessageRouteResponse>(
+    cacheKey(userId, normalizedTextLower, tenantId, responseLocale),
+  ) ?? null;
 }
 
 export function maybeCacheChatCommandResponse(
@@ -69,11 +86,16 @@ export function maybeCacheChatCommandResponse(
   normalizedTextLower: string,
   response: ChatMessageRouteResponse,
   tenantId?: number,
+  responseLocale?: string,
 ): void {
   if (!isCacheableChatCommand(normalizedTextLower)) {
     return;
   }
-  setCache(cacheKey(userId, normalizedTextLower, tenantId), response, CHAT_CMD_TTL);
+  setCache(
+    cacheKey(userId, normalizedTextLower, tenantId, responseLocale),
+    response,
+    CHAT_CMD_TTL,
+  );
 }
 
 export async function tryBuildFastPathChatResponse(
@@ -81,11 +103,14 @@ export async function tryBuildFastPathChatResponse(
   normalizedTextLower: string,
   userId: number,
   tenantId?: number,
+  responseLocale?: string,
 ): Promise<LocalChatResponse | null> {
+  const locale = resolveLocalResponseLocale(userId, responseLocale);
+  const secretaryLocale = locale === 'en' ? 'en-US' : locale;
   const fastPath = await tryDeterministicChatCommand(normalizedText, userId, tenantId);
   const secretaryFastPath = fastPath
     ? null
-    : await tryFastpath(userId, normalizedText, getUserLanguageById(userId), tenantId ?? userId);
+    : await tryFastpath(userId, normalizedText, secretaryLocale, tenantId ?? userId);
   const resolvedFastPath = fastPath ?? (
     secretaryFastPath?.matched && secretaryFastPath.response
       ? { text: secretaryFastPath.response.text, domain: secretaryFastPath.response.domain, buttons: undefined }
@@ -117,12 +142,13 @@ export function tryBuildAuthenticatedIdentityResponse(
   normalizedText: string,
   normalizedTextLower: string,
   userId: number,
+  responseLocale?: string,
 ): LocalChatResponse | null {
   if (!isAuthenticatedIdentityQuestion(normalizedTextLower || normalizedText)) {
     return null;
   }
 
-  const lang = getUserLanguageById(userId);
+  const lang = resolveLocalResponseLocale(userId, responseLocale);
   const isPT = lang.startsWith('pt');
   const displayName = getPreferredDisplayNameById(userId);
   const hasDisplayName = Boolean(displayName);
@@ -158,6 +184,7 @@ export function tryBuildTrainingPlanShortcutResponse(
   normalizedText: string,
   normalizedTextLower: string,
   userId: number,
+  responseLocale?: string,
 ): LocalChatResponse | null {
   const planKeywords = [
     'criar plano', 'cria um plano', 'crie um plano', 'novo plano de treino',
@@ -169,7 +196,7 @@ export function tryBuildTrainingPlanShortcutResponse(
     return null;
   }
 
-  const lang = getUserLanguageById(userId);
+  const lang = resolveLocalResponseLocale(userId, responseLocale);
   const isPT = lang.startsWith('pt');
   const response: ChatMessageRouteResponse = {
     id: `msg-${randomUUID()}`,

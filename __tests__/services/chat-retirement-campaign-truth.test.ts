@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { CHAT_MESSAGE_STAGES, NON_RETIRABLE_CHAT_STAGES } from '../../src/api/routes/chat-pipeline/runner';
 import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import {
+  CHAT_V2_RETIREMENT_OBSERVER_CORPUS_BINDING,
   CHAT_V2_RETIREMENT_STAGE_MAPPINGS,
   buildChatV2RetirementCampaign,
   buildChatV2RetirementBehaviorRegressionAlertInputs,
@@ -36,12 +37,13 @@ function insertBehaviorEvidence(input: {
   safetyRegressionCount?: number;
   qualityRegressionCount?: number;
   degradedNotComparableCount?: number;
+  observerCorpusBinding?: Partial<typeof CHAT_V2_RETIREMENT_OBSERVER_CORPUS_BINDING> | null;
 }): void {
   const sampleCount = input.sampleCount ?? 50;
   const matchingCount = input.matchingCount ?? sampleCount;
   const safeMetadata = {
     schemaVersion: 'chat_v2_legacy_parity_evidence_safe_metadata.v1',
-    parityObservationImport: true,
+    parityLabelImport: true,
     evaluator: input.evaluator ?? 'manual',
     peerReviewSignoffHash: input.signoff === undefined ? SIGNOFF : input.signoff,
     matchingCount,
@@ -49,6 +51,20 @@ function insertBehaviorEvidence(input: {
     safetyRegressionCount: input.safetyRegressionCount ?? 0,
     qualityRegressionCount: input.qualityRegressionCount ?? 0,
     degradedNotComparableCount: input.degradedNotComparableCount ?? 0,
+    reviewRubricVersion: 'chat_v2_legacy_parity_review_rubric.v2',
+    parityRate: matchingCount / Math.max(1, sampleCount),
+    reviewCompletenessChecked: true,
+    rawReviewArtifactCompletenessChecked: true,
+    observedRouteSampleCount: sampleCount,
+    observerManifestSha256: '1'.repeat(64),
+    observerObservationsSha256: '2'.repeat(64),
+    rawReviewArtifactSha256: '3'.repeat(64),
+    ...(input.observerCorpusBinding === null
+      ? {}
+      : {
+          ...CHAT_V2_RETIREMENT_OBSERVER_CORPUS_BINDING,
+          ...input.observerCorpusBinding,
+        }),
   };
   db.prepare(`
     INSERT INTO chat_v2_legacy_retirement_evidence (
@@ -147,6 +163,79 @@ describe('ChatV2 retirement campaign evidence truth', () => {
       candidate: true,
       verdict: 'pass',
     });
+  });
+
+  it.each([
+    {
+      name: 'missing observer corpus binding',
+      observerCorpusBinding: null,
+    },
+    {
+      name: 'the historical v1.4 observer corpus binding',
+      observerCorpusBinding: {
+        routePromptVersion: 'chat_v2_legacy_parity_route_prompts@1.4.0',
+        routeCorpusId: 'chatv2_phase7_route_replacement_heldout',
+        routeCorpusSha256: '1'.repeat(64),
+      },
+    },
+    {
+      name: 'a non-current observer corpus hash',
+      observerCorpusBinding: {
+        routeCorpusSha256: '1'.repeat(64),
+      },
+    },
+  ])('fails closed for $name', ({ observerCorpusBinding }) => {
+    insertBehaviorEvidence({
+      routeId: 'training_plan_shortcut',
+      observerCorpusBinding,
+    });
+    insertFallback({
+      routeOwner: 'training_plan_shortcut',
+      routeMethod: 'training-plan-shortcut',
+      fallback: 0,
+      total: 100,
+    });
+
+    const route = buildChatV2RetirementCampaign(db, { now: NOW })
+      .find((row) => row.routeId === 'training_plan_shortcut')!;
+
+    expect(route.behaviorParitySamples).toBe(0);
+    expect(route.behaviorProvenancePassed).toBe(false);
+    expect(route.behaviorGatePassed).toBe(false);
+    expect(route.candidate).toBe(false);
+    expect(route.verdict).toBe('insufficient_evidence');
+    expect(route.blockingReasons).toContain('missing_paired_behavior_evidence');
+  });
+
+  it('does not let a newer v1.4 package supersede current bound evidence', () => {
+    insertBehaviorEvidence({
+      routeId: 'training_plan_shortcut',
+      sampleCount: 50,
+      matchingCount: 48,
+    });
+    insertBehaviorEvidence({
+      routeId: 'training_plan_shortcut',
+      sampleCount: 50,
+      matchingCount: 50,
+      observerCorpusBinding: {
+        routePromptVersion: 'chat_v2_legacy_parity_route_prompts@1.4.0',
+        routeCorpusId: 'chatv2_phase7_route_replacement_heldout',
+        routeCorpusSha256: '1'.repeat(64),
+      },
+    });
+    insertFallback({
+      routeOwner: 'training_plan_shortcut',
+      routeMethod: 'training-plan-shortcut',
+      fallback: 0,
+      total: 100,
+    });
+
+    const route = buildChatV2RetirementCampaign(db, { now: NOW })
+      .find((row) => row.routeId === 'training_plan_shortcut')!;
+
+    expect(route.behaviorMatchingCount).toBe(48);
+    expect(route.behaviorParityRate).toBe(0.96);
+    expect(route.behaviorGatePassed).toBe(true);
   });
 
   it('fails closed when peer signoff or regression review is missing', () => {

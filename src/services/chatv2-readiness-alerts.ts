@@ -35,6 +35,10 @@ export interface ChatV2CompletionReadinessReportLike {
   schemaVersion?: string;
   generatedAt?: string;
   evidenceSources?: string[];
+  evidenceContract?: {
+    retirementObserverCorpusBinding?: unknown;
+    responseLocaleEvidenceVersion?: string;
+  };
   shadow?: ChatV2ReadinessPhaseLike;
   answerCanary?: ChatV2ReadinessPhaseLike;
   deterministicRead?: ChatV2ReadinessPhaseLike;

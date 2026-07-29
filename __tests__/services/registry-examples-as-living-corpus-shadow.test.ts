@@ -53,15 +53,11 @@ describe('examples-as-living-corpus shadow mode (Phase 14 batch 74)', () => {
     expect(skills.size).toBeGreaterThanOrEqual(11);
   });
 
-  it('en + pt + es scenarios all generate from registry', () => {
+  it('en + pt scenarios both generate from registry', () => {
     const en = buildRegistryDrivenEvalScenarios({ tags: ['golden'], locales: ['en'] });
     const pt = buildRegistryDrivenEvalScenarios({ tags: ['golden'], locales: ['pt'] });
-    const es = buildRegistryDrivenEvalScenarios({ tags: ['golden'], locales: ['es'] });
-    // Phase 14 batch 73 added the final ES examples — all 3 locales should
-    // now produce a meaningful set.
     expect(en.length).toBeGreaterThanOrEqual(20);
     expect(pt.length).toBeGreaterThanOrEqual(20);
-    expect(es.length).toBeGreaterThanOrEqual(20);
   });
 
   it('adversarial + prompt_injection scenarios are present in the generated corpus', () => {

@@ -23,7 +23,7 @@ const {
   readSignals: vi.fn(() => []),
   getScript: vi.fn(),
   saveGeneratedScriptToWorkspace: vi.fn(),
-  getUserLanguage: vi.fn(() => 'pt-BR'),
+  getUserLanguage: vi.fn(() => 'en-US'),
   trackedCreate: vi.fn(),
   isDuplicateIdeaInBatch: vi.fn(),
 }));
@@ -78,6 +78,7 @@ vi.mock('../../src/portal/anthropic-hook', () => ({
 
 vi.mock('../../src/utils/prompt-loader', () => ({
   loadPromptWithConfig: vi.fn((_name: string, values: Record<string, string>) => [
+    values.OUTPUT_LANGUAGE_CONTRACT || '',
     values.KNOWLEDGE_BLOCK || '',
     values.TASTE_PROFILE || '',
   ].join('\n')),
@@ -181,7 +182,7 @@ describe('content-workflow: user-scoped knowledge injection', () => {
     isOpenAIConfigured.mockReturnValue(false);
     isPaidAiCostControlsEnforcementEnabled.mockReturnValue(false);
     readSignals.mockReturnValue([]);
-    getUserLanguage.mockReturnValue('pt-BR');
+    getUserLanguage.mockReturnValue('en-US');
     isDuplicateIdeaInBatch.mockImplementation((newIdea: string, _angleTag: string | undefined, accepted: Array<{ title: string }>) => {
       const normalized = newIdea.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
       const match = accepted.find((candidate) => (
@@ -216,6 +217,49 @@ describe('content-workflow: user-scoped knowledge injection', () => {
     const [systemPrompt] = completeOneShotWithFallback.mock.calls[0];
     expect(systemPrompt).toContain('User voice');
     expect(systemPrompt).not.toContain('System voice');
+  });
+
+  it('maps a retired Spanish topic preference to English and rejects Spanish provider output', async () => {
+    getUserLanguage.mockReturnValue('es-ES');
+    completeOneShotWithFallback.mockResolvedValue({
+      provider: 'gemini',
+      text: JSON.stringify([{
+        title: 'Cómo organizar tu mañana sin estrés',
+        niche: 'product',
+        whyNow: 'Muchas personas quieren una solución clara para mejorar su rutina hoy.',
+        hookIdea: '¿Quieres transformar tus hábitos desde esta mañana?',
+        angle_tag: 'how-to',
+        pillar_emoji: '',
+        time_sensitivity: 'evergreen',
+      }]),
+    });
+
+    const result = await generateTopicCandidates('reel', 1, false, 42, 42);
+
+    expect(String(completeOneShotWithFallback.mock.calls[0][0])).toContain(
+      'Generate all user-facing topic fields only in English.',
+    );
+    expect(result).toEqual([]);
+  });
+
+  it('rejects short Iberian provider output under the English topic contract', async () => {
+    getUserLanguage.mockReturnValue('en-US');
+    completeOneShotWithFallback.mockResolvedValue({
+      provider: 'gemini',
+      text: JSON.stringify([{
+        title: 'Entendido.',
+        niche: 'product',
+        whyNow: 'Entendido.',
+        hookIdea: 'Entendido.',
+        angle_tag: 'how-to',
+        pillar_emoji: '',
+        time_sensitivity: 'evergreen',
+      }]),
+    });
+
+    const result = await generateTopicCandidates('reel', 1, false, 42, 42);
+
+    expect(result).toEqual([]);
   });
 
   it('reads workflow discovery and book signals with explicit user scope', async () => {
@@ -638,6 +682,35 @@ describe('content-workflow: user-scoped knowledge injection', () => {
       { format: 'reel', count: 4 },
       { format: 'youtube', count: 2 },
     ]);
+  });
+
+  it('fails the Friday package atomically when a retired Spanish preference produces Spanish output', async () => {
+    getUserLanguage.mockReturnValue('Spanish');
+    completeOneShotWithFallback.mockResolvedValue({
+      provider: 'gemini',
+      text: JSON.stringify({
+        youtube: [{
+          title: 'Cómo organizar tu mañana sin estrés',
+          niche: 'product',
+          whyNow: 'Muchas personas quieren una solución clara para mejorar su rutina hoy.',
+          hookIdea: '¿Quieres transformar tus hábitos desde esta mañana?',
+          angle_tag: 'how-to',
+          pillar_emoji: '',
+          time_sensitivity: 'evergreen',
+        }],
+        reels: [],
+      }),
+    });
+
+    const result = await generateWeeklyPackage(42, 42, { youtube: 1, reels: 0 });
+
+    expect(String(completeOneShotWithFallback.mock.calls[0][0])).toContain(
+      'Generate all user-facing topic fields only in English.',
+    );
+    expect(result).toEqual({ youtube: [], reels: [] });
+    expect((testDb.prepare(
+      "SELECT COUNT(*) AS count FROM content_topic_feedback WHERE user_id = 42 AND source_job = 'friday_weekly'",
+    ).get() as { count: number }).count).toBe(0);
   });
 
   it('persists nothing when the Friday batch is short or violates the live contract', async () => {

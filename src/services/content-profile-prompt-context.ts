@@ -4,6 +4,7 @@ import {
   getContentCreatorProfile,
   type ContentCreatorProfile,
 } from '../state/content-creator-profile';
+import { normalizeContentOutputLanguage } from './content-output-language';
 
 export interface CreatorPromptContext {
   language: string;
@@ -32,7 +33,7 @@ function cleanList(values: unknown, fallback: string[]): string[] {
 export function buildCreatorPromptContext(
   profile?: Partial<ContentCreatorProfile> | null,
 ): CreatorPromptContext {
-  const language = nonEmpty(profile?.languagePreference) ?? 'the creator preferred language';
+  const language = normalizeContentOutputLanguage(profile?.languagePreference);
   const audience = nonEmpty(profile?.audience) ?? 'the creator saved audience';
   const pillars = cleanList(profile?.pillars, ['the creator saved pillars']);
   const niches = cleanList(profile?.niches, pillars);

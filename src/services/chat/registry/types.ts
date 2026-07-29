@@ -105,7 +105,7 @@ export interface ChatSkillMetadata {
 }
 
 export interface SlotContext {
-  /** BCP-47 locale (e.g. 'en-US', 'pt-BR', 'es-ES'). */
+  /** BCP-47 locale (e.g. 'en-US', 'pt-BR', 'pt-PT'). */
   locale?: string;
   /** IANA timezone (e.g. 'Europe/Lisbon'). */
   timezone?: string;
@@ -198,7 +198,19 @@ export interface ChatActionDefinition {
   uiSurfaces?: string[];
   examples?: Array<{
     text: string;
-    locale?: 'en' | 'pt' | 'es' | 'mixed';
+    /**
+     * Supported product-locale cohort used for active evaluation. Input-only
+     * compatibility examples leave this unset and declare requestLocale plus
+     * responseLocale instead.
+     */
+    locale?: 'en' | 'pt' | 'mixed';
+    /**
+     * Language in which the user-authored example is written. Spanish is
+     * retained only as an input-routing compatibility signal.
+     */
+    requestLocale?: 'en' | 'pt' | 'es' | 'mixed';
+    /** Supported assistant response language required for this example. */
+    responseLocale?: 'en' | 'pt';
     expectedSlots?: Record<string, unknown>;
     expectedAction?: ChatActionName | null;
     tags?: Array<'golden' | 'ambiguous' | 'adversarial' | 'negative' | 'prompt_injection'>;

@@ -145,6 +145,7 @@ export const legacyTailStage: ChatStage = {
         fallbackDomain: conversationDomain,
         fallbackRouteMethod: route.method,
         fallbackConfidence: route.confidence,
+        locale: chatCoreV2RouteLocale,
         actionability: 'answer_only',
         verificationStatus: 'not_required',
         routingDecision,

@@ -50,6 +50,12 @@ import {
   buildChatV2RetirementFallbackAlertInputs,
   type ChatV2RetirementCampaignRow,
 } from './chat-route-exit-sampler';
+import {
+  CHAT_V2_RETIREMENT_OBSERVER_CORPUS_BINDING,
+} from './chat-legacy-parity-labels';
+import {
+  CHAT_V2_RESPONSE_LOCALE_EVIDENCE_VERSION,
+} from './chat-v2-completion-evidence';
 
 export const CHAT_QUALITY_DASHBOARD_VERSION = 'chat-quality-dashboard@1.2.0';
 
@@ -77,8 +83,8 @@ export function validateChatV2ReadinessReportStructure(value: unknown): string |
   }
   const report = value as Record<string, unknown>;
   const schema = typeof report.schemaVersion === 'string' ? report.schemaVersion : '';
-  if (!schema.startsWith('chat_v2_completion_readiness_report')) {
-    return `unexpected readiness schema: expected chat_v2_completion_readiness_report*, found ${schema || 'missing'}`
+  if (schema !== 'chat_v2_completion_readiness_report.v1') {
+    return `unexpected readiness schema: expected chat_v2_completion_readiness_report.v1, found ${schema || 'missing'}`
       + ' (produce the artifact with scripts/chatv2-completion-readiness.ts)';
   }
   if (typeof report.generatedAt !== 'string' || report.generatedAt.trim().length === 0) {
@@ -89,6 +95,19 @@ export function validateChatV2ReadinessReportStructure(value: unknown): string |
     || report.evidenceSources.some((source) => typeof source !== 'string' || source.trim().length === 0)
   ) {
     return 'readiness report evidenceSources must be an array of non-empty strings';
+  }
+  const evidenceContract = report.evidenceContract;
+  if (!evidenceContract || typeof evidenceContract !== 'object' || Array.isArray(evidenceContract)) {
+    return 'readiness report evidenceContract is missing or invalid';
+  }
+  const contractRecord = evidenceContract as Record<string, unknown>;
+  if (
+    contractRecord.responseLocaleEvidenceVersion
+      !== CHAT_V2_RESPONSE_LOCALE_EVIDENCE_VERSION
+    || JSON.stringify(contractRecord.retirementObserverCorpusBinding)
+      !== JSON.stringify(CHAT_V2_RETIREMENT_OBSERVER_CORPUS_BINDING)
+  ) {
+    return 'readiness report evidenceContract does not match current corpus/locale bindings';
   }
   for (const phaseName of CHAT_V2_READINESS_PHASES) {
     const phase = report[phaseName];
