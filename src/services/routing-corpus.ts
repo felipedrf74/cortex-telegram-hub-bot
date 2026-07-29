@@ -639,8 +639,8 @@ export function getNextPendingRoutingCorpusItem(
     if (options.tenantId !== undefined && options.tenantId !== 0) {
       throw new Error('Checked-in synthetic routing corpus scope must use tenant 0');
     }
-    const secret = configuredSyntheticControlSecret();
-    const controls = checkedInSyntheticControls(secret);
+    const syntheticControlHmacKey = configuredSyntheticControlSecret();
+    const controls = checkedInSyntheticControls(syntheticControlHmacKey);
     const hashes = [...controls.keys()];
     const placeholders = hashes.map(() => '?').join(', ');
     const rows = db.prepare(`
@@ -655,7 +655,7 @@ export function getNextPendingRoutingCorpusItem(
     `).all(...hashes);
     const item = rows
       .map(mapItemRow)
-      .find((candidate) => isCheckedInSyntheticRoutingCorpusItem(candidate, secret));
+      .find((candidate) => isCheckedInSyntheticRoutingCorpusItem(candidate, syntheticControlHmacKey));
     return item ?? null;
   }
   const row = options.tenantId !== undefined
@@ -770,8 +770,8 @@ export function getRoutingCorpusProgress(
     if (options.tenantId !== undefined && options.tenantId !== 0) {
       throw new Error('Checked-in synthetic routing corpus scope must use tenant 0');
     }
-    const secret = configuredSyntheticControlSecret();
-    const controls = checkedInSyntheticControls(secret);
+    const syntheticControlHmacKey = configuredSyntheticControlSecret();
+    const controls = checkedInSyntheticControls(syntheticControlHmacKey);
     const hashes = [...controls.keys()];
     const placeholders = hashes.map(() => '?').join(', ');
     const items = (db.prepare(`
@@ -784,7 +784,7 @@ export function getRoutingCorpusProgress(
       ORDER BY created_at ASC, id ASC
     `).all(...hashes))
       .map(mapItemRow)
-      .filter((item) => isCheckedInSyntheticRoutingCorpusItem(item, secret));
+      .filter((item) => isCheckedInSyntheticRoutingCorpusItem(item, syntheticControlHmacKey));
     return summarizeRoutingCorpusProgress(items.map((item) => ({
       source: item.source,
       labelStatus: item.labelStatus,

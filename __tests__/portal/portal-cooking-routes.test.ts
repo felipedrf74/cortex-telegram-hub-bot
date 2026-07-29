@@ -75,6 +75,7 @@ vi.mock('../../src/services/audit-trail', () => ({
 
 vi.mock('../../src/portal/admin-audit', () => ({
   buildPortalAdminAuditDetails: (...args: unknown[]) => hoisted.buildPortalAdminAuditDetails(...args),
+  insertPortalAdminMutationAuditStrict: vi.fn(),
   logPortalAdminMutation: (...args: unknown[]) => hoisted.logPortalAdminMutation(...args),
 }));
 

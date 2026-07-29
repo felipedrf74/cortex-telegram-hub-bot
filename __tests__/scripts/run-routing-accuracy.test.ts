@@ -315,9 +315,9 @@ describe('routing accuracy gate', () => {
     expect(canAcceptAccuracySnapshot(true, { passed: true })).toEqual({ allowed: true });
     // --gate with no accepted snapshot (gate skipped) may still bootstrap one.
     expect(canAcceptAccuracySnapshot(true, null)).toEqual({ allowed: true });
-    expect(canAcceptAccuracySnapshot(false, null)).toMatchObject({
+    expect(canAcceptAccuracySnapshot(false, null)).toEqual({
       allowed: false,
-      reason: expect.stringContaining('--gate'),
+      reason: 'refusing --accept-snapshot: --gate is required so the accepted ratchet cannot be bypassed',
     });
   });
 
@@ -733,15 +733,18 @@ describe('routing accuracy replay (cache-only, zero live calls)', () => {
       vocabulary: SYNTHETIC_VOCABULARY,
       generatedAt: '2026-07-29T00:00:00.000Z',
     });
-    const accepted = acceptRoutingAccuracySnapshotAtomically(current, {
+    const acceptance = acceptRoutingAccuracySnapshotAtomically(current, {
       gateMode: true,
       ownerAuthorized: true,
       vocabulary: SYNTHETIC_VOCABULARY,
     }, db);
-    expect(accepted.snapshotId).toBeGreaterThan(0);
-    expect(accepted.corpusReadiness.allowed).toBe(true);
-    expect(accepted.gate).toBeNull();
-    expect(getLatestAcceptedAccuracySnapshot(db)).toMatchObject({
+    const snapshotId = acceptance.snapshotId;
+    expect(snapshotId).toBeGreaterThan(0);
+    const accepted = getLatestAcceptedAccuracySnapshot(db);
+    expect(accepted?.itemCount).toBe(300);
+    expect(acceptance.corpusReadiness.allowed).toBe(true);
+    expect(acceptance.gate).toBeNull();
+    expect(accepted).toMatchObject({
       itemCount: 300,
       corpusIdentityDigest: current.corpusIdentityDigest,
     });

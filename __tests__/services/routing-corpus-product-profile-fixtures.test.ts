@@ -26,7 +26,7 @@ import {
   hashRoutingUtterance,
 } from '../../src/services/routing-corpus';
 
-const SECRET = 'routing-product-profile-test-secret';
+const TEST_HMAC_KEY = '[redacted-routing-product-profile-test-key]';
 
 const FIXTURE_ACTION_SKILL: Partial<Record<
   (typeof CHAT_BILINGUAL_EVAL_FIXTURES)[number]['skill'],
@@ -156,7 +156,7 @@ describe('routing corpus product-profile fixture import', () => {
   });
 
   it('builds the deterministic 300-item supported queue with manual rows pending', () => {
-    const summary = buildRoutingCorpus({ db, secret: SECRET, vocabulary: [] });
+    const summary = buildRoutingCorpus({ db, secret: TEST_HMAC_KEY, vocabulary: [] });
 
     expect(summary.inserted).toBe(300);
     expect(summary.perSource.bilingual_fixture).toBe(224);
@@ -183,7 +183,7 @@ describe('routing corpus product-profile fixture import', () => {
           label_status AS labelStatus
         FROM routing_corpus_items
         WHERE utterance_hash = ?
-      `).get(hashRoutingCorpusSyntheticControl(SECRET, fixture.prompt)) as Record<string, unknown> | undefined;
+      `).get(hashRoutingCorpusSyntheticControl(TEST_HMAC_KEY, fixture.prompt)) as Record<string, unknown> | undefined;
       expect(row, fixture.prompt).toEqual({
         source: 'manual',
         suggestedDomain: fixture.labelDomain,
@@ -202,9 +202,9 @@ describe('routing corpus product-profile fixture import', () => {
       INSERT INTO routing_corpus_items (
         tenant_id, user_id, utterance_hash, utterance_text, source, label_status
       ) VALUES (7, 41, ?, ?, 'history_unmatched', 'pending')
-    `).run(hashRoutingUtterance(SECRET, fixture.prompt), fixture.prompt);
+    `).run(hashRoutingUtterance(TEST_HMAC_KEY, fixture.prompt), fixture.prompt);
 
-    const summary = buildRoutingCorpus({ db, secret: SECRET, vocabulary: [] });
+    const summary = buildRoutingCorpus({ db, secret: TEST_HMAC_KEY, vocabulary: [] });
 
     expect(summary.perSource.manual).toBe(76);
     expect(db.prepare('SELECT COUNT(*) AS count FROM routing_corpus_items').get())
@@ -213,7 +213,7 @@ describe('routing corpus product-profile fixture import', () => {
       SELECT tenant_id AS tenantId, user_id AS userId, source
       FROM routing_corpus_items
       WHERE utterance_hash = ?
-    `).get(hashRoutingUtterance(SECRET, fixture.prompt))).toEqual({
+    `).get(hashRoutingUtterance(TEST_HMAC_KEY, fixture.prompt))).toEqual({
       tenantId: 7,
       userId: 41,
       source: 'history_unmatched',
@@ -222,7 +222,7 @@ describe('routing corpus product-profile fixture import', () => {
       SELECT tenant_id AS tenantId, user_id AS userId, source, label_status AS labelStatus
       FROM routing_corpus_items
       WHERE utterance_hash = ?
-    `).get(hashRoutingCorpusSyntheticControl(SECRET, fixture.prompt))).toEqual({
+    `).get(hashRoutingCorpusSyntheticControl(TEST_HMAC_KEY, fixture.prompt))).toEqual({
       tenantId: 0,
       userId: null,
       source: 'manual',

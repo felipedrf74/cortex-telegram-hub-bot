@@ -186,6 +186,18 @@ describe('routing corpus builder', () => {
       .get(hashRoutingCorpusSyntheticControl(SECRET, SHADOW_TEXT))).toEqual({
       source: 'bilingual_fixture',
     });
+    const rows = db.prepare(`
+      SELECT source
+      FROM routing_corpus_items
+      WHERE utterance_hash IN (?, ?)
+      ORDER BY source ASC
+    `).all(
+      hashRoutingUtterance(SECRET, SHADOW_TEXT),
+      hashRoutingCorpusSyntheticControl(SECRET, SHADOW_TEXT),
+    );
+    expect(rows).toHaveLength(2);
+    expect((rows[0] as { source: string }).source).toBe('bilingual_fixture');
+    expect(summary.duplicates).toBeGreaterThanOrEqual(2);
     expect(summary.perSource.classify_shadow_disagreement).toBe(1);
     expect(summary.perSource.bilingual_fixture).toBe(224);
 
