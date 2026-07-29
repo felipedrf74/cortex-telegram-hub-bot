@@ -5,29 +5,29 @@ Machine-readable truth: `docs/release/release-state.json`.
 ## Production
 
 - Backend version: `4.14.231`
-- Runtime commit: `13ecc9da8aff96c8bcf512b2143ffdcf0c891467`
-- Artifact digest: `027b75e8e5d964f62786a316b4e0c872b210442fa9fdd1e1895a1f12ed0495b6`
+- Runtime commit: `5828b1a629c68c29a605f5992f25c722af10f7e3`
+- Artifact digest: `7172186724a8e54abf6b3ad3b457a3c3675ce08641101b587b532f2bb3b3575a`
 - Installed-tree digest: `950ca632781787d4e4e8ddad0c585627d5b176c7daa66dcb129236930f3ec27d`
 - Training catalog package: `51c1089cceb8a916abf200b5cb3688b19f5f7553990467ee0f8ef01c7c4f74bb`
 - Training release subject: `27b97ebc96e1b3bb1ee3612e63c5609b5572c9d4b58e59b8ea3e77642fb1cea3`
-- Production transaction `20260729T085630Z-0a6de404352f` completed at
-  `2026-07-29T08:57:45.631Z`.
+- Production transaction `20260729T164330Z-f37c45f70dfb` completed at
+  `2026-07-29T16:44:44.539Z`.
 - Backend and content health, exact PM2 runtime identity, artifact parity,
   authenticated smoke, migration startup, SQLite integrity, foreign keys,
   pre-promotion backup, rollback readiness, and the 60-second soak passed.
-- The transaction took 74.311 seconds including a measured 61.636-second
-  soak; candidate readiness before the soak took 12.674 seconds.
+- The transaction took 73.493 seconds including a measured 61.676-second
+  soak; candidate readiness before the soak took 11.816 seconds.
 - Rollback was armed but not required. The encrypted backup is
-  `nexus-db-20260729T085639Z.sqlite.age`.
+  `nexus-db-20260729T164337Z.sqlite.age`.
 
 ## Artifact-Bound Evidence
 
-- Protected-main run: `30386227503`
-- Release-checkpoint run: `30386840581`
-- Compact manifest SHA-256: `4dfe4cbce805bcb59b79e5cf294c7b53536cc3e63df00dfadc81364ea88fb33c`
-- Staging transaction: `20260728T182335Z-209f1e16c020`
-- Production transaction: `20260729T085630Z-0a6de404352f`
-- Encrypted backup SHA-256: `717184285f9a957c7de2222e8a31581c6b3928894b02cc2651675788c1eb4245`
+- Protected-main run: `30466249801`
+- Release-checkpoint run: `30467664360`
+- Compact manifest SHA-256: `ee0ec6bdc043bc139da0397f9c8e8ae57ada275ac484c724658207f060dfd8c5`
+- Staging transaction: `20260729T155511Z-9a1419cf9da2`
+- Production transaction: `20260729T164330Z-f37c45f70dfb`
+- Encrypted backup SHA-256: `2b5368becac713a3535bdeed7690a553b16b83429ffc604038ccd0a0592b31af`
 - Evidence remains under ignored `.local/release/` paths, server transaction
   state, and restricted CI artifacts; this summary is not reusable promotion
   evidence.
@@ -37,7 +37,8 @@ Machine-readable truth: `docs/release/release-state.json`.
 - Main CI took 7m01s; the release checkpoint took 4m21s; their unattended
   handoff took 1m05s.
 - Candidate readiness took 12m27s, 7m13s (36.7%) faster than the 19m40s
-  observed baseline. This is one release, not yet a p50/p95 result.
+  observed baseline. Two releases are now observed, still below the ten needed
+  for a stable p50/p95 result.
 - Main selected roughly 30% of the deterministic inventory. The checkpoint
   ran only the disjoint remainder, so the exact union stayed complete without
   rerunning the selected partition.
@@ -93,6 +94,6 @@ expiry, and post-retention bucket deletion require explicit owner authorization.
   revoked and deletion waits for an exact retention check after that timestamp.
 - Owned IAM roles, Roles Anywhere trust anchors/profiles, CloudWatch alarms,
   and Cost Anomaly resources are gone; paid Cost Explorer granularity is off.
-- Failed-health recovery and operator-disconnect drills wait for the next
-  genuine candidate; the passing candidate correctly refuses fault injection.
-- One of ten releases is measured; no p50 or p95 target is stable yet.
+- Failed-health predecessor recovery passed in 2.705 seconds on the current
+  candidate; the operator-disconnect drill still waits for a genuine candidate.
+- Two of ten releases are measured; no p50 or p95 target is stable yet.
