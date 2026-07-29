@@ -4,26 +4,50 @@ Machine-readable truth: `docs/release/release-state.json`.
 
 ## Production
 
-- Backend version: `4.14.230`
-- Runtime commit: `36b96fab8d0987696ccd7e2ca35a343bca32da2f`
-- Artifact digest: `07a09ffc1dd608710f203493a3bee244c296b2d8126adb5916a5427b28d0de05`
-- Installed digest: `df54eea21739749e454153d931cfa01c953d5477f458009483fe4340b7be4aa6`
-- Training catalog package: `51c1089cceb8a916abf200b5cb3688b19f5f7553990467ee0f8ef01c7c4f74bb`
-- Training release subject: `27b97ebc96e1b3bb1ee3612e63c5609b5572c9d4b58e59b8ea3e77642fb1cea3`
-- Completed at `2026-07-22T08:37:34.234Z` with an 81-second cutover.
-- Backend health, database connectivity, media origin, PM2 process identity,
-  staging parity, and exact installed-tree identity are healthy.
-- Exact rollback backup:
-  `v4.14.224_before-v4.14.230_20260722_093618.tar.gz`.
+- Backend version: `4.14.231`
+- Runtime commit: `13ecc9da8aff96c8bcf512b2143ffdcf0c891467`
+- Artifact digest: `027b75e8e5d964f62786a316b4e0c872b210442fa9fdd1e1895a1f12ed0495b6`
+- Installed-tree digest:
+  `950ca632781787d4e4e8ddad0c585627d5b176c7daa66dcb129236930f3ec27d`
+- Training catalog package:
+  `51c1089cceb8a916abf200b5cb3688b19f5f7553990467ee0f8ef01c7c4f74bb`
+- Training release subject:
+  `27b97ebc96e1b3bb1ee3612e63c5609b5572c9d4b58e59b8ea3e77642fb1cea3`
+- Production transaction `20260729T085630Z-0a6de404352f` completed at
+  `2026-07-29T08:57:45.631Z`.
+- Backend and content health, exact PM2 runtime identity, artifact parity,
+  authenticated smoke, migration startup, SQLite integrity, foreign keys,
+  pre-promotion backup, rollback readiness, and the 60-second soak passed.
+- The transaction took 74.311 seconds including a measured 61.636-second
+  soak; candidate readiness before the soak took 12.674 seconds.
+- Rollback was armed but not required. The encrypted backup is
+  `nexus-db-20260729T085639Z.sqlite.age`.
 
 ## Artifact-Bound Evidence
 
-- Release candidate run: `29876582985`
-- Protected signing run: `29878221235`
-- Staging run/request: `29878760031` /
-  `0a901fee-876d-44e6-ba36-fee8cf273d4a`
-- Evidence remains under ignored `.local/release/` paths and restricted CI
-  artifacts; this summary is not reusable promotion evidence.
+- Protected-main run: `30386227503`
+- Release-checkpoint run: `30386840581`
+- Compact manifest SHA-256:
+  `4dfe4cbce805bcb59b79e5cf294c7b53536cc3e63df00dfadc81364ea88fb33c`
+- Staging transaction: `20260728T182335Z-209f1e16c020`
+- Production transaction: `20260729T085630Z-0a6de404352f`
+- Encrypted backup SHA-256:
+  `717184285f9a957c7de2222e8a31581c6b3928894b02cc2651675788c1eb4245`
+- Evidence remains under ignored `.local/release/` paths, server transaction
+  state, and restricted CI artifacts; this summary is not reusable promotion
+  evidence.
+
+## First Lean-Release Measurement
+
+- Main CI took 7m01s; the release checkpoint took 4m21s; their unattended
+  handoff took 1m05s.
+- Candidate readiness took 12m27s, 7m13s (36.7%) faster than the 19m40s
+  observed baseline. This is one release, not yet a p50/p95 result.
+- Main selected roughly 30% of the deterministic inventory. The checkpoint
+  ran only the disjoint remainder, so the exact union stayed complete without
+  rerunning the selected partition.
+- The protected-main artifact was reused unchanged. Staging and production ran
+  no build, dependency installation, Vitest, Python, or Sonar work.
 
 ## iOS / TestFlight
 
@@ -31,69 +55,24 @@ Machine-readable truth: `docs/release/release-state.json`.
 - Archived binary source: `f3d868783a52f549c235b11dc0a378fa7adfc43b`
 - Final archive-signing PR head: `213e40d08edc84732079c08b1515312b9e9efb30`
 - iOS `main`: `7fd4e96e2e0d2b51587777c0454698ea8a3b8b3f`
-- IPA SHA-256: `5eeb35d43ae24fb16ef7d5bb631e8bbbdbe866f527150073a3dcdbf7a74bb2c8`
-- Archive binary SHA-256: `b6f0215fab51f0d4d193cd4102e6c542bb56520e65669486af42aa117a1db7b5`
-- Distribution attestation SHA-256:
-  `35ebc4d1e2a27fc9d09e8ad089409191fc3b01b5e352bcc81c3ee53ff564452d`
-- Xcode 26.6 / iPhoneOS 26.5 produced the validated Apple Distribution binary.
-- Build 259 is available to the `Nexus Hub Betinha` internal TestFlight group.
-  Builds 54-57 remain retained; physical-device smoke for build 259 remains
-  open.
-- App Store review outcome for build 259: **rejected on 2026-07-24** under
-  Guideline 2.1(b) (subscription products were not submitted with the version,
-  while the client rendered an empty StoreKit catalog as indefinite loading)
-  and Guideline 5.1.1(v) (the existing deletion flow was not discoverable from
-  the ACCOUNT section). `release-state.json` still records
-  `appStoreReviewState` as `waiting_for_review` and automatic release after
-  approval; refreshing those fields is a pending owner action, not a verified
-  state this summary may assert.
-
-## In-Flight Remediation, Not Released
-
-- Branch: `claude/appstore-review-fixes-20260727`, on both the backend and the
-  iOS repository, cut from their respective `main` heads.
-- Status: **locally compiled, not staged, not promoted, not resubmitted.** No
-  release candidate, signing run, staging attestation, iOS archive, or release
-  verification verdict exists for this work.
-- Locally observed on 2026-07-27:
-  - iOS Release simulator build: succeeded with
-    `CURRENT_PROJECT_VERSION = 59`.
-  - iOS unit tests: not executed because the managed runner could not connect
-    to CoreSimulator; `xcodebuild test` exited 70 before test bootstrap.
-  - Backend TypeScript: `npx tsc --noEmit` exited 0 under Node 22.23.1.
-  - Backend changed/new focused Vitest gate: passed for every selected test
-    file that does not require a local listener.
-  - Backend migration safety: `node scripts/migration-safety-check.mjs`
-    passed.
-  - Backend full Vitest: not green in the managed runner. The dominant failure
-    was sandbox-denied local listening on `127.0.0.1` or `0.0.0.0`; this result
-    cannot be promoted as release evidence and requires an unrestricted rerun.
-- Owner-side steps that no code change can satisfy — App Store Connect product
-  and agreement configuration, reviewer demo-account entitlement, review notes,
-  the deletion screen recording, and the production freeze during review — are
-  in `docs/release/app-store-submission-runbook.md`.
-- Behavior change to expect on promote, beyond the two rejection fixes:
-  `revokeOneThirdPartyProvider` in `src/services/user-data-export.ts` now runs
-  `clearGarminSession` and the local `getTokens` read inside its error
-  boundary. `DELETE /api/v1/connections/:provider` consequently no longer
-  returns HTTP 500 when a local credential read throws during revocation; it
-  completes the disconnect and reports `revocation.status = "failed"` in the
-  success payload. Contract-wise this is additive — the response shape is
-  unchanged — but a monitored 500 on that route will stop firing.
+- Build 259 remains available to the `Nexus Hub Betinha` internal TestFlight
+  group. Physical-device smoke remains open.
+- App Store review was rejected on 2026-07-24 under Guidelines 2.1(b) and
+  5.1.1(v). The machine state still says `waiting_for_review`; refreshing that
+  iOS-only state remains a separate owner action.
+- No iOS build, TestFlight submission, or iOS-main merge was performed as part
+  of this backend release.
 
 ## Release Process
 
-The production identity above was delivered by the historical signed-manifest
-path. The repository now defines the lean successor: reuse the exact
-protected-main artifact, run one four-shard release checkpoint, stage it, stop
-for explicit owner approval, and promote with a user-owned one-shot transaction
-plus automatic predecessor recovery.
+The lean path is active and proven. Codex and Claude Code must follow
+`AGENTS.md`, the shared `release-operator` skill, and
+`docs/release/README.md`: selected tests on protected main, one disjoint
+four-shard remainder checkpoint, one immutable artifact, exact staging,
+explicit owner approval, and one user-owned production transaction with backup,
+health checks, a 60-second soak, and automatic predecessor recovery.
 
-The first lean production proof has not yet happened, so this file deliberately
-retains the last observed production identity instead of claiming the new path
-is active. After that proof, update the machine-readable state with the
-checkpoint run, compact manifest digest, staging transaction, production
-transaction, backup receipt, and measured health/soak timing.
-
-Every future production deployment, remote branch cleanup, and TestFlight
-expiry still requires explicit owner authorization.
+Legacy server release machinery remains installed pending its separately
+authorized audited retirement. Every future production deployment, remote
+branch cleanup, and TestFlight expiry still requires explicit owner
+authorization.
