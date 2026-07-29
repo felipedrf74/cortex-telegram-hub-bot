@@ -44,8 +44,8 @@ describe('chat content refinement helpers', () => {
 
   it('builds language-aware prompt text for refinement requests', () => {
     expect(buildContentRefinementSystemPrompt('pt-PT')).toContain('português europeu');
+    expect(buildContentRefinementSystemPrompt('en-US')).toContain('Reply in English.');
     const englishPrompt = buildContentRefinementSystemPrompt('en-US');
-    expect(englishPrompt).toContain('Reply in English.');
     expect(englishPrompt).toContain('Spanish-authored instructions remain on the English response contract.');
     expect(englishPrompt).not.toContain('asks to switch languages');
 

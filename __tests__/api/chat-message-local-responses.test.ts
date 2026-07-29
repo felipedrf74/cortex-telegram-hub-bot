@@ -72,7 +72,7 @@ describe('chat message local response helpers', () => {
     mockGetCached.mockReturnValue(cached);
 
     expect(isCacheableChatCommand('/day')).toBe(true);
-    expect(getCachedChatCommandResponse(42, '/day', 1001, 'en-US')).toBe(cached);
+    expect(getCachedChatCommandResponse(42, '/day', 1001)).toBe(cached);
     expect(mockGetCached).toHaveBeenCalledWith('chat-cmd:1001:42:en:/day');
 
     mockGetCached.mockClear();

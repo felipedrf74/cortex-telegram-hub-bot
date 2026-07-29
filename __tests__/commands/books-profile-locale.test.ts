@@ -7,37 +7,64 @@ const mocks = vi.hoisted(() => ({
   run: vi.fn(),
 }));
 
-vi.mock('../../src/services/database', () => ({
+vi.mock('../../src/services/database', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/database')>(
+    '../../src/services/database',
+  )),
   getDb: () => ({ prepare: mocks.prepare }),
 }));
-vi.mock('../../src/services/intelligence-bus', () => ({
+vi.mock('../../src/services/intelligence-bus', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/intelligence-bus')>(
+    '../../src/services/intelligence-bus',
+  )),
   writeGovernedSignal: vi.fn(),
 }));
-vi.mock('../../src/utils/logger', () => ({
+vi.mock('../../src/utils/logger', async () => ({
+  ...(await vi.importActual<typeof import('../../src/utils/logger')>(
+    '../../src/utils/logger',
+  )),
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
-vi.mock('../../src/utils/request-context', () => ({
+vi.mock('../../src/utils/request-context', async () => ({
+  ...(await vi.importActual<typeof import('../../src/utils/request-context')>(
+    '../../src/utils/request-context',
+  )),
   getCurrentRequestId: vi.fn(() => 'request-id'),
   generateRequestId: vi.fn(() => 'generated-request-id'),
 }));
 vi.mock('../../src/config', () => ({
   config: { contentEngine: { internalApiSecret: 'test-secret' } },
 }));
-vi.mock('../../src/services/content-engine', () => ({
+vi.mock('../../src/services/content-engine', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/content-engine')>(
+    '../../src/services/content-engine',
+  )),
   contentEngineApiBaseUrl: () => 'http://content-engine.test',
   parseForwardedAiBudgetError: vi.fn(),
 }));
-vi.mock('../../src/services/cost-guardrail', () => ({
+vi.mock('../../src/services/cost-guardrail', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/cost-guardrail')>(
+    '../../src/services/cost-guardrail',
+  )),
   AiBudgetError: class AiBudgetError extends Error {},
   withAiBudgetReservation: vi.fn(async (_input, run: () => Promise<unknown>) => run()),
 }));
-vi.mock('../../src/services/internal-attribution', () => ({
+vi.mock('../../src/services/internal-attribution', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/internal-attribution')>(
+    '../../src/services/internal-attribution',
+  )),
   createInternalAttributionToken: vi.fn(() => 'attribution-token'),
 }));
-vi.mock('../../src/state/content-creator-profile', () => ({
+vi.mock('../../src/state/content-creator-profile', async () => ({
+  ...(await vi.importActual<typeof import('../../src/state/content-creator-profile')>(
+    '../../src/state/content-creator-profile',
+  )),
   getContentCreatorProfile: (...args: unknown[]) => mocks.getContentCreatorProfile(...args),
 }));
-vi.mock('../../src/services/content-tenant-scope', () => ({
+vi.mock('../../src/services/content-tenant-scope', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/content-tenant-scope')>(
+    '../../src/services/content-tenant-scope',
+  )),
   contentScopeForInsert: vi.fn((userId: number, tenantId?: number) => ({
     tenantId: tenantId ?? userId,
     ownerUserId: userId,
