@@ -219,6 +219,7 @@ vi.mock('../../src/services/anthropic', () => ({
   getOllamaClassifierSystemPromptCompact: vi.fn().mockReturnValue(null),
   getToolsForDomainCached: vi.fn().mockReturnValue([]),
   resolveReplyLanguage: vi.fn().mockReturnValue('en'),
+  resolveReplyLanguageForCurrentRequest: vi.fn().mockReturnValue('en-US'),
   TOOLS: [],
 }));
 

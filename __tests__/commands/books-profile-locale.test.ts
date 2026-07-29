@@ -7,51 +7,105 @@ const mocks = vi.hoisted(() => ({
   run: vi.fn(),
 }));
 
-vi.mock('../../src/services/database', () => ({
-  getDb: () => ({ prepare: mocks.prepare }),
-}));
-vi.mock('../../src/services/intelligence-bus', () => ({
-  writeGovernedSignal: vi.fn(),
-}));
-vi.mock('../../src/utils/logger', () => ({
-  logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
-}));
-vi.mock('../../src/utils/request-context', () => ({
-  getCurrentRequestId: vi.fn(() => 'request-id'),
-  generateRequestId: vi.fn(() => 'generated-request-id'),
-}));
+vi.mock('../../src/services/database', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/database')>(
+    '../../src/services/database',
+  );
+  return {
+    ...actual,
+    getDb: () => ({ prepare: mocks.prepare }),
+  };
+});
+vi.mock('../../src/services/intelligence-bus', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/intelligence-bus')>(
+    '../../src/services/intelligence-bus',
+  );
+  return {
+    ...actual,
+    writeGovernedSignal: vi.fn(),
+  };
+});
+vi.mock('../../src/utils/logger', async () => {
+  const actual = await vi.importActual<typeof import('../../src/utils/logger')>(
+    '../../src/utils/logger',
+  );
+  return {
+    ...actual,
+    logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+  };
+});
+vi.mock('../../src/utils/request-context', async () => {
+  const actual = await vi.importActual<typeof import('../../src/utils/request-context')>(
+    '../../src/utils/request-context',
+  );
+  return {
+    ...actual,
+    getCurrentRequestId: vi.fn(() => 'request-id'),
+    generateRequestId: vi.fn(() => 'generated-request-id'),
+  };
+});
 vi.mock('../../src/config', () => ({
   config: { contentEngine: { internalApiSecret: 'test-secret' } },
 }));
-vi.mock('../../src/services/content-engine', () => ({
-  contentEngineApiBaseUrl: () => 'http://content-engine.test',
-  parseForwardedAiBudgetError: vi.fn(),
-}));
-vi.mock('../../src/services/cost-guardrail', () => ({
-  AiBudgetError: class AiBudgetError extends Error {},
-  withAiBudgetReservation: vi.fn(async (_input, run: () => Promise<unknown>) => run()),
-}));
-vi.mock('../../src/services/internal-attribution', () => ({
-  createInternalAttributionToken: vi.fn(() => 'attribution-token'),
-}));
-vi.mock('../../src/state/content-creator-profile', () => ({
-  getContentCreatorProfile: (...args: unknown[]) => mocks.getContentCreatorProfile(...args),
-}));
-vi.mock('../../src/services/content-tenant-scope', () => ({
-  contentScopeForInsert: vi.fn((userId: number, tenantId?: number) => ({
-    tenantId: tenantId ?? userId,
-    ownerUserId: userId,
-    visibilityScope: 'user_private',
-    lifecycleState: 'pending',
-    scopeStatus: 'active',
-    createdBy: userId,
-    updatedBy: userId,
-    auditMetadataJson: '{}',
-  })),
-  contentScopeParams: vi.fn(() => [44, 7]),
-  contentScopePredicate: vi.fn(() => "tenant_id = ? AND owner_user_id = ? AND scope_status = 'active'"),
-  ensureContentTenantScopeColumns: vi.fn(),
-}));
+vi.mock('../../src/services/content-engine', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/content-engine')>(
+    '../../src/services/content-engine',
+  );
+  return {
+    ...actual,
+    contentEngineApiBaseUrl: () => 'http://content-engine.test',
+    parseForwardedAiBudgetError: vi.fn(),
+  };
+});
+vi.mock('../../src/services/cost-guardrail', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/cost-guardrail')>(
+    '../../src/services/cost-guardrail',
+  );
+  return {
+    ...actual,
+    AiBudgetError: class AiBudgetError extends Error {},
+    withAiBudgetReservation: vi.fn(async (_input, run: () => Promise<unknown>) => run()),
+  };
+});
+vi.mock('../../src/services/internal-attribution', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/internal-attribution')>(
+    '../../src/services/internal-attribution',
+  );
+  return {
+    ...actual,
+    createInternalAttributionToken: vi.fn(() => 'attribution-token'),
+  };
+});
+vi.mock('../../src/state/content-creator-profile', async () => {
+  const actual = await vi.importActual<typeof import('../../src/state/content-creator-profile')>(
+    '../../src/state/content-creator-profile',
+  );
+  return {
+    ...actual,
+    getContentCreatorProfile: (...args: unknown[]) => mocks.getContentCreatorProfile(...args),
+  };
+});
+vi.mock('../../src/services/content-tenant-scope', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/content-tenant-scope')>(
+    '../../src/services/content-tenant-scope',
+  );
+  return {
+    ...actual,
+    contentScopeForInsert: vi.fn((userId: number, tenantId?: number) => ({
+      tenantId: tenantId ?? userId,
+      ownerUserId: userId,
+      visibilityScope: 'user_private',
+      lifecycleState: 'pending',
+      scopeStatus: 'active',
+      createdBy: userId,
+      updatedBy: userId,
+      auditMetadataJson: '{}',
+    })),
+    contentScopeParams: vi.fn(() => [44, 7]),
+    contentScopePredicate: vi.fn(() => "tenant_id = ? AND owner_user_id = ? AND scope_status = 'active'"),
+    ensureContentTenantScopeColumns: vi.fn(),
+  };
+});
 
 import { handleAddBookFromPortal } from '../../src/commands/books';
 

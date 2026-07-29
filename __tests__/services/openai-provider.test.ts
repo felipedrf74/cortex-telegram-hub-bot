@@ -38,6 +38,7 @@ vi.mock('../../src/services/anthropic', () => ({
   continueWithToolResults: vi.fn(),
   getToolsForDomainCached: vi.fn().mockReturnValue([]),
   resolveReplyLanguage: vi.fn().mockReturnValue('en'),
+  resolveReplyLanguageForCurrentRequest: vi.fn().mockReturnValue('en-US'),
   TOOLS: [
     { name: 'set_reminder', description: 'Set a reminder', input_schema: { type: 'object', properties: { message: { type: 'string' } }, required: ['message'] } },
   ],
