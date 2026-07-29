@@ -16,7 +16,8 @@
  *   --gate               Compare against the latest ACCEPTED snapshot and
  *                        exit 1 if any per-domain precision/recall drops
  *                        more than 2pts. Deterministic, zero LLM.
- *   --accept-snapshot    Store the current report as the accepted baseline.
+ *   --accept-snapshot    With --gate and explicit owner authorization, store
+ *                        the current report as the accepted baseline.
  *   --refresh-llm[=N]    THE ONLY NETWORKED PATH. Performs a bounded
  *                        flash-lite classify pass (default 25 items) via the
  *                        existing classifier path for labeled items missing
@@ -51,11 +52,10 @@ async function main(): Promise<void> {
   const db = new Database(dbPath);
   try {
     const {
-      canAcceptAccuracySnapshot,
+      acceptRoutingAccuracySnapshotAtomically,
+      buildRoutingAccuracySnapshotCandidate,
       compareRoutingAccuracySnapshots,
       getLatestAcceptedAccuracySnapshot,
-      runRoutingAccuracy,
-      storeAcceptedAccuracySnapshot,
     } = await import('../src/services/routing-accuracy');
     const { ensureRoutingCorpusTables, listLabeledRoutingCorpusItems } = await import('../src/services/routing-corpus');
     ensureRoutingCorpusTables(db);
@@ -70,7 +70,8 @@ async function main(): Promise<void> {
       await refreshLlmCache(db, listLabeledRoutingCorpusItems, Number.isFinite(refreshLimit) ? Math.max(refreshLimit, 1) : 25);
     }
 
-    const report = runRoutingAccuracy({ db });
+    const snapshotCandidate = buildRoutingAccuracySnapshotCandidate({ db });
+    const report = snapshotCandidate.report;
     const output: Record<string, unknown> = { schemaVersion: 'routing_accuracy_report.v1', dbPath, report };
 
     let gateResult: ReturnType<typeof compareRoutingAccuracySnapshots> | null = null;
@@ -86,16 +87,24 @@ async function main(): Promise<void> {
     }
 
     if (acceptSnapshot) {
-      // Ratchet guard: never accept the current report as the new baseline
-      // when a gate run just FAILED against the previous baseline.
-      const acceptDecision = canAcceptAccuracySnapshot(gateMode, gateResult);
-      if (!acceptDecision.allowed) {
-        console.error(acceptDecision.reason);
-        output.acceptSnapshotRefused = acceptDecision.reason;
+      try {
+        const accepted = acceptRoutingAccuracySnapshotAtomically(snapshotCandidate, {
+          gateMode,
+          ownerAuthorized: process.env.NEXUS_RELEASE_OWNER_AUTHORIZED === '1',
+        }, db);
+        output.corpusIdentityDigest = accepted.corpusIdentityDigest;
+        output.corpusReadiness = accepted.corpusReadiness;
+        output.acceptedSnapshotId = accepted.snapshotId;
+        output.gate = accepted.gate ?? {
+          passed: true,
+          skipped: true,
+          reason: 'no_accepted_snapshot',
+        };
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        console.error(reason);
+        output.acceptSnapshotRefused = reason;
         process.exitCode = 1;
-      } else {
-        const snapshotId = storeAcceptedAccuracySnapshot(report, db);
-        output.acceptedSnapshotId = snapshotId;
       }
     }
 

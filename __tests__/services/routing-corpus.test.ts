@@ -17,11 +17,18 @@ import {
 } from '../../src/services/chat-bilingual-eval-fixtures';
 import { compileIntentVocabulary } from '../../src/services/intent-resolution/vocabulary';
 import {
+  ROUTING_CORPUS_PRODUCT_PROFILE_FIXTURES,
+  projectBilingualFixturePromptForRoutingCorpus,
+} from '../../src/services/routing-corpus-product-profile-fixtures';
+import {
   buildRoutingCorpus,
   ensureRoutingCorpusTables,
   getNextPendingRoutingCorpusItem,
+  getRoutingLabelCandidates,
   getRoutingCorpusProgress,
+  hashRoutingCorpusSyntheticControl,
   hashRoutingUtterance,
+  isCheckedInSyntheticRoutingCorpusItem,
   labelRoutingCorpusItem,
   listLabeledRoutingCorpusItems,
   pruneSpanishSyntheticRoutingCorpusFixtures,
@@ -29,8 +36,9 @@ import {
 
 const SECRET = 'routing-corpus-test-secret';
 
-// "Apaga todas as minhas tarefas" is also a bilingual fixture prompt — used
-// below to prove first-source-wins dedupe between shadow rows and fixtures.
+// "Apaga todas as minhas tarefas" is also a bilingual fixture prompt. It
+// proves that private and synthetic identity namespaces cannot displace one
+// another even when their raw text is identical.
 const SHADOW_TEXT = 'Apaga todas as minhas tarefas';
 const SAMPLER_TEXT = 'Quanto gastei este mês?';
 
@@ -158,9 +166,10 @@ describe('routing corpus builder', () => {
     expect(item.label_status).toBe('pending');
   });
 
-  it('dedupes by utterance hash with first source winning', () => {
-    // SHADOW_TEXT is also a bilingual fixture prompt; the shadow source runs
-    // first, so the fixture insert must be counted as a duplicate.
+  it('keeps a private shadow row separate from an identical synthetic fixture', () => {
+    // SHADOW_TEXT is also a bilingual fixture prompt. The private observation
+    // retains the classify-shadow hash while the checked-in fixture uses the
+    // domain-separated synthetic identity.
     seedUserTurn(db, { tenantId: 1, userId: 2, uuid: 'turn-dupe', text: SHADOW_TEXT, domain: 'secretary' });
     db.prepare(`
       INSERT INTO classify_shadow_runs (tenant_id, user_id, message_hash, gemini_domain, ollama_domain, agree)
@@ -169,11 +178,28 @@ describe('routing corpus builder', () => {
 
     const summary = buildRoutingCorpus({ db, secret: SECRET, vocabulary: SYNTHETIC_VOCABULARY });
 
-    const rows = db.prepare('SELECT source FROM routing_corpus_items WHERE utterance_hash = ?')
-      .all(hashRoutingUtterance(SECRET, SHADOW_TEXT));
-    expect(rows).toHaveLength(1);
-    expect((rows[0] as { source: string }).source).toBe('classify_shadow_disagreement');
-    expect(summary.duplicates).toBeGreaterThanOrEqual(1);
+    expect(db.prepare('SELECT source FROM routing_corpus_items WHERE utterance_hash = ?')
+      .get(hashRoutingUtterance(SECRET, SHADOW_TEXT))).toEqual({
+      source: 'classify_shadow_disagreement',
+    });
+    expect(db.prepare('SELECT source FROM routing_corpus_items WHERE utterance_hash = ?')
+      .get(hashRoutingCorpusSyntheticControl(SECRET, SHADOW_TEXT))).toEqual({
+      source: 'bilingual_fixture',
+    });
+    const rows = db.prepare(`
+      SELECT source
+      FROM routing_corpus_items
+      WHERE utterance_hash IN (?, ?)
+      ORDER BY source ASC
+    `).all(
+      hashRoutingUtterance(SECRET, SHADOW_TEXT),
+      hashRoutingCorpusSyntheticControl(SECRET, SHADOW_TEXT),
+    );
+    expect(rows).toHaveLength(2);
+    expect((rows[0] as { source: string }).source).toBe('bilingual_fixture');
+    expect(summary.duplicates).toBeGreaterThanOrEqual(2);
+    expect(summary.perSource.classify_shadow_disagreement).toBe(1);
+    expect(summary.perSource.bilingual_fixture).toBe(224);
 
     // Rebuilding is idempotent: nothing new inserted for identical sources.
     const rebuild = buildRoutingCorpus({ db, secret: SECRET, vocabulary: SYNTHETIC_VOCABULARY });
@@ -204,9 +230,11 @@ describe('routing corpus builder', () => {
   it('imports exactly the 224 supported English and Portuguese synthetic prompts', () => {
     const summary = buildRoutingCorpus({ db, secret: SECRET, vocabulary: SYNTHETIC_VOCABULARY });
 
-    const englishPrompts = CHAT_BILINGUAL_EVAL_FIXTURES.map((fixture) => fixture.en);
+    const englishPrompts = CHAT_BILINGUAL_EVAL_FIXTURES.map((fixture) =>
+      projectBilingualFixturePromptForRoutingCorpus(fixture.scenario, 'en', fixture.en));
     const portuguesePrompts = [
-      ...CHAT_BILINGUAL_EVAL_FIXTURES.map((fixture) => fixture.pt),
+      ...CHAT_BILINGUAL_EVAL_FIXTURES.map((fixture) =>
+        projectBilingualFixturePromptForRoutingCorpus(fixture.scenario, 'pt', fixture.pt)),
       ...CHAT_LOCALE_CONFUSABLE_EVAL_FIXTURES
         .filter((fixture) => fixture.promptLocale === 'pt-BR')
         .map((fixture) => fixture.prompt),
@@ -223,7 +251,7 @@ describe('routing corpus builder', () => {
     for (const prompt of supportedPrompts) {
       const row = db.prepare(
         'SELECT source FROM routing_corpus_items WHERE utterance_hash = ?',
-      ).get(hashRoutingUtterance(SECRET, prompt)) as { source: string } | undefined;
+      ).get(hashRoutingCorpusSyntheticControl(SECRET, prompt)) as { source: string } | undefined;
       expect(row?.source, prompt).toBe('bilingual_fixture');
     }
     for (const fixture of CHAT_LOCALE_CONFUSABLE_EVAL_FIXTURES) {
@@ -236,7 +264,7 @@ describe('routing corpus builder', () => {
 
     const fixturePrompt = CHAT_BILINGUAL_EVAL_FIXTURES[0];
     const item = db.prepare('SELECT * FROM routing_corpus_items WHERE utterance_hash = ?')
-      .get(hashRoutingUtterance(SECRET, fixturePrompt.pt)) as Record<string, unknown>;
+      .get(hashRoutingCorpusSyntheticControl(SECRET, fixturePrompt.pt)) as Record<string, unknown>;
     expect(item.source).toBe('bilingual_fixture');
     expect(item.user_id).toBeNull();
     expect(item.tenant_id).toBe(0);
@@ -424,6 +452,52 @@ describe('routing corpus labeling store', () => {
     expect(getNextPendingRoutingCorpusItem(db, { tenantId: 99 })).toBeNull();
   });
 
+  it('serves and counts only exact checked-in controls in synthetic-only scope', () => {
+    const priorSecret = process.env.CLASSIFY_SHADOW_HASH_SECRET;
+    process.env.CLASSIFY_SHADOW_HASH_SECRET = SECRET;
+    try {
+      const fixture = ROUTING_CORPUS_PRODUCT_PROFILE_FIXTURES[0]!;
+      db.prepare(`
+        INSERT INTO routing_corpus_items (
+          tenant_id, user_id, utterance_hash, utterance_text, source
+        ) VALUES (0, 77, ?, 'private tenant-zero row', 'history_unmatched')
+      `).run('3'.repeat(64));
+      db.prepare(`
+        INSERT INTO routing_corpus_items (
+          tenant_id, user_id, utterance_hash, utterance_text, source
+        ) VALUES (0, NULL, ?, ?, 'manual')
+      `).run(hashRoutingCorpusSyntheticControl(SECRET, fixture.prompt), fixture.prompt);
+      db.prepare(`
+        INSERT INTO routing_corpus_items (
+          tenant_id, user_id, utterance_hash, utterance_text, source
+        ) VALUES (0, NULL, ?, 'forged manual row', 'manual')
+      `).run('4'.repeat(64));
+
+      const next = getNextPendingRoutingCorpusItem(db, {
+        tenantId: 0,
+        syntheticOnly: true,
+      });
+      const progress = getRoutingCorpusProgress(db, {
+        tenantId: 0,
+        syntheticOnly: true,
+      });
+
+      expect(next?.utteranceText).toBe(fixture.prompt);
+      expect(progress).toMatchObject({ total: 1, pending: 1 });
+      expect(isCheckedInSyntheticRoutingCorpusItem(next!, SECRET)).toBe(true);
+      expect(isCheckedInSyntheticRoutingCorpusItem({
+        tenantId: 0,
+        userId: 77,
+        utteranceHash: '3'.repeat(64),
+        utteranceText: 'private tenant-zero row',
+        source: 'history_unmatched',
+      }, SECRET)).toBe(false);
+    } finally {
+      if (priorSecret === undefined) delete process.env.CLASSIFY_SHADOW_HASH_SECRET;
+      else process.env.CLASSIFY_SHADOW_HASH_SECRET = priorSecret;
+    }
+  });
+
   it('labels, skips, and reports progress', () => {
     const first = getNextPendingRoutingCorpusItem(db)!;
     const labeled = labelRoutingCorpusItem({ id: first.id, action: 'label', labelDomain: 'secretary', labelSkill: 'tasks' }, db)!;
@@ -440,9 +514,85 @@ describe('routing corpus labeling store', () => {
     const progress = getRoutingCorpusProgress(db);
     expect(progress).toMatchObject({ total: 2, pending: 0, labeled: 1, skipped: 1 });
     expect(progress.bySource.manual).toEqual({ total: 2, labeled: 1 });
+    expect(progress.byDomain).toEqual({ secretary: 1 });
+    expect(progress.bySkill).toEqual({ tasks: 1 });
 
     expect(listLabeledRoutingCorpusItems(db)).toHaveLength(1);
     expect(labelRoutingCorpusItem({ id: 999, action: 'skip' }, db)).toBeNull();
     expect(() => labelRoutingCorpusItem({ id: first.id, action: 'label' }, db)).toThrow(/labelDomain/);
+  });
+
+  it('uses manifest action skills as candidates and validates optional skill ownership', () => {
+    const candidates = getRoutingLabelCandidates();
+    expect(candidates.skills).toEqual([
+      'secretary_calendar',
+      'secretary_reminders',
+      'mail',
+      'tasks',
+      'training',
+      'content',
+      'finance',
+      'cooking',
+      'connections',
+      'notifications',
+      'decision_center',
+    ]);
+    expect(candidates.skillsByDomain.secretary).toEqual([
+      'secretary_calendar',
+      'secretary_reminders',
+      'mail',
+      'tasks',
+    ]);
+    expect(candidates.skillsByDomain.triathlon).toEqual(['training']);
+
+    const first = getNextPendingRoutingCorpusItem(db)!;
+    expect(() => labelRoutingCorpusItem({
+      id: first.id,
+      action: 'label',
+      labelDomain: 'secretary',
+      labelSkill: 'finance',
+    }, db)).toThrow(/skill.*domain/i);
+
+    const domainOnly = labelRoutingCorpusItem({
+      id: first.id,
+      action: 'label',
+      labelDomain: 'secretary',
+    }, db)!;
+    expect(domainOnly.labelSkill).toBeNull();
+
+    const second = getNextPendingRoutingCorpusItem(db)!;
+    expect(() => labelRoutingCorpusItem({
+      id: second.id,
+      action: 'label',
+      labelDomain: 'clarify',
+      labelSkill: 'tasks',
+    }, db)).toThrow(/special.*skill/i);
+  });
+
+  it('rejects stale label and skip mutations after an item leaves pending', () => {
+    const first = getNextPendingRoutingCorpusItem(db)!;
+    labelRoutingCorpusItem({
+      id: first.id,
+      action: 'label',
+      labelDomain: 'secretary',
+      labelSkill: 'tasks',
+    }, db);
+
+    expect(() => labelRoutingCorpusItem({ id: first.id, action: 'skip' }, db))
+      .toThrow(/not pending/i);
+    expect(() => labelRoutingCorpusItem({
+      id: first.id,
+      action: 'label',
+      labelDomain: 'secretary',
+      labelSkill: 'tasks',
+    }, db)).toThrow(/not pending/i);
+    const unchanged = db.prepare(
+      'SELECT label_status AS labelStatus, label_domain AS labelDomain, label_skill AS labelSkill FROM routing_corpus_items WHERE id = ?',
+    ).get(first.id);
+    expect(unchanged).toEqual({
+      labelStatus: 'labeled',
+      labelDomain: 'secretary',
+      labelSkill: 'tasks',
+    });
   });
 });

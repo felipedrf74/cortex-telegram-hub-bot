@@ -41,6 +41,7 @@ vi.mock('../../src/portal/admin-target-user', () => ({
 
 vi.mock('../../src/portal/admin-audit', () => ({
   buildPortalAdminAuditDetails: vi.fn(),
+  insertPortalAdminMutationAuditStrict: vi.fn(),
   logPortalAdminMutation: (...args: unknown[]) => mocks.logPortalAdminMutation(...args),
 }));
 

@@ -572,8 +572,8 @@ function buildMonthlySpend(db: Database.Database, now: Date): ChatQualityDashboa
  * surfaces (classifier → provider client construction) into the portal
  * server import chain, and this dashboard must stay loadable without
  * provider config. accepted_accuracy_snapshots is only ever written by
- * routing-accuracy's storeAcceptedAccuracySnapshot (owner-gated
- * --accept-snapshot); the schema lives in migration 256 /
+ * routing-accuracy's atomic owner-gated `--gate --accept-snapshot` path; the
+ * schema lives in migration 256 /
  * ensureRoutingCorpusTables.
  */
 function readLatestAcceptedAccuracySnapshot(db: Database.Database): RoutingAccuracyReport | null {

@@ -117,8 +117,11 @@ One page for operating the production chat-quality loop (M22).
 ## Weekly ritual
 
 1. Read the digest alert (or open `/chat-quality`).
-2. Label pending sampler captures at `/routing-corpus` (owner-gated; raw
-   utterances are visible only behind the portal admin token).
+2. Label pending sampler captures at `/routing-corpus` (owner-gated). The page
+   defaults to the exact tenant-0 checked-in synthetic identities. Raw private
+   utterances require `/routing-corpus?tenantId=<owner-tenant>`, a signed portal
+   session or verified actor signature, and matching operator scope; every
+   page/API response is `no-store`.
 3. Triage any new day-to-day failure types and sampler reason spikes; file
    fixes against the owning milestone/service.
 4. Check the routing-clarify rate; stop the clarify rollout if it exceeds 10%
@@ -136,12 +139,78 @@ One page for operating the production chat-quality loop (M22).
 6. If readiness, signed-behavior, or route-fallback regressions fired, stop the affected soak
    and follow the alert runbook link before any further ChatV2 promotion.
 
-## Owner-gated steps (never automated)
+## Owner-gated steps (human decisions never automated)
 
-- Corpus labeling passes (`/routing-corpus`).
+- Corpus label decisions are owner-gated. Private sampler/history utterances
+  must be reviewed one at a time at `/routing-corpus`; they are never included
+  in an agent-proposed batch. The portal records an optional manifest
+  `chatActionSkill`, validates that it belongs to the selected domain, permits
+  an explicit domain-only choice, and audit-logs the mutation without raw
+  utterance text.
+- The checked-in, tenant-0 synthetic product-profile set has one narrowly
+  scoped assisted-review path. Deploy
+  `routing-corpus-builder@1.2.0`, run
+  `npx tsx scripts/build-routing-corpus.ts`, and confirm the tenant-0
+  synthetic set is exactly 300 unique English/Portuguese rows: 224 bilingual
+  routing projections plus 76 product-profile controls. Ten projections add
+  self-contained product context where the original chat eval turn relies on
+  prior conversation state; the shared conversational fixtures stay
+  unchanged. Private pending rows may coexist but remain outside this exact
+  HMAC-bound set and the batch. Then create the read-only,
+  owner-only review artifact and database-bound plan:
+
+  ```text
+  npx tsx scripts/apply-routing-corpus-label-plan.ts \
+    --inspect \
+    --db=<production-db-path> \
+    --review-out=<ignored-owner-only-review-json> \
+    --runtime-sha=<deployed-full-sha> \
+    --artifact-digest=<deployed-artifact-sha256>
+  ```
+
+  Felipe must read every utterance/domain/skill row in that exact review file
+  and explicitly approve the printed `planDigest`. An agent proposal is not
+  human ground truth before that review. Approval authorizes only mechanical
+  transport of those exact reviewed decisions:
+
+  ```text
+  NEXUS_RELEASE_OWNER_AUTHORIZED=1 \
+  npx tsx scripts/apply-routing-corpus-label-plan.ts \
+    --apply \
+    --db=<production-db-path> \
+    --backup-dir=<protected-backup-directory> \
+    --runtime-sha=<deployed-full-sha> \
+    --artifact-digest=<deployed-artifact-sha256> \
+    --ack-plan=<sha256:plan-digest>
+  ```
+
+  Both modes require `CLASSIFY_SHADOW_HASH_SECRET`. The plan binds the exact
+  300 row IDs, HMACs and their schemes, text digests, tenant/user scope,
+  source, pending state, domain/skill decisions, corpus contract, runtime SHA,
+  and artifact digest. All 300 checked-in controls use a domain-separated
+  synthetic HMAC so an identical private/history utterance can neither
+  displace nor enter the owner-reviewed batch. If builder 1.2 created the new
+  rows over a database that still has the pre-1.2 raw-HMAC aliases, inspect
+  also binds exactly all 224 legacy bilingual rows (or zero). Alias discovery
+  uses the exact checked-in text and provenance rather than the current HMAC
+  secret, so secret rotation cannot hide stale aliases.
+  Apply refuses authorization or digest mismatch before creating the backup
+  directory, re-inspects after the verified `0600` SQLite backup, then
+  rebinds the complete row/alias state inside the immediate transaction. It
+  labels all 300 rows, deletes the exact 224 legacy aliases when present, and
+  writes one redacted `agent_proposed_owner_approved` audit receipt
+  atomically. It refuses private rows, stale/partial labels or aliases, an
+  accepted accuracy snapshot, missing domain/special-label coverage, or fewer
+  than 20 examples for any of the 11 action skills. This owner approval does
+  not authorize `--refresh-llm` or snapshot acceptance.
+  The 300 rows provide synthetic, locale-specific, skill-balanced product
+  coverage: they represent about 153 independent intent shapes, are not
+  production-traffic-weighted, and the eight `clarify` plus eight `none` rows
+  each cover four bilingual concepts. Do not present this distribution as a
+  natural-traffic baseline.
 - The one-time production removal of the eight exact retired Spanish
   synthetic corpus fixtures. First deploy
-  `routing-corpus-builder@1.1.0`. Using the exact runtime SHA and artifact
+  `routing-corpus-builder@1.1.0` or later. Using the exact runtime SHA and artifact
   digest attested by the passing production transaction and production health,
   inspect the read-only plan:
 
@@ -179,12 +248,31 @@ One page for operating the production chat-quality loop (M22).
   operator with mode `0700`; the command creates and verifies the SQLite backup
   with mode `0600` and checks that backup's integrity before opening the prune
   transaction.
-  Re-run `npx tsx scripts/build-routing-corpus.ts` afterward. The supported
-  fixture queue is 224 unique items (109 English, 115 Portuguese).
+  Re-run `npx tsx scripts/build-routing-corpus.ts` afterward. Builder 1.1
+  retains 224 unique bilingual fixtures (109 English, 115 Portuguese);
+  builder 1.2 adds the 76 owner-reviewable product-profile controls for the exact
+  300-row assisted-review set.
 - `npx tsx scripts/run-routing-accuracy.ts --refresh-llm` (the only networked
   routing-accuracy path).
 - `npx tsx scripts/run-routing-accuracy.ts --gate --accept-snapshot`
-  (ratchet acceptance).
+  (ratchet acceptance), with `NEXUS_RELEASE_OWNER_AUTHORIZED=1` set only after
+  Felipe approves that acceptance. Standalone `--accept-snapshot` is refused.
+  Acceptance runs in one immediate transaction, recomputes and binds the
+  complete labeled-corpus identity (including skill labels), report,
+  readiness, and current ratchet. Readiness counts only replayable labeled rows
+  with retained utterance text and independently refuses fewer than 300 rows,
+  fewer than 20 labels for any manifest domain or action skill, or fewer than
+  eight `clarify` and eight `none` controls.
+  Accepted report parsing is fail-closed: it requires exactly one internally
+  consistent report for every routing surface, complete confusion totals, and
+  valid calibration buckets. A later acceptance may not reduce an accepted
+  surface's absolute/relative replay coverage or any accepted domain's
+  absolute support.
+  `routing-accuracy@1.1.0` scores domain routing only. Its action-skill counts
+  prove label coverage, not skill-routing accuracy. Do not cite the Phase 4
+  snapshot as evidence that action-skill routing passed. Before
+  `AI_CLASSIFY_MANIFEST_PROMPT` can flip in Phase 7, add and pass the separate
+  action-skill prediction/agreement evaluator for the now-labeled corpus.
 - Staging/real-provider eval runs (budgeted; persisted via
   `POST /api/portal/eval-history`) and the one-time immutable baseline
   acceptance (`POST /api/portal/eval-history/frozen-baseline`).

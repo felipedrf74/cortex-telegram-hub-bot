@@ -24,6 +24,7 @@
  */
 
 import type Database from 'better-sqlite3';
+import { createHash } from 'node:crypto';
 import { getDb } from './database';
 import { keywordMatch } from '../router/classifier';
 import { classifyShadowRoute } from './chat-core-v2/shadow-route-classifier';
@@ -33,9 +34,13 @@ import {
   getCompiledIntentVocabulary,
   type CompiledCapabilityVocabulary,
 } from './intent-resolution/vocabulary';
-import { listLabeledRoutingCorpusItems, type RoutingCorpusItem } from './routing-corpus';
+import {
+  getRoutingLabelCandidates,
+  listLabeledRoutingCorpusItems,
+  type RoutingCorpusItem,
+} from './routing-corpus';
 
-export const ROUTING_ACCURACY_VERSION = 'routing-accuracy@1.0.0';
+export const ROUTING_ACCURACY_VERSION = 'routing-accuracy@1.1.0';
 
 export const ROUTING_ACCURACY_SURFACES = [
   'classifier_keyword',
@@ -100,12 +105,29 @@ export interface RoutingAccuracyReport {
   generatedAt: string;
   itemCount: number;
   clarifyAccuracyTarget: number;
+  /**
+   * v1.1 makes the evidence boundary machine-readable. Phase 4 scores domain
+   * routing only; action-skill labels are coverage for the later Phase 7
+   * classifier-manifest gate, not a claim of skill-routing correctness.
+   * Optional only so already-accepted v1.0 snapshots remain readable.
+   */
+  evaluationScope?: {
+    domainRoutingScored: true;
+    actionSkillRoutingScored: false;
+    actionSkillGate: 'phase7_classifier_manifest_prompt';
+  };
   surfaces: RoutingSurfaceReport[];
+  /** Present on owner-accepted candidates; binds every labeled row and skill. */
+  corpusIdentityDigest?: string;
 }
 
 const CALIBRATION_BUCKET_WIDTH = 0.2;
 const DEFAULT_CLARIFY_ACCURACY_TARGET = 0.85;
 const GATE_DROP_POINTS = 0.02;
+const SNAPSHOT_MINIMUM_LABELED_ITEMS = 300;
+const SNAPSHOT_MINIMUM_DOMAIN_ITEMS = 20;
+const SNAPSHOT_MINIMUM_ACTION_SKILL_ITEMS = 20;
+const SNAPSHOT_MINIMUM_SPECIAL_LABEL_ITEMS = 8;
 
 // ─── Prediction ───────────────────────────────────────────────────
 
@@ -205,6 +227,11 @@ export function computeRoutingAccuracyReport(
     generatedAt: options.generatedAt ?? new Date().toISOString(),
     itemCount: rows.length,
     clarifyAccuracyTarget: target,
+    evaluationScope: {
+      domainRoutingScored: true,
+      actionSkillRoutingScored: false,
+      actionSkillGate: 'phase7_classifier_manifest_prompt',
+    },
     surfaces,
   };
 }
@@ -344,6 +371,74 @@ export function runRoutingAccuracy(options: RunRoutingAccuracyOptions = {}): Rou
 
 // ─── Snapshot gate ────────────────────────────────────────────────
 
+export interface RoutingCorpusSnapshotReadiness {
+  allowed: boolean;
+  totalLabeled: number;
+  byDomain: Record<string, number>;
+  bySkill: Record<string, number>;
+  reasons: string[];
+}
+
+/**
+ * The accepted snapshot is the calibration authority, so it must prove the
+ * approved corpus shape independently of the report math: >=300 labels,
+ * balanced coverage of all eight domains and eleven executable skills, and
+ * explicit clarify/none controls.
+ */
+export function assessRoutingCorpusSnapshotReadiness(
+  db: Database.Database = getDb(),
+): RoutingCorpusSnapshotReadiness {
+  const labeledItems = listLabeledRoutingCorpusItems(db);
+  const byDomain: Record<string, number> = {};
+  const bySkill: Record<string, number> = {};
+  for (const item of labeledItems) {
+    if (item.labelDomain) {
+      byDomain[item.labelDomain] = (byDomain[item.labelDomain] ?? 0) + 1;
+    }
+    if (item.labelSkill) {
+      bySkill[item.labelSkill] = (bySkill[item.labelSkill] ?? 0) + 1;
+    }
+  }
+  const candidates = getRoutingLabelCandidates();
+  const reasons: string[] = [];
+  if (labeledItems.length < SNAPSHOT_MINIMUM_LABELED_ITEMS) {
+    reasons.push(
+      `requires at least ${SNAPSHOT_MINIMUM_LABELED_ITEMS} labeled items; found ${labeledItems.length}`,
+    );
+  }
+  for (const domain of candidates.domains) {
+    const count = byDomain[domain] ?? 0;
+    if (count < SNAPSHOT_MINIMUM_DOMAIN_ITEMS) {
+      reasons.push(
+        `domain ${domain} requires at least ${SNAPSHOT_MINIMUM_DOMAIN_ITEMS} labels; found ${count}`,
+      );
+    }
+  }
+  for (const skill of candidates.skills) {
+    const count = bySkill[skill] ?? 0;
+    if (count < SNAPSHOT_MINIMUM_ACTION_SKILL_ITEMS) {
+      reasons.push(
+        `skill ${skill} requires at least ${SNAPSHOT_MINIMUM_ACTION_SKILL_ITEMS} labels; found ${count}`,
+      );
+    }
+  }
+  for (const special of candidates.specialLabels) {
+    const count = byDomain[special] ?? 0;
+    if (count < SNAPSHOT_MINIMUM_SPECIAL_LABEL_ITEMS) {
+      reasons.push(
+        `special label ${special} requires at least ${SNAPSHOT_MINIMUM_SPECIAL_LABEL_ITEMS} labels; found ${count}`,
+      );
+    }
+  }
+  return {
+    allowed: reasons.length === 0,
+    totalLabeled: labeledItems.length,
+    byDomain,
+    bySkill,
+    reasons,
+  };
+}
+
 export interface RoutingAccuracyRegression {
   surface: RoutingAccuracySurface;
   domain: string;
@@ -395,9 +490,17 @@ export function compareRoutingAccuracySnapshots(
       continue;
     }
     comparedSurfaces += 1;
-    if (acceptedSurface.covered > 0 && currentSurface.covered === 0) {
+    if (currentSurface.covered < acceptedSurface.covered) {
+      reasons.push(currentSurface.covered === 0
+        ? `surface ${acceptedSurface.surface}: coverage collapsed from ${acceptedSurface.covered} to 0 (cache wipe or hash-secret rotation?)`
+        : `surface ${acceptedSurface.surface}: coverage decreased from ${acceptedSurface.covered} to ${currentSurface.covered}`);
+      continue;
+    }
+    const acceptedCoverageRatio = ratio(acceptedSurface.covered, accepted.itemCount) ?? 0;
+    const currentCoverageRatio = ratio(currentSurface.covered, current.itemCount) ?? 0;
+    if (currentCoverageRatio + 1e-9 < acceptedCoverageRatio) {
       reasons.push(
-        `surface ${acceptedSurface.surface}: coverage collapsed from ${acceptedSurface.covered} to 0 (cache wipe or hash-secret rotation?)`,
+        `surface ${acceptedSurface.surface}: coverage ratio decreased from ${acceptedCoverageRatio} to ${currentCoverageRatio}`,
       );
       continue;
     }
@@ -407,6 +510,12 @@ export function compareRoutingAccuracySnapshots(
       if (!currentDomain) {
         reasons.push(
           `surface ${acceptedSurface.surface}: domain ${acceptedDomain.domain} (accepted support ${acceptedDomain.support}) is absent from the current report`,
+        );
+        continue;
+      }
+      if (currentDomain.support < acceptedDomain.support) {
+        reasons.push(
+          `surface ${acceptedSurface.surface}: domain ${acceptedDomain.domain} support decreased from ${acceptedDomain.support} to ${currentDomain.support}`,
         );
         continue;
       }
@@ -437,33 +546,142 @@ export function compareRoutingAccuracySnapshots(
 }
 
 /**
- * Ratchet guard for `run-routing-accuracy --gate --accept-snapshot`: a FAILED
- * gate must never be combined with accepting the current report as the new
- * baseline (that would lower the ratchet). Standalone --accept-snapshot
- * (no --gate) stays allowed.
+ * Ratchet guard for `run-routing-accuracy --gate --accept-snapshot`: the gate
+ * is mandatory and a FAILED gate must never be combined with accepting the
+ * current report as the new baseline.
  */
 export function canAcceptAccuracySnapshot(
   gateMode: boolean,
   gate: Pick<RoutingAccuracyGateResult, 'passed'> | null,
+  corpusReadiness?: Pick<RoutingCorpusSnapshotReadiness, 'allowed' | 'reasons'>,
 ): { allowed: boolean; reason?: string } {
-  if (!gateMode) return { allowed: true };
-  if (gate && !gate.passed) {
+  if (!gateMode) {
+    return {
+      allowed: false,
+      reason: 'refusing --accept-snapshot: --gate is required so the accepted ratchet cannot be bypassed',
+    };
+  }
+  if (gateMode && gate && !gate.passed) {
     return {
       allowed: false,
       reason: 'refusing --accept-snapshot: the gate FAILED — accepting this report would lower the ratchet',
     };
   }
+  if (corpusReadiness && !corpusReadiness.allowed) {
+    return {
+      allowed: false,
+      reason: `refusing --accept-snapshot: corpus coverage is incomplete — ${corpusReadiness.reasons.join('; ')}`,
+    };
+  }
   return { allowed: true };
 }
 
-export function storeAcceptedAccuracySnapshot(
+function storeAcceptedAccuracySnapshot(
   report: RoutingAccuracyReport,
-  db: Database.Database = getDb(),
+  db: Database.Database,
 ): number {
   const result = db.prepare(
     'INSERT INTO accepted_accuracy_snapshots (snapshot_json, accepted) VALUES (?, 1)',
   ).run(JSON.stringify(report));
   return Number(result.lastInsertRowid);
+}
+
+export interface RoutingAccuracySnapshotCandidate {
+  report: RoutingAccuracyReport;
+  corpusIdentityDigest: string;
+}
+
+export interface AcceptRoutingAccuracySnapshotOptions {
+  gateMode: boolean;
+  ownerAuthorized: boolean;
+  vocabulary?: readonly CompiledCapabilityVocabulary[];
+}
+
+export interface AcceptedRoutingAccuracySnapshot {
+  snapshotId: number;
+  corpusIdentityDigest: string;
+  corpusReadiness: RoutingCorpusSnapshotReadiness;
+  gate: RoutingAccuracyGateResult | null;
+}
+
+function routingCorpusIdentityDigest(db: Database.Database): string {
+  const identity = listLabeledRoutingCorpusItems(db).map((item) => ({
+    id: item.id,
+    tenantId: item.tenantId,
+    userId: item.userId,
+    utteranceHash: item.utteranceHash,
+    utteranceTextSha256: createHash('sha256').update(item.utteranceText ?? '').digest('hex'),
+    source: item.source,
+    labelDomain: item.labelDomain,
+    labelSkill: item.labelSkill,
+    labelStatus: item.labelStatus,
+    labeledAt: item.labeledAt,
+  }));
+  return `sha256:${createHash('sha256').update(JSON.stringify(identity)).digest('hex')}`;
+}
+
+export function buildRoutingAccuracySnapshotCandidate(
+  options: RunRoutingAccuracyOptions = {},
+): RoutingAccuracySnapshotCandidate {
+  const db = options.db ?? getDb();
+  const corpusIdentityDigest = routingCorpusIdentityDigest(db);
+  return {
+    report: {
+      ...runRoutingAccuracy(options),
+      corpusIdentityDigest,
+    },
+    corpusIdentityDigest,
+  };
+}
+
+/**
+ * Sole accepted-snapshot write path. BEGIN IMMEDIATE serializes this decision
+ * with corpus labeling, then the corpus identity, replay report, readiness,
+ * and ratchet are recomputed before the snapshot INSERT.
+ */
+export function acceptRoutingAccuracySnapshotAtomically(
+  candidate: RoutingAccuracySnapshotCandidate,
+  options: AcceptRoutingAccuracySnapshotOptions,
+  db: Database.Database = getDb(),
+): AcceptedRoutingAccuracySnapshot {
+  if (!options.ownerAuthorized) {
+    throw new Error('Routing accuracy snapshot acceptance requires explicit owner authorization');
+  }
+  const modeDecision = canAcceptAccuracySnapshot(options.gateMode, null);
+  if (!modeDecision.allowed) throw new Error(modeDecision.reason);
+
+  const accept = db.transaction(() => {
+    const currentIdentityDigest = routingCorpusIdentityDigest(db);
+    if (currentIdentityDigest !== candidate.corpusIdentityDigest) {
+      throw new Error(
+        `Routing corpus identity changed before snapshot acceptance; expected ${candidate.corpusIdentityDigest}, found ${currentIdentityDigest}`,
+      );
+    }
+    const currentCandidate = buildRoutingAccuracySnapshotCandidate({
+      db,
+      vocabulary: options.vocabulary,
+      clarifyAccuracyTarget: candidate.report.clarifyAccuracyTarget,
+      generatedAt: candidate.report.generatedAt,
+    });
+    const currentReport = currentCandidate.report;
+    if (JSON.stringify(currentReport) !== JSON.stringify(candidate.report)) {
+      throw new Error('Routing accuracy report changed before snapshot acceptance; rerun the gate');
+    }
+
+    const corpusReadiness = assessRoutingCorpusSnapshotReadiness(db);
+    const previous = getLatestAcceptedAccuracySnapshot(db);
+    const gate = previous ? compareRoutingAccuracySnapshots(currentReport, previous) : null;
+    const decision = canAcceptAccuracySnapshot(options.gateMode, gate, corpusReadiness);
+    if (!decision.allowed) throw new Error(decision.reason);
+
+    return {
+      snapshotId: storeAcceptedAccuracySnapshot(currentReport, db),
+      corpusIdentityDigest: currentIdentityDigest,
+      corpusReadiness,
+      gate,
+    };
+  });
+  return accept.immediate();
 }
 
 export function getLatestAcceptedAccuracySnapshot(
@@ -476,14 +694,154 @@ export function getLatestAcceptedAccuracySnapshot(
     LIMIT 1
   `).get() as { snapshotJson: string } | undefined;
   if (!row) return null;
+  let parsed: unknown;
   try {
-    return JSON.parse(row.snapshotJson) as RoutingAccuracyReport;
-  } catch {
-    return null;
+    parsed = JSON.parse(row.snapshotJson);
+  } catch (error) {
+    throw new Error(
+      'Accepted routing accuracy snapshot contains invalid JSON; refusing to treat a corrupt ratchet as absent',
+      { cause: error },
+    );
   }
+  if (!isRoutingAccuracyReport(parsed)) {
+    throw new Error(
+      'Accepted routing accuracy snapshot has an invalid report schema; refusing to treat a corrupt ratchet as absent',
+    );
+  }
+  return parsed;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function isNullableFiniteNumber(value: unknown): value is number | null {
+  return value === null || isFiniteNumber(value);
+}
+
+function isRoutingAccuracyReport(value: unknown): value is RoutingAccuracyReport {
+  if (!value || typeof value !== 'object') return false;
+  const report = value as Partial<RoutingAccuracyReport>;
+  if (
+    typeof report.version !== 'string'
+    || typeof report.generatedAt !== 'string'
+    || !isNonNegativeInteger(report.itemCount)
+    || report.itemCount < SNAPSHOT_MINIMUM_LABELED_ITEMS
+    || !isFiniteNumber(report.clarifyAccuracyTarget)
+    || report.clarifyAccuracyTarget < 0
+    || report.clarifyAccuracyTarget > 1
+    || !Array.isArray(report.surfaces)
+    || report.surfaces.length !== ROUTING_ACCURACY_SURFACES.length
+  ) {
+    return false;
+  }
+  const surfaceIds = new Set(report.surfaces.map((surface) => surface?.surface));
+  if (
+    surfaceIds.size !== ROUTING_ACCURACY_SURFACES.length
+    || ROUTING_ACCURACY_SURFACES.some((surface) => !surfaceIds.has(surface))
+  ) {
+    return false;
+  }
+  return report.surfaces.every((surface) => (
+    surface
+    && typeof surface === 'object'
+    && ROUTING_ACCURACY_SURFACES.includes(surface.surface)
+    && isNonNegativeInteger(surface.covered)
+    && isNonNegativeInteger(surface.uncovered)
+    && surface.covered + surface.uncovered === report.itemCount
+    && isNonNegativeInteger(surface.correct)
+    && surface.correct <= surface.covered
+    && isNullableFiniteNumber(surface.accuracy)
+    && surface.accuracy === ratio(surface.correct, surface.covered)
+    && Array.isArray(surface.perDomain)
+    && new Set(surface.perDomain.map((domain) => domain.domain)).size === surface.perDomain.length
+    && surface.perDomain.every((domain) => (
+      domain
+      && typeof domain === 'object'
+      && typeof domain.domain === 'string'
+      && domain.domain.length > 0
+      && isNonNegativeInteger(domain.support)
+      && isNonNegativeInteger(domain.truePositives)
+      && isNonNegativeInteger(domain.falsePositives)
+      && isNonNegativeInteger(domain.falseNegatives)
+      && domain.support === domain.truePositives + domain.falseNegatives
+      && isNullableFiniteNumber(domain.precision)
+      && domain.precision === ratio(
+        domain.truePositives,
+        domain.truePositives + domain.falsePositives,
+      )
+      && isNullableFiniteNumber(domain.recall)
+      && domain.recall === ratio(
+        domain.truePositives,
+        domain.truePositives + domain.falseNegatives,
+      )
+    ))
+    && surface.perDomain.reduce((sum, domain) => sum + domain.support, 0) === surface.covered
+    && surface.perDomain.reduce((sum, domain) => sum + domain.truePositives, 0) === surface.correct
+    && surface.perDomain.reduce((sum, domain) => sum + domain.falsePositives, 0)
+      === surface.covered - surface.correct
+    && isRoutingCalibration(surface.calibration, surface.covered, surface.correct)
+    && isNullableFiniteNumber(surface.recommendedClarifyThreshold)
+    && (
+      surface.recommendedClarifyThreshold === null
+      || (
+        surface.recommendedClarifyThreshold >= 0
+        && surface.recommendedClarifyThreshold <= 1
+      )
+    )
+  ));
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) >= 0;
+}
+
+function isRoutingCalibration(
+  value: unknown,
+  covered: number,
+  surfaceCorrect: number,
+): value is RoutingCalibrationBucket[] {
+  if (!Array.isArray(value) || value.length !== 5) return false;
+  const expected = [
+    { bucket: '0.0-0.2', lowerBound: 0, upperBound: 0.2 },
+    { bucket: '0.2-0.4', lowerBound: 0.2, upperBound: 0.4 },
+    { bucket: '0.4-0.6', lowerBound: 0.4, upperBound: 0.6 },
+    { bucket: '0.6-0.8', lowerBound: 0.6, upperBound: 0.8 },
+    { bucket: '0.8-1.0', lowerBound: 0.8, upperBound: 1 },
+  ] as const;
+  let calibrated = 0;
+  let calibratedCorrect = 0;
+  for (let index = 0; index < expected.length; index += 1) {
+    const bucket = value[index] as Partial<RoutingCalibrationBucket> | undefined;
+    const boundary = expected[index];
+    if (
+      !bucket
+      || bucket.bucket !== boundary.bucket
+      || bucket.lowerBound !== boundary.lowerBound
+      || bucket.upperBound !== boundary.upperBound
+      || !isNonNegativeInteger(bucket.count)
+      || !isNonNegativeInteger(bucket.correct)
+      || bucket.correct > bucket.count
+      || bucket.empiricalAccuracy !== ratio(bucket.correct, bucket.count)
+      || (
+        bucket.count === 0
+          ? bucket.averageStatedConfidence !== null
+          : !isFiniteNumber(bucket.averageStatedConfidence)
+            || bucket.averageStatedConfidence < boundary.lowerBound
+            || bucket.averageStatedConfidence > boundary.upperBound
+      )
+    ) {
+      return false;
+    }
+    calibrated += bucket.count;
+    calibratedCorrect += bucket.correct;
+  }
+  return calibrated <= covered
+    && calibratedCorrect <= surfaceCorrect
+    && calibrated - calibratedCorrect <= covered - surfaceCorrect;
+}
 
 function ratio(numerator: number, denominator: number): number | null {
   return denominator === 0 ? null : round4(numerator / denominator);

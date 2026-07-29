@@ -1,5 +1,6 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
+import type Database from 'better-sqlite3';
 import type { Request } from 'express';
 import {
   extractPortalActorHint,
@@ -57,4 +58,48 @@ export function logPortalAdminMutation(
   } catch (auditErr) {
     logger.warn({ err: auditErr, resource }, 'portal admin mutation audit log failed');
   }
+}
+
+export interface StrictPortalAdminMutationAuditInput {
+  userId: number;
+  tenantId: number;
+  resource: string;
+  details?: Record<string, unknown>;
+}
+
+/**
+ * Insert a portal mutation audit row through the caller's database handle.
+ *
+ * Unlike logPortalAdminMutation, this deliberately does not catch failures.
+ * Callers use it when the protected mutation and its audit evidence must
+ * commit or roll back together in one database transaction.
+ */
+export function insertPortalAdminMutationAuditStrict(
+  db: Database.Database,
+  req: Request,
+  input: StrictPortalAdminMutationAuditInput,
+): void {
+  const ownerTarget = getOwnerBootstrapTarget();
+  const details = {
+    ...buildPortalAdminAuditDetails(req),
+    ...(input.details ?? {}),
+  };
+  db.prepare(`
+    INSERT INTO audit_trail (
+      tenant_id,
+      user_id,
+      actor_id,
+      action,
+      resource,
+      details,
+      ip_address
+    ) VALUES (?, ?, ?, 'admin_mutation', ?, ?, ?)
+  `).run(
+    input.tenantId,
+    input.userId,
+    ownerTarget?.tenantId ?? 0,
+    input.resource,
+    JSON.stringify(details),
+    (req.ip || req.socket?.remoteAddress) ?? null,
+  );
 }

@@ -45,7 +45,7 @@ import {
 } from '../../src/services/chat-v2-completion-evidence';
 import { recordChatRoutingClarifyDecisionPersisted } from '../../src/services/chat-routing-clarify-metrics';
 import { ensureRoutingCorpusTables } from '../../src/services/routing-corpus';
-import { storeAcceptedAccuracySnapshot, type RoutingAccuracyReport } from '../../src/services/routing-accuracy';
+import type { RoutingAccuracyReport } from '../../src/services/routing-accuracy';
 import {
   ensureChatCoreV2OnlineEvalTables,
   recordChatV2OnlineEvalSample,
@@ -338,7 +338,10 @@ describe('chat quality dashboard', () => {
     seedEvalRuns();
     seedSampler();
     seedCorpus();
-    storeAcceptedAccuracySnapshot(makeAccuracySnapshot(), db);
+    db.prepare(`
+      INSERT INTO accepted_accuracy_snapshots (snapshot_json, accepted)
+      VALUES (?, 1)
+    `).run(JSON.stringify(makeAccuracySnapshot()));
     recordChatQualityGateOutcome('pass');
     recordChatQualityGateOutcome('pass');
     recordChatQualityGateOutcome('replaced');

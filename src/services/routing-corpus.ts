@@ -10,17 +10,21 @@
  *      re-hashing recent chat-history user turns with the same HMAC scheme;
  *   b. online-eval sampler captures — text recovered via turn_id → messages;
  *   c. supported English + Portuguese eval fixture prompts (synthetic);
- *   d. recent chat-history turns whose routed domain is not supported by the
+ *   d. owner-reviewable English + Portuguese product-profile prompts
+ *      (synthetic);
+ *   e. recent chat-history turns whose routed domain is not supported by the
  *      manifest routing vocabulary for that utterance (suspicious routes).
  *
- * Items are deduped by utterance HMAC (first source wins) and inserted as
- * `pending`. The actual ~300-item labeling pass is owner-gated and happens
- * through the portal labeling page (routing-corpus-routes).
+ * Items are deduped by identity HMAC (first source wins within each identity
+ * namespace) and inserted as `pending`. The actual ~300-item labeling pass is
+ * owner-gated and happens through the portal labeling page or the exact
+ * owner-reviewed synthetic batch.
  *
- * Privacy: the HMAC scheme is byte-identical to classify-shadow
- * (hmacSha256(secret, text.trim().toLowerCase())) so shadow rows correlate.
- * Raw text is only stored when it already exists in local chat history or a
- * checked-in synthetic fixture — never reconstructed from hashes.
+ * Privacy: private observations use the byte-identical classify-shadow HMAC
+ * so those rows correlate. Every checked-in synthetic control uses a separate
+ * domain-prefixed HMAC and cannot collide with a private observation. Raw text
+ * is stored only when it already exists in local chat history or a checked-in
+ * fixture; it is never reconstructed from hashes.
  */
 
 import type Database from 'better-sqlite3';
@@ -30,6 +34,10 @@ import {
   CHAT_BILINGUAL_EVAL_FIXTURES,
   CHAT_LOCALE_CONFUSABLE_EVAL_FIXTURES,
 } from './chat-bilingual-eval-fixtures';
+import {
+  ROUTING_CORPUS_PRODUCT_PROFILE_FIXTURES,
+  projectBilingualFixturePromptForRoutingCorpus,
+} from './routing-corpus-product-profile-fixtures';
 import { loadCapabilityManifest } from './capability-manifest';
 import { resolveIntentAgainst } from './intent-resolution/intent-resolver';
 import {
@@ -37,7 +45,7 @@ import {
   type CompiledCapabilityVocabulary,
 } from './intent-resolution/vocabulary';
 
-export const ROUTING_CORPUS_BUILDER_VERSION = 'routing-corpus-builder@1.1.0';
+export const ROUTING_CORPUS_BUILDER_VERSION = 'routing-corpus-builder@1.2.0';
 
 const UNSUPPORTED_SPANISH_FIXTURE_COUNT = 8;
 
@@ -95,6 +103,76 @@ export function hashRoutingUtterance(secret: string, text: string): string {
   // Byte-identical to classify-shadow's hashing so corpus rows correlate
   // with classify_shadow_runs.message_hash.
   return hmacSha256(secret, text.trim().toLowerCase());
+}
+
+/**
+ * Domain-separated identity for every checked-in synthetic control. These
+ * prompts are not classify-shadow observations, so they must not contend with
+ * an identical private/history utterance for the globally unique corpus hash.
+ */
+export function hashRoutingCorpusSyntheticControl(secret: string, text: string): string {
+  return hmacSha256(
+    secret,
+    `routing-corpus-control:v1\u0000${text.trim().toLowerCase()}`,
+  );
+}
+
+function configuredSyntheticControlSecret(explicit?: string): string {
+  const secret = explicit ?? process.env.CLASSIFY_SHADOW_HASH_SECRET ?? '';
+  if (!secret) {
+    throw new Error('Routing corpus synthetic controls require CLASSIFY_SHADOW_HASH_SECRET');
+  }
+  return secret;
+}
+
+function checkedInSyntheticControls(secret: string): Map<string, {
+  utteranceText: string;
+  source: 'bilingual_fixture' | 'manual';
+}> {
+  const controls = new Map<string, {
+    utteranceText: string;
+    source: 'bilingual_fixture' | 'manual';
+  }>();
+  const record = (
+    utteranceText: string,
+    source: 'bilingual_fixture' | 'manual',
+  ): void => {
+    controls.set(hashRoutingCorpusSyntheticControl(secret, utteranceText), {
+      utteranceText,
+      source,
+    });
+  };
+  for (const fixture of CHAT_BILINGUAL_EVAL_FIXTURES) {
+    record(
+      projectBilingualFixturePromptForRoutingCorpus(fixture.scenario, 'pt', fixture.pt),
+      'bilingual_fixture',
+    );
+    record(
+      projectBilingualFixturePromptForRoutingCorpus(fixture.scenario, 'en', fixture.en),
+      'bilingual_fixture',
+    );
+  }
+  for (const fixture of CHAT_LOCALE_CONFUSABLE_EVAL_FIXTURES) {
+    if (fixture.promptLocale === 'pt-BR') record(fixture.prompt, 'bilingual_fixture');
+  }
+  for (const fixture of ROUTING_CORPUS_PRODUCT_PROFILE_FIXTURES) {
+    record(fixture.prompt, 'manual');
+  }
+  return controls;
+}
+
+export function isCheckedInSyntheticRoutingCorpusItem(
+  item: Pick<
+    RoutingCorpusItem,
+    'tenantId' | 'userId' | 'utteranceHash' | 'utteranceText' | 'source'
+  >,
+  explicitSecret?: string,
+): boolean {
+  if (item.tenantId !== 0 || item.userId !== null || item.utteranceText === null) return false;
+  if (item.source !== 'bilingual_fixture' && item.source !== 'manual') return false;
+  const controls = checkedInSyntheticControls(configuredSyntheticControlSecret(explicitSecret));
+  const expected = controls.get(item.utteranceHash);
+  return expected?.source === item.source && expected.utteranceText === item.utteranceText;
 }
 
 export function ensureRoutingCorpusTables(db: Database.Database = getDb()): void {
@@ -281,11 +359,16 @@ export function buildRoutingCorpus(options: BuildRoutingCorpusOptions): RoutingC
   // (c) synthetic eval fixture prompts for supported locales (pt + en).
   for (const fixture of CHAT_BILINGUAL_EVAL_FIXTURES) {
     const suggestedDomain = FIXTURE_SKILL_TO_DOMAIN[fixture.skill] ?? null;
-    for (const prompt of [fixture.pt, fixture.en]) {
+    for (const [locale, original] of [['pt', fixture.pt], ['en', fixture.en]] as const) {
+      const prompt = projectBilingualFixturePromptForRoutingCorpus(
+        fixture.scenario,
+        locale,
+        original,
+      );
       record({
         tenantId: 0,
         userId: null,
-        utteranceHash: hashRoutingUtterance(options.secret, prompt),
+        utteranceHash: hashRoutingCorpusSyntheticControl(options.secret, prompt),
         utteranceText: prompt,
         source: 'bilingual_fixture',
         suggestedDomain,
@@ -298,7 +381,7 @@ export function buildRoutingCorpus(options: BuildRoutingCorpusOptions): RoutingC
     record({
       tenantId: 0,
       userId: null,
-      utteranceHash: hashRoutingUtterance(options.secret, fixture.prompt),
+      utteranceHash: hashRoutingCorpusSyntheticControl(options.secret, fixture.prompt),
       utteranceText: fixture.prompt,
       source: 'bilingual_fixture',
       suggestedDomain: null,
@@ -306,7 +389,21 @@ export function buildRoutingCorpus(options: BuildRoutingCorpusOptions): RoutingC
     });
   }
 
-  // (d) recent turns whose routed domain has no vocabulary support for the
+  // (d) owner-reviewable product-profile prompts complete the 300-item
+  // supported-language queue while remaining pending for the golden pass.
+  for (const fixture of ROUTING_CORPUS_PRODUCT_PROFILE_FIXTURES) {
+    record({
+      tenantId: 0,
+      userId: null,
+      utteranceHash: hashRoutingCorpusSyntheticControl(options.secret, fixture.prompt),
+      utteranceText: fixture.prompt,
+      source: 'manual',
+      suggestedDomain: fixture.labelDomain,
+      suggestedSkill: fixture.labelSkill,
+    });
+  }
+
+  // (e) recent turns whose routed domain has no vocabulary support for the
   // utterance — the manifest resolver produced zero candidates for the
   // domain the live router picked (including domains absent from the
   // registry vocabulary entirely).
@@ -488,6 +585,7 @@ export function pruneSpanishSyntheticRoutingCorpusFixtures(
 
 export interface RoutingLabelCandidates {
   domains: string[];
+  skills: string[];
   skillsByDomain: Record<string, string[]>;
   specialLabels: string[];
 }
@@ -496,24 +594,70 @@ export interface RoutingLabelCandidates {
 export function getRoutingLabelCandidates(): RoutingLabelCandidates {
   const manifest = loadCapabilityManifest();
   const domains: string[] = [];
+  const skills: string[] = [];
   const skillsByDomain: Record<string, string[]> = {};
   for (const entry of manifest.capabilities) {
     const domain = entry.runtimeRouting.domain;
     if (!domains.includes(domain)) domains.push(domain);
-    skillsByDomain[domain] = [...new Set([...(skillsByDomain[domain] ?? []), ...entry.chatOwnerSkills])];
+    skillsByDomain[domain] = [
+      ...new Set([...(skillsByDomain[domain] ?? []), ...entry.chatActionSkills]),
+    ];
+    for (const skill of entry.chatActionSkills) {
+      if (!skills.includes(skill)) skills.push(skill);
+    }
   }
-  return { domains, skillsByDomain, specialLabels: [...ROUTING_SPECIAL_LABELS] };
+  return { domains, skills, skillsByDomain, specialLabels: [...ROUTING_SPECIAL_LABELS] };
 }
 
 export function isValidRoutingLabelDomain(labelDomain: string, candidates: RoutingLabelCandidates): boolean {
   return candidates.domains.includes(labelDomain) || candidates.specialLabels.includes(labelDomain);
 }
 
+/**
+ * A domain label can remain skill-null when the utterance is genuinely
+ * domain-generic. If a skill is supplied, it must be one of that domain's
+ * executable manifest skills. Special labels never carry a skill.
+ */
+export function isValidRoutingLabelSelection(
+  labelDomain: string,
+  labelSkill: string | undefined,
+  candidates: RoutingLabelCandidates,
+): boolean {
+  if (candidates.specialLabels.includes(labelDomain)) {
+    return labelSkill === undefined;
+  }
+  if (!candidates.domains.includes(labelDomain)) return false;
+  return labelSkill === undefined || (candidates.skillsByDomain[labelDomain] ?? []).includes(labelSkill);
+}
+
 export function getNextPendingRoutingCorpusItem(
   db: Database.Database = getDb(),
-  options: { tenantId?: number } = {},
+  options: { tenantId?: number; syntheticOnly?: boolean } = {},
 ): RoutingCorpusItem | null {
   ensureRoutingCorpusTables(db);
+  if (options.syntheticOnly) {
+    if (options.tenantId !== undefined && options.tenantId !== 0) {
+      throw new Error('Checked-in synthetic routing corpus scope must use tenant 0');
+    }
+    const syntheticControlHmacKey = configuredSyntheticControlSecret();
+    const controls = checkedInSyntheticControls(syntheticControlHmacKey);
+    const hashes = [...controls.keys()];
+    const placeholders = hashes.map(() => '?').join(', ');
+    const rows = db.prepare(`
+      SELECT * FROM routing_corpus_items
+      WHERE label_status = 'pending'
+        AND tenant_id = 0
+        AND user_id IS NULL
+        AND source IN ('bilingual_fixture', 'manual')
+        AND utterance_hash IN (${placeholders})
+        AND utterance_text IS NOT NULL
+      ORDER BY created_at ASC, id ASC
+    `).all(...hashes);
+    const item = rows
+      .map(mapItemRow)
+      .find((candidate) => isCheckedInSyntheticRoutingCorpusItem(candidate, syntheticControlHmacKey));
+    return item ?? null;
+  }
   const row = options.tenantId !== undefined
     ? db.prepare(`
         SELECT * FROM routing_corpus_items
@@ -528,6 +672,15 @@ export function getNextPendingRoutingCorpusItem(
   return row ? mapItemRow(row) : null;
 }
 
+export function getRoutingCorpusItemById(
+  id: number,
+  db: Database.Database = getDb(),
+): RoutingCorpusItem | null {
+  ensureRoutingCorpusTables(db);
+  const row = db.prepare('SELECT * FROM routing_corpus_items WHERE id = ?').get(id);
+  return row ? mapItemRow(row) : null;
+}
+
 export interface LabelRoutingCorpusItemInput {
   id: number;
   action: 'label' | 'skip';
@@ -535,26 +688,64 @@ export interface LabelRoutingCorpusItemInput {
   labelSkill?: string;
 }
 
+export class RoutingCorpusLabelConflictError extends Error {
+  readonly itemId: number;
+  readonly currentStatus: RoutingCorpusLabelStatus;
+
+  constructor(itemId: number, currentStatus: RoutingCorpusLabelStatus) {
+    super(`Routing corpus item ${itemId} is not pending (current status: ${currentStatus})`);
+    this.name = 'RoutingCorpusLabelConflictError';
+    this.itemId = itemId;
+    this.currentStatus = currentStatus;
+  }
+}
+
 export function labelRoutingCorpusItem(
   input: LabelRoutingCorpusItemInput,
   db: Database.Database = getDb(),
 ): RoutingCorpusItem | null {
   ensureRoutingCorpusTables(db);
+  let mutationChanges = 0;
   if (input.action === 'label') {
     if (typeof input.labelDomain !== 'string' || input.labelDomain.length === 0) {
       throw new Error('labelDomain is required to label a routing corpus item');
     }
-    db.prepare(`
+    const candidates = getRoutingLabelCandidates();
+    if (!isValidRoutingLabelDomain(input.labelDomain, candidates)) {
+      throw new Error(`Unknown routing corpus label domain: ${input.labelDomain}`);
+    }
+    if (
+      input.labelSkill !== undefined
+      && (typeof input.labelSkill !== 'string' || input.labelSkill.length === 0)
+    ) {
+      throw new Error('labelSkill must be a non-empty string when provided');
+    }
+    if (!isValidRoutingLabelSelection(input.labelDomain, input.labelSkill, candidates)) {
+      if (candidates.specialLabels.includes(input.labelDomain)) {
+        throw new Error(`Special routing label ${input.labelDomain} must not include a skill`);
+      }
+      throw new Error(
+        `Routing label skill ${input.labelSkill} does not belong to domain ${input.labelDomain}`,
+      );
+    }
+    mutationChanges = db.prepare(`
       UPDATE routing_corpus_items
       SET label_status = 'labeled', label_domain = ?, label_skill = ?, labeled_at = datetime('now')
-      WHERE id = ?
-    `).run(input.labelDomain, input.labelSkill ?? null, input.id);
+      WHERE id = ? AND label_status = 'pending'
+    `).run(input.labelDomain, input.labelSkill ?? null, input.id).changes;
   } else {
-    db.prepare(`
+    mutationChanges = db.prepare(`
       UPDATE routing_corpus_items
       SET label_status = 'skipped', label_domain = NULL, label_skill = NULL, labeled_at = datetime('now')
-      WHERE id = ?
-    `).run(input.id);
+      WHERE id = ? AND label_status = 'pending'
+    `).run(input.id).changes;
+  }
+  if (mutationChanges === 0) {
+    const existing = db.prepare(
+      'SELECT label_status AS labelStatus FROM routing_corpus_items WHERE id = ?',
+    ).get(input.id) as { labelStatus: RoutingCorpusLabelStatus } | undefined;
+    if (!existing) return null;
+    throw new RoutingCorpusLabelConflictError(input.id, existing.labelStatus);
   }
   const row = db.prepare('SELECT * FROM routing_corpus_items WHERE id = ?').get(input.id);
   return row ? mapItemRow(row) : null;
@@ -566,22 +757,82 @@ export interface RoutingCorpusProgress {
   labeled: number;
   skipped: number;
   bySource: Record<string, { total: number; labeled: number }>;
+  byDomain: Record<string, number>;
+  bySkill: Record<string, number>;
 }
 
 export function getRoutingCorpusProgress(
   db: Database.Database = getDb(),
-  options: { tenantId?: number } = {},
+  options: { tenantId?: number; syntheticOnly?: boolean } = {},
 ): RoutingCorpusProgress {
   ensureRoutingCorpusTables(db);
+  if (options.syntheticOnly) {
+    if (options.tenantId !== undefined && options.tenantId !== 0) {
+      throw new Error('Checked-in synthetic routing corpus scope must use tenant 0');
+    }
+    const syntheticControlHmacKey = configuredSyntheticControlSecret();
+    const controls = checkedInSyntheticControls(syntheticControlHmacKey);
+    const hashes = [...controls.keys()];
+    const placeholders = hashes.map(() => '?').join(', ');
+    const items = (db.prepare(`
+      SELECT * FROM routing_corpus_items
+      WHERE tenant_id = 0
+        AND user_id IS NULL
+        AND source IN ('bilingual_fixture', 'manual')
+        AND utterance_hash IN (${placeholders})
+        AND utterance_text IS NOT NULL
+      ORDER BY created_at ASC, id ASC
+    `).all(...hashes))
+      .map(mapItemRow)
+      .filter((item) => isCheckedInSyntheticRoutingCorpusItem(item, syntheticControlHmacKey));
+    return summarizeRoutingCorpusProgress(items.map((item) => ({
+      source: item.source,
+      labelStatus: item.labelStatus,
+      labelDomain: item.labelDomain,
+      labelSkill: item.labelSkill,
+      count: 1,
+    })));
+  }
   const where = options.tenantId !== undefined ? 'WHERE tenant_id = ?' : '';
   const params = options.tenantId !== undefined ? [options.tenantId] : [];
   const rows = db.prepare(`
-    SELECT source, label_status AS labelStatus, COUNT(*) AS count
+    SELECT
+      source,
+      label_status AS labelStatus,
+      label_domain AS labelDomain,
+      label_skill AS labelSkill,
+      COUNT(*) AS count
     FROM routing_corpus_items ${where}
-    GROUP BY source, label_status
-  `).all(...params) as Array<{ source: string; labelStatus: RoutingCorpusLabelStatus; count: number }>;
+    GROUP BY source, label_status, label_domain, label_skill
+  `).all(...params) as Array<{
+    source: string;
+    labelStatus: RoutingCorpusLabelStatus;
+    labelDomain: string | null;
+    labelSkill: string | null;
+    count: number;
+  }>;
 
-  const progress: RoutingCorpusProgress = { total: 0, pending: 0, labeled: 0, skipped: 0, bySource: {} };
+  return summarizeRoutingCorpusProgress(rows);
+}
+
+function summarizeRoutingCorpusProgress(
+  rows: Array<{
+    source: string;
+    labelStatus: RoutingCorpusLabelStatus;
+    labelDomain: string | null;
+    labelSkill: string | null;
+    count: number;
+  }>,
+): RoutingCorpusProgress {
+  const progress: RoutingCorpusProgress = {
+    total: 0,
+    pending: 0,
+    labeled: 0,
+    skipped: 0,
+    bySource: {},
+    byDomain: {},
+    bySkill: {},
+  };
   for (const row of rows) {
     progress.total += row.count;
     progress[row.labelStatus] += row.count;
@@ -589,6 +840,12 @@ export function getRoutingCorpusProgress(
     source.total += row.count;
     if (row.labelStatus === 'labeled') source.labeled += row.count;
     progress.bySource[row.source] = source;
+    if (row.labelStatus === 'labeled' && row.labelDomain) {
+      progress.byDomain[row.labelDomain] = (progress.byDomain[row.labelDomain] ?? 0) + row.count;
+    }
+    if (row.labelStatus === 'labeled' && row.labelSkill) {
+      progress.bySkill[row.labelSkill] = (progress.bySkill[row.labelSkill] ?? 0) + row.count;
+    }
   }
   return progress;
 }
