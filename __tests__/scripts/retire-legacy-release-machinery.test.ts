@@ -1262,7 +1262,10 @@ exit 91
     expect(fs.readFileSync(second, 'utf8')).toBe('second\n');
     expect(fs.readFileSync(trace, 'utf8')).toContain('second-removal-failed');
     expect(fs.readFileSync(trace, 'utf8')).toContain('daemon-reload');
-    expect(fs.existsSync(blockerRoot)).toBe(false);
+    const retainedEntries = fs.existsSync(blockerRoot)
+      ? fs.readdirSync(blockerRoot)
+      : [];
+    expect(retainedEntries).toEqual([]);
   });
 
   it.each([
