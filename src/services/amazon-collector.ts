@@ -100,12 +100,10 @@ export function isAmazonConfigured(): boolean {
 // ─── Anti-Detection Context Options ─────────────────────────────────
 
 /** Browser context options that reduce headless detection by Amazon. */
-export const AMAZON_BROWSER_LOCALE = 'en-US';
-
 const CONTEXT_OPTIONS = {
   userAgent:
     'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-  locale: AMAZON_BROWSER_LOCALE,
+  locale: 'es-ES',
   timezoneId: 'Europe/Madrid',
   viewport: { width: 1280, height: 800 },
 };
