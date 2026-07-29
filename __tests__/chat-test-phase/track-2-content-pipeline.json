@@ -37,13 +37,13 @@
       "forbidden_response_substring": ["verifiquei no pipeline", "verified_success"]
     },
     {
-      "id": "content-schedule-vs-published-es",
-      "user_text": "Publica este reel mañana",
-      "locale": "es-ES",
+      "id": "content-schedule-vs-published-en",
+      "user_text": "Publish this reel tomorrow",
+      "locale": "en-US",
       "expected_action": "content_publish_now",
       "expected_action_NOT": "content_pipeline_stage_transition",
       "expected_verifier": "refused",
-      "expected_response_substring": ["No puedo publicar", "No hice cambios"],
+      "expected_response_substring": ["I cannot publish", "I made no changes"],
       "forbidden_response_substring": ["stage transition", "verified_success"]
     }
   ]
