@@ -1,7 +1,7 @@
 {
   "schema": "nexus.release-state.v1",
-  "lastVerifiedAt": "2026-07-29T09:03:59.594Z",
-  "docsHead": "2d6caa4498f8454c8509ef0e0120d624517561a4",
+  "lastVerifiedAt": "2026-07-29T12:14:37Z",
+  "docsHead": "pending_content_commit",
   "backend": {
     "version": "4.14.231",
     "runtimeSha": "13ecc9da8aff96c8bcf512b2143ffdcf0c891467",
@@ -45,10 +45,15 @@
     "testFlightGroups": [
       "Nexus Hub Betinha"
     ],
-    "appStoreReviewState": "waiting_for_review",
+    "appStoreReviewState": "rejected",
     "appStoreSubmissionId": "85807d65-538d-40e8-9513-6bdfcaf42312",
     "appStoreReviewSubmittedAt": "2026-07-22T08:59:00Z",
     "appStoreReviewVerifiedAt": "2026-07-22T09:02:22Z",
+    "appStoreReviewRejectedAt": "2026-07-24",
+    "appStoreReviewRejectionGuidelines": [
+      "2.1(b)",
+      "5.1.1(v)"
+    ],
     "automaticReleaseAfterApproval": true,
     "ipaSha256": "5eeb35d43ae24fb16ef7d5bb631e8bbbdbe866f527150073a3dcdbf7a74bb2c8",
     "archiveBinarySha256": "b6f0215fab51f0d4d193cd4102e6c542bb56520e65669486af42aa117a1db7b5",
@@ -70,7 +75,7 @@
     "exactArtifactPath": "proven",
     "stagingRehearsals": 11,
     "ownerAuthorizedProductionReleases": 7,
-    "legacyWrappers": "pending_separate_owner_authorized_retirement",
+    "legacyWrappers": "retired",
     "firstProofRelease": {
       "version": "4.14.231",
       "runtimeSha": "13ecc9da8aff96c8bcf512b2143ffdcf0c891467",
@@ -85,11 +90,179 @@
       "transactionSeconds": 74.311,
       "readinessSeconds": 12.674,
       "soakSeconds": 61.636
+    },
+    "timingObservation": {
+      "observedReleases": 1,
+      "requiredReleases": 10,
+      "status": "collecting"
+    },
+    "nextCandidateProofs": [
+      "staging_failed_health_predecessor_recovery",
+      "server_transaction_survives_operator_disconnect"
+    ]
+  },
+  "serverDominguez": {
+    "ollama": {
+      "status": "healthy_small_only",
+      "listener": "127.0.0.1:11434",
+      "retainedModel": "qwen2.5:3b-instruct-q4_K_M",
+      "retainedModelDigest": "357c53fb659c5076de1d65ccb0b397446227b71a42be9d1603d46168015c9e4b",
+      "loadedModels": 1,
+      "maxLoadedModels": 1,
+      "parallelRequests": 1,
+      "queueDepth": 4,
+      "contextTokens": 4096,
+      "memoryHigh": "4G",
+      "memoryMax": "6G",
+      "swapMax": "512MiB",
+      "cpuQuota": "200%",
+      "geminiClassificationPrimary": true,
+      "removedModelTags": [
+        "gemma2:2b-instruct-q4_K_M",
+        "qwen3.6:27b-q4_K_M",
+        "qwen3.6:35b-a3b-q4_K_M"
+      ]
+    },
+    "sonarqube": {
+      "status": "healthy_private_advisory",
+      "projectKey": "nexus-hub-backend",
+      "listener": "127.0.0.1:9000",
+      "databaseHostPortPublished": false,
+      "sonarqubeImage": "sonarqube:26.7.0.124771-community@sha256:160bd2f6a3485bd09b655ef22dd63c02bd1fa7ba82aa5d9973fd010b8bcca0b3",
+      "postgresImage": "postgres:16@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777",
+      "sonarqubeCpuLimit": 2,
+      "sonarqubeMemoryLimit": "6GiB",
+      "postgresCpuLimit": 1,
+      "postgresMemoryLimit": "2GiB",
+      "baseline": {
+        "sourceSha": "f0d4047def0c5838d562f06326d2e6949fe49770",
+        "computeEngineTask": "f1b77963-d350-4b41-99df-2971c940ab86",
+        "analysisId": "abd072e6-680b-4244-a4fd-7f17b91b592f",
+        "computeEngineStatus": "SUCCESS",
+        "qualityGate": "OK",
+        "testsRunByScan": false,
+        "coverageImported": false,
+        "applicationLatencyRegressionWithinFivePercent": true
+      },
+      "dailyBackup": "healthy",
+      "retainedBackupCopies": 6,
+      "restoreDrill": "passed"
+    },
+    "operationsCloseout": {
+      "awsExit": {
+        "status": "complete_locked_application_bucket_only",
+        "sourceBucket": "nexus-application-dr-disasterrecoverybucket-qydfyzxnchxw",
+        "sourceRegion": "eu-west-1",
+        "objectVersionsExported": 17,
+        "exportedBytes": 1746397041,
+        "exportManifestSha256": "fc7f3bc0f2d0d247325d078be4046dd1fc0a838102b84e1128e03b3c2af99dd4",
+        "databaseRestoreProof": "passed",
+        "releaseBundleIsolatedExtraction": "passed",
+        "productionPathsTouched": false,
+        "providerCallsMadeDuringRestore": false,
+        "maxComplianceRetainUntil": "2027-02-03T16:24:28Z",
+        "serverWriters": {
+          "status": "removed",
+          "removedAt": "2026-07-29T11:33:44Z",
+          "exportPreserved": true,
+          "exportChecksumsVerifiedAfterCleanup": true,
+          "applicationHealthAfterRemoval": "healthy",
+          "localBackupConfig": "passed",
+          "localBackupFreshness": "passed"
+        },
+        "deletedCloudResources": {
+          "applicationDrStack": "nexus-application-dr",
+          "sonarBackupStack": "nexus-sonarqube-backup",
+          "sonarBackupBucket": "nexus-sonarqube-backup-sonarbackupbucket-h55fpmuzdw7k",
+          "costAnomalyMonitor": "d8103ed9-a006-4b82-80f1-efbf54d0f82c",
+          "costAnomalySubscription": "821f3b21-f7af-4ee2-a2bf-3688df09f927",
+          "ownedIamRoles": [
+            "NexusApplicationDrCloudFormationExecution",
+            "NexusSonarBackupCloudFormationExecution",
+            "NexusReleaseStackOperator",
+            "AWSServiceRoleForRolesAnywhere"
+          ],
+          "cloudWatchAlarms": [
+            "nexus-application-dr-roles-anywhere-activation-rollback",
+            "nexus-sonarqube-backup-roles-anywhere-activation-rollback"
+          ]
+        },
+        "applicationBucket": {
+          "status": "retained_compliance_locked",
+          "objectVersions": 17,
+          "retainUntil": "2027-02-03T16:24:28Z",
+          "onlyPermittedResidual": true,
+          "writerAccess": "revoked",
+          "deletion": "manual_after_retention_verification"
+        },
+        "postTeardownInventory": {
+          "activeNexusCloudFormationStacks": 0,
+          "nexusOwnedS3Buckets": 1,
+          "nexusOwnedUnlockedS3Buckets": 0,
+          "nexusOwnedIamRoles": 0,
+          "rolesAnywhereTrustAnchors": 0,
+          "rolesAnywhereProfiles": 0,
+          "rolesAnywhereCrlInventory": "stack_deleted_without_retention_direct_inventory_not_independently_enumerated",
+          "cloudWatchAlarms": 0,
+          "costAnomalyMonitors": 0,
+          "costAnomalySubscriptions": 0,
+          "serverAwsUnits": 0,
+          "serverAwsProfiles": 0,
+          "localNexusAwsProfiles": 0,
+          "localAwsSessionCaches": 0
+        },
+        "costExplorerPaidGranularity": "disabled",
+        "identityAndTelemetrySweep": "passed_no_nexus_owned_identity_or_telemetry_resources",
+        "serverCredentialCleanup": "completed",
+        "localCliSessionCleanup": "completed"
+      },
+      "legacyReleaseMachinery": {
+        "status": "complete",
+        "pm2Authority": "pm2-dominguez.service",
+        "handoffTransaction": "nexus-release-retirement-20260729T111724Z.service",
+        "retiredAllowlistedEntries": 51,
+        "preservedReleaseState": "/var/lib/nexus-release",
+        "kvmResidualCleanup": {
+          "transaction": "nexus-release-retirement-20260729T113728Z.service",
+          "releaseIdentity": "13ecc9da8aff96c8bcf512b2143ffdcf0c891467:027b75e8e5d964f62786a316b4e0c872b210442fa9fdd1e1895a1f12ed0495b6",
+          "result": "success",
+          "retiredAllowlistedEntries": 9,
+          "transactionCollected": true,
+          "retiredAccountAbsent": true,
+          "retiredGroupAbsent": true,
+          "canonicalPm2AuthorityHealthy": true,
+          "applicationEndpointsHealthy": 4
+        },
+        "preservationAudit": {
+          "status": "passed",
+          "finalDryRunPlanned": 0,
+          "handoffRequired": false,
+          "exactKvmPathsAbsent": 7,
+          "uid993OwnedPaths": 0,
+          "gid980OwnedPaths": 0,
+          "pm2AuthorityActive": true,
+          "pm2AuthorityEnabled": true,
+          "pm2PidMatchesPidfile": true,
+          "pm2RuntimeIdentityExact": true,
+          "healthyApplications": 4,
+          "healthyEndpoints": 4,
+          "preservedAssets": [
+            "sonarqube_tmpfiles_and_lock",
+            "/usr/local/share/nexus-release",
+            "/opt/nexus-release",
+            "/var/lib/nexus-release",
+            "lean_release_bootstrap",
+            "retirement_evidence"
+          ],
+          "failedTransactionCache": "cleared_journals_retained"
+        }
+      }
     }
   },
   "authorizationRequired": [
     "production_deploy",
     "remote_branch_deletion",
-    "testflight_build_expiry"
+    "testflight_build_expiry",
+    "locked_application_bucket_deletion_after_retention"
   ]
 }
