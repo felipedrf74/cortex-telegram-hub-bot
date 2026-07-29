@@ -6,6 +6,7 @@ import { logger } from '../utils/logger';
 import { getCurrentRequestId, generateRequestId } from '../utils/request-context';
 import type { AgentSignal } from './intelligence-bus';
 import { buildCurrentCreatorProfilePayload } from './content-engine-profile-payload';
+import { assertContentScriptOutputLanguage, ContentOutputLanguageMismatchError, normalizeContentOutputLanguage } from './content-output-language';
 import { createInternalAttributionToken } from './internal-attribution';
 import { requireTenantIdParam } from './tenant-scope';
 import { ForwardedAiBudgetError, parseForwardedAiBudgetError } from './content-engine-error-contract';
@@ -334,12 +335,7 @@ const MODE_CONFIG: Record<ScriptGenerationMode, { cacheTtl: number; signalDays: 
   deep:     { cacheTtl: 0,         signalDays: 90, timeoutMs: 300_000 },
 };
 
-function normalizeScriptLanguage(language?: string | null): string {
-  const normalized = String(language || 'pt-BR').trim().toLowerCase();
-  if (normalized.startsWith('en')) return 'en-US';
-  if (normalized === 'pt-pt' || normalized.includes('european')) return 'pt-PT';
-  return 'pt-BR';
-}
+function normalizeScriptLanguage(language?: string | null): string { return typeof language === 'string' && language.trim() ? normalizeContentOutputLanguage(language) : 'pt-BR'; }
 
 function normalizeScriptRenderMode(renderMode?: string | null): ScriptRenderMode {
   return String(renderMode || 'structured').trim().toLowerCase() === 'chat'
@@ -533,10 +529,14 @@ export async function getScript(
       const { getCached } = await import('./cache-store');
       const cached = getCached<ScriptResponse>(normalizedKey);
       if (cached) {
+        assertContentScriptOutputLanguage(normalizedLanguage, cached, 'content-engine-script-cache');
         logger.info(buildContentEngineCacheLogContext(topic, mode, true), 'Script cache hit — returning cached result');
         return cached;
       }
-    } catch { /* cache unavailable — generate fresh */ }
+    } catch (error) {
+      if (error instanceof ContentOutputLanguageMismatchError) throw error;
+      // Cache unavailable: generate fresh.
+    }
   }
 
   // ── Intelligence bus signals (skip for quick mode) ──────────────
@@ -598,6 +598,7 @@ export async function getScript(
   const result = providerBoundary
     ? await providerBoundary(invokeFreshProviderPath)
     : await invokeFreshProviderPath();
+  assertContentScriptOutputLanguage(normalizedLanguage, result, 'content-engine-script');
 
   // ── Cache store (skip for deep mode) ───────────────────────────
   if (executionPolicy.cache === 'default' && cfg.cacheTtl > 0 && (!forceRefresh || Boolean(regenerationSeed?.trim()))) {

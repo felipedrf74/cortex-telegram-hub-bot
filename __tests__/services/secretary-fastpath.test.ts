@@ -1055,6 +1055,9 @@ describe('secretary-fastpath / normalizeLangHeader', () => {
     ['en-US', 'en-US'],
     ['en-GB', 'en-US'],
     ['EN', 'en-US'],
+    ['es', 'en-US'],
+    ['es-419', 'en-US'],
+    ['es-ES', 'en-US'],
   ])('maps "%s" → %s', (input, expected) => {
     expect(normalizeLangHeader(input)).toBe(expected);
   });

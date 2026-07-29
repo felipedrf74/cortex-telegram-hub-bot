@@ -1,6 +1,6 @@
 {
   "schema": "nexus.capability-manifest.v2",
-  "version": "2026-07-20.1",
+  "version": "2026-07-29.1",
   "schemaReferences": {
     "nexus.chat-turn.input.v1": {
       "format": "typescript",

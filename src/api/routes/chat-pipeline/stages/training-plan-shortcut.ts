@@ -26,10 +26,15 @@ export const trainingPlanShortcutStage: ChatStage = {
     const {
       res, userId, tenantId, normalizedText, normalizedTextLower,
       scopedClientMessageId, userMessageId, chatRequestId, latency,
-      recordLegacyFallbackSample,
+      chatCoreV2RouteLocale, recordLegacyFallbackSample,
     } = preparedChatTurnCtx(ctx);
 
-    const trainingPlanShortcut = tryBuildTrainingPlanShortcutResponse(normalizedText, normalizedTextLower, userId);
+    const trainingPlanShortcut = tryBuildTrainingPlanShortcutResponse(
+      normalizedText,
+      normalizedTextLower,
+      userId,
+      chatCoreV2RouteLocale,
+    );
     if (!trainingPlanShortcut) return { kind: 'continue' };
 
     recordChatStage(chatRequestId, 'training_plan_shortcut');
@@ -46,6 +51,7 @@ export const trainingPlanShortcutStage: ChatStage = {
       actionability: 'preview',
       verificationStatus: 'not_required',
       stageFamily: 'training_plan_shortcut',
+      locale: chatCoreV2RouteLocale,
     });
     persistExchange(userId, userMessageId, normalizedText, response.id, response, tenantId, {
       clientMessageId: scopedClientMessageId,

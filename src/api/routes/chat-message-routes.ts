@@ -205,7 +205,7 @@ export function registerChatMessageRoutes(
         capabilityId: v2Claim.pending.capabilityId,
         userId,
         tenantId,
-        locale: getUserLanguageById(userId) || undefined,
+        locale: v2Claim.pending.locale ?? getUserLanguageById(userId) ?? undefined,
         now: new Date(confirmationStartedAt),
       });
       if (!execution.ok || !execution.response) {

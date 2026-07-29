@@ -9,6 +9,7 @@ import { getStoredDailyCostLimitUsdForTier } from './plan-quotas';
 import type { User } from './user-service';
 import { resolveCurrentTenantIdForUser } from './user-service';
 import { getIosJwtTokenLifetimeSeconds, signIosJwt } from './ios-jwt';
+import { normalizeSupportedLang } from '../utils/i18n';
 
 // AUTH-O4 (closed-beta-auth-hardening, 2026-05-04): refresh-token at-rest
 // hashing. The plaintext token leaves the server exactly once (returned
@@ -150,7 +151,7 @@ export function createAuthSessionAndRegisterDevice(input: CreateAuthSessionInput
       id: input.userId,
       firstName: input.user.first_name || 'User',
       lastName: input.user.last_name || undefined,
-      language: input.user.language || 'en',
+      language: normalizeSupportedLang(input.user.language, 'en-US'),
       // AUTH-O2 follow-up (2026-05-04): purely additive fields.
       // Older iOS builds ignore them by contract; newer builds
       // use them to drive the post-registration verification

@@ -54,9 +54,10 @@ export const DECISION_CENTER_ACTIONS: ChatActionDefinition[] = [
           expectedAction: null,
         },
         {
-          // Phase 13 batch 68 (2026-05-16): Spanish golden example.
+          // Phase 13 batch 68 (2026-05-16): Spanish-authored compatibility input; English response contract.
           text: 'Elige la opción B para la decisión #42',
-          locale: 'es',
+          requestLocale: 'es',
+          responseLocale: 'en',
           tags: ['golden'],
           expectedAction: 'decision_choose',
         },
@@ -98,9 +99,10 @@ export const DECISION_CENTER_ACTIONS: ChatActionDefinition[] = [
           expectedAction: 'decision_dismiss',
         },
         {
-          // Phase 14 batch 73 (2026-05-16): Spanish golden example.
+          // Phase 14 batch 73 (2026-05-16): Spanish-authored compatibility input; English response contract.
           text: 'Descarta esta decisión',
-          locale: 'es',
+          requestLocale: 'es',
+          responseLocale: 'en',
           tags: ['golden'],
           expectedAction: 'decision_dismiss',
         },
@@ -163,9 +165,10 @@ export const DECISION_CENTER_ACTIONS: ChatActionDefinition[] = [
           expectedAction: 'decision_snooze',
         },
         {
-          // Phase 14 batch 73 (2026-05-16): Spanish golden example.
+          // Phase 14 batch 73 (2026-05-16): Spanish-authored compatibility input; English response contract.
           text: 'Pospón la decisión #7',
-          locale: 'es',
+          requestLocale: 'es',
+          responseLocale: 'en',
           tags: ['golden'],
           expectedAction: 'decision_snooze',
         },
@@ -206,9 +209,10 @@ export const DECISION_CENTER_ACTIONS: ChatActionDefinition[] = [
           expectedAction: 'decision_follow_up',
         },
         {
-          // Phase 14 batch 73 (2026-05-16): Spanish golden example.
+          // Phase 14 batch 73 (2026-05-16): Spanish-authored compatibility input; English response contract.
           text: 'Sigue con la decisión #42 la próxima semana',
-          locale: 'es',
+          requestLocale: 'es',
+          responseLocale: 'en',
           tags: ['golden'],
           expectedAction: 'decision_follow_up',
         },

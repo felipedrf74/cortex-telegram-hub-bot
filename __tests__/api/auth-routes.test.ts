@@ -586,6 +586,26 @@ describe('Auth invite registration', () => {
     );
   });
 
+  it('returns the English compatibility locale in auth sessions without rewriting a legacy Spanish row', async () => {
+    const userId = Number(testDb.prepare(`
+      INSERT INTO users (email, first_name, language, auth_provider, daily_cost_limit_usd)
+      VALUES ('legacy-spanish-session@example.com', 'Legacy', 'es-ES', 'email', 0.05)
+    `).run().lastInsertRowid);
+    const { createAuthSessionAndRegisterDevice } = await import('../../src/services/ios-auth-session');
+
+    const session = createAuthSessionAndRegisterDevice({
+      userId,
+      deviceId: 'legacy-spanish-session-device',
+      deviceName: 'iPhone',
+      pushToken: null,
+      user: { first_name: 'Legacy', language: 'es-ES' },
+    });
+
+    expect(session.user.language).toBe('en-US');
+    expect(testDb.prepare('SELECT language FROM users WHERE id = ?').get(userId))
+      .toMatchObject({ language: 'es-ES' });
+  });
+
   it('advertises the actual configured lifetime for session creation and refresh', async () => {
     process.env.IOS_JWT_EXPIRY = '2h';
     const userId = Number(testDb.prepare(`
@@ -691,6 +711,36 @@ describe('Auth invite registration', () => {
       lastName: 'Dominguez',
       language: 'pt-BR',
     });
+  });
+
+  it('returns the English compatibility locale from /auth/me without rewriting a legacy Spanish row', async () => {
+    const userId = Number(testDb.prepare(`
+      INSERT INTO users (
+        email,
+        first_name,
+        language,
+        auth_provider,
+        daily_cost_limit_usd
+      )
+      VALUES ('legacy-spanish-me@example.com', 'Legacy', 'es-ES', 'email', 0.05)
+    `).run().lastInsertRowid);
+
+    const res = await dispatchAuth(
+      '/me',
+      undefined,
+      {
+        method: 'GET',
+        headers: {
+          'x-test-user-id': String(userId),
+          authorization: 'Bearer test-token',
+        },
+      },
+    );
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.data.language).toBe('en-US');
+    expect(testDb.prepare('SELECT language FROM users WHERE id = ?').get(userId))
+      .toMatchObject({ language: 'es-ES' });
   });
 
   it('reports /auth/me tier from canonical subscription entitlement', async () => {

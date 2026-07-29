@@ -31,7 +31,7 @@
  *   - requiredTier !== 'owner' (owner/admin-only capabilities are
  *     operational surfaces, not NL chat targets).
  * Excluded entries are reported by getClassifierDomainExclusions() so the
- * exclusion table is inspectable instead of implicit. As of the 2026-07-20.1
+ * exclusion table is inspectable instead of implicit. As of the 2026-07-29.1
  * manifest all 8 capabilities (secretary, triathlon, content, finance,
  * cooking, connections, notifications, decision_center) pass all three
  * criteria — the exclusion table is currently empty.

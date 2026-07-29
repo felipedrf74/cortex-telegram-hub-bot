@@ -9,7 +9,7 @@
  *   a. classify-shadow disagreement rows (agree=0) — text recovered by
  *      re-hashing recent chat-history user turns with the same HMAC scheme;
  *   b. online-eval sampler captures — text recovered via turn_id → messages;
- *   c. bilingual + locale-confusable eval fixture prompts (synthetic);
+ *   c. supported English + Portuguese eval fixture prompts (synthetic);
  *   d. recent chat-history turns whose routed domain is not supported by the
  *      manifest routing vocabulary for that utterance (suspicious routes).
  *
@@ -37,7 +37,9 @@ import {
   type CompiledCapabilityVocabulary,
 } from './intent-resolution/vocabulary';
 
-export const ROUTING_CORPUS_BUILDER_VERSION = 'routing-corpus-builder@1.0.0';
+export const ROUTING_CORPUS_BUILDER_VERSION = 'routing-corpus-builder@1.1.0';
+
+const UNSUPPORTED_SPANISH_FIXTURE_COUNT = 8;
 
 export type RoutingCorpusSource =
   | 'classify_shadow_disagreement'
@@ -171,6 +173,19 @@ export interface BuildRoutingCorpusOptions {
   vocabulary?: readonly CompiledCapabilityVocabulary[];
 }
 
+export interface PruneSpanishSyntheticRoutingCorpusFixturesOptions {
+  db?: Database.Database;
+  /** HMAC secret used when the fixture rows were built. */
+  secret: string;
+}
+
+export interface PruneSpanishSyntheticRoutingCorpusFixturesResult {
+  status: 'pruned' | 'already_absent';
+  expectedFixtures: number;
+  deletedItems: number;
+  deletedCacheEntries: number;
+}
+
 export function buildRoutingCorpus(options: BuildRoutingCorpusOptions): RoutingCorpusBuildSummary {
   const db = options.db ?? getDb();
   if (typeof options.secret !== 'string' || options.secret.length === 0) {
@@ -263,7 +278,7 @@ export function buildRoutingCorpus(options: BuildRoutingCorpusOptions): RoutingC
     });
   }
 
-  // (c) synthetic eval fixture prompts (pt + en + es-419 confusables).
+  // (c) synthetic eval fixture prompts for supported locales (pt + en).
   for (const fixture of CHAT_BILINGUAL_EVAL_FIXTURES) {
     const suggestedDomain = FIXTURE_SKILL_TO_DOMAIN[fixture.skill] ?? null;
     for (const prompt of [fixture.pt, fixture.en]) {
@@ -279,6 +294,7 @@ export function buildRoutingCorpus(options: BuildRoutingCorpusOptions): RoutingC
     }
   }
   for (const fixture of CHAT_LOCALE_CONFUSABLE_EVAL_FIXTURES) {
+    if (fixture.promptLocale !== 'pt-BR') continue;
     record({
       tenantId: 0,
       userId: null,
@@ -310,6 +326,162 @@ export function buildRoutingCorpus(options: BuildRoutingCorpusOptions): RoutingC
   }
 
   return summary;
+}
+
+/**
+ * Remove the retired es-419 synthetic fixture rows without treating language
+ * detection as deletion authority. Only the exact checked-in fixture text,
+ * its HMAC under the supplied corpus secret, and synthetic-row provenance are
+ * accepted.
+ *
+ * The all-or-nothing cardinality guard makes the operation safe to retry:
+ * either all eight fixture rows are present and pending, or none are. A
+ * partial/mismatched set, human labeling, or an accepted accuracy snapshot
+ * refuses the mutation.
+ */
+export function pruneSpanishSyntheticRoutingCorpusFixtures(
+  options: PruneSpanishSyntheticRoutingCorpusFixturesOptions,
+): PruneSpanishSyntheticRoutingCorpusFixturesResult {
+  const db = options.db ?? getDb();
+  if (typeof options.secret !== 'string' || options.secret.length === 0) {
+    throw new Error('pruneSpanishSyntheticRoutingCorpusFixtures requires the corpus HMAC secret');
+  }
+  ensureRoutingCorpusTables(db);
+
+  const fixtures = CHAT_LOCALE_CONFUSABLE_EVAL_FIXTURES
+    .filter((fixture) => fixture.promptLocale === 'es-419')
+    .map((fixture) => ({
+      text: fixture.prompt,
+      hash: hashRoutingUtterance(options.secret, fixture.prompt),
+    }));
+  if (fixtures.length !== UNSUPPORTED_SPANISH_FIXTURE_COUNT) {
+    throw new Error(
+      `Expected ${UNSUPPORTED_SPANISH_FIXTURE_COUNT} retired Spanish fixtures, found ${fixtures.length}`,
+    );
+  }
+
+  const hashes = fixtures.map((fixture) => fixture.hash);
+  const texts = fixtures.map((fixture) => fixture.text);
+  const placeholders = fixtures.map(() => '?').join(', ');
+  const prune = db.transaction(() => {
+    const rows = db.prepare(`
+      SELECT
+        id,
+        tenant_id AS tenantId,
+        user_id AS userId,
+        utterance_hash AS utteranceHash,
+        utterance_text AS utteranceText,
+        source,
+        label_domain AS labelDomain,
+        label_skill AS labelSkill,
+        label_status AS labelStatus,
+        labeled_at AS labeledAt
+      FROM routing_corpus_items
+      WHERE utterance_hash IN (${placeholders})
+         OR utterance_text IN (${placeholders})
+    `).all(...hashes, ...texts) as Array<{
+      id: number;
+      tenantId: number;
+      userId: number | null;
+      utteranceHash: string;
+      utteranceText: string | null;
+      source: string;
+      labelDomain: string | null;
+      labelSkill: string | null;
+      labelStatus: RoutingCorpusLabelStatus;
+      labeledAt: string | null;
+    }>;
+
+    if (rows.length !== 0 && rows.length !== fixtures.length) {
+      throw new Error(
+        `Refusing partial Spanish synthetic fixture set: expected ${fixtures.length} or 0 rows, found ${rows.length}`,
+      );
+    }
+
+    if (rows.length > 0) {
+      for (const fixture of fixtures) {
+        const matching = rows.filter((row) => (
+          row.utteranceHash === fixture.hash || row.utteranceText === fixture.text
+        ));
+        if (
+          matching.length !== 1
+          || matching[0].utteranceHash !== fixture.hash
+          || matching[0].utteranceText !== fixture.text
+          || matching[0].source !== 'bilingual_fixture'
+          || matching[0].tenantId !== 0
+          || matching[0].userId !== null
+        ) {
+          throw new Error('Refusing partial Spanish synthetic fixture set with mismatched identity or provenance');
+        }
+        if (
+          matching[0].labelStatus !== 'pending'
+          || matching[0].labelDomain !== null
+          || matching[0].labelSkill !== null
+          || matching[0].labeledAt !== null
+        ) {
+          throw new Error('Spanish synthetic fixtures must remain pending and unlabeled before pruning');
+        }
+      }
+    }
+
+    const matchingCacheEntries = db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM routing_llm_classify_cache
+      WHERE utterance_hash IN (${placeholders})
+    `).get(...hashes) as { count: number };
+    if (rows.length === 0 && matchingCacheEntries.count === 0) {
+      return {
+        status: 'already_absent' as const,
+        expectedFixtures: fixtures.length,
+        deletedItems: 0,
+        deletedCacheEntries: 0,
+      };
+    }
+
+    const acceptedSnapshots = db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM accepted_accuracy_snapshots
+      WHERE accepted = 1
+    `).get() as { count: number };
+    if (acceptedSnapshots.count > 0) {
+      throw new Error('Refusing to prune after an accepted routing accuracy snapshot exists');
+    }
+
+    const cacheResult = db.prepare(`
+      DELETE FROM routing_llm_classify_cache
+      WHERE utterance_hash IN (${placeholders})
+    `).run(...hashes);
+    let deletedItems = 0;
+    if (rows.length > 0) {
+      const itemResult = db.prepare(`
+        DELETE FROM routing_corpus_items
+        WHERE utterance_hash IN (${placeholders})
+          AND source = 'bilingual_fixture'
+          AND tenant_id = 0
+          AND user_id IS NULL
+          AND label_status = 'pending'
+          AND label_domain IS NULL
+          AND label_skill IS NULL
+          AND labeled_at IS NULL
+      `).run(...hashes);
+      deletedItems = itemResult.changes;
+      if (deletedItems !== fixtures.length) {
+        throw new Error(
+          `Spanish synthetic fixture prune changed ${deletedItems} rows; expected ${fixtures.length}`,
+        );
+      }
+    }
+    return {
+      status: 'pruned' as const,
+      expectedFixtures: fixtures.length,
+      deletedItems,
+      deletedCacheEntries: cacheResult.changes,
+    };
+  });
+
+  // BEGIN IMMEDIATE closes the portal-labeling/snapshot race between
+  // validation and deletion while keeping the transaction short.
+  return prune.immediate();
 }
 
 // ─── Labeling store (portal) ──────────────────────────────────────

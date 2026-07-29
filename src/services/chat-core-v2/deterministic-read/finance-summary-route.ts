@@ -129,7 +129,6 @@ function buildFinanceSummaryText(data: ChatCoreV2FinanceSummaryData, locale: str
   if (data.transactionCount === 0) {
     if (normalizedLocale === 'pt-BR') return `Ainda não há movimentos financeiros registados para ${data.month}.`;
     if (normalizedLocale === 'pt-PT') return `Ainda não há movimentos financeiros registados para ${data.month}.`;
-    if (normalizedLocale === 'es') return `Todavía no hay movimientos financieros registrados para ${data.month}.`;
     return `No finance transactions are logged for ${data.month} yet.`;
   }
 
@@ -152,13 +151,11 @@ function buildFinanceSummaryHeader(
 
   if (locale === 'pt-BR') return `Resumo financeiro de ${data.month}: ${joined}, em ${transactions}.`;
   if (locale === 'pt-PT') return `Resumo financeiro de ${data.month}: ${joined}, em ${transactions}.`;
-  if (locale === 'es') return `Resumen financiero de ${data.month}: ${joined}, en ${transactions}.`;
   return `Finance summary for ${data.month}: ${joined}, across ${transactions}.`;
 }
 
 function transactionPhrase(count: number, locale: ChatCoreV2NormalizedLocale): string {
   if (locale === 'pt-BR' || locale === 'pt-PT') return `${count} ${plural(count, 'movimento', 'movimentos')}`;
-  if (locale === 'es') return `${count} ${plural(count, 'movimiento', 'movimientos')}`;
   return `${count} ${plural(count, 'transaction', 'transactions')}`;
 }
 
@@ -197,11 +194,6 @@ function moneyPhrase(
     if (kind === 'expenses') return `${value} de gastos`;
     return `${value} líquidos`;
   }
-  if (locale === 'es') {
-    if (kind === 'income') return `${value} de ingresos`;
-    if (kind === 'expenses') return `${value} de gastos`;
-    return `${value} netos`;
-  }
   if (kind === 'income') return `${value} income`;
   if (kind === 'expenses') return `${value} expenses`;
   return `${value} net`;
@@ -218,13 +210,6 @@ function detailPhrase(
     if (kind === 'recurring') return `Compromissos recorrentes ainda prováveis: ${value}`;
     if (kind === 'affordability') return `Modo de orçamento: ${value}`;
     return `Fiabilidade: ${value}`;
-  }
-  if (locale === 'es') {
-    if (kind === 'current') return `Disponible ahora: ${value}`;
-    if (kind === 'projected') return `Disponible proyectado: ${value}`;
-    if (kind === 'recurring') return `Compromisos recurrentes probables: ${value}`;
-    if (kind === 'affordability') return `Modo de presupuesto: ${value}`;
-    return `Fiabilidad: ${value}`;
   }
   if (kind === 'current') return `Current headroom: ${value}`;
   if (kind === 'projected') return `Projected headroom: ${value}`;

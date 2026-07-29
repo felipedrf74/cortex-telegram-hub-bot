@@ -6,6 +6,7 @@ import {
   ensureContentTenantScopeColumns,
   resolveContentTenantId,
 } from '../services/content-tenant-scope';
+import { normalizeContentOutputLanguage } from '../services/content-output-language';
 import { logger } from '../utils/logger';
 
 // ─────────────────────────────────────────────────────────────────────
@@ -110,7 +111,10 @@ function rowToProfile(row: Record<string, unknown> | undefined): ContentCreatorP
     trustedSources: safeParseStringArray(row.trusted_sources_json),
     dislikedSources: safeParseStringArray(row.disliked_sources_json),
     contentGoals: safeParseStringArray(row.content_goals_json),
-    languagePreference: typeof row.language_preference === 'string' ? row.language_preference : '',
+    // Project legacy/raw rows at the read boundary. This intentionally does
+    // not update the stored value; historical data remains byte-for-byte
+    // intact until the owner makes a new profile write.
+    languagePreference: normalizeContentOutputLanguage(row.language_preference),
     voiceExamples: safeParseStringArray(row.voice_examples_json),
     updatedAt: typeof row.updated_at === 'string' ? row.updated_at : null,
   };
@@ -161,9 +165,7 @@ export function sanitizeContentCreatorProfile(input: unknown): ContentCreatorPro
     trustedSources: sanitizeStringArray(o.trustedSources),
     dislikedSources: sanitizeStringArray(o.dislikedSources),
     contentGoals: sanitizeStringArray(o.contentGoals),
-    languagePreference: typeof o.languagePreference === 'string'
-      ? o.languagePreference.trim().slice(0, 16)
-      : '',
+    languagePreference: normalizeContentOutputLanguage(o.languagePreference),
     voiceExamples: sanitizeStringArray(o.voiceExamples, 25, 600),
   };
 }

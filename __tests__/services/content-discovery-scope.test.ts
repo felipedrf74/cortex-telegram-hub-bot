@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   withAiBudgetReservation: vi.fn(),
   isDuplicateIdea: vi.fn(async () => ({ isDuplicate: false, confidence: 0 })),
   captureDiscoveredIdea: vi.fn(() => ({ replayed: false })),
+  getUserLanguage: vi.fn(() => 'en-US'),
 }));
 
 vi.mock('../../src/services/cost-guardrail', () => ({
@@ -34,7 +35,7 @@ vi.mock('../../src/portal/anthropic-hook', () => ({
 }));
 
 vi.mock('../../src/services/user-service', () => ({
-  getUserLanguage: vi.fn(() => 'en-US'),
+  getUserLanguage: (...args: unknown[]) => mocks.getUserLanguage(...args),
 }));
 
 vi.mock('../../src/services/content-dedup', () => ({
@@ -51,6 +52,7 @@ describe('content discovery user scope', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.withAiBudgetReservation.mockImplementation(async (_request, providerCall) => providerCall());
+    mocks.getUserLanguage.mockReturnValue('en-US');
   });
 
   it('rejects missing or invalid user scope before provider calls or saved-idea writes', async () => {
@@ -109,5 +111,43 @@ describe('content discovery user scope', () => {
     }));
     expect(writeSpy).not.toHaveBeenCalled();
     writeSpy.mockRestore();
+  });
+
+  it('rejects mismatched provider output before any discovered idea is persisted or returned', async () => {
+    mocks.completeOneShotWithSearch.mockResolvedValueOnce({
+      text: [
+        '# Ideas de contenido — 2026-07-17',
+        '## Idea 1: Cómo organizar todas tus tareas',
+        '**Por qué ahora:** Muchas personas necesitan una solución clara esta semana.',
+        '**Hook:** ¿Quieres transformar tu rutina desde hoy?',
+      ].join('\n'),
+      sources: ['https://example.test/fresh-source'],
+    });
+
+    await expect(runContentDiscovery({ userId: 42, tenantId: 42 })).rejects.toMatchObject({
+      code: 'CONTENT_OUTPUT_LOCALE_MISMATCH',
+      boundary: 'content-discovery',
+    });
+
+    expect(mocks.captureDiscoveredIdea).not.toHaveBeenCalled();
+  });
+
+  it('rejects a Spanish idea line even when the rest of the discovery document is English', async () => {
+    mocks.completeOneShotWithSearch.mockResolvedValueOnce({
+      text: [
+        '# Content Ideas — 2026-07-17',
+        'This report explains the current creator landscape in English with grounded context and clear recommendations.',
+        '## Idea 1: Cómo organizar tus tareas',
+        '**Why now:** Teams need a reliable workflow this week.',
+        '**Hook:** Start with one concrete review.',
+      ].join('\n'),
+      sources: ['https://example.test/fresh-source'],
+    });
+
+    await expect(runContentDiscovery({ userId: 42, tenantId: 42 })).rejects.toMatchObject({
+      code: 'CONTENT_OUTPUT_LOCALE_MISMATCH',
+      boundary: 'content-discovery',
+    });
+    expect(mocks.captureDiscoveredIdea).not.toHaveBeenCalled();
   });
 });

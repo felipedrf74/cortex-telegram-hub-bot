@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const agentMocks = vi.hoisted(() => ({
   completeOneShotWithFallback: vi.fn(),
   withAiBudgetReservation: vi.fn(),
+  getUserLanguage: vi.fn(() => 'en-US'),
 }));
 
 vi.mock('../../src/services/gemini-provider', async () => {
@@ -24,6 +25,13 @@ vi.mock('../../src/services/cost-guardrail', async (importOriginal) => {
   return {
     ...actual,
     withAiBudgetReservation: (...args: unknown[]) => agentMocks.withAiBudgetReservation(...args),
+  };
+});
+vi.mock('../../src/services/user-service', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/services/user-service')>();
+  return {
+    ...actual,
+    getUserLanguage: (...args: unknown[]) => agentMocks.getUserLanguage(...args),
   };
 });
 import {
@@ -72,6 +80,8 @@ describe('canonical Content specialist jobs', () => {
     agentMocks.completeOneShotWithFallback.mockRejectedValue(new Error('specialist provider unavailable'));
     agentMocks.withAiBudgetReservation.mockReset();
     agentMocks.withAiBudgetReservation.mockImplementation(async (_request, callback) => callback());
+    agentMocks.getUserLanguage.mockReset();
+    agentMocks.getUserLanguage.mockReturnValue('en-US');
   });
 
   afterEach(() => db.close());
@@ -336,6 +346,116 @@ describe('canonical Content specialist jobs', () => {
     ))).toBe(true);
     expect(listContentRevisions(OWNER, fixture.artifact.id, db)).toEqual(before);
     expect(JSON.stringify(completed)).not.toContain('{"unexpected":true}');
+  });
+
+  it('contains mismatched specialist output before provider bytes can become a proposal', async () => {
+    const fixture = seedFixture(db, 'provider-language-containment');
+    const leakedSpanish = 'Aquí tienes el guion completo para organizar todas tus tareas.';
+    agentMocks.completeOneShotWithFallback.mockImplementation(async (
+      _system: unknown,
+      _user: unknown,
+      rawCategory: unknown,
+    ) => {
+      const role = String(rawCategory).replace('content_agent_', '') as ContentAgentRole;
+      if (role !== 'writer') return validProviderCompletion(role, 'gemini');
+      return {
+        provider: 'gemini',
+        text: JSON.stringify({
+          schemaVersion: 'content-agent-specialist-output-v1',
+          role,
+          title: 'Borrador completo',
+          summary: 'Preparé una propuesta clara para revisar.',
+          warnings: [],
+          nextAction: 'Revisa el resultado antes de aceptar los cambios.',
+          proposal: {
+            title: 'Opción de guion',
+            summary: 'Una propuesta editable para el contenido.',
+            reason: 'Mejora la estructura y mantiene el objetivo.',
+            markdown: `# Guion\n\n${leakedSpanish}`,
+          },
+        }),
+      };
+    });
+
+    const completed = await runFixtureJob(db, fixture, 'provider-language-containment');
+    const writer = completed.steps.find((step) => step.role === 'writer')!;
+    const writerProposal = completed.proposals.find((proposal) => proposal.role === 'writer')!;
+    const writerSystemPrompt = String(
+      agentMocks.completeOneShotWithFallback.mock.calls
+        .find((call) => call[2] === 'content_agent_writer')?.[0] ?? '',
+    );
+
+    expect(writerSystemPrompt).toContain('Generate every user-facing field only in English.');
+    expect(writer.summary).toMatchObject({
+      basis: 'package_derived',
+      fallbackReason: 'provider_output_invalid',
+    });
+    expect(writerProposal).toMatchObject({
+      reviewBasis: 'package_derived',
+      fallbackReason: 'provider_output_invalid',
+    });
+    expect(JSON.stringify(completed)).not.toContain(leakedSpanish);
+    expect(JSON.stringify(completed)).not.toContain('Borrador completo');
+  });
+
+  it('rejects one Spanish provider field even when the remaining specialist output is English', async () => {
+    const fixture = seedFixture(db, 'provider-field-language-containment');
+    agentMocks.completeOneShotWithFallback.mockImplementation(async (
+      _system: unknown,
+      _user: unknown,
+      rawCategory: unknown,
+    ) => {
+      const role = String(rawCategory).replace('content_agent_', '') as ContentAgentRole;
+      if (role !== 'writer') return validProviderCompletion(role, 'gemini');
+      const valid = validProviderCompletion(role, 'gemini');
+      const parsed = JSON.parse(valid.text);
+      parsed.title = 'Cómo organizar tus tareas';
+      return { ...valid, text: JSON.stringify(parsed) };
+    });
+
+    const completed = await runFixtureJob(db, fixture, 'provider-field-language-containment');
+    const writer = completed.steps.find((step) => step.role === 'writer')!;
+
+    expect(writer.summary).toMatchObject({
+      basis: 'package_derived',
+      fallbackReason: 'provider_output_invalid',
+    });
+    expect(JSON.stringify(completed)).not.toContain('Cómo organizar tus tareas');
+  });
+
+  it('suppresses a preserved Spanish package draft instead of materializing a new fallback proposal', async () => {
+    const fixture = seedFixture(db, 'spanish-package-containment', (pkg) => ({
+      ...pkg,
+      scriptVariants: pkg.scriptVariants.map((variant) => ({
+        ...variant,
+        title: 'Cómo organizar tus tareas',
+        coldOpen: 'Aquí tienes el guion completo.',
+        promise: 'Aprenderás cómo mejorar tu rutina.',
+        beats: ['Revisa todas tus tareas.', 'Elige la próxima acción.'],
+        payoff: 'Tendrás una rutina más clara.',
+        cta: 'Comparte este vídeo con alguien.',
+      })),
+    }));
+
+    const completed = await runFixtureJob(db, fixture, 'spanish-package-containment');
+
+    expect(completed.proposals).toEqual([]);
+    expect(JSON.stringify(completed)).not.toContain('Cómo organizar tus tareas');
+    expect(JSON.stringify(completed)).not.toContain('Aquí tienes el guion completo.');
+  });
+
+  it('localizes provider-unavailable fallback summaries for a Portuguese user', async () => {
+    agentMocks.getUserLanguage.mockReturnValue('pt-BR');
+    const fixture = seedFixture(db, 'portuguese-fallback-copy');
+
+    const completed = await runFixtureJob(db, fixture, 'portuguese-fallback-copy');
+
+    expect(completed.steps.every((step) => (
+      step.summary.summary.includes('pacote')
+      || step.summary.summary.includes('revisão')
+      || step.summary.summary.includes('fontes')
+    ))).toBe(true);
+    expect(JSON.stringify(completed.steps)).not.toContain('Model-backed specialist review was unavailable');
   });
 
   it('uses the same proposal engine with an explicit budget-derived fallback', async () => {

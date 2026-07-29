@@ -16,6 +16,9 @@ const hoisted = vi.hoisted(() => ({
   deterministicReadEvidence: vi.fn(),
   legacyFallback: vi.fn(),
   legacyFallbackAttribution: vi.fn(),
+  getUserLanguage: vi.fn(() => 'en-US'),
+  setUserLanguage: vi.fn(),
+  deterministicReadRoute: vi.fn(() => null),
 }));
 
 vi.mock('../../../src/services/chat-core-v2', async (importOriginal) => {
@@ -25,6 +28,7 @@ vi.mock('../../../src/services/chat-core-v2', async (importOriginal) => {
     shouldGateReadFastPathsForWriteIntent: (...args: unknown[]) => hoisted.shouldGateReadFastPaths(...args as []),
     incrementLegacyFallback: (...args: unknown[]) => hoisted.legacyFallback(...args as []),
     incrementLegacyFallbackAttribution: (...args: unknown[]) => hoisted.legacyFallbackAttribution(...args as []),
+    tryBuildChatCoreV2DeterministicReadRoute: (...args: unknown[]) => hoisted.deterministicReadRoute(...args as []),
   };
 });
 
@@ -40,9 +44,9 @@ vi.mock('../../../src/services/chat-deterministic-read-evidence', async () => ({
 
 vi.mock('../../../src/services/user-service', async () => ({
   ...(await vi.importActual('../../../src/services/user-service')),
-  getUserLanguageById: vi.fn(() => 'en-US'),
+  getUserLanguageById: (...args: unknown[]) => hoisted.getUserLanguage(...args as []),
   getUserTimezoneById: vi.fn(() => 'Europe/Lisbon'),
-  setUserLanguage: vi.fn(),
+  setUserLanguage: (...args: unknown[]) => hoisted.setUserLanguage(...args as []),
 }));
 
 vi.mock('../../../src/services/database', async () => ({
@@ -101,6 +105,8 @@ function ctxWith(overrides: Partial<ChatTurnCtx> & Record<string, unknown> = {})
 
 afterEach(() => {
   vi.clearAllMocks();
+  hoisted.getUserLanguage.mockReturnValue('en-US');
+  hoisted.deterministicReadRoute.mockReturnValue(null);
   delete process.env.CHAT_CORE_V2_SHADOW_ROUTE_HOOK_ENABLED;
   delete process.env.CHAT_RESEARCH_ROUTER_ENABLED;
 });
@@ -136,6 +142,24 @@ describe('canHandle predicates', () => {
     expect(early.canHandle(ctxWith({ bypassReadFastPathsForWriteIntent: true }))).toBe(true);
     expect(gated.canHandle(ctxWith({ bypassReadFastPathsForWriteIntent: true }))).toBe(false);
     expect(early.canHandle(ctxWith({ normalizedAttachments: [{} as never] }))).toBe(false);
+  });
+
+  it('uses the resolved English response locale for the early read after a retired Spanish override', async () => {
+    hoisted.getUserLanguage.mockReturnValue('pt-BR');
+    const early = createChatCoreV2DeterministicReadStage('early');
+
+    const result = await early.handle(ctxWith({
+      normalizedText: 'Muestra mis tareas de hoy',
+      normalizedTextLower: 'muestra mis tareas de hoy',
+      chatCoreV2RouteLocale: 'en-US',
+    }));
+
+    expect(result).toEqual({ kind: 'continue' });
+    expect(hoisted.deterministicReadRoute).toHaveBeenCalledWith(expect.objectContaining({
+      normalizedText: 'Muestra mis tareas de hoy',
+      locale: 'en-US',
+    }));
+    expect(hoisted.getUserLanguage).not.toHaveBeenCalled();
   });
 
   it('shadow_route_recording follows the runtime flag (default off)', () => {
@@ -245,6 +269,74 @@ describe('turn_context handle', () => {
     expect(patch.bypassReadFastPathsForWriteIntent).toBe(false);
     expect(hoisted.shouldGateReadFastPaths).not.toHaveBeenCalled();
   });
+
+  it('attributes a retired Spanish override to the resolved English response locale without rewriting the profile', async () => {
+    hoisted.getUserLanguage.mockReturnValue('pt-BR');
+    const req = {
+      header: (name: string) => name.toLowerCase() === 'x-language' ? 'es-419' : undefined,
+      body: {},
+    } as unknown as Request;
+    const result = await turnContextStage.handle(ctxWith({
+      req,
+      normalizedText: 'Muestra mis tareas de hoy',
+      normalizedTextLower: 'muestra mis tareas de hoy',
+    }));
+    const patch = (result as { kind: 'continue'; patch: Partial<ChatTurnCtx> }).patch;
+
+    expect(patch.chatCoreV2RouteLocale).toBe('en');
+    patch.recordChatV2CompletionEvidenceForImmediateResponse?.({ text: 'Here are your tasks.' });
+    expect(hoisted.completionEvidence).toHaveBeenCalledWith(expect.objectContaining({
+      userLanguage: 'en',
+      responseLocale: 'en',
+    }));
+    expect(hoisted.setUserLanguage).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'Crea una tarea llamada comprar leche',
+    'Cancela la tarea comprar leche',
+    'Elimina la tarea comprar leche',
+  ])(
+    'maps a headerless retired-Spanish command to English instead of inheriting the Portuguese profile: %s',
+    async (message) => {
+      hoisted.getUserLanguage.mockReturnValue('pt-BR');
+      const req = {
+        header: () => undefined,
+        body: {},
+      } as unknown as Request;
+
+      const result = await turnContextStage.handle(ctxWith({
+        req,
+        normalizedText: message,
+        normalizedTextLower: message.toLowerCase(),
+      }));
+      const patch = (result as { kind: 'continue'; patch: Partial<ChatTurnCtx> }).patch;
+
+      expect(patch.chatCoreV2RouteLocale).toBe('en');
+      expect(hoisted.setUserLanguage).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['Spanish', 'Español', 'Castellano'])(
+    'maps the named retired %s header to English even for neutral text and a Portuguese profile',
+    async (headerValue) => {
+      hoisted.getUserLanguage.mockReturnValue('pt-BR');
+      const req = {
+        header: (name: string) => name.toLowerCase() === 'x-language' ? headerValue : undefined,
+        body: {},
+      } as unknown as Request;
+
+      const result = await turnContextStage.handle(ctxWith({
+        req,
+        normalizedText: '12345',
+        normalizedTextLower: '12345',
+      }));
+      const patch = (result as { kind: 'continue'; patch: Partial<ChatTurnCtx> }).patch;
+
+      expect(patch.chatCoreV2RouteLocale).toBe('en');
+      expect(hoisted.setUserLanguage).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe('completion_evidence handle', () => {
@@ -263,6 +355,7 @@ describe('completion_evidence handle', () => {
       tenantId: 42,
       userId: 42,
       requestId: 'req-test',
+      responseLocale: 'en-US',
       response: { text: 'hi' },
     });
   });

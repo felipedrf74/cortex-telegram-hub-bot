@@ -10,6 +10,7 @@ import {
   resolveScriptStyle,
   resolveScriptTargetLanguage,
 } from '../../src/api/routes/content-script-route-utils';
+import { assertContentScriptPublicOutputLanguage } from '../../src/services/content-output-language';
 
 describe('content script route contract utilities', () => {
   afterEach(() => {
@@ -39,7 +40,10 @@ describe('content script route contract utilities', () => {
   it('prefers explicit language and safely falls back to the user preference', () => {
     expect(resolveScriptTargetLanguage('pt-PT', 12, () => 'en')).toBe('pt-PT');
     expect(resolveScriptTargetLanguage('  pt-BR  ', 12, () => 'en')).toBe('pt-BR');
-    expect(resolveScriptTargetLanguage(undefined, 12, () => 'en')).toBe('en');
+    expect(resolveScriptTargetLanguage(undefined, 12, () => 'en')).toBe('en-US');
+    expect(resolveScriptTargetLanguage('es-ES', 12, () => 'pt-BR')).toBe('en-US');
+    expect(resolveScriptTargetLanguage(undefined, 12, () => 'es-419')).toBe('en-US');
+    expect(resolveScriptTargetLanguage('de-DE', 12, () => 'pt-BR')).toBe('en-US');
     expect(resolveScriptTargetLanguage(undefined, 12, () => null)).toBe('pt-BR');
     expect(resolveScriptTargetLanguage(undefined, 12, () => {
       throw new Error('user preferences unavailable');
@@ -403,5 +407,46 @@ describe('content script route contract utilities', () => {
       expect(response.generation.cacheHit, variant.name).toBe(variant.cacheHit);
       expect(response.degraded, variant.name).toBe(variant.degraded);
     }
+  });
+
+  it('keeps every deterministic public response field in Portuguese', () => {
+    const response = buildScriptSuccessResponse({
+      result: {
+        topic: 'Rotina de conteúdo',
+        script: 'Comece pelo resultado concreto.\nMostre uma fonte e um exemplo.\nTermine com uma ação simples.',
+        hook: '',
+        title_options: ['Uma rotina de conteúdo fiável'],
+        sources_used: [],
+        warnings: [],
+      },
+      language: 'pt-BR',
+      format: 'Reel',
+      renderMode: 'structured',
+      scriptStyle: 'detailed',
+      generationMode: 'draft',
+      startMs: Date.now() - 100,
+      cacheHit: false,
+      qualityGate: {
+        qualityScore: 88,
+        qualityWarnings: ['needs_expansion'],
+        needsExpansion: true,
+        needsResearchRefresh: false,
+      },
+    });
+
+    expect(response.cta).not.toMatch(/\b(?:save|pick)\b/i);
+    expect(response.expandOptions.map((option) => option.label).join(' ')).not.toMatch(
+      /\b(?:expand|rewrite|title|caption|refresh|thumbnail)\b/i,
+    );
+    expect(response.nextActions.map((option: any) => option.label).join(' ')).not.toMatch(
+      /\b(?:expand|hook|title|caption|refresh|thumbnail)\b/i,
+    );
+    expect(JSON.stringify(response.scriptStructure)).not.toContain('First frame');
+    expect(response.qualityWarnings.join(' ')).not.toContain('Draft needs expansion');
+    expect(assertContentScriptPublicOutputLanguage(
+      'pt-BR',
+      response,
+      'content-script-public-test',
+    )).toBe('pt-BR');
   });
 });

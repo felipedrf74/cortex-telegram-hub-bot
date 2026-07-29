@@ -377,7 +377,7 @@ describe('ChatActionPlanner multi-step DAG', () => {
       locale: 'es-419',
       domain: 'content',
       skills: ['content'],
-      terms: ['contenido', 'ideas'],
+      terms: ['content', 'ideas'],
     },
     {
       text: 'Use my saved books and channel references.',

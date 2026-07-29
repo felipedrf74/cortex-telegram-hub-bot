@@ -9,6 +9,7 @@ let testDb: Database.Database;
 const agentRouteMocks = vi.hoisted(() => ({
   completeOneShotWithFallback: vi.fn(),
   withAiBudgetReservation: vi.fn(),
+  getUserLanguage: vi.fn(() => 'en-US'),
 }));
 
 vi.mock('../../src/services/database', async () => {
@@ -43,6 +44,14 @@ vi.mock('../../src/services/cost-guardrail', async (importOriginal) => {
   return {
     ...actual,
     withAiBudgetReservation: (...args: unknown[]) => agentRouteMocks.withAiBudgetReservation(...args),
+  };
+});
+
+vi.mock('../../src/services/user-service', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/services/user-service')>();
+  return {
+    ...actual,
+    getUserLanguage: (...args: unknown[]) => agentRouteMocks.getUserLanguage(...args),
   };
 });
 
@@ -83,6 +92,8 @@ describe('content agent job routes', () => {
     agentRouteMocks.completeOneShotWithFallback.mockRejectedValue(new Error('specialist provider unavailable'));
     agentRouteMocks.withAiBudgetReservation.mockReset();
     agentRouteMocks.withAiBudgetReservation.mockImplementation(async (_request, callback) => callback());
+    agentRouteMocks.getUserLanguage.mockReset();
+    agentRouteMocks.getUserLanguage.mockReturnValue('en-US');
   });
 
   afterEach(() => testDb.close());

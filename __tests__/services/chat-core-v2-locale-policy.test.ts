@@ -16,7 +16,7 @@ describe('Chat Core v2 locale policy', () => {
     expect(normalizeChatCoreV2TemplateLocale('pt-PT')).toBe('pt-PT');
     expect(normalizeChatCoreV2TemplateLocale('pt')).toBe('pt-PT');
     expect(normalizeChatCoreV2TemplateLocale('pt-AO')).toBe('pt-PT');
-    expect(normalizeChatCoreV2TemplateLocale('es')).toBe('es');
+    expect(normalizeChatCoreV2TemplateLocale('es')).toBe('en');
     expect(normalizeChatCoreV2TemplateLocale('en-GB')).toBe('en');
     expect(normalizeChatCoreV2TemplateLocale('fr-FR')).toBe('en');
     expect(normalizeChatCoreV2TemplateLocale(null)).toBe('en');
@@ -27,7 +27,7 @@ describe('Chat Core v2 locale policy', () => {
       userLocale: 'en-US',
       previousConversationLocale: 'pt-PT',
       detectedUserLanguage: 'es',
-    })).toBe('es');
+    })).toBe('en');
 
     expect(chooseChatCoreV2Locale({
       userLocale: 'en-US',
@@ -45,10 +45,10 @@ describe('Chat Core v2 locale policy', () => {
     expect(chatCoreV2Text('pt-PT', 'pré-visualização', 'prévia', 'preview')).toBe('pré-visualização');
     expect(chatCoreV2Text('pt-BR', 'pré-visualização', 'prévia', 'preview')).toBe('prévia');
     expect(chatCoreV2Text('en-US', 'pré-visualização', 'prévia', 'preview')).toBe('preview');
-    expect(chatCoreV2Text('es-ES', 'pré-visualização', 'prévia', 'preview', 'vista previa')).toBe('vista previa');
+    expect(chatCoreV2Text('es-ES', 'pré-visualização', 'prévia', 'preview')).toBe('preview');
   });
 
-  it('renders deterministic templates in EN, PT-PT, PT-BR, and ES', () => {
+  it('renders deterministic templates in EN, PT-PT, and PT-BR with ES falling back to EN', () => {
     expect(renderChatCoreV2Template({
       locale: 'en-US',
       key: 'action_completed',
@@ -68,7 +68,7 @@ describe('Chat Core v2 locale policy', () => {
     expect(renderChatCoreV2Template({
       locale: 'es-ES',
       key: 'unsupported',
-    })).toContain('Todavía no puedo hacerlo directamente');
+    })).toContain("I can't do that directly yet");
   });
 
   it('keeps exact user-provided titles and identifiers out of translation logic', () => {
@@ -88,7 +88,7 @@ describe('Chat Core v2 locale policy', () => {
     expect(formatChatCoreV2DateTime(value, 'en-US', 'UTC')).toContain('May');
     expect(formatChatCoreV2DateTime(value, 'pt-PT', 'Europe/Lisbon')).toContain('15:30');
     expect(formatChatCoreV2DateTime(value, 'pt-BR', 'America/Sao_Paulo')).toContain('11:30');
-    expect(formatChatCoreV2DateTime(value, 'es-ES', 'Europe/Madrid')).toContain('16:30');
+    expect(formatChatCoreV2DateTime(value, 'es-ES', 'Europe/Madrid')).toContain('4:30');
   });
 
   it('exposes every deterministic template key for coverage and eval generation', () => {

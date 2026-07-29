@@ -11,7 +11,7 @@ import { getDb } from './database';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import crypto from 'crypto';
-import type { Lang } from '../utils/i18n';
+import { normalizeSupportedLang, type Lang } from '../utils/i18n';
 import { hashEmail } from '../utils/identity';
 import { getStoredDailyCostLimitUsdForTier } from './plan-quotas';
 
@@ -661,7 +661,7 @@ export function touchUser(telegramId: number): void {
 
 export function getUserLanguage(userRef: number): Lang {
   const user = getUserByAnyIdentifier(userRef);
-  return (user?.language as Lang) || 'pt-BR';
+  return normalizeSupportedLang(user?.language, 'pt-BR');
 }
 
 /**
@@ -673,7 +673,7 @@ export function getUserLanguage(userRef: number): Lang {
  */
 export function getUserLanguageById(userId: number): Lang {
   const user = getUserById(userId);
-  return (user?.language as Lang) || 'pt-BR';
+  return normalizeSupportedLang(user?.language, 'pt-BR');
 }
 
 export function getUserTimezone(userRef: number | null | undefined): string {

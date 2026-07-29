@@ -3,6 +3,7 @@
 import { normalizeLangHeader } from '../../services/secretary-fastpath';
 import { getUserLanguageById, setUserLanguage } from '../../services/user-service';
 import { logger } from '../../utils/logger';
+import { isRetiredSpanishLocaleSignal } from '../../utils/i18n';
 import { normalizeChatAttachment, type ChatImageAttachment } from './chat-attachments';
 
 type HeaderReadable = {
@@ -41,6 +42,13 @@ export function persistChatLanguagePreference(req: HeaderReadable, userId: numbe
   try {
     const headerValue = req.header('x-language');
     if (!headerValue) return;
+    const rawLanguage = Array.isArray(headerValue) ? headerValue[0] : headerValue;
+    if (isRetiredSpanishLocaleSignal(rawLanguage)) {
+      // Spanish remains an input-only compatibility signal. The request
+      // locale resolver maps it to English for this turn, but the transport
+      // header must not rewrite an existing persisted user preference.
+      return;
+    }
 
     const lang = normalizeLangHeader(headerValue);
     const current = getUserLanguageById(userId);

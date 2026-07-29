@@ -109,16 +109,18 @@ export const TASK_ACTIONS: ChatActionDefinition[] = [
           expectedAction: 'create_task',
         },
         {
-          // Phase 12 batch 64 (2026-05-16): Spanish golden example.
+          // Phase 12 batch 64 (2026-05-16): Spanish-authored compatibility input; English response contract.
           text: 'Crea una tarea llamada llamar a María',
-          locale: 'es',
+          requestLocale: 'es',
+          responseLocale: 'en',
           tags: ['golden'],
           expectedSlots: { title: 'llamar a María' },
           expectedAction: 'create_task',
         },
         {
           text: 'Recuérdame de comprar leche',
-          locale: 'es',
+          requestLocale: 'es',
+          responseLocale: 'en',
           tags: ['golden'],
           expectedSlots: { title: 'comprar leche' },
           expectedAction: 'create_task',
@@ -166,7 +168,8 @@ export const TASK_ACTIONS: ChatActionDefinition[] = [
         },
         {
           text: 'Crear tarea Prozis con subtareas creatina K2 D3',
-          locale: 'es',
+          requestLocale: 'es',
+          responseLocale: 'en',
           tags: ['golden'],
           expectedSlots: { title: 'Prozis', subtasks: ['creatina', 'K2', 'D3'] },
           expectedAction: 'create_task_with_subtasks',
@@ -218,7 +221,8 @@ export const TASK_ACTIONS: ChatActionDefinition[] = [
         },
         {
           text: 'Añade creatina, K2 y D3 a la tarea Prozis',
-          locale: 'es',
+          requestLocale: 'es',
+          responseLocale: 'en',
           tags: ['golden'],
           expectedSlots: { title: 'Prozis', subtasks: ['creatina', 'K2', 'D3'] },
           expectedAction: 'add_subtasks_to_task',
@@ -270,9 +274,10 @@ export const TASK_ACTIONS: ChatActionDefinition[] = [
           expectedAction: null,
         },
         {
-          // Phase 13 batch 68 (2026-05-16): Spanish golden example.
+          // Phase 13 batch 68 (2026-05-16): Spanish-authored compatibility input; English response contract.
           text: 'Cambia la tarea de presentación para el martes',
-          locale: 'es',
+          requestLocale: 'es',
+          responseLocale: 'en',
           tags: ['golden'],
           expectedAction: 'update_task',
         },
@@ -332,9 +337,10 @@ export const TASK_ACTIONS: ChatActionDefinition[] = [
           expectedAction: 'complete_task',
         },
         {
-          // Phase 12 batch 64 (2026-05-16): Spanish golden example.
+          // Phase 12 batch 64 (2026-05-16): Spanish-authored compatibility input; English response contract.
           text: 'Marca esa tarea como hecha',
-          locale: 'es',
+          requestLocale: 'es',
+          responseLocale: 'en',
           tags: ['golden'],
           condition: 'single_recent_verified_task',
           expectedAction: 'complete_task',
@@ -443,9 +449,10 @@ export const TASK_ACTIONS: ChatActionDefinition[] = [
           expectedAction: 'delete_task',
         },
         {
-          // Phase 12 batch 64 (2026-05-16): Spanish golden example.
+          // Phase 12 batch 64 (2026-05-16): Spanish-authored compatibility input; English response contract.
           text: 'Borra la tarea de la presentación',
-          locale: 'es',
+          requestLocale: 'es',
+          responseLocale: 'en',
           tags: ['golden'],
           expectedAction: 'delete_task',
         },
@@ -484,9 +491,10 @@ export const TASK_ACTIONS: ChatActionDefinition[] = [
           expectedAction: 'create_checklist',
         },
         {
-          // Phase 13 batch 68 (2026-05-16): Spanish golden example.
+          // Phase 13 batch 68 (2026-05-16): Spanish-authored compatibility input; English response contract.
           text: 'Crea una checklist para el viaje con pasaporte y billetes',
-          locale: 'es',
+          requestLocale: 'es',
+          responseLocale: 'en',
           tags: ['golden'],
           expectedAction: 'create_checklist',
         },
@@ -538,9 +546,10 @@ export const TASK_ACTIONS: ChatActionDefinition[] = [
           expectedAction: null,
         },
         {
-          // Phase 14 batch 73 (2026-05-16): Spanish golden example.
+          // Phase 14 batch 73 (2026-05-16): Spanish-authored compatibility input; English response contract.
           text: 'Pon un recordatorio en la tarea para mañana a las 9',
-          locale: 'es',
+          requestLocale: 'es',
+          responseLocale: 'en',
           tags: ['golden'],
           expectedAction: 'set_task_reminder',
         },

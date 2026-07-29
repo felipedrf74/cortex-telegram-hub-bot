@@ -18,6 +18,7 @@ import {
 } from '../../scripts/lib/git-changed-paths.mjs';
 
 const RETIREMENT_BASE_SHA = '7b724f185580b18ce722a396b6e01d5ae268d3c1';
+const SPANISH_LOCALE_RETIREMENT_BASE_SHA = 'f0d4047def0c5838d562f06326d2e6949fe49770';
 
 function classify(files: string[]) {
   return JSON.parse(execFileSync('bash', [
@@ -257,12 +258,15 @@ describe('lean changed-area classification', () => {
     expect(surviving.requiresMutation).toBe(true);
   });
 
-  it('binds the real retirement policy to one exact baseline and explicit artifact ownership', () => {
+  it('binds the real retirement policy to exact baselines and explicit behavior ownership', () => {
     const policy = JSON.parse(fs.readFileSync('config/test-groups.json', 'utf8'));
     expect(policy.retirementMappings.length).toBeGreaterThan(0);
     expect(new Set(policy.retirementMappings.map(
       (mapping: { baseSha?: string }) => mapping.baseSha,
-    ))).toEqual(new Set([RETIREMENT_BASE_SHA]));
+    ))).toEqual(new Set([
+      RETIREMENT_BASE_SHA,
+      SPANISH_LOCALE_RETIREMENT_BASE_SHA,
+    ]));
 
     const artifactTest = '__tests__/scripts/release-artifact-manifest.test.ts';
     const matches = policy.retirementMappings.filter((mapping: {
@@ -274,6 +278,38 @@ describe('lean changed-area classification', () => {
       baselineOwnerPaths: ['scripts/release-evidence.mjs'],
       requiredRemovedPaths: ['scripts/release-evidence.mjs'],
     })]);
+
+    const spanishLocaleTests = [
+      '__tests__/services/chat-answer-contract.test.ts',
+      '__tests__/services/chat-core-v2-locale-policy.test.ts',
+      '__tests__/services/chat-day-to-day-simulation.test.ts',
+      '__tests__/services/chat-turn-context.test.ts',
+      '__tests__/services/registry-examples-as-living-corpus-shadow.test.ts',
+      '__tests__/services/registry-examples-end-to-end-routing.test.ts',
+      '__tests__/services/registry-real-eval-gates-locale.test.ts',
+      '__tests__/services/registry-shadow-smoke-corpus.test.ts',
+      '__tests__/services/routing-corpus.test.ts',
+    ];
+    const spanishMappings = policy.retirementMappings.filter((mapping: {
+      baseSha?: string;
+    }) => mapping.baseSha === SPANISH_LOCALE_RETIREMENT_BASE_SHA);
+    expect(spanishMappings.map((mapping: { test?: string }) => mapping.test).sort())
+      .toEqual(spanishLocaleTests.sort());
+    const registryRoutingMappings = new Set([
+      '__tests__/services/registry-examples-as-living-corpus-shadow.test.ts',
+      '__tests__/services/registry-examples-end-to-end-routing.test.ts',
+      '__tests__/services/registry-real-eval-gates-locale.test.ts',
+      '__tests__/services/registry-shadow-smoke-corpus.test.ts',
+    ]);
+    for (const mapping of spanishMappings) {
+      expect(mapping.requiredChangedPaths.length).toBeGreaterThan(0);
+      expect(mapping.replacementTests).toContain(mapping.test);
+      expect(mapping.replacementTests).toContain(
+        registryRoutingMappings.has(mapping.test)
+          ? '__tests__/services/registry-examples-end-to-end-routing.test.ts'
+          : '__tests__/services/chat-locale-detection-es.test.ts',
+      );
+    }
   });
 
   it('detects assertion removal inside a surviving modified test file', () => {

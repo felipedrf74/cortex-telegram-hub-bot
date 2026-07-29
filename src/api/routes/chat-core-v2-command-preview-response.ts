@@ -190,7 +190,6 @@ function buildActionConfirmation(
 ): NonNullable<ChatCoreV2CommandPreviewShortcutResponse['metadata']['actionConfirmation']> {
   const locale = String(result.response.locale ?? '').toLowerCase();
   const isPT = locale.startsWith('pt');
-  const isES = locale === 'es';
   const title = String(payload.title ?? '').trim();
   const summary = summarizeCommandPayload(payload);
   const cardSummary = result.response.cards[0]?.summary;
@@ -198,10 +197,10 @@ function buildActionConfirmation(
     ? cardSummary.trim()
     : result.response.text;
   return {
-    title: isPT ? 'Confirmação necessária' : isES ? 'Confirmación necesaria' : 'Confirmation needed',
+    title: isPT ? 'Confirmação necessária' : 'Confirmation needed',
     message,
-    actionLabel: isPT ? 'Confirmar' : isES ? 'Confirmar' : 'Confirm',
-    cancelLabel: isPT ? 'Cancelar' : isES ? 'Cancelar' : 'Cancel',
+    actionLabel: isPT ? 'Confirmar' : 'Confirm',
+    cancelLabel: isPT ? 'Cancelar' : 'Cancel',
     destructive: false,
     variant: 'default',
     requiresStrongConfirm: false,

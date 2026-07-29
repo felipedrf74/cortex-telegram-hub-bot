@@ -97,7 +97,7 @@ function classifySafePublicAnswer(message: string): SafeAnswerProfile | null {
 }
 
 function normalizeLocale(locale: string | null | undefined): ChatCoreV2Locale {
-  if (locale === 'pt-PT' || locale === 'pt-BR' || locale === 'es' || locale === 'en') return locale;
+  if (locale === 'pt-PT' || locale === 'pt-BR' || locale === 'en') return locale;
   return 'en';
 }
 

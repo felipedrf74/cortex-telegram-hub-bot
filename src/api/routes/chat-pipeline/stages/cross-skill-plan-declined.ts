@@ -56,9 +56,6 @@ export function buildCrossSkillPlanDeclinedText(locale: string | null | undefine
   if (normalized.startsWith('pt')) {
     return 'Não consegui transformar com segurança todas as partes deste pedido num único plano executável, por isso não executei nenhuma das ações. Envia cada ação como um passo separado, começando pela primeira.';
   }
-  if (normalized.startsWith('es')) {
-    return 'No pude convertir con seguridad todas las partes de esta solicitud en un único plan ejecutable, así que no ejecuté ninguna de las acciones. Envía cada acción como un paso separado, empezando por la primera.';
-  }
   return 'I could not safely turn every part of this request into one executable plan, so I did not run any action. Please send each action as a separate step, starting with the one you want first.';
 }
 

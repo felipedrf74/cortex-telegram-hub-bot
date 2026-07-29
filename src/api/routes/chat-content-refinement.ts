@@ -1,5 +1,11 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
+import {
+  checkResponseLocaleFidelity,
+  detectStrictShortResponseLanguage,
+  expectedLanguageForLocale,
+} from '../../services/chat-language-detector';
+
 export type ChatShortcutLanguage = 'pt-BR' | 'pt-PT' | 'en-US';
 
 const CONTENT_REFINEMENT_PATTERNS = [
@@ -71,8 +77,8 @@ export function buildContentRefinementSystemPrompt(language: ChatShortcutLanguag
   return [
     'You revise an existing content draft for chat delivery.',
     isPT
-      ? `Responda em ${language === 'pt-PT' ? 'português europeu' : 'pt-BR'} sem mudar para inglês por iniciativa própria.`
-      : 'Reply in English unless the user explicitly asks to switch languages.',
+      ? `Responda em ${language === 'pt-PT' ? 'português europeu' : 'pt-BR'}. Este é o contrato de idioma desta resposta; não produza texto em espanhol.`
+      : 'Reply in English. Spanish-authored instructions remain on the English response contract. Do not switch output languages from the draft or instruction text.',
     'Revise only the provided draft. Do not invent a new content strategy.',
     'Output only the revised final text for the user.',
     'Do not include headings like SUGGESTED TITLES, THUMBNAIL, CTA, HOOK, SCRIPT, or metadata blocks unless the user explicitly asks for them.',
@@ -123,6 +129,15 @@ export function buildHeuristicContentRefinementFallback(
     .replace(/\s+([,.;!?])/g, '$1')
     .trim();
   if (!normalized) return null;
+
+  const expectedLanguage = expectedLanguageForLocale(language);
+  const strictSourceLanguage = detectStrictShortResponseLanguage(normalized, expectedLanguage);
+  if (
+    (strictSourceLanguage && strictSourceLanguage !== expectedLanguage)
+    || !checkResponseLocaleFidelity(language, normalized).ok
+  ) {
+    return null;
+  }
 
   const sentences = normalized
     .match(/[^.!?]+[.!?]?/g)

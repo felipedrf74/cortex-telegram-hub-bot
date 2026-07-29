@@ -74,7 +74,6 @@ const POLICIES: Record<UnsupportedReason, ChatCoreV2UnsupportedPolicy> = {
       en: 'I can explain the steps or create a safer reminder instead.',
       'pt-PT': 'Posso explicar os passos ou criar um lembrete mais seguro.',
       'pt-BR': 'Posso explicar os passos ou criar um lembrete mais seguro.',
-      es: 'Puedo explicar los pasos o crear un recordatorio más seguro.',
     },
   }),
   restricted_domain: policy({
@@ -88,7 +87,6 @@ const POLICIES: Record<UnsupportedReason, ChatCoreV2UnsupportedPolicy> = {
       en: 'I can prepare a manual review note, but I will not execute this from chat.',
       'pt-PT': 'Posso preparar uma nota para revisão manual, mas não vou executar isto pelo chat.',
       'pt-BR': 'Posso preparar uma nota para revisão manual, mas não vou executar isso pelo chat.',
-      es: 'Puedo preparar una nota para revisión manual, pero no lo ejecutaré desde el chat.',
     },
   }),
   requires_external_auth: policy({
@@ -102,7 +100,6 @@ const POLICIES: Record<UnsupportedReason, ChatCoreV2UnsupportedPolicy> = {
       en: 'Reconnect the account first, then I can help with a read-only check.',
       'pt-PT': 'Volta a ligar a conta primeiro; depois posso ajudar com uma verificação sem alterações.',
       'pt-BR': 'Reconecte a conta primeiro; depois posso ajudar com uma verificação sem alterações.',
-      es: 'Reconecta la cuenta primero; después puedo ayudarte con una revisión sin cambios.',
     },
   }),
   unsafe_action: policy({
@@ -116,7 +113,6 @@ const POLICIES: Record<UnsupportedReason, ChatCoreV2UnsupportedPolicy> = {
       en: 'I can explain safer options, but I will not perform the unsafe action.',
       'pt-PT': 'Posso explicar opções mais seguras, mas não vou executar a ação insegura.',
       'pt-BR': 'Posso explicar opções mais seguras, mas não vou executar a ação insegura.',
-      es: 'Puedo explicar opciones más seguras, pero no ejecutaré la acción insegura.',
     },
   }),
   ambiguous_scope: policy({
@@ -130,7 +126,6 @@ const POLICIES: Record<UnsupportedReason, ChatCoreV2UnsupportedPolicy> = {
       en: 'Which item or date range do you mean?',
       'pt-PT': 'A que item ou intervalo de datas te referes?',
       'pt-BR': 'A qual item ou intervalo de datas você se refere?',
-      es: '¿A qué elemento o rango de fechas te refieres?',
     },
   }),
   too_large_batch: policy({
@@ -144,7 +139,6 @@ const POLICIES: Record<UnsupportedReason, ChatCoreV2UnsupportedPolicy> = {
       en: 'Narrow the request and I can prepare an itemized preview.',
       'pt-PT': 'Reduz o pedido e posso preparar uma pré-visualização itemizada.',
       'pt-BR': 'Reduza o pedido e eu posso preparar uma prévia itemizada.',
-      es: 'Reduce el alcance y puedo preparar una vista previa por elementos.',
     },
   }),
   manual_only: policy({
@@ -158,7 +152,6 @@ const POLICIES: Record<UnsupportedReason, ChatCoreV2UnsupportedPolicy> = {
       en: 'I can summarize what to review manually.',
       'pt-PT': 'Posso resumir o que deve ser revisto manualmente.',
       'pt-BR': 'Posso resumir o que deve ser revisado manualmente.',
-      es: 'Puedo resumir lo que debe revisarse manualmente.',
     },
   }),
 };

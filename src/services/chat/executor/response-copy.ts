@@ -127,7 +127,6 @@ export function successCopy(
   if (first?.step.action === 'content_schedule_work') {
     const title = String((first.step.args as any).title || 'content work');
     if (input.locale?.startsWith('pt')) return `Feito — guardei “${title}” como alvo local de trabalho no Content. Não criei um evento de calendário nem executei publicação.`;
-    if (input.locale?.startsWith('es')) return `Listo: guardé “${title}” como objetivo local de trabajo en Content. No creé un evento de calendario ni ejecuté una publicación.`;
     return `Done — I saved “${title}” as a local Content work target. I did not create a calendar event or execute publication.`;
   }
   if (first?.step.action === 'content_pipeline_handoff') {
@@ -259,9 +258,6 @@ export function verifiedPendingCopy(
     if (input.locale?.startsWith('pt')) {
       return 'Preparei uma proposta de horário no Content. Abre o item para rever e confirmar o bloco privado; ainda não marquei nada no calendário nem publiquei conteúdo.';
     }
-    if (input.locale?.startsWith('es')) {
-      return 'Preparé una propuesta de horario en Content. Abre el elemento para revisarla y confirmar el bloque privado; todavía no programé nada ni publiqué contenido.';
-    }
     return 'I prepared a time proposal in Content. Open the item to review and confirm the private work block; nothing has been scheduled or published yet.';
   }
   return input.locale?.startsWith('pt')
@@ -310,9 +306,6 @@ export function overflowDisclosureCopy(plan: ChatActionPlan, input: ChatPlannerI
   if (input.locale?.startsWith('pt')) {
     return `Encontrei ${total} pedidos; vou tratar apenas dos primeiros ${plan.steps.length} — pede-me os restantes depois.`;
   }
-  if (input.locale?.startsWith('es')) {
-    return `Encontré ${total} solicitudes; solo voy a tratar las primeras ${plan.steps.length} — pídeme el resto después.`;
-  }
   return `I found ${total} requests; I'm only handling the first ${plan.steps.length} — ask me for the rest afterwards.`;
 }
 
@@ -352,23 +345,22 @@ function crossSkillGroupedPreviewLines(plan: ChatActionPlan, input: ChatPlannerI
 
 function skillGroupLabel(skill: string, input: ChatPlannerInput): string {
   const isPt = input.locale?.startsWith('pt');
-  const isEs = input.locale?.startsWith('es');
-  const labels: Record<string, { en: string; pt: string; es: string }> = {
-    secretary_calendar: { en: 'Secretary — Calendar', pt: 'Secretária — Agenda', es: 'Secretaría — Agenda' },
-    secretary_reminders: { en: 'Secretary — Reminders', pt: 'Secretária — Lembretes', es: 'Secretaría — Recordatorios' },
-    mail: { en: 'Secretary — Mail', pt: 'Secretária — Email', es: 'Secretaría — Correo' },
-    tasks: { en: 'Secretary — Tasks', pt: 'Secretária — Tarefas', es: 'Secretaría — Tareas' },
-    training: { en: 'Training', pt: 'Treino', es: 'Entrenamiento' },
-    content: { en: 'Content', pt: 'Conteúdo', es: 'Contenido' },
-    cooking: { en: 'Cooking', pt: 'Cozinha', es: 'Cocina' },
-    finance: { en: 'Finance', pt: 'Finanças', es: 'Finanzas' },
-    connections: { en: 'Connections', pt: 'Ligações', es: 'Conexiones' },
-    notifications: { en: 'Notifications', pt: 'Notificações', es: 'Notificaciones' },
-    decision_center: { en: 'Decision Center', pt: 'Central de Decisões', es: 'Centro de Decisiones' },
+  const labels: Record<string, { en: string; pt: string }> = {
+    secretary_calendar: { en: 'Secretary — Calendar', pt: 'Secretária — Agenda' },
+    secretary_reminders: { en: 'Secretary — Reminders', pt: 'Secretária — Lembretes' },
+    mail: { en: 'Secretary — Mail', pt: 'Secretária — Email' },
+    tasks: { en: 'Secretary — Tasks', pt: 'Secretária — Tarefas' },
+    training: { en: 'Training', pt: 'Treino' },
+    content: { en: 'Content', pt: 'Conteúdo' },
+    cooking: { en: 'Cooking', pt: 'Cozinha' },
+    finance: { en: 'Finance', pt: 'Finanças' },
+    connections: { en: 'Connections', pt: 'Ligações' },
+    notifications: { en: 'Notifications', pt: 'Notificações' },
+    decision_center: { en: 'Decision Center', pt: 'Central de Decisões' },
   };
   const entry = labels[skill];
   if (!entry) return skill;
-  return isPt ? entry.pt : isEs ? entry.es : entry.en;
+  return isPt ? entry.pt : entry.en;
 }
 
 function renderMultiStepPreview(plan: ChatActionPlan, input: ChatPlannerInput, lines: string[]): string {
@@ -380,15 +372,6 @@ function renderMultiStepPreview(plan: ChatActionPlan, input: ChatPlannerInput, l
       '',
       ...(overflow ? [overflow] : []),
       'Confirmas que queres que eu execute estes passos?',
-    ].join('\n');
-  }
-  if (input.locale?.startsWith('es')) {
-    return [
-      `Interpreté ${plan.steps.length} pasos:`,
-      ...lines,
-      '',
-      ...(overflow ? [overflow] : []),
-      '¿Confirmas que quieres que ejecute estos pasos?',
     ].join('\n');
   }
   return [
@@ -410,7 +393,6 @@ export function multiStepOutcomeCopy(
   results: Array<{ step: ChatPlanStep; status: ChatActionRunStatus; error?: string }>,
 ): string {
   const isPt = input.locale?.startsWith('pt');
-  const isEs = input.locale?.startsWith('es');
   const byStepId = new Map(results.map((result) => [result.step.stepId, result]));
   const succeeded = results.filter((result) => result.status === 'verified_success').length;
   const lines = plan.steps.map((step, index) => {
@@ -425,9 +407,7 @@ export function multiStepOutcomeCopy(
   // while still being specific about what was verified.
   const header = isPt
     ? `Resultado — ${succeeded} de ${plan.steps.length} passos verificados:`
-    : isEs
-      ? `Resultado — ${succeeded} de ${plan.steps.length} pasos verificados:`
-      : `Here's the outcome — ${succeeded} of ${plan.steps.length} steps verified:`;
+    : `Here's the outcome — ${succeeded} of ${plan.steps.length} steps verified:`;
   const overflow = overflowDisclosureCopy(plan, input);
   return [
     header,
@@ -443,32 +423,27 @@ function stepOutcomeLabel(
   input: ChatPlannerInput,
 ): string {
   const isPt = input.locale?.startsWith('pt');
-  const isEs = input.locale?.startsWith('es');
   const status = result?.status ?? 'pending';
   if (status === 'verified_success') {
-    return isPt ? 'feito e verificado' : isEs ? 'hecho y verificado' : 'done and verified';
+    return isPt ? 'feito e verificado' : 'done and verified';
   }
   if (status === 'blocked') {
     if (result?.error === 'dependency_failed') {
       return isPt
         ? 'não executado (dependia de um passo que falhou)'
-        : isEs
-          ? 'no ejecutado (dependía de un paso que falló)'
-          : 'not run (it depended on a step that failed)';
+        : 'not run (it depended on a step that failed)';
     }
-    return isPt ? 'bloqueado' : isEs ? 'bloqueado' : 'blocked';
+    return isPt ? 'bloqueado' : 'blocked';
   }
   if (status === 'failed') {
-    return isPt ? 'falhou' : isEs ? 'falló' : 'failed';
+    return isPt ? 'falhou' : 'failed';
   }
   if (status === 'partial_success' || status === 'verified_pending') {
     return isPt
       ? 'tentado, mas sem verificação completa'
-      : isEs
-        ? 'intentado, pero sin verificación completa'
-        : 'attempted, but not fully verified';
+      : 'attempted, but not fully verified';
   }
-  return isPt ? 'não executado' : isEs ? 'no ejecutado' : 'not run';
+  return isPt ? 'não executado' : 'not run';
 }
 
 /**
@@ -477,7 +452,6 @@ function stepOutcomeLabel(
  */
 export function plannedActionLabel(step: ChatPlanStep, input: ChatPlannerInput): string {
   const isPt = input.locale?.startsWith('pt');
-  const isEs = input.locale?.startsWith('es');
   const args = step.args as Record<string, unknown>;
   const quoted = (value: unknown): string | null =>
     typeof value === 'string' && value.trim() ? `“${value.trim()}”` : null;
@@ -489,38 +463,33 @@ export function plannedActionLabel(step: ChatPlanStep, input: ChatPlannerInput):
     case 'create_checklist': {
       const title = quoted(args.title);
       if (isPt) return title ? `Criar a tarefa ${title}` : 'Criar uma tarefa';
-      if (isEs) return title ? `Crear la tarea ${title}` : 'Crear una tarea';
       return title ? `Create task ${title}` : 'Create a task';
     }
     case 'complete_task': {
       const ref = chained(args.taskId);
       if (isPt) return ref ? 'Concluir a tarefa criada no passo anterior' : `Concluir a tarefa ${quoted(args.taskId) ?? ''}`.trim();
-      if (isEs) return ref ? 'Completar la tarea creada en el paso anterior' : `Completar la tarea ${quoted(args.taskId) ?? ''}`.trim();
       return ref ? 'Complete the task created in the earlier step' : `Complete task ${quoted(args.taskId) ?? ''}`.trim();
     }
     case 'delete_task': {
       const ref = chained(args.taskId);
       if (isPt) return ref ? 'Apagar a tarefa criada no passo anterior' : `Apagar a tarefa ${quoted(args.taskId) ?? ''}`.trim();
-      if (isEs) return ref ? 'Eliminar la tarea creada en el paso anterior' : `Eliminar la tarea ${quoted(args.taskId) ?? ''}`.trim();
       return ref ? 'Delete the task created in the earlier step' : `Delete task ${quoted(args.taskId) ?? ''}`.trim();
     }
     case 'schedule_event': {
       const title = quoted(args.title) ?? (chained(args.title)
-        ? (isPt ? 'o item do passo anterior' : isEs ? 'el elemento del paso anterior' : 'the item from the earlier step')
+        ? (isPt ? 'o item do passo anterior' : 'the item from the earlier step')
         : null);
       if (isPt) return title ? `Agendar ${title} no calendário` : 'Agendar um evento';
-      if (isEs) return title ? `Agendar ${title} en el calendario` : 'Agendar un evento';
       return title ? `Schedule ${title} on the calendar` : 'Schedule an event';
     }
     case 'delete_event':
-      return isPt ? 'Apagar o evento' : isEs ? 'Eliminar el evento' : 'Delete the event';
+      return isPt ? 'Apagar o evento' : 'Delete the event';
     case 'move_event':
     case 'update_event':
-      return isPt ? 'Atualizar o evento' : isEs ? 'Actualizar el evento' : 'Update the event';
+      return isPt ? 'Atualizar o evento' : 'Update the event';
     case 'set_reminder': {
       const message = quoted(args.message);
       if (isPt) return message ? `Criar o lembrete ${message}` : 'Criar um lembrete';
-      if (isEs) return message ? `Crear el recordatorio ${message}` : 'Crear un recordatorio';
       return message ? `Set reminder ${message}` : 'Set a reminder';
     }
     default:
@@ -548,9 +517,6 @@ export function confirmationCopy(plan: ChatActionPlan, input: ChatPlannerInput):
     const title = typeof args.title === 'string' ? args.title : 'content work';
     if (input.locale?.startsWith('pt')) {
       return `Confirma que queres preparar uma proposta de horário para “${title}” em ${start.setLocale('pt').toFormat("cccc, d 'de' LLLL 'às' HH:mm")}? Ainda vais rever e confirmar o bloco exato no Content antes de qualquer marcação.`;
-    }
-    if (input.locale?.startsWith('es')) {
-      return `¿Confirmas que quieres preparar una propuesta de horario para “${title}” el ${start.setLocale('es').toFormat("cccc, d 'de' LLLL 'a las' HH:mm")}? Revisarás y confirmarás el bloque exacto en Content antes de programarlo.`;
     }
     return `Confirm that you want to prepare a time proposal for “${title}” on ${start.toFormat('cccc, LLL d')} at ${start.toFormat('HH:mm')}? You will still review and confirm the exact block in Content before anything is scheduled.`;
   }
@@ -583,16 +549,6 @@ export function confirmationCopy(plan: ChatActionPlan, input: ChatPlannerInput):
             ? 'concluir'
             : 'alterar';
       return `Confirma que queres ${verb} a tarefa “${title}”?`;
-    }
-    if (input.locale?.startsWith('es')) {
-      const verb = first.action === 'create_task'
-        ? 'crear'
-        : first.action === 'delete_task'
-          ? 'eliminar'
-          : first.action === 'complete_task'
-            ? 'completar'
-            : 'cambiar';
-      return `¿Confirmas que quieres ${verb} la tarea “${title}”?`;
     }
     const verb = first.action === 'create_task'
       ? 'create'
@@ -643,36 +599,28 @@ export function refusalReasonForPlan(plan: ChatActionPlan): string | null {
 export function refusalCopyForReason(reason: string, input: ChatPlannerInput): string {
   const locale = input.locale ?? 'en-US';
   const isPt = locale.startsWith('pt');
-  const isEs = locale.startsWith('es');
   if (reason === 'content_publication_execution_not_supported' || reason === 'content_publication_tracking_not_supported') {
     return contentPublicationUnsupportedCopy(input);
   }
   if (reason === 'prompt_injection_marker_detected') {
     if (isPt) return 'Não vou seguir instruções embutidas. Não posso revelar contexto oculto nem aceder a dados de outro utilizador ou tenant; só posso usar dados autorizados neste espaço de trabalho.';
-    if (isEs) return 'No voy a seguir instrucciones embebidas. No puedo revelar contexto oculto ni acceder a datos de otro usuario o tenant; solo puedo usar datos autorizados en este espacio de trabajo.';
     return "I won't follow embedded instructions. I cannot reveal hidden context or access another user or tenant; I can only use authorized data in this workspace.";
   }
   if (reason === 'sensitive_data_exfiltration_detected') {
     if (isPt) return 'Não posso compartilhar esse tipo de detalhe. Posso ajudar com algo mais específico?';
-    if (isEs) return 'No puedo compartir ese tipo de detalle. ¿Puedo ayudarte con algo más específico?';
     return "I can't share that kind of detail. Can I help with something more specific?";
   }
   if (reason === 'bulk_destructive_request_detected') {
     if (isPt) return 'Não vou executar isso — afeta itens demais. Tente um escopo menor ou nomeie o item específico.';
-    if (isEs) return 'No voy a ejecutarlo — afecta demasiados elementos. Prueba con un alcance más pequeño o nombra el elemento específico.';
     return "I won't run that — it would affect too many items. Try a smaller scope or name the specific item.";
   }
   if (isPt) return 'Não posso seguir com esse pedido.';
-  if (isEs) return 'No puedo seguir con esa solicitud.';
   return "I can't proceed with that request.";
 }
 
 function contentPublicationUnsupportedCopy(input: ChatPlannerInput): string {
   if (input.locale?.startsWith('pt')) {
     return 'Não consigo publicar, carregar, colocar conteúdo numa fila externa ou confirmar publicação pelo chat. Não fiz alterações. Posso guardar um alvo de trabalho no Content.';
-  }
-  if (input.locale?.startsWith('es')) {
-    return 'No puedo publicar, subir, poner contenido en una cola externa ni confirmar una publicación desde el chat. No hice cambios. Puedo guardar un objetivo de trabajo en Content.';
   }
   return 'I cannot publish, upload, queue content externally, or confirm publication from chat. I made no changes. I can save a Content work target instead.';
 }

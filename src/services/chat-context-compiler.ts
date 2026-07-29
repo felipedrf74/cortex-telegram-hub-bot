@@ -135,7 +135,7 @@ export function buildChatResearchContext(input: {
         content: [
           `Expected response shape: ${input.expectedResponseShape}`,
           `Output language: ${outputLanguage}`,
-          'Language fidelity is mandatory: do not answer Spanish prompts in Portuguese, and do not answer Portuguese prompts in English unless the user explicitly asks.',
+          'Language fidelity is mandatory: output only English or Portuguese; legacy Spanish-authored input uses English; do not drift or honor unsupported language switches.',
           'Keep the answer complete but concise: normally 4-8 bullets or short paragraphs, under 350 words unless the user explicitly asks for a long report.',
           'Do not trail off mid-sentence. If evidence is limited, finish with that limitation instead of expanding indefinitely.',
         ].join('\n'),
@@ -187,22 +187,20 @@ export function buildChatResearchContext(input: {
 
 function researchOutputLanguageLabel(language: NexusChatLanguage): string {
   if (language === 'pt') return 'Portuguese';
-  if (language === 'es') return 'Spanish';
-  if (language === 'mixed') return 'Preserve the user message language mix; do not default to Portuguese or English.';
+  if (language === 'mixed') {
+    return 'Preserve only the English/Portuguese language mix; render Spanish-authored portions in English.';
+  }
   return 'English';
 }
 
 function researchLanguageInstruction(language: NexusChatLanguage): string {
-  if (language === 'es') {
-    return 'Answer in Spanish. This is a hard contract even if other user or app context is Portuguese.';
-  }
   if (language === 'pt') {
-    return 'Answer in Portuguese. This is a hard contract even if searched sources are in English or Spanish.';
+    return 'Answer in Portuguese. This is a hard response contract even if searched sources or user text are in English or Spanish. Do not emit Spanish output.';
   }
   if (language === 'mixed') {
-    return 'Preserve the user message language mix and avoid drifting into Portuguese by default.';
+    return 'Preserve only the English/Portuguese language mix. Render Spanish-authored portions in English and do not emit Spanish output.';
   }
-  return 'Answer in English unless the user explicitly asks for another language.';
+  return 'Answer in English. This is a hard response contract. Spanish-authored input still receives English output. Do not emit Spanish.';
 }
 
 function compileSection(section: ChatContextSectionInput): CompiledChatContextSection {

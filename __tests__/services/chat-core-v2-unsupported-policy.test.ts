@@ -30,7 +30,7 @@ describe('Chat Core v2 unsupported capability policy', () => {
       expect(policy.alternatives.en, policy.reason).toBeTruthy();
       expect(policy.alternatives['pt-PT'], policy.reason).toBeTruthy();
       expect(policy.alternatives['pt-BR'], policy.reason).toBeTruthy();
-      expect(policy.alternatives.es, policy.reason).toBeTruthy();
+      expect(Object.keys(policy.alternatives).sort(), policy.reason).toEqual(['en', 'pt-BR', 'pt-PT']);
     }
   });
 

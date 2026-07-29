@@ -94,7 +94,7 @@ describe('content-creator-profile (CONTENT-UI-O1)', () => {
     expect(written.audience).toBe('Indie devs and self-coached marathon trainees');
     expect(written.platforms).toHaveLength(2);
     expect(written.platforms[0]).toEqual({ name: 'YouTube', cadence: '1x/week', enabled: true });
-    expect(written.languagePreference).toBe('en');
+    expect(written.languagePreference).toBe('en-US');
 
     const read = getContentCreatorProfile(USER_A, USER_A);
     expect(read).toEqual(expect.objectContaining({
@@ -108,7 +108,7 @@ describe('content-creator-profile (CONTENT-UI-O1)', () => {
       trustedSources: ['Anthropic Docs'],
       dislikedSources: ['Unverified Twitter threads'],
       contentGoals: ['Build authority with intermediate creators'],
-      languagePreference: 'en',
+      languagePreference: 'en-US',
       voiceExamples: ['Most creator stacks are 80% noise. Here\'s the 4 I run.'],
     }));
     expect(read.updatedAt).not.toBeNull();
@@ -189,6 +189,55 @@ describe('content-creator-profile (CONTENT-UI-O1)', () => {
     const bigBlob = 'a'.repeat(5000);
     const sanitized = sanitizeContentCreatorProfile({ audience: bigBlob });
     expect(sanitized.audience.length).toBeLessThanOrEqual(1500);
+  });
+
+  it.each([
+    ['en', 'en-US'],
+    ['English', 'en-US'],
+    ['pt', 'pt-BR'],
+    ['Brazilian Portuguese', 'pt-BR'],
+    ['pt-PT', 'pt-PT'],
+    ['European Portuguese', 'pt-PT'],
+    ['es-419', 'en-US'],
+    ['Spanish', 'en-US'],
+    ['Español', 'en-US'],
+    ['fr-FR', 'en-US'],
+  ])('canonicalizes creator output language %s to %s on writes', (input, expected) => {
+    const sanitized = sanitizeContentCreatorProfile({ languagePreference: input });
+    expect(sanitized.languagePreference).toBe(expected);
+  });
+
+  it('persists only the canonical output language on a new profile write', () => {
+    upsertContentCreatorProfile(USER_A, USER_A, {
+      languagePreference: 'Spanish',
+    });
+
+    const raw = testDb.prepare(`
+      SELECT language_preference
+        FROM content_creator_profile
+       WHERE tenant_id = ? AND owner_user_id = ?
+    `).get(USER_A, USER_A) as { language_preference: string };
+    expect(raw.language_preference).toBe('en-US');
+  });
+
+  it('projects a historical Spanish language preference to English without rewriting the row', () => {
+    upsertContentCreatorProfile(USER_A, USER_A, {
+      pillars: ['Historical'],
+      languagePreference: 'pt-BR',
+    });
+    testDb.prepare(`
+      UPDATE content_creator_profile
+         SET language_preference = 'es-419'
+       WHERE tenant_id = ? AND owner_user_id = ?
+    `).run(USER_A, USER_A);
+
+    expect(getContentCreatorProfile(USER_A, USER_A).languagePreference).toBe('en-US');
+    const raw = testDb.prepare(`
+      SELECT language_preference
+        FROM content_creator_profile
+       WHERE tenant_id = ? AND owner_user_id = ?
+    `).get(USER_A, USER_A) as { language_preference: string };
+    expect(raw.language_preference).toBe('es-419');
   });
 
   it('rejects platform entries without a name', () => {

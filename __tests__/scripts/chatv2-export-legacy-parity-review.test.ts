@@ -4,6 +4,9 @@ import { execSync } from 'child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
+import {
+  CHAT_V2_RETIREMENT_OBSERVER_CORPUS_BINDING,
+} from '../../src/services/chat-legacy-parity-labels';
 
 let tempDir: string;
 let dbPath: string;
@@ -28,20 +31,7 @@ beforeEach(() => {
       safe_metadata_json
     ) VALUES ('runtime_route', 'route_exit', 'review-import', 'hmac:sample:${'a'.repeat(64)}', 'hmac',
       'general_action_planner', 1, 1, 0.98, 50, NULL, NULL, 0, ?)
-  `).run(JSON.stringify({
-    schemaVersion: 'chat_v2_legacy_parity_evidence_safe_metadata.v1',
-    parityLabelVersion: 'chat_v2_legacy_parity_label.v1',
-    parityLabelImport: true,
-    evaluator: 'manual',
-    peerReviewSignoffHash: PEER_REVIEW_SIGNOFF_HASH,
-    matchingCount: 49,
-    sampleCount: 50,
-    parityRate: 0.98,
-    safetyRegressionCount: 0,
-    qualityRegressionCount: 0,
-    degradedNotComparableCount: 0,
-    reviewRubricVersion: 'chat_v2_legacy_parity_review_rubric.v2',
-  }));
+  `).run(JSON.stringify(validParityMetadata()));
   db.close();
 
   writeFileSync(inventoryPath, [
@@ -96,19 +86,10 @@ describe('chatv2-export-legacy-parity-review CLI', () => {
     const db = new Database(dbPath);
     try {
       db.prepare('UPDATE chat_v2_legacy_retirement_evidence SET safe_metadata_json = ? WHERE route_id = ?').run(
-        JSON.stringify({
-          schemaVersion: 'chat_v2_legacy_parity_evidence_safe_metadata.v1',
-          parityLabelVersion: 'chat_v2_legacy_parity_label.v1',
-          parityLabelImport: true,
+        JSON.stringify(validParityMetadata({
           evaluator: 'runtime_tool',
-          matchingCount: 49,
-          sampleCount: 50,
-          parityRate: 0.98,
-          safetyRegressionCount: 0,
-          qualityRegressionCount: 0,
-          degradedNotComparableCount: 0,
-          reviewRubricVersion: 'chat_v2_legacy_parity_review_rubric.v2',
-        }),
+          peerReviewSignoffHash: undefined,
+        })),
         'general_action_planner',
       );
     } finally {
@@ -130,7 +111,7 @@ describe('chatv2-export-legacy-parity-review CLI', () => {
     const row = report.rows.find((item) => item.routeId === 'general_action_planner');
     expect(row?.parityBlocker).toMatchObject({
       blocked: true,
-      reason: 'missing_independent_peer_review',
+      reason: 'insufficient_runtime_samples',
     });
   });
 
@@ -143,20 +124,11 @@ describe('chatv2-export-legacy-parity-review CLI', () => {
         WHERE route_id = ?
       `).run(
         0.76,
-        JSON.stringify({
-          schemaVersion: 'chat_v2_legacy_parity_evidence_safe_metadata.v1',
-          parityLabelVersion: 'chat_v2_legacy_parity_label.v1',
-          parityLabelImport: true,
+        JSON.stringify(validParityMetadata({
           evaluator: 'claude',
-          peerReviewSignoffHash: PEER_REVIEW_SIGNOFF_HASH,
           matchingCount: 38,
-          sampleCount: 50,
           parityRate: 0.76,
-          safetyRegressionCount: 0,
-          qualityRegressionCount: 0,
-          degradedNotComparableCount: 0,
-          reviewRubricVersion: 'chat_v2_legacy_parity_review_rubric.v2',
-        }),
+        })),
         'general_action_planner',
       );
     } finally {
@@ -188,23 +160,14 @@ describe('chatv2-export-legacy-parity-review CLI', () => {
     try {
       db.prepare(`
         UPDATE chat_v2_legacy_retirement_evidence
-        SET replaced = 0, safe_metadata_json = ?
+        SET replaced = 0, shadow_parity_rate = 0.1, safe_metadata_json = ?
         WHERE route_id = ?
       `).run(
-        JSON.stringify({
-          schemaVersion: 'chat_v2_legacy_parity_evidence_safe_metadata.v1',
-          parityLabelVersion: 'chat_v2_legacy_parity_label.v1',
-          parityLabelImport: true,
+        JSON.stringify(validParityMetadata({
           evaluator: 'claude',
-          peerReviewSignoffHash: PEER_REVIEW_SIGNOFF_HASH,
           matchingCount: 5,
-          sampleCount: 50,
           parityRate: 0.1,
-          safetyRegressionCount: 0,
-          qualityRegressionCount: 0,
-          degradedNotComparableCount: 0,
-          reviewRubricVersion: 'chat_v2_legacy_parity_review_rubric.v2',
-        }),
+        })),
         'general_action_planner',
       );
     } finally {
@@ -231,3 +194,28 @@ describe('chatv2-export-legacy-parity-review CLI', () => {
     });
   });
 });
+
+function validParityMetadata(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    schemaVersion: 'chat_v2_legacy_parity_evidence_safe_metadata.v1',
+    parityLabelVersion: 'chat_v2_legacy_parity_label.v1',
+    parityLabelImport: true,
+    evaluator: 'manual',
+    peerReviewSignoffHash: PEER_REVIEW_SIGNOFF_HASH,
+    matchingCount: 49,
+    sampleCount: 50,
+    parityRate: 0.98,
+    safetyRegressionCount: 0,
+    qualityRegressionCount: 0,
+    degradedNotComparableCount: 0,
+    reviewRubricVersion: 'chat_v2_legacy_parity_review_rubric.v2',
+    reviewCompletenessChecked: true,
+    rawReviewArtifactCompletenessChecked: true,
+    observedRouteSampleCount: 50,
+    observerManifestSha256: '1'.repeat(64),
+    observerObservationsSha256: '2'.repeat(64),
+    rawReviewArtifactSha256: '3'.repeat(64),
+    ...CHAT_V2_RETIREMENT_OBSERVER_CORPUS_BINDING,
+    ...overrides,
+  };
+}

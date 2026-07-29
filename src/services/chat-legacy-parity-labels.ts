@@ -1,6 +1,12 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
+import { createHash } from 'node:crypto';
+import type Database from 'better-sqlite3';
 import type { ChatV2LegacyRetirementEvidenceSource } from './chat-legacy-retirement-evidence';
+import {
+  CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_CORPUS_META,
+  CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_PROMPTS,
+} from './chat-legacy-parity-route-prompts';
 
 export const CHAT_V2_LEGACY_PARITY_LABEL_VERSION = 'chat_v2_legacy_parity_label.v1';
 export const CHAT_V2_LEGACY_PARITY_OBSERVATION_VERSION = 'chat_v2_legacy_parity_observation.v1';
@@ -77,6 +83,287 @@ export interface ChatV2LegacyParityEvidenceInput {
   sampleCount: number;
   evidenceSource: ChatV2LegacyRetirementEvidenceSource;
   safeMetadata: Record<string, unknown>;
+}
+
+export interface ChatV2RetirementObserverCorpusBinding {
+  routePromptVersion: typeof CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_CORPUS_META.version;
+  routeCorpusId: typeof CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_CORPUS_META.corpusId;
+  routeCorpusSha256: string;
+  routeCorpusFrozenBeforeImplementation: true;
+  routeCorpusMutationPolicy: typeof CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_CORPUS_META.mutationPolicy;
+  routeCorpusProjectionPolicy: typeof CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_CORPUS_META.projectionPolicy;
+  observerRouteIds: string[];
+}
+
+/**
+ * Canonical binding between route-retirement evidence and the exact active
+ * observer corpus. Route-scoped observer runs hash only their selected route
+ * definitions, matching `chatv2-observe-legacy-parity.ts`.
+ */
+export function buildChatV2RetirementObserverCorpusBinding(
+  routeIds: readonly string[] = CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_PROMPTS.map((route) => route.routeId),
+): ChatV2RetirementObserverCorpusBinding {
+  const observerRouteIds = [...new Set(routeIds)].sort();
+  if (observerRouteIds.length === 0 || observerRouteIds.length !== routeIds.length) {
+    throw new Error('ChatV2 observer corpus binding requires unique route ids');
+  }
+  const included = new Set(observerRouteIds);
+  const routes = CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_PROMPTS.filter((route) =>
+    included.has(route.routeId));
+  if (routes.length !== observerRouteIds.length) {
+    throw new Error('ChatV2 observer corpus binding contains an unknown route id');
+  }
+  return {
+    routePromptVersion: CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_CORPUS_META.version,
+    routeCorpusId: CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_CORPUS_META.corpusId,
+    routeCorpusSha256: createHash('sha256')
+      .update(JSON.stringify(sortJson({
+        meta: CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_CORPUS_META,
+        routes,
+      })))
+      .digest('hex'),
+    routeCorpusFrozenBeforeImplementation: true,
+    routeCorpusMutationPolicy:
+      CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_CORPUS_META.mutationPolicy,
+    routeCorpusProjectionPolicy:
+      CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_CORPUS_META.projectionPolicy,
+    observerRouteIds,
+  };
+}
+
+export const CHAT_V2_RETIREMENT_OBSERVER_CORPUS_BINDING =
+  buildChatV2RetirementObserverCorpusBinding();
+
+export function hasExactCurrentChatV2RetirementObserverCorpusBinding(
+  metadata: Record<string, unknown>,
+  routeId?: string,
+): boolean {
+  const rawObserverRouteIds = metadata.observerRouteIds;
+  const observerRouteIds = Array.isArray(rawObserverRouteIds)
+    ? rawObserverRouteIds.filter((value): value is string =>
+        typeof value === 'string' && value.trim().length > 0)
+    : [];
+  if (
+    observerRouteIds.length === 0
+    || !Array.isArray(rawObserverRouteIds)
+    || observerRouteIds.length !== rawObserverRouteIds.length
+    || [...new Set(observerRouteIds)].length !== observerRouteIds.length
+    || JSON.stringify(observerRouteIds) !== JSON.stringify([...observerRouteIds].sort())
+    || (routeId != null && !observerRouteIds.includes(routeId))
+  ) {
+    return false;
+  }
+  try {
+    const expected = buildChatV2RetirementObserverCorpusBinding(observerRouteIds);
+    return metadata.routePromptVersion === expected.routePromptVersion
+      && metadata.routeCorpusId === expected.routeCorpusId
+      && metadata.routeCorpusSha256 === expected.routeCorpusSha256
+      && metadata.routeCorpusFrozenBeforeImplementation
+        === expected.routeCorpusFrozenBeforeImplementation
+      && metadata.routeCorpusMutationPolicy === expected.routeCorpusMutationPolicy
+      && metadata.routeCorpusProjectionPolicy === expected.routeCorpusProjectionPolicy;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Retirement eligibility is intentionally narrower than diagnostic corpus
+ * binding. It must remain the exact immutable v1.4 EN/PT projection.
+ */
+export function hasRetirementEligibleExactCurrentChatV2ObserverCorpusBinding(
+  metadata: Record<string, unknown>,
+  routeId?: string,
+): boolean {
+  return CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_CORPUS_META.frozenBeforeImplementation
+    && metadata.routeCorpusFrozenBeforeImplementation === true
+    && metadata.routeCorpusProjectionPolicy
+      === CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_CORPUS_META.projectionPolicy
+    && hasExactCurrentChatV2RetirementObserverCorpusBinding(metadata, routeId);
+}
+
+export interface DeleteExactCurrentChatV2RetirementEvidenceRowsInput {
+  evidenceSource: ChatV2LegacyRetirementEvidenceSource;
+  routeIds: readonly string[];
+  importMarker: 'parityLabelImport' | 'parityObservationImport';
+}
+
+/**
+ * Delete only rows whose parsed metadata proves the exact current projected
+ * corpus, exact importer, and requested route scope. Historical/unprojected
+ * rows are audit evidence and are never matched by a substring query.
+ */
+export function deleteExactCurrentChatV2RetirementEvidenceRows(
+  db: Database.Database,
+  input: DeleteExactCurrentChatV2RetirementEvidenceRowsInput,
+): number {
+  const routeIds = [...new Set(input.routeIds)].sort();
+  if (routeIds.length === 0) return 0;
+  const rows = db.prepare(`
+    SELECT id, route_id, safe_metadata_json
+    FROM chat_v2_legacy_retirement_evidence
+    WHERE evidence_source = ?
+      AND evidence_kind = 'route_exit'
+      AND route_id IN (${routeIds.map(() => '?').join(', ')})
+    ORDER BY id
+  `).all(input.evidenceSource, ...routeIds) as Array<{
+    id: number;
+    route_id: string;
+    safe_metadata_json: string | null;
+  }>;
+  const ids = rows.flatMap((row) => {
+    const metadata = parseJsonObject(row.safe_metadata_json);
+    return metadata[input.importMarker] === true
+      && hasRetirementEligibleExactCurrentChatV2ObserverCorpusBinding(metadata, row.route_id)
+      ? [row.id]
+      : [];
+  });
+  if (ids.length === 0) return 0;
+  return db.prepare(`
+    DELETE FROM chat_v2_legacy_retirement_evidence
+    WHERE id IN (${ids.map(() => '?').join(', ')})
+  `).run(...ids).changes;
+}
+
+export interface ChatV2LegacyRetirementEvidenceRowLike {
+  evidence_source: unknown;
+  evidence_kind: unknown;
+  sample_identifier_kind: unknown;
+  route_id: unknown;
+  replaced: unknown;
+  tested: unknown;
+  shadow_parity_rate: unknown;
+  route_sample_count: unknown;
+  raw_field_audit_count: unknown;
+  safe_metadata_json?: unknown;
+}
+
+export type ChatV2LegacyRetirementEvidenceRowValidation =
+  | {
+    ok: true;
+    metadata: Record<string, unknown>;
+    sampleCount: number;
+    matchingCount: number;
+    parityRate: number;
+  }
+  | { ok: false; reason: string };
+
+/**
+ * Shared fail-closed validator for every public retirement-evidence reader.
+ * Database rows are accepted only when their scalar columns, importer
+ * provenance, review completeness, and exact frozen corpus binding agree.
+ */
+export function validateCurrentChatV2LegacyRetirementEvidenceRow(
+  row: ChatV2LegacyRetirementEvidenceRowLike,
+): ChatV2LegacyRetirementEvidenceRowValidation {
+  if (row.evidence_source !== 'runtime_route') return { ok: false, reason: 'invalid_evidence_source' };
+  if (row.evidence_kind !== 'route_exit') return { ok: false, reason: 'invalid_evidence_kind' };
+  if (row.sample_identifier_kind !== 'hmac') {
+    return { ok: false, reason: 'invalid_sample_identifier_kind' };
+  }
+  if (typeof row.route_id !== 'string' || !ROUTE_ID_RE.test(row.route_id)) {
+    return { ok: false, reason: 'invalid_route_id' };
+  }
+  if (row.raw_field_audit_count !== 0) return { ok: false, reason: 'raw_field_audit_failed' };
+  if ((row.replaced !== 0 && row.replaced !== 1) || (row.tested !== 0 && row.tested !== 1)) {
+    return { ok: false, reason: 'invalid_replaced_or_tested' };
+  }
+  const sampleCount = integerFromUnknown(row.route_sample_count);
+  if (sampleCount == null || sampleCount < 0) return { ok: false, reason: 'invalid_sample_count' };
+  const parityRate = typeof row.shadow_parity_rate === 'number'
+    && Number.isFinite(row.shadow_parity_rate)
+    && row.shadow_parity_rate >= 0
+    && row.shadow_parity_rate <= 1
+    ? row.shadow_parity_rate
+    : null;
+  if (parityRate == null) return { ok: false, reason: 'invalid_parity_rate' };
+  const metadata = parseJsonObject(row.safe_metadata_json);
+  if (metadata.schemaVersion !== 'chat_v2_legacy_parity_evidence_safe_metadata.v1') {
+    return { ok: false, reason: 'invalid_metadata_schema' };
+  }
+  const labelImport = metadata.parityLabelImport === true;
+  const observationImport = metadata.parityObservationImport === true;
+  if (labelImport === observationImport) return { ok: false, reason: 'invalid_import_marker' };
+  if (!hasRetirementEligibleExactCurrentChatV2ObserverCorpusBinding(metadata, row.route_id)) {
+    return { ok: false, reason: 'invalid_observer_corpus_binding' };
+  }
+  const metadataSampleCount = integerFromUnknown(metadata.sampleCount);
+  const matchingCount = integerFromUnknown(metadata.matchingCount);
+  if (
+    metadataSampleCount !== sampleCount
+    || matchingCount == null
+    || matchingCount < 0
+    || matchingCount > sampleCount
+  ) {
+    return { ok: false, reason: 'invalid_metadata_counts' };
+  }
+  const metadataParityRate = typeof metadata.parityRate === 'number'
+    && Number.isFinite(metadata.parityRate)
+    ? metadata.parityRate
+    : null;
+  const calculatedRate = sampleCount > 0 ? matchingCount / sampleCount : 0;
+  if (
+    metadataParityRate == null
+    || Math.abs(metadataParityRate - calculatedRate) >= 0.000001
+    || Math.abs(parityRate - calculatedRate) >= 0.000001
+  ) {
+    return { ok: false, reason: 'invalid_parity_rate_binding' };
+  }
+  if (metadata.reviewRubricVersion !== CHAT_V2_LEGACY_PARITY_REVIEW_RUBRIC_VERSION) {
+    return { ok: false, reason: 'invalid_review_rubric' };
+  }
+  for (const key of [
+    'safetyRegressionCount',
+    'qualityRegressionCount',
+    'degradedNotComparableCount',
+  ] as const) {
+    if (integerFromUnknown(metadata[key]) !== 0) {
+      return { ok: false, reason: `invalid_${key}` };
+    }
+  }
+  if (labelImport) {
+    const evaluator = typeof metadata.evaluator === 'string'
+      ? metadata.evaluator.toLowerCase()
+      : '';
+    if (evaluator !== 'manual' && evaluator !== 'claude') {
+      return { ok: false, reason: 'invalid_independent_evaluator' };
+    }
+    if (
+      typeof metadata.peerReviewSignoffHash !== 'string'
+      || !PEER_REVIEW_SIGNOFF_RE.test(metadata.peerReviewSignoffHash)
+    ) {
+      return { ok: false, reason: 'invalid_peer_review_signoff' };
+    }
+    if (
+      metadata.reviewCompletenessChecked !== true
+      || metadata.rawReviewArtifactCompletenessChecked !== true
+      || integerFromUnknown(metadata.observedRouteSampleCount) !== sampleCount
+    ) {
+      return { ok: false, reason: 'incomplete_review_provenance' };
+    }
+    for (const key of [
+      'observerManifestSha256',
+      'observerObservationsSha256',
+      'rawReviewArtifactSha256',
+    ] as const) {
+      if (typeof metadata[key] !== 'string' || !PEER_REVIEW_SIGNOFF_RE.test(metadata[key])) {
+        return { ok: false, reason: `invalid_${key}` };
+      }
+    }
+  } else {
+    if (
+      metadata.evaluator !== 'runtime_tool'
+      || typeof metadata.qaReviewId !== 'string'
+      || !/^[a-z0-9_.:@-]{8,160}$/i.test(metadata.qaReviewId)
+      || typeof metadata.observerManifestHash !== 'string'
+      || !/^hmac:legacy-parity-observer-manifest:[a-f0-9]{64}$/i.test(
+        metadata.observerManifestHash,
+      )
+    ) {
+      return { ok: false, reason: 'invalid_observation_import_provenance' };
+    }
+  }
+  return { ok: true, metadata, sampleCount, matchingCount, parityRate };
 }
 
 export type ChatV2LegacyParityLabelValidation =
@@ -429,6 +716,7 @@ export function aggregateChatV2LegacyParityObservations(
 export function buildChatV2LegacyParityEvidenceInput(input: {
   label: ChatV2LegacyParityLabel;
   requestId: string;
+  observerCorpusBinding?: ChatV2RetirementObserverCorpusBinding;
 }): ChatV2LegacyParityEvidenceInput {
   const { label } = input;
   const shadowParityRate = label.sampleCount > 0 ? label.matchingCount / label.sampleCount : 0;
@@ -455,6 +743,7 @@ export function buildChatV2LegacyParityEvidenceInput(input: {
       reviewRubricVersion: label.reviewRubricVersion,
       parityRate: shadowParityRate,
       parityLabelImport: true,
+      ...input.observerCorpusBinding,
     },
   };
 }
@@ -477,6 +766,28 @@ function emptyLabel(observation: ChatV2LegacyParityObservation): ChatV2LegacyPar
     degradedNotComparableCount: 0,
     reviewRubricVersion: observation.reviewRubricVersion,
   };
+}
+
+function sortJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortJson);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, nested]) => [key, sortJson(nested)]),
+  );
+}
+
+function parseJsonObject(value: unknown): Record<string, unknown> {
+  if (typeof value !== 'string' || value.length === 0) return {};
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
+  }
 }
 
 function integerFromUnknown(value: unknown): number | null {

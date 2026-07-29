@@ -4,6 +4,7 @@
 import Database from 'better-sqlite3';
 import dotenv from 'dotenv';
 import {
+  buildChatShadowSampleEvidenceHash,
   evaluateChatShadowGateReadiness,
   type ChatShadowGateSample,
   type NexusChatShadowLanguage,
@@ -32,12 +33,23 @@ import {
   evaluateChatLegacyRetirementReadiness,
   type ChatLegacyRetirementReadinessInput,
 } from '../src/services/chat-legacy-retirement-readiness';
-import { CHAT_V2_LEGACY_PARITY_ROUTE_PROMPTS } from '../src/services/chat-legacy-parity-route-prompts';
+import {
+  CHAT_V2_RESPONSE_LOCALE_EVIDENCE_VERSION,
+  currentChatV2ResponseLocaleEvidenceSql,
+} from '../src/services/chat-v2-completion-evidence';
+import {
+  CHAT_V2_RETIREMENT_OBSERVER_CORPUS_BINDING,
+  validateCurrentChatV2LegacyRetirementEvidenceRow,
+} from '../src/services/chat-legacy-parity-labels';
+import {
+  CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_PROMPTS,
+} from '../src/services/chat-legacy-parity-route-prompts';
 import type { NexusAnswerCompositionMode } from '../src/services/chat-final-answer-composer';
 
 dotenv.config({ quiet: true });
 
-const PHASE7_REQUIRED_ROUTE_IDS = CHAT_V2_LEGACY_PARITY_ROUTE_PROMPTS.map((route) => route.routeId);
+const PHASE7_REQUIRED_ROUTE_IDS =
+  CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_PROMPTS.map((route) => route.routeId);
 
 export interface BuildChatV2CompletionReadinessReportOptions {
   limit?: number;
@@ -63,12 +75,18 @@ export function buildChatV2CompletionReadinessReport(
       ? [...new Set(options.evidenceSources)]
       : ['runtime_route'];
   const legacyRetirementInput = loadLegacyRetirementInput(db, limit, evidenceSources);
+  const historicalLocaleEvidence = loadHistoricalLocaleEvidenceAudit(db, limit, evidenceSources);
   return {
     schemaVersion: 'chat_v2_completion_readiness_report.v1' as const,
     generatedAt: new Date().toISOString(),
     dbPath: options.dbPath ?? null,
     limit,
     evidenceSources,
+    evidenceContract: {
+      retirementObserverCorpusBinding: CHAT_V2_RETIREMENT_OBSERVER_CORPUS_BINDING,
+      responseLocaleEvidenceVersion: CHAT_V2_RESPONSE_LOCALE_EVIDENCE_VERSION,
+    },
+    historicalLocaleEvidence,
     shadow: evaluateChatShadowGateReadiness({ samples: loadShadowSamples(db, limit, evidenceSources) }),
     answerCanary: evaluateChatAnswerCanaryExit(loadAnswerCanaryInput(db, limit, evidenceSources)),
     deterministicRead: evaluateChatDeterministicReadReadiness(
@@ -121,6 +139,8 @@ function loadShadowSamples(
     FROM chat_v2_completion_evidence
     WHERE evidence_kind = 'shadow'
       AND evidence_source IN (${sourceFilter.placeholders})
+      AND NOT ${historicalSpanishLocaleSql('locale')}
+      AND ${currentChatV2ResponseLocaleEvidenceSql()}
     ORDER BY datetime(created_at) DESC, id DESC
     LIMIT ?
   `).all(...sourceFilter.values, limit) as Array<{
@@ -171,6 +191,8 @@ function loadAnswerCanaryInput(
     FROM chat_v2_completion_evidence
     WHERE evidence_kind = 'answer_canary'
       AND evidence_source IN (${sourceFilter.placeholders})
+      AND NOT ${historicalSpanishLocaleSql('locale')}
+      AND ${currentChatV2ResponseLocaleEvidenceSql()}
     ORDER BY datetime(created_at) DESC, id DESC
     LIMIT ?
   `).all(...sourceFilter.values, limit) as Array<{
@@ -210,6 +232,133 @@ function loadAnswerCanaryInput(
     compositionSamples: rows
       .map((row) => ({ sampleId: row.message_hmac, mode: asCompositionMode(row.composition_mode) }))
       .filter((sample): sample is { sampleId: string; mode: NexusAnswerCompositionMode } => sample.mode != null),
+  };
+}
+
+interface HistoricalLocaleEvidenceAudit {
+  schemaVersion: 'chat_v2_historical_locale_evidence_audit.v1';
+  spanish: {
+    excludedFromCurrentGates: true;
+    shadowRowsAvailable: number;
+    shadowRowsAudited: number;
+    answerCanaryRowsAvailable: number;
+    candidateEvidenceHashValidRows: number;
+    candidateEvidenceHashInvalidRows: number;
+  };
+  responseLocaleAttribution: {
+    currentVersion: typeof CHAT_V2_RESPONSE_LOCALE_EVIDENCE_VERSION;
+    excludedPreVersionRows: true;
+    shadowRowsAvailable: number;
+    answerCanaryRowsAvailable: number;
+  };
+}
+
+/**
+ * Spanish response evidence predates the EN/PT-only product contract. It
+ * remains visible here for immutable-evidence audit, but is never projected
+ * into a supported language bucket or passed to a current readiness gate.
+ */
+function loadHistoricalLocaleEvidenceAudit(
+  db: Database.Database,
+  limit: number,
+  evidenceSources: readonly ChatV2ReadinessEvidenceSource[],
+): HistoricalLocaleEvidenceAudit {
+  const empty = (): HistoricalLocaleEvidenceAudit => ({
+    schemaVersion: 'chat_v2_historical_locale_evidence_audit.v1',
+    spanish: {
+      excludedFromCurrentGates: true,
+      shadowRowsAvailable: 0,
+      shadowRowsAudited: 0,
+      answerCanaryRowsAvailable: 0,
+      candidateEvidenceHashValidRows: 0,
+      candidateEvidenceHashInvalidRows: 0,
+    },
+    responseLocaleAttribution: {
+      currentVersion: CHAT_V2_RESPONSE_LOCALE_EVIDENCE_VERSION,
+      excludedPreVersionRows: true,
+      shadowRowsAvailable: 0,
+      answerCanaryRowsAvailable: 0,
+    },
+  });
+  if (!tableExists(db, 'chat_v2_completion_evidence')) return empty();
+  if (!columnExists(db, 'chat_v2_completion_evidence', 'evidence_source')) return empty();
+
+  const sourceFilter = buildSourceFilter(evidenceSources);
+  const counts = db.prepare(`
+    SELECT evidence_kind AS evidenceKind, COUNT(*) AS count
+    FROM chat_v2_completion_evidence
+    WHERE evidence_source IN (${sourceFilter.placeholders})
+      AND ${historicalSpanishLocaleSql('locale')}
+    GROUP BY evidence_kind
+  `).all(...sourceFilter.values) as Array<{ evidenceKind: string; count: number }>;
+  const countFor = (kind: string): number =>
+    Number(counts.find((row) => row.evidenceKind === kind)?.count ?? 0);
+  const preVersionCounts = db.prepare(`
+    SELECT evidence_kind AS evidenceKind, COUNT(*) AS count
+    FROM chat_v2_completion_evidence
+    WHERE evidence_source IN (${sourceFilter.placeholders})
+      AND evidence_kind IN ('shadow', 'answer_canary')
+      AND NOT ${historicalSpanishLocaleSql('locale')}
+      AND COALESCE(${currentChatV2ResponseLocaleEvidenceSql()}, 0) = 0
+    GROUP BY evidence_kind
+  `).all(...sourceFilter.values) as Array<{ evidenceKind: string; count: number }>;
+  const preVersionCountFor = (kind: string): number =>
+    Number(preVersionCounts.find((row) => row.evidenceKind === kind)?.count ?? 0);
+
+  const shadowRows = db.prepare(`
+    SELECT message_hmac, candidate_capabilities_json, final_capability_id,
+           schema_valid_after_repair, message_identifier_kind,
+           candidate_evidence_hash, raw_field_audit_count
+    FROM chat_v2_completion_evidence
+    WHERE evidence_kind = 'shadow'
+      AND evidence_source IN (${sourceFilter.placeholders})
+      AND ${historicalSpanishLocaleSql('locale')}
+    ORDER BY datetime(created_at) DESC, id DESC
+    LIMIT ?
+  `).all(...sourceFilter.values, limit) as Array<{
+    message_hmac: string;
+    candidate_capabilities_json: string;
+    final_capability_id: string | null;
+    schema_valid_after_repair: number;
+    message_identifier_kind: string;
+    candidate_evidence_hash: string;
+    raw_field_audit_count: number;
+  }>;
+
+  let candidateEvidenceHashValidRows = 0;
+  for (const row of shadowRows) {
+    const historicalSample = {
+      sampleId: row.message_hmac,
+      language: 'es',
+      candidateCapabilities: parseStringArray(row.candidate_capabilities_json),
+      finalCapabilityId: row.final_capability_id ?? undefined,
+      schemaValidAfterRepair: row.schema_valid_after_repair === 1,
+      messageIdentifierKind: row.message_identifier_kind === 'hmac' ? 'hmac' : 'raw',
+      storedRawMessageText: false,
+      unsafeRawFieldCount: Math.max(0, Number(row.raw_field_audit_count || 0)),
+      candidateEvidenceHash: row.candidate_evidence_hash,
+    } as unknown as ChatShadowGateSample;
+    if (row.candidate_evidence_hash === buildChatShadowSampleEvidenceHash(historicalSample)) {
+      candidateEvidenceHashValidRows += 1;
+    }
+  }
+
+  return {
+    schemaVersion: 'chat_v2_historical_locale_evidence_audit.v1',
+    spanish: {
+      excludedFromCurrentGates: true,
+      shadowRowsAvailable: countFor('shadow'),
+      shadowRowsAudited: shadowRows.length,
+      answerCanaryRowsAvailable: countFor('answer_canary'),
+      candidateEvidenceHashValidRows,
+      candidateEvidenceHashInvalidRows: shadowRows.length - candidateEvidenceHashValidRows,
+    },
+    responseLocaleAttribution: {
+      currentVersion: CHAT_V2_RESPONSE_LOCALE_EVIDENCE_VERSION,
+      excludedPreVersionRows: true,
+      shadowRowsAvailable: preVersionCountFor('shadow'),
+      answerCanaryRowsAvailable: preVersionCountFor('answer_canary'),
+    },
   };
 }
 
@@ -383,15 +532,18 @@ function loadLegacyRetirementInput(
   }
   const sourceFilter = buildSourceFilter(evidenceSources);
   const rows = db.prepare(`
-    SELECT evidence_kind, route_id, replaced, tested, shadow_parity_rate,
+    SELECT evidence_source, evidence_kind, sample_identifier_kind,
+           route_id, replaced, tested, shadow_parity_rate,
            route_sample_count, legacy_fallback_rate_24h, full_verify_clean,
-           safe_metadata_json
+           raw_field_audit_count, safe_metadata_json
     FROM chat_v2_legacy_retirement_evidence
     WHERE evidence_source IN (${sourceFilter.placeholders})
     ORDER BY datetime(created_at) DESC, id DESC
     LIMIT ?
   `).all(...sourceFilter.values, limit) as Array<{
+    evidence_source: string;
     evidence_kind: string;
+    sample_identifier_kind: string;
     route_id: string | null;
     replaced: number | null;
     tested: number | null;
@@ -399,20 +551,23 @@ function loadLegacyRetirementInput(
     route_sample_count: number | null;
     legacy_fallback_rate_24h: number | null;
     full_verify_clean: number | null;
+    raw_field_audit_count: number;
     safe_metadata_json: string | null;
   }>;
 
   const routeRowsById = new Map<string, typeof rows>();
   for (const row of rows) {
     if (row.evidence_kind !== 'route_exit' || !row.route_id) continue;
+    if (!validateCurrentChatV2LegacyRetirementEvidenceRow(row).ok) continue;
     const existing = routeRowsById.get(row.route_id) ?? [];
     existing.push(row);
     routeRowsById.set(row.route_id, existing);
   }
-  const routeSamples = [...routeRowsById.entries()].map(([routeId, routeRows]) => {
-    const selected = routeRows.find((row) => !isInventoryOnlyRouteExitRow(row.safe_metadata_json)) ?? routeRows[0]!;
+  const routeSamples = [...routeRowsById.entries()].flatMap(([routeId, routeRows]) => {
+    const selected = routeRows[0];
+    if (!selected) return [];
     const peerMetadata = parseRoutePeerMetadata(selected.safe_metadata_json);
-    return {
+    return [{
       routeId,
       replaced: selected.replaced === 1,
       tested: selected.tested === 1,
@@ -423,7 +578,7 @@ function loadLegacyRetirementInput(
       safetyRegressionCount: peerMetadata.safetyRegressionCount,
       qualityRegressionCount: peerMetadata.qualityRegressionCount,
       degradedNotComparableCount: peerMetadata.degradedNotComparableCount,
-    };
+    }];
   });
   return {
     routeSamples,
@@ -431,16 +586,6 @@ function loadLegacyRetirementInput(
     fullVerifyClean: rows.find((row) => row.evidence_kind === 'verify_run')?.full_verify_clean === 1,
     requiredRouteIds: PHASE7_REQUIRED_ROUTE_IDS,
   };
-}
-
-function isInventoryOnlyRouteExitRow(safeMetadataJson?: string | null): boolean {
-  if (!safeMetadataJson) return false;
-  try {
-    const parsed = JSON.parse(safeMetadataJson) as { status?: unknown };
-    return parsed.status === 'inventory_only_not_retired';
-  } catch {
-    return false;
-  }
 }
 
 function parseRoutePeerMetadata(safeMetadataJson?: string | null): {
@@ -588,6 +733,14 @@ function buildSourceFilter(evidenceSources: readonly ChatV2ReadinessEvidenceSour
   };
 }
 
+function historicalSpanishLocaleSql(columnName: 'locale'): string {
+  return `(
+    lower(trim(${columnName})) = 'es'
+    OR lower(trim(${columnName})) LIKE 'es-%'
+    OR lower(trim(${columnName})) GLOB 'es_*'
+  )`;
+}
+
 function emptyAnswerCanaryInput(): ChatAnswerCanaryEvaluationInput {
   return {
     acceptanceSamples: [],
@@ -618,7 +771,6 @@ function normalizeEvidenceLanguage(value: string | null | undefined): NexusChatS
   if (/^pt[-_]?pt$/i.test(raw)) return 'pt-PT';
   if (/^pt\b/i.test(raw)) return 'pt-BR';
   if (/^en\b/i.test(raw)) return 'en';
-  if (/^es\b/i.test(raw)) return 'es';
   if (/mixed/i.test(raw)) return 'mixed';
   return 'en';
 }

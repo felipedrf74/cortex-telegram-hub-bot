@@ -35,12 +35,12 @@ import {
 } from '../src/services/chat-legacy-parity-labels';
 import {
   CHAT_V2_LEGACY_PARITY_ROUTE_CORPUS_META,
-	  CHAT_V2_LEGACY_PARITY_ROUTE_PROMPT_VERSION,
-	  CHAT_V2_LEGACY_PARITY_ROUTE_PROMPTS,
-	  CHAT_V2_LEGACY_PARITY_WRITE_ROUTE_IDS,
-	  type ChatV2LegacyParityRoutePrompt,
-	  type ChatV2LegacyParityRoutePromptTag,
-	} from '../src/services/chat-legacy-parity-route-prompts';
+  CHAT_V2_LEGACY_PARITY_ROUTE_PROMPTS,
+  CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_CORPUS_META,
+  CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_PROMPTS,
+  CHAT_V2_LEGACY_PARITY_WRITE_ROUTE_IDS,
+  type ChatV2LegacyParityRoutePromptTag,
+} from '../src/services/chat-legacy-parity-route-prompts';
 import type { ChatV2LegacyRetirementEvidenceSource } from '../src/services/chat-legacy-retirement-evidence';
 
 dotenv.config({ quiet: true });
@@ -99,10 +99,26 @@ async function main(): Promise<void> {
     : (legacyBaseUrl === chatV2BaseUrl && legacyTokenFile === chatV2TokenFile
       ? sharedLegacyAuth
       : await resolveAuth({ baseUrl: chatV2BaseUrl, tokenPath: chatV2TokenFile }));
-  const routePrompts = CHAT_V2_LEGACY_PARITY_ROUTE_PROMPTS.filter((route) => routesFilter.size === 0 || routesFilter.has(route.routeId));
-  if (routePrompts.length === 0) {
+  const routeCorpusMeta = evidenceSource === 'runtime_route'
+    ? CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_CORPUS_META
+    : CHAT_V2_LEGACY_PARITY_ROUTE_CORPUS_META;
+  const rawRoutePrompts = (
+    evidenceSource === 'runtime_route'
+      ? CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_PROMPTS
+      : CHAT_V2_LEGACY_PARITY_ROUTE_PROMPTS
+  ).filter((route) => routesFilter.size === 0 || routesFilter.has(route.routeId));
+  if (rawRoutePrompts.length === 0) {
     throw new Error(`No route prompt definitions matched --routes=${[...routesFilter].join(',') || '(empty)'}`);
   }
+  const routePrompts = rawRoutePrompts.map((route) => ({
+    ...route,
+    prompts: route.prompts.map((prompt) => ({
+      ...prompt,
+      requestLanguage: 'requestLanguage' in prompt
+        ? prompt.requestLanguage
+        : prompt.language,
+    })),
+  }));
 	  const writeRoutes = routePrompts.filter((route) => CHAT_V2_LEGACY_PARITY_WRITE_ROUTE_IDS.has(route.routeId));
 	  validateRuntimePromptSampling(routePrompts);
 	  if (writeRoutes.length > 0 && !allowWritePrompts) {
@@ -138,10 +154,13 @@ async function main(): Promise<void> {
     let missingChatV2Projection = 0;
     let targetRouteNotObserved = 0;
 	    for (let index = 0; index < samplesPerRoute; index += 1) {
-	      const prompt = evidenceSource === 'runtime_route'
-	        ? route.prompts[index]!
-	        : route.prompts[index % route.prompts.length]!;
-      const sampleKey = `${route.routeId}:${index}:${prompt.language}`;
+      const prompt = evidenceSource === 'runtime_route'
+        ? route.prompts[index]!
+        : route.prompts[index % route.prompts.length]!;
+      const requestLanguage = prompt.requestLanguage;
+      const expectedResponseLanguage = prompt.language;
+      const sampleKey =
+        `${route.routeId}:${index}:request=${requestLanguage}:response=${expectedResponseLanguage}`;
       const legacyAuth = sharedLegacyAuth ?? await registerAuth({ baseUrl: legacyBaseUrl });
       const text = promptTextForObservation(prompt.text);
       const legacyFixture = prepareParityFixture({
@@ -156,7 +175,7 @@ async function main(): Promise<void> {
         baseUrl: legacyBaseUrl,
         auth: legacyAuth,
         text,
-        language: prompt.language,
+        language: requestLanguage,
         clientMessageId: `legacy-parity-${route.routeId}-${Date.now()}-${index}`,
       });
       const chatV2Auth = legacyBaseUrl === chatV2BaseUrl
@@ -176,7 +195,7 @@ async function main(): Promise<void> {
           baseUrl: chatV2BaseUrl,
           auth: chatV2Auth,
           text,
-          language: prompt.language,
+          language: requestLanguage,
           clientMessageId: `chatv2-parity-${route.routeId}-${Date.now()}-${index}`,
         });
       const legacyProjection = projectLegacyChatResponseForParity({
@@ -214,7 +233,8 @@ async function main(): Promise<void> {
           routeId: route.routeId,
           sampleKey,
           sampleHmac: observation.sampleHmac,
-          language: prompt.language,
+          requestLanguage,
+          expectedResponseLanguage,
           promptText: text,
           legacyRawResponse: {
             status: legacyBody.status,
@@ -256,17 +276,21 @@ async function main(): Promise<void> {
     schemaVersion: 'chat_v2_legacy_parity_observer_manifest.v1',
     generatedAt: new Date().toISOString(),
     evidenceSource,
-    routePromptVersion: CHAT_V2_LEGACY_PARITY_ROUTE_PROMPT_VERSION,
-    routeCorpusId: CHAT_V2_LEGACY_PARITY_ROUTE_CORPUS_META.corpusId,
-    routeCorpusFrozenAt: CHAT_V2_LEGACY_PARITY_ROUTE_CORPUS_META.frozenAt,
-    routeCorpusFrozenBeforeImplementation: CHAT_V2_LEGACY_PARITY_ROUTE_CORPUS_META.frozenBeforeImplementation,
-    routeCorpusMutationPolicy: CHAT_V2_LEGACY_PARITY_ROUTE_CORPUS_META.mutationPolicy,
+    routePromptVersion: routeCorpusMeta.version,
+    routeCorpusId: routeCorpusMeta.corpusId,
+    routeCorpusFrozenAt: routeCorpusMeta.frozenAt,
+    routeCorpusFrozenBeforeImplementation: routeCorpusMeta.frozenBeforeImplementation,
+    routeCorpusMutationPolicy: routeCorpusMeta.mutationPolicy,
+    routeCorpusProjectionPolicy: 'projectionPolicy' in routeCorpusMeta
+      ? routeCorpusMeta.projectionPolicy
+      : 'active_v1_5_diagnostic_only_not_retirement_evidence',
     routeCorpusSha256: stableSha256({
-      meta: CHAT_V2_LEGACY_PARITY_ROUTE_CORPUS_META,
-      routes: routePrompts,
+      meta: routeCorpusMeta,
+      routes: rawRoutePrompts,
     }),
     reviewRubricVersion: CHAT_V2_LEGACY_PARITY_REVIEW_RUBRIC_VERSION,
     comparatorVersion: CHAT_V2_LEGACY_PARITY_COMPARATOR_VERSION,
+    sampleIdentityPolicy: 'route_index_request_language_expected_response_language_v1',
     stateFixtureHash: stateFixtureHash ?? `sha256:${'0'.repeat(64)}`,
     stateFixtureContract: writeRoutes.length > 0
       ? 'fresh_isolated_user_per_prompt_with_seeded_entities'
@@ -633,18 +657,14 @@ function isSha256Token(value: string | undefined): boolean {
   return typeof value === 'string' && /^sha256:[a-f0-9]{64}$/i.test(value);
 }
 
-function validateRuntimePromptSampling(routes: ChatV2LegacyParityRoutePrompt[]): void {
+function validateRuntimePromptSampling(routes: Array<{
+  routeId: string;
+  prompts: Array<{ text: string }>;
+}>): void {
   if (evidenceSource !== 'runtime_route') return;
   for (const route of routes) {
     const distinct = distinctPromptCount(route.prompts);
-    if (
-      (
-        route.evidenceTrack === 'answer_quality_research'
-        || route.evidenceTrack === 'write_firewall_bundle'
-        || route.runtimeCoupling === 'independent_read_route'
-      )
-      && (distinct < samplesPerRoute || route.prompts.length < samplesPerRoute)
-    ) {
+    if (distinct < samplesPerRoute || route.prompts.length < samplesPerRoute) {
       throw new Error(
         `Runtime evidence for ${route.routeId} requires ${samplesPerRoute} distinct held-out prompts; found ${distinct}. Repeated prompt padding is not valid parity evidence.`,
       );
@@ -652,7 +672,7 @@ function validateRuntimePromptSampling(routes: ChatV2LegacyParityRoutePrompt[]):
   }
 }
 
-function distinctPromptCount(prompts: ChatV2LegacyParityRoutePrompt['prompts']): number {
+function distinctPromptCount(prompts: Array<{ text: string }>): number {
   return new Set(prompts.map((prompt) => prompt.text.trim().replace(/\s+/g, ' '))).size;
 }
 
@@ -670,6 +690,7 @@ function prepareParityFixture(input: {
   sampleKey: string;
   prompt: {
     language: string;
+    requestLanguage: string;
     text: string;
     tags?: readonly ChatV2LegacyParityRoutePromptTag[];
   };
@@ -692,7 +713,8 @@ function prepareParityFixture(input: {
       schemaVersion: 'chat_v2_parity_write_fixture_operations.v1',
       routeId: input.routeId,
       sampleKey: input.sampleKey,
-      language: input.prompt.language,
+      requestLanguage: input.prompt.requestLanguage,
+      expectedResponseLanguage: input.prompt.language,
       operations,
     })}`;
     db.transaction(() => {

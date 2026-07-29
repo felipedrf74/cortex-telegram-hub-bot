@@ -64,7 +64,6 @@ function requestLocaleToSecretaryLanguage(locale: string | null): Lang | undefin
   if (!locale) return undefined;
   if (locale.toLowerCase() === 'pt-pt') return 'pt-PT';
   if (locale.toLowerCase().startsWith('pt')) return 'pt-BR';
-  if (locale.toLowerCase().startsWith('es')) return 'es-ES';
   return 'en-US';
 }
 

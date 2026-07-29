@@ -68,6 +68,7 @@ export const v2LocalAnswerStage: ChatStage = {
       fallbackDomain: localChatResult.response.domain,
       fallbackRouteMethod: localChatResult.response.routeMethod,
       fallbackConfidence: localChatResult.response.confidence,
+      locale: chatCoreV2RouteLocale,
       actionability: localChatResult.degraded ? 'degraded' : 'answer_only',
       verificationStatus: 'not_required',
       compositionMode: localChatResult.degraded ? 'templated' : 'model_constrained',

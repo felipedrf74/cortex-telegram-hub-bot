@@ -169,7 +169,7 @@ const LOCAL_CHAT_OUTPUT_SCHEMA = {
   properties: {
     schemaVersion: { type: 'string', enum: [COMPOSED_ANSWER_DRAFT_SCHEMA_VERSION] },
     mode: { type: 'string', enum: ['model_constrained'] },
-    locale: { type: 'string', enum: ['en', 'pt-PT', 'pt-BR', 'es'] },
+    locale: { type: 'string', enum: ['en', 'pt-PT', 'pt-BR'] },
     text: { type: 'string', minLength: 1, maxLength: 1600 },
     factualClaims: {
       type: 'array',
@@ -1092,9 +1092,7 @@ function applyNoUnverifiedSuccessClaimGuard(
   if (!textClaimsUnverifiedAction(text)) return { text, rewritten: false };
   const rewritten = locale.startsWith('pt')
     ? 'Não executei nenhuma ação nesta resposta. Posso preparar uma prévia verificada se quiseres.'
-    : locale === 'es'
-      ? 'No ejecuté ninguna acción en esta respuesta. Puedo preparar una vista previa verificada si quieres.'
-      : 'I did not execute an action in this answer. I can prepare a verified preview if you want.';
+    : 'I did not execute an action in this answer. I can prepare a verified preview if you want.';
   return { text: rewritten, rewritten: true };
 }
 
@@ -1139,7 +1137,6 @@ function hasLikelyLocaleDrift(text: string, locale: ChatCoreV2Locale): boolean {
   if (locale === 'pt-BR') {
     return (hasSpanishSignal && !hasPortugueseSignal) || hasEuropeanPortugueseSignal;
   }
-  if (locale === 'es') return hasPortugueseSignal && !hasSpanishSignal;
   if (locale === 'en') return hasSpanishSignal || hasPortugueseSignal;
   return false;
 }
@@ -1208,9 +1205,7 @@ function buildDegradedResponse(
   const locale = normalizeLocale(input.locale);
   const text = locale.startsWith('pt')
     ? 'O raciocínio local não conseguiu responder esta mensagem com segurança agora. Tenta reformular ou pede uma ação específica.'
-    : locale === 'es'
-      ? 'El razonamiento local no pudo responder este mensaje con seguridad ahora. Intenta reformularlo o pide una acción específica.'
-      : 'Local reasoning could not answer this message safely right now. Try rephrasing or ask for a specific action.';
+    : 'Local reasoning could not answer this message safely right now. Try rephrasing or ask for a specific action.';
   return {
     response: {
       id: `msg-${randomUUID()}`,
@@ -1392,11 +1387,6 @@ function helpfulFallbackText(message: string, locale: ChatCoreV2Locale): string 
     if (mentionsFocus) return 'Para manter foco, escolhe uma única próxima ação pequena e termina-a antes de abrir outra frente.';
     return 'Divide isso numa próxima ação pequena, faz um bloco curto de foco e revê o resultado antes de continuar.';
   }
-  if (locale === 'es') {
-    if (asksNextStep) return 'Elige una sola acción de 25 minutos para hoy, define el resultado esperado y cierra todo lo que no ayude a ese paso.';
-    if (mentionsFocus) return 'Para mantener el foco, elige una sola próxima acción pequeña y termínala antes de abrir otro frente.';
-    return 'Convierte eso en una próxima acción pequeña, haz un bloque corto de foco y revisa el resultado antes de seguir.';
-  }
   if (asksNextStep) return 'Pick one 25-minute action for today, define the expected result, and close anything that does not help that step.';
   if (mentionsFocus) return 'To stay focused, choose one small next action and finish it before opening another thread.';
   return 'Turn it into one small next action, do a short focus block, and review the result before continuing.';
@@ -1410,9 +1400,6 @@ function localeMismatchFallbackText(message: string, locale: ChatCoreV2Locale): 
     }
     if (locale === 'pt-BR') {
       return 'Você pode escolher uma refeição simples com uma proteína, legumes e um carboidrato que já tenha à mão.';
-    }
-    if (locale === 'es') {
-      return 'Puedes elegir una comida sencilla con una proteína, verduras y un carbohidrato que ya tengas a mano.';
     }
     return 'Pick a simple meal built around one protein, vegetables, and a carb you already have on hand.';
   }
@@ -1450,25 +1437,18 @@ function cookingIdeaText(locale: ChatCoreV2Locale): string {
   if (locale === 'pt-BR') {
     return 'Uma opção simples: escolha uma proteína, legumes e um carboidrato que já tenha à mão; tempere bem e mantenha o preparo curto.';
   }
-  if (locale === 'es') {
-    return 'Una opción sencilla: elige una proteína, verduras y un carbohidrato que ya tengas a mano; condimenta bien y mantén la preparación corta.';
-  }
   return 'A simple option: choose one protein, vegetables, and a carb you already have on hand; season it well and keep the prep short.';
 }
 
 function languageInstructionForLocale(locale: ChatCoreV2Locale): string {
   if (locale === 'pt-BR') return 'Answer only in Brazilian Portuguese.';
   if (locale === 'pt-PT') return 'Answer only in European Portuguese.';
-  if (locale === 'es') return 'Answer only in Spanish.';
   return 'Answer only in English.';
 }
 
 function recipeUnavailableText(locale: ChatCoreV2Locale): string {
   if (locale.startsWith('pt')) {
     return 'Não consegui gerar uma receita completa com segurança agora. Tenta novamente com o prato, porções e preferências principais.';
-  }
-  if (locale === 'es') {
-    return 'No pude generar una receta completa con seguridad ahora. Inténtalo otra vez con el plato, las porciones y las preferencias principales.';
   }
   return 'I could not generate a complete recipe safely right now. Try again with the dish, servings, and main preferences.';
 }
@@ -1564,24 +1544,6 @@ function buildRecipeFormatInstructions(locale: ChatCoreV2Locale): string[] {
       'Para gravidez, bebés/crianças pequenas, idosos ou pessoas imunocomprometidas, evita alimentos de alto risco ou adiciona uma cautela clara.',
       'Não afirmes curar, tratar, reverter ou diagnosticar condições médicas.',
       'Termina todas as secções.',
-    ];
-  }
-  if (locale === 'es') {
-    return [
-      'Formato de receta: concisa, completa y lista para guardar. Sin placeholders. No digas que guardaste o creaste nada en la app.',
-      'Conserva el plato pedido y sus ingredientes centrales conocidos; no lo cambies por otro plato. Si no conoces el plato, pide aclaración.',
-      'Usa exactamente estas secciones en español:',
-      '**Título**',
-      '**Rinde:** número de porciones',
-      '**Preparación:** minutos',
-      '**Cocción:** minutos',
-      '**Macros por porción (estimado):** Proteína N g; Grasa N g; Carbohidratos N g; Calorías N kcal',
-      '**Ingredientes:** 5-8 líneas con cantidad + unidad + ingrediente cuando sea posible',
-      '**Modo de preparación:** 4-5 pasos numerados',
-      'Incluye temperatura/cocción, almacenamiento o recalentado cuando haya carne, pescado, huevos, sobras, alimentos crudos o ingredientes vencidos.',
-      'Para embarazo, bebés/niños pequeños, personas mayores o inmunocomprometidas, evita alimentos de alto riesgo o añade una cautela clara.',
-      'No afirmes curar, tratar, revertir ni diagnosticar condiciones médicas.',
-      'Termina todas las secciones.',
     ];
   }
   return [
@@ -1718,16 +1680,15 @@ export function resolveLocalChatModel(
 
 function normalizeLocale(raw: string | null | undefined): ChatCoreV2Locale {
   const value = String(raw ?? '').trim();
-  if (value === 'pt-PT' || value === 'pt-BR' || value === 'es' || value === 'en') return value;
+  if (value === 'pt-PT' || value === 'pt-BR' || value === 'en') return value;
   const lower = value.toLowerCase();
   if (lower.startsWith('pt-pt')) return 'pt-PT';
   if (lower.startsWith('pt')) return 'pt-BR';
-  if (lower.startsWith('es')) return 'es';
   return 'en';
 }
 
 function isSupportedLocale(value: unknown): value is ChatCoreV2Locale {
-  return value === 'en' || value === 'pt-PT' || value === 'pt-BR' || value === 'es';
+  return value === 'en' || value === 'pt-PT' || value === 'pt-BR';
 }
 
 function readPositiveInt(raw: string | undefined, fallback: number): number {

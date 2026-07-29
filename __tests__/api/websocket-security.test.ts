@@ -13,13 +13,17 @@ import {
   DEFAULT_WEBSOCKET_MAX_CONNECTIONS_PER_IP,
   DEFAULT_WEBSOCKET_MAX_FRAME_BYTES,
   consumeWebSocketMessageBudget,
+  executeWebSocketDomainHandlerWithLocale,
   isAllowedWebSocketOrigin,
+  resolveWebSocketResponseLocale,
   resetWebSocketConnectionCountersForTests,
   webSocketAuthTimeoutMs,
   webSocketConnectionLimits,
   webSocketFrameByteLength,
   webSocketMaxPayloadBytes,
 } from '../../src/api/websocket';
+import { detectResponseLanguage } from '../../src/services/chat-language-detector';
+import { getCurrentChatRequestLocale } from '../../src/services/chat-request-locale-context';
 
 async function listenOnLoopback(server: http.Server): Promise<number> {
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -237,6 +241,34 @@ describe('WebSocket security boundary helpers', () => {
     expect(source).toContain("actionStatus: 'ACTION_CONFIRMATION_REQUIRED'");
   });
 
+  it('binds Spanish-authored deterministic reads and action previews to English under a stored Portuguese locale', () => {
+    expect(
+      resolveWebSocketResponseLocale('pt-BR', '¿Qué tareas tengo para mañana?'),
+    ).toBe('en-US');
+
+    const source = fs.readFileSync(path.resolve(__dirname, '../../src/api/websocket.ts'), 'utf8');
+    const localeResolutionIndex = source.indexOf('const responseLocale = resolveWebSocketResponseLocale(');
+    const tokenZeroIndex = source.indexOf('if (await trySendTokenZeroSecretaryRead(ws, {');
+    const firstPlannerIndex = source.indexOf('const deterministicAction = await tryHandleChatActionPlan({');
+    const secondPlannerIndex = source.indexOf('const actionResult = await tryHandleChatActionPlan({');
+
+    expect(localeResolutionIndex).toBeGreaterThan(-1);
+    expect(tokenZeroIndex).toBeGreaterThan(localeResolutionIndex);
+    expect(firstPlannerIndex).toBeGreaterThan(tokenZeroIndex);
+    expect(secondPlannerIndex).toBeGreaterThan(firstPlannerIndex);
+    expect(source.slice(tokenZeroIndex, firstPlannerIndex)).toContain('locale: responseLocale');
+    expect(source.slice(firstPlannerIndex, secondPlannerIndex)).toContain('locale: responseLocale');
+    expect(source.slice(secondPlannerIndex)).toContain('locale: responseLocale');
+    expect(source).toContain('locale: input.locale');
+  });
+
+  it.each(['Hola', 'Buenos días', 'Gracias', 'Quiero ayuda'])(
+    'selects the English compatibility response for short Spanish input: %s',
+    (message) => {
+      expect(resolveWebSocketResponseLocale('pt-BR', message)).toBe('en-US');
+    },
+  );
+
   it('emits the stable typed WebSocket frame for a budget denial', () => {
     const frame = buildWebSocketAiBudgetErrorFrame({
       name: 'AiBudgetError',
@@ -274,4 +306,191 @@ describe('WebSocket security boundary helpers', () => {
       },
     });
   });
+
+  it('projects a legacy Spanish locale to English and contains a mismatched provider reply before streaming', async () => {
+    const rawPortuguese = 'A tarefa está pronta e a sua reunião foi agendada para amanhã. Já adicionei o lembrete à sua lista.';
+    let providerCalls = 0;
+
+    const executed = await executeWebSocketDomainHandlerWithLocale({
+      locale: 'es-419',
+      message: '¿Qué tengo para mañana?',
+      userId: 42,
+      tenantId: 42,
+      handler: async () => {
+        providerCalls += 1;
+        expect(getCurrentChatRequestLocale()).toBe('en-US');
+        return { text: rawPortuguese, domain: 'secretary' };
+      },
+    });
+
+    expect(providerCalls).toBe(1);
+    expect(executed.response.text).not.toContain(rawPortuguese);
+    expect(detectResponseLanguage(executed.response.text).language).toBe('en');
+    expect(executed.languageGuard).toMatchObject({
+      contained: true,
+      expected: 'en',
+      detected: 'pt',
+    });
+
+    const source = fs.readFileSync(path.resolve(__dirname, '../../src/api/websocket.ts'), 'utf8');
+    const containmentIndex = source.indexOf('const executed = await executeWebSocketDomainHandlerWithLocale({');
+    const firstGenericChunkIndex = source.indexOf(
+      'await streamTextFrame(ws, { text: result.text, messageId, userId, tenantId });',
+      containmentIndex,
+    );
+    expect(containmentIndex).toBeGreaterThan(-1);
+    expect(firstGenericChunkIndex).toBeGreaterThan(containmentIndex);
+    expect(source).not.toContain('await handler(route.strippedMessage, userId, tenantId)');
+  });
+
+  it('uses English for a clearly Spanish-authored message even when the stored locale is Portuguese', async () => {
+    const rawEnglish = 'The task is ready and your meeting is scheduled for tomorrow. I have added the reminder to your list.';
+
+    const executed = await executeWebSocketDomainHandlerWithLocale({
+      locale: 'pt-BR',
+      message: '¿Qué tareas tengo para mañana?',
+      userId: 42,
+      tenantId: 42,
+      handler: async () => {
+        expect(getCurrentChatRequestLocale()).toBe('en-US');
+        return { text: rawEnglish, domain: 'secretary' };
+      },
+    });
+
+    expect(executed.response.text).toBe(rawEnglish);
+    expect(executed.languageGuard).toMatchObject({
+      contained: false,
+      expected: 'en',
+      detected: 'en',
+    });
+  });
+
+  it.each([
+    'Gracias.',
+    'Entendido.',
+    'De acuerdo.',
+    'Here you go. Gracias por esperar.',
+  ])('contains short or mixed Spanish provider output before WebSocket streaming: %s', async (text) => {
+    const executed = await executeWebSocketDomainHandlerWithLocale({
+      locale: 'en-US',
+      message: 'Show my priorities',
+      userId: 42,
+      tenantId: 42,
+      handler: async () => ({ text, domain: 'secretary' }),
+    });
+
+    expect(executed.response.text).not.toBe(text);
+    expect(executed.languageGuard).toMatchObject({
+      contained: true,
+      expected: 'en',
+      detected: 'es',
+    });
+  });
+
+  it('keeps supported Portuguese in request context and preserves matching provider text byte-for-byte', async () => {
+    const rawPortuguese = 'A tarefa está pronta e a sua reunião foi agendada para amanhã. Já adicionei o lembrete à sua lista.';
+
+    const executed = await executeWebSocketDomainHandlerWithLocale({
+      locale: 'pt-BR',
+      message: 'O que tenho para amanhã?',
+      userId: 42,
+      tenantId: 42,
+      handler: async () => {
+        expect(getCurrentChatRequestLocale()).toBe('pt-BR');
+        return { text: rawPortuguese, domain: 'secretary' };
+      },
+    });
+
+    expect(executed.response.text).toBe(rawPortuguese);
+    expect(executed.languageGuard).toMatchObject({
+      contained: false,
+      expected: 'pt',
+      detected: 'pt',
+    });
+  });
+
+  it('keeps the stored Portuguese variant when the authored message is ambiguous', async () => {
+    const rawPortuguese = 'A tarefa está pronta e a sua reunião foi agendada para amanhã. Já adicionei o lembrete à sua lista.';
+
+    const executed = await executeWebSocketDomainHandlerWithLocale({
+      locale: 'pt-PT',
+      message: 'Status?',
+      userId: 42,
+      tenantId: 42,
+      handler: async () => {
+        expect(getCurrentChatRequestLocale()).toBe('pt-PT');
+        return { text: rawPortuguese, domain: 'secretary' };
+      },
+    });
+
+    expect(executed.response.text).toBe(rawPortuguese);
+    expect(executed.languageGuard).toMatchObject({
+      contained: false,
+      expected: 'pt',
+      detected: 'pt',
+    });
+  });
+
+  it('locally replaces a confident English reply on a Portuguese request without retrying the provider', async () => {
+    const rawEnglish = 'The task is ready and your meeting is scheduled for tomorrow. I have added the reminder to your list.';
+    let providerCalls = 0;
+
+    const executed = await executeWebSocketDomainHandlerWithLocale({
+      locale: 'pt-PT',
+      message: 'O que tenho para amanhã?',
+      userId: 42,
+      tenantId: 42,
+      handler: async () => {
+        providerCalls += 1;
+        return { text: rawEnglish, domain: 'secretary' };
+      },
+    });
+
+    expect(providerCalls).toBe(1);
+    expect(executed.response.text).not.toContain(rawEnglish);
+    expect(detectResponseLanguage(executed.response.text).language).toBe('pt');
+    expect(executed.languageGuard).toMatchObject({
+      contained: true,
+      expected: 'pt',
+      detected: 'en',
+    });
+  });
+
+  it.each([
+    {
+      locale: 'es-419',
+      rawReply: 'Aquí tienes.',
+      expectedLanguage: 'en',
+      detectedLanguage: 'es',
+    },
+    {
+      locale: 'en-US',
+      rawReply: 'Pronto.',
+      expectedLanguage: 'en',
+      detectedLanguage: 'pt',
+    },
+  ])(
+    'contains an unambiguous short $detectedLanguage reply before WebSocket streaming',
+    async ({ locale, rawReply, expectedLanguage, detectedLanguage }) => {
+      let providerCalls = 0;
+      const executed = await executeWebSocketDomainHandlerWithLocale({
+        locale,
+        message: 'Show my current priorities',
+        userId: 42,
+        tenantId: 42,
+        handler: async () => {
+          providerCalls += 1;
+          return { text: rawReply, domain: 'secretary' };
+        },
+      });
+
+      expect(providerCalls).toBe(1);
+      expect(executed.response.text).not.toContain(rawReply);
+      expect(executed.languageGuard).toMatchObject({
+        contained: true,
+        expected: expectedLanguage,
+        detected: detectedLanguage,
+      });
+    },
+  );
 });

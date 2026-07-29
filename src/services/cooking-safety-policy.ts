@@ -194,12 +194,6 @@ export function renderCookingSafetyBlockedResponse(
       'Posso ajudar com uma alternativa segura que preserve o objetivo da refeição sem usar o ingrediente em conflito.',
     ].join('\n');
   }
-  if (normalizedLocale.startsWith('es')) {
-    return [
-      'No puedo sugerir esa opción porque entra en conflicto con una preferencia de seguridad culinaria guardada.',
-      'Puedo ayudar con una alternativa segura que mantenga el objetivo de la comida sin usar el ingrediente en conflicto.',
-    ].join('\n');
-  }
   return [
     'I cannot suggest that option because it conflicts with a saved cooking safety preference.',
     'I can help with a safe alternative that keeps the meal goal without using the conflicting ingredient.',
@@ -227,13 +221,6 @@ function cookingSafetyPromptRules(locale: string | null | undefined): string[] {
       'Inclui orientações de segurança alimentar quando houver carne, peixe, ovos, sobras, alimentos crus ou ingredientes vencidos: temperatura/doneness, armazenamento, reaquecimento e quando descartar.',
       'Para gravidez, bebés/crianças pequenas, idosos ou pessoas imunocomprometidas, evita alimentos de alto risco ou adiciona cautela clara.',
       'Não afirmes curar, tratar, reverter ou diagnosticar condições médicas; nutrição é orientação geral e casos clínicos devem ir para profissionais de saúde.',
-    ];
-  }
-  if (normalizedLocale.startsWith('es')) {
-    return [
-      'Incluye seguridad alimentaria cuando haya carne, pescado, huevos, sobras, alimentos crudos o ingredientes vencidos: temperatura/cocción, almacenamiento, recalentado y cuándo descartar.',
-      'Para embarazo, bebés/niños pequeños, personas mayores o inmunocomprometidas, evita alimentos de alto riesgo o añade una cautela clara.',
-      'No afirmes curar, tratar, revertir ni diagnosticar condiciones médicas; la nutrición es orientación general y los casos clínicos van con profesionales de salud.',
     ];
   }
   return [

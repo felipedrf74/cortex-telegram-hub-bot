@@ -123,7 +123,7 @@ describe('chat turn contract', () => {
       routeKind: 'generic_skill_answer',
       groundingRequired: 'none',
       expectedResponseShape: 'direct_answer',
-      language: 'es',
+      language: 'en',
     });
     expect(mixedRecipeIdea).toMatchObject({
       skill: 'cooking',
@@ -141,21 +141,21 @@ describe('chat turn contract', () => {
     });
   });
 
-  it('recognizes common Spanish read and cooking prompts as Spanish', () => {
+  it('recognizes Spanish-authored intents while selecting the English fallback', () => {
     expect(inferChatTurnContract({ message: 'Tengo tareas para completar hoy?' })).toMatchObject({
       skill: 'tasks',
       routeKind: 'local_read',
-      language: 'es',
+      language: 'en',
     });
     expect(inferChatTurnContract({ message: 'Qué puedo cocinar para cenar?' })).toMatchObject({
       skill: 'cooking',
       routeKind: 'generic_skill_answer',
       expectedResponseShape: 'direct_answer',
-      language: 'es',
+      language: 'en',
     });
   });
 
-  it('keeps Spanish research prompts in Spanish even when the command word is English', () => {
+  it('routes Spanish-authored research through the English fallback contract', () => {
     const currentEvents = inferChatTurnContract({
       message: 'Search noticias recientes sobre inflación en América Latina esta semana.',
     });
@@ -167,7 +167,7 @@ describe('chat turn contract', () => {
       expect(contract).toMatchObject({
         routeKind: 'internet_research',
         groundingRequired: 'web',
-        language: 'es',
+        language: 'en',
       });
     }
   });

@@ -37,7 +37,7 @@ export const internetResearchStage: ChatStage = {
     const {
       res, userId, tenantId, normalizedText, scopedClientMessageId,
       userMessageId, requestStartedAt, chatRequestId, latency,
-      ensureModelBudget, recordLegacyFallbackSample,
+      ensureModelBudget, recordLegacyFallbackSample, chatCoreV2RouteLocale,
     } = routedChatTurnCtx(ctx);
     const preTurnContract = routedChatTurnCtx(ctx).preTurnContract!;
 
@@ -98,6 +98,7 @@ export const internetResearchStage: ChatStage = {
       fallbackDomain: researchDomain,
       fallbackRouteMethod: researchRouteMethod,
       fallbackConfidence: research.degraded ? 0.55 : preTurnContract.confidence,
+      locale: chatCoreV2RouteLocale,
       actionability: research.degraded ? 'degraded' : 'answer_only',
       verificationStatus: research.sources.length > 0 ? 'verified' : 'not_required',
       fallback: research.degraded ? {

@@ -55,6 +55,7 @@ export type ChatEvalEvidenceMode =
   | 'real_provider_required'
   | 'day_to_day_fixture'
   | 'single_tenant_day_to_day_v2'
+  | 'single_tenant_day_to_day_v3'
   | 'custom_live_v1';
 
 export type ChatEvalStatus = 'pass' | 'partial' | 'fail' | 'blocked';

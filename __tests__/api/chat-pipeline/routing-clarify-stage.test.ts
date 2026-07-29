@@ -197,10 +197,10 @@ describe('flag ON — deterministic clarify terminal', () => {
     expect(isRoutingClarifyQuestion(String(body!.text))).toBe(true);
   });
 
-  it('renders the ES template for es locales', async () => {
+  it('renders the English fallback template for retired es locales', async () => {
     const { responded, body } = await runTurn(AMBIGUOUS_WRITE, { locale: 'es-419' });
     expect(responded).toBe('routing_clarify');
-    expect(body!.text).toBe('¿Te refieres a Finance o a Training?');
+    expect(body!.text).toBe('Did you mean Finance or Training?');
     expect(isRoutingClarifyQuestion(String(body!.text))).toBe(true);
   });
 

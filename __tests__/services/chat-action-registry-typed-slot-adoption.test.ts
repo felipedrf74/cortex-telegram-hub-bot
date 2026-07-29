@@ -253,13 +253,14 @@ describe('typed slot adoption inventory (Phase 15 batch 77: full coverage)', () 
     expect(adopted.length).toBe(entries.length);
   });
 
-  it('every active action has at least one Spanish golden example', () => {
+  it('every active action has at least one supported-locale golden example', () => {
     const missing = activeActions(getChatActionRegistry()).filter((entry) => !((entry.examples ?? []).some((example) =>
-      example.locale === 'es' && exampleTags(example).includes('golden')
+      (example.locale === 'en' || example.locale === 'pt' || example.locale === 'mixed')
+      && exampleTags(example).includes('golden')
     )));
     expect(
       missing.map((entry) => `${entry.skill}.${entry.action}`),
-      'active actions missing locale=es golden examples',
+      'active actions missing en/pt/mixed golden examples',
     ).toEqual([]);
   });
 

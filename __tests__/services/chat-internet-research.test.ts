@@ -416,15 +416,15 @@ describe('chat internet research', () => {
     expect(result.text).toContain('Sources consulted: https://example.gov/entry-requirements');
   });
 
-  it('passes a hard Spanish output-language contract to web-search providers', async () => {
+  it('uses the English fallback contract for Spanish-authored research input', async () => {
     mockCompleteOneShotWithSearch.mockResolvedValueOnce({
-      text: 'La respuesta está en español y resume fuentes públicas actuales.',
+      text: 'The answer summarizes current public sources in English.',
       sources: ['https://example.com/fuente-publica'],
     });
 
     const result = await buildChatInternetResearchAnswer({
       message: 'Search noticias recientes sobre inflación en América Latina esta semana.',
-      language: 'es',
+      language: 'en',
       skill: 'finance',
       expectedResponseShape: 'finance_summary',
       userId: 123,
@@ -432,26 +432,26 @@ describe('chat internet research', () => {
     });
 
     expect(mockCompleteOneShotWithSearch).toHaveBeenCalledWith(
-      expect.stringContaining('Answer in Spanish. This is a hard contract'),
+      expect.stringContaining('Answer in English'),
       expect.stringContaining('Search noticias recientes'),
       'chat_internet_research',
       expect.objectContaining({ userId: 123, tenantId: 456 }),
     );
     const systemPrompt = mockCompleteOneShotWithSearch.mock.calls[0]?.[0];
-    expect(systemPrompt).toContain('Output language: Spanish');
-    expect(systemPrompt).toContain('do not answer Spanish prompts in Portuguese');
-    expect(result.text).toContain('Fuentes consultadas: https://example.com/fuente-publica');
+    expect(systemPrompt).toContain('Output language: English');
+    expect(systemPrompt).toContain('legacy Spanish-authored input uses English');
+    expect(result.text).toContain('Sources consulted: https://example.com/fuente-publica');
   });
 
-  it('strips provider-emitted Portuguese source footers and appends the Spanish footer', async () => {
+  it('strips provider-emitted Portuguese source footers and appends the English footer', async () => {
     mockCompleteOneShotWithSearch.mockResolvedValueOnce({
-      text: 'La respuesta está en español.\n\nFontes consultadas: https://provider.example/pt-footer',
+      text: 'The answer is in English and uses current public sources.\n\nFontes consultadas: https://provider.example/pt-footer',
       sources: ['https://example.com/fuente-publica'],
     });
 
     const result = await buildChatInternetResearchAnswer({
       message: 'Search fuentes públicas sobre el marcador de la Copa Libertadores.',
-      language: 'es',
+      language: 'en',
       skill: 'chat',
       expectedResponseShape: 'direct_answer',
       userId: 123,
@@ -459,12 +459,122 @@ describe('chat internet research', () => {
     });
 
     expect(result.text).not.toContain('Fontes consultadas');
-    expect(result.text).toContain('Fuentes consultadas: https://example.com/fuente-publica');
+    expect(result.text).toContain('Sources consulted: https://example.com/fuente-publica');
   });
+
+  it('fails closed without another provider call when a retired Spanish reply leaks through', async () => {
+    mockCompleteOneShotWithSearch.mockResolvedValueOnce({
+      text: 'La respuesta está en español y resume fuentes públicas actuales.',
+      sources: ['https://example.com/fuente-publica'],
+    });
+
+    const result = await buildChatInternetResearchAnswer({
+      message: 'Search noticias recientes sobre inflación en América Latina esta semana.',
+      language: 'en',
+      skill: 'finance',
+      expectedResponseShape: 'finance_summary',
+      userId: 123,
+      tenantId: 456,
+    });
+
+    expect(mockCompleteOneShotWithSearch).toHaveBeenCalledTimes(1);
+    expect(result.degraded).toBe(true);
+    expect(result.degradedReason).toBe('response_locale_mismatch');
+    expect(result.text).toContain('could not safely present the answer in English');
+    expect(result.text).not.toContain('La respuesta');
+  });
+
+  it('fails closed when a provider reply is named Spanish with moderate evidence', async () => {
+    mockCompleteOneShotWithSearch.mockResolvedValue({
+      text: 'La lista muestra tres tareas atrasadas para revisar cuando quieras. No se ha cambiado ningún dato.',
+      sources: ['https://example.com/fuente-publica'],
+    });
+
+    const result = await buildChatInternetResearchAnswer({
+      message: 'Search fuentes actuales sobre mis prioridades.',
+      language: 'en',
+      skill: 'tasks',
+      expectedResponseShape: 'task_summary',
+      userId: 123,
+      tenantId: 456,
+    });
+
+    expect(mockCompleteOneShotWithSearch).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      degraded: true,
+      degradedReason: 'response_locale_mismatch',
+    });
+    expect(result.text).not.toContain('La lista muestra');
+  });
+
+  it('fails closed without another provider call when Portuguese leaks into the effective English contract', async () => {
+    mockCompleteOneShotWithSearch.mockResolvedValueOnce({
+      text: 'Aqui está o resumo das fontes públicas atuais e das notícias mais recentes.',
+      sources: ['https://example.com/fuente-publica'],
+    });
+
+    const result = await buildChatInternetResearchAnswer({
+      message: 'Search noticias recientes sobre inflación en América Latina esta semana.',
+      language: 'en',
+      skill: 'finance',
+      expectedResponseShape: 'finance_summary',
+      userId: 123,
+      tenantId: 456,
+    });
+
+    expect(mockCompleteOneShotWithSearch).toHaveBeenCalledTimes(1);
+    expect(result.degraded).toBe(true);
+    expect(result.degradedReason).toBe('response_locale_mismatch');
+    expect(result.text).toContain('could not safely present the answer in English');
+    expect(result.text).not.toContain('Aqui está');
+  });
+
+  it.each([
+    {
+      language: 'en' as const,
+      leakedText: 'Aquí tienes.',
+      expectedFallback: 'could not safely present the answer in English',
+    },
+    {
+      language: 'en' as const,
+      leakedText: 'Aqui está.',
+      expectedFallback: 'could not safely present the answer in English',
+    },
+    {
+      language: 'pt' as const,
+      leakedText: 'Here you go.',
+      expectedFallback: 'não consegui apresentar a resposta com segurança em português',
+    },
+  ])(
+    'fails closed without retrying a short $language cross-locale provider reply',
+    async ({ language, leakedText, expectedFallback }) => {
+      mockCompleteOneShotWithSearch.mockResolvedValueOnce({
+        text: leakedText,
+        sources: ['https://example.com/fuente-publica'],
+      });
+
+      const result = await buildChatInternetResearchAnswer({
+        message: 'Search current public information about this topic.',
+        language,
+        skill: 'chat',
+        expectedResponseShape: 'direct_answer',
+        userId: 123,
+        tenantId: 456,
+      });
+
+      expect(mockCompleteOneShotWithSearch).toHaveBeenCalledTimes(1);
+      expect(result).toMatchObject({
+        degraded: true,
+        degradedReason: 'response_locale_mismatch',
+      });
+      expect(result.text).toContain(expectedFallback);
+      expect(result.text).not.toContain(leakedText);
+    },
+  );
 
   it('uses a neutral source footer for mixed-language research instead of defaulting to Portuguese', async () => {
     mockCompleteOneShotWithSearch.mockResolvedValueOnce({
-      text: 'Respuesta en español con terminos en English.\n\nFontes consultadas: https://provider.example/pt-footer',
+      text: 'Current SaaS benchmarks vary by segment and source.\n\nFontes consultadas: https://provider.example/pt-footer',
       sources: ['https://example.com/source'],
     });
 
@@ -479,6 +589,29 @@ describe('chat internet research', () => {
 
     expect(result.text).not.toContain('Fontes consultadas');
     expect(result.text).toContain('Sources consulted: https://example.com/source');
+  });
+
+  it('blocks Spanish output under a mixed EN/PT research contract without retrying', async () => {
+    mockCompleteOneShotWithSearch.mockResolvedValueOnce({
+      text: 'La respuesta está en español y resume las fuentes públicas actuales.',
+      sources: ['https://example.com/source'],
+    });
+
+    const result = await buildChatInternetResearchAnswer({
+      message: 'Search current public SaaS benchmarks.',
+      language: 'mixed',
+      skill: 'chat',
+      expectedResponseShape: 'direct_answer',
+      userId: 123,
+      tenantId: 456,
+    });
+
+    expect(mockCompleteOneShotWithSearch).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      degraded: true,
+      degradedReason: 'response_locale_mismatch',
+    });
+    expect(result.text).not.toContain('La respuesta');
   });
 
   it('tells providers to prefer peer-reviewed or official sources for scientific research', async () => {
@@ -500,7 +633,8 @@ describe('chat internet research', () => {
     expect(systemPrompt).toContain('prefer peer-reviewed papers');
     expect(systemPrompt).toContain('official health/science institutions');
     expect(systemPrompt).toContain('at least two independent sources');
-    expect(systemPrompt).toContain('Preserve the user message language mix');
+    expect(systemPrompt).toContain('Preserve only the English/Portuguese language mix');
+    expect(systemPrompt).toContain('Render Spanish-authored portions in English');
   });
 
   it('explicitly allows public law and visa lookup answers without personalized legal advice', async () => {

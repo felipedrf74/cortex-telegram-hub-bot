@@ -84,6 +84,14 @@ describe('DatabaseConfigProvider', () => {
   // ── getSetting ────────────────────────────────────────────────
 
   describe('getSetting', () => {
+    it('advertises only English and Portuguese as supported product locales', () => {
+      expect(DatabaseConfigProvider.SETTINGS_SCHEMA.language.options).toEqual([
+        'pt-BR',
+        'pt-PT',
+        'en-US',
+      ]);
+    });
+
     it('returns hardcoded default when no override exists', () => {
       expect(provider.getSetting('timezone')).toBe('Europe/Lisbon');
     });
@@ -92,6 +100,31 @@ describe('DatabaseConfigProvider', () => {
       testDb.prepare("INSERT INTO kv_store (key, value) VALUES ('config:default:timezone', '\"UTC\"')").run();
       expect(provider.getSetting('timezone')).toBe('UTC');
     });
+
+    it('coerces a retired stored Spanish app-language override to English without rewriting history', () => {
+      testDb.prepare("INSERT INTO kv_store (key, value) VALUES ('config:default:language', '\"es-ES\"')").run();
+
+      expect(provider.getSetting('language')).toBe('en-US');
+      const row = testDb.prepare(
+        "SELECT value FROM kv_store WHERE key = 'config:default:language'",
+      ).get() as { value: string };
+      expect(JSON.parse(row.value)).toBe('es-ES');
+    });
+
+    it.each(['Spanish', 'Español', 'Castellano'])(
+      'projects the retired stored %s language label to English without rewriting history',
+      (storedLanguage) => {
+        testDb.prepare(
+          "INSERT INTO kv_store (key, value) VALUES ('config:default:language', ?)",
+        ).run(JSON.stringify(storedLanguage));
+
+        expect(provider.getSetting('language')).toBe('en-US');
+        const row = testDb.prepare(
+          "SELECT value FROM kv_store WHERE key = 'config:default:language'",
+        ).get() as { value: string };
+        expect(JSON.parse(row.value)).toBe(storedLanguage);
+      },
+    );
 
     it('returns env var when env var is set (overrides DB)', () => {
       process.env.TIMEZONE = 'America/New_York';
@@ -120,6 +153,18 @@ describe('DatabaseConfigProvider', () => {
 
     it('throws on unknown setting id', () => {
       expect(() => provider.setSetting('fake_setting', 'x')).toThrow('Unknown setting');
+    });
+
+    it('rejects values outside an option-backed setting schema before persistence or activation', () => {
+      expect(() => provider.setSetting('language', 'es-ES')).toThrow(
+        'Invalid option for setting: language',
+      );
+
+      const row = testDb.prepare(
+        "SELECT value FROM kv_store WHERE key = 'config:default:language'",
+      ).get();
+      expect(row).toBeUndefined();
+      expect(mockConfig.app.language).toBe('pt-BR');
     });
 
     it('works for number type', () => {
@@ -185,6 +230,21 @@ describe('DatabaseConfigProvider', () => {
       expect(tz.source).toBe('database');
     });
 
+    it('shows a retired stored Spanish app-language override as the English compatibility value', () => {
+      testDb.prepare("INSERT INTO kv_store (key, value) VALUES ('config:default:language', '\"es-ES\"')").run();
+
+      const language = provider.getAllSettings().find((setting) => setting.id === 'language')!;
+      expect(language).toMatchObject({
+        value: 'en-US',
+        source: 'database',
+        options: ['pt-BR', 'pt-PT', 'en-US'],
+      });
+      const row = testDb.prepare(
+        "SELECT value FROM kv_store WHERE key = 'config:default:language'",
+      ).get() as { value: string };
+      expect(JSON.parse(row.value)).toBe('es-ES');
+    });
+
     it('shows source:default for unmodified settings', () => {
       const tz = provider.getAllSettings().find(s => s.id === 'timezone')!;
       expect(tz.source).toBe('default');
@@ -198,6 +258,18 @@ describe('DatabaseConfigProvider', () => {
       testDb.prepare("INSERT INTO kv_store (key, value) VALUES ('config:default:timezone', '\"America/Sao_Paulo\"')").run();
       provider.loadPersistedSettings();
       expect(mockConfig.app.timezone).toBe('America/Sao_Paulo');
+    });
+
+    it('loads a retired stored Spanish app-language override as English without deleting the row', () => {
+      testDb.prepare("INSERT INTO kv_store (key, value) VALUES ('config:default:language', '\"es-ES\"')").run();
+
+      provider.loadPersistedSettings();
+
+      expect(mockConfig.app.language).toBe('en-US');
+      const row = testDb.prepare(
+        "SELECT value FROM kv_store WHERE key = 'config:default:language'",
+      ).get() as { value: string };
+      expect(JSON.parse(row.value)).toBe('es-ES');
     });
 
     it('skips env-locked settings', () => {

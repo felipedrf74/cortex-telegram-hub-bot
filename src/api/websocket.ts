@@ -39,6 +39,14 @@ import { withAiBudgetReservation } from '../services/cost-guardrail';
 import { toStableAiBudgetError } from './response-helpers';
 import { tryBuildChatCoreV2DeterministicReadRoute } from '../services/chat-core-v2';
 import { buildChatCoreV2DeterministicReadShortcutResponse } from './routes/chat-core-v2-deterministic-read-response';
+import {
+  checkResponseLocaleFidelity,
+  detectRetiredSpanishInputSignal,
+  detectResponseLanguage,
+  detectStrictShortResponseLanguage,
+} from '../services/chat-language-detector';
+import { runWithChatRequestLocale } from '../services/chat-request-locale-context';
+import { normalizeSupportedLang } from '../utils/i18n';
 
 const WEBSOCKET_RATE_WINDOW_MS = 60_000;
 const WEBSOCKET_PING_INTERVAL_MS = 30_000;
@@ -247,6 +255,92 @@ function getDomainHandlers(): Record<string, (message: string, userId?: number, 
   };
 }
 
+export interface WebSocketResponseLanguageGuard {
+  contained: boolean;
+  expected: 'es' | 'pt' | 'en' | 'unknown';
+  detected: 'es' | 'pt' | 'en' | 'unknown';
+  confidence: number;
+}
+
+export function resolveWebSocketResponseLocale(
+  storedLocale: string | null | undefined,
+  message: string,
+): 'pt-BR' | 'pt-PT' | 'en-US' {
+  const normalizedStoredLocale = normalizeSupportedLang(storedLocale, 'en-US');
+  return (
+    detectRetiredSpanishInputSignal(message)
+    || detectResponseLanguage(message).language === 'es'
+  )
+    ? 'en-US'
+    : normalizedStoredLocale;
+}
+
+function buildWebSocketLocaleMismatchReply(locale: string): string {
+  if (locale === 'pt-PT') {
+    return 'Não consegui apresentar esta resposta em português com segurança. Tenta enviar o pedido novamente.';
+  }
+  if (locale === 'pt-BR') {
+    return 'Não consegui apresentar esta resposta em português com segurança. Tente enviar o pedido novamente.';
+  }
+  return "I couldn't safely deliver that reply in English. Please try your request again.";
+}
+
+/**
+ * Runs the legacy WebSocket domain handler inside the request-locale scope
+ * used by provider prompt builders, then performs a zero-provider language
+ * check on the complete reply before the first chunk can be emitted.
+ *
+ * The detector fails open on short or mixed text. A confident mismatch is
+ * replaced locally; the mismatched text is never returned to the streamer and
+ * the handler is never retried.
+ */
+export async function executeWebSocketDomainHandlerWithLocale<
+  T extends { text: string; domain: DomainName },
+>(input: {
+  locale: string | null | undefined;
+  message: string;
+  userId: number;
+  tenantId: number;
+  handler: (message: string, userId?: number, tenantId?: number) => Promise<T>;
+}): Promise<{ response: T; languageGuard: WebSocketResponseLanguageGuard }> {
+  // Spanish remains accepted only as an authored-input compatibility signal.
+  // A confident Spanish message therefore selects the English response
+  // contract even when an old/stored preference still points at Portuguese.
+  // Uncertain input fails open to the stored locale, preserving regional PT.
+  const effectiveLocale = resolveWebSocketResponseLocale(input.locale, input.message);
+  const response = await runWithChatRequestLocale(
+    effectiveLocale,
+    () => input.handler(input.message, input.userId, input.tenantId),
+  );
+  const fidelity = checkResponseLocaleFidelity(effectiveLocale, response.text);
+  const strictShortLanguage = detectStrictShortResponseLanguage(
+    response.text,
+    fidelity.expected,
+  );
+  const detected = strictShortLanguage ?? fidelity.detected;
+  const contained = fidelity.expected !== 'unknown'
+    && detected !== 'unknown'
+    && detected !== fidelity.expected;
+  const languageGuard: WebSocketResponseLanguageGuard = {
+    contained,
+    expected: fidelity.expected,
+    detected,
+    confidence: strictShortLanguage ? 1 : fidelity.confidence,
+  };
+
+  if (!contained) {
+    return { response, languageGuard };
+  }
+
+  return {
+    response: {
+      ...response,
+      text: buildWebSocketLocaleMismatchReply(effectiveLocale),
+    },
+    languageGuard,
+  };
+}
+
 async function streamTextFrame(
   ws: WebSocket,
   input: {
@@ -274,14 +368,20 @@ async function streamTextFrame(
 
 async function trySendTokenZeroSecretaryRead(
   ws: WebSocket,
-  input: { text: string; messageId: string; userId: number; tenantId: number },
+  input: {
+    text: string;
+    messageId: string;
+    userId: number;
+    tenantId: number;
+    locale: 'pt-BR' | 'pt-PT' | 'en-US';
+  },
 ): Promise<boolean> {
   const read = tryBuildChatCoreV2DeterministicReadRoute({
     normalizedText: input.text,
     userId: input.userId,
     tenantId: input.tenantId,
     surface: 'ios',
-    locale: getUserLanguageById(input.userId),
+    locale: input.locale,
     timezone: getUserTimezoneById(input.userId),
   });
   if (!read) return false;
@@ -613,6 +713,10 @@ export function attachWebSocket(server: http.Server): void {
           async () => {
             const messageId = `msg-${Date.now()}`;
             const messageText = String(msg.text);
+            const responseLocale = resolveWebSocketResponseLocale(
+              getUserLanguageById(userId),
+              messageText,
+            );
 
             // Resolve deterministic Secretary reads before acquiring the AI
             // lock. Free users and quota-exhausted paid users must not queue
@@ -622,6 +726,7 @@ export function attachWebSocket(server: http.Server): void {
               messageId,
               userId,
               tenantId,
+              locale: responseLocale,
             })) {
               return;
             }
@@ -635,7 +740,7 @@ export function attachWebSocket(server: http.Server): void {
                 : messageId,
               messageId,
               channel: 'ios',
-              locale: getUserLanguageById(userId) || undefined,
+              locale: responseLocale,
               timezone: getUserTimezoneById(userId),
               requireSafeWriteConfirmation: true,
               blockNonReadOnlyPlans: true,
@@ -729,7 +834,7 @@ export function attachWebSocket(server: http.Server): void {
                 : messageId,
               messageId,
               channel: 'ios',
-              locale: getUserLanguageById(userId) || undefined,
+              locale: responseLocale,
               timezone: getUserTimezoneById(userId),
               requireSafeWriteConfirmation: true,
               blockNonReadOnlyPlans: true,
@@ -921,7 +1026,27 @@ export function attachWebSocket(server: http.Server): void {
 
             // Execute handler — for streaming, we simulate chunked delivery
             // since the domain handlers return full text at once
-            const result = await handler(route.strippedMessage, userId, tenantId);
+            const executed = await executeWebSocketDomainHandlerWithLocale({
+              locale: responseLocale,
+              message: route.strippedMessage,
+              userId,
+              tenantId,
+              handler,
+            });
+            const result = executed.response;
+            if (executed.languageGuard.contained) {
+              logger.warn(
+                {
+                  userId,
+                  tenantId,
+                  domain: result.domain || route.domain,
+                  expectedLanguage: executed.languageGuard.expected,
+                  detectedLanguage: executed.languageGuard.detected,
+                  detectionConfidence: executed.languageGuard.confidence,
+                },
+                'Contained mismatched iOS WebSocket response language before streaming',
+              );
+            }
 
             await streamTextFrame(ws, { text: result.text, messageId, userId, tenantId });
 
@@ -933,7 +1058,12 @@ export function attachWebSocket(server: http.Server): void {
                 domain: result.domain || route.domain,
                 userId,
                 tenantId,
-                metadata: null,
+                metadata: executed.languageGuard.contained
+                  ? {
+                    type: 'chat_response_locale_contained',
+                    responseLanguageGuard: executed.languageGuard,
+                  }
+                  : null,
               }));
             }
             });

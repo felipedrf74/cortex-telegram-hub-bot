@@ -53,9 +53,10 @@ export const MAIL_ACTIONS: ChatActionDefinition[] = [
           expectedAction: 'mail_unread_count',
         },
         {
-          // Phase 12 batch 64 (2026-05-16): Spanish golden example.
+          // Phase 12 batch 64 (2026-05-16): Spanish-authored compatibility input; English response contract.
           text: 'Cuántos correos sin leer tengo',
-          locale: 'es',
+          requestLocale: 'es',
+          responseLocale: 'en',
           tags: ['golden'],
           expectedAction: 'mail_unread_count',
         },
@@ -105,9 +106,10 @@ export const MAIL_ACTIONS: ChatActionDefinition[] = [
           expectedAction: 'mail_inbox_summary',
         },
         {
-          // Phase 13 batch 68 (2026-05-16): Spanish golden example.
+          // Phase 13 batch 68 (2026-05-16): Spanish-authored compatibility input; English response contract.
           text: 'Resumen de la bandeja de entrada',
-          locale: 'es',
+          requestLocale: 'es',
+          responseLocale: 'en',
           tags: ['golden'],
           expectedAction: 'mail_inbox_summary',
         },
@@ -178,9 +180,10 @@ export const MAIL_ACTIONS: ChatActionDefinition[] = [
           expectedAction: null,
         },
         {
-          // Phase 13 batch 68 (2026-05-16): Spanish golden example.
+          // Phase 13 batch 68 (2026-05-16): Spanish-authored compatibility input; English response contract.
           text: 'Responde al último correo de Pedro',
-          locale: 'es',
+          requestLocale: 'es',
+          responseLocale: 'en',
           tags: ['golden'],
           expectedAction: 'draft_email',
         },
@@ -339,9 +342,10 @@ export const MAIL_ACTIONS: ChatActionDefinition[] = [
           expectedAction: null,
         },
         {
-          // Phase 12 batch 64 (2026-05-16): Spanish golden example.
+          // Phase 12 batch 64 (2026-05-16): Spanish-authored compatibility input; English response contract.
           text: 'Envía un correo a felipe@example.com sobre la propuesta',
-          locale: 'es',
+          requestLocale: 'es',
+          responseLocale: 'en',
           tags: ['golden'],
           expectedAction: 'send_email',
         },

@@ -25,6 +25,11 @@ import {
   isMockContentSource,
   type ContentOperationKind,
 } from '../../services/content-token-economy';
+import { normalizeSupportedLang } from '../../utils/i18n';
+import {
+  assertContentScriptOutputLanguage,
+  assertContentScriptPublicOutputLanguage,
+} from '../../services/content-output-language';
 
 export type ScriptRenderMode = 'structured' | 'chat';
 export type ScriptFormat = 'YouTube' | 'Reel';
@@ -113,11 +118,11 @@ export function resolveScriptTargetLanguage(
   readUserLanguage: (userId: number) => string | undefined | null,
 ): string {
   if (typeof language === 'string' && language.trim().length > 0) {
-    return language.trim();
+    return normalizeSupportedLang(language, 'en-US');
   }
 
   try {
-    return readUserLanguage(userId) || 'pt-BR';
+    return normalizeSupportedLang(readUserLanguage(userId), 'pt-BR');
   } catch {
     return 'pt-BR';
   }
@@ -193,6 +198,7 @@ export function buildScriptCreatorProfile(params: {
 
 export function buildScriptSuccessResponse(params: {
   result: ContentScriptEngineResult;
+  language?: string;
   format: ScriptFormat;
   renderMode: ScriptRenderMode;
   scriptStyle: ScriptStyle;
@@ -233,6 +239,8 @@ export function buildScriptSuccessResponse(params: {
     budgetState,
     qualityGate,
   } = params;
+  const language = normalizeSupportedLang(params.language, 'en-US');
+  assertContentScriptOutputLanguage(language, result, 'content-script-response-input');
 
   const rawSources = Array.isArray(result.sources_used) ? result.sources_used : [];
   const sources = rawSources.filter((source) => !isMockContentSource({
@@ -250,9 +258,11 @@ export function buildScriptSuccessResponse(params: {
     cta: result.cta,
     sources,
     format,
+    language,
     preflightBrief: preflightBrief ?? buildScriptPreflightBrief({
       topic: result.topic,
       format,
+      language,
       cta: result.cta,
       sources,
     }),
@@ -278,7 +288,7 @@ export function buildScriptSuccessResponse(params: {
   const effectiveQualityScore = lowTrustGeneration
     ? Math.min(rawQualityScore, 49)
     : rawQualityScore;
-  const expandOptions = result.expand_options ?? defaultExpandOptions(generationMode);
+  const expandOptions = result.expand_options ?? defaultExpandOptions(generationMode, language);
   const enginePromptBudget = normalizeEnginePromptBudget(result.prompt_budget);
   const publicPromptBudget = enginePromptBudget ?? (promptBudget ? {
     tokenEstimate: promptBudget.tokenEstimate,
@@ -294,14 +304,17 @@ export function buildScriptSuccessResponse(params: {
       truncated: section.truncated,
     })),
   } : null);
-  const publicQualityWarnings = warnings.map(publicQualityWarningText);
+  const publicQualityWarnings = warnings.map((warning) => publicQualityWarningText(warning, language));
   const hasSourcePackageContents = Boolean(sourcePackage && (sourcePackage.sources.length > 0 || sourcePackage.sourceSummaries.length > 0));
   const hasReusableSourcePackage = Boolean(hasSourcePackageContents || publicSourcePackageIds);
   const nextActions = buildContentNextActions({
     mode: generationMode,
     budgetState: (result.budget_state as ContentBudgetState | undefined) ?? budgetState,
     hasSourcePackage: hasReusableSourcePackage,
-  });
+  }).map((action) => ({
+    ...action,
+    label: contentActionLabel(action.id, action.label, language),
+  }));
   const artifactRefs = buildContentArtifactRefs({
     voiceCard: creatorVoiceCard ?? null,
     sourcePackage: hasSourcePackageContents ? (sourcePackage ?? null) : null,
@@ -343,7 +356,7 @@ export function buildScriptSuccessResponse(params: {
       ? 'reused'
       : 'fresh';
 
-  return {
+  const response = {
     topic: result.topic,
     // The quality pass is advisory. Preserve the engine-owned document
     // byte-for-byte so long scripts and user-visible tail sections cannot be
@@ -429,6 +442,8 @@ export function buildScriptSuccessResponse(params: {
     cacheHit,
     usageImpact: cacheHit ? 'none' : generationMode === 'deep' ? 'high' : generationMode === 'draft' ? 'low' : generationMode,
   };
+  assertContentScriptPublicOutputLanguage(language, response, 'content-script-public-response');
+  return response;
 }
 
 function normalizeEnginePromptBudget(value: Record<string, unknown> | undefined): null | {
@@ -488,7 +503,46 @@ function publicPromptSectionSource(source: string | undefined): string {
   }
 }
 
-function publicQualityWarningText(code: string): string {
+function publicQualityWarningText(code: string, language: string): string {
+  if (language.startsWith('pt')) {
+    switch (code) {
+      case 'output_too_thin':
+      case 'needs_expansion':
+        return 'O rascunho precisa de ser expandido antes da publicação.';
+      case 'weak_hook':
+        return 'O gancho pode precisar de uma abertura mais forte.';
+      case 'missing_clear_cta':
+        return 'Adicione uma próxima ação mais clara.';
+      case 'high_risk_without_sources':
+        return 'As alegações sensíveis precisam de revisão das fontes.';
+      case 'unsupported_absolute_claim_review':
+        return 'Evite alegações absolutas sem fontes.';
+      case 'unsafe_prompt_artifact_review':
+        return 'A formulação insegura foi removida do caminho de revisão.';
+      case 'no_source_package_available':
+        return 'Não estava disponível um pacote de fontes reutilizável.';
+      case 'source_package_over_budget':
+        return 'O pacote de fontes foi comprimido para respeitar o orçamento.';
+      case 'duplicate_source_removed_or_review_required':
+        return 'A evidência duplicada precisa de revisão.';
+      case 'source_note_too_long':
+        return 'As notas das fontes foram encurtadas para respeitar o orçamento.';
+      case 'provider_fallback_review_required':
+        return 'A saída alternativa do modelo precisa de revisão humana antes da publicação.';
+      case 'source_grounding_review_required':
+        return 'A fundamentação das fontes não foi suficiente para uma versão pronta a publicar.';
+      case 'mock_sources_excluded':
+        return 'As fontes simuladas locais foram excluídas da proveniência publicável.';
+      case 'unsupported_or_overconfident_claim_review_required':
+        return 'As alegações absolutas ou excessivamente confiantes precisam de revisão.';
+      case 'platform_mismatch_review_required':
+        return 'A estrutura do guião precisa de ser ajustada à plataforma.';
+      case 'short_form_script_too_long_for_platform':
+        return 'O guião curto é demasiado longo para a plataforma.';
+      default:
+        return code;
+    }
+  }
   switch (code) {
     case 'output_too_thin':
     case 'needs_expansion':
@@ -522,24 +576,41 @@ function publicQualityWarningText(code: string): string {
   }
 }
 
-function defaultExpandOptions(mode: GenerationMode): Array<{ id: string; label: string; action: string }> {
+function defaultExpandOptions(
+  mode: GenerationMode,
+  language: string,
+): Array<{ id: string; label: string; action: string }> {
   if (mode !== 'draft') {
     return [
-      { id: 'rewrite-hook', label: 'Rewrite hook', action: 'rewrite_hook' },
-      { id: 'title-pack', label: 'Title pack', action: 'title_pack' },
-      { id: 'caption-pack', label: 'Caption pack', action: 'caption_pack' },
-      { id: 'refresh-research', label: 'Refresh research', action: 'refresh_research' },
+      { id: 'rewrite-hook', label: contentActionLabel('rewrite-hook', 'Rewrite hook', language), action: 'rewrite_hook' },
+      { id: 'title-pack', label: contentActionLabel('title-pack', 'Title pack', language), action: 'title_pack' },
+      { id: 'caption-pack', label: contentActionLabel('caption-pack', 'Caption pack', language), action: 'caption_pack' },
+      { id: 'refresh-research', label: contentActionLabel('refresh-research', 'Refresh research', language), action: 'refresh_research' },
     ];
   }
   return [
-    { id: 'expand-full', label: 'Expand to full script', action: 'expand_full' },
-    { id: 'expand-intro', label: 'Expand intro', action: 'expand_section:intro' },
-    { id: 'rewrite-hook', label: 'Rewrite hook', action: 'rewrite_hook' },
-    { id: 'title-pack', label: 'Title pack', action: 'title_pack' },
-    { id: 'thumbnail-pack', label: 'Thumbnail pack', action: 'thumbnail_pack' },
-    { id: 'caption-pack', label: 'Caption pack', action: 'caption_pack' },
-    { id: 'refresh-research', label: 'Refresh research', action: 'refresh_research' },
+    { id: 'expand-full', label: contentActionLabel('expand-full', 'Expand to full script', language), action: 'expand_full' },
+    { id: 'expand-intro', label: contentActionLabel('expand-intro', 'Expand intro', language), action: 'expand_section:intro' },
+    { id: 'rewrite-hook', label: contentActionLabel('rewrite-hook', 'Rewrite hook', language), action: 'rewrite_hook' },
+    { id: 'title-pack', label: contentActionLabel('title-pack', 'Title pack', language), action: 'title_pack' },
+    { id: 'thumbnail-pack', label: contentActionLabel('thumbnail-pack', 'Thumbnail pack', language), action: 'thumbnail_pack' },
+    { id: 'caption-pack', label: contentActionLabel('caption-pack', 'Caption pack', language), action: 'caption_pack' },
+    { id: 'refresh-research', label: contentActionLabel('refresh-research', 'Refresh research', language), action: 'refresh_research' },
   ];
+}
+
+function contentActionLabel(id: string, fallback: string, language: string): string {
+  if (!language.startsWith('pt')) return fallback;
+  return ({
+    'expand-full': 'Expandir para o guião completo',
+    'expand-intro': 'Expandir a introdução',
+    'rewrite-hook': 'Reescrever o gancho',
+    'hook-pack': 'Pacote de ganchos',
+    'title-pack': 'Pacote de títulos',
+    'thumbnail-pack': 'Pacote de miniaturas',
+    'caption-pack': 'Pacote de legendas',
+    'refresh-research': 'Atualizar a pesquisa',
+  } as Record<string, string>)[id] ?? fallback;
 }
 
 function publicScriptQualityReport(

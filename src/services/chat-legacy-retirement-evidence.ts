@@ -4,6 +4,9 @@ import crypto from 'crypto';
 import { getDb } from './database';
 import { countUnsafeChatShadowRawFields } from './chat-shadow-gate-readiness';
 import {
+  validateCurrentChatV2LegacyRetirementEvidenceRow,
+} from './chat-legacy-parity-labels';
+import {
   evaluateChatLegacyRetirementReadiness,
   type ChatLegacyRetirementReadinessInput,
   type ChatLegacyRetirementReadinessResult,
@@ -138,15 +141,18 @@ export function loadChatV2LegacyRetirementReadinessInput(
 ): ChatLegacyRetirementReadinessInput {
   const sourceFilter = buildEvidenceSourceFilter(sources);
   const rows = getDb().prepare(`
-    SELECT evidence_kind, route_id, replaced, tested, shadow_parity_rate,
+    SELECT evidence_source, evidence_kind, sample_identifier_kind,
+           route_id, replaced, tested, shadow_parity_rate,
            route_sample_count, legacy_fallback_rate_24h, full_verify_clean,
-           safe_metadata_json
+           raw_field_audit_count, safe_metadata_json
     FROM chat_v2_legacy_retirement_evidence
     WHERE evidence_source IN (${sourceFilter.placeholders})
     ORDER BY datetime(created_at) DESC, id DESC
     LIMIT ?
   `).all(...sourceFilter.values, Math.max(1, Math.floor(limit))) as Array<{
+    evidence_source: string;
     evidence_kind: string;
+    sample_identifier_kind: string;
     route_id: string | null;
     replaced: number | null;
     tested: number | null;
@@ -154,6 +160,7 @@ export function loadChatV2LegacyRetirementReadinessInput(
     route_sample_count: number | null;
     legacy_fallback_rate_24h: number | null;
     full_verify_clean: number | null;
+    raw_field_audit_count: number;
     safe_metadata_json: string | null;
   }>;
 
@@ -202,23 +209,27 @@ function insertChatV2LegacyRetirementEvidenceRow(row: ChatV2LegacyRetirementEvid
 }
 
 function latestRouteSamples(rows: Array<{
+  evidence_source: string;
   evidence_kind: string;
+  sample_identifier_kind: string;
   route_id: string | null;
   replaced: number | null;
   tested: number | null;
   shadow_parity_rate: number | null;
   route_sample_count: number | null;
+  raw_field_audit_count: number;
   safe_metadata_json?: string | null;
 }>): ChatLegacyRouteExitSample[] {
   const rowsByRoute = new Map<string, typeof rows>();
   for (const row of rows) {
     if (row.evidence_kind !== 'route_exit' || !row.route_id) continue;
+    if (!validateCurrentChatV2LegacyRetirementEvidenceRow(row).ok) continue;
     const existing = rowsByRoute.get(row.route_id) ?? [];
     existing.push(row);
     rowsByRoute.set(row.route_id, existing);
   }
   return [...rowsByRoute.entries()].map(([routeId, routeRows]) => {
-    const selected = routeRows.find((row) => !isInventoryOnlyRouteExitRow(row.safe_metadata_json)) ?? routeRows[0]!;
+    const selected = routeRows[0]!;
     const metadata = parseSafeMetadata(selected.safe_metadata_json);
     return {
       routeId,

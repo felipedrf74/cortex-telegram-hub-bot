@@ -23,6 +23,8 @@ import { createChatLatencyTracker } from './chat-answer-contract';
 import { finalizeChatAnswerMetadata } from '../api/routes/chat-message-finalizer';
 import { storeChatMessage } from './chat-history-store';
 import { logger } from '../utils/logger';
+import { normalizeSupportedLang } from '../utils/i18n';
+import { detectResponseLanguage } from './chat-language-detector';
 
 export const CHAT_LEGACY_TIMEOUT_CONTINUATION_JOB_TYPE = 'chat_legacy_timeout_continuation';
 const CONTINUATION_SCHEMA_VERSION = 2;
@@ -905,10 +907,21 @@ function buildHonestContinuationFailureText(
   if (normalized.startsWith('pt')) {
     return `Não consegui concluir a continuação em segundo plano com segurança. Preservei o trabalho já concluído (${completedClause}) e não o repeti. Pede-me para continuar; qualquer alteração exigirá nova confirmação.`;
   }
-  if (normalized.startsWith('es')) {
-    return `No pude terminar la continuación en segundo plano de forma segura. Conservé el trabajo ya completado (${completedClause}) y no lo repetí. Pídeme continuar; cualquier cambio requerirá una nueva confirmación.`;
-  }
   return `I could not finish the background continuation safely. I preserved the completed work (${completedClause}) and did not repeat it. Ask me to continue; any change will require confirmation.`;
+}
+
+function shouldSuppressRetiredLocaleLateResult(
+  locale: string | null,
+  text: string,
+): boolean {
+  if (!/^es(?:[-_]|$)/i.test(String(locale ?? '').trim())) return false;
+  // Unknown includes short acknowledgements such as "Listo". For a retired
+  // locale, fail closed unless the saved text is confidently English.
+  return detectResponseLanguage(text).language !== 'en';
+}
+
+function retiredLocaleLateResultFallbackText(): string {
+  return 'The background request finished, but I could not safely present its saved result in English. I preserved the result and did not run the request again. Open the original turn and ask for an English summary if needed.';
 }
 
 function buildPrivacySafePushBody(
@@ -920,11 +933,6 @@ function buildPrivacySafePushBody(
     return source === 'late_foreground_result'
       ? 'Abre o Nexus para ver a resposta concluída.'
       : 'Abre o Nexus para rever o estado do pedido.';
-  }
-  if (normalized.startsWith('es')) {
-    return source === 'late_foreground_result'
-      ? 'Abre Nexus para ver la respuesta completada.'
-      : 'Abre Nexus para revisar el estado de la solicitud.';
   }
   return source === 'late_foreground_result'
     ? 'Open Nexus to view the completed answer.'
@@ -952,10 +960,22 @@ export async function processChatLegacyTimeoutContinuationJob(
   const payload = terminalClaim.payload;
   const source = payload.delivery?.terminalSource;
   if (!source) throw new Error('chat_legacy_timeout_continuation_payload_invalid');
+  // Background jobs can survive a locale-retirement deploy. Keep their stored
+  // payload byte-compatible while projecting the effective response locale at
+  // the consumer boundary.
+  const responseLocale = normalizeSupportedLang(payload.locale, 'en-US');
+  const lateResultLocaleFallback = source === 'late_foreground_result'
+    && Boolean(payload.lateResult)
+    && shouldSuppressRetiredLocaleLateResult(payload.locale, payload.lateResult?.text ?? '');
   const result: ChatDomainExecutionResult = source === 'late_foreground_result' && payload.lateResult
-    ? { text: payload.lateResult.text, domain: payload.lateResult.domain }
+    ? {
+      text: lateResultLocaleFallback
+        ? retiredLocaleLateResultFallbackText()
+        : payload.lateResult.text,
+      domain: payload.lateResult.domain,
+    }
     : {
-      text: buildHonestContinuationFailureText(payload.locale, payload.completedTools),
+      text: buildHonestContinuationFailureText(responseLocale, payload.completedTools),
       domain: payload.domain,
     };
   const tracker = createChatLatencyTracker(now.getTime());
@@ -976,7 +996,7 @@ export async function processChatLegacyTimeoutContinuationJob(
       confidence: 1,
       strippedMessage: payload.sourceText,
     },
-    locale: payload.locale,
+    locale: responseLocale,
     existingMetadata: {
       type: 'chat_timeout_background_continuation',
       sourceRunId: payload.sourceRunId,
@@ -984,6 +1004,13 @@ export async function processChatLegacyTimeoutContinuationJob(
       completedTools: payload.completedTools,
       recoveryPolicy: payload.recoveryPolicy,
       destructiveResumePolicy: 'reconfirm',
+      ...(lateResultLocaleFallback ? {
+        lateResultLocaleFallback: {
+          applied: true,
+          effectiveLocale: responseLocale,
+          reason: 'retired_spanish_response',
+        },
+      } : {}),
     },
     verificationStatus: 'not_required',
     stageFamily: 'legacy_timeout_background',
@@ -1046,10 +1073,16 @@ export async function processChatLegacyTimeoutContinuationJob(
     let concurrentTerminalOutcome: ChatLegacyTimeoutApnsOutcome | null = null;
     try {
       pushResult = await (opts.pushNotification ?? sendPushNotification)(userId, {
-        title: source === 'late_foreground_result' ? 'Your answer is ready' : 'Background continuation stopped',
+        title: lateResultLocaleFallback
+          ? 'Background result needs review'
+          : source === 'late_foreground_result'
+            ? 'Your answer is ready'
+            : 'Background continuation stopped',
         // Lock-screen/banner copy must never contain the provider answer,
         // calendar/mail/finance contents, tool names, or raw failure details.
-        body: buildPrivacySafePushBody(payload.locale, source),
+        body: lateResultLocaleFallback
+          ? 'Open Nexus to review the request status.'
+          : buildPrivacySafePushBody(responseLocale, source),
         collapseId: `${CHAT_LEGACY_TIMEOUT_CONTINUATION_JOB_TYPE}:${payload.sourceRunId}`,
         threadId: payload.sourceRunId,
         category: CHAT_LEGACY_TIMEOUT_CONTINUATION_JOB_TYPE,

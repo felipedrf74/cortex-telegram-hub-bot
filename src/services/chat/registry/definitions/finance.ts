@@ -55,9 +55,10 @@ export const FINANCE_ACTIONS: ChatActionDefinition[] = [
           expectedAction: 'finance_summary',
         },
         {
-          // Phase 12 batch 64 (2026-05-16): Spanish golden example.
+          // Phase 12 batch 64 (2026-05-16): Spanish-authored compatibility input; English response contract.
           text: 'Cuánto gasté este mes',
-          locale: 'es',
+          requestLocale: 'es',
+          responseLocale: 'en',
           tags: ['golden'],
           expectedAction: 'finance_summary',
         },
@@ -98,9 +99,10 @@ export const FINANCE_ACTIONS: ChatActionDefinition[] = [
           expectedAction: 'finance_create_reminder',
         },
         {
-          // Phase 12 batch 64 (2026-05-16): Spanish golden example.
+          // Phase 12 batch 64 (2026-05-16): Spanish-authored compatibility input; English response contract.
           text: 'Recuérdame pagar la factura el viernes',
-          locale: 'es',
+          requestLocale: 'es',
+          responseLocale: 'en',
           tags: ['golden'],
           expectedAction: 'finance_create_reminder',
         },
@@ -148,9 +150,10 @@ export const FINANCE_ACTIONS: ChatActionDefinition[] = [
           expectedAction: 'finance_categorize_receipt',
         },
         {
-          // Phase 14 batch 73 (2026-05-16): Spanish golden example.
+          // Phase 14 batch 73 (2026-05-16): Spanish-authored compatibility input; English response contract.
           text: 'Categoriza este recibo como material de oficina',
-          locale: 'es',
+          requestLocale: 'es',
+          responseLocale: 'en',
           tags: ['golden'],
           expectedAction: 'finance_categorize_receipt',
         },
@@ -221,9 +224,10 @@ export const FINANCE_ACTIONS: ChatActionDefinition[] = [
           expectedAction: 'finance_payment_action',
         },
         {
-          // Phase 14 batch 73 (2026-05-16): Spanish golden example.
+          // Phase 14 batch 73 (2026-05-16): Spanish-authored compatibility input; English response contract.
           text: 'Paga la factura del gimnasio',
-          locale: 'es',
+          requestLocale: 'es',
+          responseLocale: 'en',
           tags: ['golden'],
           expectedAction: 'finance_payment_action',
         },

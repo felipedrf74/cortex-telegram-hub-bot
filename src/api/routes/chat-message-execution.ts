@@ -112,12 +112,6 @@ export function buildChatTimeoutPartialReplyText(
     }
     return `Fiquei sem tempo antes de terminar, mas já concluí parte do trabalho: ${listed}. Pede-me para continuar e retomo a partir daí.`;
   }
-  if (normalized.startsWith('es')) {
-    if (queuedContinuation) {
-      return `Me quedé sin tiempo antes de terminar, pero ya completé parte del trabajo: ${listed}. La solicitud en curso sigue en segundo plano; te avisaré si termina o se detiene, sin iniciarla de nuevo. Cualquier cambio posterior seguirá requiriendo confirmación.`;
-    }
-    return `Me quedé sin tiempo antes de terminar, pero ya completé parte del trabajo: ${listed}. Pídeme continuar y retomo desde ahí.`;
-  }
   if (queuedContinuation) {
     return `I ran out of time before finishing, but I already completed part of the work: ${listed}. The in-flight request is still running in the background; I’ll notify you whether it completes or stops, and I will not start it again. Any later change will still require confirmation.`;
   }

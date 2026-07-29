@@ -14,11 +14,14 @@ describe('buildChatTurnContext (Phase 16 batch 89)', () => {
     expect(ctx.folded).toBe(ctx.folded.toLowerCase());
   });
 
-  it('exposes locale-cohort booleans for pt-BR / pt-PT / en-US / es-ES', () => {
+  it('exposes supported locale cohorts and coerces legacy Spanish to English', () => {
     expect(buildChatTurnContext({ text: 'oi', locale: 'pt-BR' }).isPortuguese).toBe(true);
     expect(buildChatTurnContext({ text: 'oi', locale: 'pt-PT' }).isPortuguese).toBe(true);
     expect(buildChatTurnContext({ text: 'hi', locale: 'en-US' }).isEnglish).toBe(true);
-    expect(buildChatTurnContext({ text: 'hola', locale: 'es-ES' }).isSpanish).toBe(true);
+    const legacySpanish = buildChatTurnContext({ text: 'hola', locale: 'es-ES' });
+    expect(legacySpanish.locale).toBe('en-US');
+    expect(legacySpanish.isEnglish).toBe(true);
+    expect(legacySpanish).not.toHaveProperty('isSpanish');
   });
 
   it('defaults locale to pt-BR when not provided', () => {

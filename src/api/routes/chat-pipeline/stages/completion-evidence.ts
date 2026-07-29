@@ -24,7 +24,10 @@ export const completionEvidenceStage: ChatStage = {
     return true;
   },
   async handle(ctx: ChatTurnCtx): Promise<ChatStageResult> {
-    const { req, res, userId, tenantId, normalizedText, requestStartedAt, chatRequestId } = ctx;
+    const {
+      req, res, userId, tenantId, normalizedText, requestStartedAt,
+      chatRequestId, chatCoreV2RouteLocale,
+    } = ctx;
     const originalJson = res.json.bind(res);
     res.json = ((body?: any) => {
       safeRecordChatV2CompletionEvidence({
@@ -32,7 +35,8 @@ export const completionEvidenceStage: ChatStage = {
         userId,
         requestId: chatRequestId,
         normalizedMessage: normalizedText,
-        userLanguage: safeGetChatEvidenceLanguage(req, userId),
+        userLanguage: safeGetChatEvidenceLanguage(req, userId, chatCoreV2RouteLocale),
+        responseLocale: chatCoreV2RouteLocale,
         response: body,
         firstProgressMs: safeGetChatV2ClientFirstProgressMs(req) ?? Date.now() - requestStartedAt,
         unsupportedClaimProbe: isChatV2UnsupportedClaimEvidenceProbe(req),

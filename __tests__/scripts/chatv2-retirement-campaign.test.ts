@@ -6,6 +6,7 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
+import { CHAT_V2_RETIREMENT_OBSERVER_CORPUS_BINDING } from '../../src/services/chat-legacy-parity-labels';
 import {
   buildChatV2RetirementCampaignReport,
   renderChatV2RetirementCampaignTable,
@@ -38,7 +39,7 @@ function seedBehavior(input: { samples?: number; matches?: number; signoff?: boo
     samples,
     JSON.stringify({
       schemaVersion: 'chat_v2_legacy_parity_evidence_safe_metadata.v1',
-      parityObservationImport: true,
+      parityLabelImport: true,
       evaluator: 'manual',
       peerReviewSignoffHash: input.signoff === false ? null : 'd'.repeat(64),
       sampleCount: samples,
@@ -46,6 +47,15 @@ function seedBehavior(input: { samples?: number; matches?: number; signoff?: boo
       safetyRegressionCount: 0,
       qualityRegressionCount: 0,
       degradedNotComparableCount: 0,
+      reviewRubricVersion: 'chat_v2_legacy_parity_review_rubric.v2',
+      parityRate: matches / samples,
+      reviewCompletenessChecked: true,
+      rawReviewArtifactCompletenessChecked: true,
+      observedRouteSampleCount: samples,
+      observerManifestSha256: '1'.repeat(64),
+      observerObservationsSha256: '2'.repeat(64),
+      rawReviewArtifactSha256: '3'.repeat(64),
+      ...CHAT_V2_RETIREMENT_OBSERVER_CORPUS_BINDING,
     }),
     NOW.toISOString(),
   );

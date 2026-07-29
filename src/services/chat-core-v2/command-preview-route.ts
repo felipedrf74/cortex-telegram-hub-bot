@@ -1528,7 +1528,6 @@ function secretarySchedulePreviewTitle(payload: Record<string, unknown>, locale:
   const title = calendarEventTitle(payload);
   if (normalized === 'pt-BR') return `Prévia da agenda: ${title}`;
   if (normalized === 'pt-PT') return `Pré-visualização da agenda: ${title}`;
-  if (normalized === 'es') return `Vista previa de agenda: ${title}`;
   return `Calendar preview: ${title}`;
 }
 
@@ -1539,7 +1538,6 @@ function secretarySchedulePreviewSummary(payload: Record<string, unknown>, local
   const end = formatCalendarPreviewDateTime(payload.endDateTime, payload.timezone, locale);
   if (normalized === 'pt-BR') return `Eu prepararia "${title}" de ${start} até ${end}. Nenhum evento ou convite seria criado ainda.`;
   if (normalized === 'pt-PT') return `Eu prepararia "${title}" de ${start} até ${end}. Nenhum evento ou convite seria criado ainda.`;
-  if (normalized === 'es') return `Prepararía "${title}" de ${start} a ${end}. Todavía no se crearía ningún evento ni invitación.`;
   return `I would prepare "${title}" from ${start} to ${end}. No calendar event or invite would be created yet.`;
 }
 
@@ -1549,9 +1547,7 @@ function secretarySchedulePreviewDiff(payload: Record<string, unknown>, locale: 
     ? { event: 'Evento', start: 'Início', end: 'Fim', calendar: 'Agenda', attendees: 'Convidados', status: 'Estado', preview: 'Prévia' }
     : normalized === 'pt-PT'
       ? { event: 'Evento', start: 'Início', end: 'Fim', calendar: 'Agenda', attendees: 'Convidados', status: 'Estado', preview: 'Pré-visualização' }
-      : normalized === 'es'
-        ? { event: 'Evento', start: 'Inicio', end: 'Fin', calendar: 'Calendario', attendees: 'Invitados', status: 'Estado', preview: 'Vista previa' }
-        : { event: 'Event', start: 'Start', end: 'End', calendar: 'Calendar', attendees: 'Guests', status: 'Status', preview: 'Preview' };
+      : { event: 'Event', start: 'Start', end: 'End', calendar: 'Calendar', attendees: 'Guests', status: 'Status', preview: 'Preview' };
   const attendees = calendarAttendees(payload);
   return [
     { label: labels.event, after: calendarEventTitle(payload) },
@@ -1579,7 +1575,7 @@ function calendarProviderLabel(value: unknown, locale: string | null | undefined
   if (provider === 'outlook_calendar') return 'Outlook';
   if (provider === 'google_calendar') return 'Google';
   const normalized = normalizeChatCoreV2Locale(locale);
-  return normalized === 'es' ? 'Calendario' : normalized.startsWith('pt') ? 'Agenda' : 'Calendar';
+  return normalized.startsWith('pt') ? 'Agenda' : 'Calendar';
 }
 
 function formatCalendarPreviewDateTime(value: unknown, timezone: unknown, locale: string | null | undefined): string {
@@ -1592,9 +1588,7 @@ function formatCalendarPreviewDateTime(value: unknown, timezone: unknown, locale
     ? 'pt-BR'
     : normalized === 'pt-PT'
       ? 'pt-PT'
-      : normalized === 'es'
-        ? 'es-ES'
-        : 'en-GB';
+      : 'en-GB';
   try {
     return new Intl.DateTimeFormat(localeTag, {
       timeZone: normalizeTimezone(String(timezone ?? 'UTC')),
@@ -1615,7 +1609,6 @@ function trainingModifyPreviewTitle(payload: Record<string, unknown>, locale: st
   const title = trainingSessionTitle(payload);
   if (normalized === 'pt-BR') return `Prévia do treino: ${title}`;
   if (normalized === 'pt-PT') return `Pré-visualização do treino: ${title}`;
-  if (normalized === 'es') return `Vista previa de entrenamiento: ${title}`;
   return `Training preview: ${title}`;
 }
 
@@ -1625,7 +1618,6 @@ function trainingModifyPreviewSummary(payload: Record<string, unknown>, locale: 
   const when = String(payload.sessionDateLabel ?? payload.dayOfWeek ?? '').trim();
   if (normalized === 'pt-BR') return `Eu prepararia uma versão mais leve de "${title}"${when ? ` para ${when}` : ''}. O plano de treino ainda não seria alterado.`;
   if (normalized === 'pt-PT') return `Eu prepararia uma versão mais leve de "${title}"${when ? ` para ${when}` : ''}. O plano de treino ainda não seria alterado.`;
-  if (normalized === 'es') return `Prepararía una versión más suave de "${title}"${when ? ` para ${when}` : ''}. El plan de entrenamiento todavía no cambiaría.`;
   return `I would prepare a lighter version of "${title}"${when ? ` for ${when}` : ''}. Your training plan would not change yet.`;
 }
 
@@ -1635,9 +1627,7 @@ function trainingModifyPreviewDiff(payload: Record<string, unknown>, locale: str
     ? { session: 'Sessão', when: 'Quando', intensity: 'Intensidade', current: 'Atual', easier: 'Mais leve', status: 'Estado', preview: 'Prévia' }
     : normalized === 'pt-PT'
       ? { session: 'Sessão', when: 'Quando', intensity: 'Intensidade', current: 'Atual', easier: 'Mais leve', status: 'Estado', preview: 'Pré-visualização' }
-      : normalized === 'es'
-        ? { session: 'Sesión', when: 'Cuándo', intensity: 'Intensidad', current: 'Actual', easier: 'Más suave', status: 'Estado', preview: 'Vista previa' }
-        : { session: 'Session', when: 'When', intensity: 'Intensity', current: 'Current', easier: 'Easier', status: 'Status', preview: 'Preview' };
+      : { session: 'Session', when: 'When', intensity: 'Intensity', current: 'Current', easier: 'Easier', status: 'Status', preview: 'Preview' };
   const currentIntensity = String(payload.currentIntensity ?? '').trim() || labels.current;
   const when = String(payload.sessionDateLabel ?? payload.dayOfWeek ?? '').trim();
   return [
@@ -1658,7 +1648,6 @@ function contentBriefPreviewTitle(payload: Record<string, unknown>, locale: stri
   const topic = contentBriefTopic(payload);
   if (normalized === 'pt-BR') return `Prévia de briefing de conteúdo: ${topic}`;
   if (normalized === 'pt-PT') return `Pré-visualização de briefing de conteúdo: ${topic}`;
-  if (normalized === 'es') return `Vista previa de brief de contenido: ${topic}`;
   return `Content brief preview: ${topic}`;
 }
 
@@ -1667,7 +1656,6 @@ function contentBriefPreviewSummary(payload: Record<string, unknown>, locale: st
   const topic = contentBriefTopic(payload);
   if (normalized === 'pt-BR') return `Eu prepararia um briefing de conteúdo sobre ${topic}. Nada seria criado ou publicado ainda.`;
   if (normalized === 'pt-PT') return `Eu prepararia um briefing de conteúdo sobre ${topic}. Nada seria criado ou publicado ainda.`;
-  if (normalized === 'es') return `Prepararía un brief de contenido sobre ${topic}. Todavía no se crearía ni publicaría nada.`;
   return `I would prepare a content brief about ${topic}. Nothing would be created or published yet.`;
 }
 
@@ -1677,9 +1665,7 @@ function contentBriefPreviewDiff(payload: Record<string, unknown>, locale: strin
     ? { topic: 'Tema', format: 'Formato', status: 'Estado', preview: 'Prévia' }
     : normalized === 'pt-PT'
       ? { topic: 'Tema', format: 'Formato', status: 'Estado', preview: 'Pré-visualização' }
-      : normalized === 'es'
-        ? { topic: 'Tema', format: 'Formato', status: 'Estado', preview: 'Vista previa' }
-        : { topic: 'Topic', format: 'Format', status: 'Status', preview: 'Preview' };
+      : { topic: 'Topic', format: 'Format', status: 'Status', preview: 'Preview' };
   return [
     { label: labels.topic, after: contentBriefTopic(payload) },
     { label: labels.format, after: contentBriefFormatLabel(payload, locale) },
@@ -1696,11 +1682,11 @@ function contentBriefFormatLabel(payload: Record<string, unknown>, locale: strin
   const format = String(payload.format ?? '').trim();
   const normalized = normalizeChatCoreV2Locale(locale);
   if (format === 'reel') return 'Reel';
-  if (format === 'short_video') return normalized === 'es' ? 'Video corto' : normalized.startsWith('pt') ? 'Vídeo curto' : 'Short video';
+  if (format === 'short_video') return normalized.startsWith('pt') ? 'Vídeo curto' : 'Short video';
   if (format === 'newsletter') return 'Newsletter';
   if (format === 'youtube') return 'YouTube';
   if (format === 'post') return 'Post';
-  return normalized === 'es' ? 'Contenido' : normalized.startsWith('pt') ? 'Conteúdo' : 'Content';
+  return normalized.startsWith('pt') ? 'Conteúdo' : 'Content';
 }
 
 function cookingGroceryPreviewTitle(payload: Record<string, unknown>, locale: string | null | undefined): string {
@@ -1708,7 +1694,6 @@ function cookingGroceryPreviewTitle(payload: Record<string, unknown>, locale: st
   const itemLabel = groceryItemLabel(payload, locale);
   if (normalized === 'pt-BR') return `Prévia da lista de compras: ${itemLabel}`;
   if (normalized === 'pt-PT') return `Pré-visualização da lista de compras: ${itemLabel}`;
-  if (normalized === 'es') return `Vista previa de compra: ${itemLabel}`;
   return `Grocery preview: ${itemLabel}`;
 }
 
@@ -1717,7 +1702,6 @@ function cookingGroceryPreviewSummary(payload: Record<string, unknown>, locale: 
   const itemLabel = groceryItemLabel(payload, locale);
   if (normalized === 'pt-BR') return `Eu prepararia ${itemLabel} para a lista de compras. Nada seria adicionado ainda.`;
   if (normalized === 'pt-PT') return `Eu prepararia ${itemLabel} para a lista de compras. Nada seria adicionado ainda.`;
-  if (normalized === 'es') return `Prepararía ${itemLabel} para la lista de compras. Todavía no se añadiría nada.`;
   return `I would prepare ${itemLabel} for the grocery list. Nothing would be added yet.`;
 }
 
@@ -1728,9 +1712,7 @@ function cookingGroceryPreviewDiff(payload: Record<string, unknown>, locale: str
     ? { items: 'Itens', list: 'Lista', status: 'Estado', grocery: 'Compras', draft: 'Prévia' }
     : normalized === 'pt-PT'
       ? { items: 'Itens', list: 'Lista', status: 'Estado', grocery: 'Compras', draft: 'Pré-visualização' }
-      : normalized === 'es'
-        ? { items: 'Artículos', list: 'Lista', status: 'Estado', grocery: 'Compras', draft: 'Vista previa' }
-        : { items: 'Items', list: 'List', status: 'Status', grocery: 'Grocery', draft: 'Preview' };
+      : { items: 'Items', list: 'List', status: 'Status', grocery: 'Grocery', draft: 'Preview' };
   return [
     { label: labels.items, after: joinGroceryItems(items, locale) },
     { label: labels.list, after: labels.grocery },
@@ -1751,7 +1733,7 @@ function groceryItemLabel(payload: Record<string, unknown>, locale: string | nul
 
 function joinGroceryItems(items: string[], locale: string | null | undefined): string {
   const normalized = normalizeChatCoreV2Locale(locale);
-  const conjunction = normalized === 'es' ? ' y ' : normalized.startsWith('pt') ? ' e ' : ' and ';
+  const conjunction = normalized.startsWith('pt') ? ' e ' : ' and ';
   if (items.length <= 1) return items[0] ?? '';
   if (items.length === 2) return `${items[0]}${conjunction}${items[1]}`;
   return `${items.slice(0, -1).join(', ')}${conjunction}${items[items.length - 1]}`;
@@ -1762,7 +1744,6 @@ function decisionPreviewTitle(payload: Record<string, unknown>, locale: string |
   const normalized = normalizeChatCoreV2Locale(locale);
   if (normalized === 'pt-BR') return `Prévia para dispensar: ${title}`;
   if (normalized === 'pt-PT') return `Pré-visualização para dispensar: ${title}`;
-  if (normalized === 'es') return `Vista previa para descartar: ${title}`;
   return `Dismiss preview: ${title}`;
 }
 
@@ -1771,7 +1752,6 @@ function decisionPreviewSummary(payload: Record<string, unknown>, locale: string
   const normalized = normalizeChatCoreV2Locale(locale);
   if (normalized === 'pt-BR') return `Eu dispensaria "${title}" do Decision Center. Nada mais mudaria.`;
   if (normalized === 'pt-PT') return `Eu dispensaria "${title}" do Decision Center. Nada mais mudaria.`;
-  if (normalized === 'es') return `Descartaría "${title}" del Decision Center. No cambiaría nada más.`;
   return `I would dismiss "${title}" from Decision Center. Nothing else would change.`;
 }
 
@@ -1781,9 +1761,7 @@ function decisionPreviewDiff(payload: Record<string, unknown>, locale: string | 
     ? { decision: 'Decisão', status: 'Estado', effect: 'Efeito', active: 'Ativa', dismissed: 'Dispensada', hides: 'Remove da fila ativa' }
     : normalized === 'pt-PT'
       ? { decision: 'Decisão', status: 'Estado', effect: 'Efeito', active: 'Ativa', dismissed: 'Dispensada', hides: 'Remove da fila ativa' }
-      : normalized === 'es'
-        ? { decision: 'Decisión', status: 'Estado', effect: 'Efecto', active: 'Activa', dismissed: 'Descartada', hides: 'La quita de la cola activa' }
-        : { decision: 'Decision', status: 'Status', effect: 'Effect', active: 'Active', dismissed: 'Dismissed', hides: 'Remove from active queue' };
+      : { decision: 'Decision', status: 'Status', effect: 'Effect', active: 'Active', dismissed: 'Dismissed', hides: 'Remove from active queue' };
   return [
     { label: labels.decision, after: String(payload.title ?? '').trim() },
     { label: labels.status, before: labels.active, after: labels.dismissed },
@@ -1796,7 +1774,6 @@ function decisionSnoozePreviewTitle(payload: Record<string, unknown>, locale: st
   const normalized = normalizeChatCoreV2Locale(locale);
   if (normalized === 'pt-BR') return `Prévia para adiar: ${title}`;
   if (normalized === 'pt-PT') return `Pré-visualização para adiar: ${title}`;
-  if (normalized === 'es') return `Vista previa para pausar: ${title}`;
   return `Snooze preview: ${title}`;
 }
 
@@ -1806,7 +1783,6 @@ function decisionSnoozePreviewSummary(payload: Record<string, unknown>, locale: 
   const duration = formatSnoozeDuration(Number(payload.snoozeMinutes), normalized);
   if (normalized === 'pt-BR') return `Eu adiaria "${title}" no Decision Center por ${duration}. Nada mais mudaria.`;
   if (normalized === 'pt-PT') return `Eu adiaria "${title}" no Decision Center durante ${duration}. Nada mais mudaria.`;
-  if (normalized === 'es') return `Pausaría "${title}" en Decision Center durante ${duration}. No cambiaría nada más.`;
   return `I would snooze "${title}" in Decision Center for ${duration}. Nothing else would change.`;
 }
 
@@ -1816,9 +1792,7 @@ function decisionSnoozePreviewDiff(payload: Record<string, unknown>, locale: str
     ? { decision: 'Decisão', status: 'Estado', until: 'Até', active: 'Ativa', snoozed: 'Adiada' }
     : normalized === 'pt-PT'
       ? { decision: 'Decisão', status: 'Estado', until: 'Até', active: 'Ativa', snoozed: 'Adiada' }
-      : normalized === 'es'
-        ? { decision: 'Decisión', status: 'Estado', until: 'Hasta', active: 'Activa', snoozed: 'Pausada' }
-        : { decision: 'Decision', status: 'Status', until: 'Until', active: 'Active', snoozed: 'Snoozed' };
+      : { decision: 'Decision', status: 'Status', until: 'Until', active: 'Active', snoozed: 'Snoozed' };
   return [
     { label: labels.decision, after: String(payload.title ?? '').trim() },
     { label: labels.status, before: labels.active, after: labels.snoozed },
@@ -1833,12 +1807,10 @@ function taskPreviewTitle(payload: Record<string, unknown>, locale: string | nul
   if (operation === 'complete') {
     if (normalized === 'pt-BR') return `Prévia de conclusão: ${title}`;
     if (normalized === 'pt-PT') return `Pré-visualização de conclusão: ${title}`;
-    if (normalized === 'es') return `Vista previa de finalización: ${title}`;
     return `Completion preview: ${title}`;
   }
   if (normalized === 'pt-BR') return `Prévia da tarefa: ${title}`;
   if (normalized === 'pt-PT') return `Pré-visualização da tarefa: ${title}`;
-  if (normalized === 'es') return `Vista previa de la tarea: ${title}`;
   return `Task preview: ${title}`;
 }
 
@@ -1855,12 +1827,10 @@ function taskPreviewSummary(payload: Record<string, unknown>, locale: string | n
     if (duplicateCount > 1) {
       if (normalized === 'pt-BR') return `Eu marcaria ${duplicateCount} tarefas chamadas "${title}" como concluídas.`;
       if (normalized === 'pt-PT') return `Eu marcaria ${duplicateCount} tarefas chamadas "${title}" como concluídas.`;
-      if (normalized === 'es') return `Marcaría ${duplicateCount} tareas llamadas "${title}" como completadas.`;
       return `I would mark ${duplicateCount} tasks named "${title}" as done.`;
     }
     if (normalized === 'pt-BR') return `Eu marcaria "${title}" como concluída.`;
     if (normalized === 'pt-PT') return `Eu marcaria "${title}" como concluída.`;
-    if (normalized === 'es') return `Marcaría "${title}" como completada.`;
     return `I would mark "${title}" as done.`;
   }
   if (normalized === 'pt-BR') {
@@ -1868,9 +1838,6 @@ function taskPreviewSummary(payload: Record<string, unknown>, locale: string | n
   }
   if (normalized === 'pt-PT') {
     if (subtasks.length > 0) return `Revê e confirma para criar a tarefa "${title}" com ${subtasks.length} subtarefa(s).`;
-  }
-  if (normalized === 'es') {
-    if (subtasks.length > 0) return `Revisa y confirma para crear la tarea "${title}" con ${subtasks.length} subtarea(s).`;
   }
   if (subtasks.length > 0) return `Review and confirm to create the task "${title}" with ${subtasks.length} subtask(s).`;
   if (normalized === 'pt-BR') {
@@ -1882,11 +1849,6 @@ function taskPreviewSummary(payload: Record<string, unknown>, locale: string | n
     return due
       ? `Eu prepararia a tarefa "${title}" para ${due}.`
       : `Eu prepararia a tarefa "${title}".`;
-  }
-  if (normalized === 'es') {
-    return due
-      ? `Prepararía la tarea "${title}" para ${due}.`
-      : `Prepararía la tarea "${title}".`;
   }
   return due
     ? `I would prepare the task "${title}" for ${due}.`
@@ -1900,9 +1862,7 @@ function taskPreviewDiff(payload: Record<string, unknown>, locale: string | null
     ? { task: 'Tarefa', subtasks: 'Subtarefas', due: 'Quando', status: 'Estado', pending: 'Pendente', completed: 'Concluída', count: 'Quantidade' }
     : normalized === 'pt-PT'
       ? { task: 'Tarefa', subtasks: 'Subtarefas', due: 'Quando', status: 'Estado', pending: 'Pendente', completed: 'Concluída', count: 'Quantidade' }
-      : normalized === 'es'
-        ? { task: 'Tarea', subtasks: 'Subtareas', due: 'Cuándo', status: 'Estado', pending: 'Pendiente', completed: 'Completada', count: 'Cantidad' }
-        : { task: 'Task', subtasks: 'Subtasks', due: 'When', status: 'Status', pending: 'Pending', completed: 'Done', count: 'Count' };
+      : { task: 'Task', subtasks: 'Subtasks', due: 'When', status: 'Status', pending: 'Pending', completed: 'Done', count: 'Count' };
   const title = String(payload.title ?? '').trim();
   const due = typeof payload.dueDateTime === 'string' && payload.dueDateTime.trim()
     ? payload.dueDateTime.trim()
@@ -1938,7 +1898,6 @@ function notificationPreviewTitle(payload: Record<string, unknown>, locale: stri
   const normalized = normalizeChatCoreV2Locale(locale);
   if (normalized === 'pt-BR') return `Prévia de pausa: ${title}`;
   if (normalized === 'pt-PT') return `Pré-visualização de pausa: ${title}`;
-  if (normalized === 'es') return `Vista previa de pausa: ${title}`;
   return `Snooze preview: ${title}`;
 }
 
@@ -1949,7 +1908,6 @@ function notificationPreviewSummary(payload: Record<string, unknown>, locale: st
   const duration = formatSnoozeDuration(minutes, normalized);
   if (normalized === 'pt-BR') return `Eu pausaria "${title}" por ${duration}.`;
   if (normalized === 'pt-PT') return `Eu pausaria "${title}" durante ${duration}.`;
-  if (normalized === 'es') return `Pausaría "${title}" durante ${duration}.`;
   return `I would snooze "${title}" for ${duration}.`;
 }
 
@@ -1959,9 +1917,7 @@ function notificationPreviewDiff(payload: Record<string, unknown>, locale: strin
     ? { notification: 'Notificação', status: 'Estado', until: 'Até', unread: 'Não lida', snoozed: 'Pausada' }
     : normalized === 'pt-PT'
       ? { notification: 'Notificação', status: 'Estado', until: 'Até', unread: 'Por ler', snoozed: 'Pausada' }
-      : normalized === 'es'
-        ? { notification: 'Notificación', status: 'Estado', until: 'Hasta', unread: 'Sin leer', snoozed: 'Pausada' }
-        : { notification: 'Notification', status: 'Status', until: 'Until', unread: 'Unread', snoozed: 'Snoozed' };
+      : { notification: 'Notification', status: 'Status', until: 'Until', unread: 'Unread', snoozed: 'Snoozed' };
   return [
     { label: labels.notification, after: String(payload.title ?? '').trim() },
     { label: labels.status, before: labels.unread, after: labels.snoozed },
@@ -1974,11 +1930,9 @@ function formatSnoozeDuration(minutes: number, locale: ReturnType<typeof normali
   if (safeMinutes % 60 === 0) {
     const hours = safeMinutes / 60;
     if (locale === 'en') return hours === 1 ? '1 hour' : `${hours} hours`;
-    if (locale === 'es') return hours === 1 ? '1 hora' : `${hours} horas`;
     return hours === 1 ? '1 hora' : `${hours} horas`;
   }
   if (locale === 'en') return safeMinutes === 1 ? '1 minute' : `${safeMinutes} minutes`;
-  if (locale === 'es') return safeMinutes === 1 ? '1 minuto' : `${safeMinutes} minutos`;
   return safeMinutes === 1 ? '1 minuto' : `${safeMinutes} minutos`;
 }
 
@@ -2342,9 +2296,7 @@ function formatTrainingSessionTargetDate(
     ? 'pt-BR'
     : normalized === 'pt-PT'
       ? 'pt-PT'
-      : normalized === 'es'
-        ? 'es-ES'
-        : 'en-GB';
+      : 'en-GB';
   try {
     return new Intl.DateTimeFormat(localeTag, {
       weekday: 'short',
@@ -2360,9 +2312,7 @@ function localizedTrainingDay(dayOfWeek: string, locale: ReturnType<typeof norma
   const dayIndex = dayIndexForTrainingDay(dayOfWeek);
   const english = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
   const pt = ['segunda', 'terça', 'quarta', 'quinta', 'sexta', 'sábado', 'domingo'];
-  const es = ['lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado', 'domingo'];
   if (dayIndex === null) return dayOfWeek;
-  if (locale === 'es') return es[dayIndex];
   if (locale === 'pt-BR' || locale === 'pt-PT') return pt[dayIndex];
   return english[dayIndex];
 }

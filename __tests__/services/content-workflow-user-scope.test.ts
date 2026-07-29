@@ -23,7 +23,7 @@ const {
   readSignals: vi.fn(() => []),
   getScript: vi.fn(),
   saveGeneratedScriptToWorkspace: vi.fn(),
-  getUserLanguage: vi.fn(() => 'pt-BR'),
+  getUserLanguage: vi.fn(() => 'en-US'),
   trackedCreate: vi.fn(),
   isDuplicateIdeaInBatch: vi.fn(),
 }));
@@ -78,6 +78,7 @@ vi.mock('../../src/portal/anthropic-hook', () => ({
 
 vi.mock('../../src/utils/prompt-loader', () => ({
   loadPromptWithConfig: vi.fn((_name: string, values: Record<string, string>) => [
+    values.OUTPUT_LANGUAGE_CONTRACT || '',
     values.KNOWLEDGE_BLOCK || '',
     values.TASTE_PROFILE || '',
   ].join('\n')),
@@ -181,7 +182,7 @@ describe('content-workflow: user-scoped knowledge injection', () => {
     isOpenAIConfigured.mockReturnValue(false);
     isPaidAiCostControlsEnforcementEnabled.mockReturnValue(false);
     readSignals.mockReturnValue([]);
-    getUserLanguage.mockReturnValue('pt-BR');
+    getUserLanguage.mockReturnValue('en-US');
     isDuplicateIdeaInBatch.mockImplementation((newIdea: string, _angleTag: string | undefined, accepted: Array<{ title: string }>) => {
       const normalized = newIdea.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
       const match = accepted.find((candidate) => (
@@ -216,6 +217,97 @@ describe('content-workflow: user-scoped knowledge injection', () => {
     const [systemPrompt] = completeOneShotWithFallback.mock.calls[0];
     expect(systemPrompt).toContain('User voice');
     expect(systemPrompt).not.toContain('System voice');
+  });
+
+  it('maps a retired Spanish topic preference to English and rejects Spanish provider output', async () => {
+    getUserLanguage.mockReturnValue('es-ES');
+    completeOneShotWithFallback.mockResolvedValue({
+      provider: 'gemini',
+      text: JSON.stringify([{
+        title: 'Cómo organizar tu mañana sin estrés',
+        niche: 'product',
+        whyNow: 'Muchas personas quieren una solución clara para mejorar su rutina hoy.',
+        hookIdea: '¿Quieres transformar tus hábitos desde esta mañana?',
+        angle_tag: 'how-to',
+        pillar_emoji: '',
+        time_sensitivity: 'evergreen',
+      }]),
+    });
+
+    const result = await generateTopicCandidates('reel', 1, false, 42, 42);
+
+    expect(String(completeOneShotWithFallback.mock.calls[0][0])).toContain(
+      'Generate all user-facing topic fields only in English.',
+    );
+    expect(result).toEqual([]);
+  });
+
+  it('rejects short Iberian provider output under the English topic contract', async () => {
+    getUserLanguage.mockReturnValue('en-US');
+    completeOneShotWithFallback.mockResolvedValue({
+      provider: 'gemini',
+      text: JSON.stringify([{
+        title: 'Entendido.',
+        niche: 'product',
+        whyNow: 'Entendido.',
+        hookIdea: 'Entendido.',
+        angle_tag: 'how-to',
+        pillar_emoji: '',
+        time_sensitivity: 'evergreen',
+      }]),
+    });
+
+    const result = await generateTopicCandidates('reel', 1, false, 42, 42);
+
+    expect(result).toEqual([]);
+  });
+
+  it('rejects a Spanish provider-generated niche even when the other topic fields are English', async () => {
+    getUserLanguage.mockReturnValue('en-US');
+    completeOneShotWithFallback.mockResolvedValue({
+      provider: 'gemini',
+      text: JSON.stringify([{
+        title: 'Build one reliable creator workflow',
+        niche: 'Cómo organizar tus tareas',
+        whyNow: 'Teams need a clear and dependable process this week.',
+        hookIdea: 'Start with one concrete review.',
+        angle_tag: 'how-to',
+        pillar_emoji: '',
+        time_sensitivity: 'evergreen',
+      }]),
+    });
+
+    expect(await generateTopicCandidates('reel', 1, false, 42, 42)).toEqual([]);
+  });
+
+  it('rejects a noncanonical angle tag before ordinary topic persistence', async () => {
+    completeOneShotWithFallback.mockResolvedValue({
+      provider: 'gemini',
+      text: JSON.stringify([{
+        title: 'Build one reliable creator workflow',
+        niche: 'product',
+        whyNow: 'Teams need a clear and dependable process this week.',
+        hookIdea: 'Start with one concrete review.',
+        angle_tag: 'cómo-hacerlo',
+        pillar_emoji: '',
+        time_sensitivity: 'evergreen',
+      }]),
+    });
+
+    const result = await generateAndStoreTopicCandidates(
+      42,
+      'reel',
+      'tuesday_reels',
+      42,
+      1,
+    );
+
+    expect(result.candidates).toEqual([]);
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS count
+        FROM content_topic_feedback
+       WHERE tenant_id = 42 AND owner_user_id = 42 AND source_job = 'tuesday_reels'
+    `).get()).toEqual({ count: 0 });
   });
 
   it('reads workflow discovery and book signals with explicit user scope', async () => {
@@ -640,6 +732,35 @@ describe('content-workflow: user-scoped knowledge injection', () => {
     ]);
   });
 
+  it('fails the Friday package atomically when a retired Spanish preference produces Spanish output', async () => {
+    getUserLanguage.mockReturnValue('Spanish');
+    completeOneShotWithFallback.mockResolvedValue({
+      provider: 'gemini',
+      text: JSON.stringify({
+        youtube: [{
+          title: 'Cómo organizar tu mañana sin estrés',
+          niche: 'product',
+          whyNow: 'Muchas personas quieren una solución clara para mejorar su rutina hoy.',
+          hookIdea: '¿Quieres transformar tus hábitos desde esta mañana?',
+          angle_tag: 'how-to',
+          pillar_emoji: '',
+          time_sensitivity: 'evergreen',
+        }],
+        reels: [],
+      }),
+    });
+
+    const result = await generateWeeklyPackage(42, 42, { youtube: 1, reels: 0 });
+
+    expect(String(completeOneShotWithFallback.mock.calls[0][0])).toContain(
+      'Generate all user-facing topic fields only in English.',
+    );
+    expect(result).toEqual({ youtube: [], reels: [] });
+    expect((testDb.prepare(
+      "SELECT COUNT(*) AS count FROM content_topic_feedback WHERE user_id = 42 AND source_job = 'friday_weekly'",
+    ).get() as { count: number }).count).toBe(0);
+  });
+
   it('persists nothing when the Friday batch is short or violates the live contract', async () => {
     const valid = (title: string) => ({
       title,
@@ -800,6 +921,34 @@ describe('content-workflow: user-scoped knowledge injection', () => {
       cta: 'Save this for your next sprint.',
       captureOrigin: 'script_generation',
     }));
+  });
+
+  it('rejects a mismatched script before the canonical workflow can persist or return it', async () => {
+    seedGroundedReference(42);
+    getUserLanguage.mockReturnValue('en-US');
+    getScript.mockResolvedValue({
+      topic: 'Build a reliable workflow',
+      script: 'Aquí tienes el guion completo para organizar todas tus tareas.',
+      hook: '¿Quieres empezar ahora?',
+      title_options: ['Cómo organizar tus tareas'],
+      sources_used: [],
+      estimated_duration: '8:00',
+      duration_ms: 100,
+      caption: 'Guarda esta guía para mañana.',
+      cta: 'Comparte este vídeo con alguien.',
+    });
+
+    await expect(generateScript({
+      title: 'Build a reliable workflow',
+      niche: 'product',
+      whyNow: 'Teams need a reliable process',
+      hookIdea: 'Start with the evidence',
+    }, 'youtube', 42)).rejects.toMatchObject({
+      code: 'CONTENT_OUTPUT_LOCALE_MISMATCH',
+      boundary: 'content-workflow-script',
+    });
+
+    expect(saveGeneratedScriptToWorkspace).not.toHaveBeenCalled();
   });
 
   it('refuses sourced script generation when the tenant has no grounded references', async () => {

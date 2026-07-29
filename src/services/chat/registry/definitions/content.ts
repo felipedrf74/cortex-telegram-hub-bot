@@ -46,9 +46,10 @@ export const CONTENT_ACTIONS: ChatActionDefinition[] = [
           expectedAction: 'content_brief_create',
         },
         {
-          // Phase 14 batch 73 (2026-05-16): Spanish golden example.
+          // Phase 14 batch 73 (2026-05-16): Spanish-authored compatibility input; English response contract.
           text: 'Crea una campaña para Instagram sobre fitness',
-          locale: 'es',
+          requestLocale: 'es',
+          responseLocale: 'en',
           tags: ['golden'],
           expectedAction: 'content_brief_create',
         },
@@ -97,9 +98,10 @@ export const CONTENT_ACTIONS: ChatActionDefinition[] = [
           expectedAction: 'content_script_create',
         },
         {
-          // Phase 14 batch 73 (2026-05-16): Spanish golden example.
+          // Phase 14 batch 73 (2026-05-16): Spanish-authored compatibility input; English response contract.
           text: 'Crea un guion para un reel sobre rutinas matutinas',
-          locale: 'es',
+          requestLocale: 'es',
+          responseLocale: 'en',
           tags: ['golden'],
           expectedAction: 'content_script_create',
         },
@@ -156,9 +158,10 @@ export const CONTENT_ACTIONS: ChatActionDefinition[] = [
           expectedAction: null,
         },
         {
-          // Phase 14 batch 73 (2026-05-16): Spanish golden example.
+          // Phase 14 batch 73 (2026-05-16): Spanish-authored compatibility input; English response contract.
           text: 'Reescribe esta caption para hacerla más corta',
-          locale: 'es',
+          requestLocale: 'es',
+          responseLocale: 'en',
           tags: ['golden'],
           expectedAction: 'content_rewrite',
         },
@@ -199,7 +202,8 @@ export const CONTENT_ACTIONS: ChatActionDefinition[] = [
         },
         {
           text: 'Programa una sesión de escritura del video para mañana',
-          locale: 'es',
+          requestLocale: 'es',
+          responseLocale: 'en',
           tags: ['golden'],
           expectedAction: 'content_schedule_work',
         },
@@ -235,7 +239,8 @@ export const CONTENT_ACTIONS: ChatActionDefinition[] = [
         },
         {
           text: 'Publica este reel mañana',
-          locale: 'es',
+          requestLocale: 'es',
+          responseLocale: 'en',
           tags: ['golden'],
           expectedAction: 'content_publish_now',
         },
@@ -287,9 +292,10 @@ export const CONTENT_ACTIONS: ChatActionDefinition[] = [
           condition: 'embedded_llm_instruction_markers',
         },
         {
-          // Phase 14 batch 73 (2026-05-16): Spanish golden example.
+          // Phase 14 batch 73 (2026-05-16): Spanish-authored compatibility input; English response contract.
           text: 'Manda este paquete al pipeline de contenido',
-          locale: 'es',
+          requestLocale: 'es',
+          responseLocale: 'en',
           tags: ['golden'],
           expectedAction: 'content_pipeline_handoff',
         },
@@ -348,7 +354,8 @@ export const CONTENT_ACTIONS: ChatActionDefinition[] = [
         },
         {
           text: 'Mueve el reel de recuperación a edición',
-          locale: 'es',
+          requestLocale: 'es',
+          responseLocale: 'en',
           tags: ['golden'],
           expectedAction: 'content_pipeline_stage_transition',
           expectedSlots: { topicTitle: 'reel de recuperación', targetStage: 'editing' },

@@ -20,8 +20,9 @@
 // behavior that the Phase 10-15 batches relied on.
 
 import { foldCalendarText } from './calendar-natural-language-parser';
+import { normalizeSupportedLang } from '../utils/i18n';
 
-export type ChatTurnLocale = 'pt-BR' | 'pt-PT' | 'en-US' | 'es-ES' | string;
+export type ChatTurnLocale = 'pt-BR' | 'pt-PT' | 'en-US' | string;
 
 export interface ChatTurnContextInputs {
   text: string;
@@ -36,7 +37,6 @@ export interface ChatTurnContext {
   readonly locale: ChatTurnLocale;
   readonly isPortuguese: boolean;
   readonly isEnglish: boolean;
-  readonly isSpanish: boolean;
   readonly recentTurns: ReadonlyArray<{ role: 'user' | 'assistant'; text: string }>;
   readonly pendingActionIds: ReadonlyArray<string>;
 }
@@ -49,14 +49,13 @@ export interface ChatTurnContext {
 export function buildChatTurnContext(inputs: ChatTurnContextInputs): ChatTurnContext {
   const text = inputs.text ?? '';
   const folded = foldCalendarText(text);
-  const locale: ChatTurnLocale = inputs.locale ?? 'pt-BR';
+  const locale: ChatTurnLocale = normalizeSupportedLang(inputs.locale, 'pt-BR');
   return {
     text,
     folded,
     locale,
     isPortuguese: locale.startsWith('pt'),
     isEnglish: locale.startsWith('en'),
-    isSpanish: locale.startsWith('es'),
     recentTurns: Object.freeze([...(inputs.recentTurns ?? [])]),
     pendingActionIds: Object.freeze([...(inputs.pendingActionIds ?? [])]),
   };

@@ -25,8 +25,18 @@ import {
   DEFAULT_CHAT_LEGACY_RETIREMENT_THRESHOLDS,
   type ChatLegacyRouteExitSample,
 } from './chat-legacy-retirement-readiness';
-import { CHAT_V2_LEGACY_PARITY_ROUTE_PROMPTS } from './chat-legacy-parity-route-prompts';
+import {
+  hasRetirementEligibleExactCurrentChatV2ObserverCorpusBinding,
+  validateCurrentChatV2LegacyRetirementEvidenceRow,
+} from './chat-legacy-parity-labels';
+import {
+  CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_PROMPTS,
+} from './chat-legacy-parity-route-prompts';
 import { V2_TO_LEGACY_DOMAIN } from './intent-resolution/routing-domain-map';
+
+export {
+  CHAT_V2_RETIREMENT_OBSERVER_CORPUS_BINDING,
+} from './chat-legacy-parity-labels';
 
 export const NEXUS_CHAT_ROUTE_EXIT_SAMPLER_VERSION = 'nexus_chat_route_exit_sampler.v3';
 export const CHAT_V2_RETIREMENT_FALLBACK_WINDOW_HOURS = 24;
@@ -36,7 +46,7 @@ export type ChatRouteExitSampleSource = 'shadow_replay_bundle' | 'online_eval_sa
 export type ChatRouteExitSampleKind = 'routing_diagnostic' | 'health';
 
 export const CHAT_V2_RETIREMENT_REQUIRED_ROUTE_IDS: readonly string[] = [
-  ...new Set(CHAT_V2_LEGACY_PARITY_ROUTE_PROMPTS.map((route) => route.routeId)),
+  ...new Set(CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_PROMPTS.map((route) => route.routeId)),
 ];
 
 export const CHAT_V2_RETIREMENT_CAMPAIGN_ROUTE_ORDER: readonly string[] = [
@@ -455,6 +465,9 @@ function scanOnlineEvalSamples(db: Database.Database): ReturnType<SourceScanner>
 // ─── behavior evidence + fallback read model ────────────────────────────
 
 interface BehaviorEvidenceRow {
+  evidence_source: string;
+  evidence_kind: string;
+  sample_identifier_kind: string;
   route_id: string;
   replaced: number | null;
   tested: number | null;
@@ -650,7 +663,8 @@ function readDiagnosticAggregates(db: Database.Database): Map<string, {
 function readLatestBehaviorEvidence(db: Database.Database): Map<string, BehaviorEvidenceRow> {
   if (!tableExists(db, 'chat_v2_legacy_retirement_evidence')) return new Map();
   const rows = db.prepare(`
-    SELECT route_id, replaced, tested, shadow_parity_rate, route_sample_count,
+    SELECT evidence_source, evidence_kind, sample_identifier_kind,
+           route_id, replaced, tested, shadow_parity_rate, route_sample_count,
            raw_field_audit_count, safe_metadata_json
     FROM chat_v2_legacy_retirement_evidence
     WHERE evidence_source = 'runtime_route'
@@ -661,35 +675,38 @@ function readLatestBehaviorEvidence(db: Database.Database): Map<string, Behavior
   const latest = new Map<string, BehaviorEvidenceRow>();
   for (const row of rows) {
     const metadata = parseJsonObject(row.safe_metadata_json);
-    // Periodic inventory rows describe route presence, not paired response
-    // behavior. Select the newest actual comparator/review import so a later
-    // inventory sync cannot erase valid evidence (and a newer paired package
-    // still supersedes an older one).
-    const pairedImport = metadata.parityLabelImport === true
-      || metadata.parityObservationImport === true;
-    if (!pairedImport || metadata.status === 'inventory_only_not_retired') continue;
+    const labelImport = metadata.parityLabelImport === true;
+    const observationImport = metadata.parityObservationImport === true;
+    if (
+      labelImport === observationImport
+      || metadata.status === 'inventory_only_not_retired'
+      || !hasRetirementEligibleExactCurrentChatV2ObserverCorpusBinding(
+        metadata,
+        row.route_id,
+      )
+    ) continue;
     if (!latest.has(row.route_id)) latest.set(row.route_id, row);
   }
   return latest;
 }
 
 function validateBehaviorEvidence(routeId: string, row?: BehaviorEvidenceRow): BehaviorEvidenceResult {
+  const validation = row
+    ? validateCurrentChatV2LegacyRetirementEvidenceRow(row)
+    : { ok: false as const, reason: 'missing_paired_behavior_evidence' };
   const metadata = parseJsonObject(row?.safe_metadata_json);
-  const sampleCount = integer(metadata.sampleCount) ?? nonNegativeInteger(row?.route_sample_count) ?? 0;
-  const matchingCount = integer(metadata.matchingCount) ?? 0;
-  const rate = typeof row?.shadow_parity_rate === 'number' && Number.isFinite(row.shadow_parity_rate)
-    ? row.shadow_parity_rate
-    : sampleCount > 0 ? matchingCount / sampleCount : 0;
-  const provenancePassed = Boolean(
-    row
-      && row.raw_field_audit_count === 0
-      && metadata.schemaVersion === 'chat_v2_legacy_parity_evidence_safe_metadata.v1'
-      && (metadata.parityLabelImport === true || metadata.parityObservationImport === true)
-      && integer(metadata.sampleCount) === row.route_sample_count
-      && matchingCount >= 0
-      && matchingCount <= sampleCount
-      && Math.abs((sampleCount > 0 ? matchingCount / sampleCount : 0) - rate) < 0.000001,
-  );
+  const sampleCount = validation.ok
+    ? validation.sampleCount
+    : integer(metadata.sampleCount) ?? nonNegativeInteger(row?.route_sample_count) ?? 0;
+  const matchingCount = validation.ok
+    ? validation.matchingCount
+    : integer(metadata.matchingCount) ?? 0;
+  const rate = validation.ok
+    ? validation.parityRate
+    : typeof row?.shadow_parity_rate === 'number' && Number.isFinite(row.shadow_parity_rate)
+      ? row.shadow_parity_rate
+      : sampleCount > 0 ? matchingCount / sampleCount : 0;
+  const provenancePassed = validation.ok;
   const evaluator = typeof metadata.evaluator === 'string' ? metadata.evaluator.toLowerCase() : '';
   const signoff = typeof metadata.peerReviewSignoffHash === 'string' ? metadata.peerReviewSignoffHash : '';
   const peerReviewPassed = (evaluator === 'manual' || evaluator === 'claude')

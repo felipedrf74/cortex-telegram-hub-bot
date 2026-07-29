@@ -141,7 +141,6 @@ function buildCookingMealPlanSummaryText(
   if (data.plannedMealCount === 0 && data.shoppingItemCount === 0 && data.pantryAvailableCount === 0) {
     if (normalizedLocale === 'pt-BR') return 'Você ainda não tem refeições, compras ou despensa registadas para esta semana.';
     if (normalizedLocale === 'pt-PT') return 'Ainda não tens refeições, compras ou despensa registadas para esta semana.';
-    if (normalizedLocale === 'es') return 'Aún no tienes comidas, compras o despensa registradas para esta semana.';
     return 'You have no meals, shopping list, or pantry items logged for this week yet.';
   }
 
@@ -172,7 +171,6 @@ function buildCookingHeader(
 
   if (locale === 'pt-BR') return `Plano de refeições da semana (${range}).${detail}`;
   if (locale === 'pt-PT') return `Plano de refeições da semana (${range}).${detail}`;
-  if (locale === 'es') return `Plan de comidas de la semana (${range}).${detail}`;
   return `This week's meal plan (${range}).${detail}`;
 }
 
@@ -188,13 +186,6 @@ function countPhrase(
     if (kind === 'pantry_expired_shopping') return `${count} ${plural(count, 'item expirado para rever', 'itens expirados para rever')}`;
     return `${count} ${plural(count, 'item da despensa a usar em breve', 'itens da despensa a usar em breve')}`;
   }
-  if (locale === 'es') {
-    if (kind === 'meals') return `${count} ${plural(count, 'comida planificada', 'comidas planificadas')}`;
-    if (kind === 'shopping') return `${count} ${plural(count, 'elemento de compra', 'elementos de compra')}`;
-    if (kind === 'pantry_available_shopping') return `${count} ya en la despensa`;
-    if (kind === 'pantry_expired_shopping') return `${count} ${plural(count, 'elemento caducado para revisar', 'elementos caducados para revisar')}`;
-    return `${count} ${plural(count, 'elemento de despensa para usar pronto', 'elementos de despensa para usar pronto')}`;
-  }
   if (kind === 'meals') return `${count} planned ${plural(count, 'meal', 'meals')}`;
   if (kind === 'shopping') return `${count} shopping ${plural(count, 'item', 'items')}`;
   if (kind === 'pantry_available_shopping') return `${count} already in the pantry`;
@@ -204,21 +195,18 @@ function countPhrase(
 
 function dateCoveragePhrase(count: number, locale: ChatCoreV2NormalizedLocale): string {
   if (locale === 'pt-BR' || locale === 'pt-PT') return `cobrindo ${count} ${plural(count, 'dia', 'dias')}`;
-  if (locale === 'es') return `cubriendo ${count} ${plural(count, 'día', 'días')}`;
   return `covering ${count} ${plural(count, 'day', 'days')}`;
 }
 
 function mealListLabel(locale: ChatCoreV2NormalizedLocale): string {
   if (locale === 'pt-BR') return 'Refeições principais:';
   if (locale === 'pt-PT') return 'Refeições principais:';
-  if (locale === 'es') return 'Comidas principales:';
   return 'Top meals:';
 }
 
 function shoppingListLabel(locale: ChatCoreV2NormalizedLocale): string {
   if (locale === 'pt-BR') return 'Compras principais:';
   if (locale === 'pt-PT') return 'Compras principais:';
-  if (locale === 'es') return 'Compras principales:';
   return 'Top shopping items:';
 }
 
@@ -246,37 +234,24 @@ function mealTypeLabel(mealType: string, locale: ChatCoreV2NormalizedLocale): st
     };
     return labels[normalized] ?? normalized;
   }
-  if (locale === 'es') {
-    const labels: Record<string, string> = {
-      breakfast: 'desayuno',
-      lunch: 'almuerzo',
-      dinner: 'cena',
-      snack: 'snack',
-    };
-    return labels[normalized] ?? normalized;
-  }
   return normalized;
 }
 
 function checkedLabel(locale: ChatCoreV2NormalizedLocale): string {
   if (locale === 'pt-BR' || locale === 'pt-PT') return 'feito';
-  if (locale === 'es') return 'hecho';
   return 'checked';
 }
 
 function pantryStatusLabel(status: string, locale: ChatCoreV2NormalizedLocale): string {
   if (status === 'pantry_available') {
     if (locale === 'pt-BR' || locale === 'pt-PT') return 'já na despensa';
-    if (locale === 'es') return 'ya en despensa';
     return 'already in pantry';
   }
   if (status === 'pantry_expired') {
     if (locale === 'pt-BR' || locale === 'pt-PT') return 'verificar validade';
-    if (locale === 'es') return 'revisar caducidad';
     return 'check freshness';
   }
   if (locale === 'pt-BR' || locale === 'pt-PT') return 'necessário';
-  if (locale === 'es') return 'necesario';
   return 'needed';
 }
 

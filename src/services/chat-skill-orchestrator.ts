@@ -215,7 +215,7 @@ export function analyzeChatSkillOrchestration(input: {
   userId?: number | null;
   tenantId?: number | null;
   /**
-   * M14: BCP-47-ish locale for the templated clarify question (EN/PT/ES).
+   * M14: BCP-47-ish locale for the templated clarify question (EN/PT).
    * Optional and additive — callers that do not pass it get EN templates.
    */
   locale?: string | null;

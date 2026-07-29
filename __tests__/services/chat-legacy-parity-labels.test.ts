@@ -1,5 +1,8 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
+import Database from 'better-sqlite3';
+import fs from 'node:fs';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   CHAT_V2_LEGACY_PARITY_LABEL_VERSION,
@@ -7,9 +10,17 @@ import {
   CHAT_V2_LEGACY_PARITY_REVIEW_RUBRIC_VERSION,
   aggregateChatV2LegacyParityObservations,
   buildChatV2LegacyParityEvidenceInput,
+  buildChatV2RetirementObserverCorpusBinding,
+  deleteExactCurrentChatV2RetirementEvidenceRows,
+  hasExactCurrentChatV2RetirementObserverCorpusBinding,
+  hasRetirementEligibleExactCurrentChatV2ObserverCorpusBinding,
   validateChatV2LegacyParityLabel,
   validateChatV2LegacyParityObservation,
 } from '../../src/services/chat-legacy-parity-labels';
+import {
+  CHAT_V2_LEGACY_PARITY_ROUTE_CORPUS_META,
+  CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_CORPUS_META,
+} from '../../src/services/chat-legacy-parity-route-prompts';
 
 const PEER_REVIEW_SIGNOFF_HASH = 'b'.repeat(64);
 
@@ -21,6 +32,106 @@ const ZERO_REVIEW_COUNTS = {
 } as const;
 
 describe('chat-legacy-parity-labels', () => {
+  it('binds retirement evidence to the frozen v1.4 supported-locale projection, never v1.5', () => {
+    const routeId = 'training_plan_shortcut';
+    const binding = buildChatV2RetirementObserverCorpusBinding([routeId]);
+
+    expect(hasExactCurrentChatV2RetirementObserverCorpusBinding(binding, routeId)).toBe(true);
+    expect(CHAT_V2_LEGACY_PARITY_ROUTE_CORPUS_META.frozenBeforeImplementation).toBe(false);
+    expect(binding).toMatchObject({
+      routePromptVersion: CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_CORPUS_META.version,
+      routeCorpusId: CHAT_V2_LEGACY_PARITY_RETIREMENT_ROUTE_CORPUS_META.corpusId,
+      routeCorpusFrozenBeforeImplementation: true,
+    });
+    expect(
+      hasRetirementEligibleExactCurrentChatV2ObserverCorpusBinding(binding, routeId),
+    ).toBe(true);
+    expect(hasExactCurrentChatV2RetirementObserverCorpusBinding({
+      ...binding,
+      routePromptVersion: CHAT_V2_LEGACY_PARITY_ROUTE_CORPUS_META.version,
+      routeCorpusId: CHAT_V2_LEGACY_PARITY_ROUTE_CORPUS_META.corpusId,
+      routeCorpusFrozenBeforeImplementation: false,
+    }, routeId)).toBe(false);
+  });
+
+  it('replaces only exact-current imported rows in the requested route scope', () => {
+    const db = new Database(':memory:');
+    try {
+      db.exec(fs.readFileSync(
+        path.resolve(__dirname, '../../migrations/160_chatv2_legacy_retirement_evidence.sql'),
+        'utf8',
+      ));
+      const routeId = 'training_plan_shortcut';
+      const otherRouteId = 'general_action_planner';
+      const exactBinding = buildChatV2RetirementObserverCorpusBinding([routeId]);
+      const otherBinding = buildChatV2RetirementObserverCorpusBinding([otherRouteId]);
+      const insert = db.prepare(`
+        INSERT INTO chat_v2_legacy_retirement_evidence (
+          evidence_source, evidence_kind, request_id, sample_hmac, sample_identifier_kind,
+          route_id, replaced, tested, shadow_parity_rate, route_sample_count,
+          raw_field_audit_count, safe_metadata_json
+        ) VALUES ('runtime_route', 'route_exit', ?, ?, 'hmac', ?, 1, 1, 0.98, 50, 0, ?)
+      `);
+      insert.run(
+        'current-label-target',
+        `hmac:test:${'1'.repeat(64)}`,
+        routeId,
+        JSON.stringify({ parityLabelImport: true, ...exactBinding }),
+      );
+      const historicalMetadata = JSON.stringify({
+        parityLabelImport: true,
+        routePromptVersion: 'chat_v2_legacy_parity_route_prompts@1.4.0',
+        routeCorpusId: 'chatv2_phase7_route_replacement_heldout',
+        routeCorpusSha256: '2'.repeat(64),
+        observerRouteIds: [routeId],
+        immutableAuditMarker: 'preserve-byte-for-byte',
+      });
+      insert.run(
+        'historical-label-target',
+        `hmac:test:${'2'.repeat(64)}`,
+        routeId,
+        historicalMetadata,
+      );
+      insert.run(
+        'current-observation-target',
+        `hmac:test:${'3'.repeat(64)}`,
+        routeId,
+        JSON.stringify({ parityObservationImport: true, ...exactBinding }),
+      );
+      insert.run(
+        'current-label-other-route',
+        `hmac:test:${'4'.repeat(64)}`,
+        otherRouteId,
+        JSON.stringify({ parityLabelImport: true, ...otherBinding }),
+      );
+
+      const deleted = deleteExactCurrentChatV2RetirementEvidenceRows(db, {
+        evidenceSource: 'runtime_route',
+        routeIds: [routeId],
+        importMarker: 'parityLabelImport',
+      });
+      expect(deleted).toBe(1);
+
+      const rows = db.prepare(`
+        SELECT request_id, route_id, safe_metadata_json
+        FROM chat_v2_legacy_retirement_evidence
+        ORDER BY id
+      `).all() as Array<{
+        request_id: string;
+        route_id: string;
+        safe_metadata_json: string;
+      }>;
+      expect(rows.map((row) => row.request_id)).toEqual([
+        'historical-label-target',
+        'current-observation-target',
+        'current-label-other-route',
+      ]);
+      expect(rows[0]!.safe_metadata_json).toBe(historicalMetadata);
+    } finally {
+      db.close();
+    }
+  });
+
   it('accepts aggregate route parity labels and derives the parity rate', () => {
     const validation = validateChatV2LegacyParityLabel({
       schemaVersion: CHAT_V2_LEGACY_PARITY_LABEL_VERSION,

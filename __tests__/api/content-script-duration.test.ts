@@ -4,6 +4,7 @@ import {
   CONTENT_LIVE_EVAL_CORPUS,
   CONTENT_LIVE_EVAL_OPT_IN,
 } from '../../src/services/content-live-evaluation-artifact';
+import { ContentOutputLanguageMismatchError } from '../../src/services/content-output-language';
 
 const mockGetScript = vi.fn(async () => ({
   topic: 'Test topic',
@@ -170,8 +171,8 @@ vi.mock('../../src/services/cost-guardrail', () => ({
 
 vi.mock('../../src/services/user-service', () => ({
   // Identity-safety: content-script-routes uses the strict by-id helper.
-  getUserLanguage: vi.fn(() => 'pt-BR'),
-  getUserLanguageById: vi.fn(() => 'pt-BR'),
+  getUserLanguage: vi.fn(() => 'en-US'),
+  getUserLanguageById: vi.fn(() => 'en-US'),
 }));
 
 vi.mock('../../src/services/entitlement', () => ({
@@ -664,6 +665,199 @@ describe('Content API — script duration presets', () => {
     expect(mockSaveGeneratedScriptToWorkspace).not.toHaveBeenCalled();
   });
 
+  it('withholds Spanish engine output before artifact or workspace persistence', async () => {
+    const leakedScript = 'Aquí tienes un guion completo para organizar tu mañana sin estrés.';
+    mockGetScript.mockResolvedValueOnce({
+      topic: 'Historical Spanish-authored topic',
+      script: leakedScript,
+      hook: '¿Quieres transformar tus hábitos desde esta mañana?',
+      title_options: ['Cómo organizar tu mañana'],
+      sources_used: [{ title: 'Public source', url: 'https://example.com/source' }],
+      estimated_duration: '8:00',
+      duration_ms: 1200,
+      hashtags: ['#hábitos'],
+      caption: 'Una rutina clara para empezar bien.',
+      cta: 'Guarda este guion.',
+      degraded: false,
+      warnings: [],
+      cache_status: 'fresh',
+    });
+
+    const response = await dispatch({
+      topic: 'Cómo organizar tu mañana',
+      language: 'es-419',
+      format: 'YouTube',
+      maxDurationMinutes: 8,
+      saveToIdeas: true,
+    }, '/script', { 'x-language': 'es-419' });
+
+    expect(mockGetScript).toHaveBeenCalledTimes(1);
+    expect(response.statusCode).toBe(502);
+    expect(response.body.error).toMatchObject({
+      code: 'CONTENT_SCRIPT_LOCALE_MISMATCH',
+      details: {
+        contentMutationApplied: false,
+        displayWithheld: true,
+        retryable: true,
+      },
+    });
+    expect(JSON.stringify(response.body)).not.toContain(leakedScript);
+    expect(JSON.stringify(response.body)).not.toContain('Aquí tienes');
+    expect(mockPersistContentArtifacts).not.toHaveBeenCalled();
+    expect(mockSaveGeneratedScriptToWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('maps an engine output-language rejection to the safe 502 contract', async () => {
+    mockGetScript.mockRejectedValueOnce(
+      new ContentOutputLanguageMismatchError('en', 'es', 'content-engine-script'),
+    );
+
+    const response = await dispatch({
+      topic: 'Build a reliable morning workflow',
+      language: 'en-US',
+      format: 'YouTube',
+      maxDurationMinutes: 8,
+      saveToIdeas: true,
+    }, '/script', { 'x-language': 'en-US' });
+
+    expect(response.statusCode).toBe(502);
+    expect(response.body.error).toMatchObject({
+      code: 'CONTENT_SCRIPT_LOCALE_MISMATCH',
+      details: {
+        contentMutationApplied: false,
+        displayWithheld: true,
+        retryable: true,
+      },
+    });
+    expect(mockPersistContentArtifacts).not.toHaveBeenCalled();
+    expect(mockSaveGeneratedScriptToWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('withholds Spanish generated metadata before source or workspace persistence', async () => {
+    mockGetScript.mockResolvedValueOnce({
+      topic: 'Reliable content workflow',
+      script: 'This complete English script explains one concrete workflow and action.',
+      hook: 'Start with the measurable result.',
+      title_options: ['A reliable content workflow'],
+      sources_used: [{
+        title: 'Raw third-party source title',
+        url: 'https://example.com/source',
+        relevance_note: 'Aquí tienes la explicación completa.',
+      }],
+      estimated_duration: '8:00',
+      duration_ms: 1200,
+      warnings: ['Aquí tienes una advertencia importante.'],
+      expand_options: [{
+        id: 'expand',
+        label: 'Cómo mejorar el guion',
+        action: 'expand_full',
+      }],
+    });
+
+    const response = await dispatch({
+      topic: 'Reliable content workflow',
+      language: 'en-US',
+      format: 'YouTube',
+      maxDurationMinutes: 8,
+      saveToIdeas: true,
+    }, '/script', { 'x-language': 'en-US' });
+
+    expect(response.statusCode).toBe(502);
+    expect(response.body.error.code).toBe('CONTENT_SCRIPT_LOCALE_MISMATCH');
+    expect(mockPersistContentArtifacts).not.toHaveBeenCalled();
+    expect(mockSaveGeneratedScriptToWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('does not persist source artifacts before final public response locale validation', async () => {
+    mockGetScript.mockResolvedValueOnce({
+      topic: 'Reliable content workflow',
+      script: 'This complete English script explains one concrete workflow and action.',
+      hook: 'Start with the measurable result.',
+      title_options: ['A reliable content workflow'],
+      sources_used: [{
+        title: 'Raw third-party source title',
+        url: 'https://www.w3.org/TR/WCAG22/',
+        source_type: 'article',
+        relevance_note: 'A current source for the workflow.',
+      }],
+      estimated_duration: '8:00',
+      duration_ms: 1200,
+      warnings: [],
+      cache_status: 'fresh',
+    });
+
+    const response = await dispatch({
+      topic: 'Reliable content workflow',
+      niche: 'productividad',
+      language: 'en-US',
+      format: 'YouTube',
+      maxDurationMinutes: 8,
+      saveToIdeas: true,
+    }, '/script', { 'x-language': 'en-US' });
+
+    expect(response.statusCode).toBe(502);
+    expect(response.body.error.code).toBe('CONTENT_SCRIPT_LOCALE_MISMATCH');
+    expect(response.body.error.details.contentMutationApplied).toBe(false);
+    expect(mockPersistContentArtifacts).not.toHaveBeenCalled();
+    expect(mockSaveGeneratedScriptToWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('fails closed on malformed generated display-field shapes', async () => {
+    mockGetScript.mockResolvedValueOnce({
+      topic: 'Reliable content workflow',
+      script: 'This complete English script explains one concrete workflow and action.',
+      hook: 'Start with the measurable result.',
+      title_options: ['A reliable content workflow'],
+      sources_used: [],
+      hashtags: [{ text: 'Aquí tienes etiquetas' }] as any,
+      caption: { text: 'Aquí tienes la descripción' } as any,
+      estimated_duration: '8:00',
+      duration_ms: 1200,
+    });
+
+    const response = await dispatch({
+      topic: 'Reliable content workflow',
+      language: 'en-US',
+      format: 'YouTube',
+      maxDurationMinutes: 8,
+      saveToIdeas: true,
+    }, '/script', { 'x-language': 'en-US' });
+
+    expect(response.statusCode).toBe(502);
+    expect(response.body.error.code).toBe('CONTENT_SCRIPT_LOCALE_MISMATCH');
+    expect(mockPersistContentArtifacts).not.toHaveBeenCalled();
+    expect(mockSaveGeneratedScriptToWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('localizes deterministic response fields before saving a Portuguese script', async () => {
+    mockGetScript.mockResolvedValueOnce({
+      topic: 'Rotina de conteúdo',
+      script: 'Comece pelo resultado concreto. Mostre uma fonte e um exemplo. Termine com uma ação simples.',
+      hook: '',
+      title_options: ['Uma rotina de conteúdo fiável'],
+      sources_used: [],
+      estimated_duration: '1:00',
+      duration_ms: 1200,
+      warnings: [],
+    });
+
+    const response = await dispatch({
+      topic: 'Rotina de conteúdo',
+      language: 'pt-BR',
+      format: 'Reel',
+      maxDurationMinutes: 1,
+      saveToIdeas: true,
+    }, '/script', { 'x-language': 'pt-BR' });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body.data.cta).not.toMatch(/\b(?:save|pick)\b/i);
+    expect(mockSaveGeneratedScriptToWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cta: expect.not.stringMatching(/\b(?:save|pick)\b/i),
+      }),
+    );
+  });
+
   it('does not auto-save degraded fallback generations as approved ideas', async () => {
     mockGetScript.mockResolvedValueOnce({
       topic: 'Fallback topic',
@@ -931,6 +1125,65 @@ describe('Content API — script duration presets', () => {
     );
   });
 
+  it('binds retired Spanish edit requests to an explicit English provider contract', async () => {
+    const response = await dispatch({
+      topic: 'Cómo construir un producto SaaS',
+      script: 'Este borrador histórico fue escrito por el usuario.',
+      action: 'rewrite_hook',
+      instruction: 'Hazlo más directo',
+    }, '/script/rewrite', { 'x-language': 'es-419' });
+
+    expect(response.statusCode).toBe(200);
+    const systemPrompt = String(mockCompleteOneShotWithFallback.mock.calls.at(-1)?.[0] ?? '');
+    expect(systemPrompt).toContain('Reply only in English.');
+    expect(systemPrompt).toContain('Do not emit Spanish output.');
+    expect(systemPrompt).not.toContain('Use the user language.');
+  });
+
+  it('rejects a Spanish edit result under the resolved English contract without another provider call', async () => {
+    mockCompleteOneShotWithFallback.mockResolvedValueOnce({
+      text: 'Aquí tienes la versión revisada con un título más directo y una llamada a la acción.',
+      provider: 'gemini',
+    });
+
+    const response = await dispatch({
+      topic: 'Cómo construir un producto SaaS',
+      script: 'Historical user-authored draft.',
+      action: 'rewrite_hook',
+      instruction: 'Hazlo más directo',
+    }, '/script/rewrite', { 'x-language': 'es-419' });
+
+    expect(mockCompleteOneShotWithFallback).toHaveBeenCalledTimes(1);
+    expect(response.statusCode).toBe(502);
+    expect(response.body.error).toMatchObject({
+      code: 'CONTENT_SCRIPT_EDIT_LOCALE_MISMATCH',
+      details: { originalPreserved: true },
+    });
+    expect(JSON.stringify(response.body)).not.toContain('Aquí tienes');
+  });
+
+  it('rejects a short Iberian acknowledgement under the resolved English edit contract', async () => {
+    mockCompleteOneShotWithFallback.mockResolvedValueOnce({
+      text: 'Entendido.',
+      provider: 'gemini',
+    });
+
+    const response = await dispatch({
+      topic: 'How to build a SaaS product',
+      script: 'Historical user-authored draft.',
+      action: 'rewrite_hook',
+      instruction: 'Make it more direct',
+    }, '/script/rewrite', { 'x-language': 'en-US' });
+
+    expect(mockCompleteOneShotWithFallback).toHaveBeenCalledTimes(1);
+    expect(response.statusCode).toBe(502);
+    expect(response.body.error).toMatchObject({
+      code: 'CONTENT_SCRIPT_EDIT_LOCALE_MISMATCH',
+      details: { originalPreserved: true },
+    });
+    expect(JSON.stringify(response.body)).not.toContain('Entendido');
+  });
+
   it('returns section expansion as a proposal while preserving the full legacy script field', async () => {
     const originalScript = 'Intro stays here.\nBody and CTA must survive.';
     mockCompleteOneShotWithFallback.mockResolvedValueOnce({
@@ -1038,6 +1291,40 @@ describe('Content API — script duration presets', () => {
       expect.objectContaining({ baseCategory: 'content_research_refresh', jobName: 'content_research_refresh' }),
       expect.any(Function),
     );
+  });
+
+  it('binds retired Spanish research refresh requests to explicit English source notes', async () => {
+    const response = await dispatch({
+      topic: 'Herramientas actuales para creadores',
+      script: 'Keep this historical user-authored script.',
+    }, '/script/research-refresh', { 'x-language': 'es-419' });
+
+    expect(response.statusCode).toBe(200);
+    const systemPrompt = String(mockCompleteOneShotWithSearch.mock.calls.at(-1)?.[0] ?? '');
+    const userPrompt = String(mockCompleteOneShotWithSearch.mock.calls.at(-1)?.[1] ?? '');
+    expect(systemPrompt).toContain('Return source notes only in English.');
+    expect(userPrompt).toContain('Write every source note in English.');
+    expect(userPrompt).not.toContain('in the user language');
+  });
+
+  it('rejects Spanish research notes under the resolved English contract without retrying', async () => {
+    mockCompleteOneShotWithSearch.mockResolvedValueOnce({
+      text: 'Aquí están las fuentes públicas actuales y las notas más importantes para este tema.',
+      sources: ['https://example.com/source-a'],
+    });
+
+    const response = await dispatch({
+      topic: 'Herramientas actuales para creadores',
+      script: 'Keep this historical user-authored script.',
+    }, '/script/research-refresh', { 'x-language': 'es-419' });
+
+    expect(mockCompleteOneShotWithSearch).toHaveBeenCalledTimes(1);
+    expect(response.statusCode).toBe(502);
+    expect(response.body.error).toMatchObject({
+      code: 'CONTENT_RESEARCH_LOCALE_MISMATCH',
+      details: { originalPreserved: true },
+    });
+    expect(JSON.stringify(response.body)).not.toContain('Aquí están');
   });
 
   it('refreshes through bounded OpenAI search when Gemini maximum cost does not fit', async () => {
