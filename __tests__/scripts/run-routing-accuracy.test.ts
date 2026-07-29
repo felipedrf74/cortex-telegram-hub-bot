@@ -30,8 +30,15 @@ vi.mock('../../src/services/anthropic', async () => ({
 }));
 
 import { compileIntentVocabulary } from '../../src/services/intent-resolution/vocabulary';
-import { ensureRoutingCorpusTables, hashRoutingUtterance } from '../../src/services/routing-corpus';
 import {
+  ensureRoutingCorpusTables,
+  getRoutingLabelCandidates,
+  hashRoutingUtterance,
+} from '../../src/services/routing-corpus';
+import {
+  acceptRoutingAccuracySnapshotAtomically,
+  assessRoutingCorpusSnapshotReadiness,
+  buildRoutingAccuracySnapshotCandidate,
   canAcceptAccuracySnapshot,
   compareRoutingAccuracySnapshots,
   computeRoutingAccuracyReport,
@@ -39,7 +46,6 @@ import {
   predictRoutingSurfaces,
   recommendClarifyThreshold,
   runRoutingAccuracy,
-  storeAcceptedAccuracySnapshot,
   type LabeledPredictionRow,
   type RoutingAccuracyReport,
   type RoutingSurfacePrediction,
@@ -88,6 +94,12 @@ describe('routing accuracy report math', () => {
     const report = computeRoutingAccuracyReport(rows, { generatedAt: '2026-07-21T00:00:00.000Z' });
     const surface = report.surfaces.find((candidate) => candidate.surface === 'classifier_keyword')!;
 
+    expect(report.version).toBe('routing-accuracy@1.1.0');
+    expect(report.evaluationScope).toEqual({
+      domainRoutingScored: true,
+      actionSkillRoutingScored: false,
+      actionSkillGate: 'phase7_classifier_manifest_prompt',
+    });
     expect(surface.covered).toBe(5);
     expect(surface.accuracy).toBe(0.6);
     const secretary = surface.perDomain.find((domain) => domain.domain === 'secretary')!;
@@ -205,6 +217,56 @@ describe('routing accuracy gate', () => {
     ]);
   });
 
+  it('fails on any accepted surface coverage decrease, not only a drop to zero', () => {
+    const accepted = reportWith(1);
+    accepted.surfaces[0].covered = 300;
+    accepted.surfaces[0].uncovered = 0;
+    accepted.itemCount = 300;
+    const current = reportWith(1);
+    current.surfaces[0].covered = 299;
+    current.surfaces[0].uncovered = 1;
+    current.itemCount = 300;
+
+    const result = compareRoutingAccuracySnapshots(current, accepted);
+
+    expect(result.passed).toBe(false);
+    expect(result.reasons).toEqual([
+      expect.stringContaining('classifier_keyword: coverage decreased from 300 to 299'),
+    ]);
+  });
+
+  it('fails when surface coverage ratio drops even if absolute coverage does not', () => {
+    const accepted = reportWith(1);
+    accepted.surfaces[0].covered = 300;
+    accepted.surfaces[0].uncovered = 0;
+    accepted.itemCount = 300;
+    const current = reportWith(1);
+    current.surfaces[0].covered = 300;
+    current.surfaces[0].uncovered = 300;
+    current.itemCount = 600;
+
+    const result = compareRoutingAccuracySnapshots(current, accepted);
+
+    expect(result.passed).toBe(false);
+    expect(result.reasons).toEqual([
+      expect.stringContaining('classifier_keyword: coverage ratio decreased from 1 to 0.5'),
+    ]);
+  });
+
+  it('fails when an accepted domain loses absolute support', () => {
+    const accepted = reportWith(1);
+    const current = reportWith(1);
+    current.surfaces[0].perDomain[0].support = 4;
+    current.surfaces[0].perDomain[0].truePositives = 4;
+
+    const result = compareRoutingAccuracySnapshots(current, accepted);
+
+    expect(result.passed).toBe(false);
+    expect(result.reasons).toEqual([
+      expect.stringContaining('classifier_keyword: domain secretary support decreased from 5 to 4'),
+    ]);
+  });
+
   it('FAILS when a domain with accepted support>0 is absent from the current report', () => {
     const accepted = reportWith(0.9);
     const current = reportWith(0.5);
@@ -245,7 +307,7 @@ describe('routing accuracy gate', () => {
     expect(result.reasons).toEqual([]);
   });
 
-  it('refuses --accept-snapshot after a FAILED gate but allows it standalone or on pass', () => {
+  it('requires --gate and refuses --accept-snapshot after a FAILED gate', () => {
     expect(canAcceptAccuracySnapshot(true, { passed: false })).toMatchObject({
       allowed: false,
       reason: expect.stringContaining('lower the ratchet'),
@@ -253,8 +315,24 @@ describe('routing accuracy gate', () => {
     expect(canAcceptAccuracySnapshot(true, { passed: true })).toEqual({ allowed: true });
     // --gate with no accepted snapshot (gate skipped) may still bootstrap one.
     expect(canAcceptAccuracySnapshot(true, null)).toEqual({ allowed: true });
-    // Standalone --accept-snapshot without --gate stays allowed.
-    expect(canAcceptAccuracySnapshot(false, null)).toEqual({ allowed: true });
+    expect(canAcceptAccuracySnapshot(false, null)).toMatchObject({
+      allowed: false,
+      reason: expect.stringContaining('--gate'),
+    });
+  });
+
+  it('refuses snapshot acceptance when the corpus coverage contract is incomplete', () => {
+    const readiness = {
+      allowed: false,
+      totalLabeled: 224,
+      byDomain: {},
+      bySkill: {},
+      reasons: ['requires at least 300 labeled items'],
+    };
+    expect(canAcceptAccuracySnapshot(true, null, readiness)).toMatchObject({
+      allowed: false,
+      reason: expect.stringContaining('at least 300'),
+    });
   });
 
   it('wires the ratchet guard into the run-routing-accuracy CLI accept path', async () => {
@@ -264,8 +342,89 @@ describe('routing accuracy gate', () => {
       path.join(__dirname, '..', '..', 'scripts', 'run-routing-accuracy.ts'),
       'utf8',
     );
-    expect(raw).toContain('canAcceptAccuracySnapshot(gateMode, gateResult)');
+    expect(raw).toContain('acceptRoutingAccuracySnapshotAtomically(snapshotCandidate');
+    expect(raw).toContain("process.env.NEXUS_RELEASE_OWNER_AUTHORIZED === '1'");
     expect(raw).toContain('acceptSnapshotRefused');
+  });
+});
+
+describe('routing corpus snapshot readiness', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    ensureRoutingCorpusTables(db);
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  it('requires >=300 labels, every domain, every action skill, and clarify/none coverage', () => {
+    const empty = assessRoutingCorpusSnapshotReadiness(db);
+    expect(empty.allowed).toBe(false);
+    expect(empty.reasons).toEqual(expect.arrayContaining([
+      expect.stringContaining('at least 300'),
+      expect.stringContaining('domain secretary'),
+      expect.stringContaining('skill mail'),
+      expect.stringContaining('special label clarify'),
+      expect.stringContaining('special label none'),
+    ]));
+
+    const candidates = getRoutingLabelCandidates();
+    const insert = db.prepare(`
+      INSERT INTO routing_corpus_items (
+        tenant_id, user_id, utterance_hash, utterance_text, source,
+        label_domain, label_skill, label_status, labeled_at
+      ) VALUES (0, NULL, ?, ?, 'manual', ?, ?, 'labeled', datetime('now'))
+    `);
+    let sequence = 0;
+    for (const [domain, skills] of Object.entries(candidates.skillsByDomain)) {
+      for (const skill of skills) {
+        for (let index = 0; index < 20; index += 1) {
+          const text = `${domain}:${skill}:${index}`;
+          insert.run(hashRoutingUtterance(SECRET, text), text, domain, skill);
+          sequence += 1;
+        }
+      }
+    }
+    for (const special of candidates.specialLabels) {
+      for (let index = 0; index < 8; index += 1) {
+        const text = `${special}:${index}`;
+        insert.run(hashRoutingUtterance(SECRET, text), text, special, null);
+        sequence += 1;
+      }
+    }
+    while (sequence < 300) {
+      const text = `secretary:domain-only:${sequence}`;
+      insert.run(hashRoutingUtterance(SECRET, text), text, 'secretary', null);
+      sequence += 1;
+    }
+
+    const ready = assessRoutingCorpusSnapshotReadiness(db);
+    expect(ready.allowed).toBe(true);
+    expect(ready.totalLabeled).toBe(300);
+    expect(ready.reasons).toEqual([]);
+    expect(Object.values(ready.bySkill).every((count) => count >= 20)).toBe(true);
+    expect(ready.byDomain.clarify).toBe(8);
+    expect(ready.byDomain.none).toBe(8);
+
+    db.prepare(`
+      UPDATE routing_corpus_items
+      SET utterance_text = NULL
+      WHERE id = (
+        SELECT id FROM routing_corpus_items
+        WHERE label_skill = 'mail'
+        ORDER BY id ASC
+        LIMIT 1
+      )
+    `).run();
+    const replayableOnly = assessRoutingCorpusSnapshotReadiness(db);
+    expect(replayableOnly.allowed).toBe(false);
+    expect(replayableOnly.totalLabeled).toBe(299);
+    expect(replayableOnly.reasons).toContain(
+      'skill mail requires at least 20 labels; found 19',
+    );
   });
 });
 
@@ -351,18 +510,240 @@ describe('routing accuracy replay (cache-only, zero live calls)', () => {
     expect(shadow.confidence).toBeGreaterThan(0);
   });
 
-  it('stores and gates against accepted snapshots', () => {
-    insertLabeledItem('Quanto gastei este mês?', 'finance');
-    const report = runRoutingAccuracy({ db, vocabulary: SYNTHETIC_VOCABULARY });
+  it('fails closed when the latest accepted snapshot is corrupt', () => {
+    db.prepare(`
+      INSERT INTO accepted_accuracy_snapshots (snapshot_json, accepted)
+      VALUES ('{not-json', 1)
+    `).run();
 
+    expect(() => getLatestAcceptedAccuracySnapshot(db))
+      .toThrow(/accepted routing accuracy snapshot.*invalid json/i);
+
+    const candidate = buildRoutingAccuracySnapshotCandidate({
+      db,
+      vocabulary: SYNTHETIC_VOCABULARY,
+      generatedAt: '2026-07-29T00:00:00.000Z',
+    });
+    expect(() => acceptRoutingAccuracySnapshotAtomically(candidate, {
+      gateMode: true,
+      ownerAuthorized: true,
+      vocabulary: SYNTHETIC_VOCABULARY,
+    }, db)).toThrow(/accepted routing accuracy snapshot.*invalid json/i);
+    expect(db.prepare('SELECT COUNT(*) AS count FROM accepted_accuracy_snapshots').get())
+      .toEqual({ count: 1 });
+  });
+
+  it('rejects a structurally empty accepted report instead of passing zero comparisons', () => {
+    db.prepare(`
+      INSERT INTO accepted_accuracy_snapshots (snapshot_json, accepted)
+      VALUES (?, 1)
+    `).run(JSON.stringify({
+      version: 'routing-accuracy@1.1.0',
+      generatedAt: '2026-07-29T00:00:00.000Z',
+      itemCount: 300,
+      clarifyAccuracyTarget: 0.85,
+      surfaces: [],
+    }));
+
+    expect(() => getLatestAcceptedAccuracySnapshot(db))
+      .toThrow(/accepted routing accuracy snapshot.*invalid report schema/i);
+  });
+
+  it('rejects internally inconsistent accepted surface counts and metrics', () => {
+    const valid = buildRoutingAccuracySnapshotCandidate({
+      db,
+      vocabulary: SYNTHETIC_VOCABULARY,
+      generatedAt: '2026-07-29T00:00:00.000Z',
+    }).report;
+    valid.itemCount = 300;
+    for (const surface of valid.surfaces) {
+      surface.covered = 300;
+      surface.uncovered = 0;
+      surface.correct = 299;
+      surface.accuracy = 0.9967;
+      surface.perDomain = [{
+        domain: 'secretary',
+        support: 300,
+        truePositives: 299,
+        falsePositives: 0,
+        falseNegatives: 1,
+        precision: 1,
+        recall: 0.9967,
+      }];
+    }
+    db.prepare(`
+      INSERT INTO accepted_accuracy_snapshots (snapshot_json, accepted)
+      VALUES (?, 1)
+    `).run(JSON.stringify(valid));
+
+    expect(() => getLatestAcceptedAccuracySnapshot(db))
+      .toThrow(/accepted routing accuracy snapshot.*invalid report schema/i);
+  });
+
+  it('rejects malformed accepted calibration buckets', () => {
+    const valid = buildRoutingAccuracySnapshotCandidate({
+      db,
+      vocabulary: SYNTHETIC_VOCABULARY,
+      generatedAt: '2026-07-29T00:00:00.000Z',
+    }).report;
+    valid.itemCount = 300;
+    for (const surface of valid.surfaces) {
+      surface.covered = 300;
+      surface.uncovered = 0;
+      surface.correct = 300;
+      surface.accuracy = 1;
+      surface.perDomain = [{
+        domain: 'secretary',
+        support: 300,
+        truePositives: 300,
+        falsePositives: 0,
+        falseNegatives: 0,
+        precision: 1,
+        recall: 1,
+      }];
+      surface.calibration = Array.from({ length: 5 }, () => ({})) as never;
+    }
+    db.prepare(`
+      INSERT INTO accepted_accuracy_snapshots (snapshot_json, accepted)
+      VALUES (?, 1)
+    `).run(JSON.stringify(valid));
+
+    expect(() => getLatestAcceptedAccuracySnapshot(db))
+      .toThrow(/accepted routing accuracy snapshot.*invalid report schema/i);
+  });
+
+  it('rejects calibration totals that contradict the surface confusion totals', () => {
+    const valid = buildRoutingAccuracySnapshotCandidate({
+      db,
+      vocabulary: SYNTHETIC_VOCABULARY,
+      generatedAt: '2026-07-29T00:00:00.000Z',
+    }).report;
+    valid.itemCount = 300;
+    for (const surface of valid.surfaces) {
+      surface.covered = 300;
+      surface.uncovered = 0;
+      surface.correct = 0;
+      surface.accuracy = 0;
+      surface.perDomain = [
+        {
+          domain: 'secretary',
+          support: 300,
+          truePositives: 0,
+          falsePositives: 0,
+          falseNegatives: 300,
+          precision: null,
+          recall: 0,
+        },
+        {
+          domain: 'finance',
+          support: 0,
+          truePositives: 0,
+          falsePositives: 300,
+          falseNegatives: 0,
+          precision: 0,
+          recall: null,
+        },
+      ];
+      surface.calibration[4] = {
+        bucket: '0.8-1.0',
+        lowerBound: 0.8,
+        upperBound: 1,
+        count: 300,
+        correct: 300,
+        empiricalAccuracy: 1,
+        averageStatedConfidence: 0.9,
+      };
+    }
+    db.prepare(`
+      INSERT INTO accepted_accuracy_snapshots (snapshot_json, accepted)
+      VALUES (?, 1)
+    `).run(JSON.stringify(valid));
+
+    expect(() => getLatestAcceptedAccuracySnapshot(db))
+      .toThrow(/accepted routing accuracy snapshot.*invalid report schema/i);
+  });
+
+  it('accepts snapshots only through the owner-authorized atomic gate and rejects label drift', () => {
+    const candidates = getRoutingLabelCandidates();
+    const insert = db.prepare(`
+      INSERT INTO routing_corpus_items (
+        tenant_id, user_id, utterance_hash, utterance_text, source,
+        label_domain, label_skill, label_status, labeled_at
+      ) VALUES (0, NULL, ?, ?, 'manual', ?, ?, 'labeled', datetime('now'))
+    `);
+    let sequence = 0;
+    for (const [domain, skills] of Object.entries(candidates.skillsByDomain)) {
+      for (const skill of skills) {
+        for (let index = 0; index < 20; index += 1) {
+          const text = `atomic:${domain}:${skill}:${index}`;
+          insert.run(hashRoutingUtterance(SECRET, text), text, domain, skill);
+          sequence += 1;
+        }
+      }
+    }
+    for (const special of candidates.specialLabels) {
+      for (let index = 0; index < 8; index += 1) {
+        const text = `atomic:${special}:${index}`;
+        insert.run(hashRoutingUtterance(SECRET, text), text, special, null);
+        sequence += 1;
+      }
+    }
+    while (sequence < 300) {
+      const text = `atomic:secretary:domain-only:${sequence}`;
+      insert.run(hashRoutingUtterance(SECRET, text), text, 'secretary', null);
+      sequence += 1;
+    }
+
+    const candidate = buildRoutingAccuracySnapshotCandidate({
+      db,
+      vocabulary: SYNTHETIC_VOCABULARY,
+      generatedAt: '2026-07-29T00:00:00.000Z',
+    });
+    expect(() => acceptRoutingAccuracySnapshotAtomically(candidate, {
+      gateMode: true,
+      ownerAuthorized: false,
+      vocabulary: SYNTHETIC_VOCABULARY,
+    }, db)).toThrow(/owner authorization/i);
+    expect(() => acceptRoutingAccuracySnapshotAtomically(candidate, {
+      gateMode: false,
+      ownerAuthorized: true,
+      vocabulary: SYNTHETIC_VOCABULARY,
+    }, db)).toThrow(/--gate/i);
     expect(getLatestAcceptedAccuracySnapshot(db)).toBeNull();
-    const snapshotId = storeAcceptedAccuracySnapshot(report, db);
-    expect(snapshotId).toBeGreaterThan(0);
 
-    const accepted = getLatestAcceptedAccuracySnapshot(db);
-    expect(accepted?.itemCount).toBe(1);
+    const secretaryRows = db.prepare(`
+      SELECT id, label_skill AS labelSkill
+      FROM routing_corpus_items
+      WHERE label_domain = 'secretary' AND label_skill IN ('tasks', 'mail')
+      ORDER BY id ASC
+    `).all() as Array<{ id: number; labelSkill: string }>;
+    const tasks = secretaryRows.find((row) => row.labelSkill === 'tasks')!;
+    const mail = secretaryRows.find((row) => row.labelSkill === 'mail')!;
+    db.prepare('UPDATE routing_corpus_items SET label_skill = ? WHERE id = ?').run('mail', tasks.id);
+    db.prepare('UPDATE routing_corpus_items SET label_skill = ? WHERE id = ?').run('tasks', mail.id);
+    expect(() => acceptRoutingAccuracySnapshotAtomically(candidate, {
+      gateMode: true,
+      ownerAuthorized: true,
+      vocabulary: SYNTHETIC_VOCABULARY,
+    }, db)).toThrow(/corpus identity changed/i);
+    expect(getLatestAcceptedAccuracySnapshot(db)).toBeNull();
 
-    const gate = compareRoutingAccuracySnapshots(runRoutingAccuracy({ db, vocabulary: SYNTHETIC_VOCABULARY }), accepted!);
-    expect(gate.passed).toBe(true);
+    const current = buildRoutingAccuracySnapshotCandidate({
+      db,
+      vocabulary: SYNTHETIC_VOCABULARY,
+      generatedAt: '2026-07-29T00:00:00.000Z',
+    });
+    const accepted = acceptRoutingAccuracySnapshotAtomically(current, {
+      gateMode: true,
+      ownerAuthorized: true,
+      vocabulary: SYNTHETIC_VOCABULARY,
+    }, db);
+    expect(accepted.snapshotId).toBeGreaterThan(0);
+    expect(accepted.corpusReadiness.allowed).toBe(true);
+    expect(accepted.gate).toBeNull();
+    expect(getLatestAcceptedAccuracySnapshot(db)).toMatchObject({
+      itemCount: 300,
+      corpusIdentityDigest: current.corpusIdentityDigest,
+    });
   });
 });

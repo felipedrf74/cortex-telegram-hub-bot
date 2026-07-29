@@ -16,15 +16,23 @@
 import express, { type Express, type Request, type Response } from 'express';
 import { ipKeyGenerator, rateLimit } from 'express-rate-limit';
 import { extractClientIp } from '../api/rate-limiter';
-import { requirePortalAdminToken } from '../api/secret-guards';
+import { getPortalAuthContext, requirePortalAdminToken } from '../api/secret-guards';
+import { config } from '../config';
 import { getDb } from '../services/database';
 import {
   getNextPendingRoutingCorpusItem,
+  getRoutingCorpusItemById,
   getRoutingCorpusProgress,
   getRoutingLabelCandidates,
+  isCheckedInSyntheticRoutingCorpusItem,
   isValidRoutingLabelDomain,
+  isValidRoutingLabelSelection,
   labelRoutingCorpusItem,
+  RoutingCorpusLabelConflictError,
 } from '../services/routing-corpus';
+import { getOwnerBootstrapTarget } from '../services/user-service';
+import { isOperatorScopedToUser } from './admin-target-user';
+import { insertPortalAdminMutationAuditStrict } from './admin-audit';
 import { sendPortalInternalError } from './http';
 
 export function registerPortalRoutingCorpusRoutes(app: Express): void {
@@ -43,23 +51,26 @@ export function registerPortalRoutingCorpusRoutes(app: Express): void {
     },
   });
 
-  // PRIVACY NOTE: this endpoint returns RAW user utterance text
-  // (item.utteranceText) for labeling. Its only access control is
-  // requirePortalAdminToken (src/api/secret-guards enforcePortalToken,
-  // admin scope) — with the documented secret-guards caveat that
-  // PORTAL_ALLOW_LOCAL_BYPASS=true waives the token for loopback requests
-  // (allowLocalPortalBypass), so that bypass must never be enabled where
-  // this portal is reachable by anyone but the owner.
+  // PRIVACY NOTE: this endpoint can return raw user utterance text. It
+  // defaults to tenant 0 checked-in synthetic controls. Nonzero access is
+  // fail-closed to the owner bootstrap tenant plus a signed-session or
+  // signature-verified actor in the configured operator scope. All page and
+  // JSON responses are no-store.
+  // PORTAL_ALLOW_LOCAL_BYPASS must never be enabled where the portal is
+  // reachable by anyone but the owner.
   app.get('/api/portal/routing-corpus/next', routeRateLimitMiddleware, requirePortalAdminToken, (req: Request, res: Response) => {
     try {
-      const tenantId = parseTenantId(req.query.tenantId);
+      setRoutingCorpusNoStore(res);
+      const tenantId = resolveRoutingCorpusTenant(req, res);
+      if (tenantId === null) return;
       const db = getDb();
-      const item = getNextPendingRoutingCorpusItem(db, tenantId !== undefined ? { tenantId } : {});
+      const queryScope = { tenantId, syntheticOnly: tenantId === 0 };
+      const item = getNextPendingRoutingCorpusItem(db, queryScope);
       res.json({
         ok: true,
         item,
         candidates: getRoutingLabelCandidates(),
-        progress: getRoutingCorpusProgress(db, tenantId !== undefined ? { tenantId } : {}),
+        progress: getRoutingCorpusProgress(db, queryScope),
       });
     } catch (err) {
       sendPortalInternalError(res, err, 'Portal request failed', 'Portal: routing corpus next request failed');
@@ -68,6 +79,7 @@ export function registerPortalRoutingCorpusRoutes(app: Express): void {
 
   app.post('/api/portal/routing-corpus/label', routeRateLimitMiddleware, requirePortalAdminToken, express.json({ limit: '64kb' }), (req: Request, res: Response) => {
     try {
+      setRoutingCorpusNoStore(res);
       const body = (req.body ?? {}) as Record<string, unknown>;
       const id = typeof body.id === 'number' && Number.isInteger(body.id) && body.id > 0 ? body.id : null;
       const action = body.action === 'label' || body.action === 'skip' ? body.action : null;
@@ -95,9 +107,64 @@ export function registerPortalRoutingCorpusRoutes(app: Express): void {
           });
           return;
         }
+        if (
+          body.labelSkill !== undefined
+          && body.labelSkill !== null
+          && (typeof body.labelSkill !== 'string' || body.labelSkill.length === 0)
+        ) {
+          res.status(400).json({
+            ok: false,
+            error: {
+              code: 'INVALID_LABEL_SKILL',
+              message: 'labelSkill must be a non-empty string when provided',
+            },
+          });
+          return;
+        }
+        if (!isValidRoutingLabelSelection(labelDomain, labelSkill, candidates)) {
+          const expected = candidates.specialLabels.includes(labelDomain)
+            ? 'no skill'
+            : `one of: ${(candidates.skillsByDomain[labelDomain] ?? []).join(', ')}, or domain-only`;
+          res.status(400).json({
+            ok: false,
+            error: {
+              code: 'INVALID_LABEL_SKILL',
+              message: `labelSkill for ${labelDomain} must be ${expected}`,
+            },
+          });
+          return;
+        }
       }
 
-      const item = labelRoutingCorpusItem({ id, action, labelDomain, labelSkill }, getDb());
+      const db = getDb();
+      const mutateAndAudit = db.transaction(() => {
+        const pendingItem = getRoutingCorpusItemById(id, db);
+        if (!pendingItem) return null;
+        if (!canAccessRoutingCorpusItem(req, pendingItem)) {
+          throw new RoutingCorpusScopeError(pendingItem.tenantId);
+        }
+        const mutatedItem = labelRoutingCorpusItem({ id, action, labelDomain, labelSkill }, db);
+        if (!mutatedItem) return null;
+        insertPortalAdminMutationAuditStrict(
+          db,
+          req,
+          {
+            userId: mutatedItem.userId ?? 0,
+            tenantId: mutatedItem.tenantId,
+            resource: `portal.routing_corpus.${action}`,
+            details: {
+              itemId: mutatedItem.id,
+              tenantId: mutatedItem.tenantId,
+              source: mutatedItem.source,
+              action,
+              labelDomain: mutatedItem.labelDomain,
+              labelSkill: mutatedItem.labelSkill,
+            },
+          },
+        );
+        return mutatedItem;
+      });
+      const item = mutateAndAudit.immediate();
       if (!item) {
         res.status(404).json({
           ok: false,
@@ -107,16 +174,41 @@ export function registerPortalRoutingCorpusRoutes(app: Express): void {
       }
       res.json({ ok: true, item });
     } catch (err) {
+      if (err instanceof RoutingCorpusScopeError) {
+        res.status(403).json({
+          ok: false,
+          error: {
+            code: 'FORBIDDEN',
+            message: 'routing corpus access is restricted to synthetic controls or the owner tenant',
+          },
+        });
+        return;
+      }
+      if (err instanceof RoutingCorpusLabelConflictError) {
+        res.status(409).json({
+          ok: false,
+          error: {
+            code: 'ITEM_NOT_PENDING',
+            message: `routing corpus item ${err.itemId} is no longer pending`,
+          },
+        });
+        return;
+      }
       sendPortalInternalError(res, err, 'Portal request failed', 'Portal: routing corpus label request failed');
     }
   });
 
   app.get('/api/portal/routing-corpus/progress', routeRateLimitMiddleware, requirePortalAdminToken, (req: Request, res: Response) => {
     try {
-      const tenantId = parseTenantId(req.query.tenantId);
+      setRoutingCorpusNoStore(res);
+      const tenantId = resolveRoutingCorpusTenant(req, res);
+      if (tenantId === null) return;
       res.json({
         ok: true,
-        progress: getRoutingCorpusProgress(getDb(), tenantId !== undefined ? { tenantId } : {}),
+        progress: getRoutingCorpusProgress(getDb(), {
+          tenantId,
+          syntheticOnly: tenantId === 0,
+        }),
       });
     } catch (err) {
       sendPortalInternalError(res, err, 'Portal request failed', 'Portal: routing corpus progress request failed');
@@ -124,14 +216,81 @@ export function registerPortalRoutingCorpusRoutes(app: Express): void {
   });
 
   app.get('/routing-corpus', (_req: Request, res: Response) => {
+    setRoutingCorpusNoStore(res);
     res.type('html').send(ROUTING_CORPUS_PAGE_HTML);
   });
 }
 
-function parseTenantId(raw: unknown): number | undefined {
-  if (raw === undefined || raw === null || raw === '') return undefined;
-  const parsed = Number.parseInt(String(raw), 10);
-  return Number.isInteger(parsed) && parsed >= 0 ? parsed : undefined;
+class RoutingCorpusScopeError extends Error {
+  constructor(readonly tenantId: number) {
+    super(`Routing corpus tenant ${tenantId} is outside the owner scope`);
+    this.name = 'RoutingCorpusScopeError';
+  }
+}
+
+function setRoutingCorpusNoStore(res: Response): void {
+  res.setHeader('Cache-Control', 'no-store, max-age=0, must-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+}
+
+function hasVerifiedPortalActor(req: Request): boolean {
+  const auth = getPortalAuthContext(req);
+  return Boolean(
+    auth?.actorHint
+    && (auth.actorSignatureVerified === true || auth.sessionSignatureVerified === true),
+  );
+}
+
+function canAccessPrivateRoutingCorpusTenant(req: Request, tenantId: number): boolean {
+  const ownerTarget = getOwnerBootstrapTarget();
+  if (!ownerTarget || ownerTarget.tenantId !== tenantId) return false;
+  const auth = getPortalAuthContext(req);
+  if (!hasVerifiedPortalActor(req) || !auth?.actorHint) return false;
+  return isOperatorScopedToUser(
+    auth.actorHint,
+    tenantId,
+    config.portal.operatorUserScopes ?? {},
+  );
+}
+
+function canAccessRoutingCorpusItem(
+  req: Request,
+  item: Parameters<typeof isCheckedInSyntheticRoutingCorpusItem>[0],
+): boolean {
+  if (isCheckedInSyntheticRoutingCorpusItem(item)) return true;
+  return canAccessPrivateRoutingCorpusTenant(req, item.tenantId);
+}
+
+function resolveRoutingCorpusTenant(req: Request, res: Response): number | null {
+  const raw = req.query.tenantId;
+  if (raw === undefined || raw === null || raw === '') return 0;
+  const text = String(raw);
+  if (!/^\d+$/.test(text)) {
+    res.status(400).json({
+      ok: false,
+      error: { code: 'INVALID_TENANT_ID', message: 'tenantId must be a non-negative integer' },
+    });
+    return null;
+  }
+  const tenantId = Number(text);
+  if (!Number.isSafeInteger(tenantId) || tenantId < 0) {
+    res.status(400).json({
+      ok: false,
+      error: { code: 'INVALID_TENANT_ID', message: 'tenantId must be a non-negative integer' },
+    });
+    return null;
+  }
+  if (tenantId !== 0 && !canAccessPrivateRoutingCorpusTenant(req, tenantId)) {
+    res.status(403).json({
+      ok: false,
+      error: {
+        code: 'FORBIDDEN',
+        message: 'routing corpus access is restricted to synthetic controls or the owner tenant',
+      },
+    });
+    return null;
+  }
+  return tenantId;
 }
 
 const ROUTING_CORPUS_PAGE_HTML = `<!doctype html>
@@ -166,12 +325,18 @@ const ROUTING_CORPUS_PAGE_HTML = `<!doctype html>
     <div id="utterance"></div>
     <div class="meta" id="itemMeta"></div>
     <div id="domains"></div>
+    <div id="skills"></div>
     <button class="skip" onclick="submitLabel('skip')">Skip</button>
   </div>
 </div>
 <script>
 let current = null;
+let currentCandidates = null;
 function token() { return localStorage.getItem('routingCorpusToken') || ''; }
+function corpusScopeQuery() {
+  const tenantId = new URLSearchParams(window.location.search).get('tenantId');
+  return tenantId === null ? '' : '?tenantId=' + encodeURIComponent(tenantId);
+}
 function saveToken() {
   localStorage.setItem('routingCorpusToken', document.getElementById('token').value.trim());
   document.getElementById('auth').style.display = 'none';
@@ -186,8 +351,10 @@ async function api(path, options) {
   return response.json();
 }
 async function loadNext() {
-  const data = await api('/api/portal/routing-corpus/next');
+  const data = await api('/api/portal/routing-corpus/next' + corpusScopeQuery());
   current = data.item;
+  currentCandidates = data.candidates;
+  document.getElementById('skills').innerHTML = '';
   const progress = data.progress;
   document.getElementById('progress').textContent =
     'Labeled ' + progress.labeled + ' / ' + progress.total + ' (pending ' + progress.pending + ', skipped ' + progress.skipped + ')';
@@ -195,6 +362,7 @@ async function loadNext() {
     document.getElementById('utterance').textContent = 'No pending items. All done.';
     document.getElementById('itemMeta').textContent = '';
     document.getElementById('domains').innerHTML = '';
+    document.getElementById('skills').innerHTML = '';
     return;
   }
   document.getElementById('utterance').textContent = current.utteranceText;
@@ -207,15 +375,52 @@ async function loadNext() {
     const btn = document.createElement('button');
     btn.textContent = domain;
     if (domain === current.suggestedDomain) btn.className = 'suggested';
-    btn.onclick = () => submitLabel('label', domain);
+    btn.onclick = () => {
+      if (data.candidates.specialLabels.includes(domain)) {
+        submitLabel('label', domain);
+        return;
+      }
+      selectDomain(domain);
+    };
     container.appendChild(btn);
   }
 }
-async function submitLabel(action, labelDomain) {
+function selectDomain(domain) {
+  const container = document.getElementById('skills');
+  container.innerHTML = '';
+  const hint = document.createElement('div');
+  hint.className = 'meta';
+  hint.textContent = 'Select the executable skill, or explicitly choose domain-only:';
+  container.appendChild(hint);
+
+  const domainOnly = document.createElement('button');
+  domainOnly.textContent = 'Domain only / skill unsure';
+  domainOnly.onclick = () => submitLabel('label', domain, null);
+  container.appendChild(domainOnly);
+
+  for (const skill of currentCandidates.skillsByDomain[domain] || []) {
+    const btn = document.createElement('button');
+    btn.textContent = skill;
+    if (skill === current.suggestedSkill) btn.className = 'suggested';
+    btn.onclick = () => submitLabel('label', domain, skill);
+    container.appendChild(btn);
+  }
+}
+async function submitLabel(action, labelDomain, labelSkill) {
   if (!current) return;
+  if (
+    action === 'label'
+    && !currentCandidates.specialLabels.includes(labelDomain)
+    && labelSkill === undefined
+  ) return;
   await api('/api/portal/routing-corpus/label', {
     method: 'POST',
-    body: JSON.stringify({ id: current.id, action: action, labelDomain: labelDomain }),
+    body: JSON.stringify({
+      id: current.id,
+      action: action,
+      labelDomain: labelDomain,
+      labelSkill: labelSkill,
+    }),
   });
   await loadNext();
 }

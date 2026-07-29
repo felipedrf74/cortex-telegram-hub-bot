@@ -1,5 +1,5 @@
 {
-  "version": "2026-07-29.2",
+  "version": "2026-07-29.3",
   "core": {
     "targetSeconds": 30,
     "tests": [
@@ -733,6 +733,7 @@
         "src/services/intent-resolution/**",
         "src/services/reply-language-normalizer.ts",
         "src/services/routing-accuracy.ts",
+        "src/services/routing-corpus-*.ts",
         "src/services/routing-corpus.ts",
         "src/services/shared-decision-context.ts",
         "src/services/secretary-*.ts",

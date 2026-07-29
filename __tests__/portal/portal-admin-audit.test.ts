@@ -1,3 +1,4 @@
+import Database from 'better-sqlite3';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Request } from 'express';
 
@@ -24,6 +25,7 @@ vi.mock('../../src/utils/logger', () => ({
 
 import {
   buildPortalAdminAuditDetails,
+  insertPortalAdminMutationAuditStrict,
   logPortalAdminMutation,
 } from '../../src/portal/admin-audit';
 
@@ -95,5 +97,78 @@ describe('portal admin audit helpers', () => {
         tier: 'max',
       }),
     }));
+  });
+
+  it('strictly inserts an admin mutation into the supplied database', () => {
+    const db = new Database(':memory:');
+    db.exec(`
+      CREATE TABLE audit_trail (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts TEXT NOT NULL DEFAULT (datetime('now')),
+        tenant_id INTEGER NOT NULL DEFAULT 0,
+        user_id INTEGER NOT NULL,
+        actor_id INTEGER NOT NULL,
+        action TEXT NOT NULL,
+        resource TEXT NOT NULL,
+        details TEXT,
+        ip_address TEXT
+      );
+    `);
+    mocks.getOwnerBootstrapTarget.mockReturnValue({ tenantId: 74 });
+    const req = createRequest();
+
+    insertPortalAdminMutationAuditStrict(db, req, {
+      userId: 3,
+      tenantId: 9,
+      resource: 'portal.routing_corpus.label',
+      details: {
+        itemId: 12,
+        labelDomain: 'secretary',
+        labelSkill: 'tasks',
+      },
+    });
+
+    const row = db.prepare(`
+      SELECT
+        tenant_id AS tenantId,
+        user_id AS userId,
+        actor_id AS actorId,
+        action,
+        resource,
+        details,
+        ip_address AS ipAddress
+      FROM audit_trail
+    `).get() as Record<string, unknown>;
+    expect(row).toMatchObject({
+      tenantId: 9,
+      userId: 3,
+      actorId: 74,
+      action: 'admin_mutation',
+      resource: 'portal.routing_corpus.label',
+      ipAddress: '203.0.113.10',
+    });
+    expect(JSON.parse(String(row.details))).toMatchObject({
+      portalCredential: 'unknown',
+      dedicatedAdminConfigured: false,
+      itemId: 12,
+      labelDomain: 'secretary',
+      labelSkill: 'tasks',
+    });
+    expect(String(row.details)).not.toContain('utterance');
+    db.close();
+  });
+
+  it('strict audit insertion surfaces database failures', () => {
+    const db = new Database(':memory:');
+    mocks.getOwnerBootstrapTarget.mockReturnValue({ tenantId: 74 });
+
+    expect(() => insertPortalAdminMutationAuditStrict(db, createRequest(), {
+      userId: 3,
+      tenantId: 9,
+      resource: 'portal.routing_corpus.label',
+      details: { itemId: 12 },
+    })).toThrow(/audit_trail/);
+
+    db.close();
   });
 });
