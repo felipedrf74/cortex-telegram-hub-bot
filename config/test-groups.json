@@ -1,5 +1,5 @@
 {
-  "version": "2026-07-29.1",
+  "version": "2026-07-29.2",
   "core": {
     "targetSeconds": 30,
     "tests": [
@@ -13,7 +13,81 @@
   },
   "retirementMappings": [
     {
-      "baseSha": "f0d4047def0c5838d562f06326d2e6949fe49770",
+      "baseSha": "247ac7dc940009aacb0d1419a58db4749a76c75a",
+      "test": "__tests__/api/chat-content-refinement.test.ts",
+      "requiredChangedPaths": [
+        "src/api/routes/chat-content-refinement.ts"
+      ],
+      "replacementTests": [
+        "__tests__/api/chat-content-refinement.test.ts",
+        "__tests__/services/content-output-language.test.ts"
+      ],
+      "reason": "The retained refinement suite owns EN/PT prompt and output withholding, while the shared content-output locale suite proves legacy Spanish cannot escape an English response contract."
+    },
+    {
+      "baseSha": "247ac7dc940009aacb0d1419a58db4749a76c75a",
+      "test": "__tests__/api/chat-message-local-responses.test.ts",
+      "requiredChangedPaths": [
+        "src/api/routes/chat-message-local-responses.ts"
+      ],
+      "replacementTests": [
+        "__tests__/api/chat-message-local-responses.test.ts",
+        "__tests__/services/chat-locale-detection-es.test.ts"
+      ],
+      "reason": "The retained local-response suite owns resolved EN/PT cache and fast-path replies, while the supported-locale boundary pins legacy Spanish input to English."
+    },
+    {
+      "baseSha": "247ac7dc940009aacb0d1419a58db4749a76c75a",
+      "test": "__tests__/scripts/chatv2-import-legacy-parity-labels.test.ts",
+      "requiredChangedPaths": [
+        "scripts/chatv2-import-legacy-parity-labels.ts",
+        "src/services/chat-legacy-parity-route-prompts.ts"
+      ],
+      "replacementTests": [
+        "__tests__/scripts/chatv2-import-legacy-parity-labels.test.ts",
+        "__tests__/services/chat-legacy-parity-route-prompts.test.ts"
+      ],
+      "reason": "The retained label importer validates the immutable v1.4 EN/PT projection, while the shared prompt suite rejects padded or post-implementation retirement evidence."
+    },
+    {
+      "baseSha": "247ac7dc940009aacb0d1419a58db4749a76c75a",
+      "test": "__tests__/scripts/chatv2-import-legacy-parity-observations.test.ts",
+      "requiredChangedPaths": [
+        "scripts/chatv2-import-legacy-parity-observations.ts",
+        "src/services/chat-legacy-parity-route-prompts.ts"
+      ],
+      "replacementTests": [
+        "__tests__/scripts/chatv2-import-legacy-parity-observations.test.ts",
+        "__tests__/services/chat-legacy-parity-route-prompts.test.ts"
+      ],
+      "reason": "The retained observation importer validates the immutable v1.4 EN/PT projection, while the shared prompt suite rejects padded or post-implementation retirement evidence."
+    },
+    {
+      "baseSha": "247ac7dc940009aacb0d1419a58db4749a76c75a",
+      "test": "__tests__/services/chat-core-v2-unsupported-policy.test.ts",
+      "requiredChangedPaths": [
+        "src/services/chat-core-v2/unsupported-policy.ts"
+      ],
+      "replacementTests": [
+        "__tests__/services/chat-core-v2-unsupported-policy.test.ts",
+        "__tests__/services/chat-locale-detection-es.test.ts"
+      ],
+      "reason": "The retained unsupported-policy suite owns EN/PT alternatives, while the supported-locale boundary proves legacy Spanish signals fall back to English."
+    },
+    {
+      "baseSha": "247ac7dc940009aacb0d1419a58db4749a76c75a",
+      "test": "__tests__/services/chat-legacy-retirement-evidence.test.ts",
+      "requiredChangedPaths": [
+        "src/services/chat-legacy-retirement-evidence.ts"
+      ],
+      "replacementTests": [
+        "__tests__/services/chat-legacy-retirement-evidence.test.ts",
+        "__tests__/services/chat-legacy-parity-route-prompts.test.ts"
+      ],
+      "reason": "The retained evidence suite rejects local sandbox rows, while the shared prompt suite binds retirement proof to the immutable signed v1.4 EN/PT projection."
+    },
+    {
+      "baseSha": "247ac7dc940009aacb0d1419a58db4749a76c75a",
       "test": "__tests__/services/chat-answer-contract.test.ts",
       "requiredChangedPaths": [
         "src/services/chat-answer-contract.ts",
@@ -26,7 +100,7 @@
       "reason": "The retained answer-contract suite now owns EN/PT output repair while the supported-locale boundary proves legacy Spanish locale signals fall back to English."
     },
     {
-      "baseSha": "f0d4047def0c5838d562f06326d2e6949fe49770",
+      "baseSha": "247ac7dc940009aacb0d1419a58db4749a76c75a",
       "test": "__tests__/services/chat-core-v2-locale-policy.test.ts",
       "requiredChangedPaths": [
         "src/services/chat-core-v2/response-contracts.ts"
@@ -38,7 +112,7 @@
       "reason": "The retained Chat Core locale suite owns EN/PT templates and English normalization after the Spanish response locale is retired, with legacy signals pinned at the supported-locale boundary."
     },
     {
-      "baseSha": "f0d4047def0c5838d562f06326d2e6949fe49770",
+      "baseSha": "247ac7dc940009aacb0d1419a58db4749a76c75a",
       "test": "__tests__/services/chat-day-to-day-simulation.test.ts",
       "requiredChangedPaths": [
         "src/services/chat-day-to-day-simulation.ts"
@@ -50,7 +124,7 @@
       "reason": "The retained day-to-day simulation now exercises EN, pt-BR, and pt-PT while the supported-locale boundary owns legacy Spanish-to-English compatibility."
     },
     {
-      "baseSha": "f0d4047def0c5838d562f06326d2e6949fe49770",
+      "baseSha": "247ac7dc940009aacb0d1419a58db4749a76c75a",
       "test": "__tests__/services/chat-turn-context.test.ts",
       "requiredChangedPaths": [
         "src/services/chat-turn-context.ts"
@@ -62,7 +136,7 @@
       "reason": "The retained turn-context suite owns supported EN/PT cohorts and English coercion, while the supported-locale boundary proves legacy Spanish signals remain compatible."
     },
     {
-      "baseSha": "f0d4047def0c5838d562f06326d2e6949fe49770",
+      "baseSha": "247ac7dc940009aacb0d1419a58db4749a76c75a",
       "test": "__tests__/services/registry-examples-as-living-corpus-shadow.test.ts",
       "requiredChangedPaths": [
         "src/services/registry-driven-eval-scenarios.ts",
@@ -76,7 +150,7 @@
       "reason": "The living-corpus suite owns supported EN/PT response evaluation, while the end-to-end registry suite deterministically routes all 52 retained Spanish-authored compatibility inputs under the English response contract."
     },
     {
-      "baseSha": "f0d4047def0c5838d562f06326d2e6949fe49770",
+      "baseSha": "247ac7dc940009aacb0d1419a58db4749a76c75a",
       "test": "__tests__/services/registry-examples-end-to-end-routing.test.ts",
       "requiredChangedPaths": [
         "src/services/chat/registry/definitions/*.ts",
@@ -88,7 +162,7 @@
       "reason": "The retained end-to-end registry suite owns deterministic EN/PT golden routing plus all 52 Spanish-authored compatibility inputs, each explicitly bound to an English response contract."
     },
     {
-      "baseSha": "f0d4047def0c5838d562f06326d2e6949fe49770",
+      "baseSha": "247ac7dc940009aacb0d1419a58db4749a76c75a",
       "test": "__tests__/services/registry-real-eval-gates-locale.test.ts",
       "requiredChangedPaths": [
         "src/services/registry-driven-eval-scenarios.ts",
@@ -102,7 +176,7 @@
       "reason": "The locale eval gate owns supported EN/PT release quality, while the end-to-end registry suite directly proves Spanish-authored requests still route to their declared action with English output."
     },
     {
-      "baseSha": "f0d4047def0c5838d562f06326d2e6949fe49770",
+      "baseSha": "247ac7dc940009aacb0d1419a58db4749a76c75a",
       "test": "__tests__/services/registry-shadow-smoke-corpus.test.ts",
       "requiredChangedPaths": [
         "src/services/chat/registry/definitions/*.ts",
@@ -115,7 +189,7 @@
       "reason": "The registry shadow corpus proves generated product fixtures use supported response locales only, while the end-to-end registry suite exercises the retained Spanish-authored inputs as English-response routing compatibility cases."
     },
     {
-      "baseSha": "f0d4047def0c5838d562f06326d2e6949fe49770",
+      "baseSha": "247ac7dc940009aacb0d1419a58db4749a76c75a",
       "test": "__tests__/services/routing-corpus.test.ts",
       "requiredChangedPaths": [
         "src/services/routing-corpus.ts"

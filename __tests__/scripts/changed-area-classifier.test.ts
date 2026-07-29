@@ -18,7 +18,7 @@ import {
 } from '../../scripts/lib/git-changed-paths.mjs';
 
 const RETIREMENT_BASE_SHA = '7b724f185580b18ce722a396b6e01d5ae268d3c1';
-const SPANISH_LOCALE_RETIREMENT_BASE_SHA = 'f0d4047def0c5838d562f06326d2e6949fe49770';
+const SPANISH_LOCALE_RETIREMENT_BASE_SHA = '247ac7dc940009aacb0d1419a58db4749a76c75a';
 
 function classify(files: string[]) {
   return JSON.parse(execFileSync('bash', [
@@ -280,9 +280,15 @@ describe('lean changed-area classification', () => {
     })]);
 
     const spanishLocaleTests = [
+      '__tests__/api/chat-content-refinement.test.ts',
+      '__tests__/api/chat-message-local-responses.test.ts',
+      '__tests__/scripts/chatv2-import-legacy-parity-labels.test.ts',
+      '__tests__/scripts/chatv2-import-legacy-parity-observations.test.ts',
       '__tests__/services/chat-answer-contract.test.ts',
       '__tests__/services/chat-core-v2-locale-policy.test.ts',
+      '__tests__/services/chat-core-v2-unsupported-policy.test.ts',
       '__tests__/services/chat-day-to-day-simulation.test.ts',
+      '__tests__/services/chat-legacy-retirement-evidence.test.ts',
       '__tests__/services/chat-turn-context.test.ts',
       '__tests__/services/registry-examples-as-living-corpus-shadow.test.ts',
       '__tests__/services/registry-examples-end-to-end-routing.test.ts',
@@ -301,13 +307,25 @@ describe('lean changed-area classification', () => {
       '__tests__/services/registry-real-eval-gates-locale.test.ts',
       '__tests__/services/registry-shadow-smoke-corpus.test.ts',
     ]);
+    const contentOutputMappings = new Set([
+      '__tests__/api/chat-content-refinement.test.ts',
+    ]);
+    const legacyParityMappings = new Set([
+      '__tests__/scripts/chatv2-import-legacy-parity-labels.test.ts',
+      '__tests__/scripts/chatv2-import-legacy-parity-observations.test.ts',
+      '__tests__/services/chat-legacy-retirement-evidence.test.ts',
+    ]);
     for (const mapping of spanishMappings) {
       expect(mapping.requiredChangedPaths.length).toBeGreaterThan(0);
       expect(mapping.replacementTests).toContain(mapping.test);
       expect(mapping.replacementTests).toContain(
         registryRoutingMappings.has(mapping.test)
           ? '__tests__/services/registry-examples-end-to-end-routing.test.ts'
-          : '__tests__/services/chat-locale-detection-es.test.ts',
+          : contentOutputMappings.has(mapping.test)
+            ? '__tests__/services/content-output-language.test.ts'
+            : legacyParityMappings.has(mapping.test)
+              ? '__tests__/services/chat-legacy-parity-route-prompts.test.ts'
+              : '__tests__/services/chat-locale-detection-es.test.ts',
       );
     }
   });
