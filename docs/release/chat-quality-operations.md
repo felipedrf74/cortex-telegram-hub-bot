@@ -76,6 +76,9 @@ One page for operating the production chat-quality loop (M22).
   words and default to a 256-token output cap; an explicitly requested
   long-form caller can override that default. This keeps the interactive
   latency contract bounded without relaxing the evaluator's six-second gate.
+  If the provider reaches the cap, the response keeps only fully completed
+  sentences and states that it was shortened; when no complete sentence is
+  available, the user receives an honest narrow-or-long-form retry prompt.
 - The first live baseline runs only on staging against a dedicated synthetic
   user/tenant. Set the staging server's `CHAT_EVAL_DEDICATED_TENANT_ID` to that
   account's shared user/tenant id; its principal email must end in `.invalid`.

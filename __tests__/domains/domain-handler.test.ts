@@ -460,6 +460,26 @@ describe('handleSimpleDomain', () => {
     );
   });
 
+  it('keeps only complete content sentences when the provider reaches its output cap', async () => {
+    mockCallDomain.mockResolvedValue({
+      text: 'A concise narrative comparison is complete. This incomplete provider tail must not reach the user',
+      toolCalls: [],
+      stopReason: 'length',
+    } as any);
+
+    const result = await handleSimpleDomain('content', 'Compare launch narratives', 5, 42);
+
+    expect(result.text).toContain('A concise narrative comparison is complete.');
+    expect(result.text).toContain('Response shortened to fit this turn.');
+    expect(result.text).not.toContain('incomplete provider tail');
+    expect(addToConversation).toHaveBeenCalledWith(
+      42,
+      'content',
+      'assistant',
+      expect.stringContaining('A concise narrative comparison is complete.'),
+    );
+  });
+
   it('blocks unsafe generated cooking answers before returning or storing them', async () => {
     ensureUser(188);
     testDb.prepare('UPDATE users SET language = ? WHERE id = ?').run('pt-BR', 188);
