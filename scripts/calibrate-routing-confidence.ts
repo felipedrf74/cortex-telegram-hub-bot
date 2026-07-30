@@ -95,7 +95,7 @@ async function main(): Promise<void> {
   if (!forceBootstrap) {
     const db = new Database(dbPath);
     try {
-      const { withStandaloneToolDatabaseAsync } = await import('../src/services/database');
+      const { withStandaloneToolDatabaseAsync } = await import('../src/services/standalone-tool-database');
       await withStandaloneToolDatabaseAsync(db, async () => {
         const { ensureRoutingCorpusTables, listLabeledRoutingCorpusItems } = await import('../src/services/routing-corpus');
         const { predictRoutingSurfaces } = await import('../src/services/routing-accuracy');

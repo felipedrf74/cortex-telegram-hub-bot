@@ -395,6 +395,9 @@ describe('routing accuracy gate', () => {
       path.join(__dirname, '..', '..', 'scripts', 'run-routing-accuracy.ts'),
       'utf8',
     );
+    expect(raw).toContain(
+      "await import('../src/services/standalone-tool-database')",
+    );
     expect(dynamicImportStandaloneScopes(
       raw,
       '../src/services/routing-accuracy',

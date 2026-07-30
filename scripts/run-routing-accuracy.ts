@@ -51,7 +51,7 @@ const refreshLimit = refreshLimitRaw ? Number.parseInt(refreshLimitRaw, 10) : 25
 async function main(): Promise<void> {
   const db = new Database(dbPath);
   try {
-    const { withStandaloneToolDatabaseAsync } = await import('../src/services/database');
+    const { withStandaloneToolDatabaseAsync } = await import('../src/services/standalone-tool-database');
     await withStandaloneToolDatabaseAsync(db, async () => {
       const {
         acceptRoutingAccuracySnapshotAtomically,

@@ -217,41 +217,22 @@ export function withDatabaseForTest<T>(testDb: Database.Database, callback: () =
 export async function withDatabaseForTestAsync<T>(
   testDb: Database.Database,
   callback: () => Promise<T>,
+  options: { requireUninitialized?: boolean } = {},
 ): Promise<T> {
   const previousDb = db as Database.Database | undefined;
+  if (
+    options.requireUninitialized
+    && (previousDb !== undefined || storage !== null)
+  ) {
+    throw new Error(
+      'Standalone operational-tool database binding requires an uninitialized process database.',
+    );
+  }
   (db as any) = testDb;
   try {
     return await callback();
   } finally {
     (db as any) = previousDb;
-  }
-}
-
-/**
- * Bind a standalone operational tool to its caller-owned SQLite connection.
- *
- * Standalone tools intentionally do not call initDatabase(): that path opens
- * the configured runtime database and performs application boot mutations.
- * The scoped binding keeps nested imports and services that use getDb() on
- * the exact explicit database selected by the tool. It refuses to replace an
- * initialized application connection and always restores the uninitialized
- * state; the caller remains responsible for closing standaloneDb.
- */
-export async function withStandaloneToolDatabaseAsync<T>(
-  standaloneDb: Database.Database,
-  callback: () => Promise<T>,
-): Promise<T> {
-  if ((db as Database.Database | undefined) !== undefined || storage !== null) {
-    throw new Error(
-      'Standalone operational-tool database binding requires an uninitialized process database.',
-    );
-  }
-
-  (db as any) = standaloneDb;
-  try {
-    return await callback();
-  } finally {
-    (db as any) = undefined;
   }
 }
 

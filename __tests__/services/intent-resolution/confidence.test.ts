@@ -227,6 +227,25 @@ describe('buildCorpusRoutingCalibration (synthetic labeled data)', () => {
   });
 
   it('keeps the baseline classifier floor when LLM cache coverage is partial', () => {
+    expect(deriveClassifierFloorCalibration({
+      observations: makeObservations(0.9, 25, 25),
+      corpusSize: 300,
+      baselineFloor: 0.6,
+    })).toEqual({
+      lowConfidenceFloor: 0.6,
+      coverageComplete: false,
+      calibrated: false,
+    });
+    expect(deriveClassifierFloorCalibration({
+      observations: [],
+      corpusSize: 0,
+      baselineFloor: 0.6,
+    })).toEqual({
+      lowConfidenceFloor: 0.6,
+      coverageComplete: false,
+      calibrated: false,
+    });
+
     const table = buildCorpusRoutingCalibration({
       orchestrator: [],
       resolver: [],

@@ -33,7 +33,9 @@ describe('lean changed-area classification', () => {
   it.each([
     ['src/api/auth-middleware.ts', 'platform-security'],
     ['src/services/apple-token-revocation.ts', 'platform-security'],
+    ['src/services/standalone-tool-database.ts', 'platform-security'],
     ['__tests__/services/apple-token-revocation.test.ts', 'platform-security'],
+    ['__tests__/services/standalone-tool-database.test.ts', 'platform-security'],
     ['src/services/chat-answer-contract.ts', 'chat-secretary'],
     ['src/services/training-plans.ts', 'training'],
     ['src/services/google-calendar.ts', 'calendar-health'],

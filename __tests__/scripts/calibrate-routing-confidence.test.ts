@@ -157,6 +157,9 @@ describe('calibrate-routing-confidence operational CLI', () => {
   it('binds the explicit database before importing the routing graph', () => {
     const raw = fs.readFileSync(SCRIPT_PATH, 'utf8');
 
+    expect(raw).toContain(
+      "await import('../src/services/standalone-tool-database')",
+    );
     expect(dynamicImportStandaloneScopes(
       raw,
       '../src/services/routing-accuracy',
