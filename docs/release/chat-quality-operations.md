@@ -72,22 +72,21 @@ One page for operating the production chat-quality loop (M22).
   During local evidence seeding the script pauses only `nexus-hub`, writes the
   bind-mounted SQLite database offline, restarts the service, and re-attests
   health plus the zero-cloud profile before minting the synthetic session.
-  Routine Ollama-backed Content chat answers are prompted to stay within 140
-  words and default to a 256-token output cap; an explicitly requested
+  Routine Ollama-backed Content chat answers are prompted to stay within 90
+  words and default to a 192-token output cap; an explicitly requested
   long-form caller can override that default. This keeps the interactive
   latency contract bounded without relaxing the evaluator's six-second gate.
-  Each routine Content call gives Ollama a random, request-local boundary
-  marker to emit immediately after its first complete subject-naming
-  sentence. If the provider reaches the cap, only a substantive prefix
-  followed by that exact marker can be certified; the marker is removed at
-  the provider boundary, the response states in the request-scoped English,
-  pt-BR, or pt-PT locale that it was shortened, and the provider returns a
-  distinct `bounded_complete` stop reason. The routing layer accepts that
-  reason only for Content output carrying exact Ollama provenance and bound
-  metadata. Missing markers, punctuation/abbreviation fragments,
-  contradictory certificates, and output with no certifiable prefix stay
-  under the existing truncation refusal and emit the normal retryable
-  degraded response.
+  Each routine call supplies an exact JSON schema. Its request-derived
+  `lead_sentence` is a schema constant containing the selected subject term,
+  `lead_complete` is the constant `true`, and `answer` must contain 24–480
+  characters. The provider validates the exact keys, constants, types,
+  lengths, subject overlap, and sentence boundary before rendering only the
+  lead plus substantive answer; raw structured JSON never reaches the user.
+  Any provider cap, malformed JSON, schema mismatch, forged or contradictory
+  certificate, empty answer, or incomplete output stays under the existing
+  truncation refusal and emits the normal retryable degraded response. The
+  live c2 gate independently requires `narrative`, `broad`, and `tailored`, so
+  the deterministic subject lead alone cannot satisfy release evidence.
 - The first live baseline runs only on staging against a dedicated synthetic
   user/tenant. Set the staging server's `CHAT_EVAL_DEDICATED_TENANT_ID` to that
   account's shared user/tenant id; its principal email must end in `.invalid`.

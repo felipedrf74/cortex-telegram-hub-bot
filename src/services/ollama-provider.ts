@@ -26,7 +26,6 @@
  *   `pricing_status='zero-cost'`, `local_request_units=1`.
  */
 
-import { randomInt } from 'node:crypto';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import { getDb } from './database';
@@ -279,16 +278,16 @@ const PHASE_K_ANSWER_ONLY_GUARD = [
   "another.",
 ].join('\n');
 
-function buildPhaseKContentConcisionGuard(boundaryMarker: string): string {
+function buildPhaseKContentConcisionGuard(): string {
   return [
     '',
-    '— MANDATORY RESPONSE FORMAT —',
-    'For routine Content chat answers, use at most 140 words and finish',
+    '— MANDATORY STRUCTURED RESPONSE —',
+    'Return only the JSON object required by the response schema.',
+    'For routine Content chat answers, use at most 90 words and finish',
     'with a complete sentence before the output limit.',
-    'The first line must contain exactly one complete sentence that names the requested content subject.',
-    `On that same line, immediately after the sentence punctuation, copy exactly ${boundaryMarker}`,
-    'Continue any remaining answer on the next line.',
-    'Omitting, changing, or repeating that boundary token invalidates the response.',
+    'Copy the schema-constant `lead_sentence` exactly; do not paraphrase or omit it.',
+    'Set `lead_complete` to true only after `lead_sentence` is complete.',
+    'Put only the concise continuation in `answer`; do not repeat `lead_sentence` there.',
   ].join('\n');
 }
 
@@ -307,15 +306,11 @@ const PHASE_K_FINANCE_GUARD = [
 function phaseKDomainSystemPromptSuffix(
   domain: DomainName,
   includeContentConcision = true,
-  contentBoundaryMarker?: string,
 ): string {
   if (domain === 'content') {
     if (!includeContentConcision) return PHASE_K_ANSWER_ONLY_GUARD;
-    if (!contentBoundaryMarker) {
-      throw new Error('routine_content_boundary_marker_required');
-    }
     return PHASE_K_ANSWER_ONLY_GUARD
-      + buildPhaseKContentConcisionGuard(contentBoundaryMarker);
+      + buildPhaseKContentConcisionGuard();
   }
   if (domain === 'cooking') return PHASE_K_ANSWER_ONLY_GUARD;
   if (domain === 'finance') return PHASE_K_FINANCE_GUARD;
@@ -324,32 +319,231 @@ function phaseKDomainSystemPromptSuffix(
 
 type RoutineContentNoticeLocale = 'en-US' | 'pt-BR' | 'pt-PT';
 
-function createRoutineContentBoundaryMarker(): string {
-  const nonce = randomInt(0, 100_000_000).toString(10).padStart(8, '0');
-  return `<<END:${nonce}>>`;
+const ROUTINE_CONTENT_LEAD_MAX_CHARS = 240;
+const ROUTINE_CONTENT_ANSWER_MIN_CHARS = 24;
+const ROUTINE_CONTENT_ANSWER_MAX_CHARS = 480;
+const ROUTINE_CONTENT_MAX_OUTPUT_TOKENS = 192;
+
+const ROUTINE_CONTENT_SUBJECT_STOP_WORDS = new Set([
+  'about', 'after', 'again', 'against', 'also', 'apenas', 'around',
+  'autorizado', 'before', 'broad', 'change', 'compare', 'context',
+  'contexto', 'could', 'dados', 'data', 'each', 'explain', 'from',
+  'crie', 'have', 'into', 'latest', 'mais', 'only', 'para', 'please',
+  'preferable', 'read', 'request', 'saved', 'several', 'should',
+  'tailored', 'that', 'their', 'them', 'then', 'these', 'this',
+  'those', 'using', 'when', 'where', 'which', 'with', 'without',
+  'write',
+]);
+
+function normalizeRoutineContentSubjectStem(token: string): string {
+  const lower = token.toLowerCase();
+  return lower.length > 5 && lower.endsWith('s')
+    ? lower.slice(0, -1)
+    : lower;
 }
 
-function removeRoutineContentBoundaryMarker(
-  text: string,
-  boundaryMarker: string,
-): string {
-  return text
-    .split(boundaryMarker)
-    .join('')
-    .trim();
+interface RoutineContentSubjectToken {
+  raw: string;
+  stem: string;
 }
 
-function certifyRoutineContentPrefix(
+function routineContentSubjectTokens(text: string): RoutineContentSubjectToken[] {
+  return (text.match(/[\p{L}\p{N}]+/gu) ?? [])
+    .map((raw) => ({ raw, stem: normalizeRoutineContentSubjectStem(raw) }))
+    .filter(({ raw, stem }) => (
+      raw.length <= 64
+      && stem.length >= 4
+      && !ROUTINE_CONTENT_SUBJECT_STOP_WORDS.has(stem)
+    ));
+}
+
+function routineContentSubjectStems(text: string): string[] {
+  return routineContentSubjectTokens(text).map(({ stem }) => stem);
+}
+
+function selectRoutineContentSubjectTerm(currentMessage: string): string {
+  const tokens = routineContentSubjectTokens(currentMessage);
+  if (tokens.length === 0) {
+    return resolveRoutineContentNoticeLanguage(currentMessage) === 'en-US'
+      ? 'content'
+      : 'conteúdo';
+  }
+  const counts = new Map<string, number>();
+  for (const token of tokens) counts.set(token.stem, (counts.get(token.stem) ?? 0) + 1);
+  const maxFrequency = Math.max(...counts.values());
+  if (maxFrequency > 1) {
+    return tokens.find((token) => counts.get(token.stem) === maxFrequency)?.raw
+      ?? tokens[0].raw;
+  }
+  if (resolveRoutineContentNoticeLanguage(currentMessage) !== 'en-US') {
+    return tokens.slice(0, 2).map(({ raw }) => raw).join(' e ');
+  }
+  return tokens.reduce((selected, token) => (
+    token.raw.length > selected.raw.length ? token : selected
+  )).raw;
+}
+
+function buildRoutineContentLeadSentence(currentMessage: string): string {
+  const subjectTerm = selectRoutineContentSubjectTerm(currentMessage);
+  return resolveRoutineContentNoticeLanguage(currentMessage) === 'en-US'
+    ? `Requested ${subjectTerm} guidance follows.`
+    : `Sobre ${subjectTerm}, seguem orientações solicitadas.`;
+}
+
+function buildRoutineContentResponseFormat(expectedLeadSentence: string): Record<string, unknown> {
+  return {
+    type: 'object',
+    properties: {
+      lead_sentence: {
+        type: 'string',
+        const: expectedLeadSentence,
+      },
+      lead_complete: {
+        type: 'boolean',
+        const: true,
+      },
+      answer: {
+        type: 'string',
+        description: 'Concise continuation after lead_sentence, without repeating it.',
+        minLength: ROUTINE_CONTENT_ANSWER_MIN_CHARS,
+        maxLength: ROUTINE_CONTENT_ANSWER_MAX_CHARS,
+      },
+    },
+    required: ['lead_sentence', 'lead_complete', 'answer'],
+    additionalProperties: false,
+  };
+}
+
+function leadSharesRequiredSubject(leadSentence: string, currentMessage: string): boolean {
+  const sourceStems = routineContentSubjectStems(currentMessage);
+  if (sourceStems.length === 0) return true;
+  const counts = new Map<string, number>();
+  for (const stem of sourceStems) counts.set(stem, (counts.get(stem) ?? 0) + 1);
+  const maxFrequency = Math.max(...counts.values());
+  const required = maxFrequency > 1
+    ? new Set([...counts].filter(([, count]) => count === maxFrequency).map(([stem]) => stem))
+    : new Set(counts.keys());
+  const leadStems = new Set(routineContentSubjectStems(leadSentence));
+  return [...required].some((stem) => leadStems.has(stem));
+}
+
+function certifyRoutineContentLead(
   text: string,
-  boundaryMarker: string,
+  currentMessage: string,
+  expectedLeadSentence: string,
 ): string | null {
-  const markerIndex = text.indexOf(boundaryMarker);
-  if (markerIndex < 0) return null;
-  const candidate = text.slice(0, markerIndex).trim();
+  const candidate = text.trim();
+  if (candidate !== expectedLeadSentence) return null;
   if (candidate.includes('\n')) return null;
-  if (!/[.!?](?:["'”’)\]]*)?$/u.test(candidate)) return null;
+  const terminal = candidate.match(/([\p{L}\p{N}]+)([.!?])(?:["'”’)\]]*)?$/u);
+  if (!terminal) return null;
   const words = candidate.match(/[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)*/gu) ?? [];
-  return candidate.length >= 24 && words.length >= 4 ? candidate : null;
+  if (
+    candidate.length < 24
+    || candidate.length > ROUTINE_CONTENT_LEAD_MAX_CHARS
+    || words.length < 4
+  ) {
+    return null;
+  }
+  return leadSharesRequiredSubject(candidate, currentMessage) ? candidate : null;
+}
+
+interface RoutineContentStructuredResult {
+  leadSentence: string;
+  answer: string;
+  renderedText: string;
+}
+
+function parseRoutineContentStructuredResult(
+  text: string,
+  currentMessage: string,
+  expectedLeadSentence: string,
+): RoutineContentStructuredResult | null {
+  try {
+    const parsed = JSON.parse(text) as Record<string, unknown>;
+    if (
+      !parsed
+      || typeof parsed !== 'object'
+      || Array.isArray(parsed)
+      || Object.keys(parsed).sort().join(',')
+        !== 'answer,lead_complete,lead_sentence'
+      || parsed.lead_complete !== true
+      || typeof parsed.lead_sentence !== 'string'
+      || typeof parsed.answer !== 'string'
+      || parsed.answer.trim().length < ROUTINE_CONTENT_ANSWER_MIN_CHARS
+      || parsed.answer.length > ROUTINE_CONTENT_ANSWER_MAX_CHARS
+    ) {
+      return null;
+    }
+    const leadSentence = certifyRoutineContentLead(
+      parsed.lead_sentence,
+      currentMessage,
+      expectedLeadSentence,
+    );
+    if (!leadSentence) return null;
+    const answer = parsed.answer;
+    return {
+      leadSentence,
+      answer,
+      renderedText: `${leadSentence}\n\n${answer}`,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function describeRoutineContentStructuredValidation(
+  text: string,
+  currentMessage: string,
+  expectedLeadSentence: string,
+): Record<string, boolean | number> {
+  const diagnostics: Record<string, boolean | number> = {
+    structuredJsonComplete: false,
+    structuredExactKeys: false,
+    structuredLeadComplete: false,
+    structuredLeadTypeValid: false,
+    structuredAnswerTypeValid: false,
+    structuredLeadCertificateValid: false,
+  };
+  try {
+    const parsed = JSON.parse(text) as Record<string, unknown>;
+    diagnostics.structuredJsonComplete = true;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return diagnostics;
+    diagnostics.structuredExactKeys = Object.keys(parsed).sort().join(',')
+      === 'answer,lead_complete,lead_sentence';
+    diagnostics.structuredLeadComplete = parsed.lead_complete === true;
+    diagnostics.structuredLeadTypeValid = typeof parsed.lead_sentence === 'string';
+    diagnostics.structuredAnswerTypeValid = typeof parsed.answer === 'string';
+    if (typeof parsed.lead_sentence === 'string') {
+      const candidate = parsed.lead_sentence.trim();
+      const terminal = candidate.match(/([\p{L}\p{N}]+)([.!?])(?:["'”’)\]]*)?$/u);
+      const words = candidate.match(/[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)*/gu) ?? [];
+      diagnostics.structuredLeadChars = candidate.length;
+      diagnostics.structuredLeadSingleLine = !candidate.includes('\n');
+      diagnostics.structuredLeadTerminalValid = terminal !== null;
+      diagnostics.structuredLeadWordCount = words.length;
+      diagnostics.structuredLeadLengthValid = candidate.length >= 24
+        && candidate.length <= ROUTINE_CONTENT_LEAD_MAX_CHARS;
+      diagnostics.structuredLeadMatchesExpected = candidate === expectedLeadSentence;
+      diagnostics.structuredLeadSubjectOverlap = leadSharesRequiredSubject(
+        candidate,
+        currentMessage,
+      );
+      diagnostics.structuredLeadCertificateValid = certifyRoutineContentLead(
+        candidate,
+        currentMessage,
+        expectedLeadSentence,
+      ) !== null;
+    }
+    if (typeof parsed.answer === 'string') {
+      diagnostics.structuredAnswerChars = parsed.answer.length;
+      diagnostics.structuredAnswerSubstantive = parsed.answer.trim().length
+        >= ROUTINE_CONTENT_ANSWER_MIN_CHARS;
+    }
+  } catch {
+    // Only aggregate validation state is logged; raw provider output stays private.
+  }
+  return diagnostics;
 }
 
 function resolveRoutineContentNoticeLanguage(
@@ -366,48 +560,32 @@ function applyRoutineContentOutputBound(input: {
   text: string;
   stopReason: string;
   currentMessage: string;
-  boundaryMarker: string;
+  expectedLeadSentence: string;
 }): {
   text: string;
   stopReason: string;
   outputBoundApplied: boolean;
   completePrefixKept: boolean;
 } {
-  const sanitizedText = removeRoutineContentBoundaryMarker(
+  const structured = parseRoutineContentStructuredResult(
     input.text,
-    input.boundaryMarker,
+    input.currentMessage,
+    input.expectedLeadSentence,
   );
-  if (!['length', 'LENGTH'].includes(input.stopReason)) {
+  const truncated = ['length', 'LENGTH'].includes(input.stopReason);
+  if (!truncated && structured) {
     return {
-      text: sanitizedText,
+      text: structured.renderedText,
       stopReason: input.stopReason,
       outputBoundApplied: false,
-      completePrefixKept: false,
+      completePrefixKept: true,
     };
   }
-  const locale = resolveRoutineContentNoticeLanguage(input.currentMessage);
-  const completePrefix = certifyRoutineContentPrefix(
-    input.text,
-    input.boundaryMarker,
-  );
-  if (!completePrefix) {
-    return {
-      text: sanitizedText,
-      stopReason: input.stopReason,
-      outputBoundApplied: false,
-      completePrefixKept: false,
-    };
-  }
-  const shortenedNotice = locale === 'pt-BR'
-    ? 'Resposta encurtada para caber nesta interação. Peça um artefato em formato longo para receber a versão completa.'
-    : locale === 'pt-PT'
-      ? 'Resposta encurtada para caber nesta interação. Peça um artefacto em formato longo para receber a versão completa.'
-      : 'Response shortened to fit this turn. Ask for a long-form artifact to receive the complete version.';
   return {
-    text: `${completePrefix}\n\n_${shortenedNotice}_`,
-    stopReason: 'bounded_complete',
-    outputBoundApplied: true,
-    completePrefixKept: true,
+    text: '',
+    stopReason: 'length',
+    outputBoundApplied: false,
+    completePrefixKept: false,
   };
 }
 
@@ -1094,14 +1272,16 @@ export class OllamaProvider implements AIProvider {
     // because of the runtime hard-block) get the bare system prompt.
     const routineContent = domain === 'content'
       && options.maxTokensOverride === undefined;
-    const routineContentBoundaryMarker = routineContent
-      ? createRoutineContentBoundaryMarker()
-      : undefined;
+    const routineContentLeadSentence = routineContent
+      ? buildRoutineContentLeadSentence(currentMessage)
+      : null;
+    const routineContentResponseFormat = routineContentLeadSentence
+      ? buildRoutineContentResponseFormat(routineContentLeadSentence)
+      : null;
     const baseSys = getDomainSystemPrompt(domain, stateContext);
     const domainPromptSuffix = phaseKDomainSystemPromptSuffix(
       domain,
       options.maxTokensOverride === undefined,
-      routineContentBoundaryMarker,
     );
     const sys = domainPromptSuffix ? baseSys + domainPromptSuffix : baseSys;
 
@@ -1123,7 +1303,11 @@ export class OllamaProvider implements AIProvider {
     // bounding the default path to a concise, coherent answer.
     const providerDefaultMaxOutput = outputCapFor('chat');
     const maxOutput = options.maxTokensOverride
-      ?? (domain === 'content' ? Math.min(providerDefaultMaxOutput, 256) : providerDefaultMaxOutput);
+      ?? (
+        routineContent
+          ? Math.min(providerDefaultMaxOutput, ROUTINE_CONTENT_MAX_OUTPUT_TOKENS)
+          : providerDefaultMaxOutput
+      );
 
     // Phase K: build request options once so providerMetadata reflects
     // exactly what went over the wire. Future per-domain temperature
@@ -1131,7 +1315,7 @@ export class OllamaProvider implements AIProvider {
     const requestOptions = {
       num_ctx: 4096,
       num_predict: maxOutput,
-      temperature: 0.3,
+      temperature: routineContent ? 0.1 : 0.3,
     };
 
     const result = await this.callOllamaForTask({
@@ -1144,6 +1328,7 @@ export class OllamaProvider implements AIProvider {
         model,
         messages,
         think: false,
+        ...(routineContentResponseFormat ? { format: routineContentResponseFormat } : {}),
         stream: false,
         keep_alive: -1,
         options: requestOptions,
@@ -1151,13 +1336,15 @@ export class OllamaProvider implements AIProvider {
     });
 
     const text = stripThinkBlocks(result.response.message?.content);
-    const providerStopReason = result.response.done_reason ?? 'stop';
-    const routineContentBound = routineContent && routineContentBoundaryMarker
+    const providerStopReason = result.response.done === true
+      ? (result.response.done_reason ?? 'stop')
+      : 'length';
+    const routineContentBound = routineContent && routineContentLeadSentence
       ? applyRoutineContentOutputBound({
         text,
         stopReason: providerStopReason,
         currentMessage,
-        boundaryMarker: routineContentBoundaryMarker,
+        expectedLeadSentence: routineContentLeadSentence,
       })
       : {
         text,
@@ -1167,7 +1354,10 @@ export class OllamaProvider implements AIProvider {
       };
     if (
       routineContent
-      && ['length', 'LENGTH'].includes(providerStopReason)
+      && (
+        ['length', 'LENGTH'].includes(providerStopReason)
+        || routineContentBound.stopReason === 'length'
+      )
     ) {
       logger.warn(
         {
@@ -1176,8 +1366,13 @@ export class OllamaProvider implements AIProvider {
           outputBoundApplied: routineContentBound.outputBoundApplied,
           completePrefixKept: routineContentBound.completePrefixKept,
           boundedTextChars: routineContentBound.text.length,
+          ...describeRoutineContentStructuredValidation(
+            text,
+            currentMessage,
+            routineContentLeadSentence ?? '',
+          ),
         },
-        'ollama-provider: applied routine Content output-bound handling',
+        'ollama-provider: applied routine Content structured output handling',
       );
     }
     const md = deriveMetrics(result.response);
