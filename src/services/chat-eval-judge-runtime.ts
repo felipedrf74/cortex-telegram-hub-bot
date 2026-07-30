@@ -23,9 +23,11 @@ export interface ChatEvalJudgeResultLike {
     calls: number;
     estimatedSpendUsd: number;
     aborted: boolean;
+    abortReason?: string;
     scenarios: Array<{
       scenarioId: string;
       status: string;
+      detail?: string;
     }>;
   };
 }
@@ -53,12 +55,21 @@ export interface ChatEvalJudgeRuntimeResult<T extends ChatEvalJudgeResultLike> {
 export class ChatEvalJudgeRuntimeError extends Error {
   readonly runId: string;
   readonly ledgerPath: string;
+  readonly diagnosticPath?: string;
+  readonly diagnosticSha256?: string;
 
-  constructor(message: string, runId: string, ledgerPath: string, options?: ErrorOptions) {
+  constructor(
+    message: string,
+    runId: string,
+    ledgerPath: string,
+    options?: ErrorOptions & { diagnosticPath?: string; diagnosticSha256?: string },
+  ) {
     super(message, options);
     this.name = 'ChatEvalJudgeRuntimeError';
     this.runId = runId;
     this.ledgerPath = ledgerPath;
+    this.diagnosticPath = options?.diagnosticPath;
+    this.diagnosticSha256 = options?.diagnosticSha256;
   }
 }
 
@@ -367,6 +378,128 @@ function hashFileSha256(filePath: string): string {
   return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
 }
 
+function judgeFailureReasonCode(error: unknown, hasResult: boolean): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/judge report was not seven fully scored/i.test(message)) return 'judge_report_incomplete';
+  if (/total usage rows|expected seven usage rows/i.test(message)) return 'usage_count_mismatch';
+  if (/total provider attempts|expected seven provider attempts/i.test(message)) return 'attempt_count_mismatch';
+  if (/governed Gemini judge identity|did not bind to its usage row/i.test(message)) return 'usage_identity_mismatch';
+  if (/unresolved pricing/i.test(message)) return 'unresolved_pricing';
+  if (/actual, reserved, or conservative committed spend/i.test(message)) return 'judge_cost_ceiling_mismatch';
+  return hasResult ? 'attestation_failure' : 'execution_failure';
+}
+
+type RedactedJudgeStatus = 'scored' | 'blocked' | 'skipped_budget' | 'skipped_mode' | 'unknown_status';
+
+function normalizeJudgeStatus(status: unknown): RedactedJudgeStatus {
+  if (
+    status === 'scored'
+    || status === 'blocked'
+    || status === 'skipped_budget'
+    || status === 'skipped_mode'
+  ) {
+    return status;
+  }
+  return 'unknown_status';
+}
+
+function normalizeJudgeAbortReason(reason: unknown): 'all_blocked' | 'unknown_abort_reason' {
+  return reason === 'all_blocked' ? 'all_blocked' : 'unknown_abort_reason';
+}
+
+function judgeScenarioDetailCode(status: RedactedJudgeStatus, detail: unknown): string {
+  if (status === 'scored') return 'scored';
+  const normalized = typeof detail === 'string' ? detail.trim().toLowerCase() : '';
+  if (normalized.startsWith('judge_call_failed')) return 'judge_call_failed';
+  if (normalized.startsWith('malformed_judge_json')) return 'malformed_judge_json';
+  if (normalized.startsWith('judge budget exhausted')) return 'budget_exhausted';
+  if (normalized.startsWith('projected spend')) return 'projected_spend_exceeded';
+  if (normalized.startsWith('call budget')) return 'call_budget_exhausted';
+  if (status === 'blocked') return 'blocked_unspecified';
+  if (status === 'skipped_budget') return 'skipped_budget';
+  if (status === 'skipped_mode') return 'skipped_mode';
+  return 'unknown_status';
+}
+
+function countRows(db: Database.Database | null, table: string): number {
+  if (!db?.open) return 0;
+  const present = db.prepare(
+    "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = ?",
+  ).get(table) as { present?: number } | undefined;
+  if (present?.present !== 1) return 0;
+  return Number(
+    (db.prepare(`SELECT COUNT(*) AS count FROM "${table.replaceAll('"', '""')}"`).get() as { count?: number }).count ?? 0,
+  );
+}
+
+function writePrivateFailureDiagnostic(input: {
+  runId: string;
+  ledgerPath: string;
+  db: Database.Database | null;
+  result?: ChatEvalJudgeResultLike;
+  error: unknown;
+}): { path: string; sha256: string } {
+  const scenarios = input.result?.judge?.scenarios ?? [];
+  const statusCounts: Record<string, number> = {};
+  for (const scenario of scenarios) {
+    const status = normalizeJudgeStatus(scenario.status);
+    statusCounts[status] = (statusCounts[status] ?? 0) + 1;
+  }
+  const abortReason = input.result?.judge?.abortReason;
+  const diagnostic = {
+    schema: 'nexus.chat-eval-judge-failure.v1',
+    runId: input.runId,
+    generatedAt: new Date().toISOString(),
+    reasonCode: judgeFailureReasonCode(input.error, Boolean(input.result)),
+    usageCallCount: countRows(input.db, 'api_usage'),
+    providerAttemptCount: countRows(input.db, 'ai_provider_attempt_reservations'),
+    judge: input.result?.judge ? {
+      calls: input.result.judge.calls,
+      aborted: input.result.judge.aborted,
+      ...(abortReason !== undefined ? { abortReasonCode: normalizeJudgeAbortReason(abortReason) } : {}),
+      statusCounts,
+      scenarios: scenarios.map((scenario) => {
+        const status = normalizeJudgeStatus(scenario.status);
+        return {
+          scenarioId: /^[a-zA-Z0-9._:-]{1,120}$/.test(scenario.scenarioId)
+            ? scenario.scenarioId
+            : 'invalid_scenario_id',
+          status,
+          detailCode: judgeScenarioDetailCode(status, scenario.detail),
+        };
+      }),
+    } : null,
+  };
+  const body = Buffer.from(`${JSON.stringify(diagnostic, null, 2)}\n`);
+  const runDirectory = path.dirname(input.ledgerPath);
+  const diagnosticPath = path.join(runDirectory, 'failure-diagnostic.json');
+  const temporaryPath = path.join(
+    runDirectory,
+    `.failure-diagnostic.${process.pid}.${crypto.randomBytes(8).toString('hex')}.tmp`,
+  );
+  const noFollow = typeof fs.constants.O_NOFOLLOW === 'number' ? fs.constants.O_NOFOLLOW : 0;
+  const descriptor = fs.openSync(
+    temporaryPath,
+    fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | noFollow,
+    0o600,
+  );
+  try {
+    fs.writeFileSync(descriptor, body);
+    fs.fsyncSync(descriptor);
+  } finally {
+    fs.closeSync(descriptor);
+  }
+  fs.renameSync(temporaryPath, diagnosticPath);
+  fs.chmodSync(diagnosticPath, 0o600);
+  const directory = fs.openSync(runDirectory, 'r');
+  try {
+    fs.fsyncSync(directory);
+  } finally {
+    fs.closeSync(directory);
+  }
+  return { path: diagnosticPath, sha256: hashFileSha256(diagnosticPath) };
+}
+
 export async function runWithChatEvalJudgeRuntime<T extends ChatEvalJudgeResultLike>(input: {
   runId: string;
   judgeBudgetUsd: number;
@@ -383,8 +516,8 @@ export async function runWithChatEvalJudgeRuntime<T extends ChatEvalJudgeResultL
   const previousVerifierFlag = process.env[CONTENT_EVAL_VERIFIER_FLAG];
   process.env[CONTENT_EVAL_VERIFIER_FLAG] = '1';
   let db: Database.Database | null = null;
-  let result: T;
-  let judgeUsage: ChatEvalJudgeUsageAttestation;
+  let result: T | undefined;
+  let judgeUsage: ChatEvalJudgeUsageAttestation | undefined;
   try {
     db = new Database(ledgerPath, { fileMustExist: true });
     db.pragma('journal_mode = DELETE');
@@ -410,13 +543,31 @@ export async function runWithChatEvalJudgeRuntime<T extends ChatEvalJudgeResultL
     );
     judgeUsage = attestChatEvalJudgeUsage(db, input.runId, result, input.judgeBudgetUsd);
   } catch (error) {
+    let diagnostic: { path: string; sha256: string } | undefined;
+    try {
+      diagnostic = writePrivateFailureDiagnostic({
+        runId: input.runId,
+        ledgerPath,
+        db,
+        result,
+        error,
+      });
+    } catch {}
+    const safeFailure = judgeFailureReasonCode(error, Boolean(result));
     throw new ChatEvalJudgeRuntimeError(
-      `Chat eval judge runtime failed for ${input.runId}; retained audit ledger at ${ledgerPath}: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
+      `Chat eval judge runtime failed for ${input.runId}; `
+      + `${diagnostic
+        ? `retained redacted failure diagnostic at ${diagnostic.path} sha256=${diagnostic.sha256}; `
+        : 'redacted failure diagnostic unavailable; '}`
+      + `retained audit ledger at ${ledgerPath}; reason=${safeFailure}`,
       input.runId,
       ledgerPath,
-      { cause: error },
+      {
+        ...(diagnostic ? {
+          diagnosticPath: diagnostic.path,
+          diagnosticSha256: diagnostic.sha256,
+        } : {}),
+      },
     );
   } finally {
     if (db?.open) {
@@ -433,6 +584,9 @@ export async function runWithChatEvalJudgeRuntime<T extends ChatEvalJudgeResultL
     }
   }
 
+  if (!result || !judgeUsage) {
+    throw new Error('Chat eval judge runtime completed without result attestation');
+  }
   const usageDatabaseSha256 = hashFileSha256(ledgerPath);
   return {
     result,

@@ -26,6 +26,7 @@ vi.mock('../../src/services/database', () => ({
 }));
 
 import { buildChatActionPlan, executeChatActionPlan } from '../../src/services/chat';
+import { shouldRunActionPlannerBeforeReadOnlyFastPaths } from '../../src/services/chat/planner/preflight-gates';
 import type { ChatActionPlan, ChatPlanStep } from '../../src/services/chat/types';
 
 const baseInput = {
@@ -68,6 +69,17 @@ describe('ChatActionPlanner multi-step DAG', () => {
 
   afterEach(() => {
     testDb?.close();
+  });
+
+  it('declines the governed live-eval narrative turn before either action-planner model tier', async () => {
+    const text = 'Compare one broad launch narrative with several tailored narratives. Explain when each is preferable. Do not read or change saved data.';
+
+    expect(shouldRunActionPlannerBeforeReadOnlyFastPaths(text)).toBe(false);
+    await expect(buildChatActionPlan({
+      ...baseInput,
+      text,
+      messageId: 'chat-live-eval-content-provider-owner',
+    })).resolves.toBeNull();
   });
 
   it('turns two safe-write segments into a stable DAG of independent siblings that requires confirmation', async () => {

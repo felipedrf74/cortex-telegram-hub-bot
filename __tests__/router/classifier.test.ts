@@ -872,6 +872,17 @@ describe('routeMessage — Three-Tier Routing Integration', () => {
       expect(mockClassifyMessage).not.toHaveBeenCalled();
     });
 
+    it('routes the governed live-eval target turn through the classifier before downstream tier gates', async () => {
+      const message = 'Compare one broad launch narrative with several tailored narratives. Explain when each is preferable. Do not read or change saved data.';
+      const context = { domain: 'content' as const, lastAssistantMessage: 'Here are launch content ideas.' };
+      mockClassifyMessage.mockResolvedValue({ domain: 'content', confidence: 0.91 });
+
+      const result = await routeMessage(message, context);
+
+      expect(result).toMatchObject({ method: 'classifier', domain: 'content' });
+      expect(mockClassifyMessage).toHaveBeenCalledWith(message, context, undefined, undefined);
+    });
+
     it('an explicit fueling dedupe question escapes an unrelated active context token-zero', async () => {
       const context = { domain: 'secretary' as const, lastAssistantMessage: 'Which calendar block should I use?' };
 

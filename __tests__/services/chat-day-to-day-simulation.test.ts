@@ -152,6 +152,13 @@ describe('chat day-to-day simulation harness', () => {
             involvedSkills: ['content'],
           });
         }
+        if (req.clientMessageId?.includes('c2-references')) {
+          return liveEnvelopeResult({
+            text: 'One broad narrative is easier to remember and keeps the launch consistent. Tailored narratives can be more relevant for different groups, but they cost more effort to produce and maintain.',
+            domain: 'content',
+            involvedSkills: ['content'],
+          });
+        }
         return liveEnvelopeResult({ text: 'Safe English response for the requested turn.' });
       },
       readSideEffect,
@@ -225,6 +232,18 @@ describe('chat day-to-day simulation harness', () => {
       locale: 'pt-PT',
       text: expect.stringMatching(/conteúdo/i),
     });
+    const targetProviderTurns = result.scenarios
+      .flatMap((scenario) => scenario.turns)
+      .filter((turn) => turn.targetProviderExpected === true);
+    expect(targetProviderTurns).toEqual([
+      expect.objectContaining({
+        scenarioId: 'content_creator_day',
+        turnId: 'c2-references',
+        userMessage: 'Compare one broad launch narrative with several tailored narratives. Explain when each is preferable. Do not read or change saved data.',
+        targetProviderExpected: true,
+        passed: true,
+      }),
+    ]);
     const expectedLanguages = result.scenarios
       .flatMap((scenario) => scenario.turns.map((turn) => turn.expectedLanguage));
     expect(expectedLanguages).toEqual(expect.arrayContaining(['en', 'pt-BR', 'pt-PT']));
