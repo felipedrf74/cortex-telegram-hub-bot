@@ -88,11 +88,11 @@ describe('authenticated chat live-eval routes', () => {
     db = new Database(':memory:');
     db.exec(`
       CREATE TABLE api_usage (
-        user_id INTEGER, request_source TEXT, base_category TEXT, run_id TEXT,
+        user_id INTEGER, request_source TEXT, base_category TEXT, job_name TEXT, run_id TEXT,
         provider TEXT, cost_usd REAL, pricing_status TEXT
       );
       CREATE TABLE ai_provider_attempt_reservations (
-        user_id INTEGER, request_source TEXT, base_category TEXT, run_id TEXT,
+        user_id INTEGER, request_source TEXT, base_category TEXT, job_name TEXT, run_id TEXT,
         provider TEXT, reserved_cost_usd REAL
       );
       CREATE TABLE chat_live_eval_preparations (
@@ -165,8 +165,8 @@ describe('authenticated chat live-eval routes', () => {
   });
 
   it('returns aggregate provider and reset evidence without raw prompts or messages', () => {
-    db.prepare(`INSERT INTO api_usage VALUES (42, 'interactive', 'chat_live_eval_local', 'chat-eval-route-test', 'ollama', 0, 'zero-cost')`).run();
-    db.prepare(`INSERT INTO ai_provider_attempt_reservations VALUES (42, 'interactive', 'chat_live_eval_local', 'chat-eval-route-test', 'ollama', 0)`).run();
+    db.prepare(`INSERT INTO api_usage VALUES (42, 'interactive', 'chat_live_eval_local', 'chat_live_eval:content_creator_day', 'chat-eval-route-test', 'ollama', 0, 'zero-cost')`).run();
+    db.prepare(`INSERT INTO ai_provider_attempt_reservations VALUES (42, 'interactive', 'chat_live_eval_local', 'chat_live_eval:content_creator_day', 'chat-eval-route-test', 'ollama', 0)`).run();
     db.prepare(`INSERT INTO chat_live_eval_preparations VALUES (?, 'morning_planning', 'local_engine', 42, 42, 'single-tenant-live-v2', ?, '{"messages":1}')`)
       .run('chat-eval-route-test', 'a'.repeat(64));
     const handler = routes().get('GET /eval/evidence')!;

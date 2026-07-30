@@ -30,6 +30,10 @@ export type ChatLiveEvalMode = 'local_engine' | 'real_provider';
 export type ChatLiveEvalPhase = 'preflight' | 'reset' | 'turn' | 'evidence';
 export type ChatLiveEvalScenarioId = typeof CHAT_LIVE_EVAL_SCENARIO_IDS[number];
 
+export const CHAT_LIVE_EVAL_REQUIRED_TARGET_PROVIDER_SCENARIO_ID: ChatLiveEvalScenarioId = 'content_creator_day';
+const CHAT_LIVE_EVAL_REQUIRED_TARGET_PROVIDER_JOB_NAME =
+  `chat_live_eval:${CHAT_LIVE_EVAL_REQUIRED_TARGET_PROVIDER_SCENARIO_ID}`;
+
 export interface ChatLiveEvalBudget {
   totalCeilingUsd: number;
   targetCeilingUsd: number;
@@ -329,19 +333,26 @@ export function readChatLiveEvalRunEvidence(
     SELECT
       lower(trim(COALESCE(provider, ''))) AS provider,
       COALESCE(cost_usd, 0) AS cost_usd,
-      lower(trim(COALESCE(pricing_status, ''))) AS pricing_status
+      lower(trim(COALESCE(pricing_status, ''))) AS pricing_status,
+      trim(COALESCE(job_name, '')) AS job_name
     FROM api_usage
     WHERE user_id = ?
       AND request_source = ?
       AND base_category = ?
       AND run_id = ?${tenantPredicate}
-  `).all(...usageParams) as Array<{ provider: string; cost_usd: number; pricing_status: string }>;
+  `).all(...usageParams) as Array<{
+    provider: string;
+    cost_usd: number;
+    pricing_status: string;
+    job_name: string;
+  }>;
 
   const attemptRows = tableColumns(db, 'ai_provider_attempt_reservations').size > 0
     ? db.prepare(`
         SELECT
           lower(trim(COALESCE(provider, ''))) AS provider,
-          COALESCE(reserved_cost_usd, 0) AS reserved_cost_usd
+          COALESCE(reserved_cost_usd, 0) AS reserved_cost_usd,
+          trim(COALESCE(job_name, '')) AS job_name
         FROM ai_provider_attempt_reservations
         WHERE user_id = ?
           AND request_source = ?
@@ -350,6 +361,7 @@ export function readChatLiveEvalRunEvidence(
       `).all(context.userId, 'interactive', context.targetBaseCategory, context.runId) as Array<{
         provider: string;
         reserved_cost_usd: number;
+        job_name: string;
       }>
     : [];
 
@@ -395,6 +407,12 @@ export function readChatLiveEvalRunEvidence(
 
   if (usageRows.length === 0) reasons.push('no_target_provider_usage');
   if (attemptRows.length === 0) reasons.push('no_target_provider_attempt');
+  if (!usageRows.some((row) => row.job_name === CHAT_LIVE_EVAL_REQUIRED_TARGET_PROVIDER_JOB_NAME)) {
+    reasons.push('missing_required_target_provider_scenario_usage');
+  }
+  if (!attemptRows.some((row) => row.job_name === CHAT_LIVE_EVAL_REQUIRED_TARGET_PROVIDER_JOB_NAME)) {
+    reasons.push('missing_required_target_provider_scenario_attempt');
+  }
   if (preparationRows.length === 0) reasons.push('no_scenario_preparation_evidence');
   if (unresolvedPricingCount > 0) reasons.push('unresolved_provider_pricing');
   if (committedCeilingUsd > context.budget.targetCeilingUsd + Number.EPSILON) {

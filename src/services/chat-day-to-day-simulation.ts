@@ -136,6 +136,12 @@ export interface DayToDayTurnExpectation {
   expectedSideEffects?: readonly ChatEvalSideEffectExpectation[];
   /** Expected response language for live deterministic scoring. Defaults to English in the v2 live profile. */
   expectedLanguage?: string;
+  /**
+   * Marks the one ordinary live-profile turn intentionally shaped to reach a
+   * normal model-backed /message owner. The aggregate run-evidence endpoint
+   * remains authoritative for proving that a metered target call occurred.
+   */
+  requiresTargetProvider?: boolean;
   minAverageScore?: number;
 }
 
@@ -207,6 +213,8 @@ export interface DayToDayTurnResult {
   executionStatus: 'executed' | 'blocked';
   /** Live profile expectation used for aggregate locale evidence. */
   expectedLanguage?: string;
+  /** Profile intent only; durable target usage is attested separately. */
+  targetProviderExpected?: boolean;
   /** Live (non-fixture) executors only: deterministic scorer evidence. */
   scorerDimensions?: ChatEvalDimensionScore[];
 }
@@ -933,6 +941,16 @@ const LIVE_TURN_OVERRIDES: Record<string, Pick<DayToDayTurn, 'id' | 'userMessage
       expectedDomain: 'content',
       semanticMustInclude: ['conteúdo', 'ideias'],
       expectedLanguage: 'pt-PT',
+    },
+  },
+  'content_creator_day:c2-references': {
+    id: 'c2-references',
+    userMessage: 'Compare one broad launch narrative with several tailored narratives. Explain when each is preferable. Do not read or change saved data.',
+    expectation: {
+      expectedSkills: ['content'],
+      expectedDomain: 'content',
+      semanticMustInclude: ['narrative'],
+      requiresTargetProvider: true,
     },
   },
   'frustrated_contradictory:l2-frustrated': {
@@ -1740,6 +1758,7 @@ function evaluateTurn(
     failures,
     passed: failures.length === 0,
     executionStatus: 'executed',
+    ...(expectation.requiresTargetProvider ? { targetProviderExpected: true } : {}),
   };
 }
 
