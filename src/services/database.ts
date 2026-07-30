@@ -217,8 +217,17 @@ export function withDatabaseForTest<T>(testDb: Database.Database, callback: () =
 export async function withDatabaseForTestAsync<T>(
   testDb: Database.Database,
   callback: () => Promise<T>,
+  options: { requireUninitialized?: boolean } = {},
 ): Promise<T> {
   const previousDb = db as Database.Database | undefined;
+  if (
+    options.requireUninitialized
+    && (previousDb !== undefined || storage !== null)
+  ) {
+    throw new Error(
+      'Standalone operational-tool database binding requires an uninitialized process database.',
+    );
+  }
   (db as any) = testDb;
   try {
     return await callback();

@@ -2826,7 +2826,7 @@ const EXPECTED_ENVELOPES: Record<string, unknown> = {
       "text": "Before I make a destructive change, I need explicit confirmation. Please confirm the exact action you want, including the affected item, plan, event, or message. I will not delete, cancel, send, or clear anything without that confirmation.",
       "domain": "secretary",
       "routeMethod": "confirmation-required",
-      "confidence": 0.92,
+      "confidence": 0.7813,
       "buttons": null,
       "metadata": {
         "type": "chat_action_confirmation_required",
@@ -2886,7 +2886,7 @@ const EXPECTED_ENVELOPES: Record<string, unknown> = {
           "language": "en",
           "ambiguityReasons": [],
           "routeMethod": "confirmation-required",
-          "confidence": 0.9,
+          "confidence": 0.7813,
           "groundingFacts": [
             {
               "statement": "Authenticated user and tenant scope are present for this chat turn.",

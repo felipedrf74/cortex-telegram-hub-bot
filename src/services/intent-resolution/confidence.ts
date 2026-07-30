@@ -22,9 +22,9 @@
  *
  * Fail-open contract: the table is loaded once per process; a missing or
  * invalid file falls back to the embedded BOOTSTRAP constants, which
- * reproduce the legacy hardcoded values EXACTLY. Until Felipe labels the
- * routing corpus and regenerates the file in corpus mode, runtime behavior is
- * byte-identical to the pre-M14 constants.
+ * reproduce the legacy hardcoded values EXACTLY. The checked-in artifact is
+ * generated from the reviewed routing corpus; bootstrap is now only the
+ * runtime fallback for a missing or invalid artifact.
  */
 
 import fs from 'fs';
@@ -366,6 +366,49 @@ export interface BuildCorpusRoutingCalibrationInput {
   baseline?: RoutingCalibrationTable;
 }
 
+export interface ClassifierFloorCalibrationResult {
+  lowConfidenceFloor: number;
+  coverageComplete: boolean;
+  calibrated: boolean;
+}
+
+/**
+ * Derive the classifier safety floor only from complete corpus coverage.
+ *
+ * A bounded cache refresh can be ordered by domain and is therefore not a
+ * representative sample. Even at complete coverage, retaining the baseline
+ * because no threshold satisfies the target is not a successful calibration.
+ */
+export function deriveClassifierFloorCalibration(input: {
+  observations: ClassifierCalibrationObservation[];
+  corpusSize: number;
+  baselineFloor: number;
+  target?: number;
+}): ClassifierFloorCalibrationResult {
+  const coverageComplete = input.corpusSize > 0
+    && input.observations.length === input.corpusSize;
+  if (!coverageComplete) {
+    return {
+      lowConfidenceFloor: input.baselineFloor,
+      coverageComplete: false,
+      calibrated: false,
+    };
+  }
+
+  const threshold = recommendThresholdMeetingTarget(
+    input.observations.map((observation) => ({
+      confidence: observation.statedConfidence,
+      correct: observation.correct,
+    })),
+    input.target ?? DEFAULT_CLARIFY_ACCURACY_TARGET,
+  );
+  return {
+    lowConfidenceFloor: threshold ?? input.baselineFloor,
+    coverageComplete: true,
+    calibrated: threshold !== null,
+  };
+}
+
 /**
  * Build a corpus-mode calibration table from replayed labeled observations.
  * Deterministic, zero LLM. Per-branch/bucket smoothing: buckets with fewer
@@ -409,12 +452,17 @@ export function buildCorpusRoutingCalibration(
     };
   });
 
-  const llmObservations = (input.llmClassifier ?? []).map((observation) => ({
-    confidence: observation.statedConfidence,
-    correct: observation.correct,
-  }));
-  const lowConfidenceFloor = recommendThresholdMeetingTarget(llmObservations, target)
-    ?? baseline.classifier.lowConfidenceFloor;
+  // The classifier floor affects runtime behavior even while manifest prompt
+  // routing is OFF. A partial cache can be badly skewed by refresh ordering
+  // (for example, the first 25 rows may all be one domain), so it is not a
+  // representative basis for lowering this guard. Keep the reviewed baseline
+  // until every labeled corpus item has an LLM-cache observation.
+  const classifierFloor = deriveClassifierFloorCalibration({
+    observations: input.llmClassifier ?? [],
+    corpusSize: input.corpusSize,
+    baselineFloor: baseline.classifier.lowConfidenceFloor,
+    target,
+  });
 
   const calibrate = (rawScore: number): number => {
     for (const bucket of scoreBuckets) {
@@ -441,7 +489,7 @@ export function buildCorpusRoutingCalibration(
       overrideThreshold: baseline.orchestrator.overrideThreshold,
     },
     classifier: {
-      lowConfidenceFloor,
+      lowConfidenceFloor: classifierFloor.lowConfidenceFloor,
       pinnedConfidenceMin: baseline.classifier.pinnedConfidenceMin,
     },
     intentResolver: { scoreBuckets },

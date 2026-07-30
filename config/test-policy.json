@@ -262,6 +262,26 @@
         "reason": "The compact affected-group policy replaces the retired inventory-heavy tier governance while preserving exact deterministic partitions."
       },
       {
+        "test": "__tests__/services/intent-resolution/confidence.test.ts",
+        "replacementTests": [
+          "__tests__/services/intent-resolution/confidence.test.ts"
+        ],
+        "sources": [
+          "src/services/intent-resolution/confidence.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/intent-resolution/confidence.ts:388-395",
+            "anchor": "const coverageComplete = input.corpusSize > 0",
+            "behavior": "Partial or empty LLM-cache coverage must retain the baseline classifier safety floor and report calibration as incomplete.",
+            "replacementTest": "__tests__/services/intent-resolution/confidence.test.ts",
+            "ownerTestNamePattern": "keeps the baseline classifier floor when LLM cache coverage is partial$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The corpus calibration contract replaces the bootstrap-only artifact assertion while retaining fail-closed classifier-floor behavior for incomplete LLM-cache coverage."
+      },
+      {
         "test": "__tests__/scripts/ollama-operational-transactions.test.ts",
         "replacementTests": [
           "__tests__/scripts/ollama-lean-systemd.test.ts",
