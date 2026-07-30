@@ -26,7 +26,7 @@
  *   `pricing_status='zero-cost'`, `local_request_units=1`.
  */
 
-import { randomBytes } from 'node:crypto';
+import { randomInt } from 'node:crypto';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import { getDb } from './database';
@@ -282,11 +282,13 @@ const PHASE_K_ANSWER_ONLY_GUARD = [
 function buildPhaseKContentConcisionGuard(boundaryMarker: string): string {
   return [
     '',
+    '— MANDATORY RESPONSE FORMAT —',
     'For routine Content chat answers, use at most 140 words and finish',
     'with a complete sentence before the output limit.',
-    'Start with one direct sentence that names the requested content subject.',
-    `Immediately after that first complete sentence, write exactly ${boundaryMarker}`,
-    'Do not write that boundary token anywhere else.',
+    'The first line must contain exactly one complete sentence that names the requested content subject.',
+    `On that same line, immediately after the sentence punctuation, copy exactly ${boundaryMarker}`,
+    'Continue any remaining answer on the next line.',
+    'Omitting, changing, or repeating that boundary token invalidates the response.',
   ].join('\n');
 }
 
@@ -323,7 +325,8 @@ function phaseKDomainSystemPromptSuffix(
 type RoutineContentNoticeLocale = 'en-US' | 'pt-BR' | 'pt-PT';
 
 function createRoutineContentBoundaryMarker(): string {
-  return `[[NEXUS_COMPLETE_${randomBytes(8).toString('hex').toUpperCase()}]]`;
+  const nonce = randomInt(0, 100_000_000).toString(10).padStart(8, '0');
+  return `<<END:${nonce}>>`;
 }
 
 function removeRoutineContentBoundaryMarker(

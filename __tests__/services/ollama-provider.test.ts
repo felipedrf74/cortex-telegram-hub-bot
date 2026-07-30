@@ -181,7 +181,7 @@ function mockRoutineContentResponseWithBoundary(input: {
         messages: Array<{ role: string; content: string }>;
       };
       const systemMessage = request.messages.find((message) => message.role === 'system')?.content ?? '';
-      const marker = systemMessage.match(/\[\[NEXUS_COMPLETE_[A-F0-9]{16}\]\]/u)?.[0];
+      const marker = systemMessage.match(/<<END:\d{8}>>/u)?.[0];
       if (!marker) throw new Error('routine content boundary marker missing from request');
       return makeChatResponse({
         content: `${input.prefix}${marker}${input.tail ?? ''}`,
@@ -403,6 +403,8 @@ describe('OllamaProvider — scoped state context', () => {
     expect(request.options.num_predict).toBe(256);
     expect(systemMessage).toContain('at most 140 words');
     expect(systemMessage).toContain('names the requested content subject');
+    expect(systemMessage).toContain('first line must contain exactly one complete sentence');
+    expect(systemMessage).toMatch(/<<END:\d{8}>>/u);
   });
 
   it('certifies only a complete content prefix when the routine cap is reached', async () => {
