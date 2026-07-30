@@ -69,6 +69,9 @@ One page for operating the production chat-quality loop (M22).
   run for that exact-SHA promotion gate. Non-chat releases skip this gate
   automatically; there is no operator bypass. If Ollama is not on the default host endpoint, set
   `NEXUS_CHAT_EVAL_OLLAMA_BASE_URL`; this does not permit a cloud provider.
+  During local evidence seeding the script pauses only `nexus-hub`, writes the
+  bind-mounted SQLite database offline, restarts the service, and re-attests
+  health plus the zero-cloud profile before minting the synthetic session.
 - The first live baseline runs only on staging against a dedicated synthetic
   user/tenant. Set the staging server's `CHAT_EVAL_DEDICATED_TENANT_ID` to that
   account's shared user/tenant id; its principal email must end in `.invalid`.

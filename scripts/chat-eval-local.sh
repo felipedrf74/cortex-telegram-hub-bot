@@ -4,7 +4,8 @@
 #
 # Flow:
 #   1. Boot the sandbox via scripts/local-up.sh (idempotent).
-#   2. Seed local ChatV2 evidence via scripts/chatv2-seed-local-evidence.ts.
+#   2. Attest the Ollama-only profile, pause nexus-hub, seed the bind-mounted
+#      SQLite database offline, then restart nexus-hub and wait for health.
 #   3. Mint a local dev session via scripts/local-ios-debug-auth.mjs — the
 #      same loopback-only path the Cockpit "Mint nexushubbot iOS auth"
 #      button uses. The access token is exported into an env var and never
@@ -78,6 +79,8 @@ OUT_DIR="${CHAT_EVAL_OUT_DIR:-reports/chat-eval}"
 HISTORY_DB="${CHAT_EVAL_DB_PATH:-reports/chat-eval/chat-eval-history.sqlite}"
 AUTH_FILE="${NEXUS_CHAT_EVAL_AUTH_FILE:-$ROOT/.local/chat-eval/local-auth.json}"
 SEED_ROWS="${NEXUS_CHAT_EVAL_SEED_ROWS:-64}"
+COMPOSE_ARGS=(-f docker-compose.local.yml -f docker-compose.chat-eval-local.yml)
+NEXUS_HUB_STOPPED_FOR_SEED=0
 
 # Resolve the host-side sandbox DB path the same way local-ios-debug-auth.mjs
 # does: the container path /app/data/* maps to ./data/* on the host.
@@ -98,7 +101,8 @@ if [ "$DRY_RUN" = "1" ]; then
   echo "  provider:     Ollama-only zero-cloud profile (NEXUS_LOCAL_ALLOW_MODEL_CALLS=1, NEXUS_MODEL_FIXTURE_MODE=0)"
   echo "  1. ./scripts/local-up.sh"
   echo "  2. attest Ollama-only zero-cloud runtime profile in both Docker services"
-  echo "  3. npx tsx scripts/chatv2-seed-local-evidence.ts --write --replace --rows=$SEED_ROWS --db <sandbox DB>"
+  echo "  3. stop nexus-hub; seed the bind-mounted SQLite DB offline; restart, wait for health, and re-attest"
+  echo "     npx tsx scripts/chatv2-seed-local-evidence.ts --write --replace --rows=$SEED_ROWS --db <sandbox DB>"
   echo "  4. node scripts/local-ios-debug-auth.mjs   # mint local dev session -> $AUTH_FILE"
   echo "  5. npx tsx scripts/run-chat-eval-live.ts --mode local_engine --base-url $BASE_URL --auth-token-env $AUTH_TOKEN_ENV --out-dir $OUT_DIR --persist-db <history DB>"
   echo "  6. teardown: $TEARDOWN_PLAN"
@@ -135,8 +139,7 @@ require_clean_evidence_checkout() {
 }
 
 attest_zero_cloud_profile() {
-  local compose_args=(-f docker-compose.local.yml -f docker-compose.chat-eval-local.yml)
-  docker compose "${compose_args[@]}" exec -T content-engine sh -eu -c '
+  docker compose "${COMPOSE_ARGS[@]}" exec -T content-engine sh -eu -c '
     [ "${NEXUS_LOCAL_ALLOW_MODEL_CALLS:-}" = "1" ]
     [ "${CONTENT_ENGINE_FIXTURE_MODE:-}" != "1" ]
     [ "${CONTENT_ENGINE_RESEARCH_NETWORK_DISABLED:-}" = "1" ]
@@ -151,7 +154,7 @@ attest_zero_cloud_profile() {
     echo "chat-eval-local: content-engine did not attest the live zero-cloud profile; refusing evidence" >&2
     return 1
   }
-  docker compose "${compose_args[@]}" exec -T nexus-hub sh -eu -c '
+  docker compose "${COMPOSE_ARGS[@]}" exec -T nexus-hub sh -eu -c '
     [ "${NEXUS_LOCAL_ALLOW_MODEL_CALLS:-}" = "1" ]
     [ "${NEXUS_MODEL_FIXTURE_MODE:-}" != "1" ]
     [ "${NEXUS_CHAT_EVAL_ALLOW_DOCKER_GATEWAY:-}" = "1" ]
@@ -172,13 +175,50 @@ attest_zero_cloud_profile() {
     echo "chat-eval-local: nexus-hub did not attest the Ollama-only zero-cloud profile; refusing evidence" >&2
     return 1
   }
-  docker compose "${compose_args[@]}" exec -T nexus-hub sh -eu -c '
+  docker compose "${COMPOSE_ARGS[@]}" exec -T nexus-hub sh -eu -c '
     curl -fsS "${OLLAMA_BASE_URL%/}/api/tags" >/dev/null
   ' || {
     echo "chat-eval-local: nexus-hub cannot reach its configured Ollama daemon; refusing evidence" >&2
     return 1
   }
   echo "chat-eval-local: Ollama-only zero-cloud runtime profile attested in content-engine and nexus-hub"
+}
+
+wait_for_nexus_hub_health() {
+  local attempt=0
+  while [ "$attempt" -lt 90 ]; do
+    if curl -fsS "$BASE_URL/health" >/dev/null 2>&1; then
+      return 0
+    fi
+    attempt=$((attempt + 1))
+    sleep 1
+  done
+  echo "chat-eval-local: nexus-hub did not become healthy within 90s after evidence seeding" >&2
+  return 1
+}
+
+stop_nexus_hub_for_evidence_seed() {
+  # Docker Desktop bind mounts do not provide a safe cross-VM SQLite lock
+  # domain. Keep the content engine up, but close the Node database connection
+  # before the host-side seeder changes schema or replaces evidence rows.
+  NEXUS_HUB_STOPPED_FOR_SEED=1
+  docker compose "${COMPOSE_ARGS[@]}" stop nexus-hub
+}
+
+restart_nexus_hub_after_evidence_seed() {
+  docker compose "${COMPOSE_ARGS[@]}" start nexus-hub || return 1
+  wait_for_nexus_hub_health || return 1
+  NEXUS_HUB_STOPPED_FOR_SEED=0
+}
+
+restore_nexus_hub_on_exit() {
+  local status=$?
+  trap - EXIT
+  if [ "$NEXUS_HUB_STOPPED_FOR_SEED" = "1" ]; then
+    echo "chat-eval-local: restoring nexus-hub after interrupted/failed evidence seeding" >&2
+    docker compose "${COMPOSE_ARGS[@]}" start nexus-hub >/dev/null 2>&1 || true
+  fi
+  exit "$status"
 }
 
 require_clean_evidence_checkout
@@ -192,11 +232,22 @@ echo "chat-eval-local: [1/5] booting Ollama-only zero-cloud local sandbox (idemp
 echo "chat-eval-local: [2/5] attesting Ollama-only zero-cloud runtime profile"
 attest_zero_cloud_profile
 
-echo "chat-eval-local: [3/5] seeding local ChatV2 evidence ($SEED_ROWS rows)"
+echo "chat-eval-local: [3/5] seeding local ChatV2 evidence offline ($SEED_ROWS rows)"
+trap restore_nexus_hub_on_exit EXIT
+stop_nexus_hub_for_evidence_seed || {
+  echo "chat-eval-local: could not stop nexus-hub for safe SQLite evidence seeding" >&2
+  exit 1
+}
 npx tsx scripts/chatv2-seed-local-evidence.ts --write --replace --rows="$SEED_ROWS" --db "$HOST_DB" || {
   echo "chat-eval-local: evidence seeding failed (scripts/chatv2-seed-local-evidence.ts against $HOST_DB)" >&2
   exit 1
 }
+restart_nexus_hub_after_evidence_seed || {
+  echo "chat-eval-local: nexus-hub restart/health check failed after evidence seeding" >&2
+  exit 1
+}
+trap - EXIT
+attest_zero_cloud_profile
 
 echo "chat-eval-local: [4/5] minting local dev session"
 NEXUS_LOCAL_BASE_URL="$BASE_URL" \
