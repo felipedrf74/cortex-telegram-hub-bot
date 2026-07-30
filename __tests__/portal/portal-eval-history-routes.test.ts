@@ -209,6 +209,103 @@ describe('portal eval history routes', () => {
     expect(payload.body).toEqual({ ok: true, runId: 'chat-eval-route', runRowId: 42, scenarioCount: result.scenarioCount });
   });
 
+  it('preserves durable judge-ledger evidence while normalizing cost attestation', async () => {
+    const { routes, app } = makeApp();
+    registerPortalEvalHistoryRoutes(app as any);
+    const result = await runChatEvaluationSuite({
+      mode: 'fixture',
+      generatedAt: '2026-04-29T12:00:00.000Z',
+    });
+    const costAttestation = {
+      contractVersion: 'chat-live-eval-v1',
+      attested: true,
+      reasons: [],
+      totalCeilingUsd: 0.5,
+      targetCeilingUsd: 0.45,
+      judgeCeilingUsd: 0.05,
+      targetActualSpendUsd: 0.1,
+      targetReservedAttemptCeilingUsd: 0.02,
+      targetCommittedCeilingUsd: 0.12,
+      judgeEstimatedSpendUsd: 0.007,
+      judgeActualSpendUsd: 0.003,
+      judgeReservedAttemptCeilingUsd: 0.007,
+      judgeCommittedCeilingUsd: 0.01,
+      judgeUsageCallCount: 7,
+      judgeProviderAttemptCount: 7,
+      judgeProviders: ['gemini'],
+      judgeModels: ['gemini-2.5-flash-lite'],
+      judgeUnresolvedPricingCount: 0,
+      judgeUsageDatabaseSha256: 'b'.repeat(64),
+      totalActualSpendUsd: 0.103,
+      totalEstimatedActualSpendUsd: 0.103,
+      totalConservativeCommitmentUsd: 0.13,
+      targetUsageCallCount: 12,
+      targetProviderAttemptCount: 13,
+      targetProviders: ['gemini'],
+      unresolvedPricingCount: 0,
+      preparation: {
+        scenarioCount: 7,
+        scenarioIds: ['scenario-a'],
+        seedProfileVersions: ['single-tenant-live-v2'],
+        seedProfileHashes: ['a'.repeat(64)],
+        aggregateResetCounts: {},
+      },
+    };
+    mocks.persistChatEvalRun.mockReturnValue({
+      runId: 'chat-eval-ledger-route',
+      runRowId: 43,
+      scenarioCount: result.scenarioCount,
+    });
+
+    const { payload, res } = makeResponse();
+    routes.get('POST /api/portal/eval-history')?.at(-1)!({
+      body: {
+        result,
+        runId: 'chat-eval-ledger-route',
+        costAttestation,
+      },
+    }, res);
+
+    expect(mocks.persistChatEvalRun).toHaveBeenCalledWith(result, expect.objectContaining({
+      costAttestation,
+    }));
+    expect(payload.body).toEqual({
+      ok: true,
+      runId: 'chat-eval-ledger-route',
+      runRowId: 43,
+      scenarioCount: result.scenarioCount,
+    });
+
+    mocks.persistChatEvalRun.mockClear();
+    const { payload: invalidPayload, res: invalidRes } = makeResponse();
+    routes.get('POST /api/portal/eval-history')?.at(-1)!({
+      body: {
+        result: { ...result, mode: 'local_engine' },
+        runId: 'chat-eval-missing-ledger-identity',
+        costAttestation: {
+          ...costAttestation,
+          judgeUsageDatabaseSha256: undefined,
+        },
+        preflightAttestation: {
+          contractVersion: 'chat-live-eval-v1',
+          mode: 'local_engine',
+          runId: 'chat-eval-missing-ledger-identity',
+          providerPolicy: 'local_only',
+          productionDataUsed: false,
+          seedProfileVersion: 'single-tenant-live-v2',
+          supportedScenarioIds: ['scenario-a'],
+        },
+      },
+    }, invalidRes);
+
+    expect(invalidPayload.statusCode).toBe(400);
+    expect(invalidPayload.body).toMatchObject({
+      ok: false,
+      error: { code: 'INVALID_EVAL_EVIDENCE' },
+    });
+    expect(mocks.persistChatEvalRun).not.toHaveBeenCalled();
+  });
+
   it('rejects missing or malformed eval results', () => {
     const { routes, app } = makeApp();
     registerPortalEvalHistoryRoutes(app as any);

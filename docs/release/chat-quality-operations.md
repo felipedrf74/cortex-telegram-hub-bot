@@ -2,7 +2,7 @@
 
 Status: current
 Owner: Felipe
-Last verified: 2026-07-29
+Last verified: 2026-07-30
 
 One page for operating the production chat-quality loop (M22).
 
@@ -73,14 +73,53 @@ One page for operating the production chat-quality loop (M22).
   user/tenant. Set the staging server's `CHAT_EVAL_DEDICATED_TENANT_ID` to that
   account's shared user/tenant id; its principal email must end in `.invalid`.
   Put its bearer token in the operator shell as `CHAT_EVAL_AUTH_TOKEN`, never
-  in argv or evidence. Run from a clean checkout with exactly
-  `--mode real_provider --base-url <staging-url> --budget-usd 0.50`. The hard
-  split is $0.45 for target-provider attempts and $0.05 for flash-lite judging.
+  in argv or evidence. Run from a clean checkout with exactly:
+
+  ```text
+  npm run chat:eval-live -- \
+    --mode real_provider \
+    --base-url <staging-url> \
+    --budget-usd 0.50 \
+    --out-dir docs/release/eval-evidence
+  ```
+
+  The hard split is $0.45 for target-provider attempts and $0.05 for
+  flash-lite judging.
+  The CLI creates one private ignored judge ledger at
+  `.local/chat-eval/<run-id>/judge-usage.sqlite` (directory mode `0700`, file
+  mode `0600`). Its import-free entry bootstrap disables dotenv before any
+  project/config module loads. Supply the approved Gemini credential through
+  the operator's secret-injection wrapper; never place it in argv, evidence,
+  or the ledger. A valid run requires exactly seven total, matched,
+  resolved-price Gemini `gemini-2.5-flash-lite` usage rows and exactly seven
+  total durable pre-network attempt reservations in that fresh ledger. Rows
+  missing the run attribution or attributed to another run invalidate the
+  evidence. Its cost attestation records actual judge spend separately from
+  the retained attempt ceilings and refuses either the judge split or total
+  budget if the conservative commitment would exceed it. Keep the private
+  ledger until the archived pair is committed and the staging baseline is
+  frozen; retain it only in an access-controlled release artifact if longer
+  audit retention is required.
   Set `CHAT_EVAL_PORTAL_URL` and `CHAT_EVAL_PORTAL_TOKEN` to post through the
-  admin-authenticated staging portal; never put either token in evidence.
-  Confirm the run appears on `/chat-quality`. Copy its redacted JSON and
-  Markdown reports to the exact pair
-  `docs/release/eval-evidence/<run-id>.{json,md}`.
+  admin-authenticated staging portal; the portal token has no argv flag and
+  must never enter evidence.
+  Confirm the run appears on `/chat-quality`. The redacted JSON and Markdown
+  reports must be the exact pair
+  `docs/release/eval-evidence/<run-id>.{json,md}`. Never blindly rerun paid
+  work. Before its first portal POST, the CLI atomically saves the exact
+  request body as the private `0600` file
+  `.local/chat-eval/<run-id>/portal-retry-payload.json`. If the provider run
+  completed but the portal POST failed, leave `CHAT_EVAL_PORTAL_TOKEN` in the
+  approved secret-injected environment and retry only that exact POST:
+
+  ```text
+  npx tsx scripts/replay-chat-eval-portal.ts \
+    --payload .local/chat-eval/<run-id>/portal-retry-payload.json \
+    --portal-url <staging-url>
+  ```
+
+  The replay command performs no evaluator or provider work, verifies the
+  payload is a private regular file, and reports its SHA-256 identity.
 - Felipe then explicitly freezes that first baseline by sending the portal
   admin-authenticated request below to the staging portal. Acceptance is
   staging-only, requires the exact synthetic/preflight/cost/SHA/scenario

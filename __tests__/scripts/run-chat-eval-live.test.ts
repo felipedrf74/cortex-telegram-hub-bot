@@ -2,10 +2,11 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_AUTH_TOKEN_ENV,
   attestEvidenceCheckout,
+  buildRunCostAttestation,
   buildRunPlan,
   parseArgs,
   type EvidenceGitReader,
-} from '../../scripts/run-chat-eval-live';
+} from '../../scripts/run-chat-eval-live-runner';
 
 const FULL_SHA = 'a'.repeat(40);
 
@@ -66,6 +67,7 @@ describe('run-chat-eval-live CLI safety guards', () => {
       expect(options.authTokenEnv).toBe('MY_EVAL_JWT');
       // Tokens must never travel through argv: there is no such flag.
       expect(() => parseArgs(['--auth-token', 'secret'], {})).toThrow(/Unknown argument/);
+      expect(() => parseArgs(['--portal-token', 'secret'], {})).toThrow(/Unknown argument/);
     });
   });
 
@@ -114,6 +116,98 @@ describe('run-chat-eval-live CLI safety guards', () => {
       );
       expect(plan.executor?.mode).toBe('real_provider');
       expect(plan.judgeOptions).toEqual({ maxUsd: 0.05 });
+    });
+  });
+
+  describe('real-provider judge usage accounting', () => {
+    it('uses durable judge actual and retained-attempt evidence for actual and conservative totals', () => {
+      const attestation = buildRunCostAttestation(
+        {
+          mode: 'real_provider',
+          scenarioCount: 7,
+          judge: {
+            calls: 7,
+            estimatedSpendUsd: 0.007,
+            aborted: false,
+          },
+        } as any,
+        {
+          version: 'chat-live-eval-v1',
+          totalCeilingUsd: 0.5,
+          judgeCeilingUsd: 0.05,
+          target: {
+            ceilingUsd: 0.45,
+            actualSpendUsd: 0.1,
+            reservedAttemptCeilingUsd: 0.02,
+            committedCeilingUsd: 0.12,
+            usageCallCount: 18,
+            providerAttemptCount: 18,
+            providers: ['gemini'],
+            unresolvedPricingCount: 0,
+          },
+          preparation: {
+            scenarioCount: 7,
+            scenarioIds: [],
+            seedProfileVersions: [],
+            seedProfileHashes: [],
+          },
+          attested: true,
+          reasons: [],
+        } as any,
+        {
+          attested: true,
+          reasons: [],
+          usageCallCount: 7,
+          providerAttemptCount: 7,
+          actualSpendUsd: 0.003,
+          reservedAttemptCeilingUsd: 0.007,
+          committedCeilingUsd: 0.01,
+          providers: ['gemini'],
+          models: ['gemini-2.5-flash-lite'],
+          unresolvedPricingCount: 0,
+          usageDatabaseSha256: 'b'.repeat(64),
+        },
+      );
+
+      expect(attestation).toMatchObject({
+        judgeEstimatedSpendUsd: 0.007,
+        judgeActualSpendUsd: 0.003,
+        judgeReservedAttemptCeilingUsd: 0.007,
+        judgeCommittedCeilingUsd: 0.01,
+        judgeUsageCallCount: 7,
+        judgeProviderAttemptCount: 7,
+        judgeProviders: ['gemini'],
+        judgeModels: ['gemini-2.5-flash-lite'],
+        judgeUnresolvedPricingCount: 0,
+        judgeUsageDatabaseSha256: 'b'.repeat(64),
+        totalActualSpendUsd: 0.103,
+        totalEstimatedActualSpendUsd: 0.103,
+        totalConservativeCommitmentUsd: 0.13,
+      });
+    });
+
+    it('refuses real-provider cost evidence without a durable judge usage attestation', () => {
+      expect(() => buildRunCostAttestation(
+        { mode: 'real_provider', judge: { estimatedSpendUsd: 0.007 } } as any,
+        {
+          version: 'chat-live-eval-v1',
+          totalCeilingUsd: 0.5,
+          judgeCeilingUsd: 0.05,
+          target: {
+            ceilingUsd: 0.45,
+            actualSpendUsd: 0,
+            reservedAttemptCeilingUsd: 0,
+            committedCeilingUsd: 0,
+            usageCallCount: 1,
+            providerAttemptCount: 1,
+            providers: ['gemini'],
+            unresolvedPricingCount: 0,
+          },
+          preparation: {},
+          attested: true,
+          reasons: [],
+        } as any,
+      )).toThrow(/judge usage/i);
     });
   });
 
