@@ -273,6 +273,40 @@ One page for operating the production chat-quality loop (M22).
   snapshot as evidence that action-skill routing passed. Before
   `AI_CLASSIFY_MANIFEST_PROMPT` can flip in Phase 7, add and pass the separate
   action-skill prediction/agreement evaluator for the now-labeled corpus.
+- Generate the first corpus calibration only from an evidence-bound,
+  routing-only export. Never copy the full production database to a developer
+  machine. While holding both the release and Sonar locks, verify the exact
+  completed production release, health, database integrity, accepted snapshot
+  JSON digest, complete corpus identity, and exact LLM-cache row digest. Build
+  a fresh `0600` SQLite file containing only the 300 approved synthetic corpus
+  rows, their matching cache rows, and an empty accepted-snapshot table.
+  Omit or normalize source timestamps, suggested routes, and provider metadata
+  that calibration does not consume. The final export receipt is valid only
+  after post-export production health passes; incomplete work must retain an
+  explicitly partial receipt name/schema.
+
+  From a protected ignored evidence directory, run the zero-provider replay
+  with one recorded canonical timestamp:
+
+  ```text
+  npx tsx scripts/calibrate-routing-confidence.ts \
+    --db=<sanitized-routing-only-db> \
+    --out=config/routing-calibration.json \
+    --generated-at=<YYYY-MM-DDTHH:mm:ss.sssZ>
+  ```
+
+  Corpus mode requires `--generated-at`; reuse that exact value for retries so
+  the reviewed artifact stays byte-reproducible. The command binds the explicit
+  database before importing the routing graph and refuses to replace an
+  initialized application database. Record labeled count, cache coverage,
+  baseline provenance, input/config hashes, and zero provider calls in ignored
+  evidence, then land the generated config through a normal PR.
+  `classifier.lowConfidenceFloor` is an active runtime guard even while the
+  manifest-prompt flag is off. It may be recalibrated only at exact full
+  LLM-cache coverage (`covered === corpusSize`); partial or skewed coverage
+  retains the reviewed baseline floor. Domain-representative sampling alone is
+  not sufficient because the current observations do not carry auditable
+  stratification or weighting metadata.
 - Staging/real-provider eval runs (budgeted; persisted via
   `POST /api/portal/eval-history`) and the one-time immutable baseline
   acceptance (`POST /api/portal/eval-history/frozen-baseline`).

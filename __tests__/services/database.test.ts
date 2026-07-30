@@ -20,6 +20,7 @@ import {
   stripWrappingTransactionStatements,
   withDatabaseForTest,
   withDatabaseForTestAsync,
+  withStandaloneToolDatabaseAsync,
 } from '../../src/services/database';
 import { ensureMigrationSqlFunctions } from '../../src/services/migration-runner';
 import { assertContentWorkspaceBootReadiness } from '../../src/services/content-workspace-boot-readiness';
@@ -200,6 +201,65 @@ describe('Database Migrations', () => {
     await expect(withDatabaseForTestAsync(db, async () => getDb())).resolves.toBe(db);
 
     expect(() => getDb()).toThrow('Database not initialized');
+  });
+
+  it('binds standalone operational-tool work to an explicit process database and restores it', async () => {
+    expect(() => getDb()).toThrow('Database not initialized');
+
+    await expect(withStandaloneToolDatabaseAsync(db, async () => {
+      expect(getDb()).toBe(db);
+      await Promise.resolve();
+      expect(getDb()).toBe(db);
+      return 'bound';
+    })).resolves.toBe('bound');
+
+    expect(() => getDb()).toThrow('Database not initialized');
+  });
+
+  it('refuses to replace an initialized process database for a standalone tool', async () => {
+    await withDatabaseForTestAsync(db, async () => {
+      await expect(withStandaloneToolDatabaseAsync(db, async () => undefined))
+        .rejects.toThrow(/requires an uninitialized process database/i);
+      expect(getDb()).toBe(db);
+    });
+  });
+
+  it('restores the uninitialized database state when standalone work rejects', async () => {
+    const failure = new Error('standalone tool failed');
+
+    await expect(withStandaloneToolDatabaseAsync(db, async () => {
+      expect(getDb()).toBe(db);
+      throw failure;
+    })).rejects.toBe(failure);
+
+    expect(() => getDb()).toThrow('Database not initialized');
+  });
+
+  it('rejects an overlapping standalone binding without disturbing the active scope', async () => {
+    const otherDb = new Database(':memory:');
+    let releaseActiveScope!: () => void;
+    const activeScopeGate = new Promise<void>((resolve) => {
+      releaseActiveScope = resolve;
+    });
+
+    try {
+      const active = withStandaloneToolDatabaseAsync(db, async () => {
+        expect(getDb()).toBe(db);
+        await activeScopeGate;
+        expect(getDb()).toBe(db);
+      });
+
+      await expect(withStandaloneToolDatabaseAsync(otherDb, async () => undefined))
+        .rejects.toThrow(/requires an uninitialized process database/i);
+      expect(getDb()).toBe(db);
+
+      releaseActiveScope();
+      await active;
+      expect(() => getDb()).toThrow('Database not initialized');
+    } finally {
+      releaseActiveScope?.();
+      otherDb.close();
+    }
   });
 
   it('closes safely before initialization and remains idempotent', () => {

@@ -36,8 +36,8 @@ import { logger } from '../utils/logger';
 // matchers — the manifest's axis is capability/domain vocabulary and has no
 // intent-kind dimension, so projecting scheduling from it would collapse
 // "any secretary term" into "scheduling intent" and break routing parity.
-// The >=0.86 override semantics and all thresholds are unchanged (M14 owns
-// thresholds).
+// The >=0.86 override policy is unchanged. M14 routes branch confidence
+// values through the owner-reviewed calibration artifact.
 
 export type NexusSkillId =
   | 'secretary'
@@ -600,10 +600,9 @@ function resolvePrimaryDomain(input: {
   return input.routedDomain ?? null;
 }
 
-// M14: branch ORDER is unchanged legacy policy; the branch VALUES route
-// through the calibration table (bootstrap reproduces 0.4/0.96/0.92/0.9/
-// 0.72/0.84 exactly, so behavior is byte-identical until a corpus-mode
-// regeneration replaces them with empirical precision).
+// M14: branch ORDER is unchanged legacy policy; branch VALUES route through
+// the reviewed calibration table. The embedded bootstrap reproduces
+// 0.4/0.96/0.92/0.9/0.72/0.84 only as the fail-open fallback.
 function resolveConfidence(input: {
   scheduling: boolean;
   crossSkill: boolean;

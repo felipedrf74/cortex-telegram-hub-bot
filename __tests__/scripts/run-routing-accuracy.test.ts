@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import * as ts from 'typescript';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const providerMocks = vi.hoisted(() => ({
@@ -52,6 +53,46 @@ import {
 } from '../../src/services/routing-accuracy';
 
 const SECRET = 'routing-accuracy-test-secret';
+
+function dynamicImportStandaloneScopes(raw: string, modulePath: string): boolean[] {
+  const source = ts.createSourceFile(
+    'standalone-tool.ts',
+    raw,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const scopes: boolean[] = [];
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isCallExpression(node)
+      && node.expression.kind === ts.SyntaxKind.ImportKeyword
+      && node.arguments.length === 1
+      && ts.isStringLiteral(node.arguments[0])
+      && node.arguments[0].text === modulePath
+    ) {
+      let current: ts.Node | undefined = node.parent;
+      let insideStandaloneCallback = false;
+      while (current) {
+        if (
+          (ts.isArrowFunction(current) || ts.isFunctionExpression(current))
+          && ts.isCallExpression(current.parent)
+          && ts.isIdentifier(current.parent.expression)
+          && current.parent.expression.text === 'withStandaloneToolDatabaseAsync'
+          && current.parent.arguments[1] === current
+        ) {
+          insideStandaloneCallback = true;
+          break;
+        }
+        current = current.parent;
+      }
+      scopes.push(insideStandaloneCallback);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return scopes;
+}
 
 const SYNTHETIC_VOCABULARY = compileIntentVocabulary([
   {
@@ -345,6 +386,20 @@ describe('routing accuracy gate', () => {
     expect(raw).toContain('acceptRoutingAccuracySnapshotAtomically(snapshotCandidate');
     expect(raw).toContain("process.env.NEXUS_RELEASE_OWNER_AUTHORIZED === '1'");
     expect(raw).toContain('acceptSnapshotRefused');
+  });
+
+  it('binds the explicit CLI database before loading the routing and provider graph', async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const raw = fs.readFileSync(
+      path.join(__dirname, '..', '..', 'scripts', 'run-routing-accuracy.ts'),
+      'utf8',
+    );
+    expect(dynamicImportStandaloneScopes(
+      raw,
+      '../src/services/routing-accuracy',
+    )).toEqual([true]);
+    expect(raw).not.toContain('initDatabase(');
   });
 });
 

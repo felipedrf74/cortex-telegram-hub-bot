@@ -51,64 +51,67 @@ const refreshLimit = refreshLimitRaw ? Number.parseInt(refreshLimitRaw, 10) : 25
 async function main(): Promise<void> {
   const db = new Database(dbPath);
   try {
-    const {
-      acceptRoutingAccuracySnapshotAtomically,
-      buildRoutingAccuracySnapshotCandidate,
-      compareRoutingAccuracySnapshots,
-      getLatestAcceptedAccuracySnapshot,
-    } = await import('../src/services/routing-accuracy');
-    const { ensureRoutingCorpusTables, listLabeledRoutingCorpusItems } = await import('../src/services/routing-corpus');
-    ensureRoutingCorpusTables(db);
+    const { withStandaloneToolDatabaseAsync } = await import('../src/services/database');
+    await withStandaloneToolDatabaseAsync(db, async () => {
+      const {
+        acceptRoutingAccuracySnapshotAtomically,
+        buildRoutingAccuracySnapshotCandidate,
+        compareRoutingAccuracySnapshots,
+        getLatestAcceptedAccuracySnapshot,
+      } = await import('../src/services/routing-accuracy');
+      const { ensureRoutingCorpusTables, listLabeledRoutingCorpusItems } = await import('../src/services/routing-corpus');
+      ensureRoutingCorpusTables(db);
 
-    if (refreshLlm) {
+      if (refreshLlm) {
+        if (gateMode) {
+          // Gate runs must stay deterministic and LLM-free.
+          console.error('--refresh-llm cannot be combined with --gate.');
+          process.exitCode = 1;
+          return;
+        }
+        await refreshLlmCache(db, listLabeledRoutingCorpusItems, Number.isFinite(refreshLimit) ? Math.max(refreshLimit, 1) : 25);
+      }
+
+      const snapshotCandidate = buildRoutingAccuracySnapshotCandidate({ db });
+      const report = snapshotCandidate.report;
+      const output: Record<string, unknown> = { schemaVersion: 'routing_accuracy_report.v1', dbPath, report };
+
+      let gateResult: ReturnType<typeof compareRoutingAccuracySnapshots> | null = null;
       if (gateMode) {
-        // Gate runs must stay deterministic and LLM-free.
-        console.error('--refresh-llm cannot be combined with --gate.');
-        process.exitCode = 1;
-        return;
+        const accepted = getLatestAcceptedAccuracySnapshot(db);
+        if (!accepted) {
+          output.gate = { passed: true, skipped: true, reason: 'no_accepted_snapshot' };
+        } else {
+          gateResult = compareRoutingAccuracySnapshots(report, accepted);
+          output.gate = gateResult;
+          if (!gateResult.passed) process.exitCode = 1;
+        }
       }
-      await refreshLlmCache(db, listLabeledRoutingCorpusItems, Number.isFinite(refreshLimit) ? Math.max(refreshLimit, 1) : 25);
-    }
 
-    const snapshotCandidate = buildRoutingAccuracySnapshotCandidate({ db });
-    const report = snapshotCandidate.report;
-    const output: Record<string, unknown> = { schemaVersion: 'routing_accuracy_report.v1', dbPath, report };
-
-    let gateResult: ReturnType<typeof compareRoutingAccuracySnapshots> | null = null;
-    if (gateMode) {
-      const accepted = getLatestAcceptedAccuracySnapshot(db);
-      if (!accepted) {
-        output.gate = { passed: true, skipped: true, reason: 'no_accepted_snapshot' };
-      } else {
-        gateResult = compareRoutingAccuracySnapshots(report, accepted);
-        output.gate = gateResult;
-        if (!gateResult.passed) process.exitCode = 1;
+      if (acceptSnapshot) {
+        try {
+          const accepted = acceptRoutingAccuracySnapshotAtomically(snapshotCandidate, {
+            gateMode,
+            ownerAuthorized: process.env.NEXUS_RELEASE_OWNER_AUTHORIZED === '1',
+          }, db);
+          output.corpusIdentityDigest = accepted.corpusIdentityDigest;
+          output.corpusReadiness = accepted.corpusReadiness;
+          output.acceptedSnapshotId = accepted.snapshotId;
+          output.gate = accepted.gate ?? {
+            passed: true,
+            skipped: true,
+            reason: 'no_accepted_snapshot',
+          };
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error);
+          console.error(reason);
+          output.acceptSnapshotRefused = reason;
+          process.exitCode = 1;
+        }
       }
-    }
 
-    if (acceptSnapshot) {
-      try {
-        const accepted = acceptRoutingAccuracySnapshotAtomically(snapshotCandidate, {
-          gateMode,
-          ownerAuthorized: process.env.NEXUS_RELEASE_OWNER_AUTHORIZED === '1',
-        }, db);
-        output.corpusIdentityDigest = accepted.corpusIdentityDigest;
-        output.corpusReadiness = accepted.corpusReadiness;
-        output.acceptedSnapshotId = accepted.snapshotId;
-        output.gate = accepted.gate ?? {
-          passed: true,
-          skipped: true,
-          reason: 'no_accepted_snapshot',
-        };
-      } catch (error) {
-        const reason = error instanceof Error ? error.message : String(error);
-        console.error(reason);
-        output.acceptSnapshotRefused = reason;
-        process.exitCode = 1;
-      }
-    }
-
-    console.log(JSON.stringify(output, null, 2));
+      console.log(JSON.stringify(output, null, 2));
+    });
   } finally {
     db.close();
   }

@@ -4,8 +4,8 @@
 /**
  * Milestone 14 — offline routing-confidence calibration. ZERO LLM calls.
  *
- * Replays the labeled routing corpus (when present) through the routing
- * surfaces via routing-accuracy's replay machinery and emits
+ * Replays the labeled routing corpus through the routing surfaces via
+ * routing-accuracy's replay machinery and emits
  * config/routing-calibration.json:
  *
  *   - per surface+branch empirical precision (orchestrator resolveConfidence
@@ -15,15 +15,17 @@
  *   - clarify epsilon (policy constant) + actionable floor (reuses
  *     routing-accuracy's recommendClarifyThreshold math)
  *
- * With NO labeled corpus (today's state) it emits the documented BOOTSTRAP
- * table, which reproduces the current hardcoded constants EXACTLY — runtime
- * behavior is unchanged until Felipe labels the corpus and regenerates.
- * Provenance is embedded: {source: 'bootstrap'|'corpus', corpusSize,
- * generatedAt}.
+ * Corpus mode fails closed when the database is missing or has no labeled
+ * rows. The documented BOOTSTRAP table is emitted only with explicit
+ * --bootstrap authorization. Provenance is embedded:
+ * {source: 'bootstrap'|'corpus', corpusSize, generatedAt}.
  *
  * Flags:
  *   --db=<path>     SQLite database (default ./data/bot.db)
  *   --out=<path>    Output path (default ./config/routing-calibration.json)
+ *   --generated-at=<canonical ISO>
+ *                   Required for corpus-mode output so a reviewed timestamp
+ *                   can be reused and the tracked artifact is reproducible
  *   --bootstrap     Force the bootstrap table even when labels exist
  *   --dry-run       Print the table without writing the file
  */
@@ -50,14 +52,35 @@ const dbPath = readArg('--db') || process.env.DATABASE_PATH || './data/bot.db';
 const outPath = readArg('--out') || './config/routing-calibration.json';
 const forceBootstrap = hasFlag('--bootstrap');
 const dryRun = hasFlag('--dry-run');
+const generatedAtRaw = readArg('--generated-at');
+
+function parseGeneratedAt(raw: string | undefined): string | undefined {
+  if (raw === undefined) return undefined;
+  if (
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(raw)
+    || Number.isNaN(Date.parse(raw))
+    || new Date(raw).toISOString() !== raw
+  ) {
+    throw new Error(
+      '--generated-at must be a canonical UTC ISO timestamp with milliseconds',
+    );
+  }
+  return raw;
+}
 
 async function main(): Promise<void> {
   const {
     BOOTSTRAP_ROUTING_CALIBRATION,
     buildCorpusRoutingCalibration,
+    deriveClassifierFloorCalibration,
     getRoutingCalibration,
   } = await import('../src/services/intent-resolution/confidence');
-  const generatedAt = new Date().toISOString();
+  const generatedAt = parseGeneratedAt(generatedAtRaw);
+  if (!forceBootstrap && !fs.existsSync(dbPath)) {
+    throw new Error(
+      'Routing corpus database does not exist; use --bootstrap only for explicit bootstrap emission',
+    );
+  }
 
   // Bootstrap emissions keep the PINNED provenance.generatedAt from the
   // BOOTSTRAP constants so the emitted file is byte-for-byte reproducible
@@ -65,18 +88,32 @@ async function main(): Promise<void> {
   // timestamp included). Corpus-mode emissions stamp the real run time.
   let table = BOOTSTRAP_ROUTING_CALIBRATION;
   let labeledCount = 0;
+  let llmCoveredCount = 0;
+  let classifierFloorCalibrated = false;
+  let baselineProvenance = BOOTSTRAP_ROUTING_CALIBRATION.provenance;
 
-  if (!forceBootstrap && fs.existsSync(dbPath)) {
+  if (!forceBootstrap) {
     const db = new Database(dbPath);
     try {
-      const { ensureRoutingCorpusTables, listLabeledRoutingCorpusItems } = await import('../src/services/routing-corpus');
-      const { predictRoutingSurfaces } = await import('../src/services/routing-accuracy');
-      const { resolveIntentAgainst } = await import('../src/services/intent-resolution/intent-resolver');
-      const { getCompiledIntentVocabulary } = await import('../src/services/intent-resolution/vocabulary');
-      ensureRoutingCorpusTables(db);
-      const items = listLabeledRoutingCorpusItems(db).filter((item) => item.labelDomain !== null);
-      labeledCount = items.length;
-      if (labeledCount > 0) {
+      const { withStandaloneToolDatabaseAsync } = await import('../src/services/database');
+      await withStandaloneToolDatabaseAsync(db, async () => {
+        const { ensureRoutingCorpusTables, listLabeledRoutingCorpusItems } = await import('../src/services/routing-corpus');
+        const { predictRoutingSurfaces } = await import('../src/services/routing-accuracy');
+        const { resolveIntentAgainst } = await import('../src/services/intent-resolution/intent-resolver');
+        const { getCompiledIntentVocabulary } = await import('../src/services/intent-resolution/vocabulary');
+        ensureRoutingCorpusTables(db);
+        const items = listLabeledRoutingCorpusItems(db).filter((item) => item.labelDomain !== null);
+        labeledCount = items.length;
+        if (labeledCount === 0) {
+          throw new Error(
+            'Routing corpus database has no labeled items; use --bootstrap only for explicit bootstrap emission',
+          );
+        }
+        if (!generatedAt) {
+          throw new Error(
+            'Corpus-mode calibration requires --generated-at=<canonical UTC ISO timestamp>',
+          );
+        }
         const vocabulary = getCompiledIntentVocabulary();
         const orchestrator: Array<{ statedConfidence: number; correct: boolean }> = [];
         const llmClassifier: Array<{ statedConfidence: number; correct: boolean }> = [];
@@ -98,6 +135,15 @@ async function main(): Promise<void> {
             correct: (topCandidate?.domain ?? 'none') === label,
           });
         }
+        const baseline = getRoutingCalibration();
+        baselineProvenance = baseline.provenance;
+        llmCoveredCount = llmClassifier.length;
+        const classifierFloor = deriveClassifierFloorCalibration({
+          observations: llmClassifier,
+          corpusSize: labeledCount,
+          baselineFloor: baseline.classifier.lowConfidenceFloor,
+        });
+        classifierFloorCalibrated = classifierFloor.calibrated;
         table = buildCorpusRoutingCalibration({
           orchestrator,
           resolver,
@@ -105,9 +151,9 @@ async function main(): Promise<void> {
           corpusSize: labeledCount,
           generatedAt,
           // Group branches by the table that was active during this replay.
-          baseline: getRoutingCalibration(),
+          baseline,
         });
-      }
+      });
     } finally {
       db.close();
     }
@@ -124,6 +170,13 @@ async function main(): Promise<void> {
     dryRun,
     mode: table.provenance.source,
     labeledCorpusItems: labeledCount,
+    llmCoverage: {
+      covered: llmCoveredCount,
+      total: labeledCount,
+      complete: labeledCount > 0 && llmCoveredCount === labeledCount,
+      classifierFloorCalibrated,
+    },
+    baselineProvenance,
     table,
   }, null, 2));
 }

@@ -1,10 +1,22 @@
-import { describe, it, expect } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   analyzeChatSkillOrchestration,
   applyChatSkillRoutingDecision,
   buildChatSkillRoutingPromptBlock,
 } from '../../src/services/chat-skill-orchestrator';
+import {
+  _resetRoutingCalibrationForTests,
+  getOrchestratorOverrideThreshold,
+} from '../../src/services/intent-resolution/confidence';
 import type { RouteResult } from '../../src/router';
+
+beforeEach(() => {
+  _resetRoutingCalibrationForTests();
+});
+
+afterEach(() => {
+  _resetRoutingCalibrationForTests();
+});
 
 describe('chat skill orchestrator', () => {
   it('routes multi-skill scheduling to Secretary as the schedule owner', () => {
@@ -19,6 +31,8 @@ describe('chat skill orchestrator', () => {
     expect(decision.involvedSkills).toEqual(expect.arrayContaining(['secretary', 'training', 'content']));
     expect(decision.intentKinds).toEqual(expect.arrayContaining(['scheduling', 'cross_skill']));
     expect(decision.reasonCodes).toContain('secretary_owns_schedule_placement');
+    expect(decision.confidence).toBe(0.96);
+    expect(decision.confidence).toBeGreaterThan(getOrchestratorOverrideThreshold());
 
     const rawRoute: RouteResult = {
       domain: 'triathlon',
@@ -29,6 +43,53 @@ describe('chat skill orchestrator', () => {
     const route = applyChatSkillRoutingDecision(rawRoute, decision);
     expect(route.domain).toBe('secretary');
     expect(route.method).toBe('context');
+    expect(route.confidence).toBe(0.96);
+  });
+
+  it('keeps the raw route when reviewed single-skill scheduling precision is below the unchanged override gate', () => {
+    const message = 'Schedule a meeting tomorrow.';
+    const decision = analyzeChatSkillOrchestration({
+      message,
+      userId: 42,
+      tenantId: 42,
+    });
+
+    expect(decision.primaryDomain).toBe('secretary');
+    expect(decision.intentKinds).toContain('scheduling');
+    expect(decision.intentKinds).not.toContain('cross_skill');
+    expect(decision.confidence).toBe(0.7813);
+    expect(decision.confidence).toBeLessThan(getOrchestratorOverrideThreshold());
+
+    const rawRoute: RouteResult = {
+      domain: 'triathlon',
+      method: 'keyword',
+      confidence: 0.9,
+      strippedMessage: message,
+    };
+    expect(applyChatSkillRoutingDecision(rawRoute, decision)).toEqual(rawRoute);
+  });
+
+  it('keeps the raw route when reviewed destructive precision is below the unchanged override gate', () => {
+    const message = 'Delete my saved task and invoice.';
+    const decision = analyzeChatSkillOrchestration({
+      message,
+      userId: 42,
+      tenantId: 42,
+    });
+
+    expect(decision.primaryDomain).toBe('secretary');
+    expect(decision.safety.destructive).toBe(true);
+    expect(decision.intentKinds).toContain('cross_skill');
+    expect(decision.confidence).toBe(0.8333);
+    expect(decision.confidence).toBeLessThan(getOrchestratorOverrideThreshold());
+
+    const rawRoute: RouteResult = {
+      domain: 'finance',
+      method: 'keyword',
+      confidence: 0.9,
+      strippedMessage: message,
+    };
+    expect(applyChatSkillRoutingDecision(rawRoute, decision)).toEqual(rawRoute);
   });
 
   it('keeps content ownership for content ideas that use training context but do not schedule time', () => {
@@ -109,7 +170,6 @@ describe('chat skill orchestrator', () => {
 // retain the bridge so a secondary skill cannot disappear silently. Flag OFF
 // and master-killed behavior remain byte-identical to the pre-rollout prompt.
 
-import { vi, afterEach } from 'vitest';
 import { CROSS_SKILL_EXECUTION_ENV_VAR } from '../../src/services/chat/planner/cross-skill-ownership';
 
 describe('M19 cross_skill_bridge retirement', () => {

@@ -3,14 +3,14 @@
 /**
  * Milestone 14 — calibrated routing confidence table.
  *
- * Golden contract: the BOOTSTRAP table (and the generated
- * config/routing-calibration.json in bootstrap mode) reproduces the current
- * hardcoded routing constants EXACTLY, so runtime behavior is unchanged until
- * Felipe labels the corpus and regenerates the table.
+ * Golden contracts: the embedded BOOTSTRAP table reproduces the legacy
+ * constants exactly for fail-open behavior, while the checked-in config is
+ * the owner-reviewed 300-item corpus calibration.
  */
 
 import fs from 'fs';
 import path from 'path';
+import { createHash } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   BOOTSTRAP_ROUTING_CALIBRATION,
@@ -18,6 +18,7 @@ import {
   ROUTING_CALIBRATION_VERSION,
   buildCorpusRoutingCalibration,
   calibrateIntentResolverScore,
+  deriveClassifierFloorCalibration,
   getClarifyPolicy,
   getClassifierLowConfidenceFloor,
   getClassifierPinnedConfidenceMin,
@@ -35,7 +36,7 @@ afterEach(() => {
   _resetRoutingCalibrationForTests();
 });
 
-describe('bootstrap calibration table (golden — byte-identical legacy constants)', () => {
+describe('routing calibration table golden contracts', () => {
   it('reproduces the orchestrator resolveConfidence constants exactly', () => {
     expect(BOOTSTRAP_ROUTING_CALIBRATION.orchestrator.branches).toEqual({
       no_primary_domain: 0.4,
@@ -58,18 +59,44 @@ describe('bootstrap calibration table (golden — byte-identical legacy constant
     expect(BOOTSTRAP_ROUTING_CALIBRATION.provenance.corpusSize).toBe(0);
   });
 
-  it('generated config/routing-calibration.json is byte-for-byte the bootstrap constants (generatedAt pinned)', () => {
-    // The calibration script emits the BOOTSTRAP table verbatim in bootstrap
-    // mode — including the pinned provenance.generatedAt — so this really is
-    // a byte comparison, not a value comparison with carve-outs.
+  it('checked-in config/routing-calibration.json is the reviewed 300-item corpus calibration', () => {
     const filePath = path.resolve(process.cwd(), 'config/routing-calibration.json');
     const fileBytes = fs.readFileSync(filePath, 'utf8');
-    expect(fileBytes).toBe(`${JSON.stringify(BOOTSTRAP_ROUTING_CALIBRATION, null, 2)}\n`);
     const parsed = parseRoutingCalibration(JSON.parse(fileBytes));
     expect(parsed).not.toBeNull();
     expect(parsed!.version).toBe(ROUTING_CALIBRATION_VERSION);
-    expect(parsed!.provenance.source).toBe('bootstrap');
-    expect(parsed!.provenance.corpusSize).toBe(0);
+    expect(parsed!.provenance).toEqual({
+      source: 'corpus',
+      corpusSize: 300,
+      generatedAt: '2026-07-30T08:34:49.775Z',
+    });
+    // Partial 25/300 LLM-cache coverage cannot lower the active classifier
+    // safety floor; it stays at the reviewed bootstrap value.
+    expect(parsed!.classifier).toEqual({
+      lowConfidenceFloor: 0.6,
+      pinnedConfidenceMin: 0.51,
+    });
+    expect(parsed!.orchestrator).toEqual({
+      branches: {
+        no_primary_domain: 0.4,
+        scheduling_cross_skill: 0.96,
+        scheduling: 0.7813,
+        destructive: 0.8333,
+        ambiguous_reference: 0.5217,
+        default: 0.5251,
+      },
+      overrideThreshold: 0.86,
+    });
+    expect(parsed!.intentResolver.scoreBuckets).toEqual([
+      { minScore: 5, calibratedPrecision: 0.8846 },
+      { minScore: 2, calibratedPrecision: 0.8984 },
+      { minScore: 1, calibratedPrecision: 0.7551 },
+      { minScore: 0, calibratedPrecision: 0.1778 },
+    ]);
+    expect(parsed!.clarify).toEqual({ epsilon: 0.05, actionableFloor: 0.2 });
+    expect(createHash('sha256').update(fileBytes).digest('hex')).toBe(
+      '3ac0a38b841aecb9de4b167e480d7a0458cad78a11724467dc190f9962340326',
+    );
   });
 
   it('runtime helpers serve the bootstrap constants by default', () => {
@@ -137,6 +164,7 @@ describe('buildCorpusRoutingCalibration (synthetic labeled data)', () => {
       resolver: [],
       corpusSize: 24,
       generatedAt: '2026-07-21T00:00:00.000Z',
+      baseline: BOOTSTRAP_ROUTING_CALIBRATION,
     });
     expect(table.provenance).toEqual({ source: 'corpus', corpusSize: 24, generatedAt: '2026-07-21T00:00:00.000Z' });
     expect(table.orchestrator.branches.scheduling).toBe(0.75);
@@ -155,6 +183,7 @@ describe('buildCorpusRoutingCalibration (synthetic labeled data)', () => {
       resolver,
       corpusSize: 23,
       generatedAt: '2026-07-21T00:00:00.000Z',
+      baseline: BOOTSTRAP_ROUTING_CALIBRATION,
     });
     const byMin = Object.fromEntries(table.intentResolver.scoreBuckets.map((bucket) => [bucket.minScore, bucket.calibratedPrecision]));
     expect(byMin[5]).toBe(0.9);
@@ -172,7 +201,7 @@ describe('buildCorpusRoutingCalibration (synthetic labeled data)', () => {
     const llm = [
       ...makeObservations(0.9, 10, 10),
       ...makeObservations(0.8, 10, 10),
-      ...makeObservations(0.5, 10, 5),
+      ...makeObservations(0.5, 20, 10),
     ];
     // Resolver: strong scores always right, weak scores always wrong.
     const resolver = [
@@ -183,8 +212,9 @@ describe('buildCorpusRoutingCalibration (synthetic labeled data)', () => {
       orchestrator: [],
       resolver,
       llmClassifier: llm,
-      corpusSize: 70,
+      corpusSize: 40,
       generatedAt: '2026-07-21T00:00:00.000Z',
+      baseline: BOOTSTRAP_ROUTING_CALIBRATION,
     });
     expect(table.classifier.lowConfidenceFloor).toBe(0.55);
     // Policy constants stay policy: pinned min and epsilon are not calibrated.
@@ -196,12 +226,40 @@ describe('buildCorpusRoutingCalibration (synthetic labeled data)', () => {
     expect(table.clarify.actionableFloor).toBeLessThanOrEqual(1);
   });
 
+  it('keeps the baseline classifier floor when LLM cache coverage is partial', () => {
+    const table = buildCorpusRoutingCalibration({
+      orchestrator: [],
+      resolver: [],
+      llmClassifier: makeObservations(0.9, 25, 25),
+      corpusSize: 300,
+      generatedAt: '2026-07-30T00:00:00.000Z',
+      baseline: BOOTSTRAP_ROUTING_CALIBRATION,
+    });
+
+    expect(table.classifier.lowConfidenceFloor).toBe(
+      BOOTSTRAP_ROUTING_CALIBRATION.classifier.lowConfidenceFloor,
+    );
+  });
+
+  it('does not claim calibration when complete LLM coverage has no qualifying threshold', () => {
+    expect(deriveClassifierFloorCalibration({
+      observations: makeObservations(0.9, 10, 0),
+      corpusSize: 10,
+      baselineFloor: 0.6,
+    })).toEqual({
+      lowConfidenceFloor: 0.6,
+      coverageComplete: true,
+      calibrated: false,
+    });
+  });
+
   it('keeps bootstrap floors when the corpus provides no usable signal', () => {
     const table = buildCorpusRoutingCalibration({
       orchestrator: [],
       resolver: [],
       corpusSize: 0,
       generatedAt: '2026-07-21T00:00:00.000Z',
+      baseline: BOOTSTRAP_ROUTING_CALIBRATION,
     });
     expect(table.classifier.lowConfidenceFloor).toBe(0.6);
     expect(table.clarify.actionableFloor).toBe(0.6);
