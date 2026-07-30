@@ -329,6 +329,63 @@ describe('chat eval judge runtime', () => {
       /private provider detail|private abort reason|private status|private detail|assistantText|userMessage|rationale|rawResponse/i,
     );
   }, 60_000);
+
+  it('normalizes every governed blocked and skipped diagnostic outcome without raw detail', async () => {
+    const root = temporaryRoot();
+    const runId = `${RUN_ID}-diagnostic-outcomes`;
+    await expect(runWithChatEvalJudgeRuntime({
+      runId,
+      judgeBudgetUsd: JUDGE_BUDGET_USD,
+      rootDir: root,
+      execute: async () => {
+        const db = getDb();
+        for (let index = 0; index < 7; index += 1) {
+          assertAiBudgetReservationForProvider({
+            userId: 0,
+            category: CHAT_EVAL_JUDGE_USAGE_CATEGORY,
+            provider: 'gemini',
+            model: CHAT_EVAL_JUDGE_USAGE_MODEL,
+            maxCostUsd: 0.001,
+          });
+          insertSuccessfulJudgeUsage(db, runId);
+        }
+        return resultLike({
+          judge: {
+            calls: 7,
+            estimatedSpendUsd: 0.007,
+            aborted: true,
+            abortReason: 'all_blocked',
+            scenarios: [
+              { scenarioId: 'blocked-malformed', status: 'blocked', detail: 'malformed_judge_json: private response' },
+              { scenarioId: 'blocked-budget', status: 'blocked', detail: 'judge budget exhausted: private amount' },
+              { scenarioId: 'blocked-projected', status: 'blocked', detail: 'projected spend: private amount' },
+              { scenarioId: 'blocked-calls', status: 'blocked', detail: 'call budget: private count' },
+              { scenarioId: 'blocked-unspecified', status: 'blocked', detail: 'private blocked detail' },
+              { scenarioId: 'skipped-budget', status: 'skipped_budget', detail: 'private budget detail' },
+              { scenarioId: 'skipped-mode', status: 'skipped_mode', detail: 'private mode detail' },
+            ],
+          },
+        });
+      },
+    })).rejects.toThrow(/reason=judge_report_incomplete/);
+
+    const raw = readFileSync(path.join(root, runId, 'failure-diagnostic.json'), 'utf8');
+    const diagnostic = JSON.parse(raw);
+    expect(diagnostic.judge).toMatchObject({
+      abortReasonCode: 'all_blocked',
+      statusCounts: { blocked: 5, skipped_budget: 1, skipped_mode: 1 },
+      scenarios: [
+        { scenarioId: 'blocked-malformed', status: 'blocked', detailCode: 'malformed_judge_json' },
+        { scenarioId: 'blocked-budget', status: 'blocked', detailCode: 'budget_exhausted' },
+        { scenarioId: 'blocked-projected', status: 'blocked', detailCode: 'projected_spend_exceeded' },
+        { scenarioId: 'blocked-calls', status: 'blocked', detailCode: 'call_budget_exhausted' },
+        { scenarioId: 'blocked-unspecified', status: 'blocked', detailCode: 'blocked_unspecified' },
+        { scenarioId: 'skipped-budget', status: 'skipped_budget', detailCode: 'skipped_budget' },
+        { scenarioId: 'skipped-mode', status: 'skipped_mode', detailCode: 'skipped_mode' },
+      ],
+    });
+    expect(raw).not.toMatch(/private response|private amount|private count|private blocked detail|private budget detail|private mode detail/i);
+  }, 60_000);
 });
 
 describe('chat eval judge usage attestation', () => {
