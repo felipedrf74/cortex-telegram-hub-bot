@@ -52,6 +52,8 @@ import {
 } from './local-llm-rate-limiter';
 import { buildScopedStateContextPrefix } from './provider-state-context';
 import { assertSmallOnlyOllamaModel } from './ollama-model-policy';
+import { detectResponseLanguage } from './chat-language-detector';
+import { getCurrentChatRequestLocale } from './chat-request-locale-context';
 
 // ─── Public types for the new task dispatch paths ──────────────────
 
@@ -276,6 +278,19 @@ const PHASE_K_ANSWER_ONLY_GUARD = [
   "another.",
 ].join('\n');
 
+function buildPhaseKContentConcisionGuard(): string {
+  return [
+    '',
+    '— MANDATORY STRUCTURED RESPONSE —',
+    'Return only the JSON object required by the response schema.',
+    'For routine Content chat answers, use at most 90 words and finish',
+    'with a complete sentence before the output limit.',
+    'Copy the schema-constant `lead_sentence` exactly; do not paraphrase or omit it.',
+    'Set `lead_complete` to true only after `lead_sentence` is complete.',
+    'Put only the concise continuation in `answer`; do not repeat `lead_sentence` there.',
+  ].join('\n');
+}
+
 const PHASE_K_FINANCE_GUARD = [
   '',
   '— FINANCE OUTPUT STYLE —',
@@ -288,10 +303,290 @@ const PHASE_K_FINANCE_GUARD = [
   "user's language unless they request another.",
 ].join('\n');
 
-function phaseKDomainSystemPromptSuffix(domain: DomainName): string {
-  if (domain === 'cooking' || domain === 'content') return PHASE_K_ANSWER_ONLY_GUARD;
+function phaseKDomainSystemPromptSuffix(
+  domain: DomainName,
+  includeContentConcision = true,
+): string {
+  if (domain === 'content') {
+    if (!includeContentConcision) return PHASE_K_ANSWER_ONLY_GUARD;
+    return PHASE_K_ANSWER_ONLY_GUARD
+      + buildPhaseKContentConcisionGuard();
+  }
+  if (domain === 'cooking') return PHASE_K_ANSWER_ONLY_GUARD;
   if (domain === 'finance') return PHASE_K_FINANCE_GUARD;
   return '';
+}
+
+type RoutineContentNoticeLocale = 'en-US' | 'pt-BR' | 'pt-PT';
+
+const ROUTINE_CONTENT_LEAD_MAX_CHARS = 240;
+const ROUTINE_CONTENT_ANSWER_MIN_CHARS = 24;
+const ROUTINE_CONTENT_ANSWER_MAX_CHARS = 480;
+const ROUTINE_CONTENT_MAX_OUTPUT_TOKENS = 192;
+
+const ROUTINE_CONTENT_SUBJECT_STOP_WORDS = new Set([
+  'about', 'after', 'again', 'against', 'also', 'apenas', 'around',
+  'autorizado', 'before', 'broad', 'change', 'compare', 'context',
+  'contexto', 'could', 'dados', 'data', 'each', 'explain', 'from',
+  'crie', 'have', 'into', 'latest', 'mais', 'only', 'para', 'please',
+  'preferable', 'read', 'request', 'saved', 'several', 'should',
+  'tailored', 'that', 'their', 'them', 'then', 'these', 'this',
+  'those', 'using', 'when', 'where', 'which', 'with', 'without',
+  'write',
+]);
+
+function normalizeRoutineContentSubjectStem(token: string): string {
+  const lower = token.toLowerCase();
+  return lower.length > 5 && lower.endsWith('s')
+    ? lower.slice(0, -1)
+    : lower;
+}
+
+interface RoutineContentSubjectToken {
+  raw: string;
+  stem: string;
+}
+
+function routineContentSubjectTokens(text: string): RoutineContentSubjectToken[] {
+  return (text.match(/[\p{L}\p{N}]+/gu) ?? [])
+    .map((raw) => ({ raw, stem: normalizeRoutineContentSubjectStem(raw) }))
+    .filter(({ raw, stem }) => (
+      raw.length <= 64
+      && stem.length >= 4
+      && !ROUTINE_CONTENT_SUBJECT_STOP_WORDS.has(stem)
+    ));
+}
+
+function routineContentSubjectStems(text: string): string[] {
+  return routineContentSubjectTokens(text).map(({ stem }) => stem);
+}
+
+function selectRoutineContentSubjectTerm(currentMessage: string): string {
+  const tokens = routineContentSubjectTokens(currentMessage);
+  if (tokens.length === 0) {
+    return resolveRoutineContentNoticeLanguage(currentMessage) === 'en-US'
+      ? 'content'
+      : 'conteúdo';
+  }
+  const counts = new Map<string, number>();
+  for (const token of tokens) counts.set(token.stem, (counts.get(token.stem) ?? 0) + 1);
+  const maxFrequency = Math.max(...counts.values());
+  if (maxFrequency > 1) {
+    return tokens.find((token) => counts.get(token.stem) === maxFrequency)?.raw
+      ?? tokens[0].raw;
+  }
+  if (resolveRoutineContentNoticeLanguage(currentMessage) !== 'en-US') {
+    return tokens.slice(0, 2).map(({ raw }) => raw).join(' e ');
+  }
+  return tokens.reduce((selected, token) => (
+    token.raw.length > selected.raw.length ? token : selected
+  )).raw;
+}
+
+function buildRoutineContentLeadSentence(currentMessage: string): string {
+  const subjectTerm = selectRoutineContentSubjectTerm(currentMessage);
+  return resolveRoutineContentNoticeLanguage(currentMessage) === 'en-US'
+    ? `Requested ${subjectTerm} guidance follows.`
+    : `Sobre ${subjectTerm}, seguem orientações solicitadas.`;
+}
+
+function buildRoutineContentResponseFormat(expectedLeadSentence: string): Record<string, unknown> {
+  return {
+    type: 'object',
+    properties: {
+      lead_sentence: {
+        type: 'string',
+        const: expectedLeadSentence,
+      },
+      lead_complete: {
+        type: 'boolean',
+        const: true,
+      },
+      answer: {
+        type: 'string',
+        description: 'Concise continuation after lead_sentence, without repeating it.',
+        minLength: ROUTINE_CONTENT_ANSWER_MIN_CHARS,
+        maxLength: ROUTINE_CONTENT_ANSWER_MAX_CHARS,
+      },
+    },
+    required: ['lead_sentence', 'lead_complete', 'answer'],
+    additionalProperties: false,
+  };
+}
+
+function leadSharesRequiredSubject(leadSentence: string, currentMessage: string): boolean {
+  const sourceStems = routineContentSubjectStems(currentMessage);
+  if (sourceStems.length === 0) return true;
+  const counts = new Map<string, number>();
+  for (const stem of sourceStems) counts.set(stem, (counts.get(stem) ?? 0) + 1);
+  const maxFrequency = Math.max(...counts.values());
+  const required = maxFrequency > 1
+    ? new Set([...counts].filter(([, count]) => count === maxFrequency).map(([stem]) => stem))
+    : new Set(counts.keys());
+  const leadStems = new Set(routineContentSubjectStems(leadSentence));
+  return [...required].some((stem) => leadStems.has(stem));
+}
+
+function certifyRoutineContentLead(
+  text: string,
+  currentMessage: string,
+  expectedLeadSentence: string,
+): string | null {
+  const candidate = text.trim();
+  if (candidate !== expectedLeadSentence) return null;
+  if (candidate.includes('\n')) return null;
+  const terminal = candidate.match(/([\p{L}\p{N}]+)([.!?])(?:["'”’)\]]*)?$/u);
+  if (!terminal) return null;
+  const words = candidate.match(/[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)*/gu) ?? [];
+  if (
+    candidate.length < 24
+    || candidate.length > ROUTINE_CONTENT_LEAD_MAX_CHARS
+    || words.length < 4
+  ) {
+    return null;
+  }
+  return leadSharesRequiredSubject(candidate, currentMessage) ? candidate : null;
+}
+
+interface RoutineContentStructuredResult {
+  leadSentence: string;
+  answer: string;
+  renderedText: string;
+}
+
+function parseRoutineContentStructuredResult(
+  text: string,
+  currentMessage: string,
+  expectedLeadSentence: string,
+): RoutineContentStructuredResult | null {
+  try {
+    const parsed = JSON.parse(text) as Record<string, unknown>;
+    if (
+      !parsed
+      || typeof parsed !== 'object'
+      || Array.isArray(parsed)
+      || Object.keys(parsed).sort().join(',')
+        !== 'answer,lead_complete,lead_sentence'
+      || parsed.lead_complete !== true
+      || typeof parsed.lead_sentence !== 'string'
+      || typeof parsed.answer !== 'string'
+      || parsed.answer.trim().length < ROUTINE_CONTENT_ANSWER_MIN_CHARS
+      || parsed.answer.length > ROUTINE_CONTENT_ANSWER_MAX_CHARS
+    ) {
+      return null;
+    }
+    const leadSentence = certifyRoutineContentLead(
+      parsed.lead_sentence,
+      currentMessage,
+      expectedLeadSentence,
+    );
+    if (!leadSentence) return null;
+    const answer = parsed.answer;
+    return {
+      leadSentence,
+      answer,
+      renderedText: `${leadSentence}\n\n${answer}`,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function describeRoutineContentStructuredValidation(
+  text: string,
+  currentMessage: string,
+  expectedLeadSentence: string,
+): Record<string, boolean | number> {
+  const diagnostics: Record<string, boolean | number> = {
+    structuredJsonComplete: false,
+    structuredExactKeys: false,
+    structuredLeadComplete: false,
+    structuredLeadTypeValid: false,
+    structuredAnswerTypeValid: false,
+    structuredLeadCertificateValid: false,
+  };
+  try {
+    const parsed = JSON.parse(text) as Record<string, unknown>;
+    diagnostics.structuredJsonComplete = true;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return diagnostics;
+    diagnostics.structuredExactKeys = Object.keys(parsed).sort().join(',')
+      === 'answer,lead_complete,lead_sentence';
+    diagnostics.structuredLeadComplete = parsed.lead_complete === true;
+    diagnostics.structuredLeadTypeValid = typeof parsed.lead_sentence === 'string';
+    diagnostics.structuredAnswerTypeValid = typeof parsed.answer === 'string';
+    if (typeof parsed.lead_sentence === 'string') {
+      const candidate = parsed.lead_sentence.trim();
+      const terminal = candidate.match(/([\p{L}\p{N}]+)([.!?])(?:["'”’)\]]*)?$/u);
+      const words = candidate.match(/[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)*/gu) ?? [];
+      diagnostics.structuredLeadChars = candidate.length;
+      diagnostics.structuredLeadSingleLine = !candidate.includes('\n');
+      diagnostics.structuredLeadTerminalValid = terminal !== null;
+      diagnostics.structuredLeadWordCount = words.length;
+      diagnostics.structuredLeadLengthValid = candidate.length >= 24
+        && candidate.length <= ROUTINE_CONTENT_LEAD_MAX_CHARS;
+      diagnostics.structuredLeadMatchesExpected = candidate === expectedLeadSentence;
+      diagnostics.structuredLeadSubjectOverlap = leadSharesRequiredSubject(
+        candidate,
+        currentMessage,
+      );
+      diagnostics.structuredLeadCertificateValid = certifyRoutineContentLead(
+        candidate,
+        currentMessage,
+        expectedLeadSentence,
+      ) !== null;
+    }
+    if (typeof parsed.answer === 'string') {
+      diagnostics.structuredAnswerChars = parsed.answer.length;
+      diagnostics.structuredAnswerSubstantive = parsed.answer.trim().length
+        >= ROUTINE_CONTENT_ANSWER_MIN_CHARS;
+    }
+  } catch {
+    // Only aggregate validation state is logged; raw provider output stays private.
+  }
+  return diagnostics;
+}
+
+function resolveRoutineContentNoticeLanguage(
+  currentMessage: string,
+): RoutineContentNoticeLocale {
+  const requestLocale = getCurrentChatRequestLocale();
+  if (/^pt-pt$/iu.test(requestLocale ?? '')) return 'pt-PT';
+  if (/^pt(?:-br)?$/iu.test(requestLocale ?? '')) return 'pt-BR';
+  if (/^en(?:-[a-z0-9]{2,3})?$/iu.test(requestLocale ?? '')) return 'en-US';
+  return detectResponseLanguage(currentMessage).language === 'pt' ? 'pt-BR' : 'en-US';
+}
+
+function applyRoutineContentOutputBound(input: {
+  text: string;
+  stopReason: string;
+  currentMessage: string;
+  expectedLeadSentence: string;
+}): {
+  text: string;
+  stopReason: string;
+  outputBoundApplied: boolean;
+  completePrefixKept: boolean;
+} {
+  const structured = parseRoutineContentStructuredResult(
+    input.text,
+    input.currentMessage,
+    input.expectedLeadSentence,
+  );
+  const truncated = ['length', 'LENGTH'].includes(input.stopReason);
+  if (!truncated && structured) {
+    return {
+      text: structured.renderedText,
+      stopReason: input.stopReason,
+      outputBoundApplied: false,
+      completePrefixKept: true,
+    };
+  }
+  return {
+    text: '',
+    stopReason: 'length',
+    outputBoundApplied: false,
+    completePrefixKept: false,
+  };
 }
 
 export function stripThinkBlocks(text: string | undefined | null): string {
@@ -975,8 +1270,20 @@ export class OllamaProvider implements AIProvider {
     // balances / transactions / prices / tax rules. Other domains
     // (secretary, triathlon — which actually never reach here in v1
     // because of the runtime hard-block) get the bare system prompt.
+    const routineContent = domain === 'content'
+      && options.maxTokensOverride === undefined;
+    const routineContentLeadSentence = routineContent
+      ? buildRoutineContentLeadSentence(currentMessage)
+      : null;
+    const routineContentResponseFormat = routineContentLeadSentence
+      ? buildRoutineContentResponseFormat(routineContentLeadSentence)
+      : null;
     const baseSys = getDomainSystemPrompt(domain, stateContext);
-    const sys = phaseKDomainSystemPromptSuffix(domain) ? baseSys + phaseKDomainSystemPromptSuffix(domain) : baseSys;
+    const domainPromptSuffix = phaseKDomainSystemPromptSuffix(
+      domain,
+      options.maxTokensOverride === undefined,
+    );
+    const sys = domainPromptSuffix ? baseSys + domainPromptSuffix : baseSys;
 
     const messages: OllamaChatRequest['messages'] = [{ role: 'system', content: sys }];
     for (const h of history) {
@@ -988,7 +1295,19 @@ export class OllamaProvider implements AIProvider {
     enforceInputTokenCap('chat', [sys, currentMessage, stateContext, ...history.map(h => typeof h.content === 'string' ? h.content : '')]);
 
     const model = options.modelOverride ?? config.ollama.model;
-    const maxOutput = options.maxTokensOverride ?? outputCapFor('chat');
+    // Routine Content answers are latency-sensitive interactive chat, not
+    // long-form generation. The shared local-reasoning cap is intentionally
+    // large enough for offline workloads, so applying it here allowed a
+    // simple Content turn to emit hundreds of tokens and miss the live-chat
+    // 6s budget. Keep caller-requested long-form overrides intact, while
+    // bounding the default path to a concise, coherent answer.
+    const providerDefaultMaxOutput = outputCapFor('chat');
+    const maxOutput = options.maxTokensOverride
+      ?? (
+        routineContent
+          ? Math.min(providerDefaultMaxOutput, ROUTINE_CONTENT_MAX_OUTPUT_TOKENS)
+          : providerDefaultMaxOutput
+      );
 
     // Phase K: build request options once so providerMetadata reflects
     // exactly what went over the wire. Future per-domain temperature
@@ -996,7 +1315,7 @@ export class OllamaProvider implements AIProvider {
     const requestOptions = {
       num_ctx: 4096,
       num_predict: maxOutput,
-      temperature: 0.3,
+      temperature: routineContent ? 0.1 : 0.3,
     };
 
     const result = await this.callOllamaForTask({
@@ -1009,6 +1328,7 @@ export class OllamaProvider implements AIProvider {
         model,
         messages,
         think: false,
+        ...(routineContentResponseFormat ? { format: routineContentResponseFormat } : {}),
         stream: false,
         keep_alive: -1,
         options: requestOptions,
@@ -1016,11 +1336,50 @@ export class OllamaProvider implements AIProvider {
     });
 
     const text = stripThinkBlocks(result.response.message?.content);
+    const providerStopReason = result.response.done === true
+      ? (result.response.done_reason ?? 'stop')
+      : 'length';
+    const routineContentBound = routineContent && routineContentLeadSentence
+      ? applyRoutineContentOutputBound({
+        text,
+        stopReason: providerStopReason,
+        currentMessage,
+        expectedLeadSentence: routineContentLeadSentence,
+      })
+      : {
+        text,
+        stopReason: providerStopReason,
+        outputBoundApplied: false,
+        completePrefixKept: false,
+      };
+    if (
+      routineContent
+      && (
+        ['length', 'LENGTH'].includes(providerStopReason)
+        || routineContentBound.stopReason === 'length'
+      )
+    ) {
+      logger.warn(
+        {
+          domain,
+          originalStopReason: providerStopReason,
+          outputBoundApplied: routineContentBound.outputBoundApplied,
+          completePrefixKept: routineContentBound.completePrefixKept,
+          boundedTextChars: routineContentBound.text.length,
+          ...describeRoutineContentStructuredValidation(
+            text,
+            currentMessage,
+            routineContentLeadSentence ?? '',
+          ),
+        },
+        'ollama-provider: applied routine Content structured output handling',
+      );
+    }
     const md = deriveMetrics(result.response);
     return {
-      text,
+      text: routineContentBound.text,
       toolCalls: [],
-      stopReason: result.response.done_reason ?? 'stop',
+      stopReason: routineContentBound.stopReason,
       providerMetadata: {
         providerUsed: 'ollama',
         modelUsed: model,
@@ -1041,6 +1400,13 @@ export class OllamaProvider implements AIProvider {
         think: false,
         numCtx: requestOptions.num_ctx,
         numPredict: requestOptions.num_predict,
+        ...(routineContent
+          ? {
+            outputBoundApplied: routineContentBound.outputBoundApplied,
+            originalStopReason: providerStopReason,
+            completePrefixKept: routineContentBound.completePrefixKept,
+          }
+          : {}),
       },
     };
   }

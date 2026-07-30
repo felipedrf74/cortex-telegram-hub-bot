@@ -69,6 +69,24 @@ One page for operating the production chat-quality loop (M22).
   run for that exact-SHA promotion gate. Non-chat releases skip this gate
   automatically; there is no operator bypass. If Ollama is not on the default host endpoint, set
   `NEXUS_CHAT_EVAL_OLLAMA_BASE_URL`; this does not permit a cloud provider.
+  During local evidence seeding the script pauses only `nexus-hub`, writes the
+  bind-mounted SQLite database offline, restarts the service, and re-attests
+  health plus the zero-cloud profile before minting the synthetic session.
+  Routine Ollama-backed Content chat answers are prompted to stay within 90
+  words and default to a 192-token output cap; an explicitly requested
+  long-form caller can override that default. This keeps the interactive
+  latency contract bounded without relaxing the evaluator's six-second gate.
+  Each routine call supplies an exact JSON schema. Its request-derived
+  `lead_sentence` is a schema constant containing the selected subject term,
+  `lead_complete` is the constant `true`, and `answer` must contain 24–480
+  characters. The provider validates the exact keys, constants, types,
+  lengths, subject overlap, and sentence boundary before rendering only the
+  lead plus substantive answer; raw structured JSON never reaches the user.
+  Any provider cap, malformed JSON, schema mismatch, forged or contradictory
+  certificate, empty answer, or incomplete output stays under the existing
+  truncation refusal and emits the normal retryable degraded response. The
+  live c2 gate independently requires `narrative`, `broad`, and `tailored`, so
+  the deterministic subject lead alone cannot satisfy release evidence.
 - The first live baseline runs only on staging against a dedicated synthetic
   user/tenant. Set the staging server's `CHAT_EVAL_DEDICATED_TENANT_ID` to that
   account's shared user/tenant id; its principal email must end in `.invalid`.

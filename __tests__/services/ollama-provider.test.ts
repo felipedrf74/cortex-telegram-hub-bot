@@ -135,6 +135,7 @@ vi.mock('../../src/utils/logger', () => ({
 // Import AFTER all mocks so the provider picks them up.
 import { LocalLLMError } from '../../src/services/local-llm-error';
 import { OllamaProvider, completeLocalReasoningOneShot, stripThinkBlocks } from '../../src/services/ollama-provider';
+import { runWithChatRequestLocale } from '../../src/services/chat-request-locale-context';
 
 // Bring fetch under our control.
 const originalFetch = globalThis.fetch;
@@ -147,13 +148,15 @@ function makeChatResponse(payload: {
   load_duration_ns?: number;
   prompt_eval_count?: number;
   eval_count?: number;
+  done?: boolean;
   done_reason?: string;
+  omitDoneReason?: boolean;
 }) {
   return new Response(JSON.stringify({
     model: 'qwen2.5:3b-instruct-q4_K_M',
     message: { role: 'assistant', content: payload.content, ...(payload.thinking !== undefined ? { thinking: payload.thinking } : {}) },
-    done: true,
-    done_reason: payload.done_reason ?? 'stop',
+    done: payload.done ?? true,
+    ...(!payload.omitDoneReason ? { done_reason: payload.done_reason ?? 'stop' } : {}),
     total_duration: payload.total_duration_ns ?? 1_000_000_000,
     load_duration: payload.load_duration_ns ?? 100_000_000,
     prompt_eval_count: payload.prompt_eval_count ?? 10,
@@ -167,6 +170,18 @@ function makeTagsResponse() {
   return new Response(JSON.stringify({
     models: [{ name: 'qwen2.5:3b-instruct-q4_K_M', digest: 'sha256:abc' }],
   }), { status: 200 });
+}
+
+function routineContentJson(leadSentence: string, answer: string): string {
+  return JSON.stringify({
+    lead_sentence: leadSentence,
+    lead_complete: true,
+    answer,
+  });
+}
+
+function partialRoutineContentJson(leadSentence: string, answerPrefix = 'unfinished'): string {
+  return `{"lead_sentence":${JSON.stringify(leadSentence)},"lead_complete":true,"answer":${JSON.stringify(answerPrefix).slice(0, -1)}`;
 }
 
 beforeEach(() => {
@@ -360,6 +375,515 @@ describe('OllamaProvider — scoped state context', () => {
     expect(userMessage).toContain('SYNTHETIC_EVAL_FACT');
     expect(userMessage).toContain('What is next?');
     expect(userMessage).toContain('NEXUS_STATE_BEGIN');
+  });
+
+  it('bounds routine content answers for the interactive latency budget', async () => {
+    fetchMock
+      .mockResolvedValueOnce(makeChatResponse({
+        content: routineContentJson(
+          'Requested narratives guidance follows.',
+          'Use the broad version for reach and tailored versions for focused audiences.',
+        ),
+      }))
+      .mockResolvedValueOnce(makeTagsResponse());
+    const p = new OllamaProvider();
+
+    await p.callDomain('content', [], 'Compare launch narratives.', 'SYNTHETIC_EVAL_FACT', {
+      userId: 42,
+      tenantId: 42,
+    });
+
+    const request = JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit)?.body)) as {
+      messages: Array<{ role: string; content: string }>;
+      options: { num_predict: number; temperature: number };
+      format?: {
+        type?: string;
+        required?: string[];
+        properties?: Record<string, unknown>;
+      };
+    };
+    const systemMessage = request.messages.find((message) => message.role === 'system')?.content ?? '';
+    expect(request.options.num_predict).toBe(192);
+    expect(systemMessage).toContain('at most 90 words');
+    expect(systemMessage).toContain('lead_sentence');
+    expect(systemMessage).toContain('Copy the schema-constant');
+    expect(request.options.temperature).toBe(0.1);
+    expect(request.format).toMatchObject({
+      type: 'object',
+      required: ['lead_sentence', 'lead_complete', 'answer'],
+      properties: {
+        lead_sentence: expect.objectContaining({
+          const: 'Requested narratives guidance follows.',
+        }),
+        lead_complete: expect.objectContaining({ const: true }),
+        answer: expect.objectContaining({ minLength: 24, maxLength: 480 }),
+      },
+    });
+  });
+
+  it('binds the repeated request subject into the routine Content schema', async () => {
+    fetchMock
+      .mockResolvedValueOnce(makeChatResponse({
+        content: routineContentJson(
+          'Requested narrative guidance follows.',
+          'Use the broad version for reach and tailored versions for focused audiences.',
+        ),
+      }))
+      .mockResolvedValueOnce(makeTagsResponse());
+    const p = new OllamaProvider();
+
+    const result = await p.callDomain(
+      'content',
+      [],
+      'Compare one broad launch narrative with several tailored narratives. Explain when each is preferable.',
+      'SYNTHETIC_EVAL_FACT',
+      { userId: 42, tenantId: 42 },
+    );
+
+    const request = JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit)?.body)) as {
+      format?: { properties?: { lead_sentence?: { const?: string } } };
+    };
+    expect(request.format?.properties?.lead_sentence?.const)
+      .toBe('Requested narrative guidance follows.');
+    expect(result.stopReason).toBe('stop');
+    expect(result.text).toContain('narrative');
+    expect(result.text).not.toContain('lead_sentence');
+  });
+
+  it('refuses structured content when Ollama explicitly reports done false', async () => {
+    fetchMock
+      .mockResolvedValueOnce(makeChatResponse({
+        content: routineContentJson(
+          'Requested narratives guidance follows.',
+          'Use the broad version for reach and tailored versions for focused audiences.',
+        ),
+        done: false,
+        omitDoneReason: true,
+      }))
+      .mockResolvedValueOnce(makeTagsResponse());
+    const p = new OllamaProvider();
+
+    const result = await p.callDomain(
+      'content',
+      [],
+      'Compare launch narratives.',
+      'SYNTHETIC_EVAL_FACT',
+      { userId: 42, tenantId: 42 },
+    );
+
+    expect(result.stopReason).toBe('length');
+    expect(result.text).toBe('');
+    expect(result.providerMetadata as Record<string, unknown>).toMatchObject({
+      outputBoundApplied: false,
+      originalStopReason: 'length',
+      completePrefixKept: false,
+    });
+  });
+
+  it('refuses a routine structured result when the provider cap is reached', async () => {
+    fetchMock
+      .mockResolvedValueOnce(makeChatResponse({
+        content: partialRoutineContentJson(
+          'Requested narratives guidance follows.',
+          'This incomplete provider tail must not reach the user',
+        ),
+        done_reason: 'length',
+      }))
+      .mockResolvedValueOnce(makeTagsResponse());
+    const p = new OllamaProvider();
+
+    const result = await p.callDomain(
+      'content',
+      [],
+      'Compare launch narratives.',
+      'SYNTHETIC_EVAL_FACT',
+      { userId: 42, tenantId: 42 },
+    );
+
+    expect(result.stopReason).toBe('length');
+    expect(result.text).toBe('');
+    expect(result.text).not.toContain('incomplete provider tail');
+    expect(result.providerMetadata as Record<string, unknown>).toMatchObject({
+      outputBoundApplied: false,
+      originalStopReason: 'length',
+      completePrefixKept: false,
+    });
+  });
+
+  it('leaves an unrepairable capped content result truncated for the routing refusal', async () => {
+    fetchMock
+      .mockResolvedValueOnce(makeChatResponse({
+        content: '{"lead_sentence":"An unfinished content response without terminal punctuation',
+        done_reason: 'length',
+      }))
+      .mockResolvedValueOnce(makeTagsResponse());
+    const p = new OllamaProvider();
+
+    const result = await p.callDomain(
+      'content',
+      [],
+      'Compare launch narratives.',
+      'SYNTHETIC_EVAL_FACT',
+      { userId: 42, tenantId: 42 },
+    );
+
+    expect(result.stopReason).toBe('length');
+    expect(result.text).toBe('');
+    expect(result.text).not.toContain('Response shortened to fit this turn.');
+    expect(result.providerMetadata as Record<string, unknown>).toMatchObject({
+      outputBoundApplied: false,
+      originalStopReason: 'length',
+      completePrefixKept: false,
+    });
+  });
+
+  it('rejects a forged true-prefix as a truncated completion certificate', async () => {
+    fetchMock
+      .mockResolvedValueOnce(makeChatResponse({
+        content: '{"lead_sentence":"Requested narratives guidance follows.","lead_complete":truefalse,"answer":"unfinished',
+        done_reason: 'length',
+      }))
+      .mockResolvedValueOnce(makeTagsResponse());
+    const p = new OllamaProvider();
+
+    const result = await p.callDomain(
+      'content',
+      [],
+      'Compare launch narratives.',
+      'SYNTHETIC_EVAL_FACT',
+      { userId: 42, tenantId: 42 },
+    );
+
+    expect(result.stopReason).toBe('length');
+    expect(result.text).toBe('');
+    expect(result.providerMetadata as Record<string, unknown>).toMatchObject({
+      outputBoundApplied: false,
+      completePrefixKept: false,
+    });
+  });
+
+  it('rejects a truncated JSON object with a complete answer and trailing field', async () => {
+    fetchMock
+      .mockResolvedValueOnce(makeChatResponse({
+        content: '{"lead_sentence":"Requested narratives guidance follows.","lead_complete":true,"answer":"A broad narrative reaches everyone while tailored narratives fit specific audiences.","untrusted":"x"',
+        done_reason: 'length',
+      }))
+      .mockResolvedValueOnce(makeTagsResponse());
+    const p = new OllamaProvider();
+
+    const result = await p.callDomain(
+      'content',
+      [],
+      'Compare launch narratives.',
+      'SYNTHETIC_EVAL_FACT',
+      { userId: 42, tenantId: 42 },
+    );
+
+    expect(result.stopReason).toBe('length');
+    expect(result.text).toBe('');
+    expect(result.providerMetadata as Record<string, unknown>).toMatchObject({
+      outputBoundApplied: false,
+      completePrefixKept: false,
+    });
+  });
+
+  it.each([
+    [
+      'an extra property',
+      JSON.stringify({
+        lead_sentence: 'Requested narratives guidance follows.',
+        lead_complete: true,
+        answer: 'Short continuation.',
+        untrusted: 'must be rejected',
+      }),
+    ],
+    [
+      'an oversized lead sentence',
+      routineContentJson(
+        `Narrative ${'detail '.repeat(40)}complete.`,
+        'Short continuation.',
+      ),
+    ],
+    [
+      'an oversized answer',
+      routineContentJson(
+        'Requested narratives guidance follows.',
+        'x'.repeat(901),
+      ),
+    ],
+  ])('rejects a schema-invalid complete response with %s', async (_case, content) => {
+    fetchMock
+      .mockResolvedValueOnce(makeChatResponse({ content, done_reason: 'stop' }))
+      .mockResolvedValueOnce(makeTagsResponse());
+    const p = new OllamaProvider();
+
+    const result = await p.callDomain(
+      'content',
+      [],
+      'Compare launch narratives.',
+      'SYNTHETIC_EVAL_FACT',
+      { userId: 42, tenantId: 42 },
+    );
+
+    expect(result.stopReason).toBe('length');
+    expect(result.text).toBe('');
+    expect(result.providerMetadata as Record<string, unknown>).toMatchObject({
+      outputBoundApplied: false,
+      completePrefixKept: false,
+    });
+  });
+
+  it.each([
+    'Here are the strongest options, e.g. a launch narrative that',
+    'Here is the requested launch plan:\n1. Draft the opening',
+    'The launch narrative features Sen. Smith explaining why the policy',
+  ])('does not certify punctuation fragments as complete content: %s', async (content) => {
+    fetchMock
+      .mockResolvedValueOnce(makeChatResponse({
+        content: partialRoutineContentJson(content),
+        done_reason: 'length',
+      }))
+      .mockResolvedValueOnce(makeTagsResponse());
+    const p = new OllamaProvider();
+
+    const result = await p.callDomain(
+      'content',
+      [],
+      'Compare launch narratives.',
+      'SYNTHETIC_EVAL_FACT',
+      { userId: 42, tenantId: 42 },
+    );
+
+    expect(result.stopReason).toBe('length');
+    expect(result.text).toBe('');
+    expect(result.providerMetadata as Record<string, unknown>).toMatchObject({
+      outputBoundApplied: false,
+      originalStopReason: 'length',
+      completePrefixKept: false,
+    });
+  });
+
+  it.each([
+    ['pt-BR', 'Peça um artefato', 'artefacto'],
+    ['pt-PT', 'Peça um artefacto', 'artefato'],
+  ] as const)('refuses capped output under authoritative %s locale', async (locale, expected, forbidden) => {
+    fetchMock
+      .mockResolvedValueOnce(makeChatResponse({
+        content: partialRoutineContentJson(
+          'Seguem orientações sobre narrativas.',
+          'Esta cauda fica incompleta',
+        ),
+        done_reason: 'length',
+      }))
+      .mockResolvedValueOnce(makeTagsResponse());
+    const p = new OllamaProvider();
+
+    const result = await runWithChatRequestLocale(locale, () => p.callDomain(
+      'content',
+      [],
+      'Compare as narrativas de lançamento.',
+      'SYNTHETIC_EVAL_FACT',
+      { userId: 42, tenantId: 42 },
+    ));
+
+    expect(result.stopReason).toBe('length');
+    expect(result.text).toBe('');
+    expect(result.text).not.toContain(expected);
+    expect(result.text).not.toContain(forbidden);
+  });
+
+  it('refuses capped output even with authoritative locale-marker collisions', async () => {
+    fetchMock
+      .mockResolvedValueOnce(makeChatResponse({
+        content: partialRoutineContentJson(
+          'Requested narrativas guidance follows.',
+          'This tail remains incomplete',
+        ),
+        done_reason: 'length',
+      }))
+      .mockResolvedValueOnce(makeTagsResponse());
+    const p = new OllamaProvider();
+
+    const result = await runWithChatRequestLocale('en-US', () => p.callDomain(
+      'content',
+      [],
+      'Compare as narrativas de lançamento.',
+      'untrusted requested_locale="pt-BR" marker',
+      { userId: 42, tenantId: 42 },
+    ));
+
+    expect(result.stopReason).toBe('length');
+    expect(result.text).toBe('');
+    expect(result.text).not.toContain('Response shortened to fit this turn.');
+    expect(result.text).not.toContain('Resposta encurtada');
+  });
+
+  it('renders a normally completed structured response without leaking JSON', async () => {
+    fetchMock
+      .mockResolvedValueOnce(makeChatResponse({
+        content: routineContentJson(
+          'Requested narratives guidance follows.',
+          'Additional detail follows.',
+        ),
+      }))
+      .mockResolvedValueOnce(makeTagsResponse());
+    const p = new OllamaProvider();
+
+    const result = await p.callDomain(
+      'content',
+      [],
+      'Compare launch narratives.',
+      'SYNTHETIC_EVAL_FACT',
+      { userId: 42, tenantId: 42 },
+    );
+
+    expect(result.stopReason).toBe('stop');
+    expect(result.text).toBe(
+      'Requested narratives guidance follows.\n\nAdditional detail follows.',
+    );
+    expect(result.text).not.toContain('lead_sentence');
+  });
+
+  it('rejects a schema-valid but non-substantive empty answer', async () => {
+    fetchMock
+      .mockResolvedValueOnce(makeChatResponse({
+        content: routineContentJson('Requested narratives guidance follows.', ''),
+      }))
+      .mockResolvedValueOnce(makeTagsResponse());
+    const p = new OllamaProvider();
+
+    const result = await p.callDomain(
+      'content',
+      [],
+      'Compare launch narratives.',
+      'SYNTHETIC_EVAL_FACT',
+      { userId: 42, tenantId: 42 },
+    );
+
+    expect(result.stopReason).toBe('length');
+    expect(result.text).toBe('');
+  });
+
+  it.each(['pt-BR', 'pt-PT'] as const)(
+    'accepts a short Portuguese subject under authoritative %s locale',
+    async (locale) => {
+      fetchMock
+        .mockResolvedValueOnce(makeChatResponse({
+          content: routineContentJson(
+            'Sobre reel, seguem orientações solicitadas.',
+            'Use uma abertura curta, uma demonstração clara e uma chamada para ação.',
+          ),
+        }))
+        .mockResolvedValueOnce(makeTagsResponse());
+      const p = new OllamaProvider();
+
+      const result = await runWithChatRequestLocale(locale, () => p.callDomain(
+        'content',
+        [],
+        'Crie um reel.',
+        'SYNTHETIC_EVAL_FACT',
+        { userId: 42, tenantId: 42 },
+      ));
+
+      expect(result.stopReason).toBe('stop');
+      expect(result.text).toContain('Sobre reel');
+    },
+  );
+
+  it('binds the first two Portuguese content subjects into the schema lead', async () => {
+    fetchMock
+      .mockResolvedValueOnce(makeChatResponse({
+        content: routineContentJson(
+          'Sobre ideias e conteúdo, seguem orientações solicitadas.',
+          'Use uma abertura curta, uma demonstração clara e uma chamada para ação.',
+        ),
+      }))
+      .mockResolvedValueOnce(makeTagsResponse());
+    const p = new OllamaProvider();
+
+    const result = await runWithChatRequestLocale('pt-PT', () => p.callDomain(
+      'content',
+      [],
+      'Dá-me ideias de conteúdo para a publicação do lançamento usando apenas o contexto autorizado.',
+      'SYNTHETIC_EVAL_FACT',
+      { userId: 42, tenantId: 42 },
+    ));
+    const request = JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit)?.body)) as {
+      format?: { properties?: { lead_sentence?: { const?: string } } };
+    };
+
+    expect(request.format?.properties?.lead_sentence?.const)
+      .toBe('Sobre ideias e conteúdo, seguem orientações solicitadas.');
+    expect(result.stopReason).toBe('stop');
+    expect(result.text).toContain('ideias');
+    expect(result.text).toContain('conteúdo');
+  });
+
+  it('preserves structured-answer whitespace', async () => {
+    const answer = '    indented  detail remains intact';
+    fetchMock
+      .mockResolvedValueOnce(makeChatResponse({
+        content: routineContentJson('Requested narratives guidance follows.', answer),
+      }))
+      .mockResolvedValueOnce(makeTagsResponse());
+    const p = new OllamaProvider();
+
+    const result = await p.callDomain(
+      'content',
+      [],
+      'Compare launch narratives.',
+      'SYNTHETIC_EVAL_FACT',
+      { userId: 42, tenantId: 42 },
+    );
+
+    expect(result.text).toBe(`Requested narratives guidance follows.\n\n${answer}`);
+  });
+
+  it('preserves an explicit long-form content override without the routine-answer directive', async () => {
+    fetchMock
+      .mockResolvedValueOnce(makeChatResponse({ content: 'Long-form content answer' }))
+      .mockResolvedValueOnce(makeTagsResponse());
+    const p = new OllamaProvider();
+
+    await p.callDomain('content', [], 'Write a full launch script.', 'SYNTHETIC_EVAL_FACT', {
+      maxTokensOverride: 512,
+      userId: 42,
+      tenantId: 42,
+    });
+
+    const request = JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit)?.body)) as {
+      messages: Array<{ role: string; content: string }>;
+      options: { num_predict: number; temperature: number };
+      format?: unknown;
+    };
+    const systemMessage = request.messages.find((message) => message.role === 'system')?.content ?? '';
+    expect(request.options.num_predict).toBe(512);
+    expect(request.options.temperature).toBe(0.3);
+    expect(systemMessage).not.toContain('For routine Content chat answers');
+    expect(request.format).toBeUndefined();
+  });
+
+  it('leaves non-content output defaults and prompts unchanged', async () => {
+    fetchMock
+      .mockResolvedValueOnce(makeChatResponse({ content: 'Cooking answer' }))
+      .mockResolvedValueOnce(makeTagsResponse());
+    const p = new OllamaProvider();
+
+    await p.callDomain('cooking', [], 'Suggest dinner.', 'SYNTHETIC_EVAL_FACT', {
+      userId: 42,
+      tenantId: 42,
+    });
+
+    const request = JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit)?.body)) as {
+      messages: Array<{ role: string; content: string }>;
+      options: { num_predict: number; temperature: number };
+      format?: unknown;
+    };
+    const systemMessage = request.messages.find((message) => message.role === 'system')?.content ?? '';
+    expect(request.options.num_predict).toBe(1200);
+    expect(request.options.temperature).toBe(0.3);
+    expect(systemMessage).not.toContain('For routine Content chat answers');
+    expect(request.format).toBeUndefined();
   });
 });
 

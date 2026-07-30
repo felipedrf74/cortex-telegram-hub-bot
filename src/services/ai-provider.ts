@@ -77,6 +77,12 @@ export interface AICallResult {
     think?: boolean;
     numCtx?: number;
     numPredict?: number;
+    /** Routine local Content output was reduced to complete sentences at its interactive cap. */
+    outputBoundApplied?: boolean;
+    /** Provider-native stop reason retained when bounded Content handling runs. */
+    originalStopReason?: string;
+    /** Whether a complete sentence prefix was available at the Content output cap. */
+    completePrefixKept?: boolean;
     // Phase K — quality-gate decision carry-through, set by the unified
     // finalizer (src/api/routes/chat-message-finalizer.ts) after
     // applyChatResponseQualityGate runs (M8: routes no longer call the

@@ -151,6 +151,27 @@ describe('chat-eval-local dry run', () => {
     expect(attestation).toBeGreaterThan(boot);
     expect(evalRun).toBeGreaterThan(attestation);
   });
+
+  it('seeds the bind-mounted SQLite database only while nexus-hub is stopped', () => {
+    const script = readFileSync(CHAT_EVAL_LOCAL, 'utf8');
+    const boot = script.indexOf('echo "chat-eval-local: [1/5]');
+    const attestation = script.indexOf('\nattest_zero_cloud_profile', boot);
+    const stopForSeed = script.indexOf('\nstop_nexus_hub_for_evidence_seed', attestation);
+    const seed = script.indexOf('scripts/chatv2-seed-local-evidence.ts', stopForSeed);
+    const restartAfterSeed = script.indexOf('\nrestart_nexus_hub_after_evidence_seed', seed);
+    const postRestartAttestation = script.indexOf('\nattest_zero_cloud_profile', restartAfterSeed);
+    const authMint = script.indexOf('scripts/local-ios-debug-auth.mjs', postRestartAttestation);
+
+    expect(script).toContain('docker compose "${COMPOSE_ARGS[@]}" stop nexus-hub');
+    expect(script).toContain('docker compose "${COMPOSE_ARGS[@]}" start nexus-hub');
+    expect(script).toContain('restore_nexus_hub_on_exit');
+    expect(attestation).toBeGreaterThan(boot);
+    expect(stopForSeed).toBeGreaterThan(attestation);
+    expect(seed).toBeGreaterThan(stopForSeed);
+    expect(restartAfterSeed).toBeGreaterThan(seed);
+    expect(postRestartAttestation).toBeGreaterThan(restartAfterSeed);
+    expect(authMint).toBeGreaterThan(postRestartAttestation);
+  });
 });
 
 describe('promote-exact-release chat-eval gate', () => {

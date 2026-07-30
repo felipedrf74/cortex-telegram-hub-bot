@@ -949,7 +949,7 @@ const LIVE_TURN_OVERRIDES: Record<string, Pick<DayToDayTurn, 'id' | 'userMessage
     expectation: {
       expectedSkills: ['content'],
       expectedDomain: 'content',
-      semanticMustInclude: ['narrative'],
+      semanticMustInclude: ['narrative', 'broad', 'tailored'],
       requiresTargetProvider: true,
     },
   },

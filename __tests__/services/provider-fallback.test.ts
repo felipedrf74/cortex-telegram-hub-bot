@@ -307,6 +307,111 @@ describe('TaskRoutingProvider', () => {
       expect(anthropic.callDomain).not.toHaveBeenCalled();
     });
 
+    it('accepts provider-certified bounded content from Ollama without invoking fallback', async () => {
+      const ollama = createMockProvider('ollama');
+      const boundedResult: AICallResult = {
+        text: 'A complete bounded answer.',
+        toolCalls: [],
+        stopReason: 'bounded_complete',
+        providerMetadata: {
+          providerUsed: 'ollama',
+          modelUsed: 'qwen2.5:3b-instruct-q4_K_M',
+          fallbackUsed: false,
+          outputBoundApplied: true,
+          originalStopReason: 'length',
+          completePrefixKept: true,
+        },
+      };
+      ollama.callDomain.mockResolvedValue(boundedResult);
+      const localProvider = new TaskRoutingProvider(buildConfig({
+        chat: { primary: ollama, fallback: gemini },
+      }), onFallback);
+
+      const result = await localProvider.callDomain('content', [], 'msg', '');
+
+      expect(result).toMatchObject(boundedResult);
+      expect(ollama.callDomain).toHaveBeenCalledTimes(1);
+      expect(gemini.callDomain).not.toHaveBeenCalled();
+      expect(onFallback).not.toHaveBeenCalled();
+    });
+
+    it('rejects a bounded-content certificate without Ollama provenance', async () => {
+      openai.callDomain.mockResolvedValue({
+        text: 'A provider-claimed bounded answer.',
+        toolCalls: [],
+        stopReason: 'bounded_complete',
+        providerMetadata: {
+          providerUsed: 'openai',
+          modelUsed: 'test-model',
+          fallbackUsed: false,
+          outputBoundApplied: true,
+          originalStopReason: 'length',
+          completePrefixKept: true,
+        },
+      } satisfies AICallResult);
+      gemini.callDomain.mockResolvedValue({ ...OK_RESULT });
+
+      const result = await provider.callDomain('content', [], 'msg', '');
+
+      expect(result.text).toBe('ok');
+      expect(gemini.callDomain).toHaveBeenCalledTimes(1);
+      expect(onFallback).toHaveBeenCalledWith(expect.objectContaining({
+        taskType: 'chat',
+        primaryProvider: 'openai',
+        fallbackProvider: 'gemini',
+      }));
+    });
+
+    it('rejects an incomplete bounded-content certificate from Ollama', async () => {
+      const ollama = createMockProvider('ollama');
+      ollama.callDomain.mockResolvedValue({
+        text: 'A claimed bounded answer without the complete-prefix certificate.',
+        toolCalls: [],
+        stopReason: 'bounded_complete',
+        providerMetadata: {
+          providerUsed: 'ollama',
+          modelUsed: 'qwen2.5:3b-instruct-q4_K_M',
+          fallbackUsed: false,
+          outputBoundApplied: true,
+          originalStopReason: 'length',
+          completePrefixKept: false,
+        },
+      } satisfies AICallResult);
+      gemini.callDomain.mockResolvedValue({ ...OK_RESULT });
+      const localProvider = new TaskRoutingProvider(buildConfig({
+        chat: { primary: ollama, fallback: gemini },
+      }), onFallback);
+
+      const result = await localProvider.callDomain('content', [], 'msg', '');
+
+      expect(result.text).toBe('ok');
+      expect(gemini.callDomain).toHaveBeenCalledTimes(1);
+      expect(onFallback).toHaveBeenCalledWith(expect.objectContaining({
+        taskType: 'chat',
+        primaryProvider: 'ollama',
+        fallbackProvider: 'gemini',
+      }));
+    });
+
+    it('keeps raw length truncation governed by fallback refusal', async () => {
+      openai.callDomain.mockResolvedValue({
+        text: 'An unfinished provider answer',
+        toolCalls: [],
+        stopReason: 'length',
+      } satisfies AICallResult);
+      gemini.callDomain.mockResolvedValue({ ...OK_RESULT });
+
+      const result = await provider.callDomain('content', [], 'msg', '');
+
+      expect(result.text).toBe('ok');
+      expect(gemini.callDomain).toHaveBeenCalledTimes(1);
+      expect(onFallback).toHaveBeenCalledWith(expect.objectContaining({
+        taskType: 'chat',
+        primaryProvider: 'openai',
+        fallbackProvider: 'gemini',
+      }));
+    });
+
     it('triathlon routes to tool-use primary (anthropic)', async () => {
       anthropic.callDomain.mockResolvedValue(OK_RESULT);
       const result = await provider.callDomain('triathlon', [], 'msg', '');

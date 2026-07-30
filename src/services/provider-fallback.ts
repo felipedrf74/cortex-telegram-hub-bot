@@ -58,6 +58,32 @@ function isTruncatedDomainResult(result: unknown): boolean {
   return TRUNCATED_STOP_REASONS.has(stop);
 }
 
+function unsafeDomainStopReason(
+  result: unknown,
+  providerName: string,
+  metadata?: RoutingCallMetadata,
+): string | null {
+  if (isTruncatedDomainResult(result)) {
+    return String((result as { stopReason?: string }).stopReason ?? 'unknown');
+  }
+  if (!result || typeof result !== 'object') return null;
+  const callResult = result as Partial<AICallResult>;
+  if (callResult.stopReason !== 'bounded_complete') return null;
+
+  const providerMetadata = callResult.providerMetadata;
+  const certified = metadata?.callKind === 'domain'
+    && metadata.domain === 'content'
+    && providerName === 'ollama'
+    && callResult.routedProviderName === 'ollama'
+    && providerMetadata?.providerUsed === 'ollama'
+    && providerMetadata.outputBoundApplied === true
+    && ['length', 'LENGTH'].includes(providerMetadata.originalStopReason ?? '')
+    && providerMetadata.completePrefixKept === true
+    && typeof callResult.text === 'string'
+    && callResult.text.trim().length > 0;
+  return certified ? null : 'bounded_complete_invalid';
+}
+
 // Codex QA round 9: a typed error so the route's catch can recognize
 // truncation as RETRYABLE and emit a degraded response instead of a
 // 500. Without this, a plain Error bubbles up as a non-retryable
@@ -738,8 +764,9 @@ export class TaskRoutingProvider implements AIProvider {
         // the error propagates to the caller, who can render a "try
         // again" with explicit "the response was cut off" hint instead of
         // shipping a clipped half-answer as success.
-        if (isTruncatedDomainResult(result)) {
-          const stopReason = String((result as { stopReason?: string }).stopReason ?? 'unknown');
+        const unsafeStopReason = unsafeDomainStopReason(result, pair.primary.name, metadata);
+        if (unsafeStopReason) {
+          const stopReason = unsafeStopReason;
           logger.warn(
             {
               ...attemptMeta,
@@ -880,8 +907,9 @@ export class TaskRoutingProvider implements AIProvider {
       // instead of 500ing. Metrics are written ONCE here — the outer
       // catch must skip its own usage/failure increment to avoid
       // double-counting.
-      if (isTruncatedDomainResult(result)) {
-        const stopReason = String((result as { stopReason?: string }).stopReason ?? 'unknown');
+      const unsafeStopReason = unsafeDomainStopReason(result, pair.fallback!.name, metadata);
+      if (unsafeStopReason) {
+        const stopReason = unsafeStopReason;
         logger.warn(
           {
             ...fallbackMeta,
