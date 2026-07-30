@@ -361,6 +361,67 @@ describe('OllamaProvider — scoped state context', () => {
     expect(userMessage).toContain('What is next?');
     expect(userMessage).toContain('NEXUS_STATE_BEGIN');
   });
+
+  it('bounds routine content answers for the interactive latency budget', async () => {
+    fetchMock
+      .mockResolvedValueOnce(makeChatResponse({ content: 'Concise content answer' }))
+      .mockResolvedValueOnce(makeTagsResponse());
+    const p = new OllamaProvider();
+
+    await p.callDomain('content', [], 'Compare launch narratives.', 'SYNTHETIC_EVAL_FACT', {
+      userId: 42,
+      tenantId: 42,
+    });
+
+    const request = JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit)?.body)) as {
+      messages: Array<{ role: string; content: string }>;
+      options: { num_predict: number };
+    };
+    const systemMessage = request.messages.find((message) => message.role === 'system')?.content ?? '';
+    expect(request.options.num_predict).toBe(256);
+    expect(systemMessage).toContain('at most 140 words');
+  });
+
+  it('preserves an explicit long-form content override without the routine-answer directive', async () => {
+    fetchMock
+      .mockResolvedValueOnce(makeChatResponse({ content: 'Long-form content answer' }))
+      .mockResolvedValueOnce(makeTagsResponse());
+    const p = new OllamaProvider();
+
+    await p.callDomain('content', [], 'Write a full launch script.', 'SYNTHETIC_EVAL_FACT', {
+      maxTokensOverride: 512,
+      userId: 42,
+      tenantId: 42,
+    });
+
+    const request = JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit)?.body)) as {
+      messages: Array<{ role: string; content: string }>;
+      options: { num_predict: number };
+    };
+    const systemMessage = request.messages.find((message) => message.role === 'system')?.content ?? '';
+    expect(request.options.num_predict).toBe(512);
+    expect(systemMessage).not.toContain('For routine Content chat answers');
+  });
+
+  it('leaves non-content output defaults and prompts unchanged', async () => {
+    fetchMock
+      .mockResolvedValueOnce(makeChatResponse({ content: 'Cooking answer' }))
+      .mockResolvedValueOnce(makeTagsResponse());
+    const p = new OllamaProvider();
+
+    await p.callDomain('cooking', [], 'Suggest dinner.', 'SYNTHETIC_EVAL_FACT', {
+      userId: 42,
+      tenantId: 42,
+    });
+
+    const request = JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit)?.body)) as {
+      messages: Array<{ role: string; content: string }>;
+      options: { num_predict: number };
+    };
+    const systemMessage = request.messages.find((message) => message.role === 'system')?.content ?? '';
+    expect(request.options.num_predict).toBe(1200);
+    expect(systemMessage).not.toContain('For routine Content chat answers');
+  });
 });
 
 describe('OllamaProvider — explicit workload roles', () => {

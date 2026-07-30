@@ -276,6 +276,12 @@ const PHASE_K_ANSWER_ONLY_GUARD = [
   "another.",
 ].join('\n');
 
+const PHASE_K_CONTENT_CONCISION_GUARD = [
+  '',
+  'For routine Content chat answers, use at most 140 words and finish',
+  'with a complete sentence before the output limit.',
+].join('\n');
+
 const PHASE_K_FINANCE_GUARD = [
   '',
   '— FINANCE OUTPUT STYLE —',
@@ -288,8 +294,12 @@ const PHASE_K_FINANCE_GUARD = [
   "user's language unless they request another.",
 ].join('\n');
 
-function phaseKDomainSystemPromptSuffix(domain: DomainName): string {
-  if (domain === 'cooking' || domain === 'content') return PHASE_K_ANSWER_ONLY_GUARD;
+function phaseKDomainSystemPromptSuffix(domain: DomainName, includeContentConcision = true): string {
+  if (domain === 'content') {
+    return PHASE_K_ANSWER_ONLY_GUARD
+      + (includeContentConcision ? PHASE_K_CONTENT_CONCISION_GUARD : '');
+  }
+  if (domain === 'cooking') return PHASE_K_ANSWER_ONLY_GUARD;
   if (domain === 'finance') return PHASE_K_FINANCE_GUARD;
   return '';
 }
@@ -976,7 +986,11 @@ export class OllamaProvider implements AIProvider {
     // (secretary, triathlon — which actually never reach here in v1
     // because of the runtime hard-block) get the bare system prompt.
     const baseSys = getDomainSystemPrompt(domain, stateContext);
-    const sys = phaseKDomainSystemPromptSuffix(domain) ? baseSys + phaseKDomainSystemPromptSuffix(domain) : baseSys;
+    const domainPromptSuffix = phaseKDomainSystemPromptSuffix(
+      domain,
+      options.maxTokensOverride === undefined,
+    );
+    const sys = domainPromptSuffix ? baseSys + domainPromptSuffix : baseSys;
 
     const messages: OllamaChatRequest['messages'] = [{ role: 'system', content: sys }];
     for (const h of history) {
@@ -988,7 +1002,15 @@ export class OllamaProvider implements AIProvider {
     enforceInputTokenCap('chat', [sys, currentMessage, stateContext, ...history.map(h => typeof h.content === 'string' ? h.content : '')]);
 
     const model = options.modelOverride ?? config.ollama.model;
-    const maxOutput = options.maxTokensOverride ?? outputCapFor('chat');
+    // Routine Content answers are latency-sensitive interactive chat, not
+    // long-form generation. The shared local-reasoning cap is intentionally
+    // large enough for offline workloads, so applying it here allowed a
+    // simple Content turn to emit hundreds of tokens and miss the live-chat
+    // 6s budget. Keep caller-requested long-form overrides intact, while
+    // bounding the default path to a concise, coherent answer.
+    const providerDefaultMaxOutput = outputCapFor('chat');
+    const maxOutput = options.maxTokensOverride
+      ?? (domain === 'content' ? Math.min(providerDefaultMaxOutput, 256) : providerDefaultMaxOutput);
 
     // Phase K: build request options once so providerMetadata reflects
     // exactly what went over the wire. Future per-domain temperature

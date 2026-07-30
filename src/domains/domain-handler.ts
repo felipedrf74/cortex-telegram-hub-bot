@@ -763,6 +763,15 @@ export async function handleSimpleDomain(
     }
 
     const requestLocale = getCurrentChatRequestLocale();
+    if (domain === 'content' && result.stopReason === 'length') {
+      logger.warn(
+        { domain, userId, tenantId, stopReason: result.stopReason },
+        'Content provider answer reached its output cap; returning an honest retry prompt',
+      );
+      finalText = requestLocale?.toLowerCase().startsWith('pt')
+        ? 'Não consegui concluir essa resposta de Conteúdo dentro do limite desta interação. Reduz o pedido ou pede um artefacto em formato longo.'
+        : 'I could not complete that Content answer within this turn’s response limit. Please narrow the request or ask for a long-form artifact.';
+    }
     finalText = requestLocale
       ? normalizeReplyForLanguage(finalText, requestLocale)
       : normalizeReplyForUserLanguage(finalText, userId);

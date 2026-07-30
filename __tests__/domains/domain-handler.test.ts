@@ -441,6 +441,25 @@ describe('handleSimpleDomain', () => {
     expect(addToConversation).toHaveBeenCalledWith(42, 'content', 'assistant', 'Here is your plan.');
   });
 
+  it('does not return or store a content answer truncated at the provider output cap', async () => {
+    mockCallDomain.mockResolvedValue({
+      text: 'This clipped provider draft must not reach the user',
+      toolCalls: [],
+      stopReason: 'length',
+    } as any);
+
+    const result = await handleSimpleDomain('content', 'Compare launch narratives', 5, 42);
+
+    expect(result.text).toContain('could not complete');
+    expect(result.text).not.toContain('clipped provider draft');
+    expect(addToConversation).toHaveBeenCalledWith(
+      42,
+      'content',
+      'assistant',
+      expect.stringContaining('could not complete'),
+    );
+  });
+
   it('blocks unsafe generated cooking answers before returning or storing them', async () => {
     ensureUser(188);
     testDb.prepare('UPDATE users SET language = ? WHERE id = ?').run('pt-BR', 188);

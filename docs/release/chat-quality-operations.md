@@ -72,6 +72,10 @@ One page for operating the production chat-quality loop (M22).
   During local evidence seeding the script pauses only `nexus-hub`, writes the
   bind-mounted SQLite database offline, restarts the service, and re-attests
   health plus the zero-cloud profile before minting the synthetic session.
+  Routine Ollama-backed Content chat answers are prompted to stay within 140
+  words and default to a 256-token output cap; an explicitly requested
+  long-form caller can override that default. This keeps the interactive
+  latency contract bounded without relaxing the evaluator's six-second gate.
 - The first live baseline runs only on staging against a dedicated synthetic
   user/tenant. Set the staging server's `CHAT_EVAL_DEDICATED_TENANT_ID` to that
   account's shared user/tenant id; its principal email must end in `.invalid`.
