@@ -26,6 +26,7 @@
  *   `pricing_status='zero-cost'`, `local_request_units=1`.
  */
 
+import { randomBytes } from 'node:crypto';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import { getDb } from './database';
@@ -52,6 +53,8 @@ import {
 } from './local-llm-rate-limiter';
 import { buildScopedStateContextPrefix } from './provider-state-context';
 import { assertSmallOnlyOllamaModel } from './ollama-model-policy';
+import { detectResponseLanguage } from './chat-language-detector';
+import { getCurrentChatRequestLocale } from './chat-request-locale-context';
 
 // ─── Public types for the new task dispatch paths ──────────────────
 
@@ -276,11 +279,16 @@ const PHASE_K_ANSWER_ONLY_GUARD = [
   "another.",
 ].join('\n');
 
-const PHASE_K_CONTENT_CONCISION_GUARD = [
-  '',
-  'For routine Content chat answers, use at most 140 words and finish',
-  'with a complete sentence before the output limit.',
-].join('\n');
+function buildPhaseKContentConcisionGuard(boundaryMarker: string): string {
+  return [
+    '',
+    'For routine Content chat answers, use at most 140 words and finish',
+    'with a complete sentence before the output limit.',
+    'Start with one direct sentence that names the requested content subject.',
+    `Immediately after that first complete sentence, write exactly ${boundaryMarker}`,
+    'Do not write that boundary token anywhere else.',
+  ].join('\n');
+}
 
 const PHASE_K_FINANCE_GUARD = [
   '',
@@ -294,14 +302,110 @@ const PHASE_K_FINANCE_GUARD = [
   "user's language unless they request another.",
 ].join('\n');
 
-function phaseKDomainSystemPromptSuffix(domain: DomainName, includeContentConcision = true): string {
+function phaseKDomainSystemPromptSuffix(
+  domain: DomainName,
+  includeContentConcision = true,
+  contentBoundaryMarker?: string,
+): string {
   if (domain === 'content') {
+    if (!includeContentConcision) return PHASE_K_ANSWER_ONLY_GUARD;
+    if (!contentBoundaryMarker) {
+      throw new Error('routine_content_boundary_marker_required');
+    }
     return PHASE_K_ANSWER_ONLY_GUARD
-      + (includeContentConcision ? PHASE_K_CONTENT_CONCISION_GUARD : '');
+      + buildPhaseKContentConcisionGuard(contentBoundaryMarker);
   }
   if (domain === 'cooking') return PHASE_K_ANSWER_ONLY_GUARD;
   if (domain === 'finance') return PHASE_K_FINANCE_GUARD;
   return '';
+}
+
+type RoutineContentNoticeLocale = 'en-US' | 'pt-BR' | 'pt-PT';
+
+function createRoutineContentBoundaryMarker(): string {
+  return `[[NEXUS_COMPLETE_${randomBytes(8).toString('hex').toUpperCase()}]]`;
+}
+
+function removeRoutineContentBoundaryMarker(
+  text: string,
+  boundaryMarker: string,
+): string {
+  return text
+    .split(boundaryMarker)
+    .join('')
+    .trim();
+}
+
+function certifyRoutineContentPrefix(
+  text: string,
+  boundaryMarker: string,
+): string | null {
+  const markerIndex = text.indexOf(boundaryMarker);
+  if (markerIndex < 0) return null;
+  const candidate = text.slice(0, markerIndex).trim();
+  if (candidate.includes('\n')) return null;
+  if (!/[.!?](?:["'”’)\]]*)?$/u.test(candidate)) return null;
+  const words = candidate.match(/[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)*/gu) ?? [];
+  return candidate.length >= 24 && words.length >= 4 ? candidate : null;
+}
+
+function resolveRoutineContentNoticeLanguage(
+  currentMessage: string,
+): RoutineContentNoticeLocale {
+  const requestLocale = getCurrentChatRequestLocale();
+  if (/^pt-pt$/iu.test(requestLocale ?? '')) return 'pt-PT';
+  if (/^pt(?:-br)?$/iu.test(requestLocale ?? '')) return 'pt-BR';
+  if (/^en(?:-[a-z0-9]{2,3})?$/iu.test(requestLocale ?? '')) return 'en-US';
+  return detectResponseLanguage(currentMessage).language === 'pt' ? 'pt-BR' : 'en-US';
+}
+
+function applyRoutineContentOutputBound(input: {
+  text: string;
+  stopReason: string;
+  currentMessage: string;
+  boundaryMarker: string;
+}): {
+  text: string;
+  stopReason: string;
+  outputBoundApplied: boolean;
+  completePrefixKept: boolean;
+} {
+  const sanitizedText = removeRoutineContentBoundaryMarker(
+    input.text,
+    input.boundaryMarker,
+  );
+  if (!['length', 'LENGTH'].includes(input.stopReason)) {
+    return {
+      text: sanitizedText,
+      stopReason: input.stopReason,
+      outputBoundApplied: false,
+      completePrefixKept: false,
+    };
+  }
+  const locale = resolveRoutineContentNoticeLanguage(input.currentMessage);
+  const completePrefix = certifyRoutineContentPrefix(
+    input.text,
+    input.boundaryMarker,
+  );
+  if (!completePrefix) {
+    return {
+      text: sanitizedText,
+      stopReason: input.stopReason,
+      outputBoundApplied: false,
+      completePrefixKept: false,
+    };
+  }
+  const shortenedNotice = locale === 'pt-BR'
+    ? 'Resposta encurtada para caber nesta interação. Peça um artefato em formato longo para receber a versão completa.'
+    : locale === 'pt-PT'
+      ? 'Resposta encurtada para caber nesta interação. Peça um artefacto em formato longo para receber a versão completa.'
+      : 'Response shortened to fit this turn. Ask for a long-form artifact to receive the complete version.';
+  return {
+    text: `${completePrefix}\n\n_${shortenedNotice}_`,
+    stopReason: 'bounded_complete',
+    outputBoundApplied: true,
+    completePrefixKept: true,
+  };
 }
 
 export function stripThinkBlocks(text: string | undefined | null): string {
@@ -985,10 +1089,16 @@ export class OllamaProvider implements AIProvider {
     // balances / transactions / prices / tax rules. Other domains
     // (secretary, triathlon — which actually never reach here in v1
     // because of the runtime hard-block) get the bare system prompt.
+    const routineContent = domain === 'content'
+      && options.maxTokensOverride === undefined;
+    const routineContentBoundaryMarker = routineContent
+      ? createRoutineContentBoundaryMarker()
+      : undefined;
     const baseSys = getDomainSystemPrompt(domain, stateContext);
     const domainPromptSuffix = phaseKDomainSystemPromptSuffix(
       domain,
       options.maxTokensOverride === undefined,
+      routineContentBoundaryMarker,
     );
     const sys = domainPromptSuffix ? baseSys + domainPromptSuffix : baseSys;
 
@@ -1038,11 +1148,40 @@ export class OllamaProvider implements AIProvider {
     });
 
     const text = stripThinkBlocks(result.response.message?.content);
+    const providerStopReason = result.response.done_reason ?? 'stop';
+    const routineContentBound = routineContent && routineContentBoundaryMarker
+      ? applyRoutineContentOutputBound({
+        text,
+        stopReason: providerStopReason,
+        currentMessage,
+        boundaryMarker: routineContentBoundaryMarker,
+      })
+      : {
+        text,
+        stopReason: providerStopReason,
+        outputBoundApplied: false,
+        completePrefixKept: false,
+      };
+    if (
+      routineContent
+      && ['length', 'LENGTH'].includes(providerStopReason)
+    ) {
+      logger.warn(
+        {
+          domain,
+          originalStopReason: providerStopReason,
+          outputBoundApplied: routineContentBound.outputBoundApplied,
+          completePrefixKept: routineContentBound.completePrefixKept,
+          boundedTextChars: routineContentBound.text.length,
+        },
+        'ollama-provider: applied routine Content output-bound handling',
+      );
+    }
     const md = deriveMetrics(result.response);
     return {
-      text,
+      text: routineContentBound.text,
       toolCalls: [],
-      stopReason: result.response.done_reason ?? 'stop',
+      stopReason: routineContentBound.stopReason,
       providerMetadata: {
         providerUsed: 'ollama',
         modelUsed: model,
@@ -1063,6 +1202,13 @@ export class OllamaProvider implements AIProvider {
         think: false,
         numCtx: requestOptions.num_ctx,
         numPredict: requestOptions.num_predict,
+        ...(routineContent
+          ? {
+            outputBoundApplied: routineContentBound.outputBoundApplied,
+            originalStopReason: providerStopReason,
+            completePrefixKept: routineContentBound.completePrefixKept,
+          }
+          : {}),
       },
     };
   }

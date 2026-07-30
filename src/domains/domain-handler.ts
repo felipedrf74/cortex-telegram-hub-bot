@@ -587,17 +587,6 @@ function shouldIncludeScopedStateContext(domain: DomainName, hasUserScope: boole
   return assessChatTurnGroundingCertainty(contract).uncertain;
 }
 
-function trimContentAnswerToLastCompleteSentence(text: string): string | null {
-  const source = text.trim();
-  let lastCompleteEnd = -1;
-  for (const match of source.matchAll(/[.!?](?:["'”’)\]]*)?(?=\s|$)/gu)) {
-    lastCompleteEnd = (match.index ?? 0) + match[0].length;
-  }
-  if (lastCompleteEnd < 0) return null;
-  const completePrefix = source.slice(0, lastCompleteEnd).trim();
-  return completePrefix.length >= 24 ? completePrefix : null;
-}
-
 /**
  * Shared tool-use loop for non-secretary domains.
  * Routes through the active AI provider (Anthropic, Gemini, or OpenAI)
@@ -774,30 +763,6 @@ export async function handleSimpleDomain(
     }
 
     const requestLocale = getCurrentChatRequestLocale();
-    if (domain === 'content' && result.stopReason === 'length') {
-      const completePrefix = trimContentAnswerToLastCompleteSentence(finalText);
-      logger.warn(
-        {
-          domain,
-          userId,
-          tenantId,
-          stopReason: result.stopReason,
-          completePrefixKept: completePrefix !== null,
-        },
-        'Content provider answer reached its output cap; applying complete-sentence handling',
-      );
-      const portuguese = requestLocale?.toLowerCase().startsWith('pt') === true;
-      if (completePrefix) {
-        const shortenedNotice = portuguese
-          ? 'Resposta encurtada para caber nesta interação. Pede um artefacto em formato longo para receber a versão completa.'
-          : 'Response shortened to fit this turn. Ask for a long-form artifact to receive the complete version.';
-        finalText = `${completePrefix}\n\n_${shortenedNotice}_`;
-      } else {
-        finalText = portuguese
-          ? 'Não consegui concluir essa resposta de Conteúdo dentro do limite desta interação. Reduz o pedido ou pede um artefacto em formato longo.'
-          : 'I could not complete that Content answer within this turn’s response limit. Please narrow the request or ask for a long-form artifact.';
-      }
-    }
     finalText = requestLocale
       ? normalizeReplyForLanguage(finalText, requestLocale)
       : normalizeReplyForUserLanguage(finalText, userId);

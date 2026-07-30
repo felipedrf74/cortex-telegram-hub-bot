@@ -135,6 +135,7 @@ vi.mock('../../src/utils/logger', () => ({
 // Import AFTER all mocks so the provider picks them up.
 import { LocalLLMError } from '../../src/services/local-llm-error';
 import { OllamaProvider, completeLocalReasoningOneShot, stripThinkBlocks } from '../../src/services/ollama-provider';
+import { runWithChatRequestLocale } from '../../src/services/chat-request-locale-context';
 
 // Bring fetch under our control.
 const originalFetch = globalThis.fetch;
@@ -167,6 +168,27 @@ function makeTagsResponse() {
   return new Response(JSON.stringify({
     models: [{ name: 'qwen2.5:3b-instruct-q4_K_M', digest: 'sha256:abc' }],
   }), { status: 200 });
+}
+
+function mockRoutineContentResponseWithBoundary(input: {
+  prefix: string;
+  tail?: string;
+  doneReason: 'stop' | 'length';
+}) {
+  fetchMock
+    .mockImplementationOnce(async (_url: unknown, init?: RequestInit) => {
+      const request = JSON.parse(String(init?.body)) as {
+        messages: Array<{ role: string; content: string }>;
+      };
+      const systemMessage = request.messages.find((message) => message.role === 'system')?.content ?? '';
+      const marker = systemMessage.match(/\[\[NEXUS_COMPLETE_[A-F0-9]{16}\]\]/u)?.[0];
+      if (!marker) throw new Error('routine content boundary marker missing from request');
+      return makeChatResponse({
+        content: `${input.prefix}${marker}${input.tail ?? ''}`,
+        done_reason: input.doneReason,
+      });
+    })
+    .mockResolvedValueOnce(makeTagsResponse());
 }
 
 beforeEach(() => {
@@ -380,6 +402,173 @@ describe('OllamaProvider — scoped state context', () => {
     const systemMessage = request.messages.find((message) => message.role === 'system')?.content ?? '';
     expect(request.options.num_predict).toBe(256);
     expect(systemMessage).toContain('at most 140 words');
+    expect(systemMessage).toContain('names the requested content subject');
+  });
+
+  it('certifies only a complete content prefix when the routine cap is reached', async () => {
+    mockRoutineContentResponseWithBoundary({
+      prefix: 'A concise narrative comparison is complete.',
+      tail: ' This incomplete provider tail must not reach the user',
+      doneReason: 'length',
+    });
+    const p = new OllamaProvider();
+
+    const result = await p.callDomain(
+      'content',
+      [],
+      'Compare launch narratives.',
+      'SYNTHETIC_EVAL_FACT',
+      { userId: 42, tenantId: 42 },
+    );
+
+    expect(result.stopReason).toBe('bounded_complete');
+    expect(result.text).toContain('A concise narrative comparison is complete.');
+    expect(result.text).toContain('Response shortened to fit this turn.');
+    expect(result.text).not.toContain('incomplete provider tail');
+    expect(result.providerMetadata as Record<string, unknown>).toMatchObject({
+      outputBoundApplied: true,
+      originalStopReason: 'length',
+      completePrefixKept: true,
+    });
+  });
+
+  it('leaves an unrepairable capped content result truncated for the routing refusal', async () => {
+    fetchMock
+      .mockResolvedValueOnce(makeChatResponse({
+        content: 'An unfinished content response without terminal punctuation',
+        done_reason: 'length',
+      }))
+      .mockResolvedValueOnce(makeTagsResponse());
+    const p = new OllamaProvider();
+
+    const result = await p.callDomain(
+      'content',
+      [],
+      'Compare launch narratives.',
+      'SYNTHETIC_EVAL_FACT',
+      { userId: 42, tenantId: 42 },
+    );
+
+    expect(result.stopReason).toBe('length');
+    expect(result.text).not.toContain('Response shortened to fit this turn.');
+    expect(result.providerMetadata as Record<string, unknown>).toMatchObject({
+      outputBoundApplied: false,
+      originalStopReason: 'length',
+      completePrefixKept: false,
+    });
+  });
+
+  it.each([
+    'Here are the strongest options, e.g. a launch narrative that',
+    'Here is the requested launch plan:\n1. Draft the opening',
+    'The launch narrative features Sen. Smith explaining why the policy',
+  ])('does not certify punctuation fragments as complete content: %s', async (content) => {
+    fetchMock
+      .mockResolvedValueOnce(makeChatResponse({ content, done_reason: 'length' }))
+      .mockResolvedValueOnce(makeTagsResponse());
+    const p = new OllamaProvider();
+
+    const result = await p.callDomain(
+      'content',
+      [],
+      'Compare launch narratives.',
+      'SYNTHETIC_EVAL_FACT',
+      { userId: 42, tenantId: 42 },
+    );
+
+    expect(result.stopReason).toBe('length');
+    expect(result.text).toBe(content);
+    expect(result.providerMetadata as Record<string, unknown>).toMatchObject({
+      outputBoundApplied: false,
+      originalStopReason: 'length',
+      completePrefixKept: false,
+    });
+  });
+
+  it.each([
+    ['pt-BR', 'Peça um artefato', 'artefacto'],
+    ['pt-PT', 'Peça um artefacto', 'artefato'],
+  ] as const)('uses the authoritative %s regional notice', async (locale, expected, forbidden) => {
+    mockRoutineContentResponseWithBoundary({
+      prefix: 'Uma comparação de narrativas está completa.',
+      tail: ' Esta cauda fica incompleta',
+      doneReason: 'length',
+    });
+    const p = new OllamaProvider();
+
+    const result = await runWithChatRequestLocale(locale, () => p.callDomain(
+      'content',
+      [],
+      'Compare as narrativas de lançamento.',
+      'SYNTHETIC_EVAL_FACT',
+      { userId: 42, tenantId: 42 },
+    ));
+
+    expect(result.stopReason).toBe('bounded_complete');
+    expect(result.text).toContain(expected);
+    expect(result.text).not.toContain(forbidden);
+  });
+
+  it('honors authoritative English over Portuguese text and locale-marker collisions', async () => {
+    mockRoutineContentResponseWithBoundary({
+      prefix: 'The narrative comparison is complete.',
+      tail: ' This tail remains incomplete',
+      doneReason: 'length',
+    });
+    const p = new OllamaProvider();
+
+    const result = await runWithChatRequestLocale('en-US', () => p.callDomain(
+      'content',
+      [],
+      'Compare as narrativas de lançamento.',
+      'untrusted requested_locale="pt-BR" marker',
+      { userId: 42, tenantId: 42 },
+    ));
+
+    expect(result.stopReason).toBe('bounded_complete');
+    expect(result.text).toContain('Response shortened to fit this turn.');
+    expect(result.text).not.toContain('Resposta encurtada');
+  });
+
+  it('removes the per-call boundary marker from a normally completed response', async () => {
+    mockRoutineContentResponseWithBoundary({
+      prefix: 'The launch narrative comparison is complete.',
+      tail: ' Additional detail follows.',
+      doneReason: 'stop',
+    });
+    const p = new OllamaProvider();
+
+    const result = await p.callDomain(
+      'content',
+      [],
+      'Compare launch narratives.',
+      'SYNTHETIC_EVAL_FACT',
+      { userId: 42, tenantId: 42 },
+    );
+
+    expect(result.stopReason).toBe('stop');
+    expect(result.text).toBe(
+      'The launch narrative comparison is complete. Additional detail follows.',
+    );
+    expect(result.text).not.toContain('NEXUS_COMPLETE');
+  });
+
+  it('preserves response whitespace when the boundary marker is absent', async () => {
+    const content = 'Narrative notes:\n\n    indented  detail';
+    fetchMock
+      .mockResolvedValueOnce(makeChatResponse({ content, done_reason: 'stop' }))
+      .mockResolvedValueOnce(makeTagsResponse());
+    const p = new OllamaProvider();
+
+    const result = await p.callDomain(
+      'content',
+      [],
+      'Compare launch narratives.',
+      'SYNTHETIC_EVAL_FACT',
+      { userId: 42, tenantId: 42 },
+    );
+
+    expect(result.text).toBe(content);
   });
 
   it('preserves an explicit long-form content override without the routine-answer directive', async () => {

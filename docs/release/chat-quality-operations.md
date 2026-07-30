@@ -76,9 +76,18 @@ One page for operating the production chat-quality loop (M22).
   words and default to a 256-token output cap; an explicitly requested
   long-form caller can override that default. This keeps the interactive
   latency contract bounded without relaxing the evaluator's six-second gate.
-  If the provider reaches the cap, the response keeps only fully completed
-  sentences and states that it was shortened; when no complete sentence is
-  available, the user receives an honest narrow-or-long-form retry prompt.
+  Each routine Content call gives Ollama a random, request-local boundary
+  marker to emit immediately after its first complete subject-naming
+  sentence. If the provider reaches the cap, only a substantive prefix
+  followed by that exact marker can be certified; the marker is removed at
+  the provider boundary, the response states in the request-scoped English,
+  pt-BR, or pt-PT locale that it was shortened, and the provider returns a
+  distinct `bounded_complete` stop reason. The routing layer accepts that
+  reason only for Content output carrying exact Ollama provenance and bound
+  metadata. Missing markers, punctuation/abbreviation fragments,
+  contradictory certificates, and output with no certifiable prefix stay
+  under the existing truncation refusal and emit the normal retryable
+  degraded response.
 - The first live baseline runs only on staging against a dedicated synthetic
   user/tenant. Set the staging server's `CHAT_EVAL_DEDICATED_TENANT_ID` to that
   account's shared user/tenant id; its principal email must end in `.invalid`.
