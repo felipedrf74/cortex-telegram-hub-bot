@@ -21,6 +21,16 @@ export interface ChatEvalRunCostAttestation {
   targetReservedAttemptCeilingUsd: number;
   targetCommittedCeilingUsd: number;
   judgeEstimatedSpendUsd: number;
+  judgeActualSpendUsd: number;
+  judgeReservedAttemptCeilingUsd: number;
+  judgeCommittedCeilingUsd: number;
+  judgeUsageCallCount: number;
+  judgeProviderAttemptCount: number;
+  judgeProviders: string[];
+  judgeModels: string[];
+  judgeUnresolvedPricingCount: number;
+  judgeUsageDatabaseSha256: string | null;
+  totalActualSpendUsd: number;
   totalEstimatedActualSpendUsd: number;
   totalConservativeCommitmentUsd: number;
   targetUsageCallCount: number;
@@ -815,6 +825,13 @@ const COST_NUMBER_KEYS = [
   'targetReservedAttemptCeilingUsd',
   'targetCommittedCeilingUsd',
   'judgeEstimatedSpendUsd',
+  'judgeActualSpendUsd',
+  'judgeReservedAttemptCeilingUsd',
+  'judgeCommittedCeilingUsd',
+  'judgeUsageCallCount',
+  'judgeProviderAttemptCount',
+  'judgeUnresolvedPricingCount',
+  'totalActualSpendUsd',
   'totalEstimatedActualSpendUsd',
   'totalConservativeCommitmentUsd',
   'targetUsageCallCount',
@@ -852,6 +869,8 @@ function governedRealProviderEvidenceIssue(
     return 'cost attestation is missing or malformed';
   }
   const providers = strictStringArray(cost.targetProviders);
+  const judgeProviders = strictStringArray(cost.judgeProviders);
+  const judgeModels = strictStringArray(cost.judgeModels);
   if (
     !providers
     || providers.length === 0
@@ -863,6 +882,19 @@ function governedRealProviderEvidenceIssue(
     || Number(cost.targetProviderAttemptCount) <= 0
   ) {
     return 'target provider usage or pricing evidence is incomplete';
+  }
+  if (
+    !sameStringArrays(judgeProviders, ['gemini'])
+    || !sameStringArrays(judgeModels, ['gemini-2.5-flash-lite'])
+    || cost.judgeUnresolvedPricingCount !== 0
+    || !Number.isSafeInteger(cost.judgeUsageCallCount)
+    || Number(cost.judgeUsageCallCount) !== scenarioCount
+    || !Number.isSafeInteger(cost.judgeProviderAttemptCount)
+    || Number(cost.judgeProviderAttemptCount) !== scenarioCount
+    || typeof cost.judgeUsageDatabaseSha256 !== 'string'
+    || !/^[a-f0-9]{64}$/.test(cost.judgeUsageDatabaseSha256)
+  ) {
+    return 'judge provider usage, pricing, or private-ledger evidence is incomplete';
   }
   if (
     !preflight
@@ -944,15 +976,26 @@ function governedRealProviderEvidenceIssue(
   const targetReserved = Number(cost.targetReservedAttemptCeilingUsd);
   const targetCommitted = Number(cost.targetCommittedCeilingUsd);
   const judgeEstimated = Number(cost.judgeEstimatedSpendUsd);
+  const judgeActual = Number(cost.judgeActualSpendUsd);
+  const judgeReserved = Number(cost.judgeReservedAttemptCeilingUsd);
+  const judgeCommitted = Number(cost.judgeCommittedCeilingUsd);
+  const totalActual = Number(cost.totalActualSpendUsd);
   const totalEstimated = Number(cost.totalEstimatedActualSpendUsd);
   const totalConservative = Number(cost.totalConservativeCommitmentUsd);
   if (
     judgeEstimated <= 0
+    || judgeActual <= 0
+    || judgeReserved <= 0
     || !sameUsd(targetCommitted, targetActual + targetReserved)
-    || !sameUsd(totalEstimated, targetActual + judgeEstimated)
-    || !sameUsd(totalConservative, targetCommitted + judgeEstimated)
+    || !sameUsd(judgeReserved, judgeEstimated)
+    || !sameUsd(judgeCommitted, judgeActual + judgeReserved)
+    || judgeActual > judgeReserved + 1e-8
+    || !sameUsd(totalActual, targetActual + judgeActual)
+    || !sameUsd(totalEstimated, totalActual)
+    || !sameUsd(totalConservative, targetCommitted + judgeCommitted)
     || targetCommitted > Number(cost.targetCeilingUsd) + 1e-8
-    || judgeEstimated > Number(cost.judgeCeilingUsd) + 1e-8
+    || judgeCommitted > Number(cost.judgeCeilingUsd) + 1e-8
+    || totalActual > Number(cost.totalCeilingUsd) + 1e-8
     || totalEstimated > Number(cost.totalCeilingUsd) + 1e-8
     || totalConservative > Number(cost.totalCeilingUsd) + 1e-8
   ) {

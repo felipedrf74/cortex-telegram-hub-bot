@@ -155,19 +155,32 @@ function normalizeCostAttestation(value: unknown): ChatEvalRunCostAttestation | 
   const numericKeys = [
     'totalCeilingUsd', 'targetCeilingUsd', 'judgeCeilingUsd',
     'targetActualSpendUsd', 'targetReservedAttemptCeilingUsd', 'targetCommittedCeilingUsd',
-    'judgeEstimatedSpendUsd', 'totalEstimatedActualSpendUsd', 'totalConservativeCommitmentUsd',
+    'judgeEstimatedSpendUsd', 'judgeActualSpendUsd', 'judgeReservedAttemptCeilingUsd',
+    'judgeCommittedCeilingUsd', 'judgeUsageCallCount', 'judgeProviderAttemptCount',
+    'judgeUnresolvedPricingCount', 'totalActualSpendUsd',
+    'totalEstimatedActualSpendUsd', 'totalConservativeCommitmentUsd',
     'targetUsageCallCount', 'targetProviderAttemptCount', 'unresolvedPricingCount',
   ];
   if (
     candidate.contractVersion !== 'chat-live-eval-v1'
     || typeof candidate.attested !== 'boolean'
-    || !Array.isArray(candidate.reasons)
-    || !Array.isArray(candidate.targetProviders)
+    || !isStringArray(candidate.reasons)
+    || !isStringArray(candidate.targetProviders)
+    || !isStringArray(candidate.judgeProviders)
+    || !isStringArray(candidate.judgeModels)
+    || (
+      candidate.judgeUsageDatabaseSha256 !== null
+      && typeof candidate.judgeUsageDatabaseSha256 !== 'string'
+    )
     || !candidate.preparation
     || typeof candidate.preparation !== 'object'
     || numericKeys.some((key) => typeof candidate[key] !== 'number' || !Number.isFinite(candidate[key]) || Number(candidate[key]) < 0)
   ) return null;
   return candidate as unknown as ChatEvalRunCostAttestation;
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === 'string');
 }
 
 function normalizePreflightAttestation(value: unknown): Record<string, unknown> | null {

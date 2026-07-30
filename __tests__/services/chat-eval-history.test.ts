@@ -64,7 +64,16 @@ function costAttestationFor(result: Awaited<ReturnType<typeof runChatEvaluationS
   const scenarioIds = result.scenarios.map((scenario) => scenario.id).sort();
   const targetActualSpendUsd = 0.012;
   const judgeEstimatedSpendUsd = Number((result.judge?.estimatedSpendUsd ?? 0).toFixed(8));
-  const totalEstimatedActualSpendUsd = Number((targetActualSpendUsd + judgeEstimatedSpendUsd).toFixed(8));
+  const judgeUsageCallCount = result.judge?.calls ?? 0;
+  const judgeActualSpendUsd = judgeUsageCallCount > 0 ? judgeEstimatedSpendUsd : 0;
+  const judgeReservedAttemptCeilingUsd = judgeUsageCallCount > 0 ? judgeEstimatedSpendUsd : 0;
+  const judgeCommittedCeilingUsd = Number(
+    (judgeActualSpendUsd + judgeReservedAttemptCeilingUsd).toFixed(8),
+  );
+  const totalActualSpendUsd = Number((targetActualSpendUsd + judgeActualSpendUsd).toFixed(8));
+  const totalConservativeCommitmentUsd = Number(
+    (targetActualSpendUsd + judgeCommittedCeilingUsd).toFixed(8),
+  );
   return {
     contractVersion: 'chat-live-eval-v1',
     attested: true,
@@ -76,8 +85,18 @@ function costAttestationFor(result: Awaited<ReturnType<typeof runChatEvaluationS
     targetReservedAttemptCeilingUsd: 0,
     targetCommittedCeilingUsd: targetActualSpendUsd,
     judgeEstimatedSpendUsd,
-    totalEstimatedActualSpendUsd,
-    totalConservativeCommitmentUsd: totalEstimatedActualSpendUsd,
+    judgeActualSpendUsd,
+    judgeReservedAttemptCeilingUsd,
+    judgeCommittedCeilingUsd,
+    judgeUsageCallCount,
+    judgeProviderAttemptCount: judgeUsageCallCount,
+    judgeProviders: judgeUsageCallCount > 0 ? ['gemini'] : [],
+    judgeModels: judgeUsageCallCount > 0 ? ['gemini-2.5-flash-lite'] : [],
+    judgeUnresolvedPricingCount: 0,
+    judgeUsageDatabaseSha256: judgeUsageCallCount > 0 ? 'b'.repeat(64) : null,
+    totalActualSpendUsd,
+    totalEstimatedActualSpendUsd: totalActualSpendUsd,
+    totalConservativeCommitmentUsd,
     targetUsageCallCount: 3,
     targetProviderAttemptCount: 3,
     targetProviders: ['gemini'],
@@ -222,8 +241,12 @@ describe('Chat eval history', () => {
       targetReservedAttemptCeilingUsd: 0.2,
       targetCommittedCeilingUsd: 0.5,
       judgeEstimatedSpendUsd: 0.01,
+      judgeActualSpendUsd: 0.01,
+      judgeReservedAttemptCeilingUsd: 0.01,
+      judgeCommittedCeilingUsd: 0.02,
+      totalActualSpendUsd: 0.31,
       totalEstimatedActualSpendUsd: 0.31,
-      totalConservativeCommitmentUsd: 0.51,
+      totalConservativeCommitmentUsd: 0.52,
     });
     db.prepare(`
       UPDATE chat_eval_runs SET
@@ -243,6 +266,52 @@ describe('Chat eval history', () => {
       evidenceMarkdownPath: `docs/release/eval-evidence/${runId}.md`,
       runtime: { nodeEnv: 'staging', staging: 'true' },
     })).toThrow(/cost|ceiling|coherent/i);
+  });
+
+  it('rejects a frozen baseline without durable judge usage and provider-attempt evidence', async () => {
+    const runId = 'chat-eval-missing-judge-ledger-baseline';
+    await persistBaselineCandidate(runId);
+    const row = db.prepare('SELECT cost_attestation_json FROM chat_eval_runs WHERE run_id = ?')
+      .get(runId) as { cost_attestation_json: string };
+    const cost = JSON.parse(row.cost_attestation_json);
+    Object.assign(cost, {
+      judgeUsageCallCount: 0,
+      judgeProviderAttemptCount: 0,
+      judgeProviders: [],
+      judgeModels: [],
+      judgeUsageDatabaseSha256: null,
+    });
+    db.prepare('UPDATE chat_eval_runs SET cost_attestation_json = ? WHERE run_id = ?')
+      .run(JSON.stringify(cost), runId);
+
+    expect(() => acceptFrozenRealProviderBaseline(db, {
+      runId,
+      evidenceJsonPath: `docs/release/eval-evidence/${runId}.json`,
+      evidenceMarkdownPath: `docs/release/eval-evidence/${runId}.md`,
+      runtime: { nodeEnv: 'staging', staging: 'true' },
+    })).toThrow(/judge|usage|attempt|ledger/i);
+  });
+
+  it('rejects judge usage that is unresolved or not bound to Gemini Flash-Lite', async () => {
+    const runId = 'chat-eval-wrong-judge-provenance-baseline';
+    await persistBaselineCandidate(runId);
+    const row = db.prepare('SELECT cost_attestation_json FROM chat_eval_runs WHERE run_id = ?')
+      .get(runId) as { cost_attestation_json: string };
+    const cost = JSON.parse(row.cost_attestation_json);
+    Object.assign(cost, {
+      judgeProviders: ['openai'],
+      judgeModels: ['gpt-4.1-mini'],
+      judgeUnresolvedPricingCount: 1,
+    });
+    db.prepare('UPDATE chat_eval_runs SET cost_attestation_json = ? WHERE run_id = ?')
+      .run(JSON.stringify(cost), runId);
+
+    expect(() => acceptFrozenRealProviderBaseline(db, {
+      runId,
+      evidenceJsonPath: `docs/release/eval-evidence/${runId}.json`,
+      evidenceMarkdownPath: `docs/release/eval-evidence/${runId}.md`,
+      runtime: { nodeEnv: 'staging', staging: 'true' },
+    })).toThrow(/judge|gemini|flash-lite|pricing|provider|model/i);
   });
 
   it('rejects seed-profile preparation evidence that is not cross-attested by preflight', async () => {
@@ -425,8 +494,18 @@ describe('Chat eval history', () => {
         targetReservedAttemptCeilingUsd: 0.03,
         targetCommittedCeilingUsd: 0.042,
         judgeEstimatedSpendUsd: 0.004,
-        totalEstimatedActualSpendUsd: 0.016,
-        totalConservativeCommitmentUsd: 0.046,
+        judgeActualSpendUsd: 0.002,
+        judgeReservedAttemptCeilingUsd: 0.004,
+        judgeCommittedCeilingUsd: 0.006,
+        judgeUsageCallCount: 1,
+        judgeProviderAttemptCount: 1,
+        judgeProviders: ['gemini'],
+        judgeModels: ['gemini-2.5-flash-lite'],
+        judgeUnresolvedPricingCount: 0,
+        judgeUsageDatabaseSha256: 'b'.repeat(64),
+        totalActualSpendUsd: 0.014,
+        totalEstimatedActualSpendUsd: 0.014,
+        totalConservativeCommitmentUsd: 0.048,
         targetUsageCallCount: 3,
         targetProviderAttemptCount: 4,
         targetProviders: ['gemini'],
@@ -451,6 +530,10 @@ describe('Chat eval history', () => {
     expect(JSON.parse(row.cost_attestation_json)).toMatchObject({
       targetActualSpendUsd: 0.012,
       targetReservedAttemptCeilingUsd: 0.03,
+      judgeActualSpendUsd: 0.002,
+      judgeUsageCallCount: 1,
+      judgeUsageDatabaseSha256: 'b'.repeat(64),
+      totalActualSpendUsd: 0.014,
       totalCeilingUsd: 0.5,
     });
 

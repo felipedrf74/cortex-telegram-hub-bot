@@ -846,7 +846,7 @@ export function formatChatEvaluationResultsMarkdown(result: ChatEvaluationSuiteR
   }
   lines.push('## Safety Interpretation');
   lines.push('');
-  lines.push('Fixture pass covers only the deterministic day-to-day profile. The 24-item aspirational catalog is reported separately and is not execution evidence. Live profiles prove only their declared coverage and do not prove excluded identity, fault-injection, clock-control, or mutation read-back cases.');
+  lines.push('Fixture pass covers only the deterministic day-to-day profile. The 24-item aspirational catalog is reported separately and is not execution evidence. Live profiles prove only their declared coverage. The current v3 live profile includes mutation read-back; it does not prove excluded identity, fault-injection, or clock-control cases.');
   return lines.join('\n');
 }
 

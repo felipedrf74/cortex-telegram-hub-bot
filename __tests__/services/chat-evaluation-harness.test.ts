@@ -240,6 +240,8 @@ describe('chat evaluation harness', () => {
     expect(markdown).toContain('raw private chat text');
     expect(markdown).toContain('Executed: 0 / 24');
     expect(markdown).toContain('catalog is reported separately');
+    expect(markdown).toContain('current v3 live profile includes mutation read-back');
+    expect(markdown).not.toContain('do not prove excluded identity, fault-injection, clock-control, or mutation read-back');
     expect(markdown).not.toContain('felipedrf74');
     expect(markdown).not.toContain('vieira.jaqueline');
   });

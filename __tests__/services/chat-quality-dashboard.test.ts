@@ -198,7 +198,11 @@ function costEvidence(
   totalCeilingUsd: number,
 ): ChatEvalRunCostAttestation {
   const judgeEstimatedSpendUsd = totalCeilingUsd === 0.5 && scenarioIds.length > 0 ? 0.004 : 0;
-  const targetActualSpendUsd = totalEstimatedActualSpendUsd - judgeEstimatedSpendUsd;
+  const judgeActualSpendUsd = judgeEstimatedSpendUsd / 2;
+  const judgeReservedAttemptCeilingUsd = judgeEstimatedSpendUsd;
+  const judgeCommittedCeilingUsd = judgeActualSpendUsd + judgeReservedAttemptCeilingUsd;
+  const targetActualSpendUsd = totalEstimatedActualSpendUsd - judgeActualSpendUsd;
+  const targetCommittedCeilingUsd = targetActualSpendUsd;
   return {
     contractVersion: 'chat-live-eval-v1',
     attested: true,
@@ -208,10 +212,20 @@ function costEvidence(
     judgeCeilingUsd: totalCeilingUsd === 0.5 ? 0.05 : 0,
     targetActualSpendUsd,
     targetReservedAttemptCeilingUsd: 0,
-    targetCommittedCeilingUsd: targetActualSpendUsd,
+    targetCommittedCeilingUsd,
     judgeEstimatedSpendUsd,
+    judgeActualSpendUsd,
+    judgeReservedAttemptCeilingUsd,
+    judgeCommittedCeilingUsd,
+    judgeUsageCallCount: judgeEstimatedSpendUsd > 0 ? scenarioIds.length : 0,
+    judgeProviderAttemptCount: judgeEstimatedSpendUsd > 0 ? scenarioIds.length : 0,
+    judgeProviders: judgeEstimatedSpendUsd > 0 ? ['gemini'] : [],
+    judgeModels: judgeEstimatedSpendUsd > 0 ? ['gemini-2.5-flash-lite'] : [],
+    judgeUnresolvedPricingCount: 0,
+    judgeUsageDatabaseSha256: judgeEstimatedSpendUsd > 0 ? 'b'.repeat(64) : null,
+    totalActualSpendUsd: totalEstimatedActualSpendUsd,
     totalEstimatedActualSpendUsd,
-    totalConservativeCommitmentUsd: totalEstimatedActualSpendUsd,
+    totalConservativeCommitmentUsd: targetCommittedCeilingUsd + judgeCommittedCeilingUsd,
     targetUsageCallCount: 1,
     targetProviderAttemptCount: 1,
     targetProviders: ['gemini'],
