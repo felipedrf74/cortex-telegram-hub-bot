@@ -117,14 +117,27 @@ One page for operating the production chat-quality loop (M22).
   1024-token context, 32-token output cap, and a one-property `a` object
   containing a 24–64 character answer, with a 62-character answer target. The
   prompt instructs the model to copy the prefix, including the request terms
-  and selected authorized term, verbatim, and asks for two format nouns. The
-  deterministic verifier requires the recognized idea/content request stems,
-  requires the selected term to occupy the entire grounding slot, and requires
-  two distinct single-token slots in the two-format shape. Extra grounding
-  words, a selected term appearing only as a format, or a translated substitute
-  for the selected term are rejected. The server returns the model's answer
-  value unchanged. A
-  JSON-complete, provider-complete `grounding in format/format` response is
+  and selected authorized term, verbatim, and asks for exactly two distinct
+  one-to-three-word formats separated by one comma. The locale-aware verifier
+  requires the exact localized heading, connector, recognized idea/content
+  request stems, and selected term in the complete grounding prefix. It then
+  requires exactly two non-empty alphabetic format phrases of one to three
+  words. Each phrase must contain a spoken head exhaustively mapped from the
+  canonical Content format ontology or its bounded English/Portuguese media
+  aliases (for example, video, carousel, post, podcast, article, text, or
+  audio). Every other word must be a bounded format modifier or an internal
+  connector; a phrase cannot begin or end with a stop word. Each phrase must
+  resolve to exactly one canonical format family. The two phrases must have
+  distinct non-generic stems in both directions after local singular/plural,
+  English/Portuguese alias, and modifier normalization. The canonical
+  representation uses one comma;
+  the prior slash
+  representation remains accepted for backward compatibility under the same
+  checks. Extra grounding words, a selected term appearing only as a format, a
+  translated substitute, a third item, a newline or other line/control
+  separator, mixed separators, prose-only items, or extra prose are rejected. The
+  server returns the model's answer value unchanged. A JSON-complete,
+  provider-complete response in either certified two-format representation is
   accepted as a complete compact list even when the model omits only terminal
   punctuation; hanging conjunctions, missing formats, repeated formats, and
   semantic fragments remain rejected. Larger contexts and requests without

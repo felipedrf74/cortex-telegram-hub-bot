@@ -56,6 +56,7 @@ import { detectResponseLanguage } from './chat-language-detector';
 import { getCurrentChatRequestLocale } from './chat-request-locale-context';
 import { assessChatResearchAnswerCompleteness } from './chat-research-answer-quality';
 import { getCurrentChatLiveEvalSeedFacts } from './chat-live-evaluation-context';
+import type { ContentFormatId } from './content-domain-ontology';
 
 // ─── Public types for the new task dispatch paths ──────────────────
 
@@ -358,6 +359,12 @@ interface ModelAuthoredContentAuthorizedIdeas {
   groundingStems: ReadonlySet<string>;
 }
 
+interface ParsedModelAuthoredAuthorizedIdeasAnswer {
+  groundingStem: string;
+  formatAStems: ReadonlySet<string>;
+  formatBStems: ReadonlySet<string>;
+}
+
 type ModelAuthoredContentShortMode =
   | 'authorizedIdeas'
   | 'comparison'
@@ -389,6 +396,97 @@ const MODEL_AUTHORED_CONDITION_STOP_WORDS = new Set([
   'prefer', 'preferable', 'preferred', 'second', 'suit', 'suits', 'the',
   'to', 'use', 'versus', 'when', 'whereas', 'while',
 ]);
+const MODEL_AUTHORED_AUTHORIZED_IDEAS_FORMAT_STOP_WORDS = new Set([
+  ...MODEL_AUTHORED_CONDITION_STOP_WORDS,
+  'about', 'ao', 'aos', 'at', 'because', 'com', 'como', 'content', 'conteudo',
+  'da', 'das', 'de', 'do', 'dos', 'e', 'em', 'format', 'formato', 'idea',
+  'ideas', 'ideia', 'in', 'na', 'nas', 'no', 'nos', 'o', 'of', 'on', 'onde',
+  'os', 'ou', 'para', 'por', 'que', 'quando', 'um', 'uma', 'umas', 'uns', 'with',
+]);
+const MODEL_AUTHORED_AUTHORIZED_IDEAS_INTERNAL_CONNECTORS = new Set([
+  'com', 'da', 'das', 'de', 'do', 'dos', 'for', 'of', 'para', 'with',
+]);
+type ModelAuthoredAuthorizedIdeasHeadEntry = readonly [
+  spokenStem: string,
+  canonicalStem: string,
+];
+const MODEL_AUTHORED_AUTHORIZED_IDEAS_SPOKEN_HEADS_BY_FORMAT = {
+  youtube_long_form: [['video', 'video']],
+  youtube_shorts: [['short', 'video'], ['video', 'video']],
+  instagram_reel: [['reel', 'reel']],
+  tiktok: [['tiktok', 'tiktok']],
+  linkedin_post: [['post', 'post']],
+  x_thread: [['thread', 'thread']],
+  newsletter: [['newsletter', 'newsletter']],
+  blog: [['blog', 'blog']],
+  podcast_outline: [['outline', 'podcast'], ['podcast', 'podcast']],
+  carousel: [['carousel', 'carousel']],
+  generic_script: [['script', 'script']],
+  caption: [['caption', 'caption']],
+} satisfies Record<ContentFormatId, readonly ModelAuthoredAuthorizedIdeasHeadEntry[]>;
+const MODEL_AUTHORED_AUTHORIZED_IDEAS_HEAD_CANONICAL_STEMS: ReadonlyMap<string, string> = new Map([
+  ...Object.values(MODEL_AUTHORED_AUTHORIZED_IDEAS_SPOKEN_HEADS_BY_FORMAT).flat(),
+  ['animacao', 'video'], ['animation', 'video'],
+  ['article', 'article'], ['artigo', 'article'],
+  ['audio', 'audio'],
+  ['bastidor', 'behind_scenes'],
+  ['carrossel', 'carousel'],
+  ['case', 'case'], ['study', 'case'],
+  ['checklist', 'checklist'],
+  ['citation', 'quote'], ['citacao', 'quote'], ['quote', 'quote'],
+  ['clip', 'video'], ['clipe', 'video'],
+  ['demo', 'video'], ['demonstracao', 'video'],
+  ['dica', 'tip'], ['tip', 'tip'],
+  ['documentario', 'video'], ['documentary', 'video'],
+  ['ebook', 'ebook'],
+  ['enquete', 'poll'], ['poll', 'poll'],
+  ['entrevista', 'interview'], ['interview', 'interview'],
+  ['faq', 'faq'],
+  ['fio', 'thread'],
+  ['foto', 'photo'], ['photo', 'photo'],
+  ['gallery', 'gallery'], ['galeria', 'gallery'],
+  ['graphic', 'graphic'], ['grafico', 'graphic'],
+  ['guide', 'guide'], ['guia', 'guide'],
+  ['historia', 'story'], ['story', 'story'],
+  ['infografico', 'infographic'], ['infographic', 'infographic'],
+  ['list', 'list'], ['lista', 'list'],
+  ['live', 'livestream'], ['livestream', 'livestream'], ['stream', 'livestream'],
+  ['meme', 'meme'],
+  ['serie', 'series'], ['series', 'series'],
+  ['slide', 'slide'],
+  ['text', 'text'], ['texto', 'text'],
+  ['tutorial', 'video'],
+  ['webinar', 'webinar'],
+  ['whitepaper', 'whitepaper'],
+]);
+const MODEL_AUTHORED_AUTHORIZED_IDEAS_MODIFIER_CANONICAL_STEMS: ReadonlyMap<string, string> = new Map([
+  ['animated', 'animated'], ['animado', 'animated'],
+  ['brief', 'brief'], ['breve', 'brief'],
+  ['cliente', 'customer'], ['customer', 'customer'],
+  ['creative', 'creative'], ['criativo', 'creative'],
+  ['curto', 'short'],
+  ['daily', 'daily'], ['diario', 'daily'],
+  ['digital', 'digital'], ['editorial', 'editorial'],
+  ['educational', 'educational'], ['educativo', 'educational'],
+  ['estatico', 'static'], ['static', 'static'],
+  ['horizontal', 'horizontal'],
+  ['informative', 'informative'], ['informativo', 'informative'],
+  ['interactive', 'interactive'], ['interativo', 'interactive'],
+  ['long', 'long'], ['longo', 'long'], ['mini', 'mini'],
+  ['promocional', 'promotional'], ['promotional', 'promotional'],
+  ['quick', 'quick'], ['rapido', 'quick'],
+  ['semanal', 'weekly'], ['weekly', 'weekly'],
+  ['short', 'short'],
+  ['simple', 'simple'], ['simples', 'simple'],
+  ['social', 'social'], ['vertical', 'vertical'], ['visual', 'visual'],
+]);
+const MODEL_AUTHORED_AUTHORIZED_IDEAS_IRREGULAR_FORMAT_STEMS: ReadonlyMap<string, string> = new Map([
+  ['bastidores', 'bastidor'],
+  ['carrosseis', 'carrossel'],
+  ['serie', 'series'],
+  ['series', 'series'],
+  ['stories', 'story'],
+] as const);
 
 function normalizeModelAuthoredText(text: string): string {
   return text
@@ -506,6 +604,15 @@ function modelAuthoredComparisonSecondLabel(
   return [...(comparison?.rightUniqueStems ?? [])][0] ?? 'second';
 }
 
+function modelAuthoredAuthorizedIdeasPrefix(
+  locale: RoutineContentNoticeLocale,
+  groundingStem: string,
+): string {
+  const heading = locale === 'en-US' ? 'Ideas for content' : 'Ideias de conteúdo';
+  const connector = locale === 'en-US' ? 'in' : 'em';
+  return `${heading}: ${groundingStem} ${connector}`;
+}
+
 function modelAuthoredContentLanguageInstruction(
   locale: RoutineContentNoticeLocale,
   shortMode: ModelAuthoredContentShortMode,
@@ -530,8 +637,8 @@ function modelAuthoredContentLanguageInstruction(
   if (shortMode === 'authorizedIdeas') {
     return [
       `Use ${language}.`,
-      'Copy OUTPUT_PREFIX exactly; append two distinct one-word content formats with `/`.',
-      'Include both; end `.`; max 62 chars.',
+      'Copy OUTPUT_PREFIX exactly; add two distinct 1-3-word formats separated by one comma.',
+      'End `.`; no other text; max 62 chars.',
     ].join(' ');
   }
   return [
@@ -637,53 +744,112 @@ function modelAuthoredComparisonSemanticsMatch(
     && distinctConditions;
 }
 
-function modelAuthoredAuthorizedIdeasSemanticsMatch(
-  answer: string,
-  authorizedIdeas: ModelAuthoredContentAuthorizedIdeas,
-): boolean {
-  const answerStems = modelAuthoredComparisonStems(answer);
-  const [selectedGroundingStem] = authorizedIdeas.groundingStems;
-  const groundingStem = modelAuthoredAuthorizedIdeasGroundingStem(answer);
-  return [...authorizedIdeas.requiredStems].every((stem) => answerStems.has(stem))
-    && authorizedIdeas.groundingStems.size === 1
-    && groundingStem === selectedGroundingStem;
-}
-
-function modelAuthoredAuthorizedIdeasListShapeIsValid(answer: string): boolean {
-  if (answer.includes('\n')) return false;
-  const separator = answer.indexOf(':');
-  if (separator < 0) return false;
-  const body = answer.slice(separator + 1).trim();
-  const compactMatch = body.match(
-    /^(.+?)\s+(?:in|em)\s+([^/,\s]+)\s*\/\s*([^/,\s]+)[.]?$/iu,
-  );
-  if (compactMatch) {
-    const grounding = modelAuthoredComparisonStems(compactMatch[1] ?? '');
-    const formatA = modelAuthoredComparisonStems(compactMatch[2] ?? '');
-    const formatB = modelAuthoredComparisonStems(compactMatch[3] ?? '');
-    return grounding.size > 0
-      && formatA.size > 0
-      && formatB.size > 0
-      && [...formatA].some((stem) => !formatB.has(stem))
-      && [...formatB].some((stem) => !formatA.has(stem));
+function modelAuthoredAuthorizedIdeasFormatStems(
+  value: string,
+): ReadonlySet<string> | null {
+  if (!/^\p{L}+(?: \p{L}+){0,2}$/u.test(value)) return null;
+  const tokens = normalizeModelAuthoredText(value).split(' ');
+  if (
+    MODEL_AUTHORED_AUTHORIZED_IDEAS_FORMAT_STOP_WORDS.has(tokens[0] ?? '')
+    || MODEL_AUTHORED_AUTHORIZED_IDEAS_FORMAT_STOP_WORDS.has(tokens.at(-1) ?? '')
+  ) {
+    return null;
   }
-  const items = body
-    .split(',')
-    .map((item) => item.trim());
-  if (items.length !== 3 || items.some((item) => item.length === 0)) return false;
-  const formatA = modelAuthoredComparisonStems(items[1] ?? '');
-  const formatB = modelAuthoredComparisonStems(items[2] ?? '');
-  return formatA.size > 0
-    && formatB.size > 0
-    && [...formatA].some((stem) => !formatB.has(stem))
-    && [...formatB].some((stem) => !formatA.has(stem));
+  const normalizedStems = tokens.map((token) => {
+    const irregular = MODEL_AUTHORED_AUTHORIZED_IDEAS_IRREGULAR_FORMAT_STEMS.get(token);
+    if (irregular) return irregular;
+    if (token.length > 4 && token.endsWith('ies')) return `${token.slice(0, -3)}y`;
+    if (
+      token.length > 3
+      && token.endsWith('s')
+      && !token.endsWith('ss')
+      && token !== 'news'
+    ) {
+      return token.slice(0, -1);
+    }
+    return token;
+  });
+  const canonicalHeadStems = new Set(
+    normalizedStems
+      .map((stem) => MODEL_AUTHORED_AUTHORIZED_IDEAS_HEAD_CANONICAL_STEMS.get(stem))
+      .filter((stem): stem is string => typeof stem === 'string'),
+  );
+  if (
+    canonicalHeadStems.size !== 1
+    || normalizedStems.some((stem, index) => (
+      !MODEL_AUTHORED_AUTHORIZED_IDEAS_HEAD_CANONICAL_STEMS.has(stem)
+      && !MODEL_AUTHORED_AUTHORIZED_IDEAS_MODIFIER_CANONICAL_STEMS.has(stem)
+      && !(
+        index > 0
+        && index < normalizedStems.length - 1
+        && MODEL_AUTHORED_AUTHORIZED_IDEAS_INTERNAL_CONNECTORS.has(stem)
+      )
+    ))
+  ) {
+    return null;
+  }
+  const stems = new Set(
+    normalizedStems
+      .filter((stem) => !MODEL_AUTHORED_AUTHORIZED_IDEAS_FORMAT_STOP_WORDS.has(stem))
+      .flatMap((stem) => {
+        const headStem = MODEL_AUTHORED_AUTHORIZED_IDEAS_HEAD_CANONICAL_STEMS.get(stem);
+        const modifierStem = MODEL_AUTHORED_AUTHORIZED_IDEAS_MODIFIER_CANONICAL_STEMS.get(stem);
+        if (headStem && modifierStem && headStem !== modifierStem) {
+          return [headStem, modifierStem];
+        }
+        return [headStem ?? modifierStem ?? stem];
+      }),
+  );
+  return stems.size > 0 ? stems : null;
 }
 
-function modelAuthoredAuthorizedIdeasListIsComplete(answer: string): boolean {
-  const genericCompleteness = assessChatResearchAnswerCompleteness(answer);
-  if (genericCompleteness.ok) return true;
-  return genericCompleteness.reason === 'mid_sentence_cutoff'
-    && modelAuthoredAuthorizedIdeasListShapeIsValid(answer);
+function parseModelAuthoredAuthorizedIdeasAnswer(
+  answer: string,
+  locale: RoutineContentNoticeLocale,
+  authorizedIdeas: ModelAuthoredContentAuthorizedIdeas,
+): ParsedModelAuthoredAuthorizedIdeasAnswer | null {
+  if (/[\r\n\u2028\u2029]/u.test(answer) || authorizedIdeas.groundingStems.size !== 1) {
+    return null;
+  }
+  const [selectedGroundingStem] = authorizedIdeas.groundingStems;
+  if (!selectedGroundingStem) return null;
+
+  const outputPrefix = `${modelAuthoredAuthorizedIdeasPrefix(locale, selectedGroundingStem)} `;
+  if (!answer.startsWith(outputPrefix)) return null;
+  const answerStems = modelAuthoredComparisonStems(answer);
+  if (![...authorizedIdeas.requiredStems].every((stem) => answerStems.has(stem))) return null;
+
+  let formats = answer.slice(outputPrefix.length);
+  if (formats.endsWith('.')) formats = formats.slice(0, -1);
+  if (
+    formats.length === 0
+    || formats !== formats.trim()
+    || /[.!?。！？]/u.test(formats)
+  ) {
+    return null;
+  }
+
+  const hasSlash = formats.includes('/');
+  const hasComma = formats.includes(',');
+  if (hasSlash === hasComma) return null;
+  const separator = hasSlash ? '/' : ',';
+  const items = formats.split(separator).map((item) => item.trim());
+  if (items.length !== 2 || items.some((item) => item.length === 0)) return null;
+
+  const formatAStems = modelAuthoredAuthorizedIdeasFormatStems(items[0] ?? '');
+  const formatBStems = modelAuthoredAuthorizedIdeasFormatStems(items[1] ?? '');
+  if (!formatAStems || !formatBStems) return null;
+  if (
+    ![...formatAStems].some((stem) => !formatBStems.has(stem))
+    || ![...formatBStems].some((stem) => !formatAStems.has(stem))
+  ) {
+    return null;
+  }
+  return {
+    groundingStem: selectedGroundingStem,
+    formatAStems,
+    formatBStems,
+  };
 }
 
 function parseModelAuthoredContentResult(input: {
@@ -714,12 +880,23 @@ function parseModelAuthoredContentResult(input: {
       : input.shortAuthorizedIdeas
         ? MODEL_AUTHORED_SHORT_AUTHORIZED_IDEAS_MAX_CHARS
         : MODEL_AUTHORED_CONTENT_MAX_CHARS;
+    const genericCompleteness = typeof answer === 'string'
+      ? assessChatResearchAnswerCompleteness(answer)
+      : null;
+    const authorizedIdeasAnswer = typeof answer === 'string' && input.shortAuthorizedIdeas
+      ? parseModelAuthoredAuthorizedIdeasAnswer(
+        answer,
+        input.locale,
+        input.shortAuthorizedIdeas,
+      )
+      : null;
     const answerComplete = typeof answer === 'string'
       && (
-        assessChatResearchAnswerCompleteness(answer).ok
+        genericCompleteness?.ok === true
         || (
           input.shortAuthorizedIdeas !== null
-          && modelAuthoredAuthorizedIdeasListIsComplete(answer)
+          && authorizedIdeasAnswer !== null
+          && genericCompleteness?.reason === 'mid_sentence_cutoff'
         )
       );
     if (
@@ -734,10 +911,7 @@ function parseModelAuthoredContentResult(input: {
       )
       || (
         input.shortAuthorizedIdeas
-        && (
-          !modelAuthoredAuthorizedIdeasSemanticsMatch(answer, input.shortAuthorizedIdeas)
-          || !modelAuthoredAuthorizedIdeasListShapeIsValid(answer)
-        )
+        && authorizedIdeasAnswer === null
       )
     ) {
       return null;
@@ -783,6 +957,13 @@ function describeModelAuthoredContentValidation(input: {
     diagnostics.structuredCertificateFieldsTyped = true;
     if (typeof answer === 'string') {
       const genericCompleteness = assessChatResearchAnswerCompleteness(answer);
+      const authorizedIdeasAnswer = input.shortAuthorizedIdeas
+        ? parseModelAuthoredAuthorizedIdeasAnswer(
+          answer,
+          input.locale,
+          input.shortAuthorizedIdeas,
+        )
+        : null;
       diagnostics.structuredAnswerChars = answer.length;
       diagnostics.structuredAnswerCommaCount = answer.match(/,/gu)?.length ?? 0;
       diagnostics.structuredAnswerHasColon = answer.includes(':');
@@ -791,24 +972,21 @@ function describeModelAuthoredContentValidation(input: {
         && genericCompleteness.reason === 'mid_sentence_cutoff';
       diagnostics.structuredAuthorizedIdeasListShapeValid =
         input.shortAuthorizedIdeas !== null
-        && modelAuthoredAuthorizedIdeasListShapeIsValid(answer);
+        && authorizedIdeasAnswer !== null;
       diagnostics.structuredAnswerLanguageValid =
         modelAuthoredContentLanguageDoesNotContradict(answer, input.locale);
       diagnostics.structuredAnswerComplete =
         genericCompleteness.ok
         || (
           input.shortAuthorizedIdeas !== null
-          && modelAuthoredAuthorizedIdeasListIsComplete(answer)
+          && authorizedIdeasAnswer !== null
+          && genericCompleteness.reason === 'mid_sentence_cutoff'
         );
       diagnostics.structuredComparisonSemanticsValid = input.shortComparison
         ? modelAuthoredComparisonSemanticsMatch(answer, input.shortComparison)
         : true;
-      diagnostics.structuredAuthorizedIdeasSemanticsValid = input.shortAuthorizedIdeas
-        ? modelAuthoredAuthorizedIdeasSemanticsMatch(
-          answer,
-          input.shortAuthorizedIdeas,
-        )
-        : true;
+      diagnostics.structuredAuthorizedIdeasSemanticsValid =
+        input.shortAuthorizedIdeas ? authorizedIdeasAnswer !== null : true;
     }
   } catch {
     // Aggregate diagnostics only. Raw provider output is never logged.
@@ -1560,7 +1738,10 @@ export class OllamaProvider implements AIProvider {
     const messages: OllamaChatRequest['messages'] = [{ role: 'system', content: sys }];
     if (shortAuthorizedContentIdeas) {
       const [authorizedTerm = ''] = shortAuthorizedContentIdeas.groundingStems;
-      const outputPrefix = `${routineContentLocale === 'en-US' ? 'Ideas for content' : 'Ideias de conteúdo'}: ${authorizedTerm} ${routineContentLocale === 'en-US' ? 'in' : 'em'}`;
+      const outputPrefix = modelAuthoredAuthorizedIdeasPrefix(
+        routineContentLocale ?? 'en-US',
+        authorizedTerm,
+      );
       messages.push({
         role: 'user',
         content: [
@@ -2190,15 +2371,4 @@ export async function completeLocalReasoningOneShot(
       isColdLoad: md.isColdLoad,
     },
   };
-}
-
-function modelAuthoredAuthorizedIdeasGroundingStem(answer: string): string | null {
-  const separator = answer.indexOf(':');
-  if (separator < 0) return null;
-  const groundingMatch = answer
-    .slice(separator + 1)
-    .trim()
-    .match(/^(.+?)\s+(?:in|em)\s+/iu);
-  const grounding = groundingMatch?.[1]?.trim() ?? '';
-  return /^[a-z]{5,20}$/u.test(grounding) ? grounding : null;
 }

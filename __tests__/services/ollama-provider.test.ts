@@ -1562,6 +1562,155 @@ describe('OllamaProvider — scoped state context', () => {
       expect(result.text).toContain(groundingTerm);
     });
 
+    it.each([
+      {
+        locale: 'pt-PT',
+        request: 'Dá-me ideias de conteúdo para a publicação do lançamento usando apenas o contexto autorizado.',
+        answer: 'Ideias de conteúdo: backlog em vídeo curto, carrossel visual',
+      },
+      {
+        locale: 'pt-BR',
+        request: 'Dê-me ideias de conteúdo para a publicação do lançamento usando somente o contexto autorizado.',
+        answer: 'Ideias de conteúdo: backlog em vídeo curto, carrossel visual.',
+      },
+      {
+        locale: 'en-US',
+        request: 'Give me ideas for content for the launch using only the authorized context.',
+        answer: 'Ideas for content: backlog in short video, visual carousel',
+      },
+      {
+        locale: 'pt-PT',
+        request: 'Dá-me ideias de conteúdo para a publicação do lançamento usando apenas o contexto autorizado.',
+        answer: 'Ideias de conteúdo: backlog em vídeo criativo, carrossel visual.',
+      },
+      {
+        locale: 'pt-PT',
+        request: 'Dá-me ideias de conteúdo para a publicação do lançamento usando apenas o contexto autorizado.',
+        answer: 'Ideias de conteúdo: backlog em series, vídeo.',
+      },
+      {
+        locale: 'en-US',
+        request: 'Give me ideas for content for the launch using only the authorized context.',
+        answer: 'Ideas for content: backlog in short video, long video.',
+      },
+    ] as const)(
+      'accepts an exact $locale two-format comma form without rewriting model-authored bytes',
+      async ({ locale, request: currentRequest, answer }) => {
+        fetchMock
+          .mockResolvedValueOnce(makeChatResponse({
+            content: JSON.stringify({ a: answer }),
+          }))
+          .mockResolvedValueOnce(makeTagsResponse());
+        const p = new OllamaProvider();
+
+        const result = await runWithChatRequestLocale(locale, () => p.callDomain(
+          'content',
+          [{ role: 'user', content: 'The editing backlog needs attention.' }],
+          currentRequest,
+          'A reference library is available.',
+          {
+            userId: 42,
+            tenantId: 42,
+            currentTurnOnly: false,
+          },
+        ));
+
+        const request = firstStructuredRequest();
+        expectExactUnconstrainedProperties(request.format, ['a']);
+        expect(request.messages[0]?.content).toContain(
+          'two distinct 1-3-word formats separated by one comma',
+        );
+        expect(request.messages.at(-1)?.content).toContain(`REQUEST: ${currentRequest}`);
+        expect(result.stopReason).toBe('stop');
+        expect(result.text).toBe(answer);
+      },
+    );
+
+    it('keeps the legacy slash form compatible with multiword format phrases', async () => {
+      const answer = 'Ideias de conteúdo: backlog em vídeo curto/carrossel visual.';
+      fetchMock
+        .mockResolvedValueOnce(makeChatResponse({
+          content: JSON.stringify({ a: answer }),
+        }))
+        .mockResolvedValueOnce(makeTagsResponse());
+      const p = new OllamaProvider();
+
+      const result = await runWithChatRequestLocale('pt-PT', () => p.callDomain(
+        'content',
+        [{ role: 'user', content: 'O backlog precisa de atenção.' }],
+        'Dá-me ideias de conteúdo para a publicação do lançamento usando apenas o contexto autorizado.',
+        'A biblioteca de referências está disponível.',
+        {
+          userId: 42,
+          tenantId: 42,
+          currentTurnOnly: false,
+        },
+      ));
+
+      expect(result.stopReason).toBe('stop');
+      expect(result.text).toBe(answer);
+    });
+
+    it.each([
+      ['repeated formats', 'Ideias de conteúdo: backlog em vídeo curto, vídeo curto.'],
+      ['singular/plural repeated formats', 'Ideias de conteúdo: backlog em reel, reels.'],
+      ['accented singular/plural repeated formats', 'Ideias de conteúdo: backlog em série, séries.'],
+      ['translated carousel aliases', 'Ideias de conteúdo: backlog em carrossel, carousel.'],
+      ['translated guide aliases', 'Ideias de conteúdo: backlog em guia, guide.'],
+      ['translated photo aliases', 'Ideias de conteúdo: backlog em photo, foto.'],
+      ['translated series aliases', 'Ideias de conteúdo: backlog em série, series.'],
+      ['multiple format heads per item', 'Ideias de conteúdo: backlog em vídeo podcast, carrossel blog.'],
+      ['an empty format', 'Ideias de conteúdo: backlog em vídeo curto, .'],
+      ['a four-word format', 'Ideias de conteúdo: backlog em vídeo curto diário útil, reel.'],
+      ['a four-word legacy slash format', 'Ideias de conteúdo: backlog em vídeo curto diário útil/reel.'],
+      ['a third format', 'Ideias de conteúdo: backlog em vídeo, carrossel, podcast.'],
+      ['generic-only formats', 'Ideias de conteúdo: backlog em conteúdo, formato.'],
+      ['a hanging conjunction', 'Ideias de conteúdo: backlog em vídeo e, carrossel visual.'],
+      ['a leading conjunction', 'Ideias de conteúdo: backlog em e vídeo, carrossel visual.'],
+      ['a hanging preposition', 'Ideias de conteúdo: backlog em vídeo com, carrossel visual.'],
+      ['a leading article', 'Ideias de conteúdo: backlog em o vídeo, carrossel visual.'],
+      ['a prose-only item', 'Ideias de conteúdo: backlog em vídeo, tudo pronto.'],
+      ['platform qualifier prose', 'Ideias de conteúdo: backlog em youtube lixo, instagram palavras.'],
+      ['object-type status prose', 'Ideias de conteúdo: backlog em campaign pronta, vídeo curto.'],
+      ['reference status prose', 'Ideias de conteúdo: backlog em reference available, vídeo curto.'],
+      ['an imperative before a format head', 'Ideias de conteúdo: backlog em ignore script, vídeo curto.'],
+      ['a qualifier without a format head', 'Ideias de conteúdo: backlog em long overdue, vídeo curto.'],
+      ['the wrong localized heading', 'Ideas for content: backlog em vídeo, carrossel.'],
+      ['the wrong localized connector', 'Ideias de conteúdo: backlog in vídeo, carrossel.'],
+      ['mixed separators', 'Ideias de conteúdo: backlog em vídeo/reel, carrossel.'],
+      ['extra prose', 'Ideias de conteúdo: backlog em vídeo, reel. Extra'],
+      ['a 65-character answer', 'Ideias de conteúdo: backlog em vídeo editorial, carrossel visual.'],
+      ['a newline', 'Ideias de conteúdo: backlog em vídeo curto,\ncarrossel visual.'],
+      ['a carriage return', 'Ideias de conteúdo: backlog em vídeo curto,\rcarrossel visual.'],
+      ['a tab inside a format', 'Ideias de conteúdo: backlog em vídeo\tcurto, carrossel visual.'],
+      ['a vertical tab inside a format', 'Ideias de conteúdo: backlog em vídeo\vcurto, carrossel visual.'],
+      ['a form feed inside a format', 'Ideias de conteúdo: backlog em vídeo\fcurto, carrossel visual.'],
+      ['a Unicode line separator', 'Ideias de conteúdo: backlog em vídeo\u2028curto, carrossel visual.'],
+      ['a Unicode paragraph separator', 'Ideias de conteúdo: backlog em vídeo\u2029curto, carrossel visual.'],
+    ] as const)('rejects comma-form authorized ideas with %s', async (_label, answer) => {
+      fetchMock
+        .mockResolvedValueOnce(makeChatResponse({
+          content: JSON.stringify({ a: answer }),
+        }))
+        .mockResolvedValueOnce(makeTagsResponse());
+      const p = new OllamaProvider();
+
+      const result = await runWithChatRequestLocale('pt-PT', () => p.callDomain(
+        'content',
+        [{ role: 'user', content: 'O backlog precisa de atenção.' }],
+        'Dá-me ideias de conteúdo para a publicação do lançamento usando apenas o contexto autorizado.',
+        'A biblioteca de referências está disponível.',
+        {
+          userId: 42,
+          tenantId: 42,
+          currentTurnOnly: false,
+        },
+      ));
+
+      expect(result.stopReason).toBe('length');
+      expect(result.text).toBe('');
+    });
+
     it('preserves additional current-request constraints in the compact authorized-ideas prompt', async () => {
       const currentRequest =
         'Give me ideas for content using only the authorized context. Do not use video; use audio and text only.';
@@ -1885,9 +2034,9 @@ describe('OllamaProvider — scoped state context', () => {
       expect(result.text.endsWith('.')).toBe(false);
     });
 
-    it('rejects a complete-looking authorized-ideas answer outside the certified two-format list shape', async () => {
-      const answer = 'Ideias de conteúdo: backlog, vídeo e carrossel editorial.';
-      expect(answer).toHaveLength(57);
+    it('does not log raw fragments from a rejected authorized-ideas answer', async () => {
+      const rawCanary = 'canarioprivado';
+      const answer = `Ideias de conteúdo: backlog em vídeo, ${rawCanary}.`;
       fetchMock
         .mockResolvedValueOnce(makeChatResponse({
           content: JSON.stringify({ a: answer }),
@@ -1920,6 +2069,7 @@ describe('OllamaProvider — scoped state context', () => {
         structuredAnswerMidSentenceCutoff: false,
       });
       expect(JSON.stringify(warning)).not.toContain(answer);
+      expect(JSON.stringify(logCalls)).not.toContain(rawCanary);
     });
 
     it('uses exactly one short model-authored answer and accepts distinct visible comparison conditions', async () => {
@@ -2158,9 +2308,9 @@ describe('OllamaProvider — scoped state context', () => {
       'Copy OUTPUT_PREFIX exactly',
     );
     expect(request.messages[0]?.content).toContain(
-      'append two distinct one-word content formats',
+      'two distinct 1-3-word formats separated by one comma',
     );
-    expect(request.messages[0]?.content).toContain('Include both');
+    expect(request.messages[0]?.content).toContain('no other text');
     expect(request.messages[0]?.content).toContain(
       'max 62 chars',
     );
