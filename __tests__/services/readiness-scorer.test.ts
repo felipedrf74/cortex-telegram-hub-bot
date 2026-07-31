@@ -188,6 +188,19 @@ describe('readiness-scorer — calculateReadiness', () => {
     `).run(userId, '{"token":"oauth1"}', '{"token":"oauth2"}');
   }
 
+  /**
+   * Disconnect a user from Garmin.
+   *
+   * Garmin availability is per-user connection state, not deployment config.
+   * These cases used to fake "no Garmin" by flipping the global
+   * `isGarminConfigured()` env flag, which also disabled every *other*
+   * connected user. That conjunct is gone, so the switch is real data.
+   */
+  function clearGarminConnection(userId: number): void {
+    testDb.prepare('DELETE FROM garmin_user_tokens WHERE user_id = ?').run(userId);
+    testDb.prepare('DELETE FROM garmin_sessions WHERE user_id = ?').run(userId);
+  }
+
   function seedAppleHealthData(
     userId: number,
     types: Array<'hrv' | 'sleep' | 'rhr' | 'summary'> = ['hrv', 'sleep', 'rhr', 'summary'],
@@ -221,7 +234,6 @@ describe('readiness-scorer — calculateReadiness', () => {
   beforeEach(() => {
     testDb = createMigratedTestDatabase();
     vi.clearAllMocks();
-    mockGarmin.isGarminConfigured.mockReturnValue(true);
     mockWearableService.getReadiness.mockResolvedValue(null);
     try {
       testDb.prepare("INSERT OR IGNORE INTO users (id, first_name, tier, auth_provider, status) VALUES (1, 'Test', 'owner', 'test', 'active')").run();
@@ -284,7 +296,7 @@ describe('readiness-scorer — calculateReadiness', () => {
   });
 
   it('returns neutral (60) when no wearable configured', async () => {
-    mockGarmin.isGarminConfigured.mockReturnValue(false);
+    clearGarminConnection(1);
     // With no Apple Health data either (mock DB returns empty), falls to neutral
     const result = await calculateReadiness(1);
     expect(result.score).toBe(60);
@@ -420,7 +432,7 @@ describe('readiness-scorer — calculateReadiness', () => {
   });
 
   it('uses WHOOP readiness when Garmin is unavailable but WHOOP is connected', async () => {
-    mockGarmin.isGarminConfigured.mockReturnValue(false);
+    clearGarminConnection(1);
     mockWearableService.getReadiness.mockResolvedValue({
       provider: 'whoop',
       date: '2026-04-16',
@@ -456,7 +468,7 @@ describe('readiness-scorer — calculateReadiness', () => {
   });
 
   it('derives Apple Health body battery from activity-only HealthKit data', async () => {
-    mockGarmin.isGarminConfigured.mockReturnValue(false);
+    clearGarminConnection(1);
     seedAppleHealthData(1, ['summary']);
 
     const result = await calculateReadiness(1);
@@ -474,7 +486,7 @@ describe('readiness-scorer — calculateReadiness', () => {
     ['hrvRhr', ['hrv', 'rhr']],
     ['sleepRhr', ['sleep', 'rhr']],
   ] as const)('derives Apple Health body battery from partial HealthKit data: %s', async (_caseName, types) => {
-    mockGarmin.isGarminConfigured.mockReturnValue(false);
+    clearGarminConnection(1);
     seedAppleHealthData(1, [...types]);
 
     const result = await calculateReadiness(1);
@@ -519,7 +531,7 @@ describe('readiness-scorer — calculateReadiness', () => {
   });
 
   it('stamps source whoop on the WHOOP fallback path', async () => {
-    mockGarmin.isGarminConfigured.mockReturnValue(false);
+    clearGarminConnection(1);
     mockWearableService.getReadiness.mockResolvedValue({
       provider: 'whoop',
       date: '2026-04-16',
@@ -537,7 +549,7 @@ describe('readiness-scorer — calculateReadiness', () => {
   });
 
   it('stamps source apple_health on the Apple Health derived path', async () => {
-    mockGarmin.isGarminConfigured.mockReturnValue(false);
+    clearGarminConnection(1);
     seedAppleHealthData(1);
 
     const result = await calculateReadiness(1);
@@ -547,7 +559,7 @@ describe('readiness-scorer — calculateReadiness', () => {
   });
 
   it('stamps source estimated on the neutral no-wearable fallback', async () => {
-    mockGarmin.isGarminConfigured.mockReturnValue(false);
+    clearGarminConnection(1);
 
     const result = await calculateReadiness(1);
     expect(result.score).toBe(60);

@@ -795,12 +795,29 @@ async function hydrateClientFromPersistedSession(
   return null;
 }
 
+/**
+ * Whether the OWNER-ONLY global credential fallback is available.
+ *
+ * This is deployment configuration, not user state. Use it only to gate the
+ * legacy credential/SSO path. It must never gate a per-user read: a user who
+ * completed the interactive login has their own session in `garmin_sessions`
+ * and does not depend on these env vars existing.
+ */
 export function isGarminConfigured(): boolean {
   return !!(config.garmin.email && config.garmin.password);
 }
 
+/**
+ * Whether THIS user can read Garmin data — pure per-user truth.
+ *
+ * Previously this also required the global `GARMIN_EMAIL`/`GARMIN_PASSWORD`,
+ * which meant an unset deployment credential disabled Garmin for every user,
+ * including those who had connected their own account through
+ * POST /api/v1/garmin/login. Mirrors `WhoopAdapter.isConfigured`, which is
+ * likewise per-user connection state with no global env gate.
+ */
 export function isGarminConfiguredForUser(userId: number): boolean {
-  return isGarminConfigured() && hasActiveGarminConnection(userId);
+  return hasActiveGarminConnection(userId);
 }
 
 /**

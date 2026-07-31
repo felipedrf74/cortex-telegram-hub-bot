@@ -12,7 +12,6 @@ import { logger } from '../utils/logger';
 import { runWithContext } from '../utils/request-context';
 import { hasActiveGarminConnection } from './garmin-session-store';
 import {
-  isGarminConfigured,
   getHrvData, getSleepData, getBodyBatteryEvents,
   getTrainingReadiness, getActivitiesByDate, getDailySummary,
   type GarminReadOptions,
@@ -613,7 +612,12 @@ async function calculateReadinessUncached(
   // The old owner-only Telegram-era gate made Garmin appear connected
   // in the app while readiness/body battery stayed empty for non-owner
   // users. Only use Garmin when THIS user has an active Garmin session.
-  const canUseGarmin = isGarminConfigured() && hasActiveGarminConnection(userId);
+  //
+  // July 2026: dropped the surviving `isGarminConfigured()` conjunct. That
+  // read the deployment-wide GARMIN_EMAIL/GARMIN_PASSWORD pair, so unsetting
+  // the owner's credentials silently downgraded every connected user to
+  // Apple Health or a neutral score. Connection state is per-user truth.
+  const canUseGarmin = hasActiveGarminConnection(userId);
 
   if (!canUseGarmin) {
     const today = new Date().toISOString().slice(0, 10);
