@@ -1197,8 +1197,15 @@ export class TaskRoutingProvider implements AIProvider {
       }
     }
 
+    const currentTurnOnly = opts.callOptions.currentTurnOnly === true;
+    const routedHistory = currentTurnOnly ? [] : opts.slicedHistory;
+    const routedStateContext = currentTurnOnly ? '' : stateContext;
+    const routedCallOptions = currentTurnOnly
+      ? { ...opts.callOptions, filteredTools: [] }
+      : opts.callOptions;
+
     return this.executeWithFallback(taskType, (p) =>
-      p.callDomain(domain, opts.slicedHistory, currentMessage, stateContext, opts.callOptions)
+      p.callDomain(domain, routedHistory, currentMessage, routedStateContext, routedCallOptions)
         .then((result) => stampRoutedProvider(result, p.name)),
     pair, {
       callKind: 'domain',
@@ -1209,9 +1216,9 @@ export class TaskRoutingProvider implements AIProvider {
       modelTier: opts.callOptions.modelTier,
       pairSource,
       operatorOverrideApplied,
-      historyCount: opts.slicedHistory.length,
+      historyCount: routedHistory.length,
       promptChars: currentMessage.length,
-      stateContextChars: stateContext.length,
+      stateContextChars: routedStateContext.length,
     });
   }
 
@@ -1254,8 +1261,15 @@ export class TaskRoutingProvider implements AIProvider {
       }
     }
 
+    const currentTurnOnly = opts.callOptions.currentTurnOnly === true;
+    const routedHistory = currentTurnOnly ? [] : opts.slicedHistory;
+    const routedStateContext = currentTurnOnly ? '' : stateContext;
+    const routedCallOptions = currentTurnOnly
+      ? { ...opts.callOptions, filteredTools: [] }
+      : opts.callOptions;
+
     return this.executeWithFallback(taskType, (p) =>
-      p.continueWithToolResults(domain, opts.slicedHistory, currentMessage, stateContext, toolConversation, opts.callOptions)
+      p.continueWithToolResults(domain, routedHistory, currentMessage, routedStateContext, toolConversation, routedCallOptions)
         .then((result) => stampRoutedProvider(result, p.name)),
     pair, {
       callKind: 'tool-continuation',
@@ -1266,9 +1280,9 @@ export class TaskRoutingProvider implements AIProvider {
       modelTier: opts.callOptions.modelTier,
       pairSource,
       operatorOverrideApplied,
-      historyCount: opts.slicedHistory.length,
+      historyCount: routedHistory.length,
       promptChars: currentMessage.length,
-      stateContextChars: stateContext.length,
+      stateContextChars: routedStateContext.length,
       toolConversationTurns: toolConversation.length,
     });
   }
@@ -1335,6 +1349,7 @@ export class TaskRoutingProvider implements AIProvider {
       redactionRequired: callerOpts.redactionRequired,
       ownerSkill: callerOpts.ownerSkill,
       executeIntent: callerOpts.executeIntent,
+      currentTurnOnly: callerOpts.currentTurnOnly,
     };
 
     return {

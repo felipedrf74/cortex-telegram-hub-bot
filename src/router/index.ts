@@ -118,6 +118,39 @@ function hasFreshSecretaryOperationalIntent(message: string): boolean {
   return SECRETARY_FRESH_OPS_PATTERNS.some((pattern) => pattern.test(message));
 }
 
+// A Content comparison may be followed by a second, operational request.
+// The five legacy keyword domains already escape through keywordMatch, and
+// secretary has its dedicated fresh-operation guard above. These signals
+// cover the remaining operation-owned domains whose natural-language turns
+// deliberately fall through to the classifier. Match an operation/object
+// pair in either order rather than pinning exact utterances, so provider,
+// notification, and decision actions cannot be swallowed by the bounded
+// Content-context optimization.
+const NON_CONTENT_OPERATION_SIGNALS: ReadonlyArray<{
+  action: RegExp;
+  object: RegExp;
+}> = [
+  {
+    action: /\b(retry|reconnect|re-?sync|sync|refresh|repair|connect|disconnect|link|unlink)\b/i,
+    object: /\b(connection|connector|integration|provider|account|gmail|outlook)\b/i,
+  },
+  {
+    action: /\b(dismiss|snooze|clear|mute|unmute|enable|disable|delete|archive|mark\s+(?:it\s+|this\s+|the\s+)?(?:as\s+)?(?:read|unread))\b/i,
+    object: /\b(notification|alert|push)\b/i,
+  },
+  {
+    action: /\b(dismiss|snooze|resolve|accept|reject|approve|decline|defer|complete|close|reopen)\b/i,
+    object: /\b(decision|choice|follow-?up)\b/i,
+  },
+];
+
+function hasFreshNonContentOperationalIntent(message: string): boolean {
+  if (hasFreshSecretaryOperationalIntent(message)) return true;
+  return NON_CONTENT_OPERATION_SIGNALS.some(
+    ({ action, object }) => action.test(message) && object.test(message),
+  );
+}
+
 
 const CONTEXT_FOLLOW_UP_PATTERNS = [
   /^(yes|yeah|yep|sure|ok|okay|do it|make it|move it|change it|shorten it|make it shorter|what about|how about|and do|and move|sim|claro|faz isso|faça isso|faz|muda|altera|encurta|resume|resuma|e faz|e move|e muda)\b/i,
@@ -130,6 +163,9 @@ const CONTENT_REFINEMENT_PATTERNS = [
   /\b(reescrev(?:e|a)|encurt(?:a|e)|resume|resuma|traduz|adapta|transforma|melhora|faz)\b/i,
   /\b(in\s+portuguese|in\s+english|portugu[eê]s|portugues|ingl[eê]s|european\s+portuguese|portugu[eê]s\s+europeu|mais\s+curt[oa]|mais\s+long[oa])\b/i,
 ];
+
+const CONTENT_COMPARISON_REFINEMENT_PATTERN =
+  /^(?:compare|contrast|compara|compare|contrasta|contraste)\b(?=[\s\S]{0,220}\b(?:launch|campaign|brand|content|script|post|video|reel|lançamento|campanha|marca|conteúdo|roteiro|publicação|vídeo)\b)(?=[\s\S]{0,220}\b(?:narrative|narratives|story|stories|angle|angles|variant|variants|narrativa|narrativas|história|histórias|ângulo|ângulos|variante|variantes)\b)[\s\S]+$/i;
 
 const FINANCE_REFINEMENT_PATTERNS = [
   /\b(categori[sz]e|reclassif(?:y|ies)|tag|mark|split|rename|attach|file|reconcile|deductible|business\s+expense|personal\s+expense|software|travel|meals?)\b/i,
@@ -191,6 +227,17 @@ function shouldForceActiveContext(message: string, activeContext?: ConversationC
   }
 
   return false;
+}
+
+function isBoundedContentComparisonContinuation(
+  message: string,
+  activeContext?: ConversationContext | null,
+): boolean {
+  if (activeContext?.domain !== 'content') return false;
+  const trimmed = message.trim();
+  if (!trimmed || trimmed.length > 240 || trimmed.split(/\s+/).length > 24) return false;
+  if (hasFreshNonContentOperationalIntent(trimmed)) return false;
+  return CONTENT_COMPARISON_REFINEMENT_PATTERN.test(trimmed);
 }
 
 // System commands that don't route to a domain
@@ -306,6 +353,23 @@ export async function routeMessage(
       domain: activeContext!.domain,
       method: 'context',
       confidence: 0.85,
+      strippedMessage: message,
+    };
+  }
+
+  // A bounded Content comparison is a self-contained continuation of an
+  // already-active Content turn. Resolve this only after ordinary keyword
+  // and fresh-operation routes so calendar/finance/training intent still
+  // wins, and never apply it without active Content context.
+  if (isBoundedContentComparisonContinuation(message, activeContext)) {
+    logger.debug(
+      { domain: 'content', method: 'context' },
+      'Preserving active content context for bounded comparison continuation',
+    );
+    return {
+      domain: 'content',
+      method: 'context',
+      confidence: 0.9,
       strippedMessage: message,
     };
   }

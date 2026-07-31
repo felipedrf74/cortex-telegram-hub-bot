@@ -896,6 +896,7 @@ ${message}`;
     optionsOrMaxTokens?: number | CallDomainOptions,
   ): Promise<AICallResult> {
     const opts = normalizeCallDomainOptions(optionsOrMaxTokens);
+    const currentTurnOnly = opts.currentTurnOnly === true;
     // v2: honor options.modelOverride (set by cloud-reasoning-gate so the
     // approved reasoning model is actually used).
     const baseRouting = resolveOpenAIModel(domain, opts.modelTier);
@@ -904,15 +905,18 @@ ${message}`;
       : baseRouting;
     // Phase 2 Slice A: pass currentMessage so triathlon sub-skill
     // routing picks the sport-specific coach persona prompt.
-    const systemPrompt = getDomainSystemPrompt(domain, currentMessage);
-    const useTools = domain === 'secretary' || domain === 'triathlon';
+    const systemPrompt = getDomainSystemPrompt(domain, currentMessage, {
+      currentTurnOnly,
+    });
+    const useTools = !currentTurnOnly && (domain === 'secretary' || domain === 'triathlon');
     const allowLegacyFullTools = optionsOrMaxTokens == null || typeof optionsOrMaxTokens === 'number';
     const tools = useTools ? toOpenAITools(opts.filteredTools, 'OpenAI callDomain', allowLegacyFullTools) : [];
-    const contextPrefix = buildScopedStateContextPrefix(stateContext);
+    const contextPrefix = currentTurnOnly ? '' : buildScopedStateContextPrefix(stateContext);
+    const historyToSend = currentTurnOnly ? [] : history;
 
     const messages: OpenAI.ChatCompletionMessageParam[] = [
       { role: 'system', content: systemPrompt },
-      ...history.map((m) => ({
+      ...historyToSend.map((m) => ({
         role: m.role as 'user' | 'assistant',
         content: m.content,
       })),
@@ -944,6 +948,7 @@ ${message}`;
     options?: CallDomainOptions,
   ): Promise<AICallResult> {
     const opts = normalizeCallDomainOptions(options);
+    const currentTurnOnly = opts.currentTurnOnly === true;
     // v2: honor options.modelOverride (set by cloud-reasoning-gate so the
     // approved reasoning model is actually used).
     const baseRouting = resolveOpenAIModel(domain, opts.modelTier);
@@ -952,14 +957,17 @@ ${message}`;
       : baseRouting;
     // Phase 2 Slice A: pass currentMessage so triathlon sub-skill
     // routing picks the sport-specific coach persona prompt.
-    const systemPrompt = getDomainSystemPrompt(domain, currentMessage);
-    const useTools = domain === 'secretary' || domain === 'triathlon';
+    const systemPrompt = getDomainSystemPrompt(domain, currentMessage, {
+      currentTurnOnly,
+    });
+    const useTools = !currentTurnOnly && (domain === 'secretary' || domain === 'triathlon');
     const tools = useTools ? toOpenAITools(opts.filteredTools, 'OpenAI continueWithToolResults', options == null) : [];
-    const contextPrefix = buildScopedStateContextPrefix(stateContext);
+    const contextPrefix = currentTurnOnly ? '' : buildScopedStateContextPrefix(stateContext);
+    const historyToSend = currentTurnOnly ? [] : history;
 
     const messages: OpenAI.ChatCompletionMessageParam[] = [
       { role: 'system', content: systemPrompt },
-      ...history.map((m) => ({
+      ...historyToSend.map((m) => ({
         role: m.role as 'user' | 'assistant',
         content: m.content,
       })),

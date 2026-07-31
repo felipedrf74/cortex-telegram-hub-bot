@@ -54,6 +54,7 @@ import { buildScopedStateContextPrefix } from './provider-state-context';
 import { assertSmallOnlyOllamaModel } from './ollama-model-policy';
 import { detectResponseLanguage } from './chat-language-detector';
 import { getCurrentChatRequestLocale } from './chat-request-locale-context';
+import { assessChatResearchAnswerCompleteness } from './chat-research-answer-quality';
 
 // ─── Public types for the new task dispatch paths ──────────────────
 
@@ -278,17 +279,15 @@ const PHASE_K_ANSWER_ONLY_GUARD = [
   "another.",
 ].join('\n');
 
-function buildPhaseKContentConcisionGuard(): string {
-  return [
-    '',
-    '— MANDATORY STRUCTURED RESPONSE —',
-    'Return only the JSON object required by the response schema.',
-    'For routine Content chat answers, use at most 90 words and finish',
-    'with a complete sentence before the output limit.',
-    'Copy the schema-constant `lead_sentence` exactly; do not paraphrase or omit it.',
-    'Set `lead_complete` to true only after `lead_sentence` is complete.',
-    'Put only the concise continuation in `answer`; do not repeat `lead_sentence` there.',
-  ].join('\n');
+type RoutineContentNoticeLocale = 'en-US' | 'pt-BR' | 'pt-PT';
+type RoutineContentAnswerKey = 'answer_en_us' | 'answer_pt_br' | 'answer_pt_pt';
+
+function routineContentAnswerKey(
+  locale: RoutineContentNoticeLocale,
+): RoutineContentAnswerKey {
+  if (locale === 'pt-PT') return 'answer_pt_pt';
+  if (locale === 'pt-BR') return 'answer_pt_br';
+  return 'answer_en_us';
 }
 
 const PHASE_K_FINANCE_GUARD = [
@@ -305,245 +304,20 @@ const PHASE_K_FINANCE_GUARD = [
 
 function phaseKDomainSystemPromptSuffix(
   domain: DomainName,
-  includeContentConcision = true,
 ): string {
-  if (domain === 'content') {
-    if (!includeContentConcision) return PHASE_K_ANSWER_ONLY_GUARD;
-    return PHASE_K_ANSWER_ONLY_GUARD
-      + buildPhaseKContentConcisionGuard();
-  }
+  if (domain === 'content') return PHASE_K_ANSWER_ONLY_GUARD;
   if (domain === 'cooking') return PHASE_K_ANSWER_ONLY_GUARD;
   if (domain === 'finance') return PHASE_K_FINANCE_GUARD;
   return '';
 }
 
-type RoutineContentNoticeLocale = 'en-US' | 'pt-BR' | 'pt-PT';
-
-const ROUTINE_CONTENT_LEAD_MAX_CHARS = 240;
 const ROUTINE_CONTENT_ANSWER_MIN_CHARS = 24;
-const ROUTINE_CONTENT_ANSWER_MAX_CHARS = 480;
-const ROUTINE_CONTENT_MAX_OUTPUT_TOKENS = 192;
-
-const ROUTINE_CONTENT_SUBJECT_STOP_WORDS = new Set([
-  'about', 'after', 'again', 'against', 'also', 'apenas', 'around',
-  'autorizado', 'before', 'broad', 'change', 'compare', 'context',
-  'contexto', 'could', 'dados', 'data', 'each', 'explain', 'from',
-  'crie', 'have', 'into', 'latest', 'mais', 'only', 'para', 'please',
-  'preferable', 'read', 'request', 'saved', 'several', 'should',
-  'tailored', 'that', 'their', 'them', 'then', 'these', 'this',
-  'those', 'using', 'when', 'where', 'which', 'with', 'without',
-  'write',
-]);
 
 function normalizeRoutineContentSubjectStem(token: string): string {
   const lower = token.toLowerCase();
   return lower.length > 5 && lower.endsWith('s')
     ? lower.slice(0, -1)
     : lower;
-}
-
-interface RoutineContentSubjectToken {
-  raw: string;
-  stem: string;
-}
-
-function routineContentSubjectTokens(text: string): RoutineContentSubjectToken[] {
-  return (text.match(/[\p{L}\p{N}]+/gu) ?? [])
-    .map((raw) => ({ raw, stem: normalizeRoutineContentSubjectStem(raw) }))
-    .filter(({ raw, stem }) => (
-      raw.length <= 64
-      && stem.length >= 4
-      && !ROUTINE_CONTENT_SUBJECT_STOP_WORDS.has(stem)
-    ));
-}
-
-function routineContentSubjectStems(text: string): string[] {
-  return routineContentSubjectTokens(text).map(({ stem }) => stem);
-}
-
-function selectRoutineContentSubjectTerm(currentMessage: string): string {
-  const tokens = routineContentSubjectTokens(currentMessage);
-  if (tokens.length === 0) {
-    return resolveRoutineContentNoticeLanguage(currentMessage) === 'en-US'
-      ? 'content'
-      : 'conteúdo';
-  }
-  const counts = new Map<string, number>();
-  for (const token of tokens) counts.set(token.stem, (counts.get(token.stem) ?? 0) + 1);
-  const maxFrequency = Math.max(...counts.values());
-  if (maxFrequency > 1) {
-    return tokens.find((token) => counts.get(token.stem) === maxFrequency)?.raw
-      ?? tokens[0].raw;
-  }
-  if (resolveRoutineContentNoticeLanguage(currentMessage) !== 'en-US') {
-    return tokens.slice(0, 2).map(({ raw }) => raw).join(' e ');
-  }
-  return tokens.reduce((selected, token) => (
-    token.raw.length > selected.raw.length ? token : selected
-  )).raw;
-}
-
-function buildRoutineContentLeadSentence(currentMessage: string): string {
-  const subjectTerm = selectRoutineContentSubjectTerm(currentMessage);
-  return resolveRoutineContentNoticeLanguage(currentMessage) === 'en-US'
-    ? `Requested ${subjectTerm} guidance follows.`
-    : `Sobre ${subjectTerm}, seguem orientações solicitadas.`;
-}
-
-function buildRoutineContentResponseFormat(expectedLeadSentence: string): Record<string, unknown> {
-  return {
-    type: 'object',
-    properties: {
-      lead_sentence: {
-        type: 'string',
-        const: expectedLeadSentence,
-      },
-      lead_complete: {
-        type: 'boolean',
-        const: true,
-      },
-      answer: {
-        type: 'string',
-        description: 'Concise continuation after lead_sentence, without repeating it.',
-        minLength: ROUTINE_CONTENT_ANSWER_MIN_CHARS,
-        maxLength: ROUTINE_CONTENT_ANSWER_MAX_CHARS,
-      },
-    },
-    required: ['lead_sentence', 'lead_complete', 'answer'],
-    additionalProperties: false,
-  };
-}
-
-function leadSharesRequiredSubject(leadSentence: string, currentMessage: string): boolean {
-  const sourceStems = routineContentSubjectStems(currentMessage);
-  if (sourceStems.length === 0) return true;
-  const counts = new Map<string, number>();
-  for (const stem of sourceStems) counts.set(stem, (counts.get(stem) ?? 0) + 1);
-  const maxFrequency = Math.max(...counts.values());
-  const required = maxFrequency > 1
-    ? new Set([...counts].filter(([, count]) => count === maxFrequency).map(([stem]) => stem))
-    : new Set(counts.keys());
-  const leadStems = new Set(routineContentSubjectStems(leadSentence));
-  return [...required].some((stem) => leadStems.has(stem));
-}
-
-function certifyRoutineContentLead(
-  text: string,
-  currentMessage: string,
-  expectedLeadSentence: string,
-): string | null {
-  const candidate = text.trim();
-  if (candidate !== expectedLeadSentence) return null;
-  if (candidate.includes('\n')) return null;
-  const terminal = candidate.match(/([\p{L}\p{N}]+)([.!?])(?:["'”’)\]]*)?$/u);
-  if (!terminal) return null;
-  const words = candidate.match(/[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)*/gu) ?? [];
-  if (
-    candidate.length < 24
-    || candidate.length > ROUTINE_CONTENT_LEAD_MAX_CHARS
-    || words.length < 4
-  ) {
-    return null;
-  }
-  return leadSharesRequiredSubject(candidate, currentMessage) ? candidate : null;
-}
-
-interface RoutineContentStructuredResult {
-  leadSentence: string;
-  answer: string;
-  renderedText: string;
-}
-
-function parseRoutineContentStructuredResult(
-  text: string,
-  currentMessage: string,
-  expectedLeadSentence: string,
-): RoutineContentStructuredResult | null {
-  try {
-    const parsed = JSON.parse(text) as Record<string, unknown>;
-    if (
-      !parsed
-      || typeof parsed !== 'object'
-      || Array.isArray(parsed)
-      || Object.keys(parsed).sort().join(',')
-        !== 'answer,lead_complete,lead_sentence'
-      || parsed.lead_complete !== true
-      || typeof parsed.lead_sentence !== 'string'
-      || typeof parsed.answer !== 'string'
-      || parsed.answer.trim().length < ROUTINE_CONTENT_ANSWER_MIN_CHARS
-      || parsed.answer.length > ROUTINE_CONTENT_ANSWER_MAX_CHARS
-    ) {
-      return null;
-    }
-    const leadSentence = certifyRoutineContentLead(
-      parsed.lead_sentence,
-      currentMessage,
-      expectedLeadSentence,
-    );
-    if (!leadSentence) return null;
-    const answer = parsed.answer;
-    return {
-      leadSentence,
-      answer,
-      renderedText: `${leadSentence}\n\n${answer}`,
-    };
-  } catch {
-    return null;
-  }
-}
-
-function describeRoutineContentStructuredValidation(
-  text: string,
-  currentMessage: string,
-  expectedLeadSentence: string,
-): Record<string, boolean | number> {
-  const diagnostics: Record<string, boolean | number> = {
-    structuredJsonComplete: false,
-    structuredExactKeys: false,
-    structuredLeadComplete: false,
-    structuredLeadTypeValid: false,
-    structuredAnswerTypeValid: false,
-    structuredLeadCertificateValid: false,
-  };
-  try {
-    const parsed = JSON.parse(text) as Record<string, unknown>;
-    diagnostics.structuredJsonComplete = true;
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return diagnostics;
-    diagnostics.structuredExactKeys = Object.keys(parsed).sort().join(',')
-      === 'answer,lead_complete,lead_sentence';
-    diagnostics.structuredLeadComplete = parsed.lead_complete === true;
-    diagnostics.structuredLeadTypeValid = typeof parsed.lead_sentence === 'string';
-    diagnostics.structuredAnswerTypeValid = typeof parsed.answer === 'string';
-    if (typeof parsed.lead_sentence === 'string') {
-      const candidate = parsed.lead_sentence.trim();
-      const terminal = candidate.match(/([\p{L}\p{N}]+)([.!?])(?:["'”’)\]]*)?$/u);
-      const words = candidate.match(/[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)*/gu) ?? [];
-      diagnostics.structuredLeadChars = candidate.length;
-      diagnostics.structuredLeadSingleLine = !candidate.includes('\n');
-      diagnostics.structuredLeadTerminalValid = terminal !== null;
-      diagnostics.structuredLeadWordCount = words.length;
-      diagnostics.structuredLeadLengthValid = candidate.length >= 24
-        && candidate.length <= ROUTINE_CONTENT_LEAD_MAX_CHARS;
-      diagnostics.structuredLeadMatchesExpected = candidate === expectedLeadSentence;
-      diagnostics.structuredLeadSubjectOverlap = leadSharesRequiredSubject(
-        candidate,
-        currentMessage,
-      );
-      diagnostics.structuredLeadCertificateValid = certifyRoutineContentLead(
-        candidate,
-        currentMessage,
-        expectedLeadSentence,
-      ) !== null;
-    }
-    if (typeof parsed.answer === 'string') {
-      diagnostics.structuredAnswerChars = parsed.answer.length;
-      diagnostics.structuredAnswerSubstantive = parsed.answer.trim().length
-        >= ROUTINE_CONTENT_ANSWER_MIN_CHARS;
-    }
-  } catch {
-    // Only aggregate validation state is logged; raw provider output stays private.
-  }
-  return diagnostics;
 }
 
 function resolveRoutineContentNoticeLanguage(
@@ -556,37 +330,488 @@ function resolveRoutineContentNoticeLanguage(
   return detectResponseLanguage(currentMessage).language === 'pt' ? 'pt-BR' : 'en-US';
 }
 
-function applyRoutineContentOutputBound(input: {
-  text: string;
-  stopReason: string;
-  currentMessage: string;
-  expectedLeadSentence: string;
-}): {
-  text: string;
-  stopReason: string;
-  outputBoundApplied: boolean;
-  completePrefixKept: boolean;
-} {
-  const structured = parseRoutineContentStructuredResult(
-    input.text,
-    input.currentMessage,
-    input.expectedLeadSentence,
+const MODEL_AUTHORED_CONTENT_MAX_CHARS = 480;
+const MODEL_AUTHORED_CONTENT_MAX_OUTPUT_TOKENS = 192;
+const MODEL_AUTHORED_SHORT_COMPARISON_MAX_CHARS = 56;
+const MODEL_AUTHORED_SHORT_COMPARISON_MAX_OUTPUT_TOKENS = 24;
+const MODEL_AUTHORED_SHORT_AUTHORIZED_IDEAS_MAX_CHARS = 56;
+const MODEL_AUTHORED_SHORT_AUTHORIZED_IDEAS_MAX_OUTPUT_TOKENS = 32;
+
+const MODEL_AUTHORED_SHORT_COMPARISON_SYSTEM_PROMPT = [
+  'You are Nexus Hub Content.',
+  'JSON only. Write `a` yourself; only model-authored `a` is shown.',
+  'Choose two different concrete preference conditions.',
+].join('\n');
+
+const MODEL_AUTHORED_SHORT_AUTHORIZED_IDEAS_SYSTEM_PROMPT = [
+  'You are Nexus Hub Content.',
+  'JSON only. Write `a` yourself; only model-authored `a` is shown.',
+  'Use one AUTHORIZED_GROUNDING_TERMS term verbatim with two one-word formats.',
+].join('\n');
+
+interface ModelAuthoredContentComparison {
+  sharedStems: ReadonlySet<string>;
+  leftUniqueStems: ReadonlySet<string>;
+  rightUniqueStems: ReadonlySet<string>;
+}
+
+interface ModelAuthoredContentAuthorizedIdeas {
+  requiredStems: ReadonlySet<string>;
+  groundingStems: ReadonlySet<string>;
+}
+
+type ModelAuthoredContentShortMode =
+  | 'authorizedIdeas'
+  | 'comparison'
+  | null;
+
+const MODEL_AUTHORED_COMPARISON_STOP_WORDS = new Set([
+  'a', 'an', 'the', 'one', 'several', 'some', 'my', 'our', 'your',
+]);
+
+const MODEL_AUTHORED_LONG_FORM_MARKERS =
+  /\b(?:article|calendar|comprehensive|detailed|essay|full|in[- ]depth|long[- ]form|multi[- ]paragraph|outline|plan|script)\b/iu;
+const MODEL_AUTHORED_NORMALIZED_LONG_FORM_MARKERS =
+  /\b(?:artigo|calendario|completo|detalhado|ensaio|esboco|plano|roteiro)\b/u;
+const MODEL_AUTHORED_AUTHORIZED_CONTEXT_REQUEST =
+  /\b(?:(?:use|using)\s+only\s+(?:the\s+)?authorized\s+context|(?:usando|use|usa)\s+(?:apenas|somente)\s+(?:o\s+)?contexto\s+autorizado)\b/u;
+const MODEL_AUTHORED_IDEA_STEMS = new Set(['idea', 'ideia']);
+const MODEL_AUTHORED_CONTENT_STEMS = new Set(['content', 'conteudo']);
+const MODEL_AUTHORED_SHORT_SOURCE_MAX_ESTIMATED_TOKENS = 560;
+const MODEL_AUTHORED_GROUNDING_STOP_WORDS = new Set([
+  'active', 'assistant', 'attention', 'authorized', 'available', 'begin',
+  'campaign', 'content', 'context', 'current', 'end', 'eval', 'evaluation',
+  'evidence', 'fact', 'ideas', 'launch', 'message', 'needs', 'nexus',
+  'project', 'publication', 'publishing', 'remains', 'request', 'scoped',
+  'state', 'synthetic', 'tenant', 'using', 'user', 'workspace',
+]);
+const MODEL_AUTHORED_CONDITION_STOP_WORDS = new Set([
+  'a', 'an', 'and', 'approach', 'are', 'as', 'be', 'best', 'better', 'but',
+  'each', 'first', 'fit', 'fits', 'for', 'ideal', 'is', 'it', 'option', 'or',
+  'prefer', 'preferable', 'preferred', 'second', 'suit', 'suits', 'the',
+  'to', 'use', 'versus', 'when', 'whereas', 'while',
+]);
+
+function normalizeModelAuthoredText(text: string): string {
+  return text
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .toLowerCase();
+}
+
+function modelAuthoredComparisonStems(text: string): Set<string> {
+  return new Set(
+    (normalizeModelAuthoredText(text)
+      .match(/[\p{L}\p{N}]+/gu) ?? [])
+      .filter((token) => !MODEL_AUTHORED_COMPARISON_STOP_WORDS.has(token))
+      .map(normalizeRoutineContentSubjectStem),
   );
-  const truncated = ['length', 'LENGTH'].includes(input.stopReason);
-  if (!truncated && structured) {
-    return {
-      text: structured.renderedText,
-      stopReason: input.stopReason,
-      outputBoundApplied: false,
-      completePrefixKept: true,
-    };
+}
+
+function modelAuthoredComparisonWordCount(text: string): number {
+  return text.match(/[\p{L}\p{N}]+/gu)?.length ?? 0;
+}
+
+function parseModelAuthoredContentComparison(
+  currentMessage: string,
+): ModelAuthoredContentComparison | null {
+  if (MODEL_AUTHORED_LONG_FORM_MARKERS.test(currentMessage)) return null;
+  const firstClause = currentMessage.split(/[.!?;:\n]/u, 1)[0]?.trim() ?? '';
+  const match = firstClause.match(
+    /^(?:compare|contrast)\s+(.+?)\s+(?:with|versus|vs)\s+(.+)$/iu,
+  );
+  if (!match) return null;
+  if (
+    modelAuthoredComparisonWordCount(match[1] ?? '') > 8
+    || modelAuthoredComparisonWordCount(match[2] ?? '') > 8
+  ) {
+    return null;
   }
+  const left = modelAuthoredComparisonStems(match[1] ?? '');
+  const right = modelAuthoredComparisonStems(match[2] ?? '');
+  if (left.size === 0 || right.size === 0 || left.size > 8 || right.size > 8) return null;
+  const sharedStems = new Set([...left].filter((stem) => right.has(stem)));
+  const leftUniqueStems = new Set([...left].filter((stem) => !right.has(stem)));
+  const rightUniqueStems = new Set([...right].filter((stem) => !left.has(stem)));
+  if (leftUniqueStems.size === 0 || rightUniqueStems.size === 0) return null;
+  return { sharedStems, leftUniqueStems, rightUniqueStems };
+}
+
+function parseModelAuthoredContentAuthorizedIdeas(
+  currentMessage: string,
+  history: readonly DomainMessage[],
+  stateContext: string,
+): ModelAuthoredContentAuthorizedIdeas | null {
+  const normalized = normalizeModelAuthoredText(currentMessage);
+  if (
+    MODEL_AUTHORED_LONG_FORM_MARKERS.test(currentMessage)
+    || MODEL_AUTHORED_NORMALIZED_LONG_FORM_MARKERS.test(normalized)
+    || !MODEL_AUTHORED_AUTHORIZED_CONTEXT_REQUEST.test(normalized)
+    || modelAuthoredComparisonWordCount(currentMessage) > 32
+  ) {
+    return null;
+  }
+  const requestStems = modelAuthoredComparisonStems(currentMessage);
+  const ideaStem = [...MODEL_AUTHORED_IDEA_STEMS].find((stem) => requestStems.has(stem));
+  const contentStem = [...MODEL_AUTHORED_CONTENT_STEMS].find((stem) => requestStems.has(stem));
+  if (!ideaStem || !contentStem) return null;
+  const contextParts = [
+    ...history.map((message) => (
+      typeof message.content === 'string'
+        ? message.content
+        : JSON.stringify(message.content)
+    )),
+    stateContext,
+  ];
+  if (
+    estimateTokensTotal([...contextParts, currentMessage])
+    > MODEL_AUTHORED_SHORT_SOURCE_MAX_ESTIMATED_TOKENS
+  ) {
+    return null;
+  }
+  const groundingStems = new Set(
+    [...modelAuthoredComparisonStems(contextParts.join('\n'))]
+      .filter((stem) => (
+        stem.length >= 5
+        && !MODEL_AUTHORED_GROUNDING_STOP_WORDS.has(stem)
+        && !requestStems.has(stem)
+      ))
+      .slice(0, 64),
+  );
+  if (groundingStems.size === 0) return null;
   return {
-    text: '',
-    stopReason: 'length',
-    outputBoundApplied: false,
-    completePrefixKept: false,
+    requiredStems: new Set([ideaStem, contentStem]),
+    groundingStems,
   };
+}
+
+function modelAuthoredComparisonRequiredOpening(
+  comparison: ModelAuthoredContentComparison | null,
+): string {
+  if (!comparison) return 'Comparison:';
+  const left = [...comparison.leftUniqueStems][0] ?? 'first';
+  const shared = [...comparison.sharedStems][0];
+  const capitalizedLeft = `${left.slice(0, 1).toUpperCase()}${left.slice(1)}`;
+  return shared
+    ? `${capitalizedLeft} ${shared}`
+    : capitalizedLeft;
+}
+
+function modelAuthoredComparisonSecondLabel(
+  comparison: ModelAuthoredContentComparison | null,
+): string {
+  return [...(comparison?.rightUniqueStems ?? [])][0] ?? 'second';
+}
+
+function modelAuthoredContentLanguageInstruction(
+  locale: RoutineContentNoticeLocale,
+  shortMode: ModelAuthoredContentShortMode,
+  comparison: ModelAuthoredContentComparison | null = null,
+): string {
+  const answerKey = routineContentAnswerKey(locale);
+  const visibleAnswerKey = shortMode === null ? answerKey : 'a';
+  const language = locale === 'en-US'
+    ? 'English (en-US)'
+    : locale === 'pt-PT'
+      ? 'European Portuguese (pt-PT)'
+      : 'Brazilian Portuguese (pt-BR)';
+  const authorizedIdeasOpening = locale === 'en-US'
+    ? 'Ideas for content'
+    : 'Ideias de conteúdo';
+  const comparisonOpening = modelAuthoredComparisonRequiredOpening(comparison);
+  if (shortMode === 'comparison') {
+    const secondLabel = modelAuthoredComparisonSecondLabel(comparison);
+    return [
+      `Write \`a\` only in ${language}.`,
+      `Format \`a\` as “${comparisonOpening}: <condition>; ${secondLabel} fits <condition>.”`,
+      'Replace both placeholders with different concrete 1-2 word conditions; use at most 8 words and 54 characters including the final period.',
+    ].join(' ');
+  }
+  if (shortMode === 'authorizedIdeas') {
+    const formatConnector = locale === 'en-US' ? 'in' : 'em';
+    return [
+      `Write \`a\` only in ${language}.`,
+      `Format \`a\` as “${authorizedIdeasOpening}: <grounding> ${formatConnector} <format>/<format>.”`,
+      'Replace grounding with one listed term and both placeholders with two one-word formats; use at most 8 words and 54 characters including the final period.',
+    ].join(' ');
+  }
+  return [
+    `Write \`${visibleAnswerKey}\` only in ${language}.`,
+    'The value must be a complete, directly useful answer rather than a heading or fragment.',
+    'Use no more than 90 words.',
+  ].join(' ');
+}
+
+function modelAuthoredContentSystemSuffix(
+  locale: RoutineContentNoticeLocale,
+): string {
+  return [
+    PHASE_K_ANSWER_ONLY_GUARD,
+    '',
+    '— MANDATORY STRUCTURED RESPONSE —',
+    'Return only the JSON object required by the response schema.',
+    modelAuthoredContentLanguageInstruction(locale, null),
+  ].join('\n');
+}
+
+function buildModelAuthoredContentResponseFormat(
+  locale: RoutineContentNoticeLocale,
+  shortMode: ModelAuthoredContentShortMode,
+): Record<string, unknown> {
+  const answerKey = routineContentAnswerKey(locale);
+  const visibleAnswerKey = shortMode === null ? answerKey : 'a';
+  const language = locale === 'en-US'
+      ? 'English (en-US)'
+      : locale === 'pt-PT'
+        ? 'European Portuguese (pt-PT)'
+        : 'Brazilian Portuguese (pt-BR)';
+  return {
+    type: 'object',
+    properties: {
+      [visibleAnswerKey]: {
+        type: 'string',
+        ...(shortMode === null
+          ? { description: `Complete model-authored answer in ${language}.` }
+          : {}),
+        minLength: ROUTINE_CONTENT_ANSWER_MIN_CHARS,
+        maxLength: shortMode === 'comparison'
+          ? MODEL_AUTHORED_SHORT_COMPARISON_MAX_CHARS
+          : shortMode === 'authorizedIdeas'
+            ? MODEL_AUTHORED_SHORT_AUTHORIZED_IDEAS_MAX_CHARS
+            : MODEL_AUTHORED_CONTENT_MAX_CHARS,
+      },
+    },
+    required: [visibleAnswerKey],
+    additionalProperties: false,
+  };
+}
+
+function modelAuthoredContentLanguageDoesNotContradict(
+  answer: string,
+  locale: RoutineContentNoticeLocale,
+): boolean {
+  const expected = locale === 'en-US' ? 'en' : 'pt';
+  const detected = detectResponseLanguage(answer).language;
+  return detected === expected || detected === 'unknown';
+}
+
+function modelAuthoredComparisonSemanticsMatch(
+  answer: string,
+  comparison: ModelAuthoredContentComparison,
+): boolean {
+  const answerStems = modelAuthoredComparisonStems(answer);
+  const overlaps = (candidates: ReadonlySet<string>): boolean =>
+    candidates.size === 0 || [...candidates].some((stem) => answerStems.has(stem));
+  const preferenceExplained =
+    /\b(?:best|better|fit|fits|ideal|prefer|preferable|preferred|suit|suits|use|when|while)\b/iu
+      .test(answer);
+  const body = answer.includes(':')
+    ? answer.slice(answer.indexOf(':') + 1)
+    : answer;
+  const conditionMatch = body.match(
+    /^(.+?)(?:(?:,\s*|\s+)(?:while|whereas|but)\s+|;\s*)(.+)$/iu,
+  );
+  const requestStems = new Set([
+    ...comparison.sharedStems,
+    ...comparison.leftUniqueStems,
+    ...comparison.rightUniqueStems,
+  ]);
+  const conditionStems = (clause: string): Set<string> => new Set(
+    [...modelAuthoredComparisonStems(clause)]
+      .filter((stem) => (
+        !requestStems.has(stem)
+        && !MODEL_AUTHORED_CONDITION_STOP_WORDS.has(stem)
+      )),
+  );
+  const distinctConditions = conditionMatch
+    ? (() => {
+      const leftConditions = conditionStems(conditionMatch[1] ?? '');
+      const rightConditions = conditionStems(conditionMatch[2] ?? '');
+      return [...leftConditions].some((stem) => !rightConditions.has(stem))
+        && [...rightConditions].some((stem) => !leftConditions.has(stem));
+    })()
+    : false;
+  return overlaps(comparison.sharedStems)
+    && overlaps(comparison.leftUniqueStems)
+    && overlaps(comparison.rightUniqueStems)
+    && preferenceExplained
+    && distinctConditions;
+}
+
+function modelAuthoredAuthorizedIdeasSemanticsMatch(
+  answer: string,
+  authorizedIdeas: ModelAuthoredContentAuthorizedIdeas,
+): boolean {
+  const answerStems = modelAuthoredComparisonStems(answer);
+  return [...authorizedIdeas.requiredStems].every((stem) => answerStems.has(stem))
+    && [...authorizedIdeas.groundingStems].some((stem) => answerStems.has(stem));
+}
+
+function modelAuthoredAuthorizedIdeasListShapeIsValid(answer: string): boolean {
+  if (answer.includes('\n')) return false;
+  const separator = answer.indexOf(':');
+  if (separator < 0) return false;
+  const body = answer.slice(separator + 1).trim();
+  const compactMatch = body.match(
+    /^(.+?)\s+(?:in|em)\s+([^/,\s]+)\s*\/\s*([^/,\s]+)[.]?$/iu,
+  );
+  if (compactMatch) {
+    const grounding = modelAuthoredComparisonStems(compactMatch[1] ?? '');
+    const formatA = modelAuthoredComparisonStems(compactMatch[2] ?? '');
+    const formatB = modelAuthoredComparisonStems(compactMatch[3] ?? '');
+    return grounding.size > 0
+      && formatA.size > 0
+      && formatB.size > 0
+      && [...formatA].some((stem) => !formatB.has(stem))
+      && [...formatB].some((stem) => !formatA.has(stem));
+  }
+  const items = body
+    .split(',')
+    .map((item) => item.trim());
+  if (items.length !== 3 || items.some((item) => item.length === 0)) return false;
+  const formatA = modelAuthoredComparisonStems(items[1] ?? '');
+  const formatB = modelAuthoredComparisonStems(items[2] ?? '');
+  return formatA.size > 0
+    && formatB.size > 0
+    && [...formatA].some((stem) => !formatB.has(stem))
+    && [...formatB].some((stem) => !formatA.has(stem));
+}
+
+function modelAuthoredAuthorizedIdeasListIsComplete(answer: string): boolean {
+  const genericCompleteness = assessChatResearchAnswerCompleteness(answer);
+  if (genericCompleteness.ok) return true;
+  return genericCompleteness.reason === 'mid_sentence_cutoff'
+    && modelAuthoredAuthorizedIdeasListShapeIsValid(answer);
+}
+
+function parseModelAuthoredContentResult(input: {
+  text: string;
+  locale: RoutineContentNoticeLocale;
+  shortComparison: ModelAuthoredContentComparison | null;
+  shortAuthorizedIdeas: ModelAuthoredContentAuthorizedIdeas | null;
+}): string | null {
+  try {
+    const parsed = JSON.parse(input.text) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    const answerKey = routineContentAnswerKey(input.locale);
+    const record = parsed as Record<string, unknown>;
+    const expectedKeys = input.shortComparison || input.shortAuthorizedIdeas
+      ? ['a']
+      : [answerKey];
+    if (
+      Object.keys(record).sort().join(',')
+      !== [...expectedKeys].sort().join(',')
+    ) {
+      return null;
+    }
+    const answer = record[
+      input.shortComparison || input.shortAuthorizedIdeas ? 'a' : answerKey
+    ];
+    const maxChars = input.shortComparison
+      ? MODEL_AUTHORED_SHORT_COMPARISON_MAX_CHARS
+      : input.shortAuthorizedIdeas
+        ? MODEL_AUTHORED_SHORT_AUTHORIZED_IDEAS_MAX_CHARS
+        : MODEL_AUTHORED_CONTENT_MAX_CHARS;
+    const answerComplete = typeof answer === 'string'
+      && (
+        assessChatResearchAnswerCompleteness(answer).ok
+        || (
+          input.shortAuthorizedIdeas !== null
+          && modelAuthoredAuthorizedIdeasListIsComplete(answer)
+        )
+      );
+    if (
+      typeof answer !== 'string'
+      || answer.trim().length < ROUTINE_CONTENT_ANSWER_MIN_CHARS
+      || answer.length > maxChars
+      || !modelAuthoredContentLanguageDoesNotContradict(answer, input.locale)
+      || !answerComplete
+      || (
+        input.shortComparison
+        && !modelAuthoredComparisonSemanticsMatch(answer, input.shortComparison)
+      )
+      || (
+        input.shortAuthorizedIdeas
+        && !modelAuthoredAuthorizedIdeasSemanticsMatch(
+          answer,
+          input.shortAuthorizedIdeas,
+        )
+      )
+    ) {
+      return null;
+    }
+    return answer;
+  } catch {
+    return null;
+  }
+}
+
+function describeModelAuthoredContentValidation(input: {
+  text: string;
+  locale: RoutineContentNoticeLocale;
+  shortComparison: ModelAuthoredContentComparison | null;
+  shortAuthorizedIdeas: ModelAuthoredContentAuthorizedIdeas | null;
+}): Record<string, boolean | number> {
+  const diagnostics: Record<string, boolean | number> = {
+    structuredJsonComplete: false,
+    structuredExactKeys: false,
+    structuredAnswerTypeValid: false,
+    structuredAnswerLanguageValid: false,
+    structuredAnswerComplete: false,
+    structuredCertificateFieldsTyped:
+      input.shortComparison === null && input.shortAuthorizedIdeas === null,
+    structuredComparisonSemanticsValid: input.shortComparison === null,
+    structuredAuthorizedIdeasSemanticsValid: input.shortAuthorizedIdeas === null,
+  };
+  try {
+    const parsed = JSON.parse(input.text) as unknown;
+    diagnostics.structuredJsonComplete = true;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return diagnostics;
+    const answerKey = routineContentAnswerKey(input.locale);
+    const record = parsed as Record<string, unknown>;
+    const expectedKeys = input.shortComparison || input.shortAuthorizedIdeas
+      ? ['a']
+      : [answerKey];
+    diagnostics.structuredExactKeys = Object.keys(record).sort().join(',')
+      === [...expectedKeys].sort().join(',');
+    const answer = record[
+      input.shortComparison || input.shortAuthorizedIdeas ? 'a' : answerKey
+    ];
+    diagnostics.structuredAnswerTypeValid = typeof answer === 'string';
+    diagnostics.structuredCertificateFieldsTyped = true;
+    if (typeof answer === 'string') {
+      const genericCompleteness = assessChatResearchAnswerCompleteness(answer);
+      diagnostics.structuredAnswerChars = answer.length;
+      diagnostics.structuredAnswerCommaCount = answer.match(/,/gu)?.length ?? 0;
+      diagnostics.structuredAnswerHasColon = answer.includes(':');
+      diagnostics.structuredAnswerMidSentenceCutoff =
+        !genericCompleteness.ok
+        && genericCompleteness.reason === 'mid_sentence_cutoff';
+      diagnostics.structuredAuthorizedIdeasListShapeValid =
+        input.shortAuthorizedIdeas !== null
+        && modelAuthoredAuthorizedIdeasListShapeIsValid(answer);
+      diagnostics.structuredAnswerLanguageValid =
+        modelAuthoredContentLanguageDoesNotContradict(answer, input.locale);
+      diagnostics.structuredAnswerComplete =
+        genericCompleteness.ok
+        || (
+          input.shortAuthorizedIdeas !== null
+          && modelAuthoredAuthorizedIdeasListIsComplete(answer)
+        );
+      diagnostics.structuredComparisonSemanticsValid = input.shortComparison
+        ? modelAuthoredComparisonSemanticsMatch(answer, input.shortComparison)
+        : true;
+      diagnostics.structuredAuthorizedIdeasSemanticsValid = input.shortAuthorizedIdeas
+        ? modelAuthoredAuthorizedIdeasSemanticsMatch(
+          answer,
+          input.shortAuthorizedIdeas,
+        )
+        : true;
+    }
+  } catch {
+    // Aggregate diagnostics only. Raw provider output is never logged.
+  }
+  return diagnostics;
 }
 
 export function stripThinkBlocks(text: string | undefined | null): string {
@@ -634,6 +859,15 @@ interface DerivedMetrics {
   totalTokensPerSec?: number;
   isColdLoad?: boolean;
   warmGenerationMs?: number;
+}
+
+interface DeferredOllamaUsage {
+  model: string;
+  modelDigest?: string;
+  durationMs: number;
+  metrics: DerivedMetrics;
+  userId: number;
+  tenantId: number;
 }
 
 function deriveMetrics(resp: OllamaChatResponse): DerivedMetrics {
@@ -1272,27 +1506,80 @@ export class OllamaProvider implements AIProvider {
     // because of the runtime hard-block) get the bare system prompt.
     const routineContent = domain === 'content'
       && options.maxTokensOverride === undefined;
-    const routineContentLeadSentence = routineContent
-      ? buildRoutineContentLeadSentence(currentMessage)
+    const currentTurnOnly = options.currentTurnOnly === true;
+    const routineContentLocale = routineContent
+      ? resolveRoutineContentNoticeLanguage(currentMessage)
       : null;
-    const routineContentResponseFormat = routineContentLeadSentence
-      ? buildRoutineContentResponseFormat(routineContentLeadSentence)
+    const shortContentComparison = routineContent && currentTurnOnly
+      ? parseModelAuthoredContentComparison(currentMessage)
       : null;
-    const baseSys = getDomainSystemPrompt(domain, stateContext);
-    const domainPromptSuffix = phaseKDomainSystemPromptSuffix(
-      domain,
-      options.maxTokensOverride === undefined,
-    );
-    const sys = domainPromptSuffix ? baseSys + domainPromptSuffix : baseSys;
+    const shortAuthorizedContentIdeas = routineContent && !currentTurnOnly
+      ? parseModelAuthoredContentAuthorizedIdeas(currentMessage, history, stateContext)
+      : null;
+    const shortContentMode: ModelAuthoredContentShortMode = shortContentComparison
+      ? 'comparison'
+      : shortAuthorizedContentIdeas
+        ? 'authorizedIdeas'
+        : null;
+    const routineContentResponseFormat = routineContent && routineContentLocale
+      ? buildModelAuthoredContentResponseFormat(
+        routineContentLocale,
+        shortContentMode,
+      )
+      : null;
+    const baseSys = shortContentComparison
+      ? MODEL_AUTHORED_SHORT_COMPARISON_SYSTEM_PROMPT
+      : shortAuthorizedContentIdeas
+        ? MODEL_AUTHORED_SHORT_AUTHORIZED_IDEAS_SYSTEM_PROMPT
+      : getDomainSystemPrompt(
+        domain,
+        currentTurnOnly ? currentMessage : stateContext,
+        { currentTurnOnly },
+      );
+    const domainPromptSuffix = routineContent && routineContentLocale
+      ? (
+        shortContentComparison
+          ? modelAuthoredContentLanguageInstruction(
+            routineContentLocale,
+            'comparison',
+            shortContentComparison,
+          )
+          : shortAuthorizedContentIdeas
+            ? modelAuthoredContentLanguageInstruction(routineContentLocale, 'authorizedIdeas')
+          : modelAuthoredContentSystemSuffix(routineContentLocale)
+      )
+      : phaseKDomainSystemPromptSuffix(
+        domain,
+      );
+    const sys = domainPromptSuffix
+      ? `${baseSys}\n${domainPromptSuffix}`
+      : baseSys;
 
     const messages: OllamaChatRequest['messages'] = [{ role: 'system', content: sys }];
-    for (const h of history) {
-      messages.push({ role: h.role === 'assistant' ? 'assistant' : 'user', content: typeof h.content === 'string' ? h.content : JSON.stringify(h.content) });
+    if (shortAuthorizedContentIdeas) {
+      const authorizedTerms = [...shortAuthorizedContentIdeas.groundingStems]
+        .slice(0, 12)
+        .join(', ');
+      messages.push({
+        role: 'user',
+        content: [
+          `AUTHORIZED_GROUNDING_TERMS: ${authorizedTerms}`,
+          `REQUEST: ${currentMessage}`,
+        ].join('\n'),
+      });
+    } else if (!currentTurnOnly) {
+      for (const h of history) {
+        messages.push({ role: h.role === 'assistant' ? 'assistant' : 'user', content: typeof h.content === 'string' ? h.content : JSON.stringify(h.content) });
+      }
+      const contextPrefix = buildScopedStateContextPrefix(stateContext);
+      messages.push({ role: 'user', content: `${contextPrefix}${currentMessage}` });
+    } else {
+      messages.push({ role: 'user', content: currentMessage });
     }
-    const contextPrefix = buildScopedStateContextPrefix(stateContext);
-    messages.push({ role: 'user', content: `${contextPrefix}${currentMessage}` });
 
-    enforceInputTokenCap('chat', [sys, currentMessage, stateContext, ...history.map(h => typeof h.content === 'string' ? h.content : '')]);
+    // Account only for content that is actually sent. Current-turn-only
+    // privacy removes both saved state and history before this boundary.
+    enforceInputTokenCap('chat', messages.map((message) => message.content));
 
     const model = options.modelOverride ?? config.ollama.model;
     // Routine Content answers are latency-sensitive interactive chat, not
@@ -1305,7 +1592,14 @@ export class OllamaProvider implements AIProvider {
     const maxOutput = options.maxTokensOverride
       ?? (
         routineContent
-          ? Math.min(providerDefaultMaxOutput, ROUTINE_CONTENT_MAX_OUTPUT_TOKENS)
+          ? Math.min(
+            providerDefaultMaxOutput,
+            shortContentComparison
+              ? MODEL_AUTHORED_SHORT_COMPARISON_MAX_OUTPUT_TOKENS
+              : shortAuthorizedContentIdeas
+                ? MODEL_AUTHORED_SHORT_AUTHORIZED_IDEAS_MAX_OUTPUT_TOKENS
+                : MODEL_AUTHORED_CONTENT_MAX_OUTPUT_TOKENS,
+          )
           : providerDefaultMaxOutput
       );
 
@@ -1313,17 +1607,23 @@ export class OllamaProvider implements AIProvider {
     // exactly what went over the wire. Future per-domain temperature
     // overrides (Phase 3) plug in here.
     const requestOptions = {
-      num_ctx: 4096,
+      num_ctx: shortContentMode ? 1024 : 4096,
       num_predict: maxOutput,
-      temperature: routineContent ? 0.1 : 0.3,
+      temperature: routineContent ? 0 : 0.3,
     };
+    const providerCallCategory = shortContentComparison
+      ? 'chat_content_model_authored_short_attempt'
+      : shortAuthorizedContentIdeas
+        ? 'chat_content_model_authored_authorized_ideas_attempt'
+        : `chat_${domain}`;
 
     const result = await this.callOllamaForTask({
       taskType: 'chat',
       workloadRole: 'validated_local_chat',
-      category: `chat_${domain}`,
+      category: providerCallCategory,
       userId: options.userId,
       tenantId: options.tenantId,
+      deferUsage: shortContentMode !== null,
       request: {
         model,
         messages,
@@ -1339,47 +1639,70 @@ export class OllamaProvider implements AIProvider {
     const providerStopReason = result.response.done === true
       ? (result.response.done_reason ?? 'stop')
       : 'length';
-    const routineContentBound = routineContent && routineContentLeadSentence
-      ? applyRoutineContentOutputBound({
+    const modelAuthoredContentAnswer = routineContent && routineContentLocale
+      ? parseModelAuthoredContentResult({
         text,
-        stopReason: providerStopReason,
-        currentMessage,
-        expectedLeadSentence: routineContentLeadSentence,
+        locale: routineContentLocale,
+        shortComparison: shortContentComparison,
+        shortAuthorizedIdeas: shortAuthorizedContentIdeas,
       })
-      : {
-        text,
-        stopReason: providerStopReason,
-        outputBoundApplied: false,
-        completePrefixKept: false,
-      };
-    if (
-      routineContent
+      : null;
+    const routineContentInvalid = routineContent
       && (
         ['length', 'LENGTH'].includes(providerStopReason)
-        || routineContentBound.stopReason === 'length'
-      )
-    ) {
+        || modelAuthoredContentAnswer === null
+      );
+    if (result.deferredUsage) {
+      const validatedCategory = shortContentComparison
+        ? (
+          routineContentInvalid
+            ? 'chat_content_model_authored_short_rejected'
+            : 'chat_content_model_authored_short'
+        )
+        : (
+          routineContentInvalid
+            ? 'chat_content_model_authored_authorized_ideas_rejected'
+            : 'chat_content_model_authored_authorized_ideas'
+        );
+      await logOllamaUsage(
+        validatedCategory,
+        result.deferredUsage.model,
+        result.deferredUsage.modelDigest,
+        result.deferredUsage.durationMs,
+        result.deferredUsage.metrics,
+        result.deferredUsage.userId,
+        result.deferredUsage.tenantId,
+      );
+    }
+    const responseText = routineContent
+      ? (routineContentInvalid ? '' : (modelAuthoredContentAnswer ?? ''))
+      : text;
+    const responseStopReason = routineContentInvalid
+      ? 'length'
+      : providerStopReason;
+    if (routineContentInvalid) {
       logger.warn(
         {
           domain,
           originalStopReason: providerStopReason,
-          outputBoundApplied: routineContentBound.outputBoundApplied,
-          completePrefixKept: routineContentBound.completePrefixKept,
-          boundedTextChars: routineContentBound.text.length,
-          ...describeRoutineContentStructuredValidation(
+          outputBoundApplied: false,
+          completePrefixKept: !routineContentInvalid && modelAuthoredContentAnswer !== null,
+          boundedTextChars: responseText.length,
+          ...describeModelAuthoredContentValidation({
             text,
-            currentMessage,
-            routineContentLeadSentence ?? '',
-          ),
+            locale: routineContentLocale ?? 'en-US',
+            shortComparison: shortContentComparison,
+            shortAuthorizedIdeas: shortAuthorizedContentIdeas,
+          }),
         },
-        'ollama-provider: applied routine Content structured output handling',
+        'ollama-provider: rejected invalid model-authored Content output',
       );
     }
     const md = deriveMetrics(result.response);
     return {
-      text: routineContentBound.text,
+      text: responseText,
       toolCalls: [],
-      stopReason: routineContentBound.stopReason,
+      stopReason: responseStopReason,
       providerMetadata: {
         providerUsed: 'ollama',
         modelUsed: model,
@@ -1402,11 +1725,19 @@ export class OllamaProvider implements AIProvider {
         numPredict: requestOptions.num_predict,
         ...(routineContent
           ? {
-            outputBoundApplied: routineContentBound.outputBoundApplied,
+            outputBoundApplied: false,
             originalStopReason: providerStopReason,
-            completePrefixKept: routineContentBound.completePrefixKept,
+            completePrefixKept: !routineContentInvalid && modelAuthoredContentAnswer !== null,
+            responseConstruction: 'model_authored_structured_answer' as const,
+            responseMode: shortContentComparison
+              ? 'short_current_turn_comparison' as const
+              : shortAuthorizedContentIdeas
+                ? 'short_authorized_context_ideas' as const
+                : 'routine_content' as const,
           }
-          : {}),
+          : {
+            responseConstruction: 'model_authored_text' as const,
+          }),
       },
     };
   }
@@ -1608,7 +1939,16 @@ export class OllamaProvider implements AIProvider {
      * specific call. Shadow-classify uses a tighter ~5s timeout.
      */
     timeoutMsOverride?: number;
-  }): Promise<{ response: OllamaChatResponse; modelDigest?: string }> {
+    /**
+     * Keep budget/rate-limit admission and exactly-one accounting, but let
+     * callDomain bind the usage category to post-response validation.
+     */
+    deferUsage?: boolean;
+  }): Promise<{
+    response: OllamaChatResponse;
+    modelDigest?: string;
+    deferredUsage?: DeferredOllamaUsage;
+  }> {
     const {
       taskType,
       workloadRole,
@@ -1619,6 +1959,7 @@ export class OllamaProvider implements AIProvider {
       recordUsage = true,
       externalSignal,
       timeoutMsOverride,
+      deferUsage = false,
     } = args;
     // This is the final shared boundary for every Ollama request, including
     // chatPrimitive and module-level helpers. Keep this check ahead of budget,
@@ -1695,11 +2036,26 @@ export class OllamaProvider implements AIProvider {
       );
 
       // Controlled offline calls may opt out; runtime paths keep this true.
-      if (recordUsage) {
+      if (recordUsage && !deferUsage) {
         await logOllamaUsage(category, request.model, modelDigest, durationMs, md, userId, tenantId);
       }
 
-      return { response, modelDigest };
+      return {
+        response,
+        modelDigest,
+        ...(recordUsage && deferUsage
+          ? {
+            deferredUsage: {
+              model: request.model,
+              modelDigest,
+              durationMs,
+              metrics: md,
+              userId,
+              tenantId,
+            },
+          }
+          : {}),
+      };
     });
   }
 }

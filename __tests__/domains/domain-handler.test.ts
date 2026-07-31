@@ -441,6 +441,147 @@ describe('handleSimpleDomain', () => {
     expect(addToConversation).toHaveBeenCalledWith(42, 'content', 'assistant', 'Here is your plan.');
   });
 
+  it('does not send persisted history or scoped local context after an explicit low-risk saved-data opt-out', async () => {
+    vi.mocked(getConversationHistory).mockReturnValue([
+      { role: 'user', content: 'Private earlier launch direction.' },
+      { role: 'assistant', content: 'Private earlier draft.' },
+    ] as any);
+    mockCallDomain.mockResolvedValue({
+      text: 'Broad narratives support reach; tailored narratives support fit.',
+      toolCalls: [],
+      stopReason: 'end_turn',
+    } as any);
+    const message = 'Compare one broad launch narrative with several tailored narratives. Explain when each is preferable. Do not read or change saved data.';
+
+    await handleSimpleDomain('content', message, 5, 42, undefined, 42);
+
+    expect(mockCallDomain).toHaveBeenCalledWith(
+      'content',
+      [],
+      message,
+      expect.not.stringContaining('Local grounding rule'),
+      expect.objectContaining({ currentTurnOnly: true }),
+    );
+    expect(getConversationHistory).not.toHaveBeenCalled();
+    expect(listTodos).not.toHaveBeenCalled();
+    expect(getSharedMemorySummary).not.toHaveBeenCalled();
+  });
+
+  it.each(['true', 'false'])(
+    'suppresses Cooking history, preferences, and scoped context for a current-turn-only request when the context compiler is %s',
+    async (compilerEnabled) => {
+      const previousCompilerFlag = process.env.CHAT_CONTEXT_COMPILER_ENABLED;
+      process.env.CHAT_CONTEXT_COMPILER_ENABLED = compilerEnabled;
+      try {
+        ensureUser(187);
+        testDb.prepare('UPDATE users SET language = ? WHERE id = ?').run('pt-BR', 187);
+        setCookingPreferenceMemory(187, { kind: 'allergy', value: 'private-shellfish' }, 187);
+        vi.mocked(getConversationHistory).mockReturnValue([
+          { role: 'user', content: 'Private earlier dinner direction.' },
+          { role: 'assistant', content: 'Private earlier recipe.' },
+        ] as any);
+        vi.mocked(listTodos).mockReturnValue([
+          { id: 187, title: 'Private meal prep task', priority: 'high', due_date: null, domain: 'cooking', description: null, status: 'pending', tags: null, created_at: '', updated_at: '', completed_at: null },
+        ] as any);
+        vi.mocked(getSharedMemorySummary).mockReturnValue('[Shared] private cooking context');
+        mockCallDomain.mockResolvedValue({
+          text: 'Try private-shellfish para ti.',
+          toolCalls: [],
+          stopReason: 'end_turn',
+        } as any);
+        const message = 'What should I cook for dinner? Do not read saved history.';
+
+        const result = await handleSimpleDomain('cooking', message, 5, 187, undefined, 187);
+
+        expect(mockCallDomain).toHaveBeenCalledWith(
+          'cooking',
+          [],
+          message,
+          expect.not.stringMatching(/private-shellfish|Private meal prep task|private cooking context|Local grounding rule/),
+          expect.any(Object),
+        );
+        expect(getConversationHistory).not.toHaveBeenCalled();
+        expect(listTodos).not.toHaveBeenCalled();
+        expect(getSharedMemorySummary).not.toHaveBeenCalled();
+        expect(mockCallDomain.mock.calls[0]?.[3]).toContain('Include food-safety guidance when relevant');
+        expect(result.text).toBe('Try private-shellfish para ti.');
+        expect(addToConversation).not.toHaveBeenCalled();
+      } finally {
+        if (previousCompilerFlag === undefined) {
+          delete process.env.CHAT_CONTEXT_COMPILER_ENABLED;
+        } else {
+          process.env.CHAT_CONTEXT_COMPILER_ENABLED = previousCompilerFlag;
+        }
+      }
+    },
+  );
+
+  it('blocks model-requested local tools for a current-turn-only request', async () => {
+    mockCallDomain.mockResolvedValue({
+      text: '',
+      toolCalls: [{
+        type: 'tool_use',
+        id: 'tc_private_read',
+        name: 'get_calendar_events',
+        input: { start_date: '2026-03-30', end_date: '2026-04-06' },
+      }],
+      stopReason: 'tool_use',
+    } as any);
+    mockContinue.mockResolvedValue({
+      text: 'Here is a self-contained explanation.',
+      toolCalls: [],
+      stopReason: 'end_turn',
+    } as any);
+    const message = 'Explain time-blocking principles. Do not read saved data.';
+
+    const result = await handleSimpleDomain('content', message, 5, 187, undefined, 187);
+
+    expect(result.text).toBe('Here is a self-contained explanation.');
+    expect(mockExecuteTool).not.toHaveBeenCalled();
+    expect(mockContinue).toHaveBeenCalledWith(
+      'content',
+      [],
+      message,
+      expect.any(String),
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: 'user',
+          content: [
+            expect.objectContaining({
+              type: 'tool_result',
+              tool_use_id: 'tc_private_read',
+              content: expect.stringContaining('SAVED_DATA_OPT_OUT'),
+            }),
+          ],
+        }),
+      ]),
+      expect.objectContaining({ currentTurnOnly: true }),
+    );
+    expect(addToConversation).not.toHaveBeenCalled();
+  });
+
+  it('keeps destructive state reads and history fail-closed despite saved-data opt-out wording', async () => {
+    const history = [{ role: 'user', content: 'Earlier draft context.' }] as any;
+    vi.mocked(getConversationHistory).mockReturnValue(history);
+    mockCallDomain.mockResolvedValue({
+      text: 'I need confirmation before deleting the draft.',
+      toolCalls: [],
+      stopReason: 'end_turn',
+    } as any);
+    const message = 'Delete my saved draft, but do not read saved data.';
+
+    await handleSimpleDomain('content', message, 5, 42, undefined, 42);
+
+    expect(getConversationHistory).toHaveBeenCalledWith(42, 'content', 42);
+    expect(mockCallDomain).toHaveBeenCalledWith(
+      'content',
+      history,
+      message,
+      expect.stringContaining('Local grounding rule'),
+      expect.objectContaining({ currentTurnOnly: false }),
+    );
+  });
+
   it('blocks unsafe generated cooking answers before returning or storing them', async () => {
     ensureUser(188);
     testDb.prepare('UPDATE users SET language = ? WHERE id = ?').run('pt-BR', 188);

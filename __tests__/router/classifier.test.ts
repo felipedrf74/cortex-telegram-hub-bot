@@ -872,15 +872,92 @@ describe('routeMessage — Three-Tier Routing Integration', () => {
       expect(mockClassifyMessage).not.toHaveBeenCalled();
     });
 
-    it('routes the governed live-eval target turn through the classifier before downstream tier gates', async () => {
+    it('keeps a self-contained narrative comparison in the active content context without invoking the classifier', async () => {
       const message = 'Compare one broad launch narrative with several tailored narratives. Explain when each is preferable. Do not read or change saved data.';
       const context = { domain: 'content' as const, lastAssistantMessage: 'Here are launch content ideas.' };
       mockClassifyMessage.mockResolvedValue({ domain: 'content', confidence: 0.91 });
 
       const result = await routeMessage(message, context);
 
-      expect(result).toMatchObject({ method: 'classifier', domain: 'content' });
-      expect(mockClassifyMessage).toHaveBeenCalledWith(message, context, undefined, undefined);
+      expect(result).toMatchObject({ method: 'context', domain: 'content' });
+      expect(mockClassifyMessage).not.toHaveBeenCalled();
+    });
+
+    it('keeps a bounded campaign-story paraphrase in active content context', async () => {
+      const context = { domain: 'content' as const, lastAssistantMessage: 'Here are campaign options.' };
+
+      const result = await routeMessage(
+        'Contrast one broad launch narrative against two tailored narratives.',
+        context,
+      );
+
+      expect(result).toMatchObject({ method: 'context', domain: 'content' });
+      expect(mockClassifyMessage).not.toHaveBeenCalled();
+    });
+
+    it('lets a fresh secretary operation outrank an active-content comparison continuation', async () => {
+      const context = { domain: 'content' as const, lastAssistantMessage: 'Here are campaign options.' };
+
+      const result = await routeMessage(
+        'Compare launch narratives and schedule a meeting tomorrow.',
+        context,
+      );
+
+      expect(result).toMatchObject({ method: 'keyword', domain: 'secretary' });
+      expect(mockClassifyMessage).not.toHaveBeenCalled();
+    });
+
+    it('lets an unambiguous time-block operation outrank active-content comparison keywords', async () => {
+      const context = { domain: 'content' as const, lastAssistantMessage: 'Here are campaign options.' };
+
+      const result = await routeMessage(
+        'Compare launch narratives with tailored narratives and block 2 hours tomorrow.',
+        context,
+      );
+
+      expect(result).toMatchObject({ method: 'context', domain: 'secretary' });
+      expect(mockClassifyMessage).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      {
+        message: 'Compare launch narratives and retry my Gmail connection.',
+        domain: 'connections',
+      },
+      {
+        message: 'Compare launch narratives and dismiss my notification.',
+        domain: 'notifications',
+      },
+      {
+        message: 'Compare launch narratives and dismiss the latest decision.',
+        domain: 'decision_center',
+      },
+    ] as const)(
+      'lets a fresh $domain operation escape active-content comparison continuity',
+      async ({ message, domain }) => {
+        const context = { domain: 'content' as const, lastAssistantMessage: 'Here are campaign options.' };
+        mockClassifyMessage.mockResolvedValue({ domain, confidence: 0.93 });
+
+        const result = await routeMessage(message, context);
+
+        expect(result).toMatchObject({ method: 'classifier', domain });
+        expect(mockClassifyMessage).toHaveBeenCalledOnce();
+      },
+    );
+
+    it('does not apply content-comparison continuity without active content context or above its cap', async () => {
+      const message = 'Contrast one broad launch narrative against two tailored narratives.';
+      mockClassifyMessage.mockResolvedValue({ domain: 'content', confidence: 0.91 });
+
+      const withoutContext = await routeMessage(message);
+      const overCap = await routeMessage(
+        `${message} ${'additional '.repeat(16)}`,
+        { domain: 'content', lastAssistantMessage: 'Here are campaign options.' },
+      );
+
+      expect(withoutContext).toMatchObject({ method: 'classifier', domain: 'content' });
+      expect(overCap).toMatchObject({ method: 'classifier', domain: 'content' });
+      expect(mockClassifyMessage).toHaveBeenCalledTimes(2);
     });
 
     it('an explicit fueling dedupe question escapes an unrelated active context token-zero', async () => {

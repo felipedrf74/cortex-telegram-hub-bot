@@ -71,6 +71,89 @@ describe('chat turn contract', () => {
     });
   });
 
+  it('honors an explicit saved-data opt-out on a low-risk self-contained answer', () => {
+    const contract = inferChatTurnContract({
+      message: 'Compare one broad launch narrative with several tailored narratives. Explain when each is preferable. Do not read or change saved data.',
+      routedDomain: 'content',
+    });
+
+    expect(contract).toMatchObject({
+      skill: 'content',
+      routeKind: 'generic_skill_answer',
+      riskClass: 'low',
+      groundingRequired: 'none',
+    });
+  });
+
+  it('does not let saved-data opt-out wording bypass destructive grounding', () => {
+    const contract = inferChatTurnContract({
+      message: 'Delete my saved draft, but do not read saved data.',
+      routedDomain: 'content',
+    });
+
+    expect(contract).toMatchObject({
+      riskClass: 'destructive',
+      routeKind: 'action',
+      groundingRequired: 'local',
+    });
+  });
+
+  it('does not let saved-data opt-out wording bypass non-destructive action grounding', () => {
+    const contract = inferChatTurnContract({
+      message: 'Do not read saved data. Schedule a meeting tomorrow.',
+      routedDomain: 'secretary',
+    });
+
+    expect(contract).toMatchObject({
+      skill: 'secretary',
+      riskClass: 'medium',
+      routeKind: 'action',
+      groundingRequired: 'local',
+    });
+  });
+
+  it('honors the low-risk saved-data opt-out at either clause boundary', () => {
+    for (const message of [
+      'Do not read or change saved data. Compare a launch narrative with a tailored campaign story.',
+      'Compare a launch narrative with a tailored campaign story. Do not read or change saved data.',
+    ]) {
+      expect(inferChatTurnContract({ message, routedDomain: 'content' })).toMatchObject({
+        riskClass: 'low',
+        routeKind: 'generic_skill_answer',
+        groundingRequired: 'none',
+      });
+    }
+  });
+
+  it.each([
+    ['English data', 'Do not read saved data.'],
+    ['English possessive data', 'Do not read my saved data.'],
+    ['English without gerund', 'Without reading saved data.'],
+    ['English context', 'Do not use stored context.'],
+    ['English curly apostrophe', 'Don’t use my stored context.'],
+    ['English records', 'Never access local records.'],
+    ['English definite records', 'Without accessing the saved records.'],
+    ['English history', 'Do not consult saved history.'],
+    ['English references', "Don't use stored references."],
+    ['Portuguese data', 'Não leia os dados guardados.'],
+    ['Portuguese context', 'Não use o contexto guardado.'],
+    ['Portuguese records', 'Não acesse os registos guardados.'],
+    ['Portuguese history', 'Não consulte o histórico guardado.'],
+    ['Portuguese references', 'Não use as referências locais.'],
+  ])('does not let accepted saved-data opt-out nouns hijack the owner skill: %s', (_label, optOutClause) => {
+    const contract = inferChatTurnContract({
+      message: `Compare a launch narrative with a tailored campaign story. ${optOutClause}`,
+      routedDomain: 'content',
+    });
+
+    expect(contract).toMatchObject({
+      skill: 'content',
+      routeKind: 'generic_skill_answer',
+      riskClass: 'low',
+      groundingRequired: 'none',
+    });
+  });
+
   it('keeps generic cooking idea questions as direct answers, not forced recipe structures', () => {
     const english = inferChatTurnContract({
       message: 'What should I cook for dinner?',

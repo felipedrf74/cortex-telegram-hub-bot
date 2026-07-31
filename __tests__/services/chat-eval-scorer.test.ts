@@ -235,6 +235,131 @@ describe('chat eval scorer', () => {
     expect(entry.detail).toContain('workout');
   });
 
+  it('matches semantic terms across conservative Portuguese accents and plural suffixes', () => {
+    const score = scoreChatEvalTurn(
+      { semanticMustInclude: ['conteúdo', 'ideia'] },
+      liveResult({
+        text: 'Duas ideias de conteudos mostram o lançamento com clareza.',
+      }),
+    );
+
+    expect(dim(score.dimensions, 'semantic_coverage').passed).toBe(true);
+  });
+
+  it('does not let a generic server-owned lead make an irrelevant model continuation pass semantic coverage', () => {
+    const score = scoreChatEvalTurn(
+      { semanticMustInclude: ['narrative', 'broad', 'tailored'] },
+      liveResult({
+        text: 'Requested comparison guidance follows.\n\nThe answer is clear for this request.',
+      }),
+    );
+    const entry = dim(score.dimensions, 'semantic_coverage');
+    expect(entry.passed).toBe(false);
+    expect(entry.failureType).toBe('insufficient_answer');
+    expect(entry.detail).toContain('narrative');
+    expect(entry.detail).toContain('broad');
+    expect(entry.detail).toContain('tailored');
+  });
+
+  it.each([
+    'The broad narrative scales; tailored fits.',
+    'The broad narrative reaches; tailored focuses.',
+  ])('accepts a complete bounded comparison candidate: %s', (answer) => {
+    const score = scoreChatEvalTurn(
+      { semanticMustInclude: ['narrative', 'broad', 'tailored'] },
+      liveResult({
+        text: `Requested comparison guidance follows.\n\n${answer}`,
+      }),
+    );
+
+    expect(dim(score.dimensions, 'semantic_coverage').passed).toBe(true);
+  });
+
+  it('does not award semantic coverage to a hanging answer that merely contains every required token', () => {
+    const score = scoreChatEvalTurn(
+      {
+        semanticMustInclude: ['narrative', 'broad', 'tailored'],
+        requiresCompleteAnswer: true,
+      },
+      liveResult({
+        text: 'Requested comparison guidance follows.\n\nThe broad narrative tailored for',
+      }),
+    );
+    const entry = dim(score.dimensions, 'semantic_coverage');
+    expect(entry.passed).toBe(false);
+    expect(entry.failureType).toBe('insufficient_answer');
+    expect(entry.detail).toContain('incomplete');
+  });
+
+  it('requires distinct conditions for both sides of a comparison when the gate declares that contract', () => {
+    const weak = scoreChatEvalTurn(
+      {
+        semanticMustInclude: ['narrative', 'broad', 'tailored'],
+        requiresDistinctComparisonConditions: true,
+      },
+      liveResult({
+        text: 'Broad narrative versus tailored narrative: broad is better, while tailored is better.',
+      }),
+    );
+    const grounded = scoreChatEvalTurn(
+      {
+        semanticMustInclude: ['narrative', 'broad', 'tailored'],
+        requiresDistinctComparisonConditions: true,
+      },
+      liveResult({
+        text: 'Broad narrative versus tailored narrative: broad fits shared reach, while tailored fits specific audiences.',
+      }),
+    );
+
+    expect(dim(weak.dimensions, 'semantic_coverage').passed).toBe(false);
+    expect(dim(weak.dimensions, 'semantic_coverage').detail).toContain('distinct conditions');
+    expect(dim(grounded.dimensions, 'semantic_coverage').passed).toBe(true);
+  });
+
+  it('accepts concise semicolon-separated conditions for both comparison sides', () => {
+    const score = scoreChatEvalTurn(
+      {
+        semanticMustInclude: ['narrative', 'broad', 'tailored'],
+        requiresDistinctComparisonConditions: true,
+      },
+      liveResult({
+        text: 'Broad narrative fits reach; tailored fits niches.',
+      }),
+    );
+
+    expect(dim(score.dimensions, 'semantic_coverage').passed).toBe(true);
+  });
+
+  it('accepts one independently seeded grounding term when semanticMustIncludeAny is declared', () => {
+    const score = scoreChatEvalTurn(
+      {
+        semanticMustInclude: ['conteúdo', 'ideias'],
+        semanticMustIncludeAny: ['Friday', 'reference', 'library', 'editing', 'backlog'],
+      },
+      liveResult({
+        text: 'Ideias de conteúdo: mostrar o backlog de edição e explorar a biblioteca.',
+      }),
+    );
+
+    expect(dim(score.dimensions, 'semantic_coverage').passed).toBe(true);
+  });
+
+  it('does not apply the target-provider completeness ratchet to a valid enumerated partial outcome', () => {
+    const score = scoreChatEvalTurn(
+      { semanticMustInclude: ['alpha', 'beta', 'gamma', 'failed'] },
+      liveResult({
+        text: [
+          "Here's the outcome — 2 of 3 steps verified:",
+          '1. Create task “alpha” — done and verified',
+          '2. Create task “beta” — failed',
+          '3. Create task “gamma” — done and verified',
+        ].join('\n'),
+      }),
+    );
+
+    expect(dim(score.dimensions, 'semantic_coverage').passed).toBe(true);
+  });
+
   it('fails forbidden_content with tenant_leak when forbidden text appears in the response', () => {
     const score = scoreChatEvalTurn(
       { forbiddenContent: ['Tenant A launch follow-ups'] },

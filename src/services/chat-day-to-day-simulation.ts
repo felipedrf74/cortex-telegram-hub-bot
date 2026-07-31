@@ -124,6 +124,7 @@ export interface DayToDayTurnExpectation {
   expectedSkills?: ChatEvalSkillId[];
   expectedDomain?: DomainName;
   semanticMustInclude?: string[];
+  semanticMustIncludeAny?: string[];
   forbiddenContent?: string[];
   requiresClarification?: boolean;
   requiresConfirmation?: boolean;
@@ -142,6 +143,7 @@ export interface DayToDayTurnExpectation {
    * remains authoritative for proving that a metered target call occurred.
    */
   requiresTargetProvider?: boolean;
+  requiresDistinctComparisonConditions?: boolean;
   minAverageScore?: number;
 }
 
@@ -940,6 +942,7 @@ const LIVE_TURN_OVERRIDES: Record<string, Pick<DayToDayTurn, 'id' | 'userMessage
       expectedSkills: ['content'],
       expectedDomain: 'content',
       semanticMustInclude: ['conteúdo', 'ideias'],
+      semanticMustIncludeAny: ['Friday', 'reference', 'library', 'editing', 'backlog'],
       expectedLanguage: 'pt-PT',
     },
   },
@@ -951,6 +954,7 @@ const LIVE_TURN_OVERRIDES: Record<string, Pick<DayToDayTurn, 'id' | 'userMessage
       expectedDomain: 'content',
       semanticMustInclude: ['narrative', 'broad', 'tailored'],
       requiresTargetProvider: true,
+      requiresDistinctComparisonConditions: true,
     },
   },
   'frustrated_contradictory:l2-frustrated': {
@@ -1282,7 +1286,11 @@ async function runScenario(
     });
     const sideEffects = await readExpectedSideEffects(executor, turn.expectation.expectedSideEffects);
     const turnScore = scoreChatEvalTurn(
-      { ...turn.expectation, expectedLanguage: turn.expectation.expectedLanguage ?? 'en' },
+      {
+        ...turn.expectation,
+        expectedLanguage: turn.expectation.expectedLanguage ?? 'en',
+        requiresCompleteAnswer: turn.expectation.requiresTargetProvider === true,
+      },
       liveResult,
       sideEffects,
       scorerOptions ?? {},

@@ -90,18 +90,23 @@ function resolve(input: {
   });
 }
 
-function evidenceDb(): Database.Database {
+function evidenceDb(options: { includeApiUsageTenantId?: boolean } = {}): Database.Database {
+  const apiUsageTenantColumn = options.includeApiUsageTenantId === false
+    ? ''
+    : 'tenant_id INTEGER NOT NULL,';
   const db = new Database(':memory:');
   db.exec(`
     CREATE TABLE api_usage (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER NOT NULL,
+      ${apiUsageTenantColumn}
       request_source TEXT NOT NULL,
       base_category TEXT,
       job_name TEXT,
       run_id TEXT,
       provider TEXT,
       model TEXT,
+      category TEXT,
       cost_usd REAL,
       pricing_status TEXT
     );
@@ -243,12 +248,12 @@ describe('chat live-evaluation contract', () => {
       recordPreparation(db, context);
       db.prepare(`
         INSERT INTO api_usage (
-          user_id, request_source, base_category, job_name, run_id,
-          provider, model, cost_usd, pricing_status
+          user_id, tenant_id, request_source, base_category, job_name, run_id,
+          provider, model, category, cost_usd, pricing_status
         )
         VALUES (
-          42, 'interactive', 'chat_live_eval_local', 'chat_live_eval:content_creator_day', ?,
-          'ollama', 'qwen-test', 0, 'local_zero'
+          42, 42, 'interactive', 'chat_live_eval_local', 'chat_live_eval:content_creator_day', ?,
+          'ollama', 'qwen-test', 'chat_content_model_authored_short', 0, 'local_zero'
         )
       `).run(context.runId);
       db.prepare(`
@@ -280,13 +285,49 @@ describe('chat live-evaluation contract', () => {
       }));
 
       db.prepare(`
-        INSERT INTO api_usage (user_id, request_source, base_category, run_id, provider, model, cost_usd, pricing_status)
-        VALUES (42, 'interactive', 'chat_live_eval_local', ?, 'gemini', 'gemini-test', 0.000001, 'resolved')
+        INSERT INTO api_usage (
+          user_id, tenant_id, request_source, base_category, run_id,
+          provider, model, cost_usd, pricing_status
+        )
+        VALUES (42, 42, 'interactive', 'chat_live_eval_local', ?, 'gemini', 'gemini-test', 0.000001, 'resolved')
       `).run(context.runId);
       const rejected = readChatLiveEvalRunEvidence(db, context);
       expect(rejected.attested).toBe(false);
       expect(rejected.reasons).toContain('local_non_ollama_provider_observed');
       expect(rejected.reasons).toContain('local_nonzero_spend_observed');
+    } finally {
+      db.close();
+    }
+  });
+
+  it('rejects local evidence that lacks the model-authored short-comparison usage category', () => {
+    const db = evidenceDb();
+    try {
+      const context = resolve({ mode: 'local_engine', phase: 'evidence' })!;
+      recordPreparation(db, context);
+      db.prepare(`
+        INSERT INTO api_usage (
+          user_id, tenant_id, request_source, base_category, job_name, run_id,
+          provider, model, category, cost_usd, pricing_status
+        )
+        VALUES (
+          42, 42, 'interactive', 'chat_live_eval_local', 'chat_live_eval:content_creator_day', ?,
+          'ollama', 'qwen-test', 'chat_content_model_authored_short_rejected', 0, 'local_zero'
+        )
+      `).run(context.runId);
+      db.prepare(`
+        INSERT INTO ai_provider_attempt_reservations (
+          user_id, request_source, base_category, job_name, run_id,
+          provider, model, provider_category, reserved_cost_usd
+        ) VALUES (
+          42, 'interactive', 'chat_live_eval_local', 'chat_live_eval:content_creator_day', ?,
+          'ollama', 'qwen-test', 'chat', 0
+        )
+      `).run(context.runId);
+
+      const evidence = readChatLiveEvalRunEvidence(db, context);
+      expect(evidence.attested).toBe(false);
+      expect(evidence.reasons).toContain('missing_required_local_model_authored_response_usage');
     } finally {
       db.close();
     }
@@ -299,16 +340,16 @@ describe('chat live-evaluation contract', () => {
       recordPreparation(db, context);
       db.prepare(`
         INSERT INTO api_usage (
-          user_id, request_source, base_category, job_name, run_id,
+          user_id, tenant_id, request_source, base_category, job_name, run_id,
           provider, model, cost_usd, pricing_status
         )
         VALUES
           (
-            42, 'interactive', 'chat_live_eval_real', 'chat_live_eval:content_creator_day', ?,
+            42, 42, 'interactive', 'chat_live_eval_real', 'chat_live_eval:content_creator_day', ?,
             'openai', 'gpt-test', 0.012, 'resolved'
           ),
           (
-            999, 'interactive', 'chat_live_eval_real', 'chat_live_eval:content_creator_day', ?,
+            999, 42, 'interactive', 'chat_live_eval_real', 'chat_live_eval:content_creator_day', ?,
             'openai', 'gpt-test', 99, 'resolved'
           )
       `).run(context.runId, context.runId);
@@ -352,11 +393,11 @@ describe('chat live-evaluation contract', () => {
 
       db.prepare(`
         INSERT INTO api_usage (
-          user_id, request_source, base_category, job_name, run_id,
+          user_id, tenant_id, request_source, base_category, job_name, run_id,
           provider, model, cost_usd, pricing_status
         )
         VALUES (
-          42, 'interactive', 'chat_live_eval_real', 'chat_live_eval:content_creator_day', ?,
+          42, 42, 'interactive', 'chat_live_eval_real', 'chat_live_eval:content_creator_day', ?,
           'gemini', 'unknown-model', 0.40, 'unresolved'
         )
       `).run(context.runId);
@@ -386,11 +427,11 @@ describe('chat live-evaluation contract', () => {
       recordPreparation(db, context);
       db.prepare(`
         INSERT INTO api_usage (
-          user_id, request_source, base_category, job_name, run_id,
+          user_id, tenant_id, request_source, base_category, job_name, run_id,
           provider, model, cost_usd, pricing_status
         )
         VALUES (
-          42, 'interactive', 'chat_live_eval_real', 'chat_live_eval:morning_planning', ?,
+          42, 42, 'interactive', 'chat_live_eval_real', 'chat_live_eval:morning_planning', ?,
           'gemini', 'gemini-test', 0.001, 'resolved'
         )
       `).run(context.runId);
@@ -408,6 +449,40 @@ describe('chat live-evaluation contract', () => {
       expect(evidence.attested).toBe(false);
       expect(evidence.reasons).toContain('missing_required_target_provider_scenario_usage');
       expect(evidence.reasons).toContain('missing_required_target_provider_scenario_attempt');
+    } finally {
+      db.close();
+    }
+  });
+
+  it('fails evidence closed when api_usage cannot prove tenant attribution', () => {
+    const db = evidenceDb({ includeApiUsageTenantId: false });
+    try {
+      const context = resolve({ mode: 'real_provider', phase: 'evidence', isLoopback: false })!;
+      recordPreparation(db, context);
+      db.prepare(`
+        INSERT INTO api_usage (
+          user_id, request_source, base_category, job_name, run_id,
+          provider, model, cost_usd, pricing_status
+        )
+        VALUES (
+          42, 'interactive', 'chat_live_eval_real', 'chat_live_eval:content_creator_day', ?,
+          'openai', 'gpt-test', 0.012, 'resolved'
+        )
+      `).run(context.runId);
+      db.prepare(`
+        INSERT INTO ai_provider_attempt_reservations (
+          user_id, request_source, base_category, job_name, run_id,
+          provider, model, provider_category, reserved_cost_usd
+        ) VALUES (
+          42, 'interactive', 'chat_live_eval_real', 'chat_live_eval:content_creator_day', ?,
+          'openai', 'gpt-test', 'chat', 0.03
+        )
+      `).run(context.runId);
+
+      const evidence = readChatLiveEvalRunEvidence(db, context);
+      expect(evidence.attested).toBe(false);
+      expect(evidence.reasons).toContain('api_usage_tenant_attribution_unavailable');
+      expect(evidence.target.usageCallCount).toBe(0);
     } finally {
       db.close();
     }

@@ -37,16 +37,25 @@ const DOMAIN_SKILL = getCapabilityChatRoutingOwnerMap() as Partial<Record<Domain
 
 export function inferChatTurnContract(input: ChatTurnContractInput): ChatTurnContract {
   const folded = fold(input.message);
+  const decisionText = stripExplicitSavedDataOptOutClause(folded);
+  const savedDataOptOut = decisionText !== folded;
   const language = inferLanguage(input.message);
-  const skill = inferSkill(folded, input);
+  const skill = inferSkill(decisionText, input);
   const policyEnabled = isChatSkillResponsePolicyEnabled();
   const policy = policyEnabled ? getSkillResponsePolicy(skill) : null;
-  const riskClass = inferRiskClass(folded, skill);
-  const routeKind = inferRouteKind(folded, skill, riskClass);
-  const groundingRequired = inferGroundingRequirement(folded, skill, routeKind, riskClass, policy);
-  const expectedResponseShape = inferExpectedShape(folded, skill, routeKind, policy);
+  const riskClass = inferRiskClass(decisionText, skill);
+  const routeKind = inferRouteKind(decisionText, skill, riskClass);
+  const groundingRequired = inferGroundingRequirement(
+    decisionText,
+    skill,
+    routeKind,
+    riskClass,
+    policy,
+    savedDataOptOut,
+  );
+  const expectedResponseShape = inferExpectedShape(decisionText, skill, routeKind, policy);
   const internetEligible = groundingRequired === 'web' || groundingRequired === 'local_and_web';
-  const ambiguityReasons = inferAmbiguityReasons(folded, skill, routeKind);
+  const ambiguityReasons = inferAmbiguityReasons(decisionText, skill, routeKind);
   return {
     skill,
     routeKind,
@@ -106,6 +115,20 @@ export function fold(text: string): string {
     .toLowerCase()
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+const EXPLICIT_SAVED_DATA_OPT_OUT = /\b(?:(?:do not|don['’]t|dont|never)\s+(?:read|use|access|consult)|without\s+(?:reading|using|accessing|consulting))(?:\s+or\s+(?:change|modify|alter))?\s+(?:(?:any|my|the|your)\s+)?(?:saved|stored|local)\s+(?:data|context|records?|history|references?)\b|\b(?:nao|não)\s+(?:leia|ler|use|usar|acesse|aceder|consulte|consultar)(?:\s+nem\s+(?:altere|alterar|mude|mudar|modifique|modificar))?\s+(?:os?\s+|as?\s+)?(?:dados|contexto|registos?|historico|histórico|referencias|referências)\s+(?:guardados?|salvos?|locais?)\b/giu;
+
+function stripExplicitSavedDataOptOutClause(text: string): string {
+  return text
+    .replace(EXPLICIT_SAVED_DATA_OPT_OUT, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+export function isExplicitSavedDataOptOut(text: string): boolean {
+  const folded = fold(text);
+  return stripExplicitSavedDataOptOutClause(folded) !== folded;
 }
 
 function inferLanguage(text: string): NexusChatLanguage {
@@ -208,10 +231,12 @@ function inferGroundingRequirement(
   routeKind: NexusChatRouteKind,
   riskClass: NexusChatRiskLevel | 'destructive',
   policy: SkillResponsePolicy | null,
+  savedDataOptOut: boolean,
 ): NexusChatGroundingRequirement {
   if (routeKind === 'internet_research') return needsLocalRead(text, skill) ? 'local_and_web' : 'web';
   if (routeKind === 'local_read' || routeKind === 'repair') return 'local';
   if (routeKind === 'action') return riskClass === 'destructive' ? 'local' : (needsInternet(text) ? 'local_and_web' : 'local');
+  if (savedDataOptOut && routeKind === 'generic_skill_answer' && riskClass === 'low') return 'none';
   return policy?.defaultGrounding ?? 'none';
 }
 

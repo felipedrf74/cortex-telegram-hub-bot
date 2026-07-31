@@ -11,7 +11,11 @@ import { ensureActiveProvider, getActiveProvider } from '../services/provider-re
 import { getOrBuildDailyContext } from '../services/context-engine';
 import { buildSharedDecisionContext } from '../services/shared-decision-context';
 import { buildChatPromptContextBlock } from '../services/chat-context-engine';
-import { assessChatTurnGroundingCertainty, inferChatTurnContract } from '../services/chat-turn-contract';
+import {
+  assessChatTurnGroundingCertainty,
+  inferChatTurnContract,
+  isExplicitSavedDataOptOut,
+} from '../services/chat-turn-contract';
 import { isChatContextCompilerEnabled } from '../services/runtime-flags';
 import { buildAIUnavailableResponse, canUseDirectAnthropicFallback } from './ai-unavailable';
 // Phase 13 batch 71 (2026-05-16): training intent detector moved to the
@@ -41,6 +45,7 @@ import { buildCookingPreferenceReadModel } from '../services/cooking-preferences
 import {
   cookingSafetyLogPayload,
   evaluateCookingSafetyText,
+  evaluateCookingSafetyTextForProfile,
   renderCookingSafetyBlockedResponse,
   renderCookingSafetyPromptBlock,
 } from '../services/cooking-safety-policy';
@@ -238,6 +243,14 @@ function buildLegacyDomainWriteBlockedReply(): string {
   return 'This action needs confirmation in the app before I change anything.';
 }
 
+function buildCurrentTurnOnlyToolBlockedResult(name: string): Record<string, unknown> {
+  return {
+    success: false,
+    code: 'SAVED_DATA_OPT_OUT',
+    error: `${name} was not run because this request is limited to the current turn and cannot read or change saved data.`,
+  };
+}
+
 function anchorTodayWorkoutAnswer(domain: DomainName, message: string, text: string): string {
   if (domain !== 'triathlon') return text;
   if (!/\b(?:what(?:'s| is))\s+today'?s?\s+workout\b/i.test(message)) return text;
@@ -356,9 +369,12 @@ export async function buildSimpleStateContext(
   userId?: number,
   message?: string,
   tenantId?: number,
+  currentTurnOnlyOverride?: boolean,
 ): Promise<string> {
   const hasUserScope = typeof userId === 'number';
-  const includeScopedContext = shouldIncludeScopedStateContext(domain, hasUserScope, message);
+  const currentTurnOnly = currentTurnOnlyOverride
+    ?? (hasUserScope && Boolean(message?.trim()) && shouldUseCurrentTurnOnly(domain, message!));
+  const includeScopedContext = shouldIncludeScopedStateContext(domain, hasUserScope, message, currentTurnOnly);
   const parts: string[] = [];
   parts.push(`Today: ${now().toFormat('cccc, LLLL dd yyyy, HH:mm')} (Europe/Lisbon)`);
 
@@ -518,7 +534,9 @@ export async function buildSimpleStateContext(
 
   if (domain === 'cooking' && hasUserScope) {
     try {
-      const cookingPreferences = buildCookingPreferenceReadModel(userId, tenantId).profile;
+      const cookingPreferences = currentTurnOnly
+        ? {}
+        : buildCookingPreferenceReadModel(userId, tenantId).profile;
       const cookingSafetyBlock = renderCookingSafetyPromptBlock(cookingPreferences);
       if (cookingSafetyBlock) parts.push(cookingSafetyBlock);
     } catch (err) {
@@ -572,8 +590,14 @@ export async function buildSimpleStateContext(
   return parts.join('\n');
 }
 
-function shouldIncludeScopedStateContext(domain: DomainName, hasUserScope: boolean, message?: string): boolean {
+function shouldIncludeScopedStateContext(
+  domain: DomainName,
+  hasUserScope: boolean,
+  message?: string,
+  currentTurnOnly = false,
+): boolean {
   if (!hasUserScope) return false;
+  if (currentTurnOnly) return false;
   if (!isChatContextCompilerEnabled()) return true;
   if (!message || !message.trim()) return true;
   if (domain === 'triathlon' && isTrainingPrescriptionIntent(message)) return true;
@@ -585,6 +609,14 @@ function shouldIncludeScopedStateContext(domain: DomainName, hasUserScope: boole
   // answering blind. HIGH-certainty groundingRequired='none' turns keep
   // today's exclusion byte-for-byte.
   return assessChatTurnGroundingCertainty(contract).uncertain;
+}
+
+function shouldUseCurrentTurnOnly(domain: DomainName, message: string): boolean {
+  if (!isExplicitSavedDataOptOut(message)) return false;
+  const contract = inferChatTurnContract({ message, routedDomain: domain });
+  return contract.routeKind === 'generic_skill_answer'
+    && contract.riskClass === 'low'
+    && contract.groundingRequired === 'none';
 }
 
 /**
@@ -612,11 +644,14 @@ export async function handleSimpleDomain(
   phaseKHints?: { ownerSkill?: string; executeIntent?: boolean },
 ): Promise<DomainResponse> {
   const hasUserScope = typeof userId === 'number';
-  const history = hasUserScope ? getConversationHistory(userId, domain, tenantId) : [];
+  const currentTurnOnly = hasUserScope && shouldUseCurrentTurnOnly(domain, message);
+  const history = hasUserScope && !currentTurnOnly
+    ? getConversationHistory(userId, domain, tenantId)
+    : [];
   // Phase 3 Slice A: pass the incoming message so the triathlon
   // branch of buildSimpleStateContext can run the sport classifier
   // and inject the onboarding-pending block when appropriate.
-  const baseStateContext = await buildSimpleStateContext(domain, userId, message, tenantId);
+  const baseStateContext = await buildSimpleStateContext(domain, userId, message, tenantId, currentTurnOnly);
   const replyLanguageBlock = buildChatReplyLanguagePromptBlock();
   const stateContext = replyLanguageBlock
     ? `${baseStateContext}\n\n${replyLanguageBlock}`
@@ -627,7 +662,7 @@ export async function handleSimpleDomain(
     const provider = getActiveProvider() || ensureActiveProvider();
     if (!provider) {
       if (!canUseDirectAnthropicFallback()) {
-        return buildAIUnavailableResponse(domain, userId);
+        return buildAIUnavailableResponse(domain, currentTurnOnly ? undefined : userId);
       }
       // Fallback to direct Anthropic if routing provider not initialized
       return await handleWithDirectCalls(
@@ -641,6 +676,7 @@ export async function handleSimpleDomain(
         callDirectAnthropicDomain,
         continueDirectAnthropicWithToolResults,
         tenantId,
+        currentTurnOnly,
       );
     }
 
@@ -666,6 +702,7 @@ export async function handleSimpleDomain(
       // whether to bypass Ollama for tool-or-write requests.
       ownerSkill: derivedOwnerSkill,
       executeIntent: phaseKHints?.executeIntent,
+      currentTurnOnly,
     });
     let finalText = result.text;
 
@@ -692,6 +729,16 @@ export async function handleSimpleDomain(
       // Execute tool calls in parallel
       const toolResults = await Promise.all(
         result.toolCalls.map(async (tc) => {
+          if (currentTurnOnly) {
+            logger.info(
+              { domain, userId, tenantId, tool: tc.name },
+              'Blocked legacy domain tool for current-turn-only request',
+            );
+            const blockedResult = buildCurrentTurnOnlyToolBlockedResult(tc.name);
+            let content = JSON.stringify(blockedResult);
+            if (content.length > 2000) content = content.slice(0, 2000) + '...(truncated)';
+            return { type: 'tool_result' as const, tool_use_id: tc.id, content };
+          }
           if (isLegacyDomainWriteTool(tc.name)) {
             legacyWriteBlocked = true;
             logger.warn(
@@ -735,6 +782,7 @@ export async function handleSimpleDomain(
         userId,
         tenantId,
         toolLoopProviderName: result.routedProviderName,
+        currentTurnOnly,
       });
       finalText = result.text;
     }
@@ -765,12 +813,14 @@ export async function handleSimpleDomain(
     const requestLocale = getCurrentChatRequestLocale();
     finalText = requestLocale
       ? normalizeReplyForLanguage(finalText, requestLocale)
-      : normalizeReplyForUserLanguage(finalText, userId);
+      : currentTurnOnly
+        ? finalText
+        : normalizeReplyForUserLanguage(finalText, userId);
     finalText = anchorTodayWorkoutAnswer(domain, message, finalText);
-    finalText = applyCoachAnswerSafety(domain, message, finalText, userId);
-    finalText = enforceCookingDomainAnswerSafety(domain, finalText, userId, tenantId);
+    finalText = applyCoachAnswerSafety(domain, message, finalText, userId, currentTurnOnly);
+    finalText = enforceCookingDomainAnswerSafety(domain, finalText, userId, tenantId, currentTurnOnly);
 
-    if (hasUserScope) {
+    if (hasUserScope && !currentTurnOnly) {
       const storedText = toolsUsed.length > 0
         ? `[Tools: ${[...new Set(toolsUsed)].join(', ')}]\n${finalText}`
         : finalText;
@@ -796,11 +846,13 @@ async function handleWithDirectCalls(
   maxIterations: number, userId: number | undefined, maxTokensOverride: number | undefined,
   callDomainFn: (...args: any[]) => Promise<any>, continueWithToolResultsFn: (...args: any[]) => Promise<any>,
   tenantId?: number,
+  currentTurnOnly = false,
 ): Promise<DomainResponse> {
   const directOptions = {
     maxTokensOverride,
     userId,
     tenantId,
+    currentTurnOnly,
   };
   let result = await callDomainFn(domain, history, message, stateContext, directOptions);
   let finalText = result.text;
@@ -821,6 +873,16 @@ async function handleWithDirectCalls(
     }
     const toolResults = await Promise.all(
       result.toolCalls.map(async (tc: any) => {
+        if (currentTurnOnly) {
+          logger.info(
+            { domain, userId, tenantId, tool: tc.name, path: 'direct-calls' },
+            'Blocked legacy domain tool for current-turn-only request',
+          );
+          const blockedResult = buildCurrentTurnOnlyToolBlockedResult(tc.name);
+          let content = JSON.stringify(blockedResult);
+          if (content.length > 2000) content = content.slice(0, 2000) + '...(truncated)';
+          return { type: 'tool_result' as const, tool_use_id: tc.id, content };
+        }
         if (isLegacyDomainWriteTool(tc.name)) {
           legacyWriteBlocked = true;
           logger.warn(
@@ -880,12 +942,14 @@ async function handleWithDirectCalls(
   const requestLocale = getCurrentChatRequestLocale();
   finalText = requestLocale
     ? normalizeReplyForLanguage(finalText, requestLocale)
-    : normalizeReplyForUserLanguage(finalText, userId);
+    : currentTurnOnly
+      ? finalText
+      : normalizeReplyForUserLanguage(finalText, userId);
   finalText = anchorTodayWorkoutAnswer(domain, message, finalText);
-  finalText = applyCoachAnswerSafety(domain, message, finalText, userId);
-  finalText = enforceCookingDomainAnswerSafety(domain, finalText, userId, tenantId);
+  finalText = applyCoachAnswerSafety(domain, message, finalText, userId, currentTurnOnly);
+  finalText = enforceCookingDomainAnswerSafety(domain, finalText, userId, tenantId, currentTurnOnly);
 
-  if (typeof userId === 'number') {
+  if (typeof userId === 'number' && !currentTurnOnly) {
     addScopedConversation(userId, domain, 'user', message, tenantId);
     const storedText = toolsUsed.length > 0
       ? `[Tools: ${[...new Set(toolsUsed)].join(', ')}]\n${finalText}`
@@ -938,13 +1002,21 @@ function applyCoachAnswerSafety(
   message: string,
   finalText: string,
   userId?: number,
+  currentTurnOnly = false,
 ): string {
   if (!finalText || finalText.trim().length === 0) return finalText;
   const alwaysDisclaim = COACH_DISCLAIMER_DOMAINS.has(domain);
   const safetySurfacingDomain = SAFETY_SURFACING_DOMAINS.has(domain);
-  const locale = () => resolveCoachSafetyLocale(
-    typeof userId === 'number' ? getSafetyCopyLanguage(userId) : null,
-  );
+  const locale = () => {
+    const requestLocale = getCurrentChatRequestLocale();
+    return resolveCoachSafetyLocale(
+      currentTurnOnly
+        ? requestLocale
+        : typeof userId === 'number'
+          ? getSafetyCopyLanguage(userId)
+          : requestLocale,
+    );
+  };
   try {
     const evaluation = evaluateChatMessageSafety(message, finalText);
     const surfaced = selectSurfacedSafetyFinding(evaluation);
@@ -986,15 +1058,20 @@ function enforceCookingDomainAnswerSafety(
   finalText: string,
   userId?: number,
   tenantId?: number,
+  currentTurnOnly = false,
 ): string {
   if (domain !== 'cooking' || typeof userId !== 'number') {
     return finalText;
   }
-  const resolvedTenantId = typeof tenantId === 'number'
-    ? tenantId
-    : resolveCurrentTenantIdForUser(userId);
+  const resolvedTenantId = currentTurnOnly
+    ? null
+    : typeof tenantId === 'number'
+      ? tenantId
+      : resolveCurrentTenantIdForUser(userId);
   try {
-    const evaluation = evaluateCookingSafetyText(userId, resolvedTenantId, 'legacy_domain_answer', [finalText]);
+    const evaluation = currentTurnOnly
+      ? evaluateCookingSafetyTextForProfile({}, 'legacy_domain_answer', [finalText])
+      : evaluateCookingSafetyText(userId, resolvedTenantId!, 'legacy_domain_answer', [finalText]);
     if (!evaluation.blocked) return finalText;
     logger.warn(
       {
@@ -1005,10 +1082,14 @@ function enforceCookingDomainAnswerSafety(
       },
       'COOKING_SAFETY_BLOCKED',
     );
-    return renderCookingSafetyBlockedResponse(getSafetyCopyLanguage(userId));
+    return renderCookingSafetyBlockedResponse(
+      currentTurnOnly ? getCurrentChatRequestLocale() : getSafetyCopyLanguage(userId),
+    );
   } catch (err) {
     logger.warn({ err, userId, tenantId: resolvedTenantId }, 'Cooking domain answer safety check failed; returning safe refusal');
-    return renderCookingSafetyBlockedResponse(getSafetyCopyLanguage(userId));
+    return renderCookingSafetyBlockedResponse(
+      currentTurnOnly ? getCurrentChatRequestLocale() : getSafetyCopyLanguage(userId),
+    );
   }
 }
 

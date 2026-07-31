@@ -1685,6 +1685,7 @@ ${message}`;
     // planSecretaryOptimization() so they're consistent with what the
     // Anthropic provider would have done for the same message.
     const opts = normalizeCallDomainOptions(optionsOrMaxTokens);
+    const currentTurnOnly = opts.currentTurnOnly === true;
 
     // Layer 4: tier-aware model selection
     // v2: honor options.modelOverride (set by cloud-reasoning-gate so the
@@ -1697,18 +1698,23 @@ ${message}`;
 
     // Phase 2 Slice A: pass currentMessage so triathlon sub-skill
     // routing picks the sport-specific coach persona prompt.
-    const systemPrompt = getDomainSystemPrompt(domain, currentMessage);
-    const useTools = domain === 'secretary' || domain === 'triathlon';
-    const contextPrefix = buildScopedStateContextPrefix(stateContext);
+    const systemPrompt = getDomainSystemPrompt(domain, currentMessage, {
+      currentTurnOnly,
+    });
+    const useTools = !currentTurnOnly && (domain === 'secretary' || domain === 'triathlon');
+    const contextPrefix = currentTurnOnly ? '' : buildScopedStateContextPrefix(stateContext);
 
     const allowLegacyFullTools = optionsOrMaxTokens == null || typeof optionsOrMaxTokens === 'number';
-    const filteredTools = resolveFilteredTools(opts.filteredTools, 'Gemini callDomain', allowLegacyFullTools);
+    const filteredTools = currentTurnOnly
+      ? []
+      : resolveFilteredTools(opts.filteredTools, 'Gemini callDomain', allowLegacyFullTools);
+    const historyToSend = currentTurnOnly ? [] : history;
 
     // Layer 5: history is sliced upstream by planSecretaryOptimization
     // when modelTier === 'light'. We just consume whatever the caller
     // passes — no double-slicing here.
     const contents: Content[] = [
-      ...history.map((m) => ({
+      ...historyToSend.map((m) => ({
         role: m.role === 'assistant' ? 'model' : 'user',
         parts: [{ text: m.content }] as Part[],
       })),
@@ -1756,6 +1762,7 @@ ${message}`;
     // same filtered tool list + same model tier across the whole loop
     // is what makes multi-step tool conversations work.
     const opts = normalizeCallDomainOptions(options);
+    const currentTurnOnly = opts.currentTurnOnly === true;
 
     // v2: honor options.modelOverride (set by cloud-reasoning-gate so the
     // approved reasoning model is actually used). When undefined, fall
@@ -1767,14 +1774,19 @@ ${message}`;
     // Phase 2 Slice A: same persona routing as callDomain — continuation
     // uses the same currentMessage so the classifier resolves to the
     // same coach file. Mid-turn persona swaps would break tool chains.
-    const systemPrompt = getDomainSystemPrompt(domain, currentMessage);
-    const useTools = domain === 'secretary' || domain === 'triathlon';
-    const contextPrefix = buildScopedStateContextPrefix(stateContext);
+    const systemPrompt = getDomainSystemPrompt(domain, currentMessage, {
+      currentTurnOnly,
+    });
+    const useTools = !currentTurnOnly && (domain === 'secretary' || domain === 'triathlon');
+    const contextPrefix = currentTurnOnly ? '' : buildScopedStateContextPrefix(stateContext);
 
-    const filteredTools = resolveFilteredTools(opts.filteredTools, 'Gemini continueWithToolResults', options == null);
+    const filteredTools = currentTurnOnly
+      ? []
+      : resolveFilteredTools(opts.filteredTools, 'Gemini continueWithToolResults', options == null);
+    const historyToSend = currentTurnOnly ? [] : history;
 
     const contents: Content[] = [
-      ...history.map((m) => ({
+      ...historyToSend.map((m) => ({
         role: m.role === 'assistant' ? 'model' : 'user',
         parts: [{ text: m.content }] as Part[],
       })),

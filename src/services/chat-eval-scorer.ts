@@ -14,6 +14,7 @@ import type {
 } from './chat-eval-executor';
 import type { DayToDayFailureType } from './chat-day-to-day-simulation';
 import { detectResponseLanguage } from './chat-language-detector';
+import { assessChatResearchAnswerCompleteness } from './chat-research-answer-quality';
 import {
   textClaimsUnverifiedAction,
   textHasBareAppSuccessMarker,
@@ -100,6 +101,8 @@ export interface ChatEvalTurnScoringExpectation {
   expectedRouteMethod?: string;
   expectedSkills?: readonly string[];
   semanticMustInclude?: readonly string[];
+  /** At least one independently seeded grounding term must be present. */
+  semanticMustIncludeAny?: readonly string[];
   forbiddenContent?: readonly string[];
   requiresClarification?: boolean;
   requiresConfirmation?: boolean;
@@ -114,6 +117,10 @@ export interface ChatEvalTurnScoringExpectation {
   expectedModel?: string;
   /** Primary language subtag the response must be written in (e.g. 'pt'). */
   expectedLanguage?: string;
+  /** Fail semantic coverage when the response is a fragment or truncated. */
+  requiresCompleteAnswer?: boolean;
+  /** Require two non-generic conditions tied to opposite sides of a comparison. */
+  requiresDistinctComparisonConditions?: boolean;
 }
 
 export interface ChatEvalDimensionScore {
@@ -179,6 +186,92 @@ export const defaultChatEvalLanguageDetector: ChatEvalLanguageDetector = (text) 
 
 export interface ChatEvalScorerOptions {
   languageDetector?: ChatEvalLanguageDetector;
+}
+
+function normalizeSingleSemanticToken(value: string): string {
+  const normalized = value
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .toLowerCase();
+  return normalized.length > 5
+    && normalized.endsWith('s')
+    && !normalized.endsWith('ss')
+    && !normalized.endsWith('us')
+    && !normalized.endsWith('is')
+    ? normalized.slice(0, -1)
+    : normalized;
+}
+
+function semanticTermAppears(text: string, lowerText: string, term: string): boolean {
+  const lowerTerm = term.toLowerCase();
+  if (lowerText.includes(lowerTerm)) return true;
+
+  const normalizedTerm = term
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .toLowerCase();
+  const termTokens = normalizedTerm.match(/[\p{L}\p{N}]+/gu) ?? [];
+  if (termTokens.length !== 1) {
+    return text
+      .normalize('NFD')
+      .replace(/\p{Diacritic}/gu, '')
+      .toLowerCase()
+      .includes(normalizedTerm);
+  }
+
+  const expected = normalizeSingleSemanticToken(termTokens[0] ?? '');
+  const observed = new Set(
+    (text.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase()
+      .match(/[\p{L}\p{N}]+/gu) ?? [])
+      .map(normalizeSingleSemanticToken),
+  );
+  return observed.has(expected);
+}
+
+const COMPARISON_CONDITION_STOP_WORDS = new Set([
+  'a', 'an', 'and', 'approach', 'are', 'as', 'be', 'best', 'better', 'but',
+  'each', 'first', 'fit', 'fits', 'for', 'ideal', 'is', 'it', 'option', 'or',
+  'prefer', 'preferable', 'preferred', 'second', 'suit', 'suits', 'the',
+  'to', 'use', 'versus', 'when', 'whereas', 'while',
+]);
+
+function hasDistinctComparisonConditions(
+  text: string,
+  semanticTokens: readonly string[],
+): boolean {
+  const body = text.includes(':') ? text.slice(text.indexOf(':') + 1) : text;
+  const contrastMatch = body.match(
+    /^(.+?)(?:(?:,\s*|\s+)(?:while|whereas|but)\s+|;\s*)(.+)$/iu,
+  );
+  const sentenceClauses = body
+    .split(/(?<=[.!?])\s+/u)
+    .map((clause) => clause.trim())
+    .filter(Boolean);
+  const clauses = contrastMatch
+    ? [contrastMatch[1] ?? '', contrastMatch[2] ?? '']
+    : sentenceClauses.length >= 2
+      ? [sentenceClauses[0] ?? '', sentenceClauses[1] ?? '']
+      : null;
+  if (!clauses) return false;
+  const requestStems = new Set(
+    semanticTokens.flatMap((token) => (
+      token.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase()
+        .match(/[\p{L}\p{N}]+/gu) ?? []
+    )).map(normalizeSingleSemanticToken),
+  );
+  const meaningfulStems = (clause: string): Set<string> => new Set(
+    (clause.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase()
+      .match(/[\p{L}\p{N}]+/gu) ?? [])
+      .map(normalizeSingleSemanticToken)
+      .filter((stem) => (
+        !requestStems.has(stem)
+        && !COMPARISON_CONDITION_STOP_WORDS.has(stem)
+      )),
+  );
+  const left = meaningfulStems(clauses[0] ?? '');
+  const right = meaningfulStems(clauses[1] ?? '');
+  return [...left].some((stem) => !right.has(stem))
+    && [...right].some((stem) => !left.has(stem));
 }
 
 /**
@@ -312,11 +405,35 @@ export function scoreChatEvalTurn(
 
   // semantic_coverage
   const semanticTokens = expectation.semanticMustInclude ?? [];
-  const missingTokens = semanticTokens.filter((token) => !lowerText.includes(token.toLowerCase()));
-  if (!semanticTokens.length) {
+  const semanticAnyTokens = expectation.semanticMustIncludeAny ?? [];
+  const missingTokens = semanticTokens.filter(
+    (token) => !semanticTermAppears(result.text, lowerText, token),
+  );
+  const anyGroundingPresent = semanticAnyTokens.some(
+    (token) => semanticTermAppears(result.text, lowerText, token),
+  );
+  const distinctComparisonConditionsPresent =
+    !expectation.requiresDistinctComparisonConditions
+    || hasDistinctComparisonConditions(result.text, semanticTokens);
+  const answerCompleteness = assessChatResearchAnswerCompleteness(result.text);
+  if (
+    !semanticTokens.length
+    && !semanticAnyTokens.length
+    && !expectation.requiresDistinctComparisonConditions
+  ) {
     notApplicable('semantic_coverage', 'no semantic expectation');
+  } else if (expectation.requiresCompleteAnswer && !answerCompleteness.ok) {
+    record('semantic_coverage', false, `incomplete answer: ${answerCompleteness.reason}`);
   } else if (missingTokens.length) {
     record('semantic_coverage', false, `missing semantic tokens: ${missingTokens.join(', ')}`);
+  } else if (semanticAnyTokens.length > 0 && !anyGroundingPresent) {
+    record(
+      'semantic_coverage',
+      false,
+      `missing independently seeded grounding term: ${semanticAnyTokens.join(', ')}`,
+    );
+  } else if (!distinctComparisonConditionsPresent) {
+    record('semantic_coverage', false, 'comparison lacks distinct conditions for both approaches');
   } else {
     record('semantic_coverage', true, 'all required tokens present');
   }
