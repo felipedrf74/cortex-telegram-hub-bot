@@ -548,6 +548,51 @@ describe('readiness-scorer — calculateReadiness', () => {
     expect(Number.isFinite(Date.parse(result.asOf ?? ''))).toBe(true);
   });
 
+  it('uses a Fitbit snapshot instead of discarding it', async () => {
+    // Fitbit declares `readiness: true`, implements `getReadiness`, and is in
+    // READINESS_PRIORITY, but the fallback branch demanded provider ===
+    // 'whoop'. The snapshot was fetched, thrown away, and the user dropped to
+    // Apple Health or a neutral 60.
+    clearGarminConnection(1);
+    mockWearableService.getReadiness.mockResolvedValue({
+      provider: 'fitbit',
+      date: '2026-04-16',
+      readinessScore: 74,
+      hrvMs: 58,
+      restingHeartRate: 54,
+      bodyBattery: null,
+      recoveryScore: 74,
+      raw: {},
+    });
+
+    const result = await calculateReadiness(1);
+    expect(result.score).toBe(74);
+    expect(result.source).toBe('fitbit');
+  });
+
+  it('leaves Apple Health to its own richer derivation', async () => {
+    // The fallback builder produces a thin snapshot (sleep and training-load
+    // factors are stubbed at 60). Apple Health has a real derivation further
+    // down, so it must not be short-circuited by the widened provider check.
+    clearGarminConnection(1);
+    seedAppleHealthData(1);
+    mockWearableService.getReadiness.mockResolvedValue({
+      provider: 'apple_health',
+      date: '2026-04-16',
+      readinessScore: 66,
+      hrvMs: 51,
+      restingHeartRate: 57,
+      bodyBattery: null,
+      recoveryScore: 66,
+      raw: {},
+    });
+
+    const result = await calculateReadiness(1);
+    expect(result.source).toBe('apple_health');
+    // The thin fallback stubs sleep at exactly 60; the real derivation scores it.
+    expect(result.factors.sleep.durationHours).toBeGreaterThan(0);
+  });
+
   it('stamps source apple_health on the Apple Health derived path', async () => {
     clearGarminConnection(1);
     seedAppleHealthData(1);

@@ -22,7 +22,7 @@ import {
   publishLowReadiness,
 } from './training-signals';
 import { getReadiness as getWearableReadiness } from './wearable/wearable-service';
-import type { NormalizedReadiness } from './wearable/types';
+import type { NormalizedReadiness, WearableProvider } from './wearable/types';
 import {
   deriveIntradayEnergyReserve,
   extractGarminBodyBatterySnapshot,
@@ -43,7 +43,15 @@ export interface ReadinessFactors {
 
 export type ReadinessRecommendation = 'full_intensity' | 'reduce_10pct' | 'reduce_25pct' | 'active_recovery' | 'rest_day';
 export type ReadinessReasonCode = 'WEARABLE_INTEGRATION_MISSING';
-export type ReadinessSource = 'garmin' | 'whoop' | 'apple_health' | 'estimated';
+/**
+ * `fitbit` is additive. Fitbit declares `readiness: true`, implements
+ * `getReadiness`, and sits in `READINESS_PRIORITY`, but the fallback branch
+ * used to accept only `whoop`, so Fitbit readiness was fetched and silently
+ * discarded. iOS decodes this field as a plain `String?`
+ * (`Models/CalendarEvent.swift:8`) and branches with `switch` + `default`,
+ * so a new value cannot break client decoding.
+ */
+export type ReadinessSource = 'garmin' | 'whoop' | 'fitbit' | 'apple_health' | 'estimated';
 
 export interface ReadinessResult {
   score: number;
@@ -120,9 +128,27 @@ function buildWearableFallbackReadiness(readiness: NormalizedReadiness): Readine
     factors,
     recommendation,
     reasoning,
-    source: 'whoop',
+    source: readinessSourceForProvider(readiness.provider),
     asOf: new Date().toISOString(),
   };
+}
+
+/**
+ * Map the provider that actually produced a snapshot onto the reported source.
+ *
+ * This was hardcoded to `'whoop'`, so anything reaching the shared fallback
+ * builder was mislabelled — including the Apple Health branches downstream
+ * that key off `source === 'apple_health'`.
+ */
+function readinessSourceForProvider(provider: WearableProvider | undefined): ReadinessSource {
+  switch (provider) {
+    case 'whoop': return 'whoop';
+    case 'fitbit': return 'fitbit';
+    case 'garmin': return 'garmin';
+    case 'apple_health': return 'apple_health';
+    // Strava declares `readiness: false`, so it should never reach here.
+    default: return 'estimated';
+  }
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -624,12 +650,20 @@ async function calculateReadinessUncached(
 
     try {
       const wearableReadiness = await getWearableReadiness(userId, today);
-      if (wearableReadiness && wearableReadiness.provider === 'whoop') {
-        logger.info({ userId, score: wearableReadiness.readinessScore, provider: 'whoop' }, 'WHOOP readiness calculated');
+      // Accept whichever provider the wearable service selected by its own
+      // READINESS_PRIORITY. This used to demand `=== 'whoop'`, which threw
+      // away a Fitbit snapshot the service had already fetched and dropped
+      // the user to Apple Health or a neutral score. Apple Health keeps its
+      // own richer derivation below, so it is not short-circuited here.
+      if (wearableReadiness && wearableReadiness.provider !== 'apple_health') {
+        logger.info(
+          { userId, score: wearableReadiness.readinessScore, provider: wearableReadiness.provider },
+          'Wearable readiness calculated',
+        );
         return buildWearableFallbackReadiness(wearableReadiness);
       }
     } catch (err) {
-      logger.warn({ err, userId }, 'WHOOP readiness fallback failed');
+      logger.warn({ err, userId }, 'Wearable readiness fallback failed');
     }
 
     // Try Apple Health derived readiness
