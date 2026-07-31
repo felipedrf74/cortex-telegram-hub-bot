@@ -347,6 +347,23 @@ export const _garminRateLimitForTests = {
   isLimited: (userId: number) => isRateLimited(userId),
 };
 
+/**
+ * Test seam for the token-persistence tenant guard.
+ *
+ * `persistTokens` is private and normally reached through a data read, which
+ * would need the whole SSO stack stood up. This exposes just enough to pin
+ * the invariant: tokens from a client scoped to one user must never be
+ * written under another user's id.
+ */
+export const _garminTokenPersistenceForTests = {
+  setActiveClient: (client: unknown, userId: number | null) => {
+    _client = client as InstanceType<typeof GarminConnect> | null;
+    _authenticated = client != null;
+    _activeClientUserId = userId;
+  },
+  persist: (explicitUserId?: number) => persistTokens(explicitUserId),
+};
+
 function checkForRateLimit(html: string, status?: number): void {
   if (status === 429 || /Error\s*1015|rate.?limit|banned.*temporarily/i.test(html)) {
     setRateLimited();
@@ -957,6 +974,20 @@ function persistTokens(explicitUserId?: number): void {
     if (!_client) return;
     const userId = resolveGarminUserId(explicitUserId);
     if (!userId) return;
+
+    // `_client` is a process-wide singleton: it holds whichever user last
+    // authenticated. Writing its OAuth material under a different user's id
+    // copies one account's tokens into another's `garmin_sessions` row —
+    // precisely the cross-tenant contamination `cleanup-tainted-garmin-sessions`
+    // exists to detect. Only persist when the live client is that user's.
+    if (_activeClientUserId !== userId) {
+      logger.warn(
+        { userId, activeClientUserId: _activeClientUserId },
+        'Garmin: refusing to persist tokens from a client scoped to a different user',
+      );
+      return;
+    }
+
     upsertGarminSession(userId, {
       oauth1: (_client.client as any).oauth1Token ?? null,
       oauth2: (_client.client as any).oauth2Token ?? null,
