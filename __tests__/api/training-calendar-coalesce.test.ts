@@ -18,10 +18,22 @@ vi.mock('../../src/services/unified-calendar', () => ({
   createEvent: vi.fn(),
 }));
 
+// Imported once at module scope rather than inside `beforeEach`.
+//
+// `src/api/routes/training` has a large dependency graph; a cold transform of
+// it was measured at ~20s, well past the 10s default `hookTimeout`. This file
+// never calls `vi.resetModules()`, so only the first import actually paid that
+// cost — but that was enough to time the hook out and fail the file roughly one
+// run in eight. Module evaluation is not bound by `hookTimeout`, so loading it
+// here removes the deadline rather than merely widening it.
+//
+// `vi.mock` is hoisted above this, so the unified-calendar spy is already in
+// place when the route module is evaluated.
+const trainingRouteModule: any = await import('../../src/api/routes/training');
+
 describe('training route — calendar lookup request coalescing', () => {
-  beforeEach(async () => {
-    const mod: any = await import('../../src/api/routes/training');
-    mod._resetCalendarLookupCoalesceForTests();
+  beforeEach(() => {
+    trainingRouteModule._resetCalendarLookupCoalesceForTests();
     getEventsSpy.mockClear();
   });
 
