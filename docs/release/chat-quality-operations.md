@@ -109,16 +109,19 @@ One page for operating the production chat-quality loop (M22).
   history/state, excludes numeric, hash-like, and over-20-character
   identifiers, selects the lexically first remaining 5–20-character
   alphabetic term, and sends only that term plus a locale-specific output
-  template instead of copying raw saved messages into the narrow prompt. The
-  canonical release-eval compact message envelope is regression-tested at no
-  more than 500 characters. The mode uses a 1024-token context, 32-token
-  output cap, and a one-property `a` object containing a 24–64 character
-  answer, with a 62-character answer target. The model must emit the request
-  terms, copy the selected authorized term verbatim as the entire grounding
-  slot, and author two distinct short one-word formats. Extra grounding words,
-  a selected term appearing only as a format, or a translated substitute for
-  the selected term are rejected. The server returns the model's answer value
-  unchanged. A
+  prefix instead of copying raw saved messages into the narrow generation
+  prompt. The current request remains verbatim so its constraints are not
+  discarded. The canonical release-eval compact message envelope is
+  regression-tested at no more than 500 characters. The mode uses a
+  1024-token context, 32-token output cap, and a one-property `a` object
+  containing a 24–64 character answer, with a 62-character answer target. The
+  prompt instructs the model to copy the prefix, including the request terms
+  and selected authorized term, verbatim. The deterministic verifier requires
+  the request stems, requires the selected term to occupy the entire grounding
+  slot, and requires two distinct short one-word format nouns. Extra grounding
+  words, a selected term appearing only as a format, or a translated substitute
+  for the selected term are rejected. The server returns the model's answer
+  value unchanged. A
   JSON-complete, provider-complete `grounding in format/format` response is
   accepted as a complete compact list even when the model omits only terminal
   punctuation; hanging conjunctions, missing formats, repeated formats, and

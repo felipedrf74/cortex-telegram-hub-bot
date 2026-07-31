@@ -339,14 +339,13 @@ const MODEL_AUTHORED_SHORT_AUTHORIZED_IDEAS_MAX_CHARS = 64;
 const MODEL_AUTHORED_SHORT_AUTHORIZED_IDEAS_MAX_OUTPUT_TOKENS = 32;
 
 const MODEL_AUTHORED_SHORT_COMPARISON_SYSTEM_PROMPT = [
-  'You are Nexus Hub Content.',
-  'JSON only. Write `a` yourself; only model-authored `a` is shown.',
-  'Choose two different concrete preference conditions.',
+  'JSON only: one model-written `a`.',
+  'Use two different concrete conditions.',
 ].join('\n');
 
 const MODEL_AUTHORED_SHORT_AUTHORIZED_IDEAS_SYSTEM_PROMPT = [
   'JSON only: one model-written `a`.',
-  'Copy AUTHORIZED_GROUNDING_TERM exactly.',
+  'Never translate or alter OUTPUT_PREFIX.',
 ].join('\n');
 
 interface ModelAuthoredContentComparison {
@@ -524,16 +523,16 @@ function modelAuthoredContentLanguageInstruction(
   if (shortMode === 'comparison') {
     const secondLabel = modelAuthoredComparisonSecondLabel(comparison);
     return [
-      `Write \`a\` only in ${language}.`,
-      `Format \`a\` as “${comparisonOpening} is for <condition>; ${secondLabel} fits <condition>.”`,
-      'Replace both placeholders with different concrete one-word conditions. End with a period; use at most 64 characters including the final period.',
+      `Use ${language}. Write “${comparisonOpening} is for <condition>; ${secondLabel} fits <condition>.”`,
+      'Replace both `<condition>` markers with different concrete one-word conditions.',
+      'End with `.`; maximum 64 characters.',
     ].join(' ');
   }
   if (shortMode === 'authorizedIdeas') {
     return [
-      `Use ${language}; copy OUTPUT_TEMPLATE to \`a\`.`,
-      'Replace only both `<format>` placeholders with different short one-word formats.',
-      'Keep the grounding term unchanged. End with a period; maximum 62 characters.',
+      `Use ${language} for both format nouns.`,
+      'Copy OUTPUT_PREFIX exactly, then append two different short format nouns separated by `/`.',
+      'Do not stop at the prefix. Finish with `.`; maximum 62 characters.',
     ].join(' ');
   }
   return [
@@ -1562,12 +1561,12 @@ export class OllamaProvider implements AIProvider {
     const messages: OllamaChatRequest['messages'] = [{ role: 'system', content: sys }];
     if (shortAuthorizedContentIdeas) {
       const [authorizedTerm = ''] = shortAuthorizedContentIdeas.groundingStems;
-      const outputTemplate = `${routineContentLocale === 'en-US' ? 'Ideas for content' : 'Ideias de conteúdo'}: ${authorizedTerm} ${routineContentLocale === 'en-US' ? 'in' : 'em'} <format>/<format>.`;
+      const outputPrefix = `${routineContentLocale === 'en-US' ? 'Ideas for content' : 'Ideias de conteúdo'}: ${authorizedTerm} ${routineContentLocale === 'en-US' ? 'in' : 'em'}`;
       messages.push({
         role: 'user',
         content: [
           `AUTHORIZED_GROUNDING_TERM: ${authorizedTerm}`,
-          `OUTPUT_TEMPLATE: ${outputTemplate}`,
+          `OUTPUT_PREFIX: ${outputPrefix}`,
           `REQUEST: ${currentMessage}`,
         ].join('\n'),
       });

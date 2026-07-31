@@ -717,7 +717,7 @@ describe('OllamaProvider — scoped state context', () => {
     expect(request.format?.required).toEqual(['a']);
     expect(request.format?.enum).toBeUndefined();
     expect(request.messages[0]?.content).toContain(
-      'only model-authored `a` is shown',
+      'one model-written `a`',
     );
     expect(request.messages[0]?.content).not.toContain('CONTENT BALANCE AWARENESS');
     expect(JSON.stringify(request.messages)).not.toContain(modelAnswer);
@@ -1551,13 +1551,44 @@ describe('OllamaProvider — scoped state context', () => {
         `AUTHORIZED_GROUNDING_TERM: ${groundingTerm}`,
       );
       expect(request.messages.at(-1)?.content).toContain(
-        `OUTPUT_TEMPLATE: Ideias de conteúdo: ${groundingTerm} em <format>/<format>.`,
+        `OUTPUT_PREFIX: Ideias de conteúdo: ${groundingTerm} em`,
       );
+      expect(compactPrompt).not.toContain('<format>');
+      expect(compactPrompt).not.toMatch(/\b(?:vídeo|carrossel)\b/iu);
       expect(compactPrompt).not.toMatch(/\b(?:editing|library|reference)\b/iu);
       expect(compactPrompt.length).toBeLessThanOrEqual(500);
       expect(result.stopReason).toBe('stop');
       expect(result.text).toBe(answer);
       expect(result.text).toContain(groundingTerm);
+    });
+
+    it('preserves additional current-request constraints in the compact authorized-ideas prompt', async () => {
+      const currentRequest =
+        'Give me ideas for content using only the authorized context. Do not use video; use audio and text only.';
+      const answer = 'Ideas for content: backlog in audio/text.';
+      fetchMock
+        .mockResolvedValueOnce(makeChatResponse({
+          content: JSON.stringify({ a: answer }),
+        }))
+        .mockResolvedValueOnce(makeTagsResponse());
+      const p = new OllamaProvider();
+
+      const result = await runWithChatRequestLocale('en-US', () => p.callDomain(
+        'content',
+        [{ role: 'user', content: 'The editing backlog needs attention.' }],
+        currentRequest,
+        'A reference library is available.',
+        {
+          userId: 42,
+          tenantId: 42,
+          currentTurnOnly: false,
+        },
+      ));
+
+      const request = firstStructuredRequest();
+      expect(request.messages.at(-1)?.content).toContain(`REQUEST: ${currentRequest}`);
+      expect(result.stopReason).toBe('stop');
+      expect(result.text).toBe(answer);
     });
 
     it('rejects an authorized term used only as a format rather than grounding', async () => {
@@ -1740,7 +1771,7 @@ describe('OllamaProvider — scoped state context', () => {
       const request = firstStructuredRequest();
       expect(request.messages[0]?.content).toContain('Brazilian Portuguese (pt-BR)');
       expect(request.messages.at(-1)?.content).toContain(
-        'OUTPUT_TEMPLATE: Ideias de conteúdo: backlog em <format>/<format>.',
+        'OUTPUT_PREFIX: Ideias de conteúdo: backlog em',
       );
       expect(result.stopReason).toBe('stop');
       expect(result.text).toBe(answer);
@@ -1770,7 +1801,7 @@ describe('OllamaProvider — scoped state context', () => {
       const request = firstStructuredRequest();
       expect(request.messages[0]?.content).toContain('English (en-US)');
       expect(request.messages.at(-1)?.content).toContain(
-        'OUTPUT_TEMPLATE: Ideas for content: backlog in <format>/<format>.',
+        'OUTPUT_PREFIX: Ideas for content: backlog in',
       );
       expect(result.stopReason).toBe('stop');
       expect(result.text).toBe(answer);
@@ -2047,13 +2078,17 @@ describe('OllamaProvider — scoped state context', () => {
     });
     expect(request.format?.properties?.a?.pattern).toBeUndefined();
     expect(request.options).toMatchObject({ num_ctx: 1024, num_predict: 24 });
+    const compactComparisonPrompt = request.messages
+      .map((message) => message.content)
+      .join('\n');
     expect(request.messages[0]?.content).toContain(
-      'Format `a` as “Broad narrative is for <condition>; tailored fits <condition>.”',
+      'Write “Broad narrative is for <condition>; tailored fits <condition>.”',
     );
     expect(request.messages[0]?.content).toContain('different concrete one-word conditions');
     expect(request.messages[0]?.content).toContain(
-      'End with a period; use at most 64 characters including the final period',
+      'End with `.`; maximum 64 characters',
     );
+    expect(compactComparisonPrompt.length).toBeLessThanOrEqual(420);
     expect(serializedRequest).not.toContain(modelAnswer);
     expect(serializedRequest).not.toContain('PRIVATE_SAVED_HISTORY');
     expect(serializedRequest).not.toContain('PRIVATE_SAVED_STATE_CONTEXT');
@@ -2103,8 +2138,10 @@ describe('OllamaProvider — scoped state context', () => {
       'AUTHORIZED_GROUNDING_TERM: backlog',
     );
     expect(serializedRequest).toContain(
-      'OUTPUT_TEMPLATE: Ideias de conteúdo: backlog em <format>/<format>.',
+      'OUTPUT_PREFIX: Ideias de conteúdo: backlog em',
     );
+    expect(serializedRequest).not.toContain('<format>');
+    expect(serializedRequest).not.toMatch(/\b(?:vídeo|carrossel)\b/iu);
     expect(serializedRequest).not.toMatch(
       /\b(?:editing|library|reference)\b/iu,
     );
@@ -2117,9 +2154,9 @@ describe('OllamaProvider — scoped state context', () => {
     expect(request.format?.properties?.a?.pattern).toBeUndefined();
     expect(request.options).toMatchObject({ num_ctx: 1024, num_predict: 32 });
     expect(request.messages[0]?.content).toContain(
-      'copy OUTPUT_TEMPLATE to `a`',
+      'Copy OUTPUT_PREFIX exactly',
     );
-    expect(request.messages[0]?.content).toContain('different short one-word formats');
+    expect(request.messages[0]?.content).toContain('append two different short format nouns');
     expect(request.messages[0]?.content).toContain(
       'maximum 62 characters',
     );
