@@ -321,31 +321,47 @@ export function readChatLiveEvalRunEvidence(
 ): ChatLiveEvalRunEvidence {
   const reasons: string[] = [];
   const usageColumns = tableColumns(db, 'api_usage');
-  const tenantPredicate = usageColumns.has('tenant_id') ? ' AND tenant_id = ?' : '';
-  const usageParams: Array<string | number> = [
-    context.userId,
-    'interactive',
-    context.targetBaseCategory,
-    context.runId,
-  ];
-  if (tenantPredicate) usageParams.push(context.tenantId);
-  const usageRows = db.prepare(`
-    SELECT
-      lower(trim(COALESCE(provider, ''))) AS provider,
-      COALESCE(cost_usd, 0) AS cost_usd,
-      lower(trim(COALESCE(pricing_status, ''))) AS pricing_status,
-      trim(COALESCE(job_name, '')) AS job_name
-    FROM api_usage
-    WHERE user_id = ?
-      AND request_source = ?
-      AND base_category = ?
-      AND run_id = ?${tenantPredicate}
-  `).all(...usageParams) as Array<{
+  const hasUsageTenantAttribution = usageColumns.has('tenant_id');
+  if (!hasUsageTenantAttribution) {
+    reasons.push('api_usage_tenant_attribution_unavailable');
+  }
+  const usageCategoryProjection = usageColumns.has('category')
+    ? "lower(trim(COALESCE(category, '')))"
+    : "''";
+  const usageRows: Array<{
     provider: string;
     cost_usd: number;
     pricing_status: string;
     job_name: string;
-  }>;
+    category: string;
+  }> = hasUsageTenantAttribution
+    ? db.prepare(`
+        SELECT
+          lower(trim(COALESCE(provider, ''))) AS provider,
+          COALESCE(cost_usd, 0) AS cost_usd,
+          lower(trim(COALESCE(pricing_status, ''))) AS pricing_status,
+          trim(COALESCE(job_name, '')) AS job_name,
+          ${usageCategoryProjection} AS category
+        FROM api_usage
+        WHERE user_id = ?
+          AND request_source = ?
+          AND base_category = ?
+          AND run_id = ?
+          AND tenant_id = ?
+      `).all(
+        context.userId,
+        'interactive',
+        context.targetBaseCategory,
+        context.runId,
+        context.tenantId,
+      ) as Array<{
+        provider: string;
+        cost_usd: number;
+        pricing_status: string;
+        job_name: string;
+        category: string;
+      }>
+    : [];
 
   const attemptRows = tableColumns(db, 'ai_provider_attempt_reservations').size > 0
     ? db.prepare(`
@@ -412,6 +428,16 @@ export function readChatLiveEvalRunEvidence(
   }
   if (!attemptRows.some((row) => row.job_name === CHAT_LIVE_EVAL_REQUIRED_TARGET_PROVIDER_JOB_NAME)) {
     reasons.push('missing_required_target_provider_scenario_attempt');
+  }
+  if (
+    context.mode === 'local_engine'
+    && !usageRows.some((row) => (
+      row.job_name === CHAT_LIVE_EVAL_REQUIRED_TARGET_PROVIDER_JOB_NAME
+      && row.provider === 'ollama'
+      && row.category === 'chat_content_model_authored_short'
+    ))
+  ) {
+    reasons.push('missing_required_local_model_authored_response_usage');
   }
   if (preparationRows.length === 0) reasons.push('no_scenario_preparation_evidence');
   if (unresolvedPricingCount > 0) reasons.push('unresolved_provider_pricing');

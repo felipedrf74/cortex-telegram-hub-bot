@@ -990,6 +990,46 @@ describe('GeminiProvider', () => {
         expect(args.config.tools).toBeUndefined();
       });
 
+      it('enforces current-turn-only privacy on direct initial and continuation calls', async () => {
+        mockGeminiResponse('Current-turn response.');
+        const privateHistory = [
+          { role: 'user' as const, content: 'PRIVATE_SAVED_HISTORY' },
+        ];
+        const options = {
+          modelTier: 'light' as const,
+          filteredTools: [
+            {
+              name: 'set_reminder',
+              description: 'Set a reminder',
+              input_schema: { type: 'object', properties: {} },
+            },
+          ],
+          currentTurnOnly: true,
+        };
+
+        await provider.callDomain(
+          'secretary',
+          privateHistory,
+          'Explain time blocking.',
+          'PRIVATE_SAVED_STATE',
+          options,
+        );
+        await provider.continueWithToolResults(
+          'secretary',
+          privateHistory,
+          'Explain time blocking.',
+          'PRIVATE_SAVED_STATE',
+          [],
+          options,
+        );
+
+        expect(mockGenerateContent).toHaveBeenCalledTimes(2);
+        for (const [request] of mockGenerateContent.mock.calls) {
+          expect(JSON.stringify(request.contents)).not.toContain('PRIVATE_SAVED');
+          expect(request.config.tools).toBeUndefined();
+        }
+      });
+
       it('continueWithToolResults: same tier + tools as the initial call', async () => {
         mockGeminiResponse('Continued.');
 

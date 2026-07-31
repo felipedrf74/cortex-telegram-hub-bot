@@ -581,6 +581,45 @@ describe('OpenAIProvider', () => {
       expect(lastMsg.content).toContain('Today: Monday');
       expect(lastMsg.content).toContain('<<__NEXUS_STATE_END__-');
     });
+
+    it('enforces current-turn-only privacy on direct initial and continuation calls', async () => {
+      mockChatResponse('Current-turn response.');
+      const privateHistory = [
+        { role: 'user' as const, content: 'PRIVATE_SAVED_HISTORY' },
+      ];
+      const options = {
+        filteredTools: [
+          {
+            name: 'set_reminder',
+            description: 'Set a reminder',
+            input_schema: { type: 'object', properties: {} },
+          },
+        ],
+        currentTurnOnly: true,
+      };
+
+      await provider.callDomain(
+        'secretary',
+        privateHistory,
+        'Explain time blocking.',
+        'PRIVATE_SAVED_STATE',
+        options,
+      );
+      await provider.continueWithToolResults(
+        'secretary',
+        privateHistory,
+        'Explain time blocking.',
+        'PRIVATE_SAVED_STATE',
+        [],
+        options,
+      );
+
+      expect(mockCreate).toHaveBeenCalledTimes(2);
+      for (const [request] of mockCreate.mock.calls) {
+        expect(JSON.stringify(request.messages)).not.toContain('PRIVATE_SAVED');
+        expect(request.tools).toBeUndefined();
+      }
+    });
   });
 
   // ── continueWithToolResults ───────────────────────────────────────

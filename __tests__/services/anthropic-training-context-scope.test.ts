@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mockReadTrainingContextAll = vi.fn();
 const mockTrackedCreate = vi.fn();
 const mockBuildKnowledgePromptBlock = vi.fn();
+const mockGetUserLanguage = vi.fn();
 
 vi.mock('@anthropic-ai/sdk', () => ({
   default: class Anthropic {
@@ -24,11 +25,17 @@ vi.mock('../../src/state/content-references', async () => ({
   buildKnowledgePromptBlock: (...args: unknown[]) => mockBuildKnowledgePromptBlock(...args),
 }));
 
+vi.mock('../../src/services/user-service', () => ({
+  getUserLanguage: (...args: unknown[]) => mockGetUserLanguage(...args),
+}));
+
 import {
   callDomain,
   callStructuredGeneration,
   continueWithToolResults,
 } from '../../src/services/anthropic';
+import { runWithChatRequestLocale } from '../../src/services/chat-request-locale-context';
+import { runWithContext } from '../../src/utils/request-context';
 
 describe('Anthropic training-context tenant scope', () => {
   beforeEach(() => {
@@ -36,6 +43,8 @@ describe('Anthropic training-context tenant scope', () => {
     mockReadTrainingContextAll.mockReturnValue({ signals: [{ type: 'session_load' }] });
     mockTrackedCreate.mockReset();
     mockBuildKnowledgePromptBlock.mockReset();
+    mockGetUserLanguage.mockReset();
+    mockGetUserLanguage.mockReturnValue('pt-BR');
     mockTrackedCreate.mockResolvedValue({
       content: [{ type: 'text', text: 'Scoped response' }],
       stop_reason: 'end_turn',
@@ -114,5 +123,176 @@ describe('Anthropic training-context tenant scope', () => {
       text: 'Structured response',
       stopReason: 'end_turn',
     });
+  });
+});
+
+describe('Anthropic current-turn-only privacy scope', () => {
+  const savedKnowledge = '\nPRIVATE_SAVED_CONTENT_KNOWLEDGE';
+  const savedHistory = [
+    { role: 'user' as const, content: 'PRIVATE_SAVED_USER_HISTORY' },
+    { role: 'assistant' as const, content: 'PRIVATE_SAVED_ASSISTANT_HISTORY' },
+  ];
+  const savedState = 'PRIVATE_SAVED_STATE_CONTEXT';
+  const currentMessage = 'Compare broad narrative with tailored narrative.';
+  const currentToolConversation = [
+    { role: 'assistant' as const, content: 'CURRENT_TURN_TOOL_CONVERSATION' },
+  ];
+  const savedDataTool = {
+    name: 'read_saved_content',
+    description: 'Read saved content.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {},
+    },
+  };
+
+  beforeEach(() => {
+    mockReadTrainingContextAll.mockReset();
+    mockReadTrainingContextAll.mockReturnValue({ signals: [] });
+    mockTrackedCreate.mockReset();
+    mockBuildKnowledgePromptBlock.mockReset();
+    mockBuildKnowledgePromptBlock.mockReturnValue(savedKnowledge);
+    mockGetUserLanguage.mockReset();
+    mockGetUserLanguage.mockReturnValue('pt-BR');
+    mockTrackedCreate.mockResolvedValue({
+      content: [{ type: 'text', text: 'Current-turn response' }],
+      stop_reason: 'end_turn',
+    });
+  });
+
+  it('omits saved Content knowledge, history, state, and tools from an initial current-turn-only call', async () => {
+    await callDomain(
+      'content',
+      savedHistory,
+      currentMessage,
+      savedState,
+      {
+        filteredTools: [savedDataTool],
+        userId: 306,
+        tenantId: 901,
+        currentTurnOnly: true,
+      },
+    );
+
+    expect(mockBuildKnowledgePromptBlock).not.toHaveBeenCalled();
+    expect(mockTrackedCreate).toHaveBeenCalledTimes(1);
+    const [, request] = mockTrackedCreate.mock.calls[0];
+    expect(JSON.stringify(request.system)).not.toContain(savedKnowledge.trim());
+    expect(request.messages).toEqual([
+      { role: 'user', content: currentMessage },
+    ]);
+    expect(request).not.toHaveProperty('tools');
+  });
+
+  it('uses only request-local language evidence for a current-turn-only call', async () => {
+    await runWithContext(
+      { source: 'http', userId: 306, tenantId: 901 },
+      () => runWithChatRequestLocale(
+        'en-US',
+        () => callDomain(
+          'content',
+          savedHistory,
+          currentMessage,
+          savedState,
+          {
+            filteredTools: [savedDataTool],
+            userId: 306,
+            tenantId: 901,
+            currentTurnOnly: true,
+          },
+        ),
+      ),
+    );
+
+    expect(mockGetUserLanguage).not.toHaveBeenCalled();
+    const [, request] = mockTrackedCreate.mock.calls[0];
+    expect(JSON.stringify(request.system)).toContain('Reply in English');
+  });
+
+  it('omits saved Content knowledge, history, state, and tools from a current-turn-only continuation', async () => {
+    await continueWithToolResults(
+      'content',
+      savedHistory,
+      currentMessage,
+      savedState,
+      currentToolConversation,
+      undefined,
+      {
+        filteredTools: [savedDataTool],
+        userId: 306,
+        tenantId: 901,
+        currentTurnOnly: true,
+      },
+    );
+
+    expect(mockBuildKnowledgePromptBlock).not.toHaveBeenCalled();
+    expect(mockTrackedCreate).toHaveBeenCalledTimes(1);
+    const [, request] = mockTrackedCreate.mock.calls[0];
+    expect(JSON.stringify(request.system)).not.toContain(savedKnowledge.trim());
+    expect(request.messages).toEqual([
+      { role: 'user', content: currentMessage },
+      ...currentToolConversation,
+    ]);
+    expect(request).not.toHaveProperty('tools');
+  });
+
+  it('does not reintroduce sliced Secretary history on either current-turn-only path', async () => {
+    const secretaryMessage = 'Show my tasks without reading saved data.';
+    const options = {
+      filteredTools: [savedDataTool],
+      userId: 306,
+      tenantId: 901,
+      currentTurnOnly: true,
+    };
+
+    await callDomain('secretary', savedHistory, secretaryMessage, savedState, options);
+    await continueWithToolResults(
+      'secretary',
+      savedHistory,
+      secretaryMessage,
+      savedState,
+      currentToolConversation,
+      undefined,
+      options,
+    );
+
+    expect(mockTrackedCreate).toHaveBeenCalledTimes(2);
+    expect(mockTrackedCreate.mock.calls[0]?.[1].messages).toEqual([
+      { role: 'user', content: secretaryMessage },
+    ]);
+    expect(mockTrackedCreate.mock.calls[1]?.[1].messages).toEqual([
+      { role: 'user', content: secretaryMessage },
+      ...currentToolConversation,
+    ]);
+  });
+
+  it('preserves saved Content context and tools when current-turn-only is false', async () => {
+    const options = {
+      filteredTools: [savedDataTool],
+      userId: 306,
+      tenantId: 901,
+      currentTurnOnly: false,
+    };
+
+    await callDomain('content', savedHistory, currentMessage, savedState, options);
+    await continueWithToolResults(
+      'content',
+      savedHistory,
+      currentMessage,
+      savedState,
+      currentToolConversation,
+      undefined,
+      options,
+    );
+
+    expect(mockBuildKnowledgePromptBlock).toHaveBeenNthCalledWith(1, 306, 901);
+    expect(mockBuildKnowledgePromptBlock).toHaveBeenNthCalledWith(2, 306, 901);
+    expect(mockTrackedCreate).toHaveBeenCalledTimes(2);
+    for (const [, request] of mockTrackedCreate.mock.calls) {
+      expect(JSON.stringify(request.system)).toContain(savedKnowledge.trim());
+      expect(JSON.stringify(request.messages)).toContain('PRIVATE_SAVED_USER_HISTORY');
+      expect(JSON.stringify(request.messages)).toContain(savedState);
+      expect(request.tools).toEqual([savedDataTool]);
+    }
   });
 });

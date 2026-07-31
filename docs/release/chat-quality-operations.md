@@ -72,21 +72,62 @@ One page for operating the production chat-quality loop (M22).
   During local evidence seeding the script pauses only `nexus-hub`, writes the
   bind-mounted SQLite database offline, restarts the service, and re-attests
   health plus the zero-cloud profile before minting the synthetic session.
-  Routine Ollama-backed Content chat answers are prompted to stay within 90
-  words and default to a 192-token output cap; an explicitly requested
-  long-form caller can override that default. This keeps the interactive
-  latency contract bounded without relaxing the evaluator's six-second gate.
-  Each routine call supplies an exact JSON schema. Its request-derived
-  `lead_sentence` is a schema constant containing the selected subject term,
-  `lead_complete` is the constant `true`, and `answer` must contain 24–480
-  characters. The provider validates the exact keys, constants, types,
-  lengths, subject overlap, and sentence boundary before rendering only the
-  lead plus substantive answer; raw structured JSON never reaches the user.
-  Any provider cap, malformed JSON, schema mismatch, forged or contradictory
-  certificate, empty answer, or incomplete output stays under the existing
-  truncation refusal and emits the normal retryable degraded response. The
-  live c2 gate independently requires `narrative`, `broad`, and `tailored`, so
-  the deterministic subject lead alone cannot satisfy release evidence.
+  Routine Ollama-backed Content answers use a one-property JSON object with
+  locale-bound key `answer_en_us`, `answer_pt_br`, or `answer_pt_pt`. The
+  model authors the complete visible value; the server does not prepend,
+  select, or rewrite semantic answer text. Ordinary Content keeps the
+  90-word prompt target, 192-token cap, 4096-token context, and 24–480
+  character answer range. Authorized history and scoped state remain
+  available. An explicit long-form caller can override the routine cap.
+
+  The first narrower mode applies only when the turn contract has already accepted
+  a low-risk saved-data opt-out and the current message is a positively parsed
+  short comparison: each side has at most eight words and the request has no
+  long-form marker. That mode sends only the current turn, uses a 1024-token
+  context and 24-token output cap, and requires a one-property `a` object
+  containing a 24–56 character model-authored answer. The parser verifies
+  exact schema shape, completeness,
+  meaningful overlap with both comparison sides, shared subject coverage when
+  present, and language that does not contradict the requested primary
+  language. It also requires separate comparison clauses with distinct,
+  non-generic conditions for both approaches; either an explicit contrast
+  conjunction or semicolon may separate the clauses, but repeating that each
+  is merely "better" is not evidence. A saved or authorized-context comparison
+  never enters this mode, and normal Content requests retain the ordinary
+  capacity above.
+
+  A second narrow mode applies to a short Content-ideas request only when it
+  explicitly asks to use authorized context, the retained history/state has at
+  least one salient grounding term, and the estimated source input is at most
+  560 tokens. The parser derives a bounded list of salient terms from the
+  authorized history/state and sends that compact list instead of copying the
+  raw saved messages into the narrow prompt. The mode uses a 1024-token
+  context, 32-token output cap, and a one-property `a` object containing a
+  24–56 character answer. The model must emit the request terms, repeat at
+  least one concrete authorized term verbatim, and author two distinct compact
+  formats. The server returns the model's answer value unchanged. A
+  JSON-complete, provider-complete `grounding in format/format` response is
+  accepted as a complete compact list even when the model omits only terminal
+  punctuation; hanging conjunctions, missing formats, repeated formats, and
+  semantic fragments remain rejected. Larger contexts and requests without
+  independently checkable grounding stay on the ordinary 4096/192 path; they
+  are never silently truncated into the narrow window.
+
+  Structured JSON never reaches the user. A provider cap, malformed JSON,
+  schema mismatch, confidently contradictory primary language, empty answer,
+  incomplete answer, ungrounded authorized-context answer, or comparison
+  without distinct conditions for both sides stays under the truncation refusal and emits the normal
+  retryable degraded response. Region-specific Portuguese is prompted but the
+  deterministic verifier claims only primary-language contradiction checks;
+  it does not claim full dialect or arbitrary code-switch classification.
+  Local release evidence additionally requires a post-validation Ollama usage
+  row for `chat_content_model_authored_short` in the target scenario; rejected
+  output is recorded under a distinct rejected category and cannot attest the
+  run. The live c1 scorer also requires at least one independently seeded
+  authorized-context term, while c2 requires `narrative`, `broad`, and
+  `tailored` plus distinct conditions for both approaches. This prevents
+  server-authored text, a rejected provider call, or an incidental scenario
+  call from satisfying the provider-semantic gate.
 - The first live baseline runs only on staging against a dedicated synthetic
   user/tenant. Set the staging server's `CHAT_EVAL_DEDICATED_TENANT_ID` to that
   account's shared user/tenant id; its principal email must end in `.invalid`.

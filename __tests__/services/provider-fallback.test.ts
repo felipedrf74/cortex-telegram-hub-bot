@@ -453,6 +453,64 @@ describe('TaskRoutingProvider', () => {
       );
     });
 
+    it('preserves the caller current-turn-only privacy decision through optimization', async () => {
+      openai.callDomain.mockResolvedValue(OK_RESULT);
+      const savedHistory = [
+        { role: 'user' as const, content: 'PRIVATE_SAVED_HISTORY' },
+      ];
+
+      await provider.callDomain(
+        'content',
+        savedHistory,
+        'Explain a comparison without saved data.',
+        'PRIVATE_SAVED_STATE',
+        { userId: 42, tenantId: 42, currentTurnOnly: true },
+      );
+
+      expect(openai.callDomain).toHaveBeenCalledWith(
+        'content',
+        [],
+        'Explain a comparison without saved data.',
+        '',
+        expect.objectContaining({ currentTurnOnly: true, filteredTools: [] }),
+      );
+    });
+
+    it('centrally strips saved history and state from a current-turn-only continuation', async () => {
+      openai.continueWithToolResults.mockResolvedValue(OK_RESULT);
+      const savedHistory = [
+        { role: 'user' as const, content: 'PRIVATE_SAVED_HISTORY' },
+      ];
+      const currentTurnToolConversation = [
+        {
+          role: 'user' as const,
+          content: [{
+            type: 'tool_result' as const,
+            tool_use_id: 'tool_current_turn',
+            content: 'CURRENT_TURN_TOOL_RESULT',
+          }],
+        },
+      ];
+
+      await provider.continueWithToolResults(
+        'content',
+        savedHistory,
+        'Explain a comparison without saved data.',
+        'PRIVATE_SAVED_STATE',
+        currentTurnToolConversation,
+        { userId: 42, tenantId: 42, currentTurnOnly: true },
+      );
+
+      expect(openai.continueWithToolResults).toHaveBeenCalledWith(
+        'content',
+        [],
+        'Explain a comparison without saved data.',
+        '',
+        currentTurnToolConversation,
+        expect.objectContaining({ currentTurnOnly: true, filteredTools: [] }),
+      );
+    });
+
     // ─── TASK-17 Option B: provider-agnostic optimization wiring ───
     //
     // These tests prove the dispatch layer computes the optimization

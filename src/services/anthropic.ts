@@ -46,13 +46,17 @@ const client = new Anthropic({
  * @param domain  The routed domain from the classifier.
  * @param message Optional user message — used for sub-skill routing.
  */
-export function getDomainSystemPrompt(domain: DomainName, message?: string): string {
+export function getDomainSystemPrompt(
+  domain: DomainName,
+  message?: string,
+  options: { currentTurnOnly?: boolean } = {},
+): string {
   let basePrompt: string;
   if (domain === 'triathlon' && message) {
     const promptName = getTriathlonPromptNameForMessage(message);
     try {
       basePrompt = loadPrompt(promptName);
-      return withLanguageInstruction(basePrompt, message);
+      return withLanguageInstruction(basePrompt, message, options);
     } catch (err) {
       // Persona file missing on disk — fall through to the generic
       // triathlon prompt rather than crashing the request. Log once
@@ -67,11 +71,15 @@ export function getDomainSystemPrompt(domain: DomainName, message?: string): str
     }
   }
   basePrompt = loadPrompt(domain);
-  return withLanguageInstruction(basePrompt, message);
+  return withLanguageInstruction(basePrompt, message, options);
 }
 
-function withLanguageInstruction(prompt: string, message?: string): string {
-  const instruction = getReplyLanguageInstruction(message);
+function withLanguageInstruction(
+  prompt: string,
+  message?: string,
+  options: { currentTurnOnly?: boolean } = {},
+): string {
+  const instruction = getReplyLanguageInstruction(message, options.currentTurnOnly === true);
   return instruction ? `${prompt}\n\n${instruction}` : prompt;
 }
 
@@ -314,8 +322,20 @@ export function buildReplyLanguageInstruction(lang: string): string {
   ].join('\n');
 }
 
-function getReplyLanguageInstruction(message?: string): string {
+function getReplyLanguageInstruction(message?: string, currentTurnOnly = false): string {
   try {
+    if (currentTurnOnly) {
+      const requestLocale = getCurrentChatRequestLocale();
+      const resolvedLanguage = requestLocale
+        ? normalizeReplyLanguage(requestLocale)
+        : resolveReplyLanguage('en-US', message);
+      let instruction = buildReplyLanguageInstruction(resolvedLanguage);
+      if (resolvedLanguage === 'en-US' && isLikelyEnglishMessage(message)) {
+        instruction = `${instruction}\nThe user's current message is clearly in English. Answer this reply fully in English.`;
+      }
+      return instruction;
+    }
+
     const { getCurrentContext } = require('../utils/request-context');
     const userId = getCurrentContext()?.userId;
     if (!userId) return '';
@@ -1460,12 +1480,13 @@ export async function callDomain(
   // full options bag with pre-computed tools / tier / max-tokens.
   const opts = normalizeCallDomainOptions(optionsOrMaxTokens);
   const meteredUserId = userId ?? opts.userId;
+  const currentTurnOnly = opts.currentTurnOnly === true;
 
   // Phase 2 Slice A: pass `currentMessage` so the loader can run the
   // sport classifier for triathlon messages and pick the right coach
   // persona prompt file. Non-triathlon domains ignore the message arg.
-  let systemPrompt = getDomainSystemPrompt(domain, currentMessage);
-  if (domain === 'content') {
+  let systemPrompt = getDomainSystemPrompt(domain, currentMessage, { currentTurnOnly });
+  if (domain === 'content' && !currentTurnOnly) {
     // Identity-safety (closed-beta v4.14.126+): pass tenantId so the
     // knowledge block is scoped strictly to the authenticated user
     // AND tenant. Without tenantId the underlying contentScopePredicate
@@ -1482,20 +1503,22 @@ export async function callDomain(
   // If not (legacy direct callers, tests, ad-hoc tools), compute the
   // filter here from the message text. Either way, the resulting tool
   // list is the same.
-  const domainTools = (opts.filteredTools as Anthropic.Tool[] | undefined)
-    ?? getToolsForCall(domain, currentMessage);
+  const domainTools = currentTurnOnly
+    ? []
+    : (opts.filteredTools as Anthropic.Tool[] | undefined)
+      ?? getToolsForCall(domain, currentMessage);
   const useTools = domainTools.length > 0;
 
   // Layer 5: history reduction. Same precedence — if the routing layer
   // computed the slice (via planSecretaryOptimization, where the slice
   // is coupled to the model tier), trust it. Otherwise apply the legacy
   // text-based check here so direct callers still get the optimization.
-  let historyToSend = history;
-  if (opts.modelTier == null) {
+  let historyToSend = currentTurnOnly ? [] : history;
+  if (!currentTurnOnly && opts.modelTier == null) {
     if (domain === 'secretary' && !secretaryNeedsHeavyModel(currentMessage)) {
       historyToSend = history.slice(-4);
     }
-  } else if (opts.modelTier === 'light' && domain === 'secretary') {
+  } else if (!currentTurnOnly && opts.modelTier === 'light' && domain === 'secretary') {
     historyToSend = history.slice(-4);
   }
 
@@ -1512,7 +1535,7 @@ export async function callDomain(
   // etc. We inject into the per-request state context (NOT the system
   // prompt) so prompt caching stays intact.
   let trainingContextBlock = '';
-  if (domain === 'triathlon' && meteredUserId != null && meteredUserId > 0) {
+  if (!currentTurnOnly && domain === 'triathlon' && meteredUserId != null && meteredUserId > 0) {
     try {
       const ctx = readTrainingContextAll({ userId: meteredUserId, tenantId: opts.tenantId });
       if (ctx.signals.length > 0) {
@@ -1524,7 +1547,9 @@ export async function callDomain(
   }
 
   // State context prepended to user message (keeps system prompt cacheable)
-  const contextPrefix = buildScopedStateContextPrefix(`${stateContext || ''}${trainingContextBlock}`);
+  const contextPrefix = currentTurnOnly
+    ? ''
+    : buildScopedStateContextPrefix(`${stateContext || ''}${trainingContextBlock}`);
   const messages: Anthropic.MessageParam[] = [
     ...historyToSend.map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content })),
     { role: 'user' as const, content: `${contextPrefix}${currentMessage}` },
@@ -1576,14 +1601,15 @@ export async function continueWithToolResults(
   // tool set + model tier + history shape stay stable across the loop.
   const opts = normalizeCallDomainOptions(options);
   const meteredUserId = userId ?? opts.userId;
+  const currentTurnOnly = opts.currentTurnOnly === true;
 
   // Phase 2 Slice A: use `currentMessage` for triathlon sub-skill
   // routing. The continuation call MUST resolve to the same persona
   // file as the initial callDomain — otherwise a single conversation
   // could bounce between coaches mid-tool-loop. Passing the same
   // currentMessage guarantees the classifier produces the same answer.
-  let systemPrompt = getDomainSystemPrompt(domain, currentMessage);
-  if (domain === 'content') {
+  let systemPrompt = getDomainSystemPrompt(domain, currentMessage, { currentTurnOnly });
+  if (domain === 'content' && !currentTurnOnly) {
     // Identity-safety (closed-beta v4.14.126+): pass tenantId so the
     // continuation call's knowledge block is scoped to the same
     // (userId, tenantId) pair as the initial callDomain. Same
@@ -1602,12 +1628,12 @@ export async function continueWithToolResults(
   // Layer 5: history reduction — same precedence as callDomain. The
   // routing-provided tier wins; the legacy text classifier is the
   // fallback for direct callers that don't pass options.
-  let historyToSend = history;
-  if (opts.modelTier == null) {
+  let historyToSend = currentTurnOnly ? [] : history;
+  if (!currentTurnOnly && opts.modelTier == null) {
     if (domain === 'secretary' && !secretaryNeedsHeavyModel(currentMessage)) {
       historyToSend = history.slice(-4);
     }
-  } else if (opts.modelTier === 'light' && domain === 'secretary') {
+  } else if (!currentTurnOnly && opts.modelTier === 'light' && domain === 'secretary') {
     historyToSend = history.slice(-4);
   }
 
@@ -1617,7 +1643,7 @@ export async function continueWithToolResults(
   // consistent across iterations — the injected block doesn't move
   // between turns of a single user request.
   let trainingContextBlock = '';
-  if (domain === 'triathlon' && meteredUserId != null && meteredUserId > 0) {
+  if (!currentTurnOnly && domain === 'triathlon' && meteredUserId != null && meteredUserId > 0) {
     try {
       const ctx = readTrainingContextAll({ userId: meteredUserId, tenantId: opts.tenantId });
       if (ctx.signals.length > 0) {
@@ -1628,7 +1654,9 @@ export async function continueWithToolResults(
     }
   }
 
-  const contextPrefix = buildScopedStateContextPrefix(`${stateContext || ''}${trainingContextBlock}`);
+  const contextPrefix = currentTurnOnly
+    ? ''
+    : buildScopedStateContextPrefix(`${stateContext || ''}${trainingContextBlock}`);
   const messages: Anthropic.MessageParam[] = [
     ...historyToSend.map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content })),
     { role: 'user', content: `${contextPrefix}${currentMessage}` },
@@ -1640,8 +1668,10 @@ export async function continueWithToolResults(
   // across iterations of the tool loop — otherwise the AI could be told
   // about a tool on call 1 and lose access to it on call 2. If the
   // caller passed pre-filtered tools, use them; otherwise compute here.
-  const domainTools = (opts.filteredTools as Anthropic.Tool[] | undefined)
-    ?? getToolsForCall(domain, currentMessage);
+  const domainTools = currentTurnOnly
+    ? []
+    : (opts.filteredTools as Anthropic.Tool[] | undefined)
+      ?? getToolsForCall(domain, currentMessage);
   const useTools = domainTools.length > 0;
   let response: Anthropic.Message;
   try {

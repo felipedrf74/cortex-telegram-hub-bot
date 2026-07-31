@@ -83,6 +83,16 @@ export interface AICallResult {
     originalStopReason?: string;
     /** Whether a complete sentence prefix was available at the Content output cap. */
     completePrefixKept?: boolean;
+    /**
+     * How the visible answer was constructed. Evaluation gates can use this
+     * to distinguish model-authored text from deterministic server rendering.
+     */
+    responseConstruction?: 'model_authored_text' | 'model_authored_structured_answer';
+    /** Narrow runtime mode used for bounded local Content responses. */
+    responseMode?:
+      | 'routine_content'
+      | 'short_authorized_context_ideas'
+      | 'short_current_turn_comparison';
     // Phase K — quality-gate decision carry-through, set by the unified
     // finalizer (src/api/routes/chat-message-finalizer.ts) after
     // applyChatResponseQualityGate runs (M8: routes no longer call the
@@ -255,6 +265,11 @@ export interface CallDomainOptions {
    */
   ownerSkill?: string;
   executeIntent?: boolean;
+  /**
+   * The caller has already determined that this low-risk answer must use only
+   * the current turn. Providers must not send history or saved state when set.
+   */
+  currentTurnOnly?: boolean;
 }
 
 /**
