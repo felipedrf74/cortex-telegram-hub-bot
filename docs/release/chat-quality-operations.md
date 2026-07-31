@@ -71,7 +71,11 @@ One page for operating the production chat-quality loop (M22).
   `NEXUS_CHAT_EVAL_OLLAMA_BASE_URL`; this does not permit a cloud provider.
   During local evidence seeding the script pauses only `nexus-hub`, writes the
   bind-mounted SQLite database offline, restarts the service, and re-attests
-  health plus the zero-cloud profile before minting the synthetic session.
+  health plus the zero-cloud profile. It then prewarms the configured Ollama
+  model with one synthetic output token at the normal 4096-token chat context
+  before minting the synthetic session, so runner/model loading is explicit
+  setup time rather than a measured-turn latency failure. The warmup contains
+  no user data, makes no cloud call, and does not count as evaluation usage.
   Routine Ollama-backed Content answers use a one-property JSON object with
   locale-bound key `answer_en_us`, `answer_pt_br`, or `answer_pt_pt`. The
   model authors the complete visible value; the server does not prepend,
