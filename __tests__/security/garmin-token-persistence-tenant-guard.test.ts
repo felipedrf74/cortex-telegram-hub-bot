@@ -158,4 +158,54 @@ describe('Garmin token persistence tenant guard', () => {
 
     expect(mockUpsertGarminSession).not.toHaveBeenCalled();
   });
+
+  // The client used to be a process-wide singleton, torn down and rebuilt on
+  // every user switch. The keep-alive fan-out interleaves users by
+  // construction, so that meant a full teardown per user per tick — and it
+  // left `persistTokens` responsible for noticing that the live client
+  // belonged to someone else. Keying by user makes the wrong client
+  // unreachable rather than merely rejected.
+  describe('per-user client pool', () => {
+    it('keeps both users authenticated instead of evicting on switch', async () => {
+      const garmin = await importGarmin();
+      garmin._garminTokenPersistenceForTests.setActiveClient(clientHoldingTokensFor('user-a'), USER_A);
+      garmin._garminTokenPersistenceForTests.adoptClient(clientHoldingTokensFor('user-b'), USER_B);
+
+      expect(garmin._garminTokenPersistenceForTests.pooledUserIds()).toEqual([USER_A, USER_B]);
+    });
+
+    it('persists each user from their own client after a switch', async () => {
+      const garmin = await importGarmin();
+      garmin._garminTokenPersistenceForTests.setActiveClient(clientHoldingTokensFor('user-a'), USER_A);
+      garmin._garminTokenPersistenceForTests.adoptClient(clientHoldingTokensFor('user-b'), USER_B);
+
+      // User B authenticated most recently. User A must still persist its own
+      // tokens rather than being treated as evicted.
+      mockResolveGarminUserId.mockReturnValue(USER_A);
+      garmin._garminTokenPersistenceForTests.persist();
+
+      expect(mockUpsertGarminSession).toHaveBeenCalledWith(USER_A, {
+        oauth1: { token: 'oauth1-user-a' },
+        oauth2: { token: 'oauth2-user-a' },
+      });
+    });
+
+    it('never writes one user tokens under another id while both are pooled', async () => {
+      const garmin = await importGarmin();
+      garmin._garminTokenPersistenceForTests.setActiveClient(clientHoldingTokensFor('user-a'), USER_A);
+      garmin._garminTokenPersistenceForTests.adoptClient(clientHoldingTokensFor('user-b'), USER_B);
+
+      mockResolveGarminUserId.mockReturnValue(USER_B);
+      garmin._garminTokenPersistenceForTests.persist();
+
+      expect(mockUpsertGarminSession).toHaveBeenCalledWith(USER_B, {
+        oauth1: { token: 'oauth1-user-b' },
+        oauth2: { token: 'oauth2-user-b' },
+      });
+      expect(mockUpsertGarminSession).not.toHaveBeenCalledWith(USER_B, {
+        oauth1: { token: 'oauth1-user-a' },
+        oauth2: { token: 'oauth2-user-a' },
+      });
+    });
+  });
 });

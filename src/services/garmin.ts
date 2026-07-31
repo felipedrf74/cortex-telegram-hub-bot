@@ -356,11 +356,18 @@ export const _garminRateLimitForTests = {
  * written under another user's id.
  */
 export const _garminTokenPersistenceForTests = {
+  /** Replace the pool with a single client, as the old singleton behaved. */
   setActiveClient: (client: unknown, userId: number | null) => {
-    _client = client as InstanceType<typeof GarminConnect> | null;
-    _authenticated = client != null;
-    _activeClientUserId = userId;
+    _clientPool.clear();
+    if (client != null) {
+      putPooledClient(userId, client as InstanceType<typeof GarminConnect>);
+    }
   },
+  /** Add a client without evicting others — how the pool is really used. */
+  adoptClient: (client: unknown, userId: number | null) => {
+    putPooledClient(userId, client as InstanceType<typeof GarminConnect>);
+  },
+  pooledUserIds: (): number[] => [..._clientPool.keys()].sort((a, b) => a - b),
   persist: (explicitUserId?: number) => persistTokens(explicitUserId),
 };
 
@@ -697,11 +704,70 @@ async function finishLogin(httpClient: any, ticket: string): Promise<void> {
   logger.info('Garmin: MFA login completed, OAuth tokens obtained');
 }
 
-// ─── Client singleton ─────────────────────────────────────────────────
+// ─── Per-user client pool ─────────────────────────────────────────────
+//
+// This was a single process-wide `_client` plus an `_activeClientUserId`
+// marker. Serving a second user meant tearing the authenticated client down
+// and rebuilding it, so any interleaving of users thrashed — and the
+// keep-alive fan-out interleaves by construction, one full teardown per user
+// per tick. It also made `persistTokens` responsible for noticing that the
+// live client belonged to somebody else, which is the cross-tenant write the
+// tenant guard exists to catch. Keying clients by user makes that structural:
+// you look up the client for a user, so it cannot be another user's.
 
-let _client: InstanceType<typeof GarminConnect> | null = null;
-let _authenticated = false;
-let _activeClientUserId: number | null = null;
+interface PooledGarminClient {
+  client: InstanceType<typeof GarminConnect>;
+  lastUsedAt: number;
+}
+
+/** Legacy owner-credential path, which has no user in scope. */
+const UNSCOPED_CLIENT_KEY = 0;
+const CLIENT_POOL_MAX = 16;
+const CLIENT_POOL_IDLE_MS = 30 * 60 * 1000;
+
+const _clientPool = new Map<number, PooledGarminClient>();
+/** In-flight bootstraps, per user. Two users no longer serialise on each other. */
+const _clientBootstraps = new Map<number, Promise<InstanceType<typeof GarminConnect>>>();
+
+function clientPoolKey(userId: number | null | undefined): number {
+  return userId && userId > 0 ? userId : UNSCOPED_CLIENT_KEY;
+}
+
+function getPooledClient(userId: number | null): InstanceType<typeof GarminConnect> | null {
+  const key = clientPoolKey(userId);
+  const entry = _clientPool.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.lastUsedAt > CLIENT_POOL_IDLE_MS) {
+    _clientPool.delete(key);
+    return null;
+  }
+  entry.lastUsedAt = Date.now();
+  return entry.client;
+}
+
+function putPooledClient(userId: number | null, client: InstanceType<typeof GarminConnect>): void {
+  _clientPool.set(clientPoolKey(userId), { client, lastUsedAt: Date.now() });
+  // Bound the pool so a large user base cannot grow it without limit; the
+  // coldest entry simply re-hydrates from its stored session next time.
+  while (_clientPool.size > CLIENT_POOL_MAX) {
+    let coldestKey: number | null = null;
+    let coldestAt = Number.POSITIVE_INFINITY;
+    for (const [key, entry] of _clientPool) {
+      if (entry.lastUsedAt < coldestAt) {
+        coldestAt = entry.lastUsedAt;
+        coldestKey = key;
+      }
+    }
+    if (coldestKey === null) break;
+    _clientPool.delete(coldestKey);
+  }
+}
+
+/** Test seam: drop pooled clients so each case starts cold. */
+export function _resetGarminClientPoolForTests(): void {
+  _clientPool.clear();
+  _clientBootstraps.clear();
+}
 
 /**
  * Silent mode flag — when true, getClient() will NOT trigger MFA
@@ -714,21 +780,6 @@ let _activeClientUserId: number | null = null;
 let _silentMode = false;
 export function setSilentMode(silent: boolean): void { _silentMode = silent; }
 
-/**
- * Serialized client-bootstrap promise. Prevents the MFA email flood caused
- * by multiple parallel callers (e.g. iOS dashboard fanout calling
- * getDailySummary + getReadiness + getSleep + getActivitiesByDate at once)
- * each racing into loginWithMfa() and each submitting a fresh credential
- * POST to Garmin SSO, which generates a separate MFA email per request.
- *
- * With this guard, the first caller starts the login and every concurrent
- * caller awaits the same promise. Only ONE loginWithMfa() runs even under
- * a 10-wide parallel fanout. When the bootstrap resolves, the promise is
- * cleared so future stale-token recovery can re-trigger it if needed.
- */
-let _clientBootstrapPromise: Promise<InstanceType<typeof GarminConnect>> | null = null;
-let _clientBootstrapUserId: number | null = null;
-
 function createGarminClient(): InstanceType<typeof GarminConnect> {
   return new GarminConnect({
     username: config.garmin.email,
@@ -740,9 +791,7 @@ function adoptAuthenticatedClient(
   client: InstanceType<typeof GarminConnect>,
   userId?: number | null,
 ): InstanceType<typeof GarminConnect> {
-  _client = client;
-  _authenticated = true;
-  _activeClientUserId = userId ?? null;
+  putPooledClient(userId ?? null, client);
   if (userId) {
     touchGarminConnection(userId);
   }
@@ -841,8 +890,10 @@ export function isGarminConfiguredForUser(userId: number): boolean {
  * Get an authenticated Garmin Connect client.
  * First tries to load persisted tokens; if expired or missing, does a fresh login.
  *
- * Concurrency: all callers awaiting a cold client share the same bootstrap
- * promise. See _clientBootstrapPromise above for why.
+ * Concurrency: callers awaiting a cold client for the SAME user share one
+ * bootstrap, so a 10-wide iOS dashboard fan-out produces one credential POST
+ * and one MFA email rather than ten. Callers for different users proceed in
+ * parallel — see the client pool above.
  */
 /**
  * @param opts.silent  When true, return null instead of triggering MFA
@@ -855,55 +906,25 @@ async function getClient(opts?: { silent?: boolean }): Promise<InstanceType<type
   const silent = opts?.silent ?? getCurrentContext()?.garminSilent ?? _silentMode;
   const sessionUserId = resolveGarminUserId();
 
-  // Fast path — already authenticated
-  if (_client && _authenticated && _activeClientUserId === sessionUserId) {
-    return _client;
+  const poolKey = clientPoolKey(sessionUserId);
+
+  // Fast path — this user already has an authenticated client
+  const pooled = getPooledClient(sessionUserId);
+  if (pooled) {
+    return pooled;
   }
 
-  if (_client && _authenticated && _activeClientUserId !== sessionUserId) {
-    logger.debug(
-      {
-        event: 'account_switching',
-        provider: 'garmin',
-        action: 'switch_authenticated_client_scope',
-        outcome: 'requested',
-        previousUserId: _activeClientUserId,
-        requestedUserId: sessionUserId,
-      },
-      'Garmin: switching authenticated client to another user scope',
-    );
-    _client = null;
-    _authenticated = false;
-    _activeClientUserId = null;
+  // Serialised path — one bootstrap per user. Concurrent callers for the SAME
+  // user share it (the original reason this guard exists: a 10-wide iOS
+  // dashboard fan-out would otherwise fire ten credential POSTs and ten MFA
+  // emails). Callers for OTHER users no longer queue behind it.
+  const inFlight = _clientBootstraps.get(poolKey);
+  if (inFlight) {
+    logger.debug({ userId: sessionUserId }, 'Garmin: bootstrap in progress, awaiting shared promise');
+    return inFlight;
   }
 
-  // Serialized path — if a bootstrap is already in flight, wait for it
-  if (_clientBootstrapPromise) {
-    if (_clientBootstrapUserId === sessionUserId) {
-      logger.debug({ userId: sessionUserId }, 'Garmin: bootstrap in progress, awaiting shared promise');
-      return _clientBootstrapPromise;
-    }
-    logger.debug(
-      {
-        event: 'account_switching',
-        provider: 'garmin',
-        action: 'wait_for_bootstrap_before_switch',
-        outcome: 'waiting',
-        activeBootstrapUserId: _clientBootstrapUserId,
-        requestedUserId: sessionUserId,
-      },
-      'Garmin: waiting for in-flight bootstrap before switching user scope',
-    );
-    try {
-      await _clientBootstrapPromise;
-    } catch {
-      // ignore — the caller below will attempt a fresh bootstrap in the requested scope
-    }
-  }
-
-  // Slow path — kick off a single bootstrap that everyone else awaits
-  _clientBootstrapUserId = sessionUserId;
-  _clientBootstrapPromise = (async () => {
+  const bootstrap = (async () => {
     const hydrated = await hydrateClientFromPersistedSession(sessionUserId, { allowLegacyFile: true });
     if (hydrated) {
       return hydrated;
@@ -948,20 +969,20 @@ async function getClient(opts?: { silent?: boolean }): Promise<InstanceType<type
       logger.info({ userId: sessionUserId }, 'Garmin: login successful (manual MFA flow), tokens saved to DB');
       return client;
     } catch (err) {
-      _authenticated = false;
+      // Drop only this user's slot; other users' clients stay authenticated.
+      _clientPool.delete(poolKey);
       throw new Error(`Garmin login failed: ${(err as Error).message}`);
     }
   })();
 
+  _clientBootstraps.set(poolKey, bootstrap);
   try {
-    return await _clientBootstrapPromise;
+    return await bootstrap;
   } finally {
-    // Clear the promise slot so a future stale-token recovery can start
-    // a fresh bootstrap. This runs after the awaiting caller sees the
-    // resolved value, so concurrent waiters that arrived earlier all
-    // see the same resolved client.
-    _clientBootstrapPromise = null;
-    _clientBootstrapUserId = null;
+    // Clear this user's slot so a future stale-token recovery can start a
+    // fresh bootstrap. Runs after awaiting callers see the resolved value, so
+    // concurrent waiters for this user all get the same client.
+    _clientBootstraps.delete(poolKey);
   }
 }
 
@@ -971,26 +992,24 @@ async function getClient(opts?: { silent?: boolean }): Promise<InstanceType<type
  */
 function persistTokens(explicitUserId?: number): void {
   try {
-    if (!_client) return;
     const userId = resolveGarminUserId(explicitUserId);
     if (!userId) return;
 
-    // `_client` is a process-wide singleton: it holds whichever user last
-    // authenticated. Writing its OAuth material under a different user's id
-    // copies one account's tokens into another's `garmin_sessions` row —
-    // precisely the cross-tenant contamination `cleanup-tainted-garmin-sessions`
-    // exists to detect. Only persist when the live client is that user's.
-    if (_activeClientUserId !== userId) {
-      logger.warn(
-        { userId, activeClientUserId: _activeClientUserId },
-        'Garmin: refusing to persist tokens from a client scoped to a different user',
-      );
+    // Take the client belonging to THIS user. Previously there was one
+    // process-wide client holding whoever authenticated last, and this
+    // function had to notice that and refuse — writing its OAuth material
+    // under another user's id is exactly the contamination
+    // `cleanup-tainted-garmin-sessions` exists to detect. Keying the pool by
+    // user makes the wrong client unreachable rather than merely rejected.
+    const entry = _clientPool.get(clientPoolKey(userId));
+    if (!entry) {
+      logger.debug({ userId }, 'Garmin: no pooled client for this user, nothing to persist');
       return;
     }
 
     upsertGarminSession(userId, {
-      oauth1: (_client.client as any).oauth1Token ?? null,
-      oauth2: (_client.client as any).oauth2Token ?? null,
+      oauth1: (entry.client.client as any).oauth1Token ?? null,
+      oauth2: (entry.client.client as any).oauth2Token ?? null,
     });
     touchGarminConnection(userId);
   } catch (err) {
