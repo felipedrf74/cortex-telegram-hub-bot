@@ -580,7 +580,7 @@ describe('chat eval scorer', () => {
   });
 
   it('accepts the scorer-compatible token-zero today-workout envelope', () => {
-    const text = "Today's workout: Heavy lower-body workout (45 min, RPE 7, pending)";
+    const text = 'Your workout for today is Heavy lower-body workout (45 min, RPE 7, pending).';
     const metadata = {
       type: 'training_today_read',
       involvedSkills: ['training'],
@@ -591,6 +591,7 @@ describe('chat eval scorer', () => {
         expectedDomain: 'triathlon',
         expectedSkills: ['training'],
         semanticMustInclude: ['workout', 'today'],
+        expectedLanguage: 'en',
       },
       liveResult({
         text,

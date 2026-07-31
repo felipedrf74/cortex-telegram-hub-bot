@@ -356,8 +356,8 @@ function trainingTodayText(
   });
   if (locale === 'en') {
     const visible = lines.length === 1
-      ? `Today's workout: ${lines[0]}`
-      : `Today's workouts:\n${lines.map((line) => `- ${line}`).join('\n')}`;
+      ? `Your workout for today is ${lines[0]}.`
+      : `Here are your workouts for today:\n${lines.map((line) => `- ${line}`).join('\n')}`;
     const remaining = totalSessionCount - lines.length;
     return remaining > 0 ? `${visible}\n- ${remaining} more scheduled today` : visible;
   }

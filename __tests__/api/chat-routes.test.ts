@@ -2321,7 +2321,7 @@ describe('Chat API routes', () => {
       expect(messageRes.body).toMatchObject({
         domain: 'triathlon',
         routeMethod: 'training-today-read-shortcut',
-        text: expect.stringContaining("Today's workout: Heavy lower-body workout"),
+        text: expect.stringContaining('Your workout for today is Heavy lower-body workout'),
         metadata: {
           type: 'training_today_read',
           involvedSkills: ['training'],

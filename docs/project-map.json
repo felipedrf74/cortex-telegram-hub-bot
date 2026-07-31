@@ -5,9 +5,9 @@
     "generatorVersion": 4,
     "authoritativeFreshness": "sourceDigest",
     "sourceDigestAlgorithm": "sha256-path-git-mode-content-v2",
-    "sourceDigest": "c9573247d6105b4ffc1083a9d4ba59239ffdfc061725aae176999de26a7c6331",
-    "baseCommit": "a998eda609021bd3ada3f5a60fd505b6c572936c",
-    "baseCommitTimestamp": "2026-07-31T04:06:25+01:00",
+    "sourceDigest": "5bbd99e9443fe0829147c07dff1fa93052f37c99a0bb5fc1f5d0f625b26ccccd",
+    "baseCommit": "fbdd9305c68aee7da708a8d6fbfd36a88f8b52b3",
+    "baseCommitTimestamp": "2026-07-31T05:03:37+01:00",
     "trackedFiles": 2977,
     "sourceFiles": 1094
   },
@@ -5584,7 +5584,7 @@
     },
     {
       "path": "__tests__/api/chat-routes.test.ts",
-      "bytes": 288937,
+      "bytes": 288946,
       "generated": false
     },
     {

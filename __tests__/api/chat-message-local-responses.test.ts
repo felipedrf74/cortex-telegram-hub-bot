@@ -350,7 +350,7 @@ describe('chat message local response helpers', () => {
       response: {
         domain: 'triathlon',
         routeMethod: 'training-today-read-shortcut',
-        text: expect.stringContaining("Today's workout: Heavy lower-body session"),
+        text: expect.stringContaining('Your workout for today is Heavy lower-body session'),
         metadata: {
           type: 'training_today_read',
           involvedSkills: ['training'],
