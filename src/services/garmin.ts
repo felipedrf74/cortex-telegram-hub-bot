@@ -1004,13 +1004,21 @@ async function refreshOAuth2(): Promise<boolean> {
  * Garmin data — which is better than spamming Felipe's inbox.
  */
 export async function keepAlive(): Promise<boolean> {
-  if (!isGarminConfigured()) return false;
-  if (isRateLimited()) {
-    logger.info('Garmin: skipping keep-alive, SSO rate-limited');
+  // Runs for whichever user the caller scoped the request context to. The
+  // global credential pair is not consulted: a user who linked their own
+  // Garmin account needs their tokens refreshed regardless of whether the
+  // owner's env credentials are set.
+  const userId = resolveGarminUserId();
+  if (!userId) {
+    logger.warn('Garmin: keep-alive skipped — no user in scope');
+    return false;
+  }
+  if (isRateLimited(userId)) {
+    logger.info({ userId }, 'Garmin: skipping keep-alive, SSO rate-limited');
     return false;
   }
   if (isMfaPending()) {
-    logger.info('Garmin: skipping keep-alive, MFA pending');
+    logger.info({ userId }, 'Garmin: skipping keep-alive, MFA pending');
     return false;
   }
 
@@ -1030,11 +1038,8 @@ export async function keepAlive(): Promise<boolean> {
   // OAuth2 refresh failed. DO NOT trigger loginWithMfa here — that would
   // send a Garmin MFA email every 30 minutes. Mark the session as needing
   // re-authentication and let the explicit reauth flow recover it.
-  const userId = resolveGarminUserId();
-  if (userId) {
-    await markGarminNeedsReauth(userId, 'keepalive_refresh_failed');
-  }
-  logger.warn('Garmin: OAuth2 refresh failed — keepalive marked the connection as needs_reauth');
+  await markGarminNeedsReauth(userId, 'keepalive_refresh_failed');
+  logger.warn({ userId }, 'Garmin: OAuth2 refresh failed — keepalive marked the connection as needs_reauth');
   return false;
 }
 

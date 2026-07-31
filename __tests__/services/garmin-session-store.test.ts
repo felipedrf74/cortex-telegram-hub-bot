@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockRun = vi.fn();
 const mockGet = vi.fn();
+const mockAll = vi.fn(() => [] as unknown[]);
 const mockClearCache = vi.fn();
 const mockClearCacheByPrefix = vi.fn();
 const mockCreateNotificationIntent = vi.fn().mockResolvedValue(undefined);
@@ -24,6 +25,7 @@ vi.mock('../../src/services/database', () => ({
     prepare: () => ({
       run: (...args: unknown[]) => mockRun(...args),
       get: (...args: unknown[]) => mockGet(...args),
+      all: (...args: unknown[]) => mockAll(...args),
     }),
   }),
   initDatabase: vi.fn(),
@@ -107,7 +109,12 @@ describe('garmin-session-store cache invalidation', () => {
     expectCachePrefixesCleared('training-summary:', 'dashboard:86:', 'dashboard-home:86:');
   });
 
-  it('falls back to the canonical owner bootstrap user when no request user is present', async () => {
+  it('returns null instead of assuming the owner when no request user is present', async () => {
+    // This used to fall back to getOwnerBootstrapUser(). Any code path that
+    // forgot runWithContext then silently ran as the owner — reading the
+    // owner's Garmin data and persisting it under whichever user the caller
+    // wrote next. That is the 2026-05 P0 tenant-leak class, and it had to be
+    // patched per call site. Failing closed removes the class.
     const { getCurrentContext } = await import('../../src/utils/request-context');
     const { getOwnerBootstrapUser } = await import('../../src/services/user-service');
     vi.mocked(getCurrentContext).mockReturnValue(undefined as any);
@@ -118,7 +125,50 @@ describe('garmin-session-store cache invalidation', () => {
 
     const { resolveGarminUserId } = await import('../../src/services/garmin-session-store');
 
-    expect(resolveGarminUserId()).toBe(42);
+    expect(resolveGarminUserId()).toBeNull();
+  });
+
+  it('enumerates every connected user so scheduled work is not owner-only', async () => {
+    // `garmin_keepalive` had no way to list users, so it ran once with no
+    // context and refreshed whoever the owner fallback produced. Other
+    // users' tokens were never refreshed and decayed into needs_reauth.
+    const { getOwnerBootstrapUser } = await import('../../src/services/user-service');
+    vi.mocked(getOwnerBootstrapUser).mockReturnValue({ id: 1, telegram_id: 111 } as any);
+    mockAll.mockReturnValue([{ user_id: 1 }, { user_id: 2 }, { user_id: 3 }]);
+    // Every candidate has usable session material.
+    mockGet.mockReturnValue({ oauth1_token_json: '{"t":1}', oauth2_token_json: '{"t":2}' });
+
+    const { listGarminConnectedUserIds } = await import('../../src/services/garmin-session-store');
+
+    expect(listGarminConnectedUserIds()).toEqual([1, 2, 3]);
+  });
+
+  it('excludes active rows whose session material is missing', async () => {
+    const { getOwnerBootstrapUser } = await import('../../src/services/user-service');
+    vi.mocked(getOwnerBootstrapUser).mockReturnValue(undefined as any);
+    mockAll.mockReturnValue([{ user_id: 4 }, { user_id: 5 }]);
+    // User 4 has tokens; user 5 is marked active but has nothing to refresh.
+    mockGet.mockImplementation((userId: number) => (
+      userId === 4 ? { oauth1_token_json: '{"t":1}', oauth2_token_json: '{"t":2}' } : undefined
+    ));
+
+    const { listGarminConnectedUserIds } = await import('../../src/services/garmin-session-store');
+
+    expect(listGarminConnectedUserIds()).toEqual([4]);
+  });
+
+  it('still honours an explicit user id and a scoped request context', async () => {
+    const { getCurrentContext } = await import('../../src/utils/request-context');
+    const { getUserById } = await import('../../src/services/user-service');
+    vi.mocked(getUserById).mockImplementation(((id: number) => ({ id })) as any);
+
+    const { resolveGarminUserId } = await import('../../src/services/garmin-session-store');
+
+    vi.mocked(getCurrentContext).mockReturnValue(undefined as any);
+    expect(resolveGarminUserId(7)).toBe(7);
+
+    vi.mocked(getCurrentContext).mockReturnValue({ userId: 9 } as any);
+    expect(resolveGarminUserId()).toBe(9);
   });
 
   it('requires an active per-user token row before Garmin is considered connected', async () => {

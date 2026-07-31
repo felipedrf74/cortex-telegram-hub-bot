@@ -23,6 +23,7 @@ import { createScraperMfaInteractiveCallbacks } from './scraper-mfa-reply';
 import { getFiscalCollectionSummary, isFiscalBundleDue, sendFiscalBundleNow } from './fiscal-bundle';
 import { generateCoachBriefing } from './garmin-coach';
 import { isGarminConfigured, keepAlive as garminKeepAlive, ensureAuthenticated as garminEnsureAuth } from './garmin';
+import { listGarminConnectedUserIds } from './garmin-session-store';
 import { registerJob as registerTelemetryJob, wrapJob, recordGarminRefresh, setJobFailureNotifier, setJobEnabledChecker, getJobMap, seedJobLastRunFromHistory, type JobDomain } from '../portal/telemetry';
 import { assertAgentJobRuntimeRegistration } from './agent-job-manifest';
 import { requestTaskSync } from './task-store/task-sync-coordinator';
@@ -2114,10 +2115,38 @@ export function startScheduler(): void {
   // ── Garmin keep-alive (every 30 min) ───────────────────────────────
   if (isGarminConfigured()) {
     cron.schedule('5,35 * * * *', wrapJob('garmin_keepalive', async () => {
-      const ok = await garminKeepAlive();
-      recordGarminRefresh(ok);
-      if (!ok) {
-        throw new Error('All refresh attempts failed — session may be dead');
+      // Refresh every connected user, not just whoever `resolveGarminUserId`
+      // happened to fall back to. With no request context that was always the
+      // owner, so other users' tokens were never refreshed and their sessions
+      // expired into needs_reauth. Each user is scoped and isolated so one
+      // dead session cannot stop the rest of the fan-out.
+      const userIds = listGarminConnectedUserIds();
+      if (userIds.length === 0) return 'skipped';
+
+      let refreshed = 0;
+      const failures: number[] = [];
+      for (const userId of userIds) {
+        try {
+          const ok = await runWithContext(
+            { source: 'cron:garmin_keepalive', userId },
+            async () => garminKeepAlive(),
+          );
+          if (ok) refreshed += 1;
+          else failures.push(userId);
+        } catch (err) {
+          failures.push(userId);
+          logger.warn({ err, userId }, 'Garmin keep-alive failed for user');
+        }
+      }
+
+      // The health probe mirrors this job's history row, so report success
+      // when at least one session is alive rather than on all-or-nothing.
+      recordGarminRefresh(refreshed > 0);
+      if (refreshed === 0) {
+        throw new Error(`All refresh attempts failed for ${userIds.length} user(s) — sessions may be dead`);
+      }
+      if (failures.length > 0) {
+        logger.warn({ refreshed, failed: failures.length }, 'Garmin keep-alive partially failed');
       }
     }), { timezone: tz });
 
