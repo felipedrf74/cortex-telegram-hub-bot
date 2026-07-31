@@ -69,6 +69,8 @@ One page for operating the production chat-quality loop (M22).
   run for that exact-SHA promotion gate. Non-chat releases skip this gate
   automatically; there is no operator bypass. If Ollama is not on the default host endpoint, set
   `NEXUS_CHAT_EVAL_OLLAMA_BASE_URL`; this does not permit a cloud provider.
+  If the exact-checkout Docker build fails, evaluation startup fails closed and
+  records no run; it never falls back to last-known local images.
   During local evidence seeding the script pauses only `nexus-hub`, writes the
   bind-mounted SQLite database offline, restarts the service, and re-attests
   health plus the zero-cloud profile. It then prewarms the configured Ollama
@@ -108,17 +110,20 @@ One page for operating the production chat-quality loop (M22).
   560 tokens. The parser derives salient normalized terms from the authorized
   history/state, excludes numeric, hash-like, and over-20-character
   identifiers, selects the lexically first remaining 5–20-character
-  alphabetic term, embeds it in a locale-specific output prefix, and sends
-  that prefix instead of copying raw saved messages into the narrow generation
-  prompt. The current request remains verbatim so its constraints are not
-  discarded. The redundant standalone grounding-term label is omitted. The
+  alphabetic term, embeds it in a locale-specific output prefix, and places
+  that validated prefix in the higher-priority system instruction instead of
+  copying raw saved messages into the narrow generation prompt. The user
+  message is exactly the current request so its constraints are not discarded
+  and an untrusted fake prefix cannot replace the trusted anchor. The redundant
+  standalone grounding-term label is omitted. The
   canonical release-eval compact message envelope is regression-tested at no
   more than 340 characters. The mode uses a
   1024-token context, 32-token output cap, and a one-property `a` object
   containing a 24–64 character answer, with a 62-character answer target. The
-  prompt instructs the model to copy the prefix, including the request terms
-  and selected authorized term, verbatim, and asks for exactly two distinct
-  one-to-three-word formats, exactly one comma, and no third format. The
+  prompt instructs the model to begin the answer with the prefix, including the
+  request terms and selected authorized term, verbatim, and then author exactly
+  two distinct one-to-three-word media-format names joined by comma-space with
+  nothing else. The
   locale-aware verifier
   requires the exact localized heading, connector, recognized idea/content
   request stems, and selected term in the complete grounding prefix. It then

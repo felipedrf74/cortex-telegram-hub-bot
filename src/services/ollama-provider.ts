@@ -617,6 +617,7 @@ function modelAuthoredContentLanguageInstruction(
   locale: RoutineContentNoticeLocale,
   shortMode: ModelAuthoredContentShortMode,
   comparison: ModelAuthoredContentComparison | null = null,
+  authorizedIdeasPrefix: string | null = null,
 ): string {
   const answerKey = routineContentAnswerKey(locale);
   const visibleAnswerKey = shortMode === null ? answerKey : 'a';
@@ -635,9 +636,12 @@ function modelAuthoredContentLanguageInstruction(
     ].join(' ');
   }
   if (shortMode === 'authorizedIdeas') {
+    if (!authorizedIdeasPrefix) {
+      throw new Error('Authorized-ideas output prefix is required');
+    }
     return [
       `Use ${language}.`,
-      'Copy OUTPUT_PREFIX exactly. ONLY 2 distinct 1-3-word formats; EXACTLY 1 comma; NO third format. End `.`; max 62 chars.',
+      `Start \`a\` exactly "${authorizedIdeasPrefix} ". Then add 2 different real 1-3-word media-format names joined by ", ". End "."; nothing else; max 62 chars.`,
     ].join(' ');
   }
   return [
@@ -1700,6 +1704,12 @@ export class OllamaProvider implements AIProvider {
       : shortAuthorizedContentIdeas
         ? 'authorizedIdeas'
         : null;
+    const shortAuthorizedContentOutputPrefix = shortAuthorizedContentIdeas
+      ? modelAuthoredAuthorizedIdeasPrefix(
+        routineContentLocale ?? 'en-US',
+        [...shortAuthorizedContentIdeas.groundingStems][0] ?? '',
+      )
+      : null;
     const routineContentResponseFormat = routineContent && routineContentLocale
       ? buildModelAuthoredContentResponseFormat(
         routineContentLocale,
@@ -1724,7 +1734,12 @@ export class OllamaProvider implements AIProvider {
             shortContentComparison,
           )
           : shortAuthorizedContentIdeas
-            ? modelAuthoredContentLanguageInstruction(routineContentLocale, 'authorizedIdeas')
+            ? modelAuthoredContentLanguageInstruction(
+              routineContentLocale,
+              'authorizedIdeas',
+              null,
+              shortAuthorizedContentOutputPrefix,
+            )
           : modelAuthoredContentSystemSuffix(routineContentLocale)
       )
       : phaseKDomainSystemPromptSuffix(
@@ -1736,17 +1751,9 @@ export class OllamaProvider implements AIProvider {
 
     const messages: OllamaChatRequest['messages'] = [{ role: 'system', content: sys }];
     if (shortAuthorizedContentIdeas) {
-      const [authorizedTerm = ''] = shortAuthorizedContentIdeas.groundingStems;
-      const outputPrefix = modelAuthoredAuthorizedIdeasPrefix(
-        routineContentLocale ?? 'en-US',
-        authorizedTerm,
-      );
       messages.push({
         role: 'user',
-        content: [
-          `OUTPUT_PREFIX: ${outputPrefix}`,
-          `REQUEST: ${currentMessage}`,
-        ].join('\n'),
+        content: currentMessage,
       });
     } else if (!currentTurnOnly) {
       for (const h of history) {
