@@ -344,8 +344,7 @@ const MODEL_AUTHORED_SHORT_COMPARISON_SYSTEM_PROMPT = [
 ].join('\n');
 
 const MODEL_AUTHORED_SHORT_AUTHORIZED_IDEAS_SYSTEM_PROMPT = [
-  'JSON only: one model-written `a`.',
-  'Never translate or alter OUTPUT_PREFIX.',
+  'JSON only: model-written `a`.',
 ].join('\n');
 
 interface ModelAuthoredContentComparison {
@@ -531,7 +530,7 @@ function modelAuthoredContentLanguageInstruction(
   if (shortMode === 'authorizedIdeas') {
     return [
       `Use ${language}.`,
-      'Copy OUTPUT_PREFIX exactly; append two different one-word content formats with `/`.',
+      'Copy PREFIX exactly; append two distinct one-word content formats with `/`.',
       'Include both; end `.`; max 62 chars.',
     ].join(' ');
   }
@@ -1565,8 +1564,7 @@ export class OllamaProvider implements AIProvider {
       messages.push({
         role: 'user',
         content: [
-          `AUTHORIZED_GROUNDING_TERM: ${authorizedTerm}`,
-          `OUTPUT_PREFIX: ${outputPrefix}`,
+          `PREFIX: ${outputPrefix}`,
           `REQUEST: ${currentMessage}`,
         ].join('\n'),
       });

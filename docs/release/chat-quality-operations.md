@@ -108,17 +108,19 @@ One page for operating the production chat-quality loop (M22).
   560 tokens. The parser derives salient normalized terms from the authorized
   history/state, excludes numeric, hash-like, and over-20-character
   identifiers, selects the lexically first remaining 5–20-character
-  alphabetic term, and sends only that term plus a locale-specific output
-  prefix instead of copying raw saved messages into the narrow generation
+  alphabetic term, embeds it in a locale-specific output prefix, and sends
+  that prefix instead of copying raw saved messages into the narrow generation
   prompt. The current request remains verbatim so its constraints are not
-  discarded. The canonical release-eval compact message envelope is
-  regression-tested at no more than 420 characters. The mode uses a
+  discarded. The redundant standalone grounding-term label is omitted. The
+  canonical release-eval compact message envelope is regression-tested at no
+  more than 320 characters. The mode uses a
   1024-token context, 32-token output cap, and a one-property `a` object
   containing a 24–64 character answer, with a 62-character answer target. The
   prompt instructs the model to copy the prefix, including the request terms
-  and selected authorized term, verbatim. The deterministic verifier requires
-  the request stems, requires the selected term to occupy the entire grounding
-  slot, and requires two distinct short one-word format nouns. Extra grounding
+  and selected authorized term, verbatim, and asks for two format nouns. The
+  deterministic verifier requires the recognized idea/content request stems,
+  requires the selected term to occupy the entire grounding slot, and requires
+  two distinct single-token slots in the two-format shape. Extra grounding
   words, a selected term appearing only as a format, or a translated substitute
   for the selected term are rejected. The server returns the model's answer
   value unchanged. A

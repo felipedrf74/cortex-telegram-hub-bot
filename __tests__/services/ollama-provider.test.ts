@@ -1547,16 +1547,16 @@ describe('OllamaProvider — scoped state context', () => {
         request.format,
         ['a'],
       );
-      expect(request.messages.at(-1)?.content).toContain(
-        `AUTHORIZED_GROUNDING_TERM: ${groundingTerm}`,
+      expect(request.messages.at(-1)?.content).not.toContain(
+        'AUTHORIZED_GROUNDING_TERM:',
       );
       expect(request.messages.at(-1)?.content).toContain(
-        `OUTPUT_PREFIX: Ideias de conteúdo: ${groundingTerm} em`,
+        `PREFIX: Ideias de conteúdo: ${groundingTerm} em`,
       );
       expect(compactPrompt).not.toContain('<format>');
       expect(compactPrompt).not.toMatch(/\b(?:vídeo|carrossel)\b/iu);
       expect(compactPrompt).not.toMatch(/\b(?:editing|library|reference)\b/iu);
-      expect(compactPrompt.length).toBeLessThanOrEqual(420);
+      expect(compactPrompt.length).toBeLessThanOrEqual(320);
       expect(result.stopReason).toBe('stop');
       expect(result.text).toBe(answer);
       expect(result.text).toContain(groundingTerm);
@@ -1664,7 +1664,7 @@ describe('OllamaProvider — scoped state context', () => {
 
       const request = firstStructuredRequest();
       expect(request.messages.at(-1)?.content).toContain(
-        'AUTHORIZED_GROUNDING_TERM: backlog',
+        'PREFIX: Ideias de conteúdo: backlog em',
       );
       expect(request.messages.at(-1)?.content).not.toMatch(
         /\b(?:00000|abcdef0123456789abcdef|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)\b/u,
@@ -1736,7 +1736,7 @@ describe('OllamaProvider — scoped state context', () => {
 
       const request = firstStructuredRequest();
       expect(request.messages.at(-1)?.content).toContain(
-        'AUTHORIZED_GROUNDING_TERM: backlog',
+        'PREFIX: Ideias de conteúdo: backlog em',
       );
       expect(request.messages.at(-1)?.content).not.toMatch(
         /\b(?:deadline|friday|reference|library|editing)\b/iu,
@@ -1771,7 +1771,7 @@ describe('OllamaProvider — scoped state context', () => {
       const request = firstStructuredRequest();
       expect(request.messages[0]?.content).toContain('Brazilian Portuguese (pt-BR)');
       expect(request.messages.at(-1)?.content).toContain(
-        'OUTPUT_PREFIX: Ideias de conteúdo: backlog em',
+        'PREFIX: Ideias de conteúdo: backlog em',
       );
       expect(result.stopReason).toBe('stop');
       expect(result.text).toBe(answer);
@@ -1801,7 +1801,7 @@ describe('OllamaProvider — scoped state context', () => {
       const request = firstStructuredRequest();
       expect(request.messages[0]?.content).toContain('English (en-US)');
       expect(request.messages.at(-1)?.content).toContain(
-        'OUTPUT_PREFIX: Ideas for content: backlog in',
+        'PREFIX: Ideas for content: backlog in',
       );
       expect(result.stopReason).toBe('stop');
       expect(result.text).toBe(answer);
@@ -2137,11 +2137,9 @@ describe('OllamaProvider — scoped state context', () => {
     const compactAuthorizedPrompt = request.messages
       .map((message) => message.content)
       .join('\n');
+    expect(serializedRequest).not.toContain('AUTHORIZED_GROUNDING_TERM:');
     expect(serializedRequest).toContain(
-      'AUTHORIZED_GROUNDING_TERM: backlog',
-    );
-    expect(serializedRequest).toContain(
-      'OUTPUT_PREFIX: Ideias de conteúdo: backlog em',
+      'PREFIX: Ideias de conteúdo: backlog em',
     );
     expect(serializedRequest).not.toContain('<format>');
     expect(serializedRequest).not.toMatch(/\b(?:vídeo|carrossel)\b/iu);
@@ -2157,16 +2155,16 @@ describe('OllamaProvider — scoped state context', () => {
     expect(request.format?.properties?.a?.pattern).toBeUndefined();
     expect(request.options).toMatchObject({ num_ctx: 1024, num_predict: 32 });
     expect(request.messages[0]?.content).toContain(
-      'Copy OUTPUT_PREFIX exactly',
+      'Copy PREFIX exactly',
     );
     expect(request.messages[0]?.content).toContain(
-      'append two different one-word content formats',
+      'append two distinct one-word content formats',
     );
     expect(request.messages[0]?.content).toContain('Include both');
     expect(request.messages[0]?.content).toContain(
       'max 62 chars',
     );
-    expect(compactAuthorizedPrompt.length).toBeLessThanOrEqual(420);
+    expect(compactAuthorizedPrompt.length).toBeLessThanOrEqual(320);
     expect(result.text).toBe(modelAnswer);
     expect(result.providerMetadata).toMatchObject({
       responseConstruction: 'model_authored_structured_answer',
