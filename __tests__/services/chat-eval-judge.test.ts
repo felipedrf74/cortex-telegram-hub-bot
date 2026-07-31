@@ -12,6 +12,7 @@ import {
   CHAT_EVAL_JUDGE_DIMENSIONS,
   CHAT_EVAL_JUDGE_MAX_OUTPUT_TOKENS,
   DEFAULT_CHAT_EVAL_JUDGE_MODEL,
+  buildChatEvalJudgeProviderRequest,
   createChatEvalJudgeBudget,
   judgeChatEvalScenario,
   judgeChatEvalScenarios,
@@ -26,6 +27,65 @@ const VALID_JUDGE_JSON = JSON.stringify({
   sufficiency: { score: 1, rationale: 'Next step missing on turn 2.' },
   explanation_quality: { score: 2, rationale: 'Cause and effect explained.' },
 });
+
+const EXPECTED_JUDGE_RESPONSE_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: [
+    'wording_quality',
+    'groundedness',
+    'sufficiency',
+    'explanation_quality',
+  ],
+  propertyOrdering: [
+    'wording_quality',
+    'groundedness',
+    'sufficiency',
+    'explanation_quality',
+  ],
+  properties: {
+    wording_quality: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['score', 'rationale'],
+      propertyOrdering: ['score', 'rationale'],
+      properties: {
+        score: { type: 'integer', minimum: 0, maximum: 2 },
+        rationale: { type: 'string' },
+      },
+    },
+    groundedness: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['score', 'rationale'],
+      propertyOrdering: ['score', 'rationale'],
+      properties: {
+        score: { type: 'integer', minimum: 0, maximum: 2 },
+        rationale: { type: 'string' },
+      },
+    },
+    sufficiency: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['score', 'rationale'],
+      propertyOrdering: ['score', 'rationale'],
+      properties: {
+        score: { type: 'integer', minimum: 0, maximum: 2 },
+        rationale: { type: 'string' },
+      },
+    },
+    explanation_quality: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['score', 'rationale'],
+      propertyOrdering: ['score', 'rationale'],
+      properties: {
+        score: { type: 'integer', minimum: 0, maximum: 2 },
+        rationale: { type: 'string' },
+      },
+    },
+  },
+};
 
 function turns(): ChatEvalJudgeTurnInput[] {
   return [
@@ -104,6 +164,8 @@ describe('chat eval judge', () => {
       maxTokens: CHAT_EVAL_JUDGE_MAX_OUTPUT_TOKENS,
       temperature: 0,
       jsonMode: true,
+      responseJsonSchema: EXPECTED_JUDGE_RESPONSE_SCHEMA,
+      thinkingBudget: 0,
     });
   });
 
@@ -122,6 +184,65 @@ describe('chat eval judge', () => {
     expect(result.estimatedCostUsd).toBeCloseTo(0.0005, 10);
     expect(budget.calls).toBe(1);
     expect(budget.estimatedSpendUsd).toBeCloseTo(0.0005, 10);
+  });
+
+  it('rejects every non-exact judge shape instead of coercing or clamping it', async () => {
+    const valid = JSON.parse(VALID_JUDGE_JSON) as Record<string, unknown>;
+    const invalidResponses = [
+      { ...valid, extra: true },
+      { ...valid, wording_quality: 2 },
+      {
+        ...valid,
+        groundedness: { score: 2 },
+      },
+      {
+        ...valid,
+        sufficiency: { score: 1.5, rationale: 'Fractional score.' },
+      },
+      {
+        ...valid,
+        explanation_quality: { score: 3, rationale: 'Out of range.' },
+      },
+      {
+        ...valid,
+        wording_quality: { score: 2, rationale: 'Clear.', extra: true },
+      },
+    ];
+
+    for (const response of invalidResponses) {
+      completeOneShotMock.mockResolvedValueOnce(JSON.stringify(response));
+      const result = await judgeChatEvalScenario(
+        { id: 'morning_planning' },
+        turns(),
+        {
+          maxUsd: 2,
+          mode: 'real_provider',
+          model: 'gemini-2.5-flash-lite',
+          estimateCallCostUsd: () => 0.0001,
+        },
+      );
+      expect(result.status).toBe('blocked');
+      expect(result.scores).toBeNull();
+    }
+  });
+
+  it('keeps the completion options and reserved-cost payload on one exact contract', () => {
+    const request = buildChatEvalJudgeProviderRequest({
+      systemPrompt: 'judge system',
+      userPrompt: 'judge scenario',
+      model: DEFAULT_CHAT_EVAL_JUDGE_MODEL,
+    });
+    const {
+      model,
+      ...generationPayload
+    } = request.completionOptions;
+
+    expect(model).toBe(DEFAULT_CHAT_EVAL_JUDGE_MODEL);
+    expect(request.costPayload).toEqual({
+      systemPrompt: 'judge system',
+      userPrompt: 'judge scenario',
+      ...generationPayload,
+    });
   });
 
   it('provider failure marks the scenario blocked without crashing and still counts the cost', async () => {
