@@ -5,10 +5,10 @@
     "generatorVersion": 4,
     "authoritativeFreshness": "sourceDigest",
     "sourceDigestAlgorithm": "sha256-path-git-mode-content-v2",
-    "sourceDigest": "e137899553e14eac57b2cfe8a27740c3de4cb043373e1cafbae7a5525e2135a9",
-    "baseCommit": "a3dfe566cfb061c7a4be184d6b77f58fe260ab88",
-    "baseCommitTimestamp": "2026-07-31T03:15:18+01:00",
-    "trackedFiles": 2974,
+    "sourceDigest": "c9573247d6105b4ffc1083a9d4ba59239ffdfc061725aae176999de26a7c6331",
+    "baseCommit": "a998eda609021bd3ada3f5a60fd505b6c572936c",
+    "baseCommitTimestamp": "2026-07-31T04:06:25+01:00",
+    "trackedFiles": 2977,
     "sourceFiles": 1094
   },
   "navigation": {
@@ -4463,9 +4463,9 @@
     }
   ],
   "migrations": {
-    "count": 255,
-    "latest": "migrations/264_ai_output_reports.sql",
-    "digest": "6ca68f2f9d0f4e068a4268eea89040e82f69a05f682288bc6c994385a44f8795",
+    "count": 256,
+    "latest": "migrations/265_chat_live_eval_training_artifacts.sql",
+    "digest": "8164038cfb366e82faf9caee38e187c4c43beaacfad76e22973e358af242116e",
     "files": [
       "migrations/001_initial.sql",
       "migrations/002_shared_memory.sql",
@@ -4721,7 +4721,8 @@
       "migrations/261_chat_routing_clarify_metrics.sql",
       "migrations/262_apple_iap_environment_provenance.sql",
       "migrations/263_apple_sign_in_refresh_tokens.sql",
-      "migrations/264_ai_output_reports.sql"
+      "migrations/264_ai_output_reports.sql",
+      "migrations/265_chat_live_eval_training_artifacts.sql"
     ]
   },
   "capabilities": [
@@ -4837,7 +4838,7 @@
     }
   ],
   "tests": {
-    "files": 1095,
+    "files": 1096,
     "policy": "config/test-policy.json",
     "inventoryArtifact": ".local/test-inventory/test-inventory.json",
     "topLevelOwners": {
@@ -4851,7 +4852,7 @@
       "domains": 5,
       "integration": 3,
       "lib": 1,
-      "migrations": 25,
+      "migrations": 26,
       "portal": 58,
       "regression": 1,
       "router": 7,
@@ -5583,7 +5584,7 @@
     },
     {
       "path": "__tests__/api/chat-routes.test.ts",
-      "bytes": 285169,
+      "bytes": 288937,
       "generated": false
     },
     {

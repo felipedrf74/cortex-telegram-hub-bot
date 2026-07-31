@@ -579,6 +579,46 @@ describe('chat eval scorer', () => {
     expect(score.deterministicAverage).toBe(2);
   });
 
+  it('accepts the scorer-compatible token-zero today-workout envelope', () => {
+    const text = "Today's workout: Heavy lower-body workout (45 min, RPE 7, pending)";
+    const metadata = {
+      type: 'training_today_read',
+      involvedSkills: ['training'],
+      chatReasoning: { ownerSkill: 'training' },
+    };
+    const score = scoreChatEvalTurn(
+      {
+        expectedDomain: 'triathlon',
+        expectedSkills: ['training'],
+        semanticMustInclude: ['workout', 'today'],
+      },
+      liveResult({
+        text,
+        domain: 'triathlon',
+        routeMethod: 'training-today-read-shortcut',
+        metadata,
+        envelope: {
+          id: 'training-today-1',
+          text,
+          domain: 'triathlon',
+          routeMethod: 'training-today-read-shortcut',
+          confidence: 1,
+          buttons: null,
+          metadata,
+          timestamp: '2026-07-30T08:00:00.000Z',
+        },
+        latencyMs: 10,
+        providerTrace: null,
+      }),
+    );
+    expect(score.passed).toBe(true);
+    expect(score.failures).toEqual([]);
+    expect(dim(score.dimensions, 'routing_domain').passed).toBe(true);
+    expect(dim(score.dimensions, 'skills_used').passed).toBe(true);
+    expect(dim(score.dimensions, 'semantic_coverage').passed).toBe(true);
+    expect(dim(score.dimensions, 'latency_budget').passed).toBe(true);
+  });
+
   describe('simulation wiring', () => {
     it('attaches scorer dimensions to live-executor turns and merges scorer failures', async () => {
       const stubExecutor: ChatTurnExecutor = {
