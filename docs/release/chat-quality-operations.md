@@ -84,8 +84,9 @@ One page for operating the production chat-quality loop (M22).
   a low-risk saved-data opt-out and the current message is a positively parsed
   short comparison: each side has at most eight words and the request has no
   long-form marker. That mode sends only the current turn, uses a 1024-token
-  context and 24-token output cap, and requires a one-property `a` object
-  containing a 24–56 character model-authored answer. The parser verifies
+  context and 24-token output cap, prompts for a complete answer within 64
+  characters, and requires a one-property `a` object containing a 24–66
+  character model-authored answer. The parser verifies
   exact schema shape, completeness,
   meaningful overlap with both comparison sides, shared subject coverage when
   present, and language that does not contradict the requested primary
