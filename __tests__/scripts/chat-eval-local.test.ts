@@ -35,7 +35,7 @@ describe('chat-eval-local dry run', () => {
     expect(result.stdout).toContain('NEXUS_MODEL_FIXTURE_MODE=0');
     expect(result.stdout).toContain('Ollama-only zero-cloud profile');
     expect(result.stdout).toContain('attest Ollama-only zero-cloud runtime profile');
-    expect(result.stdout).toContain('prewarm the configured Ollama model at num_ctx=4096');
+    expect(result.stdout).toContain('prewarm the configured Ollama model at num_ctx=1024');
     // Tokens must never be printed, even in plans.
     expect(result.stdout).toContain('value never printed');
   });
@@ -153,7 +153,7 @@ describe('chat-eval-local dry run', () => {
     expect(evalRun).toBeGreaterThan(attestation);
   });
 
-  it('prewarms the exact normal-chat Ollama context before measured eval turns', () => {
+  it('prewarms the exact compact Ollama context used by the first measured provider turn', () => {
     const script = readFileSync(CHAT_EVAL_LOCAL, 'utf8');
     const restartAfterSeed = script.indexOf('\nrestart_nexus_hub_after_evidence_seed');
     const postRestartAttestation = script.indexOf('\nattest_zero_cloud_profile', restartAfterSeed);
@@ -165,7 +165,8 @@ describe('chat-eval-local dry run', () => {
     expect(script).toContain("process.env.OLLAMA_BASE_URL");
     expect(script).toContain("process.env.OLLAMA_MODEL");
     expect(script).toContain('keep_alive: -1');
-    expect(script).toContain('num_ctx: 4096');
+    expect(script).toContain('num_ctx: 1024');
+    expect(script).not.toContain('num_ctx: 4096');
     expect(script).toContain('num_predict: 1');
     expect(postRestartAttestation).toBeGreaterThan(restartAfterSeed);
     expect(prewarm).toBeGreaterThan(postRestartAttestation);

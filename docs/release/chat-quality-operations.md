@@ -72,10 +72,11 @@ One page for operating the production chat-quality loop (M22).
   During local evidence seeding the script pauses only `nexus-hub`, writes the
   bind-mounted SQLite database offline, restarts the service, and re-attests
   health plus the zero-cloud profile. It then prewarms the configured Ollama
-  model with one synthetic output token at the normal 4096-token chat context
-  before minting the synthetic session, so runner/model loading is explicit
-  setup time rather than a measured-turn latency failure. The warmup contains
-  no user data, makes no cloud call, and does not count as evaluation usage.
+  model with one synthetic output token at the compact 1024-token context used
+  by the first measured provider turn before minting the synthetic session, so
+  runner/model loading is explicit setup time rather than a measured-turn
+  latency failure. The warmup contains no user data, makes no cloud call, and
+  does not count as evaluation usage.
   Routine Ollama-backed Content answers use a one-property JSON object with
   locale-bound key `answer_en_us`, `answer_pt_br`, or `answer_pt_pt`. The
   model authors the complete visible value; the server does not prepend,
@@ -108,9 +109,10 @@ One page for operating the production chat-quality loop (M22).
   authorized history/state and sends that compact list instead of copying the
   raw saved messages into the narrow prompt. The mode uses a 1024-token
   context, 32-token output cap, and a one-property `a` object containing a
-  24–56 character answer. The model must emit the request terms, repeat at
-  least one concrete authorized term verbatim, and author two distinct compact
-  formats. The server returns the model's answer value unchanged. A
+  24–64 character answer, with a 62-character prompt target. The model must
+  emit the request terms, repeat at least one concrete authorized term
+  verbatim, and author two distinct compact formats. The server returns the
+  model's answer value unchanged. A
   JSON-complete, provider-complete `grounding in format/format` response is
   accepted as a complete compact list even when the model omits only terminal
   punctuation; hanging conjunctions, missing formats, repeated formats, and

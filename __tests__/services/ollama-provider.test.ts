@@ -1675,8 +1675,9 @@ describe('OllamaProvider — scoped state context', () => {
       expect(result.text.endsWith('.')).toBe(false);
     });
 
-    it('rejects an unterminated authorized-ideas list with fewer than two formats', async () => {
-      const answer = 'Ideias de conteúdo: backlog, vídeo';
+    it('rejects a complete-looking authorized-ideas answer outside the certified two-format list shape', async () => {
+      const answer = 'Ideias de conteúdo: backlog, vídeo e carrossel editorial.';
+      expect(answer).toHaveLength(57);
       fetchMock
         .mockResolvedValueOnce(makeChatResponse({
           content: JSON.stringify({ a: answer }),
@@ -1704,8 +1705,9 @@ describe('OllamaProvider — scoped state context', () => {
       expect(warning).toMatchObject({
         structuredAnswerCommaCount: 1,
         structuredAnswerHasColon: true,
+        structuredAuthorizedIdeasSemanticsValid: true,
         structuredAuthorizedIdeasListShapeValid: false,
-        structuredAnswerMidSentenceCutoff: true,
+        structuredAnswerMidSentenceCutoff: false,
       });
       expect(JSON.stringify(warning)).not.toContain(answer);
     });
@@ -1885,7 +1887,8 @@ describe('OllamaProvider — scoped state context', () => {
   });
 
   it('uses a short model-authored mode while preserving authorized history and state for the release-eval Content ideas request', async () => {
-    const modelAnswer = 'Ideias de conteúdo: backlog em vídeo/carrossel.';
+    const modelAnswer = 'Ideias de conteúdo: reference em documentário/infográfico.';
+    expect(modelAnswer).toHaveLength(58);
     fetchMock
       .mockResolvedValueOnce(makeChatResponse({
         content: modelAuthoredAuthorizedIdeasJson(modelAnswer),
@@ -1924,7 +1927,7 @@ describe('OllamaProvider — scoped state context', () => {
     expect(request.format?.enum).toBeUndefined();
     expect(request.format?.properties?.a).toMatchObject({
       minLength: 24,
-      maxLength: 56,
+      maxLength: 64,
     });
     expect(request.format?.properties?.a?.pattern).toBeUndefined();
     expect(request.options).toMatchObject({ num_ctx: 1024, num_predict: 32 });
@@ -1933,7 +1936,7 @@ describe('OllamaProvider — scoped state context', () => {
     );
     expect(request.messages[0]?.content).toContain('two one-word formats');
     expect(request.messages[0]?.content).toContain(
-      'at most 8 words and 54 characters including the final period',
+      'at most 8 words and 62 characters including the final period',
     );
     expect(result.text).toBe(modelAnswer);
     expect(result.providerMetadata).toMatchObject({

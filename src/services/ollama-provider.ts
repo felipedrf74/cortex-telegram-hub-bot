@@ -335,7 +335,7 @@ const MODEL_AUTHORED_CONTENT_MAX_CHARS = 480;
 const MODEL_AUTHORED_CONTENT_MAX_OUTPUT_TOKENS = 192;
 const MODEL_AUTHORED_SHORT_COMPARISON_MAX_CHARS = 66;
 const MODEL_AUTHORED_SHORT_COMPARISON_MAX_OUTPUT_TOKENS = 24;
-const MODEL_AUTHORED_SHORT_AUTHORIZED_IDEAS_MAX_CHARS = 56;
+const MODEL_AUTHORED_SHORT_AUTHORIZED_IDEAS_MAX_CHARS = 64;
 const MODEL_AUTHORED_SHORT_AUTHORIZED_IDEAS_MAX_OUTPUT_TOKENS = 32;
 
 const MODEL_AUTHORED_SHORT_COMPARISON_SYSTEM_PROMPT = [
@@ -536,7 +536,7 @@ function modelAuthoredContentLanguageInstruction(
     return [
       `Write \`a\` only in ${language}.`,
       `Format \`a\` as “${authorizedIdeasOpening}: <grounding> ${formatConnector} <format>/<format>.”`,
-      'Replace grounding with one listed term and both placeholders with two one-word formats; use at most 8 words and 54 characters including the final period.',
+      'Replace grounding with one listed term and both placeholders with two one-word formats; use at most 8 words and 62 characters including the final period.',
     ].join(' ');
   }
   return [
@@ -736,9 +736,9 @@ function parseModelAuthoredContentResult(input: {
       )
       || (
         input.shortAuthorizedIdeas
-        && !modelAuthoredAuthorizedIdeasSemanticsMatch(
-          answer,
-          input.shortAuthorizedIdeas,
+        && (
+          !modelAuthoredAuthorizedIdeasSemanticsMatch(answer, input.shortAuthorizedIdeas)
+          || !modelAuthoredAuthorizedIdeasListShapeIsValid(answer)
         )
       )
     ) {
