@@ -281,9 +281,8 @@ function loadSsoCookies(): Record<string, string> | null {
 }
 
 // ─── Rate-limit backoff (persisted to disk to survive restarts) ──────
-function _loadRateLimitedUntil(): number {
+function _loadRateLimitedUntil(userId: number): number {
   try {
-    const userId = garminPersistenceUserId();
     const scopedFile = rateLimitFile(userId);
     const fileToRead = fs.existsSync(scopedFile)
       ? scopedFile
@@ -301,36 +300,57 @@ function _loadRateLimitedUntil(): number {
   return 0;
 }
 
-let _rateLimitedUntil = _loadRateLimitedUntil();
+/**
+ * Backoff deadlines keyed by user.
+ *
+ * Garmin rate-limits per ACCOUNT, not per IP, so one user tripping Cloudflare
+ * must not stop every other user from syncing. This was previously a single
+ * module-level scalar seeded at import time — before any request context
+ * exists — which meant the process booted holding the owner's backoff and
+ * applied it to everyone for two hours.
+ *
+ * Entries are lazily hydrated from that user's on-disk file on first read.
+ */
+const _rateLimitedUntilByUser = new Map<number, number>();
 
-function isRateLimited(): boolean {
-  return Date.now() < _rateLimitedUntil;
+function rateLimitedUntilFor(userId: number): number {
+  const cached = _rateLimitedUntilByUser.get(userId);
+  if (cached !== undefined) return cached;
+  const loaded = _loadRateLimitedUntil(userId);
+  _rateLimitedUntilByUser.set(userId, loaded);
+  return loaded;
 }
 
-function setRateLimited(durationMs = 2 * 60 * 60 * 1000): void {
-  _rateLimitedUntil = Date.now() + durationMs;
+function isRateLimited(userId = garminPersistenceUserId()): boolean {
+  return Date.now() < rateLimitedUntilFor(userId);
+}
+
+function setRateLimited(durationMs = 2 * 60 * 60 * 1000, userId = garminPersistenceUserId()): void {
+  const until = Date.now() + durationMs;
+  _rateLimitedUntilByUser.set(userId, until);
   try {
-    const userId = garminPersistenceUserId();
     const dir = garminUserTokenDir(userId);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(rateLimitFile(userId), JSON.stringify({ rateLimitedUntil: _rateLimitedUntil }));
+    fs.writeFileSync(rateLimitFile(userId), JSON.stringify({ rateLimitedUntil: until }));
   } catch { /* best-effort */ }
-  logger.warn({ backoffMinutes: durationMs / 60000, until: new Date(_rateLimitedUntil).toISOString() }, 'Garmin: rate-limited by Cloudflare, backing off');
+  logger.warn({ userId, backoffMinutes: durationMs / 60000, until: new Date(until).toISOString() }, 'Garmin: rate-limited by Cloudflare, backing off');
 }
+
+/** Test seam: drop cached backoff state so each case starts from disk. */
+export function _resetGarminRateLimitCacheForTests(): void {
+  _rateLimitedUntilByUser.clear();
+}
+
+/** Test seam: drive and observe per-user backoff without exporting the real helpers. */
+export const _garminRateLimitForTests = {
+  set: (userId: number, durationMs?: number) => setRateLimited(durationMs, userId),
+  isLimited: (userId: number) => isRateLimited(userId),
+};
 
 function checkForRateLimit(html: string, status?: number): void {
   if (status === 429 || /Error\s*1015|rate.?limit|banned.*temporarily/i.test(html)) {
     setRateLimited();
     throw new Error('Garmin SSO rate-limited by Cloudflare — backing off 2 hours');
-  }
-}
-
-/** Detect rate-limit errors from library-thrown exceptions (garmin-connect throws
- * the full HTML body in the error message when SSO returns 429/1015). */
-function checkErrorForRateLimit(err: unknown): void {
-  const msg = (err as Error)?.message ?? '';
-  if (/429|Error\s*1015|rate.?limit|banned.*temporarily/i.test(msg)) {
-    setRateLimited();
   }
 }
 
@@ -344,17 +364,15 @@ export function isMfaPending(): boolean {
   return _mfaPending !== null && Date.now() < _mfaPending.expiresAt;
 }
 
-/** Submit an MFA code from the user (called from bot command handler) */
-export function submitMfaCode(code: string): boolean {
-  if (!_mfaPending || Date.now() >= _mfaPending.expiresAt) {
-    return false;
-  }
-  _mfaPending.resolve(code);
-  _mfaPending = null;
-  return true;
-}
-
-/** Wait for the user to provide an MFA code via Telegram */
+/**
+ * Wait for an MFA code.
+ *
+ * Nothing resolves `_mfaPending`: the Telegram command handler this was built
+ * for no longer exists, so this always rejects on timeout. The working
+ * per-user path is `garmin-interactive-auth.ts`, driven by
+ * `POST /api/v1/garmin/verify`. Kept only because `loginWithMfa` still calls
+ * it; both are removed when the credential path is retired.
+ */
 function waitForMfaCode(): Promise<string> {
   return new Promise((resolve, reject) => {
     const timeoutMs = 5 * 60 * 1000; // 5 minutes
@@ -421,8 +439,9 @@ function createSsoClient(savedCookies?: Record<string, string>): {
  * After getting the ticket, hands off to the library's OAuth1/OAuth2 exchange.
  */
 async function loginWithMfa(client: InstanceType<typeof GarminConnect>): Promise<void> {
-  if (isRateLimited()) {
-    throw new Error(`Garmin SSO rate-limited — retry after ${new Date(_rateLimitedUntil).toISOString()}`);
+  const loginUserId = garminPersistenceUserId();
+  if (isRateLimited(loginUserId)) {
+    throw new Error(`Garmin SSO rate-limited — retry after ${new Date(rateLimitedUntilFor(loginUserId)).toISOString()}`);
   }
 
   const httpClient = client.client as any;
@@ -950,37 +969,6 @@ async function refreshOAuth2(): Promise<boolean> {
 }
 
 /**
- * Attempt a full re-login (credentials-based).
- * This works when MFA is not enabled or when Garmin doesn't prompt for it.
- */
-async function attemptReLogin(): Promise<boolean> {
-  if (isRateLimited()) {
-    logger.info('Garmin: skipping re-login, SSO rate-limited');
-    return false;
-  }
-  try {
-    if (!_client) {
-      _client = new GarminConnect({
-        username: config.garmin.email,
-        password: config.garmin.password,
-      });
-    }
-    _authenticated = false;
-
-    // Go directly to our MFA-aware flow (avoids the library's unprotected SSO request)
-    await loginWithMfa(_client);
-    persistTokens();
-    _authenticated = true;
-    logger.info('Garmin: re-login successful (manual MFA flow), tokens saved');
-    return true;
-  } catch (err) {
-    logger.error({ err }, 'Garmin: re-login failed (MFA timeout or credentials invalid)');
-    _authenticated = false;
-    return false;
-  }
-}
-
-/**
  * Keep-alive: refresh tokens proactively. Exported for use by the scheduler.
  *
  * Strategy: OAuth2 refresh ONLY. Never attempt a full re-login from here.
@@ -1068,7 +1056,7 @@ export async function ensureAuthenticated(
  * Silent auth recovery — the cron-safe sibling of serializedAuthRecovery.
  *
  * Only attempts Step 1 (OAuth2 refresh) and Step 2 (token reload from
- * the DB session store). Explicitly DOES NOT call attemptReLogin / loginWithMfa so a
+ * the DB session store). Explicitly DOES NOT call loginWithMfa so a
  * failing cron never triggers a Garmin passcode email. If both silent
  * steps fail, returns false and the caller should degrade gracefully
  * (coach briefing with data gaps, skipped job, etc.).
