@@ -35,6 +35,7 @@ describe('chat-eval-local dry run', () => {
     expect(result.stdout).toContain('NEXUS_MODEL_FIXTURE_MODE=0');
     expect(result.stdout).toContain('Ollama-only zero-cloud profile');
     expect(result.stdout).toContain('attest Ollama-only zero-cloud runtime profile');
+    expect(result.stdout).toContain('prewarm the configured Ollama model at num_ctx=4096');
     // Tokens must never be printed, even in plans.
     expect(result.stdout).toContain('value never printed');
   });
@@ -152,9 +153,29 @@ describe('chat-eval-local dry run', () => {
     expect(evalRun).toBeGreaterThan(attestation);
   });
 
+  it('prewarms the exact normal-chat Ollama context before measured eval turns', () => {
+    const script = readFileSync(CHAT_EVAL_LOCAL, 'utf8');
+    const restartAfterSeed = script.indexOf('\nrestart_nexus_hub_after_evidence_seed');
+    const postRestartAttestation = script.indexOf('\nattest_zero_cloud_profile', restartAfterSeed);
+    const prewarm = script.indexOf('\nprewarm_ollama_for_eval', postRestartAttestation);
+    const authMint = script.indexOf('scripts/local-ios-debug-auth.mjs', prewarm);
+    const evalRun = script.indexOf('scripts/run-chat-eval-live.ts', authMint);
+
+    expect(script).toContain('prewarm_ollama_for_eval()');
+    expect(script).toContain("process.env.OLLAMA_BASE_URL");
+    expect(script).toContain("process.env.OLLAMA_MODEL");
+    expect(script).toContain('keep_alive: -1');
+    expect(script).toContain('num_ctx: 4096');
+    expect(script).toContain('num_predict: 1');
+    expect(postRestartAttestation).toBeGreaterThan(restartAfterSeed);
+    expect(prewarm).toBeGreaterThan(postRestartAttestation);
+    expect(authMint).toBeGreaterThan(prewarm);
+    expect(evalRun).toBeGreaterThan(authMint);
+  });
+
   it('seeds the bind-mounted SQLite database only while nexus-hub is stopped', () => {
     const script = readFileSync(CHAT_EVAL_LOCAL, 'utf8');
-    const boot = script.indexOf('echo "chat-eval-local: [1/5]');
+    const boot = script.indexOf('echo "chat-eval-local: [1/6]');
     const attestation = script.indexOf('\nattest_zero_cloud_profile', boot);
     const stopForSeed = script.indexOf('\nstop_nexus_hub_for_evidence_seed', attestation);
     const seed = script.indexOf('scripts/chatv2-seed-local-evidence.ts', stopForSeed);
@@ -165,6 +186,7 @@ describe('chat-eval-local dry run', () => {
     expect(script).toContain('docker compose "${COMPOSE_ARGS[@]}" stop nexus-hub');
     expect(script).toContain('docker compose "${COMPOSE_ARGS[@]}" start nexus-hub');
     expect(script).toContain('restore_nexus_hub_on_exit');
+    expect(boot).toBeGreaterThan(-1);
     expect(attestation).toBeGreaterThan(boot);
     expect(stopForSeed).toBeGreaterThan(attestation);
     expect(seed).toBeGreaterThan(stopForSeed);
