@@ -1542,18 +1542,134 @@ describe('OllamaProvider — scoped state context', () => {
       ));
 
       const request = firstStructuredRequest();
+      const compactPrompt = request.messages.map((message) => message.content).join('\n');
       expectExactUnconstrainedProperties(
         request.format,
         ['a'],
       );
-      expect(JSON.stringify(request.messages)).toContain(groundingTerm);
+      expect(request.messages.at(-1)?.content).toContain(
+        `AUTHORIZED_GROUNDING_TERM: ${groundingTerm}`,
+      );
+      expect(request.messages.at(-1)?.content).toContain(
+        `OUTPUT_TEMPLATE: Ideias de conteúdo: ${groundingTerm} em <format>/<format>.`,
+      );
+      expect(compactPrompt).not.toMatch(/\b(?:editing|library|reference)\b/iu);
+      expect(compactPrompt.length).toBeLessThanOrEqual(500);
       expect(result.stopReason).toBe('stop');
       expect(result.text).toBe(answer);
       expect(result.text).toContain(groundingTerm);
     });
 
+    it('rejects an authorized term used only as a format rather than grounding', async () => {
+      const answer = 'Ideias de conteúdo: lançamento em vídeo/backlog.';
+      fetchMock
+        .mockResolvedValueOnce(makeChatResponse({
+          content: JSON.stringify({ a: answer }),
+        }))
+        .mockResolvedValueOnce(makeTagsResponse());
+      const p = new OllamaProvider();
+
+      const result = await runWithChatRequestLocale('pt-PT', () => p.callDomain(
+        'content',
+        [{ role: 'user', content: 'O backlog precisa de atenção.' }],
+        'Dá-me ideias de conteúdo para a publicação do lançamento usando apenas o contexto autorizado.',
+        'A biblioteca de referências está disponível.',
+        {
+          userId: 42,
+          tenantId: 42,
+          currentTurnOnly: false,
+        },
+      ));
+
+      expect(result.stopReason).toBe('length');
+      expect(result.text).toBe('');
+    });
+
+    it('rejects extra words beside the selected term in the grounding slot', async () => {
+      const answer = 'Ideias de conteúdo: segredo backlog em vídeo/carrossel.';
+      fetchMock
+        .mockResolvedValueOnce(makeChatResponse({
+          content: JSON.stringify({ a: answer }),
+        }))
+        .mockResolvedValueOnce(makeTagsResponse());
+      const p = new OllamaProvider();
+
+      const result = await runWithChatRequestLocale('pt-PT', () => p.callDomain(
+        'content',
+        [{ role: 'user', content: 'O backlog precisa de atenção.' }],
+        'Dá-me ideias de conteúdo para a publicação do lançamento usando apenas o contexto autorizado.',
+        'A biblioteca de referências está disponível.',
+        {
+          userId: 42,
+          tenantId: 42,
+          currentTurnOnly: false,
+        },
+      ));
+
+      expect(result.stopReason).toBe('length');
+      expect(result.text).toBe('');
+    });
+
+    it('excludes numeric, hash-like, and overlong identifiers from source-term selection', async () => {
+      const answer = 'Ideias de conteúdo: backlog em vídeo/carrossel.';
+      fetchMock
+        .mockResolvedValueOnce(makeChatResponse({
+          content: JSON.stringify({ a: answer }),
+        }))
+        .mockResolvedValueOnce(makeTagsResponse());
+      const p = new OllamaProvider();
+
+      const result = await runWithChatRequestLocale('pt-PT', () => p.callDomain(
+        'content',
+        [],
+        'Dá-me ideias de conteúdo para a publicação do lançamento usando apenas o contexto autorizado.',
+        'IDs 00000 abcdef0123456789abcdef aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa. Content backlog remains.',
+        {
+          userId: 42,
+          tenantId: 42,
+          currentTurnOnly: false,
+        },
+      ));
+
+      const request = firstStructuredRequest();
+      expect(request.messages.at(-1)?.content).toContain(
+        'AUTHORIZED_GROUNDING_TERM: backlog',
+      );
+      expect(request.messages.at(-1)?.content).not.toMatch(
+        /\b(?:00000|abcdef0123456789abcdef|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)\b/u,
+      );
+      expect(result.stopReason).toBe('stop');
+      expect(result.text).toBe(answer);
+    });
+
+    it('keeps a translated grounding term rejected when only its English source is authorized', async () => {
+      const answer = 'Ideias de conteúdo: referência em documentário/infográfico.';
+      expect(answer).toHaveLength(59);
+      fetchMock
+        .mockResolvedValueOnce(makeChatResponse({
+          content: JSON.stringify({ a: answer }),
+        }))
+        .mockResolvedValueOnce(makeTagsResponse());
+      const p = new OllamaProvider();
+
+      const result = await runWithChatRequestLocale('pt-PT', () => p.callDomain(
+        'content',
+        [],
+        'Dá-me ideias de conteúdo para a publicação do lançamento usando apenas o contexto autorizado.',
+        'Content: a tenant-scoped reference library is available.',
+        {
+          userId: 42,
+          tenantId: 42,
+          currentTurnOnly: false,
+        },
+      ));
+
+      expect(result.stopReason).toBe('length');
+      expect(result.text).toBe('');
+    });
+
     it('offers only independently seeded facts as grounding terms inside a governed live-eval context', async () => {
-      const answer = 'Ideias de conteúdo: Friday em vídeo/carrossel.';
+      const answer = 'Ideias de conteúdo: backlog em vídeo/carrossel.';
       fetchMock
         .mockResolvedValueOnce(makeChatResponse({
           content: JSON.stringify({ a: answer }),
@@ -1589,11 +1705,74 @@ describe('OllamaProvider — scoped state context', () => {
 
       const request = firstStructuredRequest();
       expect(request.messages.at(-1)?.content).toContain(
-        'AUTHORIZED_GROUNDING_TERMS: deadline, friday, reference, library, editing, backlog',
+        'AUTHORIZED_GROUNDING_TERM: backlog',
+      );
+      expect(request.messages.at(-1)?.content).not.toMatch(
+        /\b(?:deadline|friday|reference|library|editing)\b/iu,
       );
       expect(request.messages.at(-1)?.content).not.toMatch(
         /\b(?:profile|generic|workspace|following|instructions|authority)\b/iu,
       );
+      expect(result.text).toBe(answer);
+    });
+
+    it('uses the same one-source-term contract for Brazilian Portuguese', async () => {
+      const answer = 'Ideias de conteúdo: backlog em vídeo/carrossel.';
+      fetchMock
+        .mockResolvedValueOnce(makeChatResponse({
+          content: JSON.stringify({ a: answer }),
+        }))
+        .mockResolvedValueOnce(makeTagsResponse());
+      const p = new OllamaProvider();
+
+      const result = await runWithChatRequestLocale('pt-BR', () => p.callDomain(
+        'content',
+        [{ role: 'user', content: 'The editing backlog needs attention.' }],
+        'Dê-me ideias de conteúdo para a publicação do lançamento usando somente o contexto autorizado.',
+        'A reference library is available.',
+        {
+          userId: 42,
+          tenantId: 42,
+          currentTurnOnly: false,
+        },
+      ));
+
+      const request = firstStructuredRequest();
+      expect(request.messages[0]?.content).toContain('Brazilian Portuguese (pt-BR)');
+      expect(request.messages.at(-1)?.content).toContain(
+        'OUTPUT_TEMPLATE: Ideias de conteúdo: backlog em <format>/<format>.',
+      );
+      expect(result.stopReason).toBe('stop');
+      expect(result.text).toBe(answer);
+    });
+
+    it('uses the same one-source-term contract for English', async () => {
+      const answer = 'Ideas for content: backlog in video/carousel.';
+      fetchMock
+        .mockResolvedValueOnce(makeChatResponse({
+          content: JSON.stringify({ a: answer }),
+        }))
+        .mockResolvedValueOnce(makeTagsResponse());
+      const p = new OllamaProvider();
+
+      const result = await runWithChatRequestLocale('en-US', () => p.callDomain(
+        'content',
+        [{ role: 'user', content: 'The editing backlog needs attention.' }],
+        'Give me ideas for content for the launch using only the authorized context.',
+        'A reference library is available.',
+        {
+          userId: 42,
+          tenantId: 42,
+          currentTurnOnly: false,
+        },
+      ));
+
+      const request = firstStructuredRequest();
+      expect(request.messages[0]?.content).toContain('English (en-US)');
+      expect(request.messages.at(-1)?.content).toContain(
+        'OUTPUT_TEMPLATE: Ideas for content: backlog in <format>/<format>.',
+      );
+      expect(result.stopReason).toBe('stop');
       expect(result.text).toBe(answer);
     });
 
@@ -1705,7 +1884,7 @@ describe('OllamaProvider — scoped state context', () => {
       expect(warning).toMatchObject({
         structuredAnswerCommaCount: 1,
         structuredAnswerHasColon: true,
-        structuredAuthorizedIdeasSemanticsValid: true,
+        structuredAuthorizedIdeasSemanticsValid: false,
         structuredAuthorizedIdeasListShapeValid: false,
         structuredAnswerMidSentenceCutoff: false,
       });
@@ -1886,9 +2065,9 @@ describe('OllamaProvider — scoped state context', () => {
     expect(runMock.mock.calls[0]?.[0]).toBe('chat_content_model_authored_short');
   });
 
-  it('uses a short model-authored mode while preserving authorized history and state for the release-eval Content ideas request', async () => {
-    const modelAnswer = 'Ideias de conteúdo: reference em documentário/infográfico.';
-    expect(modelAnswer).toHaveLength(58);
+  it('uses a short model-authored mode with one source-bound term from authorized history and state', async () => {
+    const modelAnswer = 'Ideias de conteúdo: backlog em vídeo/carrossel.';
+    expect(modelAnswer).toHaveLength(47);
     fetchMock
       .mockResolvedValueOnce(makeChatResponse({
         content: modelAuthoredAuthorizedIdeasJson(modelAnswer),
@@ -1921,7 +2100,13 @@ describe('OllamaProvider — scoped state context', () => {
     };
     const serializedRequest = JSON.stringify(request);
     expect(serializedRequest).toContain(
-      'AUTHORIZED_GROUNDING_TERMS: editing, backlog, reference, library',
+      'AUTHORIZED_GROUNDING_TERM: backlog',
+    );
+    expect(serializedRequest).toContain(
+      'OUTPUT_TEMPLATE: Ideias de conteúdo: backlog em <format>/<format>.',
+    );
+    expect(serializedRequest).not.toMatch(
+      /\b(?:editing|library|reference)\b/iu,
     );
     expect(request.format?.type).toBe('object');
     expect(request.format?.enum).toBeUndefined();
@@ -1932,11 +2117,11 @@ describe('OllamaProvider — scoped state context', () => {
     expect(request.format?.properties?.a?.pattern).toBeUndefined();
     expect(request.options).toMatchObject({ num_ctx: 1024, num_predict: 32 });
     expect(request.messages[0]?.content).toContain(
-      'Format `a` as “Ideias de conteúdo: <grounding> em <format>/<format>.”',
+      'copy OUTPUT_TEMPLATE to `a`',
     );
-    expect(request.messages[0]?.content).toContain('two one-word formats');
+    expect(request.messages[0]?.content).toContain('different short one-word formats');
     expect(request.messages[0]?.content).toContain(
-      'at most 8 words and 62 characters including the final period',
+      'maximum 62 characters',
     );
     expect(result.text).toBe(modelAnswer);
     expect(result.providerMetadata).toMatchObject({

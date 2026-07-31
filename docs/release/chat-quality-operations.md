@@ -105,14 +105,20 @@ One page for operating the production chat-quality loop (M22).
   A second narrow mode applies to a short Content-ideas request only when it
   explicitly asks to use authorized context, the retained history/state has at
   least one salient grounding term, and the estimated source input is at most
-  560 tokens. The parser derives a bounded list of salient terms from the
-  authorized history/state and sends that compact list instead of copying the
-  raw saved messages into the narrow prompt. The mode uses a 1024-token
-  context, 32-token output cap, and a one-property `a` object containing a
-  24–64 character answer, with a 62-character prompt target. The model must
-  emit the request terms, repeat at least one concrete authorized term
-  verbatim, and author two distinct compact formats. The server returns the
-  model's answer value unchanged. A
+  560 tokens. The parser derives salient normalized terms from the authorized
+  history/state, excludes numeric, hash-like, and over-20-character
+  identifiers, selects the lexically first remaining 5–20-character
+  alphabetic term, and sends only that term plus a locale-specific output
+  template instead of copying raw saved messages into the narrow prompt. The
+  canonical release-eval compact message envelope is regression-tested at no
+  more than 500 characters. The mode uses a 1024-token context, 32-token
+  output cap, and a one-property `a` object containing a 24–64 character
+  answer, with a 62-character answer target. The model must emit the request
+  terms, copy the selected authorized term verbatim as the entire grounding
+  slot, and author two distinct short one-word formats. Extra grounding words,
+  a selected term appearing only as a format, or a translated substitute for
+  the selected term are rejected. The server returns the model's answer value
+  unchanged. A
   JSON-complete, provider-complete `grounding in format/format` response is
   accepted as a complete compact list even when the model omits only terminal
   punctuation; hanging conjunctions, missing formats, repeated formats, and

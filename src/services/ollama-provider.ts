@@ -345,9 +345,8 @@ const MODEL_AUTHORED_SHORT_COMPARISON_SYSTEM_PROMPT = [
 ].join('\n');
 
 const MODEL_AUTHORED_SHORT_AUTHORIZED_IDEAS_SYSTEM_PROMPT = [
-  'You are Nexus Hub Content.',
-  'JSON only. Write `a` yourself; only model-authored `a` is shown.',
-  'Use one AUTHORIZED_GROUNDING_TERMS term verbatim with two one-word formats.',
+  'JSON only: one model-written `a`.',
+  'Copy AUTHORIZED_GROUNDING_TERM exactly.',
 ].join('\n');
 
 interface ModelAuthoredContentComparison {
@@ -376,14 +375,14 @@ const MODEL_AUTHORED_NORMALIZED_LONG_FORM_MARKERS =
   /\b(?:artigo|calendario|completo|detalhado|ensaio|esboco|plano|roteiro)\b/u;
 const MODEL_AUTHORED_AUTHORIZED_CONTEXT_REQUEST =
   /\b(?:(?:use|using)\s+only\s+(?:the\s+)?authorized\s+context|(?:usando|use|usa)\s+(?:apenas|somente)\s+(?:o\s+)?contexto\s+autorizado)\b/u;
-const MODEL_AUTHORED_IDEA_STEMS = new Set(['idea', 'ideia']);
+const MODEL_AUTHORED_IDEA_STEMS = new Set(['idea', 'ideas', 'ideia']);
 const MODEL_AUTHORED_CONTENT_STEMS = new Set(['content', 'conteudo']);
 const MODEL_AUTHORED_SHORT_SOURCE_MAX_ESTIMATED_TOKENS = 560;
 const MODEL_AUTHORED_GROUNDING_STOP_WORDS = new Set([
-  'active', 'assistant', 'attention', 'authorized', 'available', 'begin',
+  'active', 'assistant', 'atencao', 'attention', 'authorized', 'available', 'begin',
   'campaign', 'content', 'context', 'current', 'end', 'eval', 'evaluation',
-  'evidence', 'fact', 'ideas', 'launch', 'message', 'needs', 'nexus',
-  'project', 'publication', 'publishing', 'remains', 'request', 'scoped',
+  'disponivel', 'evidence', 'fact', 'ideas', 'launch', 'message', 'needs', 'nexus',
+  'precisa', 'project', 'publication', 'publishing', 'remain', 'remains', 'request', 'scoped',
   'state', 'synthetic', 'tenant', 'using', 'user', 'workspace',
 ]);
 const MODEL_AUTHORED_CONDITION_STOP_WORDS = new Set([
@@ -477,6 +476,8 @@ function parseModelAuthoredContentAuthorizedIdeas(
     [...modelAuthoredComparisonStems(contextParts.join('\n'))]
       .filter((stem) => (
         stem.length >= 5
+        && stem.length <= 20
+        && /^[a-z]+$/u.test(stem)
         && !MODEL_AUTHORED_GROUNDING_STOP_WORDS.has(stem)
         && !requestStems.has(stem)
       ))
@@ -485,7 +486,7 @@ function parseModelAuthoredContentAuthorizedIdeas(
   if (groundingStems.size === 0) return null;
   return {
     requiredStems: new Set([ideaStem, contentStem]),
-    groundingStems,
+    groundingStems: new Set([[...groundingStems].sort()[0] as string]),
   };
 }
 
@@ -519,9 +520,6 @@ function modelAuthoredContentLanguageInstruction(
     : locale === 'pt-PT'
       ? 'European Portuguese (pt-PT)'
       : 'Brazilian Portuguese (pt-BR)';
-  const authorizedIdeasOpening = locale === 'en-US'
-    ? 'Ideas for content'
-    : 'Ideias de conteúdo';
   const comparisonOpening = modelAuthoredComparisonRequiredOpening(comparison);
   if (shortMode === 'comparison') {
     const secondLabel = modelAuthoredComparisonSecondLabel(comparison);
@@ -532,11 +530,10 @@ function modelAuthoredContentLanguageInstruction(
     ].join(' ');
   }
   if (shortMode === 'authorizedIdeas') {
-    const formatConnector = locale === 'en-US' ? 'in' : 'em';
     return [
-      `Write \`a\` only in ${language}.`,
-      `Format \`a\` as “${authorizedIdeasOpening}: <grounding> ${formatConnector} <format>/<format>.”`,
-      'Replace grounding with one listed term and both placeholders with two one-word formats; use at most 8 words and 62 characters including the final period.',
+      `Use ${language}; copy OUTPUT_TEMPLATE to \`a\`.`,
+      'Replace only both `<format>` placeholders with different short one-word formats.',
+      'Keep the grounding term unchanged. End with a period; maximum 62 characters.',
     ].join(' ');
   }
   return [
@@ -647,8 +644,11 @@ function modelAuthoredAuthorizedIdeasSemanticsMatch(
   authorizedIdeas: ModelAuthoredContentAuthorizedIdeas,
 ): boolean {
   const answerStems = modelAuthoredComparisonStems(answer);
+  const [selectedGroundingStem] = authorizedIdeas.groundingStems;
+  const groundingStem = modelAuthoredAuthorizedIdeasGroundingStem(answer);
   return [...authorizedIdeas.requiredStems].every((stem) => answerStems.has(stem))
-    && [...authorizedIdeas.groundingStems].some((stem) => answerStems.has(stem));
+    && authorizedIdeas.groundingStems.size === 1
+    && groundingStem === selectedGroundingStem;
 }
 
 function modelAuthoredAuthorizedIdeasListShapeIsValid(answer: string): boolean {
@@ -1561,13 +1561,13 @@ export class OllamaProvider implements AIProvider {
 
     const messages: OllamaChatRequest['messages'] = [{ role: 'system', content: sys }];
     if (shortAuthorizedContentIdeas) {
-      const authorizedTerms = [...shortAuthorizedContentIdeas.groundingStems]
-        .slice(0, 12)
-        .join(', ');
+      const [authorizedTerm = ''] = shortAuthorizedContentIdeas.groundingStems;
+      const outputTemplate = `${routineContentLocale === 'en-US' ? 'Ideas for content' : 'Ideias de conteúdo'}: ${authorizedTerm} ${routineContentLocale === 'en-US' ? 'in' : 'em'} <format>/<format>.`;
       messages.push({
         role: 'user',
         content: [
-          `AUTHORIZED_GROUNDING_TERMS: ${authorizedTerms}`,
+          `AUTHORIZED_GROUNDING_TERM: ${authorizedTerm}`,
+          `OUTPUT_TEMPLATE: ${outputTemplate}`,
           `REQUEST: ${currentMessage}`,
         ].join('\n'),
       });
@@ -2193,4 +2193,15 @@ export async function completeLocalReasoningOneShot(
       isColdLoad: md.isColdLoad,
     },
   };
+}
+
+function modelAuthoredAuthorizedIdeasGroundingStem(answer: string): string | null {
+  const separator = answer.indexOf(':');
+  if (separator < 0) return null;
+  const groundingMatch = answer
+    .slice(separator + 1)
+    .trim()
+    .match(/^(.+?)\s+(?:in|em)\s+/iu);
+  const grounding = groundingMatch?.[1]?.trim() ?? '';
+  return /^[a-z]{5,20}$/u.test(grounding) ? grounding : null;
 }
