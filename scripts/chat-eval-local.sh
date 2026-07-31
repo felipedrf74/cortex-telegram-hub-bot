@@ -6,8 +6,9 @@
 #   1. Boot the sandbox via scripts/local-up.sh (idempotent).
 #   2. Attest the Ollama-only profile, pause nexus-hub, seed the bind-mounted
 #      SQLite database offline, then restart nexus-hub and wait for health.
-#   3. Prewarm the normal 4096-token Ollama chat runner with one synthetic
-#      output token so cold model loading is not charged to a measured turn.
+#   3. Prewarm the compact 1024-token Ollama chat runner with one synthetic
+#      output token so cold model loading is not charged to the first measured
+#      provider turn.
 #   4. Mint a local dev session via scripts/local-ios-debug-auth.mjs — the
 #      same loopback-only path the Cockpit "Mint nexushubbot iOS auth"
 #      button uses. The access token is exported into an env var and never
@@ -105,7 +106,7 @@ if [ "$DRY_RUN" = "1" ]; then
   echo "  2. attest Ollama-only zero-cloud runtime profile in both Docker services"
   echo "  3. stop nexus-hub; seed the bind-mounted SQLite DB offline; restart, wait for health, and re-attest"
   echo "     npx tsx scripts/chatv2-seed-local-evidence.ts --write --replace --rows=$SEED_ROWS --db <sandbox DB>"
-  echo "  4. prewarm the configured Ollama model at num_ctx=4096 with one synthetic output token"
+  echo "  4. prewarm the configured Ollama model at num_ctx=1024 with one synthetic output token"
   echo "  5. node scripts/local-ios-debug-auth.mjs   # mint local dev session -> $AUTH_FILE"
   echo "  6. npx tsx scripts/run-chat-eval-live.ts --mode local_engine --base-url $BASE_URL --auth-token-env $AUTH_TOKEN_ENV --out-dir $OUT_DIR --persist-db <history DB>"
   echo "  7. teardown: $TEARDOWN_PLAN"
@@ -189,11 +190,12 @@ attest_zero_cloud_profile() {
 
 prewarm_ollama_for_eval() {
   # Ollama creates a different runner when num_ctx changes. The first measured
-  # Training turn uses the normal 4096-token chat shape, while later compact
-  # Content turns use 1024. Warm the normal runner after the final zero-cloud
-  # attestation so model loading is setup time, not a false latency regression.
-  # The synthetic prompt contains no user data, emits one token, stays on the
-  # configured Ollama endpoint, and is deliberately outside usage evidence.
+  # provider turn in the current live-eval profile is the compact 1024-token
+  # authorized-context Content path. Warm that exact runner after the final
+  # zero-cloud attestation so model loading is setup time, not a false latency
+  # regression. The synthetic prompt contains no user data, emits one token,
+  # stays on the configured Ollama endpoint, and is deliberately outside usage
+  # evidence.
   docker compose "${COMPOSE_ARGS[@]}" exec -T nexus-hub node - <<'NODE'
 const baseUrl = String(process.env.OLLAMA_BASE_URL ?? '').trim().replace(/\/+$/, '');
 const model = String(
@@ -212,7 +214,7 @@ const model = String(
       stream: false,
       keep_alive: -1,
       options: {
-        num_ctx: 4096,
+        num_ctx: 1024,
         num_predict: 1,
         temperature: 0,
       },
@@ -298,9 +300,9 @@ restart_nexus_hub_after_evidence_seed || {
 trap - EXIT
 attest_zero_cloud_profile
 
-echo "chat-eval-local: [4/6] prewarming the normal Ollama chat runner"
+echo "chat-eval-local: [4/6] prewarming the compact Ollama chat runner"
 prewarm_ollama_for_eval || {
-  echo "chat-eval-local: normal Ollama chat runner prewarm failed; refusing latency evidence" >&2
+  echo "chat-eval-local: compact Ollama chat runner prewarm failed; refusing latency evidence" >&2
   exit 1
 }
 

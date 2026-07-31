@@ -171,7 +171,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/ollama-provider.ts:1659-1665",
+            "pattern": "src/services/ollama-provider.ts:1845-1850",
             "anchor": "'chat_content_model_authored_short_rejected'",
             "behavior": "Deferred short-comparison usage is attributed only after validation and distinguishes accepted output from rejected output.",
             "replacementTest": "__tests__/services/ollama-provider.test.ts",

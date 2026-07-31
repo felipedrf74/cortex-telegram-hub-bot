@@ -40,6 +40,11 @@ echo ""
 
 if ! docker compose "${COMPOSE_ARGS[@]}" up --build -d; then
   echo ""
+  if [ "${NEXUS_CHAT_EVAL_ZERO_CLOUD_PROFILE:-0}" = "1" ]; then
+    echo "ERROR: Docker rebuild failed while preparing release evaluation evidence." >&2
+    echo "       Refusing existing local images because they are not attested to this checkout." >&2
+    exit 1
+  fi
   echo "WARN: Docker rebuild failed. This is often a transient npm/Docker network issue." >&2
   echo "      Trying to boot the last known local images without rebuilding..." >&2
 

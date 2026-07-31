@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const ROOT = join(__dirname, '..', '..');
@@ -19,6 +19,92 @@ function runScript(args: string[], env: NodeJS.ProcessEnv = {}) {
   });
 }
 
+function localUpBuildFailureFixture() {
+  const isolatedRoot = mkdtempSync(join(tmpdir(), 'chat-eval-local-up-'));
+  const dockerLog = join(isolatedRoot, 'docker.log');
+  const healthMarker = join(isolatedRoot, 'health-invoked');
+  const binDir = join(isolatedRoot, 'bin');
+  mkdirSync(join(isolatedRoot, 'scripts'), { recursive: true });
+  mkdirSync(binDir, { recursive: true });
+  copyFileSync(LOCAL_UP, join(isolatedRoot, 'scripts', 'local-up.sh'));
+  chmodSync(join(isolatedRoot, 'scripts', 'local-up.sh'), 0o755);
+  writeFileSync(join(isolatedRoot, '.env.local'), '# isolated local-up fixture\n');
+  writeFileSync(
+    join(binDir, 'docker'),
+    `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "$NEXUS_TEST_DOCKER_LOG"
+case " $* " in
+  *" up --build -d "*) exit 42 ;;
+  *" image inspect "*) exit 0 ;;
+  *" up -d --no-build "*) exit 0 ;;
+  *) exit 64 ;;
+esac
+`,
+    { mode: 0o755 },
+  );
+  writeFileSync(
+    join(isolatedRoot, 'scripts', 'wait-for-health.sh'),
+    '#!/usr/bin/env bash\nprintf invoked > "$NEXUS_TEST_HEALTH_MARKER"\n',
+    { mode: 0o755 },
+  );
+
+  return {
+    dockerLog,
+    healthMarker,
+    isolatedRoot,
+    run(evalMode: boolean) {
+      return spawnSync('bash', [join(isolatedRoot, 'scripts', 'local-up.sh')], {
+        cwd: isolatedRoot,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          NEXUS_CHAT_EVAL_ZERO_CLOUD_PROFILE: evalMode ? '1' : '0',
+          NEXUS_TEST_DOCKER_LOG: dockerLog,
+          NEXUS_TEST_HEALTH_MARKER: healthMarker,
+          PATH: `${binDir}${delimiter}${process.env.PATH ?? '/usr/bin:/bin'}`,
+        },
+      });
+    },
+  };
+}
+
+describe('local-up release-eval image integrity', () => {
+  it('fails closed instead of booting existing images when the eval build fails', () => {
+    const fixture = localUpBuildFailureFixture();
+    try {
+      const result = fixture.run(true);
+      const dockerCalls = readFileSync(fixture.dockerLog, 'utf8');
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('release evaluation evidence');
+      expect(result.stderr).toContain('Refusing existing local images');
+      expect(dockerCalls).toContain('up --build -d');
+      expect(dockerCalls).not.toContain('image inspect');
+      expect(dockerCalls).not.toContain('--no-build');
+      expect(() => readFileSync(fixture.healthMarker, 'utf8')).toThrow();
+    } finally {
+      rmSync(fixture.isolatedRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves the existing-image fallback for ordinary local development', () => {
+    const fixture = localUpBuildFailureFixture();
+    try {
+      const result = fixture.run(false);
+      const dockerCalls = readFileSync(fixture.dockerLog, 'utf8');
+
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stderr).toContain('Sandbox started from existing local images');
+      expect(dockerCalls).toContain('up --build -d');
+      expect(dockerCalls.match(/image inspect/g)).toHaveLength(2);
+      expect(dockerCalls).toContain('up -d --no-build');
+      expect(readFileSync(fixture.healthMarker, 'utf8')).toBe('invoked');
+    } finally {
+      rmSync(fixture.isolatedRoot, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('chat-eval-local dry run', () => {
   it('prints the full local_engine plan without touching Docker and exits 0', () => {
     const result = runScript(['--dry-run']);
@@ -35,7 +121,7 @@ describe('chat-eval-local dry run', () => {
     expect(result.stdout).toContain('NEXUS_MODEL_FIXTURE_MODE=0');
     expect(result.stdout).toContain('Ollama-only zero-cloud profile');
     expect(result.stdout).toContain('attest Ollama-only zero-cloud runtime profile');
-    expect(result.stdout).toContain('prewarm the configured Ollama model at num_ctx=4096');
+    expect(result.stdout).toContain('prewarm the configured Ollama model at num_ctx=1024');
     // Tokens must never be printed, even in plans.
     expect(result.stdout).toContain('value never printed');
   });
@@ -153,7 +239,7 @@ describe('chat-eval-local dry run', () => {
     expect(evalRun).toBeGreaterThan(attestation);
   });
 
-  it('prewarms the exact normal-chat Ollama context before measured eval turns', () => {
+  it('prewarms the exact compact Ollama context used by the first measured provider turn', () => {
     const script = readFileSync(CHAT_EVAL_LOCAL, 'utf8');
     const restartAfterSeed = script.indexOf('\nrestart_nexus_hub_after_evidence_seed');
     const postRestartAttestation = script.indexOf('\nattest_zero_cloud_profile', restartAfterSeed);
@@ -165,7 +251,8 @@ describe('chat-eval-local dry run', () => {
     expect(script).toContain("process.env.OLLAMA_BASE_URL");
     expect(script).toContain("process.env.OLLAMA_MODEL");
     expect(script).toContain('keep_alive: -1');
-    expect(script).toContain('num_ctx: 4096');
+    expect(script).toContain('num_ctx: 1024');
+    expect(script).not.toContain('num_ctx: 4096');
     expect(script).toContain('num_predict: 1');
     expect(postRestartAttestation).toBeGreaterThan(restartAfterSeed);
     expect(prewarm).toBeGreaterThan(postRestartAttestation);

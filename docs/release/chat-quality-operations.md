@@ -69,13 +69,16 @@ One page for operating the production chat-quality loop (M22).
   run for that exact-SHA promotion gate. Non-chat releases skip this gate
   automatically; there is no operator bypass. If Ollama is not on the default host endpoint, set
   `NEXUS_CHAT_EVAL_OLLAMA_BASE_URL`; this does not permit a cloud provider.
+  If the exact-checkout Docker build fails, evaluation startup fails closed and
+  records no run; it never falls back to last-known local images.
   During local evidence seeding the script pauses only `nexus-hub`, writes the
   bind-mounted SQLite database offline, restarts the service, and re-attests
   health plus the zero-cloud profile. It then prewarms the configured Ollama
-  model with one synthetic output token at the normal 4096-token chat context
-  before minting the synthetic session, so runner/model loading is explicit
-  setup time rather than a measured-turn latency failure. The warmup contains
-  no user data, makes no cloud call, and does not count as evaluation usage.
+  model with one synthetic output token at the compact 1024-token context used
+  by the first measured provider turn before minting the synthetic session, so
+  runner/model loading is explicit setup time rather than a measured-turn
+  latency failure. The warmup contains no user data, makes no cloud call, and
+  does not count as evaluation usage.
   Routine Ollama-backed Content answers use a one-property JSON object with
   locale-bound key `answer_en_us`, `answer_pt_br`, or `answer_pt_pt`. The
   model authors the complete visible value; the server does not prepend,
@@ -104,14 +107,43 @@ One page for operating the production chat-quality loop (M22).
   A second narrow mode applies to a short Content-ideas request only when it
   explicitly asks to use authorized context, the retained history/state has at
   least one salient grounding term, and the estimated source input is at most
-  560 tokens. The parser derives a bounded list of salient terms from the
-  authorized history/state and sends that compact list instead of copying the
-  raw saved messages into the narrow prompt. The mode uses a 1024-token
-  context, 32-token output cap, and a one-property `a` object containing a
-  24–56 character answer. The model must emit the request terms, repeat at
-  least one concrete authorized term verbatim, and author two distinct compact
-  formats. The server returns the model's answer value unchanged. A
-  JSON-complete, provider-complete `grounding in format/format` response is
+  560 tokens. The parser derives salient normalized terms from the authorized
+  history/state, excludes numeric, hash-like, and over-20-character
+  identifiers, selects the lexically first remaining 5–20-character
+  alphabetic term, embeds it in a locale-specific output prefix, and places
+  that validated prefix in the higher-priority system instruction instead of
+  copying raw saved messages into the narrow generation prompt. The user
+  message is exactly the current request so its constraints are not discarded
+  and an untrusted fake prefix cannot replace the trusted anchor. The redundant
+  standalone grounding-term label is omitted. The
+  canonical release-eval compact message envelope is regression-tested at no
+  more than 340 characters. The mode uses a
+  1024-token context, 32-token output cap, and a one-property `a` object
+  containing a 24–64 character answer, with a 62-character answer target. The
+  prompt instructs the model to begin the answer with the prefix, including the
+  request terms and selected authorized term, verbatim, and then author exactly
+  two distinct one-to-three-word media-format names joined by comma-space with
+  nothing else. The
+  locale-aware verifier
+  requires the exact localized heading, connector, recognized idea/content
+  request stems, and selected term in the complete grounding prefix. It then
+  requires exactly two non-empty alphabetic format phrases of one to three
+  words. Each phrase must contain a spoken head exhaustively mapped from the
+  canonical Content format ontology or its bounded English/Portuguese media
+  aliases (for example, video, carousel, post, podcast, article, text, or
+  audio). Every other word must be a bounded format modifier or an internal
+  connector; a phrase cannot begin or end with a stop word. Each phrase must
+  resolve to exactly one canonical format family. The two phrases must have
+  distinct non-generic stems in both directions after local singular/plural,
+  English/Portuguese alias, and modifier normalization. The canonical
+  representation uses one comma;
+  the prior slash
+  representation remains accepted for backward compatibility under the same
+  checks. Extra grounding words, a selected term appearing only as a format, a
+  translated substitute, a third item, a newline or other line/control
+  separator, mixed separators, prose-only items, or extra prose are rejected. The
+  server returns the model's answer value unchanged. A JSON-complete,
+  provider-complete response in either certified two-format representation is
   accepted as a complete compact list even when the model omits only terminal
   punctuation; hanging conjunctions, missing formats, repeated formats, and
   semantic fragments remain rejected. Larger contexts and requests without
