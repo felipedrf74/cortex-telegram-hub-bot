@@ -112,7 +112,7 @@ One page for operating the production chat-quality loop (M22).
   prefix instead of copying raw saved messages into the narrow generation
   prompt. The current request remains verbatim so its constraints are not
   discarded. The canonical release-eval compact message envelope is
-  regression-tested at no more than 500 characters. The mode uses a
+  regression-tested at no more than 420 characters. The mode uses a
   1024-token context, 32-token output cap, and a one-property `a` object
   containing a 24–64 character answer, with a 62-character answer target. The
   prompt instructs the model to copy the prefix, including the request terms

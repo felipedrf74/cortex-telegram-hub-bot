@@ -1556,7 +1556,7 @@ describe('OllamaProvider — scoped state context', () => {
       expect(compactPrompt).not.toContain('<format>');
       expect(compactPrompt).not.toMatch(/\b(?:vídeo|carrossel)\b/iu);
       expect(compactPrompt).not.toMatch(/\b(?:editing|library|reference)\b/iu);
-      expect(compactPrompt.length).toBeLessThanOrEqual(500);
+      expect(compactPrompt.length).toBeLessThanOrEqual(420);
       expect(result.stopReason).toBe('stop');
       expect(result.text).toBe(answer);
       expect(result.text).toContain(groundingTerm);
@@ -2134,6 +2134,9 @@ describe('OllamaProvider — scoped state context', () => {
       };
     };
     const serializedRequest = JSON.stringify(request);
+    const compactAuthorizedPrompt = request.messages
+      .map((message) => message.content)
+      .join('\n');
     expect(serializedRequest).toContain(
       'AUTHORIZED_GROUNDING_TERM: backlog',
     );
@@ -2156,10 +2159,14 @@ describe('OllamaProvider — scoped state context', () => {
     expect(request.messages[0]?.content).toContain(
       'Copy OUTPUT_PREFIX exactly',
     );
-    expect(request.messages[0]?.content).toContain('append two different short format nouns');
     expect(request.messages[0]?.content).toContain(
-      'maximum 62 characters',
+      'append two different one-word content formats',
     );
+    expect(request.messages[0]?.content).toContain('Include both');
+    expect(request.messages[0]?.content).toContain(
+      'max 62 chars',
+    );
+    expect(compactAuthorizedPrompt.length).toBeLessThanOrEqual(420);
     expect(result.text).toBe(modelAnswer);
     expect(result.providerMetadata).toMatchObject({
       responseConstruction: 'model_authored_structured_answer',

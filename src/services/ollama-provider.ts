@@ -530,9 +530,9 @@ function modelAuthoredContentLanguageInstruction(
   }
   if (shortMode === 'authorizedIdeas') {
     return [
-      `Use ${language} for both format nouns.`,
-      'Copy OUTPUT_PREFIX exactly, then append two different short format nouns separated by `/`.',
-      'Do not stop at the prefix. Finish with `.`; maximum 62 characters.',
+      `Use ${language}.`,
+      'Copy OUTPUT_PREFIX exactly; append two different one-word content formats with `/`.',
+      'Include both; end `.`; max 62 chars.',
     ].join(' ');
   }
   return [
