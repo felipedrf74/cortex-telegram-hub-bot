@@ -1795,7 +1795,7 @@ describe('OllamaProvider — scoped state context', () => {
   });
 
   it('uses a model-authored structured answer for the exact current-turn-only comparison', async () => {
-    const modelAnswer = 'Broad narrative is for reach; tailored fits niches.';
+    const modelAnswer = 'Broad narrative is for everyone; tailored fits specific audience.';
     fetchMock
       .mockResolvedValueOnce(makeChatResponse({
         content: modelAuthoredComparisonJson(modelAnswer),
@@ -1836,7 +1836,7 @@ describe('OllamaProvider — scoped state context', () => {
     expect(request.format?.required).toEqual(['a']);
     expect(request.format?.properties?.a).toMatchObject({
       minLength: 24,
-      maxLength: 56,
+      maxLength: 66,
     });
     expect(request.format?.properties?.a?.pattern).toBeUndefined();
     expect(request.options).toMatchObject({ num_ctx: 1024, num_predict: 24 });
@@ -1845,7 +1845,7 @@ describe('OllamaProvider — scoped state context', () => {
     );
     expect(request.messages[0]?.content).toContain('different concrete one-word conditions');
     expect(request.messages[0]?.content).toContain(
-      'at most 8 words and 54 characters including the final period',
+      'End with a period; use at most 64 characters including the final period',
     );
     expect(serializedRequest).not.toContain(modelAnswer);
     expect(serializedRequest).not.toContain('PRIVATE_SAVED_HISTORY');

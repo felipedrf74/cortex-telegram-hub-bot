@@ -333,7 +333,7 @@ function resolveRoutineContentNoticeLanguage(
 
 const MODEL_AUTHORED_CONTENT_MAX_CHARS = 480;
 const MODEL_AUTHORED_CONTENT_MAX_OUTPUT_TOKENS = 192;
-const MODEL_AUTHORED_SHORT_COMPARISON_MAX_CHARS = 56;
+const MODEL_AUTHORED_SHORT_COMPARISON_MAX_CHARS = 66;
 const MODEL_AUTHORED_SHORT_COMPARISON_MAX_OUTPUT_TOKENS = 24;
 const MODEL_AUTHORED_SHORT_AUTHORIZED_IDEAS_MAX_CHARS = 56;
 const MODEL_AUTHORED_SHORT_AUTHORIZED_IDEAS_MAX_OUTPUT_TOKENS = 32;
@@ -528,7 +528,7 @@ function modelAuthoredContentLanguageInstruction(
     return [
       `Write \`a\` only in ${language}.`,
       `Format \`a\` as “${comparisonOpening} is for <condition>; ${secondLabel} fits <condition>.”`,
-      'Replace both placeholders with different concrete one-word conditions; use at most 8 words and 54 characters including the final period.',
+      'Replace both placeholders with different concrete one-word conditions. End with a period; use at most 64 characters including the final period.',
     ].join(' ');
   }
   if (shortMode === 'authorizedIdeas') {
