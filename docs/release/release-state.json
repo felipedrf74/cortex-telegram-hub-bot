@@ -1,12 +1,12 @@
 {
   "schema": "nexus.release-state.v1",
-  "lastVerifiedAt": "2026-07-29T21:33:11Z",
-  "docsHead": "161ec7ccd3e56740c38597f82dbd9e4a8bc8fe65",
+  "lastVerifiedAt": "2026-07-31T16:31:12Z",
+  "docsHead": "pending_content_commit",
   "backend": {
     "version": "4.14.231",
-    "runtimeSha": "e256df55c446b527e697bcc820d7a05a43994bdd",
-    "artifactDigest": "8ffeb5242f65f1c23a20f516a0f742ba4382894ff5dbbcbde5bb054da2821599",
-    "installedDigest": "0ded675736021e31675f5c95cda89055efaff3daaf811ea6b1e3569c0cde226f",
+    "runtimeSha": "77f92f6deb39f7419c24e73426fd338e6529b490",
+    "artifactDigest": "93e499e1fa819978f513bd4868fa23b1feb1706645013a5277e20121728b76b1",
+    "installedDigest": "ce2014ae2398e10c287e9f2936f05dda98e9d2e77129d7a64401c872ac07259c",
     "health": "healthy",
     "database": "connected",
     "pm2Processes": [
@@ -14,17 +14,17 @@
       "content-engine"
     ],
     "releaseEvidence": {
-      "protectedMainRun": "30489283375",
-      "releaseCheckpointRun": "30489971397",
-      "manifestSha256": "7231f33f113f4b849071591273fccf411a29defa5c2ff0fd65be219e0565f42c",
-      "stagingTransaction": "20260729T205611Z-9a917c1fec9a",
-      "productionTransaction": "20260729T213156Z-24440bb90a0d",
-      "productionCompletedAt": "2026-07-29T21:33:11.017Z",
-      "transactionSeconds": 73.525,
-      "readinessSeconds": 11.879,
-      "soakSeconds": 61.646,
-      "backup": "nexus-db-20260729T213204Z.sqlite.age",
-      "backupEncryptedSha256": "ae218a52c32b57e48103327c1f62e57f45fdcf9a592ec0cbca2c31337b65c069",
+      "protectedMainRun": "30644753549",
+      "releaseCheckpointRun": "30645655928",
+      "manifestSha256": "f5049c97ec870e60750f6c16e335cfca5d9208265732d965a0c4059821294f5a",
+      "stagingTransaction": "20260731T162318Z-b43ce4561ee3",
+      "productionTransaction": "20260731T162955Z-dc9b4daab9c8",
+      "productionCompletedAt": "2026-07-31T16:31:12.334Z",
+      "transactionSeconds": 74.549,
+      "readinessSeconds": 12.784,
+      "soakSeconds": 61.764,
+      "backup": "nexus-db-20260731T163005Z.sqlite.age",
+      "backupEncryptedSha256": "6b4748a09c2a3708bc7ea974a84a0344ce4dd71fe9698641c586e5dce39610cc",
       "rollback": "not_required"
     }
   },
@@ -73,8 +73,8 @@
     "targetManifestSchema": "nexus.release-checksum-manifest.v1",
     "leanActivation": "active_first_staging_and_production_proof_passed",
     "exactArtifactPath": "proven",
-    "stagingRehearsals": 13,
-    "ownerAuthorizedProductionReleases": 9,
+    "stagingRehearsals": 14,
+    "ownerAuthorizedProductionReleases": 10,
     "legacyWrappers": "retired",
     "firstProofRelease": {
       "version": "4.14.231",
@@ -92,7 +92,7 @@
       "soakSeconds": 61.636
     },
     "timingObservation": {
-      "observedReleases": 3,
+      "observedReleases": 4,
       "requiredReleases": 10,
       "status": "collecting",
       "baselineReadinessSeconds": 1180,
@@ -143,21 +143,33 @@
           "stagingTransactionSeconds": 26.324,
           "productionTransactionSeconds": 73.525,
           "promotionOutcome": "passed"
+        },
+        {
+          "runtimeSha": "77f92f6deb39f7419c24e73426fd338e6529b490",
+          "protectedMainRun": "30644753549",
+          "releaseCheckpointRun": "30645655928",
+          "mainSeconds": 259,
+          "unattendedHandoffSeconds": 493,
+          "checkpointSeconds": 317,
+          "automatedReadinessSeconds": 1069,
+          "stagingTransactionSeconds": 26.44,
+          "productionTransactionSeconds": 74.549,
+          "promotionOutcome": "passed"
         }
       ],
       "provisionalNearestRank": {
         "stable": false,
         "mainSeconds": {
-          "p50": 620,
+          "p50": 421,
           "p95": 992
         },
         "unattendedHandoffSeconds": {
           "p50": 29,
-          "p95": 65
+          "p95": 493
         },
         "checkpointSeconds": {
           "p50": 212,
-          "p95": 261
+          "p95": 317
         },
         "automatedReadinessSeconds": {
           "p50": 850,

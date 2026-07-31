@@ -5,44 +5,43 @@ Machine-readable truth: `docs/release/release-state.json`.
 ## Production
 
 - Backend version: `4.14.231`
-- Runtime commit: `e256df55c446b527e697bcc820d7a05a43994bdd`
-- Artifact digest: `8ffeb5242f65f1c23a20f516a0f742ba4382894ff5dbbcbde5bb054da2821599`
-- Installed-tree digest: `0ded675736021e31675f5c95cda89055efaff3daaf811ea6b1e3569c0cde226f`
+- Runtime commit: `77f92f6deb39f7419c24e73426fd338e6529b490`
+- Artifact digest: `93e499e1fa819978f513bd4868fa23b1feb1706645013a5277e20121728b76b1`
+- Installed-tree digest: `ce2014ae2398e10c287e9f2936f05dda98e9d2e77129d7a64401c872ac07259c`
 - Training catalog package: `51c1089cceb8a916abf200b5cb3688b19f5f7553990467ee0f8ef01c7c4f74bb`
 - Training release subject: `27b97ebc96e1b3bb1ee3612e63c5609b5572c9d4b58e59b8ea3e77642fb1cea3`
-- Production transaction `20260729T213156Z-24440bb90a0d` completed at `2026-07-29T21:33:11.017Z`.
+- Production transaction `20260731T162955Z-dc9b4daab9c8` completed at `2026-07-31T16:31:12.334Z`.
 - Backend/content health, exact PM2 identity, artifact parity, authenticated
   smoke, migration startup, SQLite integrity, foreign keys,
   pre-promotion backup, rollback readiness, and the 60-second soak passed.
-- The transaction took 73.525 seconds: 11.879 seconds to readiness and a
-  measured 61.646-second soak.
-- Rollback was armed but not required; backup: `nexus-db-20260729T213204Z.sqlite.age`.
+- The transaction took 74.549 seconds: 12.784 seconds to readiness and a
+  measured 61.764-second soak.
+- Rollback was armed but not required; backup: `nexus-db-20260731T163005Z.sqlite.age`.
 
 ## Artifact-Bound Evidence
 
-- Protected-main run: `30489283375`
-- Release-checkpoint run: `30489971397`
-- Compact manifest SHA-256: `7231f33f113f4b849071591273fccf411a29defa5c2ff0fd65be219e0565f42c`
-- Staging transaction: `20260729T205611Z-9a917c1fec9a`
-- Production transaction: `20260729T213156Z-24440bb90a0d`
-- Encrypted backup SHA-256: `ae218a52c32b57e48103327c1f62e57f45fdcf9a592ec0cbca2c31337b65c069`
+- Protected-main run: `30644753549`
+- Release-checkpoint run: `30645655928`
+- Compact manifest SHA-256: `f5049c97ec870e60750f6c16e335cfca5d9208265732d965a0c4059821294f5a`
+- Staging transaction: `20260731T162318Z-b43ce4561ee3`
+- Production transaction: `20260731T162955Z-dc9b4daab9c8`
+- Encrypted backup SHA-256: `6b4748a09c2a3708bc7ea974a84a0344ce4dd71fe9698641c586e5dce39610cc`
 - Evidence remains in ignored `.local/release/`, server state, and restricted
   CI artifacts; this summary is not reusable promotion evidence.
 
 ## Lean-Release Measurement
 
-- Current sample: main 10m20s (miss), unattended handoff 18s (pass), checkpoint
-  3m32s (pass), and automated readiness 14m10s.
-- Selected/remainder/union was `7,328/8,628/15,956`; the partitions were
-  disjoint and every deterministic case ran exactly once.
-- Three of ten releases are measured. Nearest-rank provisional p50/p95 values
-  are 10m20s/16m32s for main, 29s/1m05s for unattended handoff,
-  3m32s/4m21s for the checkpoint, and 14m10s/19m01s for automated readiness.
-  The sample is not yet stable.
+- Current sample: main 4m19s (pass), unattended handoff 8m13s (miss), checkpoint
+  5m17s (pass), and automated readiness 17m49s.
+- Selected/remainder/union was `1,984/14,207/16,191` tests across
+  `143/951/1,094` files; partitions were disjoint and complete.
+- Four of ten releases are measured. Nearest-rank provisional p50/p95 values
+  are 7m01s/16m32s for main, 29s/8m13s for unattended handoff,
+  3m32s/5m17s for the checkpoint, and 14m10s/19m01s for automated readiness; the sample is not yet stable.
 - The exact-`e256` cold core pack passed with files/cases `6/124` in 13.657
   seconds (14s wall) against 30s; one sample does not establish local p50/p95.
-- Against the 19m40s readiness baseline, the provisional median improvement is
-  5m30s (27.97%). Promotion passed for all three observed releases; review for
+- Against the 19m40s readiness baseline, provisional median improvement is
+  5m30s (27.97%). Promotion passed for all four observed releases; review for
   escaped critical defects remains in monitoring and makes no zero-defect claim.
 - The protected-main artifact was reused unchanged. Staging and production ran
   no build, dependency installation, Vitest, Python test suite, or Sonar work.
@@ -97,4 +96,5 @@ expiry, and post-retention bucket deletion require explicit owner authorization.
   one local Ctrl-C interrupted polling. No post-disconnect active sample was
   captured because the unit completed before that read; the same transaction
   completed remotely and identical promote reused it without a second unit.
-- Three of ten releases are measured; no p50 or p95 target is stable yet.
+- Current staging first refused before mutation on a transient predecessor health
+  timeout; the fault drill restored the predecessor in 2.699s, then normal staging passed.
