@@ -43,6 +43,13 @@ export interface ReadinessFactors {
 
 export type ReadinessRecommendation = 'full_intensity' | 'reduce_10pct' | 'reduce_25pct' | 'active_recovery' | 'rest_day';
 export type ReadinessReasonCode = 'WEARABLE_INTEGRATION_MISSING';
+
+/**
+ * Placeholder reported for a factor that was not measured. It is shown so the
+ * factor breakdown stays shape-stable for clients, but it is excluded from
+ * composites — see the HRV handling in `calculateAppleHealthReadiness`.
+ */
+const NEUTRAL_FACTOR_SCORE = 60;
 /**
  * `fitbit` is additive. Fitbit declares `readiness: true`, implements
  * `getReadiness`, and sits in `READINESS_PRIORITY`, but the fallback branch
@@ -404,7 +411,7 @@ export function deriveAppleHealthSleepScore(
  */
 export function deriveBodyBatteryEquivalent(
   sleepScore: number,
-  hrvScore: number,
+  hrvScore: number | null,
   rhrBpm: number | null,
   rhrBaselineBpm: number | null,
 ): number {
@@ -414,6 +421,15 @@ export function deriveBodyBatteryEquivalent(
     const delta = rhrBpm - rhrBaselineBpm;
     // At baseline: 80, 5 above: 50, 10 above: 20, 5 below: 95
     rhrScore = clamp(Math.round(80 - delta * 6), 0, 100);
+  }
+
+  // Garmin does not publish HRV Status to Apple Health, so a Garmin-only iOS
+  // user has no HRV rows at all. Redistribute HRV's weight across the signals
+  // that were actually measured instead of substituting a placeholder, which
+  // the composite would then consume as if it were real.
+  if (hrvScore == null) {
+    const measuredWeight = 0.40 + 0.30;
+    return clamp(Math.round((sleepScore * 0.40 + rhrScore * 0.30) / measuredWeight), 0, 100);
   }
 
   return clamp(Math.round(
@@ -502,7 +518,12 @@ async function calculateAppleHealthReadiness(
       .filter((v: number) => v > 0);
     const weeklyHrv = hrvValues.length > 0 ? hrvValues.reduce((a: number, b: number) => a + b, 0) / hrvValues.length : todayHrv;
     const hrvTrend: 'up' | 'stable' | 'down' = todayHrv > weeklyHrv * 1.05 ? 'up' : todayHrv < weeklyHrv * 0.95 ? 'down' : 'stable';
-    const hrvScoreVal = scoreHrv(todayHrv || 60, weeklyHrv || 60);
+    // Garmin syncs sleep, steps, workouts and RHR to Apple Health but NOT HRV
+    // Status, so a Garmin-only iOS user has no HRV rows. `scoreHrv(60, 60)`
+    // returns 70 — a healthy-looking number — which then fed both the composite
+    // and the derived body battery as though it had been measured.
+    const hasMeasuredHrv = todayHrv > 0 || hrvValues.length > 0;
+    const hrvScoreVal = hasMeasuredHrv ? scoreHrv(todayHrv || 60, weeklyHrv || 60) : NEUTRAL_FACTOR_SCORE;
 
     // ── Sleep ──
     const sleepData = sleepRow ? parseAppleHealthDataJson(sleepRow, userId) : null;
@@ -528,7 +549,12 @@ async function calculateAppleHealthReadiness(
     const rhrBaseline = rhrValues.length > 0 ? rhrValues.reduce((a: number, b: number) => a + b, 0) / rhrValues.length : null;
 
     // ── Derived Body Battery ──
-    const derivedBB = deriveBodyBatteryEquivalent(derivedSleepScore, hrvScoreVal, todayRhr, rhrBaseline);
+    const derivedBB = deriveBodyBatteryEquivalent(
+      derivedSleepScore,
+      hasMeasuredHrv ? hrvScoreVal : null,
+      todayRhr,
+      rhrBaseline,
+    );
 
     const summary = summaryRow ? parseAppleHealthDataJson(summaryRow, userId) : null;
     const calories = caloriesRow ? parseAppleHealthDataJson(caloriesRow, userId) : null;
@@ -554,12 +580,18 @@ async function calculateAppleHealthReadiness(
     const loadScore = scoreAcwr(acwr);
 
     // ── Composite ──
-    const compositeScore = clamp(Math.round(
-      hrvScoreVal * 0.30 +
-      sleepScoreVal * 0.30 +
-      bbScore * 0.20 +
-      loadScore * 0.20
-    ), 0, 100);
+    // Without measured HRV, renormalise over the signals that exist rather
+    // than letting a placeholder carry 30% of the score.
+    const compositeScore = hasMeasuredHrv
+      ? clamp(Math.round(
+        hrvScoreVal * 0.30 +
+        sleepScoreVal * 0.30 +
+        bbScore * 0.20 +
+        loadScore * 0.20
+      ), 0, 100)
+      : clamp(Math.round(
+        (sleepScoreVal * 0.30 + bbScore * 0.20 + loadScore * 0.20) / 0.70
+      ), 0, 100);
 
     const factors: ReadinessFactors = {
       hrv: { todayMs: todayHrv, sevenDayAvgMs: weeklyHrv, trend: hrvTrend, score: hrvScoreVal },
@@ -569,7 +601,13 @@ async function calculateAppleHealthReadiness(
     };
 
     const recommendation = getRecommendation(compositeScore);
-    const reasoning = `Apple Health is driving today's readiness. ${buildReasoning(factors, recommendation)}`;
+    // Say so when a pillar is missing. Garmin-only iOS users have no HRV in
+    // HealthKit, and a score that silently rests on two of three recovery
+    // signals should not read as confidently as a complete one.
+    const hrvCaveat = hasMeasuredHrv
+      ? ''
+      : ' No HRV in Apple Health — recovery is inferred from sleep and resting heart rate only.';
+    const reasoning = `Apple Health is driving today's readiness. ${buildReasoning(factors, recommendation)}${hrvCaveat}`;
 
     if (opts.publishSignals !== false) {
       // Publish signals (same as Garmin path)

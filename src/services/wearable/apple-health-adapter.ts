@@ -268,7 +268,12 @@ export class AppleHealthAdapter implements WearableAdapter {
         const deepSleepMin = sleep ? ((parseMetricValue(sleep, 'deepSleepSeconds') ?? ((parseMetricValue(sleep, 'deepMinutes') ?? 0) * 60)) / 60) : 0;
         const remSleepMin = sleep ? ((parseMetricValue(sleep, 'remSleepSeconds') ?? ((parseMetricValue(sleep, 'remMinutes') ?? 0) * 60)) / 60) : 0;
 
-        const hrvScoreVal = scoreHrv(hrvMs ?? 60, hrvBaseline);
+        // Garmin does not publish HRV Status to Apple Health, so a Garmin-only
+        // iOS user has no HRV rows at all. `scoreHrv(60, ...)` hands back a
+        // healthy-looking number that the energy-reserve derivation would then
+        // consume as measured; pass null so it redistributes instead.
+        const hasMeasuredHrv = (hrvMs ?? 0) > 0 || hrvValues.length > 0;
+        const hrvScoreVal = hasMeasuredHrv ? scoreHrv(hrvMs ?? 60, hrvBaseline) : null;
         const sleepScore = totalSleepMin > 0
           ? deriveAppleHealthSleepScore(totalSleepMin, deepSleepMin, remSleepMin)
           : null;
@@ -299,12 +304,15 @@ export class AppleHealthAdapter implements WearableAdapter {
         if (hrvMs != null || sleepScore != null) {
           const { scoreBodyBattery, scoreAcwr } = require('../readiness-scorer');
           const bbScore = currentEnergyReserve != null ? scoreBodyBattery(currentEnergyReserve) : 60;
-          readinessScore = Math.round(
-            hrvScoreVal * 0.30 +
-            (sleepScore != null ? scoreSleep(totalSleepMin / 60, sleepScore) : 60) * 0.30 +
-            bbScore * 0.20 +
-            60 * 0.20  // ACWR needs workout data — use neutral for getReadiness
-          );
+          const sleepWeighted = (sleepScore != null ? scoreSleep(totalSleepMin / 60, sleepScore) : 60) * 0.30;
+          const bbWeighted = bbScore * 0.20;
+          const loadWeighted = 60 * 0.20; // ACWR needs workout data — neutral for getReadiness
+          readinessScore = hrvScoreVal != null
+            ? Math.round(hrvScoreVal * 0.30 + sleepWeighted + bbWeighted + loadWeighted)
+            // No measured HRV: renormalise over the remaining weight rather
+            // than letting a null collapse the term to zero, which would read
+            // as a catastrophically low recovery score.
+            : Math.round((sleepWeighted + bbWeighted + loadWeighted) / 0.70);
         }
       } catch {
         // Scoring functions unavailable — leave as null (backward compat)

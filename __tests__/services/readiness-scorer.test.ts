@@ -603,6 +603,36 @@ describe('readiness-scorer — calculateReadiness', () => {
     expect(Number.isFinite(Date.parse(result.asOf ?? ''))).toBe(true);
   });
 
+  // A Garmin-only iOS user syncs sleep, RHR, steps and workouts to Apple
+  // Health but never HRV — Garmin does not publish HRV Status to HealthKit.
+  describe('Apple Health without HRV (Garmin-only iOS user)', () => {
+    it('says the score rests on fewer signals', async () => {
+      clearGarminConnection(1);
+      seedAppleHealthData(1, ['sleep', 'rhr', 'summary']);
+
+      const result = await calculateReadiness(1);
+      expect(result.source).toBe('apple_health');
+      expect(result.reasoning).toContain('No HRV in Apple Health');
+    });
+
+    it('does not claim an HRV measurement it never received', async () => {
+      clearGarminConnection(1);
+      seedAppleHealthData(1, ['sleep', 'rhr', 'summary']);
+
+      const result = await calculateReadiness(1);
+      expect(result.factors.hrv.todayMs).toBe(0);
+      expect(result.factors.hrv.sevenDayAvgMs).toBe(0);
+    });
+
+    it('keeps the caveat off a score that does have HRV', async () => {
+      clearGarminConnection(1);
+      seedAppleHealthData(1);
+
+      const result = await calculateReadiness(1);
+      expect(result.reasoning).not.toContain('No HRV in Apple Health');
+    });
+  });
+
   it('stamps source estimated on the neutral no-wearable fallback', async () => {
     clearGarminConnection(1);
 
