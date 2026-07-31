@@ -530,7 +530,7 @@ function modelAuthoredContentLanguageInstruction(
   if (shortMode === 'authorizedIdeas') {
     return [
       `Use ${language}.`,
-      'Copy PREFIX exactly; append two distinct one-word content formats with `/`.',
+      'Copy OUTPUT_PREFIX exactly; append two distinct one-word content formats with `/`.',
       'Include both; end `.`; max 62 chars.',
     ].join(' ');
   }
@@ -1564,7 +1564,7 @@ export class OllamaProvider implements AIProvider {
       messages.push({
         role: 'user',
         content: [
-          `PREFIX: ${outputPrefix}`,
+          `OUTPUT_PREFIX: ${outputPrefix}`,
           `REQUEST: ${currentMessage}`,
         ].join('\n'),
       });
