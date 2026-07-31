@@ -241,6 +241,20 @@ describe('WebSocket security boundary helpers', () => {
     expect(source).toContain("actionStatus: 'ACTION_CONFIRMATION_REQUIRED'");
   });
 
+  it('terminates explicit manifest-classifier outcomes before skill orchestration and domain handlers', () => {
+    const source = fs.readFileSync(path.resolve(__dirname, '../../src/api/websocket.ts'), 'utf8');
+    const routerIndex = source.indexOf('const rawRoute = await routeMessage');
+    const terminalIndex = source.indexOf('const classifierTerminal = buildManifestClassifierTerminalResponse(');
+    const orchestratorIndex = source.indexOf('const routingDecision = analyzeChatSkillOrchestration', routerIndex);
+    const handlerIndex = source.indexOf('const handlers = getDomainHandlers()', routerIndex);
+
+    expect(routerIndex).toBeGreaterThan(-1);
+    expect(terminalIndex).toBeGreaterThan(routerIndex);
+    expect(terminalIndex).toBeLessThan(orchestratorIndex);
+    expect(terminalIndex).toBeLessThan(handlerIndex);
+    expect(source).toContain("type: 'chat_manifest_classifier_terminal'");
+  });
+
   it('binds Spanish-authored deterministic reads and action previews to English under a stored Portuguese locale', () => {
     expect(
       resolveWebSocketResponseLocale('pt-BR', '¿Qué tareas tengo para mañana?'),

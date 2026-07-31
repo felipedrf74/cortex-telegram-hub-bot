@@ -46,6 +46,7 @@ import {
   type IntentCandidate,
   type IntentResolutionContext,
 } from '../services/intent-resolution/intent-resolver';
+import type { ClassifierDisposition } from '../domains/types';
 
 // ─── Rollout flag ───────────────────────────────────────────────────
 
@@ -85,6 +86,19 @@ export function isManifestClassifierPromptEnabled(env: EnvLike = process.env): b
   if (manifestClassifierPromptRuntimeForceDisabled) return false;
   if (parseBoolean(env[MANIFEST_ROUTING_MASTER_KILL_ENV_VAR])) return false;
   return parseBoolean(env[MANIFEST_CLASSIFIER_PROMPT_ENV_VAR]);
+}
+
+/**
+ * Resolve a model label as an explicit manifest-classifier terminal outcome.
+ * The flag check is part of this boundary: stray `clarify` / `none` labels on
+ * the legacy prompt path retain their historical provider fallback behavior.
+ */
+export function resolveManifestClassifierDisposition(
+  domain: unknown,
+  env: EnvLike = process.env,
+): ClassifierDisposition | null {
+  if (!isManifestClassifierPromptEnabled(env)) return null;
+  return domain === 'clarify' || domain === 'none' ? domain : null;
 }
 
 // ─── NL-reachability ────────────────────────────────────────────────
@@ -187,12 +201,13 @@ export function buildManifestClassifierPrompt(
     'CRITICAL: Your entire response must be a raw JSON object only. DO NOT use markdown code fences (no ```json or ```). DO NOT include any text before or after the JSON object.',
     '',
     'Response format — fields:',
-    '- "domain" (required): one of the domain ids listed above.',
-    '- "skill" (optional): one of the skills listed for the chosen domain. Omit when unsure.',
+    '- "domain" (required): one of the domain ids listed above, or the explicit terminal outcome "clarify" or "none".',
+    '- Use "clarify" only when the request is ambiguous between supported actions and choosing a real domain would guess the user\'s intent.',
+    '- Use "none" only when the request does not map to a supported Nexus capability.',
+    '- "skill" (optional): one of the skills listed for the chosen real domain. Omit when unsure. Omit "skill" for "clarify" and "none".',
     '- "confidence" (required): a number from 0 to 1.',
     'Example: {"domain": "secretary", "skill": "tasks", "confidence": 0.95}',
-    '',
-    'If confidence < 0.6, use "secretary" as default (it handles general coordination).',
+    'Safe terminal examples: {"domain": "clarify", "confidence": 0.91} / {"domain": "none", "confidence": 0.96}',
   ];
   return lines.join('\n');
 }

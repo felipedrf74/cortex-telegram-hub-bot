@@ -21,10 +21,15 @@
 #        Existing 17/17 staging-process smoke. Confirms /health,
 #        /api/snapshot, /api/cost-by-domain, etc. on the staging
 #        process. Required precondition for exact promotion.
-#   5. training-cross-skill-staging-smoke.sh
+#   5. training-cross-skill-staging-smoke.sh --dry-run
 #        Cross-skill training fixture smoke. Confirms training engine
 #        + agenda orchestration + secretary calendar lifecycle stay
 #        green together.
+#        NON-EVIDENTIARY: this aggregator runs from a source checkout,
+#        so the leg runs in --dry-run mode. Its staging runtime section
+#        is blocked by design and its receipt is never staging proof.
+#        Real staging proof comes from running that wrapper directly
+#        against an installed release with NEXUS_RELEASE_BASE_DIR set.
 #
 # Failure semantics: any single smoke exiting non-zero fails the
 # whole aggregator with the failed script's exit code. Aggregator
@@ -40,7 +45,7 @@
 #
 # Pre-requisites the operator must arrange before running:
 #   - Local backend running on 8200, staging running on 8201 (for
-#     legs 4 and 5).
+#     leg 4). Leg 5 is a source-checkout dry-run and needs neither.
 #   - PORTAL_ADMIN_TOKEN env var for chat-tenant-security-smoke.js.
 #   - IOS_INVITE_CODE env var (default LOCAL-BETA-2026).
 #   - TOKEN env var (or --token-file) for authenticated-api-smoke.sh.
@@ -138,9 +143,23 @@ run_leg "03-authenticated-api-smoke" "$SKIP_AUTH_API" \
 run_leg "04-staging-smoke" "$SKIP_STAGING" \
   ./scripts/staging-smoke.sh
 
-# Leg 5: cross-skill training smoke
-run_leg "05-training-cross-skill-staging-smoke" "$SKIP_TRAINING_XSKILL" \
-  ./scripts/training-cross-skill-staging-smoke.sh
+# Leg 5: cross-skill training fixtures (non-evidentiary dry-run).
+# This aggregator runs from a source checkout, which has no verified
+# .complete.json release marker, so the wrapper refuses staging proof
+# (exit 3) unless --dry-run is passed. Exit 2 means the staging runtime
+# section was blocked by design — expected here, not a leg failure.
+training_cross_skill_fixture_dry_run() {
+  ./scripts/training-cross-skill-staging-smoke.sh --dry-run
+  local rc=$?
+  if [ "$rc" -eq 2 ]; then
+    echo "Cross-skill fixtures ran; staging runtime section blocked by design in dry-run (non-evidentiary)."
+    return 0
+  fi
+  return "$rc"
+}
+
+run_leg "05-training-cross-skill-fixtures-dry-run" "$SKIP_TRAINING_XSKILL" \
+  training_cross_skill_fixture_dry_run
 
 # Summary
 echo

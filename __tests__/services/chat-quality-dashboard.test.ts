@@ -67,7 +67,9 @@ function makeSuiteResult(overrides: Partial<Record<string, unknown>> = {}): Chat
     passed: true,
     averageScore: 0.9,
     scenarioCount: 2,
-    statusCounts: { pass: 2, partial: 0, fail: 0, blocked: 0 },
+    // Must agree with the `scenarios` array below (one pass, one partial):
+    // freezing now cross-checks declared aggregates against scenario evidence.
+    statusCounts: { pass: 1, partial: 1, fail: 0, blocked: 0 },
     qualityMetrics: [
       { id: 'routeAccuracy', label: 'Route accuracy', source: 'chat_route_metadata', privacy: 'categorical_only', target: '>= 0.95' },
     ],
@@ -242,6 +244,7 @@ function costEvidence(
 
 function preflight(runId: string, scenarioIds: string[]): Record<string, unknown> {
   return {
+    deployedRelease: { runtimeSha: 'c'.repeat(40), artifactDigest: 'd'.repeat(64), role: 'staging' },
     contractVersion: 'chat-live-eval-v1',
     mode: 'real_provider',
     runId,
@@ -518,6 +521,8 @@ describe('chat quality dashboard', () => {
       runId: baselineId,
       gitBranch: 'main',
       gitCommit: 'a'.repeat(40),
+      jsonReportPath: `docs/release/eval-evidence/${baselineId}.json`,
+      markdownReportPath: `docs/release/eval-evidence/${baselineId}.md`,
       budgetUsd: 0.5,
       realProviderCalls: 2,
       costAttestation: costEvidence(['scenario-a', 'scenario-b'], 0.016, 0.5),
@@ -527,6 +532,8 @@ describe('chat quality dashboard', () => {
       runId: baselineId,
       evidenceJsonPath: `docs/release/eval-evidence/${baselineId}.json`,
       evidenceMarkdownPath: `docs/release/eval-evidence/${baselineId}.md`,
+      evidenceJsonSha256: 'e'.repeat(64),
+      evidenceMarkdownSha256: 'f'.repeat(64),
       runtime: { nodeEnv: 'staging', staging: 'true' },
     });
 

@@ -264,10 +264,19 @@ function isAllowlistedShadowContextPack(contextPack: Record<string, unknown>): b
 const ALLOWED_ROUTING_DIVERGENCE_KEYS = new Set([
   'divergenceVersion',
   'resolverVersion',
+  'releaseIdentity',
+  'capabilityFlags',
   'topCandidate',
   'candidateCount',
   'surfaces',
   'agreement',
+]);
+const ALLOWED_ROUTING_DIVERGENCE_CAPABILITY_FLAG_KEYS = new Set([
+  'classifierKeyword',
+  'orchestratorPrimary',
+  'registrySubset',
+  'shadowRoute',
+  'masterKill',
 ]);
 const ALLOWED_ROUTING_DIVERGENCE_TOP_KEYS = new Set([
   'capabilityId',
@@ -289,6 +298,44 @@ const ALLOWED_ROUTING_DIVERGENCE_AGREEMENT_KEYS = new Set([
   'registrySubset',
   'shadowRoute',
 ]);
+const ALLOWED_ROUTING_DIVERGENCE_RELEASE_IDENTITY_KEYS = new Set([
+  'runtimeSha',
+  'artifactDigest',
+  'role',
+]);
+const FULL_RUNTIME_SHA = /^[0-9a-f]{40}$/;
+const FULL_ARTIFACT_DIGEST = /^[0-9a-f]{64}$/;
+
+function isSafeRoutingDivergenceReleaseIdentity(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record);
+  if (
+    keys.length !== ALLOWED_ROUTING_DIVERGENCE_RELEASE_IDENTITY_KEYS.size
+    || !keys.every((key) => ALLOWED_ROUTING_DIVERGENCE_RELEASE_IDENTITY_KEYS.has(key))
+  ) {
+    return false;
+  }
+  return typeof record.runtimeSha === 'string'
+    && FULL_RUNTIME_SHA.test(record.runtimeSha)
+    && typeof record.artifactDigest === 'string'
+    && FULL_ARTIFACT_DIGEST.test(record.artifactDigest)
+    && (record.role === 'staging' || record.role === 'production');
+}
+
+/**
+ * Capability-flag state is booleans only: it records which manifest surfaces
+ * were live when the bundle was captured, so the divergence gate can refuse
+ * evidence a surface produced about itself.
+ */
+function isSafeRoutingDivergenceCapabilityFlags(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record);
+  return keys.length === ALLOWED_ROUTING_DIVERGENCE_CAPABILITY_FLAG_KEYS.size
+    && keys.every((key) => ALLOWED_ROUTING_DIVERGENCE_CAPABILITY_FLAG_KEYS.has(key))
+    && keys.every((key) => typeof record[key] === 'boolean');
+}
 
 function isSafeRoutingDivergence(value: unknown): boolean {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -307,6 +354,10 @@ function isSafeRoutingDivergence(value: unknown): boolean {
     if (!ALLOWED_ROUTING_DIVERGENCE_KEYS.has(key)) return false;
     if (key === 'topCandidate') {
       if (!safeSection(leaf, ALLOWED_ROUTING_DIVERGENCE_TOP_KEYS, true)) return false;
+    } else if (key === 'releaseIdentity') {
+      if (!isSafeRoutingDivergenceReleaseIdentity(leaf)) return false;
+    } else if (key === 'capabilityFlags') {
+      if (!isSafeRoutingDivergenceCapabilityFlags(leaf)) return false;
     } else if (key === 'surfaces') {
       if (!safeSection(leaf, ALLOWED_ROUTING_DIVERGENCE_SURFACE_KEYS, false)) return false;
     } else if (key === 'agreement') {

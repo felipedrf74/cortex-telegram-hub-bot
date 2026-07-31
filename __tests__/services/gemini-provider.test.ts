@@ -767,6 +767,45 @@ describe('GeminiProvider', () => {
       expect(result).toEqual({ domain: 'secretary', confidence: 0.4 });
     });
 
+    it.each(['clarify', 'none'] as const)(
+      'preserves a low-confidence manifest %s outcome before the legacy secretary fallback',
+      async (domain) => {
+        const savedFlag = process.env.AI_CLASSIFY_MANIFEST_PROMPT;
+        const savedKill = process.env.AI_ROUTING_MANIFEST_KILL;
+        process.env.AI_CLASSIFY_MANIFEST_PROMPT = 'true';
+        delete process.env.AI_ROUTING_MANIFEST_KILL;
+        try {
+          mockGeminiResponse(JSON.stringify({ domain, confidence: 0.3 }));
+
+          await expect(provider.classify('ambiguous request')).resolves.toEqual({
+            domain,
+            confidence: 0.3,
+          });
+        } finally {
+          if (savedFlag === undefined) delete process.env.AI_CLASSIFY_MANIFEST_PROMPT;
+          else process.env.AI_CLASSIFY_MANIFEST_PROMPT = savedFlag;
+          if (savedKill === undefined) delete process.env.AI_ROUTING_MANIFEST_KILL;
+          else process.env.AI_ROUTING_MANIFEST_KILL = savedKill;
+        }
+      },
+    );
+
+    it('keeps the flag-off low-confidence fallback byte-compatible for a stray special label', async () => {
+      const savedFlag = process.env.AI_CLASSIFY_MANIFEST_PROMPT;
+      delete process.env.AI_CLASSIFY_MANIFEST_PROMPT;
+      try {
+        mockGeminiResponse('{"domain":"clarify","confidence":0.3}');
+
+        await expect(provider.classify('ambiguous request')).resolves.toEqual({
+          domain: 'secretary',
+          confidence: 0.3,
+        });
+      } finally {
+        if (savedFlag === undefined) delete process.env.AI_CLASSIFY_MANIFEST_PROMPT;
+        else process.env.AI_CLASSIFY_MANIFEST_PROMPT = savedFlag;
+      }
+    });
+
     it('passes active context to prompt', async () => {
       mockGeminiResponse('{"domain":"secretary","confidence":0.9}');
 
@@ -786,6 +825,91 @@ describe('GeminiProvider', () => {
 
       const result = await provider.classify('hello');
       expect(result).toEqual({ domain: 'secretary', confidence: 0 });
+    });
+
+    it('uses exactly one provider attempt when a governed evaluation requests the one-attempt policy', async () => {
+      const error = Object.assign(new Error('Temporarily unavailable'), { status: 503 });
+      mockGenerateContent.mockRejectedValue(error);
+
+      const result = await provider.classify('hello', undefined, {
+        source: 'evaluation',
+        maxProviderAttempts: 1,
+      });
+
+      expect(result).toEqual({ domain: 'secretary', confidence: 0 });
+      expect(mockGenerateContent).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      {
+        label: 'provider failure',
+        arrange: (privateMarker: string) => {
+          mockGenerateContent.mockRejectedValue(
+            Object.assign(new Error(`provider echoed ${privateMarker}`), { status: 400 }),
+          );
+        },
+      },
+      {
+        label: 'JSON parse failure',
+        arrange: (privateMarker: string) => {
+          mockGeminiResponse(`not-json:${privateMarker}`);
+        },
+      },
+      {
+        label: 'response shape failure',
+        arrange: (privateMarker: string) => {
+          mockGeminiResponse(JSON.stringify({
+            domain: 42,
+            confidence: privateMarker,
+          }));
+        },
+      },
+    ])('fails closed with a stable sanitized error on evaluation-only $label', async ({ arrange }) => {
+      const privateMarker = 'PRIVATE_MALFORMED_CLASSIFIER_RESPONSE_9d36';
+      arrange(privateMarker);
+
+      const thrown = await provider.classify('hello', undefined, {
+        source: 'evaluation',
+        maxProviderAttempts: 1,
+        failClosedOnError: true,
+      }).then(
+        (value) => ({ returned: value }),
+        (error: unknown) => ({ thrown: error }),
+      );
+
+      expect(thrown).toEqual({
+        thrown: expect.objectContaining({
+          name: 'GeminiEvaluationClassificationError',
+          message: 'Gemini evaluation classification failed',
+          code: 'GEMINI_EVALUATION_CLASSIFICATION_FAILED',
+        }),
+      });
+      expect(JSON.stringify(thrown)).not.toContain(privateMarker);
+      expect(JSON.stringify([
+        vi.mocked(logger.error).mock.calls,
+        vi.mocked(logger.warn).mock.calls,
+        vi.mocked(logger.info).mock.calls,
+        vi.mocked(logger.debug).mock.calls,
+      ])).not.toContain(privateMarker);
+      expect(vi.mocked(logger.error)).toHaveBeenCalledWith(
+        {
+          provider: 'gemini',
+          failureCategory: 'evaluation_classification_failed',
+        },
+        'Gemini evaluation classification failed closed',
+      );
+    });
+
+    it('keeps the live malformed-response fallback behavior unchanged even if the flag is supplied', async () => {
+      mockGeminiResponse('not-json');
+
+      await expect(provider.classify('hello', undefined, {
+        source: 'live',
+        failClosedOnError: true,
+      })).resolves.toEqual({
+        domain: 'secretary',
+        confidence: 0,
+      });
     });
   });
 

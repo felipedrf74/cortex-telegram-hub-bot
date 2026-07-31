@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { runChatEvaluationSuite } from '../../src/services/chat-evaluation-harness';
 
@@ -100,6 +102,18 @@ describe('portal eval history routes', () => {
     expect(routes.get('POST /api/portal/eval-history/frozen-baseline')?.[1]).toBe(mocks.requirePortalAdminToken);
   });
 
+  it('mounts scoped eval-history body parsing before the default portal JSON parser', () => {
+    const serverSource = fs.readFileSync(
+      path.resolve(__dirname, '../../src/portal/server.ts'),
+      'utf8',
+    );
+    const evalHistoryIndex = serverSource.indexOf('registerPortalEvalHistoryRoutes(app);');
+    const defaultJsonIndex = serverSource.indexOf('app.use(express.json());');
+
+    expect(evalHistoryIndex).toBeGreaterThan(-1);
+    expect(defaultJsonIndex).toBeGreaterThan(evalHistoryIndex);
+  });
+
   it('lists recent eval runs with optional filters', () => {
     const { routes, app } = makeApp();
     registerPortalEvalHistoryRoutes(app as any);
@@ -134,6 +148,8 @@ describe('portal eval history routes', () => {
         runId: 'chat-eval-first-live',
         evidenceJsonPath: 'docs/release/eval-evidence/chat-eval-first-live.json',
         evidenceMarkdownPath: 'docs/release/eval-evidence/chat-eval-first-live.md',
+        evidenceJsonSha256: 'e'.repeat(64),
+        evidenceMarkdownSha256: 'f'.repeat(64),
         acceptedBy: 'untrusted-client-claim',
       },
     }, res);
@@ -142,6 +158,11 @@ describe('portal eval history routes', () => {
       runId: 'chat-eval-first-live',
       evidenceJsonPath: 'docs/release/eval-evidence/chat-eval-first-live.json',
       evidenceMarkdownPath: 'docs/release/eval-evidence/chat-eval-first-live.md',
+      evidenceJsonSha256: 'e'.repeat(64),
+      evidenceMarkdownSha256: 'f'.repeat(64),
+      // Absent from the request body, so the reduced-provenance escape hatch
+      // is never opened by omission.
+      acknowledgeOperatorCheckoutProvenance: false,
       runtime: { nodeEnv: 'staging', nexusEnv: undefined, staging: 'true' },
     });
     expect(payload.body).toEqual({ ok: true, action: 'created', baseline: { runId: 'chat-eval-first-live' } });
@@ -163,6 +184,8 @@ describe('portal eval history routes', () => {
       runId: 'chat-eval-other',
       evidenceJsonPath: 'docs/release/eval-evidence/chat-eval-other.json',
       evidenceMarkdownPath: 'docs/release/eval-evidence/chat-eval-other.md',
+      evidenceJsonSha256: 'e'.repeat(64),
+      evidenceMarkdownSha256: 'f'.repeat(64),
     } }, res);
 
     expect(payload.statusCode).toBe(409);

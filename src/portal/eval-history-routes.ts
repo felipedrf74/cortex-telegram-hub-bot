@@ -128,6 +128,10 @@ export function registerPortalEvalHistoryRoutes(app: Express): void {
           runId: stringValue(body.runId),
           evidenceJsonPath: stringValue(body.evidenceJsonPath),
           evidenceMarkdownPath: stringValue(body.evidenceMarkdownPath),
+          evidenceJsonSha256: stringValue(body.evidenceJsonSha256),
+          evidenceMarkdownSha256: stringValue(body.evidenceMarkdownSha256),
+          acknowledgeOperatorCheckoutProvenance:
+            body.acknowledgeOperatorCheckoutProvenance === true,
           runtime: {
             nodeEnv: process.env.NODE_ENV,
             nexusEnv: process.env.NEXUS_ENV,
@@ -207,7 +211,25 @@ function normalizePreflightAttestation(value: unknown): Record<string, unknown> 
     supportedScenarioIds: candidate.supportedScenarioIds
       .filter((item): item is string => typeof item === 'string')
       .slice(0, 32),
+    // This normalizer rebuilds the attestation from an explicit field list, so
+    // the server-attested deployed identity must be carried through here or the
+    // run's provenance is silently reduced back to the operator's checkout.
+    deployedRelease: normalizeDeployedRelease(candidate.deployedRelease),
   };
+}
+
+function normalizeDeployedRelease(value: unknown): Record<string, string> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const candidate = value as Record<string, unknown>;
+  const runtimeSha = typeof candidate.runtimeSha === 'string' ? candidate.runtimeSha : '';
+  const artifactDigest = typeof candidate.artifactDigest === 'string' ? candidate.artifactDigest : '';
+  const role = candidate.role;
+  if (
+    !/^[a-f0-9]{40}$/.test(runtimeSha)
+    || !/^[a-f0-9]{64}$/.test(artifactDigest)
+    || (role !== 'staging' && role !== 'production')
+  ) return null;
+  return { runtimeSha, artifactDigest, role };
 }
 
 function normalizeBody(body: unknown): EvalHistoryRequestBody | null {

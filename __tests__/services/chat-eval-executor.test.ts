@@ -112,6 +112,11 @@ describe('chat eval executor', () => {
                 providerPolicy: 'metered_cloud_only',
                 seedProfileVersion: CHAT_LIVE_EVAL_SEED_PROFILE_VERSION,
                 supportedScenarioIds: ['morning_planning'],
+                deployedRelease: {
+                  runtimeSha: 'c'.repeat(40),
+                  artifactDigest: 'd'.repeat(64),
+                  role: 'staging',
+                },
               },
             },
           };

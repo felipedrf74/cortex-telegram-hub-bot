@@ -14,6 +14,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { classifyWithClaude } from '../../src/router/classifier';
+import { routeMessage } from '../../src/router';
 
 vi.mock('../../src/services/anthropic', async () => ({
   ...(await vi.importActual('../../src/services/anthropic')),
@@ -132,6 +133,50 @@ describe('classifyWithClaude — M15 manifest skill threading', () => {
       mockClassifyMessage.mockResolvedValue({ domain: 'decision_center', confidence: 0.9, skill: 'decision_center' });
       const result = await classifyWithClaude('show my pending decisions');
       expect(result).toEqual({ domain: 'decision_center', confidence: 0.9, skill: 'decision_center' });
+    });
+
+    it.each(['clarify', 'none'] as const)(
+      'turns the explicit %s outcome into a safe terminal disposition without a routable fake domain',
+      async (disposition) => {
+        mockClassifyMessage.mockResolvedValue({
+          domain: disposition,
+          confidence: 0.93,
+          skill: 'tasks',
+        });
+
+        const result = await classifyWithClaude('do the ambiguous thing');
+
+        expect(result).toEqual({
+          domain: 'chat',
+          confidence: 0.93,
+          disposition,
+        });
+        expect('skill' in result).toBe(false);
+      },
+    );
+
+    it('does not replace a low-confidence explicit terminal outcome with the active-domain pin', async () => {
+      mockClassifyMessage.mockResolvedValue({ domain: 'clarify', confidence: 0.3 });
+
+      const result = await classifyWithClaude(
+        'move it',
+        { domain: 'finance', lastAssistantMessage: 'Which expense?' },
+      );
+
+      expect(result).toEqual({ domain: 'chat', confidence: 0.3, disposition: 'clarify' });
+    });
+
+    it('propagates a safe terminal disposition through routeMessage', async () => {
+      mockClassifyMessage.mockResolvedValue({ domain: 'none', confidence: 0.97 });
+
+      const route = await routeMessage('zzz qqq xyzzy');
+
+      expect(route).toMatchObject({
+        domain: 'chat',
+        method: 'classifier',
+        confidence: 0.97,
+        disposition: 'none',
+      });
     });
 
     it('low-confidence active-context pin drops the stale skill with the domain', async () => {

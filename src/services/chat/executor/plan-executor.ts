@@ -259,6 +259,10 @@ export async function executeChatActionPlan(
         continue;
       }
     }
+    // Internal fail-closed observation seam used by staging safety probes.
+    // It runs before dispatch-table lookup so a probe can throw without any
+    // registry executor or provider dependency being touched.
+    options.beforeStepExecution?.(runtimeStep);
     const result = await executeStepWithReliability(runtimeStep, {
       plan,
       input,

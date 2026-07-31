@@ -14,6 +14,10 @@ import {
   type ChatLiveEvalRequestContext,
 } from '../../services/chat-live-evaluation-contract';
 import {
+  assertChatLiveEvalDeployedStagingRelease,
+  assertChatLiveEvalRealProviderReadiness,
+} from '../../services/chat-live-evaluation-readiness';
+import {
   CHAT_LIVE_EVAL_SEED_PROFILE_VERSION,
   prepareChatLiveEvalScenario,
 } from '../../services/chat-live-evaluation-state';
@@ -76,6 +80,7 @@ function resolveRequest(
       400,
     );
   }
+  assertChatLiveEvalRealProviderReadiness(context);
   return context;
 }
 
@@ -107,6 +112,10 @@ export function registerChatEvalRoutes(
           productionDataUsed: false,
           seedProfileVersion: CHAT_LIVE_EVAL_SEED_PROFILE_VERSION,
           supportedScenarioIds: CHAT_LIVE_EVAL_SCENARIO_IDS,
+          // The serving process is the only party that can attest which
+          // artifact answered these turns; the operator's local checkout
+          // cannot. Null only for modes that do not require attestation.
+          deployedRelease: assertChatLiveEvalDeployedStagingRelease(context),
         },
       });
     } catch (error) {

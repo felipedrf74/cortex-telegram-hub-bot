@@ -415,8 +415,13 @@ command_cross_skill_fixtures() {
   if [[ "$rc" -eq 1 ]]; then
     return 1
   fi
+  # Only 2 means "blocked by design". A guard/identity refusal exits 3 and must
+  # stay a hard failure — see the exit-code contract in the smoke wrapper.
   if [[ "$rc" -eq 2 ]]; then
     echo "Cross-skill fixture checks completed; staging runtime section is blocked by design in local dry-run mode."
+  elif [[ "$rc" -eq 3 ]]; then
+    echo "ERROR: cross-skill smoke refused to run (guard/identity refusal, rc=3). This is a hard failure, not a by-design block." >&2
+    return 3
   elif [[ "$rc" -ne 0 ]]; then
     return "$rc"
   fi

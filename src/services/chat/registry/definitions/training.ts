@@ -131,10 +131,13 @@ export const TRAINING_ACTIONS: ChatActionDefinition[] = [
       // changed default multi-step behavior: "cria um plano de treino e
       // adiciona à minha lista" auto-titled the list entry instead of
       // producing the missing-title clarification. The executor still
-      // emits `plan.title` (inert without a registry consumer), the
-      // cross-skill $ref chaining is exercised via a definition mock in
-      // chat-segment-router.test.ts, and SHIPPING this row is a
-      // flag-flip-time decision for AI_CROSS_SKILL_EXECUTION. Parity pin:
+      // emits `plan.title`, but the real handoff remains
+      // `verified_pending`; plan dependencies require `verified_success`.
+      // Phase 7 therefore keeps this row out of the live registry even when
+      // AI_CROSS_SKILL_EXECUTION flips. Revisit only after the training
+      // builder returns a verified plan that can safely feed dependents.
+      // The structural $ref path remains covered through a definition mock
+      // in chat-segment-router.test.ts. Parity pin:
       // codex-qa-regressions.test.ts "training outputRefs flag-off parity".
       // Phase 12 batch 63: typed extractor wraps extractTrainingPlanSlots
       // so callers can read sport / goal / durationWeeks / weeklyVolumeKm /

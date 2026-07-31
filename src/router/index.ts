@@ -1,6 +1,6 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-import { DomainName } from '../domains/types';
+import { DomainName, type ClassifierDisposition } from '../domains/types';
 import {
   patternMatch,
   keywordMatch,
@@ -24,6 +24,8 @@ export interface RouteResult {
    * skill orchestrator as an ownership hint.
    */
   skill?: string;
+  /** Explicit non-executable manifest-classifier outcome. */
+  disposition?: ClassifierDisposition;
 }
 
 const CONTEXT_OVERRIDE_SAFE_KEYWORD_DOMAINS = new Set<DomainName>([
@@ -437,5 +439,6 @@ export async function routeMessage(
     strippedMessage: message,
     // M15: propagate the manifest-validated skill hint (absent flag-off).
     ...(classification.skill !== undefined ? { skill: classification.skill } : {}),
+    ...(classification.disposition !== undefined ? { disposition: classification.disposition } : {}),
   };
 }

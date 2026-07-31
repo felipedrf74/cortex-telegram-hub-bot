@@ -687,10 +687,9 @@ describe('Codex QA — M19 remediation: training outputRefs flag-off parity', ()
   // data-need chaining consumes registry outputRefs unconditionally — the PT
   // repro "cria um plano de treino e adiciona à minha lista" auto-titled the
   // list entry from the training plan instead of clarifying the missing
-  // title. The live registry must not declare training outputRefs while
-  // AI_CROSS_SKILL_EXECUTION defaults OFF; the $ref chaining is exercised in
-  // chat-segment-router.test.ts through a definition mock, and shipping the
-  // row is a flag-flip-time decision.
+  // title. The live registry must not declare training outputRefs. Phase 7
+  // keeps the row omitted because the real training builder handoff is
+  // verified_pending and therefore cannot satisfy a dependent step.
   it('live registry declares NO outputRefs on training_plan_create', async () => {
     const { findChatActionDefinition } = await import('../../src/services/chat/registry');
     const definition = findChatActionDefinition('training', 'training_plan_create');

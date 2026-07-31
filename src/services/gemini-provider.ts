@@ -65,6 +65,7 @@ import {
 } from './api-usage-fallback';
 import { resolveApiUsageAttribution } from './api-usage-attribution';
 import { assertAiBudgetReservationForProvider } from './cost-guardrail';
+import { resolveManifestClassifierDisposition } from '../router/classifier-prompt-builder';
 import { resolveCoachSafetyLocale, type CoachSafetyLocale } from './coach-kernel/safety-guardrails';
 import { getUserLanguageById } from './user-service';
 
@@ -1441,6 +1442,36 @@ function safeParse(json: string): Record<string, unknown> {
   }
 }
 
+const GEMINI_EVALUATION_CLASSIFICATION_ERROR_CODE =
+  'GEMINI_EVALUATION_CLASSIFICATION_FAILED';
+
+class GeminiEvaluationClassificationError extends Error {
+  readonly code = GEMINI_EVALUATION_CLASSIFICATION_ERROR_CODE;
+
+  constructor() {
+    super('Gemini evaluation classification failed');
+    this.name = 'GeminiEvaluationClassificationError';
+  }
+}
+
+function isStrictClassificationShape(value: unknown): value is {
+  domain: string;
+  confidence: number;
+  skill?: string;
+} {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  if (typeof record.domain !== 'string' || record.domain.trim().length === 0) return false;
+  if (
+    typeof record.confidence !== 'number'
+    || !Number.isFinite(record.confidence)
+    || record.confidence < 0
+    || record.confidence > 1
+  ) return false;
+  return record.skill === undefined
+    || (typeof record.skill === 'string' && record.skill.trim().length > 0);
+}
+
 // ─── Provider Implementation ────────────────────────────────────────
 
 export class GeminiProvider implements AIProvider {
@@ -1594,6 +1625,8 @@ export class GeminiProvider implements AIProvider {
     // silently fall back to user_id=0 / tenant_id=0.
     const usageUserId = options?.userId ?? 0;
     const usageTenantId = options?.tenantId ?? options?.userId ?? 0;
+    const failClosedOnError = options?.source === 'evaluation'
+      && options.failClosedOnError === true;
     try {
       let userContent = message;
       if (activeContext) {
@@ -1619,6 +1652,9 @@ ${message}`;
         maxOutputTokens: classifierMaxOutputTokens,
       });
       const start = Date.now();
+      const maxRetries = options?.source === 'evaluation' && options.maxProviderAttempts === 1
+        ? 0
+        : 3;
       const result = await this.withRetry(() => {
         assertAiBudgetReservationForProvider({
           userId: usageUserId,
@@ -1628,7 +1664,7 @@ ${message}`;
           maxCostUsd,
         });
         return model.generateContent(userContent);
-      }, 3, () => recordGeminiTimeoutEstimate({
+      }, maxRetries, () => recordGeminiTimeoutEstimate({
         category: 'gemini_classify',
         model: config.gemini.classifierModel,
         userId: usageUserId,
@@ -1651,6 +1687,9 @@ ${message}`;
       text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
 
       const parsed = JSON.parse(text);
+      if (failClosedOnError && !isStrictClassificationShape(parsed)) {
+        throw new Error('Invalid evaluation classification response shape');
+      }
       const domain = parsed.domain as DomainName;
       const confidence = parsed.confidence as number;
       // M15: tolerate BOTH output shapes — {domain, confidence} (legacy
@@ -1661,12 +1700,28 @@ ${message}`;
         ? parsed.skill.trim()
         : undefined;
 
+      // Manifest `clarify` / `none` labels are complete routing decisions.
+      // Preserve them before the legacy low-confidence secretary fallback;
+      // classifyWithClaude owns their non-routable envelope normalization.
+      const disposition = resolveManifestClassifierDisposition(domain);
+      if (disposition) return { domain: disposition, confidence };
+
       // Low-confidence secretary fallback deliberately drops the proposed
       // skill: it belonged to the rejected domain.
       if (confidence < 0.6) return { domain: 'secretary', confidence };
       return skill !== undefined ? { domain, confidence, skill } : { domain, confidence };
     } catch (err: unknown) {
       rethrowUsagePersistenceFailure(err);
+      if (failClosedOnError) {
+        // Never attach `err` here. Provider errors and JSON parse failures can
+        // echo raw prompts or raw model output; governed evaluation callers
+        // receive only the stable error identity below.
+        logger.error({
+          provider: 'gemini',
+          failureCategory: 'evaluation_classification_failed',
+        }, 'Gemini evaluation classification failed closed');
+        throw new GeminiEvaluationClassificationError();
+      }
       const e = err as { provider?: string; status?: number; retryable?: boolean };
       logger.error({
         err,

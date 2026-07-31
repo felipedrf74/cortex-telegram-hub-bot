@@ -30,6 +30,9 @@ export interface DomainResponse {
   toolsUsed?: string[];
 }
 
+/** Explicit non-executable outcomes emitted only by the manifest classifier. */
+export type ClassifierDisposition = 'clarify' | 'none';
+
 export interface ClassificationResult {
   domain: DomainName;
   confidence: number;
@@ -40,6 +43,11 @@ export interface ClassificationResult {
    * parsing tolerates the old {domain, confidence} shape.
    */
   skill?: string;
+  /**
+   * Safe terminal outcome. `domain` is normalized to the non-executable
+   * `chat` envelope domain before this reaches a runtime route.
+   */
+  disposition?: ClassifierDisposition;
 }
 
 export interface Todo {

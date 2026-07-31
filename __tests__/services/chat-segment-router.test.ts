@@ -24,13 +24,11 @@ vi.mock('../../src/utils/logger', () => ({
 }));
 
 // M19 remediation (flag-off parity): the LIVE registry must NOT declare
-// outputRefs on training_plan_create while AI_CROSS_SKILL_EXECUTION defaults
-// OFF — M16's data-need chaining consumes outputRefs unconditionally, so a
-// live declaration changes default multi-step behavior (auto-titling instead
-// of the missing-title clarification; pinned by the codex-qa regression
-// "PT flag-off parity"). The cross-skill $ref chaining below is exercised
-// through this test-seam mock of the definition instead; shipping the
-// training outputRefs row is a flag-flip-time decision.
+// outputRefs on training_plan_create — M16's data-need chaining consumes
+// outputRefs unconditionally, and the real builder handoff is
+// verified_pending rather than a safe producer for dependent steps. The
+// structural cross-skill $ref path below remains exercised through this
+// test-seam definition mock.
 vi.mock('../../src/services/chat/registry/definitions/training', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/services/chat/registry/definitions/training')>();
   return {
