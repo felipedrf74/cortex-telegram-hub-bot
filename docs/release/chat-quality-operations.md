@@ -125,6 +125,14 @@ One page for operating the production chat-quality loop (M22).
   retryable degraded response. Region-specific Portuguese is prompted but the
   deterministic verifier claims only primary-language contradiction checks;
   it does not claim full dialect or arbitrary code-switch classification.
+  A direct English/Portuguese “today’s workout” read uses the legacy
+  `training-today-read-shortcut` before quota or provider acquisition. It
+  accepts only a single-domain, read-only Training question, reads the
+  authenticated tenant’s active plan in the user timezone, and returns only
+  today’s allowlisted session summary. Writes, health advice, external
+  research, multi-domain requests, stale plans, and cross-tenant session rows
+  do not enter this shortcut. Chat Core V2 and manifest rollout flags remain
+  unchanged and OFF.
   Local release evidence additionally requires a post-validation Ollama usage
   row for `chat_content_model_authored_short` in the target scenario; rejected
   output is recorded under a distinct rejected category and cannot attest the
@@ -213,9 +221,22 @@ One page for operating the production chat-quality loop (M22).
   one server-seeded local-only task deletion that requires exact-target
   confirmation and passes only after token-zero `/tasks/snapshot` read-back;
   reset removes only the eval-owned task id and dependent rows within the
-  dedicated scope. A run is invalid if the authenticated preflight, preparation
-  evidence, exact provider budget, zero-production-data assertion, or final
-  clean-SHA attestation fails.
+  dedicated scope. Seed profile `single-tenant-live-v3` also materializes one
+  canonical, current-day Training plan/week/session for
+  `training_adjustment`. Its plan identity is held in
+  `chat_live_eval_training_artifacts`; reset verifies the exact server-owned
+  marker and authenticated user/tenant before deleting it, reseeds it for
+  Training turns, and removes it on every later scenario. The reset refuses
+  any unrelated active Training plan in the supposedly dedicated scope rather
+  than selecting, deleting, or mixing private state. Cleanup also fails closed
+  before deletion when an owned fixture has a foreign-tenant or cross-plan
+  session/completion edge, direct or denormalized calendar linkage, revision
+  projection, operation lock, adaptation, or legacy/active-plan reference. The
+  preparation transaction rolls the fixture back intact if any later evidence
+  write fails. The preparation hash binds the dated fixture manifest as well
+  as the prompt facts. A run is invalid if the authenticated preflight,
+  preparation evidence, exact provider budget, zero-production-data
+  assertion, or final clean-SHA attestation fails.
 
 ## Weekly ritual
 

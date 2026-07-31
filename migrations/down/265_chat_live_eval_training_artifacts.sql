@@ -1,0 +1,2 @@
+DROP INDEX IF EXISTS idx_chat_live_eval_training_artifacts_scope;
+DROP TABLE IF EXISTS chat_live_eval_training_artifacts;

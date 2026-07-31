@@ -14,6 +14,7 @@ import {
   CHAT_LIVE_EVAL_CONTRACT_VERSION,
   CHAT_LIVE_EVAL_REAL_BUDGET,
 } from '../../src/services/chat-live-evaluation-contract';
+import { CHAT_LIVE_EVAL_SEED_PROFILE_VERSION } from '../../src/services/chat-live-evaluation-context';
 
 function okEnvelope(overrides: Record<string, unknown> = {}): ChatEvalHttpResponse {
   return {
@@ -109,7 +110,7 @@ describe('chat eval executor', () => {
                 runId: 'chat-eval-executor-test',
                 budget: CHAT_LIVE_EVAL_REAL_BUDGET,
                 providerPolicy: 'metered_cloud_only',
-                seedProfileVersion: 'single-tenant-live-v2',
+                seedProfileVersion: CHAT_LIVE_EVAL_SEED_PROFILE_VERSION,
                 supportedScenarioIds: ['morning_planning'],
               },
             },
@@ -118,7 +119,7 @@ describe('chat eval executor', () => {
         if (input.path === CHAT_EVAL_DEFAULT_RESET_PATH) {
           return {
             statusCode: 200,
-            body: { ok: true, data: { scenarioId: 'morning_planning', seedProfileVersion: 'single-tenant-live-v2' } },
+            body: { ok: true, data: { scenarioId: 'morning_planning', seedProfileVersion: CHAT_LIVE_EVAL_SEED_PROFILE_VERSION } },
           };
         }
         if (input.path === CHAT_EVAL_DEFAULT_EVIDENCE_PATH) {

@@ -144,6 +144,7 @@ describe('gate policy table', () => {
 
   it('falls back to the deterministic routeMethod table when no stage family is given', () => {
     expect(resolveChatFinalizerGatePolicy({ routeMethod: 'fast-path' })).toBe('contract_only');
+    expect(resolveChatFinalizerGatePolicy({ routeMethod: 'training-today-read-shortcut' })).toBe('contract_only');
     expect(resolveChatFinalizerGatePolicy({ routeMethod: 'authenticated-identity' })).toBe('contract_only');
     expect(resolveChatFinalizerGatePolicy({ routeMethod: 'cross-skill-plan-declined' })).toBe('contract_only');
   });

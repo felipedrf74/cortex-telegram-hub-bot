@@ -8,6 +8,11 @@ const mockTryDeterministicChatCommand = vi.fn();
 const mockTrySecretaryFastpath = vi.fn();
 const mockGetUserLanguageById = vi.fn();
 const mockGetPreferredDisplayNameById = vi.fn();
+const mockGetUserTimezoneById = vi.fn();
+const mockGetActivePlan = vi.fn();
+const mockGetWeeksForPlan = vi.fn();
+const mockGetSessionsForWeek = vi.fn();
+const mockGetWeeklyAdherence = vi.fn();
 
 vi.mock('../../src/services/cache-store', () => ({
   getCached: (...args: unknown[]) => mockGetCached(...args),
@@ -27,6 +32,14 @@ vi.mock('../../src/services/secretary-fastpath', () => ({
 vi.mock('../../src/services/user-service', () => ({
   getUserLanguageById: (...args: unknown[]) => mockGetUserLanguageById(...args),
   getPreferredDisplayNameById: (...args: unknown[]) => mockGetPreferredDisplayNameById(...args),
+  getUserTimezoneById: (...args: unknown[]) => mockGetUserTimezoneById(...args),
+}));
+
+vi.mock('../../src/services/training-plans', () => ({
+  getActivePlan: (...args: unknown[]) => mockGetActivePlan(...args),
+  getWeeksForPlan: (...args: unknown[]) => mockGetWeeksForPlan(...args),
+  getSessionsForWeek: (...args: unknown[]) => mockGetSessionsForWeek(...args),
+  getWeeklyAdherence: (...args: unknown[]) => mockGetWeeklyAdherence(...args),
 }));
 
 import {
@@ -49,8 +62,14 @@ describe('chat message local response helpers', () => {
     mockTrySecretaryFastpath.mockReset();
     mockGetUserLanguageById.mockReset();
     mockGetPreferredDisplayNameById.mockReset();
+    mockGetUserTimezoneById.mockReset();
+    mockGetActivePlan.mockReset();
+    mockGetWeeksForPlan.mockReset();
+    mockGetSessionsForWeek.mockReset();
+    mockGetWeeklyAdherence.mockReset();
     mockGetUserLanguageById.mockReturnValue('en-US');
     mockGetPreferredDisplayNameById.mockReturnValue('');
+    mockGetUserTimezoneById.mockReturnValue('Europe/Lisbon');
     mockTrySecretaryFastpath.mockResolvedValue({ matched: false });
   });
 
@@ -214,6 +233,502 @@ describe('chat message local response helpers', () => {
         metadata: { patternId: 'create_calendar_event' },
       },
     });
+  });
+
+  it('answers a direct today-workout read from tenant-scoped Training state before the model route', async () => {
+    mockTryDeterministicChatCommand.mockResolvedValue(null);
+    mockGetActivePlan.mockReturnValue({
+      id: 101,
+      user_id: 42,
+      tenant_id: 84,
+      name: 'Eval Training Plan',
+      sport: 'strength',
+      goal: 'Train safely',
+      duration_weeks: 1,
+      periodization: 'linear',
+      status: 'active',
+      start_date: '2026-04-20',
+      end_date: '2026-04-26',
+      preferences_json: null,
+      created_at: '2026-04-20T00:00:00.000Z',
+      updated_at: '2026-04-20T00:00:00.000Z',
+    });
+    mockGetWeeksForPlan.mockReturnValue([{
+      id: 201,
+      plan_id: 101,
+      week_number: 1,
+      focus: 'Recovery-aware strength',
+      intensity_pct: 75,
+      volume_sessions: 2,
+      notes: null,
+      auto_adjusted: 0,
+      adjustment_reason: null,
+      created_at: '2026-04-20T00:00:00.000Z',
+    }]);
+    mockGetSessionsForWeek.mockReturnValue([
+      {
+        id: 301,
+        week_id: 201,
+        plan_id: 101,
+        tenant_id: 84,
+        day_of_week: 'Thursday',
+        session_type: 'recovery',
+        title: 'Yesterday recovery',
+        description: 'Private detail',
+        description_json: null,
+        exercises_json: null,
+        duration_minutes: 20,
+        intensity_text: 'easy',
+        calendar_event_id: null,
+        calendar_source: null,
+        session_identity_key: 'yesterday',
+        session_shape_hash: 'shape-yesterday',
+        preferred_time_unavailable: 0,
+        status: 'completed',
+        created_at: '2026-04-20T00:00:00.000Z',
+        updated_at: '2026-04-20T00:00:00.000Z',
+      },
+      {
+        id: 302,
+        week_id: 201,
+        plan_id: 101,
+        tenant_id: 84,
+        day_of_week: 'Friday',
+        session_type: 'strength',
+        title: 'Heavy lower-body session',
+        description: 'Private coaching detail',
+        description_json: null,
+        exercises_json: '[{"name":"Private exercise"}]',
+        duration_minutes: 45,
+        intensity_text: 'RPE 7',
+        calendar_event_id: 'private-event',
+        calendar_source: 'google',
+        session_identity_key: 'today',
+        session_shape_hash: 'shape-today',
+        preferred_time_unavailable: 0,
+        status: 'scheduled',
+        created_at: '2026-04-20T00:00:00.000Z',
+        updated_at: '2026-04-20T00:00:00.000Z',
+      },
+      {
+        id: 303,
+        week_id: 201,
+        plan_id: 101,
+        tenant_id: 999,
+        day_of_week: 'Friday',
+        session_type: 'strength',
+        title: 'Other tenant private workout',
+        description: 'Cross-tenant private coaching detail',
+        description_json: null,
+        exercises_json: null,
+        duration_minutes: 90,
+        intensity_text: 'private',
+        calendar_event_id: null,
+        calendar_source: null,
+        session_identity_key: 'other-tenant',
+        session_shape_hash: 'shape-other-tenant',
+        preferred_time_unavailable: 0,
+        status: 'scheduled',
+        created_at: '2026-04-20T00:00:00.000Z',
+        updated_at: '2026-04-20T00:00:00.000Z',
+      },
+    ]);
+    mockGetWeeklyAdherence.mockReturnValue(null);
+
+    const result = await tryBuildFastPathChatResponse(
+      "What's today's workout?",
+      "what's today's workout?",
+      42,
+      84,
+      'en-US',
+    );
+
+    expect(mockGetActivePlan).toHaveBeenCalledWith(42, 84);
+    expect(result).toMatchObject({
+      conversationDomain: 'triathlon',
+      cacheable: false,
+      response: {
+        domain: 'triathlon',
+        routeMethod: 'training-today-read-shortcut',
+        text: expect.stringContaining('Your workout for today is Heavy lower-body session'),
+        metadata: {
+          type: 'training_today_read',
+          involvedSkills: ['training'],
+        },
+      },
+    });
+    expect(result?.response.text).not.toContain('Yesterday recovery');
+    expect(result?.response.text).not.toContain('Private coaching detail');
+    expect(result?.response.text).not.toContain('private-event');
+    expect(result?.response.text).not.toContain('Other tenant private workout');
+    expect(mockTrySecretaryFastpath).not.toHaveBeenCalled();
+    expect(mockGetWeeklyAdherence).not.toHaveBeenCalled();
+  });
+
+  it('does not claim stale, write-like, health-advice, research, or multi-domain workout requests', async () => {
+    mockTryDeterministicChatCommand.mockResolvedValue(null);
+    mockGetActivePlan.mockReturnValue({
+      id: 101,
+      user_id: 42,
+      tenant_id: 84,
+      name: 'Expired plan',
+      sport: 'strength',
+      goal: null,
+      duration_weeks: 1,
+      periodization: 'linear',
+      status: 'active',
+      start_date: '2026-04-01',
+      end_date: '2026-04-07',
+      preferences_json: null,
+      created_at: '2026-04-01T00:00:00.000Z',
+      updated_at: '2026-04-01T00:00:00.000Z',
+    });
+
+    const stale = await tryBuildFastPathChatResponse(
+      "What's today's workout?",
+      "what's today's workout?",
+      42,
+      84,
+      'en-US',
+    );
+    expect(stale).toMatchObject({
+      conversationDomain: 'triathlon',
+      response: {
+        routeMethod: 'training-today-read-shortcut',
+        text: expect.stringMatching(/no workout.*today/i),
+      },
+    });
+    expect(mockGetWeeksForPlan).not.toHaveBeenCalled();
+
+    for (const text of [
+      "Move today's workout later.",
+      "Should I do today's workout with knee pain?",
+      "Search the web for today's workout trends.",
+      "Show my tasks and today's workout.",
+      "What should I eat before today's workout?",
+      "What time is today's workout?",
+      "Can I skip today's workout?",
+      "Should I do today's workout?",
+      "What equipment do I need for today's workout?",
+    ]) {
+      mockTrySecretaryFastpath.mockClear();
+      const result = await tryBuildFastPathChatResponse(
+        text,
+        text.toLowerCase(),
+        42,
+        84,
+        'en-US',
+      );
+      expect(result, text).toBeNull();
+      expect(mockTrySecretaryFastpath, text).toHaveBeenCalled();
+    }
+  });
+
+  it('localizes the no-plan today-workout read in Portuguese without entering a model path', async () => {
+    mockTryDeterministicChatCommand.mockResolvedValue(null);
+    mockGetActivePlan.mockReturnValue(null);
+
+    const result = await tryBuildFastPathChatResponse(
+      'Qual é o treino de hoje?',
+      'qual é o treino de hoje?',
+      42,
+      84,
+      'pt-PT',
+    );
+
+    expect(result).toMatchObject({
+      conversationDomain: 'triathlon',
+      cacheable: false,
+      response: {
+        routeMethod: 'training-today-read-shortcut',
+        text: expect.stringMatching(/treino.*hoje/i),
+        metadata: {
+          type: 'training_today_read',
+          involvedSkills: ['training'],
+          sessionCount: 0,
+        },
+      },
+    });
+    expect(mockTrySecretaryFastpath).not.toHaveBeenCalled();
+  });
+
+  it('reports each supported empty Training schedule state without crossing into a model path', async () => {
+    mockTryDeterministicChatCommand.mockResolvedValue(null);
+    const activePlan = {
+      id: 101,
+      user_id: 42,
+      tenant_id: 84,
+      name: 'Eval Training Plan',
+      sport: 'strength',
+      goal: 'Train safely',
+      duration_weeks: 1,
+      periodization: 'linear',
+      status: 'active',
+      start_date: '2026-04-20',
+      end_date: '2026-04-26',
+      preferences_json: null,
+      created_at: '2026-04-20T00:00:00.000Z',
+      updated_at: '2026-04-20T00:00:00.000Z',
+    };
+    const currentWeek = {
+      id: 201,
+      plan_id: 101,
+      week_number: 1,
+      focus: 'Recovery-aware strength',
+      intensity_pct: 75,
+      volume_sessions: 1,
+      notes: null,
+      auto_adjusted: 0,
+      adjustment_reason: null,
+      created_at: '2026-04-20T00:00:00.000Z',
+    };
+
+    mockGetActivePlan.mockReturnValue(null);
+    const englishNoPlan = await tryBuildFastPathChatResponse(
+      "What's today's workout?",
+      "what's today's workout?",
+      42,
+      84,
+      'en-US',
+    );
+    expect(englishNoPlan?.response.text).toMatch(/do not have an active training plan/i);
+
+    mockGetActivePlan.mockReturnValue(activePlan);
+    mockGetWeeksForPlan.mockReturnValue([]);
+    const englishNoWeek = await tryBuildFastPathChatResponse(
+      'List my workouts for today',
+      'list my workouts for today',
+      42,
+      84,
+      'en-US',
+    );
+    expect(englishNoWeek?.response.text).toMatch(/no workout is scheduled.*active training plan/i);
+
+    mockGetWeeksForPlan.mockReturnValue([currentWeek]);
+    mockGetSessionsForWeek.mockReturnValue([]);
+    const brazilianNoSession = await tryBuildFastPathChatResponse(
+      'Quais são os meus treinos de hoje?',
+      'quais são os meus treinos de hoje?',
+      42,
+      84,
+      'pt-BR',
+    );
+    expect(brazilianNoSession?.response.text).toMatch(/não há treino programado.*plano de treino ativo/i);
+
+    mockGetActivePlan.mockReturnValue(null);
+    const brazilianNoPlan = await tryBuildFastPathChatResponse(
+      'Qual é o meu treino de hoje?',
+      'qual é o meu treino de hoje?',
+      42,
+      84,
+      'pt-BR',
+    );
+    expect(brazilianNoPlan?.response.text).toMatch(/não tem um plano de treino ativo/i);
+
+    mockGetActivePlan.mockReturnValue({
+      ...activePlan,
+      start_date: '2026-04-01',
+      end_date: '2026-04-07',
+    });
+    const brazilianOutsidePlan = await tryBuildFastPathChatResponse(
+      'Que treino eu tenho hoje?',
+      'que treino eu tenho hoje?',
+      42,
+      84,
+      'pt-BR',
+    );
+    expect(brazilianOutsidePlan?.response.text).toMatch(/não abrange esta data/i);
+
+    const portugueseOutsidePlan = await tryBuildFastPathChatResponse(
+      'Mostra-me o treino de hoje',
+      'mostra-me o treino de hoje',
+      42,
+      84,
+      'pt-PT',
+    );
+    expect(portugueseOutsidePlan?.response.text).toMatch(/não abrange esta data/i);
+
+    mockGetActivePlan.mockReturnValue(activePlan);
+    mockGetWeeksForPlan.mockReturnValue([]);
+    const portugueseNoWeek = await tryBuildFastPathChatResponse(
+      'Lista os meus treinos de hoje',
+      'lista os meus treinos de hoje',
+      42,
+      84,
+      'pt-PT',
+    );
+    expect(portugueseNoWeek?.response.text).toMatch(/não há treino marcado.*plano de treino ativo/i);
+
+    mockGetActivePlan.mockReturnValue({
+      ...activePlan,
+      start_date: null,
+      end_date: null,
+    });
+    const missingPlanDates = await tryBuildFastPathChatResponse(
+      'What training sessions do I have today?',
+      'what training sessions do i have today?',
+      42,
+      84,
+      'en-US',
+    );
+    expect(missingPlanDates?.response.text).toMatch(/plan does not cover this date/i);
+
+    const commandLike = await tryBuildFastPathChatResponse('', '', 42, 84, 'en-US');
+    expect(commandLike).toBeNull();
+    expect(mockTrySecretaryFastpath).toHaveBeenCalled();
+  });
+
+  it('formats bounded multi-session Training summaries across English and Portuguese', async () => {
+    mockTryDeterministicChatCommand.mockResolvedValue(null);
+    mockGetActivePlan.mockReturnValue({
+      id: 101,
+      user_id: 42,
+      tenant_id: 84,
+      name: 'Eval Training Plan',
+      sport: 'strength',
+      goal: 'Train safely',
+      duration_weeks: 1,
+      periodization: 'linear',
+      status: 'active',
+      start_date: '2026-04-20',
+      end_date: '2026-04-26',
+      preferences_json: null,
+      created_at: '2026-04-20T00:00:00.000Z',
+      updated_at: '2026-04-20T00:00:00.000Z',
+    });
+    mockGetWeeksForPlan.mockReturnValue([{
+      id: 201,
+      plan_id: 101,
+      week_number: 1,
+      focus: 'Recovery-aware strength',
+      intensity_pct: 75,
+      volume_sessions: 5,
+      notes: null,
+      auto_adjusted: 0,
+      adjustment_reason: null,
+      created_at: '2026-04-20T00:00:00.000Z',
+    }]);
+    const sessionBase = {
+      week_id: 201,
+      plan_id: 101,
+      tenant_id: 84,
+      day_of_week: 'Friday',
+      session_type: 'strength',
+      description: null,
+      description_json: null,
+      exercises_json: null,
+      calendar_event_id: null,
+      calendar_source: null,
+      preferred_time_unavailable: 0,
+      created_at: '2026-04-20T00:00:00.000Z',
+      updated_at: '2026-04-20T00:00:00.000Z',
+    };
+    mockGetSessionsForWeek.mockReturnValue([
+      {
+        ...sessionBase,
+        id: 301,
+        title: 'Completed strength',
+        duration_minutes: 45,
+        intensity_text: 'RPE 7',
+        session_identity_key: 'completed',
+        session_shape_hash: 'shape-completed',
+        status: 'completed',
+      },
+      {
+        ...sessionBase,
+        id: 302,
+        title: 'Skipped mobility',
+        duration_minutes: null,
+        intensity_text: null,
+        session_identity_key: 'skipped',
+        session_shape_hash: 'shape-skipped',
+        status: 'skipped',
+      },
+      {
+        ...sessionBase,
+        id: 303,
+        title: 'Scheduled aerobic',
+        duration_minutes: 30,
+        intensity_text: '',
+        session_identity_key: 'scheduled',
+        session_shape_hash: 'shape-scheduled',
+        status: 'scheduled',
+      },
+      {
+        ...sessionBase,
+        id: 304,
+        title: null,
+        duration_minutes: null,
+        intensity_text: null,
+        session_identity_key: 'unknown',
+        session_shape_hash: 'shape-unknown',
+        status: 'unknown',
+      },
+      {
+        ...sessionBase,
+        id: 305,
+        title: 'Fifth session',
+        duration_minutes: 15,
+        intensity_text: 'easy',
+        session_identity_key: 'fifth',
+        session_shape_hash: 'shape-fifth',
+        status: null,
+      },
+      {
+        ...sessionBase,
+        id: 306,
+        title: 'Sixth session',
+        duration_minutes: 15,
+        intensity_text: 'easy',
+        session_identity_key: 'sixth',
+        session_shape_hash: 'shape-sixth',
+        status: 'pending',
+      },
+    ]);
+
+    const english = await tryBuildFastPathChatResponse(
+      'Show me my workouts for today',
+      'show me my workouts for today',
+      42,
+      84,
+      'en-US',
+    );
+    expect(english?.response.text).toContain('Here are your workouts for today:');
+    expect(english?.response.text).toContain('Scheduled session');
+    expect(english?.response.text).toContain('1 more scheduled today');
+    expect(english?.response.text).not.toContain('Sixth session');
+    expect(english?.response.metadata).toMatchObject({ sessionCount: 6 });
+
+    const brazilian = await tryBuildFastPathChatResponse(
+      'Mostre os meus treinos de hoje',
+      'mostre os meus treinos de hoje',
+      42,
+      84,
+      'pt-BR',
+    );
+    expect(brazilian?.response.text).toContain('Treinos de hoje:');
+    expect(brazilian?.response.text).toContain('Sessão agendada');
+    expect(brazilian?.response.text).toContain('Mais 1 treino(s) agendado(s) para hoje');
+
+    mockGetSessionsForWeek.mockReturnValue([{
+      ...sessionBase,
+      id: 307,
+      title: 'Corrida fácil',
+      duration_minutes: 20,
+      intensity_text: null,
+      session_identity_key: 'single',
+      session_shape_hash: 'shape-single',
+      status: null,
+    }]);
+    const portuguese = await tryBuildFastPathChatResponse(
+      'Qual seria o meu treino de hoje?',
+      'qual seria o meu treino de hoje?',
+      42,
+      84,
+      'pt-PT',
+    );
+    expect(portuguese?.response.text).toContain('Treino de hoje: Corrida fácil');
+    expect(portuguese?.response.text).not.toContain('Mais 1');
   });
 
   it('uses the resolved English response locale for Secretary fast paths over a stored Portuguese profile', async () => {

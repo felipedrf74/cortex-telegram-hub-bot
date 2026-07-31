@@ -22,7 +22,7 @@ vi.mock('../../src/api/secret-guards', async () => ({
   isLoopbackRequest: () => true,
 }));
 vi.mock('../../src/services/chat-live-evaluation-state', () => ({
-  CHAT_LIVE_EVAL_SEED_PROFILE_VERSION: 'single-tenant-live-v2',
+  CHAT_LIVE_EVAL_SEED_PROFILE_VERSION: 'single-tenant-live-v3',
   prepareChatLiveEvalScenario: (...args: unknown[]) => prepareMock(...args),
 }));
 
@@ -135,7 +135,7 @@ describe('authenticated chat live-eval routes', () => {
         runId: 'chat-eval-route-test',
         providerPolicy: 'ollama_only_zero_cloud',
         productionDataUsed: false,
-        seedProfileVersion: 'single-tenant-live-v2',
+        seedProfileVersion: 'single-tenant-live-v3',
       },
     });
     expect(JSON.stringify(state.body)).not.toContain('API_KEY');
@@ -144,7 +144,7 @@ describe('authenticated chat live-eval routes', () => {
   it('accepts only the header-bound scenario and never accepts client seed data', () => {
     prepareMock.mockReturnValue({
       scenarioId: 'morning_planning',
-      seedProfileVersion: 'single-tenant-live-v2',
+      seedProfileVersion: 'single-tenant-live-v3',
       seedProfileHash: 'a'.repeat(64),
       resetCounts: {},
     });
@@ -175,7 +175,7 @@ describe('authenticated chat live-eval routes', () => {
       )
     `).run();
     db.prepare(`INSERT INTO ai_provider_attempt_reservations VALUES (42, 'interactive', 'chat_live_eval_local', 'chat_live_eval:content_creator_day', 'chat-eval-route-test', 'ollama', 0)`).run();
-    db.prepare(`INSERT INTO chat_live_eval_preparations VALUES (?, 'morning_planning', 'local_engine', 42, 42, 'single-tenant-live-v2', ?, '{"messages":1}')`)
+    db.prepare(`INSERT INTO chat_live_eval_preparations VALUES (?, 'morning_planning', 'local_engine', 42, 42, 'single-tenant-live-v3', ?, '{"messages":1}')`)
       .run('chat-eval-route-test', 'a'.repeat(64));
     const handler = routes().get('GET /eval/evidence')!;
     const { state, res } = response();

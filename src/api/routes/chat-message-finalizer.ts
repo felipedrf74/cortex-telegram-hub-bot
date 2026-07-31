@@ -146,6 +146,7 @@ const DETERMINISTIC_ROUTE_METHOD_POLICIES: ReadonlySet<string> = new Set([
   'chat-core-v2-deterministic-read',
   'authenticated-identity',
   'fast-path',
+  'training-today-read-shortcut',
   'training-plan-shortcut',
   'plan-shortcut',
   'confirmation-required',

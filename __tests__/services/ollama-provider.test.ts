@@ -58,12 +58,16 @@ vi.mock('../../src/config', () => ({
   },
 }));
 
+const getDomainSystemPromptMock = vi.hoisted(() => vi.fn(
+  (domain: string) => `You are the ${domain} agent.`,
+));
+
 // Stub the anthropic system-prompt helpers used by OllamaProvider.classify
 // and callDomain so we don't pull in the whole anthropic.ts module graph.
 vi.mock('../../src/services/anthropic', () => ({
   TOOLS: [],
   getClassifierSystemPrompt: () => 'You are a domain classifier.',
-  getDomainSystemPrompt: (d: string) => `You are the ${d} agent.`,
+  getDomainSystemPrompt: getDomainSystemPromptMock,
   // Option 3 (O3-A14): compact classifier prompt. Tests don't exercise
   // the compact path — return null so the long-prompt fallback is used.
   getOllamaClassifierSystemPromptCompact: () => null,
@@ -228,6 +232,7 @@ function modelAuthoredAuthorizedIdeasJson(
 
 beforeEach(() => {
   fetchMock.mockReset();
+  getDomainSystemPromptMock.mockClear();
   runMock.mockReset();
   assertBudgetMock.mockReset();
   rateLimitMock.mockReset();
@@ -399,6 +404,27 @@ describe('OllamaProvider — classify', () => {
 });
 
 describe('OllamaProvider — scoped state context', () => {
+  it('selects the Training persona from the current message, not the full state context', async () => {
+    fetchMock
+      .mockResolvedValueOnce(makeChatResponse({ content: 'Grounded workout answer' }))
+      .mockResolvedValueOnce(makeTagsResponse());
+    const p = new OllamaProvider();
+
+    await p.callDomain(
+      'triathlon',
+      [],
+      "What's today's workout?",
+      'SYNTHETIC_STATE_WITH_GYM_AND_RUNNING_TERMS',
+      { userId: 42, tenantId: 42 },
+    );
+
+    expect(getDomainSystemPromptMock).toHaveBeenCalledWith(
+      'triathlon',
+      "What's today's workout?",
+      { currentTurnOnly: false },
+    );
+  });
+
   it('sends trusted state context in the request instead of only counting its tokens', async () => {
     fetchMock
       .mockResolvedValueOnce(makeChatResponse({ content: 'Grounded answer' }))

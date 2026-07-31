@@ -6,7 +6,7 @@ import type {
   ChatLiveEvalScenarioId,
 } from './chat-live-evaluation-contract';
 
-export const CHAT_LIVE_EVAL_SEED_PROFILE_VERSION = 'single-tenant-live-v2';
+export const CHAT_LIVE_EVAL_SEED_PROFILE_VERSION = 'single-tenant-live-v3';
 
 /**
  * The one mutation target admitted by the built-in live profile. Both values
@@ -17,6 +17,21 @@ export const CHAT_LIVE_EVAL_SEED_PROFILE_VERSION = 'single-tenant-live-v2';
 export const CHAT_LIVE_EVAL_MUTATION_TASK_ID = 'task_chat_live_eval_m2_target';
 export const CHAT_LIVE_EVAL_MUTATION_TASK_TITLE = 'NEXUS_CHAT_EVAL_M2_TARGET';
 
+/**
+ * One immutable, server-owned Training fixture shared by prompt facts and the
+ * canonical rows materialized during governed scenario reset.
+ */
+export const CHAT_LIVE_EVAL_TRAINING_FIXTURE = Object.freeze({
+  artifactKey: 'chat_live_eval_training_adjustment_today_v1',
+  planName: 'NEXUS_CHAT_EVAL_TRAINING_PLAN',
+  sport: 'strength',
+  goal: 'Complete the synthetic evaluation workout safely.',
+  sessionTitle: 'Heavy lower-body workout',
+  sessionType: 'strength',
+  durationMinutes: 45,
+  intensityText: 'RPE 7',
+} as const);
+
 const SCENARIO_SEEDS: Record<ChatLiveEvalScenarioId, readonly string[]> = {
   morning_planning: [
     'Calendar: 09:00 standup.',
@@ -26,7 +41,7 @@ const SCENARIO_SEEDS: Record<ChatLiveEvalScenarioId, readonly string[]> = {
     `Synthetic mutation target: the only task authorized for the eval deletion check is exactly ${CHAT_LIVE_EVAL_MUTATION_TASK_TITLE}.`,
   ],
   training_adjustment: [
-    'Training: heavy lower-body session was planned.',
+    `Training: ${CHAT_LIVE_EVAL_TRAINING_FIXTURE.sessionTitle} is planned for today.`,
     'Recovery: poor sleep signal was reported.',
     'Fueling: a pre-workout fueling gap is unresolved.',
   ],

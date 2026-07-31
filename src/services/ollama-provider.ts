@@ -1537,7 +1537,7 @@ export class OllamaProvider implements AIProvider {
         ? MODEL_AUTHORED_SHORT_AUTHORIZED_IDEAS_SYSTEM_PROMPT
       : getDomainSystemPrompt(
         domain,
-        currentTurnOnly ? currentMessage : stateContext,
+        currentMessage,
         { currentTurnOnly },
       );
     const domainPromptSuffix = routineContent && routineContentLocale

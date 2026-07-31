@@ -1008,6 +1008,7 @@ describe('Chat API routes', () => {
     delete process.env.CHAT_CORE_V2_LEGACY_WRITE_FALLTHROUGH_BLOCK;
     delete process.env.CHAT_CORE_V2_LEGACY_FALLBACK_DISABLED;
     delete process.env.CHAT_CORE_V2_LEGACY_FALLBACK_DISABLED_TENANTS;
+    delete process.env.AI_ROUTING_MANIFEST_KILL;
     testDb?.close();
   });
 
@@ -2239,6 +2240,109 @@ describe('Chat API routes', () => {
       buttons: [[{ text: '📅 Today', callbackData: 'cmd:/day' }]],
       routeMethod: 'fast-path',
     });
+  });
+
+  it('answers the exact today-workout read before every provider path while rollout flags remain off', async () => {
+    process.env.CHAT_CORE_V2_ORCHESTRATOR_MODE = 'off';
+    process.env.CHAT_CORE_V2_ENABLED = 'false';
+    process.env.CHAT_CORE_V2_READS_ENABLED = 'false';
+    process.env.AI_ROUTING_MANIFEST_KILL = 'true';
+    const now = new Date();
+    const localDateParts = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'Europe/Lisbon',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(now);
+    const localDateValues = Object.fromEntries(localDateParts.map((part) => [part.type, part.value]));
+    const localDate = `${localDateValues.year}-${localDateValues.month}-${localDateValues.day}`;
+    const localDay = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'Europe/Lisbon',
+      weekday: 'long',
+    }).format(now);
+    mockGetActivePlan.mockReturnValue({
+      id: 101,
+      user_id: 7001,
+      tenant_id: 7001,
+      name: 'Scoped plan',
+      sport: 'strength',
+      goal: 'Train safely',
+      duration_weeks: 1,
+      periodization: 'linear',
+      status: 'active',
+      start_date: localDate,
+      end_date: addIsoDays(localDate, 6),
+      preferences_json: null,
+      plan_version: 1,
+      created_at: now.toISOString(),
+      updated_at: now.toISOString(),
+    });
+    mockGetWeeksForPlan.mockReturnValue([{
+      id: 201,
+      plan_id: 101,
+      week_number: 1,
+      focus: 'Strength',
+      intensity_pct: 75,
+      volume_sessions: 1,
+      notes: null,
+      auto_adjusted: 0,
+      adjustment_reason: null,
+      created_at: now.toISOString(),
+    }]);
+    mockGetSessionsForWeek.mockReturnValue([{
+      id: 301,
+      week_id: 201,
+      plan_id: 101,
+      tenant_id: 7001,
+      day_of_week: localDay,
+      session_type: 'strength',
+      title: 'Heavy lower-body workout',
+      description: 'Private coaching detail',
+      description_json: null,
+      exercises_json: '[{"name":"Private exercise"}]',
+      duration_minutes: 45,
+      intensity_text: 'RPE 7',
+      calendar_event_id: 'private-event',
+      calendar_source: 'google',
+      session_identity_key: 'eval-today',
+      session_shape_hash: 'shape-eval-today',
+      preferred_time_unavailable: 0,
+      status: 'scheduled',
+      created_at: now.toISOString(),
+      updated_at: now.toISOString(),
+    }]);
+
+    try {
+      const messageRes = await dispatch('POST', '/message', 7001, {
+        text: "What's today's workout?",
+      });
+
+      expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+      expect(messageRes.body).toMatchObject({
+        domain: 'triathlon',
+        routeMethod: 'training-today-read-shortcut',
+        text: expect.stringContaining('Your workout for today is Heavy lower-body workout'),
+        metadata: {
+          type: 'training_today_read',
+          involvedSkills: ['training'],
+          chatReasoning: {
+            ownerSkill: 'training',
+            actionability: 'answer_only',
+            verificationStatus: 'not_required',
+          },
+        },
+      });
+      expect(messageRes.body.text).not.toContain('Private coaching detail');
+      expect(JSON.stringify(messageRes.body.metadata)).not.toContain('Private exercise');
+      expect(JSON.stringify(messageRes.body.metadata)).not.toContain('private-event');
+      expect(mockRouteMessage).not.toHaveBeenCalled();
+      expect(mockHandleSecretary).not.toHaveBeenCalled();
+      expect(mockCompleteOneShotWithFallback).not.toHaveBeenCalled();
+      expect(mockCompleteOneShotWithSearch).not.toHaveBeenCalled();
+      expect(mockIsUserOverDailyCap).not.toHaveBeenCalled();
+    } finally {
+      delete process.env.AI_ROUTING_MANIFEST_KILL;
+    }
   });
 
   it('records HMAC-only deterministic-read evidence for slash fast-path responses when enabled', async () => {
