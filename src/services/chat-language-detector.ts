@@ -99,6 +99,7 @@ const PT_WORDS_STRONG = new Set([
   'encontrei', 'nenhuma', 'nenhum', 'seu', 'sua', 'seus', 'suas', 'leite',
   'almoço', 'manhã', 'têm', 'possui', 'ligar', 'esse', 'essa', 'isso',
   'das', 'fontes', 'atuais', 'notícias', 'mais', 'resumo',
+  'conteúdo', 'conteúdos',
 ]);
 
 const PT_WORDS_WEAK = new Set([

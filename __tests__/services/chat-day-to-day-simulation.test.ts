@@ -147,7 +147,7 @@ describe('chat day-to-day simulation harness', () => {
         }
         if (req.clientMessageId?.includes('c1-ideas')) {
           return liveEnvelopeResult({
-            text: 'Aqui estão ideias de conteúdo seguras para a publicação do lançamento.',
+            text: 'Ideias de conteúdo: deadline em vídeo/carrossel.',
             domain: 'content',
             involvedSkills: ['content'],
           });
@@ -232,6 +232,15 @@ describe('chat day-to-day simulation harness', () => {
       locale: 'pt-PT',
       text: expect.stringMatching(/conteúdo/i),
     });
+    const contentIdeasTurn = result.scenarios
+      .find((scenario) => scenario.scenarioId === 'content_creator_day')!
+      .turns.find((turn) => turn.turnId === 'c1-ideas')!;
+    expect(contentIdeasTurn.scorerDimensions?.find(
+      (dimension) => dimension.dimension === 'semantic_coverage',
+    )).toMatchObject({ passed: true });
+    expect(contentIdeasTurn.scorerDimensions?.find(
+      (dimension) => dimension.dimension === 'response_language',
+    )).toMatchObject({ passed: true });
     const targetProviderTurns = result.scenarios
       .flatMap((scenario) => scenario.turns)
       .filter((turn) => turn.targetProviderExpected === true);

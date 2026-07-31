@@ -65,6 +65,15 @@ describe('detectResponseLanguage', () => {
     }
   });
 
+  it('detects the concise model-authored Content response shapes used by the release eval', () => {
+    expect(detectResponseLanguage('Ideias de conteúdo: Profile em texto/foto.').language).toBe('pt');
+    expect(detectResponseLanguage('Broad narrative is for reach; tailored fits niches.').language).toBe('en');
+  });
+
+  it('does not treat English marketing loanwords as a decisive English response signal', () => {
+    expect(detectResponseLanguage('Broad e tailored para campanhas.').language).not.toBe('en');
+  });
+
   it('degrades short strings to unknown with low confidence instead of guessing', () => {
     for (const text of ['OK', 'Ok!', 'Sí.', 'Sim', '👍', '10:00', 'Done', '']) {
       const result = detectResponseLanguage(text);
