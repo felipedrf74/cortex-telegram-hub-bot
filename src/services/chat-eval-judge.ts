@@ -46,6 +46,35 @@ export const CHAT_EVAL_JUDGE_PASS_THRESHOLD = 1.5;
 const JUDGE_MAX_TEXT_CHARS_PER_TURN = 1200;
 const JUDGE_MAX_RATIONALE_CHARS = 300;
 
+const JUDGE_DIMENSION_RESPONSE_SCHEMA = Object.freeze({
+  type: 'object',
+  additionalProperties: false,
+  required: ['score', 'rationale'],
+  propertyOrdering: ['score', 'rationale'],
+  properties: {
+    score: { type: 'integer', minimum: 0, maximum: 2 },
+    rationale: { type: 'string' },
+  },
+});
+
+/**
+ * Provider-enforced shape for the paid judge. JSON MIME alone still allowed
+ * Flash-Lite to emit truncated or alternate shapes in the first live
+ * baseline attempt; this schema binds every required dimension and field.
+ */
+export const CHAT_EVAL_JUDGE_RESPONSE_JSON_SCHEMA = Object.freeze({
+  type: 'object',
+  additionalProperties: false,
+  required: [...CHAT_EVAL_JUDGE_DIMENSIONS],
+  propertyOrdering: [...CHAT_EVAL_JUDGE_DIMENSIONS],
+  properties: Object.fromEntries(
+    CHAT_EVAL_JUDGE_DIMENSIONS.map((dimension) => [
+      dimension,
+      JUDGE_DIMENSION_RESPONSE_SCHEMA,
+    ]),
+  ),
+});
+
 export interface ChatEvalJudgeTurnInput {
   turnId: string;
   userMessage: string;
@@ -247,27 +276,59 @@ function resolveJudgeModel(opts: ChatEvalJudgeOptions): string {
   return opts.model ?? DEFAULT_CHAT_EVAL_JUDGE_MODEL;
 }
 
+export function buildChatEvalJudgeProviderRequest(input: {
+  systemPrompt: string;
+  userPrompt: string;
+  model: string;
+}) {
+  const generationPayload = {
+    maxTokens: CHAT_EVAL_JUDGE_MAX_OUTPUT_TOKENS,
+    temperature: 0,
+    jsonMode: true,
+    responseJsonSchema: CHAT_EVAL_JUDGE_RESPONSE_JSON_SCHEMA,
+    // Flash-Lite can spend nearly the full output cap on internal thinking,
+    // leaving an incomplete JSON body. This deterministic rubric does not
+    // need reasoning tokens; preserve the whole cap for the schema.
+    thinkingBudget: 0,
+  } as const;
+
+  return {
+    completionOptions: {
+      model: input.model,
+      ...generationPayload,
+    },
+    costPayload: {
+      systemPrompt: input.systemPrompt,
+      userPrompt: input.userPrompt,
+      ...generationPayload,
+    },
+  };
+}
+
 // Tracked Gemini one-shot: logs usage + cost to api_usage under the judge
 // category and reserves budget via the existing provider-call guardrails.
 // Dynamic import (not top-level) keeps fixture-mode consumers of this module
 // from loading the provider stack at all.
 const defaultComplete: ChatEvalJudgeCompletionFn = async ({ systemPrompt, userPrompt, model }) => {
   const gemini = await import('./gemini-provider');
-  return gemini.completeOneShot(systemPrompt, userPrompt, CHAT_EVAL_JUDGE_CATEGORY, {
-    model,
-    maxTokens: CHAT_EVAL_JUDGE_MAX_OUTPUT_TOKENS,
-    temperature: 0,
-    jsonMode: true,
-  });
+  const request = buildChatEvalJudgeProviderRequest({ systemPrompt, userPrompt, model });
+  return gemini.completeOneShot(
+    systemPrompt,
+    userPrompt,
+    CHAT_EVAL_JUDGE_CATEGORY,
+    request.completionOptions,
+  );
 };
 
-const defaultEstimateCallCostUsd: ChatEvalJudgeCostEstimator = ({ systemPrompt, userPrompt, model, maxOutputTokens }) =>
-  computeProviderCallCostUpperBoundUsd({
+const defaultEstimateCallCostUsd: ChatEvalJudgeCostEstimator = ({ systemPrompt, userPrompt, model }) => {
+  const request = buildChatEvalJudgeProviderRequest({ systemPrompt, userPrompt, model });
+  return computeProviderCallCostUpperBoundUsd({
     provider: 'gemini',
     model,
-    payload: { systemPrompt, userPrompt, maxTokens: maxOutputTokens, temperature: 0, jsonMode: true },
-    maxOutputTokens,
+    payload: request.costPayload,
+    maxOutputTokens: request.completionOptions.maxTokens,
   });
+};
 
 function buildJudgeSystemPrompt(): string {
   return [
@@ -313,14 +374,38 @@ function parseJudgeResponse(rawText: string): Record<ChatEvalJudgeDimensionId, C
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
   const raw = parsed as Record<string, unknown>;
+  const topLevelKeys = Object.keys(raw);
+  if (
+    topLevelKeys.length !== CHAT_EVAL_JUDGE_DIMENSIONS.length
+    || !CHAT_EVAL_JUDGE_DIMENSIONS.every((dimension) => topLevelKeys.includes(dimension))
+  ) {
+    return null;
+  }
+
   const scores = {} as Record<ChatEvalJudgeDimensionId, ChatEvalJudgeDimensionResult>;
   for (const dimension of CHAT_EVAL_JUDGE_DIMENSIONS) {
     const entry = raw[dimension];
-    const score = extractScore(entry);
-    if (score === null) return null;
-    const rationale = entry && typeof entry === 'object' && typeof (entry as Record<string, unknown>).rationale === 'string'
-      ? truncate((entry as Record<string, unknown>).rationale as string, JUDGE_MAX_RATIONALE_CHARS)
-      : '';
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
+    const entryObject = entry as Record<string, unknown>;
+    const entryKeys = Object.keys(entryObject);
+    if (
+      entryKeys.length !== 2
+      || !entryKeys.includes('score')
+      || !entryKeys.includes('rationale')
+    ) {
+      return null;
+    }
+    const score = entryObject.score;
+    if (
+      typeof score !== 'number'
+      || !Number.isInteger(score)
+      || score < 0
+      || score > 2
+    ) {
+      return null;
+    }
+    if (typeof entryObject.rationale !== 'string') return null;
+    const rationale = truncate(entryObject.rationale, JUDGE_MAX_RATIONALE_CHARS);
     scores[dimension] = {
       score,
       passed: score >= CHAT_EVAL_JUDGE_PASS_THRESHOLD,
@@ -328,16 +413,6 @@ function parseJudgeResponse(rawText: string): Record<ChatEvalJudgeDimensionId, C
     };
   }
   return scores;
-}
-
-function extractScore(entry: unknown): number | null {
-  const value = typeof entry === 'number'
-    ? entry
-    : entry && typeof entry === 'object' && typeof (entry as Record<string, unknown>).score === 'number'
-      ? (entry as Record<string, unknown>).score as number
-      : null;
-  if (value === null || !Number.isFinite(value)) return null;
-  return Math.min(2, Math.max(0, value));
 }
 
 function truncate(value: string, maxChars: number): string {

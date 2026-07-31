@@ -604,6 +604,10 @@ type OneShotOptions = {
   tenantId?: number;
   timeoutMs?: number;
   jsonMode?: boolean;
+  /** Optional JSON Schema paired with jsonMode for provider-enforced output shape. */
+  responseJsonSchema?: unknown;
+  /** Explicit Gemini thinking budget. Zero disables thinking on supported 2.5 models. */
+  thinkingBudget?: number;
   /** Optional caller-specific retry cap; bounded by the global safety cap. */
   maxRetries?: number;
 };
@@ -633,6 +637,9 @@ export async function completeOneShot(
   category: string,
   options?: OneShotOptions,
 ): Promise<string> {
+  if (options?.responseJsonSchema !== undefined && options.jsonMode !== true) {
+    throw new Error('responseJsonSchema requires jsonMode: true');
+  }
   if (!isGeminiProviderConfigured()) {
     throw new Error('Gemini provider not configured (GEMINI_API_KEY missing)');
   }
@@ -646,14 +653,41 @@ export async function completeOneShot(
     generationConfig: withGeminiSafetySettings({
       maxOutputTokens: maxTokens,
       temperature,
-      ...(options?.jsonMode ? { responseMimeType: 'application/json' } : {}),
+      ...(options?.jsonMode
+        ? {
+            responseMimeType: 'application/json',
+            ...(options.responseJsonSchema !== undefined
+              ? { responseJsonSchema: options.responseJsonSchema }
+              : {}),
+          }
+        : {}),
+      ...(options?.thinkingBudget !== undefined
+        ? {
+            thinkingConfig: {
+              includeThoughts: false,
+              thinkingBudget: options.thinkingBudget,
+            },
+          }
+        : {}),
     }),
   });
 
   const maxCostUsd = computeProviderCallCostUpperBoundUsd({
     provider: 'gemini',
     model,
-    payload: { systemPrompt, userPrompt, maxTokens, temperature, jsonMode: options?.jsonMode ?? false },
+    payload: {
+      systemPrompt,
+      userPrompt,
+      maxTokens,
+      temperature,
+      jsonMode: options?.jsonMode ?? false,
+      ...(options?.responseJsonSchema !== undefined
+        ? { responseJsonSchema: options.responseJsonSchema }
+        : {}),
+      ...(options?.thinkingBudget !== undefined
+        ? { thinkingBudget: options.thinkingBudget }
+        : {}),
+    },
     maxOutputTokens: maxTokens,
   });
   assertAiBudgetReservationForProvider({

@@ -116,6 +116,8 @@ import {
   renderGeminiSafetyBlockMessage,
   withGeminiSafetySettings,
 } from '../../src/services/gemini-provider';
+import { assertAiBudgetReservationForProvider } from '../../src/services/cost-guardrail';
+import { computeProviderCallCostUpperBoundUsd } from '../../src/services/model-pricing';
 
 function okResponse(text: string, finishReason = 'STOP') {
   return {
@@ -176,6 +178,69 @@ describe('safety settings reach every Gemini call site', () => {
     mockGenerateContent.mockResolvedValue(okResponse('hello'));
     await completeOneShot('sys', 'user', 'test_category');
     expect(lastConfig().safetySettings).toEqual(GEMINI_SAFETY_SETTINGS);
+  });
+
+  it('completeOneShot forwards an exact JSON schema and explicit thinking budget', async () => {
+    mockGenerateContent.mockResolvedValue(okResponse('{"score":2}'));
+    const responseJsonSchema = {
+      type: 'object',
+      additionalProperties: false,
+      required: ['score'],
+      properties: {
+        score: { type: 'integer', minimum: 0, maximum: 2 },
+      },
+    };
+    const model = 'gemini-2.5-flash-lite';
+    const maxTokens = 700;
+
+    await completeOneShot('sys', 'user', 'test_category', {
+      model,
+      maxTokens,
+      temperature: 0,
+      jsonMode: true,
+      responseJsonSchema,
+      thinkingBudget: 0,
+    });
+
+    expect(lastConfig()).toMatchObject({
+      responseMimeType: 'application/json',
+      responseJsonSchema,
+      thinkingConfig: {
+        includeThoughts: false,
+        thinkingBudget: 0,
+      },
+    });
+    expect(assertAiBudgetReservationForProvider).toHaveBeenCalledWith({
+      userId: 0,
+      category: 'test_category',
+      provider: 'gemini',
+      model,
+      maxCostUsd: computeProviderCallCostUpperBoundUsd({
+        provider: 'gemini',
+        model,
+        payload: {
+          systemPrompt: 'sys',
+          userPrompt: 'user',
+          maxTokens,
+          temperature: 0,
+          jsonMode: true,
+          responseJsonSchema,
+          thinkingBudget: 0,
+        },
+        maxOutputTokens: maxTokens,
+      }),
+    });
+  });
+
+  it('rejects a response schema unless JSON mode is enabled, before calling Gemini', async () => {
+    await expect(completeOneShot('sys', 'user', 'test_category', {
+      responseJsonSchema: {
+        type: 'object',
+        properties: { score: { type: 'integer' } },
+      },
+    })).rejects.toThrow('responseJsonSchema requires jsonMode');
+
+    expect(mockGenerateContent).not.toHaveBeenCalled();
   });
 
   it('completeOneShotWithSearch', async () => {
