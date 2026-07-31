@@ -118,7 +118,8 @@ One page for operating the production chat-quality loop (M22).
   containing a 24–64 character answer, with a 62-character answer target. The
   prompt instructs the model to copy the prefix, including the request terms
   and selected authorized term, verbatim, and asks for exactly two distinct
-  one-to-three-word formats separated by one comma. The locale-aware verifier
+  one-to-three-word formats, exactly one comma, and no third format. The
+  locale-aware verifier
   requires the exact localized heading, connector, recognized idea/content
   request stems, and selected term in the complete grounding prefix. It then
   requires exactly two non-empty alphabetic format phrases of one to three

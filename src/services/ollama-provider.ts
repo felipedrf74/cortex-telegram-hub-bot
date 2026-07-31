@@ -637,8 +637,7 @@ function modelAuthoredContentLanguageInstruction(
   if (shortMode === 'authorizedIdeas') {
     return [
       `Use ${language}.`,
-      'Copy OUTPUT_PREFIX exactly; add two distinct 1-3-word formats separated by one comma.',
-      'End `.`; no other text; max 62 chars.',
+      'Copy OUTPUT_PREFIX exactly. ONLY 2 distinct 1-3-word formats; EXACTLY 1 comma; NO third format. End `.`; max 62 chars.',
     ].join(' ');
   }
   return [

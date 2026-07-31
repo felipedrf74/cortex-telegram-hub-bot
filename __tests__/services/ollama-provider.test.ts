@@ -1618,8 +1618,10 @@ describe('OllamaProvider — scoped state context', () => {
         const request = firstStructuredRequest();
         expectExactUnconstrainedProperties(request.format, ['a']);
         expect(request.messages[0]?.content).toContain(
-          'two distinct 1-3-word formats separated by one comma',
+          'ONLY 2 distinct 1-3-word formats',
         );
+        expect(request.messages[0]?.content).toContain('EXACTLY 1 comma');
+        expect(request.messages[0]?.content).toContain('NO third format');
         expect(request.messages.at(-1)?.content).toContain(`REQUEST: ${currentRequest}`);
         expect(result.stopReason).toBe('stop');
         expect(result.text).toBe(answer);
@@ -2308,9 +2310,10 @@ describe('OllamaProvider — scoped state context', () => {
       'Copy OUTPUT_PREFIX exactly',
     );
     expect(request.messages[0]?.content).toContain(
-      'two distinct 1-3-word formats separated by one comma',
+      'ONLY 2 distinct 1-3-word formats',
     );
-    expect(request.messages[0]?.content).toContain('no other text');
+    expect(request.messages[0]?.content).toContain('EXACTLY 1 comma');
+    expect(request.messages[0]?.content).toContain('NO third format');
     expect(request.messages[0]?.content).toContain(
       'max 62 chars',
     );
