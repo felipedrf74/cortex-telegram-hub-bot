@@ -55,6 +55,7 @@ import { assertSmallOnlyOllamaModel } from './ollama-model-policy';
 import { detectResponseLanguage } from './chat-language-detector';
 import { getCurrentChatRequestLocale } from './chat-request-locale-context';
 import { assessChatResearchAnswerCompleteness } from './chat-research-answer-quality';
+import { getCurrentChatLiveEvalSeedFacts } from './chat-live-evaluation-context';
 
 // ─── Public types for the new task dispatch paths ──────────────────
 
@@ -455,14 +456,17 @@ function parseModelAuthoredContentAuthorizedIdeas(
   const ideaStem = [...MODEL_AUTHORED_IDEA_STEMS].find((stem) => requestStems.has(stem));
   const contentStem = [...MODEL_AUTHORED_CONTENT_STEMS].find((stem) => requestStems.has(stem));
   if (!ideaStem || !contentStem) return null;
-  const contextParts = [
-    ...history.map((message) => (
-      typeof message.content === 'string'
-        ? message.content
-        : JSON.stringify(message.content)
-    )),
-    stateContext,
-  ];
+  const liveEvalSeedFacts = getCurrentChatLiveEvalSeedFacts();
+  const contextParts = liveEvalSeedFacts.length > 0
+    ? [...liveEvalSeedFacts]
+    : [
+      ...history.map((message) => (
+        typeof message.content === 'string'
+          ? message.content
+          : JSON.stringify(message.content)
+      )),
+      stateContext,
+    ];
   if (
     estimateTokensTotal([...contextParts, currentMessage])
     > MODEL_AUTHORED_SHORT_SOURCE_MAX_ESTIMATED_TOKENS
@@ -523,8 +527,8 @@ function modelAuthoredContentLanguageInstruction(
     const secondLabel = modelAuthoredComparisonSecondLabel(comparison);
     return [
       `Write \`a\` only in ${language}.`,
-      `Format \`a\` as “${comparisonOpening}: <condition>; ${secondLabel} fits <condition>.”`,
-      'Replace both placeholders with different concrete 1-2 word conditions; use at most 8 words and 54 characters including the final period.',
+      `Format \`a\` as “${comparisonOpening} is for <condition>; ${secondLabel} fits <condition>.”`,
+      'Replace both placeholders with different concrete one-word conditions; use at most 8 words and 54 characters including the final period.',
     ].join(' ');
   }
   if (shortMode === 'authorizedIdeas') {

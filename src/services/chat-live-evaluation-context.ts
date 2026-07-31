@@ -81,6 +81,16 @@ export function getCurrentChatLiveEvalSeedBlock(): string {
 }
 
 /**
+ * Returns the fixed facts for the authenticated active eval scenario without
+ * the surrounding prompt-policy wrapper. This lets deterministic validation
+ * distinguish independently seeded facts from rendered context metadata.
+ */
+export function getCurrentChatLiveEvalSeedFacts(): readonly string[] {
+  const context = activeContext.getStore();
+  return context?.scenarioId ? [...SCENARIO_SEEDS[context.scenarioId]] : [];
+}
+
+/**
  * Returns true only inside the authenticated local-engine request scope that
  * the chat eval route established. An environment variable alone cannot
  * manufacture this request-local authority.

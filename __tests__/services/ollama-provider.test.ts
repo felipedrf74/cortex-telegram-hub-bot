@@ -135,6 +135,14 @@ vi.mock('../../src/utils/logger', () => ({
 // Import AFTER all mocks so the provider picks them up.
 import { LocalLLMError } from '../../src/services/local-llm-error';
 import { OllamaProvider, completeLocalReasoningOneShot, stripThinkBlocks } from '../../src/services/ollama-provider';
+import {
+  buildChatLiveEvalSeedBlock,
+  runWithChatLiveEvalContext,
+} from '../../src/services/chat-live-evaluation-context';
+import {
+  CHAT_LIVE_EVAL_CONTRACT_VERSION,
+  CHAT_LIVE_EVAL_LOCAL_BUDGET,
+} from '../../src/services/chat-live-evaluation-contract';
 import { runWithChatRequestLocale } from '../../src/services/chat-request-locale-context';
 
 // Bring fetch under our control.
@@ -1518,6 +1526,51 @@ describe('OllamaProvider — scoped state context', () => {
       expect(result.text).toContain(groundingTerm);
     });
 
+    it('offers only independently seeded facts as grounding terms inside a governed live-eval context', async () => {
+      const answer = 'Ideias de conteúdo: Friday em vídeo/carrossel.';
+      fetchMock
+        .mockResolvedValueOnce(makeChatResponse({
+          content: JSON.stringify({ a: answer }),
+        }))
+        .mockResolvedValueOnce(makeTagsResponse());
+      const p = new OllamaProvider();
+
+      const result = await runWithChatLiveEvalContext({
+        version: CHAT_LIVE_EVAL_CONTRACT_VERSION,
+        mode: 'local_engine',
+        runId: 'chat-eval-content-grounding-test',
+        scenarioId: 'content_creator_day',
+        budget: CHAT_LIVE_EVAL_LOCAL_BUDGET,
+        targetBaseCategory: 'chat_live_eval_local',
+        providerPolicy: 'ollama_only_zero_cloud',
+        userId: 42,
+        tenantId: 42,
+        productionDataUsed: false,
+      }, () => runWithChatRequestLocale('pt-PT', () => p.callDomain(
+        'content',
+        [],
+        'Dá-me ideias de conteúdo para a publicação do lançamento usando apenas o contexto autorizado.',
+        [
+          'Content profile: generic workspace defaults are available.',
+          buildChatLiveEvalSeedBlock('content_creator_day'),
+        ].join('\n'),
+        {
+          userId: 42,
+          tenantId: 42,
+          currentTurnOnly: false,
+        },
+      )));
+
+      const request = firstStructuredRequest();
+      expect(request.messages.at(-1)?.content).toContain(
+        'AUTHORIZED_GROUNDING_TERMS: deadline, friday, reference, library, editing, backlog',
+      );
+      expect(request.messages.at(-1)?.content).not.toMatch(
+        /\b(?:profile|generic|workspace|following|instructions|authority)\b/iu,
+      );
+      expect(result.text).toBe(answer);
+    });
+
     it('rejects authorized ideas grounded in a term absent from retained context', async () => {
       fetchMock
         .mockResolvedValueOnce(makeChatResponse({
@@ -1742,7 +1795,7 @@ describe('OllamaProvider — scoped state context', () => {
   });
 
   it('uses a model-authored structured answer for the exact current-turn-only comparison', async () => {
-    const modelAnswer = 'Broad narrative fits reach; tailored fits niches.';
+    const modelAnswer = 'Broad narrative is for reach; tailored fits niches.';
     fetchMock
       .mockResolvedValueOnce(makeChatResponse({
         content: modelAuthoredComparisonJson(modelAnswer),
@@ -1788,8 +1841,9 @@ describe('OllamaProvider — scoped state context', () => {
     expect(request.format?.properties?.a?.pattern).toBeUndefined();
     expect(request.options).toMatchObject({ num_ctx: 1024, num_predict: 24 });
     expect(request.messages[0]?.content).toContain(
-      'Format `a` as “Broad narrative: <condition>; tailored fits <condition>.”',
+      'Format `a` as “Broad narrative is for <condition>; tailored fits <condition>.”',
     );
+    expect(request.messages[0]?.content).toContain('different concrete one-word conditions');
     expect(request.messages[0]?.content).toContain(
       'at most 8 words and 54 characters including the final period',
     );
