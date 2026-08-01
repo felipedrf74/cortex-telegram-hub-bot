@@ -43,8 +43,11 @@ vi.mock('../../src/config', () => ({
 }));
 
 // Mock Garmin functions — use vi.hoisted to ensure availability before vi.mock
+// `isGarminConfigured` is deliberately absent. It was stubbed permanently
+// truthy, so this suite structurally could not detect the global env conjunct
+// being reintroduced into the per-user gate. readiness-scorer no longer
+// imports it; if that regresses, the module mock will fail loudly instead.
 const mockGarmin = vi.hoisted(() => ({
-  isGarminConfigured: vi.fn(() => true),
   getHrvData: vi.fn(),
   getSleepData: vi.fn(),
   getBodyBatteryEvents: vi.fn(),
@@ -548,11 +551,10 @@ describe('readiness-scorer — calculateReadiness', () => {
     expect(Number.isFinite(Date.parse(result.asOf ?? ''))).toBe(true);
   });
 
-  it('uses a Fitbit snapshot instead of discarding it', async () => {
-    // Fitbit declares `readiness: true`, implements `getReadiness`, and is in
-    // READINESS_PRIORITY, but the fallback branch demanded provider ===
-    // 'whoop'. The snapshot was fetched, thrown away, and the user dropped to
-    // Apple Health or a neutral 60.
+  it('accepts a non-WHOOP snapshot that carries a real score', async () => {
+    // The fallback branch used to demand provider === 'whoop' and stamp
+    // `source: 'whoop'` on everything it built. Any other provider with a
+    // genuine score was discarded and mislabelled respectively.
     clearGarminConnection(1);
     mockWearableService.getReadiness.mockResolvedValue({
       provider: 'fitbit',
@@ -568,6 +570,30 @@ describe('readiness-scorer — calculateReadiness', () => {
     const result = await calculateReadiness(1);
     expect(result.score).toBe(74);
     expect(result.source).toBe('fitbit');
+  });
+
+  it('rejects a snapshot with no usable score instead of inventing one', async () => {
+    // This is what a REAL Fitbit snapshot looks like today: the adapter
+    // hardcodes both `readinessScore` and `recoveryScore` to null. The shared
+    // fallback builder defaults to 60, so accepting it would report a
+    // fabricated neutral stamped as a genuine Fitbit reading and suppress the
+    // honest WEARABLE_INTEGRATION_MISSING signal.
+    clearGarminConnection(1);
+    mockWearableService.getReadiness.mockResolvedValue({
+      provider: 'fitbit',
+      date: '2026-04-16',
+      readinessScore: null,
+      hrvMs: 58,
+      restingHeartRate: 54,
+      bodyBattery: null,
+      recoveryScore: null,
+      raw: {},
+    });
+
+    const result = await calculateReadiness(1);
+    expect(result.source).not.toBe('fitbit');
+    expect(result.source).toBe('estimated');
+    expect(result.reasonCode).toBe('WEARABLE_INTEGRATION_MISSING');
   });
 
   it('leaves Apple Health to its own richer derivation', async () => {
@@ -630,6 +656,43 @@ describe('readiness-scorer — calculateReadiness', () => {
 
       const result = await calculateReadiness(1);
       expect(result.reasoning).not.toContain('No HRV in Apple Health');
+    });
+
+    it('reports a neutral placeholder for HRV, not a fabricated reading', async () => {
+      // `scoreHrv(60, 60)` returns 70 — a healthy-looking number. Reporting
+      // that as the HRV factor score claims a measurement that never existed.
+      clearGarminConnection(1);
+      seedAppleHealthData(1, ['sleep', 'rhr', 'summary']);
+
+      const result = await calculateReadiness(1);
+      expect(result.factors.hrv.score).toBe(60);
+      expect(result.factors.hrv.score).not.toBe(70);
+    });
+
+    it('excludes the unmeasured HRV pillar from the composite entirely', async () => {
+      // Only sleep (0.30) and the sleep-derived body battery (0.20) were
+      // measured, so the composite renormalises over 0.50. Counting HRV's
+      // 0.30 at a placeholder value would drag the score toward that
+      // placeholder and report `coverage` as if HRV had been read.
+      clearGarminConnection(1);
+      seedAppleHealthData(1, ['sleep', 'rhr', 'summary']);
+
+      const result = await calculateReadiness(1);
+      expect(result.coverage).toBe(0.5);
+
+      const measuredOnly = Math.round(
+        (result.factors.sleep.score * 0.30 + result.factors.bodyBattery.score * 0.20) / 0.50,
+      );
+      expect(result.score).toBe(measuredOnly);
+    });
+
+    it('does not claim resting heart rate when RHR was not measured either', async () => {
+      clearGarminConnection(1);
+      seedAppleHealthData(1, ['sleep']);
+
+      const result = await calculateReadiness(1);
+      expect(result.reasoning).toContain('No HRV in Apple Health');
+      expect(result.reasoning).not.toContain('resting heart rate');
     });
   });
 

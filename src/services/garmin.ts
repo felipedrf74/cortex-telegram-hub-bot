@@ -284,9 +284,15 @@ function loadSsoCookies(): Record<string, string> | null {
 function _loadRateLimitedUntil(userId: number): number {
   try {
     const scopedFile = rateLimitFile(userId);
+    // The legacy file holds a single process-wide deadline written before
+    // backoff was per-user, so only the owner may inherit it. Reading it for
+    // anyone lacking a scoped file recreates the shared bucket this is meant
+    // to remove: after a deploy, every user's first read would hydrate from
+    // that one file and inherit a deadline they never earned.
+    const legacyReadable = isOwnerGarminUserId(userId) && fs.existsSync(LEGACY_RATE_LIMIT_FILE);
     const fileToRead = fs.existsSync(scopedFile)
       ? scopedFile
-      : fs.existsSync(LEGACY_RATE_LIMIT_FILE)
+      : legacyReadable
         ? LEGACY_RATE_LIMIT_FILE
         : null;
     if (fileToRead) {
@@ -1021,17 +1027,53 @@ function persistTokens(explicitUserId?: number): void {
  * Proactively refresh the OAuth2 token using the OAuth1 token.
  * Called on a schedule to prevent token expiry.
  */
-async function refreshOAuth2(): Promise<boolean> {
+export type GarminRefreshOutcome = 'ok' | 'auth_rejected' | 'transient';
+
+/**
+ * Consecutive transient refresh failures per user. Demotion to needs_reauth
+ * is a one-way door for non-owners, so a run of transient failures has to
+ * accumulate before it counts as a dead session. Reset on any success.
+ */
+const _consecutiveRefreshFailures = new Map<number, number>();
+const TRANSIENT_REFRESH_FAILURE_LIMIT = 3;
+
+/** Test seam: clear transient-failure counters between cases. */
+export function _resetGarminRefreshFailureCountersForTests(): void {
+  _consecutiveRefreshFailures.clear();
+}
+
+/**
+ * Classify a refresh failure.
+ *
+ * Only a genuine credential rejection means the user must reconnect. A 500,
+ * a socket hang-up or a rate-limit is Garmin being unavailable, and demoting
+ * the connection for that is a one-way door: `listGarminConnectedUserIds`
+ * filters on `status = 'active'`, and the only non-owner route back is an
+ * explicit POST /api/v1/garmin/* reconnect. One network blip would otherwise
+ * evict a user from the refresh set permanently.
+ */
+export function classifyRefreshFailure(err: unknown): 'auth_rejected' | 'transient' {
+  const status = extractErrorStatus(err);
+  if (status === 401) return 'auth_rejected';
+  const msg = ((err as Error)?.message ?? '').toLowerCase();
+  if (/invalid_grant|invalid_token|unauthorized|token (is )?(expired|revoked)/.test(msg)) {
+    return 'auth_rejected';
+  }
+  return 'transient';
+}
+
+async function refreshOAuth2(): Promise<GarminRefreshOutcome> {
   try {
     const client = await getClient({ silent: true });
     // Access the underlying HttpClient to call refreshOauth2Token directly
     await (client.client as any).refreshOauth2Token();
     persistTokens();
     logger.info('Garmin: proactive OAuth2 token refresh successful');
-    return true;
+    return 'ok';
   } catch (err) {
-    logger.warn({ err }, 'Garmin: proactive OAuth2 refresh failed');
-    return false;
+    const kind = classifyRefreshFailure(err);
+    logger.warn({ err, kind }, 'Garmin: proactive OAuth2 refresh failed');
+    return kind;
   }
 }
 
@@ -1073,23 +1115,47 @@ export async function keepAlive(): Promise<boolean> {
   }
 
   // Step 1: Try proactive OAuth2 refresh (no SSO login needed, no email)
-  if (await refreshOAuth2()) {
+  const outcome = await refreshOAuth2();
+  if (outcome === 'ok') {
     // Validate with a lightweight call
     try {
       const client = await getClient({ silent: true });
       await client.getUserSettings();
+      _consecutiveRefreshFailures.delete(userId);
       return true;
     } catch (err) {
-      logger.warn({ err }, 'Garmin: OAuth2 refresh succeeded but validation failed — deferring to lazy recovery');
+      logger.warn({ err, userId }, 'Garmin: OAuth2 refresh succeeded but validation failed — deferring to lazy recovery');
       return false;
     }
   }
 
-  // OAuth2 refresh failed. DO NOT trigger loginWithMfa here — that would
-  // send a Garmin MFA email every 30 minutes. Mark the session as needing
-  // re-authentication and let the explicit reauth flow recover it.
-  await markGarminNeedsReauth(userId, 'keepalive_refresh_failed');
-  logger.warn({ userId }, 'Garmin: OAuth2 refresh failed — keepalive marked the connection as needs_reauth');
+  // DO NOT trigger loginWithMfa here — that would send a Garmin MFA email
+  // every 30 minutes.
+  //
+  // Demoting to needs_reauth removes the user from the keep-alive set
+  // entirely (`listGarminConnectedUserIds` filters `status = 'active'`), and
+  // for a non-owner the only route back is an explicit reconnect. So demote
+  // on a genuine credential rejection, but let Garmin being briefly
+  // unavailable pass — otherwise a single 500 permanently strands the user.
+  const failures = (_consecutiveRefreshFailures.get(userId) ?? 0) + 1;
+  _consecutiveRefreshFailures.set(userId, failures);
+
+  if (outcome === 'auth_rejected' || failures >= TRANSIENT_REFRESH_FAILURE_LIMIT) {
+    _consecutiveRefreshFailures.delete(userId);
+    await markGarminNeedsReauth(userId, outcome === 'auth_rejected'
+      ? 'keepalive_auth_rejected'
+      : 'keepalive_refresh_failed');
+    logger.warn(
+      { userId, outcome, failures },
+      'Garmin: keepalive marked the connection as needs_reauth',
+    );
+    return false;
+  }
+
+  logger.warn(
+    { userId, failures, limit: TRANSIENT_REFRESH_FAILURE_LIMIT },
+    'Garmin: transient refresh failure — leaving the connection active and retrying next tick',
+  );
   return false;
 }
 
@@ -1107,7 +1173,15 @@ export async function keepAlive(): Promise<boolean> {
 export async function ensureAuthenticated(
   opts: { silent?: boolean } = {},
 ): Promise<boolean> {
-  if (!isGarminConfigured()) return false;
+  // Scoped to the user in context. The deployment-wide credential pair is
+  // deliberately NOT consulted: a user who linked their own Garmin account
+  // must be able to pre-authenticate whether or not the owner's env vars are
+  // set. `getClient` resolves and validates the per-user session.
+  const userId = resolveGarminUserId();
+  if (!userId) {
+    logger.warn('Garmin: pre-auth skipped — no user in scope');
+    return false;
+  }
   const silent = opts.silent ?? getCurrentContext()?.garminSilent ?? _silentMode;
   try {
     const client = await getClient({ silent });
@@ -1138,11 +1212,17 @@ export async function ensureAuthenticated(
  * coach cron's pre-auth hook benefits from the same protection.
  */
 async function silentAuthRecovery(): Promise<boolean> {
-  if (_authRecoveryPromise) {
-    logger.info('Garmin: silent recovery deferring to in-flight recovery promise');
-    return _authRecoveryPromise;
+  const recoveryUserId = resolveGarminUserId();
+  if (!recoveryUserId) {
+    logger.warn('Garmin: silent recovery skipped — no user in scope');
+    return false;
   }
-  _authRecoveryPromise = (async () => {
+  const inFlight = _silentRecoveries.get(recoveryUserId);
+  if (inFlight) {
+    logger.info({ userId: recoveryUserId }, 'Garmin: silent recovery deferring to in-flight recovery promise');
+    return inFlight;
+  }
+  const recovery = (async () => {
     try {
       // Step 1: OAuth2 token refresh
       try {
@@ -1178,10 +1258,11 @@ async function silentAuthRecovery(): Promise<boolean> {
       logger.warn('Garmin: silent recovery exhausted (OAuth2 + DB reload both failed). Marked needs_reauth.');
       return false;
     } finally {
-      _authRecoveryPromise = null;
+      _silentRecoveries.delete(recoveryUserId);
     }
   })();
-  return _authRecoveryPromise;
+  _silentRecoveries.set(recoveryUserId, recovery);
+  return recovery;
 }
 
 /**
@@ -1200,7 +1281,21 @@ function extractErrorStatus(err: unknown): number | null {
 }
 
 // ─── Serialized auth recovery (prevents parallel MFA storms) ─────────
-let _authRecoveryPromise: Promise<boolean> | null = null;
+//
+// Keyed by user, and split by recovery KIND. This was one unkeyed module
+// scalar shared by both `silentAuthRecovery` and `serializedAuthRecovery`, so
+// user B's read could receive user A's recovery verdict, and a silent
+// recovery could be handed the interactive one's promise — the interactive
+// path is allowed to be more invasive, so satisfying a silent caller with it
+// is exactly backwards.
+const _silentRecoveries = new Map<number, Promise<boolean>>();
+const _serializedRecoveries = new Map<number, Promise<boolean>>();
+
+/** Test seam: drop in-flight recovery state so each case starts clean. */
+export function _resetGarminRecoveryStateForTests(): void {
+  _silentRecoveries.clear();
+  _serializedRecoveries.clear();
+}
 
 /**
  * Ensures only ONE auth recovery runs at a time.
@@ -1212,11 +1307,17 @@ let _authRecoveryPromise: Promise<boolean> | null = null;
  *   3. Mark the connection as needs_reauth and stop.
  */
 async function serializedAuthRecovery(): Promise<boolean> {
-  if (_authRecoveryPromise) {
-    logger.info('Garmin: auth recovery already in progress, waiting...');
-    return _authRecoveryPromise;
+  const recoveryUserId = resolveGarminUserId();
+  if (!recoveryUserId) {
+    logger.warn('Garmin: auth recovery skipped — no user in scope');
+    return false;
   }
-  _authRecoveryPromise = (async () => {
+  const inFlight = _serializedRecoveries.get(recoveryUserId);
+  if (inFlight) {
+    logger.info({ userId: recoveryUserId }, 'Garmin: auth recovery already in progress, waiting...');
+    return inFlight;
+  }
+  const recovery = (async () => {
     try {
       // Step 1: Try OAuth2 token refresh
       try {
@@ -1249,10 +1350,11 @@ async function serializedAuthRecovery(): Promise<boolean> {
       logger.warn('Garmin: passive recovery exhausted — marked needs_reauth instead of triggering MFA login');
       return false;
     } finally {
-      _authRecoveryPromise = null;
+      _serializedRecoveries.delete(recoveryUserId);
     }
   })();
-  return _authRecoveryPromise;
+  _serializedRecoveries.set(recoveryUserId, recovery);
+  return recovery;
 }
 
 /** Data endpoints where 404 means "no data" (not an auth failure) */

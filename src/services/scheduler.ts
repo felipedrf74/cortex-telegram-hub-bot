@@ -23,7 +23,7 @@ import { createScraperMfaInteractiveCallbacks } from './scraper-mfa-reply';
 import { getFiscalCollectionSummary, isFiscalBundleDue, sendFiscalBundleNow } from './fiscal-bundle';
 import { generateCoachBriefing } from './garmin-coach';
 import { isGarminConfigured, keepAlive as garminKeepAlive, ensureAuthenticated as garminEnsureAuth } from './garmin';
-import { listGarminConnectedUserIds } from './garmin-session-store';
+import { listGarminConnectedUserIds, hasActiveGarminConnection } from './garmin-session-store';
 import { registerJob as registerTelemetryJob, wrapJob, recordGarminRefresh, setJobFailureNotifier, setJobEnabledChecker, getJobMap, seedJobLastRunFromHistory, type JobDomain } from '../portal/telemetry';
 import { assertAgentJobRuntimeRegistration } from './agent-job-manifest';
 import { requestTaskSync } from './task-store/task-sync-coordinator';
@@ -65,7 +65,7 @@ import { getUserTimezoneById, isOwnerUserRef } from './user-service';
 import { runDatabaseBackup, weeklyRestoreTest } from './backup';
 import { getDb } from './database';
 import { listActiveFiscalCollectionProfiles } from '../state/fiscal-collection-profiles';
-import { runWithContext } from '../utils/request-context';
+import { runWithContext, type RequestSource } from '../utils/request-context';
 import { getOwnerBootstrapTarget } from './user-service';
 import { getTaskProviderForUser } from './task-store/task-router';
 import { storeAndPushReport } from './report-document-store';
@@ -179,6 +179,45 @@ function logUnexpectedTenantQueryError(fn: string, err: unknown): void {
  * Falls back only to the explicit owner bootstrap target when the users table
  * is unavailable, instead of fanning out across every legacy allowed Telegram id.
  */
+export interface GarminRefreshFanOutResult {
+  total: number;
+  refreshed: number;
+  failed: number[];
+}
+
+/**
+ * Refresh every connected user's Garmin session, one scoped context each.
+ *
+ * `resolveGarminUserId` fails closed, so a caller that invokes `keepAlive()`
+ * without establishing a user gets a silent no-op — which is exactly what
+ * happened to the startup keep-alive and the portal refresh action when the
+ * resolver changed. Callers use this helper instead of calling `keepAlive()`
+ * bare so the user scope cannot be forgotten.
+ *
+ * Failures are isolated per user: one dead session must not stop the fan-out.
+ */
+export async function refreshConnectedGarminUsers(source: RequestSource): Promise<GarminRefreshFanOutResult> {
+  const userIds = listGarminConnectedUserIds();
+  const failed: number[] = [];
+  let refreshed = 0;
+
+  for (const userId of userIds) {
+    try {
+      const ok = await runWithContext(
+        { source, userId },
+        async () => garminKeepAlive(),
+      );
+      if (ok) refreshed += 1;
+      else failed.push(userId);
+    } catch (err) {
+      failed.push(userId);
+      logger.warn({ err, userId, source }, 'Garmin keep-alive failed for user');
+    }
+  }
+
+  return { total: userIds.length, refreshed, failed };
+}
+
 function getActiveUserIds(): number[] {
   try {
     const db = getDb();
@@ -2113,70 +2152,72 @@ export function startScheduler(): void {
   }), { timezone: tz });
 
   // ── Garmin keep-alive (every 30 min) ───────────────────────────────
-  if (isGarminConfigured()) {
-    cron.schedule('5,35 * * * *', wrapJob('garmin_keepalive', async () => {
-      // Refresh every connected user, not just whoever `resolveGarminUserId`
-      // happened to fall back to. With no request context that was always the
-      // owner, so other users' tokens were never refreshed and their sessions
-      // expired into needs_reauth. Each user is scoped and isolated so one
-      // dead session cannot stop the rest of the fan-out.
-      const userIds = listGarminConnectedUserIds();
-      if (userIds.length === 0) return 'skipped';
+  //
+  // NOT gated on `isGarminConfigured()`. That reads the deployment-wide
+  // GARMIN_EMAIL/GARMIN_PASSWORD pair, which is the owner's legacy credential
+  // fallback; gating the whole job on it meant that on a deployment without
+  // owner credentials, no connected user's tokens were ever refreshed. Users
+  // who linked their own account are the reason this job exists.
+  cron.schedule('5,35 * * * *', wrapJob('garmin_keepalive', async () => {
+    const outcome = await refreshConnectedGarminUsers('cron:garmin_keepalive');
+    if (outcome.total === 0) {
+      // Still record a heartbeat: the health probe mirrors this job's
+      // job_history row and reports `fail` on staleness, so returning
+      // 'skipped' silently would look like a broken cron after 90 minutes.
+      recordGarminRefresh(true);
+      return 'skipped';
+    }
 
-      let refreshed = 0;
-      const failures: number[] = [];
-      for (const userId of userIds) {
-        try {
-          const ok = await runWithContext(
-            { source: 'cron:garmin_keepalive', userId },
-            async () => garminKeepAlive(),
-          );
-          if (ok) refreshed += 1;
-          else failures.push(userId);
-        } catch (err) {
-          failures.push(userId);
-          logger.warn({ err, userId }, 'Garmin keep-alive failed for user');
-        }
-      }
+    // Report honestly. Reporting ok because ONE of fifty users refreshed
+    // makes the integration look healthy while it is broken for everyone
+    // else; the probe has no per-user visibility to correct that.
+    recordGarminRefresh(outcome.failed.length === 0);
+    if (outcome.refreshed === 0) {
+      throw new Error(`All refresh attempts failed for ${outcome.total} user(s) — sessions may be dead`);
+    }
+    if (outcome.failed.length > 0) {
+      throw new Error(
+        `Garmin keep-alive failed for ${outcome.failed.length}/${outcome.total} user(s) — `
+        + `refreshed ${outcome.refreshed}`,
+      );
+    }
+  }), { timezone: tz });
 
-      // The health probe mirrors this job's history row, so report success
-      // when at least one session is alive rather than on all-or-nothing.
-      recordGarminRefresh(refreshed > 0);
-      if (refreshed === 0) {
-        throw new Error(`All refresh attempts failed for ${userIds.length} user(s) — sessions may be dead`);
+  // Immediate keepalive on startup — closes the 30-minute gap between
+  // server restart and the first cron tick. Without this, a cron job
+  // (coach briefing, training plan adjust) could fire during the gap
+  // with expired tokens, triggering a full re-login → MFA email.
+  // Runs in silent mode so a dead session doesn't send an MFA email.
+  setTimeout(async () => {
+    try {
+      // Set silent mode so even if keepAlive somehow triggers a
+      // recovery path, it won't send an MFA email.
+      const { setSilentMode } = require('./garmin');
+      setSilentMode(true);
+      logger.info('Garmin: startup keepalive — refreshing tokens immediately (silent mode)');
+      // Same per-user fan-out as the cron. This previously called
+      // `garminKeepAlive()` bare, which resolved no user once the resolver
+      // stopped falling back to the owner — silently disabling the very
+      // MFA-email guard this block exists to provide.
+      const outcome = await refreshConnectedGarminUsers('startup');
+      recordGarminRefresh(outcome.total === 0 || outcome.failed.length === 0);
+      if (outcome.total === 0) {
+        logger.info('Garmin: startup keepalive — no connected users');
+      } else if (outcome.failed.length === 0) {
+        logger.info({ refreshed: outcome.refreshed }, 'Garmin: startup keepalive successful — sessions are live');
+      } else {
+        logger.warn(
+          { refreshed: outcome.refreshed, failed: outcome.failed.length },
+          'Garmin: startup keepalive failed for some users (no MFA triggered, silent mode)',
+        );
       }
-      if (failures.length > 0) {
-        logger.warn({ refreshed, failed: failures.length }, 'Garmin keep-alive partially failed');
-      }
-    }), { timezone: tz });
-
-    // Immediate keepalive on startup — closes the 30-minute gap between
-    // server restart and the first cron tick. Without this, a cron job
-    // (coach briefing, training plan adjust) could fire during the gap
-    // with expired tokens, triggering a full re-login → MFA email.
-    // Runs in silent mode so a dead session doesn't send an MFA email.
-    setTimeout(async () => {
-      try {
-        // Set silent mode so even if keepAlive somehow triggers a
-        // recovery path, it won't send an MFA email.
-        const { setSilentMode } = require('./garmin');
-        setSilentMode(true);
-        logger.info('Garmin: startup keepalive — refreshing tokens immediately (silent mode)');
-        const ok = await garminKeepAlive();
-        recordGarminRefresh(ok);
-        if (ok) {
-          logger.info('Garmin: startup keepalive successful — session is live');
-        } else {
-          logger.warn('Garmin: startup keepalive failed — session may be dead (no MFA triggered, silent mode)');
-        }
-      } catch (err) {
-        logger.warn({ err }, 'Garmin: startup keepalive error (non-fatal)');
-      } finally {
-        const { setSilentMode } = require('./garmin');
-        setSilentMode(false);
-      }
-    }, 5000); // 5s delay to let other services initialize first
-  }
+    } catch (err) {
+      logger.warn({ err }, 'Garmin: startup keepalive error (non-fatal)');
+    } finally {
+      const { setSilentMode } = require('./garmin');
+      setSilentMode(false);
+    }
+  }, 5000); // 5s delay to let other services initialize first
 
   // ── Garmin coach briefing (configurable time) ──────────────────────
   if (config.garmin.coachEnabled) {
@@ -2241,14 +2282,13 @@ export function startScheduler(): void {
     // Adherence-only adjustments are still valuable and preserve the
     // cron's primary purpose on weeks where Garmin is down. The
     // `garminAvailable` flag below gates ONLY the readiness call.
-    let garminAvailable = false;
-    if (isGarminConfigured()) {
-      logger.info('Training plan adjust starting — pre-authenticating Garmin (silent mode — no MFA email if session is dead)');
-      garminAvailable = await garminEnsureAuth({ silent: true });
-      if (!garminAvailable) {
-        logger.warn('Training plan adjust: Garmin session unrecoverable in silent mode — adherence-only adjustments this week (no MFA email triggered)');
-      }
-    }
+    // Pre-auth happens per user, inside the scoped loop below. It used to run
+    // once here, outside any request context, producing a single process-wide
+    // `garminAvailable`. Once `resolveGarminUserId` stopped falling back to
+    // the owner, that call resolved no user, every hydration branch in
+    // `getClient` is gated on one, and the flag became permanently false —
+    // silently downgrading every user to adherence-only adjustments forever.
+    logger.info('Training plan adjust starting — Garmin pre-auth runs per user (silent mode — no MFA email if a session is dead)');
 
     for (const userId of getActiveUserIds()) {
       // Hardening 2026-04-21: wrap the per-user iteration in a
@@ -2270,12 +2310,23 @@ export function startScheduler(): void {
       const stats = getWeeklyAdherence(plan.id, currentWeek.id);
       if (stats.completedSessions === 0 && stats.skippedSessions === 0) return; // no data yet
 
-      // Calculate and persist readiness score (only when Garmin session
-      // is confirmed available — prevents cascading 5× raw Garmin calls
-      // against a dead session, each of which would independently retry
+      // Calculate and persist readiness score (only when THIS user's Garmin
+      // session is confirmed available — prevents cascading 5× raw Garmin
+      // calls against a dead session, each of which would independently retry
       // and could re-trigger the MFA login path we just bypassed).
+      //
+      // Pre-auth is per user and runs inside this scoped context, so one
+      // user's dead session no longer downgrades everybody else. Users with
+      // no Garmin connection skip straight to adherence-only, without an
+      // auth attempt.
       let readinessScore: number | null = null;
       let readinessRec = '';
+      const garminAvailable = hasActiveGarminConnection(userId)
+        ? await garminEnsureAuth({ silent: true })
+        : false;
+      if (!garminAvailable && hasActiveGarminConnection(userId)) {
+        logger.warn({ userId }, 'Training plan adjust: Garmin session unrecoverable in silent mode — adherence-only for this user (no MFA email triggered)');
+      }
       if (garminAvailable) {
         try {
           const readiness = await calculateReadiness(userId, { tenantId: userId, garminSilent: true });

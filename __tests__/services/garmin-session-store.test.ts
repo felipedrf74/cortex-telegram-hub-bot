@@ -143,6 +143,35 @@ describe('garmin-session-store cache invalidation', () => {
     expect(listGarminConnectedUserIds()).toEqual([1, 2, 3]);
   });
 
+  it('appends the owner legacy session when they have no active row', async () => {
+    // The owner predates the per-user tables in some environments, so they can
+    // hold usable session material with no `garmin_user_tokens` row at all.
+    // Both other cases here arrange that branch away — one puts the owner in
+    // the query result, the other has no owner — so it was never exercised.
+    const { getOwnerBootstrapUser } = await import('../../src/services/user-service');
+    vi.mocked(getOwnerBootstrapUser).mockReturnValue({ id: 99, telegram_id: 999 } as any);
+    mockAll.mockReturnValue([{ user_id: 7 }]);
+    mockGet.mockReturnValue({ oauth1_token_json: '{"t":1}', oauth2_token_json: '{"t":2}' });
+
+    const { listGarminConnectedUserIds } = await import('../../src/services/garmin-session-store');
+
+    expect(listGarminConnectedUserIds()).toEqual([7, 99]);
+  });
+
+  it('does not append an owner who has no session material either', async () => {
+    const { getOwnerBootstrapUser } = await import('../../src/services/user-service');
+    vi.mocked(getOwnerBootstrapUser).mockReturnValue({ id: 99, telegram_id: 999 } as any);
+    mockAll.mockReturnValue([{ user_id: 7 }]);
+    // Only user 7 has tokens; the owner has nothing to refresh.
+    mockGet.mockImplementation((userId: number) => (
+      userId === 7 ? { oauth1_token_json: '{"t":1}', oauth2_token_json: '{"t":2}' } : undefined
+    ));
+
+    const { listGarminConnectedUserIds } = await import('../../src/services/garmin-session-store');
+
+    expect(listGarminConnectedUserIds()).toEqual([7]);
+  });
+
   it('excludes active rows whose session material is missing', async () => {
     const { getOwnerBootstrapUser } = await import('../../src/services/user-service');
     vi.mocked(getOwnerBootstrapUser).mockReturnValue(undefined as any);

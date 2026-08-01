@@ -137,13 +137,21 @@ vi.mock('../../src/services/fiscal-bundle', () => ({
   isFiscalBundleDue: vi.fn(() => false),
   sendFiscalBundleNow: vi.fn(),
 }));
+const mockGarminKeepAlive = vi.hoisted(() => vi.fn(async () => true));
+const mockListGarminConnectedUserIds = vi.hoisted(() => vi.fn(() => [] as number[]));
+const mockHasActiveGarminConnection = vi.hoisted(() => vi.fn(() => false));
+
 vi.mock('../../src/services/garmin-coach', () => ({
   generateCoachBriefing: (...args: unknown[]) => mockGenerateCoachBriefing(...args),
 }));
 vi.mock('../../src/services/garmin', () => ({
   isGarminConfigured: vi.fn(() => false),
-  keepAlive: vi.fn(),
+  keepAlive: (...args: unknown[]) => mockGarminKeepAlive(...args),
   ensureAuthenticated: vi.fn(),
+}));
+vi.mock('../../src/services/garmin-session-store', () => ({
+  listGarminConnectedUserIds: (...args: unknown[]) => mockListGarminConnectedUserIds(...args),
+  hasActiveGarminConnection: (...args: unknown[]) => mockHasActiveGarminConnection(...args),
 }));
 vi.mock('../../src/services/garmin-tenant-isolation-watcher', () => ({
   runGarminTenantIsolationWatcher: (...args: unknown[]) => mockRunGarminTenantIsolationWatcher(...args),
@@ -346,6 +354,7 @@ import {
   sendCoachBriefingForTarget,
   runScheduledCoachBriefingForTarget,
   sendDailyBriefing,
+  refreshConnectedGarminUsers,
 } from '../../src/services/scheduler';
 import { runScheduledAutoresearch } from '../../src/services/scheduled-agent-jobs';
 import { setLastCoachState } from '../../src/domains/domain-handler';
@@ -2344,5 +2353,69 @@ describe('M6 scheduler task sync wiring', () => {
       .find((call) => (call[1] as { jobName?: string }).jobName === 'task_sync_delta')?.[1] as (() => Promise<unknown>) | undefined;
 
     await expect(job!()).resolves.toBe('skipped');
+  });
+  // The keep-alive used to call `keepAlive()` once with no request context.
+  // `resolveGarminUserId` resolved that to the owner, so only the owner's
+  // tokens were ever refreshed and every other user's session decayed into
+  // needs_reauth until they reconnected by hand.
+  describe('Garmin keep-alive fan-out', () => {
+    beforeEach(() => {
+      mockGarminKeepAlive.mockReset().mockResolvedValue(true);
+      mockListGarminConnectedUserIds.mockReset().mockReturnValue([]);
+      mockRunWithContext.mockImplementation(
+        async (_ctx: unknown, fn: () => unknown) => fn(),
+      );
+    });
+
+    it('refreshes every connected user, not just the first', async () => {
+      mockListGarminConnectedUserIds.mockReturnValue([11, 22, 33]);
+
+      const result = await refreshConnectedGarminUsers('cron:garmin_keepalive');
+
+      expect(result).toMatchObject({ total: 3, refreshed: 3, failed: [] });
+      expect(mockGarminKeepAlive).toHaveBeenCalledTimes(3);
+    });
+
+    it('scopes each refresh to its own user', async () => {
+      mockListGarminConnectedUserIds.mockReturnValue([11, 22]);
+
+      await refreshConnectedGarminUsers('cron:garmin_keepalive');
+
+      expect(mockRunWithContext).toHaveBeenCalledWith(
+        expect.objectContaining({ source: 'cron:garmin_keepalive', userId: 11 }),
+        expect.any(Function),
+      );
+      expect(mockRunWithContext).toHaveBeenCalledWith(
+        expect.objectContaining({ source: 'cron:garmin_keepalive', userId: 22 }),
+        expect.any(Function),
+      );
+    });
+
+    it('isolates a thrown failure so the rest of the fan-out still runs', async () => {
+      mockListGarminConnectedUserIds.mockReturnValue([11, 22, 33]);
+      mockGarminKeepAlive.mockImplementation(async () => {
+        if (mockGarminKeepAlive.mock.calls.length === 2) throw new Error('dead session');
+        return true;
+      });
+
+      const result = await refreshConnectedGarminUsers('cron:garmin_keepalive');
+
+      expect(result.total).toBe(3);
+      expect(result.refreshed).toBe(2);
+      expect(result.failed).toEqual([22]);
+      expect(mockGarminKeepAlive).toHaveBeenCalledTimes(3);
+    });
+
+    it('records a user that returns false as failed rather than refreshed', async () => {
+      mockListGarminConnectedUserIds.mockReturnValue([11, 22]);
+      mockGarminKeepAlive.mockImplementation(
+        async () => mockGarminKeepAlive.mock.calls.length !== 1,
+      );
+
+      const result = await refreshConnectedGarminUsers('cron:garmin_keepalive');
+
+      expect(result.refreshed).toBe(1);
+      expect(result.failed).toEqual([11]);
+    });
   });
 });

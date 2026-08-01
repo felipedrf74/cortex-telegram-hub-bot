@@ -135,6 +135,25 @@ describe('Garmin rate-limit backoff is scoped per user', () => {
     expect(written.some((p) => p.endsWith('rate_limit_until.txt'))).toBe(false);
   });
 
+  it('never READS the legacy shared file for a non-owner', async () => {
+    // Asserting it is not written is not enough. The loader used to fall back
+    // to the single legacy file for any user lacking a scoped one, so after a
+    // deploy every user's first read would hydrate from it and inherit a
+    // deadline they never earned — the shared bucket, restored by the back
+    // door.
+    mockResolveGarminUserId.mockReturnValue(OTHER);
+    mockGetCurrentContext.mockReturnValue({ userId: OTHER } as never);
+    // Only the legacy file exists; OTHER has no scoped file.
+    mockExistsSync.mockImplementation((p: string) => String(p).endsWith('rate_limit_until.txt'));
+    mockReadFileSync.mockReturnValue(String(Date.now() + 60 * 60 * 1000));
+
+    const garmin = await importGarmin();
+
+    expect(garmin._garminRateLimitForTests.isLimited(OTHER)).toBe(false);
+    const read = mockReadFileSync.mock.calls.map((c) => String(c[0]));
+    expect(read.some((p) => p.endsWith('rate_limit_until.txt'))).toBe(false);
+  });
+
   it('expires independently per user', async () => {
     const garmin = await importGarmin();
 

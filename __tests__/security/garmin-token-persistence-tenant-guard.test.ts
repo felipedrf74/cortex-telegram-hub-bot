@@ -1,14 +1,20 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
- * `persistTokens` reads OAuth material from the process-wide `_client`
- * singleton but resolves the destination user separately. Without a guard it
- * will write whichever account last authenticated into whichever user is
- * currently in scope — copying one athlete's Garmin tokens into another's
- * `garmin_sessions` row.
+ * `persistTokens` writes OAuth material under a resolved user id. Historically
+ * it read that material from a process-wide `_client` singleton holding
+ * whichever account last authenticated, so without a guard it copied one
+ * athlete's Garmin tokens into another's `garmin_sessions` row — the exact
+ * shape `scripts/cleanup-tainted-garmin-sessions.mjs` hunts for, and the class
+ * behind the 2026-05 P0 tenant leak.
  *
- * That is the exact shape `scripts/cleanup-tainted-garmin-sessions.mjs` hunts
- * for, and the class behind the 2026-05 P0 tenant leak.
+ * The singleton is now a pool keyed by user, so the wrong client is
+ * unreachable rather than merely rejected. These cases pin that outcome.
+ *
+ * Scope note: `resolveGarminUserId` is mocked here, so these cases prove how
+ * `persistTokens` behaves for a given resolution — including `null`. They do
+ * NOT prove that the resolver itself fails closed; that invariant lives in
+ * `__tests__/services/garmin-session-store.test.ts`.
  */
 
 const mockUpsertGarminSession = vi.fn();
@@ -141,7 +147,10 @@ describe('Garmin token persistence tenant guard', () => {
   it('writes nothing when no user is in scope', async () => {
     const garmin = await importGarmin();
     garmin._garminTokenPersistenceForTests.setActiveClient(clientHoldingTokensFor('user-a'), USER_A);
-    // `resolveGarminUserId` now fails closed instead of assuming the owner.
+    // Simulates the fail-closed resolver's output. That the resolver actually
+    // returns null with no context is proven in garmin-session-store.test.ts;
+    // here the resolver is mocked, so this only pins that `persistTokens`
+    // writes nothing when handed no user.
     mockResolveGarminUserId.mockReturnValue(null);
 
     garmin._garminTokenPersistenceForTests.persist();
@@ -188,6 +197,47 @@ describe('Garmin token persistence tenant guard', () => {
         oauth1: { token: 'oauth1-user-a' },
         oauth2: { token: 'oauth2-user-a' },
       });
+    });
+
+    it('bounds the pool and evicts the coldest entry, never the hottest', async () => {
+      const garmin = await importGarmin();
+      // 17 users through a pool bounded at 16.
+      for (let userId = 1; userId <= 17; userId += 1) {
+        garmin._garminTokenPersistenceForTests.adoptClient(clientHoldingTokensFor(`u${userId}`), userId);
+      }
+
+      const pooled = garmin._garminTokenPersistenceForTests.pooledUserIds();
+      expect(pooled.length).toBeLessThanOrEqual(16);
+      // User 1 was coldest; user 17 was just adopted.
+      expect(pooled).not.toContain(1);
+      expect(pooled).toContain(17);
+    });
+
+    it('an evicted user simply re-hydrates rather than persisting stale tokens', async () => {
+      const garmin = await importGarmin();
+      for (let userId = 1; userId <= 17; userId += 1) {
+        garmin._garminTokenPersistenceForTests.adoptClient(clientHoldingTokensFor(`u${userId}`), userId);
+      }
+
+      // User 1 was evicted, so there is nothing of theirs to write.
+      mockResolveGarminUserId.mockReturnValue(1);
+      garmin._garminTokenPersistenceForTests.persist();
+
+      expect(mockUpsertGarminSession).not.toHaveBeenCalled();
+    });
+
+    it('keeps the unscoped legacy client separate from every real user', async () => {
+      const garmin = await importGarmin();
+      // The owner credential path has no user id and parks under key 0.
+      garmin._garminTokenPersistenceForTests.adoptClient(clientHoldingTokensFor('legacy'), null);
+      garmin._garminTokenPersistenceForTests.adoptClient(clientHoldingTokensFor('user-a'), USER_A);
+
+      expect(garmin._garminTokenPersistenceForTests.pooledUserIds()).toEqual([0, USER_A]);
+
+      // A real user must never be served the unscoped client's tokens.
+      mockResolveGarminUserId.mockReturnValue(USER_B);
+      garmin._garminTokenPersistenceForTests.persist();
+      expect(mockUpsertGarminSession).not.toHaveBeenCalled();
     });
 
     it('never writes one user tokens under another id while both are pooled', async () => {

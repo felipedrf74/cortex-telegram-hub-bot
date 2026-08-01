@@ -50,6 +50,10 @@ type GarminModule = {
   isGarminConfigured: () => boolean;
 };
 
+type GarminSessionStoreModule = {
+  listGarminConnectedUserIds: () => number[];
+};
+
 type GoogleAuthModule = {
   isGoogleConfigured: () => boolean;
   buildGoogleOAuth2Client: () => { getAccessToken: () => Promise<unknown> };
@@ -68,6 +72,7 @@ type MicrosoftAuthModule = {
 
 const defaultProbeDeps = {
   getGarminModule: (): GarminModule => require('./garmin'),
+  getGarminSessionStoreModule: (): GarminSessionStoreModule => require('./garmin-session-store'),
   getGoogleAuthModule: (): GoogleAuthModule => require('./google-auth'),
   getMicrosoftAuthModule: (): MicrosoftAuthModule => require('./microsoft-auth'),
 };
@@ -179,9 +184,13 @@ async function probeGarmin(): Promise<ProbeResult> {
   // If the latest row is >1 hour old, we assume the cron itself is broken
   // and report fail — that's a different failure mode worth alerting on.
   try {
-    const { isGarminConfigured } = probeDeps.getGarminModule();
-    if (!isGarminConfigured()) {
-      return { provider: 'garmin', status: 'skipped', latencyMs: null, errorMessage: 'not configured' };
+    // "Configured" is per-user connection state, not the deployment-wide
+    // GARMIN_EMAIL/GARMIN_PASSWORD pair. Gating on the latter reported
+    // `skipped: not configured` on a deployment where users had linked their
+    // own accounts and the keep-alive cron was actively running for them.
+    const { listGarminConnectedUserIds } = probeDeps.getGarminSessionStoreModule();
+    if (listGarminConnectedUserIds().length === 0) {
+      return { provider: 'garmin', status: 'skipped', latencyMs: null, errorMessage: 'no connected users' };
     }
 
     const row = getDb()

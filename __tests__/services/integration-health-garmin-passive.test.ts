@@ -71,6 +71,13 @@ describe('integration health Garmin passive probe', () => {
         ensureAuthenticated,
         getUserSettings,
       } as any),
+      // The probe decides "configured" from per-user connection state rather
+      // than the deployment-wide credential pair, which reported
+      // `skipped: not configured` on deployments where users had linked their
+      // own accounts and the keep-alive cron was running for them.
+      getGarminSessionStoreModule: () => ({
+        listGarminConnectedUserIds: () => [1],
+      }),
       getGoogleAuthModule: () => ({
         isGoogleConfigured: () => false,
         buildGoogleOAuth2Client: () => ({ getAccessToken: vi.fn() }),
