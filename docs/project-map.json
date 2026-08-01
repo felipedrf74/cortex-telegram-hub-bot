@@ -5,10 +5,10 @@
     "generatorVersion": 4,
     "authoritativeFreshness": "sourceDigest",
     "sourceDigestAlgorithm": "sha256-path-git-mode-content-v2",
-    "sourceDigest": "2dedc2a3cb7b27c8277deb4b49076eae9700f15dd178c47737ac232c5a573490",
-    "baseCommit": "2b14b82c4a537904774d3d31aa441a7eeae11861",
-    "baseCommitTimestamp": "2026-08-01T18:22:32+01:00",
-    "trackedFiles": 3006,
+    "sourceDigest": "48c8f32077af9dcf5f6ae68ca73d3e43cb8e21415b4fe4aee541db911b5bf2a6",
+    "baseCommit": "9505b71c95cd0fda2a1c7b51c8d6a86b5c008202",
+    "baseCommitTimestamp": "2026-08-01T22:59:52+01:00",
+    "trackedFiles": 3005,
     "sourceFiles": 1099
   },
   "navigation": {
@@ -4840,7 +4840,7 @@
     }
   ],
   "tests": {
-    "files": 1113,
+    "files": 1112,
     "policy": "config/test-policy.json",
     "inventoryArtifact": ".local/test-inventory/test-inventory.json",
     "topLevelOwners": {
@@ -4859,7 +4859,7 @@
       "regression": 1,
       "router": 7,
       "scope": 1,
-      "scripts": 69,
+      "scripts": 68,
       "sdk": 1,
       "security": 23,
       "services": 699,

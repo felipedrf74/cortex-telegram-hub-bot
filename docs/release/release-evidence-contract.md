@@ -83,13 +83,6 @@ fault drill records `faultInjection=staging-health`, exact
 predecessor recovery, and removal of the deliberately failed candidate before
 the same bundle may be staged normally.
 
-An owner-gated staging first install is the one transaction with no predecessor.
-Its receipt sets `firstInstall=true`, records `predecessor`, `predecessorSha`,
-and `predecessorDigest` as `null`, and reports `rollbackReadiness` as
-`not_applicable`. Those shapes are valid only together, only for staging, and
-only under that marker; every other transaction is still held to a real
-predecessor and `rollbackReadiness=passed`.
-
 Validate a successful phase against its exact manifest with:
 
 ```bash
@@ -98,11 +91,6 @@ node scripts/release-checksum-manifest.mjs validate-state \
   --state <staging-or-production.json> \
   --role staging
 ```
-
-Promotion adds `--require-promotable`, which rejects a first-install receipt.
-Structural validity is not promotability: a bootstrap proved health, smoke,
-integrity, and soak, but never proved rollback, because its host had nothing to
-roll back to.
 
 ## Deliberate exclusions
 

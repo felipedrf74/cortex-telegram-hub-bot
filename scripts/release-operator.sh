@@ -23,22 +23,19 @@ CONFIRM=""
 DRY_RUN=false
 EXPECTED_SHA=""
 STAGING_FAULT_AFTER_SWITCH=false
-FIRST_INSTALL=false
 CANONICAL_DEPLOYED_SHA=""
 CANONICAL_DEPLOYED_DIGEST=""
 
 usage() {
   cat <<'USAGE'
 Usage:
-  scripts/release-operator.sh prepare [--checkpoint-run ID] [--server HOST] [--staging-fault-after-switch] [--first-install] [--dry-run]
+  scripts/release-operator.sh prepare [--checkpoint-run ID] [--server HOST] [--staging-fault-after-switch] [--dry-run]
   scripts/release-operator.sh promote --confirm SHA:DIGEST [--server HOST] [--dry-run]
   scripts/release-operator.sh status [--server HOST]
 
 `prepare` reuses the exact protected-main artifact and stops after staging.
 `promote` also requires NEXUS_RELEASE_OWNER_AUTHORIZED=1.
 The staging fault drill additionally requires NEXUS_RELEASE_DRILL_AUTHORIZED=1.
-`--first-install` is staging-only, requires NEXUS_RELEASE_OWNER_AUTHORIZED=1, and
-is refused by the remote transaction whenever a predecessor already exists.
 USAGE
 }
 
@@ -49,7 +46,6 @@ while [ $# -gt 0 ]; do
     --confirm) CONFIRM="${2:?--confirm requires SHA:DIGEST}"; shift 2 ;;
     --sha) EXPECTED_SHA="${2:?--sha requires a full SHA}"; shift 2 ;;
     --staging-fault-after-switch) STAGING_FAULT_AFTER_SWITCH=true; shift ;;
-    --first-install) FIRST_INSTALL=true; shift ;;
     --dry-run) DRY_RUN=true; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown release argument: $1" >&2; usage >&2; exit 64 ;;
@@ -70,25 +66,6 @@ esac
     echo "staging fault drill requires NEXUS_RELEASE_DRILL_AUTHORIZED=1" >&2
     exit 1
   }
-}
-# First install exists only to bootstrap a staging host that has never completed
-# a release. It never reaches production: `promote` refuses the flag here, and
-# the remote transaction refuses role=promote and any existing predecessor.
-FIRST_INSTALL_SETENV=()
-[ "$FIRST_INSTALL" = false ] || {
-  [ "$COMMAND" = prepare ] || {
-    echo "--first-install is valid only for prepare" >&2
-    exit 64
-  }
-  [ "$STAGING_FAULT_AFTER_SWITCH" = false ] || {
-    echo "--first-install cannot be combined with the staging fault drill" >&2
-    exit 64
-  }
-  [ "${NEXUS_RELEASE_OWNER_AUTHORIZED:-0}" = 1 ] || {
-    echo "first install requires NEXUS_RELEASE_OWNER_AUTHORIZED=1" >&2
-    exit 1
-  }
-  FIRST_INSTALL_SETENV=(--setenv=NEXUS_RELEASE_ALLOW_FIRST_INSTALL=1)
 }
 
 STATE_ROOT="$ROOT/.local/release"
@@ -563,13 +540,6 @@ let body="";process.stdin.on("data",chunk=>body+=chunk);process.stdin.on("end",(
           EXPECTED_STAGING_PREDECESSOR_DIGEST <<<"$STAGING_PREDECESSOR_IDENTITY"
       fi
     fi
-    if [ "$FIRST_INSTALL" = true ]; then
-      # Send no predecessor identity at all. The remote transaction refuses the
-      # first install if it observes any predecessor on the host, so this can
-      # never be used to skip rollback protection on an established staging host.
-      EXPECTED_STAGING_PREDECESSOR_SHA=""
-      EXPECTED_STAGING_PREDECESSOR_DIGEST=""
-    fi
     RESUME_TRANSACTION_ID=""
     if [ -n "$REMOTE_STAGING_STATE" ]; then
       set +e
@@ -579,10 +549,6 @@ let body="";process.stdin.on("data",chunk=>body+=chunk);process.stdin.on("end",(
  if(x.schema!=="nexus.lean-release-transaction.v1"||x.role!=="staging"
    ||x.runtimeSha!==sha||x.artifactDigest!==digest)process.exit(3);
  if(x.status==="passed"&&x.phase==="completed"){
-   // A completed first install is not "already staged". Its receipt has no
-   // predecessor and can never be promoted, and re-staging this exact artifact
-   // cannot fix that, because this artifact is the release now installed.
-   if(x.firstInstall===true)process.exit(6);
    process.stdout.write(x.transactionId);process.exit(0);
  }
  if(x.status==="running"){process.stdout.write(x.transactionId);process.exit(4);}
@@ -606,10 +572,6 @@ let body="";process.stdin.on("data",chunk=>body+=chunk);process.stdin.on("end",(
           ;;
         4) poll_remote_transaction staging "$RESUME_TRANSACTION_ID" "$STAGING_STATE" ;;
         5) RESUME_TRANSACTION_ID="" ;;
-        6)
-          echo "this exact staging artifact was installed by a first-install bootstrap; that receipt has no predecessor and is not promotable. Stage the next release against it instead - see 'After a successful first install' in docs/release/README.md" >&2
-          exit 1
-          ;;
         2)
           echo "the exact staging transaction previously failed; inspect release:status before retrying" >&2
           exit 1
@@ -665,7 +627,6 @@ NODE
         --unit "$UNIT" \
         --property Type=oneshot \
         --property TimeoutStartSec=8min \
-        ${FIRST_INSTALL_SETENV[@]+"${FIRST_INSTALL_SETENV[@]}"} \
         /bin/bash "$REMOTE_BUNDLE/scripts/remote-user-release-transaction.sh" \
         stage /home/dominguez/telegram-hub-bot-staging "$REMOTE_BUNDLE" "$RUNTIME_SHA" \
         "$ARTIFACT_DIGEST" "$TRANSACTION_ID" \
@@ -708,14 +669,10 @@ NODE
     }
     BUNDLE="$BUNDLE_ROOT/$RUNTIME_SHA/$ARTIFACT_DIGEST"
     STAGING_STATE="$TRANSACTION_ROOT/staging-$RUNTIME_SHA-$ARTIFACT_DIGEST.json"
-    # --require-promotable rejects a first-install bootstrap receipt. That
-    # transaction proved health, smoke, integrity, and soak, but it never proved
-    # rollback, because the host it bootstrapped had nothing to roll back to.
     node scripts/release-checksum-manifest.mjs validate-state \
       --manifest "$MANIFEST" \
       --state "$STAGING_STATE" \
-      --role staging \
-      --require-promotable >/dev/null
+      --role staging >/dev/null
     node scripts/release-checksum-manifest.mjs validate \
       --manifest "$MANIFEST" \
       --bundle "$BUNDLE" \
