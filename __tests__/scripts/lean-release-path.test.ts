@@ -799,6 +799,49 @@ db.close();
     expect(candidateBudget + recoveryBudget).toBeLessThanOrEqual(120);
   });
 
+  it('refuses every first-install entry point before remote release work', () => {
+    const remote = path.resolve('scripts/remote-user-release-transaction.sh');
+    const remoteResult = spawnSync('bash', [remote], {
+      cwd: path.resolve('.'),
+      encoding: 'utf8',
+      env: {
+        PATH: process.env.PATH ?? '',
+        HOME: process.env.HOME ?? '',
+        NEXUS_RELEASE_ALLOW_FIRST_INSTALL: '1',
+      },
+    });
+
+    expect(remoteResult.status).toBe(1);
+    expect(remoteResult.stderr).toContain(
+      'first install is unsupported; stage against a verified predecessor',
+    );
+    expect(remoteResult.stderr).not.toContain('usage:');
+
+    const operatorResult = spawnSync('bash', [
+      'scripts/release-operator.sh',
+      'prepare',
+      '--first-install',
+    ], {
+      cwd: path.resolve('.'),
+      encoding: 'utf8',
+      env: {
+        PATH: process.env.PATH ?? '',
+        HOME: process.env.HOME ?? '',
+        NEXUS_RELEASE_OWNER_AUTHORIZED: '1',
+      },
+    });
+
+    expect(operatorResult.status).toBe(64);
+    expect(operatorResult.stderr).toContain('unknown release argument: --first-install');
+
+    const transaction = fs.readFileSync(remote, 'utf8');
+    const refusal = transaction.indexOf('first install is unsupported');
+    expect(refusal).toBeGreaterThan(-1);
+    expect(refusal).toBeLessThan(transaction.indexOf('case "$COMMAND"'));
+    expect(refusal).toBeLessThan(transaction.indexOf('switch_current()'));
+    expect(refusal).toBeLessThan(transaction.indexOf('start_runtime()'));
+  });
+
   it('cleans a release lock when the checkout path contains spaces', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus release lock '));
     roots.push(root);

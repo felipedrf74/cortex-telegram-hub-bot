@@ -203,6 +203,9 @@ deadline and records its measured duration.
 
 ## Failure handling
 
+- A host without a verified predecessor is not eligible for the lean release
+  path. `NEXUS_RELEASE_ALLOW_FIRST_INSTALL` is explicitly unsupported; use a
+  separately reviewed bootstrap or adoption process instead.
 - A missing or ambiguous exact-SHA CI/checkpoint run fails closed.
 - Artifact or manifest drift fails before upload.
 - A staging failure restores its predecessor when one exists and cannot become
