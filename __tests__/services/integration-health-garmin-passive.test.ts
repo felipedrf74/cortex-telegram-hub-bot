@@ -101,4 +101,78 @@ describe('integration health Garmin passive probe', () => {
     expect(ensureAuthenticated).not.toHaveBeenCalled();
     expect(getUserSettings).not.toHaveBeenCalled();
   });
+
+  it('probes on per-user connection state, not the deployment credential pair', async () => {
+    // The owner's GARMIN_EMAIL/GARMIN_PASSWORD are unset, but users have
+    // linked their own accounts and the keep-alive cron is running for them.
+    // Gating on the global pair reported `skipped: not configured` while the
+    // integration was healthy and in active use.
+    const prepare = vi.fn((sql: string) => ({
+      get: vi.fn(() => (sql.includes("WHERE job_name = 'garmin_keepalive'")
+        ? {
+          result: 'success',
+          duration_ms: 42,
+          error_message: null,
+          ts: new Date().toISOString().replace(/Z$/, ''),
+        }
+        : undefined)),
+      run: vi.fn(),
+      all: vi.fn(() => []),
+    }));
+    mockGetDb.mockReturnValue({ prepare });
+
+    const {
+      _setIntegrationHealthDepsForTests,
+      runHealthProbes,
+    } = await import('../../src/services/integration-health');
+
+    _setIntegrationHealthDepsForTests({
+      getGarminModule: () => ({ isGarminConfigured: () => false } as any),
+      getGarminSessionStoreModule: () => ({ listGarminConnectedUserIds: () => [7, 9] }),
+      getGoogleAuthModule: () => ({
+        isGoogleConfigured: () => false,
+        buildGoogleOAuth2Client: () => ({ getAccessToken: vi.fn() }),
+      }),
+      getMicrosoftAuthModule: () => ({
+        isMicrosoftConfigured: () => false,
+        getGraphClient: () => ({ api: () => ({ select: () => ({ get: vi.fn() }) }) }),
+      }),
+    });
+
+    const results = await runHealthProbes();
+    const garmin = results.find((result) => result.provider === 'garmin');
+
+    expect(garmin).toMatchObject({ provider: 'garmin', status: 'ok' });
+    expect(garmin?.errorMessage).not.toBe('not configured');
+  });
+
+  it('skips only when nobody is connected', async () => {
+    const prepare = vi.fn(() => ({ get: vi.fn(() => undefined), run: vi.fn(), all: vi.fn(() => []) }));
+    mockGetDb.mockReturnValue({ prepare });
+
+    const {
+      _setIntegrationHealthDepsForTests,
+      runHealthProbes,
+    } = await import('../../src/services/integration-health');
+
+    _setIntegrationHealthDepsForTests({
+      getGarminModule: () => ({ isGarminConfigured: () => true } as any),
+      getGarminSessionStoreModule: () => ({ listGarminConnectedUserIds: () => [] }),
+      getGoogleAuthModule: () => ({
+        isGoogleConfigured: () => false,
+        buildGoogleOAuth2Client: () => ({ getAccessToken: vi.fn() }),
+      }),
+      getMicrosoftAuthModule: () => ({
+        isMicrosoftConfigured: () => false,
+        getGraphClient: () => ({ api: () => ({ select: () => ({ get: vi.fn() }) }) }),
+      }),
+    });
+
+    const results = await runHealthProbes();
+
+    expect(results.find((result) => result.provider === 'garmin')).toMatchObject({
+      status: 'skipped',
+      errorMessage: 'no connected users',
+    });
+  });
 });

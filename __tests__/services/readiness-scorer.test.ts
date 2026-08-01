@@ -686,6 +686,32 @@ describe('readiness-scorer — calculateReadiness', () => {
       expect(result.score).toBe(measuredOnly);
     });
 
+    it('treats a real baseline with no reading today as unmeasured', async () => {
+      // The gate used to be "any HRV row in the last week". With a 100 ms
+      // baseline and no row for today, `scoreHrv(60, 100)` lands in the WORST
+      // bucket (30) and `hrvTrend` computes 'down' — one missed HealthKit sync
+      // read as a collapse in recovery.
+      clearGarminConnection(1);
+      seedAppleHealthData(1, ['sleep', 'rhr', 'summary']);
+      const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+      const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+      const insert = testDb.prepare(`
+        INSERT OR REPLACE INTO apple_health_data (user_id, data_type, date, data_json, source_name)
+        VALUES (?, 'hrv', ?, ?, 'test')
+      `);
+      insert.run(1, yesterday, JSON.stringify({ value: 100 }));
+      insert.run(1, twoDaysAgo, JSON.stringify({ value: 100 }));
+
+      const result = await calculateReadiness(1);
+
+      // Unmeasured today: neutral placeholder, excluded from the composite.
+      expect(result.factors.hrv.todayMs).toBe(0);
+      expect(result.factors.hrv.score).toBe(60);
+      expect(result.factors.hrv.score).not.toBe(30);
+      expect(result.reasoning).toContain('No HRV in Apple Health');
+      expect(result.coverage).toBe(0.5);
+    });
+
     it('does not claim resting heart rate when RHR was not measured either', async () => {
       clearGarminConnection(1);
       seedAppleHealthData(1, ['sleep']);
