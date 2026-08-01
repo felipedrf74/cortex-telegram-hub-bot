@@ -940,6 +940,22 @@ describe('paid AI budget enforcement', () => {
     vi.useRealTimers();
     process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
     addPaidUser(50);
+    // Unlike the rest of this file, this case deliberately runs on the real
+    // clock: the daily spend window is aggregated in SQL (`ts >= date('now')`),
+    // and SQLite's clock is not faked, so JS and SQL only agree under real
+    // timers. `addPaidUser` hardcodes a July 2026 billing period for the
+    // fake-clock tests, which normalizeProviderBillingPeriod rejects once real
+    // now passes current_period_end — every spend would then fail closed as
+    // `invalid_billing_period` instead of exercising the daily limit. Bracket
+    // the real clock so the fixture cannot expire again.
+    db.prepare(`
+      UPDATE subscriptions
+      SET current_period_start = ?, current_period_end = ?
+      WHERE user_id = 50
+    `).run(
+      new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
+      new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+    );
     const request = {
       userId: 50,
       requestSource: 'interactive' as const,
