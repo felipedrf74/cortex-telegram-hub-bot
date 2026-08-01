@@ -73,7 +73,10 @@ export class GarminAdapter implements WearableAdapter {
   };
 
   async isConfigured(userId: number): Promise<boolean> {
-    return garmin.isGarminConfigured() && hasActiveGarminConnection(userId);
+    // Per-user connection state only. The global GARMIN_EMAIL/GARMIN_PASSWORD
+    // pair is the owner's legacy credential fallback and must not decide
+    // whether another user's own connection works. Matches WhoopAdapter.
+    return hasActiveGarminConnection(userId);
   }
 
   async getActivities(_userId: number, startDate: string, endDate: string): Promise<NormalizedActivity[]> {

@@ -89,20 +89,23 @@ describe('GarminAdapter', () => {
   });
 
   describe('isConfigured', () => {
-    it('requires both environment support and an active Garmin connection', async () => {
-      mockedGarmin.isGarminConfigured.mockReturnValue(true);
+    it('requires only an active Garmin connection for this user', async () => {
       mockedHasActiveGarminConnection.mockReturnValue(true);
       expect(await adapter.isConfigured(123)).toBe(true);
-      expect(mockedGarmin.isGarminConfigured).toHaveBeenCalled();
       expect(mockedHasActiveGarminConnection).toHaveBeenCalledWith(123);
     });
 
-    it('returns false when Garmin is not configured in the environment', async () => {
+    it('stays connected for this user even when the global credentials are unset', async () => {
+      // GARMIN_EMAIL/GARMIN_PASSWORD are the owner's legacy credential
+      // fallback. They previously ANDed into this check, so clearing them
+      // disconnected every user who had linked their own Garmin account.
       mockedGarmin.isGarminConfigured.mockReturnValue(false);
-      expect(await adapter.isConfigured(123)).toBe(false);
+      mockedHasActiveGarminConnection.mockReturnValue(true);
+      expect(await adapter.isConfigured(123)).toBe(true);
+      expect(mockedGarmin.isGarminConfigured).not.toHaveBeenCalled();
     });
 
-    it('returns false when Garmin is configured globally but not connected for this user', async () => {
+    it('returns false when this user has no active connection', async () => {
       mockedGarmin.isGarminConfigured.mockReturnValue(true);
       mockedHasActiveGarminConnection.mockReturnValue(false);
       expect(await adapter.isConfigured(123)).toBe(false);

@@ -28,7 +28,8 @@ import { getDomainSystemPrompt } from './anthropic';
 import { trackedCreate } from '../portal/anthropic-hook';
 import { completeOneShotWithFallback } from './gemini-provider';
 import { getLastCoachState } from '../domains/domain-handler';
-import { getUserTimezoneById, isOwnerUserRef } from './user-service';
+import { getUserTimezoneById } from './user-service';
+import { hasActiveGarminConnection } from './garmin-session-store';
 import { getDb } from './database';
 import { appleHealthJsonSelectColumns, parseAppleHealthDataJson } from './apple-health-encryption';
 import { requireTenantIdParam } from './tenant-scope';
@@ -604,13 +605,15 @@ export async function generateCoachBriefing(
   const errors: string[] = [];
   const collectStart = Date.now();
   let garminData: GarminCoachData | null = null;
-  const canUseScopedGarmin = isGarminConfigured() && (
-    userId == null
-    || isOwnerUserRef(userId, {
-      allowPersistedTier: false,
-      requireConfiguredIdentity: true,
-    })
-  );
+  // Any user with their own active Garmin connection gets Garmin-backed
+  // coaching. This was previously owner-only, because the briefing ran
+  // against the single global credential client — a connected non-owner saw
+  // Garmin as connected in the app but always fell through to Apple Health.
+  // The `userId == null` path has no user to scope to, so it keeps the
+  // legacy global-credential behaviour.
+  const canUseScopedGarmin = userId == null
+    ? isGarminConfigured()
+    : hasActiveGarminConnection(userId);
 
   // ── Data source resolution ─────────────────────────────────
   // Priority: Garmin (richer data) → Apple Health (HealthKit sync)

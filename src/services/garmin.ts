@@ -281,13 +281,18 @@ function loadSsoCookies(): Record<string, string> | null {
 }
 
 // ─── Rate-limit backoff (persisted to disk to survive restarts) ──────
-function _loadRateLimitedUntil(): number {
+function _loadRateLimitedUntil(userId: number): number {
   try {
-    const userId = garminPersistenceUserId();
     const scopedFile = rateLimitFile(userId);
+    // The legacy file holds a single process-wide deadline written before
+    // backoff was per-user, so only the owner may inherit it. Reading it for
+    // anyone lacking a scoped file recreates the shared bucket this is meant
+    // to remove: after a deploy, every user's first read would hydrate from
+    // that one file and inherit a deadline they never earned.
+    const legacyReadable = isOwnerGarminUserId(userId) && fs.existsSync(LEGACY_RATE_LIMIT_FILE);
     const fileToRead = fs.existsSync(scopedFile)
       ? scopedFile
-      : fs.existsSync(LEGACY_RATE_LIMIT_FILE)
+      : legacyReadable
         ? LEGACY_RATE_LIMIT_FILE
         : null;
     if (fileToRead) {
@@ -301,36 +306,81 @@ function _loadRateLimitedUntil(): number {
   return 0;
 }
 
-let _rateLimitedUntil = _loadRateLimitedUntil();
+/**
+ * Backoff deadlines keyed by user.
+ *
+ * Garmin rate-limits per ACCOUNT, not per IP, so one user tripping Cloudflare
+ * must not stop every other user from syncing. This was previously a single
+ * module-level scalar seeded at import time — before any request context
+ * exists — which meant the process booted holding the owner's backoff and
+ * applied it to everyone for two hours.
+ *
+ * Entries are lazily hydrated from that user's on-disk file on first read.
+ */
+const _rateLimitedUntilByUser = new Map<number, number>();
 
-function isRateLimited(): boolean {
-  return Date.now() < _rateLimitedUntil;
+function rateLimitedUntilFor(userId: number): number {
+  const cached = _rateLimitedUntilByUser.get(userId);
+  if (cached !== undefined) return cached;
+  const loaded = _loadRateLimitedUntil(userId);
+  _rateLimitedUntilByUser.set(userId, loaded);
+  return loaded;
 }
 
-function setRateLimited(durationMs = 2 * 60 * 60 * 1000): void {
-  _rateLimitedUntil = Date.now() + durationMs;
+function isRateLimited(userId = garminPersistenceUserId()): boolean {
+  return Date.now() < rateLimitedUntilFor(userId);
+}
+
+function setRateLimited(durationMs = 2 * 60 * 60 * 1000, userId = garminPersistenceUserId()): void {
+  const until = Date.now() + durationMs;
+  _rateLimitedUntilByUser.set(userId, until);
   try {
-    const userId = garminPersistenceUserId();
     const dir = garminUserTokenDir(userId);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(rateLimitFile(userId), JSON.stringify({ rateLimitedUntil: _rateLimitedUntil }));
+    fs.writeFileSync(rateLimitFile(userId), JSON.stringify({ rateLimitedUntil: until }));
   } catch { /* best-effort */ }
-  logger.warn({ backoffMinutes: durationMs / 60000, until: new Date(_rateLimitedUntil).toISOString() }, 'Garmin: rate-limited by Cloudflare, backing off');
+  logger.warn({ userId, backoffMinutes: durationMs / 60000, until: new Date(until).toISOString() }, 'Garmin: rate-limited by Cloudflare, backing off');
 }
+
+/** Test seam: drop cached backoff state so each case starts from disk. */
+export function _resetGarminRateLimitCacheForTests(): void {
+  _rateLimitedUntilByUser.clear();
+}
+
+/** Test seam: drive and observe per-user backoff without exporting the real helpers. */
+export const _garminRateLimitForTests = {
+  set: (userId: number, durationMs?: number) => setRateLimited(durationMs, userId),
+  isLimited: (userId: number) => isRateLimited(userId),
+};
+
+/**
+ * Test seam for the token-persistence tenant guard.
+ *
+ * `persistTokens` is private and normally reached through a data read, which
+ * would need the whole SSO stack stood up. This exposes just enough to pin
+ * the invariant: tokens from a client scoped to one user must never be
+ * written under another user's id.
+ */
+export const _garminTokenPersistenceForTests = {
+  /** Replace the pool with a single client, as the old singleton behaved. */
+  setActiveClient: (client: unknown, userId: number | null) => {
+    _clientPool.clear();
+    if (client != null) {
+      putPooledClient(userId, client as InstanceType<typeof GarminConnect>);
+    }
+  },
+  /** Add a client without evicting others — how the pool is really used. */
+  adoptClient: (client: unknown, userId: number | null) => {
+    putPooledClient(userId, client as InstanceType<typeof GarminConnect>);
+  },
+  pooledUserIds: (): number[] => [..._clientPool.keys()].sort((a, b) => a - b),
+  persist: (explicitUserId?: number) => persistTokens(explicitUserId),
+};
 
 function checkForRateLimit(html: string, status?: number): void {
   if (status === 429 || /Error\s*1015|rate.?limit|banned.*temporarily/i.test(html)) {
     setRateLimited();
     throw new Error('Garmin SSO rate-limited by Cloudflare — backing off 2 hours');
-  }
-}
-
-/** Detect rate-limit errors from library-thrown exceptions (garmin-connect throws
- * the full HTML body in the error message when SSO returns 429/1015). */
-function checkErrorForRateLimit(err: unknown): void {
-  const msg = (err as Error)?.message ?? '';
-  if (/429|Error\s*1015|rate.?limit|banned.*temporarily/i.test(msg)) {
-    setRateLimited();
   }
 }
 
@@ -344,17 +394,15 @@ export function isMfaPending(): boolean {
   return _mfaPending !== null && Date.now() < _mfaPending.expiresAt;
 }
 
-/** Submit an MFA code from the user (called from bot command handler) */
-export function submitMfaCode(code: string): boolean {
-  if (!_mfaPending || Date.now() >= _mfaPending.expiresAt) {
-    return false;
-  }
-  _mfaPending.resolve(code);
-  _mfaPending = null;
-  return true;
-}
-
-/** Wait for the user to provide an MFA code via Telegram */
+/**
+ * Wait for an MFA code.
+ *
+ * Nothing resolves `_mfaPending`: the Telegram command handler this was built
+ * for no longer exists, so this always rejects on timeout. The working
+ * per-user path is `garmin-interactive-auth.ts`, driven by
+ * `POST /api/v1/garmin/verify`. Kept only because `loginWithMfa` still calls
+ * it; both are removed when the credential path is retired.
+ */
 function waitForMfaCode(): Promise<string> {
   return new Promise((resolve, reject) => {
     const timeoutMs = 5 * 60 * 1000; // 5 minutes
@@ -421,8 +469,9 @@ function createSsoClient(savedCookies?: Record<string, string>): {
  * After getting the ticket, hands off to the library's OAuth1/OAuth2 exchange.
  */
 async function loginWithMfa(client: InstanceType<typeof GarminConnect>): Promise<void> {
-  if (isRateLimited()) {
-    throw new Error(`Garmin SSO rate-limited — retry after ${new Date(_rateLimitedUntil).toISOString()}`);
+  const loginUserId = garminPersistenceUserId();
+  if (isRateLimited(loginUserId)) {
+    throw new Error(`Garmin SSO rate-limited — retry after ${new Date(rateLimitedUntilFor(loginUserId)).toISOString()}`);
   }
 
   const httpClient = client.client as any;
@@ -661,11 +710,70 @@ async function finishLogin(httpClient: any, ticket: string): Promise<void> {
   logger.info('Garmin: MFA login completed, OAuth tokens obtained');
 }
 
-// ─── Client singleton ─────────────────────────────────────────────────
+// ─── Per-user client pool ─────────────────────────────────────────────
+//
+// This was a single process-wide `_client` plus an `_activeClientUserId`
+// marker. Serving a second user meant tearing the authenticated client down
+// and rebuilding it, so any interleaving of users thrashed — and the
+// keep-alive fan-out interleaves by construction, one full teardown per user
+// per tick. It also made `persistTokens` responsible for noticing that the
+// live client belonged to somebody else, which is the cross-tenant write the
+// tenant guard exists to catch. Keying clients by user makes that structural:
+// you look up the client for a user, so it cannot be another user's.
 
-let _client: InstanceType<typeof GarminConnect> | null = null;
-let _authenticated = false;
-let _activeClientUserId: number | null = null;
+interface PooledGarminClient {
+  client: InstanceType<typeof GarminConnect>;
+  lastUsedAt: number;
+}
+
+/** Legacy owner-credential path, which has no user in scope. */
+const UNSCOPED_CLIENT_KEY = 0;
+const CLIENT_POOL_MAX = 16;
+const CLIENT_POOL_IDLE_MS = 30 * 60 * 1000;
+
+const _clientPool = new Map<number, PooledGarminClient>();
+/** In-flight bootstraps, per user. Two users no longer serialise on each other. */
+const _clientBootstraps = new Map<number, Promise<InstanceType<typeof GarminConnect>>>();
+
+function clientPoolKey(userId: number | null | undefined): number {
+  return userId && userId > 0 ? userId : UNSCOPED_CLIENT_KEY;
+}
+
+function getPooledClient(userId: number | null): InstanceType<typeof GarminConnect> | null {
+  const key = clientPoolKey(userId);
+  const entry = _clientPool.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.lastUsedAt > CLIENT_POOL_IDLE_MS) {
+    _clientPool.delete(key);
+    return null;
+  }
+  entry.lastUsedAt = Date.now();
+  return entry.client;
+}
+
+function putPooledClient(userId: number | null, client: InstanceType<typeof GarminConnect>): void {
+  _clientPool.set(clientPoolKey(userId), { client, lastUsedAt: Date.now() });
+  // Bound the pool so a large user base cannot grow it without limit; the
+  // coldest entry simply re-hydrates from its stored session next time.
+  while (_clientPool.size > CLIENT_POOL_MAX) {
+    let coldestKey: number | null = null;
+    let coldestAt = Number.POSITIVE_INFINITY;
+    for (const [key, entry] of _clientPool) {
+      if (entry.lastUsedAt < coldestAt) {
+        coldestAt = entry.lastUsedAt;
+        coldestKey = key;
+      }
+    }
+    if (coldestKey === null) break;
+    _clientPool.delete(coldestKey);
+  }
+}
+
+/** Test seam: drop pooled clients so each case starts cold. */
+export function _resetGarminClientPoolForTests(): void {
+  _clientPool.clear();
+  _clientBootstraps.clear();
+}
 
 /**
  * Silent mode flag — when true, getClient() will NOT trigger MFA
@@ -678,21 +786,6 @@ let _activeClientUserId: number | null = null;
 let _silentMode = false;
 export function setSilentMode(silent: boolean): void { _silentMode = silent; }
 
-/**
- * Serialized client-bootstrap promise. Prevents the MFA email flood caused
- * by multiple parallel callers (e.g. iOS dashboard fanout calling
- * getDailySummary + getReadiness + getSleep + getActivitiesByDate at once)
- * each racing into loginWithMfa() and each submitting a fresh credential
- * POST to Garmin SSO, which generates a separate MFA email per request.
- *
- * With this guard, the first caller starts the login and every concurrent
- * caller awaits the same promise. Only ONE loginWithMfa() runs even under
- * a 10-wide parallel fanout. When the bootstrap resolves, the promise is
- * cleared so future stale-token recovery can re-trigger it if needed.
- */
-let _clientBootstrapPromise: Promise<InstanceType<typeof GarminConnect>> | null = null;
-let _clientBootstrapUserId: number | null = null;
-
 function createGarminClient(): InstanceType<typeof GarminConnect> {
   return new GarminConnect({
     username: config.garmin.email,
@@ -704,9 +797,7 @@ function adoptAuthenticatedClient(
   client: InstanceType<typeof GarminConnect>,
   userId?: number | null,
 ): InstanceType<typeof GarminConnect> {
-  _client = client;
-  _authenticated = true;
-  _activeClientUserId = userId ?? null;
+  putPooledClient(userId ?? null, client);
   if (userId) {
     touchGarminConnection(userId);
   }
@@ -776,20 +867,39 @@ async function hydrateClientFromPersistedSession(
   return null;
 }
 
+/**
+ * Whether the OWNER-ONLY global credential fallback is available.
+ *
+ * This is deployment configuration, not user state. Use it only to gate the
+ * legacy credential/SSO path. It must never gate a per-user read: a user who
+ * completed the interactive login has their own session in `garmin_sessions`
+ * and does not depend on these env vars existing.
+ */
 export function isGarminConfigured(): boolean {
   return !!(config.garmin.email && config.garmin.password);
 }
 
+/**
+ * Whether THIS user can read Garmin data — pure per-user truth.
+ *
+ * Previously this also required the global `GARMIN_EMAIL`/`GARMIN_PASSWORD`,
+ * which meant an unset deployment credential disabled Garmin for every user,
+ * including those who had connected their own account through
+ * POST /api/v1/garmin/login. Mirrors `WhoopAdapter.isConfigured`, which is
+ * likewise per-user connection state with no global env gate.
+ */
 export function isGarminConfiguredForUser(userId: number): boolean {
-  return isGarminConfigured() && hasActiveGarminConnection(userId);
+  return hasActiveGarminConnection(userId);
 }
 
 /**
  * Get an authenticated Garmin Connect client.
  * First tries to load persisted tokens; if expired or missing, does a fresh login.
  *
- * Concurrency: all callers awaiting a cold client share the same bootstrap
- * promise. See _clientBootstrapPromise above for why.
+ * Concurrency: callers awaiting a cold client for the SAME user share one
+ * bootstrap, so a 10-wide iOS dashboard fan-out produces one credential POST
+ * and one MFA email rather than ten. Callers for different users proceed in
+ * parallel — see the client pool above.
  */
 /**
  * @param opts.silent  When true, return null instead of triggering MFA
@@ -802,55 +912,25 @@ async function getClient(opts?: { silent?: boolean }): Promise<InstanceType<type
   const silent = opts?.silent ?? getCurrentContext()?.garminSilent ?? _silentMode;
   const sessionUserId = resolveGarminUserId();
 
-  // Fast path — already authenticated
-  if (_client && _authenticated && _activeClientUserId === sessionUserId) {
-    return _client;
+  const poolKey = clientPoolKey(sessionUserId);
+
+  // Fast path — this user already has an authenticated client
+  const pooled = getPooledClient(sessionUserId);
+  if (pooled) {
+    return pooled;
   }
 
-  if (_client && _authenticated && _activeClientUserId !== sessionUserId) {
-    logger.debug(
-      {
-        event: 'account_switching',
-        provider: 'garmin',
-        action: 'switch_authenticated_client_scope',
-        outcome: 'requested',
-        previousUserId: _activeClientUserId,
-        requestedUserId: sessionUserId,
-      },
-      'Garmin: switching authenticated client to another user scope',
-    );
-    _client = null;
-    _authenticated = false;
-    _activeClientUserId = null;
+  // Serialised path — one bootstrap per user. Concurrent callers for the SAME
+  // user share it (the original reason this guard exists: a 10-wide iOS
+  // dashboard fan-out would otherwise fire ten credential POSTs and ten MFA
+  // emails). Callers for OTHER users no longer queue behind it.
+  const inFlight = _clientBootstraps.get(poolKey);
+  if (inFlight) {
+    logger.debug({ userId: sessionUserId }, 'Garmin: bootstrap in progress, awaiting shared promise');
+    return inFlight;
   }
 
-  // Serialized path — if a bootstrap is already in flight, wait for it
-  if (_clientBootstrapPromise) {
-    if (_clientBootstrapUserId === sessionUserId) {
-      logger.debug({ userId: sessionUserId }, 'Garmin: bootstrap in progress, awaiting shared promise');
-      return _clientBootstrapPromise;
-    }
-    logger.debug(
-      {
-        event: 'account_switching',
-        provider: 'garmin',
-        action: 'wait_for_bootstrap_before_switch',
-        outcome: 'waiting',
-        activeBootstrapUserId: _clientBootstrapUserId,
-        requestedUserId: sessionUserId,
-      },
-      'Garmin: waiting for in-flight bootstrap before switching user scope',
-    );
-    try {
-      await _clientBootstrapPromise;
-    } catch {
-      // ignore — the caller below will attempt a fresh bootstrap in the requested scope
-    }
-  }
-
-  // Slow path — kick off a single bootstrap that everyone else awaits
-  _clientBootstrapUserId = sessionUserId;
-  _clientBootstrapPromise = (async () => {
+  const bootstrap = (async () => {
     const hydrated = await hydrateClientFromPersistedSession(sessionUserId, { allowLegacyFile: true });
     if (hydrated) {
       return hydrated;
@@ -895,20 +975,20 @@ async function getClient(opts?: { silent?: boolean }): Promise<InstanceType<type
       logger.info({ userId: sessionUserId }, 'Garmin: login successful (manual MFA flow), tokens saved to DB');
       return client;
     } catch (err) {
-      _authenticated = false;
+      // Drop only this user's slot; other users' clients stay authenticated.
+      _clientPool.delete(poolKey);
       throw new Error(`Garmin login failed: ${(err as Error).message}`);
     }
   })();
 
+  _clientBootstraps.set(poolKey, bootstrap);
   try {
-    return await _clientBootstrapPromise;
+    return await bootstrap;
   } finally {
-    // Clear the promise slot so a future stale-token recovery can start
-    // a fresh bootstrap. This runs after the awaiting caller sees the
-    // resolved value, so concurrent waiters that arrived earlier all
-    // see the same resolved client.
-    _clientBootstrapPromise = null;
-    _clientBootstrapUserId = null;
+    // Clear this user's slot so a future stale-token recovery can start a
+    // fresh bootstrap. Runs after awaiting callers see the resolved value, so
+    // concurrent waiters for this user all get the same client.
+    _clientBootstraps.delete(poolKey);
   }
 }
 
@@ -918,12 +998,24 @@ async function getClient(opts?: { silent?: boolean }): Promise<InstanceType<type
  */
 function persistTokens(explicitUserId?: number): void {
   try {
-    if (!_client) return;
     const userId = resolveGarminUserId(explicitUserId);
     if (!userId) return;
+
+    // Take the client belonging to THIS user. Previously there was one
+    // process-wide client holding whoever authenticated last, and this
+    // function had to notice that and refuse — writing its OAuth material
+    // under another user's id is exactly the contamination
+    // `cleanup-tainted-garmin-sessions` exists to detect. Keying the pool by
+    // user makes the wrong client unreachable rather than merely rejected.
+    const entry = _clientPool.get(clientPoolKey(userId));
+    if (!entry) {
+      logger.debug({ userId }, 'Garmin: no pooled client for this user, nothing to persist');
+      return;
+    }
+
     upsertGarminSession(userId, {
-      oauth1: (_client.client as any).oauth1Token ?? null,
-      oauth2: (_client.client as any).oauth2Token ?? null,
+      oauth1: (entry.client.client as any).oauth1Token ?? null,
+      oauth2: (entry.client.client as any).oauth2Token ?? null,
     });
     touchGarminConnection(userId);
   } catch (err) {
@@ -935,48 +1027,53 @@ function persistTokens(explicitUserId?: number): void {
  * Proactively refresh the OAuth2 token using the OAuth1 token.
  * Called on a schedule to prevent token expiry.
  */
-async function refreshOAuth2(): Promise<boolean> {
+export type GarminRefreshOutcome = 'ok' | 'auth_rejected' | 'transient';
+
+/**
+ * Consecutive transient refresh failures per user. Demotion to needs_reauth
+ * is a one-way door for non-owners, so a run of transient failures has to
+ * accumulate before it counts as a dead session. Reset on any success.
+ */
+const _consecutiveRefreshFailures = new Map<number, number>();
+const TRANSIENT_REFRESH_FAILURE_LIMIT = 3;
+
+/** Test seam: clear transient-failure counters between cases. */
+export function _resetGarminRefreshFailureCountersForTests(): void {
+  _consecutiveRefreshFailures.clear();
+}
+
+/**
+ * Classify a refresh failure.
+ *
+ * Only a genuine credential rejection means the user must reconnect. A 500,
+ * a socket hang-up or a rate-limit is Garmin being unavailable, and demoting
+ * the connection for that is a one-way door: `listGarminConnectedUserIds`
+ * filters on `status = 'active'`, and the only non-owner route back is an
+ * explicit POST /api/v1/garmin/* reconnect. One network blip would otherwise
+ * evict a user from the refresh set permanently.
+ */
+export function classifyRefreshFailure(err: unknown): 'auth_rejected' | 'transient' {
+  const status = extractErrorStatus(err);
+  if (status === 401) return 'auth_rejected';
+  const msg = ((err as Error)?.message ?? '').toLowerCase();
+  if (/invalid_grant|invalid_token|unauthorized|token (is )?(expired|revoked)/.test(msg)) {
+    return 'auth_rejected';
+  }
+  return 'transient';
+}
+
+async function refreshOAuth2(): Promise<GarminRefreshOutcome> {
   try {
     const client = await getClient({ silent: true });
     // Access the underlying HttpClient to call refreshOauth2Token directly
     await (client.client as any).refreshOauth2Token();
     persistTokens();
     logger.info('Garmin: proactive OAuth2 token refresh successful');
-    return true;
+    return 'ok';
   } catch (err) {
-    logger.warn({ err }, 'Garmin: proactive OAuth2 refresh failed');
-    return false;
-  }
-}
-
-/**
- * Attempt a full re-login (credentials-based).
- * This works when MFA is not enabled or when Garmin doesn't prompt for it.
- */
-async function attemptReLogin(): Promise<boolean> {
-  if (isRateLimited()) {
-    logger.info('Garmin: skipping re-login, SSO rate-limited');
-    return false;
-  }
-  try {
-    if (!_client) {
-      _client = new GarminConnect({
-        username: config.garmin.email,
-        password: config.garmin.password,
-      });
-    }
-    _authenticated = false;
-
-    // Go directly to our MFA-aware flow (avoids the library's unprotected SSO request)
-    await loginWithMfa(_client);
-    persistTokens();
-    _authenticated = true;
-    logger.info('Garmin: re-login successful (manual MFA flow), tokens saved');
-    return true;
-  } catch (err) {
-    logger.error({ err }, 'Garmin: re-login failed (MFA timeout or credentials invalid)');
-    _authenticated = false;
-    return false;
+    const kind = classifyRefreshFailure(err);
+    logger.warn({ err, kind }, 'Garmin: proactive OAuth2 refresh failed');
+    return kind;
   }
 }
 
@@ -999,37 +1096,66 @@ async function attemptReLogin(): Promise<boolean> {
  * Garmin data — which is better than spamming Felipe's inbox.
  */
 export async function keepAlive(): Promise<boolean> {
-  if (!isGarminConfigured()) return false;
-  if (isRateLimited()) {
-    logger.info('Garmin: skipping keep-alive, SSO rate-limited');
+  // Runs for whichever user the caller scoped the request context to. The
+  // global credential pair is not consulted: a user who linked their own
+  // Garmin account needs their tokens refreshed regardless of whether the
+  // owner's env credentials are set.
+  const userId = resolveGarminUserId();
+  if (!userId) {
+    logger.warn('Garmin: keep-alive skipped — no user in scope');
+    return false;
+  }
+  if (isRateLimited(userId)) {
+    logger.info({ userId }, 'Garmin: skipping keep-alive, SSO rate-limited');
     return false;
   }
   if (isMfaPending()) {
-    logger.info('Garmin: skipping keep-alive, MFA pending');
+    logger.info({ userId }, 'Garmin: skipping keep-alive, MFA pending');
     return false;
   }
 
   // Step 1: Try proactive OAuth2 refresh (no SSO login needed, no email)
-  if (await refreshOAuth2()) {
+  const outcome = await refreshOAuth2();
+  if (outcome === 'ok') {
     // Validate with a lightweight call
     try {
       const client = await getClient({ silent: true });
       await client.getUserSettings();
+      _consecutiveRefreshFailures.delete(userId);
       return true;
     } catch (err) {
-      logger.warn({ err }, 'Garmin: OAuth2 refresh succeeded but validation failed — deferring to lazy recovery');
+      logger.warn({ err, userId }, 'Garmin: OAuth2 refresh succeeded but validation failed — deferring to lazy recovery');
       return false;
     }
   }
 
-  // OAuth2 refresh failed. DO NOT trigger loginWithMfa here — that would
-  // send a Garmin MFA email every 30 minutes. Mark the session as needing
-  // re-authentication and let the explicit reauth flow recover it.
-  const userId = resolveGarminUserId();
-  if (userId) {
-    await markGarminNeedsReauth(userId, 'keepalive_refresh_failed');
+  // DO NOT trigger loginWithMfa here — that would send a Garmin MFA email
+  // every 30 minutes.
+  //
+  // Demoting to needs_reauth removes the user from the keep-alive set
+  // entirely (`listGarminConnectedUserIds` filters `status = 'active'`), and
+  // for a non-owner the only route back is an explicit reconnect. So demote
+  // on a genuine credential rejection, but let Garmin being briefly
+  // unavailable pass — otherwise a single 500 permanently strands the user.
+  const failures = (_consecutiveRefreshFailures.get(userId) ?? 0) + 1;
+  _consecutiveRefreshFailures.set(userId, failures);
+
+  if (outcome === 'auth_rejected' || failures >= TRANSIENT_REFRESH_FAILURE_LIMIT) {
+    _consecutiveRefreshFailures.delete(userId);
+    await markGarminNeedsReauth(userId, outcome === 'auth_rejected'
+      ? 'keepalive_auth_rejected'
+      : 'keepalive_refresh_failed');
+    logger.warn(
+      { userId, outcome, failures },
+      'Garmin: keepalive marked the connection as needs_reauth',
+    );
+    return false;
   }
-  logger.warn('Garmin: OAuth2 refresh failed — keepalive marked the connection as needs_reauth');
+
+  logger.warn(
+    { userId, failures, limit: TRANSIENT_REFRESH_FAILURE_LIMIT },
+    'Garmin: transient refresh failure — leaving the connection active and retrying next tick',
+  );
   return false;
 }
 
@@ -1047,7 +1173,15 @@ export async function keepAlive(): Promise<boolean> {
 export async function ensureAuthenticated(
   opts: { silent?: boolean } = {},
 ): Promise<boolean> {
-  if (!isGarminConfigured()) return false;
+  // Scoped to the user in context. The deployment-wide credential pair is
+  // deliberately NOT consulted: a user who linked their own Garmin account
+  // must be able to pre-authenticate whether or not the owner's env vars are
+  // set. `getClient` resolves and validates the per-user session.
+  const userId = resolveGarminUserId();
+  if (!userId) {
+    logger.warn('Garmin: pre-auth skipped — no user in scope');
+    return false;
+  }
   const silent = opts.silent ?? getCurrentContext()?.garminSilent ?? _silentMode;
   try {
     const client = await getClient({ silent });
@@ -1068,7 +1202,7 @@ export async function ensureAuthenticated(
  * Silent auth recovery — the cron-safe sibling of serializedAuthRecovery.
  *
  * Only attempts Step 1 (OAuth2 refresh) and Step 2 (token reload from
- * the DB session store). Explicitly DOES NOT call attemptReLogin / loginWithMfa so a
+ * the DB session store). Explicitly DOES NOT call loginWithMfa so a
  * failing cron never triggers a Garmin passcode email. If both silent
  * steps fail, returns false and the caller should degrade gracefully
  * (coach briefing with data gaps, skipped job, etc.).
@@ -1078,11 +1212,17 @@ export async function ensureAuthenticated(
  * coach cron's pre-auth hook benefits from the same protection.
  */
 async function silentAuthRecovery(): Promise<boolean> {
-  if (_authRecoveryPromise) {
-    logger.info('Garmin: silent recovery deferring to in-flight recovery promise');
-    return _authRecoveryPromise;
+  const recoveryUserId = resolveGarminUserId();
+  if (!recoveryUserId) {
+    logger.warn('Garmin: silent recovery skipped — no user in scope');
+    return false;
   }
-  _authRecoveryPromise = (async () => {
+  const inFlight = _silentRecoveries.get(recoveryUserId);
+  if (inFlight) {
+    logger.info({ userId: recoveryUserId }, 'Garmin: silent recovery deferring to in-flight recovery promise');
+    return inFlight;
+  }
+  const recovery = (async () => {
     try {
       // Step 1: OAuth2 token refresh
       try {
@@ -1118,10 +1258,11 @@ async function silentAuthRecovery(): Promise<boolean> {
       logger.warn('Garmin: silent recovery exhausted (OAuth2 + DB reload both failed). Marked needs_reauth.');
       return false;
     } finally {
-      _authRecoveryPromise = null;
+      _silentRecoveries.delete(recoveryUserId);
     }
   })();
-  return _authRecoveryPromise;
+  _silentRecoveries.set(recoveryUserId, recovery);
+  return recovery;
 }
 
 /**
@@ -1140,7 +1281,21 @@ function extractErrorStatus(err: unknown): number | null {
 }
 
 // ─── Serialized auth recovery (prevents parallel MFA storms) ─────────
-let _authRecoveryPromise: Promise<boolean> | null = null;
+//
+// Keyed by user, and split by recovery KIND. This was one unkeyed module
+// scalar shared by both `silentAuthRecovery` and `serializedAuthRecovery`, so
+// user B's read could receive user A's recovery verdict, and a silent
+// recovery could be handed the interactive one's promise — the interactive
+// path is allowed to be more invasive, so satisfying a silent caller with it
+// is exactly backwards.
+const _silentRecoveries = new Map<number, Promise<boolean>>();
+const _serializedRecoveries = new Map<number, Promise<boolean>>();
+
+/** Test seam: drop in-flight recovery state so each case starts clean. */
+export function _resetGarminRecoveryStateForTests(): void {
+  _silentRecoveries.clear();
+  _serializedRecoveries.clear();
+}
 
 /**
  * Ensures only ONE auth recovery runs at a time.
@@ -1152,11 +1307,17 @@ let _authRecoveryPromise: Promise<boolean> | null = null;
  *   3. Mark the connection as needs_reauth and stop.
  */
 async function serializedAuthRecovery(): Promise<boolean> {
-  if (_authRecoveryPromise) {
-    logger.info('Garmin: auth recovery already in progress, waiting...');
-    return _authRecoveryPromise;
+  const recoveryUserId = resolveGarminUserId();
+  if (!recoveryUserId) {
+    logger.warn('Garmin: auth recovery skipped — no user in scope');
+    return false;
   }
-  _authRecoveryPromise = (async () => {
+  const inFlight = _serializedRecoveries.get(recoveryUserId);
+  if (inFlight) {
+    logger.info({ userId: recoveryUserId }, 'Garmin: auth recovery already in progress, waiting...');
+    return inFlight;
+  }
+  const recovery = (async () => {
     try {
       // Step 1: Try OAuth2 token refresh
       try {
@@ -1189,10 +1350,11 @@ async function serializedAuthRecovery(): Promise<boolean> {
       logger.warn('Garmin: passive recovery exhausted — marked needs_reauth instead of triggering MFA login');
       return false;
     } finally {
-      _authRecoveryPromise = null;
+      _serializedRecoveries.delete(recoveryUserId);
     }
   })();
-  return _authRecoveryPromise;
+  _serializedRecoveries.set(recoveryUserId, recovery);
+  return recovery;
 }
 
 /** Data endpoints where 404 means "no data" (not an auth failure) */

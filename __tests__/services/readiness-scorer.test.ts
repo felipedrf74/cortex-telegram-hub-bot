@@ -43,8 +43,11 @@ vi.mock('../../src/config', () => ({
 }));
 
 // Mock Garmin functions — use vi.hoisted to ensure availability before vi.mock
+// `isGarminConfigured` is deliberately absent. It was stubbed permanently
+// truthy, so this suite structurally could not detect the global env conjunct
+// being reintroduced into the per-user gate. readiness-scorer no longer
+// imports it; if that regresses, the module mock will fail loudly instead.
 const mockGarmin = vi.hoisted(() => ({
-  isGarminConfigured: vi.fn(() => true),
   getHrvData: vi.fn(),
   getSleepData: vi.fn(),
   getBodyBatteryEvents: vi.fn(),
@@ -188,6 +191,19 @@ describe('readiness-scorer — calculateReadiness', () => {
     `).run(userId, '{"token":"oauth1"}', '{"token":"oauth2"}');
   }
 
+  /**
+   * Disconnect a user from Garmin.
+   *
+   * Garmin availability is per-user connection state, not deployment config.
+   * These cases used to fake "no Garmin" by flipping the global
+   * `isGarminConfigured()` env flag, which also disabled every *other*
+   * connected user. That conjunct is gone, so the switch is real data.
+   */
+  function clearGarminConnection(userId: number): void {
+    testDb.prepare('DELETE FROM garmin_user_tokens WHERE user_id = ?').run(userId);
+    testDb.prepare('DELETE FROM garmin_sessions WHERE user_id = ?').run(userId);
+  }
+
   function seedAppleHealthData(
     userId: number,
     types: Array<'hrv' | 'sleep' | 'rhr' | 'summary'> = ['hrv', 'sleep', 'rhr', 'summary'],
@@ -221,7 +237,6 @@ describe('readiness-scorer — calculateReadiness', () => {
   beforeEach(() => {
     testDb = createMigratedTestDatabase();
     vi.clearAllMocks();
-    mockGarmin.isGarminConfigured.mockReturnValue(true);
     mockWearableService.getReadiness.mockResolvedValue(null);
     try {
       testDb.prepare("INSERT OR IGNORE INTO users (id, first_name, tier, auth_provider, status) VALUES (1, 'Test', 'owner', 'test', 'active')").run();
@@ -284,7 +299,7 @@ describe('readiness-scorer — calculateReadiness', () => {
   });
 
   it('returns neutral (60) when no wearable configured', async () => {
-    mockGarmin.isGarminConfigured.mockReturnValue(false);
+    clearGarminConnection(1);
     // With no Apple Health data either (mock DB returns empty), falls to neutral
     const result = await calculateReadiness(1);
     expect(result.score).toBe(60);
@@ -420,7 +435,7 @@ describe('readiness-scorer — calculateReadiness', () => {
   });
 
   it('uses WHOOP readiness when Garmin is unavailable but WHOOP is connected', async () => {
-    mockGarmin.isGarminConfigured.mockReturnValue(false);
+    clearGarminConnection(1);
     mockWearableService.getReadiness.mockResolvedValue({
       provider: 'whoop',
       date: '2026-04-16',
@@ -456,7 +471,7 @@ describe('readiness-scorer — calculateReadiness', () => {
   });
 
   it('derives Apple Health body battery from activity-only HealthKit data', async () => {
-    mockGarmin.isGarminConfigured.mockReturnValue(false);
+    clearGarminConnection(1);
     seedAppleHealthData(1, ['summary']);
 
     const result = await calculateReadiness(1);
@@ -474,7 +489,7 @@ describe('readiness-scorer — calculateReadiness', () => {
     ['hrvRhr', ['hrv', 'rhr']],
     ['sleepRhr', ['sleep', 'rhr']],
   ] as const)('derives Apple Health body battery from partial HealthKit data: %s', async (_caseName, types) => {
-    mockGarmin.isGarminConfigured.mockReturnValue(false);
+    clearGarminConnection(1);
     seedAppleHealthData(1, [...types]);
 
     const result = await calculateReadiness(1);
@@ -519,7 +534,7 @@ describe('readiness-scorer — calculateReadiness', () => {
   });
 
   it('stamps source whoop on the WHOOP fallback path', async () => {
-    mockGarmin.isGarminConfigured.mockReturnValue(false);
+    clearGarminConnection(1);
     mockWearableService.getReadiness.mockResolvedValue({
       provider: 'whoop',
       date: '2026-04-16',
@@ -536,8 +551,76 @@ describe('readiness-scorer — calculateReadiness', () => {
     expect(Number.isFinite(Date.parse(result.asOf ?? ''))).toBe(true);
   });
 
+  it('accepts a non-WHOOP snapshot that carries a real score', async () => {
+    // The fallback branch used to demand provider === 'whoop' and stamp
+    // `source: 'whoop'` on everything it built. Any other provider with a
+    // genuine score was discarded and mislabelled respectively.
+    clearGarminConnection(1);
+    mockWearableService.getReadiness.mockResolvedValue({
+      provider: 'fitbit',
+      date: '2026-04-16',
+      readinessScore: 74,
+      hrvMs: 58,
+      restingHeartRate: 54,
+      bodyBattery: null,
+      recoveryScore: 74,
+      raw: {},
+    });
+
+    const result = await calculateReadiness(1);
+    expect(result.score).toBe(74);
+    expect(result.source).toBe('fitbit');
+  });
+
+  it('rejects a snapshot with no usable score instead of inventing one', async () => {
+    // This is what a REAL Fitbit snapshot looks like today: the adapter
+    // hardcodes both `readinessScore` and `recoveryScore` to null. The shared
+    // fallback builder defaults to 60, so accepting it would report a
+    // fabricated neutral stamped as a genuine Fitbit reading and suppress the
+    // honest WEARABLE_INTEGRATION_MISSING signal.
+    clearGarminConnection(1);
+    mockWearableService.getReadiness.mockResolvedValue({
+      provider: 'fitbit',
+      date: '2026-04-16',
+      readinessScore: null,
+      hrvMs: 58,
+      restingHeartRate: 54,
+      bodyBattery: null,
+      recoveryScore: null,
+      raw: {},
+    });
+
+    const result = await calculateReadiness(1);
+    expect(result.source).not.toBe('fitbit');
+    expect(result.source).toBe('estimated');
+    expect(result.reasonCode).toBe('WEARABLE_INTEGRATION_MISSING');
+  });
+
+  it('leaves Apple Health to its own richer derivation', async () => {
+    // The fallback builder produces a thin snapshot (sleep and training-load
+    // factors are stubbed at 60). Apple Health has a real derivation further
+    // down, so it must not be short-circuited by the widened provider check.
+    clearGarminConnection(1);
+    seedAppleHealthData(1);
+    mockWearableService.getReadiness.mockResolvedValue({
+      provider: 'apple_health',
+      date: '2026-04-16',
+      readinessScore: 66,
+      hrvMs: 51,
+      restingHeartRate: 57,
+      bodyBattery: null,
+      recoveryScore: 66,
+      raw: {},
+    });
+
+    const result = await calculateReadiness(1);
+    expect(result.source).toBe('apple_health');
+    // The thin fallback stubs sleep at exactly 60; the real derivation scores it.
+    expect(result.factors.sleep.durationHours).toBeGreaterThan(0);
+  });
+
   it('stamps source apple_health on the Apple Health derived path', async () => {
-    mockGarmin.isGarminConfigured.mockReturnValue(false);
+    clearGarminConnection(1);
     seedAppleHealthData(1);
 
     const result = await calculateReadiness(1);
@@ -546,8 +629,101 @@ describe('readiness-scorer — calculateReadiness', () => {
     expect(Number.isFinite(Date.parse(result.asOf ?? ''))).toBe(true);
   });
 
+  // A Garmin-only iOS user syncs sleep, RHR, steps and workouts to Apple
+  // Health but never HRV — Garmin does not publish HRV Status to HealthKit.
+  describe('Apple Health without HRV (Garmin-only iOS user)', () => {
+    it('says the score rests on fewer signals', async () => {
+      clearGarminConnection(1);
+      seedAppleHealthData(1, ['sleep', 'rhr', 'summary']);
+
+      const result = await calculateReadiness(1);
+      expect(result.source).toBe('apple_health');
+      expect(result.reasoning).toContain('No HRV in Apple Health');
+    });
+
+    it('does not claim an HRV measurement it never received', async () => {
+      clearGarminConnection(1);
+      seedAppleHealthData(1, ['sleep', 'rhr', 'summary']);
+
+      const result = await calculateReadiness(1);
+      expect(result.factors.hrv.todayMs).toBe(0);
+      expect(result.factors.hrv.sevenDayAvgMs).toBe(0);
+    });
+
+    it('keeps the caveat off a score that does have HRV', async () => {
+      clearGarminConnection(1);
+      seedAppleHealthData(1);
+
+      const result = await calculateReadiness(1);
+      expect(result.reasoning).not.toContain('No HRV in Apple Health');
+    });
+
+    it('reports a neutral placeholder for HRV, not a fabricated reading', async () => {
+      // `scoreHrv(60, 60)` returns 70 — a healthy-looking number. Reporting
+      // that as the HRV factor score claims a measurement that never existed.
+      clearGarminConnection(1);
+      seedAppleHealthData(1, ['sleep', 'rhr', 'summary']);
+
+      const result = await calculateReadiness(1);
+      expect(result.factors.hrv.score).toBe(60);
+      expect(result.factors.hrv.score).not.toBe(70);
+    });
+
+    it('excludes the unmeasured HRV pillar from the composite entirely', async () => {
+      // Only sleep (0.30) and the sleep-derived body battery (0.20) were
+      // measured, so the composite renormalises over 0.50. Counting HRV's
+      // 0.30 at a placeholder value would drag the score toward that
+      // placeholder and report `coverage` as if HRV had been read.
+      clearGarminConnection(1);
+      seedAppleHealthData(1, ['sleep', 'rhr', 'summary']);
+
+      const result = await calculateReadiness(1);
+      expect(result.coverage).toBe(0.5);
+
+      const measuredOnly = Math.round(
+        (result.factors.sleep.score * 0.30 + result.factors.bodyBattery.score * 0.20) / 0.50,
+      );
+      expect(result.score).toBe(measuredOnly);
+    });
+
+    it('treats a real baseline with no reading today as unmeasured', async () => {
+      // The gate used to be "any HRV row in the last week". With a 100 ms
+      // baseline and no row for today, `scoreHrv(60, 100)` lands in the WORST
+      // bucket (30) and `hrvTrend` computes 'down' — one missed HealthKit sync
+      // read as a collapse in recovery.
+      clearGarminConnection(1);
+      seedAppleHealthData(1, ['sleep', 'rhr', 'summary']);
+      const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+      const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+      const insert = testDb.prepare(`
+        INSERT OR REPLACE INTO apple_health_data (user_id, data_type, date, data_json, source_name)
+        VALUES (?, 'hrv', ?, ?, 'test')
+      `);
+      insert.run(1, yesterday, JSON.stringify({ value: 100 }));
+      insert.run(1, twoDaysAgo, JSON.stringify({ value: 100 }));
+
+      const result = await calculateReadiness(1);
+
+      // Unmeasured today: neutral placeholder, excluded from the composite.
+      expect(result.factors.hrv.todayMs).toBe(0);
+      expect(result.factors.hrv.score).toBe(60);
+      expect(result.factors.hrv.score).not.toBe(30);
+      expect(result.reasoning).toContain('No HRV in Apple Health');
+      expect(result.coverage).toBe(0.5);
+    });
+
+    it('does not claim resting heart rate when RHR was not measured either', async () => {
+      clearGarminConnection(1);
+      seedAppleHealthData(1, ['sleep']);
+
+      const result = await calculateReadiness(1);
+      expect(result.reasoning).toContain('No HRV in Apple Health');
+      expect(result.reasoning).not.toContain('resting heart rate');
+    });
+  });
+
   it('stamps source estimated on the neutral no-wearable fallback', async () => {
-    mockGarmin.isGarminConfigured.mockReturnValue(false);
+    clearGarminConnection(1);
 
     const result = await calculateReadiness(1);
     expect(result.score).toBe(60);
