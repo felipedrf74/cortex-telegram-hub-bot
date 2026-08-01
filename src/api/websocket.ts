@@ -47,6 +47,7 @@ import {
 } from '../services/chat-language-detector';
 import { runWithChatRequestLocale } from '../services/chat-request-locale-context';
 import { normalizeSupportedLang } from '../utils/i18n';
+import { buildManifestClassifierTerminalResponse } from '../services/chat-manifest-classifier-terminal';
 
 const WEBSOCKET_RATE_WINDOW_MS = 60_000;
 const WEBSOCKET_PING_INTERVAL_MS = 30_000;
@@ -927,6 +928,38 @@ export function attachWebSocket(server: http.Server): void {
             }
 
             const rawRoute = await routeMessage(messageText, undefined, userId, tenantId);
+            if (rawRoute.disposition) {
+              const classifierTerminal = buildManifestClassifierTerminalResponse(
+                rawRoute.disposition,
+                responseLocale,
+              );
+              await streamTextFrame(ws, {
+                text: classifierTerminal.text,
+                messageId,
+                userId,
+                tenantId,
+              });
+              if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                  type: 'done',
+                  messageId,
+                  domain: classifierTerminal.domain,
+                  userId,
+                  tenantId,
+                  metadata: {
+                    type: 'chat_manifest_classifier_terminal',
+                    disposition: classifierTerminal.disposition,
+                    actionStatus: classifierTerminal.actionStatus,
+                    reasonCodes: classifierTerminal.reasonCodes,
+                  },
+                }));
+              }
+              logger.info(
+                { userId, tenantId, disposition: classifierTerminal.disposition },
+                'iOS WebSocket chat terminated on an explicit manifest-classifier outcome',
+              );
+              return;
+            }
             const contractAwareRoute = preTurnContract ? applyWebSocketTurnContractRouteHint(rawRoute, preTurnContract) : rawRoute;
             const routingDecision = analyzeChatSkillOrchestration({
               message: messageText,

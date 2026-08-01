@@ -3,10 +3,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   CHAT_LIVE_EVAL_CONTRACT_VERSION,
   CHAT_LIVE_EVAL_LOCAL_BUDGET,
+  CHAT_LIVE_EVAL_REAL_BUDGET,
 } from '../../src/services/chat-live-evaluation-contract';
 
 let db: Database.Database;
 const prepareMock = vi.hoisted(() => vi.fn());
+const routeMocks = vi.hoisted(() => ({
+  principalEmail: 'nexushubbot@gmail.com',
+  getEffectiveEntitlement: vi.fn(),
+  checkSkillAccess: vi.fn(),
+}));
 
 vi.mock('../../src/services/database', async () => ({
   ...(await vi.importActual('../../src/services/database')),
@@ -15,7 +21,15 @@ vi.mock('../../src/services/database', async () => ({
 }));
 vi.mock('../../src/services/user-service', async () => ({
   ...(await vi.importActual('../../src/services/user-service')),
-  getUserById: () => ({ id: 42, email: 'nexushubbot@gmail.com' }),
+  getUserById: () => ({ id: 42, email: routeMocks.principalEmail }),
+}));
+vi.mock('../../src/services/entitlement', async () => ({
+  ...(await vi.importActual('../../src/services/entitlement')),
+  getEffectiveEntitlement: (...args: unknown[]) => routeMocks.getEffectiveEntitlement(...args),
+}));
+vi.mock('../../src/services/skill-tiers', async () => ({
+  ...(await vi.importActual('../../src/services/skill-tiers')),
+  checkSkillAccess: (...args: unknown[]) => routeMocks.checkSkillAccess(...args),
 }));
 vi.mock('../../src/api/secret-guards', async () => ({
   ...(await vi.importActual('../../src/api/secret-guards')),
@@ -43,14 +57,19 @@ function routes() {
   return handlers;
 }
 
-function request(phase: 'preflight' | 'reset' | 'evidence', body?: unknown) {
+function request(
+  phase: 'preflight' | 'reset' | 'evidence',
+  body?: unknown,
+  mode: 'local_engine' | 'real_provider' = 'local_engine',
+) {
+  const budget = mode === 'local_engine' ? CHAT_LIVE_EVAL_LOCAL_BUDGET : CHAT_LIVE_EVAL_REAL_BUDGET;
   const headers: Record<string, string> = {
     'x-nexus-chat-eval-contract': CHAT_LIVE_EVAL_CONTRACT_VERSION,
-    'x-nexus-chat-eval-mode': 'local_engine',
+    'x-nexus-chat-eval-mode': mode,
     'x-nexus-chat-eval-run-id': 'chat-eval-route-test',
-    'x-nexus-chat-eval-total-budget-usd': String(CHAT_LIVE_EVAL_LOCAL_BUDGET.totalCeilingUsd),
-    'x-nexus-chat-eval-target-budget-usd': String(CHAT_LIVE_EVAL_LOCAL_BUDGET.targetCeilingUsd),
-    'x-nexus-chat-eval-judge-budget-usd': String(CHAT_LIVE_EVAL_LOCAL_BUDGET.judgeCeilingUsd),
+    'x-nexus-chat-eval-total-budget-usd': String(budget.totalCeilingUsd),
+    'x-nexus-chat-eval-target-budget-usd': String(budget.targetCeilingUsd),
+    'x-nexus-chat-eval-judge-budget-usd': String(budget.judgeCeilingUsd),
     ...(phase === 'reset' ? { 'x-nexus-chat-eval-scenario-id': 'morning_planning' } : {}),
   };
   return {
@@ -71,6 +90,22 @@ function response() {
   return { state, res };
 }
 
+const DEPLOYED_SHA = 'c'.repeat(40);
+const DEPLOYED_DIGEST = 'd'.repeat(64);
+
+/** Mirrors what the release transaction exports into the serving process. */
+function stubDeployedStagingRelease(overrides: Record<string, string | undefined> = {}): void {
+  const values: Record<string, string | undefined> = {
+    NEXUS_RELEASE_SHA: DEPLOYED_SHA,
+    NEXUS_RELEASE_ARTIFACT_SHA256: DEPLOYED_DIGEST,
+    NEXUS_RELEASE_ROLE: 'staging',
+    ...overrides,
+  };
+  for (const [name, value] of Object.entries(values)) {
+    vi.stubEnv(name, value as string);
+  }
+}
+
 describe('authenticated chat live-eval routes', () => {
   beforeEach(() => {
     vi.stubEnv('NODE_ENV', 'test');
@@ -85,6 +120,11 @@ describe('authenticated chat live-eval routes', () => {
     vi.stubEnv('NEXUS_LOCAL_IOS_EMAIL', 'nexushubbot@gmail.com');
     for (const key of ['GEMINI_API_KEY', 'GOOGLE_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY']) vi.stubEnv(key, '');
     prepareMock.mockReset();
+    routeMocks.principalEmail = 'nexushubbot@gmail.com';
+    routeMocks.getEffectiveEntitlement.mockReset();
+    routeMocks.getEffectiveEntitlement.mockReturnValue({ plan: 'max', aiAccessAllowed: true });
+    routeMocks.checkSkillAccess.mockReset();
+    routeMocks.checkSkillAccess.mockReturnValue({ allowed: true });
     db = new Database(':memory:');
     db.exec(`
       CREATE TABLE api_usage (
@@ -139,6 +179,145 @@ describe('authenticated chat live-eval routes', () => {
       },
     });
     expect(JSON.stringify(state.body)).not.toContain('API_KEY');
+  });
+
+  it('rejects real-provider preflight before spend when scenario skill access is incomplete', () => {
+    vi.stubEnv('NODE_ENV', 'staging');
+    vi.stubEnv('STAGING', 'true');
+    vi.stubEnv('CHAT_EVAL_DEDICATED_TENANT_ID', '42');
+    stubDeployedStagingRelease();
+    vi.stubEnv('AI_CLASSIFY_PRIMARY', 'gemini');
+    vi.stubEnv('AI_CLASSIFY_FALLBACK', 'none');
+    vi.stubEnv('AI_CHAT_PRIMARY', 'gemini');
+    vi.stubEnv('AI_CHAT_FALLBACK', 'none');
+    vi.stubEnv('AI_TOOL_USE_PRIMARY', 'gemini');
+    vi.stubEnv('AI_TOOL_USE_FALLBACK', 'none');
+    vi.stubEnv('GEMINI_API_KEY', 'test-only-gemini-key');
+    vi.stubEnv('PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED', 'false');
+    routeMocks.principalEmail = 'chat-eval@nexus.invalid';
+    routeMocks.getEffectiveEntitlement.mockReturnValue({ plan: 'free', aiAccessAllowed: false });
+    routeMocks.checkSkillAccess.mockImplementation((_user: unknown, skillId: string) => ({
+      allowed: skillId !== 'content',
+    }));
+
+    const handler = routes().get('GET /eval/preflight')!;
+    const { state, res } = response();
+    handler(request('preflight', undefined, 'real_provider'), res);
+
+    expect(state.status).toBe(403);
+    expect(state.body).toEqual({
+      error: {
+        code: 'CHAT_LIVE_EVAL_DISABLED',
+        message: 'Real-provider chat evaluation requires complete dedicated-tenant scenario access.',
+      },
+    });
+  });
+
+  it('rejects beta access even when runtime AI enforcement is observe-only', () => {
+    vi.stubEnv('NODE_ENV', 'staging');
+    vi.stubEnv('STAGING', 'true');
+    vi.stubEnv('CHAT_EVAL_DEDICATED_TENANT_ID', '42');
+    stubDeployedStagingRelease();
+    vi.stubEnv('AI_CLASSIFY_PRIMARY', 'gemini');
+    vi.stubEnv('AI_CLASSIFY_FALLBACK', 'none');
+    vi.stubEnv('AI_CHAT_PRIMARY', 'gemini');
+    vi.stubEnv('AI_CHAT_FALLBACK', 'none');
+    vi.stubEnv('AI_TOOL_USE_PRIMARY', 'gemini');
+    vi.stubEnv('AI_TOOL_USE_FALLBACK', 'none');
+    vi.stubEnv('GEMINI_API_KEY', 'test-only-gemini-key');
+    routeMocks.principalEmail = 'chat-eval@nexus.invalid';
+    routeMocks.getEffectiveEntitlement.mockReturnValue({
+      plan: 'beta',
+      source: 'beta',
+      aiAccessAllowed: false,
+      allowedSkills: new Set(['secretary', 'triathlon', 'content', 'cooking', 'finance']),
+    });
+    const handler = routes().get('GET /eval/preflight')!;
+    const { state, res } = response();
+    handler(request('preflight', undefined, 'real_provider'), res);
+
+    expect(state.status).toBe(403);
+    expect(state.body).toMatchObject({
+      error: { code: 'CHAT_LIVE_EVAL_DISABLED' },
+    });
+  });
+
+  it('admits a dedicated real-provider tenant only after every scenario access check passes', () => {
+    vi.stubEnv('NODE_ENV', 'staging');
+    vi.stubEnv('STAGING', 'true');
+    vi.stubEnv('CHAT_EVAL_DEDICATED_TENANT_ID', '42');
+    stubDeployedStagingRelease();
+    vi.stubEnv('AI_CLASSIFY_PRIMARY', 'gemini');
+    vi.stubEnv('AI_CLASSIFY_FALLBACK', 'none');
+    vi.stubEnv('AI_CHAT_PRIMARY', 'gemini');
+    vi.stubEnv('AI_CHAT_FALLBACK', 'none');
+    vi.stubEnv('AI_TOOL_USE_PRIMARY', 'gemini');
+    vi.stubEnv('AI_TOOL_USE_FALLBACK', 'none');
+    vi.stubEnv('GEMINI_API_KEY', 'test-only-gemini-key');
+    routeMocks.principalEmail = 'chat-eval@nexus.invalid';
+    routeMocks.getEffectiveEntitlement.mockReturnValue({
+      userId: 42,
+      plan: 'max',
+      source: 'founder',
+      aiAccessAllowed: true,
+      allowedSkills: new Set(['secretary', 'triathlon', 'content', 'cooking', 'finance']),
+    });
+
+    const handler = routes().get('GET /eval/preflight')!;
+    const { state, res } = response();
+    handler(request('preflight', undefined, 'real_provider'), res);
+
+    expect(state.status).toBe(200);
+    expect(state.body).toMatchObject({
+      ok: true,
+      data: {
+        providerPolicy: 'metered_cloud_only',
+        productionDataUsed: false,
+        // The runner binds its evidence to this server-attested identity
+        // instead of to the operator's local checkout.
+        deployedRelease: {
+          runtimeSha: DEPLOYED_SHA,
+          artifactDigest: DEPLOYED_DIGEST,
+          role: 'staging',
+        },
+      },
+    });
+    expect(routeMocks.checkSkillAccess.mock.calls.map((call) => call[1])).toEqual([
+      'secretary.calendar',
+      'secretary.tasks',
+      'triathlon',
+      'content',
+      'cooking',
+      'finance',
+    ]);
+  });
+
+  it.each([
+    ['an unattested process', { NEXUS_RELEASE_SHA: undefined, NEXUS_RELEASE_ARTIFACT_SHA256: undefined, NEXUS_RELEASE_ROLE: undefined }],
+    ['the ecosystem placeholder identity', { NEXUS_RELEASE_SHA: 'unknown', NEXUS_RELEASE_ARTIFACT_SHA256: 'unknown' }],
+    ['a production release', { NEXUS_RELEASE_ROLE: 'production' }],
+  ])('refuses real-provider preflight from %s before any spend', (_label, overrides) => {
+    vi.stubEnv('NODE_ENV', 'staging');
+    vi.stubEnv('STAGING', 'true');
+    vi.stubEnv('CHAT_EVAL_DEDICATED_TENANT_ID', '42');
+    stubDeployedStagingRelease(overrides);
+    vi.stubEnv('GEMINI_API_KEY', 'test-only-gemini-key');
+    routeMocks.principalEmail = 'chat-eval@nexus.invalid';
+    routeMocks.getEffectiveEntitlement.mockReturnValue({
+      userId: 42,
+      plan: 'max',
+      source: 'founder',
+      aiAccessAllowed: true,
+      allowedSkills: new Set(['secretary', 'triathlon', 'content', 'cooking', 'finance']),
+    });
+
+    const handler = routes().get('GET /eval/preflight')!;
+    const { state, res } = response();
+    handler(request('preflight', undefined, 'real_provider'), res);
+
+    expect(state.status).toBe(403);
+    expect(state.body).toMatchObject({ error: { code: 'CHAT_LIVE_EVAL_DISABLED' } });
+    expect(routeMocks.getEffectiveEntitlement).not.toHaveBeenCalled();
   });
 
   it('accepts only the header-bound scenario and never accepts client seed data', () => {

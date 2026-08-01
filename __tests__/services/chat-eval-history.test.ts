@@ -131,7 +131,7 @@ function preflightFor(
 async function persistBaselineCandidate(
   runId: string,
   generatedAt = '2026-07-22T10:00:00.000Z',
-  options: { judged?: boolean } = {},
+  options: { judged?: boolean; deployedRelease?: boolean } = {},
 ): Promise<void> {
   const result = await runChatEvaluationSuite({
     mode: 'real_provider',
@@ -144,12 +144,40 @@ async function persistBaselineCandidate(
     runId,
     gitBranch: 'main',
     gitCommit: 'a'.repeat(40),
+    jsonReportPath: `docs/release/eval-evidence/${runId}.json`,
+    markdownReportPath: `docs/release/eval-evidence/${runId}.md`,
     budgetUsd: 0.5,
     productionDataUsed: false,
     realProviderCalls: result.judge?.calls ?? 0,
     costAttestation: costAttestationFor(result),
-    preflightAttestation: preflightFor(runId, result),
+    preflightAttestation: {
+      ...preflightFor(runId, result),
+      // A server-attested deployed identity is the normal case now; only the
+      // pre-binding legacy baseline opts out.
+      ...(options.deployedRelease === false
+        ? {}
+        : {
+          deployedRelease: {
+            runtimeSha: 'c'.repeat(40),
+            artifactDigest: 'd'.repeat(64),
+            role: 'staging',
+          },
+        }),
+    },
   });
+}
+
+const EVIDENCE_JSON_SHA = 'e'.repeat(64);
+const EVIDENCE_MARKDOWN_SHA = 'f'.repeat(64);
+
+/** The archive-identity fields every freeze request must now carry. */
+function archiveIdentityFor(runId: string) {
+  return {
+    evidenceJsonPath: `docs/release/eval-evidence/${runId}.json`,
+    evidenceMarkdownPath: `docs/release/eval-evidence/${runId}.md`,
+    evidenceJsonSha256: EVIDENCE_JSON_SHA,
+    evidenceMarkdownSha256: EVIDENCE_MARKDOWN_SHA,
+  };
 }
 
 describe('Chat eval history', () => {
@@ -226,6 +254,8 @@ describe('Chat eval history', () => {
       runId,
       evidenceJsonPath: `docs/release/eval-evidence/${runId}.json`,
       evidenceMarkdownPath: `docs/release/eval-evidence/${runId}.md`,
+      evidenceJsonSha256: EVIDENCE_JSON_SHA,
+      evidenceMarkdownSha256: EVIDENCE_MARKDOWN_SHA,
       runtime: { nodeEnv: 'staging', staging: 'true' },
     })).toThrow(/judge coverage/i);
   });
@@ -264,6 +294,8 @@ describe('Chat eval history', () => {
       runId,
       evidenceJsonPath: `docs/release/eval-evidence/${runId}.json`,
       evidenceMarkdownPath: `docs/release/eval-evidence/${runId}.md`,
+      evidenceJsonSha256: EVIDENCE_JSON_SHA,
+      evidenceMarkdownSha256: EVIDENCE_MARKDOWN_SHA,
       runtime: { nodeEnv: 'staging', staging: 'true' },
     })).toThrow(/cost|ceiling|coherent/i);
   });
@@ -288,6 +320,8 @@ describe('Chat eval history', () => {
       runId,
       evidenceJsonPath: `docs/release/eval-evidence/${runId}.json`,
       evidenceMarkdownPath: `docs/release/eval-evidence/${runId}.md`,
+      evidenceJsonSha256: EVIDENCE_JSON_SHA,
+      evidenceMarkdownSha256: EVIDENCE_MARKDOWN_SHA,
       runtime: { nodeEnv: 'staging', staging: 'true' },
     })).toThrow(/judge|usage|attempt|ledger/i);
   });
@@ -310,6 +344,8 @@ describe('Chat eval history', () => {
       runId,
       evidenceJsonPath: `docs/release/eval-evidence/${runId}.json`,
       evidenceMarkdownPath: `docs/release/eval-evidence/${runId}.md`,
+      evidenceJsonSha256: EVIDENCE_JSON_SHA,
+      evidenceMarkdownSha256: EVIDENCE_MARKDOWN_SHA,
       runtime: { nodeEnv: 'staging', staging: 'true' },
     })).toThrow(/judge|gemini|flash-lite|pricing|provider|model/i);
   });
@@ -328,6 +364,8 @@ describe('Chat eval history', () => {
       runId,
       evidenceJsonPath: `docs/release/eval-evidence/${runId}.json`,
       evidenceMarkdownPath: `docs/release/eval-evidence/${runId}.md`,
+      evidenceJsonSha256: EVIDENCE_JSON_SHA,
+      evidenceMarkdownSha256: EVIDENCE_MARKDOWN_SHA,
       runtime: { nodeEnv: 'staging', staging: 'true' },
     })).toThrow(/seed|preparation/i);
   });
@@ -340,6 +378,8 @@ describe('Chat eval history', () => {
       runId,
       evidenceJsonPath: `docs/release/eval-evidence/${runId}.json`,
       evidenceMarkdownPath: `docs/release/eval-evidence/${runId}.md`,
+      evidenceJsonSha256: EVIDENCE_JSON_SHA,
+      evidenceMarkdownSha256: EVIDENCE_MARKDOWN_SHA,
       runtime: { nodeEnv: 'staging', staging: 'true' },
       acceptedAt: '2026-07-22T11:00:00.000Z',
     });
@@ -360,6 +400,8 @@ describe('Chat eval history', () => {
       runId,
       evidenceJsonPath: `docs/release/eval-evidence/${runId}.json`,
       evidenceMarkdownPath: `docs/release/eval-evidence/${runId}.md`,
+      evidenceJsonSha256: EVIDENCE_JSON_SHA,
+      evidenceMarkdownSha256: EVIDENCE_MARKDOWN_SHA,
       runtime: { nodeEnv: 'staging', staging: 'true' },
     });
     expect(retry.action).toBe('already_frozen');
@@ -369,6 +411,8 @@ describe('Chat eval history', () => {
       runId: 'chat-eval-second-live-candidate',
       evidenceJsonPath: 'docs/release/eval-evidence/chat-eval-second-live-candidate.json',
       evidenceMarkdownPath: 'docs/release/eval-evidence/chat-eval-second-live-candidate.md',
+      evidenceJsonSha256: EVIDENCE_JSON_SHA,
+      evidenceMarkdownSha256: EVIDENCE_MARKDOWN_SHA,
       runtime: { nodeEnv: 'staging', staging: 'true' },
     })).toThrow(/already frozen/i);
 
@@ -387,13 +431,40 @@ describe('Chat eval history', () => {
       runId,
       evidenceJsonPath: `docs/release/eval-evidence/${runId}.json`,
       evidenceMarkdownPath: `docs/release/eval-evidence/${runId}.md`,
+      evidenceJsonSha256: EVIDENCE_JSON_SHA,
+      evidenceMarkdownSha256: EVIDENCE_MARKDOWN_SHA,
       runtime: { nodeEnv: 'staging', staging: 'true' },
     } as const;
 
-    expect(() => acceptFrozenRealProviderBaseline(db, {
-      ...input,
-      runtime: { nodeEnv: 'production', staging: 'false' },
-    })).toThrow(/staging/i);
+    // Full truth table for the staging guard: every operand must independently
+    // decide acceptance, so a weakened condition cannot pass unnoticed.
+    for (const runtime of [
+      { nodeEnv: 'production', staging: 'false' },
+      { nodeEnv: 'production', staging: 'true' },
+      { nexusEnv: 'production', staging: 'true' },
+      { nodeEnv: 'staging', nexusEnv: 'production' },
+      { nodeEnv: 'test', staging: 'false' },
+      { nodeEnv: 'test' },
+      {},
+    ] as Array<Record<string, string>>) {
+      expect(() => acceptFrozenRealProviderBaseline(db, { ...input, runtime }))
+        .toThrow(/staging/i);
+    }
+    for (const runtime of [
+      { nodeEnv: 'staging', staging: 'false' },
+      { nodeEnv: 'test', staging: 'true' },
+      { nodeEnv: 'test', staging: '1' },
+    ] as Array<Record<string, string>>) {
+      // Accepted by the runtime guard, so it must fail later (or succeed),
+      // never on the staging message.
+      let message = '';
+      try {
+        acceptFrozenRealProviderBaseline(db, { ...input, runtime, runId: `${runId}-probe` });
+      } catch (error) {
+        message = error instanceof Error ? error.message : String(error);
+      }
+      expect(message).not.toMatch(/restricted to staging/i);
+    }
     expect(() => acceptFrozenRealProviderBaseline(db, {
       ...input,
       evidenceJsonPath: `reports/chat-eval/${runId}.json`,
@@ -403,6 +474,216 @@ describe('Chat eval history', () => {
     expect(() => acceptFrozenRealProviderBaseline(db, input)).toThrow(/synthetic|production data/i);
   });
 
+  it('upgrades a migration-260 frozen-baseline table instead of silently skipping the new columns', async () => {
+    // Production and staging already ran migration 260, so `CREATE TABLE IF
+    // NOT EXISTS` can never add a column there. Replay the real migration and
+    // require the ensure step to ALTER the table into the current shape.
+    // migration 260 references chat_eval_runs, which already existed in
+    // production; create the pre-batch runs table first so the replay is real.
+    db.exec(`
+      CREATE TABLE chat_eval_runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id TEXT NOT NULL UNIQUE,
+        mode TEXT NOT NULL CHECK (mode IN ('fixture', 'local_engine', 'real_provider')),
+        generated_at TEXT NOT NULL,
+        package_version TEXT, git_branch TEXT, git_commit TEXT,
+        average_score REAL NOT NULL, scenario_count INTEGER NOT NULL,
+        pass_count INTEGER NOT NULL, partial_count INTEGER NOT NULL,
+        fail_count INTEGER NOT NULL, blocked_count INTEGER NOT NULL,
+        passed INTEGER NOT NULL DEFAULT 0,
+        production_data_used INTEGER NOT NULL DEFAULT 0,
+        real_provider_calls INTEGER NOT NULL DEFAULT 0,
+        budget_usd REAL, json_report_path TEXT, markdown_report_path TEXT,
+        quality_metrics_json TEXT NOT NULL DEFAULT '[]',
+        day_to_day_summary_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE TABLE chat_eval_scenario_results (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id TEXT NOT NULL, scenario_id TEXT NOT NULL, persona_id TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('pass', 'partial', 'fail', 'blocked')),
+        evidence_mode TEXT NOT NULL, average_score REAL NOT NULL,
+        failures_json TEXT NOT NULL DEFAULT '[]', notes_json TEXT NOT NULL DEFAULT '[]',
+        scores_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(run_id, scenario_id)
+      );
+    `);
+    db.exec(readFileSync('migrations/260_chat_live_eval_preparations.sql', 'utf8'));
+    const migrated = (db.prepare('PRAGMA table_info(chat_eval_frozen_baselines)').all() as Array<{ name: string }>)
+      .map((row) => row.name);
+    expect(migrated).not.toContain('evidence_json_sha256');
+
+    ensureChatEvalHistoryTables(db);
+
+    const upgraded = (db.prepare('PRAGMA table_info(chat_eval_frozen_baselines)').all() as Array<{ name: string }>)
+      .map((row) => row.name);
+    for (const column of [
+      'evidence_json_sha256',
+      'evidence_markdown_sha256',
+      'provenance_class',
+      'deployed_runtime_sha',
+      'deployed_artifact_digest',
+    ]) {
+      expect(upgraded).toContain(column);
+    }
+
+    // Idempotent: a second boot must not attempt to re-add anything.
+    expect(() => ensureChatEvalHistoryTables(db)).not.toThrow();
+
+    // And a real freeze must now succeed end to end on that upgraded database.
+    const runId = 'chat-eval-migrated-baseline';
+    await persistBaselineCandidate(runId);
+    expect(acceptFrozenRealProviderBaseline(db, {
+      runId,
+      ...archiveIdentityFor(runId),
+      runtime: { nodeEnv: 'staging', staging: 'true' },
+    }).action).toBe('created');
+  });
+
+  it('recomputes every frozen headline metric from the persisted scenario evidence', async () => {
+    const runId = 'chat-eval-recomputed-baseline';
+    await persistBaselineCandidate(runId);
+
+    // A client-declared aggregate that disagrees with the scenario rows it
+    // claims to summarise must never become the permanent baseline.
+    for (const [column, value] of [
+      ['average_score', 4.5],
+      ['pass_count', 99],
+      ['fail_count', 99],
+      ['blocked_count', 99],
+      ['partial_count', 99],
+    ] as const) {
+      const original = db.prepare(`SELECT ${column} AS value FROM chat_eval_runs WHERE run_id = ?`).get(runId) as { value: number };
+      db.prepare(`UPDATE chat_eval_runs SET ${column} = ? WHERE run_id = ?`).run(value, runId);
+      expect(() => acceptFrozenRealProviderBaseline(db, {
+        runId,
+        ...archiveIdentityFor(runId),
+        runtime: { nodeEnv: 'staging', staging: 'true' },
+      })).toThrow(/recomputed|scenario evidence/i);
+      db.prepare(`UPDATE chat_eval_runs SET ${column} = ? WHERE run_id = ?`).run(original.value, runId);
+    }
+
+    // The unmodified run still freezes, so the check is a real cross-check and
+    // not an unconditional refusal.
+    expect(acceptFrozenRealProviderBaseline(db, {
+      runId,
+      ...archiveIdentityFor(runId),
+      runtime: { nodeEnv: 'staging', staging: 'true' },
+    }).action).toBe('created');
+  });
+
+  it('binds the frozen baseline to the exact archive bytes and the run-declared report paths', async () => {
+    const runId = 'chat-eval-archive-bound-baseline';
+    await persistBaselineCandidate(runId);
+    const input = {
+      runId,
+      ...archiveIdentityFor(runId),
+      runtime: { nodeEnv: 'staging', staging: 'true' },
+    };
+
+    // Content identity is mandatory and must be a full digest.
+    for (const override of [
+      { evidenceJsonSha256: undefined },
+      { evidenceMarkdownSha256: undefined },
+      { evidenceJsonSha256: 'e'.repeat(63) },
+      { evidenceMarkdownSha256: 'F'.repeat(64) },
+      { evidenceJsonSha256: 'not-a-digest' },
+    ] as Array<Record<string, unknown>>) {
+      expect(() => acceptFrozenRealProviderBaseline(db, { ...input, ...override } as never))
+        .toThrow(/sha-?256|digest/i);
+    }
+
+    // A run id that could escape the canonical archive directory is refused.
+    expect(() => acceptFrozenRealProviderBaseline(db, {
+      ...input,
+      runId: '../../etc/passwd',
+    })).toThrow(/run id|docs\/release\/eval-evidence/i);
+
+    // The frozen paths must match what the run itself recorded at POST time.
+    db.prepare(`UPDATE chat_eval_runs SET json_report_path = ? WHERE run_id = ?`)
+      .run('docs/release/eval-evidence/some-other-run.json', runId);
+    expect(() => acceptFrozenRealProviderBaseline(db, input)).toThrow(/report path|archive/i);
+    db.prepare(`UPDATE chat_eval_runs SET json_report_path = ? WHERE run_id = ?`)
+      .run(`docs/release/eval-evidence/${runId}.json`, runId);
+
+    const accepted = acceptFrozenRealProviderBaseline(db, input);
+    expect(accepted.action).toBe('created');
+    expect(accepted.baseline).toMatchObject({
+      evidenceJsonSha256: EVIDENCE_JSON_SHA,
+      evidenceMarkdownSha256: EVIDENCE_MARKDOWN_SHA,
+    });
+
+    // The recorded digests are part of the immutable identity: an exact retry
+    // is idempotent, a different archive is refused.
+    expect(acceptFrozenRealProviderBaseline(db, input).action).toBe('already_frozen');
+    expect(() => acceptFrozenRealProviderBaseline(db, {
+      ...input,
+      evidenceJsonSha256: '0'.repeat(64),
+    })).toThrow(/already frozen/i);
+  });
+
+  it('records deployed-artifact provenance for a server-attested run without any acknowledgement', async () => {
+    const runId = 'chat-eval-attested-baseline';
+    await persistBaselineCandidate(runId, '2026-07-22T10:00:00.000Z', { deployedRelease: true });
+
+    const accepted = acceptFrozenRealProviderBaseline(db, {
+      runId,
+      ...archiveIdentityFor(runId),
+      runtime: { nodeEnv: 'staging', staging: 'true' },
+    });
+    expect(accepted.baseline).toMatchObject({
+      provenanceClass: 'deployed_artifact_attested',
+      deployedRuntimeSha: 'c'.repeat(40),
+      deployedArtifactDigest: 'd'.repeat(64),
+    });
+  });
+
+  it('refuses an unattested legacy run unless the reduced provenance is explicitly acknowledged', async () => {
+    const runId = 'chat-eval-legacy-provenance-baseline';
+    await persistBaselineCandidate(runId, '2026-07-22T10:00:00.000Z', { deployedRelease: false });
+    const input = {
+      runId,
+      ...archiveIdentityFor(runId),
+      runtime: { nodeEnv: 'staging', staging: 'true' },
+    };
+
+    // Silence is never consent: a run with no server-attested artifact identity
+    // cannot become the permanent baseline by default.
+    expect(() => acceptFrozenRealProviderBaseline(db, input))
+      .toThrow(/provenance|deployed release identity/i);
+
+    const accepted = acceptFrozenRealProviderBaseline(db, {
+      ...input,
+      acknowledgeOperatorCheckoutProvenance: true,
+    });
+    expect(accepted.action).toBe('created');
+    expect(accepted.baseline).toMatchObject({
+      provenanceClass: 'operator_checkout_only',
+      deployedRuntimeSha: null,
+      deployedArtifactDigest: null,
+    });
+
+    // The reduced provenance is part of the immutable identity and is surfaced
+    // on the read model, so it can never be cited as artifact-bound evidence.
+    expect(readFrozenRealProviderBaselineState(db).baseline).toMatchObject({
+      provenanceClass: 'operator_checkout_only',
+    });
+  });
+
+  it('never lets an acknowledgement downgrade a run that did attest its artifact', async () => {
+    const runId = 'chat-eval-attested-not-downgradable';
+    await persistBaselineCandidate(runId, '2026-07-22T10:00:00.000Z', { deployedRelease: true });
+
+    const accepted = acceptFrozenRealProviderBaseline(db, {
+      runId,
+      ...archiveIdentityFor(runId),
+      runtime: { nodeEnv: 'staging', staging: 'true' },
+      acknowledgeOperatorCheckoutProvenance: true,
+    });
+    expect(accepted.baseline.provenanceClass).toBe('deployed_artifact_attested');
+  });
+
   it('diffs later compatible real-provider evidence against the frozen identity and refuses incompatible claims', async () => {
     const baselineRunId = 'chat-eval-baseline-delta';
     await persistBaselineCandidate(baselineRunId);
@@ -410,6 +691,8 @@ describe('Chat eval history', () => {
       runId: baselineRunId,
       evidenceJsonPath: `docs/release/eval-evidence/${baselineRunId}.json`,
       evidenceMarkdownPath: `docs/release/eval-evidence/${baselineRunId}.md`,
+      evidenceJsonSha256: EVIDENCE_JSON_SHA,
+      evidenceMarkdownSha256: EVIDENCE_MARKDOWN_SHA,
       runtime: { nodeEnv: 'staging', staging: 'true' },
     });
 

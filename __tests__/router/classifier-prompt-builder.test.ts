@@ -127,10 +127,13 @@ describe('buildManifestClassifierPrompt', () => {
     }
   });
 
-  it('keeps the extended output schema and the legacy low-confidence default', () => {
-    expect(prompt).toContain('"skill" (optional): one of the skills listed for the chosen domain');
+  it('keeps the extended output schema and exposes explicit safe terminal outcomes', () => {
+    expect(prompt).toContain('"skill" (optional): one of the skills listed for the chosen real domain');
     expect(prompt).toContain('{"domain": "secretary", "skill": "tasks", "confidence": 0.95}');
-    expect(prompt).toContain('If confidence < 0.6, use "secretary" as default');
+    expect(prompt).toContain('"clarify"');
+    expect(prompt).toContain('"none"');
+    expect(prompt).toContain('Omit "skill" for "clarify" and "none"');
+    expect(prompt).not.toContain('If confidence < 0.6, use "secretary" as default');
     expect(prompt).toContain('[ACTIVE CONVERSATION]');
     expect(prompt).toContain('[CANDIDATE SHORTLIST]');
   });

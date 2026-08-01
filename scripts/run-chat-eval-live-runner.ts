@@ -1,6 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { execFileSync } from 'child_process';
+import { createHash } from 'crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'fs';
 import path from 'path';
 import {
@@ -10,6 +11,10 @@ import {
   type ChatEvaluationSuiteResult,
 } from '../src/services/chat-evaluation-harness';
 import { HttpExecutor } from '../src/services/chat-eval-executor';
+import {
+  chatEvalEvidenceRawTextFindings,
+  redactChatEvalEvidence,
+} from '../src/services/chat-eval-evidence-redaction';
 import {
   persistChatEvalRun,
   type ChatEvalRunCostAttestation,
@@ -259,11 +264,33 @@ export async function runChatEvalLiveCli(
   };
 
   if (jsonReportPath) {
-    writeFileSync(jsonReportPath, JSON.stringify({
+    const rawReport = {
       ...result,
       ...(preflight ? { preflightAttestation: preflight } : {}),
       ...(costAttestation ? { costAttestation } : {}),
-    }, null, 2));
+    };
+    // The full report carries raw user turns, model responses and judge
+    // rationales. Keep those private and publish only the redacted projection:
+    // `docs/release/eval-evidence/` is committed, and repository law forbids
+    // raw provider payloads or user content in Git.
+    const rawBody = `${JSON.stringify(rawReport, null, 2)}\n`;
+    const privateDir = path.join('.local', 'chat-eval', runId);
+    mkdirSync(privateDir, { recursive: true, mode: 0o700 });
+    const rawPath = path.join(privateDir, 'raw-report.json');
+    writeFileSync(rawPath, rawBody, { mode: 0o600 });
+
+    const sourceSha256 = createHash('sha256').update(rawBody).digest('hex');
+    const { redacted, manifest } = redactChatEvalEvidence(rawReport, sourceSha256);
+    const publishable = { ...(redacted as Record<string, unknown>), redaction: manifest };
+    const findings = chatEvalEvidenceRawTextFindings(publishable);
+    if (findings.length > 0) {
+      throw new Error(
+        'chat eval evidence refuses to publish unclassified free text at: '
+        + findings.map((finding) => `${finding.path} x${finding.occurrences}`).join(', '),
+      );
+    }
+    writeFileSync(jsonReportPath, `${JSON.stringify(publishable, null, 2)}\n`);
+    console.log(`[chat-eval-live] private-raw-report path=${rawPath} sha256=${sourceSha256}`);
   }
   if (markdownReportPath) {
     writeFileSync(markdownReportPath, formatChatEvaluationResultsMarkdown(result));

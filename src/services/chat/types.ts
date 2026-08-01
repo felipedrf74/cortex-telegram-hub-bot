@@ -147,6 +147,8 @@ export interface ChatActionExecutionOptions {
   confirmationSource?: 'explicit_current_turn' | 'pending_confirmation' | 'none';
   /** Exact server-staged grants carried from the pending confirmation. */
   confirmedTargets?: ChatConfirmedDestructiveTarget[];
+  /** @internal Fail-closed probe invoked immediately before executor lookup/dispatch. */
+  beforeStepExecution?: (step: ChatPlanStep) => void;
   /** @internal Prevents recursive authorization-context installation. */
   authorizationContextBound?: boolean;
 }

@@ -38,6 +38,7 @@ vi.mock('../../../src/services/training-plans', () => ({
 }));
 
 import { foldCalendarText } from '../../../src/services/calendar-natural-language-parser';
+import { findChatActionDefinition } from '../../../src/services/chat/registry';
 import type { ChatActionPlan, ChatPlannerInput, ChatPlanStep } from '../../../src/services/chat/types';
 import {
   executeTrainingCoachReportStep,
@@ -247,6 +248,10 @@ describe('training parser and executor hardening', () => {
     );
 
     expect(result.status).toBe('verified_pending');
+    // Phase 7 outputRefs decision: a pending UI handoff cannot safely feed a
+    // dependent cross-skill step, so the live registry remains non-producing.
+    expect(findChatActionDefinition('training', 'training_plan_create')?.outputRefs)
+      .toBeUndefined();
     expect(result.result).toMatchObject({
       pendingActionId: null,
       openSurface: 'training_plan_builder',

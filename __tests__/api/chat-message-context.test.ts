@@ -113,6 +113,48 @@ describe('chat message context helpers', () => {
     expect(getLastChatActiveDomain(42, now)).toBeNull();
   });
 
+  it('refuses to pin the non-routable chat envelope as active REST continuity', () => {
+    const now = Date.parse('2026-07-31T12:00:00.000Z');
+    mockGetLastAssistantMessage.mockReturnValue('Could you clarify what you want Nexus to do?');
+
+    rememberChatActiveDomain(42, 'chat', now - 1000, 7);
+
+    expect(getChatDomainHandler('chat')).toBeUndefined();
+    expect(getLastChatActiveDomain(42, now, 7)).toBeNull();
+    expect(resolveChatActiveContext(42, now, 7)).toBeNull();
+    expect(mockGetLastAssistantMessage).not.toHaveBeenCalled();
+  });
+
+  it('drops a previously persisted chat pseudo-domain before the next REST turn', () => {
+    const now = Date.parse('2026-07-31T12:00:00.000Z');
+    rememberChatActiveDomain(42, 'secretary', now - 1000, 7);
+    testDb.prepare(`
+      UPDATE chat_conversation_state
+      SET last_domain = 'chat', last_domain_at = ?
+      WHERE tenant_id = 7 AND user_id = 42
+    `).run(new Date(now - 1000).toISOString());
+    resetChatMessageContextForTests();
+    mockGetLastAssistantMessage.mockReturnValue('Could you clarify what you want Nexus to do?');
+
+    expect(getLastChatActiveDomain(42, now, 7)).toBeNull();
+    expect(resolveChatActiveContext(42, now, 7)).toBeNull();
+    expect(mockGetLastAssistantMessage).not.toHaveBeenCalled();
+  });
+
+  it.each(['tasks', 'training'])(
+    'still pins the Chat Core v2 deterministic-read domain %s with every manifest flag off',
+    (domain) => {
+      // These domains have no legacy REST handler but are real conversation
+      // domains emitted by the v2 deterministic read. The chat-envelope guard
+      // must not take their continuity with it.
+      const now = Date.parse('2026-07-31T12:00:00.000Z');
+      rememberChatActiveDomain(42, domain, now - 1000, 7);
+
+      expect(getChatDomainHandler(domain)).toBeUndefined();
+      expect(getLastChatActiveDomain(42, now, 7)).toBe(domain);
+    },
+  );
+
   it('exposes a scheduler-facing active-domain helper without Telegram state', () => {
     const before = Date.now();
 

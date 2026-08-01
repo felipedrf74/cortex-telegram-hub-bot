@@ -142,6 +142,26 @@
     ],
     "cleanupMappings": [
       {
+        "test": "__tests__/services/chat-eval-history.test.ts",
+        "replacementTests": [
+          "__tests__/services/chat-eval-history.test.ts"
+        ],
+        "sources": [
+          "src/services/chat-eval-history.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/chat-eval-history.ts:1134-1139",
+            "anchor": "invalidBaseline('Frozen real-provider baseline acceptance is restricted to staging.');",
+            "behavior": "Frozen baseline acceptance stays refused outside staging.",
+            "replacementTest": "__tests__/services/chat-eval-history.test.ts",
+            "ownerTestNamePattern": "fails baseline acceptance closed outside staging and for malformed evidence or archive identities$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained freeze suite strengthens its existing acceptance assertions in place: archive SHA-256 digests, run-declared report-path reconciliation, recomputed scenario aggregates, and provenance class are now required arguments, so every prior expectation was rewritten rather than removed."
+      },
+      {
         "test": "__tests__/router/classifier.test.ts",
         "replacementTests": [
           "__tests__/router/classifier.test.ts"
@@ -151,7 +171,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/router/index.ts:239-240",
+            "pattern": "src/router/index.ts:241-242",
             "anchor": "return CONTENT_COMPARISON_REFINEMENT_PATTERN.test(trimmed);",
             "behavior": "A bounded comparison remains in active Content context only when it is not a fresh non-Content operation.",
             "replacementTest": "__tests__/router/classifier.test.ts",
@@ -171,7 +191,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/ollama-provider.ts:1845-1850",
+            "pattern": "src/services/ollama-provider.ts:1906-1911",
             "anchor": "'chat_content_model_authored_short_rejected'",
             "behavior": "Deferred short-comparison usage is attributed only after validation and distinguishes accepted output from rejected output.",
             "replacementTest": "__tests__/services/ollama-provider.test.ts",

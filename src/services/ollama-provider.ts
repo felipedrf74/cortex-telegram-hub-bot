@@ -57,6 +57,11 @@ import { getCurrentChatRequestLocale } from './chat-request-locale-context';
 import { assessChatResearchAnswerCompleteness } from './chat-research-answer-quality';
 import { getCurrentChatLiveEvalSeedFacts } from './chat-live-evaluation-context';
 import type { ContentFormatId } from './content-domain-ontology';
+import {
+  getNlReachableCapabilities,
+  isManifestClassifierPromptEnabled,
+  resolveManifestClassifierDisposition,
+} from '../router/classifier-prompt-builder';
 
 // ─── Public types for the new task dispatch paths ──────────────────
 
@@ -1410,6 +1415,27 @@ const CLASSIFICATION_JSON_SCHEMA = {
   required: ['domain', 'confidence'],
 } as const;
 
+function getManifestValidClassificationDomains(): string[] {
+  return [...new Set([
+    ...getNlReachableCapabilities().map((entry) => entry.runtimeRouting.domain),
+    'clarify',
+    'none',
+  ])];
+}
+
+function buildManifestClassificationJsonSchema(validDomains: readonly string[]) {
+  return {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      domain: { type: 'string', enum: [...validDomains] },
+      skill: { type: 'string' },
+      confidence: { type: 'number', minimum: 0, maximum: 1 },
+    },
+    required: ['domain', 'confidence'],
+  } as const;
+}
+
 /**
  * v1.1 hardening suffix appended to the upstream getClassifierSystemPrompt()
  * output. The live smoke (2026-05-26) showed Qwen3.6 ignores Ollama's
@@ -1436,12 +1462,29 @@ const CLASSIFY_HARDENING_SUFFIX = [
   'Return ONLY the JSON object. No prose, no markdown, no backticks.',
 ].join('\n');
 
-function isValidClassificationPayload(o: unknown): o is ClassificationResult {
+function buildManifestClassifyHardeningSuffix(validDomains: readonly string[]): string {
+  return [
+    'CRITICAL OUTPUT CONTRACT — NON-NEGOTIABLE:',
+    '',
+    `The "domain" field MUST be EXACTLY one of: ${validDomains.join(', ')}.`,
+    'Use "clarify" only for ambiguity between supported actions.',
+    'Use "none" only when no supported Nexus capability applies.',
+    'Omit "skill" for "clarify" and "none".',
+    'The "confidence" field is REQUIRED and must be a number between 0 and 1.',
+    '',
+    'Return ONLY the JSON object. No prose, no markdown, no backticks.',
+  ].join('\n');
+}
+
+function isValidClassificationPayload(
+  o: unknown,
+  validDomains: readonly string[] = VALID_DOMAINS,
+): o is ClassificationResult {
   if (!o || typeof o !== 'object') return false;
   const obj = o as Record<string, unknown>;
   if (typeof obj.confidence !== 'number') return false;
   if (typeof obj.domain !== 'string') return false;
-  return (VALID_DOMAINS as readonly string[]).includes(obj.domain);
+  return validDomains.includes(obj.domain);
 }
 
 /**
@@ -1539,15 +1582,25 @@ export class OllamaProvider implements AIProvider {
   ): Promise<ClassificationResult> {
     void activeContext;
 
+    const manifestPromptEnabled = isManifestClassifierPromptEnabled();
+    const classificationDomains = manifestPromptEnabled
+      ? getManifestValidClassificationDomains()
+      : VALID_DOMAINS;
+
     // O3-A14: prefer the compact (<400-token) classifier prompt when set.
     // Falls back to the long Gemini prompt+hardening suffix when the
     // compact prompt is not provided (back-compat for tests / non-classifier
     // model use). The compact prompt is the path that lets a small
     // dedicated classifier model run sub-3s on this CPU.
-    const compact = getOllamaClassifierSystemPromptCompact();
+    // Compact prompts encode only the five legacy domains. Never use them
+    // while the manifest prompt is active because their output contract
+    // contradicts the declared `clarify` / `none` outcomes.
+    const compact = manifestPromptEnabled ? null : getOllamaClassifierSystemPromptCompact();
     const sys = compact
       ? compact
-      : `${getClassifierSystemPrompt()}\n\n${CLASSIFY_HARDENING_SUFFIX}`;
+      : `${getClassifierSystemPrompt()}\n\n${manifestPromptEnabled
+        ? buildManifestClassifyHardeningSuffix(classificationDomains)
+        : CLASSIFY_HARDENING_SUFFIX}`;
     enforceInputTokenCap('classify', [sys, message]);
 
     // O3-A14: classifier-specific request body knobs. Defaults sized for
@@ -1560,7 +1613,9 @@ export class OllamaProvider implements AIProvider {
     const baseRequest = {
       model: config.ollama.classifierModel,
       think: false,
-      format: CLASSIFICATION_JSON_SCHEMA,
+      format: manifestPromptEnabled
+        ? buildManifestClassificationJsonSchema(classificationDomains)
+        : CLASSIFICATION_JSON_SCHEMA,
       stream: false as const,
       keep_alive: -1,
       options: {
@@ -1587,10 +1642,13 @@ export class OllamaProvider implements AIProvider {
             { role: 'system', content: sys },
             { role: 'user', content: message },
             { role: 'assistant', content: lastBadText.slice(0, 400) },
-            { role: 'user', content:
-              `Your previous reply did not match the schema. The "domain" value MUST be EXACTLY one of: ` +
-              `${VALID_DOMAINS.join(', ')}. The "confidence" field is REQUIRED. ` +
-              `Return ONLY JSON of shape: {"domain":"<one of the 5>","confidence":<0..1>}.`,
+            { role: 'user', content: manifestPromptEnabled
+              ? `Your previous reply did not match the schema. The "domain" value MUST be EXACTLY one of: ` +
+                `${classificationDomains.join(', ')}. The "confidence" field is REQUIRED. ` +
+                `Return ONLY JSON of shape: {"domain":"<allowed value>","confidence":<0..1>}.`
+              : `Your previous reply did not match the schema. The "domain" value MUST be EXACTLY one of: ` +
+                `${VALID_DOMAINS.join(', ')}. The "confidence" field is REQUIRED. ` +
+                `Return ONLY JSON of shape: {"domain":"<one of the 5>","confidence":<0..1>}.`,
             },
           ];
 
@@ -1623,7 +1681,11 @@ export class OllamaProvider implements AIProvider {
         if (attempt === 0) continue;
         throw new LocalLLMError('invalid_json', { taskType: 'classify', body: text.slice(0, 400) });
       }
-      if (isValidClassificationPayload(parsed)) return parsed;
+      if (isValidClassificationPayload(parsed, classificationDomains)) {
+        const disposition = resolveManifestClassifierDisposition(parsed.domain);
+        if (disposition) return { domain: disposition, confidence: parsed.confidence };
+        return parsed;
+      }
 
       // Schema mismatch — try the normalizer before giving up on this attempt.
       const normalized = normalizeClassificationPayload(parsed);

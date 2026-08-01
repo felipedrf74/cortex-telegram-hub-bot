@@ -362,6 +362,45 @@ describe('OpenAIProvider', () => {
       expect(result).toEqual({ domain: 'secretary', confidence: 0.3 });
     });
 
+    it.each(['clarify', 'none'] as const)(
+      'preserves a low-confidence manifest %s outcome before the legacy secretary fallback',
+      async (domain) => {
+        const savedFlag = process.env.AI_CLASSIFY_MANIFEST_PROMPT;
+        const savedKill = process.env.AI_ROUTING_MANIFEST_KILL;
+        process.env.AI_CLASSIFY_MANIFEST_PROMPT = 'true';
+        delete process.env.AI_ROUTING_MANIFEST_KILL;
+        try {
+          mockChatResponse(JSON.stringify({ domain, confidence: 0.3 }));
+
+          await expect(provider.classify('ambiguous request')).resolves.toEqual({
+            domain,
+            confidence: 0.3,
+          });
+        } finally {
+          if (savedFlag === undefined) delete process.env.AI_CLASSIFY_MANIFEST_PROMPT;
+          else process.env.AI_CLASSIFY_MANIFEST_PROMPT = savedFlag;
+          if (savedKill === undefined) delete process.env.AI_ROUTING_MANIFEST_KILL;
+          else process.env.AI_ROUTING_MANIFEST_KILL = savedKill;
+        }
+      },
+    );
+
+    it('keeps the flag-off low-confidence fallback byte-compatible for a stray special label', async () => {
+      const savedFlag = process.env.AI_CLASSIFY_MANIFEST_PROMPT;
+      delete process.env.AI_CLASSIFY_MANIFEST_PROMPT;
+      try {
+        mockChatResponse('{"domain":"clarify","confidence":0.3}');
+
+        await expect(provider.classify('ambiguous request')).resolves.toEqual({
+          domain: 'secretary',
+          confidence: 0.3,
+        });
+      } finally {
+        if (savedFlag === undefined) delete process.env.AI_CLASSIFY_MANIFEST_PROMPT;
+        else process.env.AI_CLASSIFY_MANIFEST_PROMPT = savedFlag;
+      }
+    });
+
     it('passes active context to the classifier prompt', async () => {
       mockChatResponse('{"domain":"secretary","confidence":0.85}');
 

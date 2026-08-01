@@ -338,6 +338,19 @@ export interface ClassifyOptions {
   recordUsage?: boolean;
   timeoutMs?: number;
   abortSignal?: AbortSignal;
+  /**
+   * Governed evaluation-only retry ceiling. The sole supported value is 1,
+   * meaning one concrete provider attempt and no provider retry. Runtime/live
+   * callers cannot use this to alter their normal retry policy.
+   */
+  maxProviderAttempts?: 1;
+  /**
+   * Governed evaluation-only provenance control. When true alongside
+   * `source: 'evaluation'`, provider, parse, and response-shape failures must
+   * reject with a stable sanitized error instead of returning a live fallback.
+   * Runtime and shadow callers cannot use this to change fallback behavior.
+   */
+  failClosedOnError?: true;
 }
 
 export interface AIProvider {

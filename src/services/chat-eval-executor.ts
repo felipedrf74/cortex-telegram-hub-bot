@@ -271,6 +271,12 @@ export class HttpExecutor implements ChatTurnExecutor {
     ) {
       throw new Error('Chat eval preflight did not attest the governed run contract');
     }
+    // Paid evidence must name the artifact that served it. Only the deployed
+    // process can attest that, so refuse a real-provider run whose server did
+    // not report a verified staging release identity.
+    if (this.mode === 'real_provider' && !isAttestedStagingRelease(data.deployedRelease)) {
+      throw new Error('Chat eval preflight did not attest a deployed staging release identity');
+    }
     return data;
   }
 
@@ -396,6 +402,17 @@ function buildQueryString(params: Record<string, unknown>): string {
     query.set(key, String(value));
   }
   return query.toString();
+}
+
+/** A preflight identity is usable evidence only if it is complete and staging. */
+function isAttestedStagingRelease(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const identity = value as Record<string, unknown>;
+  return typeof identity.runtimeSha === 'string'
+    && /^[a-f0-9]{40}$/.test(identity.runtimeSha)
+    && typeof identity.artifactDigest === 'string'
+    && /^[a-f0-9]{64}$/.test(identity.artifactDigest)
+    && identity.role === 'staging';
 }
 
 function buildFetchRequestFn(baseUrl: string): ChatEvalRequestFn {

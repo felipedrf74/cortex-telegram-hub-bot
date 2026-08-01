@@ -5,6 +5,7 @@ import {
   evaluateChatCoreV2ShadowGateReadiness,
   runChatCoreV2ShadowRouteHook,
 } from '../../src/services/chat-core-v2';
+import { buildRoutingDivergenceShadowRecord } from '../../src/services/intent-resolution/divergence-shadow';
 import { incrementSchemaCompliance } from '../../src/services/chat-core-v2/autorevert-counters-store';
 
 let db: Database.Database;
@@ -149,5 +150,144 @@ describe('Chat Core v2 shadow gate readiness', () => {
     expect(readiness.safeShapeViolationCount).toBe(1);
     expect(readiness.meetsSafeShape).toBe(false);
     expect(readiness.gateMet).toBe(false);
+  });
+
+  it('accepts only the exact candidate-bound routing-divergence identity shape', () => {
+    seedSafeShadowTurns(1);
+    seedPlannerSchemaCompliance(50);
+
+    const baseDivergence = {
+      divergenceVersion: 'routing_divergence_shadow@2.0.0',
+      resolverVersion: 'manifest-intent-resolver@1.0.0',
+      releaseIdentity: {
+        runtimeSha: 'a'.repeat(40),
+        artifactDigest: 'b'.repeat(64),
+        role: 'staging',
+      },
+      topCandidate: {
+        capabilityId: 'secretary',
+        domain: 'secretary',
+        skill: 'create_task',
+        rawScore: 2,
+        matchedEvidenceCount: 2,
+      },
+      candidateCount: 1,
+      surfaces: {
+        classifierKeywordDomain: 'secretary',
+        orchestratorPrimaryDomain: 'secretary',
+        registryActionSkills: ['tasks'],
+        shadowRouteIntent: 'create_action',
+        shadowRouteDomains: ['tasks'],
+      },
+      agreement: {
+        classifierKeyword: true,
+        orchestratorPrimary: true,
+        registrySubset: true,
+        shadowRoute: true,
+      },
+    };
+    const insert = db.prepare(
+      `INSERT INTO chat_v2_replay_bundles
+        (replay_bundle_id, turn_id, sensitivity, retention_policy, redacted_bundle_json, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    );
+    const bundle = (routingDivergence: unknown) => JSON.stringify({
+      response: {
+        type: 'chat_core_v2_shadow_plan',
+        routeMethod: 'llm_command_translation',
+        wouldExecute: false,
+      },
+      contextPack: {
+        hashVersion: 'hmac_sha256@1',
+        messageHash: 'c'.repeat(64),
+        routingDivergence,
+      },
+    });
+
+    insert.run(
+      'chatv2-shadow-replay:candidate-bound-safe',
+      'candidate-bound-safe',
+      'normal',
+      '90d',
+      bundle(baseDivergence),
+      '2026-05-29T12:00:00.000Z',
+    );
+    insert.run(
+      'chatv2-shadow-replay:candidate-bound-extra-key',
+      'candidate-bound-extra-key',
+      'normal',
+      '90d',
+      bundle({
+        ...baseDivergence,
+        releaseIdentity: {
+          ...baseDivergence.releaseIdentity,
+          deploymentLabel: 'untrusted-extra-field',
+        },
+      }),
+      '2026-05-29T12:00:01.000Z',
+    );
+    insert.run(
+      'chatv2-shadow-replay:candidate-bound-invalid-role',
+      'candidate-bound-invalid-role',
+      'normal',
+      '90d',
+      bundle({
+        ...baseDivergence,
+        releaseIdentity: { ...baseDivergence.releaseIdentity, role: 'development' },
+      }),
+      '2026-05-29T12:00:02.000Z',
+    );
+
+    const readiness = evaluateChatCoreV2ShadowGateReadiness(db);
+    expect(readiness.rowCount).toBe(4);
+    expect(readiness.safeShapeViolationCount).toBe(2);
+    expect(readiness.meetsSafeShape).toBe(false);
+  });
+
+  it('accepts a divergence record actually produced by the shadow builder', () => {
+    // Round-trip guard: the readiness allowlist and the record the runtime
+    // emits must evolve together. Hand-built fixtures cannot catch a new
+    // producer field, which silently turns every real bundle into a shape
+    // violation and empties the Phase 7.1 evidence set.
+    const produced = buildRoutingDivergenceShadowRecord(
+      'add milk to my shopping list',
+      { intent: 'create_action', domains: ['tasks'] },
+      {
+        env: {
+          NEXUS_RELEASE_SHA: 'a'.repeat(40),
+          NEXUS_RELEASE_ARTIFACT_SHA256: 'b'.repeat(64),
+          NEXUS_RELEASE_ROLE: 'staging',
+        },
+      },
+    );
+
+    // One real hook turn creates the replay schema; the produced record is
+    // then stored through the same column contract the runtime uses.
+    seedSafeShadowTurns(1);
+    db.prepare(
+      `INSERT INTO chat_v2_replay_bundles
+        (replay_bundle_id, turn_id, sensitivity, retention_policy, redacted_bundle_json, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(
+      'chatv2-shadow-replay:produced-record',
+      'produced-record',
+      'normal',
+      '30d',
+      JSON.stringify({
+        response: {
+          type: 'chat_core_v2_shadow_plan',
+          routeMethod: 'llm_command_translation',
+          wouldExecute: false,
+        },
+        contextPack: {
+          hashVersion: 'hmac_sha256@1',
+          messageHash: 'c'.repeat(64),
+          routingDivergence: produced,
+        },
+      }),
+      '2026-05-30T11:00:00.000Z',
+    );
+
+    expect(evaluateChatCoreV2ShadowGateReadiness(db).safeShapeViolationCount).toBe(0);
   });
 });

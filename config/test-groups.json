@@ -1,5 +1,5 @@
 {
-  "version": "2026-07-30.1",
+  "version": "2026-07-31.2",
   "core": {
     "targetSeconds": 30,
     "tests": [
@@ -727,6 +727,7 @@
         "src/services/chat/**",
         "src/services/chat-*.ts",
         "src/services/chat-core-v2/**",
+        "src/services/release-runtime-identity.ts",
         "src/services/chatv2-*.ts",
         "src/services/classify-shadow.ts",
         "src/services/conflict-resolver.ts",
@@ -734,6 +735,7 @@
         "src/services/intelligence-bus.ts",
         "src/services/intent-resolution/**",
         "src/services/reply-language-normalizer.ts",
+        "src/services/routing-action-skill-accuracy.ts",
         "src/services/routing-accuracy.ts",
         "src/services/routing-corpus-*.ts",
         "src/services/routing-corpus.ts",
@@ -1065,6 +1067,7 @@
         "src/services/migration-runner.ts",
         "src/services/operator-alerts.ts",
         "src/services/pm2-health.ts",
+        "src/services/release-runtime-identity.ts",
         "package.json",
         "package-lock.json",
         "tsconfig.json",
@@ -1084,7 +1087,8 @@
         "__tests__/scripts/release-runtime-dependencies.test.ts",
         "__tests__/scripts/risk-gate.test.ts",
         "__tests__/scripts/test-tier-governance.test.ts",
-        "__tests__/services/python-engine-hardening.test.ts"
+        "__tests__/services/python-engine-hardening.test.ts",
+        "__tests__/services/release-runtime-identity.test.ts"
       ],
       "contracts": [
         "__tests__/scripts/changed-area-classifier.test.ts",

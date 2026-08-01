@@ -59,6 +59,7 @@ import {
   resolveChatLiveEvalRequest,
 } from '../../services/chat-live-evaluation-contract';
 import { runWithChatLiveEvalContext } from '../../services/chat-live-evaluation-context';
+import { assertChatLiveEvalRealProviderReadiness } from '../../services/chat-live-evaluation-readiness';
 import { isPrivateDockerGatewayRequest } from './chat-eval-routes';
 import {
   buildChatCoreV2GuardOnlyConfirmationLabels,
@@ -441,6 +442,7 @@ export function registerChatMessageRoutes(
             isLocalDockerGateway: isPrivateDockerGatewayRequest(req),
           })
         : null;
+      if (liveEvalContext) assertChatLiveEvalRealProviderReadiness(liveEvalContext);
     } catch (error) {
       if (error instanceof ChatLiveEvalContractError) {
         res.status(error.status).json({ error: { code: error.code, message: error.message } });

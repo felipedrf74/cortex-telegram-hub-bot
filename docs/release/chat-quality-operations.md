@@ -2,7 +2,7 @@
 
 Status: current
 Owner: Felipe
-Last verified: 2026-07-30
+Last verified: 2026-07-31
 
 One page for operating the production chat-quality loop (M22).
 
@@ -176,6 +176,15 @@ One page for operating the production chat-quality loop (M22).
 - The first live baseline runs only on staging against a dedicated synthetic
   user/tenant. Set the staging server's `CHAT_EVAL_DEDICATED_TENANT_ID` to that
   account's shared user/tenant id; its principal email must end in `.invalid`.
+  Keep this account exclusive to governed chat evaluation. `users.tier` is not
+  an entitlement, and `staging_fixture`, `beta`, `manual`, or `beta_sandbox`
+  subscriptions do not qualify for paid evaluation. Use the existing
+  admin-authenticated `POST /api/founders` grant with `plan=max` for this
+  synthetic staging principal; never invent Apple/Stripe billing data. The
+  authenticated preflight and every reset/turn/evidence request fail closed
+  unless the canonical entitlement still allows paid AI plus every scenario
+  capability and action surface. Generic fixture reseeding can replace that
+  subscription, so re-check the grant after any reseed and before spend.
   Put its bearer token in the operator shell as `CHAT_EVAL_AUTH_TOKEN`, never
   in argv or evidence. Run from a clean checkout with exactly:
 
@@ -239,9 +248,31 @@ One page for operating the production chat-quality loop (M22).
   {
     "runId": "<run-id>",
     "evidenceJsonPath": "docs/release/eval-evidence/<run-id>.json",
-    "evidenceMarkdownPath": "docs/release/eval-evidence/<run-id>.md"
+    "evidenceMarkdownPath": "docs/release/eval-evidence/<run-id>.md",
+    "evidenceJsonSha256": "<sha256 of that json file>",
+    "evidenceMarkdownSha256": "<sha256 of that md file>"
   }
   ```
+
+  The two digests are mandatory and recorded immutably, so the baseline is
+  pinned to exact bytes any reviewer can re-verify from Git. `docs/` is not part
+  of the release artifact, so the server cannot read the files itself; what it
+  does verify on its own is stronger than a path string. It recomputes
+  `scenario_count`, `pass_count`, `partial_count`, `fail_count`,
+  `blocked_count`, and `average_score` from the persisted per-scenario rows and
+  refuses any run whose declared aggregates disagree with the evidence they
+  summarise, and it refuses archive paths that differ from the report paths the
+  run itself recorded when it posted. Produce the digests with
+  `shasum -a 256 docs/release/eval-evidence/<run-id>.{json,md}`.
+
+  Acceptance also records a `provenanceClass`. A run whose authenticated
+  preflight carried a verified deployed staging identity freezes as
+  `deployed_artifact_attested`. A run without one — only the pre-binding first
+  baseline can be in that state, since paid evaluation now fails closed without
+  a server-attested identity — is refused unless the request explicitly adds
+  `"acknowledgeOperatorCheckoutProvenance": true`. That acknowledgement is
+  stored immutably and surfaced on `/chat-quality`, so a reduced-provenance
+  baseline can never later be cited as artifact-bound evidence.
 
   Until acceptance, dashboard/digest state is `not_recorded` and quality
   deltas are unavailable. Later real-provider runs get numeric deltas only
@@ -294,6 +325,225 @@ One page for operating the production chat-quality loop (M22).
    authored during this implementation; it cannot qualify retirement evidence.
 6. If readiness, signed-behavior, or route-fallback regressions fired, stop the affected soak
    and follow the alert runbook link before any further ChatV2 promotion.
+
+## Phase 7 capability-flag rollout checklist
+
+Run this checklist in order and roll out exactly one flag at a time. A passing
+gate authorizes only its named flag and exact release candidate; it is not
+evidence for a later candidate or another surface. Begin every candidate with
+all seven capability flags OFF:
+
+```text
+AI_ROUTING_MANIFEST_CLASSIFIER=false
+AI_ROUTING_MANIFEST_ORCHESTRATOR=false
+AI_ROUTING_MANIFEST_SHADOW=false
+AI_ROUTING_MANIFEST_REGISTRY=false
+AI_ROUTING_CLARIFY=false
+AI_CLASSIFY_MANIFEST_PROMPT=false
+AI_CROSS_SKILL_EXECUTION=false
+```
+
+After a flag completes its authorized rollout it may remain ON for the next
+step. Only one new flag may change at a time, and every not-yet-authorized flag
+stays OFF. Record the complete effective flag set with each gate and smoke so
+the cumulative configuration is reproducible.
+
+`AI_ROUTING_MANIFEST_KILL` defaults OFF but must remain available as the master
+rollback. Setting it to `true` force-disables all seven capabilities even if a
+per-capability flag remains configured ON. Never use the kill switch as a way
+to manufacture flag-off gate evidence.
+
+For each candidate, create an ignored operator directory such as
+`.local/release/chat-quality/phase7/<runtime-sha>-<artifact-prefix>/<NN>-<flag>/`
+and retain the completed staging transaction, exact 40-hex runtime SHA, exact
+64-hex artifact digest, gate JSON, flag-state receipt, smoke result, and
+before/after monitoring snapshots there. Do not commit raw staging databases,
+tokens, HMAC secrets, prompts containing user data, or provider responses.
+Before collecting shadow evidence, verify through the deployment secret
+boundary that `CHAT_CORE_V2_SHADOW_ROUTE_HMAC_SECRET` is present for replay
+bundle identities and `CLASSIFY_SHADOW_HASH_SECRET` is present for classifier
+shadow/corpus identities. Record presence only, never either value. Missing
+HMAC configuration means no eligible evidence.
+
+### 7.1 Manifest-routing surfaces
+
+Use this fixed readiness order and exact flag-to-telemetry mapping:
+
+| Order | Flag | Selected divergence surface |
+| --- | --- | --- |
+| 1 | `AI_ROUTING_MANIFEST_CLASSIFIER` | `classifierKeyword` |
+| 2 | `AI_ROUTING_MANIFEST_ORCHESTRATOR` | `orchestratorPrimary` |
+| 3 | `AI_ROUTING_MANIFEST_SHADOW` | `shadowRoute` |
+| 4 | `AI_ROUTING_MANIFEST_REGISTRY` | `registrySubset` |
+
+Before traffic collection, Felipe selects and records one positive integer as
+the minimum comparison count for that surface. Do not lower it after seeing
+the report. Record one canonical UTC start timestamp after the exact candidate
+is healthy on staging. With the selected flag still OFF (and only previously
+authorized flags, if any, ON), collect staging shadow traffic and run the
+selected surface gate:
+
+```text
+node scripts/routing-divergence-report.mjs \
+  --db=<staging-db> \
+  --surface=<selected-surface-from-table> \
+  --minimum-comparisons=<owner-selected-positive-integer> \
+  --since=<YYYY-MM-DDTHH:mm:ss.sssZ> \
+  --runtime-sha=<deployed-full-40-hex-sha> \
+  --artifact-digest=<deployed-full-64-hex-sha256> \
+  --environment=staging \
+  --divergence-version=<candidate-divergence-version> \
+  --resolver-version=<candidate-resolver-version> \
+  --gate \
+  --json
+```
+
+Save stdout as `divergence-gate.json` in that flag's evidence directory. PASS
+requires at least the preselected comparison count and agreement of at least
+0.99 on the one selected surface. The report must echo the exact runtime SHA,
+artifact digest, `staging` environment, telemetry versions, surface, minimum,
+and candidate window; invalid, missing-identity, version-mismatched, or
+other-candidate bundles never count. Zero eligible comparisons is a failure,
+not an empty pass. Never use an unbounded or all-surface aggregate to authorize
+a per-surface flip.
+
+After PASS, enable only the matching flag on staging, verify health and the
+normal staging smoke, and watch `/chat-quality` plus the five-minute quality
+monitor. An owner-authorized production flip must preserve the same one-flag
+scope. Record the production flag receipt and after-flip health before moving
+to the next table row. On any routing, safety, health, or quality regression,
+set that flag OFF and stop the sequence; use
+`AI_ROUTING_MANIFEST_KILL=true` only when all manifest capabilities must be
+disabled immediately.
+
+### 7.2 Routing clarification
+
+Do not start until the Phase 4 corpus calibration is committed and deployed.
+Capture the authenticated `/api/portal/chat-quality` JSON before the staging
+flip, enable only `AI_ROUTING_CLARIFY=true`, and capture it again after real
+staging test traffic. The after snapshot must show
+`routingClarifyBudget.evaluatedTurns > 0`, a non-null rate no greater than
+`0.10`, and `withinBudget === true`. Zero evaluated turns, a null rate, or
+missing durable counters is no evidence and blocks the flip. Also review the
+actual clarification outcomes for safety and usefulness; the numeric budget
+alone is not a quality pass. Store the before/after redacted JSON and staging
+smoke receipt in the flag evidence directory.
+
+Promote only with owner authorization. If the rate exceeds 10%, the counters
+become unavailable, or clarification behavior regresses, set
+`AI_ROUTING_CLARIFY=false`, verify health, and stop before the next flag. The
+master kill is the emergency all-capability rollback.
+
+### 7.3 Manifest classifier prompt
+
+`AI_CLASSIFY_MANIFEST_PROMPT` stays OFF until the pinned newly-reachable
+executor/runtime-guard tests pass, the boot guard reports ready, and the
+separate 300-row action-skill gate passes. Domain-routing accuracy is not a
+substitute for this gate. Preserve three machine-readable receipts under the
+flag evidence directory:
+
+1. `inspect-plan.json`: provider-free `--inspect` output bound to the exact
+   corpus identity, prompt SHA-256, request-builder version, runtime SHA,
+   artifact digest, selected rows, model, attempt ceiling, hard budget, and
+   immutable release run id, next `planSequence`, and `planDigest`.
+2. `apply-receipt.json`: the one owner-authorized `--apply` result for exactly
+   that acknowledged plan digest and cap, including runtime/artifact identity,
+   run id, backup, attempted/cached counts, remaining count, and actual spend.
+3. `action-skill-gate.json`: the zero-provider gate output produced with one
+   operator-recorded canonical `generatedAt`. Reuse that exact timestamp on a
+   retry; do not let a retry silently create a different report identity.
+
+Run the inspect/apply commands exactly as specified in **Owner-gated steps**
+below, redirecting their JSON to the first two receipts. Then run:
+
+```text
+npx tsx scripts/run-routing-action-skill-accuracy.ts \
+  --db=<exact-evidence-bound-db> \
+  --runtime-sha=<deployed-full-40-hex-sha> \
+  --artifact-digest=<deployed-full-64-hex-sha256> \
+  --generated-at=<recorded-YYYY-MM-DDTHH:mm:ss.sssZ> \
+  --gate
+```
+
+Save stdout as `action-skill-gate.json`. PASS requires exactly 300 labeled
+rows, 300 exact-bound cache rows, and at least 0.95 overall action-skill
+agreement. A `clarify` or `none` row is correct only when its predicted domain
+is that exact special label and its predicted skill is null. This gate is
+cache-only and must record zero provider calls. Check
+that the gate's corpus, prompt, request-builder, provider/model, and usage
+attribution identities match the inspect/apply receipts before enabling only
+`AI_CLASSIFY_MANIFEST_PROMPT=true` on staging. After staging health and chat
+quality remain sound, obtain owner authorization for the production flip. On
+boot-guard failure, skill-routing regression, provider-budget anomaly, or
+quality regression, set the flag OFF and stop; the master kill remains the
+emergency rollback.
+
+An interrupted, partial, or failed apply consumes that exact plan claim; never
+replay its digest. Re-run `--inspect` to produce the next `planSequence` and a
+new digest over the remaining rows, obtain fresh exact owner approval, and
+apply it under the same immutable release run id and original shared hard
+budget. A changed runtime, artifact, prompt/provenance identity, or budget is a
+new release operation, not a resume.
+
+### 7.4 Cross-skill execution
+
+The `training_plan_create` registry row deliberately keeps ordinary
+`outputRefs` absent: its UI handoff is `verified_pending`, not a verified
+producer for dependent steps. Verify that invariant against the exact staging
+candidate with a dedicated synthetic staging user and rich cross-skill fixture.
+Run from the unpacked candidate release with
+`AI_CROSS_SKILL_EXECUTION=true` as the only newly changed flag:
+
+```text
+STAGING=true \
+TRAINING_CROSS_SKILL_STAGING_SMOKE=1 \
+TRAINING_CROSS_SKILL_STAGING_USER_ID=<dedicated-staging-user-id> \
+DATABASE_PATH=<staging-db> \
+NEXUS_RELEASE_ROLE=staging \
+NEXUS_RELEASE_BASE_DIR=<staging-release-base-dir> \
+AI_ROUTING_MANIFEST_KILL=false \
+AI_CROSS_SKILL_EXECUTION=true \
+./scripts/training-cross-skill-staging-smoke.sh
+```
+
+The wrapper verifies every declared byte in the installed release against its
+`artifact-manifest.json` and `.complete.json`, derives the full runtime SHA and
+artifact digest from that verification, and exports those verified values to
+the smoke process. It rejects a mismatched `NEXUS_RELEASE_DIR` or any supplied
+identity that differs from the verified bytes. It never trusts stale `dist/`:
+an installed release uses its verified immutable build, while local `--dry-run`
+mode rebuilds before deriving a non-evidentiary source-manifest identity.
+Both the Markdown report and JSON receipt are written under
+`<staging-release-base-dir>/.local/release/smoke-evidence/`, outside the
+immutable release tree.
+
+The command fails closed unless the release identity verifies, staging is
+explicit, the isolated user/database guards pass, the flag is effectively ON,
+and the master kill is OFF. Its exit codes are distinct so a hard refusal can
+never be read as an intentional skip: `0` pass, `1` smoke failure, `2` the
+staging runtime section intentionally blocked by design in local `--dry-run`,
+and `3` a guard or release-identity refusal. Treat `3` as a hard failure.
+Non-installed callers (`scripts/closed-beta-smoke.sh` leg 5 and
+`npm run smoke:training-cross-skill:staging`) run `--dry-run` and are
+fixture-only; their receipts carry a non-evidentiary marker and are never
+staging proof. A valid result has no `blocked` or `fail` row and
+records `phase7_cross_skill_flag_contract=pass`. Its evidence must include the
+real manifest ownership rewrite, the Training + Secretary grouped preview, the
+flag-on-only planner-decline boundary, the executor's zero-action confirmation
+hold with zero executor/dependency access, the dedicated staging identity used
+for both user and tenant scope, and `training_plan_create.outputRefs=absent`.
+The wrapper also writes a
+full-runtime-SHA + full-artifact-digest JSON receipt under `.local/release/smoke-evidence/`;
+the receipt also records the staging role. Retain it with the full-identity
+Markdown report and staging transaction. Fixture-only or `--dry-run` output
+is never staging proof.
+
+Review grouped previews, decline behavior, tenant/user scope, and the
+`/chat-quality` dashboard before the owner-authorized production flip. If a
+dependent step consumes an unverified Training handoff, a scope check fails,
+or chat quality/health regresses, set `AI_CROSS_SKILL_EXECUTION=false`, verify
+health, and stop. Do not add `training_plan_create.outputRefs` during rollout;
+that requires a separately tested verified-success executor contract.
 
 ## Owner-gated steps (human decisions never automated)
 
@@ -409,7 +659,7 @@ One page for operating the production chat-quality loop (M22).
   builder 1.2 adds the 76 owner-reviewable product-profile controls for the exact
   300-row assisted-review set.
 - `npx tsx scripts/run-routing-accuracy.ts --refresh-llm` (the only networked
-  routing-accuracy path).
+  domain-routing-accuracy path).
 - `npx tsx scripts/run-routing-accuracy.ts --gate --accept-snapshot`
   (ratchet acceptance), with `NEXUS_RELEASE_OWNER_AUTHORIZED=1` set only after
   Felipe approves that acceptance. Standalone `--accept-snapshot` is refused.
@@ -427,8 +677,91 @@ One page for operating the production chat-quality loop (M22).
   `routing-accuracy@1.1.0` scores domain routing only. Its action-skill counts
   prove label coverage, not skill-routing accuracy. Do not cite the Phase 4
   snapshot as evidence that action-skill routing passed. Before
-  `AI_CLASSIFY_MANIFEST_PROMPT` can flip in Phase 7, add and pass the separate
-  action-skill prediction/agreement evaluator for the now-labeled corpus.
+  `AI_CLASSIFY_MANIFEST_PROMPT` can flip in Phase 7, populate and pass the
+  separate manifest-prompt action-skill evaluator for the now-labeled corpus.
+  Its cache is deliberately independent of `routing_llm_classify_cache` and
+  accepted domain snapshots.
+
+  First produce a provider-free plan on the exact deployed database and
+  release identity:
+
+  ```text
+  npx tsx scripts/refresh-routing-action-skill-cache.ts --inspect \
+    --db=<deployed-db> \
+    --prompt=prompts/classifier-manifest.md \
+    --runtime-sha=<deployed-full-sha> \
+    --artifact-digest=<deployed-artifact-sha256> \
+    --limit=300 \
+    --budget-usd=<hard-cap-at-or-above-the-reported-attempt-ceiling>
+  ```
+
+  The redacted plan binds the corpus identity, prompt bytes, every request
+  digest, Gemini 2.5 Flash-Lite, the 256-token output cap, release identity,
+  selected rows, hard budget, and aggregate provider-attempt cost ceiling.
+  It refuses a non-finite ceiling, a ceiling above the supplied cap, a cap
+  above USD 0.50, or any model other than the configured Flash-Lite model.
+  Provider work is a separate owner-authorized mutation. After Felipe approves
+  the exact plan digest and cap, apply that unchanged plan from an owner-only
+  backup directory:
+
+  ```text
+  NEXUS_RELEASE_OWNER_AUTHORIZED=1 \
+  npx tsx scripts/refresh-routing-action-skill-cache.ts --apply \
+    --db=<deployed-db> \
+    --prompt=prompts/classifier-manifest.md \
+    --runtime-sha=<deployed-full-sha> \
+    --artifact-digest=<deployed-artifact-sha256> \
+    --limit=300 \
+    --budget-usd=<approved-hard-cap> \
+    --backup-dir=<protected-backup-directory> \
+    --ack-plan=<sha256:approved-plan-digest>
+  ```
+
+  Apply refuses before backup or provider access unless authorization and the
+  plan acknowledgement are exact. It creates and verifies a `0700` directory
+  and `0600` SQLite backup, re-inspects state, refuses the master kill or a
+  failed manifest runtime guard, proves the active provider prompt is
+  byte-identical to the inspected artifact, and calls Gemini directly with one
+  provider attempt per selected row and no fallback. A prediction is retained
+  only when exactly one successful `api_usage` row matches provider, model,
+  category, run, and the `system` / `routing_action_skill_cache_refresh`
+  attribution. An interrupted, partial, or failed apply consumes its exact
+  plan claim; never replay that digest. Inspect the remaining rows to obtain
+  the next `planSequence` and new digest, get fresh exact owner approval, and
+  apply under the same immutable release run id and original shared hard
+  budget. Raw prompts and provider responses are not emitted or stored. Each
+  item gets one short canonical budget reservation, so a full-corpus pass does
+  not hold the shared system-AI lock while hundreds of sequential calls run.
+
+  Then run the zero-provider gate with one recorded canonical timestamp:
+
+  ```text
+  npx tsx scripts/run-routing-action-skill-accuracy.ts \
+    --db=<deployed-db> \
+    --runtime-sha=<deployed-full-sha> \
+    --artifact-digest=<deployed-artifact-sha256> \
+    --generated-at=<YYYY-MM-DDTHH:mm:ss.sssZ> \
+    --gate
+  ```
+
+  The gate requires the exact 300 labeled rows, 300 exact-bound cache rows,
+  and overall action-skill agreement of at least 0.95. `clarify` and `none`
+  controls pass only when the predicted domain exactly matches that special
+  label and the predicted skill is null; a generic skill abstention is not
+  correct. Per-skill precision and recall are diagnostics, not additional
+  invented rollout thresholds. This command is read-only, never calls a
+  provider, and has no snapshot-acceptance mutation.
+- Every manifest-routing surface flip. Follow **Phase 7.1** with the exact
+  selected surface, candidate identity, canonical window, telemetry versions,
+  and owner-selected minimum comparison count. Authorization never transfers
+  to another surface or candidate.
+- Phase 7 keeps `training_plan_create.outputRefs` absent when
+  `AI_CROSS_SKILL_EXECUTION` flips. The real training builder is a UI handoff
+  with `verified_pending`, while dependent plan steps require
+  `verified_success`; advertising `plan.title` would create a dependency that
+  cannot execute. Other verified-success producers remain eligible. Revisit
+  the training row only after its executor returns a verified plan and a real
+  producer-to-dependent regression passes.
 - Generate the first corpus calibration only from an evidence-bound,
   routing-only export. Never copy the full production database to a developer
   machine. While holding both the release and Sonar locks, verify the exact

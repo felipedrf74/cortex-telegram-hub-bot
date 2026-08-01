@@ -5,6 +5,13 @@ const { parse: parseDotenv } = require('dotenv');
 const releaseDir = process.env.NEXUS_RELEASE_DIR;
 if (!releaseDir) throw new Error('NEXUS_RELEASE_DIR is required');
 const role = process.env.NEXUS_RELEASE_ROLE || 'staging';
+// The role is part of the release identity the runtime attests (see
+// src/services/release-runtime-identity.ts). A role this file cannot forward as
+// a recognised value would deploy a process whose identity reads fail closed,
+// so refuse it here instead of shipping silently unattested telemetry.
+if (role !== 'staging' && role !== 'production') {
+  throw new Error(`NEXUS_RELEASE_ROLE must be staging or production, received ${role}`);
+}
 const staging = role === 'staging';
 const baseDir = process.env.NEXUS_RELEASE_BASE_DIR
   || (staging
@@ -68,6 +75,11 @@ module.exports = {
       NEXUS_BACKEND_BASE_URL: `http://127.0.0.1:${backendPort}`,
       NEXUS_BACKEND_PORT: backendPort,
       DATABASE_PATH: path.join(baseDir, 'data/bot.db'),
+      // The release-transaction environment is not inherited by PM2-managed
+      // processes, so every field of the attested release identity has to be
+      // forwarded explicitly. Dropping the role leaves the runtime unable to
+      // attest itself and silently disables identity-bound shadow telemetry.
+      NEXUS_RELEASE_ROLE: role,
       NEXUS_RELEASE_SHA: process.env.NEXUS_RELEASE_SHA || 'unknown',
       NEXUS_RELEASE_ARTIFACT_SHA256:
         process.env.NEXUS_RELEASE_ARTIFACT_SHA256 || 'unknown',
@@ -101,6 +113,7 @@ module.exports = {
       CONTENT_ENGINE_PORT: contentPort,
       NEXUS_BACKEND_BASE_URL: `http://127.0.0.1:${backendPort}`,
       NEXUS_BACKEND_PORT: backendPort,
+      NEXUS_RELEASE_ROLE: role,
       NEXUS_RELEASE_SHA: process.env.NEXUS_RELEASE_SHA || 'unknown',
       NEXUS_RELEASE_ARTIFACT_SHA256:
         process.env.NEXUS_RELEASE_ARTIFACT_SHA256 || 'unknown',
