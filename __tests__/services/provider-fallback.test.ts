@@ -290,6 +290,33 @@ describe('TaskRoutingProvider', () => {
       },
     );
 
+    it('does not escalate a normalized terminal carried on disposition rather than domain', async () => {
+      // This is the shape the runtime actually produces: classifier.ts rewrites
+      // an explicit abstention to the non-executable `chat` envelope and moves
+      // the outcome to `disposition`. The domain operand is therefore always
+      // falsy here, and only the disposition operand can stop the fallback.
+      const savedFlag = process.env.AI_CLASSIFY_MANIFEST_PROMPT;
+      const savedKill = process.env.AI_ROUTING_MANIFEST_KILL;
+      process.env.AI_CLASSIFY_MANIFEST_PROMPT = 'true';
+      delete process.env.AI_ROUTING_MANIFEST_KILL;
+      const terminal: ClassificationResult = {
+        domain: 'chat',
+        confidence: 0.2,
+        disposition: 'clarify',
+      };
+      anthropic.classify.mockResolvedValue(terminal);
+      openai.classify.mockResolvedValue({ domain: 'secretary', confidence: 0.99 });
+      try {
+        await expect(provider.classify('ambiguous request')).resolves.toEqual(terminal);
+        expect(openai.classify).not.toHaveBeenCalled();
+      } finally {
+        if (savedFlag === undefined) delete process.env.AI_CLASSIFY_MANIFEST_PROMPT;
+        else process.env.AI_CLASSIFY_MANIFEST_PROMPT = savedFlag;
+        if (savedKill === undefined) delete process.env.AI_ROUTING_MANIFEST_KILL;
+        else process.env.AI_ROUTING_MANIFEST_KILL = savedKill;
+      }
+    });
+
     it('keeps the pre-manifest flag-off confidence escalation unchanged', async () => {
       const savedFlag = process.env.AI_CLASSIFY_MANIFEST_PROMPT;
       delete process.env.AI_CLASSIFY_MANIFEST_PROMPT;

@@ -301,12 +301,6 @@ function ensureFrozenChatEvalBaselineSchema(db: Database.Database): void {
       accepted_via TEXT NOT NULL CHECK (accepted_via = 'portal_admin_token'),
       evidence_json_path TEXT NOT NULL,
       evidence_markdown_path TEXT NOT NULL,
-      evidence_json_sha256 TEXT NOT NULL CHECK (length(evidence_json_sha256) = 64),
-      evidence_markdown_sha256 TEXT NOT NULL CHECK (length(evidence_markdown_sha256) = 64),
-      provenance_class TEXT NOT NULL
-        CHECK (provenance_class IN ('deployed_artifact_attested', 'operator_checkout_only')),
-      deployed_runtime_sha TEXT CHECK (deployed_runtime_sha IS NULL OR length(deployed_runtime_sha) = 40),
-      deployed_artifact_digest TEXT CHECK (deployed_artifact_digest IS NULL OR length(deployed_artifact_digest) = 64),
       git_commit TEXT NOT NULL CHECK (length(git_commit) = 40),
       generated_at TEXT NOT NULL,
       scenario_set_hash TEXT NOT NULL CHECK (length(scenario_set_hash) = 64),
@@ -384,6 +378,39 @@ function ensureFrozenChatEvalBaselineSchema(db: Database.Database): void {
       SELECT RAISE(ABORT, 'frozen baseline scenario evidence is immutable');
     END;
   `);
+  ensureFrozenChatEvalBaselineColumns(db);
+}
+
+/**
+ * Migration 260 already created `chat_eval_frozen_baselines` on staging and
+ * production, so `CREATE TABLE IF NOT EXISTS` above is a no-op there and can
+ * never introduce a new column. Archive-digest and provenance columns must be
+ * added by ALTER, exactly like `ensureChatEvalRunEvidenceColumns` does for the
+ * runs table, or the first freeze on a real database fails with
+ * "no such column: evidence_json_sha256".
+ *
+ * The columns are declared nullable so the upgrade also succeeds on a database
+ * that already holds a frozen row: SQLite refuses `ADD COLUMN NOT NULL` without
+ * a default once any row exists. Presence is enforced ahead of every INSERT by
+ * assertBaselineArchiveDigests and resolveBaselineProvenance, which both fail
+ * closed, so the runtime contract is unchanged.
+ */
+function ensureFrozenChatEvalBaselineColumns(db: Database.Database): void {
+  const existing = new Set(
+    (db.prepare('PRAGMA table_info(chat_eval_frozen_baselines)').all() as Array<{ name: string }>)
+      .map((row) => row.name),
+  );
+  const additions: Array<[string, string]> = [
+    ['evidence_json_sha256', 'TEXT'],
+    ['evidence_markdown_sha256', 'TEXT'],
+    ['provenance_class', 'TEXT'],
+    ['deployed_runtime_sha', 'TEXT'],
+    ['deployed_artifact_digest', 'TEXT'],
+  ];
+  for (const [column, type] of additions) {
+    if (existing.has(column)) continue;
+    db.exec(`ALTER TABLE chat_eval_frozen_baselines ADD COLUMN ${column} ${type}`);
+  }
 }
 
 function ensureChatEvalRunEvidenceColumns(db: Database.Database): void {

@@ -5,6 +5,7 @@ import { ipKeyGenerator, rateLimit } from 'express-rate-limit';
 import { extractClientIp } from '../api/rate-limiter';
 import { requirePortalAdminToken } from '../api/secret-guards';
 import { getDb } from '../services/database';
+import { readDeployedReleaseIdentity } from '../services/release-runtime-identity';
 import {
   acceptFrozenRealProviderBaseline,
   ChatEvalBaselineAcceptanceError,
@@ -218,18 +219,23 @@ function normalizePreflightAttestation(value: unknown): Record<string, unknown> 
   };
 }
 
+/**
+ * Shape alone proves nothing: a client can hand-type 40 and 64 hex characters,
+ * and the accepted value becomes `deployed_artifact_attested` provenance in a
+ * trigger-immutable row. This portal runs inside the serving process, which
+ * holds the real identity, so the claim is only honoured when it matches that
+ * process exactly. An unattested process attests nothing.
+ */
 function normalizeDeployedRelease(value: unknown): Record<string, string> | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const candidate = value as Record<string, unknown>;
-  const runtimeSha = typeof candidate.runtimeSha === 'string' ? candidate.runtimeSha : '';
-  const artifactDigest = typeof candidate.artifactDigest === 'string' ? candidate.artifactDigest : '';
-  const role = candidate.role;
-  if (
-    !/^[a-f0-9]{40}$/.test(runtimeSha)
-    || !/^[a-f0-9]{64}$/.test(artifactDigest)
-    || (role !== 'staging' && role !== 'production')
-  ) return null;
-  return { runtimeSha, artifactDigest, role };
+  const served = readDeployedReleaseIdentity();
+  if (!served) return null;
+  return candidate.runtimeSha === served.runtimeSha
+    && candidate.artifactDigest === served.artifactDigest
+    && candidate.role === served.role
+    ? { runtimeSha: served.runtimeSha, artifactDigest: served.artifactDigest, role: served.role }
+    : null;
 }
 
 function normalizeBody(body: unknown): EvalHistoryRequestBody | null {

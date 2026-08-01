@@ -436,10 +436,35 @@ describe('Chat eval history', () => {
       runtime: { nodeEnv: 'staging', staging: 'true' },
     } as const;
 
-    expect(() => acceptFrozenRealProviderBaseline(db, {
-      ...input,
-      runtime: { nodeEnv: 'production', staging: 'false' },
-    })).toThrow(/staging/i);
+    // Full truth table for the staging guard: every operand must independently
+    // decide acceptance, so a weakened condition cannot pass unnoticed.
+    for (const runtime of [
+      { nodeEnv: 'production', staging: 'false' },
+      { nodeEnv: 'production', staging: 'true' },
+      { nexusEnv: 'production', staging: 'true' },
+      { nodeEnv: 'staging', nexusEnv: 'production' },
+      { nodeEnv: 'test', staging: 'false' },
+      { nodeEnv: 'test' },
+      {},
+    ] as Array<Record<string, string>>) {
+      expect(() => acceptFrozenRealProviderBaseline(db, { ...input, runtime }))
+        .toThrow(/staging/i);
+    }
+    for (const runtime of [
+      { nodeEnv: 'staging', staging: 'false' },
+      { nodeEnv: 'test', staging: 'true' },
+      { nodeEnv: 'test', staging: '1' },
+    ] as Array<Record<string, string>>) {
+      // Accepted by the runtime guard, so it must fail later (or succeed),
+      // never on the staging message.
+      let message = '';
+      try {
+        acceptFrozenRealProviderBaseline(db, { ...input, runtime, runId: `${runId}-probe` });
+      } catch (error) {
+        message = error instanceof Error ? error.message : String(error);
+      }
+      expect(message).not.toMatch(/restricted to staging/i);
+    }
     expect(() => acceptFrozenRealProviderBaseline(db, {
       ...input,
       evidenceJsonPath: `reports/chat-eval/${runId}.json`,
@@ -447,6 +472,73 @@ describe('Chat eval history', () => {
 
     db.prepare(`UPDATE chat_eval_runs SET production_data_used = 1 WHERE run_id = ?`).run(runId);
     expect(() => acceptFrozenRealProviderBaseline(db, input)).toThrow(/synthetic|production data/i);
+  });
+
+  it('upgrades a migration-260 frozen-baseline table instead of silently skipping the new columns', async () => {
+    // Production and staging already ran migration 260, so `CREATE TABLE IF
+    // NOT EXISTS` can never add a column there. Replay the real migration and
+    // require the ensure step to ALTER the table into the current shape.
+    // migration 260 references chat_eval_runs, which already existed in
+    // production; create the pre-batch runs table first so the replay is real.
+    db.exec(`
+      CREATE TABLE chat_eval_runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id TEXT NOT NULL UNIQUE,
+        mode TEXT NOT NULL CHECK (mode IN ('fixture', 'local_engine', 'real_provider')),
+        generated_at TEXT NOT NULL,
+        package_version TEXT, git_branch TEXT, git_commit TEXT,
+        average_score REAL NOT NULL, scenario_count INTEGER NOT NULL,
+        pass_count INTEGER NOT NULL, partial_count INTEGER NOT NULL,
+        fail_count INTEGER NOT NULL, blocked_count INTEGER NOT NULL,
+        passed INTEGER NOT NULL DEFAULT 0,
+        production_data_used INTEGER NOT NULL DEFAULT 0,
+        real_provider_calls INTEGER NOT NULL DEFAULT 0,
+        budget_usd REAL, json_report_path TEXT, markdown_report_path TEXT,
+        quality_metrics_json TEXT NOT NULL DEFAULT '[]',
+        day_to_day_summary_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE TABLE chat_eval_scenario_results (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id TEXT NOT NULL, scenario_id TEXT NOT NULL, persona_id TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('pass', 'partial', 'fail', 'blocked')),
+        evidence_mode TEXT NOT NULL, average_score REAL NOT NULL,
+        failures_json TEXT NOT NULL DEFAULT '[]', notes_json TEXT NOT NULL DEFAULT '[]',
+        scores_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(run_id, scenario_id)
+      );
+    `);
+    db.exec(readFileSync('migrations/260_chat_live_eval_preparations.sql', 'utf8'));
+    const migrated = (db.prepare('PRAGMA table_info(chat_eval_frozen_baselines)').all() as Array<{ name: string }>)
+      .map((row) => row.name);
+    expect(migrated).not.toContain('evidence_json_sha256');
+
+    ensureChatEvalHistoryTables(db);
+
+    const upgraded = (db.prepare('PRAGMA table_info(chat_eval_frozen_baselines)').all() as Array<{ name: string }>)
+      .map((row) => row.name);
+    for (const column of [
+      'evidence_json_sha256',
+      'evidence_markdown_sha256',
+      'provenance_class',
+      'deployed_runtime_sha',
+      'deployed_artifact_digest',
+    ]) {
+      expect(upgraded).toContain(column);
+    }
+
+    // Idempotent: a second boot must not attempt to re-add anything.
+    expect(() => ensureChatEvalHistoryTables(db)).not.toThrow();
+
+    // And a real freeze must now succeed end to end on that upgraded database.
+    const runId = 'chat-eval-migrated-baseline';
+    await persistBaselineCandidate(runId);
+    expect(acceptFrozenRealProviderBaseline(db, {
+      runId,
+      ...archiveIdentityFor(runId),
+      runtime: { nodeEnv: 'staging', staging: 'true' },
+    }).action).toBe('created');
   });
 
   it('recomputes every frozen headline metric from the persisted scenario evidence', async () => {

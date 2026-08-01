@@ -142,6 +142,26 @@
     ],
     "cleanupMappings": [
       {
+        "test": "__tests__/services/chat-eval-history.test.ts",
+        "replacementTests": [
+          "__tests__/services/chat-eval-history.test.ts"
+        ],
+        "sources": [
+          "src/services/chat-eval-history.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/chat-eval-history.ts:1134-1139",
+            "anchor": "invalidBaseline('Frozen real-provider baseline acceptance is restricted to staging.');",
+            "behavior": "Frozen baseline acceptance stays refused outside staging.",
+            "replacementTest": "__tests__/services/chat-eval-history.test.ts",
+            "ownerTestNamePattern": "fails baseline acceptance closed outside staging and for malformed evidence or archive identities$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained freeze suite strengthens its existing acceptance assertions in place: archive SHA-256 digests, run-declared report-path reconciliation, recomputed scenario aggregates, and provenance class are now required arguments, so every prior expectation was rewritten rather than removed."
+      },
+      {
         "test": "__tests__/router/classifier.test.ts",
         "replacementTests": [
           "__tests__/router/classifier.test.ts"

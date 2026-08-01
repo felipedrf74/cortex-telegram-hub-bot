@@ -65,11 +65,25 @@ const getOllamaClassifierSystemPromptCompactMock = vi.hoisted(() => vi.fn<() => 
 
 // Stub the anthropic system-prompt helpers used by OllamaProvider.classify
 // and callDomain so we don't pull in the whole anthropic.ts module graph.
+// Every runtime export is present so this stays a complete factory: a partial
+// one would add to the vi.mock ratchet, which the repo is driving down, and
+// would let a future import of an unstubbed symbol fail as `undefined` at call
+// time instead of here.
 vi.mock('../../src/services/anthropic', () => ({
   TOOLS: [],
+  DOMAIN_SYSTEM_PROMPTS: {},
   getClassifierSystemPrompt: () => 'You are a domain classifier.',
   getDomainSystemPrompt: getDomainSystemPromptMock,
   getOllamaClassifierSystemPromptCompact: () => getOllamaClassifierSystemPromptCompactMock(),
+  buildReplyLanguageInstruction: vi.fn(() => ''),
+  callDomain: vi.fn(async () => { throw new Error('anthropic.callDomain must not run in ollama-provider tests'); }),
+  callStructuredGeneration: vi.fn(async () => { throw new Error('anthropic.callStructuredGeneration must not run in ollama-provider tests'); }),
+  classifyAndExtractImage: vi.fn(async () => { throw new Error('anthropic.classifyAndExtractImage must not run in ollama-provider tests'); }),
+  classifyMessage: vi.fn(async () => { throw new Error('anthropic.classifyMessage must not run in ollama-provider tests'); }),
+  continueWithToolResults: vi.fn(async () => { throw new Error('anthropic.continueWithToolResults must not run in ollama-provider tests'); }),
+  getToolsForDomainCached: vi.fn(() => []),
+  resolveReplyLanguage: vi.fn(() => 'en'),
+  resolveReplyLanguageForCurrentRequest: vi.fn(() => 'en'),
 }));
 
 // Stub database, telemetry, api-usage-fallback, and rate-limiter so the
