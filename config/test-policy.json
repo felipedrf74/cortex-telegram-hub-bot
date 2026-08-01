@@ -159,7 +159,7 @@
             "minimumMutants": 1
           }
         ],
-        "reason": "The three environment-gated cases were rewritten in place rather than dropped: isGarminConfiguredForUser became per-user truth, so assertions that it also required GARMIN_EMAIL/GARMIN_PASSWORD were replaced by assertions that only the per-user connection decides."
+        "reason": "The three environment-gated cases were rewritten in place rather than dropped: GarminAdapter.isConfigured became per-user truth, so assertions that it also required GARMIN_EMAIL/GARMIN_PASSWORD were replaced by assertions that only the per-user connection decides. The sibling isGarminConfiguredForUser in src/services/garmin.ts underwent a structurally identical edit but is a different symbol, is not governed by this mapping, and is mocked out of this test."
       },
       {
         "test": "__tests__/router/classifier.test.ts",
