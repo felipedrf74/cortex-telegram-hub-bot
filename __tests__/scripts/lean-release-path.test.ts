@@ -111,6 +111,117 @@ function fixture(options: { docsOnly?: boolean; governanceReview?: boolean } = {
   };
 }
 
+// A written, self-consistent manifest, so a test can concentrate on the receipt
+// it is validating against that manifest.
+function preparedManifest(options: Parameters<typeof fixture>[0] = {}) {
+  const value = fixture(options);
+  execFileSync(process.execPath, [
+    manifestScript, 'write',
+    '--source-sha', value.runtimeSha,
+    '--bundle', value.bundle,
+    '--artifact-name', `release-bundle-${value.runtimeSha}-${value.digest}`,
+    '--protected-run-id', '100',
+    '--protected-run-attempt', '1',
+    '--checkpoint-run-id', '200',
+    '--checkpoint-run-attempt', '1',
+    '--release-deployed-sha', value.deployedSha,
+    '--release-groups-json', '["chat-secretary","platform-security"]',
+    '--selection', value.selection,
+    '--selected-result', value.selectedResult,
+    '--policy-file', value.policy,
+    '--shard-results', value.shards,
+    '--python-required', 'false',
+    '--python-status', 'skipped',
+    '--migration-required', 'true',
+    '--migration-status', 'passed',
+    '--migration-result', value.migrations,
+    '--output', value.output,
+  ]);
+  return value;
+}
+
+const STAGING_RELEASES = '/home/dominguez/telegram-hub-bot-staging/releases/';
+
+function completedStagingReceipt(
+  value: ReturnType<typeof fixture>,
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    schema: 'nexus.lean-release-transaction.v1',
+    role: 'staging',
+    transactionId: `20260727T120000Z-${'b'.repeat(12)}`,
+    runtimeSha: value.runtimeSha,
+    artifactDigest: value.digest,
+    releaseDir: `${STAGING_RELEASES}${value.runtimeSha}-${value.digest.slice(0, 12)}`,
+    firstInstall: false,
+    predecessor: `${STAGING_RELEASES}previous`,
+    predecessorSha: value.deployedSha,
+    predecessorDigest: 'c'.repeat(64),
+    phase: 'completed',
+    status: 'passed',
+    message: null,
+    startedAt: '2026-07-27T12:00:00.000Z',
+    completedAt: '2026-07-27T12:01:00.000Z',
+    updatedAt: '2026-07-27T12:01:00.100Z',
+    healthResult: 'passed',
+    rollbackResult: 'not_required',
+    rollbackDurationMs: null,
+    stabilitySeconds: 15,
+    soakStartedAt: '2026-07-27T12:00:30.000Z',
+    soakCompletedAt: '2026-07-27T12:00:45.000Z',
+    candidateHealthBudgetSeconds: 45,
+    rollbackHealthBudgetSeconds: 45,
+    rollbackObjectiveSeconds: 120,
+    faultInjection: null,
+    candidateRemoved: false,
+    checks: {
+      artifactParity: 'passed',
+      migrationStartup: 'passed',
+      authenticatedSmoke: 'passed',
+      databaseIntegrity: 'passed',
+      prePromotionBackup: 'skipped',
+      rollbackReadiness: 'passed',
+    },
+    ...overrides,
+  };
+}
+
+// Exactly what remote-user-release-transaction.sh writes when a first install
+// completes: no predecessor at all, and rollback readiness that was never
+// applicable because there was nothing to restore to.
+function firstInstallStagingReceipt(
+  value: ReturnType<typeof fixture>,
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  const base = completedStagingReceipt(value);
+  return {
+    ...base,
+    firstInstall: true,
+    predecessor: null,
+    predecessorSha: null,
+    predecessorDigest: null,
+    checks: { ...(base.checks as Record<string, string>), rollbackReadiness: 'not_applicable' },
+    ...overrides,
+  };
+}
+
+function validateState(
+  value: ReturnType<typeof fixture>,
+  receipt: unknown,
+  extra: string[] = [],
+  role = 'staging',
+) {
+  const state = path.join(value.root, `state-${role}.json`);
+  fs.writeFileSync(state, JSON.stringify(receipt));
+  return spawnSync(process.execPath, [
+    manifestScript, 'validate-state',
+    '--manifest', value.output,
+    '--state', state,
+    '--role', role,
+    ...extra,
+  ], { encoding: 'utf8' });
+}
+
 afterEach(() => {
   while (roots.length) fs.rmSync(roots.pop()!, { recursive: true, force: true });
 });
@@ -364,6 +475,127 @@ describe('lean exact-artifact release path', () => {
     expect(skippedProductionSmoke.stderr).toContain(
       'lean release transaction checks are incomplete',
     );
+  });
+
+  // A first install is a legitimate completed staging transaction that honestly
+  // has no predecessor. Rejecting its receipt outright made a SUCCESSFUL
+  // bootstrap unusable: promote died at validate-state and prepare no-opped.
+  it('accepts a completed first install as a valid staging transaction', () => {
+    const value = preparedManifest();
+
+    const accepted = validateState(value, firstInstallStagingReceipt(value));
+
+    expect(accepted.status, accepted.stderr).toBe(0);
+    expect(JSON.parse(accepted.stdout)).toMatchObject({ ok: true, role: 'staging' });
+  });
+
+  it('still rejects a null predecessor that is not declared a first install', () => {
+    const value = preparedManifest();
+    const base = firstInstallStagingReceipt(value);
+
+    for (const marker of [false, undefined]) {
+      const undeclared = { ...base, firstInstall: marker };
+      if (marker === undefined) delete undeclared.firstInstall;
+      const result = validateState(value, undeclared);
+
+      expect(result.status, String(marker)).toBe(1);
+      expect(result.stderr).toContain('not completed for the exact manifest');
+    }
+  });
+
+  it('rejects a first-install marker on anything other than staging', () => {
+    const value = preparedManifest();
+    const production = firstInstallStagingReceipt(value, {
+      role: 'production',
+      releaseDir: `/home/dominguez/telegram-hub-bot/releases/${value.runtimeSha}-${value.digest.slice(0, 12)}`,
+      stabilitySeconds: 60,
+      soakStartedAt: '2026-07-27T12:00:00.000Z',
+      soakCompletedAt: '2026-07-27T12:01:00.000Z',
+    });
+
+    const result = validateState(value, production, [], 'production');
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('first install is valid only for staging');
+  });
+
+  it('refuses to read a first-install staging receipt as a production transaction', () => {
+    const value = preparedManifest();
+
+    const result = validateState(value, firstInstallStagingReceipt(value), [], 'production');
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('role is invalid');
+  });
+
+  it('rejects a first-install receipt that keeps any predecessor identity', () => {
+    const value = preparedManifest();
+    const cases: Array<[string, Record<string, unknown>, string]> = [
+      ['predecessorSha', { predecessorSha: value.deployedSha }, 'not completed for the exact manifest'],
+      ['predecessorDigest', { predecessorDigest: 'c'.repeat(64) }, 'not completed for the exact manifest'],
+      ['predecessor', { predecessor: `${STAGING_RELEASES}previous` }, 'release directory is invalid'],
+    ];
+
+    for (const [name, override, message] of cases) {
+      const result = validateState(value, firstInstallStagingReceipt(value, override));
+
+      expect(result.status, name).toBe(1);
+      expect(result.stderr, name).toContain(message);
+    }
+  });
+
+  it('rejects a first-install receipt that claims rollback readiness', () => {
+    const value = preparedManifest();
+    const receipt = firstInstallStagingReceipt(value);
+
+    const result = validateState(value, {
+      ...receipt,
+      checks: { ...(receipt.checks as Record<string, string>), rollbackReadiness: 'passed' },
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('checks are incomplete');
+  });
+
+  it('rejects a normal staging receipt that claims rollback was not applicable', () => {
+    const value = preparedManifest();
+    const receipt = completedStagingReceipt(value);
+
+    const result = validateState(value, {
+      ...receipt,
+      checks: { ...(receipt.checks as Record<string, string>), rollbackReadiness: 'not_applicable' },
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('checks are incomplete');
+  });
+
+  it('rejects a non-boolean first-install marker', () => {
+    const value = preparedManifest();
+
+    const result = validateState(value, completedStagingReceipt(value, { firstInstall: 'true' }));
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('first-install marker is invalid');
+  });
+
+  // Structural validity is not promotability. A bootstrap proved health, smoke,
+  // integrity, and soak, but never proved it could be rolled back, because there
+  // was nothing to roll back to. Production promotion requires a real predecessor.
+  it('refuses to promote on the strength of a first-install receipt', () => {
+    const value = preparedManifest();
+
+    const gated = validateState(
+      value,
+      firstInstallStagingReceipt(value),
+      ['--require-promotable'],
+    );
+    const normal = validateState(value, completedStagingReceipt(value), ['--require-promotable']);
+
+    expect(gated.status).toBe(1);
+    expect(gated.stderr).toContain('first install');
+    expect(gated.stderr).toContain('not promotable');
+    expect(normal.status, normal.stderr).toBe(0);
   });
 
   it('rejects a failed or incomplete full-suite shard', () => {

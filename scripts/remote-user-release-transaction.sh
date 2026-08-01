@@ -33,6 +33,28 @@ die() {
   exit 1
 }
 
+# Test-only reflection hook, and the only seam in this file. Library mode skips
+# host probing, mutex acquisition, and the whole release flow; it only defines
+# this file's configuration and functions so they can be executed against
+# fixtures. Containment is therefore deliberate and two-part: the opt-in
+# variable, plus positive proof that this file was sourced rather than executed.
+#
+# `return` outside a function succeeds only in a sourced file, so running it in a
+# subshell answers "am I being sourced?" for any invocation spelling. An
+# execution that sets the variable anyway is a mistake or an attack, never a
+# release, so it is refused outright rather than quietly continuing.
+#
+# Do NOT reinstate `[ "${BASH_SOURCE[0]}" != "$0" ]`. That test is false: bash
+# resolving a bare script name through PATH leaves $0 as the name typed on the
+# command line while BASH_SOURCE[0] holds the absolute path it found, so an
+# ordinary execution already satisfies it and used to engage library mode.
+LIBRARY_MODE=false
+if [ "${NEXUS_RELEASE_TRANSACTION_LIBRARY_MODE:-0}" = 1 ]; then
+  (return 0 2>/dev/null) \
+    || die "library mode requires this file to be sourced; refusing to execute the release transaction with NEXUS_RELEASE_TRANSACTION_LIBRARY_MODE set"
+  LIBRARY_MODE=true
+fi
+
 case "$COMMAND" in
   stage)
     ROLE=staging
@@ -55,6 +77,25 @@ case "$COMMAND" in
     ;;
 esac
 
+# Owner-gated first install. It exists only for a host that has never completed
+# a release, so `.complete.json` cannot yet exist to be required as an input.
+# It never relaxes artifact verification, health, soak, or receipt generation;
+# the only step it can skip is the rollback restore, because there is nothing
+# to restore. An established host refuses it outright further below.
+FIRST_INSTALL_REQUESTED=false
+case "${NEXUS_RELEASE_ALLOW_FIRST_INSTALL:-}" in
+  ""|0) ;;
+  1) FIRST_INSTALL_REQUESTED=true ;;
+  *) die "first-install opt-in must be unset, 0, or 1" ;;
+esac
+FIRST_INSTALL=false
+# Production is never first-installed through this path. A production host with
+# no predecessor has no rollback target and no promote-time backup lineage, and
+# promote-exact-release.sh structurally requires a canonical predecessor digest.
+# Bootstrapping production is a separate, separately audited operation.
+[ "$FIRST_INSTALL_REQUESTED" != true ] || [ "$ROLE" != production ] \
+  || die "first install is refused for production"
+
 [ "$BASE_DIR" = "$EXPECTED_BASE" ] || die "unexpected $ROLE base directory"
 [[ "$SOURCE_BUNDLE" == "$TRANSFER_ROOT"/incoming/* ]] || die "source bundle is outside the incoming store"
 [[ "$RUNTIME_SHA" =~ ^[0-9a-f]{40}$ ]] || die "runtime SHA is invalid"
@@ -65,10 +106,18 @@ esac
   || die "stability seconds must be between 1 and 300"
 [ "$ROLE" != production ] || [ "$STABILITY_SECONDS" -ge 60 ] \
   || die "production stability seconds must be at least 60"
-[[ "$EXPECTED_PREDECESSOR_SHA" =~ ^[0-9a-f]{40}$ ]] \
-  || die "expected $ROLE predecessor SHA is invalid"
-[[ "$EXPECTED_PREDECESSOR_DIGEST" =~ ^[0-9a-f]{64}$ ]] \
-  || die "expected $ROLE predecessor digest is invalid"
+if [ "$FIRST_INSTALL_REQUESTED" = true ]; then
+  # A first install must be honest about having no predecessor. Supplying one
+  # here would mean the caller believes a predecessor exists, which is a
+  # normal staged release, not a first install.
+  [ -z "$EXPECTED_PREDECESSOR_SHA" ] && [ -z "$EXPECTED_PREDECESSOR_DIGEST" ] \
+    || die "first install must not receive an expected $ROLE predecessor identity"
+else
+  [[ "$EXPECTED_PREDECESSOR_SHA" =~ ^[0-9a-f]{40}$ ]] \
+    || die "expected $ROLE predecessor SHA is invalid"
+  [[ "$EXPECTED_PREDECESSOR_DIGEST" =~ ^[0-9a-f]{64}$ ]] \
+    || die "expected $ROLE predecessor digest is invalid"
+fi
 case "$FAULT_INJECTION" in
   "") ;;
   staging-health)
@@ -76,13 +125,20 @@ case "$FAULT_INJECTION" in
     ;;
   *) die "unsupported release fault injection" ;;
 esac
-[ -x "$PM2_BIN" ] || die "PM2 is unavailable at $PM2_BIN"
-[ -x "$NODE_BIN" ] || die "Node is unavailable at $NODE_BIN"
-[ -x "$PYTHON_BIN" ] || die "Python is unavailable at $PYTHON_BIN"
-[ -x "$TIMEOUT_BIN" ] || die "timeout is unavailable at $TIMEOUT_BIN"
-[ -x "$SONAR_RELEASE_STATE_BIN" ] \
-  || die "Sonar release-state monitor is unavailable at $SONAR_RELEASE_STATE_BIN"
-[ -d "$SOURCE_BUNDLE" ] && [ ! -L "$SOURCE_BUNDLE" ] || die "source bundle is unavailable"
+# The fault drill exists to prove predecessor restore. A first install has no
+# predecessor, so the drill could only strand the host on a deliberately broken
+# candidate with nothing to recover to.
+[ "$FIRST_INSTALL_REQUESTED" != true ] || [ -z "$FAULT_INJECTION" ] \
+  || die "first install cannot run the release fault drill"
+if [ "$LIBRARY_MODE" != true ]; then
+  [ -x "$PM2_BIN" ] || die "PM2 is unavailable at $PM2_BIN"
+  [ -x "$NODE_BIN" ] || die "Node is unavailable at $NODE_BIN"
+  [ -x "$PYTHON_BIN" ] || die "Python is unavailable at $PYTHON_BIN"
+  [ -x "$TIMEOUT_BIN" ] || die "timeout is unavailable at $TIMEOUT_BIN"
+  [ -x "$SONAR_RELEASE_STATE_BIN" ] \
+    || die "Sonar release-state monitor is unavailable at $SONAR_RELEASE_STATE_BIN"
+  [ -d "$SOURCE_BUNDLE" ] && [ ! -L "$SOURCE_BUNDLE" ] || die "source bundle is unavailable"
+fi
 
 RELEASE_NAME="${RUNTIME_SHA}-${ARTIFACT_DIGEST:0:12}"
 RELEASE_DIR="$BASE_DIR/releases/$RELEASE_NAME"
@@ -108,36 +164,39 @@ ROLLBACK_READINESS=pending
 SOAK_STARTED_AT=""
 SOAK_COMPLETED_AT=""
 CANDIDATE_REMOVED=false
+ESTABLISHED_RELEASE_REASON=""
+ROLE_RUNTIME_REASON=""
 
-[ -d "$BASE_DIR" ] && [ ! -L "$BASE_DIR" ] \
-  || die "$ROLE base directory is missing or symbolic"
-install -d -m 700 "$STATE_ROOT"
-for persistent_directory in "$BASE_DIR/releases" "$BASE_DIR/data" "$BASE_DIR/logs"; do
-  if [ -e "$persistent_directory" ] || [ -L "$persistent_directory" ]; then
-    [ -d "$persistent_directory" ] && [ ! -L "$persistent_directory" ] \
-      || die "$ROLE persistent directory is unsafe: $persistent_directory"
-  else
-    install -d -m 700 "$persistent_directory"
-  fi
-done
-touch "$LOCK_FILE"
-chmod 600 "$LOCK_FILE"
-exec 9<>"$LOCK_FILE"
-flock -n 9 || die "another staging, production, or Sonar-sensitive release action is active"
-[ -f "$ROOT_SONAR_LOCK" ] && [ ! -L "$ROOT_SONAR_LOCK" ] \
-  && [ "$(stat -c '%U:%G:%a' "$ROOT_SONAR_LOCK")" = root:dominguez:660 ] \
-  || die "shared root release/Sonar lock is missing or unsafe"
-exec 8<>"$ROOT_SONAR_LOCK"
-flock -n 8 || die "a Sonar backup, restore, or root maintenance action is active"
+if [ "$LIBRARY_MODE" != true ]; then
+  [ -d "$BASE_DIR" ] && [ ! -L "$BASE_DIR" ] \
+    || die "$ROLE base directory is missing or symbolic"
+  install -d -m 700 "$STATE_ROOT"
+  for persistent_directory in "$BASE_DIR/releases" "$BASE_DIR/data" "$BASE_DIR/logs"; do
+    if [ -e "$persistent_directory" ] || [ -L "$persistent_directory" ]; then
+      [ -d "$persistent_directory" ] && [ ! -L "$persistent_directory" ] \
+        || die "$ROLE persistent directory is unsafe: $persistent_directory"
+    else
+      install -d -m 700 "$persistent_directory"
+    fi
+  done
+  touch "$LOCK_FILE"
+  chmod 600 "$LOCK_FILE"
+  exec 9<>"$LOCK_FILE"
+  flock -n 9 || die "another staging, production, or Sonar-sensitive release action is active"
+  [ -f "$ROOT_SONAR_LOCK" ] && [ ! -L "$ROOT_SONAR_LOCK" ] \
+    && [ "$(stat -c '%U:%G:%a' "$ROOT_SONAR_LOCK")" = root:dominguez:660 ] \
+    || die "shared root release/Sonar lock is missing or unsafe"
+  exec 8<>"$ROOT_SONAR_LOCK"
+  flock -n 8 || die "a Sonar backup, restore, or root maintenance action is active"
 
-# The shared user lock prevents a new advisory scan from starting. Check the
-# server-side CE queue while holding it as well, so a scan whose client exited
-# after submission cannot overlap artifact extraction, staging, or promotion.
-SONAR_RELEASE_STATE="$(
-  sudo -n "$SONAR_RELEASE_STATE_BIN" --project nexus-hub-backend --json
-)" || die "Sonar Compute Engine state is unavailable"
-"$NODE_BIN" - "$SONAR_RELEASE_STATE" <<'NODE' \
-  || die "Sonar Compute Engine is processing an advisory scan"
+  # The shared user lock prevents a new advisory scan from starting. Check the
+  # server-side CE queue while holding it as well, so a scan whose client exited
+  # after submission cannot overlap artifact extraction, staging, or promotion.
+  SONAR_RELEASE_STATE="$(
+    sudo -n "$SONAR_RELEASE_STATE_BIN" --project nexus-hub-backend --json
+  )" || die "Sonar Compute Engine state is unavailable"
+  "$NODE_BIN" - "$SONAR_RELEASE_STATE" <<'NODE' \
+    || die "Sonar Compute Engine is processing an advisory scan"
 const value = JSON.parse(process.argv[2]);
 if (value?.schema !== 'nexus.sonarqube-release-state.v1'
     || value.status !== 'passed'
@@ -146,7 +205,8 @@ if (value?.schema !== 'nexus.sonarqube-release-state.v1'
   process.exit(1);
 }
 NODE
-unset SONAR_RELEASE_STATE
+  unset SONAR_RELEASE_STATE
+fi
 
 write_state() {
   local phase="$1"
@@ -161,7 +221,8 @@ write_state() {
     "$PRE_PROMOTION_BACKUP" \
     "$STABILITY_SECONDS" "$SOAK_STARTED_AT" "$SOAK_COMPLETED_AT" \
     "$CANDIDATE_HEALTH_BUDGET_SECONDS" "$ROLLBACK_HEALTH_BUDGET_SECONDS" \
-    "$ROLLBACK_OBJECTIVE_SECONDS" "$FAULT_INJECTION" "$CANDIDATE_REMOVED" <<'NODE'
+    "$ROLLBACK_OBJECTIVE_SECONDS" "$FAULT_INJECTION" "$CANDIDATE_REMOVED" \
+    "$FIRST_INSTALL" <<'NODE'
 const fs = require('node:fs');
 const path = require('node:path');
 const [
@@ -172,10 +233,14 @@ const [
  prePromotionBackup,
  stabilitySeconds,soakStartedAt,soakCompletedAt,candidateHealthBudgetSeconds,
  rollbackHealthBudgetSeconds,rollbackObjectiveSeconds,faultInjection,candidateRemoved,
+ firstInstall,
 ]=process.argv.slice(2);
 const body = Buffer.from(`${JSON.stringify({
   schema:'nexus.lean-release-transaction.v1',
   role,transactionId:id,runtimeSha,artifactDigest,releaseDir,
+  // A first install has no predecessor. Record that honestly as null and mark
+  // the receipt so it can never be read as a normally staged release.
+  firstInstall:firstInstall==='true',
   predecessor:predecessor||null,
   predecessorSha:predecessorSha||null,
   predecessorDigest:predecessorDigest||null,
@@ -487,6 +552,210 @@ process.stdout.write(`${x.runtimeSha||""} ${x.artifactDigest||""}\n`);
   [ "$(date +%s)" -le "$rollback_deadline" ]
 }
 
+# Answers "has this host ever installed a release?" and must fail CLOSED. A
+# first install is the only path that deletes and restarts the role apps with no
+# recorded predecessor, so every uncertain answer has to read as "yes, it has".
+# This asks about PRESENCE, never validity: a truncated, symbolic, renamed, or
+# future-schema completion marker is still proof that a release was installed
+# here. Trying to validate the marker is what made this guard fail open, because
+# every validation failure looked exactly like a virgin host.
+established_release_exists() {
+  local releases="$BASE_DIR/releases"
+  local listing candidate
+  ESTABLISHED_RELEASE_REASON="an installed $ROLE release already exists"
+
+  if [ -L "$releases" ]; then
+    ESTABLISHED_RELEASE_REASON="the $ROLE release store could not be fully inspected"
+    return 0
+  fi
+  if [ ! -e "$releases" ]; then
+    ESTABLISHED_RELEASE_REASON=""
+    return 1
+  fi
+  if [ ! -d "$releases" ]; then
+    ESTABLISHED_RELEASE_REASON="the $ROLE release store could not be fully inspected"
+    return 0
+  fi
+
+  # Enumerate with find, not a glob. An unreadable directory makes a glob expand
+  # quietly to its own pattern, which reads as "empty" and is precisely the
+  # unknown-means-allow hole this guard has to close.
+  listing="$(mktemp)" || {
+    ESTABLISHED_RELEASE_REASON="the $ROLE release store could not be fully inspected"
+    return 0
+  }
+  if ! find "$releases" -mindepth 1 -maxdepth 1 -print0 >"$listing" 2>/dev/null; then
+    rm -f -- "$listing"
+    ESTABLISHED_RELEASE_REASON="the $ROLE release store could not be fully inspected"
+    return 0
+  fi
+
+  while IFS= read -r -d '' candidate; do
+    # Presence only. Do not require a regular file, a non-symlink, parseable
+    # JSON, a known schema, or a directory name that matches the receipt.
+    if [ -e "$candidate/.complete.json" ] || [ -L "$candidate/.complete.json" ]; then
+      rm -f -- "$listing"
+      ESTABLISHED_RELEASE_REASON="an installed $ROLE release already exists"
+      return 0
+    fi
+    # An entry that exists but cannot be fully inspected is unknown, and unknown
+    # must never be reported as "never released".
+    if [ -L "$candidate" ] && [ ! -e "$candidate" ]; then
+      rm -f -- "$listing"
+      ESTABLISHED_RELEASE_REASON="the $ROLE release store could not be fully inspected"
+      return 0
+    fi
+    if [ -d "$candidate" ]; then
+      if [ ! -r "$candidate" ] || [ ! -x "$candidate" ] \
+          || ! find "$candidate/" -mindepth 1 -maxdepth 1 -print0 >/dev/null 2>&1; then
+        rm -f -- "$listing"
+        ESTABLISHED_RELEASE_REASON="the $ROLE release store could not be fully inspected"
+        return 0
+      fi
+    fi
+  done <"$listing"
+
+  rm -f -- "$listing"
+  ESTABLISHED_RELEASE_REASON=""
+  return 1
+}
+
+# The one signal that directly answers "is a deployment live right now?". A
+# release store can be renamed, truncated, or made unreadable; a running role
+# process cannot be argued with. This probe fails closed as well: if PM2 cannot
+# be queried, or its answer cannot be interpreted, the host counts as live.
+role_runtime_is_live() {
+  local snapshot probe_status
+  ROLE_RUNTIME_REASON="a $ROLE runtime process is registered with PM2"
+  snapshot="$(mktemp)" || {
+    ROLE_RUNTIME_REASON="the PM2 process table could not be captured"
+    return 0
+  }
+  if ! "$TIMEOUT_BIN" --foreground 10s "$PM2_BIN" jlist >"$snapshot" 2>/dev/null; then
+    rm -f -- "$snapshot"
+    ROLE_RUNTIME_REASON="PM2 could not be queried"
+    return 0
+  fi
+  probe_status=0
+  "$NODE_BIN" - "$snapshot" "$(IFS=,; echo "${APP_NAMES[*]}")" <<'NODE' \
+    || probe_status=$?
+const fs=require('node:fs');
+const [snapshot,names]=process.argv.slice(2);
+let rows;
+try{rows=JSON.parse(fs.readFileSync(snapshot,'utf8'));}catch{process.exit(2);}
+if(!Array.isArray(rows))process.exit(2);
+const wanted=new Set(names.split(','));
+for(const row of rows){
+ if(row===null||typeof row!=='object')process.exit(2);
+ // A role app PM2 still knows about means this host is deployed. Its reported
+ // status is one more field that could be missing or unexpected, so registration
+ // itself is the refusal, not a status string comparison.
+ if(wanted.has(row.name))process.exit(0);
+}
+process.exit(1);
+NODE
+  rm -f -- "$snapshot"
+  case "$probe_status" in
+    0) return 0 ;;
+    1) ROLE_RUNTIME_REASON=""; return 1 ;;
+    *) ROLE_RUNTIME_REASON="the PM2 process table could not be interpreted"; return 0 ;;
+  esac
+}
+
+# Every reason a first install must be refused, in one place. The transaction
+# runs it before the EXIT trap is armed, so a refusal cannot touch recorded
+# release state, and resolve_predecessor runs it again once it has proved that
+# no predecessor could be resolved.
+refuse_established_first_install() {
+  [ ! -e "$CURRENT_LINK" ] && [ ! -L "$CURRENT_LINK" ] \
+    || die "first install is refused because a current $ROLE selector already exists"
+  if established_release_exists; then
+    die "first install is refused because $ESTABLISHED_RELEASE_REASON"
+  fi
+  if role_runtime_is_live; then
+    die "first install is refused because $ROLE_RUNTIME_REASON"
+  fi
+}
+
+# The guards above run in begin_transaction, before the candidate is copied,
+# manifest-verified, and dependency-extracted. On a real bundle that is minutes,
+# and nothing outside this transaction takes the release mutex, so the host can
+# become live inside that window: a reboot replays `pm2 resurrect`, or somebody
+# starts the legacy runtime by hand. A first install that switched `current` and
+# pm2-deleted a live host would have no restore path at all, so re-prove the host
+# is still uninstalled immediately before the irreversible switch, failing closed
+# exactly like the first guard.
+#
+# Only the two host-liveness signals can be re-checked here. established_release_
+# exists cannot: this transaction has by now installed its own candidate, with a
+# `.complete.json` receipt, into the release store, so that probe would refuse
+# every first install unconditionally.
+recheck_first_install_host() {
+  [ "$FIRST_INSTALL" = true ] || return 0
+  local reason=""
+  if [ -e "$CURRENT_LINK" ] || [ -L "$CURRENT_LINK" ]; then
+    reason="a current $ROLE selector appeared while the candidate was prepared"
+  elif role_runtime_is_live; then
+    reason="$ROLE_RUNTIME_REASON"
+  fi
+  [ -n "$reason" ] || return 0
+  # Nothing has been switched or started yet, so this abort is recoverable by
+  # construction. Remove only the candidate this transaction created, which
+  # returns the release store to the shape the run found it in and keeps the host
+  # re-stageable; leave every other release, `current`, and all persistent data
+  # untouched.
+  if [[ "$RELEASE_DIR" == "$BASE_DIR"/releases/* ]] \
+      && [ -d "$RELEASE_DIR" ] && [ ! -L "$RELEASE_DIR" ] \
+      && [ "$(readlink -f "$CURRENT_LINK" 2>/dev/null || true)" != "$RELEASE_DIR" ]; then
+    if rm -rf -- "$RELEASE_DIR"; then
+      CANDIDATE_REMOVED=true
+    fi
+  fi
+  PHASE=first_install_aborted
+  COMPLETED_AT="$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)"
+  # Deliberately not the first_install_failed wording: that receipt tells an
+  # operator the host is stranded with no predecessor, and this one has not
+  # touched the host at all.
+  write_state "$PHASE" failed \
+    "first install aborted before runtime mutation because $reason"
+  trap - EXIT
+  die "first install is refused because $reason"
+}
+
+resolve_predecessor() {
+  if [ -L "$CURRENT_LINK" ]; then
+    PREDECESSOR="$(readlink -f "$CURRENT_LINK")"
+    case "$PREDECESSOR" in "$BASE_DIR"/releases/*) ;; *) die "current $ROLE selector is unsafe" ;; esac
+  fi
+  if [ -z "$PREDECESSOR" ]; then
+    [ "$FIRST_INSTALL_REQUESTED" = true ] || die "$ROLE predecessor is unavailable"
+    # A first install is only honest on a host that has genuinely never
+    # released. Re-check every refusal signal here, under the release mutex,
+    # immediately before the run is allowed to skip rollback protection.
+    refuse_established_first_install
+    FIRST_INSTALL=true
+    ROLLBACK_READINESS=not_applicable
+    return 0
+  fi
+  [ "$FIRST_INSTALL_REQUESTED" != true ] \
+    || die "first install is refused because an established $ROLE predecessor exists"
+  read -r PREDECESSOR_SHA PREDECESSOR_DIGEST < <(
+    read_installed_release_identity "$PREDECESSOR"
+  ) || die "$ROLE predecessor marker identity is not rollback-ready"
+  [ "$PREDECESSOR_SHA" = "$EXPECTED_PREDECESSOR_SHA" ] \
+    || die "observed $ROLE predecessor SHA does not match protected release state"
+  [ "$PREDECESSOR_DIGEST" = "$EXPECTED_PREDECESSOR_DIGEST" ] \
+    || die "observed $ROLE predecessor digest does not match protected release state"
+  verify_installed_runtime "$PREDECESSOR" "$PREDECESSOR_SHA" "$PREDECESSOR_DIGEST" \
+    || die "$ROLE predecessor artifact or dependency identity is not rollback-ready"
+  # The first predecessor may be the exact pre-lean release, whose PM2
+  # environment predates the digest variable. Its installed bytes and dependency
+  # receipt are verified above; reject a wrong digest but bridge one absent value.
+  health_once "$PREDECESSOR" "$PREDECESSOR_SHA" "$PREDECESSOR_DIGEST" allow-missing \
+    || die "$ROLE predecessor health or PM2 identity is not rollback-ready"
+  ROLLBACK_READINESS=passed
+}
+
 on_exit() {
   local status=$?
   local rollback_started_ms rollback_finished_ms
@@ -495,7 +764,19 @@ on_exit() {
       && [[ "$TEMP_RELEASE" == "$BASE_DIR"/releases/.*.preparing-* ]]; then
     rm -rf -- "$TEMP_RELEASE"
   fi
-  if [ "$status" -ne 0 ] && [ "$ROLLBACK_ARMED" = true ]; then
+  if [ "$status" -ne 0 ] && [ "$ROLLBACK_ARMED" = true ] && [ "$FIRST_INSTALL" = true ]; then
+    # A first install has no predecessor to restore. Fail closed and say so
+    # exactly, instead of reporting a rollback that could never have run or
+    # claiming the transaction stopped before runtime mutation.
+    PHASE=first_install_failed
+    HEALTH_RESULT=failed
+    ROLLBACK_RESULT=unavailable
+    COMPLETED_AT="$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)"
+    # This receipt is the only thing an operator has once the host is stranded,
+    # so it names the runbook that returns the host to a retryable state.
+    write_state first_install_failed failed \
+      "first install failed after runtime mutation and has no predecessor to restore; follow 'Recovering a failed first install' in docs/release/README.md"
+  elif [ "$status" -ne 0 ] && [ "$ROLLBACK_ARMED" = true ]; then
     PHASE=rollback
     HEALTH_RESULT=failed
     ROLLBACK_RESULT=running
@@ -532,32 +813,27 @@ on_exit() {
   fi
   exit "$status"
 }
-trap on_exit EXIT
 
-verify_pristine_bundle
-PHASE=preparing
-write_state "$PHASE" running
+begin_transaction() {
+  # A refused first install must be side-effect-free. Every first-install
+  # refusal guard runs here, before the EXIT trap is armed and before the first
+  # state write, so an established host keeps the predecessor identity already
+  # recorded in its state file byte-identical. Overwriting it with a null
+  # predecessor would leave release-operator.sh unable to infer the predecessor
+  # for every later normal release.
+  [ "$FIRST_INSTALL_REQUESTED" != true ] || refuse_established_first_install
+  trap on_exit EXIT
+  verify_pristine_bundle
+  PHASE=preparing
+  write_state "$PHASE" running
+  resolve_predecessor
+}
 
-if [ -L "$CURRENT_LINK" ]; then
-  PREDECESSOR="$(readlink -f "$CURRENT_LINK")"
-  case "$PREDECESSOR" in "$BASE_DIR"/releases/*) ;; *) die "current $ROLE selector is unsafe" ;; esac
+if [ "$LIBRARY_MODE" = true ]; then
+  return 0
 fi
-[ -n "$PREDECESSOR" ] || die "$ROLE predecessor is unavailable"
-read -r PREDECESSOR_SHA PREDECESSOR_DIGEST < <(
-  read_installed_release_identity "$PREDECESSOR"
-) || die "$ROLE predecessor marker identity is not rollback-ready"
-[ "$PREDECESSOR_SHA" = "$EXPECTED_PREDECESSOR_SHA" ] \
-  || die "observed $ROLE predecessor SHA does not match protected release state"
-[ "$PREDECESSOR_DIGEST" = "$EXPECTED_PREDECESSOR_DIGEST" ] \
-  || die "observed $ROLE predecessor digest does not match protected release state"
-verify_installed_runtime "$PREDECESSOR" "$PREDECESSOR_SHA" "$PREDECESSOR_DIGEST" \
-  || die "$ROLE predecessor artifact or dependency identity is not rollback-ready"
-# The first predecessor may be the exact pre-lean release, whose PM2
-# environment predates the digest variable. Its installed bytes and dependency
-# receipt are verified above; reject a wrong digest but bridge one absent value.
-health_once "$PREDECESSOR" "$PREDECESSOR_SHA" "$PREDECESSOR_DIGEST" allow-missing \
-  || die "$ROLE predecessor health or PM2 identity is not rollback-ready"
-ROLLBACK_READINESS=passed
+
+begin_transaction
 
 if [ -e "$RELEASE_DIR" ] || [ -L "$RELEASE_DIR" ]; then
   die "exact $ROLE release directory already exists"
@@ -599,6 +875,9 @@ fi
 
 PHASE=switching
 write_state "$PHASE" running
+# Last point at which a first install can still be abandoned without consequence.
+# It is a no-op for a normal staged release, which has a predecessor to restore.
+recheck_first_install_host
 ROLLBACK_ARMED=true
 switch_current "$RELEASE_DIR"
 MUTATED=true

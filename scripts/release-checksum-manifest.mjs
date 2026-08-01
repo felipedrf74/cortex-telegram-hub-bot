@@ -23,6 +23,10 @@ function valueOf(name, fallback = '') {
   return index === -1 ? fallback : args[index + 1] || fallback;
 }
 
+function hasFlag(name) {
+  return args.includes(name);
+}
+
 function fail(message) {
   throw new Error(message);
 }
@@ -344,7 +348,7 @@ function validateManifest(
   return value;
 }
 
-function validateTransaction(value, manifest, expectedRole = '') {
+function validateTransaction(value, manifest, expectedRole = '', options = {}) {
   if (!value || typeof value !== 'object' || Array.isArray(value)
       || value.schema !== 'nexus.lean-release-transaction.v1') {
     fail('lean release transaction schema is invalid');
@@ -352,6 +356,29 @@ function validateTransaction(value, manifest, expectedRole = '') {
   if (!['staging', 'production'].includes(value.role)
       || (expectedRole && value.role !== expectedRole)) {
     fail('lean release transaction role is invalid');
+  }
+  // Receipts written before the first-install path existed simply omit the
+  // marker, which means the same thing as false. Anything else is a receipt this
+  // validator does not understand.
+  if (value.firstInstall !== undefined && typeof value.firstInstall !== 'boolean') {
+    fail('lean release transaction first-install marker is invalid');
+  }
+  // A first install is the one transaction that can honestly have no
+  // predecessor: it bootstraps a host that has never released, so there is
+  // nothing to record, nothing to restore, and rollback readiness was never
+  // applicable. That is legitimate for staging only. Production always has a
+  // predecessor and a promote-time backup lineage, and bootstrapping it is a
+  // separate, separately audited operation.
+  const firstInstall = value.firstInstall === true;
+  if (firstInstall && value.role !== 'staging') {
+    fail('lean release transaction first install is valid only for staging');
+  }
+  // Structural validity is not promotability. A first install proved health, the
+  // authenticated smoke, database integrity, and the soak, but it never proved it
+  // could be rolled back, because there was nothing to roll back to. A promotion
+  // gate asks for the stronger property.
+  if (firstInstall && options.requirePromotable === true) {
+    fail('lean release transaction is a first install and is not promotable');
   }
   if (!/^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}$/.test(value.transactionId ?? '')
       || value.runtimeSha !== manifest.sourceSha
@@ -361,8 +388,10 @@ function validateTransaction(value, manifest, expectedRole = '') {
       || value.healthResult !== 'passed'
       || value.rollbackResult !== 'not_required'
       || value.rollbackDurationMs !== null
-      || !/^[0-9a-f]{40}$/.test(value.predecessorSha ?? '')
-      || !/^[0-9a-f]{64}$/.test(value.predecessorDigest ?? '')
+      || (firstInstall
+        ? (value.predecessorSha !== null || value.predecessorDigest !== null)
+        : (!/^[0-9a-f]{40}$/.test(value.predecessorSha ?? '')
+          || !/^[0-9a-f]{64}$/.test(value.predecessorDigest ?? '')))
       || (value.role === 'production'
         && value.predecessorSha !== manifest.releaseImpact.deployedSha)
       || !Number.isSafeInteger(value.stabilitySeconds)
@@ -390,9 +419,11 @@ function validateTransaction(value, manifest, expectedRole = '') {
     : '/home/dominguez/telegram-hub-bot/releases/';
   if (typeof value.releaseDir !== 'string'
       || !value.releaseDir.startsWith(releasePrefix)
-      || typeof value.predecessor !== 'string'
-      || !value.predecessor.startsWith(releasePrefix)
-      || value.predecessor === value.releaseDir) {
+      || (firstInstall
+        ? value.predecessor !== null
+        : (typeof value.predecessor !== 'string'
+          || !value.predecessor.startsWith(releasePrefix)
+          || value.predecessor === value.releaseDir))) {
     fail('lean release transaction release directory is invalid');
   }
   const expectedChecks = {
@@ -401,7 +432,9 @@ function validateTransaction(value, manifest, expectedRole = '') {
     authenticatedSmoke: 'passed',
     databaseIntegrity: 'passed',
     prePromotionBackup: value.role === 'production' ? 'passed' : 'skipped',
-    rollbackReadiness: 'passed',
+    // Not applicable and passed are not interchangeable. Only a declared first
+    // install may report the former, and it may never report the latter.
+    rollbackReadiness: firstInstall ? 'not_applicable' : 'passed',
   };
   if (!value.checks || typeof value.checks !== 'object' || Array.isArray(value.checks)
       || JSON.stringify(Object.keys(value.checks).sort())
@@ -733,10 +766,14 @@ if (command === 'write') {
     readJson(valueOf('--state'), 'lean release transaction state'),
     manifest,
     role,
+    // The promotion gate additionally requires a receipt with real predecessor
+    // lineage, which a first-install bootstrap receipt does not have.
+    { requirePromotable: hasFlag('--require-promotable') },
   );
   process.stdout.write(`${JSON.stringify({
     ok: true,
     role: transaction.role,
+    firstInstall: transaction.firstInstall === true,
     sourceSha: transaction.runtimeSha,
     artifactDigest: transaction.artifactDigest,
     transactionId: transaction.transactionId,
