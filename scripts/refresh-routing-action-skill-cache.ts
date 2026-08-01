@@ -1149,9 +1149,73 @@ function readArg(name: string): string | undefined {
   return joined?.slice(name.length + 1);
 }
 
+/**
+ * A hard-killed apply (SIGKILL, power loss) never reaches its cleanup, so the
+ * claim stays `active` and blocks every future plan for that release identity —
+ * with no TTL, recovery previously meant undocumented SQL against the deployed
+ * database. This releases exactly one stuck claim under the same owner gate as
+ * `--apply`, and marks it `failed` rather than reopening it: an interrupted
+ * apply consumes its digest, so the operator must inspect for the next
+ * `planSequence`. It never touches a claim from a different release identity.
+ */
+export function releaseStaleRefreshPlanClaim(options: {
+  dbPath: string;
+  runtimeSha: string;
+  artifactDigest: string;
+  planDigest: string;
+  ownerAuthorized: boolean;
+}): Record<string, unknown> {
+  if (!options.ownerAuthorized) {
+    throw new Error('Releasing a stale plan claim requires NEXUS_RELEASE_OWNER_AUTHORIZED=1');
+  }
+  if (!/^sha256:[a-f0-9]{64}$/.test(options.planDigest)) {
+    throw new Error('--ack-plan must be the exact sha256:<digest> of the stuck claim');
+  }
+  const db = new Database(options.dbPath);
+  try {
+    const claim = db.prepare(`
+      SELECT plan_sequence AS planSequence, plan_digest AS planDigest, status
+      FROM routing_manifest_skill_refresh_plan_claims
+      WHERE runtime_sha = ? AND artifact_digest = ? AND status = 'active'
+      LIMIT 1
+    `).get(options.runtimeSha, options.artifactDigest) as
+      { planSequence: number; planDigest: string; status: string } | undefined;
+    if (!claim) throw new Error('No active plan claim exists for that exact release identity');
+    if (claim.planDigest !== options.planDigest) {
+      throw new Error('The acknowledged digest does not match the active plan claim');
+    }
+    db.prepare(`
+      UPDATE routing_manifest_skill_refresh_plan_claims
+      SET status = 'failed', claim_token = NULL
+      WHERE runtime_sha = ? AND artifact_digest = ? AND plan_sequence = ? AND status = 'active'
+    `).run(options.runtimeSha, options.artifactDigest, claim.planSequence);
+    return {
+      released: true,
+      planSequence: claim.planSequence,
+      planDigest: claim.planDigest,
+      status: 'failed',
+      note: 'Digest consumed. Re-run --inspect for the next planSequence and obtain fresh approval.',
+    };
+  } finally {
+    db.close();
+  }
+}
+
 async function main(): Promise<void> {
   const inspect = process.argv.includes('--inspect');
   const apply = process.argv.includes('--apply');
+  const releaseStale = process.argv.includes('--release-stale-claim');
+  if (releaseStale) {
+    if (inspect || apply) throw new Error('--release-stale-claim cannot combine with --inspect or --apply');
+    console.log(JSON.stringify(releaseStaleRefreshPlanClaim({
+      dbPath: readArg('--db') ?? process.env.DATABASE_PATH ?? './data/bot.db',
+      runtimeSha: readArg('--runtime-sha') ?? '',
+      artifactDigest: readArg('--artifact-digest') ?? '',
+      planDigest: readArg('--ack-plan') ?? '',
+      ownerAuthorized: process.env.NEXUS_RELEASE_OWNER_AUTHORIZED === '1',
+    }), null, 2));
+    return;
+  }
   if (inspect === apply) throw new Error('Choose exactly one --inspect or --apply mode');
 
   const { config } = await import('../src/config');

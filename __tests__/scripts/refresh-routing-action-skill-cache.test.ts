@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   inspectRoutingActionSkillCacheRefresh,
+  releaseStaleRefreshPlanClaim,
   runRoutingActionSkillCacheRefresh,
   type RoutingActionSkillRefreshDependencies,
 } from '../../scripts/refresh-routing-action-skill-cache';
@@ -902,5 +903,70 @@ describe('refresh-routing-action-skill-cache governed provider boundary', () => 
       readActiveClassifierSystemPrompt: async () => 'legacy classifier prompt',
     })).rejects.toThrow(/active classifier.*prompt.*artifact/i);
     expect(provider.classify).not.toHaveBeenCalled();
+  });
+});
+
+describe('stale refresh plan claim recovery', () => {
+  const SHA = 'a'.repeat(40);
+  const DIGEST = 'b'.repeat(64);
+  const PLAN = `sha256:${'c'.repeat(64)}`;
+
+  function seedActiveClaim(dbPath: string): void {
+    const db = new Database(dbPath);
+    db.exec(MIGRATION);
+    db.prepare(`
+      INSERT INTO routing_manifest_skill_refresh_runs
+        (runtime_sha, artifact_digest, run_id, budget_usd, prompt_sha256, request_builder_version,
+         provider, model, usage_category, request_source, base_category, job_name, user_id, tenant_id)
+      VALUES (?, ?, 'run-dead', 0.5, ?, 'v1', 'gemini', 'gemini-2.5-flash-lite',
+              'routing_action_skill_cache_refresh', 'system', 'routing_action_skill_cache_refresh', 'refresh', 0, 0)
+    `).run(SHA, DIGEST, 'a'.repeat(64));
+    db.prepare(`
+      INSERT INTO routing_manifest_skill_refresh_plan_claims
+        (plan_digest, plan_sequence, corpus_identity_digest, runtime_sha, artifact_digest, run_id, status, claim_token)
+      VALUES (?, 1, ?, ?, ?, 'run-dead', 'active', 'token-from-a-dead-process')
+    `).run(PLAN, `sha256:${'f'.repeat(64)}`, SHA, DIGEST);
+    db.close();
+  }
+
+  function statusOf(dbPath: string): string {
+    const db = new Database(dbPath);
+    const row = db.prepare('SELECT status FROM routing_manifest_skill_refresh_plan_claims WHERE plan_sequence = 1').get() as { status: string };
+    db.close();
+    return row.status;
+  }
+
+  it('refuses without owner authorization, without the exact digest, and for another release', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stale-claim-'));
+    const dbPath = path.join(dir, 'bot.db');
+    seedActiveClaim(dbPath);
+    const base = { dbPath, runtimeSha: SHA, artifactDigest: DIGEST, planDigest: PLAN, ownerAuthorized: true };
+
+    expect(() => releaseStaleRefreshPlanClaim({ ...base, ownerAuthorized: false }))
+      .toThrow(/NEXUS_RELEASE_OWNER_AUTHORIZED/);
+    expect(() => releaseStaleRefreshPlanClaim({ ...base, planDigest: `sha256:${'d'.repeat(64)}` }))
+      .toThrow(/does not match/i);
+    expect(() => releaseStaleRefreshPlanClaim({ ...base, planDigest: 'not-a-digest' }))
+      .toThrow(/exact sha256/i);
+    expect(() => releaseStaleRefreshPlanClaim({ ...base, runtimeSha: 'e'.repeat(40) }))
+      .toThrow(/No active plan claim/i);
+    expect(statusOf(dbPath)).toBe('active');
+  });
+
+  it('consumes the digest rather than reopening the claim', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stale-claim-ok-'));
+    const dbPath = path.join(dir, 'bot.db');
+    seedActiveClaim(dbPath);
+
+    const result = releaseStaleRefreshPlanClaim({
+      dbPath, runtimeSha: SHA, artifactDigest: DIGEST, planDigest: PLAN, ownerAuthorized: true,
+    });
+    expect(result).toMatchObject({ released: true, planSequence: 1, status: 'failed' });
+    expect(statusOf(dbPath)).toBe('failed');
+
+    // Not replayable: the claim is gone, so a second release finds nothing.
+    expect(() => releaseStaleRefreshPlanClaim({
+      dbPath, runtimeSha: SHA, artifactDigest: DIGEST, planDigest: PLAN, ownerAuthorized: true,
+    })).toThrow(/No active plan claim/i);
   });
 });

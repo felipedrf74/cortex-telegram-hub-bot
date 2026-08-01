@@ -230,6 +230,28 @@ describe('chat eval evidence redaction', () => {
     expect(chatEvalEvidenceRawTextFindings(redacted)).toEqual([]);
   });
 
+  it('flags an unclassified string a remote server injected into an attestation', () => {
+    // preflightAttestation is echoed from the evaluated server's response, so a
+    // subtree wildcard would publish whatever that server chose to add.
+    const raw = rawEvidenceFixture() as any;
+    raw.preflightAttestation.operatorNote = 'remind me to buy oat milk at 7pm';
+    const { redacted } = redactChatEvalEvidence(raw, SOURCE_SHA);
+    expect(chatEvalEvidenceRawTextFindings(redacted)).toEqual([
+      { path: 'preflightAttestation.operatorNote', occurrences: 1 },
+    ]);
+  });
+
+  it('flags unclassified strings added under the cost attestation or metric catalog', () => {
+    const raw = rawEvidenceFixture() as any;
+    raw.costAttestation.debugTrace = 'internal note';
+    raw.qualityMetrics[0].sampleUtterance = 'add milk to my list';
+    const { redacted } = redactChatEvalEvidence(raw, SOURCE_SHA);
+    expect(chatEvalEvidenceRawTextFindings(redacted).map((f) => f.path)).toEqual([
+      'costAttestation.debugTrace',
+      'qualityMetrics[].sampleUtterance',
+    ]);
+  });
+
   it('tolerates evidence that omits optional collections', () => {
     const sparse = { generatedAt: 'x', mode: 'fixture', scenarios: [], dayToDay: { scenarios: [] } };
     const { redacted, manifest } = redactChatEvalEvidence(sparse, SOURCE_SHA);

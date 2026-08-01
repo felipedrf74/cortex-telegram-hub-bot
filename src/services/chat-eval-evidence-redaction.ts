@@ -100,17 +100,45 @@ const RETAINED_STRING_PATHS = new Set<string>([
 ]);
 
 /**
- * Subtrees that are server-authored attestations or the repo-authored metric
- * catalog. They carry versions, hashes, enum labels, and metric copy — never
- * turn-derived text — so their strings are retained wholesale.
+ * Attestation and catalog strings, enumerated rather than whitelisted by
+ * prefix. `preflightAttestation` is echoed from the evaluated server's
+ * response, so a subtree wildcard here would be fail-OPEN: any key that server
+ * chose to add would be published unreviewed. Listing them means a new
+ * attestation field must be classified before it can ship.
  */
-const RETAINED_STRING_PREFIXES = [
-  'preflightAttestation.',
-  'costAttestation.',
-  'qualityMetrics[].',
+const RETAINED_ATTESTATION_STRING_PATHS = new Set<string>([
+  'preflightAttestation.contractVersion',
+  'preflightAttestation.mode',
+  'preflightAttestation.runId',
+  'preflightAttestation.targetBaseCategory',
+  'preflightAttestation.providerPolicy',
+  'preflightAttestation.seedProfileVersion',
+  'preflightAttestation.supportedScenarioIds[]',
+  'preflightAttestation.deployedRelease.runtimeSha',
+  'preflightAttestation.deployedRelease.artifactDigest',
+  'preflightAttestation.deployedRelease.role',
+  'costAttestation.contractVersion',
+  'costAttestation.judgeUsageDatabaseSha256',
+  'costAttestation.targetProviders[]',
+  'costAttestation.judgeProviders[]',
+  'costAttestation.judgeModels[]',
+  'costAttestation.reasons[]',
+  'costAttestation.preparation.scenarioIds[]',
+  'costAttestation.preparation.seedProfileVersions[]',
+  'costAttestation.preparation.seedProfileHashes[]',
+  // Repo-authored metric catalog shipped in the harness, not turn-derived.
+  'qualityMetrics[].id',
+  'qualityMetrics[].label',
+  'qualityMetrics[].description',
+  'qualityMetrics[].source',
+  'qualityMetrics[].privacy',
+  'qualityMetrics[].target',
   // The redaction manifest this module itself embeds in the archive.
-  'redaction.',
-];
+  'redaction.redactionVersion',
+  'redaction.sourceSha256',
+  'redaction.marker',
+  'redaction.removed[].path',
+]);
 
 export interface ChatEvalEvidenceRedactionEntry {
   path: string;
@@ -141,8 +169,7 @@ function matchesPattern(path: string, pattern: string): boolean {
 }
 
 function isRetainedString(path: string): boolean {
-  if (RETAINED_STRING_PATHS.has(path)) return true;
-  return RETAINED_STRING_PREFIXES.some((prefix) => path.startsWith(prefix));
+  return RETAINED_STRING_PATHS.has(path) || RETAINED_ATTESTATION_STRING_PATHS.has(path);
 }
 
 function isRedactedPath(path: string): boolean {
