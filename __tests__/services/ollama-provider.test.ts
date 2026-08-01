@@ -61,16 +61,29 @@ vi.mock('../../src/config', () => ({
 const getDomainSystemPromptMock = vi.hoisted(() => vi.fn(
   (domain: string) => `You are the ${domain} agent.`,
 ));
+const getOllamaClassifierSystemPromptCompactMock = vi.hoisted(() => vi.fn<() => string | null>(() => null));
 
 // Stub the anthropic system-prompt helpers used by OllamaProvider.classify
 // and callDomain so we don't pull in the whole anthropic.ts module graph.
+// Every runtime export is present so this stays a complete factory: a partial
+// one would add to the vi.mock ratchet, which the repo is driving down, and
+// would let a future import of an unstubbed symbol fail as `undefined` at call
+// time instead of here.
 vi.mock('../../src/services/anthropic', () => ({
   TOOLS: [],
+  DOMAIN_SYSTEM_PROMPTS: {},
   getClassifierSystemPrompt: () => 'You are a domain classifier.',
   getDomainSystemPrompt: getDomainSystemPromptMock,
-  // Option 3 (O3-A14): compact classifier prompt. Tests don't exercise
-  // the compact path — return null so the long-prompt fallback is used.
-  getOllamaClassifierSystemPromptCompact: () => null,
+  getOllamaClassifierSystemPromptCompact: () => getOllamaClassifierSystemPromptCompactMock(),
+  buildReplyLanguageInstruction: vi.fn(() => ''),
+  callDomain: vi.fn(async () => { throw new Error('anthropic.callDomain must not run in ollama-provider tests'); }),
+  callStructuredGeneration: vi.fn(async () => { throw new Error('anthropic.callStructuredGeneration must not run in ollama-provider tests'); }),
+  classifyAndExtractImage: vi.fn(async () => { throw new Error('anthropic.classifyAndExtractImage must not run in ollama-provider tests'); }),
+  classifyMessage: vi.fn(async () => { throw new Error('anthropic.classifyMessage must not run in ollama-provider tests'); }),
+  continueWithToolResults: vi.fn(async () => { throw new Error('anthropic.continueWithToolResults must not run in ollama-provider tests'); }),
+  getToolsForDomainCached: vi.fn(() => []),
+  resolveReplyLanguage: vi.fn(() => 'en'),
+  resolveReplyLanguageForCurrentRequest: vi.fn(() => 'en'),
 }));
 
 // Stub database, telemetry, api-usage-fallback, and rate-limiter so the
@@ -233,6 +246,8 @@ function modelAuthoredAuthorizedIdeasJson(
 beforeEach(() => {
   fetchMock.mockReset();
   getDomainSystemPromptMock.mockClear();
+  getOllamaClassifierSystemPromptCompactMock.mockReset();
+  getOllamaClassifierSystemPromptCompactMock.mockReturnValue(null);
   runMock.mockReset();
   assertBudgetMock.mockReset();
   rateLimitMock.mockReset();
@@ -349,6 +364,115 @@ describe('OllamaProvider — classify', () => {
     const result = await p.classify('write me a youtube hook for triathlon', undefined, { source: 'shadow' });
     expect(result.domain).toBe('content');
     expect(result.confidence).toBeCloseTo(0.91);
+  });
+
+  it.each(['clarify', 'none'] as const)(
+    'accepts the manifest-only %s terminal outcome without retrying or normalizing it',
+    async (domain) => {
+      const savedFlag = process.env.AI_CLASSIFY_MANIFEST_PROMPT;
+      const savedKill = process.env.AI_ROUTING_MANIFEST_KILL;
+      process.env.AI_CLASSIFY_MANIFEST_PROMPT = 'true';
+      delete process.env.AI_ROUTING_MANIFEST_KILL;
+      try {
+        fetchMock
+          .mockResolvedValueOnce(makeChatResponse({
+            content: JSON.stringify({ domain, confidence: 0.3 }),
+          }))
+          .mockResolvedValueOnce(makeTagsResponse());
+
+        await expect(new OllamaProvider().classify(
+          'ambiguous request',
+          undefined,
+          { source: 'shadow' },
+        )).resolves.toEqual({ domain, confidence: 0.3 });
+      } finally {
+        if (savedFlag === undefined) delete process.env.AI_CLASSIFY_MANIFEST_PROMPT;
+        else process.env.AI_CLASSIFY_MANIFEST_PROMPT = savedFlag;
+        if (savedKill === undefined) delete process.env.AI_ROUTING_MANIFEST_KILL;
+        else process.env.AI_ROUTING_MANIFEST_KILL = savedKill;
+      }
+    },
+  );
+
+  it('uses the full manifest schema and bypasses the legacy compact prompt while the flag is on', async () => {
+    const savedFlag = process.env.AI_CLASSIFY_MANIFEST_PROMPT;
+    const savedKill = process.env.AI_ROUTING_MANIFEST_KILL;
+    process.env.AI_CLASSIFY_MANIFEST_PROMPT = 'true';
+    delete process.env.AI_ROUTING_MANIFEST_KILL;
+    getOllamaClassifierSystemPromptCompactMock.mockReturnValue('LEGACY_COMPACT_PROMPT');
+    try {
+      fetchMock
+        .mockResolvedValueOnce(makeChatResponse({ content: '{"domain":"clarify","confidence":0.3}' }))
+        .mockResolvedValueOnce(makeTagsResponse());
+
+      await new OllamaProvider().classify('ambiguous request', undefined, { source: 'shadow' });
+
+      expect(getOllamaClassifierSystemPromptCompactMock).not.toHaveBeenCalled();
+      const request = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)) as {
+        messages: Array<{ role: string; content: string }>;
+        format: { properties: { domain: { enum: string[] }; skill?: { type: string } } };
+      };
+      expect(request.messages[0]?.content).not.toContain('LEGACY_COMPACT_PROMPT');
+      expect(request.messages[0]?.content).toContain('clarify');
+      expect(request.messages[0]?.content).toContain('none');
+      expect(request.format.properties.domain.enum).toEqual(expect.arrayContaining([
+        'secretary',
+        'triathlon',
+        'content',
+        'finance',
+        'cooking',
+        'connections',
+        'notifications',
+        'decision_center',
+        'clarify',
+        'none',
+      ]));
+      expect(request.format.properties.skill).toEqual({ type: 'string' });
+    } finally {
+      if (savedFlag === undefined) delete process.env.AI_CLASSIFY_MANIFEST_PROMPT;
+      else process.env.AI_CLASSIFY_MANIFEST_PROMPT = savedFlag;
+      if (savedKill === undefined) delete process.env.AI_ROUTING_MANIFEST_KILL;
+      else process.env.AI_ROUTING_MANIFEST_KILL = savedKill;
+    }
+  });
+
+  it('keeps the exact five-domain compact-prompt contract while the manifest flag is off', async () => {
+    const savedFlag = process.env.AI_CLASSIFY_MANIFEST_PROMPT;
+    const savedKill = process.env.AI_ROUTING_MANIFEST_KILL;
+    delete process.env.AI_CLASSIFY_MANIFEST_PROMPT;
+    delete process.env.AI_ROUTING_MANIFEST_KILL;
+    getOllamaClassifierSystemPromptCompactMock.mockReturnValue('LEGACY_COMPACT_PROMPT');
+    try {
+      fetchMock
+        .mockResolvedValueOnce(makeChatResponse({ content: '{"domain":"content","confidence":0.91}' }))
+        .mockResolvedValueOnce(makeTagsResponse());
+
+      await new OllamaProvider().classify('write a hook', undefined, { source: 'shadow' });
+
+      expect(getOllamaClassifierSystemPromptCompactMock).toHaveBeenCalledTimes(1);
+      const request = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)) as {
+        messages: Array<{ role: string; content: string }>;
+        format: { properties: Record<string, unknown> };
+      };
+      expect(request.messages[0]?.content).toBe('LEGACY_COMPACT_PROMPT');
+      expect(request.format).toEqual({
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          domain: {
+            type: 'string',
+            enum: ['secretary', 'triathlon', 'content', 'finance', 'cooking'],
+          },
+          confidence: { type: 'number', minimum: 0, maximum: 1 },
+        },
+        required: ['domain', 'confidence'],
+      });
+    } finally {
+      if (savedFlag === undefined) delete process.env.AI_CLASSIFY_MANIFEST_PROMPT;
+      else process.env.AI_CLASSIFY_MANIFEST_PROMPT = savedFlag;
+      if (savedKill === undefined) delete process.env.AI_ROUTING_MANIFEST_KILL;
+      else process.env.AI_ROUTING_MANIFEST_KILL = savedKill;
+    }
   });
 
   it('throws LocalLLMError(invalid_json) when the response is unparseable', async () => {

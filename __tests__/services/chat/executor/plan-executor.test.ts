@@ -186,6 +186,23 @@ describe('M16 plan-executor topological execution', () => {
     expect(response.metadata.multiStepSummary).toMatchObject({ succeeded: 0, failed: 1, blocked: 1 });
   });
 
+  it('runs the internal fail-closed guard before registry executor dispatch', async () => {
+    const beforeStepExecution = vi.fn(() => {
+      throw new Error('staging_probe_executor_access');
+    });
+    const plan = makePlan([
+      makeStep({ stepId: 'step_guard', args: { title: 'must not execute' } }),
+    ]);
+
+    await expect(executeChatActionPlan(plan, INPUT, {} as never, {
+      confirmed: true,
+      beforeStepExecution,
+    })).rejects.toThrow('staging_probe_executor_access');
+
+    expect(beforeStepExecution).toHaveBeenCalledTimes(1);
+    expect(executeStepMock).not.toHaveBeenCalled();
+  });
+
   it('names the verified task deletion target in the success copy', async () => {
     executeStepMock.mockImplementation(async (step) => ({
       step,

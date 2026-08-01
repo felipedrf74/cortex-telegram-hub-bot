@@ -5,6 +5,7 @@ import { ipKeyGenerator, rateLimit } from 'express-rate-limit';
 import { extractClientIp } from '../api/rate-limiter';
 import { requirePortalAdminToken } from '../api/secret-guards';
 import { getDb } from '../services/database';
+import { readDeployedReleaseIdentity } from '../services/release-runtime-identity';
 import {
   acceptFrozenRealProviderBaseline,
   ChatEvalBaselineAcceptanceError,
@@ -128,6 +129,10 @@ export function registerPortalEvalHistoryRoutes(app: Express): void {
           runId: stringValue(body.runId),
           evidenceJsonPath: stringValue(body.evidenceJsonPath),
           evidenceMarkdownPath: stringValue(body.evidenceMarkdownPath),
+          evidenceJsonSha256: stringValue(body.evidenceJsonSha256),
+          evidenceMarkdownSha256: stringValue(body.evidenceMarkdownSha256),
+          acknowledgeOperatorCheckoutProvenance:
+            body.acknowledgeOperatorCheckoutProvenance === true,
           runtime: {
             nodeEnv: process.env.NODE_ENV,
             nexusEnv: process.env.NEXUS_ENV,
@@ -207,7 +212,30 @@ function normalizePreflightAttestation(value: unknown): Record<string, unknown> 
     supportedScenarioIds: candidate.supportedScenarioIds
       .filter((item): item is string => typeof item === 'string')
       .slice(0, 32),
+    // This normalizer rebuilds the attestation from an explicit field list, so
+    // the server-attested deployed identity must be carried through here or the
+    // run's provenance is silently reduced back to the operator's checkout.
+    deployedRelease: normalizeDeployedRelease(candidate.deployedRelease),
   };
+}
+
+/**
+ * Shape alone proves nothing: a client can hand-type 40 and 64 hex characters,
+ * and the accepted value becomes `deployed_artifact_attested` provenance in a
+ * trigger-immutable row. This portal runs inside the serving process, which
+ * holds the real identity, so the claim is only honoured when it matches that
+ * process exactly. An unattested process attests nothing.
+ */
+function normalizeDeployedRelease(value: unknown): Record<string, string> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const candidate = value as Record<string, unknown>;
+  const served = readDeployedReleaseIdentity();
+  if (!served) return null;
+  return candidate.runtimeSha === served.runtimeSha
+    && candidate.artifactDigest === served.artifactDigest
+    && candidate.role === served.role
+    ? { runtimeSha: served.runtimeSha, artifactDigest: served.artifactDigest, role: served.role }
+    : null;
 }
 
 function normalizeBody(body: unknown): EvalHistoryRequestBody | null {

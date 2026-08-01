@@ -40,12 +40,15 @@ import {
 } from '../../chat-persistence';
 import { tryBuildChatMessageShortcutResponse } from '../../chat-message-shortcuts';
 import { recordChatStage } from '../../../../services/chat-stage-trace';
+import { buildBlocksFromMarkdown } from '../../../../services/chat-response-blocks';
+import { buildChatResponseSufficiencyMetadata } from '../../../../services/chat-response-sufficiency';
+import { buildManifestClassifierTerminalResponse } from '../../../../services/chat-manifest-classifier-terminal';
 import {
   attachLateChatLegacyTimeoutResult,
   enqueueChatLegacyTimeoutContinuation,
   markChatLegacyTimeoutForegroundFailure,
 } from '../../../../services/chat-legacy-timeout-continuation';
-import { applyTurnContractRouteHint } from '../support';
+import { applyTurnContractRouteHint, newAssistantMessageId } from '../support';
 import { routedChatTurnCtx, type ChatStage, type ChatStageResult, type ChatTurnCtx } from '../types';
 
 export const legacyTailStage: ChatStage = {
@@ -72,6 +75,93 @@ export const legacyTailStage: ChatStage = {
     const rawRoute = await routeMessage(normalizedText, activeContext, userId, tenantId);
     latency.mark('routed');
     recordChatStage(chatRequestId, 'legacy_route');
+
+    // Manifest classifier abstentions are explicit non-executable outcomes.
+    // Terminate before contract hints, skill orchestration, tier gates, or a
+    // domain handler so `clarify`/`none` can never become an UNKNOWN_DOMAIN
+    // error or accidentally execute a fallback domain.
+    if (rawRoute.disposition) {
+      const terminal = buildManifestClassifierTerminalResponse(
+        rawRoute.disposition,
+        chatCoreV2RouteLocale,
+      );
+      const sufficiency = buildChatResponseSufficiencyMetadata({
+        actionStatus: terminal.actionStatus,
+        needsClarification: terminal.disposition === 'clarify',
+        unresolvedBlockers: terminal.disposition === 'none'
+          ? ['unsupported_request']
+          : [],
+      });
+      const terminalEnvelope = {
+        id: newAssistantMessageId(),
+        text: terminal.text,
+        domain: terminal.domain,
+        routeMethod: terminal.routeMethod,
+        confidence: rawRoute.confidence,
+        buttons: null,
+        metadata: {
+          type: 'chat_manifest_classifier_terminal',
+          disposition: terminal.disposition,
+          actionStatus: terminal.actionStatus,
+          reasonCodes: terminal.reasonCodes,
+          unresolvedBlockers: sufficiency.unresolvedBlockers,
+          responseSufficiency: sufficiency,
+        },
+        timestamp: new Date(requestStartedAt).toISOString(),
+        responseBlocks: buildBlocksFromMarkdown(terminal.text),
+        reasonCodes: terminal.reasonCodes,
+      };
+      const response = finalizeChatMessageResponse(terminalEnvelope, {
+        normalizedText,
+        userId,
+        tenantId,
+        chatRequestId,
+        tracker: latency,
+        latencyTier: 'tier1_fast_read',
+        fallbackDomain: terminal.domain,
+        fallbackRouteMethod: terminal.routeMethod,
+        fallbackConfidence: rawRoute.confidence,
+        actionability: terminal.actionability,
+        verificationStatus: 'not_required',
+        compositionMode: 'templated',
+        locale: chatCoreV2RouteLocale,
+        stageFamily: terminal.disposition === 'clarify'
+          ? 'routing_clarify'
+          : 'chat_core_v2_unsupported_fallback',
+        ...(terminal.disposition === 'none'
+          ? {
+            fallback: {
+              fallbackType: 'degraded_response' as const,
+              fallbackReason: 'classifier_explicit_none',
+              retryable: false,
+              userActionRequired: true,
+              operatorActionRequired: false,
+            },
+          }
+          : {}),
+        requestStartedAt,
+      });
+      persistExchange(userId, userMessageId, normalizedText, response.id, response, tenantId, {
+        clientMessageId: scopedClientMessageId,
+        requestId: chatRequestId,
+      });
+      // `chat` is an envelope domain, not an executable REST domain. Keep the
+      // terminal exchange in durable history but do not create conversation
+      // continuity that could make the next turn short-circuit to
+      // UNKNOWN_DOMAIN.
+      recordLegacyFallbackSample(true, {
+        domain: response.domain,
+        routeOwner: 'manifest_classifier_terminal',
+        routeMethod: response.routeMethod,
+      });
+      logger.info(
+        { chatRequestId, userId, tenantId, disposition: terminal.disposition },
+        'iOS chat terminated on an explicit manifest-classifier outcome',
+      );
+      res.json(response);
+      return { kind: 'respond' };
+    }
+
     const contractAwareRoute = preTurnContract ? applyTurnContractRouteHint(rawRoute, preTurnContract) : rawRoute;
     const routingDecision = analyzeChatSkillOrchestration({
       message: normalizedText,

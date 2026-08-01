@@ -103,6 +103,18 @@ export interface ChatEvalHistoryRun {
 
 export const CHAT_EVAL_FROZEN_BASELINE_KEY = 'first_real_provider_staging' as const;
 
+/**
+ * How strongly the frozen run is tied to the artifact that produced it.
+ * `deployed_artifact_attested` is the only class new runs can reach: paid
+ * evaluation now fails closed unless the serving process reports a verified
+ * staging release. `operator_checkout_only` exists solely for the first
+ * baseline, captured before that binding existed, and is recorded immutably so
+ * it can never be mistaken for artifact-bound evidence.
+ */
+export type ChatEvalBaselineProvenanceClass =
+  | 'deployed_artifact_attested'
+  | 'operator_checkout_only';
+
 export interface ChatEvalFrozenBaseline {
   baselineKey: typeof CHAT_EVAL_FROZEN_BASELINE_KEY;
   runRowId: number;
@@ -111,6 +123,16 @@ export interface ChatEvalFrozenBaseline {
   acceptedVia: 'portal_admin_token';
   evidenceJsonPath: string;
   evidenceMarkdownPath: string;
+  /** SHA-256 of the exact committed archive bytes this baseline is pinned to. */
+  evidenceJsonSha256: string;
+  evidenceMarkdownSha256: string;
+  /**
+   * Whether the serving artifact attested itself, or the run predates that
+   * binding and is therefore only as strong as the operator's local checkout.
+   */
+  provenanceClass: ChatEvalBaselineProvenanceClass;
+  deployedRuntimeSha: string | null;
+  deployedArtifactDigest: string | null;
   gitCommit: string;
   generatedAt: string;
   scenarioSetHash: string;
@@ -165,6 +187,19 @@ export interface AcceptFrozenRealProviderBaselineInput {
   runId: string;
   evidenceJsonPath: string;
   evidenceMarkdownPath: string;
+  /**
+   * Digests of the committed archive pair. `docs/` is not part of the release
+   * artifact, so the serving process cannot read these files; recording the
+   * operator-supplied digests immutably is what makes the frozen baseline
+   * pinned to specific bytes that any reviewer can re-verify from Git.
+   */
+  evidenceJsonSha256: string;
+  evidenceMarkdownSha256: string;
+  /**
+   * Required only to freeze a run that carries no server-attested artifact
+   * identity. Silence is never consent; the acknowledgement is recorded.
+   */
+  acknowledgeOperatorCheckoutProvenance?: boolean;
   runtime: {
     nodeEnv?: string;
     nexusEnv?: string;
@@ -343,6 +378,39 @@ function ensureFrozenChatEvalBaselineSchema(db: Database.Database): void {
       SELECT RAISE(ABORT, 'frozen baseline scenario evidence is immutable');
     END;
   `);
+  ensureFrozenChatEvalBaselineColumns(db);
+}
+
+/**
+ * Migration 260 already created `chat_eval_frozen_baselines` on staging and
+ * production, so `CREATE TABLE IF NOT EXISTS` above is a no-op there and can
+ * never introduce a new column. Archive-digest and provenance columns must be
+ * added by ALTER, exactly like `ensureChatEvalRunEvidenceColumns` does for the
+ * runs table, or the first freeze on a real database fails with
+ * "no such column: evidence_json_sha256".
+ *
+ * The columns are declared nullable so the upgrade also succeeds on a database
+ * that already holds a frozen row: SQLite refuses `ADD COLUMN NOT NULL` without
+ * a default once any row exists. Presence is enforced ahead of every INSERT by
+ * assertBaselineArchiveDigests and resolveBaselineProvenance, which both fail
+ * closed, so the runtime contract is unchanged.
+ */
+function ensureFrozenChatEvalBaselineColumns(db: Database.Database): void {
+  const existing = new Set(
+    (db.prepare('PRAGMA table_info(chat_eval_frozen_baselines)').all() as Array<{ name: string }>)
+      .map((row) => row.name),
+  );
+  const additions: Array<[string, string]> = [
+    ['evidence_json_sha256', 'TEXT'],
+    ['evidence_markdown_sha256', 'TEXT'],
+    ['provenance_class', 'TEXT'],
+    ['deployed_runtime_sha', 'TEXT'],
+    ['deployed_artifact_digest', 'TEXT'],
+  ];
+  for (const [column, type] of additions) {
+    if (existing.has(column)) continue;
+    db.exec(`ALTER TABLE chat_eval_frozen_baselines ADD COLUMN ${column} ${type}`);
+  }
 }
 
 function ensureChatEvalRunEvidenceColumns(db: Database.Database): void {
@@ -579,6 +647,7 @@ export function acceptFrozenRealProviderBaseline(
   ensureChatEvalHistoryTables(db);
   assertStagingBaselineRuntime(input.runtime);
   assertBaselineArchivePaths(input.runId, input.evidenceJsonPath, input.evidenceMarkdownPath);
+  assertBaselineArchiveDigests(input.evidenceJsonSha256, input.evidenceMarkdownSha256);
 
   const existing = readFrozenBaseline(db);
   if (existing) {
@@ -586,6 +655,8 @@ export function acceptFrozenRealProviderBaseline(
       existing.runId === input.runId
       && existing.evidenceJsonPath === input.evidenceJsonPath
       && existing.evidenceMarkdownPath === input.evidenceMarkdownPath
+      && existing.evidenceJsonSha256 === input.evidenceJsonSha256
+      && existing.evidenceMarkdownSha256 === input.evidenceMarkdownSha256
     ) {
       return { action: 'already_frozen', baseline: existing };
     }
@@ -600,6 +671,9 @@ export function acceptFrozenRealProviderBaseline(
   if (!row) invalidBaseline('The requested eval run does not exist.');
   const scenarioRows = readScenarioIdentityRows(db, input.runId);
   const evidence = validateFrozenBaselineCandidate(row!, scenarioRows);
+  assertBaselineArchiveMatchesRun(row!, input.evidenceJsonPath, input.evidenceMarkdownPath);
+  assertRunAggregatesMatchScenarioEvidence(row!, recomputeRunAggregates(db, input.runId));
+  const provenance = resolveBaselineProvenance(row!, input.acknowledgeOperatorCheckoutProvenance);
   const acceptedAt = normalizeAcceptedAt(input.acceptedAt);
   const scenarioPassRate = round8(Number(row!.pass_count) / Number(row!.scenario_count));
   const localeLeakageRate = localeLeakageRateFromSummary(row!.day_to_day_summary_json);
@@ -608,12 +682,15 @@ export function acceptFrozenRealProviderBaseline(
     db.prepare(`
       INSERT INTO chat_eval_frozen_baselines (
         baseline_key, run_row_id, run_id, accepted_at, accepted_via,
-        evidence_json_path, evidence_markdown_path, git_commit, generated_at,
+        evidence_json_path, evidence_markdown_path,
+        evidence_json_sha256, evidence_markdown_sha256,
+        provenance_class, deployed_runtime_sha, deployed_artifact_digest,
+        git_commit, generated_at,
         scenario_set_hash, eval_contract_version, seed_profile_version,
         average_score, scenario_pass_rate, passed, scenario_count, fail_count,
         blocked_count, locale_leakage_rate,
         total_estimated_actual_spend_usd, total_budget_ceiling_usd
-      ) VALUES (?, ?, ?, ?, 'portal_admin_token', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, 'portal_admin_token', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       CHAT_EVAL_FROZEN_BASELINE_KEY,
       Number(row!.id),
@@ -621,6 +698,11 @@ export function acceptFrozenRealProviderBaseline(
       acceptedAt,
       input.evidenceJsonPath,
       input.evidenceMarkdownPath,
+      input.evidenceJsonSha256,
+      input.evidenceMarkdownSha256,
+      provenance.provenanceClass,
+      provenance.deployedRuntimeSha,
+      provenance.deployedArtifactDigest,
       String(row!.git_commit),
       String(row!.generated_at),
       scenarioIdentityHash(scenarioRows),
@@ -643,6 +725,8 @@ export function acceptFrozenRealProviderBaseline(
         raced.runId === input.runId
         && raced.evidenceJsonPath === input.evidenceJsonPath
         && raced.evidenceMarkdownPath === input.evidenceMarkdownPath
+        && raced.evidenceJsonSha256 === input.evidenceJsonSha256
+        && raced.evidenceMarkdownSha256 === input.evidenceMarkdownSha256
       ) return { action: 'already_frozen', baseline: raced };
       throw new ChatEvalBaselineAcceptanceError(
         'BASELINE_ALREADY_FROZEN',
@@ -735,6 +819,11 @@ function readFrozenBaseline(db: Database.Database): ChatEvalFrozenBaseline | nul
     acceptedVia: 'portal_admin_token',
     evidenceJsonPath: String(row.evidence_json_path),
     evidenceMarkdownPath: String(row.evidence_markdown_path),
+    evidenceJsonSha256: String(row.evidence_json_sha256),
+    evidenceMarkdownSha256: String(row.evidence_markdown_sha256),
+    provenanceClass: String(row.provenance_class) as ChatEvalBaselineProvenanceClass,
+    deployedRuntimeSha: stringOrNull(row.deployed_runtime_sha),
+    deployedArtifactDigest: stringOrNull(row.deployed_artifact_digest),
     gitCommit: String(row.git_commit),
     generatedAt: String(row.generated_at),
     scenarioSetHash: String(row.scenario_set_hash),
@@ -1050,10 +1139,147 @@ function assertStagingBaselineRuntime(runtime: AcceptFrozenRealProviderBaselineI
   }
 }
 
+/** Run ids become archive path segments, so they may not shape the path. */
+const SAFE_RUN_ID = /^[A-Za-z0-9._-]{1,160}$/;
+const FULL_SHA256 = /^[a-f0-9]{64}$/;
+
 function assertBaselineArchivePaths(runId: string, jsonPath: string, markdownPath: string): void {
+  if (!SAFE_RUN_ID.test(runId) || runId.includes('..')) {
+    invalidBaseline('Frozen baseline run id must be a plain archive-safe identifier.');
+  }
   const base = `docs/release/eval-evidence/${runId}`;
   if (jsonPath !== `${base}.json` || markdownPath !== `${base}.md`) {
     invalidBaseline(`Frozen baseline evidence paths must be the exact docs/release/eval-evidence/${runId}.{json,md} pair.`);
+  }
+}
+
+function assertBaselineArchiveDigests(jsonSha256: unknown, markdownSha256: unknown): void {
+  if (!FULL_SHA256.test(String(jsonSha256 ?? '')) || !FULL_SHA256.test(String(markdownSha256 ?? ''))) {
+    invalidBaseline('Frozen baseline requires the full lowercase SHA-256 digest of both archive files.');
+  }
+}
+
+/**
+ * The archive the operator is freezing must be the one the run itself declared
+ * when it posted its evidence. Without this, a valid run could be frozen
+ * against an unrelated committed file.
+ */
+function assertBaselineArchiveMatchesRun(
+  row: Record<string, unknown>,
+  jsonPath: string,
+  markdownPath: string,
+): void {
+  const declaredJson = stringOrNull(row.json_report_path);
+  const declaredMarkdown = stringOrNull(row.markdown_report_path);
+  if (!declaredJson || !declaredMarkdown) {
+    invalidBaseline('The frozen baseline run did not record its own archive report paths.');
+  }
+  if (declaredJson !== jsonPath || declaredMarkdown !== markdownPath) {
+    invalidBaseline('Frozen baseline archive paths do not match the report paths recorded by the run.');
+  }
+}
+
+interface BaselineProvenance {
+  provenanceClass: ChatEvalBaselineProvenanceClass;
+  deployedRuntimeSha: string | null;
+  deployedArtifactDigest: string | null;
+}
+
+/**
+ * Classify how the run bound itself to the artifact that served it. The
+ * identity lives in the persisted preflight attestation because only the
+ * serving process could report it.
+ */
+function resolveBaselineProvenance(
+  row: Record<string, unknown>,
+  acknowledged: boolean | undefined,
+): BaselineProvenance {
+  const preflight = parseJsonObjectOrNull(row.preflight_attestation_json);
+  const deployed = preflight?.deployedRelease;
+  const identity = deployed && typeof deployed === 'object' && !Array.isArray(deployed)
+    ? deployed as Record<string, unknown>
+    : null;
+  const runtimeSha = typeof identity?.runtimeSha === 'string' ? identity.runtimeSha : '';
+  const artifactDigest = typeof identity?.artifactDigest === 'string' ? identity.artifactDigest : '';
+
+  if (/^[a-f0-9]{40}$/.test(runtimeSha) && /^[a-f0-9]{64}$/.test(artifactDigest) && identity?.role === 'staging') {
+    return {
+      provenanceClass: 'deployed_artifact_attested',
+      deployedRuntimeSha: runtimeSha,
+      deployedArtifactDigest: artifactDigest,
+    };
+  }
+
+  if (acknowledged !== true) {
+    invalidBaseline(
+      'This run carries no server-attested deployed release identity. Freezing it as the permanent baseline '
+      + 'requires explicitly acknowledging the reduced operator-checkout provenance.',
+    );
+  }
+  return {
+    provenanceClass: 'operator_checkout_only',
+    deployedRuntimeSha: null,
+    deployedArtifactDigest: null,
+  };
+}
+
+interface RecomputedRunAggregates {
+  scenarioCount: number;
+  passCount: number;
+  partialCount: number;
+  failCount: number;
+  blockedCount: number;
+  averageScore: number;
+}
+
+function recomputeRunAggregates(db: Database.Database, runId: string): RecomputedRunAggregates {
+  const rows = db.prepare(`
+    SELECT status, average_score FROM chat_eval_scenario_results WHERE run_id = ?
+  `).all(runId) as Array<{ status: string; average_score: number }>;
+
+  const counts = { pass: 0, partial: 0, fail: 0, blocked: 0 } as Record<string, number>;
+  let scoreTotal = 0;
+  for (const row of rows) {
+    counts[row.status] = (counts[row.status] ?? 0) + 1;
+    scoreTotal += Number(row.average_score);
+  }
+  return {
+    scenarioCount: rows.length,
+    passCount: counts.pass,
+    partialCount: counts.partial,
+    failCount: counts.fail,
+    blockedCount: counts.blocked,
+    averageScore: rows.length > 0 ? scoreTotal / rows.length : 0,
+  };
+}
+
+/**
+ * The run-level aggregates arrive from the evaluation client. Before they
+ * become a permanent, immutable comparison identity they must agree with the
+ * per-scenario evidence persisted alongside them in this same database.
+ */
+function assertRunAggregatesMatchScenarioEvidence(
+  row: Record<string, unknown>,
+  recomputed: RecomputedRunAggregates,
+): void {
+  const declared = {
+    scenarioCount: Number(row.scenario_count),
+    passCount: Number(row.pass_count),
+    partialCount: Number(row.partial_count),
+    failCount: Number(row.fail_count),
+    blockedCount: Number(row.blocked_count),
+  };
+  for (const [field, value] of Object.entries(declared)) {
+    if (value !== recomputed[field as keyof RecomputedRunAggregates]) {
+      invalidBaseline(
+        `The frozen baseline ${field} does not match the recomputed value from its persisted scenario evidence.`,
+      );
+    }
+  }
+  if (round8(Number(row.average_score)) !== round8(recomputed.averageScore)) {
+    invalidBaseline(
+      'The frozen baseline average score does not match the recomputed value from its persisted scenario evidence.',
+    );
   }
 }
 

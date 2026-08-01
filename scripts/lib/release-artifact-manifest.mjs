@@ -31,6 +31,8 @@ export const RELEASE_RUNTIME_FILES = Object.freeze([
   'scripts/release-runtime-dependencies.mjs',
   'scripts/remote-user-release-transaction.sh',
   'scripts/staging-smoke-ollama.sh',
+  'scripts/training-cross-skill-staging-smoke.sh',
+  'scripts/with-smoke-evidence.sh',
 ]);
 
 export function sha256(value) {

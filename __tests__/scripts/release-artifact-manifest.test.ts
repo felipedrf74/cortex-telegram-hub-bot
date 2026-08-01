@@ -46,6 +46,8 @@ describe('release artifact manifest', () => {
       'scripts/release-runtime-dependencies.mjs',
       'scripts/remote-user-release-transaction.sh',
       'scripts/staging-smoke-ollama.sh',
+      'scripts/training-cross-skill-staging-smoke.sh',
+      'scripts/with-smoke-evidence.sh',
     ]));
     expect(RELEASE_RUNTIME_FILES).not.toEqual(expect.arrayContaining([
       'scripts/promote-exact-release.sh',
@@ -75,6 +77,11 @@ describe('release artifact manifest', () => {
 
   it('verifies a sealed bundle and rejects undeclared bytes', () => {
     const root = fixtureRoot();
+    fs.mkdirSync(path.join(root, 'dist/tools'), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, 'dist/tools/training-cross-skill-staging-smoke.js'),
+      'console.log("cross-skill-smoke");\n',
+    );
     const manifest = buildReleaseArtifactManifest(root);
     const bundle = path.join(root, 'bundle');
     fs.mkdirSync(bundle);
@@ -97,6 +104,19 @@ describe('release artifact manifest', () => {
     }, null, 2)}\n`);
 
     expect(verifyReleaseBundle(bundle, 'a'.repeat(40)).digest).toBe(manifest.digest);
+    const verifiedCandidate = spawnSync(process.execPath, [
+      path.resolve('scripts/release-artifact-manifest.mjs'),
+      '--verify-installed-source', bundle,
+      '--require-declared-file', 'dist/tools/training-cross-skill-staging-smoke.js',
+    ], { encoding: 'utf8' });
+    expect(verifiedCandidate.status).toBe(0);
+    expect(JSON.parse(verifiedCandidate.stdout)).toEqual(expect.objectContaining({
+      schema: 'nexus.release-installed-source-verification.v1',
+      status: 'passed',
+      runtimeSha: 'a'.repeat(40),
+      artifactDigest: manifest.digest,
+      releaseRoot: path.resolve(bundle),
+    }));
     fs.writeFileSync(path.join(bundle, 'undeclared.txt'), 'unexpected\n');
     expect(() => verifyReleaseBundle(bundle, 'a'.repeat(40))).toThrow(
       'undeclared or missing files',

@@ -359,6 +359,19 @@ export async function classifyWithClaude(
   }
   const liveDurationMs = Date.now() - liveStart;
 
+  const manifestPromptEnabled = isManifestClassifierPromptEnabled();
+  if (
+    manifestPromptEnabled
+    && (result.domain === 'clarify' || result.domain === 'none')
+  ) {
+    const disposition = result.domain as 'clarify' | 'none';
+    result = {
+      domain: 'chat',
+      confidence: result.confidence,
+      disposition,
+    };
+  }
+
   // M15 output validation: keep the optional skill field ONLY when the
   // manifest prompt flag is on AND the skill is a manifest chatActionSkill of
   // the classified domain. Providers pass the model's skill through raw; this
@@ -367,7 +380,7 @@ export async function classifyWithClaude(
   // must not leak into the orchestrator hint), so flag-off results stay
   // byte-identical to pre-M15 behavior.
   if (result.skill !== undefined) {
-    const validSkill = isManifestClassifierPromptEnabled() && typeof result.skill === 'string'
+    const validSkill = manifestPromptEnabled && typeof result.skill === 'string'
       ? resolveManifestSkillForDomain(result.domain, result.skill)
       : null;
     if (validSkill) {
@@ -420,6 +433,13 @@ export async function classifyWithClaude(
     }).catch((err) =>
       logger.warn({ err: err instanceof Error ? err.message : String(err) }, 'classify shadow failed'),
     );
+  }
+
+  // Explicit manifest-classifier abstentions are terminal decisions, not
+  // weak guesses. Never replace them with a stale active-domain pin.
+  if (result.disposition) {
+    logger.debug({ result }, 'Routing-provider classification produced a safe terminal disposition');
+    return result;
   }
 
   // M14: the low-confidence floor (legacy 0.6) and the pinned-domain minimum

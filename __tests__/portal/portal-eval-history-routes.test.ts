@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { runChatEvaluationSuite } from '../../src/services/chat-evaluation-harness';
 
@@ -100,6 +102,18 @@ describe('portal eval history routes', () => {
     expect(routes.get('POST /api/portal/eval-history/frozen-baseline')?.[1]).toBe(mocks.requirePortalAdminToken);
   });
 
+  it('mounts scoped eval-history body parsing before the default portal JSON parser', () => {
+    const serverSource = fs.readFileSync(
+      path.resolve(__dirname, '../../src/portal/server.ts'),
+      'utf8',
+    );
+    const evalHistoryIndex = serverSource.indexOf('registerPortalEvalHistoryRoutes(app);');
+    const defaultJsonIndex = serverSource.indexOf('app.use(express.json());');
+
+    expect(evalHistoryIndex).toBeGreaterThan(-1);
+    expect(defaultJsonIndex).toBeGreaterThan(evalHistoryIndex);
+  });
+
   it('lists recent eval runs with optional filters', () => {
     const { routes, app } = makeApp();
     registerPortalEvalHistoryRoutes(app as any);
@@ -134,6 +148,8 @@ describe('portal eval history routes', () => {
         runId: 'chat-eval-first-live',
         evidenceJsonPath: 'docs/release/eval-evidence/chat-eval-first-live.json',
         evidenceMarkdownPath: 'docs/release/eval-evidence/chat-eval-first-live.md',
+        evidenceJsonSha256: 'e'.repeat(64),
+        evidenceMarkdownSha256: 'f'.repeat(64),
         acceptedBy: 'untrusted-client-claim',
       },
     }, res);
@@ -142,9 +158,105 @@ describe('portal eval history routes', () => {
       runId: 'chat-eval-first-live',
       evidenceJsonPath: 'docs/release/eval-evidence/chat-eval-first-live.json',
       evidenceMarkdownPath: 'docs/release/eval-evidence/chat-eval-first-live.md',
+      evidenceJsonSha256: 'e'.repeat(64),
+      evidenceMarkdownSha256: 'f'.repeat(64),
+      // Absent from the request body, so the reduced-provenance escape hatch
+      // is never opened by omission.
+      acknowledgeOperatorCheckoutProvenance: false,
       runtime: { nodeEnv: 'staging', nexusEnv: undefined, staging: 'true' },
     });
     expect(payload.body).toEqual({ ok: true, action: 'created', baseline: { runId: 'chat-eval-first-live' } });
+    vi.unstubAllEnvs();
+  });
+
+  /** Minimal attestation that satisfies the route's cost guard. */
+  function attestedCostEvidence(): Record<string, unknown> {
+    const numeric = Object.fromEntries([
+      'totalCeilingUsd', 'targetCeilingUsd', 'judgeCeilingUsd',
+      'targetActualSpendUsd', 'targetReservedAttemptCeilingUsd', 'targetCommittedCeilingUsd',
+      'judgeEstimatedSpendUsd', 'judgeActualSpendUsd', 'judgeReservedAttemptCeilingUsd',
+      'judgeCommittedCeilingUsd', 'judgeUsageCallCount', 'judgeProviderAttemptCount',
+      'judgeUnresolvedPricingCount', 'totalActualSpendUsd',
+      'totalEstimatedActualSpendUsd', 'totalConservativeCommitmentUsd',
+      'targetUsageCallCount', 'targetProviderAttemptCount', 'unresolvedPricingCount',
+    ].map((key) => [key, 0]));
+    return {
+      contractVersion: 'chat-live-eval-v1',
+      attested: true,
+      reasons: [],
+      targetProviders: ['gemini'],
+      judgeProviders: ['gemini'],
+      judgeModels: ['gemini-2.5-flash-lite'],
+      judgeUsageDatabaseSha256: null,
+      preparation: { scenarioCount: 1 },
+      ...numeric,
+    };
+  }
+
+  it('refuses a hand-typed deployed-release claim that the serving process cannot corroborate', () => {
+    const { routes, app } = makeApp();
+    registerPortalEvalHistoryRoutes(app as any);
+    const suite = {
+      generatedAt: '2026-07-31T17:19:58.073Z',
+      mode: 'real_provider',
+      passed: false,
+      averageScore: 1.3,
+      scenarioCount: 1,
+      statusCounts: { pass: 0, partial: 0, fail: 1, blocked: 0 },
+      qualityMetrics: [],
+      dayToDay: {},
+      scenarios: [],
+    };
+    const preflight = {
+      contractVersion: 'chat-live-eval-v1',
+      mode: 'real_provider',
+      runId: 'chat-eval-forged',
+      providerPolicy: 'metered_cloud_only',
+      productionDataUsed: false,
+      seedProfileVersion: 'single-tenant-live-v3',
+      supportedScenarioIds: ['morning_planning'],
+      // Well-formed, entirely fabricated, and not what this process is serving.
+      deployedRelease: { runtimeSha: 'c'.repeat(40), artifactDigest: 'd'.repeat(64), role: 'staging' },
+    };
+
+    vi.stubEnv('NEXUS_RELEASE_SHA', '');
+    vi.stubEnv('NEXUS_RELEASE_ARTIFACT_SHA256', '');
+    vi.stubEnv('NEXUS_RELEASE_ROLE', '');
+    const handler = routes.get('POST /api/portal/eval-history')?.at(-1)!;
+    handler({ body: { result: suite, costAttestation: null, preflightAttestation: preflight } }, makeResponse().res);
+    expect(mocks.persistChatEvalRun).not.toHaveBeenCalled();
+
+    // Even a fully attested process must reject an identity that is not its own.
+    vi.stubEnv('NEXUS_RELEASE_SHA', 'a'.repeat(40));
+    vi.stubEnv('NEXUS_RELEASE_ARTIFACT_SHA256', 'b'.repeat(64));
+    vi.stubEnv('NEXUS_RELEASE_ROLE', 'staging');
+    mocks.persistChatEvalRun.mockReturnValue({ runId: 'chat-eval-forged', runRowId: 1, scenarioCount: 1 });
+    handler({
+      body: {
+        result: suite,
+        costAttestation: attestedCostEvidence(),
+        preflightAttestation: preflight,
+      },
+    }, makeResponse().res);
+    const forwarded = mocks.persistChatEvalRun.mock.calls.at(-1)?.[1];
+    expect(forwarded?.preflightAttestation?.deployedRelease ?? null).toBeNull();
+
+    // Not vacuous: the identity this process really serves IS carried through.
+    handler({
+      body: {
+        result: suite,
+        costAttestation: attestedCostEvidence(),
+        preflightAttestation: {
+          ...preflight,
+          deployedRelease: { runtimeSha: 'a'.repeat(40), artifactDigest: 'b'.repeat(64), role: 'staging' },
+        },
+      },
+    }, makeResponse().res);
+    expect(mocks.persistChatEvalRun.mock.calls.at(-1)?.[1]?.preflightAttestation?.deployedRelease).toEqual({
+      runtimeSha: 'a'.repeat(40),
+      artifactDigest: 'b'.repeat(64),
+      role: 'staging',
+    });
     vi.unstubAllEnvs();
   });
 
@@ -163,6 +275,8 @@ describe('portal eval history routes', () => {
       runId: 'chat-eval-other',
       evidenceJsonPath: 'docs/release/eval-evidence/chat-eval-other.json',
       evidenceMarkdownPath: 'docs/release/eval-evidence/chat-eval-other.md',
+      evidenceJsonSha256: 'e'.repeat(64),
+      evidenceMarkdownSha256: 'f'.repeat(64),
     } }, res);
 
     expect(payload.statusCode).toBe(409);

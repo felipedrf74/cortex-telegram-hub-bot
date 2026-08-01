@@ -22,12 +22,34 @@ import type {
   TrainingMeshContext,
 } from '../services/cross-agent-learning';
 import type { SharedDecisionContracts } from '../services/shared-decision-context';
+import { findChatActionDefinition } from '../services/chat/registry';
+import {
+  CROSS_SKILL_EXECUTION_ENV_VAR,
+  enforceCrossSkillPreview,
+  isCrossSkillExecutionEnabled,
+} from '../services/chat/planner/cross-skill-ownership';
+import { MANIFEST_ROUTING_MASTER_KILL_ENV_VAR } from '../services/intent-resolution/manifest-routing-flags';
+import { splitChatMultiStepRequest } from '../services/chat-multi-step-splitter';
+import { routeChatMultiStepSegments } from '../services/chat-segment-router';
+import { multiStepPreviewCopy } from '../services/chat/executor/response-copy';
+import { executeChatActionPlan } from '../services/chat/executor/plan-executor';
+import { makeStep } from '../services/skills/step-builder';
+import { crossSkillPlanDeclinedStage } from '../api/routes/chat-pipeline/stages/cross-skill-plan-declined';
+import type {
+  ChatActionPlan,
+  ChatActionPlannerDeps,
+  ChatPlannerInput,
+  ChatPlanStep,
+} from '../services/chat/types';
+import type { ChatTurnCtx } from '../api/routes/chat-pipeline/types';
 
-const DEFAULT_RESULTS_PATH = 'docs/training/cross-skill-staging-smoke-results.md';
+export const DEFAULT_CROSS_SKILL_SMOKE_RESULTS_PATH =
+  '.local/release/smoke-evidence/training-cross-skill-staging-latest.md';
 
 type CrossSkillFlow =
   | 'local_fixture_contracts'
   | 'staging_prerequisites'
+  | 'phase7_cross_skill_flag_contract'
   | 'secretary_conflict'
   | 'cooking_fueling_gap'
   | 'finance_budget_constraint'
@@ -57,6 +79,11 @@ interface SmokeReport {
   finishedAt: string;
   dryRun: boolean;
   userId?: number;
+  releaseIdentity: {
+    environment: string | null;
+    runtimeSha: string | null;
+    artifactDigest: string | null;
+  };
   prerequisites: SmokePrerequisiteReport;
   operations: SmokeOperationResult[];
   localFixtureOperations: SmokeOperationResult[];
@@ -118,6 +145,26 @@ export function evaluateCrossSkillSmokePrerequisites(env: NodeJS.ProcessEnv): Sm
     missing.push('TRAINING_CROSS_SKILL_STAGING_SMOKE=1');
   }
 
+  if (!parseEnvBoolean(env[CROSS_SKILL_EXECUTION_ENV_VAR])) {
+    missing.push(`${CROSS_SKILL_EXECUTION_ENV_VAR}=true`);
+  }
+
+  if (parseEnvBoolean(env[MANIFEST_ROUTING_MASTER_KILL_ENV_VAR])) {
+    missing.push(`${MANIFEST_ROUTING_MASTER_KILL_ENV_VAR} must be false/unset`);
+  }
+
+  if (env.NEXUS_RELEASE_ROLE !== 'staging') {
+    missing.push('NEXUS_RELEASE_ROLE=staging');
+  }
+
+  if (!/^[a-f0-9]{40}$/.test(env.NEXUS_RELEASE_SHA ?? '')) {
+    missing.push('NEXUS_RELEASE_SHA=<full lowercase 40-hex SHA>');
+  }
+
+  if (!/^[a-f0-9]{64}$/.test(env.NEXUS_RELEASE_ARTIFACT_SHA256 ?? '')) {
+    missing.push('NEXUS_RELEASE_ARTIFACT_SHA256=<full lowercase 64-hex digest>');
+  }
+
   const userId = Number(env.TRAINING_CROSS_SKILL_STAGING_USER_ID);
   if (!Number.isInteger(userId) || userId <= 0) {
     missing.push('TRAINING_CROSS_SKILL_STAGING_USER_ID=<staging test user id>');
@@ -134,6 +181,223 @@ export function evaluateCrossSkillSmokePrerequisites(env: NodeJS.ProcessEnv): Sm
   }
 
   return { ok: missing.length === 0, missing, warnings };
+}
+
+/**
+ * Phase 7 behavioral proof for the real cross-skill runtime boundaries.
+ * This is deliberately provider-free and mutation-free: the synthetic plan
+ * reaches the production segment router, ownership transform, grouped preview,
+ * declined-stage predicate, and executor confirmation hold with persistence
+ * disabled. It never confirms the plan, so no action executor can run.
+ *
+ * The Training handoff still returns verified_pending, so its ordinary
+ * outputRefs must remain absent even while cross-skill execution is enabled.
+ */
+export async function evaluatePhase7CrossSkillFlagContract(
+  env: NodeJS.ProcessEnv,
+): Promise<SmokeOperationResult> {
+  const trainingPlanCreate = findChatActionDefinition('training', 'training_plan_create');
+  const crossSkillEnabled = isCrossSkillExecutionEnabled(env);
+  const masterKillEnabled = parseEnvBoolean(env[MANIFEST_ROUTING_MASTER_KILL_ENV_VAR]);
+  const ordinaryOutputRefsAbsent = trainingPlanCreate !== null && trainingPlanCreate.outputRefs === undefined;
+
+  try {
+    return await withScopedCrossSkillProcessEnv(env, async () => {
+      const isolatedUserId = Number(env.TRAINING_CROSS_SKILL_STAGING_USER_ID);
+      const plannerInput: ChatPlannerInput = {
+        text: "create this week's workout plan and add workout review to my calendar tomorrow at 7am",
+        userId: isolatedUserId,
+        tenantId: isolatedUserId,
+        conversationId: 'phase7-cross-skill-smoke',
+        messageId: 'phase7-cross-skill-smoke-message',
+        channel: 'api',
+        locale: 'en-US',
+        timezone: 'Europe/Lisbon',
+        nowIso: '2026-07-31T10:00:00.000Z',
+        persistRuns: false,
+      };
+      const split = splitChatMultiStepRequest(plannerInput.text);
+      const segmentSteps: ChatPlanStep[] = [
+        makeStep(plannerInput, {
+          skill: 'training',
+          action: 'training_plan_create',
+          risk: 'safe_write',
+          provider: 'nexus',
+          args: {
+            sport: 'running',
+            goal: 'weekly workout plan',
+            durationWeeks: 1,
+            startDate: '2026-08-03',
+            weeklyVolumeKm: 20,
+          },
+          requiredArgsPresent: true,
+        }),
+        // This is the historical lookalike misroute. The live manifest's
+        // calendar-placement ownership row must replace it in the router.
+        makeStep(plannerInput, {
+          skill: 'tasks',
+          action: 'add_subtasks_to_task',
+          risk: 'safe_write',
+          provider: 'nexus',
+          args: { title: 'calendar', subtasks: ['workout review'] },
+          requiredArgsPresent: true,
+        }),
+      ];
+      let segmentIndex = 0;
+      const routed = await routeChatMultiStepSegments(
+        plannerInput,
+        split.segments,
+        async (segmentInput) => syntheticSegmentPlan(segmentInput, segmentSteps[segmentIndex++]),
+      );
+      const routedPlan = routed.plan;
+      const ownershipSignal = routedPlan?.debug?.routingSignals.find((signal) => (
+        signal === 'cross_skill_ownership_rewrite:tasks.add_subtasks_to_task->secretary_calendar.schedule_event'
+      ));
+      const ownedSteps = routedPlan?.steps.map((step) => `${step.skill}.${step.action}`) ?? [];
+      const allStepsReady = routedPlan?.steps.every((step) => step.requiredArgsPresent) === true;
+      const previewPlan = routedPlan ? enforceCrossSkillPreview(routedPlan) : null;
+      const preview = previewPlan ? multiStepPreviewCopy(previewPlan, plannerInput) : '';
+      const groupedPreview = preview.includes('Training:')
+        && preview.includes('Secretary — Calendar:');
+
+      const declineCtx = {
+        normalizedText: 'Log this receipt for 45 EUR and remind me Friday',
+        preRoutingDecision: {
+          primaryDomain: 'finance',
+          involvedSkills: ['finance', 'secretary'],
+          intentKinds: ['action', 'cross_skill'],
+          confidence: 0.94,
+          reasonCodes: ['cross_skill_request'],
+          explanation: 'Finance owns the receipt and Secretary owns the reminder.',
+          ownership: {
+            scheduleOwner: 'secretary',
+            contentOwners: ['finance', 'secretary'],
+            chatRole: 'coordinate_and_explain',
+          },
+          safety: {
+            destructive: false,
+            requiresConfirmation: false,
+            explicitConfirmation: false,
+            confirmationReasonCodes: [],
+          },
+          context: {
+            shouldRefreshBeforeAnswer: false,
+            staleContextRisk: false,
+            ambiguousReference: false,
+            tenantBoundaryMention: false,
+          },
+          clarify: null,
+        },
+      } as unknown as ChatTurnCtx;
+      const declineFlagOn = await crossSkillPlanDeclinedStage.canHandle(declineCtx);
+      process.env[CROSS_SKILL_EXECUTION_ENV_VAR] = 'false';
+      const declineFlagOff = await crossSkillPlanDeclinedStage.canHandle(declineCtx);
+      process.env[CROSS_SKILL_EXECUTION_ENV_VAR] = env[CROSS_SKILL_EXECUTION_ENV_VAR] ?? 'true';
+
+      let dependencyAccesses = 0;
+      let executorAccesses = 0;
+      const failClosedDependencies = new Proxy(Object.create(null) as Required<ChatActionPlannerDeps>, {
+        get(_target, property) {
+          dependencyAccesses += 1;
+          throw new Error(`cross_skill_smoke_dependency_access:${String(property)}`);
+        },
+      });
+      const executorResponse = previewPlan && allStepsReady
+        ? await executeChatActionPlan(previewPlan, plannerInput, failClosedDependencies, {
+          beforeStepExecution() {
+            executorAccesses += 1;
+            throw new Error('cross_skill_smoke_executor_access');
+          },
+        })
+        : null;
+      const executorHeldForConfirmation = executorResponse?.metadata.actionStatus === 'needs_confirmation';
+      const executionStayedCold = dependencyAccesses === 0 && executorAccesses === 0;
+
+      return assertOperation({
+        flow: 'phase7_cross_skill_flag_contract',
+        expected: 'The enabled runtime rewrites ownership, groups one preview, declines unsafe planner fallthrough, and holds execution for confirmation while Training outputRefs remain absent.',
+        checks: [
+          ['AI_CROSS_SKILL_EXECUTION is effectively enabled', crossSkillEnabled && isCrossSkillExecutionEnabled()],
+          ['manifest-routing master kill is off', !masterKillEnabled],
+          ['training_plan_create definition is present', trainingPlanCreate !== null],
+          ['training_plan_create ordinary outputRefs remain absent', ordinaryOutputRefsAbsent],
+          ['the real splitter produced two planner segments', split.classification === 'multi' && split.segments.length === 2],
+          ['the real segment router applied the manifest ownership row', ownershipSignal !== undefined],
+          ['the rewritten plan has Training and Secretary-owned calendar steps', ownedSteps.join(',') === 'training.training_plan_create,secretary_calendar.schedule_event'],
+          ['the owner-extracted steps are executable without invented test patches', allStepsReady],
+          ['the real cross-skill preview is grouped and confirmation-required', previewPlan?.requiresConfirmation === true && groupedPreview],
+          ['the declined-stage boundary handles only the flag-on turn', declineFlagOn === true && declineFlagOff === false],
+          ['the real executor held the plan before any action ran', executorHeldForConfirmation && executionStayedCold],
+          ['the behavioral plan uses only the dedicated staging identity', Number.isInteger(isolatedUserId) && isolatedUserId > 0 && plannerInput.userId === isolatedUserId && plannerInput.tenantId === isolatedUserId],
+        ],
+        evidence: [
+          `${CROSS_SKILL_EXECUTION_ENV_VAR}=${crossSkillEnabled ? 'enabled' : 'disabled'}`,
+          `${MANIFEST_ROUTING_MASTER_KILL_ENV_VAR}=${masterKillEnabled ? 'on' : 'off'}`,
+          `training_plan_create.outputRefs=${ordinaryOutputRefsAbsent ? 'absent' : 'present-or-definition-missing'}`,
+          `ownership=${ownershipSignal ? 'tasks.add_subtasks_to_task->secretary_calendar.schedule_event' : 'missing'}`,
+          `groupedPreview=${groupedPreview ? 'training+secretary_calendar' : 'missing'}`,
+          `declineBoundary=${declineFlagOn === true && declineFlagOff === false ? 'flag-on-only' : 'failed'}`,
+          `executorConfirmation=${executorHeldForConfirmation ? 'needs_confirmation;executedActions=0' : 'failed'}`,
+          `executionGuards=dependencyAccesses:${dependencyAccesses};executorAccesses:${executorAccesses}`,
+          `scope=user:${plannerInput.userId};tenant:${plannerInput.tenantId}`,
+        ],
+      });
+    });
+  } catch (error) {
+    return assertOperation({
+      flow: 'phase7_cross_skill_flag_contract',
+      expected: 'The enabled runtime completes every provider-free cross-skill behavioral probe.',
+      checks: [['behavioral probe completed without an exception', false]],
+      evidence: [`probeError=${oneLine(error instanceof Error ? error.message : String(error))}`],
+    });
+  }
+}
+
+function syntheticSegmentPlan(input: ChatPlannerInput, step: ChatPlanStep | undefined): ChatActionPlan | null {
+  if (!step) return null;
+  return {
+    schemaVersion: 1,
+    userId: String(input.userId),
+    tenantId: String(input.tenantId),
+    conversationId: input.conversationId,
+    messageId: input.messageId,
+    locale: input.locale ?? 'en-US',
+    timezone: input.timezone,
+    channel: input.channel,
+    createdAt: input.nowIso ?? new Date().toISOString(),
+    planner: 'deterministic',
+    steps: [step],
+    requiresConfirmation: false,
+    confidence: 0.99,
+    effectiveConfidence: 0.99,
+    debug: {
+      routingSignals: ['phase7_cross_skill_smoke_segment'],
+      rejectedFastPaths: [],
+      parser: 'deterministic',
+    },
+  };
+}
+
+async function withScopedCrossSkillProcessEnv<T>(
+  env: NodeJS.ProcessEnv,
+  run: () => Promise<T>,
+): Promise<T> {
+  const names = [CROSS_SKILL_EXECUTION_ENV_VAR, MANIFEST_ROUTING_MASTER_KILL_ENV_VAR] as const;
+  const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+  for (const name of names) {
+    const value = env[name];
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  }
+  try {
+    return await run();
+  } finally {
+    for (const name of names) {
+      const value = previous[name];
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
 }
 
 export async function runTrainingCrossSkillStagingSmoke(
@@ -159,6 +423,7 @@ export async function runTrainingCrossSkillStagingSmoke(
   }
 
   const runtimeReader = reader ?? loadRuntimeCrossSkillReader();
+  operations.push(await evaluatePhase7CrossSkillFlagContract(options.env));
   const bundle = await readRuntimeBundle(options.userId, runtimeReader);
   operations.push(...evaluateRuntimeBundle(bundle, options.userId));
 
@@ -848,6 +1113,11 @@ function finishReport(
     finishedAt: new Date().toISOString(),
     dryRun: options.dryRun,
     userId: options.userId,
+    releaseIdentity: {
+      environment: options.env.NEXUS_RELEASE_ROLE ?? null,
+      runtimeSha: options.env.NEXUS_RELEASE_SHA ?? null,
+      artifactDigest: options.env.NEXUS_RELEASE_ARTIFACT_SHA256 ?? null,
+    },
     prerequisites,
     operations,
     localFixtureOperations,
@@ -878,6 +1148,11 @@ function oneLine(text: string): string {
     .trim();
 }
 
+function parseEnvBoolean(raw: string | undefined): boolean {
+  const normalized = String(raw ?? '').trim().toLowerCase();
+  return normalized === 'true' || normalized === '1' || normalized === 'yes';
+}
+
 export function renderCrossSkillSmokeReportMarkdown(report: SmokeReport): string {
   const lines: string[] = [];
   lines.push('# Training Cross-Skill Staging Smoke Results');
@@ -887,6 +1162,9 @@ export function renderCrossSkillSmokeReportMarkdown(report: SmokeReport): string
   lines.push(`- Finished: \`${report.finishedAt}\``);
   lines.push(`- Dry run: \`${report.dryRun}\``);
   lines.push(`- Staging user ID: \`${report.userId ?? 'not configured'}\``);
+  lines.push(`- Environment: \`${report.releaseIdentity.environment ?? 'not configured'}\``);
+  lines.push(`- Runtime SHA: \`${report.releaseIdentity.runtimeSha ?? 'not configured'}\``);
+  lines.push(`- Artifact SHA-256: \`${report.releaseIdentity.artifactDigest ?? 'not configured'}\``);
   lines.push('');
   lines.push('## Prerequisites');
   lines.push('');
@@ -953,7 +1231,8 @@ async function main(): Promise<void> {
   const normalizedUserId = Number.isInteger(userId) && userId > 0 ? userId : undefined;
   const runId = process.env.TRAINING_CROSS_SKILL_STAGING_RUN_ID || buildCrossSkillSmokeRunId();
   const dryRun = process.argv.includes('--dry-run') || process.env.TRAINING_CROSS_SKILL_STAGING_DRY_RUN === '1';
-  const resultsPath = process.env.TRAINING_CROSS_SKILL_STAGING_RESULTS_PATH || DEFAULT_RESULTS_PATH;
+  const resultsPath = process.env.TRAINING_CROSS_SKILL_STAGING_RESULTS_PATH
+    || DEFAULT_CROSS_SKILL_SMOKE_RESULTS_PATH;
   const prerequisites = evaluateCrossSkillSmokePrerequisites(process.env);
   const reader = !dryRun && prerequisites.ok && normalizedUserId ? loadRuntimeCrossSkillReader() : null;
 

@@ -20,6 +20,7 @@ import {
   validateStructuredOutputSchema,
   validateStructuredOutputValue,
 } from './structured-output-schema';
+import { resolveManifestClassifierDisposition } from '../router/classifier-prompt-builder';
 
 // ─── Error Classification ─────────────────────────────────────────
 // Only retryable errors should trigger circuit-breaker failures and fallback.
@@ -182,6 +183,16 @@ import type Anthropic from '@anthropic-ai/sdk';
 const TOOL_BEARING_CLASSIFY_DOMAINS: ReadonlySet<string> = new Set(['secretary', 'triathlon']);
 
 function isLowConfidenceClassifyResult(result: ClassificationResult): boolean {
+  // Explicit manifest abstentions are complete routing decisions. A
+  // confidence fallback can otherwise replace the safe terminal with an
+  // executable domain. The flag check inside the resolver preserves legacy
+  // escalation unchanged when the manifest prompt is off.
+  if (
+    resolveManifestClassifierDisposition(result.domain)
+    || (result.disposition && resolveManifestClassifierDisposition(result.disposition))
+  ) {
+    return false;
+  }
   const thresholds = config.classifyConfidenceThresholds;
   if (!thresholds) return false; // defensive: skip if config missing (test fixtures, etc.)
   const isToolDomain = TOOL_BEARING_CLASSIFY_DOMAINS.has(result.domain);

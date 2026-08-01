@@ -269,6 +269,12 @@ export function createPortalServer(): http.Server {
     }
   }
 
+  // Live-eval evidence can legitimately exceed Express's 100 KB default.
+  // Mount this narrowly scoped route family before the global parser so its
+  // own limiter -> admin auth -> 2 MB/32 KB parser chain receives the raw
+  // request stream. All other portal routes retain the smaller global cap.
+  registerPortalEvalHistoryRoutes(app);
+
   app.use(express.json());
 
   // ── AI provider routing (must initialize BEFORE any AI call) ─────────
@@ -406,8 +412,6 @@ export function createPortalServer(): http.Server {
   registerPortalAdminDataRoutes(app);
 
   registerPortalChatRoutes(app);
-
-  registerPortalEvalHistoryRoutes(app);
 
   registerPortalChatQualityRoutes(app);
 

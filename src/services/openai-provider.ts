@@ -52,6 +52,7 @@ import {
 } from './api-usage-fallback';
 import { resolveApiUsageAttribution } from './api-usage-attribution';
 import { assertAiBudgetReservationForProvider } from './cost-guardrail';
+import { resolveManifestClassifierDisposition } from '../router/classifier-prompt-builder';
 
 // ─── Client (lazy init — only created if API key is set) ────────────
 
@@ -878,6 +879,11 @@ ${message}`;
       const parsed = JSON.parse(text);
       const domain = parsed.domain as DomainName;
       const confidence = parsed.confidence as number;
+
+      // Manifest `clarify` / `none` labels are terminal decisions rather
+      // than weak domain guesses. Flag-off behavior remains unchanged.
+      const disposition = resolveManifestClassifierDisposition(domain);
+      if (disposition) return { domain: disposition, confidence };
 
       if (confidence < 0.6) return { domain: 'secretary', confidence };
       return { domain, confidence };

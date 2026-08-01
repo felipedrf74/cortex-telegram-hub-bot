@@ -13,6 +13,7 @@ import { getIntegrationSummary } from '../../services/integration-status';
 import { getNotificationProfileIfExists } from '../../services/notification-orchestrator';
 import { getDecisionSummary } from '../../services/decision-center';
 import { getCurrentChatRequestLocale } from '../../services/chat-request-locale-context';
+import { logger } from '../../utils/logger';
 import {
   clearActiveChatDomain,
   getActiveChatDomain,
@@ -218,6 +219,22 @@ const domainHandlers: Record<string, ChatDomainHandler> = {
   decision_center: handleDecisionCenterManifestTail,
 };
 
+/**
+ * Response-envelope domains that must never become routing continuity. `chat`
+ * is what the manifest classifier's terminal `clarify`/`none` outcome returns;
+ * pinning it makes the next turn short-circuit to UNKNOWN_DOMAIN.
+ *
+ * Scoped deliberately to envelope domains rather than "anything without a
+ * legacy REST handler": Chat Core v2's deterministic read legitimately pins
+ * conversation domains such as `tasks` and `training`, which have no entry in
+ * `domainHandlers` and whose continuity must survive with every flag off.
+ */
+const NON_ROUTABLE_CONTINUITY_DOMAINS = new Set<string>(['chat']);
+
+function isNonRoutableContinuityDomain(domain: DomainName): boolean {
+  return NON_ROUTABLE_CONTINUITY_DOMAINS.has(domain);
+}
+
 export function rememberChatActiveDomain(
   userId: number,
   domain: DomainName,
@@ -225,6 +242,10 @@ export function rememberChatActiveDomain(
   tenantId?: number,
   continuity?: ChatContinuityWriteExtras,
 ): void {
+  if (isNonRoutableContinuityDomain(domain)) {
+    logger.warn({ userId, tenantId, domain }, 'Refusing non-routable active chat domain');
+    return;
+  }
   rememberActiveChatDomain(userId, domain, timestamp, tenantId, continuity);
 }
 
@@ -242,7 +263,15 @@ export function clearChatActiveDomain(userId: number, tenantId?: number): void {
 }
 
 export function getLastChatActiveDomain(userId: number, now = Date.now(), tenantId?: number): DomainName | null {
-  return getActiveChatDomain(userId, now, tenantId);
+  const domain = getActiveChatDomain(userId, now, tenantId);
+  if (!domain) return null;
+  if (!isNonRoutableContinuityDomain(domain)) return domain;
+
+  // Defensive cleanup for an envelope domain persisted by an older release.
+  // Clear before pre-routing can expose one as active context.
+  logger.warn({ userId, tenantId, domain }, 'Dropping non-routable active chat domain');
+  clearActiveChatDomain(userId, tenantId);
+  return null;
 }
 
 export function resolveChatActiveContext(userId: number, now = Date.now(), tenantId?: number): ChatActiveContext | null {

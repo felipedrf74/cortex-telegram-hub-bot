@@ -25,6 +25,8 @@ const hoisted = vi.hoisted(() => ({
   analyzeChatSkillOrchestration: vi.fn(),
   getPendingChatConfirmation: vi.fn(),
   clearPendingChatConfirmation: vi.fn(),
+  rememberChatActiveDomain: vi.fn(),
+  syncConversationStateForShortcut: vi.fn(),
 }));
 
 vi.mock('../../../src/utils/logger', () => ({
@@ -67,7 +69,7 @@ vi.mock('../../../src/api/routes/chat-message-context', async () => ({
   ...(await vi.importActual('../../../src/api/routes/chat-message-context')),
   buildDefaultButtonsForChatDomain: vi.fn(() => null),
   getChatDomainHandler: vi.fn(() => vi.fn()),
-  rememberChatActiveDomain: vi.fn(),
+  rememberChatActiveDomain: (...args: unknown[]) => hoisted.rememberChatActiveDomain(...args),
 }));
 
 vi.mock('../../../src/api/routes/chat-message-execution', async (importOriginal) => {
@@ -96,7 +98,7 @@ vi.mock('../../../src/api/routes/chat-message-tier-gate', () => ({
 vi.mock('../../../src/api/routes/chat-persistence', async () => ({
   ...(await vi.importActual('../../../src/api/routes/chat-persistence')),
   persistExchange: (...args: unknown[]) => hoisted.persistExchange(...args as []),
-  syncConversationStateForShortcut: vi.fn(),
+  syncConversationStateForShortcut: (...args: unknown[]) => hoisted.syncConversationStateForShortcut(...args),
 }));
 
 vi.mock('../../../src/api/routes/chat-message-shortcuts', async () => ({
@@ -183,6 +185,44 @@ afterEach(() => {
 });
 
 describe('legacy_tail M18 timeout catch', () => {
+  it.each([
+    ['clarify', 'routing-clarify', 'needs_clarification'],
+    ['none', 'unsupported', 'blocked'],
+  ] as const)('terminates an explicit classifier %s result before orchestration or domain execution', async (
+    disposition,
+    routeMethod,
+    actionStatus,
+  ) => {
+    hoisted.routeMessage.mockResolvedValue({
+      domain: 'chat',
+      method: 'classifier',
+      confidence: 0.93,
+      strippedMessage: 'do the ambiguous thing',
+      disposition,
+    });
+
+    const { ctx, json } = buildCtx({ normalizedText: 'do the ambiguous thing' });
+    const result = await legacyTailStage.handle(ctx);
+
+    expect(result).toEqual({ kind: 'respond' });
+    expect(json).toHaveBeenCalledTimes(1);
+    expect(json.mock.calls[0][0]).toMatchObject({
+      domain: 'chat',
+      routeMethod,
+      metadata: {
+        type: 'chat_manifest_classifier_terminal',
+        disposition,
+        actionStatus,
+      },
+    });
+    expect(hoisted.analyzeChatSkillOrchestration).not.toHaveBeenCalled();
+    expect(hoisted.runWithChatToolAuthorization).not.toHaveBeenCalled();
+    expect(hoisted.executeChatDomainHandler).not.toHaveBeenCalled();
+    expect(hoisted.persistExchange).toHaveBeenCalledTimes(1);
+    expect(hoisted.rememberChatActiveDomain).not.toHaveBeenCalled();
+    expect(hoisted.syncConversationStateForShortcut).not.toHaveBeenCalled();
+  });
+
   it('turns a checkpointed timeout into an honest queued partial-progress 202 naming tools 1-2', async () => {
     const timeoutError = new ChatDomainTimeoutError('req-m18', [
       { toolName: 'ms_todo_get_tasks', sequence: 1, completedAt: '2026-07-21T10:00:00.000Z' },

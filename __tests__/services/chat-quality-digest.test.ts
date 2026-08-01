@@ -170,6 +170,7 @@ function costEvidence(
 
 function preflight(runId: string, scenarioIds: string[]): Record<string, unknown> {
   return {
+    deployedRelease: { runtimeSha: 'c'.repeat(40), artifactDigest: 'd'.repeat(64), role: 'staging' },
     contractVersion: 'chat-live-eval-v1', mode: 'real_provider', runId,
     budget: { totalCeilingUsd: 0.5, targetCeilingUsd: 0.45, judgeCeilingUsd: 0.05 },
     targetBaseCategory: 'chat_live_eval_real', providerPolicy: 'metered_cloud_only',
@@ -435,6 +436,8 @@ describe('chat quality weekly digest', () => {
     const scenarioIds = baseline.scenarios.map((scenario) => scenario.id);
     persistChatEvalRun(baseline, {
       db, runId: baselineId, gitCommit: 'a'.repeat(40), budgetUsd: 0.5,
+      jsonReportPath: `docs/release/eval-evidence/${baselineId}.json`,
+      markdownReportPath: `docs/release/eval-evidence/${baselineId}.md`,
       realProviderCalls: 1, costAttestation: costEvidence(scenarioIds, 0.01, 0.5),
       preflightAttestation: preflight(baselineId, scenarioIds),
     });
@@ -442,6 +445,8 @@ describe('chat quality weekly digest', () => {
       runId: baselineId,
       evidenceJsonPath: `docs/release/eval-evidence/${baselineId}.json`,
       evidenceMarkdownPath: `docs/release/eval-evidence/${baselineId}.md`,
+      evidenceJsonSha256: 'e'.repeat(64),
+      evidenceMarkdownSha256: 'f'.repeat(64),
       runtime: { nodeEnv: 'staging', staging: 'true' },
     });
     const followupId = 'chat-eval-digest-followup';

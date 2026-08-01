@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
 import {
@@ -24,6 +24,22 @@ const ENABLED_ENV = {
   CHAT_CORE_V2_SHADOW_ROUTE_HOOK_ENABLED: 'true',
   CHAT_CORE_V2_SHADOW_ROUTE_HMAC_SECRET: 'chat-core-v2-shadow-test-secret',
 };
+const RELEASE_IDENTITY_ENV = {
+  NEXUS_RELEASE_SHA: 'a'.repeat(40),
+  NEXUS_RELEASE_ARTIFACT_SHA256: 'b'.repeat(64),
+  NEXUS_RELEASE_ROLE: 'staging',
+};
+
+function stubReleaseIdentityEnv(
+  releaseEnvironment: Partial<typeof RELEASE_IDENTITY_ENV>,
+): void {
+  vi.stubEnv('NEXUS_RELEASE_SHA', releaseEnvironment.NEXUS_RELEASE_SHA ?? '');
+  vi.stubEnv(
+    'NEXUS_RELEASE_ARTIFACT_SHA256',
+    releaseEnvironment.NEXUS_RELEASE_ARTIFACT_SHA256 ?? '',
+  );
+  vi.stubEnv('NEXUS_RELEASE_ROLE', releaseEnvironment.NEXUS_RELEASE_ROLE ?? '');
+}
 
 describe('Chat Core v2 shadow route hook', () => {
   beforeEach(() => {
@@ -31,6 +47,7 @@ describe('Chat Core v2 shadow route hook', () => {
   });
 
   afterEach(() => {
+    vi.unstubAllEnvs();
     db.close();
   });
 
@@ -269,6 +286,7 @@ describe('Chat Core v2 shadow route hook', () => {
   });
 
   it('records resolver-vs-surface routing divergence telemetry additively in the replay row', () => {
+    stubReleaseIdentityEnv(RELEASE_IDENTITY_ENV);
     const result = runChatCoreV2ShadowRouteHook({
       ...BASE,
       chatRequestId: 'chat-shadow-hook-divergence',
@@ -283,6 +301,8 @@ describe('Chat Core v2 shadow route hook', () => {
       routingDivergence?: {
         divergenceVersion: string;
         resolverVersion: string;
+        releaseIdentity: { runtimeSha: string; artifactDigest: string; role: string };
+        capabilityFlags: Record<string, unknown>;
         topCandidate: { capabilityId: string; domain: string; skill: string; rawScore: number; matchedEvidenceCount: number } | null;
         candidateCount: number;
         surfaces: { shadowRouteIntent: string; shadowRouteDomains: string[]; registryActionSkills: string[] };
@@ -292,8 +312,25 @@ describe('Chat Core v2 shadow route hook', () => {
     };
     const divergence = contextPack.routingDivergence;
     expect(divergence).toBeDefined();
-    expect(divergence!.divergenceVersion).toBe('routing_divergence_shadow@1.0.0');
+    expect(divergence!.divergenceVersion).toBe('routing_divergence_shadow@3.0.0');
     expect(divergence!.resolverVersion).toBe('manifest-intent-resolver@1.0.0');
+    expect(divergence!.releaseIdentity).toEqual({
+      runtimeSha: RELEASE_IDENTITY_ENV.NEXUS_RELEASE_SHA,
+      artifactDigest: RELEASE_IDENTITY_ENV.NEXUS_RELEASE_ARTIFACT_SHA256,
+      role: 'staging',
+    });
+    // Gate evidence is only non-circular while the compared surfaces are still
+    // legacy, so the flag state observed at write time is part of the record.
+    expect(Object.keys(divergence!.capabilityFlags).sort()).toEqual([
+      'classifierKeyword',
+      'masterKill',
+      'orchestratorPrimary',
+      'registrySubset',
+      'shadowRoute',
+    ]);
+    for (const observed of Object.values(divergence!.capabilityFlags)) {
+      expect(typeof observed).toBe('boolean');
+    }
     // "Create a task to buy milk tomorrow" — resolver and shadow route agree on secretary/tasks.
     expect(divergence!.topCandidate).toMatchObject({ capabilityId: 'secretary', domain: 'secretary' });
     expect(divergence!.topCandidate!.rawScore).toBeGreaterThan(0);
@@ -305,6 +342,97 @@ describe('Chat Core v2 shadow route hook', () => {
     expect(serialized).not.toContain(BASE.normalizedText);
     // Additive: the pre-existing row fields are untouched.
     expect(contextPack.messageHash).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it('omits divergence evidence when canonical release identity is missing or malformed', () => {
+    for (const [suffix, releaseEnvironment] of [
+      ['missing', {}],
+      ['short-sha', { ...RELEASE_IDENTITY_ENV, NEXUS_RELEASE_SHA: 'abc123' }],
+      ['bad-digest', { ...RELEASE_IDENTITY_ENV, NEXUS_RELEASE_ARTIFACT_SHA256: 'not-a-digest' }],
+      ['bad-role', { ...RELEASE_IDENTITY_ENV, NEXUS_RELEASE_ROLE: 'development' }],
+    ] as const) {
+      stubReleaseIdentityEnv(releaseEnvironment);
+      const chatRequestId = `chat-shadow-hook-release-identity-${suffix}`;
+      const result = runChatCoreV2ShadowRouteHook({
+        ...BASE,
+        chatRequestId,
+        env: ENABLED_ENV,
+        db,
+      });
+
+      expect(result.recorded).toBe(true);
+      const bundles = listChatV2ReplayBundlesForTurn(chatRequestId, db);
+      expect(bundles).toHaveLength(1);
+      const contextPack = bundles[0].bundle?.contextPack as { routingDivergence?: unknown };
+      expect(contextPack.routingDivergence).toBeUndefined();
+    }
+  });
+
+  it('reads the gated release identity and capability-flag state through the injected environment', () => {
+    // No vi.stubEnv here on purpose: the gated inputs travel through the same
+    // deps seam as every other injected surface, so this asserts the exact
+    // recorded state without mutating the ambient process environment.
+    const result = runChatCoreV2ShadowRouteHook({
+      ...BASE,
+      chatRequestId: 'chat-shadow-hook-divergence-env-seam',
+      env: ENABLED_ENV,
+      db,
+      routingDivergenceDeps: {
+        env: {
+          ...RELEASE_IDENTITY_ENV,
+          NEXUS_RELEASE_ROLE: 'production',
+          AI_ROUTING_MANIFEST_ORCHESTRATOR: 'true',
+        },
+      },
+    });
+    expect(result.recorded).toBe(true);
+
+    const bundles = listChatV2ReplayBundlesForTurn('chat-shadow-hook-divergence-env-seam', db);
+    const contextPack = bundles[0].bundle?.contextPack as {
+      routingDivergence?: {
+        releaseIdentity: { role: string };
+        capabilityFlags: Record<string, boolean>;
+      };
+    };
+    expect(contextPack.routingDivergence?.releaseIdentity.role).toBe('production');
+    expect(contextPack.routingDivergence?.capabilityFlags).toEqual({
+      classifierKeyword: false,
+      orchestratorPrimary: true,
+      registrySubset: false,
+      shadowRoute: false,
+      masterKill: false,
+    });
+  });
+
+  it('records the master kill separately from the surfaces it forces off', () => {
+    // A kill-switch run leaves every surface legacy, which would otherwise look
+    // identical to a genuine pre-flip observation in the gate evidence.
+    const result = runChatCoreV2ShadowRouteHook({
+      ...BASE,
+      chatRequestId: 'chat-shadow-hook-divergence-master-kill',
+      env: ENABLED_ENV,
+      db,
+      routingDivergenceDeps: {
+        env: {
+          ...RELEASE_IDENTITY_ENV,
+          AI_ROUTING_MANIFEST_CLASSIFIER: 'true',
+          AI_ROUTING_MANIFEST_KILL: 'true',
+        },
+      },
+    });
+    expect(result.recorded).toBe(true);
+
+    const bundles = listChatV2ReplayBundlesForTurn('chat-shadow-hook-divergence-master-kill', db);
+    const contextPack = bundles[0].bundle?.contextPack as {
+      routingDivergence?: { capabilityFlags: Record<string, boolean> };
+    };
+    expect(contextPack.routingDivergence?.capabilityFlags).toEqual({
+      classifierKeyword: false,
+      orchestratorPrimary: false,
+      registrySubset: false,
+      shadowRoute: false,
+      masterKill: true,
+    });
   });
 
   it('never lets a resolver throw break the recorded turn (fail-open divergence telemetry)', () => {
