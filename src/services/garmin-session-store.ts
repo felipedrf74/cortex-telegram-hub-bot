@@ -191,6 +191,22 @@ export function encryptPlaintextGarminTokens(): {
   };
 }
 
+/**
+ * Resolve the user a Garmin operation belongs to. Returns null when there is
+ * no user in scope — it does NOT guess.
+ *
+ * This used to fall back to `getOwnerBootstrapUser()` whenever no explicit id
+ * and no AsyncLocalStorage context were present. Any code path that forgot
+ * `runWithContext` therefore silently operated as the owner: reading the
+ * owner's Garmin data and, worse, persisting it under whatever user the
+ * caller went on to write. The 2026-05 P0 tenant leak and the
+ * `training_plan_adjust` hardening comment are both artefacts of that
+ * fallback, and each fix had to be applied per call site.
+ *
+ * Failing closed removes the whole class instead: a caller that needs a user
+ * must establish one. Scheduled Garmin work now enumerates users explicitly
+ * via `listGarminConnectedUserIds` and scopes each with `runWithContext`.
+ */
 export function resolveGarminUserId(explicitUserId?: number): number | null {
   const candidate = explicitUserId ?? getCurrentContext()?.userId;
   if (candidate && candidate > 0) {
@@ -203,8 +219,7 @@ export function resolveGarminUserId(explicitUserId?: number): number | null {
     return candidate;
   }
 
-  const owner = getOwnerBootstrapUser();
-  return owner?.id ?? null;
+  return null;
 }
 
 export function getGarminSession(userId: number): GarminSessionRecord | null {
@@ -253,6 +268,37 @@ export function hasActiveGarminConnection(userId: number): boolean {
   // stale/non-owner row cannot make another user look Garmin-connected.
   const owner = getOwnerBootstrapUser();
   return owner?.id === userId && hasGarminSessionMaterial(userId);
+}
+
+/**
+ * Every user whose Garmin connection is live enough to be worth refreshing.
+ *
+ * Scheduled Garmin work had no way to enumerate users, so `keepAlive` ran
+ * once with no request context and `resolveGarminUserId` resolved it to the
+ * owner. Only the owner's tokens were ever refreshed; everyone else's session
+ * sat untouched until it expired and forced a re-auth.
+ *
+ * Includes the owner's legacy pre-table session for the same reason
+ * `hasActiveGarminConnection` does.
+ */
+export function listGarminConnectedUserIds(): number[] {
+  const rows = getDb().prepare(`
+    SELECT user_id
+    FROM garmin_user_tokens
+    WHERE status = 'active'
+    ORDER BY user_id
+  `).all() as Array<{ user_id: number }>;
+
+  const ids = rows
+    .map((row) => Number(row.user_id))
+    .filter((id) => Number.isFinite(id) && id > 0 && hasGarminSessionMaterial(id));
+
+  const owner = getOwnerBootstrapUser();
+  if (owner?.id && !ids.includes(owner.id) && hasGarminSessionMaterial(owner.id)) {
+    ids.push(owner.id);
+  }
+
+  return ids;
 }
 
 export function isOwnerGarminUserId(userId: number | null | undefined): boolean {

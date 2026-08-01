@@ -23,6 +23,10 @@ const mockTryComplete = vi.fn();
 const mockGetLastCoachState = vi.fn();
 const mockTrackedCreate = vi.fn();
 const mockIsOwnerUserRef = vi.fn();
+// Garmin-backed coaching is now gated on THIS user's own connection rather
+// than on owner identity plus the global credential pair, so a connected
+// non-owner gets Garmin data instead of silently falling to Apple Health.
+const mockHasActiveGarminConnection = vi.fn();
 const mockGetDb = vi.fn();
 const mockWithAiBudgetReservation = vi.hoisted(() => vi.fn());
 
@@ -82,6 +86,26 @@ vi.mock('../../src/domains/domain-handler', () => ({
 
 vi.mock('../../src/services/user-service', () => ({
   isOwnerUserRef: (...args: unknown[]) => mockIsOwnerUserRef(...args),
+  getUserTimezoneById: vi.fn(() => 'Europe/Lisbon'),
+}));
+
+vi.mock('../../src/services/garmin-session-store', () => ({
+  hasActiveGarminConnection: (...args: unknown[]) => mockHasActiveGarminConnection(...args),
+  assertGarminEncryptionConfigured: vi.fn(),
+  getGarminConnectionRecord: vi.fn(() => null),
+  encryptPlaintextGarminTokens: vi.fn(),
+  resolveGarminUserId: vi.fn(() => null),
+  getGarminSession: vi.fn(() => null),
+  listGarminConnectedUserIds: vi.fn(() => []),
+  isOwnerGarminUserId: vi.fn(() => false),
+  getLegacyGarminTokenBlob: vi.fn(() => null),
+  upsertGarminSession: vi.fn(),
+  migrateLegacyGarminTokensToSession: vi.fn(),
+  markGarminConnectionActive: vi.fn(),
+  markGarminConnectionMfaPending: vi.fn(),
+  touchGarminConnection: vi.fn(),
+  markGarminNeedsReauth: vi.fn(),
+  clearGarminSession: vi.fn(),
 }));
 
 vi.mock('../../src/services/database', () => ({
@@ -134,6 +158,7 @@ describe('garmin-coach user scoping', () => {
     mockGetEvents.mockResolvedValue([]);
     mockIsGarminConfigured.mockReturnValue(true);
     mockIsOwnerUserRef.mockReturnValue(false);
+    mockHasActiveGarminConnection.mockReturnValue(false);
     mockGetDb.mockReturnValue({
       prepare: vi.fn(() => ({
         all: vi.fn(() => [
@@ -159,12 +184,9 @@ describe('garmin-coach user scoping', () => {
     mockGetLastCoachState.mockReturnValue(null);
   });
 
-  it('does not use global Garmin data for a non-owner scoped user', async () => {
+  it('does not use Garmin data for a user without their own connection', async () => {
     await generateCoachBriefing(42, { tenantId: 42 });
-    expect(mockIsOwnerUserRef).toHaveBeenCalledWith(42, {
-      allowPersistedTier: false,
-      requireConfiguredIdentity: true,
-    });
+    expect(mockHasActiveGarminConnection).toHaveBeenCalledWith(42);
     expect(mockFetchDailyCoachData).not.toHaveBeenCalled();
   });
 
@@ -292,24 +314,21 @@ describe('garmin-coach user scoping', () => {
     });
   });
 
-  it('still allows Garmin for owner-scoped users', async () => {
-    mockIsOwnerUserRef.mockReturnValue(true);
+  it('allows Garmin for any user with their own active connection', async () => {
+    mockHasActiveGarminConnection.mockReturnValue(true);
     await generateCoachBriefing(7, { tenantId: 7 });
-    expect(mockIsOwnerUserRef).toHaveBeenCalledWith(7, {
-      allowPersistedTier: false,
-      requireConfiguredIdentity: true,
-    });
+    expect(mockHasActiveGarminConnection).toHaveBeenCalledWith(7);
     expect(mockFetchDailyCoachData).toHaveBeenCalledWith({ silent: undefined });
   });
 
   it('passes silent Garmin mode through for scheduled coach report generation', async () => {
-    mockIsOwnerUserRef.mockReturnValue(true);
+    mockHasActiveGarminConnection.mockReturnValue(true);
     await generateCoachBriefing(7, { tenantId: 7, garminSilent: true });
     expect(mockFetchDailyCoachData).toHaveBeenCalledWith({ silent: true });
   });
 
   it('sends a compact coach input without missing-data boilerplate or full schedule dumps', async () => {
-    mockIsOwnerUserRef.mockReturnValue(true);
+    mockHasActiveGarminConnection.mockReturnValue(true);
     mockFetchDailyCoachData.mockResolvedValue({
       date: '2026-07-09',
       summary: { totalSteps: 4200, bodyBatteryHighestValue: null, unusedVerboseBlob: 'x'.repeat(1000) },

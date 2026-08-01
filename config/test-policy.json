@@ -142,6 +142,26 @@
     ],
     "cleanupMappings": [
       {
+        "test": "__tests__/services/garmin-adapter.test.ts",
+        "replacementTests": [
+          "__tests__/services/garmin-adapter.test.ts"
+        ],
+        "sources": [
+          "src/services/wearable/garmin-adapter.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/wearable/garmin-adapter.ts:75-80",
+            "anchor": "return hasActiveGarminConnection(userId);",
+            "behavior": "Garmin availability for a user is decided solely by that user's own stored connection, so a user stays connected when the global credential env pair is unset and disconnected when only another user is connected.",
+            "replacementTest": "__tests__/services/garmin-adapter.test.ts",
+            "ownerTestNamePattern": "requires only an active Garmin connection for this user$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The three environment-gated cases were rewritten in place rather than dropped: GarminAdapter.isConfigured became per-user truth, so assertions that it also required GARMIN_EMAIL/GARMIN_PASSWORD were replaced by assertions that only the per-user connection decides. The sibling isGarminConfiguredForUser in src/services/garmin.ts underwent a structurally identical edit but is a different symbol, is not governed by this mapping, and is mocked out of this test."
+      },
+      {
         "test": "__tests__/services/chat-eval-history.test.ts",
         "replacementTests": [
           "__tests__/services/chat-eval-history.test.ts"

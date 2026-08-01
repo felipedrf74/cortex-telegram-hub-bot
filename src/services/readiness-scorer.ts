@@ -12,7 +12,6 @@ import { logger } from '../utils/logger';
 import { runWithContext } from '../utils/request-context';
 import { hasActiveGarminConnection } from './garmin-session-store';
 import {
-  isGarminConfigured,
   getHrvData, getSleepData, getBodyBatteryEvents,
   getTrainingReadiness, getActivitiesByDate, getDailySummary,
   type GarminReadOptions,
@@ -23,7 +22,7 @@ import {
   publishLowReadiness,
 } from './training-signals';
 import { getReadiness as getWearableReadiness } from './wearable/wearable-service';
-import type { NormalizedReadiness } from './wearable/types';
+import type { NormalizedReadiness, WearableProvider } from './wearable/types';
 import {
   deriveIntradayEnergyReserve,
   extractGarminBodyBatterySnapshot,
@@ -44,7 +43,34 @@ export interface ReadinessFactors {
 
 export type ReadinessRecommendation = 'full_intensity' | 'reduce_10pct' | 'reduce_25pct' | 'active_recovery' | 'rest_day';
 export type ReadinessReasonCode = 'WEARABLE_INTEGRATION_MISSING';
-export type ReadinessSource = 'garmin' | 'whoop' | 'apple_health' | 'estimated';
+
+/**
+ * Placeholder reported for a factor that was not measured. It is shown so the
+ * factor breakdown stays shape-stable for clients, but it is excluded from
+ * composites — see the HRV handling in `calculateAppleHealthReadiness`.
+ */
+const NEUTRAL_FACTOR_SCORE = 60;
+/**
+ * `fitbit` is additive and currently RESERVED BUT UNREACHABLE.
+ *
+ * An earlier revision of this file claimed Fitbit readiness was "fetched and
+ * silently discarded" by a `provider === 'whoop'` check. That was wrong:
+ * `fitbit-adapter.getReadiness` returns `readinessScore: null` AND
+ * `recoveryScore: null`, so there was never a score to discard. Accepting it
+ * unconditionally was worse than dropping it — the shared fallback builder
+ * defaults to 60, so a Fitbit user received a fabricated neutral score
+ * labelled as a real Fitbit reading, replacing the honest `estimated` +
+ * `WEARABLE_INTEGRATION_MISSING` signal. Snapshots now have to carry a usable
+ * score to be accepted; see `calculateReadinessUncached`.
+ *
+ * The mapping itself is still correct and worth keeping: the builder used to
+ * hardcode `source: 'whoop'` for every provider, which was a real bug.
+ *
+ * iOS decodes this field with `decodeIfPresent(String.self, forKey: .source)`
+ * into `let source: String?` (`Models/TrainingSession.swift:1537`,
+ * `ReadinessResponse`), so a new value cannot break client decoding.
+ */
+export type ReadinessSource = 'garmin' | 'whoop' | 'fitbit' | 'apple_health' | 'estimated';
 
 export interface ReadinessResult {
   score: number;
@@ -56,6 +82,12 @@ export interface ReadinessResult {
   source?: ReadinessSource;
   /** ISO timestamp captured at compute time. Optional — additive for old clients. */
   asOf?: string;
+  /**
+   * Fraction (0-1) of the scoring model backed by real readings rather than
+   * placeholders. A Garmin-only iOS user with just a sleep row scores on 0.5
+   * coverage; a complete snapshot is 1. Optional — additive for old clients.
+   */
+  coverage?: number;
 }
 
 type AppleHealthJsonRow = {
@@ -121,9 +153,27 @@ function buildWearableFallbackReadiness(readiness: NormalizedReadiness): Readine
     factors,
     recommendation,
     reasoning,
-    source: 'whoop',
+    source: readinessSourceForProvider(readiness.provider),
     asOf: new Date().toISOString(),
   };
+}
+
+/**
+ * Map the provider that actually produced a snapshot onto the reported source.
+ *
+ * This was hardcoded to `'whoop'`, so anything reaching the shared fallback
+ * builder was mislabelled — including the Apple Health branches downstream
+ * that key off `source === 'apple_health'`.
+ */
+function readinessSourceForProvider(provider: WearableProvider | undefined): ReadinessSource {
+  switch (provider) {
+    case 'whoop': return 'whoop';
+    case 'fitbit': return 'fitbit';
+    case 'garmin': return 'garmin';
+    case 'apple_health': return 'apple_health';
+    // Strava declares `readiness: false`, so it should never reach here.
+    default: return 'estimated';
+  }
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -371,6 +421,48 @@ export function deriveAppleHealthSleepScore(
 }
 
 /**
+ * Coarse readiness composite for the wearable-adapter entry point.
+ *
+ * Extracted from `apple-health-adapter` so it is reachable from tests. There
+ * it sat inside a `try { const {...} = require('../readiness-scorer') }`
+ * block added to dodge the
+ * adapter → readiness-scorer → wearable-service → adapter cycle. Under vitest
+ * that `require` throws, the surrounding catch swallows it, and the composite
+ * silently produced `null` — so none of this arithmetic was ever exercised by
+ * a test.
+ *
+ * `hrvScore == null` means HRV was not measured today. Multiplying null into
+ * the sum yields 0 in JavaScript rather than skipping the term, which would
+ * report a catastrophic recovery score off a normal night's sleep; the weight
+ * is redistributed instead.
+ *
+ * Coarser than `calculateAppleHealthReadiness`: sleep falls back to a neutral
+ * and the ACWR term is a fixed neutral because this entry point has no workout
+ * data. Prefer the full path when coverage matters.
+ */
+export function deriveAdapterReadinessScore(input: {
+  hrvScore: number | null;
+  sleepScore: number | null;
+  sleepDurationHours: number;
+  bodyBatteryScore: number;
+}): number {
+  const sleepWeighted = (input.sleepScore != null
+    ? scoreSleep(input.sleepDurationHours, input.sleepScore)
+    : NEUTRAL_FACTOR_SCORE) * 0.30;
+  const bbWeighted = input.bodyBatteryScore * 0.20;
+  const loadWeighted = NEUTRAL_FACTOR_SCORE * 0.20;
+
+  if (input.hrvScore == null) {
+    return clamp(Math.round((sleepWeighted + bbWeighted + loadWeighted) / 0.70), 0, 100);
+  }
+  return clamp(
+    Math.round(input.hrvScore * 0.30 + sleepWeighted + bbWeighted + loadWeighted),
+    0,
+    100,
+  );
+}
+
+/**
  * Derive a "body battery equivalent" (energy reserve) from Apple Health signals.
  * Garmin's Body Battery is proprietary. We approximate it using:
  *   - Sleep quality (40%) — good sleep = high morning energy
@@ -379,7 +471,7 @@ export function deriveAppleHealthSleepScore(
  */
 export function deriveBodyBatteryEquivalent(
   sleepScore: number,
-  hrvScore: number,
+  hrvScore: number | null,
   rhrBpm: number | null,
   rhrBaselineBpm: number | null,
 ): number {
@@ -389,6 +481,21 @@ export function deriveBodyBatteryEquivalent(
     const delta = rhrBpm - rhrBaselineBpm;
     // At baseline: 80, 5 above: 50, 10 above: 20, 5 below: 95
     rhrScore = clamp(Math.round(80 - delta * 6), 0, 100);
+  }
+
+  // Garmin does not publish HRV Status to Apple Health, so a Garmin-only iOS
+  // user has no HRV rows at all. Redistribute HRV's weight over the remaining
+  // terms rather than substituting a placeholder the composite would consume
+  // as real.
+  //
+  // Note this redistributes over sleep + RHR, and `rhrScore` above still
+  // defaults to 70 when RHR is absent — so with neither HRV nor RHR the
+  // result leans on that default. The caller
+  // (`calculateAppleHealthReadiness`) tracks measured-vs-placeholder per
+  // pillar and reports `coverage`; this function only handles the HRV term.
+  if (hrvScore == null) {
+    const remainingWeight = 0.40 + 0.30;
+    return clamp(Math.round((sleepScore * 0.40 + rhrScore * 0.30) / remainingWeight), 0, 100);
   }
 
   return clamp(Math.round(
@@ -477,7 +584,18 @@ async function calculateAppleHealthReadiness(
       .filter((v: number) => v > 0);
     const weeklyHrv = hrvValues.length > 0 ? hrvValues.reduce((a: number, b: number) => a + b, 0) / hrvValues.length : todayHrv;
     const hrvTrend: 'up' | 'stable' | 'down' = todayHrv > weeklyHrv * 1.05 ? 'up' : todayHrv < weeklyHrv * 0.95 ? 'down' : 'stable';
-    const hrvScoreVal = scoreHrv(todayHrv || 60, weeklyHrv || 60);
+    // Garmin syncs sleep, steps, workouts and RHR to Apple Health but NOT HRV
+    // Status, so a Garmin-only iOS user has no HRV rows. `scoreHrv(60, 60)`
+    // returns 70 — a healthy-looking number — which then fed both the composite
+    // and the derived body battery as though it had been measured.
+    // TODAY's reading, not "any reading in the last week". With a real
+    // baseline but no row for today, the old check stayed true and the code
+    // still scored a fabricated 60 ms against that baseline. For an athlete
+    // whose baseline is 100 ms that lands in the WORST HRV bucket (30) and
+    // reports trend 'down' — a missed HealthKit sync read as a collapse in
+    // recovery. Absent today means unmeasured today.
+    const hasMeasuredHrv = todayHrv > 0;
+    const hrvScoreVal = hasMeasuredHrv ? scoreHrv(todayHrv || 60, weeklyHrv || 60) : NEUTRAL_FACTOR_SCORE;
 
     // ── Sleep ──
     const sleepData = sleepRow ? parseAppleHealthDataJson(sleepRow, userId) : null;
@@ -503,7 +621,12 @@ async function calculateAppleHealthReadiness(
     const rhrBaseline = rhrValues.length > 0 ? rhrValues.reduce((a: number, b: number) => a + b, 0) / rhrValues.length : null;
 
     // ── Derived Body Battery ──
-    const derivedBB = deriveBodyBatteryEquivalent(derivedSleepScore, hrvScoreVal, todayRhr, rhrBaseline);
+    const derivedBB = deriveBodyBatteryEquivalent(
+      derivedSleepScore,
+      hasMeasuredHrv ? hrvScoreVal : null,
+      todayRhr,
+      rhrBaseline,
+    );
 
     const summary = summaryRow ? parseAppleHealthDataJson(summaryRow, userId) : null;
     const calories = caloriesRow ? parseAppleHealthDataJson(caloriesRow, userId) : null;
@@ -529,12 +652,33 @@ async function calculateAppleHealthReadiness(
     const loadScore = scoreAcwr(acwr);
 
     // ── Composite ──
-    const compositeScore = clamp(Math.round(
-      hrvScoreVal * 0.30 +
-      sleepScoreVal * 0.30 +
-      bbScore * 0.20 +
-      loadScore * 0.20
-    ), 0, 100);
+    //
+    // Renormalise over the pillars that were ACTUALLY measured, not merely
+    // over "everything except HRV". Dropping only HRV and dividing by 0.70
+    // multiplied whatever survived by 1.43× — and `rhrScore` defaults to 70
+    // while `scoreAcwr(NaN)` returns 60, so for the Garmin-only-on-iOS case
+    // this work targets (one sleep row, no HRV, no RHR, no workouts) the
+    // amplified terms were themselves placeholders. That produced a
+    // confident-looking score built mostly from defaults.
+    //
+    // Body battery is derived from sleep and RHR, so it counts as measured
+    // only when one of those exists. ACWR needs at least one workout.
+    const measuredPillars = [
+      { measured: hasMeasuredHrv, weight: 0.30, score: hrvScoreVal },
+      { measured: totalSleepMin > 0, weight: 0.30, score: sleepScoreVal },
+      { measured: totalSleepMin > 0 || todayRhr != null, weight: 0.20, score: bbScore },
+      { measured: activities.length > 0, weight: 0.20, score: loadScore },
+    ];
+    const measuredWeight = measuredPillars.reduce((sum, p) => sum + (p.measured ? p.weight : 0), 0);
+    const compositeScore = measuredWeight > 0
+      ? clamp(Math.round(
+        measuredPillars.reduce((sum, p) => sum + (p.measured ? p.score * p.weight : 0), 0) / measuredWeight,
+      ), 0, 100)
+      : NEUTRAL_FACTOR_SCORE;
+    // Fraction of the scoring model backed by real readings, so a client can
+    // show a degraded state rather than presenting a one-pillar score as
+    // equivalent to a complete one.
+    const coverage = Math.round(measuredWeight * 100) / 100;
 
     const factors: ReadinessFactors = {
       hrv: { todayMs: todayHrv, sevenDayAvgMs: weeklyHrv, trend: hrvTrend, score: hrvScoreVal },
@@ -544,7 +688,22 @@ async function calculateAppleHealthReadiness(
     };
 
     const recommendation = getRecommendation(compositeScore);
-    const reasoning = `Apple Health is driving today's readiness. ${buildReasoning(factors, recommendation)}`;
+    // Say so when a pillar is missing. Garmin-only iOS users have no HRV in
+    // HealthKit, and a score that silently rests on two of three recovery
+    // signals should not read as confidently as a complete one.
+    // Name only what was actually measured. The previous wording claimed
+    // "sleep and resting heart rate" even when RHR was absent too.
+    const measuredNames = [
+      totalSleepMin > 0 ? 'sleep' : null,
+      todayRhr != null ? 'resting heart rate' : null,
+      activities.length > 0 ? 'training load' : null,
+    ].filter(Boolean) as string[];
+    const hrvCaveat = hasMeasuredHrv
+      ? ''
+      : measuredNames.length > 0
+        ? ` No HRV in Apple Health today — recovery is inferred from ${measuredNames.join(' and ')} only (${Math.round(coverage * 100)}% signal coverage).`
+        : ' No recovery signals in Apple Health today — this is a conservative default, not a measurement.';
+    const reasoning = `Apple Health is driving today's readiness. ${buildReasoning(factors, recommendation)}${hrvCaveat}`;
 
     if (opts.publishSignals !== false) {
       // Publish signals (same as Garmin path)
@@ -564,7 +723,15 @@ async function calculateAppleHealthReadiness(
     }
 
     logger.info({ userId, score: compositeScore, provider: 'apple_health' }, 'Apple Health readiness calculated');
-    return { score: compositeScore, factors, recommendation, reasoning, source: 'apple_health', asOf: new Date().toISOString() };
+    return {
+      score: compositeScore,
+      factors,
+      recommendation,
+      reasoning,
+      source: 'apple_health',
+      coverage,
+      asOf: new Date().toISOString(),
+    };
   } catch (err) {
     logger.warn({ err, userId }, 'Apple Health readiness calculation failed');
     return null;
@@ -613,19 +780,38 @@ async function calculateReadinessUncached(
   // The old owner-only Telegram-era gate made Garmin appear connected
   // in the app while readiness/body battery stayed empty for non-owner
   // users. Only use Garmin when THIS user has an active Garmin session.
-  const canUseGarmin = isGarminConfigured() && hasActiveGarminConnection(userId);
+  //
+  // July 2026: dropped the surviving `isGarminConfigured()` conjunct. That
+  // read the deployment-wide GARMIN_EMAIL/GARMIN_PASSWORD pair, so unsetting
+  // the owner's credentials silently downgraded every connected user to
+  // Apple Health or a neutral score. Connection state is per-user truth.
+  const canUseGarmin = hasActiveGarminConnection(userId);
 
   if (!canUseGarmin) {
     const today = new Date().toISOString().slice(0, 10);
 
     try {
       const wearableReadiness = await getWearableReadiness(userId, today);
-      if (wearableReadiness && wearableReadiness.provider === 'whoop') {
-        logger.info({ userId, score: wearableReadiness.readinessScore, provider: 'whoop' }, 'WHOOP readiness calculated');
+      // Accept whichever provider the wearable service selected by its own
+      // READINESS_PRIORITY. This used to demand `=== 'whoop'`, which threw
+      // away a Fitbit snapshot the service had already fetched and dropped
+      // the user to Apple Health or a neutral score. Apple Health keeps its
+      // own richer derivation below, so it is not short-circuited here.
+      // Require a usable score. Some adapters (Fitbit today) return a
+      // snapshot with both `readinessScore` and `recoveryScore` null; the
+      // fallback builder would turn that into a fabricated 60 stamped with
+      // their provider name, hiding the honest "no wearable data" signal.
+      const hasUsableScore = wearableReadiness != null
+        && (wearableReadiness.readinessScore != null || wearableReadiness.recoveryScore != null);
+      if (wearableReadiness && hasUsableScore && wearableReadiness.provider !== 'apple_health') {
+        logger.info(
+          { userId, score: wearableReadiness.readinessScore, provider: wearableReadiness.provider },
+          'Wearable readiness calculated',
+        );
         return buildWearableFallbackReadiness(wearableReadiness);
       }
     } catch (err) {
-      logger.warn({ err, userId }, 'WHOOP readiness fallback failed');
+      logger.warn({ err, userId }, 'Wearable readiness fallback failed');
     }
 
     // Try Apple Health derived readiness

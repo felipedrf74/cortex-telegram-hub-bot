@@ -5,8 +5,7 @@ import { runVoiceEvolutionAgent } from '../agents/voice-evolution-agent';
 import { runReactionRadar } from '../agents/reaction-radar-agent';
 import { runSEOAgent } from '../agents/seo-agent';
 import { runPipelineAgent } from '../agents/pipeline-agent';
-import { sendDailyBriefing } from '../services/scheduler';
-import { isGarminConfigured, keepAlive as garminKeepAlive } from '../services/garmin';
+import { sendDailyBriefing, refreshConnectedGarminUsers } from '../services/scheduler';
 import { isMicrosoftConfigured } from '../services/microsoft-auth';
 import { isInvoiceFilingConfigured } from '../services/invoice-filer';
 import { getOwnerBootstrapTarget } from '../services/user-service';
@@ -52,10 +51,21 @@ export async function handlePortalAction(
 ): Promise<PortalActionResult> {
   switch (name) {
     case 'refresh-garmin': {
-      if (!isGarminConfigured()) return { ok: false, message: 'Garmin not configured' };
-      const ok = await garminKeepAlive();
-      pushEvent({ ts: new Date().toISOString(), type: 'auth', summary: `Manual Garmin refresh: ${ok ? 'success' : 'failed'}` });
-      return { ok, message: ok ? 'Garmin session refreshed' : 'Garmin refresh failed' };
+      // The portal authenticates with PORTAL_TOKEN rather than a user JWT, so
+      // there is no request user to inherit. This used to call
+      // `garminKeepAlive()` bare, which became a silent no-op once
+      // `resolveGarminUserId` stopped falling back to the owner — the button
+      // then always reported failure. Refresh every connected user explicitly,
+      // reusing the same scoped fan-out as the cron.
+      const outcome = await refreshConnectedGarminUsers('manual');
+      if (outcome.total === 0) {
+        pushEvent({ ts: new Date().toISOString(), type: 'auth', summary: 'Manual Garmin refresh: no connected users' });
+        return { ok: false, message: 'No Garmin-connected users to refresh' };
+      }
+      const ok = outcome.failed.length === 0;
+      const summary = `${outcome.refreshed}/${outcome.total} refreshed`;
+      pushEvent({ ts: new Date().toISOString(), type: 'auth', summary: `Manual Garmin refresh: ${summary}` });
+      return { ok, message: ok ? `Garmin sessions refreshed (${summary})` : `Garmin refresh incomplete (${summary})` };
     }
 
     case 'trigger-briefing': {

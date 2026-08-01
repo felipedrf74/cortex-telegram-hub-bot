@@ -128,6 +128,30 @@ describe('apple-health-parity: body battery derivation', () => {
     expect(high).toBeLessThanOrEqual(100);
     expect(low).toBeGreaterThanOrEqual(0);
   });
+
+  // Garmin syncs sleep, steps, workouts and RHR to Apple Health but NOT HRV
+  // Status, so a Garmin-only iOS user has no HRV rows at all.
+  describe('when HRV was never measured', () => {
+    it('redistributes HRV weight instead of scoring it as zero', () => {
+      const withoutHrv = deriveBodyBatteryEquivalent(90, null, 55, 60);
+      // Treating the missing pillar as 0 would drag this far below the
+      // measured signals, which were both strong.
+      expect(withoutHrv).toBeGreaterThan(70);
+    });
+
+    it('reflects only the measured signals', () => {
+      // Sleep 90 (0.40) and RHR 55 vs 60 baseline -> rhrScore 110 clamped 100
+      // (0.30). Renormalised over 0.70 that is (90*0.4 + 100*0.3) / 0.7 = 94.
+      expect(deriveBodyBatteryEquivalent(90, null, 55, 60)).toBe(94);
+    });
+
+    it('does not inherit the placeholder a missing HRV used to contribute', () => {
+      // Poor sleep and elevated RHR must not be propped up by a stand-in HRV.
+      const poor = deriveBodyBatteryEquivalent(30, null, 75, 60);
+      const poorWithNeutralHrv = deriveBodyBatteryEquivalent(30, 70, 75, 60);
+      expect(poor).toBeLessThan(poorWithNeutralHrv);
+    });
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════

@@ -10,7 +10,7 @@
 
 import { getDb } from '../database';
 import { logger } from '../../utils/logger';
-import { scoreSleep } from '../readiness-scorer';
+import { deriveAdapterReadinessScore } from '../readiness-scorer';
 import { appleHealthJsonSelectColumns, parseAppleHealthDataJson } from '../apple-health-encryption';
 import { deriveIntradayEnergyReserve } from './energy-reserve';
 import type { WearableAdapter } from './adapter-interface';
@@ -268,7 +268,16 @@ export class AppleHealthAdapter implements WearableAdapter {
         const deepSleepMin = sleep ? ((parseMetricValue(sleep, 'deepSleepSeconds') ?? ((parseMetricValue(sleep, 'deepMinutes') ?? 0) * 60)) / 60) : 0;
         const remSleepMin = sleep ? ((parseMetricValue(sleep, 'remSleepSeconds') ?? ((parseMetricValue(sleep, 'remMinutes') ?? 0) * 60)) / 60) : 0;
 
-        const hrvScoreVal = scoreHrv(hrvMs ?? 60, hrvBaseline);
+        // Garmin does not publish HRV Status to Apple Health, so a Garmin-only
+        // iOS user has no HRV rows at all. `scoreHrv(60, ...)` hands back a
+        // healthy-looking number that the energy-reserve derivation would then
+        // consume as measured; pass null so it redistributes instead.
+        // TODAY's reading only. A present 7-day baseline with no row for today
+        // previously kept this true, so `scoreHrv(60, baseline)` judged a
+        // fabricated 60 ms against a real baseline — for a 100 ms athlete that
+        // lands in the worst HRV bucket off one missed sync.
+        const hasMeasuredHrv = (hrvMs ?? 0) > 0;
+        const hrvScoreVal = hasMeasuredHrv ? scoreHrv(hrvMs ?? 60, hrvBaseline) : null;
         const sleepScore = totalSleepMin > 0
           ? deriveAppleHealthSleepScore(totalSleepMin, deepSleepMin, remSleepMin)
           : null;
@@ -295,16 +304,22 @@ export class AppleHealthAdapter implements WearableAdapter {
           steps: parseMetricValue(summary, 'steps') ?? parseMetricValue(steps, 'count'),
         }) ?? bodyBatteryEquiv;
 
-        // Derive readiness: same 30/30/20/20 weighting
+        // Derive readiness: same 30/30/20/20 weighting.
+        //
+        // The arithmetic lives in `deriveAdapterReadinessScore` so it is
+        // reachable from tests. It used to sit inline here, inside a block
+        // whose `require` throws under vitest — the catch below swallowed it
+        // and the composite silently produced null, so none of it was ever
+        // covered.
         if (hrvMs != null || sleepScore != null) {
-          const { scoreBodyBattery, scoreAcwr } = require('../readiness-scorer');
+          const { scoreBodyBattery } = require('../readiness-scorer');
           const bbScore = currentEnergyReserve != null ? scoreBodyBattery(currentEnergyReserve) : 60;
-          readinessScore = Math.round(
-            hrvScoreVal * 0.30 +
-            (sleepScore != null ? scoreSleep(totalSleepMin / 60, sleepScore) : 60) * 0.30 +
-            bbScore * 0.20 +
-            60 * 0.20  // ACWR needs workout data — use neutral for getReadiness
-          );
+          readinessScore = deriveAdapterReadinessScore({
+            hrvScore: hrvScoreVal,
+            sleepScore,
+            sleepDurationHours: totalSleepMin / 60,
+            bodyBatteryScore: bbScore,
+          });
         }
       } catch {
         // Scoring functions unavailable — leave as null (backward compat)
