@@ -47,7 +47,8 @@ vi.mock('../../src/utils/logger', () => ({
   LOGGER_REDACTION_PATHS: [],
 }));
 
-vi.mock('../../src/utils/request-context', () => ({
+vi.mock('../../src/utils/request-context', async () => ({
+  ...(await vi.importActual<typeof import('../../src/utils/request-context')>('../../src/utils/request-context')),
   getCurrentContext: (...args: unknown[]) => mockGetCurrentContext(...args),
   runWithContext: (_ctx: unknown, fn: () => unknown) => fn(),
 }));
@@ -62,6 +63,13 @@ vi.mock('../../src/services/garmin-session-store', () => ({
   migrateLegacyGarminTokensToSession: vi.fn(),
   clearGarminSession: vi.fn(),
   isOwnerGarminUserId: vi.fn(),
+  assertGarminEncryptionConfigured: vi.fn(),
+  getGarminConnectionRecord: vi.fn(() => null),
+  encryptPlaintextGarminTokens: vi.fn(),
+  hasActiveGarminConnection: vi.fn(() => false),
+  listGarminConnectedUserIds: vi.fn(() => []),
+  getLegacyGarminTokenBlob: vi.fn(() => null),
+  markGarminConnectionMfaPending: vi.fn(),
 }));
 
 vi.mock('fs', () => ({

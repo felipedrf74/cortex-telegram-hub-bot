@@ -91,6 +91,21 @@ vi.mock('../../src/services/user-service', () => ({
 
 vi.mock('../../src/services/garmin-session-store', () => ({
   hasActiveGarminConnection: (...args: unknown[]) => mockHasActiveGarminConnection(...args),
+  assertGarminEncryptionConfigured: vi.fn(),
+  getGarminConnectionRecord: vi.fn(() => null),
+  encryptPlaintextGarminTokens: vi.fn(),
+  resolveGarminUserId: vi.fn(() => null),
+  getGarminSession: vi.fn(() => null),
+  listGarminConnectedUserIds: vi.fn(() => []),
+  isOwnerGarminUserId: vi.fn(() => false),
+  getLegacyGarminTokenBlob: vi.fn(() => null),
+  upsertGarminSession: vi.fn(),
+  migrateLegacyGarminTokensToSession: vi.fn(),
+  markGarminConnectionActive: vi.fn(),
+  markGarminConnectionMfaPending: vi.fn(),
+  touchGarminConnection: vi.fn(),
+  markGarminNeedsReauth: vi.fn(),
+  clearGarminSession: vi.fn(),
 }));
 
 vi.mock('../../src/services/database', () => ({

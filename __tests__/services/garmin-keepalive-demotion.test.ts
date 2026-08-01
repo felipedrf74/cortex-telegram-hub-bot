@@ -12,53 +12,7 @@
  * Only a genuine credential rejection may demote on the first failure.
  */
 
-import { describe, expect, it, vi } from 'vitest';
-
-vi.mock('../../src/config', () => ({
-  config: {
-    garmin: { email: '', password: '', tokenPath: '/tmp/garmin-demotion-tests' },
-    telegram: { allowedUserIds: [1] },
-    app: { timezone: 'Europe/Lisbon' },
-  },
-}));
-
-vi.mock('../../src/utils/logger', () => ({
-  logger: {
-    info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), trace: vi.fn(),
-    child: vi.fn().mockReturnThis(),
-  },
-  LOGGER_REDACTION_PATHS: [],
-}));
-
-vi.mock('../../src/services/garmin-session-store', () => ({
-  resolveGarminUserId: vi.fn(),
-  isOwnerGarminUserId: vi.fn(() => false),
-  getGarminSession: vi.fn(),
-  markGarminNeedsReauth: vi.fn(),
-  touchGarminConnection: vi.fn(),
-  upsertGarminSession: vi.fn(),
-  markGarminConnectionActive: vi.fn(),
-  migrateLegacyGarminTokensToSession: vi.fn(),
-  clearGarminSession: vi.fn(),
-  hasActiveGarminConnection: vi.fn(() => true),
-}));
-
-vi.mock('axios', () => ({
-  default: {
-    create: () => ({
-      get: vi.fn(), post: vi.fn(),
-      interceptors: { response: { use: vi.fn() }, request: { use: vi.fn() } },
-    }),
-  },
-}));
-
-vi.mock('garmin-connect', () => ({
-  GarminConnect: class MockGarminConnect {
-    client = { oauth1Token: null, oauth2Token: null };
-    loadToken = vi.fn();
-    loadTokenByFile = vi.fn();
-  },
-}));
+import { describe, expect, it } from 'vitest';
 
 import { classifyRefreshFailure } from '../../src/services/garmin';
 

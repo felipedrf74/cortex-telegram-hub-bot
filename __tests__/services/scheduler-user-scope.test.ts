@@ -152,6 +152,20 @@ vi.mock('../../src/services/garmin', () => ({
 vi.mock('../../src/services/garmin-session-store', () => ({
   listGarminConnectedUserIds: (...args: unknown[]) => mockListGarminConnectedUserIds(...args),
   hasActiveGarminConnection: (...args: unknown[]) => mockHasActiveGarminConnection(...args),
+  assertGarminEncryptionConfigured: vi.fn(),
+  getGarminConnectionRecord: vi.fn(() => null),
+  encryptPlaintextGarminTokens: vi.fn(),
+  resolveGarminUserId: vi.fn(() => null),
+  getGarminSession: vi.fn(() => null),
+  isOwnerGarminUserId: vi.fn(() => false),
+  getLegacyGarminTokenBlob: vi.fn(() => null),
+  upsertGarminSession: vi.fn(),
+  migrateLegacyGarminTokensToSession: vi.fn(),
+  markGarminConnectionActive: vi.fn(),
+  markGarminConnectionMfaPending: vi.fn(),
+  touchGarminConnection: vi.fn(),
+  markGarminNeedsReauth: vi.fn(),
+  clearGarminSession: vi.fn(),
 }));
 vi.mock('../../src/services/garmin-tenant-isolation-watcher', () => ({
   runGarminTenantIsolationWatcher: (...args: unknown[]) => mockRunGarminTenantIsolationWatcher(...args),
@@ -228,7 +242,8 @@ vi.mock('../../src/services/operator-alerts', () => ({
 }));
 vi.mock('../../src/services/backup', () => ({ runDatabaseBackup: vi.fn(), weeklyRestoreTest: vi.fn() }));
 vi.mock('../../src/state/fiscal-collection-profiles', () => ({ listActiveFiscalCollectionProfiles: vi.fn(() => []) }));
-vi.mock('../../src/utils/request-context', () => ({
+vi.mock('../../src/utils/request-context', async () => ({
+  ...(await vi.importActual<typeof import('../../src/utils/request-context')>('../../src/utils/request-context')),
   runWithContext: (...args: unknown[]) => mockRunWithContext(...args),
 }));
 vi.mock('../../src/services/user-service', () => ({
