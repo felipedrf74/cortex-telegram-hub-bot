@@ -85,6 +85,13 @@ interface RuntimeDeps {
     statusCode: number,
   ): void;
   failTrainingPlanGenerationIdempotency(userId: number, tenantId: number, idempotencyKey: string | null, requestHash: string): void;
+  /**
+   * Phase 1B: provider calendar events are created by the background
+   * calendar-sync chain, not inline in generation. The smoke drains that
+   * chain (event router + dedicated worker) before asserting provider
+   * events, mirroring what the scheduler crons do continuously in prod.
+   */
+  drainTrainingPlanCalendarSync(): Promise<void>;
 }
 
 type ProfileBackup = Record<ProfileType, { existed: boolean; data: string | null }>;
@@ -311,6 +318,10 @@ export async function runTrainingFullFlowStagingSmoke(
     if (!createdPlanId) {
       return finishReport(options, startedAt, prerequisites, operations, cleanupFailures);
     }
+
+    // Phase 1B: link provider events through the durable background chain
+    // before asserting on them — generation itself no longer creates any.
+    await runtime.drainTrainingPlanCalendarSync();
 
     const planWindow = planWindowFor(runtime, createdPlanId);
     const planShape = snapshotPlanShape(runtime, createdPlanId);
@@ -1060,6 +1071,14 @@ function loadRuntimeDeps(): RuntimeDeps {
       completeTrainingPlanGenerationIdempotency: require('../services/training-plan-generation-idempotency').completeTrainingPlanGenerationIdempotency,
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       failTrainingPlanGenerationIdempotency: require('../services/training-plan-generation-idempotency').failTrainingPlanGenerationIdempotency,
+      drainTrainingPlanCalendarSync: async () => {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        await require('../services/event-backbone-worker').runEventBackboneOnce({ lockOwner: 'training-full-flow-smoke' });
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        await require('../services/training-plan-calendar-sync-worker').runScheduledTrainingPlanCalendarSyncJobs({
+          lockOwner: 'training-full-flow-smoke',
+        });
+      },
     };
     return loaded;
   };
@@ -1081,6 +1100,7 @@ function loadRuntimeDeps(): RuntimeDeps {
     claimTrainingPlanGenerationIdempotency: (...args) => loadAfterDatabaseInit().claimTrainingPlanGenerationIdempotency(...args),
     completeTrainingPlanGenerationIdempotency: (...args) => loadAfterDatabaseInit().completeTrainingPlanGenerationIdempotency(...args),
     failTrainingPlanGenerationIdempotency: (...args) => loadAfterDatabaseInit().failTrainingPlanGenerationIdempotency(...args),
+    drainTrainingPlanCalendarSync: (...args) => loadAfterDatabaseInit().drainTrainingPlanCalendarSync(...args),
   };
 }
 

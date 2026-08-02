@@ -82,21 +82,49 @@ beforeEach(() => {
 });
 
 describe('Training Plan Tool Handlers', () => {
-  it('create_training_plan creates a plan and returns ID', async () => {
+  /**
+   * F13 (Phase 1A-3): `create_training_plan` no longer writes, so suites that
+   * only need a plan to exist seed one directly.
+   */
+  function seedPlan(
+    name = 'Plan',
+    startDate = '2026-04-01',
+    endDate = '2026-04-29',
+  ): number {
+    const row = testDb.prepare(`
+      INSERT INTO fitness_training_plans
+        (user_id, tenant_id, name, sport, duration_weeks, start_date, end_date, status)
+      VALUES (?, ?, ?, 'strength', 4, ?, ?, 'active')
+    `).run(testUserId, testUserId, name, startDate, endDate);
+    return Number(row.lastInsertRowid);
+  }
+
+  it('create_training_plan refuses to write a plan and hands off to the reviewed builder', async () => {
+    // Previously this asserted the tool created a plan row. That was the
+    // defect: `createPlan` inserts with status defaulting to 'active' and
+    // there is no unique constraint on active plans, so one model turn could
+    // create an empty shell plan that shadowed the athlete's real one
+    // (`getActivePlan` orders by created_at DESC). It also bypassed the coach
+    // kernel, volume enforcement, the linter, the safety guardrails and the
+    // cancellation saga.
+    const before = testDb.prepare('SELECT COUNT(*) AS count FROM fitness_training_plans').get() as { count: number };
+
     const result = await executeToolCall('create_training_plan', {
       name: 'Test Plan', sport: 'strength', duration_weeks: 8,
       start_date: '2026-04-01', end_date: '2026-05-27', goal: 'Build base',
     }, testUserId);
-    expect(result.success).toBe(true);
-    expect(result.plan_id).toBe(1);
-    expect(result.name).toBe('Test Plan');
+
+    expect(result.success).toBeUndefined();
+    expect(result.plan_id).toBeUndefined();
+    expect(String(result.error)).toContain('cannot write a plan directly');
+    expect(result.handoff).toBe('training_plan_builder');
+
+    const after = testDb.prepare('SELECT COUNT(*) AS count FROM fitness_training_plans').get() as { count: number };
+    expect(after.count).toBe(before.count);
   });
 
   it('add_training_week creates a week', async () => {
-    await executeToolCall('create_training_plan', {
-      name: 'Plan', sport: 'strength', duration_weeks: 4,
-      start_date: '2026-04-01', end_date: '2026-04-29',
-    }, testUserId);
+    seedPlan();
     const result = await executeToolCall('add_training_week', {
       plan_id: 1, week_number: 1, focus: 'hypertrophy', intensity_pct: 100, volume_sessions: 5,
     }, testUserId);
@@ -105,10 +133,7 @@ describe('Training Plan Tool Handlers', () => {
   });
 
   it('add_training_session creates a session', async () => {
-    await executeToolCall('create_training_plan', {
-      name: 'Plan', sport: 'strength', duration_weeks: 4,
-      start_date: '2026-04-01', end_date: '2026-04-29',
-    }, testUserId);
+    seedPlan();
     await executeToolCall('add_training_week', { plan_id: 1, week_number: 1 }, testUserId);
     const result = await executeToolCall('add_training_session', {
       week_id: 1, plan_id: 1, day_of_week: 'Monday',
@@ -122,10 +147,7 @@ describe('Training Plan Tool Handlers', () => {
   });
 
   it('blocks legacy plan creation and projection growth for an active enrolled user without mutating rows', async () => {
-    await executeToolCall('create_training_plan', {
-      name: 'Projection', sport: 'strength', duration_weeks: 4,
-      start_date: '2026-04-01', end_date: '2026-04-29',
-    }, testUserId);
+    seedPlan();
     await executeToolCall('add_training_week', { plan_id: 1, week_number: 1 }, testUserId);
     const modeKey = `TRAINING_PLAN_REVISION_V1_MODE_USER_${testUserId}`;
     const priorMode = process.env[modeKey];
@@ -135,10 +157,13 @@ describe('Training Plan Tool Handlers', () => {
         name: 'Forbidden legacy plan', sport: 'running', duration_weeks: 4,
         start_date: '2026-05-01', end_date: '2026-05-29',
       }, testUserId);
-      expect(blockedCreate).toMatchObject({
-        success: false,
-        code: 'TRAINING_REVISION_MANAGED_LEGACY_MUTATION_BLOCKED',
-      });
+      // F13 (Phase 1A-3): creation is now refused for EVERY scope, not just
+      // enrolled ones, so this no longer reaches the enrollment guard. The
+      // guarantee is strictly stronger — enrolled or not, the model cannot
+      // write a plan row. The week/session assertions below still exercise
+      // the enrollment guard on projection growth.
+      expect(blockedCreate.handoff).toBe('training_plan_builder');
+      expect(blockedCreate.plan_id).toBeUndefined();
 
       testDb.prepare("UPDATE fitness_training_plans SET source_revision_id = 'revision-1' WHERE id = 1").run();
       const blockedWeek = await executeToolCall('add_training_week', {
@@ -179,10 +204,7 @@ describe('Training Plan Tool Handlers', () => {
   });
 
   it('preserves legacy projection growth when this exact scope is off or only another scope is enrolled', async () => {
-    await executeToolCall('create_training_plan', {
-      name: 'Legacy projection', sport: 'strength', duration_weeks: 4,
-      start_date: '2026-04-01', end_date: '2026-04-29',
-    }, testUserId);
+    seedPlan();
     testDb.prepare("UPDATE fitness_training_plans SET source_revision_id = 'revision-legacy' WHERE id = 1").run();
     const modeKey = `TRAINING_PLAN_REVISION_V1_MODE_USER_${testUserId}`;
     const otherModeKey = 'TRAINING_PLAN_REVISION_V1_MODE_USER_999999';
@@ -222,10 +244,7 @@ describe('Training Plan Tool Handlers', () => {
     const priorMode = process.env.TRAINING_EXERCISE_IDENTITY_V1_MODE;
     process.env.TRAINING_EXERCISE_IDENTITY_V1_MODE = 'active';
     try {
-      await executeToolCall('create_training_plan', {
-        name: 'Identity Plan', sport: 'strength', duration_weeks: 4,
-        start_date: '2026-04-01', end_date: '2026-04-29',
-      }, testUserId);
+      seedPlan();
       await executeToolCall('add_training_week', { plan_id: 1, week_number: 1 }, testUserId);
       const created = await executeToolCall('add_training_session', {
         week_id: 1, plan_id: 1, day_of_week: 'Monday',
@@ -262,10 +281,7 @@ describe('Training Plan Tool Handlers', () => {
   });
 
   it('preserves legacy service writes with missing user scope off and fails closed only when active', async () => {
-    await executeToolCall('create_training_plan', {
-      name: 'Legacy Scope Plan', sport: 'strength', duration_weeks: 4,
-      start_date: '2026-04-01', end_date: '2026-04-29',
-    }, testUserId);
+    seedPlan();
     await executeToolCall('add_training_week', { plan_id: 1, week_number: 1 }, testUserId);
     testDb.pragma('foreign_keys = OFF');
     testDb.prepare('UPDATE fitness_training_plans SET user_id = 0 WHERE id = 1').run();
@@ -307,10 +323,9 @@ describe('Training Plan Tool Handlers', () => {
     const endDate = new Date();
     endDate.setDate(endDate.getDate() + 28);
 
-    await executeToolCall('create_training_plan', {
-      name: 'Plan', sport: 'strength', duration_weeks: 4,
-      start_date: today, end_date: endDate.toISOString().slice(0, 10),
-    }, testUserId);
+    // Current-dated: `get_training_plan` resolves sessions relative to today,
+    // so the fixture plan must span now.
+    seedPlan('Plan', today, endDate.toISOString().slice(0, 10));
     await executeToolCall('add_training_week', { plan_id: 1, week_number: 1, focus: 'hypertrophy' }, testUserId);
     await executeToolCall('add_training_session', {
       week_id: 1, plan_id: 1, day_of_week: 'Monday',
@@ -329,10 +344,7 @@ describe('Training Plan Tool Handlers', () => {
   });
 
   it('log_training_completion logs and returns completion', async () => {
-    await executeToolCall('create_training_plan', {
-      name: 'Plan', sport: 'strength', duration_weeks: 4,
-      start_date: '2026-04-01', end_date: '2026-04-29',
-    }, testUserId);
+    seedPlan();
     await executeToolCall('add_training_week', { plan_id: 1, week_number: 1 }, testUserId);
     await executeToolCall('add_training_session', {
       week_id: 1, plan_id: 1, day_of_week: 'Monday',
@@ -353,10 +365,7 @@ describe('Training Plan Tool Handlers', () => {
   });
 
   it('update_training_session updates fields', async () => {
-    await executeToolCall('create_training_plan', {
-      name: 'Plan', sport: 'strength', duration_weeks: 4,
-      start_date: '2026-04-01', end_date: '2026-04-29',
-    }, testUserId);
+    seedPlan();
     await executeToolCall('add_training_week', { plan_id: 1, week_number: 1 }, testUserId);
     await executeToolCall('add_training_session', {
       week_id: 1, plan_id: 1, day_of_week: 'Monday',
@@ -370,10 +379,7 @@ describe('Training Plan Tool Handlers', () => {
   });
 
   it('link_session_calendar links session to calendar event', async () => {
-    await executeToolCall('create_training_plan', {
-      name: 'Plan', sport: 'strength', duration_weeks: 4,
-      start_date: '2026-04-01', end_date: '2026-04-29',
-    }, testUserId);
+    seedPlan();
     await executeToolCall('add_training_week', { plan_id: 1, week_number: 1 }, testUserId);
     await executeToolCall('add_training_session', {
       week_id: 1, plan_id: 1, day_of_week: 'Monday',
@@ -387,10 +393,7 @@ describe('Training Plan Tool Handlers', () => {
   });
 
   it('allows legacy session tools but blocks revision-owned projection rewrites', async () => {
-    await executeToolCall('create_training_plan', {
-      name: 'Plan', sport: 'strength', duration_weeks: 4,
-      start_date: '2026-04-01', end_date: '2026-04-29',
-    }, testUserId);
+    seedPlan();
     await executeToolCall('add_training_week', { plan_id: 1, week_number: 1 }, testUserId);
     await executeToolCall('add_training_session', {
       week_id: 1, plan_id: 1, day_of_week: 'Monday',

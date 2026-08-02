@@ -73,9 +73,15 @@ export interface TrainingPlanRevisionResource {
   capabilityRegistryVersion: string;
   documentSchemaVersion: string;
   document: TrainingPlanRevisionDocument | Record<string, unknown>;
+  // F3 (Phase 1A-1): `FAIL` added to both unions. Previously the report-level
+  // status admitted only PASS/LEGACY_COMPATIBILITY and the per-check status
+  // only PASS/WARNING, so no candidate could ever be *rejected* on quality —
+  // the report was an attestation, not a gate. `LEGACY_COMPATIBILITY` is
+  // retained unchanged for backfilled revisions; `WARNING` remains
+  // non-blocking. Only `FAIL` blocks activation.
   qualityReport: {
-    status: 'PASS' | 'LEGACY_COMPATIBILITY';
-    checks: Array<{ code: string; status: 'PASS' | 'WARNING'; evidence: string }>;
+    status: 'PASS' | 'FAIL' | 'LEGACY_COMPATIBILITY';
+    checks: Array<{ code: string; status: 'PASS' | 'WARNING' | 'FAIL'; evidence: string }>;
     warnings?: string[];
   };
   causalFactors: TrainingPlanCausalFactor[];

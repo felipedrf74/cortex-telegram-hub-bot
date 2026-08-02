@@ -110,10 +110,17 @@ beforeEach(async () => {
   `).run();
   userId = Number(userRow.lastInsertRowid);
   // Seed a plan + week + session so log_training_completion has a target.
-  await executeToolCall('create_training_plan', {
-    name: 'Plan', sport: 'strength', duration_weeks: 4,
-    start_date: '2026-05-01', end_date: '2026-05-28',
-  });
+  //
+  // Inserted directly rather than via `create_training_plan`: F13
+  // (Phase 1A-3) removed that tool's ability to write a plan row, because a
+  // model turn could use it to create an empty shell plan that shadowed the
+  // athlete's real one. This suite only needs a plan to exist as a fixture,
+  // not to exercise the tool.
+  testDb.prepare(`
+    INSERT INTO fitness_training_plans
+      (user_id, tenant_id, name, sport, duration_weeks, start_date, end_date, status)
+    VALUES (?, ?, 'Plan', 'strength', 4, '2026-05-01', '2026-05-28', 'active')
+  `).run(userId, userId);
   await executeToolCall('add_training_week', { plan_id: 1, week_number: 1 });
   await executeToolCall('add_training_session', {
     week_id: 1, plan_id: 1, day_of_week: 'Monday',

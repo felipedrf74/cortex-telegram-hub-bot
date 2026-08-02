@@ -75,6 +75,7 @@ import { runEventBackboneCleanup } from '../tools/event-backbone-cleanup';
 import { expireStalePendingChatActionsForJob } from './chat-action-state';
 import { pruneCompletedChatActionRuns, reapZombieChatActionRuns } from './chat-action-run-store';
 import { runScheduledChatActionFixerJobs } from './chat-action-fixer-worker';
+import { runScheduledTrainingPlanCalendarSyncJobs } from './training-plan-calendar-sync-worker';
 import { runGarminTenantIsolationWatcher } from './garmin-tenant-isolation-watcher';
 import {
   AgentJobOutputValidationError,
@@ -1368,6 +1369,7 @@ export function startScheduler(): void {
   registerJob('commitment_start_reminder', 'Commitment Start Reminders', '*/5 * * * *', 'secretary');
   registerJob('finance_tax_deadline', 'Tax Deadline Notices', '10 9 * * *', 'invoices');
   registerJob('training_session_reminder', 'Training Session Reminders', '*/5 * * * *', 'triathlon');
+  registerJob('training_plan_calendar_sync_worker', 'Training Plan Calendar Sync Worker', '* * * * *', 'triathlon');
   registerJob('operator_alert_delivery', 'Operator Alert Delivery', '* * * * *', 'system');
   registerJob('decision_source_supersession', 'Decision Source Supersession', '*/15 * * * *', 'system');
   registerJob('decision_daily_attention', 'Decision Daily Attention Materialization', '12 * * * *', 'system');
@@ -3168,6 +3170,19 @@ export function startScheduler(): void {
       runChatCoreV2GateCheck();
     }), { timezone: 'UTC' });
   }
+
+  cron.schedule('* * * * *', wrapJob('training_plan_calendar_sync_worker', async () => {
+    const result = await runScheduledTrainingPlanCalendarSyncJobs({
+      limit: intEnv('TRAINING_PLAN_CALENDAR_SYNC_JOB_BATCH_LIMIT', 5, 1, 25),
+      lockOwner: `training-plan-calendar-sync:${process.pid}`,
+    });
+    const touched = result.completed + result.failed + result.deadLetter;
+    if (result.deadLetter > 0) {
+      logger.warn(result, 'Training plan calendar sync worker produced dead-letter rows');
+    }
+    if (touched === 0) return 'skipped';
+    logger.info(result, 'Training plan calendar sync worker completed');
+  }), { timezone: tz });
 
   cron.schedule('* * * * *', wrapJob('event_backbone_worker', async () => {
     if (process.env.EVENT_BACKBONE_WORKER_DISABLED === '1') {

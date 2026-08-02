@@ -25,7 +25,106 @@ type IdempotencyRow = {
   status_code: number | null;
   created_at: string | null;
   updated_at: string | null;
+  // F1 (Phase 1A-4) lease columns (migration 273). Optional so rows read
+  // before the migration lands still type-check.
+  failure_class?: 'retryable' | 'terminal' | null;
+  last_error_code?: string | null;
+  lease_owner?: string | null;
+  fencing_token?: string | null;
+  lease_expires_at?: string | null;
+  heartbeat_at?: string | null;
+  attempt_count?: number | null;
 };
+
+/**
+ * Generous enough to exceed the worst-case generation. Calendar writes run
+ * ceil(N/5) x 15s, so a 52-week plan can legitimately take ~18 minutes; a
+ * lease shorter than that would reclaim live work.
+ */
+const LEASE_TTL_MS = 30 * 60_000;
+
+function leaseExpiryIso(fromMs: number = Date.now()): string {
+  return new Date(fromMs + LEASE_TTL_MS).toISOString();
+}
+
+function parseIsoMs(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const normalized = value.includes('T') ? value : `${value.replace(' ', 'T')}Z`;
+  const parsed = Date.parse(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+/**
+ * A claim is reclaimable only when its lease has demonstrably elapsed.
+ *
+ * A row with no `lease_expires_at` at all is treated as NOT expired. That is
+ * deliberate: pre-migration rows are backfilled with a derived expiry, so a
+ * missing value means an unexpected shape, and failing closed keeps the
+ * concurrent-duplicate guarantee that the original design got right.
+ */
+function isLeaseExpired(row: IdempotencyRow, nowMs: number = Date.now()): boolean {
+  const expiresAtMs = parseIsoMs(row.lease_expires_at);
+  if (expiresAtMs === null) return false;
+  return expiresAtMs <= nowMs;
+}
+
+function reclaimRow(row: IdempotencyRow, requestHash: string): TrainingPlanGenerationIdempotencyClaim {
+  const db = getOptionalDb();
+  const nowIso = new Date().toISOString();
+  const nextAttempt = (row.attempt_count ?? 1) + 1;
+  if (db) {
+    db.prepare(`
+      UPDATE ${IDEMPOTENCY_TABLE}
+         SET status = 'in_progress',
+             response_json = NULL,
+             status_code = NULL,
+             failure_class = NULL,
+             lease_expires_at = ?,
+             heartbeat_at = ?,
+             attempt_count = ?,
+             updated_at = ?
+       WHERE user_id = ? AND tenant_id = ? AND idempotency_key = ?
+    `).run(
+      leaseExpiryIso(), nowIso, nextAttempt, nowIso,
+      row.user_id, row.tenant_id, row.idempotency_key,
+    );
+  } else {
+    MEMORY_ROWS.set(memoryKey(row.user_id, row.tenant_id, row.idempotency_key), {
+      ...row,
+      status: 'in_progress',
+      response_json: null,
+      status_code: null,
+      failure_class: null,
+      lease_expires_at: leaseExpiryIso(),
+      heartbeat_at: nowIso,
+      attempt_count: nextAttempt,
+      updated_at: nowIso,
+    });
+  }
+  return { kind: 'claimed', idempotencyKey: row.idempotency_key, requestHash };
+}
+
+/**
+ * Record a terminal outcome and immediately hand the caller a fresh claim.
+ * Used when a stored `succeeded` payload is unreadable: the old result is
+ * unrecoverable, so the only honest move is to let a new attempt run rather
+ * than pin the user behind a permanent 409.
+ */
+function markTerminalAndReclaim(
+  row: IdempotencyRow,
+  requestHash: string,
+  errorCode: string,
+): TrainingPlanGenerationIdempotencyClaim {
+  const db = getOptionalDb();
+  if (db) {
+    db.prepare(`
+      UPDATE ${IDEMPOTENCY_TABLE}
+         SET failure_class = 'terminal', last_error_code = ?
+       WHERE user_id = ? AND tenant_id = ? AND idempotency_key = ?
+    `).run(errorCode, row.user_id, row.tenant_id, row.idempotency_key);
+  }
+  return reclaimRow({ ...row, last_error_code: errorCode }, requestHash);
+}
 
 const MEMORY_ROWS = new Map<string, IdempotencyRow>();
 const AUTO_IDEMPOTENCY_WINDOW_MS = 90_000;
@@ -69,11 +168,18 @@ export function claimTrainingPlanGenerationIdempotency(
   }
 
   const nowIso = new Date().toISOString();
+  // F1 (Phase 1A-4): every new claim carries a lease from the moment it is
+  // written, so a claim orphaned by a process death becomes reclaimable
+  // instead of pinning the deterministic key behind a permanent 409.
   db.prepare(`
     INSERT INTO ${IDEMPOTENCY_TABLE} (
-      user_id, tenant_id, idempotency_key, request_hash, status, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, 'in_progress', ?, ?)
-  `).run(userId, scopedTenantId, idempotencyKey, requestHash, nowIso, nowIso);
+      user_id, tenant_id, idempotency_key, request_hash, status, created_at, updated_at,
+      lease_expires_at, heartbeat_at, attempt_count
+    ) VALUES (?, ?, ?, ?, 'in_progress', ?, ?, ?, ?, 1)
+  `).run(
+    userId, scopedTenantId, idempotencyKey, requestHash, nowIso, nowIso,
+    leaseExpiryIso(), nowIso,
+  );
 
   return { kind: 'claimed', idempotencyKey, requestHash };
 }
@@ -213,9 +319,39 @@ function claimFromExisting(row: IdempotencyRow, requestHash: string): TrainingPl
     } catch (err) {
       logger.warn(
         { err, userId: row.user_id, tenantId: row.tenant_id, idempotencyKey: row.idempotency_key },
-        'Training plan idempotency replay payload could not be parsed; treating as in-progress',
+        'Training plan idempotency replay payload is unreadable; marking terminal so a fresh attempt can proceed',
       );
+      // F1 (Phase 1A-4): this used to fall through to `in_progress`, which is
+      // permanent — a `succeeded` row whose payload cannot be parsed can never
+      // reach the `failed` branch below, so every retry of the identical
+      // request 409'd forever. It is terminal, not in-flight: mark it so and
+      // let the caller start a new attempt.
+      return markTerminalAndReclaim(row, requestHash, 'IDEMPOTENCY_RESPONSE_UNREADABLE');
     }
+  }
+
+  // F1 (Phase 1A-4): an `in_progress` claim whose lease has expired is not
+  // in flight — the process that owned it died before it could record an
+  // outcome. Without this, the deterministic key (iOS SHA-256, or the server
+  // `auto:<requestHash>` fallback) makes the 409 permanent for that exact
+  // request payload.
+  //
+  // Rows written before the lease existed inherit a derived expiry from
+  // migration 273 rather than being reclaimable immediately, so a generation
+  // still running on an older process cannot be reclaimed out from under
+  // itself.
+  if (row.status === 'in_progress' && isLeaseExpired(row)) {
+    logger.warn(
+      {
+        userId: row.user_id,
+        tenantId: row.tenant_id,
+        idempotencyKey: row.idempotency_key,
+        leaseExpiresAt: row.lease_expires_at,
+        attemptCount: row.attempt_count,
+      },
+      'Reclaiming Training plan generation claim whose lease expired without an outcome',
+    );
+    return reclaimRow(row, requestHash);
   }
 
   if (row.status === 'failed') {
@@ -353,6 +489,19 @@ function createTrainingPlanGenerationIdempotencyTable(db: Database.Database): vo
       status_code INTEGER,
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now')),
+      -- F1 (Phase 1A-4) lease columns. These MUST stay in lockstep with
+      -- migration 273: this DDL bootstraps fresh databases that never run the
+      -- ALTER TABLE path, so a divergence here means the lease silently does
+      -- not exist on new installs while working everywhere else.
+      -- status deliberately keeps its lowercase 207 vocabulary; the terminal
+      -- distinction lives in failure_class.
+      failure_class TEXT CHECK (failure_class IS NULL OR failure_class IN ('retryable', 'terminal')),
+      last_error_code TEXT,
+      lease_owner TEXT,
+      fencing_token TEXT,
+      lease_expires_at TEXT,
+      heartbeat_at TEXT,
+      attempt_count INTEGER NOT NULL DEFAULT 1,
       PRIMARY KEY (user_id, tenant_id, idempotency_key)
     );
   `);
@@ -407,7 +556,8 @@ function ensureTrainingPlanGenerationIdempotencyIndexes(db: Database.Database): 
 
 function getRow(db: Database.Database, userId: number, tenantId: number, idempotencyKey: string): IdempotencyRow | null {
   return db.prepare(`
-    SELECT user_id, tenant_id, idempotency_key, request_hash, status, response_json, status_code, created_at, updated_at
+    SELECT user_id, tenant_id, idempotency_key, request_hash, status, response_json, status_code, created_at, updated_at,
+           failure_class, last_error_code, lease_owner, fencing_token, lease_expires_at, heartbeat_at, attempt_count
       FROM ${IDEMPOTENCY_TABLE}
      WHERE user_id = ? AND tenant_id = ? AND idempotency_key = ?
   `).get(userId, tenantId, idempotencyKey) as IdempotencyRow | undefined ?? null;

@@ -3,6 +3,7 @@
 import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
+import { fingerprintTrainingPlanClarificationAnswers } from '../../services/training-plan-clarification-registry';
 import { invalidateCalendarCaches } from '../../services/cache-coherence-registry';
 import { sendSuccess, sendError, sendInternalError } from '../response-helpers';
 import { cancelTrainingPlanForUser } from './training-plan-cancellation';
@@ -20,6 +21,7 @@ import {
   isTrainingPlanGenerationEnabled,
   trainingOperationDisabledMessage,
 } from '../../services/training-operational-switches';
+import { isTrainingOperationLockError } from '../../services/training-operation-locks';
 import { validateRequestedTrainingCalendarSource } from '../../services/training-calendar-source';
 import { isPastIsoDate, isStrictIsoDate } from '../../services/training-date-utils';
 import * as trainingPlans from '../../services/training-plans';
@@ -278,6 +280,11 @@ export function registerTrainingPlanRoutes(
       twoADayPreference: normalizedTwoADayPreference,
       calendarSource: calendarSourceValidation.source,
       generatorPolicyVersion: TRAINING_PLAN_GENERATOR_POLICY_VERSION,
+      // Phase 2 (F2): clarification answers live in profiles, not the body.
+      // Without this fingerprint, answering a clarification and retrying the
+      // identical request inside the 90s auto-dedupe window would replay the
+      // stale pre-answer plan instead of honoring the answer.
+      clarificationAnswersFingerprint: fingerprintTrainingPlanClarificationAnswers(userId),
     };
     const requestHash = fingerprintTrainingPlanGenerationRequest(generationRequest);
     const explicitIdempotencyKey = normalizeTrainingPlanGenerationIdempotencyKey(
@@ -472,8 +479,23 @@ export function registerTrainingPlanRoutes(
       sendSuccess(res, result.data, { status: 201 });
 
     } catch (err: any) {
-      logger.error({ err, userId }, 'Training plan generation failed');
       failTrainingPlanGenerationIdempotency(userId, tenantId, idempotencyKey, requestHash);
+      // F35 (Phase 1A-5): lock contention is a known, retryable state — not an
+      // internal error. Previously it fell through to a generic 500 after a
+      // 30s hang, so the client could not tell "someone else is mid-operation,
+      // retry shortly" from "the server is broken".
+      if (isTrainingOperationLockError(err)) {
+        logger.warn(
+          { userId, operation: err.operation },
+          'Training plan generation contended on the training operation lock',
+        );
+        sendError(res, err.code, 'Another training operation is in progress. Please try again shortly.', err.status, {
+          operation: err.operation,
+          retryAfterSeconds: err.retryAfterSeconds,
+        });
+        return;
+      }
+      logger.error({ err, userId }, 'Training plan generation failed');
       sendError(res, 'INTERNAL', 'Failed to generate training plan. Please try again.', 500);
     }
   });

@@ -206,7 +206,13 @@ function analyzeSource(file) {
         && ['get', 'post', 'put', 'patch', 'delete'].includes(node.expression.name.text)) {
       const receiver = node.expression.expression.getText(sourceFile);
       const localPath = staticString(node.arguments[0]);
-      if (localPath !== null && /^(?:router|app|[A-Za-z][A-Za-z0-9]*Router)$/.test(receiver)) {
+      // F15: `v<n>` accepts versioned sub-router locals. `mountCoachV2Routes`
+      // names its sub-router `v2`, which matched none of `router` / `app` /
+      // `*Router`, so all six Coach V2 routes were silently dropped at
+      // collection — the mount edge resolved fine, the receiver name did not.
+      // The allow-list stays narrow on purpose: it exists to keep unrelated
+      // `.get(...)` calls (http clients, Maps) out of the route table.
+      if (localPath !== null && /^(?:router|app|v\d+|[A-Za-z][A-Za-z0-9]*Router)$/.test(receiver)) {
         routes.push({
           method: node.expression.name.text.toUpperCase(),
           localPath,

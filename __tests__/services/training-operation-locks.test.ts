@@ -197,3 +197,49 @@ describe('training operation SQLite advisory locks', () => {
     expect(columns.find((column) => column.name === 'tenant_id')).toBeTruthy();
   });
 });
+
+// F35 (Phase 1A-5) — the operation/resource conflict matrix and the typed
+// contention error. These are pure and need no database, so they live outside
+// the DB-backed describe above.
+describe('training operation conflict matrix (F35)', () => {
+  it('treats every currently-shipped operation pair as conflicting', async () => {
+    const { TRAINING_OPERATION_RESOURCES, trainingOperationsConflict } =
+      await import('../../src/services/training-operation-locks');
+    const operations = Object.keys(TRAINING_OPERATION_RESOURCES) as Array<
+      keyof typeof TRAINING_OPERATION_RESOURCES
+    >;
+
+    // The matrix is total today because every operation writes `plan`,
+    // `calendar`, or both, and the two are coupled. This pins that claim: if
+    // a future change makes a pair genuinely independent, this test fails and
+    // forces the key-splitting decision to be explicit rather than inferred.
+    for (const left of operations) {
+      for (const right of operations) {
+        expect(trainingOperationsConflict(left, right), `${left} vs ${right}`).toBe(true);
+      }
+    }
+  });
+
+  it('declares the resources each operation writes', async () => {
+    const { TRAINING_OPERATION_RESOURCES } =
+      await import('../../src/services/training-operation-locks');
+    expect(TRAINING_OPERATION_RESOURCES.calendar_sync).toEqual(['calendar']);
+    expect(TRAINING_OPERATION_RESOURCES.plan_activate).toEqual(['plan', 'calendar']);
+  });
+
+  it('carries a typed 409 with a wait-derived Retry-After and no lock key', async () => {
+    const { TrainingOperationLockError, isTrainingOperationLockError } =
+      await import('../../src/services/training-operation-locks');
+    const error = new TrainingOperationLockError('calendar_generate', 30);
+
+    expect(isTrainingOperationLockError(error)).toBe(true);
+    expect(error.code).toBe('TRAINING_OPERATION_LOCKED');
+    expect(error.status).toBe(409);
+    // Derived from the caller's 30s wait budget, NOT the 20-minute
+    // calendar_generate TTL — advertising the TTL would tell a client to wait
+    // 20 minutes for a lock that is usually free in seconds.
+    expect(error.retryAfterSeconds).toBe(30);
+    // The lock key embeds user and tenant ids and must never reach a client.
+    expect(error.message).not.toMatch(/user:|tenant:/);
+  });
+});

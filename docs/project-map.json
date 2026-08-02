@@ -5,11 +5,11 @@
     "generatorVersion": 4,
     "authoritativeFreshness": "sourceDigest",
     "sourceDigestAlgorithm": "sha256-path-git-mode-content-v2",
-    "sourceDigest": "4b8693b4713fdf12923385ddadd3ca0cad2fba6d84c268067d498c698f73227d",
-    "baseCommit": "62dbaf0d6bd231cb946f7d4c6d6975dd08d76689",
-    "baseCommitTimestamp": "2026-08-02T13:32:55+01:00",
-    "trackedFiles": 3047,
-    "sourceFiles": 1110
+    "sourceDigest": "4233733bf8a34e8a2987f423802dbe2c1586df1c29b21dee5261408820f696c8",
+    "baseCommit": "0c4af848349c2cf3c2c89fd4d66f039b481f62ae",
+    "baseCommitTimestamp": "2026-08-02T14:18:12+01:00",
+    "trackedFiles": 3059,
+    "sourceFiles": 1116
   },
   "navigation": {
     "agentBootloader": "AGENTS.md",
@@ -34,7 +34,7 @@
     {
       "path": "src/api",
       "owner": "backend",
-      "files": 161
+      "files": 162
     },
     {
       "path": "src/boot.ts",
@@ -44,7 +44,7 @@
     {
       "path": "src/cli",
       "owner": "backend",
-      "files": 1
+      "files": 2
     },
     {
       "path": "src/commands",
@@ -99,7 +99,7 @@
     {
       "path": "src/services",
       "owner": "backend",
-      "files": 800
+      "files": 804
     },
     {
       "path": "src/skills",
@@ -3894,6 +3894,14 @@
       "owner": "training"
     },
     {
+      "method": "POST",
+      "path": "/api/v1/training/health-intake/red-flag",
+      "localPath": "/health-intake/red-flag",
+      "mountPath": "/api/v1/training",
+      "source": "src/api/routes/training-coach-v2.ts",
+      "owner": "training"
+    },
+    {
       "method": "GET",
       "path": "/api/v1/training/history",
       "localPath": "/history",
@@ -4007,6 +4015,30 @@
     },
     {
       "method": "GET",
+      "path": "/api/v1/training/plans/:planId/coach-analysis",
+      "localPath": "/plans/:planId/coach-analysis",
+      "mountPath": "/api/v1/training",
+      "source": "src/api/routes/training-coach-v2.ts",
+      "owner": "training"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/training/plans/:planId/coach-policy",
+      "localPath": "/plans/:planId/coach-policy",
+      "mountPath": "/api/v1/training",
+      "source": "src/api/routes/training-coach-v2.ts",
+      "owner": "training"
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/v1/training/plans/:planId/coach-policy",
+      "localPath": "/plans/:planId/coach-policy",
+      "mountPath": "/api/v1/training",
+      "source": "src/api/routes/training-coach-v2.ts",
+      "owner": "training"
+    },
+    {
+      "method": "GET",
       "path": "/api/v1/training/progression/cardio",
       "localPath": "/progression/cardio",
       "mountPath": "/api/v1/training",
@@ -4083,6 +4115,22 @@
       "localPath": "/week",
       "mountPath": "/api/v1/training",
       "source": "src/api/routes/training.ts",
+      "owner": "training"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/training/week/:weekId/reflow",
+      "localPath": "/week/:weekId/reflow",
+      "mountPath": "/api/v1/training",
+      "source": "src/api/routes/training-coach-v2.ts",
+      "owner": "training"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/training/week/travel",
+      "localPath": "/week/travel",
+      "mountPath": "/api/v1/training",
+      "source": "src/api/routes/training-coach-v2.ts",
       "owner": "training"
     },
     {
@@ -4463,9 +4511,9 @@
     }
   ],
   "migrations": {
-    "count": 263,
-    "latest": "migrations/272_user_oauth_connection_health.sql",
-    "digest": "23879a48e51b1dbdad8802a3a8f2e2638f4b9f5954361e158d56343b192aa054",
+    "count": 264,
+    "latest": "migrations/273_training_plan_generation_idempotency_lease.sql",
+    "digest": "0ffacad266325a2c82ef826e716489c693f8771db6aa283f653acf6f2b06928f",
     "files": [
       "migrations/001_initial.sql",
       "migrations/002_shared_memory.sql",
@@ -4729,7 +4777,8 @@
       "migrations/269_notification_marketing_consent.sql",
       "migrations/270_notification_priority_shadow.sql",
       "migrations/271_notification_device_context.sql",
-      "migrations/272_user_oauth_connection_health.sql"
+      "migrations/272_user_oauth_connection_health.sql",
+      "migrations/273_training_plan_generation_idempotency_lease.sql"
     ]
   },
   "capabilities": [
@@ -4845,7 +4894,7 @@
     }
   ],
   "tests": {
-    "files": 1134,
+    "files": 1139,
     "policy": "config/test-policy.json",
     "inventoryArtifact": ".local/test-inventory/test-inventory.json",
     "topLevelOwners": {
@@ -4866,8 +4915,8 @@
       "scope": 1,
       "scripts": 75,
       "sdk": 1,
-      "security": 23,
-      "services": 713,
+      "security": 24,
+      "services": 717,
       "skills": 11,
       "state": 17,
       "storage": 1,

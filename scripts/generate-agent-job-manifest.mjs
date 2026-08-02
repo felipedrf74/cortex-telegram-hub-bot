@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const AGENT_JOB_MANIFEST_SCHEMA = 'nexus.agent-job-manifest.v3';
-export const AGENT_JOB_MANIFEST_VERSION = '2026-08-02.1';
+export const AGENT_JOB_MANIFEST_VERSION = '2026-08-02.2';
 
 const GEMINI_ONE_SHOT_PROVIDER_ROUTE = 'gemini-primary-openai-fallback-anthropic-gated-last-resort';
 
@@ -98,7 +98,7 @@ const providerCapableHandler = (policyOwner, tenantScope, inputFingerprint, over
   ...overrides,
 });
 
-// This is intentionally an explicit 63-job audit, not a domain-wide default.
+// This is intentionally an explicit per-job audit, not a domain-wide default.
 // Adding a scheduler registration without a reviewed policy makes generation
 // fail. Provider usage means model-provider capability; calendar, mail, task,
 // Garmin, and invoice integrations remain described by their job policies but
@@ -238,6 +238,14 @@ export const JOB_POLICIES = Object.freeze({
     ...sharedGovernedRunner('tenant-user'),
   }),
   training_plan_adjust: noProvider('training', 'active-plan-tenant-loop', { outputPolicy: 'deterministic-threshold-adjustment' }),
+  // Calendar/provider integrations are NOT model-provider jobs (see the
+  // comment above JOB_POLICIES): like task_sync and secretary_agenda_sync,
+  // the calendar-sync drain is providerUsage 'none' with its outbound-write
+  // discipline described by the output policy.
+  training_plan_calendar_sync_worker: noProvider('training', 'durable-queue-tenant-user', {
+    retryPolicy: 'durable-queue-max-5-with-backoff',
+    outputPolicy: 'active-plan-validated-ownership-idempotent-calendar-write',
+  }),
   training_session_reminder: noProvider('training', 'active-tenant-user-training-agenda', {
     retryPolicy: 'next-five-minute-sweep-with-dedupe-and-start-expiry',
     outputPolicy: 'tenant-scoped-deduped-expiring-training-reminder',
@@ -346,6 +354,11 @@ export const QUEUED_JOB_HANDLER_POLICIES = Object.freeze({
     runtimeGroup: 'event-backbone-default',
     outputPolicy: 'intentional-no-external-call-foundation-handler',
   }),
+  training_plan_calendar_sync: noProviderHandler('training', 'durable-queue-tenant-user', {
+    runtimeGroup: 'training-plan-calendar-sync',
+    retryPolicy: 'durable-queue-max-5-with-backoff',
+    outputPolicy: 'active-plan-validated-ownership-idempotent-calendar-write',
+  }),
   chat_action_fixer_review: providerCapableHandler('chat-reliability', 'durable-queue-tenant-user', {
     enforcement: 'durable-job-idempotency',
     evidence: 'tenant/user/job-type/idempotency key and completed-state exclusion',
@@ -377,7 +390,15 @@ function buildEventHandlers(eventBackboneSource) {
   const handlerBody = extractArrayBody(eventBackboneSource, 'defaultEventHandlers');
   const eventTypes = [...handlerBody.matchAll(/eventType:\s*'([^']+)'/g)].map((match) => match[1]);
   const projectableBlock = eventBackboneSource.match(/const PROJECTABLE_EVENT_TYPES\s*=\s*new Set\(\[([\s\S]*?)\]\);/)?.[1] ?? '';
-  const routedEventTypes = parseSingleQuotedValues(projectableBlock).sort();
+  // Queue-only routed events: consumed by the '*' router purely to enqueue a
+  // durable job (no read-model projection). Required so the manifest's
+  // routedEventTypes stays an honest audit of everything the router acts on.
+  const queueRoutedBlock = eventBackboneSource.match(/const QUEUE_ROUTED_EVENT_TYPES\s*=\s*new Set\(\[([\s\S]*?)\]\);/)?.[1];
+  if (queueRoutedBlock == null) throw new Error('Cannot locate runtime queue-routed event registry');
+  const routedEventTypes = [...new Set([
+    ...parseSingleQuotedValues(projectableBlock),
+    ...parseSingleQuotedValues(queueRoutedBlock),
+  ])].sort();
   const queuedJobTypes = [...new Set([...handlerBody.matchAll(/jobType:\s*'([^']+)'/g)].map((match) => match[1]))].sort();
   const directEffectsBlock = eventBackboneSource.match(/export const DEFAULT_EVENT_DIRECT_EFFECTS\s*=\s*\[([\s\S]*?)\]\s*as const;/)?.[1];
   if (!directEffectsBlock) throw new Error('Cannot locate runtime direct event effect registry');
@@ -428,13 +449,16 @@ function buildEventHandlers(eventBackboneSource) {
   return handlers;
 }
 
-function buildQueuedJobHandlers(eventBackboneSource, chatActionFixerSource) {
+function buildQueuedJobHandlers(eventBackboneSource, chatActionFixerSource, trainingCalendarSyncSource) {
   const handlerBody = extractArrayBody(eventBackboneSource, 'defaultJobHandlers');
   const handlers = [...handlerBody.matchAll(/jobType:\s*'([^']+)'[\s\S]*?idempotent:\s*(true|false)/g)]
     .map((match) => ({ jobType: match[1], idempotent: match[2] === 'true', runtimeGroup: 'event-backbone-default' }));
   const chatFixerJobType = chatActionFixerSource.match(/CHAT_ACTION_FIXER_JOB_TYPE\s*=\s*'([^']+)'/)?.[1];
   if (!chatFixerJobType) throw new Error('Cannot locate chat action fixer queued job type');
   handlers.push({ jobType: chatFixerJobType, idempotent: true, runtimeGroup: 'chat-action-fixer' });
+  const trainingCalendarSyncJobType = trainingCalendarSyncSource.match(/TRAINING_PLAN_CALENDAR_SYNC_JOB_TYPE\s*=\s*'([^']+)'/)?.[1];
+  if (!trainingCalendarSyncJobType) throw new Error('Cannot locate training plan calendar sync queued job type');
+  handlers.push({ jobType: trainingCalendarSyncJobType, idempotent: true, runtimeGroup: 'training-plan-calendar-sync' });
   const generated = handlers.map((handler) => {
     const policy = QUEUED_JOB_HANDLER_POLICIES[handler.jobType];
     if (!policy) throw new Error(`AgentJobManifest policy missing for queued job handler: ${handler.jobType}`);
@@ -455,7 +479,7 @@ function buildQueuedJobHandlers(eventBackboneSource, chatActionFixerSource) {
   return generated;
 }
 
-export function buildAgentJobManifest(source, eventBackboneSource, chatActionFixerSource) {
+export function buildAgentJobManifest(source, eventBackboneSource, chatActionFixerSource, trainingCalendarSyncSource) {
   const jobs = [];
   const pattern = /registerJob\(\s*'([^']+)'\s*,\s*'([^']+)'\s*,\s*('[^']*'|[A-Za-z_][A-Za-z0-9_]*)\s*,\s*'([^']+)'/g;
   for (const match of source.matchAll(pattern)) {
@@ -482,7 +506,7 @@ export function buildAgentJobManifest(source, eventBackboneSource, chatActionFix
     version: AGENT_JOB_MANIFEST_VERSION,
     jobs,
     eventHandlers: buildEventHandlers(eventBackboneSource),
-    queuedJobHandlers: buildQueuedJobHandlers(eventBackboneSource, chatActionFixerSource),
+    queuedJobHandlers: buildQueuedJobHandlers(eventBackboneSource, chatActionFixerSource, trainingCalendarSyncSource),
   };
 }
 
@@ -495,7 +519,8 @@ function main() {
   const source = fs.readFileSync(path.join(root, 'src/services/scheduler.ts'), 'utf8');
   const eventBackboneSource = fs.readFileSync(path.join(root, 'src/services/event-backbone-worker.ts'), 'utf8');
   const chatActionFixerSource = fs.readFileSync(path.join(root, 'src/services/chat-action-fixer-worker.ts'), 'utf8');
-  const manifest = buildAgentJobManifest(source, eventBackboneSource, chatActionFixerSource);
+  const trainingCalendarSyncSource = fs.readFileSync(path.join(root, 'src/services/training-plan-calendar-sync-worker.ts'), 'utf8');
+  const manifest = buildAgentJobManifest(source, eventBackboneSource, chatActionFixerSource, trainingCalendarSyncSource);
   const serialized = serializeAgentJobManifest(manifest);
   const relativeOutput = 'config/agent-job-manifest.json';
   const output = path.join(root, relativeOutput);

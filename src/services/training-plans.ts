@@ -27,7 +27,14 @@ export interface TrainingPlan {
   goal: string | null;
   duration_weeks: number;
   periodization: string;
-  status: 'active' | 'completed' | 'paused' | 'cancelled';
+  // `pending_activation` (F6, Phase 1A-2) is a replacement that has been
+  // persisted but is NOT yet the user's plan. Every reader filters
+  // `status = 'active'`, so a pending row is invisible to Home, /today,
+  // /week, adherence, and the calendar — which is what makes it safe to
+  // write the replacement BEFORE removing the plan it replaces.
+  // The column has no CHECK constraint (migration 023:13), so this needed
+  // no schema change.
+  status: 'active' | 'completed' | 'paused' | 'cancelled' | 'pending_activation';
   start_date: string;
   end_date: string;
   preferences_json: string | null;
@@ -132,6 +139,14 @@ export interface TrainingSession {
    */
   preferred_time_unavailable: number;
   status: TrainingSessionStatus;
+  /**
+   * Phase 1B — finalized schedule window persisted at creation time
+   * (migration 255 columns). The background calendar-sync worker rebuilds
+   * provider event times from these; rows persisted before Phase 1B have
+   * NULL here and are not calendar-syncable through the outbox path.
+   */
+  scheduled_start_at?: string | null;
+  scheduled_end_at?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -161,6 +176,12 @@ export interface CreatePlanInput {
   start_date: string;
   end_date: string;
   preferences_json?: string;
+  /**
+   * Defaults to `'active'` so every existing caller is unchanged. Generation
+   * passes `'pending_activation'` so the replacement is durable before the
+   * plan it replaces is removed (F6, Phase 1A-2).
+   */
+  status?: TrainingPlan['status'];
 }
 
 export interface CreateWeekInput {
@@ -195,6 +216,16 @@ export interface CreateSessionInput {
    * as `preferred_time_unavailable INTEGER` (1/0). See migration 080.
    */
   preferred_time_unavailable?: boolean;
+  /**
+   * Phase 1B (calendar-sync outbox) — the finalized schedule window,
+   * persisted so the background calendar-sync worker can rebuild provider
+   * event times from the row. Columns exist since migration 255 but had no
+   * writer on this path; the in-memory `calendarEvents` array used to be the
+   * only holder of these times, which is incompatible with post-commit
+   * provider work.
+   */
+  scheduled_start_at?: string | null;
+  scheduled_end_at?: string | null;
 }
 
 export interface LogCompletionInput {
@@ -269,16 +300,40 @@ export function createPlan(input: CreatePlanInput): TrainingPlan {
   const tenantId = requireTenantIdParam(input.tenant_id, 'createPlan');
   const result = db.prepare(`
     INSERT INTO fitness_training_plans
-      (user_id, tenant_id, name, sport, goal, duration_weeks, periodization, start_date, end_date, preferences_json)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (user_id, tenant_id, name, sport, goal, duration_weeks, periodization, start_date, end_date, preferences_json, status)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     input.user_id, tenantId, input.name, input.sport, input.goal ?? null,
     input.duration_weeks, input.periodization ?? 'linear',
     input.start_date, input.end_date, input.preferences_json ?? null,
+    input.status ?? 'active',
   );
-  logger.info({ planId: result.lastInsertRowid, name: input.name }, 'Training plan created');
+  logger.info(
+    { planId: result.lastInsertRowid, name: input.name, status: input.status ?? 'active' },
+    'Training plan created',
+  );
   return getDb().prepare('SELECT * FROM fitness_training_plans WHERE id = ?')
     .get(result.lastInsertRowid) as TrainingPlan;
+}
+
+/**
+ * Promote a `pending_activation` replacement to the user's active plan
+ * (F6, Phase 1A-2).
+ *
+ * Tenant-scoped and status-qualified: the UPDATE only matches a row that is
+ * still `pending_activation` and owned by this scope, so a concurrent
+ * activation or a foreign-scope id changes nothing and returns false. Callers
+ * treat `false` as "do not proceed" and clean up the pending row.
+ */
+export function activatePendingPlan(planId: number, userId: number, tenantId: number): boolean {
+  const db = getDb();
+  const scopedTenantId = requireTenantIdParam(tenantId, 'activatePendingPlan');
+  const result = db.prepare(`
+    UPDATE fitness_training_plans
+       SET status = 'active', updated_at = datetime('now')
+     WHERE id = ? AND user_id = ? AND tenant_id = ? AND status = 'pending_activation'
+  `).run(planId, userId, scopedTenantId);
+  return result.changes === 1;
 }
 
 /**
@@ -534,8 +589,8 @@ export function createSession(input: CreateSessionInput): TrainingSession {
       (week_id, plan_id, tenant_id, day_of_week, session_type, title, description,
        description_json, exercises_json, duration_minutes, intensity_text,
        calendar_event_id, calendar_source, session_identity_key, session_shape_hash,
-       preferred_time_unavailable, status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       preferred_time_unavailable, status, scheduled_start_at, scheduled_end_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     input.week_id, input.plan_id, tenantId, normalizedDay, input.session_type,
     input.title, input.description ?? null, input.description_json ?? null,
@@ -545,6 +600,7 @@ export function createSession(input: CreateSessionInput): TrainingSession {
     input.session_identity_key ?? null, input.session_shape_hash ?? null,
     input.preferred_time_unavailable ? 1 : 0,
     input.status ?? 'pending',
+    input.scheduled_start_at ?? null, input.scheduled_end_at ?? null,
   );
   return db.prepare('SELECT * FROM training_sessions WHERE id = ?')
     .get(result.lastInsertRowid) as TrainingSession;

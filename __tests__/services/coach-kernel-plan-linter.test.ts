@@ -100,6 +100,86 @@ describe('coach-kernel/plan-linter', () => {
     });
   });
 
+  // F3 (Phase 1A-1): whole-plan volume floor.
+  //
+  // `week_one_has_active_training` deliberately exits clean when the WHOLE
+  // plan is empty (`totalActiveTraining === 0`) — it only fires when week 1
+  // is empty *relative to* populated later weeks. Nothing else in the rule
+  // set is a whole-plan floor, so a plan with zero active sessions anywhere
+  // passed the strict preflight and was persisted as "created", after the
+  // cancellation saga had already removed the previous plan.
+  //
+  // All three production shapes collapse to the same zero count:
+  //   - every session `unscheduled` (calendar capacity exhausted),
+  //   - every session rest/deferred (safety pause rewrite),
+  //   - genuinely empty weeks.
+  describe('rule: plan_has_active_training', () => {
+    it('blocks a plan whose sessions are all unscheduled', () => {
+      const result = lintPlan(input({
+        weeks: [
+          week(1, [
+            session({ dayOfWeek: 'monday', title: 'Could Not Place', status: 'unscheduled' }),
+            session({ dayOfWeek: 'wednesday', title: 'Could Not Place', status: 'unscheduled' }),
+          ]),
+          week(2, [
+            session({ dayOfWeek: 'tuesday', title: 'Could Not Place', status: 'unscheduled' }),
+          ]),
+        ],
+      }));
+
+      expect(result.status).toBe('fail');
+      expect(result.blockers.map((blocker) => blocker.ruleId)).toContain('plan_has_active_training');
+    });
+
+    it('blocks a plan whose sessions are all rest-like and deferred', () => {
+      const result = lintPlan(input({
+        weeks: [
+          week(1, [
+            session({ dayOfWeek: 'monday', sessionType: 'rest', title: 'Safety pause', status: 'deferred' }),
+            session({ dayOfWeek: 'tuesday', sessionType: 'rest', title: 'Safety pause', status: 'deferred' }),
+          ]),
+        ],
+      }));
+
+      expect(result.status).toBe('fail');
+      expect(result.blockers.map((blocker) => blocker.ruleId)).toContain('plan_has_active_training');
+    });
+
+    it('blocks a plan whose weeks contain no sessions at all', () => {
+      const result = lintPlan(input({ weeks: [week(1, []), week(2, [])] }));
+
+      expect(result.status).toBe('fail');
+      expect(result.blockers.map((blocker) => blocker.ruleId)).toContain('plan_has_active_training');
+    });
+
+    it('passes when the plan has at least one active training session', () => {
+      const result = lintPlan(input({
+        weeks: [
+          week(1, [session({ dayOfWeek: 'monday', title: 'Easy Run' })]),
+          week(2, [session({ dayOfWeek: 'tuesday', sessionType: 'rest', title: 'Rest', status: 'deferred' })]),
+        ],
+      }));
+
+      expect(result.blockers.map((blocker) => blocker.ruleId)).not.toContain('plan_has_active_training');
+    });
+
+    it('does not double-report with week_one_has_active_training', () => {
+      // Week 1 empty + later weeks populated is the week-one rule's case, not
+      // the floor's — the floor must stay silent so the operator sees one
+      // actionable blocker rather than two.
+      const result = lintPlan(input({
+        weeks: [
+          week(1, [session({ dayOfWeek: 'monday', title: 'Could Not Place', status: 'unscheduled' })]),
+          week(2, [session({ dayOfWeek: 'tuesday', title: 'Real Run', scheduledDate: '2026-04-28T07:00:00.000Z' })]),
+        ],
+      }));
+
+      const ruleIds = result.blockers.map((blocker) => blocker.ruleId);
+      expect(ruleIds).toContain('week_one_has_active_training');
+      expect(ruleIds).not.toContain('plan_has_active_training');
+    });
+  });
+
   describe('rule: week_one_has_active_training', () => {
     it('blocks a plan whose first week is empty while later weeks have active sessions', () => {
       const result = lintPlan(input({

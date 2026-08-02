@@ -90,13 +90,48 @@ describe('training plan generation idempotency — real SQLite', () => {
     expect(rowFor(7, 7, 'key-failed')).toMatchObject({ status: 'in_progress', response_json: null });
   });
 
-  it('treats a succeeded row with corrupted response JSON as in_progress instead of crashing', () => {
+  it('marks a succeeded row with corrupted response JSON terminal and allows a fresh attempt', () => {
+    // F1 (Phase 1A-4). This previously asserted `in_progress`, which read as
+    // graceful degradation but was permanent: a `succeeded` row can never
+    // reach the `failed` re-claim branch, so every retry of the identical
+    // request 409'd forever. Because both the iOS key and the server
+    // `auto:<requestHash>` fallback are deterministic, the user could only
+    // escape by changing a plan input.
+    //
+    // The stored result is unrecoverable either way; the honest outcome is
+    // terminal + a fresh claim, not a permanent in-flight lie.
     claimTrainingPlanGenerationIdempotency(7, 7, 'key-corrupt', 'hash-a');
     completeTrainingPlanGenerationIdempotency(7, 7, 'key-corrupt', 'hash-a', { planId: 1 }, 201);
     realDb.prepare(`UPDATE ${TABLE} SET response_json = '{not-json' WHERE idempotency_key = ?`)
       .run('key-corrupt');
 
     const claim = claimTrainingPlanGenerationIdempotency(7, 7, 'key-corrupt', 'hash-a');
+    expect(claim.kind).toBe('claimed');
+
+    const row = realDb.prepare(`SELECT last_error_code, attempt_count FROM ${TABLE} WHERE idempotency_key = ?`)
+      .get('key-corrupt') as { last_error_code: string | null; attempt_count: number };
+    expect(row.last_error_code).toBe('IDEMPOTENCY_RESPONSE_UNREADABLE');
+    expect(row.attempt_count).toBe(2);
+  });
+
+  it('reclaims an in_progress claim whose lease has expired', () => {
+    // The core F1 fix: a claim orphaned by a process death (OOM, SIGKILL,
+    // deploy restart) never records an outcome, so without an expiry it stays
+    // `in_progress` forever and the deterministic key 409s permanently.
+    claimTrainingPlanGenerationIdempotency(7, 7, 'key-orphaned', 'hash-a');
+    realDb.prepare(`UPDATE ${TABLE} SET lease_expires_at = ? WHERE idempotency_key = ?`)
+      .run('2020-01-01T00:00:00.000Z', 'key-orphaned');
+
+    const claim = claimTrainingPlanGenerationIdempotency(7, 7, 'key-orphaned', 'hash-a');
+    expect(claim.kind).toBe('claimed');
+  });
+
+  it('does NOT reclaim an in_progress claim whose lease is still live', () => {
+    // The concurrent-duplicate guarantee the original design got right must
+    // survive: a live attempt still blocks a second one.
+    claimTrainingPlanGenerationIdempotency(7, 7, 'key-live', 'hash-a');
+
+    const claim = claimTrainingPlanGenerationIdempotency(7, 7, 'key-live', 'hash-a');
     expect(claim.kind).toBe('in_progress');
   });
 

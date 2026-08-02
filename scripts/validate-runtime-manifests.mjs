@@ -32,9 +32,10 @@ const runtimeCapabilityIds = Object.keys(buildCapabilitySkillMetadata(capability
 const schedulerSource = fs.readFileSync(path.join(root, 'src/services/scheduler.ts'), 'utf8');
 const eventBackboneSource = fs.readFileSync(path.join(root, 'src/services/event-backbone-worker.ts'), 'utf8');
 const chatActionFixerSource = fs.readFileSync(path.join(root, 'src/services/chat-action-fixer-worker.ts'), 'utf8');
+const trainingCalendarSyncSource = fs.readFileSync(path.join(root, 'src/services/training-plan-calendar-sync-worker.ts'), 'utf8');
 const scheduledAgentJobsSource = fs.readFileSync(path.join(root, 'src/services/scheduled-agent-jobs.ts'), 'utf8');
 const voiceEvolutionSource = fs.readFileSync(path.join(root, 'src/agents/voice-evolution-agent.ts'), 'utf8');
-const generatedJobManifest = buildAgentJobManifest(schedulerSource, eventBackboneSource, chatActionFixerSource);
+const generatedJobManifest = buildAgentJobManifest(schedulerSource, eventBackboneSource, chatActionFixerSource, trainingCalendarSyncSource);
 const generatedJobManifestRaw = serializeAgentJobManifest(generatedJobManifest);
 if (jobManifest.schema !== AGENT_JOB_MANIFEST_SCHEMA) {
   errors.push(`agent-job manifest schema drift: expected=${AGENT_JOB_MANIFEST_SCHEMA} actual=${jobManifest.schema}`);

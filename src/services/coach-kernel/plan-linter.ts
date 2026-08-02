@@ -86,6 +86,7 @@ export type PlanLintRuleId =
   | 'triathlon_brick_placement'
   | 'plan_linter_exception'
   | 'week_one_has_active_training'
+  | 'plan_has_active_training'
   | 'no_sessions_outside_plan_window'
   | 'session_prescription_completeness';
 
@@ -601,10 +602,52 @@ function ruleNoConsecutiveIdenticalStrengthSessions(input: PlanLintInput): PlanL
   };
 }
 
-function ruleWeekOneHasActiveTraining(input: PlanLintInput): PlanLintFinding | null {
-  const totalActiveTraining = input.weeks.reduce((count, week) => {
+/**
+ * Whole-plan volume floor (F3, Phase 1A-1).
+ *
+ * `ruleWeekOneHasActiveTraining` is a *relative* check: it fires only when
+ * week 1 is empty while later weeks are populated, and returns clean when
+ * the entire plan is empty. That left no rule standing between a
+ * zero-session plan and persistence — and because generation cancels the
+ * previous plan before persisting the replacement, the user was left with
+ * "Plan created! 0 sessions scheduled" and nothing else.
+ *
+ * Three production shapes collapse to the same zero count:
+ *   - every session `unscheduled` (no calendar window could be found),
+ *   - every session rewritten to rest/deferred (safety-pause path),
+ *   - genuinely empty weeks.
+ *
+ * This rule is deliberately narrow: it fires ONLY at a total of zero, so it
+ * never competes with the week-one rule (which requires a non-zero total) and
+ * never second-guesses a legitimately light plan.
+ */
+function rulePlanHasActiveTraining(input: PlanLintInput): PlanLintFinding | null {
+  const totalActiveTraining = countActiveTrainingSessions(input);
+  if (totalActiveTraining > 0) return null;
+
+  const totalSessions = input.weeks.reduce((count, week) => count + week.sessions.length, 0);
+  return {
+    ruleId: 'plan_has_active_training',
+    severity: 'blocker',
+    message:
+      `Plan has zero active training sessions across all ${input.weeks.length} ` +
+      `week${input.weeks.length === 1 ? '' : 's'} ` +
+      `(${totalSessions} session row${totalSessions === 1 ? '' : 's'}, none active). ` +
+      `Do not save a plan with no trainable work; keep the current plan and resolve ` +
+      `scheduling capacity or the safety hold first.`,
+    affectedSessions: [],
+    evidence: { totalActiveTraining, totalSessions, weekCount: input.weeks.length },
+  };
+}
+
+function countActiveTrainingSessions(input: PlanLintInput): number {
+  return input.weeks.reduce((count, week) => {
     return count + week.sessions.filter((session) => isActiveSession(session) && !isRestLikeSession(session)).length;
   }, 0);
+}
+
+function ruleWeekOneHasActiveTraining(input: PlanLintInput): PlanLintFinding | null {
+  const totalActiveTraining = countActiveTrainingSessions(input);
   if (totalActiveTraining === 0) return null;
 
   const weekOne = input.weeks.find((week) => week.weekNumber === 1);
@@ -1022,6 +1065,7 @@ function dedupeAffected(items: PlanLintAffectedSession[]): PlanLintAffectedSessi
 
 const RULES: Array<(input: PlanLintInput) => PlanLintFinding | null> = [
   ruleNoPastActiveSessions,
+  rulePlanHasActiveTraining,
   ruleWeekOneHasActiveTraining,
   ruleNoSessionsOutsidePlanWindow,
   ruleEquipmentCompatibility,
@@ -1094,6 +1138,9 @@ const SUGGESTED_FIXES: Record<PlanLintRuleId, string> = {
     'Retry after the quality gate can complete; do not persist strict-preflight plans that could not be linted.',
   week_one_has_active_training:
     'Re-run scheduling with Week 1 protected; if no legal slot exists, ask the user before saving.',
+  plan_has_active_training:
+    'Keep the existing plan. Resolve the blocking cause first — free calendar capacity, widen availability, '
+    + 'or clear the safety hold — then re-preview.',
   no_sessions_outside_plan_window:
     'Clamp move suggestions to the requested plan window and keep later weeks in a new plan preview.',
   session_prescription_completeness:

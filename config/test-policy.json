@@ -138,7 +138,12 @@
       "src/services/provider-fallback.ts",
       "src/services/database.ts",
       "src/services/migration-runner.ts",
-      "src/services/pm2-health.ts"
+      "src/services/pm2-health.ts",
+      "src/services/training-plan-generation-idempotency.ts",
+      "src/services/training-plan-revision-activation.ts",
+      "src/services/training-operation-locks.ts",
+      "src/api/routes/training-plan-generation.ts",
+      "src/api/routes/training-plan-persistence.ts"
     ],
     "cleanupMappings": [
       {

@@ -1,6 +1,6 @@
 {
   "schema": "nexus.agent-job-manifest.v3",
-  "version": "2026-08-02.1",
+  "version": "2026-08-02.2",
   "jobs": [
     {
       "id": "amazon_collection",
@@ -1450,6 +1450,30 @@
       }
     },
     {
+      "id": "training_plan_calendar_sync_worker",
+      "name": "Training Plan Calendar Sync Worker",
+      "schedule": "* * * * *",
+      "domain": "triathlon",
+      "lifecycle": "active",
+      "policyOwner": "training",
+      "jobVersion": "1.0.0",
+      "tenantScope": "durable-queue-tenant-user",
+      "overlapPolicy": "runtime-process-lock",
+      "retryPolicy": "durable-queue-max-5-with-backoff",
+      "providerUsage": "none",
+      "providerRouting": "not-applicable-no-model-provider",
+      "costPolicy": "no-model-provider-cost",
+      "latencyPolicy": "callback-owned-no-model-budget",
+      "outputPolicy": "active-plan-validated-ownership-idempotent-calendar-write",
+      "notificationPolicy": "job-specific",
+      "inputFingerprint": {
+        "enforcement": "not-applicable-no-provider",
+        "unchangedInputProviderCalls": 0,
+        "evidence": "source-audit:no-model-provider-boundary",
+        "tests": []
+      }
+    },
+    {
       "id": "training_session_reminder",
       "name": "Training Session Reminders",
       "schedule": "*/5 * * * *",
@@ -1646,12 +1670,14 @@
         "training.feedback.recorded",
         "training.plan.created",
         "training.plan.updated",
+        "training.plan_calendar_sync.requested.v1",
         "training.plan_revision.activated.v1",
         "training.session.updated"
       ],
       "queuedJobTypes": [
         "content_topic_secretary_sync",
-        "project_read_models"
+        "project_read_models",
+        "training_plan_calendar_sync"
       ],
       "directEffects": [
         {
@@ -1900,6 +1926,28 @@
         "tests": []
       },
       "runtimeGroup": "event-backbone-default"
+    },
+    {
+      "id": "training_plan_calendar_sync",
+      "jobType": "training_plan_calendar_sync",
+      "lifecycle": "active",
+      "idempotent": true,
+      "policyOwner": "training",
+      "handlerVersion": "1.0.0",
+      "tenantScope": "durable-queue-tenant-user",
+      "retryPolicy": "durable-queue-max-5-with-backoff",
+      "providerUsage": "none",
+      "providerRouting": "not-applicable-no-model-provider",
+      "costPolicy": "no-model-provider-cost",
+      "latencyPolicy": "handler-owned-no-model-budget",
+      "outputPolicy": "active-plan-validated-ownership-idempotent-calendar-write",
+      "inputFingerprint": {
+        "enforcement": "not-applicable-no-provider",
+        "unchangedInputProviderCalls": 0,
+        "evidence": "source-audit:no-model-provider-boundary",
+        "tests": []
+      },
+      "runtimeGroup": "training-plan-calendar-sync"
     },
     {
       "id": "training_summary_projector",

@@ -10,8 +10,31 @@ import {
   inferTrainingSessionIsLowerHeavy,
 } from '../../src/services/training-session-classification';
 import { getQuestionnaire } from '../../src/services/onboarding';
+import { defaultEventHandlers } from '../../src/services/event-backbone-worker';
+import { processPendingEvents } from '../../src/services/event-outbox';
+import { processTrainingPlanCalendarSyncJobs } from '../../src/services/training-plan-calendar-sync-worker';
 
 let harness: TrainingE2EHarness | null = null;
+
+// Phase 1B: provider calendar events are created by the dedicated background
+// worker after activation, not inline in the route. Integration tests drain
+// the real durable chain (outbox '*' router → training_plan_calendar_sync job
+// → worker) exactly the way the scheduler crons do in production.
+async function drainTrainingCalendarSync(): Promise<void> {
+  await processPendingEvents(defaultEventHandlers, { limit: 25, lockOwner: 'training-e2e-router' });
+  await processTrainingPlanCalendarSyncJobs({ limit: 10, lockOwner: 'training-e2e-drain' });
+}
+
+function countLinkedSessions(planId: number): number {
+  if (!harness) return 0;
+  const row = harness.db.prepare(`
+    SELECT COUNT(*) AS count
+      FROM training_sessions
+     WHERE plan_id = ?
+       AND calendar_event_id IS NOT NULL
+  `).get(planId) as { count: number };
+  return Number(row.count);
+}
 
 const dayBefore: Record<string, string> = {
   monday: 'sunday',
@@ -159,8 +182,13 @@ describe('training plan create cycle integration', () => {
     expect(res.body.data.planId).toEqual(expect.any(Number));
     expect(ruleIds(res.body.data.planLint.blockers)).not.toContain('no_heavy_lower_before_long_run');
     expect(res.body.data.calendarSource).toBe('outlook');
-    expect(res.body.data.eventsCreated).toBeGreaterThan(0);
-    expect(res.body.data.calendarSync.sessionsLinked).toBe(res.body.data.eventsCreated);
+    // Phase 1B: the creation response reports the queued (not-yet-synced)
+    // state honestly; provider events only exist after the worker drain.
+    expect(res.body.data.eventsCreated).toBe(0);
+    expect(res.body.data.calendarSync).toMatchObject({ status: 'not_synced', pending: true });
+    expect(calendarMocks.createEvent).not.toHaveBeenCalled();
+
+    await drainTrainingCalendarSync();
 
     const sessions = persistedSessions(Number(res.body.data.planId));
     expect(countTwoADayTrainingDays(sessions)).toBeGreaterThanOrEqual(3);
@@ -172,7 +200,9 @@ describe('training plan create cycle integration', () => {
     expect(sessions.filter((session) => session.dayOfWeek.toLowerCase() === protectedDay)
       .some((session) => inferTrainingSessionIsLowerHeavy(session))).toBe(false);
     expect(calendarMocks.createEvent).toHaveBeenCalled();
-    expect(calendarMocks.createEvent.mock.calls.length).toBe(res.body.data.eventsCreated);
+    const linkedSessions = countLinkedSessions(Number(res.body.data.planId));
+    expect(linkedSessions).toBeGreaterThan(0);
+    expect(calendarMocks.createEvent.mock.calls.length).toBe(linkedSessions);
     expect(calendarMocks.createEvent.mock.calls.every(([payload]) =>
       hasWorkoutContentCalendarBody(payload?.description),
     )).toBe(true);
@@ -244,14 +274,18 @@ describe('training plan create cycle integration', () => {
       phaseRoadmap: expect.any(Array),
       totalSessions: expect.any(Number),
       eventsCreated: expect.any(Number),
+      // Phase 1B contract: creation always reports the queued state — the
+      // background worker owns provider outcomes and the plan-level durable
+      // state lives in preferences_json.calendarSync.
       calendarSync: {
         provider: 'outlook',
         sessionsAttempted: expect.any(Number),
-        eventsCreated: expect.any(Number),
-        sessionsLinked: expect.any(Number),
-        sessionsFailed: expect.any(Number),
-        unscheduled: expect.any(Number),
-        status: expect.stringMatching(/^(synced|partial|not_synced)$/),
+        eventsCreated: 0,
+        sessionsLinked: 0,
+        sessionsFailed: 0,
+        unscheduled: 0,
+        status: 'not_synced',
+        pending: true,
       },
       preferredCardioTime: '07:00',
       preferredStrengthTime: '18:00',
@@ -277,8 +311,12 @@ describe('training plan create cycle integration', () => {
       message: expect.any(String),
     });
     expect(created.body.data).toHaveProperty('profileQuality');
-    expect(created.body.data.calendarSync.sessionsLinked).toBeGreaterThan(0);
-    expect(created.body.data.calendarSync.sessionsLinked).toBe(created.body.data.eventsCreated);
+    // Phase 1B: linkage is proven post-drain against the database, not from
+    // the creation response (which can no longer observe provider outcomes).
+    await drainTrainingCalendarSync();
+    const linkedSessions = countLinkedSessions(Number(created.body.data.planId));
+    expect(linkedSessions).toBeGreaterThan(0);
+    expect(calendarMocks.createEvent.mock.calls.length).toBe(linkedSessions);
     expect(created.body.data.weeks[0]).toMatchObject({
       weekNumber: 1,
       sessionCount: expect.any(Number),
@@ -395,6 +433,12 @@ describe('training plan create cycle integration', () => {
     const firstPlanId = Number(first.body.data.planId);
     expect(firstPlanId).toBeGreaterThan(0);
     expect(countActivePlans()).toBe(1);
+
+    // Phase 1B: link the provider events through the background chain BEFORE
+    // cancelling, so cancellation has real provider events to delete — the
+    // deleteEvent assertion below still guards the cleanup invariant.
+    await drainTrainingCalendarSync();
+    expect(countLinkedSessions(firstPlanId)).toBeGreaterThan(0);
 
     const cancel = await harness.dispatch('POST', '/plan/cancel', { planId: firstPlanId });
     expect(cancel.statusCode).toBe(200);

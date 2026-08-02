@@ -46,6 +46,16 @@ const PROJECTABLE_EVENT_TYPES = new Set([
   'notification.item.updated',
 ]);
 
+// Event types the '*' router consumes ONLY to enqueue a durable background
+// job — no read-model projection. Kept as a named registry (parsed by
+// scripts/generate-agent-job-manifest.mjs, like PROJECTABLE_EVENT_TYPES) so
+// AgentJobManifest lists them as routed without implying projection
+// semantics. Dispatch stays strictly 1:1: the single '*' handler branches
+// internally; never add a second consumer for one of these types.
+const QUEUE_ROUTED_EVENT_TYPES = new Set([
+  'training.plan_calendar_sync.requested.v1',
+]);
+
 // Direct effects run inside the event lease instead of creating a second
 // background_jobs row. Keep this compact registration aligned with
 // AgentJobManifest so new direct side effects cannot bypass governance.
@@ -156,6 +166,32 @@ export const defaultEventHandlers: EventHandler[] = [
           },
           priority: 30,
           idempotencyKey: `project_read_models:${event.eventId}`,
+          correlationId: event.correlationId,
+          causationEventId: event.eventId,
+        }, db);
+      }
+      if (QUEUE_ROUTED_EVENT_TYPES.has(event.eventType)
+        && event.eventType === 'training.plan_calendar_sync.requested.v1'
+        && event.sourceSkill === 'training') {
+        // Provider calendar work must never run inside this event lease
+        // (this runtime group is providerUsage: 'none'); the dedicated
+        // training-plan-calendar-sync worker drains the queued job. Payload
+        // keys are chosen to survive the outbox privacy sanitizer — any key
+        // matching /calendar|title|description/i would arrive '[redacted]'.
+        enqueueJob({
+          tenantId: event.tenantId,
+          userId: event.userId,
+          jobType: 'training_plan_calendar_sync',
+          payload: {
+            eventId: event.eventId,
+            planId: Number(event.payload?.planId ?? event.entityId),
+            planVersion: Number(event.payload?.planVersion ?? event.entityVersion),
+            sessionIds: Array.isArray(event.payload?.sessionIds) ? event.payload.sessionIds : null,
+            syncTarget: typeof event.payload?.syncTarget === 'string' ? event.payload.syncTarget : null,
+          },
+          priority: 20,
+          maxAttempts: 5,
+          idempotencyKey: `training_plan_calendar_sync:${event.eventId}`,
           correlationId: event.correlationId,
           causationEventId: event.eventId,
         }, db);

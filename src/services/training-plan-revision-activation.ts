@@ -32,6 +32,7 @@ import type {
 } from './training-plan-revision-candidate-builder';
 import {
   buildTrainingPlanRevisionCandidate,
+  countActiveWorkouts,
   stableTrainingRevisionHash,
   validateTrainingPlanRevisionDocument,
 } from './training-plan-revision-candidate-builder';
@@ -620,6 +621,22 @@ function validateActivationInput(db: Database.Database, input: {
   if (revision.origin !== 'GENERATED'
       || !['training-plan-revision.v1', 'training-plan-revision.v2'].includes(revision.documentSchemaVersion)) {
     throw new TrainingPlanRevisionError('TRAINING_LEGACY_ACTIVE_REPLACEMENT_NOT_IN_M1', 'Legacy revisions cannot be activated through the Milestone 1 generator.', 409);
+  }
+  // F3 (Phase 1A-1): whole-candidate volume floor.
+  //
+  // Runs AFTER the content-hash integrity check above, so the document being
+  // counted is provably the reviewed one, and after the legacy gate, so
+  // `LEGACY_COMPATIBILITY` backfills never reach here. Two independent
+  // conditions, because the stored report and the document could disagree if
+  // a future builder path forgot the floor check: the report is the
+  // attestation, the count is the ground truth.
+  const activeWorkoutCount = countActiveWorkouts(revision.document as TrainingPlanRevisionDocument);
+  if (activeWorkoutCount === 0 || revision.qualityReport?.status === 'FAIL') {
+    throw new TrainingPlanRevisionError(
+      'TRAINING_REVISION_QUALITY_GATE_FAILED',
+      'The reviewed plan has no active training sessions and cannot be activated. The current plan is unchanged.',
+      409,
+    );
   }
   if (revision.decisionId !== input.approval.decisionId) {
     throw new TrainingPlanRevisionError('TRAINING_REVISION_DECISION_MISMATCH', 'The approval does not belong to this revision.', 409);

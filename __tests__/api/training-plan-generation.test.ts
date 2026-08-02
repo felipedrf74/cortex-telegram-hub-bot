@@ -75,6 +75,8 @@ const mockPersistGeneratedTrainingPlan = vi.fn();
 const mockCancelTrainingPlanForUser = vi.fn();
 // Slice 4.D.2 — saga inspects post-cancellation state via these.
 const mockGetActivePlans = vi.fn();
+const mockActivatePendingPlan = vi.fn(() => true);
+const mockDeletePlanHard = vi.fn(() => ({ deleted: true }));
 const mockFindOrphanedOwnerships = vi.fn();
 const mockReconcileOrphanedTrainingAgendaEvents = vi.fn();
 const mockLoggerWarn = vi.fn();
@@ -170,6 +172,10 @@ vi.mock('../../src/api/routes/training-plan-cancellation', () => ({
 
 vi.mock('../../src/services/training-plans', () => ({
   getActivePlans: (...args: unknown[]) => mockGetActivePlans(...args),
+  // F6 (Phase 1A-2): generation now persists the replacement as
+  // `pending_activation` and promotes it only after the old plan is gone.
+  activatePendingPlan: (...args: unknown[]) => mockActivatePendingPlan(...args),
+  deletePlanHard: (...args: unknown[]) => mockDeletePlanHard(...args),
 }));
 
 vi.mock('../../src/services/training-plan-lifecycle', () => ({
@@ -401,11 +407,16 @@ describe('generateTrainingPlanForUser', () => {
       warnings: [],
       suggestedFixes: [],
     });
+    // Phase 1B: persistence queues calendar work through the outbox instead
+    // of creating provider events inline, so its result reports zero
+    // created/linked plus the queued-sync flags.
     mockPersistGeneratedTrainingPlan.mockResolvedValue({
       planId: 9001,
       totalSessions: 4,
-      eventsCreated: 3,
-      sessionsLinked: 3,
+      eventsCreated: 0,
+      sessionsLinked: 0,
+      calendarSyncQueued: true,
+      syncableSessions: 4,
       weekSummaries: [{ weekNumber: 1, focus: 'base', sessionCount: 4 }],
     });
     mockCancelTrainingPlanForUser.mockResolvedValue({
@@ -477,6 +488,38 @@ describe('generateTrainingPlanForUser', () => {
         ]),
       );
       expect(result.data.suggestedQuestions.join(' ')).toMatch(/equipment/i);
+      // Phase 2 (F2): every clarification issue carries allowlisted,
+      // machine-readable resolution metadata so the client can render an
+      // answerable form and save through the canonical profile path instead
+      // of dead-ending on "Try again".
+      const issuesById = new Map(
+        (result.data.clarificationIssues as Array<{ id: string; resolution?: unknown }>).map(
+          (issue) => [issue.id, issue],
+        ),
+      );
+      expect(issuesById.get('equipment_clarification')?.resolution).toEqual({
+        profileType: 'triathlon-gym',
+        fields: [{
+          fieldKey: 'equipment_access',
+          answerType: 'choice',
+          allowedValues: [
+            'Full commercial gym',
+            'Garage gym (barbell + rack)',
+            'Home gym (basic)',
+            'Bodyweight only',
+          ],
+        }],
+      });
+      expect(issuesById.get('session_duration_clarification')?.resolution).toEqual({
+        profileType: 'triathlon-gym',
+        fields: [{
+          fieldKey: 'session_duration_minutes',
+          answerType: 'number',
+          min: 20,
+          max: 180,
+          unit: 'minutes',
+        }],
+      });
     }
     expect(mockCancelTrainingPlanForUser).not.toHaveBeenCalled();
     expect(mockPersistGeneratedTrainingPlan).not.toHaveBeenCalled();
@@ -487,6 +530,38 @@ describe('generateTrainingPlanForUser', () => {
       }),
       expect.stringContaining('needs clarification'),
     );
+  });
+
+  it('consumes an answered session duration from the canonical gym profile', async () => {
+    // Phase 2 (F2): the client answers session_duration_clarification by
+    // writing the allowlisted `session_duration_minutes` field through the
+    // canonical profile path, then re-previews. The answered value must feed
+    // the spec so the clarification clears — equipment stays open here, so
+    // the request is still blocked, proving severity is untouched.
+    mockGetProfile.mockImplementation((_userId: number, questionnaireId: string) => {
+      if (questionnaireId === 'fitness') return { experienceLevel: 'Intermediate' };
+      if (questionnaireId === 'triathlon-gym') return { session_duration_minutes: '60' };
+      return null;
+    });
+    mockBuildTrainingEquipmentAdaptation.mockReturnValue({
+      equipmentProfile: 'unknown',
+      canonicalProfile: { items: [] },
+    });
+
+    const result = await generateTrainingPlanForUser({
+      userId: 12,
+      tenantId: 12,
+      objective: 'Build muscle with a 5-day gym plan',
+      sessionsPerWeek: 5,
+      strengthSessionsPerWeek: 5,
+    });
+
+    expect(result.status).toBe('needs_clarification');
+    if (result.status === 'needs_clarification') {
+      const ids = (result.data.clarificationIssues as Array<{ id: string }>).map((issue) => issue.id);
+      expect(ids).toContain('equipment_clarification');
+      expect(ids).not.toContain('session_duration_clarification');
+    }
   });
 
   it('falls back to the questionnaire id when the fitness definition has no title', async () => {
@@ -689,13 +764,19 @@ describe('generateTrainingPlanForUser', () => {
       durationWeeks: 6,
       resolvedStartDate: '2026-04-20',
       totalSessions: 4,
-      eventsCreated: 3,
+      // Phase 1B: the creation response can no longer observe provider
+      // outcomes — sync happens in the background worker after activation.
+      // The old 'partial' + fabricated per-session failure counts encoded
+      // the inline provider loop; 'not_synced' + pending is the honest
+      // point-in-time truth and the worker persists the durable state.
+      eventsCreated: 0,
       calendarSync: expect.objectContaining({
-        eventsCreated: 3,
-        sessionsLinked: 3,
-        sessionsFailed: 1,
-        unscheduled: 1,
-        status: 'partial',
+        eventsCreated: 0,
+        sessionsLinked: 0,
+        sessionsFailed: 0,
+        unscheduled: 0,
+        status: 'not_synced',
+        pending: true,
       }),
       preferredCardioTime: '07:00',
       preferredStrengthTime: '12:30',
@@ -2187,6 +2268,11 @@ describe('generateTrainingPlanForUser', () => {
     it('aborts the persist with cancellation_failed when the cancellation throws AND the prior plan is still active', async () => {
       mockCancelTrainingPlanForUser.mockRejectedValueOnce(new Error('SQLITE_BUSY: database is locked'));
       mockGetActivePlans.mockReturnValue([{ id: 999, status: 'active' }]);
+      // These two are module-scoped and this suite does not clear between
+      // tests, so scope the call-count assertions below to this test only.
+      mockActivatePendingPlan.mockClear();
+      mockDeletePlanHard.mockClear();
+      mockPersistGeneratedTrainingPlan.mockClear();
 
       const result = await generateTrainingPlanForUser({
         userId: 12,
@@ -2202,10 +2288,47 @@ describe('generateTrainingPlanForUser', () => {
         expect(result.data.reason).toContain('SQLITE_BUSY');
         expect(String(result.data.message)).toContain('Could not finalize cancellation');
       }
-      // Critical: persist must NOT run when the saga aborts.
-      expect(mockPersistGeneratedTrainingPlan).not.toHaveBeenCalled();
+      // F6 (Phase 1A-2) changed HOW this is made safe, and the new guarantee
+      // is stronger than the one this test previously asserted.
+      //
+      // Before: the saga ran first, so "safe" meant "never reach persist".
+      // That protected against a double-plan, but not against the far worse
+      // outcome — a throw *after* the hard-delete left the user with no plan
+      // at all, because the only copy was already gone.
+      //
+      // Now: the replacement is persisted as `pending_activation` FIRST
+      // (invisible to every reader, which all filter `status = 'active'`),
+      // and is only promoted once the old plan is gone. So persist IS
+      // expected to run here; what must hold is that the pending row is
+      // discarded and the user's existing plan is untouched.
+      expect(mockPersistGeneratedTrainingPlan).toHaveBeenCalledTimes(1);
+      expect(mockPersistGeneratedTrainingPlan.mock.calls[0]?.[0]).toMatchObject({ persistAsPending: true });
+      expect(mockActivatePendingPlan).not.toHaveBeenCalled();
+      expect(mockDeletePlanHard).toHaveBeenCalled();
       expect(mockLoggerError).toHaveBeenCalled();
       expect(mockGetActivePlans).toHaveBeenCalledWith(12, 34);
+    });
+
+    it('discards the pending replacement and reports failure when activation does not take', async () => {
+      // Guards the promote step itself: if the status-qualified UPDATE matches
+      // no row (concurrent activation, or the row is no longer pending) we must
+      // fail closed rather than report a plan the user cannot see.
+      mockActivatePendingPlan.mockReturnValueOnce(false);
+      mockDeletePlanHard.mockClear();
+
+      const result = await generateTrainingPlanForUser({
+        userId: 12,
+        tenantId: 12,
+        objective: 'Lisbon Marathon',
+        sessionsPerWeek: 5,
+        strengthSessionsPerWeek: 2,
+      });
+
+      expect(result.status).toBe('cancellation_failed');
+      if (result.status === 'cancellation_failed') {
+        expect(result.data.reason).toBe('PENDING_ACTIVATION_FAILED');
+      }
+      expect(mockDeletePlanHard).toHaveBeenCalled();
     });
 
     it('proceeds with persist when cancellation throws but no active plans remain (post-delete throw)', async () => {

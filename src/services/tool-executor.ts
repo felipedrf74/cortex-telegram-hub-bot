@@ -793,23 +793,44 @@ export async function executeToolCall(
       }
 
       // ── Training Plan tools ──
+      //
+      // F13 (Phase 1A-3): `create_training_plan` no longer writes a plan row.
+      //
+      // It used to call `trainingPlans.createPlan` directly, which inserts
+      // with `status` defaulting to `'active'` and no unique constraint on
+      // active plans. A single model turn could therefore create an empty
+      // shell plan that immediately became "the active plan" — `getActivePlan`
+      // orders by `created_at DESC` — hiding the user's real plan from Home,
+      // /today, /week and the calendar. It also bypassed the coach kernel,
+      // volume enforcement, the plan linter, the spec/readiness gate, the
+      // safety guardrails and the cancellation saga, and produced a row with
+      // `source_revision_id = NULL` that later blocks revision enrollment
+      // with TRAINING_EXISTING_ACTIVE_PLAN_NOT_REPLACEABLE_IN_M1.
+      //
+      // The enrollment-scoped `assertLegacyPlanGenerationAllowed` guard did
+      // not help: `shouldGuard` returns false for non-enrolled scopes, so in
+      // default mode it was a no-op.
+      //
+      // Plan creation has a reviewed path — preview → confirm via the plan
+      // builder — and chat already hands off to it (`training_plan_create`
+      // returns `verified_pending` with `openSurface: 'training_plan_builder'`).
+      // This tool now returns that handoff instead of writing. The released
+      // REST route `/api/v1/training/plan/generate` is untouched; raw model
+      // writers and the compatibility API are separate concerns.
       case 'create_training_plan': {
         const scope = requireTenantToolUserId(toolName, userId, input.user_id, tenantId);
         if (!scope.ok) return { error: scope.error };
-        assertLegacyPlanGenerationAllowed({ userId: scope.userId, tenantId: scope.tenantId });
-        const plan = trainingPlans.createPlan({
-          user_id: scope.userId,
-          tenant_id: scope.tenantId,
-          name: input.name,
-          sport: input.sport,
-          goal: input.goal,
-          duration_weeks: input.duration_weeks,
-          periodization: input.periodization,
-          start_date: input.start_date,
-          end_date: input.end_date,
-          preferences_json: input.preferences_json,
-        });
-        return { success: true, plan_id: plan.id, name: plan.name, status: plan.status };
+        logger.warn(
+          { userId: scope.userId, tenantId: scope.tenantId, toolName },
+          'Model attempted direct training plan creation; returning plan-builder handoff instead of writing a row',
+        );
+        return {
+          error: 'create_training_plan cannot write a plan directly. '
+            + 'Training plans must be reviewed before they replace the athlete\'s current plan. '
+            + 'Collect the objective and weekly targets, then open the training plan builder '
+            + 'so the athlete can preview and confirm.',
+          handoff: 'training_plan_builder',
+        };
       }
 
       case 'add_training_week': {

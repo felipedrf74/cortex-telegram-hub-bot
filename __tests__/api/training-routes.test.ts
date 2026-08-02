@@ -155,6 +155,9 @@ vi.mock('../../src/services/training-plans', () => ({
   getPlanById: (...args: unknown[]) => mockGetPlanById(...args),
   getWeeklyAdherence: (...args: unknown[]) => mockGetWeeklyAdherence(...args),
   createPlan: (...args: unknown[]) => mockCreatePlan(...args),
+  // F6 (Phase 1A-2): generation persists the replacement as
+  // `pending_activation`, then promotes it once the old plan is gone.
+  activatePendingPlan: () => true,
   createWeek: (...args: unknown[]) => mockCreateWeek(...args),
   createSession: (...args: unknown[]) => mockCreateSession(...args),
   linkSessionToCalendar: (...args: unknown[]) => mockLinkSessionToCalendar(...args),
@@ -1576,7 +1579,9 @@ describe('Training API routes', () => {
     expect(res.body.data.status).not.toBe('plan_quality_blocked');
     expect(mockCreatePlan).toHaveBeenCalledTimes(1);
     expect(mockCreateSession).toHaveBeenCalled();
-    expect(mockCreateEvent).toHaveBeenCalled();
+    // Phase 1B: provider calendar events are created by the background
+    // calendar-sync worker after activation, never inline in the route.
+    expect(mockCreateEvent).not.toHaveBeenCalled();
   });
 
   it('schedules same-day run and gym sessions at separate preferred times', async () => {
@@ -1624,15 +1629,22 @@ describe('Training API routes', () => {
     });
 
     expect(res.statusCode).toBe(201);
-    const createdEvents = mockCreateEvent.mock.calls.map((call) => call[0]);
-    const runEvent = createdEvents.find((event) => String(event.title).includes('Base Run'));
-    const gymEvent = createdEvents.find((event) => /\bRunner Strength \(40min\)/.test(String(event.title)));
+    // Phase 1B: the separate preferred times are proven on the persisted
+    // schedule windows (the calendar-sync worker rebuilds provider event
+    // times from these rows) instead of on inline provider calls.
+    expect(mockCreateEvent).not.toHaveBeenCalled();
+    const createdSessions = mockCreateSession.mock.calls.map((call) => call[0] as Record<string, unknown>);
+    // Exact-title match: volume enforcement adds filler sessions like
+    // 'Runner Strength Support' on other days that a substring match would
+    // wrongly capture.
+    const runEvent = createdSessions.find((session) => session.title === 'Base Run');
+    const gymEvent = createdSessions.find((session) => session.title === 'Runner Strength');
 
     expect(runEvent).toBeTruthy();
     expect(gymEvent).toBeTruthy();
 
-    const runStart = new Date(String(runEvent.start));
-    const gymStart = new Date(String(gymEvent.start));
+    const runStart = new Date(String(runEvent!.scheduled_start_at));
+    const gymStart = new Date(String(gymEvent!.scheduled_start_at));
     expect(runStart.toDateString()).toBe(gymStart.toDateString());
     expect(runStart.getTime()).toBeLessThan(gymStart.getTime());
     expect((gymStart.getTime() - runStart.getTime()) / 60000).toBeGreaterThanOrEqual(300);
@@ -1676,7 +1688,6 @@ describe('Training API routes', () => {
     const first = await dispatch('POST', '/plan/generate', {}, body);
     const createPlanCountAfterFirst = mockCreatePlan.mock.calls.length;
     const createSessionCountAfterFirst = mockCreateSession.mock.calls.length;
-    const createEventCountAfterFirst = mockCreateEvent.mock.calls.length;
     mockGetPlanById.mockReturnValue({ id: first.body.data.planId, user_id: 12, tenant_id: 12, status: 'active' });
     mockGetWeeksForPlan.mockReturnValue([{ id: 3001, plan_id: first.body.data.planId, week_number: 1 }]);
     mockGetSessionsForWeek.mockReturnValue([{ id: 4001, plan_id: first.body.data.planId, week_id: 3001, status: 'scheduled' }]);
@@ -1687,10 +1698,12 @@ describe('Training API routes', () => {
     expect(second.body.data).toEqual(first.body.data);
     expect(createPlanCountAfterFirst).toBeGreaterThan(0);
     expect(createSessionCountAfterFirst).toBeGreaterThan(0);
-    expect(createEventCountAfterFirst).toBeGreaterThan(0);
     expect(mockCreatePlan).toHaveBeenCalledTimes(createPlanCountAfterFirst);
     expect(mockCreateSession).toHaveBeenCalledTimes(createSessionCountAfterFirst);
-    expect(mockCreateEvent).toHaveBeenCalledTimes(createEventCountAfterFirst);
+    // Phase 1B: routes never call providers — the replay guarantee for
+    // provider events is now the worker's ownership idempotency, covered in
+    // the training-plan-calendar-sync worker suite.
+    expect(mockCreateEvent).not.toHaveBeenCalled();
   });
 
   it('discards a stale confirmed plan replay when the referenced plan no longer exists', async () => {
@@ -1935,6 +1948,66 @@ describe('Training API routes', () => {
     expect(mockCreateEvent).toHaveBeenCalledTimes(createEventCountAfterFirst);
   });
 
+  it('regenerates instead of replaying the auto-deduped plan after a clarification answer changes the profile', async () => {
+    // Phase 2 (F2): clarification answers live in PROFILES, not the request
+    // body. Without the answers fingerprint in the request hash, an athlete
+    // who answers a clarification and immediately retries the identical
+    // request inside the 90s auto-dedupe window would get the stale
+    // pre-answer plan replayed — silently discarding their answer.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date('2026-04-15T12:00:10.000Z'));
+
+    let gymProfile: Record<string, unknown> = {};
+    mockGetProfile.mockImplementation((_userId: number, profile: string) => {
+      if (profile === 'fitness') return { experienceLevel: 'Intermediate', available_equipment: 'Full gym' };
+      if (profile === 'triathlon-gym') return gymProfile;
+      return null;
+    });
+    mockBuildCoachKernelTrainingPlan.mockReturnValue(makeKernelPlan([
+      {
+        weekNumber: 1,
+        focus: 'base',
+        intensityPct: 70,
+        sessions: [
+          {
+            dayOfWeek: 'Wednesday',
+            sessionType: 'gym',
+            title: 'Strength + Core Support',
+            durationMinutes: 40,
+            description: 'Controlled strength work.',
+            exercises: [],
+          },
+        ],
+      },
+    ]));
+
+    const body = {
+      objective: 'General fitness',
+      preferredTime: '12:00',
+      sessionsPerWeek: 3,
+      strengthSessionsPerWeek: 3,
+    };
+
+    const first = await dispatch('POST', '/plan/generate', {}, body);
+    expect(first.statusCode).toBe(201);
+    const createPlanCountAfterFirst = mockCreatePlan.mock.calls.length;
+    expect(createPlanCountAfterFirst).toBeGreaterThan(0);
+
+    // The athlete answers a clarification through the canonical profile
+    // path, then retries the same request seconds later.
+    gymProfile = { session_duration_minutes: 60 };
+    vi.setSystemTime(new Date('2026-04-15T12:00:20.000Z'));
+    mockGetPlanById.mockReturnValue({ id: first.body.data.planId, user_id: 12, tenant_id: 12, status: 'active' });
+    mockGetWeeksForPlan.mockReturnValue([{ id: 3005, plan_id: first.body.data.planId, week_number: 1 }]);
+    mockGetSessionsForWeek.mockReturnValue([{ id: 4005, plan_id: first.body.data.planId, week_id: 3005, status: 'scheduled' }]);
+    const second = await dispatch('POST', '/plan/generate', {}, body);
+
+    expect(second.statusCode).toBe(201);
+    // A changed answer must change the request hash → fresh generation, not
+    // a replay of the pre-answer plan.
+    expect(mockCreatePlan.mock.calls.length).toBe(createPlanCountAfterFirst + 1);
+  });
+
   it('auto-dedupes rapid duplicate plan creation across a minute boundary', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(new Date('2026-04-15T12:00:59.500Z'));
@@ -1971,7 +2044,6 @@ describe('Training API routes', () => {
     const first = await dispatch('POST', '/plan/generate', {}, body);
     const createPlanCountAfterFirst = mockCreatePlan.mock.calls.length;
     const createSessionCountAfterFirst = mockCreateSession.mock.calls.length;
-    const createEventCountAfterFirst = mockCreateEvent.mock.calls.length;
 
     vi.setSystemTime(new Date('2026-04-15T12:01:00.500Z'));
     mockGetPlanById.mockReturnValue({ id: first.body.data.planId, user_id: 12, tenant_id: 12, status: 'active' });
@@ -1984,10 +2056,11 @@ describe('Training API routes', () => {
     expect(second.body.data).toEqual(first.body.data);
     expect(createPlanCountAfterFirst).toBeGreaterThan(0);
     expect(createSessionCountAfterFirst).toBeGreaterThan(0);
-    expect(createEventCountAfterFirst).toBeGreaterThan(0);
     expect(mockCreatePlan).toHaveBeenCalledTimes(createPlanCountAfterFirst);
     expect(mockCreateSession).toHaveBeenCalledTimes(createSessionCountAfterFirst);
-    expect(mockCreateEvent).toHaveBeenCalledTimes(createEventCountAfterFirst);
+    // Phase 1B: routes never call providers — duplicate-event protection is
+    // the worker's ownership idempotency, covered in its own suite.
+    expect(mockCreateEvent).not.toHaveBeenCalled();
   });
 
   it('keeps stale automatic plan-generation claims in progress while the first request is still running', () => {

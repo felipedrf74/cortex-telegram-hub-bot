@@ -61,6 +61,7 @@ import {
   type EnduranceKeyDay,
   type TrainingPlanSpecReadinessResult,
 } from '../../services/training-plan-spec';
+import { parseSessionDurationMinutesAnswer } from '../../services/training-plan-clarification-registry';
 import {
   mergeTrainingQualityIntoPlanLint,
   prepareTrainingPlanForQualityGate,
@@ -792,6 +793,10 @@ export async function generateTrainingPlanForUser(
         startDate: startStr,
         equipmentProfileLabel,
         availableEquipment: equipmentAdaptation.canonicalProfile?.items,
+        // Phase 2 (F2): the session_duration_clarification answer is written
+        // to the canonical gym profile; consuming it here is what closes the
+        // answer → profile write → re-preview loop.
+        sessionDurationMinutes: parseSessionDurationMinutesAnswer(gymProfile),
         fitnessProfile,
         gymProfile,
         enduranceSchedule: generatedEnduranceSchedule,
@@ -1061,6 +1066,40 @@ export async function generateTrainingPlanForUser(
   // are still present. This now runs only after the strict quality
   // gate has passed, so a blocked candidate cannot delete the current
   // plan.
+  // F6 (Phase 1A-2) — create-new-before-delete-old.
+  //
+  // Previously the saga ran FIRST and hard-deleted the user's plan, then
+  // persistence ran as a separate, non-transactional step. Any failure in
+  // between (a throw mid-session-insert, SQLITE_BUSY, a process restart)
+  // left the user with no plan at all, because the only copy had already
+  // been deleted.
+  //
+  // The replacement is now persisted first as `pending_activation`. Every
+  // reader filters `status = 'active'`, so it is durable but invisible —
+  // the user still sees their existing plan throughout. Only once the
+  // replacement is on disk do we remove the old one, and only then do we
+  // flip the replacement to active.
+  //
+  // Failure before activation deletes the pending replacement and leaves
+  // the existing plan exactly as it was.
+  const persistedPlan = await persistGeneratedTrainingPlan({
+    ...finalizedPersistenceInput,
+    persistAsPending: true,
+  });
+
+  const discardPendingReplacement = (reason: string): void => {
+    try {
+      trainingPlans.deletePlanHard(persistedPlan.planId, userId, tenantId);
+    } catch (err) {
+      // The pending row is invisible to every reader, so a failed cleanup
+      // degrades to a harmless orphan rather than a user-visible plan.
+      logger.error(
+        { err, userId, planId: persistedPlan.planId, reason },
+        'Could not discard pending replacement plan; row is invisible to readers and left for reconciliation',
+      );
+    }
+  };
+
   const cancellationOutcome = await runPrePersistCancellationSaga(userId, tenantId);
 
   switch (cancellationOutcome.kind) {
@@ -1077,8 +1116,9 @@ export async function generateTrainingPlanForUser(
           reason: cancellationOutcome.reason,
           activePlansRemaining: cancellationOutcome.activePlansRemaining,
         },
-        'Pre-persist cancellation: LOCAL DELETE FAILED — aborting new plan persist to avoid double-plan corruption',
+        'Pre-persist cancellation: LOCAL DELETE FAILED — discarding pending replacement so the existing plan stays intact',
       );
+      discardPendingReplacement('local_delete_failed');
       return {
         status: 'cancellation_failed',
         data: {
@@ -1095,7 +1135,27 @@ export async function generateTrainingPlanForUser(
       break;
   }
 
-  const persistedPlan = await persistGeneratedTrainingPlan(finalizedPersistenceInput);
+  // The old plan is gone and the replacement is already durable; promote it.
+  // Status-qualified and tenant-scoped, so a concurrent generation that
+  // already activated this row changes nothing and we fail closed rather
+  // than reporting a plan the user cannot see.
+  if (!trainingPlans.activatePendingPlan(persistedPlan.planId, userId, tenantId)) {
+    logger.error(
+      { userId, planId: persistedPlan.planId },
+      'Pending replacement could not be activated after cancellation; discarding',
+    );
+    discardPendingReplacement('activation_failed');
+    return {
+      status: 'cancellation_failed',
+      data: {
+        message:
+          'Could not finalize your new plan. No changes were saved. Please try again.',
+        reason: 'PENDING_ACTIVATION_FAILED',
+        activePlansRemaining: 0,
+        generationVersionPins,
+      },
+    };
+  }
 
   // training-expert-coach-knowledge-engine (2026-05-03):
   // Surface plan-linter findings + calendar-degraded warning on the
@@ -1112,10 +1172,14 @@ export async function generateTrainingPlanForUser(
     warnings: [],
     suggestedFixes: [],
   };
-  const sessionsLinked = typeof persistedPlan.sessionsLinked === 'number'
-    ? persistedPlan.sessionsLinked
-    : persistedPlan.eventsCreated;
-  const sessionsFailed = Math.max(0, persistedPlan.totalSessions - sessionsLinked);
+  // Phase 1B: provider calendar work is queued through the outbox and runs in
+  // the training_plan_calendar_sync worker after activation, so at response
+  // time nothing is created, linked, or failed yet. Reporting
+  // `totalSessions - 0` as failures here would fabricate failures; the honest
+  // contract is pending + not_synced. (`calendarSyncQueued` is read
+  // defensively because legacy tests mock persistGeneratedTrainingPlan
+  // without the Phase 1B fields.)
+  const calendarSyncPending = persistedPlan.calendarSyncQueued === true;
   const planWarnings = buildPlanWarnings({
     calendarFetchDegraded,
     calendarFetchError,
@@ -1141,18 +1205,21 @@ export async function generateTrainingPlanForUser(
       trainingLearningPath: extractTrainingLearningPath(planData),
       totalSessions: persistedPlan.totalSessions,
       eventsCreated: persistedPlan.eventsCreated,
+      // Phase 1B contract change (deliberate): calendar sync is asynchronous,
+      // so creation responses always report `not_synced` + `pending` and zero
+      // counts — never fabricated failures. iOS reads these fields from the
+      // wrong nesting level today (F20) and always sees nil, so no released
+      // client regresses; the worker-persisted plan-level state is the
+      // durable source of truth for later reads.
       calendarSync: {
         provider: resolvedCalendarSource || null,
         sessionsAttempted: persistedPlan.totalSessions,
         eventsCreated: persistedPlan.eventsCreated,
-        sessionsLinked,
-        sessionsFailed,
-        unscheduled: sessionsFailed,
-        status: sessionsLinked >= persistedPlan.totalSessions
-          ? 'synced'
-          : sessionsLinked > 0
-            ? 'partial'
-            : 'not_synced',
+        sessionsLinked: persistedPlan.sessionsLinked,
+        sessionsFailed: 0,
+        unscheduled: 0,
+        status: 'not_synced',
+        pending: calendarSyncPending,
       },
       preferredCardioTime: normalizedPreferredCardioTime,
       preferredStrengthTime: normalizedPreferredStrengthTime,
@@ -1182,7 +1249,7 @@ export async function generateTrainingPlanForUser(
       message: buildTrainingPlanCreatedMessage({
         totalSessions: persistedPlan.totalSessions,
         durationWeeks,
-        eventsCreated: persistedPlan.eventsCreated,
+        calendarSyncPending,
         calendarSource: resolvedCalendarSource || null,
       }),
     },
@@ -1192,7 +1259,7 @@ export async function generateTrainingPlanForUser(
 function buildTrainingPlanCreatedMessage(input: {
   totalSessions: number;
   durationWeeks: number;
-  eventsCreated: number;
+  calendarSyncPending: boolean;
   calendarSource: CalendarSource | null;
 }): string {
   const sessionLabel = input.totalSessions === 1 ? 'session' : 'sessions';
@@ -1203,12 +1270,12 @@ function buildTrainingPlanCreatedMessage(input: {
   }
 
   const providerName = input.calendarSource === 'google' ? 'Google Calendar' : 'Outlook Calendar';
-  if (input.eventsCreated <= 0) {
-    return `${base} No ${providerName} events were created yet; use calendar sync after reconnecting the provider.`;
+  // Phase 1B: provider events are created by the background sync worker, so
+  // the creation message never claims events already exist.
+  if (input.calendarSyncPending) {
+    return `${base} ${providerName} events are being created in the background.`;
   }
-
-  const eventLabel = input.eventsCreated === 1 ? 'event' : 'events';
-  return `${base} ${input.eventsCreated} ${providerName} ${eventLabel} created.`;
+  return `${base} No ${providerName} events were queued; use calendar sync after reconnecting the provider.`;
 }
 
 function countSchedulablePlanSessions(planData: any): number {

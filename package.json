@@ -72,6 +72,7 @@
     "training:exercise-media:seed": "npx tsx scripts/seed-training-exercise-media.ts",
     "training:exercise-media:seed:runtime": "node dist/tools/training-exercise-media-seed.js",
     "training:revision-v1:backfill": "node dist/cli/training-plan-revision-v1-backfill.js",
+    "training:calendar-sync:backfill": "node dist/cli/training-plan-calendar-sync-backfill.js",
     "training:plan-validation-matrix": "npm run build && node dist/tools/training-plan-creation-validation-matrix.js",
     "training:e2e:up": "scripts/training-e2e-up.sh",
     "training:e2e:smoke": "scripts/training-e2e-smoke.sh",

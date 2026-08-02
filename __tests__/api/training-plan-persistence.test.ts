@@ -26,6 +26,20 @@ const mockMarkSecretaryAgendaProviderSyncSatisfied = vi.fn();
 const mockMarkSecretaryAgendaProviderCleanupRequired = vi.fn();
 const mockLoadLiveCalendarBusyWindowsForSecretaryIntent = vi.fn();
 
+// F4 (Phase 1B): plan + weeks + sessions now commit inside one
+// `db.transaction(...)`, so persistence needs a real database handle even
+// though the individual writers below are mocked. An in-memory handle is
+// enough — `transaction()` just wraps the (mocked) calls, and using a real
+// one keeps the atomicity guarantee honest rather than letting the code
+// silently degrade to non-transactional when no database is present.
+const transactionTestDb = new (require('better-sqlite3'))(':memory:');
+vi.mock('../../src/services/database', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/database')>(
+    '../../src/services/database',
+  );
+  return { ...actual, getDb: () => transactionTestDb };
+});
+
 vi.mock('../../src/services/training-plans', async () => {
   const actual = await vi.importActual<typeof import('../../src/services/training-plans')>(
     '../../src/services/training-plans',
@@ -105,7 +119,6 @@ vi.mock('../../src/services/coach-kernel/plan-linter', async () => {
 import {
   lintGeneratedTrainingPlanPreflight,
   persistGeneratedTrainingPlan,
-  trainingCalendarCreateBatchSize,
 } from '../../src/api/routes/training-plan-persistence';
 import { _resetTrainingOperationLocksForTests } from '../../src/services/training-operation-locks';
 
@@ -120,6 +133,10 @@ async function waitForMockCallCount(mock: { mock: { calls: unknown[] } }, count:
 describe('training-plan-persistence', () => {
   beforeEach(() => {
     _resetTrainingOperationLocksForTests();
+    // Phase 1B: the outbox emit joins the plan-graph transaction on this
+    // shared in-memory handle; reset the table so per-test event assertions
+    // never see a previous test's rows.
+    transactionTestDb.exec('DROP TABLE IF EXISTS event_outbox');
     delete process.env.TRAINING_ENGINE_ENABLED;
     delete process.env.TRAINING_ENGINE_DISABLED;
     delete process.env.TRAINING_CALENDAR_WRITES_ENABLED;
@@ -202,6 +219,90 @@ describe('training-plan-persistence', () => {
     _resetTrainingOperationLocksForTests();
   });
 
+  // Phase 1B red test — calendar effects must route through the outbox.
+  // Provider work inside persistence ran while the plan was still
+  // `pending_activation` and could not retry transient failures; the
+  // outbox + dedicated worker gives durability, backoff, and the
+  // "no provider work for a non-active plan" invariant.
+  it('emits one calendar-sync outbox event inside the plan-graph transaction and performs no provider work', async () => {
+    const result = await persistGeneratedTrainingPlan({
+      userId: 12,
+      tenantId: 12,
+      objective: 'Marathon build',
+      durationWeeks: 4,
+      startDate: '2026-04-19',
+      endDate: '2026-05-17',
+      now: new Date('2026-04-19T00:00:00.000Z'),
+      preferencesJson: '{"preferredTime":"12:00"}',
+      normalizedPreferredTime: '12:00',
+      normalizedPreferredCardioTime: '07:00',
+      normalizedPreferredStrengthTime: '12:30',
+      busyWindows: [],
+      calendarSource: 'google',
+      planData: {
+        planName: 'Marathon Plan',
+        sport: 'running',
+        periodization: 'block',
+        weeks: [
+          {
+            weekNumber: 1,
+            focus: 'base',
+            intensityPct: 72,
+            sessions: [
+              {
+                dayOfWeek: 'Monday',
+                sessionType: 'run',
+                title: 'Base Run',
+                durationMinutes: 50,
+                description: 'Easy aerobic work.',
+                exercises: [{ name: 'Warm-up', distance_km: 1 }],
+              },
+              {
+                dayOfWeek: 'Tuesday',
+                sessionType: 'gym',
+                title: 'Runner Strength',
+                durationMinutes: 40,
+                description: 'Strength work.',
+                exercises: [{ name: 'Goblet Squat', sets: 3, reps: 10, rpe: '7', restSec: 90 }],
+              },
+            ],
+          },
+        ],
+      },
+    });
+
+    // No provider or Secretary work happens inline anymore — the
+    // training_plan_calendar_sync worker owns it after activation.
+    expect(mockCreateEvent).not.toHaveBeenCalled();
+    expect(mockSubmitSecretarySchedulingIntent).not.toHaveBeenCalled();
+    expect(mockLoadLiveCalendarBusyWindowsForSecretaryIntent).not.toHaveBeenCalled();
+    expect(mockLinkSessionToCalendar).not.toHaveBeenCalled();
+
+    const events = transactionTestDb.prepare(
+      "SELECT * FROM event_outbox WHERE event_type = 'training.plan_calendar_sync.requested.v1'",
+    ).all() as Array<{ payload_json: string; idempotency_key: string; source_skill: string; entity_id: string }>;
+    expect(events).toHaveLength(1);
+    expect(events[0].source_skill).toBe('training');
+    expect(events[0].entity_id).toBe('901');
+    expect(events[0].idempotency_key).toBe('training.plan_calendar_sync.requested:901:1');
+    const payload = JSON.parse(events[0].payload_json);
+    expect(payload).toMatchObject({ planId: 901, planVersion: 1, syncTarget: 'google' });
+    expect(payload.sessionIds).toHaveLength(2);
+
+    // The finalized schedule window is now durable on the session row so the
+    // worker can rebuild provider event times after the fact.
+    expect(mockCreateSession).toHaveBeenCalledWith(expect.objectContaining({
+      title: 'Base Run',
+      scheduled_start_at: expect.any(String),
+      scheduled_end_at: expect.any(String),
+    }));
+
+    expect(result.eventsCreated).toBe(0);
+    expect(result.sessionsLinked).toBe(0);
+    expect(result.calendarSyncQueued).toBe(true);
+    expect(result.syncableSessions).toBe(2);
+  });
+
   it('persists generated weeks and sessions, schedules events, and links created calendar events', async () => {
     const result = await persistGeneratedTrainingPlan({
       userId: 12,
@@ -257,8 +358,15 @@ describe('training-plan-persistence', () => {
     expect(result).toEqual({
       planId: 901,
       totalSessions: 2,
-      eventsCreated: 2,
-      sessionsLinked: 2,
+      // Phase 1B: provider calendar work moved behind the outbox, so
+      // persistence reports 0 created/linked and flags the queued sync
+      // instead — the prior non-zero counts encoded inline provider writes
+      // that ran while the plan was still pending activation and could not
+      // retry transient failures.
+      eventsCreated: 0,
+      sessionsLinked: 0,
+      calendarSyncQueued: true,
+      syncableSessions: 2,
       weekSummaries: [{ weekNumber: 1, focus: 'base', sessionCount: 2 }],
       // training-expert-coach-knowledge-engine (2026-05-03):
       // The persister now runs the deterministic plan-linter in advisor
@@ -291,45 +399,49 @@ describe('training-plan-persistence', () => {
       session_identity_key: expect.stringContaining('plan:901|week:1|day:monday|type:run|slot:1'),
       session_shape_hash: expect.any(String),
     }));
-    expect(mockCreateEvent).toHaveBeenCalledTimes(2);
+    // Phase 1B: Secretary arbitration and provider event creation now happen
+    // in the training_plan_calendar_sync worker (see its suite for the
+    // provider-side assertions that used to live here). Persistence emits the
+    // durable request and records the finalized windows on session rows.
+    expect(mockCreateEvent).not.toHaveBeenCalled();
     expect(mockDeleteEvent).not.toHaveBeenCalled();
-    expect(mockSubmitSecretarySchedulingIntent).toHaveBeenCalledTimes(2);
-    expect(mockSubmitSecretarySchedulingIntent.mock.invocationCallOrder[0])
-      .toBeLessThan(mockCreateEvent.mock.invocationCallOrder[0]);
-    expect(mockSubmitSecretarySchedulingIntent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        sourceSkill: 'training',
-        sourceAction: 'schedule_training_session',
-        sourceEntityType: 'training_session',
-        ownerUserId: 12,
-        tenantId: 12,
-        preferredWindows: [expect.objectContaining({ hard: true })],
-      }),
-      expect.any(Object),
-    );
-    expect(mockCreateEvent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        title: expect.stringContaining('Base Run (50min)'),
-        description: expect.stringContaining('EXERCISES:'),
-      }),
-      // 2026-05-25 fix — was 'google'. Outlook is now ON by default
-      // so the writer no longer forces 'google' in the auto-target
-      // path; it passes `undefined` to let unified-calendar pick the
-      // user's resolved provider. Test setup here has no explicit
-      // calendarSource preference, so `undefined` is the new shape.
-      undefined,
-      12,
-      expect.objectContaining({ tenantId: 12 }),
-    );
-    expect(mockCreateEvent.mock.calls[0][0].description).toContain('[NEXUS_TRAINING_IDENTITY');
-    expect(mockLinkSessionToCalendar).toHaveBeenCalledTimes(2);
+    expect(mockSubmitSecretarySchedulingIntent).not.toHaveBeenCalled();
+    expect(mockLinkSessionToCalendar).not.toHaveBeenCalled();
+    const emitted = transactionTestDb.prepare(
+      "SELECT payload_json FROM event_outbox WHERE event_type = 'training.plan_calendar_sync.requested.v1'",
+    ).all() as Array<{ payload_json: string }>;
+    expect(emitted).toHaveLength(1);
+    expect(JSON.parse(emitted[0].payload_json)).toMatchObject({
+      planId: 901,
+      planVersion: 1,
+      // No explicit calendarSource in this setup → the worker lets
+      // unified-calendar resolve the user's provider ('auto').
+      syncTarget: 'auto',
+      requestedSessions: 2,
+    });
     expect(mockUpdatePlanPreferences).toHaveBeenCalledWith(
       901,
       expect.stringContaining('"finalValidationResult"'),
     );
+    // Initial plan-level consistency state uses migration 244 vocabulary and
+    // is written in the same preferences pass as the lint summary.
+    expect(mockUpdatePlanPreferences).toHaveBeenCalledWith(
+      901,
+      expect.stringContaining('"calendarSync"'),
+    );
+    const preferencesWrite = JSON.parse(mockUpdatePlanPreferences.mock.calls[0][1] as string);
+    expect(preferencesWrite.calendarSync).toMatchObject({
+      state: 'not_synced',
+      pending: true,
+      requestedSessions: 2,
+      eventsCreated: 0,
+    });
   });
 
-  it('passes the resolved Training calendar provider into Secretary availability and provider writes', async () => {
+  // Phase 1B: the provider used to be asserted on Secretary availability and
+  // provider-write calls made inline; those now happen in the worker, so the
+  // resolved provider must instead travel durably in the outbox payload.
+  it('passes the resolved Training calendar provider into the outbox syncTarget', async () => {
     mockCreateEvent.mockResolvedValueOnce({ id: 'evt-outlook', source: 'outlook' });
 
     await persistGeneratedTrainingPlan({
@@ -364,301 +476,30 @@ describe('training-plan-persistence', () => {
       },
     });
 
-    expect(mockLoadLiveCalendarBusyWindowsForSecretaryIntent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        sourceSkill: 'training',
-        softPreferences: { calendarProvider: 'outlook' },
-      }),
-    );
-    expect(mockSubmitSecretarySchedulingIntent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        softPreferences: { calendarProvider: 'outlook' },
-        minimumDurationMinutes: 34,
-      }),
-      expect.any(Object),
-    );
-    expect(mockCreateEvent).toHaveBeenCalledWith(
-      expect.objectContaining({ title: expect.stringContaining('Upper Strength (45min)') }),
-      'outlook',
-      12,
-      expect.objectContaining({ tenantId: 12 }),
-    );
+    expect(mockLoadLiveCalendarBusyWindowsForSecretaryIntent).not.toHaveBeenCalled();
+    expect(mockSubmitSecretarySchedulingIntent).not.toHaveBeenCalled();
+    expect(mockCreateEvent).not.toHaveBeenCalled();
+    const emitted = transactionTestDb.prepare(
+      "SELECT payload_json FROM event_outbox WHERE event_type = 'training.plan_calendar_sync.requested.v1'",
+    ).all() as Array<{ payload_json: string }>;
+    expect(emitted).toHaveLength(1);
+    expect(JSON.parse(emitted[0].payload_json)).toMatchObject({
+      syncTarget: 'outlook',
+      requestedSessions: 1,
+    });
   });
 
-  it('keeps plan persistence successful when individual calendar event creation fails', async () => {
-    mockCreateEvent
-      .mockRejectedValueOnce(new Error('calendar unavailable'))
-      .mockResolvedValueOnce({ id: 'evt-2', source: 'google' });
 
-    const result = await persistGeneratedTrainingPlan({
-      userId: 12,
-      tenantId: 12,
-      objective: 'Hybrid block',
-      durationWeeks: 1,
-      startDate: '2026-04-19',
-      endDate: '2026-04-26',
-      now: new Date('2026-04-19T00:00:00.000Z'),
-      preferencesJson: '{}',
-      normalizedPreferredTime: '12:00',
-      normalizedPreferredCardioTime: '07:00',
-      normalizedPreferredStrengthTime: '12:30',
-      busyWindows: [],
-      planData: {
-        weeks: [
-          {
-            weekNumber: 1,
-            sessions: [
-              { dayOfWeek: 'Monday', sessionType: 'run', title: 'Run', durationMinutes: 35 },
-              { dayOfWeek: 'Wednesday', sessionType: 'gym', title: 'Lift', durationMinutes: 45 },
-            ],
-          },
-        ],
-      },
-    });
 
-    expect(result.totalSessions).toBe(2);
-    expect(result.eventsCreated).toBe(1);
-    expect(mockUpdateSession).toHaveBeenCalledWith(2001, {
-      status: 'unscheduled',
-      calendar_event_id: null,
-      calendar_source: null,
-    });
-    expect(mockMarkSecretaryAgendaProviderCleanupRequired).toHaveBeenCalledWith(expect.objectContaining({
-      agendaItemId: 'sec-2001',
-      ownerUserId: 12,
-      tenantId: 12,
-      providerSyncState: 'create_failed',
-      lifecycleState: 'unscheduled',
-      clearProviderMapping: true,
-    }));
-    expect(mockLinkSessionToCalendar).toHaveBeenCalledTimes(1);
-    expect(mockLinkSessionToCalendar).toHaveBeenCalledWith(2002, 'evt-2', 'google');
-    expect(mockLoggerWarn).toHaveBeenCalledWith(
-      expect.objectContaining({
-        userId: 12,
-        planId: 901,
-        planVersion: 1,
-        sessionId: 2001,
-      }),
-      'Failed to create calendar event for session',
-    );
-    expect(mockLoggerWarn.mock.calls[0]?.[0]).not.toHaveProperty('title');
-  });
 
-  it('does not count a provider event as synced when ownership recording fails', async () => {
-    mockRecordCalendarOwnership.mockReturnValueOnce({ ok: false, created: false, ownershipId: null });
 
-    const result = await persistGeneratedTrainingPlan({
-      userId: 12,
-      tenantId: 12,
-      objective: 'Ownership guarded block',
-      durationWeeks: 1,
-      startDate: '2026-04-19',
-      endDate: '2026-04-26',
-      now: new Date('2026-04-19T00:00:00.000Z'),
-      preferencesJson: '{}',
-      normalizedPreferredTime: '12:00',
-      normalizedPreferredCardioTime: '07:00',
-      normalizedPreferredStrengthTime: '12:30',
-      busyWindows: [],
-      planData: {
-        weeks: [
-          {
-            weekNumber: 1,
-            sessions: [
-              { dayOfWeek: 'Monday', sessionType: 'run', title: 'Run', durationMinutes: 35 },
-            ],
-          },
-        ],
-      },
-    });
 
-    expect(result.totalSessions).toBe(1);
-    expect(result.eventsCreated).toBe(0);
-    expect(result.sessionsLinked).toBe(0);
-    expect(mockLinkSessionToCalendar).toHaveBeenCalledWith(2001, 'evt-1', 'google');
-    expect(mockUpdateSession).toHaveBeenCalledWith(2001, {
-      status: 'unscheduled',
-      calendar_event_id: null,
-      calendar_source: null,
-    });
-    expect(mockDeleteEvent).toHaveBeenCalledWith('evt-1', 'google', 12);
-    expect(mockMarkSecretaryAgendaProviderSyncSatisfied).not.toHaveBeenCalled();
-    expect(mockMarkSecretaryAgendaProviderCleanupRequired).toHaveBeenCalledWith(expect.objectContaining({
-      agendaItemId: 'sec-2001',
-      ownerUserId: 12,
-      tenantId: 12,
-      providerEventId: null,
-      providerSource: null,
-      providerSyncState: 'deleted',
-      lifecycleState: 'unscheduled',
-      reason: 'training_provider_ownership_record_failed',
-      clearProviderMapping: true,
-    }));
-  });
 
-  it('keeps ownership-readback failure controlled when provider cleanup delete fails', async () => {
-    mockRecordCalendarOwnership.mockReturnValueOnce({ ok: false, created: false, ownershipId: null });
-    mockDeleteEvent.mockRejectedValueOnce(new Error('provider delete timeout'));
-
-    const result = await persistGeneratedTrainingPlan({
-      userId: 12,
-      tenantId: 12,
-      objective: 'Ownership guarded block',
-      durationWeeks: 1,
-      startDate: '2026-04-19',
-      endDate: '2026-04-26',
-      now: new Date('2026-04-19T00:00:00.000Z'),
-      preferencesJson: '{}',
-      normalizedPreferredTime: '12:00',
-      normalizedPreferredCardioTime: '07:00',
-      normalizedPreferredStrengthTime: '12:30',
-      busyWindows: [],
-      planData: {
-        weeks: [
-          {
-            weekNumber: 1,
-            sessions: [
-              { dayOfWeek: 'Monday', sessionType: 'run', title: 'Run', durationMinutes: 35 },
-            ],
-          },
-        ],
-      },
-    });
-
-    expect(result.eventsCreated).toBe(0);
-    expect(result.sessionsLinked).toBe(0);
-    expect(mockDeleteEvent).toHaveBeenCalledWith('evt-1', 'google', 12);
-    expect(mockLoggerWarn).toHaveBeenCalledWith(
-      expect.objectContaining({
-        providerEventId: 'evt-1',
-        providerSource: 'google',
-      }),
-      'Failed to delete Training calendar event after ownership failure; agenda cleanup will retry provider deletion',
-    );
-    expect(mockMarkSecretaryAgendaProviderCleanupRequired).toHaveBeenCalledWith(expect.objectContaining({
-      agendaItemId: 'sec-2001',
-      ownerUserId: 12,
-      tenantId: 12,
-      providerEventId: 'evt-1',
-      providerSource: 'google',
-      providerSyncState: 'delete_failed',
-      lifecycleState: 'unscheduled',
-      reason: 'training_provider_ownership_record_failed',
-      clearProviderMapping: false,
-    }));
-  });
-
-  it('creates training calendar events in batches of five', async () => {
-    let inFlight = 0;
-    let maxInFlight = 0;
-    let eventCounter = 0;
-    mockCreateEvent.mockImplementation(async () => {
-      inFlight += 1;
-      maxInFlight = Math.max(maxInFlight, inFlight);
-      await new Promise((resolve) => setTimeout(resolve, 5));
-      inFlight -= 1;
-      eventCounter += 1;
-      return { id: `evt-${eventCounter}`, source: 'google' };
-    });
-
-    const result = await persistGeneratedTrainingPlan({
-      userId: 12,
-      tenantId: 12,
-      objective: 'Busy build',
-      durationWeeks: 1,
-      startDate: '2026-04-19',
-      endDate: '2026-04-26',
-      now: new Date('2026-04-19T00:00:00.000Z'),
-      preferencesJson: '{}',
-      normalizedPreferredTime: '12:00',
-      normalizedPreferredCardioTime: '07:00',
-      normalizedPreferredStrengthTime: '12:30',
-      busyWindows: [],
-      planData: {
-        weeks: [
-          {
-            weekNumber: 1,
-            sessions: [
-              { dayOfWeek: 'Monday', sessionType: 'run', title: 'Run 1', durationMinutes: 35 },
-              { dayOfWeek: 'Tuesday', sessionType: 'run', title: 'Run 2', durationMinutes: 35 },
-              { dayOfWeek: 'Wednesday', sessionType: 'gym', title: 'Lift 1', durationMinutes: 45 },
-              { dayOfWeek: 'Thursday', sessionType: 'run', title: 'Run 3', durationMinutes: 35 },
-              { dayOfWeek: 'Friday', sessionType: 'gym', title: 'Lift 2', durationMinutes: 45 },
-              { dayOfWeek: 'Saturday', sessionType: 'run', title: 'Run 4', durationMinutes: 50 },
-            ],
-          },
-        ],
-      },
-    });
-
-    expect(result.totalSessions).toBe(6);
-    expect(result.eventsCreated).toBe(6);
-    expect(mockCreateEvent).toHaveBeenCalledTimes(6);
-    expect(maxInFlight).toBe(5);
-  });
-
-  it('allows ops to lower training calendar create batch width to one', async () => {
-    process.env.TRAINING_CALENDAR_CREATE_BATCH_SIZE = '1';
-    let inFlight = 0;
-    let maxInFlight = 0;
-    let eventCounter = 0;
-    mockCreateEvent.mockImplementation(async () => {
-      inFlight += 1;
-      maxInFlight = Math.max(maxInFlight, inFlight);
-      await Promise.resolve();
-      inFlight -= 1;
-      eventCounter += 1;
-      return { id: `evt-${eventCounter}`, source: 'google' };
-    });
-
-    const result = await persistGeneratedTrainingPlan({
-      userId: 12,
-      tenantId: 12,
-      objective: 'Paced provider writes',
-      durationWeeks: 1,
-      startDate: '2026-04-19',
-      endDate: '2026-04-26',
-      now: new Date('2026-04-19T00:00:00.000Z'),
-      preferencesJson: '{}',
-      normalizedPreferredTime: '12:00',
-      normalizedPreferredCardioTime: '07:00',
-      normalizedPreferredStrengthTime: '12:30',
-      busyWindows: [],
-      planData: {
-        weeks: [
-          {
-            weekNumber: 1,
-            sessions: [
-              { dayOfWeek: 'Monday', sessionType: 'run', title: 'Run 1', durationMinutes: 35 },
-              { dayOfWeek: 'Tuesday', sessionType: 'run', title: 'Run 2', durationMinutes: 35 },
-              { dayOfWeek: 'Wednesday', sessionType: 'gym', title: 'Lift 1', durationMinutes: 45 },
-            ],
-          },
-        ],
-      },
-    });
-
-    expect(result.eventsCreated).toBe(3);
-    expect(mockCreateEvent).toHaveBeenCalledTimes(3);
-    expect(maxInFlight).toBe(1);
-  });
-
-  it('clamps invalid or overly large training calendar create batch sizes', () => {
-    expect(trainingCalendarCreateBatchSize({})).toBe(5);
-    expect(trainingCalendarCreateBatchSize({ TRAINING_CALENDAR_CREATE_BATCH_SIZE: '0' })).toBe(1);
-    expect(trainingCalendarCreateBatchSize({ TRAINING_CALENDAR_CREATE_BATCH_SIZE: '12' })).toBe(5);
-    expect(trainingCalendarCreateBatchSize({ TRAINING_CALENDAR_CREATE_BATCH_SIZE: 'nope' })).toBe(5);
-  });
-
-  it('persists a mocked 16-week calendar plan under the batching SLA', async () => {
-    let eventCounter = 0;
-    mockCreateEvent.mockImplementation(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 5));
-      eventCounter += 1;
-      return { id: `evt-${eventCounter}`, source: 'google' };
-    });
-
+  // Phase 1B: the provider-batching half of the old SLA test moved to the
+  // worker suite; persistence keeps the persist-side SLA plus a guard that a
+  // realistic 96-session id array survives the outbox payload sanitizer
+  // (arrays are recursed, not truncated — this pins that assumption).
+  it('persists a mocked 16-week calendar plan under the persistence SLA with a full outbox payload', async () => {
     const dayNames = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
     const weeks = Array.from({ length: 16 }, (_, weekIndex) => ({
       weekNumber: weekIndex + 1,
@@ -689,8 +530,14 @@ describe('training-plan-persistence', () => {
     const elapsedMs = performance.now() - startedAt;
 
     expect(result.totalSessions).toBe(96);
-    expect(result.eventsCreated).toBe(96);
-    expect(mockCreateEvent).toHaveBeenCalledTimes(96);
+    expect(result.eventsCreated).toBe(0);
+    expect(result.syncableSessions).toBe(96);
+    expect(mockCreateEvent).not.toHaveBeenCalled();
+    const emitted = transactionTestDb.prepare(
+      "SELECT payload_json FROM event_outbox WHERE event_type = 'training.plan_calendar_sync.requested.v1'",
+    ).all() as Array<{ payload_json: string }>;
+    expect(emitted).toHaveLength(1);
+    expect(JSON.parse(emitted[0].payload_json).sessionIds).toHaveLength(96);
     expect(elapsedMs).toBeLessThan(8_000);
   });
 
@@ -723,10 +570,12 @@ describe('training-plan-persistence', () => {
     });
 
     expect(result.totalSessions).toBe(1);
-    expect(result.eventsCreated).toBe(1);
+    // Phase 1B: one syncable session is queued for the worker, not created inline.
+    expect(result.eventsCreated).toBe(0);
+    expect(result.syncableSessions).toBe(1);
     expect(result.weekSummaries).toEqual([{ weekNumber: 1, focus: undefined, sessionCount: 1 }]);
     expect(mockCreateSession).toHaveBeenCalledTimes(1);
-    expect(mockCreateEvent).toHaveBeenCalledTimes(1);
+    expect(mockCreateEvent).not.toHaveBeenCalled();
   });
 
   it('persists deferred and unscheduled capacity-reconciliation sessions as inactive rows without calendar events', async () => {
@@ -766,7 +615,9 @@ describe('training-plan-persistence', () => {
     });
 
     expect(result.totalSessions).toBe(1);
-    expect(result.eventsCreated).toBe(1);
+    // Phase 1B: the single compressed session is queued for the worker.
+    expect(result.eventsCreated).toBe(0);
+    expect(result.syncableSessions).toBe(1);
     expect(result.weekSummaries).toEqual([{ weekNumber: 1, focus: undefined, sessionCount: 1 }]);
     expect(mockCreateSession).toHaveBeenCalledTimes(3);
     expect(mockCreateSession).toHaveBeenCalledWith(expect.objectContaining({
@@ -783,8 +634,16 @@ describe('training-plan-persistence', () => {
       title: 'Deferred Run',
       status: 'deferred',
     }));
-    expect(mockCreateEvent).toHaveBeenCalledTimes(1);
-    expect(mockCreateEvent.mock.calls[0]?.[0]?.description).toContain('Compressed from 45 to 35 minutes');
+    // Phase 1B: the calendar description is rebuilt by the worker from the
+    // persisted session row, so the schedule reason must live on the row —
+    // asserted through createSession above — and only the compressed session
+    // id may appear in the outbox request.
+    expect(mockCreateEvent).not.toHaveBeenCalled();
+    const emitted = transactionTestDb.prepare(
+      "SELECT payload_json FROM event_outbox WHERE event_type = 'training.plan_calendar_sync.requested.v1'",
+    ).all() as Array<{ payload_json: string }>;
+    expect(emitted).toHaveLength(1);
+    expect(JSON.parse(emitted[0].payload_json).sessionIds).toHaveLength(1);
   });
 
   it('persists reflowed/capped schedule adjustments as rich lifecycle states for iOS read models', async () => {
@@ -838,7 +697,13 @@ describe('training-plan-persistence', () => {
       status: 'capped',
       description: expect.stringContaining('Capped to the available hotel-gym window'),
     }));
-    expect(mockCreateEvent).toHaveBeenCalledTimes(2);
+    // Phase 1B: reflowed/capped states remain calendar-eligible; both are
+    // requested through the outbox instead of created inline.
+    expect(mockCreateEvent).not.toHaveBeenCalled();
+    const emitted = transactionTestDb.prepare(
+      "SELECT payload_json FROM event_outbox WHERE event_type = 'training.plan_calendar_sync.requested.v1'",
+    ).all() as Array<{ payload_json: string }>;
+    expect(JSON.parse(emitted[0].payload_json).sessionIds).toHaveLength(2);
   });
 
   it('persists a session as unscheduled when real calendar busy windows leave no valid slot', async () => {
@@ -914,20 +779,18 @@ describe('training-plan-persistence', () => {
     });
 
     expect(result.totalSessions).toBe(1);
-    expect(result.eventsCreated).toBe(1);
+    // Phase 1B: the kernel-selected alternate time is now proven through the
+    // persisted schedule window (the worker rebuilds provider event times
+    // from the row), not through an inline provider call.
+    expect(result.eventsCreated).toBe(0);
+    expect(result.syncableSessions).toBe(1);
     expect(mockCreateSession).toHaveBeenCalledWith(expect.objectContaining({
       title: 'Lift before meetings',
       status: 'scheduled',
       preferred_time_unavailable: true,
+      scheduled_start_at: '2026-04-20T04:00:00.000Z',
     }));
-    expect(mockCreateEvent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        start: '2026-04-20T04:00:00.000Z',
-      }),
-      undefined,
-      12,
-      expect.objectContaining({ tenantId: 12 }),
-    );
+    expect(mockCreateEvent).not.toHaveBeenCalled();
   });
 
   it('does not auto-create calendar events when the spec calendar preference is none', async () => {
@@ -978,57 +841,21 @@ describe('training-plan-persistence', () => {
     expect(mockCreateEvent).not.toHaveBeenCalled();
     expect(mockLinkSessionToCalendar).not.toHaveBeenCalled();
     expect(mockSubmitSecretarySchedulingIntent).not.toHaveBeenCalled();
-  });
-
-  it('creates small calendar event sets in the same bounded batch', async () => {
-    let resolveFirst!: (value: { id: string; source: string }) => void;
-    mockCreateEvent
-      .mockImplementationOnce(() => new Promise((resolve) => {
-        resolveFirst = resolve;
-      }))
-      .mockResolvedValueOnce({ id: 'evt-2', source: 'google' });
-
-    const pending = persistGeneratedTrainingPlan({
-      userId: 12,
-      tenantId: 12,
-      objective: 'Strength block',
-      durationWeeks: 1,
-      startDate: '2026-04-19',
-      endDate: '2026-04-26',
-      now: new Date('2026-04-19T00:00:00.000Z'),
-      preferencesJson: '{}',
-      normalizedPreferredTime: '12:00',
-      normalizedPreferredCardioTime: '07:00',
-      normalizedPreferredStrengthTime: '12:30',
-      busyWindows: [],
-      planData: {
-        weeks: [
-          {
-            weekNumber: 1,
-            sessions: [
-              { dayOfWeek: 'Monday', sessionType: 'gym', title: 'Lift A', durationMinutes: 45 },
-              { dayOfWeek: 'Wednesday', sessionType: 'gym', title: 'Lift B', durationMinutes: 45 },
-            ],
-          },
-        ],
-      },
-    });
-
-    let result: Awaited<ReturnType<typeof persistGeneratedTrainingPlan>> | undefined;
-    try {
-      await waitForMockCallCount(mockCreateEvent, 2);
-      expect(mockCreateEvent).toHaveBeenCalledTimes(2);
-    } finally {
-      resolveFirst({ id: 'evt-1', source: 'google' });
-      result = await pending;
+    // Phase 1B: an explicit 'none' preference must not even queue a sync —
+    // no outbox request means the worker can never touch a provider. The
+    // table-existence guard matters: emitDomainEvent creates event_outbox on
+    // demand, so "table absent" is itself proof that nothing was emitted.
+    expect(result.calendarSyncQueued).toBe(false);
+    const outboxTableExists = (transactionTestDb.prepare(
+      "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'event_outbox'",
+    ).get() as { count: number }).count > 0;
+    if (outboxTableExists) {
+      expect(transactionTestDb.prepare(
+        "SELECT COUNT(*) AS count FROM event_outbox WHERE event_type = 'training.plan_calendar_sync.requested.v1'",
+      ).get()).toEqual({ count: 0 });
     }
-
-    expect(result).toBeDefined();
-    expect(result!.eventsCreated).toBe(2);
-    expect(mockCreateEvent).toHaveBeenCalledTimes(2);
-    expect(mockLinkSessionToCalendar).toHaveBeenCalledWith(2001, 'evt-1', 'google');
-    expect(mockLinkSessionToCalendar).toHaveBeenCalledWith(2002, 'evt-2', 'google');
   });
+
 
   // training-expert-coach-knowledge-engine (2026-05-03):
   // mid-week-creation past-day floor. Before this fix, creating a plan on
@@ -1072,7 +899,9 @@ describe('training-plan-persistence', () => {
 
       // 5 sessions persisted total; 2 unscheduled (Mon, Tue), 3 active.
       expect(result.totalSessions).toBe(3);
-      expect(result.eventsCreated).toBe(3);
+      // Phase 1B: the 3 forward-looking sessions are queued for the worker.
+      expect(result.eventsCreated).toBe(0);
+      expect(result.syncableSessions).toBe(3);
       expect(mockCreateSession).toHaveBeenCalledTimes(5);
 
       // Mon — past day, unscheduled, reason mentions Monday + Wednesday.
@@ -1103,8 +932,13 @@ describe('training-plan-persistence', () => {
         status: 'scheduled',
       }));
 
-      // Calendar events created ONLY for the 3 forward-looking sessions.
-      expect(mockCreateEvent).toHaveBeenCalledTimes(3);
+      // Calendar sync requested ONLY for the 3 forward-looking sessions —
+      // the two past-day rejects never enter the outbox payload.
+      expect(mockCreateEvent).not.toHaveBeenCalled();
+      const emitted = transactionTestDb.prepare(
+        "SELECT payload_json FROM event_outbox WHERE event_type = 'training.plan_calendar_sync.requested.v1'",
+      ).all() as Array<{ payload_json: string }>;
+      expect(JSON.parse(emitted[0].payload_json).sessionIds).toHaveLength(3);
 
       // No-available-slot warning telemetry emitted for both past-day rejects.
       const pastDayWarnings = mockLoggerWarn.mock.calls.filter(call =>
@@ -1182,13 +1016,18 @@ describe('training-plan-persistence', () => {
         },
       });
 
-      expect(result.eventsCreated).toBe(1);
-      expect(mockCreateSession).toHaveBeenCalledWith(expect.objectContaining({
-        title: 'Today Run',
+      // Phase 1B: the same-day floor is proven on the persisted schedule
+      // window instead of the inline provider call the worker now owns.
+      expect(result.eventsCreated).toBe(0);
+      expect(result.syncableSessions).toBe(1);
+      const sessionCall = mockCreateSession.mock.calls.find(
+        (call) => (call[0] as any).title === 'Today Run',
+      )?.[0] as any;
+      expect(sessionCall).toMatchObject({
         status: 'scheduled',
         preferred_time_unavailable: true,
-      }));
-      const eventStart = new Date(mockCreateEvent.mock.calls[0]?.[0]?.start);
+      });
+      const eventStart = new Date(sessionCall.scheduled_start_at);
       expect(eventStart.getTime()).toBeGreaterThanOrEqual(now.getTime());
       expect(eventStart.getHours()).toBe(15);
       expect(eventStart.getMinutes()).toBe(30);
@@ -1438,7 +1277,11 @@ describe('training-plan-persistence', () => {
         },
       });
 
-      expect(result.eventsCreated).toBe(3);
+      // Phase 1B: the lint pass still sees the 3 finalized windows through
+      // the in-transaction calendarEvents list even though provider events
+      // are only queued, not created.
+      expect(result.eventsCreated).toBe(0);
+      expect(result.syncableSessions).toBe(3);
       expect(result.lint.status).toBe('fail');
       expect(result.lint.blockers).toEqual(
         expect.arrayContaining([
@@ -1529,5 +1372,131 @@ describe('training-plan-persistence', () => {
         status: 'scheduled',
       }));
     });
+  });
+
+  // F28 (Phase 3): support-debug traces must never COST the athlete their
+  // payload. The old catch replaced a malformed preferences string with an
+  // object containing ONLY the traces — silently discarding requestedTargets,
+  // the spec, and the learning path. Low probability, unbounded blast radius.
+  it('never replaces a malformed preferences payload with support-debug traces', async () => {
+    const malformedPreferences = '{"requestedTargets":{"sessionsPerWeek":5}'; // truncated JSON
+    await persistGeneratedTrainingPlan({
+      userId: 12,
+      tenantId: 12,
+      objective: 'Strength block',
+      durationWeeks: 1,
+      startDate: '2026-04-19',
+      endDate: '2026-04-26',
+      now: new Date('2026-04-19T00:00:00.000Z'),
+      preferencesJson: malformedPreferences,
+      normalizedPreferredTime: '12:00',
+      normalizedPreferredCardioTime: '07:00',
+      normalizedPreferredStrengthTime: '12:30',
+      busyWindows: [],
+      planData: {
+        weeks: [{
+          weekNumber: 1,
+          sessions: [{
+            dayOfWeek: 'Monday',
+            sessionType: 'gym',
+            title: 'Lift',
+            durationMinutes: 45,
+            // A selector trace forces the append path — without one the
+            // function returns early and the catch never runs.
+            exercises: [{ name: 'Squat', selectorTrace: { picked: 'squat' } }],
+          }],
+        }],
+      },
+    });
+
+    expect(mockCreatePlan).toHaveBeenCalledWith(expect.objectContaining({
+      preferences_json: malformedPreferences,
+    }));
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 12 }),
+      expect.stringContaining('malformed preferences'),
+    );
+  });
+
+  // F4 (Phase 1B) failure injection: a throw partway through the plan graph
+  // must leave NOTHING committed. Before the transaction, `createPlan` and the
+  // completed `createWeek`/`createSession` calls were already durable, so a
+  // failure here left a half-written plan that the athlete could see.
+  it('rolls back the entire plan graph when a session insert throws', async () => {
+    let sessionCalls = 0;
+    mockCreateSession.mockImplementation(() => {
+      sessionCalls += 1;
+      // Throw on the SECOND session so the plan row and at least one session
+      // are already written when the failure lands — exactly the half-written
+      // state the pre-transaction code left behind.
+      if (sessionCalls === 2) throw new Error('SQLITE_BUSY: database is locked');
+      return { id: sessionCalls };
+    });
+
+    await expect(persistGeneratedTrainingPlan({
+      userId: 12,
+      tenantId: 12,
+      objective: 'Marathon build',
+      durationWeeks: 4,
+      startDate: '2026-04-19',
+      endDate: '2026-05-17',
+      now: new Date('2026-04-19T00:00:00.000Z'),
+      preferencesJson: '{"preferredTime":"12:00"}',
+      normalizedPreferredTime: '12:00',
+      normalizedPreferredCardioTime: '07:00',
+      normalizedPreferredStrengthTime: '12:30',
+      busyWindows: [],
+      planData: {
+        planName: 'Marathon Plan',
+        sport: 'running',
+        periodization: 'block',
+        weeks: [
+          {
+            weekNumber: 1,
+            focus: 'base',
+            intensityPct: 72,
+            sessions: [
+              {
+                dayOfWeek: 'Monday',
+                sessionType: 'run',
+                title: 'Base Run',
+                durationMinutes: 50,
+                description: 'Easy aerobic work.',
+                exercises: [{ name: 'Warm-up', distance_km: 1 }],
+              },
+              {
+                dayOfWeek: 'Monday',
+                sessionType: 'gym',
+                title: 'Runner Strength',
+                durationMinutes: 40,
+                description: 'Strength work.',
+                exercises: [{ name: 'Goblet Squat', sets: 3, reps: 10, rpe: '7', restSec: 90 }],
+              },
+              {
+                dayOfWeek: 'Tuesday',
+                sessionType: 'rest',
+                title: 'Rest',
+                durationMinutes: 30,
+              },
+            ],
+          },
+        ],
+      },
+    })).rejects.toThrow('SQLITE_BUSY');
+
+    // The throw escaped the transaction, so no provider work was attempted
+    // either — calendar effects only run after a successful commit.
+    expect(mockCreateEvent).not.toHaveBeenCalled();
+    expect(mockLinkSessionToCalendar).not.toHaveBeenCalled();
+    // Phase 1B same-transaction proof: the calendar-sync request is emitted
+    // inside the plan-graph transaction, so a rolled-back graph must leave
+    // ZERO outbox rows — a request for a plan that never committed would be
+    // an orphaned provider write waiting to happen.
+    const outboxCount = (transactionTestDb.prepare(
+      "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'event_outbox'",
+    ).get() as { count: number }).count === 0
+      ? 0
+      : (transactionTestDb.prepare('SELECT COUNT(*) AS count FROM event_outbox').get() as { count: number }).count;
+    expect(outboxCount).toBe(0);
   });
 });
