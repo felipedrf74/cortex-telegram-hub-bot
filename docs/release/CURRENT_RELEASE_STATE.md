@@ -77,10 +77,11 @@ verification on protected main, one disjoint four-shard remainder checkpoint,
 one artifact, exact staging, explicit owner approval, and one user-owned
 production transaction with backup, health, soak, and predecessor recovery.
 
-The release operator has one open polling defect: a newly submitted staging
-transaction can briefly expose the prior durable receipt, causing the local
-wrapper to exit while the server transaction continues correctly. The next
-candidate must make polling ignore non-matching transaction IDs until timeout.
+The prior staging-receipt polling defect is closed by
+`3b275a7209cdc2f73c86c770ac069767848a3b44`. Polling now ignores a valid
+non-matching predecessor transaction ID until the requested transaction appears
+or the deadline expires, while malformed state and matching-ID release-identity
+drift remain fail-closed.
 
 ## Notification Release Owner Gates
 
