@@ -45,13 +45,16 @@ function enabledPrefix(length: number): FlagState {
 }
 
 function routingEvidence(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  const artifactDigest = typeof overrides.artifactDigest === 'string'
+    ? overrides.artifactDigest
+    : ARTIFACT_DIGEST;
   return {
     schema: EVIDENCE_SCHEMA,
     kind: 'routing_divergence',
     status: 'passed',
     environment: 'staging',
     runtimeSha: RUNTIME_SHA,
-    artifactDigest: ARTIFACT_DIGEST,
+    artifactDigest,
     flag: 'AI_ROUTING_MANIFEST_CLASSIFIER',
     collectedWithTargetEnabled: false,
     evidenceSha256: EVIDENCE_SHA256,
@@ -69,7 +72,7 @@ function routingEvidence(overrides: Record<string, unknown> = {}): Record<string
     shadowHookPlanSequence: 1,
     shadowHookCompletedAt: '2026-08-02T00:04:00.000Z',
     shadowHookReceiptRuntimeSha: RUNTIME_SHA,
-    shadowHookReceiptArtifactDigest: ARTIFACT_DIGEST,
+    shadowHookReceiptArtifactDigest: artifactDigest,
     shadowHookReceiptRole: 'staging',
     shadowHookReceiptStatus: 'passed',
     shadowHookReceiptAction: 'enable',
@@ -543,8 +546,8 @@ async function classifierPlan(overrides: Record<string, unknown> = {}): Promise<
 
 describe('chat capability flag transaction', () => {
   it('derives routing attestation from exact raw gate bytes instead of trusting a claimed hash', async () => {
-    const helper = await loadHelper();
-    const receipt = passedShadowHookReceipt(helper);
+    const nativeHelper = await loadHelper();
+    const receipt = passedShadowHookReceipt(nativeHelper);
     const receiptRaw = `${JSON.stringify(receipt, null, 2)}\n`;
     const health = JSON.parse(detailedHealth(allOff(), '2026-08-02T01:01:58.750Z'));
     health.releaseAttestation.shadowRouteHookEffective.dedicatedEval.user = true;
@@ -552,11 +555,19 @@ describe('chat capability flag transaction', () => {
     const healthRaw = JSON.stringify(health);
     const checkedAt = '2026-08-02T01:01:59.000Z';
     const rawEvidence = rawRoutingGate(receipt, receiptRaw, healthRaw, checkedAt);
+    const helper = {
+      ...nativeHelper,
+      buildCapabilityEvidenceAttestation: (input: Record<string, unknown>) => (
+        nativeHelper.buildCapabilityEvidenceAttestation({
+          shadowHookReceiptRaw: receiptRaw,
+          healthRaw,
+          checkedAt,
+          ...input,
+        })
+      ),
+    };
     const attestation = helper.buildCapabilityEvidenceAttestation({
       rawEvidence,
-      shadowHookReceiptRaw: receiptRaw,
-      healthRaw,
-      checkedAt,
       flag: 'AI_ROUTING_MANIFEST_CLASSIFIER',
       runtimeSha: RUNTIME_SHA,
       artifactDigest: ARTIFACT_DIGEST,
@@ -577,6 +588,19 @@ describe('chat capability flag transaction', () => {
       (raw: any) => { raw.surfaceTotals.classifierKeyword.compared = 199; },
       (raw: any) => { raw.evidence.capabilityFlagBinding.counts.selectedSurfaceFlagOnBundles = 1; },
       (raw: any) => { raw.evidence.identity.releaseIdentity.runtimeSha = 'f'.repeat(40); },
+    ]) {
+      const invalid = JSON.parse(rawEvidence);
+      mutate(invalid);
+      expect(() => helper.buildCapabilityEvidenceAttestation({
+        rawEvidence: JSON.stringify(invalid),
+        flag: 'AI_ROUTING_MANIFEST_CLASSIFIER',
+        runtimeSha: RUNTIME_SHA,
+        artifactDigest: ARTIFACT_DIGEST,
+        configuredFlags: allOff(),
+      })).toThrow(/gate|evidence|comparison|flag|release|identity|minimum/i);
+    }
+
+    for (const mutate of [
       (raw: any) => { raw.evidence.shadowRecorderBinding.receipt.sha256 = 'f'.repeat(64); },
       (raw: any) => { raw.evidence.shadowRecorderBinding.liveHealth.sha256 = 'f'.repeat(64); },
       (raw: any) => { raw.evidence.shadowRecorderBinding.counts.exactRecorderStateBundles = 199; },
@@ -587,9 +611,6 @@ describe('chat capability flag transaction', () => {
       mutate(invalid);
       expect(() => helper.buildCapabilityEvidenceAttestation({
         rawEvidence: JSON.stringify(invalid),
-        shadowHookReceiptRaw: receiptRaw,
-        healthRaw,
-        checkedAt,
         flag: 'AI_ROUTING_MANIFEST_CLASSIFIER',
         runtimeSha: RUNTIME_SHA,
         artifactDigest: ARTIFACT_DIGEST,
@@ -677,6 +698,28 @@ describe('chat capability flag transaction', () => {
       { receiptRaw, healthRaw: healthRaw.replace('"AI_ROUTING_MANIFEST_CLASSIFIER":true', '"AI_ROUTING_MANIFEST_CLASSIFIER":false') },
       { receiptRaw, healthRaw: healthRaw.replace('"status":"healthy"', '"status":"degraded"') },
       { receiptRaw, healthRaw: healthRaw.replace('"database":"connected"', '"database":"disconnected"') },
+      { receiptRaw, healthRaw: healthRaw.replace('"uptime":600', '"uptime":10') },
+      {
+        receiptRaw,
+        healthRaw: healthRaw.replace(
+          '"timestamp":"2026-08-02T01:07:10.000Z"',
+          '"timestamp":"2026-08-02T00:59:08.750Z"',
+        ),
+      },
+    ]) {
+      expect(() => helper.buildStagingCapabilityPrerequisite({
+        ...invalid,
+        dashboardRaw,
+        smokeRaw,
+        monitorRaw,
+        flag: 'AI_ROUTING_MANIFEST_CLASSIFIER',
+        runtimeSha: RUNTIME_SHA,
+        artifactDigest: ARTIFACT_DIGEST,
+        checkedAt: '2026-08-02T01:07:10.250Z',
+      })).toThrow(/staging|receipt|health|release|flag|kill/i);
+    }
+
+    for (const invalid of [
       {
         receiptRaw,
         healthRaw: healthRaw.replace(
@@ -696,14 +739,6 @@ describe('chat capability flag transaction', () => {
         healthRaw: healthRaw.replace(
           '"shadowRouteHookEffective":{"global":false',
           '"shadowRouteHookEffective":{"global":true',
-        ),
-      },
-      { receiptRaw, healthRaw: healthRaw.replace('"uptime":600', '"uptime":10') },
-      {
-        receiptRaw,
-        healthRaw: healthRaw.replace(
-          '"timestamp":"2026-08-02T01:07:10.000Z"',
-          '"timestamp":"2026-08-02T00:59:08.750Z"',
         ),
       },
     ]) {
@@ -1197,10 +1232,7 @@ describe('chat capability flag transaction', () => {
       .not.toBe(plan.planDigest);
     expect((await classifierPlan({
       artifactDigest: 'e'.repeat(64),
-      evidenceAttestation: routingEvidence({
-        artifactDigest: 'e'.repeat(64),
-        shadowHookReceiptArtifactDigest: 'e'.repeat(64),
-      }),
+      evidenceAttestation: routingEvidence({ artifactDigest: 'e'.repeat(64) }),
     })).planDigest)
       .not.toBe(plan.planDigest);
     expect((await classifierPlan({
