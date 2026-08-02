@@ -1,12 +1,12 @@
 {
   "schema": "nexus.release-state.v1",
-  "lastVerifiedAt": "2026-08-01T22:49:45Z",
-  "docsHead": "cbdfffed3b47aac55495a8aedf537866c1c1200f",
+  "lastVerifiedAt": "2026-08-02T03:10:31Z",
+  "docsHead": "3a867863054df785406cd7d18b8d0547f79deaac",
   "backend": {
-    "version": "4.14.231",
-    "runtimeSha": "2b14b82c4a537904774d3d31aa441a7eeae11861",
-    "artifactDigest": "49003001ea49f65806de9823235f8ef56a9a0451f4124b81f600f60719b83564",
-    "installedDigest": "ce2014ae2398e10c287e9f2936f05dda98e9d2e77129d7a64401c872ac07259c",
+    "version": "4.14.232",
+    "runtimeSha": "8783409632073c87ee49eaac99e91ddf6bfa6880",
+    "artifactDigest": "a786b16a0e199db736b3846b0100b486bd932ae652072718a7458f0faac23c38",
+    "installedDigest": "3944f37f16dd1a526a53bee80758b4519298e260c6f6596d88dfad6a6dda55ae",
     "health": "healthy",
     "database": "connected",
     "pm2Processes": [
@@ -14,17 +14,39 @@
       "content-engine"
     ],
     "releaseEvidence": {
-      "protectedMainRun": "30710186698",
-      "releaseCheckpointRun": "30710263802",
-      "manifestSha256": "9829918457793e9e3f0fe85fd88ca27ee81923f813404451349165c51f5ec445",
-      "stagingTransaction": "20260801T223342Z-350d8412d295",
-      "productionTransaction": "20260801T224831Z-11efa65022e2",
-      "productionCompletedAt": "2026-08-01T22:49:45.670Z",
-      "transactionSeconds": 73.700,
-      "readinessSeconds": 11.964,
-      "soakSeconds": 61.735,
-      "backup": "nexus-db-20260801T224838Z.sqlite.age",
-      "backupEncryptedSha256": "b8ae7e1ea55b3370b9e7979d4d9920a689d36149150c70edba66f60e41f1e0fb",
+      "protectedMainRun": "30729143268",
+      "releaseCheckpointRun": "30729700062",
+      "manifestSha256": "3dd9c748883523a807f55c0dcb525e45802f08068a480b42df0ceb61c0927952",
+      "stagingTransaction": "20260802T030237Z-87ea25e958b6",
+      "productionTransaction": "20260802T030916Z-9cafc1d52544",
+      "productionCompletedAt": "2026-08-02T03:10:31.429Z",
+      "transactionSeconds": 73.917,
+      "readinessSeconds": 12.212,
+      "soakSeconds": 61.704,
+      "backup": "nexus-db-20260802T030924Z.sqlite.age",
+      "backupEncryptedSha256": "07a9eab44be961461f4cdd58f5012e54038f617ec3a8d2b20dae6d56403cc982",
+      "stagingRollbackDrill": {
+        "transaction": "20260802T025941Z-2ed894227116",
+        "result": "restored",
+        "durationMs": 2700,
+        "objectiveSeconds": 120,
+        "candidateRemoved": true
+      },
+      "stagingSmoke": {
+        "verdict": "passed",
+        "passed": 28,
+        "failed": 0,
+        "evidence": "staging-smoke-87834096-20260802T030822Z.json"
+      },
+      "chatEval": {
+        "runId": "chat-eval-2026-08-02T02-45-18-816Z",
+        "engine": "local_engine",
+        "scenarios": 7,
+        "passed": 7,
+        "partial": 0,
+        "failed": 0,
+        "averageScore": 2.0
+      },
       "rollback": "not_required"
     }
   },
@@ -40,7 +62,12 @@
     "sourceBuild": 59,
     "sha": "f3d868783a52f549c235b11dc0a378fa7adfc43b",
     "prHeadSha": "213e40d08edc84732079c08b1515312b9e9efb30",
-    "mainSha": "7fd4e96e2e0d2b51587777c0454698ea8a3b8b3f",
+    "mainSha": "e6f374bdd77bdd5f47afcb82e546bdaa15b69985",
+    "distributedBuildMainSha": "7fd4e96e2e0d2b51587777c0454698ea8a3b8b3f",
+    "notificationMergeSha": "e6f374bdd77bdd5f47afcb82e546bdaa15b69985",
+    "notificationPullRequest": 35,
+    "notificationSignedBuild": "blocked_owner_required",
+    "notificationAuthorizationUpgradeSmoke": "blocked_physical_device_required",
     "testFlightState": "testing",
     "testFlightGroups": [
       "Nexus Hub Betinha"
@@ -73,8 +100,8 @@
     "targetManifestSchema": "nexus.release-checksum-manifest.v1",
     "leanActivation": "active_first_staging_and_production_proof_passed",
     "exactArtifactPath": "proven",
-    "stagingRehearsals": 15,
-    "ownerAuthorizedProductionReleases": 11,
+    "stagingRehearsals": 16,
+    "ownerAuthorizedProductionReleases": 12,
     "legacyWrappers": "retired",
     "firstProofRelease": {
       "version": "4.14.231",
@@ -92,7 +119,7 @@
       "soakSeconds": 61.636
     },
     "timingObservation": {
-      "observedReleases": 5,
+      "observedReleases": 6,
       "requiredReleases": 10,
       "status": "collecting",
       "baselineReadinessSeconds": 1180,
@@ -167,25 +194,37 @@
           "stagingTransactionSeconds": 26.509,
           "productionTransactionSeconds": 73.700,
           "promotionOutcome": "passed"
+        },
+        {
+          "runtimeSha": "8783409632073c87ee49eaac99e91ddf6bfa6880",
+          "protectedMainRun": "30729143268",
+          "releaseCheckpointRun": "30729700062",
+          "mainSeconds": 1053,
+          "unattendedHandoffSeconds": 105,
+          "checkpointSeconds": 145,
+          "automatedReadinessSeconds": 1303,
+          "stagingTransactionSeconds": 314.079,
+          "productionTransactionSeconds": 73.917,
+          "promotionOutcome": "passed"
         }
       ],
       "provisionalNearestRank": {
         "stable": false,
         "mainSeconds": {
           "p50": 421,
-          "p95": 992
+          "p95": 1053
         },
         "unattendedHandoffSeconds": {
           "p50": 29,
           "p95": 493
         },
         "checkpointSeconds": {
-          "p50": 261,
+          "p50": 212,
           "p95": 333
         },
         "automatedReadinessSeconds": {
           "p50": 850,
-          "p95": 1141
+          "p95": 1303
         },
         "medianReadinessImprovementSeconds": 330,
         "medianReadinessImprovementPercent": 27.97
@@ -207,7 +246,15 @@
       "identicalPromotionResume": "same_transaction_resumed",
       "secondUnitCreated": false
     },
-    "nextCandidateProofs": []
+    "nextCandidateProofs": [
+      {
+        "id": "release-operator-stale-staging-receipt-race",
+        "status": "open",
+        "observedAt": "2026-08-02T02:59:53Z",
+        "impact": "local prepare exited while the durable fault-drill transaction completed and restored the predecessor",
+        "required": "ignore prior transaction receipts until the requested transaction id appears or the poll deadline expires"
+      }
+    ]
   },
   "serverDominguez": {
     "ollama": {
