@@ -76,6 +76,10 @@ import {
   hasUsableCalendarProvider,
   hasUsableHealthProvider,
 } from '../../src/services/integration-status';
+import {
+  classifyOAuthAuthFailure,
+  markOAuthConnectionAuthFailure,
+} from '../../src/services/oauth-connection-health';
 
 function seedGoogle(userId: number, scopes: string[] = [
   'https://www.googleapis.com/auth/calendar',
@@ -523,6 +527,62 @@ describe('integration-status', () => {
       expect(status.state).toBe('connected');
       expect(status.reasonCode).toBeUndefined();
       expect(status.detail).toBeUndefined();
+    });
+  });
+
+  describe('per-user OAuth auth-failure state', () => {
+    it('maps only the affected user/provider to revoked and stores no raw provider response', () => {
+      seedGoogle(67);
+      seedGoogle(68);
+
+      expect(markOAuthConnectionAuthFailure(67, 'google', 'invalid_grant')).toBe(true);
+
+      expect(getProviderStatus(67, 'google')).toMatchObject({
+        state: 'revoked',
+        reasonCode: 'NEEDS_REAUTH',
+      });
+      expect(getProviderStatus(68, 'google').state).toBe('connected');
+      expect(getProviderStatus(67, 'outlook').state).toBe('disconnected');
+
+      const row = testDb.prepare(`
+        SELECT * FROM user_oauth_connection_health
+        WHERE user_id = 67 AND tenant_id = 67 AND provider = 'google'
+      `).get() as Record<string, unknown>;
+      expect(row).toMatchObject({
+        user_id: 67,
+        tenant_id: 67,
+        provider: 'google',
+        state: 'auth_rejected',
+        reason_code: 'invalid_grant',
+      });
+      expect(Object.keys(row)).not.toContain('error_message');
+      expect(Object.keys(row)).not.toContain('raw_response');
+      expect(Object.keys(row)).not.toContain('token');
+    });
+
+    it('clears the revoked state when fresh tokens are stored after reauth', () => {
+      seedOutlook(69);
+      markOAuthConnectionAuthFailure(69, 'outlook', 'token_expired');
+      expect(getProviderStatus(69, 'outlook').state).toBe('revoked');
+
+      seedOutlook(69);
+
+      expect(getProviderStatus(69, 'outlook').state).toBe('connected');
+      expect(testDb.prepare(`
+        SELECT 1 FROM user_oauth_connection_health
+        WHERE user_id = 69 AND tenant_id = 69 AND provider = 'outlook'
+      `).get()).toBeUndefined();
+    });
+
+    it('classifies deterministic grant rejection but ignores transient/provider failures', () => {
+      expect(classifyOAuthAuthFailure({
+        response: { data: { error: 'invalid_grant', error_description: 'Bad grant' } },
+      })).toBe('invalid_grant');
+      expect(classifyOAuthAuthFailure(new Error('AADSTS70000: refresh token expired')))
+        .toBe('token_expired');
+      expect(classifyOAuthAuthFailure(new Error('ECONNRESET while refreshing token'))).toBeNull();
+      expect(classifyOAuthAuthFailure({ code: 429, message: 'temporarily_unavailable' })).toBeNull();
+      expect(classifyOAuthAuthFailure({ code: 'invalid_client' })).toBeNull();
     });
   });
 

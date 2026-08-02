@@ -99,6 +99,7 @@ import {
   snoozeDecision,
   updateDecisionPreferences,
 } from '../../src/services/decision-center';
+import { resolveNotificationContract } from '../../src/services/notification-contracts';
 import { buildSkillNotificationFixtureIntent, createNotificationIntent, ensureNotificationTables, listNotificationCenterItems } from '../../src/services/notification-orchestrator';
 import { clearPendingChatConfirmation, trackPendingChatConfirmation } from '../../src/services/chat-pending-confirmations';
 import { buildNormalizedDecisionAction } from '../../src/services/decision-action-contract';
@@ -712,11 +713,21 @@ describe('Decision Center facade', () => {
     expect(created.item).toBeTruthy();
     const listed = listDecisionItems(86, 86);
     expect(listed).toHaveLength(1);
-    expect(listed[0].displayMode).toBe('waiting_on_system');
-    expect(listed[0].frontendActionState).toBe('disabled_missing_details');
-    expect(listed[0].recommendedAction?.id).toBe('retry');
-    expect(listed[0].alternatives.find((option) => option.actionId === 'retry')?.available).toBe(false);
+    // `retry` is no longer advertised by the sync_failure contract — its
+    // executor never existed, so it always rendered permanently greyed while
+    // being floored to the top of the queue. The action contract now drops it.
+    expect(listed[0].alternatives.find((option) => option.actionId === 'retry')).toBeUndefined();
     expect(listed[0].actionTruthTableEntry).toBeNull();
+
+    // ...and is replaced by `reconnect`, which is navigation rather than a
+    // provider mutation, so it needs no deterministic executor and renders
+    // enabled instead of disabled_not_implemented.
+    const reconnect = listed[0].alternatives.find((option) => option.actionId === 'reconnect');
+    expect(reconnect?.available).toBe(true);
+    expect(resolveNotificationContract({
+      sourceSkill: 'secretary',
+      type: 'sync_failure',
+    }).supportedActions).toEqual(['reconnect', 'open_detail']);
   });
 
   it('threads owner/admin visibility scope through internal decision intents', async () => {

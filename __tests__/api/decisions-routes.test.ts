@@ -617,6 +617,7 @@ describe('Decision routes', () => {
       token: 'abcdef12345678',
       userId: 999,
       tenantId: 999,
+      deviceId: 'forged-device',
     });
 
     expect(registered.statusCode).toBe(200);
@@ -624,9 +625,13 @@ describe('Decision routes', () => {
       userId: 7,
       tenantId: 7,
       token: 'abcdef12345678',
+      deviceId: 'iphone-test',
     }));
     expect(mockRegisterNotificationDeviceToken).not.toHaveBeenCalledWith(expect.objectContaining({
       userId: 999,
+    }));
+    expect(mockRegisterNotificationDeviceToken).not.toHaveBeenCalledWith(expect.objectContaining({
+      deviceId: 'forged-device',
     }));
   });
 

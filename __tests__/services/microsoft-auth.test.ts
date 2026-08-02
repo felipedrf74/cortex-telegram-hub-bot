@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
+import { readFileSync } from 'node:fs';
 
 let testDb: Database.Database;
 
@@ -118,12 +119,14 @@ function createOAuthSchema(db: Database.Database): void {
       UNIQUE(user_id, provider)
     );
   `);
+  db.exec(readFileSync('migrations/272_user_oauth_connection_health.sql', 'utf8'));
 }
 
 async function loadModules() {
   const microsoftAuth = await import('../../src/services/microsoft-auth');
   const oauthStore = await import('../../src/services/oauth-store');
-  return { microsoftAuth, oauthStore };
+  const oauthConnectionHealth = await import('../../src/services/oauth-connection-health');
+  return { microsoftAuth, oauthStore, oauthConnectionHealth };
 }
 
 async function loadModulesWithMsalClients() {
@@ -194,6 +197,46 @@ describe('microsoft-auth access token cache', () => {
 
     await expect(microsoftAuth.__testing.acquireAccessTokenFromRefreshToken('refresh-token')).rejects.toThrow('AADSTS70000');
     expect(mockState.publicAcquire).not.toHaveBeenCalled();
+  });
+
+  it('marks only the affected user when Outlook deterministically rejects their refresh token', async () => {
+    const { microsoftAuth, oauthStore, oauthConnectionHealth } = await loadModulesWithMsalClients();
+    storeOutlookTokens(oauthStore, 25, 'refresh-user-25');
+    storeOutlookTokens(oauthStore, 28, 'refresh-user-28');
+    mockState.confidentialAcquire.mockImplementation(async ({ refreshToken }) => {
+      if (refreshToken === 'refresh-user-25') {
+        throw new Error('AADSTS70000: refresh token expired');
+      }
+      return { accessToken: 'access-user-28' };
+    });
+
+    await expect(microsoftAuth.getAccessTokenForUser(25)).rejects.toThrow('AADSTS70000');
+    await expect(microsoftAuth.getAccessTokenForUser(28)).resolves.toBe('access-user-28');
+
+    expect(oauthConnectionHealth.getOAuthConnectionAuthFailure(25, 'outlook')).toMatchObject({
+      state: 'auth_rejected',
+      reasonCode: 'token_expired',
+    });
+    expect(oauthConnectionHealth.getOAuthConnectionAuthFailure(28, 'outlook')).toBeNull();
+  });
+
+  it('does not mark transient Outlook acquisition failures as revoked', async () => {
+    const { microsoftAuth, oauthStore, oauthConnectionHealth } = await loadModulesWithMsalClients();
+    storeOutlookTokens(oauthStore, 29, 'refresh-user-29');
+    mockState.confidentialAcquire.mockRejectedValue(new Error('ETIMEDOUT'));
+
+    await expect(microsoftAuth.getAccessTokenForUser(29)).rejects.toThrow('ETIMEDOUT');
+    expect(oauthConnectionHealth.getOAuthConnectionAuthFailure(29, 'outlook')).toBeNull();
+  });
+
+  it('clears an Outlook auth failure after a successful authenticated refresh', async () => {
+    const { microsoftAuth, oauthStore, oauthConnectionHealth } = await loadModulesWithMsalClients();
+    storeOutlookTokens(oauthStore, 31, 'refresh-user-31');
+    oauthConnectionHealth.markOAuthConnectionAuthFailure(31, 'outlook', 'invalid_grant');
+    mockState.confidentialAcquire.mockResolvedValue({ accessToken: 'access-user-31' });
+
+    await expect(microsoftAuth.getAccessTokenForUser(31)).resolves.toBe('access-user-31');
+    expect(oauthConnectionHealth.getOAuthConnectionAuthFailure(31, 'outlook')).toBeNull();
   });
 
   it('detects the exact public-client mismatch error text we saw in live Outlook validation', async () => {

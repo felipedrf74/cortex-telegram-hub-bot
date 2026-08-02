@@ -35,6 +35,10 @@ import {
   type OAuthProvider,
 } from './oauth-store';
 import { hasActiveGarminConnection } from './garmin-session-store';
+import {
+  getOAuthConnectionAuthFailure,
+  type OAuthConnectionAuthFailure,
+} from './oauth-connection-health';
 
 // ─── Canonical types ─────────────────────────────────────────────────
 
@@ -62,9 +66,8 @@ export const ALL_INTEGRATION_PROVIDERS: IntegrationProvider[] = [
  *   degraded       → tokens present but recent probes failed ≥ threshold.
  *                    Data may be stale; product should show "limited" copy.
  *   revoked        → tokens present but auth is known-bad (Garmin needs_reauth,
- *                    Garmin expired, Google/Outlook invalid_grant surfaced
- *                    through integration_health error messages). User must
- *                    re-auth before the integration recovers.
+ *                    Garmin expired, or a durable per-user Google/Outlook
+ *                    refresh rejection). User must re-auth before recovery.
  *   coming_soon    → provider exists in the registry but is not launched
  *                    to end users (WHOOP today).
  */
@@ -424,6 +427,7 @@ function isOAuthProvider(provider: IntegrationProvider): provider is OAuthProvid
 function buildOAuthStatus(
   provider: IntegrationProvider,
   connection: OAuthConnectionInfo | undefined,
+  authFailure: OAuthConnectionAuthFailure | null = null,
 ): ProviderIntegrationStatus {
   // 1. `coming_soon` takes precedence so WHOOP never lands on "disconnected"
   //    copy even if the env has WHOOP_CLIENT_ID set.
@@ -460,7 +464,21 @@ function buildOAuthStatus(
       capabilities: capabilitiesForProvider(provider),
     };
   }
-  // 4. Token row exists: lean on probe history to decide healthy vs degraded.
+  // 4. A deterministic rejection of THIS user's current refresh token is
+  //    actionable. Owner/global probe failures never write this scoped row.
+  if (authFailure?.state === 'auth_rejected') {
+    return {
+      provider,
+      state: 'revoked',
+      connectedAt: connection.connectedAt,
+      scopes: connection.scopes,
+      capabilities: capabilitiesForProvider(provider, connection.scopes),
+      reasonCode: 'NEEDS_REAUTH',
+      detail: `${provider === 'google' ? 'Google' : 'Outlook'} authorization expired. Reconnect to resume sync.`,
+      lastCheckedAt: authFailure.lastDetectedAt,
+    };
+  }
+  // 5. Token row exists: lean on probe history to decide healthy vs degraded.
   //    Anchor probe gating at the user's most recent reauth so a fresh
   //    OAuth exchange immediately clears stale `invalid_grant` failures.
   const probe = probeDerivedState(provider, connection.lastReauthedAt);
@@ -697,7 +715,10 @@ export function getProviderStatus(
 
   const connections = safeGetUserConnections(userId);
   const connection = connections.find((c) => c.provider === provider);
-  return buildOAuthStatus(provider, connection);
+  const authFailure = provider === 'google' || provider === 'outlook'
+    ? getOAuthConnectionAuthFailure(userId, provider)
+    : null;
+  return buildOAuthStatus(provider, connection, authFailure);
 }
 
 /**
@@ -725,7 +746,14 @@ export function getIntegrationSummary(userId: number): IntegrationSummary {
       continue;
     }
     if (!isOAuthProvider(provider)) continue;
-    providers.push(buildOAuthStatus(provider, connectionByProvider.get(provider)));
+    const authFailure = provider === 'google' || provider === 'outlook'
+      ? getOAuthConnectionAuthFailure(userId, provider)
+      : null;
+    providers.push(buildOAuthStatus(
+      provider,
+      connectionByProvider.get(provider),
+      authFailure,
+    ));
   }
 
   return {

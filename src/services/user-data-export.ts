@@ -253,8 +253,34 @@ export interface FullUserExport {
   sharedMemory: Array<{ key: string; value: string; updatedAt: string }>;
   finance: UserFinanceExport;
   oauthConnections: Array<{ provider: string; connectedAt: string }>;
+  oauthConnectionHealth: Array<{
+    provider: string;
+    state: string;
+    reasonCode: string;
+    firstDetectedAt: string;
+    lastDetectedAt: string;
+  }>;
   settings: Array<{ key: string; value: string }>;
   notificationDeviceTokens: Array<{ environment: string; platform: string; appVersion: string | null; lastSeenAt: string; revokedAt: string | null }>;
+  // Subject-access requests previously disclosed only the device tokens above
+  // and skipped the notification store entirely — which is where the
+  // personal data actually lives (event titles, task names, invoice
+  // references in `body`/`sensitive_body`), plus the user's own preferences
+  // and per-type mutes.
+  notificationProfile: Array<Record<string, unknown>>;
+  notificationCenterItems: Array<{
+    itemId: string; sourceSkill: string; type: string; priority: string; status: string;
+    title: string; body: string; sensitiveBody: string | null;
+    createdAt: string; readAt: string | null; dismissedAt: string | null; snoozedUntil: string | null;
+  }>;
+  notificationDecisionLogs: Array<{
+    decision: string; reason: string; priority: string; sourceSkill: string; type: string | null;
+    scheduledFor: string | null; sentAt: string | null; openedAt: string | null;
+    actionTaken: string | null; createdAt: string;
+  }>;
+  notificationTypeSuppressions: Array<{ sourceSkill: string; type: string; mode: string; until: string | null; createdAt: string }>;
+  notificationEngagementEvents: Array<{ sourceSkill: string; type: string; eventType: string; actionId: string | null; createdAt: string }>;
+  notificationPriorityShadow: Array<{ sourceSkill: string; type: string; declaredPriority: string; effectivePriority: string; actualDecision: string; score: number; tier: string; createdAt: string }>;
   garminSessions: Array<{ lastRefreshedAt: string | null; createdAt: string; updatedAt: string }>;
   agentSignals: Array<{ sourceAgent: string; signalType: string; status: string; createdAt: string }>;
   encryptionMeta: Array<{ keyVersion: number; encryptedAt: string; updatedAt: string }>;
@@ -432,12 +458,56 @@ export function exportAllUserData(userId: number): FullUserExport {
   // OAuth connections (metadata only — NO tokens for security)
   const oauthRows = safeAll(db,
     'SELECT provider, created_at FROM user_oauth_tokens WHERE user_id = ?', userId);
+  const oauthConnectionHealth = safeAll(db, `
+    SELECT provider, state, reason_code AS reasonCode,
+           first_detected_at AS firstDetectedAt,
+           last_detected_at AS lastDetectedAt
+    FROM user_oauth_connection_health
+    WHERE user_id = ? AND tenant_id = ?
+    ORDER BY provider
+  `, userId, userId);
 
   // User settings from kv_store
   const settings = safeAll(db,
     "SELECT key, value FROM kv_store WHERE key LIKE ?", `config:${userId}:%`);
   const notificationDeviceTokens = safeAll(db,
     'SELECT environment, platform, app_version as appVersion, last_seen_at as lastSeenAt, revoked_at as revokedAt FROM notification_device_tokens WHERE user_id = ?', userId);
+  const notificationProfile = safeAll(db,
+    'SELECT * FROM notification_profiles WHERE user_id = ?', userId);
+  const notificationCenterItems = safeAll(db,
+    `SELECT item_id as itemId, source_skill as sourceSkill, type, priority, status,
+            title, body, sensitive_body as sensitiveBody,
+            created_at as createdAt, read_at as readAt, dismissed_at as dismissedAt,
+            snoozed_until as snoozedUntil
+       FROM notification_center_items WHERE user_id = ? ORDER BY created_at`, userId);
+  const notificationDecisionLogs = safeAll(db,
+    `SELECT logs.decision, logs.reason, logs.priority,
+            logs.source_skill as sourceSkill, intents.type,
+            logs.scheduled_for as scheduledFor, logs.sent_at as sentAt,
+            logs.opened_at as openedAt, logs.action_taken as actionTaken,
+            logs.created_at as createdAt
+       FROM notification_decision_logs AS logs
+       LEFT JOIN notification_intents AS intents
+         ON intents.intent_id = logs.intent_id
+        AND intents.user_id = logs.user_id
+        AND intents.tenant_id = logs.tenant_id
+      WHERE logs.user_id = ?
+      ORDER BY logs.created_at`, userId);
+  const notificationTypeSuppressions = safeAll(db,
+    `SELECT source_skill as sourceSkill, type, mode, until, created_at as createdAt
+       FROM decision_type_suppressions WHERE user_id = ?`, userId);
+  const notificationEngagementEvents = safeAll(db,
+    `SELECT source_skill as sourceSkill, type, event_type as eventType,
+            action_id as actionId, created_at as createdAt
+       FROM notification_engagement_events WHERE user_id = ? ORDER BY created_at`, userId);
+  // Erasure already covered this table (accountDeletionTablesForDb walks
+  // sqlite_master for user_id columns), but subject ACCESS did not: it holds
+  // per-user scores and tiers, which is personal data the user may ask to see.
+  const notificationPriorityShadow = safeAll(db,
+    `SELECT source_skill as sourceSkill, type,
+            declared_priority as declaredPriority, effective_priority as effectivePriority,
+            actual_decision as actualDecision, score, tier, created_at as createdAt
+       FROM notification_priority_shadow WHERE user_id = ? ORDER BY created_at`, userId);
   const garminSessions = safeAll(db,
     'SELECT last_refreshed_at as lastRefreshedAt, created_at as createdAt, updated_at as updatedAt FROM garmin_sessions WHERE user_id = ?', userId);
   const agentSignals = safeAll(db,
@@ -733,8 +803,15 @@ export function exportAllUserData(userId: number): FullUserExport {
     sharedMemory,
     finance,
     oauthConnections: oauthRows.map((c: any) => ({ provider: c.provider, connectedAt: c.created_at })),
+    oauthConnectionHealth,
     settings: settings.map((s: any) => ({ key: s.key.replace(`config:${userId}:`, ''), value: s.value })),
     notificationDeviceTokens,
+    notificationProfile,
+    notificationCenterItems,
+    notificationDecisionLogs,
+    notificationTypeSuppressions,
+    notificationEngagementEvents,
+    notificationPriorityShadow,
     garminSessions,
     agentSignals,
     encryptionMeta,
@@ -807,6 +884,7 @@ export const ACCOUNT_DELETION_TABLES: Array<{ table: string; column: string }> =
   { table: 'garmin_user_tokens', column: 'user_id' },
   { table: 'agent_signals', column: 'user_id' },
   { table: 'user_oauth_tokens', column: 'user_id' },
+  { table: 'user_oauth_connection_health', column: 'user_id' },
   { table: 'apple_sign_in_refresh_tokens', column: 'user_id' },
   { table: 'oauth_ios_nonce_sessions', column: 'user_id' },
   { table: 'user_skill_overrides', column: 'user_id' },

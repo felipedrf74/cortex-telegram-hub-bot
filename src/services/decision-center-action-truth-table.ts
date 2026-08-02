@@ -221,6 +221,10 @@ const ACTION_TRUTH_TABLE: Record<string, DecisionActionTruthTemplate> = {
     apnsActionAllowed: false,
     highRiskConfirmationRequired: false,
   },
+  /**
+   * Retained so historical rows and audit records that reference `retry` still
+   * resolve. No contract advertises it any more — see `reconnect`.
+   */
   retry: {
     executor: 'provider-sync',
     verifier: 'provider_sync_state',
@@ -230,6 +234,23 @@ const ACTION_TRUTH_TABLE: Record<string, DecisionActionTruthTemplate> = {
     successUi: 'Sync retry completed.',
     retryAvailable: false,
     apnsActionAllowed: false,
+    highRiskConfirmationRequired: false,
+  },
+  /**
+   * Navigation, not a provider mutation. It routes the user to connection
+   * settings where re-auth happens under normal authentication, so it needs no
+   * deterministic executor and is honest about what tapping it does — unlike
+   * `retry`, which promised a sync nothing could perform.
+   */
+  reconnect: {
+    executor: 'navigation',
+    verifier: 'none',
+    implemented: true,
+    mutating: false,
+    expectedMutation: 'None. Opens connection settings; the provider re-auth is performed by the user in-app.',
+    successUi: 'Opening connection settings.',
+    retryAvailable: true,
+    apnsActionAllowed: true,
     highRiskConfirmationRequired: false,
   },
   choose_priority: {

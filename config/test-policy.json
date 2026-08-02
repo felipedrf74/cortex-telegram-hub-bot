@@ -434,6 +434,46 @@
           }
         ],
         "reason": "The fixed loopback one-model envelope remains behaviorally covered while the separate zero-swap transition is retired in favor of the permanent 512 MiB lean baseline."
+      },
+      {
+        "test": "__tests__/services/chat-core-v2-background-command.test.ts",
+        "replacementTests": [
+          "__tests__/services/chat-core-v2-background-command.test.ts"
+        ],
+        "sources": [
+          "src/services/chat-core-v2/background-command-worker.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/chat-core-v2/background-command-worker.ts:248-248",
+            "anchor": "dedupeKey: `chat:command:${command.commandId}`",
+            "behavior": "A completed background command creates one durable Notification Center item using command-scoped deduplication.",
+            "replacementTest": "__tests__/services/chat-core-v2-background-command.test.ts",
+            "ownerTestNamePattern": "verified execution → execution_completed event \\+ APNs pushed$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained integration test replaces its direct-APNs collapse assertion with stronger privacy-safe payload and durable orchestrator-item assertions after the only bypassing producer was moved behind the notification contract."
+      },
+      {
+        "test": "__tests__/services/decision-center.test.ts",
+        "replacementTests": [
+          "__tests__/services/decision-center.test.ts"
+        ],
+        "sources": [
+          "src/services/notification-contracts.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/notification-contracts.ts:178-178",
+            "anchor": "return ['reconnect', 'open_detail'];",
+            "behavior": "Sync-failure decisions stop advertising an unimplemented retry and instead expose an enabled navigation-only reconnect action.",
+            "replacementTest": "__tests__/services/decision-center.test.ts",
+            "ownerTestNamePattern": "disables user-facing actions when a recipe has no deterministic executor yet$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained Decision Center test replaces assertions for the permanently disabled retry CTA with assertions that the contract removes retry and exposes an honest reconnect navigation action."
       }
     ],
     "ownerTestMappings": [],

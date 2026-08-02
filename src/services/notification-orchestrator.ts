@@ -13,9 +13,10 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { DateTime } from 'luxon';
 import { getDb } from './database';
-import { getUserTimezoneById } from './user-service';
+import { getUserLanguageById, getUserTimezoneById } from './user-service';
 import { getPushTokensForUser, isApnsConfigured, sendPushNotification } from './apns-sender';
 import { config } from '../config';
+import { t, type Lang } from '../utils/i18n';
 import { logger } from '../utils/logger';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
 import { emitDomainEvent, runOutboxTransaction } from './event-outbox';
@@ -38,8 +39,11 @@ import {
   isDecisionCenterGuidanceSkillEnabled,
   isDecisionCenterGuidanceV1Enabled,
   isDecisionReconnectAffordanceEnabled,
+  isDecisionTypeSuppressionEnabled,
+  isNotificationPriorityShadowScoringEnabled,
 } from './runtime-flags';
 import { computeSharedNotificationActionEffectiveStatus } from './notification-action-state';
+import { NEUTRAL_ENGAGEMENT, scoreNotification } from './notification-priority-model';
 import { decisionRelationshipSemantics } from './decision-relationship-types';
 import { getSecretaryAgendaItemById } from './secretary-scheduling-arbitrator';
 import { normalizeDecisionAction } from './decision-action-contract';
@@ -89,6 +93,48 @@ export type NotificationDecision =
   | 'blocked_user_preferences'
   | 'blocked_privacy_policy'
   | 'apns_delivery_failed';
+/**
+ * Did this decision surface a notification to the user at all?
+ *
+ * Producer sweeps report a `notified` count, and every one computed it as
+ * `decision !== 'deduped'` — which also counts `suppressed`, where no item is
+ * ever shown. A push that fails still leaves a durable Notification Center item
+ * the user will see, so it DOES count here; what it must not do is go
+ * unreported, which is what `notificationDeliveryFailed` below is for.
+ */
+export function notificationDecisionReachedUser(
+  decision: NotificationDecision | null | undefined,
+): boolean {
+  if (!decision) return false;
+  // These three store NO Notification Center item — `blocked_user_preferences`
+  // writes its log with `notificationId: null` — so nothing was surfaced.
+  // `blocked_missing_device_token` and `apns_delivery_failed` are decided
+  // AFTER the item is persisted, so those genuinely did reach the inbox.
+  return decision !== 'deduped'
+    && decision !== 'suppressed'
+    && decision !== 'blocked_user_preferences'
+    && decision !== 'blocked_privacy_policy';
+}
+
+/**
+ * Did an APNs delivery genuinely fail, as opposed to never being attempted?
+ *
+ * Producer summaries counted only thrown exceptions as `failed`, so a sweep in
+ * which every single push failed reported `notified: 40, failed: 0` — and the
+ * scheduler's `notified === 0 → 'skipped'` mapping meant even that left no
+ * job_history row. Time-to-detect for a push outage was unbounded.
+ *
+ * `blocked_missing_credentials` and `blocked_missing_device_token` are
+ * deliberately NOT failures: the first is an unconfigured environment (every
+ * local dev run would otherwise page), the second is a user who has not granted
+ * push. Only an attempted-and-rejected delivery is an outage signal.
+ */
+export function notificationDeliveryFailed(
+  attempts: ReadonlyArray<{ status: string }> | null | undefined,
+): boolean {
+  return Boolean(attempts?.some((attempt) => attempt.status === 'failed'));
+}
+
 export type NotificationCenterStatus = 'unread' | 'read' | 'viewed' | 'snoozed' | 'actioned' | 'dismissed' | 'failed' | 'expired' | 'superseded';
 export type NotificationPrivacyPolicy = 'public' | 'standard' | 'sensitive' | 'private_content' | 'financial' | 'health';
 // 'push_allowed' pruned 2026-07-04: it was set by three producers but never
@@ -144,6 +190,13 @@ export interface NotificationIntentInput {
   requiresUserAction?: boolean;
   decisionDeadline?: string | null;
   deliveryPolicy?: NotificationDeliveryPolicy;
+  /**
+   * Promotional / lifecycle notification (activation nudge, win-back, resume
+   * onboarding). Gated on separate marketing consent per App Store 4.5.4 —
+   * see `marketingPushEnabled`. Default false; operational notifications must
+   * never set it, and promotional ones must never omit it.
+   */
+  promotional?: boolean;
   privacyPolicy?: NotificationPrivacyPolicy;
   decisionContext?: DecisionLogicContext | null;
   visibilityScope?: DecisionVisibilityScope | null;
@@ -151,7 +204,7 @@ export interface NotificationIntentInput {
 
 export interface NotificationIntentRecord extends Required<Omit<NotificationIntentInput,
   'intentId' | 'relatedEntityId' | 'relatedEntityType' | 'sensitiveBody' | 'actionButtons' | 'deeplink' | 'expiresAt' |
-  'quietHoursPolicy' | 'dedupeKey' | 'requiresUserAction' | 'decisionDeadline' | 'deliveryPolicy' | 'privacyPolicy' | 'decisionContext' | 'visibilityScope'>> {
+  'quietHoursPolicy' | 'dedupeKey' | 'requiresUserAction' | 'decisionDeadline' | 'deliveryPolicy' | 'privacyPolicy' | 'promotional' | 'decisionContext' | 'visibilityScope'>> {
   intentId: string;
   tenantId: number;
   relatedEntityId: string | null;
@@ -166,6 +219,7 @@ export interface NotificationIntentRecord extends Required<Omit<NotificationInte
   decisionDeadline: string | null;
   deliveryPolicy: NotificationDeliveryPolicy;
   privacyPolicy: NotificationPrivacyPolicy;
+  promotional: boolean;
   decisionContext: DecisionLogicContext | null;
   status: 'pending' | 'evaluated' | 'deduped' | 'suppressed' | 'expired';
   createdAt: string;
@@ -177,6 +231,8 @@ export interface NotificationProfile {
   quietHours: { start: string; end: string };
   timezone: string;
   pushEnabled: boolean;
+  /** Separate consent for promotional/lifecycle pushes (App Store 4.5.4). */
+  marketingPushEnabled: boolean;
   localEnabled: boolean;
   emailEnabled: boolean;
   portalEnabled: boolean;
@@ -218,6 +274,17 @@ export interface NotificationCenterItem {
   type: NotificationIntentType;
   priority: NotificationPriority;
   status: NotificationCenterStatus;
+  /**
+   * Whether this item is an outstanding ask. The badge counts only these, and
+   * counts them off the LIST — so it has to travel with the item rather than be
+   * re-derived from a second query.
+   */
+  requiresUserAction: boolean;
+  /**
+   * Marketing/lifecycle content. Never badges: a badge is an outstanding ask,
+   * and a re-engagement nudge is not something the user can resolve.
+   */
+  promotional: boolean;
   deeplink: string | null;
   actions: NotificationActionButton[];
   actionEffectiveStatuses?: NotificationActionEffectiveStatus[];
@@ -390,6 +457,7 @@ export interface NotificationProfilePatch {
   quietHours?: Partial<{ start: string; end: string }>;
   timezone?: string;
   pushEnabled?: boolean;
+  marketingPushEnabled?: boolean;
   localEnabled?: boolean;
   emailEnabled?: boolean;
   portalEnabled?: boolean;
@@ -439,9 +507,30 @@ const TERMINAL_NOTIFICATION_STATUSES = new Set<NotificationCenterStatus>([
   'superseded',
 ]);
 const DEFAULT_TIMEZONE = 'Europe/Lisbon';
-const PUSH_RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;
-const PUSH_RATE_LIMIT_MAX_PER_SOURCE = 20;
-const pushRateLimitByScope = new Map<string, number[]>();
+
+/**
+ * Resolve a stored profile timezone to one Luxon can actually compute in.
+ *
+ * `notification_profiles.timezone` is seeded from client-reported data and has
+ * never been validated on write, so values like `GMT-3` reach us. Luxon does
+ * not throw on those — it returns an INVALID DateTime, and every downstream
+ * expression then fails soft in whichever direction happens to be worst:
+ *
+ *   - `evaluateInterruptBudget` got `dayStart === null` and allowed every
+ *     interrupt, disabling the daily cap entirely;
+ *   - `isInQuietHours` compared NaN minutes, so quiet hours never matched and
+ *     the user was woken up;
+ *   - `nextQuietHoursEnd` / `nextDigestTime` produced an invalid DateTime whose
+ *     `.toISO()` is null, so scheduled work lost its schedule.
+ *
+ * Falling back to the default zone can be off by a few hours; silently
+ * disabling the cap and quiet hours cannot be recovered from at all.
+ */
+function resolveProfileZone(timezone: string | null | undefined): string {
+  const candidate = (timezone ?? '').trim();
+  if (candidate && DateTime.local().setZone(candidate).isValid) return candidate;
+  return DEFAULT_TIMEZONE;
+}
 
 function appNowIso(): string {
   return new Date(Date.now()).toISOString();
@@ -629,16 +718,76 @@ export function ensureNotificationTables(): void {
     CREATE INDEX IF NOT EXISTS idx_notification_device_tokens_scope_active
       ON notification_device_tokens(user_id, tenant_id, platform, revoked_at);
     CREATE INDEX IF NOT EXISTS idx_ios_devices_user ON ios_devices(user_id);
+    CREATE TABLE IF NOT EXISTS notification_priority_shadow (
+      shadow_id TEXT PRIMARY KEY,
+      intent_id TEXT NOT NULL,
+      user_id INTEGER NOT NULL,
+      tenant_id INTEGER NOT NULL,
+      source_skill TEXT NOT NULL,
+      type TEXT NOT NULL,
+      declared_priority TEXT NOT NULL,
+      effective_priority TEXT NOT NULL,
+      actual_decision TEXT NOT NULL,
+      model_version INTEGER NOT NULL,
+      score INTEGER NOT NULL,
+      tier TEXT NOT NULL,
+      reason_codes_json TEXT NOT NULL DEFAULT '[]',
+      components_json TEXT NOT NULL DEFAULT '{}',
+      features_complete INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    -- Mirrors migration 270. Every other notification table's indexes are
+    -- mirrored here; this one was the sole omission, so a database built by
+    -- ensureNotificationTables alone scanned the shadow table.
+    CREATE INDEX IF NOT EXISTS idx_notification_priority_shadow_scope_created
+      ON notification_priority_shadow(user_id, tenant_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_notification_priority_shadow_compare
+      ON notification_priority_shadow(tier, actual_decision, created_at DESC);
+    CREATE TABLE IF NOT EXISTS notification_engagement_events (
+      event_id TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      tenant_id INTEGER NOT NULL,
+      notification_id TEXT,
+      intent_id TEXT,
+      source_skill TEXT NOT NULL,
+      type TEXT NOT NULL,
+      priority TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      action_id TEXT,
+      latency_ms INTEGER,
+      flag_vector_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_notification_engagement_scope_type_created
+      ON notification_engagement_events(user_id, tenant_id, source_skill, type, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_notification_engagement_event_type_created
+      ON notification_engagement_events(event_type, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_notification_engagement_notification
+      ON notification_engagement_events(notification_id, created_at DESC);
   `);
   ensureColumn('notification_center_items', 'sensitive_body', 'TEXT');
   ensureColumn('notification_center_items', 'snoozed_until', 'TEXT');
+  ensureColumn('notification_center_items', 'snooze_count', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('notification_center_items', 'last_pushed_at', 'TEXT');
   ensureColumn('notification_center_items', 'priority_score', 'INTEGER');
   ensureColumn('notification_center_items', 'requires_user_action', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn('notification_intents', 'decision_context_json', 'TEXT');
+  ensureColumn('notification_intents', 'promotional', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('notification_device_tokens', 'device_timezone', 'TEXT');
+  ensureColumn('notification_device_tokens', 'device_timezone_reported_at', 'TEXT');
+  ensureColumn('notification_device_tokens', 'authorization_tier', "TEXT NOT NULL DEFAULT 'authorized'");
+  ensureColumn('notification_profiles', 'marketing_push_enabled', 'INTEGER NOT NULL DEFAULT 0');
   backfillNotificationCenterActionability();
   getDb().prepare(`
     CREATE INDEX IF NOT EXISTS idx_notification_center_badge_actionable
       ON notification_center_items(user_id, tenant_id, status, requires_user_action, expires_at)
+  `).run();
+  // Snooze release predicate. Created here rather than in migration 268
+  // because `snoozed_until` is an ensureColumn() self-heal, so it does not
+  // exist yet in a database built from migrations alone.
+  getDb().prepare(`
+    CREATE INDEX IF NOT EXISTS idx_notification_center_snoozed_due
+      ON notification_center_items(user_id, tenant_id, status, snoozed_until)
   `).run();
 }
 
@@ -692,6 +841,183 @@ export function getOrCreateNotificationProfile(userId: number, tenantId = userId
   return mapProfile(row);
 }
 
+export interface NotificationPreferenceRejection {
+  field: string;
+  reason: 'unknown_field' | 'invalid_value' | 'not_implemented';
+  detail: string;
+}
+
+export interface NotificationProfilePatchResult {
+  profile: NotificationProfile;
+  /** Fields whose supplied value was accepted and persisted. */
+  applied: string[];
+  /** Fields the caller sent that did NOT take effect, and why. */
+  rejected: NotificationPreferenceRejection[];
+}
+
+const HH_MM = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+const NOTIFICATION_SOURCE_SKILLS: readonly NotificationSourceSkill[] = [
+  'secretary', 'training', 'content', 'cooking', 'finance', 'chat', 'system', 'security',
+];
+
+/**
+ * Preference keys a client may legitimately send. Anything else is reported
+ * back as `unknown_field` rather than silently dropped.
+ */
+const KNOWN_PREFERENCE_FIELDS = new Set([
+  'quietHours', 'timezone', 'pushEnabled', 'marketingPushEnabled', 'localEnabled', 'emailEnabled', 'portalEnabled',
+  'inAppEnabled', 'skillPreferences', 'defaultReminderMinutes', 'workoutReminderMinutes',
+  'contentReminderMinutes', 'financeReminderDays', 'allowTimeSensitive', 'allowCritical',
+  'digestPassiveItems', 'dailyDigestTime', 'weeklyReviewDay', 'weeklyReviewTime',
+  'morningBriefingTime', 'coachBriefingTime', 'endOfDayTime', 'weeklyReviewReportDay',
+  'weeklyReviewReportTime', 'doNotNotifyRules',
+]);
+
+/**
+ * Settings a client can send today that are read by NOTHING. They are reported
+ * as `not_implemented` instead of `unknown_field` so the app can hide the
+ * control rather than render a switch that changes nothing.
+ *
+ * `getDecisionPreferences` returns these five as hardcoded literals, so a
+ * client sending `autoHideResolved: false` previously got HTTP 200 and `true`
+ * back — a setting that reported success and did nothing.
+ */
+const NOT_IMPLEMENTED_PREFERENCE_FIELDS = new Map<string, string>([
+  ['homePreviewMode', 'Decision home preview mode is not stored; the server always uses urgent_and_today.'],
+  ['autoHideResolved', 'Resolved decisions are always hidden; this is not configurable.'],
+  ['askBeforeScheduleChanges', 'Schedule confirmations are always required; this is not configurable.'],
+  ['askBeforeContentPublishing', 'Content approvals are always required; this is not configurable.'],
+  ['askBeforeTrainingReflow', 'Training reflow confirmations are always required; this is not configurable.'],
+  ['localEnabled', 'No local-notification scheduling exists; this column gates nothing.'],
+  ['emailEnabled', 'Email delivery is not implemented in the notification ladder.'],
+  ['doNotNotifyRules', 'The do-not-notify rules engine is declared but has no evaluator.'],
+  ['contentReminderMinutes', 'No content producer reads a lead time yet.'],
+]);
+
+const BOOLEAN_PREFERENCE_FIELDS = [
+  'pushEnabled', 'marketingPushEnabled', 'localEnabled', 'emailEnabled', 'portalEnabled', 'inAppEnabled',
+  'allowTimeSensitive', 'allowCritical', 'digestPassiveItems',
+] as const;
+
+const POSITIVE_INT_PREFERENCE_FIELDS = [
+  'defaultReminderMinutes', 'workoutReminderMinutes', 'contentReminderMinutes', 'financeReminderDays',
+] as const;
+
+/**
+ * Validate a preference patch and report exactly what took effect.
+ *
+ * Invalid values are still coerced back to the current value rather than
+ * throwing — a hard 400 would break iOS builds already in the wild that send
+ * fields this server does not honour. The difference is that the caller is now
+ * TOLD, instead of receiving HTTP 200 and assuming the write landed.
+ */
+export function applyNotificationProfilePatch(
+  userId: number,
+  tenantId: number,
+  patch: Record<string, unknown>,
+): NotificationProfilePatchResult {
+  const applied: string[] = [];
+  const rejected: NotificationPreferenceRejection[] = [];
+  const sanitized: Record<string, unknown> = {};
+  const reject = (field: string, reason: NotificationPreferenceRejection['reason'], detail: string) =>
+    rejected.push({ field, reason, detail });
+
+  for (const [field, value] of Object.entries(patch ?? {})) {
+    if (value === undefined) continue;
+
+    const notImplemented = NOT_IMPLEMENTED_PREFERENCE_FIELDS.get(field);
+    if (notImplemented) {
+      // Persist it anyway when the column exists, so the value survives a
+      // future wiring, but never claim it is in effect.
+      if (KNOWN_PREFERENCE_FIELDS.has(field)) sanitized[field] = value;
+      reject(field, 'not_implemented', notImplemented);
+      continue;
+    }
+    if (!KNOWN_PREFERENCE_FIELDS.has(field)) {
+      reject(field, 'unknown_field', `'${field}' is not a notification preference.`);
+      continue;
+    }
+
+    if ((BOOLEAN_PREFERENCE_FIELDS as readonly string[]).includes(field)) {
+      if (typeof value !== 'boolean') { reject(field, 'invalid_value', 'expected a boolean'); continue; }
+      sanitized[field] = value; applied.push(field); continue;
+    }
+    if ((POSITIVE_INT_PREFERENCE_FIELDS as readonly string[]).includes(field)) {
+      if (!Number.isInteger(value) || (value as number) <= 0) {
+        reject(field, 'invalid_value', 'expected a positive whole number of minutes/days'); continue;
+      }
+      sanitized[field] = value; applied.push(field); continue;
+    }
+    if (field === 'dailyDigestTime' || field === 'weeklyReviewTime') {
+      if (typeof value !== 'string' || !HH_MM.test(value)) {
+        reject(field, 'invalid_value', 'expected HH:MM (24-hour)'); continue;
+      }
+      sanitized[field] = value; applied.push(field); continue;
+    }
+    if (field === 'weeklyReviewDay') {
+      if (!Number.isInteger(value) || (value as number) < 0 || (value as number) > 6) {
+        reject(field, 'invalid_value', 'expected 0 (Sunday) through 6 (Saturday)'); continue;
+      }
+      sanitized[field] = value; applied.push(field); continue;
+    }
+    if (field === 'timezone') {
+      if (typeof value !== 'string' || !value.trim() || !DateTime.local().setZone(value).isValid) {
+        reject(field, 'invalid_value', 'expected a valid IANA timezone, e.g. Europe/Lisbon'); continue;
+      }
+      sanitized[field] = value.trim(); applied.push(field); continue;
+    }
+    if (field === 'quietHours') {
+      const qh = value as { start?: unknown; end?: unknown } | null;
+      if (!qh || typeof qh !== 'object') { reject(field, 'invalid_value', 'expected { start, end }'); continue; }
+      const start = qh.start === undefined ? undefined : String(qh.start);
+      const end = qh.end === undefined ? undefined : String(qh.end);
+      if ((start !== undefined && !HH_MM.test(start)) || (end !== undefined && !HH_MM.test(end))) {
+        reject(field, 'invalid_value', 'quiet hours must be HH:MM (24-hour)'); continue;
+      }
+      const current = getOrCreateNotificationProfile(userId, tenantId).quietHours;
+      if ((start ?? current.start) === (end ?? current.end)) {
+        reject(field, 'invalid_value', 'quiet hours start and end must differ'); continue;
+      }
+      sanitized[field] = { ...(start !== undefined ? { start } : {}), ...(end !== undefined ? { end } : {}) };
+      applied.push(field); continue;
+    }
+    if (field === 'skillPreferences') {
+      const prefs = value as Record<string, unknown> | null;
+      if (!prefs || typeof prefs !== 'object') { reject(field, 'invalid_value', 'expected an object of skill booleans'); continue; }
+      const clean: Record<string, boolean> = {};
+      let bad = false;
+      for (const [skill, on] of Object.entries(prefs)) {
+        if (!NOTIFICATION_SOURCE_SKILLS.includes(skill as NotificationSourceSkill)) {
+          reject(`skillPreferences.${skill}`, 'unknown_field', `'${skill}' is not a skill.`); bad = true; continue;
+        }
+        if (typeof on !== 'boolean') {
+          reject(`skillPreferences.${skill}`, 'invalid_value', 'expected a boolean'); bad = true; continue;
+        }
+        clean[skill] = on;
+      }
+      if (Object.keys(clean).length > 0) { sanitized[field] = clean; if (!bad) applied.push(field); }
+      continue;
+    }
+    // Nullable schedule overrides — these already throw on bad input, so
+    // validate here and report rather than letting the request 400 wholesale.
+    if (field === 'weeklyReviewReportDay') {
+      if (value !== null && (!Number.isInteger(value) || (value as number) < 0 || (value as number) > 6)) {
+        reject(field, 'invalid_value', 'expected 0-6 or null'); continue;
+      }
+      sanitized[field] = value; applied.push(field); continue;
+    }
+    if (typeof value === 'string' || value === null) {
+      if (value !== null && !HH_MM.test(value)) { reject(field, 'invalid_value', 'expected HH:MM (24-hour) or null'); continue; }
+      sanitized[field] = value; applied.push(field); continue;
+    }
+    reject(field, 'invalid_value', 'unsupported value type');
+  }
+
+  const profile = updateNotificationProfile(userId, tenantId, sanitized as NotificationProfilePatch);
+  return { profile, applied, rejected };
+}
+
 export function updateNotificationProfile(userId: number, tenantId: number, patch: NotificationProfilePatch): NotificationProfile {
   const current = getOrCreateNotificationProfile(userId, tenantId);
   const skillPrefs = { ...current.skillPreferences, ...(patch.skillPreferences ?? {}) };
@@ -709,6 +1035,7 @@ export function updateNotificationProfile(userId: number, tenantId: number, patc
       quiet_hours_end = ?,
       timezone = ?,
       push_enabled = ?,
+      marketing_push_enabled = ?,
       local_enabled = ?,
       email_enabled = ?,
       portal_enabled = ?,
@@ -744,6 +1071,7 @@ export function updateNotificationProfile(userId: number, tenantId: number, patc
     quietHoursEnd,
     stringOr(current.timezone, patch.timezone),
     boolInt(patch.pushEnabled ?? current.pushEnabled),
+    boolInt(patch.marketingPushEnabled ?? current.marketingPushEnabled),
     boolInt(patch.localEnabled ?? current.localEnabled),
     boolInt(patch.emailEnabled ?? current.emailEnabled),
     boolInt(patch.portalEnabled ?? current.portalEnabled),
@@ -779,7 +1107,62 @@ export function updateNotificationProfile(userId: number, tenantId: number, patc
   return getOrCreateNotificationProfile(userId, tenantId);
 }
 
-export async function createNotificationIntent(input: NotificationIntentInput): Promise<NotificationEvaluationResult> {
+/**
+ * Serializes notification evaluation per user.
+ *
+ * The interrupt budget is a check-then-act across an await:
+ * `evaluateInterruptBudget` counts today's `sent_push` rows, the caller then
+ * awaits an APNs round trip, and only afterwards writes its own row. Two
+ * evaluations for the same user that interleave on that await BOTH read the
+ * pre-push count, so both pass a cap that should have admitted one — and the
+ * caps then bind at an arbitrary multiple of their configured value.
+ *
+ * This is not an exotic-load scenario. `training_session_reminder` and
+ * `commitment_start_reminder` share a `*!/5 * * * *` schedule, and wrapJob's
+ * in-flight guard is keyed by job NAME, so it does nothing to stop two
+ * different jobs interleaving across their APNs awaits.
+ *
+ * better-sqlite3 being synchronous does not help: the yield is in the
+ * orchestrator, not in the driver. Serializing per user is enough — the budget
+ * is per user — and it keeps unrelated users fully concurrent.
+ */
+const evaluationChains = new Map<string, Promise<void>>();
+
+async function withUserEvaluationLock<T>(
+  userId: number,
+  tenantId: number,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const key = `${tenantId}:${userId}`;
+  const prior = evaluationChains.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  // Successors wait on `gate`, never on `fn` itself, so one failed evaluation
+  // does not reject the whole chain behind it.
+  const chain = prior.then(() => gate);
+  evaluationChains.set(key, chain);
+  await prior;
+  try {
+    return await fn();
+  } finally {
+    release();
+    // Only the tail clears the entry, so the map does not grow per user forever
+    // and a queued successor is never orphaned.
+    if (evaluationChains.get(key) === chain) evaluationChains.delete(key);
+  }
+}
+
+export function createNotificationIntent(
+  input: NotificationIntentInput,
+): Promise<NotificationEvaluationResult> {
+  return withUserEvaluationLock(
+    Number(input.userId),
+    Number(input.tenantId ?? input.userId),
+    () => runNotificationIntentEvaluation(input),
+  );
+}
+
+async function runNotificationIntentEvaluation(input: NotificationIntentInput): Promise<NotificationEvaluationResult> {
   const normalized = normalizeIntent(input);
   expireStaleNotificationIntents();
   const budget = consumeResourceBudget({
@@ -901,9 +1284,14 @@ export async function evaluateNotificationIntent(
   const intent = mapIntent(intentRow);
   const profile = getOrCreateNotificationProfile(userId, tenantId);
   const effectivePriority = normalizePriorityForPolicy(intent.priority, profile);
-  const safeBody = buildPrivacySafeBody(intent);
+  // Resolved ONCE per evaluation. Each helper resolving the language on its own
+  // made this two indexed `users` lookups per notification — twice the cost the
+  // localization design note documents, and two for `daily_digest` too, the one
+  // branch that then discards the value.
+  const copyLanguage = notificationCopyLanguage(intent.userId);
+  const safeBody = buildPrivacySafeBody(intent, copyLanguage);
   const pushPayload = {
-    title: safeNotificationTitle(intent),
+    title: safeNotificationTitle(intent, copyLanguage),
     body: safeBody,
     deeplink: intent.deeplink,
     actions: intent.actionButtons,
@@ -947,7 +1335,27 @@ export async function evaluateNotificationIntent(
   }
 
   const item = persistCenterItem(intent, effectivePriority, safeBody);
+  // Denominator for every engagement rate. Recorded once the durable item
+  // exists, BEFORE the delivery branches, so "surfaced but never pushed"
+  // stays distinguishable from "never surfaced at all".
+  recordNotificationEngagementEvent({
+    userId: intent.userId,
+    tenantId: intent.tenantId,
+    notificationId: item.itemId,
+    intentId: intent.intentId,
+    sourceSkill: intent.sourceSkill,
+    type: intent.type,
+    priority: effectivePriority,
+    eventType: 'surfaced',
+  });
   const quietHours = quietHoursDecision(profile, intent, effectivePriority);
+  // Read once: the cause is needed both to branch and to explain the branch.
+  const suppressionCause = notificationTypeSuppressionCause(intent);
+  // Compatibility bridge for the Settings toggle shipped before notification
+  // profiles existed. iOS still writes push_preferences/reminders; treating it
+  // as a push-only gate preserves the durable inbox item while honoring the
+  // user's explicit choice not to be interrupted.
+  const categoryPreferenceCause = notificationCategoryPreferenceCause(intent);
   const deliveryAttempts: DeliveryAttempt[] = [];
   let decision: NotificationDecision = 'in_app_only';
   let reason = 'stored in authenticated notification center';
@@ -957,6 +1365,29 @@ export async function evaluateNotificationIntent(
   if (intent.deliveryPolicy === 'portal_only') {
     decision = 'portal_only';
     reason = 'delivery policy is portal only';
+  } else if (intent.promotional && !profile.marketingPushEnabled) {
+    // App Store 4.5.4: push must be optional AND marketing needs its own
+    // opt-in. Operational consent (`pushEnabled`) does not cover a win-back or
+    // an activation nudge. Default is off, so a promotional producer that
+    // forgets to ask simply never interrupts.
+    // The Notification Center item still exists — the user loses the interrupt,
+    // not the message.
+    decision = 'in_app_only';
+    reason = 'promotional notification without marketing consent';
+  } else if (suppressionCause) {
+    // "Don't show me this type" previously bound only on the read path, so the
+    // list hid the row and the push fired anyway. The durable item above still
+    // exists (the read filter hides it, and unmuting brings it back); only the
+    // interrupt and the digest slot are withheld.
+    decision = 'suppressed';
+    reason = suppressionCause === 'user_muted'
+      ? `user muted ${intent.sourceSkill}/${intent.type} notifications`
+      : `suppression state unreadable for ${intent.sourceSkill}/${intent.type}; withheld fail-closed`;
+  } else if (categoryPreferenceCause) {
+    decision = 'in_app_only';
+    reason = categoryPreferenceCause === 'user_disabled'
+      ? 'push disabled by reminders category preference'
+      : 'reminders category preference unreadable; push withheld fail-closed';
   } else if (intent.type === 'daily_digest' && hasUnreadDigestStreak(intent.userId, intent.tenantId, item.itemId)) {
     // Engagement gate (2026-07-04): prod showed 629 of 738 items were never
     // read — pushing the Nth identical digest at a user who ignored the
@@ -964,24 +1395,47 @@ export async function evaluateNotificationIntent(
     // created; only the push/digest release is suppressed.
     decision = 'suppressed';
     reason = `daily digest push suppressed: last ${digestUnreadStreakThreshold()} digests were never opened`;
+  } else if (intent.deliveryPolicy === 'in_app_only') {
+    // An explicit per-intent delivery contract outranks the user's global
+    // "hold passive items for the digest" preference. Testing the digest branch
+    // first routed `in_app_only` intents INTO the digest push channel — the
+    // contract said never push, `digestPassiveItems` defaults true, and the
+    // only thing between such an intent and APNs was the digest group's own
+    // eligibility check. (`portal_only` is already returned above, at the top
+    // of this function.)
+    decision = 'in_app_only';
+    reason = 'delivery policy is in-app only';
   } else if (intent.deliveryPolicy === 'digest_only' || (intent.priority === 'passive' && profile.digestPassiveItems)) {
     decision = 'digest';
     reason = 'passive notification held for digest';
-    scheduledFor = nextDigestTime(profile).toISO();
+    scheduledFor = nextDigestTime(profile, intent.type).toISO();
   } else if (quietHours.delayed) {
     decision = 'quiet_hours_delayed';
     reason = quietHours.reason;
     scheduledFor = quietHours.scheduledFor;
-  } else if (intent.deliveryPolicy === 'in_app_only' || !profile.pushEnabled) {
+  } else if (!profile.pushEnabled) {
     decision = 'in_app_only';
-    reason = intent.deliveryPolicy === 'in_app_only' ? 'delivery policy is in-app only' : 'push disabled by user preference';
+    reason = 'push disabled by user preference';
   } else {
+    const interruptBudget = evaluateInterruptBudget(intent, effectivePriority, profile);
+    const reachability = notificationReachability(intent.userId, intent.tenantId);
+    if (reachability.hasToken && !reachability.canInterrupt) {
+      // Provisional/ephemeral: iOS delivers to Notification Center only and
+      // IGNORES interruption-level. Claiming time-sensitive here would be a
+      // promise the platform will not keep, so the payload is made honest —
+      // silent and passive — rather than pretending it will ring.
+      pushPayload.interruptionLevel = 'passive';
+    }
     if (decisionPushPlan && !decisionPushPlan.eligible) {
       decision = 'in_app_only';
       reason = decisionPushPlan.reason;
-    } else if (!consumePushRateLimit(intent, effectivePriority)) {
-      decision = 'in_app_only';
-      reason = 'push rate limit reached for notification source; stored in-app only';
+    } else if (!interruptBudget.allowed) {
+      // Demoted, never dropped: the item still reaches the user in the next
+      // digest slot. Silently withholding it in-app would make a budget
+      // indistinguishable from a bug.
+      decision = 'digest';
+      reason = `interrupt budget: ${interruptBudget.reason}`;
+      scheduledFor = nextDigestTime(profile).toISO();
     } else {
       const attempt = await attemptPushDelivery(intent, item.itemId, pushPayload, profile);
       if (attempt.attemptId !== null) deliveryAttempts.push(attempt);
@@ -990,11 +1444,15 @@ export async function evaluateNotificationIntent(
       // hiding real APNs failures behind a success decision).
       decision = attempt.status === 'sent'
         ? 'sent_push'
+        : attempt.status === 'blocked_expired'
+          ? 'in_app_only'
         : attempt.status === 'blocked_missing_device_token'
           ? 'blocked_missing_device_token'
           : 'apns_delivery_failed';
       reason = attempt.status === 'sent'
           ? 'APNs accepted privacy-safe payload'
+          : attempt.status === 'blocked_expired'
+            ? 'notification push deadline expired before APNs dispatch'
           : attempt.status === 'blocked_missing_credentials'
             ? 'APNs credentials missing; durable in-app item created'
             : attempt.status === 'blocked_missing_device_token'
@@ -1016,6 +1474,9 @@ export async function evaluateNotificationIntent(
   });
   attachDecisionLog(item.itemId, log.decisionLogId);
   markIntentStatus(intent.intentId, 'evaluated');
+  // Shadow only: records what the priority model would have said next to what
+  // the ladder above actually did. Never influences `decision`.
+  recordPriorityShadowVerdict(intent, effectivePriority, decision);
 
   return {
     intent: { ...intent, priority: effectivePriority, status: 'evaluated' },
@@ -1084,6 +1545,8 @@ export interface NotificationReleaseSweepSummary {
   inspected: number;
   released: number;
   blocked: number;
+  /** Provider attempts and sweep operations that genuinely failed. */
+  failed: number;
 }
 
 // Single-flight latch for the release sweep (NOTIF-RELEASE-CAS). Both the
@@ -1131,6 +1594,7 @@ async function runReleaseDueNotificationDeliveriesSweep(now: Date): Promise<Noti
 
   let released = 0;
   let blocked = 0;
+  let failed = 0;
   const digestGroups = new Map<string, any[]>();
   const regularRows: any[] = [];
   for (const row of rows) {
@@ -1150,13 +1614,15 @@ async function runReleaseDueNotificationDeliveriesSweep(now: Date): Promise<Noti
     reason: string;
     sentAt: string | null;
     attemptIds: string[];
+    scheduledFor?: string | null;
   }>): number => {
     const stmt = db.prepare(`
       UPDATE notification_decision_logs
       SET decision = ?,
           reason = ?,
           sent_at = ?,
-          delivery_attempt_ids_json = ?
+          delivery_attempt_ids_json = ?,
+          scheduled_for = CASE WHEN ? = 1 THEN ? ELSE scheduled_for END
       WHERE decision_log_id = ?
         AND user_id = ?
         AND tenant_id = ?
@@ -1170,6 +1636,8 @@ async function runReleaseDueNotificationDeliveriesSweep(now: Date): Promise<Noti
         update.reason,
         update.sentAt,
         JSON.stringify(update.attemptIds),
+        update.scheduledFor !== undefined ? 1 : 0,
+        update.scheduledFor ?? null,
         update.row.decision_log_id,
         update.row.user_id,
         update.row.tenant_id,
@@ -1188,61 +1656,248 @@ async function runReleaseDueNotificationDeliveriesSweep(now: Date): Promise<Noti
   });
 
   for (const group of digestGroups.values()) {
-    try {
+    await withUserEvaluationLock(group[0].user_id, group[0].tenant_id, async () => {
+      try {
       const first = group[0];
       const profile = getOrCreateNotificationProfile(first.user_id, first.tenant_id);
-      const digestIntent = mapIntent(first);
-      const payload = assembleDailyDigest(first.user_id, first.tenant_id, group.length);
-      const attempt = await attemptPushDelivery(digestIntent, first.item_id, payload, profile);
+      // Push eligibility is a PER-INTENT property — skill gate, delivery
+      // policy, marketing consent, per-type suppression. Judging the whole
+      // group by `group[0]` let one arbitrary member decide for all the others,
+      // and it failed in both directions: a cooking `in_app_only` item that
+      // happened to sort first withheld an unrelated secretary reminder, and in
+      // the opposite order the group pushed while carrying a member the user
+      // had confined to the app. Partition, then push only what may be pushed.
+      const pushable: typeof group = [];
+      const withheld: Array<{ row: typeof group[number]; cause: NotificationPushBlockCause }> = [];
+      // A row whose block is only "we could not read the suppression table" is
+      // left ALONE — decision and scheduled_for untouched — so the next sweep
+      // re-claims it once the table is readable. Rewriting it to a terminal
+      // decision destroyed the push for good on a transient fault.
+      let deferred = 0;
+      for (const row of group) {
+        const cause = notificationPushBlockCause(mapIntent(row), profile);
+        if (cause === null) pushable.push(row);
+        else if (isRetryablePushBlock(cause)) deferred += 1;
+        else withheld.push({ row, cause });
+      }
+      if (deferred > 0) {
+        blocked += deferred;
+        failed += deferred;
+        logger.warn({
+          userId: first.user_id, tenantId: first.tenant_id, deferred,
+        }, 'digest rows left queued: suppression state unreadable, retrying next sweep');
+      }
+      if (withheld.length > 0) {
+        blocked += updateReleasedLogs(withheld.map(({ row, cause }) => ({
+          row,
+          decision: 'in_app_only' as NotificationDecision,
+          reason: `digest withheld: ${pushBlockReason(cause, mapIntent(row))}`,
+          sentAt: null,
+          attemptIds: [],
+        })));
+      }
+      if (pushable.length === 0) return;
+      // A real morning brief / weekly review in the group carries its own
+      // composed headline; prefer it over a generic type breakdown.
+      const reportRow = pushable.find((row) => row.type === 'daily_digest' || row.type === 'weekly_review');
+      // The push is carried by — and deeplinks into — the row whose content the
+      // body actually leads with. Taking `pushable[0]` unconditionally meant
+      // that when a brief supplied the body but sorted second, the wire
+      // metadata (thread-id, apns category, iosDestination, collapse-id) all
+      // described a DIFFERENT notification than the text the user read.
+      const carrier = reportRow ?? pushable[0];
+      const digestIntent = mapIntent(carrier);
+      const payload = assembleDailyDigest(
+        carrier.user_id, carrier.tenant_id, pushable.length, now,
+        typeof reportRow?.body === 'string' ? reportRow.body : null,
+      );
+      // The old sweep sent "N Nexus updates are ready" based on the number of
+      // QUEUED LOG ROWS, so a user who cleared everything overnight still got
+      // a digest announcing items they had already handled. Re-check against
+      // live item state and skip the interrupt when nothing is left.
+      if (!payload.hasContent) {
+        const claimed = updateReleasedLogs(pushable.map((row) => ({
+          row,
+          decision: 'suppressed' as NotificationDecision,
+          reason: 'digest skipped: nothing unresolved at release time',
+          sentAt: null,
+          attemptIds: [],
+        })));
+        blocked += claimed;
+        return;
+      }
+      // Fatigue gate, applied to the digest PUSH rather than only to
+      // `daily_digest` INTENTS at creation. Scoping it to one intent type meant
+      // any `digest_only` producer bypassed it: a travel notice is
+      // `schedule_changed`, forms its own digest group, and reached APNs with a
+      // push indistinguishable from the digests the user has been ignoring —
+      // and whose body advertised those very digests as its content.
+      if (hasUnreadDigestStreak(carrier.user_id, carrier.tenant_id, carrier.item_id)) {
+        blocked += updateReleasedLogs(pushable.map((row) => ({
+          row,
+          decision: 'suppressed' as NotificationDecision,
+          reason: `digest push suppressed: last ${digestUnreadStreakThreshold()} digests were never opened`,
+          sentAt: null,
+          attemptIds: [],
+        })));
+        return;
+      }
+      // The budget can change while a digest waits for its release slot. Count
+      // again at the last synchronous boundary before APNs, under the same
+      // per-user lock used by immediate delivery. A digest is one interrupt,
+      // so only its carrier is evaluated and, if sent, only that carrier is
+      // charged below.
+      const releasePriority = normalizePriorityForPolicy(digestIntent.priority, profile);
+      const interruptBudget = evaluateInterruptBudget(digestIntent, releasePriority, profile, now);
+      if (!interruptBudget.allowed) {
+        // The items remain durable and visible in Notification Center. Make
+        // this digest attempt terminal instead of leaving an already-due row
+        // to wake every 15 minutes for the rest of the budget window.
+        blocked += updateReleasedLogs(pushable.map((row) => ({
+          row,
+          decision: 'in_app_only' as NotificationDecision,
+          reason: `digest withheld: interrupt budget: ${interruptBudget.reason}`,
+          sentAt: null,
+          attemptIds: [],
+        })));
+        return;
+      }
+      const attempt = await attemptPushDelivery(digestIntent, carrier.item_id, payload, profile);
       const decision: NotificationDecision = attempt.status === 'sent'
         ? 'sent_push'
+        : attempt.status === 'blocked_expired'
+          ? 'in_app_only'
         : attempt.status === 'blocked_missing_device_token'
           ? 'blocked_missing_device_token'
           : 'apns_delivery_failed';
       const reason = attempt.status === 'sent'
         ? 'digest notification released to APNs'
+        : attempt.status === 'blocked_expired'
+          ? 'digest notification expired before APNs dispatch'
         : attempt.status === 'blocked_missing_credentials'
             ? 'digest notification due but APNs credentials are missing'
             : attempt.status === 'blocked_missing_device_token'
               ? 'digest notification due but no active device token is available'
               : 'digest notification due but APNs delivery failed';
-      const claimed = updateReleasedLogs(group.map((row) => ({
-        row,
-        decision,
-        reason,
-        sentAt: attempt.sentAt,
-        attemptIds: attempt.attemptId === null ? [] : [attempt.attemptId],
-      })));
+      const attemptIds = attempt.attemptId === null ? [] : [attempt.attemptId];
+      // ONE push left the building, so exactly ONE row may be recorded as an
+      // interrupt. Stamping every group member `sent_push` — the previous
+      // behaviour — was not merely a cosmetic miscount: `evaluateInterruptBudget`
+      // sums `sent_push` rows, so a nine-item digest consumed nine of the
+      // user's eight daily interrupts and silently suppressed everything that
+      // came after it, including time-sensitive items. The bigger the digest,
+      // the longer the blackout.
+      //
+      // The covered rows keep the attempt id so the delivery is still
+      // traceable from any member, but carry no `sent_at` and a decision that
+      // says what actually happened to them: they were surfaced in the app, and
+      // the digest interrupt was carried by another row.
+      let claimed = updateReleasedLogs([{
+        row: carrier, decision, reason, sentAt: attempt.sentAt, attemptIds,
+      }]);
+      claimed += updateReleasedLogs(pushable
+        .filter((row) => row.decision_log_id !== carrier.decision_log_id)
+        .map((row) => ({
+          row,
+          decision: attempt.status === 'sent' ? ('in_app_only' as NotificationDecision) : decision,
+          reason: attempt.status === 'sent'
+            ? `surfaced in the digest push carried by ${carrier.item_id}; not a separate interrupt`
+            : reason,
+          sentAt: null,
+          attemptIds,
+        })));
       if (attempt.status === 'sent') released += claimed;
       else blocked += claimed;
-    } catch (err) {
-      blocked += group.length;
-      logger.warn({ err, userId: group[0]?.user_id, tenantId: group[0]?.tenant_id }, 'Notification digest release failed');
-    }
+      if (attempt.status === 'failed') failed += 1;
+      } catch (err) {
+        blocked += group.length;
+        failed += 1;
+        logger.warn({ err, userId: group[0]?.user_id, tenantId: group[0]?.tenant_id }, 'Notification digest release failed');
+      }
+    });
   }
 
   for (const row of regularRows) {
-    try {
+    await withUserEvaluationLock(row.user_id, row.tenant_id, async () => {
+      try {
       const intent = mapIntent(row);
       const profile = getOrCreateNotificationProfile(row.user_id, row.tenant_id);
+      // Preferences are re-evaluated HERE, not just at first evaluation.
+      // Previously the reloaded profile reached only effectiveSound, so a user
+      // who turned push off during quiet hours still received everything queued
+      // before the change. The item stays in the inbox; only the push is dropped.
+      const blockCause = notificationPushBlockCause(intent, profile);
+      if (isRetryablePushBlock(blockCause)) {
+        // Left queued deliberately — see the digest branch above. Counted as
+        // blocked so the sweep summary does not read as a silent no-op.
+        blocked += 1;
+        failed += 1;
+        logger.warn({
+          decisionLogId: row.decision_log_id, userId: row.user_id, tenantId: row.tenant_id,
+        }, 'delayed notification left queued: suppression state unreadable, retrying next sweep');
+        return;
+      }
+      if (blockCause !== null) {
+        const claimed = updateReleasedLogs([{
+          row,
+          decision: 'in_app_only',
+          reason: `delayed notification withheld: ${pushBlockReason(blockCause, intent)}`,
+          sentAt: null,
+          attemptIds: [],
+        }]);
+        blocked += claimed;
+        return;
+      }
+      const releasePriority = normalizePriorityForPolicy(intent.priority, profile);
+      // Resolved ONCE and threaded into both. Letting each helper resolve
+      // independently cost two indexed `users` lookups per notification, not
+      // the one the design note claims.
+      const copyLanguage = notificationCopyLanguage(intent.userId);
       const payload = {
-        title: safeNotificationTitle(intent),
-        body: buildPrivacySafeBody(intent),
+        title: safeNotificationTitle(intent, copyLanguage),
+        body: buildPrivacySafeBody(intent, copyLanguage),
         deeplink: intent.deeplink,
         actions: intent.actionButtons,
+        // Without this the release path fell back to apns-expiration '0'
+        // (now-or-drop), so a time-sensitive item deferred by quiet hours was
+        // discarded outright if the device happened to be offline.
+        interruptionLevel: interruptionLevelForPriority(releasePriority),
       };
+      // Quiet-hours delay is not pre-authorisation to spend attention later.
+      // Re-check at release time, while serialized with immediate sends for
+      // this user, so a push delivered during the wait is visible here.
+      const interruptBudget = evaluateInterruptBudget(intent, releasePriority, profile, now);
+      if (!interruptBudget.allowed) {
+        // Demote once to the next digest slot. Advancing scheduled_for is
+        // essential: retaining the already-due timestamp would retry this row
+        // on every release sweep and eventually create an interrupt burst.
+        const claimed = updateReleasedLogs([{
+          row,
+          decision: 'digest',
+          reason: `delayed notification demoted: interrupt budget: ${interruptBudget.reason}`,
+          sentAt: null,
+          attemptIds: [],
+          scheduledFor: nextDigestTime(profile, intent.type).toISO(),
+        }]);
+        blocked += claimed;
+        return;
+      }
       const attempt = await attemptPushDelivery(intent, row.item_id, payload, profile);
       // A real APNs failure ('failed'/'blocked_missing_credentials') is an
       // apns_delivery_failed outcome; only the genuine no-token case may be
       // recorded as blocked_missing_device_token.
       const decision: NotificationDecision = attempt.status === 'sent'
         ? 'sent_push'
+        : attempt.status === 'blocked_expired'
+          ? 'in_app_only'
         : attempt.status === 'blocked_missing_device_token'
           ? 'blocked_missing_device_token'
           : 'apns_delivery_failed';
       const reason = attempt.status === 'sent'
         ? 'delayed notification released to APNs'
-          : attempt.status === 'blocked_missing_credentials'
+        : attempt.status === 'blocked_expired'
+          ? 'delayed notification expired before APNs dispatch'
+        : attempt.status === 'blocked_missing_credentials'
             ? 'delayed notification released but APNs credentials are missing'
             : attempt.status === 'blocked_missing_device_token'
               ? 'delayed notification released but no active device token is available'
@@ -1256,43 +1911,413 @@ async function runReleaseDueNotificationDeliveriesSweep(now: Date): Promise<Noti
       }]);
       if (attempt.status === 'sent') released += claimed;
       else blocked += claimed;
-    } catch (err) {
-      blocked += 1;
-      logger.warn({ err, decisionLogId: row.decision_log_id }, 'Notification delayed/digest release failed');
-    }
+      if (attempt.status === 'failed') failed += 1;
+      } catch (err) {
+        blocked += 1;
+        failed += 1;
+        logger.warn({ err, decisionLogId: row.decision_log_id }, 'Notification delayed/digest release failed');
+      }
+    });
   }
 
-  return { inspected: rows.length, released, blocked };
+  // Due snoozes ride the same sweep as delayed/digest releases so snooze
+  // re-delivery inherits the existing notification_release cron and the
+  // single-flight latch rather than needing a second schedule.
+  try {
+    const snoozeSummary = await releaseDueSnoozedNotifications(now);
+    released += snoozeSummary.released;
+    blocked += snoozeSummary.blocked;
+    failed += snoozeSummary.failed;
+  } catch (err) {
+    failed += 1;
+    logger.warn({ err }, 'Snoozed notification sweep failed');
+  }
+
+  return { inspected: rows.length, released, blocked, failed };
 }
 
-export function assembleDailyDigest(
-  userId: number,
-  tenantId: number,
-  itemCount: number,
-): {
+export interface NotificationRetentionSummary {
+  centerItems: number;
+  intents: number;
+  decisionLogs: number;
+  deliveryAttempts: number;
+  reliabilityEvents: number;
+  engagementEvents: number;
+  priorityShadow: number;
+}
+
+export const NOTIFICATION_RETENTION_DAYS = {
+  /** Terminal center items. Unresolved rows are kept regardless of age. */
+  terminalItems: 90,
+  decisionLogs: 90,
+  deliveryAttempts: 30,
+  reliabilityEvents: 30,
+  /** Long enough to fit a seasonal cycle for the fatigue model, still bounded. */
+  engagementEvents: 180,
+  /**
+   * Shadow scoring is a comparison sample, not an audit trail. It was in no
+   * prune path anywhere in the repo — the one notification table that grew
+   * without bound (~480 B/row including migration 270's two indexes).
+   */
+  priorityShadow: 90,
+} as const;
+
+/**
+ * Age out notification history.
+ *
+ * Nothing deleted from these tables before: `midnight_cleanup` pruned
+ * transcripts, job history and error logs but no notification table, so
+ * `notification_center_items.body` and `.sensitive_body` retained event
+ * titles, task names and invoice references indefinitely — on a single-file
+ * SQLite database with four indexes on that table, fed by a per-minute cron.
+ *
+ * Retention is status-aware, not purely age-based: an unresolved decision must
+ * survive no matter how old it is, because deleting it would silently drop
+ * something still waiting on the user. Only terminal rows age out.
+ */
+export function pruneNotificationRetention(now = new Date()): NotificationRetentionSummary {
+  ensureNotificationTables();
+  const db = getDb();
+  const cutoff = (days: number): string =>
+    new Date(now.getTime() - days * 24 * 60 * 60 * 1000).toISOString();
+
+  const summary: NotificationRetentionSummary = {
+    centerItems: 0, intents: 0, decisionLogs: 0,
+    deliveryAttempts: 0, reliabilityEvents: 0, engagementEvents: 0,
+    priorityShadow: 0,
+  };
+
+  const run = (label: keyof NotificationRetentionSummary, sql: string, ...params: unknown[]): void => {
+    try {
+      summary[label] = db.prepare(sql).run(...params).changes ?? 0;
+    } catch (err) {
+      logger.warn({ err, label }, 'notification retention prune failed');
+    }
+  };
+
+  // Children first: attempts and logs reference items that are about to go.
+  run('deliveryAttempts',
+    `DELETE FROM notification_delivery_attempts WHERE created_at < ?`,
+    cutoff(NOTIFICATION_RETENTION_DAYS.deliveryAttempts));
+  run('reliabilityEvents',
+    `DELETE FROM notification_reliability_events WHERE created_at < ?`,
+    cutoff(NOTIFICATION_RETENTION_DAYS.reliabilityEvents));
+  // Age alone is the WRONG rule here, because the item table does not use it:
+  // `notification_center_items` is pruned only when a row reaches a terminal
+  // status, so an unresolved item lives indefinitely. Deleting its engagement
+  // history by age therefore splits one item's timeline in half — a `surfaced`
+  // event aged out at 180 days while the item it denominates is still open, so
+  // an `opened` on day 200 lands with no `surfaced` to divide by. Every rate
+  // computed off this table would be inflated, and open-rate could exceed 1.
+  //
+  // Same shape as the decision-log prune below: history is retained for as long
+  // as the thing it describes exists, and aged out once it does not.
+  run('engagementEvents',
+    `DELETE FROM notification_engagement_events
+      WHERE created_at < ?
+        AND (notification_id IS NULL
+             OR notification_id NOT IN (SELECT item_id FROM notification_center_items))`,
+    cutoff(NOTIFICATION_RETENTION_DAYS.engagementEvents));
+  run('priorityShadow',
+    `DELETE FROM notification_priority_shadow WHERE created_at < ?`,
+    cutoff(NOTIFICATION_RETENTION_DAYS.priorityShadow));
+
+  const itemCutoff = cutoff(NOTIFICATION_RETENTION_DAYS.terminalItems);
+  run('centerItems',
+    `DELETE FROM notification_center_items
+      WHERE status IN ('dismissed','actioned','expired','superseded')
+        AND created_at < ?`,
+    itemCutoff);
+  // `notification_id IS NOT NULL` made this unable to ever delete a log that
+  // has no item — the `blocked_user_preferences` and dedupe paths write exactly
+  // those, so they accumulated forever at any age. The intent was "keep logs
+  // whose item still exists", which only needs the NOT IN clause; a NULL
+  // notification_id has no item to protect.
+  run('decisionLogs',
+    `DELETE FROM notification_decision_logs
+      WHERE created_at < ?
+        AND (notification_id IS NULL
+             OR notification_id NOT IN (SELECT item_id FROM notification_center_items))`,
+    cutoff(NOTIFICATION_RETENTION_DAYS.decisionLogs));
+  // Intents last, and only once nothing references them — an intent still
+  // backing a live item carries the body the inbox renders.
+  run('intents',
+    `DELETE FROM notification_intents
+      WHERE created_at < ?
+        AND intent_id NOT IN (SELECT intent_id FROM notification_center_items)`,
+    itemCutoff);
+
+  return summary;
+}
+
+/**
+ * An item pushed within this window does not earn its own digest slot — it
+ * still contributes to the aggregate count, so the user learns the true queue
+ * depth without being told the same sentence twice. Wide enough that something
+ * pushed yesterday afternoon is eligible again the next morning (by then it is
+ * stale-and-ignored, which is worth re-raising).
+ */
+export const DIGEST_SURFACED_WINDOW_HOURS = 20;
+/** Hard cap. A sixth item appears on the digest screen, never in the push. */
+export const DIGEST_MAX_SLOTS = 5;
+
+/**
+ * Rank for a digest slot. Deadlines before commitments before counts — never
+ * alphabetical, never by skill.
+ */
+const DIGEST_TYPE_RANK: Partial<Record<NotificationIntentType, number>> = {
+  security_account: 0,
+  approval_required: 1,
+  conflict_detected: 2,
+  decision_required: 3,
+  reflow_suggestion: 4,
+  risk_warning: 5,
+  sync_failure: 6,
+  reminder: 7,
+  missed_item: 8,
+  schedule_changed: 9,
+};
+
+export interface DailyDigestComposition {
   title: string;
   body: string;
   deeplink: string;
   actions: NotificationActionButton[];
   interruptionLevel: 'passive';
-} {
+  slots: string[];
+  totalOpen: number;
+  /**
+   * False when the digest has nothing to report — no eligible slots and no
+   * report headline. The caller skips the push entirely rather than
+   * interrupting with "nothing needs you".
+   */
+  hasContent: boolean;
+}
+
+/**
+ * Compose the digest push.
+ *
+ * This used to return "N Nexus updates are ready" — a count with no content,
+ * which converts about as well as no digest at all, and which ~22 catalog
+ * entries route through. It now reads the actual constituent items and states
+ * what is waiting.
+ *
+ * Everything here is either a count or a privacy-safe title already rewritten
+ * by the per-skill rules; no producer free-text, email subject, amount or task
+ * title is interpolated. buildPrivacySafeBody trusts that invariant.
+ */
+export function assembleDailyDigest(
+  userId: number,
+  tenantId: number,
+  itemCount: number,
+  now = new Date(),
+  /**
+   * The morning brief / weekly review composes its own headline ("4 events,
+   * 6 tasks · first: Standup 09:00"), which is strictly better copy than a
+   * type breakdown. When a real report is in the group, its summary wins.
+   */
+  preferredBody?: string | null,
+): DailyDigestComposition {
   assertScope(userId, tenantId, 'assemble_daily_digest', { itemCount });
-  const count = Math.max(1, itemCount);
+  const digestLang = notificationCopyLanguage(userId);
+  ensureNotificationTables();
+
+  // A digest push may only ADVERTISE what it would be allowed to SEND.
+  //
+  // This query used to read `notification_center_items` alone, which carries
+  // neither the delivery policy nor the promotional flag — both live on
+  // `notification_intents`. So an item the ladder had already refused to push
+  // was still counted in the body: one pushable reminder plus one
+  // consent-blocked promotional item produced a push that announced "2
+  // reminders". The interrupt itself was correctly withheld from the
+  // promotional item, and then its existence was leaked by the digest anyway.
+  let digestProfile: NotificationProfile;
+  try {
+    digestProfile = getOrCreateNotificationProfile(userId, tenantId);
+  } catch (err) {
+    // Without the profile we cannot know which skills the user has muted.
+    // Abort composition so the release row remains queued for a later sweep;
+    // emitting a partial digest would disclose content through an opt-out.
+    logger.warn({ err, userId, tenantId }, 'digest profile read failed; withholding composition');
+    throw new Error('notification profile unreadable during digest composition');
+  }
+  const marketingAllowed = digestProfile.marketingPushEnabled;
+
+  let rows: Array<{
+    type: NotificationIntentType;
+    sourceSkill: NotificationSourceSkill;
+    lastPushedAt: string | null;
+    decisionContextJson: string | null;
+  }> = [];
+  try {
+    rows = getDb().prepare(`
+      SELECT items.type,
+             items.source_skill AS sourceSkill,
+             items.last_pushed_at AS lastPushedAt,
+             intents.decision_context_json AS decisionContextJson
+        FROM notification_center_items items
+        LEFT JOIN notification_intents intents
+          ON intents.intent_id = items.intent_id
+         AND intents.user_id = items.user_id
+         AND intents.tenant_id = items.tenant_id
+       WHERE items.user_id = ? AND items.tenant_id = ?
+         AND items.status IN ('unread', 'read')
+         AND (items.expires_at IS NULL OR datetime(items.expires_at) > datetime(?))
+         AND COALESCE(intents.delivery_policy, 'auto') NOT IN ('in_app_only', 'portal_only')
+         AND (? = 1 OR COALESCE(intents.promotional, 0) = 0)
+       ORDER BY items.created_at DESC
+       LIMIT 50
+    `).all(userId, tenantId, now.toISOString(), marketingAllowed ? 1 : 0) as typeof rows;
+  } catch (err) {
+    logger.warn({ err, userId, tenantId }, 'digest composition read failed; falling back to a count');
+  }
+
+  // Suppressed rows remain durable so unmuting can reveal them again. That
+  // means the broad open-item scan above must repeat the same broad + recipe
+  // suppression check as the delivery ladder; otherwise an unrelated digest
+  // push advertises a muted item even though its own interrupt was withheld.
+  // A read fault must abort composition: releaseDueNotificationDeliveries will
+  // leave the queued rows claimable for the next sweep rather than leak copy.
+  const advertisableRows = rows.filter((row) => {
+    if (!digestProfile.skillPreferences[row.sourceSkill]) return false;
+    const categoryPreference = notificationCategoryPreferenceCause({ userId, type: row.type });
+    if (categoryPreference === 'read_failed') {
+      throw new Error('notification category preference unreadable during digest composition');
+    }
+    if (categoryPreference === 'user_disabled') return false;
+    const cause = notificationTypeSuppressionCause({
+      userId,
+      tenantId,
+      sourceSkill: row.sourceSkill,
+      type: row.type,
+      decisionContext: normalizeDecisionContext(
+        safeParseJSON<DecisionLogicContext | null>(row.decisionContextJson, null),
+      ),
+    });
+    if (cause === 'read_failed') {
+      throw new Error('notification suppression state unreadable during digest composition');
+    }
+    return cause === null;
+  });
+
+  const surfacedCutoff = now.getTime() - DIGEST_SURFACED_WINDOW_HOURS * 3_600_000;
+  const eligible = advertisableRows.filter((row) => {
+    if (!row.lastPushedAt) return true;
+    const pushed = Date.parse(row.lastPushedAt);
+    return !Number.isFinite(pushed) || pushed < surfacedCutoff;
+  });
+
+  const byType = new Map<NotificationIntentType, number>();
+  for (const row of eligible) byType.set(row.type, (byType.get(row.type) ?? 0) + 1);
+
+  const rankedTypes = [...byType.entries()]
+    .sort((a, b) => (DIGEST_TYPE_RANK[a[0]] ?? 99) - (DIGEST_TYPE_RANK[b[0]] ?? 99));
+  const slots = rankedTypes
+    .slice(0, DIGEST_MAX_SLOTS)
+    .map(([type, count]) => digestSlotLabel(type, count, digestLang));
+
+  const totalOpen = advertisableRows.length || (rows.length === 0 ? Math.max(0, itemCount) : 0);
+  const brief = typeof preferredBody === 'string' ? stripTitleEmoji(preferredBody) : '';
+  // A report's own headline is better copy than a type breakdown — but it
+  // describes only ITSELF. Returning it alone discarded every other slot, so
+  // anything else sharing that digest slot (a travel notice, a conflict) rode
+  // the push without appearing in it: silently dropped from the only interrupt
+  // it will ever get, while its item sat unread in the inbox.
+  //
+  // The report's own type is excluded so the brief does not count itself twice.
+  const companionSlots = rankedTypes
+    .filter(([type]) => type !== 'daily_digest' && type !== 'weekly_review')
+    .slice(0, DIGEST_MAX_SLOTS)
+    .map(([type, count]) => digestSlotLabel(type, count, digestLang));
+  const body = brief
+    ? companionSlots.length > 0
+      // The brief is capped first so at least one companion slot survives the
+      // 120-char budget. Truncating the joined string as a whole would let a
+      // long brief push the companions back off the end.
+      ? truncate(`${truncate(brief, 80)} · ${companionSlots.join(' · ')}`, 120)
+      : truncate(brief, 120)
+    : slots.length > 0
+      ? truncate(slots.join(' · '), 120)
+      // Still worth sending: a brief that goes quiet is indistinguishable from
+      // a brief that broke. The caller decides whether anything is queued.
+      : t('notif.digest.empty', digestLang);
+
   return {
-    title: 'Daily digest',
-    body: count === 1 ? '1 Nexus update is ready.' : `${count} Nexus updates are ready.`,
+    title: t('notif.digest.title', digestLang),
+    body,
     deeplink: 'nexus://notifications/digest',
     actions: [{ id: 'open_detail', label: 'Open', style: 'primary' }],
     interruptionLevel: 'passive',
+    slots,
+    totalOpen,
+    hasContent: slots.length > 0 || brief.length > 0,
   };
+}
+
+/**
+ * Slot labels carry their own singular and plural entries rather than being
+ * assembled from a count plus a noun. Portuguese and Spanish inflect the noun
+ * ("1 decisão pendente" / "3 decisões pendentes"), so the English trick of
+ * concatenating a number onto a fixed word does not survive translation.
+ *
+ * Types with no slot key read as plain updates — calling a queued report a
+ * "brief" inside a brief is circular.
+ */
+const DIGEST_SLOT_KEY_TYPES = new Set<NotificationIntentType>([
+  'security_account', 'approval_required', 'conflict_detected', 'decision_required',
+  'reflow_suggestion', 'risk_warning', 'sync_failure', 'reminder', 'missed_item',
+  'schedule_changed',
+]);
+
+function digestSlotLabel(type: NotificationIntentType, count: number, lang: Lang): string {
+  const base = DIGEST_SLOT_KEY_TYPES.has(type) ? `notif.digest.slot.${type}` : 'notif.digest.slot.default';
+  return t(`${base}.${count === 1 ? 'one' : 'other'}`, lang, { count: String(count) });
 }
 
 export function listNotificationCenterItems(
   userId: number,
   tenantId = userId,
-  opts: { status?: NotificationCenterStatus | 'all'; sourceSkill?: NotificationSourceSkill; limit?: number } = {},
+  opts: {
+    status?: NotificationCenterStatus | 'all';
+    sourceSkill?: NotificationSourceSkill;
+    limit?: number;
+    /**
+     * Show items that are snoozed and not yet due. Off by default: a snoozed
+     * item is deliberately out of the inbox until it comes back.
+     *
+     * This is an explicit flag rather than a meaning overloaded onto
+     * `status:'all'`, because the primary inbox route passes `'all'` to mean
+     * "every status" — so tying snooze-hiding to it silently un-hid snoozed
+     * items on the one surface that matters most.
+     *
+     * NO PRODUCTION CALLER PASSES THIS TODAY; only tests do. It exists so the
+     * hiding rule above cannot be re-derived from `status`, and so a future
+     * "snoozed" surface has an honest way to ask. The corresponding product
+     * gap is real and separate: nothing currently shows a user what they have
+     * snoozed. `status:'snoozed'` already returns those rows when a surface
+     * wants them.
+     */
+    includeSnoozed?: boolean;
+  } = {},
 ): NotificationCenterItem[] {
   assertScope(userId, tenantId, 'list_notification_center_items', opts);
+  // 200 is the API page ceiling. It is applied HERE rather than inside the
+  // shared query, because the badge counts through the same code path and must
+  // not inherit a paging limit as a counting limit.
+  return queryUserFacingCenterItems(userId, tenantId, opts, Math.min(Math.max(opts.limit ?? 50, 1), 200));
+}
+
+/** Shared by the inbox list and the badge count, so the two cannot disagree. */
+function queryUserFacingCenterItems(
+  userId: number,
+  tenantId: number,
+  opts: {
+    status?: NotificationCenterStatus | 'all';
+    sourceSkill?: NotificationSourceSkill;
+    includeSnoozed?: boolean;
+  },
+  limit: number,
+): NotificationCenterItem[] {
   ensureNotificationTables();
   const clauses = ['items.user_id = ?', 'items.tenant_id = ?'];
   const params: unknown[] = [userId, tenantId];
@@ -1301,6 +2326,37 @@ export function listNotificationCenterItems(
     params.push(opts.status);
   } else {
     clauses.push("items.status != 'expired'");
+  }
+  // A snoozed item is deliberately out of the inbox until it is due. Without
+  // this it stayed visible the whole time it was "snoozed", which is why
+  // snooze read as a no-op even before the missing re-delivery was found.
+  // Items whose snooze has LAPSED stay visible, so a stalled release sweep
+  // degrades to "shows early" rather than "disappears".
+  //
+  // Applied regardless of the status filter, because the primary inbox route
+  // asks for `status:'all'` meaning "every status" — gating on that value
+  // instead of an explicit flag left snoozed items visible on the one surface
+  // where it matters. Asking for `status:'snoozed'` obviously still returns them.
+  if (!opts.includeSnoozed && opts.status !== 'snoozed') {
+    clauses.push("(items.status != 'snoozed' OR items.snoozed_until IS NULL OR datetime(items.snoozed_until) <= datetime(?))");
+    params.push(appNowIso());
+  }
+  // A muted (sourceSkill, type) pair must disappear from the inbox, not just
+  // from the badge. This clause lived ONLY on the badge count, so with the flag
+  // on, muting a type zeroed the badge while the unread row stayed in the list
+  // — the exact badge/list divergence the badge comment claims to prevent,
+  // running in the opposite direction.
+  if (isDecisionTypeSuppressionEnabled(process.env, { userId, tenantId })) {
+    clauses.push(`(items.type = 'security_account' OR NOT EXISTS (
+      SELECT 1 FROM decision_type_suppressions s
+       WHERE s.user_id = items.user_id
+         AND s.tenant_id = items.tenant_id
+         AND s.source_skill = items.source_skill
+         AND s.type = items.type
+         AND (s.mode = 'dont_show_type'
+              OR (s.mode = 'snooze_type' AND s.until IS NOT NULL AND datetime(s.until) > datetime(?)))
+    ))`);
+    params.push(appNowIso());
   }
   // A1: hide items past their hard deadline (unless the caller explicitly asks for expired).
   if (opts.status !== 'expired') {
@@ -1311,13 +2367,14 @@ export function listNotificationCenterItems(
     clauses.push('items.source_skill = ?');
     params.push(opts.sourceSkill);
   }
-  params.push(Math.min(Math.max(opts.limit ?? 50, 1), 200));
+  params.push(limit);
 
   const rows = getDb().prepare(`
     SELECT items.*, intents.intent_id AS intent_joined_intent_id,
            intents.related_entity_id AS intent_related_entity_id,
            intents.related_entity_type AS intent_related_entity_type,
            COALESCE(intents.requires_user_action, items.requires_user_action) AS intent_requires_user_action,
+           intents.promotional AS intent_promotional,
            intents.decision_deadline AS intent_decision_deadline,
            intents.privacy_policy AS intent_privacy_policy,
            intents.decision_context_json AS intent_decision_context_json
@@ -1458,21 +2515,41 @@ function firstNonEmptyString(values: unknown[]): string | null {
   return null;
 }
 
+/**
+ * Upper bound on rows scanned for the badge. Far above any realistic unread
+ * count, and finite so a pathological account cannot turn a badge read into a
+ * full-table scan.
+ */
+const BADGE_COUNT_CEILING = 5000;
+
 export function countUnreadNotificationCenterItems(userId: number, tenantId = userId): number {
   assertScope(userId, tenantId, 'count_unread_notification_center_items');
   ensureNotificationTables();
-  const nonBadgePlaceholders = NON_BADGE_NOTIFICATION_TYPES.map(() => '?').join(',');
-  const row = getDb().prepare(`
-    SELECT COUNT(*) AS count
-      FROM notification_center_items
-     WHERE user_id = ?
-       AND tenant_id = ?
-       AND status = 'unread'
-       AND type NOT IN (${nonBadgePlaceholders})
-       AND requires_user_action = 1
-       AND (expires_at IS NULL OR datetime(expires_at) > datetime(?))
-  `).get(userId, tenantId, ...NON_BADGE_NOTIFICATION_TYPES, appNowIso()) as { count: number } | undefined;
-  return row?.count ?? 0;
+  try {
+    // Derived from the LIST, never from a parallel COUNT(*).
+    //
+    // `listNotificationCenterItems` post-filters rows through
+    // `isUserFacingNotificationCenterRow` — visibility scope, internal/smoke
+    // markers, and the guidance quality gate — none of which SQL can express.
+    // Any independently-written count therefore drifts from what the user can
+    // actually see, and it drifted in both directions: a badge counting rows
+    // the inbox refuses to render cannot be cleared by the user, and a
+    // suppression clause present only here zeroed the badge while the row
+    // remained listed.
+    //
+    // Bounded by BADGE_COUNT_CEILING rather than the 200-row API page size:
+    // paging the inbox and counting the badge are different jobs.
+    return queryUserFacingCenterItems(userId, tenantId, { status: 'unread' }, BADGE_COUNT_CEILING)
+      .filter((item) => item.requiresUserAction
+        && !item.promotional
+        && !NON_BADGE_NOTIFICATION_TYPES.includes(item.type))
+      .length;
+  } catch (err) {
+    // The suppression table is owned by decision-center and may not have
+    // self-healed yet in a fresh DB. A zero badge beats a thrown one.
+    logger.warn({ err, userId, tenantId }, 'badge count failed');
+    return 0;
+  }
 }
 
 export function listNotificationBridgeEntityIds(
@@ -1575,6 +2652,7 @@ export function getNotificationProfileSummariesForPortal(
     userId: row.user_id,
     tenantId: row.tenant_id,
     pushEnabled: !!row.push_enabled,
+    marketingPushEnabled: !!row.marketing_push_enabled,
     inAppEnabled: !!row.in_app_enabled,
     portalEnabled: !!row.portal_enabled,
     allowTimeSensitive: !!row.allow_time_sensitive,
@@ -1591,6 +2669,7 @@ export function getNotificationCenterItem(itemId: string, userId: number, tenant
            intents.related_entity_id AS intent_related_entity_id,
            intents.related_entity_type AS intent_related_entity_type,
            COALESCE(intents.requires_user_action, items.requires_user_action) AS intent_requires_user_action,
+           intents.promotional AS intent_promotional,
            intents.decision_deadline AS intent_decision_deadline,
            intents.privacy_policy AS intent_privacy_policy,
            intents.decision_context_json AS intent_decision_context_json
@@ -1633,26 +2712,277 @@ export function dismissNotificationCenterItem(itemId: string, userId: number, te
   return getNotificationCenterItem(itemId, userId, tenantId);
 }
 
+export const SNOOZE_MIN_MINUTES = 5;
+export const SNOOZE_MAX_DAYS = 7;
+export const SNOOZE_DEFAULT_MINUTES = 60;
+/**
+ * After this many snoozes an item stops re-interrupting and is routed to the
+ * digest instead. Deferring forever is the failure mode a working snooze
+ * introduces, so it is bounded from the start.
+ */
+export const SNOOZE_MAX_COUNT = 3;
+
+/**
+ * Clamp a caller-supplied snooze target into [5 min, 7 days] from `now`.
+ * Unparseable input falls back to the default hour. Returning a clamped value
+ * rather than rejecting keeps the lock-screen button total: iOS cannot show a
+ * validation error.
+ */
+export function resolveSnoozeUntil(snoozedUntil?: string | null, now = new Date()): string {
+  const nowMs = now.getTime();
+  const min = nowMs + SNOOZE_MIN_MINUTES * 60_000;
+  const max = nowMs + SNOOZE_MAX_DAYS * 24 * 60 * 60_000;
+  const parsed = typeof snoozedUntil === 'string' ? Date.parse(snoozedUntil) : NaN;
+  const requested = Number.isFinite(parsed) ? parsed : nowMs + SNOOZE_DEFAULT_MINUTES * 60_000;
+  return new Date(Math.min(Math.max(requested, min), max)).toISOString();
+}
+
 export function snoozeNotificationCenterItem(
   itemId: string,
   userId: number,
   tenantId = userId,
   snoozedUntil?: string | null,
+  now = new Date(),
 ): NotificationCenterItem | null {
   assertScope(userId, tenantId, 'snooze_notification_center_item', { itemId });
   ensureNotificationTables();
-  const parsedUntil = typeof snoozedUntil === 'string' ? Date.parse(snoozedUntil) : NaN;
-  const until = Number.isFinite(parsedUntil)
-    ? new Date(parsedUntil).toISOString()
-    : DateTime.utc().plus({ minutes: 60 }).toISO() ?? DateTime.utc().toISO();
-  getDb().prepare(`
-    UPDATE notification_center_items
-    SET status = 'snoozed',
-        snoozed_until = ?,
-        read_at = COALESCE(read_at, datetime('now'))
-    WHERE item_id = ? AND user_id = ? AND tenant_id = ? AND status IN ('unread', 'read')
-  `).run(until, itemId, userId, tenantId);
+  const until = resolveSnoozeUntil(snoozedUntil, now);
+  const db = getDb();
+  db.transaction(() => {
+    const updated = db.prepare(`
+      UPDATE notification_center_items
+      SET status = 'snoozed',
+          snoozed_until = ?,
+          snooze_count = COALESCE(snooze_count, 0) + 1,
+          read_at = COALESCE(read_at, datetime('now'))
+      WHERE item_id = ? AND user_id = ? AND tenant_id = ? AND status IN ('unread', 'read')
+    `).run(until, itemId, userId, tenantId);
+    if ((updated.changes ?? 0) === 0) return;
+
+    // A queued digest/quiet-hours push predates the user's explicit snooze and
+    // is no longer a valid delivery instruction. Leaving it claimable means
+    // the snooze release pushes once, then the original row pushes the same
+    // item again on the next sweep. Terminalize every pending row for this
+    // scoped item atomically with the snooze transition; a later quiet-hours
+    // deferral creates one fresh row for the new requested release.
+    db.prepare(`
+      UPDATE notification_decision_logs
+      SET decision = 'in_app_only',
+          reason = 'pending push superseded by user snooze',
+          scheduled_for = NULL
+      WHERE notification_id = ?
+        AND user_id = ?
+        AND tenant_id = ?
+        AND sent_at IS NULL
+        AND decision IN ('quiet_hours_delayed', 'digest')
+    `).run(itemId, userId, tenantId);
+  })();
   return getNotificationCenterItem(itemId, userId, tenantId);
+}
+
+export interface SnoozeReleaseSummary {
+  inspected: number;
+  released: number;
+  demotedToDigest: number;
+  /**
+   * Snoozes that came due inside quiet hours and were re-parked until quiet
+   * hours end. Counted separately because it is the correct outcome, not a
+   * failure — without its own counter a deferred item is indistinguishable
+   * from one the sweep silently dropped.
+   */
+  deferredQuietHours: number;
+  blocked: number;
+  failed: number;
+}
+
+/**
+ * Return due snoozed items to the inbox and re-interrupt for them.
+ *
+ * Nothing did this before: `snoozeNotificationCenterItem` parked the row and
+ * the release sweep only ever claimed `quiet_hours_delayed`/`digest` decision
+ * logs, so a snoozed item was functionally dismissed. Re-delivery restores the
+ * item's ORIGINAL priority — a snoozed conflict is still a conflict — but is
+ * deferred out of quiet hours and demoted to the digest once the item has been
+ * snoozed SNOOZE_MAX_COUNT times.
+ */
+export async function releaseDueSnoozedNotifications(now = new Date()): Promise<SnoozeReleaseSummary> {
+  ensureNotificationTables();
+  const db = getDb();
+  const nowIso = now.toISOString();
+  const rows = db.prepare(`
+    SELECT items.item_id, items.user_id, items.tenant_id, items.snooze_count, items.decision_log_id, intents.*
+      FROM notification_center_items items
+      JOIN notification_intents intents ON intents.intent_id = items.intent_id
+       AND intents.user_id = items.user_id
+       AND intents.tenant_id = items.tenant_id
+     WHERE items.status = 'snoozed'
+       AND items.snoozed_until IS NOT NULL
+       AND datetime(items.snoozed_until) <= datetime(?)
+       AND (items.expires_at IS NULL OR datetime(items.expires_at) > datetime(?))
+     ORDER BY items.snoozed_until ASC
+     LIMIT 100
+  `).all(nowIso, nowIso) as any[];
+
+  const restore = db.prepare(`
+    UPDATE notification_center_items
+    SET status = 'unread', snoozed_until = NULL
+    WHERE item_id = ? AND user_id = ? AND tenant_id = ? AND status = 'snoozed'
+  `);
+
+  let released = 0;
+  let demotedToDigest = 0;
+  let deferredQuietHours = 0;
+  let blocked = 0;
+  let failed = 0;
+
+  for (const row of rows) {
+    await withUserEvaluationLock(row.user_id, row.tenant_id, async () => {
+      try {
+      // CAS: a concurrent sweep or a user action may already have moved it.
+      if ((restore.run(row.item_id, row.user_id, row.tenant_id).changes ?? 0) === 0) return;
+
+      const intent = mapIntent(row);
+      const profile = getOrCreateNotificationProfile(row.user_id, row.tenant_id);
+      recordNotificationEngagementEvent({
+        userId: row.user_id,
+        tenantId: row.tenant_id,
+        notificationId: row.item_id,
+        intentId: intent.intentId,
+        sourceSkill: intent.sourceSkill,
+        type: intent.type,
+        priority: intent.priority,
+        eventType: 'surfaced',
+      });
+
+      // Repeated snoozing is the user telling us this does not deserve an
+      // interrupt. Honour that rather than re-ringing a fourth time.
+      if ((row.snooze_count ?? 0) >= SNOOZE_MAX_COUNT) {
+        demotedToDigest += 1;
+        return;
+      }
+      // This must be the PUSHABLE gate, not the deliverable one. The weak gate
+      // only asks "may this user receive this at all" — it ignores pushEnabled,
+      // marketing consent, `in_app_only`/`portal_only` delivery policy and
+      // per-type suppression. Snooze therefore routed around three separate
+      // consent decisions: a user who had turned push off, or who had confined
+      // a type to the app, got an APNs interrupt purely by having snoozed it.
+      // The item is already restored to the inbox above, so failing this gate
+      // withholds the interrupt only — the content is still there to read.
+      const snoozeBlockCause = notificationPushBlockCause(intent, profile);
+      if (isRetryablePushBlock(snoozeBlockCause)) {
+        // The item is already back in the inbox (restored above), so only the
+        // interrupt is at stake — and an unreadable suppression table is not a
+        // reason to lose it permanently. Re-park briefly so the next sweep
+        // re-evaluates, rather than dropping it.
+        db.prepare(`
+          UPDATE notification_center_items
+          SET status = 'snoozed', snoozed_until = ?
+          WHERE item_id = ? AND user_id = ? AND tenant_id = ?
+        `).run(nowIso, row.item_id, row.user_id, row.tenant_id);
+        blocked += 1;
+        failed += 1;
+        logger.warn({
+          itemId: row.item_id, userId: row.user_id,
+        }, 'snoozed notification re-queued: suppression state unreadable, retrying next sweep');
+        return;
+      }
+      if (snoozeBlockCause !== null) {
+        blocked += 1;
+        return;
+      }
+      const effectivePriority = normalizePriorityForPolicy(intent.priority, profile);
+      const quiet = quietHoursDecision(profile, intent, effectivePriority);
+      if (quiet.delayed) {
+        // The item STAYS visible — the user asked to be shown it again at this
+        // time, and the inbox hides `snoozed` rows. Re-parking it (the old
+        // behaviour) meant a reminder that came due at 22:00 vanished from the
+        // inbox until quiet hours ended the next morning, which reads as lost
+        // rather than deferred.
+        //
+        // Only the interrupt waits, and it waits on the regular release sweep
+        // rather than on a second snooze: a `quiet_hours_delayed` log with a
+        // `scheduled_for` is exactly what that sweep consumes, and it re-checks
+        // preferences and quiet hours again at release time.
+        persistDecisionLog({
+          intent,
+          notificationId: row.item_id,
+          decision: 'quiet_hours_delayed',
+          priority: effectivePriority,
+          reason: 'snoozed notification came due during quiet hours; push deferred, item left visible',
+          scheduledFor: quiet.scheduledFor ?? nowIso,
+          sentAt: null,
+          deliveryAttemptIds: [],
+        });
+        deferredQuietHours += 1;
+        return;
+      }
+
+      // Resolved ONCE and threaded into both. Letting each helper resolve
+      // independently cost two indexed `users` lookups per notification, not
+      // the one the design note claims.
+      const copyLanguage = notificationCopyLanguage(intent.userId);
+      const payload = {
+        title: safeNotificationTitle(intent, copyLanguage),
+        body: buildPrivacySafeBody(intent, copyLanguage),
+        deeplink: intent.deeplink,
+        actions: intent.actionButtons,
+        interruptionLevel: interruptionLevelForPriority(effectivePriority),
+      };
+      // Re-apply the decision quality/rank gate. Without this a decision the
+      // gate refused to push at creation time would acquire a push simply by
+      // being snoozed — snooze must not be a route around the gate.
+      const plan = buildDecisionPushPlan({ ...intent, priority: effectivePriority }, payload);
+      if (plan && !plan.eligible) {
+        blocked += 1;
+        return;
+      }
+      if (plan?.interruptionLevel) payload.interruptionLevel = plan.interruptionLevel;
+      const attempt = await attemptPushDelivery(intent, row.item_id, payload, profile);
+      // Every other push in this service writes a decision log; this path did
+      // not. That made snooze re-delivery invisible twice over: absent from the
+      // audit trail, and uncounted by the interrupt budget, which sums
+      // `sent_push` rows. Re-snoozing was therefore an unbounded source of
+      // interrupts that no cap could see.
+      //
+      // The budget is CHARGED here but deliberately not CHECKED: the user
+      // explicitly asked to be reminded at this moment, so the right behaviour
+      // is to honour it and let it count against later, less-asked-for
+      // interrupts. The surrounding per-user lock still matters: it makes this
+      // sent_push row visible before any queued ambient delivery evaluates its
+      // budget, closing the snooze-vs-ambient check/await/write race without
+      // overriding the user's explicit request.
+      persistDecisionLog({
+        intent,
+        notificationId: row.item_id,
+        decision: attempt.status === 'sent'
+          ? 'sent_push'
+          : attempt.status === 'blocked_expired'
+            ? 'in_app_only'
+          : attempt.status === 'blocked_missing_device_token'
+            ? 'blocked_missing_device_token'
+            : 'apns_delivery_failed',
+        priority: effectivePriority,
+        reason: attempt.status === 'sent'
+          ? 'snoozed notification returned to the user'
+          : attempt.status === 'blocked_expired'
+            ? 'snoozed notification expired before APNs dispatch'
+          : `snoozed notification release failed: ${attempt.status}`,
+        scheduledFor: null,
+        sentAt: attempt.sentAt,
+        deliveryAttemptIds: attempt.attemptId === null ? [] : [attempt.attemptId],
+      });
+      if (attempt.status === 'sent') released += 1;
+      else blocked += 1;
+      if (attempt.status === 'failed') failed += 1;
+      } catch (err) {
+        blocked += 1;
+        failed += 1;
+        logger.warn({ err, itemId: row.item_id }, 'Snoozed notification release failed');
+      }
+    });
+  }
+
+  return { inspected: rows.length, released, demotedToDigest, deferredQuietHours, blocked, failed };
 }
 
 export function performNotificationAction(
@@ -1660,6 +2990,7 @@ export function performNotificationAction(
   actionId: string,
   userId: number,
   tenantId = userId,
+  opts: { snoozedUntil?: string | null } = {},
 ): { item: NotificationCenterItem; actionId: string; idempotent: boolean } {
   assertScope(userId, tenantId, 'perform_notification_action', { itemId, actionId });
   ensureNotificationTables();
@@ -1686,10 +3017,32 @@ export function performNotificationAction(
     throw new Error('action not allowed for notification');
   }
 
-  if (actionId === 'open_detail') {
+  const logEngagement = (
+    updated: NotificationCenterItem,
+    eventType: NotificationEngagementEventType,
+  ): void => {
+    recordNotificationEngagementEvent({
+      userId,
+      tenantId,
+      notificationId: updated.itemId,
+      intentId: updated.intentId,
+      sourceSkill: updated.sourceSkill,
+      type: updated.type,
+      priority: updated.priority,
+      eventType,
+      actionId,
+      latencyMs: Date.parse(updated.createdAt) ? Date.now() - Date.parse(updated.createdAt) : null,
+    });
+  };
+
+  // `reconnect` behaves exactly like `open_detail` here: both are navigation.
+  // The provider re-auth happens in the app under normal authentication, so
+  // there is no domain mutation to execute or verify.
+  if (actionId === 'open_detail' || actionId === 'reconnect') {
     const updated = markNotificationCenterItemRead(itemId, userId, tenantId);
     if (!updated) throw new Error('notification action failed');
     markDecisionActionTaken(updated.decisionLogId, actionId);
+    logEngagement(updated, actionId === 'reconnect' ? 'actioned' : 'opened');
     return { item: updated, actionId, idempotent: false };
   }
 
@@ -1697,13 +3050,15 @@ export function performNotificationAction(
     const updated = dismissNotificationCenterItem(itemId, userId, tenantId);
     if (!updated) throw new Error('notification action failed');
     markDecisionActionTaken(updated.decisionLogId, actionId);
+    logEngagement(updated, 'dismissed');
     return { item: updated, actionId, idempotent: false };
   }
 
   if (actionId === 'snooze') {
-    const updated = snoozeNotificationCenterItem(itemId, userId, tenantId);
+    const updated = snoozeNotificationCenterItem(itemId, userId, tenantId, opts.snoozedUntil);
     if (!updated) throw new Error('notification action failed');
     markDecisionActionTaken(updated.decisionLogId, actionId);
+    logEngagement(updated, 'snoozed');
     return { item: updated, actionId, idempotent: false };
   }
 
@@ -1781,6 +3136,96 @@ function revokePriorActiveDeviceTokenOwners(
   }
 }
 
+export type NotificationAuthorizationTier = 'provisional' | 'authorized' | 'ephemeral' | 'denied';
+
+const AUTHORIZATION_TIERS: readonly NotificationAuthorizationTier[] = ['provisional', 'authorized', 'ephemeral', 'denied'];
+
+function normalizeAuthorizationTier(value: unknown): NotificationAuthorizationTier {
+  return AUTHORIZATION_TIERS.includes(value as NotificationAuthorizationTier)
+    ? value as NotificationAuthorizationTier
+    // Every token minted before this existed came from a full authorization
+    // request, so an unreported tier is 'authorized' rather than unknown.
+    : 'authorized';
+}
+
+function normalizeIanaZone(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const zone = value.trim();
+  if (!zone) return null;
+  return DateTime.local().setZone(zone).isValid ? zone : null;
+}
+
+/**
+ * What the server can actually promise about reaching this user.
+ *
+ * Under `.provisional` iOS delivers to Notification Center only: no banner, no
+ * sound, no lock-screen alert, and `interruption-level` is IGNORED. A producer
+ * that mints a time-sensitive intent for a provisional-only user is therefore
+ * making a promise the platform will not keep — which matters most for exactly
+ * the archetypes that must ring, MFA codes with a five-minute life.
+ */
+export function notificationReachability(userId: number, tenantId = userId): {
+  hasToken: boolean;
+  canInterrupt: boolean;
+  tiers: NotificationAuthorizationTier[];
+} {
+  try {
+    const rows = getDb().prepare(`
+      SELECT DISTINCT authorization_tier AS tier
+        FROM notification_device_tokens
+       WHERE user_id = ? AND tenant_id = ? AND revoked_at IS NULL
+    `).all(userId, tenantId) as Array<{ tier: string }>;
+    const tiers = rows.map((row) => normalizeAuthorizationTier(row.tier));
+    return {
+      hasToken: tiers.length > 0,
+      // Only a full grant can break through. Provisional and ephemeral deliver
+      // quietly; denied does not deliver at all.
+      canInterrupt: tiers.includes('authorized'),
+      tiers,
+    };
+  } catch (err) {
+    logger.warn({ err, userId }, 'reachability lookup failed; assuming interruptible');
+    // Fail open: a producer that withholds on a transient read fault would
+    // silently drop a legitimate alert.
+    return { hasToken: true, canInterrupt: true, tiers: [] };
+  }
+}
+
+/**
+ * Device-reported timezone drift, for the client to offer in context.
+ *
+ * Deliberately NOT applied automatically. Auto-shifting would move every
+ * scheduled notification — brief time, quiet hours, every lead time — without
+ * the user asking, and would thrash for anyone who commutes across a border.
+ */
+export function notificationTimezoneDrift(userId: number, tenantId = userId): {
+  profileTimezone: string;
+  deviceTimezone: string | null;
+  drifted: boolean;
+  reportedAt: string | null;
+} {
+  const profile = getOrCreateNotificationProfile(userId, tenantId);
+  try {
+    const row = getDb().prepare(`
+      SELECT device_timezone AS deviceTimezone, device_timezone_reported_at AS reportedAt
+        FROM notification_device_tokens
+       WHERE user_id = ? AND tenant_id = ? AND revoked_at IS NULL AND device_timezone IS NOT NULL
+       ORDER BY datetime(device_timezone_reported_at) DESC
+       LIMIT 1
+    `).get(userId, tenantId) as { deviceTimezone: string | null; reportedAt: string | null } | undefined;
+    const deviceTimezone = row?.deviceTimezone ?? null;
+    return {
+      profileTimezone: profile.timezone,
+      deviceTimezone,
+      drifted: Boolean(deviceTimezone && deviceTimezone !== profile.timezone),
+      reportedAt: row?.reportedAt ?? null,
+    };
+  } catch (err) {
+    logger.warn({ err, userId }, 'timezone drift lookup failed');
+    return { profileTimezone: profile.timezone, deviceTimezone: null, drifted: false, reportedAt: null };
+  }
+}
+
 export function registerNotificationDeviceToken(opts: {
   userId: number;
   tenantId?: number;
@@ -1789,6 +3234,18 @@ export function registerNotificationDeviceToken(opts: {
   environment?: 'sandbox' | 'production';
   deviceId?: string | null;
   appVersion?: string | null;
+  /**
+   * IANA zone the DEVICE is currently in. Advisory only — see migration 271.
+   * Invalid values are ignored rather than rejected: a bad zone from a client
+   * must not stop it registering for push.
+   */
+  deviceTimezone?: string | null;
+  /**
+   * What iOS actually granted. Under `.provisional` notifications are delivered
+   * quietly and interruption-level is ignored, so this changes what the server
+   * can promise a producer.
+   */
+  authorizationTier?: NotificationAuthorizationTier | null;
 }): DeviceTokenRegistration {
   const tenantId = opts.tenantId ?? opts.userId;
   assertScope(opts.userId, tenantId, 'register_notification_device_token');
@@ -1801,6 +3258,21 @@ export function registerNotificationDeviceToken(opts: {
   const tokenId = `dt_${randomUUID()}`;
   const environment = opts.environment ?? 'sandbox';
   const deviceId = opts.deviceId?.trim() || `ios-${tokenHash.slice(0, 16)}`;
+  // A malformed zone from a client must never stop it registering for push;
+  // it is advisory data, so it is dropped rather than rejected.
+  const deviceTimezone = normalizeIanaZone(opts.deviceTimezone);
+  // "The client reported a tier" and "the client said nothing" are different
+  // facts and must not collapse to the same value. Normalizing an absent tier
+  // straight to 'authorized' let any caller that omits the field silently
+  // PROMOTE an existing provisional grant to a full one — and one such caller
+  // is still mounted (`POST /api/v1/settings/push-token` sends no tier). That
+  // re-opens exactly the quiet-delivery blind spot migration 271 exists to
+  // close. A first registration still defaults to 'authorized'; only the
+  // overwrite of a known tier is suppressed.
+  const reportedTier = opts.authorizationTier == null
+    ? null
+    : normalizeAuthorizationTier(opts.authorizationTier);
+  const authorizationTier = reportedTier ?? 'authorized';
   const db = getDb();
 
   db.transaction(() => {
@@ -1816,16 +3288,26 @@ export function registerNotificationDeviceToken(opts: {
     db.prepare(`
       INSERT INTO notification_device_tokens (
         token_id, user_id, tenant_id, platform, token_hash, token_suffix, environment,
-        device_id, app_version, last_seen_at, revoked_at
+        device_id, app_version, device_timezone, device_timezone_reported_at,
+        authorization_tier, last_seen_at, revoked_at
       )
-      VALUES (?, ?, ?, 'ios', ?, ?, ?, ?, ?, datetime('now'), NULL)
+      VALUES (?, ?, ?, 'ios', ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), NULL)
       ON CONFLICT(user_id, tenant_id, platform, token_hash, environment) DO UPDATE SET
         device_id = excluded.device_id,
         app_version = excluded.app_version,
+        device_timezone = COALESCE(excluded.device_timezone, notification_device_tokens.device_timezone),
+        device_timezone_reported_at = COALESCE(excluded.device_timezone_reported_at, notification_device_tokens.device_timezone_reported_at),
+        authorization_tier = COALESCE(?, notification_device_tokens.authorization_tier),
         token_suffix = excluded.token_suffix,
         last_seen_at = datetime('now'),
         revoked_at = NULL
-    `).run(tokenId, opts.userId, tenantId, tokenHash, tokenSuffix, environment, deviceId, opts.appVersion ?? null);
+    `).run(
+      tokenId, opts.userId, tenantId, tokenHash, tokenSuffix, environment, deviceId,
+      opts.appVersion ?? null, deviceTimezone, deviceTimezone ? new Date().toISOString() : null,
+      authorizationTier,
+      // Bound after the VALUES list because the DO UPDATE clause is textually last.
+      reportedTier,
+    );
 
     revokePriorActiveDeviceTokenOwners(db, deviceId, opts.userId);
   })();
@@ -2597,7 +4079,9 @@ function normalizeIntent(input: NotificationIntentInput): NotificationIntentReco
   if (!SOURCE_SKILLS.includes(input.sourceSkill)) throw new Error('invalid notification sourceSkill');
   if (!VALID_TYPES.includes(input.type)) throw new Error('invalid notification type');
   if (!VALID_PRIORITIES.includes(input.priority)) throw new Error('invalid notification priority');
-  if (!input.title.trim()) throw new Error('notification title required');
+  // Validated AFTER emoji stripping: an emoji-only title carries no
+  // information for a screen reader and must not reach the inbox.
+  if (!stripTitleEmoji(input.title)) throw new Error('notification title required');
   if (!input.body.trim()) throw new Error('notification body required');
   const intentId = input.intentId ?? `ni_${randomUUID()}`;
   const relatedEntityId = input.relatedEntityId == null ? null : String(input.relatedEntityId);
@@ -2620,6 +4104,7 @@ function normalizeIntent(input: NotificationIntentInput): NotificationIntentReco
     entityType: relatedEntityType,
     entityId: relatedEntityId,
     recipe: typeof decisionContext?.recipe === 'string' ? decisionContext.recipe : null,
+    deeplink,
   });
   const actionButtons = enforceNotificationActionContract(
     candidateActions,
@@ -2636,7 +4121,7 @@ function normalizeIntent(input: NotificationIntentInput): NotificationIntentReco
     priority,
     relatedEntityId,
     relatedEntityType,
-    title: input.title.trim(),
+    title: stripTitleEmoji(input.title),
     body: input.body.trim(),
     sensitiveBody: input.sensitiveBody?.trim() || null,
     actionButtons,
@@ -2648,6 +4133,7 @@ function normalizeIntent(input: NotificationIntentInput): NotificationIntentReco
     decisionDeadline: input.decisionDeadline ?? null,
     deliveryPolicy: missingActionSourceScope ? 'digest_only' : input.deliveryPolicy ?? deliveryPolicyForNotificationContract(contract),
     privacyPolicy: effectiveNotificationPrivacyPolicy(input.privacyPolicy, contract.privacySafeCopyPolicy),
+    promotional: input.promotional === true,
     decisionContext,
     status: 'pending',
     createdAt: new Date().toISOString(),
@@ -2660,8 +4146,8 @@ function persistIntent(intent: NotificationIntentRecord): NotificationIntentReco
     INSERT INTO notification_intents (
       intent_id, user_id, tenant_id, source_skill, type, priority, related_entity_id, related_entity_type,
       title, body, sensitive_body, action_buttons_json, deeplink, expires_at, quiet_hours_policy,
-      dedupe_key, requires_user_action, decision_deadline, delivery_policy, privacy_policy, decision_context_json, status, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+      dedupe_key, requires_user_action, decision_deadline, delivery_policy, privacy_policy, promotional, decision_context_json, status, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
   `).run(
     intent.intentId,
     intent.userId,
@@ -2683,6 +4169,7 @@ function persistIntent(intent: NotificationIntentRecord): NotificationIntentReco
     intent.decisionDeadline,
     intent.deliveryPolicy,
     intent.privacyPolicy,
+    intent.promotional ? 1 : 0,
     intent.decisionContext ? JSON.stringify(intent.decisionContext) : null,
     intent.createdAt,
   );
@@ -2758,11 +4245,21 @@ export function userHasActivePushDeviceToken(userId: number): boolean {
  */
 interface SkippedPushDelivery {
   attemptId: null;
-  status: 'blocked_missing_device_token';
+  status: 'blocked_missing_device_token' | 'blocked_expired';
   sentAt: null;
 }
 
 type PushDeliveryOutcome = DeliveryAttempt | SkippedPushDelivery;
+
+/** Earliest instant after which a push is no longer useful or actionable. */
+function notificationPushExpirationAt(intent: NotificationIntentRecord): string | null {
+  const candidates = [intent.expiresAt, intent.decisionDeadline]
+    .filter((value): value is string => typeof value === 'string' && Number.isFinite(Date.parse(value)))
+    .map((value) => ({ value, at: Date.parse(value) }));
+  if (candidates.length === 0) return null;
+  candidates.sort((left, right) => left.at - right.at);
+  return candidates[0].value;
+}
 
 async function attemptPushDelivery(
   intent: NotificationIntentRecord,
@@ -2776,6 +4273,10 @@ async function attemptPushDelivery(
   },
   profile: NotificationProfile,
 ): Promise<PushDeliveryOutcome> {
+  const expirationAt = notificationPushExpirationAt(intent);
+  if (expirationAt && Date.parse(expirationAt) <= Date.now()) {
+    return { attemptId: null, status: 'blocked_expired', sentAt: null };
+  }
   const tokens = getPushTokensForUser(intent.userId);
   if (tokens.length === 0) {
     return { attemptId: null, status: 'blocked_missing_device_token', sentAt: null };
@@ -2832,6 +4333,7 @@ async function attemptPushDelivery(
           ? `decision:${notificationId}`
           : `${intent.sourceSkill}:${intent.type}:${intent.dedupeKey ?? notificationId ?? intent.intentId}`,
       ),
+      expirationAt: expirationAt ?? undefined,
     });
     // APNs 410 responses delete the token inside the sender; surface that
     // here so decision logs explain WHY later attempts see no tokens
@@ -2848,12 +4350,39 @@ async function attemptPushDelivery(
     }
     if (result.sent > 0) {
       touchDeviceTokenActivity(intent.userId, intent.tenantId);
+      // `last_pushed_at` is what lets a later digest tell "already interrupted
+      // them about this" from "queued but never surfaced", so the brief can
+      // count an item without re-stating it. Recorded on real delivery only.
+      if (notificationId) {
+        try {
+          getDb().prepare(`
+            UPDATE notification_center_items
+               SET last_pushed_at = datetime('now')
+             WHERE item_id = ? AND user_id = ? AND tenant_id = ?
+          `).run(notificationId, intent.userId, intent.tenantId);
+        } catch (err) {
+          logger.debug({ err, notificationId }, 'last_pushed_at not stamped');
+        }
+      }
+      recordNotificationEngagementEvent({
+        userId: intent.userId,
+        tenantId: intent.tenantId,
+        notificationId,
+        intentId: intent.intentId,
+        sourceSkill: intent.sourceSkill,
+        type: intent.type,
+        priority: intent.priority,
+        eventType: 'pushed',
+      });
       return persistDeliveryAttempt(intent, notificationId, 'push', 'apns', 'sent', '2xx', null);
     }
     if (result.unregistered.length > 0) {
       return persistDeliveryAttempt(intent, notificationId, 'push', 'apns', 'failed', '410', 'apns_token_unregistered');
     }
     if (result.skipped > 0) {
+      if (expirationAt && Date.parse(expirationAt) <= Date.now()) {
+        return { attemptId: null, status: 'blocked_expired', sentAt: null };
+      }
       return persistDeliveryAttempt(intent, notificationId, 'push', 'apns', 'blocked_missing_credentials', null, 'apns_credentials_missing');
     }
     return persistDeliveryAttempt(intent, notificationId, 'push', 'apns', 'failed', 'apns_rejected', 'apns_delivery_failed');
@@ -3043,6 +4572,7 @@ function findActiveDuplicate(intent: NotificationIntentRecord): NotificationCent
            intents.related_entity_id AS intent_related_entity_id,
            intents.related_entity_type AS intent_related_entity_type,
            COALESCE(intents.requires_user_action, items.requires_user_action) AS intent_requires_user_action,
+           intents.promotional AS intent_promotional,
            intents.decision_deadline AS intent_decision_deadline,
            intents.privacy_policy AS intent_privacy_policy,
            intents.decision_context_json AS intent_decision_context_json
@@ -3186,37 +4716,152 @@ function hasDecisionSourceScope(intent: NotificationIntentRecord): boolean {
   return intent.type === 'sync_failure' || intent.type === 'security_account';
 }
 
-function buildPrivacySafeBody(intent: NotificationIntentRecord): string {
+/** Digest bodies are assembled server-side from counts and schedule facts. */
+const DIGEST_BODY_TYPES = new Set<NotificationIntentType>(['daily_digest', 'weekly_review']);
+
+function buildPrivacySafeBody(intent: NotificationIntentRecord, lang?: Lang): string {
+  const language = lang ?? notificationCopyLanguage(intent.userId);
+  // A digest body is composed by assembleDailyDigest from counts and clock
+  // times — never from a producer's free text, an email subject, a task title
+  // or an amount. It is therefore already privacy-safe by construction, and
+  // rewriting it to a fixed string is what made the digest say nothing useful
+  // ("3 Nexus updates are ready"). The composition rules are the guarantee
+  // here, so this branch is only safe while assembleDailyDigest owns the copy.
+  if (DIGEST_BODY_TYPES.has(intent.type)) {
+    return truncate(intent.body, 120);
+  }
   if (intent.privacyPolicy === 'financial' || intent.sourceSkill === 'finance') {
-    return 'Finance reminder needs review.';
+    return t('notif.body.finance', language);
   }
   if (intent.privacyPolicy === 'health' || intent.sourceSkill === 'training') {
-    return 'Training check-in needed. Review today’s adjustment.';
+    return t('notif.body.training', language);
   }
   if (intent.privacyPolicy === 'private_content' || intent.sourceSkill === 'content') {
-    return 'Content item is ready for review.';
+    return t('notif.body.content', language);
   }
   if (intent.privacyPolicy === 'sensitive') {
-    return `${safeNotificationTitle(intent)} — open Nexus to review the recommendation.`;
+    return t('notif.body.review', language, { title: safeNotificationTitle(intent, language) });
   }
   if (intent.privacyPolicy === 'public' && intent.sourceSkill === 'system') {
     return truncate(intent.body, 150);
   }
-  return `${safeNotificationTitle(intent)} — open Nexus to review the recommendation.`;
+  return t('notif.body.review', language, { title: safeNotificationTitle(intent, language) });
 }
 
-function safeNotificationTitle(intent: NotificationIntentRecord): string {
-  switch (intent.sourceSkill) {
-    case 'secretary': return intent.type === 'conflict_detected' || intent.type === 'reflow_suggestion' ? 'Schedule decision' : 'Secretary decision';
-    case 'training': return 'Training update';
-    case 'content': return 'Content review';
-    case 'cooking': return 'Cooking reminder';
-    case 'finance': return 'Finance reminder';
-    case 'chat': return 'Nexus needs your choice';
-    case 'system': return 'System notification';
-    case 'security': return 'Account activity';
-    default: return truncate(intent.title, 60);
+/**
+ * Emoji are banned from notification titles.
+ *
+ * VoiceOver reads them verbatim, so a report titled "☀️ Thursday" is announced
+ * as "sun behind cloud, Thursday" — the decoration becomes the first thing a
+ * screen-reader user hears. Report producers ship "☀️", "📊" and "🏋️" today.
+ * Bodies are left alone: they are prose, and the lock-screen body is rewritten
+ * by buildPrivacySafeBody anyway.
+ *
+ * `Extended_Pictographic` is the WRONG property to strip by: it also covers
+ * © ® ™ ‼ ℹ ▶ ☀ ♀, which are punctuation and prose, not decoration. Matching on
+ * it deleted them from the user's own text mid-word — "CrossFit® Open" became
+ * "CrossFit Open". What actually predicts VoiceOver reading a character as an
+ * emoji name is EMOJI PRESENTATION, which is either intrinsic
+ * (`Emoji_Presentation`, e.g. 📊) or forced by a VS16 selector (☀ + U+FE0F).
+ * Bare text-presentation symbols render as glyphs and are left alone.
+ */
+/**
+ * One emoji unit: an intrinsically-emoji character, or a text symbol that VS16
+ * forces into emoji presentation, plus an optional skin-tone modifier.
+ */
+const EMOJI_UNIT = String.raw`(?:\p{Emoji_Presentation}|\p{Extended_Pictographic}\u{FE0F})(?:[\u{1F3FB}-\u{1F3FF}])?`;
+/** That unit, plus any ZWJ-joined continuations (family, flag, profession). */
+const EMOJI_SEQUENCE = new RegExp(`${EMOJI_UNIT}(?:\\u{200D}${EMOJI_UNIT})*`, 'gu');
+
+export function stripTitleEmoji(title: string): string {
+  return title
+    // Keycaps are three code points ("1" + VS16 + U+20E3). Removing only the
+    // pictographic part left an orphan combining mark: "1️⃣" -> "1⃣".
+    .replace(/[0-9#*]\u{FE0F}?\u{20E3}/gu, '')
+    .replace(/[\u{E0020}-\u{E007F}]/gu, '')  // tag sequences (subdivision flags)
+    // A whole emoji sequence — base, optional skin tone, and any ZWJ-joined
+    // continuations — removed as ONE unit. Stripping U+200D unconditionally
+    // (the previous approach) corrupted real text: ZWJ is a meaningful
+    // letter-joiner in Devanagari and Persian, where "क्‍ष" is not "क्ष".
+    // Consuming it only between emoji leaves prose untouched.
+    .replace(EMOJI_SEQUENCE, '')
+    // Leftover presentation selectors are formatting, safe to drop anywhere.
+    .replace(/[\u{FE0F}\u{FE0E}]/gu, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
+/**
+ * Producer titles are often user-authored (a commitment or session name), and a
+ * title made only of emoji strips to the empty string — which
+ * `createNotificationIntent` rejects outright. The producer then counted a
+ * failure and the user got NO notification for that item at all. Degrading to a
+ * generic-but-accurate title is strictly better than silence.
+ */
+export function notificationTitleOrFallback(
+  title: string | null | undefined,
+  fallback: string,
+): string {
+  const trimmed = (title ?? '').trim();
+  return stripTitleEmoji(trimmed) ? trimmed : fallback;
+}
+
+/**
+ * Language for a user's lock-screen copy.
+ *
+ * This is the ACCOUNT language (`users.language`, default pt-BR), not the
+ * device language. That distinction is the main reason `loc-key` is the better
+ * end state: the app bundle would follow the phone. Until the client can carry
+ * loc-keys, the account language is the best signal the server has, and it is
+ * strictly better than the hardcoded English this replaces.
+ *
+ * Falls back rather than throwing: copy resolution must never fail a delivery.
+ */
+export function notificationCopyLanguage(userId: number): Lang {
+  try {
+    return getUserLanguageById(userId);
+  } catch (err) {
+    logger.debug({ err, userId }, 'notification copy language lookup failed; using default');
+    return 'pt-BR';
   }
+}
+
+/**
+ * Stable copy keys for the fixed lock-screen strings.
+ *
+ * Exported because these are the exact identifiers a future
+ * `aps.alert.title-loc-key` / `loc-key` payload will send, and the iOS
+ * Localizable.strings file must use the same names. Changing one is a
+ * cross-repo contract change, not a copy tweak.
+ */
+export const NOTIFICATION_TITLE_KEYS: Record<NotificationSourceSkill, string> = {
+  secretary: 'notif.title.secretary',
+  training: 'notif.title.training',
+  content: 'notif.title.content',
+  cooking: 'notif.title.cooking',
+  finance: 'notif.title.finance',
+  chat: 'notif.title.chat',
+  system: 'notif.title.system',
+  security: 'notif.title.security',
+};
+
+/** The copy key a notification's title resolves from, before localization. */
+export function notificationTitleKey(intent: NotificationIntentRecord): string | null {
+  if (intent.sourceSkill === 'secretary') {
+    return intent.type === 'conflict_detected' || intent.type === 'reflow_suggestion'
+      ? 'notif.title.secretary.schedule'
+      : 'notif.title.secretary';
+  }
+  return NOTIFICATION_TITLE_KEYS[intent.sourceSkill] ?? null;
+}
+
+function safeNotificationTitle(intent: NotificationIntentRecord, lang?: Lang): string {
+  const key = notificationTitleKey(intent);
+  // No key means an unknown skill: fall back to the producer title, truncated,
+  // exactly as before. Producer text on an unknown skill is the pre-existing
+  // behaviour and is not made worse by localization.
+  if (!key) return truncate(intent.title, 60);
+  return t(key, lang ?? notificationCopyLanguage(intent.userId));
 }
 
 function normalizePriorityForPolicy(priority: NotificationPriority, profile: NotificationProfile): NotificationPriority {
@@ -3230,10 +4875,386 @@ function canUseSendNowPolicy(
   priority: NotificationPriority,
   profile: NotificationProfile,
 ): boolean {
+  // A quiet-hours breakthrough is pointless on a device that cannot ring.
+  // MFA codes are the archetype: a five-minute TTL delivered silently is worse
+  // than useless, because the producer believes the user was reached.
+  const reach = notificationReachability(intent.userId, intent.tenantId);
+  if (reach.hasToken && !reach.canInterrupt) return false;
   const trustedSource = intent.sourceSkill === 'security' || intent.sourceSkill === 'system';
   const trustedType = intent.type === 'security_account' || intent.type === 'sync_failure';
   const allowedPriority = priority === 'time_sensitive' || (priority === 'critical' && profile.allowCritical);
   return trustedSource && trustedType && allowedPriority && profile.allowTimeSensitive;
+}
+
+/**
+ * Intent types a per-type mute may never silence. Mirrors the `floor_security`
+ * invariant the Decision Center read filter enforces via
+ * `isDecisionItemPolicyFloored`: an account-integrity alert is not a
+ * preference. Deliberately narrow — the other policy floors (deadline, finance
+ * risk, connection) are ordinary product signals a user is entitled to mute.
+ */
+const NON_SUPPRESSIBLE_NOTIFICATION_TYPES = new Set<NotificationIntentType>(['security_account']);
+
+type NotificationCategoryPreferenceCause = 'user_disabled' | 'read_failed' | null;
+
+/**
+ * Bridge the legacy iOS push category contract into the central delivery
+ * ladder. The Settings app writes `push_preferences.category = 'reminders'`;
+ * notification profiles intentionally remain the richer per-skill policy.
+ *
+ * A missing table means the legacy preference was never available and retains
+ * its documented default-enabled behavior. Other read failures fail closed:
+ * an inbox item remains available, but Nexus does not risk violating an
+ * explicit push opt-out. Queued deliveries treat that failure as retryable.
+ */
+function notificationCategoryPreferenceCause(
+  intent: Pick<NotificationIntentRecord, 'userId' | 'type'>,
+): NotificationCategoryPreferenceCause {
+  if (intent.type !== 'reminder') return null;
+  if (!isValidTenantUserId(intent.userId)) return 'read_failed';
+
+  try {
+    const row = getDb().prepare(`
+      SELECT enabled
+        FROM push_preferences
+       WHERE user_id = ? AND category = 'reminders'
+    `).get(intent.userId) as { enabled: number } | undefined;
+    return row && row.enabled !== 1 ? 'user_disabled' : null;
+  } catch (err) {
+    // Migration 063 established this table. Keep default-enabled compatibility
+    // for pre-migration/local databases; a different read failure is unsafe to
+    // interpret as consent.
+    if (err instanceof Error && /no such table:\s*push_preferences/i.test(err.message)) return null;
+    logger.warn(
+      { err, userId: intent.userId, category: 'reminders' },
+      'notification category preference read failed; withholding push (fail-closed)',
+    );
+    return 'read_failed';
+  }
+}
+
+/**
+ * Whether the user has actively muted this (sourceSkill, type[, recipe]).
+ *
+ * `decision_type_suppressions` was previously consulted ONLY by the read-path
+ * filter, so "don't show me this type" hid the row from the list and let the
+ * push fire anyway — a setting that did not do what it said.
+ *
+ * The tables are read with raw SQL rather than through decision-center, which
+ * imports this module; going the other way would close an import cycle.
+ *
+ * Failure direction is deliberate and OPPOSITE to the read path. The read
+ * filter fails OPEN (show everything) because hiding a user's queue on a
+ * transient fault is worse than showing a muted row. Here a fault fails
+ * CLOSED (treat as muted, degrade to in-app) because the Notification Center
+ * item still exists either way — only the interrupt is lost — and an unwanted
+ * interrupt costs trust that cannot be won back.
+ */
+/**
+ * Why a push is being withheld for this (sourceSkill, type).
+ *
+ * `null` means nothing is suppressing it. The two non-null values are NOT
+ * interchangeable: `user_muted` is a choice the user made, `read_failed` is the
+ * suppression table being unreadable and the ladder failing closed. Collapsing
+ * both to `true` made the decision log record "user muted secretary/reminder"
+ * for a row where no suppression record exists — an audit trail asserting a
+ * user preference that was never expressed.
+ */
+type NotificationSuppressionCause = 'user_muted' | 'read_failed' | null;
+type NotificationSuppressionSubject = Pick<
+  NotificationIntentRecord,
+  'userId' | 'tenantId' | 'sourceSkill' | 'type' | 'decisionContext'
+>;
+
+function notificationTypeSuppressionCause(
+  intent: NotificationSuppressionSubject,
+): NotificationSuppressionCause {
+  if (NON_SUPPRESSIBLE_NOTIFICATION_TYPES.has(intent.type)) return null;
+  if (!isDecisionTypeSuppressionEnabled(process.env, { userId: intent.userId, tenantId: intent.tenantId })) {
+    return null;
+  }
+  try {
+    const db = getDb();
+    const nowIso = new Date().toISOString();
+    const broad = db.prepare(`
+      SELECT 1 FROM decision_type_suppressions
+       WHERE user_id = ? AND tenant_id = ? AND source_skill = ? AND type = ?
+         AND (mode = 'dont_show_type' OR (mode = 'snooze_type' AND until IS NOT NULL AND datetime(until) > datetime(?)))
+       LIMIT 1
+    `).get(intent.userId, intent.tenantId, intent.sourceSkill, intent.type, nowIso);
+    if (broad) return 'user_muted';
+
+    const recipe = normalizeRecipeForSuppression(intent);
+    if (!recipe) return null;
+    const scoped = db.prepare(`
+      SELECT 1 FROM decision_recipe_suppressions
+       WHERE user_id = ? AND tenant_id = ? AND source_skill = ? AND type = ? AND recipe = ?
+         AND (mode = 'dont_show_type' OR (mode = 'snooze_type' AND until IS NOT NULL AND datetime(until) > datetime(?)))
+       LIMIT 1
+    `).get(intent.userId, intent.tenantId, intent.sourceSkill, intent.type, recipe, nowIso);
+    return scoped ? 'user_muted' : null;
+  } catch (err) {
+    logger.warn(
+      { err, userId: intent.userId, tenantId: intent.tenantId, sourceSkill: intent.sourceSkill, type: intent.type },
+      'notification type-suppression read failed; withholding push (fail-closed)',
+    );
+    return 'read_failed';
+  }
+}
+
+function normalizeRecipeForSuppression(intent: NotificationSuppressionSubject): string | null {
+  try {
+    const raw = intent.decisionContext as Record<string, unknown> | null | undefined;
+    const recipe = raw && typeof raw.recipe === 'string' ? raw.recipe.trim() : '';
+    if (!recipe) return null;
+    const prefix = recipe.split(':', 1)[0] as NotificationSourceSkill;
+    const normalized = SOURCE_SKILLS.includes(prefix) && recipe.startsWith(`${prefix}:`)
+      ? recipe.slice(prefix.length + 1)
+      : recipe;
+    return normalized.slice(0, 160) || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The preference/skill gate, re-usable outside the initial evaluation.
+ *
+ * Extracted so the release sweep and the snooze sweep apply the SAME rules the
+ * first evaluation did. Previously the sweep reloaded the profile and passed it
+ * only to `effectiveSound`, so turning push off — or muting a skill — did not
+ * drain items already queued as quiet_hours_delayed/digest: they still sent.
+ */
+export function isNotificationDeliverableForProfile(
+  intent: NotificationIntentRecord,
+  profile: NotificationProfile,
+): boolean {
+  if (!profile.skillPreferences[intent.sourceSkill]) return false;
+  if (!profile.inAppEnabled && !profile.portalEnabled && !profile.pushEnabled) return false;
+  return true;
+}
+
+/** True when a queued delivery may still legitimately reach APNs. */
+/**
+ * Why a push may not be sent — or `null` when it may.
+ *
+ * `suppression_read_failed` is the one value callers must treat differently.
+ * Every other cause is a DECISION: the user turned something off, and
+ * withholding the push permanently is correct. That one is an ABSENCE of a
+ * decision — the suppression table could not be read, so we fail closed
+ * without knowing. Collapsing the two into a boolean made the release sweep
+ * rewrite such a row to a terminal `in_app_only` that its own SELECT can never
+ * re-claim, so one transient SQLITE_BUSY during a sweep permanently destroyed
+ * the push for up to 100 queued items — and blamed it on a preference change
+ * the user never made.
+ */
+export type NotificationPushBlockCause =
+  | 'skill_or_channels_off'
+  | 'push_disabled'
+  | 'category_preference'
+  | 'category_preference_read_failed'
+  | 'marketing_consent'
+  | 'delivery_policy'
+  | 'user_muted'
+  | 'suppression_read_failed';
+
+export function notificationPushBlockCause(
+  intent: NotificationIntentRecord,
+  profile: NotificationProfile,
+): NotificationPushBlockCause | null {
+  if (!isNotificationDeliverableForProfile(intent, profile)) return 'skill_or_channels_off';
+  if (!profile.pushEnabled) return 'push_disabled';
+  const categoryPreference = notificationCategoryPreferenceCause(intent);
+  if (categoryPreference === 'read_failed') return 'category_preference_read_failed';
+  if (categoryPreference === 'user_disabled') return 'category_preference';
+  // Consent can be withdrawn between queueing and release.
+  if (intent.promotional && !profile.marketingPushEnabled) return 'marketing_consent';
+  if (intent.deliveryPolicy === 'in_app_only' || intent.deliveryPolicy === 'portal_only') return 'delivery_policy';
+  const suppression = notificationTypeSuppressionCause(intent);
+  if (suppression === 'read_failed') return 'suppression_read_failed';
+  if (suppression !== null) return 'user_muted';
+  return null;
+}
+
+/** Thin wrapper so existing call sites are unaffected. */
+export function isNotificationPushableForProfile(
+  intent: NotificationIntentRecord,
+  profile: NotificationProfile,
+): boolean {
+  return notificationPushBlockCause(intent, profile) === null;
+}
+
+/**
+ * A blocked push that should be RETRIED rather than recorded as final.
+ *
+ * Terminal decisions are unrecoverable by design: the release sweep re-claims
+ * only `quiet_hours_delayed` and `digest` rows. Writing one for a cause we are
+ * not sure about forecloses a delivery on the strength of a transient fault.
+ */
+function isRetryablePushBlock(cause: NotificationPushBlockCause | null): boolean {
+  return cause === 'suppression_read_failed' || cause === 'category_preference_read_failed';
+}
+
+/** Human-readable, and — unlike the previous wording — true. */
+function pushBlockReason(cause: NotificationPushBlockCause, intent: NotificationIntentRecord): string {
+  switch (cause) {
+    case 'user_muted':
+      return `user muted ${intent.sourceSkill}/${intent.type} notifications`;
+    case 'marketing_consent':
+      return 'promotional notification without marketing consent';
+    case 'delivery_policy':
+      return `delivery policy is ${intent.deliveryPolicy === 'portal_only' ? 'portal' : 'in-app'} only`;
+    case 'push_disabled':
+      return 'push disabled by user preference';
+    case 'category_preference':
+      return 'push disabled by reminders category preference';
+    case 'category_preference_read_failed':
+      return 'reminders category preference unreadable; push deferred to a later sweep';
+    case 'suppression_read_failed':
+      return 'suppression state unreadable; push deferred to a later sweep';
+    default:
+      return 'notifications disabled for this skill or every channel is off';
+  }
+}
+
+export type NotificationEngagementEventType =
+  | 'surfaced'
+  | 'pushed'
+  | 'opened'
+  | 'actioned'
+  | 'dismissed'
+  | 'snoozed'
+  | 'expired_unseen';
+
+export interface NotificationEngagementEventInput {
+  userId: number;
+  tenantId: number;
+  notificationId?: string | null;
+  intentId?: string | null;
+  sourceSkill: NotificationSourceSkill;
+  type: NotificationIntentType;
+  priority: NotificationPriority;
+  eventType: NotificationEngagementEventType;
+  actionId?: string | null;
+  latencyMs?: number | null;
+  flagVector?: Record<string, unknown>;
+}
+
+/**
+ * Append-only engagement log. WRITE PATH ONLY — nothing scores off this yet.
+ *
+ * `opened_at` and `action_taken` were already stamped on the decision log and
+ * read nowhere, and neither captured the surfaced/dismissed transitions a
+ * per-type fatigue model needs. Recording starts now so the adaptive work in a
+ * later phase has history to tune against instead of shipping blind.
+ *
+ * Never throws: instrumentation must not be able to fail a delivery.
+ */
+export function recordNotificationEngagementEvent(input: NotificationEngagementEventInput): void {
+  try {
+    ensureNotificationTables();
+    getDb().prepare(`
+      INSERT INTO notification_engagement_events (
+        event_id, user_id, tenant_id, notification_id, intent_id,
+        source_skill, type, priority, event_type, action_id, latency_ms, flag_vector_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      `nee_${randomUUID()}`,
+      input.userId,
+      input.tenantId,
+      input.notificationId ?? null,
+      input.intentId ?? null,
+      input.sourceSkill,
+      input.type,
+      input.priority,
+      input.eventType,
+      input.actionId ?? null,
+      Number.isFinite(input.latencyMs as number) ? Math.max(0, Math.round(input.latencyMs as number)) : null,
+      JSON.stringify(input.flagVector ?? {}),
+    );
+  } catch (err) {
+    logger.debug({ err, eventType: input.eventType }, 'notification engagement event not recorded');
+  }
+}
+
+/**
+ * Score an evaluated intent with the candidate priority model and record the
+ * verdict beside the decision the ladder actually took.
+ *
+ * SHADOW ONLY. The return value is discarded; delivery has already happened by
+ * the time this runs. It exists so the model can be validated against real
+ * traffic before it is allowed to decide anything — shipping a scoring change
+ * blind, on a system with no engagement history, is how you teach users to
+ * disable notifications.
+ *
+ * The feature set is deliberately PARTIAL: `riskIfIgnored`, `reversibility` and
+ * `confidence` are not yet plumbed out of the decision quality gate, so they
+ * take neutral defaults and every row is stamped `features_complete = 0`. Any
+ * analysis that treats these scores as final ranking would be reading more
+ * into them than they carry.
+ *
+ * Never throws: instrumentation must not be able to fail a delivery.
+ */
+function recordPriorityShadowVerdict(
+  intent: NotificationIntentRecord,
+  effectivePriority: NotificationPriority,
+  actualDecision: NotificationDecision,
+): void {
+  if (!isNotificationPriorityShadowScoringEnabled(process.env, {
+    userId: intent.userId,
+    tenantId: intent.tenantId,
+  })) return;
+
+  try {
+    const nowMs = Date.now();
+    const verdict = scoreNotification({
+      type: intent.type,
+      sourceSkill: intent.sourceSkill,
+      declaredPriority: intent.priority,
+      nowMs,
+      deadlineAtMs: intent.decisionDeadline ? Date.parse(intent.decisionDeadline) : null,
+      // The intent carries no observation timestamp yet; creation time is the
+      // closest honest proxy.
+      sourceObservedAtMs: intent.createdAt ? Date.parse(intent.createdAt) : nowMs,
+      requiresUserAction: intent.requiresUserAction,
+      hasSourceScope: Boolean(intent.relatedEntityType && intent.relatedEntityId),
+      actionCount: intent.actionButtons.length,
+      riskIfIgnored: 'medium',
+      reversibility: 'reversible',
+      confidence: 0.85,
+      engagement: NEUTRAL_ENGAGEMENT,
+      dependencyBlocked: false,
+      dependencySlack: 0,
+      escalationGeneration: 0,
+      snoozed: false,
+      safeForAPNs: intent.deliveryPolicy === 'auto',
+    });
+
+    getDb().prepare(`
+      INSERT INTO notification_priority_shadow (
+        shadow_id, intent_id, user_id, tenant_id, source_skill, type,
+        declared_priority, effective_priority, actual_decision,
+        model_version, score, tier, reason_codes_json, components_json, features_complete
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+    `).run(
+      `nps_${randomUUID()}`,
+      intent.intentId,
+      intent.userId,
+      intent.tenantId,
+      intent.sourceSkill,
+      intent.type,
+      intent.priority,
+      effectivePriority,
+      actualDecision,
+      verdict.modelVersion,
+      verdict.score,
+      verdict.tier,
+      JSON.stringify(verdict.reasonCodes),
+      JSON.stringify(verdict.components),
+    );
+  } catch (err) {
+    logger.debug({ err, intentId: intent.intentId }, 'priority shadow verdict not recorded');
+  }
 }
 
 function interruptionLevelForPriority(priority: NotificationPriority): 'passive' | 'active' | 'time-sensitive' {
@@ -3242,18 +5263,198 @@ function interruptionLevelForPriority(priority: NotificationPriority): 'passive'
   return 'active';
 }
 
-function consumePushRateLimit(intent: NotificationIntentRecord, priority: NotificationPriority): boolean {
-  if (priority === 'time_sensitive' || priority === 'critical') return true;
-  const now = Date.now();
-  const key = `${intent.userId}:${intent.tenantId}:${intent.sourceSkill}`;
-  const retained = (pushRateLimitByScope.get(key) ?? []).filter((timestamp) => now - timestamp < PUSH_RATE_LIMIT_WINDOW_MS);
-  if (retained.length >= PUSH_RATE_LIMIT_MAX_PER_SOURCE) {
-    pushRateLimitByScope.set(key, retained);
-    return false;
+/**
+ * Parse a timestamp that may be written in either of the two formats this
+ * schema produces: an ISO string from application code, or SQLite's
+ * `datetime('now')` output, which is space-separated and therefore rejected by
+ * `DateTime.fromISO`.
+ *
+ * Getting this wrong is silent: an unparseable date yields NaN, every
+ * comparison against it is false, and the rule that depended on it simply never
+ * fires. The new-user ramp did exactly that before this existed.
+ */
+function parseDbTimestamp(value: string | null | undefined): DateTime | null {
+  if (!value) return null;
+  const iso = DateTime.fromISO(value, { zone: 'utc' });
+  if (iso.isValid) return iso;
+  const sql = DateTime.fromSQL(value, { zone: 'utc' });
+  return sql.isValid ? sql : null;
+}
+
+export type InterruptTier = 't0_security' | 't1_time_sensitive' | 't2_active' | 't4_promotional';
+
+/**
+ * Daily interrupt caps per tier. `null` means uncapped.
+ *
+ * T0 is uncapped because an account-integrity alert is not a volume decision —
+ * but it should be ≈0/day in practice, and more than a couple in a day is
+ * itself an incident worth alerting on rather than silently absorbing.
+ */
+export const INTERRUPT_TIER_DAILY_CAPS: Record<InterruptTier, number | null> = {
+  t0_security: null,
+  t1_time_sensitive: 4,
+  t2_active: 3,
+  t4_promotional: null, // bounded by its own 30-day rule instead
+};
+
+/**
+ * Hard ceiling across every capped tier. Deliberately treated as the incident
+ * threshold, not the target: the steady state this system is designed around is
+ * two scheduled brief slots plus roughly one real interrupt.
+ */
+export const INTERRUPT_GLOBAL_DAILY_CAP = 8;
+
+/** No single skill may spend more than this share of a day's attention. */
+export const INTERRUPT_SKILL_DAILY_CAP = 2;
+
+/** A new user's first week should feel like a well-timed assistant, not a launch. */
+export const NEW_USER_RAMP_DAYS = 7;
+export const NEW_USER_RAMP_DAILY_CAP = 1;
+
+/** Minimum gap between promotional interrupts, per App Store 4.5.4 posture. */
+export const PROMOTIONAL_MIN_DAYS_BETWEEN = 30;
+
+export interface InterruptBudgetVerdict {
+  allowed: boolean;
+  tier: InterruptTier;
+  reason: string;
+}
+
+export function interruptTierFor(
+  intent: NotificationIntentRecord,
+  priority: NotificationPriority,
+): InterruptTier {
+  if (intent.promotional) return 't4_promotional';
+  if (intent.type === 'security_account') return 't0_security';
+  if (priority === 'time_sensitive' || priority === 'critical') return 't1_time_sensitive';
+  return 't2_active';
+}
+
+/**
+ * Whether this notification may spend one of the user's interrupts today.
+ *
+ * Replaces a process-local `Map` that allowed 20/hour PER SKILL (eight skills →
+ * a 160/hour ceiling), was lost on restart, was not shared across workers, and
+ * returned true immediately for `time_sensitive` — so it did not bind on
+ * exactly the traffic that most needs capping.
+ *
+ * Counted from `notification_decision_logs` rather than a parallel ledger: that
+ * table already records every push actually sent, so the budget cannot drift
+ * from reality, and being in the DB it survives restarts and is correct with
+ * more than one worker.
+ *
+ * The window is the user's LOCAL day. A UTC window would reset mid-afternoon
+ * for a user in UTC+13 and hand them a second full budget.
+ *
+ * NOT adaptive. Capacity that grows and shrinks with engagement needs history
+ * to tune against; `notification_engagement_events` only started collecting
+ * recently. These are fixed caps, and deliberately so until there is evidence.
+ */
+export function evaluateInterruptBudget(
+  intent: NotificationIntentRecord,
+  priority: NotificationPriority,
+  profile: NotificationProfile,
+  now = new Date(),
+): InterruptBudgetVerdict {
+  const tier = interruptTierFor(intent, priority);
+  // Account integrity is never a volume decision.
+  if (tier === 't0_security') return { allowed: true, tier, reason: 'security notifications are never budget-capped' };
+
+  try {
+    const zone = resolveProfileZone(profile.timezone);
+    const dayStart = DateTime.fromJSDate(now).setZone(zone).startOf('day').toUTC().toISO();
+    if (!dayStart) return { allowed: true, tier, reason: 'budget window unresolved; allowing' };
+    const db = getDb();
+
+    const countSince = (sinceIso: string, sourceSkill?: string): number => {
+      const row = db.prepare(`
+        SELECT COUNT(*) AS c
+          FROM notification_decision_logs
+         WHERE user_id = ? AND tenant_id = ?
+           AND decision = 'sent_push'
+           AND sent_at IS NOT NULL
+           AND datetime(sent_at) >= datetime(?)
+           ${sourceSkill ? 'AND source_skill = ?' : ''}
+      `).get(...(sourceSkill
+        ? [intent.userId, intent.tenantId, sinceIso, sourceSkill]
+        : [intent.userId, intent.tenantId, sinceIso])) as { c: number } | undefined;
+      return row?.c ?? 0;
+    };
+
+    if (tier === 't4_promotional') {
+      // In the USER's zone, not the server's. Luxon's `minus({days})` is
+      // calendar-aware, so without setZone the 30-day boundary shifted by an
+      // hour across a server-side DST transition — a cadence gate that moves
+      // with the deploy host is not a cadence gate.
+      const since = DateTime.fromJSDate(now).setZone(zone).minus({ days: PROMOTIONAL_MIN_DAYS_BETWEEN }).toUTC().toISO()!;
+      const recentPromotional = db.prepare(`
+        SELECT COUNT(*) AS c
+          FROM notification_decision_logs logs
+          JOIN notification_intents intents ON intents.intent_id = logs.intent_id
+         WHERE logs.user_id = ? AND logs.tenant_id = ?
+           AND logs.decision = 'sent_push'
+           AND logs.sent_at IS NOT NULL
+           AND datetime(logs.sent_at) >= datetime(?)
+           AND intents.promotional = 1
+      `).get(intent.userId, intent.tenantId, since) as { c: number } | undefined;
+      if ((recentPromotional?.c ?? 0) > 0) {
+        return { allowed: false, tier, reason: `promotional interrupt already sent in the last ${PROMOTIONAL_MIN_DAYS_BETWEEN} days` };
+      }
+      return { allowed: true, tier, reason: 'within promotional cadence' };
+    }
+
+    const sentToday = countSince(dayStart);
+
+    // A user's first week sets their expectation of what this product does to
+    // their attention. Ramp regardless of tier.
+    const profileCreatedAt = parseDbTimestamp(profile.createdAt);
+    // An unparseable or missing creation time must NOT be read as "brand new"
+    // — that would clamp an established user to one interrupt a day.
+    const profileAgeDays = profileCreatedAt
+      ? DateTime.fromJSDate(now).diff(profileCreatedAt, 'days').days
+      : Number.POSITIVE_INFINITY;
+    // A negative age means the profile claims to have been created in the
+    // future — clock skew, or a restored backup. Throttling an established user
+    // to one interrupt a day because of that is the worse failure, so only a
+    // genuinely recent, non-negative age ramps.
+    const withinRamp = profileAgeDays >= 0 && profileAgeDays < NEW_USER_RAMP_DAYS;
+    if (withinRamp && sentToday >= NEW_USER_RAMP_DAILY_CAP) {
+      return { allowed: false, tier, reason: `new-user ramp: ${NEW_USER_RAMP_DAILY_CAP} interrupt per day for the first ${NEW_USER_RAMP_DAYS} days` };
+    }
+
+    if (sentToday >= INTERRUPT_GLOBAL_DAILY_CAP) {
+      return { allowed: false, tier, reason: `daily interrupt ceiling reached (${INTERRUPT_GLOBAL_DAILY_CAP})` };
+    }
+
+    const tierCap = INTERRUPT_TIER_DAILY_CAPS[tier];
+    if (tierCap !== null) {
+      const tierPriorities = tier === 't1_time_sensitive' ? ['time_sensitive', 'critical'] : ['active'];
+      const tierRow = db.prepare(`
+        SELECT COUNT(*) AS c
+          FROM notification_decision_logs
+         WHERE user_id = ? AND tenant_id = ?
+           AND decision = 'sent_push'
+           AND sent_at IS NOT NULL
+           AND datetime(sent_at) >= datetime(?)
+           AND priority IN (${tierPriorities.map(() => '?').join(',')})
+      `).get(intent.userId, intent.tenantId, dayStart, ...tierPriorities) as { c: number } | undefined;
+      if ((tierRow?.c ?? 0) >= tierCap) {
+        return { allowed: false, tier, reason: `daily cap reached for ${tier} (${tierCap})` };
+      }
+    }
+
+    if (countSince(dayStart, intent.sourceSkill) >= INTERRUPT_SKILL_DAILY_CAP) {
+      return { allowed: false, tier, reason: `daily cap reached for ${intent.sourceSkill} (${INTERRUPT_SKILL_DAILY_CAP})` };
+    }
+
+    return { allowed: true, tier, reason: 'within interrupt budget' };
+  } catch (err) {
+    // Fail OPEN, unlike the per-type mute. A mute is an explicit user
+    // instruction; a budget is a heuristic, and dropping every interrupt on a
+    // transient read fault would be a worse failure than one extra push.
+    logger.warn({ err, userId: intent.userId }, 'interrupt budget read failed; allowing');
+    return { allowed: true, tier, reason: 'budget check unavailable; allowing' };
   }
-  retained.push(now);
-  pushRateLimitByScope.set(key, retained);
-  return true;
 }
 
 function effectiveSound(priority: NotificationPriority, _profile: NotificationProfile): string | undefined {
@@ -3277,6 +5478,10 @@ function notificationContractForIntent(intent: NotificationIntentRecord) {
     entityType: intent.relatedEntityType,
     entityId: intent.relatedEntityId,
     recipe: typeof intent.decisionContext?.recipe === 'string' ? intent.decisionContext.recipe : null,
+    actionId: intent.actionButtons.some((action) => action.id === 'reconnect')
+      ? 'reconnect'
+      : intent.actionButtons[0]?.id ?? null,
+    deeplink: intent.deeplink,
   });
 }
 
@@ -3310,6 +5515,7 @@ function mapProfile(row: any): NotificationProfile {
     quietHours: { start: row.quiet_hours_start, end: row.quiet_hours_end },
     timezone: row.timezone,
     pushEnabled: !!row.push_enabled,
+    marketingPushEnabled: !!row.marketing_push_enabled,
     localEnabled: !!row.local_enabled,
     emailEnabled: !!row.email_enabled,
     portalEnabled: !!row.portal_enabled,
@@ -3367,6 +5573,7 @@ function mapIntent(row: any): NotificationIntentRecord {
     decisionDeadline: row.decision_deadline,
     deliveryPolicy: row.delivery_policy,
     privacyPolicy: row.privacy_policy,
+    promotional: !!row.promotional,
     decisionContext: normalizeDecisionContext(safeParseJSON(row.decision_context_json, null)),
     status: row.status,
     createdAt: row.created_at,
@@ -3565,6 +5772,10 @@ function mapCenterItem(row: any): NotificationCenterItem {
     type: row.type,
     priority: row.priority,
     status: row.status,
+    // The joined intent value wins where present, matching the list query's
+    // COALESCE; a bare item row falls back to its own column.
+    requiresUserAction: Boolean(row.intent_requires_user_action ?? row.requires_user_action),
+    promotional: Boolean(row.intent_promotional),
     deeplink: row.deeplink,
     actions: safeParseJSON(row.actions_json, []),
     dedupeKey: row.dedupe_key,
@@ -3771,6 +5982,11 @@ function defaultActionsForType(type: NotificationIntentType): NotificationAction
       { id: 'snooze', label: 'Snooze', style: 'secondary' },
     ];
   }
+  if (type === 'sync_failure') {
+    // `sync_failure` also covers invoice and content jobs. Real connection
+    // producers opt into `reconnect`; the broad type must default to details.
+    return [{ id: 'open_detail', label: 'Open', style: 'primary' }];
+  }
   return [{ id: 'open_detail', label: 'Open', style: 'primary' }];
 }
 
@@ -3796,7 +6012,14 @@ function enforceNotificationActionContract(
   const accepted: NotificationActionButton[] = [];
   const seen = new Set<string>();
 
-  for (const action of actions) {
+  for (const raw of actions) {
+    // Legacy producers still ask for `retry`, whose executor never existed, so
+    // the button rendered permanently greyed. Rewriting it here fixes every
+    // sync_failure producer at the contract boundary instead of requiring an
+    // edit in each one. `reconnect` is navigation, so it is always executable.
+    const action = raw.id === 'retry' && supported.has('reconnect')
+      ? { ...raw, id: 'reconnect', label: 'Reconnect', mutating: undefined }
+      : raw;
     if (!supported.has(action.id) || seen.has(action.id)) continue;
     seen.add(action.id);
     const deeplink = normalizeNotificationActionDeeplink(action.deeplink, action.id, fallbackDeeplink);
@@ -3878,7 +6101,7 @@ function hashToken(token: string): string {
 }
 
 function isInQuietHours(now: Date, start: string, end: string, timezone = DEFAULT_TIMEZONE): boolean {
-  const local = DateTime.fromJSDate(now).setZone(timezone);
+  const local = DateTime.fromJSDate(now).setZone(resolveProfileZone(timezone));
   const minute = local.hour * 60 + local.minute;
   const [startH, startM] = start.split(':').map(Number);
   const [endH, endM] = end.split(':').map(Number);
@@ -3892,7 +6115,7 @@ function isInQuietHours(now: Date, start: string, end: string, timezone = DEFAUL
 }
 
 function nextQuietHoursEnd(end: string, timezone = DEFAULT_TIMEZONE): DateTime {
-  const now = DateTime.now().setZone(timezone);
+  const now = DateTime.now().setZone(resolveProfileZone(timezone));
   const [endH, endM] = end.split(':').map(Number);
   let target = now.set({ hour: endH, minute: endM, second: 0, millisecond: 0 });
   if (target <= now) {
@@ -3901,9 +6124,32 @@ function nextQuietHoursEnd(end: string, timezone = DEFAULT_TIMEZONE): DateTime {
   return target.toUTC();
 }
 
-function nextDigestTime(profile: NotificationProfile): DateTime {
-  const zone = profile.timezone || DEFAULT_TIMEZONE;
+/**
+ * When a digest-routed intent should be released.
+ *
+ * `weekly_review` used to land here too and was therefore scheduled on the
+ * DAILY clock — a retrospective delivered every morning. `weeklyReviewDay` and
+ * `weeklyReviewTime` existed in the profile but were never read by anything.
+ * They are now the schedule for weekly items.
+ */
+function nextDigestTime(profile: NotificationProfile, type?: NotificationIntentType): DateTime {
+  const zone = resolveProfileZone(profile.timezone);
   const now = DateTime.now().setZone(zone);
+
+  if (type === 'weekly_review') {
+    const [hour, minute] = profile.weeklyReviewTime.split(':').map(Number);
+    // `weekly_review_day` is stored in the JS convention (0=Sunday..6=Saturday,
+    // bounded on write); Luxon uses 1=Monday..7=Sunday. Sunday is the only
+    // value that differs.
+    const storedDay = Math.min(6, Math.max(0, profile.weeklyReviewDay ?? 1));
+    const targetWeekday = storedDay === 0 ? 7 : storedDay;
+    let target = now.set({ hour, minute, second: 0, millisecond: 0 });
+    const daysAhead = (targetWeekday - target.weekday + 7) % 7;
+    target = target.plus({ days: daysAhead });
+    if (target <= now) target = target.plus({ weeks: 1 });
+    return target.toUTC();
+  }
+
   const [hour, minute] = profile.dailyDigestTime.split(':').map(Number);
   let target = now.set({ hour, minute, second: 0, millisecond: 0 });
   if (target <= now) {
@@ -3915,7 +6161,10 @@ function nextDigestTime(profile: NotificationProfile): DateTime {
 function deadlineSoon(deadline: string | null): boolean {
   if (!deadline) return false;
   const ms = Date.parse(deadline) - Date.now();
-  return Number.isFinite(ms) && ms <= 24 * 3_600_000;
+  // An expired deadline has zero remaining value and must never buy a
+  // quiet-hours bypass. The Decision Center's sibling check already enforces
+  // the same lower bound; keep delivery policy aligned with it.
+  return Number.isFinite(ms) && ms >= 0 && ms <= 24 * 3_600_000;
 }
 
 function skillLabel(sourceSkill: NotificationSourceSkill): string {

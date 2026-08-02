@@ -376,6 +376,77 @@ describe('exportAllUserData', () => {
     expect(exported.conversations[0].domain).toBe('secretary');
   });
 
+  it('exports only safe, scoped OAuth connection-health metadata', () => {
+    seedUser(testDb, 1);
+    seedUser(testDb, 2);
+    const insert = testDb.prepare(`
+      INSERT INTO user_oauth_connection_health (
+        user_id, tenant_id, provider, state, reason_code
+      ) VALUES (?, ?, ?, 'auth_rejected', ?)
+    `);
+    insert.run(1, 1, 'google', 'invalid_grant');
+    insert.run(2, 2, 'outlook', 'token_expired');
+
+    const exported = exportAllUserData(1);
+
+    expect(exported.oauthConnectionHealth).toEqual([
+      expect.objectContaining({
+        provider: 'google',
+        state: 'auth_rejected',
+        reasonCode: 'invalid_grant',
+      }),
+    ]);
+    expect(JSON.stringify(exported.oauthConnectionHealth)).not.toContain('token');
+    expect(JSON.stringify(exported.oauthConnectionHealth)).not.toContain('provider response');
+
+    const counts = deleteAllUserData(1);
+    expect(counts.user_oauth_connection_health).toBe(1);
+    expect(testDb.prepare(`
+      SELECT user_id, provider FROM user_oauth_connection_health
+      ORDER BY user_id
+    `).all()).toEqual([{ user_id: 2, provider: 'outlook' }]);
+  });
+
+  it('exports notification decision logs with type from the matching scoped intent', () => {
+    testDb.prepare(`
+      INSERT INTO notification_intents (
+        intent_id, user_id, tenant_id, source_skill, type, priority, title, body
+      ) VALUES
+        ('intent-export-owner', 1, 1, 'secretary', 'reminder', 'active',
+         'Owner reminder', 'Owner body'),
+        ('intent-export-other', 2, 2, 'security', 'security_account', 'time_sensitive',
+         'Other security alert', 'Other body')
+    `).run();
+    testDb.prepare(`
+      INSERT INTO notification_decision_logs (
+        decision_log_id, intent_id, user_id, tenant_id, source_skill,
+        decision, priority, reason, created_at
+      ) VALUES
+        ('log-export-owner', 'intent-export-owner', 1, 1, 'secretary',
+         'sent_push', 'active', 'pushable', '2026-08-01T10:00:00.000Z'),
+        ('log-export-scope-mismatch', 'intent-export-other', 1, 1, 'secretary',
+         'in_app_only', 'active', 'policy_blocked', '2026-08-01T10:01:00.000Z'),
+        ('log-export-other', 'intent-export-other', 2, 2, 'security',
+         'sent_push', 'time_sensitive', 'pushable', '2026-08-01T10:02:00.000Z')
+    `).run();
+
+    const exported = exportAllUserData(1);
+
+    expect(exported.notificationDecisionLogs).toEqual([
+      expect.objectContaining({
+        decision: 'sent_push',
+        sourceSkill: 'secretary',
+        type: 'reminder',
+      }),
+      expect.objectContaining({
+        decision: 'in_app_only',
+        sourceSkill: 'secretary',
+        type: null,
+      }),
+    ]);
+    expect(JSON.stringify(exported.notificationDecisionLogs)).not.toContain('security_account');
+  });
+
   it('exports todos, reminders, notes, shared memory', () => {
     seedUser(testDb, 1);
     seedUserData(testDb, 1);
