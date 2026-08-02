@@ -19,6 +19,8 @@ const EVIDENCE_SHA256 = 'c'.repeat(64);
 const GENERATED_AT = '2026-08-02T01:02:03.000Z';
 const TRANSACTION_ID = '20260802T010203Z-abcdef123456';
 const SECRET_SENTINEL = 'do-not-print-this-private-value';
+const SYNTHETIC_QA_MANIFEST_SHA256 = `sha256:${'4'.repeat(64)}`;
+const SYNTHETIC_QA_RECEIPT_SHA256 = `sha256:${'5'.repeat(64)}`;
 
 const CAPABILITY_FLAGS = [
   'AI_ROUTING_MANIFEST_CLASSIFIER',
@@ -85,6 +87,16 @@ function routingEvidence(overrides: Record<string, unknown> = {}): Record<string
     liveShadowPlannerDedicatedTenant: false,
     liveHealthSha256: '3'.repeat(64),
     liveHealthCheckedAt: '2026-08-02T01:01:59.000Z',
+    syntheticQaContractVersion: 'routing-synthetic-qa-v1',
+    syntheticQaTrafficClass: 'owner_authorized_synthetic_staging_qa',
+    syntheticQaManifestSchema: 'nexus.routing-synthetic-qa-manifest.v1',
+    syntheticQaManifestSha256: SYNTHETIC_QA_MANIFEST_SHA256,
+    syntheticQaReceiptSchema: 'nexus.routing-synthetic-qa-receipt.v1',
+    syntheticQaReceiptSha256: SYNTHETIC_QA_RECEIPT_SHA256,
+    syntheticQaStartedAt: '2026-08-02T00:05:00.000Z',
+    syntheticQaCompletedAt: '2026-08-02T00:59:59.999Z',
+    syntheticQaPlannedTurns: 200,
+    syntheticQaMatchedBundles: 200,
     ...overrides,
   };
 }
@@ -126,6 +138,57 @@ function rawRoutingGate(
           state: 'classifierKeyword=off,orchestratorPrimary=off,registrySubset=off,shadowRoute=off,masterKill=off',
           bundles: 200,
         }],
+      },
+      syntheticQaBinding: {
+        enforced: true,
+        contractVersion: 'routing-synthetic-qa-v1',
+        trafficClass: 'owner_authorized_synthetic_staging_qa',
+        manifest: {
+          schema: 'nexus.routing-synthetic-qa-manifest.v1',
+          sha256: SYNTHETIC_QA_MANIFEST_SHA256,
+          runtimeSha: RUNTIME_SHA,
+          artifactDigest: ARTIFACT_DIGEST,
+          environment: 'staging',
+          surface: 'classifierKeyword',
+          userId: 424242,
+          tenantId: 424242,
+          plannedTurns: 200,
+        },
+        receipt: {
+          schema: 'nexus.routing-synthetic-qa-receipt.v1',
+          sha256: SYNTHETIC_QA_RECEIPT_SHA256,
+          status: 'passed',
+          manifestSha256: SYNTHETIC_QA_MANIFEST_SHA256,
+          runtimeSha: RUNTIME_SHA,
+          artifactDigest: ARTIFACT_DIGEST,
+          environment: 'staging',
+          surface: 'classifierKeyword',
+          userId: 424242,
+          tenantId: 424242,
+          plannedTurns: 200,
+          attemptedTurns: 200,
+          acceptedTurns: 200,
+          recordedTurns: 200,
+          startedAt: '2026-08-02T00:05:00.000Z',
+          completedAt: '2026-08-02T00:59:59.999Z',
+          httpStatusCounts: { 200: 200 },
+          apiUsageDelta: { rows: 0, costUsd: 0 },
+          providerReservationDelta: { rows: 0, costUsd: 0 },
+          providerCalled: false,
+          externalCallPerformed: false,
+          domainMutationPerformed: false,
+        },
+        counts: {
+          inWindowBundles: 200,
+          matchedBundles: 200,
+          missingOrMalformedProvenanceBundles: 0,
+          manifestMismatchBundles: 0,
+          duplicateOrdinalBundles: 0,
+          missingOrdinals: 0,
+          hmacMismatchBundles: 0,
+          expectedLabelMismatchBundles: 0,
+          targetSurfaceNotComparedBundles: 0,
+        },
       },
       shadowRecorderBinding: {
         enforced: true,
@@ -613,6 +676,9 @@ describe('chat capability flag transaction', () => {
       (raw: any) => { raw.surfaceTotals.classifierKeyword.compared = 199; },
       (raw: any) => { raw.evidence.capabilityFlagBinding.counts.selectedSurfaceFlagOnBundles = 1; },
       (raw: any) => { raw.evidence.identity.releaseIdentity.runtimeSha = 'f'.repeat(40); },
+      (raw: any) => { delete raw.evidence.syntheticQaBinding; },
+      (raw: any) => { raw.evidence.syntheticQaBinding.counts.expectedLabelMismatchBundles = 1; },
+      (raw: any) => { raw.evidence.syntheticQaBinding.receipt.apiUsageDelta.rows = 1; },
     ]) {
       const invalid = JSON.parse(rawEvidence);
       mutate(invalid);

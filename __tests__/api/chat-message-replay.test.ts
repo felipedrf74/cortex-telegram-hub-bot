@@ -45,10 +45,18 @@ const mockGetCached = vi.fn(() => null as unknown);
 const mockSetCache = vi.fn();
 const mockTryHandleChatActionPlan = vi.fn(async () => null as unknown);
 const mockExecuteConfirmedChatActionRuns = vi.fn(async () => null as unknown);
+const mockAcquireAiBudgetReservation = vi.fn(async () => () => { /* no-op */ });
+const mockAcquireCostLock = vi.fn(async () => () => { /* no-op */ });
+const mockEnsureActiveProvider = vi.fn(() => null as unknown);
 const mockHandleSecretary = vi.fn(async (message: string) => ({
   text: `Secretary handled: ${message}`,
   domain: 'secretary' as const,
 }));
+const mockHandleTriathlon = vi.fn(async () => ({ text: 'Training.', domain: 'triathlon' as const }));
+const mockHandleContent = vi.fn(async () => ({ text: 'Content.', domain: 'content' as const }));
+const mockHandleFinance = vi.fn(async () => ({ text: 'Finance.', domain: 'finance' as const }));
+const mockHandleCooking = vi.fn(async () => ({ text: 'Cooking.', domain: 'cooking' as const }));
+const runtimeGuardReplayFixture = vi.hoisted(() => ({ enabled: false }));
 const decisionMocks = vi.hoisted(() => ({
   createDecisionIntent: vi.fn(async () => ({ item: { decisionId: 'decision-fixed' } })),
   findDecisionByRelatedEntity: vi.fn((): unknown => null),
@@ -113,6 +121,34 @@ vi.mock('../../src/utils/logger', () => ({
   LOGGER_REDACTION_PATHS: [],
 }));
 
+// Host filesystem/controller attestation is pinned in the dedicated runtime-
+// guard suite. This endpoint replay isolates the governed request contract and
+// terminal stage while keeping the guard in its ordinary clear state.
+vi.mock('../../src/services/chat-capability-runtime-guard', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/services/chat-capability-runtime-guard')>();
+  return {
+    ...actual,
+    getChatCapabilityRuntimeGuardStatus: vi.fn((...args: Parameters<typeof actual.getChatCapabilityRuntimeGuardStatus>) => (
+      runtimeGuardReplayFixture.enabled
+        ? {
+            status: 'clear' as const,
+            reason: 'replay_fixture_no_unresolved_transaction',
+            transactionId: null,
+            planDigest: null,
+          }
+        : actual.getChatCapabilityRuntimeGuardStatus(...args)
+    )),
+  };
+});
+
+vi.mock('../../src/services/provider-registry', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/services/provider-registry')>();
+  return {
+    ...actual,
+    ensureActiveProvider: (...args: unknown[]) => mockEnsureActiveProvider(...args),
+  };
+});
+
 vi.mock('../../src/router', () => ({
   routeMessage: (...args: unknown[]) => mockRouteMessage(...args),
   keywordMatch: vi.fn(() => null),
@@ -148,7 +184,9 @@ vi.mock('../../src/services/user-service', () => ({
   getUserById: (userId: number) => ({
     id: userId,
     tier: 'pro',
-    email: 'nexushubbot@gmail.com',
+    email: process.env.CHAT_EVAL_DEDICATED_TENANT_ID === String(userId)
+      ? 'phase7-routing-qa@example.invalid'
+      : 'nexushubbot@gmail.com',
   }),
   getUserByTelegramId: (userId: number) => ({ id: userId, tier: 'pro' }),
 }));
@@ -169,8 +207,8 @@ vi.mock('../../src/services/cost-guardrail', () => {
   }
   return {
     AiBudgetError,
-    acquireAiBudgetReservation: vi.fn(async () => () => { /* no-op */ }),
-    acquireCostLock: vi.fn(async () => () => { /* no-op */ }),
+    acquireAiBudgetReservation: (...args: unknown[]) => mockAcquireAiBudgetReservation(...args),
+    acquireCostLock: (...args: unknown[]) => mockAcquireCostLock(...args),
     isUserOverDailyCap: vi.fn(() => ({ over: false, plan: 'pro', resetAt: '2026-07-21T00:00:00.000Z' })),
     buildQuotaExceededPayload: vi.fn(() => ({})),
     buildQuotaExceededMessage: vi.fn(() => 'quota'),
@@ -190,19 +228,19 @@ vi.mock('../../src/domains/secretary', () => ({
 }));
 
 vi.mock('../../src/domains/triathlon', () => ({
-  handleTriathlon: vi.fn(async () => ({ text: 'Training.', domain: 'triathlon' as const })),
+  handleTriathlon: (...args: unknown[]) => mockHandleTriathlon(...args),
 }));
 
 vi.mock('../../src/domains/content-creator', () => ({
-  handleContent: vi.fn(async () => ({ text: 'Content.', domain: 'content' as const })),
+  handleContent: (...args: unknown[]) => mockHandleContent(...args),
 }));
 
 vi.mock('../../src/domains/finance', () => ({
-  handleFinance: vi.fn(async () => ({ text: 'Finance.', domain: 'finance' as const })),
+  handleFinance: (...args: unknown[]) => mockHandleFinance(...args),
 }));
 
 vi.mock('../../src/domains/cooking', () => ({
-  handleCooking: vi.fn(async () => ({ text: 'Cooking.', domain: 'cooking' as const })),
+  handleCooking: (...args: unknown[]) => mockHandleCooking(...args),
 }));
 
 vi.mock('../../src/services/gemini-provider', () => ({
@@ -556,6 +594,7 @@ afterEach(async () => {
 
 describe('POST /api/v1/chat/message replay net', () => {
   beforeEach(() => {
+    runtimeGuardReplayFixture.enabled = false;
     testDb = createMigratedTestDatabase();
     // Chat history rows FK-reference users; seed the corpus user.
     testDb.prepare(`
@@ -578,7 +617,14 @@ describe('POST /api/v1/chat/message replay net', () => {
     mockTryHandleChatActionPlan.mockResolvedValue(null);
     mockExecuteConfirmedChatActionRuns.mockReset();
     mockExecuteConfirmedChatActionRuns.mockResolvedValue(null);
+    mockAcquireAiBudgetReservation.mockClear();
+    mockAcquireCostLock.mockClear();
+    mockEnsureActiveProvider.mockClear();
     mockHandleSecretary.mockClear();
+    mockHandleTriathlon.mockClear();
+    mockHandleContent.mockClear();
+    mockHandleFinance.mockClear();
+    mockHandleCooking.mockClear();
     decisionMocks.createDecisionIntent.mockReset();
     decisionMocks.createDecisionIntent.mockResolvedValue({ item: { decisionId: 'decision-fixed' } });
     decisionMocks.findDecisionByRelatedEntity.mockReset();
@@ -681,6 +727,71 @@ describe('POST /api/v1/chat/message replay net', () => {
 
     const conflict = await postMessage('req-idem-3', { text: 'different text', clientMessageId: 'cmid-replay' });
     assertTurn('idempotency_conflict', captureTurn('idempotency_conflict', conflict, 'req-idem-3'));
+  });
+
+  it('pins the governed staging synthetic-routing QA terminal without provider or domain execution', async () => {
+    const manifestHex = 'e'.repeat(64);
+    const manifestSha256 = `sha256:${manifestHex}`;
+    const turnId = `routing-synthetic-qa-v1:${manifestHex}:classifierKeyword:001`;
+    runtimeGuardReplayFixture.enabled = true;
+    try {
+      const res = await withChatCoreV2Env({
+        NODE_ENV: 'staging',
+        STAGING: 'true',
+        NEXUS_RELEASE_ROLE: 'staging',
+        NEXUS_RELEASE_SHA: 'a'.repeat(40),
+        NEXUS_RELEASE_ARTIFACT_SHA256: 'b'.repeat(64),
+        CHAT_EVAL_DEDICATED_TENANT_ID: String(TENANT_ID),
+        CHAT_CORE_V2_SHADOW_ROUTE_HOOK_ENABLED: 'false',
+        [`CHAT_CORE_V2_SHADOW_ROUTE_HOOK_ENABLED_USER_${USER_ID}`]: 'true',
+        [`CHAT_CORE_V2_SHADOW_ROUTE_HOOK_ENABLED_TENANT_${TENANT_ID}`]: 'true',
+        CHAT_CORE_V2_SHADOW_PLANNER_ENABLED: 'false',
+        [`CHAT_CORE_V2_SHADOW_PLANNER_ENABLED_USER_${USER_ID}`]: 'false',
+        [`CHAT_CORE_V2_SHADOW_PLANNER_ENABLED_TENANT_${TENANT_ID}`]: 'false',
+        CHAT_CORE_V2_SHADOW_ROUTE_HMAC_SECRET: 'replay-only-shadow-route-secret-with-at-least-32-bytes',
+      }, () => postMessage(
+        'req-routing-synthetic-qa',
+        {
+          text: 'Please review my task list for tomorrow.',
+          clientMessageId: turnId,
+        },
+        {
+          'x-language': 'en-US',
+          'x-nexus-routing-synthetic-qa-contract': 'routing-synthetic-qa-v1',
+          'x-nexus-routing-synthetic-qa-manifest-sha256': manifestSha256,
+          'x-nexus-routing-synthetic-qa-surface': 'classifierKeyword',
+          'x-nexus-routing-synthetic-qa-ordinal': '1',
+          'x-nexus-routing-synthetic-qa-planned-turns': '200',
+          'x-nexus-routing-synthetic-qa-turn-id': turnId,
+        },
+      ));
+
+      assertTerminalContract(
+        'routing_synthetic_qa',
+        captureTurn('routing_synthetic_qa', res, 'req-routing-synthetic-qa'),
+      );
+      expect(mockAcquireAiBudgetReservation).not.toHaveBeenCalled();
+      expect(mockAcquireCostLock).not.toHaveBeenCalled();
+      expect(mockEnsureActiveProvider).not.toHaveBeenCalled();
+      expect(mockRouteMessage).not.toHaveBeenCalled();
+      expect(mockTryDeterministicChatCommand).not.toHaveBeenCalled();
+      expect(mockTryHandleChatActionPlan).not.toHaveBeenCalled();
+      expect(mockExecuteConfirmedChatActionRuns).not.toHaveBeenCalled();
+      expect(mockHandleSecretary).not.toHaveBeenCalled();
+      expect(mockHandleTriathlon).not.toHaveBeenCalled();
+      expect(mockHandleContent).not.toHaveBeenCalled();
+      expect(mockHandleFinance).not.toHaveBeenCalled();
+      expect(mockHandleCooking).not.toHaveBeenCalled();
+      expect(decisionMocks.createDecisionIntent).not.toHaveBeenCalled();
+      expect(decisionMocks.findDecisionByRelatedEntity).not.toHaveBeenCalled();
+      expect(decisionMocks.performDecisionAction).not.toHaveBeenCalled();
+      expect(mockGetScript).not.toHaveBeenCalled();
+      expect(mockBuildChatInternetResearchAnswer).not.toHaveBeenCalled();
+      expect(testDb.prepare('SELECT COUNT(*) AS count FROM messages').get()).toEqual({ count: 0 });
+      expect(testDb.prepare('SELECT COUNT(*) AS count FROM chat_v2_replay_bundles').get()).toEqual({ count: 1 });
+    } finally {
+      runtimeGuardReplayFixture.enabled = false;
+    }
   });
 
   it('pins the token-zero finance shortcut envelope and stage order', async () => {
@@ -1133,6 +1244,7 @@ const EXPECTED_STAGES: Record<string, string[]> = {
   legacy_route_secretary: ["request_received", "request_validated", "legacy_route", "legacy_response"],
   idempotent_replay: ["request_received", "idempotent_replay"],
   idempotency_conflict: ["request_received", "idempotent_replay_conflict"],
+  routing_synthetic_qa: ["request_received", "routing_synthetic_qa"],
   token_zero_shortcut: ["request_received", "request_validated", "token_zero_shortcut"],
   fast_path_slash_day: ["request_received", "request_validated", "fast_path"],
   cached_command: ["request_received", "request_validated", "cached_command"],
@@ -1237,6 +1349,19 @@ const REPLAY_SOURCE_POPULATIONS = {
 } as const;
 
 const EXPECTED_TERMINAL_CONTRACTS: Record<string, unknown> = {
+  routing_synthetic_qa: {
+    statusCode: 200,
+    body: {
+      domain: 'secretary',
+      routeMethod: 'routing-synthetic-qa',
+      metadata: {
+        type: 'routing_synthetic_qa_recorded',
+        providerCalled: false,
+        externalCallPerformed: false,
+        domainMutationPerformed: false,
+      },
+    },
+  },
   idempotency_in_progress: {
     statusCode: 202,
     body: {
@@ -1338,6 +1463,7 @@ const REPLAY_TERMINAL_COVERAGE: ReadonlyArray<{
 }> = [
   { stageFamily: 'idempotent_replay', replayCases: ['idempotent_replay', 'idempotency_conflict'] },
   { stageFamily: 'idempotency_claim', replayCases: ['idempotency_in_progress', 'idempotency_claim_conflict'] },
+  { stageFamily: 'routing_synthetic_qa', replayCases: ['routing_synthetic_qa'] },
   { stageFamily: 'token_zero_shortcut', replayCases: ['token_zero_shortcut'] },
   { stageFamily: 'chat_core_v2_deterministic_read_early', replayCases: ['chat_core_v2_deterministic_read_early'] },
   { stageFamily: 'pending_work_cancel', replayCases: ['cancel_empty', 'cancel_pending'] },

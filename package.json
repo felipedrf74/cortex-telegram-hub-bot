@@ -40,6 +40,7 @@
     "security:rotate-data-encryption": "node dist/tools/rotate-data-encryption-keys.js",
     "chat:eval": "node dist/tools/chat-evaluation-harness.js",
     "chat:eval-live": "npx tsx scripts/run-chat-eval-live.ts",
+    "chat:routing-synthetic-qa": "node scripts/run-routing-synthetic-qa.mjs",
     "chat:test-phase": "npx tsx scripts/chat-test-phase.ts",
     "chat:model-bakeoff": "node dist/tools/chat-model-bakeoff.js",
     "fiscal:vendors:audit": "node dist/tools/invoice-vendor-cleanup.js",

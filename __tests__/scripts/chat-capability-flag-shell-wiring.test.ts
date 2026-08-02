@@ -37,6 +37,12 @@ const ARTIFACT_DIGEST = 'b'.repeat(64);
 const TRANSACTION_ID = '20260802T010203Z-abcdef123456';
 const NEXT_TRANSACTION_ID = '20260802T010204Z-fedcba654321';
 const SHADOW_HOOK_TRANSACTION_ID = '20260730T235900Z-abcdef123456';
+const SYNTHETIC_QA_MANIFEST_BYTES = '{"fixture":"synthetic-qa-manifest"}\n';
+const SYNTHETIC_QA_MANIFEST_DIGEST = createHash('sha256')
+  .update(SYNTHETIC_QA_MANIFEST_BYTES)
+  .digest('hex');
+const SYNTHETIC_QA_MANIFEST_SHA256 = `sha256:${SYNTHETIC_QA_MANIFEST_DIGEST}`;
+const SYNTHETIC_QA_RECEIPT_SHA256 = `sha256:${'f'.repeat(64)}`;
 const temporaryRoots: string[] = [];
 
 function shellSingleQuote(value: string): string {
@@ -68,6 +74,7 @@ function createShellFixture() {
   const helper = path.join(scripts, 'lib/chat-capability-flag-transaction.mjs');
   const remote = path.join(scripts, 'remote-chat-capability-flag-transaction.sh');
   const stateRoot = path.join(root, 'state/chat-capability-flags');
+  const routingSyntheticQaStateRoot = path.join(root, 'state/routing-synthetic-qa');
   const userReleaseLock = path.join(root, 'state/.release.lock');
   const rootSonarLock = path.join(root, 'root-lock/nexus-release-sonar.lock');
   const fakeBin = path.join(root, 'bin');
@@ -97,7 +104,7 @@ function createShellFixture() {
   writeFileSync(path.join(scripts, 'routing-divergence-report.mjs'), '// fixture\n');
   writeFileSync(
     path.join(release, 'dist/services/intent-resolution/divergence-shadow.js'),
-    "exports.ROUTING_DIVERGENCE_SHADOW_VERSION = 'routing_divergence_shadow@4.0.0';\n",
+    "exports.ROUTING_DIVERGENCE_SHADOW_VERSION = 'routing_divergence_shadow@5.0.0';\n",
   );
   writeFileSync(
     path.join(release, 'dist/services/intent-resolution/intent-resolver.js'),
@@ -131,6 +138,11 @@ case "\${1:-}" in
     exit 0
     ;;
   --env-file=*)
+    if [ "\${2:-}" = scripts/routing-divergence-report.mjs ]; then
+      [ -f ${shellSingleQuote(routingReportFile)} ] || exit 97
+      /bin/cat ${shellSingleQuote(routingReportFile)}
+      exit 0
+    fi
     if [ "\${2:-}" = - ] && [ "\${3:-}" = ${shellSingleQuote(release)} ] \
         && [ "\${4:-}" = ${shellSingleQuote(path.join(base, 'data/bot.db'))} ]; then
       printf '42'
@@ -219,6 +231,7 @@ chmod "$mode" "$@"
 if [ "\${1:-}" = -c ]; then
   case "\${2:-}" in
     %U:%a) printf '%s:600\\n' "$(id -un)" ;;
+    %U:%a:%h) printf '%s:600:1\\n' "$(id -un)" ;;
     %U:%G:%a) printf 'root:dominguez:660\\n' ;;
     *) exit 96 ;;
   esac
@@ -257,6 +270,11 @@ exec /usr/bin/readlink "$@"
     remoteBody,
     "readonly STATE_ROOT='/home/dominguez/.local/state/nexus-release/chat-capability-flags'",
     `readonly STATE_ROOT=${shellSingleQuote(stateRoot)}`,
+  );
+  remoteBody = replaceRequired(
+    remoteBody,
+    "readonly ROUTING_SYNTHETIC_QA_STATE_ROOT='/home/dominguez/.local/state/nexus-release/routing-synthetic-qa'",
+    `readonly ROUTING_SYNTHETIC_QA_STATE_ROOT=${shellSingleQuote(routingSyntheticQaStateRoot)}`,
   );
   remoteBody = replaceRequired(
     remoteBody,
@@ -451,6 +469,23 @@ exec /usr/bin/readlink "$@"
       routingEvidence({ receipt, receiptRaw, healthRaw, healthTimestamp }),
       { mode: 0o600 },
     );
+    const syntheticQaRoot = path.join(
+      routingSyntheticQaStateRoot,
+      `${RUNTIME_SHA}-${ARTIFACT_DIGEST.slice(0, 12)}`,
+      'classifierKeyword',
+    );
+    mkdirSync(syntheticQaRoot, { recursive: true, mode: 0o700 });
+    chmodSync(syntheticQaRoot, 0o700);
+    writeFileSync(
+      path.join(syntheticQaRoot, `${SYNTHETIC_QA_MANIFEST_DIGEST}.manifest.json`),
+      SYNTHETIC_QA_MANIFEST_BYTES,
+      { mode: 0o600 },
+    );
+    writeFileSync(
+      path.join(syntheticQaRoot, `${SYNTHETIC_QA_MANIFEST_DIGEST}.receipt.json`),
+      '{"fixture":"synthetic-qa-receipt"}\n',
+      { mode: 0o600 },
+    );
   }
 
   return {
@@ -459,6 +494,7 @@ exec /usr/bin/readlink "$@"
     pm2Log,
     release,
     remote,
+    routingSyntheticQaStateRoot,
     stateRoot,
     runtimePermit: path.join(stateRoot, 'staging.runtime-permit.json'),
     run,
@@ -529,6 +565,57 @@ function routingEvidence(input: {
           state: 'classifierKeyword=off,orchestratorPrimary=off,registrySubset=off,shadowRoute=off,masterKill=off',
           bundles: 200,
         }],
+      },
+      syntheticQaBinding: {
+        enforced: true,
+        contractVersion: 'routing-synthetic-qa-v1',
+        trafficClass: 'owner_authorized_synthetic_staging_qa',
+        manifest: {
+          schema: 'nexus.routing-synthetic-qa-manifest.v1',
+          sha256: SYNTHETIC_QA_MANIFEST_SHA256,
+          runtimeSha: RUNTIME_SHA,
+          artifactDigest: ARTIFACT_DIGEST,
+          environment: 'staging',
+          surface: 'classifierKeyword',
+          userId: input.receipt.dedicatedTenantId,
+          tenantId: input.receipt.dedicatedTenantId,
+          plannedTurns: 200,
+        },
+        receipt: {
+          schema: 'nexus.routing-synthetic-qa-receipt.v1',
+          sha256: SYNTHETIC_QA_RECEIPT_SHA256,
+          status: 'passed',
+          manifestSha256: SYNTHETIC_QA_MANIFEST_SHA256,
+          runtimeSha: RUNTIME_SHA,
+          artifactDigest: ARTIFACT_DIGEST,
+          environment: 'staging',
+          surface: 'classifierKeyword',
+          userId: input.receipt.dedicatedTenantId,
+          tenantId: input.receipt.dedicatedTenantId,
+          plannedTurns: 200,
+          attemptedTurns: 200,
+          acceptedTurns: 200,
+          recordedTurns: 200,
+          startedAt: '2026-07-31T00:00:00.000Z',
+          completedAt: '2026-07-31T23:59:59.999Z',
+          httpStatusCounts: { 200: 200 },
+          apiUsageDelta: { rows: 0, costUsd: 0 },
+          providerReservationDelta: { rows: 0, costUsd: 0 },
+          providerCalled: false,
+          externalCallPerformed: false,
+          domainMutationPerformed: false,
+        },
+        counts: {
+          inWindowBundles: 200,
+          matchedBundles: 200,
+          missingOrMalformedProvenanceBundles: 0,
+          manifestMismatchBundles: 0,
+          duplicateOrdinalBundles: 0,
+          missingOrdinals: 0,
+          hmacMismatchBundles: 0,
+          expectedLabelMismatchBundles: 0,
+          targetSurfaceNotComparedBundles: 0,
+        },
       },
       shadowRecorderBinding: {
         enforced: true,
@@ -618,6 +705,7 @@ describe('chat capability flag remote shell wiring', () => {
       'gate_pass',
       '2026-07-31T00:00:00.000Z',
       '2026-07-31T23:59:59.999Z',
+      SYNTHETIC_QA_MANIFEST_SHA256,
     ]);
 
     expect(replacement.status).not.toBe(0);
@@ -634,6 +722,7 @@ describe('chat capability flag remote shell wiring', () => {
       'gate_pass',
       '2026-07-31T00:00:00.000Z',
       '2026-07-31T23:59:59.999Z',
+      SYNTHETIC_QA_MANIFEST_SHA256,
     ], { input: '{"forgedCallerEvidence":true}\n' });
 
     expect(result.status, result.stderr).toBe(0);
@@ -649,6 +738,30 @@ describe('chat capability flag remote shell wiring', () => {
     });
   });
 
+  it('refuses a selected synthetic QA manifest whose bytes do not match its digest', () => {
+    const fixture = createShellFixture();
+    fixture.seedShadowHookEnable();
+    const manifestPath = path.join(
+      fixture.routingSyntheticQaStateRoot,
+      `${RUNTIME_SHA}-${ARTIFACT_DIGEST.slice(0, 12)}`,
+      'classifierKeyword',
+      `${SYNTHETIC_QA_MANIFEST_DIGEST}.manifest.json`,
+    );
+    writeFileSync(manifestPath, '{"fixture":"substituted-after-selection"}\n', { mode: 0o600 });
+
+    const result = fixture.run('inspect', [
+      'AI_ROUTING_MANIFEST_CLASSIFIER',
+      'true',
+      'gate_pass',
+      '2026-07-31T00:00:00.000Z',
+      '2026-07-31T23:59:59.999Z',
+      SYNTHETIC_QA_MANIFEST_SHA256,
+    ]);
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/manifest.*digest|sha-?256|does not match/i);
+  });
+
   it('refuses a staging environment hardlinked to the production environment', () => {
     const fixture = createShellFixture();
     const productionBase = path.join(path.dirname(fixture.base), 'telegram-hub-bot');
@@ -661,6 +774,7 @@ describe('chat capability flag remote shell wiring', () => {
       'gate_pass',
       '2026-07-31T00:00:00.000Z',
       '2026-07-31T23:59:59.999Z',
+      SYNTHETIC_QA_MANIFEST_SHA256,
     ]);
 
     expect(result.status).not.toBe(0);
@@ -685,6 +799,7 @@ describe('chat capability flag remote shell wiring', () => {
       'gate_pass',
       '2026-07-31T00:00:00.000Z',
       '2026-07-31T23:59:59.999Z',
+      SYNTHETIC_QA_MANIFEST_SHA256,
     ]);
 
     expect(result.status).not.toBe(0);

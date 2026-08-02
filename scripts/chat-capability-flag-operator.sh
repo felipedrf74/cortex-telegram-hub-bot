@@ -26,6 +26,7 @@ DESIRED_VALUE=''
 TRANSITION_REASON=''
 SINCE=''
 UNTIL=''
+SYNTHETIC_QA_MANIFEST_SHA256=''
 ACK_PLAN=''
 
 usage() {
@@ -35,7 +36,8 @@ Usage:
     --role <staging|production> --runtime-sha <40-hex> \
     --artifact-digest <64-hex> --flag <governed-flag> \
     --value <true|false> --transition-reason <reason> \
-    [--since <canonical-UTC>] [--until <canonical-UTC>]
+    [--since <canonical-UTC>] [--until <canonical-UTC>] \
+    [--synthetic-qa-manifest-sha256 sha256:<64-hex>]
 
   NEXUS_RELEASE_OWNER_AUTHORIZED=1 \
   scripts/chat-capability-flag-operator.sh apply \
@@ -99,6 +101,10 @@ while [ $# -gt 0 ]; do
     --transition-reason) TRANSITION_REASON="${2:?--transition-reason requires a value}"; shift 2 ;;
     --since) SINCE="${2:?--since requires a timestamp}"; shift 2 ;;
     --until) UNTIL="${2:?--until requires a timestamp}"; shift 2 ;;
+    --synthetic-qa-manifest-sha256)
+      SYNTHETIC_QA_MANIFEST_SHA256="${2:?--synthetic-qa-manifest-sha256 requires a digest}"
+      shift 2
+      ;;
     --ack-plan) ACK_PLAN="${2:?--ack-plan requires a digest}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1" ;;
@@ -133,6 +139,8 @@ if [ "$COMMAND" = inspect ] && [ "$ROLE" = staging ] \
     && [ "$DESIRED_VALUE" = true ] && [ "$ROUTING_FLAG" = true ]; then
   [ -n "$SINCE" ] && [ -n "$UNTIL" ] \
     || die 'staging routing enable inspect requires both --since and --until'
+  [[ "$SYNTHETIC_QA_MANIFEST_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]] \
+    || die 'staging routing enable inspect requires the exact synthetic QA manifest digest'
   node - "$SINCE" "$UNTIL" <<'NODE' \
     || die '--since and --until must be one ordered immutable canonical UTC window'
 const [since, until] = process.argv.slice(2);
@@ -142,8 +150,9 @@ if (!canonical(since) || !canonical(until) || Date.parse(until) < Date.parse(sin
   process.exit(1);
 }
 NODE
-elif [ -n "$SINCE" ] || [ -n "$UNTIL" ]; then
-  die '--since and --until are accepted only for a staging manifest-routing enable inspect'
+elif [ -n "$SINCE" ] || [ -n "$UNTIL" ] \
+    || [ -n "$SYNTHETIC_QA_MANIFEST_SHA256" ]; then
+  die '--since, --until, and --synthetic-qa-manifest-sha256 are accepted only for a staging manifest-routing enable inspect'
 fi
 
 RELEASE_NAME="$RUNTIME_SHA-${ARTIFACT_DIGEST:0:12}"
@@ -433,7 +442,8 @@ case "$COMMAND" in
         && [ "$ROUTING_FLAG" = true ]; then
       ssh "$SERVER" /bin/bash "$REMOTE_SCRIPT" inspect "$ROLE" "$BASE_DIR" \
         "$RUNTIME_SHA" "$ARTIFACT_DIGEST" "$FLAG" "$DESIRED_VALUE" \
-        "$TRANSITION_REASON" "$SINCE" "$UNTIL" < /dev/null > "$PLAN_TEMP"
+        "$TRANSITION_REASON" "$SINCE" "$UNTIL" \
+        "$SYNTHETIC_QA_MANIFEST_SHA256" < /dev/null > "$PLAN_TEMP"
     else
       ssh "$SERVER" /bin/bash "$REMOTE_SCRIPT" inspect "$ROLE" "$BASE_DIR" \
         "$RUNTIME_SHA" "$ARTIFACT_DIGEST" "$FLAG" "$DESIRED_VALUE" \
