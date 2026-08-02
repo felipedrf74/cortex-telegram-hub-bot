@@ -30,6 +30,7 @@
 import fs from 'fs';
 import path from 'path';
 import { logger } from '../../utils/logger';
+import { chatCapabilityRuntimeAllowsFlags } from '../chat-capability-runtime-guard';
 import { MANIFEST_ROUTING_MASTER_KILL_ENV_VAR } from './manifest-routing-flags';
 
 export const ROUTING_CALIBRATION_VERSION = 'routing-calibration@1.0.0';
@@ -328,6 +329,7 @@ function parseBoolean(raw: string | undefined): boolean {
  * always wins, mirroring the M12 per-surface flag precedence rule.
  */
 export function isRoutingClarifyEnabled(env: EnvLike = process.env): boolean {
+  if (!chatCapabilityRuntimeAllowsFlags()) return false;
   if (parseBoolean(env[MANIFEST_ROUTING_MASTER_KILL_ENV_VAR])) return false;
   return parseBoolean(env[ROUTING_CLARIFY_ENV_VAR]);
 }

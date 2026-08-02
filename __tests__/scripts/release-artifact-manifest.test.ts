@@ -43,8 +43,12 @@ describe('release artifact manifest', () => {
     expect(RELEASE_RUNTIME_FILES).toEqual(expect.arrayContaining([
       'scripts/release-artifact-manifest.mjs',
       'scripts/lib/release-artifact-manifest.mjs',
+      'scripts/lib/chat-capability-flag-transaction.mjs',
       'scripts/release-runtime-dependencies.mjs',
+      'scripts/chat-capability-flag-operator.sh',
+      'scripts/remote-chat-capability-flag-transaction.sh',
       'scripts/remote-user-release-transaction.sh',
+      'scripts/routing-divergence-report.mjs',
       'scripts/staging-smoke-ollama.sh',
       'scripts/training-cross-skill-staging-smoke.sh',
       'scripts/with-smoke-evidence.sh',

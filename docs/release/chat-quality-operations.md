@@ -2,7 +2,7 @@
 
 Status: current
 Owner: Felipe
-Last verified: 2026-07-31
+Last verified: 2026-08-02
 
 One page for operating the production chat-quality loop (M22).
 
@@ -328,10 +328,36 @@ One page for operating the production chat-quality loop (M22).
 
 ## Phase 7 capability-flag rollout checklist
 
-Run this checklist in order and roll out exactly one flag at a time. A passing
-gate authorizes only its named flag and exact release candidate; it is not
-evidence for a later candidate or another surface. Begin every candidate with
-all seven capability flags OFF:
+Run this checklist in order through the governed operator. After the operator
+is merged, built into the exact artifact, and deployed, its only supported
+entry point is:
+
+```text
+npm run release:chat-flags -- \
+  <inspect|apply|inspect-secrets|apply-secrets|inspect-observation|apply-observation> ...
+```
+
+The command is hardcoded to `ServerDominguez`; it has no server override and
+must never be pointed at AWS or another host. Run it from a clean checkout of
+the exact deployed runtime SHA. It executes the remote helper from the exact
+installed release directory, verifies the completion marker and artifact
+manifest, and holds the same user-release and root/Sonar locks as release
+operations. Local plans and receipts remain under ignored
+`.local/release/chat-capability-flags/`; private durable state remains under
+`/home/dominguez/.local/state/nexus-release/chat-capability-flags/`.
+
+`inspect` collects its evidence natively on ServerDominguez from the exact
+staging release and database. It accepts no operator-supplied evidence JSON
+and performs no provider calls. `apply` accepts only the exact redacted
+`sha256:<plan-digest>` produced by that inspect, requires
+`NEXUS_RELEASE_OWNER_AUTHORIZED=1`, consumes the plan once, and runs as a
+detached user systemd transaction. A partial or failed attempt never licenses
+a digest replay; inspect again and review the next sequence.
+
+Roll out exactly one flag at a time. A passing gate authorizes only its named
+flag, role, configured-prefix state, and exact runtime/artifact candidate; it
+is not evidence for a later candidate or another surface. Begin every
+candidate with all seven capability flags OFF:
 
 ```text
 AI_ROUTING_MANIFEST_CLASSIFIER=false
@@ -346,7 +372,13 @@ AI_CROSS_SKILL_EXECUTION=false
 After a flag completes its authorized rollout it may remain ON for the next
 step. Only one new flag may change at a time, and every not-yet-authorized flag
 stays OFF. Record the complete effective flag set with each gate and smoke so
-the cumulative configuration is reproducible.
+the cumulative configuration is reproducible. Every staging and production
+release transaction refuses to begin unless all seven governed capability
+flags are omitted (runtime-default OFF) or appear once in canonical
+`FLAG=false` form. Before staging or promoting a later runtime/artifact
+candidate, return all seven flags to OFF one at a time through owner-authorized
+rollback transactions. Evidence and ON receipts do not transfer across
+release identities.
 
 `AI_ROUTING_MANIFEST_KILL` defaults OFF but must remain available as the master
 rollback. Setting it to `true` force-disables all seven capabilities even if a
@@ -365,6 +397,127 @@ bundle identities and `CLASSIFY_SHADOW_HASH_SECRET` is present for classifier
 shadow/corpus identities. Record presence only, never either value. Missing
 HMAC configuration means no eligible evidence.
 
+Provision the two evidence HMACs before collecting any Phase 7 evidence. The
+plan and receipt expose only each governed name and `preserve`/`generate`
+action; they never expose a value, value-derived hash, fingerprint, or length:
+
+```text
+npm run release:chat-flags -- inspect-secrets \
+  --role staging \
+  --runtime-sha <deployed-full-40-hex-sha> \
+  --artifact-digest <deployed-full-64-hex-sha256>
+
+NEXUS_RELEASE_OWNER_AUTHORIZED=1 \
+npm run release:chat-flags -- apply-secrets \
+  --role staging \
+  --runtime-sha <deployed-full-40-hex-sha> \
+  --artifact-digest <deployed-full-64-hex-sha256> \
+  --ack-plan <sha256:exact-secret-plan-digest>
+```
+
+Repeat for production before its first capability flip. Existing values are
+always preserved. Staging may generate either missing HMAC. Production must
+already contain `CLASSIFY_SHADOW_HASH_SECRET`, preserving corpus continuity,
+but may generate a missing `CHAT_CORE_V2_SHADOW_ROUTE_HMAC_SECRET`. Generation
+occurs only inside the server transaction; secret values are never CLI
+arguments. A changed `.env`, PM2 identity, release identity, or one-hour plan
+window invalidates apply.
+
+During an `.env` mutation the remote transaction writes a short-lived
+`nexus.chat-capability-runtime-permit.v1` bound to the exact plan digest,
+transaction, release identity, complete configured state, environment bytes,
+controller process, phase, and expiry. Runtime flag readers fail closed while
+the durable transaction marker exists unless that permit is live and exact.
+The permit is removed only after the committed receipt and clear-state health
+check. A failed apply atomically restores the private `.env` preimage,
+restarts only the backend, verifies restored identity and health, and records
+`rolled_back` or `rollback_failed`; unresolved backups or unpublished receipts
+block a later release transaction.
+
+After one staging flag is ON, do not ask production inspect to run a smoke.
+Wait until its exact successful staging enable receipt is at least five
+minutes old, then inspect one staging-only observation plan:
+
+```text
+npm run release:chat-flags -- inspect-observation \
+  --role staging \
+  --runtime-sha <deployed-full-40-hex-sha> \
+  --artifact-digest <deployed-full-64-hex-sha256> \
+  --flag <the-one-enabled-flag>
+```
+
+The read-only inspect binds the exact runtime/artifact, flag, latest staging ON
+receipt and hash, enable and observation sequences, complete contiguous
+configured/effective prefix, master kill OFF, expected next production plan
+sequence, installed smoke script SHA-256, canonical smoke profile, and a
+one-hour apply window. Every global/user/tenant
+`CHAT_CORE_V2_SHADOW_PLANNER_ENABLED` scope used by the two smoke fixtures must
+be effectively false so an authenticated identity turn cannot launch an
+asynchronous planner/provider path.
+
+Review the plan, then authorize the separate one-shot evidence transaction:
+
+```text
+NEXUS_RELEASE_OWNER_AUTHORIZED=1 \
+npm run release:chat-flags -- apply-observation \
+  --role staging \
+  --runtime-sha <deployed-full-40-hex-sha> \
+  --artifact-digest <deployed-full-64-hex-sha256> \
+  --flag <the-one-enabled-flag> \
+  --ack-plan <sha256:exact-observation-plan-digest>
+```
+
+Apply consumes that exact digest once, holds both release/Sonar mutexes,
+revalidates the plan and live flag prefix, and runs the installed canonical
+staging smoke exactly once. It publishes the immutable raw smoke and a strict
+`nexus.chat-capability-observation-receipt.v1` receipt. The canonical
+`nexus.staging-smoke.canonical.token-zero-locale.v2` profile uses the
+authenticated-identity fast path for English and Portuguese plus one legacy
+`es-*` request that must respond in English without rewriting the persisted
+Spanish preference. This is deterministic token-zero identity/locale
+evidence. It deliberately no longer claims task-write planner or
+model-authored locale coverage; use the governed live-eval evidence for model
+behavior claims. Its training and locale fixture users are fixed at `1000014`
+and `1000016`. Before any dependent fixture write, each principal must be
+absent or match its exact synthetic ID, Telegram ID, email, username, and
+auth-provider marker. A mismatch or marker collision fails closed without
+changing the unknown row. An absent fixture uses a plain insert; an exact
+fixture uses a marker-guarded update inside the immediate seed transaction.
+The canonical smoke never uses `INSERT OR REPLACE` for either user principal.
+
+The observation also binds health and `/chat-quality`, one clean scheduled and
+one direct quality-monitor result, and zero durable `operator_alerts` activity
+since the enable completion time for both `chat_quality_regression_monitor`
+and `chat_v2_retirement_monitor`. The alert query includes every status and
+qualifies either `created_at` or `last_seen_at`, so resolving or acknowledging
+an alert cannot erase a regression from the window. Before and after the whole
+smoke it snapshots every staging-database `api_usage` row/cost and
+hard-ceiling-reservation row/reserved cost, while also binding the two expected
+fixture IDs; all global deltas must be zero. The hard-ceiling reservation table
+is a governed pre-network budget ledger, not a universal ledger for every
+possible provider-attempt mechanism. Never broaden the receipt into a claim it
+does not prove.
+
+Production `inspect` is selector-only, read-only, and provider-free. It
+selects the exact strict observation receipt and its bound raw smoke; it does
+not execute staging traffic. Production `apply` re-fetches and revalidates
+those exact bytes, the staging ON receipt and sequence, complete live prefix,
+master-kill state, release identity, health, dashboard, monitor, alert window,
+and zero-ledger deltas immediately before changing production. A rollback and
+later re-enable require a fresh observation sequence; a prior smoke cannot be
+reused.
+
+For a normal rollback, inspect the one enabled flag with `--value false` and
+`--transition-reason operator_rollback`, review its exact plan digest, and
+apply it with owner authorization. Use `quality_regression` or
+`health_regression` only when that observed condition is the reason. For an
+emergency all-capability stop, inspect
+`AI_ROUTING_MANIFEST_KILL=true --transition-reason emergency_kill`, then apply
+its exact digest. The kill makes every capability effectively OFF without
+rewriting their configured values. Turn the individual flags OFF before
+clearing the kill; clear it with an owner-authorized rollback transaction only
+after all seven are configured OFF.
+
 ### 7.1 Manifest-routing surfaces
 
 Use this fixed readiness order and exact flag-to-telemetry mapping:
@@ -376,52 +529,70 @@ Use this fixed readiness order and exact flag-to-telemetry mapping:
 | 3 | `AI_ROUTING_MANIFEST_SHADOW` | `shadowRoute` |
 | 4 | `AI_ROUTING_MANIFEST_REGISTRY` | `registrySubset` |
 
-Before traffic collection, Felipe selects and records one positive integer as
-the minimum comparison count for that surface. Do not lower it after seeing
-the report. Record one canonical UTC start timestamp after the exact candidate
-is healthy on staging. With the selected flag still OFF (and only previously
-authorized flags, if any, ON), collect staging shadow traffic and run the
-selected surface gate:
+The minimum is fixed at 200 comparisons for every surface; it is not an
+operator input and cannot be lowered after seeing results. Record one
+canonical UTC start timestamp after the exact candidate is healthy on staging,
+then record an explicit canonical UTC end timestamp after eligible staging
+traffic. With the selected flag still OFF (and only previously authorized
+flags, if any, ON), inspect that one immutable window:
 
 ```text
-node scripts/routing-divergence-report.mjs \
-  --db=<staging-db> \
-  --surface=<selected-surface-from-table> \
-  --minimum-comparisons=<owner-selected-positive-integer> \
-  --since=<YYYY-MM-DDTHH:mm:ss.sssZ> \
-  --runtime-sha=<deployed-full-40-hex-sha> \
-  --artifact-digest=<deployed-full-64-hex-sha256> \
-  --environment=staging \
-  --divergence-version=<candidate-divergence-version> \
-  --resolver-version=<candidate-resolver-version> \
-  --gate \
-  --json
+npm run release:chat-flags -- inspect \
+  --role staging \
+  --runtime-sha <deployed-full-40-hex-sha> \
+  --artifact-digest <deployed-full-64-hex-sha256> \
+  --flag <flag-from-table> \
+  --value true \
+  --transition-reason gate_pass \
+  --since <YYYY-MM-DDTHH:mm:ss.sssZ> \
+  --until <YYYY-MM-DDTHH:mm:ss.sssZ>
 ```
 
-Save stdout as `divergence-gate.json` in that flag's evidence directory. PASS
-requires at least the preselected comparison count and agreement of at least
-0.99 on the one selected surface. The report must echo the exact runtime SHA,
-artifact digest, `staging` environment, telemetry versions, surface, minimum,
-and candidate window; invalid, missing-identity, version-mismatched, or
-other-candidate bundles never count. Zero eligible comparisons is a failure,
-not an empty pass. Never use an unbounded or all-surface aggregate to authorize
-a per-surface flip.
+The server derives the selected surface and installed telemetry versions, runs
+the provider-free divergence collector against the isolated staging database
+with `--minimum-comparisons=200`, and binds the exact `since`/`until` window
+into the plan. PASS requires at least 200 comparisons and agreement of at least
+0.99 on that one surface. Invalid, missing-identity, version-mismatched,
+out-of-window, flag-on, or other-candidate bundles never count. Zero eligible
+comparisons is a failure, not an empty pass. Never use an unbounded or
+all-surface aggregate to authorize a per-surface flip.
 
-After PASS, enable only the matching flag on staging, verify health and the
-normal staging smoke, and watch `/chat-quality` plus the five-minute quality
-monitor. An owner-authorized production flip must preserve the same one-flag
-scope. Record the production flag receipt and after-flip health before moving
-to the next table row. On any routing, safety, health, or quality regression,
-set that flag OFF and stop the sequence; use
+Apply only the exact inspected staging plan:
+
+```text
+NEXUS_RELEASE_OWNER_AUTHORIZED=1 \
+npm run release:chat-flags -- apply \
+  --role staging \
+  --runtime-sha <deployed-full-40-hex-sha> \
+  --artifact-digest <deployed-full-64-hex-sha256> \
+  --ack-plan <sha256:exact-plan-digest>
+```
+
+After PASS, enable only the matching flag on staging. Wait five uninterrupted
+minutes, then run the exact `inspect-observation` / owner-authorized
+`apply-observation` sequence above. Only that strict observation receipt can
+authorize production inspect for the same candidate and flag. Production
+inspect selects the receipt without running traffic; production apply
+re-fetches and revalidates it, the full configured/effective prefix,
+master-kill state, exact staging release, and live staging health before it
+mutates production. Apply the owner-authorized production plan by the same
+command with `--role production` and no routing window arguments, then repeat
+health and `/chat-quality` monitoring for at least five uninterrupted minutes
+before the next table row. Record the staging flag, observation, and production
+receipts. On any routing, safety, health, or quality regression, set that flag
+OFF through a governed rollback transaction and stop the sequence; use
 `AI_ROUTING_MANIFEST_KILL=true` only when all manifest capabilities must be
 disabled immediately.
 
 ### 7.2 Routing clarification
 
 Do not start until the Phase 4 corpus calibration is committed and deployed.
-Capture the authenticated `/api/portal/chat-quality` JSON before the staging
-flip, enable only `AI_ROUTING_CLARIFY=true`, and capture it again after real
-staging test traffic. The after snapshot must show
+Use `release:chat-flags inspect` for `AI_ROUTING_CLARIFY=true` on staging. The
+server reads the exact installed calibration, authenticated
+`/api/portal/chat-quality`, live staging health, and full flag prefix itself;
+the operator cannot substitute a local dashboard export. Apply the exact plan,
+then run real staging test traffic. After at least five uninterrupted minutes,
+the observation transaction's after snapshot must show
 `routingClarifyBudget.evaluatedTurns > 0`, a non-null rate no greater than
 `0.10`, and `withinBudget === true`. Zero evaluated turns, a null rate, or
 missing durable counters is no evidence and blocks the flip. Also review the
@@ -429,84 +600,115 @@ actual clarification outcomes for safety and usefulness; the numeric budget
 alone is not a quality pass. Store the before/after redacted JSON and staging
 smoke receipt in the flag evidence directory.
 
-Promote only with owner authorization. If the rate exceeds 10%, the counters
-become unavailable, or clarification behavior regresses, set
-`AI_ROUTING_CLARIFY=false`, verify health, and stop before the next flag. The
-master kill is the emergency all-capability rollback.
+Run `inspect-observation` and owner-authorized `apply-observation`; production
+inspect then selects that exact strict receipt without generating traffic.
+Production apply revalidates its staging dashboard, health, alert-window, and
+flag evidence again. Apply only with owner authorization, then monitor
+production health and `/chat-quality` for at least five uninterrupted minutes.
+If the rate exceeds 10%, the counters become
+unavailable, or clarification behavior regresses, use the governed operator
+to set `AI_ROUTING_CLARIFY=false`, verify health, and stop before the next
+flag. The master kill is the emergency all-capability rollback.
 
 ### 7.3 Manifest classifier prompt
 
 `AI_CLASSIFY_MANIFEST_PROMPT` stays OFF until the pinned newly-reachable
 executor/runtime-guard tests pass, the boot guard reports ready, and the
 separate 300-row action-skill gate passes. Domain-routing accuracy is not a
-substitute for this gate. Preserve three machine-readable receipts under the
-flag evidence directory:
+substitute for this gate. First complete the separately owner-authorized cache
+refresh described under **Owner-gated steps** and retain its inspect plan and
+apply receipt. That is the only provider phase; the flag operator never fills
+the cache or calls a provider.
 
-1. `inspect-plan.json`: provider-free `--inspect` output bound to the exact
-   corpus identity, prompt SHA-256, request-builder version, runtime SHA,
-   artifact digest, selected rows, model, attempt ceiling, hard budget, and
-   immutable release run id, next `planSequence`, and `planDigest`.
-2. `apply-receipt.json`: the one owner-authorized `--apply` result for exactly
-   that acknowledged plan digest and cap, including runtime/artifact identity,
-   run id, backup, attempted/cached counts, remaining count, and actual spend.
-3. `action-skill-gate.json`: the zero-provider gate output produced with one
-   operator-recorded canonical `generatedAt`. Reuse that exact timestamp on a
-   retry; do not let a retry silently create a different report identity.
-
-Run the inspect/apply commands exactly as specified in **Owner-gated steps**
-below, redirecting their JSON to the first two receipts. Then run:
+After all 300 exact-bound cache rows exist, inspect the staging enable through
+the governed operator:
 
 ```text
-npx tsx scripts/run-routing-action-skill-accuracy.ts \
-  --db=<exact-evidence-bound-db> \
-  --runtime-sha=<deployed-full-40-hex-sha> \
-  --artifact-digest=<deployed-full-64-hex-sha256> \
-  --generated-at=<recorded-YYYY-MM-DDTHH:mm:ss.sssZ> \
-  --gate
+npm run release:chat-flags -- inspect \
+  --role staging \
+  --runtime-sha <deployed-full-40-hex-sha> \
+  --artifact-digest <deployed-full-64-hex-sha256> \
+  --flag AI_CLASSIFY_MANIFEST_PROMPT \
+  --value true \
+  --transition-reason gate_pass
 ```
 
-Save stdout as `action-skill-gate.json`. PASS requires exactly 300 labeled
-rows, 300 exact-bound cache rows, and at least 0.95 overall action-skill
-agreement. A `clarify` or `none` row is correct only when its predicted domain
-is that exact special label and its predicted skill is null. This gate is
-cache-only and must record zero provider calls. Check
-that the gate's corpus, prompt, request-builder, provider/model, and usage
-attribution identities match the inspect/apply receipts before enabling only
-`AI_CLASSIFY_MANIFEST_PROMPT=true` on staging. After staging health and chat
-quality remain sound, obtain owner authorization for the production flip. On
-boot-guard failure, skill-routing regression, provider-budget anomaly, or
-quality regression, set the flag OFF and stop; the master kill remains the
-emergency rollback.
+The server runs the compiled installed
+`dist/tools/routing-action-skill-accuracy.js` against the isolated staging
+database with a freshly recorded timestamp. PASS requires exactly 300 labeled
+rows, 300 exact-bound cache rows, at least 0.95 overall action-skill agreement,
+the exact runtime/artifact/corpus/prompt/request/provider-model and usage
+attribution identities, and zero provider calls. A `clarify` or `none` row is
+correct only when its predicted domain is that exact special label and its
+predicted skill is null. Source TypeScript, a developer database, a manually
+supplied gate JSON, or the domain-routing snapshot is not eligible.
 
-An interrupted, partial, or failed apply consumes that exact plan claim; never
-replay its digest. Re-run `--inspect` to produce the next `planSequence` and a
-new digest over the remaining rows, obtain fresh exact owner approval, and
-apply it under the same immutable release run id and original shared hard
-budget. A changed runtime, artifact, prompt/provenance identity, or budget is a
-new release operation, not a resume.
+Apply the exact staging plan and verify that the boot guard does not
+force-disable the configured flag. After five uninterrupted minutes, run the
+staging observation inspect/apply sequence. Production inspect selects that
+observation receipt; production apply revalidates it and live staging health
+before mutation.
+Monitor production for at least five uninterrupted minutes before proceeding.
+On boot-guard failure, skill-routing regression, provider-budget anomaly, or
+quality regression, use the governed operator to set the flag OFF and stop;
+the master kill remains the emergency rollback.
+
+An interrupted, partial, or failed cache-fill apply consumes that cache plan
+claim; never replay its digest. Re-run its `--inspect` to produce the next
+sequence over the remaining rows and obtain fresh exact owner approval under
+the same immutable release run id and original shared hard budget. An
+interrupted flag apply likewise consumes its flag plan. A changed runtime,
+artifact, prompt/provenance identity, or budget is a new operation, not a
+resume.
 
 ### 7.4 Cross-skill execution
 
 The `training_plan_create` registry row deliberately keeps ordinary
 `outputRefs` absent: its UI handoff is `verified_pending`, not a verified
 producer for dependent steps. Verify that invariant against the exact staging
-candidate with a dedicated synthetic staging user and rich cross-skill fixture.
-Run from the unpacked candidate release with
-`AI_CROSS_SKILL_EXECUTION=true` as the only newly changed flag:
+candidate with the dedicated synthetic staging tenant and rich cross-skill
+fixture. Inspect the staging enable through the governed operator:
 
 ```text
-STAGING=true \
-TRAINING_CROSS_SKILL_STAGING_SMOKE=1 \
-TRAINING_CROSS_SKILL_STAGING_USER_ID=<dedicated-staging-user-id> \
-DATABASE_PATH=<staging-db> \
-NEXUS_RELEASE_ROLE=staging \
-NEXUS_RELEASE_BASE_DIR=<staging-release-base-dir> \
-AI_ROUTING_MANIFEST_KILL=false \
-AI_CROSS_SKILL_EXECUTION=true \
-./scripts/training-cross-skill-staging-smoke.sh
+npm run release:chat-flags -- inspect \
+  --role staging \
+  --runtime-sha <deployed-full-40-hex-sha> \
+  --artifact-digest <deployed-full-64-hex-sha256> \
+  --flag AI_CROSS_SKILL_EXECUTION \
+  --value true \
+  --transition-reason gate_pass
 ```
 
-The wrapper verifies every declared byte in the installed release against its
+Staging inspect runs the compiled, installed, provider-free
+`dist/tools/chat-capability-cross-skill-preflight.js` and binds its strict JSON
+receipt, live health, complete flag prefix, registry row, and dispatch-table
+readiness. Apply that exact staging plan, then wait at least five uninterrupted
+minutes and run `inspect-observation` / owner-authorized `apply-observation`
+for this flag.
+
+For `AI_CROSS_SKILL_EXECUTION`, `apply-observation` runs both the full canonical
+v2 staging smoke and the installed
+`scripts/training-cross-skill-staging-smoke.sh --json` against the exact
+staging artifact and database. It binds the dedicated smoke's strict identity
+and freshness in the observation receipt; a local or operator-supplied report
+is not accepted. Before the dedicated smoke it proves that the staging `.env`
+and SQLite database are ordinary files isolated from production, that
+`TRAINING_CROSS_SKILL_STAGING_USER_ID` equals
+`CHAT_EVAL_DEDICATED_TENANT_ID`, and that this one user exists in the staging
+database with a principal email ending in `.invalid`. This is the dedicated
+synthetic tenant/database attestation; never point it at Felipe's or another
+production identity.
+
+The runtime reader opens that ordinary staging SQLite file directly with
+`readonly: true` and `fileMustExist: true`, verifies its file identity, and
+sets `PRAGMA query_only=ON`. Every intelligence-bus, mesh, and shared-decision
+read is bound to that same handle through the standalone global-database
+scope. It never calls the application database initializer, runs migrations
+or boot backfills, seeds an owner, rewrites credentials, or writes data. The
+standalone scope restores the global database binding; the smoke then
+invalidates its provider and closes the owned handle, including on failure.
+
+The smoke wrapper verifies every declared byte in the installed release against its
 `artifact-manifest.json` and `.complete.json`, derives the full runtime SHA and
 artifact digest from that verification, and exports those verified values to
 the smoke process. It rejects a mismatched `NEXUS_RELEASE_DIR` or any supplied
@@ -538,12 +740,18 @@ the receipt also records the staging role. Retain it with the full-identity
 Markdown report and staging transaction. Fixture-only or `--dry-run` output
 is never staging proof.
 
-Review grouped previews, decline behavior, tenant/user scope, and the
-`/chat-quality` dashboard before the owner-authorized production flip. If a
-dependent step consumes an unverified Training handoff, a scope check fails,
-or chat quality/health regresses, set `AI_CROSS_SKILL_EXECUTION=false`, verify
-health, and stop. Do not add `training_plan_create.outputRefs` during rollout;
-that requires a separately tested verified-success executor contract.
+Production inspect is read-only: it selects the pre-existing observation and
+bound cross-skill smoke evidence and never executes the smoke. Review
+the JSON smoke, grouped previews, decline behavior, tenant/user scope, and
+`/chat-quality` before the owner-authorized production apply. Production apply
+revalidates those exact observation bytes, the staging ON receipt, and live
+staging health. Monitor production health and `/chat-quality` for at least five
+uninterrupted minutes.
+If a dependent step consumes an unverified Training handoff, a scope check
+fails, or chat quality/health regresses, use the governed operator to set
+`AI_CROSS_SKILL_EXECUTION=false`, verify health, and stop. Do not add
+`training_plan_create.outputRefs` during rollout; that requires a separately
+tested verified-success executor contract.
 
 ## Owner-gated steps (human decisions never automated)
 
@@ -733,28 +941,20 @@ that requires a separately tested verified-success executor contract.
   item gets one short canonical budget reservation, so a full-corpus pass does
   not hold the shared system-AI lock while hundreds of sequential calls run.
 
-  Then run the zero-provider gate with one recorded canonical timestamp:
-
-  ```text
-  npx tsx scripts/run-routing-action-skill-accuracy.ts \
-    --db=<deployed-db> \
-    --runtime-sha=<deployed-full-sha> \
-    --artifact-digest=<deployed-artifact-sha256> \
-    --generated-at=<YYYY-MM-DDTHH:mm:ss.sssZ> \
-    --gate
-  ```
-
-  The gate requires the exact 300 labeled rows, 300 exact-bound cache rows,
-  and overall action-skill agreement of at least 0.95. `clarify` and `none`
-  controls pass only when the predicted domain exactly matches that special
-  label and the predicted skill is null; a generic skill abstention is not
-  correct. Per-skill precision and recall are diagnostics, not additional
-  invented rollout thresholds. This command is read-only, never calls a
-  provider, and has no snapshot-acceptance mutation.
+  Cache population alone does not authorize the flag. Continue at **Phase
+  7.3**: `release:chat-flags inspect` runs the compiled installed cache-only
+  evaluator against the exact staging database and binds its output into the
+  enable plan. That gate requires the exact 300 labeled rows, 300 exact-bound
+  cache rows, and overall action-skill agreement of at least 0.95. `clarify`
+  and `none` controls pass only when the predicted domain exactly matches that
+  special label and the predicted skill is null; a generic skill abstention is
+  not correct. Per-skill precision and recall are diagnostics, not additional
+  invented rollout thresholds. The compiled gate is read-only, makes zero
+  provider calls, and has no snapshot-acceptance mutation.
 - Every manifest-routing surface flip. Follow **Phase 7.1** with the exact
   selected surface, candidate identity, canonical window, telemetry versions,
-  and owner-selected minimum comparison count. Authorization never transfers
-  to another surface or candidate.
+  and fixed 200-comparison minimum. Authorization never transfers to another
+  surface or candidate.
 - Phase 7 keeps `training_plan_create.outputRefs` absent when
   `AI_CROSS_SKILL_EXECUTION` flips. The real training builder is a UI handoff
   with `verified_pending`, while dependent plan steps require

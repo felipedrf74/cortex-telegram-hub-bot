@@ -842,6 +842,113 @@ db.close();
     expect(refusal).toBeLessThan(transaction.indexOf('start_runtime()'));
   });
 
+  it('refuses release mutation while an interrupted chat capability env transaction exists', () => {
+    const remote = fs.readFileSync('scripts/remote-user-release-transaction.sh', 'utf8');
+    const guardDefinition = remote.indexOf(
+      'assert_no_unresolved_chat_capability_transaction() {',
+    );
+    const guardCall = remote.lastIndexOf(
+      '\nassert_no_unresolved_chat_capability_transaction\n',
+    );
+    const releaseLock = remote.indexOf(
+      'flock -n 9 || die "another staging, production, or Sonar-sensitive release action is active"',
+    );
+    const firstDeploymentWork = remote.indexOf('\nverify_pristine_bundle\n');
+
+    expect(guardDefinition).toBeGreaterThan(-1);
+    expect(remote).toContain(
+      "-name '.env.before-chat-capability-*' -print -quit",
+    );
+    expect(remote).toContain(
+      'unresolved chat capability transaction blocks release; recover it first',
+    );
+    expect(guardCall).toBeGreaterThan(releaseLock);
+    expect(guardCall).toBeLessThan(firstDeploymentWork);
+    expect(guardCall).toBeLessThan(remote.indexOf('cp -a "$SOURCE_BUNDLE/."'));
+    expect(guardCall).toBeLessThan(remote.indexOf('switch_current "$RELEASE_DIR"'));
+  });
+
+  it('refuses release mutation while a committed capability receipt is unpublished', () => {
+    const remote = fs.readFileSync('scripts/remote-user-release-transaction.sh', 'utf8');
+    const guardDefinition = remote.indexOf(
+      'assert_no_unpublished_chat_capability_receipt() {',
+    );
+    const guardCall = remote.lastIndexOf(
+      '\nassert_no_unpublished_chat_capability_receipt\n',
+    );
+    const releaseLock = remote.indexOf(
+      'flock -n 9 || die "another staging, production, or Sonar-sensitive release action is active"',
+    );
+    const firstDeploymentWork = remote.indexOf('\nverify_pristine_bundle\n');
+
+    expect(guardDefinition).toBeGreaterThan(-1);
+    expect(remote).toContain('*.flag-receipt.json');
+    expect(remote).toContain('*.secret-receipt.json');
+    expect(remote).toContain(
+      'unpublished chat capability receipt blocks release; recover it first',
+    );
+    expect(guardCall).toBeGreaterThan(releaseLock);
+    expect(guardCall).toBeLessThan(firstDeploymentWork);
+    expect(guardCall).toBeLessThan(remote.indexOf('cp -a "$SOURCE_BUNDLE/."'));
+    expect(guardCall).toBeLessThan(remote.indexOf('switch_current "$RELEASE_DIR"'));
+  });
+
+  it('requires every release candidate boundary to start with all seven capabilities off', () => {
+    const remote = fs.readFileSync('scripts/remote-user-release-transaction.sh', 'utf8');
+    const match = remote.match(
+      /assert_release_candidate_chat_capabilities_off\(\) \{[\s\S]*?"\$NODE_BIN" - "\$BASE_DIR\/\.env" <<'NODE'\n([\s\S]*?)\nNODE\n\}/u,
+    );
+    expect(match).not.toBeNull();
+    const parser = match![1];
+    const flags = [
+      'AI_ROUTING_MANIFEST_CLASSIFIER',
+      'AI_ROUTING_MANIFEST_ORCHESTRATOR',
+      'AI_ROUTING_MANIFEST_SHADOW',
+      'AI_ROUTING_MANIFEST_REGISTRY',
+      'AI_ROUTING_CLARIFY',
+      'AI_CLASSIFY_MANIFEST_PROMPT',
+      'AI_CROSS_SKILL_EXECUTION',
+    ];
+    const run = (lines: string[]) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-release-flags-'));
+      roots.push(root);
+      const environment = path.join(root, '.env');
+      fs.writeFileSync(environment, `${lines.join('\n')}\n`, { mode: 0o600 });
+      return spawnSync(process.execPath, ['-', environment], {
+        input: parser,
+        encoding: 'utf8',
+      });
+    };
+    const canonical = [...flags.map((flag) => `${flag}=false`), 'AI_ROUTING_MANIFEST_KILL=false'];
+    expect(run([]).status).toBe(0);
+    expect(run([`${flags[0]}=false`]).status).toBe(0);
+    expect(run(canonical).status).toBe(0);
+    expect(run(flags.map((flag) => `${flag}=false`)).status).toBe(0);
+    expect(run(['AI_ROUTING_MANIFEST_KILL=true']).status).toBe(0);
+    expect(run([...canonical.slice(0, -1), 'AI_ROUTING_MANIFEST_KILL=true']).status).toBe(0);
+    for (const invalid of [
+      [...canonical, `${flags[0]}=false`],
+      canonical.map((line, index) => index === 0 ? `${flags[0]}=true` : line),
+      canonical.map((line, index) => index === 0 ? `${flags[0]}=yes` : line),
+      canonical.map((line, index) => index === 0 ? `export ${flags[0]}=false` : line),
+      canonical.map((line, index) => index === 0 ? ` ${flags[0]}=false` : line),
+      [...canonical.slice(0, -1), 'AI_ROUTING_MANIFEST_KILL=yes'],
+      [...canonical, 'AI_ROUTING_MANIFEST_KILL=false'],
+    ]) {
+      expect(run(invalid).status).not.toBe(0);
+    }
+
+    const guardCall = remote.lastIndexOf('\nassert_release_candidate_chat_capabilities_off\n');
+    const releaseLock = remote.indexOf(
+      'flock -n 9 || die "another staging, production, or Sonar-sensitive release action is active"',
+    );
+    expect(guardCall).toBeGreaterThan(releaseLock);
+    expect(guardCall).toBeLessThan(remote.indexOf('\nverify_pristine_bundle\n'));
+    expect(guardCall).toBeLessThan(remote.indexOf('cp -a "$SOURCE_BUNDLE/."'));
+    expect(guardCall).toBeLessThan(remote.indexOf('switch_current "$RELEASE_DIR"'));
+    expect(remote).not.toMatch(/assert_release_candidate_chat_capabilities_off[\s\S]*?\$ROLE\s*=/u);
+  });
+
   it('cleans a release lock when the checkout path contains spaces', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus release lock '));
     roots.push(root);

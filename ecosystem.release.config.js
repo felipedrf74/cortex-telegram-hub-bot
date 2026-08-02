@@ -79,6 +79,7 @@ module.exports = {
       // processes, so every field of the attested release identity has to be
       // forwarded explicitly. Dropping the role leaves the runtime unable to
       // attest itself and silently disables identity-bound shadow telemetry.
+      NEXUS_RELEASE_BASE_DIR: baseDir,
       NEXUS_RELEASE_ROLE: role,
       NEXUS_RELEASE_SHA: process.env.NEXUS_RELEASE_SHA || 'unknown',
       NEXUS_RELEASE_ARTIFACT_SHA256:
@@ -113,6 +114,7 @@ module.exports = {
       CONTENT_ENGINE_PORT: contentPort,
       NEXUS_BACKEND_BASE_URL: `http://127.0.0.1:${backendPort}`,
       NEXUS_BACKEND_PORT: backendPort,
+      NEXUS_RELEASE_BASE_DIR: baseDir,
       NEXUS_RELEASE_ROLE: role,
       NEXUS_RELEASE_SHA: process.env.NEXUS_RELEASE_SHA || 'unknown',
       NEXUS_RELEASE_ARTIFACT_SHA256:

@@ -18,6 +18,7 @@
  */
 
 import { logger } from '../../utils/logger';
+import { chatCapabilityRuntimeAllowsFlags } from '../chat-capability-runtime-guard';
 
 export type ManifestRoutingSurface = 'classifier' | 'orchestrator' | 'shadow' | 'registry';
 
@@ -75,6 +76,7 @@ export function isManifestRoutingEnabled(
   env: EnvLike = process.env,
 ): boolean {
   logBootFlagStateOnce(env);
+  if (!chatCapabilityRuntimeAllowsFlags()) return false;
   if (parseBoolean(env[MANIFEST_ROUTING_MASTER_KILL_ENV_VAR])) return false;
   return parseBoolean(env[SURFACE_ENV_VAR[surface]]);
 }

@@ -1,10 +1,37 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { runInNewContext } from 'node:vm';
+import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
 const read = (path: string) => readFileSync(path, 'utf8');
 
 describe('canonical staging gate Ollama integration', () => {
+  it('can run the exact canonical smoke inside ServerDominguez without recursive SSH', () => {
+    const canonical = read('scripts/staging-smoke.sh');
+    const manifest = read('scripts/lib/release-artifact-manifest.mjs');
+
+    expect(canonical).toContain('NEXUS_STAGING_SMOKE_LOCAL_SERVER');
+    expect(canonical).toContain('NEXUS_SMOKE_REQUIRE_EXACT_IDENTITY');
+    expect(canonical).toContain('NEXUS_RELEASE_SHA');
+    expect(canonical).toContain('NEXUS_RELEASE_ARTIFACT_SHA256');
+    expect(canonical).toContain('NEXUS_SMOKE_EVIDENCE_PATH');
+    expect(canonical).toContain('NEXUS_SMOKE_EVIDENCE_DIR');
+    expect(canonical).toContain("node -e 'process.stdout.write(new Date().toISOString())'");
+    expect(canonical).not.toContain('date -u +%Y-%m-%dT%H:%M:%S.%3NZ');
+    expect(canonical).toContain(
+      'smoke_ssh "$SERVER" /usr/bin/node - "$STAGING_ROOT" "$STAGING_RELEASE"',
+    );
+    expect(canonical).toContain('runtimeSha: process.env.SMOKE_RUNTIME_SHA');
+    expect(canonical).toContain('artifactDigest: process.env.SMOKE_ARTIFACT_DIGEST');
+    expect(canonical).toContain('nexus.staging-smoke.canonical.token-zero-locale.v2');
+    expect(canonical).toContain('const evidenceStat = fs.lstatSync(file);');
+    expect(canonical).toContain('evidenceStat.uid !== process.getuid()');
+    expect(canonical).not.toContain("stat -c '%U:%a:%h'");
+    expect(canonical).toContain('local server mode requires exact release identity');
+    expect(manifest).toContain("'scripts/staging-smoke.sh'");
+  });
+
   it('reuses one private SSH transport while keeping every smoke probe sequential', () => {
     const canonical = read('scripts/staging-smoke.sh');
 
@@ -113,6 +140,131 @@ describe('canonical staging gate Ollama integration', () => {
     }
   });
 
+  it('refuses to replace an unknown principal at either governed smoke fixture ID', () => {
+    const canonical = read('scripts/staging-smoke.sh');
+    const embeddedPrograms = [...canonical.matchAll(
+      /\/usr\/bin\/node <<'NODE'\n([\s\S]*?)\nNODE/g,
+    )].map((match) => match[1]);
+
+    expect(embeddedPrograms).toHaveLength(2);
+    for (const program of embeddedPrograms) {
+      expect(program).toContain('function seedGovernedFixtureUser');
+      expect(program).toContain('governed staging fixture principal collision');
+      expect(program).toContain("'id', 'telegram_id', 'email', 'username', 'auth_provider'");
+      expect(program).toContain('fixture principal changed during safe seed');
+      expect(program).toContain('seedGovernedFixtureUser({');
+      expect(program).toContain('}).immediate();');
+      expect(program).not.toMatch(/insert\('users'/u);
+    }
+  });
+
+  it('leaves an unknown fixture-ID collision unchanged and accepts an exact fixture idempotently', () => {
+    const canonical = read('scripts/staging-smoke.sh');
+    const embeddedPrograms = [...canonical.matchAll(
+      /\/usr\/bin\/node <<'NODE'\n([\s\S]*?)\nNODE/g,
+    )].map((match) => match[1]);
+    const fixtures = [
+      {
+        id: 1_000_014,
+        telegramId: 911_000_014,
+        email: 'training-preview-smoke-1000014@nexushub.test',
+        username: 'training_preview_smoke_1000014',
+      },
+      {
+        id: 1_000_016,
+        telegramId: 911_000_016,
+        email: 'locale-fidelity-smoke-1000016@nexushub.test',
+        username: 'locale_fidelity_smoke_1000016',
+      },
+    ];
+
+    expect(embeddedPrograms).toHaveLength(fixtures.length);
+    for (const [index, program] of embeddedPrograms.entries()) {
+      const helperSource = program.match(
+        /\/\/ GOVERNED_FIXTURE_USER_SEED_START\n([\s\S]*?)\/\/ GOVERNED_FIXTURE_USER_SEED_END/u,
+      )?.[1];
+      expect(helperSource).toBeTruthy();
+
+      const fixture = { ...fixtures[index], authProvider: 'email' };
+      const db = new Database(':memory:');
+      try {
+        db.exec(`
+          CREATE TABLE users (
+            id INTEGER PRIMARY KEY,
+            telegram_id INTEGER,
+            email TEXT,
+            username TEXT,
+            auth_provider TEXT,
+            language TEXT,
+            created_at TEXT,
+            last_active_at TEXT
+          )
+        `);
+        const columnsFor = (name: string) => new Set(
+          db.prepare(`PRAGMA table_info(${name})`).all()
+            .map((row) => (row as { name: string }).name),
+        );
+        const context: Record<string, unknown> = {
+          db,
+          fixturePrincipal: fixture,
+          columnsFor,
+          seedResult: null,
+        };
+        runInNewContext(`${helperSource}\nseedResult = seedGovernedFixtureUser;`, context);
+        const seed = context.seedResult as (values: Record<string, unknown>) => void;
+        const values = {
+          id: fixture.id,
+          telegram_id: fixture.telegramId,
+          email: fixture.email,
+          username: fixture.username,
+          auth_provider: fixture.authProvider,
+          language: index === 0 ? 'en-US' : 'es-ES',
+          created_at: '2026-08-02T00:00:00.000Z',
+          last_active_at: '2026-08-02T00:00:00.000Z',
+        };
+
+        db.prepare(`
+          INSERT INTO users (
+            id, telegram_id, email, username, auth_provider, language, created_at, last_active_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          fixture.id,
+          fixture.telegramId + 99,
+          `real-user-${fixture.id}@example.com`,
+          `real_user_${fixture.id}`,
+          'apple',
+          'pt-BR',
+          '2025-01-01T00:00:00.000Z',
+          '2025-01-02T00:00:00.000Z',
+        );
+        const collisionBefore = JSON.stringify(
+          db.prepare('SELECT * FROM users WHERE id = ?').get(fixture.id),
+        );
+        expect(() => seed(values)).toThrow(/governed staging fixture principal collision/u);
+        expect(JSON.stringify(
+          db.prepare('SELECT * FROM users WHERE id = ?').get(fixture.id),
+        )).toBe(collisionBefore);
+
+        db.prepare('DELETE FROM users WHERE id = ?').run(fixture.id);
+        expect(() => seed(values)).not.toThrow();
+        const exactFixtureAfterFirstSeed = JSON.stringify(
+          db.prepare('SELECT * FROM users WHERE id = ?').get(fixture.id),
+        );
+        expect(() => seed(values)).not.toThrow();
+        expect(JSON.stringify(
+          db.prepare('SELECT * FROM users WHERE id = ?').get(fixture.id),
+        )).toBe(exactFixtureAfterFirstSeed);
+        expect(db.prepare('SELECT COUNT(*) AS count FROM users').get()).toEqual({ count: 1 });
+        expect(db.prepare(`
+          SELECT id, telegram_id AS telegramId, email, username, auth_provider AS authProvider
+          FROM users WHERE id = ?
+        `).get(fixture.id)).toEqual(fixture);
+      } finally {
+        db.close();
+      }
+    }
+  });
+
   it('proves a persisted legacy Spanish preference falls back to English without rewriting it', () => {
     const canonical = read('scripts/staging-smoke.sh');
     const legacyTurn = canonical.indexOf(
@@ -132,6 +284,31 @@ describe('canonical staging gate Ollama integration', () => {
     expect(canonical).toContain(
       "throw new Error('legacy Spanish preference was rewritten during compatibility smoke')",
     );
+  });
+
+  it('keeps the canonical locale smoke on a verified token-zero identity route', () => {
+    const canonical = read('scripts/staging-smoke.sh');
+
+    expect(canonical).toContain('checkResponseLocaleFidelity');
+    expect(canonical).not.toContain('checkStagingLocaleWritePreview');
+    expect(canonical).toContain("text: 'Who am I signed in as?'");
+    expect(canonical).toContain("text: 'Quem sou eu?'");
+    expect(canonical).toContain("text: '¿Quién soy?'");
+    expect(canonical).toContain("routeMethod === 'authenticated-identity'");
+    expect(canonical).toContain("metadata?.type === 'authenticated_identity'");
+    expect(canonical).toContain('metadata?.userId === userId');
+    expect(canonical).toContain('metadata?.hasDisplayName === true');
+    expect(canonical).toContain('userId !== 1000014');
+    expect(canonical).toContain('userId !== 1000016');
+    expect(canonical).toContain('successful training smoke exceeded 16384-byte evidence limit');
+    expect(canonical).toContain('successful training smoke did not emit one strict JSON document');
+    expect(canonical).toContain('providerUsageBefore');
+    expect(canonical).toContain('providerUsageAfter');
+    expect(canonical).toContain('providerUsageAfter === providerUsageBefore');
+    expect(canonical).not.toContain('the reply itself may spend planner tokens');
+    expect(canonical).not.toContain('Crea una tarea llamada staging legacy locale smoke');
+    expect(canonical).not.toContain('Create a task called staging English locale smoke');
+    expect(canonical).not.toContain('Cria uma tarefa chamada revisão do planejador de fumaça');
   });
 
   it('runs the exact-release policy smoke once in the existing sequential gate', () => {

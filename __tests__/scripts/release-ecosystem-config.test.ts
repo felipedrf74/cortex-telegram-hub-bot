@@ -1,6 +1,14 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import {
+  appendFileSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -95,11 +103,13 @@ describe('release ecosystem config release identity', () => {
       const content = apps.find((app) => app.name === contentName);
 
       expect(backend?.env).toMatchObject({
+        NEXUS_RELEASE_BASE_DIR: baseDir,
         NEXUS_RELEASE_ROLE: role,
         NEXUS_RELEASE_SHA: releaseSha,
         NEXUS_RELEASE_ARTIFACT_SHA256: releaseArtifactDigest,
       });
       expect(content?.env).toMatchObject({
+        NEXUS_RELEASE_BASE_DIR: baseDir,
         NEXUS_RELEASE_ROLE: role,
         NEXUS_RELEASE_SHA: releaseSha,
         NEXUS_RELEASE_ARTIFACT_SHA256: releaseArtifactDigest,
@@ -158,5 +168,56 @@ describe('release ecosystem config release identity', () => {
       expect(app.env?.NEXUS_RELEASE_ARTIFACT_SHA256).toBe('unknown');
       expect(readDeployedReleaseIdentity(app.env ?? {})).toBeNull();
     }
+  });
+
+  it('loads governed flags and private HMACs from the protected release env symlink at boot', () => {
+    const releaseDir = path.join(baseDir, 'releases', `${releaseSha}-${releaseArtifactDigest.slice(0, 12)}`);
+    mkdirSync(releaseDir, { recursive: true });
+    appendFileSync(path.join(baseDir, '.env'), [
+      'AI_ROUTING_MANIFEST_CLASSIFIER=true',
+      'AI_ROUTING_MANIFEST_ORCHESTRATOR=false',
+      'AI_ROUTING_MANIFEST_SHADOW=false',
+      'AI_ROUTING_MANIFEST_REGISTRY=false',
+      'AI_ROUTING_CLARIFY=false',
+      'AI_CLASSIFY_MANIFEST_PROMPT=false',
+      'AI_CROSS_SKILL_EXECUTION=false',
+      'AI_ROUTING_MANIFEST_KILL=false',
+      'CLASSIFY_SHADOW_HASH_SECRET=classifier-private-sentinel',
+      'CHAT_CORE_V2_SHADOW_ROUTE_HMAC_SECRET=shadow-private-sentinel',
+      '',
+    ].join('\n'));
+    symlinkSync(path.join(baseDir, '.env'), path.join(releaseDir, '.env'));
+    const backend = loadReleaseApps('staging').find((app) => app.name === 'nexus-hub-staging');
+
+    // Secrets intentionally stay out of PM2's persisted app environment. The
+    // runtime's protected .env symlink is the single secret-loading boundary.
+    expect(backend?.env).not.toHaveProperty('CLASSIFY_SHADOW_HASH_SECRET');
+    expect(backend?.env).not.toHaveProperty('CHAT_CORE_V2_SHADOW_ROUTE_HMAC_SECRET');
+    expect(backend?.env).not.toHaveProperty('AI_ROUTING_MANIFEST_CLASSIFIER');
+
+    const result = spawnSync(process.execPath, [
+      '--import',
+      requireConfig.resolve('tsx'),
+      '--eval',
+      `import ${JSON.stringify(path.join(repoRoot, 'src/config.ts'))};\n`
+        + 'process.stdout.write(JSON.stringify({'
+        + 'classifier:process.env.AI_ROUTING_MANIFEST_CLASSIFIER,'
+        + 'classifierSecret:process.env.CLASSIFY_SHADOW_HASH_SECRET,'
+        + 'shadowSecret:process.env.CHAT_CORE_V2_SHADOW_ROUTE_HMAC_SECRET}));',
+    ], {
+      cwd: releaseDir,
+      encoding: 'utf8',
+      env: {
+        PATH: process.env.PATH ?? '',
+        ...(backend?.env ?? {}),
+      },
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({
+      classifier: 'true',
+      classifierSecret: 'classifier-private-sentinel',
+      shadowSecret: 'shadow-private-sentinel',
+    });
   });
 });

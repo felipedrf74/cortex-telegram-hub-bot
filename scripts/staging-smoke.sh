@@ -33,6 +33,7 @@ SERVER="${DEPLOY_SERVER:-dominguez@serverdominguez}"
 STAGING_ROOT="${STAGING_PATH:-/home/dominguez/telegram-hub-bot-staging}"
 STAGING_RELEASE=""
 VERBOSE=false
+LOCAL_SERVER_MODE="${NEXUS_STAGING_SMOKE_LOCAL_SERVER:-0}"
 
 # Every remote check remains sequential, but they reuse one authenticated SSH
 # transport instead of paying a new handshake for each endpoint and database
@@ -43,6 +44,19 @@ chmod 700 "$SSH_CONTROL_DIR"
 SSH_CONTROL_PATH="$SSH_CONTROL_DIR/control"
 
 smoke_ssh() {
+  if [ "$LOCAL_SERVER_MODE" = 1 ]; then
+    [ "${1:-}" = "$SERVER" ] || {
+      echo "local staging smoke received an unexpected server target" >&2
+      return 64
+    }
+    shift
+    if [ "$#" -eq 1 ]; then
+      /bin/bash -c "$1"
+    else
+      command "$@"
+    fi
+    return
+  fi
   command ssh \
     -o ControlMaster=auto \
     -o ControlPersist=30 \
@@ -51,7 +65,9 @@ smoke_ssh() {
 }
 
 cleanup_smoke_transport() {
-  command ssh -o "ControlPath=$SSH_CONTROL_PATH" -O exit "$SERVER" >/dev/null 2>&1 || true
+  if [ "$LOCAL_SERVER_MODE" != 1 ]; then
+    command ssh -o "ControlPath=$SSH_CONTROL_PATH" -O exit "$SERVER" >/dev/null 2>&1 || true
+  fi
   rm -f "$SSH_CONTROL_PATH" 2>/dev/null || true
   rmdir "$SSH_CONTROL_DIR" 2>/dev/null || true
 }
@@ -139,6 +155,43 @@ STAGING_RELEASE="$(resolve_staging_release)" || {
 }
 assert_staging_selector
 
+SMOKE_RUNTIME_SHA=''
+SMOKE_ARTIFACT_DIGEST=''
+read -r SMOKE_RUNTIME_SHA SMOKE_ARTIFACT_DIGEST < <(
+  smoke_ssh "$SERVER" /usr/bin/node - "$STAGING_ROOT" "$STAGING_RELEASE" <<'NODE'
+const fs = require('node:fs');
+const path = require('node:path');
+const [root, release] = process.argv.slice(2);
+const selector = path.join(root, 'current');
+if (!fs.lstatSync(selector).isSymbolicLink() || fs.realpathSync(selector) !== release) {
+  process.exit(1);
+}
+const file = path.join(release, '.complete.json');
+const stat = fs.lstatSync(file);
+const value = JSON.parse(fs.readFileSync(file, 'utf8'));
+if (!stat.isFile() || stat.isSymbolicLink()
+    || value?.schema !== 'nexus.release-bundle.v1'
+    || !/^[0-9a-f]{40}$/u.test(value.runtimeSha ?? '')
+    || !/^[0-9a-f]{64}$/u.test(value.artifactDigest ?? '')
+    || path.basename(release) !== `${value.runtimeSha}-${value.artifactDigest.slice(0, 12)}`) {
+  process.exit(1);
+}
+if (fs.realpathSync(selector) !== release) process.exit(1);
+process.stdout.write(`${value.runtimeSha} ${value.artifactDigest}\n`);
+NODE
+) || {
+  echo "exact staging completion identity is missing or invalid" >&2
+  exit 1
+}
+
+if [ "${NEXUS_SMOKE_REQUIRE_EXACT_IDENTITY:-0}" = 1 ] || [ "$LOCAL_SERVER_MODE" = 1 ]; then
+  [ "${NEXUS_RELEASE_SHA:-}" = "$SMOKE_RUNTIME_SHA" ] \
+    && [ "${NEXUS_RELEASE_ARTIFACT_SHA256:-}" = "$SMOKE_ARTIFACT_DIGEST" ] || {
+    echo "local server mode requires exact release identity" >&2
+    exit 1
+  }
+fi
+
 echo "═══════════════════════════════════════════════"
 echo "  🧪 Nexus Hub Staging Smoke Test"
 echo "═══════════════════════════════════════════════"
@@ -157,10 +210,11 @@ FAILED_TESTS=()
 EVIDENCE_RESULTS=()
 EVIDENCE_ENABLED="${NEXUS_SMOKE_EVIDENCE:-1}"
 LOCAL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-EVIDENCE_DIR="$LOCAL_DIR/.local/release/smoke-evidence"
-SMOKE_START_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-SMOKE_HEAD_SHA="$(cd "$LOCAL_DIR" && git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+EVIDENCE_DIR="${NEXUS_SMOKE_EVIDENCE_DIR:-$LOCAL_DIR/.local/release/smoke-evidence}"
+SMOKE_START_AT="$(node -e 'process.stdout.write(new Date().toISOString())')"
+SMOKE_HEAD_SHA="$SMOKE_RUNTIME_SHA"
 SMOKE_BRANCH="$(cd "$LOCAL_DIR" && git branch --show-current 2>/dev/null || echo unknown)"
+SMOKE_PROFILE="nexus.staging-smoke.canonical.token-zero-locale.v2"
 
 evidence_record() {
   # evidence_record <name> <status:passed|failed> [<detail>]
@@ -604,11 +658,18 @@ const Database = require('better-sqlite3');
 const { signIosJwt } = require('./dist/services/ios-jwt');
 
 const userId = Number(process.env.NEXUS_SMOKE_TRAINING_E2E_USER_ID || '1000014');
-if (!Number.isInteger(userId) || userId < 1000000 || userId > 1099999) {
-  throw new Error('NEXUS_SMOKE_TRAINING_E2E_USER_ID must be an isolated staging fixture user id in 1000000-1099999');
+if (userId !== 1000014) {
+  throw new Error('NEXUS_SMOKE_TRAINING_E2E_USER_ID must remain the governed staging fixture user 1000014');
 }
 
 const deviceId = process.env.NEXUS_SMOKE_TRAINING_E2E_DEVICE_ID || 'training-preview-smoke-device-' + userId;
+const fixturePrincipal = Object.freeze({
+  id: userId,
+  telegramId: 910000000 + userId,
+  email: 'training-preview-smoke-' + userId + '@nexushub.test',
+  username: 'training_preview_smoke_' + userId,
+  authProvider: 'email',
+});
 const db = new Database(process.env.DATABASE_PATH || process.env.DB_PATH || './data/bot.db');
 const now = new Date().toISOString();
 
@@ -632,20 +693,84 @@ function insert(table, values, mode = 'INSERT OR REPLACE') {
     .run(...entries.map(([, value]) => value));
 }
 
+// GOVERNED_FIXTURE_USER_SEED_START
+function seedGovernedFixtureUser(values) {
+  const requiredIdentityColumns = ['id', 'telegram_id', 'email', 'username', 'auth_provider'];
+  const userColumns = columnsFor('users');
+  if (requiredIdentityColumns.some((column) => !userColumns.has(column))) {
+    throw new Error('governed staging fixture principal columns are unavailable');
+  }
+  if (values.id !== fixturePrincipal.id
+      || values.telegram_id !== fixturePrincipal.telegramId
+      || values.email !== fixturePrincipal.email
+      || values.username !== fixturePrincipal.username
+      || values.auth_provider !== fixturePrincipal.authProvider) {
+    throw new Error('governed staging fixture principal seed marker is invalid');
+  }
+  const matches = db.prepare(`
+    SELECT id, telegram_id, email, username, auth_provider
+    FROM users
+    WHERE id = ? OR telegram_id = ? OR email = ? OR username = ?
+  `).all(
+    fixturePrincipal.id,
+    fixturePrincipal.telegramId,
+    fixturePrincipal.email,
+    fixturePrincipal.username,
+  );
+  const exact = matches.length === 1
+    && matches[0].id === fixturePrincipal.id
+    && matches[0].telegram_id === fixturePrincipal.telegramId
+    && matches[0].email === fixturePrincipal.email
+    && matches[0].username === fixturePrincipal.username
+    && matches[0].auth_provider === fixturePrincipal.authProvider;
+  if (matches.length > 0 && !exact) {
+    throw new Error('governed staging fixture principal collision');
+  }
+  const entries = Object.entries(values).filter(([column]) => userColumns.has(column));
+  if (matches.length === 0) {
+    const names = entries.map(([column]) => column);
+    const placeholders = names.map(() => '?').join(', ');
+    const result = db.prepare(
+      'INSERT INTO users (' + names.join(', ') + ') VALUES (' + placeholders + ')',
+    ).run(...entries.map(([, value]) => value));
+    if (result.changes !== 1) {
+      throw new Error('fixture principal changed during safe seed');
+    }
+    return;
+  }
+  const updates = entries.filter(([column]) => column !== 'id' && column !== 'created_at');
+  const assignments = updates.map(([column]) => column + ' = ?').join(', ');
+  const result = db.prepare(`
+    UPDATE users SET ${assignments}
+    WHERE id = ? AND telegram_id = ? AND email = ? AND username = ? AND auth_provider = ?
+  `).run(
+    ...updates.map(([, value]) => value),
+    fixturePrincipal.id,
+    fixturePrincipal.telegramId,
+    fixturePrincipal.email,
+    fixturePrincipal.username,
+    fixturePrincipal.authProvider,
+  );
+  if (result.changes !== 1) {
+    throw new Error('fixture principal changed during safe seed');
+  }
+}
+// GOVERNED_FIXTURE_USER_SEED_END
+
 db.transaction(() => {
-  insert('users', {
-    id: userId,
-    telegram_id: 910000000 + userId,
-    email: 'training-preview-smoke-' + userId + '@nexushub.test',
+  seedGovernedFixtureUser({
+    id: fixturePrincipal.id,
+    telegram_id: fixturePrincipal.telegramId,
+    email: fixturePrincipal.email,
     email_verified: 1,
-    username: 'training_preview_smoke_' + userId,
+    username: fixturePrincipal.username,
     first_name: 'Training',
     last_name: 'Smoke',
     language: 'en-US',
     timezone: 'Europe/Lisbon',
     tier: 'max',
     status: 'active',
-    auth_provider: 'email',
+    auth_provider: fixturePrincipal.authProvider,
     daily_message_limit: 500,
     daily_token_limit: 1000000,
     daily_cost_limit_usd: 25,
@@ -721,7 +846,7 @@ db.transaction(() => {
     scopes: JSON.stringify([]),
     updated_at: now,
   });
-})();
+}).immediate();
 
 async function main() {
   const token = signIosJwt({
@@ -804,7 +929,30 @@ NODE
 REMOTE_TRAINING_E2E
   ) || TRAINING_SMOKE_RC=$?
 
-  TRAINING_SMOKE_DETAIL="$(printf '%s' "$TRAINING_SMOKE_RESULT" | tail -c 700 | tr '\n' ' ')"
+  TRAINING_SMOKE_DETAIL=""
+  if [ "$TRAINING_SMOKE_RC" -eq 0 ]; then
+    if [ "${#TRAINING_SMOKE_RESULT}" -gt 16384 ]; then
+      TRAINING_SMOKE_RC=1
+      TRAINING_SMOKE_DETAIL="successful training smoke exceeded 16384-byte evidence limit"
+    else
+      TRAINING_SMOKE_DETAIL="$(printf '%s' "$TRAINING_SMOKE_RESULT" | node -e '
+        let body = "";
+        process.stdin.on("data", (chunk) => { body += chunk; });
+        process.stdin.on("end", () => {
+          try {
+            process.stdout.write(JSON.stringify(JSON.parse(body)));
+          } catch {
+            process.exit(1);
+          }
+        });
+      ')" || {
+        TRAINING_SMOKE_RC=1
+        TRAINING_SMOKE_DETAIL="successful training smoke did not emit one strict JSON document"
+      }
+    fi
+  else
+    TRAINING_SMOKE_DETAIL="$(printf '%s' "$TRAINING_SMOKE_RESULT" | tail -c 700 | tr '\n' ' ')"
+  fi
   if [ "$TRAINING_SMOKE_RC" -eq 0 ]; then
     echo "  ✅ Training plan preview E2E — isolated fixture seeded; blocker-free preview"
     PASS=$((PASS + 1))
@@ -819,17 +967,19 @@ REMOTE_TRAINING_E2E
 fi
 
 echo ""
-echo "🌐 Locale-fidelity chat smoke (EN + PT + legacy ES→EN fallback)"
+echo "🌐 Locale-fidelity chat smoke (token-zero EN + PT + legacy ES→EN fallback)"
 # Supported-locale gate: send en-US and pt-BR turns plus one legacy es-419
-# compatibility turn through the real staging chat endpoint. The legacy turn
-# must follow the English fallback contract; Spanish is not a supported reply
-# locale. Assert reply language
-# with the deterministic detector shipped in dist/services/chat-language-
-# detector.js (zero-LLM check; the reply itself may spend planner tokens on
-# staging, which is acceptable for this gate). The check fails OPEN on
-# 'unknown' detections (short acks like "OK") — it only fails the smoke when
-# the detector confidently names a language that contradicts the prompt
-# locale. Uses an isolated staging fixture user like the training preview E2E.
+# compatibility turn through the authenticated-identity fast path on the real
+# staging chat endpoint. The legacy turn must follow the English fallback
+# contract; Spanish is not a supported reply locale. Exact route metadata and
+# a zero api_usage delta provide one local guard against provider use. The
+# governed Phase 7 observation transaction separately proves zero provider
+# attempt reservations across the entire canonical smoke. Assert reply
+# language with the deterministic detector shipped in
+# dist/services/chat-language-detector.js. The check fails closed on 'unknown'
+# detections, but the fixed identity replies contain enough discriminative
+# language for EN/PT. Uses an isolated staging fixture user like the training
+# preview E2E.
 # The persisted es-ES value intentionally exercises compatibility coercion;
 # it is never rewritten or treated as a selectable locale. The signed gate treats
 # NEXUS_SMOKE_LOCALE_FIDELITY=0 as a failure rather than accepting missing
@@ -859,14 +1009,21 @@ export NODE_PATH="$staging_release/node_modules"
 /usr/bin/node <<'NODE'
 const Database = require('better-sqlite3');
 const { signIosJwt } = require('./dist/services/ios-jwt');
-const { checkStagingLocaleWritePreview } = require('./dist/services/chat-language-detector');
+const { checkResponseLocaleFidelity } = require('./dist/services/chat-language-detector');
 
 const userId = Number(process.env.NEXUS_SMOKE_LOCALE_FIDELITY_USER_ID || '1000016');
-if (!Number.isInteger(userId) || userId < 1000000 || userId > 1099999) {
-  throw new Error('NEXUS_SMOKE_LOCALE_FIDELITY_USER_ID must be an isolated staging fixture user id in 1000000-1099999');
+if (userId !== 1000016) {
+  throw new Error('NEXUS_SMOKE_LOCALE_FIDELITY_USER_ID must remain the governed staging fixture user 1000016');
 }
 
 const deviceId = process.env.NEXUS_SMOKE_LOCALE_FIDELITY_DEVICE_ID || 'locale-fidelity-smoke-device-' + userId;
+const fixturePrincipal = Object.freeze({
+  id: userId,
+  telegramId: 910000000 + userId,
+  email: 'locale-fidelity-smoke-' + userId + '@nexushub.test',
+  username: 'locale_fidelity_smoke_' + userId,
+  authProvider: 'email',
+});
 const db = new Database(process.env.DATABASE_PATH || process.env.DB_PATH || './data/bot.db');
 const now = new Date().toISOString();
 
@@ -887,20 +1044,84 @@ function insert(table, values, mode = 'INSERT OR REPLACE') {
     .run(...entries.map(([, value]) => value));
 }
 
+// GOVERNED_FIXTURE_USER_SEED_START
+function seedGovernedFixtureUser(values) {
+  const requiredIdentityColumns = ['id', 'telegram_id', 'email', 'username', 'auth_provider'];
+  const userColumns = columnsFor('users');
+  if (requiredIdentityColumns.some((column) => !userColumns.has(column))) {
+    throw new Error('governed staging fixture principal columns are unavailable');
+  }
+  if (values.id !== fixturePrincipal.id
+      || values.telegram_id !== fixturePrincipal.telegramId
+      || values.email !== fixturePrincipal.email
+      || values.username !== fixturePrincipal.username
+      || values.auth_provider !== fixturePrincipal.authProvider) {
+    throw new Error('governed staging fixture principal seed marker is invalid');
+  }
+  const matches = db.prepare(`
+    SELECT id, telegram_id, email, username, auth_provider
+    FROM users
+    WHERE id = ? OR telegram_id = ? OR email = ? OR username = ?
+  `).all(
+    fixturePrincipal.id,
+    fixturePrincipal.telegramId,
+    fixturePrincipal.email,
+    fixturePrincipal.username,
+  );
+  const exact = matches.length === 1
+    && matches[0].id === fixturePrincipal.id
+    && matches[0].telegram_id === fixturePrincipal.telegramId
+    && matches[0].email === fixturePrincipal.email
+    && matches[0].username === fixturePrincipal.username
+    && matches[0].auth_provider === fixturePrincipal.authProvider;
+  if (matches.length > 0 && !exact) {
+    throw new Error('governed staging fixture principal collision');
+  }
+  const entries = Object.entries(values).filter(([column]) => userColumns.has(column));
+  if (matches.length === 0) {
+    const names = entries.map(([column]) => column);
+    const placeholders = names.map(() => '?').join(', ');
+    const result = db.prepare(
+      'INSERT INTO users (' + names.join(', ') + ') VALUES (' + placeholders + ')',
+    ).run(...entries.map(([, value]) => value));
+    if (result.changes !== 1) {
+      throw new Error('fixture principal changed during safe seed');
+    }
+    return;
+  }
+  const updates = entries.filter(([column]) => column !== 'id' && column !== 'created_at');
+  const assignments = updates.map(([column]) => column + ' = ?').join(', ');
+  const result = db.prepare(`
+    UPDATE users SET ${assignments}
+    WHERE id = ? AND telegram_id = ? AND email = ? AND username = ? AND auth_provider = ?
+  `).run(
+    ...updates.map(([, value]) => value),
+    fixturePrincipal.id,
+    fixturePrincipal.telegramId,
+    fixturePrincipal.email,
+    fixturePrincipal.username,
+    fixturePrincipal.authProvider,
+  );
+  if (result.changes !== 1) {
+    throw new Error('fixture principal changed during safe seed');
+  }
+}
+// GOVERNED_FIXTURE_USER_SEED_END
+
 db.transaction(() => {
-  insert('users', {
-    id: userId,
-    telegram_id: 910000000 + userId,
-    email: 'locale-fidelity-smoke-' + userId + '@nexushub.test',
+  seedGovernedFixtureUser({
+    id: fixturePrincipal.id,
+    telegram_id: fixturePrincipal.telegramId,
+    email: fixturePrincipal.email,
     email_verified: 1,
-    username: 'locale_fidelity_smoke_' + userId,
+    username: fixturePrincipal.username,
     first_name: 'Locale',
     last_name: 'Smoke',
     language: 'es-ES',
     timezone: 'Europe/Lisbon',
     tier: 'max',
     status: 'active',
-    auth_provider: 'email',
+    auth_provider: fixturePrincipal.authProvider,
     daily_message_limit: 500,
     daily_token_limit: 1000000,
     daily_cost_limit_usd: 25,
@@ -928,12 +1149,12 @@ db.transaction(() => {
     created_at: now,
     updated_at: now,
   });
-})();
+}).immediate();
 
 const TURNS = [
-  { locale: 'es-419', expectedLocale: 'en-US', text: 'Crea una tarea llamada staging legacy locale smoke' },
-  { locale: 'en-US', expectedLocale: 'en-US', text: 'Create a task called staging English locale smoke' },
-  { locale: 'pt-BR', text: 'Cria uma tarefa chamada revisão do planejador de fumaça' },
+  { locale: 'es-419', expectedLocale: 'en-US', text: '¿Quién soy?' },
+  { locale: 'en-US', expectedLocale: 'en-US', text: 'Who am I signed in as?' },
+  { locale: 'pt-BR', text: 'Quem sou eu?' },
 ];
 
 async function runTurn(turn) {
@@ -963,28 +1184,55 @@ async function runTurn(turn) {
     throw new Error('legacy Spanish preference was rewritten during compatibility smoke');
   }
   const expectedLocale = turn.expectedLocale || turn.locale;
-  const contract = checkStagingLocaleWritePreview(expectedLocale, response.status, json);
+  const envelope = json?.data && typeof json.data === 'object' ? json.data : json;
+  const replyText = typeof envelope?.text === 'string' ? envelope.text : '';
+  const routeMethod = typeof envelope?.routeMethod === 'string' ? envelope.routeMethod : null;
+  const metadata = envelope?.metadata && typeof envelope.metadata === 'object'
+    ? envelope.metadata : null;
+  const localeFidelity = checkResponseLocaleFidelity(expectedLocale, replyText);
+  const ok = response.status === 200
+    && routeMethod === 'authenticated-identity'
+    && metadata?.type === 'authenticated_identity'
+    && metadata?.userId === userId
+    && metadata?.hasDisplayName === true
+    && replyText.trim().length > 0
+    && localeFidelity.ok;
   return {
     requestedLocale: turn.locale,
     expectedLocale,
     storedLanguage,
     httpStatus: response.status,
-    ok: contract.ok,
-    httpStatusAccepted: contract.httpStatusAccepted,
-    actionStatus: contract.actionStatus,
-    actionStatusAccepted: contract.actionStatusAccepted,
-    expected: contract.localeFidelity.expected,
-    detected: contract.localeFidelity.detected,
-    confidence: Number(contract.localeFidelity.confidence.toFixed(3)),
-    replyPreview: contract.replyText.slice(0, 120),
+    ok,
+    routeMethod,
+    responseType: metadata?.type ?? null,
+    authenticatedUserId: metadata?.userId ?? null,
+    hasDisplayName: metadata?.hasDisplayName ?? null,
+    expected: localeFidelity.expected,
+    detected: localeFidelity.detected,
+    confidence: Number(localeFidelity.confidence.toFixed(3)),
+    replyPreview: replyText.slice(0, 120),
   };
 }
 
 async function main() {
+  const providerUsageBefore = Number(db.prepare(
+    'SELECT COUNT(*) AS count FROM api_usage WHERE user_id = ?',
+  ).get(userId)?.count ?? 0);
   const turns = [];
   for (const turn of TURNS) turns.push(await runTurn(turn));
-  const ok = turns.every((result) => result.ok);
-  process.stdout.write(JSON.stringify({ ok, userId, turns }));
+  const providerUsageAfter = Number(db.prepare(
+    'SELECT COUNT(*) AS count FROM api_usage WHERE user_id = ?',
+  ).get(userId)?.count ?? 0);
+  const ok = turns.every((result) => result.ok)
+    && providerUsageAfter === providerUsageBefore;
+  process.stdout.write(JSON.stringify({
+    ok,
+    userId,
+    providerUsageBefore,
+    providerUsageAfter,
+    providerUsageDelta: providerUsageAfter - providerUsageBefore,
+    turns,
+  }));
   if (!ok) process.exit(1);
 }
 
@@ -1000,9 +1248,32 @@ NODE
 REMOTE_LOCALE_E2E
   ) || LOCALE_SMOKE_RC=$?
 
-  LOCALE_SMOKE_DETAIL="$(printf '%s' "$LOCALE_SMOKE_RESULT" | tail -c 700 | tr '\n' ' ')"
+  LOCALE_SMOKE_DETAIL=""
   if [ "$LOCALE_SMOKE_RC" -eq 0 ]; then
-    echo "  ✅ Locale-fidelity chat smoke — EN/PT supported; legacy es-419 falls back to EN"
+    if [ "${#LOCALE_SMOKE_RESULT}" -gt 16384 ]; then
+      LOCALE_SMOKE_RC=1
+      LOCALE_SMOKE_DETAIL="successful locale smoke exceeded 16384-byte evidence limit"
+    else
+      LOCALE_SMOKE_DETAIL="$(printf '%s' "$LOCALE_SMOKE_RESULT" | node -e '
+        let body = "";
+        process.stdin.on("data", (chunk) => { body += chunk; });
+        process.stdin.on("end", () => {
+          try {
+            process.stdout.write(JSON.stringify(JSON.parse(body)));
+          } catch {
+            process.exit(1);
+          }
+        });
+      ')" || {
+        LOCALE_SMOKE_RC=1
+        LOCALE_SMOKE_DETAIL="successful locale smoke did not emit one strict JSON document"
+      }
+    fi
+  else
+    LOCALE_SMOKE_DETAIL="$(printf '%s' "$LOCALE_SMOKE_RESULT" | tail -c 700 | tr '\n' ' ')"
+  fi
+  if [ "$LOCALE_SMOKE_RC" -eq 0 ]; then
+    echo "  ✅ Locale-fidelity chat smoke — token-zero EN/PT; legacy es-419 falls back to EN"
     PASS=$((PASS + 1))
     evidence_record "locale fidelity chat smoke" "passed" "$LOCALE_SMOKE_DETAIL"
   else
@@ -1357,16 +1628,33 @@ write_evidence_file() {
   if [ "$EVIDENCE_ENABLED" != "1" ]; then
     return
   fi
-  mkdir -p "$EVIDENCE_DIR" 2>/dev/null || return
+  if ! mkdir -p "$EVIDENCE_DIR" 2>/dev/null; then
+    [ "${NEXUS_SMOKE_REQUIRE_EXACT_IDENTITY:-0}" != 1 ] || return 1
+    return 0
+  fi
+  chmod 700 "$EVIDENCE_DIR" 2>/dev/null || {
+    [ "${NEXUS_SMOKE_REQUIRE_EXACT_IDENTITY:-0}" != 1 ] || return 1
+  }
   local stamp
   stamp="$(date -u +%Y%m%dT%H%M%SZ)"
-  local file="$EVIDENCE_DIR/staging-smoke-${SMOKE_HEAD_SHA}-${stamp}.json"
+  local file="${NEXUS_SMOKE_EVIDENCE_PATH:-$EVIDENCE_DIR/staging-smoke-${SMOKE_HEAD_SHA}-${stamp}.json}"
+  node - "$EVIDENCE_DIR" "$file" <<'NODE' || return 1
+const fs = require('node:fs');
+const path = require('node:path');
+const [root, file] = process.argv.slice(2).map((value) => path.resolve(value));
+const relative = path.relative(root, file);
+if (!relative || relative.startsWith('..') || path.isAbsolute(relative)
+    || path.extname(file) !== '.json' || fs.existsSync(file) || fs.lstatSync(root).isSymbolicLink()) {
+  process.exit(1);
+}
+NODE
 
   # Build a JSON via node, feeding each result line as TAB-separated.
   local results_blob
   results_blob="$(printf '%s\n' "${EVIDENCE_RESULTS[@]+"${EVIDENCE_RESULTS[@]}"}")"
-  printf '%s' "$results_blob" \
-    | NODE_NO_WARNINGS=1 node -e '
+  if ! ( set -o noclobber
+    printf '%s' "$results_blob" \
+      | NODE_NO_WARNINGS=1 node -e '
       const lines = require("fs").readFileSync(0, "utf8").split("\n").filter(Boolean);
       const checks = lines.map((l) => {
         const [name, status, ...rest] = l.split("\t");
@@ -1375,21 +1663,39 @@ write_evidence_file() {
       const passed = checks.filter((c) => c.status === "passed").length;
       const failed = checks.filter((c) => c.status === "failed").length;
       const payload = {
-        version: "1",
+        version: "2",
+        profile: process.env.SMOKE_PROFILE,
         runStartedAt: process.env.SMOKE_START_AT,
         runCompletedAt: new Date().toISOString(),
         branch: process.env.SMOKE_BRANCH,
         sha: process.env.SMOKE_HEAD_SHA,
+        runtimeSha: process.env.SMOKE_RUNTIME_SHA,
+        artifactDigest: process.env.SMOKE_ARTIFACT_DIGEST,
         host: "staging",
         verdict: failed === 0 ? "passed" : "failed",
         totals: { passed, failed, total: checks.length },
         checks,
       };
       console.log(JSON.stringify(payload, null, 2));
-    ' > "$file" 2>/dev/null \
-    && echo "  📝 Smoke evidence: $file"
+      ' > "$file" 2>/dev/null
+  ); then
+    return 1
+  fi
+  chmod 600 "$file"
+  node - "$file" <<'NODE' || return 1
+const fs = require('node:fs');
+const file = process.argv[2];
+const evidenceStat = fs.lstatSync(file);
+if (!evidenceStat.isFile() || evidenceStat.isSymbolicLink()
+    || evidenceStat.uid !== process.getuid()
+    || (evidenceStat.mode & 0o777) !== 0o600
+    || evidenceStat.nlink !== 1) {
+  process.exit(1);
 }
-export SMOKE_START_AT SMOKE_BRANCH SMOKE_HEAD_SHA
+NODE
+  echo "  📝 Smoke evidence: $file"
+}
+export SMOKE_START_AT SMOKE_BRANCH SMOKE_HEAD_SHA SMOKE_RUNTIME_SHA SMOKE_ARTIFACT_DIGEST SMOKE_PROFILE
 
 # ── Summary ────────────────────────────────────────
 echo ""

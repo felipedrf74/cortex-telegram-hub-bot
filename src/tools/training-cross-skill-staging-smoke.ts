@@ -45,6 +45,19 @@ import type { ChatTurnCtx } from '../api/routes/chat-pipeline/types';
 
 export const DEFAULT_CROSS_SKILL_SMOKE_RESULTS_PATH =
   '.local/release/smoke-evidence/training-cross-skill-staging-latest.md';
+export const CROSS_SKILL_SMOKE_EVIDENCE_SCHEMA =
+  'nexus.training-cross-skill-staging-smoke.v1' as const;
+
+const CROSS_SKILL_SMOKE_OPERATION_FLOWS = [
+  'local_fixture_contracts',
+  'phase7_cross_skill_flag_contract',
+  'secretary_conflict',
+  'cooking_fueling_gap',
+  'finance_budget_constraint',
+  'content_workload',
+  'training_content_milestone',
+  'shared_context_scope',
+] as const;
 
 type CrossSkillFlow =
   | 'local_fixture_contracts'
@@ -58,6 +71,9 @@ type CrossSkillFlow =
   | 'shared_context_scope';
 
 type SmokeStatus = 'pass' | 'fail' | 'blocked';
+type EvidentiaryCrossSkillFlow = typeof CROSS_SKILL_SMOKE_OPERATION_FLOWS[number];
+type TrainingPlanOutputRefsDecision = 'absent' | 'present' | 'missing';
+type DedicatedIdentitySource = 'chat_eval_dedicated_tenant_db_attested' | 'unverified';
 
 interface SmokeOperationResult {
   flow: CrossSkillFlow;
@@ -87,6 +103,34 @@ interface SmokeReport {
   prerequisites: SmokePrerequisiteReport;
   operations: SmokeOperationResult[];
   localFixtureOperations: SmokeOperationResult[];
+  executionIdentity: {
+    dedicatedStagingIdentity: boolean;
+    dedicatedIdentitySource: DedicatedIdentitySource;
+    crossSkillExecutionEffective: boolean;
+    masterKill: boolean;
+    trainingPlanCreateOutputRefs: TrainingPlanOutputRefsDecision;
+  };
+}
+
+export interface TrainingCrossSkillStagingSmokeEvidence {
+  schema: typeof CROSS_SKILL_SMOKE_EVIDENCE_SCHEMA;
+  runId: string;
+  startedAt: string;
+  finishedAt: string;
+  dryRun: boolean;
+  dedicatedStagingIdentity: boolean;
+  dedicatedIdentitySource: DedicatedIdentitySource;
+  releaseIdentity: {
+    environment: string | null;
+    runtimeSha: string | null;
+    artifactDigest: string | null;
+  };
+  prerequisitesPassed: boolean;
+  operationStatuses: Record<EvidentiaryCrossSkillFlow, SmokeStatus>;
+  crossSkillExecutionEffective: boolean;
+  masterKill: boolean;
+  trainingPlanCreateOutputRefs: TrainingPlanOutputRefsDecision;
+  verdict: 'passed' | 'failed';
 }
 
 interface SmokeHarnessOptions {
@@ -105,6 +149,12 @@ interface RuntimeCrossSkillReader {
   readSecretaryMeshContext(opts: { userId: number; weekStart?: string }): Promise<SecretaryMeshContext>;
   buildSharedDecisionContext(domain: 'triathlon', userId: number): Promise<string>;
   buildSharedDecisionContracts(domain: 'triathlon', userId: number): Promise<SharedDecisionContracts>;
+}
+
+interface RuntimeCrossSkillReaderHandle {
+  reader: RuntimeCrossSkillReader;
+  run<T>(callback: () => Promise<T>): Promise<T>;
+  close(): void;
 }
 
 interface RuntimeBundle {
@@ -168,6 +218,17 @@ export function evaluateCrossSkillSmokePrerequisites(env: NodeJS.ProcessEnv): Sm
   const userId = Number(env.TRAINING_CROSS_SKILL_STAGING_USER_ID);
   if (!Number.isInteger(userId) || userId <= 0) {
     missing.push('TRAINING_CROSS_SKILL_STAGING_USER_ID=<staging test user id>');
+  }
+
+  const dedicatedTenantId = Number(env.CHAT_EVAL_DEDICATED_TENANT_ID);
+  if (!Number.isInteger(dedicatedTenantId) || dedicatedTenantId <= 0) {
+    missing.push('CHAT_EVAL_DEDICATED_TENANT_ID=<dedicated synthetic tenant id>');
+  } else if (Number.isInteger(userId) && userId > 0 && userId !== dedicatedTenantId) {
+    missing.push('TRAINING_CROSS_SKILL_STAGING_USER_ID must equal CHAT_EVAL_DEDICATED_TENANT_ID');
+  }
+
+  if (env.TRAINING_CROSS_SKILL_DEDICATED_IDENTITY_ATTESTED !== '1') {
+    missing.push('TRAINING_CROSS_SKILL_DEDICATED_IDENTITY_ATTESTED=1 from the native DB identity check');
   }
 
   if (!env.DATABASE_PATH) {
@@ -422,10 +483,21 @@ export async function runTrainingCrossSkillStagingSmoke(
     return finishReport(options, startedAt, prerequisites, operations, localFixtureOperations);
   }
 
-  const runtimeReader = reader ?? loadRuntimeCrossSkillReader();
-  operations.push(await evaluatePhase7CrossSkillFlagContract(options.env));
-  const bundle = await readRuntimeBundle(options.userId, runtimeReader);
-  operations.push(...evaluateRuntimeBundle(bundle, options.userId));
+  const ownedReader = reader === null
+    ? await loadRuntimeCrossSkillReader(options.env.DATABASE_PATH)
+    : null;
+  try {
+    const runtimeReader = reader ?? ownedReader!.reader;
+    const read = async () => {
+      operations.push(await evaluatePhase7CrossSkillFlagContract(options.env));
+      const bundle = await readRuntimeBundle(options.userId!, runtimeReader);
+      operations.push(...evaluateRuntimeBundle(bundle, options.userId!));
+    };
+    if (ownedReader) await ownedReader.run(read);
+    else await read();
+  } finally {
+    ownedReader?.close();
+  }
 
   return finishReport(options, startedAt, prerequisites, operations, localFixtureOperations);
 }
@@ -1107,6 +1179,24 @@ function finishReport(
   operations: SmokeOperationResult[],
   localFixtureOperations: SmokeOperationResult[],
 ): SmokeReport {
+  const trainingPlanCreate = findChatActionDefinition('training', 'training_plan_create');
+  const trainingPlanCreateOutputRefs: TrainingPlanOutputRefsDecision = !trainingPlanCreate
+    ? 'missing'
+    : trainingPlanCreate.outputRefs === undefined
+      ? 'absent'
+      : 'present';
+  const dedicatedTenantId = Number(options.env.CHAT_EVAL_DEDICATED_TENANT_ID);
+  const dedicatedStagingIdentity = options.env.TRAINING_CROSS_SKILL_STAGING_SMOKE === '1'
+    && options.env.NEXUS_RELEASE_ROLE === 'staging'
+    && options.env.TRAINING_CROSS_SKILL_DEDICATED_IDENTITY_ATTESTED === '1'
+    && Number.isInteger(options.userId)
+    && Number(options.userId) > 0
+    && Number.isInteger(dedicatedTenantId)
+    && dedicatedTenantId > 0
+    && Number(options.userId) === dedicatedTenantId;
+  const dedicatedIdentitySource: DedicatedIdentitySource = dedicatedStagingIdentity
+    ? 'chat_eval_dedicated_tenant_db_attested'
+    : 'unverified';
   return {
     runId: options.runId,
     startedAt,
@@ -1121,6 +1211,13 @@ function finishReport(
     prerequisites,
     operations,
     localFixtureOperations,
+    executionIdentity: {
+      dedicatedStagingIdentity,
+      dedicatedIdentitySource,
+      crossSkillExecutionEffective: isCrossSkillExecutionEnabled(options.env),
+      masterKill: parseEnvBoolean(options.env[MANIFEST_ROUTING_MASTER_KILL_ENV_VAR]),
+      trainingPlanCreateOutputRefs,
+    },
   };
 }
 
@@ -1201,6 +1298,263 @@ export function renderCrossSkillSmokeReportMarkdown(report: SmokeReport): string
   return `${lines.join('\n')}\n`;
 }
 
+/**
+ * Produce the intentionally small, redacted receipt consumed by the Phase 7
+ * flag transaction. Raw prompts, fixture values, user IDs, database paths,
+ * and per-operation evidence remain only in ignored local diagnostic output.
+ */
+export function buildTrainingCrossSkillStagingSmokeEvidence(
+  report: SmokeReport,
+): TrainingCrossSkillStagingSmokeEvidence {
+  assertCanonicalIsoTimestamp(report.startedAt, 'smoke startedAt');
+  assertCanonicalIsoTimestamp(report.finishedAt, 'smoke finishedAt');
+  if (!/^[A-Za-z0-9._:-]{1,160}$/u.test(report.runId)) {
+    throw new Error('smoke runId must contain only redaction-safe identifier characters');
+  }
+  if (report.releaseIdentity.environment !== 'staging'
+      || !/^[0-9a-f]{40}$/u.test(report.releaseIdentity.runtimeSha ?? '')
+      || !/^[0-9a-f]{64}$/u.test(report.releaseIdentity.artifactDigest ?? '')) {
+    throw new Error('strict cross-skill smoke evidence requires exact staging release identity');
+  }
+
+  const operationStatuses = Object.fromEntries(
+    CROSS_SKILL_SMOKE_OPERATION_FLOWS.map((flow) => {
+      if (flow === 'local_fixture_contracts') {
+        if (report.localFixtureOperations.length === 0) return [flow, 'blocked'];
+        if (report.localFixtureOperations.some((operation) => operation.status === 'fail')) {
+          return [flow, 'fail'];
+        }
+        if (report.localFixtureOperations.some((operation) => operation.status === 'blocked')) {
+          return [flow, 'blocked'];
+        }
+        return [flow, 'pass'];
+      }
+      const source = report.operations;
+      const matches = source.filter((operation) => operation.flow === flow);
+      if (matches.length === 0) return [flow, 'blocked'];
+      if (matches.length > 1) return [flow, 'fail'];
+      return [flow, matches[0]!.status];
+    }),
+  ) as Record<EvidentiaryCrossSkillFlow, SmokeStatus>;
+
+  const timeOrderValid = Date.parse(report.finishedAt) >= Date.parse(report.startedAt);
+  const verdictPassed = report.dryRun === false
+    && report.prerequisites.ok
+    && report.executionIdentity.dedicatedStagingIdentity
+    && report.executionIdentity.dedicatedIdentitySource === 'chat_eval_dedicated_tenant_db_attested'
+    && report.executionIdentity.crossSkillExecutionEffective
+    && !report.executionIdentity.masterKill
+    && report.executionIdentity.trainingPlanCreateOutputRefs === 'absent'
+    && timeOrderValid
+    && Object.values(operationStatuses).every((status) => status === 'pass');
+
+  return {
+    schema: CROSS_SKILL_SMOKE_EVIDENCE_SCHEMA,
+    runId: report.runId,
+    startedAt: report.startedAt,
+    finishedAt: report.finishedAt,
+    dryRun: report.dryRun,
+    dedicatedStagingIdentity: report.executionIdentity.dedicatedStagingIdentity,
+    dedicatedIdentitySource: report.executionIdentity.dedicatedIdentitySource,
+    releaseIdentity: {
+      environment: report.releaseIdentity.environment,
+      runtimeSha: report.releaseIdentity.runtimeSha,
+      artifactDigest: report.releaseIdentity.artifactDigest,
+    },
+    prerequisitesPassed: report.prerequisites.ok,
+    operationStatuses,
+    crossSkillExecutionEffective: report.executionIdentity.crossSkillExecutionEffective,
+    masterKill: report.executionIdentity.masterKill,
+    trainingPlanCreateOutputRefs: report.executionIdentity.trainingPlanCreateOutputRefs,
+    verdict: verdictPassed ? 'passed' : 'failed',
+  };
+}
+
+export function writeTrainingCrossSkillStagingSmokeEvidence(input: {
+  evidence: TrainingCrossSkillStagingSmokeEvidence;
+  allowedLocalRoot: string;
+  outputPath: string;
+}): string {
+  assertStrictCrossSkillSmokeEvidence(input.evidence);
+  const resolvedRoot = path.resolve(input.allowedLocalRoot);
+  const resolvedOutput = path.resolve(input.outputPath);
+  if (!pathSegments(resolvedRoot).includes('.local')) {
+    throw new Error('cross-skill smoke evidence root must be beneath an explicit .local directory');
+  }
+  if (!isStrictDescendant(resolvedRoot, resolvedOutput) || path.extname(resolvedOutput) !== '.json') {
+    throw new Error('cross-skill smoke JSON must be a contained .json file beneath the allowed root');
+  }
+
+  assertNoSymlinkAtOrBelowLocalBoundary(resolvedRoot, 'cross-skill smoke evidence root');
+  fs.mkdirSync(resolvedRoot, { recursive: true, mode: 0o700 });
+  assertNoSymlinkAtOrBelowLocalBoundary(resolvedRoot, 'cross-skill smoke evidence root');
+  const canonicalRoot = fs.realpathSync(resolvedRoot);
+  if (!pathSegments(canonicalRoot).includes('.local')) {
+    throw new Error('cross-skill smoke evidence root resolves outside .local');
+  }
+
+  const outputParent = path.dirname(resolvedOutput);
+  assertNoSymlinkAtOrBelowLocalBoundary(outputParent, 'cross-skill smoke JSON parent');
+  fs.mkdirSync(outputParent, { recursive: true, mode: 0o700 });
+  assertNoSymlinkAtOrBelowLocalBoundary(outputParent, 'cross-skill smoke JSON parent');
+  const canonicalParent = fs.realpathSync(outputParent);
+  if (!isSameOrDescendant(canonicalRoot, canonicalParent)) {
+    throw new Error('cross-skill smoke JSON parent resolves outside its contained .local root');
+  }
+  const canonicalOutput = path.join(canonicalParent, path.basename(resolvedOutput));
+  const outputStat = fs.lstatSync(canonicalOutput, { throwIfNoEntry: false });
+  if (outputStat) {
+    if (!outputStat.isFile() || outputStat.isSymbolicLink()) {
+      throw new Error('cross-skill smoke JSON target must be an ordinary file');
+    }
+  }
+
+  const bytes = `${JSON.stringify(input.evidence, null, 2)}\n`;
+  const temporary = `${canonicalOutput}.next-${process.pid}-${Math.random().toString(16).slice(2)}`;
+  let descriptor: number | undefined;
+  try {
+    descriptor = fs.openSync(temporary, 'wx', 0o600);
+    fs.writeFileSync(descriptor, bytes, { encoding: 'utf8' });
+    fs.fsyncSync(descriptor);
+    fs.closeSync(descriptor);
+    descriptor = undefined;
+    fs.renameSync(temporary, canonicalOutput);
+    fs.chmodSync(canonicalOutput, 0o600);
+  } catch (error) {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
+    try {
+      fs.unlinkSync(temporary);
+    } catch {
+      // Nothing to clean up after a pre-create or post-rename failure.
+    }
+    throw error;
+  }
+  return fs.realpathSync(canonicalOutput);
+}
+
+function assertStrictCrossSkillSmokeEvidence(
+  evidence: TrainingCrossSkillStagingSmokeEvidence,
+): void {
+  assertExactObjectKeys(evidence as unknown as Record<string, unknown>, [
+    'schema',
+    'runId',
+    'startedAt',
+    'finishedAt',
+    'dryRun',
+    'dedicatedStagingIdentity',
+    'dedicatedIdentitySource',
+    'releaseIdentity',
+    'prerequisitesPassed',
+    'operationStatuses',
+    'crossSkillExecutionEffective',
+    'masterKill',
+    'trainingPlanCreateOutputRefs',
+    'verdict',
+  ], 'cross-skill smoke evidence');
+  assertExactObjectKeys(evidence.releaseIdentity as unknown as Record<string, unknown>, [
+    'environment',
+    'runtimeSha',
+    'artifactDigest',
+  ], 'cross-skill smoke release identity');
+  assertExactObjectKeys(evidence.operationStatuses as unknown as Record<string, unknown>, [
+    ...CROSS_SKILL_SMOKE_OPERATION_FLOWS,
+  ], 'cross-skill smoke operation statuses');
+  const booleanFields = [
+    evidence.dryRun,
+    evidence.dedicatedStagingIdentity,
+    evidence.prerequisitesPassed,
+    evidence.crossSkillExecutionEffective,
+    evidence.masterKill,
+  ];
+  if (evidence.schema !== CROSS_SKILL_SMOKE_EVIDENCE_SCHEMA
+      || !/^[A-Za-z0-9._:-]{1,160}$/u.test(evidence.runId)
+      || evidence.releaseIdentity.environment !== 'staging'
+      || !/^[0-9a-f]{40}$/u.test(evidence.releaseIdentity.runtimeSha ?? '')
+      || !/^[0-9a-f]{64}$/u.test(evidence.releaseIdentity.artifactDigest ?? '')
+      || booleanFields.some((value) => typeof value !== 'boolean')
+      || !['chat_eval_dedicated_tenant_db_attested', 'unverified'].includes(evidence.dedicatedIdentitySource)
+      || !['absent', 'present', 'missing'].includes(evidence.trainingPlanCreateOutputRefs)
+      || !['passed', 'failed'].includes(evidence.verdict)
+      || Object.values(evidence.operationStatuses)
+        .some((status) => !['pass', 'fail', 'blocked'].includes(status))) {
+    throw new Error('cross-skill smoke evidence does not match its strict schema');
+  }
+  assertCanonicalIsoTimestamp(evidence.startedAt, 'smoke evidence startedAt');
+  assertCanonicalIsoTimestamp(evidence.finishedAt, 'smoke evidence finishedAt');
+  const passedContract = evidence.dryRun === false
+    && evidence.dedicatedStagingIdentity
+    && evidence.dedicatedIdentitySource === 'chat_eval_dedicated_tenant_db_attested'
+    && evidence.prerequisitesPassed
+    && evidence.crossSkillExecutionEffective
+    && !evidence.masterKill
+    && evidence.trainingPlanCreateOutputRefs === 'absent'
+    && Date.parse(evidence.finishedAt) >= Date.parse(evidence.startedAt)
+    && Object.values(evidence.operationStatuses).every((status) => status === 'pass');
+  if ((evidence.verdict === 'passed') !== passedContract) {
+    throw new Error('cross-skill smoke verdict does not match its strict pass contract');
+  }
+}
+
+function assertExactObjectKeys(
+  value: Record<string, unknown>,
+  expected: string[],
+  label: string,
+): void {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`${label} must be an object`);
+  }
+  const actual = Object.keys(value).sort();
+  const wanted = [...expected].sort();
+  if (actual.length !== wanted.length || actual.some((key, index) => key !== wanted[index])) {
+    throw new Error(`${label} has unexpected or missing fields`);
+  }
+}
+
+function assertCanonicalIsoTimestamp(value: string, label: string): void {
+  const parsed = new Date(value);
+  if (!Number.isFinite(parsed.getTime()) || parsed.toISOString() !== value) {
+    throw new Error(`${label} must be a canonical UTC timestamp`);
+  }
+}
+
+function pathSegments(value: string): string[] {
+  return value.split(path.sep).filter(Boolean);
+}
+
+function assertNoSymlinkAtOrBelowLocalBoundary(candidate: string, label: string): void {
+  const resolved = path.resolve(candidate);
+  const root = path.parse(resolved).root;
+  const segments = resolved.slice(root.length).split(path.sep).filter(Boolean);
+  const localIndex = segments.lastIndexOf('.local');
+  if (localIndex < 0) throw new Error(`${label} is missing its .local boundary`);
+
+  let cursor = root;
+  for (let index = 0; index < segments.length; index += 1) {
+    cursor = path.join(cursor, segments[index]!);
+    if (index < localIndex) continue;
+    const stat = fs.lstatSync(cursor, { throwIfNoEntry: false });
+    if (!stat) return;
+    if (stat.isSymbolicLink()) {
+      throw new Error(`${label} must not traverse a symbolic link at ${cursor}`);
+    }
+    if (!stat.isDirectory() && index < segments.length - 1) {
+      throw new Error(`${label} traverses a non-directory path at ${cursor}`);
+    }
+  }
+}
+
+function isStrictDescendant(parent: string, child: string): boolean {
+  const relative = path.relative(parent, child);
+  return relative !== '' && relative !== '..' && !relative.startsWith(`..${path.sep}`)
+    && !path.isAbsolute(relative);
+}
+
+function isSameOrDescendant(parent: string, child: string): boolean {
+  const relative = path.relative(parent, child);
+  return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`)
+    && !path.isAbsolute(relative));
+}
+
 function appendOperationTable(lines: string[], operations: SmokeOperationResult[]): void {
   if (operations.length === 0) {
     lines.push('No operations recorded.');
@@ -1225,32 +1579,49 @@ function escapeMarkdownCell(value: string): string {
 
 async function main(): Promise<void> {
   const envFile = process.env.TRAINING_CROSS_SKILL_STAGING_ENV_FILE;
-  dotenv.config(envFile ? { path: envFile } : undefined);
+  dotenv.config(envFile ? { path: envFile, quiet: true } : { quiet: true });
 
   const userId = Number(process.env.TRAINING_CROSS_SKILL_STAGING_USER_ID);
   const normalizedUserId = Number.isInteger(userId) && userId > 0 ? userId : undefined;
   const runId = process.env.TRAINING_CROSS_SKILL_STAGING_RUN_ID || buildCrossSkillSmokeRunId();
   const dryRun = process.argv.includes('--dry-run') || process.env.TRAINING_CROSS_SKILL_STAGING_DRY_RUN === '1';
+  const jsonMode = process.argv.includes('--json');
   const resultsPath = process.env.TRAINING_CROSS_SKILL_STAGING_RESULTS_PATH
     || DEFAULT_CROSS_SKILL_SMOKE_RESULTS_PATH;
   const prerequisites = evaluateCrossSkillSmokePrerequisites(process.env);
-  const reader = !dryRun && prerequisites.ok && normalizedUserId ? loadRuntimeCrossSkillReader() : null;
-
-  const report = await runTrainingCrossSkillStagingSmoke(
-    {
-      userId: normalizedUserId,
-      runId,
-      dryRun,
-      now: new Date(),
-      env: process.env,
-    },
-    reader,
-  );
+  const report = await runTrainingCrossSkillStagingSmoke({
+    userId: normalizedUserId,
+    runId,
+    dryRun,
+    now: new Date(),
+    env: process.env,
+  });
 
   const markdown = renderCrossSkillSmokeReportMarkdown(report);
   fs.mkdirSync(path.dirname(resultsPath), { recursive: true });
   fs.writeFileSync(resultsPath, markdown);
-  process.stdout.write(markdown);
+  const strictEvidence = jsonMode || !dryRun
+    ? buildTrainingCrossSkillStagingSmokeEvidence(report)
+    : null;
+  if (!dryRun) {
+    const allowedLocalRoot = process.env.NEXUS_SMOKE_EVIDENCE_DIR;
+    const outputPath = process.env.TRAINING_CROSS_SKILL_STAGING_JSON_RESULTS_PATH;
+    if (!allowedLocalRoot || !outputPath) {
+      throw new Error(
+        'real staging smoke requires explicit NEXUS_SMOKE_EVIDENCE_DIR and TRAINING_CROSS_SKILL_STAGING_JSON_RESULTS_PATH',
+      );
+    }
+    writeTrainingCrossSkillStagingSmokeEvidence({
+      evidence: strictEvidence!,
+      allowedLocalRoot,
+      outputPath,
+    });
+  }
+  if (jsonMode) {
+    process.stdout.write(`${JSON.stringify(strictEvidence)}\n`);
+  } else {
+    process.stdout.write(markdown);
+  }
 
   const failed = [...report.operations, ...report.localFixtureOperations].some((operation) => operation.status === 'fail');
   const blocked = report.operations.some((operation) => operation.status === 'blocked');
@@ -1259,29 +1630,92 @@ async function main(): Promise<void> {
   }
 }
 
-function loadRuntimeCrossSkillReader(): RuntimeCrossSkillReader {
-  // Lazy requires keep dotenv/env-file loading before config and storage modules initialize.
+export function openCrossSkillSmokeReadOnlyDatabase(
+  databasePath: string,
+): import('better-sqlite3').Database {
+  const resolvedPath = path.resolve(databasePath);
+  const canonicalPath = fs.realpathSync(resolvedPath);
+  const stat = fs.lstatSync(resolvedPath);
+  const currentUid = process.getuid?.();
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1
+      || currentUid === undefined || stat.uid !== currentUid) {
+    throw new Error('cross-skill staging smoke database path is unsafe');
+  }
+  // Lazy loading keeps the command's environment validation ahead of native
+  // module initialization while avoiding the application's mutating database
+  // bootstrap entirely.
   // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const database = require('../services/database') as typeof import('../services/database');
-  database.initDatabase();
+  const ReadOnlyDatabase = require('better-sqlite3') as typeof import('better-sqlite3');
+  const database = new ReadOnlyDatabase(canonicalPath, {
+    readonly: true,
+    fileMustExist: true,
+  });
+  try {
+    const openedStat = fs.statSync(canonicalPath);
+    if (openedStat.dev !== stat.dev || openedStat.ino !== stat.ino) {
+      throw new Error('cross-skill staging smoke database identity changed while opening');
+    }
+    database.pragma('query_only = ON');
+    if (database.pragma('query_only', { simple: true }) !== 1) {
+      throw new Error('cross-skill staging smoke database did not enter query-only mode');
+    }
+    database.prepare('SELECT 1 AS ready').get();
+    return database;
+  } catch (error) {
+    database.close();
+    throw error;
+  }
+}
+
+async function loadRuntimeCrossSkillReader(
+  databasePath: string | undefined,
+): Promise<RuntimeCrossSkillReaderHandle> {
+  if (!databasePath) {
+    throw new Error('DATABASE_PATH is required for the cross-skill staging smoke reader');
+  }
+  const database = openCrossSkillSmokeReadOnlyDatabase(databasePath);
   // Match the runtime boot wiring so training signal reads see the same
-  // user-scoped intelligence-bus rows that the server would expose.
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const bus = require('../services/intelligence-bus') as typeof import('../services/intelligence-bus');
-  bus.setDbProvider(() => database.getDb() as any);
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const mesh = require('../services/cross-agent-learning') as typeof import('../services/cross-agent-learning');
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const shared = require('../services/shared-decision-context') as typeof import('../services/shared-decision-context');
-  return {
-    readTrainingMeshContext: mesh.readTrainingMeshContext,
-    readCookingMeshContext: mesh.readCookingMeshContext,
-    readFinanceMeshContext: mesh.readFinanceMeshContext,
-    readContentMeshContext: mesh.readContentMeshContext,
-    readSecretaryMeshContext: mesh.readSecretaryMeshContext,
-    buildSharedDecisionContext: shared.buildSharedDecisionContext,
-    buildSharedDecisionContracts: shared.buildSharedDecisionContracts,
+  // user-scoped intelligence-bus rows that the server would expose, but bind
+  // them to a file-level readonly/query-only handle. This command must never
+  // run migrations, boot backfills, owner seeding, or credential rewrites.
+  const bus = await import('../services/intelligence-bus');
+  const invalidateBusProvider = () => {
+    bus.setDbProvider(() => {
+      throw new Error('cross-skill staging smoke database is closed');
+    });
   };
+  try {
+    bus.setDbProvider(() => database as any);
+    // This adapter binds services/database.getDb() without invoking the
+    // application's mutating initializer and rejects an already initialized
+    // process. The same readonly handle therefore covers every mesh adapter,
+    // not only intelligence-bus reads.
+    const standalone = await import('../services/standalone-tool-database');
+    const mesh = await import('../services/cross-agent-learning');
+    const shared = await import('../services/shared-decision-context');
+    return {
+      reader: {
+        readTrainingMeshContext: mesh.readTrainingMeshContext,
+        readCookingMeshContext: mesh.readCookingMeshContext,
+        readFinanceMeshContext: mesh.readFinanceMeshContext,
+        readContentMeshContext: mesh.readContentMeshContext,
+        readSecretaryMeshContext: mesh.readSecretaryMeshContext,
+        buildSharedDecisionContext: shared.buildSharedDecisionContext,
+        buildSharedDecisionContracts: shared.buildSharedDecisionContracts,
+      },
+      run<T>(callback: () => Promise<T>): Promise<T> {
+        return standalone.withStandaloneToolDatabaseAsync(database, callback);
+      },
+      close() {
+        invalidateBusProvider();
+        database.close();
+      },
+    };
+  } catch (error) {
+    invalidateBusProvider();
+    database.close();
+    throw error;
+  }
 }
 
 if (require.main === module) {

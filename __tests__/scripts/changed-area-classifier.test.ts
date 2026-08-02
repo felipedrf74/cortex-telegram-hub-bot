@@ -89,6 +89,25 @@ describe('lean changed-area classification', () => {
     }
   });
 
+  it.each([
+    'scripts/chat-capability-flag-operator.sh',
+    'scripts/lib/chat-capability-flag-transaction.mjs',
+    'scripts/remote-chat-capability-flag-transaction.sh',
+    'scripts/routing-divergence-report.mjs',
+    'scripts/run-routing-action-skill-accuracy.ts',
+    'src/services/chat-capability-runtime-guard.ts',
+    'src/tools/chat-capability-cross-skill-preflight.ts',
+    'src/tools/routing-action-skill-accuracy.ts',
+    'src/tools/training-cross-skill-staging-smoke.ts',
+  ])('classifies %s as release-operator code', (file) => {
+    const result = classify([file]);
+
+    expect(result.flags.releaseOperator).toBe(true);
+    expect(result.tiers).toContain('T4');
+    expect(result.vitest.groups).toContain('release-ops');
+    expect(result.vitest.skipReason).toBeNull();
+  });
+
   it('skips Vitest for a docs-only change', () => {
     expect(classify(['docs/testing.md']).vitest).toMatchObject({
       mode: 'skip',

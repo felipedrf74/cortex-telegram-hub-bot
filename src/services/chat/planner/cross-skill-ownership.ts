@@ -44,6 +44,7 @@ import {
 } from '../registry';
 import type { ChatActionPlan, ChatPlannerInput, ChatPlanStep } from '../types';
 import { logger } from '../../../utils/logger';
+import { chatCapabilityRuntimeAllowsFlags } from '../../chat-capability-runtime-guard';
 
 export const CROSS_SKILL_EXECUTION_ENV_VAR = 'AI_CROSS_SKILL_EXECUTION';
 
@@ -60,6 +61,7 @@ function parseBoolean(raw: string | undefined): boolean {
  * master kill always wins.
  */
 export function isCrossSkillExecutionEnabled(env: EnvLike = process.env): boolean {
+  if (!chatCapabilityRuntimeAllowsFlags()) return false;
   if (parseBoolean(env[MANIFEST_ROUTING_MASTER_KILL_ENV_VAR])) return false;
   return parseBoolean(env[CROSS_SKILL_EXECUTION_ENV_VAR]);
 }

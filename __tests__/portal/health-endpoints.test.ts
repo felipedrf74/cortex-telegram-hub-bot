@@ -11,6 +11,42 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import http from 'http';
 
+const RELEASE_SHA = 'a'.repeat(40);
+const RELEASE_ARTIFACT_DIGEST = 'b'.repeat(64);
+const CHAT_CAPABILITY_FLAGS = [
+  'AI_ROUTING_MANIFEST_CLASSIFIER',
+  'AI_ROUTING_MANIFEST_ORCHESTRATOR',
+  'AI_ROUTING_MANIFEST_SHADOW',
+  'AI_ROUTING_MANIFEST_REGISTRY',
+  'AI_ROUTING_CLARIFY',
+  'AI_CLASSIFY_MANIFEST_PROMPT',
+  'AI_CROSS_SKILL_EXECUTION',
+] as const;
+
+const runtimeGuardMock = vi.hoisted(() => ({
+  value: {
+    status: 'clear' as 'clear' | 'authorized' | 'forced_off',
+    reason: 'no_unresolved_transaction',
+    transactionId: null as string | null,
+    planDigest: null as string | null,
+  },
+}));
+
+vi.mock('../../src/services/chat-capability-runtime-guard', () => ({
+  chatCapabilityRuntimeAllowsFlags: () => runtimeGuardMock.value.status !== 'forced_off',
+  getChatCapabilityRuntimeGuardStatus: () => runtimeGuardMock.value,
+}));
+
+function stubReleaseIdentity(): void {
+  vi.stubEnv('NEXUS_RELEASE_ROLE', 'staging');
+  vi.stubEnv('NEXUS_RELEASE_SHA', RELEASE_SHA);
+  vi.stubEnv('NEXUS_RELEASE_ARTIFACT_SHA256', RELEASE_ARTIFACT_DIGEST);
+}
+
+function stubCapabilityFlags(value: 'true' | 'false'): void {
+  for (const flag of CHAT_CAPABILITY_FLAGS) vi.stubEnv(flag, value);
+}
+
 // ── Mock telemetry ──────────────────────────────────────────────────
 
 let mockPolling = true;
@@ -274,12 +310,16 @@ async function startServer(): Promise<{ server: http.Server; port: number }> {
 // ── Tests ───────────────────────────────────────────────────────────
 
 let activeServer: http.Server | null = null;
+let resetManifestPromptRuntimeOverride: (() => void) | null = null;
 
 afterEach(() => {
   if (activeServer) {
     activeServer.close();
     activeServer = null;
   }
+  resetManifestPromptRuntimeOverride?.();
+  resetManifestPromptRuntimeOverride = null;
+  vi.unstubAllEnvs();
 });
 
 describe('GET /health', () => {
@@ -390,6 +430,12 @@ describe('GET /health', () => {
 
 describe('GET /health/detailed', () => {
   beforeEach(() => {
+    runtimeGuardMock.value = {
+      status: 'clear',
+      reason: 'no_unresolved_transaction',
+      transactionId: null,
+      planDigest: null,
+    };
     mockPolling = true;
     mockRestarting = false;
     mockLastMessage = new Date().toISOString();
@@ -506,6 +552,188 @@ describe('GET /health/detailed', () => {
         restartCount: 0,
       })],
     });
+  });
+
+  it('attests the exact deployed release and configured versus effective chat flags', async () => {
+    stubReleaseIdentity();
+    stubCapabilityFlags('false');
+    vi.stubEnv('AI_ROUTING_MANIFEST_CLASSIFIER', 'true');
+    vi.stubEnv('AI_ROUTING_MANIFEST_SHADOW', 'true');
+    vi.stubEnv('AI_ROUTING_CLARIFY', 'true');
+    vi.stubEnv('AI_CLASSIFY_MANIFEST_PROMPT', 'true');
+    vi.stubEnv('AI_CROSS_SKILL_EXECUTION', 'true');
+    vi.stubEnv('AI_ROUTING_MANIFEST_KILL', 'false');
+    vi.stubEnv('CHAT_CORE_V2_SHADOW_PLANNER_ENABLED', 'false');
+    vi.stubEnv('CHAT_CORE_V2_SHADOW_PLANNER_ENABLED_USER_1000014', 'true');
+    const manifestPrompt = await import('../../src/router/classifier-prompt-builder');
+    manifestPrompt.forceDisableManifestClassifierPromptForProcess();
+    resetManifestPromptRuntimeOverride =
+      manifestPrompt._resetManifestClassifierPromptRuntimeOverrideForTests;
+
+    const { server, port } = await startServer();
+    activeServer = server;
+
+    const res = await fetch(`http://127.0.0.1:${port}/health/detailed`, {
+      headers: { Authorization: 'Bearer test-health-secret' },
+    });
+    expect(res.status).toBe(200);
+
+    const body = await res.json();
+    expect(body.releaseAttestation).toEqual({
+      schema: 'nexus.chat-capability-release-attestation.v1',
+      runtimeSha: RELEASE_SHA,
+      artifactDigest: RELEASE_ARTIFACT_DIGEST,
+      role: 'staging',
+      processId: process.pid,
+      classifierPromptRuntimeForceDisabled: true,
+      capabilityRuntimeGuard: {
+        status: 'clear',
+        reason: 'no_unresolved_transaction',
+        transactionId: null,
+        planDigest: null,
+      },
+      shadowPlannerEffective: {
+        global: false,
+        user1000014: true,
+        tenant1000014: false,
+        user1000016: false,
+        tenant1000016: false,
+      },
+      capabilityFlags: {
+        configured: {
+          AI_ROUTING_MANIFEST_CLASSIFIER: true,
+          AI_ROUTING_MANIFEST_ORCHESTRATOR: false,
+          AI_ROUTING_MANIFEST_SHADOW: true,
+          AI_ROUTING_MANIFEST_REGISTRY: false,
+          AI_ROUTING_CLARIFY: true,
+          AI_CLASSIFY_MANIFEST_PROMPT: true,
+          AI_CROSS_SKILL_EXECUTION: true,
+        },
+        effective: {
+          AI_ROUTING_MANIFEST_CLASSIFIER: true,
+          AI_ROUTING_MANIFEST_ORCHESTRATOR: false,
+          AI_ROUTING_MANIFEST_SHADOW: true,
+          AI_ROUTING_MANIFEST_REGISTRY: false,
+          AI_ROUTING_CLARIFY: true,
+          // The boot-time safety guard wins over the configured value.
+          AI_CLASSIFY_MANIFEST_PROMPT: false,
+          AI_CROSS_SKILL_EXECUTION: true,
+        },
+        masterKill: false,
+      },
+    });
+    expect(Object.keys(body.releaseAttestation).sort()).toEqual([
+      'artifactDigest',
+      'capabilityFlags',
+      'capabilityRuntimeGuard',
+      'classifierPromptRuntimeForceDisabled',
+      'processId',
+      'role',
+      'runtimeSha',
+      'schema',
+      'shadowPlannerEffective',
+    ]);
+    expect(Object.keys(body.releaseAttestation.capabilityFlags.configured).sort())
+      .toEqual([...CHAT_CAPABILITY_FLAGS].sort());
+    expect(Object.keys(body.releaseAttestation.capabilityFlags.effective).sort())
+      .toEqual([...CHAT_CAPABILITY_FLAGS].sort());
+  });
+
+  it('attests master-kill suppression without exposing deployment secrets', async () => {
+    stubReleaseIdentity();
+    stubCapabilityFlags('true');
+    vi.stubEnv('AI_ROUTING_MANIFEST_KILL', 'true');
+    vi.stubEnv('CLASSIFY_SHADOW_HASH_SECRET', 'classify-shadow-secret-must-not-leak');
+    vi.stubEnv('CHAT_CORE_V2_SHADOW_ROUTE_HMAC_SECRET', 'chat-shadow-secret-must-not-leak');
+    vi.stubEnv('IOS_API_JWT_SECRET', 'jwt-secret-must-not-leak');
+
+    const { server, port } = await startServer();
+    activeServer = server;
+
+    const res = await fetch(`http://127.0.0.1:${port}/health/detailed`, {
+      headers: { Authorization: 'Bearer test-health-secret' },
+    });
+    expect(res.status).toBe(200);
+
+    const body = await res.json();
+    expect(body.releaseAttestation).toEqual({
+      schema: 'nexus.chat-capability-release-attestation.v1',
+      runtimeSha: RELEASE_SHA,
+      artifactDigest: RELEASE_ARTIFACT_DIGEST,
+      role: 'staging',
+      processId: process.pid,
+      classifierPromptRuntimeForceDisabled: false,
+      capabilityRuntimeGuard: {
+        status: 'clear',
+        reason: 'no_unresolved_transaction',
+        transactionId: null,
+        planDigest: null,
+      },
+      shadowPlannerEffective: {
+        global: false,
+        user1000014: false,
+        tenant1000014: false,
+        user1000016: false,
+        tenant1000016: false,
+      },
+      capabilityFlags: {
+        configured: Object.fromEntries(CHAT_CAPABILITY_FLAGS.map((flag) => [flag, true])),
+        effective: Object.fromEntries(CHAT_CAPABILITY_FLAGS.map((flag) => [flag, false])),
+        masterKill: true,
+      },
+    });
+
+    const serialized = JSON.stringify(body.releaseAttestation);
+    expect(serialized).not.toContain('classify-shadow-secret-must-not-leak');
+    expect(serialized).not.toContain('chat-shadow-secret-must-not-leak');
+    expect(serialized).not.toContain('jwt-secret-must-not-leak');
+    expect(serialized).not.toMatch(/(?:HASH_SECRET|HMAC_SECRET|JWT_SECRET|TOKEN|PASSWORD|API_KEY)/i);
+  });
+
+  it('attests configured flags but forces every effective flag off for an unresolved dead transaction', async () => {
+    stubReleaseIdentity();
+    stubCapabilityFlags('true');
+    vi.stubEnv('AI_ROUTING_MANIFEST_KILL', 'false');
+    runtimeGuardMock.value = {
+      status: 'forced_off',
+      reason: 'runtime_permit_controller_not_live',
+      transactionId: '20260802T010203Z-abcdef123456',
+      planDigest: null,
+    };
+
+    const { server, port } = await startServer();
+    activeServer = server;
+    const res = await fetch(`http://127.0.0.1:${port}/health/detailed`, {
+      headers: { Authorization: 'Bearer test-health-secret' },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.releaseAttestation.capabilityRuntimeGuard).toEqual(runtimeGuardMock.value);
+    expect(body.releaseAttestation.capabilityFlags.configured)
+      .toEqual(Object.fromEntries(CHAT_CAPABILITY_FLAGS.map((flag) => [flag, true])));
+    expect(body.releaseAttestation.capabilityFlags.effective)
+      .toEqual(Object.fromEntries(CHAT_CAPABILITY_FLAGS.map((flag) => [flag, false])));
+  });
+
+  it('fails closed instead of attesting malformed deployed release identity', async () => {
+    stubCapabilityFlags('false');
+    vi.stubEnv('AI_ROUTING_MANIFEST_KILL', 'false');
+    vi.stubEnv('NEXUS_RELEASE_ROLE', 'staging');
+    vi.stubEnv('NEXUS_RELEASE_SHA', 'not-a-full-runtime-sha');
+    vi.stubEnv('NEXUS_RELEASE_ARTIFACT_SHA256', 'not-a-full-artifact-digest');
+
+    const { server, port } = await startServer();
+    activeServer = server;
+
+    const res = await fetch(`http://127.0.0.1:${port}/health/detailed`, {
+      headers: { Authorization: 'Bearer test-health-secret' },
+    });
+    expect(res.status).toBe(200);
+
+    const body = await res.json();
+    expect(body.releaseAttestation).toBeNull();
+    expect(JSON.stringify(body)).not.toContain('not-a-full-runtime-sha');
+    expect(JSON.stringify(body)).not.toContain('not-a-full-artifact-digest');
   });
 
   it('returns 200 when only Telegram bot polling is degraded', async () => {

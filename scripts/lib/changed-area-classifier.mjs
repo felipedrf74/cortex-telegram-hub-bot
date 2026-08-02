@@ -226,9 +226,12 @@ export function classifyChangedFiles({
   registryRealEval = has(/^src\/services\/chat\/registry\/|^src\/services\/registry-(?:driven-eval-scenarios|real-eval-scoring|telemetry-report|adversarial-discovery|adversarial-example-proposer|readable-intents-proposer|cross-tenant-alert-hook)\.ts$|^src\/services\/build-llm-safe-prompt-slice\.ts$|^src\/services\/skills\/|^__tests__\/services\/(?:chat-action-registry-|registry-(?:driven-eval|real-eval|telemetry-report|adversarial|readable-intents|cross-tenant))|^__tests__\/scripts\/registry-feedback-report\.test\.ts$|^scripts\/registry-feedback-report\.ts$/);
 
   flags.releaseOperator = has(/^config\/production-migration-lineages\.json$/)
-    || has(/^scripts\/(?:release-operator|promote-exact-release|build-release-runtime-dependencies|remote-user-release-transaction)\.sh$/)
-    || has(/^scripts\/(?:release-artifact-manifest|release-bundle|release-checksum-manifest|release-runtime-dependencies)\.mjs$/)
-    || has(/^scripts\/lib\/(?:release-artifact-manifest|production-migration-lineage)\.mjs$/);
+    || has(/^scripts\/(?:release-operator|promote-exact-release|build-release-runtime-dependencies|chat-capability-flag-operator|remote-chat-capability-flag-transaction|remote-user-release-transaction)\.sh$/)
+    || has(/^scripts\/(?:release-artifact-manifest|release-bundle|release-checksum-manifest|release-runtime-dependencies|routing-divergence-report)\.mjs$/)
+    || has(/^scripts\/run-routing-action-skill-accuracy\.ts$/)
+    || has(/^scripts\/lib\/(?:chat-capability-flag-transaction|release-artifact-manifest|production-migration-lineage)\.mjs$/)
+    || has(/^src\/services\/chat-capability-runtime-guard\.ts$/)
+    || has(/^src\/tools\/(?:chat-capability-cross-skill-preflight|routing-action-skill-accuracy|training-cross-skill-staging-smoke)\.ts$/);
   flags.operationsTooling = has(/^ops\/(?:sonarqube|ollama|cloudflared)\//)
     || has(/^scripts\/(?:quality-sonar-|cloudflared-systemd-migrate|ollama-(?:lean-finalize|service-envelope-check|systemd-dropin-transaction|install-state-check))/)
     || has(/^scripts\/lib\/ollama-service-envelope\.mjs$/)

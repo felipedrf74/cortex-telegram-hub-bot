@@ -9,6 +9,7 @@ import { describe, expect, it } from 'vitest';
 
 const repoRoot = path.resolve(__dirname, '../..');
 const scriptPath = path.join(repoRoot, 'scripts', 'run-routing-action-skill-accuracy.ts');
+const installedToolPath = path.join(repoRoot, 'src', 'tools', 'routing-action-skill-accuracy.ts');
 const runtimeSha = 'a'.repeat(40);
 const artifactDigest = 'b'.repeat(64);
 const releaseArgs = [
@@ -99,15 +100,19 @@ function withEmptyEvaluationDb(
 describe('run-routing-action-skill-accuracy CLI', () => {
   it('is a read-only, cache-only wrapper around the action-skill evaluator', () => {
     const raw = fs.readFileSync(scriptPath, 'utf8');
+    const installedTool = fs.readFileSync(installedToolPath, 'utf8');
+    const evaluatedSource = `${raw}\n${installedTool}`;
 
-    expect(raw).toContain("new Database(dbPath, { readonly: true, fileMustExist: true })");
-    expect(raw).toContain("await import('../src/services/standalone-tool-database')");
-    expect(raw).toMatch(
-      /await import\(\s*['"]\.\.\/src\/services\/routing-action-skill-accuracy['"]\s*\)/,
+    expect(raw).toContain("from '../src/tools/routing-action-skill-accuracy'");
+    expect(raw).toContain('runRoutingActionSkillAccuracyCli()');
+    expect(installedTool).toContain('new Database(dbPath, { readonly: true, fileMustExist: true })');
+    expect(installedTool).toContain("'../services/standalone-tool-database'");
+    expect(installedTool).toMatch(
+      /await import\(\s*['"]\.\.\/services\/routing-action-skill-accuracy['"]\s*\)/,
     );
-    expect(raw).not.toContain('classifyWithClaude');
-    expect(raw).not.toContain('accepted_accuracy_snapshots');
-    expect(raw).not.toContain('routing_llm_classify_cache');
+    expect(evaluatedSource).not.toContain('classifyWithClaude');
+    expect(evaluatedSource).not.toContain('accepted_accuracy_snapshots');
+    expect(evaluatedSource).not.toContain('routing_llm_classify_cache');
   });
 
   it.each(['--refresh-llm', '--refresh-llm=25', '--accept-snapshot'])(

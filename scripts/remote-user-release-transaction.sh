@@ -33,6 +33,155 @@ die() {
   exit 1
 }
 
+assert_no_unresolved_chat_capability_transaction() {
+  local marker
+  marker="$(
+    find "$BASE_DIR" -mindepth 1 -maxdepth 1 \
+      -name '.env.before-chat-capability-*' -print -quit
+  )" || die "cannot inspect chat capability transaction state"
+  [ -z "$marker" ] \
+    || die "unresolved chat capability transaction blocks release; recover it first"
+}
+
+assert_no_unpublished_chat_capability_receipt() {
+  local capability_root="$STATE_ROOT/chat-capability-flags"
+  local claims_root="$capability_root/claims"
+  [ -e "$capability_root" ] || return 0
+  [ -d "$capability_root" ] && [ ! -L "$capability_root" ] \
+    || die "chat capability state root is unsafe"
+  [ "$(stat -c '%U:%a' "$capability_root")" = "$(id -un):700" ] \
+    || die "chat capability state root owner or mode is unsafe"
+  [ -e "$claims_root" ] || return 0
+  [ -d "$claims_root" ] && [ ! -L "$claims_root" ] \
+    || die "chat capability claims root is unsafe"
+  [ "$(stat -c '%U:%a' "$claims_root")" = "$(id -un):700" ] \
+    || die "chat capability claims root owner or mode is unsafe"
+
+  local receipts=()
+  shopt -s nullglob
+  receipts=(
+    "$claims_root/$ROLE-"*.flag-receipt.json
+    "$claims_root/$ROLE-"*.secret-receipt.json
+  )
+  shopt -u nullglob
+  [ "${#receipts[@]}" -gt 0 ] || return 0
+
+  local result
+  result="$($NODE_BIN - "$ROLE" "$capability_root/$ROLE.json" "${receipts[@]}" <<'NODE'
+const fs = require('node:fs');
+const path = require('node:path');
+const [role, externalFile, ...files] = process.argv.slice(2);
+const ids = /^\d{8}T\d{6}Z-[0-9a-f]{12}$/u;
+const sha = /^[0-9a-f]{40}$/u;
+const digest = /^[0-9a-f]{64}$/u;
+const timestamp = (value, label) => {
+  const parsed = Date.parse(value);
+  if (typeof value !== 'string' || !Number.isFinite(parsed)
+      || new Date(parsed).toISOString() !== value) throw new Error(`${label} timestamp is invalid`);
+  return parsed;
+};
+const safePrivateFile = (file) => {
+  const stat = fs.lstatSync(file);
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.uid !== process.getuid()
+      || (stat.mode & 0o777) !== 0o600) throw new Error('capability receipt path is unsafe');
+};
+const claims = files.map((file) => {
+  safePrivateFile(file);
+  const value = JSON.parse(fs.readFileSync(file, 'utf8'));
+  const kind = file.endsWith('.flag-receipt.json') ? 'flag' : 'secret';
+  const schema = kind === 'flag'
+    ? 'nexus.chat-capability-flag-transaction.v1'
+    : 'nexus.chat-capability-secret-transaction.v1';
+  if (value?.schema !== schema || value.status !== 'passed' || value.role !== role
+      || !ids.test(value.transactionId ?? '') || !sha.test(value.runtimeSha ?? '')
+      || !digest.test(value.artifactDigest ?? '')
+      || path.basename(file) !== `${role}-${value.transactionId}.${kind}-receipt.json`) {
+    throw new Error('capability claim receipt binding is invalid');
+  }
+  return { transactionId: value.transactionId, completedAt: timestamp(value.completedAt, 'claim') };
+}).sort((left, right) => right.completedAt - left.completedAt);
+if (claims.length > 1 && claims[0].completedAt === claims[1].completedAt
+    && claims[0].transactionId !== claims[1].transactionId) {
+  throw new Error('latest capability claim receipt is ambiguous');
+}
+if (!fs.existsSync(externalFile)) {
+  process.stdout.write('unpublished');
+  process.exit(0);
+}
+safePrivateFile(externalFile);
+const external = JSON.parse(fs.readFileSync(externalFile, 'utf8'));
+if (external?.role !== role || !ids.test(external.transactionId ?? '')) {
+  throw new Error('external capability receipt binding is invalid');
+}
+const externalCompletedAt = timestamp(external.completedAt, 'external');
+if (externalCompletedAt === claims[0].completedAt
+    && external.transactionId !== claims[0].transactionId) {
+  throw new Error('latest capability receipt ordering is ambiguous');
+}
+process.stdout.write(externalCompletedAt < claims[0].completedAt ? 'unpublished' : 'clear');
+NODE
+)" || die "cannot inspect committed chat capability receipts"
+  case "$result" in
+    clear) ;;
+    unpublished) die "unpublished chat capability receipt blocks release; recover it first" ;;
+    *) die "committed chat capability receipt state is invalid" ;;
+  esac
+}
+
+assert_release_candidate_chat_capabilities_off() {
+  [ -f "$BASE_DIR/.env" ] && [ ! -L "$BASE_DIR/.env" ] \
+    || die "release environment must be a regular non-symbolic file"
+  [ "$(stat -c '%U:%a' "$BASE_DIR/.env")" = "$(id -un):600" ] \
+    || die "release environment owner or mode is unsafe"
+  "$NODE_BIN" - "$BASE_DIR/.env" <<'NODE'
+const fs = require('node:fs');
+const environmentFile = process.argv[2];
+const capabilityFlags = [
+  'AI_ROUTING_MANIFEST_CLASSIFIER',
+  'AI_ROUTING_MANIFEST_ORCHESTRATOR',
+  'AI_ROUTING_MANIFEST_SHADOW',
+  'AI_ROUTING_MANIFEST_REGISTRY',
+  'AI_ROUTING_CLARIFY',
+  'AI_CLASSIFY_MANIFEST_PROMPT',
+  'AI_CROSS_SKILL_EXECUTION',
+];
+const masterKill = 'AI_ROUTING_MANIFEST_KILL';
+const stat = fs.lstatSync(environmentFile);
+if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) {
+  throw new Error('release environment is not a single-link ordinary file');
+}
+const lines = fs.readFileSync(environmentFile, 'utf8').split(/\r?\n/u);
+const escapedKeys = [...capabilityFlags, masterKill]
+  .map((key) => key.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'))
+  .join('|');
+const governedAssignment = new RegExp(
+  `^\\s*(?:export[ \\t]+)?(${escapedKeys})[ \\t]*=`,
+  'u',
+);
+const assignmentsByKey = new Map(
+  [...capabilityFlags, masterKill].map((key) => [key, []]),
+);
+for (const line of lines) {
+  const candidate = line.match(governedAssignment);
+  if (candidate) assignmentsByKey.get(candidate[1]).push(line);
+}
+for (const key of [...capabilityFlags, masterKill]) {
+  const assignments = assignmentsByKey.get(key);
+  if (assignments.length === 0) continue;
+  if (assignments.length !== 1) {
+    throw new Error(`release environment has duplicate ${key} assignments`);
+  }
+  if (key === masterKill) {
+    if (!new RegExp(`^${key}=(?:true|false)$`, 'u').test(assignments[0])) {
+      throw new Error(`release environment requires canonical ${key}=true or ${key}=false`);
+    }
+  } else if (assignments[0] !== `${key}=false`) {
+    throw new Error(`release candidate requires omitted ${key} or canonical ${key}=false`);
+  }
+}
+NODE
+}
+
 # There is no rollback-safe bootstrap transaction. Staging and production must
 # both enter this script with a verified predecessor. Refuse the retired opt-in
 # before command dispatch, host probes, selector changes, or PM2 operations so a
@@ -138,6 +287,13 @@ flock -n 9 || die "another staging, production, or Sonar-sensitive release actio
   || die "shared root release/Sonar lock is missing or unsafe"
 exec 8<>"$ROOT_SONAR_LOCK"
 flock -n 8 || die "a Sonar backup, restore, or root maintenance action is active"
+
+# The chat capability operator holds the same user release lock while it
+# mutates .env. A surviving preimage means that transaction was interrupted;
+# changing the selected release would invalidate its exact-runtime recovery.
+assert_no_unresolved_chat_capability_transaction
+assert_no_unpublished_chat_capability_receipt
+assert_release_candidate_chat_capabilities_off
 
 # The shared user lock prevents a new advisory scan from starting. Check the
 # server-side CE queue while holding it as well, so a scan whose client exited
