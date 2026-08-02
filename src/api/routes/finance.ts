@@ -26,6 +26,7 @@
 import { createHash } from 'node:crypto';
 import { Router, type Request, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
+import { financeTaxDueAt } from '../../services/finance-tax-deadline-notifier';
 import { logger } from '../../utils/logger';
 import { sendSuccess, sendError, sendInternalError, asyncHandler, sendAiBudgetError } from '../response-helpers';
 import { emitDomainEvent, runOutboxTransaction } from '../../services/event-outbox';
@@ -1034,13 +1035,11 @@ export function financeRoutes(): Router {
 }
 
 function financeTaxReminderWindow(month: string): { start: string; end: string; label: string; hard: boolean } | null {
-  const match = /^(\d{4})-(\d{2})$/.exec(month);
-  if (!match) return null;
-  const year = Number(match[1]);
-  const monthNumber = Number(match[2]);
-  if (!Number.isInteger(year) || !Number.isInteger(monthNumber) || monthNumber < 1 || monthNumber > 12) return null;
-  const start = new Date(Date.UTC(year, monthNumber - 1, 20, 9, 0, 0, 0));
-  const end = new Date(Date.UTC(year, monthNumber - 1, 20, 9, 30, 0, 0));
+  // Derived from the single canonical due date so the Secretary reminder
+  // window and the scheduled deadline notification cannot drift apart.
+  const start = financeTaxDueAt(month);
+  if (!start) return null;
+  const end = new Date(start.getTime() + 30 * 60_000);
   return {
     start: start.toISOString(),
     end: end.toISOString(),

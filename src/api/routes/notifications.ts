@@ -49,6 +49,9 @@ import {
   recordNotificationReliabilityEvent,
   registerNotificationDeviceToken,
   revokeNotificationDeviceToken,
+  applyNotificationProfilePatch,
+  notificationReachability,
+  notificationTimezoneDrift,
   updateNotificationProfile,
   type NotificationCenterStatus,
   type NotificationCenterItem,
@@ -289,6 +292,10 @@ function formatCenterItemForApi(item: NotificationCenterItem): Record<string, un
     dedupeKey: item.dedupeKey,
     createdAt: item.createdAt,
     expiresAt: item.expiresAt,
+    // Clients cannot render "snoozed until 16:00" — or tell a snoozed row from
+    // a dismissed one — without this. It was tracked server-side but never
+    // projected.
+    snoozedUntil: item.snoozedUntil ?? null,
   };
 }
 
@@ -1074,8 +1081,19 @@ export function notificationRoutes(): Router {
     if (!ensureValidNotificationsRouteScope(res, userId, 'notifications_route_update_preferences')) return;
     const tenantId = routeTenantId(authReq, userId);
     try {
-      const profile = updateNotificationProfile(userId, tenantId, req.body ?? {});
-      sendSuccess(res, { profile, reportSchedule: buildReportScheduleForApi(profile) });
+      // `applied` / `rejected` exist because this endpoint used to answer 200
+      // for fields it silently dropped — including five decision preferences
+      // that are hardcoded literals on read, so a client could send `false`
+      // and be told `true`. Invalid input still falls back rather than 400ing
+      // (older iOS builds send fields this server never honoured), but the
+      // caller is now told which of its writes actually landed.
+      const { profile, applied, rejected } = applyNotificationProfilePatch(userId, tenantId, req.body ?? {});
+      sendSuccess(res, {
+        profile,
+        reportSchedule: buildReportScheduleForApi(profile),
+        applied,
+        rejected,
+      });
     } catch (err: any) {
       logger.warn({ err, userId }, 'Notification preferences rejected');
       sendError(res, 'INVALID_NOTIFICATION_PREFERENCES', 'Unable to update notification preferences', 400);
@@ -1138,8 +1156,17 @@ export function notificationRoutes(): Router {
         tenantId,
         token: String(req.body?.token || ''),
         environment: req.body?.environment === 'production' ? 'production' : 'sandbox',
-        deviceId: typeof req.body?.deviceId === 'string' ? req.body.deviceId : authReq.deviceId,
+        // Device ownership comes from the signed iOS session, never the body.
+        // A caller-chosen id could re-associate another user's known device
+        // and revoke that user's push rows in the cross-login cleanup below.
+        deviceId: authReq.deviceId,
         appVersion: typeof req.body?.appVersion === 'string' ? req.body.appVersion : null,
+        // Advisory: the client reports where the DEVICE is, the server never
+        // shifts the profile on its own. See migration 271.
+        deviceTimezone: typeof req.body?.timezone === 'string' ? req.body.timezone : null,
+        // What iOS actually granted. Absent means a full grant, which is what
+        // every token minted before this field existed represents.
+        authorizationTier: typeof req.body?.authorizationTier === 'string' ? req.body.authorizationTier : null,
       });
       sendSuccess(res, {
         token: {
@@ -1150,6 +1177,11 @@ export function notificationRoutes(): Router {
           deviceId: token.deviceId,
           lastSeenAt: token.lastSeenAt,
         },
+        // Returned so the client can offer the change in context — "you're in
+        // New York, move your brief?" — instead of the server silently moving
+        // every scheduled notification.
+        timezoneDrift: notificationTimezoneDrift(userId, tenantId),
+        reachability: notificationReachability(userId, tenantId),
       });
     } catch (err: any) {
       logger.warn({ err, userId }, 'Notification device token rejected');
@@ -1227,7 +1259,13 @@ export function notificationRoutes(): Router {
         return;
       }
 
-      const result = performNotificationAction(itemId, actionId, userId, tenantId);
+      // `snoozedUntil` lets the client offer "remind me at…" instead of the
+      // fixed hour. The orchestrator clamps it to [5m, 7d]; an unparseable
+      // value falls back to the default rather than erroring, because the
+      // lock-screen button has nowhere to render a validation failure.
+      const result = performNotificationAction(itemId, actionId, userId, tenantId, {
+        snoozedUntil: typeof req.body?.snoozedUntil === 'string' ? req.body.snoozedUntil : undefined,
+      });
       invalidateNotificationInboxCaches(userId, tenantId);
       sendSuccess(res, {
         actionId: result.actionId,

@@ -4764,7 +4764,7 @@ describe('Chat API routes', () => {
         title: 'Daily planning reminder',
         detail: 'Done — I snoozed "Daily planning reminder" for 30 minutes.',
       }]);
-      const updated = listNotificationCenterItems(7001, 7001, { status: 'all', limit: 5 })
+      const updated = listNotificationCenterItems(7001, 7001, { includeSnoozed: true, status: 'all', limit: 5 })
         .find((candidate) => candidate.itemId === item.itemId);
       expect(updated).toMatchObject({
         itemId: item.itemId,
@@ -4861,7 +4861,7 @@ describe('Chat API routes', () => {
           status: 'verified',
         },
       });
-      const updated = listNotificationCenterItems(7001, 7001, { status: 'all', limit: 5 })
+      const updated = listNotificationCenterItems(7001, 7001, { includeSnoozed: true, status: 'all', limit: 5 })
         .find((candidate) => candidate.itemId === item.itemId);
       expect(updated).toMatchObject({
         itemId: item.itemId,
@@ -4936,7 +4936,7 @@ describe('Chat API routes', () => {
         code: 'CHAT_CORE_V2_CONFIRMATION_NOT_EXECUTABLE',
         message: 'This preview is no longer safe to apply. Please ask again so I can refresh it.',
       });
-      const updated = listNotificationCenterItems(7001, 7001, { status: 'all', limit: 5 })
+      const updated = listNotificationCenterItems(7001, 7001, { includeSnoozed: true, status: 'all', limit: 5 })
         .find((candidate) => candidate.itemId === item.itemId);
       expect(updated).toMatchObject({
         itemId: item.itemId,

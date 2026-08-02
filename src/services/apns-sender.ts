@@ -82,6 +82,11 @@ export interface PushNotificationPayload {
   interruptionLevel?: 'passive' | 'active' | 'time-sensitive';
   /** APNs collapse id. Decision pushes use decision:<decisionId> so updates replace stale alerts. */
   collapseId?: string;
+  /**
+   * Latest useful delivery time. APNs storage is capped to this instant so a
+   * short-lived reminder or decision cannot arrive after it is actionable.
+   */
+  expirationAt?: string;
 }
 
 export interface PushTokenTarget {
@@ -97,7 +102,7 @@ export interface SendResult {
   failed: number;
   /** Tokens skipped because APNs isn't configured. */
   skipped: number;
-  /** Tokens that got a transient error (429, 500, network) and will be retried by Apple. */
+  /** Tokens that got a transient error (429, 5xx, network) and require provider retry. */
   retriable: number;
   /** Push tokens that APNs reported as unregistered (410) — caller should delete. */
   unregistered: string[];
@@ -358,6 +363,15 @@ interface SingleSendOutcome {
   environment: 'sandbox' | 'production';
 }
 
+function apnsExpirationSeconds(payload: PushNotificationPayload, nowMs = Date.now()): number {
+  const classWindowSeconds = payload.interruptionLevel === 'time-sensitive' ? 3600 : 21600;
+  const classExpiry = Math.floor(nowMs / 1000) + classWindowSeconds;
+  if (!payload.expirationAt) return classExpiry;
+  const explicitMs = Date.parse(payload.expirationAt);
+  if (!Number.isFinite(explicitMs)) return classExpiry;
+  return Math.min(classExpiry, Math.floor(explicitMs / 1000));
+}
+
 /**
  * Dispatches a single request to APNs for a single device token. Separated
  * from the higher-level fan-out so tests can mock this function in isolation.
@@ -367,6 +381,10 @@ async function dispatchOne(
   payload: PushNotificationPayload,
   environment: 'sandbox' | 'production' = config.apns.environment,
 ): Promise<SingleSendOutcome> {
+  const expirationSeconds = apnsExpirationSeconds(payload);
+  if (expirationSeconds <= Math.floor(Date.now() / 1000)) {
+    return { status: 0, reason: 'PayloadExpired', environment };
+  }
   const client = getHttp2Client(environment);
   const jwtToken = getProviderJwt();
 
@@ -416,9 +434,23 @@ async function dispatchOne(
       // apns-expiration is an epoch timestamp. 0 = deliver once, now-or-drop
       // (~30s store). Time-sensitive alerts get a 1h window so an offline
       // device still receives them on reconnect (2026-07-04 APNs round).
-      'apns-expiration': payload.interruptionLevel === 'time-sensitive'
-        ? String(Math.floor(Date.now() / 1000) + 3600)
-        : '0',
+      //
+      // Everything else gets a window too, rather than 0. Two reasons:
+      //
+      //  1. `0` discards a notification because the phone was off for a minute.
+      //     Anything worth creating is worth surviving a lock-screen gap.
+      //  2. The orchestrator downgrades interruptionLevel to 'passive' for
+      //     users on a PROVISIONAL authorization grant — the default for every
+      //     new user — because iOS ignores interruption-level there. Coupling
+      //     expiration to that downgrade meant the entire new-user population
+      //     silently lost store-and-forward on every notification, including
+      //     security alerts. The downgrade is about whether it RINGS, not about
+      //     whether it is worth delivering at all.
+      //
+      // Staleness is bounded by both collapse-id and the intent's own useful
+      // lifetime. The latter matters for one-time challenges and reminders:
+      // replacing a stale alert does not help when no newer alert is created.
+      'apns-expiration': String(expirationSeconds),
       'content-type': 'application/json',
       'content-length': Buffer.byteLength(bodyStr).toString(),
     };
@@ -564,13 +596,16 @@ export async function sendPushNotification(
   for (const { token, outcome } of outcomes) {
     if (outcome.status === 200) {
       result.sent += 1;
+    } else if (outcome.reason === 'PayloadExpired') {
+      result.skipped += 1;
     } else if (outcome.status === 410) {
       // 410 Gone = device unregistered (app uninstalled or token rotated).
       // Clear it so we don't keep pinging.
       result.unregistered.push(token);
       deleteDeadPushToken(token);
     } else if (outcome.status === 429 || outcome.status >= 500 || outcome.status === 0) {
-      // Transient — Apple will try again on its own for well-formed messages.
+      // Transient provider failure. APNs did not accept the request; the
+      // caller must treat this as retryable (durable resend remains separate).
       result.retriable += 1;
       logger.warn(
         { status: outcome.status, reason: outcome.reason, tokenSuffix: token.slice(-8) },

@@ -240,23 +240,27 @@ export const defaultJobHandlers: JobHandler[] = [
       // Spread: the sweep summary is a named interface without an index
       // signature, and recordProductDecision takes Record<string, unknown>.
       const result = { ...sweep };
-      if (!job.userId) return;
-      recordProductDecision({
-        tenantId: job.tenantId,
-        userId: job.userId,
-        sourceSkill: 'system',
-        entityType: 'notification_delivery_job',
-        entityId: String(job.payload?.intentId ?? job.jobId),
-        decisionType: 'notification_delivery_release',
-        inputsSummary: {
-          jobType: job.jobType,
-          intentId: job.payload?.intentId ?? null,
-        },
-        decision: result,
-        explanationCode: 'notification_delivery_job_released_due_items',
-        correlationId: job.correlationId,
-        eventId: job.causationEventId,
-      });
+      if (job.userId) {
+        recordProductDecision({
+          tenantId: job.tenantId,
+          userId: job.userId,
+          sourceSkill: 'system',
+          entityType: 'notification_delivery_job',
+          entityId: String(job.payload?.intentId ?? job.jobId),
+          decisionType: 'notification_delivery_release',
+          inputsSummary: {
+            jobType: job.jobType,
+            intentId: job.payload?.intentId ?? null,
+          },
+          decision: result,
+          explanationCode: 'notification_delivery_job_released_due_items',
+          correlationId: job.correlationId,
+          eventId: job.causationEventId,
+        });
+      }
+      if (sweep.failed > 0) {
+        throw new Error(`notification delivery release: ${sweep.failed} delivery operation(s) failed`);
+      }
     },
   },
   {

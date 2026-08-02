@@ -224,12 +224,38 @@ function createSchema(): void {
   `);
 }
 
+/**
+ * Billing period for a seeded paid subscription: the UTC calendar month
+ * containing the clock AT THE MOMENT THE FIXTURE RUNS.
+ *
+ * This used to be hardcoded to 2026-07-01 → 2026-08-01, which made the file a
+ * time bomb. Most tests run on the fake clock (2026-07-09) and the literals
+ * matched, but the concurrency tests call `vi.useRealTimers()` because they
+ * need a real `setTimeout`, so they see the actual date. The moment real time
+ * reached 2026-08-01 the seeded subscription was expired for those tests and
+ * every spend failed with AI_PLAN_REQUIRED instead of the daily-limit denial
+ * they assert.
+ *
+ * Deriving the window from the active clock keeps the fake-clock tests on
+ * exactly the same dates as before (2026-07-09 → 2026-07-01/2026-08-01, which
+ * the billing-cycle reset assertions depend on) while giving the real-timer
+ * tests a period that is genuinely current — the same shape a live Stripe
+ * subscription would have.
+ */
+function currentUtcBillingPeriod(): { start: string; end: string } {
+  const now = new Date();
+  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
+  return { start: start.toISOString(), end: end.toISOString() };
+}
+
 function addPaidUser(userId: number, plan: 'pro' | 'max' = 'pro', status: 'active' | 'trialing' = 'active'): void {
+  const period = currentUtcBillingPeriod();
   db.prepare(`
     INSERT INTO subscriptions (
       user_id, plan, status, provider, current_period_start, current_period_end
-    ) VALUES (?, ?, ?, 'stripe', '2026-07-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z')
-  `).run(userId, plan, status);
+    ) VALUES (?, ?, ?, 'stripe', ?, ?)
+  `).run(userId, plan, status, period.start, period.end);
 }
 
 function makeCoachEligible(userId: number): void {

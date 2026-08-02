@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const AGENT_JOB_MANIFEST_SCHEMA = 'nexus.agent-job-manifest.v3';
-export const AGENT_JOB_MANIFEST_VERSION = '2026-07-22.2';
+export const AGENT_JOB_MANIFEST_VERSION = '2026-08-02.1';
 
 const GEMINI_ONE_SHOT_PROVIDER_ROUTE = 'gemini-primary-openai-fallback-anthropic-gated-last-resort';
 
@@ -98,7 +98,7 @@ const providerCapableHandler = (policyOwner, tenantScope, inputFingerprint, over
   ...overrides,
 });
 
-// This is intentionally an explicit 57-job audit, not a domain-wide default.
+// This is intentionally an explicit 63-job audit, not a domain-wide default.
 // Adding a scheduler registration without a reviewed policy makes generation
 // fail. Provider usage means model-provider capability; calendar, mail, task,
 // Garmin, and invoice integrations remain described by their job policies but
@@ -145,7 +145,15 @@ export const JOB_POLICIES = Object.freeze({
   chat_quality_weekly_digest: noProvider('ai-quality', 'platform-quality-metrics', { retryPolicy: 'next-scheduled-run', outputPolicy: 'deduped-info-operator-alert' }),
   chat_v2_gate_check: noProvider('chat-core-v2', 'platform-shadow-metrics'),
   classify_shadow_prune: noProvider('chat-core-v2', 'platform-retention'),
+  commitment_start_reminder: noProvider('secretary', 'active-tenant-user-secretary-agenda', {
+    retryPolicy: 'next-five-minute-sweep-with-dedupe-and-start-expiry',
+    outputPolicy: 'tenant-scoped-deduped-expiring-commitment-reminder',
+  }),
   conflict_detection: noProvider('secretary', 'active-tenant-loop', { outputPolicy: 'tenant-scoped-decision-intent' }),
+  connection_health_notify: noProvider('connections', 'active-tenant-user-integration-profile', {
+    retryPolicy: 'next-scheduled-sweep-with-three-day-dedupe-bucket',
+    outputPolicy: 'tenant-scoped-deduped-provider-reconnect-notification',
+  }),
   daily_briefing: noProvider('secretary', 'report-ledger-active-tenant', { retryPolicy: 'report-dispatch-next-tick' }),
   db_backup: noProvider('operations', 'platform-database', { scheduleSource: 'config.backup.time', outputPolicy: 'verified-backup-artifact' }),
   db_restore_test: noProvider('operations', 'platform-database', { outputPolicy: 'restore-integrity-result' }),
@@ -155,12 +163,20 @@ export const JOB_POLICIES = Object.freeze({
   decision_handled_history_backfill: noProvider('decision-center', 'platform-tenant-scoped-rows'),
   decision_ledger_retention_prune: noProvider('decision-center', 'platform-retention'),
   decision_metrics_rollup: noProvider('decision-center', 'platform-daily-rollup'),
+  decision_recovery_notify: noProvider('decision-center', 'bounded-lifecycle-event-tenant-user', {
+    retryPolicy: 'next-ten-minute-sweep-with-sixty-minute-lookback-and-event-dedupe',
+    outputPolicy: 'event-deduped-tenant-scoped-recovery-notification',
+  }),
   decision_source_supersession: noProvider('decision-center', 'platform-tenant-scoped-rows'),
   dst_watchdog: noProvider('operations', 'registered-job-runtime', { outputPolicy: 'bounded-three-hour-recovery-window' }),
   end_of_day: noProvider('secretary', 'report-ledger-active-tenant', { retryPolicy: 'report-dispatch-next-tick' }),
   event_backbone_cleanup: noProvider('event-backbone', 'platform-retention'),
   event_backbone_worker: noProvider('event-backbone', 'durable-event-and-job-tenant-user', { retryPolicy: 'durable-queue-bounded-with-leases' }),
   expire_signals: noProvider('content', 'platform-signal-retention'),
+  finance_tax_deadline: noProvider('finance', 'active-tenant-user-finance-tax-events', {
+    retryPolicy: 'next-daily-stage-evaluation-with-dedupe-and-deadline-expiry',
+    outputPolicy: 'stage-deduped-tenant-scoped-tax-deadline-notification',
+  }),
   fiscal_bundle: noProvider('finance', 'active-fiscal-profile-tenant', { retryPolicy: 'next-due-check-with-durable-delivery-state' }),
   fossa_email: noProvider('secretary', 'owner-mailbox', { retryPolicy: 'next-scheduled-run' }),
   friday_weekly: providerCapable('content', 'eligible-active-tenant-loop', {
@@ -222,6 +238,14 @@ export const JOB_POLICIES = Object.freeze({
     ...sharedGovernedRunner('tenant-user'),
   }),
   training_plan_adjust: noProvider('training', 'active-plan-tenant-loop', { outputPolicy: 'deterministic-threshold-adjustment' }),
+  training_session_reminder: noProvider('training', 'active-tenant-user-training-agenda', {
+    retryPolicy: 'next-five-minute-sweep-with-dedupe-and-start-expiry',
+    outputPolicy: 'tenant-scoped-deduped-expiring-training-reminder',
+  }),
+  travel_window_notify: noProvider('secretary', 'active-tenant-user-travel-window-and-agenda', {
+    retryPolicy: 'next-daily-sweep-with-trip-dedupe-and-departure-expiry',
+    outputPolicy: 'tenant-scoped-deduped-cross-skill-digest-notification',
+  }),
   tuesday_reels: providerCapable('content', 'eligible-active-tenant-loop', {
     enforcement: 'output-inventory-gate',
     evidence: 'rollout-independent seven-day pending inventory requests only missing output and skips when full',

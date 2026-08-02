@@ -636,7 +636,9 @@ export function deviceTokenRoutes(): Router {
         tenantId,
         token: String(req.body?.token || ''),
         environment: req.body?.environment === 'production' ? 'production' : 'sandbox',
-        deviceId: typeof req.body?.deviceId === 'string' ? req.body.deviceId : authReq.deviceId,
+        // JWT-bound device identity prevents a body value from revoking or
+        // re-associating another user's push registration.
+        deviceId: authReq.deviceId,
         appVersion: typeof req.body?.appVersion === 'string' ? req.body.appVersion : null,
       });
       sendSuccess(res, {

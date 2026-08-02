@@ -17,7 +17,7 @@ import {
 import {
   CONNECTIONS_STATUS_CAPABILITY,
   MAX_VISIBLE_CONNECTIONS,
-  hashStable,
+  checksumStableMetadata,
 } from './common';
 import { joinParts, plural, type ChatCoreV2NormalizedLocale } from './copy';
 import type { ChatCoreV2ShadowRouteGuess } from '../shadow-route-classifier';
@@ -205,7 +205,9 @@ function providerLabel(provider: string): string {
 function sourceVersionsForConnections(items: ProviderIntegrationStatus[]): Record<string, string> {
   const versions: Record<string, string> = {};
   for (const item of items) {
-    versions[connectionEntityId(item)] = hashStable({
+    // Allowlist credential-free metadata before checksumming. Never pass the
+    // provider object wholesale: it is credential-adjacent by contract.
+    versions[connectionEntityId(item)] = checksumStableMetadata({
       state: item.state,
       connectedAt: item.connectedAt,
       capabilities: item.capabilities,

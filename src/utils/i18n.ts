@@ -20,6 +20,121 @@ type MessageEntry = {
 };
 
 const MESSAGES: Record<string, MessageEntry> = {
+  // ── Lock-screen notification copy ───────────────────────────────────────
+  //
+  // These are the ONLY strings the server puts on a locked phone. They are
+  // fixed, non-sensitive, and never contain producer text — `buildPrivacySafeBody`
+  // exists to guarantee that. Until now they were hardcoded English, while
+  // `users.language` defaults to pt-BR, so the product was trilingual in-app
+  // and monolingual on the lock screen.
+  //
+  // The keys are deliberately shaped as iOS Localizable.strings keys. When the
+  // client can carry `aps.alert.loc-key`/`loc-args`, the SAME key ships in the
+  // payload and the strings move into the app bundle — where they follow the
+  // DEVICE language rather than the account language, and no prose crosses the
+  // wire at all. Keeping the key as the unit of copy now makes that a
+  // payload-layer change instead of a producer rewrite.
+  'notif.title.secretary': {
+    'pt-BR': 'Decisão pendente',
+    'pt-PT': 'Decisão pendente',
+    'en-US': 'Secretary decision',
+  },
+  'notif.title.secretary.schedule': {
+    'pt-BR': 'Decisão de agenda',
+    'pt-PT': 'Decisão de agenda',
+    'en-US': 'Schedule decision',
+  },
+  'notif.title.training': {
+    'pt-BR': 'Atualização de treino',
+    'pt-PT': 'Atualização de treino',
+    'en-US': 'Training update',
+  },
+  'notif.title.content': {
+    'pt-BR': 'Revisão de conteúdo',
+    'pt-PT': 'Revisão de conteúdo',
+    'en-US': 'Content review',
+  },
+  'notif.title.cooking': {
+    'pt-BR': 'Lembrete de cozinha',
+    'pt-PT': 'Lembrete de cozinha',
+    'en-US': 'Cooking reminder',
+  },
+  'notif.title.finance': {
+    'pt-BR': 'Lembrete financeiro',
+    'pt-PT': 'Lembrete financeiro',
+    'en-US': 'Finance reminder',
+  },
+  'notif.title.chat': {
+    'pt-BR': 'O Nexus precisa da sua escolha',
+    'pt-PT': 'O Nexus precisa da tua escolha',
+    'en-US': 'Nexus needs your choice',
+  },
+  'notif.title.system': {
+    'pt-BR': 'Notificação do sistema',
+    'pt-PT': 'Notificação do sistema',
+    'en-US': 'System notification',
+  },
+  'notif.title.security': {
+    'pt-BR': 'Atividade da conta',
+    'pt-PT': 'Atividade da conta',
+    'en-US': 'Account activity',
+  },
+  'notif.body.finance': {
+    'pt-BR': 'Um lembrete financeiro precisa de revisão.',
+    'pt-PT': 'Um lembrete financeiro precisa de revisão.',
+    'en-US': 'Finance reminder needs review.',
+  },
+  'notif.body.training': {
+    'pt-BR': 'Check-in de treino necessário. Revise o ajuste de hoje.',
+    'pt-PT': 'Check-in de treino necessário. Revê o ajuste de hoje.',
+    'en-US': 'Training check-in needed. Review today’s adjustment.',
+  },
+  'notif.body.content': {
+    'pt-BR': 'Um item de conteúdo está pronto para revisão.',
+    'pt-PT': 'Um item de conteúdo está pronto para revisão.',
+    'en-US': 'Content item is ready for review.',
+  },
+  'notif.body.review': {
+    'pt-BR': '{title} — abra o Nexus para revisar.',
+    'pt-PT': '{title} — abre o Nexus para rever.',
+    'en-US': '{title} — open Nexus to review the recommendation.',
+  },
+  'notif.digest.title': {
+    'pt-BR': 'O seu resumo',
+    'pt-PT': 'O teu resumo',
+    'en-US': 'Your brief',
+  },
+  'notif.digest.empty': {
+    'pt-BR': 'Nada precisa de você agora.',
+    'pt-PT': 'Nada precisa de ti agora.',
+    'en-US': 'Nothing needs you right now.',
+  },
+  // Digest slot labels. Separate singular/plural entries because Portuguese and
+  // Portuguese inflects the noun, so "{count} decision(s)" cannot be assembled by
+  // concatenation the way the English version was.
+  'notif.digest.slot.security_account.one':   { 'pt-BR': '1 alerta de conta', 'en-US': '1 account alert' },
+  'notif.digest.slot.security_account.other': { 'pt-BR': '{count} alertas de conta', 'en-US': '{count} account alerts' },
+  'notif.digest.slot.approval_required.one':   { 'pt-BR': '1 aprovação pendente', 'en-US': '1 approval waiting' },
+  'notif.digest.slot.approval_required.other': { 'pt-BR': '{count} aprovações pendentes', 'en-US': '{count} approvals waiting' },
+  'notif.digest.slot.conflict_detected.one':   { 'pt-BR': '1 conflito de agenda', 'en-US': '1 schedule conflict' },
+  'notif.digest.slot.conflict_detected.other': { 'pt-BR': '{count} conflitos de agenda', 'en-US': '{count} schedule conflicts' },
+  'notif.digest.slot.decision_required.one':   { 'pt-BR': '1 decisão pendente', 'en-US': '1 decision waiting' },
+  'notif.digest.slot.decision_required.other': { 'pt-BR': '{count} decisões pendentes', 'en-US': '{count} decisions waiting' },
+  'notif.digest.slot.reflow_suggestion.one':   { 'pt-BR': '1 proposta de reagendamento', 'en-US': '1 reschedule proposal' },
+  'notif.digest.slot.reflow_suggestion.other': { 'pt-BR': '{count} propostas de reagendamento', 'en-US': '{count} reschedule proposals' },
+  'notif.digest.slot.risk_warning.one':   { 'pt-BR': '1 check-in necessário', 'en-US': '1 check-in needed' },
+  'notif.digest.slot.risk_warning.other': { 'pt-BR': '{count} check-ins necessários', 'en-US': '{count} check-ins needed' },
+  'notif.digest.slot.sync_failure.one':   { 'pt-BR': '1 conexão precisa de atenção', 'pt-PT': '1 ligação precisa de atenção', 'en-US': '1 connection needs attention' },
+  'notif.digest.slot.sync_failure.other': { 'pt-BR': '{count} conexões precisam de atenção', 'pt-PT': '{count} ligações precisam de atenção', 'en-US': '{count} connections need attention' },
+  'notif.digest.slot.reminder.one':   { 'pt-BR': '1 lembrete', 'en-US': '1 reminder' },
+  'notif.digest.slot.reminder.other': { 'pt-BR': '{count} lembretes', 'en-US': '{count} reminders' },
+  'notif.digest.slot.missed_item.one':   { 'pt-BR': '1 item perdido', 'en-US': '1 missed item' },
+  'notif.digest.slot.missed_item.other': { 'pt-BR': '{count} itens perdidos', 'en-US': '{count} missed items' },
+  'notif.digest.slot.schedule_changed.one':   { 'pt-BR': '1 alteração de agenda', 'en-US': '1 schedule update' },
+  'notif.digest.slot.schedule_changed.other': { 'pt-BR': '{count} alterações de agenda', 'en-US': '{count} schedule updates' },
+  'notif.digest.slot.default.one':   { 'pt-BR': '1 atualização', 'en-US': '1 update' },
+  'notif.digest.slot.default.other': { 'pt-BR': '{count} atualizações', 'en-US': '{count} updates' },
+
   'welcome': {
     'pt-BR': '🎉 Bem-vindo ao Nexus Hub!\n\nSou seu assistente pessoal com IA. Use /help para ver os comandos disponíveis.',
     'pt-PT': '🎉 Bem-vindo ao Nexus Hub!\n\nSou o teu assistente pessoal com IA. Usa /help para veres os comandos disponíveis.',
@@ -284,6 +399,28 @@ const MESSAGES: Record<string, MessageEntry> = {
  * Get a translated message. Falls back to English, then to the raw key.
  * Supports {variable} substitution.
  */
+/**
+ * Is there a translation for this key in this EXACT language, with no fallback?
+ *
+ * `t()` deliberately falls back (pt-PT -> pt-BR -> en-US -> key). That is right
+ * at runtime, but it makes coverage guards impossible to write against: a key
+ * present only in en-US resolves to English for every language and never
+ * returns the key, so `expect(t(key, lang)).not.toBe(key)` passes for a
+ * translation that does not exist.
+ */
+export function hasTranslation(key: string, lang: Lang): boolean {
+  const value = MESSAGES[key]?.[lang];
+  return typeof value === 'string' && value.length > 0;
+}
+
+/**
+ * Every message key under a prefix. Lets a coverage guard sweep a whole
+ * namespace instead of a hand-maintained list that silently misses new keys.
+ */
+export function messageKeysWithPrefix(prefix: string): string[] {
+  return Object.keys(MESSAGES).filter((key) => key.startsWith(prefix)).sort();
+}
+
 export function t(key: string, lang: Lang, vars?: Record<string, string>): string {
   let msg =
     MESSAGES[key]?.[lang]

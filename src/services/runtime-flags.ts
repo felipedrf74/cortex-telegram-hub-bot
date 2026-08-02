@@ -645,6 +645,22 @@ export function isDecisionTypeSuppressionEnabled(env: RuntimeEnv = process.env, 
 }
 
 /**
+ * Shadow scoring for the notification priority model.
+ *
+ * When on, every evaluated intent is ALSO scored by
+ * `notification-priority-model` and the verdict is recorded next to the
+ * decision the delivery ladder actually took. Delivery is unchanged either way
+ * — this exists so the model can be compared against real traffic before it is
+ * allowed to decide anything.
+ */
+export function isNotificationPriorityShadowScoringEnabled(
+  env: RuntimeEnv = process.env,
+  scope?: RuntimeFlagScope,
+): boolean {
+  return scopedFlagEnabledByExplicitOptIn(env, 'NOTIFICATION_PRIORITY_SHADOW_SCORING_ENABLED', scope);
+}
+
+/**
  * C3b/Phase 2 — uses aggregated feedback signals as a presentation-only
  * suppression input. Dark by default. Policy-floored decisions remain exempt.
  */

@@ -913,6 +913,8 @@
         "src/services/agent-job-*.ts",
         "src/services/apns-*.ts",
         "src/services/app-summary-read-models.ts",
+        "src/services/commitment-start-reminder.ts",
+        "src/services/connection-health-notifier.ts",
         "src/services/background-job-queue.ts",
         "src/services/*cache-invalidator.ts",
         "src/services/coordination-cache-invalidator.ts",
@@ -931,7 +933,8 @@
         "src/services/scheduler.ts",
         "src/services/signals-observability.ts",
         "src/services/task-*.ts",
-        "src/services/task-store/**"
+        "src/services/task-store/**",
+        "src/services/travel-window-notifier.ts"
       ],
       "tests": [
         "__tests__/fixtures/decision-center/**",

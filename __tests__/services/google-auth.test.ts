@@ -34,8 +34,15 @@ vi.mock('../../src/config', () => ({
 
 
 import { storeTokens, _resetDecryptCacheForTests } from '../../src/services/oauth-store';
-import { getOwnerGoogleRefreshToken } from '../../src/services/google-auth';
+import {
+  buildGoogleOAuth2ClientForUser,
+  getOwnerGoogleRefreshToken,
+} from '../../src/services/google-auth';
 import { isMicrosoftConfigured } from '../../src/services/microsoft-auth';
+import {
+  getOAuthConnectionAuthFailure,
+  markOAuthConnectionAuthFailure,
+} from '../../src/services/oauth-connection-health';
 
 describe('owner integration bootstrap token resolution', () => {
   beforeEach(() => {
@@ -101,5 +108,84 @@ describe('owner integration bootstrap token resolution', () => {
     });
 
     expect(isMicrosoftConfigured()).toBe(true);
+  });
+
+  it('marks a deterministic per-user Google refresh rejection', async () => {
+    storeTokens(25, 'google', {
+      accessToken: '',
+      refreshToken: 'refresh-user-25',
+      tokenType: 'Bearer',
+      expiresAt: null,
+      scopes: [],
+    });
+    const client = buildGoogleOAuth2ClientForUser(25);
+    vi.spyOn(client.transporter, 'request').mockRejectedValue(Object.assign(
+      new Error('invalid_grant'),
+      { response: { data: { error: 'invalid_grant' } } },
+    ));
+
+    await expect(client.getAccessToken()).rejects.toThrow('invalid_grant');
+
+    expect(getOAuthConnectionAuthFailure(25, 'google')).toMatchObject({
+      state: 'auth_rejected',
+      reasonCode: 'invalid_grant',
+    });
+  });
+
+  it('does not mark transient Google refresh failures as revoked', async () => {
+    storeTokens(26, 'google', {
+      accessToken: '',
+      refreshToken: 'refresh-user-26',
+      tokenType: 'Bearer',
+      expiresAt: null,
+      scopes: [],
+    });
+    const client = buildGoogleOAuth2ClientForUser(26);
+    vi.spyOn(client.transporter, 'request').mockRejectedValue(new Error('ECONNRESET'));
+
+    await expect(client.getAccessToken()).rejects.toThrow('ECONNRESET');
+    expect(getOAuthConnectionAuthFailure(26, 'google')).toBeNull();
+  });
+
+  it('clears the user-scoped failure after a successful Google refresh', async () => {
+    storeTokens(27, 'google', {
+      accessToken: '',
+      refreshToken: 'refresh-user-27',
+      tokenType: 'Bearer',
+      expiresAt: null,
+      scopes: [],
+    });
+    markOAuthConnectionAuthFailure(27, 'google', 'invalid_token');
+    const client = buildGoogleOAuth2ClientForUser(27);
+    vi.spyOn(client.transporter, 'request').mockResolvedValue({
+      data: { access_token: 'fresh-access-27', expires_in: 3600 },
+    } as never);
+
+    await expect(client.getAccessToken()).resolves.toMatchObject({ token: 'fresh-access-27' });
+    expect(getOAuthConnectionAuthFailure(27, 'google')).toBeNull();
+  });
+
+  it('does not let an old in-flight Google refresh revoke a newly reauthed token', async () => {
+    storeTokens(28, 'google', {
+      accessToken: '',
+      refreshToken: 'old-refresh-user-28',
+      tokenType: 'Bearer',
+      expiresAt: null,
+      scopes: [],
+    });
+    const staleClient = buildGoogleOAuth2ClientForUser(28);
+    storeTokens(28, 'google', {
+      accessToken: '',
+      refreshToken: 'new-refresh-user-28',
+      tokenType: 'Bearer',
+      expiresAt: null,
+      scopes: [],
+    });
+    vi.spyOn(staleClient.transporter, 'request').mockRejectedValue(
+      new Error('invalid_grant'),
+    );
+
+    await expect(staleClient.getAccessToken()).rejects.toThrow('invalid_grant');
+    expect(getOAuthConnectionAuthFailure(28, 'google')).toBeNull();
   });
 });

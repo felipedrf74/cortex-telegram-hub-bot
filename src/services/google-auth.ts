@@ -26,11 +26,48 @@
  */
 
 import { google } from 'googleapis';
-import type { OAuth2Client } from 'google-auth-library';
+import { OAuth2Client } from 'google-auth-library';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import { getTokens } from './oauth-store';
 import { getOwnerBootstrapUserRefs } from './user-service';
+import {
+  classifyOAuthAuthFailure,
+  clearOAuthConnectionAuthFailure,
+  markOAuthConnectionAuthFailure,
+} from './oauth-connection-health';
+
+/**
+ * Google refreshes lazily inside API requests, so the OAuth client itself is
+ * the one canonical boundary shared by Calendar, Gmail, and Drive. Only the
+ * per-user client records health; the legacy owner client remains operator
+ * scoped and can never revoke another tenant's connection badge.
+ */
+class UserScopedGoogleOAuth2Client extends OAuth2Client {
+  constructor(private readonly nexusUserId: number, clientId: string, clientSecret: string) {
+    super(clientId, clientSecret);
+  }
+
+  protected override async refreshToken(refreshToken?: string | null) {
+    try {
+      const result = await super.refreshToken(refreshToken);
+      clearOAuthConnectionAuthFailure(this.nexusUserId, 'google');
+      return result;
+    } catch (err) {
+      const reason = classifyOAuthAuthFailure(err);
+      // A reconnect may race an old in-flight refresh. Mark the failure only
+      // while the rejected token is still the user's current stored token.
+      if (
+        reason
+        && refreshToken
+        && getGoogleRefreshTokenForUser(this.nexusUserId) === refreshToken
+      ) {
+        markOAuthConnectionAuthFailure(this.nexusUserId, 'google', reason);
+      }
+      throw err;
+    }
+  }
+}
 
 // ─── Token resolution ───────────────────────────────────────────────
 
@@ -100,7 +137,11 @@ export function buildGoogleOAuth2ClientForUser(userId: number): OAuth2Client {
   if (!config.google.clientId || !config.google.clientSecret || !refreshToken) {
     throw new Error(`Google not connected for user ${userId}`);
   }
-  const client = new google.auth.OAuth2(config.google.clientId, config.google.clientSecret);
+  const client = new UserScopedGoogleOAuth2Client(
+    userId,
+    config.google.clientId,
+    config.google.clientSecret,
+  );
   client.setCredentials({ refresh_token: refreshToken });
   return client;
 }

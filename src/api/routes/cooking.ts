@@ -1491,10 +1491,16 @@ export function cookingRoutes(): Router {
           tenantId,
           sourceSkill: 'cooking',
           type: 'reminder',
-          priority: 'active',
+          // K5: this fires the moment the user creates the block, in the
+          // foreground — it confirms an action they performed two seconds ago.
+          // The durable item stays (it is a useful receipt in the inbox) but it
+          // no longer interrupts. The moment with real value is 30 minutes
+          // BEFORE the block, which needs its own scheduled producer.
+          priority: 'passive',
+          deliveryPolicy: 'in_app_only',
           relatedEntityId: event.id,
           relatedEntityType: 'meal_prep_block',
-          title: 'Meal prep reminder',
+          title: 'Meal prep scheduled',
           body: `${meals.length} meal prep block scheduled.`,
           sensitiveBody: description,
           actionButtons: [
