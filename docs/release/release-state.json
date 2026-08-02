@@ -249,10 +249,12 @@
     "nextCandidateProofs": [
       {
         "id": "release-operator-stale-staging-receipt-race",
-        "status": "open",
+        "status": "closed",
         "observedAt": "2026-08-02T02:59:53Z",
         "impact": "local prepare exited while the durable fault-drill transaction completed and restored the predecessor",
-        "required": "ignore prior transaction receipts until the requested transaction id appears or the poll deadline expires"
+        "required": "ignore prior transaction receipts until the requested transaction id appears or the poll deadline expires",
+        "resolvedBy": "3b275a7209cdc2f73c86c770ac069767848a3b44",
+        "proof": "failing-first parser contract plus release-ops risk gate: 95 files and 1115 tests passed"
       }
     ]
   },
