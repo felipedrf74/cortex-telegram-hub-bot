@@ -719,6 +719,20 @@ export function setUserLanguage(userRef: number, language: Lang): void {
   db.prepare('UPDATE users SET language = ? WHERE telegram_id = ? OR id = ?').run(language, userRef, userRef);
 }
 
+/**
+ * F11 prerequisite (Phase 3): the canonical `users.timezone` write path.
+ * Migration 271 documented that the column had NO writer at all, which is
+ * why nine Training call sites still fall back to the process-global
+ * `config.app.timezone`. Callers MUST validate the zone is a real IANA
+ * identifier before calling (the settings route does); this writer is
+ * deliberately dumb so there is exactly one validation point.
+ */
+export function setUserTimezone(userId: number, timezone: string): void {
+  const db = getDb();
+  db.prepare('UPDATE users SET timezone = ? WHERE id = ?').run(timezone, userId);
+  logger.info({ userId, timezone }, 'User timezone updated');
+}
+
 /** List users with safe fields only — never exposes password_hash, external IDs, or tokens. */
 export function listUsers(): Partial<User>[] {
   const db = getDb();

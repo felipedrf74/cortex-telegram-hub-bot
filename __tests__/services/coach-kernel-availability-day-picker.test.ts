@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  buildAvailabilityInsufficiencyDecisionReason,
   isDayAvailableForSport,
   pickAvailableDay,
   pickAvailableDays,
+  pickAvailableDaysDetailed,
   pickKeyDay,
 } from '../../src/services/coach-kernel/availability-day-picker';
 import type { AthleteState, AvailabilityWindow, DayOfWeek } from '../../src/services/coach-kernel/types';
@@ -226,5 +228,90 @@ describe('availability-day-picker — pickKeyDay', () => {
     const athlete = athleteWithWindows([]);
     const pick = pickKeyDay(athlete, 'running', ['tuesday', 'wednesday']);
     expect(pick).toBe('tuesday');
+  });
+  // ── F9 (Phase 3): missing ≠ insufficient ─────────────────────────────────
+  // The legacy fallback silently scheduled weekday sessions for a
+  // weekend-only athlete. The detailed variant keeps the fallback DAYS
+  // byte-identical (no placement change) but returns a typed outcome so
+  // callers can surface an honest capacity conflict.
+  describe('pickAvailableDaysDetailed (F9)', () => {
+    const weekendWindows: AvailabilityWindow[] = [
+      { dayOfWeek: 'saturday' as DayOfWeek, start: '08:00', end: '12:00' },
+      { dayOfWeek: 'sunday' as DayOfWeek, start: '08:00', end: '12:00' },
+    ];
+
+    it('classifies undeclared availability as the legacy every-day default, not a conflict', () => {
+      const outcome = pickAvailableDaysDetailed(
+        athleteWithWindows([]),
+        'running',
+        ['tuesday', 'thursday', 'saturday'],
+        3,
+      );
+      expect(outcome.kind).toBe('no_availability_declared');
+      expect(outcome.days).toEqual(['tuesday', 'thursday', 'saturday']);
+    });
+
+    it('classifies covered asks as available with the filtered days', () => {
+      const outcome = pickAvailableDaysDetailed(
+        athleteWithWindows(weekendWindows),
+        'running',
+        ['tuesday', 'saturday', 'sunday'],
+        2,
+      );
+      expect(outcome.kind).toBe('available');
+      expect(outcome.days).toEqual(['saturday', 'sunday']);
+    });
+
+    it('returns a typed conflict for the weekend-only athlete asked for three weekday-heavy sessions', () => {
+      const outcome = pickAvailableDaysDetailed(
+        athleteWithWindows(weekendWindows),
+        'running',
+        ['tuesday', 'thursday', 'saturday'],
+        3,
+      );
+      expect(outcome.kind).toBe('insufficient_availability');
+      // Placement behaviour is unchanged: the legacy fallback days survive.
+      expect(outcome.days).toEqual(['tuesday', 'thursday', 'saturday']);
+      if (outcome.kind === 'insufficient_availability') {
+        expect(outcome.conflict).toMatchObject({
+          code: 'TRAINING_AVAILABILITY_INSUFFICIENT_FOR_FREQUENCY',
+          sport: 'running',
+          requiredCount: 3,
+          availableCount: 1,
+          availableDays: ['saturday'],
+        });
+        expect(outcome.unavailableDays).toEqual(['tuesday', 'thursday']);
+      }
+    });
+
+    it('keeps the legacy pickAvailableDays behaviour byte-identical', () => {
+      const athlete = athleteWithWindows(weekendWindows);
+      const preferences: DayOfWeek[] = ['tuesday', 'thursday', 'saturday'];
+      expect(pickAvailableDays(athlete, 'running', preferences, 3)).toEqual(
+        pickAvailableDaysDetailed(athlete, 'running', preferences, 3).days,
+      );
+      expect(pickAvailableDays(athlete, 'running', preferences, 1)).toEqual(
+        pickAvailableDaysDetailed(athlete, 'running', preferences, 1).days,
+      );
+    });
+
+    it('builds a warning decision reason engines can attach to affected sessions', () => {
+      const outcome = pickAvailableDaysDetailed(
+        athleteWithWindows(weekendWindows),
+        'running',
+        ['tuesday', 'thursday', 'saturday'],
+        3,
+      );
+      expect(outcome.kind).toBe('insufficient_availability');
+      if (outcome.kind !== 'insufficient_availability') return;
+      const reason = buildAvailabilityInsufficiencyDecisionReason(outcome.conflict, 'tuesday' as DayOfWeek);
+      expect(reason).toMatchObject({
+        code: 'availability_insufficient_for_frequency',
+        severity: 'warning',
+        affectedEntity: { type: 'session', dayOfWeek: 'tuesday' },
+        sourceConstraint: { type: 'capacity' },
+      });
+      expect(reason.text).toMatch(/availab/i);
+    });
   });
 });

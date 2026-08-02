@@ -812,7 +812,11 @@ export type TrainingDecisionReasonCode =
   | 'equipment_conservative_default'
   | 'equipment_adaptation_applied'
   | 'endurance_coherence_warning'
-  | 'endurance_interference_warning';
+  | 'endurance_interference_warning'
+  // F9 (Phase 3): declared availability cannot cover the requested weekly
+  // frequency — the session was placed on an undeclared day (released
+  // fallback behaviour) and the athlete deserves to know.
+  | 'availability_insufficient_for_frequency';
 
 export interface TrainingDecisionReason {
   code: TrainingDecisionReasonCode;

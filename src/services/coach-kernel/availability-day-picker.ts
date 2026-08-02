@@ -33,7 +33,7 @@
  *     working without code changes.
  */
 
-import type { AthleteState, DayOfWeek, Sport } from './types';
+import type { AthleteState, DayOfWeek, Sport, TrainingDecisionReason } from './types';
 
 /**
  * Return true if the athlete has at least one availability window
@@ -91,11 +91,137 @@ export function pickAvailableDays(
   preferences: ReadonlyArray<DayOfWeek>,
   minimumCount: number = preferences.length,
 ): DayOfWeek[] {
+  return pickAvailableDaysDetailed(athlete, sport, preferences, minimumCount).days;
+}
+
+/**
+ * F9 (Phase 3): typed capacity conflict for insufficient declared
+ * availability. Carried on decision reasons so iOS can render an honest
+ * "your availability can't cover this frequency" banner instead of the
+ * athlete discovering weekday sessions they never declared time for.
+ */
+export interface TrainingAvailabilityCapacityConflict {
+  code: 'TRAINING_AVAILABILITY_INSUFFICIENT_FOR_FREQUENCY';
+  sport: Sport;
+  requiredCount: number;
+  availableCount: number;
+  availableDays: DayOfWeek[];
+  requestedDays: DayOfWeek[];
+}
+
+export type AvailabilityDayPickOutcome =
+  | {
+    /** MISSING availability — the athlete never declared windows. Every day
+     *  is treated as available (the legacy default for brand-new users).
+     *  This is NOT a conflict: there is nothing to contradict. */
+    kind: 'no_availability_declared';
+    days: DayOfWeek[];
+  }
+  | {
+    /** Declared windows cover the ask. */
+    kind: 'available';
+    days: DayOfWeek[];
+  }
+  | {
+    /** INSUFFICIENT — windows are declared but cannot cover `minimumCount`.
+     *  `days` keeps the legacy fallback (full preference list) so placement
+     *  behaviour is unchanged; the typed conflict is the honest signal the
+     *  legacy API silently swallowed. */
+    kind: 'insufficient_availability';
+    days: DayOfWeek[];
+    unavailableDays: DayOfWeek[];
+    conflict: TrainingAvailabilityCapacityConflict;
+  };
+
+/**
+ * F9 (Phase 3): same day selection as `pickAvailableDays` — byte-identical
+ * `days` in every case — but with MISSING and INSUFFICIENT availability
+ * distinguished instead of collapsed into one silent fallback.
+ */
+export function pickAvailableDaysDetailed(
+  athlete: AthleteState,
+  sport: Sport,
+  preferences: ReadonlyArray<DayOfWeek>,
+  minimumCount: number = preferences.length,
+): AvailabilityDayPickOutcome {
+  const windows = athlete.availability?.weeklyWindows ?? [];
+  if (windows.length === 0) {
+    return { kind: 'no_availability_declared', days: [...preferences] };
+  }
   const filtered = preferences.filter((day) => isDayAvailableForSport(athlete, day, sport));
   if (filtered.length >= minimumCount) {
-    return [...filtered];
+    return { kind: 'available', days: [...filtered] };
   }
-  return [...preferences];
+  return {
+    kind: 'insufficient_availability',
+    days: [...preferences],
+    unavailableDays: preferences.filter((day) => !filtered.includes(day)),
+    conflict: {
+      code: 'TRAINING_AVAILABILITY_INSUFFICIENT_FOR_FREQUENCY',
+      sport,
+      requiredCount: minimumCount,
+      availableCount: filtered.length,
+      availableDays: [...filtered],
+      requestedDays: [...preferences],
+    },
+  };
+}
+
+/**
+ * F9: warning-severity decision reason engines attach to sessions placed on
+ * days the athlete's declared availability does not cover. Severity is
+ * deliberately 'warning' — surfacing, not blocking — because the fallback
+ * placement is the released behaviour and blocking is a separate canary
+ * decision.
+ */
+export function buildAvailabilityInsufficiencyDecisionReason(
+  conflict: TrainingAvailabilityCapacityConflict,
+  dayOfWeek: DayOfWeek,
+): TrainingDecisionReason {
+  const availableLabel = conflict.availableDays.length > 0
+    ? conflict.availableDays.join(', ')
+    : 'no days';
+  return {
+    code: 'availability_insufficient_for_frequency',
+    severity: 'warning',
+    text:
+      `Your declared availability covers ${conflict.availableCount} of the ${conflict.requiredCount} `
+      + `${conflict.sport} days this plan needs (${availableLabel}), so this session was placed on a day `
+      + `you have not marked as available. Update your availability or lower the weekly frequency.`,
+    affectedEntity: { type: 'session', dayOfWeek },
+    sourceConstraint: {
+      type: 'capacity',
+      id: conflict.code,
+      label: 'Declared weekly availability',
+    },
+    evidence: [
+      `requiredCount=${conflict.requiredCount}`,
+      `availableCount=${conflict.availableCount}`,
+      `availableDays=${conflict.availableDays.join(',') || 'none'}`,
+    ],
+  };
+}
+
+/**
+ * F9: annotate every session that landed on a day the athlete's declared
+ * availability does not cover. No-op for the other outcomes, so engines can
+ * apply it unconditionally after building their session lists.
+ */
+export function annotateSessionsOnUnavailableDays<
+  T extends { dayOfWeek: DayOfWeek; decisionReasons?: TrainingDecisionReason[] },
+>(sessions: T[], outcome: AvailabilityDayPickOutcome): T[] {
+  if (outcome.kind !== 'insufficient_availability') return sessions;
+  return sessions.map((session) => (
+    outcome.unavailableDays.includes(session.dayOfWeek)
+      ? {
+        ...session,
+        decisionReasons: [
+          ...(session.decisionReasons ?? []),
+          buildAvailabilityInsufficiencyDecisionReason(outcome.conflict, session.dayOfWeek),
+        ],
+      }
+      : session
+  ));
 }
 
 /**

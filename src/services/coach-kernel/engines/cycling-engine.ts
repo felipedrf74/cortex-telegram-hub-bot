@@ -3,7 +3,7 @@
 import type { EngineContext, SportEngine } from './interfaces';
 import type { DayOfWeek, Session, SessionType, WorkoutTemplate } from '../types';
 import { clamp, createSessionId, durationToLoad } from '../utils';
-import { pickAvailableDays, pickKeyDay } from '../availability-day-picker';
+import { annotateSessionsOnUnavailableDays, pickAvailableDaysDetailed, pickKeyDay } from '../availability-day-picker';
 import { applyVolumeGrowthCapForSport } from '../training-principles';
 import { attachTrainingSessionRole } from '../endurance-session-classifier';
 import { attachSessionIntensityMetadata } from '../session-intensity-metadata';
@@ -145,14 +145,14 @@ export const cyclingEngine: SportEngine = {
     ];
 
     const fillerPreferences: DayOfWeek[] = ['monday', 'friday', 'thursday'];
-    const fillerDays = pickAvailableDays(context.athlete, 'cycling', fillerPreferences, fillerPreferences.length);
-    for (const [supportIndex, dayOfWeek] of fillerDays.entries()) {
+    const fillerPick = pickAvailableDaysDetailed(context.athlete, 'cycling', fillerPreferences, fillerPreferences.length);
+    for (const [supportIndex, dayOfWeek] of fillerPick.days.entries()) {
       if (sessions.length >= targetSessions) break;
       if (sessions.find((session) => session.dayOfWeek === dayOfWeek)) continue;
       const template = supportRideTemplateFor(context, templates, supportIndex, sessions.length === targetSessions - 1);
       sessions.push(buildRideSession(template, dayOfWeek, fillerMinutes, ['support_ride', template.id], context.athlete.profile));
     }
 
-    return sessions;
+    return annotateSessionsOnUnavailableDays(sessions, fillerPick);
   },
 };

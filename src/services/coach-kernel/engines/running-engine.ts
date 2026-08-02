@@ -3,7 +3,7 @@
 import type { EngineContext, SportEngine } from './interfaces';
 import type { DayOfWeek, Session, SessionType, WorkoutTemplate } from '../types';
 import { clamp, createSessionId, durationToLoad } from '../utils';
-import { pickAvailableDays, pickKeyDay } from '../availability-day-picker';
+import { annotateSessionsOnUnavailableDays, pickAvailableDaysDetailed, pickKeyDay } from '../availability-day-picker';
 import { applyVolumeGrowthCapForSport } from '../training-principles';
 import { attachTrainingSessionRole } from '../endurance-session-classifier';
 import { attachSessionIntensityMetadata } from '../session-intensity-metadata';
@@ -103,10 +103,12 @@ function buildSupportOnlyRunSessions(context: EngineContext, templates: WorkoutT
   const targetMinutes = Math.max(targetSessions * 25, cappedTarget);
   const baseMinutes = clamp(Math.round(targetMinutes / targetSessions), 25, 50);
   const dayPreferences: DayOfWeek[] = ['tuesday', 'thursday', 'saturday', 'monday', 'friday', 'wednesday', 'sunday'];
-  const days = pickAvailableDays(context.athlete, 'running', dayPreferences, targetSessions);
+  // F9: day selection is unchanged; the detailed outcome lets us annotate
+  // sessions that land on days the athlete never declared as available.
+  const dayPick = pickAvailableDaysDetailed(context.athlete, 'running', dayPreferences, targetSessions);
   const sessions: Session[] = [];
 
-  for (const [supportIndex, dayOfWeek] of days.entries()) {
+  for (const [supportIndex, dayOfWeek] of dayPick.days.entries()) {
     if (sessions.length >= targetSessions) break;
     const template = supportRunTemplateFor(context, templates, supportIndex, sessions.length === targetSessions - 1);
     const duration = template.sessionType === 'recovery_run'
@@ -115,7 +117,7 @@ function buildSupportOnlyRunSessions(context: EngineContext, templates: WorkoutT
     sessions.push(buildRunSession(template, dayOfWeek, duration, ['aerobic_support', 'support_run', template.id], context.athlete.profile));
   }
 
-  return sessions;
+  return annotateSessionsOnUnavailableDays(sessions, dayPick);
 }
 
 function keyRunTemplateFor(context: EngineContext, templates: WorkoutTemplate[]): WorkoutTemplate {
@@ -228,9 +230,9 @@ export const runningEngine: SportEngine = {
     // when not enough days have windows, so a fully-busy week still
     // produces a session list and the scheduler can attempt slotting).
     const fillerPreferences: DayOfWeek[] = ['monday', 'thursday', 'friday', 'saturday', 'wednesday'];
-    const fillerDays = pickAvailableDays(context.athlete, 'running', fillerPreferences, 3);
+    const fillerPick = pickAvailableDaysDetailed(context.athlete, 'running', fillerPreferences, 3);
     let supportIndex = 0;
-    for (const dayOfWeek of fillerDays) {
+    for (const dayOfWeek of fillerPick.days) {
       if (sessions.length >= targetSessions) break;
       if (sessions.find((session) => session.dayOfWeek === dayOfWeek)) continue;
       const template = supportRunTemplateFor(context, templates, supportIndex, sessions.length === targetSessions - 1);
@@ -241,6 +243,6 @@ export const runningEngine: SportEngine = {
       supportIndex += 1;
     }
 
-    return sessions;
+    return annotateSessionsOnUnavailableDays(sessions, fillerPick);
   },
 };
