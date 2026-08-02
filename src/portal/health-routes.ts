@@ -9,8 +9,87 @@ import { getStatus as getSentryStatus } from '../services/error-tracker';
 import { getRuntimeStatus } from '../services/runtime-status';
 import { getDb } from '../services/database';
 import { getPm2SupervisorHealth, recordPm2SupervisorAlerts } from '../services/pm2-health';
+import { readDeployedReleaseIdentity } from '../services/release-runtime-identity';
+import { isManifestRoutingEnabled } from '../services/intent-resolution/manifest-routing-flags';
+import { isRoutingClarifyEnabled } from '../services/intent-resolution/confidence';
+import {
+  isManifestClassifierPromptEnabled,
+  isManifestClassifierPromptRuntimeForceDisabled,
+} from '../router/classifier-prompt-builder';
+import { isCrossSkillExecutionEnabled } from '../services/chat/planner/cross-skill-ownership';
+import { isChatCoreV2ShadowPlannerEnabled } from '../services/runtime-flags';
 import { getJobStatuses, getRecentEvents } from './telemetry';
 import { humanUptime } from './formatters';
+import { getChatCapabilityRuntimeGuardStatus } from '../services/chat-capability-runtime-guard';
+
+const CHAT_CAPABILITY_FLAG_NAMES = {
+  classifier: 'AI_ROUTING_MANIFEST_CLASSIFIER',
+  orchestrator: 'AI_ROUTING_MANIFEST_ORCHESTRATOR',
+  shadow: 'AI_ROUTING_MANIFEST_SHADOW',
+  registry: 'AI_ROUTING_MANIFEST_REGISTRY',
+  clarify: 'AI_ROUTING_CLARIFY',
+  manifestPrompt: 'AI_CLASSIFY_MANIFEST_PROMPT',
+  crossSkill: 'AI_CROSS_SKILL_EXECUTION',
+} as const;
+
+const CHAT_CAPABILITY_MASTER_KILL = 'AI_ROUTING_MANIFEST_KILL' as const;
+
+function enabledFlagValue(value: string | undefined): boolean {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  return normalized === 'true' || normalized === '1' || normalized === 'yes';
+}
+
+/**
+ * Protected, non-secret proof of the chat rollout configuration this process
+ * is actually serving. Effective values come from the same helpers as the
+ * runtime paths, including the manifest-prompt boot guard override.
+ */
+function releaseAttestation(env: NodeJS.ProcessEnv = process.env) {
+  const release = readDeployedReleaseIdentity(env);
+  if (!release) return null;
+
+  const configured = {
+    [CHAT_CAPABILITY_FLAG_NAMES.classifier]: enabledFlagValue(env[CHAT_CAPABILITY_FLAG_NAMES.classifier]),
+    [CHAT_CAPABILITY_FLAG_NAMES.orchestrator]: enabledFlagValue(env[CHAT_CAPABILITY_FLAG_NAMES.orchestrator]),
+    [CHAT_CAPABILITY_FLAG_NAMES.shadow]: enabledFlagValue(env[CHAT_CAPABILITY_FLAG_NAMES.shadow]),
+    [CHAT_CAPABILITY_FLAG_NAMES.registry]: enabledFlagValue(env[CHAT_CAPABILITY_FLAG_NAMES.registry]),
+    [CHAT_CAPABILITY_FLAG_NAMES.clarify]: enabledFlagValue(env[CHAT_CAPABILITY_FLAG_NAMES.clarify]),
+    [CHAT_CAPABILITY_FLAG_NAMES.manifestPrompt]: enabledFlagValue(env[CHAT_CAPABILITY_FLAG_NAMES.manifestPrompt]),
+    [CHAT_CAPABILITY_FLAG_NAMES.crossSkill]: enabledFlagValue(env[CHAT_CAPABILITY_FLAG_NAMES.crossSkill]),
+  };
+  const masterKill = enabledFlagValue(env[CHAT_CAPABILITY_MASTER_KILL]);
+  const effective = {
+    [CHAT_CAPABILITY_FLAG_NAMES.classifier]: isManifestRoutingEnabled('classifier', env),
+    [CHAT_CAPABILITY_FLAG_NAMES.orchestrator]: isManifestRoutingEnabled('orchestrator', env),
+    [CHAT_CAPABILITY_FLAG_NAMES.shadow]: isManifestRoutingEnabled('shadow', env),
+    [CHAT_CAPABILITY_FLAG_NAMES.registry]: isManifestRoutingEnabled('registry', env),
+    [CHAT_CAPABILITY_FLAG_NAMES.clarify]: isRoutingClarifyEnabled(env),
+    [CHAT_CAPABILITY_FLAG_NAMES.manifestPrompt]: isManifestClassifierPromptEnabled(env),
+    [CHAT_CAPABILITY_FLAG_NAMES.crossSkill]: isCrossSkillExecutionEnabled(env),
+  };
+
+  return {
+    schema: 'nexus.chat-capability-release-attestation.v1',
+    runtimeSha: release.runtimeSha,
+    artifactDigest: release.artifactDigest,
+    role: release.role,
+    processId: process.pid,
+    classifierPromptRuntimeForceDisabled: isManifestClassifierPromptRuntimeForceDisabled(),
+    capabilityRuntimeGuard: getChatCapabilityRuntimeGuardStatus(),
+    shadowPlannerEffective: {
+      global: isChatCoreV2ShadowPlannerEnabled(env),
+      user1000014: isChatCoreV2ShadowPlannerEnabled(env, { userId: 1_000_014 }),
+      tenant1000014: isChatCoreV2ShadowPlannerEnabled(env, { tenantId: 1_000_014 }),
+      user1000016: isChatCoreV2ShadowPlannerEnabled(env, { userId: 1_000_016 }),
+      tenant1000016: isChatCoreV2ShadowPlannerEnabled(env, { tenantId: 1_000_016 }),
+    },
+    capabilityFlags: {
+      configured,
+      effective,
+      masterKill,
+    },
+  };
+}
 
 type HealthSnapshotIntegration = {
   name: string;
@@ -227,6 +306,7 @@ export function registerPortalHealthRoutes(app: Express, options: HealthRoutesOp
         total: errorCount,
         lastHour: errorsLast1h,
       },
+      releaseAttestation: releaseAttestation(),
       timestamp: new Date().toISOString(),
     });
   });

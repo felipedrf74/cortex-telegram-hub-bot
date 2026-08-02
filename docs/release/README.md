@@ -201,6 +201,113 @@ unless it proves at least 60 seconds. Candidate and predecessor health budgets
 are recorded as 45 seconds each; predecessor recovery has a hard 120-second
 deadline and records its measured duration.
 
+## Chat capability transactions
+
+After the governed chat-flag operator is merged into protected main and its
+exact artifact is deployed, use only:
+
+```bash
+npm run release:chat-flags -- inspect ...
+NEXUS_RELEASE_OWNER_AUTHORIZED=1 npm run release:chat-flags -- apply ...
+npm run release:chat-flags -- inspect-secrets ...
+NEXUS_RELEASE_OWNER_AUTHORIZED=1 npm run release:chat-flags -- apply-secrets ...
+npm run release:chat-flags -- inspect-observation ...
+NEXUS_RELEASE_OWNER_AUTHORIZED=1 \
+  npm run release:chat-flags -- apply-observation ...
+```
+
+The command is hardcoded to `ServerDominguez` and has no host override. AWS is
+not a release or flag target. Run from a clean checkout of the exact installed
+runtime SHA and pass the full runtime SHA and artifact digest. Inspect creates
+one redacted, exact-release-bound, sequence-bound plan; apply accepts and
+consumes only that exact `sha256:<plan-digest>`. It runs detached through user
+systemd and publishes a strict durable receipt. A failed or partial claim is
+never replayable.
+
+Gate evidence is collected natively on ServerDominguez from the installed
+artifact, isolated staging `.env` and SQLite database, authenticated health,
+and `/chat-quality`; the operator accepts no evidence file and makes no
+provider call. Routing enables require an explicit immutable canonical UTC
+`--since`/`--until` window and always use the fixed minimum of 200 comparisons
+at 0.99 or greater agreement. The manifest-prompt enable runs the compiled
+installed action-skill evaluator cache-only, requiring 300/300 exact-bound
+rows, at least 0.95 agreement, and zero provider calls. Cross-skill staging
+inspect binds the compiled preflight JSON.
+
+The staging observation is a separate, owner-gated transaction. After the
+exact staging ON receipt is at least five minutes old, `inspect-observation`
+creates a one-hour, sequence-bound plan for that exact release and flag;
+`apply-observation` acknowledges and consumes only its exact digest. It
+revalidates the ON receipt and contiguous configured/effective prefix, master
+kill OFF, the expected next production sequence, installed smoke bytes, and
+every ChatV2 shadow-planner scope effectively OFF. It then runs the canonical
+staging smoke exactly once and publishes immutable raw smoke plus a strict
+observation receipt.
+
+The canonical v2 locale profile uses token-zero authenticated-identity turns
+for English and Portuguese plus a legacy Spanish-request-to-English
+compatibility turn. It proves that exact identity/language contract; it no
+longer claims task-write planner or model-authored locale coverage. Before any
+dependent fixture write, users `1000014` and `1000016` must be absent or match
+their exact synthetic ID/Telegram/email/username/auth-provider markers. A
+collision fails closed; an absent fixture uses a plain insert, an exact fixture
+uses a guarded update, and neither principal is ever replaced. The
+observation additionally requires zero all-status durable alert activity for
+the chat-quality and ChatV2 retirement sources since enable, and zero
+staging-database-wide `api_usage` and hard-ceiling reservation row/cost deltas
+during the observation. The hard-ceiling table is one governed pre-network
+reservation ledger, not a universal claim about every possible
+provider-attempt path. For
+`AI_CROSS_SKILL_EXECUTION`, the same owner-gated observation also runs and
+binds the installed dedicated Training cross-skill staging smoke. All runtime
+reads share one directly opened readonly, `query_only` SQLite handle through
+the standalone global-database scope. The smoke never initializes the
+application database, runs migrations/backfills, or writes; it restores the
+scope and closes its owned handle.
+
+Production inspect does not run staging traffic. It is selector-only,
+read-only, and provider-free: it selects the exact strict observation receipt
+and bound raw smoke already published by the staging observation transaction.
+Production apply re-fetches and revalidates those exact bytes and the live
+staging flag evidence immediately before mutation.
+
+Operate the seven flags strictly in runbook order, one new flag at a time:
+staging gate inspect, owner-authorized staging apply, five-minute maturity,
+observation inspect and owner-authorized observation apply, production
+inspect, owner-authorized production apply, then another minimum five-minute
+production observation. A production enable plan binds the exact passing
+staging ON and observation receipts. Production apply revalidates them, the
+complete configured/effective prefix, master-kill state, exact staging
+release, and live staging health immediately before mutation.
+
+Every staging and production release transaction starts only when all seven
+capability flags are omitted (runtime-default OFF) or canonically configured
+`false`. Return any enabled flags to OFF one at a time through governed
+rollback transactions before staging or promoting a later candidate; ON
+receipts and evidence never transfer to a new release identity.
+
+Provision `CLASSIFY_SHADOW_HASH_SECRET` and
+`CHAT_CORE_V2_SHADOW_ROUTE_HMAC_SECRET` through `inspect-secrets` and
+`apply-secrets`, never argv values. Existing values are preserved. Staging may
+generate either missing value; production must preserve an existing classifier
+HMAC but may generate the missing ChatV2 route HMAC. Plans and receipts expose
+actions only, never secret values or derived hashes, fingerprints, or lengths.
+
+During `.env` mutation, a short-lived runtime permit binds the exact
+transaction, plan, release, environment bytes, configured state, controller,
+phase, and expiry. Runtime flag readers fail closed when a durable transaction
+marker exists without that exact live permit. Failed activation restores the
+private preimage atomically, restarts only the backend, and health-checks the
+restored state. Unresolved backups or unpublished receipts block the next
+release. Use a one-flag OFF transaction for ordinary rollback.
+`AI_ROUTING_MANIFEST_KILL=true` is the emergency all-capability rollback;
+clear it only after all seven individual flags are configured OFF.
+
+This section defines the required process. It does not assert that any Phase 7
+flag has been enabled in staging or production; only exact transaction
+receipts and live evidence can establish that state. Full gate details are in
+`docs/release/chat-quality-operations.md`.
+
 ## Failure handling
 
 - A host without a verified predecessor is not eligible for the lean release

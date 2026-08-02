@@ -1,17 +1,23 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { spawnSync } from 'child_process';
+import Database from 'better-sqlite3';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { getDb } from '../../src/services/database';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import {
+  buildTrainingCrossSkillStagingSmokeEvidence,
   DEFAULT_CROSS_SKILL_SMOKE_RESULTS_PATH,
   evaluatePhase7CrossSkillFlagContract,
   evaluateCrossSkillSmokePrerequisites,
+  openCrossSkillSmokeReadOnlyDatabase,
   renderCrossSkillSmokeReportMarkdown,
   runLocalFixtureSmoke,
   runTrainingCrossSkillStagingSmoke,
+  writeTrainingCrossSkillStagingSmokeEvidence,
 } from '../../src/tools/training-cross-skill-staging-smoke';
 
 function env(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
@@ -19,6 +25,8 @@ function env(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
     STAGING: 'true',
     TRAINING_CROSS_SKILL_STAGING_SMOKE: '1',
     TRAINING_CROSS_SKILL_STAGING_USER_ID: '42',
+    CHAT_EVAL_DEDICATED_TENANT_ID: '42',
+    TRAINING_CROSS_SKILL_DEDICATED_IDENTITY_ATTESTED: '1',
     DATABASE_PATH: '/tmp/nexus-staging.db',
     AI_CROSS_SKILL_EXECUTION: 'true',
     AI_ROUTING_MANIFEST_KILL: 'false',
@@ -30,6 +38,67 @@ function env(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
 }
 
 describe('training cross-skill staging smoke harness', () => {
+  it('opens staging data read-only without running application database initialization', () => {
+    const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-cross-skill-readonly-'));
+    const databasePath = path.join(fixtureRoot, 'staging-smoke.db');
+    const writer = new Database(databasePath);
+    writer.exec('CREATE TABLE sentinel (id INTEGER PRIMARY KEY, value TEXT NOT NULL)');
+    writer.prepare('INSERT INTO sentinel (id, value) VALUES (?, ?)').run(7, 'outside-dedicated-tenant');
+    writer.close();
+    const before = fs.readFileSync(databasePath);
+
+    try {
+      const database = openCrossSkillSmokeReadOnlyDatabase(databasePath);
+      expect(database.pragma('query_only', { simple: true })).toBe(1);
+      expect(database.prepare('SELECT value FROM sentinel WHERE id = 7').get()).toEqual({
+        value: 'outside-dedicated-tenant',
+      });
+      expect(() => database.prepare('UPDATE sentinel SET value = ? WHERE id = 7')
+        .run('mutated')).toThrow(/read.?only/i);
+      database.close();
+
+      expect(fs.readFileSync(databasePath)).toEqual(before);
+      expect(fs.readdirSync(fixtureRoot).sort()).toEqual(['staging-smoke.db']);
+      const source = fs.readFileSync(
+        path.resolve('src/tools/training-cross-skill-staging-smoke.ts'),
+        'utf8',
+      );
+      expect(source).not.toContain('database.initDatabase()');
+    } finally {
+      fs.rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('runs the real no-reader path against a migrated database without mutating it', async () => {
+    const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-cross-skill-runtime-readonly-'));
+    const databasePath = path.join(fixtureRoot, 'staging-smoke.db');
+    const migrated = createMigratedTestDatabase();
+    fs.writeFileSync(databasePath, migrated.serialize());
+    migrated.close();
+    const before = fs.readFileSync(databasePath);
+
+    try {
+      const report = await runTrainingCrossSkillStagingSmoke({
+        userId: 42,
+        runId: 'run-real-readonly-reader',
+        dryRun: false,
+        now: new Date('2026-05-01T08:00:00.000Z'),
+        env: env({ DATABASE_PATH: databasePath }),
+      });
+
+      expect(report.operations[0]).toMatchObject({
+        flow: 'phase7_cross_skill_flag_contract',
+        status: 'pass',
+      });
+      expect(report.operations.some((operation) => operation.status === 'blocked')).toBe(true);
+      expect(() => getDb()).toThrow(/not initialized/i);
+      expect(fs.readFileSync(databasePath)).toEqual(before);
+      expect(fs.readdirSync(fixtureRoot).sort()).toEqual(['staging-smoke.db']);
+    } finally {
+      fs.rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  }, 30000);
+
   it('keeps its default mutable result under ignored local release evidence', () => {
     expect(DEFAULT_CROSS_SKILL_SMOKE_RESULTS_PATH).toBe(
       '.local/release/smoke-evidence/training-cross-skill-staging-latest.md',
@@ -67,6 +136,24 @@ describe('training cross-skill staging smoke harness', () => {
     expect(disabled.missing).toContain('AI_CROSS_SKILL_EXECUTION=true');
     expect(killed.ok).toBe(false);
     expect(killed.missing).toContain('AI_ROUTING_MANIFEST_KILL must be false/unset');
+  });
+
+  it('requires the native DB-attested dedicated chat-eval tenant identity', () => {
+    const missingAttestation = evaluateCrossSkillSmokePrerequisites(env({
+      TRAINING_CROSS_SKILL_DEDICATED_IDENTITY_ATTESTED: '',
+    }));
+    const mismatchedIdentity = evaluateCrossSkillSmokePrerequisites(env({
+      CHAT_EVAL_DEDICATED_TENANT_ID: '43',
+    }));
+
+    expect(missingAttestation.ok).toBe(false);
+    expect(missingAttestation.missing).toContain(
+      'TRAINING_CROSS_SKILL_DEDICATED_IDENTITY_ATTESTED=1 from the native DB identity check',
+    );
+    expect(mismatchedIdentity.ok).toBe(false);
+    expect(mismatchedIdentity.missing).toContain(
+      'TRAINING_CROSS_SKILL_STAGING_USER_ID must equal CHAT_EVAL_DEDICATED_TENANT_ID',
+    );
   });
 
   it('requires an exact staging runtime and artifact identity', () => {
@@ -134,6 +221,8 @@ describe('training cross-skill staging smoke harness', () => {
     expect(wrapper).toContain('npm run build');
     expect(wrapper).toContain('NEXUS_RELEASE_SHA="$VERIFIED_RUNTIME_SHA"');
     expect(wrapper).toContain('NEXUS_RELEASE_ARTIFACT_SHA256="$VERIFIED_ARTIFACT_DIGEST"');
+    expect(wrapper).toContain('TRAINING_CROSS_SKILL_STAGING_JSON_RESULTS_PATH');
+    expect(wrapper).toContain('strict JSON evidence must stay under NEXUS_SMOKE_EVIDENCE_DIR');
     expect(artifactManifest).toContain("'scripts/training-cross-skill-staging-smoke.sh'");
     expect(artifactManifest).toContain("'scripts/with-smoke-evidence.sh'");
   });
@@ -271,6 +360,157 @@ describe('training cross-skill staging smoke harness', () => {
     });
     expect(renderCrossSkillSmokeReportMarkdown(report)).toContain(`Runtime SHA: \`${'a'.repeat(40)}\``);
   });
+
+  it('builds the strict redacted eight-operation staging receipt with exact flag and release identity', async () => {
+    const report = await buildPassingSmokeReport();
+    const evidence = buildTrainingCrossSkillStagingSmokeEvidence(report);
+
+    expect(evidence).toEqual({
+      schema: 'nexus.training-cross-skill-staging-smoke.v1',
+      runId: 'run-rich-evidence',
+      startedAt: report.startedAt,
+      finishedAt: report.finishedAt,
+      dryRun: false,
+      dedicatedStagingIdentity: true,
+      dedicatedIdentitySource: 'chat_eval_dedicated_tenant_db_attested',
+      releaseIdentity: {
+        environment: 'staging',
+        runtimeSha: 'a'.repeat(40),
+        artifactDigest: 'b'.repeat(64),
+      },
+      prerequisitesPassed: true,
+      operationStatuses: {
+        local_fixture_contracts: 'pass',
+        phase7_cross_skill_flag_contract: 'pass',
+        secretary_conflict: 'pass',
+        cooking_fueling_gap: 'pass',
+        finance_budget_constraint: 'pass',
+        content_workload: 'pass',
+        training_content_milestone: 'pass',
+        shared_context_scope: 'pass',
+      },
+      crossSkillExecutionEffective: true,
+      masterKill: false,
+      trainingPlanCreateOutputRefs: 'absent',
+      verdict: 'passed',
+    });
+    expect(Object.keys(evidence.operationStatuses)).toHaveLength(8);
+    const serialized = JSON.stringify(evidence);
+    expect(serialized).not.toContain('userId');
+    expect(serialized).not.toContain('DATABASE_PATH');
+    expect(evidence).not.toHaveProperty('evidence');
+    expect(serialized).not.toContain('prompt');
+  });
+
+  it('writes the strict receipt mode 0600 only beneath an explicit contained .local root', async () => {
+    const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-cross-skill-evidence-'));
+    try {
+      const allowedRoot = path.join(fixtureRoot, '.local', 'release', 'smoke-evidence');
+      const outputPath = path.join(allowedRoot, 'training-cross-skill-staging.json');
+      const evidence = buildTrainingCrossSkillStagingSmokeEvidence(await buildPassingSmokeReport());
+
+      const writtenPath = writeTrainingCrossSkillStagingSmokeEvidence({
+        evidence,
+        allowedLocalRoot: allowedRoot,
+        outputPath,
+      });
+
+      expect(writtenPath).toBe(fs.realpathSync(outputPath));
+      expect(fs.statSync(outputPath).mode & 0o777).toBe(0o600);
+      expect(JSON.parse(fs.readFileSync(outputPath, 'utf8'))).toEqual(evidence);
+      expect(() => writeTrainingCrossSkillStagingSmokeEvidence({
+        evidence,
+        allowedLocalRoot: allowedRoot,
+        outputPath: path.join(fixtureRoot, 'escaped.json'),
+      })).toThrow(/contained/i);
+      expect(() => writeTrainingCrossSkillStagingSmokeEvidence({
+        evidence,
+        allowedLocalRoot: path.join(fixtureRoot, 'not-local'),
+        outputPath: path.join(fixtureRoot, 'not-local', 'receipt.json'),
+      })).toThrow(/\.local/i);
+    } finally {
+      fs.rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a .local evidence root redirected through a symbolic link', async () => {
+    const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-cross-skill-evidence-link-'));
+    try {
+      const redirectedRoot = path.join(fixtureRoot, 'redirected', '.local', 'smoke-evidence');
+      const lexicalParent = path.join(fixtureRoot, '.local', 'release');
+      const allowedRoot = path.join(lexicalParent, 'smoke-evidence');
+      fs.mkdirSync(redirectedRoot, { recursive: true });
+      fs.mkdirSync(lexicalParent, { recursive: true });
+      fs.symlinkSync(redirectedRoot, allowedRoot, 'dir');
+      const evidence = buildTrainingCrossSkillStagingSmokeEvidence(await buildPassingSmokeReport());
+
+      expect(() => writeTrainingCrossSkillStagingSmokeEvidence({
+        evidence,
+        allowedLocalRoot: allowedRoot,
+        outputPath: path.join(allowedRoot, 'training-cross-skill-staging.json'),
+      })).toThrow(/symbolic link/i);
+      expect(fs.readdirSync(redirectedRoot)).toEqual([]);
+    } finally {
+      fs.rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('cannot report a dry run or missing runtime operation as a passing strict receipt', async () => {
+    const dryRun = await runTrainingCrossSkillStagingSmoke({
+      userId: 42,
+      runId: 'run-dry-evidence',
+      dryRun: true,
+      now: new Date('2026-05-01T08:00:00.000Z'),
+      env: env(),
+    });
+
+    const evidence = buildTrainingCrossSkillStagingSmokeEvidence(dryRun);
+
+    expect(evidence.dryRun).toBe(true);
+    expect(evidence.operationStatuses.phase7_cross_skill_flag_contract).toBe('blocked');
+    expect(evidence.verdict).toBe('failed');
+  });
+
+  it('aggregates every local fixture row into the local_fixture_contracts receipt status', async () => {
+    const report = await buildPassingSmokeReport();
+    report.localFixtureOperations[1]!.status = 'fail';
+
+    const evidence = buildTrainingCrossSkillStagingSmokeEvidence(report);
+
+    expect(evidence.operationStatuses.local_fixture_contracts).toBe('fail');
+    expect(evidence.verdict).toBe('failed');
+  });
+
+  it('supports --json as JSON-only stdout while retaining the blocked dry-run exit code', () => {
+    const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-cross-skill-json-cli-'));
+    try {
+      const result = spawnSync(process.execPath, [
+        '--import',
+        'tsx',
+        'src/tools/training-cross-skill-staging-smoke.ts',
+        '--dry-run',
+        '--json',
+      ], {
+        cwd: process.cwd(),
+        encoding: 'utf8',
+        env: env({
+          ...process.env,
+          TRAINING_CROSS_SKILL_STAGING_RESULTS_PATH: path.join(fixtureRoot, 'dry-run.md'),
+        }),
+      });
+
+      expect(result.status).toBe(2);
+      const evidence = JSON.parse(result.stdout);
+      expect(evidence).toMatchObject({
+        schema: 'nexus.training-cross-skill-staging-smoke.v1',
+        dryRun: true,
+        verdict: 'failed',
+      });
+      expect(result.stdout).not.toContain('# Training Cross-Skill');
+    } finally {
+      fs.rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  }, 30000);
 });
 
 describe('training cross-skill staging smoke shell wrapper', () => {
@@ -527,4 +767,26 @@ function signal(signalType: string, payload: Record<string, unknown>) {
     payload,
     expiresAt: '2026-05-10T23:59:59.000Z',
   };
+}
+
+async function buildPassingSmokeReport() {
+  return runTrainingCrossSkillStagingSmoke({
+    userId: 42,
+    runId: 'run-rich-evidence',
+    dryRun: false,
+    now: new Date('2026-05-01T08:00:00.000Z'),
+    env: env(),
+  }, buildRuntimeReader({
+    secretarySignals: [signal('calendar_busy_blocks', { dates: ['2026-05-05'] })],
+    cookingSignals: [signal('fueling_support_status', { status: 'at_risk' })],
+    financeSignals: [signal('budget_remaining', { budgetMode: 'tight' })],
+    contentSignals: [signal('publishing_commitment', { nextDate: '2026-05-07' })],
+    trainingSignals: [signal('content_capture_opportunity', { title: 'Training win' })],
+    sharedDecisionContext: [
+      'Secretary: schedule pressure is active.',
+      'Cooking: fueling support is at risk.',
+      'Finance: budget mode is tight.',
+      'Content: a publishing commitment is active.',
+    ].join('\n'),
+  }));
 }

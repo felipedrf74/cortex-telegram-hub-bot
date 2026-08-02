@@ -47,6 +47,7 @@ import {
   type IntentResolutionContext,
 } from '../services/intent-resolution/intent-resolver';
 import type { ClassifierDisposition } from '../domains/types';
+import { chatCapabilityRuntimeAllowsFlags } from '../services/chat-capability-runtime-guard';
 
 // ─── Rollout flag ───────────────────────────────────────────────────
 
@@ -84,6 +85,7 @@ export function _resetManifestClassifierPromptRuntimeOverrideForTests(): void {
 /** Whether the manifest-generated classifier prompt is active. Runtime guard + master kill win. */
 export function isManifestClassifierPromptEnabled(env: EnvLike = process.env): boolean {
   if (manifestClassifierPromptRuntimeForceDisabled) return false;
+  if (!chatCapabilityRuntimeAllowsFlags()) return false;
   if (parseBoolean(env[MANIFEST_ROUTING_MASTER_KILL_ENV_VAR])) return false;
   return parseBoolean(env[MANIFEST_CLASSIFIER_PROMPT_ENV_VAR]);
 }

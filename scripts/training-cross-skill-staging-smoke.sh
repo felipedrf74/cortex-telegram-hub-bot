@@ -99,8 +99,10 @@ if [ -f "$ROOT_DIR/.complete.json" ]; then
   VERIFIED_ARTIFACT_DIGEST="${VERIFIED_IDENTITY#* }"
   export NEXUS_SMOKE_EVIDENCE_DIR="${NEXUS_SMOKE_EVIDENCE_DIR:-$VERIFIED_RELEASE_BASE/.local/release/smoke-evidence}"
   export TRAINING_CROSS_SKILL_STAGING_RESULTS_PATH="${TRAINING_CROSS_SKILL_STAGING_RESULTS_PATH:-$VERIFIED_RELEASE_BASE/.local/release/smoke-evidence/training-cross-skill-staging.md}"
+  export TRAINING_CROSS_SKILL_STAGING_JSON_RESULTS_PATH="${TRAINING_CROSS_SKILL_STAGING_JSON_RESULTS_PATH:-$VERIFIED_RELEASE_BASE/.local/release/smoke-evidence/training-cross-skill-staging.json}"
   VERIFIED_JSON_EVIDENCE_DIR="$(node -e 'process.stdout.write(require("node:path").resolve(process.argv[1]))' "$NEXUS_SMOKE_EVIDENCE_DIR")"
   VERIFIED_MARKDOWN_EVIDENCE_PATH="$(node -e 'process.stdout.write(require("node:path").resolve(process.argv[1]))' "$TRAINING_CROSS_SKILL_STAGING_RESULTS_PATH")"
+  VERIFIED_STRICT_JSON_EVIDENCE_PATH="$(node -e 'process.stdout.write(require("node:path").resolve(process.argv[1]))' "$TRAINING_CROSS_SKILL_STAGING_JSON_RESULTS_PATH")"
   case "$VERIFIED_JSON_EVIDENCE_DIR" in
     "$VERIFIED_RELEASE_BASE"/.local/*) ;;
     *)
@@ -115,12 +117,19 @@ if [ -f "$ROOT_DIR/.complete.json" ]; then
       exit "$GUARD_REFUSAL_EXIT"
       ;;
   esac
+  case "$VERIFIED_STRICT_JSON_EVIDENCE_PATH" in
+    "$VERIFIED_JSON_EVIDENCE_DIR"/*) ;;
+    *)
+      echo "Refusing cross-skill smoke: strict JSON evidence must stay under NEXUS_SMOKE_EVIDENCE_DIR." >&2
+      exit "$GUARD_REFUSAL_EXIT"
+      ;;
+  esac
 else
   if [ "$DRY_RUN" != "1" ]; then
     echo "Refusing staging proof outside an installed release with a verified .complete.json marker." >&2
     exit "$GUARD_REFUSAL_EXIT"
   fi
-  echo "Building current source before non-evidentiary dry-run smoke..."
+  echo "Building current source before non-evidentiary dry-run smoke..." >&2
   # A failed build must not inherit the compiler's exit code: tsc exits 2, which
   # callers read as "blocked by design" and would score a broken tree as benign.
   if ! npm run build >/dev/null; then

@@ -184,14 +184,17 @@ try {
     );
   }
   const docsOnly = isDocsOnly(legacyResult.changedFiles);
+  const groupedVitestMode = docsOnly || grouped.groups.length === 0 ? 'skip' : 'focused';
   const result = {
     ...legacyResult,
     version: '2',
     vitest: {
-      mode: docsOnly || grouped.groups.length === 0 ? 'skip' : 'focused',
+      mode: groupedVitestMode,
       groups: grouped.groups,
       globs: [],
-      skipReason: docsOnly ? 'docs-only diff' : 'no Vitest-owned group changed',
+      skipReason: groupedVitestMode === 'skip'
+        ? (docsOnly ? 'docs-only diff' : 'no Vitest-owned group changed')
+        : null,
     },
     testGroups: {
       version: groupPolicy.version,
