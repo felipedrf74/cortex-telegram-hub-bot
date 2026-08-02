@@ -5,41 +5,41 @@ Machine-readable truth: `docs/release/release-state.json`.
 ## Production
 
 - Backend version: `4.14.232`
-- Runtime commit: `d3f0db389458ecee3a2c6dff3249469d1c4228b2`
-- Artifact digest: `abb492153eba81f192829d390aaaa660cde6a08cca26f145578cb283e9412375`
+- Runtime commit: `0c4af848349c2cf3c2c89fd4d66f039b481f62ae`
+- Artifact digest: `f8d20b5f90c1477ff3fe6178490548828e63ecf872e868b8933bcd104e5e4cd7`
 - Installed-tree digest: `3944f37f16dd1a526a53bee80758b4519298e260c6f6596d88dfad6a6dda55ae`
 - Training catalog package: `51c1089cceb8a916abf200b5cb3688b19f5f7553990467ee0f8ef01c7c4f74bb`
 - Training release subject: `27b97ebc96e1b3bb1ee3612e63c5609b5572c9d4b58e59b8ea3e77642fb1cea3`
-- Transaction `20260802T093404Z-7ebfe6c05ca1` completed at
-  `2026-08-02T09:35:19.247Z` in 73.884s: readiness 12.224s, soak 61.659s.
+- Transaction `20260802T135145Z-f649b11cfc35` completed at
+  `2026-08-02T13:53:00.140Z` in 74.058s: readiness 12.220s, soak 61.837s.
 - Backend/content health, exact PM2 identity, artifact parity, authenticated
   smoke, migration startup, database integrity, backup, and rollback passed.
-- Rollback was armed but not required; backup: `nexus-db-20260802T093412Z.sqlite.age`.
+- Rollback was armed but not required; backup: `nexus-db-20260802T135153Z.sqlite.age`.
 
 ## Artifact-Bound Evidence
 
-- Protected-main/checkpoint runs: `30736935248` / `30737533142`
-- Compact manifest SHA-256: `06edea4e4af078ba8e0dbcf423ff981fe7c23f8b4e521dc10dd1a07acd282762`
-- Staging/production transactions: `20260802T073100Z-dc324ff40f22` /
-  `20260802T093404Z-7ebfe6c05ca1`
-- Encrypted backup SHA-256: `7952c0c9b3fa4338ebb0c81cc70079460b91928aaa4161f4b0c55752fac5b4b9`
-- Fault drill `20260802T072848Z-e4274563fa40` restored the predecessor in
-  2.714s against 120s; normal staging then passed its 300s soak.
+- Protected-main/checkpoint runs: `30749642688` / `30749820570`
+- Compact manifest SHA-256: `de440266b169506ce921dba0470b0acad71b5966c5469ea5a2fafda59e6ffc93`
+- Staging/production transactions: `20260802T133357Z-681ace2c0e8d` /
+  `20260802T135145Z-f649b11cfc35`
+- Encrypted backup SHA-256: `4c240fe81496a2f897eaf9e301c6d832c662e0ffb00269cc8c744eb3f9067800`
+- Fault drill `20260802T133139Z-1d33c71562f6` restored the predecessor in
+  2.696s against 120s; normal staging then passed its 15s soak.
 - `./scripts/staging-smoke.sh` passed 24/24 checks. Exact-SHA `local_engine`
-  evaluation `chat-eval-2026-08-02T07-26-40-918Z` passed 7/7 scenarios at $0 actual cost.
+  evaluation `chat-eval-2026-08-02T13-30-37-799Z` passed 7/7 scenarios at $0 actual cost.
 - Evidence remains in ignored `.local/release/`, server state, and restricted
   CI artifacts; this summary is not reusable promotion evidence.
 
 ## Lean-Release Measurement
 
-- Current sample: main 4m18s, handoff 7m08s, checkpoint 4m55s, automated
-  readiness 16m21s; all passed.
-- Selected/remainder/union: `1,115/15,635/16,750` tests and
-  `95/1,036/1,131` files; partitions were disjoint and complete.
-- Seven of ten releases are measured. Provisional nearest-rank p50/p95:
-  main 7m01s/17m33s; handoff 1m05s/8m13s; checkpoint 4m21s/5m33s;
-  automated readiness 16m21s/21m43s. The sample is not yet stable.
-- Median improvement against 19m40s is 3m19s (16.86%); all seven promotions
+- Current sample: main 4m11s, handoff 55s, checkpoint 5m29s, automated
+  readiness 10m35s; all passed.
+- Selected/remainder/union: `1,130/15,636/16,766` tests and
+  `96/1,036/1,132` files; partitions were disjoint and complete.
+- Eight of ten releases are measured. Provisional nearest-rank p50/p95:
+  main 4m19s/17m33s; handoff 55s/8m13s; checkpoint 4m21s/5m33s;
+  automated readiness 14m10s/21m43s. The sample is not yet stable.
+- Median improvement against 19m40s is 5m30s (27.97%); all eight promotions
   passed. Escaped-critical-defect review remains monitoring.
 - The protected-main artifact was reused unchanged; hosts ran no build or test.
 
@@ -52,9 +52,9 @@ Machine-readable truth: `docs/release/release-state.json`.
   immutable hashes. Its acknowledged `operator_checkout_only` provenance is
   surfaced and is not represented as production evidence.
 - Phase 6: 0/9 routes pass, two are insufficient and seven blocked; no legacy
-  stage was disabled. Report SHA-256: `a1f4d81c58911083578d9fefe8179d2a431e5f1e2a317f024842716b64c15f5f`.
-- Phase 7 is paused at `AI_ROUTING_MANIFEST_CLASSIFIER` / `classifierKeyword`:
-  0/200 eligible comparisons against the fixed 99% gate. No later flag ran.
+  stage was disabled. Report SHA-256: `f8a00055927cb7596e1f470e619bc8ae5000689264da8c8324a3432eb7f9f842`.
+- Phase 7 is paused at `AI_ROUTING_MANIFEST_CLASSIFIER` / `classifierKeyword`.
+  No current-release traffic window or later flag ran; the last window was 0/200.
 - The deterministic shadow recorder is absent in every staging scope, so live
   turns cannot yet generate gate evidence; it needs a governed staging enable.
 - HMAC prerequisites pass in both roles. All seven flags are configured and
