@@ -47,6 +47,10 @@ vi.mock('../../src/services/secretary-scheduling-arbitrator', async () => {
 vi.mock('../../src/services/secretary-live-calendar-busy', () => ({
   loadLiveCalendarBusyWindowsForSecretaryIntent: (...args: unknown[]) =>
     mockLoadLiveCalendarBusyWindowsForSecretaryIntent(...args),
+  // F29: the worker fetches once per drain through the range entry point;
+  // both exports share one mock so call-count assertions cover either path.
+  loadLiveCalendarBusyWindowsForRange: (...args: unknown[]) =>
+    mockLoadLiveCalendarBusyWindowsForSecretaryIntent(...args),
 }));
 
 // Ownership recording delegates to the real implementation unless a test
@@ -304,10 +308,14 @@ describe('training-plan-calendar-sync-worker', () => {
       // availability lookup and submission carry the training identity, a
       // hard preferred window, the 75%-floor minimum duration, and the
       // resolved provider as a soft preference.
+      // F29: one range-shaped fetch per drain replaces the per-intent call.
+      expect(mockLoadLiveCalendarBusyWindowsForSecretaryIntent).toHaveBeenCalledTimes(1);
       expect(mockLoadLiveCalendarBusyWindowsForSecretaryIntent).toHaveBeenCalledWith(
         expect.objectContaining({
-          sourceSkill: 'training',
-          softPreferences: { calendarProvider: 'google' },
+          ownerUserId: USER_ID,
+          tenantId: TENANT_ID,
+          start: expect.any(String),
+          end: expect.any(String),
         }),
       );
       expect(mockSubmitSecretarySchedulingIntent).toHaveBeenCalledWith(
@@ -497,6 +505,24 @@ describe('training-plan-calendar-sync-worker', () => {
       }));
       expect(mockMarkSecretaryAgendaProviderSyncSatisfied).not.toHaveBeenCalled();
       expect(planCalendarSyncSummary(plan.id)).toMatchObject({ state: 'create_failed' });
+    });
+    db.close();
+  });
+
+  it('fetches live provider busy windows once per drain, not once per session (F29)', async () => {
+    // §5/F29: the inline phase fetched the athlete's live calendar once PER
+    // SESSION — a 96-session plan meant 96 provider reads. The drain now
+    // performs one bounded fetch covering the whole plan window and shares
+    // it across every Secretary arbitration.
+    const db = createMigratedTestDatabase();
+    await withDatabaseForTestAsync(db, async () => {
+      const { plan, sessionIds } = seedPlan({ sessionCount: 6 });
+      emitSyncRequest(plan, sessionIds);
+      await processPendingEvents(defaultEventHandlers, { limit: 10, lockOwner: 'route-test' });
+      const drained = await processTrainingPlanCalendarSyncJobs({ limit: 5, lockOwner: 'drain-test' });
+      expect(drained).toMatchObject({ completed: 1, failed: 0 });
+      expect(mockCreateEvent).toHaveBeenCalledTimes(6);
+      expect(mockLoadLiveCalendarBusyWindowsForSecretaryIntent).toHaveBeenCalledTimes(1);
     });
     db.close();
   });

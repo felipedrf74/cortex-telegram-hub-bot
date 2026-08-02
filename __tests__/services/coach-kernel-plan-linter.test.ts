@@ -874,4 +874,50 @@ describe('coach-kernel/plan-linter', () => {
       });
     });
   });
+  // F7 (Phase 3): defense-in-depth for the explicit 'never' two-a-day
+  // stance. The volume enforcer relocates or defers doubles; this rule
+  // guarantees a violating plan can never pass the strict preflight even if
+  // an upstream pass regresses.
+  describe('rule: two_a_day_cap', () => {
+    it("blocks a doubled day when twoADayPreference is 'never'", () => {
+      const result = lintPlan(input({
+        twoADayPreference: 'never',
+        weeks: [week(1, [
+          session({ dayOfWeek: 'friday', sessionType: 'run', title: 'Tempo Run' }),
+          session({ dayOfWeek: 'friday', sessionType: 'gym', title: 'Lift A' }),
+          session({ dayOfWeek: 'saturday', title: 'Long Run' }),
+        ])],
+      }));
+
+      expect(result.status).toBe('fail');
+      const finding = result.blockers.find((blocker) => blocker.ruleId === 'two_a_day_cap');
+      expect(finding).toBeTruthy();
+      expect(finding?.affectedSessions).toHaveLength(2);
+      expect(finding?.affectedSessions.every((affected) => affected.dayOfWeek === 'friday')).toBe(true);
+    });
+
+    it('ignores doubled days for every other preference value', () => {
+      for (const preference of [undefined, null, 'preferred', 'optional', 'auto']) {
+        const result = lintPlan(input({
+          twoADayPreference: preference as never,
+          weeks: [week(1, [
+            session({ dayOfWeek: 'friday', sessionType: 'run', title: 'Tempo Run' }),
+            session({ dayOfWeek: 'friday', sessionType: 'gym', title: 'Lift A' }),
+          ])],
+        }));
+        expect(result.blockers.some((blocker) => blocker.ruleId === 'two_a_day_cap')).toBe(false);
+      }
+    });
+
+    it('does not count inactive sessions toward the cap', () => {
+      const result = lintPlan(input({
+        twoADayPreference: 'never',
+        weeks: [week(1, [
+          session({ dayOfWeek: 'friday', sessionType: 'run', title: 'Tempo Run' }),
+          session({ dayOfWeek: 'friday', sessionType: 'gym', title: 'Lift A', status: 'deferred' }),
+        ])],
+      }));
+      expect(result.blockers.some((blocker) => blocker.ruleId === 'two_a_day_cap')).toBe(false);
+    });
+  });
 });

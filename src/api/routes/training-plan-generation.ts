@@ -705,9 +705,16 @@ export async function generateTrainingPlanForUser(
     preferredStrengthTime: normalizedPreferredStrengthTime,
     startDate: startStr,
     longWorkoutDay: coordination.resolvedLongWorkoutDay ?? normalizedLongWorkoutDay,
+    // F7 (Phase 3): the kernel already receives the preference as guidance;
+    // the volume enforcer is the per-day-cap guarantee, so it needs it too.
+    twoADayPreference: twoADayPreference ?? null,
   };
+  const volumeEnforcedPlan = enforceRequestedTrainingPlanVolume(planData, volumeEnforcementInput);
+  // F10 (Phase 3): captured before the equipment pass, which may rebuild the
+  // plan object without carrying the enforcement metadata through.
+  const volumeShortfalls = volumeEnforcedPlan.volumeShortfalls ?? [];
   planData = applyEquipmentAuthorityMode(
-    enforceRequestedTrainingPlanVolume(planData, volumeEnforcementInput),
+    volumeEnforcedPlan,
     equipmentAdaptation,
     equipmentAuthorityEnabled,
   );
@@ -882,6 +889,9 @@ export async function generateTrainingPlanForUser(
     raceDate: effectiveRaceDate,
     startPolicy: normalizedStartPolicy,
     twoADayPreference: twoADayPreference ?? null,
+    // F10 (Phase 3): structured record of ask-vs-placed gaps, persisted so
+    // re-edit flows and support can see WHY a week under-delivers.
+    volumeShortfalls,
     trainingPlanSpec,
     trainingPlanQuality: trainingQuality?.planData.trainingPlanQuality ?? null,
     trainingPlanRepairActions: trainingQuality?.repairActions ?? [],
@@ -916,6 +926,8 @@ export async function generateTrainingPlanForUser(
     raceDate: raceDateForLint,
     isRaceSpecific: isRaceSpecificForLint,
     goalMode: normalizedGoalMode,
+    // F7 (Phase 3): arms the two_a_day_cap lint rule in preflight + advisor.
+    twoADayPreference: twoADayPreference ?? null,
     trainingPlanSpec: trainingPlanSpec ?? undefined,
   };
 
@@ -1240,6 +1252,10 @@ export async function generateTrainingPlanForUser(
       generatorPolicyVersion: TRAINING_PLAN_GENERATOR_POLICY_VERSION,
       generationVersionPins,
       trainingSafety: buildTrainingSafetyGenerationSummary(safetyOutput),
+      // F10 (Phase 3, additive): every gap between the requested and the
+      // placeable weekly volume, with a machine-readable reason — the fill
+      // loops used to under-deliver silently.
+      volumeShortfalls,
       // training-expert-coach-knowledge-engine: explicit calendar
       // health flag + lint verdict surface on the response payload.
       calendarFetchDegraded,

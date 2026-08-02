@@ -527,4 +527,159 @@ describe('training-plan-volume-enforcement', () => {
     )).toBe(true);
     expect([...sessionsByDay.values()].every((daySessions) => daySessions.length <= 2)).toBe(true);
   });
+  // ── F7 (Phase 3): twoADayPreference 'never' ─────────────────────────────
+  // The kernel receives the preference but the volume enforcer used to
+  // ignore it: activeTarget baked in allowedDays * 2, the insertion-day
+  // picker happily stacked a second session, and kernel-produced doubles
+  // survived untouched. 'never' is an explicit athlete constraint.
+  describe("twoADayPreference 'never' (F7)", () => {
+    const neverRequest = {
+      sessionsPerWeek: 3,
+      strengthSessionsPerWeek: 1,
+      preferredCardioTime: '07:00',
+      preferredStrengthTime: '12:00',
+      startDate: '2026-04-27',
+      twoADayPreference: 'never',
+    };
+
+    function activeSessionsPerDay(sessions: Array<{ dayOfWeek: string; scheduleState?: string }>): Map<string, number> {
+      const counts = new Map<string, number>();
+      for (const session of sessions) {
+        if (session.scheduleState === 'deferred' || session.scheduleState === 'unscheduled' || session.scheduleState === 'dropped') continue;
+        counts.set(session.dayOfWeek, (counts.get(session.dayOfWeek) ?? 0) + 1);
+      }
+      return counts;
+    }
+
+    it('relocates kernel-produced same-day doubles instead of keeping two a day', () => {
+      const result = enforceRequestedTrainingPlanVolume(
+        {
+          sport: 'hybrid',
+          weeks: [{
+            weekNumber: 1,
+            sessions: [
+              { dayOfWeek: 'Friday', sessionType: 'run', title: 'Tempo Run', durationMinutes: 40 },
+              { dayOfWeek: 'Friday', sessionType: 'gym', title: 'Lift A', durationMinutes: 45, exercises: [{ name: 'Squat' }] },
+              { dayOfWeek: 'Saturday', sessionType: 'run', title: 'Long Run', durationMinutes: 70 },
+            ],
+          }],
+        },
+        neverRequest,
+      );
+
+      const sessions = result.weeks?.[0]?.sessions ?? [];
+      const perDay = activeSessionsPerDay(sessions);
+      expect(Math.max(...perDay.values())).toBe(1);
+      // Relocation, not deletion: all three sessions survive as active work.
+      expect([...perDay.values()].reduce((sum, count) => sum + count, 0)).toBe(3);
+    });
+
+    it('never fills a second session onto an occupied day', () => {
+      const result = enforceRequestedTrainingPlanVolume(
+        { sport: 'running', weeks: [{ weekNumber: 1, sessions: [] }] },
+        {
+          sessionsPerWeek: 5,
+          runSessionsPerWeek: 5,
+          strengthSessionsPerWeek: 3,
+          preferredCardioTime: '07:00',
+          preferredStrengthTime: '12:00',
+          startDate: '2026-04-27',
+          twoADayPreference: 'never',
+        },
+      );
+
+      const sessions = result.weeks?.[0]?.sessions ?? [];
+      const perDay = activeSessionsPerDay(sessions);
+      expect(sessions.length).toBeGreaterThan(0);
+      expect(Math.max(...perDay.values())).toBe(1);
+    });
+
+    it('keeps two-a-days available when the preference is absent', () => {
+      const result = enforceRequestedTrainingPlanVolume(
+        { sport: 'running', weeks: [{ weekNumber: 1, sessions: [] }] },
+        {
+          sessionsPerWeek: 5,
+          runSessionsPerWeek: 5,
+          strengthSessionsPerWeek: 3,
+          preferredCardioTime: '07:00',
+          preferredStrengthTime: '12:00',
+          startDate: '2026-04-27',
+        },
+      );
+
+      const sessions = result.weeks?.[0]?.sessions ?? [];
+      const perDay = activeSessionsPerDay(sessions);
+      // The pre-F7 behaviour is preserved for every other preference value:
+      // the 5-day budget with 8 requested sessions requires doubling up.
+      expect(Math.max(...perDay.values())).toBe(2);
+    });
+  });
+
+  // ── F10 (Phase 3): filler provenance + structured shortfall ─────────────
+  describe('volume filler provenance and shortfall (F10)', () => {
+    it('marks enforcer-authored support sessions with provenance', () => {
+      const result = enforceRequestedTrainingPlanVolume(
+        { sport: 'running', weeks: [{ weekNumber: 1, sessions: [
+          { dayOfWeek: 'Monday', sessionType: 'run', title: 'Engine Run', durationMinutes: 45 },
+        ] }] },
+        {
+          sessionsPerWeek: 3,
+          runSessionsPerWeek: 3,
+          strengthSessionsPerWeek: 1,
+          preferredCardioTime: '07:00',
+          preferredStrengthTime: '12:00',
+          startDate: '2026-04-27',
+        },
+      );
+
+      const sessions = result.weeks?.[0]?.sessions ?? [];
+      const engineSessions = sessions.filter((session) => session.title === 'Engine Run');
+      const fillers = sessions.filter((session) => session.title !== 'Engine Run');
+      expect(fillers.length).toBeGreaterThan(0);
+      expect(engineSessions.every((session) => session.sessionProvenance === undefined)).toBe(true);
+      expect(fillers.every((session) => session.sessionProvenance === 'volume_filler')).toBe(true);
+    });
+
+    it('surfaces a structured shortfall when the two-a-day cap makes the ask unreachable', () => {
+      const result = enforceRequestedTrainingPlanVolume(
+        { sport: 'running', weeks: [{ weekNumber: 1, sessions: [] }] },
+        {
+          sessionsPerWeek: 5,
+          runSessionsPerWeek: 5,
+          strengthSessionsPerWeek: 5,
+          preferredCardioTime: '07:00',
+          preferredStrengthTime: '12:00',
+          startDate: '2026-04-27',
+          twoADayPreference: 'never',
+        },
+      );
+
+      // 10 requested sessions on a 5-day budget with a 1/day cap: the silent
+      // \`break\` used to hide the gap entirely.
+      expect(result.volumeShortfalls).toEqual([
+        expect.objectContaining({
+          weekNumber: 1,
+          kind: 'active',
+          requested: 10,
+          achieved: 5,
+          reason: 'two_a_day_cap',
+        }),
+      ]);
+    });
+
+    it('reports no shortfall when the ask is met', () => {
+      const result = enforceRequestedTrainingPlanVolume(
+        { sport: 'running', weeks: [{ weekNumber: 1, sessions: [] }] },
+        {
+          sessionsPerWeek: 3,
+          runSessionsPerWeek: 3,
+          strengthSessionsPerWeek: 0,
+          preferredCardioTime: '07:00',
+          preferredStrengthTime: '12:00',
+          startDate: '2026-04-27',
+        },
+      );
+      expect(result.volumeShortfalls ?? []).toHaveLength(0);
+    });
+  });
 });

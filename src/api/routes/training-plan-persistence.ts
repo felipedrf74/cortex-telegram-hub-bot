@@ -165,6 +165,8 @@ export interface PersistGeneratedTrainingPlanInput {
   isRaceSpecific?: boolean;
   /** Request goal mode; `event_based` enables strict race-date semantics. */
   goalMode?: string | null;
+  /** F7 (Phase 3): athlete two-a-day stance; 'never' arms the per-day cap lint rule. */
+  twoADayPreference?: string | null;
   /** Explicit swim access from profile/intake; false blocks swim prescriptions. */
   hasPoolAccess?: boolean | null;
   /** True when FTP, threshold power, or equivalent cycling benchmark is known. */
@@ -970,6 +972,7 @@ function runPlanLintGuarded(args: {
       durationWeeks: args.input.durationWeeks,
       isRaceSpecific: args.input.isRaceSpecific,
       goalMode: args.input.goalMode,
+      twoADayPreference: args.input.twoADayPreference ?? null,
       raceDate: args.input.raceDate ?? null,
       equipmentProfile: args.input.equipmentProfile,
       hasPoolAccess: args.input.hasPoolAccess ?? inferPoolAccessFromProfiles(args.input.athleteProfiles),

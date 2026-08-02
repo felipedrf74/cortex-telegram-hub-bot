@@ -87,6 +87,7 @@ export type PlanLintRuleId =
   | 'plan_linter_exception'
   | 'week_one_has_active_training'
   | 'plan_has_active_training'
+  | 'two_a_day_cap'
   | 'no_sessions_outside_plan_window'
   | 'session_prescription_completeness';
 
@@ -181,6 +182,11 @@ export interface PlanLintInput {
   isRaceSpecific?: boolean;
   /** Goal mode from the plan request; event_based enables race/taper strictness. */
   goalMode?: string | null;
+  /**
+   * F7 (Phase 3): athlete's two-a-day stance from the plan request. Only
+   * 'never' activates the per-day cap rule.
+   */
+  twoADayPreference?: string | null;
   raceDate?: string | Date | null;
   /** Intended plan duration. Used to block Week 5 leakage in a 4-week plan. */
   durationWeeks?: number;
@@ -1063,6 +1069,49 @@ function dedupeAffected(items: PlanLintAffectedSession[]): PlanLintAffectedSessi
   return deduped;
 }
 
+/**
+ * F7 (Phase 3): defense-in-depth for the explicit 'never' two-a-day stance.
+ * The volume enforcer relocates or defers doubles; this rule guarantees a
+ * violating plan can never pass the strict preflight regardless of which
+ * upstream pass regressed. Fires ONLY when the athlete opted out.
+ */
+function ruleTwoADayCap(input: PlanLintInput): PlanLintFinding | null {
+  if (String(input.twoADayPreference || '').trim().toLowerCase() !== 'never') return null;
+  const affected: PlanLintAffectedSession[] = [];
+  for (const week of input.weeks) {
+    const perDay = new Map<string, PlanLintSession[]>();
+    for (const candidate of week.sessions) {
+      if (!isActiveSession(candidate) || isRestLikeSession(candidate)) continue;
+      const day = String(candidate.dayOfWeek || '').toLowerCase();
+      if (!day) continue;
+      const list = perDay.get(day) ?? [];
+      list.push(candidate);
+      perDay.set(day, list);
+    }
+    for (const [day, daySessions] of perDay) {
+      if (daySessions.length < 2) continue;
+      for (const doubled of daySessions) {
+        affected.push({
+          weekNumber: week.weekNumber,
+          sessionId: doubled.id,
+          dayOfWeek: day,
+          title: doubled.title,
+        });
+      }
+    }
+  }
+  if (affected.length === 0) return null;
+  return {
+    ruleId: 'two_a_day_cap',
+    severity: 'blocker',
+    message:
+      'Two-a-day sessions are turned off for this athlete, but at least one day '
+      + 'carries more than one active session. Reflow the doubled sessions before saving.',
+    affectedSessions: affected,
+    evidence: { doubledSlots: affected.length },
+  };
+}
+
 const RULES: Array<(input: PlanLintInput) => PlanLintFinding | null> = [
   ruleNoPastActiveSessions,
   rulePlanHasActiveTraining,
@@ -1076,6 +1125,7 @@ const RULES: Array<(input: PlanLintInput) => PlanLintFinding | null> = [
   ruleRaceDateMustBeFuture,
   rulePlanDurationDoesNotOvershootRaceDate,
   ruleNoConsecutiveIdenticalStrengthSessions,
+  ruleTwoADayCap,
   ruleEnduranceHardEasyBalance,
   ruleEnduranceIntervalDensity,
   ruleLongSessionProgression,
@@ -1086,6 +1136,8 @@ const RULES: Array<(input: PlanLintInput) => PlanLintFinding | null> = [
 ];
 
 const SUGGESTED_FIXES: Record<PlanLintRuleId, string> = {
+  two_a_day_cap:
+    'Move the doubled session to a free training day or defer it; the athlete opted out of two-a-days.',
   no_past_active_sessions:
     'Mark past-dated active sessions as `unscheduled` and surface in the read model.',
   equipment_compatibility:

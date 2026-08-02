@@ -49,7 +49,10 @@ import {
   type SecretarySchedulingDecision,
   type SecretarySchedulingIntent,
 } from './secretary-scheduling-arbitrator';
-import { loadLiveCalendarBusyWindowsForSecretaryIntent } from './secretary-live-calendar-busy';
+import {
+  loadLiveCalendarBusyWindowsForRange,
+  type SecretaryLiveCalendarBusyWindowsResult,
+} from './secretary-live-calendar-busy';
 import { emojiForTrainingSession } from './training-calendar-format';
 import { appendTrainingIdentityMarker } from './training-session-identity';
 import {
@@ -384,6 +387,8 @@ async function syncSessionCalendarEvent(input: {
   eventPayload: SessionEventPayload;
   now: Date;
   finalAttempt: boolean;
+  /** F29: fetched ONCE per drain for the whole plan window. */
+  liveBusyWindows: SecretaryLiveCalendarBusyWindowsResult['windows'];
 }): Promise<SessionSyncOutcome> {
   const { userId, tenantId, planId, planVersion, calendarSource, eventPayload, now } = input;
   const existing = findExistingOwnership({
@@ -414,15 +419,11 @@ async function syncSessionCalendarEvent(input: {
       calendarSource: calendarSource ?? null,
       eventPayload,
     });
-    const liveBusyWindows = await loadLiveCalendarBusyWindowsForSecretaryIntent(secretaryIntent);
-    if (liveBusyWindows.degraded) {
-      throw new Error('TRAINING_SECRETARY_LIVE_BUSY_WINDOWS_DEGRADED');
-    }
     secretaryDecision = submitSecretarySchedulingIntent(
       secretaryIntent,
       {
         now: now.toISOString(),
-        additionalBusyWindows: liveBusyWindows.windows,
+        additionalBusyWindows: input.liveBusyWindows,
       },
     );
     const selectedWindow = selectedTrainingSecretaryWindow(secretaryDecision, { notBefore: now });
@@ -692,9 +693,13 @@ export async function executeTrainingPlanCalendarSyncJob(job: JobRecord): Promis
     // pending:true} would remain the last word forever on a dead job. The
     // in-loop PROVIDER_CREATE_FAILED throw already wrote truthful counters —
     // it must not be overwritten here.
+    // PROVIDER_CREATE_FAILED is the only retryable thrown AFTER the in-loop
+    // summary wrote truthful counters — every other retryable (pending
+    // activation, lock contention, busy-window fetch) failed before any
+    // work and left the persist-time {pending:true} as the last word.
     const preWorkErrorCode = err instanceof TrainingPlanCalendarSyncRetryableError
-      && err.code === 'PLAN_PENDING_ACTIVATION'
-      ? 'TRAINING_PLAN_CALENDAR_SYNC_PLAN_PENDING_ACTIVATION'
+      && err.code !== 'PROVIDER_CREATE_FAILED'
+      ? `TRAINING_PLAN_CALENDAR_SYNC_${err.code}`
       : isTrainingOperationLockError(err)
         ? 'TRAINING_OPERATION_LOCKED'
         : null;
@@ -778,6 +783,31 @@ export async function executeTrainingPlanCalendarSyncJob(job: JobRecord): Promis
         );
       }
 
+      // F29/F30: ONE bounded live busy-window fetch for the whole plan
+      // window (±1 day, matching the per-intent resolver's padding) instead
+      // of a provider read per session. Timeout and degraded reads are
+      // known-outcome-safe (nothing was written) → retryable with backoff.
+      const windowStartMs = Math.min(...eventPayloads.map((event) => Date.parse(event.start)));
+      const windowEndMs = Math.max(...eventPayloads.map((event) => Date.parse(event.end)));
+      let liveBusy: SecretaryLiveCalendarBusyWindowsResult;
+      try {
+        liveBusy = await withTrainingCalendarSyncTimeout(
+          loadLiveCalendarBusyWindowsForRange({
+            ownerUserId: userId,
+            tenantId,
+            start: new Date(windowStartMs - 86_400_000).toISOString(),
+            end: new Date(windowEndMs + 86_400_000).toISOString(),
+            context: `training_plan_calendar_sync:${payload.planId}`,
+          }),
+          'live_busy_windows_fetch',
+        );
+      } catch {
+        throw new TrainingPlanCalendarSyncRetryableError('LIVE_BUSY_WINDOWS_TIMEOUT');
+      }
+      if (liveBusy.degraded) {
+        throw new TrainingPlanCalendarSyncRetryableError('LIVE_BUSY_WINDOWS_DEGRADED');
+      }
+
       let eventsCreated = 0;
       let eventsAlreadyOwned = 0;
       let eventsSkipped = 0;
@@ -795,6 +825,7 @@ export async function executeTrainingPlanCalendarSyncJob(job: JobRecord): Promis
           eventPayload,
           now,
           finalAttempt,
+          liveBusyWindows: liveBusy.windows,
         })));
         for (const result of settled) {
           if (result.status === 'rejected') {

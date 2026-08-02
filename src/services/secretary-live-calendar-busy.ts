@@ -22,9 +22,34 @@ export async function loadLiveCalendarBusyWindowsForSecretaryIntent(
 ): Promise<SecretaryLiveCalendarBusyWindowsResult> {
   const range = resolveCalendarBusyRange(intent);
   if (!range) return { windows: [], degraded: false, providerConfigured: false, warningCodes: [], warnings: [] };
+  return loadLiveCalendarBusyWindowsForRange({
+    ownerUserId: intent.ownerUserId,
+    tenantId: intent.tenantId,
+    start: range.start,
+    end: range.end,
+    context: intent.intentId,
+  });
+}
 
+export interface SecretaryLiveCalendarBusyRangeInput {
+  ownerUserId: number;
+  tenantId: string | number;
+  start: string;
+  end: string;
+  /** Correlation label for the failure log (intent id, plan id, ...). */
+  context?: string;
+}
+
+/**
+ * F29 (Phase 3): range-level entry point so batch callers (the training
+ * calendar-sync drain) can fetch the athlete's live busy windows ONCE for a
+ * whole plan window instead of once per session/intent.
+ */
+export async function loadLiveCalendarBusyWindowsForRange(
+  input: SecretaryLiveCalendarBusyRangeInput,
+): Promise<SecretaryLiveCalendarBusyWindowsResult> {
   try {
-    const result = await getEventsWithDiagnostics(range.start, range.end, intent.ownerUserId);
+    const result = await getEventsWithDiagnostics(input.start, input.end, input.ownerUserId);
     const providerConfigured = result.sources.configured.length > 0;
     const windows = result.events
       .filter((event) => !isTrainingOwnedCalendarEvent(event))
@@ -39,7 +64,7 @@ export async function loadLiveCalendarBusyWindowsForSecretaryIntent(
     };
   } catch (err) {
     logger.warn(
-      { err, userId: intent.ownerUserId, tenantId: intent.tenantId, intentId: intent.intentId },
+      { err, userId: input.ownerUserId, tenantId: input.tenantId, context: input.context ?? null },
       'Secretary live calendar busy-window fetch failed',
     );
     return {

@@ -41,6 +41,25 @@ export interface CoordinatedTrainingSession {
   keySessionLabel?: string;
   intensitySummary?: unknown;
   intensityProfile?: unknown;
+  /**
+   * F10 (Phase 3): set by the volume enforcer on sessions IT authored to
+   * reach the requested weekly frequency. Engine-authored sessions carry no
+   * provenance — absence means the coach kernel produced the session.
+   */
+  sessionProvenance?: 'volume_filler';
+}
+
+/**
+ * F10 (Phase 3): a structured record of every gap between what the athlete
+ * asked for and what the volume enforcer could actually place. Previously
+ * the fill loops broke silently and the response simply under-delivered.
+ */
+export interface TrainingPlanVolumeShortfall {
+  weekNumber: number;
+  kind: 'active' | 'strength';
+  requested: number;
+  achieved: number;
+  reason: 'no_available_day' | 'two_a_day_cap';
 }
 
 export interface CoordinatedTrainingWeek {
@@ -72,6 +91,8 @@ export interface CoordinatedTrainingPlan {
   weeks?: CoordinatedTrainingWeek[];
   profileQuality?: CoordinatedTrainingProfileQuality;
   decisionReasons?: TrainingDecisionReason[];
+  /** F10 (Phase 3): populated by the volume enforcer; see the type's doc. */
+  volumeShortfalls?: TrainingPlanVolumeShortfall[];
 }
 
 export interface TrainingPlanCoordinationInput {
