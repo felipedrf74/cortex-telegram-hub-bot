@@ -598,6 +598,53 @@ db.close();
     expect(fs.readFileSync(sshCalls, 'utf8')).toBe(callsBeforeFailedExact);
   });
 
+  it('waits past a predecessor receipt while preserving poll fail-closed checks', () => {
+    const operator = fs.readFileSync('scripts/release-operator.sh', 'utf8');
+    const parser = operator.match(
+      /poll_remote_transaction\(\) \{[\s\S]*?<<'NODE'\n([\s\S]*?)\nNODE\n\s+then/u,
+    )?.[1];
+    expect(parser).toBeDefined();
+
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-release-poll-'));
+    roots.push(root);
+    const state = path.join(root, 'staging.json');
+    const role = 'staging';
+    const expectedId = `20260802T010203Z-${'a'.repeat(12)}`;
+    const staleId = `20260802T010102Z-${'b'.repeat(12)}`;
+    const runtimeSha = 'c'.repeat(40);
+    const artifactDigest = 'd'.repeat(64);
+    const run = (value: Record<string, unknown>) => {
+      fs.writeFileSync(state, JSON.stringify(value));
+      return spawnSync(process.execPath, [
+        '-', state, role, expectedId, runtimeSha, artifactDigest,
+      ], {
+        input: parser,
+        encoding: 'utf8',
+      });
+    };
+    const valid = {
+      schema: 'nexus.lean-release-transaction.v1',
+      role,
+      transactionId: expectedId,
+      runtimeSha,
+      artifactDigest,
+      status: 'running',
+      phase: 'preparing',
+    };
+
+    expect(run({
+      ...valid,
+      transactionId: staleId,
+      runtimeSha: 'e'.repeat(40),
+      artifactDigest: 'f'.repeat(64),
+      status: 'passed',
+      phase: 'completed',
+    }).status).toBe(4);
+    expect(run(valid).status).toBe(3);
+    expect(run({ ...valid, runtimeSha: 'e'.repeat(40) }).status).toBe(1);
+    expect(run({ ...valid, schema: 'unexpected' }).status).toBe(1);
+  });
+
   it('keeps promotion user-owned while requiring the narrow root backup service', () => {
     const operator = fs.readFileSync('scripts/release-operator.sh', 'utf8');
     const remote = fs.readFileSync('scripts/remote-user-release-transaction.sh', 'utf8');

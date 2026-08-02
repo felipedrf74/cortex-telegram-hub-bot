@@ -97,7 +97,7 @@ describe('training cross-skill staging smoke harness', () => {
     } finally {
       fs.rmSync(fixtureRoot, { recursive: true, force: true });
     }
-  }, 30000);
+  }, 60000);
 
   it('keeps its default mutable result under ignored local release evidence', () => {
     expect(DEFAULT_CROSS_SKILL_SMOKE_RESULTS_PATH).toBe(

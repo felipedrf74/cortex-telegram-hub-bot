@@ -363,7 +363,9 @@ const fs=require('node:fs');
 const x=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));
 const [role,id,sha,digest]=process.argv.slice(3);
 if(x.schema!=='nexus.lean-release-transaction.v1'||x.role!==role
- ||x.transactionId!==id||x.runtimeSha!==sha||x.artifactDigest!==digest)process.exit(1);
+ ||!/^\d{8}T\d{6}Z-[0-9a-f]{12}$/.test(x.transactionId??''))process.exit(1);
+if(x.transactionId!==id)process.exit(4);
+if(x.runtimeSha!==sha||x.artifactDigest!==digest)process.exit(1);
 if(x.status==='passed'&&x.phase==='completed')process.exit(0);
 if(x.status==='failed')process.exit(2);
 process.exit(3);
@@ -380,7 +382,7 @@ NODE
             cat "$output" >&2
             return 1
             ;;
-          3) rm -f "$output.next" ;;
+          3|4) rm -f "$output.next" ;;
           *) rm -f "$output.next"; echo "remote $role transaction state is invalid" >&2; return 1 ;;
         esac
       fi
