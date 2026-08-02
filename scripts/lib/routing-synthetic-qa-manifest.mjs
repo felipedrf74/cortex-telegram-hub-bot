@@ -199,7 +199,7 @@ const CONTROL_CHARACTER = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/u;
 // Deliberately bounded to markers that are not ordinary English/Portuguese
 // vocabulary. This is a fail-closed supported-locale gate, not a claim of
 // general language identification.
-const SPANISH_MARKER = /[¿¡ñÑ]|\b(?:tareas?|entrenamiento|correo|reuni[oó]n|ma[ñn]ana|hoy|ayer|puedes?|quiero|necesito|borrar|eliminar|notificaciones|decisi[oó]n|receta|gimnasio)\b/iu;
+const SPANISH_MARKER = /[¿¡ñÑ]|\b(?:tareas?|entrenamiento|correo|reuni[oó]n|ma[ñn]ana|hoy|ayer|puedes?|quiero|necesito|borrar|notificaciones|decisión|receta|gimnasio)\b/iu;
 
 export function getRoutingSyntheticQaSurfaceQuota(surface) {
   if (!ROUTING_SYNTHETIC_QA_SURFACES.includes(surface)) {

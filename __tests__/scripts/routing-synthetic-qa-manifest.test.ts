@@ -382,6 +382,24 @@ describe('routing synthetic QA manifest', () => {
       .toThrow(/within-manifest/);
   });
 
+  it('accepts the ordinary English word decision', () => {
+    const english: any = validManifest();
+    const englishIndex = english.turns.findIndex((turn: any) => turn.locale === 'en-US');
+    english.turns[englishIndex].text =
+      'Please review this decision and summarize the available options before my meeting';
+    expect(() => validateRoutingSyntheticQaManifest(english, { referenceTexts: [] }))
+      .not.toThrow();
+  });
+
+  it('accepts the ordinary Portuguese word eliminar', () => {
+    const portuguese: any = validManifest();
+    const portugueseIndex = portuguese.turns.findIndex((turn: any) => turn.locale === 'pt-BR');
+    portuguese.turns[portugueseIndex].text =
+      'Por favor, eliminar este lembrete antigo e manter os restantes na lista de hoje';
+    expect(() => validateRoutingSyntheticQaManifest(portuguese, { referenceTexts: [] }))
+      .not.toThrow();
+  });
+
   it('computes four-gram Jaccard on normalized token sets', () => {
     expect(fourGramJaccard('one two three four five', 'one two three four six')).toBeCloseTo(1 / 3);
     expect(fourGramJaccard('one two three', 'one two three')).toBe(0);

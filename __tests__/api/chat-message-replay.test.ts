@@ -794,6 +794,60 @@ describe('POST /api/v1/chat/message replay net', () => {
     }
   });
 
+  it('bypasses an ordinary idempotency collision for a governed synthetic-routing QA turn', async () => {
+    const manifestHex = 'e'.repeat(64);
+    const manifestSha256 = `sha256:${manifestHex}`;
+    const turnId = `routing-synthetic-qa-v1:${manifestHex}:classifierKeyword:001`;
+    const text = 'Please review my task list for tomorrow.';
+
+    const ordinary = await postMessage(
+      'req-routing-synthetic-qa-ordinary-collision',
+      { text, clientMessageId: turnId },
+    );
+    expect(ordinary.statusCode).toBe(200);
+    expect(testDb.prepare('SELECT COUNT(*) AS count FROM messages').get()).toEqual({ count: 2 });
+
+    runtimeGuardReplayFixture.enabled = true;
+    try {
+      const res = await withChatCoreV2Env({
+        NODE_ENV: 'staging',
+        STAGING: 'true',
+        NEXUS_RELEASE_ROLE: 'staging',
+        NEXUS_RELEASE_SHA: 'a'.repeat(40),
+        NEXUS_RELEASE_ARTIFACT_SHA256: 'b'.repeat(64),
+        CHAT_EVAL_DEDICATED_TENANT_ID: String(TENANT_ID),
+        CHAT_CORE_V2_SHADOW_ROUTE_HOOK_ENABLED: 'false',
+        [`CHAT_CORE_V2_SHADOW_ROUTE_HOOK_ENABLED_USER_${USER_ID}`]: 'true',
+        [`CHAT_CORE_V2_SHADOW_ROUTE_HOOK_ENABLED_TENANT_${TENANT_ID}`]: 'true',
+        CHAT_CORE_V2_SHADOW_PLANNER_ENABLED: 'false',
+        [`CHAT_CORE_V2_SHADOW_PLANNER_ENABLED_USER_${USER_ID}`]: 'false',
+        [`CHAT_CORE_V2_SHADOW_PLANNER_ENABLED_TENANT_${TENANT_ID}`]: 'false',
+        CHAT_CORE_V2_SHADOW_ROUTE_HMAC_SECRET: 'replay-only-shadow-route-secret-with-at-least-32-bytes',
+      }, () => postMessage(
+        'req-routing-synthetic-qa-collision-bypass',
+        { text, clientMessageId: turnId },
+        {
+          'x-language': 'en-US',
+          'x-nexus-routing-synthetic-qa-contract': 'routing-synthetic-qa-v1',
+          'x-nexus-routing-synthetic-qa-manifest-sha256': manifestSha256,
+          'x-nexus-routing-synthetic-qa-surface': 'classifierKeyword',
+          'x-nexus-routing-synthetic-qa-ordinal': '1',
+          'x-nexus-routing-synthetic-qa-planned-turns': '200',
+          'x-nexus-routing-synthetic-qa-turn-id': turnId,
+        },
+      ));
+
+      assertTerminalContract(
+        'routing_synthetic_qa',
+        captureTurn('routing_synthetic_qa', res, 'req-routing-synthetic-qa-collision-bypass'),
+      );
+      expect(testDb.prepare('SELECT COUNT(*) AS count FROM messages').get()).toEqual({ count: 2 });
+      expect(testDb.prepare('SELECT COUNT(*) AS count FROM chat_v2_replay_bundles').get()).toEqual({ count: 1 });
+    } finally {
+      runtimeGuardReplayFixture.enabled = false;
+    }
+  });
+
   it('pins the token-zero finance shortcut envelope and stage order', async () => {
     const res = await postMessage('req-token-zero', { text: 'What bills are still missing this month?' });
     assertTurn('token_zero_shortcut', captureTurn('token_zero_shortcut', res, 'req-token-zero'));
