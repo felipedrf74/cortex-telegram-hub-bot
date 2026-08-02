@@ -13,7 +13,8 @@ vi.mock('../../../src/services/chat-core-v2', async (importOriginal) => ({
   runChatCoreV2ShadowRouteHook: (...args: unknown[]) => hoisted.runShadowHook(...args),
 }));
 
-vi.mock('../../../src/services/chat-stage-trace', () => ({
+vi.mock('../../../src/services/chat-stage-trace', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
   recordChatStage: (...args: unknown[]) => hoisted.recordStage(...args),
 }));
 

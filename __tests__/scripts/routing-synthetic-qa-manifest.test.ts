@@ -368,6 +368,14 @@ describe('routing synthetic QA manifest', () => {
       referenceTexts: [`Unrelated prefix ${shared} unrelated suffix`],
     })).toThrow(/shared contiguous 8-token passage/);
 
+    const isolatedWithinManifestPassage: any = validManifest();
+    isolatedWithinManifestPassage.turns[0].text =
+      'Review my morning agenda and keep this exact shared passage for overlap checking while highlighting urgent calendar conflicts.';
+    isolatedWithinManifestPassage.turns[1].text =
+      'List tomorrow afternoon reminders, then keep this exact shared passage for overlap checking before noting any unfinished task.';
+    expect(() => validateRoutingSyntheticQaManifest(isolatedWithinManifestPassage, { referenceTexts: [] }))
+      .toThrow('within-manifest 8-token overlap at ordinals 1 and 2');
+
     const templated: any = validManifest();
     templated.turns[1].text = `${templated.turns[0].text} tomorrow`;
     expect(() => validateRoutingSyntheticQaManifest(templated, { referenceTexts: [] }))
