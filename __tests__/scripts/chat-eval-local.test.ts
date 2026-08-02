@@ -239,6 +239,32 @@ describe('chat-eval-local dry run', () => {
     expect(evalRun).toBeGreaterThan(attestation);
   });
 
+  it('uses the same dedicated local JWT secret for host and container eval steps', () => {
+    const script = readFileSync(CHAT_EVAL_LOCAL, 'utf8');
+    const compose = readFileSync(join(ROOT, 'docker-compose.local.yml'), 'utf8');
+    const sourceEnv = script.indexOf('source .env.local');
+    const localJwtOverride = script.indexOf(
+      'export IOS_API_JWT_SECRET="${NEXUS_LOCAL_IOS_API_JWT_SECRET:-nexus-hub-local-compose-ios-jwt-secret-2026-06-strong-48-byte}"',
+    );
+    const seedPhase = script.indexOf('echo "chat-eval-local: [3/6]');
+    const verifierRuntime = script.indexOf(
+      'NEXUS_CONTENT_LIVE_EVAL_VERIFIER_RUNTIME=1',
+      seedPhase,
+    );
+    const seed = script.indexOf(
+      '\nnpx tsx scripts/chatv2-seed-local-evidence.ts',
+      seedPhase,
+    );
+
+    expect(compose).toContain(
+      'IOS_API_JWT_SECRET: "${NEXUS_LOCAL_IOS_API_JWT_SECRET:-nexus-hub-local-compose-ios-jwt-secret-2026-06-strong-48-byte}"',
+    );
+    expect(localJwtOverride).toBeGreaterThan(sourceEnv);
+    expect(seedPhase).toBeGreaterThan(localJwtOverride);
+    expect(verifierRuntime).toBeGreaterThan(seedPhase);
+    expect(seed).toBeGreaterThan(verifierRuntime);
+  });
+
   it('prewarms the exact compact Ollama context used by the first measured provider turn', () => {
     const script = readFileSync(CHAT_EVAL_LOCAL, 'utf8');
     const restartAfterSeed = script.indexOf('\nrestart_nexus_hub_after_evidence_seed');

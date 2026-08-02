@@ -74,6 +74,11 @@ fi
 export NEXUS_LOCAL_ALLOW_MODEL_CALLS=1
 export NEXUS_MODEL_FIXTURE_MODE=0
 export NEXUS_CHAT_EVAL_ZERO_CLOUD_PROFILE=1
+# Host-side seed/auth helpers import the same validated config as the service.
+# Match docker-compose.local.yml's dedicated loopback-only JWT value after
+# sourcing .env.local so an old setup-template placeholder cannot split the
+# host and container profiles or weaken the runtime validator.
+export IOS_API_JWT_SECRET="${NEXUS_LOCAL_IOS_API_JWT_SECRET:-nexus-hub-local-compose-ios-jwt-secret-2026-06-strong-48-byte}"
 
 NEXUS_PORT="${NEXUS_LOCAL_PORT_TS:-8200}"
 BASE_URL="http://127.0.0.1:${NEXUS_PORT}"
@@ -289,6 +294,9 @@ stop_nexus_hub_for_evidence_seed || {
   echo "chat-eval-local: could not stop nexus-hub for safe SQLite evidence seeding" >&2
   exit 1
 }
+# Preserve the already-attested local profile if a developer checkout also has
+# a repository .env; config.ts must not overwrite this host verifier process.
+NEXUS_CONTENT_LIVE_EVAL_VERIFIER_RUNTIME=1 \
 npx tsx scripts/chatv2-seed-local-evidence.ts --write --replace --rows="$SEED_ROWS" --db "$HOST_DB" || {
   echo "chat-eval-local: evidence seeding failed (scripts/chatv2-seed-local-evidence.ts against $HOST_DB)" >&2
   exit 1
