@@ -33,6 +33,15 @@ die() {
   exit 1
 }
 
+# There is no rollback-safe bootstrap transaction. Staging and production must
+# both enter this script with a verified predecessor. Refuse the retired opt-in
+# before command dispatch, host probes, selector changes, or PM2 operations so a
+# stale owner environment cannot revive the removed first-install path.
+case "${NEXUS_RELEASE_ALLOW_FIRST_INSTALL:-0}" in
+  0) ;;
+  *) die "first install is unsupported; stage against a verified predecessor" ;;
+esac
+
 case "$COMMAND" in
   stage)
     ROLE=staging
