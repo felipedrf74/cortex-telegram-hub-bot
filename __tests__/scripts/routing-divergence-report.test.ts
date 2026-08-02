@@ -1,19 +1,26 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import {
+  buildShadowRouteHookPlan,
+  buildShadowRouteHookReceipt,
+} from '../../scripts/lib/chat-capability-flag-transaction.mjs';
 
 const repoRoot = path.resolve(__dirname, '../..');
 const candidateSince = '2026-07-31T12:00:00.000Z';
-const candidateDivergenceVersion = 'routing_divergence_shadow@2.0.0';
+const candidateDivergenceVersion = 'routing_divergence_shadow@4.0.0';
 const candidateResolverVersion = 'manifest-intent-resolver@1.0.0';
 const candidateRuntimeSha = 'a'.repeat(40);
 const candidateArtifactDigest = 'b'.repeat(64);
 const candidateRole = 'staging';
+const dedicatedTenantId = 42;
+const receiptCompletedAt = '2026-07-31T11:59:59.000Z';
 /** Every manifest-routing surface still answering with legacy logic. */
 const flagsAllOff = Object.freeze({
   classifierKeyword: false,
@@ -24,6 +31,8 @@ const flagsAllOff = Object.freeze({
 });
 let tempDir: string;
 let dbPath: string;
+let shadowHookReceiptPath: string;
+let liveHealthPath: string;
 let db: Database.Database;
 
 beforeEach(() => {
@@ -38,6 +47,69 @@ beforeEach(() => {
       created_at TEXT NOT NULL
     )
   `);
+  shadowHookReceiptPath = path.join(tempDir, 'shadow-hook-receipt.json');
+  liveHealthPath = path.join(tempDir, 'live-health.json');
+  const dotenvSource = [
+    `CHAT_EVAL_DEDICATED_TENANT_ID=${dedicatedTenantId}`,
+    `CLASSIFY_SHADOW_HASH_SECRET=${'classifier-secret-'.repeat(3)}`,
+    `CHAT_CORE_V2_SHADOW_ROUTE_HMAC_SECRET=${'route-secret-'.repeat(4)}`,
+    'AI_ROUTING_MANIFEST_CLASSIFIER=false',
+    'AI_ROUTING_MANIFEST_ORCHESTRATOR=false',
+    'AI_ROUTING_MANIFEST_SHADOW=false',
+    'AI_ROUTING_MANIFEST_REGISTRY=false',
+    'AI_ROUTING_CLARIFY=false',
+    'AI_CLASSIFY_MANIFEST_PROMPT=false',
+    'AI_CROSS_SKILL_EXECUTION=false',
+    'AI_ROUTING_MANIFEST_KILL=false',
+    '',
+  ].join('\n');
+  const plan = buildShadowRouteHookPlan({
+    role: candidateRole,
+    runtimeSha: candidateRuntimeSha,
+    artifactDigest: candidateArtifactDigest,
+    dotenvSource,
+    dedicatedIdentityAttested: true,
+    desiredValue: true,
+    transitionReason: 'dedicated_eval_evidence_collection',
+    previousPlanSequence: 7,
+    generatedAt: '2026-07-31T11:58:00.000Z',
+  });
+  const receipt = buildShadowRouteHookReceipt({
+    plan,
+    transactionId: '20260731T115900Z-abcdef123456',
+    startedAt: '2026-07-31T11:59:00.000Z',
+    completedAt: receiptCompletedAt,
+    status: 'passed',
+    health: { backend: 'passed', identity: 'passed', shadowHook: 'passed' },
+    rollback: { status: 'not_required' },
+  });
+  writeFileSync(shadowHookReceiptPath, `${JSON.stringify(receipt)}\n`, { mode: 0o600 });
+  writeFileSync(liveHealthPath, `${JSON.stringify({
+    status: 'healthy',
+    database: 'connected',
+    timestamp: '2026-07-31T12:10:00.000Z',
+    releaseAttestation: {
+      schema: 'nexus.chat-capability-release-attestation.v2',
+      runtimeSha: candidateRuntimeSha,
+      artifactDigest: candidateArtifactDigest,
+      role: candidateRole,
+      capabilityRuntimeGuard: {
+        status: 'clear', reason: 'no_unresolved_transaction', transactionId: null, planDigest: null,
+      },
+      shadowPlannerEffective: {
+        global: false,
+        user1000014: false,
+        tenant1000014: false,
+        user1000016: false,
+        tenant1000016: false,
+        dedicatedEval: { present: true, user: false, tenant: false },
+      },
+      shadowRouteHookEffective: {
+        global: false,
+        dedicatedEval: { present: true, user: true, tenant: true },
+      },
+    },
+  })}\n`, { mode: 0o600 });
 });
 
 afterEach(() => {
@@ -58,6 +130,8 @@ function seedDivergence(input: {
   releaseIdentityExtra?: Record<string, unknown>;
   capabilityFlags?: Record<string, unknown>;
   omitCapabilityFlags?: boolean;
+  recorderState?: Record<string, unknown>;
+  omitRecorderState?: boolean;
 }): void {
   const sequence = db.prepare('SELECT COUNT(*) AS count FROM chat_v2_replay_bundles').get() as {
     count: number;
@@ -82,11 +156,28 @@ function seedDivergence(input: {
           capabilityFlags: input.omitCapabilityFlags
             ? undefined
             : { ...flagsAllOff, ...input.capabilityFlags },
-          topCandidate: { skill: input.skill, domain: input.domain },
+          recorderState: input.omitRecorderState
+            ? undefined
+            : {
+              userId: String(dedicatedTenantId),
+              tenantId: String(dedicatedTenantId),
+              shadowRouteHookEffective: true,
+              shadowPlannerEffective: false,
+              ...input.recorderState,
+            },
+          topCandidate: {
+            capabilityId: input.domain,
+            skill: input.skill,
+            domain: input.domain,
+            rawScore: 2,
+            matchedEvidenceCount: 1,
+          },
+          candidateCount: 1,
           surfaces: {
             classifierKeywordDomain: 'secretary',
             orchestratorPrimaryDomain: 'secretary',
             registryActionSkills: ['secretary.tasks'],
+            shadowRouteIntent: 'create_action',
             shadowRouteDomains: ['secretary'],
           },
           agreement: input.agreement,
@@ -123,6 +214,8 @@ function candidateGateArgs(): string[] {
     '--artifact-digest', candidateArtifactDigest,
     '--environment', candidateRole,
     '--minimum-comparisons', '1',
+    '--shadow-hook-receipt', shadowHookReceiptPath,
+    '--live-health', liveHealthPath,
   ];
 }
 
@@ -194,6 +287,169 @@ describe('routing-divergence-report gate', () => {
       passed: true,
       failures: [],
     });
+    expect(report.evidence.shadowRecorderBinding).toEqual({
+      enforced: true,
+      receipt: {
+        schema: 'nexus.chat-shadow-route-hook-transaction.v1',
+        sha256: createHash('sha256').update(readFileSync(shadowHookReceiptPath)).digest('hex'),
+        transactionId: '20260731T115900Z-abcdef123456',
+        planDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+        planSequence: 8,
+        completedAt: receiptCompletedAt,
+        runtimeSha: candidateRuntimeSha,
+        artifactDigest: candidateArtifactDigest,
+        role: candidateRole,
+        status: 'passed',
+        action: 'enable',
+        dedicatedTenantId,
+      },
+      requiredState: {
+        shadowRouteHookEffective: true,
+        shadowPlannerEffective: false,
+      },
+      liveHealth: {
+        sha256: createHash('sha256').update(readFileSync(liveHealthPath)).digest('hex'),
+        checkedAt: '2026-07-31T12:10:00.000Z',
+        shadowRouteHookGlobal: false,
+        shadowRouteHookDedicatedUser: true,
+        shadowRouteHookDedicatedTenant: true,
+        shadowPlannerGlobal: false,
+        shadowPlannerDedicatedUser: false,
+        shadowPlannerDedicatedTenant: false,
+      },
+      counts: {
+        exactRecorderStateBundles: 1,
+        missingRecorderStateBundles: 0,
+        dedicatedScopeMismatchBundles: 0,
+        hookNotEffectiveBundles: 0,
+        plannerEffectiveBundles: 0,
+      },
+    });
+  });
+
+  it('requires exact server receipt and live-health bindings and anchors since after enable completion', () => {
+    const missing = candidateGateArgs().filter((value, index, values) => (
+      value !== '--shadow-hook-receipt'
+      && values[index - 1] !== '--shadow-hook-receipt'
+      && value !== '--live-health'
+      && values[index - 1] !== '--live-health'
+    ));
+    const missingResult = runReport(...missing);
+    expect(missingResult.status).toBe(1);
+    expect(missingResult.stderr).toContain('--shadow-hook-receipt');
+    expect(missingResult.stderr).toContain('--live-health');
+
+    const beforeReceipt = runReport(
+      ...candidateGateArgs().flatMap((value, index, values) =>
+        index > 0 && values[index - 1] === '--since'
+          ? ['2026-07-31T11:59:58.999Z']
+          : [value]),
+    );
+    expect(beforeReceipt.status).toBe(1);
+    expect(beforeReceipt.stderr).toContain('--since must be at or after shadow hook receipt completedAt');
+
+    writeFileSync(shadowHookReceiptPath, '{}\n');
+    const malformedReceipt = runReport(...candidateGateArgs());
+    expect(malformedReceipt.status).toBe(1);
+    expect(malformedReceipt.stderr).toMatch(/shadow hook receipt.*invalid|receipt.*field/i);
+  });
+
+  it('refuses live health unless the exact release has the dedicated hook on and planner off', () => {
+    const health = JSON.parse(readFileSync(liveHealthPath, 'utf8'));
+    health.releaseAttestation.shadowRouteHookEffective.dedicatedEval.tenant = false;
+    writeFileSync(liveHealthPath, `${JSON.stringify(health)}\n`);
+
+    const result = runReport(...candidateGateArgs());
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(
+      'live health does not attest the exact healthy dedicated recorder state',
+    );
+    expect(result.stdout).toBe('');
+
+    health.releaseAttestation.shadowRouteHookEffective.dedicatedEval.tenant = true;
+    health.releaseAttestation.capabilityRuntimeGuard.transactionId = 'pending-shadow-transaction';
+    writeFileSync(liveHealthPath, `${JSON.stringify(health)}\n`);
+    const pendingGuard = runReport(...candidateGateArgs());
+    expect(pendingGuard.status).toBe(1);
+    expect(pendingGuard.stderr).toContain(
+      'live health does not attest the exact healthy dedicated recorder state',
+    );
+  });
+
+  it('fails the gate for malformed JSON or a shadow row without divergence telemetry', () => {
+    db.prepare(`
+      INSERT INTO chat_v2_replay_bundles (
+        replay_bundle_id, redacted_bundle_json, created_at
+      ) VALUES (?, ?, ?)
+    `).run(
+      'chatv2-shadow-replay:malformed-json',
+      '{not-json',
+      candidateSince,
+    );
+    db.prepare(`
+      INSERT INTO chat_v2_replay_bundles (
+        replay_bundle_id, redacted_bundle_json, created_at
+      ) VALUES (?, ?, ?)
+    `).run(
+      'chatv2-shadow-replay:missing-divergence',
+      JSON.stringify({ contextPack: {} }),
+      '2026-07-31T12:00:01.000Z',
+    );
+
+    const result = runReport(...candidateGateArgs());
+    expect(result.status).toBe(1);
+    const report = JSON.parse(result.stdout);
+    expect(report.gate.failures).toEqual(expect.arrayContaining([
+      { scope: 'evidence', reason: 'malformed_bundle_json', bundles: 1 },
+      { scope: 'evidence', reason: 'missing_divergence_telemetry', bundles: 1 },
+    ]));
+  });
+
+  it('rejects every malformed, mixed-scope, hook-off, or planner-on row in the anchored gate window', () => {
+    const agreement = {
+      classifierKeyword: true,
+      orchestratorPrimary: true,
+      registrySubset: true,
+      shadowRoute: true,
+    };
+    seedDivergence({ skill: 'exact', domain: 'secretary', agreement });
+    seedDivergence({
+      skill: 'missing', domain: 'secretary', agreement, omitRecorderState: true,
+    });
+    seedDivergence({
+      skill: 'foreign', domain: 'secretary', agreement, recorderState: { tenantId: '43' },
+    });
+    seedDivergence({
+      skill: 'hook_off', domain: 'secretary', agreement,
+      recorderState: { shadowRouteHookEffective: false },
+    });
+    seedDivergence({
+      skill: 'planner_on', domain: 'secretary', agreement,
+      recorderState: { shadowPlannerEffective: true },
+    });
+    seedDivergence({
+      skill: 'extra', domain: 'secretary', agreement,
+      recorderState: { unsafeExtra: 'private-text' },
+    });
+
+    const result = runReport(...candidateGateArgs());
+    expect(result.status).toBe(1);
+    const report = JSON.parse(result.stdout);
+    expect(report.gate.passed).toBe(false);
+    expect(report.evidence.shadowRecorderBinding.counts).toEqual({
+      exactRecorderStateBundles: 1,
+      missingRecorderStateBundles: 2,
+      dedicatedScopeMismatchBundles: 1,
+      hookNotEffectiveBundles: 1,
+      plannerEffectiveBundles: 1,
+    });
+    expect(report.gate.failures).toEqual(expect.arrayContaining([
+      expect.objectContaining({ reason: 'missing_or_malformed_recorder_state', bundles: 2 }),
+      expect.objectContaining({ reason: 'dedicated_scope_mismatch', bundles: 1 }),
+      expect.objectContaining({ reason: 'shadow_route_hook_not_effective', bundles: 1 }),
+      expect.objectContaining({ reason: 'shadow_planner_effective', bundles: 1 }),
+    ]));
+    expect(report.surfaceTotals.classifierKeyword.compared).toBe(1);
   });
 
   it('fails --gate when the selected surface has fewer than the explicit minimum comparisons', () => {
@@ -252,7 +508,8 @@ describe('routing-divergence-report gate', () => {
     expect(missing.status).toBe(1);
     expect(missing.stderr).toContain(
       '--gate requires explicit --surface, --since, --divergence-version, --resolver-version, '
-      + '--runtime-sha, --artifact-digest, --environment, and --minimum-comparisons',
+      + '--runtime-sha, --artifact-digest, --environment, --minimum-comparisons, '
+      + '--shadow-hook-receipt, and --live-health',
     );
 
     const invalidTimestamp = runReport(
@@ -265,6 +522,8 @@ describe('routing-divergence-report gate', () => {
       '--artifact-digest', candidateArtifactDigest,
       '--environment', candidateRole,
       '--minimum-comparisons', '1',
+      '--shadow-hook-receipt', shadowHookReceiptPath,
+      '--live-health', liveHealthPath,
     );
     expect(invalidTimestamp.status).toBe(1);
     expect(invalidTimestamp.stderr).toContain(
@@ -281,6 +540,8 @@ describe('routing-divergence-report gate', () => {
       '--artifact-digest', candidateArtifactDigest,
       '--environment', candidateRole,
       '--minimum-comparisons', '1',
+      '--shadow-hook-receipt', shadowHookReceiptPath,
+      '--live-health', liveHealthPath,
     );
     expect(invalidVersion.status).toBe(1);
     expect(invalidVersion.stderr).toContain('--divergence-version must be an exact telemetry identifier');
@@ -377,8 +638,17 @@ describe('routing-divergence-report gate', () => {
     });
 
     const result = runReport(...candidateGateArgs());
-    expect(result.status, result.stderr).toBe(0);
+    expect(result.status).toBe(1);
     const report = JSON.parse(result.stdout);
+    expect(report.gate.failures).toEqual(expect.arrayContaining([
+      { scope: 'evidence', reason: 'mixed_evidence_identity', bundles: 6 },
+      {
+        scope: 'shadow_recorder',
+        reason: 'recorder_state_count_does_not_match_eligible_bundles',
+        exactRecorderStateBundles: 7,
+        eligibleBundles: 1,
+      },
+    ]));
 
     expect(report.evidence).toMatchObject({
       identity: {
@@ -766,6 +1036,31 @@ describe('routing-divergence-report gate', () => {
     const result = runReportRaw(...candidateGateArgs());
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('--gate requires --json so the saved receipt is machine-readable');
+    expect(result.stdout).toBe('');
+  });
+
+  it('refuses a nominally clear runtime guard that still names a transaction', () => {
+    seedDivergence({
+      skill: 'create_task',
+      domain: 'secretary',
+      agreement: {
+        classifierKeyword: true,
+        orchestratorPrimary: true,
+        registrySubset: true,
+        shadowRoute: true,
+      },
+    });
+    const health = JSON.parse(readFileSync(liveHealthPath, 'utf8'));
+    health.releaseAttestation.capabilityRuntimeGuard.transactionId =
+      '20260731T115900Z-abcdef123456';
+    health.releaseAttestation.capabilityRuntimeGuard.planDigest = `sha256:${'a'.repeat(64)}`;
+    writeFileSync(liveHealthPath, `${JSON.stringify(health)}\n`);
+
+    const result = runReport(...candidateGateArgs());
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(
+      'live health does not attest the exact healthy dedicated recorder state',
+    );
     expect(result.stdout).toBe('');
   });
 });

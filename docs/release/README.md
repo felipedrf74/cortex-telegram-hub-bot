@@ -211,6 +211,9 @@ npm run release:chat-flags -- inspect ...
 NEXUS_RELEASE_OWNER_AUTHORIZED=1 npm run release:chat-flags -- apply ...
 npm run release:chat-flags -- inspect-secrets ...
 NEXUS_RELEASE_OWNER_AUTHORIZED=1 npm run release:chat-flags -- apply-secrets ...
+npm run release:chat-flags -- inspect-shadow-hook ...
+NEXUS_RELEASE_OWNER_AUTHORIZED=1 \
+  npm run release:chat-flags -- apply-shadow-hook ...
 npm run release:chat-flags -- inspect-observation ...
 NEXUS_RELEASE_OWNER_AUTHORIZED=1 \
   npm run release:chat-flags -- apply-observation ...
@@ -233,6 +236,19 @@ at 0.99 or greater agreement. The manifest-prompt enable runs the compiled
 installed action-skill evaluator cache-only, requiring 300/300 exact-bound
 rows, at least 0.95 agreement, and zero provider calls. Cross-skill staging
 inspect binds the compiled preflight JSON.
+
+The four routing surfaces first require a separately governed staging-only
+shadow-recorder transaction. `inspect-shadow-hook` attests the dedicated
+synthetic evaluation principal in the isolated staging database, both evidence
+HMACs present, every capability and master-kill assignment OFF, and every
+shadow-planner scope OFF. `apply-shadow-hook` changes only that principal's
+exact USER and TENANT route-hook assignments; the global hook remains OFF and
+the planner remains OFF. A routing window may begin only after the immutable
+passed enable receipt. The divergence report binds that receipt, authenticated
+live release-attestation v2 bytes, the dedicated effective scope, target flag
+OFF, and telemetry `recorderState` for every eligible bundle. Missing, mixed,
+or planner-enabled recorder state fails the complete gate. Disable the
+recorder through the same exact-plan transaction after routing collection.
 
 The staging observation is a separate, owner-gated transaction. After the
 exact staging ON receipt is at least five minutes old, `inspect-observation`
@@ -282,9 +298,11 @@ release, and live staging health immediately before mutation.
 
 Every staging and production release transaction starts only when all seven
 capability flags are omitted (runtime-default OFF) or canonically configured
-`false`. Return any enabled flags to OFF one at a time through governed
-rollback transactions before staging or promoting a later candidate; ON
-receipts and evidence never transfer to a new release identity.
+`false`, and when every global, USER, and TENANT route-hook and shadow-planner
+scope is effectively OFF. Return any enabled flags and the dedicated recorder
+to OFF through their governed rollback transactions before staging or
+promoting a later candidate; ON receipts and evidence never transfer to a new
+release identity.
 
 Provision `CLASSIFY_SHADOW_HASH_SECRET` and
 `CHAT_CORE_V2_SHADOW_ROUTE_HMAC_SECRET` through `inspect-secrets` and

@@ -54,6 +54,28 @@ function routingEvidence(): Record<string, unknown> {
     comparisonCount: 200,
     minimumComparisons: 200,
     agreementRate: 0.99,
+    windowSinceInclusive: '2026-08-02T00:50:01.000Z',
+    windowUntilInclusive: '2026-08-02T00:59:58.000Z',
+    shadowHookReceiptSchema: 'nexus.chat-shadow-route-hook-transaction.v1',
+    shadowHookReceiptSha256: '2'.repeat(64),
+    shadowHookTransactionId: '20260802T005000Z-123456abcdef',
+    shadowHookPlanDigest: `sha256:${'3'.repeat(64)}`,
+    shadowHookPlanSequence: 1,
+    shadowHookCompletedAt: '2026-08-02T00:50:00.000Z',
+    shadowHookReceiptRuntimeSha: RUNTIME_SHA,
+    shadowHookReceiptArtifactDigest: ARTIFACT_DIGEST,
+    shadowHookReceiptRole: 'staging',
+    shadowHookReceiptStatus: 'passed',
+    shadowHookReceiptAction: 'enable',
+    dedicatedTenantId: 42,
+    liveShadowRouteHookGlobal: false,
+    liveShadowRouteHookDedicatedUser: true,
+    liveShadowRouteHookDedicatedTenant: true,
+    liveShadowPlannerGlobal: false,
+    liveShadowPlannerDedicatedUser: false,
+    liveShadowPlannerDedicatedTenant: false,
+    liveHealthSha256: '4'.repeat(64),
+    liveHealthCheckedAt: '2026-08-02T00:59:58.500Z',
   };
 }
 
@@ -82,13 +104,14 @@ function enableReceipt(): Record<string, unknown> {
   });
 }
 
-function shadowPlannerOff(): Record<string, boolean> {
+function shadowPlannerOff(): Record<string, unknown> {
   return {
     global: false,
     user1000014: false,
     tenant1000014: false,
     user1000016: false,
     tenant1000016: false,
+    dedicatedEval: { present: true, user: false, tenant: false },
   };
 }
 

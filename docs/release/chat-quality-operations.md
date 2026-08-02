@@ -334,7 +334,8 @@ entry point is:
 
 ```text
 npm run release:chat-flags -- \
-  <inspect|apply|inspect-secrets|apply-secrets|inspect-observation|apply-observation> ...
+  <inspect|apply|inspect-secrets|apply-secrets|inspect-shadow-hook|
+   apply-shadow-hook|inspect-observation|apply-observation> ...
 ```
 
 The command is hardcoded to `ServerDominguez`; it has no server override and
@@ -375,10 +376,12 @@ stays OFF. Record the complete effective flag set with each gate and smoke so
 the cumulative configuration is reproducible. Every staging and production
 release transaction refuses to begin unless all seven governed capability
 flags are omitted (runtime-default OFF) or appear once in canonical
-`FLAG=false` form. Before staging or promoting a later runtime/artifact
-candidate, return all seven flags to OFF one at a time through owner-authorized
-rollback transactions. Evidence and ON receipts do not transfer across
-release identities.
+`FLAG=false` form. It also rejects any enabled, malformed, or duplicate
+global, USER, or TENANT `CHAT_CORE_V2_SHADOW_ROUTE_HOOK_ENABLED` or
+`CHAT_CORE_V2_SHADOW_PLANNER_ENABLED` assignment. Before staging or promoting
+a later runtime/artifact candidate, return all seven flags and the dedicated
+recorder to OFF through owner-authorized rollback transactions. Evidence and
+ON receipts do not transfer across release identities.
 
 `AI_ROUTING_MANIFEST_KILL` defaults OFF but must remain available as the master
 rollback. Setting it to `true` force-disables all seven capabilities even if a
@@ -433,6 +436,52 @@ check. A failed apply atomically restores the private `.env` preimage,
 restarts only the backend, verifies restored identity and health, and records
 `rolled_back` or `rollback_failed`; unresolved backups or unpublished receipts
 block a later release transaction.
+
+Before collecting the first manifest-routing window for an exact candidate,
+activate only the staging route recorder for the database-attested dedicated
+evaluation identity:
+
+```text
+npm run release:chat-flags -- inspect-shadow-hook \
+  --role staging \
+  --runtime-sha <deployed-full-40-hex-sha> \
+  --artifact-digest <deployed-full-64-hex-sha256> \
+  --value true \
+  --transition-reason dedicated_eval_evidence_collection
+
+NEXUS_RELEASE_OWNER_AUTHORIZED=1 \
+npm run release:chat-flags -- apply-shadow-hook \
+  --role staging \
+  --runtime-sha <deployed-full-40-hex-sha> \
+  --artifact-digest <deployed-full-64-hex-sha256> \
+  --ack-plan <sha256:exact-shadow-hook-plan-digest>
+```
+
+The inspect is staging-only and requires both evidence HMACs, all seven
+capabilities and the master kill OFF, every global/USER/TENANT shadow-planner
+scope OFF, and a dedicated `.invalid` principal in the isolated staging
+database. Apply consumes the one-hour plan once, changes only the exact
+dedicated USER and TENANT route-hook assignments, restarts only the backend,
+and publishes a strict `nexus.chat-shadow-route-hook-transaction.v1` receipt.
+The global route hook stays OFF. Authenticated `/health/detailed`
+release-attestation v2 reports only presence and effective booleans for this
+scope; it never exposes its identity.
+
+Record the canonical routing-window start no earlier than the passed receipt's
+`completedAt`. Eligible `routing_divergence_shadow@4.0.0` bundles must all bind
+that exact dedicated user and tenant, route hook effective, shadow planner not
+effective, target capability OFF, exact release identity, and the selected
+surface. The gate also hashes and binds fresh authenticated health bytes and
+the exact recorder receipt. Missing or mixed recorder metadata, a stale or
+different receipt, any planner-effective bundle, or a live-scope mismatch
+fails the entire window instead of merely excluding rows.
+
+After all four manifest-routing collection windows are complete, disable the
+recorder with `inspect-shadow-hook --value false --transition-reason
+operator_rollback` and owner-authorized `apply-shadow-hook` against its exact
+digest. Use `quality_regression` or `health_regression` only when that observed
+condition is the reason. A normal release, staging transaction, or production
+promotion is blocked until all route-hook and planner scopes are OFF.
 
 After one staging flag is ON, do not ask production inspect to run a smoke.
 Wait until its exact successful staging enable receipt is at least five
@@ -553,9 +602,10 @@ the provider-free divergence collector against the isolated staging database
 with `--minimum-comparisons=200`, and binds the exact `since`/`until` window
 into the plan. PASS requires at least 200 comparisons and agreement of at least
 0.99 on that one surface. Invalid, missing-identity, version-mismatched,
-out-of-window, flag-on, or other-candidate bundles never count. Zero eligible
-comparisons is a failure, not an empty pass. Never use an unbounded or
-all-surface aggregate to authorize a per-surface flip.
+out-of-window, flag-on, other-candidate, or recorder-state-mismatched bundles
+fail the governed gate. Zero eligible comparisons is a failure, not an empty
+pass. Never use an unbounded or all-surface aggregate to authorize a
+per-surface flip.
 
 Apply only the exact inspected staging plan:
 

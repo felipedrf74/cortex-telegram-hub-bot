@@ -327,6 +327,28 @@ function validateRoutingEvidence(evidence, binding) {
     'comparisonCount',
     'minimumComparisons',
     'agreementRate',
+    'windowSinceInclusive',
+    'windowUntilInclusive',
+    'shadowHookReceiptSchema',
+    'shadowHookReceiptSha256',
+    'shadowHookTransactionId',
+    'shadowHookPlanDigest',
+    'shadowHookPlanSequence',
+    'shadowHookCompletedAt',
+    'shadowHookReceiptRuntimeSha',
+    'shadowHookReceiptArtifactDigest',
+    'shadowHookReceiptRole',
+    'shadowHookReceiptStatus',
+    'shadowHookReceiptAction',
+    'dedicatedTenantId',
+    'liveShadowRouteHookGlobal',
+    'liveShadowRouteHookDedicatedUser',
+    'liveShadowRouteHookDedicatedTenant',
+    'liveShadowPlannerGlobal',
+    'liveShadowPlannerDedicatedUser',
+    'liveShadowPlannerDedicatedTenant',
+    'liveHealthSha256',
+    'liveHealthCheckedAt',
   ], 'routing divergence evidence');
   assertEvidenceCommon(evidence, binding, { targetEnabled: false });
   const expectedSurface = ROUTING_SURFACES[binding.flag];
@@ -341,6 +363,54 @@ function validateRoutingEvidence(evidence, binding) {
   if (evidence.agreementRate < 0.99) {
     fail('routing divergence agreement rate must be at least 0.99');
   }
+  const windowSinceInclusive = assertCanonicalTimestamp(
+    evidence.windowSinceInclusive,
+    'evidence.windowSinceInclusive',
+  );
+  const windowUntilInclusive = assertCanonicalTimestamp(
+    evidence.windowUntilInclusive,
+    'evidence.windowUntilInclusive',
+  );
+  const shadowHookCompletedAt = assertCanonicalTimestamp(
+    evidence.shadowHookCompletedAt,
+    'evidence.shadowHookCompletedAt',
+  );
+  if (Date.parse(windowSinceInclusive) < Date.parse(shadowHookCompletedAt)
+      || Date.parse(windowUntilInclusive) < Date.parse(windowSinceInclusive)) {
+    fail('routing evidence window must begin at or after the bound shadow hook receipt');
+  }
+  if (evidence.shadowHookReceiptSchema !== CHAT_SHADOW_ROUTE_HOOK_RECEIPT_SCHEMA) {
+    fail('routing evidence shadow hook receipt schema is unsupported');
+  }
+  assertSha256(evidence.shadowHookReceiptSha256, 'evidence.shadowHookReceiptSha256');
+  if (typeof evidence.shadowHookTransactionId !== 'string'
+      || !/^\d{8}T\d{6}Z-[0-9a-z]{12,64}$/u.test(evidence.shadowHookTransactionId)) {
+    fail('routing evidence shadow hook transaction ID is invalid');
+  }
+  assertSha256(evidence.shadowHookPlanDigest, 'evidence.shadowHookPlanDigest', {
+    prefixed: true,
+  });
+  assertInteger(evidence.shadowHookPlanSequence, 'evidence.shadowHookPlanSequence', {
+    minimum: 1,
+  });
+  if (evidence.shadowHookReceiptRuntimeSha !== evidence.runtimeSha
+      || evidence.shadowHookReceiptArtifactDigest !== evidence.artifactDigest
+      || evidence.shadowHookReceiptRole !== 'staging'
+      || evidence.shadowHookReceiptStatus !== 'passed'
+      || evidence.shadowHookReceiptAction !== 'enable') {
+    fail('routing evidence shadow hook receipt identity or terminal state is invalid');
+  }
+  assertInteger(evidence.dedicatedTenantId, 'evidence.dedicatedTenantId', { minimum: 1 });
+  if (evidence.liveShadowRouteHookGlobal !== false
+      || evidence.liveShadowRouteHookDedicatedUser !== true
+      || evidence.liveShadowRouteHookDedicatedTenant !== true
+      || evidence.liveShadowPlannerGlobal !== false
+      || evidence.liveShadowPlannerDedicatedUser !== false
+      || evidence.liveShadowPlannerDedicatedTenant !== false) {
+    fail('routing evidence requires the exact dedicated recorder-on planner-off live state');
+  }
+  assertSha256(evidence.liveHealthSha256, 'evidence.liveHealthSha256');
+  assertCanonicalTimestamp(evidence.liveHealthCheckedAt, 'evidence.liveHealthCheckedAt');
   return evidence;
 }
 
@@ -588,7 +658,16 @@ function validateEvidence(evidence, binding) {
 export function buildCapabilityEvidenceAttestation(input) {
   assertExactKeys(
     input,
-    ['rawEvidence', 'flag', 'runtimeSha', 'artifactDigest', 'configuredFlags'],
+    [
+      'rawEvidence',
+      'shadowHookReceiptRaw',
+      'healthRaw',
+      'checkedAt',
+      'flag',
+      'runtimeSha',
+      'artifactDigest',
+      'configuredFlags',
+    ],
     'raw capability evidence input',
   );
   const rawEvidence = assertString(input.rawEvidence, 'rawEvidence');
@@ -609,6 +688,53 @@ export function buildCapabilityEvidenceAttestation(input) {
   const selectedSurface = ROUTING_SURFACES[flag];
   if (!selectedSurface) {
     fail(`native evidence normalization is not implemented for ${flag}`);
+  }
+  const shadowHookReceiptRaw = assertString(
+    input.shadowHookReceiptRaw,
+    'raw routing shadowHookReceiptRaw',
+  );
+  let shadowHookReceipt;
+  try {
+    shadowHookReceipt = validateShadowRouteHookReceipt(JSON.parse(shadowHookReceiptRaw));
+  } catch {
+    fail('raw routing gate requires one valid shadow hook receipt');
+  }
+  if (shadowHookReceipt.role !== 'staging'
+      || shadowHookReceipt.runtimeSha !== runtimeSha
+      || shadowHookReceipt.artifactDigest !== artifactDigest
+      || shadowHookReceipt.status !== 'passed'
+      || shadowHookReceipt.action !== 'enable'
+      || shadowHookReceipt.desiredValue !== true
+      || shadowHookReceipt.transitionReason !== SHADOW_ROUTE_HOOK_ENABLE_REASON
+      || shadowHookReceipt.dedicatedIdentityAttested !== true
+      || shadowHookReceipt.recorderAfter.user !== true
+      || shadowHookReceipt.recorderAfter.tenant !== true
+      || Object.values(shadowHookReceipt.health).some((value) => value !== 'passed')
+      || shadowHookReceipt.rollback.status !== 'not_required') {
+    fail('raw routing gate shadow hook receipt is not an exact passed dedicated enable');
+  }
+  const liveHealth = validateLiveStagingHealth({
+    healthRaw: input.healthRaw,
+    runtimeSha,
+    artifactDigest,
+    configuredFlags,
+    checkedAt: input.checkedAt,
+    flag,
+    targetEnabled: false,
+  });
+  const liveShadowRuntime = normalizeHealthShadowRuntimeState(
+    liveHealth.health.releaseAttestation,
+    'raw routing live health release attestation',
+  );
+  if (!liveShadowRuntime.hook.dedicatedEval.present
+      || liveShadowRuntime.hook.global
+      || liveShadowRuntime.hook.dedicatedEval.user !== true
+      || liveShadowRuntime.hook.dedicatedEval.tenant !== true
+      || !liveShadowRuntime.planner.dedicatedEval.present
+      || liveShadowRuntime.planner.global
+      || liveShadowRuntime.planner.dedicatedEval.user
+      || liveShadowRuntime.planner.dedicatedEval.tenant) {
+    fail('raw routing live health does not prove the dedicated hook-on planner-off state');
   }
   let report;
   try {
@@ -640,6 +766,9 @@ export function buildCapabilityEvidenceAttestation(input) {
       || Date.parse(untilInclusive) < Date.parse(sinceInclusive)
       || Date.parse(generatedAt) < Date.parse(untilInclusive)) {
     fail('raw routing gate must use one immutable explicit evidence window');
+  }
+  if (Date.parse(sinceInclusive) < Date.parse(shadowHookReceipt.completedAt)) {
+    fail('raw routing evidence window begins before the shadow hook enable completed');
   }
   const identity = report.evidence?.identity;
   const releaseIdentity = identity?.releaseIdentity;
@@ -689,6 +818,100 @@ export function buildCapabilityEvidenceAttestation(input) {
   if (observedBundles !== counts.flagEligibleBundles) {
     fail('raw routing observed-state bundles do not match eligible comparisons');
   }
+  const shadowBinding = report.evidence?.shadowRecorderBinding;
+  assertExactKeys(
+    shadowBinding,
+    ['enforced', 'receipt', 'liveHealth', 'requiredState', 'counts'],
+    'raw routing shadow recorder binding',
+  );
+  if (shadowBinding.enforced !== true) {
+    fail('raw routing shadow recorder binding must be enforced');
+  }
+  const receiptBinding = shadowBinding.receipt;
+  assertExactKeys(receiptBinding, [
+    'schema',
+    'sha256',
+    'transactionId',
+    'planDigest',
+    'planSequence',
+    'completedAt',
+    'runtimeSha',
+    'artifactDigest',
+    'role',
+    'status',
+    'action',
+    'dedicatedTenantId',
+  ], 'raw routing shadow recorder receipt binding');
+  const receiptSha256 = sha256(shadowHookReceiptRaw);
+  if (receiptBinding.schema !== shadowHookReceipt.schema
+      || receiptBinding.sha256 !== receiptSha256
+      || receiptBinding.transactionId !== shadowHookReceipt.transactionId
+      || receiptBinding.planDigest !== shadowHookReceipt.planDigest
+      || receiptBinding.planSequence !== shadowHookReceipt.planSequence
+      || receiptBinding.completedAt !== shadowHookReceipt.completedAt
+      || receiptBinding.runtimeSha !== shadowHookReceipt.runtimeSha
+      || receiptBinding.artifactDigest !== shadowHookReceipt.artifactDigest
+      || receiptBinding.role !== shadowHookReceipt.role
+      || receiptBinding.status !== shadowHookReceipt.status
+      || receiptBinding.action !== shadowHookReceipt.action
+      || receiptBinding.dedicatedTenantId !== shadowHookReceipt.dedicatedTenantId) {
+    fail('raw routing report does not bind the exact shadow hook receipt bytes and identity');
+  }
+  const liveHealthBinding = shadowBinding.liveHealth;
+  assertExactKeys(liveHealthBinding, [
+    'sha256',
+    'checkedAt',
+    'shadowRouteHookGlobal',
+    'shadowRouteHookDedicatedUser',
+    'shadowRouteHookDedicatedTenant',
+    'shadowPlannerGlobal',
+    'shadowPlannerDedicatedUser',
+    'shadowPlannerDedicatedTenant',
+  ], 'raw routing shadow recorder live-health binding');
+  if (liveHealthBinding.sha256 !== liveHealth.healthSha256
+      || liveHealthBinding.checkedAt !== liveHealth.healthTimestamp
+      || liveHealthBinding.shadowRouteHookGlobal !== false
+      || liveHealthBinding.shadowRouteHookDedicatedUser !== true
+      || liveHealthBinding.shadowRouteHookDedicatedTenant !== true
+      || liveHealthBinding.shadowPlannerGlobal !== false
+      || liveHealthBinding.shadowPlannerDedicatedUser !== false
+      || liveHealthBinding.shadowPlannerDedicatedTenant !== false) {
+    fail('raw routing shadow recorder live-health binding is not exact');
+  }
+  assertExactKeys(
+    shadowBinding.requiredState,
+    ['shadowRouteHookEffective', 'shadowPlannerEffective'],
+    'raw routing shadow recorder required state',
+  );
+  if (shadowBinding.requiredState.shadowRouteHookEffective !== true
+      || shadowBinding.requiredState.shadowPlannerEffective !== false) {
+    fail('raw routing shadow recorder required state is unsafe');
+  }
+  const recorderCounts = shadowBinding.counts;
+  assertExactKeys(recorderCounts, [
+    'exactRecorderStateBundles',
+    'missingRecorderStateBundles',
+    'dedicatedScopeMismatchBundles',
+    'hookNotEffectiveBundles',
+    'plannerEffectiveBundles',
+  ], 'raw routing shadow recorder counts');
+  for (const key of [
+    'missingRecorderStateBundles',
+    'dedicatedScopeMismatchBundles',
+    'hookNotEffectiveBundles',
+    'plannerEffectiveBundles',
+  ]) {
+    if (assertInteger(recorderCounts[key], `raw routing shadow recorder ${key}`) !== 0) {
+      fail(`raw routing shadow recorder ${key} must be zero`);
+    }
+  }
+  if (assertInteger(
+    recorderCounts.exactRecorderStateBundles,
+    'raw routing shadow recorder exactRecorderStateBundles',
+    { minimum: 1 },
+  ) !== counts.flagEligibleBundles) {
+    fail('raw routing exact recorder-state bundles must equal all flag-eligible bundles');
+  }
   const gate = report.gate;
   if (gate?.enabled !== true || gate.selectedSurface !== selectedSurface
       || gate.capabilityFlag !== flag || gate.minimumComparisons !== 200
@@ -726,6 +949,28 @@ export function buildCapabilityEvidenceAttestation(input) {
     comparisonCount,
     minimumComparisons: 200,
     agreementRate,
+    windowSinceInclusive: sinceInclusive,
+    windowUntilInclusive: untilInclusive,
+    shadowHookReceiptSchema: shadowHookReceipt.schema,
+    shadowHookReceiptSha256: receiptSha256,
+    shadowHookTransactionId: shadowHookReceipt.transactionId,
+    shadowHookPlanDigest: shadowHookReceipt.planDigest,
+    shadowHookPlanSequence: shadowHookReceipt.planSequence,
+    shadowHookCompletedAt: shadowHookReceipt.completedAt,
+    shadowHookReceiptRuntimeSha: shadowHookReceipt.runtimeSha,
+    shadowHookReceiptArtifactDigest: shadowHookReceipt.artifactDigest,
+    shadowHookReceiptRole: shadowHookReceipt.role,
+    shadowHookReceiptStatus: shadowHookReceipt.status,
+    shadowHookReceiptAction: shadowHookReceipt.action,
+    dedicatedTenantId: shadowHookReceipt.dedicatedTenantId,
+    liveShadowRouteHookGlobal: liveHealthBinding.shadowRouteHookGlobal,
+    liveShadowRouteHookDedicatedUser: liveHealthBinding.shadowRouteHookDedicatedUser,
+    liveShadowRouteHookDedicatedTenant: liveHealthBinding.shadowRouteHookDedicatedTenant,
+    liveShadowPlannerGlobal: liveHealthBinding.shadowPlannerGlobal,
+    liveShadowPlannerDedicatedUser: liveHealthBinding.shadowPlannerDedicatedUser,
+    liveShadowPlannerDedicatedTenant: liveHealthBinding.shadowPlannerDedicatedTenant,
+    liveHealthSha256: liveHealth.healthSha256,
+    liveHealthCheckedAt: liveHealth.checkedAt,
   };
   return validateRoutingEvidence(attestation, {
     runtimeSha,
@@ -742,6 +987,81 @@ function normalizeHealthCapabilityState(value, masterKill, label) {
     assertBoolean(value[flag], `${label}.${flag}`),
   ]));
   return { ...normalized, [MASTER_KILL]: masterKill };
+}
+
+function normalizeDedicatedEvalHealthState(value, label) {
+  assertExactKeys(value, ['present', 'user', 'tenant'], label);
+  const present = assertBoolean(value.present, `${label}.present`);
+  if (!present) {
+    if (value.user !== null || value.tenant !== null) {
+      fail(`${label} must use null scoped values when the dedicated identity is absent`);
+    }
+    return { present: false, user: null, tenant: null };
+  }
+  return {
+    present: true,
+    user: assertBoolean(value.user, `${label}.user`),
+    tenant: assertBoolean(value.tenant, `${label}.tenant`),
+  };
+}
+
+function normalizeHealthShadowRuntimeState(attestation, label) {
+  const planner = attestation?.shadowPlannerEffective;
+  assertExactKeys(planner, [
+    'global',
+    'user1000014',
+    'tenant1000014',
+    'user1000016',
+    'tenant1000016',
+    'dedicatedEval',
+  ], `${label}.shadowPlannerEffective`);
+  const normalizedPlanner = {
+    global: assertBoolean(planner.global, `${label}.shadowPlannerEffective.global`),
+    user1000014: assertBoolean(
+      planner.user1000014,
+      `${label}.shadowPlannerEffective.user1000014`,
+    ),
+    tenant1000014: assertBoolean(
+      planner.tenant1000014,
+      `${label}.shadowPlannerEffective.tenant1000014`,
+    ),
+    user1000016: assertBoolean(
+      planner.user1000016,
+      `${label}.shadowPlannerEffective.user1000016`,
+    ),
+    tenant1000016: assertBoolean(
+      planner.tenant1000016,
+      `${label}.shadowPlannerEffective.tenant1000016`,
+    ),
+    dedicatedEval: normalizeDedicatedEvalHealthState(
+      planner.dedicatedEval,
+      `${label}.shadowPlannerEffective.dedicatedEval`,
+    ),
+  };
+  if (Object.entries(normalizedPlanner)
+    .filter(([key]) => key !== 'dedicatedEval')
+    .some(([, value]) => value !== false)
+      || (normalizedPlanner.dedicatedEval.present
+        && (normalizedPlanner.dedicatedEval.user || normalizedPlanner.dedicatedEval.tenant))) {
+    fail(`${label} shadow planner must remain effectively off in every attested scope`);
+  }
+
+  const hook = attestation?.shadowRouteHookEffective;
+  assertExactKeys(hook, ['global', 'dedicatedEval'], `${label}.shadowRouteHookEffective`);
+  const normalizedHook = {
+    global: assertBoolean(hook.global, `${label}.shadowRouteHookEffective.global`),
+    dedicatedEval: normalizeDedicatedEvalHealthState(
+      hook.dedicatedEval,
+      `${label}.shadowRouteHookEffective.dedicatedEval`,
+    ),
+  };
+  if (normalizedHook.global
+      || normalizedHook.dedicatedEval.present !== normalizedPlanner.dedicatedEval.present
+      || (normalizedHook.dedicatedEval.present
+        && normalizedHook.dedicatedEval.user !== normalizedHook.dedicatedEval.tenant)) {
+    fail(`${label} shadow hook must be global-off, identity-consistent, and ID-free`);
+  }
+  return { planner: normalizedPlanner, hook: normalizedHook };
 }
 
 function parseRawJson(raw, label) {
@@ -798,13 +1118,14 @@ function validateLiveStagingHealth({
   }
   const attestation = health.releaseAttestation;
   const masterKill = attestation?.capabilityFlags?.masterKill;
-  if (attestation?.schema !== 'nexus.chat-capability-release-attestation.v1'
+  if (attestation?.schema !== 'nexus.chat-capability-release-attestation.v2'
       || attestation.role !== 'staging' || attestation.runtimeSha !== exactRuntimeSha
       || attestation.artifactDigest !== exactArtifactDigest
       || !Number.isSafeInteger(attestation.processId) || attestation.processId < 1
       || masterKill !== false) {
     fail('live staging health does not attest the exact release with master kill off');
   }
+  normalizeHealthShadowRuntimeState(attestation, 'live staging health release attestation');
   const configured = normalizeHealthCapabilityState(
     attestation.capabilityFlags.configured,
     masterKill,
@@ -1128,13 +1449,14 @@ export function buildStagingCapabilityPrerequisite(input) {
     fail('live staging health is degraded, stale, or database-disconnected');
   }
   const masterKill = attestation?.capabilityFlags?.masterKill;
-  if (attestation?.schema !== 'nexus.chat-capability-release-attestation.v1'
+  if (attestation?.schema !== 'nexus.chat-capability-release-attestation.v2'
       || attestation.role !== 'staging' || attestation.runtimeSha !== runtimeSha
       || attestation.artifactDigest !== artifactDigest
       || !Number.isSafeInteger(attestation.processId) || attestation.processId < 1
       || typeof masterKill !== 'boolean' || masterKill) {
     fail('live staging health does not attest the exact release with master kill off');
   }
+  normalizeHealthShadowRuntimeState(attestation, 'staging health release attestation');
   const stagingConfigured = normalizeHealthCapabilityState(
     attestation.capabilityFlags.configured,
     masterKill,
@@ -1495,6 +1817,7 @@ const OBSERVATION_SHADOW_PLANNER_KEYS = Object.freeze([
   'tenant1000014',
   'user1000016',
   'tenant1000016',
+  'dedicatedEval',
 ]);
 
 const OBSERVATION_PLAN_KEYS = Object.freeze([
@@ -1606,12 +1929,24 @@ const OBSERVATION_LEDGER_KEYS = Object.freeze([
 
 function validateObservationShadowPlannerState(value, label) {
   assertExactKeys(value, OBSERVATION_SHADOW_PLANNER_KEYS, label);
-  for (const key of OBSERVATION_SHADOW_PLANNER_KEYS) {
+  for (const key of OBSERVATION_SHADOW_PLANNER_KEYS.filter((key) => key !== 'dedicatedEval')) {
     if (assertBoolean(value[key], `${label}.${key}`)) {
       fail(`${label}.${key} must be effectively off for the token-zero fixtures`);
     }
   }
-  return { ...value };
+  const dedicatedEval = normalizeDedicatedEvalHealthState(
+    value.dedicatedEval,
+    `${label}.dedicatedEval`,
+  );
+  if (dedicatedEval.present && (dedicatedEval.user || dedicatedEval.tenant)) {
+    fail(`${label}.dedicatedEval must be effectively off when present`);
+  }
+  return {
+    ...Object.fromEntries(OBSERVATION_SHADOW_PLANNER_KEYS
+      .filter((key) => key !== 'dedicatedEval')
+      .map((key) => [key, value[key]])),
+    dedicatedEval,
+  };
 }
 
 function assertContiguousCapabilityPrefix(state, flag, label) {
@@ -3724,6 +4059,665 @@ export function buildCapabilitySecretReceipt(input) {
     presentBefore: plan.presentBefore,
     actions: plan.actions,
     planGeneratedAt: plan.generatedAt,
+    startedAt: input.startedAt,
+    completedAt: input.completedAt,
+    status: input.status,
+    health: input.health,
+    rollback: input.rollback,
+  });
+}
+
+export const CHAT_SHADOW_ROUTE_HOOK_PLAN_SCHEMA = 'nexus.chat-shadow-route-hook-plan.v1';
+export const CHAT_SHADOW_ROUTE_HOOK_RECEIPT_SCHEMA =
+  'nexus.chat-shadow-route-hook-transaction.v1';
+
+const CHAT_EVAL_DEDICATED_TENANT_ID = 'CHAT_EVAL_DEDICATED_TENANT_ID';
+const SHADOW_ROUTE_HOOK_FLAG = 'CHAT_CORE_V2_SHADOW_ROUTE_HOOK_ENABLED';
+const SHADOW_PLANNER_FLAG = 'CHAT_CORE_V2_SHADOW_PLANNER_ENABLED';
+const SHADOW_ROUTE_HOOK_ENABLE_REASON = 'dedicated_eval_evidence_collection';
+const SHADOW_ROUTE_HOOK_ROLLBACK_REASONS = Object.freeze([
+  'operator_rollback',
+  'quality_regression',
+  'health_regression',
+]);
+const SHADOW_ROUTE_HOOK_PLAN_WINDOW_MS = 60 * 60 * 1000;
+const SHADOW_ROUTE_HOOK_PLAN_KEYS = Object.freeze([
+  'schema',
+  'role',
+  'runtimeSha',
+  'artifactDigest',
+  'dedicatedTenantId',
+  'dedicatedIdentityAttested',
+  'action',
+  'desiredValue',
+  'transitionReason',
+  'previousPlanSequence',
+  'planSequence',
+  'generatedAt',
+  'expiresAt',
+  'prerequisites',
+  'recorderBefore',
+  'recorderAfter',
+  'changedAssignments',
+  'planDigest',
+]);
+const BUILD_SHADOW_ROUTE_HOOK_PLAN_INPUT_KEYS = Object.freeze([
+  'role',
+  'runtimeSha',
+  'artifactDigest',
+  'dotenvSource',
+  'dedicatedIdentityAttested',
+  'desiredValue',
+  'transitionReason',
+  'previousPlanSequence',
+  'generatedAt',
+]);
+const SHADOW_ROUTE_HOOK_RECEIPT_KEYS = Object.freeze([
+  'schema',
+  'transactionId',
+  'role',
+  'runtimeSha',
+  'artifactDigest',
+  'planDigest',
+  'previousPlanSequence',
+  'planSequence',
+  'dedicatedTenantId',
+  'dedicatedIdentityAttested',
+  'action',
+  'desiredValue',
+  'transitionReason',
+  'planGeneratedAt',
+  'planExpiresAt',
+  'prerequisites',
+  'recorderBefore',
+  'recorderAfter',
+  'changedAssignments',
+  'startedAt',
+  'completedAt',
+  'status',
+  'health',
+  'rollback',
+]);
+const BUILD_SHADOW_ROUTE_HOOK_RECEIPT_INPUT_KEYS = Object.freeze([
+  'plan',
+  'transactionId',
+  'startedAt',
+  'completedAt',
+  'status',
+  'health',
+  'rollback',
+]);
+
+function regexEscape(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+}
+
+function shadowRouteHookAssignmentNames(dedicatedTenantId) {
+  return [
+    `${SHADOW_ROUTE_HOOK_FLAG}_USER_${dedicatedTenantId}`,
+    `${SHADOW_ROUTE_HOOK_FLAG}_TENANT_${dedicatedTenantId}`,
+  ];
+}
+
+function parseDedicatedTenantId(sourceLines) {
+  const candidate = new RegExp(
+    `^\\s*(?:export[ \\t]+)?${regexEscape(CHAT_EVAL_DEDICATED_TENANT_ID)}(?:[ \\t]*=|\\b)`,
+    'u',
+  );
+  const exact = new RegExp(
+    `^${regexEscape(CHAT_EVAL_DEDICATED_TENANT_ID)}=([1-9][0-9]*)$`,
+    'u',
+  );
+  let dedicatedTenantId = null;
+  for (const body of sourceLines) {
+    if (!candidate.test(body)) continue;
+    const match = body.match(exact);
+    if (!match) {
+      fail(`${CHAT_EVAL_DEDICATED_TENANT_ID} must use one exact canonical positive integer assignment`);
+    }
+    if (dedicatedTenantId !== null) {
+      fail(`duplicate ${CHAT_EVAL_DEDICATED_TENANT_ID} assignment`);
+    }
+    const parsed = Number(match[1]);
+    if (!Number.isSafeInteger(parsed) || parsed <= 0 || String(parsed) !== match[1]) {
+      fail(`${CHAT_EVAL_DEDICATED_TENANT_ID} must be one canonical positive safe integer`);
+    }
+    dedicatedTenantId = parsed;
+  }
+  if (dedicatedTenantId === null) {
+    fail(`${CHAT_EVAL_DEDICATED_TENANT_ID} is required for the dedicated shadow recorder scope`);
+  }
+  return dedicatedTenantId;
+}
+
+function inspectGovernedCapabilityScopesOff(sourceLines) {
+  const governed = CHAT_CAPABILITY_FLAGS
+    .map((flag) => regexEscape(flag))
+    .join('|');
+  const candidate = new RegExp(
+    `^\\s*(?:export[ \\t]+)?(?:${governed})(?:[ \\t]*=|_(?:USER|TENANT)_|\\b)`,
+    'u',
+  );
+  const exact = new RegExp(
+    `^\\s*(?:export[ \\t]+)?(${governed})(?:_(USER|TENANT)_([A-Za-z0-9_-]+))?[ \\t]*=[ \\t]*(true|false)[ \\t]*$`,
+    'u',
+  );
+  const seen = new Set();
+  let effectiveOff = true;
+  for (const body of sourceLines) {
+    if (!candidate.test(body)) continue;
+    const match = body.match(exact);
+    if (!match) fail('governed capability and master-kill assignments must use canonical booleans');
+    const key = match[2] ? `${match[1]}_${match[2]}_${match[3]}` : match[1];
+    if (seen.has(key)) fail(`duplicate governed capability assignment for ${key}`);
+    seen.add(key);
+    if (match[4] !== 'false') effectiveOff = false;
+  }
+  return effectiveOff;
+}
+
+function inspectShadowPlannerScopesOff(sourceLines) {
+  const escaped = regexEscape(SHADOW_PLANNER_FLAG);
+  const candidate = new RegExp(
+    `^\\s*(?:export[ \\t]+)?${escaped}(?:[ \\t]*=|_|\\b)`,
+    'u',
+  );
+  const exact = new RegExp(
+    `^${escaped}(?:_(USER|TENANT)_([A-Za-z0-9_-]+))?=(true|false|on|off|1|0|shadow)$`,
+    'u',
+  );
+  const enabled = new Set(['true', 'on', '1', 'shadow']);
+  const seen = new Set();
+  let effectiveOff = true;
+  for (const body of sourceLines) {
+    if (!candidate.test(body)) continue;
+    const match = body.match(exact);
+    if (!match) fail('shadow planner assignments must use one exact canonical runtime boolean');
+    const key = match[1] ? `${SHADOW_PLANNER_FLAG}_${match[1]}_${match[2]}` : SHADOW_PLANNER_FLAG;
+    if (seen.has(key)) fail(`duplicate shadow planner assignment for ${key}`);
+    seen.add(key);
+    if (enabled.has(match[3])) effectiveOff = false;
+  }
+  return effectiveOff;
+}
+
+function parseShadowRouteHookAssignments(sourceLines, dedicatedTenantId) {
+  const escaped = regexEscape(SHADOW_ROUTE_HOOK_FLAG);
+  const candidate = new RegExp(
+    `^\\s*(?:export[ \\t]+)?${escaped}(?:[ \\t]*=|_|\\b)`,
+    'u',
+  );
+  const exact = new RegExp(
+    `^${escaped}_(USER|TENANT)_([A-Za-z0-9_-]+)=(true|false)$`,
+    'u',
+  );
+  const expectedNames = shadowRouteHookAssignmentNames(dedicatedTenantId);
+  const seen = new Map();
+  for (const body of sourceLines) {
+    if (!candidate.test(body)) continue;
+    const match = body.match(exact);
+    if (!match) {
+      fail('shadow route recorder forbids global, malformed, or noncanonical assignments');
+    }
+    const key = `${SHADOW_ROUTE_HOOK_FLAG}_${match[1]}_${match[2]}`;
+    if (!expectedNames.includes(key)) {
+      fail('shadow route recorder assignments may target only the configured dedicated identity');
+    }
+    if (seen.has(key)) fail(`duplicate shadow route recorder assignment for ${key}`);
+    seen.set(key, match[3] === 'true');
+  }
+  const state = {
+    user: seen.get(expectedNames[0]) ?? false,
+    tenant: seen.get(expectedNames[1]) ?? false,
+  };
+  if (state.user !== state.tenant) {
+    fail('dedicated USER and TENANT shadow route recorder scopes must be consistent');
+  }
+  return state;
+}
+
+function inspectShadowRouteHookDotenv(source, { requireEnableSafe = false } = {}) {
+  assertString(source, 'shadow route hook dotenv source');
+  const sourceLines = splitPreservingLineEndings(source).map((segment) => lineParts(segment).body);
+  const dedicatedTenantId = parseDedicatedTenantId(sourceLines);
+  const hmacsPresent = readCapabilitySecretPresence(source);
+  const governedCapabilitiesOff = inspectGovernedCapabilityScopesOff(sourceLines);
+  const shadowPlannerEffectiveOff = inspectShadowPlannerScopesOff(sourceLines);
+  const recorder = parseShadowRouteHookAssignments(sourceLines, dedicatedTenantId);
+  if (requireEnableSafe) {
+    if (CHAT_CAPABILITY_HMAC_NAMES.some((name) => hmacsPresent[name] !== true)) {
+      fail('both governed HMAC secrets must be present before shadow route hook activation');
+    }
+    if (!governedCapabilitiesOff) {
+      fail('all seven governed capabilities and the master kill must remain off before activation');
+    }
+    if (!shadowPlannerEffectiveOff) {
+      fail('all shadow planner scopes must be effectively off before activation');
+    }
+  }
+  return {
+    dedicatedTenantId,
+    prerequisites: {
+      hmacsPresent,
+      governedCapabilitiesOff,
+      shadowPlannerEffectiveOff,
+      otherRecorderScopesAbsent: true,
+    },
+    recorder,
+  };
+}
+
+export function readShadowRouteHookState(source) {
+  const inspected = inspectShadowRouteHookDotenv(source, { requireEnableSafe: true });
+  return {
+    dedicatedTenantId: inspected.dedicatedTenantId,
+    prerequisites: {
+      hmacsPresent: { ...inspected.prerequisites.hmacsPresent },
+      governedCapabilitiesOff: inspected.prerequisites.governedCapabilitiesOff,
+      shadowPlannerEffectiveOff: inspected.prerequisites.shadowPlannerEffectiveOff,
+      otherRecorderScopesAbsent: inspected.prerequisites.otherRecorderScopesAbsent,
+    },
+    recorder: { ...inspected.recorder },
+  };
+}
+
+export function readShadowRouteHookCollectionState(source) {
+  const inspected = inspectShadowRouteHookDotenv(source);
+  if (CHAT_CAPABILITY_HMAC_NAMES.some(
+    (name) => inspected.prerequisites.hmacsPresent[name] !== true,
+  )) {
+    fail('both governed HMAC secrets must be present for shadow route hook collection');
+  }
+  if (!inspected.prerequisites.shadowPlannerEffectiveOff) {
+    fail('all shadow planner scopes must remain effectively off during collection');
+  }
+  return {
+    dedicatedTenantId: inspected.dedicatedTenantId,
+    prerequisites: {
+      hmacsPresent: { ...inspected.prerequisites.hmacsPresent },
+      shadowPlannerEffectiveOff: true,
+      otherRecorderScopesAbsent: true,
+    },
+    recorder: { ...inspected.recorder },
+  };
+}
+
+function normalizeShadowRouteHookPrerequisites(value, label, { requireEnableSafe = false } = {}) {
+  assertExactKeys(value, [
+    'hmacsPresent',
+    'governedCapabilitiesOff',
+    'shadowPlannerEffectiveOff',
+    'otherRecorderScopesAbsent',
+  ], label);
+  const hmacsPresent = normalizeSecretPresence(value.hmacsPresent, `${label}.hmacsPresent`);
+  const governedCapabilitiesOff = assertBoolean(
+    value.governedCapabilitiesOff,
+    `${label}.governedCapabilitiesOff`,
+  );
+  const shadowPlannerEffectiveOff = assertBoolean(
+    value.shadowPlannerEffectiveOff,
+    `${label}.shadowPlannerEffectiveOff`,
+  );
+  const otherRecorderScopesAbsent = assertBoolean(
+    value.otherRecorderScopesAbsent,
+    `${label}.otherRecorderScopesAbsent`,
+  );
+  if (!otherRecorderScopesAbsent) fail(`${label}.otherRecorderScopesAbsent must be true`);
+  if (requireEnableSafe
+      && (CHAT_CAPABILITY_HMAC_NAMES.some((name) => hmacsPresent[name] !== true)
+        || !governedCapabilitiesOff
+        || !shadowPlannerEffectiveOff)) {
+    fail(`${label} must preserve the HMAC-present, capability-off, planner-off enable gate`);
+  }
+  return {
+    hmacsPresent,
+    governedCapabilitiesOff,
+    shadowPlannerEffectiveOff,
+    otherRecorderScopesAbsent: true,
+  };
+}
+
+function normalizeShadowRouteHookRecorderState(value, label) {
+  assertExactKeys(value, ['user', 'tenant'], label);
+  const normalized = {
+    user: assertBoolean(value.user, `${label}.user`),
+    tenant: assertBoolean(value.tenant, `${label}.tenant`),
+  };
+  if (normalized.user !== normalized.tenant) {
+    fail(`${label} USER and TENANT scopes must be consistent`);
+  }
+  return normalized;
+}
+
+function validateShadowRouteHookTransition({ desiredValue, transitionReason, recorderBefore }) {
+  if (recorderBefore.user === desiredValue || recorderBefore.tenant === desiredValue) {
+    fail(`shadow route hook is already ${desiredValue ? 'enabled' : 'disabled'} for the dedicated identity`);
+  }
+  if (desiredValue) {
+    if (transitionReason !== SHADOW_ROUTE_HOOK_ENABLE_REASON) {
+      fail(`shadow route hook enable reason must be ${SHADOW_ROUTE_HOOK_ENABLE_REASON}`);
+    }
+  } else if (!SHADOW_ROUTE_HOOK_ROLLBACK_REASONS.includes(transitionReason)) {
+    fail(`shadow route hook rollback reason must be one of: ${SHADOW_ROUTE_HOOK_ROLLBACK_REASONS.join(', ')}`);
+  }
+}
+
+function shadowRouteHookPlanWithoutDigest(plan) {
+  return Object.fromEntries(SHADOW_ROUTE_HOOK_PLAN_KEYS
+    .filter((key) => key !== 'planDigest')
+    .map((key) => [key, plan[key]]));
+}
+
+function computeShadowRouteHookPlanDigest(plan) {
+  return `sha256:${sha256(canonicalJson(shadowRouteHookPlanWithoutDigest(plan)))}`;
+}
+
+export function validateShadowRouteHookPlan(plan) {
+  assertExactKeys(plan, SHADOW_ROUTE_HOOK_PLAN_KEYS, 'shadow route hook plan');
+  if (plan.schema !== CHAT_SHADOW_ROUTE_HOOK_PLAN_SCHEMA) {
+    fail('shadow route hook plan schema is unsupported');
+  }
+  if (plan.role !== 'staging') fail('shadow route hook plan is staging-only');
+  assertRuntimeSha(plan.runtimeSha, 'shadow route hook plan.runtimeSha');
+  assertArtifactDigest(plan.artifactDigest, 'shadow route hook plan.artifactDigest');
+  const dedicatedTenantId = assertInteger(
+    plan.dedicatedTenantId,
+    'shadow route hook plan.dedicatedTenantId',
+    { minimum: 1 },
+  );
+  if (plan.dedicatedIdentityAttested !== true) {
+    fail('shadow route hook plan requires the dedicated identity attestation');
+  }
+  const desiredValue = assertBoolean(plan.desiredValue, 'shadow route hook plan.desiredValue');
+  const action = assertOneOf(plan.action, ['enable', 'disable'], 'shadow route hook plan.action');
+  if (action !== (desiredValue ? 'enable' : 'disable')) {
+    fail('shadow route hook plan action does not match desiredValue');
+  }
+  const previousPlanSequence = assertInteger(
+    plan.previousPlanSequence,
+    'shadow route hook plan.previousPlanSequence',
+    { maximum: Number.MAX_SAFE_INTEGER - 1 },
+  );
+  if (plan.planSequence !== previousPlanSequence + 1) {
+    fail('shadow route hook plan sequence must advance exactly once');
+  }
+  const generatedAt = assertCanonicalTimestamp(plan.generatedAt, 'shadow route hook plan.generatedAt');
+  const expiresAt = assertCanonicalTimestamp(plan.expiresAt, 'shadow route hook plan.expiresAt');
+  if (Date.parse(expiresAt) !== Date.parse(generatedAt) + SHADOW_ROUTE_HOOK_PLAN_WINDOW_MS) {
+    fail('shadow route hook plan must expire exactly one hour after generation');
+  }
+  const prerequisites = normalizeShadowRouteHookPrerequisites(
+    plan.prerequisites,
+    'shadow route hook plan.prerequisites',
+    { requireEnableSafe: desiredValue },
+  );
+  const recorderBefore = normalizeShadowRouteHookRecorderState(
+    plan.recorderBefore,
+    'shadow route hook plan.recorderBefore',
+  );
+  const recorderAfter = normalizeShadowRouteHookRecorderState(
+    plan.recorderAfter,
+    'shadow route hook plan.recorderAfter',
+  );
+  const expectedAfter = { user: desiredValue, tenant: desiredValue };
+  if (!equalCanonical(recorderAfter, expectedAfter)) {
+    fail('shadow route hook plan recorderAfter must change both exact dedicated scopes only');
+  }
+  validateShadowRouteHookTransition({
+    desiredValue,
+    transitionReason: plan.transitionReason,
+    recorderBefore,
+  });
+  const expectedAssignments = shadowRouteHookAssignmentNames(dedicatedTenantId);
+  if (!Array.isArray(plan.changedAssignments)
+      || plan.changedAssignments.length !== expectedAssignments.length
+      || plan.changedAssignments.some((name, index) => name !== expectedAssignments[index])) {
+    fail('shadow route hook plan changedAssignments must bind the exact dedicated USER and TENANT scopes');
+  }
+  assertSha256(plan.planDigest, 'shadow route hook plan.planDigest', { prefixed: true });
+  const expectedDigest = computeShadowRouteHookPlanDigest(plan);
+  if (!safeEqualDigest(plan.planDigest, expectedDigest)) {
+    fail('shadow route hook plan digest does not match canonical plan bytes');
+  }
+  return {
+    ...plan,
+    dedicatedTenantId,
+    prerequisites,
+    recorderBefore,
+    recorderAfter,
+    changedAssignments: [...expectedAssignments],
+  };
+}
+
+export function buildShadowRouteHookPlan(input) {
+  assertExactKeys(input, BUILD_SHADOW_ROUTE_HOOK_PLAN_INPUT_KEYS, 'shadow route hook plan input');
+  if (input.role !== 'staging') fail('shadow route hook transaction is staging-only');
+  const runtimeSha = assertRuntimeSha(input.runtimeSha, 'shadow route hook runtimeSha');
+  const artifactDigest = assertArtifactDigest(
+    input.artifactDigest,
+    'shadow route hook artifactDigest',
+  );
+  if (input.dedicatedIdentityAttested !== true) {
+    fail('shadow route hook plan requires a dedicated identity attestation');
+  }
+  const desiredValue = assertBoolean(input.desiredValue, 'shadow route hook desiredValue');
+  const previousPlanSequence = assertInteger(
+    input.previousPlanSequence,
+    'shadow route hook previousPlanSequence',
+    { maximum: Number.MAX_SAFE_INTEGER - 1 },
+  );
+  const generatedAt = assertCanonicalTimestamp(input.generatedAt, 'shadow route hook generatedAt');
+  const expiresAt = new Date(Date.parse(generatedAt) + SHADOW_ROUTE_HOOK_PLAN_WINDOW_MS).toISOString();
+  const state = inspectShadowRouteHookDotenv(input.dotenvSource, {
+    requireEnableSafe: desiredValue,
+  });
+  validateShadowRouteHookTransition({
+    desiredValue,
+    transitionReason: input.transitionReason,
+    recorderBefore: state.recorder,
+  });
+  const plan = {
+    schema: CHAT_SHADOW_ROUTE_HOOK_PLAN_SCHEMA,
+    role: 'staging',
+    runtimeSha,
+    artifactDigest,
+    dedicatedTenantId: state.dedicatedTenantId,
+    dedicatedIdentityAttested: true,
+    action: desiredValue ? 'enable' : 'disable',
+    desiredValue,
+    transitionReason: input.transitionReason,
+    previousPlanSequence,
+    planSequence: previousPlanSequence + 1,
+    generatedAt,
+    expiresAt,
+    prerequisites: state.prerequisites,
+    recorderBefore: state.recorder,
+    recorderAfter: { user: desiredValue, tenant: desiredValue },
+    changedAssignments: shadowRouteHookAssignmentNames(state.dedicatedTenantId),
+  };
+  return validateShadowRouteHookPlan({
+    ...plan,
+    planDigest: computeShadowRouteHookPlanDigest(plan),
+  });
+}
+
+export function assertShadowRouteHookApplyAuthorization(input = {}) {
+  assertExactKeys(input, ['ownerAuthorized', 'ackPlan', 'plan', 'now'], 'shadow route hook authorization');
+  if (input.ownerAuthorized !== '1') {
+    fail('explicit owner authorization is required for shadow route hook apply');
+  }
+  const plan = validateShadowRouteHookPlan(input.plan);
+  assertSha256(input.ackPlan, 'acknowledged shadow route hook plan digest', { prefixed: true });
+  if (!safeEqualDigest(input.ackPlan, plan.planDigest)) {
+    fail('acknowledged shadow route hook plan digest does not match the inspected plan');
+  }
+  const now = assertCanonicalTimestamp(input.now, 'shadow route hook authorization now');
+  if (Date.parse(now) < Date.parse(plan.generatedAt)) {
+    fail('shadow route hook authorization cannot be before the generated plan window');
+  }
+  if (Date.parse(now) > Date.parse(plan.expiresAt)) {
+    fail('shadow route hook authorization plan window expired');
+  }
+  return true;
+}
+
+export function rewriteShadowRouteHookDotenv({ source, plan } = {}) {
+  assertString(source, 'shadow route hook dotenv source');
+  const validatedPlan = validateShadowRouteHookPlan(plan);
+  const state = inspectShadowRouteHookDotenv(source, {
+    requireEnableSafe: validatedPlan.desiredValue,
+  });
+  if (state.dedicatedTenantId !== validatedPlan.dedicatedTenantId
+      || !equalCanonical(state.prerequisites, validatedPlan.prerequisites)
+      || !equalCanonical(state.recorder, validatedPlan.recorderBefore)) {
+    fail('shadow route hook dotenv state changed after the plan was inspected');
+  }
+
+  const expectedAssignments = shadowRouteHookAssignmentNames(validatedPlan.dedicatedTenantId);
+  const seen = new Set();
+  let newline = '\n';
+  const segments = splitPreservingLineEndings(source).map((segment) => {
+    const parts = lineParts(segment);
+    if (parts.ending && newline === '\n') newline = parts.ending;
+    const assignment = expectedAssignments.find((name) => parts.body.startsWith(`${name}=`));
+    if (!assignment) return parts;
+    seen.add(assignment);
+    return { body: `${assignment}=${validatedPlan.desiredValue}`, ending: parts.ending };
+  });
+  let contents = segments.map(({ body, ending }) => `${body}${ending}`).join('');
+  const missing = expectedAssignments.filter((name) => !seen.has(name));
+  if (missing.length > 0) {
+    if (contents.length > 0 && !/(?:\r\n|\n|\r)$/u.test(contents)) contents += newline;
+    contents += missing.map((name) => `${name}=${validatedPlan.desiredValue}${newline}`).join('');
+  }
+  return { contents, changedAssignments: [...expectedAssignments] };
+}
+
+function normalizeShadowRouteHookHealth(value) {
+  assertExactKeys(value, ['backend', 'identity', 'shadowHook'], 'shadow route hook receipt health');
+  return Object.fromEntries(['backend', 'identity', 'shadowHook'].map((key) => [
+    key,
+    assertOneOf(value[key], ['passed', 'failed'], `shadow route hook receipt health.${key}`),
+  ]));
+}
+
+function normalizeShadowRouteHookRollback(value) {
+  assertExactKeys(value, ['status'], 'shadow route hook receipt rollback');
+  return {
+    status: assertOneOf(
+      value.status,
+      ['not_required', 'rolled_back', 'rollback_failed'],
+      'shadow route hook receipt rollback.status',
+    ),
+  };
+}
+
+function shadowRouteHookReceiptPlan(receipt) {
+  return {
+    schema: CHAT_SHADOW_ROUTE_HOOK_PLAN_SCHEMA,
+    role: receipt.role,
+    runtimeSha: receipt.runtimeSha,
+    artifactDigest: receipt.artifactDigest,
+    dedicatedTenantId: receipt.dedicatedTenantId,
+    dedicatedIdentityAttested: receipt.dedicatedIdentityAttested,
+    action: receipt.action,
+    desiredValue: receipt.desiredValue,
+    transitionReason: receipt.transitionReason,
+    previousPlanSequence: receipt.previousPlanSequence,
+    planSequence: receipt.planSequence,
+    generatedAt: receipt.planGeneratedAt,
+    expiresAt: receipt.planExpiresAt,
+    prerequisites: receipt.prerequisites,
+    recorderBefore: receipt.recorderBefore,
+    recorderAfter: receipt.recorderAfter,
+    changedAssignments: receipt.changedAssignments,
+    planDigest: receipt.planDigest,
+  };
+}
+
+export function validateShadowRouteHookReceipt(receipt) {
+  assertExactKeys(receipt, SHADOW_ROUTE_HOOK_RECEIPT_KEYS, 'shadow route hook receipt');
+  if (receipt.schema !== CHAT_SHADOW_ROUTE_HOOK_RECEIPT_SCHEMA) {
+    fail('shadow route hook receipt schema is unsupported');
+  }
+  if (typeof receipt.transactionId !== 'string'
+      || !/^\d{8}T\d{6}Z-[0-9a-z]{12,64}$/u.test(receipt.transactionId)) {
+    fail('shadow route hook receipt transactionId has an invalid shape');
+  }
+  const plan = validateShadowRouteHookPlan(shadowRouteHookReceiptPlan(receipt));
+  const startedAt = assertCanonicalTimestamp(receipt.startedAt, 'shadow route hook receipt.startedAt');
+  const completedAt = assertCanonicalTimestamp(
+    receipt.completedAt,
+    'shadow route hook receipt.completedAt',
+  );
+  if (Date.parse(startedAt) < Date.parse(plan.generatedAt)
+      || Date.parse(startedAt) > Date.parse(plan.expiresAt)) {
+    fail('shadow route hook receipt startedAt is outside the exact plan window');
+  }
+  if (Date.parse(completedAt) < Date.parse(startedAt)) {
+    fail('shadow route hook receipt completedAt precedes startedAt');
+  }
+  const status = assertOneOf(
+    receipt.status,
+    ['passed', 'failed', 'rolled_back', 'rollback_failed'],
+    'shadow route hook receipt.status',
+  );
+  const health = normalizeShadowRouteHookHealth(receipt.health);
+  const rollback = normalizeShadowRouteHookRollback(receipt.rollback);
+  if (status === 'passed') {
+    if (Object.values(health).some((value) => value !== 'passed')
+        || rollback.status !== 'not_required') {
+      fail('passed shadow route hook receipt requires all health checks passed and no rollback');
+    }
+  } else if (status === 'failed') {
+    if (rollback.status !== 'not_required') {
+      fail('failed shadow route hook receipt cannot claim a completed rollback');
+    }
+  } else if (status === 'rolled_back') {
+    if (rollback.status !== 'rolled_back') {
+      fail('rolled_back shadow route hook receipt requires rolled_back rollback status');
+    }
+  } else if (rollback.status !== 'rollback_failed') {
+    fail('rollback_failed shadow route hook receipt requires rollback_failed rollback status');
+  }
+  return {
+    ...receipt,
+    prerequisites: plan.prerequisites,
+    recorderBefore: plan.recorderBefore,
+    recorderAfter: plan.recorderAfter,
+    changedAssignments: [...plan.changedAssignments],
+    health,
+    rollback,
+  };
+}
+
+export function buildShadowRouteHookReceipt(input) {
+  assertExactKeys(
+    input,
+    BUILD_SHADOW_ROUTE_HOOK_RECEIPT_INPUT_KEYS,
+    'shadow route hook receipt input',
+  );
+  const plan = validateShadowRouteHookPlan(input.plan);
+  return validateShadowRouteHookReceipt({
+    schema: CHAT_SHADOW_ROUTE_HOOK_RECEIPT_SCHEMA,
+    transactionId: input.transactionId,
+    role: plan.role,
+    runtimeSha: plan.runtimeSha,
+    artifactDigest: plan.artifactDigest,
+    planDigest: plan.planDigest,
+    previousPlanSequence: plan.previousPlanSequence,
+    planSequence: plan.planSequence,
+    dedicatedTenantId: plan.dedicatedTenantId,
+    dedicatedIdentityAttested: plan.dedicatedIdentityAttested,
+    action: plan.action,
+    desiredValue: plan.desiredValue,
+    transitionReason: plan.transitionReason,
+    planGeneratedAt: plan.generatedAt,
+    planExpiresAt: plan.expiresAt,
+    prerequisites: plan.prerequisites,
+    recorderBefore: plan.recorderBefore,
+    recorderAfter: plan.recorderAfter,
+    changedAssignments: plan.changedAssignments,
     startedAt: input.startedAt,
     completedAt: input.completedAt,
     status: input.status,

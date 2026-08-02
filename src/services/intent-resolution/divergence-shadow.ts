@@ -32,7 +32,7 @@ import { V2_TO_LEGACY_DOMAIN } from './routing-domain-map';
 
 export { V2_TO_LEGACY_DOMAIN } from './routing-domain-map';
 
-export const ROUTING_DIVERGENCE_SHADOW_VERSION = 'routing_divergence_shadow@3.0.0';
+export const ROUTING_DIVERGENCE_SHADOW_VERSION = 'routing_divergence_shadow@4.0.0';
 
 const FULL_RUNTIME_SHA = /^[0-9a-f]{40}$/;
 const FULL_ARTIFACT_DIGEST = /^[0-9a-f]{64}$/;
@@ -77,6 +77,18 @@ export interface RoutingDivergenceCapabilityFlags {
   masterKill: boolean;
 }
 
+/**
+ * Exact dedicated identity and effective recorder/planner state observed by
+ * the live hook for this row. These are operational identifiers only; no
+ * user-provided text or profile data is recorded.
+ */
+export interface RoutingDivergenceRecorderState {
+  userId: string;
+  tenantId: string;
+  shadowRouteHookEffective: boolean;
+  shadowPlannerEffective: boolean;
+}
+
 /** Granular Chat action-skill space → legacy runtime domain space. */
 const ACTION_SKILL_TO_LEGACY_DOMAIN: Record<string, string> = {
   secretary_calendar: 'secretary',
@@ -97,6 +109,7 @@ export interface RoutingDivergenceShadowRecord {
   resolverVersion: string;
   releaseIdentity: RoutingDivergenceReleaseIdentity;
   capabilityFlags: RoutingDivergenceCapabilityFlags;
+  recorderState: RoutingDivergenceRecorderState;
   topCandidate: {
     capabilityId: string;
     domain: string;
@@ -133,6 +146,8 @@ export interface RoutingDivergenceShadowDeps {
    * state.
    */
   env?: Readonly<Record<string, string | undefined>>;
+  /** Effective state supplied by the live hook after evaluating its real scope. */
+  recorderState?: RoutingDivergenceRecorderState;
 }
 
 export function buildRoutingDivergenceShadowRecord(
@@ -146,6 +161,7 @@ export function buildRoutingDivergenceShadowRecord(
   const top = candidates[0] ?? null;
   const releaseIdentity = readReleaseIdentity(env);
   const capabilityFlags = readCapabilityFlags(env);
+  const recorderState = readRecorderState(deps.recorderState);
 
   const classifierKeywordDomain = (deps.keywordMatch ?? keywordMatch)(text);
   const orchestratorPrimaryDomain = deps.orchestratorPrimaryDomain
@@ -168,6 +184,7 @@ export function buildRoutingDivergenceShadowRecord(
     resolverVersion: INTENT_RESOLVER_VERSION,
     releaseIdentity,
     capabilityFlags,
+    recorderState,
     topCandidate: top
       ? {
         capabilityId: top.capabilityId,
@@ -199,6 +216,31 @@ export function buildRoutingDivergenceShadowRecord(
         ? null
         : shadowLegacyDomains.has(top.domain),
     },
+  };
+}
+
+function readRecorderState(
+  state: RoutingDivergenceRecorderState | undefined,
+): RoutingDivergenceRecorderState {
+  const canonicalPositiveId = (value: unknown): value is string => {
+    if (typeof value !== 'string' || !/^[1-9][0-9]*$/u.test(value)) return false;
+    const parsed = Number(value);
+    return Number.isSafeInteger(parsed) && String(parsed) === value;
+  };
+  if (
+    !state
+    || !canonicalPositiveId(state.userId)
+    || !canonicalPositiveId(state.tenantId)
+    || typeof state.shadowRouteHookEffective !== 'boolean'
+    || typeof state.shadowPlannerEffective !== 'boolean'
+  ) {
+    throw new Error('routing_divergence_recorder_state_invalid');
+  }
+  return {
+    userId: state.userId,
+    tenantId: state.tenantId,
+    shadowRouteHookEffective: state.shadowRouteHookEffective,
+    shadowPlannerEffective: state.shadowPlannerEffective,
   };
 }
 

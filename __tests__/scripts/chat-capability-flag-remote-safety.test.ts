@@ -102,6 +102,44 @@ function afterPm2(): Pm2Row[] {
 }
 
 describe('remote chat capability flag safety helpers', () => {
+  it('governs dedicated-eval shadow-hook enablement as an owner-bound staging transaction', () => {
+    const operator = readFileSync(OPERATOR, 'utf8');
+    const remote = readFileSync(REMOTE, 'utf8');
+    const helper = readFileSync(HELPER, 'utf8');
+
+    expect(operator).toContain('inspect-shadow-hook');
+    expect(operator).toContain('apply-shadow-hook');
+    expect(operator).toContain('nexus.chat-shadow-route-hook-plan.v1');
+    expect(operator).toContain('nexus.chat-shadow-route-hook-transaction.v1');
+    expect(operator).toContain('apply-shadow-hook requires NEXUS_RELEASE_OWNER_AUTHORIZED=1');
+    expect(operator).toContain('nexus-chat-shadow-hook-');
+
+    expect(remote).toContain("inspect-shadow-hook)");
+    expect(remote).toContain("apply-shadow-hook)");
+    expect(remote).toContain("TRANSACTION_KIND='shadow_hook'");
+    expect(remote).toContain('CHAT_EVAL_DEDICATED_TENANT_ID');
+    expect(helper).toContain('`${SHADOW_ROUTE_HOOK_FLAG}_USER_${dedicatedTenantId}`');
+    expect(helper).toContain('`${SHADOW_ROUTE_HOOK_FLAG}_TENANT_${dedicatedTenantId}`');
+    expect(helper).toContain('CHAT_CORE_V2_SHADOW_PLANNER_ENABLED');
+    expect(remote).toContain('buildShadowRouteHookPlan');
+    expect(remote).toContain('rewriteShadowRouteHookDotenv');
+    expect(remote).toContain('validateShadowRouteHookReceipt');
+    expect(remote).toContain('assert_shadow_route_hook_runtime_state');
+    expect(remote).toContain('select_exact_shadow_hook_enable_receipt');
+    expect(remote).toContain('revalidate_routing_shadow_binding');
+    expect(remote).toContain('staging.shadow-hook.sequence');
+    expect(remote).toContain('--shadow-hook-receipt=');
+    expect(remote).toContain('--live-health=');
+    expect(remote).toContain('shadowHookReceiptRaw:');
+    expect(remote).toContain('readShadowRouteHookCollectionState');
+    expect(remote).toContain('committed shadow route hook receipt gap state is invalid');
+    expect(remote).toContain("normalizedEmail.endsWith('.invalid')");
+    expect(remote).toContain('resolve_exact_staging_release');
+    expect(remote).toContain('.shadow-hook-plan.json');
+    expect(remote).toContain('.shadow-hook-private.json');
+    expect(remote).toContain('.shadow-hook-receipt.json');
+  });
+
   it('collects immutable gate evidence on the server instead of accepting an operator file', () => {
     const operator = readFileSync(OPERATOR, 'utf8');
     const remote = readFileSync(REMOTE, 'utf8');

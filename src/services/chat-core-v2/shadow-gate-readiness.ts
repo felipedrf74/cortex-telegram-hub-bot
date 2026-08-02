@@ -266,6 +266,7 @@ const ALLOWED_ROUTING_DIVERGENCE_KEYS = new Set([
   'resolverVersion',
   'releaseIdentity',
   'capabilityFlags',
+  'recorderState',
   'topCandidate',
   'candidateCount',
   'surfaces',
@@ -303,6 +304,12 @@ const ALLOWED_ROUTING_DIVERGENCE_RELEASE_IDENTITY_KEYS = new Set([
   'artifactDigest',
   'role',
 ]);
+const ALLOWED_ROUTING_DIVERGENCE_RECORDER_STATE_KEYS = new Set([
+  'userId',
+  'tenantId',
+  'shadowRouteHookEffective',
+  'shadowPlannerEffective',
+]);
 const FULL_RUNTIME_SHA = /^[0-9a-f]{40}$/;
 const FULL_ARTIFACT_DIGEST = /^[0-9a-f]{64}$/;
 
@@ -337,6 +344,23 @@ function isSafeRoutingDivergenceCapabilityFlags(value: unknown): boolean {
     && keys.every((key) => typeof record[key] === 'boolean');
 }
 
+function isSafeRoutingDivergenceRecorderState(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record);
+  const canonicalPositiveId = (candidate: unknown): candidate is string => {
+    if (typeof candidate !== 'string' || !/^[1-9][0-9]*$/u.test(candidate)) return false;
+    const parsed = Number(candidate);
+    return Number.isSafeInteger(parsed) && String(parsed) === candidate;
+  };
+  return keys.length === ALLOWED_ROUTING_DIVERGENCE_RECORDER_STATE_KEYS.size
+    && keys.every((key) => ALLOWED_ROUTING_DIVERGENCE_RECORDER_STATE_KEYS.has(key))
+    && canonicalPositiveId(record.userId)
+    && canonicalPositiveId(record.tenantId)
+    && typeof record.shadowRouteHookEffective === 'boolean'
+    && typeof record.shadowPlannerEffective === 'boolean';
+}
+
 function isSafeRoutingDivergence(value: unknown): boolean {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;
@@ -358,6 +382,8 @@ function isSafeRoutingDivergence(value: unknown): boolean {
       if (!isSafeRoutingDivergenceReleaseIdentity(leaf)) return false;
     } else if (key === 'capabilityFlags') {
       if (!isSafeRoutingDivergenceCapabilityFlags(leaf)) return false;
+    } else if (key === 'recorderState') {
+      if (!isSafeRoutingDivergenceRecorderState(leaf)) return false;
     } else if (key === 'surfaces') {
       if (!safeSection(leaf, ALLOWED_ROUTING_DIVERGENCE_SURFACE_KEYS, false)) return false;
     } else if (key === 'agreement') {
@@ -366,7 +392,7 @@ function isSafeRoutingDivergence(value: unknown): boolean {
       return false;
     }
   }
-  return true;
+  return Object.hasOwn(record, 'recorderState');
 }
 
 function isAllowlistedShadowResponse(response: Record<string, unknown>): boolean {

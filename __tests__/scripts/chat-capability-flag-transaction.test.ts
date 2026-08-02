@@ -45,13 +45,16 @@ function enabledPrefix(length: number): FlagState {
 }
 
 function routingEvidence(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  const artifactDigest = typeof overrides.artifactDigest === 'string'
+    ? overrides.artifactDigest
+    : ARTIFACT_DIGEST;
   return {
     schema: EVIDENCE_SCHEMA,
     kind: 'routing_divergence',
     status: 'passed',
     environment: 'staging',
     runtimeSha: RUNTIME_SHA,
-    artifactDigest: ARTIFACT_DIGEST,
+    artifactDigest,
     flag: 'AI_ROUTING_MANIFEST_CLASSIFIER',
     collectedWithTargetEnabled: false,
     evidenceSha256: EVIDENCE_SHA256,
@@ -60,18 +63,45 @@ function routingEvidence(overrides: Record<string, unknown> = {}): Record<string
     comparisonCount: 200,
     minimumComparisons: 200,
     agreementRate: 0.99,
+    windowSinceInclusive: '2026-08-02T00:05:00.000Z',
+    windowUntilInclusive: '2026-08-02T00:59:59.999Z',
+    shadowHookReceiptSchema: 'nexus.chat-shadow-route-hook-transaction.v1',
+    shadowHookReceiptSha256: '1'.repeat(64),
+    shadowHookTransactionId: '20260802T000000Z-abcdef123456',
+    shadowHookPlanDigest: `sha256:${'2'.repeat(64)}`,
+    shadowHookPlanSequence: 1,
+    shadowHookCompletedAt: '2026-08-02T00:04:00.000Z',
+    shadowHookReceiptRuntimeSha: RUNTIME_SHA,
+    shadowHookReceiptArtifactDigest: artifactDigest,
+    shadowHookReceiptRole: 'staging',
+    shadowHookReceiptStatus: 'passed',
+    shadowHookReceiptAction: 'enable',
+    dedicatedTenantId: 424242,
+    liveShadowRouteHookGlobal: false,
+    liveShadowRouteHookDedicatedUser: true,
+    liveShadowRouteHookDedicatedTenant: true,
+    liveShadowPlannerGlobal: false,
+    liveShadowPlannerDedicatedUser: false,
+    liveShadowPlannerDedicatedTenant: false,
+    liveHealthSha256: '3'.repeat(64),
+    liveHealthCheckedAt: '2026-08-02T01:01:59.000Z',
     ...overrides,
   };
 }
 
-function rawRoutingGate(): string {
+function rawRoutingGate(
+  receipt: Record<string, unknown>,
+  receiptRaw: string,
+  healthRaw: string,
+  checkedAt: string,
+): string {
   return `${JSON.stringify({
     generatedAt: GENERATED_AT,
     evidence: {
       window: {
-        sinceInclusive: '2026-08-01T00:00:00.000Z',
-        throughInclusive: '2026-08-01T23:59:59.999Z',
-        untilInclusive: '2026-08-01T23:59:59.999Z',
+        sinceInclusive: '2026-08-02T00:05:00.000Z',
+        throughInclusive: '2026-08-02T00:59:59.999Z',
+        untilInclusive: '2026-08-02T00:59:59.999Z',
         upperBoundSource: 'until_flag',
       },
       identity: {
@@ -96,6 +126,44 @@ function rawRoutingGate(): string {
           state: 'classifierKeyword=off,orchestratorPrimary=off,registrySubset=off,shadowRoute=off,masterKill=off',
           bundles: 200,
         }],
+      },
+      shadowRecorderBinding: {
+        enforced: true,
+        receipt: {
+          schema: receipt.schema,
+          sha256: createHash('sha256').update(receiptRaw).digest('hex'),
+          transactionId: receipt.transactionId,
+          planDigest: receipt.planDigest,
+          planSequence: receipt.planSequence,
+          completedAt: receipt.completedAt,
+          runtimeSha: receipt.runtimeSha,
+          artifactDigest: receipt.artifactDigest,
+          role: receipt.role,
+          status: receipt.status,
+          action: receipt.action,
+          dedicatedTenantId: receipt.dedicatedTenantId,
+        },
+        liveHealth: {
+          sha256: createHash('sha256').update(healthRaw).digest('hex'),
+          checkedAt: JSON.parse(healthRaw).timestamp,
+          shadowRouteHookGlobal: false,
+          shadowRouteHookDedicatedUser: true,
+          shadowRouteHookDedicatedTenant: true,
+          shadowPlannerGlobal: false,
+          shadowPlannerDedicatedUser: false,
+          shadowPlannerDedicatedTenant: false,
+        },
+        requiredState: {
+          shadowRouteHookEffective: true,
+          shadowPlannerEffective: false,
+        },
+        counts: {
+          exactRecorderStateBundles: 200,
+          missingRecorderStateBundles: 0,
+          dedicatedScopeMismatchBundles: 0,
+          hookNotEffectiveBundles: 0,
+          plannerEffectiveBundles: 0,
+        },
       },
     },
     surfaceTotals: {
@@ -130,7 +198,7 @@ function detailedHealth(
       latencyMs: 2,
     },
     releaseAttestation: {
-      schema: 'nexus.chat-capability-release-attestation.v1',
+      schema: 'nexus.chat-capability-release-attestation.v2',
       runtimeSha: RUNTIME_SHA,
       artifactDigest: ARTIFACT_DIGEST,
       role: 'staging',
@@ -142,6 +210,19 @@ function detailedHealth(
         tenant1000014: false,
         user1000016: false,
         tenant1000016: false,
+        dedicatedEval: {
+          present: true,
+          user: false,
+          tenant: false,
+        },
+      },
+      shadowRouteHookEffective: {
+        global: false,
+        dedicatedEval: {
+          present: true,
+          user: false,
+          tenant: false,
+        },
       },
       capabilityFlags: {
         configured: Object.fromEntries(CAPABILITY_FLAGS.map((flag) => [flag, configured[flag]])),
@@ -411,6 +492,40 @@ async function loadHelper(): Promise<any> {
   return import(pathToFileURL(HELPER).href);
 }
 
+function shadowHookDotenv(): string {
+  return [
+    'CHAT_EVAL_DEDICATED_TENANT_ID=424242',
+    `CLASSIFY_SHADOW_HASH_SECRET=${'c'.repeat(40)}`,
+    `CHAT_CORE_V2_SHADOW_ROUTE_HMAC_SECRET=${'r'.repeat(40)}`,
+    ...GOVERNED_FLAGS.map((flag) => `${flag}=false`),
+    'CHAT_CORE_V2_SHADOW_PLANNER_ENABLED=false',
+    '',
+  ].join('\n');
+}
+
+function passedShadowHookReceipt(helper: any): Record<string, unknown> {
+  const plan = helper.buildShadowRouteHookPlan({
+    role: 'staging',
+    runtimeSha: RUNTIME_SHA,
+    artifactDigest: ARTIFACT_DIGEST,
+    dotenvSource: shadowHookDotenv(),
+    dedicatedIdentityAttested: true,
+    desiredValue: true,
+    transitionReason: 'dedicated_eval_evidence_collection',
+    previousPlanSequence: 0,
+    generatedAt: '2026-08-02T00:00:00.000Z',
+  });
+  return helper.buildShadowRouteHookReceipt({
+    plan,
+    transactionId: '20260802T000000Z-abcdef123456',
+    startedAt: '2026-08-02T00:03:00.000Z',
+    completedAt: '2026-08-02T00:04:00.000Z',
+    status: 'passed',
+    health: { backend: 'passed', identity: 'passed', shadowHook: 'passed' },
+    rollback: { status: 'not_required' },
+  });
+}
+
 async function classifierPlan(overrides: Record<string, unknown> = {}): Promise<any> {
   const helper = await loadHelper();
   return helper.buildCapabilityFlagPlan({
@@ -431,8 +546,26 @@ async function classifierPlan(overrides: Record<string, unknown> = {}): Promise<
 
 describe('chat capability flag transaction', () => {
   it('derives routing attestation from exact raw gate bytes instead of trusting a claimed hash', async () => {
-    const helper = await loadHelper();
-    const rawEvidence = rawRoutingGate();
+    const nativeHelper = await loadHelper();
+    const receipt = passedShadowHookReceipt(nativeHelper);
+    const receiptRaw = `${JSON.stringify(receipt, null, 2)}\n`;
+    const health = JSON.parse(detailedHealth(allOff(), '2026-08-02T01:01:58.750Z'));
+    health.releaseAttestation.shadowRouteHookEffective.dedicatedEval.user = true;
+    health.releaseAttestation.shadowRouteHookEffective.dedicatedEval.tenant = true;
+    const healthRaw = JSON.stringify(health);
+    const checkedAt = '2026-08-02T01:01:59.000Z';
+    const rawEvidence = rawRoutingGate(receipt, receiptRaw, healthRaw, checkedAt);
+    const helper = {
+      ...nativeHelper,
+      buildCapabilityEvidenceAttestation: (input: Record<string, unknown>) => (
+        nativeHelper.buildCapabilityEvidenceAttestation({
+          shadowHookReceiptRaw: receiptRaw,
+          healthRaw,
+          checkedAt,
+          ...input,
+        })
+      ),
+    };
     const attestation = helper.buildCapabilityEvidenceAttestation({
       rawEvidence,
       flag: 'AI_ROUTING_MANIFEST_CLASSIFIER',
@@ -443,6 +576,10 @@ describe('chat capability flag transaction', () => {
     expect(attestation).toEqual({
       ...routingEvidence(),
       evidenceSha256: createHash('sha256').update(rawEvidence).digest('hex'),
+      shadowHookReceiptSha256: createHash('sha256').update(receiptRaw).digest('hex'),
+      shadowHookPlanDigest: receipt.planDigest,
+      liveHealthSha256: createHash('sha256').update(healthRaw).digest('hex'),
+      liveHealthCheckedAt: checkedAt,
     });
 
     for (const mutate of [
@@ -462,6 +599,53 @@ describe('chat capability flag transaction', () => {
         configuredFlags: allOff(),
       })).toThrow(/gate|evidence|comparison|flag|release|identity|minimum/i);
     }
+
+    for (const mutate of [
+      (raw: any) => { raw.evidence.shadowRecorderBinding.receipt.sha256 = 'f'.repeat(64); },
+      (raw: any) => { raw.evidence.shadowRecorderBinding.liveHealth.sha256 = 'f'.repeat(64); },
+      (raw: any) => { raw.evidence.shadowRecorderBinding.counts.exactRecorderStateBundles = 199; },
+      (raw: any) => { raw.evidence.shadowRecorderBinding.counts.missingRecorderStateBundles = 1; },
+      (raw: any) => { raw.evidence.shadowRecorderBinding.requiredState.shadowPlannerEffective = true; },
+    ]) {
+      const invalid = JSON.parse(rawEvidence);
+      mutate(invalid);
+      expect(() => helper.buildCapabilityEvidenceAttestation({
+        rawEvidence: JSON.stringify(invalid),
+        flag: 'AI_ROUTING_MANIFEST_CLASSIFIER',
+        runtimeSha: RUNTIME_SHA,
+        artifactDigest: ARTIFACT_DIGEST,
+        configuredFlags: allOff(),
+      })).toThrow(/gate|evidence|comparison|flag|release|identity|minimum|shadow|recorder|health|state|receipt/i);
+    }
+
+    for (const invalid of [
+      { shadowHookReceiptRaw: receiptRaw.replace('"status": "passed"', '"status": "failed"'), healthRaw },
+      { shadowHookReceiptRaw: receiptRaw, healthRaw: healthRaw.replace('"user":true', '"user":false') },
+      { shadowHookReceiptRaw: receiptRaw, healthRaw: healthRaw.replace('"global":false', '"global":true') },
+    ]) {
+      expect(() => helper.buildCapabilityEvidenceAttestation({
+        rawEvidence,
+        ...invalid,
+        checkedAt,
+        flag: 'AI_ROUTING_MANIFEST_CLASSIFIER',
+        runtimeSha: RUNTIME_SHA,
+        artifactDigest: ARTIFACT_DIGEST,
+        configuredFlags: allOff(),
+      })).toThrow(/shadow|hook|receipt|health|state|digest|status/i);
+    }
+
+    const changedWindow = JSON.parse(rawEvidence);
+    changedWindow.evidence.window.sinceInclusive = '2026-08-02T00:03:59.999Z';
+    expect(() => helper.buildCapabilityEvidenceAttestation({
+      rawEvidence: JSON.stringify(changedWindow),
+      shadowHookReceiptRaw: receiptRaw,
+      healthRaw,
+      checkedAt,
+      flag: 'AI_ROUTING_MANIFEST_CLASSIFIER',
+      runtimeSha: RUNTIME_SHA,
+      artifactDigest: ARTIFACT_DIGEST,
+      configuredFlags: allOff(),
+    })).toThrow(/window|receipt|completed/i);
   });
 
   it('derives production staging prerequisite from a strict ON receipt and live exact health', async () => {
@@ -520,6 +704,41 @@ describe('chat capability flag transaction', () => {
         healthRaw: healthRaw.replace(
           '"timestamp":"2026-08-02T01:07:10.000Z"',
           '"timestamp":"2026-08-02T00:59:08.750Z"',
+        ),
+      },
+    ]) {
+      expect(() => helper.buildStagingCapabilityPrerequisite({
+        ...invalid,
+        dashboardRaw,
+        smokeRaw,
+        monitorRaw,
+        flag: 'AI_ROUTING_MANIFEST_CLASSIFIER',
+        runtimeSha: RUNTIME_SHA,
+        artifactDigest: ARTIFACT_DIGEST,
+        checkedAt: '2026-08-02T01:07:10.250Z',
+      })).toThrow(/staging|receipt|health|release|flag|kill/i);
+    }
+
+    for (const invalid of [
+      {
+        receiptRaw,
+        healthRaw: healthRaw.replace(
+          'nexus.chat-capability-release-attestation.v2',
+          'nexus.chat-capability-release-attestation.v1',
+        ),
+      },
+      {
+        receiptRaw,
+        healthRaw: healthRaw.replace(
+          '"dedicatedEval":{"present":true,"user":false,"tenant":false}',
+          '"dedicatedEval":{"present":true,"user":false,"tenant":false,"id":424242}',
+        ),
+      },
+      {
+        receiptRaw,
+        healthRaw: healthRaw.replace(
+          '"shadowRouteHookEffective":{"global":false',
+          '"shadowRouteHookEffective":{"global":true',
         ),
       },
     ]) {
@@ -616,6 +835,11 @@ describe('chat capability flag transaction', () => {
         tenant1000014: false,
         user1000016: false,
         tenant1000016: false,
+        dedicatedEval: {
+          present: true,
+          user: false,
+          tenant: false,
+        },
       },
       smokeScriptSha256: '9'.repeat(64),
       expectedProductionPlanSequence: 1,
@@ -1011,6 +1235,12 @@ describe('chat capability flag transaction', () => {
       evidenceAttestation: routingEvidence({ artifactDigest: 'e'.repeat(64) }),
     })).planDigest)
       .not.toBe(plan.planDigest);
+    expect((await classifierPlan({
+      evidenceAttestation: routingEvidence({ shadowHookReceiptSha256: 'f'.repeat(64) }),
+    })).planDigest).not.toBe(plan.planDigest);
+    expect((await classifierPlan({
+      evidenceAttestation: routingEvidence({ liveHealthSha256: 'e'.repeat(64) }),
+    })).planDigest).not.toBe(plan.planDigest);
     const laterPlan = await classifierPlan({ previousPlanSequence: 7 });
     expect(laterPlan).toMatchObject({ previousPlanSequence: 7, planSequence: 8 });
     expect(laterPlan.planDigest).not.toBe(plan.planDigest);

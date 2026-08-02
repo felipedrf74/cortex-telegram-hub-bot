@@ -1,6 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { config } from '../config';
+import { getChatCapabilityRuntimeGuardStatus } from './chat-capability-runtime-guard';
 import type { CoachingDiscipline } from './coach-kernel/types';
 import type { TrainingPlanMode } from './training-workout-capability-registry';
 
@@ -246,7 +247,9 @@ export function isChatBilingualEvalGateEnabled(env: RuntimeEnv = process.env, sc
 
 export function isChatCoreV2ShadowRouteHookEnabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
   const raw = scopedEnvValue(env, 'CHAT_CORE_V2_SHADOW_ROUTE_HOOK_ENABLED', scope)?.trim().toLowerCase();
-  return raw === 'true' || raw === 'on' || raw === '1' || raw === 'shadow';
+  const enabled = raw === 'true' || raw === 'on' || raw === '1' || raw === 'shadow';
+  if (!enabled) return false;
+  return getChatCapabilityRuntimeGuardStatus(env).status !== 'forced_off';
 }
 
 export function isChatCoreV2ShadowPlannerEnabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {

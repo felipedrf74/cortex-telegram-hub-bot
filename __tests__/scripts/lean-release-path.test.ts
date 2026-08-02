@@ -894,8 +894,8 @@ db.close();
     const guardDefinition = remote.indexOf(
       'assert_no_unresolved_chat_capability_transaction() {',
     );
-    const guardCall = remote.lastIndexOf(
-      '\nassert_no_unresolved_chat_capability_transaction\n',
+    const guardCall = remote.indexOf(
+      '\nassert_no_unresolved_chat_capability_transaction "$BASE_DIR"\n',
     );
     const releaseLock = remote.indexOf(
       'flock -n 9 || die "another staging, production, or Sonar-sensitive release action is active"',
@@ -920,8 +920,8 @@ db.close();
     const guardDefinition = remote.indexOf(
       'assert_no_unpublished_chat_capability_receipt() {',
     );
-    const guardCall = remote.lastIndexOf(
-      '\nassert_no_unpublished_chat_capability_receipt\n',
+    const guardCall = remote.indexOf(
+      '\nassert_no_unpublished_chat_capability_receipt "$ROLE"\n',
     );
     const releaseLock = remote.indexOf(
       'flock -n 9 || die "another staging, production, or Sonar-sensitive release action is active"',
@@ -931,6 +931,8 @@ db.close();
     expect(guardDefinition).toBeGreaterThan(-1);
     expect(remote).toContain('*.flag-receipt.json');
     expect(remote).toContain('*.secret-receipt.json');
+    expect(remote).toContain('*.shadow-hook-receipt.json');
+    expect(remote).toContain('nexus.chat-shadow-route-hook-transaction.v1');
     expect(remote).toContain(
       'unpublished chat capability receipt blocks release; recover it first',
     );
@@ -940,10 +942,38 @@ db.close();
     expect(guardCall).toBeLessThan(remote.indexOf('switch_current "$RELEASE_DIR"'));
   });
 
-  it('requires every release candidate boundary to start with all seven capabilities off', () => {
+  it('refuses production admission while staging capability recovery or receipt publication is incomplete', () => {
+    const remote = fs.readFileSync('scripts/remote-user-release-transaction.sh', 'utf8');
+    const releaseLock = remote.indexOf(
+      'flock -n 9 || die "another staging, production, or Sonar-sensitive release action is active"',
+    );
+    const firstDeploymentWork = remote.indexOf('\nverify_pristine_bundle\n');
+    const productionBoundary = remote.indexOf(
+      'assert_no_unresolved_chat_capability_transaction /home/dominguez/telegram-hub-bot-staging',
+    );
+
+    expect(remote).toContain('local capability_base="$1"');
+    expect(remote).toContain('local receipt_role="$1"');
+    expect(remote).toContain('assert_no_unresolved_chat_capability_transaction "$BASE_DIR"');
+    expect(remote).toContain('assert_no_unpublished_chat_capability_receipt "$ROLE"');
+    expect(remote).toContain(
+      'assert_no_unresolved_chat_capability_transaction /home/dominguez/telegram-hub-bot-staging',
+    );
+    expect(remote).toContain('assert_no_unpublished_chat_capability_receipt staging');
+    expect(remote).toContain('*.observation-plan.json');
+    expect(remote).toContain('*.observation-receipt.json');
+    expect(remote).toContain('nexus.chat-capability-observation-receipt.v1');
+    expect(remote).toContain(
+      'unpublished staging chat capability observation blocks release; recover it first',
+    );
+    expect(productionBoundary).toBeGreaterThan(releaseLock);
+    expect(productionBoundary).toBeLessThan(firstDeploymentWork);
+  });
+
+  it('requires every release candidate boundary to start with all seven capabilities and every shadow runtime scope off', () => {
     const remote = fs.readFileSync('scripts/remote-user-release-transaction.sh', 'utf8');
     const match = remote.match(
-      /assert_release_candidate_chat_capabilities_off\(\) \{[\s\S]*?"\$NODE_BIN" - "\$BASE_DIR\/\.env" <<'NODE'\n([\s\S]*?)\nNODE\n\}/u,
+      /assert_release_candidate_chat_capabilities_off\(\) \{[\s\S]*?"\$NODE_BIN" - "\$environment_file" <<'NODE'\n([\s\S]*?)\nNODE\n\}/u,
     );
     expect(match).not.toBeNull();
     const parser = match![1];
@@ -955,6 +985,10 @@ db.close();
       'AI_ROUTING_CLARIFY',
       'AI_CLASSIFY_MANIFEST_PROMPT',
       'AI_CROSS_SKILL_EXECUTION',
+    ];
+    const shadowPolicies = [
+      'CHAT_CORE_V2_SHADOW_ROUTE_HOOK_ENABLED',
+      'CHAT_CORE_V2_SHADOW_PLANNER_ENABLED',
     ];
     const run = (lines: string[]) => {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-release-flags-'));
@@ -973,6 +1007,14 @@ db.close();
     expect(run(flags.map((flag) => `${flag}=false`)).status).toBe(0);
     expect(run(['AI_ROUTING_MANIFEST_KILL=true']).status).toBe(0);
     expect(run([...canonical.slice(0, -1), 'AI_ROUTING_MANIFEST_KILL=true']).status).toBe(0);
+    expect(run([
+      'CHAT_CORE_V2_SHADOW_ROUTE_HOOK_ENABLED=false',
+      'CHAT_CORE_V2_SHADOW_ROUTE_HOOK_ENABLED_USER_42=off',
+      'CHAT_CORE_V2_SHADOW_ROUTE_HOOK_ENABLED_TENANT_eval-fixture=0',
+      'CHAT_CORE_V2_SHADOW_PLANNER_ENABLED=false',
+      'CHAT_CORE_V2_SHADOW_PLANNER_ENABLED_USER_42=off',
+      'CHAT_CORE_V2_SHADOW_PLANNER_ENABLED_TENANT_eval-fixture=0',
+    ]).status).toBe(0);
     for (const invalid of [
       [...canonical, `${flags[0]}=false`],
       canonical.map((line, index) => index === 0 ? `${flags[0]}=true` : line),
@@ -984,8 +1026,23 @@ db.close();
     ]) {
       expect(run(invalid).status).not.toBe(0);
     }
+    for (const policy of shadowPolicies) {
+      for (const enabled of ['true', 'on', '1', 'shadow']) {
+        expect(run([`${policy}=${enabled}`]).status).not.toBe(0);
+        expect(run([`${policy}_USER_42=${enabled}`]).status).not.toBe(0);
+        expect(run([`${policy}_TENANT_eval-fixture=${enabled}`]).status).not.toBe(0);
+      }
+      expect(run([`${policy}=false`, `${policy}_USER_42=true`]).status).not.toBe(0);
+      expect(run([`${policy}_TENANT_42=false`, `${policy}_TENANT_42=false`]).status)
+        .not.toBe(0);
+      expect(run([`${policy}_USER_42=maybe`]).status).not.toBe(0);
+      expect(run([`export ${policy}_USER_42=\"shadow\"`]).status).not.toBe(0);
+      expect(run([` ${policy}_TENANT_42 = 'on' # governed`]).status).not.toBe(0);
+    }
 
-    const guardCall = remote.lastIndexOf('\nassert_release_candidate_chat_capabilities_off\n');
+    const guardCall = remote.lastIndexOf(
+      '\nassert_release_candidate_chat_capabilities_off "$BASE_DIR/.env"\n',
+    );
     const releaseLock = remote.indexOf(
       'flock -n 9 || die "another staging, production, or Sonar-sensitive release action is active"',
     );
@@ -993,6 +1050,10 @@ db.close();
     expect(guardCall).toBeLessThan(remote.indexOf('\nverify_pristine_bundle\n'));
     expect(guardCall).toBeLessThan(remote.indexOf('cp -a "$SOURCE_BUNDLE/."'));
     expect(guardCall).toBeLessThan(remote.indexOf('switch_current "$RELEASE_DIR"'));
+    expect(remote).toContain(
+      'assert_release_candidate_chat_capabilities_off '
+      + '/home/dominguez/telegram-hub-bot-staging/.env',
+    );
     expect(remote).not.toMatch(/assert_release_candidate_chat_capabilities_off[\s\S]*?\$ROLE\s*=/u);
   });
 

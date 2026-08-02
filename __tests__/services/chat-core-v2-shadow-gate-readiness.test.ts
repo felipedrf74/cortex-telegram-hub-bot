@@ -157,12 +157,18 @@ describe('Chat Core v2 shadow gate readiness', () => {
     seedPlannerSchemaCompliance(50);
 
     const baseDivergence = {
-      divergenceVersion: 'routing_divergence_shadow@2.0.0',
+      divergenceVersion: 'routing_divergence_shadow@4.0.0',
       resolverVersion: 'manifest-intent-resolver@1.0.0',
       releaseIdentity: {
         runtimeSha: 'a'.repeat(40),
         artifactDigest: 'b'.repeat(64),
         role: 'staging',
+      },
+      recorderState: {
+        userId: '7',
+        tenantId: '7',
+        shadowRouteHookEffective: true,
+        shadowPlannerEffective: false,
       },
       topCandidate: {
         capabilityId: 'secretary',
@@ -237,10 +243,32 @@ describe('Chat Core v2 shadow gate readiness', () => {
       }),
       '2026-05-29T12:00:02.000Z',
     );
+    insert.run(
+      'chatv2-shadow-replay:candidate-bound-unsafe-recorder-state',
+      'candidate-bound-unsafe-recorder-state',
+      'normal',
+      '90d',
+      bundle({
+        ...baseDivergence,
+        recorderState: {
+          ...baseDivergence.recorderState,
+          rawIdentityLabel: 'must-not-pass',
+        },
+      }),
+      '2026-05-29T12:00:03.000Z',
+    );
+    insert.run(
+      'chatv2-shadow-replay:candidate-bound-missing-recorder-state',
+      'candidate-bound-missing-recorder-state',
+      'normal',
+      '90d',
+      bundle({ ...baseDivergence, recorderState: undefined }),
+      '2026-05-29T12:00:04.000Z',
+    );
 
     const readiness = evaluateChatCoreV2ShadowGateReadiness(db);
-    expect(readiness.rowCount).toBe(4);
-    expect(readiness.safeShapeViolationCount).toBe(2);
+    expect(readiness.rowCount).toBe(6);
+    expect(readiness.safeShapeViolationCount).toBe(4);
     expect(readiness.meetsSafeShape).toBe(false);
   });
 
@@ -253,6 +281,12 @@ describe('Chat Core v2 shadow gate readiness', () => {
       'add milk to my shopping list',
       { intent: 'create_action', domains: ['tasks'] },
       {
+        recorderState: {
+          userId: '7',
+          tenantId: '7',
+          shadowRouteHookEffective: true,
+          shadowPlannerEffective: false,
+        },
         env: {
           NEXUS_RELEASE_SHA: 'a'.repeat(40),
           NEXUS_RELEASE_ARTIFACT_SHA256: 'b'.repeat(64),

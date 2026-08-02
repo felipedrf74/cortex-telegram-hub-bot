@@ -1,6 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { describe, expect, it } from 'vitest';
+import { getChatCapabilityRuntimeGuardStatus } from '../../src/services/chat-capability-runtime-guard';
 import {
   areGlobalInvoiceVendorsEnabled,
   canUseAnthropicRuntimeFallback,
@@ -474,6 +475,22 @@ describe('runtime-flags', () => {
       CHAT_CORE_V2_SHADOW_ROUTE_HOOK_ENABLED: 'true',
       CHAT_CORE_V2_SHADOW_ROUTE_HOOK_ENABLED_USER_42: 'off',
     }, { userId: 42, tenantId: 9 })).toBe(false);
+  });
+
+  it('forces the Chat Core v2 shadow route hook off when a deployed runtime guard is forced off', () => {
+    const deployedEnv = {
+      NODE_ENV: 'production',
+      NEXUS_RELEASE_ROLE: 'production',
+      CHAT_CORE_V2_SHADOW_ROUTE_HOOK_ENABLED: 'true',
+    };
+
+    expect(getChatCapabilityRuntimeGuardStatus(deployedEnv).status).toBe('forced_off');
+    expect(isChatCoreV2ShadowRouteHookEnabled(deployedEnv)).toBe(false);
+
+    expect(isChatCoreV2ShadowRouteHookEnabled({
+      NODE_ENV: 'test',
+      CHAT_CORE_V2_SHADOW_ROUTE_HOOK_ENABLED: 'true',
+    })).toBe(true);
   });
 
   it('keeps Chat Core v2 live capability flags default-off with scoped opt-in', () => {

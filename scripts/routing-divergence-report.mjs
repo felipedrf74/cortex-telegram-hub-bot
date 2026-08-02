@@ -21,12 +21,14 @@
 //     --surface classifierKeyword \
 //     --since 2026-07-31T12:00:00.000Z \
 //     [--until 2026-07-31T18:00:00.000Z] \
-//     --divergence-version routing_divergence_shadow@3.0.0 \
+//     --divergence-version routing_divergence_shadow@4.0.0 \
 //     --resolver-version manifest-intent-resolver@1.0.0 \
 //     --runtime-sha <40-hex-sha> \
 //     --artifact-digest <64-hex-sha256> \
 //     --environment staging \
-//     --minimum-comparisons <positive-integer>
+//     --minimum-comparisons <positive-integer> \
+//     --shadow-hook-receipt <server-transaction-receipt.json> \
+//     --live-health <server-detailed-health.json>
 //
 // --until pins the upper bound of the evidence window. Without it the window
 // ends at report-generation time, so re-running the same command silently
@@ -36,7 +38,9 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
+import { validateShadowRouteHookReceipt } from './lib/chat-capability-flag-transaction.mjs';
 
 const require = createRequire(import.meta.url);
 const Database = require('better-sqlite3');
@@ -75,6 +79,8 @@ const runtimeSha = readArg('--runtime-sha', undefined);
 const artifactDigest = readArg('--artifact-digest', undefined);
 const environment = readArg('--environment', undefined);
 const minimumComparisonsRaw = readArg('--minimum-comparisons', undefined);
+const shadowHookReceiptPath = readArg('--shadow-hook-receipt', undefined);
+const liveHealthPath = readArg('--live-health', undefined);
 const MINIMUM_AGREEMENT_RATE = 0.99;
 const TELEMETRY_IDENTIFIER = /^[a-zA-Z0-9@._:-]{1,128}$/;
 const FULL_RUNTIME_SHA = /^[0-9a-f]{40}$/;
@@ -89,6 +95,13 @@ const SURFACE_TO_FLAG = Object.freeze({
 const SURFACES = Object.freeze(Object.keys(SURFACE_TO_FLAG));
 const MASTER_KILL_FLAG = 'AI_ROUTING_MANIFEST_KILL';
 const CAPABILITY_FLAG_KEYS = Object.freeze([...SURFACES, 'masterKill']);
+const RECORDER_STATE_KEYS = Object.freeze([
+  'userId',
+  'tenantId',
+  'shadowRouteHookEffective',
+  'shadowPlannerEffective',
+]);
+const REQUIRED_DIVERGENCE_VERSION = 'routing_divergence_shadow@4.0.0';
 
 function failUsage(message) {
   console.error(`routing-divergence-report: ${message}`);
@@ -153,6 +166,191 @@ function capabilityFlagStateKey(flags) {
   return CAPABILITY_FLAG_KEYS.map((key) => `${key}=${flags[key] ? 'on' : 'off'}`).join(',');
 }
 
+function sha256(bytes) {
+  return createHash('sha256').update(bytes).digest('hex');
+}
+
+function readJsonEvidenceFile(flag, filePath) {
+  if (!fs.existsSync(filePath)) failUsage(`${flag} file does not exist`);
+  let raw;
+  try {
+    raw = fs.readFileSync(filePath);
+  } catch {
+    failUsage(`${flag} file could not be read`);
+  }
+  try {
+    return { raw, value: JSON.parse(raw.toString('utf8')), sha256: sha256(raw) };
+  } catch {
+    failUsage(`${flag} must contain valid JSON`);
+  }
+}
+
+function isExactObject(value, keys) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const actual = Object.keys(value);
+  return actual.length === keys.length && actual.every((key) => keys.includes(key));
+}
+
+function validateShadowHookReceiptEvidence(filePath) {
+  const parsed = readJsonEvidenceFile('--shadow-hook-receipt', filePath);
+  let receipt;
+  try {
+    receipt = validateShadowRouteHookReceipt(parsed.value);
+  } catch (error) {
+    failUsage(`shadow hook receipt is invalid: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (
+    receipt.role !== 'staging'
+    || receipt.status !== 'passed'
+    || receipt.action !== 'enable'
+    || receipt.desiredValue !== true
+    || receipt.transitionReason !== 'dedicated_eval_evidence_collection'
+    || receipt.dedicatedIdentityAttested !== true
+    || receipt.recorderAfter?.user !== true
+    || receipt.recorderAfter?.tenant !== true
+    || receipt.health?.backend !== 'passed'
+    || receipt.health?.identity !== 'passed'
+    || receipt.health?.shadowHook !== 'passed'
+    || receipt.rollback?.status !== 'not_required'
+  ) {
+    failUsage('shadow hook receipt must be an exact passed staging enable transaction');
+  }
+  return { receipt, sha256: parsed.sha256 };
+}
+
+function validateLiveHealthEvidence(filePath) {
+  const parsed = readJsonEvidenceFile('--live-health', filePath);
+  const health = parsed.value;
+  const attestation = health?.releaseAttestation;
+  const hook = attestation?.shadowRouteHookEffective;
+  const planner = attestation?.shadowPlannerEffective;
+  const guard = attestation?.capabilityRuntimeGuard;
+  const dedicatedHook = hook?.dedicatedEval;
+  const dedicatedPlanner = planner?.dedicatedEval;
+  const checkedAt = parseCanonicalTimestamp('live health timestamp', health?.timestamp);
+  if (
+    health?.status !== 'healthy'
+    || health?.database !== 'connected'
+    || attestation?.schema !== 'nexus.chat-capability-release-attestation.v2'
+    || !isExactObject(guard, ['status', 'reason', 'transactionId', 'planDigest'])
+    || guard?.status !== 'clear'
+    || guard.reason !== 'no_unresolved_transaction'
+    || guard.transactionId !== null
+    || guard.planDigest !== null
+    || !isExactObject(hook, ['global', 'dedicatedEval'])
+    || !isExactObject(dedicatedHook, ['present', 'user', 'tenant'])
+    || !isExactObject(planner, [
+      'global',
+      'user1000014',
+      'tenant1000014',
+      'user1000016',
+      'tenant1000016',
+      'dedicatedEval',
+    ])
+    || !isExactObject(dedicatedPlanner, ['present', 'user', 'tenant'])
+    || hook.global !== false
+    || dedicatedHook.present !== true
+    || dedicatedHook.user !== true
+    || dedicatedHook.tenant !== true
+    || planner.global !== false
+    || planner.user1000014 !== false
+    || planner.tenant1000014 !== false
+    || planner.user1000016 !== false
+    || planner.tenant1000016 !== false
+    || dedicatedPlanner.present !== true
+    || dedicatedPlanner.user !== false
+    || dedicatedPlanner.tenant !== false
+  ) {
+    failUsage('live health does not attest the exact healthy dedicated recorder state');
+  }
+  return { health, attestation, checkedAt, sha256: parsed.sha256 };
+}
+
+function isStrictRecorderStateShape(value) {
+  if (!isExactObject(value, RECORDER_STATE_KEYS)) return false;
+  const canonicalPositiveId = (candidate) => {
+    if (typeof candidate !== 'string' || !/^[1-9][0-9]*$/u.test(candidate)) return false;
+    const parsed = Number(candidate);
+    return Number.isSafeInteger(parsed) && String(parsed) === candidate;
+  };
+  if (
+    !canonicalPositiveId(value.userId)
+    || !canonicalPositiveId(value.tenantId)
+    || typeof value.shadowRouteHookEffective !== 'boolean'
+    || typeof value.shadowPlannerEffective !== 'boolean'
+  ) return false;
+  return true;
+}
+
+function classifyRecorderState(value, dedicatedId) {
+  if (!isStrictRecorderStateShape(value)) return 'missing_or_malformed';
+  const expectedId = String(dedicatedId);
+  if (value.userId !== expectedId || value.tenantId !== expectedId) return 'dedicated_scope_mismatch';
+  if (value.shadowRouteHookEffective !== true) return 'hook_not_effective';
+  if (value.shadowPlannerEffective !== false) return 'planner_effective';
+  return 'exact';
+}
+
+function isSafeIdentifier(value) {
+  return typeof value === 'string' && /^[a-zA-Z0-9@._:-]{1,128}$/u.test(value);
+}
+
+function isStrictDivergenceShape(value) {
+  if (!isExactObject(value, [
+    'divergenceVersion',
+    'resolverVersion',
+    'releaseIdentity',
+    'capabilityFlags',
+    'recorderState',
+    'topCandidate',
+    'candidateCount',
+    'surfaces',
+    'agreement',
+  ])) return false;
+  if (!isSafeIdentifier(value.divergenceVersion) || !isSafeIdentifier(value.resolverVersion)) return false;
+  if (!isStrictReleaseIdentity(value.releaseIdentity)) return false;
+  if (!isStrictCapabilityFlagState(value.capabilityFlags)) return false;
+  if (!isStrictRecorderStateShape(value.recorderState)) return false;
+  if (!Number.isSafeInteger(value.candidateCount) || value.candidateCount < 0) return false;
+  const top = value.topCandidate;
+  if (top !== null) {
+    if (!isExactObject(top, [
+      'capabilityId', 'domain', 'skill', 'rawScore', 'matchedEvidenceCount',
+    ])) return false;
+    if (
+      !isSafeIdentifier(top.capabilityId)
+      || !isSafeIdentifier(top.domain)
+      || !isSafeIdentifier(top.skill)
+      || typeof top.rawScore !== 'number'
+      || !Number.isFinite(top.rawScore)
+      || !Number.isSafeInteger(top.matchedEvidenceCount)
+      || top.matchedEvidenceCount < 0
+    ) return false;
+  }
+  const surfaces = value.surfaces;
+  if (!isExactObject(surfaces, [
+    'classifierKeywordDomain',
+    'orchestratorPrimaryDomain',
+    'registryActionSkills',
+    'shadowRouteIntent',
+    'shadowRouteDomains',
+  ])) return false;
+  if (
+    !(surfaces.classifierKeywordDomain === null || isSafeIdentifier(surfaces.classifierKeywordDomain))
+    || !(surfaces.orchestratorPrimaryDomain === null || isSafeIdentifier(surfaces.orchestratorPrimaryDomain))
+    || !Array.isArray(surfaces.registryActionSkills)
+    || !surfaces.registryActionSkills.every(isSafeIdentifier)
+    || !isSafeIdentifier(surfaces.shadowRouteIntent)
+    || !Array.isArray(surfaces.shadowRouteDomains)
+    || !surfaces.shadowRouteDomains.every(isSafeIdentifier)
+  ) return false;
+  const agreement = value.agreement;
+  if (!isExactObject(agreement, SURFACES)) return false;
+  return SURFACES.every((surface) => (
+    agreement[surface] === null || typeof agreement[surface] === 'boolean'
+  ));
+}
+
 if (gateEnabled && (
   !selectedSurface
   || !sinceRaw
@@ -162,10 +360,13 @@ if (gateEnabled && (
   || !artifactDigest
   || !environment
   || !minimumComparisonsRaw
+  || !shadowHookReceiptPath
+  || !liveHealthPath
 )) {
   failUsage(
     '--gate requires explicit --surface, --since, --divergence-version, --resolver-version, '
-    + '--runtime-sha, --artifact-digest, --environment, and --minimum-comparisons',
+    + '--runtime-sha, --artifact-digest, --environment, --minimum-comparisons, '
+    + '--shadow-hook-receipt, and --live-health',
   );
 }
 // A gate run is a saved receipt (divergence-gate.json), so it must emit the
@@ -175,6 +376,9 @@ if (gateEnabled && !asJson) {
 }
 if ((divergenceVersion === undefined) !== (resolverVersion === undefined)) {
   failUsage('--divergence-version and --resolver-version must be supplied together');
+}
+if ((shadowHookReceiptPath === undefined) !== (liveHealthPath === undefined)) {
+  failUsage('--shadow-hook-receipt and --live-health must be supplied together');
 }
 const releaseIdentityValues = [runtimeSha, artifactDigest, environment];
 if (
@@ -191,6 +395,9 @@ if (since !== undefined && until !== undefined && Date.parse(until) < Date.parse
 if (divergenceVersion !== undefined) {
   validateTelemetryIdentifier('--divergence-version', divergenceVersion);
   validateTelemetryIdentifier('--resolver-version', resolverVersion);
+}
+if (gateEnabled && divergenceVersion !== REQUIRED_DIVERGENCE_VERSION) {
+  failUsage(`--gate requires --divergence-version ${REQUIRED_DIVERGENCE_VERSION}`);
 }
 if (selectedSurface !== undefined && !Object.hasOwn(SURFACE_TO_FLAG, selectedSurface)) {
   failUsage(`--surface must be one of: ${SURFACES.join(', ')}`);
@@ -210,6 +417,32 @@ if (gateEnabled && environment !== 'staging') {
 const minimumComparisons = minimumComparisonsRaw === undefined
   ? undefined
   : parsePositiveInteger('--minimum-comparisons', minimumComparisonsRaw);
+const shadowHookReceiptEvidence = gateEnabled
+  ? validateShadowHookReceiptEvidence(shadowHookReceiptPath)
+  : null;
+const liveHealthEvidence = gateEnabled
+  ? validateLiveHealthEvidence(liveHealthPath)
+  : null;
+if (gateEnabled) {
+  const receipt = shadowHookReceiptEvidence.receipt;
+  const attestation = liveHealthEvidence.attestation;
+  if (
+    receipt.runtimeSha !== runtimeSha
+    || receipt.artifactDigest !== artifactDigest
+    || receipt.role !== environment
+    || attestation.runtimeSha !== runtimeSha
+    || attestation.artifactDigest !== artifactDigest
+    || attestation.role !== environment
+  ) {
+    failUsage('shadow hook receipt, live health, and requested release identity must match exactly');
+  }
+  if (Date.parse(since) < Date.parse(receipt.completedAt)) {
+    failUsage('--since must be at or after shadow hook receipt completedAt');
+  }
+  if (Date.parse(liveHealthEvidence.checkedAt) < Date.parse(receipt.completedAt)) {
+    failUsage('live health timestamp must be at or after shadow hook receipt completedAt');
+  }
+}
 const generatedAt = new Date().toISOString();
 // Operator-pinnable upper bound: without --until the window ends at generation
 // time, so the same command evaluates a wider window on every re-run.
@@ -274,6 +507,12 @@ let selectedSurfaceFlagOnBundles = 0;
 let masterKillEngagedBundles = 0;
 let capabilityFlagIneligibleBundles = 0;
 let capabilityFlagEligibleBundles = 0;
+let exactRecorderStateBundles = 0;
+let missingRecorderStateBundles = 0;
+let dedicatedScopeMismatchBundles = 0;
+let hookNotEffectiveBundles = 0;
+let plannerEffectiveBundles = 0;
+let malformedDivergenceBundles = 0;
 // exact observed flag-state key -> count
 const observedCapabilityFlagStates = new Map();
 // surface -> skill -> { compared, agreed }
@@ -293,6 +532,23 @@ for (const row of rows) {
   const divergence = bundle?.contextPack?.routingDivergence;
   if (!divergence) continue;
   withDivergence += 1;
+  let recorderStateClass = null;
+  let divergenceShapeKnown = true;
+  if (gateEnabled) {
+    recorderStateClass = classifyRecorderState(
+      divergence.recorderState,
+      shadowHookReceiptEvidence.receipt.dedicatedTenantId,
+    );
+    if (recorderStateClass === 'exact') exactRecorderStateBundles += 1;
+    else if (recorderStateClass === 'missing_or_malformed') missingRecorderStateBundles += 1;
+    else if (recorderStateClass === 'dedicated_scope_mismatch') dedicatedScopeMismatchBundles += 1;
+    else if (recorderStateClass === 'hook_not_effective') hookNotEffectiveBundles += 1;
+    else if (recorderStateClass === 'planner_effective') plannerEffectiveBundles += 1;
+    if (!isStrictDivergenceShape(divergence)) {
+      malformedDivergenceBundles += 1;
+      divergenceShapeKnown = false;
+    }
+  }
   if (identityFilterEnabled) {
     const divergenceMatches = divergenceVersion === undefined
       || divergence.divergenceVersion === divergenceVersion;
@@ -349,6 +605,7 @@ for (const row of rows) {
     }
   }
   if (gateEnabled) {
+    if (!divergenceShapeKnown) continue;
     const flagEligible = capabilityFlagStateKnown
       && !recordedCapabilityFlags.masterKill
       && !recordedCapabilityFlags[selectedSurface];
@@ -357,6 +614,7 @@ for (const row of rows) {
       continue;
     }
     capabilityFlagEligibleBundles += 1;
+    if (recorderStateClass !== 'exact') continue;
   }
 
   const top = divergence.topCandidate;
@@ -412,6 +670,26 @@ const surfaceTotals = Object.fromEntries(
 
 const gateFailures = gateEnabled
   ? [
+    ...(invalidJsonBundles > 0
+      ? [{ scope: 'evidence', reason: 'malformed_bundle_json', bundles: invalidJsonBundles }]
+      : []),
+    ...((totalBundles - invalidJsonBundles - withDivergence) > 0
+      ? [{
+        scope: 'evidence',
+        reason: 'missing_divergence_telemetry',
+        bundles: totalBundles - invalidJsonBundles - withDivergence,
+      }]
+      : []),
+    ...(identityMismatchBundles > 0
+      ? [{ scope: 'evidence', reason: 'mixed_evidence_identity', bundles: identityMismatchBundles }]
+      : []),
+    ...(malformedDivergenceBundles > 0
+      ? [{
+        scope: 'evidence',
+        reason: 'malformed_divergence_telemetry',
+        bundles: malformedDivergenceBundles,
+      }]
+      : []),
     ...(identityMatchedBundles === 0
       ? [{ scope: 'evidence', reason: 'zero_identity_matched_bundles', matchedBundles: 0 }]
       : []),
@@ -437,6 +715,42 @@ const gateFailures = gateEnabled
         reason: 'master_kill_engaged',
         capabilityFlag: MASTER_KILL_FLAG,
         bundles: masterKillEngagedBundles,
+      }]
+      : []),
+    ...(missingRecorderStateBundles > 0
+      ? [{
+        scope: 'shadow_recorder',
+        reason: 'missing_or_malformed_recorder_state',
+        bundles: missingRecorderStateBundles,
+      }]
+      : []),
+    ...(dedicatedScopeMismatchBundles > 0
+      ? [{
+        scope: 'shadow_recorder',
+        reason: 'dedicated_scope_mismatch',
+        bundles: dedicatedScopeMismatchBundles,
+      }]
+      : []),
+    ...(hookNotEffectiveBundles > 0
+      ? [{
+        scope: 'shadow_recorder',
+        reason: 'shadow_route_hook_not_effective',
+        bundles: hookNotEffectiveBundles,
+      }]
+      : []),
+    ...(plannerEffectiveBundles > 0
+      ? [{
+        scope: 'shadow_recorder',
+        reason: 'shadow_planner_effective',
+        bundles: plannerEffectiveBundles,
+      }]
+      : []),
+    ...(exactRecorderStateBundles !== capabilityFlagEligibleBundles
+      ? [{
+        scope: 'shadow_recorder',
+        reason: 'recorder_state_count_does_not_match_eligible_bundles',
+        exactRecorderStateBundles,
+        eligibleBundles: capabilityFlagEligibleBundles,
       }]
       : []),
     ...(identityMatchedBundles > 0 && capabilityFlagEligibleBundles === 0
@@ -495,6 +809,7 @@ const report = {
       artifactDigestMismatchBundles,
       environmentMismatchBundles,
       releaseIdentityShapeMismatchBundles,
+      malformedDivergenceBundles,
     },
     runtimeArtifactBinding: {
       available: runtimeSha !== undefined,
@@ -519,6 +834,50 @@ const report = {
         .sort((a, b) => b[1] - a[1])
         .map(([state, bundles]) => ({ state, bundles })),
     },
+    ...(gateEnabled ? {
+      shadowRecorderBinding: {
+        enforced: true,
+        receipt: {
+          schema: shadowHookReceiptEvidence.receipt.schema,
+          sha256: shadowHookReceiptEvidence.sha256,
+          transactionId: shadowHookReceiptEvidence.receipt.transactionId,
+          planDigest: shadowHookReceiptEvidence.receipt.planDigest,
+          planSequence: shadowHookReceiptEvidence.receipt.planSequence,
+          completedAt: shadowHookReceiptEvidence.receipt.completedAt,
+          runtimeSha: shadowHookReceiptEvidence.receipt.runtimeSha,
+          artifactDigest: shadowHookReceiptEvidence.receipt.artifactDigest,
+          role: shadowHookReceiptEvidence.receipt.role,
+          status: shadowHookReceiptEvidence.receipt.status,
+          action: shadowHookReceiptEvidence.receipt.action,
+          dedicatedTenantId: shadowHookReceiptEvidence.receipt.dedicatedTenantId,
+        },
+        liveHealth: {
+          sha256: liveHealthEvidence.sha256,
+          checkedAt: liveHealthEvidence.checkedAt,
+          shadowRouteHookGlobal: liveHealthEvidence.attestation.shadowRouteHookEffective.global,
+          shadowRouteHookDedicatedUser:
+            liveHealthEvidence.attestation.shadowRouteHookEffective.dedicatedEval.user,
+          shadowRouteHookDedicatedTenant:
+            liveHealthEvidence.attestation.shadowRouteHookEffective.dedicatedEval.tenant,
+          shadowPlannerGlobal: liveHealthEvidence.attestation.shadowPlannerEffective.global,
+          shadowPlannerDedicatedUser:
+            liveHealthEvidence.attestation.shadowPlannerEffective.dedicatedEval.user,
+          shadowPlannerDedicatedTenant:
+            liveHealthEvidence.attestation.shadowPlannerEffective.dedicatedEval.tenant,
+        },
+        requiredState: {
+          shadowRouteHookEffective: true,
+          shadowPlannerEffective: false,
+        },
+        counts: {
+          exactRecorderStateBundles,
+          missingRecorderStateBundles,
+          dedicatedScopeMismatchBundles,
+          hookNotEffectiveBundles,
+          plannerEffectiveBundles,
+        },
+      },
+    } : {}),
   },
   totalShadowBundles: totalBundles,
   bundlesWithDivergenceTelemetry: withDivergence,
