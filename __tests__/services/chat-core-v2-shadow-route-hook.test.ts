@@ -29,6 +29,16 @@ const RELEASE_IDENTITY_ENV = {
   NEXUS_RELEASE_ARTIFACT_SHA256: 'b'.repeat(64),
   NEXUS_RELEASE_ROLE: 'staging',
 };
+const SYNTHETIC_QA_PROVENANCE = {
+  contractVersion: 'routing-synthetic-qa-v1' as const,
+  trafficClass: 'owner_authorized_synthetic_staging_qa' as const,
+  manifestSha256: `sha256:${'c'.repeat(64)}`,
+  surface: 'classifierKeyword' as const,
+  ordinal: 1,
+  plannedTurns: 200 as const,
+  turnId: `routing-synthetic-qa-v1:${'c'.repeat(64)}:classifierKeyword:001`,
+  locale: 'en-US' as const,
+};
 
 function stubReleaseIdentityEnv(
   releaseEnvironment: Partial<typeof RELEASE_IDENTITY_ENV>,
@@ -309,6 +319,7 @@ describe('Chat Core v2 shadow route hook', () => {
           shadowRouteHookEffective: boolean;
           shadowPlannerEffective: boolean;
         };
+        trafficProvenance: typeof SYNTHETIC_QA_PROVENANCE | null;
         topCandidate: { capabilityId: string; domain: string; skill: string; rawScore: number; matchedEvidenceCount: number } | null;
         candidateCount: number;
         surfaces: { shadowRouteIntent: string; shadowRouteDomains: string[]; registryActionSkills: string[] };
@@ -318,7 +329,7 @@ describe('Chat Core v2 shadow route hook', () => {
     };
     const divergence = contextPack.routingDivergence;
     expect(divergence).toBeDefined();
-    expect(divergence!.divergenceVersion).toBe('routing_divergence_shadow@4.0.0');
+    expect(divergence!.divergenceVersion).toBe('routing_divergence_shadow@5.0.0');
     expect(divergence!.resolverVersion).toBe('manifest-intent-resolver@1.0.0');
     expect(divergence!.releaseIdentity).toEqual({
       runtimeSha: RELEASE_IDENTITY_ENV.NEXUS_RELEASE_SHA,
@@ -343,6 +354,7 @@ describe('Chat Core v2 shadow route hook', () => {
       shadowRouteHookEffective: true,
       shadowPlannerEffective: false,
     });
+    expect(divergence!.trafficProvenance).toBeNull();
     // "Create a task to buy milk tomorrow" — resolver and shadow route agree on secretary/tasks.
     expect(divergence!.topCandidate).toMatchObject({ capabilityId: 'secretary', domain: 'secretary' });
     expect(divergence!.topCandidate!.rawScore).toBeGreaterThan(0);
@@ -354,6 +366,52 @@ describe('Chat Core v2 shadow route hook', () => {
     expect(serialized).not.toContain(BASE.normalizedText);
     // Additive: the pre-existing row fields are untouched.
     expect(contextPack.messageHash).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it('persists the exact owner-authorized synthetic QA provenance and attests it in the result', () => {
+    stubReleaseIdentityEnv(RELEASE_IDENTITY_ENV);
+    const result = runChatCoreV2ShadowRouteHook({
+      ...BASE,
+      chatRequestId: 'chat-shadow-hook-synthetic-provenance',
+      clientMessageId: SYNTHETIC_QA_PROVENANCE.turnId,
+      env: ENABLED_ENV,
+      db,
+      trafficProvenance: SYNTHETIC_QA_PROVENANCE,
+      routingDivergenceDeps: {
+        // The live input must win over this test seam.
+        trafficProvenance: null,
+      },
+    });
+
+    expect(result.recorded).toBe(true);
+    expect(result.trafficProvenanceRecorded).toBe(true);
+    const bundles = listChatV2ReplayBundlesForTurn('chat-shadow-hook-synthetic-provenance', db);
+    const contextPack = bundles[0].bundle?.contextPack as {
+      routingDivergence?: { trafficProvenance: unknown };
+    };
+    expect(contextPack.routingDivergence?.trafficProvenance).toEqual(SYNTHETIC_QA_PROVENANCE);
+  });
+
+  it('fails closed before writing a replay when synthetic QA provenance is malformed', () => {
+    stubReleaseIdentityEnv(RELEASE_IDENTITY_ENV);
+    const result = runChatCoreV2ShadowRouteHook({
+      ...BASE,
+      chatRequestId: 'chat-shadow-hook-malformed-synthetic-provenance',
+      env: ENABLED_ENV,
+      db,
+      trafficProvenance: {
+        ...SYNTHETIC_QA_PROVENANCE,
+        plannedTurns: 199,
+      } as never,
+    });
+
+    expect(result).toMatchObject({
+      enabled: true,
+      recorded: false,
+      trafficProvenanceRecorded: false,
+      errorCode: 'shadow_route_hook_failed',
+    });
+    expect(listChatV2ReplayBundlesForTurn('chat-shadow-hook-malformed-synthetic-provenance', db)).toEqual([]);
   });
 
   it('omits divergence evidence when canonical release identity is missing or malformed', () => {

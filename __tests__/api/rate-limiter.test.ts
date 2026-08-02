@@ -7,7 +7,7 @@
 // no floor — `/auth/register` + `/auth/refresh` were unthrottled and
 // the invite code `BETA2026` was brute-forceable.
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Request, Response, NextFunction } from 'express';
 import {
   rateLimitMiddleware,
@@ -16,6 +16,20 @@ import {
   internalAiCompleteRateLimitMiddleware,
   _resetRateLimiterForTests,
 } from '../../src/api/rate-limiter';
+import { ROUTING_SYNTHETIC_QA_HEADERS } from '../../src/services/routing-synthetic-qa-contract';
+
+const ROUTING_SYNTHETIC_QA_MANIFEST_SHA = `sha256:${'a'.repeat(64)}`;
+
+function routingSyntheticQaHeaders(): Record<string, string> {
+  return {
+    [ROUTING_SYNTHETIC_QA_HEADERS.contract]: 'routing-synthetic-qa-v1',
+    [ROUTING_SYNTHETIC_QA_HEADERS.manifestSha256]: ROUTING_SYNTHETIC_QA_MANIFEST_SHA,
+    [ROUTING_SYNTHETIC_QA_HEADERS.surface]: 'classifierKeyword',
+    [ROUTING_SYNTHETIC_QA_HEADERS.ordinal]: '1',
+    [ROUTING_SYNTHETIC_QA_HEADERS.plannedTurns]: '200',
+    [ROUTING_SYNTHETIC_QA_HEADERS.turnId]: `routing-synthetic-qa-v1:${'a'.repeat(64)}:classifierKeyword:001`,
+  };
+}
 
 function mockReq(opts: {
   userId?: number;
@@ -58,6 +72,126 @@ function mockRes(): Response {
 describe('rate-limiter — two-bucket behavior', () => {
   beforeEach(() => {
     _resetRateLimiterForTests();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('allows exactly 205 owner-authorized synthetic QA turns for the dedicated staging identity', () => {
+    vi.stubEnv('NEXUS_RELEASE_ROLE', 'staging');
+    vi.stubEnv('NODE_ENV', 'staging');
+    vi.stubEnv('CHAT_EVAL_DEDICATED_TENANT_ID', '42');
+    const next = vi.fn();
+
+    for (let i = 0; i < 205; i++) {
+      const res = mockRes();
+      rateLimitMiddleware(
+        mockReq({
+          userId: 42,
+          method: 'POST',
+          originalUrl: '/api/v1/chat/message',
+          headers: { 'x-language': 'en-US', ...routingSyntheticQaHeaders() },
+        }),
+        res,
+        next as NextFunction,
+      );
+      expect((res as any).statusCode).toBe(200);
+      expect((res as any).headers['X-RateLimit-Bucket']).toBe('routing-synthetic-qa-user');
+      expect((res as any).headers['X-RateLimit-Limit']).toBe(205);
+    }
+
+    const blocked = mockRes();
+    rateLimitMiddleware(
+      mockReq({
+        userId: 42,
+        method: 'POST',
+        originalUrl: '/api/v1/chat/message',
+        headers: { 'x-language': 'en-US', ...routingSyntheticQaHeaders() },
+      }),
+      blocked,
+      next as NextFunction,
+    );
+    expect((blocked as any).statusCode).toBe(429);
+    expect(next).toHaveBeenCalledTimes(205);
+  });
+
+  it.each([
+    {
+      name: 'partial QA headers',
+      userId: 42,
+      role: 'staging',
+      nodeEnv: 'staging',
+      headers: {
+        [ROUTING_SYNTHETIC_QA_HEADERS.contract]: 'routing-synthetic-qa-v1',
+      },
+    },
+    {
+      name: 'wrong authenticated identity',
+      userId: 43,
+      role: 'staging',
+      nodeEnv: 'staging',
+      headers: routingSyntheticQaHeaders(),
+    },
+    {
+      name: 'production runtime',
+      userId: 42,
+      role: 'production',
+      nodeEnv: 'production',
+      headers: routingSyntheticQaHeaders(),
+    },
+    {
+      name: 'complete but non-canonical QA headers',
+      userId: 42,
+      role: 'staging',
+      nodeEnv: 'staging',
+      headers: {
+        ...routingSyntheticQaHeaders(),
+        [ROUTING_SYNTHETIC_QA_HEADERS.ordinal]: '001',
+      },
+    },
+    {
+      name: 'missing governed locale header',
+      userId: 42,
+      role: 'staging',
+      nodeEnv: 'staging',
+      headers: routingSyntheticQaHeaders(),
+      omitLocale: true,
+    },
+  ])('keeps $name on the ordinary 60-request bucket', ({ userId, role, nodeEnv, headers, omitLocale }) => {
+    vi.stubEnv('NEXUS_RELEASE_ROLE', role);
+    vi.stubEnv('NODE_ENV', nodeEnv);
+    vi.stubEnv('CHAT_EVAL_DEDICATED_TENANT_ID', '42');
+    const next = vi.fn();
+
+    for (let i = 0; i < 60; i++) {
+      const res = mockRes();
+      rateLimitMiddleware(
+        mockReq({
+          userId,
+          method: 'POST',
+          originalUrl: '/api/v1/chat/message',
+          headers: omitLocale ? headers : { 'x-language': 'en-US', ...headers },
+        }),
+        res,
+        next as NextFunction,
+      );
+      expect((res as any).statusCode).toBe(200);
+      expect((res as any).headers['X-RateLimit-Bucket']).toBe('user');
+    }
+
+    const blocked = mockRes();
+    rateLimitMiddleware(
+      mockReq({
+        userId,
+        method: 'POST',
+        originalUrl: '/api/v1/chat/message',
+        headers: omitLocale ? headers : { 'x-language': 'en-US', ...headers },
+      }),
+      blocked,
+      next as NextFunction,
+    );
+    expect((blocked as any).statusCode).toBe(429);
   });
 
   it('keys authenticated traffic by userId', () => {

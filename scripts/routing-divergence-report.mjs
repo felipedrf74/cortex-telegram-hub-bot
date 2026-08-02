@@ -20,15 +20,18 @@
 //   node scripts/routing-divergence-report.mjs --gate --json \
 //     --surface classifierKeyword \
 //     --since 2026-07-31T12:00:00.000Z \
-//     [--until 2026-07-31T18:00:00.000Z] \
-//     --divergence-version routing_divergence_shadow@4.0.0 \
+//     --until 2026-07-31T18:00:00.000Z \
+//     --divergence-version routing_divergence_shadow@5.0.0 \
 //     --resolver-version manifest-intent-resolver@1.0.0 \
 //     --runtime-sha <40-hex-sha> \
 //     --artifact-digest <64-hex-sha256> \
 //     --environment staging \
-//     --minimum-comparisons <positive-integer> \
+//     --minimum-comparisons 200 \
 //     --shadow-hook-receipt <server-transaction-receipt.json> \
-//     --live-health <server-detailed-health.json>
+//     --live-health <server-detailed-health.json> \
+//     --synthetic-qa-manifest <owner-authorized-canonical-manifest.json> \
+//     --expected-synthetic-qa-manifest-sha256 <sha256:64-lowercase-hex> \
+//     --synthetic-qa-receipt <server-execution-receipt.json>
 //
 // --until pins the upper bound of the evidence window. Without it the window
 // ends at report-generation time, so re-running the same command silently
@@ -38,9 +41,15 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { validateShadowRouteHookReceipt } from './lib/chat-capability-flag-transaction.mjs';
+import {
+  ROUTING_SYNTHETIC_QA_CONTRACT_VERSION as SYNTHETIC_QA_CONTRACT_VERSION,
+  ROUTING_SYNTHETIC_QA_QUOTAS,
+  ROUTING_SYNTHETIC_QA_TRAFFIC_CLASS as SYNTHETIC_QA_TRAFFIC_CLASS,
+  buildRoutingSyntheticQaManifest,
+} from './lib/routing-synthetic-qa-manifest.mjs';
 
 const require = createRequire(import.meta.url);
 const Database = require('better-sqlite3');
@@ -81,7 +90,50 @@ const environment = readArg('--environment', undefined);
 const minimumComparisonsRaw = readArg('--minimum-comparisons', undefined);
 const shadowHookReceiptPath = readArg('--shadow-hook-receipt', undefined);
 const liveHealthPath = readArg('--live-health', undefined);
+const syntheticQaManifestPath = readArg('--synthetic-qa-manifest', undefined);
+const expectedSyntheticQaManifestSha256 = readArg(
+  '--expected-synthetic-qa-manifest-sha256',
+  undefined,
+);
+const syntheticQaReceiptPath = readArg('--synthetic-qa-receipt', undefined);
 const MINIMUM_AGREEMENT_RATE = 0.99;
+const SYNTHETIC_QA_PLANNED_TURNS = ROUTING_SYNTHETIC_QA_QUOTAS.plannedTurns;
+const SYNTHETIC_QA_RECEIPT_SCHEMA = 'nexus.routing-synthetic-qa-receipt.v1';
+const SYNTHETIC_QA_PROVENANCE_KEYS = Object.freeze([
+  'contractVersion',
+  'trafficClass',
+  'manifestSha256',
+  'surface',
+  'ordinal',
+  'plannedTurns',
+  'turnId',
+  'locale',
+]);
+const SYNTHETIC_QA_RECEIPT_KEYS = Object.freeze([
+  'schema',
+  'status',
+  'contractVersion',
+  'trafficClass',
+  'manifestSha256',
+  'runtimeSha',
+  'artifactDigest',
+  'environment',
+  'surface',
+  'userId',
+  'tenantId',
+  'plannedTurns',
+  'attemptedTurns',
+  'acceptedTurns',
+  'recordedTurns',
+  'startedAt',
+  'completedAt',
+  'httpStatusCounts',
+  'apiUsageDelta',
+  'providerReservationDelta',
+  'providerCalled',
+  'externalCallPerformed',
+  'domainMutationPerformed',
+]);
 const TELEMETRY_IDENTIFIER = /^[a-zA-Z0-9@._:-]{1,128}$/;
 const FULL_RUNTIME_SHA = /^[0-9a-f]{40}$/;
 const FULL_ARTIFACT_DIGEST = /^[0-9a-f]{64}$/;
@@ -101,7 +153,7 @@ const RECORDER_STATE_KEYS = Object.freeze([
   'shadowRouteHookEffective',
   'shadowPlannerEffective',
 ]);
-const REQUIRED_DIVERGENCE_VERSION = 'routing_divergence_shadow@4.0.0';
+const REQUIRED_DIVERGENCE_VERSION = 'routing_divergence_shadow@5.0.0';
 
 function failUsage(message) {
   console.error(`routing-divergence-report: ${message}`);
@@ -189,6 +241,133 @@ function isExactObject(value, keys) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const actual = Object.keys(value);
   return actual.length === keys.length && actual.every((key) => keys.includes(key));
+}
+
+function isCanonicalPositiveInteger(value) {
+  return Number.isSafeInteger(value) && value > 0;
+}
+
+function syntheticQaTurnIdentity(manifestSha256, surface, ordinal) {
+  return `${SYNTHETIC_QA_CONTRACT_VERSION}:${manifestSha256}:${surface}:${String(ordinal).padStart(3, '0')}`;
+}
+
+function hmacSyntheticQaValue(secret, userId, tenantId, kind, value) {
+  return createHmac('sha256', secret)
+    .update(`${tenantId}:${userId}:${kind}:${value}`)
+    .digest('hex');
+}
+
+function validateSyntheticQaManifestEvidence(filePath, binding) {
+  const parsed = readJsonEvidenceFile('--synthetic-qa-manifest', filePath);
+  let built;
+  try {
+    built = buildRoutingSyntheticQaManifest(parsed.value, {
+      expectedRuntimeSha: binding.runtimeSha,
+      expectedArtifactDigest: binding.artifactDigest,
+      expectedSurface: binding.surface,
+      expectedDedicatedId: binding.dedicatedTenantId,
+    });
+  } catch (error) {
+    failUsage(
+      `synthetic QA manifest is invalid: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  const canonicalBytes = Buffer.from(built.bytes, 'utf8');
+  if (!parsed.raw.equals(canonicalBytes)) {
+    failUsage('synthetic QA manifest must use the exact canonical compact JSON bytes');
+  }
+  const secret = String(process.env.CHAT_CORE_V2_SHADOW_ROUTE_HMAC_SECRET ?? '').trim();
+  if (!secret) {
+    failUsage('CHAT_CORE_V2_SHADOW_ROUTE_HMAC_SECRET is required to verify synthetic QA evidence');
+  }
+  const manifestSha256 = parsed.sha256;
+  const expectedTurns = new Map(built.manifest.turns.map((turn) => {
+    const turnId = syntheticQaTurnIdentity(manifestSha256, built.manifest.surface, turn.ordinal);
+    return [turn.ordinal, {
+      ...turn,
+      turnId,
+      messageHash: hmacSyntheticQaValue(
+        secret,
+        built.manifest.userId,
+        built.manifest.tenantId,
+        'message',
+        turn.text,
+      ),
+      clientMessageHash: hmacSyntheticQaValue(
+        secret,
+        built.manifest.userId,
+        built.manifest.tenantId,
+        'client_message_id',
+        turnId,
+      ),
+    }];
+  }));
+  return {
+    manifest: built.manifest,
+    manifestSha256,
+    manifestSha256Prefixed: `sha256:${manifestSha256}`,
+    expectedTurns,
+  };
+}
+
+function validateSyntheticQaReceiptEvidence(filePath, binding) {
+  const parsed = readJsonEvidenceFile('--synthetic-qa-receipt', filePath);
+  const receipt = parsed.value;
+  if (!isExactObject(receipt, SYNTHETIC_QA_RECEIPT_KEYS)) {
+    failUsage('synthetic QA receipt must have the exact governed shape');
+  }
+  if (receipt.schema !== SYNTHETIC_QA_RECEIPT_SCHEMA
+      || receipt.status !== 'passed'
+      || receipt.contractVersion !== SYNTHETIC_QA_CONTRACT_VERSION
+      || receipt.trafficClass !== SYNTHETIC_QA_TRAFFIC_CLASS) {
+    failUsage('synthetic QA receipt contract identity or terminal status is invalid');
+  }
+  if (receipt.manifestSha256 !== binding.manifestSha256Prefixed
+      || receipt.runtimeSha !== binding.runtimeSha
+      || receipt.artifactDigest !== binding.artifactDigest
+      || receipt.environment !== 'staging'
+      || receipt.environment !== binding.environment
+      || receipt.surface !== binding.surface
+      || receipt.userId !== binding.dedicatedTenantId
+      || receipt.tenantId !== binding.dedicatedTenantId
+      || receipt.userId !== receipt.tenantId) {
+    failUsage('synthetic QA receipt manifest, release, surface, or identity binding is not exact');
+  }
+  if (receipt.plannedTurns !== SYNTHETIC_QA_PLANNED_TURNS
+      || receipt.attemptedTurns !== SYNTHETIC_QA_PLANNED_TURNS
+      || receipt.acceptedTurns !== SYNTHETIC_QA_PLANNED_TURNS
+      || receipt.recordedTurns !== SYNTHETIC_QA_PLANNED_TURNS) {
+    failUsage('synthetic QA receipt must attest exactly 200 attempted, accepted, and recorded turns');
+  }
+  const startedAt = parseCanonicalTimestamp('synthetic QA receipt startedAt', receipt.startedAt);
+  const completedAt = parseCanonicalTimestamp('synthetic QA receipt completedAt', receipt.completedAt);
+  if (startedAt !== binding.since || completedAt !== binding.until) {
+    failUsage('synthetic QA receipt timestamps must equal the exact gate window');
+  }
+  if (!isExactObject(receipt.httpStatusCounts, ['200'])
+      || receipt.httpStatusCounts['200'] !== SYNTHETIC_QA_PLANNED_TURNS) {
+    failUsage('synthetic QA receipt must attest exactly 200 HTTP 200 responses');
+  }
+  for (const [name, delta] of [
+    ['apiUsageDelta', receipt.apiUsageDelta],
+    ['providerReservationDelta', receipt.providerReservationDelta],
+  ]) {
+    if (!isExactObject(delta, ['rows', 'costUsd'])
+        || delta.rows !== 0
+        || delta.costUsd !== 0) {
+      failUsage(`synthetic QA receipt ${name} must attest zero rows and zero cost`);
+    }
+  }
+  if (receipt.providerCalled !== false
+      || receipt.externalCallPerformed !== false
+      || receipt.domainMutationPerformed !== false) {
+    failUsage('synthetic QA receipt must attest zero provider, external, and domain mutation activity');
+  }
+  return {
+    receipt,
+    sha256: parsed.sha256,
+    sha256Prefixed: `sha256:${parsed.sha256}`,
+  };
 }
 
 function validateShadowHookReceiptEvidence(filePath) {
@@ -282,6 +461,21 @@ function isStrictRecorderStateShape(value) {
   return true;
 }
 
+function isStrictSyntheticQaTrafficProvenance(value) {
+  return isExactObject(value, SYNTHETIC_QA_PROVENANCE_KEYS)
+    && value.contractVersion === SYNTHETIC_QA_CONTRACT_VERSION
+    && value.trafficClass === SYNTHETIC_QA_TRAFFIC_CLASS
+    && typeof value.manifestSha256 === 'string'
+    && /^sha256:[0-9a-f]{64}$/u.test(value.manifestSha256)
+    && SURFACES.includes(value.surface)
+    && isCanonicalPositiveInteger(value.ordinal)
+    && value.ordinal <= SYNTHETIC_QA_PLANNED_TURNS
+    && value.plannedTurns === SYNTHETIC_QA_PLANNED_TURNS
+    && typeof value.turnId === 'string'
+    && /^[a-zA-Z0-9@._:-]{1,256}$/u.test(value.turnId)
+    && ['en-US', 'pt-BR', 'pt-PT'].includes(value.locale);
+}
+
 function classifyRecorderState(value, dedicatedId) {
   if (!isStrictRecorderStateShape(value)) return 'missing_or_malformed';
   const expectedId = String(dedicatedId);
@@ -302,6 +496,7 @@ function isStrictDivergenceShape(value) {
     'releaseIdentity',
     'capabilityFlags',
     'recorderState',
+    'trafficProvenance',
     'topCandidate',
     'candidateCount',
     'surfaces',
@@ -311,6 +506,9 @@ function isStrictDivergenceShape(value) {
   if (!isStrictReleaseIdentity(value.releaseIdentity)) return false;
   if (!isStrictCapabilityFlagState(value.capabilityFlags)) return false;
   if (!isStrictRecorderStateShape(value.recorderState)) return false;
+  if (!(value.trafficProvenance === null || isStrictSyntheticQaTrafficProvenance(value.trafficProvenance))) {
+    return false;
+  }
   if (!Number.isSafeInteger(value.candidateCount) || value.candidateCount < 0) return false;
   const top = value.topCandidate;
   if (top !== null) {
@@ -354,6 +552,7 @@ function isStrictDivergenceShape(value) {
 if (gateEnabled && (
   !selectedSurface
   || !sinceRaw
+  || !untilRaw
   || !divergenceVersion
   || !resolverVersion
   || !runtimeSha
@@ -362,11 +561,15 @@ if (gateEnabled && (
   || !minimumComparisonsRaw
   || !shadowHookReceiptPath
   || !liveHealthPath
+  || !syntheticQaManifestPath
+  || !expectedSyntheticQaManifestSha256
+  || !syntheticQaReceiptPath
 )) {
   failUsage(
-    '--gate requires explicit --surface, --since, --divergence-version, --resolver-version, '
+    '--gate requires explicit --surface, --since, --until, --divergence-version, --resolver-version, '
     + '--runtime-sha, --artifact-digest, --environment, --minimum-comparisons, '
-    + '--shadow-hook-receipt, and --live-health',
+    + '--shadow-hook-receipt, --live-health, --synthetic-qa-manifest, '
+    + '--expected-synthetic-qa-manifest-sha256, and --synthetic-qa-receipt',
   );
 }
 // A gate run is a saved receipt (divergence-gate.json), so it must emit the
@@ -408,6 +611,12 @@ if (runtimeSha !== undefined && !FULL_RUNTIME_SHA.test(runtimeSha)) {
 if (artifactDigest !== undefined && !FULL_ARTIFACT_DIGEST.test(artifactDigest)) {
   failUsage('--artifact-digest must be a full lowercase 64-hex SHA-256 digest');
 }
+if (
+  expectedSyntheticQaManifestSha256 !== undefined
+  && !/^sha256:[0-9a-f]{64}$/u.test(expectedSyntheticQaManifestSha256)
+) {
+  failUsage('--expected-synthetic-qa-manifest-sha256 must be sha256: plus 64 lowercase hex characters');
+}
 if (environment !== undefined && environment !== 'staging' && environment !== 'production') {
   failUsage('--environment must be staging or production');
 }
@@ -417,12 +626,31 @@ if (gateEnabled && environment !== 'staging') {
 const minimumComparisons = minimumComparisonsRaw === undefined
   ? undefined
   : parsePositiveInteger('--minimum-comparisons', minimumComparisonsRaw);
+if (gateEnabled && minimumComparisons !== SYNTHETIC_QA_PLANNED_TURNS) {
+  failUsage(`--gate requires --minimum-comparisons ${SYNTHETIC_QA_PLANNED_TURNS}`);
+}
 const shadowHookReceiptEvidence = gateEnabled
   ? validateShadowHookReceiptEvidence(shadowHookReceiptPath)
   : null;
 const liveHealthEvidence = gateEnabled
   ? validateLiveHealthEvidence(liveHealthPath)
   : null;
+const syntheticQaManifestEvidence = gateEnabled
+  ? validateSyntheticQaManifestEvidence(syntheticQaManifestPath, {
+    runtimeSha,
+    artifactDigest,
+    environment,
+    surface: selectedSurface,
+    dedicatedTenantId: shadowHookReceiptEvidence.receipt.dedicatedTenantId,
+  })
+  : null;
+if (
+  gateEnabled
+  && syntheticQaManifestEvidence.manifestSha256Prefixed !== expectedSyntheticQaManifestSha256
+) {
+  failUsage('synthetic QA manifest bytes do not match the precommitted SHA-256 digest');
+}
+let syntheticQaReceiptEvidence = null;
 if (gateEnabled) {
   const receipt = shadowHookReceiptEvidence.receipt;
   const attestation = liveHealthEvidence.attestation;
@@ -442,6 +670,16 @@ if (gateEnabled) {
   if (Date.parse(liveHealthEvidence.checkedAt) < Date.parse(receipt.completedAt)) {
     failUsage('live health timestamp must be at or after shadow hook receipt completedAt');
   }
+  syntheticQaReceiptEvidence = validateSyntheticQaReceiptEvidence(syntheticQaReceiptPath, {
+    manifestSha256Prefixed: syntheticQaManifestEvidence.manifestSha256Prefixed,
+    runtimeSha,
+    artifactDigest,
+    environment,
+    surface: selectedSurface,
+    dedicatedTenantId: shadowHookReceiptEvidence.receipt.dedicatedTenantId,
+    since,
+    until,
+  });
 }
 const generatedAt = new Date().toISOString();
 // Operator-pinnable upper bound: without --until the window ends at generation
@@ -513,6 +751,14 @@ let dedicatedScopeMismatchBundles = 0;
 let hookNotEffectiveBundles = 0;
 let plannerEffectiveBundles = 0;
 let malformedDivergenceBundles = 0;
+let syntheticQaMatchedBundles = 0;
+let syntheticQaMissingOrMalformedProvenanceBundles = 0;
+let syntheticQaManifestMismatchBundles = 0;
+let syntheticQaDuplicateOrdinalBundles = 0;
+let syntheticQaHmacMismatchBundles = 0;
+let syntheticQaExpectedLabelMismatchBundles = 0;
+let syntheticQaTargetSurfaceNotComparedBundles = 0;
+const syntheticQaSeenOrdinals = new Set();
 // exact observed flag-state key -> count
 const observedCapabilityFlagStates = new Map();
 // surface -> skill -> { compared, agreed }
@@ -527,11 +773,63 @@ for (const row of rows) {
     bundle = JSON.parse(row.redacted_bundle_json);
   } catch {
     invalidJsonBundles += 1;
+    if (gateEnabled) syntheticQaMissingOrMalformedProvenanceBundles += 1;
     continue;
   }
   const divergence = bundle?.contextPack?.routingDivergence;
-  if (!divergence) continue;
+  if (!divergence) {
+    if (gateEnabled) syntheticQaMissingOrMalformedProvenanceBundles += 1;
+    continue;
+  }
   withDivergence += 1;
+  if (gateEnabled) {
+    const provenance = divergence.trafficProvenance;
+    if (!isStrictSyntheticQaTrafficProvenance(provenance)) {
+      syntheticQaMissingOrMalformedProvenanceBundles += 1;
+    } else {
+      const expected = syntheticQaManifestEvidence.expectedTurns.get(provenance.ordinal);
+      const expectedRecorderLocale = expected?.locale === 'en-US' ? 'en' : expected?.locale;
+      const manifestMatches = Boolean(expected)
+        && provenance.manifestSha256 === syntheticQaManifestEvidence.manifestSha256Prefixed
+        && provenance.surface === selectedSurface
+        && provenance.turnId === expected.turnId
+        && provenance.locale === expected.locale
+        && bundle?.contextPack?.locale === expectedRecorderLocale
+        && bundle?.contextPack?.attachmentsCount === 0
+        && bundle?.contextPack?.messageLength === expected.text.length;
+      if (!manifestMatches) syntheticQaManifestMismatchBundles += 1;
+
+      let ordinalUnique = false;
+      if (manifestMatches) {
+        if (syntheticQaSeenOrdinals.has(provenance.ordinal)) {
+          syntheticQaDuplicateOrdinalBundles += 1;
+        } else {
+          syntheticQaSeenOrdinals.add(provenance.ordinal);
+          ordinalUnique = true;
+        }
+      }
+
+      const hmacMatches = Boolean(expected)
+        && typeof bundle?.contextPack?.messageHash === 'string'
+        && typeof bundle?.contextPack?.clientMessageHash === 'string'
+        && bundle.contextPack.messageHash === expected.messageHash
+        && bundle.contextPack.clientMessageHash === expected.clientMessageHash;
+      if (!hmacMatches) syntheticQaHmacMismatchBundles += 1;
+
+      const expectedLabelMatches = Boolean(expected)
+        && divergence.topCandidate?.domain === expected.expectedDomain
+        && divergence.topCandidate?.skill === expected.expectedResolverSkill;
+      if (!expectedLabelMatches) syntheticQaExpectedLabelMismatchBundles += 1;
+
+      const targetSurfaceCompared = typeof divergence.agreement?.[selectedSurface] === 'boolean';
+      if (!targetSurfaceCompared) syntheticQaTargetSurfaceNotComparedBundles += 1;
+
+      if (manifestMatches && ordinalUnique && hmacMatches
+          && expectedLabelMatches && targetSurfaceCompared) {
+        syntheticQaMatchedBundles += 1;
+      }
+    }
+  }
   let recorderStateClass = null;
   let divergenceShapeKnown = true;
   if (gateEnabled) {
@@ -668,8 +966,77 @@ const surfaceTotals = Object.fromEntries(
   }),
 );
 
+const syntheticQaMissingOrdinals = gateEnabled
+  ? SYNTHETIC_QA_PLANNED_TURNS - syntheticQaSeenOrdinals.size
+  : 0;
+
 const gateFailures = gateEnabled
   ? [
+    ...(totalBundles !== SYNTHETIC_QA_PLANNED_TURNS
+      ? [{
+        scope: 'synthetic_qa',
+        reason: 'in_window_bundle_count_mismatch',
+        expectedBundles: SYNTHETIC_QA_PLANNED_TURNS,
+        actualBundles: totalBundles,
+      }]
+      : []),
+    ...(syntheticQaMissingOrMalformedProvenanceBundles > 0
+      ? [{
+        scope: 'synthetic_qa',
+        reason: 'missing_or_malformed_traffic_provenance',
+        bundles: syntheticQaMissingOrMalformedProvenanceBundles,
+      }]
+      : []),
+    ...(syntheticQaManifestMismatchBundles > 0
+      ? [{
+        scope: 'synthetic_qa',
+        reason: 'manifest_binding_mismatch',
+        bundles: syntheticQaManifestMismatchBundles,
+      }]
+      : []),
+    ...(syntheticQaDuplicateOrdinalBundles > 0
+      ? [{
+        scope: 'synthetic_qa',
+        reason: 'duplicate_campaign_ordinal',
+        bundles: syntheticQaDuplicateOrdinalBundles,
+      }]
+      : []),
+    ...(syntheticQaMissingOrdinals > 0
+      ? [{
+        scope: 'synthetic_qa',
+        reason: 'missing_campaign_ordinals',
+        ordinals: syntheticQaMissingOrdinals,
+      }]
+      : []),
+    ...(syntheticQaHmacMismatchBundles > 0
+      ? [{
+        scope: 'synthetic_qa',
+        reason: 'message_or_client_hmac_mismatch',
+        bundles: syntheticQaHmacMismatchBundles,
+      }]
+      : []),
+    ...(syntheticQaExpectedLabelMismatchBundles > 0
+      ? [{
+        scope: 'synthetic_qa',
+        reason: 'independent_expected_label_mismatch',
+        bundles: syntheticQaExpectedLabelMismatchBundles,
+      }]
+      : []),
+    ...(syntheticQaTargetSurfaceNotComparedBundles > 0
+      ? [{
+        scope: 'synthetic_qa',
+        reason: 'target_surface_comparison_missing',
+        bundles: syntheticQaTargetSurfaceNotComparedBundles,
+      }]
+      : []),
+    ...(syntheticQaMatchedBundles !== SYNTHETIC_QA_PLANNED_TURNS
+      ? [{
+        scope: 'synthetic_qa',
+        reason: 'one_to_one_campaign_binding_incomplete',
+        expectedBundles: SYNTHETIC_QA_PLANNED_TURNS,
+        matchedBundles: syntheticQaMatchedBundles,
+      }]
+      : []),
     ...(invalidJsonBundles > 0
       ? [{ scope: 'evidence', reason: 'malformed_bundle_json', bundles: invalidJsonBundles }]
       : []),
@@ -835,6 +1202,57 @@ const report = {
         .map(([state, bundles]) => ({ state, bundles })),
     },
     ...(gateEnabled ? {
+      syntheticQaBinding: {
+        enforced: true,
+        contractVersion: SYNTHETIC_QA_CONTRACT_VERSION,
+        trafficClass: SYNTHETIC_QA_TRAFFIC_CLASS,
+        manifest: {
+          schema: syntheticQaManifestEvidence.manifest.schema,
+          sha256: syntheticQaManifestEvidence.manifestSha256Prefixed,
+          runtimeSha: syntheticQaManifestEvidence.manifest.runtimeSha,
+          artifactDigest: syntheticQaManifestEvidence.manifest.artifactDigest,
+          environment: syntheticQaManifestEvidence.manifest.environment,
+          surface: syntheticQaManifestEvidence.manifest.surface,
+          userId: syntheticQaManifestEvidence.manifest.userId,
+          tenantId: syntheticQaManifestEvidence.manifest.tenantId,
+          plannedTurns: syntheticQaManifestEvidence.manifest.plannedTurns,
+        },
+        receipt: {
+          schema: syntheticQaReceiptEvidence.receipt.schema,
+          sha256: syntheticQaReceiptEvidence.sha256Prefixed,
+          status: syntheticQaReceiptEvidence.receipt.status,
+          manifestSha256: syntheticQaReceiptEvidence.receipt.manifestSha256,
+          runtimeSha: syntheticQaReceiptEvidence.receipt.runtimeSha,
+          artifactDigest: syntheticQaReceiptEvidence.receipt.artifactDigest,
+          environment: syntheticQaReceiptEvidence.receipt.environment,
+          surface: syntheticQaReceiptEvidence.receipt.surface,
+          userId: syntheticQaReceiptEvidence.receipt.userId,
+          tenantId: syntheticQaReceiptEvidence.receipt.tenantId,
+          plannedTurns: syntheticQaReceiptEvidence.receipt.plannedTurns,
+          attemptedTurns: syntheticQaReceiptEvidence.receipt.attemptedTurns,
+          acceptedTurns: syntheticQaReceiptEvidence.receipt.acceptedTurns,
+          recordedTurns: syntheticQaReceiptEvidence.receipt.recordedTurns,
+          startedAt: syntheticQaReceiptEvidence.receipt.startedAt,
+          completedAt: syntheticQaReceiptEvidence.receipt.completedAt,
+          httpStatusCounts: syntheticQaReceiptEvidence.receipt.httpStatusCounts,
+          apiUsageDelta: syntheticQaReceiptEvidence.receipt.apiUsageDelta,
+          providerReservationDelta: syntheticQaReceiptEvidence.receipt.providerReservationDelta,
+          providerCalled: syntheticQaReceiptEvidence.receipt.providerCalled,
+          externalCallPerformed: syntheticQaReceiptEvidence.receipt.externalCallPerformed,
+          domainMutationPerformed: syntheticQaReceiptEvidence.receipt.domainMutationPerformed,
+        },
+        counts: {
+          inWindowBundles: totalBundles,
+          matchedBundles: syntheticQaMatchedBundles,
+          missingOrMalformedProvenanceBundles: syntheticQaMissingOrMalformedProvenanceBundles,
+          manifestMismatchBundles: syntheticQaManifestMismatchBundles,
+          duplicateOrdinalBundles: syntheticQaDuplicateOrdinalBundles,
+          missingOrdinals: syntheticQaMissingOrdinals,
+          hmacMismatchBundles: syntheticQaHmacMismatchBundles,
+          expectedLabelMismatchBundles: syntheticQaExpectedLabelMismatchBundles,
+          targetSurfaceNotComparedBundles: syntheticQaTargetSurfaceNotComparedBundles,
+        },
+      },
       shadowRecorderBinding: {
         enforced: true,
         receipt: {

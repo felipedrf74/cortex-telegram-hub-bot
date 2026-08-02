@@ -20,6 +20,7 @@ import type { ChatTurnContract } from '../../../services/chat-turn-contract';
 import type { safeRecordChatV2DeterministicReadEvidence } from '../../../services/chat-deterministic-read-evidence';
 import type { safeRecordChatV2CompletionEvidence } from '../../../services/chat-v2-completion-evidence';
 import type { ChatCoreV2LegacyFallbackAttribution } from './support';
+import type { RoutingSyntheticQaTrafficProvenance } from '../../../services/routing-synthetic-qa-contract';
 
 export type RecordDeterministicReadEvidenceFn = (
   response: Parameters<typeof safeRecordChatV2DeterministicReadEvidence>[0]['response'],
@@ -59,6 +60,8 @@ export interface ChatTurnCtx {
   latency: ChatLatencyTracker;
   /** Lazily acquires the per-user AI budget reservation (route-owned). */
   ensureModelBudget: (logMessage: string) => Promise<boolean>;
+  /** Validated staging-only synthetic routing QA provenance; absent on ordinary traffic. */
+  routingSyntheticQa?: RoutingSyntheticQaTrafficProvenance | null;
 
   // ── Accumulated by idempotency_claim ────────────────────────────
   isNewUserFlow?: boolean;

@@ -1,7 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -11,16 +11,38 @@ import {
   buildShadowRouteHookPlan,
   buildShadowRouteHookReceipt,
 } from '../../scripts/lib/chat-capability-flag-transaction.mjs';
+import {
+  ROUTING_SYNTHETIC_QA_CONTRACT_VERSION,
+  ROUTING_SYNTHETIC_QA_MANIFEST_SCHEMA,
+  ROUTING_SYNTHETIC_QA_QUOTAS,
+  ROUTING_SYNTHETIC_QA_TRAFFIC_CLASS,
+  buildRoutingSyntheticQaManifest,
+  getRoutingSyntheticQaSurfaceQuota,
+} from '../../scripts/lib/routing-synthetic-qa-manifest.mjs';
 
 const repoRoot = path.resolve(__dirname, '../..');
 const candidateSince = '2026-07-31T12:00:00.000Z';
-const candidateDivergenceVersion = 'routing_divergence_shadow@4.0.0';
+const candidateUntil = '2026-07-31T12:10:00.000Z';
+const candidateDivergenceVersion = 'routing_divergence_shadow@5.0.0';
 const candidateResolverVersion = 'manifest-intent-resolver@1.0.0';
 const candidateRuntimeSha = 'a'.repeat(40);
 const candidateArtifactDigest = 'b'.repeat(64);
 const candidateRole = 'staging';
 const dedicatedTenantId = 42;
 const receiptCompletedAt = '2026-07-31T11:59:59.000Z';
+const syntheticQaContractVersion = ROUTING_SYNTHETIC_QA_CONTRACT_VERSION;
+const syntheticQaTrafficClass = ROUTING_SYNTHETIC_QA_TRAFFIC_CLASS;
+const shadowRouteHmacSecret = 'test-shadow-route-hmac-secret-with-sufficient-entropy';
+const syntheticQaResolverSkillByDomain: Record<string, string> = Object.freeze({
+  secretary: 'secretary',
+  triathlon: 'training',
+  content: 'content',
+  cooking: 'cooking',
+  finance: 'finance',
+  connections: 'connections',
+  notifications: 'notifications',
+  decision_center: 'decision_center',
+});
 /** Every manifest-routing surface still answering with legacy logic. */
 const flagsAllOff = Object.freeze({
   classifierKeyword: false,
@@ -33,7 +55,93 @@ let tempDir: string;
 let dbPath: string;
 let shadowHookReceiptPath: string;
 let liveHealthPath: string;
+let syntheticQaManifestPath: string;
+let syntheticQaReceiptPath: string;
+let syntheticQaManifest: {
+  schema: string;
+  contractVersion: string;
+  trafficClass: string;
+  runtimeSha: string;
+  artifactDigest: string;
+  environment: string;
+  surface: string;
+  userId: number;
+  tenantId: number;
+  plannedTurns: number;
+  referenceSources: Array<{ kind: string; sha256: string; textCount: number }>;
+  predecessorManifestSha256s: string[];
+  turns: Array<{
+    ordinal: number;
+    id: string;
+    scenarioGroupId: string;
+    text: string;
+    locale: string;
+    expectedDomain: string;
+    expectedResolverSkill: string;
+    stratum: string;
+    standalone: true;
+  }>;
+};
+let syntheticQaManifestSha256: string;
 let db: Database.Database;
+
+function expandQuota(counts: Record<string, number>): string[] {
+  return Object.entries(counts).flatMap(([value, count]) => Array(count).fill(value));
+}
+
+function buildValidSyntheticQaDraft() {
+  const profile = getRoutingSyntheticQaSurfaceQuota('classifierKeyword');
+  const domainLocaleRows = Object.entries(profile.expectedDomainsByLocale)
+    .flatMap(([locale, counts]) => expandQuota(counts)
+      .map((expectedDomain) => ({ locale, expectedDomain })));
+  const strata = expandQuota(ROUTING_SYNTHETIC_QA_QUOTAS.strata);
+  const scenarioRows: Array<{ scenarioGroupId: string; locale: string }> = [];
+  let scenarioNumber = 0;
+  for (const [locale, shape] of Object.entries(
+    ROUTING_SYNTHETIC_QA_QUOTAS.scenarioGroupsByLocale,
+  )) {
+    for (const [turnCountText, scenarioCount] of Object.entries(shape)) {
+      const turnCount = Number(turnCountText);
+      for (let scenario = 0; scenario < scenarioCount; scenario += 1) {
+        scenarioNumber += 1;
+        for (let turnIndex = 1; turnIndex <= turnCount; turnIndex += 1) {
+          scenarioRows.push({
+            scenarioGroupId: `qa-scenario-${String(scenarioNumber).padStart(3, '0')}`,
+            locale,
+          });
+        }
+      }
+    }
+  }
+  return {
+    schema: ROUTING_SYNTHETIC_QA_MANIFEST_SCHEMA,
+    contractVersion: syntheticQaContractVersion,
+    trafficClass: syntheticQaTrafficClass,
+    runtimeSha: candidateRuntimeSha,
+    artifactDigest: candidateArtifactDigest,
+    environment: candidateRole,
+    surface: 'classifierKeyword',
+    userId: dedicatedTenantId,
+    tenantId: dedicatedTenantId,
+    plannedTurns: 200,
+    referenceSources: [
+      { kind: 'routing_corpus', sha256: `sha256:${'c'.repeat(64)}`, textCount: 300 },
+      { kind: 'chat_eval_fixtures', sha256: `sha256:${'d'.repeat(64)}`, textCount: 40 },
+    ],
+    predecessorManifestSha256s: [],
+    turns: domainLocaleRows.map(({ locale, expectedDomain }, index) => ({
+      ordinal: index + 1,
+      id: `qa-turn-${String(index + 1).padStart(3, '0')}`,
+      scenarioGroupId: scenarioRows[index].scenarioGroupId,
+      text: `River${index + 1} review ${expectedDomain} cedar${index + 1} ${strata[index]} for synthetic project quartz${index + 1} marker while preserving scoped state`,
+      locale,
+      expectedDomain,
+      expectedResolverSkill: syntheticQaResolverSkillByDomain[expectedDomain],
+      stratum: strata[index],
+      standalone: true,
+    })),
+  };
+}
 
 beforeEach(() => {
   tempDir = mkdtempSync(path.join(tmpdir(), 'routing-divergence-report-'));
@@ -49,6 +157,8 @@ beforeEach(() => {
   `);
   shadowHookReceiptPath = path.join(tempDir, 'shadow-hook-receipt.json');
   liveHealthPath = path.join(tempDir, 'live-health.json');
+  syntheticQaManifestPath = path.join(tempDir, 'synthetic-qa-manifest.json');
+  syntheticQaReceiptPath = path.join(tempDir, 'synthetic-qa-receipt.json');
   const dotenvSource = [
     `CHAT_EVAL_DEDICATED_TENANT_ID=${dedicatedTenantId}`,
     `CLASSIFY_SHADOW_HASH_SECRET=${'classifier-secret-'.repeat(3)}`,
@@ -110,6 +220,37 @@ beforeEach(() => {
       },
     },
   })}\n`, { mode: 0o600 });
+
+  const builtManifest = buildRoutingSyntheticQaManifest(buildValidSyntheticQaDraft());
+  syntheticQaManifest = builtManifest.manifest;
+  const manifestRaw = builtManifest.bytes;
+  syntheticQaManifestSha256 = builtManifest.sha256;
+  writeFileSync(syntheticQaManifestPath, manifestRaw, { mode: 0o600 });
+  writeFileSync(syntheticQaReceiptPath, `${JSON.stringify({
+    schema: 'nexus.routing-synthetic-qa-receipt.v1',
+    status: 'passed',
+    contractVersion: syntheticQaContractVersion,
+    trafficClass: syntheticQaTrafficClass,
+    manifestSha256: `sha256:${syntheticQaManifestSha256}`,
+    runtimeSha: candidateRuntimeSha,
+    artifactDigest: candidateArtifactDigest,
+    environment: candidateRole,
+    surface: 'classifierKeyword',
+    userId: dedicatedTenantId,
+    tenantId: dedicatedTenantId,
+    plannedTurns: 200,
+    attemptedTurns: 200,
+    acceptedTurns: 200,
+    recordedTurns: 200,
+    startedAt: candidateSince,
+    completedAt: candidateUntil,
+    httpStatusCounts: { 200: 200 },
+    apiUsageDelta: { rows: 0, costUsd: 0 },
+    providerReservationDelta: { rows: 0, costUsd: 0 },
+    providerCalled: false,
+    externalCallPerformed: false,
+    domainMutationPerformed: false,
+  })}\n`, { mode: 0o600 });
 });
 
 afterEach(() => {
@@ -118,8 +259,8 @@ afterEach(() => {
 });
 
 function seedDivergence(input: {
-  skill: string;
-  domain: string;
+  skill?: string;
+  domain?: string;
   agreement: Record<string, boolean | null>;
   createdAt?: string;
   divergenceVersion?: string;
@@ -132,10 +273,28 @@ function seedDivergence(input: {
   omitCapabilityFlags?: boolean;
   recorderState?: Record<string, unknown>;
   omitRecorderState?: boolean;
+  syntheticOrdinal?: number;
+  omitTrafficProvenance?: boolean;
+  trafficProvenance?: Record<string, unknown>;
+  messageHash?: string;
+  clientMessageHash?: string;
+  contextLocale?: unknown;
+  attachmentsCount?: unknown;
+  messageLength?: unknown;
+  omitTopCandidate?: boolean;
 }): void {
   const sequence = db.prepare('SELECT COUNT(*) AS count FROM chat_v2_replay_bundles').get() as {
     count: number;
   };
+  const ordinal = input.syntheticOrdinal ?? sequence.count + 1;
+  const manifestTurn = syntheticQaManifest.turns[ordinal - 1] ?? syntheticQaManifest.turns[0];
+  const turnIdentity = `${syntheticQaContractVersion}:${syntheticQaManifestSha256}:classifierKeyword:${String(ordinal).padStart(3, '0')}`;
+  const hmac = (kind: 'message' | 'client_message_id', value: string): string => createHmac(
+    'sha256',
+    shadowRouteHmacSecret,
+  ).update(`${dedicatedTenantId}:${dedicatedTenantId}:${kind}:${value}`).digest('hex');
+  const domain = input.domain ?? manifestTurn.expectedDomain;
+  const skill = input.skill ?? manifestTurn.expectedResolverSkill;
   db.prepare(`
     INSERT INTO chat_v2_replay_bundles (
       replay_bundle_id, redacted_bundle_json, created_at
@@ -144,6 +303,11 @@ function seedDivergence(input: {
     `chatv2-shadow-replay:${sequence.count + 1}`,
     JSON.stringify({
       contextPack: {
+        messageHash: input.messageHash ?? hmac('message', manifestTurn.text),
+        clientMessageHash: input.clientMessageHash ?? hmac('client_message_id', turnIdentity),
+        messageLength: input.messageLength ?? manifestTurn.text.length,
+        attachmentsCount: input.attachmentsCount ?? 0,
+        locale: input.contextLocale ?? (manifestTurn.locale === 'en-US' ? 'en' : manifestTurn.locale),
         routingDivergence: {
           divergenceVersion: input.divergenceVersion ?? candidateDivergenceVersion,
           resolverVersion: input.resolverVersion ?? candidateResolverVersion,
@@ -165,13 +329,28 @@ function seedDivergence(input: {
               shadowPlannerEffective: false,
               ...input.recorderState,
             },
-          topCandidate: {
-            capabilityId: input.domain,
-            skill: input.skill,
-            domain: input.domain,
-            rawScore: 2,
-            matchedEvidenceCount: 1,
-          },
+          trafficProvenance: input.omitTrafficProvenance
+            ? undefined
+            : {
+              contractVersion: syntheticQaContractVersion,
+              trafficClass: syntheticQaTrafficClass,
+              manifestSha256: `sha256:${syntheticQaManifestSha256}`,
+              surface: 'classifierKeyword',
+              ordinal,
+              plannedTurns: 200,
+              turnId: turnIdentity,
+              locale: manifestTurn.locale,
+              ...input.trafficProvenance,
+            },
+          topCandidate: input.omitTopCandidate
+            ? null
+            : {
+              capabilityId: domain,
+              skill,
+              domain,
+              rawScore: 2,
+              matchedEvidenceCount: 1,
+            },
           candidateCount: 1,
           surfaces: {
             classifierKeywordDomain: 'secretary',
@@ -184,8 +363,53 @@ function seedDivergence(input: {
         },
       },
     }),
-    input.createdAt ?? `2026-07-31T12:00:${String(sequence.count).padStart(2, '0')}.000Z`,
+    input.createdAt ?? new Date(Date.parse(candidateSince) + ordinal * 1000).toISOString(),
   );
+}
+
+function fillSyntheticQaCampaign(input: {
+  agreement?: Record<string, boolean | null>;
+  capabilityFlags?: Record<string, unknown>;
+  runtimeSha?: string;
+  artifactDigest?: string;
+  role?: string;
+  omitCapabilityFlags?: boolean;
+  omitTopCandidate?: boolean;
+} = {}): void {
+  const usedOrdinals = new Set<number>();
+  const rows = db.prepare(`
+    SELECT redacted_bundle_json
+    FROM chat_v2_replay_bundles
+    ORDER BY id ASC
+  `).all() as Array<{ redacted_bundle_json: string }>;
+  for (const row of rows) {
+    try {
+      const parsed = JSON.parse(row.redacted_bundle_json);
+      const ordinal = parsed?.contextPack?.routingDivergence?.trafficProvenance?.ordinal;
+      if (Number.isInteger(ordinal) && ordinal >= 1 && ordinal <= 200) usedOrdinals.add(ordinal);
+    } catch {
+      // Deliberately malformed rows remain extras and are not allowed to consume
+      // one of the exact precommitted campaign ordinals.
+    }
+  }
+  for (let ordinal = 1; ordinal <= 200; ordinal += 1) {
+    if (usedOrdinals.has(ordinal)) continue;
+    seedDivergence({
+      syntheticOrdinal: ordinal,
+      agreement: input.agreement ?? {
+        classifierKeyword: true,
+        orchestratorPrimary: true,
+        registrySubset: true,
+        shadowRoute: true,
+      },
+      capabilityFlags: input.capabilityFlags,
+      runtimeSha: input.runtimeSha,
+      artifactDigest: input.artifactDigest,
+      role: input.role,
+      omitCapabilityFlags: input.omitCapabilityFlags,
+      omitTopCandidate: input.omitTopCandidate,
+    });
+  }
 }
 
 function runReportRaw(...args: string[]) {
@@ -196,6 +420,10 @@ function runReportRaw(...args: string[]) {
   ], {
     cwd: repoRoot,
     encoding: 'utf8',
+    env: {
+      ...process.env,
+      CHAT_CORE_V2_SHADOW_ROUTE_HMAC_SECRET: shadowRouteHmacSecret,
+    },
   });
 }
 
@@ -203,23 +431,155 @@ function runReport(...args: string[]) {
   return runReportRaw('--json', ...args);
 }
 
+function runReportWithoutShadowHmac(...args: string[]) {
+  const env = { ...process.env };
+  delete env.CHAT_CORE_V2_SHADOW_ROUTE_HMAC_SECRET;
+  return spawnSync(process.execPath, [
+    'scripts/routing-divergence-report.mjs',
+    '--db', dbPath,
+    '--json',
+    ...args,
+  ], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+    env,
+  });
+}
+
 function candidateGateArgs(): string[] {
   return [
     '--gate',
     '--surface', 'classifierKeyword',
     '--since', candidateSince,
+    '--until', candidateUntil,
     '--divergence-version', candidateDivergenceVersion,
     '--resolver-version', candidateResolverVersion,
     '--runtime-sha', candidateRuntimeSha,
     '--artifact-digest', candidateArtifactDigest,
     '--environment', candidateRole,
-    '--minimum-comparisons', '1',
+    '--minimum-comparisons', '200',
     '--shadow-hook-receipt', shadowHookReceiptPath,
     '--live-health', liveHealthPath,
+    '--synthetic-qa-manifest', syntheticQaManifestPath,
+    '--expected-synthetic-qa-manifest-sha256', `sha256:${syntheticQaManifestSha256}`,
+    '--synthetic-qa-receipt', syntheticQaReceiptPath,
   ];
 }
 
 describe('routing-divergence-report gate', () => {
+  it('requires a hash-bound synthetic QA manifest for every governed routing gate', () => {
+    seedDivergence({
+      skill: 'create_task',
+      domain: 'secretary',
+      agreement: {
+        classifierKeyword: true,
+        orchestratorPrimary: true,
+        registrySubset: true,
+        shadowRoute: true,
+      },
+    });
+
+    const result = runReport(...candidateGateArgs().filter((value, index, values) => (
+      value !== '--synthetic-qa-manifest'
+      && values[index - 1] !== '--synthetic-qa-manifest'
+      && value !== '--synthetic-qa-receipt'
+      && values[index - 1] !== '--synthetic-qa-receipt'
+      && value !== '--expected-synthetic-qa-manifest-sha256'
+      && values[index - 1] !== '--expected-synthetic-qa-manifest-sha256'
+    )));
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('--synthetic-qa-manifest');
+    expect(result.stdout).toBe('');
+  });
+
+  it('rejects manifest bytes that do not match the separately precommitted digest', () => {
+    const args = candidateGateArgs();
+    const digestIndex = args.indexOf('--expected-synthetic-qa-manifest-sha256');
+    args[digestIndex + 1] = `sha256:${'f'.repeat(64)}`;
+
+    const result = runReport(...args);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('precommitted SHA-256 digest');
+    expect(result.stdout).toBe('');
+  });
+
+  it('rejects a structurally valid manifest that violates the fixed human QA matrix', () => {
+    const invalidManifest = JSON.parse(readFileSync(syntheticQaManifestPath, 'utf8'));
+    invalidManifest.turns[0].expectedResolverSkill = 'training';
+    invalidManifest.turns[0].expectedDomain = 'secretary';
+    writeFileSync(syntheticQaManifestPath, `${JSON.stringify(invalidManifest)}\n`);
+
+    const result = runReport(...candidateGateArgs());
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('synthetic QA manifest is invalid');
+    expect(result.stderr).toContain('expectedDomain does not match expectedResolverSkill');
+    expect(result.stdout).toBe('');
+  });
+
+  it('requires the server HMAC secret through process environment to bind request evidence', () => {
+    const result = runReportWithoutShadowHmac(...candidateGateArgs());
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('CHAT_CORE_V2_SHADOW_ROUTE_HMAC_SECRET is required');
+    expect(result.stdout).toBe('');
+  });
+
+  it('rejects a synthetic QA receipt that reports spend, provider work, or mutation', () => {
+    const receipt = JSON.parse(readFileSync(syntheticQaReceiptPath, 'utf8'));
+    const cases: Array<[string, (candidate: any) => void]> = [
+      ['zero rows and zero cost', (candidate) => { candidate.apiUsageDelta.rows = 1; }],
+      ['zero rows and zero cost', (candidate) => { candidate.providerReservationDelta.costUsd = 0.01; }],
+      ['zero provider, external, and domain mutation activity', (candidate) => {
+        candidate.providerCalled = true;
+      }],
+      ['zero provider, external, and domain mutation activity', (candidate) => {
+        candidate.externalCallPerformed = true;
+      }],
+      ['zero provider, external, and domain mutation activity', (candidate) => {
+        candidate.domainMutationPerformed = true;
+      }],
+    ];
+    for (const [message, mutate] of cases) {
+      const candidate = structuredClone(receipt);
+      mutate(candidate);
+      writeFileSync(syntheticQaReceiptPath, `${JSON.stringify(candidate)}\n`);
+      const result = runReport(...candidateGateArgs());
+      expect(result.status, message).toBe(1);
+      expect(result.stderr, message).toContain(message);
+      expect(result.stdout, message).toBe('');
+    }
+  });
+
+  it('rejects every non-exact synthetic QA receipt identity, count, window, or shape', () => {
+    const receipt = JSON.parse(readFileSync(syntheticQaReceiptPath, 'utf8'));
+    const cases: Array<[string, (candidate: any) => void]> = [
+      ['exact governed shape', (candidate) => { candidate.unreviewed = true; }],
+      ['contract identity or terminal status', (candidate) => { candidate.status = 'failed'; }],
+      ['manifest, release, surface, or identity binding', (candidate) => {
+        candidate.manifestSha256 = `sha256:${'e'.repeat(64)}`;
+      }],
+      ['exactly 200 attempted, accepted, and recorded turns', (candidate) => {
+        candidate.recordedTurns = 199;
+      }],
+      ['timestamps must equal the exact gate window', (candidate) => {
+        candidate.completedAt = '2026-07-31T12:09:59.999Z';
+      }],
+      ['exactly 200 HTTP 200 responses', (candidate) => {
+        candidate.httpStatusCounts = { 200: 199, 202: 1 };
+      }],
+    ];
+    for (const [message, mutate] of cases) {
+      const candidate = structuredClone(receipt);
+      mutate(candidate);
+      writeFileSync(syntheticQaReceiptPath, `${JSON.stringify(candidate)}\n`);
+      const result = runReport(...candidateGateArgs());
+      expect(result.status, message).toBe(1);
+      expect(result.stderr, message).toContain(message);
+      expect(result.stdout, message).toBe('');
+    }
+  });
+
   it('reports aggregate agreement totals for every surface without replacing per-skill output', () => {
     seedDivergence({
       skill: 'create_task',
@@ -259,8 +619,6 @@ describe('routing-divergence-report gate', () => {
 
   it('gates only the explicitly selected surface and maps it to its capability flag', () => {
     seedDivergence({
-      skill: 'create_task',
-      domain: 'secretary',
       agreement: {
         classifierKeyword: true,
         orchestratorPrimary: true,
@@ -268,6 +626,7 @@ describe('routing-divergence-report gate', () => {
         shadowRoute: false,
       },
     });
+    fillSyntheticQaCampaign();
 
     const result = runReport(...candidateGateArgs());
     expect(result.status, result.stderr).toBe(0);
@@ -282,10 +641,62 @@ describe('routing-divergence-report gate', () => {
       enabled: true,
       selectedSurface: 'classifierKeyword',
       capabilityFlag: 'AI_ROUTING_MANIFEST_CLASSIFIER',
-      minimumComparisons: 1,
+      minimumComparisons: 200,
       minimumAgreementRate: 0.99,
       passed: true,
       failures: [],
+    });
+    expect(report.evidence.syntheticQaBinding).toEqual({
+      enforced: true,
+      contractVersion: syntheticQaContractVersion,
+      trafficClass: syntheticQaTrafficClass,
+      manifest: {
+        schema: ROUTING_SYNTHETIC_QA_MANIFEST_SCHEMA,
+        sha256: `sha256:${syntheticQaManifestSha256}`,
+        runtimeSha: candidateRuntimeSha,
+        artifactDigest: candidateArtifactDigest,
+        environment: candidateRole,
+        surface: 'classifierKeyword',
+        userId: dedicatedTenantId,
+        tenantId: dedicatedTenantId,
+        plannedTurns: 200,
+      },
+      receipt: {
+        schema: 'nexus.routing-synthetic-qa-receipt.v1',
+        sha256: `sha256:${createHash('sha256')
+          .update(readFileSync(syntheticQaReceiptPath)).digest('hex')}`,
+        status: 'passed',
+        manifestSha256: `sha256:${syntheticQaManifestSha256}`,
+        runtimeSha: candidateRuntimeSha,
+        artifactDigest: candidateArtifactDigest,
+        environment: candidateRole,
+        surface: 'classifierKeyword',
+        userId: dedicatedTenantId,
+        tenantId: dedicatedTenantId,
+        plannedTurns: 200,
+        attemptedTurns: 200,
+        acceptedTurns: 200,
+        recordedTurns: 200,
+        startedAt: candidateSince,
+        completedAt: candidateUntil,
+        httpStatusCounts: { 200: 200 },
+        apiUsageDelta: { rows: 0, costUsd: 0 },
+        providerReservationDelta: { rows: 0, costUsd: 0 },
+        providerCalled: false,
+        externalCallPerformed: false,
+        domainMutationPerformed: false,
+      },
+      counts: {
+        inWindowBundles: 200,
+        matchedBundles: 200,
+        missingOrMalformedProvenanceBundles: 0,
+        manifestMismatchBundles: 0,
+        duplicateOrdinalBundles: 0,
+        missingOrdinals: 0,
+        hmacMismatchBundles: 0,
+        expectedLabelMismatchBundles: 0,
+        targetSurfaceNotComparedBundles: 0,
+      },
     });
     expect(report.evidence.shadowRecorderBinding).toEqual({
       enforced: true,
@@ -318,13 +729,180 @@ describe('routing-divergence-report gate', () => {
         shadowPlannerDedicatedTenant: false,
       },
       counts: {
-        exactRecorderStateBundles: 1,
+        exactRecorderStateBundles: 200,
         missingRecorderStateBundles: 0,
         dedicatedScopeMismatchBundles: 0,
         hookNotEffectiveBundles: 0,
         plannerEffectiveBundles: 0,
       },
     });
+  });
+
+  it.each<Array<[string, () => void, string]>>([
+    [
+      'malformed traffic provenance',
+      () => seedDivergence({
+        agreement: {
+          classifierKeyword: true,
+          orchestratorPrimary: true,
+          registrySubset: true,
+          shadowRoute: true,
+        },
+        trafficProvenance: { unexpected: true },
+      }),
+      'missing_or_malformed_traffic_provenance',
+    ],
+    [
+      'a different manifest digest',
+      () => seedDivergence({
+        agreement: {
+          classifierKeyword: true,
+          orchestratorPrimary: true,
+          registrySubset: true,
+          shadowRoute: true,
+        },
+        trafficProvenance: { manifestSha256: `sha256:${'f'.repeat(64)}` },
+      }),
+      'manifest_binding_mismatch',
+    ],
+    [
+      'a different manifested locale',
+      () => seedDivergence({
+        agreement: {
+          classifierKeyword: true,
+          orchestratorPrimary: true,
+          registrySubset: true,
+          shadowRoute: true,
+        },
+        trafficProvenance: { locale: 'pt-PT' },
+      }),
+      'manifest_binding_mismatch',
+    ],
+    [
+      'a recorder locale that differs from the canonical manifested locale',
+      () => seedDivergence({
+        agreement: {
+          classifierKeyword: true,
+          orchestratorPrimary: true,
+          registrySubset: true,
+          shadowRoute: true,
+        },
+        contextLocale: 'pt-BR',
+      }),
+      'manifest_binding_mismatch',
+    ],
+    [
+      'an attachment-bearing recorder context',
+      () => seedDivergence({
+        agreement: {
+          classifierKeyword: true,
+          orchestratorPrimary: true,
+          registrySubset: true,
+          shadowRoute: true,
+        },
+        attachmentsCount: 1,
+      }),
+      'manifest_binding_mismatch',
+    ],
+    [
+      'a recorder message length that differs from the manifested text',
+      () => seedDivergence({
+        agreement: {
+          classifierKeyword: true,
+          orchestratorPrimary: true,
+          registrySubset: true,
+          shadowRoute: true,
+        },
+        messageLength: 1,
+      }),
+      'manifest_binding_mismatch',
+    ],
+    [
+      'a request HMAC mismatch',
+      () => seedDivergence({
+        agreement: {
+          classifierKeyword: true,
+          orchestratorPrimary: true,
+          registrySubset: true,
+          shadowRoute: true,
+        },
+        messageHash: '0'.repeat(64),
+      }),
+      'message_or_client_hmac_mismatch',
+    ],
+    [
+      'a resolver label that disagrees with the independent expected label',
+      () => seedDivergence({
+        skill: 'wrong_skill',
+        domain: 'wrong_domain',
+        agreement: {
+          classifierKeyword: true,
+          orchestratorPrimary: true,
+          registrySubset: true,
+          shadowRoute: true,
+        },
+      }),
+      'independent_expected_label_mismatch',
+    ],
+    [
+      'a null target-surface comparison',
+      () => seedDivergence({
+        agreement: {
+          classifierKeyword: null,
+          orchestratorPrimary: true,
+          registrySubset: true,
+          shadowRoute: true,
+        },
+      }),
+      'target_surface_comparison_missing',
+    ],
+  ])('fails closed for %s', (_name, seedInvalidRow, expectedReason) => {
+    seedInvalidRow();
+    fillSyntheticQaCampaign();
+
+    const result = runReport(...candidateGateArgs());
+    expect(result.status).toBe(1);
+    const report = JSON.parse(result.stdout);
+    expect(report.gate.failures).toEqual(expect.arrayContaining([
+      expect.objectContaining({ scope: 'synthetic_qa', reason: expectedReason, bundles: 1 }),
+      expect.objectContaining({
+        scope: 'synthetic_qa',
+        reason: 'one_to_one_campaign_binding_incomplete',
+        expectedBundles: 200,
+        matchedBundles: 199,
+      }),
+    ]));
+  });
+
+  it('rejects duplicate ordinals and extra in-window bundles even when 200 valid rows remain', () => {
+    const agreement = {
+      classifierKeyword: true,
+      orchestratorPrimary: true,
+      registrySubset: true,
+      shadowRoute: true,
+    };
+    seedDivergence({ syntheticOrdinal: 1, agreement });
+    seedDivergence({ syntheticOrdinal: 1, agreement });
+    fillSyntheticQaCampaign();
+
+    const result = runReport(...candidateGateArgs());
+    expect(result.status).toBe(1);
+    const report = JSON.parse(result.stdout);
+    expect(report.evidence.syntheticQaBinding.counts).toMatchObject({
+      inWindowBundles: 201,
+      matchedBundles: 200,
+      duplicateOrdinalBundles: 1,
+      missingOrdinals: 0,
+    });
+    expect(report.gate.failures).toEqual(expect.arrayContaining([
+      {
+        scope: 'synthetic_qa',
+        reason: 'in_window_bundle_count_mismatch',
+        expectedBundles: 200,
+        actualBundles: 201,
+      },
+      { scope: 'synthetic_qa', reason: 'duplicate_campaign_ordinal', bundles: 1 },
+    ]));
   });
 
   it('requires exact server receipt and live-health bindings and anchors since after enable completion', () => {
@@ -452,44 +1030,29 @@ describe('routing-divergence-report gate', () => {
     expect(report.surfaceTotals.classifierKeyword.compared).toBe(1);
   });
 
-  it('fails --gate when the selected surface has fewer than the explicit minimum comparisons', () => {
-    seedDivergence({
-      skill: 'create_task',
-      domain: 'secretary',
-      agreement: {
-        classifierKeyword: true,
-        orchestratorPrimary: true,
-        registrySubset: true,
-        shadowRoute: true,
-      },
-    });
+  it('refuses a routing gate whose comparison minimum is not the governed 200', () => {
     const result = runReport(
       ...candidateGateArgs().flatMap((value, index, values) =>
         index > 0 && values[index - 1] === '--minimum-comparisons' ? ['2'] : [value]),
     );
     expect(result.status).toBe(1);
-    const report = JSON.parse(result.stdout);
-    expect(report.gate.failures).toContainEqual({
-      surface: 'classifierKeyword',
-      reason: 'insufficient_comparisons',
-      minimumComparisons: 2,
-      compared: 1,
-      agreed: 1,
-      agreementRate: 1,
-    });
+    expect(result.stderr).toContain('--gate requires --minimum-comparisons 200');
+    expect(result.stdout).toBe('');
   });
 
   it('fails --gate when the selected surface agreement is below 99 percent', () => {
-    seedDivergence({
-      skill: 'create_task',
-      domain: 'secretary',
-      agreement: {
-        classifierKeyword: false,
-        orchestratorPrimary: true,
-        registrySubset: true,
-        shadowRoute: true,
-      },
-    });
+    for (let ordinal = 1; ordinal <= 3; ordinal += 1) {
+      seedDivergence({
+        syntheticOrdinal: ordinal,
+        agreement: {
+          classifierKeyword: false,
+          orchestratorPrimary: true,
+          registrySubset: true,
+          shadowRoute: true,
+        },
+      });
+    }
+    fillSyntheticQaCampaign();
 
     const result = runReport(...candidateGateArgs());
     expect(result.status).toBe(1);
@@ -497,9 +1060,9 @@ describe('routing-divergence-report gate', () => {
     expect(report.gate.failures).toContainEqual({
       surface: 'classifierKeyword',
       reason: 'agreement_below_threshold',
-      compared: 1,
-      agreed: 0,
-      agreementRate: 0,
+      compared: 200,
+      agreed: 197,
+      agreementRate: 0.985,
     });
   });
 
@@ -507,23 +1070,15 @@ describe('routing-divergence-report gate', () => {
     const missing = runReport('--gate');
     expect(missing.status).toBe(1);
     expect(missing.stderr).toContain(
-      '--gate requires explicit --surface, --since, --divergence-version, --resolver-version, '
+      '--gate requires explicit --surface, --since, --until, --divergence-version, --resolver-version, '
       + '--runtime-sha, --artifact-digest, --environment, --minimum-comparisons, '
-      + '--shadow-hook-receipt, and --live-health',
+      + '--shadow-hook-receipt, --live-health, --synthetic-qa-manifest, '
+      + '--expected-synthetic-qa-manifest-sha256, and --synthetic-qa-receipt',
     );
 
     const invalidTimestamp = runReport(
-      '--gate',
-      '--surface', 'classifierKeyword',
-      '--since', '2026-07-31T12:00:00Z',
-      '--divergence-version', candidateDivergenceVersion,
-      '--resolver-version', candidateResolverVersion,
-      '--runtime-sha', candidateRuntimeSha,
-      '--artifact-digest', candidateArtifactDigest,
-      '--environment', candidateRole,
-      '--minimum-comparisons', '1',
-      '--shadow-hook-receipt', shadowHookReceiptPath,
-      '--live-health', liveHealthPath,
+      ...candidateGateArgs().flatMap((value, index, values) =>
+        index > 0 && values[index - 1] === '--since' ? ['2026-07-31T12:00:00Z'] : [value]),
     );
     expect(invalidTimestamp.status).toBe(1);
     expect(invalidTimestamp.stderr).toContain(
@@ -531,17 +1086,10 @@ describe('routing-divergence-report gate', () => {
     );
 
     const invalidVersion = runReport(
-      '--gate',
-      '--surface', 'classifierKeyword',
-      '--since', candidateSince,
-      '--divergence-version', 'routing divergence latest',
-      '--resolver-version', candidateResolverVersion,
-      '--runtime-sha', candidateRuntimeSha,
-      '--artifact-digest', candidateArtifactDigest,
-      '--environment', candidateRole,
-      '--minimum-comparisons', '1',
-      '--shadow-hook-receipt', shadowHookReceiptPath,
-      '--live-health', liveHealthPath,
+      ...candidateGateArgs().flatMap((value, index, values) =>
+        index > 0 && values[index - 1] === '--divergence-version'
+          ? ['routing divergence latest']
+          : [value]),
     );
     expect(invalidVersion.status).toBe(1);
     expect(invalidVersion.stderr).toContain('--divergence-version must be an exact telemetry identifier');
@@ -696,8 +1244,6 @@ describe('routing-divergence-report gate', () => {
 
   it('normalizes SQLite-default created_at values when applying the candidate window', () => {
     seedDivergence({
-      skill: 'sqlite_default_timestamp_row',
-      domain: 'secretary',
       agreement: {
         classifierKeyword: true,
         orchestratorPrimary: true,
@@ -706,17 +1252,18 @@ describe('routing-divergence-report gate', () => {
       },
       createdAt: '2026-07-31 12:04:00',
     });
+    fillSyntheticQaCampaign();
 
     const result = runReport(...candidateGateArgs());
     expect(result.status, result.stderr).toBe(0);
     const report = JSON.parse(result.stdout);
     expect(report.evidence.counts).toMatchObject({
-      shadowBundlesInWindow: 1,
-      identityMatchedBundles: 1,
+      shadowBundlesInWindow: 200,
+      identityMatchedBundles: 200,
     });
     expect(report.surfaceTotals.classifierKeyword).toEqual({
-      compared: 1,
-      agreed: 1,
+      compared: 200,
+      agreed: 200,
       agreementRate: 1,
     });
   });
@@ -772,8 +1319,6 @@ describe('routing-divergence-report gate', () => {
     // Section 7.1 allows previously authorized flags to stay ON while the next
     // surface in the order is measured.
     seedDivergence({
-      skill: 'create_task',
-      domain: 'secretary',
       agreement: {
         classifierKeyword: true,
         orchestratorPrimary: true,
@@ -782,6 +1327,7 @@ describe('routing-divergence-report gate', () => {
       },
       capabilityFlags: { orchestratorPrimary: true },
     });
+    fillSyntheticQaCampaign({ capabilityFlags: { orchestratorPrimary: true } });
 
     const result = runReport(...candidateGateArgs());
     expect(result.status, result.stderr).toBe(0);
@@ -791,14 +1337,14 @@ describe('routing-divergence-report gate', () => {
       {
         state: 'classifierKeyword=off,orchestratorPrimary=on,registrySubset=off,'
           + 'shadowRoute=off,masterKill=off',
-        bundles: 1,
+        bundles: 200,
       },
     ]);
     expect(report.evidence.capabilityFlagBinding.counts).toMatchObject({
-      knownFlagStateBundles: 1,
+      knownFlagStateBundles: 200,
       selectedSurfaceFlagOnBundles: 0,
       masterKillEngagedBundles: 0,
-      flagEligibleBundles: 1,
+      flagEligibleBundles: 200,
     });
   });
 
@@ -880,7 +1426,7 @@ describe('routing-divergence-report gate', () => {
     expect(report.gate.failures).toContainEqual({
       surface: 'classifierKeyword',
       reason: 'insufficient_comparisons',
-      minimumComparisons: 1,
+      minimumComparisons: 200,
       compared: 0,
       agreed: 0,
       agreementRate: null,
@@ -980,17 +1526,17 @@ describe('routing-divergence-report gate', () => {
       skill: 'inside_window_row',
       domain: 'secretary',
       agreement,
-      createdAt: '2026-07-31T12:30:00.000Z',
+      createdAt: '2026-07-31T12:05:00.000Z',
     });
     seedDivergence({
       skill: 'after_window_row',
       domain: 'secretary',
       agreement,
-      createdAt: '2026-07-31T13:30:00.000Z',
+      createdAt: '2026-07-31T12:30:00.000Z',
     });
 
-    const until = '2026-07-31T13:00:00.000Z';
-    const result = runReport(...candidateGateArgs(), '--until', until);
+    const until = candidateUntil;
+    const result = runReport('--since', candidateSince, '--until', until);
     expect(result.status, result.stderr).toBe(0);
     const report = JSON.parse(result.stdout);
     expect(report.evidence.window).toMatchObject({
@@ -1021,13 +1567,16 @@ describe('routing-divergence-report gate', () => {
   });
 
   it('rejects an upper bound that is not canonical or precedes the start of the window', () => {
-    const notCanonical = runReport(...candidateGateArgs(), '--until', '2026-07-31T13:00:00Z');
+    const replaceUntil = (replacement: string): string[] => candidateGateArgs().flatMap(
+      (value, index, values) => (index > 0 && values[index - 1] === '--until' ? [replacement] : [value]),
+    );
+    const notCanonical = runReport(...replaceUntil('2026-07-31T13:00:00Z'));
     expect(notCanonical.status).toBe(1);
     expect(notCanonical.stderr).toContain(
       '--until must be a canonical UTC ISO timestamp with milliseconds',
     );
 
-    const inverted = runReport(...candidateGateArgs(), '--until', '2026-07-31T11:00:00.000Z');
+    const inverted = runReport(...replaceUntil('2026-07-31T11:00:00.000Z'));
     expect(inverted.status).toBe(1);
     expect(inverted.stderr).toContain('--until must not be earlier than --since');
   });

@@ -20,6 +20,7 @@ import type { ChatStage, ChatTurnCtx } from './types';
 import { idempotentReplayStage } from './stages/idempotent-replay';
 import { idempotencyClaimStage } from './stages/idempotency-claim';
 import { turnContextStage } from './stages/turn-context';
+import { routingSyntheticQaStage } from './stages/routing-synthetic-qa';
 import { tokenZeroShortcutStage } from './stages/token-zero-shortcut';
 import { createChatCoreV2DeterministicReadStage } from './stages/deterministic-read';
 import { shadowRouteStage } from './stages/shadow-route';
@@ -50,6 +51,7 @@ export const CHAT_MESSAGE_STAGES: readonly ChatStage[] = [
   idempotentReplayStage,
   idempotencyClaimStage,
   turnContextStage,
+  routingSyntheticQaStage,
   tokenZeroShortcutStage,
   createChatCoreV2DeterministicReadStage('early'),
   shadowRouteStage,
@@ -90,6 +92,7 @@ export const NON_RETIRABLE_CHAT_STAGES: ReadonlySet<string> = new Set([
   'idempotent_replay',
   'idempotency_claim',
   'turn_context',
+  'routing_synthetic_qa',
   'completion_evidence_recorder',
   'pending_work_cancel',
   'action_gateway',

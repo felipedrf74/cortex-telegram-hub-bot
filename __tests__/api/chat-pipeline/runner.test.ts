@@ -32,6 +32,7 @@ const EXPECTED_STAGE_ORDER: Array<{ name: string; traceStages: string[] }> = [
   { name: 'idempotent_replay', traceStages: ['idempotent_replay_conflict', 'idempotent_replay'] },
   { name: 'idempotency_claim', traceStages: ['idempotency_claim_conflict', 'idempotency_in_progress', 'request_validated'] },
   { name: 'turn_context', traceStages: [] },
+  { name: 'routing_synthetic_qa', traceStages: ['routing_synthetic_qa'] },
   { name: 'token_zero_shortcut', traceStages: ['token_zero_shortcut'] },
   { name: 'chat_core_v2_deterministic_read_early', traceStages: ['chat_core_v2_deterministic_read_early'] },
   { name: 'shadow_route_recording', traceStages: [] },
@@ -102,6 +103,7 @@ describe('chat-pipeline runner', () => {
       }
       expect(isChatPipelineStageDisabled('legacy_tail', env)).toBe(false);
       expect(isChatPipelineStageDisabled('action_gateway', env)).toBe(false);
+      expect(isChatPipelineStageDisabled('routing_synthetic_qa', env)).toBe(false);
     });
 
     it('lists every non-retirable stage name in the runner array', () => {

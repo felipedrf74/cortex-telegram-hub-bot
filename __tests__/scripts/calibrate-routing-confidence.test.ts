@@ -77,7 +77,9 @@ function createCorpusDatabase(labeled: boolean): string {
 function runCli(args: string[], env: NodeJS.ProcessEnv = process.env) {
   return spawnSync(process.execPath, ['--import', 'tsx', SCRIPT_PATH, ...args], {
     cwd: process.cwd(),
-    env: { ...env, NODE_ENV: 'test' },
+    // This standalone calibration CLI does not exercise the iOS API. Keep the
+    // subprocess hermetic when a developer's local .env enables that API.
+    env: { ...env, NODE_ENV: 'test', IOS_API_ENABLED: 'false' },
     encoding: 'utf8',
   });
 }

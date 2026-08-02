@@ -62,6 +62,11 @@ import { runWithChatLiveEvalContext } from '../../services/chat-live-evaluation-
 import { assertChatLiveEvalRealProviderReadiness } from '../../services/chat-live-evaluation-readiness';
 import { isPrivateDockerGatewayRequest } from './chat-eval-routes';
 import {
+  RoutingSyntheticQaContractError,
+  hasRoutingSyntheticQaHeaders,
+  resolveRoutingSyntheticQaRequest,
+} from '../../services/routing-synthetic-qa-contract';
+import {
   buildChatCoreV2GuardOnlyConfirmationLabels,
   buildChatCoreV2GuardOnlyConfirmationText,
   buildUserMessageId,
@@ -429,8 +434,32 @@ export function registerChatMessageRoutes(
     }
 
     let liveEvalContext;
+    let routingSyntheticQaContext;
     try {
       const readEvalHeader = (name: string) => req.header(name);
+      routingSyntheticQaContext = hasRoutingSyntheticQaHeaders(readEvalHeader)
+        ? resolveRoutingSyntheticQaRequest({
+            readHeader: readEvalHeader,
+            userId,
+            tenantId,
+            principalEmail: getUserById(userId)?.email ?? null,
+            // The synthetic contract intentionally binds the body field, not
+            // an idempotency fallback header, to its canonical turn id.
+            clientMessageId,
+            requestLocale: req.header('x-language'),
+            attachmentsCount: normalizedAttachments.length,
+            rawAttachments: req.body && typeof req.body === 'object'
+              ? (req.body as Record<string, unknown>).attachments
+              : undefined,
+          })
+        : null;
+      if (routingSyntheticQaContext && hasChatLiveEvalHeaders(readEvalHeader)) {
+        throw new RoutingSyntheticQaContractError(
+          'ROUTING_SYNTHETIC_QA_INVALID',
+          'Routing synthetic QA cannot be combined with the paid chat live-evaluation contract.',
+          400,
+        );
+      }
       liveEvalContext = hasChatLiveEvalHeaders(readEvalHeader)
         ? resolveChatLiveEvalRequest({
             readHeader: readEvalHeader,
@@ -444,6 +473,10 @@ export function registerChatMessageRoutes(
         : null;
       if (liveEvalContext) assertChatLiveEvalRealProviderReadiness(liveEvalContext);
     } catch (error) {
+      if (error instanceof RoutingSyntheticQaContractError) {
+        res.status(error.status).json({ error: { code: error.code, message: error.message } });
+        return;
+      }
       if (error instanceof ChatLiveEvalContractError) {
         res.status(error.status).json({ error: { code: error.code, message: error.message } });
         return;
@@ -451,7 +484,7 @@ export function registerChatMessageRoutes(
       throw error;
     }
 
-    persistChatLanguagePreference(req, userId);
+    if (!routingSyntheticQaContext) persistChatLanguagePreference(req, userId);
 
     // Token-zero reads/actions must never queue behind a long model call.
     // Acquire the per-user lock lazily only when this turn is definitely
@@ -515,6 +548,7 @@ export function registerChatMessageRoutes(
         chatRequestId,
         latency,
         ensureModelBudget,
+        routingSyntheticQa: routingSyntheticQaContext,
       });
       if (liveEvalContext) {
         await runWithChatLiveEvalContext(liveEvalContext, runPipeline);

@@ -534,14 +534,15 @@ The global route hook stays OFF. Authenticated `/health/detailed`
 release-attestation v2 reports only presence and effective booleans for this
 scope; it never exposes its identity.
 
-Record the canonical routing-window start no earlier than the passed receipt's
-`completedAt`. Eligible `routing_divergence_shadow@4.0.0` bundles must all bind
-that exact dedicated user and tenant, route hook effective, shadow planner not
-effective, target capability OFF, exact release identity, and the selected
-surface. The gate also hashes and binds fresh authenticated health bytes and
-the exact recorder receipt. Missing or mixed recorder metadata, a stale or
-different receipt, any planner-effective bundle, or a live-scope mismatch
-fails the entire window instead of merely excluding rows.
+Routing-window evidence uses the provider-free synthetic QA contract in
+**Phase 7.1** below. Eligible `routing_divergence_shadow@5.0.0` bundles bind
+the exact dedicated user and tenant, route hook effective, shadow planner not
+effective, target capability OFF, exact release identity, selected surface,
+and strict synthetic-QA provenance. The gate also hashes and binds fresh
+authenticated health bytes, the exact recorder receipt, the precommitted
+manifest, and its zero-provider campaign receipt. Missing or mixed recorder
+metadata, a stale or different receipt, any planner-effective bundle, or a
+live-scope mismatch fails the entire window instead of merely excluding rows.
 
 After all four manifest-routing collection windows are complete, disable the
 recorder with `inspect-shadow-hook --value false --transition-reason
@@ -646,11 +647,185 @@ Use this fixed readiness order and exact flag-to-telemetry mapping:
 | 4 | `AI_ROUTING_MANIFEST_REGISTRY` | `registrySubset` |
 
 The minimum is fixed at 200 comparisons for every surface; it is not an
-operator input and cannot be lowered after seeing results. Record one
-canonical UTC start timestamp after the exact candidate is healthy on staging,
-then record an explicit canonical UTC end timestamp after eligible staging
-traffic. With the selected flag still OFF (and only previously authorized
-flags, if any, ON), inspect that one immutable window:
+operator input and cannot be lowered after seeing results. Each surface uses a
+fresh, precommitted 200-turn manifest. No synthetic routing QA window is organic traffic.
+Its exact traffic class is
+`owner_authorized_synthetic_staging_qa`; describe it as governed synthetic
+staging evidence, never as a natural-traffic or human-traffic baseline.
+
+Each manifest contains 200 standalone natural-language turns organized into
+83 editorial scenario groups. A group is only an authoring-diversity aid; it
+is not a conversation, is not sent to the API, and does not authorize a claim
+about multi-turn behavior. Every turn carries `standalone: true` and must be
+independently understandable by the per-message router. Use English, Brazilian
+Portuguese, and European Portuguese only.
+
+The locale, stratum, and editorial-group quotas are identical for all four
+surfaces:
+
+| Dimension | Exact quota |
+| --- | --- |
+| Locale | `en-US=100`, `pt-BR=60`, `pt-PT=40` |
+| Stratum | `deterministic_state_read=80`, `missing_field_clarification=45`, `safe_write_preview_decline=35`, `restricted_side_effect_boundary=20`, `cross_skill_preview=10`, `domain_anchored_noop=10` |
+| Editorial groups | 83 total: 49 groups of two standalone turns and 34 groups of three |
+| `en-US` groups | 20 groups of two and 20 groups of three |
+| `pt-BR` groups | 15 groups of two and 10 groups of three |
+| `pt-PT` groups | 14 groups of two and 4 groups of three |
+
+The classifier and orchestrator surfaces measure only their actual five-domain
+runtime intersection. Their exact domain-by-locale matrix is:
+
+| Expected domain | `en-US` | `pt-BR` | `pt-PT` | Total |
+| --- | ---: | ---: | ---: | ---: |
+| `secretary` | 34 | 20 | 14 | 68 |
+| `triathlon` | 20 | 12 | 7 | 39 |
+| `content` | 16 | 10 | 6 | 32 |
+| `cooking` | 16 | 10 | 6 | 32 |
+| `finance` | 14 | 8 | 7 | 29 |
+| **Total** | **100** | **60** | **40** | **200** |
+
+The shadow-route and registry-subset surfaces cover all eight routable
+manifest domains. Their exact domain-by-locale matrix is:
+
+| Expected domain | `en-US` | `pt-BR` | `pt-PT` | Total |
+| --- | ---: | ---: | ---: | ---: |
+| `secretary` | 27 | 16 | 10 | 53 |
+| `triathlon` | 15 | 9 | 6 | 30 |
+| `content` | 13 | 7 | 5 | 25 |
+| `cooking` | 12 | 8 | 5 | 25 |
+| `finance` | 11 | 7 | 5 | 23 |
+| `connections` | 8 | 5 | 4 | 17 |
+| `notifications` | 7 | 4 | 3 | 14 |
+| `decision_center` | 7 | 4 | 2 | 13 |
+| **Total** | **100** | **60** | **40** | **200** |
+
+Expected labels use the resolver's coarse skill space, not granular action
+skills: `secretary -> secretary`, `triathlon -> training`, and each of
+`content`, `cooking`, `finance`, `connections`, `notifications`, and
+`decision_center` maps to the same-named resolver skill. Calendar, task,
+reminder, and mail coverage can remain an editorial worksheet dimension, but
+none is a valid `expectedResolverSkill` for the shared Secretary capability.
+
+Use a blind two-role authoring procedure before any prompt is exposed to a
+router or resolver. The author receives only the product/action ownership
+rubric and assigned quota cells, never routing regexes, manifest examples,
+corpus or chat-eval text, predecessor text, or runtime output. A separate
+labeler receives the prompts in shuffled order plus the same product ownership
+rubric and independently assigns `expectedDomain` and
+`expectedResolverSkill`. Adjudicate or replace every disagreement, ambiguous
+row, or context-dependent row before router exposure. The authoring, labeling,
+adjudication, and builder steps must not invoke a router; the live staging run
+is the first router consumer. Once built, never edit or replace a frozen
+manifest after seeing results; a failure is a routing gap, not a prompt-tuning
+invitation. This process creates agent-authored, independently labeled
+synthetic QA; it is not human traffic or a human baseline.
+
+Before execution, build the immutable manifest and check it against the
+routing corpus, chat-eval fixtures, and the strict chain of every earlier
+surface manifest:
+
+```text
+node scripts/build-routing-synthetic-qa-manifest.mjs \
+  --input <ignored-private-draft.json> \
+  --output <ignored-private-canonical-manifest.json> \
+  --runtime-sha <deployed-full-40-hex-sha> \
+  --artifact-digest <deployed-full-64-hex-sha256> \
+  --surface classifierKeyword \
+  --dedicated-id <CHAT_EVAL_DEDICATED_TENANT_ID> \
+  --reference routing_corpus=<owner-only-routing-corpus-export> \
+  --reference chat_eval_fixtures=<owner-only-chat-eval-fixture-export>
+```
+
+That first-surface command intentionally has no `--predecessor-manifest`.
+For each later surface, change `--surface` and append the real
+`--predecessor-manifest <path>` option once per earlier surface in the table's
+exact readiness order: one for `orchestratorPrimary`, two for `shadowRoute`,
+and three for `registrySubset`. The optional third typed reference is
+`--reference qa_history=<owner-only-QA-history-export>`. Do not pass an
+untyped `--reference` or use it for predecessor manifests; the builder rejects
+both. Every input and reference must be an owner-only mode-`0600` ordinary
+file.
+
+The builder invokes no router and no provider. It fails closed unless the
+matrix contains exactly 200 unique ordered standalone turns, the selected
+surface's exact locale/domain/resolver-skill/stratum and 83-editorial-group
+quotas, both mandatory typed reference lineages, the exact predecessor digest
+chain, and no exact, contiguous eight-token, or high four-gram overlap with the
+supplied references. It writes new canonical mode-`0600` bytes without
+overwriting an existing output and prints only their SHA-256, lineage, and
+aggregate counts. Record that digest before traffic.
+
+Copy the canonical manifest to an owner-only non-release staging path, then run
+the installed candidate from its selected `current` release. Supply identity
+fields in the process environment and secrets only through the protected
+staging env file; never put a token, `HEALTH_TOKEN`, or HMAC secret in argv.
+The protected staging env must provide `HEALTH_TOKEN`; this is the existing
+credential for authenticated `/health/detailed`, not the short-lived iOS JWT
+the runner creates for chat requests:
+
+```text
+cd /home/dominguez/telegram-hub-bot-staging/current
+env -i \
+  HOME=/home/dominguez USER=dominguez LOGNAME=dominguez \
+  PATH=/usr/local/bin:/usr/bin:/bin \
+  NEXUS_RELEASE_ROLE=staging \
+  NEXUS_RELEASE_SHA=<deployed-full-40-hex-sha> \
+  NEXUS_RELEASE_ARTIFACT_SHA256=<deployed-full-64-hex-sha256> \
+  DATABASE_PATH=/home/dominguez/telegram-hub-bot-staging/data/bot.db \
+  /usr/bin/node \
+    --env-file=/home/dominguez/telegram-hub-bot-staging/.env \
+    scripts/run-routing-synthetic-qa.mjs \
+    --manifest <owner-only-canonical-manifest.json> \
+    --manifest-sha256 <sha256:exact-manifest-digest>
+```
+
+The runner verifies the selected installed release marker/current symlink,
+dedicated `.invalid` identity, canonical manifest bytes, owner-only file state,
+and the shared release lock file. For every later surface it also reloads each
+prior manifest from the release-bound protected state tree, revalidates the
+current manifest against those predecessor prompts, and requires an exact
+canonical `passed` receipt for every predecessor on the same release and
+dedicated identity. The command self-enforces the release mutex:
+its entrypoint re-executes itself under non-blocking `/usr/bin/flock` on the
+shared release lock and fails closed if it cannot acquire or prove that exact
+parent/lock state. Do not wrap it in a second lock command.
+
+Before the first turn, the runner uses the protected `HEALTH_TOKEN` to require
+an authenticated healthy/connected serving-process attestation for the exact
+staging SHA and artifact, a clear runtime guard, the selected flag OFF, master
+kill OFF, the dedicated recorder effective, and the dedicated planner not
+effective. It separately mints a short-lived staging-fixture iOS JWT in memory
+for chat authentication and rejects a missing health credential or one equal
+to that JWT. Neither credential is printed or persisted.
+
+The runner then sends exactly 200 authenticated
+`POST /api/v1/chat/message` requests. Each body contains only the standalone
+text and canonical `clientMessageId`; attachments are absent. The API binds
+the raw `x-language` value to the manifest's exact `en-US`, `pt-BR`, or `pt-PT`
+locale, rejects any raw or normalized attachment, and persists the raw locale
+in synthetic provenance. The replay evidence separately binds its normalized
+route locale, zero attachment count, message length, message HMAC, and client-
+message HMAC. The staging-only terminal runs immediately after turn context,
+records the real four-surface shadow routing bundle, and returns before model
+budget, providers, connectors, tools, or domain actions. It also skips the
+ordinary idempotency claim/lifecycle-row creation and language-preference
+write; canonical turn identity is proven by the provenance, HMACs, and
+campaign receipt instead. A separate dedicated rate-limit bucket permits only
+this exact six-synthetic-header contract for the configured identity; ordinary
+or partial-header traffic keeps the normal limit.
+
+Every response must carry the exact recorded provenance, and before/after
+dedicated-identity provider-usage and attempt-reservation ledgers must have
+zero row and cost delta. Any non-200, malformed response, recorder failure,
+provider ledger change, duplicate evidence path, or release/identity mismatch
+fails without a passed receipt. The successful private manifest and receipt
+are stored under
+`/home/dominguez/.local/state/nexus-release/routing-synthetic-qa/` with mode
+`0600`. Use the receipt's exact `startedAt` and `completedAt` as the immutable
+gate window.
+
+With the selected flag still OFF (and only previously authorized flags, if
+any, ON), inspect that one immutable window:
 
 ```text
 npm run release:chat-flags -- inspect \
@@ -661,18 +836,27 @@ npm run release:chat-flags -- inspect \
   --value true \
   --transition-reason gate_pass \
   --since <YYYY-MM-DDTHH:mm:ss.sssZ> \
-  --until <YYYY-MM-DDTHH:mm:ss.sssZ>
+  --until <YYYY-MM-DDTHH:mm:ss.sssZ> \
+  --synthetic-qa-manifest-sha256 <sha256:exact-manifest-digest>
 ```
 
 The server derives the selected surface and installed telemetry versions, runs
 the provider-free divergence collector against the isolated staging database
-with `--minimum-comparisons=200`, and binds the exact `since`/`until` window
-into the plan. PASS requires at least 200 comparisons and agreement of at least
-0.99 on that one surface. Invalid, missing-identity, version-mismatched,
-out-of-window, flag-on, other-candidate, or recorder-state-mismatched bundles
-fail the governed gate. Zero eligible comparisons is a failure, not an empty
-pass. Never use an unbounded or all-surface aggregate to authorize a
-per-surface flip.
+with `--minimum-comparisons=200`, securely loads the route HMAC from the
+protected staging env, and binds the exact manifest/receipt hashes and
+`since`/`until` window into the plan. It requires exactly 200 in-window bundles,
+one per ordinal: no extras, omissions, duplicates, or relabeling. Each bundle's
+raw locale, normalized route locale, attachment-free state, message length,
+message HMAC, and client-message HMAC must match the precommitted turn. The
+resolved domain and resolver skill must match the independent expected labels,
+and the selected surface comparison must be non-null. PASS requires agreement
+of at least 0.99 on that one surface. Invalid, missing-identity, version-
+mismatched, out-of-window, flag-on, other-candidate, expected-label-mismatched,
+locale/attachment-mismatched, HMAC-mismatched, or recorder-state-mismatched
+bundles fail the governed gate. Zero eligible comparisons is a failure, not an
+empty pass. Never use an unbounded or all-surface aggregate to authorize a
+per-surface flip, and never reuse one surface's manifest or receipt for
+another.
 
 Apply only the exact inspected staging plan:
 

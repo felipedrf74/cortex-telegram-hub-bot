@@ -18,8 +18,11 @@ import type { ChatStage, ChatStageResult, ChatTurnCtx } from '../types';
 export const idempotencyClaimStage: ChatStage = {
   name: 'idempotency_claim',
   traceStages: ['idempotency_claim_conflict', 'idempotency_in_progress', 'request_validated'],
-  canHandle(): boolean {
-    return true;
+  canHandle(ctx: ChatTurnCtx): boolean {
+    // The staging-only synthetic routing terminal must not create ordinary
+    // chat lifecycle rows. Its canonical turn IDs are instead proven by the
+    // shadow-bundle HMAC and immutable execution receipt.
+    return !ctx.routingSyntheticQa;
   },
   async handle(ctx: ChatTurnCtx): Promise<ChatStageResult> {
     const {

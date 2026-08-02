@@ -76,6 +76,16 @@ function routingEvidence(): Record<string, unknown> {
     liveShadowPlannerDedicatedTenant: false,
     liveHealthSha256: '4'.repeat(64),
     liveHealthCheckedAt: '2026-08-02T00:59:58.500Z',
+    syntheticQaContractVersion: 'routing-synthetic-qa-v1',
+    syntheticQaTrafficClass: 'owner_authorized_synthetic_staging_qa',
+    syntheticQaManifestSchema: 'nexus.routing-synthetic-qa-manifest.v1',
+    syntheticQaManifestSha256: `sha256:${'5'.repeat(64)}`,
+    syntheticQaReceiptSchema: 'nexus.routing-synthetic-qa-receipt.v1',
+    syntheticQaReceiptSha256: `sha256:${'6'.repeat(64)}`,
+    syntheticQaStartedAt: '2026-08-02T00:50:01.000Z',
+    syntheticQaCompletedAt: '2026-08-02T00:59:58.000Z',
+    syntheticQaPlannedTurns: 200,
+    syntheticQaMatchedBundles: 200,
   };
 }
 

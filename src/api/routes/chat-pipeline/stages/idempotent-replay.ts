@@ -14,8 +14,11 @@ import type { ChatStage, ChatStageResult, ChatTurnCtx } from '../types';
 export const idempotentReplayStage: ChatStage = {
   name: 'idempotent_replay',
   traceStages: ['idempotent_replay_conflict', 'idempotent_replay'],
-  canHandle(): boolean {
-    return true;
+  canHandle(ctx: ChatTurnCtx): boolean {
+    // Governed staging synthetic turns have canonical campaign IDs and must
+    // reach their evidence terminal even if an ordinary lifecycle row used
+    // the same client message ID before the campaign began.
+    return !ctx.routingSyntheticQa;
   },
   async handle(ctx: ChatTurnCtx): Promise<ChatStageResult> {
     const {

@@ -29,10 +29,14 @@ import {
   type ManifestRoutingSurface,
 } from './manifest-routing-flags';
 import { V2_TO_LEGACY_DOMAIN } from './routing-domain-map';
+import {
+  normalizeRoutingSyntheticQaTrafficProvenance,
+  type RoutingSyntheticQaTrafficProvenance,
+} from '../routing-synthetic-qa-contract';
 
 export { V2_TO_LEGACY_DOMAIN } from './routing-domain-map';
 
-export const ROUTING_DIVERGENCE_SHADOW_VERSION = 'routing_divergence_shadow@4.0.0';
+export const ROUTING_DIVERGENCE_SHADOW_VERSION = 'routing_divergence_shadow@5.0.0';
 
 const FULL_RUNTIME_SHA = /^[0-9a-f]{40}$/;
 const FULL_ARTIFACT_DIGEST = /^[0-9a-f]{64}$/;
@@ -110,6 +114,8 @@ export interface RoutingDivergenceShadowRecord {
   releaseIdentity: RoutingDivergenceReleaseIdentity;
   capabilityFlags: RoutingDivergenceCapabilityFlags;
   recorderState: RoutingDivergenceRecorderState;
+  /** null for ordinary traffic; exact eight-key contract for synthetic QA. */
+  trafficProvenance: RoutingSyntheticQaTrafficProvenance | null;
   topCandidate: {
     capabilityId: string;
     domain: string;
@@ -148,6 +154,7 @@ export interface RoutingDivergenceShadowDeps {
   env?: Readonly<Record<string, string | undefined>>;
   /** Effective state supplied by the live hook after evaluating its real scope. */
   recorderState?: RoutingDivergenceRecorderState;
+  trafficProvenance?: RoutingSyntheticQaTrafficProvenance | null;
 }
 
 export function buildRoutingDivergenceShadowRecord(
@@ -162,6 +169,9 @@ export function buildRoutingDivergenceShadowRecord(
   const releaseIdentity = readReleaseIdentity(env);
   const capabilityFlags = readCapabilityFlags(env);
   const recorderState = readRecorderState(deps.recorderState);
+  const trafficProvenance = normalizeRoutingSyntheticQaTrafficProvenance(
+    deps.trafficProvenance,
+  );
 
   const classifierKeywordDomain = (deps.keywordMatch ?? keywordMatch)(text);
   const orchestratorPrimaryDomain = deps.orchestratorPrimaryDomain
@@ -185,6 +195,7 @@ export function buildRoutingDivergenceShadowRecord(
     releaseIdentity,
     capabilityFlags,
     recorderState,
+    trafficProvenance,
     topCandidate: top
       ? {
         capabilityId: top.capabilityId,

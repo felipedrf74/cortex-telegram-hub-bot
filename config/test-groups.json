@@ -735,6 +735,7 @@
         "src/services/intelligence-bus.ts",
         "src/services/intent-resolution/**",
         "src/services/reply-language-normalizer.ts",
+        "src/services/routing-synthetic-qa-contract.ts",
         "src/services/routing-action-skill-accuracy.ts",
         "src/services/routing-accuracy.ts",
         "src/services/routing-corpus-*.ts",
