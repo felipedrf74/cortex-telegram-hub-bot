@@ -278,6 +278,26 @@ function effectiveFlagState(configured) {
   return effective;
 }
 
+export function deriveEffectiveCapabilityFlagState(configured) {
+  return effectiveFlagState(normalizeFlagState(configured, 'configured capability flags'));
+}
+
+export function resolveCapabilityHealthState(record, stateKey) {
+  const source = assertPlainObject(record, 'capability health state record');
+  const configuredKey = assertOneOf(
+    stateKey,
+    ['configuredBefore', 'configuredAfter', 'configuredFlags'],
+    'capability health configured state key',
+  );
+  const configured = normalizeFlagState(source[configuredKey], configuredKey);
+  const effectiveKey = configuredKey.replace('configured', 'effective');
+  const effective = normalizeFlagState(source[effectiveKey], effectiveKey);
+  if (!equalCanonical(effective, effectiveFlagState(configured))) {
+    fail(`${effectiveKey} does not honor the configured master-kill projection`);
+  }
+  return { configured, effective };
+}
+
 function equalCanonical(left, right) {
   return canonicalJson(left) === canonicalJson(right);
 }

@@ -103,6 +103,10 @@ function createShellFixture() {
     path.join(release, 'dist/services/intent-resolution/intent-resolver.js'),
     "exports.INTENT_RESOLVER_VERSION = 'manifest-intent-resolver@1.0.0';\n",
   );
+  writeFileSync(
+    path.join(release, 'dist/services/runtime-flags.js'),
+    '// fixture\n',
+  );
   writeFileSync(path.join(base, 'data/bot.db'), 'fixture\n');
   writeFileSync(path.join(release, 'ecosystem.release.config.js'), '// fixture\n');
   writeFileSync(path.join(release, '.complete.json'), `${JSON.stringify({
@@ -127,6 +131,15 @@ case "\${1:-}" in
     exit 0
     ;;
   --env-file=*)
+    if [ "\${2:-}" = - ] && [ "\${3:-}" = ${shellSingleQuote(release)} ] \
+        && [ "\${4:-}" = ${shellSingleQuote(path.join(base, 'data/bot.db'))} ]; then
+      printf '42'
+      exit 0
+    fi
+    if [ "\${2:-}" = - ] && [ "\${3:-}" = 8201 ] && [ "\${4:-}" = 8101 ]; then
+      ${shellSingleQuote(actualNode)} --input-type=module -e 'import fs from "node:fs";import{pathToFileURL}from"node:url";const[helperPath,file,stateKey]=process.argv.slice(1);const helper=await import(pathToFileURL(helperPath).href);const record=JSON.parse(fs.readFileSync(file,"utf8"));helper.resolveCapabilityHealthState(record.plan??record,stateKey)' "\${14:-}" "\${9:-}" "\${10:-}"
+      exit $?
+    fi
     if [ "\${2:-}" = - ] && [ "\${4:-}" = /health/detailed ] \
         && [ -f ${shellSingleQuote(routingHealthFile)} ]; then
       /bin/cat ${shellSingleQuote(routingHealthFile)} > "\${8:-}"
@@ -284,6 +297,11 @@ exec /usr/bin/readlink "$@"
     remoteBody,
     'const startTicks = fieldsFromState[19];',
     "const startTicks = '9001';",
+  );
+  remoteBody = replaceRequired(
+    remoteBody,
+    'local deadline=$((SECONDS + 45))',
+    'local deadline=$((SECONDS + 1))',
   );
   remoteBody = replaceRequired(
     remoteBody,
@@ -881,5 +899,61 @@ describe('chat capability flag remote shell wiring', () => {
     expect(shadow).toBeTruthy();
     expect(applied.stdout).not.toContain(classifier!);
     expect(applied.stdout).not.toContain(shadow!);
+  });
+
+  it('applies a dedicated shadow hook with exact configured and effective health state', () => {
+    const fixture = createShellFixture();
+    const source = [
+      'CHAT_EVAL_DEDICATED_TENANT_ID=42',
+      `CLASSIFY_SHADOW_HASH_SECRET=${'c'.repeat(64)}`,
+      `CHAT_CORE_V2_SHADOW_ROUTE_HMAC_SECRET=${'d'.repeat(64)}`,
+      'AI_ROUTING_MANIFEST_CLASSIFIER=false',
+      'AI_ROUTING_MANIFEST_ORCHESTRATOR=false',
+      'AI_ROUTING_MANIFEST_SHADOW=false',
+      'AI_ROUTING_MANIFEST_REGISTRY=false',
+      'AI_ROUTING_CLARIFY=false',
+      'AI_CLASSIFY_MANIFEST_PROMPT=false',
+      'AI_CROSS_SKILL_EXECUTION=false',
+      'AI_ROUTING_MANIFEST_KILL=false',
+      'UNMANAGED_SETTING=preserved',
+      '',
+    ].join('\n');
+    writeFileSync(fixture.environmentFile, source, { mode: 0o600 });
+
+    const inspected = fixture.run('inspect-shadow-hook', [
+      'true',
+      'dedicated_eval_evidence_collection',
+    ]);
+    expect(inspected.status, inspected.stderr).toBe(0);
+    const plan = JSON.parse(inspected.stdout);
+
+    const applied = fixture.run('apply-shadow-hook', [
+      TRANSACTION_ID,
+      plan.planDigest,
+    ], { ownerAuthorized: true });
+    expect(applied.status, applied.stderr).toBe(0);
+    expect(JSON.parse(applied.stdout)).toMatchObject({
+      schema: 'nexus.chat-shadow-route-hook-transaction.v1',
+      status: 'passed',
+      desiredValue: true,
+      health: { backend: 'passed', identity: 'passed', shadowHook: 'passed' },
+    });
+    expect(readFileSync(fixture.environmentFile, 'utf8')).toContain(
+      'CHAT_CORE_V2_SHADOW_ROUTE_HOOK_ENABLED_USER_42=true\n',
+    );
+    expect(readFileSync(fixture.environmentFile, 'utf8')).toContain(
+      'CHAT_CORE_V2_SHADOW_ROUTE_HOOK_ENABLED_TENANT_42=true\n',
+    );
+    expect(existsSync(fixture.runtimePermit)).toBe(false);
+    expect(existsSync(path.join(
+      fixture.base,
+      `.env.before-chat-capability-${TRANSACTION_ID}`,
+    ))).toBe(false);
+    const privateState = JSON.parse(readFileSync(path.join(
+      fixture.stateRoot,
+      `claims/staging-${TRANSACTION_ID}.shadow-hook-private.json`,
+    ), 'utf8'));
+    expect(privateState.schema).toBe('nexus.chat-shadow-route-hook-private.v2');
+    expect(privateState.effectiveFlags).toEqual(privateState.configuredFlags);
   });
 });
