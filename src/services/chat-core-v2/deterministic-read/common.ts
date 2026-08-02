@@ -30,6 +30,20 @@ export function hashStable(value: unknown): string {
   return createHash('sha256').update(stableStringify(value)).digest('hex').slice(0, 16);
 }
 
+/**
+ * Compact deterministic checksum for source-version metadata that is already
+ * safe to expose. This is deliberately not a cryptographic/password hash:
+ * callers must pass only allowlisted, non-secret state.
+ */
+export function checksumStableMetadata(value: unknown): string {
+  let checksum = 0xcbf29ce484222325n;
+  for (const character of stableStringify(value)) {
+    checksum ^= BigInt(character.codePointAt(0) ?? 0);
+    checksum = BigInt.asUintN(64, checksum * 0x100000001b3n);
+  }
+  return checksum.toString(16).padStart(16, '0');
+}
+
 export function stableStringify(value: unknown): string {
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;

@@ -645,6 +645,10 @@ describe('Chat Core v2 deterministic read route', () => {
       'connection:outlook',
       'connection:whoop',
     ]);
+    const connectionVersions = Object.values(result?.contextPack.sourceVersions ?? {});
+    expect(connectionVersions).toHaveLength(4);
+    expect(connectionVersions.every((version) => /^[0-9a-f]{16}$/.test(version))).toBe(true);
+    expect(JSON.stringify(result?.contextPack.sourceVersions)).not.toContain('googleapis.com');
   });
 
   it('answers finance summary questions through aggregate-only finance reads', () => {
