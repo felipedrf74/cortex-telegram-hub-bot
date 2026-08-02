@@ -104,14 +104,27 @@ export function buildCrossSkillPreflightReport(
   };
 }
 
-interface CliOptions {
+export interface CrossSkillPreflightCliOptions {
   runtimeSha: string;
   artifactDigest: string;
   generatedAt: Date;
   json: true;
 }
 
-function parseCliOptions(argv: string[]): CliOptions {
+export interface CrossSkillPreflightCliResult {
+  exitCode: 0 | 1;
+  stdout: string;
+  stderr: string;
+}
+
+interface CrossSkillPreflightCliEnvironment {
+  readonly NEXUS_RELEASE_SHA?: string;
+  readonly NEXUS_RELEASE_ARTIFACT_SHA256?: string;
+}
+
+export function parseCrossSkillPreflightCliOptions(
+  argv: string[],
+): CrossSkillPreflightCliOptions {
   let runtimeSha = '';
   let artifactDigest = '';
   let generatedAtRaw = '';
@@ -161,11 +174,15 @@ function parseCliOptions(argv: string[]): CliOptions {
   return { runtimeSha, artifactDigest, generatedAt, json: true };
 }
 
-function main(): void {
+export function runCrossSkillPreflightCli(
+  argv: string[],
+  environment: CrossSkillPreflightCliEnvironment = process.env,
+  dependencies: CrossSkillPreflightDependencies = RUNTIME_DEPENDENCIES,
+): CrossSkillPreflightCliResult {
   try {
-    const options = parseCliOptions(process.argv.slice(2));
-    const configuredRuntimeSha = process.env.NEXUS_RELEASE_SHA;
-    const configuredArtifactDigest = process.env.NEXUS_RELEASE_ARTIFACT_SHA256;
+    const options = parseCrossSkillPreflightCliOptions(argv);
+    const configuredRuntimeSha = environment.NEXUS_RELEASE_SHA;
+    const configuredArtifactDigest = environment.NEXUS_RELEASE_ARTIFACT_SHA256;
     if (configuredRuntimeSha && configuredRuntimeSha !== options.runtimeSha) {
       throw new Error('--runtime-sha differs from NEXUS_RELEASE_SHA');
     }
@@ -173,14 +190,27 @@ function main(): void {
       throw new Error('--artifact-digest differs from NEXUS_RELEASE_ARTIFACT_SHA256');
     }
 
-    const report = buildCrossSkillPreflightReport(options);
-    process.stdout.write(`${JSON.stringify(report)}\n`);
-    if (!report.passed) process.exitCode = 1;
+    const report = buildCrossSkillPreflightReport(options, dependencies);
+    return {
+      exitCode: report.passed ? 0 : 1,
+      stdout: `${JSON.stringify(report)}\n`,
+      stderr: '',
+    };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    process.stderr.write(`Cross-skill preflight failed: ${message}\n`);
-    process.exitCode = 1;
+    return {
+      exitCode: 1,
+      stdout: '',
+      stderr: `Cross-skill preflight failed: ${message}\n`,
+    };
   }
+}
+
+function main(): void {
+  const result = runCrossSkillPreflightCli(process.argv.slice(2));
+  process.stdout.write(result.stdout);
+  process.stderr.write(result.stderr);
+  process.exitCode = result.exitCode;
 }
 
 if (require.main === module) {
