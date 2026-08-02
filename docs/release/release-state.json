@@ -1,11 +1,11 @@
 {
   "schema": "nexus.release-state.v1",
-  "lastVerifiedAt": "2026-08-02T03:10:31Z",
-  "docsHead": "3a867863054df785406cd7d18b8d0547f79deaac",
+  "lastVerifiedAt": "2026-08-02T09:57:11Z",
+  "docsHead": "pending_content_commit",
   "backend": {
     "version": "4.14.232",
-    "runtimeSha": "8783409632073c87ee49eaac99e91ddf6bfa6880",
-    "artifactDigest": "a786b16a0e199db736b3846b0100b486bd932ae652072718a7458f0faac23c38",
+    "runtimeSha": "d3f0db389458ecee3a2c6dff3249469d1c4228b2",
+    "artifactDigest": "abb492153eba81f192829d390aaaa660cde6a08cca26f145578cb283e9412375",
     "installedDigest": "3944f37f16dd1a526a53bee80758b4519298e260c6f6596d88dfad6a6dda55ae",
     "health": "healthy",
     "database": "connected",
@@ -14,32 +14,32 @@
       "content-engine"
     ],
     "releaseEvidence": {
-      "protectedMainRun": "30729143268",
-      "releaseCheckpointRun": "30729700062",
-      "manifestSha256": "3dd9c748883523a807f55c0dcb525e45802f08068a480b42df0ceb61c0927952",
-      "stagingTransaction": "20260802T030237Z-87ea25e958b6",
-      "productionTransaction": "20260802T030916Z-9cafc1d52544",
-      "productionCompletedAt": "2026-08-02T03:10:31.429Z",
-      "transactionSeconds": 73.917,
-      "readinessSeconds": 12.212,
-      "soakSeconds": 61.704,
-      "backup": "nexus-db-20260802T030924Z.sqlite.age",
-      "backupEncryptedSha256": "07a9eab44be961461f4cdd58f5012e54038f617ec3a8d2b20dae6d56403cc982",
+      "protectedMainRun": "30736935248",
+      "releaseCheckpointRun": "30737533142",
+      "manifestSha256": "06edea4e4af078ba8e0dbcf423ff981fe7c23f8b4e521dc10dd1a07acd282762",
+      "stagingTransaction": "20260802T073100Z-dc324ff40f22",
+      "productionTransaction": "20260802T093404Z-7ebfe6c05ca1",
+      "productionCompletedAt": "2026-08-02T09:35:19.247Z",
+      "transactionSeconds": 73.884,
+      "readinessSeconds": 12.224,
+      "soakSeconds": 61.659,
+      "backup": "nexus-db-20260802T093412Z.sqlite.age",
+      "backupEncryptedSha256": "7952c0c9b3fa4338ebb0c81cc70079460b91928aaa4161f4b0c55752fac5b4b9",
       "stagingRollbackDrill": {
-        "transaction": "20260802T025941Z-2ed894227116",
+        "transaction": "20260802T072848Z-e4274563fa40",
         "result": "restored",
-        "durationMs": 2700,
+        "durationMs": 2714,
         "objectiveSeconds": 120,
         "candidateRemoved": true
       },
       "stagingSmoke": {
         "verdict": "passed",
-        "passed": 28,
+        "passed": 24,
         "failed": 0,
-        "evidence": "staging-smoke-87834096-20260802T030822Z.json"
+        "evidence": "staging-smoke-d3f0db389458ecee3a2c6dff3249469d1c4228b2-20260802T073639Z.json"
       },
       "chatEval": {
-        "runId": "chat-eval-2026-08-02T02-45-18-816Z",
+        "runId": "chat-eval-2026-08-02T07-26-40-918Z",
         "engine": "local_engine",
         "scenarios": 7,
         "passed": 7,
@@ -55,6 +55,134 @@
     "releaseSubjectHash": "27b97ebc96e1b3bb1ee3612e63c5609b5572c9d4b58e59b8ea3e77642fb1cea3",
     "approvedOrigin": "https://media.nexushub.me",
     "activationState": "active"
+  },
+  "chatQualityRollout": {
+    "status": "production_released_phase7_waiting_genuine_staging_traffic",
+    "releaseIdentity": {
+      "runtimeSha": "d3f0db389458ecee3a2c6dff3249469d1c4228b2",
+      "artifactDigest": "abb492153eba81f192829d390aaaa660cde6a08cca26f145578cb283e9412375"
+    },
+    "phase4GoldenCorpus": {
+      "status": "complete",
+      "corpusSize": 300,
+      "corpusIdentitySha256": "dad7ef4ef5a62d5956345ec09b50115b6bf875d96f5d0290f535ff1e5c637d63",
+      "ownerReviewedLabelPlanSha256": "ec3d4e3de7d8d3a1b9a88d965135ea55f26bc73afb056a66fc94e1b3cb6cefd2",
+      "spanishCorpusRetirementPlanSha256": "0bad2137934f0df7ef1887eb7dd2ded294b87c9d624baaac688c21c83695cf9e",
+      "acceptedSnapshotPreflightSha256": "af0d6d27ae09ecbb364bba9ce47ec11cdb651577d489d27863ad5fd2370e3005",
+      "acceptedLlmCacheCoverage": 25,
+      "acceptedLlmCacheTotal": 300,
+      "acceptedLlmCorrect": 25,
+      "acceptedCoveredDomain": "secretary",
+      "acceptedMetricScope": "domain_routing_only",
+      "calibrationCommit": "0661233f31ac8f3c43530204ec9e89a35c15715a",
+      "calibrationSource": "corpus"
+    },
+    "phase5FrozenBaseline": {
+      "status": "baseline_only",
+      "environment": "staging",
+      "runId": "chat-eval-2026-07-31T17-19-58-073Z",
+      "acceptedAt": "2026-08-01T23:54:36.645Z",
+      "runtimeSha": "77f92f6deb39f7419c24e73426fd338e6529b490",
+      "evidenceJsonSha256": "c0418ff18e533ce54ed3254545e07da67065dd7fd639da9e2d95bfa8e8be0605",
+      "evidenceMarkdownSha256": "74439f008c2dfce7e9c2a4cce2863f4b073f7525c8494c216c4b7dc51ab91fbb",
+      "provenanceClass": "operator_checkout_only",
+      "operatorCheckoutProvenanceAcknowledged": true,
+      "scenarios": 7
+    },
+    "phase6Retirement": {
+      "status": "no_routes_eligible",
+      "routes": 9,
+      "passedRoutes": 0,
+      "failedRoutes": 0,
+      "insufficientRoutes": 2,
+      "blockedRoutes": 7,
+      "behaviorParitySamples": 0,
+      "missingSamples": 450,
+      "disabledLegacyStages": [],
+      "reportSha256": "a1f4d81c58911083578d9fefe8179d2a431e5f1e2a317f024842716b64c15f5f"
+    },
+    "phase7Capabilities": {
+      "status": "blocked_genuine_staging_traffic",
+      "requiredComparisonsPerSurface": 200,
+      "minimumAgreementRate": 0.99,
+      "firstSurface": "classifierKeyword",
+      "firstFlag": "AI_ROUTING_MANIFEST_CLASSIFIER",
+      "stagingHmacPrerequisites": {
+        "status": "passed_presence_only",
+        "transaction": "20260802T091910Z-bbe00989217b"
+      },
+      "productionHmacPrerequisites": {
+        "status": "passed_presence_only",
+        "transaction": "20260802T093937Z-9f75e274b286"
+      },
+      "observabilityPrerequisite": {
+        "flag": "CHAT_CORE_V2_SHADOW_ROUTE_HOOK_ENABLED",
+        "status": "absent_all_scopes",
+        "global": "absent",
+        "userScopeEnabled": 0,
+        "tenantScopeEnabled": 0
+      },
+      "firstGateEvidence": {
+        "sinceInclusive": "2026-08-02T09:19:20.201Z",
+        "untilInclusive": "2026-08-02T09:57:11.549Z",
+        "shadowBundles": 0,
+        "identityMatchedBundles": 0,
+        "flagEligibleBundles": 0,
+        "compared": 0,
+        "agreementRate": null,
+        "gatePassed": false,
+        "failures": [
+          "zero_identity_matched_bundles",
+          "insufficient_comparisons"
+        ]
+      },
+      "roleAttestations": {
+        "staging": {
+          "configured": {
+            "AI_ROUTING_MANIFEST_CLASSIFIER": false,
+            "AI_ROUTING_MANIFEST_ORCHESTRATOR": false,
+            "AI_ROUTING_MANIFEST_SHADOW": false,
+            "AI_ROUTING_MANIFEST_REGISTRY": false,
+            "AI_ROUTING_CLARIFY": false,
+            "AI_CLASSIFY_MANIFEST_PROMPT": false,
+            "AI_CROSS_SKILL_EXECUTION": false
+          },
+          "effective": {
+            "AI_ROUTING_MANIFEST_CLASSIFIER": false,
+            "AI_ROUTING_MANIFEST_ORCHESTRATOR": false,
+            "AI_ROUTING_MANIFEST_SHADOW": false,
+            "AI_ROUTING_MANIFEST_REGISTRY": false,
+            "AI_ROUTING_CLARIFY": false,
+            "AI_CLASSIFY_MANIFEST_PROMPT": false,
+            "AI_CROSS_SKILL_EXECUTION": false
+          },
+          "masterKillFlag": "AI_ROUTING_MANIFEST_KILL",
+          "masterKill": false
+        },
+        "production": {
+          "configured": {
+            "AI_ROUTING_MANIFEST_CLASSIFIER": false,
+            "AI_ROUTING_MANIFEST_ORCHESTRATOR": false,
+            "AI_ROUTING_MANIFEST_SHADOW": false,
+            "AI_ROUTING_MANIFEST_REGISTRY": false,
+            "AI_ROUTING_CLARIFY": false,
+            "AI_CLASSIFY_MANIFEST_PROMPT": false,
+            "AI_CROSS_SKILL_EXECUTION": false
+          },
+          "effective": {
+            "AI_ROUTING_MANIFEST_CLASSIFIER": false,
+            "AI_ROUTING_MANIFEST_ORCHESTRATOR": false,
+            "AI_ROUTING_MANIFEST_SHADOW": false,
+            "AI_ROUTING_MANIFEST_REGISTRY": false,
+            "AI_ROUTING_CLARIFY": false,
+            "AI_CLASSIFY_MANIFEST_PROMPT": false,
+            "AI_CROSS_SKILL_EXECUTION": false
+          },
+          "masterKillFlag": "AI_ROUTING_MANIFEST_KILL",
+          "masterKill": false
+        }
+      }
+    }
   },
   "ios": {
     "version": "1.5.0",
@@ -100,8 +228,8 @@
     "targetManifestSchema": "nexus.release-checksum-manifest.v1",
     "leanActivation": "active_first_staging_and_production_proof_passed",
     "exactArtifactPath": "proven",
-    "stagingRehearsals": 16,
-    "ownerAuthorizedProductionReleases": 12,
+    "stagingRehearsals": 17,
+    "ownerAuthorizedProductionReleases": 13,
     "legacyWrappers": "retired",
     "firstProofRelease": {
       "version": "4.14.231",
@@ -119,7 +247,7 @@
       "soakSeconds": 61.636
     },
     "timingObservation": {
-      "observedReleases": 6,
+      "observedReleases": 7,
       "requiredReleases": 10,
       "status": "collecting",
       "baselineReadinessSeconds": 1180,
@@ -206,6 +334,18 @@
           "stagingTransactionSeconds": 314.079,
           "productionTransactionSeconds": 73.917,
           "promotionOutcome": "passed"
+        },
+        {
+          "runtimeSha": "d3f0db389458ecee3a2c6dff3249469d1c4228b2",
+          "protectedMainRun": "30736935248",
+          "releaseCheckpointRun": "30737533142",
+          "mainSeconds": 258,
+          "unattendedHandoffSeconds": 428,
+          "checkpointSeconds": 295,
+          "automatedReadinessSeconds": 981,
+          "stagingTransactionSeconds": 313.701,
+          "productionTransactionSeconds": 73.884,
+          "promotionOutcome": "passed"
         }
       ],
       "provisionalNearestRank": {
@@ -215,19 +355,19 @@
           "p95": 1053
         },
         "unattendedHandoffSeconds": {
-          "p50": 29,
+          "p50": 65,
           "p95": 493
         },
         "checkpointSeconds": {
-          "p50": 212,
+          "p50": 261,
           "p95": 333
         },
         "automatedReadinessSeconds": {
-          "p50": 850,
+          "p50": 981,
           "p95": 1303
         },
-        "medianReadinessImprovementSeconds": 330,
-        "medianReadinessImprovementPercent": 27.97
+        "medianReadinessImprovementSeconds": 199,
+        "medianReadinessImprovementPercent": 16.86
       },
       "escapedCriticalDefectReview": "monitoring"
     },
