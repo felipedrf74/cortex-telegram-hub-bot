@@ -7,6 +7,8 @@ readonly FLAG_RECEIPT_SCHEMA='nexus.chat-capability-flag-transaction.v1'
 readonly SECRET_RECEIPT_SCHEMA='nexus.chat-capability-secret-transaction.v1'
 readonly OBSERVATION_PLAN_SCHEMA='nexus.chat-capability-observation-plan.v1'
 readonly OBSERVATION_RECEIPT_SCHEMA='nexus.chat-capability-observation-receipt.v1'
+readonly SHADOW_HOOK_PLAN_SCHEMA='nexus.chat-shadow-route-hook-plan.v1'
+readonly SHADOW_HOOK_RECEIPT_SCHEMA='nexus.chat-shadow-route-hook-transaction.v1'
 readonly USER_RELEASE_LOCK='/home/dominguez/.local/state/nexus-release/.release.lock'
 readonly ROOT_SONAR_LOCK='/run/lock/nexus-release-sonar.lock'
 readonly STATE_ROOT='/home/dominguez/.local/state/nexus-release/chat-capability-flags'
@@ -31,6 +33,7 @@ TRANSACTION_ID=''
 ACK_PLAN=''
 SINCE=''
 UNTIL=''
+DEDICATED_ID=''
 
 RELEASE_DIR=''
 HELPER=''
@@ -58,6 +61,7 @@ STAGING_DATABASE_PATH=''
 STAGING_ENABLE_RECEIPT_FILE=''
 RAW_EVIDENCE_FILE=''
 HEALTH_EVIDENCE_FILE=''
+SHADOW_HOOK_RECEIPT_FILE=''
 DASHBOARD_EVIDENCE_FILE=''
 STAGING_SMOKE_EVIDENCE_FILE=''
 MONITOR_EVIDENCE_FILE=''
@@ -150,15 +154,38 @@ case "$COMMAND" in
       || die 'acknowledged observation plan digest is invalid'
     PLAN_DIGEST="$ACK_PLAN"
     ;;
+  inspect-shadow-hook)
+    [ "$ROLE" = staging ] || die 'shadow route hook inspection is staging-only'
+    [ "$#" -eq 2 ] || die 'inspect-shadow-hook requires value and transition reason'
+    DESIRED_VALUE="$1"
+    TRANSITION_REASON="$2"
+    case "$DESIRED_VALUE" in true|false) ;; *) die 'shadow route hook value is invalid' ;; esac
+    case "$TRANSITION_REASON" in
+      dedicated_eval_evidence_collection|operator_rollback|quality_regression|health_regression) ;;
+      *) die 'shadow route hook transition reason is invalid' ;;
+    esac
+    ;;
+  apply-shadow-hook)
+    [ "$ROLE" = staging ] || die 'shadow route hook apply is staging-only'
+    [ "$#" -eq 2 ] || die 'apply-shadow-hook requires transaction ID and acknowledged plan digest'
+    TRANSACTION_ID="$1"
+    ACK_PLAN="$2"
+    [[ "$TRANSACTION_ID" =~ ^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{12}$ ]] \
+      || die 'shadow route hook transaction ID is invalid'
+    [[ "$ACK_PLAN" =~ ^sha256:[0-9a-f]{64}$ ]] \
+      || die 'acknowledged shadow route hook plan digest is invalid'
+    PLAN_DIGEST="$ACK_PLAN"
+    ;;
   inspect-secrets)
     [ "$#" -eq 0 ] || die 'inspect-secrets accepts no additional arguments'
     ;;
-  *) die 'command must be inspect, apply, inspect-observation, apply-observation, inspect-secrets, or apply-secrets' ;;
+  *) die 'command must be inspect, apply, inspect-observation, apply-observation, inspect-secrets, apply-secrets, inspect-shadow-hook, or apply-shadow-hook' ;;
 esac
 case "$COMMAND" in
   apply) TRANSACTION_KIND='flag' ;;
   apply-secrets) TRANSACTION_KIND='secret' ;;
   apply-observation) TRANSACTION_KIND='observation' ;;
+  apply-shadow-hook) TRANSACTION_KIND='shadow_hook' ;;
 esac
 
 if [ "$COMMAND" = inspect-observation ] || [ "$COMMAND" = apply-observation ]; then
@@ -324,6 +351,116 @@ if (fs.existsSync(productionFile)) {
 NODE
 }
 
+attest_dedicated_eval_identity() {
+  [ "$ROLE" = staging ] || die 'dedicated evaluation identity attestation is staging-only'
+  [ -n "$STAGING_DATABASE_PATH" ] || die 'staging database is unavailable for identity attestation'
+  env -i \
+    "HOME=$HOME" \
+    "USER=$(id -un)" \
+    "LOGNAME=$(id -un)" \
+    'PATH=/usr/local/bin:/usr/bin:/bin' \
+    "NODE_PATH=$STAGING_RELEASE_DIR/node_modules" \
+    "$TIMEOUT_BIN" --foreground 30s \
+    "$NODE_BIN" --env-file="$STAGING_ENV_FILE" - \
+      "$STAGING_RELEASE_DIR" "$STAGING_DATABASE_PATH" <<'NODE'
+const path = require('node:path');
+const [release, databasePath] = process.argv.slice(2);
+const dedicatedId = Number(String(process.env.CHAT_EVAL_DEDICATED_TENANT_ID ?? '').trim());
+if (!Number.isSafeInteger(dedicatedId) || dedicatedId < 1) {
+  throw new Error('dedicated evaluation tenant is unavailable');
+}
+const Database = require(path.join(release, 'node_modules/better-sqlite3'));
+const database = new Database(databasePath, { readonly: true, fileMustExist: true });
+try {
+  database.pragma('query_only = ON');
+  const rows = database.prepare('SELECT id, email FROM users WHERE id = ?').all(dedicatedId);
+  const normalizedEmail = typeof rows[0]?.email === 'string'
+    ? rows[0].email.trim().toLowerCase()
+    : '';
+  if (rows.length !== 1 || rows[0].id !== dedicatedId
+      || !normalizedEmail.endsWith('.invalid')) {
+    throw new Error('dedicated evaluation identity is not the synthetic staging principal');
+  }
+  process.stdout.write(String(dedicatedId));
+} finally {
+  database.close();
+}
+NODE
+}
+
+assert_shadow_route_hook_runtime_state() {
+  local desired="$1"
+  local dedicated_id="$2"
+  [ -f "$RELEASE_DIR/dist/services/runtime-flags.js" ] \
+    && [ ! -L "$RELEASE_DIR/dist/services/runtime-flags.js" ] \
+    || die 'installed runtime flag reader is unavailable'
+  env -i \
+    "HOME=$HOME" \
+    "USER=$(id -un)" \
+    "LOGNAME=$(id -un)" \
+    'PATH=/usr/local/bin:/usr/bin:/bin' \
+    "NODE_PATH=$RELEASE_DIR/node_modules" \
+    "NEXUS_RELEASE_ROLE=$ROLE" \
+    "NEXUS_RELEASE_BASE_DIR=$BASE_DIR" \
+    "NEXUS_RELEASE_SHA=$RUNTIME_SHA" \
+    "NEXUS_RELEASE_ARTIFACT_SHA256=$ARTIFACT_DIGEST" \
+     "$TIMEOUT_BIN" --foreground 30s \
+     "$NODE_BIN" --env-file="$ENV_FILE" - \
+       "$RELEASE_DIR/dist/services/runtime-flags.js" "$desired" "$dedicated_id" \
+       "$BACKEND_PORT" "$ROLE" "$RUNTIME_SHA" "$ARTIFACT_DIGEST" <<'NODE'
+const http = require('node:http');
+const [modulePath, desiredRaw, dedicatedRaw, backendPortRaw, role, runtimeSha,
+  artifactDigest] = process.argv.slice(2);
+const flags = require(modulePath);
+const desired = desiredRaw === 'true';
+const dedicatedId = Number(dedicatedRaw);
+if (!Number.isSafeInteger(dedicatedId) || dedicatedId < 1) process.exit(1);
+const dedicatedScope = { userId: dedicatedId, tenantId: dedicatedId };
+const unrelatedScope = { userId: dedicatedId + 1, tenantId: dedicatedId + 1 };
+if (flags.isChatCoreV2ShadowRouteHookEnabled(process.env, dedicatedScope) !== desired
+    || flags.isChatCoreV2ShadowRouteHookEnabled(process.env, unrelatedScope) !== false
+    || flags.isChatCoreV2ShadowPlannerEnabled(process.env, dedicatedScope) !== false) {
+  process.exit(1);
+}
+const request = () => new Promise((resolve, reject) => {
+  const token = process.env.HEALTH_TOKEN;
+  if (!token) return reject(new Error('health token unavailable'));
+  const req = http.get({
+    hostname: '127.0.0.1',
+    port: Number(backendPortRaw),
+    path: '/health/detailed',
+    headers: { Authorization: `Bearer ${token}` },
+    timeout: 5_000,
+  }, (response) => {
+    let body = '';
+    response.setEncoding('utf8');
+    response.on('data', (chunk) => { body += chunk; });
+    response.on('end', () => resolve({ status: response.statusCode, body }));
+  });
+  req.on('timeout', () => req.destroy(new Error('health timeout')));
+  req.on('error', reject);
+});
+request().then(({ status, body }) => {
+  const health = JSON.parse(body);
+  const attestation = health?.releaseAttestation;
+  if (status !== 200 || health?.status !== 'healthy'
+      || attestation?.schema !== 'nexus.chat-capability-release-attestation.v2'
+      || attestation.role !== role || attestation.runtimeSha !== runtimeSha
+      || attestation.artifactDigest !== artifactDigest
+      || attestation.shadowRouteHookEffective?.global !== false
+      || attestation.shadowRouteHookEffective?.dedicatedEval?.present !== true
+      || attestation.shadowRouteHookEffective?.dedicatedEval?.user !== desired
+      || attestation.shadowRouteHookEffective?.dedicatedEval?.tenant !== desired
+      || attestation.shadowPlannerEffective?.global !== false
+      || attestation.shadowPlannerEffective?.dedicatedEval?.present !== true
+      || attestation.shadowPlannerEffective?.dedicatedEval?.user !== false
+      || attestation.shadowPlannerEffective?.dedicatedEval?.tenant !== false) {
+    process.exit(1);
+  }
+}).catch(() => process.exit(1));
+NODE
+}
+
 collect_staging_http_json() {
   local route="$1"
   local auth_kind="$2"
@@ -422,6 +559,89 @@ routing_surface() {
   esac
 }
 
+select_exact_shadow_hook_enable_receipt() {
+  local output="$1"
+  "$NODE_BIN" --input-type=module - "$HELPER" "$ENV_FILE" \
+    "$STATE_ROOT/claims" "$STATE_ROOT/staging.shadow-hook.sequence" \
+    "$output" "$RUNTIME_SHA" "$ARTIFACT_DIGEST" <<'NODE'
+import fs from 'node:fs';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+const [helperPath,envFile,claimsRoot,sequenceFile,output,runtimeSha,
+  artifactDigest] = process.argv.slice(2);
+const helper = await import(pathToFileURL(helperPath).href);
+const privateNode = (file, label, { maximumBytes = 1024 * 1024 } = {}) => {
+  const stat = fs.lstatSync(file);
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1
+      || stat.uid !== process.getuid() || (stat.mode & 0o777) !== 0o600
+      || stat.size < 1 || stat.size > maximumBytes) {
+    throw new Error(`${label} is unsafe`);
+  }
+  return stat;
+};
+const claimsStat = fs.lstatSync(claimsRoot);
+if (!claimsStat.isDirectory() || claimsStat.isSymbolicLink()
+    || claimsStat.uid !== process.getuid() || (claimsStat.mode & 0o777) !== 0o700) {
+  throw new Error('shadow-hook claim root is unsafe');
+}
+privateNode(sequenceFile, 'shadow-hook sequence', { maximumBytes: 32 });
+const sequenceRaw = fs.readFileSync(sequenceFile, 'utf8').trim();
+if (!/^[1-9][0-9]*$/u.test(sequenceRaw)) {
+  throw new Error('shadow-hook sequence is invalid');
+}
+const sequence = Number(sequenceRaw);
+if (!Number.isSafeInteger(sequence)) throw new Error('shadow-hook sequence is outside the safe range');
+const receipts = [];
+for (const name of fs.readdirSync(claimsRoot).sort()) {
+  if (!name.endsWith('.shadow-hook-receipt.json')) continue;
+  const match = name.match(
+    /^staging-(\d{8}T\d{6}Z-[0-9a-f]{12})\.shadow-hook-receipt\.json$/u,
+  );
+  if (!match) throw new Error('shadow-hook receipt filename is invalid');
+  const file = path.join(claimsRoot, name);
+  privateNode(file, 'shadow-hook receipt');
+  const raw = fs.readFileSync(file, 'utf8');
+  const receipt = helper.validateShadowRouteHookReceipt(JSON.parse(raw));
+  if (receipt.transactionId !== match[1]) {
+    throw new Error('shadow-hook receipt filename and transaction differ');
+  }
+  if (receipt.planSequence === sequence) receipts.push({ raw, receipt });
+}
+if (receipts.length !== 1) {
+  throw new Error('current durable shadow-hook sequence does not have one exact receipt');
+}
+const { raw, receipt } = receipts[0];
+if (receipt.schema !== 'nexus.chat-shadow-route-hook-transaction.v1'
+    || receipt.status !== 'passed' || receipt.role !== 'staging'
+    || receipt.runtimeSha !== runtimeSha || receipt.artifactDigest !== artifactDigest
+    || receipt.action !== 'enable' || receipt.desiredValue !== true
+    || receipt.transitionReason !== 'dedicated_eval_evidence_collection'
+    || receipt.dedicatedIdentityAttested !== true
+    || receipt.recorderAfter?.user !== true || receipt.recorderAfter?.tenant !== true
+    || Object.values(receipt.health ?? {}).some((value) => value !== 'passed')
+    || receipt.rollback?.status !== 'not_required') {
+  throw new Error('current shadow-hook receipt is not an exact passed enable for this release');
+}
+const state = helper.readShadowRouteHookCollectionState(fs.readFileSync(envFile, 'utf8'));
+if (state.dedicatedTenantId !== receipt.dedicatedTenantId
+    || state.recorder?.user !== true || state.recorder?.tenant !== true
+    || Object.values(state.prerequisites?.hmacsPresent ?? {}).some((value) => value !== true)
+    || state.prerequisites?.shadowPlannerEffectiveOff !== true
+    || state.prerequisites?.otherRecorderScopesAbsent !== true) {
+  throw new Error('live shadow-hook collection state differs from its enable receipt');
+}
+const outputStat = fs.lstatSync(output);
+if (!outputStat.isFile() || outputStat.isSymbolicLink() || outputStat.nlink !== 1
+    || outputStat.uid !== process.getuid() || (outputStat.mode & 0o777) !== 0o600
+    || outputStat.size !== 0) {
+  throw new Error('shadow-hook receipt output is unsafe');
+}
+fs.writeFileSync(output, raw, { encoding: 'utf8', mode: 0o600 });
+const descriptor = fs.openSync(output, 'r+');
+try { fs.fsyncSync(descriptor); } finally { fs.closeSync(descriptor); }
+NODE
+}
+
 collect_routing_divergence() {
   local output="$1"
   local surface versions divergence_version resolver_version
@@ -468,6 +688,8 @@ NODE
         --environment=staging \
         --divergence-version="$divergence_version" \
         --resolver-version="$resolver_version" \
+        --shadow-hook-receipt="$SHADOW_HOOK_RECEIPT_FILE" \
+        --live-health="$HEALTH_EVIDENCE_FILE" \
         --gate --json > "$output"
   )
 }
@@ -1136,7 +1358,7 @@ const health = JSON.parse(fs.readFileSync(healthFile, 'utf8'));
 const attestation = health?.releaseAttestation;
 if (health?.status !== 'healthy' || health?.database !== 'connected'
     || health?.databaseProbe?.status !== 'connected' || !Number.isSafeInteger(health?.uptime)
-    || health.uptime < 300 || attestation?.schema !== 'nexus.chat-capability-release-attestation.v1'
+    || health.uptime < 300 || attestation?.schema !== 'nexus.chat-capability-release-attestation.v2'
     || attestation.role !== 'staging' || attestation.runtimeSha !== runtimeSha
     || attestation.artifactDigest !== artifactDigest
     || attestation.capabilityRuntimeGuard?.status !== 'clear'
@@ -1170,10 +1392,26 @@ const shadowPlannerEffective = {
   tenant1000014: scoped('TENANT', 1000014),
   user1000016: scoped('USER', 1000016),
   tenant1000016: scoped('TENANT', 1000016),
+  dedicatedEval: (() => {
+    const raw = String(parsed.CHAT_EVAL_DEDICATED_TENANT_ID ?? '').trim();
+    const id = Number(raw);
+    const present = /^[1-9][0-9]*$/u.test(raw)
+      && Number.isSafeInteger(id) && String(id) === raw;
+    return {
+      present,
+      user: present ? scoped('USER', id) : null,
+      tenant: present ? scoped('TENANT', id) : null,
+    };
+  })(),
 };
 const attestedShadowPlannerEffective = attestation.shadowPlannerEffective;
 if (JSON.stringify(attestedShadowPlannerEffective) !== JSON.stringify(shadowPlannerEffective)
-    || Object.values(attestedShadowPlannerEffective ?? {}).some((value) => value !== false)) {
+    || Object.entries(shadowPlannerEffective)
+      .filter(([key]) => key !== 'dedicatedEval')
+      .some(([, value]) => value !== false)
+    || (shadowPlannerEffective.dedicatedEval.present
+      && (shadowPlannerEffective.dedicatedEval.user !== false
+        || shadowPlannerEffective.dedicatedEval.tenant !== false))) {
   throw new Error('observation requires exact process-effective shadow planning off for every fixture scope');
 }
 const smokeScript = path.join(release, 'scripts/staging-smoke.sh');
@@ -1266,8 +1504,7 @@ if (health?.status !== 'healthy' || health?.database !== 'connected'
     || JSON.stringify(configured) !== JSON.stringify(plan.configured)
     || JSON.stringify(effective) !== JSON.stringify(plan.effective)
     || JSON.stringify(attestation?.shadowPlannerEffective)
-      !== JSON.stringify(plan.shadowPlannerEffective)
-    || Object.values(attestation?.shadowPlannerEffective ?? {}).some((value) => value !== false)) {
+      !== JSON.stringify(plan.shadowPlannerEffective)) {
   throw new Error('live staging state changed before canonical observation smoke');
 }
 if (Date.now() < Date.parse(plan.smokeNotBefore) || Date.now() > Date.parse(plan.expiresAt)) {
@@ -1537,6 +1774,10 @@ collect_native_evidence_sources() {
   resolve_exact_staging_release
   case "$ROLE:$FLAG" in
     staging:AI_ROUTING_MANIFEST_CLASSIFIER|staging:AI_ROUTING_MANIFEST_ORCHESTRATOR|staging:AI_ROUTING_MANIFEST_SHADOW|staging:AI_ROUTING_MANIFEST_REGISTRY)
+      SHADOW_HOOK_RECEIPT_FILE="$(mktemp "$STATE_ROOT/.shadow-hook-enable-receipt.XXXXXX")"
+      select_exact_shadow_hook_enable_receipt "$SHADOW_HOOK_RECEIPT_FILE"
+      HEALTH_EVIDENCE_FILE="$(mktemp "$STATE_ROOT/.routing-health-evidence.XXXXXX")"
+      collect_staging_http_json '/health/detailed' health "$HEALTH_EVIDENCE_FILE"
       RAW_EVIDENCE_FILE="$(mktemp "$STATE_ROOT/.routing-evidence.XXXXXX")"
       collect_routing_divergence "$RAW_EVIDENCE_FILE"
       return 0
@@ -1567,6 +1808,98 @@ collect_native_evidence_sources() {
   fi
   HEALTH_EVIDENCE_FILE="$(mktemp "$STATE_ROOT/.health-evidence.XXXXXX")"
   collect_staging_http_json '/health/detailed' health "$HEALTH_EVIDENCE_FILE"
+}
+
+revalidate_routing_shadow_binding() {
+  local plan_file="$1"
+  local pm2_file="$2"
+  if ! "$NODE_BIN" - "$plan_file" <<'NODE'
+const fs = require('node:fs');
+const record = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+const plan = record.plan ?? record;
+const routing = new Set([
+  'AI_ROUTING_MANIFEST_CLASSIFIER',
+  'AI_ROUTING_MANIFEST_ORCHESTRATOR',
+  'AI_ROUTING_MANIFEST_SHADOW',
+  'AI_ROUTING_MANIFEST_REGISTRY',
+]);
+process.exit(plan.role === 'staging' && plan.desiredValue === true && routing.has(plan.flag) ? 0 : 1);
+NODE
+  then
+    return 0
+  fi
+
+  resolve_exact_staging_release
+  local receipt_file health_file checked_at
+  receipt_file="$(mktemp "$STATE_ROOT/.apply-shadow-hook-receipt.XXXXXX")"
+  health_file="$(mktemp "$STATE_ROOT/.apply-shadow-hook-health.XXXXXX")"
+  SHADOW_HOOK_RECEIPT_FILE="$receipt_file"
+  HEALTH_EVIDENCE_FILE="$health_file"
+  select_exact_shadow_hook_enable_receipt "$receipt_file"
+  collect_staging_http_json '/health/detailed' health "$health_file"
+  checked_at="$($NODE_BIN -e 'process.stdout.write(new Date().toISOString())')"
+  "$NODE_BIN" --input-type=module - "$HELPER" "$plan_file" "$receipt_file" \
+    "$health_file" "$pm2_file" "$checked_at" <<'NODE'
+import fs from 'node:fs';
+import { createHash } from 'node:crypto';
+import { pathToFileURL } from 'node:url';
+const [helperPath,planFile,receiptFile,healthFile,pm2File,checkedAt] = process.argv.slice(2);
+const helper = await import(pathToFileURL(helperPath).href);
+const persisted = JSON.parse(fs.readFileSync(planFile, 'utf8'));
+const plan = persisted.plan ?? persisted;
+const evidence = plan.evidenceAttestation;
+const receiptRaw = fs.readFileSync(receiptFile, 'utf8');
+const receipt = helper.validateShadowRouteHookReceipt(JSON.parse(receiptRaw));
+const receiptSha256 = createHash('sha256').update(receiptRaw).digest('hex');
+if (receipt.status !== 'passed' || receipt.action !== 'enable'
+    || receipt.role !== plan.role || receipt.runtimeSha !== plan.runtimeSha
+    || receipt.artifactDigest !== plan.artifactDigest
+    || receiptSha256 !== evidence?.shadowHookReceiptSha256
+    || receipt.transactionId !== evidence?.shadowHookTransactionId
+    || receipt.planDigest !== evidence?.shadowHookPlanDigest
+    || receipt.planSequence !== evidence?.shadowHookPlanSequence
+    || receipt.completedAt !== evidence?.shadowHookCompletedAt
+    || receipt.dedicatedTenantId !== evidence?.dedicatedTenantId
+    || Date.parse(evidence?.windowSinceInclusive) < Date.parse(receipt.completedAt)) {
+  throw new Error('current shadow-hook receipt no longer matches the reviewed routing evidence');
+}
+const healthRaw = fs.readFileSync(healthFile, 'utf8');
+const health = JSON.parse(healthRaw);
+const attestation = health?.releaseAttestation;
+const pm2 = JSON.parse(fs.readFileSync(pm2File, 'utf8'));
+const timestamp = Date.parse(health?.timestamp);
+if (health?.status !== 'healthy' || health?.database !== 'connected'
+    || health?.databaseProbe?.status !== 'connected'
+    || attestation?.schema !== 'nexus.chat-capability-release-attestation.v2'
+    || attestation.role !== 'staging' || attestation.runtimeSha !== plan.runtimeSha
+    || attestation.artifactDigest !== plan.artifactDigest
+    || attestation.processId !== pm2.backend.pid
+    || attestation.capabilityRuntimeGuard?.status !== 'clear'
+    || attestation.capabilityRuntimeGuard?.transactionId !== null
+    || attestation.capabilityRuntimeGuard?.planDigest !== null
+    || attestation.capabilityFlags?.masterKill !== false
+    || !Number.isFinite(timestamp) || timestamp > Date.parse(checkedAt)
+    || Date.parse(checkedAt) - timestamp > 30_000) {
+  throw new Error('current routing shadow-hook health is stale or has the wrong release identity');
+}
+const expectedConfigured = { ...plan.configuredBefore };
+delete expectedConfigured.AI_ROUTING_MANIFEST_KILL;
+if (JSON.stringify(attestation.capabilityFlags.configured) !== JSON.stringify(expectedConfigured)
+    || JSON.stringify(attestation.capabilityFlags.effective) !== JSON.stringify(expectedConfigured)
+    || attestation.shadowRouteHookEffective?.global !== false
+    || attestation.shadowRouteHookEffective?.dedicatedEval?.present !== true
+    || attestation.shadowRouteHookEffective?.dedicatedEval?.user !== true
+    || attestation.shadowRouteHookEffective?.dedicatedEval?.tenant !== true
+    || attestation.shadowPlannerEffective?.global !== false
+    || attestation.shadowPlannerEffective?.dedicatedEval?.present !== true
+    || attestation.shadowPlannerEffective?.dedicatedEval?.user !== false
+    || attestation.shadowPlannerEffective?.dedicatedEval?.tenant !== false) {
+  throw new Error('current routing shadow-hook state differs from the reviewed rollout prefix');
+}
+NODE
+  rm -f -- "$receipt_file" "$health_file"
+  SHADOW_HOOK_RECEIPT_FILE=''
+  HEALTH_EVIDENCE_FILE=''
 }
 
 revalidate_apply_staging_prerequisite() {
@@ -1696,8 +2029,7 @@ if (health?.status !== 'healthy' || health?.database !== 'connected'
     || JSON.stringify(currentConfigured) !== JSON.stringify(plan.configuredAfter)
     || JSON.stringify(currentEffective) !== JSON.stringify(plan.effectiveAfter)
     || JSON.stringify(attestation?.shadowPlannerEffective)
-      !== JSON.stringify(observation.shadowPlannerEffective)
-    || Object.values(attestation?.shadowPlannerEffective ?? {}).some((value) => value !== false)) {
+      !== JSON.stringify(observation.shadowPlannerEffective)) {
   throw new Error('current staging health no longer matches the observed target-on release');
 }
 const currentBasePrerequisite = helper.buildStagingCapabilityPrerequisite({
@@ -1812,6 +2144,10 @@ elif [ "$COMMAND" = inspect-observation ] || [ "$COMMAND" = apply-observation ];
   SEQUENCE_FILE="$STATE_ROOT/staging.observation.sequence"
   OBSERVATION_CLAIM_PLAN="$STATE_ROOT/observations/staging-$TRANSACTION_ID.observation-plan.json"
   OBSERVATION_RECEIPT_FILE="$STATE_ROOT/observations/staging-$TRANSACTION_ID.observation-receipt.json"
+elif [ "$COMMAND" = inspect-shadow-hook ] || [ "$COMMAND" = apply-shadow-hook ]; then
+  PENDING_PLAN="$STATE_ROOT/staging.shadow-hook.pending.json"
+  PENDING_PRIVATE="$STATE_ROOT/staging.shadow-hook.pending.private.json"
+  SEQUENCE_FILE="$STATE_ROOT/staging.shadow-hook.sequence"
 else
   PENDING_PLAN="$STATE_ROOT/$ROLE.secrets.pending.json"
   PENDING_PRIVATE="$STATE_ROOT/$ROLE.secrets.pending.private.json"
@@ -1956,7 +2292,7 @@ const main = async () => {
   if (backend.status !== 200 || content.status !== 200) throw new Error('health endpoint failed');
   const body = JSON.parse(backend.body);
   const attestation = body.releaseAttestation;
-  if (attestation?.schema !== 'nexus.chat-capability-release-attestation.v1'
+  if (attestation?.schema !== 'nexus.chat-capability-release-attestation.v2'
       || attestation.role !== role || attestation.runtimeSha !== sha
       || attestation.artifactDigest !== digest
       || attestation.processId !== Number(expectedPid)) throw new Error('release attestation mismatch');
@@ -2122,6 +2458,7 @@ write_minimal_failure_receipt() {
   [ -n "$TRANSACTION_ID" ] || return 0
   local schema='nexus.chat-capability-flag-attempt.v1'
   [ "$COMMAND" = apply-secrets ] && schema='nexus.chat-capability-secret-attempt.v1'
+  [ "$COMMAND" = apply-shadow-hook ] && schema='nexus.chat-shadow-route-hook-attempt.v1'
   local temporary
   temporary="$(mktemp "$STATE_ROOT/.failure.XXXXXX")"
   "$NODE_BIN" - "$temporary" "$schema" "$TRANSACTION_ID" "$ROLE" \
@@ -2205,7 +2542,21 @@ const receipt = kind === 'secret'
       },
       rollback: { status: rollbackStatus },
     })
-  : helper.buildCapabilityFlagReceipt({
+  : kind === 'shadow_hook'
+    ? helper.buildShadowRouteHookReceipt({
+      plan,
+      transactionId,
+      status: rollbackStatus,
+      startedAt,
+      completedAt: new Date().toISOString(),
+      health: {
+        backend: failed ? 'failed' : 'passed',
+        identity: failed ? 'failed' : 'passed',
+        shadowHook: failed ? 'failed' : 'passed',
+      },
+      rollback: { status: rollbackStatus },
+    })
+    : helper.buildCapabilityFlagReceipt({
       plan,
       transactionId,
       status: rollbackStatus,
@@ -2228,11 +2579,15 @@ NODE
 on_exit() {
   local status=$?
   trap - EXIT INT TERM
-  if [ "$status" -ne 0 ] && { [ "$COMMAND" = apply ] || [ "$COMMAND" = apply-secrets ]; }; then
+  if [ "$status" -ne 0 ] && { [ "$COMMAND" = apply ] || [ "$COMMAND" = apply-secrets ] \
+      || [ "$COMMAND" = apply-shadow-hook ]; }; then
     if [ "$ROLLBACK_ARMED" = true ] && [ "$ENV_MUTATED" = true ]; then
       local rollback_plan="$CLAIM_PLAN"
       local rollback_state='configuredBefore'
       if [ "$TRANSACTION_KIND" = secret ]; then
+        rollback_plan="$CLAIM_PRIVATE"
+        rollback_state='configuredFlags'
+      elif [ "$TRANSACTION_KIND" = shadow_hook ]; then
         rollback_plan="$CLAIM_PRIVATE"
         rollback_state='configuredFlags'
       fi
@@ -2244,9 +2599,21 @@ on_exit() {
         if write_pm2_snapshot "$restored_snapshot"; then
           restored_pid="$($NODE_BIN -e 'const fs=require("node:fs");process.stdout.write(String(JSON.parse(fs.readFileSync(process.argv[1],"utf8")).backend.pid))' "$restored_snapshot")"
           if wait_healthy "$rollback_plan" "$rollback_state" "$restored_pid" authorized; then
-            write_rollback_receipt rolled_back
-            durable_remove "$BACKUP_FILE"
-            durable_remove "$PERMIT_FILE"
+            local rollback_runtime_valid=true
+            if [ "$TRANSACTION_KIND" = shadow_hook ]; then
+              local rollback_desired rollback_dedicated
+              rollback_desired="$($NODE_BIN -e 'const p=require(process.argv[1]);process.stdout.write(String(p.recorderBefore.user))' "$CLAIM_PLAN")"
+              rollback_dedicated="$($NODE_BIN -e 'const p=require(process.argv[1]);process.stdout.write(String(p.dedicatedTenantId))' "$CLAIM_PLAN")"
+              assert_shadow_route_hook_runtime_state "$rollback_desired" "$rollback_dedicated" \
+                || rollback_runtime_valid=false
+            fi
+            if [ "$rollback_runtime_valid" = true ]; then
+              write_rollback_receipt rolled_back
+              durable_remove "$BACKUP_FILE"
+              durable_remove "$PERMIT_FILE"
+            else
+              write_rollback_receipt rollback_failed
+            fi
           else
             write_rollback_receipt rollback_failed
           fi
@@ -2266,7 +2633,8 @@ on_exit() {
     [ -z "$CLAIM_PRIVATE" ] || rm -f -- "$CLAIM_PRIVATE.next-$TRANSACTION_ID"
   fi
   rm -f -- "${EVIDENCE_FILE:-}" "${RAW_EVIDENCE_FILE:-}" \
-    "${HEALTH_EVIDENCE_FILE:-}" "${DASHBOARD_EVIDENCE_FILE:-}" \
+    "${HEALTH_EVIDENCE_FILE:-}" "${SHADOW_HOOK_RECEIPT_FILE:-}" \
+    "${DASHBOARD_EVIDENCE_FILE:-}" \
     "${MONITOR_EVIDENCE_FILE:-}" "${STAGING_ENABLE_RECEIPT_FILE:-}" \
     "${PM2_BEFORE_TEMP:-}" "${PM2_AFTER_TEMP:-}" \
     "${OBSERVATION_LEDGER_BEFORE_FILE:-}" "${OBSERVATION_LEDGER_AFTER_FILE:-}" \
@@ -2309,18 +2677,29 @@ recover_interrupted_transaction() {
   local flag_private="$STATE_ROOT/claims/$ROLE-$TRANSACTION_ID.flag-private.json"
   local secret_plan="$STATE_ROOT/claims/$ROLE-$TRANSACTION_ID.secret-plan.json"
   local secret_private="$STATE_ROOT/claims/$ROLE-$TRANSACTION_ID.secret-private.json"
+  local shadow_hook_plan="$STATE_ROOT/claims/$ROLE-$TRANSACTION_ID.shadow-hook-plan.json"
+  local shadow_hook_private="$STATE_ROOT/claims/$ROLE-$TRANSACTION_ID.shadow-hook-private.json"
   if [ -f "$flag_plan" ] && [ -f "$flag_private" ] \
-      && [ ! -e "$secret_plan" ] && [ ! -e "$secret_private" ]; then
+      && [ ! -e "$secret_plan" ] && [ ! -e "$secret_private" ] \
+      && [ ! -e "$shadow_hook_plan" ] && [ ! -e "$shadow_hook_private" ]; then
     TRANSACTION_KIND='flag'
     CLAIM_PLAN="$flag_plan"
     CLAIM_PRIVATE="$flag_private"
     CLAIM_RECEIPT="$STATE_ROOT/claims/$ROLE-$TRANSACTION_ID.flag-receipt.json"
   elif [ -f "$secret_plan" ] && [ -f "$secret_private" ] \
-      && [ ! -e "$flag_plan" ] && [ ! -e "$flag_private" ]; then
+      && [ ! -e "$flag_plan" ] && [ ! -e "$flag_private" ] \
+      && [ ! -e "$shadow_hook_plan" ] && [ ! -e "$shadow_hook_private" ]; then
     TRANSACTION_KIND='secret'
     CLAIM_PLAN="$secret_plan"
     CLAIM_PRIVATE="$secret_private"
     CLAIM_RECEIPT="$STATE_ROOT/claims/$ROLE-$TRANSACTION_ID.secret-receipt.json"
+  elif [ -f "$shadow_hook_plan" ] && [ -f "$shadow_hook_private" ] \
+      && [ ! -e "$flag_plan" ] && [ ! -e "$flag_private" ] \
+      && [ ! -e "$secret_plan" ] && [ ! -e "$secret_private" ]; then
+    TRANSACTION_KIND='shadow_hook'
+    CLAIM_PLAN="$shadow_hook_plan"
+    CLAIM_PRIVATE="$shadow_hook_private"
+    CLAIM_RECEIPT="$STATE_ROOT/claims/$ROLE-$TRANSACTION_ID.shadow-hook-receipt.json"
   else
     die 'interrupted capability transaction claim is missing or ambiguous'
   fi
@@ -2361,7 +2740,9 @@ const plan = persisted.plan ?? persisted;
 const privateState = JSON.parse(fs.readFileSync(privateFile, 'utf8'));
 const validated = kind === 'secret'
   ? helper.validateCapabilitySecretReceipt(receipt)
-  : helper.validateCapabilityFlagReceipt(receipt);
+  : kind === 'shadow_hook'
+    ? helper.validateShadowRouteHookReceipt(receipt)
+    : helper.validateCapabilityFlagReceipt(receipt);
 if (validated.status !== 'passed' || validated.transactionId !== transactionId
     || validated.role !== role || validated.runtimeSha !== runtimeSha
     || validated.artifactDigest !== artifactDigest
@@ -2380,14 +2761,28 @@ NODE
     if [ "$TRANSACTION_KIND" = secret ]; then
       committed_plan="$CLAIM_PRIVATE"
       committed_state='configuredFlags'
+    elif [ "$TRANSACTION_KIND" = shadow_hook ]; then
+      committed_plan="$CLAIM_PRIVATE"
+      committed_state='configuredFlags'
     fi
     write_runtime_permit committed_recovery "$committed_plan" "$committed_state"
     wait_healthy "$committed_plan" "$committed_state" "$committed_pid" authorized \
       || die 'interrupted committed capability transaction is unhealthy'
+    if [ "$TRANSACTION_KIND" = shadow_hook ]; then
+      local committed_desired committed_dedicated
+      committed_desired="$($NODE_BIN -e 'const p=require(process.argv[1]);process.stdout.write(String(p.desiredValue))' "$CLAIM_PLAN")"
+      committed_dedicated="$($NODE_BIN -e 'const p=require(process.argv[1]);process.stdout.write(String(p.dedicatedTenantId))' "$CLAIM_PLAN")"
+      assert_shadow_route_hook_runtime_state "$committed_desired" "$committed_dedicated" \
+        || die 'interrupted committed shadow route hook state is invalid'
+    fi
     durable_remove "$BACKUP_FILE"
     durable_remove "$PERMIT_FILE"
     wait_healthy "$committed_plan" "$committed_state" "$committed_pid" clear \
       || die 'interrupted committed capability guard did not clear'
+    if [ "$TRANSACTION_KIND" = shadow_hook ]; then
+      assert_shadow_route_hook_runtime_state "$committed_desired" "$committed_dedicated" \
+        || die 'committed shadow route hook state changed after guard clear'
+    fi
     atomic_write_json "$STATE_ROOT/$ROLE.json" "$CLAIM_RECEIPT"
     rm -f -- "$committed_snapshot"
   else
@@ -2395,6 +2790,9 @@ NODE
     restored_plan="$CLAIM_PLAN"
     restored_state='configuredBefore'
     if [ "$TRANSACTION_KIND" = secret ]; then
+      restored_plan="$CLAIM_PRIVATE"
+      restored_state='configuredFlags'
+    elif [ "$TRANSACTION_KIND" = shadow_hook ]; then
       restored_plan="$CLAIM_PRIVATE"
       restored_state='configuredFlags'
     fi
@@ -2407,6 +2805,13 @@ NODE
     restored_pid="$($NODE_BIN -e 'const fs=require("node:fs");process.stdout.write(String(JSON.parse(fs.readFileSync(process.argv[1],"utf8")).backend.pid))' "$restored_snapshot")"
     wait_healthy "$restored_plan" "$restored_state" "$restored_pid" authorized \
       || die 'interrupted capability rollback health verification failed'
+    if [ "$TRANSACTION_KIND" = shadow_hook ]; then
+      local restored_desired restored_dedicated
+      restored_desired="$($NODE_BIN -e 'const p=require(process.argv[1]);process.stdout.write(String(p.recorderBefore.user))' "$CLAIM_PLAN")"
+      restored_dedicated="$($NODE_BIN -e 'const p=require(process.argv[1]);process.stdout.write(String(p.dedicatedTenantId))' "$CLAIM_PLAN")"
+      assert_shadow_route_hook_runtime_state "$restored_desired" "$restored_dedicated" \
+        || die 'interrupted shadow route hook rollback state is invalid'
+    fi
     write_rollback_receipt rolled_back
     durable_remove "$BACKUP_FILE"
     durable_remove "$PERMIT_FILE"
@@ -2433,6 +2838,7 @@ recover_committed_receipt_gap() {
   candidates=(
     "$STATE_ROOT/claims/$ROLE-"*.flag-receipt.json
     "$STATE_ROOT/claims/$ROLE-"*.secret-receipt.json
+    "$STATE_ROOT/claims/$ROLE-"*.shadow-hook-receipt.json
   )
   shopt -u nullglob
   [ "${#candidates[@]}" -gt 0 ] || return 0
@@ -2450,7 +2856,9 @@ const parsed = files.map((file) => {
   const receipt = JSON.parse(fs.readFileSync(file, 'utf8'));
   const validated = file.endsWith('.secret-receipt.json')
     ? helper.validateCapabilitySecretReceipt(receipt)
-    : helper.validateCapabilityFlagReceipt(receipt);
+    : file.endsWith('.shadow-hook-receipt.json')
+      ? helper.validateShadowRouteHookReceipt(receipt)
+      : helper.validateCapabilityFlagReceipt(receipt);
   if (validated.status !== 'passed' || validated.role !== role
       || validated.runtimeSha !== runtimeSha
       || validated.artifactDigest !== artifactDigest) return null;
@@ -2493,6 +2901,13 @@ NODE
     claim_private="$STATE_ROOT/claims/$ROLE-$gap_id.secret-private.json"
     health_plan="$claim_private"
     state_key='configuredFlags'
+  elif [[ "$filename" =~ ^$ROLE-([0-9]{8}T[0-9]{6}Z-[0-9a-f]{12})\.shadow-hook-receipt\.json$ ]]; then
+    gap_kind='shadow_hook'
+    gap_id="${BASH_REMATCH[1]}"
+    claim_plan="$STATE_ROOT/claims/$ROLE-$gap_id.shadow-hook-plan.json"
+    claim_private="$STATE_ROOT/claims/$ROLE-$gap_id.shadow-hook-private.json"
+    health_plan="$claim_private"
+    state_key='configuredFlags'
   else
     die 'committed capability receipt filename is invalid'
   fi
@@ -2511,7 +2926,9 @@ const persisted = JSON.parse(fs.readFileSync(planFile, 'utf8'));
 const plan = persisted.plan ?? persisted;
 const validated = kind === 'secret'
   ? helper.validateCapabilitySecretReceipt(receipt)
-  : helper.validateCapabilityFlagReceipt(receipt);
+  : kind === 'shadow_hook'
+    ? helper.validateShadowRouteHookReceipt(receipt)
+    : helper.validateCapabilityFlagReceipt(receipt);
 if (validated.transactionId !== transactionId
     || validated.planDigest !== plan.planDigest
     || validated.runtimeSha !== plan.runtimeSha
@@ -2535,6 +2952,13 @@ NODE
   gap_pid="$($NODE_BIN -e 'const fs=require("node:fs");process.stdout.write(String(JSON.parse(fs.readFileSync(process.argv[1],"utf8")).backend.pid))' "$gap_snapshot")"
   wait_healthy "$health_plan" "$state_key" "$gap_pid" clear \
     || die 'committed capability receipt gap is unhealthy'
+  if [ "$gap_kind" = shadow_hook ]; then
+    local gap_desired gap_dedicated
+    gap_desired="$($NODE_BIN -e 'const p=require(process.argv[1]);process.stdout.write(String(p.desiredValue))' "$claim_plan")"
+    gap_dedicated="$($NODE_BIN -e 'const p=require(process.argv[1]);process.stdout.write(String(p.dedicatedTenantId))' "$claim_plan")"
+    assert_shadow_route_hook_runtime_state "$gap_desired" "$gap_dedicated" \
+      || die 'committed shadow route hook receipt gap state is invalid'
+  fi
   atomic_write_json "$external" "$candidate"
   rm -f -- "$gap_snapshot"
 }
@@ -2641,7 +3065,7 @@ case "$COMMAND" in
       "$DASHBOARD_EVIDENCE_FILE" "$STATE_ROOT/claims" \
       "$STAGING_RELEASE_DIR" "$STAGING_SMOKE_EVIDENCE_FILE" \
       "$MONITOR_EVIDENCE_FILE" "$STAGING_ENABLE_RECEIPT_FILE" \
-      "$STAGING_OBSERVATION_EVIDENCE_FILE" <<'NODE'
+      "$STAGING_OBSERVATION_EVIDENCE_FILE" "$SHADOW_HOOK_RECEIPT_FILE" <<'NODE'
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
@@ -2649,7 +3073,8 @@ import { pathToFileURL } from 'node:url';
 const [helperPath,envFile,pendingPlan,sequenceFile,pm2File,release,
   role,runtimeSha,artifactDigest,flag,desiredValue,transitionReason,rawEvidenceFile,
   healthEvidenceFile,dashboardEvidenceFile,claimsRoot,stagingRelease,smokeEvidenceFile,
-  monitorEvidenceFile,preselectedReceiptFile,observationEvidenceFile] = process.argv.slice(2);
+  monitorEvidenceFile,preselectedReceiptFile,observationEvidenceFile,
+  shadowHookReceiptFile] = process.argv.slice(2);
 const helper = await import(pathToFileURL(helperPath).href);
 const source = fs.readFileSync(envFile, 'utf8');
 const configuredFlags = helper.readCapabilityFlagState(source);
@@ -2800,6 +3225,12 @@ if (existingRecord === null && desiredValue === 'true'
             runtimeSha,
             artifactDigest,
             configuredFlags,
+            shadowHookReceiptRaw: readRaw(
+              shadowHookReceiptFile,
+              'current shadow-hook enable receipt',
+            ),
+            healthRaw: readRaw(healthEvidenceFile, 'live staging health'),
+            checkedAt,
           })
         : stagingReceipt.evidenceAttestation;
       break;
@@ -2890,6 +3321,7 @@ NODE
     CLAIM_RECEIPT="$STATE_ROOT/claims/$ROLE-$TRANSACTION_ID.flag-receipt.json"
     PM2_BEFORE_TEMP="$(mktemp "$STATE_ROOT/.pm2-before.XXXXXX")"
     write_pm2_snapshot "$PM2_BEFORE_TEMP"
+    revalidate_routing_shadow_binding "$PENDING_PLAN" "$PM2_BEFORE_TEMP"
     "$NODE_BIN" --input-type=module - "$HELPER" "$ENV_FILE" "$PENDING_PLAN" \
       "$SEQUENCE_FILE" "$CLAIM_PLAN" "$CLAIM_PRIVATE" "$PM2_BEFORE_TEMP" \
       "$RELEASE_DIR" "$ACK_PLAN" "$ROLE" "$RUNTIME_SHA" \
@@ -3093,6 +3525,335 @@ NODE
     durable_remove "$BACKUP_FILE"
     durable_remove "$PERMIT_FILE"
     wait_healthy "$CLAIM_PLAN" configuredAfter "$BACKEND_PID" clear
+    atomic_write_json "$STATE_ROOT/$ROLE.json" "$CLAIM_RECEIPT"
+    rm -f -- "$RECEIPT_TEMP"
+    cat "$STATE_ROOT/$ROLE.json"
+    ;;
+
+  inspect-shadow-hook)
+    resolve_exact_staging_release
+    DEDICATED_ID="$(attest_dedicated_eval_identity)" \
+      || die 'dedicated evaluation identity attestation failed'
+    PM2_BEFORE_TEMP="$(mktemp "$STATE_ROOT/.shadow-hook-pm2-before.XXXXXX")"
+    write_pm2_snapshot "$PM2_BEFORE_TEMP"
+    "$NODE_BIN" --input-type=module - "$HELPER" "$ENV_FILE" "$PENDING_PLAN" \
+      "$PENDING_PRIVATE" "$SEQUENCE_FILE" "$PM2_BEFORE_TEMP" "$RELEASE_DIR" \
+      "$ROLE" "$RUNTIME_SHA" "$ARTIFACT_DIGEST" "$DESIRED_VALUE" \
+      "$TRANSITION_REASON" "$DEDICATED_ID" <<'NODE'
+import fs from 'node:fs';
+import path from 'node:path';
+import { createHash } from 'node:crypto';
+import { pathToFileURL } from 'node:url';
+const [helperPath,envFile,pendingPlan,pendingPrivate,sequenceFile,pm2File,release,
+  role,runtimeSha,artifactDigest,desiredRaw,transitionReason,dedicatedRaw]
+  = process.argv.slice(2);
+const helper = await import(pathToFileURL(helperPath).href);
+const source = fs.readFileSync(envFile, 'utf8');
+const stat = fs.lstatSync(envFile);
+const pm2 = JSON.parse(fs.readFileSync(pm2File, 'utf8'));
+const dedicatedTenantId = Number(dedicatedRaw);
+let previousPlanSequence = 0;
+if (fs.existsSync(sequenceFile)) {
+  const raw = fs.readFileSync(sequenceFile, 'utf8').trim();
+  if (!/^(?:0|[1-9][0-9]*)$/u.test(raw)) throw new Error('invalid shadow-hook sequence state');
+  previousPlanSequence = Number(raw);
+}
+const build = (generatedAt) => helper.buildShadowRouteHookPlan({
+  role,
+  runtimeSha,
+  artifactDigest,
+  dotenvSource: source,
+  dedicatedIdentityAttested: true,
+  desiredValue: desiredRaw === 'true',
+  transitionReason,
+  previousPlanSequence,
+  generatedAt,
+});
+const privateStateFor = (planDigest) => ({
+  schema: 'nexus.chat-shadow-route-hook-private.v1',
+  planDigest,
+  release,
+  dedicatedTenantId,
+  environmentPrecondition: {
+    device: stat.dev,
+    inode: stat.ino,
+    size: stat.size,
+    mtimeMs: stat.mtimeMs,
+    sha256: createHash('sha256').update(Buffer.from(source)).digest('hex'),
+  },
+  pm2,
+  configuredFlags: helper.readCapabilityFlagState(source),
+});
+const planExists = fs.existsSync(pendingPlan);
+const privateExists = fs.existsSync(pendingPrivate);
+if (planExists !== privateExists) throw new Error('pending shadow-hook state is incomplete');
+if (planExists) {
+  for (const file of [pendingPlan, pendingPrivate]) {
+    const candidate = fs.lstatSync(file);
+    if (!candidate.isFile() || candidate.isSymbolicLink() || candidate.nlink !== 1
+        || (candidate.mode & 0o777) !== 0o600 || candidate.uid !== process.getuid()) {
+      throw new Error('pending shadow-hook state is unsafe');
+    }
+  }
+  const existingPlan = helper.validateShadowRouteHookPlan(
+    JSON.parse(fs.readFileSync(pendingPlan, 'utf8')),
+  );
+  const existingPrivate = JSON.parse(fs.readFileSync(pendingPrivate, 'utf8'));
+  const rebuilt = helper.buildShadowRouteHookPlan({
+    role: existingPlan.role,
+    runtimeSha: existingPlan.runtimeSha,
+    artifactDigest: existingPlan.artifactDigest,
+    dotenvSource: source,
+    dedicatedIdentityAttested: true,
+    desiredValue: existingPlan.desiredValue,
+    transitionReason: existingPlan.transitionReason,
+    previousPlanSequence: existingPlan.previousPlanSequence,
+    generatedAt: existingPlan.generatedAt,
+  });
+  const expectedPrivate = privateStateFor(existingPlan.planDigest);
+  const stale = Date.now() > Date.parse(existingPlan.expiresAt)
+    || existingPlan.previousPlanSequence !== previousPlanSequence
+    || JSON.stringify(existingPlan) !== JSON.stringify(rebuilt)
+    || JSON.stringify(existingPrivate) !== JSON.stringify(expectedPrivate);
+  if (!stale) {
+    if (existingPlan.desiredValue !== (desiredRaw === 'true')
+        || existingPlan.transitionReason !== transitionReason) {
+      throw new Error('a different unconsumed shadow-hook plan already exists');
+    }
+    process.stdout.write(`${JSON.stringify(existingPlan, null, 2)}\n`);
+    process.exit(0);
+  }
+  const archiveRoot = path.join(path.dirname(pendingPlan), 'expired');
+  fs.mkdirSync(archiveRoot, { recursive: true, mode: 0o700 });
+  const suffix = existingPlan.planDigest.slice(7);
+  const archivedPlan = path.join(archiveRoot, `staging.shadow-hook.${suffix}.plan.json`);
+  const archivedPrivate = path.join(archiveRoot, `staging.shadow-hook.${suffix}.private.json`);
+  if (fs.existsSync(archivedPlan) || fs.existsSync(archivedPrivate)) {
+    throw new Error('stale shadow-hook archive already exists');
+  }
+  fs.renameSync(pendingPlan, archivedPlan);
+  fs.renameSync(pendingPrivate, archivedPrivate);
+}
+const plan = build(new Date().toISOString());
+if (plan.dedicatedTenantId !== dedicatedTenantId) {
+  throw new Error('dedicated evaluation identity changed during inspect');
+}
+const privateState = privateStateFor(plan.planDigest);
+const atomic = (file, value) => {
+  const temporary = `${file}.next-${process.pid}`;
+  const descriptor = fs.openSync(temporary, 'wx', 0o600);
+  try { fs.writeFileSync(descriptor, `${JSON.stringify(value, null, 2)}\n`); fs.fsyncSync(descriptor); }
+  finally { fs.closeSync(descriptor); }
+  fs.renameSync(temporary, file);
+  const parent = fs.openSync(path.dirname(file), 'r');
+  try { fs.fsyncSync(parent); } finally { fs.closeSync(parent); }
+};
+atomic(pendingPlan, plan);
+atomic(pendingPrivate, privateState);
+process.stdout.write(`${JSON.stringify(plan, null, 2)}\n`);
+NODE
+    ;;
+
+  apply-shadow-hook)
+    [ "${NEXUS_RELEASE_OWNER_AUTHORIZED:-0}" = 1 ] \
+      || die 'apply-shadow-hook requires NEXUS_RELEASE_OWNER_AUTHORIZED=1'
+    CLAIM_PLAN="$STATE_ROOT/claims/$ROLE-$TRANSACTION_ID.shadow-hook-plan.json"
+    CLAIM_PRIVATE="$STATE_ROOT/claims/$ROLE-$TRANSACTION_ID.shadow-hook-private.json"
+    CLAIM_RECEIPT="$STATE_ROOT/claims/$ROLE-$TRANSACTION_ID.shadow-hook-receipt.json"
+    resolve_exact_staging_release
+    DEDICATED_ID="$(attest_dedicated_eval_identity)" \
+      || die 'dedicated evaluation identity attestation failed'
+    PM2_BEFORE_TEMP="$(mktemp "$STATE_ROOT/.shadow-hook-pm2-before.XXXXXX")"
+    write_pm2_snapshot "$PM2_BEFORE_TEMP"
+    "$NODE_BIN" --input-type=module - "$HELPER" "$ENV_FILE" "$PENDING_PLAN" \
+      "$PENDING_PRIVATE" "$SEQUENCE_FILE" "$CLAIM_PLAN" "$CLAIM_PRIVATE" \
+      "$PM2_BEFORE_TEMP" "$RELEASE_DIR" "$ACK_PLAN" "$ROLE" "$RUNTIME_SHA" \
+      "$ARTIFACT_DIGEST" "$TRANSACTION_ID" "$DEDICATED_ID" <<'NODE'
+import fs from 'node:fs';
+import path from 'node:path';
+import { createHash } from 'node:crypto';
+import { pathToFileURL } from 'node:url';
+const [helperPath,envFile,pendingPlan,pendingPrivate,sequenceFile,claimPlan,
+  claimPrivate,pm2File,release,ack,role,runtimeSha,artifactDigest,transactionId,
+  dedicatedRaw] = process.argv.slice(2);
+const helper = await import(pathToFileURL(helperPath).href);
+if (!fs.existsSync(pendingPlan) || !fs.existsSync(pendingPrivate)) {
+  throw new Error('no complete pending shadow-hook plan');
+}
+const plan = helper.validateShadowRouteHookPlan(
+  JSON.parse(fs.readFileSync(pendingPlan, 'utf8')),
+);
+helper.assertShadowRouteHookApplyAuthorization({
+  ownerAuthorized: process.env.NEXUS_RELEASE_OWNER_AUTHORIZED,
+  ackPlan: ack,
+  plan,
+  now: new Date().toISOString(),
+});
+if (plan.role !== role || plan.runtimeSha !== runtimeSha
+    || plan.artifactDigest !== artifactDigest
+    || plan.dedicatedTenantId !== Number(dedicatedRaw)) {
+  throw new Error('pending shadow-hook plan identity changed');
+}
+const privateState = JSON.parse(fs.readFileSync(pendingPrivate, 'utf8'));
+if (privateState.schema !== 'nexus.chat-shadow-route-hook-private.v1'
+    || privateState.planDigest !== plan.planDigest
+    || privateState.release !== release
+    || privateState.dedicatedTenantId !== plan.dedicatedTenantId) {
+  throw new Error('pending shadow-hook private state changed');
+}
+const source = fs.readFileSync(envFile, 'utf8');
+const stat = fs.lstatSync(envFile);
+helper.assertDotenvCasPrecondition({
+  expectedSha256: privateState.environmentPrecondition.sha256,
+  expectedFileIdentity: {
+    device: privateState.environmentPrecondition.device,
+    inode: privateState.environmentPrecondition.inode,
+    size: privateState.environmentPrecondition.size,
+    mtimeMs: privateState.environmentPrecondition.mtimeMs,
+  },
+  observedContents: source,
+  observedFileIdentity: {
+    device: stat.dev,
+    inode: stat.ino,
+    size: stat.size,
+    mtimeMs: stat.mtimeMs,
+  },
+});
+const rebuilt = helper.buildShadowRouteHookPlan({
+  role: plan.role,
+  runtimeSha: plan.runtimeSha,
+  artifactDigest: plan.artifactDigest,
+  dotenvSource: source,
+  dedicatedIdentityAttested: true,
+  desiredValue: plan.desiredValue,
+  transitionReason: plan.transitionReason,
+  previousPlanSequence: plan.previousPlanSequence,
+  generatedAt: plan.generatedAt,
+});
+if (JSON.stringify(rebuilt) !== JSON.stringify(plan)
+    || JSON.stringify(helper.readCapabilityFlagState(source))
+      !== JSON.stringify(privateState.configuredFlags)) {
+  throw new Error('live shadow-hook state changed after inspect');
+}
+const pm2 = JSON.parse(fs.readFileSync(pm2File, 'utf8'));
+if (JSON.stringify(pm2) !== JSON.stringify(privateState.pm2)) {
+  throw new Error('PM2 changed after shadow-hook inspect');
+}
+let sequence = 0;
+if (fs.existsSync(sequenceFile)) sequence = Number(fs.readFileSync(sequenceFile, 'utf8').trim());
+if (sequence !== plan.previousPlanSequence) throw new Error('shadow-hook plan sequence was consumed');
+for (const file of [claimPlan, claimPrivate]) {
+  if (fs.existsSync(file)) throw new Error('shadow-hook transaction claim already exists');
+}
+const atomicExclusive = (file, value) => {
+  const temporary = `${file}.next-${transactionId}`;
+  const descriptor = fs.openSync(temporary, 'wx', 0o600);
+  try { fs.writeFileSync(descriptor, `${JSON.stringify(value, null, 2)}\n`); fs.fsyncSync(descriptor); }
+  finally { fs.closeSync(descriptor); }
+  fs.renameSync(temporary, file);
+};
+atomicExclusive(claimPlan, plan);
+atomicExclusive(claimPrivate, privateState);
+const sequenceNext = `${sequenceFile}.next-${transactionId}`;
+const sequenceDescriptor = fs.openSync(sequenceNext, 'wx', 0o600);
+try { fs.writeFileSync(sequenceDescriptor, `${plan.planSequence}\n`); fs.fsyncSync(sequenceDescriptor); }
+finally { fs.closeSync(sequenceDescriptor); }
+fs.renameSync(sequenceNext, sequenceFile);
+fs.unlinkSync(pendingPlan);
+fs.unlinkSync(pendingPrivate);
+const parent = fs.openSync(path.dirname(sequenceFile), 'r');
+try { fs.fsyncSync(parent); } finally { fs.closeSync(parent); }
+NODE
+    resolve_current_release
+    BACKUP_FILE="$BASE_DIR/.env.before-chat-capability-$TRANSACTION_ID"
+    ROLLBACK_ARMED=true
+    ENV_MUTATED=true
+    "$NODE_BIN" --input-type=module - "$HELPER" "$ENV_FILE" "$CLAIM_PLAN" \
+      "$CLAIM_PRIVATE" "$BACKUP_FILE" "$TRANSACTION_ID" <<'NODE'
+import fs from 'node:fs';
+import path from 'node:path';
+import { createHash } from 'node:crypto';
+import { pathToFileURL } from 'node:url';
+const [helperPath,envFile,planFile,privateFile,backupFile,id] = process.argv.slice(2);
+const helper = await import(pathToFileURL(helperPath).href);
+const plan = helper.validateShadowRouteHookPlan(JSON.parse(fs.readFileSync(planFile, 'utf8')));
+const privateState = JSON.parse(fs.readFileSync(privateFile, 'utf8'));
+const source = fs.readFileSync(envFile, 'utf8');
+const stat = fs.lstatSync(envFile);
+helper.assertDotenvCasPrecondition({
+  expectedSha256: privateState.environmentPrecondition.sha256,
+  expectedFileIdentity: {
+    device: privateState.environmentPrecondition.device,
+    inode: privateState.environmentPrecondition.inode,
+    size: privateState.environmentPrecondition.size,
+    mtimeMs: privateState.environmentPrecondition.mtimeMs,
+  },
+  observedContents: source,
+  observedFileIdentity: {
+    device: stat.dev, inode: stat.ino, size: stat.size, mtimeMs: stat.mtimeMs,
+  },
+});
+const rewritten = helper.rewriteShadowRouteHookDotenv({ source, plan });
+privateState.mutation = {
+  preimageSha256: createHash('sha256').update(Buffer.from(source)).digest('hex'),
+  mutatedSha256: createHash('sha256').update(Buffer.from(rewritten.contents)).digest('hex'),
+};
+const privateNext = `${privateFile}.next-${id}`;
+const privateDescriptor = fs.openSync(privateNext, 'wx', 0o600);
+try { fs.writeFileSync(privateDescriptor, `${JSON.stringify(privateState)}\n`); fs.fsyncSync(privateDescriptor); }
+finally { fs.closeSync(privateDescriptor); }
+fs.renameSync(privateNext, privateFile);
+let parent = fs.openSync(path.dirname(privateFile), 'r');
+try { fs.fsyncSync(parent); } finally { fs.closeSync(parent); }
+helper.replaceCapabilitySecretDotenvFile({
+  filePath: envFile,
+  backupPath: backupFile,
+  expectedContents: source,
+  nextContents: rewritten.contents,
+  temporarySuffix: id,
+});
+NODE
+    resolve_current_release
+    write_runtime_permit apply "$CLAIM_PRIVATE" configuredFlags
+    restart_backend
+    PM2_AFTER_TEMP="$(mktemp "$STATE_ROOT/.shadow-hook-pm2-after.XXXXXX")"
+    write_pm2_snapshot "$PM2_AFTER_TEMP"
+    assert_pm2_transition "$PM2_BEFORE_TEMP" "$PM2_AFTER_TEMP" true
+    BACKEND_PID="$($NODE_BIN -e 'const fs=require("node:fs");process.stdout.write(String(JSON.parse(fs.readFileSync(process.argv[1],"utf8")).backend.pid))' "$PM2_AFTER_TEMP")"
+    wait_healthy "$CLAIM_PRIVATE" configuredFlags "$BACKEND_PID" authorized
+    DESIRED_VALUE="$($NODE_BIN -e 'const p=require(process.argv[1]);process.stdout.write(String(p.desiredValue))' "$CLAIM_PLAN")"
+    DEDICATED_ID="$($NODE_BIN -e 'const p=require(process.argv[1]);process.stdout.write(String(p.dedicatedTenantId))' "$CLAIM_PLAN")"
+    assert_shadow_route_hook_runtime_state "$DESIRED_VALUE" "$DEDICATED_ID" \
+      || die 'shadow route hook runtime state did not match the plan'
+    RECEIPT_TEMP="$(mktemp "$STATE_ROOT/.shadow-hook-receipt.XXXXXX")"
+    "$NODE_BIN" --input-type=module - "$HELPER" "$CLAIM_PLAN" "$RECEIPT_TEMP" \
+      "$TRANSACTION_ID" "$STARTED_AT" <<'NODE'
+import fs from 'node:fs';
+import { pathToFileURL } from 'node:url';
+const [helperPath,planFile,receiptFile,transactionId,startedAt] = process.argv.slice(2);
+const helper = await import(pathToFileURL(helperPath).href);
+const plan = helper.validateShadowRouteHookPlan(JSON.parse(fs.readFileSync(planFile, 'utf8')));
+const receipt = helper.buildShadowRouteHookReceipt({
+  plan,
+  transactionId,
+  status: 'passed',
+  startedAt,
+  completedAt: new Date().toISOString(),
+  health: { backend: 'passed', identity: 'passed', shadowHook: 'passed' },
+  rollback: { status: 'not_required' },
+});
+helper.validateShadowRouteHookReceipt(receipt);
+fs.writeFileSync(receiptFile, `${JSON.stringify(receipt, null, 2)}\n`, { mode: 0o600 });
+NODE
+    atomic_write_json "$CLAIM_RECEIPT" "$RECEIPT_TEMP"
+    RECEIPT_WRITTEN=true
+    ROLLBACK_ARMED=false
+    ENV_MUTATED=false
+    durable_remove "$BACKUP_FILE"
+    durable_remove "$PERMIT_FILE"
+    wait_healthy "$CLAIM_PRIVATE" configuredFlags "$BACKEND_PID" clear
+    assert_shadow_route_hook_runtime_state "$DESIRED_VALUE" "$DEDICATED_ID" \
+      || die 'committed shadow route hook runtime state is invalid'
     atomic_write_json "$STATE_ROOT/$ROLE.json" "$CLAIM_RECEIPT"
     rm -f -- "$RECEIPT_TEMP"
     cat "$STATE_ROOT/$ROLE.json"

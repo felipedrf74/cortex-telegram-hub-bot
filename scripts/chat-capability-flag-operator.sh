@@ -10,6 +10,8 @@ readonly SECRET_PLAN_SCHEMA='nexus.chat-capability-secret-plan.v1'
 readonly SECRET_RECEIPT_SCHEMA='nexus.chat-capability-secret-transaction.v1'
 readonly OBSERVATION_PLAN_SCHEMA='nexus.chat-capability-observation-plan.v1'
 readonly OBSERVATION_RECEIPT_SCHEMA='nexus.chat-capability-observation-receipt.v1'
+readonly SHADOW_HOOK_PLAN_SCHEMA='nexus.chat-shadow-route-hook-plan.v1'
+readonly SHADOW_HOOK_RECEIPT_SCHEMA='nexus.chat-shadow-route-hook-transaction.v1'
 readonly SERVER='ServerDominguez'
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -58,6 +60,15 @@ Usage:
     --role staging --runtime-sha <40-hex> --artifact-digest <64-hex> \
     --flag <governed-capability-flag> --ack-plan sha256:<64-hex>
 
+  scripts/chat-capability-flag-operator.sh inspect-shadow-hook \
+    --role staging --runtime-sha <40-hex> --artifact-digest <64-hex> \
+    --value <true|false> --transition-reason <reason>
+
+  NEXUS_RELEASE_OWNER_AUTHORIZED=1 \
+  scripts/chat-capability-flag-operator.sh apply-shadow-hook \
+    --role staging --runtime-sha <40-hex> --artifact-digest <64-hex> \
+    --ack-plan sha256:<64-hex>
+
 Inspect creates one exact-release-bound pending plan. Apply accepts only that
 plan digest, consumes it once, runs detached through systemd-run --user
 --collect, and polls the strict durable receipt. Secret values are generated
@@ -65,6 +76,9 @@ only inside the server transaction and are never accepted as arguments.
 Observation inspection binds the exact mature staging enable and zero-spend
 canonical smoke contract. Observation apply consumes that exact plan once in a
 detached transaction and publishes immutable raw smoke plus a strict receipt.
+Shadow-hook inspection targets only the configured dedicated synthetic evaluation
+identity and proves both HMACs present, every capability and planner flag OFF,
+and exact staging isolation before offering an owner-bound plan.
 For a staging enable of one of the four manifest-routing surfaces, --since and
 --until are both required and bind the server-collected divergence window.
 USAGE
@@ -92,7 +106,7 @@ while [ $# -gt 0 ]; do
 done
 
 case "$COMMAND" in
-  inspect|apply|inspect-secrets|apply-secrets|inspect-observation|apply-observation) ;;
+  inspect|apply|inspect-secrets|apply-secrets|inspect-observation|apply-observation|inspect-shadow-hook|apply-shadow-hook) ;;
   -h|--help) usage; exit 0 ;;
   *) usage >&2; exit 64 ;;
 esac
@@ -104,8 +118,9 @@ case "$ROLE" in
 esac
 [[ "$RUNTIME_SHA" =~ ^[0-9a-f]{40}$ ]] || die '--runtime-sha must be full lowercase 40-hex'
 [[ "$ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]] || die '--artifact-digest must be full lowercase 64-hex'
-if [ "$COMMAND" = inspect-observation ] || [ "$COMMAND" = apply-observation ]; then
-  [ "$ROLE" = staging ] || die 'capability observation is staging-only'
+if [ "$COMMAND" = inspect-observation ] || [ "$COMMAND" = apply-observation ] \
+    || [ "$COMMAND" = inspect-shadow-hook ] || [ "$COMMAND" = apply-shadow-hook ]; then
+  [ "$ROLE" = staging ] || die 'capability observation and shadow route hook are staging-only'
 fi
 
 ROUTING_FLAG=false
@@ -231,8 +246,10 @@ const value = JSON.parse(fs.readFileSync(file, 'utf8'));
 const knownSchemas = new Set([
   'nexus.chat-capability-flag-transaction.v1',
   'nexus.chat-capability-secret-transaction.v1',
+  'nexus.chat-shadow-route-hook-transaction.v1',
   'nexus.chat-capability-flag-attempt.v1',
   'nexus.chat-capability-secret-attempt.v1',
+  'nexus.chat-shadow-route-hook-attempt.v1',
 ]);
 if (!stat.isFile() || stat.isSymbolicLink() || !knownSchemas.has(value?.schema)
     || !['staging', 'production'].includes(value.role)
@@ -242,7 +259,9 @@ if (!stat.isFile() || stat.isSymbolicLink() || !knownSchemas.has(value?.schema)
     || !/^sha256:[0-9a-f]{64}$/u.test(value.planDigest ?? '')) process.exit(1);
 const attemptSchema = schema === 'nexus.chat-capability-flag-transaction.v1'
   ? 'nexus.chat-capability-flag-attempt.v1'
-  : 'nexus.chat-capability-secret-attempt.v1';
+  : schema === 'nexus.chat-capability-secret-transaction.v1'
+    ? 'nexus.chat-capability-secret-attempt.v1'
+    : 'nexus.chat-shadow-route-hook-attempt.v1';
 const exactAttempt = value.schema === attemptSchema && value.role === role
   && value.runtimeSha === sha && value.artifactDigest === digest
   && value.transactionId === id && value.planDigest === ack;
@@ -253,8 +272,10 @@ if (value.schema !== schema || value.role !== role || value.runtimeSha !== sha
 try {
   if (schema === 'nexus.chat-capability-flag-transaction.v1') {
     helper.validateCapabilityFlagReceipt(value);
-  } else {
+  } else if (schema === 'nexus.chat-capability-secret-transaction.v1') {
     helper.validateCapabilitySecretReceipt(value);
+  } else {
+    helper.validateShadowRouteHookReceipt(value);
   }
 } catch {
   process.exit(1);
@@ -373,7 +394,7 @@ case "$COMMAND" in
       require_current_protected_main
     fi
     ;;
-  inspect-secrets|apply-secrets|inspect-observation|apply-observation)
+  inspect-secrets|apply-secrets|inspect-observation|apply-observation|inspect-shadow-hook|apply-shadow-hook)
     require_current_protected_main
     ;;
   apply)
@@ -429,6 +450,59 @@ case "$COMMAND" in
       "$RUNTIME_SHA" "$ARTIFACT_DIGEST" > "$PLAN_TEMP"
     validate_and_save_plan "$PLAN_TEMP" "$SECRET_PLAN_SCHEMA"
     cat "$PLAN_TEMP"
+    ;;
+
+  inspect-shadow-hook)
+    case "$DESIRED_VALUE" in true|false) ;; *) die 'inspect-shadow-hook requires --value true or false' ;; esac
+    case "$TRANSITION_REASON" in
+      dedicated_eval_evidence_collection|operator_rollback|quality_regression|health_regression) ;;
+      *) die 'inspect-shadow-hook transition reason is outside the governed allowlist' ;;
+    esac
+    [ -z "$FLAG$ACK_PLAN$SINCE$UNTIL" ] \
+      || die 'inspect-shadow-hook accepts only exact release identity, value, and reason'
+    PLAN_TEMP="$(mktemp "$PLAN_ROOT/.inspect-shadow-hook.XXXXXX")"
+    trap 'rm -f -- "${PLAN_TEMP:-}"' EXIT
+    ssh "$SERVER" /bin/bash "$REMOTE_SCRIPT" inspect-shadow-hook staging "$BASE_DIR" \
+      "$RUNTIME_SHA" "$ARTIFACT_DIGEST" "$DESIRED_VALUE" \
+      "$TRANSITION_REASON" < /dev/null > "$PLAN_TEMP"
+    validate_and_save_plan "$PLAN_TEMP" "$SHADOW_HOOK_PLAN_SCHEMA"
+    cat "$PLAN_TEMP"
+    ;;
+
+  apply-shadow-hook)
+    [ "${NEXUS_RELEASE_OWNER_AUTHORIZED:-0}" = 1 ] \
+      || die 'apply-shadow-hook requires NEXUS_RELEASE_OWNER_AUTHORIZED=1'
+    [[ "$ACK_PLAN" =~ ^sha256:[0-9a-f]{64}$ ]] \
+      || die 'apply-shadow-hook requires exact --ack-plan'
+    [ -z "$FLAG$DESIRED_VALUE$TRANSITION_REASON$SINCE$UNTIL" ] \
+      || die 'apply-shadow-hook accepts only exact release identity and plan digest'
+    LOCAL_ACK_PLAN="$PLAN_ROOT/${ACK_PLAN#sha256:}.json"
+    [ -f "$LOCAL_ACK_PLAN" ] && [ ! -L "$LOCAL_ACK_PLAN" ] \
+      || die 'apply-shadow-hook requires the locally retained exact inspected plan'
+    node --input-type=module - \
+      "$ROOT/scripts/lib/chat-capability-flag-transaction.mjs" "$LOCAL_ACK_PLAN" \
+      "$RUNTIME_SHA" "$ARTIFACT_DIGEST" "$ACK_PLAN" <<'NODE' \
+      || die 'local shadow-hook plan does not match the requested apply'
+import fs from 'node:fs';
+import { pathToFileURL } from 'node:url';
+const [helperPath,file,runtimeSha,artifactDigest,planDigest] = process.argv.slice(2);
+const helper = await import(pathToFileURL(helperPath).href);
+const stat = fs.lstatSync(file);
+if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) process.exit(1);
+const plan = helper.validateShadowRouteHookPlan(JSON.parse(fs.readFileSync(file, 'utf8')));
+if (plan.role !== 'staging' || plan.runtimeSha !== runtimeSha
+    || plan.artifactDigest !== artifactDigest || plan.planDigest !== planDigest) process.exit(1);
+NODE
+    TRANSACTION_ID="$(transaction_id)"
+    UNIT="nexus-chat-shadow-hook-${RUNTIME_SHA:0:12}-${TRANSACTION_ID##*-}"
+    ssh "$SERVER" systemd-run --user --quiet --collect --remain-after-exit \
+      --unit "$UNIT" \
+      --property Type=oneshot \
+      --property TimeoutStartSec=4min \
+      --setenv=NEXUS_RELEASE_OWNER_AUTHORIZED=1 \
+      /bin/bash "$REMOTE_SCRIPT" apply-shadow-hook staging "$BASE_DIR" \
+      "$RUNTIME_SHA" "$ARTIFACT_DIGEST" "$TRANSACTION_ID" "$ACK_PLAN"
+    poll_receipt "$TRANSACTION_ID" "$UNIT" "$SHADOW_HOOK_RECEIPT_SCHEMA"
     ;;
 
   inspect-observation)

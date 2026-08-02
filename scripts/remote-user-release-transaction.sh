@@ -34,9 +34,10 @@ die() {
 }
 
 assert_no_unresolved_chat_capability_transaction() {
+  local capability_base="$1"
   local marker
   marker="$(
-    find "$BASE_DIR" -mindepth 1 -maxdepth 1 \
+    find "$capability_base" -mindepth 1 -maxdepth 1 \
       -name '.env.before-chat-capability-*' -print -quit
   )" || die "cannot inspect chat capability transaction state"
   [ -z "$marker" ] \
@@ -44,6 +45,7 @@ assert_no_unresolved_chat_capability_transaction() {
 }
 
 assert_no_unpublished_chat_capability_receipt() {
+  local receipt_role="$1"
   local capability_root="$STATE_ROOT/chat-capability-flags"
   local claims_root="$capability_root/claims"
   [ -e "$capability_root" ] || return 0
@@ -60,14 +62,15 @@ assert_no_unpublished_chat_capability_receipt() {
   local receipts=()
   shopt -s nullglob
   receipts=(
-    "$claims_root/$ROLE-"*.flag-receipt.json
-    "$claims_root/$ROLE-"*.secret-receipt.json
+    "$claims_root/$receipt_role-"*.flag-receipt.json
+    "$claims_root/$receipt_role-"*.secret-receipt.json
+    "$claims_root/$receipt_role-"*.shadow-hook-receipt.json
   )
   shopt -u nullglob
   [ "${#receipts[@]}" -gt 0 ] || return 0
 
   local result
-  result="$($NODE_BIN - "$ROLE" "$capability_root/$ROLE.json" "${receipts[@]}" <<'NODE'
+  result="$($NODE_BIN - "$receipt_role" "$capability_root/$receipt_role.json" "${receipts[@]}" <<'NODE'
 const fs = require('node:fs');
 const path = require('node:path');
 const [role, externalFile, ...files] = process.argv.slice(2);
@@ -82,16 +85,27 @@ const timestamp = (value, label) => {
 };
 const safePrivateFile = (file) => {
   const stat = fs.lstatSync(file);
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.uid !== process.getuid()
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1
+      || stat.uid !== process.getuid()
       || (stat.mode & 0o777) !== 0o600) throw new Error('capability receipt path is unsafe');
 };
 const claims = files.map((file) => {
   safePrivateFile(file);
   const value = JSON.parse(fs.readFileSync(file, 'utf8'));
-  const kind = file.endsWith('.flag-receipt.json') ? 'flag' : 'secret';
+  const kind = file.endsWith('.flag-receipt.json')
+    ? 'flag'
+    : file.endsWith('.secret-receipt.json')
+      ? 'secret'
+      : file.endsWith('.shadow-hook-receipt.json')
+        ? 'shadow-hook'
+        : null;
   const schema = kind === 'flag'
     ? 'nexus.chat-capability-flag-transaction.v1'
-    : 'nexus.chat-capability-secret-transaction.v1';
+    : kind === 'secret'
+      ? 'nexus.chat-capability-secret-transaction.v1'
+      : kind === 'shadow-hook'
+        ? 'nexus.chat-shadow-route-hook-transaction.v1'
+        : null;
   if (value?.schema !== schema || value.status !== 'passed' || value.role !== role
       || !ids.test(value.transactionId ?? '') || !sha.test(value.runtimeSha ?? '')
       || !digest.test(value.artifactDigest ?? '')
@@ -128,12 +142,165 @@ NODE
   esac
 }
 
+assert_no_unpublished_staging_chat_capability_observation() {
+  local capability_root="$STATE_ROOT/chat-capability-flags"
+  local observations_root="$capability_root/observations"
+  local sequence_file="$capability_root/staging.observation.sequence"
+  local smoke_root=/home/dominguez/telegram-hub-bot-staging/.local/release/smoke-evidence
+
+  if [ ! -e "$observations_root" ] && [ ! -L "$observations_root" ]; then
+    if [ -e "$sequence_file" ] || [ -L "$sequence_file" ]; then
+      die "unpublished staging chat capability observation blocks release; recover it first"
+    fi
+    return 0
+  fi
+  [ -d "$observations_root" ] && [ ! -L "$observations_root" ] \
+    || die "staging chat capability observation root is unsafe"
+  [ "$(stat -c '%U:%a' "$observations_root")" = "$(id -un):700" ] \
+    || die "staging chat capability observation root owner or mode is unsafe"
+
+  local observation_plans=()
+  local observation_receipts=()
+  shopt -s nullglob
+  observation_plans=("$observations_root"/staging-*.observation-plan.json)
+  observation_receipts=("$observations_root"/staging-*.observation-receipt.json)
+  shopt -u nullglob
+  if [ "${#observation_plans[@]}" -eq 0 ] \
+      && [ "${#observation_receipts[@]}" -eq 0 ] \
+      && [ ! -e "$sequence_file" ] && [ ! -L "$sequence_file" ]; then
+    return 0
+  fi
+
+  local result
+  result="$($NODE_BIN - "$sequence_file" "$smoke_root" \
+    "${#observation_plans[@]}" \
+    "${observation_plans[@]}" "${observation_receipts[@]}" <<'NODE'
+const fs = require('node:fs');
+const path = require('node:path');
+const [sequenceFile, smokeRoot, planCountRaw, ...files] = process.argv.slice(2);
+const planCount = Number(planCountRaw);
+if (!Number.isSafeInteger(planCount) || planCount < 0 || planCount > files.length) {
+  throw new Error('staging observation inventory is invalid');
+}
+const planFiles = files.slice(0, planCount);
+const receiptFiles = files.slice(planCount);
+const ids = /^\d{8}T\d{6}Z-[0-9a-f]{12}$/u;
+const sha = /^[0-9a-f]{40}$/u;
+const digest = /^[0-9a-f]{64}$/u;
+const planDigest = /^sha256:[0-9a-f]{64}$/u;
+const safePrivateFile = (file, label) => {
+  const stat = fs.lstatSync(file);
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1
+      || stat.uid !== process.getuid() || (stat.mode & 0o777) !== 0o600) {
+    throw new Error(`${label} is unsafe`);
+  }
+  return fs.readFileSync(file, 'utf8');
+};
+const unpublished = () => {
+  process.stdout.write('unpublished');
+  process.exit(0);
+};
+if (!fs.existsSync(sequenceFile) || planFiles.length === 0) unpublished();
+const sequenceRaw = safePrivateFile(sequenceFile, 'staging observation sequence').trim();
+if (!/^[1-9][0-9]*$/u.test(sequenceRaw)) {
+  throw new Error('staging observation sequence is invalid');
+}
+const sequence = Number(sequenceRaw);
+if (!Number.isSafeInteger(sequence)) {
+  throw new Error('staging observation sequence is outside the safe range');
+}
+
+const plans = new Map();
+const sequences = new Set();
+for (const file of planFiles) {
+  const match = path.basename(file).match(
+    /^staging-(\d{8}T\d{6}Z-[0-9a-f]{12})\.observation-plan\.json$/u,
+  );
+  if (!match) throw new Error('staging observation plan filename is invalid');
+  const transactionId = match[1];
+  const value = JSON.parse(safePrivateFile(file, 'staging observation plan'));
+  if (value?.schema !== 'nexus.chat-capability-observation-plan.v1'
+      || value.role !== 'staging' || !sha.test(value.runtimeSha ?? '')
+      || !digest.test(value.artifactDigest ?? '')
+      || !planDigest.test(value.planDigest ?? '')
+      || !Number.isSafeInteger(value.observationSequence)
+      || value.observationSequence < 1
+      || value.previousObservationSequence !== value.observationSequence - 1
+      || sequences.has(value.observationSequence)) {
+    throw new Error('staging observation plan binding is invalid');
+  }
+  sequences.add(value.observationSequence);
+  plans.set(transactionId, value);
+}
+if (Math.max(...sequences) !== sequence) unpublished();
+
+let smokeRootReady = true;
+for (const directory of [path.dirname(path.dirname(smokeRoot)), path.dirname(smokeRoot), smokeRoot]) {
+  if (!fs.existsSync(directory)) {
+    smokeRootReady = false;
+    break;
+  }
+  const stat = fs.lstatSync(directory);
+  if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid()
+      || (stat.mode & 0o777) !== 0o700) {
+    throw new Error('staging observation evidence root is unsafe');
+  }
+}
+
+const published = new Set();
+let publicationIncomplete = false;
+for (const file of receiptFiles) {
+  const match = path.basename(file).match(
+    /^staging-(\d{8}T\d{6}Z-[0-9a-f]{12})\.observation-receipt\.json$/u,
+  );
+  if (!match) throw new Error('staging observation receipt filename is invalid');
+  const transactionId = match[1];
+  const raw = safePrivateFile(file, 'staging observation receipt');
+  const value = JSON.parse(raw);
+  const plan = plans.get(transactionId);
+  if (!plan || value?.schema !== 'nexus.chat-capability-observation-receipt.v1'
+      || value.status !== 'passed' || value.role !== 'staging'
+      || value.transactionId !== transactionId || !ids.test(value.transactionId ?? '')
+      || value.runtimeSha !== plan.runtimeSha
+      || value.artifactDigest !== plan.artifactDigest
+      || value.observationSequence !== plan.observationSequence
+      || value.planDigest !== plan.planDigest
+      || JSON.stringify(value.plan) !== JSON.stringify(plan)) {
+    throw new Error('staging observation receipt binding is invalid');
+  }
+  const sidecar = path.join(
+    smokeRoot,
+    `chat-capability-${transactionId}-staging-observation.json`,
+  );
+  if (!smokeRootReady || !fs.existsSync(sidecar)) {
+    publicationIncomplete = true;
+  } else if (safePrivateFile(sidecar, 'staging observation sidecar') !== raw) {
+    throw new Error('staging observation receipt and sidecar bytes differ');
+  }
+  published.add(transactionId);
+}
+for (const transactionId of plans.keys()) {
+  if (!published.has(transactionId)) publicationIncomplete = true;
+}
+process.stdout.write(publicationIncomplete ? 'unpublished' : 'clear');
+NODE
+)" || die "cannot inspect staging chat capability observation publication"
+  case "$result" in
+    clear) ;;
+    unpublished)
+      die "unpublished staging chat capability observation blocks release; recover it first"
+      ;;
+    *) die "staging chat capability observation publication state is invalid" ;;
+  esac
+}
+
 assert_release_candidate_chat_capabilities_off() {
-  [ -f "$BASE_DIR/.env" ] && [ ! -L "$BASE_DIR/.env" ] \
+  local environment_file="$1"
+  [ -f "$environment_file" ] && [ ! -L "$environment_file" ] \
     || die "release environment must be a regular non-symbolic file"
-  [ "$(stat -c '%U:%a' "$BASE_DIR/.env")" = "$(id -un):600" ] \
+  [ "$(stat -c '%U:%a' "$environment_file")" = "$(id -un):600" ] \
     || die "release environment owner or mode is unsafe"
-  "$NODE_BIN" - "$BASE_DIR/.env" <<'NODE'
+  "$NODE_BIN" - "$environment_file" <<'NODE'
 const fs = require('node:fs');
 const environmentFile = process.argv[2];
 const capabilityFlags = [
@@ -146,6 +313,10 @@ const capabilityFlags = [
   'AI_CROSS_SKILL_EXECUTION',
 ];
 const masterKill = 'AI_ROUTING_MANIFEST_KILL';
+const shadowRuntimePolicies = [
+  'CHAT_CORE_V2_SHADOW_ROUTE_HOOK_ENABLED',
+  'CHAT_CORE_V2_SHADOW_PLANNER_ENABLED',
+];
 const stat = fs.lstatSync(environmentFile);
 if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) {
   throw new Error('release environment is not a single-link ordinary file');
@@ -177,6 +348,39 @@ for (const key of [...capabilityFlags, masterKill]) {
     }
   } else if (assignments[0] !== `${key}=false`) {
     throw new Error(`release candidate requires omitted ${key} or canonical ${key}=false`);
+  }
+}
+
+const escapedShadowPolicies = shadowRuntimePolicies
+  .map((key) => key.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'))
+  .join('|');
+const shadowAssignment = new RegExp(
+  `^\\s*(?:export[ \\t]+)?((?:${escapedShadowPolicies})(?:_(?:USER|TENANT)_[A-Za-z0-9_-]+)?)[ \\t]*=(.*)$`,
+  'u',
+);
+const enabledShadowValues = new Set(['true', 'on', '1', 'shadow']);
+const disabledShadowValues = new Set(['false', 'off', '0']);
+const normalizeDotenvValue = (raw) => {
+  const trimmed = raw.trim();
+  const quoted = trimmed.match(/^(["'`])([\s\S]*)\1(?:[ \\t]*#.*)?$/u);
+  if (quoted) return quoted[2].trim().toLowerCase();
+  return trimmed.replace(/#.*$/u, '').trim().toLowerCase();
+};
+const seenShadowAssignments = new Set();
+for (const line of lines) {
+  const assignment = line.match(shadowAssignment);
+  if (!assignment) continue;
+  const key = assignment[1];
+  if (seenShadowAssignments.has(key)) {
+    throw new Error(`release environment has duplicate ${key} assignments`);
+  }
+  seenShadowAssignments.add(key);
+  const normalized = normalizeDotenvValue(assignment[2]);
+  if (enabledShadowValues.has(normalized)) {
+    throw new Error(`release candidate requires ${key} effectively off`);
+  }
+  if (!disabledShadowValues.has(normalized)) {
+    throw new Error(`release environment has non-canonical ${key} value`);
   }
 }
 NODE
@@ -291,9 +495,18 @@ flock -n 8 || die "a Sonar backup, restore, or root maintenance action is active
 # The chat capability operator holds the same user release lock while it
 # mutates .env. A surviving preimage means that transaction was interrupted;
 # changing the selected release would invalidate its exact-runtime recovery.
-assert_no_unresolved_chat_capability_transaction
-assert_no_unpublished_chat_capability_receipt
-assert_release_candidate_chat_capabilities_off
+assert_no_unresolved_chat_capability_transaction "$BASE_DIR"
+assert_no_unpublished_chat_capability_receipt "$ROLE"
+if [ "$ROLE" = staging ]; then
+  assert_no_unpublished_staging_chat_capability_observation
+fi
+assert_release_candidate_chat_capabilities_off "$BASE_DIR/.env"
+if [ "$ROLE" = production ]; then
+  assert_no_unresolved_chat_capability_transaction /home/dominguez/telegram-hub-bot-staging
+  assert_no_unpublished_chat_capability_receipt staging
+  assert_no_unpublished_staging_chat_capability_observation
+  assert_release_candidate_chat_capabilities_off /home/dominguez/telegram-hub-bot-staging/.env
+fi
 
 # The shared user lock prevents a new advisory scan from starting. Check the
 # server-side CE queue while holding it as well, so a scan whose client exited

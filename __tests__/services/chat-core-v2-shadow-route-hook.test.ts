@@ -303,6 +303,12 @@ describe('Chat Core v2 shadow route hook', () => {
         resolverVersion: string;
         releaseIdentity: { runtimeSha: string; artifactDigest: string; role: string };
         capabilityFlags: Record<string, unknown>;
+        recorderState: {
+          userId: string;
+          tenantId: string;
+          shadowRouteHookEffective: boolean;
+          shadowPlannerEffective: boolean;
+        };
         topCandidate: { capabilityId: string; domain: string; skill: string; rawScore: number; matchedEvidenceCount: number } | null;
         candidateCount: number;
         surfaces: { shadowRouteIntent: string; shadowRouteDomains: string[]; registryActionSkills: string[] };
@@ -312,7 +318,7 @@ describe('Chat Core v2 shadow route hook', () => {
     };
     const divergence = contextPack.routingDivergence;
     expect(divergence).toBeDefined();
-    expect(divergence!.divergenceVersion).toBe('routing_divergence_shadow@3.0.0');
+    expect(divergence!.divergenceVersion).toBe('routing_divergence_shadow@4.0.0');
     expect(divergence!.resolverVersion).toBe('manifest-intent-resolver@1.0.0');
     expect(divergence!.releaseIdentity).toEqual({
       runtimeSha: RELEASE_IDENTITY_ENV.NEXUS_RELEASE_SHA,
@@ -331,6 +337,12 @@ describe('Chat Core v2 shadow route hook', () => {
     for (const observed of Object.values(divergence!.capabilityFlags)) {
       expect(typeof observed).toBe('boolean');
     }
+    expect(divergence!.recorderState).toEqual({
+      userId: String(BASE.userId),
+      tenantId: String(BASE.tenantId),
+      shadowRouteHookEffective: true,
+      shadowPlannerEffective: false,
+    });
     // "Create a task to buy milk tomorrow" — resolver and shadow route agree on secretary/tasks.
     expect(divergence!.topCandidate).toMatchObject({ capabilityId: 'secretary', domain: 'secretary' });
     expect(divergence!.topCandidate!.rawScore).toBeGreaterThan(0);

@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   chmodSync,
   existsSync,
@@ -15,6 +16,11 @@ import {
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import {
+  buildShadowRouteHookPlan,
+  buildShadowRouteHookReceipt,
+  rewriteShadowRouteHookDotenv,
+} from '../../scripts/lib/chat-capability-flag-transaction.mjs';
 
 const ROOT = path.resolve(__dirname, '../..');
 const REMOTE_SOURCE = path.join(
@@ -30,6 +36,7 @@ const RUNTIME_SHA = 'a'.repeat(40);
 const ARTIFACT_DIGEST = 'b'.repeat(64);
 const TRANSACTION_ID = '20260802T010203Z-abcdef123456';
 const NEXT_TRANSACTION_ID = '20260802T010204Z-fedcba654321';
+const SHADOW_HOOK_TRANSACTION_ID = '20260730T235900Z-abcdef123456';
 const temporaryRoots: string[] = [];
 
 function shellSingleQuote(value: string): string {
@@ -71,6 +78,8 @@ function createShellFixture() {
   const backendPid = path.join(root, 'backend.pid');
   const backendUptime = path.join(root, 'backend.uptime');
   const environmentFile = path.join(base, '.env');
+  const routingReportFile = path.join(root, 'routing-report.json');
+  const routingHealthFile = path.join(root, 'routing-health.json');
   const actualNode = process.execPath;
 
   mkdirSync(path.join(scripts, 'lib'), { recursive: true });
@@ -88,7 +97,7 @@ function createShellFixture() {
   writeFileSync(path.join(scripts, 'routing-divergence-report.mjs'), '// fixture\n');
   writeFileSync(
     path.join(release, 'dist/services/intent-resolution/divergence-shadow.js'),
-    "exports.ROUTING_DIVERGENCE_SHADOW_VERSION = 'routing_divergence_shadow@3.0.0';\n",
+    "exports.ROUTING_DIVERGENCE_SHADOW_VERSION = 'routing_divergence_shadow@4.0.0';\n",
   );
   writeFileSync(
     path.join(release, 'dist/services/intent-resolution/intent-resolver.js'),
@@ -113,10 +122,17 @@ function createShellFixture() {
 case "\${1:-}" in
   */scripts/release-artifact-manifest.mjs) exit 0 ;;
   scripts/routing-divergence-report.mjs)
-    printf '%s\\n' ${shellSingleQuote(routingEvidence().trim())}
+    [ -f ${shellSingleQuote(routingReportFile)} ] || exit 97
+    /bin/cat ${shellSingleQuote(routingReportFile)}
     exit 0
     ;;
-  --env-file=*) exit 0 ;;
+  --env-file=*)
+    if [ "\${2:-}" = - ] && [ "\${4:-}" = /health/detailed ] \
+        && [ -f ${shellSingleQuote(routingHealthFile)} ]; then
+      /bin/cat ${shellSingleQuote(routingHealthFile)} > "\${8:-}"
+    fi
+    exit 0
+    ;;
 esac
 exec ${shellSingleQuote(actualNode)} "$@"
 `);
@@ -305,6 +321,120 @@ exec /usr/bin/readlink "$@"
     });
   }
 
+  function seedShadowHookEnable(): void {
+    const preEnableDotenv = [
+      'CHAT_EVAL_DEDICATED_TENANT_ID=42',
+      `CLASSIFY_SHADOW_HASH_SECRET=${'c'.repeat(64)}`,
+      `CHAT_CORE_V2_SHADOW_ROUTE_HMAC_SECRET=${'d'.repeat(64)}`,
+      'AI_ROUTING_MANIFEST_CLASSIFIER=false',
+      'AI_ROUTING_MANIFEST_ORCHESTRATOR=false',
+      'AI_ROUTING_MANIFEST_SHADOW=false',
+      'AI_ROUTING_MANIFEST_REGISTRY=false',
+      'AI_ROUTING_CLARIFY=false',
+      'AI_CLASSIFY_MANIFEST_PROMPT=false',
+      'AI_CROSS_SKILL_EXECUTION=false',
+      'AI_ROUTING_MANIFEST_KILL=false',
+      'UNMANAGED_SETTING=preserved',
+      '',
+    ].join('\n');
+    const plan = buildShadowRouteHookPlan({
+      role: 'staging',
+      runtimeSha: RUNTIME_SHA,
+      artifactDigest: ARTIFACT_DIGEST,
+      dotenvSource: preEnableDotenv,
+      dedicatedIdentityAttested: true,
+      desiredValue: true,
+      transitionReason: 'dedicated_eval_evidence_collection',
+      previousPlanSequence: 7,
+      generatedAt: '2026-07-30T23:58:00.000Z',
+    });
+    const receipt = buildShadowRouteHookReceipt({
+      plan,
+      transactionId: SHADOW_HOOK_TRANSACTION_ID,
+      startedAt: '2026-07-30T23:59:00.000Z',
+      completedAt: '2026-07-30T23:59:59.000Z',
+      status: 'passed',
+      health: { backend: 'passed', identity: 'passed', shadowHook: 'passed' },
+      rollback: { status: 'not_required' },
+    });
+    const receiptRaw = `${JSON.stringify(receipt)}\n`;
+    const postEnableDotenv = rewriteShadowRouteHookDotenv({
+      source: preEnableDotenv,
+      plan,
+    }).contents;
+    writeFileSync(environmentFile, postEnableDotenv, { mode: 0o600 });
+    chmodSync(environmentFile, 0o600);
+
+    const claimsRoot = path.join(stateRoot, 'claims');
+    mkdirSync(claimsRoot, { recursive: true, mode: 0o700 });
+    chmodSync(claimsRoot, 0o700);
+    writeFileSync(path.join(stateRoot, 'staging.shadow-hook.sequence'), '8\n', {
+      mode: 0o600,
+    });
+    writeFileSync(
+      path.join(claimsRoot, `staging-${SHADOW_HOOK_TRANSACTION_ID}.shadow-hook-receipt.json`),
+      receiptRaw,
+      { mode: 0o600 },
+    );
+    // Publishing the same receipt prevents recovery from mistaking this complete
+    // fixture transaction for an interrupted final-publication gap.
+    writeFileSync(path.join(stateRoot, 'staging.json'), receiptRaw, { mode: 0o600 });
+
+    const healthTimestamp = new Date().toISOString();
+    const configuredFlags = {
+      AI_ROUTING_MANIFEST_CLASSIFIER: false,
+      AI_ROUTING_MANIFEST_ORCHESTRATOR: false,
+      AI_ROUTING_MANIFEST_SHADOW: false,
+      AI_ROUTING_MANIFEST_REGISTRY: false,
+      AI_ROUTING_CLARIFY: false,
+      AI_CLASSIFY_MANIFEST_PROMPT: false,
+      AI_CROSS_SKILL_EXECUTION: false,
+    };
+    const healthRaw = `${JSON.stringify({
+      status: 'healthy',
+      database: 'connected',
+      databaseProbe: { status: 'connected', checkedAt: healthTimestamp },
+      timestamp: healthTimestamp,
+      releaseAttestation: {
+        schema: 'nexus.chat-capability-release-attestation.v2',
+        runtimeSha: RUNTIME_SHA,
+        artifactDigest: ARTIFACT_DIGEST,
+        role: 'staging',
+        processId: 4101,
+        classifierPromptRuntimeForceDisabled: false,
+        capabilityRuntimeGuard: {
+          status: 'clear',
+          reason: 'no_unresolved_transaction',
+          transactionId: null,
+          planDigest: null,
+        },
+        shadowPlannerEffective: {
+          global: false,
+          user1000014: false,
+          tenant1000014: false,
+          user1000016: false,
+          tenant1000016: false,
+          dedicatedEval: { present: true, user: false, tenant: false },
+        },
+        shadowRouteHookEffective: {
+          global: false,
+          dedicatedEval: { present: true, user: true, tenant: true },
+        },
+        capabilityFlags: {
+          configured: configuredFlags,
+          effective: configuredFlags,
+          masterKill: false,
+        },
+      },
+    })}\n`;
+    writeFileSync(routingHealthFile, healthRaw, { mode: 0o600 });
+    writeFileSync(
+      routingReportFile,
+      routingEvidence({ receipt, receiptRaw, healthRaw, healthTimestamp }),
+      { mode: 0o600 },
+    );
+  }
+
   return {
     base,
     environmentFile,
@@ -318,6 +448,7 @@ exec /usr/bin/readlink "$@"
     pendingFlagPrivate: path.join(stateRoot, 'staging.flag.pending.private.json'),
     flagSequence: path.join(stateRoot, 'staging.flag.sequence'),
     pendingSecrets: path.join(stateRoot, 'staging.secrets.pending.json'),
+    seedShadowHookEnable,
   };
 }
 
@@ -329,7 +460,26 @@ function inspectMasterKill(value: boolean, fixture: ShellFixture) {
   ]);
 }
 
-function routingEvidence(): string {
+function routingEvidence(input: {
+  receipt: {
+    schema: string;
+    transactionId: string;
+    planDigest: string;
+    planSequence: number;
+    completedAt: string;
+    runtimeSha: string;
+    artifactDigest: string;
+    role: string;
+    status: string;
+    action: string;
+    dedicatedTenantId: number;
+  };
+  receiptRaw: string;
+  healthRaw: string;
+  healthTimestamp: string;
+}): string {
+  const receiptSha256 = createHash('sha256').update(input.receiptRaw).digest('hex');
+  const healthSha256 = createHash('sha256').update(input.healthRaw).digest('hex');
   return `${JSON.stringify({
     generatedAt: '2026-08-01T00:00:00.000Z',
     evidence: {
@@ -361,6 +511,44 @@ function routingEvidence(): string {
           state: 'classifierKeyword=off,orchestratorPrimary=off,registrySubset=off,shadowRoute=off,masterKill=off',
           bundles: 200,
         }],
+      },
+      shadowRecorderBinding: {
+        enforced: true,
+        receipt: {
+          schema: input.receipt.schema,
+          sha256: receiptSha256,
+          transactionId: input.receipt.transactionId,
+          planDigest: input.receipt.planDigest,
+          planSequence: input.receipt.planSequence,
+          completedAt: input.receipt.completedAt,
+          runtimeSha: input.receipt.runtimeSha,
+          artifactDigest: input.receipt.artifactDigest,
+          role: input.receipt.role,
+          status: input.receipt.status,
+          action: input.receipt.action,
+          dedicatedTenantId: input.receipt.dedicatedTenantId,
+        },
+        liveHealth: {
+          sha256: healthSha256,
+          checkedAt: input.healthTimestamp,
+          shadowRouteHookGlobal: false,
+          shadowRouteHookDedicatedUser: true,
+          shadowRouteHookDedicatedTenant: true,
+          shadowPlannerGlobal: false,
+          shadowPlannerDedicatedUser: false,
+          shadowPlannerDedicatedTenant: false,
+        },
+        requiredState: {
+          shadowRouteHookEffective: true,
+          shadowPlannerEffective: false,
+        },
+        counts: {
+          exactRecorderStateBundles: 200,
+          missingRecorderStateBundles: 0,
+          dedicatedScopeMismatchBundles: 0,
+          hookNotEffectiveBundles: 0,
+          plannerEffectiveBundles: 0,
+        },
       },
     },
     surfaceTotals: {
@@ -421,6 +609,7 @@ describe('chat capability flag remote shell wiring', () => {
 
   it('runs the installed routing gate over one explicit fixed 200-comparison window', () => {
     const fixture = createShellFixture();
+    fixture.seedShadowHookEnable();
     const result = fixture.run('inspect', [
       'AI_ROUTING_MANIFEST_CLASSIFIER',
       'true',

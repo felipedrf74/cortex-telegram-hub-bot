@@ -17,7 +17,10 @@ import {
   isManifestClassifierPromptRuntimeForceDisabled,
 } from '../router/classifier-prompt-builder';
 import { isCrossSkillExecutionEnabled } from '../services/chat/planner/cross-skill-ownership';
-import { isChatCoreV2ShadowPlannerEnabled } from '../services/runtime-flags';
+import {
+  isChatCoreV2ShadowPlannerEnabled,
+  isChatCoreV2ShadowRouteHookEnabled,
+} from '../services/runtime-flags';
 import { getJobStatuses, getRecentEvents } from './telemetry';
 import { humanUptime } from './formatters';
 import { getChatCapabilityRuntimeGuardStatus } from '../services/chat-capability-runtime-guard';
@@ -39,6 +42,13 @@ function enabledFlagValue(value: string | undefined): boolean {
   return normalized === 'true' || normalized === '1' || normalized === 'yes';
 }
 
+function dedicatedEvalScopeId(env: NodeJS.ProcessEnv): number | null {
+  const raw = String(env.CHAT_EVAL_DEDICATED_TENANT_ID ?? '').trim();
+  if (!/^[1-9][0-9]*$/u.test(raw)) return null;
+  const id = Number(raw);
+  return Number.isSafeInteger(id) ? id : null;
+}
+
 /**
  * Protected, non-secret proof of the chat rollout configuration this process
  * is actually serving. Effective values come from the same helpers as the
@@ -58,6 +68,7 @@ function releaseAttestation(env: NodeJS.ProcessEnv = process.env) {
     [CHAT_CAPABILITY_FLAG_NAMES.crossSkill]: enabledFlagValue(env[CHAT_CAPABILITY_FLAG_NAMES.crossSkill]),
   };
   const masterKill = enabledFlagValue(env[CHAT_CAPABILITY_MASTER_KILL]);
+  const dedicatedEvalId = dedicatedEvalScopeId(env);
   const effective = {
     [CHAT_CAPABILITY_FLAG_NAMES.classifier]: isManifestRoutingEnabled('classifier', env),
     [CHAT_CAPABILITY_FLAG_NAMES.orchestrator]: isManifestRoutingEnabled('orchestrator', env),
@@ -69,7 +80,7 @@ function releaseAttestation(env: NodeJS.ProcessEnv = process.env) {
   };
 
   return {
-    schema: 'nexus.chat-capability-release-attestation.v1',
+    schema: 'nexus.chat-capability-release-attestation.v2',
     runtimeSha: release.runtimeSha,
     artifactDigest: release.artifactDigest,
     role: release.role,
@@ -82,6 +93,27 @@ function releaseAttestation(env: NodeJS.ProcessEnv = process.env) {
       tenant1000014: isChatCoreV2ShadowPlannerEnabled(env, { tenantId: 1_000_014 }),
       user1000016: isChatCoreV2ShadowPlannerEnabled(env, { userId: 1_000_016 }),
       tenant1000016: isChatCoreV2ShadowPlannerEnabled(env, { tenantId: 1_000_016 }),
+      dedicatedEval: {
+        present: dedicatedEvalId !== null,
+        user: dedicatedEvalId === null
+          ? null
+          : isChatCoreV2ShadowPlannerEnabled(env, { userId: dedicatedEvalId }),
+        tenant: dedicatedEvalId === null
+          ? null
+          : isChatCoreV2ShadowPlannerEnabled(env, { tenantId: dedicatedEvalId }),
+      },
+    },
+    shadowRouteHookEffective: {
+      global: isChatCoreV2ShadowRouteHookEnabled(env),
+      dedicatedEval: {
+        present: dedicatedEvalId !== null,
+        user: dedicatedEvalId === null
+          ? null
+          : isChatCoreV2ShadowRouteHookEnabled(env, { userId: dedicatedEvalId }),
+        tenant: dedicatedEvalId === null
+          ? null
+          : isChatCoreV2ShadowRouteHookEnabled(env, { tenantId: dedicatedEvalId }),
+      },
     },
     capabilityFlags: {
       configured,

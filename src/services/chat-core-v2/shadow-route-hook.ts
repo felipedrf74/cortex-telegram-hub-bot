@@ -214,10 +214,22 @@ function buildRoutingDivergenceSafely(
   guess: ChatCoreV2ShadowRouteGuess,
 ): RoutingDivergenceShadowRecord | undefined {
   try {
+    const env = input.env ?? process.env;
+    const scope: RuntimeFlagScope = { userId: input.userId, tenantId: input.tenantId };
     return buildRoutingDivergenceShadowRecord(
       input.normalizedText,
       { intent: guess.intent, domains: guess.domains },
-      input.routingDivergenceDeps ?? {},
+      {
+        ...(input.routingDivergenceDeps ?? {}),
+        // This state is always evaluated from the hook's real runtime env and
+        // scope. The test seam cannot replace it with a claimed state.
+        recorderState: {
+          userId: String(input.userId),
+          tenantId: String(input.tenantId),
+          shadowRouteHookEffective: isChatCoreV2ShadowRouteHookEnabled(env, scope),
+          shadowPlannerEffective: isChatCoreV2ShadowPlannerEnabled(env, scope),
+        },
+      },
     );
   } catch (err) {
     logger.debug(

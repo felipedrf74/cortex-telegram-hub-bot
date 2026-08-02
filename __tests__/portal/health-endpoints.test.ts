@@ -565,6 +565,11 @@ describe('GET /health/detailed', () => {
     vi.stubEnv('AI_ROUTING_MANIFEST_KILL', 'false');
     vi.stubEnv('CHAT_CORE_V2_SHADOW_PLANNER_ENABLED', 'false');
     vi.stubEnv('CHAT_CORE_V2_SHADOW_PLANNER_ENABLED_USER_1000014', 'true');
+    vi.stubEnv('CHAT_EVAL_DEDICATED_TENANT_ID', '424242');
+    vi.stubEnv('CHAT_CORE_V2_SHADOW_PLANNER_ENABLED_TENANT_424242', 'on');
+    vi.stubEnv('CHAT_CORE_V2_SHADOW_ROUTE_HOOK_ENABLED', 'false');
+    vi.stubEnv('CHAT_CORE_V2_SHADOW_ROUTE_HOOK_ENABLED_USER_424242', 'true');
+    vi.stubEnv('CHAT_CORE_V2_SHADOW_ROUTE_HOOK_ENABLED_TENANT_424242', 'shadow');
     const manifestPrompt = await import('../../src/router/classifier-prompt-builder');
     manifestPrompt.forceDisableManifestClassifierPromptForProcess();
     resetManifestPromptRuntimeOverride =
@@ -580,7 +585,7 @@ describe('GET /health/detailed', () => {
 
     const body = await res.json();
     expect(body.releaseAttestation).toEqual({
-      schema: 'nexus.chat-capability-release-attestation.v1',
+      schema: 'nexus.chat-capability-release-attestation.v2',
       runtimeSha: RELEASE_SHA,
       artifactDigest: RELEASE_ARTIFACT_DIGEST,
       role: 'staging',
@@ -598,6 +603,19 @@ describe('GET /health/detailed', () => {
         tenant1000014: false,
         user1000016: false,
         tenant1000016: false,
+        dedicatedEval: {
+          present: true,
+          user: false,
+          tenant: true,
+        },
+      },
+      shadowRouteHookEffective: {
+        global: false,
+        dedicatedEval: {
+          present: true,
+          user: true,
+          tenant: true,
+        },
       },
       capabilityFlags: {
         configured: {
@@ -632,17 +650,20 @@ describe('GET /health/detailed', () => {
       'runtimeSha',
       'schema',
       'shadowPlannerEffective',
+      'shadowRouteHookEffective',
     ]);
     expect(Object.keys(body.releaseAttestation.capabilityFlags.configured).sort())
       .toEqual([...CHAT_CAPABILITY_FLAGS].sort());
     expect(Object.keys(body.releaseAttestation.capabilityFlags.effective).sort())
       .toEqual([...CHAT_CAPABILITY_FLAGS].sort());
+    expect(JSON.stringify(body.releaseAttestation)).not.toContain('424242');
   });
 
   it('attests master-kill suppression without exposing deployment secrets', async () => {
     stubReleaseIdentity();
     stubCapabilityFlags('true');
     vi.stubEnv('AI_ROUTING_MANIFEST_KILL', 'true');
+    vi.stubEnv('CHAT_CORE_V2_SHADOW_ROUTE_HOOK_ENABLED', 'false');
     vi.stubEnv('CLASSIFY_SHADOW_HASH_SECRET', 'classify-shadow-secret-must-not-leak');
     vi.stubEnv('CHAT_CORE_V2_SHADOW_ROUTE_HMAC_SECRET', 'chat-shadow-secret-must-not-leak');
     vi.stubEnv('IOS_API_JWT_SECRET', 'jwt-secret-must-not-leak');
@@ -657,7 +678,7 @@ describe('GET /health/detailed', () => {
 
     const body = await res.json();
     expect(body.releaseAttestation).toEqual({
-      schema: 'nexus.chat-capability-release-attestation.v1',
+      schema: 'nexus.chat-capability-release-attestation.v2',
       runtimeSha: RELEASE_SHA,
       artifactDigest: RELEASE_ARTIFACT_DIGEST,
       role: 'staging',
@@ -675,6 +696,19 @@ describe('GET /health/detailed', () => {
         tenant1000014: false,
         user1000016: false,
         tenant1000016: false,
+        dedicatedEval: {
+          present: false,
+          user: null,
+          tenant: null,
+        },
+      },
+      shadowRouteHookEffective: {
+        global: false,
+        dedicatedEval: {
+          present: false,
+          user: null,
+          tenant: null,
+        },
       },
       capabilityFlags: {
         configured: Object.fromEntries(CHAT_CAPABILITY_FLAGS.map((flag) => [flag, true])),
