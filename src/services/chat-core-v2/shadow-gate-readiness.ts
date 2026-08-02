@@ -23,10 +23,17 @@
 import Database from 'better-sqlite3';
 import { getDb } from '../database';
 import { ensureChatCoreV2AuditTables } from './model-run-audit';
-import { ROUTING_DIVERGENCE_SHADOW_VERSION } from '../intent-resolution/divergence-shadow';
 import { normalizeRoutingSyntheticQaTrafficProvenance } from '../routing-synthetic-qa-contract';
 
 export const CHAT_CORE_V2_SHADOW_GATE_READINESS_VERSION = 'chat_core_v2_shadow_gate_readiness@1.0.0';
+/**
+ * Reader-side schema pin. Keep this literal aligned with the producer and the
+ * offline divergence gate. Importing the producer here would load the full
+ * classifier/provider graph in every gate-metrics consumer (including the
+ * scheduler) merely to read a version string.
+ */
+export const CHAT_CORE_V2_SHADOW_GATE_ROUTING_DIVERGENCE_VERSION =
+  'routing_divergence_shadow@5.0.0';
 
 const SHADOW_BUNDLE_ID_LIKE = 'chatv2-shadow-replay:%';
 const HMAC_HEX_64 = /^[a-f0-9]{64}$/;
@@ -406,7 +413,7 @@ function isSafeRoutingDivergence(value: unknown): boolean {
       return false;
     }
   }
-  return record.divergenceVersion === ROUTING_DIVERGENCE_SHADOW_VERSION
+  return record.divergenceVersion === CHAT_CORE_V2_SHADOW_GATE_ROUTING_DIVERGENCE_VERSION
     && Object.hasOwn(record, 'recorderState')
     && Object.hasOwn(record, 'trafficProvenance');
 }

@@ -2,10 +2,14 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 
 import {
+  CHAT_CORE_V2_SHADOW_GATE_ROUTING_DIVERGENCE_VERSION,
   evaluateChatCoreV2ShadowGateReadiness,
   runChatCoreV2ShadowRouteHook,
 } from '../../src/services/chat-core-v2';
-import { buildRoutingDivergenceShadowRecord } from '../../src/services/intent-resolution/divergence-shadow';
+import {
+  buildRoutingDivergenceShadowRecord,
+  ROUTING_DIVERGENCE_SHADOW_VERSION,
+} from '../../src/services/intent-resolution/divergence-shadow';
 import { incrementSchemaCompliance } from '../../src/services/chat-core-v2/autorevert-counters-store';
 
 let db: Database.Database;
@@ -43,6 +47,11 @@ function seedPlannerSchemaCompliance(passCount: number, failCount = 0): void {
 }
 
 describe('Chat Core v2 shadow gate readiness', () => {
+  it('pins the exact routing-divergence producer version without a runtime producer import', () => {
+    expect(CHAT_CORE_V2_SHADOW_GATE_ROUTING_DIVERGENCE_VERSION)
+      .toBe(ROUTING_DIVERGENCE_SHADOW_VERSION);
+  });
+
   beforeEach(() => {
     db = new Database(':memory:');
   });
