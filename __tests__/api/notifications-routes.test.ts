@@ -76,6 +76,20 @@ vi.mock('../../src/services/notification-orchestrator', () => ({
   listNotificationCenterItems: (...args: unknown[]) => mockListNotificationCenterItems(...args),
   getOrCreateNotificationProfile: (...args: unknown[]) => mockGetOrCreateNotificationProfile(...args),
   updateNotificationProfile: (...args: unknown[]) => mockUpdateNotificationProfile(...args),
+  // The PUT route calls applyNotificationProfilePatch, which wraps
+  // updateNotificationProfile and additionally reports what took effect.
+  // Delegating keeps every existing assertion on mockUpdateNotificationProfile valid.
+  // The device-token and preferences routes now also report device-reported
+  // context. Advisory data, so fixed stubs keep these suites about routing.
+  notificationTimezoneDrift: () => ({
+    profileTimezone: 'Europe/Lisbon', deviceTimezone: null, drifted: false, reportedAt: null,
+  }),
+  notificationReachability: () => ({ hasToken: true, canInterrupt: true, tiers: ['authorized'] }),
+  applyNotificationProfilePatch: (userId: unknown, tenantId: unknown, patch: Record<string, unknown>) => ({
+    profile: mockUpdateNotificationProfile(userId, tenantId, patch),
+    applied: Object.keys(patch ?? {}),
+    rejected: [],
+  }),
   registerNotificationDeviceToken: (...args: unknown[]) => mockRegisterNotificationDeviceToken(...args),
   revokeNotificationDeviceToken: (...args: unknown[]) => mockRevokeNotificationDeviceToken(...args),
   getNotificationDecisionLog: (...args: unknown[]) => mockGetNotificationDecisionLog(...args),

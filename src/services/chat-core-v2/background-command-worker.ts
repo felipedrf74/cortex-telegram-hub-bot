@@ -28,7 +28,6 @@
  */
 
 import type { JobHandler, JobRecord } from '../background-job-queue';
-import { sendPushNotification } from '../apns-sender';
 import { logger } from '../../utils/logger';
 import {
   canTransitionBackgroundJob,
@@ -98,10 +97,9 @@ function isStaleEnvelope(expiresAt: string, now: Date): boolean {
  */
 export async function processBackgroundChatCommandJob(
   job: JobRecord,
-  opts: { now?: Date; pushNotification?: typeof sendPushNotification } = {},
+  opts: { now?: Date } = {},
 ): Promise<ProcessBackgroundChatCommandResult> {
   const now = opts.now ?? new Date();
-  const push = opts.pushNotification ?? sendPushNotification;
   const payload = coercePayload(job.payload);
   if (!payload) {
     throw new Error('chat_core_v2_background_command_payload_invalid');
@@ -212,21 +210,52 @@ export async function processBackgroundChatCommandJob(
 
   const finalState = resolveBackgroundCommandTransition('running', succeeded ? 'completed' : 'failed');
 
-  // ── APNs delivery (only when policy === 'apns'). The collapseId dedupes
-  // repeated deliveries for the same command (APNs dedup, WP-15 risks). ──
+  // ── Notification delivery (only when policy === 'apns').
+  //
+  // This used to call sendPushNotification directly — the single production
+  // path that bypassed the orchestrator. That meant: no Notification Center
+  // item, no dedupe, no badge, no rate limit, NO QUIET-HOURS CHECK, an APNs
+  // category iOS never registered (so no buttons and wrong routing), and raw
+  // `execution.response.text` on the lock screen, defeating the privacy floor
+  // that every other producer goes through.
+  //
+  // Routing through createNotificationIntent restores all of it. The intent
+  // body is a fixed, non-sensitive string: the model's response text is
+  // deliberately NOT propagated, because it is free-form output that can carry
+  // whatever the user's data contained. The result stays in the app.
   let apnsPushed = false;
   if (payload.notificationPolicy === 'apns') {
-    apnsPushed = true;
-    const body = typeof execution.response?.text === 'string' && execution.response.text.trim()
-      ? execution.response.text.trim().slice(0, 150)
-      : (succeeded ? 'Your request finished.' : 'I could not finish your request.');
-    await push(Number(payload.userId), {
-      title: succeeded ? 'Done' : 'Action needs attention',
-      body,
-      collapseId: `chat_core_v2_command:${command.commandId}`,
-      threadId: payload.turnId,
-      category: 'chat_core_v2_command',
-    });
+    try {
+      const { createNotificationIntent } = await import('../notification-orchestrator');
+      const result = await createNotificationIntent({
+        userId: Number(payload.userId),
+        tenantId: Number(payload.tenantId ?? payload.userId),
+        sourceSkill: 'chat',
+        // Success is an FYI about a change Nexus already made; a failure is
+        // something the user has to pick up. Neither is a Decision Center
+        // item, so neither needs a deterministic executor.
+        type: succeeded ? 'schedule_changed' : 'missed_item',
+        priority: 'active',
+        relatedEntityId: payload.turnId,
+        relatedEntityType: 'chat_turn',
+        title: succeeded ? 'Your request finished' : 'A request needs your attention',
+        body: succeeded
+          ? 'Nexus finished the action you asked for.'
+          : 'Nexus could not finish the action you asked for.',
+        deeplink: `nexus://chat/turn/${payload.turnId}`,
+        // Same dedupe identity the old collapseId carried, so repeated
+        // deliveries for one command still collapse.
+        dedupeKey: `chat:command:${command.commandId}`,
+      });
+      apnsPushed = result.decisionLog?.decision === 'sent_push';
+    } catch (err) {
+      // Notification failure must not dead-letter a command that actually ran.
+      logger.warn({
+        scope: 'chat_core_v2_background_command',
+        commandId: command.commandId,
+        err,
+      }, 'background command notification failed');
+    }
   }
 
   if (!succeeded) {

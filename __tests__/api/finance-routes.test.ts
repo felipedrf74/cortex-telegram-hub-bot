@@ -356,8 +356,12 @@ describe('Finance API — tax routes', () => {
       sourceSkill: 'finance',
       type: 'decision_required',
       priority: 'time_sensitive',
-      safeBody: 'Finance reminder needs review.',
     });
+    // The property this protects is redaction, not wording: lock-screen copy is
+    // now localized from the account language (default pt-BR), so asserting an
+    // English literal here would pin a translation rather than the guarantee.
+    expect(notifications[0].safeBody).not.toMatch(/\d+[.,]\d{2}/);
+    expect(notifications[0].safeBody).not.toContain(ACTIVE_TAX_MONTH);
     expect(notifications[0].sensitiveBody).toContain(`Tax event ${ACTIVE_TAX_MONTH}`);
     const agendaItems = listSecretaryAgendaItems({ ownerUserId: user.id, tenantId: user.id });
     expect(agendaItems).toHaveLength(1);

@@ -619,6 +619,35 @@ export async function buildDailyBriefingDataForUser(userId: number, tenantId = u
   return data;
 }
 
+/**
+ * Decisions Nexus resolved on the user's behalf during the current week.
+ *
+ * Read-only over `handled_by_nexus_items`, which is written whenever a decision
+ * auto-resolves. Titles come from the ledger's own privacy-classified summary
+ * rows and go into a report document behind authenticated access — never onto
+ * a lock screen.
+ *
+ * Fails soft: a weekly review that loses this section is worth far more than
+ * one that fails to build.
+ */
+function handledByNexusThisWeek(userId: number): { count: number; highlights: string[] } {
+  try {
+    const { listHandledByNexusItems } = require('./decision-center');
+    const weekStart = now().startOf('week').toISO();
+    const items = (listHandledByNexusItems(userId, userId, 25) as Array<{ title: string; createdAt: string }>)
+      .filter((item) => !weekStart || item.createdAt >= weekStart);
+    return {
+      count: items.length,
+      // Three is enough to make the point; a full list turns a retrospective
+      // into a second inbox.
+      highlights: items.slice(0, 3).map((item) => item.title),
+    };
+  } catch (err) {
+    logger.warn({ err, userId }, 'weekly review: handled-by-Nexus section unavailable');
+    return { count: 0, highlights: [] };
+  }
+}
+
 export async function buildWeeklyReviewPayloadForUser(userId: number): Promise<{
   message: string;
   summary: string;
@@ -672,10 +701,22 @@ export async function buildWeeklyReviewPayloadForUser(userId: number): Promise<{
     message += `\n📅 Meetings this week: ${calendarEvents.length}\n`;
   }
 
+  // "What Nexus handled without you" — the only slot in the product that
+  // demonstrates value without asking for anything. Costs no new producer:
+  // the handled-by-Nexus ledger is already written on every auto-resolved
+  // decision and, until now, was read only by the Decision Center overview.
+  const handled = handledByNexusThisWeek(userId);
+  if (handled.count > 0) {
+    message += `\n🤖 Handled without you: ${handled.count}\n`;
+    for (const line of handled.highlights) message += `- ${escapeHtml(line)}\n`;
+  }
+
   const documentJson: Record<string, any> = {
     weekStart: now().startOf('week').toISO(),
     weekEnd: now().endOf('week').toISO(),
     meetingsCount: calendarEvents.length,
+    handledByNexusCount: handled.count,
+    handledByNexusHighlights: handled.highlights,
   };
   if (todoData) {
     const [completedResult, pendingResult] = todoData;
@@ -1321,6 +1362,12 @@ export function startScheduler(): void {
   registerJob('db_restore_test', 'Weekly Restore Test',   '0 4 * * 0',       'system');
   registerJob('task_sync',        'Task Provider Sync',     '*/15 * * * *',    'system');
   registerJob('task_sync_delta',  'Task Provider Delta Sync', '*/5 * * * *',   'system');
+  registerJob('connection_health_notify', 'Broken Connection Notices', '25 9,18 * * *', 'system');
+  registerJob('travel_window_notify', 'Travel Window Notices', '40 8 * * *', 'secretary');
+  registerJob('decision_recovery_notify', 'Decision Recovery Notices', '*/10 * * * *', 'system');
+  registerJob('commitment_start_reminder', 'Commitment Start Reminders', '*/5 * * * *', 'secretary');
+  registerJob('finance_tax_deadline', 'Tax Deadline Notices', '10 9 * * *', 'invoices');
+  registerJob('training_session_reminder', 'Training Session Reminders', '*/5 * * * *', 'triathlon');
   registerJob('operator_alert_delivery', 'Operator Alert Delivery', '* * * * *', 'system');
   registerJob('decision_source_supersession', 'Decision Source Supersession', '*/15 * * * *', 'system');
   registerJob('decision_daily_attention', 'Decision Daily Attention Materialization', '12 * * * *', 'system');
@@ -1520,7 +1567,9 @@ export function startScheduler(): void {
           tenantId: target.tenantId,
           sourceSkill: 'secretary',
           type: 'missed_item',
-          priority: 'active',
+          // K6: someone else editing a shared list is worth a line in the
+          // morning brief, not an interrupt.
+          priority: 'passive',
           relatedEntityId: `shared-list:${target.tenantId}:${signature}`,
           relatedEntityType: 'shared_task_list',
           title: 'Shared list update',
@@ -1589,6 +1638,20 @@ export function startScheduler(): void {
       }
     }
 
+    // ── notification history: status-aware retention ───────────────
+    // Kept out of the generic table loop above because an unresolved item must
+    // survive regardless of age; only terminal rows age out. Before this,
+    // nothing ever deleted a notification body, so event titles, task names
+    // and invoice references accumulated indefinitely.
+    try {
+      const { pruneNotificationRetention } = require('./notification-orchestrator');
+      const pruned = pruneNotificationRetention();
+      const total = Object.values(pruned).reduce((sum: number, n) => sum + (n as number), 0);
+      if (total > 0) logger.info(pruned, 'Retention cleanup: notification history');
+    } catch (err) {
+      logger.warn({ err }, 'Notification retention cleanup failed');
+    }
+
     // ── audit_trail: partial retention (Phase 0.C) ─────────────────
     // User-meaningful audit rows (action='export','delete','login', etc)
     // are kept for 180 days for GDPR compliance. The noisy machine-generated
@@ -1626,6 +1689,124 @@ export function startScheduler(): void {
   // and the sole sync mechanism for polling providers (Notion, MS To Do).
   // The sync engine itself short-circuits disconnected adapters cheaply,
   // so this is safe even when most users have zero providers connected.
+  // ── Training session lead-time reminders (every 5 min) ─────────────
+  // The sweep window matches the cron interval; each user's lead time comes
+  // from their own workout_reminder_minutes preference.
+  cron.schedule('*/5 * * * *', wrapJob('training_session_reminder', async () => {
+    const { runTrainingSessionReminders } = require('./training-session-reminder');
+    const users = getActiveUserIds();
+    if (users.length === 0) return 'skipped';
+    const summary = await runTrainingSessionReminders(users);
+    // A sweep that failed every send must not report as healthy. `notified === 0`
+    // alone returned 'skipped', which wrapJob records as success with no
+    // job_history row and no activity event — so a total push outage was
+    // indistinguishable from a quiet tick, and time-to-detect was unbounded.
+    if (summary.failed > 0) {
+      throw new Error(`training session reminders: ${summary.failed} send(s) failed`);
+    }
+    if (summary.notified === 0) return 'skipped';
+    logger.info(summary, 'Training session reminders sent');
+  }), { timezone: tz });
+
+  // ── Commitment lead-time reminders (every 5 min) ───────────────────
+  // Sibling of the training sweep above, on default_reminder_minutes.
+  // Covers Nexus-owned agenda commitments only — provider-only events are
+  // not cached anywhere, and reading them live per user per tick is a
+  // rate-limit problem. See the module note.
+  cron.schedule('*/5 * * * *', wrapJob('commitment_start_reminder', async () => {
+    const { runCommitmentStartReminders } = require('./commitment-start-reminder');
+    const users = getActiveUserIds();
+    if (users.length === 0) return 'skipped';
+    const summary = await runCommitmentStartReminders(users);
+    // A sweep that failed every send must not report as healthy. `notified === 0`
+    // alone returned 'skipped', which wrapJob records as success with no
+    // job_history row and no activity event — so a total push outage was
+    // indistinguishable from a quiet tick, and time-to-detect was unbounded.
+    if (summary.failed > 0) {
+      throw new Error(`commitment start reminders: ${summary.failed} send(s) failed`);
+    }
+    if (summary.notified === 0) return 'skipped';
+    logger.info(summary, 'Commitment start reminders sent');
+  }), { timezone: tz });
+
+  // ── Tax deadline notices (09:10 daily) ─────────────────────────────
+  // Once a day inside waking hours. The two stages (due-soon, due-today)
+  // are resolved per user from finance_reminder_days, so a single daily
+  // tick covers both without a second schedule.
+  cron.schedule('10 9 * * *', wrapJob('finance_tax_deadline', async () => {
+    const { runFinanceTaxDeadlineNotices } = require('./finance-tax-deadline-notifier');
+    const users = getActiveUserIds();
+    if (users.length === 0) return 'skipped';
+    const summary = await runFinanceTaxDeadlineNotices(users);
+    // A sweep that failed every send must not report as healthy. `notified === 0`
+    // alone returned 'skipped', which wrapJob records as success with no
+    // job_history row and no activity event — so a total push outage was
+    // indistinguishable from a quiet tick, and time-to-detect was unbounded.
+    if (summary.failed > 0) {
+      throw new Error(`tax deadline notices: ${summary.failed} send(s) failed`);
+    }
+    if (summary.notified === 0) return 'skipped';
+    logger.info(summary, 'Tax deadline notices sent');
+  }), { timezone: tz });
+
+  // ── Decision recovery notices (every 10 min) ───────────────────────
+  // Half-applied and rolled-back executions are correctness notifications: the
+  // world is changed and the user does not know. Swept rather than emitted
+  // inline because emitDecisionLifecycleEvent runs mid-transaction in places.
+  cron.schedule('*/10 * * * *', wrapJob('decision_recovery_notify', async () => {
+    const { runDecisionRecoveryNotices } = require('./decision-recovery-notifier');
+    const summary = await runDecisionRecoveryNotices();
+    // A sweep that failed every send must not report as healthy. `notified === 0`
+    // alone returned 'skipped', which wrapJob records as success with no
+    // job_history row and no activity event — so a total push outage was
+    // indistinguishable from a quiet tick, and time-to-detect was unbounded.
+    if (summary.failed > 0) {
+      throw new Error(`decision recovery notices: ${summary.failed} send(s) failed`);
+    }
+    if (summary.notified === 0) return 'skipped';
+    logger.info(summary, 'Decision recovery notices sent');
+  }), { timezone: tz });
+
+  // ── Travel window notices (08:40 daily) ────────────────────────────
+  // The first cross-skill producer: one trip, one decision, spanning every
+  // skill that scheduled something inside the window.
+  cron.schedule('40 8 * * *', wrapJob('travel_window_notify', async () => {
+    const { runTravelWindowNotices } = require('./travel-window-notifier');
+    const users = getActiveUserIds();
+    if (users.length === 0) return 'skipped';
+    const summary = await runTravelWindowNotices(users);
+    // A sweep that failed every send must not report as healthy. `notified === 0`
+    // alone returned 'skipped', which wrapJob records as success with no
+    // job_history row and no activity event — so a total push outage was
+    // indistinguishable from a quiet tick, and time-to-detect was unbounded.
+    if (summary.failed > 0) {
+      throw new Error(`travel window notices: ${summary.failed} send(s) failed`);
+    }
+    if (summary.notified === 0) return 'skipped';
+    logger.info(summary, 'Travel window notices sent');
+  }), { timezone: tz });
+
+  // ── Broken connection notices (09:25 and 18:25) ────────────────────
+  // Twice daily, not per-sync: a revoked authorisation does not resolve
+  // itself, so probing it every 15 minutes would only add interrupt pressure.
+  // Both slots sit inside waking hours so quiet hours never defers them into
+  // a pile the next morning.
+  cron.schedule('25 9,18 * * *', wrapJob('connection_health_notify', async () => {
+    const { runConnectionHealthNotifier } = require('./connection-health-notifier');
+    const users = getActiveUserIds();
+    if (users.length === 0) return 'skipped';
+    const summary = await runConnectionHealthNotifier(users);
+    // A sweep that failed every send must not report as healthy. `notified === 0`
+    // alone returned 'skipped', which wrapJob records as success with no
+    // job_history row and no activity event — so a total push outage was
+    // indistinguishable from a quiet tick, and time-to-detect was unbounded.
+    if (summary.failed > 0) {
+      throw new Error(`broken connection notices: ${summary.failed} send(s) failed`);
+    }
+    if (summary.notified === 0) return 'skipped';
+    logger.info(summary, 'Broken connection notices sent');
+  }), { timezone: tz });
+
   cron.schedule('*/15 * * * *', wrapJob('task_sync', async () => {
     try {
       const users = getActiveUserIds();
@@ -2351,6 +2532,11 @@ export function startScheduler(): void {
       const allWeeks = getWeeksForPlan(plan.id);
       const nextWeek = allWeeks.find((w: any) => w.week_number === currentWeek.week_number + 1);
 
+      // A 2% volume tweak pushing at active priority is exactly the noise
+      // that trains users to swipe everything away. Below a 15% change the
+      // adjustment is applied silently; the week view still shows it.
+      const MATERIAL_ADJUST_DELTA = 15;
+      const adjustIsMaterial = Math.abs(recommendation.adjustIntensity - 100) >= MATERIAL_ADJUST_DELTA;
       if (nextWeek && recommendation.adjustIntensity !== 100) {
         try {
           updateWeekAdjustment(nextWeek.id, recommendation.adjustIntensity, recommendation.reason);
@@ -2366,38 +2552,40 @@ export function startScheduler(): void {
           throw err;
         }
 
-        const emoji = recommendation.adjustIntensity < 100 ? '📉' : '📈';
-        let msg = `${emoji} <b>Training Plan Auto-Adjust</b>\n\n`;
-        msg += `<b>${plan.name}</b> — Week ${currentWeek.week_number} review:\n`;
-        msg += `• Adherence: ${stats.adherenceRate}%  (${stats.completedSessions}/${stats.totalSessions})\n`;
-        if (stats.avgRpe != null) msg += `• Avg RPE: ${stats.avgRpe}\n`;
-        if (stats.avgSoreness != null) msg += `• Avg Soreness: ${stats.avgSoreness}/10\n`;
-        if (stats.avgEnergy != null) msg += `• Avg Energy: ${stats.avgEnergy}/10\n`;
-        if (readinessScore != null) msg += `• Readiness: ${readinessScore}/100 (${readinessRec})\n`;
-        msg += `\n<b>Week ${currentWeek.week_number + 1} adjusted:</b> ${recommendation.adjustIntensity}% intensity\n`;
-        msg += `<i>Reason: ${recommendation.reason}</i>`;
+        if (adjustIsMaterial) {
+          const emoji = recommendation.adjustIntensity < 100 ? '📉' : '📈';
+          let msg = `${emoji} <b>Training Plan Auto-Adjust</b>\n\n`;
+          msg += `<b>${plan.name}</b> — Week ${currentWeek.week_number} review:\n`;
+          msg += `• Adherence: ${stats.adherenceRate}%  (${stats.completedSessions}/${stats.totalSessions})\n`;
+          if (stats.avgRpe != null) msg += `• Avg RPE: ${stats.avgRpe}\n`;
+          if (stats.avgSoreness != null) msg += `• Avg Soreness: ${stats.avgSoreness}/10\n`;
+          if (stats.avgEnergy != null) msg += `• Avg Energy: ${stats.avgEnergy}/10\n`;
+          if (readinessScore != null) msg += `• Readiness: ${readinessScore}/100 (${readinessRec})\n`;
+          msg += `\n<b>Week ${currentWeek.week_number + 1} adjusted:</b> ${recommendation.adjustIntensity}% intensity\n`;
+          msg += `<i>Reason: ${recommendation.reason}</i>`;
 
-        try {
-          await createNotificationIntent({
-            userId,
-            tenantId: userId,
-            sourceSkill: 'training',
-            type: 'schedule_changed',
-            priority: 'active',
-            relatedEntityId: `training-plan-adjust:${plan.id}:${nextWeek.id}`,
-            relatedEntityType: 'training_week_adjustment',
-            title: 'Training week adjusted',
-            body: 'Nexus adjusted your next training week.',
-            sensitiveBody: safeHtmlNotificationBody(msg),
-            actionButtons: [{ id: 'open_detail', label: 'Open training', style: 'primary' }],
-            deeplink: `nexus://training/plan/${plan.id}`,
-            dedupeKey: `training:plan_adjust:${userId}:${plan.id}:${nextWeek.id}:${recommendation.adjustIntensity}`,
-            requiresUserAction: false,
-            deliveryPolicy: 'auto',
-            privacyPolicy: 'health',
-          });
-        } catch (err) {
-          logger.warn({ err, userId, planId: plan.id, weekId: nextWeek.id }, 'Training adjustment notification intent emit failed');
+          try {
+            await createNotificationIntent({
+              userId,
+              tenantId: userId,
+              sourceSkill: 'training',
+              type: 'schedule_changed',
+              priority: 'active',
+              relatedEntityId: `training-plan-adjust:${plan.id}:${nextWeek.id}`,
+              relatedEntityType: 'training_week_adjustment',
+              title: 'Training week adjusted',
+              body: 'Nexus adjusted your next training week.',
+              sensitiveBody: safeHtmlNotificationBody(msg),
+              actionButtons: [{ id: 'open_detail', label: 'Open training', style: 'primary' }],
+              deeplink: `nexus://training/plan/${plan.id}`,
+              dedupeKey: `training:plan_adjust:${userId}:${plan.id}:${nextWeek.id}:${recommendation.adjustIntensity}`,
+              requiresUserAction: false,
+              deliveryPolicy: 'auto',
+              privacyPolicy: 'health',
+            });
+          } catch (err) {
+            logger.warn({ err, userId, planId: plan.id, weekId: nextWeek.id }, 'Training adjustment notification intent emit failed');
+          }
         }
       }
 
@@ -2405,6 +2593,8 @@ export function startScheduler(): void {
       // If this is the LAST week of the plan, notify the user to
       // create a new cycle. Include adherence summary + readiness
       // so they can decide whether to increase or maintain.
+      // K9: finishing a plan is welcome but nothing decays, so it belongs in
+      // the digest rather than as an interrupt.
       if (!nextWeek && currentWeek.week_number >= (plan.duration_weeks || 4)) {
         let renewMsg = `🔄 <b>Plan Complete!</b>\n\n`;
         renewMsg += `<b>${plan.name}</b> — ${plan.duration_weeks} weeks finished.\n`;
@@ -2453,13 +2643,13 @@ export function startScheduler(): void {
 
     const result = await flushQueue();
 
-    if (result.flushed > 0) {
-      // Notify user that queued invoices were filed
-      let msg = `📤 <b>Fila de faturas processada!</b>\n\n`;
-      msg += `✅ ${result.flushed} fatura${result.flushed > 1 ? 's' : ''} arquivada${result.flushed > 1 ? 's' : ''} com sucesso`;
-      if (result.failed > 0) msg += `\n❌ ${result.failed} falharam permanentemente`;
-      if (result.remaining > 0) msg += `\n🔄 ${result.remaining} ainda na fila`;
-      msg += `\n\n<i>O Mac voltou a estar disponível.</i>`;
+    if (result.failed > 0) {
+      // Only permanent failures are user-facing (K2); a clean flush stays in
+      // job history where operators can see it.
+      let msg = `<b>Faturas por arquivar</b>\n\n`;
+      msg += `${result.failed} fatura${result.failed > 1 ? 's falharam' : ' falhou'} permanentemente`;
+      if (result.flushed > 0) msg += `\n${result.flushed} arquivada${result.flushed > 1 ? 's' : ''} com sucesso`;
+      if (result.remaining > 0) msg += `\n${result.remaining} ainda na fila`;
 
       for (const userId of getOwnerUserIds()) {
         // GAP-CAL-1 fix: durable in-app notification; Telegram was a no-op.
@@ -2468,12 +2658,15 @@ export function startScheduler(): void {
             userId,
             tenantId: userId,
             sourceSkill: 'finance',
-            type: result.failed > 0 ? 'sync_failure' : 'insight',
-            priority: result.failed > 0 ? 'active' : 'passive',
+            // Success is not news: a */15 cron reporting that a queue drained
+            // is the definition of a notification nobody is glad to receive.
+            // Only the failure branch reaches the user now (K2).
+            type: 'sync_failure',
+            priority: 'active',
             relatedEntityId: `invoice_queue_flush:${new Date().toISOString().slice(0, 10)}`,
             relatedEntityType: 'finance_queue_flush',
-            title: 'Invoice queue processed',
-            body: `${result.flushed} queued invoice${result.flushed === 1 ? '' : 's'} filed${result.failed > 0 ? `, ${result.failed} failed permanently` : ''}.`,
+            title: 'Invoices failed to file',
+            body: `${result.failed} invoice${result.failed === 1 ? '' : 's'} could not be filed.`,
             sensitiveBody: safeHtmlNotificationBody(msg),
             deeplink: 'nexus://finance/invoices',
             dedupeKey: `finance:invoice_queue_flush:${userId}:${new Date().toISOString().slice(0, 10)}`,
@@ -2493,20 +2686,23 @@ export function startScheduler(): void {
   // autoresearch crons below.
   cron.schedule('37 3 * * 0', wrapJob('channel_relearn', async () => {
     const result = await runScheduledChannelRelearn();
-    if (result.analyzed > 0 || result.failed > 0) {
-      const msg = `📚 <b>Weekly Channel Re-Learn</b>\n\n` +
-        `✅ ${result.analyzed} analyzed · ❌ ${result.failed} failed · 🧠 ${result.synthesized ? 'Knowledge updated' : 'No changes'}`;
+    // K3: a weekly background job announcing that it worked is not news. Only
+    // failures — which cost the user analysis quality until they reconnect —
+    // are surfaced.
+    if (result.failed > 0) {
+      const msg = `<b>Channel analysis incomplete</b>\n\n` +
+        `${result.failed} failed · ${result.analyzed} analyzed`;
       for (const userId of getOwnerUserIds()) {
         await createNotificationIntent({
           userId,
           tenantId: userId,
           sourceSkill: 'content',
-          type: result.failed > 0 ? 'sync_failure' : 'insight',
-          priority: result.failed > 0 ? 'active' : 'passive',
+          type: 'sync_failure',
+          priority: 'active',
           relatedEntityId: 'channel_relearn',
           relatedEntityType: 'content_channel_relearn',
-          title: 'Channel Re-Learn',
-          body: `${result.analyzed} channels analyzed${result.failed > 0 ? `, ${result.failed} failed` : ''}${result.synthesized ? ' — knowledge updated' : ''}`,
+          title: 'Channels failed to analyse',
+          body: `${result.failed} channel${result.failed === 1 ? '' : 's'} could not be analysed.`,
           actionButtons: [{ id: 'open_detail', label: 'Open', style: 'primary' }],
           deeplink: 'nexus://notifications/channel-relearn',
           dedupeKey: `content:channel_relearn:${userId}:${startOfDay()}`,

@@ -4549,6 +4549,9 @@ function defaultDecisionNotificationProfile(userId: number, tenantId: number): N
     quietHours: { start: '22:00', end: '07:00' },
     timezone: userDecisionContextDefaults(userId).timezone || 'UTC',
     pushEnabled: true,
+    // Promotional consent defaults OFF even in the read-side fallback, so a
+    // missing profile row can never be read as marketing consent.
+    marketingPushEnabled: false,
     localEnabled: true,
     emailEnabled: false,
     portalEnabled: true,
@@ -6541,6 +6544,10 @@ function mapDecisionRecord(row: any): DecisionRecord {
     relatedEntityType: row.related_entity_type,
     decisionContext: safeParseJson(row.decision_context_json, null),
     requiresUserAction: !!row.requires_user_action,
+    // Carried through so the badge can exclude it. A Decision Center row is
+    // never promotional today, but the field is required by the shared type
+    // and defaulting it silently would reintroduce the gap it closes.
+    promotional: !!row.promotional,
     decisionDeadline: row.decision_deadline,
     privacyPolicy: row.privacy_policy ?? 'standard',
     deliveryPolicy: row.delivery_policy,
@@ -9809,6 +9816,19 @@ async function executeDecisionAction(
       approved: true,
       approvalReference: learningReviewApprovalReferenceForExecution(actionExecutionId),
     }, 'The exact product learning case review was approved and durably recorded.');
+  }
+
+  // Navigation-only: acknowledge and route the client to connection settings.
+  // No provider state changes here, so there is nothing to read back — the
+  // user completes re-auth in the app. This replaces `retry`, whose executor
+  // never existed and which therefore always rendered disabled.
+  if (action.id === 'reconnect') {
+    return markDecisionActioned(
+      record,
+      action.id,
+      { navigatedTo: 'nexus://connections', providerReauthRequired: true },
+      'Opening connection settings.',
+    );
   }
 
   if (MUTATING_ACTIONS.has(action.id)) {

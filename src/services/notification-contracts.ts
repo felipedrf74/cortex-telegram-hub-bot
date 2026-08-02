@@ -57,7 +57,13 @@ export const NON_BADGE_NOTIFICATION_TYPES: readonly NotificationIntentType[] = [
 
 const NON_BADGE_NOTIFICATION_TYPE_SET = new Set<NotificationIntentType>(NON_BADGE_NOTIFICATION_TYPES);
 
-export const SAFE_GENERIC_NOTIFICATION_ACTIONS = ['open_detail', 'dismiss', 'snooze'] as const;
+/**
+ * Actions safe to expose on a lock screen: they navigate or change local
+ * notification lifecycle only, never domain state. `reconnect` qualifies
+ * because it opens connection settings — the provider re-auth itself still
+ * happens in the app, behind normal authentication.
+ */
+export const SAFE_GENERIC_NOTIFICATION_ACTIONS = ['open_detail', 'dismiss', 'snooze', 'reconnect'] as const;
 
 const DEFAULT_APNS_CATEGORY_ACTIONS: Record<string, readonly string[]> = {
   decision_required: ['open_detail', 'dismiss'],
@@ -67,6 +73,7 @@ const DEFAULT_APNS_CATEGORY_ACTIONS: Record<string, readonly string[]> = {
   DECISION_SCHEDULE_CONFLICT: ['snooze', 'open_detail'],
   DECISION_APPROVAL: ['open_detail'],
   DECISION_SYNC_ISSUE: ['open_detail'],
+  DECISION_RECONNECT: ['reconnect', 'open_detail'],
   FINANCE_PAYMENT: ['open_detail', 'dismiss'],
   DECISION_CLARIFICATION: ['open_detail', 'dismiss'],
 };
@@ -101,7 +108,13 @@ const BASE_ACTIONS_BY_TYPE: Record<NotificationIntentType, string[]> = {
   daily_digest: ['open_detail'],
   weekly_review: ['open_detail'],
   security_account: ['open_detail'],
-  sync_failure: ['retry', 'open_detail'],
+  // `retry` was advertised here for every broken connection but its executor is
+  // implemented:false, so the primary CTA rendered permanently greyed — and
+  // because sync_failure is floored to `high`, those dead cards were pinned to
+  // the top of the Decision Center and exempt from the fatigue cap.
+  // `reconnect` is navigation, not a provider mutation, so it needs no
+  // executor and is honest about what tapping it does.
+  sync_failure: ['reconnect', 'open_detail'],
   insight: ['open_detail'],
 };
 
@@ -112,6 +125,7 @@ export function resolveNotificationContract(input: {
   entityId?: string | number | null;
   recipe?: string | null;
   actionId?: string | null;
+  deeplink?: string | null;
 }): NotificationContract {
   const supportedActions = supportedActionsFor(input.sourceSkill, input.type);
   const actionId = input.actionId && supportedActions.includes(input.actionId) ? input.actionId : null;
@@ -120,7 +134,7 @@ export function resolveNotificationContract(input: {
   const crossSkillImpact = recipe === 'cross_skill_impact'
     || entityType === 'cross_skill_impact'
     || entityType === 'cross_skill_coordination';
-  const apnsCategory = apnsCategoryFor(input.type, input.sourceSkill);
+  const apnsCategory = apnsCategoryFor(input.type, input.sourceSkill, actionId, input.deeplink);
 
   return {
     topic: {
@@ -161,7 +175,7 @@ function supportedActionsFor(sourceSkill: NotificationSourceSkill, type: Notific
     return ['option_a', 'option_b', 'accept_chat_action_fix', 'open_detail', 'dismiss'];
   }
   if (type === 'sync_failure') {
-    return ['retry', 'open_detail'];
+    return ['reconnect', 'open_detail'];
   }
   return BASE_ACTIONS_BY_TYPE[type] ?? ['open_detail'];
 }
@@ -186,6 +200,18 @@ export function __setNotificationApnsCategoryActionOverridesForTests(overrides: 
 export function deliveryPolicyForNotificationContract(contract: NotificationContract): NotificationDeliveryPolicy {
   if (contract.defaultDelivery.includes('portal_operator')) return 'portal_only';
   if (contract.defaultDelivery.includes('digest') && !contract.defaultDelivery.includes('push')) return 'digest_only';
+  // `insight` is the one type that must never interrupt. Its contract already
+  // says so — defaultDeliveryFor returns ['in_app','inbox_history'] with no
+  // push — but the resolver fell through to 'auto', so active-priority
+  // insights pushed anyway and silently overrode their own contract. That leak
+  // is why background jobs announcing their own success ("N invoices filed",
+  // "N channels analysed", "coach report deferred") reached the lock screen.
+  //
+  // Scoped to `insight` deliberately: other types also omit `push` from
+  // defaultDelivery (reminder, schedule_changed, missed_item) but legitimately
+  // push under 'auto'. For those, defaultDelivery lists guaranteed channels
+  // rather than the full permitted set.
+  if (contract.type === 'insight') return 'digest_only';
   return 'auto';
 }
 
@@ -199,11 +225,32 @@ function iosDestinationFor(type: NotificationIntentType, sourceSkill: Notificati
   return 'notification_detail';
 }
 
-function apnsCategoryFor(type: NotificationIntentType, sourceSkill: NotificationSourceSkill): string {
+function apnsCategoryFor(
+  type: NotificationIntentType,
+  sourceSkill: NotificationSourceSkill,
+  actionId: string | null,
+  deeplink: string | null | undefined,
+): string {
   if (sourceSkill === 'finance' && type === 'decision_required') return 'FINANCE_PAYMENT';
   if (type === 'approval_required' && sourceSkill !== 'content') return 'DECISION_CLARIFICATION';
+  // `sync_failure` is broader than a broken provider connection (invoice and
+  // content jobs use it too). A reconnect button is therefore valid only when
+  // the persisted action and its foreground route both say "connections".
+  if (type === 'sync_failure' && actionId === 'reconnect' && isConnectionsDeeplink(deeplink)) {
+    return 'DECISION_RECONNECT';
+  }
   if (DECISION_TYPES.has(type)) return DECISION_APNS_CATEGORIES[type] ?? 'DECISION_CLARIFICATION';
   return type;
+}
+
+function isConnectionsDeeplink(value: string | null | undefined): boolean {
+  if (!value) return false;
+  try {
+    const url = new URL(value);
+    return url.protocol.toLowerCase() === 'nexus:' && url.hostname.toLowerCase() === 'connections';
+  } catch {
+    return false;
+  }
 }
 
 function privacySafeCopyPolicyFor(sourceSkill: NotificationSourceSkill): NotificationPrivacyPolicy {

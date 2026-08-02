@@ -16,6 +16,16 @@ vi.mock('../../src/services/database', () => ({
   withDatabaseForTestAsync: vi.fn(),
 }));
 
+// These suites assert redaction and routing, not translation. Lock-screen copy
+// is now resolved from the account language (users.language, default pt-BR), so
+// pin English here and let notification-localization.test.ts own the language
+// behaviour. Only the language resolver is overridden — every other
+// user-service export stays real.
+vi.mock('../../src/services/user-service', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/user-service')>()),
+  getUserLanguageById: () => 'en-US',
+}));
+
 vi.mock('../../src/services/apns-sender', () => ({
   getPushTokensForUser: vi.fn(() => pushTokens),
   isApnsConfigured: vi.fn(() => apnsConfigured),
@@ -39,6 +49,7 @@ vi.mock('../../src/utils/logger', () => ({
 }));
 
 import {
+  INTERRUPT_SKILL_DAILY_CAP,
   assembleDailyDigest,
   buildSkillNotificationFixtureIntent,
   countUnreadNotificationCenterItems,
@@ -1208,7 +1219,8 @@ describe('Secretary Notification Orchestrator', () => {
 
     expect(first.decisionLog.decision).toBe('digest');
     expect(second.decisionLog.decision).toBe('digest');
-    expect(assembleDailyDigest(54, 54, 2).body).toBe('2 Nexus updates are ready.');
+    // The digest now states what is waiting rather than only how much.
+    expect(assembleDailyDigest(54, 54, 2).body).toBe('2 updates');
 
     testDb.prepare(`
       UPDATE notification_decision_logs
@@ -1221,9 +1233,17 @@ describe('Secretary Notification Orchestrator', () => {
     expect(result.released).toBe(2);
     const firstLog = getNotificationDecisionLog(first.decisionLog.decisionLogId, 54, 54);
     const secondLog = getNotificationDecisionLog(second.decisionLog.decisionLogId, 54, 54);
+    // A digest is ONE interrupt, so exactly one row may be recorded as one.
+    // This assertion previously required `sent_push` on both rows, which
+    // encoded an over-count that `evaluateInterruptBudget` then billed to the
+    // user's daily cap — an N-item digest burned N of their 8 daily interrupts.
     expect(firstLog?.decision).toBe('sent_push');
-    expect(secondLog?.decision).toBe('sent_push');
+    expect(firstLog?.sentAt).toBeTruthy();
+    expect(secondLog?.decision).toBe('in_app_only');
+    expect(secondLog?.sentAt).toBeNull();
+    // Both rows still point at the delivery, so it stays traceable from either.
     expect(firstLog?.deliveryAttemptIds).toEqual(secondLog?.deliveryAttemptIds);
+    expect(firstLog?.deliveryAttemptIds).toHaveLength(1);
   });
 
   it('single-flights concurrent release sweeps so a due row is pushed at most once', async () => {
@@ -1412,19 +1432,34 @@ describe('Secretary Notification Orchestrator', () => {
     expect(trusted.decisionLog.decision).toBe('sent_push');
   });
 
-  it('rate-limits active push delivery while preserving in-app notification items', async () => {
+  it('caps push delivery per skill while preserving in-app notification items', async () => {
+    // Was: 20 pushes allowed before limiting, from a process-local Map that
+    // also exempted time_sensitive entirely — i.e. it did not bind. The budget
+    // that replaced it counts real sends from notification_decision_logs and
+    // caps each skill at INTERRUPT_SKILL_DAILY_CAP per local day.
     pushTokens = ['sandbox-token'];
+    // Past the new-user ramp, which would otherwise be what binds here.
+    getOrCreateNotificationProfile(56, 56);
+    // SQLite's datetime('now') reads the REAL clock while this suite runs on a
+    // fake one, so a relative offset can land in the future and trip the
+    // new-user ramp. Pin an absolute date instead.
+    testDb.prepare("UPDATE notification_profiles SET created_at = '2020-01-01 00:00:00' WHERE user_id = 56").run();
+
     const results = [];
-    for (let index = 0; index < 21; index += 1) {
+    for (let index = 0; index < INTERRUPT_SKILL_DAILY_CAP + 2; index += 1) {
       results.push(await createNotificationIntent(buildSkillNotificationFixtureIntent('cooking', 56, {
         dedupeKey: `cooking-rate-${index}`,
       })));
     }
 
-    expect(results.filter((result) => result.decisionLog.decision === 'sent_push')).toHaveLength(20);
-    expect(results.at(-1)?.decisionLog.decision).toBe('in_app_only');
-    expect(results.at(-1)?.decisionLog.reason).toContain('rate limit');
-    expect(listNotificationCenterItems(56, 56)).toHaveLength(21);
+    expect(results.filter((result) => result.decisionLog.decision === 'sent_push'))
+      .toHaveLength(INTERRUPT_SKILL_DAILY_CAP);
+    // Demoted to the digest, not silently withheld in-app: the user still gets
+    // it, batched, in the next slot.
+    expect(results.at(-1)?.decisionLog.decision).toBe('digest');
+    expect(results.at(-1)?.decisionLog.reason).toContain('interrupt budget');
+    // Every intent still produced a durable item.
+    expect(listNotificationCenterItems(56, 56)).toHaveLength(INTERRUPT_SKILL_DAILY_CAP + 2);
   });
 
   it('allows configured time-sensitive deadlines through quiet hours and downgrades critical by default', async () => {
@@ -1447,6 +1482,21 @@ describe('Secretary Notification Orchestrator', () => {
 
     expect(soon.decisionLog.decision).toBe('blocked_missing_device_token');
     expect(critical.intent.priority).toBe('time_sensitive');
+  });
+
+  it('does not let an already-expired deadline bypass quiet hours', async () => {
+    updateNotificationProfile(57, 57, {
+      quietHours: { start: '00:00', end: '23:59' },
+      allowTimeSensitive: true,
+    });
+
+    const expired = await createNotificationIntent(buildSkillNotificationFixtureIntent('content', 57, {
+      priority: 'time_sensitive',
+      decisionDeadline: new Date(Date.now() - 60_000).toISOString(),
+      dedupeKey: 'content:expired-deadline',
+    }));
+
+    expect(expired.decisionLog.decision).toBe('quiet_hours_delayed');
   });
 
   it('registers and revokes iOS device tokens with hashed notification metadata', () => {
@@ -1699,7 +1749,8 @@ describe('Secretary Notification Orchestrator', () => {
     // iOS decodes the `profile` object from GET/PUT /preferences and ignores
     // unknown keys. This pins the legacy key set so a rename/removal breaks
     // loudly here instead of silently breaking old clients, and documents
-    // that migration 225 only ADDED the five reportSchedule fields.
+    // that migration 225 only ADDED the five reportSchedule fields and
+    // migration 269 only ADDED marketingPushEnabled.
     const profile = getOrCreateNotificationProfile(21, 21) as unknown as Record<string, unknown>;
     const legacyKeys = [
       'userId', 'tenantId', 'quietHours', 'timezone', 'pushEnabled', 'localEnabled',
@@ -1714,7 +1765,7 @@ describe('Secretary Notification Orchestrator', () => {
     }
     const addedKeys = Object.keys(profile).filter((key) => !legacyKeys.includes(key)).sort();
     expect(addedKeys).toEqual([
-      'coachBriefingTime', 'endOfDayTime', 'morningBriefingTime',
+      'coachBriefingTime', 'endOfDayTime', 'marketingPushEnabled', 'morningBriefingTime',
       'weeklyReviewReportDay', 'weeklyReviewReportTime',
     ]);
   });

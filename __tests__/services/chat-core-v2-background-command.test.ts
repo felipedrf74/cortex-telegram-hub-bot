@@ -25,8 +25,17 @@ vi.mock('../../src/services/database', () => ({
 const mockSendPushNotification = vi.hoisted(() => vi.fn(async () => ({
   sent: 1, failed: 0, skipped: 0, retriable: 0, unregistered: [] as string[],
 })));
+// Background command notifications now go through the orchestrator rather than
+// calling APNs directly, so the orchestrator's token/config lookups have to be
+// satisfied for a push to be attempted at all.
 vi.mock('../../src/services/apns-sender', () => ({
   sendPushNotification: (...args: unknown[]) => mockSendPushNotification(...args),
+  getPushTokensForUser: vi.fn(() => [{ token: 'tok-bg', environment: 'production' }]),
+  isApnsConfigured: vi.fn(() => true),
+  deleteDeadPushToken: vi.fn(),
+  closeApnsClient: vi.fn(),
+  _resetForTests: vi.fn(),
+  sendPushToUsers: vi.fn(),
 }));
 
 const mockExecuteCommand = vi.hoisted(() => vi.fn());
@@ -146,15 +155,30 @@ function makeTelemetry(): ChatCoreV2WriteIntentGuardTelemetry {
 }
 
 beforeEach(() => {
+  // Pinned to this suite's own NOW. It dispatches through the notification
+  // orchestrator, whose default quiet hours are 22:00-07:00, and it ran on the
+  // real wall clock — so the APNs assertions below passed only between 07:00
+  // and 22:00 local and failed every night.
+  //
+  // Only `Date` is faked: faking setTimeout/setInterval too would freeze the
+  // worker's own async plumbing. Using NOW (rather than a second constant)
+  // keeps the faked clock consistent with the `now` the worker is handed.
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(NOW);
   testDb = new Database(':memory:');
   ensureBackgroundJobTables(testDb);
   ensureChatCoreV2CommandEventTables(testDb);
   mockSendPushNotification.mockClear();
   mockExecuteCommand.mockReset();
+  // The orchestrator refuses to dispatch unless APNs is the selected delivery
+  // mode; the worker now routes through it instead of calling APNs directly.
+  process.env.NOTIFICATION_DELIVERY_MODE = 'apns';
   _resetChatCoreV2RuntimeOverridesForTests();
 });
 
 afterEach(() => {
+  delete process.env.NOTIFICATION_DELIVERY_MODE;
+  vi.useRealTimers();
   testDb.close();
   _resetChatCoreV2RuntimeOverridesForTests();
 });
@@ -366,7 +390,10 @@ describe('§5.E type-boundary conversions (string↔number at all four crossings
         locale: 'en-US',
       }));
       expect(mockSendPushNotification).toHaveBeenCalledWith(7, expect.objectContaining({
-        body: 'Task created',
+        // The execution locale is projected independently from notification
+        // copy. Raw executor text must never cross the lock-screen privacy
+        // boundary; the orchestrator supplies the user's safe profile copy.
+        body: expect.not.stringContaining('Task created'),
       }));
       const stored = testDb.prepare(
         'SELECT payload_json FROM background_jobs WHERE job_id = ?',
@@ -459,8 +486,18 @@ describe('processBackgroundChatCommandJob integration', () => {
     expect(mockSendPushNotification).toHaveBeenCalledTimes(1);
     const apnsArgs = mockSendPushNotification.mock.calls[0];
     expect(apnsArgs[0]).toBe(7); // NUMBER userId at the APNs boundary
-    expect((apnsArgs[1] as { collapseId: string }).collapseId).toBe('chat_core_v2_command:cmd_bg_1');
+    const payload = apnsArgs[1] as { body: string; title: string };
+    // The defect this replaced: the worker shipped raw execution.response.text
+    // straight to the lock screen, bypassing the privacy floor every other
+    // producer goes through. The executor returned 'Task created' above; it
+    // must not appear in the payload.
+    expect(payload.body).not.toContain('Task created');
     expect(getChatV2CommandEventById('cmd_bg_1:background_execution_completed', testDb)).not.toBeNull();
+    // A durable Notification Center item now exists — previously there was none.
+    const item = testDb.prepare(
+      "SELECT dedupe_key AS dedupeKey FROM notification_center_items WHERE user_id = 7 AND source_skill = 'chat'",
+    ).get() as { dedupeKey: string } | undefined;
+    expect(item?.dedupeKey).toBe('chat:command:cmd_bg_1');
   });
 
   it('does NOT push APNs when notificationPolicy is silent', async () => {

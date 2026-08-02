@@ -346,6 +346,26 @@ describe('sendPushNotification (happy path)', () => {
     expect(req.headers['apns-priority']).toBe('10');
   });
 
+  it('gives every push a store-and-forward window, not just time-sensitive ones', async () => {
+    mockPushTokensForUser[1] = ['tok-expiry'];
+    mockHttp2Responses = [{ status: 200 }, { status: 200 }];
+    const nowSeconds = Math.floor(Date.now() / 1000);
+
+    await sendPushNotification(1, { title: 'T', body: 'B', interruptionLevel: 'time-sensitive' });
+    await sendPushNotification(1, { title: 'T', body: 'B', interruptionLevel: 'passive' });
+
+    const timeSensitive = Number(mockHttp2Requests[0].headers['apns-expiration']);
+    const passive = Number(mockHttp2Requests[1].headers['apns-expiration']);
+
+    // '0' means now-or-drop: a phone offline for a minute loses the push
+    // entirely. It used to apply to everything except time-sensitive — and the
+    // orchestrator downgrades EVERY push to passive for users on a provisional
+    // grant, so the whole new-user population lost store-and-forward.
+    expect(passive).toBeGreaterThan(nowSeconds);
+    expect(timeSensitive).toBeGreaterThan(nowSeconds);
+    expect(passive).toBeGreaterThan(timeSensitive);
+  });
+
   it('sets APNs collapse id when the payload asks for one', async () => {
     mockPushTokensForUser[1] = ['tok-collapse'];
     mockHttp2Responses = [{ status: 200 }];

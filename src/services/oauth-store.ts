@@ -23,6 +23,7 @@ import { encryptValue, decryptValue } from '../utils/encryption';
 import { LRUMap } from '../utils/lru-map';
 import { getOwnerBootstrapUserRefs } from './user-service';
 import { notifyOAuthTokenMutation } from './oauth-token-cache-events';
+import { clearOAuthConnectionAuthFailure } from './oauth-connection-health';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -172,6 +173,12 @@ function invalidateProviderSurfaceCaches(userId: number, provider: OAuthProvider
   }
 }
 
+function clearUserScopedAuthFailure(userId: number, provider: OAuthProvider): void {
+  if (provider === 'google' || provider === 'outlook') {
+    clearOAuthConnectionAuthFailure(userId, provider);
+  }
+}
+
 /**
  * Test-only: clear the entire decrypted-token cache. Exported so tests
  * can reset state between cases without touching the LRU internals.
@@ -310,6 +317,9 @@ export function storeTokens(userId: number, provider: OAuthProvider, tokens: OAu
   // of the old tokens so the next getTokens() immediately picks up the
   // new ones instead of waiting out the 10-minute TTL.
   invalidateTokenCache(userId, provider);
+  // A fresh OAuth exchange is authoritative recovery for this exact user and
+  // provider. It must not leave a prior deterministic refresh rejection live.
+  clearUserScopedAuthFailure(userId, provider);
   notifyOAuthTokenMutation({ userId, provider });
   invalidateProviderSurfaceCaches(userId, provider);
   logger.info({ userId, provider }, 'OAuth tokens stored');
@@ -404,6 +414,7 @@ export function disconnectProvider(userId: number, provider: OAuthProvider): voi
   // Blow away the cached decrypted tokens so the next getTokens() returns
   // null immediately instead of serving stale data for up to 10 minutes.
   invalidateTokenCache(userId, provider);
+  clearUserScopedAuthFailure(userId, provider);
   notifyOAuthTokenMutation({ userId, provider });
   invalidateProviderSurfaceCaches(userId, provider);
   logger.info({ userId, provider }, 'OAuth tokens removed');
@@ -457,6 +468,7 @@ export function updateAccessToken(userId: number, provider: OAuthProvider, acces
     WHERE user_id = ? AND provider = ?
   `).run(encrypt(accessToken, userId), expiresAt, userId, provider);
   invalidateTokenCache(userId, provider);
+  clearUserScopedAuthFailure(userId, provider);
   notifyOAuthTokenMutation({ userId, provider });
 }
 

@@ -25,6 +25,11 @@ import { logger } from '../utils/logger';
 import { getTokens, storeTokens } from './oauth-store';
 import { getOwnerBootstrapUserRefs } from './user-service';
 import { registerOAuthTokenMutationListener } from './oauth-token-cache-events';
+import {
+  classifyOAuthAuthFailure,
+  clearOAuthConnectionAuthFailure,
+  markOAuthConnectionAuthFailure,
+} from './oauth-connection-health';
 
 // ─── All Microsoft Graph scopes needed by the app ────────────────────
 const ALL_SCOPES = [
@@ -343,7 +348,23 @@ export async function getAccessTokenForUser(userId: number): Promise<string> {
     throw new Error(`Outlook not connected for user ${userId}`);
   }
 
-  return acquireAccessTokenFromRefreshToken(refreshToken, userAccessTokenCacheKey(userId));
+  try {
+    const token = await acquireAccessTokenFromRefreshToken(
+      refreshToken,
+      userAccessTokenCacheKey(userId),
+    );
+    clearOAuthConnectionAuthFailure(userId, 'outlook');
+    return token;
+  } catch (err) {
+    const reason = classifyOAuthAuthFailure(err);
+    // Do not let a stale in-flight request overwrite a successful reconnect.
+    // The rejection is current only while the stored refresh token is still
+    // the exact token MSAL rejected for this user.
+    if (reason && getOutlookRefreshTokenForUser(userId) === refreshToken) {
+      markOAuthConnectionAuthFailure(userId, 'outlook', reason);
+    }
+    throw err;
+  }
 }
 
 /** @deprecated Use getAccessTokenForUser(userId) for multi-user. */

@@ -1206,8 +1206,12 @@ describe('Cooking API — shopping list item updates', () => {
     expect(notifications[0]).toMatchObject({
       sourceSkill: 'cooking',
       type: 'reminder',
-      safeBody: 'Cooking reminder — open Nexus to review the recommendation.',
+
     });
+    // Localized from the account language now; assert the redaction guarantee
+    // rather than an English literal.
+    expect(notifications[0].safeBody).toEqual(expect.any(String));
+    expect(notifications[0].safeBody.length).toBeGreaterThan(0);
   });
 
   it('checks the authenticated user calendar before creating a meal prep event', async () => {

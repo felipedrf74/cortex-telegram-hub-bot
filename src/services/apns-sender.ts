@@ -416,9 +416,25 @@ async function dispatchOne(
       // apns-expiration is an epoch timestamp. 0 = deliver once, now-or-drop
       // (~30s store). Time-sensitive alerts get a 1h window so an offline
       // device still receives them on reconnect (2026-07-04 APNs round).
-      'apns-expiration': payload.interruptionLevel === 'time-sensitive'
-        ? String(Math.floor(Date.now() / 1000) + 3600)
-        : '0',
+      //
+      // Everything else gets a window too, rather than 0. Two reasons:
+      //
+      //  1. `0` discards a notification because the phone was off for a minute.
+      //     Anything worth creating is worth surviving a lock-screen gap.
+      //  2. The orchestrator downgrades interruptionLevel to 'passive' for
+      //     users on a PROVISIONAL authorization grant — the default for every
+      //     new user — because iOS ignores interruption-level there. Coupling
+      //     expiration to that downgrade meant the entire new-user population
+      //     silently lost store-and-forward on every notification, including
+      //     security alerts. The downgrade is about whether it RINGS, not about
+      //     whether it is worth delivering at all.
+      //
+      // Staleness is bounded by apns-collapse-id: a newer push of the same
+      // source+type replaces its stored predecessor rather than stacking.
+      'apns-expiration': String(
+        Math.floor(Date.now() / 1000)
+        + (payload.interruptionLevel === 'time-sensitive' ? 3600 : 21600),
+      ),
       'content-type': 'application/json',
       'content-length': Buffer.byteLength(bodyStr).toString(),
     };

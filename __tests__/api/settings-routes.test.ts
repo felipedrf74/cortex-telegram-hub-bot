@@ -578,11 +578,11 @@ describe('Settings language route', () => {
   });
 
   it('reads and writes push preferences for a valid tenant scope', async () => {
-    const setRes = await dispatchPushPreferencesSet(1, 'coach_briefing', false);
+    const setRes = await dispatchPushPreferencesSet(1, 'reminders', false);
 
     expect(setRes.statusCode).toBe(200);
     expect(setRes.body.ok).toBe(true);
-    expect(setRes.body.data).toEqual({ category: 'coach_briefing', enabled: false });
+    expect(setRes.body.data).toEqual({ category: 'reminders', enabled: false });
 
     const getRes = await dispatchPushPreferencesGet(1);
 
@@ -590,7 +590,7 @@ describe('Settings language route', () => {
     expect(getRes.body.ok).toBe(true);
     expect(getRes.body.data.preferences).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ category: 'coach_briefing', enabled: false }),
+        expect.objectContaining({ category: 'reminders', enabled: false }),
       ]),
     );
   });

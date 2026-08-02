@@ -37,7 +37,7 @@ describe('runtime manifests', () => {
       directEventEffects: 2,
       queuedJobHandlers: 9,
     });
-    expect(result).toMatchObject({ jobs: 57, scheduledJobs: 57 });
+    expect(result).toMatchObject({ jobs: 63, scheduledJobs: 63 });
   });
 
   it('keeps parent skill and domain metadata byte-identical to CapabilityManifest generation', () => {
@@ -81,7 +81,7 @@ describe('runtime manifests', () => {
       ok: true,
       output: 'config/agent-job-manifest.json',
       schema: 'nexus.agent-job-manifest.v3',
-      jobs: 57,
+      jobs: 63,
       eventHandlers: 1,
       directEventEffects: 2,
       queuedJobHandlers: 9,
@@ -90,8 +90,8 @@ describe('runtime manifests', () => {
 
     const manifest = JSON.parse(before);
     expect(manifest.schema).toBe('nexus.agent-job-manifest.v3');
-    expect(manifest.version).toBe('2026-07-22.2');
-    expect(manifest.jobs).toHaveLength(57);
+    expect(manifest.version).toBe('2026-08-02.1');
+    expect(manifest.jobs).toHaveLength(63);
     for (const job of manifest.jobs) {
       expect(job).toMatchObject({
         id: expect.any(String),
@@ -180,8 +180,64 @@ describe('runtime manifests', () => {
     }
   });
 
+  it('governs notification producer sweeps with their reviewed tenant, retry, and output boundaries', () => {
+    const manifest = loadAgentJobManifest();
+    const jobsById = Object.fromEntries(manifest.jobs.map((job) => [job.id, job]));
+    const expectedPolicies = {
+      commitment_start_reminder: {
+        policyOwner: 'secretary',
+        tenantScope: 'active-tenant-user-secretary-agenda',
+        retryPolicy: 'next-five-minute-sweep-with-dedupe-and-start-expiry',
+        outputPolicy: 'tenant-scoped-deduped-expiring-commitment-reminder',
+      },
+      connection_health_notify: {
+        policyOwner: 'connections',
+        tenantScope: 'active-tenant-user-integration-profile',
+        retryPolicy: 'next-scheduled-sweep-with-three-day-dedupe-bucket',
+        outputPolicy: 'tenant-scoped-deduped-provider-reconnect-notification',
+      },
+      decision_recovery_notify: {
+        policyOwner: 'decision-center',
+        tenantScope: 'bounded-lifecycle-event-tenant-user',
+        retryPolicy: 'next-ten-minute-sweep-with-sixty-minute-lookback-and-event-dedupe',
+        outputPolicy: 'event-deduped-tenant-scoped-recovery-notification',
+      },
+      finance_tax_deadline: {
+        policyOwner: 'finance',
+        tenantScope: 'active-tenant-user-finance-tax-events',
+        retryPolicy: 'next-daily-stage-evaluation-with-dedupe-and-deadline-expiry',
+        outputPolicy: 'stage-deduped-tenant-scoped-tax-deadline-notification',
+      },
+      training_session_reminder: {
+        policyOwner: 'training',
+        tenantScope: 'active-tenant-user-training-agenda',
+        retryPolicy: 'next-five-minute-sweep-with-dedupe-and-start-expiry',
+        outputPolicy: 'tenant-scoped-deduped-expiring-training-reminder',
+      },
+      travel_window_notify: {
+        policyOwner: 'secretary',
+        tenantScope: 'active-tenant-user-travel-window-and-agenda',
+        retryPolicy: 'next-daily-sweep-with-trip-dedupe-and-departure-expiry',
+        outputPolicy: 'tenant-scoped-deduped-cross-skill-digest-notification',
+      },
+    };
+
+    for (const [id, expected] of Object.entries(expectedPolicies)) {
+      expect(jobsById[id]).toMatchObject({
+        id,
+        providerUsage: 'none',
+        providerRouting: 'not-applicable-no-model-provider',
+        inputFingerprint: {
+          enforcement: 'not-applicable-no-provider',
+          unchangedInputProviderCalls: 0,
+        },
+        ...expected,
+      });
+    }
+  });
+
   it('fails closed when runtime registration drifts from the exact manifest identity', () => {
-    expect(loadAgentJobManifest().jobs).toHaveLength(57);
+    expect(loadAgentJobManifest().jobs).toHaveLength(63);
     expect(() => assertAgentJobRuntimeRegistration({
       id: 'tuesday_reels',
       name: 'Tuesday Reel Topics',

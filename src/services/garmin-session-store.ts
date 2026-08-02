@@ -440,7 +440,7 @@ export async function markGarminNeedsReauth(userId: number, reason: string): Pro
       relatedEntityType: 'garmin_session',
       title: 'Garmin needs re-authentication',
       body: 'Your Garmin session expired. Reconnect Garmin to restore training data in Nexus Hub.',
-      actionButtons: [{ id: 'open_detail', label: 'Reconnect', style: 'primary' }],
+      actionButtons: [{ id: 'reconnect', label: 'Reconnect', style: 'primary' }],
       // Must be an allowlisted deeplink host (isSupportedNotificationDeeplink):
       // 'settings' is rejected and would silently downgrade to the inbox
       // fallback. 'connections/garmin/reauth' is the route iOS ships and the

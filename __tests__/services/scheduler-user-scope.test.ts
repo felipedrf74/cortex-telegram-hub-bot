@@ -787,7 +787,9 @@ describe('scheduler tenant scoping', () => {
       tenantId: 11,
       sourceSkill: 'secretary',
       type: 'missed_item',
-      priority: 'active',
+      // Passive by design (K6): a third party editing a shared list earns a
+      // line in the morning brief, not an interrupt on a */5 cron.
+      priority: 'passive',
       relatedEntityType: 'shared_task_list',
       title: 'Shared list update',
       body: 'New shared tasks need your attention.',

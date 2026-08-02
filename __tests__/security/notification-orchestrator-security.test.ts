@@ -15,6 +15,16 @@ vi.mock('../../src/services/database', () => ({
   withDatabaseForTestAsync: vi.fn(),
 }));
 
+// These suites assert redaction and routing, not translation. Lock-screen copy
+// is now resolved from the account language (users.language, default pt-BR), so
+// pin English here and let notification-localization.test.ts own the language
+// behaviour. Only the language resolver is overridden — every other
+// user-service export stays real.
+vi.mock('../../src/services/user-service', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/user-service')>()),
+  getUserLanguageById: () => 'en-US',
+}));
+
 vi.mock('../../src/services/apns-sender', () => ({
   getPushTokensForUser: vi.fn(() => pushTokens),
   isApnsConfigured: vi.fn(() => false),
