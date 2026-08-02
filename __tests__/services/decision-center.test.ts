@@ -99,6 +99,7 @@ import {
   snoozeDecision,
   updateDecisionPreferences,
 } from '../../src/services/decision-center';
+import { resolveNotificationContract } from '../../src/services/notification-contracts';
 import { buildSkillNotificationFixtureIntent, createNotificationIntent, ensureNotificationTables, listNotificationCenterItems } from '../../src/services/notification-orchestrator';
 import { clearPendingChatConfirmation, trackPendingChatConfirmation } from '../../src/services/chat-pending-confirmations';
 import { buildNormalizedDecisionAction } from '../../src/services/decision-action-contract';
@@ -723,6 +724,10 @@ describe('Decision Center facade', () => {
     // enabled instead of disabled_not_implemented.
     const reconnect = listed[0].alternatives.find((option) => option.actionId === 'reconnect');
     expect(reconnect?.available).toBe(true);
+    expect(resolveNotificationContract({
+      sourceSkill: 'secretary',
+      type: 'sync_failure',
+    }).supportedActions).toEqual(['reconnect', 'open_detail']);
   });
 
   it('threads owner/admin visibility scope through internal decision intents', async () => {

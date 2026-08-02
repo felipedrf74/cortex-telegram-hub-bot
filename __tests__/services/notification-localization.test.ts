@@ -19,7 +19,8 @@ import Database from 'better-sqlite3';
 let testDb: Database.Database;
 let userLanguage: Record<number, string> = {};
 
-vi.mock('../../src/services/database', () => ({
+vi.mock('../../src/services/database', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/database')>()),
   getDb: () => testDb,
   initDatabase: vi.fn(),
   closeDatabase: vi.fn(),

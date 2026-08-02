@@ -18,7 +18,8 @@ import Database from 'better-sqlite3';
 let testDb: Database.Database;
 const mockSendPushNotification = vi.fn();
 
-vi.mock('../../src/services/database', () => ({
+vi.mock('../../src/services/database', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/database')>()),
   getDb: () => testDb,
   initDatabase: vi.fn(),
   closeDatabase: vi.fn(),
@@ -112,10 +113,10 @@ describe('device timezone reporting', () => {
   it('ignores a malformed zone rather than refusing to register the token', () => {
     getOrCreateNotificationProfile(502, 502);
     // A bad zone from a client must never cost the user push entirely.
-    const token = registerNotificationDeviceToken({
+    const registration = registerNotificationDeviceToken({
       userId: 502, tenantId: 502, token: 'tok-502', deviceTimezone: 'Mars/Olympus_Mons',
     });
-    expect(token.tokenId).toBeTruthy();
+    expect(registration.tokenId).toBeTruthy();
     expect(notificationTimezoneDrift(502, 502).deviceTimezone).toBeNull();
   });
 

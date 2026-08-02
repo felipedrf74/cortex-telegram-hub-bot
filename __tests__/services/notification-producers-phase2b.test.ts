@@ -11,7 +11,8 @@ import Database from 'better-sqlite3';
 let testDb: Database.Database;
 const mockSendPushNotification = vi.fn(async () => ({ sent: 1, failed: 0, skipped: 0, retriable: 0, unregistered: [] }));
 
-vi.mock('../../src/services/database', () => ({
+vi.mock('../../src/services/database', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/database')>()),
   getDb: () => testDb,
   initDatabase: vi.fn(),
   closeDatabase: vi.fn(),

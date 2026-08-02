@@ -14,7 +14,8 @@ let testDb: Database.Database;
 const mockSendPushNotification = vi.fn();
 let integrationSummary: { providers: Array<Record<string, unknown>> } = { providers: [] };
 
-vi.mock('../../src/services/database', () => ({
+vi.mock('../../src/services/database', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/database')>()),
   getDb: () => testDb,
   initDatabase: vi.fn(),
   closeDatabase: vi.fn(),

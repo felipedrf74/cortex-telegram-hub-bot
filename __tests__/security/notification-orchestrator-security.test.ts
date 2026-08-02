@@ -6,7 +6,8 @@ let testDb: Database.Database;
 let pushTokens: string[] = [];
 const mockSendPushNotification = vi.fn();
 
-vi.mock('../../src/services/database', () => ({
+vi.mock('../../src/services/database', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/database')>()),
   getDb: () => testDb,
   initDatabase: vi.fn(),
   closeDatabase: vi.fn(),
