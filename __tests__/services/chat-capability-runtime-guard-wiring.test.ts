@@ -4,6 +4,12 @@ const runtimeGuard = vi.hoisted(() => ({ allowed: false }));
 
 vi.mock('../../src/services/chat-capability-runtime-guard', () => ({
   chatCapabilityRuntimeAllowsFlags: () => runtimeGuard.allowed,
+  getChatCapabilityRuntimeGuardStatus: () => ({
+    status: runtimeGuard.allowed ? 'authorized' : 'forced_off',
+    reason: runtimeGuard.allowed ? 'matching_runtime_permit' : 'test_forced_off',
+    transactionId: null,
+    planDigest: null,
+  }),
 }));
 
 import { isManifestClassifierPromptEnabled } from '../../src/router/classifier-prompt-builder';

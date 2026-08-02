@@ -101,15 +101,18 @@ describe('run-routing-action-skill-accuracy CLI', () => {
   it('is a read-only, cache-only wrapper around the action-skill evaluator', () => {
     const raw = fs.readFileSync(scriptPath, 'utf8');
     const installedTool = fs.readFileSync(installedToolPath, 'utf8');
+    const evaluatedSource = `${raw}\n${installedTool}`;
 
     expect(raw).toContain("from '../src/tools/routing-action-skill-accuracy'");
     expect(raw).toContain('runRoutingActionSkillAccuracyCli()');
     expect(installedTool).toContain('new Database(dbPath, { readonly: true, fileMustExist: true })');
     expect(installedTool).toContain("'../services/standalone-tool-database'");
-    expect(installedTool).toContain("'../services/routing-action-skill-accuracy'");
-    expect(`${raw}\n${installedTool}`).not.toContain('classifyWithClaude');
-    expect(`${raw}\n${installedTool}`).not.toContain('accepted_accuracy_snapshots');
-    expect(`${raw}\n${installedTool}`).not.toContain('routing_llm_classify_cache');
+    expect(installedTool).toMatch(
+      /await import\(\s*['"]\.\.\/services\/routing-action-skill-accuracy['"]\s*\)/,
+    );
+    expect(evaluatedSource).not.toContain('classifyWithClaude');
+    expect(evaluatedSource).not.toContain('accepted_accuracy_snapshots');
+    expect(evaluatedSource).not.toContain('routing_llm_classify_cache');
   });
 
   it.each(['--refresh-llm', '--refresh-llm=25', '--accept-snapshot'])(
