@@ -3000,6 +3000,9 @@ export function startScheduler(): void {
 
   cron.schedule('*/15 * * * *', wrapJob('notification_release', async () => {
     const result = await releaseDueNotificationDeliveries();
+    if (result.failed > 0) {
+      throw new Error(`notification delayed/digest release: ${result.failed} delivery operation(s) failed`);
+    }
     if (result.inspected > 0) {
       logger.info(result, 'Notification delayed/digest release completed');
     }

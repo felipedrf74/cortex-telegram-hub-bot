@@ -1346,6 +1346,7 @@ describe('Secretary Notification Orchestrator', () => {
     expect(result.inspected).toBe(1);
     expect(result.released).toBe(0);
     expect(result.blocked).toBe(1);
+    expect(result.failed).toBe(1);
     const updated = getNotificationDecisionLog(delayed.decisionLog.decisionLogId, 59, 59);
     expect(updated?.decision).toBe('apns_delivery_failed');
     expect(updated?.reason).toContain('APNs delivery failed');

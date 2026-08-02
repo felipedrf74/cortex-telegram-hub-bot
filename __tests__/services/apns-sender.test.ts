@@ -366,6 +366,34 @@ describe('sendPushNotification (happy path)', () => {
     expect(passive).toBeGreaterThan(timeSensitive);
   });
 
+  it('never lets the APNs store-and-forward window outlive the payload expiry', async () => {
+    mockPushTokensForUser[1] = ['tok-bounded-expiry'];
+    mockHttp2Responses = [{ status: 200 }];
+    const expiresAtSeconds = Math.floor(Date.now() / 1000) + 120;
+
+    await sendPushNotification(1, {
+      title: 'T',
+      body: 'B',
+      interruptionLevel: 'passive',
+      expirationAt: new Date(expiresAtSeconds * 1000).toISOString(),
+    });
+
+    expect(Number(mockHttp2Requests[0].headers['apns-expiration'])).toBe(expiresAtSeconds);
+  });
+
+  it('skips an already-expired payload without opening an APNs request', async () => {
+    mockPushTokensForUser[1] = ['tok-already-expired'];
+
+    const result = await sendPushNotification(1, {
+      title: 'T',
+      body: 'B',
+      expirationAt: new Date(Date.now() - 60_000).toISOString(),
+    });
+
+    expect(result).toMatchObject({ sent: 0, failed: 0, skipped: 1, retriable: 0 });
+    expect(mockHttp2Requests).toHaveLength(0);
+  });
+
   it('sets APNs collapse id when the payload asks for one', async () => {
     mockPushTokensForUser[1] = ['tok-collapse'];
     mockHttp2Responses = [{ status: 200 }];

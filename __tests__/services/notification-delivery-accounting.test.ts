@@ -158,6 +158,58 @@ describe('notification delivery accounting', () => {
       expect(countInterrupts(700)).toBe(1);
     });
 
+    it('terminalizes every covered row when a later report row carries the digest', async () => {
+      establishedProfile(732);
+      const ordinary = await createNotificationIntent(reminderIntent(732, {
+        priority: 'passive', dedupeKey: 'carrier-ordinary', relatedEntityId: 'carrier-ordinary',
+      }));
+      const report = await createNotificationIntent(reminderIntent(732, {
+        type: 'daily_digest', priority: 'passive', body: 'Your day, in short',
+        dedupeKey: 'carrier-report', relatedEntityId: 'carrier-report',
+      }));
+      // The ordinary row sorts first, while the later report row must carry the
+      // wire payload because its composed body leads the digest.
+      testDb.prepare('UPDATE notification_decision_logs SET scheduled_for = ? WHERE decision_log_id = ?')
+        .run('2026-05-07T10:58:00.000Z', ordinary.decisionLog.decisionLogId);
+      testDb.prepare('UPDATE notification_decision_logs SET scheduled_for = ? WHERE decision_log_id = ?')
+        .run('2026-05-07T10:59:00.000Z', report.decisionLog.decisionLogId);
+      mockSendPushNotification.mockClear();
+
+      await releaseDueNotificationDeliveries();
+
+      const decisions = testDb.prepare(`
+        SELECT notification_id, decision FROM notification_decision_logs
+         WHERE user_id = 732 ORDER BY rowid ASC
+      `).all() as Array<{ notification_id: string; decision: string }>;
+      expect(decisions).toEqual([
+        { notification_id: ordinary.item!.itemId, decision: 'in_app_only' },
+        { notification_id: report.item!.itemId, decision: 'sent_push' },
+      ]);
+      expect(mockSendPushNotification).toHaveBeenCalledTimes(1);
+
+      // Leaving the first row as `digest` makes the next sweep send a second
+      // push for content already covered by the report-carried digest.
+      expect((await releaseDueNotificationDeliveries()).inspected).toBe(0);
+      expect(mockSendPushNotification).toHaveBeenCalledTimes(1);
+    });
+
+    it('reports a failed digest provider attempt separately from policy blocks', async () => {
+      establishedProfile(733);
+      const digest = await createNotificationIntent(reminderIntent(733, {
+        priority: 'passive', dedupeKey: 'digest-provider-failure',
+        relatedEntityId: 'digest-provider-failure',
+      }));
+      testDb.prepare('UPDATE notification_decision_logs SET scheduled_for = ? WHERE decision_log_id = ?')
+        .run(DUE, digest.decisionLog.decisionLogId);
+      mockSendPushNotification.mockResolvedValueOnce({
+        sent: 0, failed: 1, skipped: 0, retriable: 0, unregistered: [],
+      });
+
+      const summary = await releaseDueNotificationDeliveries();
+
+      expect(summary).toMatchObject({ inspected: 1, released: 0, blocked: 1, failed: 1 });
+    });
+
     it('re-checks the durable budget before APNs and terminates an over-budget digest without a retry loop', async () => {
       establishedProfile(701);
       for (let i = 0; i < 2; i += 1) {
@@ -490,9 +542,108 @@ describe('notification delivery accounting', () => {
       expect(visible).toBe(true);
       expect(mockSendPushNotification).not.toHaveBeenCalled();
     });
+
+    it('supersedes an existing queued delivery when the user snoozes the item', async () => {
+      establishedProfile(741);
+      updateNotificationProfile(741, 741, { quietHours: { start: '00:00', end: '23:59' } });
+      const created = await createNotificationIntent(reminderIntent(741, {
+        dedupeKey: 'snooze-supersedes-pending',
+        relatedEntityId: 'snooze-supersedes-pending',
+      }));
+      expect(created.decisionLog.decision).toBe('quiet_hours_delayed');
+      testDb.prepare('UPDATE notification_decision_logs SET scheduled_for = ? WHERE decision_log_id = ?')
+        .run(DUE, created.decisionLog.decisionLogId);
+      performNotificationAction(created.item!.itemId, 'snooze', 741, 741, {
+        snoozedUntil: '2026-05-07T13:00:00.000Z',
+      });
+      testDb.prepare('UPDATE notification_center_items SET snoozed_until = ? WHERE item_id = ?')
+        .run(DUE, created.item!.itemId);
+      updateNotificationProfile(741, 741, { quietHours: { start: '02:00', end: '03:00' } });
+      mockSendPushNotification.mockClear();
+
+      const first = await releaseDueNotificationDeliveries();
+
+      expect(first.released).toBe(1);
+      expect(mockSendPushNotification).toHaveBeenCalledTimes(1);
+      const original = testDb.prepare(`
+        SELECT decision, reason, scheduled_for FROM notification_decision_logs
+         WHERE decision_log_id = ?
+      `).get(created.decisionLog.decisionLogId) as {
+        decision: string; reason: string; scheduled_for: string | null;
+      };
+      expect(original).toMatchObject({
+        decision: 'in_app_only',
+        reason: 'pending push superseded by user snooze',
+        scheduled_for: null,
+      });
+
+      // The pre-snooze queue entry must not wake on the next sweep and push the
+      // same item a second time after its explicit snooze release.
+      expect((await releaseDueNotificationDeliveries()).inspected).toBe(0);
+      expect(mockSendPushNotification).toHaveBeenCalledTimes(1);
+    });
+
+    it('reports a failed snooze provider attempt separately from consent blocks', async () => {
+      establishedProfile(744);
+      const created = await createNotificationIntent(reminderIntent(744, {
+        dedupeKey: 'snooze-provider-failure',
+        relatedEntityId: 'snooze-provider-failure',
+      }));
+      performNotificationAction(created.item!.itemId, 'snooze', 744, 744, {
+        snoozedUntil: '2026-05-07T13:00:00.000Z',
+      });
+      testDb.prepare('UPDATE notification_center_items SET snoozed_until = ? WHERE item_id = ?')
+        .run(DUE, created.item!.itemId);
+      mockSendPushNotification.mockResolvedValueOnce({
+        sent: 0, failed: 1, skipped: 0, retriable: 0, unregistered: [],
+      });
+
+      const summary = await releaseDueSnoozedNotifications();
+
+      expect(summary).toMatchObject({ inspected: 1, released: 0, blocked: 1, failed: 1 });
+    });
   });
 
   describe('delivery policy', () => {
+    it('bounds APNs storage by the earlier intent or decision expiry', async () => {
+      establishedProfile(742);
+      const expiresAt = '2026-05-07T13:00:00.000Z';
+      const decisionDeadline = '2026-05-07T12:05:00.000Z';
+
+      await createNotificationIntent(reminderIntent(742, {
+        dedupeKey: 'bounded-wire-expiry',
+        relatedEntityId: 'bounded-wire-expiry',
+        expiresAt,
+        decisionDeadline,
+      }));
+
+      expect(mockSendPushNotification).toHaveBeenCalledWith(
+        742,
+        expect.objectContaining({ expirationAt: decisionDeadline }),
+      );
+    });
+
+    it('does not push an intent that is already expired', async () => {
+      establishedProfile(743);
+      mockSendPushNotification.mockClear();
+
+      const result = await createNotificationIntent(reminderIntent(743, {
+        dedupeKey: 'already-expired',
+        relatedEntityId: 'already-expired',
+        expiresAt: '2026-05-07T11:59:00.000Z',
+      }));
+
+      expect(result.item).not.toBeNull();
+      expect(listNotificationCenterItems(743, 743)).not.toContainEqual(
+        expect.objectContaining({ itemId: result.item!.itemId }),
+      );
+      expect(result.decisionLog).toMatchObject({
+        decision: 'in_app_only',
+        reason: 'notification push deadline expired before APNs dispatch',
+      });
+      expect(mockSendPushNotification).not.toHaveBeenCalled();
+    });
+
     it('keeps an in_app_only intent out of the digest push channel', async () => {
       establishedProfile(760);
       const created = await createNotificationIntent(reminderIntent(760, {
@@ -581,6 +732,7 @@ describe('notification delivery accounting', () => {
       mockSendPushNotification.mockClear();
       const blocked = await releaseDueNotificationDeliveries();
       expect(blocked.blocked).toBe(1);
+      expect(blocked.failed).toBe(1);
       expect(mockSendPushNotification).not.toHaveBeenCalled();
 
       // The row must still be claimable. Rewriting it to a terminal
@@ -597,6 +749,7 @@ describe('notification delivery accounting', () => {
       delete process.env.DECISION_TYPE_SUPPRESSION_ENABLED;
       const recovered = await releaseDueNotificationDeliveries();
       expect(recovered.released).toBe(1);
+      expect(recovered.failed).toBe(0);
       expect(mockSendPushNotification).toHaveBeenCalledTimes(1);
     });
 
@@ -671,6 +824,44 @@ describe('notification delivery accounting', () => {
       // A badge is an outstanding ask. A re-engagement nudge is not something
       // the user can resolve, so a badge pointing at one cannot be cleared.
       expect(countUnreadNotificationCenterItems(812, 812)).toBe(1);
+    });
+  });
+
+  describe('digest consent projection', () => {
+    it('does not advertise a reminder after its category consent is withdrawn', async () => {
+      establishedProfile(814);
+      await createNotificationIntent(reminderIntent(814, {
+        priority: 'passive', dedupeKey: 'category-muted-reminder',
+        relatedEntityId: 'category-muted-reminder',
+      }));
+      await createNotificationIntent(reminderIntent(814, {
+        sourceSkill: 'system', type: 'insight', priority: 'passive',
+        dedupeKey: 'category-muted-companion', relatedEntityId: 'category-muted-companion',
+      }));
+      setPushPreference(814, 'reminders', false);
+
+      const digest = assembleDailyDigest(814, 814, 2);
+
+      expect(digest.body).toContain('update');
+      expect(digest.body).not.toContain('reminder');
+    });
+
+    it('does not advertise an item after its skill consent is withdrawn', async () => {
+      establishedProfile(815);
+      await createNotificationIntent(reminderIntent(815, {
+        sourceSkill: 'training', type: 'missed_item', priority: 'passive',
+        dedupeKey: 'skill-muted-training', relatedEntityId: 'skill-muted-training',
+      }));
+      await createNotificationIntent(reminderIntent(815, {
+        sourceSkill: 'system', type: 'insight', priority: 'passive',
+        dedupeKey: 'skill-muted-companion', relatedEntityId: 'skill-muted-companion',
+      }));
+      updateNotificationProfile(815, 815, { skillPreferences: { training: false } });
+
+      const digest = assembleDailyDigest(815, 815, 2);
+
+      expect(digest.body).toContain('update');
+      expect(digest.body).not.toContain('missed');
     });
   });
 

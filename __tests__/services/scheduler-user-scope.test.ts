@@ -25,6 +25,7 @@ const mockGetOwnerBootstrapTarget = vi.fn();
 const mockGenerateCoachBriefing = vi.hoisted(() => vi.fn());
 const mockCronSchedule = vi.hoisted(() => vi.fn());
 const mockCreateNotificationIntent = vi.hoisted(() => vi.fn());
+const mockReleaseDueNotificationDeliveries = vi.hoisted(() => vi.fn());
 const mockCreateDecisionIntent = vi.hoisted(() => vi.fn());
 const mockListSecretaryAgendaItems = vi.hoisted(() => vi.fn());
 const mockRunEventBackboneOnce = vi.hoisted(() => vi.fn());
@@ -290,7 +291,7 @@ vi.mock('../../src/services/report-schedule-dispatcher', () => ({
 }));
 vi.mock('../../src/services/notification-orchestrator', () => ({
   createNotificationIntent: (...args: unknown[]) => mockCreateNotificationIntent(...args),
-  releaseDueNotificationDeliveries: vi.fn(),
+  releaseDueNotificationDeliveries: (...args: unknown[]) => mockReleaseDueNotificationDeliveries(...args),
 }));
 vi.mock('../../src/services/decision-center', async () => {
   const actual = await vi.importActual<typeof import('../../src/services/decision-center')>(
@@ -422,6 +423,9 @@ describe('scheduler tenant scoping', () => {
     });
     mockGetOwnerBootstrapTarget.mockReturnValue({ tenantId: 99, telegramId: 1999 });
     mockCreateNotificationIntent.mockResolvedValue({ decision: 'in_app_only' });
+    mockReleaseDueNotificationDeliveries.mockResolvedValue({
+      inspected: 0, released: 0, blocked: 0, failed: 0,
+    });
     mockCreateDecisionIntent.mockResolvedValue({
       item: { decisionId: 'decision_calendar_conflict' },
       eligibility: { classification: 'decision' },
@@ -549,6 +553,22 @@ describe('scheduler tenant scoping', () => {
     expect(autoresearchJob).toBeDefined();
     expect(autoresearchJob?.[1]).toBeTypeOf('function');
     expect(autoresearchJob?.[2]).toEqual({ timezone: 'Europe/Lisbon' });
+  });
+
+  it('fails the notification release cron when a real delivery operation fails', async () => {
+    mockReleaseDueNotificationDeliveries.mockResolvedValueOnce({
+      inspected: 2, released: 0, blocked: 2, failed: 2,
+    });
+    startScheduler();
+    const releaseJob = mockCronSchedule.mock.calls.find(
+      (call) => call[0] === '*/15 * * * *'
+        && String(call[1]).includes('releaseDueNotificationDeliveries'),
+    )?.[1] as (() => Promise<unknown>) | undefined;
+    expect(releaseJob).toBeTypeOf('function');
+
+    await expect(releaseJob!()).rejects.toThrow(
+      'notification delayed/digest release: 2 delivery operation(s) failed',
+    );
   });
 
   it('continues processing later reminders when one reminder delivery fails', async () => {

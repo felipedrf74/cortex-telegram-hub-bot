@@ -407,6 +407,46 @@ describe('exportAllUserData', () => {
     `).all()).toEqual([{ user_id: 2, provider: 'outlook' }]);
   });
 
+  it('exports notification decision logs with type from the matching scoped intent', () => {
+    testDb.prepare(`
+      INSERT INTO notification_intents (
+        intent_id, user_id, tenant_id, source_skill, type, priority, title, body
+      ) VALUES
+        ('intent-export-owner', 1, 1, 'secretary', 'reminder', 'active',
+         'Owner reminder', 'Owner body'),
+        ('intent-export-other', 2, 2, 'security', 'security_account', 'time_sensitive',
+         'Other security alert', 'Other body')
+    `).run();
+    testDb.prepare(`
+      INSERT INTO notification_decision_logs (
+        decision_log_id, intent_id, user_id, tenant_id, source_skill,
+        decision, priority, reason, created_at
+      ) VALUES
+        ('log-export-owner', 'intent-export-owner', 1, 1, 'secretary',
+         'sent_push', 'active', 'pushable', '2026-08-01T10:00:00.000Z'),
+        ('log-export-scope-mismatch', 'intent-export-other', 1, 1, 'secretary',
+         'in_app_only', 'active', 'policy_blocked', '2026-08-01T10:01:00.000Z'),
+        ('log-export-other', 'intent-export-other', 2, 2, 'security',
+         'sent_push', 'time_sensitive', 'pushable', '2026-08-01T10:02:00.000Z')
+    `).run();
+
+    const exported = exportAllUserData(1);
+
+    expect(exported.notificationDecisionLogs).toEqual([
+      expect.objectContaining({
+        decision: 'sent_push',
+        sourceSkill: 'secretary',
+        type: 'reminder',
+      }),
+      expect.objectContaining({
+        decision: 'in_app_only',
+        sourceSkill: 'secretary',
+        type: null,
+      }),
+    ]);
+    expect(JSON.stringify(exported.notificationDecisionLogs)).not.toContain('security_account');
+  });
+
   it('exports todos, reminders, notes, shared memory', () => {
     seedUser(testDb, 1);
     seedUserData(testDb, 1);

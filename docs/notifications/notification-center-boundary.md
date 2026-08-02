@@ -192,7 +192,9 @@ case where a setting or control did not do what it said.
   re-interrupts at its original priority. Re-delivery re-applies quiet hours,
   the preference gate and the decision quality gate, so snooze cannot be used
   to obtain a push the gate already refused. After `SNOOZE_MAX_COUNT` snoozes
-  the item returns to the inbox without interrupting again.
+  the item returns to the inbox without interrupting again. Snoozing also
+  terminalizes any older `digest` or `quiet_hours_delayed` row for the same
+  scoped item, so the original queue cannot push it again after snooze release.
 - **Per-type mute stops the push.** `decision_type_suppressions` is consulted
   in the delivery ladder, not only by the read filter, and the badge query
   applies the same predicate so the badge cannot count rows the list hides.
@@ -201,7 +203,10 @@ case where a setting or control did not do what it said.
   the durable item exists either way, so only the interrupt is at stake.
 - **Queued deliveries re-check preferences.** The release sweep re-evaluates
   the skill gate, `pushEnabled`, delivery policy and per-type mute before
-  sending, so turning push off drains the queue instead of flushing it.
+  sending, so turning push off drains the queue instead of flushing it. Digest
+  composition applies the same skill and legacy Reminders-category consent to
+  every advertised row; a permitted digest cannot reveal that muted content
+  exists.
 - **Queued deliveries re-check the durable interrupt budget.** Digest and
   quiet-hours rows are serialized by user and re-count persisted `sent_push`
   decisions at the last synchronous boundary before APNs. A digest charges
@@ -215,7 +220,15 @@ case where a setting or control did not do what it said.
   and an already-queued row stays queued for a later safe re-read rather than
   being discarded.
 - **Queued deliveries keep their interruption level**, so `apns-expiration`
-  is not silently `0` (now-or-drop) for a deferred time-sensitive item.
+  is not silently `0` (now-or-drop) for a deferred time-sensitive item. The
+  1-hour/6-hour class window is also capped at the earlier intent expiry or
+  decision deadline, and an already-expired payload never opens an APNs
+  request.
+- **Release failures are operational failures.** The release summary separates
+  provider/sweep faults from preference, budget, no-token and other legitimate
+  blocks. Both `notification_release` and queued `deliver_notification` fail
+  their governed job when `failed > 0`; transient consent-read faults remain
+  queued and make the failure visible rather than silently disappearing.
 - **`insight` never pushes.** `deliveryPolicyForNotificationContract` returns
   `digest_only` for it, matching the contract's own `defaultDelivery`. Other
   types omit `push` from `defaultDelivery` yet legitimately push under `auto`
@@ -228,6 +241,9 @@ case where a setting or control did not do what it said.
   row is retained only so historical rows still resolve.
 - **No producer may call APNs directly.** `createNotificationIntent` is the
   only path; the chat-v2 background command worker was the last bypass.
+- **Device registration identity is authenticated.** Device-token aliases use
+  the JWT-bound `deviceId`; a request-body identifier is ignored so one user
+  cannot re-associate a known device id and revoke another user's push rows.
 - **Titles carry no emoji.** Stripped at the normalizer — VoiceOver announces
   them verbatim. What is stripped is emoji PRESENTATION (intrinsic, or forced
   by a VS16 selector), not `Extended_Pictographic`, which would also delete
@@ -249,7 +265,10 @@ case where a setting or control did not do what it said.
     already did, via the `sqlite_master` walk for `user_id` columns.
 - **Subject-access exports include the notification store** — profile, center
   items (including bodies), decision logs, type suppressions and engagement
-  events. Device tokens alone under-disclosed the most sensitive store here.
+  events. Decision-log type is projected through an intent join scoped by
+  intent, user and tenant; orphaned/mismatched history remains exportable with
+  `type: null` and cannot borrow another scope's type. Device tokens alone
+  under-disclosed the most sensitive store here.
 
 New producers must be user-scoped. `connection-health-notifier` is built on
 `getIntegrationSummary(userId)` — the per-user connection state — and NOT on

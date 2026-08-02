@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 let testDb: Database.Database;
+const mockReleaseDueNotificationDeliveries = vi.hoisted(() => vi.fn());
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
@@ -63,6 +64,10 @@ vi.mock('../../src/utils/logger', () => ({
   LOGGER_REDACTION_PATHS: [],
 }));
 
+vi.mock('../../src/services/notification-orchestrator', () => ({
+  releaseDueNotificationDeliveries: (...args: unknown[]) => mockReleaseDueNotificationDeliveries(...args),
+}));
+
 import {
   cancelEvent,
   claimPendingEvents,
@@ -95,6 +100,10 @@ import { createMigratedTestDatabase } from '../../src/testing/migrated-test-data
 describe('event backbone foundation', () => {
   beforeEach(() => {
     testDb = new Database(':memory:');
+    mockReleaseDueNotificationDeliveries.mockReset();
+    mockReleaseDueNotificationDeliveries.mockResolvedValue({
+      inspected: 0, released: 0, blocked: 0, failed: 0,
+    });
     ensureEventOutboxTables();
     ensureBackgroundJobTables();
     ensureAppSummaryTables();
@@ -571,7 +580,39 @@ describe('event backbone foundation', () => {
       entityId: 'intent-delivery-1',
       decisionType: 'notification_delivery_release',
     });
-    expect(JSON.parse(row.decisionJson)).toMatchObject({ inspected: 0, released: 0, blocked: 0 });
+    expect(JSON.parse(row.decisionJson)).toMatchObject({
+      inspected: 0, released: 0, blocked: 0, failed: 0,
+    });
+  });
+
+  it('fails and retries a deliver_notification job when its release sweep reports failure', async () => {
+    mockReleaseDueNotificationDeliveries.mockResolvedValueOnce({
+      inspected: 1, released: 0, blocked: 1, failed: 1,
+    });
+    const job = enqueueJob({
+      tenantId: 7,
+      userId: 7,
+      jobType: 'deliver_notification',
+      payload: { intentId: 'intent-delivery-failed' },
+      idempotencyKey: 'deliver-notification-failed',
+    });
+
+    const result = await processPendingJobs(defaultJobHandlers, { limit: 1 });
+
+    expect(result).toMatchObject({ completed: 0, failed: 1, deadLetter: 0 });
+    const failedJob = testDb.prepare(`
+      SELECT status, last_error AS lastError FROM background_jobs WHERE job_id = ?
+    `).get(job.jobId) as { status: string; lastError: string };
+    expect(failedJob).toMatchObject({
+      status: 'failed',
+      lastError: 'notification delivery release: 1 delivery operation(s) failed',
+    });
+    const audit = testDb.prepare(`
+      SELECT decision_json AS decisionJson FROM product_decision_logs
+       WHERE decision_type = 'notification_delivery_release'
+       ORDER BY rowid DESC LIMIT 1
+    `).get() as { decisionJson: string };
+    expect(JSON.parse(audit.decisionJson)).toMatchObject({ failed: 1 });
   });
 
   it('processPendingJobs only claims job types handled by the worker', async () => {

@@ -1444,11 +1444,15 @@ export async function evaluateNotificationIntent(
       // hiding real APNs failures behind a success decision).
       decision = attempt.status === 'sent'
         ? 'sent_push'
+        : attempt.status === 'blocked_expired'
+          ? 'in_app_only'
         : attempt.status === 'blocked_missing_device_token'
           ? 'blocked_missing_device_token'
           : 'apns_delivery_failed';
       reason = attempt.status === 'sent'
           ? 'APNs accepted privacy-safe payload'
+          : attempt.status === 'blocked_expired'
+            ? 'notification push deadline expired before APNs dispatch'
           : attempt.status === 'blocked_missing_credentials'
             ? 'APNs credentials missing; durable in-app item created'
             : attempt.status === 'blocked_missing_device_token'
@@ -1541,6 +1545,8 @@ export interface NotificationReleaseSweepSummary {
   inspected: number;
   released: number;
   blocked: number;
+  /** Provider attempts and sweep operations that genuinely failed. */
+  failed: number;
 }
 
 // Single-flight latch for the release sweep (NOTIF-RELEASE-CAS). Both the
@@ -1588,6 +1594,7 @@ async function runReleaseDueNotificationDeliveriesSweep(now: Date): Promise<Noti
 
   let released = 0;
   let blocked = 0;
+  let failed = 0;
   const digestGroups = new Map<string, any[]>();
   const regularRows: any[] = [];
   for (const row of rows) {
@@ -1675,6 +1682,7 @@ async function runReleaseDueNotificationDeliveriesSweep(now: Date): Promise<Noti
       }
       if (deferred > 0) {
         blocked += deferred;
+        failed += deferred;
         logger.warn({
           userId: first.user_id, tenantId: first.tenant_id, deferred,
         }, 'digest rows left queued: suppression state unreadable, retrying next sweep');
@@ -1757,11 +1765,15 @@ async function runReleaseDueNotificationDeliveriesSweep(now: Date): Promise<Noti
       const attempt = await attemptPushDelivery(digestIntent, carrier.item_id, payload, profile);
       const decision: NotificationDecision = attempt.status === 'sent'
         ? 'sent_push'
+        : attempt.status === 'blocked_expired'
+          ? 'in_app_only'
         : attempt.status === 'blocked_missing_device_token'
           ? 'blocked_missing_device_token'
           : 'apns_delivery_failed';
       const reason = attempt.status === 'sent'
         ? 'digest notification released to APNs'
+        : attempt.status === 'blocked_expired'
+          ? 'digest notification expired before APNs dispatch'
         : attempt.status === 'blocked_missing_credentials'
             ? 'digest notification due but APNs credentials are missing'
             : attempt.status === 'blocked_missing_device_token'
@@ -1783,19 +1795,23 @@ async function runReleaseDueNotificationDeliveriesSweep(now: Date): Promise<Noti
       let claimed = updateReleasedLogs([{
         row: carrier, decision, reason, sentAt: attempt.sentAt, attemptIds,
       }]);
-      claimed += updateReleasedLogs(pushable.slice(1).map((row) => ({
-        row,
-        decision: attempt.status === 'sent' ? ('in_app_only' as NotificationDecision) : decision,
-        reason: attempt.status === 'sent'
-          ? `surfaced in the digest push carried by ${carrier.item_id}; not a separate interrupt`
-          : reason,
-        sentAt: null,
-        attemptIds,
-      })));
+      claimed += updateReleasedLogs(pushable
+        .filter((row) => row.decision_log_id !== carrier.decision_log_id)
+        .map((row) => ({
+          row,
+          decision: attempt.status === 'sent' ? ('in_app_only' as NotificationDecision) : decision,
+          reason: attempt.status === 'sent'
+            ? `surfaced in the digest push carried by ${carrier.item_id}; not a separate interrupt`
+            : reason,
+          sentAt: null,
+          attemptIds,
+        })));
       if (attempt.status === 'sent') released += claimed;
       else blocked += claimed;
+      if (attempt.status === 'failed') failed += 1;
       } catch (err) {
         blocked += group.length;
+        failed += 1;
         logger.warn({ err, userId: group[0]?.user_id, tenantId: group[0]?.tenant_id }, 'Notification digest release failed');
       }
     });
@@ -1815,6 +1831,7 @@ async function runReleaseDueNotificationDeliveriesSweep(now: Date): Promise<Noti
         // Left queued deliberately — see the digest branch above. Counted as
         // blocked so the sweep summary does not read as a silent no-op.
         blocked += 1;
+        failed += 1;
         logger.warn({
           decisionLogId: row.decision_log_id, userId: row.user_id, tenantId: row.tenant_id,
         }, 'delayed notification left queued: suppression state unreadable, retrying next sweep');
@@ -1871,12 +1888,16 @@ async function runReleaseDueNotificationDeliveriesSweep(now: Date): Promise<Noti
       // recorded as blocked_missing_device_token.
       const decision: NotificationDecision = attempt.status === 'sent'
         ? 'sent_push'
+        : attempt.status === 'blocked_expired'
+          ? 'in_app_only'
         : attempt.status === 'blocked_missing_device_token'
           ? 'blocked_missing_device_token'
           : 'apns_delivery_failed';
       const reason = attempt.status === 'sent'
         ? 'delayed notification released to APNs'
-          : attempt.status === 'blocked_missing_credentials'
+        : attempt.status === 'blocked_expired'
+          ? 'delayed notification expired before APNs dispatch'
+        : attempt.status === 'blocked_missing_credentials'
             ? 'delayed notification released but APNs credentials are missing'
             : attempt.status === 'blocked_missing_device_token'
               ? 'delayed notification released but no active device token is available'
@@ -1890,8 +1911,10 @@ async function runReleaseDueNotificationDeliveriesSweep(now: Date): Promise<Noti
       }]);
       if (attempt.status === 'sent') released += claimed;
       else blocked += claimed;
+      if (attempt.status === 'failed') failed += 1;
       } catch (err) {
         blocked += 1;
+        failed += 1;
         logger.warn({ err, decisionLogId: row.decision_log_id }, 'Notification delayed/digest release failed');
       }
     });
@@ -1904,11 +1927,13 @@ async function runReleaseDueNotificationDeliveriesSweep(now: Date): Promise<Noti
     const snoozeSummary = await releaseDueSnoozedNotifications(now);
     released += snoozeSummary.released;
     blocked += snoozeSummary.blocked;
+    failed += snoozeSummary.failed;
   } catch (err) {
+    failed += 1;
     logger.warn({ err }, 'Snoozed notification sweep failed');
   }
 
-  return { inspected: rows.length, released, blocked };
+  return { inspected: rows.length, released, blocked, failed };
 }
 
 export interface NotificationRetentionSummary {
@@ -2106,14 +2131,17 @@ export function assembleDailyDigest(
   // consent-blocked promotional item produced a push that announced "2
   // reminders". The interrupt itself was correctly withheld from the
   // promotional item, and then its existence was leaked by the digest anyway.
-  const marketingAllowed = (() => {
-    try {
-      return getOrCreateNotificationProfile(userId, tenantId).marketingPushEnabled;
-    } catch {
-      // Fail closed: an unreadable profile must not license marketing copy.
-      return false;
-    }
-  })();
+  let digestProfile: NotificationProfile;
+  try {
+    digestProfile = getOrCreateNotificationProfile(userId, tenantId);
+  } catch (err) {
+    // Without the profile we cannot know which skills the user has muted.
+    // Abort composition so the release row remains queued for a later sweep;
+    // emitting a partial digest would disclose content through an opt-out.
+    logger.warn({ err, userId, tenantId }, 'digest profile read failed; withholding composition');
+    throw new Error('notification profile unreadable during digest composition');
+  }
+  const marketingAllowed = digestProfile.marketingPushEnabled;
 
   let rows: Array<{
     type: NotificationIntentType;
@@ -2151,6 +2179,12 @@ export function assembleDailyDigest(
   // A read fault must abort composition: releaseDueNotificationDeliveries will
   // leave the queued rows claimable for the next sweep rather than leak copy.
   const advertisableRows = rows.filter((row) => {
+    if (!digestProfile.skillPreferences[row.sourceSkill]) return false;
+    const categoryPreference = notificationCategoryPreferenceCause({ userId, type: row.type });
+    if (categoryPreference === 'read_failed') {
+      throw new Error('notification category preference unreadable during digest composition');
+    }
+    if (categoryPreference === 'user_disabled') return false;
     const cause = notificationTypeSuppressionCause({
       userId,
       tenantId,
@@ -2713,14 +2747,36 @@ export function snoozeNotificationCenterItem(
   assertScope(userId, tenantId, 'snooze_notification_center_item', { itemId });
   ensureNotificationTables();
   const until = resolveSnoozeUntil(snoozedUntil, now);
-  getDb().prepare(`
-    UPDATE notification_center_items
-    SET status = 'snoozed',
-        snoozed_until = ?,
-        snooze_count = COALESCE(snooze_count, 0) + 1,
-        read_at = COALESCE(read_at, datetime('now'))
-    WHERE item_id = ? AND user_id = ? AND tenant_id = ? AND status IN ('unread', 'read')
-  `).run(until, itemId, userId, tenantId);
+  const db = getDb();
+  db.transaction(() => {
+    const updated = db.prepare(`
+      UPDATE notification_center_items
+      SET status = 'snoozed',
+          snoozed_until = ?,
+          snooze_count = COALESCE(snooze_count, 0) + 1,
+          read_at = COALESCE(read_at, datetime('now'))
+      WHERE item_id = ? AND user_id = ? AND tenant_id = ? AND status IN ('unread', 'read')
+    `).run(until, itemId, userId, tenantId);
+    if ((updated.changes ?? 0) === 0) return;
+
+    // A queued digest/quiet-hours push predates the user's explicit snooze and
+    // is no longer a valid delivery instruction. Leaving it claimable means
+    // the snooze release pushes once, then the original row pushes the same
+    // item again on the next sweep. Terminalize every pending row for this
+    // scoped item atomically with the snooze transition; a later quiet-hours
+    // deferral creates one fresh row for the new requested release.
+    db.prepare(`
+      UPDATE notification_decision_logs
+      SET decision = 'in_app_only',
+          reason = 'pending push superseded by user snooze',
+          scheduled_for = NULL
+      WHERE notification_id = ?
+        AND user_id = ?
+        AND tenant_id = ?
+        AND sent_at IS NULL
+        AND decision IN ('quiet_hours_delayed', 'digest')
+    `).run(itemId, userId, tenantId);
+  })();
   return getNotificationCenterItem(itemId, userId, tenantId);
 }
 
@@ -2736,6 +2792,7 @@ export interface SnoozeReleaseSummary {
    */
   deferredQuietHours: number;
   blocked: number;
+  failed: number;
 }
 
 /**
@@ -2776,6 +2833,7 @@ export async function releaseDueSnoozedNotifications(now = new Date()): Promise<
   let demotedToDigest = 0;
   let deferredQuietHours = 0;
   let blocked = 0;
+  let failed = 0;
 
   for (const row of rows) {
     await withUserEvaluationLock(row.user_id, row.tenant_id, async () => {
@@ -2822,6 +2880,7 @@ export async function releaseDueSnoozedNotifications(now = new Date()): Promise<
           WHERE item_id = ? AND user_id = ? AND tenant_id = ?
         `).run(nowIso, row.item_id, row.user_id, row.tenant_id);
         blocked += 1;
+        failed += 1;
         logger.warn({
           itemId: row.item_id, userId: row.user_id,
         }, 'snoozed notification re-queued: suppression state unreadable, retrying next sweep');
@@ -2897,12 +2956,16 @@ export async function releaseDueSnoozedNotifications(now = new Date()): Promise<
         notificationId: row.item_id,
         decision: attempt.status === 'sent'
           ? 'sent_push'
+          : attempt.status === 'blocked_expired'
+            ? 'in_app_only'
           : attempt.status === 'blocked_missing_device_token'
             ? 'blocked_missing_device_token'
             : 'apns_delivery_failed',
         priority: effectivePriority,
         reason: attempt.status === 'sent'
           ? 'snoozed notification returned to the user'
+          : attempt.status === 'blocked_expired'
+            ? 'snoozed notification expired before APNs dispatch'
           : `snoozed notification release failed: ${attempt.status}`,
         scheduledFor: null,
         sentAt: attempt.sentAt,
@@ -2910,14 +2973,16 @@ export async function releaseDueSnoozedNotifications(now = new Date()): Promise<
       });
       if (attempt.status === 'sent') released += 1;
       else blocked += 1;
+      if (attempt.status === 'failed') failed += 1;
       } catch (err) {
         blocked += 1;
+        failed += 1;
         logger.warn({ err, itemId: row.item_id }, 'Snoozed notification release failed');
       }
     });
   }
 
-  return { inspected: rows.length, released, demotedToDigest, deferredQuietHours, blocked };
+  return { inspected: rows.length, released, demotedToDigest, deferredQuietHours, blocked, failed };
 }
 
 export function performNotificationAction(
@@ -4180,11 +4245,21 @@ export function userHasActivePushDeviceToken(userId: number): boolean {
  */
 interface SkippedPushDelivery {
   attemptId: null;
-  status: 'blocked_missing_device_token';
+  status: 'blocked_missing_device_token' | 'blocked_expired';
   sentAt: null;
 }
 
 type PushDeliveryOutcome = DeliveryAttempt | SkippedPushDelivery;
+
+/** Earliest instant after which a push is no longer useful or actionable. */
+function notificationPushExpirationAt(intent: NotificationIntentRecord): string | null {
+  const candidates = [intent.expiresAt, intent.decisionDeadline]
+    .filter((value): value is string => typeof value === 'string' && Number.isFinite(Date.parse(value)))
+    .map((value) => ({ value, at: Date.parse(value) }));
+  if (candidates.length === 0) return null;
+  candidates.sort((left, right) => left.at - right.at);
+  return candidates[0].value;
+}
 
 async function attemptPushDelivery(
   intent: NotificationIntentRecord,
@@ -4198,6 +4273,10 @@ async function attemptPushDelivery(
   },
   profile: NotificationProfile,
 ): Promise<PushDeliveryOutcome> {
+  const expirationAt = notificationPushExpirationAt(intent);
+  if (expirationAt && Date.parse(expirationAt) <= Date.now()) {
+    return { attemptId: null, status: 'blocked_expired', sentAt: null };
+  }
   const tokens = getPushTokensForUser(intent.userId);
   if (tokens.length === 0) {
     return { attemptId: null, status: 'blocked_missing_device_token', sentAt: null };
@@ -4254,6 +4333,7 @@ async function attemptPushDelivery(
           ? `decision:${notificationId}`
           : `${intent.sourceSkill}:${intent.type}:${intent.dedupeKey ?? notificationId ?? intent.intentId}`,
       ),
+      expirationAt: expirationAt ?? undefined,
     });
     // APNs 410 responses delete the token inside the sender; surface that
     // here so decision logs explain WHY later attempts see no tokens
@@ -4300,6 +4380,9 @@ async function attemptPushDelivery(
       return persistDeliveryAttempt(intent, notificationId, 'push', 'apns', 'failed', '410', 'apns_token_unregistered');
     }
     if (result.skipped > 0) {
+      if (expirationAt && Date.parse(expirationAt) <= Date.now()) {
+        return { attemptId: null, status: 'blocked_expired', sentAt: null };
+      }
       return persistDeliveryAttempt(intent, notificationId, 'push', 'apns', 'blocked_missing_credentials', null, 'apns_credentials_missing');
     }
     return persistDeliveryAttempt(intent, notificationId, 'push', 'apns', 'failed', 'apns_rejected', 'apns_delivery_failed');

@@ -704,6 +704,7 @@ describe('Notification inbox routes', () => {
       userId: 7,
       tenantId: 7,
       token: 'abcdef1234567890',
+      deviceId: 'iphone-test',
     }));
 
     const action = await dispatch('POST', '/nc_action/actions', {}, 7, { actionId: 'open_detail' });
@@ -828,6 +829,9 @@ describe('Notification inbox routes', () => {
     }));
     expect(mockRegisterNotificationDeviceToken).not.toHaveBeenCalledWith(expect.objectContaining({
       userId: 999,
+    }));
+    expect(mockRegisterNotificationDeviceToken).not.toHaveBeenCalledWith(expect.objectContaining({
+      deviceId: 'forged-device',
     }));
   });
 

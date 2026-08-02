@@ -274,7 +274,7 @@ export interface FullUserExport {
     createdAt: string; readAt: string | null; dismissedAt: string | null; snoozedUntil: string | null;
   }>;
   notificationDecisionLogs: Array<{
-    decision: string; reason: string; priority: string; sourceSkill: string; type: string;
+    decision: string; reason: string; priority: string; sourceSkill: string; type: string | null;
     scheduledFor: string | null; sentAt: string | null; openedAt: string | null;
     actionTaken: string | null; createdAt: string;
   }>;
@@ -481,10 +481,18 @@ export function exportAllUserData(userId: number): FullUserExport {
             snoozed_until as snoozedUntil
        FROM notification_center_items WHERE user_id = ? ORDER BY created_at`, userId);
   const notificationDecisionLogs = safeAll(db,
-    `SELECT decision, reason, priority, source_skill as sourceSkill, type,
-            scheduled_for as scheduledFor, sent_at as sentAt, opened_at as openedAt,
-            action_taken as actionTaken, created_at as createdAt
-       FROM notification_decision_logs WHERE user_id = ? ORDER BY created_at`, userId);
+    `SELECT logs.decision, logs.reason, logs.priority,
+            logs.source_skill as sourceSkill, intents.type,
+            logs.scheduled_for as scheduledFor, logs.sent_at as sentAt,
+            logs.opened_at as openedAt, logs.action_taken as actionTaken,
+            logs.created_at as createdAt
+       FROM notification_decision_logs AS logs
+       LEFT JOIN notification_intents AS intents
+         ON intents.intent_id = logs.intent_id
+        AND intents.user_id = logs.user_id
+        AND intents.tenant_id = logs.tenant_id
+      WHERE logs.user_id = ?
+      ORDER BY logs.created_at`, userId);
   const notificationTypeSuppressions = safeAll(db,
     `SELECT source_skill as sourceSkill, type, mode, until, created_at as createdAt
        FROM decision_type_suppressions WHERE user_id = ?`, userId);

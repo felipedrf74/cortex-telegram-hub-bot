@@ -5,9 +5,9 @@
     "generatorVersion": 4,
     "authoritativeFreshness": "sourceDigest",
     "sourceDigestAlgorithm": "sha256-path-git-mode-content-v2",
-    "sourceDigest": "cb743fdf7a143a766f9d4208096d5a8385826c142186ab41da7abe696c24c7af",
-    "baseCommit": "5bb9c73c3b781a619f7576a697e1c3d8e0e8b4c1",
-    "baseCommitTimestamp": "2026-08-02T01:27:57+01:00",
+    "sourceDigest": "255c651b7456d89e15d11b52a5e3b49225f469bb60a18172db406d556784e0db",
+    "baseCommit": "7328139e2ccb8a3a828cfa6a523ecb2970afa9fc",
+    "baseCommitTimestamp": "2026-08-02T01:44:15+01:00",
     "trackedFiles": 3031,
     "sourceFiles": 1107
   },
@@ -5619,7 +5619,7 @@
     },
     {
       "path": "src/services/notification-orchestrator.ts",
-      "bytes": 258491,
+      "bytes": 262499,
       "generated": false
     }
   ]

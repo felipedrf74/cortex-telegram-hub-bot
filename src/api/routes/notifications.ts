@@ -1156,7 +1156,10 @@ export function notificationRoutes(): Router {
         tenantId,
         token: String(req.body?.token || ''),
         environment: req.body?.environment === 'production' ? 'production' : 'sandbox',
-        deviceId: typeof req.body?.deviceId === 'string' ? req.body.deviceId : authReq.deviceId,
+        // Device ownership comes from the signed iOS session, never the body.
+        // A caller-chosen id could re-associate another user's known device
+        // and revoke that user's push rows in the cross-login cleanup below.
+        deviceId: authReq.deviceId,
         appVersion: typeof req.body?.appVersion === 'string' ? req.body.appVersion : null,
         // Advisory: the client reports where the DEVICE is, the server never
         // shifts the profile on its own. See migration 271.
