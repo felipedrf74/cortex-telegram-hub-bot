@@ -5,49 +5,61 @@ Machine-readable truth: `docs/release/release-state.json`.
 ## Production
 
 - Backend version: `4.14.232`
-- Runtime commit: `8783409632073c87ee49eaac99e91ddf6bfa6880`
-- Artifact digest: `a786b16a0e199db736b3846b0100b486bd932ae652072718a7458f0faac23c38`
+- Runtime commit: `d3f0db389458ecee3a2c6dff3249469d1c4228b2`
+- Artifact digest: `abb492153eba81f192829d390aaaa660cde6a08cca26f145578cb283e9412375`
 - Installed-tree digest: `3944f37f16dd1a526a53bee80758b4519298e260c6f6596d88dfad6a6dda55ae`
 - Training catalog package: `51c1089cceb8a916abf200b5cb3688b19f5f7553990467ee0f8ef01c7c4f74bb`
 - Training release subject: `27b97ebc96e1b3bb1ee3612e63c5609b5572c9d4b58e59b8ea3e77642fb1cea3`
-- Production transaction `20260802T030916Z-9cafc1d52544` completed at `2026-08-02T03:10:31.429Z`.
+- Transaction `20260802T093404Z-7ebfe6c05ca1` completed at
+  `2026-08-02T09:35:19.247Z` in 73.884s: readiness 12.224s, soak 61.659s.
 - Backend/content health, exact PM2 identity, artifact parity, authenticated
-  smoke, migration startup, SQLite integrity, foreign keys,
-  pre-promotion backup, rollback readiness, and the 60-second soak passed.
-- The transaction took 73.917 seconds: 12.212 seconds to readiness and a
-  measured 61.704-second soak.
-- Rollback was armed but not required; backup: `nexus-db-20260802T030924Z.sqlite.age`.
+  smoke, migration startup, database integrity, backup, and rollback passed.
+- Rollback was armed but not required; backup: `nexus-db-20260802T093412Z.sqlite.age`.
 
 ## Artifact-Bound Evidence
 
-- Protected-main run: `30729143268`
-- Release-checkpoint run: `30729700062`
-- Compact manifest SHA-256: `3dd9c748883523a807f55c0dcb525e45802f08068a480b42df0ceb61c0927952`
-- Staging transaction: `20260802T030237Z-87ea25e958b6`
-- Production transaction: `20260802T030916Z-9cafc1d52544`
-- Encrypted backup SHA-256: `07a9eab44be961461f4cdd58f5012e54038f617ec3a8d2b20dae6d56403cc982`
-- Staging fault drill `20260802T025941Z-2ed894227116` restored the predecessor in 2.700 seconds against the 120-second objective; the normal staging transaction then passed its 300-second soak.
-- `./scripts/staging-smoke.sh` passed 28/28 checks. Exact-SHA `local_engine`
-  evaluation `chat-eval-2026-08-02T02-45-18-816Z` passed 7/7 scenarios.
+- Protected-main/checkpoint runs: `30736935248` / `30737533142`
+- Compact manifest SHA-256: `06edea4e4af078ba8e0dbcf423ff981fe7c23f8b4e521dc10dd1a07acd282762`
+- Staging/production transactions: `20260802T073100Z-dc324ff40f22` /
+  `20260802T093404Z-7ebfe6c05ca1`
+- Encrypted backup SHA-256: `7952c0c9b3fa4338ebb0c81cc70079460b91928aaa4161f4b0c55752fac5b4b9`
+- Fault drill `20260802T072848Z-e4274563fa40` restored the predecessor in
+  2.714s against 120s; normal staging then passed its 300s soak.
+- `./scripts/staging-smoke.sh` passed 24/24 checks. Exact-SHA `local_engine`
+  evaluation `chat-eval-2026-08-02T07-26-40-918Z` passed 7/7 scenarios at $0 actual cost.
 - Evidence remains in ignored `.local/release/`, server state, and restricted
   CI artifacts; this summary is not reusable promotion evidence.
 
 ## Lean-Release Measurement
 
-- Current sample: main 17m33s (pass), unattended handoff 1m45s (pass), checkpoint
-  2m25s (pass), and automated readiness 21m43s.
-- Selected/remainder/union was `13,417/3,220/16,637` tests across
-  `875/247/1,122` files; partitions were disjoint and complete.
-- Six of ten releases are measured. Nearest-rank provisional p50/p95 values
-  are 7m01s/17m33s for main, 29s/8m13s for unattended handoff,
-  3m32s/5m33s for the checkpoint, and 14m10s/21m43s for automated readiness; the sample is not yet stable.
-- The exact-`e256` cold core pack passed with files/cases `6/124` in 13.657
-  seconds (14s wall) against 30s; one sample does not establish local p50/p95.
-- Against the 19m40s readiness baseline, provisional median improvement is
-  5m30s (27.97%). Promotion passed for all six observed releases; review for
-  escaped critical defects remains in monitoring and makes no zero-defect claim.
-- The protected-main artifact was reused unchanged. Staging and production ran
-  no build, dependency installation, Vitest, Python test suite, or Sonar work.
+- Current sample: main 4m18s, handoff 7m08s, checkpoint 4m55s, automated
+  readiness 16m21s; all passed.
+- Selected/remainder/union: `1,115/15,635/16,750` tests and
+  `95/1,036/1,131` files; partitions were disjoint and complete.
+- Seven of ten releases are measured. Provisional nearest-rank p50/p95:
+  main 7m01s/17m33s; handoff 1m05s/8m13s; checkpoint 4m21s/5m33s;
+  automated readiness 16m21s/21m43s. The sample is not yet stable.
+- Median improvement against 19m40s is 3m19s (16.86%); all seven promotions
+  passed. Escaped-critical-defect review remains monitoring.
+- The protected-main artifact was reused unchanged; hosts ran no build or test.
+
+## Chat Quality Rollout
+
+- Phases 1–4 are complete: the 300 reviewed rows, domain-routing snapshot, and
+  corpus calibration are deployed. Bootstrap cache coverage is 25/300, with
+  25/25 secretary rows correct; action-skill accuracy is not claimed.
+- Phase 5 staging baseline `chat-eval-2026-07-31T17-19-58-073Z` is frozen with
+  immutable hashes. Its acknowledged `operator_checkout_only` provenance is
+  surfaced and is not represented as production evidence.
+- Phase 6: 0/9 routes pass, two are insufficient and seven blocked; no legacy
+  stage was disabled. Report SHA-256: `a1f4d81c58911083578d9fefe8179d2a431e5f1e2a317f024842716b64c15f5f`.
+- Phase 7 is paused at `AI_ROUTING_MANIFEST_CLASSIFIER` / `classifierKeyword`:
+  0/200 eligible comparisons against the fixed 99% gate. No later flag ran.
+- The deterministic shadow recorder is absent in every staging scope, so live
+  turns cannot yet generate gate evidence; it needs a governed staging enable.
+- HMAC prerequisites pass in both roles. All seven flags are configured and
+  effective OFF; master kill is available and OFF. Only genuine staging chat
+  traffic can advance the gate.
 
 ## ServerDominguez Services
 
@@ -66,32 +78,20 @@ Machine-readable truth: `docs/release/release-state.json`.
 - Build 259 remains in the `Nexus Hub Betinha` group; physical-device smoke is open.
 - Review was rejected on 2026-07-24 under 2.1(b)/5.1.1(v); no resubmission,
   signed notification build, or TestFlight submission occurred in this release.
-- Notification PR #35 merged into iOS `main`; signed-build and provisional-to-full
-  authorization-upgrade proof remain owner-gated.
+- Notification PR #35 is merged; signed-build and authorization-upgrade proof
+  remain owner-gated.
 
 ## Release Process
 
-The lean path is active and proven. Codex and Claude Code must follow `AGENTS.md`,
-the shared `release-operator` skill, and `docs/release/README.md`: selected
-verification on protected main, one disjoint four-shard remainder checkpoint,
-one artifact, exact staging, explicit owner approval, and one user-owned
-production transaction with backup, health, soak, and predecessor recovery.
-
-The prior staging-receipt polling defect is closed by
-`3b275a7209cdc2f73c86c770ac069767848a3b44`. Polling now ignores a valid
-non-matching predecessor transaction ID until the requested transaction appears
-or the deadline expires, while malformed state and matching-ID release-identity
-drift remain fail-closed.
+The proven lean path remains mandatory: protected-main selection, disjoint
+checkpoint remainder, one exact artifact, staging, explicit owner approval,
+and one production transaction with backup, health, soak, and recovery.
+Staging-receipt polling defect `3b275a7209cdc2f73c86c770ac069767848a3b44`
+is closed; malformed or identity-drifting receipts fail closed.
 
 ## Notification Release Owner Gates
 
-- `DECISION_TYPE_SUPPRESSION_ENABLED` production state is blocked on owner-only
-  `.env` inspection.
-- `NOTIFICATION_PRIORITY_SHADOW_SCORING_ENABLED` production state is blocked on
-  owner-only `.env` inspection.
-- Production APNs credentials and physical-device delivery proof (`PROD-APNS`)
-  remain blocked.
-- A signed TestFlight build and manual provisional-to-full notification upgrade
-  remain blocked.
-- Staging database/port isolation remains unproven; the staging environment is
-  owner-readable only, and PM2 still shares the user-level state directory.
+- Two notification feature states still require owner-only `.env` inspection.
+- Production APNs, signed TestFlight delivery, and physical-device notification
+  authorization-upgrade proof remain blocked.
+- Staging database/port isolation remains unproven; PM2 shares user-level state.
