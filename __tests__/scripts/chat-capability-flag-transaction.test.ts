@@ -545,6 +545,31 @@ async function classifierPlan(overrides: Record<string, unknown> = {}): Promise<
 }
 
 describe('chat capability flag transaction', () => {
+  it('requires an exact master-kill projection for capability health state', async () => {
+    const helper = await loadHelper();
+    const configuredFlags = allOff();
+    configuredFlags.AI_ROUTING_MANIFEST_CLASSIFIER = true;
+    configuredFlags.AI_ROUTING_MANIFEST_KILL = true;
+    const effectiveFlags = {
+      ...allOff(),
+      AI_ROUTING_MANIFEST_KILL: true,
+    };
+
+    expect(helper.resolveCapabilityHealthState({
+      configuredFlags,
+      effectiveFlags,
+    }, 'configuredFlags')).toEqual({
+      configured: configuredFlags,
+      effective: effectiveFlags,
+    });
+    expect(() => helper.resolveCapabilityHealthState({ configuredFlags }, 'configuredFlags'))
+      .toThrow(/effectiveFlags/u);
+    expect(() => helper.resolveCapabilityHealthState({
+      configuredFlags,
+      effectiveFlags: configuredFlags,
+    }, 'configuredFlags')).toThrow(/master-kill projection/u);
+  });
+
   it('derives routing attestation from exact raw gate bytes instead of trusting a claimed hash', async () => {
     const nativeHelper = await loadHelper();
     const receipt = passedShadowHookReceipt(nativeHelper);

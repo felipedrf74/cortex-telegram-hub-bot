@@ -437,6 +437,73 @@ restarts only the backend, verifies restored identity and health, and records
 `rolled_back` or `rollback_failed`; unresolved backups or unpublished receipts
 block a later release transaction.
 
+### One-time 4.14.232 shadow-hook claim recovery
+
+The staging shadow-hook transaction
+`20260802T143331Z-8ce452d0143b` on runtime
+`0c4af848349c2cf3c2c89fd4d66f039b481f62ae` and artifact
+`f8d20b5f90c1477ff3fe6178490548828e63ecf872e868b8933bcd104e5e4cd7`
+predates the explicit effective-state claim field. Its restored `.env`, failed
+receipt, expired permit, and exact backup marker form a release deadlock: the
+marker correctly blocks a new artifact, while the installed operator cannot
+complete rollback health verification without that field. This is the only
+supported legacy exception.
+
+From a clean checkout of protected main, inspect the exact repair:
+
+```text
+scripts/chat-shadow-hook-legacy-claim-repair-operator.sh inspect \
+  --runtime-sha 0c4af848349c2cf3c2c89fd4d66f039b481f62ae \
+  --artifact-digest f8d20b5f90c1477ff3fe6178490548828e63ecf872e868b8933bcd104e5e4cd7 \
+  --transaction-id 20260802T143331Z-8ce452d0143b
+```
+
+After the owner approves the exact `repairPlanDigest`, apply only that plan:
+
+```text
+NEXUS_RELEASE_OWNER_AUTHORIZED=1 \
+scripts/chat-shadow-hook-legacy-claim-repair-operator.sh apply \
+  --runtime-sha 0c4af848349c2cf3c2c89fd4d66f039b481f62ae \
+  --artifact-digest f8d20b5f90c1477ff3fe6178490548828e63ecf872e868b8933bcd104e5e4cd7 \
+  --transaction-id 20260802T143331Z-8ce452d0143b \
+  --ack-plan sha256:<exact-repair-plan-digest>
+```
+
+The hash-bound repair runs under both release locks and adds only the
+deterministic `effectiveFlags` master-kill projection to the exact legacy v1
+private claim. It does not change `.env`, restart a process, remove a marker,
+or publish a replacement capability result. Its receipt status is
+`claim_repaired`, deliberately not `passed` or `release_unblocked`.
+
+Next, from a clean detached checkout of the exact installed runtime, run the
+exact old operator to trigger its startup recovery:
+
+```text
+npm run release:chat-flags -- inspect-shadow-hook \
+  --role staging \
+  --runtime-sha 0c4af848349c2cf3c2c89fd4d66f039b481f62ae \
+  --artifact-digest f8d20b5f90c1477ff3fe6178490548828e63ecf872e868b8933bcd104e5e4cd7 \
+  --value false \
+  --transition-reason operator_rollback
+```
+
+Startup recovery in that installed operator must verify the restored
+environment, restart and health-check the backend, publish `rolled_back`, and
+remove the exact backup and permit. The command is expected to exit nonzero
+after successful startup recovery if the subsequent inspect refuses the
+already-OFF requested state; that exit is not the recovery verdict. Verify
+instead that
+`/home/dominguez/.local/state/nexus-release/chat-capability-flags/staging.json`
+is `rolled_back` for the exact transaction and release, that
+`/home/dominguez/telegram-hub-bot-staging/.env.before-chat-capability-20260802T143331Z-8ce452d0143b`
+and
+`/home/dominguez/.local/state/nexus-release/chat-capability-flags/staging.runtime-permit.json`
+are absent, and that authenticated `/health/detailed` reports the exact PM2
+release identity, a clear runtime guard, and every capability, dedicated
+route-hook, and planner assignment OFF. Only then may a new artifact enter
+normal staging preparation and smoke. Never delete the marker or permit
+manually.
+
 Before collecting the first manifest-routing window for an exact candidate,
 activate only the staging route recorder for the database-attested dedicated
 evaluation identity:
