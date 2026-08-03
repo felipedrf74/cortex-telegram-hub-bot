@@ -1265,15 +1265,72 @@ tested verified-success executor contract.
   producer-to-dependent regression passes.
 - Generate the first corpus calibration only from an evidence-bound,
   routing-only export. Never copy the full production database to a developer
-  machine. While holding both the release and Sonar locks, verify the exact
-  completed production release, health, database integrity, accepted snapshot
-  JSON digest, complete corpus identity, and exact LLM-cache row digest. Build
-  a fresh `0600` SQLite file containing only the 300 approved synthetic corpus
-  rows, their matching cache rows, and an empty accepted-snapshot table.
-  Omit or normalize source timestamps, suggested routes, and provider metadata
-  that calibration does not consume. The final export receipt is valid only
-  after post-export production health passes; incomplete work must retain an
-  explicitly partial receipt name/schema.
+  machine. The governed export operator must first land and be released in a
+  separate exact artifact; otherwise asking an unreleased operator to produce
+  the input for its own release creates a provenance cycle. From a clean
+  protected-main checkout of that already-running production artifact, inspect
+  the exact production state:
+
+  ```text
+  npm run release:routing-calibration-export -- inspect \
+    --runtime-sha <production-runtime-sha> \
+    --artifact-digest <production-artifact-digest>
+  ```
+
+  Review the redacted plan and obtain Felipe's authorization for its exact
+  `sha256:` digest. Apply that same plan before its one-hour expiry:
+
+  ```text
+  NEXUS_RELEASE_OWNER_AUTHORIZED=1 \
+  npm run release:routing-calibration-export -- apply \
+    --runtime-sha <production-runtime-sha> \
+    --artifact-digest <production-artifact-digest> \
+    --ack-plan sha256:<reviewed-plan-digest>
+  ```
+
+  Apply dispatches one detached transaction. If the local process, SSH, or
+  polling is interrupted, observe that same transaction without applying it
+  again:
+
+  ```text
+  npm run release:routing-calibration-export -- collect \
+    --runtime-sha <production-runtime-sha> \
+    --artifact-digest <production-artifact-digest> \
+    --ack-plan sha256:<reviewed-plan-digest>
+  ```
+
+  `collect` derives the transaction id from the locally retained plan and can
+  publish either a complete, revalidated evidence set or a terminal partial
+  receipt whose status is exactly `failed`. A stranded `started` or
+  `exported_pending_post_health` receipt is nonterminal evidence: collection
+  refuses it and the transaction requires manual recovery under the shared
+  locks. Never re-run `apply` for that plan or lower/reset its sequence.
+  Collection also deliberately requires that the retained runtime is still
+  protected `origin/main` and still selected in production. If either identity
+  advances before collection finishes, stop: recover the retained transaction
+  manually under both shared locks and validate its immutable server-side
+  artifacts. Do not relabel nonterminal state as failed and do not treat an
+  uncollected receipt as release evidence.
+
+  Inspect and apply both hold the shared user release lock and root/Sonar lock.
+  They verify the exact installed release, PM2 identity, health, database
+  integrity, accepted-snapshot JSON digest, complete corpus identity, and exact
+  LLM-cache row digest. Apply builds a fresh `0600` SQLite file containing only
+  the 300 approved synthetic corpus rows, their matching cache rows, and an
+  intentionally empty accepted-snapshot table. It preserves `labeled_at` and
+  normalizes only creation times, suggested routes, and provider model
+  metadata. The final receipt is emitted only after source identity, locks,
+  release selector, PM2, and production health pass again. A claimed plan that
+  does not finish retains an explicitly partial receipt name/schema and cannot
+  be replayed. The operator makes zero provider calls.
+
+  Partial LLM-cache coverage is valid for export. A successful 25/300 export
+  therefore has a final passed receipt with `cacheComplete: false`; this is
+  distinct from an operational partial receipt. Only `status: failed` is a
+  collectible terminal failure; `started` and `exported_pending_post_health`
+  require manual recovery. Because the sanitized accepted-snapshot table is empty,
+  a downstream `run-routing-accuracy --gate` result of
+  `skip=no_accepted_snapshot` is never authoritative evidence.
 
   From a protected ignored evidence directory, run the zero-provider replay
   with one recorded canonical timestamp:
@@ -1288,15 +1345,18 @@ tested verified-success executor contract.
   Corpus mode requires `--generated-at`; reuse that exact value for retries so
   the reviewed artifact stays byte-reproducible. The command binds the explicit
   database before importing the routing graph and refuses to replace an
-  initialized application database. Record labeled count, cache coverage,
+  initialized application database. Use the equals form
+  `--db=<sanitized-routing-only-db>` so the bootstrap binding is established
+  before imports. Record labeled count, cache coverage,
   baseline provenance, input/config hashes, and zero provider calls in ignored
   evidence, then land the generated config through a normal PR.
   `classifier.lowConfidenceFloor` is an active runtime guard even while the
   manifest-prompt flag is off. It may be recalibrated only at exact full
   LLM-cache coverage (`covered === corpusSize`); partial or skewed coverage
-  retains the reviewed baseline floor. Domain-representative sampling alone is
-  not sufficient because the current observations do not carry auditable
-  stratification or weighting metadata.
+  must prove `classifierFloorCalibrated=false` and retain the reviewed baseline
+  floor of `0.6`. Domain-representative sampling alone is not sufficient
+  because the current observations do not carry auditable stratification or
+  weighting metadata.
 - Staging/real-provider eval runs (budgeted; persisted via
   `POST /api/portal/eval-history`) and the one-time immutable baseline
   acceptance (`POST /api/portal/eval-history/frozen-baseline`).

@@ -87,6 +87,7 @@
     "release:promote": "scripts/release-operator.sh promote",
     "release:status": "scripts/release-operator.sh status",
     "release:chat-flags": "scripts/chat-capability-flag-operator.sh",
+    "release:routing-calibration-export": "scripts/routing-calibration-export-operator.sh",
     "quality:sonar": "scripts/quality-sonar-scan.sh",
     "quality:sonar:images": "scripts/quality-sonar-resolve-images.sh --verify-lock-only",
     "quality:sonar:latency": "node scripts/quality-sonar-latency-gate.mjs",

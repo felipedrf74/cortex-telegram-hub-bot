@@ -738,6 +738,7 @@
         "src/services/routing-synthetic-qa-contract.ts",
         "src/services/routing-action-skill-accuracy.ts",
         "src/services/routing-accuracy.ts",
+        "src/services/routing-accuracy-snapshot-contract.ts",
         "src/services/routing-corpus-*.ts",
         "src/services/routing-corpus.ts",
         "src/services/shared-decision-context.ts",
