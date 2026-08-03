@@ -301,13 +301,17 @@ function reviewedExportArtifactArgs(dbPath: string): string[] {
 
 function runCli(args: string[], env: NodeJS.ProcessEnv = process.env) {
   cliInvocation += 1;
+  const outputDirectory = fs.realpathSync(
+    fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-calibration-test-output-')),
+  );
+  tempDirectories.push(outputDirectory);
   const isolatedArgs = args.some((arg) => arg === '--out' || arg.startsWith('--out='))
     ? args
     : [
       ...args,
       `--out=${path.join(
-        fs.realpathSync(os.tmpdir()),
-        `nexus-calibration-test-output-${process.pid}-${cliInvocation}.json`,
+        outputDirectory,
+        `routing-calibration-${process.pid}-${cliInvocation}.json`,
       )}`,
     ];
   return spawnSync(process.execPath, ['--import', 'tsx', SCRIPT_PATH, ...isolatedArgs], {
