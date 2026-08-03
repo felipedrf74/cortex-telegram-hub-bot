@@ -1,11 +1,11 @@
 {
   "schema": "nexus.release-state.v1",
-  "lastVerifiedAt": "2026-08-02T14:13:26Z",
-  "docsHead": "58a4f8c33960f69a4ac804f7310d29c1ce507c5d",
+  "lastVerifiedAt": "2026-08-03T05:48:45Z",
+  "docsHead": "0fb4f62f1984fdb8092eb2b623f5fe06ce9a4962",
   "backend": {
     "version": "4.14.232",
-    "runtimeSha": "0c4af848349c2cf3c2c89fd4d66f039b481f62ae",
-    "artifactDigest": "f8d20b5f90c1477ff3fe6178490548828e63ecf872e868b8933bcd104e5e4cd7",
+    "runtimeSha": "f4fe405aca2ce94e72ba809574f99d041bcb3bcd",
+    "artifactDigest": "26ca938a98c9270b0d5daefce6fdaed679a3a53132da904d448924f6c8f53f2d",
     "installedDigest": "3944f37f16dd1a526a53bee80758b4519298e260c6f6596d88dfad6a6dda55ae",
     "health": "healthy",
     "database": "connected",
@@ -14,17 +14,17 @@
       "content-engine"
     ],
     "releaseEvidence": {
-      "protectedMainRun": "30749642688",
-      "releaseCheckpointRun": "30749820570",
-      "manifestSha256": "de440266b169506ce921dba0470b0acad71b5966c5469ea5a2fafda59e6ffc93",
-      "stagingTransaction": "20260802T133357Z-681ace2c0e8d",
-      "productionTransaction": "20260802T135145Z-f649b11cfc35",
-      "productionCompletedAt": "2026-08-02T13:53:00.140Z",
-      "transactionSeconds": 74.058,
-      "readinessSeconds": 12.220,
-      "soakSeconds": 61.837,
-      "backup": "nexus-db-20260802T135153Z.sqlite.age",
-      "backupEncryptedSha256": "4c240fe81496a2f897eaf9e301c6d832c662e0ffb00269cc8c744eb3f9067800",
+      "protectedMainRun": "30778758910",
+      "releaseCheckpointRun": "30779260105",
+      "manifestSha256": "ce6b37c922885fe6045bb90020fdafdc3d4aca0b6382b2b572d4e9af8b0237ad",
+      "stagingTransaction": "20260803T053850Z-22e8feffc812",
+      "productionTransaction": "20260803T054254Z-2a4481391b3d",
+      "productionCompletedAt": "2026-08-03T05:44:09.614Z",
+      "transactionSeconds": 74.340,
+      "readinessSeconds": 12.644,
+      "soakSeconds": 61.695,
+      "backup": "nexus-db-20260803T054302Z.sqlite.age",
+      "backupEncryptedSha256": "01a55204e57711aa50b8cf35b24562c70d0e55212aa1cdd587128bc1caddfcc0",
       "stagingRollbackDrill": {
         "transaction": "20260802T133139Z-1d33c71562f6",
         "result": "restored",
@@ -36,10 +36,10 @@
         "verdict": "passed",
         "passed": 24,
         "failed": 0,
-        "evidence": "staging-smoke-0c4af848349c2cf3c2c89fd4d66f039b481f62ae-20260802T133452Z.json"
+        "evidence": "staging-smoke-f4fe405aca2ce94e72ba809574f99d041bcb3bcd-20260803T053945Z.json"
       },
       "chatEval": {
-        "runId": "chat-eval-2026-08-02T13-30-37-799Z",
+        "runId": "chat-eval-2026-08-03T02-35-30-360Z",
         "engine": "local_engine",
         "scenarios": 7,
         "passed": 7,
@@ -57,10 +57,10 @@
     "activationState": "active"
   },
   "chatQualityRollout": {
-    "status": "production_released_phase7_waiting_genuine_staging_traffic",
+    "status": "production_released_calibration_regenerated_pending_final_batch",
     "releaseIdentity": {
-      "runtimeSha": "0c4af848349c2cf3c2c89fd4d66f039b481f62ae",
-      "artifactDigest": "f8d20b5f90c1477ff3fe6178490548828e63ecf872e868b8933bcd104e5e4cd7"
+      "runtimeSha": "f4fe405aca2ce94e72ba809574f99d041bcb3bcd",
+      "artifactDigest": "26ca938a98c9270b0d5daefce6fdaed679a3a53132da904d448924f6c8f53f2d"
     },
     "phase4GoldenCorpus": {
       "status": "complete",
@@ -75,7 +75,24 @@
       "acceptedCoveredDomain": "secretary",
       "acceptedMetricScope": "domain_routing_only",
       "calibrationCommit": "0661233f31ac8f3c43530204ec9e89a35c15715a",
-      "calibrationSource": "corpus"
+      "calibrationSource": "corpus",
+      "calibrationRefresh": {
+        "status": "generated_pending_release",
+        "generatedAt": "2026-08-03T05:48:45.873Z",
+        "baselineSha256": "3ac0a38b841aecb9de4b167e480d7a0458cad78a11724467dc190f9962340326",
+        "configSha256": "0e22443181b7b4ed2998c1b144b10126bcc17679eb5726f41af3cd5b561be6b7",
+        "exportRuntimeSha": "f4fe405aca2ce94e72ba809574f99d041bcb3bcd",
+        "exportArtifactDigest": "26ca938a98c9270b0d5daefce6fdaed679a3a53132da904d448924f6c8f53f2d",
+        "exportTransaction": "20260803T054448Z-d0ab16455321",
+        "exportPlanDigest": "sha256:1289f87ebb7cfdf7e8270f9ef61cb2649e8c3bf573e6308c338575579f5a0c1a",
+        "exportReceiptDigest": "sha256:f571cb2cbe6a89a5b66e41db506aeb5bf9f58b98b562491f74526b57a6548ee9",
+        "exportPlanFileSha256": "d69ddceac471f2a7bb87f49b9c9fc0f89b4abf0b9ca6f18fe91db5ff512f73d7",
+        "exportEvidenceFileSha256": "a4ef0f136124a54114de3f1810b6251e47082c3d49d09339102d4a89f16baa4d",
+        "exportReceiptFileSha256": "1e95ace0bdf9b8983f05baa5fa2fa2c8e4fe3db6d0e5d847c7a2067a174c15c7",
+        "sanitizedInputSha256": "b29c97c3ea5e70f26b5bf36364b7c06109ad555a1e72cf66fa581e5d83c54b8b",
+        "cacheRowsDigest": "sha256:104be01c14a2b4bb835d76e8502554f965cc1f364a81bf99719770d71fcc7ba4",
+        "providerCalls": 0
+      }
     },
     "phase5FrozenBaseline": {
       "status": "baseline_only",
@@ -118,6 +135,7 @@
       "observabilityPrerequisite": {
         "flag": "CHAT_CORE_V2_SHADOW_ROUTE_HOOK_ENABLED",
         "status": "absent_all_scopes",
+        "lastTransition": "20260803T053705Z-207be46ad343",
         "global": "absent",
         "userScopeEnabled": 0,
         "tenantScopeEnabled": 0
@@ -228,8 +246,8 @@
     "targetManifestSchema": "nexus.release-checksum-manifest.v1",
     "leanActivation": "active_first_staging_and_production_proof_passed",
     "exactArtifactPath": "proven",
-    "stagingRehearsals": 18,
-    "ownerAuthorizedProductionReleases": 14,
+    "stagingRehearsals": 19,
+    "ownerAuthorizedProductionReleases": 15,
     "legacyWrappers": "retired",
     "firstProofRelease": {
       "version": "4.14.231",
@@ -247,7 +265,7 @@
       "soakSeconds": 61.636
     },
     "timingObservation": {
-      "observedReleases": 8,
+      "observedReleases": 9,
       "requiredReleases": 10,
       "status": "collecting",
       "baselineReadinessSeconds": 1180,
@@ -358,28 +376,40 @@
           "stagingTransactionSeconds": 26.619,
           "productionTransactionSeconds": 74.058,
           "promotionOutcome": "passed"
+        },
+        {
+          "runtimeSha": "f4fe405aca2ce94e72ba809574f99d041bcb3bcd",
+          "protectedMainRun": "30778758910",
+          "releaseCheckpointRun": "30779260105",
+          "mainSeconds": 665,
+          "unattendedHandoffSeconds": 68,
+          "checkpointSeconds": 263,
+          "automatedReadinessSeconds": 996,
+          "stagingTransactionSeconds": 26.891,
+          "productionTransactionSeconds": 74.340,
+          "promotionOutcome": "passed"
         }
       ],
       "provisionalNearestRank": {
         "stable": false,
         "mainSeconds": {
-          "p50": 259,
+          "p50": 421,
           "p95": 1053
         },
         "unattendedHandoffSeconds": {
-          "p50": 55,
+          "p50": 65,
           "p95": 493
         },
         "checkpointSeconds": {
-          "p50": 261,
+          "p50": 263,
           "p95": 333
         },
         "automatedReadinessSeconds": {
-          "p50": 850,
+          "p50": 981,
           "p95": 1303
         },
-        "medianReadinessImprovementSeconds": 330,
-        "medianReadinessImprovementPercent": 27.97
+        "medianReadinessImprovementSeconds": 199,
+        "medianReadinessImprovementPercent": 16.86
       },
       "escapedCriticalDefectReview": "monitoring"
     },

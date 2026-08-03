@@ -372,7 +372,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/intent-resolution/confidence.ts:388-395",
+            "pattern": "src/services/intent-resolution/confidence.ts:446-453",
             "anchor": "const coverageComplete = input.corpusSize > 0",
             "behavior": "Partial or empty LLM-cache coverage must retain the baseline classifier safety floor and report calibration as incomplete.",
             "replacementTest": "__tests__/services/intent-resolution/confidence.test.ts",

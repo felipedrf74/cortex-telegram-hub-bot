@@ -67,8 +67,9 @@ describe('manifest projections', () => {
 
   it('scores distinct matchers and treats example utterances as decisive', () => {
     seedSyntheticVocabulary();
-    // locale 'alpha' + locale 'alphas?' + fragment => 3 distinct matchers.
-    expect(manifestDomainScores('alpha quantum flux').get('alpha_domain')).toBe(3);
+    // Overlapping locale matchers select the same lexical value, so they count
+    // once; the distinct fragment contributes the second point.
+    expect(manifestDomainScores('alpha quantum flux').get('alpha_domain')).toBe(2);
     expect(manifestDecisiveDomains('alpha quantum flux').has('alpha_domain')).toBe(false);
     // Example utterance alone crosses the decisive bar.
     const exampleScore = manifestDomainScores('The canonical alpha ask').get('alpha_domain') ?? 0;

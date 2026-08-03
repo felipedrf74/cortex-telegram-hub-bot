@@ -30,6 +30,7 @@ import {
   isCheckedInSyntheticRoutingCorpusItem,
 } from '../../src/services/routing-corpus';
 import { parseAcceptedRoutingAccuracySnapshot } from '../../src/services/routing-accuracy-snapshot-contract';
+import { BOOTSTRAP_ROUTING_CALIBRATION } from '../../src/services/intent-resolution/confidence';
 
 const ROOT = path.resolve(__dirname, '../..');
 const OPERATOR = path.join(ROOT, 'scripts/routing-calibration-export-operator.sh');
@@ -1019,13 +1020,56 @@ describe('governed routing-calibration export operator', () => {
       partialOutputPath: outputPath,
     });
     expect(evidence.providerCalls).toBe(0);
+    const receipt = buildRoutingCalibrationExportReceipt({
+      plan,
+      evidence,
+      completedAt: new Date(Date.parse(GENERATED_AT) + 30_000).toISOString(),
+      postflight: {
+        selector: fixture.releaseDir,
+        health: healthEvidence(),
+        pm2: pm2Evidence(fixture.releaseDir),
+      },
+    });
+    const baselineDirectory = path.join(fixture.root, 'private-baseline');
+    fs.mkdirSync(baselineDirectory, { mode: 0o700 });
+    const baselinePath = path.join(baselineDirectory, 'reviewed-calibration-baseline.json');
+    const reviewedPredecessor = JSON.parse(JSON.stringify(BOOTSTRAP_ROUTING_CALIBRATION));
+    reviewedPredecessor.provenance = {
+      source: 'corpus',
+      corpusSize: 300,
+      generatedAt: '2026-07-30T08:34:49.775Z',
+    };
+    reviewedPredecessor.intentResolver.scoreBuckets = [
+      { minScore: 5, calibratedPrecision: 0.8846 },
+      { minScore: 2, calibratedPrecision: 0.8984 },
+      { minScore: 1, calibratedPrecision: 0.7551 },
+      { minScore: 0, calibratedPrecision: 0.1778 },
+    ];
+    const baselineBytes = `${JSON.stringify(reviewedPredecessor, null, 2)}\n`;
+    fs.writeFileSync(
+      baselinePath,
+      baselineBytes,
+      { encoding: 'utf8', mode: 0o600 },
+    );
+    const planPath = path.join(baselineDirectory, 'export-plan.json');
+    const evidencePath = path.join(baselineDirectory, 'export-evidence.json');
+    const receiptPath = path.join(baselineDirectory, 'export-receipt.json');
+    fs.writeFileSync(planPath, `${JSON.stringify(plan, null, 2)}\n`, { mode: 0o600 });
+    fs.writeFileSync(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, { mode: 0o600 });
+    fs.writeFileSync(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`, { mode: 0o600 });
     const calibration = spawnSync(process.execPath, [
       '--import',
       'tsx',
       path.join(ROOT, 'scripts/calibrate-routing-confidence.ts'),
       `--db=${outputPath}`,
+      `--baseline=${baselinePath}`,
+      `--out=${path.join(baselineDirectory, 'calibration-output.json')}`,
       '--dry-run',
       '--generated-at=2026-08-03T01:12:00.000Z',
+      `--export-plan=${planPath}`,
+      `--export-evidence=${evidencePath}`,
+      `--export-receipt=${receiptPath}`,
+      `--ack-plan=${plan.planDigest}`,
     ], {
       cwd: ROOT,
       env: {
@@ -1043,6 +1087,20 @@ describe('governed routing-calibration export operator', () => {
     expect(result).toMatchObject({
       mode: 'corpus',
       labeledCorpusItems: 300,
+      providerCalls: 0,
+      reviewedExportIdentity: {
+        runtimeSha: plan.runtimeSha,
+        artifactDigest: plan.artifactDigest,
+        transactionId: plan.transactionId,
+        planDigest: plan.planDigest,
+        receiptDigest: receipt.receiptDigest,
+        inputSha256: evidence.outputSha256.slice('sha256:'.length),
+        corpusRows: 300,
+        corpusIdentityDigest: plan.corpus.identityDigest,
+        cacheRowsDigest: plan.cache.rowsDigest,
+        cacheRows: plan.cache.rows,
+        providerCalls: 0,
+      },
       llmCoverage: {
         covered: 25,
         total: 300,
@@ -1050,7 +1108,18 @@ describe('governed routing-calibration export operator', () => {
         classifierFloorCalibrated: false,
       },
     });
+    expect(`sha256:${result.inputSha256}`).toBe(evidence.outputSha256);
+    expect(result.baselineSha256).toBe(
+      createHash('sha256').update(baselineBytes).digest('hex'),
+    );
+    expect(`sha256:${result.outputSha256}`).toBe(
+      sha256(`${JSON.stringify(result.table, null, 2)}\n`),
+    );
     expect(result.table.classifier.lowConfidenceFloor).toBe(0.6);
+    expect(result.table.intentResolver.scoreBuckets.slice(0, 2)).toEqual([
+      { minScore: 5, calibratedPrecision: 0.9341 },
+      { minScore: 2, calibratedPrecision: 0.9341 },
+    ]);
   });
 
   it.each([
