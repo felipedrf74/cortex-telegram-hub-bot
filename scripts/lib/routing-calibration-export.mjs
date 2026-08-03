@@ -54,7 +54,7 @@ const SOURCE_TABLE_COLUMNS = Object.freeze({
   ],
 });
 
-const ROUTING_SCHEMA = `
+export const ROUTING_CALIBRATION_SANITIZED_SCHEMA = `
   CREATE TABLE routing_corpus_items (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     tenant_id INTEGER NOT NULL DEFAULT 0,
@@ -601,7 +601,7 @@ function assertNoSymlinkPathComponents(filename, label) {
   }
 }
 
-function safePrivateFile(filename, label) {
+export function safePrivateFile(filename, label) {
   const unresolved = path.resolve(filename);
   assertNoSymlinkPathComponents(unresolved, label);
   const unresolvedStat = fs.lstatSync(unresolved);
@@ -624,7 +624,7 @@ function safePrivateFile(filename, label) {
   return { resolved, stat };
 }
 
-function safePrivateDirectory(directory, label) {
+export function safePrivateDirectory(directory, label) {
   const unresolved = path.resolve(directory);
   assertNoSymlinkPathComponents(unresolved, label);
   const unresolvedStat = fs.lstatSync(unresolved);
@@ -644,7 +644,7 @@ function safePrivateDirectory(directory, label) {
   return { resolved, stat };
 }
 
-function safeOwnerControlledDirectory(directory, label) {
+export function safeOwnerControlledDirectory(directory, label) {
   const unresolved = path.resolve(directory);
   assertNoSymlinkPathComponents(unresolved, label);
   const unresolvedStat = fs.lstatSync(unresolved);
@@ -739,10 +739,10 @@ function sqliteSchemaContract(db) {
   return { objects, tableInfo, indexes };
 }
 
-function assertSanitizedSchema(db, Database) {
+export function assertSanitizedSchema(db, Database) {
   const expected = new Database(':memory:');
   try {
-    expected.exec(ROUTING_SCHEMA);
+    expected.exec(ROUTING_CALIBRATION_SANITIZED_SCHEMA);
     if (canonicalJson(sqliteSchemaContract(db))
         !== canonicalJson(sqliteSchemaContract(expected))) {
       fail('sanitized export SQLite schema differs from the exact routing-only contract');
@@ -953,7 +953,7 @@ function linuxFileDescriptors() {
   return descriptors;
 }
 
-function sameFileIdentity(left, right) {
+export function sameFileIdentity(left, right) {
   return left.dev === right.dev && left.ino === right.ino;
 }
 
@@ -1469,7 +1469,7 @@ function createSanitizedDatabase(input) {
   const output = new Database(outputPath);
   try {
     output.pragma('foreign_keys = ON');
-    output.exec(ROUTING_SCHEMA);
+    output.exec(ROUTING_CALIBRATION_SANITIZED_SCHEMA);
     const insertCorpus = output.prepare(`
       INSERT INTO routing_corpus_items (
         id, tenant_id, user_id, utterance_hash, utterance_text, source,

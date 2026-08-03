@@ -183,14 +183,30 @@ const SKILL_PATTERNS: Array<{ skill: NexusSkillId; pattern: RegExp }> = [
 ];
 
 const SCHEDULING_PATTERNS = [
-  /\b(plan\s+my\s+(?:day|week)|plan\s+(?:the\s+)?week|schedule|calendar|agenda|find\s+time|fit\s+(?:it|this|that|time)|make\s+time|time[- ]?block|block\s+time|move|reschedule|reflow|defer|push|shift|clear\s+(?:my\s+)?calendar)\b/i,
+  /\b(plan\s+my\s+(?:day|week)|plan\s+(?:the\s+)?week|schedule|book|calendar|agenda|find\s+time|fit\s+(?:it|this|that|time)|make\s+time|time[- ]?block|block\s+time|move|reschedule|reflow|defer|push|shift|clear\s+(?:my\s+)?calendar)\b/i,
   /\b(prioriti[sz]e\s+(?:my\s+)?(?:day|week)|what\s+do\s+i\s+need\s+to\s+do\s+today|what\s+should\s+i\s+do\s+today|what\s+changed\s+since\s+yesterday)\b/i,
-  /\b(agenda|marca|remarca|reagenda|planeia|planejar|organiza|encaixa|arranja\s+tempo|prioriza|muda\s+(?:isso|isto)|move\s+(?:isso|isto))\b/i,
+  /\b(agend(?:a|e|ar)|marc(?:a|e|ar)|remarc(?:a|e|ar)|reagend(?:a|e|ar)|planeia|planejar|organiza|encaixa|arranja\s+tempo|prioriza|muda\s+(?:isso|isto)|move\s+(?:isso|isto))\b/i,
 ];
 
+const NEGATED_SCHEDULING_CLAUSE_PATTERNS = [
+  /\b(?:do\s+not|don['’]t|never)\b(?!\s+(?:forget|fail)\b)(?=[^.;!?\n]{0,60}\b(?:schedule|reschedule|book|move)\b)(?:(?!\b(?:but|however)\b)[^.;!?\n])*/gi,
+  /\bwithout\s+(?=(?:scheduling|rescheduling|booking|moving)\b)(?:(?!\b(?:but|however)\b)[^,.;!?\n])*/gi,
+  /\bn[aã]o\b(?!\s+(?:(?:se\s+)?esque[cç]a|deixe\s+de|falhe\s+em)\b)(?=[^.;!?\n]{0,60}\b(?:agend(?:ar|e)|reagend(?:ar|e)|remarc(?:ar|e)|marc(?:ar|e)|mover?)\b)(?:(?!\bmas\b)[^.;!?\n])*/gi,
+  /\bsem\s+(?=(?:agendar|reagendar|remarcar|marcar|mover)\b)(?:(?!\bmas\b)[^.;!?\n])*/gi,
+];
+
+function withoutDeclinedSchedulingClauses(message: string): string {
+  let result = message;
+  for (const pattern of NEGATED_SCHEDULING_CLAUSE_PATTERNS) {
+    pattern.lastIndex = 0;
+    result = result.replace(pattern, ' ');
+  }
+  return result;
+}
+
 const ACTION_PATTERNS = [
-  /\b(create|add|make|build|generate|schedule|move|reschedule|cancel|delete|remove|eliminate|clear|send|reply|mark|update|change|apply|save|remember)\b/i,
-  /\b(cria|crie|adiciona|faz|gera|agenda|move|muda|remarca|cancela|cancelar|cancele|cancelem|apaga|apagar|apague|apaguem|remove|remover|remova|removam|elimina|eliminar|elimine|eliminem|exclui|excluir|exclua|excluam|limpa|envia|responde|marca|atualiza|aplica|guarda|lembra)\b/i,
+  /\b(create|add|make|build|generate|schedule|book|move|reschedule|cancel|delete|remove|eliminate|clear|send|reply|mark|update|change|apply|save|remember)\b/i,
+  /\b(cria|crie|adiciona|faz|gera|agend(?:a|e|ar)|move|muda|remarc(?:a|e|ar)|reagend(?:a|e|ar)|cancela|cancelar|cancele|cancelem|apaga|apagar|apague|apaguem|remove|remover|remova|removam|elimina|eliminar|elimine|eliminem|exclui|excluir|exclua|excluam|limpa|envia|responde|marc(?:a|e|ar)|atualiza|aplica|guarda|lembra)\b/i,
 ];
 
 const DESTRUCTIVE_PATTERNS = [
@@ -518,15 +534,16 @@ function resolveInvolvedSkills(
   routedDomain?: DomainName | null,
 ): NexusSkillId[] {
   const skills = new Set<NexusSkillId>();
+  const routingEvidence = withoutDeclinedSchedulingClauses(message);
   if (isManifestRoutingEnabled('orchestrator')) {
     // Same skill set, evidence sourced from the shared manifest vocabulary.
     for (const { skill } of SKILL_PATTERNS) {
       const domain = SKILL_TO_DOMAIN[skill];
-      if (domain && manifestDomainMatches(domain, message)) skills.add(skill);
+      if (domain && manifestDomainMatches(domain, routingEvidence)) skills.add(skill);
     }
   } else {
     for (const { skill, pattern } of SKILL_PATTERNS) {
-      if (pattern.test(message)) skills.add(skill);
+      if (pattern.test(routingEvidence)) skills.add(skill);
     }
   }
   if (activeContext?.domain && DOMAIN_TO_SKILL[activeContext.domain]) {
@@ -544,8 +561,9 @@ function resolveInvolvedSkills(
 
 function resolveIntentKinds(message: string, involved: NexusSkillId[]): ChatIntentKind[] {
   const kinds = new Set<ChatIntentKind>();
-  const hasAction = ACTION_PATTERNS.some((pattern) => pattern.test(message));
-  const hasScheduling = SCHEDULING_PATTERNS.some((pattern) => pattern.test(message));
+  const routingIntentText = withoutDeclinedSchedulingClauses(message);
+  const hasAction = ACTION_PATTERNS.some((pattern) => pattern.test(routingIntentText));
+  const hasScheduling = SCHEDULING_PATTERNS.some((pattern) => pattern.test(routingIntentText));
   if (hasAction) kinds.add('action');
   else kinds.add('information');
   if (hasScheduling) kinds.add('scheduling');
@@ -553,7 +571,7 @@ function resolveIntentKinds(message: string, involved: NexusSkillId[]): ChatInte
     kinds.add('plan_creation');
   }
   if (DESTRUCTIVE_PATTERNS.some((pattern) => pattern.test(message))) kinds.add('cancellation');
-  if (/\b(update|change|move|reschedule|edit|adjust|muda|altera|remarca|ajusta)\b/i.test(message)) kinds.add('edit_update');
+  if (/\b(update|change|move|reschedule|edit|adjust|muda|altera|remarca|ajusta)\b/i.test(routingIntentText)) kinds.add('edit_update');
   if (/\b(analy[sz]e|review|compare|can\s+i\s+afford|what\s+changed|what\s+do\s+i\s+need|analisa|rev[eê])\b/i.test(message)) kinds.add('analysis');
   if (involved.length > 1) kinds.add('cross_skill');
   if (TENANT_PATTERNS.some((pattern) => pattern.test(message))) kinds.add('tenant_admin');
@@ -578,6 +596,9 @@ function resolvePrimaryDomain(input: {
   if (input.scheduling) {
     return 'secretary';
   }
+  if (/\brecipients?\b[\s\S]{0,100}\bbulk\s+(?:messages?|emails?)\b|\bbulk\s+(?:messages?|emails?)\b[\s\S]{0,100}\brecipients?\b/i.test(text)) {
+    return 'secretary';
+  }
   if (/\b(task|tasks|to-?do|calendar|meeting|event|reminder|email|inbox|agenda|tarefa|tarefas|calend[aá]rio|reuni[aã]o|evento|lembrete|e-?mail)\b/i.test(text)) {
     return 'secretary';
   }
@@ -587,10 +608,11 @@ function resolvePrimaryDomain(input: {
   if (/\b(can\s+i\s+afford|budget|invoice|tax|expense|subscription|or[cç]amento|fatura|imposto)\b/i.test(text)) {
     return 'finance';
   }
-  if (/\b(recipe|meal\s+plan|what\s+should\s+i\s+eat|grocery|cooking|receita|refei[cç][aã]o|lista\s+de\s+compras)\b/i.test(text)) {
+  if (/\b(recipe|meal\s+plan|what\s+should\s+i\s+eat|grocery|cooking|receita|refei[cç][aã]o|lista\s+de\s+compras)\b/i.test(text)
+    || (input.involved.includes('cooking') && /\bpantry\b/i.test(text))) {
     return 'cooking';
   }
-  if (/\b(training\s+plan|workout\s+plan|what\s+workout|how\s+should\s+i\s+train|treino|plano\s+de\s+treino)\b/i.test(text)) {
+  if (/\b(training\s+plan|workout\s+plan|what(?:'s|\s+is)?[\s\S]{0,24}\bworkouts?|how\s+should\s+i\s+train|treino|plano\s+de\s+treino)\b/i.test(text)) {
     return 'triathlon';
   }
   for (const skill of input.involved) {

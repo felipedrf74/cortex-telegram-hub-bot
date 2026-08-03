@@ -10,7 +10,7 @@
  * telemetry only.
  *
  * Scoring:
- *   +1   per distinct matched vocabulary matcher (locale term or fragment)
+ *   +1   per distinct matched lexical value (locale term or fragment)
  *   +5   when the message normalizes to a seeded example utterance
  *   +0.25 context nudge when the caller's active domain matches (tie-break aid)
  * Ties break on manifest order, keeping the ranking stable across runs.
@@ -23,7 +23,7 @@ import {
   type CompiledCapabilityVocabulary,
 } from './vocabulary';
 
-export const INTENT_RESOLVER_VERSION = 'manifest-intent-resolver@1.0.0';
+export const INTENT_RESOLVER_VERSION = 'manifest-intent-resolver@1.1.0';
 
 const EXAMPLE_MATCH_SCORE = 5;
 const MATCHER_SCORE = 1;
@@ -55,12 +55,26 @@ export function resolveIntentAgainst(
 
   for (const entry of vocabulary) {
     const matchedEvidence: string[] = [];
+    const matchedLexicalValues = new Set<string>();
     let rawScore = 0;
     for (const matcher of entry.matchers) {
-      if (matcher.regex.test(raw) || matcher.regex.test(folded)) {
-        matchedEvidence.push(matcher.label);
-        rawScore += MATCHER_SCORE;
-      }
+      matcher.regex.lastIndex = 0;
+      const rawMatch = matcher.regex.exec(raw);
+      matcher.regex.lastIndex = 0;
+      const foldedMatch = rawMatch ? null : matcher.regex.exec(folded);
+      matcher.regex.lastIndex = 0;
+      const matchedText = (rawMatch ?? foldedMatch)?.[0];
+      if (!matchedText) continue;
+
+      // The manifest intentionally contains overlapping projections of the
+      // same domain vocabulary (locale terms plus richer fragments). A single
+      // word such as "schedule" must not become four independent votes merely
+      // because four matcher shapes all select that exact lexical value.
+      const lexicalValue = foldIntentText(matchedText).trim().replace(/\s+/g, ' ');
+      if (!lexicalValue || matchedLexicalValues.has(lexicalValue)) continue;
+      matchedLexicalValues.add(lexicalValue);
+      matchedEvidence.push(matcher.label);
+      rawScore += MATCHER_SCORE;
     }
     if (normalized.length > 0 && entry.normalizedExamples.includes(normalized)) {
       matchedEvidence.push('example_utterance');

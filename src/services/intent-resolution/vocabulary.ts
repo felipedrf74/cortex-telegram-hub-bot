@@ -68,9 +68,19 @@ export function compileIntentVocabulary(
     const vocabulary = entry.routingVocabulary;
     if (!vocabulary) return;
     const matchers: CompiledVocabularyMatcher[] = [];
+    // Locale buckets express translation coverage, not independent evidence.
+    // Some terms (for example Portuguese/Spanish cognates) are byte-identical;
+    // counting the same regex twice inflated one capability's score merely
+    // because it appeared under two locale headings. Retain the first label so
+    // diagnostics stay stable while each distinct matcher contributes once.
+    const localeMatcherKeys = new Set<string>();
     for (const [locale, terms] of Object.entries(vocabulary.locales)) {
       for (const term of terms ?? []) {
-        matchers.push({ label: `locale:${locale}:${term}`, regex: new RegExp(`\\b(?:${term})\\b`, 'i') });
+        const regex = new RegExp(`\\b(?:${term})\\b`, 'i');
+        const matcherKey = `${regex.source}/${regex.flags}`;
+        if (localeMatcherKeys.has(matcherKey)) continue;
+        localeMatcherKeys.add(matcherKey);
+        matchers.push({ label: `locale:${locale}:${term}`, regex });
       }
     }
     (vocabulary.regexFragments ?? []).forEach((fragment, index) => {

@@ -901,6 +901,13 @@ actual clarification outcomes for safety and usefulness; the numeric budget
 alone is not a quality pass. Store the before/after redacted JSON and staging
 smoke receipt in the flag evidence directory.
 
+Resolver score-bucket calibration must be monotonic: a higher raw-score bucket
+cannot carry lower calibrated precision than a lower-score bucket. Corpus-mode
+generation enforces this with weighted adjacent pooling after sparse buckets
+retain their reviewed prior, and runtime parsing rejects unordered, duplicate,
+or non-monotonic buckets. Do not weaken that invariant to make a calibration
+artifact load; regenerate from the governed routing-only export instead.
+
 Run `inspect-observation` and owner-authorized `apply-observation`; production
 inspect then selects that exact strict receipt without generating traffic.
 Production apply revalidates its staging dashboard, health, alert-window, and
@@ -1332,23 +1339,59 @@ tested verified-success executor contract.
   a downstream `run-routing-accuracy --gate` result of
   `skip=no_accepted_snapshot` is never authoritative evidence.
 
-  From a protected ignored evidence directory, run the zero-provider replay
-  with one recorded canonical timestamp:
+  Before generation, copy the reviewed currently deployed
+  `config/routing-calibration.json` into the protected ignored evidence
+  directory as a separate mode-`0600` baseline and record its SHA-256. The
+  baseline must not be the output path: sparse-bucket priors are weighted into
+  monotonic pooling, so using a prior output as the next baseline would make a
+  retry drift. Run the zero-provider replay with that immutable baseline and
+  one recorded canonical timestamp:
 
   ```text
   npx tsx scripts/calibrate-routing-confidence.ts \
     --db=<sanitized-routing-only-db> \
+    --baseline=<reviewed-calibration-baseline-json> \
     --out=config/routing-calibration.json \
-    --generated-at=<YYYY-MM-DDTHH:mm:ss.sssZ>
+    --generated-at=<YYYY-MM-DDTHH:mm:ss.sssZ> \
+    --export-plan=<retained-private-export-plan-json> \
+    --export-evidence=<retained-private-export-evidence-json> \
+    --export-receipt=<retained-private-final-receipt-json> \
+    --ack-plan=sha256:<owner-approved-plan-digest>
   ```
 
-  Corpus mode requires `--generated-at`; reuse that exact value for retries so
-  the reviewed artifact stays byte-reproducible. The command binds the explicit
-  database before importing the routing graph and refuses to replace an
-  initialized application database. Use the equals form
-  `--db=<sanitized-routing-only-db>` so the bootstrap binding is established
-  before imports. Record labeled count, cache coverage,
-  baseline provenance, input/config hashes, and zero provider calls in ignored
+  Corpus mode requires both `--baseline` and `--generated-at`; reuse those
+  exact baseline bytes and timestamp for retries so the reviewed artifact
+  stays byte-reproducible. The sanitized database, reviewed baseline, export
+  plan, export evidence, and final receipt must each be a current-owner,
+  ordinary single-link file with exact mode `0600`, no symbolic-link path
+  component, and a current-owner private parent. The command anchors each
+  parent and file with `O_NOFOLLOW`, validates the canonical plan and final
+  receipt digests plus their release, postflight, normalization, and
+  zero-provider bindings, and requires `--ack-plan` to equal the validated
+  plan digest. It copies the captured database bytes into a private replay
+  file, independently verifies that copy against the exact export evidence,
+  opens it read-only with `query_only`, and verifies the exact routing-only
+  schema, `delete` journal mode, absence of `-wal`, `-shm`, and `-journal`
+  sidecars, empty snapshot table, integrity, and foreign keys. It then derives
+  the exact input hash, 300-row corpus identity, cache count/digest, production
+  runtime/artifact/transaction, and provider-call count from those validated
+  artifacts before importing the routing graph. The baseline must use exactly
+  `routing-calibration@1.0.0` with resolver boundaries `[5, 2, 1, 0]`; only
+  predecessor precision monotonicity is relaxed because the generator repairs
+  it. Empirical correct counts remain exact through weighted
+  Pool-Adjacent-Violators and round only once in the final table.
+
+  Replay is scoped to that explicit baseline instead of the ambient output.
+  Publication takes a calibration-specific cooperative lock and snapshots the
+  output before replay, rejects aliases and another calibration writer, writes
+  a same-parent `0644` temporary file, fsyncs it, revalidates the unchanged
+  destination immediately before an atomic rename, fsyncs the parent, and
+  verifies the published bytes. The lock cannot coordinate an unrelated
+  editor, so serialize other writes to the tracked output while this command
+  runs; do not describe the check-then-rename boundary as a filesystem CAS.
+  Use the equals forms shown above so bootstrap binding is established before
+  imports. Record the CLI-emitted labeled count, cache coverage, baseline
+  provenance and hash, input/output hashes, and zero provider calls in ignored
   evidence, then land the generated config through a normal PR.
   `classifier.lowConfidenceFloor` is an active runtime guard even while the
   manifest-prompt flag is off. It may be recalibrated only at exact full

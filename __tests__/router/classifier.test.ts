@@ -411,6 +411,71 @@ describe('keywordMatch — Tier 2 NL Routing', () => {
     });
   });
 
+  describe('Product-workspace vocabulary and cross-skill precedence', () => {
+    it.each([
+      ['secretary', 'Outline a weekly planning block at 3 p.m.; the date is still open.'],
+      ['secretary', 'Preview a schedule that fits meal prep around tomorrow\'s commitments; save nothing.'],
+      ['secretary', 'Explain recipient checks before a bulk message; send nothing.'],
+      ['secretary', 'Mostre uma prévia para remarcar uma conversa; não envie.'],
+      ['secretary', 'Ajuda-me a preparar um bloco de concentração às 15h; falta escolher o dia.'],
+      ['secretary', 'Esboce como encaixar o treino nos horários livres de amanhã; não altere a agenda.'],
+      ['secretary', 'Describe how you would prioritize an overloaded day by urgency; save nothing.'],
+      ['secretary', 'Outline safeguards before a message goes to multiple recipients; keep it unsent.'],
+      ['secretary', 'Mostre os próximos eventos do calendário por ordem de horário.'],
+      ['secretary', 'Explique como excluir uma série de eventos do calendário; não exclua nada.'],
+      ['secretary', 'Faça uma minuta de pedido para mudar o horário da reunião; não envie.'],
+      ['secretary', 'Escreve um rascunho a pedir outra hora para a reunião; não o guardes.'],
+      ['secretary', 'Esboça uma sessão de foco de cinquenta minutos às duas; deixa a data em aberto.'],
+      ['secretary', 'Prepara uma hora de planeamento na quinta-feira; deixa o início por escolher.'],
+      ['triathlon', 'Prepare a one-hour easy ride for Thursday; the start time remains open.'],
+      ['triathlon', 'Sketch an easy 1500-metre swim for Tuesday; the pool length is missing.'],
+      ['triathlon', 'Preview a long-ride workout with a fueling outline; save nothing.'],
+      ['triathlon', 'Estruture uma sessão leve de natação; o tamanho da piscina segue indefinido.'],
+      ['triathlon', 'Prepare uma sessão fácil de 1.200 metros para terça cedo, deixando apenas o comprimento da piscina indefinido.'],
+      ['triathlon', 'Draft an easier version of Saturday\'s long run; do not apply the change.'],
+      ['triathlon', 'Explain the confirmation needed before clearing a week of workouts from the plan.'],
+      ['triathlon', 'Mostre os treinos guardados no planeamento da semana.'],
+      ['triathlon', 'Mostre as corridas previstas no plano dos próximos dias.'],
+      ['triathlon', 'Preview a bike session with a snack outline; do not update workouts or groceries.'],
+      ['triathlon', 'Esboça uma sessão de bicicleta com abastecimento; não alteres treino nem despensa.'],
+      ['content', 'List the editorial briefs saved in my workspace with their due dates.'],
+      ['content', 'Show the research notes filed under sustainable packaging.'],
+      ['content', 'Quais pautas estão salvas no espaço editorial?'],
+      ['content', 'Mostre os títulos e os status das pautas existentes sobre consumo consciente.'],
+      ['content', 'Rascunhe uma pauta sobre hábitos sustentáveis para iniciantes, mas não salve nem publique.'],
+      ['content', 'Que briefings editoriais estão guardados no espaço de trabalho?'],
+      ['content', 'Explain the review needed before replacing an approved article draft.'],
+      ['content', 'Show source notes filed in the research folder for reusable packaging.'],
+      ['content', 'Explain safeguards before superseding an approved content brief.'],
+      ['content', 'Which saved ideas in the editorial backlog share the beginner theme?'],
+      ['content', 'Mostre uma prévia de briefing para um guia de sustentabilidade; não registe.'],
+      ['content', 'Revise o processo para substituir um artigo aprovado; não troque o texto.'],
+      ['content', 'O que deve ser revisado antes de substituir um artigo já aprovado? Não troque o texto.'],
+      ['content', 'Esboça um artigo introdutório em três secções; deixa a extensão em aberto.'],
+      ['content', 'Prepara a estrutura de um guia prático em três partes; não o guardes.'],
+      ['cooking', 'Which pantry items need restocking this week?'],
+      ['cooking', 'Sketch a lentil soup for Sunday; leave the portion count open.'],
+      ['cooking', 'Que itens da despensa precisam de reposição?'],
+      ['cooking', 'Explain the checks before placing a large grocery order.'],
+      ['cooking', 'Which meals are planned from Monday through Friday next week?'],
+      ['cooking', 'Suggest possible swaps for the pasta ingredients; change nothing.'],
+      ['cooking', 'Mostre uma prévia de compras para refeições rápidas; não atualize a lista.'],
+      ['cooking', 'Propõe, só em rascunho, os ingredientes para refeições rápidas desta semana; não guardes a sugestão nem alteres a lista.'],
+      ['cooking', 'Explique como substituir ervas frescas por secas neste prato.'],
+      ['cooking', 'Que verificações vêm antes de encomendar uma compra grande de mercearia?'],
+      ['cooking', 'Confirme os cuidados para uma encomenda avultada de alimentos; não compre.'],
+      ['finance', 'Quais faturas pendentes vencem neste mês?'],
+      ['finance', 'Que pagamentos a fornecedores continuam pendentes?'],
+      ['finance', 'Show supplier payments still pending processing.'],
+      ['finance', 'Liste as faturas não pagas com datas de vencimento e valores.'],
+      ['finance', 'Liste os lançamentos que aguardam recibo.'],
+      ['finance', 'Esboce um registo fictício de material de escritório; falta a forma de pagamento.'],
+      ['finance', 'Esboça um recibo fictício em euros; deixa a categoria fiscal em aberto.'],
+    ] as const)('%s owns "%s"', (expected, message) => {
+      expect(keywordMatch(message)).toBe(expected);
+    });
+  });
+
   describe('No match → null', () => {
     const noMatch = [
       'hello',
@@ -424,6 +489,27 @@ describe('keywordMatch — Tier 2 NL Routing', () => {
 
     it.each(noMatch)('"%s" → null', (msg) => {
       expect(keywordMatch(msg)).toBeNull();
+    });
+  });
+
+  describe('Product-workspace nouns remain context bounded', () => {
+    it('keeps unrelated workspace language out of specialized domains', () => {
+      for (const meetingAgenda of [
+        'Quais são as pautas da reunião de amanhã?',
+        'Mostre os títulos das pautas da reunião de amanhã.',
+        'Rascunhe uma pauta para a reunião de sexta.',
+        'Qual é o status das pautas da reunião?',
+      ]) {
+        expect(keywordMatch(meetingAgenda)).toBe('secretary');
+      }
+      expect(keywordMatch('Restock printer paper in the office supplies cabinet.')).toBeNull();
+      expect(keywordMatch('Repor papel na impressora do escritório.')).toBeNull();
+      expect(keywordMatch('A piscina precisa de manutenção.')).toBeNull();
+      expect(keywordMatch('A academia publicou novas regras.')).toBeNull();
+      expect(keywordMatch('The swimming pool needs maintenance.')).toBeNull();
+      expect(keywordMatch('Swimming lessons for the kids start Monday.')).toBeNull();
+      expect(keywordMatch('As aulas de natação das crianças começam segunda.')).toBeNull();
+      expect(keywordMatch('Esboce um registro fictício de personagem com detalhes reais.')).toBeNull();
     });
   });
 });

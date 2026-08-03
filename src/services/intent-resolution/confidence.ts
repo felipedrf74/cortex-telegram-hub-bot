@@ -165,10 +165,20 @@ const ORCHESTRATOR_BRANCH_KEYS: OrchestratorConfidenceBranch[] = [
 ];
 
 /**
+ * The resolver bucket boundaries are a versioned runtime contract. Accepting
+ * a different topology under the same schema version would silently change
+ * lookup semantics, so both runtime and offline-baseline parsing pin them.
+ */
+const ROUTING_CALIBRATION_RESOLVER_BUCKET_MIN_SCORES = [5, 2, 1, 0] as const;
+
+/**
  * Parse + validate an untrusted JSON payload into a calibration table.
  * Returns null on ANY shape problem so callers can fail open to bootstrap.
  */
-export function parseRoutingCalibration(raw: unknown): RoutingCalibrationTable | null {
+function parseRoutingCalibrationInternal(
+  raw: unknown,
+  requireMonotonicResolverPrecision: boolean,
+): RoutingCalibrationTable | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const candidate = raw as Record<string, unknown>;
   const provenance = candidate.provenance as Record<string, unknown> | undefined;
@@ -176,7 +186,7 @@ export function parseRoutingCalibration(raw: unknown): RoutingCalibrationTable |
   const classifier = candidate.classifier as Record<string, unknown> | undefined;
   const intentResolver = candidate.intentResolver as Record<string, unknown> | undefined;
   const clarify = candidate.clarify as Record<string, unknown> | undefined;
-  if (typeof candidate.version !== 'string' || candidate.version.length === 0) return null;
+  if (candidate.version !== ROUTING_CALIBRATION_VERSION) return null;
   if (!provenance || typeof provenance !== 'object') return null;
   if (provenance.source !== 'bootstrap' && provenance.source !== 'corpus') return null;
   if (typeof provenance.corpusSize !== 'number' || !Number.isFinite(provenance.corpusSize) || provenance.corpusSize < 0) return null;
@@ -189,11 +199,19 @@ export function parseRoutingCalibration(raw: unknown): RoutingCalibrationTable |
   }
   if (!isConfidence(orchestrator.overrideThreshold)) return null;
   if (!classifier || !isConfidence(classifier.lowConfidenceFloor) || !isConfidence(classifier.pinnedConfidenceMin)) return null;
-  if (!intentResolver || !Array.isArray(intentResolver.scoreBuckets) || intentResolver.scoreBuckets.length === 0) return null;
-  for (const bucket of intentResolver.scoreBuckets as Array<Record<string, unknown>>) {
+  if (
+    !intentResolver
+    || !Array.isArray(intentResolver.scoreBuckets)
+    || intentResolver.scoreBuckets.length !== ROUTING_CALIBRATION_RESOLVER_BUCKET_MIN_SCORES.length
+  ) return null;
+  const resolverBuckets = intentResolver.scoreBuckets as Array<Record<string, unknown>>;
+  let previousPrecision = Number.POSITIVE_INFINITY;
+  for (const [index, bucket] of resolverBuckets.entries()) {
     if (!bucket || typeof bucket !== 'object') return null;
-    if (typeof bucket.minScore !== 'number' || !Number.isFinite(bucket.minScore) || bucket.minScore < 0) return null;
+    if (bucket.minScore !== ROUTING_CALIBRATION_RESOLVER_BUCKET_MIN_SCORES[index]) return null;
     if (!isConfidence(bucket.calibratedPrecision)) return null;
+    if (requireMonotonicResolverPrecision && bucket.calibratedPrecision > previousPrecision) return null;
+    previousPrecision = bucket.calibratedPrecision;
   }
   if (!clarify || !isConfidence(clarify.epsilon) || !isConfidence(clarify.actionableFloor)) return null;
   return {
@@ -214,15 +232,32 @@ export function parseRoutingCalibration(raw: unknown): RoutingCalibrationTable |
       pinnedConfidenceMin: classifier.pinnedConfidenceMin as number,
     },
     intentResolver: {
-      scoreBuckets: [...(intentResolver.scoreBuckets as IntentResolverScoreBucket[])]
-        .map((bucket) => ({ minScore: bucket.minScore, calibratedPrecision: bucket.calibratedPrecision }))
-        .sort((left, right) => right.minScore - left.minScore),
+      scoreBuckets: (intentResolver.scoreBuckets as IntentResolverScoreBucket[])
+        .map((bucket) => ({ minScore: bucket.minScore, calibratedPrecision: bucket.calibratedPrecision })),
     },
     clarify: {
       epsilon: clarify.epsilon as number,
       actionableFloor: clarify.actionableFloor as number,
     },
   };
+}
+
+/** Runtime parser: malformed or non-monotonic tables fail open to bootstrap. */
+export function parseRoutingCalibration(raw: unknown): RoutingCalibrationTable | null {
+  return parseRoutingCalibrationInternal(raw, true);
+}
+
+/**
+ * Offline regeneration seam for one reviewed predecessor table. Older corpus
+ * artifacts may predate monotonic enforcement; their strict shape and bucket
+ * order remain usable as weighted priors because corpus generation repairs
+ * precision inversions before emitting a runtime artifact. Never use this
+ * parser on a runtime request path.
+ */
+export function parseRoutingCalibrationForCorpusBaseline(
+  raw: unknown,
+): RoutingCalibrationTable | null {
+  return parseRoutingCalibrationInternal(raw, false);
 }
 
 /** Read + parse a calibration file from disk. Null on missing/unreadable/invalid. */
@@ -278,6 +313,27 @@ export function _resetRoutingCalibrationForTests(): void {
 export function _setRoutingCalibrationForTests(table: RoutingCalibrationTable | null): void {
   cachedTable = table;
   loadAttempted = true;
+}
+
+/**
+ * Scope an offline replay to its reviewed predecessor table. The calibration
+ * generator must not observe the ambient output file: doing so makes an
+ * identical retry depend on whether a prior attempt already published.
+ */
+export async function withRoutingCalibrationForOfflineReplayAsync<T>(
+  table: RoutingCalibrationTable,
+  callback: () => Promise<T>,
+): Promise<T> {
+  const previousTable = cachedTable;
+  const previousLoadAttempted = loadAttempted;
+  cachedTable = table;
+  loadAttempted = true;
+  try {
+    return await callback();
+  } finally {
+    cachedTable = previousTable;
+    loadAttempted = previousLoadAttempted;
+  }
 }
 
 // ─── Runtime helpers (replace the inline constants) ───────────────
@@ -440,19 +496,71 @@ export function buildCorpusRoutingCalibration(
   }
 
   const baselineBuckets = baseline.intentResolver.scoreBuckets;
-  const scoreBuckets: IntentResolverScoreBucket[] = baselineBuckets.map((bucket, index) => {
+  const provisionalScoreBuckets = baselineBuckets.map((bucket, index) => {
     const upper = index === 0 ? Number.POSITIVE_INFINITY : baselineBuckets[index - 1].minScore;
     const inBucket = input.resolver.filter(
       (observation) => observation.rawScore >= bucket.minScore && observation.rawScore < upper,
     );
     if (inBucket.length < CALIBRATION_MIN_BUCKET_SAMPLES) {
-      return { minScore: bucket.minScore, calibratedPrecision: bucket.calibratedPrecision };
+      return {
+        minScore: bucket.minScore,
+        weight: CALIBRATION_MIN_BUCKET_SAMPLES,
+        weightedCorrect: bucket.calibratedPrecision * CALIBRATION_MIN_BUCKET_SAMPLES,
+      };
     }
+    const correctCount = inBucket.filter((observation) => observation.correct).length;
     return {
       minScore: bucket.minScore,
-      calibratedPrecision: round4(inBucket.filter((observation) => observation.correct).length / inBucket.length),
+      weight: inBucket.length,
+      // Preserve the exact empirical numerator through PAV pooling. Rounding
+      // before pooling can move a governed output by one basis point.
+      weightedCorrect: correctCount,
     };
   });
+
+  // Bucket precision is consumed as an ordered confidence scale. Finite
+  // samples can invert adjacent empirical buckets, while sparse buckets keep
+  // a reviewed prior. Weighted Pool-Adjacent-Violators restores the required
+  // high-score >= low-score ordering without discarding either source: a
+  // sparse prior carries the same minimum weight required before an empirical
+  // replacement, and populated buckets carry their observation count.
+  const blocks: Array<{
+    start: number;
+    end: number;
+    weight: number;
+    weightedCorrect: number;
+  }> = [];
+  for (const [index, bucket] of provisionalScoreBuckets.entries()) {
+    blocks.push({
+      start: index,
+      end: index,
+      weight: bucket.weight,
+      weightedCorrect: bucket.weightedCorrect,
+    });
+    while (blocks.length >= 2) {
+      const right = blocks[blocks.length - 1];
+      const left = blocks[blocks.length - 2];
+      const leftPrecision = left.weightedCorrect / left.weight;
+      const rightPrecision = right.weightedCorrect / right.weight;
+      if (leftPrecision >= rightPrecision) break;
+      blocks.splice(blocks.length - 2, 2, {
+        start: left.start,
+        end: right.end,
+        weight: left.weight + right.weight,
+        weightedCorrect: left.weightedCorrect + right.weightedCorrect,
+      });
+    }
+  }
+  const scoreBuckets: IntentResolverScoreBucket[] = provisionalScoreBuckets.map((bucket) => ({
+    minScore: bucket.minScore,
+    calibratedPrecision: 0,
+  }));
+  for (const block of blocks) {
+    const calibratedPrecision = round4(block.weightedCorrect / block.weight);
+    for (let index = block.start; index <= block.end; index += 1) {
+      scoreBuckets[index].calibratedPrecision = calibratedPrecision;
+    }
+  }
 
   // The classifier floor affects runtime behavior even while manifest prompt
   // routing is OFF. A partial cache can be badly skewed by refresh ordering

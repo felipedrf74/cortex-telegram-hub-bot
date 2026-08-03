@@ -70,6 +70,31 @@ const CORPUS: string[] = [
   'Faz snooze da decisão dec_123 até amanhã',
   'Dispense decisão dec_123',
   'show my pending decisions',
+  // Product-workspace families added by the routing corpus remediation.
+  'Outline a weekly planning block at 3 p.m.; the date is still open.',
+  'Explain recipient checks before a bulk message; send nothing.',
+  'Mostre os próximos eventos do calendário por ordem de horário.',
+  'Prepare a one-hour easy ride for Thursday; the start time remains open.',
+  'Prepare uma sessão fácil de 1.200 metros para terça cedo, deixando apenas o comprimento da piscina indefinido.',
+  'Preview a bike session with a snack outline; do not update workouts or groceries.',
+  'List the editorial briefs saved in my content workspace.',
+  'Mostre os títulos e os status das pautas existentes sobre consumo consciente.',
+  'Explain the review needed before replacing an approved article draft.',
+  'Which pantry items need restocking this week?',
+  'Which meals are planned from Monday through Friday next week?',
+  'Explain the checks before placing a large grocery order.',
+  'Show supplier payments still pending processing.',
+  'Liste os lançamentos que aguardam recibo.',
+  // Adversarial boundaries for newly added product-workspace vocabulary.
+  'Quais são as pautas da reunião de amanhã?',
+  'Restock printer paper in the office supplies cabinet.',
+  'Repor papel na impressora do escritório.',
+  'Show the legal briefs for tomorrow\'s meeting.',
+  'Review the editorial decision from legal.',
+  'Check our vendor integration status.',
+  'A piscina precisa de manutenção.',
+  'A academia publicou novas regras.',
+  'Esboce um registro fictício de personagem com detalhes reais.',
 ];
 
 // Chat Core v2 domains → legacy runtime domains (capability manifest space).

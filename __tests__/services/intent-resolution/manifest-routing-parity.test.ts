@@ -64,6 +64,31 @@ const PARITY_CORPUS: string[] = [
   'Faz snooze da decisão dec_123 até amanhã',
   'Dispense decisão dec_123',
   'show my pending decisions',
+  // Product-workspace families added by the routing corpus remediation.
+  'Outline a weekly planning block at 3 p.m.; the date is still open.',
+  'Explain recipient checks before a bulk message; send nothing.',
+  'Mostre os próximos eventos do calendário por ordem de horário.',
+  'Prepare a one-hour easy ride for Thursday; the start time remains open.',
+  'Prepare uma sessão fácil de 1.200 metros para terça cedo, deixando apenas o comprimento da piscina indefinido.',
+  'Preview a bike session with a snack outline; do not update workouts or groceries.',
+  'List the editorial briefs saved in my content workspace.',
+  'Mostre os títulos e os status das pautas existentes sobre consumo consciente.',
+  'Explain the review needed before replacing an approved article draft.',
+  'Which pantry items need restocking this week?',
+  'Which meals are planned from Monday through Friday next week?',
+  'Explain the checks before placing a large grocery order.',
+  'Show supplier payments still pending processing.',
+  'Liste os lançamentos que aguardam recibo.',
+  // Adversarial boundaries for newly added product-workspace vocabulary.
+  'Quais são as pautas da reunião de amanhã?',
+  'Restock printer paper in the office supplies cabinet.',
+  'Repor papel na impressora do escritório.',
+  'Show the legal briefs for tomorrow\'s meeting.',
+  'Review the editorial decision from legal.',
+  'Check our vendor integration status.',
+  'A piscina precisa de manutenção.',
+  'A academia publicou novas regras.',
+  'Esboce um registro fictício de personagem com detalhes reais.',
 ];
 
 const DAY_TO_DAY_MESSAGES: string[] = DAY_TO_DAY_SCENARIOS.flatMap(
@@ -115,6 +140,11 @@ const SURFACES: SurfaceSpec[] = [
       // only knew "faturamento"/"que faturas registei", so this corpus finance
       // phrase fell through to the LLM classifier.
       'que faturas faltam este mes': { before: 'null', after: 'finance', why: 'finance example utterance; legacy PT vocabulary gap' },
+      'Move my workout because the client call moved earlier.': {
+        before: 'secretary',
+        after: 'triathlon',
+        why: 'training-owned workout modification; legacy secretary precedence was triggered by the contextual client call',
+      },
     },
   },
   {
@@ -154,6 +184,36 @@ const SURFACES: SurfaceSpec[] = [
       'what should I eat before a hard workout tomorrow morning?': { before: 'cooking|secretary,training', after: 'cooking|cooking,secretary,training', why: 'cooking example utterance; cooking skill was invisible to legacy SKILL_PATTERNS ("eat" missing)' },
       'O que devo cozinhar para o jantar?': { before: 'secretary|secretary', after: 'cooking|cooking', why: 'cooking example utterance; classifier routes cooking' },
       'What should I eat before today’s heavy workout?': { before: 'cooking|secretary,training', after: 'cooking|cooking,secretary,training', why: 'same eat-before-workout vocabulary gap' },
+      'Prepare uma sessão fácil de 1.200 metros para terça cedo, deixando apenas o comprimento da piscina indefinido.': {
+        before: 'secretary|secretary',
+        after: 'triathlon|training',
+        why: 'bounded swim-session distance and pool-length vocabulary fixes a legacy Portuguese training gap',
+      },
+      'Mostre os títulos e os status das pautas existentes sobre consumo consciente.': {
+        before: 'secretary|secretary',
+        after: 'content|content',
+        why: 'bounded editorial-title/status vocabulary fixes a legacy content read gap',
+      },
+      'Explain the review needed before replacing an approved article draft.': {
+        before: 'secretary|secretary',
+        after: 'content|content',
+        why: 'bounded approved-article-draft vocabulary fixes a legacy content read gap',
+      },
+      'Which pantry items need restocking this week?': {
+        before: 'secretary|secretary',
+        after: 'cooking|cooking',
+        why: 'pantry ownership fixes a legacy cooking read gap without accepting bare restock language',
+      },
+      'Which meals are planned from Monday through Friday next week?': {
+        before: 'secretary|secretary',
+        after: 'cooking|cooking',
+        why: 'bounded planned-meals vocabulary fixes a legacy cooking read gap',
+      },
+      'Show supplier payments still pending processing.': {
+        before: 'secretary|secretary',
+        after: 'finance|finance',
+        why: 'supplier-payment ownership fixes a legacy finance read gap without accepting bare vendor language',
+      },
     },
   },
   {
@@ -172,7 +232,28 @@ const SURFACES: SurfaceSpec[] = [
     // training subject vocabulary (classifier CONTENT_INTENT precedence), so
     // the manifest path now drops subject-only training evidence for
     // creation asks and the phrase stays app_question|content in BOTH states.
-    reviewedDivergences: {},
+    reviewedDivergences: {
+      'Explain the review needed before replacing an approved article draft.': {
+        before: 'general_question|',
+        after: 'app_question|content',
+        why: 'bounded approved-article-draft vocabulary fixes a legacy content read gap',
+      },
+      'Which pantry items need restocking this week?': {
+        before: 'general_question|',
+        after: 'app_question|cooking',
+        why: 'pantry ownership fixes a legacy cooking read gap without accepting bare restock language',
+      },
+      'Show supplier payments still pending processing.': {
+        before: 'general_question|',
+        after: 'app_question|finance',
+        why: 'supplier-payment ownership fixes a legacy finance read gap without accepting bare vendor language',
+      },
+      'Liste os lançamentos que aguardam recibo.': {
+        before: 'general_question|',
+        after: 'app_question|finance',
+        why: 'bounded bookkeeping-entry and receipt vocabulary fixes a legacy Portuguese finance read gap',
+      },
+    },
   },
   {
     name: 'chat registry selectRegistrySubsetForMessage',
@@ -197,6 +278,11 @@ const SURFACES: SurfaceSpec[] = [
       'what should I eat before a hard workout tomorrow morning?': { before: '', after: 'cooking', why: 'cooking example utterance' },
       'snooze my notifications for an hour': { before: 'decision_center', after: 'decision_center,notifications', why: 'notifications example utterance; shadow routes notifications.snooze for the same phrase' },
       'show my pending decisions': { before: '', after: 'decision_center', why: 'decision_center example utterance' },
+      'Preview a bike session with a snack outline; do not update workouts or groceries.': {
+        before: 'cooking',
+        after: 'cooking,training',
+        why: 'manifest adds the training-owned workout while retaining the ancillary cooking skill',
+      },
     },
   },
 ];

@@ -16,6 +16,7 @@ beforeEach(() => {
 
 afterEach(() => {
   _resetRoutingCalibrationForTests();
+  vi.unstubAllEnvs();
 });
 
 describe('chat skill orchestrator', () => {
@@ -105,6 +106,113 @@ describe('chat skill orchestrator', () => {
     expect(decision.intentKinds).toContain('cross_skill');
     expect(decision.intentKinds).not.toContain('scheduling');
   });
+
+  it('uses ranked manifest evidence for the primary domain when several skills match', () => {
+    vi.stubEnv('AI_ROUTING_MANIFEST_ORCHESTRATOR', 'true');
+    vi.stubEnv('AI_ROUTING_MANIFEST_KILL', 'false');
+
+    const pantry = analyzeChatSkillOrchestration({
+      message: 'What ingredients are currently listed in my pantry as running low?',
+    });
+    expect(pantry.primaryDomain).toBe('cooking');
+    expect(pantry.involvedSkills).toEqual(expect.arrayContaining(['cooking', 'training']));
+
+    const bulkMessage = analyzeChatSkillOrchestration({
+      message: 'Explain the recipient and content checks required before a bulk message, without sending anything.',
+    });
+    expect(bulkMessage.primaryDomain).toBe('secretary');
+    expect(bulkMessage.involvedSkills).toEqual(expect.arrayContaining(['secretary', 'content']));
+  });
+
+  it('does not treat an explicitly declined schedule operation as scheduling intent', () => {
+    vi.stubEnv('AI_ROUTING_MANIFEST_ORCHESTRATOR', 'true');
+    vi.stubEnv('AI_ROUTING_MANIFEST_KILL', 'false');
+
+    const decision = analyzeChatSkillOrchestration({
+      message: 'Preview a steady Sunday bike session lasting 75 minutes; do not save or schedule it.',
+    });
+    expect(decision.primaryDomain).toBe('triathlon');
+    expect(decision.involvedSkills).toContain('training');
+    expect(decision.involvedSkills).not.toContain('secretary');
+    expect(decision.intentKinds).not.toContain('scheduling');
+  });
+
+  it.each([false, true])(
+    'does not let a declined first sentence erase a later positive schedule command (manifest=%s)',
+    (manifestEnabled) => {
+      vi.stubEnv('AI_ROUTING_MANIFEST_ORCHESTRATOR', manifestEnabled ? 'true' : 'false');
+      vi.stubEnv('AI_ROUTING_MANIFEST_KILL', 'false');
+
+      for (const message of [
+        'Do not save the workout. Schedule it tomorrow.',
+        'Do not save this draft; schedule it tomorrow.',
+        'Não guarde o treino. Agende-o amanhã.',
+      ]) {
+        const decision = analyzeChatSkillOrchestration({ message });
+        expect(decision.primaryDomain).toBe('secretary');
+        expect(decision.intentKinds).toContain('action');
+        expect(decision.intentKinds).toContain('scheduling');
+      }
+    },
+  );
+
+  it.each([false, true])(
+    'does not treat a non-negating without phrase as declining scheduling (manifest=%s)',
+    (manifestEnabled) => {
+      vi.stubEnv('AI_ROUTING_MANIFEST_ORCHESTRATOR', manifestEnabled ? 'true' : 'false');
+      vi.stubEnv('AI_ROUTING_MANIFEST_KILL', 'false');
+
+      for (const message of [
+        'Without delay, schedule my workout tomorrow.',
+        'Without conflicts, book the meeting for Friday.',
+        'Without scheduling conflicts, schedule my workout tomorrow.',
+      ]) {
+        const decision = analyzeChatSkillOrchestration({ message });
+        expect(decision.primaryDomain).toBe('secretary');
+        expect(decision.intentKinds).toContain('action');
+        expect(decision.intentKinds).toContain('scheduling');
+      }
+    },
+  );
+
+  it.each([false, true])(
+    'preserves positive scheduling mandates expressed with a negative idiom (manifest=%s)',
+    (manifestEnabled) => {
+      vi.stubEnv('AI_ROUTING_MANIFEST_ORCHESTRATOR', manifestEnabled ? 'true' : 'false');
+      vi.stubEnv('AI_ROUTING_MANIFEST_KILL', 'false');
+
+      for (const message of [
+        'Do not forget to schedule the meeting tomorrow.',
+        'Do not fail to book the meeting for Friday.',
+        'Não se esqueça de agendar a reunião amanhã.',
+        'Não deixe de remarcar o treino para sexta.',
+      ]) {
+        const decision = analyzeChatSkillOrchestration({ message });
+        expect(decision.primaryDomain).toBe('secretary');
+        expect(decision.intentKinds).toContain('action');
+        expect(decision.intentKinds).toContain('scheduling');
+      }
+    },
+  );
+
+  it.each([false, true])(
+    'suppresses every coordinated scheduling verb in one declined clause (manifest=%s)',
+    (manifestEnabled) => {
+      vi.stubEnv('AI_ROUTING_MANIFEST_ORCHESTRATOR', manifestEnabled ? 'true' : 'false');
+      vi.stubEnv('AI_ROUTING_MANIFEST_KILL', 'false');
+
+      for (const message of [
+        'Do not schedule or move the workout tomorrow.',
+        'Don’t schedule or move the workout tomorrow.',
+        'Never book or reschedule the meeting.',
+      ]) {
+        const decision = analyzeChatSkillOrchestration({ message });
+        expect(decision.intentKinds).not.toContain('action');
+        expect(decision.intentKinds).not.toContain('scheduling');
+        expect(decision.intentKinds).not.toContain('edit_update');
+      }
+    },
+  );
 
   it('requires confirmation for destructive cross-skill actions', () => {
     const decision = analyzeChatSkillOrchestration({

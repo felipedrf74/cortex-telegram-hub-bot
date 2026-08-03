@@ -295,6 +295,32 @@ describe('Chat Core v2 shadow route hook', () => {
     });
   });
 
+  it.each([false, true])(
+    'routes meeting, integration, and subscription boundaries semantically (manifest=%s)',
+    (manifestEnabled) => {
+      vi.stubEnv('AI_ROUTING_MANIFEST_KILL', 'false');
+      vi.stubEnv('AI_ROUTING_MANIFEST_SHADOW', manifestEnabled ? 'true' : 'false');
+
+      const cases = [
+        ['secretary', 'Mostre os títulos das pautas da reunião de amanhã.'],
+        ['secretary', 'Rascunhe uma pauta para a reunião de sexta.'],
+        ['secretary', 'Qual é o status das pautas da reunião?'],
+        ['secretary', 'Rascunhe para a reunião uma pauta de sexta.'],
+        ['connections', 'Check the gym integration status.'],
+        ['connections', 'Is my gym connection working?'],
+        ['connections', 'Mostre o status da integração de pagamentos.'],
+        ['connections', 'Verifique o status da integração do ginásio.'],
+        ['connections', 'Mostre o status da integração de recibos.'],
+        ['finance', 'Show my gym subscription renewal.'],
+        ['finance', 'Mostre a renovação da assinatura do ginásio.'],
+      ] as const;
+
+      for (const [domain, message] of cases) {
+        expect(classifyShadowRoute(message).domains).toEqual([domain]);
+      }
+    },
+  );
+
   it('records resolver-vs-surface routing divergence telemetry additively in the replay row', () => {
     stubReleaseIdentityEnv(RELEASE_IDENTITY_ENV);
     const result = runChatCoreV2ShadowRouteHook({
@@ -330,7 +356,7 @@ describe('Chat Core v2 shadow route hook', () => {
     const divergence = contextPack.routingDivergence;
     expect(divergence).toBeDefined();
     expect(divergence!.divergenceVersion).toBe('routing_divergence_shadow@5.0.0');
-    expect(divergence!.resolverVersion).toBe('manifest-intent-resolver@1.0.0');
+    expect(divergence!.resolverVersion).toBe('manifest-intent-resolver@1.1.0');
     expect(divergence!.releaseIdentity).toEqual({
       runtimeSha: RELEASE_IDENTITY_ENV.NEXUS_RELEASE_SHA,
       artifactDigest: RELEASE_IDENTITY_ENV.NEXUS_RELEASE_ARTIFACT_SHA256,
