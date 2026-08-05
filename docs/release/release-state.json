@@ -1,11 +1,11 @@
 {
   "schema": "nexus.release-state.v1",
-  "lastVerifiedAt": "2026-08-03T05:48:45Z",
-  "docsHead": "0fb4f62f1984fdb8092eb2b623f5fe06ce9a4962",
+  "lastVerifiedAt": "2026-08-05T12:58:15Z",
+  "docsHead": "23ee4cc6b0f771de2dd65acfe880e64b86853550",
   "backend": {
     "version": "4.14.232",
-    "runtimeSha": "f4fe405aca2ce94e72ba809574f99d041bcb3bcd",
-    "artifactDigest": "26ca938a98c9270b0d5daefce6fdaed679a3a53132da904d448924f6c8f53f2d",
+    "runtimeSha": "53164d51fa775d287732e71f8fed62cf2604b2a7",
+    "artifactDigest": "dca700c000ad44cada7ed4af7e5eb9c4507d729851f137bf3e16320bd571fe29",
     "installedDigest": "3944f37f16dd1a526a53bee80758b4519298e260c6f6596d88dfad6a6dda55ae",
     "health": "healthy",
     "database": "connected",
@@ -14,17 +14,17 @@
       "content-engine"
     ],
     "releaseEvidence": {
-      "protectedMainRun": "30778758910",
-      "releaseCheckpointRun": "30779260105",
-      "manifestSha256": "ce6b37c922885fe6045bb90020fdafdc3d4aca0b6382b2b572d4e9af8b0237ad",
-      "stagingTransaction": "20260803T053850Z-22e8feffc812",
-      "productionTransaction": "20260803T054254Z-2a4481391b3d",
-      "productionCompletedAt": "2026-08-03T05:44:09.614Z",
-      "transactionSeconds": 74.340,
-      "readinessSeconds": 12.644,
-      "soakSeconds": 61.695,
-      "backup": "nexus-db-20260803T054302Z.sqlite.age",
-      "backupEncryptedSha256": "01a55204e57711aa50b8cf35b24562c70d0e55212aa1cdd587128bc1caddfcc0",
+      "protectedMainRun": "30800191821",
+      "releaseCheckpointRun": "30801186575",
+      "manifestSha256": "cd51e786ee7656360bd330fbd17f8361a99b8d46d95f35ab16d7b3ad1c8ff98d",
+      "stagingTransaction": "20260803T093209Z-3bb0ceb9547f",
+      "productionTransaction": "20260803T095052Z-bfd98c408c52",
+      "productionCompletedAt": "2026-08-03T09:52:07.851Z",
+      "transactionSeconds": 74.374,
+      "readinessSeconds": 12.702,
+      "soakSeconds": 61.671,
+      "backup": "nexus-db-20260803T095101Z.sqlite.age",
+      "backupEncryptedSha256": "0f47c92279def2736f9a8391c82e6037fb7bed69ecb636efcf7721b2404fca4b",
       "stagingRollbackDrill": {
         "transaction": "20260802T133139Z-1d33c71562f6",
         "result": "restored",
@@ -36,10 +36,10 @@
         "verdict": "passed",
         "passed": 24,
         "failed": 0,
-        "evidence": "staging-smoke-f4fe405aca2ce94e72ba809574f99d041bcb3bcd-20260803T053945Z.json"
+        "evidence": "staging-smoke-53164d51fa775d287732e71f8fed62cf2604b2a7-20260803T093318Z.json"
       },
       "chatEval": {
-        "runId": "chat-eval-2026-08-03T02-35-30-360Z",
+        "runId": "chat-eval-2026-08-03T09-30-21-240Z",
         "engine": "local_engine",
         "scenarios": 7,
         "passed": 7,
@@ -57,10 +57,10 @@
     "activationState": "active"
   },
   "chatQualityRollout": {
-    "status": "production_released_calibration_regenerated_pending_final_batch",
+    "status": "production_released_phase7_waiting_genuine_staging_traffic",
     "releaseIdentity": {
-      "runtimeSha": "f4fe405aca2ce94e72ba809574f99d041bcb3bcd",
-      "artifactDigest": "26ca938a98c9270b0d5daefce6fdaed679a3a53132da904d448924f6c8f53f2d"
+      "runtimeSha": "53164d51fa775d287732e71f8fed62cf2604b2a7",
+      "artifactDigest": "dca700c000ad44cada7ed4af7e5eb9c4507d729851f137bf3e16320bd571fe29"
     },
     "phase4GoldenCorpus": {
       "status": "complete",
@@ -77,7 +77,7 @@
       "calibrationCommit": "0661233f31ac8f3c43530204ec9e89a35c15715a",
       "calibrationSource": "corpus",
       "calibrationRefresh": {
-        "status": "generated_pending_release",
+        "status": "released",
         "generatedAt": "2026-08-03T05:48:45.873Z",
         "baselineSha256": "3ac0a38b841aecb9de4b167e480d7a0458cad78a11724467dc190f9962340326",
         "configSha256": "0e22443181b7b4ed2998c1b144b10126bcc17679eb5726f41af3cd5b561be6b7",
@@ -91,7 +91,10 @@
         "exportReceiptFileSha256": "1e95ace0bdf9b8983f05baa5fa2fa2c8e4fe3db6d0e5d847c7a2067a174c15c7",
         "sanitizedInputSha256": "b29c97c3ea5e70f26b5bf36364b7c06109ad555a1e72cf66fa581e5d83c54b8b",
         "cacheRowsDigest": "sha256:104be01c14a2b4bb835d76e8502554f965cc1f364a81bf99719770d71fcc7ba4",
-        "providerCalls": 0
+        "providerCalls": 0,
+        "releasedAt": "2026-08-03T09:52:07.851Z",
+        "releaseRuntimeSha": "53164d51fa775d287732e71f8fed62cf2604b2a7",
+        "releaseArtifactDigest": "dca700c000ad44cada7ed4af7e5eb9c4507d729851f137bf3e16320bd571fe29"
       }
     },
     "phase5FrozenBaseline": {
@@ -246,8 +249,8 @@
     "targetManifestSchema": "nexus.release-checksum-manifest.v1",
     "leanActivation": "active_first_staging_and_production_proof_passed",
     "exactArtifactPath": "proven",
-    "stagingRehearsals": 19,
-    "ownerAuthorizedProductionReleases": 15,
+    "stagingRehearsals": 20,
+    "ownerAuthorizedProductionReleases": 16,
     "legacyWrappers": "retired",
     "firstProofRelease": {
       "version": "4.14.231",
@@ -265,9 +268,9 @@
       "soakSeconds": 61.636
     },
     "timingObservation": {
-      "observedReleases": 9,
+      "observedReleases": 10,
       "requiredReleases": 10,
-      "status": "collecting",
+      "status": "complete",
       "baselineReadinessSeconds": 1180,
       "percentileMethod": "nearest_rank",
       "coldCoreProof": {
@@ -388,20 +391,32 @@
           "stagingTransactionSeconds": 26.891,
           "productionTransactionSeconds": 74.340,
           "promotionOutcome": "passed"
+        },
+        {
+          "runtimeSha": "53164d51fa775d287732e71f8fed62cf2604b2a7",
+          "protectedMainRun": "30800191821",
+          "releaseCheckpointRun": "30801186575",
+          "mainSeconds": 821,
+          "unattendedHandoffSeconds": 21,
+          "checkpointSeconds": 261,
+          "automatedReadinessSeconds": 1103,
+          "stagingTransactionSeconds": 26.945,
+          "productionTransactionSeconds": 74.374,
+          "promotionOutcome": "passed"
         }
       ],
       "provisionalNearestRank": {
-        "stable": false,
+        "stable": true,
         "mainSeconds": {
           "p50": 421,
           "p95": 1053
         },
         "unattendedHandoffSeconds": {
-          "p50": 65,
+          "p50": 55,
           "p95": 493
         },
         "checkpointSeconds": {
-          "p50": 263,
+          "p50": 261,
           "p95": 333
         },
         "automatedReadinessSeconds": {
