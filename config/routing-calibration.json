@@ -24,15 +24,15 @@
     "scoreBuckets": [
       {
         "minScore": 5,
-        "calibratedPrecision": 0.9341
+        "calibratedPrecision": 0.943
       },
       {
         "minScore": 2,
-        "calibratedPrecision": 0.9341
+        "calibratedPrecision": 0.943
       },
       {
         "minScore": 1,
-        "calibratedPrecision": 0.843
+        "calibratedPrecision": 0.8376
       },
       {
         "minScore": 0,

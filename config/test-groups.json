@@ -1,5 +1,5 @@
 {
-  "version": "2026-07-31.2",
+  "version": "2026-08-05.1",
   "core": {
     "targetSeconds": 30,
     "tests": [
@@ -747,6 +747,7 @@
       ],
       "tests": [
         "__tests__/chat-test-phase/**",
+        "__tests__/fixtures/product-profile-routing-regressions.ts",
         "__tests__/fixtures/secretary-reasoning/**",
         "__tests__/api/chat*.test.ts",
         "__tests__/services/intelligence-bus-contract.test.ts",

@@ -89,14 +89,14 @@ describe('routing calibration table golden contracts', () => {
       overrideThreshold: 0.86,
     });
     expect(parsed!.intentResolver.scoreBuckets).toEqual([
-      { minScore: 5, calibratedPrecision: 0.9341 },
-      { minScore: 2, calibratedPrecision: 0.9341 },
-      { minScore: 1, calibratedPrecision: 0.843 },
+      { minScore: 5, calibratedPrecision: 0.943 },
+      { minScore: 2, calibratedPrecision: 0.943 },
+      { minScore: 1, calibratedPrecision: 0.8376 },
       { minScore: 0, calibratedPrecision: 0.1633 },
     ]);
     expect(parsed!.clarify).toEqual({ epsilon: 0.05, actionableFloor: 0.2 });
     expect(createHash('sha256').update(fileBytes).digest('hex')).toBe(
-      '0e22443181b7b4ed2998c1b144b10126bcc17679eb5726f41af3cd5b561be6b7',
+      'ee1ff569fe999414313c15843bca112a389c71a5b41bfcc80f380f80dbe37ede',
     );
   });
 

@@ -1,6 +1,6 @@
 {
   "schema": "nexus.capability-manifest.v2",
-  "version": "2026-07-29.1",
+  "version": "2026-08-05.1",
   "schemaReferences": {
     "nexus.chat-turn.input.v1": {
       "format": "typescript",
@@ -306,7 +306,20 @@
           "\\b(?:arrange|arranging|prioriti[sz]e|prioriti[sz]ing)\\b[\\s\\S]{0,70}\\b(?:busy|overloaded)\\s+(?:day|week)\\b[\\s\\S]{0,50}\\burgency\\b",
           "\\b(?:mostre|liste|listar)\\b[\\s\\S]{0,60}\\beventos?\\b[\\s\\S]{0,50}\\bcalend[aá]rio\\b|\\b(?:excluir|exclua|apagar|apague)\\b[\\s\\S]{0,50}\\b(?:s[eé]rie\\s+de\\s+)?eventos?\\b[\\s\\S]{0,50}\\bcalend[aá]rio\\b",
           "\\b(?:minuta|rascunho|pedido|vers[aã]o\\s+provis[oó]ria)\\b[\\s\\S]{0,80}\\b(?:mudar|mudan[cç]a\\s+de|pedir)\\b[\\s\\S]{0,50}\\b(?:hor[aá]rio|outra\\s+hora|reuni[aã]o)\\b",
-          "\\b(?:sess(?:[aã]o|ao)|hora)\\s+de\\s+(?:planeamento|planejamento|foco|concentra[cç][aã]o)\\b"
+          "\\b(?:sess(?:[aã]o|ao)|hora)\\s+de\\s+(?:planeamento|planejamento|foco|concentra[cç][aã]o)\\b",
+          "\\b(?:subject\\s+lines?|messages?)\\b[\\s\\S]{0,60}\\b(?:arrived|received|inbox)\\b",
+          "\\b(?:draft|prepare|preview|write)\\b[\\s\\S]{0,60}\\b(?:reply|out-of-office|email)\\b",
+          "\\b(?:reply|out-of-office|email)\\b[\\s\\S]{0,100}\\b(?:unsent|do\\s+not\\s+send|don'?t\\s+send|leave\\s+it\\s+unsent|change\\s+no\\s+workouts?)\\b",
+          "\\b(?:unsent|do\\s+not\\s+send|don'?t\\s+send|leave\\s+it\\s+unsent|change\\s+no\\s+workouts?)\\b",
+          "\\b(?:events?|appointments?)\\b[\\s\\S]{0,60}\\b(?:overlap|start|room|notes?)\\b",
+          "\\b(?:focus\\s+time|one-on-one|client\\s+check-in)\\b",
+          "\\b(?:marque|reserve|mude|passa)\\b[\\s\\S]{0,60}\\b(?:conversa|per[ií]odo\\s+de\\s+concentra[cç][aã]o|reuni[aã]o|consulta)\\b",
+          "\\b(?:consulta|reuni[aã]o)\\b[\\s\\S]{0,60}\\b(?:marcada|sala|outra\\s+hora|hor[aá]rio\\s+diferente)\\b",
+          "\\b(?:pr[eé]via|pr[eé]-visualiza[cç][aã]o)\\b[\\s\\S]{0,50}\\be-?mail\\b",
+          "\\be-?mail\\b[\\s\\S]{0,100}\\bn[aã]o\\s+envi(?:e|es)\\b",
+          "\\bn[aã]o\\s+envi(?:e|es)\\b[\\s\\S]{0,80}\\b(?:n[aã]o|nem)\\s+(?:altere|alteres|mexa)\\b",
+          "\\blembra-me\\b[\\s\\S]{0,50}\\b(?:levantar|buscar|recolher)\\b",
+          "\\bapaga\\b[\\s\\S]{0,50}\\bmarca[cç][aã]o\\b"
         ],
         "exampleUtterances": [
           "Create a task to buy milk tomorrow",
@@ -478,7 +491,17 @@
           "\\btreinos?\\b[\\s\\S]{0,70}\\b(?:salvos?|planeamento|planejamento|plano|semana)\\b|\\b(?:planeamento|planejamento|plano)\\b[\\s\\S]{0,70}\\btreinos?\\b",
           "\\bcorridas?\\b[\\s\\S]{0,70}\\b(?:previstas?|planeadas?|planejadas?|plano)\\b|\\bplano\\b[\\s\\S]{0,70}\\bcorridas?\\b",
           "\\b(?:preview|sketch|draft|outline|prepare|build)\\b[\\s\\S]{0,120}\\b(?:bike\\s+sessions?|ride\\s+workouts?|workouts?|training\\s+plans?)\\b[\\s\\S]{0,120}\\b(?:fuel(?:ing)?|snacks?|meals?|grocer(?:y|ies)|pantry)\\b",
-          "\\b(?:esbo[cç]a|esboce|pr[eé]via|prepara|prepare|estrutura|estruture)\\b[\\s\\S]{0,120}\\b(?:sess(?:[aã]o|ao)\\s+de\\s+bicicleta|treinos?|plano\\s+de\\s+treino)\\b[\\s\\S]{0,120}\\b(?:abastecimento|snacks?|refei[cç][aã]o|compras?|despensa)\\b"
+          "\\b(?:esbo[cç]a|esboce|pr[eé]via|prepara|prepare|estrutura|estruture)\\b[\\s\\S]{0,120}\\b(?:sess(?:[aã]o|ao)\\s+de\\s+bicicleta|treinos?|plano\\s+de\\s+treino)\\b[\\s\\S]{0,120}\\b(?:abastecimento|snacks?|refei[cç][aã]o|compras?|despensa)\\b",
+          "\\b(?:split\\s+times?|splits?)\\b[\\s\\S]{0,60}\\b(?:pool|swim|metres?|meters?|yards?)\\b",
+          "\\b(?:log|record|adjust|schedule)\\b[\\s\\S]{0,60}\\b(?:swim\\s+(?:workout|session)|cycling\\s+load|brick\\s+(?:workout|session))\\b",
+          "\\b(?:brick\\s+(?:workout|session)|race\\s+day)\\b",
+          "\\b(?:sprint[-\\s]?triathlon|triathlon)\\s+plan\\b|\\b(?:preview|sketch)\\b[\\s\\S]{0,70}\\b(?:triathlon|training)\\s+plan\\b",
+          "\\b(?:metros?\\s+nadei|bloco\\s+de\\s+treino|carga\\s+dos?\\s+meus?\\s+pr[oó]ximos?\\s+treinos?\\s+de\\s+bicicleta)\\b",
+          "\\b(?:esboce?|estrutura|prepare)\\b[\\s\\S]{0,70}\\b(?:semana\\s+de\\s+treinos?|plano\\s+de\\s+treino|triatlo\\s+sprint)\\b",
+          "\\bsemana\\s+de\\s+treinos?\\b[\\s\\S]{0,100}\\bsem\\s+(?:alterar|modificar)\\s+(?:(?:a|minha)\\s+)?agenda\\b",
+          "\\b(?:longest\\s+duration|longest)\\b[\\s\\S]{0,50}\\brun\\b|\\brun\\b[\\s\\S]{0,50}\\blongest\\s+duration\\b",
+          "\\b(?:apresenta|mostra)\\b[\\s\\S]{0,60}\\bpr[eé]-visualiza[cç][aã]o\\b[\\s\\S]{0,70}\\btriatlo\\s+sprint\\b",
+          "\\b(?:without\\s+saving|do\\s+not\\s+save)\\b[\\s\\S]{0,70}\\btraining\\s+schedule\\b"
         ],
         "exampleUtterances": [
           "I need to plan my workout",
@@ -658,7 +681,23 @@
           "\\b(?:t[ií]tulos?|status)\\b[\\s\\S]{0,60}\\bpautas?\\b(?![\\s\\S]{0,60}\\breuni(?:[aã]o|[oõ]es)\\b)|\\bpautas?\\b(?![\\s\\S]{0,60}\\breuni(?:[aã]o|[oõ]es)\\b)[\\s\\S]{0,60}\\b(?:t[ií]tulos?|status)\\b",
           "\\brascunh(?:e|a|ar)\\b[\\s\\S]{0,50}\\bpautas?\\b(?![\\s\\S]{0,60}\\breuni(?:[aã]o|[oõ]es)\\b)",
           "\\b(?:substituir|trocar|rever|revisar|revise|revisado)\\b[\\s\\S]{0,70}\\bartigo(?:\\s+j[aá])?\\s+aprovado\\b|\\bartigo(?:\\s+j[aá])?\\s+aprovado\\b[\\s\\S]{0,70}\\b(?:substituir|trocar|rever|revisar|revise|revisado)\\b",
-          "\\b(?:esbo[cç]a|esboce|prepara|prepare|estrutura|estruture)\\b[\\s\\S]{0,70}\\b(?:artigo\\s+(?:introdut[oó]rio|pr[aá]tico)|guia\\s+pr[aá]tico)\\b[\\s\\S]{0,80}\\b(?:sec[cç][oõ]es|partes|extens[aã]o|palavras?)\\b"
+          "\\b(?:esbo[cç]a|esboce|prepara|prepare|estrutura|estruture)\\b[\\s\\S]{0,70}\\b(?:artigo\\s+(?:introdut[oó]rio|pr[aá]tico)|guia\\s+pr[aá]tico)\\b[\\s\\S]{0,80}\\b(?:sec[cç][oõ]es|partes|extens[aã]o|palavras?)\\b",
+          "\\b(?:write|create|draft|prepare)\\b[\\s\\S]{0,80}\\b(?:blog\\s+article|article|newsletter|marketing\\s+post)\\b",
+          "\\b(?:escreve|redige|cria|prepare|prepara)\\b[\\s\\S]{0,80}\\b(?:artigo|newsletter|publica[cç][aã]o\\s+de\\s+marketing)\\b",
+          "\\b(?:blog\\s+article|article|newsletter|marketing\\s+post|artigo)\\b",
+          "\\b(?:blog|article|social|documentary|newsletter|marketing)\\b[\\s\\S]{0,70}\\b(?:drafts?|posts?|videos?|opening|campaign|email\\s+series|editorial\\s+review)\\b",
+          "\\b(?:marketing\\s+email|email\\s+series|newsletter\\s+opening)\\b",
+          "\\b(?:three-part|multi-part|multipart)\\s+marketing\\s+email\\s+series\\b",
+          "\\b(?:approved|latest)\\s+tagline\\b[\\s\\S]{0,60}\\b(?:product\\s+)?launch\\b",
+          "\\b(?:tagline|product\\s+launch|approved\\s+article)\\b",
+          "\\b(?:publish|delete|preview)\\b[\\s\\S]{0,80}\\b(?:approved\\s+article|article|content\\s+drafts?|campaign)\\b",
+          "\\b(?:slogan|artigo|texto|publica[cç][aã]o)\\b[\\s\\S]{0,80}\\b(?:aprovad[oa]|marca|rascunho\\s+editorial|campanha|confirmar)\\b",
+          "\\b(?:aprovad[oa]|marca|rascunho\\s+editorial|campanha|confirmar)\\b[\\s\\S]{0,80}\\b(?:slogan|artigo|texto|publica[cç][aã]o)\\b",
+          "\\b(?:slogan|rascunho\\s+editorial|campanha\\s+de\\s+lan[cç]amento)\\b",
+          "\\b(?:repurpose|repurposed)\\b[\\s\\S]{0,70}\\b(?:webinar|short-form\\s+content)\\b",
+          "\\bpublica[cç][oõ]es\\b[\\s\\S]{0,80}\\b(?:programadas?|campanha\\s+de\\s+lan[cç]amento)\\b",
+          "\\bartigos?\\b[\\s\\S]{0,80}\\bcampanha\\b[\\s\\S]{0,60}\\b(?:aguardar|aguardam|revis[aã]o)\\b",
+          "\\bescreve\\b[\\s\\S]{0,50}\\bpublica[cç][aã]o\\b[\\s\\S]{0,50}\\blan[cç]amento\\b"
         ],
         "exampleUtterances": [
           "plan my youtube content",
@@ -818,7 +857,22 @@
           "\\b(?:supplier|vendor)\\s+(?:payments?|invoices?|bills?)\\b|\\b(?:payments?|invoices?|bills?)\\s+(?:to|from)\\s+(?:suppliers?|vendors?)\\b|\\b(?:faturas?|facturas?|recibos?|pagamentos?)\\b[\\s\\S]{0,50}\\b(?:fornecedores?|venc(?:e|em|ida|idas)|pendentes?)\\b|\\bfornecedores?\\b[\\s\\S]{0,50}\\b(?:faturas?|facturas?|recibos?|pagamentos?)\\b",
           "\\bfaturas?\\b[\\s\\S]{0,80}\\b(?:n[aã]o\\s+pagas?|datas?\\s+de\\s+vencimento|vencimento|valores?)\\b",
           "\\blan[cç]amentos?\\b[\\s\\S]{0,70}\\b(?:aguard(?:am|ando)|pendentes?|sem)\\b[\\s\\S]{0,40}\\brecibos?\\b",
-          "\\b(?:registro|registo|recibo)\\s+fict[ií]cio\\b[\\s\\S]{0,100}\\b(?:euros?|forma\\s+de\\s+pagamento|categoria\\s+fiscal)\\b"
+          "\\b(?:registro|registo|recibo)\\s+fict[ií]cio\\b[\\s\\S]{0,100}\\b(?:euros?|forma\\s+de\\s+pagamento|categoria\\s+fiscal)\\b",
+          "\\b(?:checking|savings|bank)\\b[\\s\\S]{0,60}\\b(?:accounts?|balances?|transfer)\\b|\\b(?:accounts?|balances?|transfer)\\b[\\s\\S]{0,60}\\b(?:checking|savings|bank)\\b",
+          "\\b(?:checking\\s+account|savings\\s+account|card\\s+charges?|card\\s+purchases?|emergency\\s+fund|savings\\s+target)\\b",
+          "\\b(?:card\\s+charges?|card\\s+purchases?|recategori[sz](?:e|ing)|emergency\\s+fund|savings\\s+target)\\b",
+          "\\b(?:travel|conference)\\s+budget\\b|\\bbudget\\b[\\s\\S]{0,50}\\b(?:travel|conference)\\b",
+          "\\bsubscriptions?\\b[\\s\\S]{0,50}\\b(?:due\\s+to\\s+renew|renew\\s+before|cancel)\\b",
+          "\\b(?:categori[sz]e|recategori[sz]e)\\b[\\s\\S]{0,50}\\b(?:transaction|card\\s+charge)\\b",
+          "\\b(?:travel|conference)\\s+budget\\b[\\s\\S]{0,100}\\b(?:calendar|event)\\b[\\s\\S]{0,80}\\b(?:unchanged|without\\s+changing|not\\s+change)\\b",
+          "\\b(?:income|spending)\\b[\\s\\S]{0,50}\\b(?:income|spending|calendar\\s+month)\\b",
+          "\\b(?:compras?|movimentos?|lan[cç]amentos?)\\b[\\s\\S]{0,60}\\b(?:cart[aã]o|conta\\s+[àa]\\s+ordem)\\b|\\bcart[aã]o\\b[\\s\\S]{0,60}\\b(?:compras?|movimentos?|lan[cç]amentos?)\\b",
+          "\\b(?:compras?\\s+no\\s+cart[aã]o|movimentos?\\s+superiores?|conta\\s+[àa]\\s+ordem)\\b",
+          "\\b(?:meta|reserva)\\b[\\s\\S]{0,50}\\b(?:poupan[cç]as?|emerg[eê]ncia)\\b|\\b(?:poupan[cç]as?|emerg[eê]ncia)\\b[\\s\\S]{0,50}\\b(?:meta|reserva)\\b",
+          "\\b(?:transfere?|transfira)\\b[\\s\\S]{0,80}\\b(?:conta\\s+corrente|conta\\s+[àa]\\s+ordem|poupan[cç]a)\\b",
+          "\\bor[cç]amento\\b[\\s\\S]{0,60}\\b(?:alimenta[cç][aã]o|viagem|confer[eê]ncia)\\b",
+          "\\b(?:quanto\\s+(?:ainda\\s+)?posso\\s+gastar|categoria\\s+lazer|assinaturas?\\s+ser[aã]o\\s+renovadas?)\\b",
+          "\\b(?:saldos?|movimentos?)\\b[\\s\\S]{0,70}\\b(?:conta\\s+[àa]\\s+ordem|poupan[cç]a|superiores?\\s+a)\\b"
         ],
         "exampleUtterances": [
           "what subscriptions renew soon",
@@ -968,7 +1022,14 @@
           "\\b(?:pr[eé]via|esbo[cç]o)\\b[\\s\\S]{0,50}\\bcompras?\\b[\\s\\S]{0,50}\\brefei[cç][oõ]es\\s+r[aá]pidas\\b",
           "\\bsubstituir\\b[\\s\\S]{0,50}\\bervas?\\b[\\s\\S]{0,40}\\b(?:frescas?|secas?)\\b[\\s\\S]{0,40}\\bprato\\b",
           "\\b(?:encomendar|confirmar|confirme|verifica[cç][oõ]es|cuidados?)\\b[\\s\\S]{0,80}\\b(?:compra|encomenda)\\b[\\s\\S]{0,60}\\b(?:mercearia|alimentos|supermercado)\\b",
-          "\\b(?:mercearia|alimentos|supermercado)\\b[\\s\\S]{0,60}\\b(?:compra|encomenda)\\b[\\s\\S]{0,80}\\b(?:confirmar|verifica[cç][oõ]es|cuidados?)\\b"
+          "\\b(?:mercearia|alimentos|supermercado)\\b[\\s\\S]{0,60}\\b(?:compra|encomenda)\\b[\\s\\S]{0,80}\\b(?:confirmar|verifica[cç][oõ]es|cuidados?)\\b",
+          "\\b(?:main\\s+course|food\\s+allerg(?:y|ies)|sourdough|cold-proof|bread\\s+recipe)\\b",
+          "\\b(?:sourdough|cold-proof|bread\\s+recipe)\\b",
+          "\\b(?:confirm|approve)\\b[\\s\\S]{0,70}\\bgrocery\\s+order\\b",
+          "\\b(?:confirma|aprova)\\b[\\s\\S]{0,70}\\bencomenda\\s+de\\s+mercearia\\b",
+          "\\b(?:dinner|meal-prep)\\s+plan\\b[\\s\\S]{0,70}\\b(?:food\\s+budget|without\\s+saving|do\\s+not\\s+save)\\b",
+          "\\b(?:dinner\\s+plan|meal-prep\\s+plan|food\\s+budget)\\b",
+          "\\b(?:planeje|prepara)\\b[\\s\\S]{0,60}\\b(?:comida|refei[cç][oõ]es)\\b[\\s\\S]{0,70}\\b(?:restri[cç][oõ]es\\s+alimentares|sem\\s+guardar)\\b"
         ],
         "exampleUtterances": [
           "I need a carnivore meal plan",
