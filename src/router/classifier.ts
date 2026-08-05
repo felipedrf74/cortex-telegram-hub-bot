@@ -85,6 +85,18 @@ const NL_KEYWORD_ROUTES: { domain: DomainName; pattern: RegExp }[] = [
   { domain: 'secretary', pattern: /\b(tasks?|to-?dos?|remind(?:ers?)?|(?:my\s+)?calendar|schedule|meetings?|appointments?|(?:my\s+)?emails?|inbox|overdue|due\s+(?:today|tomorrow|this\s+week)|planning|digest|unread|mark\s+(?:as\s+)?(?:done|complete)|pending|priority|deadline|tarefas?|lembretes?|agend(?:a|ar)|reuni[oõ]es?|compromissos?|e-?mails?|caixa\s+de\s+entrada|atrasad[ao]s?|pra\s+hoje|pendentes?|prioridade|prazo)\b/i },
 ];
 
+// Explicit Nexus product-area anchors outrank generic workflow nouns such as
+// "task", "schedule", or "summary". Keep these phrases narrow: they close
+// observed gaps where a standalone request names its owning product directly,
+// without turning ordinary uses of those generic nouns into domain signals.
+const EXPLICIT_PRODUCT_AREA_ROUTES: { domain: DomainName; pattern: RegExp }[] = [
+  { domain: 'content', pattern: /\b(?:content\s+(?:area|request|workspace|draft|preview)|request\s+(?:a\s+)?(?:safe\s+)?content|specific\s+content|publishing\s+plans?|channel\s+performance|performance\s+(?:of\s+)?(?:the\s+)?channel)\b|[aá]rea\s+de\s+conte[uú]do\b|performance[\s\S]{0,20}\bcanal\b/i },
+  { domain: 'finance', pattern: /\b(?:finance|finan[çc]as?|financeir[oa]|finance\s+(?:area|request|workspace)|specific\s+finance|an[aá]lise\s+detalhada\s+d(?:e|as?)\s+contas?)\b|[aá]rea\s+(?:de\s+)?finan[çc]as?\b|[aá]rea\s+financeir[ao]\b/i },
+  { domain: 'cooking', pattern: /\b(?:cooking[-\s]+related\s+(?:task|request)|cooking\s+(?:area|request|workspace)|cozinha|cozedura|meal\s+preparation\s+plan|planejamento\s+de\s+refei[cç][oõ]es|regras?\s+de\s+substitui[cç][aã]o\s+de\s+ingredientes|plano\s+de\s+(?:cozedura|refei[cç][oõ]es)|se[cç][aã]o\s+de\s+cozinhar)\b|[aá]rea\s+(?:de\s+)?cozinha\b/i },
+  { domain: 'triathlon', pattern: /\b(?:triathlon|triatl(?:o|on)|treinamento)\b|[aá]rea\s+(?:de\s+)?triatl(?:o|on)\b/i },
+  { domain: 'secretary', pattern: /\b(?:secretary\s+(?:area|request|workspace)|area\s+within\s+secretary|secret[aá]ria|secret[aá]ria\s+nexus|daily\s+planner|calend[aá]rio\s+pessoal|agendamento)\b|[aá]rea\s+(?:d[ae]\s+)?secret[aá]ria\b/i },
+];
+
 // Product-profile nouns exposed by the governed staging QA are deliberately
 // narrower than generic verbs such as "show", "preview", or "create".  These
 // pairs let the free classifier recognize stable Nexus-owned artifacts while
@@ -341,6 +353,9 @@ export function keywordMatch(message: string): DomainName | null {
   // from other domains, e.g. "Write a script about recovery intervals".
   if (CONTENT_INTENT_PATTERNS.some((pattern) => pattern.test(message))) {
     return 'content';
+  }
+  for (const { domain, pattern } of EXPLICIT_PRODUCT_AREA_ROUTES) {
+    if (pattern.test(message)) return domain;
   }
   if (CONTENT_PRODUCT_PROFILE_PATTERNS.some((pattern) => pattern.test(message))) {
     return 'content';
