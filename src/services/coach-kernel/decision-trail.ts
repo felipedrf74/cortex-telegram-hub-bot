@@ -1,13 +1,17 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-import type { AthleteState, Session, Sport, WeeklyPlan } from './types';
+import type { AthleteState, Session, Sport, TrainingDecisionReason, WeeklyPlan } from './types';
+import { COACH_NON_DIAGNOSTIC_DISCLAIMER } from './safety-guardrails';
 
 const AUTO_NOTE_PREFIXES = [
   'Weekly structure:',
   'Readiness decision:',
+  'Readiness confidence:',
   'Adherence decision:',
   'Plan adjustment:',
   'Secretary:',
+  'Maintenance/recovery rationale:',
+  'Pain-management boundary:',
 ];
 
 /**
@@ -114,11 +118,83 @@ export function buildWeeklyDecisionNotes(
   return dedupeDecisionLines([
     `Weekly structure: ${activeSessions.length} sessions across ${trainingDays} training day${trainingDays === 1 ? '' : 's'} (${sportBreakdown}, ${totalMinutes} min total) for ${plan.discipline} focus in ${plan.phase} phase.`,
     `Readiness decision: ${athlete.readiness.level}/${athlete.readiness.score} ${readinessAction}.`,
+    ...readinessConfidenceNotes(athlete),
     adherenceDecisionNote(athlete),
+    ...recoveryRationaleNotes(plan, athlete),
     ...secretaryLine,
     ...decisionReasonNotes(plan),
     ...staleAutoNotesRemoved,
   ]);
+}
+
+function recoveryRationaleNotes(plan: WeeklyPlan, athlete: AthleteState): string[] {
+  if (plan.phase !== 'deload' && plan.phase !== 'maintenance') return [];
+
+  const hasDeclaredInjury = athlete.constraints.some((constraint) => constraint.type === 'injury');
+  const hasPainFlag = (athlete.readiness.painFlags ?? []).length > 0;
+  if (hasDeclaredInjury || hasPainFlag) {
+    return [
+      `Maintenance/recovery rationale: the ${plan.phase} phase remains recovery-led while declared pain or injury constraints are active; reassess before resuming build phases.`,
+    ];
+  }
+
+  if (athlete.feedbackAnalysis?.progressionState === 'reentry') {
+    const misses = athlete.compliance.consecutiveMisses;
+    return [
+      `Maintenance/recovery rationale: the ${plan.phase} phase is an adherence re-entry after ${misses} consecutive miss${misses === 1 ? '' : 'es'}; keep work easy and repeatable until consistency returns.`,
+    ];
+  }
+
+  if (
+    athlete.feedbackAnalysis?.progressionState === 'deload'
+    || athlete.readiness.level === 'orange'
+    || athlete.readiness.level === 'red'
+  ) {
+    return [
+      `Maintenance/recovery rationale: the ${plan.phase} phase remains recovery-led while readiness or fatigue signals are constrained; reassess before resuming build phases.`,
+    ];
+  }
+
+  return [];
+}
+
+/**
+ * Public, typed safety evidence for a declared injury/pain constraint.
+ * The same reason is aggregated onto the plan response, so preview/create
+ * clients do not have to rely on private persisted week-note rows to render
+ * the professional boundary.
+ */
+export function buildInjurySafetyDecisionReasons(athlete: AthleteState): TrainingDecisionReason[] {
+  const hasDeclaredInjury = athlete.constraints.some((constraint) => constraint.type === 'injury');
+  const hasPainFlag = (athlete.readiness.painFlags ?? []).length > 0;
+  if (!hasDeclaredInjury && !hasPainFlag) return [];
+
+  return [{
+    code: 'pain_flag',
+    text: `Pain-management boundary: keep every session pain-free and stop if symptoms worsen. ${COACH_NON_DIAGNOSTIC_DISCLAIMER}`,
+    severity: 'warning',
+    affectedEntity: { type: 'week' },
+    sourceConstraint: {
+      type: 'safety',
+      label: 'declared pain or injury constraint',
+    },
+    preservedIntent: 'Preserve safe training continuity without diagnosing or overriding professional care.',
+    evidence: ['declared_injury_or_pain_constraint', 'non_diagnostic_professional_boundary'],
+  }];
+}
+
+function readinessConfidenceNotes(athlete: AthleteState): string[] {
+  if (athlete.readiness.confidence === 'stale_provider' || athlete.readiness.isStale === true) {
+    return [
+      'Readiness confidence: provider data is stale; avoid aggressive progression and use a manual check-in before hard work.',
+    ];
+  }
+  if (athlete.readiness.confidence === 'no_data') {
+    return [
+      'Readiness confidence: no fresh wearable or manual readiness data; use perceived effort (RPE) to pace conservative defaults and complete a manual check-in before hard work.',
+    ];
+  }
+  return [];
 }
 
 function adherenceDecisionNote(athlete: AthleteState): string {

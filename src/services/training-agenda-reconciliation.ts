@@ -17,7 +17,14 @@ import { logger } from '../utils/logger';
 import { deleteTrainingCalendarEventWithRetry } from './training-calendar-provider-retry';
 import { getUserTimezoneById } from './user-service';
 import { DateTime } from 'luxon';
+import type Database from 'better-sqlite3';
 import { requireTenantIdParam } from './tenant-scope';
+import { getDb } from './database';
+import {
+  claimScheduledJobExecution,
+  completeScheduledJobExecution,
+  type ScheduledJobExecutionClaim,
+} from './scheduled-job-execution-state';
 
 export interface TrainingAgendaReconciliationResult {
   attempted: number;
@@ -32,20 +39,16 @@ const LEGACY_MARKER_LOOKAHEAD_DAYS = 90;
 // is far too heavy for the every-5-minute agenda-sync tick it rides on
 // (2026-07-03 audit: dominant share of ~59h/month sync runtime). Ownership-
 // table-driven deletes stay on every tick (precise and cheap); the wide scan
-// runs at most once per interval per user. In-memory state is acceptable:
-// a restart just means one extra scan.
+// runs at most once per interval per tenant/user scope. Its database lease and
+// success checkpoint prevent process restarts or multiple scheduler replicas
+// from multiplying the provider scan.
 const LEGACY_MARKER_SCAN_INTERVAL_MS = 24 * 60 * 60 * 1000;
-const legacyMarkerScanLastRunByUser = new Map<number, number>();
+const LEGACY_MARKER_SCAN_LEASE_MS = 30 * 60_000;
+const LEGACY_MARKER_SCAN_JOB = 'training_agenda_legacy_marker_scan';
 
 export function _resetLegacyMarkerScanGateForTests(): void {
-  legacyMarkerScanLastRunByUser.clear();
-}
-
-function shouldRunLegacyMarkerScan(userId: number): boolean {
-  const last = legacyMarkerScanLastRunByUser.get(userId) ?? 0;
-  if (Date.now() - last < LEGACY_MARKER_SCAN_INTERVAL_MS) return false;
-  legacyMarkerScanLastRunByUser.set(userId, Date.now());
-  return true;
+  // Kept as a compatibility hook for existing focused tests. Durable state is
+  // isolated by each test database rather than by clearing process memory.
 }
 
 function isCalendarSource(value: string): value is CalendarSource {
@@ -69,9 +72,11 @@ export async function reconcileOrphanedTrainingAgendaEvents(
   ]);
   const ownershipKeys = new Set(ownerships.map((ownership) =>
     ownershipKey(ownership.calendar_event_id, ownership.calendar_source)));
-  const legacyMarkerEvents = shouldRunLegacyMarkerScan(userId)
-    ? await findStaleLegacyMarkerEvents(userId, ownershipKeys)
-    : [];
+  const legacyMarkerEvents = await findStaleLegacyMarkerEventsWithLease(
+    userId,
+    scopedTenantId,
+    ownershipKeys,
+  );
   let deleted = 0;
   let failed = 0;
 
@@ -193,35 +198,81 @@ type LegacyTrainingMarkerEvent = {
   planId: number;
 };
 
-async function findStaleLegacyMarkerEvents(
+async function findStaleLegacyMarkerEventsWithLease(
   userId: number,
+  tenantId: number,
   ownershipKeys: Set<string>,
 ): Promise<LegacyTrainingMarkerEvent[]> {
+  let db: Database.Database;
+  let claim: ScheduledJobExecutionClaim;
   try {
-    const timezone = getUserTimezoneById(userId);
-    const now = DateTime.now().setZone(timezone);
-    const start = now.startOf('day').minus({ days: LEGACY_MARKER_LOOKBACK_DAYS }).toUTC().toISO()!;
-    const end = now.startOf('day').plus({ days: LEGACY_MARKER_LOOKAHEAD_DAYS }).toUTC().toISO()!;
-    const events = await getEvents(start, end, userId);
-    const results: LegacyTrainingMarkerEvent[] = [];
-    const seen = new Set<string>();
-    for (const event of events) {
-      if (!event.id || !isCalendarSource(event.source)) continue;
-      const key = ownershipKey(event.id, event.source);
-      if (ownershipKeys.has(key) || seen.has(key)) continue;
-      const planId = extractLegacyTrainingPlanId(event);
-      if (!planId || isActivePlanForUser(planId, userId)) continue;
-      seen.add(key);
-      results.push({ id: event.id, source: event.source, planId });
-    }
-    return results;
+    db = getDb();
+    claim = claimScheduledJobExecution({
+      jobName: LEGACY_MARKER_SCAN_JOB,
+      scopeKey: `tenant:${tenantId}:user:${userId}`,
+      leaseTtlMs: LEGACY_MARKER_SCAN_LEASE_MS,
+      minimumSuccessIntervalMs: LEGACY_MARKER_SCAN_INTERVAL_MS,
+    }, db);
   } catch (err) {
     logger.debug(
-      { err, userId },
+      { err, tenantId, userId },
+      'Training agenda legacy-marker lease unavailable; broad scan skipped',
+    );
+    return [];
+  }
+
+  if (claim.kind !== 'claimed') return [];
+
+  try {
+    const events = await findStaleLegacyMarkerEvents(userId, tenantId, ownershipKeys);
+    const completed = completeScheduledJobExecution(claim, 'success', db);
+    if (!completed) {
+      logger.warn(
+        { tenantId, userId },
+        'Training agenda legacy-marker scan lost its durable lease',
+      );
+      return [];
+    }
+    return events;
+  } catch (err) {
+    try {
+      completeScheduledJobExecution(claim, 'failed', db);
+    } catch (completionErr) {
+      logger.warn(
+        { err: completionErr, tenantId, userId },
+        'Training agenda legacy-marker failed lease release',
+      );
+    }
+    logger.debug(
+      { err, tenantId, userId },
       'Training agenda legacy-marker scan skipped',
     );
     return [];
   }
+}
+
+async function findStaleLegacyMarkerEvents(
+  userId: number,
+  tenantId: number,
+  ownershipKeys: Set<string>,
+): Promise<LegacyTrainingMarkerEvent[]> {
+  const timezone = getUserTimezoneById(userId);
+  const now = DateTime.now().setZone(timezone);
+  const start = now.startOf('day').minus({ days: LEGACY_MARKER_LOOKBACK_DAYS }).toUTC().toISO()!;
+  const end = now.startOf('day').plus({ days: LEGACY_MARKER_LOOKAHEAD_DAYS }).toUTC().toISO()!;
+  const events = await getEvents(start, end, userId);
+  const results: LegacyTrainingMarkerEvent[] = [];
+  const seen = new Set<string>();
+  for (const event of events) {
+    if (!event.id || !isCalendarSource(event.source)) continue;
+    const key = ownershipKey(event.id, event.source);
+    if (ownershipKeys.has(key) || seen.has(key)) continue;
+    const planId = extractLegacyTrainingPlanId(event);
+    if (!planId || isActivePlanForScope(planId, userId, tenantId)) continue;
+    seen.add(key);
+    results.push({ id: event.id, source: event.source, planId });
+  }
+  return results;
 }
 
 function extractLegacyTrainingPlanId(event: UnifiedCalendarEvent): number | null {
@@ -239,9 +290,11 @@ function positiveInt(value: unknown): number | null {
   return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : null;
 }
 
-function isActivePlanForUser(planId: number, userId: number): boolean {
+function isActivePlanForScope(planId: number, userId: number, tenantId: number): boolean {
   const plan = getPlanById(planId);
-  return Number(plan?.user_id) === userId && String(plan?.status || '').toLowerCase() === 'active';
+  return Number(plan?.user_id) === userId
+    && Number(plan?.tenant_id) === tenantId
+    && String(plan?.status || '').toLowerCase() === 'active';
 }
 
 function ownershipKey(eventId: string | null | undefined, source: string | null | undefined): string {

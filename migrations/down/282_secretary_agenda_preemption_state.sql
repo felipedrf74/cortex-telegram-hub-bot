@@ -1,0 +1,48 @@
+-- Reverse migration 282's additive schema. Runtime rollback must precede this
+-- migration because the pre-282 runtime does not understand preemption state.
+
+DROP TRIGGER IF EXISTS trg_secretary_preemption_winner_mapping_fence;
+DROP TRIGGER IF EXISTS trg_secretary_preemption_provider_effect_insert_fence;
+DROP TRIGGER IF EXISTS trg_secretary_preemption_create_attempt_update_fence;
+DROP TRIGGER IF EXISTS trg_secretary_preemption_create_attempt_insert_fence;
+DROP TRIGGER IF EXISTS trg_secretary_preemption_provider_claim_update_fence;
+DROP TRIGGER IF EXISTS trg_secretary_preemption_provider_claim_insert_fence;
+
+DROP TRIGGER IF EXISTS trg_secretary_provider_source_target_update;
+DROP TRIGGER IF EXISTS trg_secretary_provider_source_target_insert;
+DROP TRIGGER IF EXISTS trg_secretary_provider_target_logical_update;
+DROP TRIGGER IF EXISTS trg_secretary_provider_target_logical_insert;
+DROP TRIGGER IF EXISTS trg_secretary_provider_target_row_immutable;
+
+DROP TRIGGER IF EXISTS trg_secretary_preemption_dependency_settlement;
+DROP TRIGGER IF EXISTS trg_secretary_preemption_dependency_lease_result;
+DROP TRIGGER IF EXISTS trg_secretary_preemption_dependency_lease_claim;
+DROP TRIGGER IF EXISTS trg_secretary_preemption_dependency_state_transition;
+DROP TRIGGER IF EXISTS trg_secretary_preemption_dependency_identity_immutable;
+DROP TRIGGER IF EXISTS trg_secretary_preemption_dependency_insert_guard;
+
+DROP TRIGGER IF EXISTS trg_secretary_preemption_operation_completed;
+DROP TRIGGER IF EXISTS trg_secretary_preemption_operation_canceled;
+DROP TRIGGER IF EXISTS trg_secretary_preemption_operation_winner_ready;
+DROP TRIGGER IF EXISTS trg_secretary_preemption_operation_state_transition;
+DROP TRIGGER IF EXISTS trg_secretary_preemption_operation_identity_immutable;
+DROP TRIGGER IF EXISTS trg_secretary_preemption_operation_insert_guard;
+
+DROP INDEX IF EXISTS idx_secretary_agenda_preemption_dependency_unresolved_identity;
+DROP INDEX IF EXISTS idx_secretary_agenda_preemption_dependency_unresolved_event;
+DROP INDEX IF EXISTS idx_secretary_agenda_preemption_dependency_lease;
+DROP INDEX IF EXISTS idx_secretary_agenda_preemption_dependency_cleanup;
+DROP INDEX IF EXISTS idx_secretary_agenda_preemption_dependency_operation;
+DROP INDEX IF EXISTS idx_secretary_agenda_preemption_dependency_replacement;
+DROP INDEX IF EXISTS idx_secretary_agenda_preemption_dependency_loser;
+DROP TABLE IF EXISTS secretary_agenda_preemption_dependencies;
+
+DROP INDEX IF EXISTS idx_secretary_agenda_preemption_operation_state;
+DROP INDEX IF EXISTS idx_secretary_agenda_preemption_operation_winner;
+DROP INDEX IF EXISTS idx_secretary_agenda_preemption_operation_request;
+DROP INDEX IF EXISTS idx_secretary_agenda_preemption_operation_idempotency;
+DROP TABLE IF EXISTS secretary_agenda_preemption_operations;
+
+DROP INDEX IF EXISTS idx_secretary_source_skill_feedback_scope_version;
+DROP INDEX IF EXISTS idx_secretary_source_skill_feedback_current_intent;
+ALTER TABLE secretary_source_skill_feedback DROP COLUMN agenda_version;

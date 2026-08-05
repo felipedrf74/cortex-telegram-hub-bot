@@ -14,6 +14,7 @@ import {
 } from '../../src/services/coach-kernel';
 import { trainingEvalPersonaBank } from '../../src/services/coach-kernel/evaluation';
 import { validateSessionCoherence } from '../../src/services/coach-kernel/session-coherence';
+import { buildAthleteStateFromTrainingProfiles } from '../../src/services/training-coach-kernel-plan-generator';
 
 function recent(overrides: Partial<RecentSession> = {}): RecentSession {
   return {
@@ -87,6 +88,150 @@ describe('coach-kernel feedback analysis and autoregulation', () => {
     expect(strainedPlan.notes.some((note) => note.includes('Feedback loop:'))).toBe(true);
     expect(strainedPlan.sessions.reduce((sum, session) => sum + session.durationMinutes, 0)).toBeLessThan(baseMinutes);
     expect(strainedPlan.sessions.some((session) => session.tags.includes('feedback_deload'))).toBe(true);
+  });
+
+  it('preserves movement-pattern variety across a four-week fatigue deload block', () => {
+    const generatedState = buildAthleteStateFromTrainingProfiles({
+      userId: 1_000_019,
+      objective: 'Recovery-led plateau reset',
+      durationWeeks: 4,
+      startDate: '2026-05-04',
+      sessionsPerWeek: 3,
+      runSessionsPerWeek: 2,
+      bikeSessionsPerWeek: 0,
+      swimSessionsPerWeek: 0,
+      strengthSessionsPerWeek: 1,
+      preferredTime: '07:00',
+      preferredCardioTime: '07:00',
+      preferredStrengthTime: '18:00',
+      longWorkoutDay: 'Saturday',
+      notes: 'Fixture-only canonical persona fatigue_plateau.',
+      fitnessProfile: {
+        experience_level: 'Intermediate (1-3 years)',
+        weekly_frequency: '2-3 days',
+        preferred_training_days: 'Monday, Tuesday, Thursday, Saturday',
+        blocked_days: 'Friday',
+        training_goals: 'Endurance, Strength',
+        injuries: 'none',
+        available_equipment: 'Full gym',
+      },
+      gymProfile: {
+        training_age: '3-5 years',
+        current_split: 'No preference',
+        primary_goal: 'Support other sports',
+        squat_1rm_kg: '115',
+        bench_1rm_kg: '82',
+        deadlift_1rm_kg: '150',
+        sessions_per_week: '1-2',
+        preferred_training_days: 'Monday, Tuesday, Thursday, Saturday',
+        blocked_days: 'Friday',
+        equipment_access: 'Full commercial gym',
+        session_duration_minutes: '60',
+      },
+      runProfile: {
+        weekly_mileage_km: '32',
+        longest_recent_run_km: '14',
+        easy_pace_min_per_km: '5:45',
+        target_race: 'None — general fitness',
+        target_race_date: 'none',
+        preferred_workouts: 'Easy runs, Tempo, Long runs',
+        injury_history: 'none',
+        weekly_availability_days: '5',
+        preferred_training_days: 'Tuesday, Thursday, Saturday, Sunday',
+        blocked_days: 'Friday',
+      },
+      goalMode: 'continuous',
+      trainingPriority: 'hybrid',
+      twoADayPreference: 'never',
+      currentReadiness: { score: 25 },
+    });
+    const fatigueState: AthleteState = {
+      ...generatedState,
+      readiness: {
+        ...generatedState.readiness,
+        level: 'red',
+        score: 25,
+        soreness: 'high',
+        sleepHours: 3.5,
+        hrvStatus: 'low',
+        energyReserve: 20,
+      },
+      compliance: {
+        trailing14DayCompliance: 1,
+        bySport: { running: 1, strength: 1 },
+        missedKeySessions: 0,
+        consecutiveMisses: 0,
+      },
+      recentSessions: [
+        recent({ id: 'fatigue-threshold', sport: 'running', sessionType: 'threshold_run', intensityZone: 'threshold', fatigueCost: 'high', rpe: 9, sorenessLevel: 8, keySession: true }),
+        recent({ id: 'fatigue-interval', sport: 'running', sessionType: 'interval_run', intensityZone: 'vo2', fatigueCost: 'high', rpe: 9, sorenessLevel: 8, keySession: true }),
+        recent({ id: 'fatigue-long', sport: 'running', sessionType: 'long_run', intensityZone: 'aerobic', fatigueCost: 'high', rpe: 9, sorenessLevel: 8, keySession: true }),
+      ],
+    };
+    const weekStarts = ['2026-05-04', '2026-05-11', '2026-05-18', '2026-05-25'];
+    const block = weekStarts.map((weekStart, index) => buildWeekPlan({
+      ...fatigueState,
+      // Production only carries today's severe readiness into week one;
+      // later planned weeks use the neutral yellow canary posture while the
+      // same recent high-strain history continues to drive deload shaping.
+      readiness: index === 0
+        ? fatigueState.readiness
+        : { ...fatigueState.readiness, level: 'yellow' as const, score: 70, soreness: 'moderate' as const },
+      currentBlock: {
+        ...fatigueState.currentBlock,
+        phase: index === 3 ? 'deload' : index < 2 ? 'base' : 'build',
+        weekIndex: index + 1,
+        totalWeeks: weekStarts.length,
+      },
+    }, weekStart));
+    const strengthSessions = block.flatMap((week) =>
+      week.sessions.filter((session) => session.sport === 'strength' && session.exercises?.length)
+    );
+    const movementByExerciseId = new Map(
+      loadCoachKnowledge().exercises.map((exercise) => [exercise.id, exercise.movementPattern]),
+    );
+    const exerciseIds = strengthSessions.flatMap((session) =>
+      (session.exercises ?? []).map((exercise) => exercise.exerciseId ?? '')
+    );
+    const movementPatterns = new Set(
+      exerciseIds.map((exerciseId) => movementByExerciseId.get(exerciseId)).filter(Boolean),
+    );
+
+    // A recovery-led block must remove hard work without collapsing every
+    // strength prescription into the same squat/hinge pair.
+    expect(block.flatMap((week) => week.sessions).every((session) =>
+      session.keySession === false
+      && session.fatigueCost !== 'high'
+      && session.fatigueCost !== 'very_high'
+    )).toBe(true);
+    const adaptedEndurance = block.flatMap((week) => week.sessions)
+      .filter((session) => session.sport !== 'strength');
+    // The public structured metadata is part of the prescription. A recovery
+    // title/zone paired with the original VO2 or threshold summary would make
+    // the read model advertise work the guardrail explicitly removed.
+    expect(adaptedEndurance.every((session) =>
+      session.intensitySummary?.primaryZone === session.intensityZone
+      && session.intensityProfile?.primaryZone === session.intensityZone
+    )).toBe(true);
+    expect(adaptedEndurance.every((session) =>
+      session.intensitySummary?.highPct === 0
+      && !/threshold|vo2/i.test(session.intensitySummary?.targetSummaryText ?? '')
+    )).toBe(true);
+    expect(new Set(strengthSessions.map((session) =>
+      (session.exercises ?? []).map((exercise) => exercise.exerciseId).join('|')
+    )).size).toBeGreaterThanOrEqual(3);
+    expect(
+      movementPatterns.size,
+      `four-week recovery strength ids: ${JSON.stringify(exerciseIds)}`,
+    ).toBeGreaterThanOrEqual(3);
+    for (const session of strengthSessions) {
+      const coherence = validateSessionCoherence(session, loadCoachKnowledge());
+      expect(coherence.reason).not.toBe('overstuffed');
+    }
+    const firstWeekStrength = block[0].sessions.find((session) => session.sport === 'strength');
+    expect(firstWeekStrength?.exercises?.every((exercise) =>
+      exercise.sets <= 2 && (exercise.rir ?? 0) >= 4
+    )).toBe(true);
   });
 
   it('uses poor adherence and missed sessions as a re-entry signal instead of regenerating the same volume', () => {
@@ -255,6 +400,16 @@ describe('coach-kernel feedback analysis and autoregulation', () => {
 
   it('turns poor adherence strength work into a minimum-effective-dose session instead of another hard-to-finish plan', () => {
     const reentry = athlete({
+      goals: {
+        ...sampleHybridAthlete.goals,
+        weeklySessionsTarget: {
+          ...sampleHybridAthlete.goals.weeklySessionsTarget,
+          running: 2,
+          cycling: 0,
+          swimming: 0,
+          strength: 1,
+        },
+      },
       compliance: {
         trailing14DayCompliance: 0.34,
         bySport: { strength: 0.3 },
@@ -278,6 +433,35 @@ describe('coach-kernel feedback analysis and autoregulation', () => {
     expect(strengthSession?.exercises?.length).toBeLessThanOrEqual(2);
     expect(strengthSession?.exercises?.every((exercise) => exercise.sets <= 2)).toBe(true);
     expect(strengthSession?.exercises?.every((exercise) => (exercise.rir ?? 0) >= 3)).toBe(true);
+
+    // Stronger guarantee: a re-entry week must not retain a long/key/hard
+    // identity after its load was downshifted, and a four-week minimum-dose
+    // block must rotate enough movement patterns to avoid a two-movement rut.
+    const block = ['2026-05-04', '2026-05-11', '2026-05-18', '2026-05-25']
+      .map((weekStart) => buildWeekPlan(reentry, weekStart));
+    expect(block.every((week) => week.phase === 'deload')).toBe(true);
+    const endurance = block.flatMap((week) => week.sessions.filter((session) => session.sport !== 'strength'));
+    expect(endurance.length).toBeGreaterThan(0);
+    expect(endurance.every((session) =>
+      session.keySession === false
+      && /easy|recovery/.test(session.sessionType)
+      && !/long|threshold|interval|tempo|vo2/i.test(`${session.sessionType} ${session.title}`)
+    )).toBe(true);
+    expect(block.every((week) => week.notes.some((note) =>
+      /maintenance\/recovery rationale:.*adherence.*(?:re-entry|consecutive miss)/i.test(note)
+    ))).toBe(true);
+
+    const movementByExerciseId = new Map(
+      loadCoachKnowledge().exercises.map((exercise) => [exercise.id, exercise.movementPattern]),
+    );
+    const blockMovementPatterns = new Set(block.flatMap((week) =>
+      week.sessions
+        .filter((session) => session.sport === 'strength')
+        .flatMap((session) => session.exercises ?? [])
+        .map((exercise) => movementByExerciseId.get(exercise.exerciseId ?? ''))
+        .filter((pattern): pattern is string => typeof pattern === 'string')
+    ));
+    expect(blockMovementPatterns.size).toBeGreaterThanOrEqual(3);
   });
 
   it('compresses strength sessions for declared low-time weeks without hiding the fallback rationale', () => {

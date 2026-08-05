@@ -278,6 +278,52 @@ export async function getEvents(startDate: string, endDate: string, userId?: num
   }
 }
 
+export async function getEventById(eventId: string, userId?: number): Promise<CalendarEvent | null> {
+  try {
+    return await getOutlookEventRequest(eventId, userId, true);
+  } catch (err) {
+    if (shouldRetryOutlookRequestWithoutImmutableId(err)) {
+      try {
+        return await getOutlookEventRequest(eventId, userId, false);
+      } catch (retryErr) {
+        if (isProviderEventNotFoundError(retryErr)) return null;
+        logger.error({ err: retryErr }, 'Failed to fetch Outlook calendar event by id after legacy id retry');
+        throw retryErr;
+      }
+    }
+    if (isProviderEventNotFoundError(err)) return null;
+    logger.error({ err }, 'Failed to fetch Outlook calendar event by id');
+    throw err;
+  }
+}
+
+async function getOutlookEventRequest(
+  eventId: string,
+  userId: number | undefined,
+  preferImmutableId: boolean,
+): Promise<CalendarEvent> {
+  const client = userId
+    ? getGraphClientForUser(userId)
+    : getGraphClient();
+  const request = client.api(`/me/events/${eventId}`);
+  if (preferImmutableId) request.header('Prefer', OUTLOOK_IMMUTABLE_ID_PREFER);
+  const event = await withTimeout(request.get(), OUTLOOK_API_TIMEOUT_MS);
+  return {
+    id: event.id || eventId,
+    summary: event.subject || '(No title)',
+    start: event.start?.dateTime || '',
+    end: event.end?.dateTime || '',
+    description: fullOutlookEventDescription(event),
+    location: event.location?.displayName || undefined,
+    htmlLink: event.webLink || undefined,
+    categories: Array.isArray(event.categories) ? event.categories : undefined,
+    isAllDay: !!event.isAllDay,
+    timeZone: event.start?.timeZone || event.end?.timeZone,
+    blocksTime: !['free', 'workingelsewhere']
+      .includes(String(event.showAs ?? '').trim().toLowerCase()),
+  };
+}
+
 export async function createEvent(data: {
   title: string;
   start: string;
@@ -440,7 +486,7 @@ export async function deleteEvent(eventId: string, userId?: number, options?: { 
     if (options?.signal?.aborted) throw new Error('provider_write_aborted');
     await deleteOutlookEventRequest(eventId, userId, options, true);
   } catch (err) {
-    if (shouldRetryOutlookDeleteWithoutImmutableId(err)) {
+    if (shouldRetryOutlookRequestWithoutImmutableId(err)) {
       logger.debug(
         { err, userId },
         'Retrying Outlook event delete without immutable-id preference for legacy stored event id',
@@ -475,7 +521,7 @@ async function deleteOutlookEventRequest(
   await request.delete();
 }
 
-function shouldRetryOutlookDeleteWithoutImmutableId(err: unknown): boolean {
+function shouldRetryOutlookRequestWithoutImmutableId(err: unknown): boolean {
   const candidate = err as { statusCode?: unknown; code?: unknown; message?: unknown; body?: unknown } | null;
   if (!candidate || typeof candidate !== 'object') return false;
   if (Number(candidate.statusCode) !== 400) return false;

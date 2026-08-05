@@ -4,6 +4,11 @@ export function normalizeTrainingStatus(status?: string | null): string {
   switch ((status || '').toLowerCase()) {
     case 'completed':
       return 'completed';
+    // F18: partial is a durable released disposition, not a pending-plan
+    // synonym. Collapsing it to `planned` made /plan/weeks contradict
+    // History and the completion response immediately after a write.
+    case 'partial':
+      return 'partial';
     case 'skipped':
       return 'skipped';
     case 'scheduled':

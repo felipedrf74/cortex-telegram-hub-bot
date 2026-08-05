@@ -51,8 +51,8 @@ const ROUTING_CORPUS_BILINGUAL_PROMPT_OVERRIDES: Record<
   { en: string; pt: string }
 > = {
   pending_plan_continuation: {
-    en: 'Use 20 km per week as the current volume for my new running training plan.',
-    pt: 'Use 20 km por semana como o volume atual do meu novo plano de treino de corrida.',
+    en: 'Use 4 sessions per week for my new 12-week running 10K training plan starting next week.',
+    pt: 'Use 4 treinos por semana no meu novo plano de corrida de 10K por 12 semanas começando na próxima semana.',
   },
   fresh_research_request: {
     en: 'Do fresh research on recovery trends for a new content script.',

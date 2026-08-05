@@ -82,7 +82,7 @@ export const CHAT_BILINGUAL_EVAL_FIXTURES: ChatBilingualEvalFixture[] = [
     ['event_prep', 'Como preparo a prova de domingo?', 'How should I prepare for Sunday’s race?', 'generic_skill_answer', 'none'],
     ['delete_plan', 'Apaga o meu plano de treino', 'Delete my training plan', 'action', 'local'],
     ['eliminate_plan_subjunctive', 'Elimine o plano de treino', 'Eliminate the training plan', 'action', 'local', 'training_advice', 'destructive'],
-    ['pending_plan_continuation', 'São 20 km por semana', 'It is 20 km a week', 'repair', 'local'],
+    ['pending_plan_continuation', 'Queria dizer 4 treinos por semana no meu plano de treino', 'I meant 4 sessions per week for my training plan', 'repair', 'local'],
     ['injury_safety', 'Tenho dor no joelho, devo treinar?', 'I have knee pain, should I train?', 'internet_research', 'local_and_web'],
   ]),
   ...skill('content', 'content_draft', [

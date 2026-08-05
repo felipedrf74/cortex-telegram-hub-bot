@@ -102,6 +102,35 @@ describe('coach-kernel decision trail', () => {
     expect(adherenceNote).not.toContain('0%');
   });
 
+  it.each([
+    {
+      confidence: 'stale_provider' as const,
+      expected: /provider data is stale.*manual check-in/i,
+    },
+    {
+      confidence: 'no_data' as const,
+      expected: /no fresh wearable or manual readiness data.*manual check-in/i,
+    },
+  ])('discloses $confidence readiness confidence in durable weekly notes', ({ confidence, expected }) => {
+    const notes = buildWeeklyDecisionNotes({
+      notes: [],
+      athleteId: sampleHybridAthlete.profile.athleteId,
+      weekStart: '2026-05-04',
+      discipline: 'hybrid',
+      phase: 'base',
+      sessions: [],
+      guardrailResults: [],
+    }, {
+      ...sampleHybridAthlete,
+      readiness: {
+        ...sampleHybridAthlete.readiness,
+        confidence,
+      },
+    });
+
+    expect(notes.some((note) => expected.test(note))).toBe(true);
+  });
+
   it('surfaces recovery-driven volume explanations as structured decision reasons', () => {
     const athlete: AthleteState = {
       ...sampleHybridAthlete,

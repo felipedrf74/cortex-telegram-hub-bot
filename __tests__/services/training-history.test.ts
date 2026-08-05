@@ -51,6 +51,7 @@ vi.mock('../../src/utils/logger', () => ({
 
 
 import {
+  getTrainingHistoryPage,
   readTrainingComplianceFromRecentHistory,
   readTrainingHistoryFromCompletions,
 } from '../../src/services/training-history';
@@ -130,6 +131,49 @@ function seedSessionAction(opts: SeedOpts & {
       VALUES (?, ?, ?, ?)
     `).run(opts.baseId, opts.baseId, actionAt, opts.actualDurationMin ?? opts.durationMin);
   }
+}
+
+function seedPersistedDisposition(opts: SeedOpts & {
+  state: 'partial' | 'skipped';
+  actualDurationMin?: number;
+  missedReason?: string;
+}): void {
+  const tenantId = opts.tenantId ?? opts.userId;
+  const actionAt = new Date(ASOF.getTime() - opts.daysAgo * 24 * 60 * 60 * 1000).toISOString();
+
+  testDb.prepare(`
+    INSERT INTO fitness_training_plans
+      (id, user_id, tenant_id, name, sport, duration_weeks, start_date, end_date, status)
+    VALUES (?, ?, ?, 'F18 disposition', ?, 12, '2026-01-01', '2026-04-01', 'active')
+  `).run(opts.baseId, opts.userId, tenantId, opts.sessionType);
+  testDb.prepare(`
+    INSERT INTO training_weeks (id, plan_id, week_number) VALUES (?, ?, 1)
+  `).run(opts.baseId, opts.baseId);
+  testDb.prepare(`
+    INSERT INTO training_sessions
+      (id, week_id, plan_id, day_of_week, session_type, title, duration_minutes, status, updated_at)
+    VALUES (?, ?, ?, 'Monday', ?, 'Session', ?, ?, ?)
+  `).run(
+    opts.baseId,
+    opts.baseId,
+    opts.baseId,
+    opts.sessionType,
+    opts.durationMin,
+    opts.state,
+    actionAt,
+  );
+  testDb.prepare(`
+    INSERT INTO training_completions
+      (session_id, plan_id, completed_at, completed_duration_sec, completion_state, missed_reason)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(
+    opts.baseId,
+    opts.baseId,
+    actionAt,
+    opts.actualDurationMin == null ? null : opts.actualDurationMin * 60,
+    opts.state,
+    opts.missedReason ?? null,
+  );
 }
 
 const ASOF = new Date('2026-04-27T12:00:00.000Z');
@@ -260,6 +304,67 @@ describe('training-history — sport normalization', () => {
 });
 
 describe('training-history — recent compliance', () => {
+  it('uses persisted partial/skipped state once per session across history, load, and compliance', () => {
+    // Stronger F18 guarantee: explicit disposition is authoritative. Duration
+    // heuristics may supplement legacy rows, but must not turn an explicit
+    // partial into completed or surface a skipped completion row twice.
+    seedPersistedDisposition({
+      userId: 100,
+      sessionType: 'easy_run',
+      daysAgo: 2,
+      durationMin: 60,
+      actualDurationMin: 50,
+      baseId: 9081,
+      state: 'partial',
+    });
+    seedPersistedDisposition({
+      userId: 100,
+      sessionType: 'long_run',
+      daysAgo: 1,
+      durationMin: 90,
+      baseId: 9082,
+      state: 'skipped',
+      missedReason: 'schedule_conflict',
+    });
+    // Historical retries/updates may already have left more than one row. The
+    // latest explicit disposition is the one action/load source for a session.
+    testDb.prepare(`
+      INSERT INTO training_completions
+        (session_id, plan_id, completed_at, completed_duration_sec, completion_state)
+      VALUES (9081, 9081, '2026-04-24T12:00:00.000Z', 1200, 'completed')
+    `).run();
+
+    const page = getTrainingHistoryPage(100, 100, {
+      limit: 10,
+      startDate: '2026-04-13T00:00:00.000Z',
+      endDate: ASOF.toISOString(),
+    });
+    expect(page.items).toHaveLength(2);
+    expect(page.items.filter((item) => item.sessionId === 9081)).toEqual([
+      expect.objectContaining({ status: 'partial', type: 'completion', actualDurationMin: 50 }),
+    ]);
+    expect(page.items.filter((item) => item.sessionId === 9082)).toEqual([
+      expect.objectContaining({ status: 'skipped', type: 'skipped', actualDurationMin: null }),
+    ]);
+
+    // Skips carry feedback but no training load. The exact Swift duration
+    // alias persists as seconds and remains the partial session's real load.
+    const loadHistory = READ(100);
+    expect(loadHistory.rawCompletionCount).toBe(1);
+    expect(loadHistory.lastWeekMinutesBySport.running).toBe(50);
+
+    const compliance = readTrainingComplianceFromRecentHistory(100, { tenantId: 100, asOf: ASOF });
+    expect(compliance).toMatchObject({
+      actionCount: 2,
+      completedCount: 0,
+      partialCount: 1,
+      skippedCount: 1,
+    });
+    expect(compliance.compliance?.trailing14DayCompliance).toBeCloseTo(0.25, 5);
+    expect(compliance.compliance?.missedKeySessions).toBe(1);
+    expect(compliance.compliance?.consecutiveMisses).toBe(1);
+  });
+
   it('derives compliance from completed, partial, and skipped recent actions', () => {
     seedSessionAction({
       userId: 100,

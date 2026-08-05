@@ -29,6 +29,12 @@ const mockIsOwnerUserRef = vi.fn();
 const mockHasActiveGarminConnection = vi.fn();
 const mockGetDb = vi.fn();
 const mockWithAiBudgetReservation = vi.hoisted(() => vi.fn());
+const coachApplyMocks = vi.hoisted(() => ({
+  getSessionByCalendarEvent: vi.fn(),
+  syncSessionWithCoachRecommendation: vi.fn(),
+  updateEvent: vi.fn(),
+  withTrainingCalendarOperationLock: vi.fn(),
+}));
 
 vi.mock('../../src/config', () => ({
   config: { anthropic: { apiKey: 'test-key' } },
@@ -61,11 +67,19 @@ vi.mock('../../src/services/unified-calendar', () => ({
   getEvents: (...args: unknown[]) => mockGetEvents(...args),
   hasConnectedCalendarForUser: (...args: unknown[]) => mockHasConnectedCalendarForUser(...args),
   isAnyCalendarConfigured: vi.fn(() => false),
-  updateEvent: vi.fn(),
+  updateEvent: (...args: unknown[]) => coachApplyMocks.updateEvent(...args),
 }));
 
 vi.mock('../../src/services/training-plans', () => ({
-  syncSessionWithCoachRecommendation: vi.fn(),
+  getSessionByCalendarEvent: (...args: unknown[]) => coachApplyMocks.getSessionByCalendarEvent(...args),
+  syncSessionWithCoachRecommendation: (...args: unknown[]) => coachApplyMocks.syncSessionWithCoachRecommendation(...args),
+}));
+
+vi.mock('../../src/services/training-operation-locks', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/training-operation-locks')>()),
+  withTrainingCalendarOperationLock: (...args: unknown[]) => (
+    coachApplyMocks.withTrainingCalendarOperationLock(...args)
+  ),
 }));
 
 vi.mock('../../src/services/anthropic', () => ({
@@ -127,6 +141,8 @@ vi.mock('../../src/services/cost-guardrail', () => ({
 }));
 
 import {
+  applyCoachRecommendation,
+  applyCoachRecommendations,
   COACH_ANALYSIS_SYSTEM_METERING_TENANT_ID,
   COACH_ANALYSIS_SYSTEM_METERING_USER_ID,
   COACH_SYSTEM_PROMPT_MAX_CHARS,
@@ -182,6 +198,19 @@ describe('garmin-coach user scoping', () => {
       usage: {},
     });
     mockGetLastCoachState.mockReturnValue(null);
+    coachApplyMocks.getSessionByCalendarEvent.mockReturnValue({
+      id: 901,
+      plan_id: 801,
+      title: 'Tempo Run',
+    });
+    coachApplyMocks.syncSessionWithCoachRecommendation.mockReturnValue(true);
+    coachApplyMocks.updateEvent.mockResolvedValue({ id: 'event-1', source: 'outlook' });
+    coachApplyMocks.withTrainingCalendarOperationLock.mockImplementation(
+      async (_input: unknown, operation: (lease: unknown) => Promise<unknown>) => {
+        const signal = new AbortController().signal;
+        return operation({ signal, assertActive: vi.fn() });
+      },
+    );
   });
 
   it('does not use Garmin data for a user without their own connection', async () => {
@@ -426,6 +455,228 @@ describe('garmin-coach user scoping', () => {
     expect(result.message).toContain('⏰ 11:00-11:42 (42 min)');
     expect(result.message).not.toMatch(/2026-07-10T|COACH_RECS_END|eventId|source|action/i);
     expect(result.recommendations).toEqual([]);
+  });
+
+  it.each(['google', 'outlook'] as const)(
+    'applies %s recommendations against the delegated data owner with a fenced provider write',
+    async (source) => {
+      const recommendation = {
+        eventId: 'event-1',
+        source,
+        action: 'MODIFY' as const,
+        originalTitle: 'Tempo Run',
+        newTitle: 'Easy Run',
+        newStart: '2026-04-18T08:00:00.000Z',
+        newEnd: '2026-04-18T08:45:00.000Z',
+        summary: 'Reduce intensity',
+        reason: 'Recovery is low',
+      };
+      mockGetLastCoachState.mockImplementation((dataUserId: number) => (
+        dataUserId === 77
+          ? { recommendations: [recommendation], briefingSummary: 'brief', timestamp: Date.now() }
+          : null
+      ));
+
+      const result = await applyCoachRecommendations(42, 77, ['event-1']);
+
+      expect(result).toMatchObject({ count: 1, appliedRecommendations: [recommendation] });
+      // Stronger delegated-scope guarantee: the authenticated actor (42) may
+      // meter/authorize the request, but state, provider credentials, and
+      // Training rows all belong to the active data owner (77).
+      expect(mockGetLastCoachState).toHaveBeenCalledWith(77);
+      expect(coachApplyMocks.withTrainingCalendarOperationLock).toHaveBeenCalledWith(
+        { userId: 77, tenantId: 77, operation: 'coach_apply' },
+        expect.any(Function),
+      );
+      expect(coachApplyMocks.getSessionByCalendarEvent).toHaveBeenCalledWith(
+        'event-1',
+        source,
+        { userId: 77, tenantId: 77 },
+      );
+      expect(coachApplyMocks.getSessionByCalendarEvent.mock.invocationCallOrder[0]).toBeLessThan(
+        coachApplyMocks.updateEvent.mock.invocationCallOrder[0],
+      );
+      expect(coachApplyMocks.updateEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ event_id: 'event-1', new_title: 'Easy Run' }),
+        source,
+        77,
+        { signal: expect.objectContaining({ aborted: false }) },
+      );
+      expect(coachApplyMocks.syncSessionWithCoachRecommendation).toHaveBeenCalledWith(
+        expect.objectContaining({
+          eventId: 'event-1',
+          source,
+          userId: 77,
+          tenantId: 77,
+          timezone: 'Europe/Lisbon',
+        }),
+      );
+    },
+  );
+
+  it('rejects a stale or foreign event before any provider mutation', async () => {
+    const recommendation = {
+      eventId: 'foreign-event',
+      source: 'google' as const,
+      action: 'REST' as const,
+      originalTitle: 'Long Run',
+      newTitle: 'Rest Day',
+      newStart: null,
+      newEnd: null,
+      summary: 'Rest',
+      reason: 'Recovery is low',
+    };
+    mockGetLastCoachState.mockReturnValue({
+      recommendations: [recommendation],
+      briefingSummary: 'brief',
+      timestamp: Date.now(),
+    });
+    coachApplyMocks.getSessionByCalendarEvent.mockReturnValue(null);
+
+    await expect(applyCoachRecommendations(42, 77, ['foreign-event'])).rejects.toMatchObject({
+      code: 'COACH_RECOMMENDATION_STALE',
+      status: 409,
+    });
+    expect(coachApplyMocks.updateEvent).not.toHaveBeenCalled();
+    expect(coachApplyMocks.syncSessionWithCoachRecommendation).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['returns false', () => coachApplyMocks.syncSessionWithCoachRecommendation.mockReturnValue(false)],
+    ['throws', () => coachApplyMocks.syncSessionWithCoachRecommendation.mockImplementation(() => {
+      throw new Error('sqlite write failed');
+    })],
+  ] as const)('reports an explicit partial failure when local sync %s after provider success', async (_label, arrange) => {
+    const recommendation = {
+      eventId: 'event-1',
+      source: 'outlook' as const,
+      action: 'MODIFY' as const,
+      originalTitle: 'Tempo Run',
+      newTitle: 'Easy Run',
+      newStart: null,
+      newEnd: null,
+      summary: 'Reduce intensity',
+      reason: 'Recovery is low',
+    };
+    mockGetLastCoachState.mockReturnValue({
+      recommendations: [recommendation],
+      briefingSummary: 'brief',
+      timestamp: Date.now(),
+    });
+    arrange();
+
+    await expect(applyCoachRecommendations(42, 77, ['event-1'])).rejects.toMatchObject({
+      code: 'COACH_APPLY_PARTIAL_FAILURE',
+      status: 409,
+      providerMutationApplied: true,
+      localSyncConfirmed: false,
+    });
+    expect(coachApplyMocks.updateEvent).toHaveBeenCalledOnce();
+  });
+
+  it('fails closed as partial when the lease is lost after the provider update', async () => {
+    const recommendation = {
+      eventId: 'event-1',
+      source: 'google' as const,
+      action: 'SWAP' as const,
+      originalTitle: 'Intervals',
+      newTitle: 'Easy Ride',
+      newStart: null,
+      newEnd: null,
+      summary: 'Swap session',
+      reason: 'Recovery is low',
+    };
+    const signal = new AbortController().signal;
+    const assertActive = vi.fn()
+      .mockImplementationOnce(() => undefined)
+      .mockImplementationOnce(() => {
+        throw Object.assign(new Error('lease lost'), { code: 'TRAINING_OPERATION_LOCKED' });
+      });
+
+    await expect(applyCoachRecommendation(recommendation, {
+      userId: 77,
+      tenantId: 77,
+      lease: { signal, assertActive },
+    })).rejects.toMatchObject({
+      code: 'COACH_APPLY_PARTIAL_FAILURE',
+      providerMutationApplied: true,
+      localSyncConfirmed: false,
+    });
+    expect(coachApplyMocks.updateEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      'google',
+      77,
+      { signal },
+    );
+    expect(coachApplyMocks.syncSessionWithCoachRecommendation).not.toHaveBeenCalled();
+  });
+
+  it('fences both sides of the provider and local durable boundaries', async () => {
+    const signal = new AbortController().signal;
+    const assertActive = vi.fn();
+
+    await applyCoachRecommendation({
+      eventId: 'event-1',
+      source: 'outlook',
+      action: 'MODIFY',
+      originalTitle: 'Tempo Run',
+      newTitle: 'Easy Run',
+      newStart: null,
+      newEnd: null,
+      summary: 'Reduce intensity',
+      reason: 'Recovery is low',
+    }, {
+      userId: 42,
+      tenantId: 77,
+      lease: { signal, assertActive },
+    });
+
+    // Before/after provider plus before/after local persistence. Keeping the
+    // four explicit fences prevents a later refactor from collapsing a lease
+    // checkpoint across either external or durable side effect.
+    expect(assertActive).toHaveBeenCalledTimes(4);
+  });
+
+  it('does not write local Training state when the provider update fails', async () => {
+    coachApplyMocks.updateEvent.mockRejectedValueOnce(new Error('provider unavailable'));
+    const signal = new AbortController().signal;
+
+    await expect(applyCoachRecommendation({
+      eventId: 'event-1',
+      source: 'google',
+      action: 'MODIFY',
+      originalTitle: 'Tempo Run',
+      newTitle: 'Easy Run',
+      newStart: null,
+      newEnd: null,
+      summary: 'Reduce intensity',
+      reason: 'Recovery is low',
+    }, {
+      userId: 42,
+      tenantId: 77,
+      lease: { signal, assertActive: vi.fn() },
+    })).rejects.toThrow('provider unavailable');
+
+    expect(coachApplyMocks.syncSessionWithCoachRecommendation).not.toHaveBeenCalled();
+  });
+
+  it('keeps KEEP recommendations mutation-free', async () => {
+    await applyCoachRecommendation({
+      eventId: 'event-1',
+      source: 'google',
+      action: 'KEEP',
+      originalTitle: 'Easy Run',
+      newTitle: 'Easy Run',
+      newStart: null,
+      newEnd: null,
+      summary: 'Keep',
+      reason: 'On plan',
+    }, { userId: 42, tenantId: 77 });
+
+    expect(coachApplyMocks.withTrainingCalendarOperationLock).not.toHaveBeenCalled();
+    expect(coachApplyMocks.getSessionByCalendarEvent).not.toHaveBeenCalled();
+    expect(coachApplyMocks.updateEvent).not.toHaveBeenCalled();
+    expect(coachApplyMocks.syncSessionWithCoachRecommendation).not.toHaveBeenCalled();
   });
 
   // ── Local-LLM pilot: GARMIN_COACH_CAPTURE_PROMPT payload capture ──

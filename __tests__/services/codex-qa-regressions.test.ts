@@ -706,7 +706,7 @@ describe('Codex QA — M19 remediation: training outputRefs flag-off parity', ()
       action: 'training_plan_create' as const,
       risk: 'safe_write' as const,
       provider: 'nexus' as const,
-      args: { sport: 'running', goal: '10k', durationWeeks: 12, startDate: '2026-07-27', weeklyVolumeKm: 20 },
+      args: { objective: '10k', durationWeeks: 12, sessionsPerWeek: 4, startPolicy: 'next_full_week' },
       requiredArgsPresent: true,
       idempotencyKey: 'idem-train',
       verification: { required: false, method: 'none' as const },

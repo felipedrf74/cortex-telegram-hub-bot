@@ -1754,7 +1754,6 @@ function dedupedCausePhrases(readiness: ReadinessInput | null, signals: Training
       case 'low_readiness': phrases.push(tPT(language, 'prontidão baixa', 'prontidão baixa', 'low readiness')); break;
       case 'high_leg_load': phrases.push(tPT(language, 'carga alta nas pernas', 'carga alta nas pernas', 'heavy leg load')); break;
       case 'high_shoulder_load': phrases.push(tPT(language, 'ombros ainda carregados', 'ombros ainda carregados', 'heavy shoulder load')); break;
-      case 'calendar_conflict': phrases.push(tPT(language, 'sobreposição com a agenda', 'sobreposição com a agenda', 'calendar overlap')); break;
       case 'planned_race_this_week': phrases.push(tPT(language, 'corrida importante esta semana', 'corrida importante esta semana', 'race week')); break;
       case 'safety_red_flag':
       case 'red_flag':
@@ -1810,8 +1809,6 @@ function localizedSignalTitle(signal: TrainingSignalInput, language: Lang): stri
     case 'planned_hard_run': return tPT(language, 'Corrida dura planeada', 'Corrida dura planejada', 'Hard run planned');
     case 'planned_hard_ride': return tPT(language, 'Saída dura planeada', 'Saída dura planejada', 'Hard ride planned');
     case 'planned_race_this_week': return tPT(language, 'Prova esta semana', 'Prova esta semana', 'Race this week');
-    case 'training_session_scheduled': return tPT(language, 'Sessão marcada', 'Sessão marcada', 'Session scheduled');
-    case 'calendar_conflict': return tPT(language, 'Conflito no calendário', 'Conflito no calendário', 'Calendar conflict');
     case 'low_adherence': return tPT(language, 'Aderência baixa', 'Aderência baixa', 'Low adherence');
     case 'high_adherence': return tPT(language, 'Aderência alta', 'Aderência alta', 'High adherence');
     case 'plan_drift': return tPT(language, 'Desvio ao plano', 'Desvio ao plano', 'Plan drift');
@@ -1826,14 +1823,6 @@ function localizedSignalTitle(signal: TrainingSignalInput, language: Lang): stri
 
 function localizedSignalSummary(signal: TrainingSignalInput, language: Lang): string {
   const payload = signal.payload ?? {};
-  if (signal.type === 'calendar_conflict') {
-    return tPT(
-      language,
-      'Um evento da agenda sobrepõe-se a uma sessão de treino marcada — considera mover uma das duas.',
-      'Um evento da agenda se sobrepõe a uma sessão de treino marcada — considera mover uma das duas.',
-      'A calendar event overlaps a scheduled training session — consider moving one.',
-    );
-  }
   if (hasExplicitRedFlagSignal([signal])) {
     return tPT(
       language,
@@ -1888,11 +1877,6 @@ function localizedSignalSummary(signal: TrainingSignalInput, language: Lang): st
       return 'Há uma saída dura marcada — ginásio e corrida ficam mais leves à volta dela.';
     case 'planned_race_this_week':
       return 'Tens uma prova no calendário nos próximos 7 dias — os coaches vão afinar a carga.';
-    case 'training_session_scheduled': {
-      const sportText = localizedSport(payload.sport, language);
-      const titleText = typeof payload.title === 'string' ? `: ${localizedSessionType(payload.title, language)}` : '';
-      return `Sessão de ${sportText}${titleText} — já está no calendário.`;
-    }
     case 'low_adherence': {
       const completed = typeof payload.completed === 'number' ? payload.completed : 0;
       const planned = typeof payload.planned === 'number' ? payload.planned : 0;
@@ -2045,7 +2029,6 @@ function isMarginSignal(signal: TrainingSignalInput): boolean {
     'low_readiness',
     'high_leg_load',
     'high_shoulder_load',
-    'calendar_conflict',
     'planned_race_this_week',
     'low_adherence',
     'plan_drift',

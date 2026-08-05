@@ -2,7 +2,7 @@
 
 import type { EngineContext, SportEngine } from './interfaces';
 import type { DayOfWeek, Session, SessionType, WorkoutTemplate } from '../types';
-import { clamp, createSessionId, durationToLoad } from '../utils';
+import { clamp, createSessionId, durationToLoad, timeToMinutes } from '../utils';
 import { annotateSessionsOnUnavailableDays, pickAvailableDaysDetailed, pickKeyDay } from '../availability-day-picker';
 import { applyVolumeGrowthCapForSport } from '../training-principles';
 import { attachTrainingSessionRole } from '../endurance-session-classifier';
@@ -27,6 +27,37 @@ function constraintText(context: EngineContext): string {
 
 function isTravelOrLimitedWeek(context: EngineContext): boolean {
   return /travel|hotel|trip|limited equipment|away/.test(constraintText(context));
+}
+
+function hasOnlyShortRunningWindows(context: EngineContext, maximumMinutes = 35): boolean {
+  const runningWindows = context.athlete.availability.weeklyWindows.filter((window) =>
+    !window.sports || window.sports.includes('running'));
+  return runningWindows.length > 0 && runningWindows.every((window) => {
+    const duration = timeToMinutes(window.end) - timeToMinutes(window.start);
+    return duration > 0 && duration <= maximumMinutes;
+  });
+}
+
+function applyNoDataRpeGuidance(context: EngineContext, sessions: Session[]): Session[] {
+  if (context.athlete.readiness.confidence !== 'no_data') return sessions;
+  return sessions.map((session) => {
+    const guidance = session.intensityZone === 'recovery'
+      ? 'Without a fresh readiness signal, guide this recovery session by perceived effort (RPE 2-3) instead of wearable metrics.'
+      : session.intensityZone === 'aerobic'
+        ? 'Without a fresh readiness signal, guide this session by conversational perceived effort (RPE 3-4) instead of wearable metrics.'
+        : session.intensityZone === 'tempo'
+          ? 'Without a fresh readiness signal, complete a manual check-in first and keep the controlled tempo at perceived effort RPE 6-7.'
+          : session.intensityZone === 'threshold'
+            ? 'Without a fresh readiness signal, complete a manual check-in first, cap threshold work at perceived effort RPE 7, and switch to easy aerobic work if recovery feels off.'
+            : session.intensityZone === 'vo2' || session.intensityZone === 'neuromuscular'
+              ? 'Without a fresh readiness signal, complete a manual check-in first, cap the quality work at perceived effort RPE 8, and switch to easy aerobic work if recovery feels off.'
+              : 'Without a fresh readiness signal, use perceived effort (RPE) and a manual check-in to pace this session conservatively.';
+    return {
+      ...session,
+      description: `${session.description} ${guidance}`.trim(),
+      tags: [...session.tags, 'rpe_guided_no_data'],
+    };
+  });
 }
 
 function hasHybridStrengthPressure(context: EngineContext): boolean {
@@ -117,7 +148,7 @@ function buildSupportOnlyRunSessions(context: EngineContext, templates: WorkoutT
     sessions.push(buildRunSession(template, dayOfWeek, duration, ['aerobic_support', 'support_run', template.id], context.athlete.profile));
   }
 
-  return annotateSessionsOnUnavailableDays(sessions, dayPick);
+  return applyNoDataRpeGuidance(context, annotateSessionsOnUnavailableDays(sessions, dayPick));
 }
 
 function keyRunTemplateFor(context: EngineContext, templates: WorkoutTemplate[]): WorkoutTemplate {
@@ -194,7 +225,9 @@ export const runningEngine: SportEngine = {
         ? templateFor(templates, 'recovery_run')
         : templateFor(templates, 'long_run');
       const duration = clamp(Math.round(targetMinutes), 30, template.sessionType === 'long_run' ? 120 : 50);
-      return [buildRunSession(template, longRunDay, duration, ['single_run', template.id], context.athlete.profile)];
+      return applyNoDataRpeGuidance(context, [
+        buildRunSession(template, longRunDay, duration, ['single_run', template.id], context.athlete.profile),
+      ]);
     }
     const longTemplate = context.phase === 'race'
       ? templateByIdOrType(templates, isTravelOrLimitedWeek(context) ? 'run_travel_treadmill_easy' : 'run_easy_aerobic', 'easy_run')
@@ -207,7 +240,18 @@ export const runningEngine: SportEngine = {
     const keyMinutes = clamp(Math.round(targetMinutes * 0.18), context.phase === 'race' ? 25 : 30, context.phase === 'race' ? 40 : 70);
     const remainingMinutes = Math.max(targetMinutes - longRunMinutes - keyMinutes, 40);
     const fillerMinutes = Math.max(30, Math.round(remainingMinutes / Math.max(1, targetSessions - 2)));
-    const keyTemplate = keyRunTemplateFor(context, templates);
+    // With exactly two runs, one hard key session would make half the
+    // endurance block hard. A week made entirely of 35-minute (or shorter)
+    // running windows is constrained maintenance work, so preserve the long
+    // aerobic stimulus and turn the key slot into explicit easy work.
+    const keyTemplate = targetSessions === 2
+      && hasOnlyShortRunningWindows(context)
+      ? templateByIdOrType(
+          templates,
+          isTravelOrLimitedWeek(context) ? 'run_travel_treadmill_easy' : 'run_easy_aerobic',
+          'easy_run',
+        )
+      : keyRunTemplateFor(context, templates);
 
     // Slice 4.F — availability-aware key-day pick. When the user has
     // declared availability for running, pick the first day in the
@@ -243,6 +287,6 @@ export const runningEngine: SportEngine = {
       supportIndex += 1;
     }
 
-    return annotateSessionsOnUnavailableDays(sessions, fillerPick);
+    return applyNoDataRpeGuidance(context, annotateSessionsOnUnavailableDays(sessions, fillerPick));
   },
 };

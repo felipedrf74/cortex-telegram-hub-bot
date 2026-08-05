@@ -20,6 +20,7 @@ import { getEvents, getEventsForSources } from '../../services/unified-calendar'
 import {
   applyTrainingPlanCoordination,
   buildTrainingPlanCoordination,
+  type TrainingPlanVolumeShortfall,
 } from '../../services/training-plan-coordination';
 import {
   buildCoachKernelTrainingPlan,
@@ -47,14 +48,18 @@ import {
   lintGeneratedTrainingPlanPreflight,
   persistGeneratedTrainingPlan,
   resolvePlanSlotDate,
+  type PersistGeneratedTrainingPlanResult,
 } from './training-plan-persistence';
-import { cancelTrainingPlanForUser } from './training-plan-cancellation';
-import { enforceRequestedTrainingPlanVolume } from '../../services/training-plan-volume-enforcement';
+import {
+  captureTrainingPlanVolumeTargetSnapshot,
+  enforceFinalTrainingPlanTwoADayCap,
+  enforceRequestedTrainingPlanVolume,
+  recalculateFinalTrainingPlanVolumeShortfalls,
+} from '../../services/training-plan-volume-enforcement';
 import { loadTrainingCatalogSnapshot } from '../../services/coach-kernel/training-catalog';
 import * as trainingPlans from '../../services/training-plans';
-import { findOrphanedOwnerships } from '../../services/training-plan-lifecycle';
-import { reconcileOrphanedTrainingAgendaEvents } from '../../services/training-agenda-reconciliation';
 import { resolveTrainingCalendarSource } from '../../services/training-calendar-source';
+import type { TrainingPlanGenerationLeaseIdentity } from '../../services/training-plan-generation-idempotency';
 import {
   assessTrainingPlanSpecReadiness,
   buildTrainingPlanSpec,
@@ -66,7 +71,11 @@ import {
   mergeTrainingQualityIntoPlanLint,
   prepareTrainingPlanForQualityGate,
 } from '../../services/coach-kernel/training-plan-quality-gate';
-import { isPastIsoDate, isStrictIsoDate } from '../../services/training-date-utils';
+import {
+  isFutureIsoDate,
+  isStrictIsoDate,
+  resolveTrainingTimezone,
+} from '../../services/training-date-utils';
 import { logger } from '../../utils/logger';
 import type { CalendarSource } from '../../services/unified-calendar';
 import type { PlanLintResult } from '../../services/coach-kernel/plan-linter';
@@ -96,6 +105,15 @@ import {
   getTrainingExerciseIdentityV1Mode,
   type TrainingExerciseIdentityV1Mode,
 } from '../../services/runtime-flags';
+import {
+  buildTrainingPlanGenerationResponseDiscriminator,
+  type TrainingPlanGenerationResponseDiscriminator,
+} from './training-plan-generation-response-contract';
+import {
+  fingerprintTrainingPlanPreviewCandidate,
+  signTrainingPlanPreviewToken,
+  TrainingPlanPreviewStaleError,
+} from '../../services/training-plan-preview-token';
 
 export const TRAINING_PLAN_GENERATOR_POLICY_VERSION = 'training-plan-shape-v2';
 
@@ -139,11 +157,27 @@ export interface GenerateTrainingPlanForUserInput {
   twoADayPreference?: 'never' | 'optional' | 'preferred' | 'auto' | null;
   calendarSource?: CalendarSource | null;
   previewOnly?: boolean;
+  /** Trusted request-context digest assembled by the authenticated preview
+   * route. When present, the preview returns a signed, scoped candidate token. */
+  previewContextFingerprint?: string;
+  /** Candidate digest extracted only from a validated signed preview token.
+   * Create compares it before any plan/provider persistence. */
+  expectedPreviewCandidateFingerprint?: string;
   /**
    * Internal test/staging smoke clock override. Public API routes do not pass
    * this field; production ignores it so users cannot spoof plan dates.
    */
   plannerNow?: unknown;
+  /**
+   * Trusted internal seam. Public routes resolve this from users.timezone;
+   * request-body values must never be forwarded here.
+   */
+  schedulingTimezone?: string | null;
+  /**
+   * F1 compatibility-operation fence acquired by the authenticated REST
+   * boundary. Persistence revalidates it inside the replacement transaction.
+   */
+  generationIdempotencyLease?: TrainingPlanGenerationLeaseIdentity;
 }
 
 export type TrainingPlanStartPolicy = 'next_full_week' | 'today';
@@ -157,11 +191,11 @@ export interface TrainingSafetyGenerationSummary {
 export type TrainingPlanGenerationResult =
   | {
       status: 'needs_profile';
-      data: Record<string, unknown>;
+      data: Record<string, unknown> & TrainingPlanGenerationResponseDiscriminator<'needs_profile'>;
     }
   | {
       status: 'preview';
-      data: {
+      data: TrainingPlanGenerationResponseDiscriminator<'preview'> & {
         status: 'preview';
         planName: string | null;
         sport: string | null;
@@ -184,23 +218,29 @@ export type TrainingPlanGenerationResult =
           assessmentPrompt?: string | null;
         }>;
         trainingLearningPath: TrainingLearningPath | null;
+        /** F10: preview must explain any ask-vs-scheduled gap just like the
+         * create response; otherwise `weeklyTargets` changes without a
+         * machine-readable reason at the athlete's review boundary. */
+        volumeShortfalls: TrainingPlanVolumeShortfall[];
         planLint: PlanLintResult;
         warnings: Array<{ code: string; message: string }>;
         blockers: Array<{ code: string; message: string }>;
         calendarFetchDegraded: boolean;
         calendarFetchError?: string;
         fallbackTemplateUsed: boolean;
+        decisionReasons: TrainingDecisionReason[];
         goalMode: TrainingGoalMode | null;
         trainingPriority: TrainingPriority | null;
         raceDate: string | null;
         generatorPolicyVersion: string;
         generationVersionPins: TrainingGenerationVersionPins;
+        previewToken?: string;
         trainingSafety?: TrainingSafetyGenerationSummary | null;
       };
     }
   | {
       status: 'created';
-      data: Record<string, unknown>;
+      data: Record<string, unknown> & TrainingPlanGenerationResponseDiscriminator<'created'>;
       planId: number;
       eventsCreated: number;
       totalSessions: number;
@@ -212,13 +252,14 @@ export type TrainingPlanGenerationResult =
    */
   | {
       status: 'needs_clarification';
-      data: {
+      data: TrainingPlanGenerationResponseDiscriminator<'needs_clarification'> & {
         status: 'needs_clarification';
         message: string;
         specReadiness: TrainingPlanSpecReadinessResult;
         clarificationIssues: TrainingPlanSpecReadinessResult['issues'];
         suggestedQuestions: string[];
         fallbackTemplateUsed: boolean;
+        decisionReasons: TrainingDecisionReason[];
         goalMode: TrainingGoalMode | null;
         trainingPriority: TrainingPriority | null;
         raceDate: string | null;
@@ -229,7 +270,7 @@ export type TrainingPlanGenerationResult =
     }
   | {
       status: 'plan_quality_blocked';
-      data: {
+      data: TrainingPlanGenerationResponseDiscriminator<'plan_quality_blocked'> & {
         status: 'plan_quality_blocked';
         message: string;
         planLint: PlanLintResult;
@@ -238,6 +279,7 @@ export type TrainingPlanGenerationResult =
         calendarFetchDegraded: boolean;
         calendarFetchError?: string;
         fallbackTemplateUsed: boolean;
+        decisionReasons: TrainingDecisionReason[];
         goalMode: TrainingGoalMode | null;
         trainingPriority: TrainingPriority | null;
         raceDate: string | null;
@@ -257,89 +299,13 @@ export type TrainingPlanGenerationResult =
    */
   | {
       status: 'cancellation_failed';
-      data: {
+      data: TrainingPlanGenerationResponseDiscriminator<'cancellation_failed'> & {
         message: string;
         reason: string;
         activePlansRemaining: number;
         generationVersionPins: TrainingGenerationVersionPins;
       };
     };
-
-/**
- * Slice 4.D.2 — saga taxonomy for the pre-persist cancellation step.
- *
- * The audit identified silent error suppression in the catch block
- * around `cancelTrainingPlanForUser` as compounding root cause #4 of
- * regression #3. Previously we logged + continued unconditionally,
- * which produced a double-plan state when the local hard-delete
- * failed (e.g. SQLite was locked, the cancellation route's narrative
- * cleanup threw before the local delete, etc.).
- *
- * The new shape distinguishes:
- *   - `success`           — old plan + events fully cleaned up.
- *   - `no_active_plan`    — first-time user, nothing to cancel.
- *   - `external_partial`  — local delete OK; some calendar deletes
- *                            failed transiently. Safe to continue;
- *                            orphans are queued via the slice 4.D
- *                            ownership audit table.
- *   - `forbidden`         — old plan was owned by a different user
- *                            (rare; route handles this explicitly).
- *                            Continue with new plan.
- *   - `local_delete_failed` — DANGEROUS. Old plan rows are still in
- *                            the DB. Caller MUST abort the persist.
- */
-type CancellationSagaOutcome =
-  | { kind: 'success'; removedEvents: number }
-  | { kind: 'no_active_plan' }
-  | { kind: 'external_partial'; orphanedEventCount: number }
-  | { kind: 'local_delete_failed'; reason: string; activePlansRemaining: number };
-
-async function runPrePersistCancellationSaga(userId: number, tenantId: number): Promise<CancellationSagaOutcome> {
-  try {
-    const cancellation = await cancelTrainingPlanForUser(userId, undefined, { tenantId });
-    if (cancellation.status === 'not_found') {
-      const reconciliation = await reconcileOrphanedTrainingAgendaEvents(userId, tenantId);
-      if (reconciliation.failed > 0) {
-        return { kind: 'external_partial', orphanedEventCount: reconciliation.failed };
-      }
-      return { kind: 'no_active_plan' };
-    }
-    // Status is 'cancelled' — local hard-delete succeeded. The slice
-    // 4.D ownership audit table tells us whether any external calendar
-    // deletes failed (status='orphaned' rows). Those are reconcilable;
-    // the saga can safely proceed.
-    const reconciliation = await reconcileOrphanedTrainingAgendaEvents(userId, tenantId);
-    const orphans = findOrphanedOwnerships(userId, tenantId);
-    const orphanedEventCount = orphans.length + reconciliation.failed;
-    if (orphanedEventCount > 0) {
-      return { kind: 'external_partial', orphanedEventCount };
-    }
-    return { kind: 'success', removedEvents: cancellation.data.removedEvents };
-  } catch (err) {
-    // The throw landed somewhere inside `cancelTrainingPlanForUser`.
-    // We can't tell from here whether the local hard-delete already
-    // ran. Conservative inspection: if any active plans remain for
-    // this user, the cancellation didn't finish — abort. If none
-    // remain, the throw was post-delete (e.g. narrative cleanup), so
-    // continuing is safe but we mark it as external-partial so the
-    // ownership reconciler picks up any remaining orphans.
-    const remainingPlans = trainingPlans.getActivePlans?.(userId, tenantId) ?? [];
-    const reason = err instanceof Error ? err.message : String(err);
-    if (remainingPlans.length > 0) {
-      return {
-        kind: 'local_delete_failed',
-        reason,
-        activePlansRemaining: remainingPlans.length,
-      };
-    }
-    logger.warn(
-      { err, userId },
-      'Cancellation threw post-delete; saga continuing with reconciliation queued',
-    );
-    const reconciliation = await reconcileOrphanedTrainingAgendaEvents(userId, tenantId);
-    return { kind: 'external_partial', orphanedEventCount: reconciliation.failed || -1 };
-  }
-}
 
 export interface TrainingPlanWeeklyTargets {
   sessionsPerWeek: number;
@@ -372,18 +338,27 @@ export async function generateTrainingPlanForUser(
     twoADayPreference,
     calendarSource,
     previewOnly = false,
+    previewContextFingerprint,
+    expectedPreviewCandidateFingerprint,
     plannerNow,
+    schedulingTimezone: requestedSchedulingTimezone,
+    generationIdempotencyLease,
   } = input;
   const tenantId = requireTenantIdParam(input.tenantId, 'generateTrainingPlanForUser');
+  const expectedActivePlanIds = previewOnly
+    ? []
+    : trainingPlans.getActivePlans(userId, tenantId).map((plan) => plan.id).sort((a, b) => a - b);
+  const schedulingTimezone = resolveTrainingTimezone(requestedSchedulingTimezone);
   const exerciseIdentityMode = getTrainingExerciseIdentityV1Mode(process.env, { tenantId, userId });
   const requestedDurationWeeks = normalizeTrainingPlanDurationWeeks(input.durationWeeks, 4);
+  const now = resolvePlannerNow(plannerNow);
 
   const fitnessProfile = unwrapOnboardingProfileData(onboarding.getProfile?.(userId, 'fitness'));
   const gymProfile = unwrapOnboardingProfileData(onboarding.getProfile?.(userId, 'triathlon-gym'));
   const runProfile = unwrapOnboardingProfileData(onboarding.getProfile?.(userId, 'triathlon-running'));
   const cyclingProfile = unwrapOnboardingProfileData(onboarding.getProfile?.(userId, 'triathlon-cycling'));
   const swimProfile = unwrapOnboardingProfileData(onboarding.getProfile?.(userId, 'triathlon-swim'));
-  const normalizedGoalMode = normalizeGoalMode(goalMode);
+  const requestedGoalMode = normalizeGoalMode(goalMode);
   const normalizedTrainingPriority = normalizeTrainingPriority(trainingPriority);
   const normalizedRaceDate = normalizeIsoDate(raceDate);
   const raceDateWasProvided = typeof raceDate === 'string'
@@ -393,6 +368,7 @@ export async function generateTrainingPlanForUser(
     return {
       status: 'needs_profile',
       data: {
+        ...buildTrainingPlanGenerationResponseDiscriminator('needs_profile'),
         needsProfile: true,
         message: 'Race date must be a real future date in YYYY-MM-DD format.',
         missingFields: ['raceDate'],
@@ -403,10 +379,11 @@ export async function generateTrainingPlanForUser(
       },
     };
   }
-  if (normalizedRaceDate && isPastIsoDate(normalizedRaceDate)) {
+  if (normalizedRaceDate && !isFutureIsoDate(normalizedRaceDate, now, schedulingTimezone)) {
     return {
       status: 'needs_profile',
       data: {
+        ...buildTrainingPlanGenerationResponseDiscriminator('needs_profile'),
         needsProfile: true,
         message: 'Race date must be in the future.',
         missingFields: ['raceDate'],
@@ -417,26 +394,36 @@ export async function generateTrainingPlanForUser(
       },
     };
   }
-  const effectiveRaceDate = normalizedRaceDate ?? resolveProfileRaceDate(runProfile);
+  const profileRaceDate = resolveProfileRaceDate(runProfile);
+  const effectiveProfileRaceDate = profileRaceDate
+    && isFutureIsoDate(profileRaceDate, now, schedulingTimezone)
+    ? profileRaceDate
+    : null;
+  const effectiveRaceDate = normalizedRaceDate ?? effectiveProfileRaceDate;
+  // Profile dates are advisory and can outlive the event. Strip every alias
+  // before reattaching the one validated, strictly-future canonical value so
+  // the phase generator cannot see stale/today metadata through a side door.
+  const runProfileWithoutRaceDates = stripProfileRaceDates(runProfile);
   const runProfileForPlan = effectiveRaceDate
     ? {
-        ...(runProfile ?? {}),
+        ...(runProfileWithoutRaceDates ?? {}),
         target_race_date: effectiveRaceDate,
         target_race: typeof runProfile?.target_race === 'string' && runProfile.target_race.trim()
           ? runProfile.target_race
           : objective,
       }
-    : runProfile;
+    : runProfileWithoutRaceDates;
   const enduranceProfileForPlan = mergeEnduranceProfileForPlan(runProfileForPlan, cyclingProfile, swimProfile);
   // Computed here (not at the lint-input site below) because the
   // duration clamp after start-date resolution needs the exact same
   // event-based definition the linter applies.
-  const raceDateForLint: string | null =
-    effectiveRaceDate
-      ? effectiveRaceDate
-      : typeof runProfileForPlan?.target_race_date === 'string' && runProfileForPlan.target_race_date.trim()
-      ? runProfileForPlan.target_race_date
-      : null;
+  const raceDateForLint: string | null = effectiveRaceDate;
+  // F12 policy (a), chosen 2026-08-03: raceDate wins. The phase generator
+  // already builds toward a supplied race, so every downstream consumer must
+  // see the same effective mode for clamping, linting, persistence, and reads.
+  const normalizedGoalMode: TrainingGoalMode | null = raceDateForLint
+    ? 'event_based'
+    : requestedGoalMode;
   const isRaceSpecificForLint = normalizedGoalMode === 'event_based';
 
   if (!fitnessProfile || Object.keys(fitnessProfile).length === 0) {
@@ -448,6 +435,7 @@ export async function generateTrainingPlanForUser(
     return {
       status: 'needs_profile',
       data: {
+        ...buildTrainingPlanGenerationResponseDiscriminator('needs_profile'),
         needsProfile: true,
         requiredQuestionnaireId: 'fitness',
         requiredQuestionnaireTitle: onboarding.getQuestionnaire('fitness')?.title ?? 'fitness',
@@ -462,6 +450,7 @@ export async function generateTrainingPlanForUser(
     return {
       status: 'needs_profile',
       data: {
+        ...buildTrainingPlanGenerationResponseDiscriminator('needs_profile'),
         needsProfile: true,
         requiredQuestionnaireId: objectiveRequirement.questionnaireId,
         requiredQuestionnaireTitle: objectiveRequirement.title,
@@ -471,9 +460,31 @@ export async function generateTrainingPlanForUser(
     };
   }
 
-  const now = resolvePlannerNow(plannerNow);
   const normalizedStartPolicy = normalizeStartPolicy(startPolicy);
-  const startStr = resolveTrainingPlanStartDate(now, normalizedStartPolicy);
+  const startStr = resolveTrainingPlanStartDate(now, normalizedStartPolicy, schedulingTimezone);
+  // F12 policy (a): a valid future race date makes the request event-based,
+  // but it still has to be reachable from the resolved plan window. The
+  // duration clamp cannot repair a race that occurs before week 1, and letting
+  // it through would persist an event-based plan whose generated phases omit
+  // the race entirely. Fail before calendar reads, kernel generation, or any
+  // cancellation/persistence work.
+  if (raceDateForLint && raceDateForLint < startStr) {
+    return {
+      status: 'needs_profile',
+      data: {
+        ...buildTrainingPlanGenerationResponseDiscriminator('needs_profile'),
+        needsProfile: true,
+        message: 'Race date must be on or after the resolved training-plan start date.',
+        missingFields: ['raceDate'],
+        validationError: {
+          code: 'RACE_DATE_BEFORE_PLAN_START',
+          field: 'raceDate',
+          raceDate: raceDateForLint,
+          resolvedStartDate: startStr,
+        },
+      },
+    };
+  }
   // rerun-4 R3 (2026-06-12): iOS derives the requested week count from
   // "today", but the engine anchors the plan at its start policy (e.g.
   // next Monday). A 16-week request made days before that anchor then
@@ -488,9 +499,10 @@ export async function generateTrainingPlanForUser(
     requestedDurationWeeks,
     startDateIso: startStr,
     raceDateIso: isRaceSpecificForLint ? raceDateForLint : null,
+    schedulingTimezone,
   });
   const endStr = DateTime
-    .fromISO(startStr, { zone: config.app.timezone || 'Europe/Lisbon' })
+    .fromISO(startStr, { zone: schedulingTimezone })
     .plus({ weeks: durationWeeks })
     .toISODate() ?? startStr;
   const resolvedCalendarSource = resolveTrainingCalendarSource({
@@ -519,7 +531,7 @@ export async function generateTrainingPlanForUser(
     const events = resolvedCalendarSource
       ? await getEventsForSources(startStr, endStr, userId, [resolvedCalendarSource])
       : await getEvents(startStr, endStr, userId);
-    busyWindows = buildBusyWindows(events || []);
+    busyWindows = buildBusyWindows(events || [], schedulingTimezone);
   } catch (err) {
     calendarFetchDegraded = true;
     calendarFetchError = err instanceof Error ? err.message : String(err);
@@ -628,10 +640,13 @@ export async function generateTrainingPlanForUser(
   const normalizedPreferredTime = normalizePreferredTime(preferredTime, '12:00');
   const normalizedPreferredCardioTime = normalizePreferredTime(preferredCardioTime, normalizedPreferredTime);
   const normalizedPreferredStrengthTime = normalizePreferredTime(preferredStrengthTime, normalizedPreferredTime);
-  const upstreamCapacityWindows = config.coaching.trainingCalendarCapacityKernelEnabled && !calendarFetchDegraded
+  const upstreamCapacityWindows = config.coaching.trainingCalendarCapacityKernelEnabled
+    && !calendarFetchDegraded
+    && busyWindows.length > 0
     ? buildKernelCapacityWindows({
         startDate: startStr,
         busyWindows,
+        schedulingTimezone,
       })
     : null;
   if (upstreamCapacityWindows?.some((window) => window.constraints.includes('calendar_busy_windows_present'))) {
@@ -709,10 +724,16 @@ export async function generateTrainingPlanForUser(
     // the volume enforcer is the per-day-cap guarantee, so it needs it too.
     twoADayPreference: twoADayPreference ?? null,
   };
+  // Capture request interpretation while the raw coach output still carries
+  // every auto-selected modality. Later trims must not redefine the ask.
+  const volumeTargetSnapshot = captureTrainingPlanVolumeTargetSnapshot(
+    planData,
+    volumeEnforcementInput,
+  );
   const volumeEnforcedPlan = enforceRequestedTrainingPlanVolume(planData, volumeEnforcementInput);
   // F10 (Phase 3): captured before the equipment pass, which may rebuild the
   // plan object without carrying the enforcement metadata through.
-  const volumeShortfalls = volumeEnforcedPlan.volumeShortfalls ?? [];
+  let volumeShortfalls = volumeEnforcedPlan.volumeShortfalls ?? [];
   planData = applyEquipmentAuthorityMode(
     volumeEnforcedPlan,
     equipmentAdaptation,
@@ -737,6 +758,20 @@ export async function generateTrainingPlanForUser(
   }
   if (equipmentAuthorityEnabled) {
     planData = applyEquipmentAuthorityDecisionReasons(planData, equipmentAdaptation);
+  }
+  const raceDateGoalModeDecision = buildRaceDateGoalModeOverrideReason({
+    requestedGoalMode,
+    effectiveGoalMode: normalizedGoalMode,
+    raceDate: raceDateForLint,
+  });
+  if (raceDateGoalModeDecision) {
+    planData = {
+      ...planData,
+      decisionReasons: dedupeDecisionReasons([
+        ...safeDecisionReasons(planData?.decisionReasons),
+        raceDateGoalModeDecision,
+      ]),
+    };
   }
 
   const safetyOutput = config.coaching.trainingSafetyGuardrailsEnabled
@@ -789,7 +824,17 @@ export async function generateTrainingPlanForUser(
     : gymOnlyObjective
       ? normalizedSessionsPerWeek
       : 0;
-  const generatedEnduranceSchedule = buildGeneratedEnduranceSchedule(planData, startStr, now);
+  const generatedEnduranceSchedule = buildGeneratedEnduranceSchedule(
+    planData,
+    startStr,
+    now,
+    schedulingTimezone,
+  );
+  // Conservative bodyweight items keep generation safe, but an
+  // unknown-confidence profile is not evidence that the user declared
+  // equipment. Present that distinction to readiness without changing the
+  // canonical adaptation used by generation and persistence.
+  const equipmentUnknownForReadiness = equipmentAdaptation.canonicalProfile?.confidence === 'unknown';
   const trainingPlanSpec = requestedStrengthDaysForQuality >= 2
     ? buildTrainingPlanSpec({
         userId,
@@ -798,8 +843,10 @@ export async function generateTrainingPlanForUser(
         trainingPriority: normalizedTrainingPriority,
         daysPerWeek: requestedStrengthDaysForQuality,
         startDate: startStr,
-        equipmentProfileLabel,
-        availableEquipment: equipmentAdaptation.canonicalProfile?.items,
+        equipmentProfileLabel: equipmentUnknownForReadiness ? 'unknown' : equipmentProfileLabel,
+        availableEquipment: equipmentUnknownForReadiness
+          ? []
+          : equipmentAdaptation.canonicalProfile?.items,
         // Phase 2 (F2): the session_duration_clarification answer is written
         // to the canonical gym profile; consuming it here is what closes the
         // answer → profile write → re-preview loop.
@@ -828,13 +875,14 @@ export async function generateTrainingPlanForUser(
     return {
       status: 'needs_clarification',
       data: {
-        status: 'needs_clarification',
+        ...buildTrainingPlanGenerationResponseDiscriminator('needs_clarification'),
         message:
           'Nexus needs one or two training details before saving this high-frequency strength plan.',
         specReadiness,
         clarificationIssues: specReadiness.issues,
         suggestedQuestions: specReadiness.issues.map((issue) => issue.question),
         fallbackTemplateUsed: usedFallbackTemplate,
+        decisionReasons: safeDecisionReasons(planData?.decisionReasons),
         goalMode: normalizedGoalMode,
         trainingPriority: normalizedTrainingPriority,
         raceDate: raceDateForLint,
@@ -850,6 +898,16 @@ export async function generateTrainingPlanForUser(
   if (trainingQuality) {
     planData = trainingQuality.planData;
   }
+  // F7 final invariant restoration: quality enrichment owns split structure
+  // and may move sessions after the main volume pass. Re-apply ONLY the hard
+  // one-session-per-day shape constraint here, before finalization/lint, so a
+  // late repair cannot recreate a doubled day for an athlete who chose
+  // `never`. The narrow pass never authors replacement workout content.
+  planData = enforceFinalTrainingPlanTwoADayCap(planData, {
+    startDate: startStr,
+    twoADayPreference: twoADayPreference ?? null,
+  });
+  volumeShortfalls = planData.volumeShortfalls ?? volumeShortfalls;
   const requestedWeeklyTargets = buildWeeklyTargets({
     sessionsPerWeek: normalizedSessionsPerWeek,
     runSessionsPerWeek: normalizedRunSessionsPerWeek ?? null,
@@ -858,6 +916,7 @@ export async function generateTrainingPlanForUser(
     strengthSessionsPerWeek: effectiveStrengthSessionsPerWeek,
   });
   const buildPreferencesJson = (weeklyTargets: TrainingPlanWeeklyTargets): string => JSON.stringify({
+    schedulingTimezone,
     preferredTime: normalizedPreferredTime,
     preferredCardioTime: normalizedPreferredCardioTime,
     preferredStrengthTime: normalizedPreferredStrengthTime,
@@ -901,6 +960,9 @@ export async function generateTrainingPlanForUser(
   });
 
   const persistenceInput = {
+    replaceExistingActivePlan: true,
+    expectedActivePlanIds,
+    generationIdempotencyLease,
     userId,
     tenantId,
     objective,
@@ -908,6 +970,7 @@ export async function generateTrainingPlanForUser(
     startDate: startStr,
     endDate: endStr,
     now,
+    schedulingTimezone,
     planData,
     preferencesJson: buildPreferencesJson(requestedWeeklyTargets),
     normalizedPreferredTime,
@@ -932,16 +995,76 @@ export async function generateTrainingPlanForUser(
   };
 
   let finalizedPersistenceInput = finalizeGeneratedTrainingPlanForPersistence(persistenceInput);
-  planData = finalizedPersistenceInput.planData;
+  // F10 final truth: equipment/quality passes and deterministic schedule
+  // finalization can add, remove, or defer sessions after the primary volume
+  // pass. Recalculate against that exact schedule while retaining the
+  // original enforced modality mix for partial-multisport target semantics.
+  planData = recalculateFinalTrainingPlanVolumeShortfalls(
+    finalizedPersistenceInput.planData,
+    volumeTargetSnapshot,
+  );
+  volumeShortfalls = planData.volumeShortfalls ?? [];
   const scheduledWeeklyTargets = buildScheduledWeeklyTargetsFromPlan(planData, requestedWeeklyTargets);
   finalizedPersistenceInput = {
     ...finalizedPersistenceInput,
+    planData,
     preferencesJson: buildPreferencesJson(scheduledWeeklyTargets),
   };
   const basePreflightLint = lintGeneratedTrainingPlanPreflight(finalizedPersistenceInput);
   const preflightLint = trainingQuality
     ? mergeTrainingQualityIntoPlanLint(basePreflightLint, trainingQuality.validation)
     : basePreflightLint;
+  const previewCandidateData = {
+    ...buildTrainingPlanGenerationResponseDiscriminator('preview'),
+    planName: typeof planData.planName === 'string' ? planData.planName : null,
+    sport: typeof planData.sport === 'string' ? planData.sport : null,
+    objective,
+    durationWeeks,
+    resolvedStartDate: startStr,
+    weeklyTargets: buildWeeklyTargets({
+      sessionsPerWeek: scheduledWeeklyTargets.sessionsPerWeek,
+      runSessionsPerWeek: scheduledWeeklyTargets.runSessionsPerWeek,
+      strengthSessionsPerWeek: scheduledWeeklyTargets.strengthSessionsPerWeek,
+      bikeSessionsPerWeek: scheduledWeeklyTargets.bikeSessionsPerWeek,
+      swimSessionsPerWeek: scheduledWeeklyTargets.swimSessionsPerWeek,
+    }),
+    totalSessions: countSchedulablePlanSessions(planData),
+    calendarSource: resolvedCalendarSource || null,
+    phaseRoadmap: buildPlanPhaseRoadmap(planData),
+    trainingLearningPath: extractTrainingLearningPath(planData),
+    volumeShortfalls,
+    planLint: preflightLint,
+    warnings: buildPlanWarnings({
+      calendarFetchDegraded,
+      calendarFetchError,
+      lintResult: preflightLint,
+      safetyOutput,
+    }),
+    blockers: preflightLint.blockers.map((blocker) => ({
+      code: blocker.ruleId,
+      message: blocker.message,
+    })),
+    calendarFetchDegraded,
+    ...(calendarFetchError ? { calendarFetchError } : {}),
+    fallbackTemplateUsed: usedFallbackTemplate,
+    decisionReasons: safeDecisionReasons(planData?.decisionReasons),
+    goalMode: normalizedGoalMode,
+    trainingPriority: normalizedTrainingPriority,
+    raceDate: raceDateForLint,
+    generatorPolicyVersion: TRAINING_PLAN_GENERATOR_POLICY_VERSION,
+    generationVersionPins,
+    trainingSafety: buildTrainingSafetyGenerationSummary(safetyOutput),
+  };
+  const previewCandidateFingerprint = fingerprintTrainingPlanPreviewCandidate({
+    planData,
+    preview: previewCandidateData,
+  });
+  if (expectedPreviewCandidateFingerprint
+    && expectedPreviewCandidateFingerprint !== previewCandidateFingerprint) {
+    // The rerun no longer matches the candidate the athlete accepted. This
+    // executes before plan persistence and before any provider/calendar work.
+    throw new TrainingPlanPreviewStaleError('candidate_changed');
+  }
   if (usedFallbackTemplate && !previewOnly) {
     incrementTrainingGenerationCounter('fallback_template_blocked_total');
     logger.warn(
@@ -957,7 +1080,7 @@ export async function generateTrainingPlanForUser(
     return {
       status: 'plan_quality_blocked',
       data: {
-        status: 'plan_quality_blocked',
+        ...buildTrainingPlanGenerationResponseDiscriminator('plan_quality_blocked'),
         message:
           'Nexus generated a safe fallback preview, but did not save it because the full coach engine was unavailable. Review the preview, retry generation, or adjust the inputs before saving a plan.',
         planLint: preflightLint,
@@ -978,6 +1101,7 @@ export async function generateTrainingPlanForUser(
         calendarFetchDegraded,
         ...(calendarFetchError ? { calendarFetchError } : {}),
         fallbackTemplateUsed: true,
+        decisionReasons: safeDecisionReasons(planData?.decisionReasons),
         goalMode: normalizedGoalMode,
         trainingPriority: normalizedTrainingPriority,
         raceDate: raceDateForLint,
@@ -988,46 +1112,20 @@ export async function generateTrainingPlanForUser(
     };
   }
   if (previewOnly) {
+    const previewToken = previewContextFingerprint
+      ? signTrainingPlanPreviewToken({
+          userId,
+          tenantId,
+          contextFingerprint: previewContextFingerprint,
+          candidateFingerprint: previewCandidateFingerprint,
+          now,
+        })
+      : undefined;
     return {
       status: 'preview',
       data: {
-        status: 'preview',
-        planName: typeof planData.planName === 'string' ? planData.planName : null,
-        sport: typeof planData.sport === 'string' ? planData.sport : null,
-        objective,
-        durationWeeks,
-        resolvedStartDate: startStr,
-        weeklyTargets: buildWeeklyTargets({
-          sessionsPerWeek: scheduledWeeklyTargets.sessionsPerWeek,
-          runSessionsPerWeek: scheduledWeeklyTargets.runSessionsPerWeek,
-          strengthSessionsPerWeek: scheduledWeeklyTargets.strengthSessionsPerWeek,
-          bikeSessionsPerWeek: scheduledWeeklyTargets.bikeSessionsPerWeek,
-          swimSessionsPerWeek: scheduledWeeklyTargets.swimSessionsPerWeek,
-        }),
-        totalSessions: countSchedulablePlanSessions(planData),
-        calendarSource: resolvedCalendarSource || null,
-        phaseRoadmap: buildPlanPhaseRoadmap(planData),
-        trainingLearningPath: extractTrainingLearningPath(planData),
-        planLint: preflightLint,
-        warnings: buildPlanWarnings({
-          calendarFetchDegraded,
-          calendarFetchError,
-          lintResult: preflightLint,
-          safetyOutput,
-        }),
-        blockers: preflightLint.blockers.map((blocker) => ({
-          code: blocker.ruleId,
-          message: blocker.message,
-        })),
-        calendarFetchDegraded,
-        ...(calendarFetchError ? { calendarFetchError } : {}),
-        fallbackTemplateUsed: usedFallbackTemplate,
-        goalMode: normalizedGoalMode,
-        trainingPriority: normalizedTrainingPriority,
-        raceDate: raceDateForLint,
-        generatorPolicyVersion: TRAINING_PLAN_GENERATOR_POLICY_VERSION,
-        generationVersionPins,
-        trainingSafety: buildTrainingSafetyGenerationSummary(safetyOutput),
+        ...previewCandidateData,
+        ...(previewToken ? { previewToken } : {}),
       },
     };
   }
@@ -1047,7 +1145,7 @@ export async function generateTrainingPlanForUser(
     return {
       status: 'plan_quality_blocked',
       data: {
-        status: 'plan_quality_blocked',
+        ...buildTrainingPlanGenerationResponseDiscriminator('plan_quality_blocked'),
         message:
           'Nexus blocked this plan before saving because it failed the Training quality gate. Review the coach warning, adjust the inputs, and generate again.',
         planLint: preflightLint,
@@ -1061,6 +1159,7 @@ export async function generateTrainingPlanForUser(
         calendarFetchDegraded,
         ...(calendarFetchError ? { calendarFetchError } : {}),
         fallbackTemplateUsed: usedFallbackTemplate,
+        decisionReasons: safeDecisionReasons(planData?.decisionReasons),
         goalMode: normalizedGoalMode,
         trainingPriority: normalizedTrainingPriority,
         raceDate: raceDateForLint,
@@ -1071,205 +1170,128 @@ export async function generateTrainingPlanForUser(
     };
   }
 
-  // Slice 4.D.2 — saga for pre-persist cancellation. The previous
-  // silent catch produced a double-plan state when the local
-  // hard-delete failed; the new saga inspects post-cancellation
-  // database state and aborts the persist when the old plan rows
-  // are still present. This now runs only after the strict quality
-  // gate has passed, so a blocked candidate cannot delete the current
-  // plan.
-  // F6 (Phase 1A-2) — create-new-before-delete-old.
-  //
-  // Previously the saga ran FIRST and hard-deleted the user's plan, then
-  // persistence ran as a separate, non-transactional step. Any failure in
-  // between (a throw mid-session-insert, SQLITE_BUSY, a process restart)
-  // left the user with no plan at all, because the only copy had already
-  // been deleted.
-  //
-  // The replacement is now persisted first as `pending_activation`. Every
-  // reader filters `status = 'active'`, so it is durable but invisible —
-  // the user still sees their existing plan throughout. Only once the
-  // replacement is on disk do we remove the old one, and only then do we
-  // flip the replacement to active.
-  //
-  // Failure before activation deletes the pending replacement and leaves
-  // the existing plan exactly as it was.
-  const persistedPlan = await persistGeneratedTrainingPlan({
-    ...finalizedPersistenceInput,
-    persistAsPending: true,
-  });
+  // F6: persistence owns one atomic replacement transaction. It writes the
+  // complete graph as pending, revalidates the F1 fence + predecessor CAS,
+  // retains prior plans as superseded, activates the candidate, and enqueues
+  // calendar work before commit. There is no cancellation/provider saga and
+  // therefore no observable zero-active-plan window.
+  const buildCreatedResult = (
+    persistedPlan: PersistGeneratedTrainingPlanResult,
+  ): Extract<TrainingPlanGenerationResult, { status: 'created' }> => {
+    // training-expert-coach-knowledge-engine (2026-05-03):
+    // Surface plan-linter findings + calendar-degraded warning on the
+    // response so iOS can render an honest "review your week before
+    // trusting it" banner. Both fields are best-effort signals; the iOS
+    // client decides UX. Treating these as silent passes was the historical
+    // foot-gun where a calendar outage produced sessions stacked on top of
+    // meetings with no warning.
+    // Lint result is optional defensively: mocked persistGeneratedTrainingPlan
+    // in legacy tests pre-dates the lint field; production always populates it.
+    const lintResult = persistedPlan.lint ?? {
+      status: 'pass' as const,
+      blockers: [],
+      warnings: [],
+      suggestedFixes: [],
+    };
+    // Phase 1B: provider calendar work is queued through the outbox and runs in
+    // the training_plan_calendar_sync worker after activation, so at response
+    // time nothing is created, linked, or failed yet. Reporting
+    // `totalSessions - 0` as failures here would fabricate failures; the honest
+    // contract is pending + not_synced. (`calendarSyncQueued` is read
+    // defensively because legacy tests mock persistGeneratedTrainingPlan
+    // without the Phase 1B fields.)
+    const calendarSyncPending = persistedPlan.calendarSyncQueued === true;
+    const planWarnings = buildPlanWarnings({
+      calendarFetchDegraded,
+      calendarFetchError,
+      lintResult,
+      safetyOutput,
+    });
 
-  const discardPendingReplacement = (reason: string): void => {
-    try {
-      trainingPlans.deletePlanHard(persistedPlan.planId, userId, tenantId);
-    } catch (err) {
-      // The pending row is invisible to every reader, so a failed cleanup
-      // degrades to a harmless orphan rather than a user-visible plan.
-      logger.error(
-        { err, userId, planId: persistedPlan.planId, reason },
-        'Could not discard pending replacement plan; row is invisible to readers and left for reconciliation',
-      );
-    }
-  };
-
-  const cancellationOutcome = await runPrePersistCancellationSaga(userId, tenantId);
-
-  switch (cancellationOutcome.kind) {
-    case 'external_partial':
-      logger.warn(
-        { userId, orphanedEventCount: cancellationOutcome.orphanedEventCount },
-        'Pre-persist cancellation: local delete OK but some external calendar deletes failed; reconciliation queued via ownership audit',
-      );
-      break;
-    case 'local_delete_failed':
-      logger.error(
-        {
-          userId,
-          reason: cancellationOutcome.reason,
-          activePlansRemaining: cancellationOutcome.activePlansRemaining,
-        },
-        'Pre-persist cancellation: LOCAL DELETE FAILED — discarding pending replacement so the existing plan stays intact',
-      );
-      discardPendingReplacement('local_delete_failed');
-      return {
-        status: 'cancellation_failed',
-        data: {
-          message:
-            'Could not finalize cancellation of the existing plan. The old plan is still active. Please retry in a moment.',
-          reason: cancellationOutcome.reason,
-          activePlansRemaining: cancellationOutcome.activePlansRemaining,
-          generationVersionPins,
-        },
-      };
-    case 'success':
-    case 'no_active_plan':
-      // Clean state — proceed.
-      break;
-  }
-
-  // The old plan is gone and the replacement is already durable; promote it.
-  // Status-qualified and tenant-scoped, so a concurrent generation that
-  // already activated this row changes nothing and we fail closed rather
-  // than reporting a plan the user cannot see.
-  if (!trainingPlans.activatePendingPlan(persistedPlan.planId, userId, tenantId)) {
-    logger.error(
-      { userId, planId: persistedPlan.planId },
-      'Pending replacement could not be activated after cancellation; discarding',
-    );
-    discardPendingReplacement('activation_failed');
     return {
-      status: 'cancellation_failed',
+      status: 'created',
+      planId: persistedPlan.planId,
+      eventsCreated: persistedPlan.eventsCreated,
+      totalSessions: persistedPlan.totalSessions,
+      durationWeeks,
       data: {
-        message:
-          'Could not finalize your new plan. No changes were saved. Please try again.',
-        reason: 'PENDING_ACTIVATION_FAILED',
-        activePlansRemaining: 0,
+        ...buildTrainingPlanGenerationResponseDiscriminator('created'),
+        planId: persistedPlan.planId,
+        planName: planData.planName,
+        sport: planData.sport,
+        objective,
+        durationWeeks,
+        resolvedStartDate: startStr,
+        calendarSource: resolvedCalendarSource || null,
+        phaseRoadmap: buildPlanPhaseRoadmap(planData),
+        trainingLearningPath: extractTrainingLearningPath(planData),
+        totalSessions: persistedPlan.totalSessions,
+        eventsCreated: persistedPlan.eventsCreated,
+        // Phase 1B contract change (deliberate): calendar sync is asynchronous,
+        // so creation responses always report `not_synced` + `pending` and zero
+        // counts — never fabricated failures. iOS reads these fields from the
+        // wrong nesting level today (F20) and always sees nil, so no released
+        // client regresses; the worker-persisted plan-level state is the
+        // durable source of truth for later reads.
+        calendarSync: {
+          provider: resolvedCalendarSource || null,
+          sessionsAttempted: persistedPlan.totalSessions,
+          eventsCreated: persistedPlan.eventsCreated,
+          sessionsLinked: persistedPlan.sessionsLinked,
+          sessionsFailed: 0,
+          unscheduled: 0,
+          status: 'not_synced',
+          pending: calendarSyncPending,
+        },
+        preferredCardioTime: normalizedPreferredCardioTime,
+        preferredStrengthTime: normalizedPreferredStrengthTime,
+        weeklyTargets: buildWeeklyTargets({
+          sessionsPerWeek: scheduledWeeklyTargets.sessionsPerWeek,
+          runSessionsPerWeek: scheduledWeeklyTargets.runSessionsPerWeek,
+          strengthSessionsPerWeek: scheduledWeeklyTargets.strengthSessionsPerWeek,
+          bikeSessionsPerWeek: scheduledWeeklyTargets.bikeSessionsPerWeek,
+          swimSessionsPerWeek: scheduledWeeklyTargets.swimSessionsPerWeek,
+        }),
+        weeks: persistedPlan.weekSummaries,
+        profileQuality: planData.profileQuality ?? null,
+        decisionReasons: Array.isArray(planData.decisionReasons) ? planData.decisionReasons : [],
+        fallbackTemplateUsed: usedFallbackTemplate,
+        goalMode: normalizedGoalMode,
+        trainingPriority: normalizedTrainingPriority,
+        raceDate: raceDateForLint,
+        generatorPolicyVersion: TRAINING_PLAN_GENERATOR_POLICY_VERSION,
         generationVersionPins,
+        trainingSafety: buildTrainingSafetyGenerationSummary(safetyOutput),
+        // F10 (Phase 3, additive): every gap between the requested and the
+        // placeable weekly volume, with a machine-readable reason — the fill
+        // loops used to under-deliver silently.
+        volumeShortfalls,
+        // training-expert-coach-knowledge-engine: explicit calendar
+        // health flag + lint verdict surface on the response payload.
+        calendarFetchDegraded,
+        ...(calendarFetchError ? { calendarFetchError } : {}),
+        planLint: lintResult,
+        warnings: planWarnings,
+        message: buildTrainingPlanCreatedMessage({
+          totalSessions: persistedPlan.totalSessions,
+          durationWeeks,
+          calendarSyncPending,
+          calendarSource: resolvedCalendarSource || null,
+        }),
       },
     };
-  }
-
-  // training-expert-coach-knowledge-engine (2026-05-03):
-  // Surface plan-linter findings + calendar-degraded warning on the
-  // response so iOS can render an honest "review your week before
-  // trusting it" banner. Both fields are best-effort signals; the iOS
-  // client decides UX. Treating these as silent passes was the historical
-  // foot-gun where a calendar outage produced sessions stacked on top of
-  // meetings with no warning.
-  // Lint result is optional defensively: mocked persistGeneratedTrainingPlan
-  // in legacy tests pre-dates the lint field; production always populates it.
-  const lintResult = persistedPlan.lint ?? {
-    status: 'pass' as const,
-    blockers: [],
-    warnings: [],
-    suggestedFixes: [],
   };
-  // Phase 1B: provider calendar work is queued through the outbox and runs in
-  // the training_plan_calendar_sync worker after activation, so at response
-  // time nothing is created, linked, or failed yet. Reporting
-  // `totalSessions - 0` as failures here would fabricate failures; the honest
-  // contract is pending + not_synced. (`calendarSyncQueued` is read
-  // defensively because legacy tests mock persistGeneratedTrainingPlan
-  // without the Phase 1B fields.)
-  const calendarSyncPending = persistedPlan.calendarSyncQueued === true;
-  const planWarnings = buildPlanWarnings({
-    calendarFetchDegraded,
-    calendarFetchError,
-    lintResult,
-    safetyOutput,
+
+  const persistedPlan = await persistGeneratedTrainingPlan({
+    ...finalizedPersistenceInput,
+    ...(generationIdempotencyLease
+      ? {
+          buildCommittedIdempotencyResponse: (result: PersistGeneratedTrainingPlanResult) =>
+            buildCreatedResult(result).data,
+        }
+      : {}),
   });
-
-  return {
-    status: 'created',
-    planId: persistedPlan.planId,
-    eventsCreated: persistedPlan.eventsCreated,
-    totalSessions: persistedPlan.totalSessions,
-    durationWeeks,
-    data: {
-      planId: persistedPlan.planId,
-      planName: planData.planName,
-      sport: planData.sport,
-      objective,
-      durationWeeks,
-      resolvedStartDate: startStr,
-      calendarSource: resolvedCalendarSource || null,
-      phaseRoadmap: buildPlanPhaseRoadmap(planData),
-      trainingLearningPath: extractTrainingLearningPath(planData),
-      totalSessions: persistedPlan.totalSessions,
-      eventsCreated: persistedPlan.eventsCreated,
-      // Phase 1B contract change (deliberate): calendar sync is asynchronous,
-      // so creation responses always report `not_synced` + `pending` and zero
-      // counts — never fabricated failures. iOS reads these fields from the
-      // wrong nesting level today (F20) and always sees nil, so no released
-      // client regresses; the worker-persisted plan-level state is the
-      // durable source of truth for later reads.
-      calendarSync: {
-        provider: resolvedCalendarSource || null,
-        sessionsAttempted: persistedPlan.totalSessions,
-        eventsCreated: persistedPlan.eventsCreated,
-        sessionsLinked: persistedPlan.sessionsLinked,
-        sessionsFailed: 0,
-        unscheduled: 0,
-        status: 'not_synced',
-        pending: calendarSyncPending,
-      },
-      preferredCardioTime: normalizedPreferredCardioTime,
-      preferredStrengthTime: normalizedPreferredStrengthTime,
-      weeklyTargets: buildWeeklyTargets({
-        sessionsPerWeek: scheduledWeeklyTargets.sessionsPerWeek,
-        runSessionsPerWeek: scheduledWeeklyTargets.runSessionsPerWeek,
-        strengthSessionsPerWeek: scheduledWeeklyTargets.strengthSessionsPerWeek,
-        bikeSessionsPerWeek: scheduledWeeklyTargets.bikeSessionsPerWeek,
-        swimSessionsPerWeek: scheduledWeeklyTargets.swimSessionsPerWeek,
-      }),
-      weeks: persistedPlan.weekSummaries,
-      profileQuality: planData.profileQuality ?? null,
-      decisionReasons: Array.isArray(planData.decisionReasons) ? planData.decisionReasons : [],
-      fallbackTemplateUsed: usedFallbackTemplate,
-      goalMode: normalizedGoalMode,
-      trainingPriority: normalizedTrainingPriority,
-      raceDate: raceDateForLint,
-      generatorPolicyVersion: TRAINING_PLAN_GENERATOR_POLICY_VERSION,
-      generationVersionPins,
-      trainingSafety: buildTrainingSafetyGenerationSummary(safetyOutput),
-      // F10 (Phase 3, additive): every gap between the requested and the
-      // placeable weekly volume, with a machine-readable reason — the fill
-      // loops used to under-deliver silently.
-      volumeShortfalls,
-      // training-expert-coach-knowledge-engine: explicit calendar
-      // health flag + lint verdict surface on the response payload.
-      calendarFetchDegraded,
-      ...(calendarFetchError ? { calendarFetchError } : {}),
-      planLint: lintResult,
-      warnings: planWarnings,
-      message: buildTrainingPlanCreatedMessage({
-        totalSessions: persistedPlan.totalSessions,
-        durationWeeks,
-        calendarSyncPending,
-        calendarSource: resolvedCalendarSource || null,
-      }),
-    },
-  };
+  return buildCreatedResult(persistedPlan);
 }
 
 function buildTrainingPlanCreatedMessage(input: {
@@ -1308,7 +1330,6 @@ function buildScheduledWeeklyTargetsFromPlan(
   fallback: TrainingPlanWeeklyTargets,
 ): TrainingPlanWeeklyTargets {
   const weeks = Array.isArray(planData?.weeks) ? planData.weeks : [];
-  if (weeks.length === 0) return buildWeeklyTargets(fallback);
 
   const maxCounts = {
     trainingDays: 0,
@@ -1344,7 +1365,9 @@ function buildScheduledWeeklyTargetsFromPlan(
   }
 
   return {
-    sessionsPerWeek: sawAnyPlanSession ? maxCounts.trainingDays : fallback.sessionsPerWeek,
+    // Athlete-facing response truth is realized schedule capacity. An empty
+    // engine/final plan is zero, not permission to echo the original ask.
+    sessionsPerWeek: sawAnyPlanSession ? maxCounts.trainingDays : 0,
     runSessionsPerWeek: nullableScheduledTarget(maxCounts.running, fallback.runSessionsPerWeek),
     bikeSessionsPerWeek: nullableScheduledTarget(maxCounts.cycling, fallback.bikeSessionsPerWeek),
     swimSessionsPerWeek: nullableScheduledTarget(maxCounts.swimming, fallback.swimSessionsPerWeek),
@@ -1407,8 +1430,9 @@ function scheduledWeeklyTargetModality(
 function buildKernelCapacityWindows(input: {
   startDate: string;
   busyWindows: BusyWindow[];
+  schedulingTimezone?: string | null;
 }): CapacityWindow[] {
-  const zone = config.app.timezone || 'Europe/Lisbon';
+  const zone = resolveTrainingTimezone(input.schedulingTimezone);
   const weekStart = DateTime.fromISO(input.startDate, { zone }).startOf('day');
   if (!weekStart.isValid) return [];
   const windows: CapacityWindow[] = [];
@@ -1553,6 +1577,37 @@ function applyEquipmentAuthorityDecisionReasons(
       ...safeDecisionReasons(planData?.decisionReasons),
       ...equipmentReasons,
     ]),
+  };
+}
+
+function buildRaceDateGoalModeOverrideReason(input: {
+  requestedGoalMode: TrainingGoalMode | null;
+  effectiveGoalMode: TrainingGoalMode | null;
+  raceDate: string | null;
+}): TrainingDecisionReason | null {
+  if (
+    !input.raceDate
+    || input.effectiveGoalMode !== 'event_based'
+    || input.requestedGoalMode === 'event_based'
+  ) {
+    return null;
+  }
+  const requestedLabel = input.requestedGoalMode ?? 'unspecified';
+  return {
+    code: 'race_date_implies_event_based',
+    text:
+      `I treated this as an event-based plan because a race date was supplied `
+      + `(requested mode: ${requestedLabel}).`,
+    severity: 'notice',
+    affectedEntity: { type: 'week' },
+    sourceConstraint: {
+      type: 'time',
+      label: 'race_date',
+    },
+    before: { goalMode: input.requestedGoalMode },
+    after: { goalMode: 'event_based' },
+    preservedIntent: 'build_toward_race_date',
+    evidence: ['valid_race_date_present'],
   };
 }
 
@@ -1904,9 +1959,10 @@ function buildGeneratedEnduranceSchedule(
   planData: Record<string, any>,
   startDate: string,
   now: Date,
+  schedulingTimezone?: string | null,
 ): EnduranceKeyDay[] {
   const schedule: EnduranceKeyDay[] = [];
-  const zone = config.app.timezone || 'Europe/Lisbon';
+  const zone = resolveTrainingTimezone(schedulingTimezone);
   for (const week of Array.isArray(planData.weeks) ? planData.weeks : []) {
     const weekNumber = typeof week?.weekNumber === 'number' ? week.weekNumber : 1;
     for (const session of Array.isArray(week?.sessions) ? week.sessions : []) {
@@ -1919,6 +1975,7 @@ function buildGeneratedEnduranceSchedule(
         dayIndex,
         planStartDate: startDate,
         now,
+        schedulingTimezone: zone,
       });
       if (slotDate.kind !== 'usable') continue;
       const date = DateTime.fromJSDate(slotDate.sessionDate, { zone }).toISODate();
@@ -2132,8 +2189,12 @@ function resolvePlannerNow(raw: unknown): Date {
   return parsed && Number.isFinite(parsed.getTime()) ? parsed : new Date();
 }
 
-export function resolveTrainingPlanStartDate(now: Date, startPolicy: TrainingPlanStartPolicy): string {
-  const zone = config.app.timezone || 'Europe/Lisbon';
+export function resolveTrainingPlanStartDate(
+  now: Date,
+  startPolicy: TrainingPlanStartPolicy,
+  schedulingTimezone?: string | null,
+): string {
+  const zone = resolveTrainingTimezone(schedulingTimezone);
   const today = DateTime.fromJSDate(now, { zone }).startOf('day');
   if (!today.isValid) return now.toISOString().slice(0, 10);
 
@@ -2162,10 +2223,11 @@ export function clampTrainingPlanDurationWeeksToRaceDate(params: {
   requestedDurationWeeks: number;
   startDateIso: string;
   raceDateIso: string | null;
+  schedulingTimezone?: string | null;
 }): number {
   const { requestedDurationWeeks, startDateIso, raceDateIso } = params;
   if (!raceDateIso) return requestedDurationWeeks;
-  const zone = config.app.timezone || 'Europe/Lisbon';
+  const zone = resolveTrainingTimezone(params.schedulingTimezone);
   const start = DateTime.fromISO(startDateIso, { zone }).startOf('day');
   const race = DateTime.fromISO(raceDateIso, { zone }).startOf('day');
   if (!start.isValid || !race.isValid || race < start) return requestedDurationWeeks;
@@ -2227,4 +2289,16 @@ function resolveProfileRaceDate(profile: Record<string, any> | null | undefined)
     ?? normalizeIsoDate(profile.targetRaceDate)
     ?? normalizeIsoDate(profile.race_date)
     ?? normalizeIsoDate(profile.raceDate);
+}
+
+function stripProfileRaceDates(
+  profile: Record<string, any> | null | undefined,
+): Record<string, any> | null {
+  if (!profile) return null;
+  const sanitized = { ...profile };
+  delete sanitized.target_race_date;
+  delete sanitized.targetRaceDate;
+  delete sanitized.race_date;
+  delete sanitized.raceDate;
+  return sanitized;
 }

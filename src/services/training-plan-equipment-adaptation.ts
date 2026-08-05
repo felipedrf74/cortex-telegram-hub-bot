@@ -43,13 +43,28 @@ export interface TrainingEquipmentAdaptation {
 
 type ExerciseLike = {
   exerciseId?: string;
+  exercise_id?: string;
   name?: string;
+  equipment?: string[];
   sets?: number;
   reps?: number | string;
   rpe?: string;
   restSec?: number;
   tempo?: string;
 };
+
+function withAdaptedExerciseName(exercise: ExerciseLike, name: string): ExerciseLike {
+  const previousName = String(exercise.name || '').trim();
+  const adapted: ExerciseLike = { ...exercise, name };
+  if (name !== previousName) {
+    // A replacement name represents a different reviewed movement. Keeping
+    // the source id would create an id/name contradiction in off and shadow
+    // modes; active mode will materialize the replacement's canonical id.
+    delete adapted.exerciseId;
+    delete adapted.exercise_id;
+  }
+  return adapted;
+}
 
 const BODYWEIGHT_FULL_BODY_TEMPLATE: ExerciseLike[] = [
   { name: 'Tempo Split Squat', sets: 3, reps: 10, rpe: '7', restSec: 60 },
@@ -389,37 +404,28 @@ function adaptExercise(exercise: ExerciseLike, adaptation: TrainingEquipmentAdap
         'No reviewed movement-role-preserving resistance-band substitution exists for this exercise.',
       );
     }
-    return { ...exercise, name: replacement };
+    return withAdaptedExerciseName(exercise, replacement);
   }
 
   for (const rule of SUBSTITUTION_RULES) {
     if (rule.match.test(name)) {
       const replacement = rule.replacements[equipmentProfile];
       if (replacement) {
-        return { ...exercise, name: replacement };
+        return withAdaptedExerciseName(exercise, replacement);
       }
     }
   }
 
   if (equipmentProfile === 'bodyweight') {
-    return {
-      ...exercise,
-      name: bodyweightFallbackName(name),
-    };
+    return withAdaptedExerciseName(exercise, bodyweightFallbackName(name));
   }
 
   if (equipmentProfile === 'bands') {
-    return {
-      ...exercise,
-      name: legacyBandsFallbackName(name),
-    };
+    return withAdaptedExerciseName(exercise, legacyBandsFallbackName(name));
   }
 
   if (equipmentProfile === 'home_basic') {
-    return {
-      ...exercise,
-      name: homeBasicFallbackName(name),
-    };
+    return withAdaptedExerciseName(exercise, homeBasicFallbackName(name));
   }
 
   return exercise;
@@ -617,7 +623,10 @@ function materializeEquipmentExercise(
     const resolution = resolveTrainingExerciseIdentity({ name });
     if (resolution.kind === 'canonical') canonicalId = resolution.canonicalId;
   }
-  return materializeCanonicalTrainingExercise(exercise as Record<string, unknown>, {
+  const exerciseWithEquipmentEvidence = adaptation.equipmentProfile === 'bodyweight'
+    ? { ...exercise, equipment: ['bodyweight'] }
+    : exercise;
+  return materializeCanonicalTrainingExercise(exerciseWithEquipmentEvidence as Record<string, unknown>, {
     canonicalId,
     env: { TRAINING_EXERCISE_IDENTITY_V1_MODE: exerciseIdentityMode },
     source: 'training-plan-equipment-adaptation',

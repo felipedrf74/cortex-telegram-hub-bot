@@ -167,25 +167,29 @@ describe('typed slot adoption — training_plan_create (Phase 12 batch 63)', () 
     expect(getSlotExtractors(entry)[0].name).toBe('training_plan_slots');
   });
 
-  it('extracts sport, duration, and weekly volume from a natural-language phrasing', () => {
+  it('extracts the REST-compatible creation core from natural language', () => {
     const entry = findChatActionDefinition('training', 'training_plan_create')!;
     const result = getSlotExtractors(entry)[0].extract(
-      'Build me a running plan for 12 weeks with 30km per week',
+      'Build me a 10K plan for 12 weeks starting Monday with 4 sessions per week',
       { timezone: 'Europe/Madrid', nowIso: '2026-05-16T12:00:00+02:00' },
     );
-    expect(result.slots.sport).toBe('running');
-    expect(result.slots.durationWeeks).toBe(12);
-    expect(result.slots.weeklyVolumeKm).toBe(30);
+    expect(result.slots).toMatchObject({
+      objective: '10K',
+      durationWeeks: 12,
+      sessionsPerWeek: 4,
+      startPolicy: 'next_full_week',
+    });
+    expect(result.slots).not.toHaveProperty('weeklyVolumeKm');
   });
 
   it('validator surfaces every missing required field', () => {
     const entry = findChatActionDefinition('training', 'training_plan_create')!;
     const validators = getSlotValidators(entry);
     expect(validators[0].name).toBe('required_fields');
-    const result = runSlotValidators(entry, { sport: 'running' });
+    const result = runSlotValidators(entry, { objective: '10K' });
     expect(result.ok).toBe(false);
     expect(result.missing).toEqual(
-      expect.arrayContaining(['goal', 'durationWeeks', 'startDate', 'weeklyVolumeKm']),
+      expect.arrayContaining(['durationWeeks', 'sessionsPerWeek', 'startPolicy']),
     );
   });
 });

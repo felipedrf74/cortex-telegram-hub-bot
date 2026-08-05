@@ -3,6 +3,7 @@
 import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
+import { getDb } from '../../services/database';
 import { runOutboxTransaction } from '../../services/event-outbox';
 import { consumeResourceBudget } from '../../services/resource-budgets';
 import { normalizeLangHeader } from '../../services/secretary-fastpath';
@@ -11,6 +12,7 @@ import type { Lang } from '../../utils/i18n';
 import { getCached, setCache } from '../../services/cache-store';
 import { invalidateTrainingDerivedCaches } from '../../services/cache-coherence-registry';
 import { markKeepOriginalForToday } from '../../services/training-keep-original';
+import { recordTrainingSummaryDeprecationHit } from '../../services/training-route-deprecation-telemetry';
 import * as trainingPlans from '../../services/training-plans';
 import { sendAiBudgetError, sendSuccess, sendError, sendInternalError } from '../response-helpers';
 import { applyCoachRecommendations, generateCoachBriefing } from '../../services/garmin-coach';
@@ -25,6 +27,10 @@ import {
 } from './training-calendar-lookup';
 import { mountCoachV2Routes } from './training-coach-v2';
 import { computeV2IdempotencyHashHex } from './training-completion-v2-hash';
+import {
+  normalizeTrainingCompletionFeedback,
+  TrainingCompletionContractError,
+} from '../../services/training-completion-contract';
 import {
   COACH_BRIEFING_TTL,
   getCoachBriefingSnapshot,
@@ -56,6 +62,10 @@ import {
   isPaidAiCostControlsEnforcementEnabled,
   type UserEntitlement,
 } from '../../services/entitlement';
+import {
+  trainingOperationLockPublicError,
+  withTrainingCalendarOperationLock,
+} from '../../services/training-operation-locks';
 
 export { looksLikeTrainingCalendarEvent } from './training-calendar-utils';
 
@@ -261,6 +271,71 @@ async function buildDeterministicCoachFallback(
   };
 }
 
+function parsePersistedStringArray(value: unknown): string[] {
+  if (typeof value !== 'string' || value.length === 0) return [];
+  try {
+    const parsed = JSON.parse(value);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((item): item is string => typeof item === 'string');
+  } catch {
+    return [];
+  }
+}
+
+function persistedBoolean(value: unknown): boolean {
+  return value === true || value === 1;
+}
+
+/**
+ * Additive server readback for the released iOS feedback sheet. Build it
+ * from the committed row, rather than echoing request input, so aliases and
+ * defaults reflect the canonical durable state.
+ */
+function serializeTrainingCompletionFeedback(
+  row: Partial<ReturnType<typeof trainingPlans.logCompletion>> | null,
+): Record<string, unknown> | null {
+  if (!row) return null;
+  const completionState = row.completion_state ?? 'completed';
+  const actualDurationMinutes = typeof row.completed_duration_sec === 'number'
+    ? row.completed_duration_sec / 60
+    : typeof row.duration_minutes === 'number'
+      ? row.duration_minutes
+      : null;
+
+  return {
+    sessionId: row.session_id == null ? null : String(row.session_id),
+    completionState,
+    status: completionState,
+    actualDurationMinutes,
+    rpe: row.rpe_overall ?? null,
+    energyLevel: row.energy_level ?? null,
+    sorenessLevel: row.soreness_level ?? null,
+    notes: row.notes ?? null,
+    readinessLevel: row.readiness_level ?? null,
+    difficulty: row.difficulty_feedback ?? null,
+    difficultyFeedback: row.difficulty_feedback ?? null,
+    durationFeedback: row.duration_feedback ?? null,
+    discomfortFlag: persistedBoolean(row.discomfort_flag),
+    discomfortFlags: parsePersistedStringArray(row.discomfort_flags_json),
+    discomfortLocations: parsePersistedStringArray(row.discomfort_locations_json),
+    discomfortDetails: row.discomfort_details ?? null,
+    substitutionsUsed: parsePersistedStringArray(row.substitutions_used_json),
+    skippedReason: row.missed_reason ?? null,
+    feltTooHard: persistedBoolean(row.felt_too_hard),
+    feltTooEasy: persistedBoolean(row.felt_too_easy),
+    feltTooLong: persistedBoolean(row.felt_too_long),
+    feltTooShort: persistedBoolean(row.felt_too_short),
+    modality: row.modality ?? null,
+    sessionRole: row.session_role ?? null,
+    completedDistanceMeters: row.completed_distance_meters ?? null,
+    rir: row.rir ?? null,
+    painScore: row.pain_score ?? null,
+    painLocation: row.pain_location ?? null,
+    technicalSuccessScore: row.technical_success_score ?? null,
+    externalTrainingDeclared: persistedBoolean(row.external_training_declared),
+  };
+}
+
 export function trainingRoutes(): Router {
   const router = Router();
 
@@ -321,6 +396,20 @@ export function trainingRoutes(): Router {
   router.get('/summary', async (req, res: Response) => {
     const { userId, tenantId } = req as AuthenticatedRequest;
     const cacheKey = `training-summary:${tenantId}:${userId}`;
+
+    // F37: keep the compatibility endpoint operational while measuring its
+    // deprecation window. The date is an earliest review point, not removal
+    // authority: two supported client releases and operator telemetry review
+    // are still required before this route can be deleted.
+    res.setHeader('Deprecation', 'true');
+    res.setHeader('Sunset', 'Fri, 02 Oct 2026 00:00:00 GMT');
+    res.setHeader('Link', '</api/v1/training/home>; rel="successor-version"');
+    try {
+      recordTrainingSummaryDeprecationHit(getDb());
+    } catch (err) {
+      // Telemetry must never make the compatibility read unavailable.
+      logger.warn({ err }, 'Training summary deprecation telemetry recording failed');
+    }
 
     const cached = getCached(cacheKey);
     if (cached) {
@@ -409,6 +498,11 @@ export function trainingRoutes(): Router {
       sendError(res, 'TENANT_SCOPE_REQUIRED', 'Coach briefing requires a validated tenant scope.', 400);
       return;
     }
+    // Eligibility is request state, while the briefing cache can outlive an
+    // entitlement or active-plan change. Revalidate before reading any cache
+    // or restored report so a stale paid snapshot cannot bypass a downgrade.
+    if (!requireCoachBriefingEligibility(req as AuthenticatedRequest, res)) return;
+
     const forceRefresh = req.query.refresh === 'true';
     const cacheOnly = req.query.cacheOnly === 'true';
     const cacheKey = `coach-briefing:${dataUserId}`;
@@ -443,8 +537,6 @@ export function trainingRoutes(): Router {
       });
       return;
     }
-
-    if (!requireCoachBriefingEligibility(req as AuthenticatedRequest, res)) return;
 
     try {
       const briefing = await generateCoachBriefing(dataUserId, {
@@ -513,6 +605,10 @@ export function trainingRoutes(): Router {
       return;
     }
     const dataUserId = tenantId;
+    // The report endpoint shares the briefing cache/restore path, so it must
+    // enforce the same current-request eligibility before either read.
+    if (!requireCoachBriefingEligibility(req as AuthenticatedRequest, res)) return;
+
     const forceRefresh = req.body?.refresh === true;
     const cacheKey = `coach-briefing:${dataUserId}`;
     const language = resolveTrainingLanguage(req as AuthenticatedRequest, userId);
@@ -532,8 +628,6 @@ export function trainingRoutes(): Router {
         return;
       }
     }
-
-    if (!requireCoachBriefingEligibility(req as AuthenticatedRequest, res)) return;
 
     try {
       const briefing = await generateCoachBriefing(dataUserId, {
@@ -582,6 +676,17 @@ export function trainingRoutes(): Router {
    */
   router.post('/complete', async (req, res: Response) => {
     const { userId, tenantId } = req as AuthenticatedRequest;
+    const requestBody = (req.body ?? {}) as Record<string, unknown>;
+    let completionFeedback: ReturnType<typeof normalizeTrainingCompletionFeedback>;
+    try {
+      completionFeedback = normalizeTrainingCompletionFeedback(requestBody, 'completed');
+    } catch (err) {
+      if (err instanceof TrainingCompletionContractError) {
+        sendError(res, err.code, err.message, err.statusCode);
+        return;
+      }
+      throw err;
+    }
     // Codex R2 P2 fix — accept the A0c CompletionFeedbackV2 fields.
     // Legacy callers that only send sessionId/notes/rpe continue to
     // work unchanged; the new fields are all optional.
@@ -604,7 +709,7 @@ export function trainingRoutes(): Router {
       energyLevel,
       sorenessLevel,
       fatigueLevel,
-    } = req.body as Record<string, unknown>;
+    } = requestBody;
     // R4 P2 fix — stricter V2 field validation. Codex caught that
     // R3's `typeof v === 'number'` accepted NaN and Infinity, and
     // the event hash only fingerprinted field presence (so
@@ -612,7 +717,7 @@ export function trainingRoutes(): Router {
     // collided to the same outbox key). This pass requires
     // Number.isFinite + per-field ranges and switches the event
     // hash to a canonical *value* hash.
-    const v2TypeErrors: string[] = [];
+    const completionInputErrors: string[] = [];
     const checkNumberInRange = (
       name: string,
       v: unknown,
@@ -621,21 +726,21 @@ export function trainingRoutes(): Router {
     ): void => {
       if (v === undefined || v === null) return;
       if (typeof v !== 'number' || !Number.isFinite(v)) {
-        v2TypeErrors.push(`${name} must be a finite number`);
+        completionInputErrors.push(`${name} must be a finite number`);
         return;
       }
       if (v < min || v > max) {
-        v2TypeErrors.push(`${name} must be between ${min} and ${max} (got ${v})`);
+        completionInputErrors.push(`${name} must be between ${min} and ${max} (got ${v})`);
       }
     };
     const checkString = (name: string, v: unknown, maxLen = 1024): void => {
       if (v === undefined || v === null) return;
       if (typeof v !== 'string') {
-        v2TypeErrors.push(`${name} must be a string`);
+        completionInputErrors.push(`${name} must be a string`);
         return;
       }
       if (v.length > maxLen) {
-        v2TypeErrors.push(`${name} must be ≤ ${maxLen} characters`);
+        completionInputErrors.push(`${name} must be ≤ ${maxLen} characters`);
       }
     };
     // R7 P2/P3 fix — Codex caught that null was silently treated as
@@ -648,11 +753,15 @@ export function trainingRoutes(): Router {
     const checkBoolean = (name: string, v: unknown): void => {
       if (v === undefined) return;
       if (typeof v !== 'boolean') {
-        v2TypeErrors.push(`${name} must be a boolean`);
+        completionInputErrors.push(`${name} must be a boolean`);
       }
     };
     // Per-field ranges per A0c semantics (RPE/RIR scales, plausible
     // distances/durations). Out-of-range payloads are bugs, not data.
+    if (rpe === null) completionInputErrors.push('rpe must be a finite number');
+    else checkNumberInRange('rpe', rpe, 0, 10);
+    if (notes === null) completionInputErrors.push('notes must be a string');
+    else checkString('notes', notes, 1024);
     checkNumberInRange('rir', rir, 0, 10);
     checkNumberInRange('painScore', painScore, 0, 10);
     checkString('painLocation', painLocation, 256);
@@ -668,8 +777,8 @@ export function trainingRoutes(): Router {
     checkNumberInRange('energyLevel', energyLevel, 0, 10);
     checkNumberInRange('sorenessLevel', sorenessLevel, 0, 10);
     checkNumberInRange('fatigueLevel', fatigueLevel, 0, 10);
-    if (v2TypeErrors.length > 0) {
-      sendError(res, 'BAD_INPUT', `Invalid V2 completion fields: ${v2TypeErrors.join('; ')}`, 400);
+    if (completionInputErrors.length > 0) {
+      sendError(res, 'BAD_INPUT', `Invalid completion feedback: ${completionInputErrors.join('; ')}`, 400);
       return;
     }
 
@@ -718,7 +827,9 @@ export function trainingRoutes(): Router {
 
       if (resolved.kind === 'no_active_session') {
         sendSuccess(res, {
-          completed: true,
+          completed: completionFeedback.completionState === 'completed',
+          skipped: completionFeedback.completionState === 'skipped',
+          completionState: completionFeedback.completionState,
           weeklyAdherence: null,
           noActiveSession: true,
         });
@@ -752,12 +863,13 @@ export function trainingRoutes(): Router {
         normalizedCompletedDurationSec != null || completedDistanceMeters != null ||
         completedSetsJson != null || completedRepsJson != null ||
         completedLoadJson != null ||
-        normalizedEnergyLevel != null || sorenessLevel != null || fatigueLevel != null
+        normalizedEnergyLevel != null || sorenessLevel != null || fatigueLevel != null ||
+        completionFeedback.stateWasExplicit || completionFeedback.hasRichFeedback
       );
 
       const writeCompletion = () => {
         if (notes || rpe != null || hasV2Field) {
-          trainingPlans.logCompletion({
+          return trainingPlans.logCompletion({
             session_id: rowId,
             plan_id: session.plan_id,
             rpe_overall: typeof rpe === 'number' ? rpe : undefined,
@@ -766,7 +878,7 @@ export function trainingRoutes(): Router {
             pain_score: typeof painScore === 'number' ? painScore : undefined,
             pain_location: typeof painLocation === 'string' ? painLocation : undefined,
             technical_success_score: typeof technicalSuccessScore === 'number' ? technicalSuccessScore : undefined,
-            missed_reason: typeof missedReason === 'string' ? missedReason : undefined,
+            missed_reason: completionFeedback.missedReason ?? undefined,
             external_training_declared: externalTrainingDeclared === true,
             energy_level: typeof normalizedEnergyLevel === 'number' ? normalizedEnergyLevel : undefined,
             soreness_level: typeof sorenessLevel === 'number' ? sorenessLevel : undefined,
@@ -775,13 +887,32 @@ export function trainingRoutes(): Router {
             completed_sets_json: typeof completedSetsJson === 'string' ? completedSetsJson : undefined,
             completed_reps_json: typeof completedRepsJson === 'string' ? completedRepsJson : undefined,
             completed_load_json: typeof completedLoadJson === 'string' ? completedLoadJson : undefined,
+            completion_state: completionFeedback.completionState,
+            readiness_level: completionFeedback.readinessLevel ?? undefined,
+            difficulty_feedback: completionFeedback.difficultyFeedback ?? undefined,
+            duration_feedback: completionFeedback.durationFeedback ?? undefined,
+            discomfort_flag: completionFeedback.discomfortFlag,
+            discomfort_flags_json: JSON.stringify(completionFeedback.discomfortFlags),
+            discomfort_locations_json: JSON.stringify(completionFeedback.discomfortLocations),
+            discomfort_details: completionFeedback.discomfortDetails ?? undefined,
+            substitutions_used_json: JSON.stringify(completionFeedback.substitutionsUsed),
+            felt_too_hard: completionFeedback.feltTooHard,
+            felt_too_easy: completionFeedback.feltTooEasy,
+            felt_too_long: completionFeedback.feltTooLong,
+            felt_too_short: completionFeedback.feltTooShort,
+            modality: completionFeedback.modality ?? undefined,
+            session_role: completionFeedback.sessionRole ?? undefined,
           });
-        } else {
-          trainingPlans.markSessionCompleted(rowId);
         }
+        // Preserve the released lightweight call: only an absent state and no
+        // feedback skips creation of a completion detail row.
+        if (!trainingPlans.markSessionCompleted(rowId)) {
+          throw new Error(`TRAINING_COMPLETION_SESSION_STATE_WRITE_FAILED:${rowId}`);
+        }
+        return null;
       };
-      runOutboxTransaction((emitDomainEvent) => {
-        writeCompletion();
+      const persistedCompletion = runOutboxTransaction((emitDomainEvent) => {
+        const completionRow = writeCompletion();
         // R3 P2 fix — include V2 fields in the dedup hash so two
         // distinct V2 payloads don't collapse onto the same event.
         // R4 P2 fix — the prior version only hashed *presence flags*
@@ -797,7 +928,7 @@ export function trainingRoutes(): Router {
           hasPainScore: painScore != null,
           hasPainLocation: typeof painLocation === 'string' && painLocation.length > 0,
           hasTechnicalSuccessScore: technicalSuccessScore != null,
-          hasMissedReason: typeof missedReason === 'string' && missedReason.length > 0,
+          hasMissedReason: completionFeedback.missedReason !== null,
           externalTrainingDeclared: externalTrainingDeclared === true,
           hasCompletedDurationSec: normalizedCompletedDurationSec != null,
           hasCompletedDistanceMeters: completedDistanceMeters != null,
@@ -811,11 +942,13 @@ export function trainingRoutes(): Router {
         // sibling module so it can be unit-tested in isolation (see
         // R4 P2 fix in training-completion-v2-hash.ts).
         const v2HashHex = computeV2IdempotencyHashHex({
+          notes: typeof notes === 'string' ? notes : null,
+          rpe: typeof rpe === 'number' ? rpe : null,
           rir: typeof rir === 'number' ? rir : null,
           painScore: typeof painScore === 'number' ? painScore : null,
           painLocation: typeof painLocation === 'string' ? painLocation : null,
           technicalSuccessScore: typeof technicalSuccessScore === 'number' ? technicalSuccessScore : null,
-          missedReason: typeof missedReason === 'string' ? missedReason : null,
+          missedReason: completionFeedback.missedReason,
           externalTrainingDeclared: externalTrainingDeclared === true,
           completedDurationSec: typeof normalizedCompletedDurationSec === 'number' ? normalizedCompletedDurationSec : null,
           completedDistanceMeters: typeof completedDistanceMeters === 'number' ? completedDistanceMeters : null,
@@ -824,6 +957,21 @@ export function trainingRoutes(): Router {
           completedLoadJson: typeof completedLoadJson === 'string' ? completedLoadJson : null,
           energyLevel: typeof normalizedEnergyLevel === 'number' ? normalizedEnergyLevel : null,
           sorenessLevel: typeof sorenessLevel === 'number' ? sorenessLevel : null,
+          completionState: completionFeedback.completionState,
+          readinessLevel: completionFeedback.readinessLevel,
+          difficultyFeedback: completionFeedback.difficultyFeedback,
+          durationFeedback: completionFeedback.durationFeedback,
+          discomfortFlag: completionFeedback.discomfortFlag,
+          discomfortFlagsJson: JSON.stringify(completionFeedback.discomfortFlags),
+          discomfortLocationsJson: JSON.stringify(completionFeedback.discomfortLocations),
+          discomfortDetails: completionFeedback.discomfortDetails,
+          substitutionsUsedJson: JSON.stringify(completionFeedback.substitutionsUsed),
+          feltTooHard: completionFeedback.feltTooHard,
+          feltTooEasy: completionFeedback.feltTooEasy,
+          feltTooLong: completionFeedback.feltTooLong,
+          feltTooShort: completionFeedback.feltTooShort,
+          modality: completionFeedback.modality,
+          sessionRole: completionFeedback.sessionRole,
         });
         emitDomainEvent({
           tenantId,
@@ -834,7 +982,7 @@ export function trainingRoutes(): Router {
           entityId: rowId,
           payload: {
             summary: {
-              status: 'completed',
+              status: completionFeedback.completionState,
               hasNotes: Boolean(notes),
               hasRpe: rpe != null,
               v2: v2Summary,
@@ -842,8 +990,9 @@ export function trainingRoutes(): Router {
             action: 'updated',
           },
           privacyClassification: 'health',
-          idempotencyKey: `training.feedback.recorded:${userId}:${rowId}:completed:${Boolean(notes)}:${rpe ?? 'none'}:v2-${v2HashHex}`,
+          idempotencyKey: `training.feedback.recorded:${userId}:${rowId}:${completionFeedback.completionState}:v2-${v2HashHex}`,
         });
+        return completionRow;
       });
 
       const adherenceRate = getTrainingWeeklyAdherenceRate(userId, tenantId, {
@@ -855,7 +1004,14 @@ export function trainingRoutes(): Router {
       // Invalidate caches since training status changed
       invalidateTrainingScreenCaches(userId);
 
-      sendSuccess(res, { completed: true, weeklyAdherence: adherenceRate });
+      sendSuccess(res, {
+        completed: completionFeedback.completionState === 'completed',
+        skipped: completionFeedback.completionState === 'skipped',
+        completionState: completionFeedback.completionState,
+        completionId: persistedCompletion?.id ?? null,
+        feedback: serializeTrainingCompletionFeedback(persistedCompletion),
+        weeklyAdherence: adherenceRate,
+      });
     } catch (err: any) {
       logger.error({ err }, 'iOS training/complete failed');
       sendInternalError(res, 'Failed to complete session');
@@ -871,7 +1027,71 @@ export function trainingRoutes(): Router {
    */
   router.post('/skip', async (req, res: Response) => {
     const { userId, tenantId } = req as AuthenticatedRequest;
-    const { sessionId } = req.body;
+    const requestBody = (req.body ?? {}) as Record<string, unknown>;
+    let completionFeedback: ReturnType<typeof normalizeTrainingCompletionFeedback>;
+    try {
+      completionFeedback = normalizeTrainingCompletionFeedback(requestBody, 'skipped');
+    } catch (err) {
+      if (err instanceof TrainingCompletionContractError) {
+        sendError(res, err.code, err.message, err.statusCode);
+        return;
+      }
+      throw err;
+    }
+    const {
+      sessionId,
+      notes,
+      rpe,
+      rir,
+      painScore,
+      painLocation,
+      technicalSuccessScore,
+      externalTrainingDeclared,
+      completedDurationSec,
+      completedDistanceMeters,
+      completedSetsJson,
+      completedRepsJson,
+      completedLoadJson,
+      actualDurationMinutes,
+      energyLevel,
+      fatigueLevel,
+      sorenessLevel,
+    } = requestBody;
+    const skipInputErrors: string[] = [];
+    const validateNumber = (field: string, value: unknown, min: number, max: number) => {
+      if (value === undefined) return;
+      if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max) {
+        skipInputErrors.push(`${field} must be a finite number between ${min} and ${max}`);
+      }
+    };
+    const validateString = (field: string, value: unknown, max: number) => {
+      if (value === undefined) return;
+      if (typeof value !== 'string' || value.length > max) {
+        skipInputErrors.push(`${field} must be a string of at most ${max} characters`);
+      }
+    };
+    validateNumber('rpe', rpe, 0, 10);
+    validateNumber('rir', rir, 0, 10);
+    validateNumber('painScore', painScore, 0, 10);
+    validateNumber('technicalSuccessScore', technicalSuccessScore, 0, 10);
+    validateNumber('completedDurationSec', completedDurationSec, 0, 24 * 3600);
+    validateNumber('completedDistanceMeters', completedDistanceMeters, 0, 500_000);
+    validateNumber('actualDurationMinutes', actualDurationMinutes, 0, 24 * 60);
+    validateNumber('energyLevel', energyLevel, 0, 10);
+    validateNumber('fatigueLevel', fatigueLevel, 0, 10);
+    validateNumber('sorenessLevel', sorenessLevel, 0, 10);
+    validateString('notes', notes, 1024);
+    validateString('painLocation', painLocation, 256);
+    validateString('completedSetsJson', completedSetsJson, 8 * 1024);
+    validateString('completedRepsJson', completedRepsJson, 8 * 1024);
+    validateString('completedLoadJson', completedLoadJson, 8 * 1024);
+    if (externalTrainingDeclared !== undefined && typeof externalTrainingDeclared !== 'boolean') {
+      skipInputErrors.push('externalTrainingDeclared must be a boolean');
+    }
+    if (skipInputErrors.length > 0) {
+      sendError(res, 'BAD_INPUT', `Invalid skip feedback: ${skipInputErrors.join('; ')}`, 400);
+      return;
+    }
     if (!consumeTrainingWriteBudget(res, tenantId, userId, 'training_session_skip')) return;
 
     try {
@@ -889,6 +1109,7 @@ export function trainingRoutes(): Router {
       if (resolved.kind === 'no_active_session') {
         sendSuccess(res, {
           skipped: true,
+          completionState: 'skipped',
           weeklyAdherence: null,
           noActiveSession: true,
         });
@@ -910,13 +1131,89 @@ export function trainingRoutes(): Router {
         return;
       }
 
-      const { rowId } = resolved;
+      const { rowId, session } = resolved;
+
+      const normalizedEnergyLevel = typeof energyLevel === 'number'
+        ? energyLevel
+        : typeof fatigueLevel === 'number'
+          ? 10 - fatigueLevel
+          : undefined;
+      const normalizedCompletedDurationSec = typeof completedDurationSec === 'number'
+        ? completedDurationSec
+        : typeof actualDurationMinutes === 'number'
+          ? actualDurationMinutes * 60
+          : undefined;
 
       const writeSkip = () => {
-        trainingPlans.markSessionSkipped(rowId);
+        return trainingPlans.logCompletion({
+          session_id: rowId,
+          plan_id: session.plan_id,
+          completion_state: 'skipped',
+          notes: typeof notes === 'string' ? notes : undefined,
+          rpe_overall: typeof rpe === 'number' ? rpe : undefined,
+          rir: typeof rir === 'number' ? rir : undefined,
+          pain_score: typeof painScore === 'number' ? painScore : undefined,
+          pain_location: typeof painLocation === 'string' ? painLocation : undefined,
+          technical_success_score: typeof technicalSuccessScore === 'number' ? technicalSuccessScore : undefined,
+          missed_reason: completionFeedback.missedReason ?? undefined,
+          external_training_declared: externalTrainingDeclared === true,
+          completed_duration_sec: normalizedCompletedDurationSec,
+          completed_distance_meters: typeof completedDistanceMeters === 'number' ? completedDistanceMeters : undefined,
+          completed_sets_json: typeof completedSetsJson === 'string' ? completedSetsJson : undefined,
+          completed_reps_json: typeof completedRepsJson === 'string' ? completedRepsJson : undefined,
+          completed_load_json: typeof completedLoadJson === 'string' ? completedLoadJson : undefined,
+          energy_level: normalizedEnergyLevel,
+          soreness_level: typeof sorenessLevel === 'number' ? sorenessLevel : undefined,
+          readiness_level: completionFeedback.readinessLevel ?? undefined,
+          difficulty_feedback: completionFeedback.difficultyFeedback ?? undefined,
+          duration_feedback: completionFeedback.durationFeedback ?? undefined,
+          discomfort_flag: completionFeedback.discomfortFlag,
+          discomfort_flags_json: JSON.stringify(completionFeedback.discomfortFlags),
+          discomfort_locations_json: JSON.stringify(completionFeedback.discomfortLocations),
+          discomfort_details: completionFeedback.discomfortDetails ?? undefined,
+          substitutions_used_json: JSON.stringify(completionFeedback.substitutionsUsed),
+          felt_too_hard: completionFeedback.feltTooHard,
+          felt_too_easy: completionFeedback.feltTooEasy,
+          felt_too_long: completionFeedback.feltTooLong,
+          felt_too_short: completionFeedback.feltTooShort,
+          modality: completionFeedback.modality ?? undefined,
+          session_role: completionFeedback.sessionRole ?? undefined,
+        });
       };
-      runOutboxTransaction((emitDomainEvent) => {
-        writeSkip();
+      const persistedCompletion = runOutboxTransaction((emitDomainEvent) => {
+        const completionRow = writeSkip();
+        const feedbackHash = computeV2IdempotencyHashHex({
+          notes: typeof notes === 'string' ? notes : null,
+          rpe: typeof rpe === 'number' ? rpe : null,
+          rir: typeof rir === 'number' ? rir : null,
+          painScore: typeof painScore === 'number' ? painScore : null,
+          painLocation: typeof painLocation === 'string' ? painLocation : null,
+          technicalSuccessScore: typeof technicalSuccessScore === 'number' ? technicalSuccessScore : null,
+          missedReason: completionFeedback.missedReason,
+          externalTrainingDeclared: externalTrainingDeclared === true,
+          completedDurationSec: normalizedCompletedDurationSec ?? null,
+          completedDistanceMeters: typeof completedDistanceMeters === 'number' ? completedDistanceMeters : null,
+          completedSetsJson: typeof completedSetsJson === 'string' ? completedSetsJson : null,
+          completedRepsJson: typeof completedRepsJson === 'string' ? completedRepsJson : null,
+          completedLoadJson: typeof completedLoadJson === 'string' ? completedLoadJson : null,
+          energyLevel: normalizedEnergyLevel ?? null,
+          sorenessLevel: typeof sorenessLevel === 'number' ? sorenessLevel : null,
+          completionState: 'skipped',
+          readinessLevel: completionFeedback.readinessLevel,
+          difficultyFeedback: completionFeedback.difficultyFeedback,
+          durationFeedback: completionFeedback.durationFeedback,
+          discomfortFlag: completionFeedback.discomfortFlag,
+          discomfortFlagsJson: JSON.stringify(completionFeedback.discomfortFlags),
+          discomfortLocationsJson: JSON.stringify(completionFeedback.discomfortLocations),
+          discomfortDetails: completionFeedback.discomfortDetails,
+          substitutionsUsedJson: JSON.stringify(completionFeedback.substitutionsUsed),
+          feltTooHard: completionFeedback.feltTooHard,
+          feltTooEasy: completionFeedback.feltTooEasy,
+          feltTooLong: completionFeedback.feltTooLong,
+          feltTooShort: completionFeedback.feltTooShort,
+          modality: completionFeedback.modality,
+          sessionRole: completionFeedback.sessionRole,
+        });
         emitDomainEvent({
           tenantId,
           userId,
@@ -925,12 +1222,18 @@ export function trainingRoutes(): Router {
           entityType: 'training_session',
           entityId: rowId,
           payload: {
-            summary: { status: 'skipped' },
+            summary: {
+              status: 'skipped',
+              hasSkippedReason: completionFeedback.missedReason !== null,
+              hasDiscomfort: completionFeedback.discomfortFlag,
+              hasReadiness: completionFeedback.readinessLevel !== null,
+            },
             action: 'updated',
           },
           privacyClassification: 'health',
-          idempotencyKey: `training.session.updated:${userId}:${rowId}:skipped`,
+          idempotencyKey: `training.session.updated:${userId}:${rowId}:skipped:v2-${feedbackHash}`,
         });
+        return completionRow;
       });
 
       const adherenceRate = getTrainingWeeklyAdherenceRate(userId, tenantId, {
@@ -941,7 +1244,13 @@ export function trainingRoutes(): Router {
 
       invalidateTrainingScreenCaches(userId);
 
-      sendSuccess(res, { skipped: true, weeklyAdherence: adherenceRate });
+      sendSuccess(res, {
+        skipped: true,
+        completionState: 'skipped',
+        completionId: persistedCompletion?.id ?? null,
+        feedback: serializeTrainingCompletionFeedback(persistedCompletion),
+        weeklyAdherence: adherenceRate,
+      });
     } catch (err: any) {
       logger.error({ err }, 'iOS training/skip failed');
       sendInternalError(res, 'Failed to skip session');
@@ -978,19 +1287,27 @@ export function trainingRoutes(): Router {
     const { userId, tenantId } = req as AuthenticatedRequest;
     const { recommendationIds } = req.body;
     try {
-      const applied = await applyCoachRecommendations(userId, tenantId, recommendationIds);
+      // Coach state, Training rows, provider credentials, and the operation
+      // lock all belong to the active data owner. The authenticated actor is
+      // passed separately for authorization/audit semantics.
+      const dataUserId = requireTenantIdParam(tenantId, 'training.coach.apply');
+      const applied = await withTrainingCalendarOperationLock(
+        { userId: dataUserId, tenantId: dataUserId, operation: 'coach_apply' },
+        (lease) => applyCoachRecommendations(userId, dataUserId, recommendationIds, { lease }),
+      );
       // Applying a coach recommendation changes the coach briefing and
       // training summary the client just read — clear those caches too,
       // otherwise the next read serves the pre-apply brief and the user
       // sees the same recommendation they just accepted. Mirrors the
       // cache-clear set used by /training/complete above.
-      invalidateTrainingScreenCaches(userId);
+      invalidateTrainingScreenCaches(dataUserId);
       sendSuccess(res, {
         applied: applied?.count || 0,
         message: `Calendar updated with ${applied?.count || 0} recommendation(s).`,
         appliedRecommendations: applied?.appliedRecommendations || [],
       });
     } catch (err: any) {
+      if (sendCoachApplyRouteError(res, err)) return;
       logger.error({ err }, 'iOS training/coach/apply failed');
       sendInternalError(res, 'Failed to apply coach recommendations', {
         code: 'COACH_APPLY_FAILED',
@@ -1005,6 +1322,45 @@ export function trainingRoutes(): Router {
   registerTrainingAdaptationRoutes(router);
 
   return router;
+}
+
+function sendCoachApplyRouteError(res: Response, error: unknown): boolean {
+  const lockError = trainingOperationLockPublicError(error);
+  if (lockError) {
+    logger.warn(
+      { code: lockError.code, operation: lockError.operation },
+      'Coach apply deferred by the shared Training operation lock',
+    );
+    sendError(res, lockError.code, lockError.message, lockError.status, lockError.details);
+    return true;
+  }
+
+  const code = (error as { code?: unknown } | null)?.code;
+  if (code === 'COACH_APPLY_PARTIAL_FAILURE') {
+    sendError(
+      res,
+      'COACH_APPLY_PARTIAL_FAILURE',
+      'Calendar changed, but Training could not confirm the matching update. Refresh before retrying.',
+      409,
+      {
+        providerMutationApplied: true,
+        localSyncConfirmed: false,
+        retryable: false,
+      },
+    );
+    return true;
+  }
+  if (code === 'COACH_RECOMMENDATION_STALE') {
+    sendError(
+      res,
+      'COACH_RECOMMENDATION_STALE',
+      'This coach recommendation is stale. Refresh the coach briefing before retrying.',
+      409,
+      { retryable: false },
+    );
+    return true;
+  }
+  return false;
 }
 
 function consumeTrainingWriteBudget(res: Response, tenantId: number, userId: number, budgetKey: string): boolean {

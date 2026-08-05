@@ -13,6 +13,7 @@ import { getQuestionnaire } from '../../src/services/onboarding';
 import { defaultEventHandlers } from '../../src/services/event-backbone-worker';
 import { processPendingEvents } from '../../src/services/event-outbox';
 import { processTrainingPlanCalendarSyncJobs } from '../../src/services/training-plan-calendar-sync-worker';
+import { scoreTrainingPlanQuality } from '../../src/services/training-plan-creation-validation';
 
 let harness: TrainingE2EHarness | null = null;
 
@@ -75,7 +76,7 @@ const weeklyTargetCases = [
       trainingPriority: 'running',
       startPolicy: 'today',
     },
-    expected: { strengthSessionsPerWeek: 6 },
+    requested: { strengthSessionsPerWeek: 6 },
   },
   {
     id: 'genuine-two-a-day-distinct-days',
@@ -88,7 +89,7 @@ const weeklyTargetCases = [
       twoADayPreference: 'preferred',
       startPolicy: 'today',
     },
-    expected: { sessionsPerWeek: 5, runSessionsPerWeek: 5, strengthSessionsPerWeek: 5 },
+    requested: { sessionsPerWeek: 5, runSessionsPerWeek: 5, strengthSessionsPerWeek: 5 },
     expectedDistinctTrainingDays: 5,
   },
   {
@@ -102,7 +103,7 @@ const weeklyTargetCases = [
       trainingPriority: 'running',
       startPolicy: 'today',
     },
-    expected: { runSessionsPerWeek: 2, strengthSessionsPerWeek: 5 },
+    requested: { runSessionsPerWeek: 2, strengthSessionsPerWeek: 5 },
   },
   {
     id: 'triathlon-zero-bike-swim-floor',
@@ -117,7 +118,7 @@ const weeklyTargetCases = [
       trainingPriority: 'triathlon',
       startPolicy: 'today',
     },
-    expected: { bikeSessionsPerWeek: 1, swimSessionsPerWeek: 0, strengthSessionsPerWeek: 1 },
+    requested: { bikeSessionsPerWeek: 0, swimSessionsPerWeek: 0, strengthSessionsPerWeek: 1 },
   },
   {
     id: 'cycling-nonzero-bike-passthrough',
@@ -130,7 +131,7 @@ const weeklyTargetCases = [
       trainingPriority: 'cycling',
       startPolicy: 'today',
     },
-    expected: { bikeSessionsPerWeek: 3, strengthSessionsPerWeek: 1 },
+    requested: { bikeSessionsPerWeek: 3, strengthSessionsPerWeek: 1 },
   },
 ] as const;
 
@@ -155,9 +156,14 @@ describe('training plan create cycle integration', () => {
     expect(res.body.data.blockers.map((blocker: any) => blocker.code)).not.toContain('no_heavy_lower_before_long_run');
     expect(res.body.data.weeklyTargets).toMatchObject({
       sessionsPerWeek: 5,
+      // Stronger F8/F10 guarantee: athlete-facing targets describe the
+      // finalized schedule, never the raw ask. Coordination now treats the
+      // five-day target as DAYS, so all five authored runs survive alongside
+      // five strength sessions instead of fabricating a shortfall.
       runSessionsPerWeek: 5,
       strengthSessionsPerWeek: 5,
     });
+    expect(res.body.data.volumeShortfalls ?? []).toEqual([]);
     expect(calendarMocks.getEventsForSources).toHaveBeenCalledWith(
       '2026-05-25',
       '2026-06-08',
@@ -229,6 +235,8 @@ describe('training plan create cycle integration', () => {
       resolvedStartDate: '2026-05-25',
       weeklyTargets: {
         sessionsPerWeek: 5,
+        // Response truth is the finalized matrix; request truth is retained
+        // separately in persisted `requestedTargets`.
         runSessionsPerWeek: 5,
         strengthSessionsPerWeek: 5,
       },
@@ -332,6 +340,301 @@ describe('training plan create cycle integration', () => {
     expect(ruleIds(created.body.data.planLint.blockers)).not.toContain('no_heavy_lower_before_long_run');
   });
 
+  it('carries a fitted novice deload from preview through persistence and the plan-weeks read model', async () => {
+    vi.useFakeTimers({ now: new Date('2026-05-25T10:00:00.000Z') });
+    harness = createTrainingE2EHarness();
+    harness.seedTrainingUser();
+
+    const fitnessRow = harness.db.prepare(`
+      SELECT data FROM user_profiles WHERE user_id = 12 AND profile_type = 'fitness'
+    `).get() as { data: string };
+    const fitnessProfile = JSON.parse(fitnessRow.data);
+    fitnessProfile.experience_level = 'Beginner (< 1 year)';
+    harness.db.prepare(`
+      UPDATE user_profiles SET data = ? WHERE user_id = 12 AND profile_type = 'fitness'
+    `).run(JSON.stringify(fitnessProfile));
+
+    // The default integration fixture carries a future marathon date. Remove
+    // it so this proves the continuous novice cadence rather than the separate
+    // race-date/taper path.
+    const runningRow = harness.db.prepare(`
+      SELECT data FROM user_profiles WHERE user_id = 12 AND profile_type = 'triathlon-running'
+    `).get() as { data: string };
+    const runningProfile = JSON.parse(runningRow.data);
+    runningProfile.target_race = 'None — general fitness';
+    runningProfile.target_race_date = 'none';
+    harness.db.prepare(`
+      UPDATE user_profiles SET data = ? WHERE user_id = 12 AND profile_type = 'triathlon-running'
+    `).run(JSON.stringify(runningProfile));
+
+    const request = {
+      objective: 'Beginner gym strength plan',
+      durationWeeks: 4,
+      preferredTime: '07:00',
+      preferredStrengthTime: '18:00',
+      sessionsPerWeek: 3,
+      runSessionsPerWeek: 0,
+      strengthSessionsPerWeek: 3,
+      startPolicy: 'today',
+      goalMode: 'continuous',
+      trainingPriority: 'strength',
+      twoADayPreference: 'never',
+    };
+
+    const preview = await harness.dispatch('POST', '/plan/preview', request);
+    expect(preview.statusCode).toBe(200);
+    expect(preview.body.data.phaseRoadmap.at(-1)).toMatchObject({ weekNumber: 4, phase: 'deload' });
+
+    const created = await harness.dispatch('POST', '/plan/generate', {
+      ...request,
+      idempotencyKey: 'training-e2e-novice-four-week-deload',
+    });
+    expect(created.statusCode).toBe(201);
+    expect(created.body.data.phaseRoadmap.at(-1)).toMatchObject({ weekNumber: 4, phase: 'deload' });
+
+    const persistedWeeks = harness.db.prepare(`
+      SELECT week_number, focus, intensity_pct
+        FROM training_weeks
+       WHERE plan_id = ?
+       ORDER BY week_number
+    `).all(Number(created.body.data.planId)) as Array<{
+      week_number: number;
+      focus: string;
+      intensity_pct: number;
+    }>;
+    expect(persistedWeeks.at(-1)).toMatchObject({
+      week_number: 4,
+      focus: 'deload',
+      intensity_pct: expect.any(Number),
+    });
+    expect(Number(persistedWeeks.at(-1)?.intensity_pct)).toBeLessThanOrEqual(58);
+
+    const readModel = await harness.dispatch('GET', '/plan/weeks');
+    expect(readModel.statusCode).toBe(200);
+    expect(readModel.body.data.weeks.at(-1)).toMatchObject({
+      weekNumber: 4,
+      phase: 'deload',
+      intensityPct: expect.any(Number),
+    });
+
+    const quality = scoreTrainingPlanQuality({
+      objective: request.objective,
+      goalMode: request.goalMode,
+      weeks: readModel.body.data.weeks.map((week: any) => ({
+        weekNumber: Number(week.weekNumber),
+        phase: String(week.phase),
+        sessions: (week.sessions ?? []).map((session: any) => ({
+          id: String(session.id),
+          weekNumber: Number(week.weekNumber),
+          dayOfWeek: String(session.dayOfWeek),
+          sport: 'strength' as const,
+          title: String(session.title),
+          sessionType: String(session.sessionType),
+          durationMinutes: Number(session.durationMinutes),
+          intensity: 'moderate' as const,
+        })),
+      })),
+    });
+    expect(quality.dimensions.find((dimension) => dimension.dimension === 'deload_logic')?.blockers)
+      .toEqual([]);
+  });
+
+  it('preserves the exact hybrid run-strength request and an easy/recovery session through the real route', async () => {
+    vi.useFakeTimers({ now: new Date('2026-05-25T10:00:00.000Z') });
+    harness = createTrainingE2EHarness();
+    harness.seedTrainingUser();
+
+    upsertProfile('fitness', {
+      experience_level: 'Intermediate (1-3 years)',
+      weekly_frequency: '4-5 days',
+      preferred_training_days: 'Monday, Tuesday, Thursday, Saturday',
+      blocked_days: 'Friday',
+      training_goals: 'Endurance, Strength',
+      injuries: 'none',
+      available_equipment: 'Full gym',
+    });
+    upsertProfile('triathlon-gym', {
+      training_age: '3-5 years',
+      current_split: 'No preference',
+      primary_goal: 'Support other sports',
+      squat_1rm_kg: '115',
+      bench_1rm_kg: '82',
+      deadlift_1rm_kg: '150',
+      sessions_per_week: '1-2',
+      preferred_training_days: 'Monday, Tuesday, Thursday, Saturday',
+      blocked_days: 'Friday',
+      equipment_access: 'Full commercial gym',
+      session_duration_minutes: '60',
+    });
+    upsertProfile('triathlon-running', {
+      weekly_mileage_km: '32',
+      longest_recent_run_km: '14',
+      easy_pace_min_per_km: '5:45',
+      target_race: 'None — general fitness',
+      target_race_date: 'none',
+      preferred_workouts: 'Easy runs, Tempo, Long runs',
+      injury_history: 'none',
+      weekly_availability_days: '5',
+      preferred_training_days: 'Tuesday, Thursday, Saturday, Sunday',
+      blocked_days: 'Friday',
+    });
+
+    const request = {
+      objective: 'Hybrid running and strength consistency',
+      durationWeeks: 4,
+      preferredTime: '07:00',
+      preferredCardioTime: '07:00',
+      preferredStrengthTime: '18:00',
+      sessionsPerWeek: 5,
+      runSessionsPerWeek: 3,
+      bikeSessionsPerWeek: 0,
+      swimSessionsPerWeek: 0,
+      strengthSessionsPerWeek: 2,
+      startPolicy: 'today',
+      longWorkoutDay: 'Saturday',
+      goalMode: 'continuous',
+      trainingPriority: 'hybrid',
+      twoADayPreference: 'never',
+      calendarSource: null,
+    };
+
+    const created = await harness.dispatch('POST', '/plan/generate', {
+      ...request,
+      idempotencyKey: 'training-e2e-hybrid-run-strength-contract',
+    });
+    expect(created.statusCode).toBe(201);
+
+    const readModel = await harness.dispatch('GET', '/plan/weeks');
+    expect(readModel.statusCode).toBe(200);
+    const weeklyMix = readModel.body.data.weeks.map((week: any) => ({
+      weekNumber: Number(week.weekNumber),
+      running: week.sessions.filter((session: any) => /run/.test(String(session.sessionType).toLowerCase())).length,
+      strength: week.sessions.filter((session: any) => /gym|strength|lift/.test(String(session.sessionType).toLowerCase())).length,
+      distinctDays: new Set(week.sessions.map((session: any) => String(session.day).toLowerCase())).size,
+      titles: week.sessions.map((session: any) => String(session.title)),
+    }));
+
+    expect(
+      weeklyMix.map(({ weekNumber, running, strength }: any) => ({ weekNumber, running, strength })),
+      JSON.stringify(weeklyMix),
+    )
+      .toEqual([
+        { weekNumber: 1, running: 3, strength: 2 },
+        { weekNumber: 2, running: 3, strength: 2 },
+        { weekNumber: 3, running: 3, strength: 2 },
+        { weekNumber: 4, running: 3, strength: 2 },
+      ]);
+    expect(
+      weeklyMix.every((week: any) => week.distinctDays === 5),
+      JSON.stringify(weeklyMix),
+    ).toBe(true);
+    expect(created.body.data.volumeShortfalls ?? []).toEqual([]);
+    expect(weeklyMix.flatMap((week: any) => week.titles).some((title: string) => /easy|recover/i.test(title)))
+      .toBe(true);
+  });
+
+  it('accepts a canonical 25m-indoor swim profile through preview, strict preflight, and persistence', async () => {
+    vi.useFakeTimers({ now: new Date('2026-05-25T10:00:00.000Z') });
+    harness = createTrainingE2EHarness();
+    harness.seedTrainingUser();
+
+    upsertProfile('triathlon-running', {
+      weekly_mileage_km: '32',
+      longest_recent_run_km: '14',
+      easy_pace_min_per_km: '5:45',
+      target_race: 'None — general fitness',
+      target_race_date: 'none',
+      preferred_workouts: 'Easy runs, Tempo, Long runs',
+      injury_history: 'none',
+      weekly_availability_days: '5',
+    });
+    upsertProfile('triathlon-cycling', {
+      ftp_watts: '245',
+      weekly_hours: '3-6 hours',
+      primary_discipline: 'Road',
+      target_event: 'Triathlon bike leg',
+      power_meter: 'Indoor only (smart trainer)',
+      terrain_preference: 'Mixed',
+      weekly_availability_days: '3',
+    });
+    upsertProfile('triathlon-swim', {
+      experience: 'Fitness swimmer',
+      primary_stroke: 'Freestyle',
+      time_400m_freestyle_min: '8:00',
+      pool_access: '25m indoor',
+      goal: 'Triathlon swim leg',
+      sessions_per_week: '2',
+      equipment_access: 'Pull buoy, Fins, Kickboard',
+    });
+
+    const request = {
+      objective: 'Triathlon discipline balance',
+      durationWeeks: 4,
+      preferredTime: '07:00',
+      preferredCardioTime: '07:00',
+      preferredStrengthTime: '18:00',
+      sessionsPerWeek: 6,
+      runSessionsPerWeek: 2,
+      bikeSessionsPerWeek: 1,
+      swimSessionsPerWeek: 2,
+      strengthSessionsPerWeek: 1,
+      startPolicy: 'today',
+      longWorkoutDay: 'Saturday',
+      goalMode: 'continuous',
+      trainingPriority: 'triathlon',
+      twoADayPreference: 'never',
+      calendarSource: null,
+    };
+
+    const preview = await harness.dispatch('POST', '/plan/preview', request);
+    expect(preview.statusCode).toBe(200);
+    // Stronger guarantee: an accepted pool answer must reach a schedulable,
+    // intensity-safe multisport plan, not merely clear the pool preflight.
+    expect(ruleIds(preview.body.data.planLint.blockers)).not.toEqual(expect.arrayContaining([
+      'swim_pool_access_required',
+      'endurance_hard_easy_balance',
+      'endurance_interval_density',
+    ]));
+
+    const created = await harness.dispatch('POST', '/plan/generate', {
+      ...request,
+      idempotencyKey: 'training-e2e-canonical-pool-access',
+    });
+    expect(created.statusCode, JSON.stringify(created.body)).toBe(201);
+    expect(ruleIds(created.body.data.planLint.blockers)).not.toEqual(expect.arrayContaining([
+      'swim_pool_access_required',
+      'endurance_hard_easy_balance',
+      'endurance_interval_density',
+    ]));
+    const planId = Number(created.body.data.planId);
+    const sessions = persistedSessions(planId);
+    expect(sessions.filter((session) => /swim/i.test(session.sessionType)), JSON.stringify({
+      sessions,
+      weeklyTargets: created.body.data.weeklyTargets,
+      volumeShortfalls: created.body.data.volumeShortfalls,
+      decisionReasons: created.body.data.decisionReasons,
+      warnings: created.body.data.warnings,
+    })).toHaveLength(8);
+    const weeklyMix = [1, 2, 3, 4].map((weekNumber) => {
+      const weekSessions = sessions.filter((session) => session.weekNumber === weekNumber);
+      return Object.fromEntries(['running', 'cycling', 'swimming', 'strength'].map((modality) => [
+        modality,
+        weekSessions.filter((session) => sessionModality(session) === modality).length,
+      ]));
+    });
+    expect(weeklyMix, JSON.stringify({
+      sessions,
+      weeklyTargets: created.body.data.weeklyTargets,
+      volumeShortfalls: created.body.data.volumeShortfalls,
+      decisionReasons: created.body.data.decisionReasons,
+    })).toEqual([
+      { running: 2, cycling: 1, swimming: 2, strength: 1 },
+      { running: 2, cycling: 1, swimming: 2, strength: 1 },
+      { running: 2, cycling: 1, swimming: 2, strength: 1 },
+      { running: 2, cycling: 1, swimming: 2, strength: 1 },
+    ]);
+  });
+
   it.each(weeklyTargetCases)('$id: persists and reports weekly targets from the final scheduled plan matrix', async (planCase) => {
     vi.useFakeTimers({ now: new Date('2026-05-25T10:00:00.000Z') });
     harness = createTrainingE2EHarness();
@@ -356,8 +659,10 @@ describe('training plan create cycle integration', () => {
 
     expect(created.statusCode, planCase.id).toBe(201);
     expect(created.body.ok).toBe(true);
-    expect(created.body.data.weeklyTargets).toMatchObject(planCase.expected);
-    expect(preferences).toMatchObject(planCase.expected);
+    // Stronger F8/F10 guarantee: flat response/persistence targets are the
+    // realized plan and are proven against session rows below. The original
+    // request remains auditable under its explicitly named namespace.
+    expect(preferences.requestedTargets).toMatchObject(planCase.requested);
     expectWeeklyTargetsToMatchScheduled(created.body.data.weeklyTargets, scheduledTargets);
     expectWeeklyTargetsToMatchScheduled(preferences, scheduledTargets);
     if ('expectedDistinctTrainingDays' in planCase) {
@@ -486,7 +791,10 @@ describe('training plan create cycle integration', () => {
     expect(created.statusCode).toBe(201);
     expect(created.body.data.resolvedStartDate).toBe(preview.body.data.resolvedStartDate);
     expect(created.body.data.weeklyTargets).toEqual(preview.body.data.weeklyTargets);
+    expect(created.body.data.volumeShortfalls).toEqual(preview.body.data.volumeShortfalls);
     expect(created.body.data.totalSessions).toBe(preview.body.data.totalSessions);
+    expect(persistedPreferences(Number(created.body.data.planId)).volumeShortfalls)
+      .toEqual(created.body.data.volumeShortfalls);
   });
 
   it('reports create-response weekly targets that match the persisted schedule', async () => {
@@ -530,6 +838,7 @@ describe('training plan create cycle integration', () => {
       runSessionsPerWeek: 5,
       strengthSessionsPerWeek: 5,
     });
+    expect(preferences.volumeShortfalls).toEqual(created.body.data.volumeShortfalls);
 
     // getAllPlanWeeks renders the per-week learning focus FROM
     // preferences_json — generation must persist the attached learning
@@ -547,6 +856,7 @@ function ruleIds(findings: Array<{ ruleId?: string }> | undefined): string[] {
 }
 
 function persistedSessions(planId: number): Array<{
+  weekNumber: number;
   dayOfWeek: string;
   sessionType: string;
   title: string;
@@ -554,11 +864,13 @@ function persistedSessions(planId: number): Array<{
 }> {
   if (!harness) return [];
   const rows = harness.db.prepare(`
-    SELECT day_of_week, session_type, title, exercises_json
-      FROM training_sessions
-     WHERE plan_id = ?
-     ORDER BY id
+    SELECT w.week_number, s.day_of_week, s.session_type, s.title, s.exercises_json
+      FROM training_sessions s
+      JOIN training_weeks w ON w.id = s.week_id
+     WHERE s.plan_id = ?
+     ORDER BY s.id
   `).all(planId) as Array<{
+    week_number: number;
     day_of_week: string;
     session_type: string;
     title: string;
@@ -566,6 +878,7 @@ function persistedSessions(planId: number): Array<{
   }>;
 
   return rows.map((row) => ({
+    weekNumber: row.week_number,
     dayOfWeek: row.day_of_week,
     sessionType: row.session_type,
     title: row.title,
@@ -585,6 +898,17 @@ function seedCompleteSportProfile(profileType: string, userId = 12): void {
         ? 1
         : 'test',
   ]));
+  harness.db.prepare(`
+    INSERT INTO user_profiles (user_id, profile_type, data)
+    VALUES (?, ?, ?)
+    ON CONFLICT(user_id, profile_type) DO UPDATE SET
+      data = excluded.data,
+      updated_at = datetime('now')
+  `).run(userId, profileType, JSON.stringify(data));
+}
+
+function upsertProfile(profileType: string, data: Record<string, unknown>, userId = 12): void {
+  if (!harness) return;
   harness.db.prepare(`
     INSERT INTO user_profiles (user_id, profile_type, data)
     VALUES (?, ?, ?)

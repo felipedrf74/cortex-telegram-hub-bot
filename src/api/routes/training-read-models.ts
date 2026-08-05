@@ -487,6 +487,7 @@ export async function getAllPlanWeeks(userId: number, tenantId: number) {
     plan: {
       id: plan.id,
       name: plan.name,
+      goal: typeof plan.goal === 'string' ? plan.goal : null,
       planVersion: plan.plan_version ?? null,
       durationWeeks: plan.duration_weeks,
       lifecycleState: plan.status ?? 'active',
@@ -495,6 +496,11 @@ export async function getAllPlanWeeks(userId: number, tenantId: number) {
       periodization: plan.periodization ?? null,
       raceDate: typeof planPreferences?.raceDate === 'string' ? planPreferences.raceDate : null,
       goalMode: typeof planPreferences?.goalMode === 'string' ? planPreferences.goalMode : null,
+      // F11: this is the immutable zone captured when the plan was created;
+      // never substitute the user's current setting on later reads.
+      schedulingTimezone: typeof planPreferences?.schedulingTimezone === 'string'
+        ? planPreferences.schedulingTimezone
+        : null,
       // Requested-vs-scheduled transparency: the flat preference keys are
       // REALIZED targets (re-persisted from the finalized plan), while
       // requestedTargets preserves what the user asked for. Legacy plans
@@ -733,7 +739,14 @@ function buildWeekSessionDto(session: any, plan: any, linkedCalendarEvent: any, 
     type: session.title || humanizeSessionType(session.session_type),
     title: session.title || humanizeSessionType(session.session_type),
     sessionType: session.session_type || 'workout',
+    intensityText: session.intensity_text || null,
     time: verifiedCalendarEventId ? linkedCalendarEvent?.time ?? null : null,
+    // Persisted schedule truth is provider-independent. Keep it available even
+    // when calendarSource=null so clients and qualifying E2E evidence can prove
+    // exact plan/read-model identity without treating a provider event as the
+    // source of truth.
+    scheduledStartAt: session.scheduled_start_at || null,
+    scheduledEndAt: session.scheduled_end_at || null,
     calendarEventId: verifiedCalendarEventId,
     calendarSource: verifiedCalendarEventId ? session.calendar_source || null : null,
     calendarSyncState,
@@ -803,6 +816,8 @@ export async function getReadiness(userId: number, tenantId = userId) {
     const reasonCode = typeof readiness?.reasonCode === 'string' ? readiness.reasonCode : null;
     const source = typeof readiness?.source === 'string' ? readiness.source : null;
     const asOf = typeof readiness?.asOf === 'string' ? readiness.asOf : null;
+    const computedAt = typeof readiness?.computedAt === 'string' ? readiness.computedAt : null;
+    const dataAsOf = typeof readiness?.dataAsOf === 'string' ? readiness.dataAsOf : null;
     // Adaptation snapshots need raw sleep duration and reasoning prose; the
     // display-shaped `factors` above intentionally drops both.
     const sleepDurationHours = typeof readiness?.factors?.sleep?.durationHours === 'number' && readiness.factors.sleep.durationHours > 0
@@ -811,7 +826,18 @@ export async function getReadiness(userId: number, tenantId = userId) {
     const reasoning = typeof readiness?.reasoning === 'string' && readiness.reasoning.trim().length > 0
       ? readiness.reasoning.trim()
       : null;
-    const result = { score, factors, recommendation, reasonCode, source, asOf, sleepDurationHours, reasoning };
+    const result = {
+      score,
+      factors,
+      recommendation,
+      reasonCode,
+      source,
+      asOf,
+      computedAt,
+      dataAsOf,
+      sleepDurationHours,
+      reasoning,
+    };
     setCache(cacheKey, result, READINESS_TTL);
     return result;
   } catch (err) {
@@ -844,14 +870,33 @@ export async function fetchCurrentReadinessForPlan(userId: number, tenantId: num
       : undefined;
 
     const noData = readiness.reasonCode === 'WEARABLE_INTEGRATION_MISSING';
-    const isStale = !noData && isReadinessSnapshotStale(readiness.asOf);
+    const freshnessNow = new Date();
+    const sourceCapturedAt = trustedReadinessSourceTimestamp(readiness.dataAsOf, freshnessNow);
+    const freshnessUnknown = !noData && sourceCapturedAt == null;
+    const isStale = !noData
+      && sourceCapturedAt != null
+      && isReadinessSnapshotStale(sourceCapturedAt, freshnessNow);
 
     return {
       score: readiness.score,
-      confidence: noData ? 'no_data' : isStale ? 'stale_provider' : 'fresh_wearable',
+      // `no_data` means there is no trustworthy fresh composite, not that the
+      // user necessarily has zero wearable rows. dataSource keeps an
+      // incomplete/unknown provider snapshot distinct from the estimate-only
+      // fallback while avoiding a fabricated stale claim.
+      confidence: noData || freshnessUnknown
+        ? 'no_data'
+        : isStale
+          ? 'stale_provider'
+          : 'fresh_wearable',
       dataSource: noData ? 'fallback' : 'wearable',
       isStale,
-      reasonCode: readiness.reasonCode ?? (isStale ? 'wearable_sync_stale' : null),
+      reasonCode: readiness.reasonCode
+        ?? (freshnessUnknown
+          ? 'wearable_freshness_unknown'
+          : isStale
+            ? 'wearable_sync_stale'
+            : null),
+      ...(!noData && sourceCapturedAt ? { capturedAt: sourceCapturedAt } : {}),
       sleepHours,
       hrvStatus,
       energyReserve,
@@ -863,12 +908,19 @@ export async function fetchCurrentReadinessForPlan(userId: number, tenantId: num
   }
 }
 
-function isReadinessSnapshotStale(asOf: string | null | undefined, now = new Date()): boolean {
-  if (typeof asOf !== 'string' || asOf.trim() === '') return false;
-  const capturedAt = Date.parse(asOf);
-  if (!Number.isFinite(capturedAt)) return false;
+function trustedReadinessSourceTimestamp(dataAsOf: string | null | undefined, now = new Date()): string | null {
+  if (typeof dataAsOf !== 'string' || dataAsOf.trim() === '') return null;
+  const normalized = dataAsOf.trim();
+  const capturedAt = Date.parse(normalized);
+  if (!Number.isFinite(capturedAt) || capturedAt > now.getTime()) return null;
+  return normalized;
+}
+
+function isReadinessSnapshotStale(dataAsOf: string | null | undefined, now = new Date()): boolean {
+  const trustedTimestamp = trustedReadinessSourceTimestamp(dataAsOf, now);
+  if (!trustedTimestamp) return false;
+  const capturedAt = Date.parse(trustedTimestamp);
   const ageMs = now.getTime() - capturedAt;
-  if (ageMs < 0) return false;
   return ageMs > READINESS_STALE_MAX_AGE_HOURS * 60 * 60 * 1000;
 }
 

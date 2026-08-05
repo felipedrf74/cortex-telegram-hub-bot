@@ -81,6 +81,31 @@ describe('coach-kernel/plan-linter', () => {
       ).toBe(true);
     });
 
+    it('compares scheduled timestamps against the plan-local calendar day', () => {
+      const now = new Date('2026-04-22T00:30:00.000Z');
+      const scheduledDate = '2026-04-21T08:00:00.000Z';
+
+      // Stronger guarantee: linting the same absolute timestamps must honor
+      // the immutable plan zone instead of whichever timezone runs the process.
+      const losAngeles = lintPlan(input({
+        now,
+        timezone: 'America/Los_Angeles',
+        weeks: [week(1, [session({ scheduledDate })])],
+      }));
+      const tokyo = lintPlan(input({
+        now,
+        timezone: 'Asia/Tokyo',
+        weeks: [week(1, [session({ scheduledDate })])],
+      }));
+
+      expect(losAngeles.blockers.some((finding) => (
+        finding.ruleId === 'no_past_active_sessions'
+      ))).toBe(false);
+      expect(tokyo.blockers.some((finding) => (
+        finding.ruleId === 'no_past_active_sessions'
+      ))).toBe(true);
+    });
+
     it('does NOT flag past-dated UNSCHEDULED sessions (those are correctly marked)', () => {
       const result = lintPlan(input({
         weeks: [week(1, [
@@ -627,6 +652,18 @@ describe('coach-kernel/plan-linter', () => {
       expect(result.blockers.some((blocker) => blocker.ruleId === 'race_date_must_be_future')).toBe(true);
     });
 
+    it('blocks a same-day race date even when goalMode says continuous', () => {
+      const result = lintPlan(input({
+        goalMode: 'continuous',
+        raceDate: '2026-04-22',
+      }));
+
+      // F12 stronger guarantee: "future" is strict in the plan-local day;
+      // an internal caller cannot bypass the public boundary with today.
+      expect(result.status).toBe('fail');
+      expect(result.blockers.some((blocker) => blocker.ruleId === 'race_date_must_be_future')).toBe(true);
+    });
+
     it('blocks a plan duration that overshoots the race date', () => {
       const result = lintPlan(input({
         goalMode: 'event_based',
@@ -639,16 +676,63 @@ describe('coach-kernel/plan-linter', () => {
       expect(result.blockers.some((blocker) => blocker.ruleId === 'plan_duration_overshoots_race_date')).toBe(true);
     });
 
-    it('does not apply race-date duration checks to non-event plans', () => {
+    it('blocks a strictly-future race date that precedes the resolved plan start', () => {
+      const result = lintPlan(input({
+        goalMode: 'continuous',
+        startDate: '2026-04-27',
+        raceDate: '2026-04-25',
+        durationWeeks: 4,
+      }));
+
+      // F12 policy (a) still makes this event-based: the date is future
+      // relative to NOW, but no generated week can build toward an event that
+      // occurs before week 1. Internal callers must fail closed too.
+      expect(result.status).toBe('fail');
+      const blocker = result.blockers.find((candidate) => (
+        String(candidate.ruleId) === 'race_date_precedes_plan_start'
+      ));
+      expect(blocker).toMatchObject({
+        severity: 'blocker',
+        evidence: {
+          raceDateIso: '2026-04-25',
+          startDateIso: '2026-04-27',
+        },
+      });
+    });
+
+    it('treats a future race date as event-based even when goalMode says continuous', () => {
       const result = lintPlan(input({
         goalMode: 'continuous',
         startDate: '2026-04-22',
         raceDate: '2026-05-05',
         durationWeeks: 6,
+        weeks: [week(1, [session({})], 'taper')],
       }));
 
-      expect(result.blockers.some((blocker) => blocker.ruleId === 'plan_duration_overshoots_race_date')).toBe(false);
-      expect(result.status).toBe('pass');
+      // Stronger guarantee: a valid future race date activates the same
+      // duration and taper rules as an explicit event_based request. The
+      // taper is legitimate because the event exists; the overshoot is not.
+      expect(result.blockers.some((blocker) => blocker.ruleId === 'plan_duration_overshoots_race_date')).toBe(true);
+      expect(result.blockers.some((blocker) => blocker.ruleId === 'no_fake_taper_without_event')).toBe(false);
+      expect(result.status).toBe('fail');
+    });
+
+    it('fails closed on a supplied malformed race date even in continuous mode', () => {
+      const result = lintPlan(input({
+        goalMode: 'continuous',
+        raceDate: 'not-a-date',
+      }));
+
+      // F12 stronger guarantee: internal callers cannot evade event-date
+      // validation by pairing malformed data with continuous mode. Public
+      // routes reject this earlier; the linter remains the defense in depth.
+      expect(result.status).toBe('fail');
+      expect(result.blockers.some((blocker) => (
+        blocker.ruleId === 'race_date_invalid'
+      ))).toBe(true);
+      expect(result.blockers.some((blocker) => (
+        blocker.ruleId === 'race_specific_plan_requires_race_date'
+      ))).toBe(false);
     });
   });
 
@@ -776,6 +860,22 @@ describe('coach-kernel/plan-linter', () => {
 
       expect(result.status).toBe('fail');
       expect(result.blockers.map((blocker) => blocker.ruleId)).toContain('endurance_interval_density');
+    });
+
+    it('does not equate a controlled key long session with hard intensity', () => {
+      const result = lintPlan(input({
+        weeks: [week(1, [
+          session({ dayOfWeek: 'monday', sessionType: 'threshold_run', title: 'Threshold Run', isKey: true }),
+          session({ dayOfWeek: 'wednesday', sessionType: 'easy_run', title: 'Easy Run' }),
+          session({ dayOfWeek: 'thursday', sessionType: 'threshold_swim', title: 'Threshold Swim', sport: 'swimming', isKey: true }),
+          session({ dayOfWeek: 'saturday', sessionType: 'long_run', title: 'Long Run', isKey: true, isLongRun: true }),
+          session({ dayOfWeek: 'sunday', sessionType: 'technique_swim', title: 'Technique Swim', sport: 'swimming' }),
+        ])],
+      }));
+
+      const blockerIds = result.blockers.map((blocker) => blocker.ruleId);
+      expect(blockerIds).not.toContain('endurance_hard_easy_balance');
+      expect(blockerIds).not.toContain('endurance_interval_density');
     });
 
     it('blocks a large long-session jump across weeks', () => {

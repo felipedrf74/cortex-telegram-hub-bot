@@ -41,6 +41,7 @@ import {
   type TrainingSession,
   type TrainingWeek,
 } from './training-plans';
+import { resolveTrainingPlanTimezone } from './training-date-utils';
 import { getEvents, hasWritableCalendarForUser, type UnifiedCalendarEvent } from './unified-calendar';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
 import {
@@ -281,7 +282,7 @@ export async function getFilmingRecommendation(
   const calendarEvents = calendarResult.status === 'fulfilled' ? calendarResult.value : [];
   const readiness = readinessResult.status === 'fulfilled' ? readinessResult.value : null;
   const trainingContext = readTrainingContextAll({ userId, tenantId });
-  const trainingSchedule = buildTrainingSchedule(userId, today, windowDays);
+  const trainingSchedule = buildTrainingSchedule(userId, resolvedTenantId, today, windowDays);
 
   const hasAnySignal =
     calendarEvents.length > 0 ||
@@ -494,19 +495,22 @@ async function readBestReadiness(userId: number, tenantId?: number): Promise<{ s
 
 function buildTrainingSchedule(
   userId: number,
+  tenantId: number,
   startDate: DateTime,
   windowDays: number,
 ): Map<string, { load: TrainingLoad; scorePenalty: number; reasons: string[] }> {
   const byDate = new Map<string, { load: TrainingLoad; scorePenalty: number; reasons: string[] }>();
-  const plans = getActivePlans(userId, userId);
+  const plans = getActivePlans(userId, tenantId);
 
   for (const plan of plans) {
     const weeks = getWeeksForPlan(plan.id);
+    const schedulingTimezone = resolveTrainingPlanTimezone(plan);
     for (let offset = 0; offset < windowDays; offset += 1) {
       const date = startDate.plus({ days: offset });
-      const week = weekForDate(plan, weeks, date);
+      const planDate = date.setZone(schedulingTimezone).startOf('day');
+      const week = weekForDate(plan, weeks, planDate, schedulingTimezone);
       if (!week) continue;
-      const weekday = date.toFormat('EEEE');
+      const weekday = planDate.toFormat('EEEE');
       const sessions = getSessionsForWeek(week.id).filter((session) => session.day_of_week === weekday);
       if (sessions.length === 0) continue;
 
@@ -521,8 +525,13 @@ function buildTrainingSchedule(
   return byDate;
 }
 
-function weekForDate(plan: TrainingPlan, weeks: TrainingWeek[], date: DateTime): TrainingWeek | null {
-  const planStart = DateTime.fromISO(plan.start_date, { zone: config.app.timezone }).startOf('day');
+function weekForDate(
+  plan: TrainingPlan,
+  weeks: TrainingWeek[],
+  date: DateTime,
+  schedulingTimezone: string = resolveTrainingPlanTimezone(plan),
+): TrainingWeek | null {
+  const planStart = DateTime.fromISO(plan.start_date, { zone: schedulingTimezone }).startOf('day');
   const diffDays = Math.floor(date.startOf('day').diff(planStart, 'days').days);
   if (diffDays < 0) return null;
   const weekNumber = Math.floor(diffDays / 7) + 1;

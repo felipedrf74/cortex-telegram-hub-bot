@@ -68,7 +68,7 @@ vi.mock('../../src/utils/logger', () => ({
   LOGGER_REDACTION_PATHS: [],
 }));
 
-import { createEvent, updateEvent, deleteEvent, getEvents } from '../../src/services/outlook-calendar';
+import { createEvent, updateEvent, deleteEvent, getEventById, getEvents } from '../../src/services/outlook-calendar';
 
 describe('OutlookCalendar — per-user Graph client for writes', () => {
   beforeEach(() => {
@@ -331,6 +331,61 @@ describe('OutlookCalendar — per-user Graph client for writes', () => {
     expect(mocks.getGraphClient).not.toHaveBeenCalled();
     expect(mocks.userClient.api).toHaveBeenCalledWith('/me/events/evt-3');
     expect(mocks.userRequest.header).toHaveBeenCalledWith('Prefer', 'IdType="ImmutableId"');
+  });
+
+  it('reads an Outlook event by exact immutable provider id', async () => {
+    mocks.userRequest.get.mockResolvedValue({
+      id: 'evt-exact',
+      subject: 'Moved session',
+      start: { dateTime: '2026-04-20T09:00:00.000Z' },
+      end: { dateTime: '2026-04-20T10:00:00.000Z' },
+      body: { content: 'NEXUS_SECRETARY_AGENDA_ITEM:agenda-1' },
+    });
+
+    await expect(getEventById('evt-exact', 77)).resolves.toMatchObject({
+      id: 'evt-exact',
+      description: 'NEXUS_SECRETARY_AGENDA_ITEM:agenda-1',
+    });
+    expect(mocks.userClient.api).toHaveBeenCalledWith('/me/events/evt-exact');
+    expect(mocks.userRequest.header).toHaveBeenCalledWith('Prefer', 'IdType="ImmutableId"');
+  });
+
+  it('returns null only for a provider-confirmed Outlook 404', async () => {
+    mocks.userRequest.get.mockRejectedValue(Object.assign(new Error('missing'), {
+      statusCode: 404,
+      code: 'ErrorItemNotFound',
+    }));
+
+    await expect(getEventById('evt-gone', 77)).resolves.toBeNull();
+  });
+
+  it('retries an Outlook exact read without immutable-id preference for a legacy id', async () => {
+    mocks.userRequest.get
+      .mockRejectedValueOnce(Object.assign(new Error('non-calendar folder'), {
+        statusCode: 400,
+        code: 'ErrorInvalidRequest',
+        body: '{"code":"ErrorInvalidRequest","message":"non-calendar folder"}',
+      }))
+      .mockResolvedValueOnce({
+        id: 'legacy-evt',
+        subject: 'Legacy event',
+        start: { dateTime: '2026-04-20T09:00:00.000Z' },
+        end: { dateTime: '2026-04-20T10:00:00.000Z' },
+      });
+
+    await expect(getEventById('legacy-evt', 77)).resolves.toMatchObject({ id: 'legacy-evt' });
+    expect(mocks.userClient.api).toHaveBeenCalledTimes(2);
+    expect(mocks.userRequest.header).toHaveBeenCalledTimes(1);
+    expect(mocks.userRequest.get).toHaveBeenCalledTimes(2);
+  });
+
+  it('propagates an unknown Outlook exact-read failure', async () => {
+    mocks.userRequest.get.mockRejectedValue(Object.assign(new Error('service unavailable'), {
+      statusCode: 503,
+      code: 'ServiceUnavailable',
+    }));
+
+    await expect(getEventById('evt-unknown', 77)).rejects.toMatchObject({ statusCode: 503 });
   });
 
   it('retries Outlook deletes without immutable-id preference for legacy event ids', async () => {

@@ -571,12 +571,14 @@ function repairTrainingPlanAfterValidation(
   if (!needsVolumeRepair && !needsLowerConflictRepair) return;
 
   for (const week of planData.weeks ?? []) {
-    if (isDeloadFocus(week.focus)) continue;
+    const deloadWeek = isDeloadFocus(week.focus);
     const strength = (week.sessions ?? []).filter(isStrengthSession);
     const lowerRepaired = needsLowerConflictRepair
       ? repairLowerHeavyConflicts(strength, split, spec, week.weekNumber ?? 1, week.focus, repairActions)
       : 0;
-    const repaired = needsVolumeRepair ? reconcileWeeklyVolume(strength, spec) : 0;
+    // Deload weeks intentionally skip normal weekly-volume reconciliation,
+    // but recovery spacing remains a safety invariant and is repaired above.
+    const repaired = needsVolumeRepair && !deloadWeek ? reconcileWeeklyVolume(strength, spec) : 0;
     const totalRepaired = lowerRepaired + repaired;
     if (repaired > 0) {
       repairActions.push(`Adjusted ${repaired} strength prescription${repaired === 1 ? '' : 's'} to reconcile weekly direct-set targets.`);
@@ -1970,7 +1972,7 @@ function repairSessionDurationCoherence(
   }
 
   if (!verdict.ok && verdict.reason === 'overstuffed') {
-    if (options.preserveExercises && verdict.estimatedMinutes <= 90) {
+    if (options.preserveExercises && !spec.sessionDurationMinutes && verdict.estimatedMinutes <= 90) {
       const previous = normalizeDuration(session.durationMinutes, spec.sessionDurationMinutes);
       session.durationMinutes = normalizeSplitStrengthDuration(verdict.estimatedMinutes, spec.sessionDurationMinutes, { honorRequestedFloor: false });
       repairActions.push(`Raised ${session.title || slot.slot} from ${previous} min to ${session.durationMinutes} min to preserve quality-gate volume truthfully.`);

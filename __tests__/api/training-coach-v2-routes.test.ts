@@ -38,6 +38,9 @@ vi.mock('../../src/utils/logger', () => ({
 
 vi.mock('../../src/config', () => ({
   config: {
+    // F11: reflow resolves one scheduling zone even when the test athlete has
+    // no users row, mirroring the production user-zone → app-zone fallback.
+    app: { timezone: 'Europe/Lisbon' },
     coaching: {
       get periodizationV2Enabled() { return flagState; },
       ruleEnforcementEnabled: false,
@@ -48,7 +51,10 @@ vi.mock('../../src/config', () => ({
 }));
 
 
-import { mountCoachV2Routes } from '../../src/api/routes/training-coach-v2';
+import {
+  mountCoachV2Routes,
+  resolvePersistedTrainingReflowSyncTarget,
+} from '../../src/api/routes/training-coach-v2';
 import { _resetRateLimiterForTests } from '../../src/api/rate-limiter';
 import { setDbProvider } from '../../src/services/intelligence-bus';
 
@@ -308,6 +314,11 @@ describe('POST /week/:weekId/reflow (C6)', () => {
     });
     expect(result.status).toBe(200);
     expect(result.json?.data?.adaptationRevision).toBe(1);
+    expect(result.json?.data?.propagation).toMatchObject({
+      state: 'not_synced',
+      pending: false,
+      adaptationRevision: 1,
+    });
     const ledger = testDb.prepare(
       "SELECT COUNT(*) AS n FROM training_plan_adaptations WHERE plan_id = 1 AND scope = 'week'",
     ).get() as { n: number };
@@ -586,6 +597,41 @@ describe('POST /week/:weekId/reflow (C6)', () => {
       planId: 1, mode: 'apply', trigger: 't', idempotencyKey: 'k',
     });
     expect(result.status).toBe(404);
+  });
+});
+
+describe('F24 — live reflow propagation wiring', () => {
+  it.each([
+    ['google', 'google'],
+    ['outlook', 'outlook'],
+    ['none', 'none'],
+    ['apple', 'apple'],
+  ] as const)('resolves persisted Training spec provider %s without reinterpretation', (provider, expected) => {
+    expect(resolvePersistedTrainingReflowSyncTarget(JSON.stringify({
+      trainingCalendarSource: provider === 'google' || provider === 'outlook' ? provider : null,
+      trainingPlanSpec: { calendarPreference: { provider } },
+    }))).toBe(expected);
+  });
+
+  it('fails legacy explicit null to no-provider while preserving absent-key auto compatibility', () => {
+    expect(resolvePersistedTrainingReflowSyncTarget('{"trainingCalendarSource":null}')).toBe('none');
+    expect(resolvePersistedTrainingReflowSyncTarget('{"preferredTime":"07:00"}')).toBe('auto');
+  });
+
+  it('routes the live apply endpoint through the scoped propagation orchestrator', () => {
+    const source = fs.readFileSync(path.resolve(
+      __dirname,
+      '../../src/api/routes/training-coach-v2.ts',
+    ), 'utf8');
+    expect(source).toContain('await executeWeekReflowWithPropagation({');
+    expect(source).toContain("tenantId: requireTenantIdParam(auth.tenantId, 'training.coach.reflow')");
+    expect(source).toContain('planVersion: planMeta.plan_version');
+    // Stronger F24 guarantee: reflow preserves the plan's persisted calendar
+    // choice; none/apple must never be upgraded into an auto provider write.
+    expect(source).toContain('const reflowSyncTarget = resolvePersistedTrainingReflowSyncTarget(');
+    expect(source).toContain('syncTarget: reflowSyncTarget');
+    expect(source).not.toContain("syncTarget: 'auto'");
+    expect(source).not.toMatch(/\bexecuteWeekReflow\s*\(\s*\{/);
   });
 });
 
@@ -1164,13 +1210,15 @@ describe('R3 P2 — V2 completion REST validation', () => {
     // validator (training.ts:521) is what blocks. The unit test
     // training-plans-completion-v2.test.ts already pins persistence;
     // here we lean on TypeScript to verify the route imports the
-    // validator. Pin via a sanity assertion that the validator
-    // export exists.
+    // validator. F18 replaces the ad-hoc V2-only list with the canonical
+    // released completion validator, so aliases and rich feedback cannot
+    // silently diverge between complete and skip.
     const routeSource = fs.readFileSync(
       path.resolve(__dirname, '../../src/api/routes/training.ts'),
       'utf8',
     );
-    expect(routeSource).toContain('v2TypeErrors');
-    expect(routeSource).toContain('Invalid V2 completion fields');
+    expect(routeSource).toContain('normalizeTrainingCompletionFeedback');
+    expect(routeSource).toContain('Invalid completion feedback');
+    expect(routeSource).not.toContain('v2TypeErrors');
   });
 });

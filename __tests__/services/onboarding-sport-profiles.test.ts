@@ -75,10 +75,28 @@ describe('Phase 2 Slice B — sport questionnaire definitions', () => {
       expect(getQuestionnaire(sport)).toBeDefined();
     });
 
-    it(`${sport} has 5-10 steps per Phase 1 decision 1.5`, () => {
+    it(`${sport} asks 5-10 REQUIRED questions per Phase 1 decision 1.5`, () => {
+      // Decision 1.5 bounds ONBOARDING BURDEN — how many questions the athlete
+      // must answer to finish a sport profile. It was originally expressed as
+      // total step count because every step was required.
+      //
+      // The F2 clarification contract introduced optional canonical targets:
+      // `session_duration_minutes` must exist as a questionnaire step or the
+      // allowlisted PATCH route rejects the server-advertised resolution as an
+      // unknown field, but it is `required: false` and is only written when a
+      // clarification actually asks for it. `getMissingProfileFields` skips it,
+      // so it never makes an existing complete profile incomplete and never
+      // lengthens the onboarding flow.
+      //
+      // Counting it against the burden budget would have forced a false choice
+      // between the clarification contract and the onboarding-length decision,
+      // so the assertion now measures what the decision is actually about.
       const q = QUESTIONNAIRES[sport];
-      expect(q.steps.length).toBeGreaterThanOrEqual(5);
-      expect(q.steps.length).toBeLessThanOrEqual(10);
+      const required = q.steps.filter((step) => step.required !== false);
+      expect(required.length).toBeGreaterThanOrEqual(5);
+      expect(required.length).toBeLessThanOrEqual(10);
+      // Total steps stay bounded so the definition cannot grow without review.
+      expect(q.steps.length).toBeLessThanOrEqual(12);
     });
 
     it(`${sport} has a non-empty title and description`, () => {

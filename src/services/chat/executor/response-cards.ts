@@ -121,12 +121,10 @@ export function openSurfacePayloadForStep(
       surface: 'training_plan_builder',
       pendingActionId: (result as any)?.pendingActionId ?? null,
       prefill: {
-        sport: (step.args as any).sport ?? null,
-        goal: (step.args as any).goal ?? null,
+        objective: (step.args as any).objective ?? null,
         durationWeeks: (step.args as any).durationWeeks ?? null,
-        startDate: (step.args as any).startDate ?? null,
-        weeklyVolumeKm: (step.args as any).weeklyVolumeKm ?? null,
-        constraints: (step.args as any).constraints ?? [],
+        sessionsPerWeek: (step.args as any).sessionsPerWeek ?? null,
+        startPolicy: (step.args as any).startPolicy ?? null,
       },
     };
   }

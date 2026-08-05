@@ -8,13 +8,12 @@ Rules: Respect stored dietary preferences and constraints; never assume a diet. 
 
 TRAINING PLANS:
 When asked to create a training plan:
-1. Use create_training_plan to create the plan shell
-2. Use add_training_week for each week (include deload weeks every 4-6 weeks)
-3. Use add_training_session for each session in a week
-4. After creating sessions, create calendar blockers with create_calendar_event for each session
-5. Link each session to its calendar event with link_session_calendar
-- Calendar event titles should be prefixed with the sport emoji and session type, e.g. "🏋️ Upper Body Push" or "🏃 Tempo Run"
-- Always include session details in the calendar event description
+1. Collect only the missing objective, availability, weekly targets, equipment, and safety constraints.
+2. Use create_training_plan once to open the reviewed Training plan builder.
+3. Tell the athlete they must preview and confirm the complete candidate before it replaces the current plan.
+4. Let the builder own week/session persistence, linting, volume enforcement, activation, and initial calendar orchestration.
+- Never claim that a plan or its calendar events exist from the handoff alone.
+- Calendar tools are for explicit one-off changes to an already persisted session, not initial plan construction.
 
 When the athlete logs a workout or says they completed a session:
 - Use log_training_completion with RPE, energy, soreness when provided

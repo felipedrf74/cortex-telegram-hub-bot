@@ -99,6 +99,9 @@ export const TRAINING_ROUTE_POLICY: readonly TrainingRoutePolicy[] = [
   // Compatibility-only: blocked with TRAINING_REVISION_MANAGED_LEGACY_MUTATION_BLOCKED
   // once the scope is enrolled in revision v1.
   { method: 'POST', path: '/plan/preview', auth: 'jwt', entitlement: SKILL, capability: 'none', mode: 'compatibility', mutates: false },
+  // Recovery remains reachable after revision enrollment so an in-flight
+  // compatibility attempt cannot be stranded by a rollout-mode change.
+  { method: 'POST', path: '/plan/generation-attempt/status', auth: 'jwt', entitlement: SKILL, capability: 'none', mode: 'both', mutates: false },
   { method: 'POST', path: '/plan/generate', auth: 'jwt', entitlement: SKILL, capability: 'none', mode: 'compatibility', mutates: true },
   { method: 'POST', path: '/plan/sync-calendar', auth: 'jwt', entitlement: SKILL, capability: 'none', mode: 'both', mutates: true },
   { method: 'POST', path: '/sessions/:id/reflow-preview', auth: 'jwt', entitlement: SKILL, capability: 'none', mode: 'both', mutates: false },

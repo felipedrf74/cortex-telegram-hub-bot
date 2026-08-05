@@ -12,7 +12,7 @@ import type Database from 'better-sqlite3';
 import { withDatabaseForTest } from '../../src/services/database';
 import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import * as trainingPlans from '../../src/services/training-plans';
-import { emitDomainEvent, markEventProcessed } from '../../src/services/event-outbox';
+import { claimPendingEvents, emitDomainEvent, markEventProcessed } from '../../src/services/event-outbox';
 import { runTrainingPlanCalendarSyncBackfill } from '../../src/services/training-plan-calendar-sync-backfill';
 import { TRAINING_PLAN_CALENDAR_SYNC_REQUESTED_EVENT_TYPE } from '../../src/services/training-plan-calendar-sync-worker';
 
@@ -72,6 +72,40 @@ function seedLegacyPlan(options: {
     sessionIds.push(session.id);
   });
   return { planId: plan.id, sessionIds };
+}
+
+/**
+ * Drive an outbox row to `failed` the way a real worker does.
+ *
+ * Migration 279's `trg_event_outbox_terminal_tombstone` forbids any terminal
+ * transition (`processed` / `failed` / `dead_letter`) from a state other than
+ * `processing`: a row can only reach a terminal state by being claimed first.
+ * A bare `pending -> failed` UPDATE is therefore not a legal transition, and
+ * the abort this test used to hit was the fence working, not a defect.
+ *
+ * The legal path is claim-then-fail:
+ *   1. `pending -> processing` with a full fence (fresh token, owner,
+ *      locked_at, unexpired lease), per `trg_event_outbox_fenced_claim_transition`.
+ *   2. `processing -> failed` RETAINING the same token and clearing
+ *      `lease_expires_at`, per `trg_event_outbox_fenced_terminal_transition`.
+ *      Keeping the token is what leaves the tombstone that rejects a later
+ *      predecessor overwrite.
+ */
+function failOutboxEventLikeWorker(db: Database.Database, eventId: string): void {
+  const token = `fence-backfill-${eventId}`;
+  db.prepare(`
+    UPDATE event_outbox
+       SET status = 'processing', lock_owner = 'backfill-test-worker',
+           locked_at = datetime('now'), fencing_token = ?,
+           lease_expires_at = datetime('now', '+15 minutes')
+     WHERE event_id = ?
+  `).run(token, eventId);
+  db.prepare(`
+    UPDATE event_outbox
+       SET status = 'failed', lease_expires_at = NULL, fencing_token = ?,
+           lock_owner = NULL, locked_at = NULL
+     WHERE event_id = ?
+  `).run(token, eventId);
 }
 
 function outboxRows(db: Database.Database) {
@@ -172,7 +206,7 @@ describe('training-plan-calendar-sync-backfill', () => {
         payload: { planId, planVersion: 1, sessionIds, syncTarget: 'google' },
         idempotencyKey: `training.plan_calendar_sync.requested:${planId}:1`,
       }, db);
-      db.prepare("UPDATE event_outbox SET status = 'failed' WHERE event_id = ?").run(event.eventId);
+      failOutboxEventLikeWorker(db, event.eventId);
 
       const dryRun = runTrainingPlanCalendarSyncBackfill({ mode: 'dry_run', db });
       expect(dryRun.candidates[0]).toMatchObject({
@@ -204,7 +238,9 @@ describe('training-plan-calendar-sync-backfill', () => {
         payload: { planId, planVersion: 1, sessionIds, syncTarget: 'google' },
         idempotencyKey: `training.plan_calendar_sync.requested:${planId}:1`,
       }, db);
-      markEventProcessed(event.eventId, db);
+      // Stronger guarantee: even fixture terminalization must carry the exact
+      // lease owner/token instead of using the predecessor id-only shortcut.
+      markEventProcessed(claimPendingEvents(1, 'backfill-canonical-fixture', db)[0], db);
 
       // Replaying the processed event would be neutralized by the router's
       // job idempotency key against the completed job row, so the backfill
@@ -227,7 +263,7 @@ describe('training-plan-calendar-sync-backfill', () => {
 
       // Once the suffixed request also terminates with the same unlinked
       // set, the backfill refuses to loop and reports it for the operator.
-      markEventProcessed(rows[1].event_id, db);
+      markEventProcessed(claimPendingEvents(1, 'backfill-suffixed-fixture', db)[0], db);
       const third = runTrainingPlanCalendarSyncBackfill({ mode: 'dry_run', db });
       expect(third.candidates[0]).toMatchObject({
         action: 'backfill_already_attempted',

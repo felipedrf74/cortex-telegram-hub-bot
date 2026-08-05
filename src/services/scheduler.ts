@@ -22,9 +22,13 @@ import { collectUberInvoices, formatUberNotification, isUberConfigured } from '.
 import { createScraperMfaInteractiveCallbacks } from './scraper-mfa-reply';
 import { getFiscalCollectionSummary, isFiscalBundleDue, sendFiscalBundleNow } from './fiscal-bundle';
 import { generateCoachBriefing } from './garmin-coach';
-import { isGarminConfigured, keepAlive as garminKeepAlive, ensureAuthenticated as garminEnsureAuth } from './garmin';
+import {
+  isGarminConfigured,
+  keepAlive as garminKeepAlive,
+  ensureAuthenticated as garminEnsureAuth,
+} from './garmin';
 import { listGarminConnectedUserIds, hasActiveGarminConnection } from './garmin-session-store';
-import { registerJob as registerTelemetryJob, wrapJob, recordGarminRefresh, setJobFailureNotifier, setJobEnabledChecker, getJobMap, seedJobLastRunFromHistory, type JobDomain } from '../portal/telemetry';
+import { registerJob as registerTelemetryJob, wrapJob, recordGarminRefresh, setJobFailureNotifier, setJobEnabledChecker, getJobMap, seedJobLastRunFromHistory, type JobDomain, type ScheduledJobExecutionContext } from '../portal/telemetry';
 import { assertAgentJobRuntimeRegistration } from './agent-job-manifest';
 import { requestTaskSync } from './task-store/task-sync-coordinator';
 import { isTaskMsDeltaSyncEnabled } from './task-store/task-sync-flags';
@@ -197,26 +201,117 @@ export interface GarminRefreshFanOutResult {
  *
  * Failures are isolated per user: one dead session must not stop the fan-out.
  */
-export async function refreshConnectedGarminUsers(source: RequestSource): Promise<GarminRefreshFanOutResult> {
+export async function refreshConnectedGarminUsers(
+  source: RequestSource,
+  execution?: Pick<ScheduledJobExecutionContext, 'signal' | 'assertLeaseActive'>,
+): Promise<GarminRefreshFanOutResult> {
+  execution?.assertLeaseActive();
   const userIds = listGarminConnectedUserIds();
   const failed: number[] = [];
   let refreshed = 0;
 
   for (const userId of userIds) {
+    execution?.assertLeaseActive();
     try {
       const ok = await runWithContext(
-        { source, userId },
+        {
+          source,
+          tenantId: userId,
+          userId,
+          // Keepalive is always passive token maintenance. Scope no-MFA safety
+          // to this tenant/user invocation instead of racing a process-global
+          // flag against unrelated interactive requests.
+          garminSilent: true,
+        },
         async () => garminKeepAlive(),
       );
+      // A provider call may have been in flight when another process replaced
+      // the token. Fence before recording it or moving to the next tenant.
+      execution?.assertLeaseActive();
       if (ok) refreshed += 1;
       else failed.push(userId);
     } catch (err) {
+      // Ordinary per-user provider failures remain isolated. Lease loss is a
+      // job-level safety failure and must stop the fan-out immediately.
+      execution?.assertLeaseActive();
       failed.push(userId);
       logger.warn({ err, userId, source }, 'Garmin keep-alive failed for user');
     }
   }
 
+  execution?.assertLeaseActive();
   return { total: userIds.length, refreshed, failed };
+}
+
+class GarminKeepaliveIncompleteError extends Error {
+  readonly outcome: GarminRefreshFanOutResult;
+
+  constructor(outcome: GarminRefreshFanOutResult) {
+    super(`Garmin keep-alive incomplete: ${outcome.refreshed}/${outcome.total} refreshed`);
+    this.name = 'GarminKeepaliveIncompleteError';
+    this.outcome = outcome;
+  }
+}
+
+function recordAndValidateGarminKeepaliveOutcome(
+  source: RequestSource,
+  outcome: GarminRefreshFanOutResult,
+): void {
+  recordGarminRefresh(outcome.total === 0 || outcome.failed.length === 0);
+  if (outcome.total === 0) {
+    if (source === 'startup') logger.info('Garmin: startup keepalive — no connected users');
+    return;
+  }
+  if (outcome.failed.length > 0) {
+    throw new GarminKeepaliveIncompleteError(outcome);
+  }
+  if (source === 'startup') {
+    logger.info({ refreshed: outcome.refreshed }, 'Garmin: startup keepalive successful — sessions are live');
+  }
+}
+
+async function runGarminKeepaliveJob(
+  source: RequestSource,
+  execution: ScheduledJobExecutionContext,
+): Promise<void> {
+  const outcome = await refreshConnectedGarminUsers(source, execution);
+  recordAndValidateGarminKeepaliveOutcome(source, outcome);
+}
+
+export type GuardedGarminRefreshResult =
+  | { status: 'completed'; outcome: GarminRefreshFanOutResult }
+  | { status: 'not_executed'; outcome: null };
+
+/**
+ * Run an operator-triggered refresh under the same global durable lease used
+ * by cron and startup. `not_executed` means another holder owns the fence (or
+ * the Training job is disabled); callers must never fall back to an unfenced
+ * direct fan-out.
+ */
+export async function refreshConnectedGarminUsersWithLease(
+  source: RequestSource,
+): Promise<GuardedGarminRefreshResult> {
+  let outcome: GarminRefreshFanOutResult | null = null;
+  const guarded = wrapJob('garmin_keepalive', async (execution) => {
+    outcome = await refreshConnectedGarminUsers(source, execution);
+    recordAndValidateGarminKeepaliveOutcome(source, outcome);
+  }, { requestSource: source, storeForRecovery: false });
+
+  try {
+    await guarded();
+  } catch (err) {
+    // Partial/all-user provider failures are truthful completed fan-outs. The
+    // durable wrapper has already recorded a failed job; the portal still
+    // needs the bounded aggregate to tell the operator what happened.
+    if (err instanceof GarminKeepaliveIncompleteError) {
+      return { status: 'completed', outcome: err.outcome };
+    }
+    throw err;
+  }
+
+  return outcome
+    ? { status: 'completed', outcome }
+    : { status: 'not_executed', outcome: null };
 }
 
 function getActiveUserIds(): number[] {
@@ -1947,23 +2042,22 @@ export function startScheduler(): void {
   // ── Secretary agenda → calendar sync (every 5 min) ────────────────
   // Closes the orphaned-selectedSlot gap: arbitrator persists an agenda item
   // with selectedSlot but no cron previously pushed it to Google/Outlook.
-  // Per-user fan-out picks the user's connected calendar source(s) via
-  // hasConnectedCalendarForUser; runs the unified-calendar adapter against
-  // the agenda store. Wave 1 batch cap is 50 items/user/run with the
+  // Durable owner+tenant+provider-target scopes select one adapter without
+  // re-deriving the user's current preference. Wave 1 batch cap is 50
+  // items/scope/run with the
   // existing provider_sync_state state machine (see
   // secretary-agenda-provider-sync.ts:97 for the state enum). Outlook
   // rate limits aggressively, so retry budget is per-item not per-tick.
   // Wave 2 escalation: raise to */15 + isCronJobEnabled gate if 429s spike.
   cron.schedule('*/5 * * * *', wrapJob('secretary_agenda_sync', async () => {
     try {
-      const { syncSecretaryAgendaItemsToProvider, markCompletedSecretaryAgendaItems } = require('./secretary-agenda-provider-sync');
+      const {
+        syncSecretaryAgendaItemsToProvider,
+        markCompletedSecretaryAgendaItems,
+        listPendingSecretaryAgendaProviderScopes,
+      } = require('./secretary-agenda-provider-sync');
       const { createUnifiedCalendarSecretaryProviderAdapter } = require('./secretary-unified-calendar-provider-adapter');
       const { reconcileOrphanedTrainingAgendaEvents } = require('./training-agenda-reconciliation');
-      const googleCal = require('./google-calendar');
-      const outlookCal = require('./outlook-calendar');
-      const users = getActiveUserIds();
-      if (users.length === 0) return 'skipped';
-
       // Sweep past items out of the active set first. Without this the
       // active set grows without bound and every past item keeps costing
       // sync-eligibility checks each tick (the sweep existed since the
@@ -1972,68 +2066,97 @@ export function startScheduler(): void {
       if (completedSwept > 0) {
         logger.info({ completedSwept }, '[scheduler] secretary_agenda_sync marked past agenda items completed');
       }
+      const scopes = listPendingSecretaryAgendaProviderScopes();
+      if (scopes.length === 0) return 'skipped';
 
       const PER_USER_CAP = 50;
       const CONCURRENCY = 4;
       let syncedTotal = 0;
       let readbackFailedTotal = 0;
       let reconciledTrainingAgendaTotal = 0;
+      const failedScopes: Array<{
+        userId: number;
+        tenantId: string;
+        source: 'google' | 'outlook' | 'training_reconciliation';
+        failed: number;
+        deadLetter: number;
+      }> = [];
+      const reconciledScopes = new Set<string>();
 
-      // Per-user fan-out with bounded concurrency. Outlook + Google rate-limit
-      // at the request layer (429 with Retry-After), so we keep concurrency low.
-      // Each user's failure is isolated by the inner try/catch.
-      for (let i = 0; i < users.length; i += CONCURRENCY) {
-        const batch = users.slice(i, i + CONCURRENCY);
+      // Every unit of work comes from the durable agenda target and carries
+      // its exact owner+tenant scope. Never reconstruct tenantId from userId
+      // or fan one provider-agnostic intent across connected providers.
+      for (let i = 0; i < scopes.length; i += CONCURRENCY) {
+        const batch = scopes.slice(i, i + CONCURRENCY);
         const settled = await Promise.allSettled(
-          batch.map(async (userId) => {
-            const sources: Array<'google' | 'outlook'> = [];
-            if (googleCal.isGoogleCalendarConfigured(userId)) sources.push('google');
-            if (outlookCal.isOutlookCalendarConfigured(userId)) sources.push('outlook');
-            if (sources.length === 0) return { userId, synced: 0, readbackFailed: 0, skipped: true };
-
+          batch.map(async (scope: { ownerUserId: number; tenantId: string; providerSource: 'google' | 'outlook' }) => {
+            const userId = scope.ownerUserId;
+            const tenantId = scope.tenantId;
+            const source = scope.providerSource;
             let userSynced = 0;
             let userReadbackFailed = 0;
             let userReconciledTrainingAgenda = 0;
-            try {
-              const reconciliation = await reconcileOrphanedTrainingAgendaEvents(userId, userId);
-              userReconciledTrainingAgenda = reconciliation.deleted;
-              if (reconciliation.attempted > 0) {
-                logger.info(
-                  {
-                    userId,
-                    attempted: reconciliation.attempted,
-                    deleted: reconciliation.deleted,
-                    failed: reconciliation.failed,
-                  },
-                  '[scheduler] secretary_agenda_sync reconciled stale Training calendar events',
-                );
-              }
-            } catch (err) {
-              logger.warn({ err, userId }, '[scheduler] secretary_agenda_sync training reconciliation failure');
-            }
-            for (const source of sources) {
+            const reconciliationScopeKey = `${userId}:${tenantId}`;
+            if (!reconciledScopes.has(reconciliationScopeKey)) {
+              reconciledScopes.add(reconciliationScopeKey);
               try {
-                const adapter = createUnifiedCalendarSecretaryProviderAdapter(source);
-                const results = await syncSecretaryAgendaItemsToProvider(
-                  { ownerUserId: userId, tenantId: userId, includeInactive: false },
-                  adapter,
-                );
-                // Bound the work this tick: take at most PER_USER_CAP results.
-                // Remaining items are picked up next tick. Unchanged 'synced'
-                // rows are short-circuited by the last_synced_fingerprint
-                // check inside the sync function (migration 224) and re-
-                // verified against the provider every
-                // SECRETARY_SYNC_VERIFY_INTERVAL_MINUTES (default 6h).
-                const bounded = results.slice(0, PER_USER_CAP);
-                for (const r of bounded) {
-                  if (r.providerSyncState === 'synced') userSynced += 1;
-                  if (r.providerSyncState === 'readback_failed') userReadbackFailed += 1;
+                const reconciliation = await reconcileOrphanedTrainingAgendaEvents(userId, tenantId);
+                userReconciledTrainingAgenda = reconciliation.deleted;
+                if (reconciliation.attempted > 0) {
+                  logger.info(
+                    {
+                      userId,
+                      tenantId,
+                      attempted: reconciliation.attempted,
+                      deleted: reconciliation.deleted,
+                      failed: reconciliation.failed,
+                    },
+                    '[scheduler] secretary_agenda_sync reconciled stale Training calendar events',
+                  );
                 }
               } catch (err) {
-                logger.warn({ err, userId, source }, '[scheduler] secretary_agenda_sync per-user/source failure');
+                logger.warn({ err, userId, tenantId }, '[scheduler] secretary_agenda_sync training reconciliation failure');
+                failedScopes.push({
+                  userId,
+                  tenantId,
+                  source: 'training_reconciliation',
+                  failed: 1,
+                  deadLetter: 0,
+                });
               }
             }
-            return { userId, synced: userSynced, readbackFailed: userReadbackFailed, reconciledTrainingAgenda: userReconciledTrainingAgenda };
+            try {
+              const adapter = createUnifiedCalendarSecretaryProviderAdapter(source);
+              const results = await syncSecretaryAgendaItemsToProvider(
+                { ownerUserId: userId, tenantId, includeInactive: false },
+                adapter,
+                { maxItems: PER_USER_CAP },
+              );
+              let failed = 0;
+              let deadLetter = 0;
+              for (const r of results) {
+                if (r.action !== 'failed' && r.providerSyncState === 'synced') userSynced += 1;
+                if (r.providerSyncState === 'readback_failed') userReadbackFailed += 1;
+                if (r.action === 'failed') failed += 1;
+                if (r.reasonCode === 'provider_sync_dead_letter') deadLetter += 1;
+              }
+              if (failed > 0 || deadLetter > 0) {
+                failedScopes.push({ userId, tenantId, source, failed, deadLetter });
+              }
+            } catch (err) {
+              logger.warn({ err, userId, tenantId, source }, '[scheduler] secretary_agenda_sync per-user/source failure');
+              const deadLetterCount = Number(
+                (err as { deadLetterCount?: unknown } | null)?.deadLetterCount ?? 0,
+              );
+              failedScopes.push({
+                userId,
+                tenantId,
+                source,
+                failed: deadLetterCount > 0 ? 0 : 1,
+                deadLetter: Number.isFinite(deadLetterCount) ? Math.max(0, deadLetterCount) : 0,
+              });
+            }
+            return { userId, tenantId, synced: userSynced, readbackFailed: userReadbackFailed, reconciledTrainingAgenda: userReconciledTrainingAgenda };
           }),
         );
         for (const s of settled) {
@@ -2048,12 +2171,23 @@ export function startScheduler(): void {
       }
       if (syncedTotal > 0 || readbackFailedTotal > 0 || reconciledTrainingAgendaTotal > 0) {
         logger.info(
-          { syncedTotal, readbackFailedTotal, reconciledTrainingAgendaTotal, userCount: users.length },
+          { syncedTotal, readbackFailedTotal, reconciledTrainingAgendaTotal, scopeCount: scopes.length },
           '[scheduler] secretary_agenda_sync complete',
         );
       }
+      if (failedScopes.length > 0) {
+        logger.warn({
+          failedScopeCount: failedScopes.length,
+          failedItemCount: failedScopes.reduce((sum, scope) => sum + scope.failed, 0),
+          deadLetterCount: failedScopes.reduce((sum, scope) => sum + scope.deadLetter, 0),
+        }, '[scheduler] secretary_agenda_sync completed independent scopes with failures');
+        // Keep durable job history truthful without placing user identifiers
+        // in the persisted error message.
+        throw new Error(`SECRETARY_AGENDA_SYNC_SCOPED_FAILURES:${failedScopes.length}`);
+      }
     } catch (err) {
       logger.warn({ err }, '[scheduler] secretary_agenda_sync cron failed');
+      throw err;
     }
   }), { timezone: tz });
 
@@ -2341,29 +2475,10 @@ export function startScheduler(): void {
   // fallback; gating the whole job on it meant that on a deployment without
   // owner credentials, no connected user's tokens were ever refreshed. Users
   // who linked their own account are the reason this job exists.
-  cron.schedule('5,35 * * * *', wrapJob('garmin_keepalive', async () => {
-    const outcome = await refreshConnectedGarminUsers('cron:garmin_keepalive');
-    if (outcome.total === 0) {
-      // Still record a heartbeat: the health probe mirrors this job's
-      // job_history row and reports `fail` on staleness, so returning
-      // 'skipped' silently would look like a broken cron after 90 minutes.
-      recordGarminRefresh(true);
-      return 'skipped';
-    }
-
-    // Report honestly. Reporting ok because ONE of fifty users refreshed
-    // makes the integration look healthy while it is broken for everyone
-    // else; the probe has no per-user visibility to correct that.
-    recordGarminRefresh(outcome.failed.length === 0);
-    if (outcome.refreshed === 0) {
-      throw new Error(`All refresh attempts failed for ${outcome.total} user(s) — sessions may be dead`);
-    }
-    if (outcome.failed.length > 0) {
-      throw new Error(
-        `Garmin keep-alive failed for ${outcome.failed.length}/${outcome.total} user(s) — `
-        + `refreshed ${outcome.refreshed}`,
-      );
-    }
+  cron.schedule('5,35 * * * *', wrapJob('garmin_keepalive', async (execution) => {
+    // Empty fan-out still records a successful heartbeat. Partial fan-out is a
+    // truthful job failure, and every next provider effect is token-fenced.
+    await runGarminKeepaliveJob('cron:garmin_keepalive', execution);
   }), { timezone: tz });
 
   // Immediate keepalive on startup — closes the 30-minute gap between
@@ -2371,34 +2486,19 @@ export function startScheduler(): void {
   // (coach briefing, training plan adjust) could fire during the gap
   // with expired tokens, triggering a full re-login → MFA email.
   // Runs in silent mode so a dead session doesn't send an MFA email.
+  // This auxiliary wrapper deliberately uses the SAME job name and durable
+  // scope as cron. Multiple replicas, or a restart near minute 5/35, therefore
+  // cannot run startup and scheduled refreshes concurrently. It must not
+  // replace the cron callback retained for DST recovery.
+  const startupGarminKeepaliveJob = wrapJob('garmin_keepalive', async (execution) => {
+    logger.info('Garmin: startup keepalive — refreshing tokens immediately (silent mode)');
+    await runGarminKeepaliveJob('startup', execution);
+  }, { requestSource: 'startup', storeForRecovery: false });
   setTimeout(async () => {
     try {
-      // Set silent mode so even if keepAlive somehow triggers a
-      // recovery path, it won't send an MFA email.
-      const { setSilentMode } = require('./garmin');
-      setSilentMode(true);
-      logger.info('Garmin: startup keepalive — refreshing tokens immediately (silent mode)');
-      // Same per-user fan-out as the cron. This previously called
-      // `garminKeepAlive()` bare, which resolved no user once the resolver
-      // stopped falling back to the owner — silently disabling the very
-      // MFA-email guard this block exists to provide.
-      const outcome = await refreshConnectedGarminUsers('startup');
-      recordGarminRefresh(outcome.total === 0 || outcome.failed.length === 0);
-      if (outcome.total === 0) {
-        logger.info('Garmin: startup keepalive — no connected users');
-      } else if (outcome.failed.length === 0) {
-        logger.info({ refreshed: outcome.refreshed }, 'Garmin: startup keepalive successful — sessions are live');
-      } else {
-        logger.warn(
-          { refreshed: outcome.refreshed, failed: outcome.failed.length },
-          'Garmin: startup keepalive failed for some users (no MFA triggered, silent mode)',
-        );
-      }
+      await startupGarminKeepaliveJob();
     } catch (err) {
       logger.warn({ err }, 'Garmin: startup keepalive error (non-fatal)');
-    } finally {
-      const { setSilentMode } = require('./garmin');
-      setSilentMode(false);
     }
   }, 5000); // 5s delay to let other services initialize first
 
@@ -2491,7 +2591,11 @@ export function startScheduler(): void {
       if (!currentWeek) return;
 
       const stats = getWeeklyAdherence(plan.id, currentWeek.id);
-      if (stats.completedSessions === 0 && stats.skippedSessions === 0) return; // no data yet
+      if (
+        stats.completedSessions === 0
+        && (stats.partialSessions ?? 0) === 0
+        && stats.skippedSessions === 0
+      ) return; // no completion disposition yet
 
       // Calculate and persist readiness score (only when THIS user's Garmin
       // session is confirmed available — prevents cascading 5× raw Garmin
@@ -2558,7 +2662,10 @@ export function startScheduler(): void {
           const emoji = recommendation.adjustIntensity < 100 ? '📉' : '📈';
           let msg = `${emoji} <b>Training Plan Auto-Adjust</b>\n\n`;
           msg += `<b>${plan.name}</b> — Week ${currentWeek.week_number} review:\n`;
-          msg += `• Adherence: ${stats.adherenceRate}%  (${stats.completedSessions}/${stats.totalSessions})\n`;
+          const partialLabel = (stats.partialSessions ?? 0) > 0
+            ? ` + ${stats.partialSessions} partial`
+            : '';
+          msg += `• Adherence: ${stats.adherenceRate}%  (${stats.completedSessions}${partialLabel}/${stats.totalSessions})\n`;
           if (stats.avgRpe != null) msg += `• Avg RPE: ${stats.avgRpe}\n`;
           if (stats.avgSoreness != null) msg += `• Avg Soreness: ${stats.avgSoreness}/10\n`;
           if (stats.avgEnergy != null) msg += `• Avg Energy: ${stats.avgEnergy}/10\n`;
@@ -3237,7 +3344,7 @@ export function startScheduler(): void {
   }), { timezone: tz });
 
   logger.info(
-    `Scheduler started: reminders, daily briefing (${config.todo.digestTime}), end-of-day (21:00), weekly (Fri 17:00), shared list (*/5), content topics (Tue 09:17/Thu 09:23/Fri 18:41), invoices (1st 09:00/09:15/09:30), fiscal-bundle (daily 08:10 due-check), conflict (19:30), fossa (bi-weekly Mon 07:30), garmin-keepalive (*/30), coach (${config.garmin.coachTime}), invoice-queue (*/15), channel-relearn (Sun 03:00), pipeline-agent (20:00), notification-release (*/15), decision-source-supersession (*/15), chat-action-plan-expiry (*/2), chat-action-run-zombie-reaper (*/5), chat-action-run-retention (00:20), event-backbone-worker (* * * * *), event-backbone-cleanup (00:10), nexus-points-expiry (04:00 UTC), expire-signals (hourly), db-backup (${config.backup.time}), dst-watchdog (*/15)`
+    `Scheduler started: reminders, daily briefing (${config.todo.digestTime}), end-of-day (21:00), weekly (Fri 17:00), shared list (*/5), content topics (Tue 09:17/Thu 09:23/Fri 18:41), invoices (1st 09:00/09:15/09:30), fiscal-bundle (daily 08:10 due-check), conflict (19:30), fossa (bi-weekly Mon 07:30), garmin-keepalive (5,35), coach (${config.garmin.coachTime}), invoice-queue (*/15), channel-relearn (Sun 03:00), pipeline-agent (20:00), notification-release (*/15), decision-source-supersession (*/15), chat-action-plan-expiry (*/2), chat-action-run-zombie-reaper (*/5), chat-action-run-retention (00:20), event-backbone-worker (* * * * *), event-backbone-cleanup (00:10), nexus-points-expiry (04:00 UTC), expire-signals (hourly), db-backup (${config.backup.time}), dst-watchdog (*/15)`
   );
 }
 

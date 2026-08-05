@@ -5,7 +5,10 @@ import {
   type SecretaryTimeWindow,
   type SecretarySchedulingIntent,
 } from './secretary-scheduling-arbitrator';
-import { parseTrainingIdentityMarker } from './training-session-identity';
+import {
+  normalizeProviderDescriptionForMarkerParse,
+  parseTrainingIdentityMarker,
+} from './training-session-identity';
 import { getEventsWithDiagnostics, type UnifiedCalendarEvent } from './unified-calendar';
 import { logger } from '../utils/logger';
 
@@ -52,8 +55,7 @@ export async function loadLiveCalendarBusyWindowsForRange(
     const result = await getEventsWithDiagnostics(input.start, input.end, input.ownerUserId);
     const providerConfigured = result.sources.configured.length > 0;
     const windows = result.events
-      .filter((event) => !isTrainingOwnedCalendarEvent(event))
-      .map(calendarEventToBusyWindow)
+      .map((event) => calendarEventToBusyWindow(event, input))
       .filter((window): window is SecretaryTimeWindow => Boolean(window));
     return {
       windows,
@@ -103,22 +105,48 @@ function resolveCalendarBusyRange(intent: SecretarySchedulingIntent): { start: s
   };
 }
 
-function isTrainingOwnedCalendarEvent(event: UnifiedCalendarEvent): boolean {
-  const description = String(event.description || '');
-  return parseTrainingIdentityMarker(description) !== null
-    || /\[NEXUS_TRAINING_IDENTITY\b/i.test(description)
-    || /^NEXUS_SECRETARY_SOURCE_SKILL:training$/mi.test(description)
-    || /^NEXUS_SECRETARY_SOURCE_INTENT:training:/mi.test(description);
-}
-
-function calendarEventToBusyWindow(event: UnifiedCalendarEvent): SecretaryTimeWindow | null {
+function calendarEventToBusyWindow(
+  event: UnifiedCalendarEvent,
+  scope: Pick<SecretaryLiveCalendarBusyRangeInput, 'ownerUserId' | 'tenantId'>,
+): SecretaryTimeWindow | null {
   if (!event.start || !event.end) return null;
   const start = DateTime.fromISO(event.start, { setZone: true });
   const end = DateTime.fromISO(event.end, { setZone: true });
   if (!start.isValid || !end.isValid || end.toMillis() <= start.toMillis()) return null;
+  const providerEventId = String(event.id || '').trim();
+  const description = String(event.description || '');
   return {
     start: start.toUTC().toISO()!,
     end: end.toUTC().toISO()!,
     label: event.summary || 'Calendar event',
+    ...(providerEventId ? {
+      providerIdentity: {
+        providerEventId,
+        providerSource: event.source,
+        ownerUserId: scope.ownerUserId,
+        tenantId: String(scope.tenantId),
+        agendaItemId: extractExactSecretaryAgendaMarker(description),
+        trainingIdentity: extractExactTrainingIdentity(description),
+      },
+    } : {}),
   };
+}
+
+/**
+ * A marker is identity evidence only when exactly one marker is present.
+ * Duplicate markers are ambiguous and deliberately collapse to `null`, which
+ * keeps the provider event hard-busy in the Stage 1 planner.
+ */
+function extractExactSecretaryAgendaMarker(description: string): string | null {
+  const normalized = normalizeProviderDescriptionForMarkerParse(description);
+  const matches = [...normalized.matchAll(/\bNEXUS_SECRETARY_AGENDA_ITEM:([A-Za-z0-9._:-]+)\b/gi)];
+  if (matches.length !== 1) return null;
+  return matches[0][1]?.trim() || null;
+}
+
+function extractExactTrainingIdentity(description: string) {
+  const normalized = normalizeProviderDescriptionForMarkerParse(description);
+  const matches = normalized.match(/\[NEXUS_TRAINING_IDENTITY\s+[^\]]+\]/gi) ?? [];
+  if (matches.length !== 1) return null;
+  return parseTrainingIdentityMarker(normalized);
 }

@@ -13,6 +13,13 @@ import {
   completeTrainingPlanGenerationIdempotency,
   fingerprintTrainingPlanGenerationRequest,
 } from '../../src/services/training-plan-generation-idempotency';
+import type { TrainingPlanGenerationLeaseIdentity } from '../../src/services/training-plan-generation-idempotency';
+
+function ownedClaim(claim: ReturnType<typeof claimTrainingPlanGenerationIdempotency>): TrainingPlanGenerationLeaseIdentity {
+  expect(claim.kind).toBe('claimed');
+  if (claim.kind !== 'claimed') throw new Error('expected owned claim');
+  return claim;
+}
 
 describe('training plan generation idempotency', () => {
   afterEach(() => {
@@ -28,7 +35,7 @@ describe('training plan generation idempotency', () => {
     const requestHash = 'same-plan-request-hash';
 
     const first = claimTrainingPlanGenerationIdempotency(12, 34, key, requestHash);
-    expect(first).toEqual({ kind: 'claimed', idempotencyKey: key, requestHash });
+    expect(first).toMatchObject({ kind: 'claimed', idempotencyKey: key, requestHash });
 
     vi.setSystemTime(new Date('2026-04-15T12:01:40.000Z'));
     const second = claimTrainingPlanGenerationIdempotency(12, 34, key, requestHash);
@@ -44,10 +51,10 @@ describe('training plan generation idempotency', () => {
     const requestHash = 'same-plan-request-hash';
 
     const first = claimTrainingPlanGenerationIdempotency(12, 34, key, requestHash);
-    expect(first).toEqual({ kind: 'claimed', idempotencyKey: key, requestHash });
+    expect(first).toMatchObject({ kind: 'claimed', idempotencyKey: key, requestHash });
 
     vi.setSystemTime(new Date('2026-04-15T12:02:10.000Z'));
-    completeTrainingPlanGenerationIdempotency(12, 34, key, requestHash, { planId: 901 }, 201);
+    completeTrainingPlanGenerationIdempotency(12, 34, ownedClaim(first), { planId: 901 }, 201);
 
     vi.setSystemTime(new Date('2026-04-15T12:03:35.000Z'));
     const second = claimTrainingPlanGenerationIdempotency(12, 34, key, requestHash);
@@ -64,13 +71,13 @@ describe('training plan generation idempotency', () => {
     const key = 'manual:tenant-scoped-double-tap';
     const requestHash = 'same-plan-request-hash';
     const firstTenant = claimTrainingPlanGenerationIdempotency(12, 34, key, requestHash);
-    completeTrainingPlanGenerationIdempotency(12, 34, key, requestHash, { planId: 901 }, 201);
+    completeTrainingPlanGenerationIdempotency(12, 34, ownedClaim(firstTenant), { planId: 901 }, 201);
 
     const secondTenant = claimTrainingPlanGenerationIdempotency(12, 56, key, requestHash);
     const firstTenantReplay = claimTrainingPlanGenerationIdempotency(12, 34, key, requestHash);
 
-    expect(firstTenant).toEqual({ kind: 'claimed', idempotencyKey: key, requestHash });
-    expect(secondTenant).toEqual({ kind: 'claimed', idempotencyKey: key, requestHash });
+    expect(firstTenant).toMatchObject({ kind: 'claimed', idempotencyKey: key, requestHash });
+    expect(secondTenant).toMatchObject({ kind: 'claimed', idempotencyKey: key, requestHash });
     expect(firstTenantReplay).toEqual({
       kind: 'replay',
       idempotencyKey: key,

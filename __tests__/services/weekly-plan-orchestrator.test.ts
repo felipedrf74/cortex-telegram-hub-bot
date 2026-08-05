@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { clearTenantScopeAnomaliesForTests, getTenantScopeAnomalies } from '../../src/services/tenant-scope-observability';
 
 const mockGetCached = vi.fn(() => null);
@@ -24,6 +24,12 @@ const mockDismissSignal = vi.fn((signalId: number) => {
       : signal,
   );
 });
+
+vi.mock('../../src/config', () => ({
+  config: {
+    app: { timezone: 'Europe/Lisbon' },
+  },
+}));
 
 vi.mock('../../src/services/cache-store', () => ({
   getCached: (...args: unknown[]) => mockGetCached(...args),
@@ -388,6 +394,10 @@ function buildBaseContexts() {
 }
 
 describe('weekly-plan-orchestrator', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   beforeEach(() => {
     clearTenantScopeAnomaliesForTests();
     writtenSignals = [];
@@ -590,6 +600,34 @@ describe('weekly-plan-orchestrator', () => {
     expect(result.variant).toBe('conservative');
     expect(result.days.some((day) =>
       day.secretary.decisions.some((decision) => decision.signalType === 'travel_window'))).toBe(true);
+  });
+
+  it('pins plan age and session dates to the persisted plan timezone', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-13T00:30:00.000Z'));
+    const base = buildBaseContexts();
+    mockReadTrainingMeshContext.mockResolvedValueOnce({
+      ...base.training,
+      activePlan: {
+        ...base.training.activePlan,
+        start_date: '2026-03-30',
+        preferences_json: JSON.stringify({ schedulingTimezone: 'America/Los_Angeles' }),
+      },
+      sessions: [{
+        ...base.training.sessions[0],
+        day_of_week: 'Sunday',
+        title: 'Persisted-zone Sunday run',
+      }],
+    });
+
+    // Lisbon has reached day 14 (push-eligible), while Los Angeles is still
+    // on plan day 13. The immutable plan clock must keep the week conservative.
+    const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
+    const result = await composeWeeklyPlan({ userId: 12, weekStart: '2026-04-13', forceRefresh: true });
+
+    expect(result.variant).toBe('conservative');
+    expect(result.days.find((day) => day.date === '2026-04-19')?.training.title)
+      .toBe('Persisted-zone Sunday run');
   });
 
   it('turns recovery and session prescription signals into training decisions', async () => {

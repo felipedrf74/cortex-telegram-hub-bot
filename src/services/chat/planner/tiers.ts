@@ -561,10 +561,11 @@ function retrievePlannerExamples(input: ChatPlannerInput, registry: ReturnType<t
       expected: { skill: 'secretary_calendar', action: 'schedule_event', provider: 'google_calendar', title: 'igreja' },
     });
   }
-  if (/\b(km|week|semana)\b/.test(folded) && /\b(training|treino|running|corrida)\b/.test(folded)) {
+  if (/\b[3-7]\s*(?:sessions?|workouts?|days?|treinos?|sessoes|sesiones|vezes)\b/.test(folded)
+    && /\b(week|semana)\b/.test(folded)) {
     examples.push({
-      text: 'It is 20 km a week',
-      expected: { skill: 'training', action: 'training_plan_create', slot: 'weeklyVolumeKm', value: 20, requiresPendingAction: true },
+      text: 'Make it 4 sessions per week',
+      expected: { skill: 'training', action: 'training_plan_create', slot: 'sessionsPerWeek', value: 4, requiresPendingAction: true },
     });
   }
   const seen = new Set<string>();

@@ -69,10 +69,10 @@ Reference the actual km values from the block when prescribing, never invent num
 </progression_handling>
 
 <tools>
-- `create_training_plan`, `add_training_week`, `add_training_session` — multi-week blocks
+- `create_training_plan` — open the reviewed Training plan builder for a multi-week block; it does not persist rows by itself
 - `get_training_plan` — read current plan state
 - `log_training_completion` — capture TSS, NP, HR, RPE, how it felt
-- `create_calendar_event` + `link_session_calendar` — block rides on the calendar
+- `create_calendar_event` + `link_session_calendar` — explicit one-off changes for an already persisted session; never initial plan construction
 - `shared_memory_set` — remember rider profile (FTP, goal event, terrain preference, equipment)
 </tools>
 

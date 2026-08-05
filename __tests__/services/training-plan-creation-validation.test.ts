@@ -491,6 +491,30 @@ describe('training plan quality scoring', () => {
     expect(score.dimensions.find((dimension) => dimension.dimension === 'objective_fidelity')?.score).toBeLessThan(82);
   });
 
+  it('accepts a single recovery phase only when the candidate carries an explicit durable rationale', () => {
+    const candidate = goodCandidate();
+    candidate.goalMode = 'return_to_training';
+    candidate.weeks = candidate.weeks.map((week) => ({ ...week, phase: 'deload' }));
+    candidate.rationaleNotes = [
+      'Maintenance/recovery rationale: this plan remains recovery-led while declared knee discomfort is active.',
+    ];
+
+    const score = scoreTrainingPlanQuality(candidate);
+    const periodization = score.dimensions.find((dimension) => dimension.dimension === 'periodization');
+
+    expect(periodization?.blockers).toEqual([]);
+    expect(periodization?.observations.join(' ')).toMatch(/explicit maintenance\/recovery rationale: true/i);
+
+    // The prefix alone is not evidence. Keep this fail-closed so a copy edit
+    // cannot bypass the multi-phase invariant without naming the real cause.
+    candidate.rationaleNotes = ['Maintenance/recovery rationale: unchanged.'];
+    const unsupported = scoreTrainingPlanQuality(candidate);
+    expect(unsupported.dimensions.find((dimension) => dimension.dimension === 'periodization')?.blockers)
+      .toEqual(expect.arrayContaining([
+        'Four-plus-week plans need more than one phase or an explicit maintenance rationale.',
+      ]));
+  });
+
   it('keeps deload and safety downgrade checks standalone from the broader adaptation score', () => {
     const noDeload = goodCandidate();
     noDeload.weeks = noDeload.weeks.map((week) => ({
@@ -507,6 +531,43 @@ describe('training plan quality scoring', () => {
       .toContain('deload');
     expect(redFlagScore.dimensions.find((dimension) => dimension.dimension === 'safety_downgrades')?.blockers.join(' '))
       .toContain('Safety red-flag');
+  });
+
+  it('requires explicit readiness adaptation copy instead of any non-empty reason', () => {
+    const candidate = goodCandidate();
+    candidate.readinessState = 'low_readiness';
+    candidate.weeks = candidate.weeks.map((week) => ({
+      ...week,
+      sessions: week.sessions.map((session) => ({
+        ...session,
+        adaptationReason: undefined,
+        safetyDowngradeReason: undefined,
+      })),
+    }));
+    candidate.weeks[0].sessions[0].adaptationReason = 'Regular training description.';
+
+    const unsupported = scoreTrainingPlanQuality(candidate);
+    expect(unsupported.dimensions.find((dimension) => dimension.dimension === 'readiness_adaptation')?.blockers)
+      .toEqual(expect.arrayContaining([
+        'Readiness state low_readiness requires visible adaptation or safety rationale.',
+      ]));
+
+    // Generic execution guidance names fatigue and a stopping action, but it
+    // does not say that readiness caused the plan to change. Keep that copy
+    // from laundering an unchanged session through the safety gate.
+    candidate.weeks[0].sessions[0].adaptationReason =
+      'Stop every set well before fatigue accumulates.';
+    const genericExecutionCue = scoreTrainingPlanQuality(candidate);
+    expect(genericExecutionCue.dimensions.find((dimension) => dimension.dimension === 'readiness_adaptation')?.blockers)
+      .toEqual(expect.arrayContaining([
+        'Readiness state low_readiness requires visible adaptation or safety rationale.',
+      ]));
+
+    candidate.weeks[0].sessions[0].adaptationReason =
+      'Feedback loop: reduce load today because readiness and fatigue signals are constrained.';
+    const explicit = scoreTrainingPlanQuality(candidate);
+    expect(explicit.dimensions.find((dimension) => dimension.dimension === 'readiness_adaptation')?.blockers)
+      .toEqual([]);
   });
 });
 

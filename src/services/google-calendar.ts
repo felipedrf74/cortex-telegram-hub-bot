@@ -153,6 +153,36 @@ export async function getEvents(startDate: string, endDate: string, userId?: num
   }
 }
 
+export async function getEventById(eventId: string, userId?: number): Promise<CalendarEvent | null> {
+  try {
+    const calendar = getCalendar(userId);
+    const response = await withTimeout(
+      calendar.events.get({
+        calendarId: 'primary',
+        eventId,
+      }),
+      GOOGLE_API_TIMEOUT_MS,
+    );
+    const event = response.data;
+    if (event.status === 'cancelled') return null;
+    return {
+      id: event.id || eventId,
+      summary: event.summary || '(No title)',
+      start: event.start?.dateTime || event.start?.date || '',
+      end: event.end?.dateTime || event.end?.date || '',
+      description: event.description || undefined,
+      location: event.location || undefined,
+      htmlLink: event.htmlLink || undefined,
+      isAllDay: !event.start?.dateTime && !!event.start?.date,
+      timeZone: event.start?.timeZone || event.end?.timeZone || undefined,
+      blocksTime: event.transparency !== 'transparent',
+    };
+  } catch (err) {
+    if (isProviderEventNotFoundError(err)) return null;
+    throw logAndWrapGoogleCalendarError(err, 'Failed to fetch calendar event by id');
+  }
+}
+
 export async function createEvent(data: {
   title: string;
   start: string;

@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: backend architecture lead
-Last verified: 2026-07-17
+Last verified: 2026-08-05
 Update policy: update when REST contract conventions, route shape, or
 migration discipline changes. The risk-based gate matrix at
 `docs/release/risk-based-release-gate-matrix.md` is the runtime
@@ -235,6 +235,87 @@ Nexus runtime model routing is **configurable**. Do not hardcode "Gemini",
    reservation contract in `src/services/cost-guardrail.ts`; `api_usage` is
    quota truth. Do not use `users.tier`, `usage_metering`, prompt instructions,
    or a route-local counter as an access/blocking authority.
+
+### 10A. Secretary arbitration metadata prerequisite (must)
+
+Migration 280 records an additive rank snapshot on each newly persisted
+Secretary agenda row. The single runtime authority is
+`computeSecretaryIntentArbitrationRank`; batch ordering and persisted metadata
+must use that same function and the exact
+`secretary-arbitration-rank-policy.v1` policy version.
+
+The v1 score preserves the existing ordering contract: explicit priority,
+source-skill weight, an 18-point valid-deadline boost, an 8-point fixed-window
+boost, and the existing Training phase adjustment. Equal scores use the
+earliest valid normalized deadline and then the source intent ID. The snapshot
+stores the score, normalized deadline (nullable), effective flexibility, and
+policy version; it stores no title, description, or other new user content.
+
+Rows with a missing, non-finite, incomplete, or unknown-policy snapshot remain
+hard busy and cannot be preempted. In particular, migration 280 deliberately
+leaves all legacy rows NULL rather than guessing from the irreversible
+source-shape hash.
+
+Stage 1 adds one pure capacity planner shared by preview and submit. A preview
+may disregard a local loser only when all of these facts agree: same tenant and
+user, active cross-skill row, non-fixed current-policy rank strictly below the
+incoming full rank, `synced` durable provider mapping, exactly one live event
+with the same provider source and event ID, and exact marker evidence. A
+non-Training event requires its exact `NEXUS_SECRETARY_AGENDA_ITEM` marker; a
+Training event requires its plan/version/session identity to match the
+`training:<plan>:<version>:<session>` source intent. Titles, times, legacy
+source lines, and provider-looking text are never identity evidence. Duplicate,
+unmarked, foreign, unidentified, fixed, legacy-NULL, and equal/higher-ranked
+cases remain hard busy.
+
+Preview returns the canonical
+`priority_preemption_candidate` reason plus `wouldPreempt: true` and a count,
+but never loser/provider IDs. Stage 1 itself performs no loser mutation and no
+provider write.
+
+Migration 282 enables the verified Stage 2/3 submit path. A submit may remove
+only the same exact lower-ranked candidates used by preview, and its first
+transaction writes the complete graph or nothing: a proposed/unmapped winner,
+one proposed/unmapped loser replacement at exactly vN+1 for every active loser
+vN, immutable exact provider-delete dependencies, and one privacy-bounded
+`secretary.arbitration.committed.v1` outbox event. The loser vN remains active,
+busy, and mapped during this phase. Replay returns the same winner graph;
+changing the winner source shape or mutating a locked winner/loser intent
+conflicts.
+No provider or source-feedback call occurs in that transaction.
+
+The provider-sync worker drains dependency edges before ordinary agenda work
+under the same bounded adapter-call budget. It reads the frozen provider event
+ID and requires the exact source plus Secretary/Training marker before delete;
+title/time similarity is never authority. Confirmed absence and provider 404
+are idempotent success. An unknown delete outcome enters readback-only
+reconciliation, so another delete occurs only after a fresh exact read proves
+the event still exists. Identity mismatch and terminal refusal fail closed.
+Leases are token-fenced and compared as normalized datetimes; provider target,
+create-attempt, claim, newest-version, and mapping guards are also enforced in
+SQLite for mixed-runtime defense in depth.
+
+Confirmed deletion, loser vN supersession/mapping clear, loser vN+1 transition
+to `unscheduled/deleted`, dependency settlement, and its durable source-feedback
+request commit in one transaction. The winner remains `proposed` until every
+edge is satisfied. The final edge supersedes an active prior winner without
+transferring its provider mapping and activates the new winner, but does not
+queue winner feedback yet. Only then may ordinary provider sync create/adopt
+its event; exact mapping success completes the operation and atomically queues
+winner feedback. Safe cancellation, explicit pre-provider expiry, and terminal
+provider/dependency failure likewise persist truthful terminal decision
+metadata and their one durable feedback request in the same transaction.
+Cooking, Finance, and Content use
+`secretary.source_feedback.requested.v1`; Training keeps its specialized event.
+Both consumers re-read the exact scoped agenda ID/version and advance one
+logical-intent projection only when `agenda_version` increases.
+
+Cancellation is a request while cleanup is outstanding. Exact cleanup still
+finishes and no loser is automatically restored; only then does the operation
+become canceled and the winner remain provider-ineligible. Scoped synchronous
+callers may drain only dependencies belonging to their requested winner;
+background batches may drain the scoped backlog. Neither path can spend more
+than its declared provider-call budget.
 
 ### 10.1 Content-pipeline compatibility exit (must)
 

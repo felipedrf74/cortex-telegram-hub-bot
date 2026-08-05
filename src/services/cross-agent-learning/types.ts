@@ -96,6 +96,20 @@ export interface MeshSignalDraft {
   expiresAt?: string;
 }
 
+/** Privacy-bounded, attention-first current-state aggregate from Secretary for
+ * one Training plan. Agenda/source identifiers, per-intent versions, and exact
+ * timestamps stay in the owning service; plan and coach consumers receive only
+ * allowlisted scheduling consequences. */
+export interface TrainingSecretaryFeedbackForContext {
+  planId: number;
+  feedbackType: 'compressed_session' | 'reflowed_session' | 'schedule_attention' | 'needs_context' | 'schedule_confirmed';
+  status: 'scheduled' | 'reflowed' | 'compressed' | 'deferred' | 'unscheduled' | 'rejected' | 'needs_more_context';
+  reasonCodes: string[];
+  shouldRefreshSource: boolean;
+  hints: string[];
+  scheduledDurationMinutes: number | null;
+}
+
 export interface TrainingMeshContext {
   userId: number;
   weekStart: string;
@@ -106,6 +120,8 @@ export interface TrainingMeshContext {
   trainingContext: TrainingContext;
   coachBriefing: ReportDocument | null;
   adherence: WeeklyAdherenceStats | null;
+  /** Attention-first Secretary aggregate for this exact active plan version. */
+  secretaryFeedback: TrainingSecretaryFeedbackForContext | null;
   /** Persistent coach narrative state (macro phase, adherence trend,
    *  recent deloads, active concern). Null for users who haven't had
    *  a coach phase memory written yet; consumers fall back to

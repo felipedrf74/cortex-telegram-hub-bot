@@ -3,8 +3,15 @@ import http from 'http';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockGenerateCoachBriefing = vi.fn();
+const mockApplyCoachRecommendations = vi.fn();
 const mockGetCached = vi.fn();
 const mockSetCache = vi.fn();
+const mockRestoreCoachBriefingFromLatestReport = vi.fn();
+const mockMarkKeepOriginalForToday = vi.fn();
+const mockPreviewTrainingAdaptation = vi.fn();
+const mockRequestTrainingAdaptationReview = vi.fn();
+const mockSelectTrainingAdaptationOption = vi.fn();
+const mockGetTrainingAdaptationOptionEnvelope = vi.fn();
 const mockGetEffectiveEntitlement = vi.fn();
 const mockIsSkillAllowedByEntitlement = vi.fn();
 const mockIsUserOverDailyCap = vi.fn();
@@ -15,7 +22,18 @@ let lockTail: Promise<unknown> = Promise.resolve();
 vi.mock('../../src/services/garmin-coach', () => ({
   generateCoachBriefing: (...args: unknown[]) => mockGenerateCoachBriefing(...args),
   applyCoachRecommendation: vi.fn(),
-  applyCoachRecommendations: vi.fn(),
+  applyCoachRecommendations: (...args: unknown[]) => mockApplyCoachRecommendations(...args),
+}));
+
+vi.mock('../../src/services/training-keep-original', () => ({
+  markKeepOriginalForToday: (...args: unknown[]) => mockMarkKeepOriginalForToday(...args),
+}));
+
+vi.mock('../../src/services/training-adaptation-proposals', () => ({
+  previewTrainingAdaptation: (...args: unknown[]) => mockPreviewTrainingAdaptation(...args),
+  requestTrainingAdaptationReview: (...args: unknown[]) => mockRequestTrainingAdaptationReview(...args),
+  selectTrainingAdaptationOption: (...args: unknown[]) => mockSelectTrainingAdaptationOption(...args),
+  getTrainingAdaptationOptionEnvelope: (...args: unknown[]) => mockGetTrainingAdaptationOptionEnvelope(...args),
 }));
 
 vi.mock('../../src/services/cache-store', () => ({
@@ -218,7 +236,9 @@ vi.mock('../../src/api/routes/training-coach-briefing', () => ({
   COACH_BRIEFING_TTL: 21_600,
   normalizeCoachRecommendation: vi.fn((rec: Record<string, unknown>) => rec),
   getCoachBriefingSnapshot: vi.fn(() => null),
-  restoreCoachBriefingFromLatestReport: vi.fn(() => null),
+  restoreCoachBriefingFromLatestReport: (...args: unknown[]) => (
+    mockRestoreCoachBriefingFromLatestReport(...args)
+  ),
   syncCoachStateForUser: vi.fn((_userId: number, payload: unknown) => payload),
 }));
 
@@ -264,7 +284,12 @@ function setPlan(plan: 'free' | 'pro'): void {
   ));
 }
 
-async function getCoach(userId = 42): Promise<{ status: number; body: any }> {
+async function requestCoach(
+  method: 'GET' | 'POST',
+  path: string,
+  userId = 42,
+  body?: unknown,
+): Promise<{ status: number; body: any }> {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -281,12 +306,20 @@ async function getCoach(userId = 42): Promise<{ status: number; body: any }> {
 
   try {
     return await new Promise((resolve, reject) => {
-      const req = http.request({
+      const requestBody = body === undefined ? null : JSON.stringify(body);
+      const requestOptions: http.RequestOptions = {
         hostname: '127.0.0.1',
         port: address.port,
-        method: 'GET',
-        path: '/training/coach?refresh=true',
-      }, (res) => {
+        method,
+        path,
+      };
+      if (requestBody !== null) {
+        requestOptions.headers = {
+          'content-type': 'application/json',
+          'content-length': Buffer.byteLength(requestBody),
+        };
+      }
+      const req = http.request(requestOptions, (res) => {
         let data = '';
         res.setEncoding('utf8');
         res.on('data', (chunk) => { data += chunk; });
@@ -296,6 +329,7 @@ async function getCoach(userId = 42): Promise<{ status: number; body: any }> {
         }));
       });
       req.on('error', reject);
+      if (requestBody !== null) req.write(requestBody);
       req.end();
     });
   } finally {
@@ -303,17 +337,104 @@ async function getCoach(userId = 42): Promise<{ status: number; body: any }> {
   }
 }
 
+async function getCoach(userId = 42): Promise<{ status: number; body: any }> {
+  return requestCoach('GET', '/training/coach?refresh=true', userId);
+}
+
+const productTrainingRouteCases = [
+  {
+    name: 'coach apply',
+    method: 'POST' as const,
+    path: '/training/coach/apply',
+    body: { recommendationIds: ['recommendation-1'] },
+    handler: mockApplyCoachRecommendations,
+  },
+  {
+    name: 'keep original',
+    method: 'POST' as const,
+    path: '/training/today/keep-original',
+    body: {},
+    handler: mockMarkKeepOriginalForToday,
+  },
+  {
+    name: 'adaptation preview',
+    method: 'POST' as const,
+    path: '/training/adaptations/preview',
+    body: {
+      eventId: 'event-1',
+      currentRevisionId: 'revision-1',
+      expectedContentHash: 'a'.repeat(64),
+      contextVersion: 'context-1',
+      requestedScope: 'SESSION',
+      trigger: 'REFLOW',
+      target: { workoutKey: 'week-1-monday' },
+    },
+    handler: mockPreviewTrainingAdaptation,
+  },
+  {
+    name: 'adaptation review request',
+    method: 'POST' as const,
+    path: '/training/adaptations/adaptation-1/request-review',
+    body: {
+      optionId: 'option-1',
+      expectedCurrentRevisionId: 'revision-1',
+      expectedContextVersion: 'context-1',
+    },
+    handler: mockRequestTrainingAdaptationReview,
+  },
+  {
+    name: 'adaptation option selection',
+    method: 'POST' as const,
+    path: '/training/adaptations/adaptation-1/select-option',
+    body: {
+      optionId: 'option-1',
+      expectedCurrentRevisionId: 'revision-1',
+      expectedContextVersion: 'context-1',
+    },
+    handler: mockSelectTrainingAdaptationOption,
+  },
+  {
+    name: 'adaptation envelope read',
+    method: 'GET' as const,
+    path: '/training/adaptations/adaptation-1',
+    body: undefined,
+    handler: mockGetTrainingAdaptationOptionEnvelope,
+  },
+] as const;
+
 describe('training routes entitlement and AI cost guardrails', () => {
   beforeEach(() => {
     lockTail = Promise.resolve();
     mockGenerateCoachBriefing.mockReset();
+    mockApplyCoachRecommendations.mockReset();
     mockGetCached.mockReset();
     mockSetCache.mockReset();
+    mockRestoreCoachBriefingFromLatestReport.mockReset();
+    mockMarkKeepOriginalForToday.mockReset();
+    mockPreviewTrainingAdaptation.mockReset();
+    mockRequestTrainingAdaptationReview.mockReset();
+    mockSelectTrainingAdaptationOption.mockReset();
+    mockGetTrainingAdaptationOptionEnvelope.mockReset();
     mockGetEffectiveEntitlement.mockReset();
     mockIsSkillAllowedByEntitlement.mockReset();
     mockIsUserOverDailyCap.mockReset();
     mockGetActivePlan.mockReset();
     mockGetCached.mockReturnValue(null);
+    mockRestoreCoachBriefingFromLatestReport.mockReturnValue(null);
+    mockApplyCoachRecommendations.mockResolvedValue({ count: 1, appliedRecommendations: [] });
+    mockPreviewTrainingAdaptation.mockReturnValue({ schemaVersion: 'training_adaptation_api.v1' });
+    mockRequestTrainingAdaptationReview.mockResolvedValue({
+      schemaVersion: 'training_adaptation_api.v1',
+      status: 'PENDING_REVIEW',
+    });
+    mockSelectTrainingAdaptationOption.mockReturnValue({
+      schemaVersion: 'training_adaptation_api.v1',
+      status: 'SELECTED',
+    });
+    mockGetTrainingAdaptationOptionEnvelope.mockReturnValue({
+      schemaVersion: 'training_adaptation_api.v1',
+      option: { optionId: 'option-1' },
+    });
     mockGetActivePlan.mockReturnValue({ id: 1, user_id: 42, tenant_id: 42, status: 'active' });
     mockGenerateCoachBriefing.mockResolvedValue({ message: 'Coach ready.', recommendations: [] });
     delete process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED;
@@ -350,6 +471,118 @@ describe('training routes entitlement and AI cost guardrails', () => {
     expect(mockIsUserOverDailyCap).not.toHaveBeenCalled();
     expect(mockGenerateCoachBriefing).not.toHaveBeenCalled();
   });
+
+  it('rechecks a downgraded entitlement before serving a cached GET coach briefing', async () => {
+    setPlan('pro');
+    mockGetCached.mockReturnValue({
+      briefing: 'Paid snapshot',
+      recommendations: [],
+      garminData: null,
+    });
+
+    const eligible = await requestCoach('GET', '/training/coach');
+    expect(eligible.status).toBe(200);
+    expect(eligible.body.data.briefing).toBe('Paid snapshot');
+
+    setPlan('free');
+    // Let the request reach the route so this proves the route-level coach
+    // eligibility gate, rather than the broad Training-skill middleware.
+    mockIsSkillAllowedByEntitlement.mockReturnValue(true);
+    const downgraded = await requestCoach('GET', '/training/coach');
+
+    expect(downgraded.status).toBe(403);
+    expect(downgraded.body.error.code).toBe('TIER_REQUIRED');
+    expect(mockGetCached).toHaveBeenCalledTimes(1);
+    expect(mockGenerateCoachBriefing).not.toHaveBeenCalled();
+  });
+
+  it('rechecks a downgraded entitlement before serving a cached POST coach report', async () => {
+    setPlan('pro');
+    mockGetCached.mockReturnValue({
+      briefing: 'Paid report snapshot',
+      recommendations: [],
+      garminData: null,
+    });
+
+    const eligible = await requestCoach('POST', '/training/coach/report', 42, {});
+    expect(eligible.status).toBe(200);
+
+    setPlan('free');
+    mockIsSkillAllowedByEntitlement.mockReturnValue(true);
+    const downgraded = await requestCoach('POST', '/training/coach/report', 42, {});
+
+    expect(downgraded.status).toBe(403);
+    expect(downgraded.body.error.code).toBe('TIER_REQUIRED');
+    expect(mockGetCached).toHaveBeenCalledTimes(1);
+    expect(mockRestoreCoachBriefingFromLatestReport).not.toHaveBeenCalled();
+    expect(mockGenerateCoachBriefing).not.toHaveBeenCalled();
+  });
+
+  it('rechecks a downgraded entitlement before restoring a POST coach report', async () => {
+    setPlan('pro');
+    mockRestoreCoachBriefingFromLatestReport.mockReturnValue({
+      briefing: 'Restored paid report',
+      recommendations: [],
+      garminData: null,
+      restoredFromReport: true,
+    });
+
+    const eligible = await requestCoach('POST', '/training/coach/report', 42, {});
+    expect(eligible.status).toBe(200);
+    expect(mockRestoreCoachBriefingFromLatestReport).toHaveBeenCalledTimes(1);
+
+    setPlan('free');
+    mockIsSkillAllowedByEntitlement.mockReturnValue(true);
+    const downgraded = await requestCoach('POST', '/training/coach/report', 42, {});
+
+    expect(downgraded.status).toBe(403);
+    expect(downgraded.body.error.code).toBe('TIER_REQUIRED');
+    expect(mockRestoreCoachBriefingFromLatestReport).toHaveBeenCalledTimes(1);
+    expect(mockGenerateCoachBriefing).not.toHaveBeenCalled();
+  });
+
+  it.each(productTrainingRouteCases)(
+    'denies an ineligible Free entitlement at the production Training mount before $name work',
+    async ({ method, path, body, handler }) => {
+      setPlan('free');
+
+      const response = await requestCoach(method, path, 42, body);
+
+      expect(response.status).toBe(403);
+      expect(response.body.error.code).toBe('TIER_REQUIRED');
+      expect(handler).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['owner', 'beta'] as const)(
+    'keeps %s product-grant access to non-model Training operations without a blanket coach gate',
+    async (plan) => {
+      mockGetEffectiveEntitlement.mockReturnValue({
+        plan,
+        source: plan,
+        aiAccessAllowed: plan === 'owner',
+        blockReason: plan === 'beta' ? 'beta_ai_disabled' : null,
+        allowedSkills: new Set(['training']),
+        evaluatedAt: '2026-05-08T00:00:00.000Z',
+      });
+      mockIsSkillAllowedByEntitlement.mockImplementation(
+        (entitlement: { allowedSkills: Set<string> }, skill: string) => entitlement.allowedSkills.has(skill),
+      );
+
+      for (const routeCase of productTrainingRouteCases) {
+        routeCase.handler.mockClear();
+        const response = await requestCoach(
+          routeCase.method,
+          routeCase.path,
+          42,
+          routeCase.body,
+        );
+
+        expect(response.status, routeCase.name).not.toBe(403);
+        expect(routeCase.handler, routeCase.name).toHaveBeenCalledTimes(1);
+      }
+    },
+  );
 
   it('blocks owner and beta bypass entitlements before coach work starts', async () => {
     mockIsSkillAllowedByEntitlement.mockReturnValue(true);

@@ -15,6 +15,14 @@ const MIGRATION_224 = path.resolve(
   __dirname,
   '../../migrations/224_secretary_agenda_sync_fingerprint.sql',
 );
+const MIGRATION_280 = path.resolve(
+  __dirname,
+  '../../migrations/280_secretary_agenda_arbitration_metadata.sql',
+);
+const MIGRATION_281 = path.resolve(
+  __dirname,
+  '../../migrations/281_secretary_provider_target_and_failure_disposition.sql',
+);
 
 let testDb: Database.Database;
 
@@ -46,11 +54,14 @@ vi.mock('../../src/utils/logger', () => ({
 
 import {
   arbitrateSecretarySchedulingIntents,
+  computeSecretaryIntentArbitrationRank,
   computeSecretaryAgendaProviderSyncFingerprint,
   getSecretaryAgendaItemById,
+  hasCompleteSecretaryAgendaArbitrationMetadata,
   listSecretaryAgendaItems,
   markSecretaryAgendaProviderCleanupRequired,
   markSecretaryAgendaProviderSyncSatisfied,
+  SECRETARY_ARBITRATION_RANK_POLICY_VERSION,
   submitSecretarySchedulingIntent,
   type SecretarySchedulingIntent,
   type SecretaryTimeWindow,
@@ -65,6 +76,8 @@ beforeEach(() => {
   testDb.exec(fs.readFileSync(MIGRATION_098, 'utf8'));
   testDb.exec(fs.readFileSync(MIGRATION_224, 'utf8'));
   testDb.exec('ALTER TABLE secretary_agenda_items ADD COLUMN reasoning_trail_json TEXT');
+  testDb.exec(fs.readFileSync(MIGRATION_280, 'utf8'));
+  testDb.exec(fs.readFileSync(MIGRATION_281, 'utf8'));
 });
 
 afterEach(() => {
@@ -96,6 +109,74 @@ function intent(overrides: Partial<SecretarySchedulingIntent> = {}): SecretarySc
 }
 
 describe('secretary-scheduling-arbitrator', () => {
+  it('pins the selected provider in the same transaction as a Cooking agenda version', () => {
+    const decision = submitSecretarySchedulingIntent(intent({
+      intentId: 'cooking-provider-target',
+      sourceSkill: 'cooking',
+      sourceAction: 'schedule_meal_prep',
+      sourceEntityType: 'meal_prep_block',
+      providerTarget: 'outlook',
+    }));
+
+    expect(decision.agendaItem.providerTarget).toBe('outlook');
+    expect(testDb.prepare(`
+      SELECT provider_target AS providerTarget
+        FROM secretary_agenda_items
+       WHERE agenda_item_id = ?
+    `).get(decision.agendaItem.agendaItemId)).toEqual({ providerTarget: 'outlook' });
+  });
+
+  it('rolls back the agenda insert when durable provider-target persistence fails', () => {
+    testDb.exec(`
+      -- Migration 282's stronger source/target invariant requires the pinned
+      -- target in the INSERT itself; inject at that atomic write boundary.
+      CREATE TRIGGER fail_secretary_provider_target
+      BEFORE INSERT ON secretary_agenda_items
+      WHEN NEW.provider_target IS NOT NULL
+      BEGIN
+        SELECT RAISE(ABORT, 'injected provider target failure');
+      END;
+    `);
+
+    expect(() => submitSecretarySchedulingIntent(intent({
+      intentId: 'cooking-provider-target-rollback',
+      sourceSkill: 'cooking',
+      sourceAction: 'schedule_meal_prep',
+      sourceEntityType: 'meal_prep_block',
+      providerTarget: 'google',
+    }))).toThrow(/injected provider target failure/);
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS count
+        FROM secretary_agenda_items
+       WHERE source_intent_id = 'cooking-provider-target-rollback'
+    `).get()).toEqual({ count: 0 });
+  });
+
+  it('refuses to move one logical intent to a second provider', () => {
+    submitSecretarySchedulingIntent(intent({
+      intentId: 'cooking-provider-target-immutable',
+      sourceSkill: 'cooking',
+      sourceAction: 'schedule_meal_prep',
+      sourceEntityType: 'meal_prep_block',
+      providerTarget: 'outlook',
+    }));
+
+    expect(() => submitSecretarySchedulingIntent(intent({
+      intentId: 'cooking-provider-target-immutable',
+      sourceSkill: 'cooking',
+      sourceAction: 'schedule_meal_prep',
+      sourceEntityType: 'meal_prep_block',
+      providerTarget: 'google',
+    }))).toThrow('SECRETARY_PROVIDER_TARGET_IMMUTABLE');
+    // Stronger guarantee: the rejected provider change creates no replacement
+    // agenda version that a second provider worker could claim.
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS count
+        FROM secretary_agenda_items
+       WHERE source_intent_id = 'cooking-provider-target-immutable'
+    `).get()).toEqual({ count: 1 });
+  });
+
   it('hard-fails missing tenant scope before persisting agenda rows', () => {
     expect(() => submitSecretarySchedulingIntent(intent({ tenantId: '  ' }))).toThrow(/SECRETARY_INVALID_TENANT_SCOPE/);
     expect(() => arbitrateSecretarySchedulingIntents([intent({ tenantId: '' })])).toThrow(/SECRETARY_INVALID_TENANT_SCOPE/);
@@ -498,6 +579,117 @@ describe('secretary-scheduling-arbitrator', () => {
     expect(batch.feedbackBySourceSkill.content[0]?.shouldRefreshSource).toBe(true);
   });
 
+  it('uses one deterministic rank contract for batch ordering and persisted metadata', () => {
+    const contentIntent = intent({
+      intentId: 'rank-content',
+      sourceSkill: 'content',
+      title: 'Write launch post',
+      priority: 'normal',
+      flexibility: 'flexible',
+    });
+    const financeIntent = intent({
+      intentId: 'rank-finance',
+      sourceSkill: 'finance',
+      title: 'Review filing deadline',
+      deadline: '2026-05-05T14:00:00+02:00',
+      priority: 'high',
+      flexibility: 'fixed',
+    });
+    const financeRank = computeSecretaryIntentArbitrationRank(financeIntent);
+    const contentRank = computeSecretaryIntentArbitrationRank(contentIntent);
+
+    expect(financeRank).toEqual({
+      score: 112,
+      deadlineAt: '2026-05-05T12:00:00.000Z',
+      flexibility: 'fixed',
+      policyVersion: SECRETARY_ARBITRATION_RANK_POLICY_VERSION,
+      tieBreakerIntentId: 'rank-finance',
+    });
+    expect(contentRank).toEqual({
+      score: 51,
+      deadlineAt: null,
+      flexibility: 'flexible',
+      policyVersion: SECRETARY_ARBITRATION_RANK_POLICY_VERSION,
+      tieBreakerIntentId: 'rank-content',
+    });
+
+    const batch = arbitrateSecretarySchedulingIntents([contentIntent, financeIntent], {
+      now: '2026-05-01T08:00:00.000Z',
+    });
+    expect(batch.decisions.map(({ agendaItem }) => agendaItem.sourceIntentId)).toEqual([
+      'rank-finance',
+      'rank-content',
+    ]);
+    expect(batch.decisions[0]?.agendaItem).toMatchObject({
+      arbitrationScore: financeRank.score,
+      arbitrationDeadlineAt: financeRank.deadlineAt,
+      arbitrationFlexibility: financeRank.flexibility,
+      arbitrationPolicyVersion: financeRank.policyVersion,
+    });
+    expect(batch.decisions[1]?.agendaItem).toMatchObject({
+      arbitrationScore: contentRank.score,
+      arbitrationDeadlineAt: contentRank.deadlineAt,
+      arbitrationFlexibility: contentRank.flexibility,
+      arbitrationPolicyVersion: contentRank.policyVersion,
+    });
+  });
+
+  it('keeps deterministic intent-id ordering when rank and deadline are tied', () => {
+    const onlySlot = [
+      timeWindow('2026-05-04T09:00:00.000Z', '2026-05-04T10:00:00.000Z', 'only slot'),
+    ];
+    const batch = arbitrateSecretarySchedulingIntents([
+      intent({
+        intentId: 'rank-zeta',
+        sourceSkill: 'content',
+        priority: 'normal',
+        flexibility: 'flexible',
+        preferredWindows: onlySlot,
+      }),
+      intent({
+        intentId: 'rank-alpha',
+        sourceSkill: 'content',
+        priority: 'normal',
+        flexibility: 'flexible',
+        preferredWindows: onlySlot,
+      }),
+    ]);
+
+    expect(batch.decisions.map(({ agendaItem }) => agendaItem.sourceIntentId)).toEqual([
+      'rank-alpha',
+      'rank-zeta',
+    ]);
+    expect(batch.decisions[0]?.status).toBe('scheduled');
+    expect(batch.decisions[1]?.status).toBe('unscheduled');
+  });
+
+  it('decodes legacy NULL rank metadata as protected from priority preemption', () => {
+    testDb.prepare(`
+      INSERT INTO secretary_agenda_items (
+        agenda_item_id, source_intent_id, source_skill, intent_action,
+        owner_user_id, tenant_id, lifecycle_state, provider_sync_state,
+        version, title, decision_action, source_shape_hash, created_at, updated_at
+      ) VALUES (
+        'legacy-null-rank', 'legacy-null-rank-intent', 'content', 'schedule_this',
+        ?, ?, 'scheduled', 'not_synced', 1, 'Legacy block', 'scheduled',
+        'legacy-null-rank-shape', '2026-05-01T08:00:00.000Z', '2026-05-01T08:00:00.000Z'
+      )
+    `).run(OWNER_USER_ID, TENANT_ID);
+
+    const legacy = getSecretaryAgendaItemById({
+      agendaItemId: 'legacy-null-rank',
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+    });
+    expect(legacy).toMatchObject({
+      arbitrationScore: null,
+      arbitrationDeadlineAt: null,
+      arbitrationFlexibility: null,
+      arbitrationPolicyVersion: null,
+    });
+    expect(hasCompleteSecretaryAgendaArbitrationMetadata(legacy!)).toBe(false);
+  });
+
   it('schedules Content focus blocks with lifecycle state exposed to downstream clients', () => {
     const decision = submitSecretarySchedulingIntent(intent({
       intentId: 'content-editing',
@@ -788,6 +980,131 @@ describe('secretary-scheduling-arbitrator', () => {
     expect(second.feedback.shouldRefreshSource).toBe(true);
     expect(all.find((item) => item.agendaItemId === first.agendaItem.agendaItemId)?.lifecycleState).toBe('superseded');
     expect(all.find((item) => item.agendaItemId === second.agendaItem.agendaItemId)?.lifecycleState).toBe('reflowed');
+  });
+
+  it('F24 atomically transfers a reused provider id to the replacement agenda version', () => {
+    const sourceIntentId = 'training:240:1:242';
+    const providerEventId = 'google-reused-f24';
+    const first = submitSecretarySchedulingIntent(intent({
+      intentId: sourceIntentId,
+      sourceEntityId: 242,
+      title: 'Tempo run',
+      preferredWindows: [
+        timeWindow('2026-05-05T07:00:00.000Z', '2026-05-05T08:00:00.000Z', 'Tuesday'),
+      ],
+    }));
+    markSecretaryAgendaProviderSyncSatisfied({
+      agendaItemId: first.agendaItem.agendaItemId,
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+      providerEventId,
+      providerSource: 'google',
+      now: '2026-05-01T08:05:00.000Z',
+    });
+
+    const replacement = submitSecretarySchedulingIntent(intent({
+      intentId: sourceIntentId,
+      sourceEntityId: 242,
+      title: 'Tempo run',
+      preferredWindows: [
+        timeWindow('2026-05-07T07:00:00.000Z', '2026-05-07T08:00:00.000Z', 'Thursday'),
+      ],
+    }), {
+      now: '2026-05-01T09:00:00.000Z',
+      providerMappingTransfer: {
+        providerEventId,
+        providerSource: 'google',
+      },
+    });
+
+    const previous = getSecretaryAgendaItemById({
+      agendaItemId: first.agendaItem.agendaItemId,
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+    });
+    const current = getSecretaryAgendaItemById({
+      agendaItemId: replacement.agendaItem.agendaItemId,
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+    });
+
+    expect(replacement.agendaItem.version).toBe(2);
+    expect(previous).toMatchObject({
+      lifecycleState: 'superseded',
+      providerEventId: null,
+      providerSource: null,
+      providerSyncState: 'deleted',
+    });
+    expect(current).toMatchObject({
+      version: 2,
+      providerEventId,
+      providerSource: 'google',
+      // The provider still needs the moved time pushed and read back.
+      providerSyncState: 'not_synced',
+      startAt: '2026-05-07T07:00:00.000Z',
+      endAt: '2026-05-07T08:00:00.000Z',
+    });
+
+    // Cleanup of superseded history must have no live event id left to delete.
+    expect(testDb.prepare(`
+      SELECT provider_event_id FROM secretary_agenda_items
+      WHERE agenda_item_id = ? AND lifecycle_state = 'superseded'
+    `).get(first.agendaItem.agendaItemId)).toMatchObject({ provider_event_id: null });
+  });
+
+  it('F24 leaves the prior synced mapping intact when the requested replacement is unschedulable', () => {
+    const sourceIntentId = 'training:240:1:collision';
+    const providerEventId = 'google-collision-f24';
+    const first = submitSecretarySchedulingIntent(intent({
+      intentId: sourceIntentId,
+      sourceEntityId: 243,
+      preferredWindows: [
+        timeWindow('2026-05-05T07:00:00.000Z', '2026-05-05T08:00:00.000Z', 'old slot'),
+      ],
+    }));
+    markSecretaryAgendaProviderSyncSatisfied({
+      agendaItemId: first.agendaItem.agendaItemId,
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+      providerEventId,
+      providerSource: 'google',
+      now: '2026-05-01T08:05:00.000Z',
+    });
+
+    expect(() => submitSecretarySchedulingIntent(intent({
+      intentId: sourceIntentId,
+      sourceEntityId: 243,
+      preferredWindows: [
+        timeWindow('2026-05-07T07:00:00.000Z', '2026-05-07T08:00:00.000Z', 'occupied target'),
+      ],
+    }), {
+      now: '2026-05-01T09:00:00.000Z',
+      additionalBusyWindows: [
+        timeWindow('2026-05-07T07:00:00.000Z', '2026-05-07T08:00:00.000Z', 'sibling session'),
+      ],
+      providerMappingTransfer: {
+        providerEventId,
+        providerSource: 'google',
+      },
+    })).toThrow('SECRETARY_PROVIDER_MAPPING_TRANSFER_UNSAFE_DECISION');
+
+    expect(getSecretaryAgendaItemById({
+      agendaItemId: first.agendaItem.agendaItemId,
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+    })).toMatchObject({
+      // The fixture already completed provider read-back; rejecting the new
+      // slot must preserve that exact synced state as well as the mapping.
+      lifecycleState: 'synced',
+      providerEventId,
+      providerSource: 'google',
+      providerSyncState: 'synced',
+    });
+    expect(listSecretaryAgendaItems({
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+      includeInactive: true,
+    })).toHaveLength(1);
   });
 
   it('creates a fresh active row when a same-slot reschedule follows a terminal cleanup row', () => {

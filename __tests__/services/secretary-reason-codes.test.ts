@@ -57,6 +57,7 @@ describe('SecretaryReasonCode union', () => {
       'fixed_intent_respected',
       'high_priority_intent',
       'deadline_present',
+      'priority_preemption_candidate',
     ];
     for (const code of modifiers) {
       expect(isKnownReasonCode(code)).toBe(true);
@@ -68,6 +69,10 @@ describe('SecretaryReasonCode union', () => {
       'provider_source_mismatch',
       'readback_mismatch',
       'readback_verified',
+      'priority_preemption_dependency_terminal_failure',
+      'preemption_winner_provider_terminal_failure',
+      'preemption_canceled_before_provider_sync',
+      'preemption_winner_expired_before_provider_sync',
     ];
     for (const code of syncCodes) {
       expect(isKnownReasonCode(code)).toBe(true);

@@ -19,6 +19,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const hoisted = vi.hoisted(() => ({
   refreshConnectedGarminUsers: vi.fn(),
+  refreshConnectedGarminUsersWithLease: vi.fn(),
   pushEvent: vi.fn(),
 }));
 
@@ -56,6 +57,8 @@ vi.mock('../../src/agents/pipeline-agent', () => ({
 vi.mock('../../src/services/scheduler', () => ({
   decisionMetricsRollupDateForScheduler: vi.fn(),
   refreshConnectedGarminUsers: (...args: unknown[]) => hoisted.refreshConnectedGarminUsers(...args),
+  refreshConnectedGarminUsersWithLease: (...args: unknown[]) =>
+    hoisted.refreshConnectedGarminUsersWithLease(...args),
   getActiveTaskSyncScopes: vi.fn(),
   runChatCoreV2ShadowDataRetention: vi.fn(),
   runChatCoreV2GateCheck: vi.fn(),
@@ -228,18 +231,25 @@ describe('portal action: refresh-garmin', () => {
   });
 
   it('fans out to every connected user instead of relying on request context', async () => {
-    hoisted.refreshConnectedGarminUsers.mockResolvedValue({ total: 1, refreshed: 1, failed: [] });
+    hoisted.refreshConnectedGarminUsersWithLease.mockResolvedValue({
+      status: 'completed',
+      outcome: { total: 1, refreshed: 1, failed: [] },
+    });
 
     await handlePortalAction('refresh-garmin');
 
     // The portal authenticates with PORTAL_TOKEN, not a user JWT, so there is
     // no ambient user. Passing the source explicitly is what keeps this from
     // silently becoming a no-op again.
-    expect(hoisted.refreshConnectedGarminUsers).toHaveBeenCalledWith('manual');
+    expect(hoisted.refreshConnectedGarminUsersWithLease).toHaveBeenCalledWith('manual');
+    expect(hoisted.refreshConnectedGarminUsers).not.toHaveBeenCalled();
   });
 
   it('reports failure when no user has connected Garmin', async () => {
-    hoisted.refreshConnectedGarminUsers.mockResolvedValue({ total: 0, refreshed: 0, failed: [] });
+    hoisted.refreshConnectedGarminUsersWithLease.mockResolvedValue({
+      status: 'completed',
+      outcome: { total: 0, refreshed: 0, failed: [] },
+    });
 
     const result = await handlePortalAction('refresh-garmin');
 
@@ -247,7 +257,10 @@ describe('portal action: refresh-garmin', () => {
   });
 
   it('reports success only when every connected user refreshed', async () => {
-    hoisted.refreshConnectedGarminUsers.mockResolvedValue({ total: 2, refreshed: 2, failed: [] });
+    hoisted.refreshConnectedGarminUsersWithLease.mockResolvedValue({
+      status: 'completed',
+      outcome: { total: 2, refreshed: 2, failed: [] },
+    });
 
     const result = await handlePortalAction('refresh-garmin');
 
@@ -255,7 +268,10 @@ describe('portal action: refresh-garmin', () => {
   });
 
   it('reports incomplete rather than success when one user fails', async () => {
-    hoisted.refreshConnectedGarminUsers.mockResolvedValue({ total: 2, refreshed: 1, failed: [7] });
+    hoisted.refreshConnectedGarminUsersWithLease.mockResolvedValue({
+      status: 'completed',
+      outcome: { total: 2, refreshed: 1, failed: [7] },
+    });
 
     const result = await handlePortalAction('refresh-garmin');
 
@@ -264,12 +280,30 @@ describe('portal action: refresh-garmin', () => {
   });
 
   it('records a telemetry event describing the outcome', async () => {
-    hoisted.refreshConnectedGarminUsers.mockResolvedValue({ total: 3, refreshed: 2, failed: [9] });
+    hoisted.refreshConnectedGarminUsersWithLease.mockResolvedValue({
+      status: 'completed',
+      outcome: { total: 3, refreshed: 2, failed: [9] },
+    });
 
     await handlePortalAction('refresh-garmin');
 
     expect(hoisted.pushEvent).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'auth', summary: 'Manual Garmin refresh: 2/3 refreshed' }),
     );
+  });
+
+  it('reports a durable overlap without starting an unfenced fallback refresh', async () => {
+    hoisted.refreshConnectedGarminUsersWithLease.mockResolvedValue({
+      status: 'not_executed',
+      outcome: null,
+    });
+
+    const result = await handlePortalAction('refresh-garmin');
+
+    expect(result).toEqual({
+      ok: false,
+      message: 'Garmin refresh already running or temporarily disabled',
+    });
+    expect(hoisted.refreshConnectedGarminUsers).not.toHaveBeenCalled();
   });
 });

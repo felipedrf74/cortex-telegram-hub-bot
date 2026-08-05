@@ -796,6 +796,7 @@ export type TrainingDecisionReasonCode =
   | 'return_to_training_volume_capped'
   | 'continuous_plan_no_taper'
   | 'event_based_missing_race_date'
+  | 'race_date_implies_event_based'
   // Pre-race strength cutoff (taper wiring, 2026-07-01): strength sessions
   // inside the priority-scaled cutoff window are dropped at generation time
   // and the volume enforcer honors the week marker instead of refilling.

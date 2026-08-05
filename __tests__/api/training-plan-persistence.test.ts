@@ -248,6 +248,10 @@ describe('training-plan-persistence', () => {
             weekNumber: 1,
             focus: 'base',
             intensityPct: 72,
+            notes: [
+              'Readiness confidence: provider data is stale; use a manual check-in.',
+              'Adherence decision: reset week after 3 consecutive misses.',
+            ],
             sessions: [
               {
                 dayOfWeek: 'Monday',
@@ -295,6 +299,15 @@ describe('training-plan-persistence', () => {
       title: 'Base Run',
       scheduled_start_at: expect.any(String),
       scheduled_end_at: expect.any(String),
+    }));
+    // Stronger durability guarantee: coach-kernel week explanations must be
+    // stored as a parseable array for later read/evidence paths; they are not
+    // flattened into, or substituted for, structured decisionReasons.
+    expect(mockCreateWeek).toHaveBeenCalledWith(expect.objectContaining({
+      notes: JSON.stringify([
+        'Readiness confidence: provider data is stale; use a manual check-in.',
+        'Adherence decision: reset week after 3 consecutive misses.',
+      ]),
     }));
 
     expect(result.eventsCreated).toBe(0);
@@ -1080,6 +1093,54 @@ describe('training-plan-persistence', () => {
         'plan-linter: blocker(s) present before persistence; route must block writes',
       );
     });
+
+    it.each([
+      ['25m indoor', false],
+      ['50m indoor', false],
+      ['25m outdoor', false],
+      ['50m outdoor', false],
+      ['Open water', false],
+      ['Limited/none', true],
+    ] as const)(
+      'plan-linter strict preflight: maps the onboarding pool-access answer %s',
+      (poolAccess, expectedBlocked) => {
+      const lint = lintGeneratedTrainingPlanPreflight({
+        userId: 12,
+        tenantId: 12,
+        objective: 'Triathlon discipline balance',
+        durationWeeks: 1,
+        startDate: '2026-04-19',
+        endDate: '2026-04-26',
+        now: new Date('2026-04-19T08:00:00.000Z'),
+        preferencesJson: '{}',
+        normalizedPreferredTime: '12:00',
+        normalizedPreferredCardioTime: '07:00',
+        normalizedPreferredStrengthTime: '12:30',
+        busyWindows: [],
+        athleteProfiles: {
+          swimProfile: { pool_access: poolAccess },
+        },
+        planData: {
+          weeks: [
+            {
+              weekNumber: 1,
+              sessions: [
+                {
+                  dayOfWeek: 'Sunday',
+                  sessionType: 'swim',
+                  title: 'Technique Swim',
+                  durationMinutes: 40,
+                },
+              ],
+            },
+          ],
+        },
+      });
+
+      expect(lint.blockers.map((blocker) => blocker.ruleId)
+        .includes('swim_pool_access_required')).toBe(expectedBlocked);
+      },
+    );
 
     it('plan-linter strict preflight: fails closed when the linter throws', () => {
       mockLintPlan.mockImplementation(() => {

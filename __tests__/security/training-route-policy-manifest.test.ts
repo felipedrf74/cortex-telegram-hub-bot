@@ -112,4 +112,17 @@ describe('Training route policy manifest', () => {
       .sort();
     expect(compatibilityOnly).toEqual(['/plan/generate', '/plan/preview']);
   });
+
+  it('keeps compatibility-attempt reconciliation readable across rollout modes', () => {
+    expect(TRAINING_ROUTE_POLICY.find(
+      (entry) => entry.path === '/plan/generation-attempt/status',
+    )).toMatchObject({
+      method: 'POST',
+      auth: 'jwt',
+      entitlement: 'skill:training',
+      capability: 'none',
+      mode: 'both',
+      mutates: false,
+    });
+  });
 });

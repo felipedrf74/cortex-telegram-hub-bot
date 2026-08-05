@@ -721,9 +721,9 @@ export function setUserLanguage(userRef: number, language: Lang): void {
 
 /**
  * F11 prerequisite (Phase 3): the canonical `users.timezone` write path.
- * Migration 271 documented that the column had NO writer at all, which is
- * why nine Training call sites still fall back to the process-global
- * `config.app.timezone`. Callers MUST validate the zone is a real IANA
+ * The column predates migration 271; that migration documented that it had
+ * NO writer at all, which left Training on process-global timezone semantics.
+ * Callers MUST validate the zone is a real IANA
  * identifier before calling (the settings route does); this writer is
  * deliberately dumb so there is exactly one validation point.
  */

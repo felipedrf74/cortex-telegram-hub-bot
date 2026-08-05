@@ -27,6 +27,7 @@ const mockGetActivePlans = vi.fn();
 const mockGetWeeksForPlan = vi.fn();
 const mockGetSessionsForWeek = vi.fn();
 const mockGetWeeklyAdherence = vi.fn();
+const mockGetLatestCompletionForPlan = vi.fn();
 const mockGetEvents = vi.fn();
 const mockHasWritableCalendarForUser = vi.fn();
 
@@ -120,6 +121,7 @@ vi.mock('../../src/services/training-plans', () => ({
   getWeeksForPlan: (...args: unknown[]) => mockGetWeeksForPlan(...args),
   getSessionsForWeek: (...args: unknown[]) => mockGetSessionsForWeek(...args),
   getWeeklyAdherence: (...args: unknown[]) => mockGetWeeklyAdherence(...args),
+  getLatestCompletionForPlan: (...args: unknown[]) => mockGetLatestCompletionForPlan(...args),
 }));
 
 vi.mock('../../src/services/unified-calendar', () => ({
@@ -170,6 +172,7 @@ describe('mesh context scope hardening', () => {
       mockGetWeeksForPlan,
       mockGetSessionsForWeek,
       mockGetWeeklyAdherence,
+      mockGetLatestCompletionForPlan,
       mockGetEvents,
       mockHasWritableCalendarForUser,
     ].forEach((mock) => mock.mockReset());

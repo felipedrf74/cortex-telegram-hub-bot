@@ -17,13 +17,13 @@
 //     present.
 //   • multiple_recent_tasks — same phrase, but multiple recent task
 //     candidates means the engine should clarify, not guess.
-//   • pending_training_plan_awaiting_weekly_volume — "It is 20 km a week"
-//     fills the weeklyVolumeKm slot ONLY when a pending training plan is
+//   • pending_training_plan_awaiting_sessions_per_week — a frequency answer
+//     fills sessionsPerWeek ONLY when a pending training plan is
 //     active.
 //
 // These scenarios are also covered by individual chat-action-planner tests
 // (search for "resolves 'this task' to the recent verified task" and
-// "stores a pending Training plan draft and fills weekly mileage").  This
+// "stores a pending Training plan draft and fills sessions per week").  This
 // harness keeps the per-condition contract visible from the parity layer.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -156,8 +156,8 @@ describe('state-required fixture parity (Phase 3 batch 13)', () => {
     });
   });
 
-  describe('condition: pending_training_plan_awaiting_weekly_volume', () => {
-    it('"It is 20 km a week" fills weeklyVolumeKm when a pending plan is active', async () => {
+  describe('condition: pending_training_plan_awaiting_sessions_per_week', () => {
+    it('fills sessionsPerWeek only when a pending plan is active', async () => {
       mockedGetActivePending.mockReturnValue({
         pendingActionId: 'pending-training-1',
         skill: 'training',
@@ -166,27 +166,26 @@ describe('state-required fixture parity (Phase 3 batch 13)', () => {
         tenantId: 1,
         conversationId: 'state-test',
         collectedSlots: {
-          sport: 'running',
-          goal: '10k',
+          objective: '10k',
           durationWeeks: 12,
-          startDate: '2026-05-19',
+          startPolicy: 'next_full_week',
         },
-        missingSlots: ['weeklyVolumeKm'],
+        missingSlots: ['sessionsPerWeek'],
         ttlExpiresAt: '2026-05-15T12:00:00+01:00',
       } as any);
 
-      const plan = await buildChatActionPlan(baseInput('It is 20 km a week', 'en-US'));
+      const plan = await buildChatActionPlan(baseInput('Make it 4 sessions per week', 'en-US'));
       expect(plan).not.toBeNull();
       const step = plan?.steps[0];
       expect(step?.skill).toBe('training');
       expect(step?.action).toBe('training_plan_create');
       const args = step?.args as Record<string, unknown> | undefined;
-      expect(args?.weeklyVolumeKm).toBe(20);
+      expect(args?.sessionsPerWeek).toBe(4);
     });
 
-    it('"It is 20 km a week" without a pending plan does NOT invent one', async () => {
+    it('a bare frequency without a pending plan does NOT invent one', async () => {
       // Default mock returns null pending — already set in beforeEach.
-      const plan = await buildChatActionPlan(baseInput('It is 20 km a week', 'en-US'));
+      const plan = await buildChatActionPlan(baseInput('Make it 4 sessions per week', 'en-US'));
       // Without pending context, the planner must refuse to invent a plan.
       // It may return null OR emit a clarification, but it must NOT emit a
       // completed training_plan_create.
@@ -668,8 +667,8 @@ describe('state-required fixture parity (Phase 3 batch 13)', () => {
   });
 
   // Phase 6 batch 29: pending training plan with alternative slot phrasings.
-  describe('condition: pending_training_plan_awaiting_weekly_volume — alternative phrasings', () => {
-    it('"30 quilometros por semana" fills weeklyVolumeKm in PT', async () => {
+  describe('condition: pending_training_plan_awaiting_sessions_per_week — alternative phrasings', () => {
+    it('"4 treinos por semana" fills sessionsPerWeek in PT', async () => {
       mockedGetActivePending.mockReturnValue({
         pendingActionId: 'pending-training-2',
         skill: 'training',
@@ -678,20 +677,19 @@ describe('state-required fixture parity (Phase 3 batch 13)', () => {
         tenantId: 1,
         conversationId: 'state-test-pt',
         collectedSlots: {
-          sport: 'running',
-          goal: '21k',
+          objective: '21k',
           durationWeeks: 16,
-          startDate: '2026-05-19',
+          startPolicy: 'next_full_week',
         },
-        missingSlots: ['weeklyVolumeKm'],
+        missingSlots: ['sessionsPerWeek'],
         ttlExpiresAt: '2026-05-15T12:00:00+01:00',
       } as any);
-      const plan = await buildChatActionPlan(baseInput('30 quilometros por semana', 'pt-PT'));
+      const plan = await buildChatActionPlan(baseInput('4 treinos por semana', 'pt-PT'));
       const step = plan?.steps[0];
       expect(step?.action).toBe('training_plan_create');
       expect(step?.requiredArgsPresent).toBe(true);
       const args = step?.args as Record<string, unknown>;
-      expect(args.weeklyVolumeKm).toBe(30);
+      expect(args.sessionsPerWeek).toBe(4);
     });
   });
 });

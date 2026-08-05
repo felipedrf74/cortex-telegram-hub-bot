@@ -11,6 +11,7 @@ import type {
 } from './types';
 import { loadCoachKnowledge } from './knowledge-loader';
 import { trimOverstuffedStrengthSessionToDuration } from './session-coherence';
+import { replaceSessionIntensityMetadataWithFinalSteadyPrescription } from './session-intensity-metadata';
 import { cloneSessions, durationToLoad, sumMinutes } from './utils';
 
 type CompletionBucket = 'completed' | 'partial' | 'skipped';
@@ -277,7 +278,16 @@ export function applyFeedbackToAthleteState(athlete: AthleteState, analysis: Tra
   };
 }
 
-export function applyFeedbackToWeeklyPlan(plan: WeeklyPlan, analysis?: TrainingFeedbackAnalysis): WeeklyPlan {
+export interface ApplyFeedbackToWeeklyPlanOptions {
+  /** Zero-based week position used to rotate recovery-only truncation. */
+  strengthRecoveryRotationIndex?: number;
+}
+
+export function applyFeedbackToWeeklyPlan(
+  plan: WeeklyPlan,
+  analysis?: TrainingFeedbackAnalysis,
+  options: ApplyFeedbackToWeeklyPlanOptions = {},
+): WeeklyPlan {
   if (!analysis || analysis.decisions.length === 0) return plan;
 
   let sessions = cloneSessions(plan.sessions);
@@ -295,7 +305,14 @@ export function applyFeedbackToWeeklyPlan(plan: WeeklyPlan, analysis?: TrainingF
   );
 
   if (effectiveDurationMultiplier !== 1 || intensityMultiplier < 1) {
-    sessions = sessions.map((session) => adaptSessionLoad(session, effectiveDurationMultiplier, intensityMultiplier, analysis));
+    sessions = sessions.map((session) => adaptSessionLoad(
+      session,
+      effectiveDurationMultiplier,
+      intensityMultiplier,
+      analysis,
+      plan.weekStart,
+      options.strengthRecoveryRotationIndex,
+    ));
   }
 
   if (shouldProgress) {
@@ -443,6 +460,8 @@ function adaptSessionLoad(
   durationMultiplier: number,
   intensityMultiplier: number,
   analysis: TrainingFeedbackAnalysis,
+  weekStart: string,
+  strengthRecoveryRotationIndex?: number,
 ): Session {
   if (session.sessionType === 'rest') return session;
   const nextDuration = durationMultiplier < 1
@@ -459,7 +478,7 @@ function adaptSessionLoad(
     : downshift && session.fatigueCost === 'high'
       ? 'medium'
       : session.fatigueCost;
-  const adapted: Session = {
+  let adapted: Session = {
     ...session,
     durationMinutes: nextDuration,
     intensityZone: nextIntensity,
@@ -470,7 +489,52 @@ function adaptSessionLoad(
     tags: dedupeStrings([...session.tags, `feedback_${analysis.progressionState}`]),
   };
 
-  return enforceFeedbackStrengthCoherence(applyMinimumDoseStrengthFallback(adapted, analysis));
+  adapted = applyReentryEnduranceIdentity(adapted, analysis);
+  if (downshift && adapted.sport !== 'strength') {
+    adapted = replaceSessionIntensityMetadataWithFinalSteadyPrescription(adapted);
+  }
+  adapted.plannedLoad = durationToLoad(
+    adapted.durationMinutes,
+    adapted.intensityZone,
+    adapted.fatigueCost,
+  );
+
+  return enforceFeedbackStrengthCoherence(
+    applyMinimumDoseStrengthFallback(adapted, analysis, weekStart),
+    analysis.progressionState === 'deload' ? strengthRecoveryRotationIndex : undefined,
+  );
+}
+
+function applyReentryEnduranceIdentity(
+  session: Session,
+  analysis: TrainingFeedbackAnalysis,
+): Session {
+  if (analysis.progressionState !== 'reentry' || session.sport === 'strength') return session;
+
+  const identity = session.sport === 'running'
+    ? { sessionType: 'easy_run' as const, title: 'Re-entry Easy Run' }
+    : session.sport === 'cycling'
+      ? { sessionType: 'recovery_ride' as const, title: 'Re-entry Recovery Ride' }
+      : { sessionType: 'recovery_swim' as const, title: 'Re-entry Recovery Swim' };
+
+  return {
+    ...session,
+    ...identity,
+    description: `Adherence re-entry aerobic session replacing ${session.title}; keep the effort easy and finish able to repeat it.`,
+    intensityZone: 'recovery',
+    fatigueCost: 'low',
+    keySession: false,
+    sourceTemplateId: undefined,
+    sessionRole: 'recovery',
+    sessionRoleLabel: 'Recovery',
+    sessionRoleSummary: 'Easy, repeatable work that rebuilds consistency after missed sessions.',
+    keySessionLabel: undefined,
+    intensityProfile: undefined,
+    intensitySummary: undefined,
+    tags: dedupeStrings(session.tags.filter((tag) =>
+      !/(?:key_session|role_long|run_long|threshold|interval|tempo|vo2)/i.test(tag)
+    ).concat(['reentry_easy', 'adherence_realistic'])),
+  };
 }
 
 function progressSession(session: Session): Session {
@@ -508,13 +572,18 @@ function shouldUseMinimumDoseStrength(analysis: TrainingFeedbackAnalysis): boole
     );
 }
 
-function applyMinimumDoseStrengthFallback(session: Session, analysis: TrainingFeedbackAnalysis): Session {
+function applyMinimumDoseStrengthFallback(
+  session: Session,
+  analysis: TrainingFeedbackAnalysis,
+  weekStart: string,
+): Session {
   if (!shouldUseMinimumDoseStrength(analysis)) return session;
   if (session.sport !== 'strength' || !session.exercises?.length) return session;
 
   const keepCount = analysis.progressionState === 'reentry' ? 2 : Math.min(3, session.exercises.length);
   const durationCap = analysis.progressionState === 'reentry' ? 20 : 25;
-  const exercises = session.exercises.slice(0, keepCount).map((exercise, index) => ({
+  const orderedExercises = rotateMinimumDoseExercises(session.exercises, keepCount, analysis, weekStart);
+  const exercises = orderedExercises.slice(0, keepCount).map((exercise, index) => ({
     ...exercise,
     sets: Math.min(exercise.sets, 2),
     rir: exercise.rir != null ? Math.max(exercise.rir, 3) : 3,
@@ -545,11 +614,29 @@ function applyMinimumDoseStrengthFallback(session: Session, analysis: TrainingFe
   };
 }
 
-function enforceFeedbackStrengthCoherence(session: Session): Session {
+function rotateMinimumDoseExercises(
+  exercises: NonNullable<Session['exercises']>,
+  keepCount: number,
+  analysis: TrainingFeedbackAnalysis,
+  weekStart: string,
+): NonNullable<Session['exercises']> {
+  if (analysis.progressionState !== 'reentry' || exercises.length <= keepCount) return exercises;
+  const weekIndex = Math.floor(Date.parse(weekStart) / (7 * 24 * 60 * 60 * 1000));
+  if (!Number.isFinite(weekIndex)) return exercises;
+  const groupCount = Math.ceil(exercises.length / keepCount);
+  const offset = (Math.abs(weekIndex) % groupCount) * keepCount;
+  return exercises.map((_, index) => exercises[(offset + index) % exercises.length]);
+}
+
+function enforceFeedbackStrengthCoherence(
+  session: Session,
+  recoveryRotationIndex?: number,
+): Session {
   if (session.sport !== 'strength' || !session.exercises?.length) return session;
   return trimOverstuffedStrengthSessionToDuration(session, loadCoachKnowledge(), {
     tag: 'feedback_duration_coherent',
     alternative: 'Feedback time cap trimmed trailing strength volume so the session matches the scheduled duration.',
+    recoveryRotationIndex,
   }).session;
 }
 

@@ -63,6 +63,39 @@ describe('training profile model overhaul', () => {
     expect(athlete.profileQuality?.missingCriticalData).toHaveLength(0);
   });
 
+  it('parses a hyphenated generic duration note into endurance availability', () => {
+    const athlete = buildAthleteStateFromTrainingProfiles(baseInput({
+      objective: 'Travel-safe running and strength',
+      sessionsPerWeek: 3,
+      runSessionsPerWeek: 2,
+      strengthSessionsPerWeek: 1,
+      notes: 'Every session must fit a 35-minute window while travelling.',
+      fitnessProfile: {
+        experience_level: 'Intermediate (1-3 years)',
+        weekly_frequency: '2-3 days',
+        training_goals: 'Endurance, Strength',
+        injuries: 'none',
+        available_equipment: 'Resistance bands',
+      },
+      gymProfile: {
+        training_age: '1-3 years',
+        primary_goal: 'Support other sports',
+        equipment_access: 'Bodyweight only',
+        sessions_per_week: '1-2',
+        session_duration_minutes: '35',
+      },
+    }));
+
+    expect(athlete.normalizedTrainingProfile?.availableSessionDurations).toMatchObject({
+      genericMinutes: 35,
+      enduranceMinutes: 35,
+      strengthMinutes: 35,
+    });
+    expect(athlete.availability.weeklyWindows
+      .filter((window) => window.sports?.includes('running'))
+      .every((window) => window.end === '07:35')).toBe(true);
+  });
+
   it('uses profile differences to produce materially different strength plans', () => {
     const beginner = buildAthleteStateFromTrainingProfiles(baseInput({
       userId: 91002,

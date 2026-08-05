@@ -4,10 +4,7 @@ import { DateTime } from 'luxon';
 import { logger } from '../utils/logger';
 import { calculateReadiness } from './readiness-scorer';
 import { getEvents, type UnifiedCalendarEvent } from './unified-calendar';
-import {
-  readScheduledTrainingSessions,
-  readTrainingContextAll,
-} from './training-signals';
+import { readTrainingContextAll } from './training-signals';
 import {
   getActivePlans,
   getSessionsForWeek,
@@ -93,12 +90,6 @@ export async function getFocusBlockRecommendation(
   const events = calendarResult.status === 'fulfilled' ? calendarResult.value : [];
   const readiness = readinessResult.status === 'fulfilled' ? readinessResult.value : null;
   const trainingContext = readTrainingContextAll({ userId, tenantId: opts.tenantId });
-  const scheduledTraining = readScheduledTrainingSessions({
-    userId,
-    tenantId: opts.tenantId,
-    windowStartIso: startDate.toUTC().toISO()!,
-    windowEndIso: endDate.toUTC().toISO()!,
-  });
   const trainingSchedule = buildTrainingSchedule(userId, startDate, horizonDays, zone);
 
   const hadCalendarData = calendarResult.status === 'fulfilled';
@@ -129,7 +120,7 @@ export async function getFocusBlockRecommendation(
         trainingLoad: trainingSummary.load,
         calendarLoad: calendarSummary.load,
         trainingContextFlags: trainingContext.flags,
-        hasTrainingAdjacency: hasTrainingAdjacency(window.start, window.end, dayEvents, scheduledTraining, zone),
+        hasTrainingAdjacency: hasTrainingAdjacency(window.start, window.end, dayEvents, zone),
       });
 
       const reasons = dedupePreservingOrder([
@@ -137,7 +128,7 @@ export async function getFocusBlockRecommendation(
         ...readinessReasons(offset, readiness?.score ?? null, trainingContext.flags),
         ...trainingSummary.reasons,
         ...calendarSummary.reasons,
-        ...(hasTrainingAdjacency(window.start, window.end, dayEvents, scheduledTraining, zone)
+        ...(hasTrainingAdjacency(window.start, window.end, dayEvents, zone)
           ? ['This slot stays free, but training sits close enough that the block could feel interrupted.']
           : []),
       ]);
@@ -627,20 +618,9 @@ function hasTrainingAdjacency(
   start: DateTime,
   end: DateTime,
   dayEvents: UnifiedCalendarEvent[],
-  scheduledTraining: Array<{ payload?: Record<string, unknown> }>,
   zone: string,
 ): boolean {
   const windows: Array<{ start: DateTime; end: DateTime }> = [];
-
-  for (const signal of scheduledTraining) {
-    const rawStart = typeof signal.payload?.start === 'string' ? signal.payload.start : null;
-    const rawEnd = typeof signal.payload?.end === 'string' ? signal.payload.end : null;
-    if (!rawStart || !rawEnd) continue;
-    windows.push({
-      start: DateTime.fromISO(rawStart, { zone: 'utc' }).setZone(zone),
-      end: DateTime.fromISO(rawEnd, { zone: 'utc' }).setZone(zone),
-    });
-  }
 
   for (const event of dayEvents) {
     if (!looksLikeTrainingEvent(event.summary || '')) continue;

@@ -304,6 +304,15 @@ describe('chat-action-state', () => {
   });
 
   describe('TTL expiry (expireStalePendingChatActionsForJob)', () => {
+    it('compares equivalent offset timestamps by instant instead of ISO text ordering', () => {
+      const future = seedAction({ expiresAt: '2026-07-20T12:30:00.000Z' });
+
+      // 13:00 at +01:00 is 12:00Z, so this action still has 30 minutes left.
+      // A raw SQLite TEXT comparison incorrectly treats the offset hour as later.
+      expect(expireStalePendingChatActionsForJob('2026-07-20T13:00:00+01:00')).toBe(0);
+      expect(rawRow(future.id)?.cancellation_state).toBe('active');
+    });
+
     it('expires stale active rows with cancellation_state=expired', () => {
       const stale = seedAction({ expiresAt: '2026-07-20T12:30:00.000Z' });
       const fresh = seedAction({

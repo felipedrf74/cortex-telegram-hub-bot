@@ -263,6 +263,7 @@ function buildIntent(input: {
     sourceEntityType: 'calendar_staging_smoke',
     ownerUserId: input.userId,
     tenantId: input.tenantId,
+    providerTarget: input.provider,
     title: `${TITLE_PREFIX} ${input.runId} ${input.provider} ${label}`,
     requestedDurationMinutes: durationMinutes,
     preferredWindows: [{ start: start.toISOString(), end: new Date(start.getTime() + 2 * 60 * 60_000).toISOString(), label }],

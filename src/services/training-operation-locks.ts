@@ -1,6 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import crypto from 'crypto';
+import type Database from 'better-sqlite3';
 import { getDb } from './database';
 import { logger } from '../utils/logger';
 import { requireTenantIdParam } from './tenant-scope';
@@ -10,13 +11,34 @@ export type TrainingOperationName =
   | 'calendar_sync'
   | 'calendar_reflow'
   | 'calendar_cancel'
-  | 'plan_activate';
+  | 'plan_activate'
+  | 'plan_repair'
+  | 'coach_apply';
 
 export interface TrainingOperationLockInput {
   userId: number;
   tenantId: number;
   planId?: number | null;
   operation: TrainingOperationName;
+  /**
+   * Standalone operator tools already own an explicit database handle. Using
+   * it here keeps the advisory lock and the guarded mutation on the same
+   * store without initializing the process-global application database.
+   */
+  db?: Database.Database;
+}
+
+/**
+ * Callable release handle plus an explicit ownership fence. Existing callers
+ * can keep invoking the handle as a function; mutation/provider boundaries
+ * that need stronger fencing call `assertActive()` immediately before the
+ * effect. The signal is aborted when the lease expires, is stolen, cannot be
+ * renewed, or is released.
+ */
+export interface TrainingOperationLockLease {
+  (): void;
+  readonly signal: AbortSignal;
+  assertActive(): void;
 }
 
 /**
@@ -33,6 +55,9 @@ export interface TrainingOperationLockInput {
  *   - `plan`     — the athlete's active plan row and its projection
  *                  (weeks/sessions, the active pointer).
  *   - `calendar` — provider events owned by Training for that athlete.
+ *
+ * Coach apply writes both resources synchronously: it patches the scoped
+ * provider event and then records the matching Training-session change.
  *
  * Two operations conflict iff they write a resource in common. Read-only
  * operations do not take this lock at all.
@@ -63,6 +88,8 @@ export const TRAINING_OPERATION_RESOURCES: Record<TrainingOperationName, Readonl
   calendar_reflow: ['plan', 'calendar'],
   calendar_cancel: ['plan', 'calendar'],
   plan_activate: ['plan', 'calendar'],
+  plan_repair: ['plan', 'calendar'],
+  coach_apply: ['plan', 'calendar'],
 };
 
 /** True when two operations write at least one resource in common. */
@@ -105,6 +132,90 @@ export function isTrainingOperationLockError(err: unknown): err is TrainingOpera
   return err instanceof TrainingOperationLockError;
 }
 
+/**
+ * The lock store itself could not be reached, so mutual exclusion cannot be
+ * proven. This is distinct from contention: callers should retry it as a
+ * temporary 503, never continue the write without the shared resource lock.
+ */
+export class TrainingOperationLockUnavailableError extends Error {
+  readonly code = 'TRAINING_OPERATION_LOCK_UNAVAILABLE';
+  readonly status = 503;
+  readonly operation: TrainingOperationName;
+  readonly retryAfterSeconds: number;
+
+  constructor(operation: TrainingOperationName, retryAfterSeconds = 5) {
+    super(`TRAINING_OPERATION_LOCK_UNAVAILABLE: ${operation}`);
+    this.name = 'TrainingOperationLockUnavailableError';
+    this.operation = operation;
+    this.retryAfterSeconds = retryAfterSeconds;
+  }
+}
+
+export function isTrainingOperationLockUnavailableError(
+  err: unknown,
+): err is TrainingOperationLockUnavailableError {
+  return err instanceof TrainingOperationLockUnavailableError;
+}
+
+export interface TrainingOperationLockPublicError {
+  code: 'TRAINING_OPERATION_LOCKED' | 'TRAINING_OPERATION_LOCK_UNAVAILABLE';
+  status: 409 | 503;
+  message: string;
+  operation: TrainingOperationName;
+  retryAfterSeconds: number;
+  details: {
+    operation: TrainingOperationName;
+    retryAfterSeconds: number;
+  };
+}
+
+/**
+ * Convert only known lock failures into the scope-safe transport contract.
+ * The returned details are constructed from an explicit allowlist; raw error
+ * properties and messages can contain database, owner, user, or tenant data
+ * and must never be spread into an API/Decision payload.
+ */
+export function trainingOperationLockPublicError(
+  err: unknown,
+): TrainingOperationLockPublicError | null {
+  if (isTrainingOperationLockError(err)) {
+    return buildTrainingOperationLockPublicError(
+      err.code,
+      err.status,
+      'Another training operation is in progress. Please try again shortly.',
+      err.operation,
+      err.retryAfterSeconds,
+    );
+  }
+  if (isTrainingOperationLockUnavailableError(err)) {
+    return buildTrainingOperationLockPublicError(
+      err.code,
+      err.status,
+      'Training operations are temporarily unavailable. Please try again shortly.',
+      err.operation,
+      err.retryAfterSeconds,
+    );
+  }
+  return null;
+}
+
+function buildTrainingOperationLockPublicError(
+  code: TrainingOperationLockPublicError['code'],
+  status: TrainingOperationLockPublicError['status'],
+  message: string,
+  operation: TrainingOperationName,
+  retryAfterSeconds: number,
+): TrainingOperationLockPublicError {
+  return {
+    code,
+    status,
+    message,
+    operation,
+    retryAfterSeconds,
+    details: { operation, retryAfterSeconds },
+  };
+}
+
 const TRAINING_OPERATION_LOCK_WAIT_MS = 30_000;
 const TRAINING_OPERATION_LOCK_POLL_MS = 25;
 const TRAINING_OPERATION_LOCK_TTL_MS_BY_OPERATION: Record<TrainingOperationName, number> = {
@@ -113,6 +224,8 @@ const TRAINING_OPERATION_LOCK_TTL_MS_BY_OPERATION: Record<TrainingOperationName,
   calendar_reflow: 10 * 60_000,
   calendar_cancel: 15 * 60_000,
   plan_activate: 10 * 60_000,
+  plan_repair: 15 * 60_000,
+  coach_apply: 10 * 60_000,
 };
 
 const memoryLocks = new Map<string, Promise<void>>();
@@ -196,6 +309,23 @@ function ensureTrainingOperationLockIndexes(db: ReturnType<typeof getDb>): void 
   `);
 }
 
+function runTrainingOperationLockStoreStep<T>(
+  operation: TrainingOperationName,
+  step: () => T,
+): T {
+  try {
+    return step();
+  } catch (err) {
+    // Keep the raw SQLite failure in server-only logs. The typed exception is
+    // deliberately scope-free because route and Decision surfaces serialize it.
+    logger.warn(
+      { err, operation },
+      'Training operation lock store unavailable during acquisition',
+    );
+    throw new TrainingOperationLockUnavailableError(operation);
+  }
+}
+
 function ttlMsForTrainingOperation(operation: TrainingOperationName): number {
   return TRAINING_OPERATION_LOCK_TTL_MS_BY_OPERATION[operation] ?? 10 * 60_000;
 }
@@ -206,7 +336,10 @@ export function trainingCalendarOperationLockKey(input: Pick<TrainingOperationLo
   return `training-calendar:user:${userId}:tenant:${tenantId}`;
 }
 
-async function acquireMemoryTrainingOperationLock(lockKey: string): Promise<() => void> {
+async function acquireMemoryTrainingOperationLock(
+  lockKey: string,
+  operation: TrainingOperationName,
+): Promise<TrainingOperationLockLease> {
   const prior = memoryLocks.get(lockKey);
   if (prior) {
     try {
@@ -222,28 +355,47 @@ async function acquireMemoryTrainingOperationLock(lockKey: string): Promise<() =
   });
   memoryLocks.set(lockKey, current);
 
+  const abortController = new AbortController();
   let released = false;
-  return () => {
+  const release = (() => {
     if (released) return;
     released = true;
+    abortController.abort();
     releaseCurrent();
     if (memoryLocks.get(lockKey) === current) {
       memoryLocks.delete(lockKey);
     }
-  };
+  }) as TrainingOperationLockLease;
+  Object.defineProperties(release, {
+    signal: { value: abortController.signal, enumerable: true },
+    assertActive: {
+      value: () => {
+        if (released || memoryLocks.get(lockKey) !== current) {
+          throw new TrainingOperationLockError(operation, 1);
+        }
+      },
+      enumerable: true,
+    },
+  });
+  return release;
 }
 
-export async function acquireTrainingCalendarOperationLock(input: TrainingOperationLockInput): Promise<() => void> {
+export async function acquireTrainingCalendarOperationLock(
+  input: TrainingOperationLockInput,
+): Promise<TrainingOperationLockLease> {
   const userId = requireTrainingOperationUserId(input.userId);
   const tenantId = requireTenantIdParam(input.tenantId, 'acquireTrainingCalendarOperationLock');
   const lockKey = trainingCalendarOperationLockKey(input);
-  const db = tryGetLockDb();
+  const db = input.db ?? tryGetLockDb();
   if (!db) {
-    if (isTestRuntime()) return acquireMemoryTrainingOperationLock(lockKey);
-    throw new Error('TRAINING_OPERATION_LOCK_UNAVAILABLE');
+    if (isTestRuntime()) return acquireMemoryTrainingOperationLock(lockKey, input.operation);
+    throw new TrainingOperationLockUnavailableError(input.operation);
   }
 
-  ensureTrainingOperationLockTable(db);
+  runTrainingOperationLockStoreStep(
+    input.operation,
+    () => ensureTrainingOperationLockTable(db),
+  );
   const ownerToken = crypto.randomUUID();
   const startedAt = Date.now();
   const planId = Number.isFinite(Number(input.planId)) && Number(input.planId) > 0
@@ -252,57 +404,114 @@ export async function acquireTrainingCalendarOperationLock(input: TrainingOperat
 
   while (Date.now() - startedAt < TRAINING_OPERATION_LOCK_WAIT_MS) {
     const nowMs = Date.now();
-    db.prepare('DELETE FROM training_operation_locks WHERE lock_key = ? AND expires_at_ms <= ?')
-      .run(lockKey, nowMs);
-    const result = db.prepare(`
-      INSERT OR IGNORE INTO training_operation_locks (
-        lock_key,
-        owner_token,
-        operation,
-        user_id,
-        tenant_id,
-        plan_id,
-        acquired_at_ms,
-        expires_at_ms
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      lockKey,
-      ownerToken,
-      input.operation,
-      userId,
-      tenantId,
-      planId,
-      nowMs,
-      nowMs + ttlMsForTrainingOperation(input.operation),
-    );
+    const result = runTrainingOperationLockStoreStep(input.operation, () => {
+      db.prepare('DELETE FROM training_operation_locks WHERE lock_key = ? AND expires_at_ms <= ?')
+        .run(lockKey, nowMs);
+      return db.prepare(`
+        INSERT OR IGNORE INTO training_operation_locks (
+          lock_key,
+          owner_token,
+          operation,
+          user_id,
+          tenant_id,
+          plan_id,
+          acquired_at_ms,
+          expires_at_ms
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        lockKey,
+        ownerToken,
+        input.operation,
+        userId,
+        tenantId,
+        planId,
+        nowMs,
+        nowMs + ttlMsForTrainingOperation(input.operation),
+      );
+    });
     if (result.changes > 0) {
       let released = false;
+      let lost = false;
       const ttlMs = ttlMsForTrainingOperation(input.operation);
-      const renewalInterval = setInterval(() => {
+      const abortController = new AbortController();
+      let renewalInterval: ReturnType<typeof setInterval> | null = null;
+      const markLost = (): void => {
+        if (lost || released) return;
+        lost = true;
+        abortController.abort();
+        if (renewalInterval) clearInterval(renewalInterval);
+      };
+      const assertActive = (): void => {
+        if (released || lost) {
+          throw new TrainingOperationLockError(input.operation, 1);
+        }
+        const checkedAtMs = Date.now();
+        let active: { active: number } | undefined;
+        try {
+          active = db.prepare(`
+            SELECT 1 AS active
+              FROM training_operation_locks
+             WHERE lock_key = ?
+               AND owner_token = ?
+               AND expires_at_ms > ?
+          `).get(lockKey, ownerToken, checkedAtMs) as { active: number } | undefined;
+        } catch (err) {
+          markLost();
+          logger.warn(
+            { err, operation: input.operation },
+            'Training operation SQLite lock lease validation failed',
+          );
+          throw new TrainingOperationLockUnavailableError(input.operation);
+        }
+        if (!active) {
+          markLost();
+          throw new TrainingOperationLockError(input.operation, 1);
+        }
+      };
+      renewalInterval = setInterval(() => {
         try {
           const renewedAtMs = Date.now();
-          db.prepare(`
+          const renewed = db.prepare(`
             UPDATE training_operation_locks
                SET expires_at_ms = ?
-             WHERE lock_key = ? AND owner_token = ?
-          `).run(renewedAtMs + ttlMs, lockKey, ownerToken);
+             WHERE lock_key = ?
+               AND owner_token = ?
+               AND expires_at_ms > ?
+          `).run(renewedAtMs + ttlMs, lockKey, ownerToken, renewedAtMs);
+          if (renewed.changes !== 1) {
+            markLost();
+            logger.warn(
+              { operation: input.operation },
+              'Training operation SQLite lock lease ownership was lost',
+            );
+          }
         } catch (err) {
-          logger.warn({ err, lockKey, operation: input.operation, userId, tenantId }, 'Training operation SQLite lock lease renewal failed');
+          markLost();
+          logger.warn(
+            { err, operation: input.operation },
+            'Training operation SQLite lock lease renewal failed',
+          );
         }
       }, Math.max(1_000, Math.floor(ttlMs / 3)));
       if (typeof renewalInterval.unref === 'function') renewalInterval.unref();
-      return () => {
+      const release = (() => {
         if (released) return;
         released = true;
-        clearInterval(renewalInterval);
+        abortController.abort();
+        if (renewalInterval) clearInterval(renewalInterval);
         try {
           db.prepare('DELETE FROM training_operation_locks WHERE lock_key = ? AND owner_token = ?')
             .run(lockKey, ownerToken);
         } catch (err) {
-          logger.warn({ err, lockKey, operation: input.operation, userId, tenantId }, 'Training operation SQLite lock release failed');
+          logger.warn({ err, operation: input.operation }, 'Training operation SQLite lock release failed');
         }
-      };
+      }) as TrainingOperationLockLease;
+      Object.defineProperties(release, {
+        signal: { value: abortController.signal, enumerable: true },
+        assertActive: { value: assertActive, enumerable: true },
+      });
+      return release;
     }
     await sleep(TRAINING_OPERATION_LOCK_POLL_MS);
   }
@@ -318,13 +527,16 @@ export async function acquireTrainingCalendarOperationLock(input: TrainingOperat
 
 export async function withTrainingCalendarOperationLock<T>(
   input: TrainingOperationLockInput,
-  fn: () => Promise<T>,
+  fn: (lease: TrainingOperationLockLease) => Promise<T>,
 ): Promise<T> {
-  const release = await acquireTrainingCalendarOperationLock(input);
+  const lease = await acquireTrainingCalendarOperationLock(input);
   try {
-    return await fn();
+    lease.assertActive();
+    const result = await fn(lease);
+    lease.assertActive();
+    return result;
   } finally {
-    release();
+    lease();
   }
 }
 

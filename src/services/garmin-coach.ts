@@ -22,7 +22,10 @@ import {
   CalendarSource,
   updateEvent as updateCalendarEvent,
 } from './unified-calendar';
-import { syncSessionWithCoachRecommendation } from './training-plans';
+import {
+  getSessionByCalendarEvent,
+  syncSessionWithCoachRecommendation,
+} from './training-plans';
 import { assertLegacyCalendarEventMutationAllowed } from './training-plan-revision-legacy-guard';
 import { getDomainSystemPrompt } from './anthropic';
 import { trackedCreate } from '../portal/anthropic-hook';
@@ -35,6 +38,10 @@ import { appleHealthJsonSelectColumns, parseAppleHealthDataJson } from './apple-
 import { requireTenantIdParam } from './tenant-scope';
 import { rethrowAiUsageFailClosedError } from './api-usage-fallback';
 import { withAiBudgetReservation, type AiRequestSource } from './cost-guardrail';
+import {
+  withTrainingCalendarOperationLock,
+  type TrainingOperationLockLease,
+} from './training-operation-locks';
 
 const client = new Anthropic({
   apiKey: config.anthropic.apiKey,
@@ -214,6 +221,107 @@ export interface CoachBriefingOptions {
 export interface CoachRecommendationApplyScope {
   userId?: number | null;
   tenantId?: number | null;
+  lease?: Pick<TrainingOperationLockLease, 'signal' | 'assertActive'>;
+}
+
+export interface CoachRecommendationsApplyOptions {
+  lease?: Pick<TrainingOperationLockLease, 'signal' | 'assertActive'>;
+}
+
+export class CoachRecommendationStaleError extends Error {
+  readonly code = 'COACH_RECOMMENDATION_STALE';
+  readonly status = 409;
+  readonly retryable = false;
+
+  constructor() {
+    super('COACH_RECOMMENDATION_STALE');
+    this.name = 'CoachRecommendationStaleError';
+  }
+}
+
+/**
+ * The provider mutation completed, but the matching local Training write
+ * could not be confirmed. Retrying blindly is unsafe because the externally
+ * visible calendar state already changed.
+ */
+export class CoachRecommendationApplyPartialFailureError extends Error {
+  readonly code = 'COACH_APPLY_PARTIAL_FAILURE';
+  readonly status = 409;
+  readonly retryable = false;
+  readonly providerMutationApplied = true;
+  readonly localSyncConfirmed = false;
+
+  constructor() {
+    super('COACH_APPLY_PARTIAL_FAILURE');
+    this.name = 'CoachRecommendationApplyPartialFailureError';
+  }
+}
+
+async function applyCoachRecommendationUnderLease(
+  rec: CoachRecommendation,
+  dataUserId: number,
+  tenantId: number,
+  lease: Pick<TrainingOperationLockLease, 'signal' | 'assertActive'>,
+): Promise<void> {
+  const scopedRec = {
+    ...rec,
+    userId: dataUserId,
+    tenantId,
+    timezone: getUserTimezoneById(dataUserId),
+  };
+  assertLegacyCalendarEventMutationAllowed(
+    { userId: dataUserId, tenantId },
+    rec.eventId,
+    rec.source,
+  );
+
+  // Resolve the event through the tenant-scoped Training row before any
+  // provider call. A stale briefing or foreign provider id must never become
+  // an authorization path to mutate someone else's calendar event.
+  const session = getSessionByCalendarEvent(rec.eventId, rec.source, {
+    userId: dataUserId,
+    tenantId,
+  });
+  if (!session) throw new CoachRecommendationStaleError();
+
+  const updateData: {
+    event_id: string;
+    new_title?: string;
+    new_start?: string;
+    new_end?: string;
+  } = { event_id: rec.eventId };
+  if (rec.action === 'REST') {
+    updateData.new_title = rec.newTitle || `❌ CANCELLED — ${rec.originalTitle}`;
+  } else {
+    if (rec.newTitle && rec.newTitle !== rec.originalTitle) {
+      updateData.new_title = rec.newTitle;
+    }
+    if (rec.newStart) updateData.new_start = rec.newStart;
+    if (rec.newEnd) updateData.new_end = rec.newEnd;
+  }
+
+  lease.assertActive();
+  await updateCalendarEvent(updateData, rec.source, dataUserId, { signal: lease.signal });
+
+  try {
+    // These are deliberately separate fences: one confirms the provider
+    // boundary completed under our lease, and one guards the following local
+    // durable boundary against ownership loss between effects.
+    lease.assertActive();
+    lease.assertActive();
+    const localSyncConfirmed = syncSessionWithCoachRecommendation(scopedRec);
+    if (!localSyncConfirmed) {
+      throw new CoachRecommendationApplyPartialFailureError();
+    }
+    lease.assertActive();
+  } catch (err) {
+    if (err instanceof CoachRecommendationApplyPartialFailureError) throw err;
+    logger.warn(
+      { code: 'COACH_APPLY_PARTIAL_FAILURE' },
+      'Coach provider update completed but local Training sync could not be confirmed',
+    );
+    throw new CoachRecommendationApplyPartialFailureError();
+  }
 }
 
 /**
@@ -226,53 +334,19 @@ export async function applyCoachRecommendation(
   scope: CoachRecommendationApplyScope = {},
 ): Promise<void> {
   if (rec.action === 'KEEP') return;
-  const userId = requireTenantIdParam(scope.userId, 'applyCoachRecommendation.userId');
-  const tenantId = requireTenantIdParam(scope.tenantId, 'applyCoachRecommendation');
-  const scopedRec = {
-    ...rec,
-    userId,
-    tenantId,
-    timezone: getUserTimezoneById(userId),
-  };
-  assertLegacyCalendarEventMutationAllowed(
-    { userId, tenantId },
-    rec.eventId,
-    rec.source,
-  );
+  requireTenantIdParam(scope.userId, 'applyCoachRecommendation.actorUserId');
+  const dataUserId = requireTenantIdParam(scope.tenantId, 'applyCoachRecommendation.dataUserId');
+  const tenantId = dataUserId;
 
-  if (rec.action === 'REST') {
-    await updateCalendarEvent(
-      {
-        event_id: rec.eventId,
-        new_title: rec.newTitle || `❌ CANCELLED — ${rec.originalTitle}`,
-      },
-      rec.source,
-    );
-    try {
-      syncSessionWithCoachRecommendation(scopedRec);
-    } catch (err) {
-      logger.warn({ err, eventId: rec.eventId }, 'Coach apply updated the calendar but failed to sync the training session state');
-    }
+  if (scope.lease) {
+    await applyCoachRecommendationUnderLease(rec, dataUserId, tenantId, scope.lease);
     return;
   }
 
-  const updateData: { event_id: string; new_title?: string; new_start?: string; new_end?: string } = {
-    event_id: rec.eventId,
-  };
-
-  if (rec.newTitle && rec.newTitle !== rec.originalTitle) {
-    updateData.new_title = rec.newTitle;
-  }
-  if (rec.newStart) updateData.new_start = rec.newStart;
-  if (rec.newEnd) updateData.new_end = rec.newEnd;
-
-  await updateCalendarEvent(updateData, rec.source);
-
-  try {
-    syncSessionWithCoachRecommendation(scopedRec);
-  } catch (err) {
-    logger.warn({ err, eventId: rec.eventId }, 'Coach apply updated the calendar but failed to sync the training session state');
-  }
+  await withTrainingCalendarOperationLock(
+    { userId: dataUserId, tenantId, operation: 'coach_apply' },
+    (lease) => applyCoachRecommendationUnderLease(rec, dataUserId, tenantId, lease),
+  );
 }
 
 /**
@@ -284,13 +358,13 @@ export async function applyCoachRecommendations(
   userId: number | undefined,
   tenantId: number | undefined,
   recommendationIds?: string[] | null,
+  options: CoachRecommendationsApplyOptions = {},
 ): Promise<CoachApplyResult> {
-  if (!userId) {
-    throw new Error('Missing user id for coach recommendation apply');
-  }
-  const scopedTenantId = requireTenantIdParam(tenantId, 'applyCoachRecommendations');
+  const actorUserId = requireTenantIdParam(userId, 'applyCoachRecommendations.actorUserId');
+  const dataUserId = requireTenantIdParam(tenantId, 'applyCoachRecommendations.dataUserId');
+  const scopedTenantId = dataUserId;
 
-  const coachState = getLastCoachState(userId);
+  const coachState = getLastCoachState(dataUserId);
   if (!coachState || coachState.recommendations.length === 0) {
     throw new Error('No active coach recommendations found. Run /coach again first.');
   }
@@ -308,14 +382,39 @@ export async function applyCoachRecommendations(
     throw new Error('The selected coach recommendations expired or no longer match the latest briefing.');
   }
 
-  for (const rec of selected) {
-    await applyCoachRecommendation(rec, { userId, tenantId: scopedTenantId });
-  }
-
-  return {
-    count: selected.length,
-    appliedRecommendations: selected,
+  const applySelected = async (
+    lease: Pick<TrainingOperationLockLease, 'signal' | 'assertActive'>,
+  ): Promise<CoachApplyResult> => {
+    const appliedRecommendations: CoachRecommendation[] = [];
+    for (const rec of selected) {
+      try {
+        await applyCoachRecommendation(rec, {
+          userId: actorUserId,
+          tenantId: scopedTenantId,
+          lease,
+        });
+        appliedRecommendations.push(rec);
+      } catch (err) {
+        if (
+          appliedRecommendations.length > 0
+          && !(err instanceof CoachRecommendationApplyPartialFailureError)
+        ) {
+          throw new CoachRecommendationApplyPartialFailureError();
+        }
+        throw err;
+      }
+    }
+    return {
+      count: appliedRecommendations.length,
+      appliedRecommendations,
+    };
   };
+
+  if (options.lease) return applySelected(options.lease);
+  return withTrainingCalendarOperationLock(
+    { userId: dataUserId, tenantId: scopedTenantId, operation: 'coach_apply' },
+    applySelected,
+  );
 }
 
 // ─── Apple Health fallback for coach briefing ────────────────────────

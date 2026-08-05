@@ -66,12 +66,17 @@ vi.mock('../../src/utils/logger', () => ({
 
 import { eventBackboneAdminRoutes } from '../../src/api/routes/event-backbone-admin';
 import {
+  claimPendingEvents,
   emitDomainEvent,
   ensureEventOutboxTables,
+  markEventFailed,
+  markEventProcessed,
 } from '../../src/services/event-outbox';
 import {
+  claimPendingJobs,
   enqueueJob,
   ensureBackgroundJobTables,
+  markJobFailed,
 } from '../../src/services/background-job-queue';
 
 interface MockRes {
@@ -145,6 +150,29 @@ function jobStatus(jobId: string): { status: string; attempts: number; tenant_id
   return testDb.prepare('SELECT status, attempts, tenant_id FROM background_jobs WHERE job_id = ?').get(jobId) as any;
 }
 
+// Migration 279 makes pending -> terminal fixture rewrites invalid for the
+// same reason they are unsafe in production: only a fenced processing lease
+// may publish an outcome. Keep admin-route fixtures on that stronger path.
+function moveEventToDeadLetter(eventId: string): void {
+  const lease = claimPendingEvents(1, `admin-event-fixture-${eventId}`, testDb)[0];
+  if (!lease || lease.eventId !== eventId) throw new Error(`failed to claim event fixture ${eventId}`);
+  testDb.prepare('UPDATE event_outbox SET attempts = 3 WHERE event_id = ?').run(eventId);
+  expect(markEventFailed(lease, new Error('boom'), testDb)).toBe('dead_letter');
+}
+
+function moveEventToProcessed(eventId: string): void {
+  const lease = claimPendingEvents(1, `admin-event-fixture-${eventId}`, testDb)[0];
+  if (!lease || lease.eventId !== eventId) throw new Error(`failed to claim event fixture ${eventId}`);
+  expect(markEventProcessed(lease, testDb)).toBe(true);
+}
+
+function moveJobToDeadLetter(jobId: string): void {
+  const lease = claimPendingJobs(1, `admin-job-fixture-${jobId}`, testDb, undefined, [jobId])[0];
+  if (!lease || lease.jobId !== jobId) throw new Error(`failed to claim job fixture ${jobId}`);
+  testDb.prepare('UPDATE background_jobs SET attempts = max_attempts WHERE job_id = ?').run(jobId);
+  expect(markJobFailed(lease, new Error('boom'), testDb)).toBe('dead_letter');
+}
+
 describe('event backbone admin routes', () => {
   beforeEach(() => {
     testDb = new Database(':memory:');
@@ -172,6 +200,7 @@ describe('event backbone admin routes', () => {
       entityId: 'admin-event-a',
       idempotencyKey: 'admin-event-a',
     });
+    moveEventToDeadLetter(tenantA.eventId);
     const tenantB = emitDomainEvent({
       tenantId: 8,
       userId: 8,
@@ -181,7 +210,7 @@ describe('event backbone admin routes', () => {
       entityId: 'admin-event-b',
       idempotencyKey: 'admin-event-b',
     });
-    testDb.prepare("UPDATE event_outbox SET status = 'dead_letter', attempts = 3 WHERE event_id IN (?, ?)").run(tenantA.eventId, tenantB.eventId);
+    moveEventToDeadLetter(tenantB.eventId);
 
     const res = await dispatch(req('GET', '/events/dead-letter', { tenantId: '7' }));
     expect(res.statusCode).toBe(200);
@@ -200,7 +229,7 @@ describe('event backbone admin routes', () => {
       entityId: 'admin-replay-event',
       idempotencyKey: 'admin-replay-event',
     });
-    testDb.prepare("UPDATE event_outbox SET status = 'dead_letter', attempts = 3, last_error = 'boom' WHERE event_id = ?").run(event.eventId);
+    moveEventToDeadLetter(event.eventId);
 
     const wrongTenant = await dispatch(req('POST', `/events/${event.eventId}/replay`, { tenantId: '8' }));
     expect(wrongTenant.statusCode).toBe(200);
@@ -223,7 +252,7 @@ describe('event backbone admin routes', () => {
       entityId: 'processed-event',
       idempotencyKey: 'processed-event',
     });
-    testDb.prepare("UPDATE event_outbox SET status = 'processed' WHERE event_id = ?").run(event.eventId);
+    moveEventToProcessed(event.eventId);
 
     const res = await dispatch(req('POST', `/events/${event.eventId}/cancel`, { tenantId: '7' }));
     expect(res.statusCode).toBe(200);
@@ -238,13 +267,14 @@ describe('event backbone admin routes', () => {
       jobType: 'project_read_models',
       idempotencyKey: 'job-a',
     });
+    moveJobToDeadLetter(tenantA.jobId);
     const tenantB = enqueueJob({
       tenantId: 8,
       userId: 8,
       jobType: 'project_read_models',
       idempotencyKey: 'job-b',
     });
-    testDb.prepare("UPDATE background_jobs SET status = 'dead_letter', attempts = 3 WHERE job_id IN (?, ?)").run(tenantA.jobId, tenantB.jobId);
+    moveJobToDeadLetter(tenantB.jobId);
 
     const list = await dispatch(req('GET', '/jobs/dead-letter', { tenantId: '7' }));
     expect(list.statusCode).toBe(200);

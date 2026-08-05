@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   canonicalTrainingWeekdayKey,
+  isFutureIsoDate,
   isPastIsoDate,
   isStrictIsoDate,
   resolveTrainingDay,
@@ -45,8 +46,28 @@ describe('training-date-utils', () => {
 
   it('detects past ISO dates at UTC day granularity', () => {
     const now = new Date('2026-06-03T23:30:00.000Z');
-    expect(isPastIsoDate('2026-06-02', now)).toBe(true);
-    expect(isPastIsoDate('2026-06-03', now)).toBe(false);
-    expect(isPastIsoDate('2026-06-04', now)).toBe(false);
+    expect(isPastIsoDate('2026-06-02', now, 'UTC')).toBe(true);
+    expect(isPastIsoDate('2026-06-03', now, 'UTC')).toBe(false);
+    expect(isPastIsoDate('2026-06-04', now, 'UTC')).toBe(false);
+  });
+
+  it('requires race dates to be strictly later than the user-local day', () => {
+    const now = new Date('2026-06-03T23:30:00.000Z');
+
+    // F12 stronger guarantee: "future" excludes both past and same-day
+    // values; an event whose local calendar day is today cannot anchor a
+    // newly generated multi-day plan.
+    expect(isFutureIsoDate('2026-06-02', now, 'UTC')).toBe(false);
+    expect(isFutureIsoDate('2026-06-03', now, 'UTC')).toBe(false);
+    expect(isFutureIsoDate('2026-06-04', now, 'UTC')).toBe(true);
+  });
+
+  it('evaluates date-only deadlines in the authenticated user timezone', () => {
+    const now = new Date('2026-06-03T00:30:00.000Z');
+
+    // Stronger guarantee: the same instant can be a different calendar day
+    // for two users, so race-date validation must compare plan-local dates.
+    expect(isPastIsoDate('2026-06-02', now, 'America/Los_Angeles')).toBe(false);
+    expect(isPastIsoDate('2026-06-02', now, 'Asia/Tokyo')).toBe(true);
   });
 });

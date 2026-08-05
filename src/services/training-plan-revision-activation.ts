@@ -13,7 +13,10 @@ import {
   isTrainingM4PlanCombinationAllowed,
   isTrainingM4OwnedCombination,
 } from './runtime-flags';
-import { withTrainingCalendarOperationLock } from './training-operation-locks';
+import {
+  withTrainingCalendarOperationLock,
+  type TrainingOperationLockLease,
+} from './training-operation-locks';
 import {
   getActiveTrainingPlanReference,
   computeTrainingRevisionAuthoritativeContext,
@@ -96,7 +99,7 @@ export async function activateApprovedTrainingPlanRevision(input: {
     return await withTrainingCalendarOperationLock({
       ...input.scope,
       operation: 'plan_activate',
-    }, async () => activateUnderLock(resolvedInput));
+    }, async (lease) => activateUnderLock(resolvedInput, lease));
   } catch (error) {
     if (error instanceof TrainingPlanRevisionError && error.statusCode === 409) {
       incrementTrainingGenerationCounter('revision_activation_conflict_total');
@@ -112,7 +115,8 @@ function activateUnderLock(input: {
   activationDate?: string;
   env?: NodeJS.ProcessEnv;
   referenceTime: Date;
-}): TrainingPlanRevisionActivationResult {
+}, lease: TrainingOperationLockLease): TrainingPlanRevisionActivationResult {
+  lease.assertActive();
   const db = getDb();
   const before = validateActivationInput(db, input);
   const adaptation = findAdaptationForRevision(db, input.scope, input.revisionId);
@@ -122,7 +126,7 @@ function activateUnderLock(input: {
   }
   if (adaptation) {
     requireAdaptationActivationFlags(input.scope, input.env);
-    return activateAdaptationUnderLock(db, input, before, adaptation);
+    return activateAdaptationUnderLock(db, input, before, adaptation, lease);
   }
   if (active) {
     const current = getScopedTrainingPlanRevision(input.scope, active.activeRevisionId, db);
@@ -143,6 +147,7 @@ function activateUnderLock(input: {
   assertNoExistingActivePlan(db, input.scope);
 
   return db.transaction(() => {
+    lease.assertActive();
     // Revalidate inside the write transaction so no pointer/content state can
     // change between the preflight and projection insert.
     const revision = validateActivationInput(db, input);
@@ -228,7 +233,12 @@ function activateUnderLock(input: {
       idempotencyKey: `training.plan_revision.activated:${input.revisionId}`,
       causationId: input.approval.actionExecutionId,
     }, db);
-    return readActivationResult(db, input.scope, revision.familyId, input.revisionId, false);
+    const result = readActivationResult(db, input.scope, revision.familyId, input.revisionId, false);
+    // Keep the ownership check inside the same transaction as projection,
+    // active-pointer, approval, and outbox writes so a stale holder rolls the
+    // entire activation graph back instead of merely failing after commit.
+    lease.assertActive();
+    return result;
   })();
 }
 
@@ -277,7 +287,9 @@ function activateAdaptationUnderLock(
   },
   before: NonNullable<ReturnType<typeof getScopedTrainingPlanRevision>>,
   adaptation: AdaptationActivationRow,
+  lease: TrainingOperationLockLease,
 ): TrainingPlanRevisionActivationResult {
+  lease.assertActive();
   const active = getActiveTrainingPlanReference(input.scope, before.familyId, db);
   if (!active || active.activeRevisionId !== adaptation.source_revision_id
       || active.pointerVersion !== adaptation.expected_active_pointer_version
@@ -298,6 +310,7 @@ function activateAdaptationUnderLock(
   }
 
   return db.transaction(() => {
+    lease.assertActive();
     const revision = validateActivationInput(db, input);
     const proposal = findAdaptationForRevision(db, input.scope, revision.revisionId);
     const current = getActiveTrainingPlanReference(input.scope, revision.familyId, db);
@@ -455,7 +468,9 @@ function activateAdaptationUnderLock(
       causationId: input.approval.actionExecutionId,
     }, db);
     incrementTrainingGenerationCounter('adaptation_activated_total');
-    return readActivationResult(db, input.scope, revision.familyId, revision.revisionId, false);
+    const result = readActivationResult(db, input.scope, revision.familyId, revision.revisionId, false);
+    lease.assertActive();
+    return result;
   })();
 }
 

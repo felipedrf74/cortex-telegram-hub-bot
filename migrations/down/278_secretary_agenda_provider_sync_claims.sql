@@ -1,0 +1,7 @@
+DROP INDEX IF EXISTS idx_secretary_provider_create_reconciliation_intent;
+DROP TABLE IF EXISTS secretary_agenda_provider_create_reconciliation;
+DROP INDEX IF EXISTS idx_secretary_provider_effect_recovery_pending_event;
+DROP INDEX IF EXISTS idx_secretary_provider_effect_recovery_intent;
+DROP TABLE IF EXISTS secretary_agenda_provider_effect_recovery;
+DROP INDEX IF EXISTS idx_secretary_provider_sync_claim_scope;
+DROP TABLE IF EXISTS secretary_agenda_provider_sync_claims;

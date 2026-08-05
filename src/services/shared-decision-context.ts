@@ -631,13 +631,20 @@ function summarizeTrainingForSecretary(training: TrainingMeshContext | null): st
   const session = extractSessionPrescription(training);
   const immovability = extractSessionImmovability(training);
   const hardDays = extractHardDayCount(training);
-  if (!recovery && !session && !immovability && hardDays == null) return '';
+  const completion = extractSafeTrainingCompletionSummary(training);
+  if (!recovery && !session && !immovability && hardDays == null && !completion) return '';
 
   const facts: string[] = [];
   if (recovery) facts.push(`recovery is ${recovery.state}`);
   if (session) facts.push(`next key session is ${session.title} on ${session.date}`);
   if (immovability) facts.push(`session immovability is ${immovability.level} for ${immovability.title}`);
   if (hardDays != null) facts.push(`${hardDays} hard day(s) are planned this week`);
+  if (completion) {
+    facts.push(`latest training disposition is ${completion.completionState}`);
+    if (completion.hasDiscomfort) facts.push('discomfort reported');
+    if (completion.hasReadiness) facts.push('readiness feedback recorded');
+    if (completion.skippedReasonCode) facts.push(`skip reason code is ${completion.skippedReasonCode}`);
+  }
   return formatSection('Training', facts, 'Protect high-cost training windows before moving the day around.');
 }
 
@@ -1032,6 +1039,7 @@ function buildTrainingContractForSecretary(training: TrainingMeshContext | null)
   const session = extractSessionPrescription(training);
   const immovability = extractSessionImmovability(training);
   const hardDays = extractHardDayCount(training);
+  const completion = extractSafeTrainingCompletionSummary(training);
   // Surface the Content-deprioritization implication to Secretary
   // explicitly. When recovery is strained or critical, filming /
   // capture work is the natural first-candidate for deferral. Without
@@ -1063,6 +1071,7 @@ function buildTrainingContractForSecretary(training: TrainingMeshContext | null)
     ]),
     notes: compact([
       recovery ? `Recovery state: ${recovery.state}.` : null,
+      completion ? formatSafeTrainingCompletionNote(completion) : null,
       extractCoachPhaseNote(training),
     ]),
   });
@@ -1624,6 +1633,59 @@ function buildContentContractForFinance(content: ContentMeshContext | null): Pee
         : null,
     ]),
   });
+}
+
+interface SafeTrainingCompletionSummary {
+  completionState: 'completed' | 'partial' | 'skipped';
+  hasDiscomfort: boolean;
+  hasReadiness: boolean;
+  skippedReasonCode: string | null;
+}
+
+const SAFE_TRAINING_SKIP_REASON_CODES = new Set([
+  'not_enough_time',
+  'fatigue',
+  'soreness',
+  'pain',
+  'equipment',
+  'schedule_conflict',
+  'motivation',
+  'other',
+]);
+
+/**
+ * Defense-in-depth allowlist for a cross-skill health signal. Ignore every
+ * unrecognized producer field so raw pain values, locations, notes, and free
+ * text can never enter Secretary prompt context.
+ */
+function extractSafeTrainingCompletionSummary(
+  training: TrainingMeshContext,
+): SafeTrainingCompletionSummary | null {
+  const signal = training.derivedSignals.find(
+    (entry) => entry.signalType === 'training_completion_summary',
+  );
+  const rawState = signal?.payload.completionState;
+  if (rawState !== 'completed' && rawState !== 'partial' && rawState !== 'skipped') return null;
+  const rawReason = signal?.payload.skippedReasonCode;
+  const skippedReasonCode = rawState === 'skipped'
+    && typeof rawReason === 'string'
+    && SAFE_TRAINING_SKIP_REASON_CODES.has(rawReason)
+    ? rawReason
+    : null;
+  return {
+    completionState: rawState,
+    hasDiscomfort: signal?.payload.hasDiscomfort === true,
+    hasReadiness: signal?.payload.hasReadiness === true,
+    skippedReasonCode,
+  };
+}
+
+function formatSafeTrainingCompletionNote(completion: SafeTrainingCompletionSummary): string {
+  const facts = [`Latest training disposition: ${completion.completionState}`];
+  if (completion.hasDiscomfort) facts.push('discomfort reported');
+  if (completion.hasReadiness) facts.push('readiness feedback recorded');
+  if (completion.skippedReasonCode) facts.push(`skip reason code: ${completion.skippedReasonCode}`);
+  return `${facts.join('; ')}.`;
 }
 
 function extractRecoveryState(training: TrainingMeshContext): { state: string } | null {

@@ -19,12 +19,29 @@
  */
 
 import crypto from 'crypto';
+import type Database from 'better-sqlite3';
 import { getDb } from './database';
 import { logger } from '../utils/logger';
 import { cancelRemindersForAgendaItem } from '../state/reminders';
 import { filterKnownReasonCodes, type SecretaryReasonCode } from './secretary-reason-codes';
 import { emitSecretaryFeedback } from './secretary-feedback-bus';
-import './training-secretary-feedback-consumer';
+import { emitDomainEvent } from './event-outbox';
+import {
+  TRAINING_SECRETARY_FEEDBACK_EVENT_TYPE,
+  TRAINING_SECRETARY_FEEDBACK_SCHEMA_VERSION,
+} from './training-secretary-feedback-consumer';
+import {
+  SECRETARY_SOURCE_SKILL_FEEDBACK_EVENT_TYPE,
+  SECRETARY_SOURCE_SKILL_FEEDBACK_EVENT_VERSION,
+  SECRETARY_SOURCE_SKILL_FEEDBACK_SCHEMA_VERSION,
+} from './secretary-source-skill-feedback-consumers';
+import {
+  findSecretaryPreemptionWinnerReplay,
+  persistSecretaryPreemptionGraph,
+  secretaryAgendaPreemptionSchemaReady,
+  type SecretaryPreemptionLoserEvidence,
+} from './secretary-agenda-preemption';
+import { requestSecretaryPreemptionCancellation } from './secretary-agenda-preemption-worker';
 import './secretary-source-skill-feedback-consumers';
 
 export type SecretarySourceSkill = 'secretary' | 'training' | 'cooking' | 'finance' | 'content';
@@ -73,11 +90,47 @@ export type SecretarySchedulingDecisionStatus =
 export type SecretaryIntentPriority = 'low' | 'normal' | 'high' | 'urgent' | number;
 export type SecretaryIntentFlexibility = 'fixed' | 'flexible' | 'compressible' | 'splittable';
 
+export const SECRETARY_ARBITRATION_RANK_POLICY_VERSION = 'secretary-arbitration-rank-policy.v1' as const;
+
+/**
+ * Stable, privacy-bounded metadata for comparing scheduling intents under one
+ * policy version. This is an additive prerequisite only: it does not authorize
+ * cross-skill preemption or provider mutation.
+ */
+export interface SecretaryIntentArbitrationRank {
+  score: number;
+  deadlineAt: string | null;
+  flexibility: SecretaryIntentFlexibility;
+  policyVersion: typeof SECRETARY_ARBITRATION_RANK_POLICY_VERSION;
+  tieBreakerIntentId: string;
+}
+
 export interface SecretaryTimeWindow {
   start: string;
   end: string;
   label?: string;
   hard?: boolean;
+  /**
+   * Privacy-bounded durable identity from a live provider read. This is never
+   * inferred from title/time. Missing or ambiguous identity keeps the window
+   * hard-busy.
+   */
+  providerIdentity?: SecretaryProviderEventIdentity;
+}
+
+export interface SecretaryProviderEventIdentity {
+  providerEventId: string;
+  providerSource: 'google' | 'outlook';
+  ownerUserId: number;
+  tenantId: string;
+  agendaItemId: string | null;
+  trainingIdentity: {
+    planId: number | null;
+    planVersion: number | null;
+    sessionId: number | null;
+    sessionIdentityKey: string | null;
+    sessionShapeHash: string | null;
+  } | null;
 }
 
 /**
@@ -105,6 +158,12 @@ export interface SecretarySchedulingIntent {
   sourceEntityType?: string | null;
   ownerUserId: number;
   tenantId: string | number;
+  /**
+   * Calendar provider selected before this intent is persisted. Provider
+   * workers may execute only against this durable target; they must never
+   * infer a target from whichever connection happens to be available later.
+   */
+  providerTarget?: 'google' | 'outlook' | null;
   title: string;
   requestedDurationMinutes?: number | null;
   minimumDurationMinutes?: number | null;
@@ -152,7 +211,18 @@ export interface SecretaryAgendaItem {
   providerSyncState: SecretaryProviderSyncState;
   providerEventId: string | null;
   providerSource: string | null;
+  providerTarget: 'google' | 'outlook' | null;
+  providerSyncFailureDisposition: 'terminal' | 'retryable' | 'reconcile' | null;
+  providerSyncRetryAfterAt: string | null;
   version: number;
+  /**
+   * Migration 280 rank snapshot. Legacy NULL values are intentionally
+   * protected from future priority preemption.
+   */
+  arbitrationScore: number | null;
+  arbitrationDeadlineAt: string | null;
+  arbitrationFlexibility: SecretaryIntentFlexibility | null;
+  arbitrationPolicyVersion: string | null;
   title: string;
   startAt: string | null;
   endAt: string | null;
@@ -312,9 +382,46 @@ export interface SecretarySchedulingOptions {
   existingAgendaItems?: Array<Pick<SecretaryAgendaItem, 'startAt' | 'endAt' | 'lifecycleState' | 'title'>>;
   additionalBusyWindows?: SecretaryTimeWindow[];
   now?: string;
+  /**
+   * F24: hand an already-owned Training provider event to the replacement
+   * agenda version in the same transaction that supersedes the prior row.
+   * This prevents the cleanup loop from deleting an event now owned by vN+1.
+   */
+  providerMappingTransfer?: {
+    providerEventId: string;
+    providerSource: 'google' | 'outlook';
+  };
+}
+
+export interface SecretarySchedulingPreemptionCandidate {
+  agendaItemId: string;
+  localWindow: SecretaryTimeWindow;
+  liveWindow: SecretaryTimeWindow;
+}
+
+export interface SecretarySchedulingCapacityPlan {
+  /** Full submit-time capacity. Stage 1 never removes a loser from this set. */
+  hardBusyWindows: SecretaryTimeWindow[];
+  /** Preview-only capacity after exact, safe preemption candidates are disregarded. */
+  previewBusyWindows: SecretaryTimeWindow[];
+  preemptionCandidates: SecretarySchedulingPreemptionCandidate[];
+}
+
+export interface SecretarySchedulingCapacityPlanInput {
+  intent: SecretarySchedulingIntent;
+  localAgendaItems: SecretaryAgendaItem[];
+  existingAgendaItems?: SecretarySchedulingOptions['existingAgendaItems'];
+  additionalBusyWindows?: SecretaryTimeWindow[];
+  acceptedBusyWindows?: SecretaryTimeWindow[];
 }
 
 type SecretaryScheduleMode = 'persist' | 'preview';
+
+type SecretaryInternalSchedulingDecision = SecretarySchedulingDecision & {
+  previewPreemptedCount?: number;
+  /** Durable Stage 2 feedback is emitted only after exact loser cleanup. */
+  deferFeedback?: true;
+};
 
 type NormalizedWindow = {
   startMs: number;
@@ -332,6 +439,10 @@ type CandidateSlot = {
 };
 
 const ACTIVE_BUSY_STATES = new Set<SecretaryAgendaLifecycleState>([
+  // A proposed row with a concrete slot is a two-phase preemption reservation.
+  // Provider sync deliberately excludes it until every exact cleanup edge is
+  // satisfied; local scheduling must nevertheless keep the slot hard-busy.
+  'proposed',
   'scheduled',
   'synced',
   'reflowed',
@@ -361,6 +472,54 @@ const SKILL_PRIORITY_WEIGHT: Record<SecretarySourceSkill, number> = {
   content: 6,
 };
 
+/**
+ * Compute the canonical v1 arbitration rank used by both batch ordering and
+ * persisted agenda metadata. Keep this function pure and version-bump before
+ * changing any weight or tie-break rule.
+ */
+export function computeSecretaryIntentArbitrationRank(
+  intent: SecretarySchedulingIntent,
+): SecretaryIntentArbitrationRank {
+  const base = typeof intent.priority === 'number'
+    ? intent.priority
+    : intent.priority === 'urgent'
+      ? 100
+      : intent.priority === 'high'
+        ? 70
+        : intent.priority === 'low'
+          ? 20
+          : 45;
+  const deadlineMs = intent.deadline ? Date.parse(intent.deadline) : Number.NaN;
+  const deadlineAt = Number.isFinite(deadlineMs) ? new Date(deadlineMs).toISOString() : null;
+  const deadlineBoost = deadlineAt ? 18 : 0;
+  const fixedBoost = intent.flexibility === 'fixed' ? 8 : 0;
+  const phaseBoost = phaseBoostFor(intent.sourceSkill, intent.goalPhase ?? null);
+  return {
+    score: base + SKILL_PRIORITY_WEIGHT[intent.sourceSkill] + deadlineBoost + fixedBoost + phaseBoost,
+    deadlineAt,
+    flexibility: intent.flexibility ?? 'flexible',
+    policyVersion: SECRETARY_ARBITRATION_RANK_POLICY_VERSION,
+    tieBreakerIntentId: intent.intentId,
+  };
+}
+
+/**
+ * Guard for the later preemption planner. A row without a complete current
+ * rank snapshot is legacy/unknown-policy state and must remain a hard block.
+ */
+export function hasCompleteSecretaryAgendaArbitrationMetadata(
+  item: Pick<
+    SecretaryAgendaItem,
+    'arbitrationScore' | 'arbitrationDeadlineAt' | 'arbitrationFlexibility' | 'arbitrationPolicyVersion'
+  >,
+): boolean {
+  return item.arbitrationScore != null
+    && Number.isFinite(item.arbitrationScore)
+    && item.arbitrationFlexibility != null
+    && ['fixed', 'flexible', 'compressible', 'splittable'].includes(item.arbitrationFlexibility)
+    && item.arbitrationPolicyVersion === SECRETARY_ARBITRATION_RANK_POLICY_VERSION;
+}
+
 function assertSecretaryAgendaSchemaReady(db = getDb()): void {
   const columns = db.prepare('PRAGMA table_info(secretary_agenda_items)').all() as Array<{ name: string }>;
   const names = new Set(columns.map((column) => column.name));
@@ -379,7 +538,7 @@ export function submitSecretarySchedulingIntent(
   const decision = scheduleOne(intent, options, []);
   // W-B: emit feedback to registered consumers. Synchronous emit; bad
   // consumers are caught inside the bus so arbitration is never blocked.
-  emitSecretaryFeedback(decision.feedback);
+  if (!decision.deferFeedback) emitSecretaryFeedback(decision.feedback);
   return decision;
 }
 
@@ -416,6 +575,10 @@ export function previewSecretarySchedulingIntent(
     confidence: decision.confidence,
     wouldReflow: decision.status === 'reflowed',
     wouldCompress: decision.status === 'compressed',
+    ...(decision.previewPreemptedCount && decision.previewPreemptedCount > 0 ? {
+      wouldPreempt: true as const,
+      preemptedCount: decision.previewPreemptedCount,
+    } : {}),
     // W-E: preview returns the trail so callers (Training, Decision Center)
     // can render "if you pick this slot, here's why" copy without a submit.
     reasoningTrail: decision.reasoningTrail,
@@ -431,6 +594,10 @@ export interface SecretarySchedulingPreview {
   confidence: 'low' | 'medium' | 'high';
   wouldReflow: boolean;
   wouldCompress: boolean;
+  /** Stage 1 dry-run disclosure; present only when the recommended slot uses a safely identified loser. */
+  wouldPreempt?: true;
+  /** Count only; agenda/provider identifiers never cross the preview boundary. */
+  preemptedCount?: number;
   /**
    * W-E reasoning trail attached to the preview decision. Same shape +
    * cap as a real submit; useful for "what would Secretary explain?"
@@ -449,7 +616,7 @@ export function arbitrateSecretarySchedulingIntents(
   assertSecretaryAgendaSchemaReady();
   const ordered = [...intents].sort(compareIntentPriority);
   const acceptedBusyWindows: SecretaryTimeWindow[] = [];
-  const decisions: SecretarySchedulingDecision[] = [];
+  const decisions: SecretaryInternalSchedulingDecision[] = [];
 
   for (const intent of ordered) {
     const decision = scheduleOne(intent, options, acceptedBusyWindows);
@@ -459,10 +626,14 @@ export function arbitrateSecretarySchedulingIntents(
     }
     // W-B: emit feedback per decision (not at end of batch) so consumers
     // can react incrementally if needed.
-    emitSecretaryFeedback(decision.feedback);
+    if (!decision.deferFeedback) emitSecretaryFeedback(decision.feedback);
   }
 
-  const feedbackBySourceSkill = buildFeedbackBySourceSkill(decisions);
+  // A two-phase winner is a durable reservation, not yet source feedback.
+  // Its finalizer emits the authoritative event after every exact edge.
+  const feedbackBySourceSkill = buildFeedbackBySourceSkill(
+    decisions.filter((decision) => !decision.deferFeedback),
+  );
   return {
     decisions,
     scheduledCount: decisions.filter((decision) => ['scheduled', 'reflowed', 'compressed'].includes(decision.status)).length,
@@ -520,10 +691,12 @@ export function markSecretaryAgendaProviderSyncSatisfied(scope: {
 }): SecretaryAgendaItem | null {
   const nowIso = normalizeNow(scope.now);
   assertSecretaryAgendaSchemaReady();
+  const hasProviderTarget = secretaryAgendaProviderTargetColumnExists();
   getDb().prepare(`
     UPDATE secretary_agenda_items
        SET provider_event_id = ?,
            provider_source = ?,
+           ${hasProviderTarget ? 'provider_target = COALESCE(provider_target, ?),' : ''}
            provider_sync_state = 'synced',
            lifecycle_state = CASE
              WHEN lifecycle_state IN ('scheduled', 'reflowed', 'compressed', 'synced', 'failed_sync')
@@ -534,13 +707,16 @@ export function markSecretaryAgendaProviderSyncSatisfied(scope: {
      WHERE agenda_item_id = ?
        AND owner_user_id = ?
        AND tenant_id = ?
+       ${hasProviderTarget ? 'AND (provider_target IS NULL OR provider_target = ?)' : ''}
   `).run(
     scope.providerEventId,
     scope.providerSource,
+    ...(hasProviderTarget ? [scope.providerSource] : []),
     nowIso,
     scope.agendaItemId,
     scope.ownerUserId,
     normalizeTenantId(scope.tenantId),
+    ...(hasProviderTarget ? [scope.providerSource] : []),
   );
   const updated = getSecretaryAgendaItemById(scope);
   if (updated) {
@@ -610,22 +786,40 @@ export function cancelSecretaryAgendaItem(scope: {
 }): SecretaryAgendaItem | null {
   const nowIso = normalizeNow(scope.now);
   assertSecretaryAgendaSchemaReady();
-  getDb().prepare(`
-    UPDATE secretary_agenda_items
-    SET lifecycle_state = 'canceled',
-        cancellation_reason = COALESCE(?, cancellation_reason),
-        updated_at = ?
-    WHERE agenda_item_id = ?
-      AND owner_user_id = ?
-      AND tenant_id = ?
-      AND lifecycle_state NOT IN ('canceled', 'completed')
-  `).run(
-    scope.reason ?? null,
-    nowIso,
-    scope.agendaItemId,
-    scope.ownerUserId,
-    normalizeTenantId(scope.tenantId),
-  );
+  const db = getDb();
+  const tenantId = normalizeTenantId(scope.tenantId);
+  const cancel = db.transaction(() => {
+    db.prepare(`
+      UPDATE secretary_agenda_items
+      SET lifecycle_state = 'canceled',
+          cancellation_reason = COALESCE(?, cancellation_reason),
+          updated_at = ?
+      WHERE agenda_item_id = ?
+        AND owner_user_id = ?
+        AND tenant_id = ?
+        AND lifecycle_state NOT IN ('canceled', 'completed')
+    `).run(
+      scope.reason ?? null,
+      nowIso,
+      scope.agendaItemId,
+      scope.ownerUserId,
+      tenantId,
+    );
+    const row = db.prepare(`
+      SELECT version FROM secretary_agenda_items
+       WHERE agenda_item_id = ? AND owner_user_id = ? AND tenant_id = ?
+    `).get(scope.agendaItemId, scope.ownerUserId, tenantId) as { version: number } | undefined;
+    if (row) {
+      requestSecretaryPreemptionCancellation({
+        agendaItemId: scope.agendaItemId,
+        agendaVersion: Number(row.version),
+        ownerUserId: scope.ownerUserId,
+        tenantId,
+        nowIso,
+      }, db);
+    }
+  });
+  cancel();
   cancelRemindersForAgendaItem(scope.ownerUserId, scope.agendaItemId, scope.tenantId);
   return getSecretaryAgendaItemById(scope);
 }
@@ -635,7 +829,7 @@ function scheduleOne(
   options: SecretarySchedulingOptions,
   acceptedBusyWindows: SecretaryTimeWindow[],
   mode: SecretaryScheduleMode = 'persist',
-): SecretarySchedulingDecision {
+): SecretaryInternalSchedulingDecision {
   const nowIso = normalizeNow(options.now);
   // W-E: collect reasoning breadcrumbs as we go. Privacy-safe — only
   // enum codes, slot ISO strings, and numeric weights/counts.
@@ -665,13 +859,62 @@ function scheduleOne(
       downstreamImplications: downstreamFor(intent, validation.includes('missing_duration') ? 'needs_more_context' : 'rejected'),
       reasoningTrail: trail,
       persist: mode === 'persist',
+      providerMappingTransfer: options.providerMappingTransfer,
     });
   }
 
   const latest = findLatestAgendaItemForIntent(intent);
   const sourceShapeHash = computeSourceShapeHash(intent);
+  if (mode === 'persist' && secretaryAgendaPreemptionSchemaReady()) {
+    const replay = findSecretaryPreemptionWinnerReplay({
+      ownerUserId: intent.ownerUserId,
+      tenantId: normalizeTenantId(intent.tenantId),
+      sourceSkill: intent.sourceSkill,
+      sourceIntentId: intent.intentId,
+      sourceShapeHash,
+    });
+    if (replay) {
+      const replayedAgendaItem = findAgendaItemById(replay.agendaItemId);
+      if (!replayedAgendaItem || replayedAgendaItem.version !== replay.agendaVersion) {
+        throw new Error('SECRETARY_PREEMPTION_REPLAY_ROW_MISSING');
+      }
+      const replayStatus = replayedAgendaItem.decisionAction;
+      const replayReasons = filterKnownReasonCodes(replayedAgendaItem.decisionReasonCodes);
+      return {
+        ...decisionFromExisting(
+          intent,
+          replayedAgendaItem,
+          replayStatus,
+          replayReasons,
+          replayedAgendaItem.decisionExplanation ?? explainDecision(intent, replayStatus, replayReasons),
+          [],
+          downstreamFor(intent, replayStatus),
+          replayedAgendaItem.reasoningTrail,
+        ),
+        deferFeedback: true,
+      };
+    }
+  }
   const duration = Math.max(1, Math.round(Number(intent.requestedDurationMinutes)));
-  const busyWindows = buildBusyWindows(intent, options, acceptedBusyWindows);
+  const localAgendaItems = listSecretaryAgendaItems({
+    ownerUserId: intent.ownerUserId,
+    tenantId: intent.tenantId,
+  });
+  const capacityPlan = planSecretarySchedulingCapacity({
+    intent,
+    localAgendaItems,
+    existingAgendaItems: options.existingAgendaItems,
+    additionalBusyWindows: options.additionalBusyWindows,
+    acceptedBusyWindows,
+  });
+  const durablePreemptionEnabled = mode === 'persist'
+    && intent.providerTarget != null
+    && secretaryAgendaPreemptionSchemaReady();
+  const busyWindows = normalizeWindows(
+    mode === 'preview' || durablePreemptionEnabled
+      ? capacityPlan.previewBusyWindows
+      : capacityPlan.hardBusyWindows,
+  );
   const candidateWindows = normalizeWindows(intent.preferredWindows ?? []);
   // W-E: priority weight + phase boost are inputs to arbitration ordering;
   // log them so users can see "why this won over the cooking intent".
@@ -701,9 +944,20 @@ function scheduleOne(
       && latest.endAt
       && (Date.parse(latest.startAt) !== exactSlot.startMs || Date.parse(latest.endAt) !== exactSlot.endMs);
     const status: SecretarySchedulingDecisionStatus = reflowed ? 'reflowed' : 'scheduled';
+    const usedPreemptionCandidates = mode === 'preview' || durablePreemptionEnabled
+      ? capacityPlan.preemptionCandidates.filter((candidate) => preemptionCandidateOverlapsSlot(candidate, exactSlot))
+      : [];
     const reasonCodes: SecretaryReasonCode[] = reflowed
       ? ['reflowed_to_available_window', ...slotReasonCodes(intent, exactSlot)]
       : ['scheduled_in_available_window', ...slotReasonCodes(intent, exactSlot)];
+    if (usedPreemptionCandidates.length > 0) {
+      reasonCodes.push(mode === 'preview' ? 'priority_preemption_candidate' : 'priority_preemption_applied');
+      trail.push({
+        kind: 'priority',
+        reasonCode: mode === 'preview' ? 'priority_preemption_candidate' : 'priority_preemption_applied',
+        detail: `preempt:${usedPreemptionCandidates.length}`,
+      });
+    }
 
     const selectedSlot = slotToWindow(exactSlot);
     if (reflowed) {
@@ -722,7 +976,7 @@ function scheduleOne(
       detail: `dur:${minutesBetween(selectedSlot.start, selectedSlot.end)}`,
     });
 
-    return persistDecision({
+    const decision = persistDecision({
       intent,
       nowIso,
       status,
@@ -737,7 +991,12 @@ function scheduleOne(
       sourceShapeHash,
       reasoningTrail: trail,
       persist: mode === 'persist',
+      providerMappingTransfer: options.providerMappingTransfer,
+      preemptionCandidates: mode === 'persist' ? usedPreemptionCandidates : [],
     });
+    return usedPreemptionCandidates.length > 0
+      ? { ...decision, previewPreemptedCount: usedPreemptionCandidates.length }
+      : decision;
   }
 
   if ((intent.flexibility ?? 'flexible') === 'compressible') {
@@ -747,7 +1006,18 @@ function scheduleOne(
     );
     const compressedSlot = findLargestAvailableSlot(candidateWindows, busyWindows, minimumDuration, duration);
     if (compressedSlot) {
+      const usedPreemptionCandidates = mode === 'preview' || durablePreemptionEnabled
+        ? capacityPlan.preemptionCandidates.filter((candidate) => preemptionCandidateOverlapsSlot(candidate, compressedSlot))
+        : [];
       const reasonCodes: SecretaryReasonCode[] = ['compressed_to_fit_capacity', ...slotReasonCodes(intent, compressedSlot)];
+      if (usedPreemptionCandidates.length > 0) {
+        reasonCodes.push(mode === 'preview' ? 'priority_preemption_candidate' : 'priority_preemption_applied');
+        trail.push({
+          kind: 'priority',
+          reasonCode: mode === 'preview' ? 'priority_preemption_candidate' : 'priority_preemption_applied',
+          detail: `preempt:${usedPreemptionCandidates.length}`,
+        });
+      }
       const selectedSlot = slotToWindow(compressedSlot);
       trail.push({ kind: 'compression', reasonCode: 'compressed_to_fit_capacity', detail: `min:${minimumDuration}` });
       const alternatives = candidateWindowsToAlternatives(candidateWindows, compressedSlot);
@@ -760,7 +1030,7 @@ function scheduleOne(
         reasonCode: 'compressed_to_fit_capacity',
         detail: `dur:${minutesBetween(selectedSlot.start, selectedSlot.end)}`,
       });
-      return persistDecision({
+      const decision = persistDecision({
         intent,
         nowIso,
         status: 'compressed',
@@ -775,7 +1045,12 @@ function scheduleOne(
         sourceShapeHash,
         reasoningTrail: trail,
         persist: mode === 'persist',
+        providerMappingTransfer: options.providerMappingTransfer,
+        preemptionCandidates: mode === 'persist' ? usedPreemptionCandidates : [],
       });
+      return usedPreemptionCandidates.length > 0
+        ? { ...decision, previewPreemptedCount: usedPreemptionCandidates.length }
+        : decision;
     }
   }
 
@@ -808,6 +1083,7 @@ function scheduleOne(
     sourceShapeHash,
     reasoningTrail: trail,
     persist: mode === 'persist',
+    providerMappingTransfer: options.providerMappingTransfer,
   });
 }
 
@@ -834,7 +1110,9 @@ function persistDecision(input: {
    * superseding `secretary_agenda_items`.
    */
   persist?: boolean;
-}): SecretarySchedulingDecision {
+  providerMappingTransfer?: SecretarySchedulingOptions['providerMappingTransfer'];
+  preemptionCandidates?: SecretarySchedulingPreemptionCandidate[];
+}): SecretaryInternalSchedulingDecision {
   const db = getDb();
   const tenantId = normalizeTenantId(input.intent.tenantId);
   const latest = input.latest ?? findLatestAgendaItemForIntent(input.intent);
@@ -859,6 +1137,16 @@ function persistDecision(input: {
     return decisionFromPreview(input, sourceShapeHash, cappedTrail, latest);
   }
 
+  if ((input.preemptionCandidates?.length ?? 0) > 0) {
+    return persistPreemptiveDecision({
+      ...input,
+      latest,
+      sourceShapeHash,
+      reasoningTrail: cappedTrail,
+      preemptionCandidates: input.preemptionCandidates!,
+    });
+  }
+
   const version = latest ? latest.version + 1 : 1;
   const agendaItemId = buildAgendaItemId(input.intent, version);
   const startAt = input.selectedSlot?.start ?? null;
@@ -870,21 +1158,125 @@ function persistDecision(input: {
       : null;
   const scheduledSegments = decisionScheduledSegments(input.selectedSlot, input.alternativeSlots);
   const reasoningTrailJson = cappedTrail.length > 0 ? JSON.stringify(cappedTrail) : null;
+  const arbitrationRank = computeSecretaryIntentArbitrationRank(input.intent);
+  const providerMappingTransfer = input.providerMappingTransfer;
+  const providerTarget = input.intent.providerTarget ?? providerMappingTransfer?.providerSource ?? null;
+  const hasProviderTargetColumns = secretaryAgendaProviderTargetColumnExists(db);
+  if (
+    latest?.providerTarget
+    && providerTarget
+    && latest.providerTarget !== providerTarget
+    && hasUnsafePriorProviderTargetVersion(input.intent, providerTarget, db)
+  ) {
+    // A logical Secretary intent is single-provider. Switching the target by
+    // creating a newer agenda version can leave the older provider event live
+    // and authorize a second create on another provider.
+    throw new Error('SECRETARY_PROVIDER_TARGET_IMMUTABLE');
+  }
+  if (providerMappingTransfer) {
+    const transferHasSafeDecision = Boolean(
+      input.selectedSlot
+      && ['scheduled', 'reflowed', 'compressed'].includes(input.status)
+      && (input.intent.preferredWindows ?? []).some((window) =>
+        Date.parse(window.start) === Date.parse(input.selectedSlot!.start)
+        && Date.parse(window.end) === Date.parse(input.selectedSlot!.end),
+      ),
+    );
+    // Mapping transfer happens before the provider PATCH. Never move the live
+    // id onto an unscheduled/alternate agenda row: its cleanup worker could
+    // delete the still-canonical event while Training is retrying reflow.
+    if (!transferHasSafeDecision) {
+      throw new Error('SECRETARY_PROVIDER_MAPPING_TRANSFER_UNSAFE_DECISION');
+    }
+    if (input.intent.sourceSkill !== 'training'
+        || (providerTarget != null && providerTarget !== providerMappingTransfer.providerSource)
+        || (latest?.providerEventId != null
+          && latest.providerEventId !== providerMappingTransfer.providerEventId)
+        || (latest?.providerSource != null
+          && latest.providerSource !== providerMappingTransfer.providerSource)) {
+      throw new Error('SECRETARY_PROVIDER_MAPPING_TRANSFER_MISMATCH');
+    }
+  }
 
   const writeAgendaItem = db.transaction(() => {
+    const adoptedMappings = providerMappingTransfer
+      ? resolveScopedTrainingProviderMappingAdoption({
+        intent: input.intent,
+        latest,
+        providerEventId: providerMappingTransfer.providerEventId,
+        providerSource: providerMappingTransfer.providerSource,
+        nowIso: input.nowIso,
+      }, db)
+      : [];
+    const adoptedAgendaIds = new Set<string>();
+    for (const adopted of adoptedMappings) {
+      const cleared = db.prepare(`
+        UPDATE secretary_agenda_items
+           SET lifecycle_state = CASE
+                 WHEN lifecycle_state IN (
+                   'proposed', 'scheduled', 'synced', 'reflowed',
+                   'compressed', 'failed_sync'
+                 ) THEN 'superseded'
+                 ELSE lifecycle_state
+               END,
+               provider_sync_state = 'deleted',
+               provider_event_id = NULL,
+               provider_source = NULL,
+               superseded_by_agenda_item_id = ?,
+               updated_at = ?
+         WHERE agenda_item_id = ?
+           AND version = ?
+           AND owner_user_id = ?
+           AND tenant_id = ?
+           AND source_skill = 'training'
+           AND provider_event_id = ?
+           AND provider_source = ?
+      `).run(
+        agendaItemId,
+        input.nowIso,
+        adopted.agendaItemId,
+        adopted.version,
+        input.intent.ownerUserId,
+        tenantId,
+        providerMappingTransfer!.providerEventId,
+        providerMappingTransfer!.providerSource,
+      );
+      if (cleared.changes !== 1) {
+        throw new Error('SECRETARY_PROVIDER_MAPPING_TRANSFER_STALE');
+      }
+      adoptedAgendaIds.add(adopted.agendaItemId);
+      cancelRemindersForAgendaItem(
+        input.intent.ownerUserId,
+        adopted.agendaItemId,
+        input.intent.tenantId,
+      );
+    }
+
     if (latest && latest.lifecycleState !== 'superseded') {
       db.prepare(`
         UPDATE secretary_agenda_items
         SET lifecycle_state = 'superseded',
             provider_sync_state = CASE
+              WHEN ? = 1 THEN 'deleted'
               WHEN provider_sync_state = 'not_synced' THEN 'not_synced'
               ELSE provider_sync_state
             END,
+            provider_event_id = CASE WHEN ? = 1 THEN NULL ELSE provider_event_id END,
+            provider_source = CASE WHEN ? = 1 THEN NULL ELSE provider_source END,
             superseded_by_agenda_item_id = ?,
             updated_at = ?
         WHERE agenda_item_id = ?
-      `).run(agendaItemId, input.nowIso, latest.agendaItemId);
-      cancelRemindersForAgendaItem(input.intent.ownerUserId, latest.agendaItemId, input.intent.tenantId);
+      `).run(
+        providerMappingTransfer ? 1 : 0,
+        providerMappingTransfer ? 1 : 0,
+        providerMappingTransfer ? 1 : 0,
+        agendaItemId,
+        input.nowIso,
+        latest.agendaItemId,
+      );
+      if (!adoptedAgendaIds.has(latest.agendaItemId)) {
+        cancelRemindersForAgendaItem(input.intent.ownerUserId, latest.agendaItemId, input.intent.tenantId);
+      }
     }
 
     db.prepare(`
@@ -896,7 +1288,11 @@ function persistDecision(input: {
         decision_reason_codes_json, decision_explanation, source_shape_hash, scheduled_segments_json,
         cancellation_reason, superseded_by_agenda_item_id, created_at, updated_at,
         completed_at, source_created_at, source_updated_at, reasoning_trail_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'not_synced', NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, NULL, ?, ?, ?)
+        ${hasProviderTargetColumns
+          ? ', provider_target, provider_sync_failure_disposition, provider_sync_retry_after_at'
+          : ''}
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'not_synced', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, NULL, ?, ?, ?
+        ${hasProviderTargetColumns ? ', ?, NULL, NULL' : ''})
     `).run(
       agendaItemId,
       input.intent.intentId,
@@ -908,6 +1304,8 @@ function persistDecision(input: {
       input.intent.ownerUserId,
       tenantId,
       input.lifecycleState,
+      providerMappingTransfer?.providerEventId ?? null,
+      providerMappingTransfer?.providerSource ?? null,
       version,
       input.intent.title.trim(),
       startAt,
@@ -923,7 +1321,72 @@ function persistDecision(input: {
       input.intent.createdAt ?? null,
       input.intent.updatedAt ?? null,
       reasoningTrailJson,
+      ...(hasProviderTargetColumns ? [providerTarget] : []),
     );
+
+    // The pinned target is inserted with the agenda row when migration 281 is
+    // present. Migration 282's provider-source trigger deliberately rejects a
+    // transient source-without-target row, including mapping-transfer paths.
+
+    if (secretaryAgendaArbitrationMetadataColumnsExist(db)) {
+      db.prepare(`
+        UPDATE secretary_agenda_items
+           SET arbitration_score = ?,
+               arbitration_deadline_at = ?,
+               arbitration_flexibility = ?,
+               arbitration_policy_version = ?
+         WHERE agenda_item_id = ?
+      `).run(
+        Number.isFinite(arbitrationRank.score) ? arbitrationRank.score : null,
+        arbitrationRank.deadlineAt,
+        arbitrationRank.flexibility,
+        arbitrationRank.policyVersion,
+        agendaItemId,
+      );
+    }
+
+    if (input.intent.sourceSkill === 'training') {
+      // F23: the agenda version and its durable Training feedback request are
+      // one atomic graph. event_outbox requires a positive numeric tenant;
+      // this repo's authenticated user partition is ownerUserId, while the
+      // exact legacy-compatible Secretary tenant stays in the payload and is
+      // revalidated against the agenda row by the direct-effect consumer.
+      emitDomainEvent({
+        tenantId: input.intent.ownerUserId,
+        userId: input.intent.ownerUserId,
+        sourceSkill: 'secretary',
+        eventType: TRAINING_SECRETARY_FEEDBACK_EVENT_TYPE,
+        entityType: 'secretary_agenda_item',
+        entityId: agendaItemId,
+        entityVersion: version,
+        schemaVersion: TRAINING_SECRETARY_FEEDBACK_SCHEMA_VERSION,
+        payload: { agendaTenantId: tenantId },
+        privacyClassification: 'health',
+        idempotencyKey: `secretary.training_feedback.requested:${agendaItemId}:${version}`,
+      }, db);
+    } else if (['cooking', 'finance', 'content'].includes(input.intent.sourceSkill)) {
+      // F23: generic source-skill feedback has the same atomicity and
+      // monotonic-version guarantees as Training. The event is ID-only; its
+      // consumer re-reads the exact scoped agenda row before projecting it.
+      emitDomainEvent({
+        tenantId: input.intent.ownerUserId,
+        userId: input.intent.ownerUserId,
+        sourceSkill: 'secretary',
+        eventType: SECRETARY_SOURCE_SKILL_FEEDBACK_EVENT_TYPE,
+        entityType: 'secretary_agenda_item',
+        entityId: agendaItemId,
+        entityVersion: version,
+        eventVersion: SECRETARY_SOURCE_SKILL_FEEDBACK_EVENT_VERSION,
+        schemaVersion: SECRETARY_SOURCE_SKILL_FEEDBACK_SCHEMA_VERSION,
+        payload: { agendaTenantId: tenantId },
+        privacyClassification: input.intent.sourceSkill === 'finance'
+          ? 'financial'
+          : input.intent.sourceSkill === 'content'
+            ? 'private_content'
+            : 'internal',
+        idempotencyKey: `secretary.source_feedback.requested:${agendaItemId}:${version}`,
+      }, db);
+    }
   });
 
   writeAgendaItem();
@@ -949,6 +1412,569 @@ function persistDecision(input: {
   };
 }
 
+type SecretaryProviderMappingAdoptionRow = {
+  agendaItemId: string;
+  version: number;
+  sourceIntentId: string;
+  sourceEntityId: string | null;
+  sourceEntityType: string | null;
+};
+
+/**
+ * Authorizes a Training provider-id adoption without title/time inference.
+ * Cross-version reuse requires an older active ownership row with the exact
+ * stable identity key and material shape. A same-version sibling session can
+ * never borrow the event sideways even if corrupt data duplicated its keys.
+ */
+function resolveScopedTrainingProviderMappingAdoption(input: {
+  intent: SecretarySchedulingIntent;
+  latest: SecretaryAgendaItem | null;
+  providerEventId: string;
+  providerSource: 'google' | 'outlook';
+  nowIso: string;
+}, db: Database.Database): SecretaryProviderMappingAdoptionRow[] {
+  const tenantId = normalizeTenantId(input.intent.tenantId);
+  const latestIsExact = Boolean(
+    input.latest
+    && input.latest.providerEventId === input.providerEventId
+    && input.latest.providerSource === input.providerSource,
+  );
+  const scopedAuthoritySessionIds = new Set<number>();
+  let scopedTrainingAuthority = false;
+  let currentPlanId: number | null = null;
+
+  const parsedIntent = parseTrainingAgendaSourceIntent(input.intent.intentId);
+  const sourceEntityId = positiveTrainingScopeInteger(input.intent.sourceEntityId);
+  const numericTenantId = positiveTrainingScopeInteger(tenantId);
+  if (
+    parsedIntent
+    && sourceEntityId === parsedIntent.sessionId
+    && input.intent.sourceEntityType === 'training_session'
+    && numericTenantId != null
+    && trainingProviderMappingAuthoritySchemaReady(db)
+  ) {
+    const current = db.prepare(`
+      SELECT session.id AS sessionId,
+             session.plan_id AS planId,
+             session.calendar_event_id AS calendarEventId,
+             session.calendar_source AS calendarSource,
+             session.session_identity_key AS sessionIdentityKey,
+             session.session_shape_hash AS sessionShapeHash,
+             plan.plan_version AS planVersion
+        FROM training_sessions AS session
+        JOIN fitness_training_plans AS plan
+          ON plan.id = session.plan_id
+         AND plan.user_id = ?
+         AND plan.tenant_id = ?
+       WHERE session.id = ?
+         AND session.plan_id = ?
+         AND session.tenant_id = ?
+         AND plan.plan_version = ?
+       LIMIT 1
+    `).get(
+      input.intent.ownerUserId,
+      numericTenantId,
+      parsedIntent.sessionId,
+      parsedIntent.planId,
+      numericTenantId,
+      parsedIntent.planVersion,
+    ) as {
+      sessionId: number;
+      planId: number;
+      calendarEventId: string | null;
+      calendarSource: string | null;
+      sessionIdentityKey: string | null;
+      sessionShapeHash: string | null;
+      planVersion: number;
+    } | undefined;
+
+    if (current) {
+      currentPlanId = Number(current.planId);
+      if (
+        current.calendarEventId === input.providerEventId
+        && current.calendarSource === input.providerSource
+      ) {
+        scopedTrainingAuthority = true;
+        scopedAuthoritySessionIds.add(Number(current.sessionId));
+      }
+      const ownershipRows = db.prepare(`
+        SELECT ownership.session_id AS sessionId
+          FROM training_agenda_event_ownership AS ownership
+         WHERE ownership.plan_id = ?
+           AND ownership.plan_version <= ?
+           AND ownership.user_id = ?
+           AND ownership.tenant_id = ?
+           AND ownership.calendar_event_id = ?
+           AND ownership.calendar_source = ?
+           AND ownership.status = 'active'
+           AND ownership.session_id IS NOT NULL
+           AND (
+             ownership.session_id = ?
+             OR (
+               ownership.plan_version < ?
+               AND length(trim(COALESCE(ownership.session_identity_key, ''))) > 0
+               AND length(trim(COALESCE(ownership.session_shape_hash, ''))) > 0
+               AND length(trim(COALESCE(?, ''))) > 0
+               AND length(trim(COALESCE(?, ''))) > 0
+               AND ownership.session_identity_key = ?
+               AND ownership.session_shape_hash = ?
+             )
+           )
+      `).all(
+        current.planId,
+        current.planVersion,
+        input.intent.ownerUserId,
+        numericTenantId,
+        input.providerEventId,
+        input.providerSource,
+        current.sessionId,
+        current.planVersion,
+        current.sessionIdentityKey,
+        current.sessionShapeHash,
+        current.sessionIdentityKey,
+        current.sessionShapeHash,
+      ) as Array<{ sessionId: number }>;
+      for (const ownership of ownershipRows) {
+        const authorizedSessionId = Number(ownership.sessionId);
+        if (Number.isSafeInteger(authorizedSessionId) && authorizedSessionId > 0) {
+          scopedTrainingAuthority = true;
+          scopedAuthoritySessionIds.add(authorizedSessionId);
+        }
+      }
+    }
+  }
+
+  if (!latestIsExact && !scopedTrainingAuthority) {
+    throw new Error('SECRETARY_PROVIDER_MAPPING_TRANSFER_MISMATCH');
+  }
+
+  const mappedRows = db.prepare(`
+    SELECT agenda_item_id AS agendaItemId,
+           version,
+           source_skill AS sourceSkill,
+           source_intent_id AS sourceIntentId,
+           source_entity_id AS sourceEntityId,
+           source_entity_type AS sourceEntityType
+      FROM secretary_agenda_items
+     WHERE owner_user_id = ?
+       AND tenant_id = ?
+       AND provider_event_id = ?
+       AND provider_source = ?
+     ORDER BY version ASC, agenda_item_id ASC
+  `).all(
+    input.intent.ownerUserId,
+    tenantId,
+    input.providerEventId,
+    input.providerSource,
+  ) as Array<SecretaryProviderMappingAdoptionRow & { sourceSkill: string }>;
+
+  for (const mapped of mappedRows) {
+    const isExactLatest = Boolean(
+      latestIsExact
+      && input.latest?.agendaItemId === mapped.agendaItemId
+      && input.latest.version === Number(mapped.version)
+      && input.latest.sourceIntentId === mapped.sourceIntentId,
+    );
+    if (mapped.sourceSkill !== 'training') {
+      throw new Error('SECRETARY_PROVIDER_MAPPING_TRANSFER_MISMATCH');
+    }
+    if (isExactLatest) continue;
+    const mappedIntent = parseTrainingAgendaSourceIntent(mapped.sourceIntentId);
+    const mappedSessionId = positiveTrainingScopeInteger(mapped.sourceEntityId);
+    if (
+      !scopedTrainingAuthority
+      || currentPlanId == null
+      || !mappedIntent
+      || mappedIntent.planId !== currentPlanId
+      || mapped.sourceEntityType !== 'training_session'
+      || mappedSessionId !== mappedIntent.sessionId
+      || !scopedAuthoritySessionIds.has(mappedIntent.sessionId)
+    ) {
+      throw new Error('SECRETARY_PROVIDER_MAPPING_TRANSFER_MISMATCH');
+    }
+  }
+
+  if (secretaryProviderMappingAdoptionHasUnsafeWork({
+    ownerUserId: input.intent.ownerUserId,
+    tenantId,
+    providerEventId: input.providerEventId,
+    providerSource: input.providerSource,
+    nowIso: input.nowIso,
+    mappedRows,
+  }, db)) {
+    throw new Error('SECRETARY_PROVIDER_MAPPING_TRANSFER_BUSY');
+  }
+
+  return mappedRows.map((row) => ({
+    agendaItemId: row.agendaItemId,
+    version: Number(row.version),
+    sourceIntentId: row.sourceIntentId,
+    sourceEntityId: row.sourceEntityId,
+    sourceEntityType: row.sourceEntityType,
+  }));
+}
+
+function secretaryProviderMappingAdoptionHasUnsafeWork(input: {
+  ownerUserId: number;
+  tenantId: string;
+  providerEventId: string;
+  providerSource: 'google' | 'outlook';
+  nowIso: string;
+  mappedRows: SecretaryProviderMappingAdoptionRow[];
+}, db: Database.Database): boolean {
+  if (sqliteTableExists('secretary_agenda_provider_effect_recovery', db)) {
+    const pendingEffect = db.prepare(`
+      SELECT 1
+        FROM secretary_agenda_provider_effect_recovery
+       WHERE owner_user_id = ?
+         AND tenant_id = ?
+         AND provider_source = ?
+         AND provider_event_id = ?
+         AND resolution_state = 'pending'
+       LIMIT 1
+    `).get(input.ownerUserId, input.tenantId, input.providerSource, input.providerEventId);
+    if (pendingEffect) return true;
+  }
+
+  for (const mapped of input.mappedRows) {
+    if (sqliteTableExists('secretary_agenda_provider_sync_claims', db)) {
+      const liveClaim = db.prepare(`
+        SELECT 1
+          FROM secretary_agenda_provider_sync_claims
+         WHERE owner_user_id = ?
+           AND tenant_id = ?
+           AND provider_source = ?
+           AND agenda_item_id = ?
+           AND agenda_version = ?
+           AND datetime(lease_expires_at) > datetime(?)
+         LIMIT 1
+      `).get(
+        input.ownerUserId,
+        input.tenantId,
+        input.providerSource,
+        mapped.agendaItemId,
+        mapped.version,
+        input.nowIso,
+      );
+      if (liveClaim) return true;
+    }
+
+    if (sqliteTableExists('secretary_agenda_provider_create_reconciliation', db)) {
+      const unresolvedCreate = db.prepare(`
+        SELECT 1
+          FROM secretary_agenda_provider_create_reconciliation
+         WHERE owner_user_id = ?
+           AND tenant_id = ?
+           AND provider_source = ?
+           AND source_skill = 'training'
+           AND source_intent_id = ?
+           AND agenda_item_id = ?
+           AND agenda_version = ?
+           AND resolution_state IN ('in_flight', 'unknown', 'known')
+         LIMIT 1
+      `).get(
+        input.ownerUserId,
+        input.tenantId,
+        input.providerSource,
+        mapped.sourceIntentId,
+        mapped.agendaItemId,
+        mapped.version,
+      );
+      if (unresolvedCreate) return true;
+    }
+
+    if (secretaryAgendaPreemptionSchemaReady(db)) {
+      const lockedOperation = db.prepare(`
+        SELECT 1
+          FROM secretary_agenda_preemption_operations AS operation
+         WHERE operation.owner_user_id = ?
+           AND operation.tenant_id = ?
+           AND operation.state NOT IN ('completed', 'canceled')
+           AND (
+             (operation.winner_agenda_item_id = ? AND operation.winner_agenda_version = ?)
+             OR (
+               operation.prior_winner_agenda_item_id = ?
+               AND operation.prior_winner_agenda_version = ?
+             )
+           )
+         LIMIT 1
+      `).get(
+        input.ownerUserId,
+        input.tenantId,
+        mapped.agendaItemId,
+        mapped.version,
+        mapped.agendaItemId,
+        mapped.version,
+      );
+      if (lockedOperation) return true;
+
+      // Completed/canceled operations are safe only after every dependency is
+      // satisfied. Terminal graphs remain mutation-locked for manual repair.
+      const unsettledDependency = db.prepare(`
+        SELECT 1
+          FROM secretary_agenda_preemption_dependencies AS dependency
+          JOIN secretary_agenda_preemption_operations AS operation
+            ON operation.operation_id = dependency.operation_id
+           AND operation.owner_user_id = dependency.owner_user_id
+           AND operation.tenant_id = dependency.tenant_id
+         WHERE dependency.owner_user_id = ?
+           AND dependency.tenant_id = ?
+           AND dependency.state <> 'satisfied'
+           AND (
+             (dependency.loser_agenda_item_id = ? AND dependency.loser_agenda_version = ?)
+             OR (
+               dependency.loser_replacement_agenda_item_id = ?
+               AND dependency.loser_replacement_version = ?
+             )
+           )
+         LIMIT 1
+      `).get(
+        input.ownerUserId,
+        input.tenantId,
+        mapped.agendaItemId,
+        mapped.version,
+        mapped.agendaItemId,
+        mapped.version,
+      );
+      if (unsettledDependency) return true;
+    }
+  }
+
+  return false;
+}
+
+function parseTrainingAgendaSourceIntent(
+  value: string,
+): { planId: number; planVersion: number; sessionId: number } | null {
+  const match = value.match(/^training:(\d+):(\d+):(\d+)$/);
+  if (!match) return null;
+  const planId = positiveTrainingScopeInteger(match[1]);
+  const planVersion = positiveTrainingScopeInteger(match[2]);
+  const sessionId = positiveTrainingScopeInteger(match[3]);
+  return planId != null && planVersion != null && sessionId != null
+    ? { planId, planVersion, sessionId }
+    : null;
+}
+
+function positiveTrainingScopeInteger(value: unknown): number | null {
+  if (typeof value !== 'string' && typeof value !== 'number') return null;
+  const normalized = typeof value === 'string' ? value.trim() : value;
+  if (normalized === '') return null;
+  const numeric = typeof normalized === 'number' ? normalized : Number(normalized);
+  return Number.isSafeInteger(numeric) && numeric > 0 ? numeric : null;
+}
+
+function trainingProviderMappingAuthoritySchemaReady(db: Database.Database): boolean {
+  return sqliteTableExists('fitness_training_plans', db)
+    && sqliteTableExists('training_sessions', db)
+    && sqliteTableExists('training_agenda_event_ownership', db)
+    && sqliteTableHasColumns('fitness_training_plans', ['id', 'user_id', 'tenant_id', 'plan_version'], db)
+    && sqliteTableHasColumns('training_sessions', [
+      'id', 'plan_id', 'tenant_id', 'calendar_event_id', 'calendar_source',
+      'session_identity_key', 'session_shape_hash',
+    ], db)
+    && sqliteTableHasColumns('training_agenda_event_ownership', [
+      'plan_id', 'plan_version', 'session_id', 'user_id', 'tenant_id',
+      'calendar_event_id', 'calendar_source', 'status',
+      'session_identity_key', 'session_shape_hash',
+    ], db);
+}
+
+function sqliteTableExists(tableName: string, db: Database.Database): boolean {
+  return Boolean(db.prepare(`
+    SELECT 1 FROM sqlite_master
+     WHERE type = 'table' AND name = ?
+     LIMIT 1
+  `).get(tableName));
+}
+
+function sqliteTableHasColumns(
+  tableName: string,
+  requiredColumns: string[],
+  db: Database.Database,
+): boolean {
+  if (!sqliteTableExists(tableName, db)) return false;
+  const columns = new Set(
+    (db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name?: string }>)
+      .map((column) => column.name)
+      .filter((name): name is string => Boolean(name)),
+  );
+  return requiredColumns.every((column) => columns.has(column));
+}
+
+function hasUnsafePriorProviderTargetVersion(
+  intent: SecretarySchedulingIntent,
+  providerTarget: 'google' | 'outlook',
+  db: Database.Database,
+): boolean {
+  const existingRows = db.prepare(`
+    SELECT agenda_item_id AS agendaItemId,
+           version,
+           provider_event_id AS providerEventId,
+           provider_source AS providerSource,
+           provider_sync_state AS providerSyncState,
+           lifecycle_state AS lifecycleState
+      FROM secretary_agenda_items AS existing
+     WHERE existing.owner_user_id = ?
+       AND existing.tenant_id = ?
+       AND existing.source_skill = ?
+       AND existing.source_intent_id = ?
+       AND existing.provider_target IS NOT NULL
+       AND existing.provider_target <> ?
+  `).all(
+    intent.ownerUserId,
+    normalizeTenantId(intent.tenantId),
+    intent.sourceSkill,
+    intent.intentId,
+    providerTarget,
+  ) as Array<{
+    agendaItemId: string;
+    version: number;
+    providerEventId: string | null;
+    providerSource: string | null;
+    providerSyncState: string;
+    lifecycleState: string;
+  }>;
+  const tenantId = normalizeTenantId(intent.tenantId);
+  for (const existing of existingRows) {
+    if (
+      existing.providerEventId != null
+      || existing.providerSource != null
+      || existing.providerSyncState !== 'deleted'
+      || !['canceled', 'superseded', 'unscheduled', 'deferred', 'completed'].includes(existing.lifecycleState)
+    ) {
+      return true;
+    }
+    if (sqliteTableExists('secretary_agenda_provider_sync_claims', db)) {
+      const liveClaim = db.prepare(`
+        SELECT 1 FROM secretary_agenda_provider_sync_claims
+         WHERE owner_user_id = ? AND tenant_id = ?
+           AND agenda_item_id = ? AND agenda_version = ?
+           AND datetime(lease_expires_at) > datetime('now')
+         LIMIT 1
+      `).get(intent.ownerUserId, tenantId, existing.agendaItemId, existing.version);
+      if (liveClaim) return true;
+    }
+    if (sqliteTableExists('secretary_agenda_provider_effect_recovery', db)) {
+      const pendingEffect = db.prepare(`
+        SELECT 1 FROM secretary_agenda_provider_effect_recovery
+         WHERE owner_user_id = ? AND tenant_id = ?
+           AND agenda_item_id = ? AND agenda_version = ?
+           AND resolution_state = 'pending'
+         LIMIT 1
+      `).get(intent.ownerUserId, tenantId, existing.agendaItemId, existing.version);
+      if (pendingEffect) return true;
+    }
+    if (secretaryAgendaPreemptionSchemaReady(db)) {
+      const lockedGraph = db.prepare(`
+        SELECT 1 FROM secretary_agenda_preemption_operations AS operation
+         WHERE operation.owner_user_id = ? AND operation.tenant_id = ?
+           AND operation.state NOT IN ('completed', 'canceled')
+           AND (
+             (operation.winner_agenda_item_id = ? AND operation.winner_agenda_version = ?)
+             OR (operation.prior_winner_agenda_item_id = ? AND operation.prior_winner_agenda_version = ?)
+           )
+         LIMIT 1
+      `).get(
+        intent.ownerUserId,
+        tenantId,
+        existing.agendaItemId,
+        existing.version,
+        existing.agendaItemId,
+        existing.version,
+      );
+      if (lockedGraph) return true;
+    }
+  }
+  return false;
+}
+
+function persistPreemptiveDecision(input: {
+  intent: SecretarySchedulingIntent;
+  nowIso: string;
+  status: SecretarySchedulingDecisionStatus;
+  lifecycleState: SecretaryAgendaLifecycleState;
+  reasonCodes: SecretaryReasonCode[];
+  explanation: string;
+  selectedSlot: SecretaryTimeWindow | null;
+  alternativeSlots: SecretaryTimeWindow[];
+  conflicts: string[];
+  downstreamImplications: string[];
+  latest: SecretaryAgendaItem | null;
+  sourceShapeHash: string;
+  reasoningTrail: ReasoningTrailNode[];
+  preemptionCandidates: SecretarySchedulingPreemptionCandidate[];
+}): SecretaryInternalSchedulingDecision {
+  if (!input.selectedSlot
+      || !['scheduled', 'reflowed', 'compressed'].includes(input.status)
+      || !input.intent.providerTarget) {
+    throw new Error('SECRETARY_PREEMPTION_INVALID_WINNER');
+  }
+  const loserEvidence: SecretaryPreemptionLoserEvidence[] = input.preemptionCandidates.map((candidate) => {
+    const identity = candidate.liveWindow.providerIdentity;
+    if (!identity) throw new Error('SECRETARY_PREEMPTION_PROVIDER_IDENTITY_MISSING');
+    return {
+      agendaItemId: candidate.agendaItemId,
+      providerSource: identity.providerSource,
+      providerEventId: identity.providerEventId,
+    };
+  });
+  const rank = computeSecretaryIntentArbitrationRank(input.intent);
+  const durationMinutes = minutesBetween(input.selectedSlot.start, input.selectedSlot.end);
+  const graph = persistSecretaryPreemptionGraph({
+    winner: {
+      ownerUserId: input.intent.ownerUserId,
+      tenantId: normalizeTenantId(input.intent.tenantId),
+      sourceSkill: input.intent.sourceSkill,
+      sourceIntentId: input.intent.intentId,
+      sourceAction: input.intent.sourceAction ?? null,
+      intentAction: input.intent.action ?? defaultActionForStatus(input.status),
+      sourceEntityId: input.intent.sourceEntityId != null ? String(input.intent.sourceEntityId) : null,
+      sourceEntityType: input.intent.sourceEntityType ?? null,
+      providerTarget: input.intent.providerTarget,
+      title: input.intent.title.trim(),
+      startAt: input.selectedSlot.start,
+      endAt: input.selectedSlot.end,
+      durationMinutes,
+      decisionAction: input.status as 'scheduled' | 'reflowed' | 'compressed',
+      decisionReasonCodes: input.reasonCodes,
+      decisionExplanation: input.explanation,
+      sourceShapeHash: input.sourceShapeHash,
+      scheduledSegments: decisionScheduledSegments(input.selectedSlot, input.alternativeSlots),
+      sourceCreatedAt: input.intent.createdAt ?? null,
+      sourceUpdatedAt: input.intent.updatedAt ?? null,
+      reasoningTrail: input.reasoningTrail,
+      rank,
+    },
+    losers: loserEvidence,
+    nowIso: input.nowIso,
+  });
+  const agendaItem = findAgendaItemById(graph.winnerAgendaItemId);
+  if (!agendaItem || agendaItem.version !== graph.winnerAgendaVersion) {
+    throw new Error('SECRETARY_PREEMPTION_WINNER_READBACK_FAILED');
+  }
+  return {
+    status: input.status,
+    agendaItem,
+    reasonCodes: input.reasonCodes,
+    explanation: input.explanation,
+    selectedSlot: input.selectedSlot,
+    alternativeSlots: input.alternativeSlots,
+    conflicts: input.conflicts,
+    downstreamImplications: input.downstreamImplications,
+    confidence: confidenceFor(input.status, input.reasonCodes),
+    feedback: buildFeedback(
+      input.intent,
+      agendaItem,
+      input.status,
+      input.reasonCodes,
+      input.downstreamImplications,
+    ),
+    reasoningTrail: input.reasoningTrail,
+    deferFeedback: true,
+  };
+}
+
 function decisionFromPreview(
   input: {
     intent: SecretarySchedulingIntent;
@@ -966,6 +1992,7 @@ function decisionFromPreview(
   reasoningTrail: ReasoningTrailNode[],
   latest: SecretaryAgendaItem | null,
 ): SecretarySchedulingDecision {
+  const arbitrationRank = computeSecretaryIntentArbitrationRank(input.intent);
   const startAt = input.selectedSlot?.start ?? null;
   const endAt = input.selectedSlot?.end ?? null;
   const durationMinutes = input.selectedSlot
@@ -987,7 +2014,14 @@ function decisionFromPreview(
     providerSyncState: 'not_synced',
     providerEventId: null,
     providerSource: null,
+    providerTarget: input.intent.providerTarget ?? null,
+    providerSyncFailureDisposition: null,
+    providerSyncRetryAfterAt: null,
     version: latest ? latest.version + 1 : 1,
+    arbitrationScore: Number.isFinite(arbitrationRank.score) ? arbitrationRank.score : null,
+    arbitrationDeadlineAt: arbitrationRank.deadlineAt,
+    arbitrationFlexibility: arbitrationRank.flexibility,
+    arbitrationPolicyVersion: arbitrationRank.policyVersion,
     title: input.intent.title.trim(),
     startAt,
     endAt,
@@ -1146,38 +2180,172 @@ function findAgendaItemById(agendaItemId: string): SecretaryAgendaItem | null {
   return row ? rowToAgendaItem(row) : null;
 }
 
-function buildBusyWindows(
-  intent: SecretarySchedulingIntent,
-  options: SecretarySchedulingOptions,
-  acceptedBusyWindows: SecretaryTimeWindow[],
-): NormalizedWindow[] {
-  const persisted = listSecretaryAgendaItems({
-    ownerUserId: intent.ownerUserId,
-    tenantId: intent.tenantId,
-  })
-    .filter((item) => item.sourceSkill !== intent.sourceSkill || item.sourceIntentId !== intent.intentId)
+/**
+ * Shared Stage 1 capacity planner. It is pure: no loser mutation, provider
+ * write, or agenda persistence occurs here. The full hard set remains the
+ * submit contract; only preview may disregard an exactly identified,
+ * lower-ranked local/provider pair.
+ */
+export function planSecretarySchedulingCapacity(
+  input: SecretarySchedulingCapacityPlanInput,
+): SecretarySchedulingCapacityPlan {
+  const tenantId = normalizeTenantId(input.intent.tenantId);
+  const localAgendaItems = input.localAgendaItems
+    .filter((item) => item.ownerUserId === input.intent.ownerUserId && item.tenantId === tenantId)
+    .filter((item) => item.sourceSkill !== input.intent.sourceSkill || item.sourceIntentId !== input.intent.intentId)
+    .filter((item) => ACTIVE_BUSY_STATES.has(item.lifecycleState) && item.startAt && item.endAt);
+  const localWindows = localAgendaItems.map((item) => ({
+    start: item.startAt!,
+    end: item.endAt!,
+    label: item.title,
+  }));
+  const existingWindows = (input.existingAgendaItems ?? [])
     .filter((item) => ACTIVE_BUSY_STATES.has(item.lifecycleState) && item.startAt && item.endAt)
     .map((item) => ({
       start: item.startAt!,
       end: item.endAt!,
       label: item.title,
     }));
-  const existing = (options.existingAgendaItems ?? [])
-    .filter((item) => ACTIVE_BUSY_STATES.has(item.lifecycleState) && item.startAt && item.endAt)
-    .map((item) => ({
-      start: item.startAt!,
-      end: item.endAt!,
-      label: item.title,
-    }));
-  return normalizeWindows([
-    ...persisted,
-    ...existing,
-    ...(options.additionalBusyWindows ?? []),
-    ...acceptedBusyWindows,
-    ...(intent.hardConstraints?.unavailableWindows ?? []),
-    ...(intent.hardConstraints?.protectedWindows ?? []),
-    ...(intent.hardConstraints?.hardCommitments ?? []),
-  ]);
+  const additionalBusyWindows = input.additionalBusyWindows ?? [];
+  const hardBusyWindows = [
+    ...localWindows,
+    ...existingWindows,
+    ...additionalBusyWindows,
+    ...(input.acceptedBusyWindows ?? []),
+    ...(input.intent.hardConstraints?.unavailableWindows ?? []),
+    ...(input.intent.hardConstraints?.protectedWindows ?? []),
+    ...(input.intent.hardConstraints?.hardCommitments ?? []),
+  ].filter(isValidSecretaryTimeWindow);
+
+  const localWindowByAgendaItemId = new Map<string, SecretaryTimeWindow>();
+  for (let index = 0; index < localAgendaItems.length; index += 1) {
+    const window = localWindows[index];
+    if (window && isValidSecretaryTimeWindow(window)) {
+      localWindowByAgendaItemId.set(localAgendaItems[index].agendaItemId, window);
+    }
+  }
+
+  const liveWindowsByProviderIdentity = new Map<string, SecretaryTimeWindow[]>();
+  for (const window of additionalBusyWindows) {
+    const identity = window.providerIdentity;
+    if (!identity) continue;
+    const key = providerIdentityKey(identity.providerSource, identity.providerEventId);
+    const matching = liveWindowsByProviderIdentity.get(key) ?? [];
+    matching.push(window);
+    liveWindowsByProviderIdentity.set(key, matching);
+  }
+
+  const localItemsByProviderIdentity = new Map<string, SecretaryAgendaItem[]>();
+  for (const item of localAgendaItems) {
+    if (!isSupportedProviderSource(item.providerSource) || !String(item.providerEventId || '').trim()) continue;
+    const key = providerIdentityKey(item.providerSource, item.providerEventId!);
+    const matching = localItemsByProviderIdentity.get(key) ?? [];
+    matching.push(item);
+    localItemsByProviderIdentity.set(key, matching);
+  }
+
+  const preemptionCandidates: SecretarySchedulingPreemptionCandidate[] = [];
+  for (const item of localAgendaItems) {
+    if (!isLowerRankedPreemptionCandidate(input.intent, item)) continue;
+    if (!isSupportedProviderSource(item.providerSource) || !String(item.providerEventId || '').trim()) continue;
+    const key = providerIdentityKey(item.providerSource, item.providerEventId!);
+    if ((localItemsByProviderIdentity.get(key) ?? []).length !== 1) continue;
+    const liveWindows = liveWindowsByProviderIdentity.get(key) ?? [];
+    if (liveWindows.length !== 1) continue;
+    const liveWindow = liveWindows[0];
+    if (!isExactPreemptionProviderEvidence(input.intent, item, liveWindow)) continue;
+    const localWindow = localWindowByAgendaItemId.get(item.agendaItemId);
+    if (!localWindow) continue;
+    preemptionCandidates.push({ agendaItemId: item.agendaItemId, localWindow, liveWindow });
+  }
+
+  const previewRemovals = new Set<SecretaryTimeWindow>();
+  for (const candidate of preemptionCandidates) {
+    previewRemovals.add(candidate.localWindow);
+    previewRemovals.add(candidate.liveWindow);
+  }
+  return {
+    hardBusyWindows,
+    previewBusyWindows: hardBusyWindows.filter((window) => !previewRemovals.has(window)),
+    preemptionCandidates,
+  };
+}
+
+function isLowerRankedPreemptionCandidate(
+  incoming: SecretarySchedulingIntent,
+  item: SecretaryAgendaItem,
+): boolean {
+  if (item.sourceSkill === incoming.sourceSkill) return false;
+  if (!hasCompleteSecretaryAgendaArbitrationMetadata(item)) return false;
+  if (item.arbitrationFlexibility === 'fixed') return false;
+  if (item.providerSyncState !== 'synced') return false;
+  const incomingRank = computeSecretaryIntentArbitrationRank(incoming);
+  if (incomingRank.score !== item.arbitrationScore) return incomingRank.score > item.arbitrationScore!;
+  const incomingDeadline = incomingRank.deadlineAt
+    ? Date.parse(incomingRank.deadlineAt)
+    : Number.POSITIVE_INFINITY;
+  const itemDeadline = item.arbitrationDeadlineAt
+    ? Date.parse(item.arbitrationDeadlineAt)
+    : Number.POSITIVE_INFINITY;
+  if (incomingDeadline !== itemDeadline) return incomingDeadline < itemDeadline;
+  return incomingRank.tieBreakerIntentId.localeCompare(item.sourceIntentId) < 0;
+}
+
+function isExactPreemptionProviderEvidence(
+  incoming: SecretarySchedulingIntent,
+  item: SecretaryAgendaItem,
+  liveWindow: SecretaryTimeWindow,
+): boolean {
+  if (liveWindow.hard === true) return false;
+  const identity = liveWindow.providerIdentity;
+  if (!identity || !isSupportedProviderSource(item.providerSource)) return false;
+  if (identity.ownerUserId !== incoming.ownerUserId || identity.ownerUserId !== item.ownerUserId) return false;
+  const tenantId = normalizeTenantId(incoming.tenantId);
+  if (identity.tenantId !== tenantId || item.tenantId !== tenantId) return false;
+  if (identity.providerEventId !== item.providerEventId || identity.providerSource !== item.providerSource) return false;
+
+  if (item.sourceSkill === 'training') {
+    if (identity.agendaItemId && identity.agendaItemId !== item.agendaItemId) return false;
+    return trainingIdentityMatchesSourceIntent(identity.trainingIdentity, item.sourceIntentId);
+  }
+  return identity.agendaItemId === item.agendaItemId;
+}
+
+function trainingIdentityMatchesSourceIntent(
+  identity: SecretaryProviderEventIdentity['trainingIdentity'],
+  sourceIntentId: string,
+): boolean {
+  if (!identity) return false;
+  const match = /^training:(\d+):(\d+):(\d+)$/.exec(sourceIntentId);
+  if (!match) return false;
+  return identity.planId === Number(match[1])
+    && identity.planVersion === Number(match[2])
+    && identity.sessionId === Number(match[3]);
+}
+
+function isSupportedProviderSource(value: string | null): value is 'google' | 'outlook' {
+  return value === 'google' || value === 'outlook';
+}
+
+function providerIdentityKey(source: 'google' | 'outlook', eventId: string): string {
+  return `${source}:${eventId.trim()}`;
+}
+
+function isValidSecretaryTimeWindow(window: SecretaryTimeWindow): boolean {
+  const startMs = Date.parse(window.start);
+  const endMs = Date.parse(window.end);
+  return Number.isFinite(startMs) && Number.isFinite(endMs) && endMs > startMs;
+}
+
+function preemptionCandidateOverlapsSlot(
+  candidate: SecretarySchedulingPreemptionCandidate,
+  slot: CandidateSlot,
+): boolean {
+  return [candidate.localWindow, candidate.liveWindow].some((window) => {
+    const startMs = Date.parse(window.start);
+    const endMs = Date.parse(window.end);
+    return startMs < slot.endMs && endMs > slot.startMs;
+  });
 }
 
 function normalizeWindows(windows: SecretaryTimeWindow[]): NormalizedWindow[] {
@@ -1293,28 +2461,12 @@ function conflictSummaries(busyWindows: NormalizedWindow[]): string[] {
 }
 
 function compareIntentPriority(left: SecretarySchedulingIntent, right: SecretarySchedulingIntent): number {
-  const leftScore = scoreIntent(left);
-  const rightScore = scoreIntent(right);
-  if (leftScore !== rightScore) return rightScore - leftScore;
-  const leftDeadline = left.deadline ? Date.parse(left.deadline) : Number.POSITIVE_INFINITY;
-  const rightDeadline = right.deadline ? Date.parse(right.deadline) : Number.POSITIVE_INFINITY;
-  return leftDeadline - rightDeadline || left.intentId.localeCompare(right.intentId);
-}
-
-function scoreIntent(intent: SecretarySchedulingIntent): number {
-  const base = typeof intent.priority === 'number'
-    ? intent.priority
-    : intent.priority === 'urgent'
-      ? 100
-      : intent.priority === 'high'
-        ? 70
-        : intent.priority === 'low'
-          ? 20
-          : 45;
-  const deadlineBoost = intent.deadline && Number.isFinite(Date.parse(intent.deadline)) ? 18 : 0;
-  const fixedBoost = intent.flexibility === 'fixed' ? 8 : 0;
-  const phaseBoost = phaseBoostFor(intent.sourceSkill, intent.goalPhase ?? null);
-  return base + SKILL_PRIORITY_WEIGHT[intent.sourceSkill] + deadlineBoost + fixedBoost + phaseBoost;
+  const leftRank = computeSecretaryIntentArbitrationRank(left);
+  const rightRank = computeSecretaryIntentArbitrationRank(right);
+  if (leftRank.score !== rightRank.score) return rightRank.score - leftRank.score;
+  const leftDeadline = leftRank.deadlineAt ? Date.parse(leftRank.deadlineAt) : Number.POSITIVE_INFINITY;
+  const rightDeadline = rightRank.deadlineAt ? Date.parse(rightRank.deadlineAt) : Number.POSITIVE_INFINITY;
+  return leftDeadline - rightDeadline || leftRank.tieBreakerIntentId.localeCompare(rightRank.tieBreakerIntentId);
 }
 
 /**
@@ -1488,6 +2640,7 @@ function computeSourceShapeHash(intent: SecretarySchedulingIntent): string {
     flexibility: intent.flexibility ?? 'flexible',
     dependencies: intent.dependencies ?? [],
     energyCost: intent.energyCost ?? null,
+    providerTarget: intent.providerTarget ?? null,
   })).slice(0, 32);
 }
 
@@ -1564,6 +2717,24 @@ function secretaryAgendaColumnExists(columnName: string, db = getDb()): boolean 
   return columns.some((column) => column.name === columnName);
 }
 
+function secretaryAgendaArbitrationMetadataColumnsExist(db = getDb()): boolean {
+  const required = new Set([
+    'arbitration_score',
+    'arbitration_deadline_at',
+    'arbitration_flexibility',
+    'arbitration_policy_version',
+  ]);
+  const columns = db.prepare('PRAGMA table_info(secretary_agenda_items)').all() as Array<{ name?: string }>;
+  for (const column of columns) {
+    if (column.name) required.delete(column.name);
+  }
+  return required.size === 0;
+}
+
+function secretaryAgendaProviderTargetColumnExists(db = getDb()): boolean {
+  return secretaryAgendaColumnExists('provider_target', db);
+}
+
 function normalizeNow(now?: string): string {
   if (now) {
     const parsed = Date.parse(now);
@@ -1591,7 +2762,21 @@ function rowToAgendaItem(row: any): SecretaryAgendaItem {
     providerSyncState: row.provider_sync_state,
     providerEventId: row.provider_event_id ?? null,
     providerSource: row.provider_source ?? null,
+    providerTarget: row.provider_target === 'google' || row.provider_target === 'outlook'
+      ? row.provider_target
+      : null,
+    providerSyncFailureDisposition:
+      row.provider_sync_failure_disposition === 'terminal'
+      || row.provider_sync_failure_disposition === 'retryable'
+      || row.provider_sync_failure_disposition === 'reconcile'
+        ? row.provider_sync_failure_disposition
+        : null,
+    providerSyncRetryAfterAt: row.provider_sync_retry_after_at ?? null,
     version: Number(row.version),
+    arbitrationScore: row.arbitration_score == null ? null : Number(row.arbitration_score),
+    arbitrationDeadlineAt: row.arbitration_deadline_at ?? null,
+    arbitrationFlexibility: row.arbitration_flexibility ?? null,
+    arbitrationPolicyVersion: row.arbitration_policy_version ?? null,
     title: row.title,
     startAt: row.start_at ?? null,
     endAt: row.end_at ?? null,

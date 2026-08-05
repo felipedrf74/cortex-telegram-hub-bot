@@ -79,12 +79,11 @@ interface RuntimeDeps {
   completeTrainingPlanGenerationIdempotency(
     userId: number,
     tenantId: number,
-    idempotencyKey: string | null,
-    requestHash: string,
+    claim: any,
     responseData: Record<string, unknown>,
     statusCode: number,
-  ): void;
-  failTrainingPlanGenerationIdempotency(userId: number, tenantId: number, idempotencyKey: string | null, requestHash: string): void;
+  ): boolean;
+  failTrainingPlanGenerationIdempotency(userId: number, tenantId: number, claim: any): boolean;
   /**
    * Phase 1B: provider calendar events are created by the background
    * calendar-sync chain, not inline in generation. The smoke drains that
@@ -280,18 +279,22 @@ export async function runTrainingFullFlowStagingSmoke(
     const firstClaim = runtime.claimTrainingPlanGenerationIdempotency(userId, tenantId, idempotencyKey, requestHash);
     let generationResult: any = null;
     if (firstClaim.kind === 'claimed') {
-      generationResult = await runtime.generateTrainingPlanForUser({ userId, tenantId, ...generationRequest });
+      generationResult = await runtime.generateTrainingPlanForUser({
+        userId,
+        tenantId,
+        ...generationRequest,
+        generationIdempotencyLease: firstClaim,
+      });
       if (generationResult.status === 'created') {
         runtime.completeTrainingPlanGenerationIdempotency(
           userId,
           tenantId,
-          idempotencyKey,
-          requestHash,
+          firstClaim,
           generationResult.data ?? generationResult,
           201,
         );
       } else {
-        runtime.failTrainingPlanGenerationIdempotency(userId, tenantId, idempotencyKey, requestHash);
+        runtime.failTrainingPlanGenerationIdempotency(userId, tenantId, firstClaim);
       }
     }
     const secondClaim = runtime.claimTrainingPlanGenerationIdempotency(userId, tenantId, idempotencyKey, requestHash);

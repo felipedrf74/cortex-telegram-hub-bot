@@ -219,6 +219,8 @@ import {
   TRAINING_EXERCISE_IDENTITY_CATALOG_VERSION,
   TRAINING_EXERCISE_IDENTITY_EXPECTED_SOURCE_HASH,
 } from '../../src/services/training-exercise-identity';
+import { resolveCanonicalEquipmentProfile } from '../../src/services/training-equipment-vocabulary';
+import { validateTrainingPlanPreviewToken } from '../../src/services/training-plan-preview-token';
 
 function makePlan(title = 'Coach Plan') {
   return {
@@ -308,6 +310,18 @@ function makePlanFromKernelInput(input: any, title = 'Coach Plan') {
 }
 
 describe('generateTrainingPlanForUser', () => {
+  it('restores the never-two-a-day invariant after quality enrichment', () => {
+    const source = readFileSync(path.resolve('src/api/routes/training-plan-generation.ts'), 'utf8');
+    const qualityCall = source.indexOf('prepareTrainingPlanForQualityGate(planData');
+    const finalCapCall = source.indexOf('enforceFinalTrainingPlanTwoADayCap(', qualityCall + 1);
+
+    // Stronger guarantee: late quality/repair passes may move sessions, so the
+    // hard athlete cap must be the final schedule-shape mutator before lint.
+    expect(qualityCall).toBeGreaterThan(-1);
+    expect(finalCapCall).toBeGreaterThan(qualityCall);
+    expect(finalCapCall).toBeLessThan(source.indexOf('lintGeneratedTrainingPlanPreflight('));
+  });
+
   it('keeps the operational generator free of direct model-provider dependencies', () => {
     const files = [
       'src/api/routes/training-plan-generation.ts',
@@ -368,6 +382,7 @@ describe('generateTrainingPlanForUser', () => {
     mockGetLatestHealthSignal.mockReturnValue(null);
     config.coaching.trainingSafetyGuardrailsEnabled = false;
     config.coaching.coachKernelEquipmentAuthorityEnabled = false;
+    config.coaching.trainingCalendarCapacityKernelEnabled = false;
     mockIsConnected.mockReturnValue(true);
     // Slice 4.D.2 defaults — clean state, no orphans, no remaining plans.
     mockGetActivePlans.mockReturnValue([]);
@@ -461,14 +476,36 @@ describe('generateTrainingPlanForUser', () => {
   });
 
   it('asks for clarification before saving high-frequency strength plans with unknown equipment', async () => {
+    const fitnessProfile = {
+      experienceLevel: 'Intermediate',
+      available_equipment: 'unknown',
+    };
+    const gymProfile = { equipment_access: 'unknown' };
     mockGetProfile.mockImplementation((_userId: number, questionnaireId: string) => {
-      if (questionnaireId === 'fitness') return { experienceLevel: 'Intermediate' };
-      if (questionnaireId === 'triathlon-gym') return {};
+      if (questionnaireId === 'fitness') return fitnessProfile;
+      if (questionnaireId === 'triathlon-gym') return gymProfile;
       return null;
     });
+    const canonicalProfile = resolveCanonicalEquipmentProfile({
+      fitnessProfile,
+      gymProfile,
+      recordConservativeDefaultMetric: false,
+    });
+    expect(canonicalProfile).toMatchObject({
+      bucket: 'bodyweight',
+      confidence: 'unknown',
+    });
+    expect(canonicalProfile.items.length).toBeGreaterThan(0);
     mockBuildTrainingEquipmentAdaptation.mockReturnValue({
-      equipmentProfile: 'unknown',
-      canonicalProfile: { items: [] },
+      // Stronger guarantee: the real resolver retains bodyweight-safe
+      // generation defaults, but those items are not evidence that the user
+      // declared equipment and therefore must not suppress clarification.
+      equipmentProfile: 'full_gym',
+      canonicalProfile,
+      decisionReasons: canonicalProfile.decisionReasons,
+      summary: canonicalProfile.summary,
+      promptBlock: '- conservative fallback',
+      authority: 'legacy_route_adapter',
     });
 
     const result = await generateTrainingPlanForUser({
@@ -477,10 +514,19 @@ describe('generateTrainingPlanForUser', () => {
       objective: 'Build muscle with a 5-day gym plan',
       sessionsPerWeek: 5,
       strengthSessionsPerWeek: 5,
+      goalMode: 'continuous',
+      raceDate: '2026-10-02',
+      plannerNow: '2026-06-12T10:00:00.000Z',
     });
 
     expect(result.status).toBe('needs_clarification');
     if (result.status === 'needs_clarification') {
+      expect(
+        result.data.clarificationIssues
+          .filter((issue) => issue.severity === 'blocker')
+          .map((issue) => issue.id)
+          .sort(),
+      ).toEqual(['equipment_clarification', 'session_duration_clarification']);
       expect(result.data.clarificationIssues).toEqual(
         expect.arrayContaining([
           expect.objectContaining({ id: 'equipment_clarification', severity: 'blocker' }),
@@ -520,6 +566,11 @@ describe('generateTrainingPlanForUser', () => {
           unit: 'minutes',
         }],
       });
+      expect(result.data.decisionReasons).toContainEqual(expect.objectContaining({
+        code: 'race_date_implies_event_based',
+        before: { goalMode: 'continuous' },
+        after: { goalMode: 'event_based' },
+      }));
     }
     expect(mockCancelTrainingPlanForUser).not.toHaveBeenCalled();
     expect(mockPersistGeneratedTrainingPlan).not.toHaveBeenCalled();
@@ -538,14 +589,31 @@ describe('generateTrainingPlanForUser', () => {
     // canonical profile path, then re-previews. The answered value must feed
     // the spec so the clarification clears — equipment stays open here, so
     // the request is still blocked, proving severity is untouched.
+    const fitnessProfile = {
+      experienceLevel: 'Intermediate',
+      available_equipment: 'unknown',
+    };
+    const gymProfile = {
+      equipment_access: 'unknown',
+      session_duration_minutes: '60',
+    };
     mockGetProfile.mockImplementation((_userId: number, questionnaireId: string) => {
-      if (questionnaireId === 'fitness') return { experienceLevel: 'Intermediate' };
-      if (questionnaireId === 'triathlon-gym') return { session_duration_minutes: '60' };
+      if (questionnaireId === 'fitness') return fitnessProfile;
+      if (questionnaireId === 'triathlon-gym') return gymProfile;
       return null;
     });
+    const canonicalProfile = resolveCanonicalEquipmentProfile({
+      fitnessProfile,
+      gymProfile,
+      recordConservativeDefaultMetric: false,
+    });
     mockBuildTrainingEquipmentAdaptation.mockReturnValue({
-      equipmentProfile: 'unknown',
-      canonicalProfile: { items: [] },
+      equipmentProfile: 'full_gym',
+      canonicalProfile,
+      decisionReasons: canonicalProfile.decisionReasons,
+      summary: canonicalProfile.summary,
+      promptBlock: '- conservative fallback',
+      authority: 'legacy_route_adapter',
     });
 
     const result = await generateTrainingPlanForUser({
@@ -803,9 +871,16 @@ describe('generateTrainingPlanForUser', () => {
       currentReadiness: { score: 76 },
       startDate: '2026-04-20',
     }));
-    expect(mockCancelTrainingPlanForUser).toHaveBeenCalledWith(12, undefined, { tenantId: 12 });
+    // F6 stronger guarantee: generation no longer invokes the destructive
+    // cancellation saga. The persister receives the predecessor snapshot and
+    // owns supersede + activation + outbox in one transaction.
+    expect(mockCancelTrainingPlanForUser).not.toHaveBeenCalled();
 
     const persistInput = mockPersistGeneratedTrainingPlan.mock.calls[0][0];
+    expect(persistInput).toMatchObject({
+      replaceExistingActivePlan: true,
+      expectedActivePlanIds: [],
+    });
     expect(persistInput.busyWindows).toEqual([
       expect.objectContaining({ title: 'Fixed meeting' }),
     ]);
@@ -988,7 +1063,112 @@ describe('generateTrainingPlanForUser', () => {
     });
   });
 
-  it('derives triathlon zero bike and swim floors from the final scheduled plan', async () => {
+  it('keeps the raw partial-multisport target when the final route plan contains only swim and strength', async () => {
+    const finalSessions = [
+      { dayOfWeek: 'Monday', sessionType: 'swim', title: 'Swim 1', durationMinutes: 40 },
+      { dayOfWeek: 'Tuesday', sessionType: 'swim', title: 'Swim 2', durationMinutes: 40 },
+      { dayOfWeek: 'Friday', sessionType: 'gym', title: 'Strength 1', durationMinutes: 45 },
+      { dayOfWeek: 'Saturday', sessionType: 'gym', title: 'Strength 2', durationMinutes: 45 },
+    ];
+    mockGetProfile.mockImplementation((_userId: number, questionnaireId: string) => {
+      if (questionnaireId === 'fitness') return { experienceLevel: 'Intermediate' };
+      if (questionnaireId === 'triathlon-running') return { currentMileage: 35 };
+      if (questionnaireId === 'triathlon-gym') {
+        return { equipment_access: 'Full gym', session_duration_minutes: 45 };
+      }
+      return null;
+    });
+    mockBuildCoachKernelTrainingPlan.mockReturnValue({
+      planName: 'Partial Multisport Plan',
+      sport: 'triathlon',
+      weeks: [{
+        weekNumber: 1,
+        sessions: [
+          { dayOfWeek: 'Monday', sessionType: 'swim', title: 'Swim 1', durationMinutes: 40 },
+          { dayOfWeek: 'Tuesday', sessionType: 'swim', title: 'Swim 2', durationMinutes: 40 },
+          { dayOfWeek: 'Wednesday', sessionType: 'run', title: 'Run 1', durationMinutes: 40 },
+          { dayOfWeek: 'Thursday', sessionType: 'ride', title: 'Ride 1', durationMinutes: 50 },
+          { dayOfWeek: 'Friday', sessionType: 'gym', title: 'Strength 1', durationMinutes: 45 },
+          { dayOfWeek: 'Saturday', sessionType: 'gym', title: 'Strength 2', durationMinutes: 45 },
+        ],
+      }],
+    });
+    mockFinalizeGeneratedTrainingPlanForPersistence.mockImplementation((input: any) => ({
+      ...input,
+      planData: {
+        ...input.planData,
+        weeks: [{ weekNumber: 1, sessions: finalSessions }],
+      },
+    }));
+
+    const result = await generateTrainingPlanForUser({
+      userId: 12,
+      tenantId: 12,
+      objective: 'Balanced triathlon support',
+      sessionsPerWeek: 6,
+      runSessionsPerWeek: 0,
+      bikeSessionsPerWeek: 0,
+      swimSessionsPerWeek: 2,
+      strengthSessionsPerWeek: 2,
+      trainingPriority: 'triathlon',
+    });
+
+    expect(result.status).toBe('created');
+    expect((result as any).data.volumeShortfalls).toContainEqual(expect.objectContaining({
+      kind: 'active',
+      requested: 6,
+      achieved: 4,
+      reason: 'no_available_day',
+    }));
+    const persistInput = mockPersistGeneratedTrainingPlan.mock.calls[0][0];
+    expect(JSON.parse(persistInput.preferencesJson).volumeShortfalls).toEqual(
+      (result as any).data.volumeShortfalls,
+    );
+  });
+
+  it.each([
+    ['zero weeks', []],
+    ['one zero-session week', [{ weekNumber: 1, sessions: [] }]],
+  ])('reports realized-zero targets for %s and keeps preview/create/persistence shortfalls aligned', async (_label, weeks) => {
+    mockBuildCoachKernelTrainingPlan.mockReturnValue({
+      planName: 'Empty Engine Plan',
+      sport: 'running',
+      weeks,
+    });
+    const input = {
+      userId: 12,
+      tenantId: 12,
+      objective: 'Running plan with no engine rows',
+      sessionsPerWeek: 3,
+      runSessionsPerWeek: 2,
+      strengthSessionsPerWeek: 1,
+      trainingPriority: 'running' as const,
+    };
+
+    const preview = await generateTrainingPlanForUser({ ...input, previewOnly: true });
+    const created = await generateTrainingPlanForUser(input);
+
+    expect(preview.status).toBe('preview');
+    expect(created.status).toBe('created');
+    expect((preview as any).data.weeklyTargets).toMatchObject({
+      sessionsPerWeek: 0,
+      runSessionsPerWeek: 0,
+      strengthSessionsPerWeek: 0,
+    });
+    expect((created as any).data.weeklyTargets).toEqual((preview as any).data.weeklyTargets);
+    expect((created as any).data.volumeShortfalls).toEqual((preview as any).data.volumeShortfalls);
+
+    const persistInput = mockPersistGeneratedTrainingPlan.mock.calls[0][0];
+    const preferences = JSON.parse(persistInput.preferencesJson);
+    expect(preferences).toMatchObject({
+      sessionsPerWeek: 0,
+      runSessionsPerWeek: 0,
+      strengthSessionsPerWeek: 0,
+    });
+    expect(preferences.volumeShortfalls).toEqual((created as any).data.volumeShortfalls);
+  });
+
+  it('derives triathlon zero bike and swim floors without inventing missing run sessions', async () => {
     const result = await generateTrainingPlanForUser({
       userId: 12,
       tenantId: 12,
@@ -1003,17 +1183,26 @@ describe('generateTrainingPlanForUser', () => {
 
     expect(result.status).toBe('created');
     const persistInput = mockPersistGeneratedTrainingPlan.mock.calls[0][0];
+    // Stronger F10 guarantee: realized targets describe only engine-authored
+    // rows; the original six-day ask remains explicit under requestedTargets.
     expect(JSON.parse(persistInput.preferencesJson)).toMatchObject({
-      sessionsPerWeek: 6,
-      runSessionsPerWeek: 3,
+      sessionsPerWeek: 3,
+      runSessionsPerWeek: 0,
       bikeSessionsPerWeek: 1,
       swimSessionsPerWeek: 1,
       strengthSessionsPerWeek: 1,
       trainingPriority: 'triathlon',
+      requestedTargets: {
+        sessionsPerWeek: 6,
+        runSessionsPerWeek: 0,
+        bikeSessionsPerWeek: 0,
+        swimSessionsPerWeek: 0,
+        strengthSessionsPerWeek: 1,
+      },
     });
     expect((result as any).data.weeklyTargets).toMatchObject({
-      sessionsPerWeek: 6,
-      runSessionsPerWeek: 3,
+      sessionsPerWeek: 3,
+      runSessionsPerWeek: 0,
       bikeSessionsPerWeek: 1,
       swimSessionsPerWeek: 1,
       strengthSessionsPerWeek: 1,
@@ -1328,6 +1517,28 @@ describe('generateTrainingPlanForUser', () => {
     }));
   });
 
+  it('persists one immutable user-zone schedule across the generation pipeline', async () => {
+    const schedulingTimezone = 'America/Los_Angeles';
+    const result = await generateTrainingPlanForUser({
+      userId: 12,
+      tenantId: 12,
+      objective: 'Muscle Building',
+      startPolicy: 'today',
+      plannerNow: '2026-06-16T00:30:00.000Z',
+      schedulingTimezone,
+    });
+
+    // Stronger guarantee: generation resolves "today" once in the trusted
+    // user zone and persists that same zone for every later schedule rewrite.
+    expect(result.status).toBe('created');
+    if (result.status === 'created') {
+      expect(result.data.resolvedStartDate).toBe('2026-06-15');
+    }
+    const persistInput = mockPersistGeneratedTrainingPlan.mock.calls[0][0];
+    expect(persistInput.schedulingTimezone).toBe(schedulingTimezone);
+    expect(JSON.parse(persistInput.preferencesJson)).toMatchObject({ schedulingTimezone });
+  });
+
   // Rerun-4 R3: iOS derives the week count from "today" while the
   // engine anchors at next Monday, so a 16-week marathon request made
   // mid-week overshot the race by days and lint-blocked the wizard.
@@ -1399,6 +1610,217 @@ describe('generateTrainingPlanForUser', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('lets a valid future race date override continuous mode and discloses the decision (F12)', async () => {
+    vi.useFakeTimers();
+    // Friday 2026-06-12 in Europe/Lisbon -> start resolves to Monday
+    // 2026-06-15. Sixteen weeks overshoots the future race; fifteen fits.
+    vi.setSystemTime(new Date('2026-06-12T10:00:00.000Z'));
+    try {
+      const result = await generateTrainingPlanForUser({
+        userId: 12,
+        tenantId: 12,
+        objective: 'Lisbon Marathon',
+        goalMode: 'continuous',
+        raceDate: '2026-10-02',
+        durationWeeks: 16,
+      });
+
+      expect(result.status).toBe('created');
+      expect(result.durationWeeks).toBe(15);
+      expect(mockBuildCoachKernelTrainingPlan).toHaveBeenCalledWith(expect.objectContaining({
+        goalMode: 'event_based',
+        raceDate: '2026-10-02',
+        durationWeeks: 15,
+      }));
+      expect(mockLintGeneratedTrainingPlanPreflight).toHaveBeenCalledWith(expect.objectContaining({
+        goalMode: 'event_based',
+        isRaceSpecific: true,
+        raceDate: '2026-10-02',
+        durationWeeks: 15,
+      }));
+
+      const persistInput = mockPersistGeneratedTrainingPlan.mock.calls[0][0];
+      expect(JSON.parse(persistInput.preferencesJson)).toMatchObject({
+        goalMode: 'event_based',
+        raceDate: '2026-10-02',
+      });
+      expect(persistInput.planData.decisionReasons).toContainEqual(expect.objectContaining({
+        code: 'race_date_implies_event_based',
+        before: { goalMode: 'continuous' },
+        after: { goalMode: 'event_based' },
+      }));
+      expect(result.data).toMatchObject({
+        durationWeeks: 15,
+        goalMode: 'event_based',
+        raceDate: '2026-10-02',
+      });
+      expect(result.data.decisionReasons).toContainEqual(expect.objectContaining({
+        code: 'race_date_implies_event_based',
+        severity: 'notice',
+        before: { goalMode: 'continuous' },
+        after: { goalMode: 'event_based' },
+      }));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('discloses the race-date mode override on non-mutating previews (F12)', async () => {
+    const result = await generateTrainingPlanForUser({
+      userId: 12,
+      tenantId: 12,
+      objective: 'Lisbon Marathon',
+      goalMode: 'continuous',
+      raceDate: '2026-10-02',
+      durationWeeks: 8,
+      previewOnly: true,
+      plannerNow: '2026-06-12T10:00:00.000Z',
+    });
+
+    expect(result.status).toBe('preview');
+    if (result.status !== 'preview') return;
+    expect(result.data.goalMode).toBe('event_based');
+    expect(result.data.decisionReasons).toContainEqual(expect.objectContaining({
+      code: 'race_date_implies_event_based',
+      before: { goalMode: 'continuous' },
+      after: { goalMode: 'event_based' },
+    }));
+    expect(mockPersistGeneratedTrainingPlan).not.toHaveBeenCalled();
+  });
+
+  it('binds create to the exact signed preview candidate before persistence', async () => {
+    const contextFingerprint = 'c'.repeat(64);
+    const request = {
+      userId: 12,
+      tenantId: 12,
+      objective: 'General training consistency',
+      durationWeeks: 4,
+      sessionsPerWeek: 5,
+      strengthSessionsPerWeek: 2,
+      plannerNow: '2026-08-05T12:00:00.000Z',
+    };
+    const preview = await generateTrainingPlanForUser({
+      ...request,
+      previewOnly: true,
+      previewContextFingerprint: contextFingerprint,
+    });
+
+    expect(preview.status).toBe('preview');
+    if (preview.status !== 'preview') return;
+    expect(preview.data.previewToken).toEqual(expect.any(String));
+    const token = validateTrainingPlanPreviewToken(preview.data.previewToken, {
+      userId: 12,
+      tenantId: 12,
+      now: new Date('2026-08-05T12:01:00.000Z'),
+    });
+    expect(token.ok).toBe(true);
+    if (!token.ok) return;
+
+    // Same trusted/request context, different finalized candidate. The
+    // compatibility endpoint reruns the deterministic engine, so this fence
+    // is what prevents calendar/engine drift from silently creating a plan
+    // other than the one the athlete reviewed.
+    mockBuildCoachKernelTrainingPlan.mockImplementation((input: any) => ({
+      ...makePlanFromKernelInput(input),
+      planName: 'Changed after preview',
+    }));
+    mockPersistGeneratedTrainingPlan.mockClear();
+
+    await expect(generateTrainingPlanForUser({
+      ...request,
+      expectedPreviewCandidateFingerprint: token.payload.candidateFingerprint,
+    })).rejects.toMatchObject({
+      code: 'TRAINING_PLAN_PREVIEW_STALE',
+      reason: 'candidate_changed',
+    });
+    expect(mockPersistGeneratedTrainingPlan).not.toHaveBeenCalled();
+  });
+
+  it('rejects an explicit same-day race date before invoking the planner', async () => {
+    const result = await generateTrainingPlanForUser({
+      userId: 12,
+      tenantId: 12,
+      objective: 'Race day is already here',
+      goalMode: 'continuous',
+      raceDate: '2026-06-12',
+      plannerNow: '2026-06-12T10:00:00.000Z',
+    });
+
+    // F12 stronger guarantee: direct/internal callers receive the same
+    // strict-future decision as both REST boundaries.
+    expect(result.status).toBe('needs_profile');
+    expect(result.data).toMatchObject({
+      validationError: { code: 'PAST_RACE_DATE', field: 'raceDate' },
+    });
+    expect(mockBuildCoachKernelTrainingPlan).not.toHaveBeenCalled();
+    expect(mockPersistGeneratedTrainingPlan).not.toHaveBeenCalled();
+  });
+
+  it('blocks a strictly-future race that precedes the resolved plan start (F12)', async () => {
+    const result = await generateTrainingPlanForUser({
+      userId: 12,
+      tenantId: 12,
+      objective: 'Weekend race preparation',
+      goalMode: 'continuous',
+      // Friday -> the default next_full_week anchor is Monday 2026-06-15.
+      // Saturday is strictly future relative to the request, but already over
+      // before week 1. F12 must not persist an event-based plan that silently
+      // drops this race from phase generation.
+      raceDate: '2026-06-13',
+      plannerNow: '2026-06-12T10:00:00.000Z',
+    });
+
+    expect(result.status).toBe('needs_profile');
+    expect(result.data).toMatchObject({
+      needsProfile: true,
+      validationError: {
+        code: 'RACE_DATE_BEFORE_PLAN_START',
+        field: 'raceDate',
+        raceDate: '2026-06-13',
+        resolvedStartDate: '2026-06-15',
+      },
+    });
+    expect(mockBuildCoachKernelTrainingPlan).not.toHaveBeenCalled();
+    expect(mockPersistGeneratedTrainingPlan).not.toHaveBeenCalled();
+  });
+
+  it('discloses an unspecified mode as null when a future race date selects event mode', async () => {
+    const result = await generateTrainingPlanForUser({
+      userId: 12,
+      tenantId: 12,
+      objective: 'Lisbon Marathon',
+      raceDate: '2026-10-02',
+      plannerNow: '2026-06-12T10:00:00.000Z',
+    });
+
+    expect(result.status).toBe('created');
+    if (result.status !== 'created') return;
+    expect(result.data.goalMode).toBe('event_based');
+    expect(result.data.decisionReasons).toContainEqual(expect.objectContaining({
+      code: 'race_date_implies_event_based',
+      before: { goalMode: null },
+      after: { goalMode: 'event_based' },
+    }));
+  });
+
+  it('does not fabricate an override when the request is already event-based', async () => {
+    const result = await generateTrainingPlanForUser({
+      userId: 12,
+      tenantId: 12,
+      objective: 'Lisbon Marathon',
+      goalMode: 'event_based',
+      raceDate: '2026-10-02',
+      plannerNow: '2026-06-12T10:00:00.000Z',
+    });
+
+    expect(result.status).toBe('created');
+    if (result.status !== 'created') return;
+    expect(result.data.goalMode).toBe('event_based');
+    expect(result.data.decisionReasons).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'race_date_implies_event_based' }),
+    ]));
   });
 
   it('persists the requested training calendar source for generation and follow-up sync', async () => {
@@ -1570,6 +1992,9 @@ describe('generateTrainingPlanForUser', () => {
       durationWeeks: 4,
       sessionsPerWeek: 5,
       strengthSessionsPerWeek: 1,
+      goalMode: 'continuous',
+      raceDate: '2026-10-02',
+      plannerNow: '2026-06-12T10:00:00.000Z',
     });
 
     expect(result.status).toBe('plan_quality_blocked');
@@ -1578,6 +2003,9 @@ describe('generateTrainingPlanForUser', () => {
     expect(result.data.warnings).toEqual(expect.arrayContaining([
       expect.objectContaining({ code: 'fallback_requires_review' }),
     ]));
+    expect(result.data.decisionReasons).toContainEqual(expect.objectContaining({
+      code: 'race_date_implies_event_based',
+    }));
     expect(mockBuildDeterministicTrainingPlan).toHaveBeenCalledWith(
       'General running consistency',
       4,
@@ -1605,6 +2033,31 @@ describe('generateTrainingPlanForUser', () => {
     expect(result.status).toBe('created');
     expect(mockPersistGeneratedTrainingPlan).toHaveBeenCalledWith(expect.objectContaining({
       busyWindows: [],
+    }));
+  });
+
+  it('does not replace profile availability with synthetic open-day windows when the calendar is empty', async () => {
+    config.coaching.trainingCalendarCapacityKernelEnabled = true;
+    mockGetEvents.mockResolvedValue([]);
+
+    const result = await generateTrainingPlanForUser({
+      userId: 12,
+      tenantId: 12,
+      objective: 'Travel-safe running and strength',
+      sessionsPerWeek: 3,
+      runSessionsPerWeek: 2,
+      strengthSessionsPerWeek: 1,
+      notes: 'Every session must fit a 35-minute window.',
+      previewOnly: true,
+    });
+
+    expect(result.status).toBe('preview');
+    // Stronger guarantee: an empty provider calendar adds no capacity facts.
+    // The kernel must retain the user's profile-derived duration/day windows
+    // instead of replacing them with fabricated 05:00-21:00 open days.
+    expect(mockBuildCoachKernelTrainingPlan).toHaveBeenCalledWith(expect.objectContaining({
+      notes: 'Every session must fit a 35-minute window.',
+      capacityWindows: null,
     }));
   });
 
@@ -1660,6 +2113,9 @@ describe('generateTrainingPlanForUser', () => {
       objective: 'Build consistency',
       sessionsPerWeek: 5,
       strengthSessionsPerWeek: 2,
+      goalMode: 'continuous',
+      raceDate: '2026-10-02',
+      plannerNow: '2026-06-12T10:00:00.000Z',
     });
 
     expect(result.status).toBe('plan_quality_blocked');
@@ -1674,6 +2130,9 @@ describe('generateTrainingPlanForUser', () => {
         ]),
       );
       expect(result.data.message).toContain('blocked this plan before saving');
+      expect(result.data.decisionReasons).toContainEqual(expect.objectContaining({
+        code: 'race_date_implies_event_based',
+      }));
     }
     expect(mockCancelTrainingPlanForUser).not.toHaveBeenCalled();
     expect(mockPersistGeneratedTrainingPlan).not.toHaveBeenCalled();
@@ -1747,6 +2206,87 @@ describe('generateTrainingPlanForUser', () => {
 
     expect(result.status).toBe('created');
     expect(mockPersistGeneratedTrainingPlan).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['past', '2026-06-11'],
+    ['same-day', '2026-06-12'],
+  ])('does not let a %s profile race date override continuous mode', async (_label, profileRaceDate) => {
+    mockGetProfile.mockImplementation((_userId: number, questionnaireId: string) => {
+      if (questionnaireId === 'fitness') return { experienceLevel: 'Intermediate' };
+      if (questionnaireId === 'triathlon-running') {
+        return {
+          currentMileage: 35,
+          target_race: 'Historical race',
+          target_race_date: profileRaceDate,
+        };
+      }
+      if (questionnaireId === 'triathlon-gym') return { equipment_access: 'Full gym' };
+      return null;
+    });
+
+    const result = await generateTrainingPlanForUser({
+      userId: 12,
+      tenantId: 12,
+      objective: 'Maintain running consistency',
+      goalMode: 'continuous',
+      plannerNow: '2026-06-12T10:00:00.000Z',
+    });
+
+    // F12 stronger guarantee: only a future profile date has authority to
+    // switch modes. Expired profile metadata is removed before both phase
+    // generation and linting so it cannot manufacture taper semantics.
+    expect(result.status).toBe('created');
+    expect(mockBuildCoachKernelTrainingPlan).toHaveBeenCalledWith(expect.objectContaining({
+      goalMode: 'continuous',
+      raceDate: null,
+      runProfile: expect.not.objectContaining({
+        target_race_date: profileRaceDate,
+      }),
+    }));
+    expect(mockLintGeneratedTrainingPlanPreflight).toHaveBeenCalledWith(expect.objectContaining({
+      goalMode: 'continuous',
+      raceDate: null,
+      isRaceSpecific: false,
+    }));
+    expect((result as any).data.decisionReasons).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'race_date_implies_event_based' }),
+    ]));
+  });
+
+  it('lets a strictly future profile race date select event mode', async () => {
+    mockGetProfile.mockImplementation((_userId: number, questionnaireId: string) => {
+      if (questionnaireId === 'fitness') return { experienceLevel: 'Intermediate' };
+      if (questionnaireId === 'triathlon-running') {
+        return {
+          currentMileage: 35,
+          target_race: 'Lisbon Marathon',
+          target_race_date: '2026-10-02',
+        };
+      }
+      if (questionnaireId === 'triathlon-gym') return { equipment_access: 'Full gym' };
+      return null;
+    });
+
+    const result = await generateTrainingPlanForUser({
+      userId: 12,
+      tenantId: 12,
+      objective: 'Maintain running consistency',
+      goalMode: 'continuous',
+      plannerNow: '2026-06-12T10:00:00.000Z',
+    });
+
+    expect(result.status).toBe('created');
+    expect(mockBuildCoachKernelTrainingPlan).toHaveBeenCalledWith(expect.objectContaining({
+      goalMode: 'event_based',
+      raceDate: '2026-10-02',
+      runProfile: expect.objectContaining({ target_race_date: '2026-10-02' }),
+    }));
+    expect((result as any).data.decisionReasons).toContainEqual(expect.objectContaining({
+      code: 'race_date_implies_event_based',
+      before: { goalMode: 'continuous' },
+      after: { goalMode: 'event_based' },
+    }));
   });
 
   it('does NOT mark calendarFetchDegraded on a normal calendar read', async () => {
@@ -2002,9 +2542,15 @@ describe('generateTrainingPlanForUser', () => {
 
     const persistInput = mockPersistGeneratedTrainingPlan.mock.calls[0][0];
     expect(JSON.parse(persistInput.preferencesJson)).toMatchObject({
-      sessionsPerWeek: 5,
+      // Stronger F10 guarantee: the request remains auditable, but two
+      // engine-authored strength rows do not become three generic sessions.
+      sessionsPerWeek: 2,
       strengthSessionsPerWeek: 2,
       trainingPriority: 'strength',
+      requestedTargets: {
+        sessionsPerWeek: 5,
+        strengthSessionsPerWeek: 2,
+      },
     });
   });
 
@@ -2262,17 +2808,12 @@ describe('generateTrainingPlanForUser', () => {
     expect(mockPersistGeneratedTrainingPlan).not.toHaveBeenCalled();
   });
 
-  // ─── Slice 4.D.2 — pre-persist cancellation saga ─────────────────────
-
-  describe('pre-persist cancellation saga (slice 4.D.2)', () => {
-    it('aborts the persist with cancellation_failed when the cancellation throws AND the prior plan is still active', async () => {
-      mockCancelTrainingPlanForUser.mockRejectedValueOnce(new Error('SQLITE_BUSY: database is locked'));
-      mockGetActivePlans.mockReturnValue([{ id: 999, status: 'active' }]);
-      // These two are module-scoped and this suite does not clear between
-      // tests, so scope the call-count assertions below to this test only.
-      mockActivatePendingPlan.mockClear();
-      mockDeletePlanHard.mockClear();
-      mockPersistGeneratedTrainingPlan.mockClear();
+  describe('atomic compatibility replacement (F6)', () => {
+    it('passes the exact predecessor snapshot to the transactional persister', async () => {
+      mockGetActivePlans.mockReturnValue([
+        { id: 902, status: 'active' },
+        { id: 901, status: 'active' },
+      ]);
 
       const result = await generateTrainingPlanForUser({
         userId: 12,
@@ -2282,125 +2823,33 @@ describe('generateTrainingPlanForUser', () => {
         strengthSessionsPerWeek: 2,
       });
 
-      expect(result.status).toBe('cancellation_failed');
-      if (result.status === 'cancellation_failed') {
-        expect(result.data.activePlansRemaining).toBe(1);
-        expect(result.data.reason).toContain('SQLITE_BUSY');
-        expect(String(result.data.message)).toContain('Could not finalize cancellation');
-      }
-      // F6 (Phase 1A-2) changed HOW this is made safe, and the new guarantee
-      // is stronger than the one this test previously asserted.
-      //
-      // Before: the saga ran first, so "safe" meant "never reach persist".
-      // That protected against a double-plan, but not against the far worse
-      // outcome — a throw *after* the hard-delete left the user with no plan
-      // at all, because the only copy was already gone.
-      //
-      // Now: the replacement is persisted as `pending_activation` FIRST
-      // (invisible to every reader, which all filter `status = 'active'`),
-      // and is only promoted once the old plan is gone. So persist IS
-      // expected to run here; what must hold is that the pending row is
-      // discarded and the user's existing plan is untouched.
-      expect(mockPersistGeneratedTrainingPlan).toHaveBeenCalledTimes(1);
-      expect(mockPersistGeneratedTrainingPlan.mock.calls[0]?.[0]).toMatchObject({ persistAsPending: true });
+      expect(result.status).toBe('created');
+      expect(mockPersistGeneratedTrainingPlan).toHaveBeenCalledWith(expect.objectContaining({
+        replaceExistingActivePlan: true,
+        expectedActivePlanIds: [901, 902],
+      }));
+      // Stronger guarantee than the retired saga: generation never performs
+      // provider cancellation, hard-delete, or a separate activation step.
+      expect(mockCancelTrainingPlanForUser).not.toHaveBeenCalled();
+      expect(mockDeletePlanHard).not.toHaveBeenCalled();
       expect(mockActivatePendingPlan).not.toHaveBeenCalled();
-      expect(mockDeletePlanHard).toHaveBeenCalled();
-      expect(mockLoggerError).toHaveBeenCalled();
-      expect(mockGetActivePlans).toHaveBeenCalledWith(12, 34);
     });
 
-    it('discards the pending replacement and reports failure when activation does not take', async () => {
-      // Guards the promote step itself: if the status-qualified UPDATE matches
-      // no row (concurrent activation, or the row is no longer pending) we must
-      // fail closed rather than report a plan the user cannot see.
-      mockActivatePendingPlan.mockReturnValueOnce(false);
-      mockDeletePlanHard.mockClear();
+    it('propagates a transactional replacement failure without cleanup side effects', async () => {
+      mockGetActivePlans.mockReturnValue([{ id: 999, status: 'active' }]);
+      mockPersistGeneratedTrainingPlan.mockRejectedValueOnce(new Error('injected transaction rollback'));
 
-      const result = await generateTrainingPlanForUser({
+      await expect(generateTrainingPlanForUser({
         userId: 12,
-        tenantId: 12,
+        tenantId: 34,
         objective: 'Lisbon Marathon',
         sessionsPerWeek: 5,
         strengthSessionsPerWeek: 2,
-      });
+      })).rejects.toThrow('injected transaction rollback');
 
-      expect(result.status).toBe('cancellation_failed');
-      if (result.status === 'cancellation_failed') {
-        expect(result.data.reason).toBe('PENDING_ACTIVATION_FAILED');
-      }
-      expect(mockDeletePlanHard).toHaveBeenCalled();
+      expect(mockCancelTrainingPlanForUser).not.toHaveBeenCalled();
+      expect(mockDeletePlanHard).not.toHaveBeenCalled();
+      expect(mockActivatePendingPlan).not.toHaveBeenCalled();
     });
-
-    it('proceeds with persist when cancellation throws but no active plans remain (post-delete throw)', async () => {
-      mockCancelTrainingPlanForUser.mockRejectedValueOnce(new Error('Narrative cleanup failed'));
-      mockGetActivePlans.mockReturnValue([]);
-
-      const result = await generateTrainingPlanForUser({
-        userId: 12,
-        tenantId: 12,
-        objective: 'Lisbon Marathon',
-        sessionsPerWeek: 5,
-        strengthSessionsPerWeek: 2,
-      });
-
-      expect(result.status).toBe('created');
-      expect(mockPersistGeneratedTrainingPlan).toHaveBeenCalledTimes(1);
-      // Should warn about post-delete throw, not error.
-      expect(mockLoggerWarn).toHaveBeenCalled();
-    });
-
-    it('warns and continues when cancellation succeeds with orphaned external events', async () => {
-      mockCancelTrainingPlanForUser.mockResolvedValueOnce({
-        status: 'cancelled',
-        data: {
-          cancelled: true,
-          planId: 99,
-          removedEvents: 3,
-          removedSessions: 10,
-          removedWeeks: 4,
-          removedCompletions: 0,
-          removedPlans: 1,
-          totalSessions: 10,
-          message: 'Plan cancelled',
-        },
-      });
-      mockFindOrphanedOwnerships.mockReturnValue([
-        { id: 1, calendar_event_id: 'evt-orphan-1', calendar_source: 'google', status: 'active' },
-        { id: 2, calendar_event_id: 'evt-orphan-2', calendar_source: 'outlook', status: 'active' },
-      ]);
-
-      const result = await generateTrainingPlanForUser({
-        userId: 12,
-        tenantId: 12,
-        objective: 'Lisbon Marathon',
-        sessionsPerWeek: 5,
-        strengthSessionsPerWeek: 2,
-      });
-
-      expect(result.status).toBe('created');
-      expect(mockPersistGeneratedTrainingPlan).toHaveBeenCalledTimes(1);
-      // The saga should warn that reconciliation is queued.
-      expect(mockLoggerWarn).toHaveBeenCalledWith(
-        expect.objectContaining({ orphanedEventCount: 2 }),
-        expect.stringContaining('reconciliation queued'),
-      );
-    });
-
-    it('continues silently when cancellation reports no active plan (first-time generation)', async () => {
-      // Default mock from beforeEach already returns 'not_found'.
-      const result = await generateTrainingPlanForUser({
-        userId: 12,
-        tenantId: 12,
-        objective: 'Lisbon Marathon',
-        sessionsPerWeek: 5,
-        strengthSessionsPerWeek: 2,
-      });
-
-      expect(result.status).toBe('created');
-      expect(mockPersistGeneratedTrainingPlan).toHaveBeenCalledTimes(1);
-      // No saga warnings/errors for clean first-time generation.
-      expect(mockLoggerError).not.toHaveBeenCalled();
-    });
-
   });
 });

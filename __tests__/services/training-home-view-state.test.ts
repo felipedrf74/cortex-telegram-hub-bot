@@ -127,15 +127,16 @@ describe('buildTrainingHomeViewState', () => {
       signals: [
         {
           id: 44,
-          type: 'training_session_scheduled',
-          title: 'training_session_scheduled',
+          type: 'low_sleep',
+          title: 'low_sleep',
           summary: 'undefined',
           priority: 'normal',
           source: 'secretary',
           createdAt: '2026-04-19T06:00:00.000Z',
           expiresAt: '2026-04-19T18:00:00.000Z',
           payload: {
-            title: 'selector_trace leaked raw validation',
+            score: 40,
+            notes: 'selector_trace leaked raw validation',
           },
         },
       ],
@@ -366,30 +367,6 @@ describe('buildTrainingHomeViewState', () => {
 
     expect(state.coachReview?.state).toBe('needsRefresh');
     expect(state.coachReview?.primaryAction.target).toBe('refreshCoach');
-  });
-
-  it('does not expose private calendar event titles in conflict reasoning', () => {
-    const state = buildTrainingHomeViewState(baseInput({
-      signals: [
-        {
-          id: 2,
-          type: 'calendar_conflict',
-          title: 'Calendar conflict',
-          summary: 'A private event overlaps training.',
-          priority: 'urgent',
-          source: 'secretary',
-          createdAt: '2026-04-19T06:00:00.000Z',
-          expiresAt: '2026-04-19T18:00:00.000Z',
-          payload: {
-            conflict_event_title: 'Private therapy appointment',
-          },
-        },
-      ],
-    }), 'en-US');
-
-    const serialized = JSON.stringify(state);
-    expect(serialized).toContain('A calendar event overlaps a scheduled training session');
-    expect(serialized).not.toContain('Private therapy appointment');
   });
 
   it('marks low confidence when the read is degraded', () => {

@@ -157,6 +157,27 @@ describe('computeWeeklyAdherence', () => {
     expect(result.percentage).toBe(40);
   });
 
+  it('F18 — credits explicit partial sessions at one half without calling them completed', () => {
+    const ref = DateTime.fromISO('2026-04-08T12:00:00', { zone: 'Europe/Lisbon' });
+    seedPlanWithWeek({
+      userId: 204,
+      referenceDate: ref,
+      sessionStatuses: ['completed', 'partial', 'partial', 'skipped'],
+      baseId: 204,
+    });
+
+    // Stronger adherence guarantee: completed=1, partial=0.5, skipped=0.
+    const result = computeWeeklyAdherence(204, 204, ref);
+    expect(result).toMatchObject({
+      planned: 4,
+      completed: 1,
+      partial: 2,
+      skipped: 1,
+      ratio: 0.5,
+      percentage: 50,
+    });
+  });
+
   it('counts explicitly skipped sessions separately', () => {
     const ref = DateTime.fromISO('2026-04-08T12:00:00', { zone: 'Europe/Lisbon' });
     seedPlanWithWeek({

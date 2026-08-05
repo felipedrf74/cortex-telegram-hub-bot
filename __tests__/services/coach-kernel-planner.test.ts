@@ -125,8 +125,10 @@ describe('coach-kernel planner', () => {
 
   it('softens consecutive high-intensity triathlon sessions instead of stacking hard days', () => {
     const plan = buildWeekPlan(sampleTriathlete, '2026-06-15');
+    // Stronger guarantee: tempo is quality work too, matching the plan linter's
+    // hard-endurance vocabulary instead of silently omitting tempo sessions.
     const highIntensityDays = plan.sessions
-      .filter((session) => ['threshold', 'vo2', 'neuromuscular'].includes(session.intensityZone))
+      .filter((session) => ['tempo', 'threshold', 'vo2', 'neuromuscular'].includes(session.intensityZone))
       .map((session) => ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'].indexOf(session.dayOfWeek))
       .sort((left, right) => left - right);
 
@@ -137,6 +139,97 @@ describe('coach-kernel planner', () => {
     expect(plan.sessions.some((session) =>
       session.decisionReasons?.some((reason) => reason.sourceConstraint?.id === 'triathlon-hard-day-spacing')
     )).toBe(true);
+  });
+
+  it('re-applies triathlon hard-day spacing after capacity reflows a quality session', () => {
+    const athlete: AthleteState = {
+      ...sampleTriathlete,
+      goals: {
+        ...sampleTriathlete.goals,
+        raceCalendar: [],
+        weeklySessionsTarget: { running: 2, cycling: 1, swimming: 2, strength: 1 },
+        weeklySessionsTargetExplicit: { running: true, cycling: true, swimming: true, strength: true },
+      },
+      constraints: [],
+      currentBlock: {
+        ...sampleTriathlete.currentBlock,
+        phase: 'base',
+      },
+      availability: {
+        weeklyWindows: [
+          { dayOfWeek: 'monday', start: '07:00', end: '07:45', label: 'Cardio', sports: ['running', 'cycling', 'swimming'] },
+          { dayOfWeek: 'tuesday', start: '18:00', end: '18:35', label: 'Strength', sports: ['strength'] },
+          { dayOfWeek: 'wednesday', start: '07:00', end: '07:45', label: 'Cardio', sports: ['running', 'cycling', 'swimming'] },
+          { dayOfWeek: 'thursday', start: '07:00', end: '07:45', label: 'Cardio', sports: ['running', 'cycling', 'swimming'] },
+          { dayOfWeek: 'friday', start: '07:00', end: '07:45', label: 'Cardio', sports: ['running', 'cycling', 'swimming'] },
+          { dayOfWeek: 'saturday', start: '07:00', end: '07:45', label: 'Cardio', sports: ['running', 'cycling', 'swimming'] },
+          { dayOfWeek: 'sunday', start: '07:00', end: '07:45', label: 'Cardio', sports: ['running', 'cycling', 'swimming'] },
+        ],
+        preferredLongSessionDay: 'saturday',
+        preferredTimesBySport: {
+          running: '07:00',
+          cycling: '07:00',
+          swimming: '07:00',
+          strength: '18:00',
+        },
+        maxSessionsPerDay: 1,
+      },
+    };
+
+    const plan = buildWeekPlan(athlete, '2026-06-15');
+    const hardSessions = plan.sessions
+      .filter((session) => ['tempo', 'threshold', 'vo2', 'neuromuscular'].includes(session.intensityZone))
+      .sort((left, right) => [
+        'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday',
+      ].indexOf(left.dayOfWeek) - [
+        'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday',
+      ].indexOf(right.dayOfWeek));
+
+    const softenedAfterReflow = plan.sessions.find((session) =>
+      session.tags.includes('triathlon_spacing_softened')
+      && session.originalDayOfWeek != null
+      && session.originalDayOfWeek !== session.dayOfWeek
+    );
+    expect(softenedAfterReflow, JSON.stringify(plan.sessions.map((session) => ({
+      sport: session.sport,
+      type: session.sessionType,
+      day: session.dayOfWeek,
+      originalDay: session.originalDayOfWeek,
+      zone: session.intensityZone,
+      fatigue: session.fatigueCost,
+      key: session.keySession,
+    })))).toBeTruthy();
+    for (let index = 1; index < hardSessions.length; index += 1) {
+      const days = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+      expect(days.indexOf(hardSessions[index].dayOfWeek) - days.indexOf(hardSessions[index - 1].dayOfWeek))
+        .toBeGreaterThan(1);
+    }
+    expect(softenedAfterReflow).toMatchObject({
+      intensityZone: 'aerobic',
+      keySession: false,
+      sessionRole: 'easy',
+      keySessionLabel: undefined,
+    });
+    expect(softenedAfterReflow?.tags).toContain('role_easy');
+    expect(softenedAfterReflow?.tags).not.toContain('role_threshold');
+    expect(softenedAfterReflow?.tags).not.toContain('key_session_classified');
+    const activeRequestedSessions = plan.sessions.filter((session) =>
+      session.sessionType !== 'brick'
+      && !['deferred', 'unscheduled', 'dropped'].includes(String(session.scheduleState ?? ''))
+    );
+    const modalityCounts = activeRequestedSessions.reduce((counts, session) => {
+      counts[session.sport] = (counts[session.sport] ?? 0) + 1;
+      return counts;
+    }, {} as Record<string, number>);
+    // Stronger guarantee: the post-capacity safety pass may soften a quality
+    // session, but it must preserve every explicit triathlon modality target.
+    expect(modalityCounts, JSON.stringify(plan.sessions.map((session) => ({
+      sport: session.sport,
+      type: session.sessionType,
+      day: session.dayOfWeek,
+      state: session.scheduleState,
+      title: session.title,
+    })))).toMatchObject({ running: 2, cycling: 1, swimming: 2, strength: 1 });
   });
 
   it('respects a one-ride weekly target for cycling-primary plans', () => {

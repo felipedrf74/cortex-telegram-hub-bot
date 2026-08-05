@@ -1,6 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import * as trainingPlans from '../../services/training-plans';
+import { DateTime } from 'luxon';
 import { getDb } from '../../services/database';
 import {
   buildRichSessionDescription,
@@ -31,7 +32,10 @@ import type { TrainingSessionSection } from '../../services/coach-kernel/trainin
 import type { TrainingPlanSpec } from '../../services/training-plan-spec';
 import type { TrainingDecisionReason } from '../../services/coach-kernel/types';
 import { logger } from '../../utils/logger';
-import { withTrainingCalendarOperationLock } from '../../services/training-operation-locks';
+import {
+  withTrainingCalendarOperationLock,
+  type TrainingOperationLockLease,
+} from '../../services/training-operation-locks';
 import { requireTenantIdParam } from '../../services/tenant-scope';
 import { getTrainingExerciseIdentityV1Mode } from '../../services/runtime-flags';
 import {
@@ -47,6 +51,17 @@ import {
   inferTrainingSessionIsLowerHeavy,
 } from '../../services/training-session-classification';
 import { incrementTrainingGenerationCounter } from '../../services/training-generation-observability';
+import {
+  normalizeTrainingTimezone,
+  resolveTrainingTimezone,
+} from '../../services/training-date-utils';
+import {
+  assertTrainingPlanGenerationIdempotencyLease,
+  completeTrainingPlanGenerationIdempotency,
+  TrainingPlanGenerationLeaseLostError,
+  type TrainingPlanGenerationLeaseIdentity,
+} from '../../services/training-plan-generation-idempotency';
+export { TrainingPlanReplacementConflictError } from '../../services/training-plans';
 
 const DAY_NAMES = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
 
@@ -58,6 +73,8 @@ type GeneratedTrainingPlan = {
     weekNumber?: number;
     focus?: string;
     intensityPct?: number;
+    notes?: string[];
+    decisionReasons?: TrainingDecisionReason[];
     sessions?: Array<GeneratedTrainingSession>;
   }>;
 };
@@ -121,7 +138,34 @@ const INACTIVE_SCHEDULE_STATES = new Set<PersistableSessionScheduleState>([
 
 const PRE_PERSIST_SCHEDULE_FINALIZER_VERSION = 'training_pre_persist_schedule_finalizer_v1';
 
+/**
+ * Persist only the coach kernel's string-note contract. JSON encoding keeps
+ * note boundaries unambiguous for downstream readers and prevents malformed
+ * runtime values from being coerced into user-facing evidence.
+ */
+function serializeGeneratedWeekNotes(value: unknown): string | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const notes = value
+    .filter((note): note is string => typeof note === 'string')
+    .map((note) => note.trim())
+    .filter(Boolean);
+  return JSON.stringify(notes);
+}
+
 export interface PersistGeneratedTrainingPlanInput {
+  /** Compatibility generation replaces the predecessor in this transaction. */
+  replaceExistingActivePlan?: boolean;
+  /** Active-plan snapshot captured before candidate construction; exact CAS. */
+  expectedActivePlanIds?: number[];
+  /** F1 owner/fencing identity asserted at activation + outbox boundaries. */
+  generationIdempotencyLease?: TrainingPlanGenerationLeaseIdentity;
+  /**
+   * Pure response projection used to store the exact replay payload in the
+   * same commit as activation. No I/O is permitted in this callback.
+   */
+  buildCommittedIdempotencyResponse?: (
+    result: PersistGeneratedTrainingPlanResult,
+  ) => Record<string, unknown>;
   /**
    * F6 (Phase 1A-2): persist the plan as `pending_activation` instead of
    * `active`. Readers all filter `status = 'active'`, so the replacement is
@@ -137,6 +181,12 @@ export interface PersistGeneratedTrainingPlanInput {
   startDate: string;
   endDate: string;
   now: Date;
+  /**
+   * Trusted scheduling zone resolved by the server. New plans also persist
+   * this value in preferences_json so later calendar work keeps creation-zone
+   * semantics even after the user's current timezone changes.
+   */
+  schedulingTimezone?: string;
   planData: GeneratedTrainingPlan;
   preferencesJson: string;
   normalizedPreferredTime: string;
@@ -176,6 +226,7 @@ export interface PersistGeneratedTrainingPlanInput {
   /** Deterministic training generation contract used by the strict quality gate. */
   trainingPlanSpec?: TrainingPlanSpec;
 }
+
 export interface PersistGeneratedTrainingPlanResult {
   planId: number;
   totalSessions: number;
@@ -216,22 +267,42 @@ export interface PersistGeneratedTrainingPlanResult {
 export function finalizeGeneratedTrainingPlanForPersistence(
   input: PersistGeneratedTrainingPlanInput,
 ): PersistGeneratedTrainingPlanInput {
-  if (isPlanScheduleFinalized(input.planData)) return input;
+  const normalizedInput = {
+    ...input,
+    schedulingTimezone: schedulingTimezoneForPersistence(input),
+  };
+  if (isPlanScheduleFinalized(normalizedInput.planData)) return normalizedInput;
 
   const scheduledWindows: BusyWindow[] = [];
   const planData: GeneratedTrainingPlan = {
-    ...input.planData,
-    weeks: (input.planData.weeks ?? []).map((weekData) => ({
+    ...normalizedInput.planData,
+    weeks: (normalizedInput.planData.weeks ?? []).map((weekData) => ({
       ...weekData,
       sessions: (weekData.sessions ?? []).map((sessionData) => finalizeGeneratedTrainingSessionSchedule({
-        input,
+        input: normalizedInput,
         weekData,
         sessionData,
         scheduledWindows,
       })),
     })),
   };
-  return { ...input, planData };
+  return { ...normalizedInput, planData };
+}
+
+function schedulingTimezoneForPersistence(input: PersistGeneratedTrainingPlanInput): string {
+  const explicit = normalizeTrainingTimezone(input.schedulingTimezone);
+  if (explicit) return explicit;
+  try {
+    const parsed = JSON.parse(input.preferencesJson) as Record<string, unknown>;
+    const persisted = normalizeTrainingTimezone(
+      typeof parsed?.schedulingTimezone === 'string' ? parsed.schedulingTimezone : null,
+    );
+    if (persisted) return persisted;
+  } catch {
+    // Malformed preferences are preserved by the existing persistence path;
+    // scheduling still gets a safe canonical fallback for this operation.
+  }
+  return resolveTrainingTimezone();
 }
 
 /**
@@ -264,12 +335,13 @@ export async function persistGeneratedTrainingPlan(
       tenantId,
       operation: 'calendar_generate',
     },
-    () => persistGeneratedTrainingPlanLocked(finalizedInput),
+    (lease) => persistGeneratedTrainingPlanLocked(finalizedInput, lease),
   );
 }
 
 async function persistGeneratedTrainingPlanLocked(
   input: PersistGeneratedTrainingPlanInput,
+  lease: TrainingOperationLockLease,
 ): Promise<PersistGeneratedTrainingPlanResult> {
   const tenantId = requireTenantIdParam(input.tenantId, 'persistGeneratedTrainingPlanLocked');
   const preferencesJson = appendSelectorSupportDebugTraces(input.preferencesJson, input.planData, input.now, input.userId);
@@ -290,6 +362,7 @@ async function persistGeneratedTrainingPlanLocked(
   // once the plan is actually active.
   const db = getDb();
   const persistPlanGraph = db.transaction(() => {
+  lease.assertActive();
   const plan = trainingPlans.createPlan({
     user_id: input.userId,
     tenant_id: tenantId,
@@ -301,7 +374,9 @@ async function persistGeneratedTrainingPlanLocked(
     start_date: input.startDate,
     end_date: input.endDate,
     preferences_json: preferencesJson,
-    status: input.persistAsPending ? 'pending_activation' : 'active',
+    status: input.replaceExistingActivePlan || input.persistAsPending
+      ? 'pending_activation'
+      : 'active',
   });
 
   let totalSessions = 0;
@@ -323,6 +398,7 @@ async function persistGeneratedTrainingPlanLocked(
       focus: weekData.focus || 'base',
       intensity_pct: weekData.intensityPct || 70,
       volume_sessions: weekData.sessions?.filter(isCalendarSchedulableTrainingSession).length || 0,
+      notes: serializeGeneratedWeekNotes(weekData.notes),
     });
 
     for (const sessionData of weekData.sessions || []) {
@@ -472,13 +548,41 @@ async function persistGeneratedTrainingPlanLocked(
     }
   }
 
-    // Phase 1B — the calendar-sync request is durable exactly when the plan
-    // graph is: `emitDomainEvent` joins this transaction because the same
-    // `db` handle is passed explicitly. The '*' event router enqueues the
-    // durable `training_plan_calendar_sync` job; the dedicated worker
-    // performs provider work only once the plan is active.
     const calendarWriteSource = effectiveTrainingCalendarWriteSource(input);
     let calendarSyncQueued = false;
+    const lint = runPlanLintGuarded({
+      input,
+      planId: plan.id,
+      weeks: input.planData.weeks ?? [],
+      calendarEvents,
+      mode: 'advisor',
+    });
+    if (lint.status === 'fail') {
+      incrementTrainingGenerationCounter('final_validation_failure_total');
+    }
+
+    if (input.replaceExistingActivePlan) {
+      lease.assertActive();
+      if (input.generationIdempotencyLease) {
+        assertTrainingPlanGenerationIdempotencyLease(
+          input.userId,
+          tenantId,
+          input.generationIdempotencyLease,
+          db,
+        );
+      }
+
+      trainingPlans.activateCompatibilityPlanReplacement({
+        planId: plan.id,
+        userId: input.userId,
+        tenantId,
+        expectedActivePlanIds: input.expectedActivePlanIds ?? [],
+      });
+    }
+
+    // Phase 1B — the calendar-sync request is durable exactly when the plan
+    // graph + compatibility activation are. Provider work remains strictly
+    // post-commit in the dedicated worker.
     if (calendarWriteSource !== null && calendarEvents.length > 0) {
       const planVersion = getPlanVersion(plan.id) ?? 1;
       emitDomainEvent({
@@ -508,73 +612,82 @@ async function persistGeneratedTrainingPlanLocked(
       calendarSyncQueued = true;
     }
 
-    return { plan, totalSessions, calendarEvents, calendarWriteSource, calendarSyncQueued };
+    persistPlanValidationSummary({
+      planId: plan.id,
+      preferencesJson,
+      lint,
+      now: input.now,
+      strict: input.replaceExistingActivePlan === true,
+      calendarSync: {
+        schemaVersion: 1,
+        state: 'not_synced',
+        pending: calendarSyncQueued,
+        provider: calendarWriteSource ?? null,
+        requestedSessions: calendarEvents.length,
+        eventsCreated: 0,
+        eventsAttached: 0,
+        eventsUpdated: 0,
+        eventsAlreadyOwned: 0,
+        eventsFailed: 0,
+        eventsSkipped: 0,
+        lastErrorCode: null,
+        updatedAt: input.now.toISOString(),
+      },
+    });
+
+    const result: PersistGeneratedTrainingPlanResult = {
+      planId: plan.id,
+      totalSessions,
+      eventsCreated: 0,
+      sessionsLinked: 0,
+      calendarSyncQueued,
+      syncableSessions: calendarEvents.length,
+      weekSummaries: (input.planData.weeks || []).map((weekData) => ({
+        weekNumber: weekData.weekNumber,
+        focus: weekData.focus,
+        sessionCount: weekData.sessions?.filter(isCalendarSchedulableTrainingSession).length || 0,
+      })),
+      lint,
+    };
+
+    // Re-check at the final durable boundary. Within this write transaction
+    // SQLite prevents another connection from stealing the row between the
+    // activation and outbox writes; expiry itself is still fail-closed.
+    if (input.generationIdempotencyLease) {
+      assertTrainingPlanGenerationIdempotencyLease(
+        input.userId,
+        tenantId,
+        input.generationIdempotencyLease,
+        db,
+      );
+    }
+    lease.assertActive();
+
+    // F1 + F6 crash boundary: the exact replay payload becomes `succeeded`
+    // in the same commit as graph activation and outbox emission. A process
+    // death after COMMIT but before the HTTP response therefore replays this
+    // result instead of claiming a second replacement attempt.
+    if (input.generationIdempotencyLease && input.buildCommittedIdempotencyResponse) {
+      const completed = completeTrainingPlanGenerationIdempotency(
+        input.userId,
+        tenantId,
+        input.generationIdempotencyLease,
+        input.buildCommittedIdempotencyResponse(result),
+        201,
+        db,
+      );
+      if (!completed) {
+        throw new TrainingPlanGenerationLeaseLostError();
+      }
+    }
+
+    return result;
   });
 
   // Throws propagate with nothing committed — including the calendar-sync
   // outbox event; the caller (generation) then discards the pending
   // replacement and the athlete's existing plan stands.
-  const {
-    plan,
-    totalSessions,
-    calendarEvents,
-    calendarWriteSource,
-    calendarSyncQueued,
-  } = persistPlanGraph();
-
-  // training-expert-coach-knowledge-engine (2026-06-09):
-  // Plan-level deterministic lint. The app-facing generation route now
-  // finalizes deterministic session placement before the strict,
-  // write-free preflight. This post-persist pass remains defense-in-depth
-  // and should match the preflight shape unless an external calendar write
-  // fails or provider/Secretary availability changes after persistence.
-  const lint = runPlanLintGuarded({
-    input,
-    planId: plan.id,
-    weeks: input.planData.weeks ?? [],
-    calendarEvents,
-    mode: 'advisor',
-  });
-  if (lint.status === 'fail') {
-    incrementTrainingGenerationCounter('final_validation_failure_total');
-  }
-  persistPlanValidationSummary({
-    planId: plan.id,
-    preferencesJson,
-    lint,
-    now: input.now,
-    // Phase 1B initial consistency state (migration 244 vocabulary): nothing
-    // is synced at persist time; the worker overwrites this after the drain.
-    // 'synced' is only ever written once provider state is verified there.
-    calendarSync: {
-      schemaVersion: 1,
-      state: 'not_synced',
-      pending: calendarSyncQueued,
-      provider: calendarWriteSource ?? null,
-      requestedSessions: calendarEvents.length,
-      eventsCreated: 0,
-      eventsAlreadyOwned: 0,
-      eventsFailed: 0,
-      eventsSkipped: 0,
-      lastErrorCode: null,
-      updatedAt: input.now.toISOString(),
-    },
-  });
-
-  return {
-    planId: plan.id,
-    totalSessions,
-    eventsCreated: 0,
-    sessionsLinked: 0,
-    calendarSyncQueued,
-    syncableSessions: calendarEvents.length,
-    weekSummaries: (input.planData.weeks || []).map((weekData) => ({
-      weekNumber: weekData.weekNumber,
-      focus: weekData.focus,
-      sessionCount: weekData.sessions?.filter(isCalendarSchedulableTrainingSession).length || 0,
-    })),
-    lint,
-  };
+  return persistPlanGraph();
 }
 
 function isPlanScheduleFinalized(planData: GeneratedTrainingPlan): boolean {
@@ -609,6 +722,7 @@ function finalizeGeneratedTrainingSessionSchedule(args: {
     dayIndex,
     planStartDate: input.startDate,
     now: input.now,
+    schedulingTimezone: input.schedulingTimezone,
     durationMinutes,
     sessionType: base.sessionType || '',
     preferredStartTime: base.preferredStartTime,
@@ -767,6 +881,7 @@ function persistPlanValidationSummary(input: {
   preferencesJson: string;
   lint: PlanLintResult;
   now: Date;
+  strict?: boolean;
   /**
    * Phase 1B: initial plan-level calendar consistency state, written in the
    * same preferences pass as the lint summary so neither write clobbers the
@@ -794,6 +909,11 @@ function persistPlanValidationSummary(input: {
       { err, planId: input.planId },
       'persistGeneratedTrainingPlan: failed to persist compact final validation summary',
     );
+    // F6 stronger guarantee: compatibility replacement executes inside the
+    // activation transaction. It may not commit without its validation and
+    // calendar consistency state. Legacy standalone persistence preserves
+    // the released fail-soft behavior for malformed caller-owned JSON.
+    if (input.strict) throw err;
   }
 }
 
@@ -906,6 +1026,7 @@ function inferPoolAccessFromProfiles(profiles?: AthleteProfiles): boolean | null
   ].filter((value) => value != null).join(' ').toLowerCase();
   if (!text.trim()) return null;
   if (/\b(no|none|without|unavailable|false)\b/.test(text)) return false;
+  if (/\b(?:25m|50m)\s+(?:indoor|outdoor)\b/.test(text)) return true;
   if (/\b(pool|open water|open-water|access|yes|true|available)\b/.test(text)) return true;
   return null;
 }
@@ -967,6 +1088,7 @@ function runPlanLintGuarded(args: {
     const mode = args.mode ?? 'advisor';
     const lintInput: PlanLintInput = {
       now: args.input.now,
+      timezone: args.input.schedulingTimezone,
       planId: args.planId,
       startDate: args.input.startDate,
       durationWeeks: args.input.durationWeeks,
@@ -1187,45 +1309,36 @@ type PlanSlotResolution =
       generatedOnDayName: string;
     };
 
-const DAY_NAMES_SUN_FIRST = [
-  'Sunday',
-  'Monday',
-  'Tuesday',
-  'Wednesday',
-  'Thursday',
-  'Friday',
-  'Saturday',
-];
-
 export function resolvePlanSlotDate(input: {
   weekNumber: number;
   dayIndex: number; // 0=Mon, 1=Tue, ..., 6=Sun (matches DAY_NAMES at top of file)
   planStartDate?: string;
   now: Date;
+  schedulingTimezone?: string | null;
 }): PlanSlotResolution {
-  const anchor = parsePlanStartDate(input.planStartDate, input.now);
-  anchor.setDate(anchor.getDate() + ((input.weekNumber - 1) * 7));
+  const timezone = resolveTrainingTimezone(input.schedulingTimezone);
+  const today = DateTime.fromJSDate(input.now, { zone: timezone }).startOf('day');
+  const anchor = parsePlanStartDate(input.planStartDate, input.now, timezone)
+    .plus({ weeks: input.weekNumber - 1 });
 
-  const anchorDayIndex = (anchor.getDay() + 6) % 7; // Mon=0, ..., Sun=6.
+  const anchorDayIndex = anchor.weekday - 1; // Luxon: Mon=1 ... Sun=7.
   const anchorIsSunday = anchorDayIndex === 6;
   let daysUntil = input.dayIndex - anchorDayIndex;
   if (anchorIsSunday && input.weekNumber === 1) {
     daysUntil = input.dayIndex === 6 ? 0 : input.dayIndex + 1;
   } else if (daysUntil < 0) {
     if (input.weekNumber === 1) {
-      const pastDate = new Date(anchor);
-      pastDate.setDate(pastDate.getDate() + daysUntil);
+      const pastDate = anchor.plus({ days: daysUntil });
       return {
         kind: 'past_day_in_week_1',
-        dayName: DAY_NAMES_SUN_FIRST[pastDate.getDay()],
-        generatedOnDayName: DAY_NAMES_SUN_FIRST[input.now.getDay()],
+        dayName: pastDate.setLocale('en-US').toFormat('cccc'),
+        generatedOnDayName: today.setLocale('en-US').toFormat('cccc'),
       };
     }
     daysUntil += 7;
   }
 
-  const sessionDate = new Date(anchor);
-  sessionDate.setDate(sessionDate.getDate() + daysUntil);
+  const sessionDate = anchor.plus({ days: daysUntil }).startOf('day');
 
   // PAST-DAY FLOOR: only relevant for week 1.
   //
@@ -1235,17 +1348,15 @@ export function resolvePlanSlotDate(input: {
   // added +7 here; we now mark this as a past-day rejection so the
   // session is persisted with status='unscheduled' and surfaced honestly
   // to iOS instead of silently sliding to next week's Monday.
-  const sessionDayStart = startOfLocalDay(sessionDate);
-  const todayStart = startOfLocalDay(input.now);
-  if (input.weekNumber === 1 && sessionDayStart.getTime() < todayStart.getTime()) {
+  if (input.weekNumber === 1 && sessionDate < today) {
     return {
       kind: 'past_day_in_week_1',
-      dayName: DAY_NAMES_SUN_FIRST[sessionDate.getDay()],
-      generatedOnDayName: DAY_NAMES_SUN_FIRST[input.now.getDay()],
+      dayName: sessionDate.setLocale('en-US').toFormat('cccc'),
+      generatedOnDayName: today.setLocale('en-US').toFormat('cccc'),
     };
   }
 
-  return { kind: 'usable', sessionDate };
+  return { kind: 'usable', sessionDate: sessionDate.toUTC().toJSDate() };
 }
 
 function scheduleSessionForPlan(input: {
@@ -1253,6 +1364,7 @@ function scheduleSessionForPlan(input: {
   dayIndex: number;
   planStartDate: string;
   now: Date;
+  schedulingTimezone?: string | null;
   durationMinutes: number;
   sessionType: string;
   preferredStartTime: unknown;
@@ -1268,6 +1380,7 @@ function scheduleSessionForPlan(input: {
     dayIndex: input.dayIndex,
     planStartDate: input.planStartDate,
     now: input.now,
+    schedulingTimezone: input.schedulingTimezone,
   });
 
   if (slot.kind === 'past_day_in_week_1') {
@@ -1306,7 +1419,7 @@ function scheduleSessionForPlan(input: {
     resolvedPreferredTime,
     input.busyWindows,
     input.scheduledWindows,
-    { notBefore: input.now },
+    { notBefore: input.now, timezone: input.schedulingTimezone },
   );
 
   // Don't pollute the busy-window guard with a past-day fallback marker
@@ -1322,24 +1435,16 @@ function scheduleSessionForPlan(input: {
   return scheduledWindow;
 }
 
-function parsePlanStartDate(raw: string | undefined, fallback: Date): Date {
+function parsePlanStartDate(
+  raw: string | undefined,
+  fallback: Date,
+  timezone: string,
+): DateTime {
   if (typeof raw === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(raw)) {
-    const [year, month, day] = raw.split('-').map(Number);
-    if (Number.isInteger(year) && Number.isInteger(month) && Number.isInteger(day)) {
-      // Use local midday for date-only anchors. Midnight crosses back to
-      // the prior UTC date in Europe/Lisbon during DST, which makes
-      // date-only tests and provider payloads unnecessarily brittle while
-      // preserving the intended local calendar day for downstream setHours().
-      return new Date(year, month - 1, day, 12, 0, 0, 0);
-    }
+    const parsed = DateTime.fromISO(raw, { zone: timezone }).startOf('day');
+    if (parsed.isValid) return parsed;
   }
-  return new Date(fallback);
-}
-
-function startOfLocalDay(date: Date): Date {
-  const out = new Date(date);
-  out.setHours(0, 0, 0, 0);
-  return out;
+  return DateTime.fromJSDate(fallback, { zone: timezone }).startOf('day');
 }
 
 /**

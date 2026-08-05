@@ -63,6 +63,7 @@ import {
   createSession,
   getSessionsForWeek,
   getSessionById,
+  getSessionByIdForScope,
   getSessionByCalendarEvent,
   updateSession,
   markSessionCompleted,
@@ -213,6 +214,28 @@ describe('Week CRUD', () => {
     expect(weekNumber).toBe(2);
   });
 
+  it('resolves the current week from the plan-persisted timezone by default', () => {
+    const plan = createPlan({
+      user_id: 42,
+      tenant_id: 42,
+      name: 'Immutable timezone plan',
+      sport: 'running',
+      duration_weeks: 4,
+      start_date: '2026-05-04',
+      end_date: '2026-06-01',
+      preferences_json: JSON.stringify({ schedulingTimezone: 'America/Los_Angeles' }),
+    });
+    createWeek({ plan_id: plan.id, week_number: 1, focus: 'base' });
+    createWeek({ plan_id: plan.id, week_number: 2, focus: 'build' });
+
+    // At this instant Lisbon/Tokyo are already Monday (week 2), while the
+    // plan's persisted Los Angeles wall clock is still Sunday (week 1).
+    // F11 requires later reads to remain pinned even after a user-zone change.
+    const now = new Date('2026-05-10T23:30:00.000Z');
+    expect(resolveTrainingPlanWeekNumber(plan, { now })).toBe(1);
+    expect(getCurrentWeek(plan.id, { now })?.week_number).toBe(1);
+  });
+
   it('updates week adjustment', () => {
     const plan = createPlan({
       user_id: 42, tenant_id: 42, name: 'Plan', sport: 'strength',
@@ -352,6 +375,49 @@ describe('Session CRUD', () => {
     const found = getSessionById(s.id);
     expect(found).not.toBeNull();
     expect(found!.title).toBe('Test');
+  });
+
+  it('gets a session by ID only inside the owning user and tenant scope', () => {
+    const currentSession = createSession({
+      week_id: weekId,
+      plan_id: planId,
+      day_of_week: 'Monday',
+      session_type: 'strength',
+      title: 'Current user session',
+      description: 'Current user body',
+    });
+    const foreignPlan = createPlan({
+      user_id: 99,
+      tenant_id: 99,
+      name: 'Foreign Plan',
+      sport: 'swim',
+      duration_weeks: 4,
+      start_date: '2026-04-01',
+      end_date: '2026-04-29',
+    });
+    const foreignWeek = createWeek({ plan_id: foreignPlan.id, week_number: 1 });
+    const foreignSession = createSession({
+      week_id: foreignWeek.id,
+      plan_id: foreignPlan.id,
+      day_of_week: 'Tuesday',
+      session_type: 'swim',
+      title: 'Foreign private session',
+      description: 'Foreign private body',
+    });
+
+    expect(getSessionByIdForScope(currentSession.id, { userId: 42, tenantId: 42 })?.title)
+      .toBe('Current user session');
+    expect(getSessionByIdForScope(foreignSession.id, { userId: 42, tenantId: 42 }))
+      .toBeNull();
+    expect(getSessionByIdForScope(foreignSession.id, { userId: 99, tenantId: 99 })?.title)
+      .toBe('Foreign private session');
+  });
+
+  it('fails closed when the scoped ownership tables are unavailable', () => {
+    testDb = createTestDb();
+
+    expect(() => getSessionByIdForScope(970, { userId: 42, tenantId: 42 })).not.toThrow();
+    expect(getSessionByIdForScope(970, { userId: 42, tenantId: 42 })).toBeNull();
   });
 
   it('updates session fields', () => {

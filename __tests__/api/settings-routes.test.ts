@@ -279,11 +279,10 @@ describe('Settings language route', () => {
     });
   });
 
-  // F11 prerequisite (Phase 3): users.timezone existed since migration 271
-  // with NO write path at all — every runtime fell back to the process-global
-  // config zone. This route is the canonical write path; threading the
-  // per-user zone through the 9 config.app.timezone call sites is the
-  // separate canary-postured F11 slice.
+  // F11 prerequisite (Phase 3): users.timezone predates migration 271, which
+  // documented that it still had NO write path. This route is the canonical
+  // validation boundary and deliberately dumb writer seam; runtime scheduling
+  // consumes the saved zone through the separate F11 threading slice.
   describe('timezone', () => {
     it('accepts a valid IANA zone and persists it on the user row', async () => {
       const res = await dispatchTimezone(1, 'America/Sao_Paulo');

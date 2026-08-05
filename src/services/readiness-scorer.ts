@@ -9,6 +9,11 @@
 
 import { getDb } from './database';
 import { logger } from '../utils/logger';
+import {
+  clearReadinessMemoForTests,
+  getReadinessMemo,
+  setReadinessMemo,
+} from './readiness-memo';
 import { runWithContext } from '../utils/request-context';
 import { hasActiveGarminConnection } from './garmin-session-store';
 import {
@@ -80,7 +85,17 @@ export interface ReadinessResult {
   reasonCode?: ReadinessReasonCode;
   /** Which provider produced this readiness snapshot. Optional — additive for old clients. */
   source?: ReadinessSource;
-  /** ISO timestamp captured at compute time. Optional — additive for old clients. */
+  /** ISO timestamp for when this readiness result was computed. */
+  computedAt?: string;
+  /**
+   * ISO timestamp from the provider/source record used by the score, or null
+   * when the provider did not supply trustworthy freshness provenance.
+   */
+  dataAsOf?: string | null;
+  /**
+   * Legacy compatibility alias for `computedAt`. Freshness decisions must use
+   * `dataAsOf`, because this field historically described computation time.
+   */
   asOf?: string;
   /**
    * Fraction (0-1) of the scoring model backed by real readings rather than
@@ -93,7 +108,193 @@ export interface ReadinessResult {
 type AppleHealthJsonRow = {
   data_json: string;
   encrypted_data_json?: string | null;
+  created_at?: string | null;
 };
+
+type ReadinessTimestamps = Required<Pick<ReadinessResult, 'computedAt' | 'dataAsOf' | 'asOf'>>;
+
+function normalizeProviderTimestamp(value: unknown): string | null {
+  let candidate: string | number;
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    // Garmin timestamps are normally epoch milliseconds, but tolerate epoch
+    // seconds without turning a valid provider time into a 1970 date.
+    candidate = Math.abs(value) < 1_000_000_000_000 ? value * 1000 : value;
+  } else if (typeof value === 'string' && value.trim().length > 0) {
+    const trimmed = value.trim();
+    // SQLite datetime('now') is UTC but omits both `T` and `Z`.
+    candidate = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(trimmed)
+      ? `${trimmed.replace(' ', 'T')}Z`
+      : trimmed;
+  } else {
+    return null;
+  }
+
+  const timestampMs = typeof candidate === 'number' ? candidate : Date.parse(candidate);
+  if (!Number.isFinite(timestampMs)) return null;
+  const timestamp = new Date(timestampMs);
+  if (!Number.isFinite(timestamp.getTime())) return null;
+  return timestamp.toISOString();
+}
+
+function latestProviderTimestamp(...values: unknown[]): string | null {
+  let latestMs = Number.NEGATIVE_INFINITY;
+  let latest: string | null = null;
+  for (const value of values) {
+    const normalized = normalizeProviderTimestamp(value);
+    if (!normalized) continue;
+    const timestampMs = Date.parse(normalized);
+    if (timestampMs > latestMs) {
+      latestMs = timestampMs;
+      latest = normalized;
+    }
+  }
+  return latest;
+}
+
+function oldestProviderTimestamp(...values: unknown[]): string | null {
+  let oldestMs = Number.POSITIVE_INFINITY;
+  let oldest: string | null = null;
+  for (const value of values) {
+    const normalized = normalizeProviderTimestamp(value);
+    if (!normalized) continue;
+    const timestampMs = Date.parse(normalized);
+    if (timestampMs < oldestMs) {
+      oldestMs = timestampMs;
+      oldest = normalized;
+    }
+  }
+  return oldest;
+}
+
+function readinessTimestamps(dataAsOf: unknown, computedAtDate = new Date()): ReadinessTimestamps {
+  const computedAt = computedAtDate.toISOString();
+  const normalizedDataAsOf = normalizeProviderTimestamp(dataAsOf);
+  return {
+    computedAt,
+    // Provider clocks and malformed payloads must not manufacture a source
+    // freshness claim. `computedAt` remains available independently.
+    dataAsOf: normalizedDataAsOf != null && Date.parse(normalizedDataAsOf) <= computedAtDate.getTime()
+      ? normalizedDataAsOf
+      : null,
+    // `asOf` was already public and represented computation time. Keep that
+    // behavior while the additive fields let new consumers distinguish it.
+    asOf: computedAt,
+  };
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value != null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function wearableReadinessDataAsOf(readiness: NormalizedReadiness): string | null {
+  const raw = asRecord(readiness.raw);
+  const recovery = asRecord(raw?.recovery);
+  const providerReadiness = asRecord(raw?.readiness);
+  return latestProviderTimestamp(
+    recovery?.updated_at,
+    recovery?.created_at,
+    providerReadiness?.updated_at,
+    providerReadiness?.created_at,
+    raw?.updated_at,
+    raw?.created_at,
+  );
+}
+
+const TRUSTED_PROVIDER_TIMESTAMP_KEYS = new Set([
+  'updated_at',
+  'created_at',
+  'updatedAt',
+  'createdAt',
+  'timestamp',
+  'timestampGMT',
+  'measurementTimestamp',
+  'measurementTimestampGMT',
+  'sleepEndTimestampGMT',
+  'endTimestampGMT',
+  'startTimestampGMT',
+  'startTimeGMT',
+  'startTimeLocal',
+  'beginTimestamp',
+  'startDate',
+]);
+
+function collectTrustedProviderTimestamps(value: unknown, depth = 0): unknown[] {
+  if (value == null || depth > 5) return [];
+  if (Array.isArray(value)) {
+    return value.flatMap((entry) => collectTrustedProviderTimestamps(entry, depth + 1));
+  }
+  const record = asRecord(value);
+  if (!record) return [];
+
+  const timestamps: unknown[] = [];
+  for (const [key, entry] of Object.entries(record)) {
+    if (TRUSTED_PROVIDER_TIMESTAMP_KEYS.has(key)) timestamps.push(entry);
+    // Garmin body-battery samples encode the provider time as the first item
+    // in `[timestamp, status, value, ...]` tuples rather than a named field.
+    if (key === 'bodyBatteryValuesArray' && Array.isArray(entry)) {
+      for (const sample of entry) {
+        if (Array.isArray(sample) && sample.length > 0) timestamps.push(sample[0]);
+      }
+    }
+    if (entry != null && typeof entry === 'object') {
+      timestamps.push(...collectTrustedProviderTimestamps(entry, depth + 1));
+    }
+  }
+  return timestamps;
+}
+
+type WeightedProviderFreshnessFactor = {
+  weight: number;
+  /** Whether this factor's score participates in the returned composite. */
+  contributes: boolean;
+  /** Whether the participating score is backed by an actual provider value. */
+  providerBacked: boolean;
+  timestampPayload: unknown;
+};
+
+function latestNonFutureProviderTimestamp(payload: unknown, computedAt: Date): string | null {
+  const nestedTimestamps = collectTrustedProviderTimestamps(payload);
+  const candidates = nestedTimestamps.length > 0 ? nestedTimestamps : [payload];
+  return latestProviderTimestamp(...candidates.filter((candidate) => {
+    const normalized = normalizeProviderTimestamp(candidate);
+    return normalized != null && Date.parse(normalized) <= computedAt.getTime();
+  }));
+}
+
+function coverageAwareReadinessTimestamps(
+  factors: WeightedProviderFreshnessFactor[],
+): ReadinessTimestamps & { coverage: number } {
+  const computedAtDate = new Date();
+  const materialFactors = factors.filter((factor) => factor.contributes && factor.weight > 0);
+  const coveredWeight = materialFactors.reduce(
+    (sum, factor) => sum + (factor.providerBacked ? factor.weight : 0),
+    0,
+  );
+  const coverage = Math.round(coveredWeight * 100) / 100;
+
+  // A timestamp is meaningful for a composite only when every weighted
+  // contribution came from provider data and each such factor has trustworthy
+  // non-future provenance. Missing-factor placeholders may keep the numeric
+  // response shape stable, but they cannot inherit freshness from sleep (or
+  // any other lone signal).
+  if (materialFactors.some((factor) => !factor.providerBacked)) {
+    return { ...readinessTimestamps(null, computedAtDate), coverage };
+  }
+
+  const factorTimestamps = materialFactors.map((factor) => (
+    latestNonFutureProviderTimestamp(factor.timestampPayload, computedAtDate)
+  ));
+  if (factorTimestamps.some((timestamp) => timestamp == null)) {
+    return { ...readinessTimestamps(null, computedAtDate), coverage };
+  }
+
+  return {
+    ...readinessTimestamps(oldestProviderTimestamp(...factorTimestamps), computedAtDate),
+    coverage,
+  };
+}
 
 function providerDisplayName(provider: NormalizedReadiness['provider']): string {
   switch (provider) {
@@ -154,7 +355,7 @@ function buildWearableFallbackReadiness(readiness: NormalizedReadiness): Readine
     recommendation,
     reasoning,
     source: readinessSourceForProvider(readiness.provider),
-    asOf: new Date().toISOString(),
+    ...readinessTimestamps(wearableReadinessDataAsOf(readiness)),
   };
 }
 
@@ -358,6 +559,34 @@ export function computeAcwr(activities: any[], now: Date = new Date()): { acuteL
   return { acuteLoad, chronicLoad, acwr };
 }
 
+function hasProviderBackedTrainingLoad(activities: any[], now = new Date()): boolean {
+  const todayStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const sampleDays = new Set<string>();
+  for (const activity of activities) {
+    const rawDate = activity?.startTimeLocal
+      ?? activity?.startTimeGMT
+      ?? activity?.beginTimestamp
+      ?? activity?.startDate
+      ?? activity?.start;
+    const activityMs = new Date(rawDate).getTime();
+    if (!Number.isFinite(activityMs) || activityMs > now.getTime()) continue;
+    const activityDate = new Date(activityMs);
+    const dayStart = Date.UTC(
+      activityDate.getUTCFullYear(),
+      activityDate.getUTCMonth(),
+      activityDate.getUTCDate(),
+    );
+    const daysAgo = Math.floor((todayStart - dayStart) / 86_400_000);
+    if (daysAgo < 0 || daysAgo >= 28) continue;
+    sampleDays.add(activityDate.toISOString().slice(0, 10));
+  }
+
+  // `computeAcwr` deliberately substitutes 1.0 until 14 distinct days exist.
+  // Before that point, the 20% load score is still a placeholder and cannot
+  // contribute provider freshness even if one recent activity has a timestamp.
+  return sampleDays.size >= 14;
+}
+
 // ── Recommendation Logic ────────────────────────────────────────────
 
 function getRecommendation(score: number): ReadinessRecommendation {
@@ -519,47 +748,48 @@ async function calculateAppleHealthReadiness(
 
   try {
     const healthJsonColumns = appleHealthJsonSelectColumns(db);
+    const healthJsonSourceColumns = `${healthJsonColumns}, created_at`;
     // Read HRV (today)
     const hrvRow = db.prepare(
-      `SELECT ${healthJsonColumns} FROM apple_health_data WHERE user_id = ? AND data_type = 'hrv' AND date = ? ORDER BY created_at DESC LIMIT 1`,
+      `SELECT ${healthJsonSourceColumns} FROM apple_health_data WHERE user_id = ? AND data_type = 'hrv' AND date = ? ORDER BY created_at DESC LIMIT 1`,
     ).get(userId, today) as AppleHealthJsonRow | undefined;
 
     // Read HRV baseline (7-day average)
     const hrvHistory = db.prepare(
-      `SELECT ${healthJsonColumns} FROM apple_health_data WHERE user_id = ? AND data_type = 'hrv' AND date > ? ORDER BY date DESC LIMIT 7`,
+      `SELECT ${healthJsonSourceColumns} FROM apple_health_data WHERE user_id = ? AND data_type = 'hrv' AND date > ? ORDER BY date DESC LIMIT 7`,
     ).all(userId, subtractDays(today, 8)) as AppleHealthJsonRow[];
 
     // Read sleep (today)
     const sleepRow = db.prepare(
-      `SELECT ${healthJsonColumns} FROM apple_health_data WHERE user_id = ? AND data_type = 'sleep' AND date = ? ORDER BY created_at DESC LIMIT 1`,
+      `SELECT ${healthJsonSourceColumns} FROM apple_health_data WHERE user_id = ? AND data_type = 'sleep' AND date = ? ORDER BY created_at DESC LIMIT 1`,
     ).get(userId, today) as AppleHealthJsonRow | undefined;
 
     // Read RHR (today)
     const rhrRow = db.prepare(
-      `SELECT ${healthJsonColumns} FROM apple_health_data WHERE user_id = ? AND data_type IN ('resting_heart_rate', 'resting_hr') AND date = ? ORDER BY created_at DESC LIMIT 1`,
+      `SELECT ${healthJsonSourceColumns} FROM apple_health_data WHERE user_id = ? AND data_type IN ('resting_heart_rate', 'resting_hr') AND date = ? ORDER BY created_at DESC LIMIT 1`,
     ).get(userId, today) as AppleHealthJsonRow | undefined;
 
     // Read RHR baseline (7-day average)
     const rhrHistory = db.prepare(
-      `SELECT ${healthJsonColumns} FROM apple_health_data WHERE user_id = ? AND data_type IN ('resting_heart_rate', 'resting_hr') AND date > ? ORDER BY date DESC LIMIT 7`,
+      `SELECT ${healthJsonSourceColumns} FROM apple_health_data WHERE user_id = ? AND data_type IN ('resting_heart_rate', 'resting_hr') AND date > ? ORDER BY date DESC LIMIT 7`,
     ).all(userId, subtractDays(today, 8)) as AppleHealthJsonRow[];
 
     // Read workouts for ACWR (28 days)
     const workoutRows = db.prepare(
-      `SELECT ${healthJsonColumns} FROM apple_health_data WHERE user_id = ? AND data_type = 'workout' AND date > ? ORDER BY date ASC`,
+      `SELECT ${healthJsonSourceColumns} FROM apple_health_data WHERE user_id = ? AND data_type = 'workout' AND date > ? ORDER BY date ASC`,
     ).all(userId, subtractDays(today, 29)) as AppleHealthJsonRow[];
 
     const summaryRow = db.prepare(
-      `SELECT ${healthJsonColumns} FROM apple_health_data WHERE user_id = ? AND data_type = 'daily_summary' AND date = ? ORDER BY created_at DESC LIMIT 1`,
+      `SELECT ${healthJsonSourceColumns} FROM apple_health_data WHERE user_id = ? AND data_type = 'daily_summary' AND date = ? ORDER BY created_at DESC LIMIT 1`,
     ).get(userId, today) as AppleHealthJsonRow | undefined;
     const caloriesRow = db.prepare(
-      `SELECT ${healthJsonColumns} FROM apple_health_data WHERE user_id = ? AND data_type = 'calories' AND date = ? ORDER BY created_at DESC LIMIT 1`,
+      `SELECT ${healthJsonSourceColumns} FROM apple_health_data WHERE user_id = ? AND data_type = 'calories' AND date = ? ORDER BY created_at DESC LIMIT 1`,
     ).get(userId, today) as AppleHealthJsonRow | undefined;
     const stepsRow = db.prepare(
-      `SELECT ${healthJsonColumns} FROM apple_health_data WHERE user_id = ? AND data_type = 'steps' AND date = ? ORDER BY created_at DESC LIMIT 1`,
+      `SELECT ${healthJsonSourceColumns} FROM apple_health_data WHERE user_id = ? AND data_type = 'steps' AND date = ? ORDER BY created_at DESC LIMIT 1`,
     ).get(userId, today) as AppleHealthJsonRow | undefined;
     const exerciseRow = db.prepare(
-      `SELECT ${healthJsonColumns} FROM apple_health_data WHERE user_id = ? AND data_type = 'exercise_minutes' AND date = ? ORDER BY created_at DESC LIMIT 1`,
+      `SELECT ${healthJsonSourceColumns} FROM apple_health_data WHERE user_id = ? AND data_type = 'exercise_minutes' AND date = ? ORDER BY created_at DESC LIMIT 1`,
     ).get(userId, today) as AppleHealthJsonRow | undefined;
 
     // If Apple Health has any useful signal, still provide the energy-reserve
@@ -632,11 +862,14 @@ async function calculateAppleHealthReadiness(
     const calories = caloriesRow ? parseAppleHealthDataJson(caloriesRow, userId) : null;
     const steps = stepsRow ? parseAppleHealthDataJson(stepsRow, userId) : null;
     const exercise = exerciseRow ? parseAppleHealthDataJson(exerciseRow, userId) : null;
+    const activeCalories = summary?.activeCalories ?? calories?.kcal ?? null;
+    const exerciseMinutes = summary?.exerciseMinutes ?? exercise?.minutes ?? null;
+    const stepCount = summary?.steps ?? steps?.count ?? null;
     const currentEnergyReserve = deriveIntradayEnergyReserve({
       morningPeak: derivedBB,
-      activeCalories: summary?.activeCalories ?? calories?.kcal ?? null,
-      exerciseMinutes: summary?.exerciseMinutes ?? exercise?.minutes ?? null,
-      steps: summary?.steps ?? steps?.count ?? null,
+      activeCalories,
+      exerciseMinutes,
+      steps: stepCount,
     }) ?? derivedBB;
     const bbScore = scoreBodyBattery(currentEnergyReserve);
 
@@ -678,7 +911,46 @@ async function calculateAppleHealthReadiness(
     // Fraction of the scoring model backed by real readings, so a client can
     // show a degraded state rather than presenting a one-pillar score as
     // equivalent to a complete one.
-    const coverage = Math.round(measuredWeight * 100) / 100;
+    const freshness = coverageAwareReadinessTimestamps([
+      {
+        weight: 0.30,
+        contributes: hasMeasuredHrv,
+        providerBacked: hasMeasuredHrv,
+        timestampPayload: hrvRow?.created_at,
+      },
+      {
+        weight: 0.30,
+        contributes: totalSleepMin > 0,
+        providerBacked: totalSleepMin > 0,
+        timestampPayload: sleepRow?.created_at,
+      },
+      {
+        weight: 0.20,
+        contributes: totalSleepMin > 0 || todayRhr != null,
+        providerBacked: totalSleepMin > 0 || todayRhr != null,
+        timestampPayload: [
+          totalSleepMin > 0 ? { created_at: sleepRow?.created_at } : null,
+          hasMeasuredHrv ? { created_at: hrvRow?.created_at } : null,
+          todayRhr != null ? { created_at: rhrRow?.created_at } : null,
+          activeCalories != null
+            ? { created_at: summary?.activeCalories != null ? summaryRow?.created_at : caloriesRow?.created_at }
+            : null,
+          exerciseMinutes != null
+            ? { created_at: summary?.exerciseMinutes != null ? summaryRow?.created_at : exerciseRow?.created_at }
+            : null,
+          stepCount != null
+            ? { created_at: summary?.steps != null ? summaryRow?.created_at : stepsRow?.created_at }
+            : null,
+        ],
+      },
+      {
+        weight: 0.20,
+        contributes: activities.length > 0,
+        providerBacked: hasProviderBackedTrainingLoad(activities),
+        timestampPayload: workoutRows,
+      },
+    ]);
+    const coverage = freshness.coverage;
 
     const factors: ReadinessFactors = {
       hrv: { todayMs: todayHrv, sevenDayAvgMs: weeklyHrv, trend: hrvTrend, score: hrvScoreVal },
@@ -729,8 +1001,7 @@ async function calculateAppleHealthReadiness(
       recommendation,
       reasoning,
       source: 'apple_health',
-      coverage,
-      asOf: new Date().toISOString(),
+      ...freshness,
     };
   } catch (err) {
     logger.warn({ err, userId }, 'Apple Health readiness calculation failed');
@@ -747,10 +1018,9 @@ async function calculateAppleHealthReadiness(
 // rate-limit sensitive, so results are reused for 30 minutes unless the
 // caller forces a refresh.
 const READINESS_MEMO_TTL_MS = 30 * 60 * 1000;
-const readinessMemo = new Map<string, { at: number; result: ReadinessResult }>();
 
 export function _resetReadinessMemoForTests(): void {
-  readinessMemo.clear();
+  clearReadinessMemoForTests();
 }
 
 export async function calculateReadiness(
@@ -758,16 +1028,15 @@ export async function calculateReadiness(
   opts: { tenantId?: number; garminSilent?: boolean; forceRefresh?: boolean } = {},
 ): Promise<ReadinessResult> {
   const tenantId = opts.tenantId ?? resolveCurrentTenantIdForUser(userId);
-  const memoKey = `${tenantId}:${userId}`;
   // Memo is inert under vitest (same pattern as chat-action-retry-policy):
   // tests assert distinct results per scenario for the same userId.
   const memoDisabled = process.env.NODE_ENV === 'test' || process.env.VITEST === 'true';
-  const memoized = readinessMemo.get(memoKey);
+  const memoized = getReadinessMemo<ReadinessResult>(tenantId, userId);
   if (!memoDisabled && !opts.forceRefresh && memoized && Date.now() - memoized.at < READINESS_MEMO_TTL_MS) {
     return memoized.result;
   }
   const result = await calculateReadinessUncached(userId, { ...opts, tenantId });
-  if (!memoDisabled) readinessMemo.set(memoKey, { at: Date.now(), result });
+  if (!memoDisabled) setReadinessMemo(tenantId, userId, result);
   return result;
 }
 
@@ -832,7 +1101,7 @@ async function calculateReadinessUncached(
       reasoning: 'No wearable connected — using conservative default readiness. Connect Garmin or Apple Health for personalized adjustments.',
       reasonCode: 'WEARABLE_INTEGRATION_MISSING',
       source: 'estimated',
-      asOf: new Date().toISOString(),
+      ...readinessTimestamps(null),
     };
   }
 
@@ -902,6 +1171,35 @@ async function calculateReadinessUncached(
   const { acuteLoad, chronicLoad, acwr } = computeAcwr(activities);
   const loadScore = scoreAcwr(acwr);
 
+  const freshness = coverageAwareReadinessTimestamps([
+    {
+      weight: 0.30,
+      contributes: true,
+      providerBacked: Number.isFinite(todayHrv) && todayHrv > 0,
+      timestampPayload: hrvRaw,
+    },
+    {
+      weight: 0.30,
+      contributes: true,
+      providerBacked: sleepDuration > 0 || (garminSleepQuality != null && garminSleepQuality > 0),
+      timestampPayload: sleepRaw,
+    },
+    {
+      weight: 0.20,
+      contributes: true,
+      providerBacked: bbCurrent > 0,
+      timestampPayload: usedAppleHealthBodyBatteryFallback
+        ? appleHealthBodyBatteryFallback?.dataAsOf
+        : [bbRaw, summaryRaw],
+    },
+    {
+      weight: 0.20,
+      contributes: true,
+      providerBacked: hasProviderBackedTrainingLoad(activities),
+      timestampPayload: activities,
+    },
+  ]);
+
   // ── Composite Score ──
   const compositeScore = clamp(Math.round(
     hrvScore * 0.30 +
@@ -958,7 +1256,14 @@ async function calculateReadinessUncached(
     logger.warn({ err, userId }, 'training-signals publish failed after calculateReadiness');
   }
 
-  return { score: compositeScore, factors, recommendation, reasoning, source: 'garmin', asOf: new Date().toISOString() };
+  return {
+    score: compositeScore,
+    factors,
+    recommendation,
+    reasoning,
+    source: 'garmin',
+    ...freshness,
+  };
 }
 
 // ── Persistence ─────────────────────────────────────────────────────

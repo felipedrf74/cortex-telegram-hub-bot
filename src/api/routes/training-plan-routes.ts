@@ -1,16 +1,25 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-import { Router, Response } from 'express';
+import { Router, type Request, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
-import { fingerprintTrainingPlanClarificationAnswers } from '../../services/training-plan-clarification-registry';
+import {
+  fingerprintTrainingPlanClarificationAnswers,
+  fingerprintTrainingPlanGenerationProfileContext,
+} from '../../services/training-plan-clarification-registry';
 import { invalidateCalendarCaches } from '../../services/cache-coherence-registry';
 import { sendSuccess, sendError, sendInternalError } from '../response-helpers';
 import { cancelTrainingPlanForUser } from './training-plan-cancellation';
 import {
   TRAINING_PLAN_GENERATOR_POLICY_VERSION,
   generateTrainingPlanForUser,
+  type TrainingPlanGenerationResult,
 } from './training-plan-generation';
+import {
+  buildTrainingPlanGenerationResponseDiscriminator,
+  resolveTrainingPlanGenerationHttpContract,
+  type TrainingPlanGenerationRouteSurface,
+} from './training-plan-generation-response-contract';
 import {
   confirmTrainingSessionReflow,
   previewTrainingSessionReflow,
@@ -21,21 +30,29 @@ import {
   isTrainingPlanGenerationEnabled,
   trainingOperationDisabledMessage,
 } from '../../services/training-operational-switches';
-import { isTrainingOperationLockError } from '../../services/training-operation-locks';
+import { trainingOperationLockPublicError } from '../../services/training-operation-locks';
 import { validateRequestedTrainingCalendarSource } from '../../services/training-calendar-source';
-import { isPastIsoDate, isStrictIsoDate } from '../../services/training-date-utils';
+import { isFutureIsoDate, isStrictIsoDate } from '../../services/training-date-utils';
 import * as trainingPlans from '../../services/training-plans';
 import {
   claimTrainingPlanGenerationIdempotency,
-  clearTrainingPlanGenerationIdempotency,
   completeTrainingPlanGenerationIdempotency,
   failTrainingPlanGenerationIdempotency,
   fingerprintTrainingPlanGenerationRequest,
-  normalizeTrainingPlanGenerationIdempotencyKey,
+  getTrainingPlanGenerationAttemptStatus,
+  normalizeTrainingPlanGenerationAttemptLookupKey,
+  startTrainingPlanGenerationIdempotencyHeartbeat,
+  TrainingPlanGenerationLeaseLostError,
 } from '../../services/training-plan-generation-idempotency';
 import { assertLegacyPlanGenerationAllowed } from '../../services/training-plan-revision-legacy-guard';
 import { TrainingPlanRevisionError } from '../../services/training-plan-revision-errors';
 import { runTrainingPlanRevisionShadowForLegacyRequest } from '../../services/training-plan-revision-shadow';
+import { getUserTimezoneById } from '../../services/user-service';
+import {
+  TrainingPlanPreviewStaleError,
+  validateTrainingPlanPreviewToken,
+  type TrainingPlanPreviewTokenValidation,
+} from '../../services/training-plan-preview-token';
 
 type TrainingScreenCacheInvalidator = (userId: number) => void;
 
@@ -103,7 +120,10 @@ export function registerTrainingPlanRoutes(
       return;
     }
 
-    const raceDateValidation = validateRaceDateInput(raceDate);
+    // Resolve once from the authenticated user. Request-body timezone is
+    // intentionally ignored so schedule truth cannot be spoofed per request.
+    const schedulingTimezone = getUserTimezoneById(userId);
+    const raceDateValidation = validateRaceDateInput(raceDate, schedulingTimezone);
     if (!raceDateValidation.ok) {
       sendError(res, raceDateValidation.code, raceDateValidation.message, 400, { field: 'raceDate' });
       return;
@@ -121,6 +141,28 @@ export function registerTrainingPlanRoutes(
     }
 
     try {
+      const previewContextFingerprint = fingerprintTrainingPlanRouteContext({
+        userId,
+        objective,
+        durationWeeks,
+        preferredTime,
+        preferredCardioTime,
+        preferredStrengthTime,
+        sessionsPerWeek,
+        runSessionsPerWeek,
+        bikeSessionsPerWeek,
+        swimSessionsPerWeek,
+        strengthSessionsPerWeek,
+        startPolicy,
+        longWorkoutDay,
+        notes,
+        goalMode,
+        trainingPriority,
+        raceDate,
+        twoADayPreference: normalizedTwoADayPreference,
+        calendarSource: calendarSourceValidation.source,
+        schedulingTimezone,
+      });
       const result = await generateTrainingPlanForUser({
         userId,
         tenantId,
@@ -149,25 +191,58 @@ export function registerTrainingPlanRoutes(
         // through; `resolveMaxSessionsPerDay` has a matching branch.
         twoADayPreference: normalizedTwoADayPreference,
         calendarSource: calendarSourceValidation.source,
+        schedulingTimezone,
+        previewContextFingerprint,
         previewOnly: true,
       });
 
-      if (result.status === 'needs_profile') {
-        sendSuccess(res, result.data);
-        return;
-      }
-      if (result.status === 'preview') {
-        sendSuccess(res, result.data);
-        return;
-      }
-      if (result.status === 'needs_clarification') {
-        sendSuccess(res, result.data);
-        return;
-      }
-      sendInternalError(res, 'Failed to preview training plan');
+      sendTrainingPlanGenerationContractResponse(res, 'preview', result);
     } catch (err: any) {
       logger.error({ err, userId }, 'Training plan preview failed');
       sendError(res, 'INTERNAL', 'Failed to preview training plan. Please try again.', 500);
+    }
+  });
+
+  /**
+   * POST /api/v1/training/plan/generation-attempt/status
+   *
+   * Read-only reconciliation for a compatibility-plan create whose HTTP
+   * outcome was not observed by the client. POST keeps the bounded
+   * idempotency key out of URL/query logs. The service deliberately exposes
+   * no request hash, lease owner, fencing token, failure code, or timestamp.
+   */
+  router.post('/plan/generation-attempt/status', (req, res: Response) => {
+    const { userId, tenantId } = req as AuthenticatedRequest;
+    const idempotencyKey = normalizeTrainingPlanGenerationAttemptLookupKey(
+      req.body?.idempotencyKey,
+    );
+    if (!idempotencyKey) {
+      sendError(
+        res,
+        'VALIDATION',
+        'idempotencyKey must be a non-empty string of at most 160 characters.',
+        400,
+        { field: 'idempotencyKey' },
+      );
+      return;
+    }
+
+    try {
+      sendSuccess(
+        res,
+        getTrainingPlanGenerationAttemptStatus(userId, tenantId, idempotencyKey),
+      );
+    } catch (err) {
+      logger.error(
+        { err, userId, tenantId },
+        'Training plan generation attempt status failed',
+      );
+      sendError(
+        res,
+        'TRAINING_PLAN_GENERATION_STATUS_UNAVAILABLE',
+        'Plan creation status is temporarily unavailable. Retry the same attempt.',
+        503,
+      );
     }
   });
 
@@ -243,7 +318,10 @@ export function registerTrainingPlanRoutes(
       return;
     }
 
-    const raceDateValidation = validateRaceDateInput(raceDate);
+    // Resolve once from the authenticated user. This trusted value is used
+    // for validation, idempotency, generation, and immutable persistence.
+    const schedulingTimezone = getUserTimezoneById(userId);
+    const raceDateValidation = validateRaceDateInput(raceDate, schedulingTimezone);
     if (!raceDateValidation.ok) {
       sendError(res, raceDateValidation.code, raceDateValidation.message, 400, { field: 'raceDate' });
       return;
@@ -260,7 +338,8 @@ export function registerTrainingPlanRoutes(
       return;
     }
 
-    const generationRequest = {
+    const requestHash = fingerprintTrainingPlanRouteContext({
+      userId,
       objective,
       durationWeeks,
       preferredTime,
@@ -279,22 +358,71 @@ export function registerTrainingPlanRoutes(
       raceDate,
       twoADayPreference: normalizedTwoADayPreference,
       calendarSource: calendarSourceValidation.source,
-      generatorPolicyVersion: TRAINING_PLAN_GENERATOR_POLICY_VERSION,
-      // Phase 2 (F2): clarification answers live in profiles, not the body.
-      // Without this fingerprint, answering a clarification and retrying the
-      // identical request inside the 90s auto-dedupe window would replay the
-      // stale pre-answer plan instead of honoring the answer.
-      clarificationAnswersFingerprint: fingerprintTrainingPlanClarificationAnswers(userId),
-    };
-    const requestHash = fingerprintTrainingPlanGenerationRequest(generationRequest);
-    const explicitIdempotencyKey = normalizeTrainingPlanGenerationIdempotencyKey(
-      req.body?.idempotencyKey
-        ?? req.header('x-idempotency-key')
-        ?? req.header('idempotency-key'),
+      schedulingTimezone,
+    });
+
+    let expectedPreviewCandidateFingerprint: string | undefined;
+    let validatedPreviewToken = false;
+    const previewTokenWasSupplied = req.body != null
+      && typeof req.body === 'object'
+      && Object.prototype.hasOwnProperty.call(req.body, 'previewToken');
+    if (previewTokenWasSupplied) {
+      let previewValidation: TrainingPlanPreviewTokenValidation;
+      try {
+        previewValidation = typeof req.body.previewToken === 'string'
+          ? validateTrainingPlanPreviewToken(req.body.previewToken, { userId, tenantId })
+          : { ok: false, code: 'invalid_token' };
+      } catch (err) {
+        logger.error(
+          { err, userId, tenantId },
+          'Training plan preview token validation unavailable',
+        );
+        sendError(
+          res,
+          'TRAINING_PLAN_PREVIEW_VALIDATION_UNAVAILABLE',
+          'Preview validation is temporarily unavailable. Please preview the plan again.',
+          503,
+          { requiresPreview: true },
+        );
+        return;
+      }
+
+      if (!previewValidation.ok) {
+        sendTrainingPlanPreviewStale(res, previewValidation.code);
+        return;
+      }
+      if (previewValidation.payload.contextFingerprint !== requestHash) {
+        sendTrainingPlanPreviewStale(res, 'context_changed');
+        return;
+      }
+      validatedPreviewToken = true;
+      expectedPreviewCandidateFingerprint = previewValidation.payload.candidateFingerprint;
+    }
+
+    const explicitIdempotencyKey = readExplicitTrainingPlanGenerationIdempotencyKey(req);
+    if (explicitIdempotencyKey.provided && !explicitIdempotencyKey.key) {
+      sendError(
+        res,
+        'VALIDATION',
+        'idempotencyKey must be a non-empty string of at most 160 characters.',
+        400,
+        { field: 'idempotencyKey' },
+      );
+      return;
+    }
+    const idempotencyKey = explicitIdempotencyKey.provided
+      ? explicitIdempotencyKey.key!
+      : buildAutomaticTrainingPlanGenerationIdempotencyKey(requestHash);
+    const idempotencyClaim = claimTrainingPlanGenerationIdempotency(
+      userId,
+      tenantId,
+      idempotencyKey,
+      requestHash,
+      {
+        allowExpiredFencedRequestHashRebind: validatedPreviewToken
+          && explicitIdempotencyKey.provided,
+      },
     );
-    const idempotencyKey = explicitIdempotencyKey
-      ?? buildAutomaticTrainingPlanGenerationIdempotencyKey(requestHash);
-    let idempotencyClaim = claimTrainingPlanGenerationIdempotency(userId, tenantId, idempotencyKey, requestHash);
     if (idempotencyClaim.kind === 'replay') {
       const replayAssessment = assessTrainingPlanGenerationReplay({
         userId,
@@ -306,40 +434,52 @@ export function registerTrainingPlanRoutes(
           invalidateCalendarCaches(userId);
           invalidateTrainingScreenCaches(userId);
         }
-        sendSuccess(res, idempotencyClaim.responseData, { status: idempotencyClaim.statusCode });
+        // Older completed rows predate F27. Replays are still upgraded
+        // additively at the boundary so every public creation response exposes
+        // the same versioned discriminator.
+        sendSuccess(res, {
+          ...idempotencyClaim.responseData,
+          ...buildTrainingPlanGenerationResponseDiscriminator('created'),
+        }, { status: idempotencyClaim.statusCode });
         return;
       }
 
-      const clearedRows = clearTrainingPlanGenerationIdempotency(
-        userId,
-        tenantId,
-        idempotencyKey,
-        requestHash,
-      );
       logger.warn(
         {
           userId,
           idempotencyKey,
           reason: replayAssessment.reason,
           planId: replayAssessment.planId ?? null,
-          clearedRows,
         },
-        'Training plan idempotency replay discarded because active plan proof failed',
+        'Training plan idempotency replay retained because active plan proof failed',
       );
 
-      idempotencyClaim = claimTrainingPlanGenerationIdempotency(userId, tenantId, idempotencyKey, requestHash);
-    }
-    if (idempotencyClaim.kind === 'replay') {
-      logger.warn(
-        { userId, idempotencyKey },
-        'Training plan idempotency replay claim reappeared after discard; returning in-progress instead of generating with a stale claim',
-      );
+      if (replayAssessment.reason === 'plan_lookup_failed') {
+        sendError(
+          res,
+          'TRAINING_PLAN_GENERATION_STATUS_UNAVAILABLE',
+          'Plan creation status is temporarily unavailable. Retry the same attempt.',
+          503,
+        );
+        return;
+      }
+
+      const inactivePlan = replayAssessment.reason === 'plan_not_active'
+        || replayAssessment.reason === 'plan_superseded';
       sendError(
         res,
-        'TRAINING_PLAN_GENERATION_IN_PROGRESS',
-        'This plan creation is being reconciled. Please wait for the current result instead of creating another plan.',
+        inactivePlan
+          ? 'TRAINING_PLAN_GENERATION_ALREADY_COMPLETED'
+          : 'TRAINING_PLAN_GENERATION_RECONCILIATION_REQUIRED',
+        inactivePlan
+          ? 'This plan creation already completed, but that plan is no longer active. Refresh your active plan before starting another.'
+          : 'This plan creation already completed, but its persisted plan cannot be safely confirmed. Reconcile the existing attempt before creating another plan.',
         409,
-        { idempotencyKey: idempotencyClaim.idempotencyKey },
+        {
+          idempotencyKey: idempotencyClaim.idempotencyKey,
+          ...(replayAssessment.planId != null ? { planId: replayAssessment.planId } : {}),
+          ...(inactivePlan ? { requiresActivePlanRefresh: true } : {}),
+        },
       );
       return;
     }
@@ -348,6 +488,16 @@ export function registerTrainingPlanRoutes(
         res,
         'TRAINING_PLAN_GENERATION_IN_PROGRESS',
         'This plan creation is already in progress. Please wait for the current result instead of creating another plan.',
+        409,
+        { idempotencyKey: idempotencyClaim.idempotencyKey },
+      );
+      return;
+    }
+    if (idempotencyClaim.kind === 'reconciliation_required') {
+      sendError(
+        res,
+        'TRAINING_PLAN_GENERATION_RECONCILIATION_REQUIRED',
+        'This plan creation already completed, but its stored result cannot be safely read. Reconcile the existing attempt before creating another plan.',
         409,
         { idempotencyKey: idempotencyClaim.idempotencyKey },
       );
@@ -363,6 +513,26 @@ export function registerTrainingPlanRoutes(
       );
       return;
     }
+    if (idempotencyClaim.kind !== 'claimed') {
+      sendError(res, 'INTERNAL', 'Failed to acquire plan generation ownership.', 500);
+      return;
+    }
+    const generationLease = idempotencyClaim;
+    const heartbeat = startTrainingPlanGenerationIdempotencyHeartbeat(
+      userId,
+      tenantId,
+      generationLease,
+    );
+    const failOwnedAttempt = (
+      code: string,
+      failureClass: 'retryable' | 'terminal' = 'retryable',
+    ) => failTrainingPlanGenerationIdempotency(
+      userId,
+      tenantId,
+      generationLease,
+      code,
+      failureClass,
+    );
 
     // Plan generation is deterministic and token-zero. If a future model
     // explanation is added, that specific call must own its own classified
@@ -396,11 +566,14 @@ export function registerTrainingPlanRoutes(
         // through; `resolveMaxSessionsPerDay` has a matching branch.
         twoADayPreference: normalizedTwoADayPreference,
         calendarSource: calendarSourceValidation.source,
+        schedulingTimezone,
+        expectedPreviewCandidateFingerprint,
+        generationIdempotencyLease: generationLease,
       });
 
       if (result.status === 'needs_profile') {
-        failTrainingPlanGenerationIdempotency(userId, tenantId, idempotencyKey, requestHash);
-        sendSuccess(res, result.data);
+        failOwnedAttempt('TRAINING_PLAN_NEEDS_PROFILE');
+        sendTrainingPlanGenerationContractResponse(res, 'generate', result);
         return;
       }
 
@@ -412,8 +585,8 @@ export function registerTrainingPlanRoutes(
           },
           'Training plan generation needs clarification before persistence',
         );
-        failTrainingPlanGenerationIdempotency(userId, tenantId, idempotencyKey, requestHash);
-        sendSuccess(res, result.data);
+        failOwnedAttempt('TRAINING_PLAN_NEEDS_CLARIFICATION');
+        sendTrainingPlanGenerationContractResponse(res, 'generate', result);
         return;
       }
 
@@ -426,17 +599,8 @@ export function registerTrainingPlanRoutes(
           { userId, reason: result.data.reason, activePlansRemaining: result.data.activePlansRemaining },
           'Training plan generation aborted by cancellation saga',
         );
-        sendError(
-          res,
-          'CANCELLATION_FAILED',
-          result.data.message,
-          409,
-          {
-            reason: result.data.reason,
-            activePlansRemaining: result.data.activePlansRemaining,
-          },
-        );
-        failTrainingPlanGenerationIdempotency(userId, tenantId, idempotencyKey, requestHash);
+        sendTrainingPlanGenerationContractResponse(res, 'generate', result);
+        failOwnedAttempt('TRAINING_PLAN_REPLACEMENT_FAILED');
         return;
       }
 
@@ -449,15 +613,17 @@ export function registerTrainingPlanRoutes(
           },
           'Training plan generation blocked by strict quality gate',
         );
-        failTrainingPlanGenerationIdempotency(userId, tenantId, idempotencyKey, requestHash);
-        sendSuccess(res, result.data);
+        failOwnedAttempt('TRAINING_PLAN_QUALITY_BLOCKED');
+        sendTrainingPlanGenerationContractResponse(res, 'generate', result);
         return;
       }
 
       if (result.status === 'preview') {
         logger.warn({ userId }, 'Training plan generate route returned preview unexpectedly');
-        failTrainingPlanGenerationIdempotency(userId, tenantId, idempotencyKey, requestHash);
-        sendError(res, 'INVALID_PLAN_GENERATION_STATE', 'Plan preview must be confirmed before creation.', 409);
+        // The request may become valid after a fresh preview/confirmation;
+        // do not permanently poison this deterministic key as terminal.
+        failOwnedAttempt('INVALID_PLAN_GENERATION_STATE');
+        sendTrainingPlanGenerationContractResponse(res, 'generate', result);
         return;
       }
 
@@ -475,28 +641,45 @@ export function registerTrainingPlanRoutes(
       invalidateCalendarCaches(userId);
       invalidateTrainingScreenCaches(userId);
 
-      completeTrainingPlanGenerationIdempotency(userId, tenantId, idempotencyKey, requestHash, result.data, 201);
-      sendSuccess(res, result.data, { status: 201 });
+      if (!completeTrainingPlanGenerationIdempotency(userId, tenantId, generationLease, result.data, 201)) {
+        throw new TrainingPlanGenerationLeaseLostError();
+      }
+      sendTrainingPlanGenerationContractResponse(res, 'generate', result);
 
     } catch (err: any) {
-      failTrainingPlanGenerationIdempotency(userId, tenantId, idempotencyKey, requestHash);
-      // F35 (Phase 1A-5): lock contention is a known, retryable state — not an
-      // internal error. Previously it fell through to a generic 500 after a
-      // 30s hang, so the client could not tell "someone else is mid-operation,
-      // retry shortly" from "the server is broken".
-      if (isTrainingOperationLockError(err)) {
-        logger.warn(
-          { userId, operation: err.operation },
-          'Training plan generation contended on the training operation lock',
-        );
-        sendError(res, err.code, 'Another training operation is in progress. Please try again shortly.', err.status, {
-          operation: err.operation,
-          retryAfterSeconds: err.retryAfterSeconds,
-        });
+      const ownedFailureCode = err instanceof TrainingPlanGenerationLeaseLostError
+        ? err.code
+        : err instanceof TrainingPlanPreviewStaleError
+          ? err.code
+          : 'TRAINING_PLAN_GENERATION_FAILED';
+      failOwnedAttempt(ownedFailureCode);
+      if (err instanceof TrainingPlanPreviewStaleError) {
+        sendTrainingPlanPreviewStale(res, err.reason);
         return;
       }
+      if (err instanceof TrainingPlanGenerationLeaseLostError) {
+        sendError(
+          res,
+          err.code,
+          'This plan attempt lost ownership and was not allowed to activate. Please retry.',
+          409,
+        );
+        return;
+      }
+      if (err?.code === 'TRAINING_PLAN_REPLACEMENT_CONFLICT') {
+        sendError(
+          res,
+          err.code,
+          'Your active Training plan changed while this replacement was being built. Refresh and try again.',
+          409,
+        );
+        return;
+      }
+      if (sendTrainingOperationLockRouteError(res, err)) return;
       logger.error({ err, userId }, 'Training plan generation failed');
       sendError(res, 'INTERNAL', 'Failed to generate training plan. Please try again.', 500);
+    } finally {
+      heartbeat.stop();
     }
   });
 
@@ -552,8 +735,9 @@ export function registerTrainingPlanRoutes(
       // when counts stay at zero so the button never appears to no-op.
       invalidateCalendarCaches(userId);
       invalidateTrainingScreenCaches(userId);
-      sendSuccess(res, result.data);
+      sendSuccess(res, result.data, { status: result.status === 'partial_failure' ? 202 : 200 });
     } catch (err: any) {
+      if (sendTrainingOperationLockRouteError(res, err)) return;
       if (sendLegacyRevisionGuardError(res, err)) return;
       logger.error({ err, userId }, 'Training plan calendar sync failed');
       sendInternalError(res, 'Failed to sync training plan to calendar');
@@ -655,6 +839,7 @@ export function registerTrainingPlanRoutes(
       invalidateTrainingScreenCaches(userId);
       sendSuccess(res, result.data, { status: result.status === 'partial_failure' ? 202 : 200 });
     } catch (err: any) {
+      if (sendTrainingOperationLockRouteError(res, err)) return;
       if (sendLegacyRevisionGuardError(res, err)) return;
       logger.error({ err, userId, sessionId }, 'Training session reflow confirm failed');
       sendInternalError(res, 'Failed to confirm training session reflow');
@@ -678,11 +863,110 @@ export function registerTrainingPlanRoutes(
       invalidateTrainingScreenCaches(userId);
       sendSuccess(res, result.data);
     } catch (err: any) {
+      if (sendTrainingOperationLockRouteError(res, err)) return;
       if (sendLegacyRevisionGuardError(res, err)) return;
       logger.error({ err, userId }, 'Training plan cancellation failed');
       sendInternalError(res, 'Failed to cancel training plan');
     }
   });
+}
+
+function sendTrainingPlanGenerationContractResponse(
+  res: Response,
+  surface: TrainingPlanGenerationRouteSurface,
+  result: TrainingPlanGenerationResult,
+): void {
+  const validationErrorCode = result.status === 'needs_profile'
+    ? readTrainingPlanGenerationValidationErrorCode(result.data)
+    : undefined;
+  const contract = resolveTrainingPlanGenerationHttpContract({
+    surface,
+    outcome: result.status,
+    validationErrorCode,
+  });
+
+  if (contract.envelope === 'success') {
+    sendSuccess(res, result.data, { status: contract.status });
+    return;
+  }
+
+  sendError(
+    res,
+    contract.errorCode,
+    trainingPlanGenerationErrorMessage(surface, result),
+    contract.status,
+    trainingPlanGenerationErrorDetails(result),
+  );
+}
+
+function readTrainingPlanGenerationValidationErrorCode(data: Record<string, unknown>): string | undefined {
+  const validationError = data.validationError;
+  if (!validationError || typeof validationError !== 'object') return undefined;
+  const code = (validationError as { code?: unknown }).code;
+  return typeof code === 'string' && code.trim() ? code.trim() : undefined;
+}
+
+function trainingPlanGenerationErrorMessage(
+  surface: TrainingPlanGenerationRouteSurface,
+  result: TrainingPlanGenerationResult,
+): string {
+  const message = (result.data as Record<string, unknown>).message;
+  if (typeof message === 'string' && message.trim()) return message;
+  if (result.status === 'preview') return 'Plan preview must be confirmed before creation.';
+  if (result.status === 'created' && surface === 'preview') {
+    return 'Plan preview unexpectedly attempted to create a plan. Please retry the preview.';
+  }
+  return 'Training plan generation could not complete for the supplied request.';
+}
+
+function trainingPlanGenerationErrorDetails(
+  result: TrainingPlanGenerationResult,
+): Record<string, unknown> {
+  const discriminator = {
+    schemaVersion: result.data.schemaVersion,
+    status: result.data.status,
+  };
+
+  if (result.status === 'needs_profile') {
+    return {
+      ...discriminator,
+      needsProfile: result.data.needsProfile,
+      missingFields: result.data.missingFields,
+      validationError: result.data.validationError,
+    };
+  }
+  if (result.status === 'plan_quality_blocked' || result.status === 'cancellation_failed') {
+    const { message: _message, ...details } = result.data;
+    return details;
+  }
+  return discriminator;
+}
+
+function sendTrainingOperationLockRouteError(res: Response, error: unknown): boolean {
+  const publicError = trainingOperationLockPublicError(error);
+  if (!publicError) return false;
+  logger.warn(
+    { code: publicError.code, operation: publicError.operation },
+    'Training operation deferred by the shared resource lock',
+  );
+  sendError(
+    res,
+    publicError.code,
+    publicError.message,
+    publicError.status,
+    publicError.details,
+  );
+  return true;
+}
+
+function sendTrainingPlanPreviewStale(res: Response, reason: string): void {
+  sendError(
+    res,
+    'TRAINING_PLAN_PREVIEW_STALE',
+    'The Training plan inputs or candidate changed after preview. Preview the plan again before creating it.',
+    409,
+    { requiresPreview: true, reason },
+  );
 }
 
 function allowLegacyGenerationRoute(
@@ -708,9 +992,83 @@ function buildAutomaticTrainingPlanGenerationIdempotencyKey(requestHash: string)
   return `auto:${requestHash.slice(0, 48)}`;
 }
 
+interface TrainingPlanRouteContextInput {
+  userId: number;
+  objective: string;
+  durationWeeks: unknown;
+  preferredTime: unknown;
+  preferredCardioTime: unknown;
+  preferredStrengthTime: unknown;
+  sessionsPerWeek: unknown;
+  runSessionsPerWeek: unknown;
+  bikeSessionsPerWeek: unknown;
+  swimSessionsPerWeek: unknown;
+  strengthSessionsPerWeek: unknown;
+  startPolicy: unknown;
+  longWorkoutDay: unknown;
+  notes: unknown;
+  goalMode: unknown;
+  trainingPriority: unknown;
+  raceDate: unknown;
+  twoADayPreference: unknown;
+  calendarSource: unknown;
+  schedulingTimezone: string;
+}
+
+/**
+ * Preview and create call this exact builder after the same public-field
+ * defaults/normalizers and trusted timezone resolution. Keeping one builder
+ * prevents a field from participating in idempotency while silently escaping
+ * signed preview acceptance (or vice versa).
+ */
+function fingerprintTrainingPlanRouteContext(input: TrainingPlanRouteContextInput): string {
+  const { userId, ...normalizedPublicFields } = input;
+  return fingerprintTrainingPlanGenerationRequest({
+    ...normalizedPublicFields,
+    generatorPolicyVersion: TRAINING_PLAN_GENERATOR_POLICY_VERSION,
+    profileContextFingerprint: fingerprintTrainingPlanGenerationProfileContext(userId),
+    // Phase 2 clarification answers remain an explicit, narrow component so
+    // their legacy dedupe contract stays visible alongside the full profile
+    // context fingerprint used for signed preview acceptance.
+    clarificationAnswersFingerprint: fingerprintTrainingPlanClarificationAnswers(userId),
+  });
+}
+
 type TrainingPlanGenerationReplayAssessment =
   | { replayable: true; createdPlan: boolean; planId?: number }
   | { replayable: false; reason: string; planId?: number | null };
+
+type ExplicitTrainingPlanGenerationIdempotencyKey =
+  | { provided: false }
+  | { provided: true; key: string | null };
+
+function readExplicitTrainingPlanGenerationIdempotencyKey(
+  req: Request,
+): ExplicitTrainingPlanGenerationIdempotencyKey {
+  const body = req.body;
+  if (
+    body != null
+    && typeof body === 'object'
+    && Object.prototype.hasOwnProperty.call(body, 'idempotencyKey')
+  ) {
+    return {
+      provided: true,
+      key: normalizeTrainingPlanGenerationAttemptLookupKey(body.idempotencyKey),
+    };
+  }
+
+  for (const headerName of ['x-idempotency-key', 'idempotency-key']) {
+    const value = req.header(headerName);
+    if (value !== undefined) {
+      return {
+        provided: true,
+        key: normalizeTrainingPlanGenerationAttemptLookupKey(value),
+      };
+    }
+  }
+
+  return { provided: false };
+}
 
 function assessTrainingPlanGenerationReplay(input: {
   userId: number;
@@ -743,7 +1101,11 @@ function assessTrainingPlanGenerationReplay(input: {
       ? String((plan as { status?: unknown }).status).trim().toLowerCase()
       : 'active';
     if (lifecycleStatus !== 'active') {
-      return { replayable: false, reason: 'plan_not_active', planId };
+      return {
+        replayable: false,
+        reason: lifecycleStatus === 'superseded' ? 'plan_superseded' : 'plan_not_active',
+        planId,
+      };
     }
 
     const weeks = trainingPlans.getWeeksForPlan(planId);
@@ -929,7 +1291,10 @@ function validateAllowedStringField(
   return { ok: true };
 }
 
-function validateRaceDateInput(raceDate: unknown): { ok: true } | { ok: false; code: string; message: string } {
+function validateRaceDateInput(
+  raceDate: unknown,
+  schedulingTimezone: string,
+): { ok: true } | { ok: false; code: string; message: string } {
   if (raceDate == null || raceDate === '') return { ok: true };
   if (typeof raceDate !== 'string') {
     return { ok: false, code: 'INVALID_RACE_DATE', message: 'raceDate must be a YYYY-MM-DD string.' };
@@ -938,7 +1303,7 @@ function validateRaceDateInput(raceDate: unknown): { ok: true } | { ok: false; c
   if (!isStrictIsoDate(trimmed)) {
     return { ok: false, code: 'INVALID_RACE_DATE', message: 'raceDate must be a real date in YYYY-MM-DD format.' };
   }
-  if (isPastIsoDate(trimmed)) {
+  if (!isFutureIsoDate(trimmed, new Date(), schedulingTimezone)) {
     return { ok: false, code: 'PAST_RACE_DATE', message: 'raceDate must be in the future.' };
   }
   return { ok: true };

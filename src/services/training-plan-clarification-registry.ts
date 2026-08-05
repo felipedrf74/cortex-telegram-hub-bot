@@ -23,6 +23,7 @@
 
 import { createHash } from 'node:crypto';
 import { getProfile } from './onboarding';
+import { fingerprintTrainingPlanGenerationRequest } from './training-plan-generation-idempotency';
 import type { TrainingPlanSpecClarificationId } from './training-plan-spec';
 
 export interface TrainingPlanClarificationFieldTarget {
@@ -142,6 +143,33 @@ export function fingerprintTrainingPlanClarificationAnswers(userId: number): str
     availableEquipment: scalarOrNull(fitnessProfile?.available_equipment),
   };
   return createHash('sha256').update(JSON.stringify(material)).digest('hex').slice(0, 32);
+}
+
+/**
+ * Candidate-acceptance context is deliberately broader than the narrow
+ * clarification auto-dedupe hash above. Plan generation consumes all five
+ * canonical Training profiles; if any of them changes after preview, create
+ * must require a fresh candidate instead of silently accepting a different
+ * plan under the old review.
+ *
+ * Only the one-way digest crosses the REST boundary. Profile values never do.
+ */
+export function fingerprintTrainingPlanGenerationProfileContext(userId: number): string {
+  const profileTypes = [
+    'fitness',
+    'triathlon-gym',
+    'triathlon-running',
+    'triathlon-cycling',
+    'triathlon-swim',
+  ] as const;
+  const profiles = Object.fromEntries(profileTypes.map((profileType) => [
+    profileType,
+    profileRecord(getProfile(userId, profileType)),
+  ]));
+  return fingerprintTrainingPlanGenerationRequest({
+    contract: 'training_plan_generation_profile_context.v1',
+    profiles,
+  });
 }
 
 function profileRecord(value: unknown): Record<string, unknown> | null {

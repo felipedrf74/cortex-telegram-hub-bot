@@ -1,42 +1,40 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 /**
- * F26 (Phase 3) — chat-builder vs REST creation-schema drift pin.
+ * F26 (Phase 3 canary) — chat-builder/REST creation-schema convergence.
  *
- * The chat slot vocabulary and the REST /plan/generate schema share ONLY
- * `durationWeeks`. Converging them is a chat-behaviour change that must ship
- * as its own canary slice updating every mirror (registry requiredFields,
- * planner tiers, EN/PT clarification copy, response cards) in one change —
- * see docs/engineering/training-plan-request-semantics.md §3.
- *
- * This test PINS the current state of both sides so the drift cannot grow
- * silently: if either vocabulary changes, this fails and routes the editor
- * to the contract. Updating the pin without updating the contract (or vice
- * versa) is the defect this test exists to catch.
+ * The chat handoff intentionally collects the smallest complete REST request
+ * core. Every field below is accepted by compatibility `/plan/generate`; the
+ * richer modality/race fields remain optional builder refinements. Keep this
+ * pin synchronized with the registry, bilingual clarification copy, planner
+ * examples, response card, staging smoke, and the canonical semantics doc.
  */
 
 import { describe, expect, it } from 'vitest';
 import { TRAINING_PLAN_REQUIRED_SLOTS } from '../../src/services/skills/training/helpers';
 import { findChatActionDefinition } from '../../src/services/chat/registry';
+import { openSurfacePayloadForStep } from '../../src/services/chat/executor/response-cards';
 
 describe('training chat/REST creation-schema drift pin (F26)', () => {
-  const PINNED_CHAT_SLOTS = ['sport', 'goal', 'durationWeeks', 'startDate', 'weeklyVolumeKm'];
+  const CANONICAL_CHAT_CREATION_SLOTS = [
+    'objective',
+    'durationWeeks',
+    'sessionsPerWeek',
+    'startPolicy',
+  ];
 
   it('pins the chat slot vocabulary', () => {
-    expect([...TRAINING_PLAN_REQUIRED_SLOTS]).toEqual(PINNED_CHAT_SLOTS);
+    // Stronger guarantee: chat no longer collects aliases or inputs that the
+    // generation request silently drops (`weeklyVolumeKm` was the defect).
+    expect([...TRAINING_PLAN_REQUIRED_SLOTS]).toEqual(CANONICAL_CHAT_CREATION_SLOTS);
   });
 
   it('pins the chat registry mirror to the same vocabulary', () => {
     const definition = findChatActionDefinition('training', 'training_plan_create');
-    expect(definition?.requiredFields).toEqual(PINNED_CHAT_SLOTS);
+    expect(definition?.requiredFields).toEqual(CANONICAL_CHAT_CREATION_SLOTS);
   });
 
-  it('documents the single shared field with the REST schema', () => {
-    // REST /plan/generate's creation fields (objective, sessionsPerWeek,
-    // startPolicy, modality dials, ...) share only durationWeeks with chat —
-    // the REST request has NO startDate (startPolicy derives it). If this
-    // overlap grows, the convergence slice has started: update the contract
-    // doc and replace this pin with real shared-schema assertions.
+  it('requires only fields accepted by the REST creation contract', () => {
     const restCreationFields = [
       'objective',
       'durationWeeks',
@@ -51,7 +49,33 @@ describe('training chat/REST creation-schema drift pin (F26)', () => {
       'raceDate',
       'twoADayPreference',
     ];
-    const overlap = PINNED_CHAT_SLOTS.filter((slot) => restCreationFields.includes(slot));
-    expect(overlap).toEqual(['durationWeeks']);
+    expect(CANONICAL_CHAT_CREATION_SLOTS.every((slot) => restCreationFields.includes(slot))).toBe(true);
+    expect(CANONICAL_CHAT_CREATION_SLOTS).not.toContain('weeklyVolumeKm');
+  });
+
+  it('hands the same canonical fields to the Training Plan Builder card', () => {
+    const payload = openSurfacePayloadForStep({
+      action: 'training_plan_create',
+      args: {
+        objective: '10K',
+        durationWeeks: 12,
+        sessionsPerWeek: 4,
+        startPolicy: 'next_full_week',
+      },
+    } as any, { pendingActionId: 'pending-1' }, {
+      userId: 42,
+      tenantId: 42,
+    } as any);
+
+    expect(payload).toEqual({
+      surface: 'training_plan_builder',
+      pendingActionId: 'pending-1',
+      prefill: {
+        objective: '10K',
+        durationWeeks: 12,
+        sessionsPerWeek: 4,
+        startPolicy: 'next_full_week',
+      },
+    });
   });
 });

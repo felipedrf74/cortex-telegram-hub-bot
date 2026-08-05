@@ -14,19 +14,19 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.python
-    image: ${NEXUS_TRAINING_E2E_CONTENT_IMAGE:-nexus-hub-content-engine:training-e2e}
-    env_file:
-      - path: .env.local
-        required: false
+    image: ${NEXUS_TRAINING_E2E_CONTENT_IMAGE:?run-scoped Training E2E content image is required}
     environment:
       ENV: development
       CONTENT_ENGINE_PORT: "8100"
       NEXUS_BACKEND_BASE_URL: "http://nexus-hub:8200"
+      INTERNAL_API_SECRET: ${NEXUS_TRAINING_E2E_INTERNAL_SECRET:-nexus-training-e2e-internal-secret}
       NEXUS_LOCAL_ALLOW_MODEL_CALLS: "0"
+      NEXUS_MODEL_FIXTURE_MODE: "1"
+      CONTENT_ENGINE_FIXTURE_MODE: "1"
+      CONTENT_ENGINE_RESEARCH_NETWORK_DISABLED: "1"
     ports:
       - "127.0.0.1:${NEXUS_TRAINING_E2E_PORT_PY:-18100}:8100"
     volumes:
-      - ./content-engine:/engine:cached
       - ${NEXUS_TRAINING_E2E_ROOT:-./.local/training-e2e/default}/content-engine-venv:/engine/.venv
       - ${NEXUS_TRAINING_E2E_ROOT:-./.local/training-e2e/default}/logs/content-engine:/engine/logs
     healthcheck:
@@ -41,13 +41,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.node
-    image: ${NEXUS_TRAINING_E2E_NODE_IMAGE:-nexus-hub-node:training-e2e}
+    image: ${NEXUS_TRAINING_E2E_NODE_IMAGE:?run-scoped Training E2E backend image is required}
     depends_on:
       content-engine:
         condition: service_healthy
-    env_file:
-      - path: .env.local
-        required: false
     environment:
       NODE_ENV: development
       ENV: development
@@ -59,15 +56,20 @@ services:
       HEALTH_ALLOW_UNAUTHENTICATED: "true"
       IOS_API_ENABLED: "true"
       IOS_API_JWT_SECRET: ${NEXUS_TRAINING_E2E_IOS_API_JWT_SECRET:-nexus-training-e2e-ios-jwt-secret-2026-06-strong-48-byte}
+      # Isolate fixture-token signing from any developer keyring; quality
+      # users use the run-scoped secret file.
+      IOS_API_JWT_KEYS: ""
+      IOS_API_JWT_ACTIVE_KID: ""
       IOS_INVITE_CODE: ${NEXUS_TRAINING_E2E_IOS_INVITE_CODE:-LOCAL-TRAINING-E2E}
       PAYWALL_ENABLED: "false"
       PORTAL_ALLOW_LOCAL_BYPASS: "true"
-      DATABASE_PATH: "/app/data/training-e2e.db"
-      # The E2E harness seeds and inspects this isolated DB from helper
-      # processes while the backend is running. WAL can leave the app
-      # holding deleted -wal/-shm handles on Docker Desktop bind mounts,
-      # which makes file-based evidence read a stale snapshot.
+      DATABASE_PATH: "/app/training-e2e-state/data/training-e2e.db"
+      # All fixture readers/writers execute inside this container's Linux lock
+      # domain. Keep the canonical Docker Desktop rollback-journal posture too
+      # so host-side artifact reads after shutdown remain durable and coherent.
       SQLITE_JOURNAL_MODE: "DELETE"
+      SQLITE_SYNCHRONOUS: "FULL"
+      SQLITE_MMAP_SIZE: "0"
       OAUTH_ENCRYPTION_KEY: ${NEXUS_TRAINING_E2E_OAUTH_KEY:-nexus-training-e2e-oauth-key-2026-06-strong-32-byte}
       FINANCE_ENCRYPTION_ENABLED: "false"
       BACKUP_ENABLED: "false"
@@ -80,11 +82,11 @@ services:
       TRAINING_CALENDAR_SYNC_ENABLED: "false"
       # F31 (Phase 3): the coaching engine flags are EXPLICIT here so the E2E
       # lane can be run in either posture instead of silently exercising only
-      # the flag-off branches. Defaults mirror src/config.ts defaults; export
-      # the NEXUS_TRAINING_E2E_* variables to run a flag-on lane. This states
-      # nothing about production flag state (operator input).
+      # the flag-off branches. Periodization V2 is on in this isolated lane so
+      # §13 can prove a real fixture-backed reflow; this states nothing about
+      # production flag state (operator input).
       COACH_RULE_ENFORCEMENT: ${NEXUS_TRAINING_E2E_COACH_RULE_ENFORCEMENT:-off}
-      COACH_PERIODIZATION_V2_ENABLED: ${NEXUS_TRAINING_E2E_COACH_PERIODIZATION_V2:-off}
+      COACH_PERIODIZATION_V2_ENABLED: ${NEXUS_TRAINING_E2E_COACH_PERIODIZATION_V2:-on}
       TRAINING_SAFETY_GUARDRAILS_ENABLED: ${NEXUS_TRAINING_E2E_SAFETY_GUARDRAILS:-off}
       COACH_KERNEL_EQUIPMENT_AUTHORITY_ENABLED: ${NEXUS_TRAINING_E2E_EQUIPMENT_AUTHORITY:-off}
       COACH_KERNEL_EQUIPMENT_AUTHORITY_SHADOW_ENABLED: ${NEXUS_TRAINING_E2E_EQUIPMENT_AUTHORITY_SHADOW:-off}
@@ -92,7 +94,9 @@ services:
       TRAINING_COMPLETION_FEEDBACK_V2_ENABLED: ${NEXUS_TRAINING_E2E_COMPLETION_FEEDBACK_V2:-on}
       TRAINING_SELECTOR_POLICY_V2_ENABLED: ${NEXUS_TRAINING_E2E_SELECTOR_POLICY_V2:-off}
       TRAINING_ENDURANCE_COHERENCE_V2_ENABLED: ${NEXUS_TRAINING_E2E_ENDURANCE_COHERENCE_V2:-off}
-      TRAINING_CALENDAR_CAPACITY_KERNEL_ENABLED: ${NEXUS_TRAINING_E2E_CAPACITY_KERNEL:-off}
+      # F24 is now covered in the qualifying lane: fixture calendar busy
+      # windows must reach the kernel and produce durable capacity rationale.
+      TRAINING_CALENDAR_CAPACITY_KERNEL_ENABLED: ${NEXUS_TRAINING_E2E_CAPACITY_KERNEL:-on}
       NEXUS_LOCAL_ALLOW_MODEL_CALLS: "0"
       NEXUS_MODEL_FIXTURE_MODE: "1"
       NEXUS_MULTISKILL_MESH: "on"
@@ -102,7 +106,8 @@ services:
     ports:
       - "127.0.0.1:${NEXUS_TRAINING_E2E_PORT_TS:-18200}:8200"
     volumes:
-      - ${NEXUS_TRAINING_E2E_ROOT:-./.local/training-e2e/default}/data:/app/data
+      - ${NEXUS_TRAINING_E2E_SOURCE_ROOT:?Training E2E source root is required}/scripts:/app/scripts:ro
+      - ${NEXUS_TRAINING_E2E_ROOT:-./.local/training-e2e/default}:/app/training-e2e-state
       - ${NEXUS_TRAINING_E2E_ROOT:-./.local/training-e2e/default}/logs/backend:/app/logs
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8200/health"]

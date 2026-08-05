@@ -39,15 +39,17 @@ describe('M2: secretary_agenda_sync cron registration', () => {
     expect(schedulerSource).toContain('createUnifiedCalendarSecretaryProviderAdapter');
   });
 
-  it('iterates active users and fans out per (user, source) with bounded concurrency', () => {
+  it('enumerates exact durable owner+tenant+target scopes with bounded concurrency', () => {
     const bodyMatch = schedulerSource.match(
       /wrapJob\('secretary_agenda_sync',\s*async[\s\S]*?\}\),\s*\{\s*timezone: tz\s*\}\)/,
     );
     expect(bodyMatch).not.toBeNull();
     const body = bodyMatch![0];
-    expect(body).toContain('getActiveUserIds()');
-    expect(body).toContain('isGoogleCalendarConfigured(userId)');
-    expect(body).toContain('isOutlookCalendarConfigured(userId)');
+    expect(body).toContain('listPendingSecretaryAgendaProviderScopes()');
+    expect(body).not.toContain('getActiveUserIds()');
+    expect(body).not.toContain('tenantId: userId');
+    expect(body).toContain('{ ownerUserId: userId, tenantId, includeInactive: false }');
+    expect(body).toContain('createUnifiedCalendarSecretaryProviderAdapter(source)');
     // Concurrency bound prevents simultaneous-user storms on Outlook quotas
     expect(body).toMatch(/CONCURRENCY\s*=\s*\d+/);
     // Per-user item cap bounds Outlook rate-limit exposure
@@ -63,6 +65,40 @@ describe('M2: secretary_agenda_sync cron registration', () => {
     expect(body).toContain('Promise.allSettled');
     // Inner try/catch keeps a single user/source failure from spilling out
     expect(body).toContain('per-user/source failure');
+  });
+
+  it('propagates scoped failures to the durable job wrapper after finishing independent scopes', () => {
+    const bodyMatch = schedulerSource.match(
+      /wrapJob\('secretary_agenda_sync',\s*async[\s\S]*?\}\),\s*\{\s*timezone: tz\s*\}\)/,
+    );
+    expect(bodyMatch).not.toBeNull();
+    const body = bodyMatch![0];
+    // Stronger guarantee: allSettled still isolates users, but the aggregate
+    // job must not be checkpointed as succeeded when any scope failed.
+    expect(body).toContain('failedScopes');
+    expect(body).toMatch(/if \(failedScopes\.length > 0\)[\s\S]*throw/);
+    expect(body).not.toMatch(/catch \(err\) \{\s*logger\.warn\([^]*cron failed[^]*\);\s*\}/);
+  });
+
+  it('does not count a failed exact-edge cleanup as a successful provider sync', () => {
+    const bodyMatch = schedulerSource.match(
+      /wrapJob\('secretary_agenda_sync',\s*async[\s\S]*?\}\),\s*\{\s*timezone: tz\s*\}\)/,
+    );
+    expect(bodyMatch).not.toBeNull();
+    const body = bodyMatch![0];
+    // A terminal preemption failure leaves the loser provider row truthfully
+    // `synced`; success accounting must additionally honor the failed action.
+    expect(body).toContain("if (r.action !== 'failed' && r.providerSyncState === 'synced') userSynced += 1;");
+  });
+
+  it('passes the query-level cap into the provider-sync primitive instead of slicing after effects', () => {
+    const bodyMatch = schedulerSource.match(
+      /wrapJob\('secretary_agenda_sync',\s*async[\s\S]*?\}\),\s*\{\s*timezone: tz\s*\}\)/,
+    );
+    expect(bodyMatch).not.toBeNull();
+    const body = bodyMatch![0];
+    expect(body).toMatch(/syncSecretaryAgendaItemsToProvider\([\s\S]*?maxItems:\s*PER_USER_CAP/);
+    expect(body).not.toContain('results.slice(0, PER_USER_CAP)');
   });
 
   it('passes the secretary tz to cron.schedule (DST-safe)', () => {

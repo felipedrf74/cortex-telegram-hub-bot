@@ -742,7 +742,16 @@ describe('Chat hybrid action smoke fixture suite', () => {
     expect(writeCases.some((testCase) => testCase.actionStatus === 'needs_confirmation')).toBe(true);
     expect(writeCases.some((testCase) => testCase.claimedSuccess === true)).toBe(false);
     expect(cases.some((testCase) => testCase.expectedRefusal === true && testCase.actualRequiredArgsPresent === false)).toBe(true);
-    expect(cases.filter((testCase) => testCase.bypassedRealExecution)).toHaveLength(26);
+    // Stronger F26 guarantee: weeklyVolumeKm is no longer collected. The two
+    // direct EN/PT mileage-only canaries (training-slot-0 / training-slot-2)
+    // therefore bypass execution instead of synthesizing an unscoped
+    // training_plan_create clarification. Both remain gate-negative, and the
+    // zero gate-positive bypass assertion below stays load-bearing.
+    expect(cases.filter((testCase) => testCase.bypassedRealExecution)).toHaveLength(28);
+    expect(cases.filter((testCase) =>
+      ['training-slot-0', 'training-slot-2'].includes(testCase.id)
+      && testCase.bypassedRealExecution
+      && testCase.expectedGate === false)).toHaveLength(2);
     expect(cases.filter((testCase) => testCase.bypassedRealExecution && testCase.expectedGate === true)).toHaveLength(0);
     expect(gate.failures).toEqual([]);
     expect(gate.passed).toBe(true);

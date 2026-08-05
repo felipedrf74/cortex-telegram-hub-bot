@@ -95,6 +95,34 @@ describe('training-plan-revisions', () => {
     });
   });
 
+  it('keeps retired revision-operation lease columns null', () => {
+    withDatabaseForTest(db, () => {
+      // Stronger guarantee: revision creation is one synchronous transaction, so a
+      // durable-looking lease must never imply crash recovery that does not exist.
+      db.exec(`
+        CREATE TEMP TRIGGER reject_revision_operation_leases
+        BEFORE INSERT ON training_plan_revision_operations
+        WHEN NEW.lease_owner IS NOT NULL OR NEW.lease_expires_at IS NOT NULL
+        BEGIN
+          SELECT RAISE(ABORT, 'revision operation leases are retired');
+        END;
+      `);
+
+      createTrainingPlanCandidateRevision({
+        scope: { userId: 7, tenantId: 7 },
+        idempotencyKey: 'candidate-without-dormant-lease',
+        request,
+        env: activeEnv,
+      });
+
+      expect(db.prepare(`
+        SELECT lease_owner AS leaseOwner, lease_expires_at AS leaseExpiresAt
+          FROM training_plan_revision_operations
+         WHERE idempotency_key = 'candidate-without-dormant-lease'
+      `).get()).toEqual({ leaseOwner: null, leaseExpiresAt: null });
+    });
+  });
+
   it('persists typed workout validation evidence only for the explicitly enabled scope', () => {
     withDatabaseForTest(db, () => {
       const created = createTrainingPlanCandidateRevision({

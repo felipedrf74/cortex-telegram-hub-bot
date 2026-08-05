@@ -30,6 +30,7 @@ describe('cooking-secretary-integration', () => {
       endIso: '2026-06-07T16:00:00Z',
       durationMinutes: 120,
       mealCount: 5,
+      providerTarget: 'outlook',
       additionalBusyWindows: [],
     });
 
@@ -41,6 +42,7 @@ describe('cooking-secretary-integration', () => {
       ownerUserId: 42,
       tenantId: 42,
       flexibility: 'fixed',
+      providerTarget: 'outlook',
     });
   });
 
@@ -53,6 +55,7 @@ describe('cooking-secretary-integration', () => {
       endIso: '2026-06-07T16:00:00Z',
       durationMinutes: 120,
       mealCount: 5,
+      providerTarget: 'outlook',
     })).toThrow('COOKING_SECRETARY_LIVE_BUSY_WINDOWS_REQUIRED');
   });
 
@@ -65,6 +68,7 @@ describe('cooking-secretary-integration', () => {
       endIso: '2026-06-07T16:00:00Z',
       durationMinutes: 120,
       mealCount: 5,
+      providerTarget: 'outlook',
       additionalBusyWindows: [],
       liveBusyWindowsDegraded: true,
     })).toThrow('COOKING_SECRETARY_LIVE_BUSY_WINDOWS_DEGRADED');
@@ -83,12 +87,14 @@ describe('cooking-secretary-integration', () => {
       endIso: '2026-06-07T16:00:00Z',
       durationMinutes: 120,
       mealCount: 5,
+      providerTarget: 'outlook',
       additionalBusyWindows: busy,
     });
 
     expect(decision).toEqual({ status: 'scheduled' });
     expect(mockSubmitSecretarySchedulingIntent).toHaveBeenCalledWith(expect.objectContaining({
       sourceSkill: 'cooking',
+      providerTarget: 'outlook',
     }), { additionalBusyWindows: busy });
   });
 });

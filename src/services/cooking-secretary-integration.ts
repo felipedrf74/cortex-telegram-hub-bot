@@ -18,6 +18,7 @@ export interface CookingMealPrepSecretaryInput {
   endIso: string;
   durationMinutes: number;
   mealCount: number;
+  providerTarget: 'google' | 'outlook';
   additionalBusyWindows?: SecretaryTimeWindow[];
   liveBusyWindowsDegraded?: boolean;
 }
@@ -58,6 +59,7 @@ export function buildCookingMealPrepSchedulingIntent(
     sourceEntityType: 'meal_prep_block',
     ownerUserId: input.userId,
     tenantId,
+    providerTarget: input.providerTarget,
     title: input.title,
     requestedDurationMinutes: input.durationMinutes,
     minimumDurationMinutes: Math.min(input.durationMinutes, Math.max(30, Math.round(input.durationMinutes * 0.75))),

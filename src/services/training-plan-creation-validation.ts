@@ -329,6 +329,9 @@ export interface TrainingPlanQualityCandidate {
   readinessState?: string;
   equipmentState?: string;
   calendarCapacityState?: string;
+  /** Durable week-level explanation lines. A single recovery-limited phase
+   *  may only satisfy periodization when this contains an explicit rationale. */
+  rationaleNotes?: string[];
   weeks: Array<{
     weekNumber: number;
     phase: string;
@@ -706,10 +709,24 @@ export function scoreTrainingPlanQuality(candidate: TrainingPlanQualityCandidate
 
 function scorePeriodization(candidate: TrainingPlanQualityCandidate): TrainingPlanQualityDimensionScore {
   const phases = new Set(candidate.weeks.map((week) => normalizeText(week.phase)).filter(Boolean));
-  const observations = [`Phases: ${[...phases].join(', ') || 'none'}.`];
+  const recoveryLimitedPhases = phases.size > 0
+    && [...phases].every((phase) => /\b(?:deload|maintenance|recovery|review)\b/.test(phase));
+  const hasExplicitMaintenanceRationale = recoveryLimitedPhases
+    && (candidate.rationaleNotes ?? []).some((note) => {
+      const normalized = normalizeText(note);
+      const prefix = normalized.match(/\bmaintenance\s*\/\s*recovery rationale\s*:/);
+      if (!prefix || prefix.index == null) return false;
+      const explanation = normalized.slice(prefix.index + prefix[0].length).trim();
+      return explanation.length >= 20
+        && /\b(?:injur|pain|discomfort|readiness|fatigue|adher\w*|miss\w*|re-?entry|return\w*|recovery signal)\b/.test(explanation);
+    });
+  const observations = [
+    `Phases: ${[...phases].join(', ') || 'none'}.`,
+    `Explicit maintenance/recovery rationale: ${hasExplicitMaintenanceRationale}.`,
+  ];
   const blockers: string[] = [];
   let score = 100;
-  if (candidate.weeks.length >= 4 && phases.size < 2) {
+  if (candidate.weeks.length >= 4 && phases.size < 2 && !hasExplicitMaintenanceRationale) {
     score -= 28;
     blockers.push('Four-plus-week plans need more than one phase or an explicit maintenance rationale.');
   }
@@ -849,7 +866,10 @@ function scoreCalendarRealism(candidate: TrainingPlanQualityCandidate): Training
 function scoreReadinessAdaptation(candidate: TrainingPlanQualityCandidate): TrainingPlanQualityDimensionScore {
   const state = candidate.readinessState ?? 'unknown';
   const sessions = allQualitySessions(candidate);
-  const hasAdaptation = sessions.some((session) => session.adaptationReason || session.safetyDowngradeReason);
+  const hasAdaptation = sessions.some((session) =>
+    isExplicitTrainingAdaptationRationale(session.adaptationReason)
+    || isExplicitTrainingAdaptationRationale(session.safetyDowngradeReason)
+  );
   const hardCount = sessions.filter((session) => session.intensity === 'hard').length;
   const blockers: string[] = [];
   let score = 100;
@@ -862,6 +882,21 @@ function scoreReadinessAdaptation(candidate: TrainingPlanQualityCandidate): Trai
     blockers.push('Safety red-flag state cannot keep hard sessions without a qualified clearance rationale.');
   }
   return dimension('readiness_adaptation', score, [`Readiness state: ${state}.`], blockers);
+}
+
+/**
+ * Fail-closed proof that public copy explains both the recovery signal and
+ * the concrete plan change. Any non-empty description is not enough: that
+ * would let ordinary workout prose satisfy the low-readiness safety gate.
+ */
+export function isExplicitTrainingAdaptationRationale(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+  const normalized = normalizeText(value);
+  if (normalized.length < 20) return false;
+  const namesConstraint = /\b(?:readiness|fatigue|recovery|soreness|pain|injur\w*|safety|feedback loop|red readiness|orange readiness)\b/.test(normalized);
+  const namesAction = /\b(?:reduce\w*|downshift\w*|downgrad\w*|replace\w*|swap\w*|deload\w*|recover\w*|easier|lower\w*|protect\w*)\b/.test(normalized);
+  const namesCausalChange = /\b(?:feedback loop|became|because|due to|in response to|after recent|adapt\w*|adjust\w*|changed?|converted?|replac\w*|downshift\w*|downgrad\w*|swapp\w*)\b/.test(normalized);
+  return namesConstraint && namesAction && namesCausalChange;
 }
 
 function scoreSafetyDowngrades(candidate: TrainingPlanQualityCandidate): TrainingPlanQualityDimensionScore {

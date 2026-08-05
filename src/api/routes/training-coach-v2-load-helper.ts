@@ -96,16 +96,32 @@ export function hydrateLoadModelByDimension(
   // generic load columns so the strength dimension can use the real
   // V2 set/reps/load JSON instead of a duration*RPE proxy.
   const completionsRows = db.prepare(`
+    WITH ranked_completions AS (
+      SELECT source.*,
+             ROW_NUMBER() OVER (
+               PARTITION BY source.session_id
+               ORDER BY datetime(source.completed_at) DESC, source.id DESC
+             ) AS row_number
+        FROM training_completions source
+    )
     SELECT
-      tc.completed_at, tc.duration_minutes, tc.completed_duration_sec,
+      tc.completed_at,
+      COALESCE(tc.completed_duration_sec / 60.0, tc.duration_minutes) AS duration_minutes,
+      tc.completed_duration_sec,
       tc.completed_distance_meters, tc.rpe_overall AS session_rpe, tc.rir,
       tc.actual_exercises_json, tc.notes,
       tc.completed_sets_json, tc.completed_reps_json, tc.completed_load_json,
       s.sport AS plan_sport, ts.session_type
-    FROM training_completions tc
-    JOIN training_sessions ts ON ts.id = tc.session_id
+    FROM ranked_completions tc
+    JOIN training_sessions ts
+      ON ts.id = tc.session_id
+     AND ts.plan_id = tc.plan_id
     JOIN fitness_training_plans s ON s.id = tc.plan_id
-    WHERE s.user_id = ? AND s.tenant_id = ? AND tc.completed_at >= datetime('now', '-60 days')
+    WHERE s.user_id = ? AND s.tenant_id = ?
+      AND tc.row_number = 1
+      AND tc.completion_state IN ('completed', 'partial')
+      AND ts.status <> 'skipped'
+      AND datetime(tc.completed_at) >= datetime('now', '-60 days')
     ORDER BY tc.completed_at ASC
   `).all(userId, tenantId) as Array<{
     completed_at: string;

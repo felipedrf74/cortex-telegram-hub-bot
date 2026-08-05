@@ -118,7 +118,7 @@ export const TRAINING_ACTIONS: ChatActionDefinition[] = [
         'gerar plano',
         'criar plano',
       ],
-      requiredFields: ['sport', 'goal', 'durationWeeks', 'startDate', 'weeklyVolumeKm'],
+      requiredFields: ['objective', 'durationWeeks', 'sessionsPerWeek', 'startPolicy'],
       optionalFields: [],
       providerDependencies: ['nexus'],
       risk: 'safe_write',
@@ -139,54 +139,54 @@ export const TRAINING_ACTIONS: ChatActionDefinition[] = [
       // The structural $ref path remains covered through a definition mock
       // in chat-segment-router.test.ts. Parity pin:
       // codex-qa-regressions.test.ts "training outputRefs flag-off parity".
-      // Phase 12 batch 63: typed extractor wraps extractTrainingPlanSlots
-      // so callers can read sport / goal / durationWeeks / weeklyVolumeKm /
-      // startDate directly from the registry entry instead of calling the
-      // helper module by hand.
+      // F26 canary: the typed extractor and handoff use the same minimal
+      // creation core accepted by compatibility `/plan/generate`. Richer
+      // modality/race fields remain optional refinements in the builder.
       typedSlotExtractors: [trainingPlanSlotExtractor],
       typedSlotValidators: [
-        makeRequiredFieldsValidator(['sport', 'goal', 'durationWeeks', 'startDate', 'weeklyVolumeKm']),
+        makeRequiredFieldsValidator(['objective', 'durationWeeks', 'sessionsPerWeek', 'startPolicy']),
       ],
       supportedCards: STATUS_CARDS,
       examples: [
         {
-          text: 'Cria um plano de treino para correr 10K em 12 semanas começando segunda',
+          text: 'Cria um plano de treino para correr 10K em 12 semanas começando segunda, 4 treinos por semana',
           locale: 'pt',
           tags: ['golden'],
-          expectedSlots: { sport: 'running', goal: '10k', durationWeeks: 12 },
+          expectedSlots: { objective: 'correr 10K', durationWeeks: 12, sessionsPerWeek: 4, startPolicy: 'next_full_week' },
           expectedAction: 'training_plan_create',
         },
         {
           // Phase 2 batch 10: PT-BR uses "Monta" (BR colloquial for build/set up)
           // and "10 km" with space (PT-PT often "10K" without space).
-          text: 'Monta um plano de treino pra correr 10 km em 12 semanas começando segunda',
+          text: 'Monta um plano de treino pra correr 10 km em 12 semanas começando segunda, 4 treinos por semana',
           locale: 'pt',
           tags: ['golden'],
-          expectedSlots: { sport: 'running', goal: '10k', durationWeeks: 12 },
+          expectedSlots: { objective: 'correr 10 km', durationWeeks: 12, sessionsPerWeek: 4, startPolicy: 'next_full_week' },
           expectedAction: 'training_plan_create',
         },
         {
           // Phase 3 batch 16: paraphrase — "Build me a marathon plan" exercises
           // the new marathon/race-plan training parser extension.
-          text: 'Build me a marathon plan starting Monday',
+          text: 'Build me a marathon plan starting Monday, 4 sessions per week',
           locale: 'en',
           tags: ['golden'],
+          expectedSlots: { objective: 'marathon', sessionsPerWeek: 4, startPolicy: 'next_full_week' },
           expectedAction: 'training_plan_create',
         },
         {
           // Phase 5 batch 25 (2026-05-15): canonical multi-turn example. Turn 1
-          // creates a partial plan; turn 2 fills the weekly volume slot. The
+          // creates a partial plan; turn 2 fills the canonical frequency. The
           // existing state-required parity harness exercises this in code; the
           // multi-turn `turns` field documents it at the registry layer.
           text: 'Build me a 10K plan in 12 weeks starting Monday',
           turns: [
             'Build me a 10K plan in 12 weeks starting Monday',
-            'It is 20 km a week',
+            'Make it 4 sessions per week',
           ],
           locale: 'en',
           tags: ['golden'],
           condition: 'multi_turn_pending_plan_slot_fill',
-          expectedSlots: { sport: 'running', goal: '10k', durationWeeks: 12, weeklyVolumeKm: 20 },
+          expectedSlots: { objective: '10K', durationWeeks: 12, sessionsPerWeek: 4, startPolicy: 'next_full_week' },
           expectedAction: 'training_plan_create',
         },
         {
@@ -197,22 +197,21 @@ export const TRAINING_ACTIONS: ChatActionDefinition[] = [
           expectedAction: null,
         },
         {
-          // With a pending Training plan awaiting weekly volume: the second-turn
-          // message fills the slot. Pinned by planner test "stores a pending
-          // Training plan draft and fills weekly mileage on the follow-up turn".
-          text: 'It is 20 km a week',
+          // With a pending Training plan awaiting frequency, the second-turn
+          // message fills the REST-compatible slot.
+          text: 'Make it 4 sessions per week',
           locale: 'en',
           tags: ['ambiguous'],
-          condition: 'pending_training_plan_awaiting_weekly_volume',
+          condition: 'pending_training_plan_awaiting_sessions_per_week',
           requiresPendingActionId: true,
-          expectedSlots: { weeklyVolumeKm: 20 },
+          expectedSlots: { sessionsPerWeek: 4 },
           expectedAction: 'training_plan_create',
         },
         {
           // Without a pending Training plan, the planner must NOT invent one.
           // Pinned by planner test "does not invent a Training plan when weekly
           // mileage arrives without pending context".
-          text: 'It is 20 km a week',
+          text: 'Make it 4 sessions per week',
           locale: 'en',
           tags: ['negative'],
           condition: 'no_pending_training_plan',
@@ -220,11 +219,11 @@ export const TRAINING_ACTIONS: ChatActionDefinition[] = [
         },
         {
           // Phase 13 batch 68 (2026-05-16): Spanish-authored compatibility input; English response contract.
-          text: 'Crea un plan de entrenamiento para correr 10 km en 12 semanas',
+          text: 'Crea un plan de entrenamiento para correr 10 km en 12 semanas, empezar lunes, 4 sesiones por semana',
           requestLocale: 'es',
           responseLocale: 'en',
           tags: ['golden'],
-          expectedSlots: { sport: 'running', goal: '10k', durationWeeks: 12 },
+          expectedSlots: { objective: 'correr 10 km', durationWeeks: 12, sessionsPerWeek: 4, startPolicy: 'next_full_week' },
           expectedAction: 'training_plan_create',
         },
       ],

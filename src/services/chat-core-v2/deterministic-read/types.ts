@@ -167,6 +167,7 @@ export interface ChatCoreV2TrainingSessionExplainData {
   currentWeekIntensityPct: number | null;
   adherenceRate: number | null;
   completedSessions: number;
+  partialSessions: number;
   skippedSessions: number;
   pendingSessions: number;
   totalSessions: number;

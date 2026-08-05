@@ -41,6 +41,7 @@ import { getUserById, type User } from './user-service';
 import { entitlementPlanToSkillTier, getEffectiveEntitlement } from './entitlement';
 import { checkSkillAccess } from './skill-tiers';
 import { getWeeksForPlan, getWeeklyAdherence, type TrainingSession } from './training-plans';
+import { resolveTrainingPlanTimezone } from './training-date-utils';
 import type { MealPlan } from './cooking-chef';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
 
@@ -451,7 +452,10 @@ function buildCookingMeshSignals(
 ): MeshSignalDraft[] {
   const fuelingSupport = readFuelingSupportSignal(cooking);
   const executionReadiness = readMealExecutionReadinessSignal(cooking);
-  const sessionDates = new Set(training.sessions.map((session) => sessionDateForWeek(session, cooking.weekStart)));
+  const trainingTimezone = resolveTrainingPlanTimezone(training.activePlan);
+  const sessionDates = new Set(training.sessions.map(
+    (session) => sessionDateForWeek(session, cooking.weekStart, trainingTimezone),
+  ));
   const mealDates = new Set(cooking.meals.map((meal) => meal.date));
   const riskyDates = fuelingSupport?.hardDatesMissingMeals.length
     ? fuelingSupport.hardDatesMissingMeals
@@ -954,8 +958,14 @@ function buildPlanDay(opts: {
   acceptedDirectives: MeshDirective[];
   shadowedDirectives: MeshDirective[];
 }): WeeklyPlanDay {
-  const weekday = DateTime.fromISO(opts.date, { zone: config.app.timezone || 'Europe/Lisbon' }).toFormat('cccc');
-  const trainingSession = sessionForDate(opts.training.sessions, opts.date, opts.training.weekStart);
+  const trainingTimezone = resolveTrainingPlanTimezone(opts.training.activePlan);
+  const weekday = DateTime.fromISO(opts.date, { zone: trainingTimezone }).toFormat('cccc');
+  const trainingSession = sessionForDate(
+    opts.training.sessions,
+    opts.date,
+    opts.training.weekStart,
+    trainingTimezone,
+  );
   const availabilityDirective = opts.acceptedDirectives.find((directive) => directive.target === 'availability');
   const restDirective = opts.acceptedDirectives.find((directive) => directive.target === 'training-load');
   const recoveryDirective = opts.acceptedDirectives.find((directive) => directive.target === 'training-recovery');
@@ -1806,7 +1816,7 @@ function resolveAggressivenessVariant(
     return 'conservative';
   }
 
-  const zone = config.app.timezone || 'Europe/Lisbon';
+  const zone = resolveTrainingPlanTimezone(training.activePlan);
   const planAgeDays = Math.max(
     0,
     DateTime.now().setZone(zone).startOf('day').diff(
@@ -1861,8 +1871,11 @@ function sessionForDate(
   sessions: TrainingSession[],
   date: string,
   weekStart: string,
+  schedulingTimezone: string,
 ): TrainingSession | null {
-  return sessions.find((session) => sessionDateForWeek(session, weekStart) === date) ?? null;
+  return sessions.find(
+    (session) => sessionDateForWeek(session, weekStart, schedulingTimezone) === date,
+  ) ?? null;
 }
 
 function mealsForDate(meals: MealPlan[], date: string): MealPlan[] {
@@ -1886,10 +1899,11 @@ function chooseBatchCookDate(
   content: ContentMeshContext | null,
   weekStart: string,
 ): string {
-  const dates = weekIsoDates(DateTime.fromISO(weekStart, { zone: config.app.timezone || 'Europe/Lisbon' }));
+  const trainingTimezone = resolveTrainingPlanTimezone(training.activePlan);
+  const dates = weekIsoDates(DateTime.fromISO(weekStart, { zone: trainingTimezone }));
   const trainingLoadByDate = new Map(
     training.sessions.map((session) => {
-      const date = sessionDateForWeek(session, weekStart);
+      const date = sessionDateForWeek(session, weekStart, trainingTimezone);
       const load = inferTrainingLoadForBatchCook(session);
       return [date, load] as const;
     }),
@@ -2041,8 +2055,12 @@ function taxReminderDate(month: string): string {
   return parsed.isValid ? parsed.endOf('month').toISODate()! : `${month}-28`;
 }
 
-function sessionDateForWeek(session: TrainingSession, weekStart: string): string {
-  const start = DateTime.fromISO(weekStart, { zone: config.app.timezone || 'Europe/Lisbon' }).startOf('day');
+function sessionDateForWeek(
+  session: TrainingSession,
+  weekStart: string,
+  schedulingTimezone: string,
+): string {
+  const start = DateTime.fromISO(weekStart, { zone: schedulingTimezone }).startOf('day');
   const normalized = session.day_of_week.trim().toLowerCase();
   const weekdays = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
   const offset = weekdays.indexOf(normalized);

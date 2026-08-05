@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 
 let testDb: Database.Database;
@@ -20,6 +21,7 @@ import {
   _resetTrainingOperationLocksForTests,
   acquireTrainingCalendarOperationLock,
   trainingCalendarOperationLockKey,
+  withTrainingCalendarOperationLock,
 } from '../../src/services/training-operation-locks';
 
 describe('training operation SQLite advisory locks', () => {
@@ -70,6 +72,82 @@ describe('training operation SQLite advisory locks', () => {
       tenantId: undefined as unknown as number,
       operation: 'calendar_sync',
     })).rejects.toMatchObject({ code: 'TENANT_SCOPE_REQUIRED' });
+  });
+
+  it('types lock-store unavailability as a retryable 503 without exposing scope', async () => {
+    const runtimeEnv = {
+      nodeEnv: process.env.NODE_ENV,
+      vitest: process.env.VITEST,
+      workerId: process.env.VITEST_WORKER_ID,
+    };
+    testDb.close();
+    testDb = undefined as unknown as Database.Database;
+    delete process.env.NODE_ENV;
+    delete process.env.VITEST;
+    delete process.env.VITEST_WORKER_ID;
+
+    try {
+      const error = await acquireTrainingCalendarOperationLock({
+        userId: 42,
+        tenantId: 84,
+        operation: 'calendar_sync',
+      }).then(
+        () => null,
+        (caught: unknown) => caught as Error & Record<string, unknown>,
+      );
+
+      expect(error).toMatchObject({
+        code: 'TRAINING_OPERATION_LOCK_UNAVAILABLE',
+        status: 503,
+        operation: 'calendar_sync',
+        retryAfterSeconds: 5,
+      });
+      // Pin the complete public metadata surface; merely checking for one
+      // known key would miss a future raw user, tenant, or owner field.
+      expect(Object.fromEntries(
+        Object.entries(error ?? {}).filter(([key]) => key !== 'name'),
+      )).toEqual({
+        code: 'TRAINING_OPERATION_LOCK_UNAVAILABLE',
+        status: 503,
+        operation: 'calendar_sync',
+        retryAfterSeconds: 5,
+      });
+      expect(error?.message).not.toMatch(/user:|tenant:|owner|42|84/);
+    } finally {
+      if (runtimeEnv.nodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = runtimeEnv.nodeEnv;
+      if (runtimeEnv.vitest === undefined) delete process.env.VITEST;
+      else process.env.VITEST = runtimeEnv.vitest;
+      if (runtimeEnv.workerId === undefined) delete process.env.VITEST_WORKER_ID;
+      else process.env.VITEST_WORKER_ID = runtimeEnv.workerId;
+    }
+  });
+
+  it('maps a lock-store write failure after getDb to the typed unavailable contract', async () => {
+    // The connection exists, but the lock table cannot be created/written.
+    // This is the realistic SQLITE_READONLY/SQLITE_BUSY class that used to
+    // escape the acquisition helper as a generic route-level 500.
+    testDb.pragma('query_only = ON');
+    try {
+      const error = await acquireTrainingCalendarOperationLock({
+        userId: 42,
+        tenantId: 84,
+        operation: 'calendar_sync',
+      }).then(
+        () => null,
+        (caught: unknown) => caught as Error & Record<string, unknown>,
+      );
+
+      expect(error).toMatchObject({
+        code: 'TRAINING_OPERATION_LOCK_UNAVAILABLE',
+        status: 503,
+        operation: 'calendar_sync',
+        retryAfterSeconds: 5,
+      });
+      expect(error?.message).not.toMatch(/readonly|database|user:|tenant:|42|84/i);
+    } finally {
+      testDb.pragma('query_only = OFF');
+    }
   });
 
   it('does not queue same-user locks across different tenants', async () => {
@@ -157,6 +235,79 @@ describe('training operation SQLite advisory locks', () => {
       release();
     } finally {
       vi.useRealTimers();
+    }
+  });
+
+  it('never resurrects an expired SQLite lease during heartbeat renewal', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-05-22T12:00:00.000Z'));
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'training-lock-expiry-'));
+    const dbPath = path.join(tempDir, 'locks.sqlite');
+    testDb.close();
+    testDb = new Database(dbPath);
+    const secondConnection = new Database(dbPath);
+    try {
+      const lease = await acquireTrainingCalendarOperationLock({
+        userId: 46,
+        tenantId: 84,
+        operation: 'calendar_sync',
+      });
+      const lockKey = trainingCalendarOperationLockKey({ userId: 46, tenantId: 84 });
+      secondConnection.prepare(`
+        UPDATE training_operation_locks
+           SET expires_at_ms = ?
+         WHERE lock_key = ?
+      `).run(Date.now() - 1, lockKey);
+
+      await vi.advanceTimersByTimeAsync(5 * 60_000);
+
+      const row = secondConnection.prepare(`
+        SELECT expires_at_ms FROM training_operation_locks WHERE lock_key = ?
+      `).get(lockKey) as { expires_at_ms: number };
+      expect(row.expires_at_ms).toBeLessThanOrEqual(Date.now());
+      expect(() => lease.assertActive()).toThrowError(
+        expect.objectContaining({ code: 'TRAINING_OPERATION_LOCKED' }),
+      );
+      lease();
+    } finally {
+      secondConnection.close();
+      vi.useRealTimers();
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a stale owner through a second connection before it can continue', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'training-lock-owner-'));
+    const dbPath = path.join(tempDir, 'locks.sqlite');
+    testDb.close();
+    testDb = new Database(dbPath);
+    const secondConnection = new Database(dbPath);
+    try {
+      await expect(withTrainingCalendarOperationLock({
+        userId: 47,
+        tenantId: 84,
+        operation: 'calendar_generate',
+      }, async (lease) => {
+        const lockKey = trainingCalendarOperationLockKey({ userId: 47, tenantId: 84 });
+        secondConnection.prepare(`
+          UPDATE training_operation_locks
+             SET owner_token = 'replacement-owner',
+                 expires_at_ms = ?
+           WHERE lock_key = ?
+        `).run(Date.now() + 20 * 60_000, lockKey);
+        lease.assertActive();
+      })).rejects.toMatchObject({
+        code: 'TRAINING_OPERATION_LOCKED',
+        status: 409,
+        operation: 'calendar_generate',
+      });
+
+      expect(secondConnection.prepare(`
+        SELECT owner_token FROM training_operation_locks
+      `).get()).toEqual({ owner_token: 'replacement-owner' });
+    } finally {
+      secondConnection.close();
+      fs.rmSync(tempDir, { recursive: true, force: true });
     }
   });
 

@@ -56,7 +56,9 @@
  * partially written plan.
  */
 
+import { DateTime } from 'luxon';
 import { logger } from '../../utils/logger';
+import { resolveTrainingTimezone } from '../training-date-utils';
 import { getTrainingCoachRuleById } from './coach-rules';
 
 export type PlanLintRuleId =
@@ -65,8 +67,10 @@ export type PlanLintRuleId =
   | 'no_three_consecutive_leg_heavy_days'
   | 'no_heavy_lower_before_long_run'
   | 'no_fake_taper_without_event'
+  | 'race_date_invalid'
   | 'race_specific_plan_requires_race_date'
   | 'race_date_must_be_future'
+  | 'race_date_precedes_plan_start'
   | 'plan_duration_overshoots_race_date'
   | 'no_consecutive_identical_strength_sessions'
   | 'requested_strength_session_count'
@@ -176,6 +180,8 @@ export interface PlanLintWeek {
 
 export interface PlanLintInput {
   now: Date;
+  /** Immutable scheduling zone for plan-local calendar-day rules. */
+  timezone?: string | null;
   planId?: number;
   startDate?: string;
   /** Mark the plan as race-specific so rule 6 can fire on missing race date. */
@@ -235,8 +241,10 @@ const PLAN_LINT_COACH_RULE_MAP: Partial<Record<PlanLintRuleId, string>> = {
   no_three_consecutive_leg_heavy_days: 'hybrid-interference-protect-key-sessions',
   no_heavy_lower_before_long_run: 'hybrid-interference-protect-key-sessions',
   no_fake_taper_without_event: 'endurance-periodization-by-goal-horizon',
+  race_date_invalid: 'endurance-periodization-by-goal-horizon',
   race_specific_plan_requires_race_date: 'endurance-periodization-by-goal-horizon',
   race_date_must_be_future: 'endurance-periodization-by-goal-horizon',
+  race_date_precedes_plan_start: 'endurance-periodization-by-goal-horizon',
   plan_duration_overshoots_race_date: 'endurance-periodization-by-goal-horizon',
   no_consecutive_identical_strength_sessions: 'strength-progressive-overload-with-deloads',
   requested_strength_session_count: 'strength-progressive-overload-with-deloads',
@@ -259,16 +267,33 @@ const PLAN_LINT_COACH_RULE_MAP: Partial<Record<PlanLintRuleId, string>> = {
   session_prescription_completeness: 'coach-communication-no-raw-dumps',
 };
 
-function toDate(value: string | Date | null | undefined): Date | null {
+function toDateTime(
+  value: string | Date | null | undefined,
+  timezone: string,
+): DateTime | null {
   if (!value) return null;
-  const d = value instanceof Date ? new Date(value) : new Date(value);
-  return Number.isFinite(d.getTime()) ? d : null;
+  const parsed = value instanceof Date
+    ? DateTime.fromJSDate(value, { zone: timezone })
+    : /^\d{4}-\d{2}-\d{2}$/.test(value.trim())
+      ? DateTime.fromISO(value.trim(), { zone: timezone }).startOf('day')
+      : DateTime.fromISO(value.trim(), { zone: timezone, setZone: true }).setZone(timezone);
+  return parsed.isValid ? parsed : null;
 }
 
-function startOfDay(d: Date): Date {
-  const c = new Date(d);
-  c.setHours(0, 0, 0, 0);
-  return c;
+function lintTimezone(input: PlanLintInput): string {
+  return resolveTrainingTimezone(input.timezone);
+}
+
+function startOfLintDay(
+  value: string | Date | null | undefined,
+  timezone: string,
+): DateTime | null {
+  return toDateTime(value, timezone)?.startOf('day') ?? null;
+}
+
+function hasSuppliedRaceDate(input: PlanLintInput): boolean {
+  if (input.raceDate instanceof Date) return true;
+  return typeof input.raceDate === 'string' && input.raceDate.trim().length > 0;
 }
 
 function makeAffected(weekNumber: number, session: PlanLintSession): PlanLintAffectedSession {
@@ -293,10 +318,15 @@ function isRestLikeSession(session: PlanLintSession): boolean {
 }
 
 const DAY_ORDER = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
-const DAY_MS = 24 * 60 * 60 * 1000;
 
 function isEventBasedPlan(input: PlanLintInput): boolean {
-  return input.goalMode === 'event_based' || input.isRaceSpecific === true;
+  // F12 policy (a): any supplied race date is itself an event signal. Keeping
+  // this guard inside the linter protects internal callers that did not pass
+  // through the public route's effective-goal-mode normalization. Invalid
+  // values stay armed and are rejected by race_date_invalid below.
+  return input.goalMode === 'event_based'
+    || input.isRaceSpecific === true
+    || hasSuppliedRaceDate(input);
 }
 
 function dayIndexFor(dayOfWeek: string): number {
@@ -304,14 +334,16 @@ function dayIndexFor(dayOfWeek: string): number {
 }
 
 function ruleNoPastActiveSessions(input: PlanLintInput): PlanLintFinding | null {
-  const today = startOfDay(input.now);
+  const timezone = lintTimezone(input);
+  const today = startOfLintDay(input.now, timezone);
+  if (!today) return null;
   const offenders: PlanLintAffectedSession[] = [];
   for (const week of input.weeks) {
     for (const session of week.sessions) {
       if (!session.status || !ACTIVE_STATUSES.has(session.status)) continue;
-      const sessionDate = toDate(session.scheduledDate);
+      const sessionDate = startOfLintDay(session.scheduledDate, timezone);
       if (!sessionDate) continue;
-      if (startOfDay(sessionDate).getTime() < today.getTime()) {
+      if (sessionDate < today) {
         offenders.push(makeAffected(week.weekNumber, session));
       }
     }
@@ -324,7 +356,7 @@ function ruleNoPastActiveSessions(input: PlanLintInput): PlanLintFinding | null 
       `${offenders.length} active session${offenders.length === 1 ? '' : 's'} scheduled in the past. ` +
       `Active sessions must have a scheduled date >= today; mark them 'unscheduled' instead.`,
     affectedSessions: offenders,
-    evidence: { todayIso: today.toISOString().slice(0, 10) },
+    evidence: { todayIso: today.toISODate(), timezone },
   };
 }
 
@@ -412,29 +444,38 @@ function ruleNoThreeConsecutiveLegHeavyDays(input: PlanLintInput): PlanLintFindi
 
 function ruleNoHeavyLowerBeforeLongRun(input: PlanLintInput): PlanLintFinding | null {
   const offenders: PlanLintAffectedSession[] = [];
+  const timezone = lintTimezone(input);
 
   // Prefer exact scheduled dates when callers provide them. This catches
   // boundary cases such as "week 1 Sunday heavy lower" before "week 2
   // Monday long run", which weekday-only logic cannot see.
-  const datedSessions: Array<{ weekNumber: number; session: PlanLintSession; dayStartMs: number }> = [];
+  const datedSessions: Array<{
+    weekNumber: number;
+    session: PlanLintSession;
+    day: DateTime;
+    dayKey: string;
+  }> = [];
   for (const week of input.weeks) {
     for (const session of week.sessions) {
-      const d = toDate(session.scheduledDate);
+      const d = startOfLintDay(session.scheduledDate, timezone);
       if (!d) continue;
-      datedSessions.push({ weekNumber: week.weekNumber, session, dayStartMs: startOfDay(d).getTime() });
+      const dayKey = d.toISODate();
+      if (!dayKey) continue;
+      datedSessions.push({ weekNumber: week.weekNumber, session, day: d, dayKey });
     }
   }
   if (datedSessions.length > 0) {
-    const lowerByDay = new Map<number, Array<{ weekNumber: number; session: PlanLintSession }>>();
+    const lowerByDay = new Map<string, Array<{ weekNumber: number; session: PlanLintSession }>>();
     for (const entry of datedSessions) {
       if (!entry.session.isLowerHeavy) continue;
-      const existing = lowerByDay.get(entry.dayStartMs) ?? [];
+      const existing = lowerByDay.get(entry.dayKey) ?? [];
       existing.push({ weekNumber: entry.weekNumber, session: entry.session });
-      lowerByDay.set(entry.dayStartMs, existing);
+      lowerByDay.set(entry.dayKey, existing);
     }
     for (const entry of datedSessions) {
       if (!entry.session.isLongRun) continue;
-      const previousDay = entry.dayStartMs - DAY_MS;
+      const previousDay = entry.day.minus({ days: 1 }).toISODate();
+      if (!previousDay) continue;
       for (const heavy of lowerByDay.get(previousDay) ?? []) {
         offenders.push(makeAffected(heavy.weekNumber, heavy.session));
       }
@@ -486,10 +527,25 @@ function ruleNoHeavyLowerBeforeLongRun(input: PlanLintInput): PlanLintFinding | 
   };
 }
 
+function ruleRaceDateInvalid(input: PlanLintInput): PlanLintFinding | null {
+  if (!hasSuppliedRaceDate(input)) return null;
+  if (toDateTime(input.raceDate, lintTimezone(input))) return null;
+  return {
+    ruleId: 'race_date_invalid',
+    severity: 'blocker',
+    message: 'Race date must be a real ISO date before Nexus can generate an event-based training plan.',
+    affectedSessions: [],
+    evidence: { receivedType: input.raceDate instanceof Date ? 'date' : typeof input.raceDate },
+  };
+}
+
 function ruleNoFakeTaperWithoutEvent(input: PlanLintInput): PlanLintFinding | null {
   if (!isEventBasedPlan(input)) return null;
-  const hasRaceDate = !!toDate(input.raceDate);
+  const hasRaceDate = !!toDateTime(input.raceDate, lintTimezone(input));
   if (hasRaceDate) return null;
+  // A supplied-but-invalid value has its own precise blocker. Do not also
+  // describe that value as missing or manufacture a contradictory taper fix.
+  if (hasSuppliedRaceDate(input)) return null;
   const offenders: PlanLintAffectedSession[] = [];
   for (const week of input.weeks) {
     if (!week.focus) continue;
@@ -514,7 +570,8 @@ function ruleNoFakeTaperWithoutEvent(input: PlanLintInput): PlanLintFinding | nu
 
 function ruleRaceSpecificRequiresRaceDate(input: PlanLintInput): PlanLintFinding | null {
   if (!isEventBasedPlan(input)) return null;
-  if (toDate(input.raceDate)) return null;
+  if (toDateTime(input.raceDate, lintTimezone(input))) return null;
+  if (hasSuppliedRaceDate(input)) return null;
   return {
     ruleId: 'race_specific_plan_requires_race_date',
     severity: 'blocker',
@@ -527,34 +584,53 @@ function ruleRaceSpecificRequiresRaceDate(input: PlanLintInput): PlanLintFinding
 
 function ruleRaceDateMustBeFuture(input: PlanLintInput): PlanLintFinding | null {
   if (!isEventBasedPlan(input)) return null;
-  const raceDate = toDate(input.raceDate);
-  if (!raceDate) return null;
-  const today = startOfDay(input.now);
-  const race = startOfDay(raceDate);
-  if (race.getTime() > today.getTime()) return null;
+  const timezone = lintTimezone(input);
+  const race = startOfLintDay(input.raceDate, timezone);
+  const today = startOfLintDay(input.now, timezone);
+  if (!race || !today) return null;
+  if (race > today) return null;
   return {
     ruleId: 'race_date_must_be_future',
     severity: 'blocker',
     message: 'Race date must be in the future before Nexus can generate an event-based training plan.',
     affectedSessions: [],
     evidence: {
-      todayIso: today.toISOString().slice(0, 10),
-      raceDateIso: race.toISOString().slice(0, 10),
+      todayIso: today.toISODate(),
+      raceDateIso: race.toISODate(),
+      timezone,
+    },
+  };
+}
+
+function ruleRaceDateDoesNotPrecedePlanStart(input: PlanLintInput): PlanLintFinding | null {
+  if (!isEventBasedPlan(input)) return null;
+  const timezone = lintTimezone(input);
+  const race = startOfLintDay(input.raceDate, timezone);
+  const start = startOfLintDay(input.startDate, timezone);
+  if (!race || !start || race >= start) return null;
+  return {
+    ruleId: 'race_date_precedes_plan_start',
+    severity: 'blocker',
+    message: 'Race date occurs before the resolved training-plan start date. Choose an earlier start or a later race.',
+    affectedSessions: [],
+    evidence: {
+      startDateIso: start.toISODate(),
+      raceDateIso: race.toISODate(),
+      timezone,
     },
   };
 }
 
 function rulePlanDurationDoesNotOvershootRaceDate(input: PlanLintInput): PlanLintFinding | null {
   if (!isEventBasedPlan(input)) return null;
-  const raceDate = toDate(input.raceDate);
-  const startDate = toDate(input.startDate);
+  const timezone = lintTimezone(input);
+  const race = startOfLintDay(input.raceDate, timezone);
+  const start = startOfLintDay(input.startDate, timezone);
   const durationWeeks = Number(input.durationWeeks);
-  if (!raceDate || !startDate || !Number.isFinite(durationWeeks) || durationWeeks <= 0) return null;
-  const start = startOfDay(startDate);
-  const race = startOfDay(raceDate);
-  if (race.getTime() < start.getTime()) return null;
+  if (!race || !start || !Number.isFinite(durationWeeks) || durationWeeks <= 0) return null;
+  if (race < start) return null;
   const planDays = Math.round(durationWeeks * 7);
-  const daysThroughRace = Math.floor((race.getTime() - start.getTime()) / DAY_MS) + 1;
+  const daysThroughRace = Math.floor(race.diff(start, 'days').days) + 1;
   if (planDays <= daysThroughRace) return null;
   return {
     ruleId: 'plan_duration_overshoots_race_date',
@@ -562,10 +638,11 @@ function rulePlanDurationDoesNotOvershootRaceDate(input: PlanLintInput): PlanLin
     message: `Requested ${durationWeeks} week plan extends beyond the race date. Shorten the plan or move the start date.`,
     affectedSessions: [],
     evidence: {
-      startDateIso: start.toISOString().slice(0, 10),
-      raceDateIso: race.toISOString().slice(0, 10),
+      startDateIso: start.toISODate(),
+      raceDateIso: race.toISODate(),
       planDays,
       daysThroughRace,
+      timezone,
     },
   };
 }
@@ -707,17 +784,16 @@ function ruleNoSessionsOutsidePlanWindow(input: PlanLintInput): PlanLintFinding 
     }
   }
 
-  const start = toDate(input.startDate);
+  const timezone = lintTimezone(input);
+  const start = startOfLintDay(input.startDate, timezone);
   if (start) {
-    const startDay = startOfDay(start);
-    const endExclusive = new Date(startDay.getTime() + durationWeeks * 7 * 24 * 60 * 60 * 1000);
+    const endExclusive = start.plus({ days: durationWeeks * 7 });
     for (const week of input.weeks) {
       for (const session of week.sessions) {
         if (!isActiveSession(session)) continue;
-        const scheduledDate = toDate(session.scheduledDate);
-        if (!scheduledDate) continue;
-        const sessionDay = startOfDay(scheduledDate);
-        if (sessionDay.getTime() < startDay.getTime() || sessionDay.getTime() >= endExclusive.getTime()) {
+        const sessionDay = startOfLintDay(session.scheduledDate, timezone);
+        if (!sessionDay) continue;
+        if (sessionDay < start || sessionDay >= endExclusive) {
           offenders.push(makeAffected(week.weekNumber, session));
         }
       }
@@ -1017,10 +1093,12 @@ function isEnduranceTrainingSession(session: PlanLintSession): boolean {
 
 function isHardEnduranceSession(session: PlanLintSession): boolean {
   if (!isEnduranceTrainingSession(session)) return false;
-  const roleText = sessionRoleText(session);
+  const roleText = sessionRoleText(session).replace(/[_-]+/g, ' ');
   const text = sessionSearchText(session);
   const hardPattern = /\b(threshold|interval|tempo|vo2|speed|race\s*pace|hill|hard|anaerobic|zone\s*[4-7]|z[4-7])\b/;
-  if (session.isKey === true || hardPattern.test(roleText)) return true;
+  // Key marks plan priority, not intensity: controlled long sessions and
+  // aerobic bricks can be key without counting toward the hard-session cap.
+  if (hardPattern.test(roleText)) return true;
   if (/\b(recovery|easy|aerobic|zone\s*[12]|z[12]|mobility|drill|technique)\b/.test(roleText)) return false;
   return hardPattern.test(text);
 }
@@ -1120,9 +1198,11 @@ const RULES: Array<(input: PlanLintInput) => PlanLintFinding | null> = [
   ruleEquipmentCompatibility,
   ruleNoThreeConsecutiveLegHeavyDays,
   ruleNoHeavyLowerBeforeLongRun,
+  ruleRaceDateInvalid,
   ruleNoFakeTaperWithoutEvent,
   ruleRaceSpecificRequiresRaceDate,
   ruleRaceDateMustBeFuture,
+  ruleRaceDateDoesNotPrecedePlanStart,
   rulePlanDurationDoesNotOvershootRaceDate,
   ruleNoConsecutiveIdenticalStrengthSessions,
   ruleTwoADayCap,
@@ -1148,10 +1228,14 @@ const SUGGESTED_FIXES: Record<PlanLintRuleId, string> = {
     'Move heavy lower-body strength two days before the long run, or convert that day to upper-body.',
   no_fake_taper_without_event:
     'Use neutral focus copy ("deload"/"review") OR collect race date via training-profile follow-up.',
+  race_date_invalid:
+    'Ask for a real race date in ISO YYYY-MM-DD form before generating an event-specific plan.',
   race_specific_plan_requires_race_date:
     'Block plan generation until race date is provided; emit follow-up question through training-profile-requirements.',
   race_date_must_be_future:
     'Ask for a future race date before generating an event-specific plan.',
+  race_date_precedes_plan_start:
+    'Choose a plan start on or before the race date, or ask the user for a later race date.',
   plan_duration_overshoots_race_date:
     'Shorten the generated plan duration or ask the user to choose a later race/start date.',
   no_consecutive_identical_strength_sessions:

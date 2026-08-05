@@ -115,8 +115,9 @@ function buildTrainingSessionExplainData(
     currentWeekIntensityPct: currentWeek?.intensity_pct ?? null,
     adherenceRate: adherence?.adherenceRate ?? null,
     completedSessions: adherence?.completedSessions ?? activeSessions.filter((session) => normalizeStatus(session.status) === 'completed').length,
+    partialSessions: adherence?.partialSessions ?? activeSessions.filter((session) => normalizeStatus(session.status) === 'partial').length,
     skippedSessions: adherence?.skippedSessions ?? activeSessions.filter((session) => normalizeStatus(session.status) === 'skipped').length,
-    pendingSessions: adherence?.pendingSessions ?? activeSessions.filter((session) => normalizeStatus(session.status) !== 'completed' && normalizeStatus(session.status) !== 'skipped').length,
+    pendingSessions: adherence?.pendingSessions ?? activeSessions.filter((session) => !['completed', 'partial', 'skipped'].includes(normalizeStatus(session.status))).length,
     totalSessions: adherence?.totalSessions ?? activeSessions.length,
     topSessions,
   };
@@ -162,6 +163,7 @@ function buildTrainingHeader(
   const sessionText = sessionCountPhrase(data.totalSessions, locale);
   const statusParts: string[] = [];
   if (data.completedSessions > 0) statusParts.push(progressPhrase(data.completedSessions, locale, 'completed'));
+  if (data.partialSessions > 0) statusParts.push(progressPhrase(data.partialSessions, locale, 'partial'));
   if (data.pendingSessions > 0) statusParts.push(progressPhrase(data.pendingSessions, locale, 'pending'));
   if (data.skippedSessions > 0) statusParts.push(progressPhrase(data.skippedSessions, locale, 'skipped'));
   if (data.adherenceRate != null) statusParts.push(adherencePhrase(data.adherenceRate, locale));
@@ -184,14 +186,16 @@ function sessionCountPhrase(count: number, locale: ChatCoreV2NormalizedLocale): 
 function progressPhrase(
   count: number,
   locale: ChatCoreV2NormalizedLocale,
-  kind: 'completed' | 'pending' | 'skipped',
+  kind: 'completed' | 'partial' | 'pending' | 'skipped',
 ): string {
   if (locale === 'pt-BR' || locale === 'pt-PT') {
     if (kind === 'completed') return `${count} ${plural(count, 'concluída', 'concluídas')}`;
+    if (kind === 'partial') return `${count} ${plural(count, 'parcial', 'parciais')}`;
     if (kind === 'skipped') return `${count} ${plural(count, 'saltada', 'saltadas')}`;
     return `${count} ${plural(count, 'pendente', 'pendentes')}`;
   }
   if (kind === 'completed') return `${count} completed`;
+  if (kind === 'partial') return `${count} partial`;
   if (kind === 'skipped') return `${count} skipped`;
   return `${count} pending`;
 }
@@ -248,6 +252,10 @@ function statusLabel(status: string, locale: ChatCoreV2NormalizedLocale): string
   if (status === 'completed') {
     if (locale === 'pt-BR' || locale === 'pt-PT') return 'concluída';
     return 'completed';
+  }
+  if (status === 'partial') {
+    if (locale === 'pt-BR' || locale === 'pt-PT') return 'parcial';
+    return 'partial';
   }
   if (status === 'skipped') {
     if (locale === 'pt-BR' || locale === 'pt-PT') return 'saltada';

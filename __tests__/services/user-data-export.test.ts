@@ -832,6 +832,91 @@ describe('exportAllUserData', () => {
     ]);
   });
 
+  it('exports and explicitly inventories rich compatibility-plan completions by plan ownership', () => {
+    seedUser(testDb, 1);
+    seedUser(testDb, 2, { username: 'other' });
+    const insertPlan = testDb.prepare(`
+      INSERT INTO fitness_training_plans (
+        id, user_id, name, sport, goal, duration_weeks, periodization,
+        status, start_date, end_date, preferences_json
+      ) VALUES (?, ?, ?, 'running', 'Finish safely', 4, 'linear',
+                'active', '2026-08-01', '2026-08-28', ?)
+    `);
+    insertPlan.run(9101, 1, 'Owner plan', JSON.stringify({ schedulingTimezone: 'Europe/Lisbon' }));
+    insertPlan.run(9201, 2, 'Other plan', JSON.stringify({ schedulingTimezone: 'America/New_York' }));
+    testDb.prepare(`
+      INSERT INTO training_weeks (id, plan_id, week_number, focus)
+      VALUES (9111, 9101, 1, 'base'), (9211, 9201, 1, 'base')
+    `).run();
+    testDb.prepare(`
+      INSERT INTO training_sessions (
+        id, week_id, plan_id, day_of_week, session_type, title, status
+      ) VALUES
+        (9121, 9111, 9101, 'Monday', 'running', 'Owner run', 'completed'),
+        (9221, 9211, 9201, 'Tuesday', 'running', 'Other run', 'completed')
+    `).run();
+    const insertCompletion = testDb.prepare(`
+      INSERT INTO training_completions (
+        id, session_id, plan_id, completed_at, actual_exercises_json,
+        rpe_overall, duration_minutes, energy_level, soreness_level, notes,
+        completion_state, readiness_level, difficulty_feedback,
+        duration_feedback, discomfort_flag, discomfort_flags_json,
+        discomfort_locations_json, discomfort_details,
+        substitutions_used_json, felt_too_hard, felt_too_easy,
+        felt_too_long, felt_too_short, modality, session_role
+      ) VALUES (
+        ?, ?, ?, '2026-08-02T08:00:00.000Z', ?, 8, 47, 6, 4, ?,
+        'partial', 5, 'hard', 'too_long', 1, ?, ?, ?, ?, 1, 0, 1, 0,
+        'run', 'quality'
+      )
+    `);
+    insertCompletion.run(
+      9131,
+      9121,
+      9101,
+      JSON.stringify([{ name: 'Tempo intervals', completed: 4 }]),
+      'Owner private feedback',
+      JSON.stringify(['pain']),
+      JSON.stringify(['left_knee']),
+      'Stopped before the final interval',
+      JSON.stringify(['walk_recovery']),
+    );
+    insertCompletion.run(
+      9231,
+      9221,
+      9201,
+      JSON.stringify([{ name: 'Other private workout', completed: 3 }]),
+      'Other private feedback',
+      JSON.stringify(['fatigue']),
+      JSON.stringify(['right_ankle']),
+      'Other private detail',
+      JSON.stringify(['bike']),
+    );
+
+    const exported = exportAllUserData(1);
+
+    // F18 privacy guarantee: compatibility rows have no direct user_id on
+    // children, so ownership must be derived through the parent plan.
+    expect(exported.trainingPlanCompatibility.completions).toEqual([
+      expect.objectContaining({
+        id: 9131,
+        completion_state: 'partial',
+        notes: 'Owner private feedback',
+        discomfort_locations: ['left_knee'],
+        substitutions_used: ['walk_recovery'],
+      }),
+    ]);
+    expect(JSON.stringify(exported.trainingPlanCompatibility)).not.toContain('Other private');
+
+    const inventory = getAccountDeletionInventoryForUser(1);
+    expect(inventory.deletableTables.training_completions).toBe(1);
+
+    const counts = deleteAllUserData(1);
+    expect(counts.training_completions).toBe(1);
+    expect(testDb.prepare('SELECT id FROM training_completions ORDER BY id').all())
+      .toEqual([{ id: 9231 }]);
+  });
+
   it('handles missing tables gracefully', () => {
     // Just export with no data seeded — should not throw
     const exported = exportAllUserData(999);

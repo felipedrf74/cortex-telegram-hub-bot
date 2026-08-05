@@ -504,7 +504,7 @@ describe('M19 cross-skill ownership on the segment router', () => {
       makePlan([makeStep({
         skill: 'training',
         action: 'training_plan_create',
-        args: { sport: 'running', goal: 'weekly workout plan', durationWeeks: 1, startDate: '2026-07-20', weeklyVolumeKm: 20 },
+        args: { objective: 'weekly running workout plan', durationWeeks: 1, sessionsPerWeek: 4, startPolicy: 'next_full_week' },
         requiredArgsPresent: true,
       })]),
       // Pre-M19 real-world misroute for "add it to my calendar".

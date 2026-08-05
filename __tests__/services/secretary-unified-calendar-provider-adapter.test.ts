@@ -4,18 +4,22 @@ const unifiedCalendar = vi.hoisted(() => ({
   createEvent: vi.fn(),
   updateEvent: vi.fn(),
   deleteEvent: vi.fn(),
+  getEventById: vi.fn(),
 }));
 
 const googleCalendar = vi.hoisted(() => ({
   getEvents: vi.fn(),
+  getEventById: vi.fn(),
 }));
 
 const outlookCalendar = vi.hoisted(() => ({
   getEvents: vi.fn(),
+  getEventById: vi.fn(),
 }));
 
 const trainingPlans = vi.hoisted(() => ({
   getSessionById: vi.fn(),
+  getSessionByIdForScope: vi.fn(),
   getPlanById: vi.fn(),
 }));
 
@@ -39,7 +43,7 @@ const input: SecretaryProviderEventInput = {
   sourceEntityId: 'session_123',
   sourceEntityType: 'training_session',
   ownerUserId: 42,
-  tenantId: 'tenant-a',
+  tenantId: '42',
   version: 3,
   title: 'Endurance ride',
   startAt: '2026-05-04T09:00:00.000Z',
@@ -53,11 +57,12 @@ const input: SecretaryProviderEventInput = {
 beforeEach(() => {
   vi.clearAllMocks();
   trainingPlans.getSessionById.mockReturnValue(null);
+  trainingPlans.getSessionByIdForScope.mockReturnValue(null);
   trainingPlans.getPlanById.mockReturnValue(null);
 });
 
 describe('secretary-unified-calendar-provider-adapter', () => {
-  it('creates provider events with user-facing descriptions instead of Secretary identity markers', async () => {
+  it('writes an exact Secretary agenda marker while keeping the public description builder marker-free', async () => {
     unifiedCalendar.createEvent.mockResolvedValue({
       id: 'google_event_1',
       source: 'google',
@@ -79,13 +84,78 @@ describe('secretary-unified-calendar-provider-adapter', () => {
       title: 'Endurance ride',
       start: input.startAt,
       end: input.endAt,
-      description: expect.not.stringContaining('NEXUS_SECRETARY_'),
+      description: expect.stringContaining('NEXUS_SECRETARY_AGENDA_ITEM:sec_agenda_123'),
       categories: ['Nexus', 'Secretary', 'training'],
     }), 'google', 42);
+    expect(buildSecretaryCalendarDescription(input)).not.toContain('NEXUS_SECRETARY_');
+  });
+
+  it('fails closed when a corrupt sourceEntityId points at another tenant\'s Training session', async () => {
+    const currentUser = { userId: 42, tenantId: 42 };
+    const foreignUser = { userId: 99, tenantId: 99 };
+    const foreignSession = {
+      id: 970,
+      plan_id: 390,
+      tenant_id: foreignUser.tenantId,
+      session_type: 'swim',
+      title: 'FOREIGN PRIVATE SWIM',
+      description: 'FOREIGN PRIVATE WORKOUT BODY',
+      duration_minutes: 75,
+      session_identity_key: 'foreign-private-session-key',
+      session_shape_hash: 'foreign-private-session-shape',
+    };
+    // Model the canonical scoped repository boundary: the row exists for the
+    // foreign tenant, but it is invisible in the current agenda item's scope.
+    trainingPlans.getSessionByIdForScope.mockImplementation((sessionId, scope) => (
+      sessionId === foreignSession.id
+      && scope.userId === foreignUser.userId
+      && scope.tenantId === foreignUser.tenantId
+        ? foreignSession
+        : null
+    ));
+    // The pre-fix global loader sees the foreign row. Keeping this mock makes
+    // the regression red if the adapter ever falls back to unscoped hydration.
+    trainingPlans.getSessionById.mockReturnValue(foreignSession);
+    trainingPlans.getPlanById.mockReturnValue({
+      id: foreignSession.plan_id,
+      user_id: foreignUser.userId,
+      tenant_id: foreignUser.tenantId,
+      plan_version: 7,
+    });
+    unifiedCalendar.createEvent.mockResolvedValue({
+      id: 'google_current_user_event',
+      source: 'google',
+      summary: 'Current user workout',
+      start: input.startAt,
+      end: input.endAt,
+      description: 'Current user workout',
+    });
+
+    const adapter = createUnifiedCalendarSecretaryProviderAdapter('google');
+    await adapter.createEvent({
+      ...input,
+      ownerUserId: currentUser.userId,
+      tenantId: String(currentUser.tenantId),
+      title: 'Current user workout',
+      sourceIntentId: 'training:39:1:969',
+      // Corrupt/misrouted pointer: session 970 belongs to user/tenant 99.
+      sourceEntityId: String(foreignSession.id),
+      durationMinutes: 30,
+    });
+
+    expect(trainingPlans.getSessionByIdForScope).toHaveBeenCalledWith(
+      foreignSession.id,
+      currentUser,
+    );
+    expect(trainingPlans.getSessionById).not.toHaveBeenCalled();
+    const providerWrite = unifiedCalendar.createEvent.mock.calls[0][0];
+    expect(providerWrite.title).toBe('🏋️ Current user workout (30min)');
+    expect(providerWrite.description).not.toContain('FOREIGN PRIVATE');
+    expect(providerWrite.description).not.toContain('NEXUS_TRAINING_IDENTITY');
   });
 
   it('puts Training session content in provider descriptions without internal markers', () => {
-    trainingPlans.getSessionById.mockReturnValue({
+    trainingPlans.getSessionByIdForScope.mockReturnValue({
       id: 970,
       description: [
         'WARM-UP:',
@@ -115,7 +185,7 @@ describe('secretary-unified-calendar-provider-adapter', () => {
   });
 
   it('falls back to useful Training event body when the session row is unavailable', () => {
-    trainingPlans.getSessionById.mockReturnValue(null);
+    trainingPlans.getSessionByIdForScope.mockReturnValue(null);
 
     const description = buildSecretaryCalendarDescription({
       ...input,
@@ -146,13 +216,13 @@ describe('secretary-unified-calendar-provider-adapter', () => {
     await adapter.updateEvent('google_event_1', input);
     await adapter.deleteEvent('google_event_1', input);
 
-    expect(unifiedCalendar.updateEvent).toHaveBeenCalledWith({
+    expect(unifiedCalendar.updateEvent).toHaveBeenCalledWith(expect.objectContaining({
       event_id: 'google_event_1',
       new_title: 'Endurance ride',
       new_start: input.startAt,
       new_end: input.endAt,
-      new_description: buildSecretaryCalendarDescription(input),
-    }, 'google', 42);
+      new_description: expect.stringContaining('NEXUS_SECRETARY_AGENDA_ITEM:sec_agenda_123'),
+    }), 'google', 42);
     expect(unifiedCalendar.deleteEvent).toHaveBeenCalledWith('google_event_1', 'google', 42);
   });
 
@@ -176,11 +246,20 @@ describe('secretary-unified-calendar-provider-adapter', () => {
         end: input.endAt,
         description: 'NEXUS_SECRETARY_AGENDA_ITEM:other_agenda',
       },
+      {
+        id: 'google_markerless_collision',
+        summary: input.title,
+        start: input.startAt,
+        end: input.endAt,
+        description: 'Same title and time, but no ownership marker.',
+      },
     ]);
     const adapter = createUnifiedCalendarSecretaryProviderAdapter('google');
 
     const events = await adapter.findEventsByAgendaItemId!('sec_agenda_123', input);
 
+    // Stronger ownership guarantee: title/time similarity is never authority
+    // to adopt or later delete a provider event.
     expect(events.map((event) => event.eventId)).toEqual(['google_event_1']);
     expect(googleCalendar.getEvents).toHaveBeenCalledWith(
       '2026-05-03T09:00:00.000Z',
@@ -188,6 +267,32 @@ describe('secretary-unified-calendar-provider-adapter', () => {
       42,
     );
     expect(outlookCalendar.getEvents).not.toHaveBeenCalled();
+  });
+
+  it('uses an exact provider read when a mapped event moved outside the bounded discovery window', async () => {
+    googleCalendar.getEvents.mockResolvedValue([]);
+    unifiedCalendar.getEventById.mockResolvedValue({
+      id: 'google_event_moved',
+      source: 'google',
+      summary: 'Endurance ride moved by the user',
+      start: '2026-05-08T09:00:00.000Z',
+      end: '2026-05-08T10:00:00.000Z',
+      description: 'NEXUS_SECRETARY_AGENDA_ITEM:sec_agenda_123',
+    });
+    const adapter = createUnifiedCalendarSecretaryProviderAdapter('google');
+
+    const read = await adapter.getEvent!('google_event_moved', input);
+
+    expect(read).toEqual({
+      status: 'found',
+      event: expect.objectContaining({
+        eventId: 'google_event_moved',
+        source: 'google',
+        agendaItemId: 'sec_agenda_123',
+      }),
+    });
+    expect(unifiedCalendar.getEventById).toHaveBeenCalledWith('google_event_moved', 'google', 42);
+    expect(googleCalendar.getEvents).not.toHaveBeenCalled();
   });
 
   it('recognizes Training-created calendar events without creating a Secretary duplicate', async () => {
@@ -200,7 +305,7 @@ describe('secretary-unified-calendar-provider-adapter', () => {
       endAt: '2026-05-04T18:40:00.000Z',
       durationMinutes: 40,
     };
-    trainingPlans.getSessionById.mockReturnValue({
+    trainingPlans.getSessionByIdForScope.mockReturnValue({
       id: 970,
       session_type: 'gym',
       duration_minutes: 40,
@@ -232,6 +337,78 @@ describe('secretary-unified-calendar-provider-adapter', () => {
     });
   });
 
+  it('adopts a prior-version Training event only when the durable identity key and shape still match', async () => {
+    const trainingInput: SecretaryProviderEventInput = {
+      ...input,
+      sourceIntentId: 'training:39:4:971',
+      sourceEntityId: '971',
+      title: 'Lower Body Strength B',
+      startAt: '2026-05-06T18:00:00.000Z',
+      endAt: '2026-05-06T18:40:00.000Z',
+      durationMinutes: 40,
+    };
+    trainingPlans.getSessionByIdForScope.mockReturnValue({
+      id: 971,
+      plan_id: 39,
+      session_type: 'gym',
+      duration_minutes: 40,
+      session_identity_key: 'plan:39|week:1|day:wednesday|type:gym|slot:1',
+      session_shape_hash: 'stable-shape',
+    });
+    googleCalendar.getEvents.mockResolvedValue([
+      {
+        id: 'google_training_prior_version',
+        summary: '💪 Lower Body Strength B (40min)',
+        start: '2026-05-04T18:00:00.000Z',
+        end: '2026-05-04T18:40:00.000Z',
+        description: appendTrainingIdentityMarker('Prior-version work', {
+          planId: 39,
+          planVersion: 3,
+          sessionId: 970,
+          sessionIdentityKey: 'plan:39|week:1|day:wednesday|type:gym|slot:1',
+          sessionShapeHash: 'stable-shape',
+        }),
+      },
+      {
+        id: 'google_training_same_key_wrong_shape',
+        summary: '💪 Lower Body Strength B (40min)',
+        start: trainingInput.startAt,
+        end: trainingInput.endAt,
+        description: appendTrainingIdentityMarker('Materially changed work', {
+          planId: 39,
+          planVersion: 3,
+          sessionId: 969,
+          sessionIdentityKey: 'plan:39|week:1|day:wednesday|type:gym|slot:1',
+          sessionShapeHash: 'different-shape',
+        }),
+      },
+      {
+        id: 'google_training_same_version_sideways',
+        summary: '💪 Lower Body Strength B (40min)',
+        start: trainingInput.startAt,
+        end: trainingInput.endAt,
+        description: appendTrainingIdentityMarker('Corrupt sibling identity', {
+          planId: 39,
+          planVersion: 4,
+          sessionId: 972,
+          sessionIdentityKey: 'plan:39|week:1|day:wednesday|type:gym|slot:1',
+          sessionShapeHash: 'stable-shape',
+        }),
+      },
+    ]);
+    const adapter = createUnifiedCalendarSecretaryProviderAdapter('google');
+
+    const events = await adapter.findEventsByAgendaItemId!('sec_agenda_123', trainingInput);
+
+    // Stronger guarantee: cross-version adoption is identity-and-shape based;
+    // title/time similarity and a stable key alone are insufficient authority.
+    expect(events.map((event) => event.eventId)).toEqual(['google_training_prior_version']);
+    expect(events[0]).toMatchObject({
+      agendaItemId: 'sec_agenda_123',
+      trainingOwned: true,
+    });
+  });
+
   it('formats Training provider writes like direct Training calendar sync titles', async () => {
     const trainingInput: SecretaryProviderEventInput = {
       ...input,
@@ -242,7 +419,7 @@ describe('secretary-unified-calendar-provider-adapter', () => {
       endAt: '2026-05-04T18:40:00.000Z',
       durationMinutes: 40,
     };
-    trainingPlans.getSessionById.mockReturnValue({
+    trainingPlans.getSessionByIdForScope.mockReturnValue({
       id: 970,
       session_type: 'gym',
       duration_minutes: 40,
@@ -275,7 +452,7 @@ describe('secretary-unified-calendar-provider-adapter', () => {
       title: 'Lower Body Strength B',
       durationMinutes: 40,
     };
-    trainingPlans.getSessionById.mockReturnValue({
+    trainingPlans.getSessionByIdForScope.mockReturnValue({
       id: 970,
       plan_id: 39,
       session_type: 'gym',
@@ -318,7 +495,7 @@ describe('secretary-unified-calendar-provider-adapter', () => {
       title: 'Lower Body Strength B',
       durationMinutes: 40,
     };
-    trainingPlans.getSessionById.mockReturnValue({
+    trainingPlans.getSessionByIdForScope.mockReturnValue({
       id: 970,
       plan_id: 39,
       session_type: 'gym',
@@ -351,9 +528,10 @@ describe('secretary-unified-calendar-provider-adapter', () => {
 
     const events = await adapter.findEventsByAgendaItemId!('sec_agenda_123', trainingInput);
 
+    // Stronger ownership guarantee: the markerless Secretary-looking copy is
+    // not relabeled as ours merely because its title and slot match.
     expect(events.map((event) => [event.eventId, event.trainingOwned === true])).toEqual([
       ['google_training_direct', true],
-      ['google_secretary_copy', false],
     ]);
   });
 
@@ -367,7 +545,7 @@ describe('secretary-unified-calendar-provider-adapter', () => {
       endAt: '2026-07-06T18:40:00.000Z',
       durationMinutes: 40,
     };
-    trainingPlans.getSessionById.mockReturnValue({
+    trainingPlans.getSessionByIdForScope.mockReturnValue({
       id: 970,
       plan_id: 39,
       session_type: 'gym',
@@ -393,7 +571,7 @@ describe('secretary-unified-calendar-provider-adapter', () => {
   });
 
   it('rejects Training marker matches from a different plan and tolerates non-training intent ids', async () => {
-    trainingPlans.getSessionById.mockReturnValue({
+    trainingPlans.getSessionByIdForScope.mockReturnValue({
       id: 970,
       plan_id: 39,
       session_type: 'gym',
@@ -483,7 +661,7 @@ describe('secretary-unified-calendar-provider-adapter', () => {
         { name: 'Plank', sets: 3, durationSeconds: 60 },
       ],
     };
-    trainingPlans.getSessionById.mockReturnValue({
+    trainingPlans.getSessionByIdForScope.mockReturnValue({
       id: 970,
       description: null,
       description_json: JSON.stringify(sections),
@@ -507,7 +685,7 @@ describe('secretary-unified-calendar-provider-adapter', () => {
   });
 
   it('R-2026-05-25 Bug #3 — falls back to title+intensity+duration when description AND description_json are both empty', () => {
-    trainingPlans.getSessionById.mockReturnValue({
+    trainingPlans.getSessionByIdForScope.mockReturnValue({
       id: 971,
       description: null,
       description_json: null,
@@ -530,7 +708,7 @@ describe('secretary-unified-calendar-provider-adapter', () => {
   });
 
   it('R-2026-05-25 Bug #3 — fallback omits missing fields cleanly (no orphan separators)', () => {
-    trainingPlans.getSessionById.mockReturnValue({
+    trainingPlans.getSessionByIdForScope.mockReturnValue({
       id: 972,
       description: null,
       description_json: null,
@@ -553,7 +731,7 @@ describe('secretary-unified-calendar-provider-adapter', () => {
   });
 
   it('R-2026-05-25 Bug #3 — gracefully handles malformed description_json (logs + falls through to fallback)', () => {
-    trainingPlans.getSessionById.mockReturnValue({
+    trainingPlans.getSessionByIdForScope.mockReturnValue({
       id: 973,
       description: null,
       description_json: '{not-json',
@@ -575,7 +753,7 @@ describe('secretary-unified-calendar-provider-adapter', () => {
   });
 
   it('R-2026-05-25 Bug #3 — emits useful fallback body when session row is missing', () => {
-    trainingPlans.getSessionById.mockReturnValue(null);
+    trainingPlans.getSessionByIdForScope.mockReturnValue(null);
 
     const description = buildSecretaryCalendarDescription({
       ...input,
@@ -590,7 +768,7 @@ describe('secretary-unified-calendar-provider-adapter', () => {
   });
 
   it('R-2026-05-25 Bug #3 — new user-facing description no longer carries a Secretary marker', () => {
-    trainingPlans.getSessionById.mockReturnValue({
+    trainingPlans.getSessionByIdForScope.mockReturnValue({
       id: 974,
       description: 'Tempo run · 5 km @ Z3',
       description_json: null,

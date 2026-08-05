@@ -498,6 +498,8 @@ describe('training-read-models', () => {
       reasonCode: 'maintain',
       source: 'garmin',
       asOf: '2026-06-11T07:30:00.000Z',
+      computedAt: '2026-06-11T07:30:00.000Z',
+      dataAsOf: '2026-06-11T06:50:00.000Z',
       factors: {
         sleep: { score: 88, durationHours: 7.5 },
         hrv: { trend: 'stable' },
@@ -516,6 +518,8 @@ describe('training-read-models', () => {
       reasonCode: 'maintain',
       source: 'garmin',
       asOf: '2026-06-11T07:30:00.000Z',
+      computedAt: '2026-06-11T07:30:00.000Z',
+      dataAsOf: '2026-06-11T06:50:00.000Z',
       sleepDurationHours: 7.5,
       reasoning: 'Recovered well overnight.',
       factors: {
@@ -529,7 +533,7 @@ describe('training-read-models', () => {
     expect(hoisted.calculateReadiness).toHaveBeenCalledTimes(1);
   });
 
-  it('passes null source and asOf through when the scorer omits provenance', async () => {
+  it('keeps additive timestamp fields nullable when the scorer omits provenance', async () => {
     mockReadinessResult = {
       score: 60,
       recommendation: 'normal',
@@ -540,6 +544,8 @@ describe('training-read-models', () => {
     const result = await getReadiness(42);
     expect(result.source).toBeNull();
     expect(result.asOf).toBeNull();
+    expect(result.computedAt).toBeNull();
+    expect(result.dataAsOf).toBeNull();
     expect(result.sleepDurationHours).toBeNull();
     expect(result.reasoning).toBeNull();
   });
@@ -587,9 +593,13 @@ describe('training-read-models', () => {
   });
 
   it('maps readiness into coach-kernel plan input and returns null for missing useful data', async () => {
+    const freshDataAsOf = new Date().toISOString();
     mockReadinessResult = {
       score: 81,
       reasoning: 'Recovered well overnight.',
+      computedAt: freshDataAsOf,
+      asOf: freshDataAsOf,
+      dataAsOf: freshDataAsOf,
       factors: {
         sleep: { durationHours: 7.5 },
         hrv: { trend: 'up' },
@@ -604,6 +614,7 @@ describe('training-read-models', () => {
       dataSource: 'wearable',
       isStale: false,
       reasonCode: null,
+      capturedAt: freshDataAsOf,
       sleepHours: 7.5,
       hrvStatus: 'high',
       energyReserve: 78,
@@ -648,7 +659,9 @@ describe('training-read-models', () => {
         recommendation: 'reduce_10pct',
         reasoning: 'Garmin readiness is available but old.',
         source: 'garmin',
-        asOf: '2026-07-06T06:00:00.000Z',
+        computedAt: '2026-07-08T12:00:00.000Z',
+        asOf: '2026-07-08T12:00:00.000Z',
+        dataAsOf: '2026-07-06T06:00:00.000Z',
         factors: {
           sleep: { durationHours: 6.2 },
           hrv: { trend: 'stable' },
@@ -664,6 +677,7 @@ describe('training-read-models', () => {
         dataSource: 'wearable',
         isStale: true,
         reasonCode: 'wearable_sync_stale',
+        capturedAt: '2026-07-06T06:00:00.000Z',
         sleepHours: 6.2,
         hrvStatus: 'normal',
         energyReserve: 55,
@@ -674,7 +688,7 @@ describe('training-read-models', () => {
     }
   });
 
-  it('keeps readiness staleness classification honest across asOf edge cases', async () => {
+  it('classifies source freshness conservatively without falling back to compute-time asOf', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-07-08T12:00:00.000Z'));
     const baseReadiness = {
@@ -682,42 +696,63 @@ describe('training-read-models', () => {
       recommendation: 'normal',
       reasoning: 'Edge-case readiness.',
       source: 'garmin',
+      computedAt: '2026-07-08T12:00:00.000Z',
+      asOf: '2026-07-08T12:00:00.000Z',
       factors: { sleep: { durationHours: 7 }, hrv: { trend: 'stable' }, bodyBattery: { current: 60 } },
     };
     try {
       // Recent same-day sync stays fresh.
-      mockReadinessResult = { ...baseReadiness, asOf: '2026-07-08T11:00:00.000Z' };
+      mockReadinessResult = { ...baseReadiness, dataAsOf: '2026-07-08T11:00:00.000Z' };
       expect(await fetchCurrentReadinessForPlan(42, 42)).toMatchObject({
         confidence: 'fresh_wearable',
         isStale: false,
         reasonCode: null,
+        capturedAt: '2026-07-08T11:00:00.000Z',
       });
 
       // Exactly 36h is the boundary and stays fresh (strict '>' cutoff).
-      mockReadinessResult = { ...baseReadiness, asOf: '2026-07-07T00:00:00.000Z' };
+      mockReadinessResult = { ...baseReadiness, dataAsOf: '2026-07-07T00:00:00.000Z' };
       expect(await fetchCurrentReadinessForPlan(42, 42)).toMatchObject({
         confidence: 'fresh_wearable',
         isStale: false,
       });
 
-      // Unparseable and future timestamps must not flag staleness.
-      mockReadinessResult = { ...baseReadiness, asOf: 'not-a-date' };
-      expect(await fetchCurrentReadinessForPlan(42, 42)).toMatchObject({
-        confidence: 'fresh_wearable',
+      // Stronger F32 guarantee: a fresh computation/legacy alias cannot
+      // upgrade missing source provenance, but absence is not evidence that
+      // the provider data is old. Use the existing no-data confidence with a
+      // wearable source and an explicit freshness-unknown reason instead of
+      // fabricating `stale_provider`.
+      mockReadinessResult = { ...baseReadiness };
+      const unknownFreshness = await fetchCurrentReadinessForPlan(42, 42);
+      expect(unknownFreshness).toMatchObject({
+        confidence: 'no_data',
+        dataSource: 'wearable',
         isStale: false,
+        reasonCode: 'wearable_freshness_unknown',
       });
-      mockReadinessResult = { ...baseReadiness, asOf: '2026-07-09T12:00:00.000Z' };
+      expect(unknownFreshness).not.toHaveProperty('capturedAt');
+
+      // Malformed and future provider timestamps are untrustworthy and must
+      // degrade conservatively rather than becoming fresh or pretending old.
+      mockReadinessResult = { ...baseReadiness, dataAsOf: 'not-a-date' };
       expect(await fetchCurrentReadinessForPlan(42, 42)).toMatchObject({
-        confidence: 'fresh_wearable',
+        confidence: 'no_data',
         isStale: false,
+        reasonCode: 'wearable_freshness_unknown',
+      });
+      mockReadinessResult = { ...baseReadiness, dataAsOf: '2026-07-09T12:00:00.000Z' };
+      expect(await fetchCurrentReadinessForPlan(42, 42)).toMatchObject({
+        confidence: 'no_data',
+        isStale: false,
+        reasonCode: 'wearable_freshness_unknown',
       });
 
-      // Missing integration outranks staleness: no_data wins over an old asOf.
+      // Missing integration outranks staleness: no_data wins over old source data.
       mockReadinessResult = {
         ...baseReadiness,
         score: 50,
         reasonCode: 'WEARABLE_INTEGRATION_MISSING',
-        asOf: '2026-07-05T00:00:00.000Z',
+        dataAsOf: '2026-07-05T00:00:00.000Z',
         factors: {},
       };
       expect(await fetchCurrentReadinessForPlan(42, 42)).toMatchObject({
@@ -811,11 +846,12 @@ describe('training-read-models', () => {
     });
   });
 
-  describe('getAllPlanWeeks — raceDate/goalMode from preferences_json', () => {
-    it('exposes raceDate and goalMode from the plan preferences_json', async () => {
+  describe('getAllPlanWeeks — canonical plan semantics from preferences_json', () => {
+    it('exposes goal, raceDate, goalMode, and persisted scheduling timezone', async () => {
       mockActivePlan = {
         id: 14,
         name: 'Marathon Build',
+        goal: 'marathon_endurance',
         plan_version: 3,
         duration_weeks: 12,
         status: 'active',
@@ -826,6 +862,7 @@ describe('training-read-models', () => {
           preferredTime: 'morning',
           goalMode: 'race',
           raceDate: '2026-07-12',
+          schedulingTimezone: 'Europe/Lisbon',
         }),
       };
       mockPlanWeeks = [{ id: 140, week_number: 1, focus: 'base', intensity_pct: 60 }];
@@ -836,8 +873,10 @@ describe('training-read-models', () => {
       expect(result.plan).toMatchObject({
         id: 14,
         name: 'Marathon Build',
+        goal: 'marathon_endurance',
         raceDate: '2026-07-12',
         goalMode: 'race',
+        schedulingTimezone: 'Europe/Lisbon',
       });
       expect(result.weeks).toHaveLength(1);
     });

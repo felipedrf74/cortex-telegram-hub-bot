@@ -7,11 +7,20 @@
  *  - Activity event ring buffer (200 entries, in-memory)
  *  - Scheduled job execution registry (name → last run metadata)
  *
- * This module has no project imports — it is a pure data store
- * with zero risk of circular dependencies.
+ * Durable scheduled-job leases are delegated to a database-agnostic helper;
+ * the database itself is still injected at boot to avoid circular imports.
  */
+import type Database from 'better-sqlite3';
 import { logger } from '../utils/logger';
-import { runWithContext, generateRequestId } from '../utils/request-context';
+import { runWithContext, generateRequestId, type RequestSource } from '../utils/request-context';
+import {
+  claimScheduledJobExecution,
+  completeScheduledJobExecution,
+  isScheduledJobExecutionLeaseActive,
+  renewScheduledJobExecution,
+  DEFAULT_SCHEDULED_JOB_LEASE_HEARTBEAT_MS,
+  type ScheduledJobExecutionClaim,
+} from '../services/scheduled-job-execution-state';
 
 // ─── Activity Event Ring Buffer ──────────────────────────────────────
 
@@ -119,20 +128,93 @@ export function setJobFailureNotifier(fn: FailureNotifier): void {
  */
 export type JobResult = void | 'skipped';
 
-export function wrapJob(name: string, fn: () => Promise<JobResult>): () => Promise<void> {
+export class ScheduledJobLeaseLostError extends Error {
+  readonly code = 'SCHEDULED_JOB_LEASE_LOST';
+  readonly jobName: string;
+
+  constructor(jobName: string) {
+    super(`SCHEDULED_JOB_LEASE_LOST: ${jobName}`);
+    this.name = 'ScheduledJobLeaseLostError';
+    this.jobName = jobName;
+  }
+}
+
+export class ScheduledJobLeaseStoreUnavailableError extends Error {
+  readonly code = 'SCHEDULED_JOB_LEASE_STORE_UNAVAILABLE';
+  readonly jobName: string;
+
+  constructor(jobName: string) {
+    super(`SCHEDULED_JOB_LEASE_STORE_UNAVAILABLE: ${jobName}`);
+    this.name = 'ScheduledJobLeaseStoreUnavailableError';
+    this.jobName = jobName;
+  }
+}
+
+export interface ScheduledJobExecutionContext {
+  readonly jobName: string;
+  readonly signal: AbortSignal;
+  /** Throw before the next external or user-visible effect if the fence is gone. */
+  assertLeaseActive(): void;
+}
+
+export interface ScheduledJobWrapOptions {
+  /** Override the tracing source for non-cron invocations such as startup. */
+  requestSource?: RequestSource;
+  /** Keep false for auxiliary invocations so DST recovery retains the cron callback. */
+  storeForRecovery?: boolean;
+}
+
+function recordOverlapSkip(name: string, status: JobStatus): void {
+  logger.warn({ job: name }, 'Cron job skipped — previous invocation still running');
+  pushEvent({
+    ts: new Date().toISOString(),
+    type: 'job',
+    summary: `${status.label}: skipped overlap`,
+    detail: 'Previous invocation still running; skipped this tick to avoid duplicate work.',
+  });
+}
+
+function recordJobFailure(
+  name: string,
+  status: JobStatus,
+  startIso: string,
+  startedAtMs: number,
+  err: unknown,
+): void {
+  status.lastResult = 'failed';
+  status.lastDurationMs = Date.now() - startedAtMs;
+  status.lastError = err instanceof Error ? err.message : String(err);
+  pushEvent({
+    ts: startIso,
+    type: 'error',
+    summary: `${status.label}: failed — ${(status.lastError ?? '').slice(0, 80)}`,
+    durationMs: status.lastDurationMs,
+  });
+  persistJobRun(name, 'failed', status.lastDurationMs, status.lastError);
+  // Notification failures must never hide the original job/lease failure.
+  if (_failureNotifier) {
+    _failureNotifier(status.label, status.lastError ?? 'unknown error').catch(() => {});
+  }
+}
+
+export function wrapJob(
+  name: string,
+  fn: (execution: ScheduledJobExecutionContext) => Promise<JobResult>,
+  options: ScheduledJobWrapOptions = {},
+): () => Promise<void> {
   const status = jobMap.get(name);
   if (!status) {
     throw new Error(`Cannot wrap unregistered scheduled job: ${name}`);
   }
 
   const wrapped = async () => {
-    // Each cron tick runs inside its own request context so all log lines
+    // Each invocation runs inside its own request context so all log lines
     // emitted during the job (and any HTTP calls it makes to content-engine
     // or external APIs) carry the same reqId. The source is "cron:<name>"
     // so logs can be filtered to a single job's history. (Quarter: tracing.)
     const requestId = generateRequestId();
     return runWithContext(
-      { requestId, source: `cron:${name}` as const },
+      { requestId, source: options.requestSource ?? `cron:${name}` as const },
       async () => {
         // Skip if the owning sub-skill is disabled
         if (!isJobEnabled(name)) {
@@ -141,14 +223,81 @@ export function wrapJob(name: string, fn: () => Promise<JobResult>): () => Promi
         }
 
         if (inFlightJobs.has(name)) {
-          logger.warn({ job: name }, 'Cron job skipped — previous invocation still running');
-          pushEvent({
-            ts: new Date().toISOString(),
-            type: 'job',
-            summary: `${status.label}: skipped overlap`,
-            detail: 'Previous invocation still running; skipped this tick to avoid duplicate work.',
-          });
+          recordOverlapSkip(name, status);
           return;
+        }
+
+        let durableDb: Database.Database | null = null;
+        let durableClaim: Extract<ScheduledJobExecutionClaim, { kind: 'claimed' }> | null = null;
+        let durableLeaseHeartbeat: ReturnType<typeof setInterval> | null = null;
+        const leaseAbortController = new AbortController();
+        let leaseLostError: ScheduledJobLeaseLostError | null = null;
+        const markLeaseLost = (): ScheduledJobLeaseLostError => {
+          if (!leaseLostError) {
+            leaseLostError = new ScheduledJobLeaseLostError(name);
+            leaseAbortController.abort(leaseLostError);
+          }
+          return leaseLostError;
+        };
+        const execution: ScheduledJobExecutionContext = {
+          jobName: name,
+          signal: leaseAbortController.signal,
+          assertLeaseActive(): void {
+            if (leaseLostError) throw leaseLostError;
+            if (!durableDb || !durableClaim) return;
+            try {
+              if (!isScheduledJobExecutionLeaseActive(durableClaim, durableDb)) {
+                throw markLeaseLost();
+              }
+            } catch (err) {
+              if (err instanceof ScheduledJobLeaseLostError) throw err;
+              logger.error(
+                { job: name, err: err instanceof Error ? err.message : String(err) },
+                'Cron job durable lease effect guard failed',
+              );
+              throw markLeaseLost();
+            }
+          },
+        };
+        const leaseStartIso = new Date().toISOString();
+        const leaseStartedAtMs = Date.now();
+        try {
+          if (!_getDb) {
+            throw new ScheduledJobLeaseStoreUnavailableError(name);
+          }
+          durableDb = _getDb();
+          const claim = claimScheduledJobExecution({ jobName: name }, durableDb);
+          if (claim.kind !== 'claimed') {
+            recordOverlapSkip(name, status);
+            return;
+          }
+          durableClaim = claim;
+          durableLeaseHeartbeat = setInterval(() => {
+            try {
+              if (!durableDb || !durableClaim) return;
+              const renewed = renewScheduledJobExecution(durableClaim, durableDb);
+              if (!renewed) {
+                markLeaseLost();
+                logger.error(
+                  { job: name },
+                  'Cron job durable lease heartbeat lost its fencing token',
+                );
+              }
+            } catch (err) {
+              markLeaseLost();
+              logger.error(
+                { job: name, err: err instanceof Error ? err.message : String(err) },
+                'Cron job durable lease heartbeat failed',
+              );
+            }
+          }, DEFAULT_SCHEDULED_JOB_LEASE_HEARTBEAT_MS);
+          durableLeaseHeartbeat.unref?.();
+        } catch (err) {
+          // F36: an unavailable cluster fence is an operational failure, not
+          // permission to run potentially duplicated work without a lease.
+          status.lastRunAt = leaseStartIso;
+          recordJobFailure(name, status, leaseStartIso, leaseStartedAtMs, err);
+          throw err;
         }
 
         const startIso = new Date().toISOString();
@@ -157,18 +306,23 @@ export function wrapJob(name: string, fn: () => Promise<JobResult>): () => Promi
         status.lastResult = 'running';
         status.lastError = null;
         const start = Date.now();
+        let durableResult: 'success' | 'skipped' | 'failed' = 'failed';
 
         try {
-          const result = await fn();
+          execution.assertLeaseActive();
+          const result = await fn(execution);
+          execution.assertLeaseActive();
           status.lastDurationMs = Date.now() - start;
           // Skipped jobs don't get persisted or pushed to the activity ring —
           // they wake up, see no work, and exit silently. Status still updates
           // so the portal shows lastRunAt, but job_history is not written.
           if (result === 'skipped') {
             status.lastResult = 'success';
+            durableResult = 'skipped';
             return;
           }
           status.lastResult = 'success';
+          durableResult = 'success';
           pushEvent({
             ts: startIso,
             type: 'job',
@@ -177,30 +331,31 @@ export function wrapJob(name: string, fn: () => Promise<JobResult>): () => Promi
           });
           persistJobRun(name, 'success', status.lastDurationMs);
         } catch (err: any) {
-          status.lastResult = 'failed';
-          status.lastDurationMs = Date.now() - start;
-          status.lastError = err?.message ?? String(err);
-          pushEvent({
-            ts: startIso,
-            type: 'error',
-            summary: `${status.label}: failed — ${(status.lastError ?? '').slice(0, 80)}`,
-            durationMs: status.lastDurationMs,
-          });
-          persistJobRun(name, 'failed', status.lastDurationMs, status.lastError);
-          // Invoke failure notifier (swallow notification errors to avoid masking the original)
-          if (_failureNotifier) {
-            _failureNotifier(status.label, status.lastError ?? 'unknown error').catch(() => {});
-          }
+          recordJobFailure(name, status, startIso, start, err);
           throw err; // re-throw so existing catch blocks in scheduler still fire
         } finally {
           inFlightJobs.delete(name);
+          if (durableLeaseHeartbeat) clearInterval(durableLeaseHeartbeat);
+          if (durableDb && durableClaim) {
+            try {
+              const released = completeScheduledJobExecution(durableClaim, durableResult, durableDb);
+              if (!released) {
+                logger.warn({ job: name }, 'Cron job durable lease release lost its fencing token');
+              }
+            } catch (err: any) {
+              logger.warn(
+                { job: name, err: err?.message ?? String(err) },
+                'Cron job durable lease release failed',
+              );
+            }
+          }
         }
       },
     );
   };
 
   // Store the wrapped callback so DST watchdog can re-invoke missed jobs
-  status.wrappedFn = wrapped;
+  if (options.storeForRecovery !== false) status.wrappedFn = wrapped;
 
   return wrapped;
 }
@@ -261,7 +416,7 @@ export function getGarminRefreshStatus(): { at: string | null; ok: boolean } {
 
 // ─── Database Provider (lazy, avoids circular imports) ───────────────
 
-type DbProvider = () => { prepare(sql: string): { run(...args: any[]): void } };
+type DbProvider = () => Database.Database;
 let _getDb: DbProvider | null = null;
 
 /** Set the database provider once the DB is initialized. */

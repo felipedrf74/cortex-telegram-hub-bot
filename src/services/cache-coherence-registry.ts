@@ -2,6 +2,7 @@
 
 import { clearCache, clearCacheByPrefix } from './cache-store';
 import { invalidateContextCache } from './context-engine';
+import { invalidateReadinessMemoForUser } from './readiness-memo';
 import { invalidateSharedDecisionContextCache } from './shared-decision-context';
 import { isValidTenantUserId } from './tenant-scope-observability';
 import type { OAuthProvider } from './oauth-store';
@@ -352,7 +353,12 @@ export function invalidateCacheForEvent(event: CacheCoherenceEvent): void {
 
     case 'training.changed':
       clearCache(`coach-briefing:${event.userId}`);
-      clearCache(`readiness:${event.userId}`);
+      // Readiness rows and the scorer memo are tenant-first. A Training
+      // mutation often only has the authenticated user id, so invalidate the
+      // bounded family plus every memo entry whose terminal user segment
+      // matches instead of clearing a non-existent `readiness:{userId}` key.
+      clearCacheByPrefix('readiness:');
+      invalidateReadinessMemoForUser(event.userId);
       // training-home, training-summary, training-history, and
       // training-load-snapshot keys are tenant-first
       // (`…:{tenantId}:{userId}…`), so a user-scoped exact key or

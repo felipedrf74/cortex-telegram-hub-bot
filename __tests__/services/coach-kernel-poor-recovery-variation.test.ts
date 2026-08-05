@@ -13,6 +13,7 @@ import { isActiveTrainingSession } from '../../src/services/coach-kernel/capacit
 import { adaptSessionForPoorRecovery, classifyRecoveryScenario } from '../../src/services/coach-kernel/poor-recovery-variation';
 import { estimateStrengthSessionMinutes, validateSessionCoherence } from '../../src/services/coach-kernel/session-coherence';
 import type { ExercisePrescription } from '../../src/services/coach-kernel/types';
+import { isExplicitTrainingAdaptationRationale } from '../../src/services/training-plan-creation-validation';
 
 function withPoorRecovery(athlete: AthleteState, overrides: Partial<AthleteState> = {}): AthleteState {
   return {
@@ -92,6 +93,73 @@ function uniqueTitles(sessions: Session[]): Set<string> {
 }
 
 describe('coach-kernel poor recovery variation', () => {
+  it('persists the causal recovery adaptation in the public session description', () => {
+    const session: Session = {
+      id: 'causal-run',
+      sport: 'running',
+      sessionType: 'threshold_run',
+      title: 'Threshold Run',
+      description: 'Run controlled threshold intervals.',
+      dayOfWeek: 'tuesday',
+      durationMinutes: 60,
+      intensityZone: 'threshold',
+      fatigueCost: 'high',
+      keySession: true,
+      plannedLoad: 100,
+      tags: [],
+    };
+    const adaptation = adaptSessionForPoorRecovery({
+      athlete: withPoorRecovery(sampleHybridAthlete),
+      session,
+      weekSessions: [session],
+      sessionIndex: 0,
+    });
+
+    expect(adaptation.explanation).toMatch(/became .* because/i);
+    expect(adaptation.session.description).toContain(adaptation.explanation);
+  });
+
+  it('makes a pure low-readiness downgrade explicit in public copy', () => {
+    const session: Session = {
+      id: 'low-readiness-strength',
+      sport: 'strength',
+      sessionType: 'strength_hypertrophy',
+      title: 'Full-Body Strength',
+      description: 'Complete the prescribed full-body session.',
+      dayOfWeek: 'monday',
+      durationMinutes: 60,
+      intensityZone: 'z3',
+      fatigueCost: 'high',
+      keySession: true,
+      plannedLoad: 100,
+      tags: [],
+      exercises: [
+        { exerciseId: 'bodyweight_squat', name: 'Bodyweight Squat', sets: 3, reps: '8-10' },
+        { exerciseId: 'push_up', name: 'Push-Up', sets: 3, reps: '8-10' },
+        { exerciseId: 'band_row', name: 'Band Row', sets: 3, reps: '8-10' },
+      ],
+    };
+    const athlete = withPoorRecovery(sampleHybridAthlete, {
+      recentSessions: [],
+      readiness: {
+        ...sampleHybridAthlete.readiness,
+        level: 'red',
+        score: 24,
+        soreness: 'low',
+        painFlags: [],
+      },
+    });
+    const adaptation = adaptSessionForPoorRecovery({
+      athlete,
+      session,
+      weekSessions: [session],
+      sessionIndex: 0,
+    });
+
+    expect(adaptation.scenario).toBe('low_readiness');
+    expect(isExplicitTrainingAdaptationRationale(adaptation.session.description)).toBe(true);
+  });
+
   it('prioritizes high soreness before generic hybrid overload', () => {
     const session: Session = {
       id: 'run',

@@ -16,17 +16,19 @@ describe('Training Plans Sub-Skill Config', () => {
     expect(trainingPlans!.enabledByDefault).toBe(true);
   });
 
-  it('training-plans sub-skill contains all training tools', () => {
+  it('training-plans sub-skill exposes reviewed actions but no raw projection writers', () => {
     const triathlon = getSkillDefinition('triathlon');
     const tp = triathlon.subSkills.find(s => s.name === 'training-plans')!;
     expect(tp.tools).toContain('create_training_plan');
-    expect(tp.tools).toContain('add_training_week');
-    expect(tp.tools).toContain('add_training_session');
     expect(tp.tools).toContain('get_training_plan');
     expect(tp.tools).toContain('log_training_completion');
-    expect(tp.tools).toContain('update_training_session');
     expect(tp.tools).toContain('link_session_calendar');
-    expect(tp.tools).toHaveLength(7);
+    // F13 supersedes the old CRUD exposure: these tools bypassed candidate
+    // construction, lint, volume enforcement, and activation review.
+    expect(tp.tools).not.toContain('add_training_week');
+    expect(tp.tools).not.toContain('add_training_session');
+    expect(tp.tools).not.toContain('update_training_session');
+    expect(tp.tools).toHaveLength(4);
   });
 
   it('training_plan_adjust cron job is mapped to triathlon/training-plans', () => {

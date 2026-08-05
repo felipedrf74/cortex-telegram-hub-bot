@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const AGENT_JOB_MANIFEST_SCHEMA = 'nexus.agent-job-manifest.v3';
-export const AGENT_JOB_MANIFEST_VERSION = '2026-08-02.2';
+export const AGENT_JOB_MANIFEST_VERSION = '2026-08-02.6';
 
 const GEMINI_ONE_SHOT_PROVIDER_ROUTE = 'gemini-primary-openai-fallback-anthropic-gated-last-resort';
 
@@ -12,7 +12,7 @@ const noProvider = (policyOwner, tenantScope, overrides = {}) => ({
   policyOwner,
   jobVersion: '1.0.0',
   tenantScope,
-  overlapPolicy: 'runtime-process-lock',
+  overlapPolicy: 'durable-database-lease',
   retryPolicy: 'next-scheduled-run',
   providerUsage: 'none',
   providerRouting: 'not-applicable-no-model-provider',
@@ -33,7 +33,7 @@ const providerCapable = (policyOwner, tenantScope, inputFingerprint, overrides =
   policyOwner,
   jobVersion: '1.0.0',
   tenantScope,
-  overlapPolicy: 'runtime-process-lock',
+  overlapPolicy: 'durable-database-lease',
   retryPolicy: 'next-scheduled-run',
   providerUsage: 'governed-provider-capable',
   providerRouting: 'budgeted-provider-route',
@@ -205,7 +205,10 @@ export const JOB_POLICIES = Object.freeze({
     costPolicy: 'ai-cost-guardrail:coach_analysis',
     ...sharedGovernedRunner('tenant-user', { fingerprintGate: 'adapter' }),
   }),
-  garmin_keepalive: noProvider('training', 'owner-garmin-identity', { retryPolicy: 'next-scheduled-run-with-auth-refresh' }),
+  garmin_keepalive: noProvider('training', 'connected-garmin-tenant-user', {
+    overlapPolicy: 'durable-database-lease',
+    retryPolicy: 'next-scheduled-run-with-auth-refresh',
+  }),
   garmin_tenant_isolation_watcher: noProvider('training', 'configured-garmin-tenant'),
   integration_health: noProvider('operations', 'configured-integration-identities', { outputPolicy: 'redacted-integration-health-records' }),
   invoice_collection: noProvider('finance', 'active-filing-profile-tenant', { retryPolicy: 'collector-bounded-retry' }),
@@ -223,7 +226,7 @@ export const JOB_POLICIES = Object.freeze({
   shared_list: noProvider('secretary', 'active-tenant-loop', { outputPolicy: 'notification-dedupe-key' }),
   task_ledger_retention: noProvider('tasks', 'platform-retention'),
   task_sync: noProvider('tasks', 'active-and-pending-task-tenant-user', { retryPolicy: 'provider-mutation-ledger-bounded-retry', outputPolicy: 'content-hash-and-provider-link-idempotency' }),
-  task_sync_delta: noProvider('tasks', 'active-and-pending-task-tenant-user', { overlapPolicy: 'task-sync-coordinator-single-flight', outputPolicy: 'flag-gated-delta-pull-content-hash-idempotency' }),
+  task_sync_delta: noProvider('tasks', 'active-and-pending-task-tenant-user', { overlapPolicy: 'durable-database-lease-plus-task-sync-coordinator-single-flight', outputPolicy: 'flag-gated-delta-pull-content-hash-idempotency' }),
   thursday_youtube: providerCapable('content', 'eligible-active-tenant-loop', {
     enforcement: 'output-inventory-gate',
     evidence: 'rollout-independent seven-day pending inventory requests only missing output and skips when full',
@@ -295,6 +298,21 @@ export const DIRECT_EVENT_EFFECT_POLICIES = Object.freeze({
     runtimeGroup: 'event-backbone-default',
     retryPolicy: 'event-outbox-max-3-with-backoff',
     outputPolicy: 'validated-redacted-learning-observation-upsert',
+  }),
+  record_training_secretary_feedback_decision: noProviderHandler('training', 'durable-event-owner-and-exact-secretary-tenant', {
+    runtimeGroup: 'event-backbone-default',
+    retryPolicy: 'event-outbox-max-3-with-backoff',
+    outputPolicy: 'exact-scope-monotonic-training-feedback-state-upsert',
+  }),
+  complete_cooking_meal_prep_provider_sync: noProviderHandler('cooking', 'durable-event-owner-and-exact-secretary-tenant', {
+    runtimeGroup: 'event-backbone-default',
+    retryPolicy: 'event-outbox-max-3-with-backoff',
+    outputPolicy: 'deduped-cooking-notification-and-calendar-cache-invalidation',
+  }),
+  record_secretary_source_skill_feedback: noProviderHandler('secretary', 'durable-event-owner-and-exact-secretary-tenant', {
+    runtimeGroup: 'event-backbone-default',
+    retryPolicy: 'event-outbox-max-3-with-backoff',
+    outputPolicy: 'exact-scope-monotonic-cooking-finance-content-feedback-upsert',
   }),
 });
 
@@ -395,13 +413,16 @@ function buildEventHandlers(eventBackboneSource) {
   // routedEventTypes stays an honest audit of everything the router acts on.
   const queueRoutedBlock = eventBackboneSource.match(/const QUEUE_ROUTED_EVENT_TYPES\s*=\s*new Set\(\[([\s\S]*?)\]\);/)?.[1];
   if (queueRoutedBlock == null) throw new Error('Cannot locate runtime queue-routed event registry');
+  const directEffectsBlock = eventBackboneSource.match(/export const DEFAULT_EVENT_DIRECT_EFFECTS\s*=\s*\[([\s\S]*?)\]\s*as const;/)?.[1];
+  if (!directEffectsBlock) throw new Error('Cannot locate runtime direct event effect registry');
+  const directEffectEventTypes = [...directEffectsBlock.matchAll(/eventType:\s*'([^']+)'\s*,\s*effect:\s*'([^']+)'/g)]
+    .map((match) => match[1]);
   const routedEventTypes = [...new Set([
     ...parseSingleQuotedValues(projectableBlock),
     ...parseSingleQuotedValues(queueRoutedBlock),
+    ...directEffectEventTypes,
   ])].sort();
   const queuedJobTypes = [...new Set([...handlerBody.matchAll(/jobType:\s*'([^']+)'/g)].map((match) => match[1]))].sort();
-  const directEffectsBlock = eventBackboneSource.match(/export const DEFAULT_EVENT_DIRECT_EFFECTS\s*=\s*\[([\s\S]*?)\]\s*as const;/)?.[1];
-  if (!directEffectsBlock) throw new Error('Cannot locate runtime direct event effect registry');
   const directEffects = [...directEffectsBlock.matchAll(/eventType:\s*'([^']+)'\s*,\s*effect:\s*'([^']+)'/g)]
     .map((match) => {
       const eventType = match[1];
@@ -422,6 +443,24 @@ function buildEventHandlers(eventBackboneSource) {
   const runtimeLearningCalls = [...eventBackboneSource.matchAll(/recordTrainingLearningObservation\(\{/g)].length;
   if (runtimeLearningCalls < registeredLearningEffects) {
     throw new Error(`Product-learning direct event effects are not all called at runtime: registered=${registeredLearningEffects} calls=${runtimeLearningCalls}`);
+  }
+  const registeredSecretaryFeedbackEffects = directEffects
+    .filter((entry) => entry.effect === 'record_training_secretary_feedback_decision').length;
+  const runtimeSecretaryFeedbackCalls = [...eventBackboneSource.matchAll(/consumeTrainingSecretaryFeedbackEvent\(event,\s*db\)/g)].length;
+  if (runtimeSecretaryFeedbackCalls < registeredSecretaryFeedbackEffects) {
+    throw new Error(`Training Secretary feedback direct event effects are not all called at runtime: registered=${registeredSecretaryFeedbackEffects} calls=${runtimeSecretaryFeedbackCalls}`);
+  }
+  const registeredCookingCompletionEffects = directEffects
+    .filter((entry) => entry.effect === 'complete_cooking_meal_prep_provider_sync').length;
+  const runtimeCookingCompletionCalls = [...eventBackboneSource.matchAll(/consumeCookingMealPrepProviderSyncCompleted\(event,\s*db\)/g)].length;
+  if (runtimeCookingCompletionCalls < registeredCookingCompletionEffects) {
+    throw new Error(`Cooking provider-sync completion effects are not all called at runtime: registered=${registeredCookingCompletionEffects} calls=${runtimeCookingCompletionCalls}`);
+  }
+  const registeredSourceSkillFeedbackEffects = directEffects
+    .filter((entry) => entry.effect === 'record_secretary_source_skill_feedback').length;
+  const runtimeSourceSkillFeedbackCalls = [...eventBackboneSource.matchAll(/consumeSecretarySourceSkillFeedbackEvent\(event,\s*db\)/g)].length;
+  if (runtimeSourceSkillFeedbackCalls < registeredSourceSkillFeedbackEffects) {
+    throw new Error(`Secretary source-skill feedback direct event effects are not all called at runtime: registered=${registeredSourceSkillFeedbackEffects} calls=${runtimeSourceSkillFeedbackCalls}`);
   }
   const discoveredEffects = new Set(directEffects.map((entry) => entry.effect));
   const unusedEffects = Object.keys(DIRECT_EVENT_EFFECT_POLICIES).filter((effect) => !discoveredEffects.has(effect));

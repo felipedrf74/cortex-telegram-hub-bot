@@ -65,7 +65,7 @@ const POST_EXERTIONAL_SYMPTOMS = new Set([
  * Detect a training gap + classify the return protocol.
  *
  * Algorithm:
- *   1. Find the most recent training_completions row for the user.
+ *   1. Find the most recent latest-state completed/partial action for the user.
  *   2. If the gap (now - lastCompletion) ≥ minGapDays, classify.
  *   3. Classification precedence:
  *      a. Explicit declaredProtocol wins.
@@ -85,10 +85,24 @@ export function detectTrainingGap(input: DetectTrainingGapInput): GapSignal | nu
   const tenantId = requireTenantIdParam(input.tenantId, 'detectTrainingGap');
 
   const latest = db.prepare(`
+    WITH ranked_completions AS (
+      SELECT source.*,
+             ROW_NUMBER() OVER (
+               PARTITION BY source.session_id
+               ORDER BY datetime(source.completed_at) DESC, source.id DESC
+             ) AS row_number
+        FROM training_completions source
+    )
     SELECT MAX(completed_at) AS last_completion
-    FROM training_completions tc
+    FROM ranked_completions tc
+    JOIN training_sessions ts
+      ON ts.id = tc.session_id
+     AND ts.plan_id = tc.plan_id
     JOIN fitness_training_plans p ON p.id = tc.plan_id
     WHERE p.user_id = ? AND p.tenant_id = ?
+      AND tc.row_number = 1
+      AND tc.completion_state IN ('completed', 'partial')
+      AND ts.status <> 'skipped'
   `).get(input.userId, tenantId) as { last_completion: string | null } | undefined;
 
   const lastCompletion = latest?.last_completion ?? null;

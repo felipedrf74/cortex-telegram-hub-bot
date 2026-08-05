@@ -26,7 +26,10 @@ vi.mock('../../src/services/onboarding', async () => {
 import { QUESTIONNAIRES } from '../../src/services/onboarding';
 import {
   GYM_EQUIPMENT_ACCESS_OPTIONS,
+  SESSION_DURATION_MAX_MINUTES,
+  SESSION_DURATION_MIN_MINUTES,
   fingerprintTrainingPlanClarificationAnswers,
+  fingerprintTrainingPlanGenerationProfileContext,
   parseSessionDurationMinutesAnswer,
   resolveTrainingPlanClarificationResolution,
 } from '../../src/services/training-plan-clarification-registry';
@@ -42,6 +45,31 @@ describe('training-plan-clarification-registry', () => {
       (candidate) => candidate.key === 'equipment_access',
     );
     expect(step?.options).toEqual([...GYM_EQUIPMENT_ACCESS_OPTIONS]);
+  });
+
+  it('keeps the session-duration resolution writable through the canonical questionnaire route', () => {
+    const step = QUESTIONNAIRES['triathlon-gym']?.steps.find(
+      (candidate) => candidate.key === 'session_duration_minutes',
+    );
+    const resolution = resolveTrainingPlanClarificationResolution('session_duration_clarification');
+    const field = resolution?.fields[0];
+
+    expect(step).toMatchObject({
+      type: 'number',
+      min: SESSION_DURATION_MIN_MINUTES,
+      max: SESSION_DURATION_MAX_MINUTES,
+      required: false,
+    });
+    expect(field).toMatchObject({
+      fieldKey: step?.key,
+      answerType: 'number',
+      min: step?.min,
+      max: step?.max,
+    });
+    expect(step?.validation?.test(String(SESSION_DURATION_MIN_MINUTES))).toBe(true);
+    expect(step?.validation?.test(String(SESSION_DURATION_MAX_MINUTES))).toBe(true);
+    expect(step?.validation?.test(String(SESSION_DURATION_MIN_MINUTES - 1))).toBe(false);
+    expect(step?.validation?.test(String(SESSION_DURATION_MAX_MINUTES + 1))).toBe(false);
   });
 
   it('resolves every clarification id to an allowlisted target or an explicit null', () => {
@@ -112,6 +140,61 @@ describe('training-plan-clarification-registry', () => {
       return null;
     });
     expect(fingerprintTrainingPlanClarificationAnswers(12)).not.toBe(base);
+  });
+
+  it('binds preview context to every canonical profile consumed by generation', () => {
+    mockGetProfile.mockImplementation((_userId: number, questionnaireId: string) => {
+      if (questionnaireId === 'fitness') {
+        return { data: { experience_level: 'intermediate', readiness: 'normal' } };
+      }
+      if (questionnaireId === 'triathlon-gym') {
+        return { data: { equipment_access: 'Full commercial gym' } };
+      }
+      if (questionnaireId === 'triathlon-running') {
+        return { data: { weekly_km: 30, preferred_days: ['Tuesday', 'Saturday'] } };
+      }
+      if (questionnaireId === 'triathlon-cycling') return { data: { ftp: 220 } };
+      if (questionnaireId === 'triathlon-swim') return { data: { css: '1:55' } };
+      return null;
+    });
+    const base = fingerprintTrainingPlanGenerationProfileContext(12);
+    expect(base).toMatch(/^[a-f0-9]{64}$/);
+
+    // Stable canonicalization prevents storage/object key order from making a
+    // reviewed preview stale when its actual generation inputs are unchanged.
+    mockGetProfile.mockImplementation((_userId: number, questionnaireId: string) => {
+      if (questionnaireId === 'fitness') {
+        return { data: { readiness: 'normal', experience_level: 'intermediate' } };
+      }
+      if (questionnaireId === 'triathlon-gym') {
+        return { data: { equipment_access: 'Full commercial gym' } };
+      }
+      if (questionnaireId === 'triathlon-running') {
+        return { data: { preferred_days: ['Tuesday', 'Saturday'], weekly_km: 30 } };
+      }
+      if (questionnaireId === 'triathlon-cycling') return { data: { ftp: 220 } };
+      if (questionnaireId === 'triathlon-swim') return { data: { css: '1:55' } };
+      return null;
+    });
+    expect(fingerprintTrainingPlanGenerationProfileContext(12)).toBe(base);
+
+    // Unlike the narrow auto-dedupe clarification hash, candidate acceptance
+    // binds all profile material the generator consumes.
+    mockGetProfile.mockImplementation((_userId: number, questionnaireId: string) => {
+      if (questionnaireId === 'fitness') {
+        return { data: { readiness: 'normal', experience_level: 'advanced' } };
+      }
+      if (questionnaireId === 'triathlon-gym') {
+        return { data: { equipment_access: 'Full commercial gym' } };
+      }
+      if (questionnaireId === 'triathlon-running') {
+        return { data: { preferred_days: ['Tuesday', 'Saturday'], weekly_km: 30 } };
+      }
+      if (questionnaireId === 'triathlon-cycling') return { data: { ftp: 220 } };
+      if (questionnaireId === 'triathlon-swim') return { data: { css: '1:55' } };
+      return null;
+    });
+    expect(fingerprintTrainingPlanGenerationProfileContext(12)).not.toBe(base);
   });
 
   it('preserves severity: warnings carry resolutions but never gate readiness', () => {

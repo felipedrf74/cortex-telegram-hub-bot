@@ -1035,7 +1035,7 @@ describe('ChatActionPlanner', () => {
     expect(taskProvider.completeTask).not.toHaveBeenCalled();
   });
 
-  it('stores a pending Training plan draft and fills weekly mileage on the follow-up turn', async () => {
+  it('stores a pending Training plan draft and fills REST frequency on the follow-up turn', async () => {
     const deps = {
       calendar: {
         createEvent: vi.fn() as any,
@@ -1053,7 +1053,7 @@ describe('ChatActionPlanner', () => {
     }, deps);
 
     expect(first?.status).toBe('needs_clarification');
-    expect(first?.response.text).toMatch(/sport/i);
+    expect(first?.response.text).toMatch(/goal|objective/i);
     expect(first?.response.metadata).toMatchObject({
       type: 'chat_action_needs_input',
       openSurface: { surface: 'training_plan_builder' },
@@ -1064,20 +1064,20 @@ describe('ChatActionPlanner', () => {
       conversationId: baseInput.conversationId,
       skill: 'training',
       nowIso: FROZEN_NOW,
-    })?.missingSlots).toContain('weeklyVolumeKm');
+    })?.missingSlots).toContain('sessionsPerWeek');
 
     const second = await tryHandleChatActionPlan({
       ...baseInput,
-      text: 'It is 20 km a week',
-      messageId: 'msg-training-weekly-volume',
+      text: 'Make it 4 sessions per week',
+      messageId: 'msg-training-weekly-frequency',
       locale: 'en',
       persistRuns: true,
     }, deps);
 
     expect(second?.status).toBe('needs_clarification');
-    expect(second?.plan.steps[0]?.args).toMatchObject({ weeklyVolumeKm: 20 });
+    expect(second?.plan.steps[0]?.args).toMatchObject({ sessionsPerWeek: 4 });
     expect(second?.plan.steps[0]?.slotProvenance).toMatchObject({
-      weeklyVolumeKm: { normalizer: 'training_weekly_volume_v1' },
+      sessionsPerWeek: { normalizer: 'training_sessions_per_week_v1' },
     });
     const pending = getActivePendingChatAction({
       userId: baseInput.userId,
@@ -1086,8 +1086,8 @@ describe('ChatActionPlanner', () => {
       skill: 'training',
       nowIso: FROZEN_NOW,
     });
-    expect(pending?.collectedSlots).toMatchObject({ weeklyVolumeKm: 20 });
-    expect(pending?.missingSlots).not.toContain('weeklyVolumeKm');
+    expect(pending?.collectedSlots).toMatchObject({ sessionsPerWeek: 4 });
+    expect(pending?.missingSlots).not.toContain('sessionsPerWeek');
   });
 
   it('records route telemetry for persisted action responses without exposing debug payloads', async () => {
@@ -1190,8 +1190,8 @@ describe('ChatActionPlanner', () => {
       conversationId: baseInput.conversationId,
       skill: 'training',
       action: 'training_plan_create',
-      collectedSlots: { sport: 'running' },
-      missingSlots: ['weeklyVolumeKm'],
+      collectedSlots: { objective: 'running training' },
+      missingSlots: ['sessionsPerWeek'],
       riskClass: 'R1',
       locale: 'en-US',
       timezone: 'Europe/Lisbon',
@@ -1250,8 +1250,8 @@ describe('ChatActionPlanner', () => {
       conversationId: baseInput.conversationId,
       skill: 'training',
       action: 'training_plan_create',
-      collectedSlots: { sport: 'running' },
-      missingSlots: ['weeklyVolumeKm'],
+      collectedSlots: { objective: 'running training' },
+      missingSlots: ['sessionsPerWeek'],
       riskClass: 'R1',
       locale: 'en-US',
       timezone: 'Europe/Lisbon',
@@ -1600,8 +1600,8 @@ describe('ChatActionPlanner', () => {
         conversationId: `stale-${index}`,
         skill: 'training',
         action: 'training_plan_create',
-        collectedSlots: { sport: 'running', index },
-        missingSlots: ['goal'],
+        collectedSlots: { objective: 'running training', index },
+        missingSlots: ['durationWeeks'],
         riskClass: 'R3',
         locale: 'en-US',
         timezone: 'Europe/Lisbon',
@@ -1703,10 +1703,10 @@ describe('ChatActionPlanner', () => {
     }
   });
 
-  it('does not invent a Training plan when weekly mileage arrives without pending context', async () => {
+  it('does not invent a Training plan when frequency arrives without pending context', async () => {
     const response = await tryHandleChatActionPlan({
       ...baseInput,
-      text: 'It is 20 km a week',
+      text: 'Make it 4 sessions per week',
       locale: 'en',
       persistRuns: false,
     }, {
@@ -1719,9 +1719,9 @@ describe('ChatActionPlanner', () => {
       taskProviderForUser: vi.fn(() => ({}) as any),
     });
 
-    expect(response?.status).toBe('needs_clarification');
-    expect(response?.response.text).toMatch(/training plan|creating|adjusting/i);
-    expect(response?.plan.steps[0]?.requiredArgsPresent).toBe(false);
+    // Stronger F26 guarantee: canonical slot answers are state-required and
+    // never bootstrap a plan on their own.
+    expect(response?.plan.steps.some((step) => step.action === 'training_plan_create')).not.toBe(true);
   });
 
   it('reads pending chat actions by scoped id for token-zero native handoff prefill', () => {
@@ -1731,7 +1731,7 @@ describe('ChatActionPlanner', () => {
       conversationId: baseInput.conversationId,
       skill: 'training',
       action: 'training_plan_create',
-      collectedSlots: { goal: 'sub-19 5K', weeklyVolumeKm: 20, sessionsPerWeek: 4 },
+      collectedSlots: { objective: 'sub-19 5K', durationWeeks: 12, sessionsPerWeek: 4, startPolicy: 'next_full_week' },
       missingSlots: [],
       riskClass: 'R1',
       locale: 'en-US',
@@ -1745,7 +1745,7 @@ describe('ChatActionPlanner', () => {
       tenantId: baseInput.tenantId,
       pendingActionId: pending.id,
       nowIso: FROZEN_NOW,
-    })?.collectedSlots).toMatchObject({ goal: 'sub-19 5K', weeklyVolumeKm: 20 });
+    })?.collectedSlots).toMatchObject({ objective: 'sub-19 5K', sessionsPerWeek: 4 });
     expect(getPendingChatActionById({
       userId: baseInput.userId + 1,
       tenantId: baseInput.tenantId + 1,

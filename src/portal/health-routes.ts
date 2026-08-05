@@ -24,6 +24,10 @@ import {
 import { getJobStatuses, getRecentEvents } from './telemetry';
 import { humanUptime } from './formatters';
 import { getChatCapabilityRuntimeGuardStatus } from '../services/chat-capability-runtime-guard';
+import {
+  readTrainingSummaryDeprecationUsage,
+  TRAINING_SUMMARY_ROUTE_PATH,
+} from '../services/training-route-deprecation-telemetry';
 
 const CHAT_CAPABILITY_FLAG_NAMES = {
   classifier: 'AI_ROUTING_MANIFEST_CLASSIFIER',
@@ -305,6 +309,30 @@ export function registerPortalHealthRoutes(app: Express, options: HealthRoutesOp
       dashboardInvalidation: getDashboardCacheInvalidationStats(),
     };
 
+    let trainingSummaryDeprecation: ReturnType<typeof readTrainingSummaryDeprecationUsage> | {
+      routePath: typeof TRAINING_SUMMARY_ROUTE_PATH;
+      windowDays: 30;
+      requestCount: null;
+      firstHitDate: null;
+      lastHitDate: null;
+      unavailable: true;
+    };
+    try {
+      trainingSummaryDeprecation = readTrainingSummaryDeprecationUsage(getDb(), { windowDays: 30 });
+    } catch {
+      // Keep the protected health surface available during bootstrap or a
+      // metrics-store outage, but make the evidence gap explicit. Never
+      // serialize database errors into an operator response.
+      trainingSummaryDeprecation = {
+        routePath: TRAINING_SUMMARY_ROUTE_PATH,
+        windowDays: 30,
+        requestCount: null,
+        firstHitDate: null,
+        lastHitDate: null,
+        unavailable: true,
+      };
+    }
+
     const pm2 = await getPm2SupervisorHealth();
     const pm2AlertsRecorded = recordPm2SupervisorAlerts(pm2);
     const status = overallHealthStatus(runtime, databaseProbe);
@@ -337,6 +365,9 @@ export function registerPortalHealthRoutes(app: Express, options: HealthRoutesOp
       errors: {
         total: errorCount,
         lastHour: errorsLast1h,
+      },
+      deprecations: {
+        trainingSummary: trainingSummaryDeprecation,
       },
       releaseAttestation: releaseAttestation(),
       timestamp: new Date().toISOString(),

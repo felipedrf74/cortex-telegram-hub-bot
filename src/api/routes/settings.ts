@@ -214,9 +214,9 @@ export function settingsRoutes(): Router {
   /**
    * POST /api/v1/settings/timezone — F11 prerequisite (Phase 3).
    *
-   * The canonical `users.timezone` write path (the column shipped in
-   * migration 271 with no writer, so every runtime fell back to the
-   * process-global config zone). Only real IANA identifiers are accepted:
+   * The canonical `users.timezone` write path. The column predates migration
+   * 271; that migration documented the missing writer that left Training on
+   * the process-global config zone. Only real IANA identifiers are accepted:
    * fixed offsets ("UTC+3") shift with DST and would silently corrupt
    * schedule anchoring, which is the exact defect class F11 exists to fix.
    */

@@ -262,6 +262,8 @@ function weeklyAdherence(overrides: Partial<WeeklyAdherenceStats> = {}): WeeklyA
     weekNumber: 1,
     totalSessions: 3,
     completedSessions: 1,
+    // F18: partial has its own 0.5-credit bucket; it is never completed.
+    partialSessions: 0,
     skippedSessions: 0,
     pendingSessions: 2,
     adherenceRate: 33,

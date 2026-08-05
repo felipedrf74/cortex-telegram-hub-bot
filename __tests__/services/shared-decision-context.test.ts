@@ -198,6 +198,43 @@ describe('shared-decision-context', () => {
     expect(mockReadTrainingMeshContext).toHaveBeenCalledWith({ userId: 42, tenantId: 42 });
   });
 
+  it('gives Secretary safe completion facts without raw health feedback', async () => {
+    mockReadTrainingMeshContext.mockResolvedValue({
+      derivedSignals: [
+        meshSignal({
+          sourceAgent: 'mesh.training-context',
+          signalType: 'training_completion_summary',
+          meshPriority: 2,
+          payload: {
+            completionState: 'skipped',
+            hasDiscomfort: true,
+            hasReadiness: true,
+            skippedReasonCode: 'schedule_conflict',
+            // Defense in depth: even a malformed/up-level producer must not
+            // let raw health values or free text enter Secretary context.
+            painScore: 9.875310246,
+            painLocation: 'PRIVATE_F18_SECRETARY_PAIN_LOCATION',
+            discomfortDetails: 'PRIVATE_F18_SECRETARY_DISCOMFORT_DETAILS',
+            notes: 'PRIVATE_F18_SECRETARY_NOTES',
+          },
+        }),
+      ],
+    });
+
+    const context = await buildSharedDecisionContext('secretary', 42);
+    const contracts = await buildSharedDecisionContracts('secretary', 42);
+    const secretaryVisible = `${context}\n${JSON.stringify(contracts.training)}`;
+
+    expect(secretaryVisible).toContain('skipped');
+    expect(secretaryVisible).toContain('discomfort reported');
+    expect(secretaryVisible).toContain('readiness feedback recorded');
+    expect(secretaryVisible).toContain('schedule_conflict');
+    expect(secretaryVisible).not.toContain('9.875310246');
+    expect(secretaryVisible).not.toContain('PRIVATE_F18_SECRETARY_PAIN_LOCATION');
+    expect(secretaryVisible).not.toContain('PRIVATE_F18_SECRETARY_DISCOMFORT_DETAILS');
+    expect(secretaryVisible).not.toContain('PRIVATE_F18_SECRETARY_NOTES');
+  });
+
   it('adds source attribution, skill ownership boundaries, and downstream update signals for Training -> Secretary', async () => {
     mockReadTrainingMeshContext.mockResolvedValueOnce({
       derivedSignals: [

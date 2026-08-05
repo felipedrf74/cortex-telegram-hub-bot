@@ -479,7 +479,7 @@ describe('M19 cross-skill plan execution', () => {
         skill: 'training',
         type: 'provider_write',
         action: 'training_plan_create',
-        args: { sport: 'running', goal: 'weekly workout plan', durationWeeks: 1, startDate: '2026-07-20', weeklyVolumeKm: 20 },
+        args: { objective: 'weekly running workout plan', durationWeeks: 1, sessionsPerWeek: 4, startPolicy: 'next_full_week' },
       }),
       makeStep({
         stepId: 'step_2',
@@ -547,7 +547,7 @@ describe('M19 cross-skill plan execution', () => {
       return { step, status: 'verified_success' as const, result: {} };
     });
     const plan = makePlan([
-      makeStep({ stepId: 'step_1', skill: 'training', action: 'training_plan_create', args: { sport: 'running' } }),
+      makeStep({ stepId: 'step_1', skill: 'training', action: 'training_plan_create', args: { objective: 'running training' } }),
       makeStep({
         stepId: 'step_2',
         skill: 'secretary_calendar',

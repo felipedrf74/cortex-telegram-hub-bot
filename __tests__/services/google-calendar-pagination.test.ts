@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   list: vi.fn(),
+  get: vi.fn(),
   calendar: vi.fn(),
 }));
 
@@ -33,8 +34,9 @@ describe('google calendar pagination', () => {
   beforeEach(() => {
     vi.resetModules();
     mocks.list.mockReset();
+    mocks.get.mockReset();
     mocks.calendar.mockReset();
-    mocks.calendar.mockReturnValue({ events: { list: mocks.list } });
+    mocks.calendar.mockReturnValue({ events: { list: mocks.list, get: mocks.get } });
   });
 
   it('reads every Google Calendar page in the requested window', async () => {
@@ -119,5 +121,41 @@ describe('google calendar pagination', () => {
       },
     });
     expect(mocks.list).toHaveBeenCalledTimes(20);
+  });
+
+  it('reads a Google event by exact provider id', async () => {
+    mocks.get.mockResolvedValue({
+      data: {
+        id: 'evt-exact',
+        summary: 'Moved session',
+        start: { dateTime: '2026-06-27T12:00:00+01:00' },
+        end: { dateTime: '2026-06-27T12:45:00+01:00' },
+        description: 'NEXUS_SECRETARY_AGENDA_ITEM:agenda-1',
+      },
+    });
+    const { getEventById } = await import('../../src/services/google-calendar');
+
+    await expect(getEventById('evt-exact', 42)).resolves.toMatchObject({
+      id: 'evt-exact',
+      summary: 'Moved session',
+    });
+    expect(mocks.get).toHaveBeenCalledWith({ calendarId: 'primary', eventId: 'evt-exact' });
+    expect(mocks.list).not.toHaveBeenCalled();
+  });
+
+  it('returns null only for a provider-confirmed Google 404', async () => {
+    mocks.get.mockRejectedValue(Object.assign(new Error('not found'), { status: 404 }));
+    const { getEventById } = await import('../../src/services/google-calendar');
+
+    await expect(getEventById('evt-gone', 42)).resolves.toBeNull();
+  });
+
+  it('propagates an unknown Google exact-read failure', async () => {
+    mocks.get.mockRejectedValue(Object.assign(new Error('socket reset'), { code: 'ECONNRESET' }));
+    const { getEventById } = await import('../../src/services/google-calendar');
+
+    await expect(getEventById('evt-unknown', 42)).rejects.toMatchObject({
+      safeDetails: expect.objectContaining({ code: 'ECONNRESET' }),
+    });
   });
 });

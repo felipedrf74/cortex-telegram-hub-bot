@@ -173,18 +173,6 @@ const TYPE_META: Partial<Record<SignalType, TypeMeta>> = {
     title: 'Race this week',
     summarize: () => 'Race on the calendar within 7 days — coaches will taper, no new stimulus.',
   },
-  training_session_scheduled: {
-    title: 'Session scheduled',
-    summarize: (p) => {
-      const sport = typeof p.sport === 'string' ? p.sport : 'training';
-      const title = typeof p.title === 'string' ? `: ${p.title}` : '';
-      return `${sport[0].toUpperCase()}${sport.slice(1)} session${title} — on the calendar.`;
-    },
-  },
-  calendar_conflict: {
-    title: 'Calendar conflict',
-    summarize: () => 'A calendar event overlaps a scheduled training session — consider moving one.',
-  },
   // ─── Phase 4 Slice C — Adherence ──────────────────────────────
   low_adherence: {
     title: 'Low adherence',
@@ -256,8 +244,6 @@ function sanitizeSignalPayloadForClient(
     return pickPayloadFields(payload, ['rpe']);
   case 'running_load_today':
     return pickPayloadFields(payload, ['rpe', 'distance_km']);
-  case 'training_session_scheduled':
-    return pickPayloadFields(payload, ['sport', 'title']);
   case 'low_adherence':
   case 'high_adherence':
     return pickPayloadFields(payload, ['completed', 'planned', 'adherence_pct']);
@@ -383,11 +369,9 @@ function preferUserFacingSignal(a: AgentSignal, b: AgentSignal): AgentSignal {
 /**
  * All training-scoped signal types the observability view surfaces.
  *
- * Broader than `readTrainingContextAll`'s coach-reader set: we ALSO
- * include `training_session_scheduled` and `calendar_conflict` so the
- * user sees scheduled sessions + secretary-flagged conflicts in one
- * place. Content-mesh signals (hook_effectiveness etc.) are omitted
- * because they're global, not per-user.
+ * This is a curated user-facing subset of the coach-reader set.
+ * Content-mesh signals (hook_effectiveness etc.) are omitted because
+ * they're global, not per-user.
  */
 const OBSERVABILITY_TYPES: SignalType[] = [
   // Wellness
@@ -406,10 +390,6 @@ const OBSERVABILITY_TYPES: SignalType[] = [
   'planned_hard_run',
   'planned_hard_ride',
   'planned_race_this_week',
-  // Calendar coordination — EXCLUDED from readTrainingContextAll but
-  // shown here because the user benefits from seeing them.
-  'training_session_scheduled',
-  'calendar_conflict',
   // Phase 4 Slice C — adherence.
   'low_adherence',
   'high_adherence',
@@ -424,9 +404,8 @@ const OBSERVABILITY_TYPES: SignalType[] = [
  *   1. `readTrainingContextAll` — used for the `flags` object (so
  *      the UI can light up "Low Sleep" badges deterministically from
  *      the same logic the sport coaches use).
- *   2. A broader `readSignals(OBSERVABILITY_TYPES, userId)` — used for
- *      the full signals list, including calendar-coordination signals
- *      that the coach readers don't consume but the user wants to see.
+ *   2. A curated `readSignals(OBSERVABILITY_TYPES, userId)` — used for
+ *      the user-facing signals list.
  *
  * The observability reads use a dedicated consumer key ('ios.signals.view')
  * so they never mark signals as consumed from the sport coaches'
@@ -437,7 +416,7 @@ const OBSERVABILITY_TYPES: SignalType[] = [
 export function buildActiveSignalsResponse(userId: number, tenantId?: number): ActiveSignalsResponse {
   const ctx = readTrainingContextAll({ userId, tenantId });
 
-  // Broader read for the signals list, using a distinct consumer key
+  // Curated read for the signals list, using a distinct consumer key
   // so we don't flip any signal's consumed_by state on either the
   // sport coaches or the secretary.
   const rawSignals = readSignals('ios.signals.view', OBSERVABILITY_TYPES, 100, userId, undefined, tenantId);
