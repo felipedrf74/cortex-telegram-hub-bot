@@ -208,11 +208,25 @@ const PARITY_FALLBACK_GATE_IDS = new Set(['legacy_fallback_rate']);
 export function selectChatV2ParityFallbackRegressionAlerts(
   inputs: RecordOperatorAlertInput[],
 ): RecordOperatorAlertInput[] {
+  const missingLegacyEvidence = inputs.some((input) => {
+    const metadata = input.metadata ?? {};
+    return metadata.phase === 'legacyRetirement'
+      && typeof metadata.reasonCode === 'string'
+      && metadata.reasonCode.startsWith('missing_');
+  });
   return inputs.filter((input) => {
     const metadata = input.metadata ?? {};
     const gateId = typeof metadata.gateId === 'string' ? metadata.gateId : '';
     if (gateId === 'missing_phase') return false;
+    if (typeof metadata.reasonCode === 'string'
+      && metadata.reasonCode.startsWith('missing_')) return false;
     const phase = metadata.phase;
+    // A clean full-verify row is required before retiring a route, but it is
+    // not an immediate regression while the same report still proves that
+    // route evidence is absent. That state remains visible in the weekly
+    // digest and must never authorize retirement.
+    if (phase === 'legacyRetirement' && gateId === 'full_verify_clean'
+      && missingLegacyEvidence) return false;
     return phase === 'legacyRetirement' || PARITY_FALLBACK_GATE_IDS.has(gateId);
   });
 }
