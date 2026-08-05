@@ -5,28 +5,28 @@ Machine-readable truth: `docs/release/release-state.json`.
 ## Production
 
 - Backend version: `4.14.232`
-- Runtime commit: `53164d51fa775d287732e71f8fed62cf2604b2a7`
-- Artifact digest: `dca700c000ad44cada7ed4af7e5eb9c4507d729851f137bf3e16320bd571fe29`
+- Runtime commit: `39965e357d19a1a44ecb167d213c6ffcf361a21b`
+- Artifact digest: `e368f1e15c3b2a84cfb798ad12621932a61fd766db6161259a7bd364cbac1535`
 - Installed-tree digest: `3944f37f16dd1a526a53bee80758b4519298e260c6f6596d88dfad6a6dda55ae`
 - Training catalog package: `51c1089cceb8a916abf200b5cb3688b19f5f7553990467ee0f8ef01c7c4f74bb`
 - Training release subject: `27b97ebc96e1b3bb1ee3612e63c5609b5572c9d4b58e59b8ea3e77642fb1cea3`
-- Transaction `20260803T095052Z-bfd98c408c52` completed at `2026-08-03T09:52:07.851Z` in 74.374s: readiness 12.702s, soak 61.671s.
+- Transaction `20260805T151603Z-c9c4a522c858` completed at `2026-08-05T15:17:19.308Z` in 74.930s: readiness 13.162s, soak 61.768s.
 - Backend/content health, exact PM2 identity, artifact parity, authenticated
   smoke, migration startup, database integrity, backup, and rollback passed.
-- Rollback was armed but not required; backup: `nexus-db-20260803T095101Z.sqlite.age`.
+- Rollback was armed but not required; backup: `nexus-db-20260805T151612Z.sqlite.age`.
 
 ## Artifact-Bound Evidence
 
-- Protected-main/checkpoint runs: `30800191821` / `30801186575`
-- Compact manifest SHA-256: `cd51e786ee7656360bd330fbd17f8361a99b8d46d95f35ab16d7b3ad1c8ff98d`
-- Staging/production transactions: `20260803T093209Z-3bb0ceb9547f` /
-  `20260803T095052Z-bfd98c408c52`
-- Encrypted backup SHA-256: `0f47c92279def2736f9a8391c82e6037fb7bed69ecb636efcf7721b2404fca4b`
+- Protected-main/checkpoint runs: `31008609619` / `31008781829`
+- Compact manifest SHA-256: `9da0ffac67330206c1e5c6d5a86ba3635e8e18ca6bee833a0ee4d638eafaef5d`
+- Staging/production transactions: `20260805T132230Z-bdd0efe2ae69` /
+  `20260805T151603Z-c9c4a522c858`
+- Encrypted backup SHA-256: `5f35d7369fd78c6b5db86c215b95acbe770ae69d792d3ab54c317da67eab0ee0`
 - The latest required fault drill remains `20260802T133139Z-1d33c71562f6`; it
   restored the predecessor in 2.696s against 120s. The current staging
   transaction then passed its normal 15s soak.
 - `./scripts/staging-smoke.sh` passed 24/24 checks. Exact-SHA `local_engine`
-  evaluation `chat-eval-2026-08-03T09-30-21-240Z` passed 7/7 scenarios at $0 actual cost.
+  evaluation `chat-eval-2026-08-05T13-11-14-385Z` passed 7/7 scenarios at $0 actual cost.
 - Evidence remains in ignored `.local/release/`, server state, and restricted CI
   artifacts; this summary is not reusable promotion evidence.
 
@@ -56,21 +56,20 @@ Machine-readable truth: `docs/release/release-state.json`.
   surfaced and is not represented as production evidence.
 - Phase 6: 0/9 routes pass, two are insufficient and seven blocked; no legacy
   stage was disabled. Report SHA-256: `f8a00055927cb7596e1f470e619bc8ae5000689264da8c8324a3432eb7f9f842`.
-- Phase 7 is paused at `AI_ROUTING_MANIFEST_CLASSIFIER` / `classifierKeyword`.
-  No current-release traffic window or later flag ran; the last window was 0/200.
-- The deterministic shadow recorder is deployed and effectively OFF (absent)
-  in every staging scope; a governed enable is required before fresh traffic.
+- Phase 7 reached a genuine 200/200 (100%) classifier agreement gate on the
+  current release. The staging classifier enable passed, but its observation
+  failed before receipt publication because missing retirement evidence was
+  incorrectly paged as a regression. The classifier rollback passed and all
+  seven capability flags are OFF.
+- The failed observation plan and canonical smoke remain immutable. The
+  protected-main, hash-bound `failure_acknowledged` recovery must publish
+  before another release; it does not turn the failed attempt into a pass.
+- The dedicated staging recorder remains ON at USER/TENANT scope and must be
+  returned OFF through the exact installed-predecessor rollback operator after
+  the observation recovery and before release preparation.
 - HMAC prerequisites pass in both roles. All seven flags are configured and
-  effective OFF; master kill is available and OFF. Only genuine staging chat
-  traffic can advance the gate.
-
-## ServerDominguez Services
-
-- Ollama is healthy on `127.0.0.1:11434`; sole model
-  `qwen2.5:3b-instruct-q4_K_M` (`357c53fb659c5076de1d65ccb0b397446227b71a42be9d1603d46168015c9e4b`);
-  the three larger/unused models are removed.
-- SonarQube `26.7.0.124771` is healthy, private, capped, and advisory. Baseline
-  `f0d4047def0c5838d562f06326d2e6949fe49770`, gate `OK`, backup, and restore passed.
+  effective OFF; master kill is available and OFF. No later capability flag
+  has started.
 
 ## iOS / TestFlight
 
@@ -91,10 +90,3 @@ checkpoint remainder, one exact artifact, staging, explicit owner approval,
 and one production transaction with backup, health, soak, and recovery.
 Staging-receipt polling defect `3b275a7209cdc2f73c86c770ac069767848a3b44`
 is closed; malformed or identity-drifting receipts fail closed.
-
-## Notification Release Owner Gates
-
-- Two notification feature states still require owner-only `.env` inspection.
-- Production APNs, signed TestFlight delivery, and physical-device notification
-  authorization-upgrade proof remain blocked.
-- Staging database/port isolation remains unproven; PM2 shares user-level state.

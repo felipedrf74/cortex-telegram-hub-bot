@@ -161,33 +161,54 @@ assert_no_unpublished_staging_chat_capability_observation() {
 
   local observation_plans=()
   local observation_receipts=()
+  local observation_recovery_receipts=()
   shopt -s nullglob
   observation_plans=("$observations_root"/staging-*.observation-plan.json)
   observation_receipts=("$observations_root"/staging-*.observation-receipt.json)
+  observation_recovery_receipts=(
+    "$observations_root"/staging-*.observation-recovery-receipt.json
+  )
   shopt -u nullglob
   if [ "${#observation_plans[@]}" -eq 0 ] \
       && [ "${#observation_receipts[@]}" -eq 0 ] \
+      && [ "${#observation_recovery_receipts[@]}" -eq 0 ] \
       && [ ! -e "$sequence_file" ] && [ ! -L "$sequence_file" ]; then
     return 0
   fi
 
   local result
   result="$($NODE_BIN - "$sequence_file" "$smoke_root" \
-    "${#observation_plans[@]}" \
-    "${observation_plans[@]}" "${observation_receipts[@]}" <<'NODE'
+    "${#observation_plans[@]}" "${#observation_receipts[@]}" \
+    "${observation_plans[@]}" "${observation_receipts[@]}" \
+    "${observation_recovery_receipts[@]}" <<'NODE'
 const fs = require('node:fs');
 const path = require('node:path');
-const [sequenceFile, smokeRoot, planCountRaw, ...files] = process.argv.slice(2);
+const { createHash } = require('node:crypto');
+const [sequenceFile, smokeRoot, planCountRaw, receiptCountRaw, ...files] = process.argv.slice(2);
 const planCount = Number(planCountRaw);
-if (!Number.isSafeInteger(planCount) || planCount < 0 || planCount > files.length) {
+const receiptCount = Number(receiptCountRaw);
+if (!Number.isSafeInteger(planCount) || planCount < 0 || planCount > files.length
+    || !Number.isSafeInteger(receiptCount) || receiptCount < 0
+    || planCount + receiptCount > files.length) {
   throw new Error('staging observation inventory is invalid');
 }
 const planFiles = files.slice(0, planCount);
-const receiptFiles = files.slice(planCount);
+const receiptFiles = files.slice(planCount, planCount + receiptCount);
+const recoveryReceiptFiles = files.slice(planCount + receiptCount);
 const ids = /^\d{8}T\d{6}Z-[0-9a-f]{12}$/u;
 const sha = /^[0-9a-f]{40}$/u;
 const digest = /^[0-9a-f]{64}$/u;
 const planDigest = /^sha256:[0-9a-f]{64}$/u;
+const sha256 = (value) => createHash('sha256').update(value).digest('hex');
+const canonical = (value) => {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') {
+    return JSON.stringify(value);
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
+  if (!value || typeof value !== 'object') throw new Error('canonical JSON value is invalid');
+  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(',')}}`;
+};
 const safePrivateFile = (file, label) => {
   const stat = fs.lstatSync(file);
   if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1
@@ -276,6 +297,94 @@ for (const file of receiptFiles) {
     publicationIncomplete = true;
   } else if (safePrivateFile(sidecar, 'staging observation sidecar') !== raw) {
     throw new Error('staging observation receipt and sidecar bytes differ');
+  }
+  published.add(transactionId);
+}
+for (const file of recoveryReceiptFiles) {
+  const match = path.basename(file).match(
+    /^staging-(\d{8}T\d{6}Z-[0-9a-f]{12})\.observation-recovery-receipt\.json$/u,
+  );
+  if (!match) throw new Error('staging observation recovery receipt filename is invalid');
+  const transactionId = match[1];
+  const raw = safePrivateFile(file, 'staging observation recovery receipt');
+  const value = JSON.parse(raw);
+  const plan = plans.get(transactionId);
+  const planFile = planFiles.find((candidate) => path.basename(candidate)
+    === `staging-${transactionId}.observation-plan.json`);
+  const recoveryPlanFile = path.join(
+    path.dirname(planFile ?? ''),
+    `staging-${transactionId}.observation-recovery-plan.json`,
+  );
+  const recoveryPlanRaw = fs.existsSync(recoveryPlanFile)
+    ? safePrivateFile(recoveryPlanFile, 'staging observation recovery plan')
+    : '';
+  const recoveryPlan = recoveryPlanRaw ? JSON.parse(recoveryPlanRaw) : null;
+  const { recoveryPlanDigest: recordedRecoveryPlanDigest, ...recoveryPlanBody }
+    = recoveryPlan ?? {};
+  const computedRecoveryPlanDigest = recoveryPlan
+    ? `sha256:${sha256(canonical(recoveryPlanBody))}`
+    : null;
+  if (!plan || !planFile || published.has(transactionId) || !recoveryPlan
+      || recoveryPlan.schema
+        !== 'nexus.chat-capability-observation-failure-recovery-plan.v1'
+      || recoveryPlan.action !== 'acknowledge_failed_observation_without_receipt'
+      || recoveryPlan.role !== 'staging'
+      || recoveryPlan.runtimeSha !== plan.runtimeSha
+      || recoveryPlan.artifactDigest !== plan.artifactDigest
+      || recoveryPlan.transactionId !== transactionId
+      || recoveryPlan.flag !== plan.flag
+      || recoveryPlan.observationSequence !== plan.observationSequence
+      || recoveryPlan.observationPlanDigest !== plan.planDigest
+      || recoveryPlan.reasonCode !== 'observation_failed_before_receipt'
+      || recordedRecoveryPlanDigest !== computedRecoveryPlanDigest
+      || value?.schema
+        !== 'nexus.chat-capability-observation-failure-recovery-receipt.v1'
+      || value.status !== 'failure_acknowledged'
+      || value.action !== 'acknowledge_failed_observation_without_receipt'
+      || value.reasonCode !== 'observation_failed_before_receipt'
+      || value.role !== 'staging' || value.transactionId !== transactionId
+      || !ids.test(value.transactionId ?? '')
+      || value.runtimeSha !== plan.runtimeSha
+      || value.artifactDigest !== plan.artifactDigest
+      || value.flag !== plan.flag
+      || value.observationSequence !== plan.observationSequence
+      || value.observationPlanDigest !== plan.planDigest
+      || value.observationPlanSha256
+        !== sha256(safePrivateFile(planFile, 'recovered staging observation plan'))
+      || !digest.test(value.smokeSha256 ?? '')
+      || !digest.test(value.offReceiptSha256 ?? '')
+      || !digest.test(value.environmentSha256 ?? '')
+      || !digest.test(value.toolSha256 ?? '')
+      || !planDigest.test(value.recoveryPlanDigest ?? '')
+      || value.recoveryPlanDigest !== recoveryPlan.recoveryPlanDigest
+      || value.toolSha256 !== recoveryPlan.toolSha256
+      || value.observationPlanSha256 !== recoveryPlan.observationPlanSha256
+      || value.smokeSha256 !== recoveryPlan.smokeSha256
+      || value.offReceiptSha256 !== recoveryPlan.offReceiptSha256
+      || value.environmentSha256 !== recoveryPlan.environmentSha256
+      || !Number.isFinite(Date.parse(value.completedAt ?? ''))
+      || new Date(Date.parse(value.completedAt)).toISOString() !== value.completedAt
+      || !Number.isFinite(Date.parse(recoveryPlan.generatedAt ?? ''))
+      || new Date(Date.parse(recoveryPlan.generatedAt)).toISOString()
+        !== recoveryPlan.generatedAt
+      || Date.parse(value.completedAt) < Date.parse(recoveryPlan.generatedAt ?? '')) {
+    throw new Error('staging observation recovery receipt binding is invalid');
+  }
+  const smoke = path.join(
+    smokeRoot,
+    `chat-capability-${transactionId}-staging-smoke.json`,
+  );
+  const sidecar = path.join(
+    smokeRoot,
+    `chat-capability-${transactionId}-staging-observation-recovery.json`,
+  );
+  if (!smokeRootReady || !fs.existsSync(smoke) || !fs.existsSync(sidecar)) {
+    publicationIncomplete = true;
+  } else if (sha256(safePrivateFile(smoke, 'recovered staging observation smoke'))
+      !== value.smokeSha256) {
+    throw new Error('staging observation recovery smoke binding is invalid');
+  } else if (safePrivateFile(sidecar, 'staging observation recovery sidecar') !== raw) {
+    throw new Error('staging observation recovery receipt and sidecar bytes differ');
   }
   published.add(transactionId);
 }

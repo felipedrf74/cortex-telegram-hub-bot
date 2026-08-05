@@ -504,6 +504,72 @@ route-hook, and planner assignment OFF. Only then may a new artifact enter
 normal staging preparation and smoke. Never delete the marker or permit
 manually.
 
+### One-time 4.14.232 failed observation publication recovery
+
+The staging classifier observation `20260805T163302Z-2522779e6416` on runtime
+`39965e357d19a1a44ecb167d213c6ffcf361a21b` and artifact
+`e368f1e15c3b2a84cfb798ad12621932a61fd766db6161259a7bd364cbac1535`
+completed the canonical smoke but failed the then-installed quality monitor
+before it could publish an observation receipt. The exact plan and smoke are
+durable, the successful observation receipt and sidecar are absent, and the
+classifier was subsequently returned to OFF through a passed exact-release
+transaction. That incomplete publication correctly blocks another release.
+
+From a clean checkout of protected main, inspect the exact recovery:
+
+```text
+scripts/chat-observation-legacy-failure-recovery-operator.sh inspect \
+  --runtime-sha 39965e357d19a1a44ecb167d213c6ffcf361a21b \
+  --artifact-digest e368f1e15c3b2a84cfb798ad12621932a61fd766db6161259a7bd364cbac1535 \
+  --transaction-id 20260805T163302Z-2522779e6416
+```
+
+After the owner approves the exact `recoveryPlanDigest`, apply only that plan:
+
+```text
+NEXUS_RELEASE_OWNER_AUTHORIZED=1 \
+scripts/chat-observation-legacy-failure-recovery-operator.sh apply \
+  --runtime-sha 39965e357d19a1a44ecb167d213c6ffcf361a21b \
+  --artifact-digest e368f1e15c3b2a84cfb798ad12621932a61fd766db6161259a7bd364cbac1535 \
+  --transaction-id 20260805T163302Z-2522779e6416 \
+  --ack-plan sha256:<exact-recovery-plan-digest>
+```
+
+The hash-bound transaction runs under both release locks. It revalidates the
+installed source, expired observation plan, sequence, preserved smoke bytes,
+later exact classifier-OFF receipt, environment bytes, and every global
+capability/route-hook/planner assignment OFF. It publishes an immutable
+`failure_acknowledged` recovery receipt and byte-identical smoke sidecar; it
+does not create a passing observation, enable a flag, alter `.env`, restart a
+process, or delete the failed plan or smoke. Production flag selection never
+accepts this receipt as observation evidence. The release guard accepts it
+only as terminal publication of the failed attempt. Never synthesize a passed
+observation receipt or remove the stranded files manually.
+
+This incident also left the dedicated USER/TENANT route recorder ON after
+protected main advanced beyond the installed staging release. After the
+failure receipt is published, use the narrow protected-main wrapper around the
+exact installed operator to inspect its OFF rollback:
+
+```text
+scripts/chat-shadow-hook-installed-predecessor-off-operator.sh inspect
+```
+
+After owner review of that exact `planDigest`, apply it once:
+
+```text
+NEXUS_RELEASE_OWNER_AUTHORIZED=1 \
+scripts/chat-shadow-hook-installed-predecessor-off-operator.sh apply \
+  --ack-plan sha256:<exact-recorder-OFF-plan-digest>
+```
+
+The wrapper is hard-bound to the same `39965e357d19...` staging artifact,
+verifies its installed source from the artifact manifest, and permits only
+the installed operator's `false` / `operator_rollback` transition. It does not
+provide a predecessor ON path or a general protected-main bypass. Confirm the
+receipt is `passed`/`disable` and the staging environment has zero enabled
+route-hook or planner assignments before retrying release preparation.
+
 Before collecting the first manifest-routing window for an exact candidate,
 activate only the staging route recorder for the database-attested dedicated
 evaluation identity:
