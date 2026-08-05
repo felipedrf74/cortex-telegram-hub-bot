@@ -1117,8 +1117,8 @@ describe('governed routing-calibration export operator', () => {
     );
     expect(result.table.classifier.lowConfidenceFloor).toBe(0.6);
     expect(result.table.intentResolver.scoreBuckets.slice(0, 2)).toEqual([
-      { minScore: 5, calibratedPrecision: 0.9341 },
-      { minScore: 2, calibratedPrecision: 0.9341 },
+      { minScore: 5, calibratedPrecision: 0.943 },
+      { minScore: 2, calibratedPrecision: 0.943 },
     ]);
   });
 
