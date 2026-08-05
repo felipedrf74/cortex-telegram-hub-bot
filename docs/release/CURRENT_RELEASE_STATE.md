@@ -5,41 +5,41 @@ Machine-readable truth: `docs/release/release-state.json`.
 ## Production
 
 - Backend version: `4.14.232`
-- Runtime commit: `f4fe405aca2ce94e72ba809574f99d041bcb3bcd`
-- Artifact digest: `26ca938a98c9270b0d5daefce6fdaed679a3a53132da904d448924f6c8f53f2d`
+- Runtime commit: `53164d51fa775d287732e71f8fed62cf2604b2a7`
+- Artifact digest: `dca700c000ad44cada7ed4af7e5eb9c4507d729851f137bf3e16320bd571fe29`
 - Installed-tree digest: `3944f37f16dd1a526a53bee80758b4519298e260c6f6596d88dfad6a6dda55ae`
 - Training catalog package: `51c1089cceb8a916abf200b5cb3688b19f5f7553990467ee0f8ef01c7c4f74bb`
 - Training release subject: `27b97ebc96e1b3bb1ee3612e63c5609b5572c9d4b58e59b8ea3e77642fb1cea3`
-- Transaction `20260803T054254Z-2a4481391b3d` completed at `2026-08-03T05:44:09.614Z` in 74.340s: readiness 12.644s, soak 61.695s.
+- Transaction `20260803T095052Z-bfd98c408c52` completed at `2026-08-03T09:52:07.851Z` in 74.374s: readiness 12.702s, soak 61.671s.
 - Backend/content health, exact PM2 identity, artifact parity, authenticated
   smoke, migration startup, database integrity, backup, and rollback passed.
-- Rollback was armed but not required; backup: `nexus-db-20260803T054302Z.sqlite.age`.
+- Rollback was armed but not required; backup: `nexus-db-20260803T095101Z.sqlite.age`.
 
 ## Artifact-Bound Evidence
 
-- Protected-main/checkpoint runs: `30778758910` / `30779260105`
-- Compact manifest SHA-256: `ce6b37c922885fe6045bb90020fdafdc3d4aca0b6382b2b572d4e9af8b0237ad`
-- Staging/production transactions: `20260803T053850Z-22e8feffc812` /
-  `20260803T054254Z-2a4481391b3d`
-- Encrypted backup SHA-256: `01a55204e57711aa50b8cf35b24562c70d0e55212aa1cdd587128bc1caddfcc0`
+- Protected-main/checkpoint runs: `30800191821` / `30801186575`
+- Compact manifest SHA-256: `cd51e786ee7656360bd330fbd17f8361a99b8d46d95f35ab16d7b3ad1c8ff98d`
+- Staging/production transactions: `20260803T093209Z-3bb0ceb9547f` /
+  `20260803T095052Z-bfd98c408c52`
+- Encrypted backup SHA-256: `0f47c92279def2736f9a8391c82e6037fb7bed69ecb636efcf7721b2404fca4b`
 - The latest required fault drill remains `20260802T133139Z-1d33c71562f6`; it
   restored the predecessor in 2.696s against 120s. The current staging
   transaction then passed its normal 15s soak.
 - `./scripts/staging-smoke.sh` passed 24/24 checks. Exact-SHA `local_engine`
-  evaluation `chat-eval-2026-08-03T02-35-30-360Z` passed 7/7 scenarios at $0 actual cost.
+  evaluation `chat-eval-2026-08-03T09-30-21-240Z` passed 7/7 scenarios at $0 actual cost.
 - Evidence remains in ignored `.local/release/`, server state, and restricted CI
   artifacts; this summary is not reusable promotion evidence.
 
 ## Lean-Release Measurement
 
-- Current sample: main 11m05s, handoff 1m08s, checkpoint 4m23s, automated
-  readiness 16m36s; all passed.
-- Selected/remainder/union: `5,132/11,747/16,879` tests and
-  `361/779/1,140` files; partitions were disjoint and complete.
-- Nine of ten releases are measured. Provisional nearest-rank p50/p95:
-  main 7m01s/17m33s; handoff 1m05s/8m13s; checkpoint 4m23s/5m33s;
-  automated readiness 16m21s/21m43s. The sample is not yet stable.
-- Median improvement against 19m40s is 3m19s (16.86%); all nine promotions
+- Current sample: main 13m41s, handoff 21s, checkpoint 4m21s, automated
+  readiness 18m23s; all passed.
+- Selected/remainder/union: `6,897/10,136/17,033` tests and
+  `447/693/1,140` files; partitions were disjoint and complete.
+- Ten of ten releases are measured. Stable nearest-rank p50/p95:
+  main 7m01s/17m33s; handoff 55s/8m13s; checkpoint 4m21s/5m33s;
+  automated readiness 16m21s/21m43s.
+- Median improvement against 19m40s is 3m19s (16.86%); all ten promotions
   passed. Escaped-critical-defect review remains monitoring.
 - The protected-main artifact was reused unchanged; hosts ran no build or test.
 
@@ -49,8 +49,8 @@ Machine-readable truth: `docs/release/release-state.json`.
   first corpus calibration are deployed. Bootstrap cache coverage is 25/300,
   with 25/25 secretary rows correct; action-skill accuracy is not claimed.
 - The production-bound sanitized corpus export completed with zero provider
-  calls. Its plan/receipt-bound monotonic calibration is generated and
-  verified, but remains pending the final routing batch release.
+  calls. Its plan/receipt-bound monotonic calibration was verified and released
+  in `53164d51fa775d287732e71f8fed62cf2604b2a7`.
 - Phase 5 staging baseline `chat-eval-2026-07-31T17-19-58-073Z` is frozen with
   immutable hashes. Its acknowledged `operator_checkout_only` provenance is
   surfaced and is not represented as production evidence.
