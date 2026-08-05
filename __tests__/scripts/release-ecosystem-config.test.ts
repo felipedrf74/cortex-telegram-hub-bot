@@ -182,6 +182,9 @@ describe('release ecosystem config release identity', () => {
       'AI_CLASSIFY_MANIFEST_PROMPT=false',
       'AI_CROSS_SKILL_EXECUTION=false',
       'AI_ROUTING_MANIFEST_KILL=false',
+      'CHAT_EVAL_DEDICATED_TENANT_ID=42',
+      'CHAT_CORE_V2_SHADOW_ROUTE_HOOK_ENABLED_USER_42=true',
+      'CHAT_CORE_V2_SHADOW_ROUTE_HOOK_ENABLED_TENANT_42=true',
       'CLASSIFY_SHADOW_HASH_SECRET=classifier-private-sentinel',
       'CHAT_CORE_V2_SHADOW_ROUTE_HMAC_SECRET=shadow-private-sentinel',
       '',
@@ -202,6 +205,8 @@ describe('release ecosystem config release identity', () => {
       `import ${JSON.stringify(path.join(repoRoot, 'src/config.ts'))};\n`
         + 'process.stdout.write(JSON.stringify({'
         + 'classifier:process.env.AI_ROUTING_MANIFEST_CLASSIFIER,'
+        + 'shadowHookUser:process.env.CHAT_CORE_V2_SHADOW_ROUTE_HOOK_ENABLED_USER_42,'
+        + 'shadowHookTenant:process.env.CHAT_CORE_V2_SHADOW_ROUTE_HOOK_ENABLED_TENANT_42,'
         + 'classifierSecret:process.env.CLASSIFY_SHADOW_HASH_SECRET,'
         + 'shadowSecret:process.env.CHAT_CORE_V2_SHADOW_ROUTE_HMAC_SECRET}));',
     ], {
@@ -216,6 +221,8 @@ describe('release ecosystem config release identity', () => {
     expect(result.status, result.stderr).toBe(0);
     expect(JSON.parse(result.stdout)).toEqual({
       classifier: 'true',
+      shadowHookUser: 'true',
+      shadowHookTenant: 'true',
       classifierSecret: 'classifier-private-sentinel',
       shadowSecret: 'shadow-private-sentinel',
     });

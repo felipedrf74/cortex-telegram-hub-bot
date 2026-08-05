@@ -67,6 +67,11 @@ const ROUTING_SURFACES = Object.freeze({
   AI_ROUTING_MANIFEST_SHADOW: 'shadowRoute',
   AI_ROUTING_MANIFEST_REGISTRY: 'registrySubset',
 });
+const ROUTING_SYNTHETIC_QA_MANIFEST_SCHEMA = 'nexus.routing-synthetic-qa-manifest.v1';
+const ROUTING_SYNTHETIC_QA_RECEIPT_SCHEMA = 'nexus.routing-synthetic-qa-receipt.v1';
+const ROUTING_SYNTHETIC_QA_CONTRACT_VERSION = 'routing-synthetic-qa-v1';
+const ROUTING_SYNTHETIC_QA_TRAFFIC_CLASS = 'owner_authorized_synthetic_staging_qa';
+const ROUTING_SYNTHETIC_QA_PLANNED_TURNS = 200;
 function expectedEvidenceKind(binding) {
   if (Object.hasOwn(ROUTING_SURFACES, binding.flag)) return 'routing_divergence';
   if (binding.flag === 'AI_ROUTING_CLARIFY') {
@@ -278,6 +283,26 @@ function effectiveFlagState(configured) {
   return effective;
 }
 
+export function deriveEffectiveCapabilityFlagState(configured) {
+  return effectiveFlagState(normalizeFlagState(configured, 'configured capability flags'));
+}
+
+export function resolveCapabilityHealthState(record, stateKey) {
+  const source = assertPlainObject(record, 'capability health state record');
+  const configuredKey = assertOneOf(
+    stateKey,
+    ['configuredBefore', 'configuredAfter', 'configuredFlags'],
+    'capability health configured state key',
+  );
+  const configured = normalizeFlagState(source[configuredKey], configuredKey);
+  const effectiveKey = configuredKey.replace('configured', 'effective');
+  const effective = normalizeFlagState(source[effectiveKey], effectiveKey);
+  if (!equalCanonical(effective, effectiveFlagState(configured))) {
+    fail(`${effectiveKey} does not honor the configured master-kill projection`);
+  }
+  return { configured, effective };
+}
+
 function equalCanonical(left, right) {
   return canonicalJson(left) === canonicalJson(right);
 }
@@ -349,6 +374,16 @@ function validateRoutingEvidence(evidence, binding) {
     'liveShadowPlannerDedicatedTenant',
     'liveHealthSha256',
     'liveHealthCheckedAt',
+    'syntheticQaContractVersion',
+    'syntheticQaTrafficClass',
+    'syntheticQaManifestSchema',
+    'syntheticQaManifestSha256',
+    'syntheticQaReceiptSchema',
+    'syntheticQaReceiptSha256',
+    'syntheticQaStartedAt',
+    'syntheticQaCompletedAt',
+    'syntheticQaPlannedTurns',
+    'syntheticQaMatchedBundles',
   ], 'routing divergence evidence');
   assertEvidenceCommon(evidence, binding, { targetEnabled: false });
   const expectedSurface = ROUTING_SURFACES[binding.flag];
@@ -411,6 +446,34 @@ function validateRoutingEvidence(evidence, binding) {
   }
   assertSha256(evidence.liveHealthSha256, 'evidence.liveHealthSha256');
   assertCanonicalTimestamp(evidence.liveHealthCheckedAt, 'evidence.liveHealthCheckedAt');
+  if (evidence.syntheticQaContractVersion !== ROUTING_SYNTHETIC_QA_CONTRACT_VERSION
+      || evidence.syntheticQaTrafficClass !== ROUTING_SYNTHETIC_QA_TRAFFIC_CLASS
+      || evidence.syntheticQaManifestSchema !== ROUTING_SYNTHETIC_QA_MANIFEST_SCHEMA
+      || evidence.syntheticQaReceiptSchema !== ROUTING_SYNTHETIC_QA_RECEIPT_SCHEMA
+      || evidence.syntheticQaPlannedTurns !== ROUTING_SYNTHETIC_QA_PLANNED_TURNS
+      || evidence.syntheticQaMatchedBundles !== ROUTING_SYNTHETIC_QA_PLANNED_TURNS) {
+    fail('routing evidence synthetic QA contract or counts are invalid');
+  }
+  assertSha256(
+    evidence.syntheticQaManifestSha256,
+    'evidence.syntheticQaManifestSha256',
+    { prefixed: true },
+  );
+  assertSha256(
+    evidence.syntheticQaReceiptSha256,
+    'evidence.syntheticQaReceiptSha256',
+    { prefixed: true },
+  );
+  if (assertCanonicalTimestamp(
+    evidence.syntheticQaStartedAt,
+    'evidence.syntheticQaStartedAt',
+  ) !== windowSinceInclusive
+      || assertCanonicalTimestamp(
+        evidence.syntheticQaCompletedAt,
+        'evidence.syntheticQaCompletedAt',
+      ) !== windowUntilInclusive) {
+    fail('routing evidence synthetic QA timestamps must equal the gate window');
+  }
   return evidence;
 }
 
@@ -818,6 +881,148 @@ export function buildCapabilityEvidenceAttestation(input) {
   if (observedBundles !== counts.flagEligibleBundles) {
     fail('raw routing observed-state bundles do not match eligible comparisons');
   }
+  const syntheticQa = report.evidence?.syntheticQaBinding;
+  assertExactKeys(
+    syntheticQa,
+    ['enforced', 'contractVersion', 'trafficClass', 'manifest', 'receipt', 'counts'],
+    'raw routing synthetic QA binding',
+  );
+  if (syntheticQa.enforced !== true
+      || syntheticQa.contractVersion !== ROUTING_SYNTHETIC_QA_CONTRACT_VERSION
+      || syntheticQa.trafficClass !== ROUTING_SYNTHETIC_QA_TRAFFIC_CLASS) {
+    fail('raw routing synthetic QA contract is not enforced');
+  }
+  const syntheticManifest = syntheticQa.manifest;
+  assertExactKeys(syntheticManifest, [
+    'schema',
+    'sha256',
+    'runtimeSha',
+    'artifactDigest',
+    'environment',
+    'surface',
+    'userId',
+    'tenantId',
+    'plannedTurns',
+  ], 'raw routing synthetic QA manifest binding');
+  assertSha256(
+    syntheticManifest.sha256,
+    'raw routing synthetic QA manifest SHA-256',
+    { prefixed: true },
+  );
+  if (syntheticManifest.schema !== ROUTING_SYNTHETIC_QA_MANIFEST_SCHEMA
+      || syntheticManifest.runtimeSha !== runtimeSha
+      || syntheticManifest.artifactDigest !== artifactDigest
+      || syntheticManifest.environment !== 'staging'
+      || syntheticManifest.surface !== selectedSurface
+      || syntheticManifest.userId !== shadowHookReceipt.dedicatedTenantId
+      || syntheticManifest.tenantId !== shadowHookReceipt.dedicatedTenantId
+      || syntheticManifest.userId !== syntheticManifest.tenantId
+      || syntheticManifest.plannedTurns !== ROUTING_SYNTHETIC_QA_PLANNED_TURNS) {
+    fail('raw routing synthetic QA manifest identity is not exact');
+  }
+  const syntheticReceipt = syntheticQa.receipt;
+  assertExactKeys(syntheticReceipt, [
+    'schema',
+    'sha256',
+    'status',
+    'manifestSha256',
+    'runtimeSha',
+    'artifactDigest',
+    'environment',
+    'surface',
+    'userId',
+    'tenantId',
+    'plannedTurns',
+    'attemptedTurns',
+    'acceptedTurns',
+    'recordedTurns',
+    'startedAt',
+    'completedAt',
+    'httpStatusCounts',
+    'apiUsageDelta',
+    'providerReservationDelta',
+    'providerCalled',
+    'externalCallPerformed',
+    'domainMutationPerformed',
+  ], 'raw routing synthetic QA receipt binding');
+  assertSha256(
+    syntheticReceipt.sha256,
+    'raw routing synthetic QA receipt SHA-256',
+    { prefixed: true },
+  );
+  const syntheticStartedAt = assertCanonicalTimestamp(
+    syntheticReceipt.startedAt,
+    'raw routing synthetic QA startedAt',
+  );
+  const syntheticCompletedAt = assertCanonicalTimestamp(
+    syntheticReceipt.completedAt,
+    'raw routing synthetic QA completedAt',
+  );
+  assertExactKeys(
+    syntheticReceipt.httpStatusCounts,
+    ['200'],
+    'raw routing synthetic QA HTTP status counts',
+  );
+  for (const [name, delta] of [
+    ['api usage', syntheticReceipt.apiUsageDelta],
+    ['provider reservation', syntheticReceipt.providerReservationDelta],
+  ]) {
+    assertExactKeys(delta, ['rows', 'costUsd'], `raw routing synthetic QA ${name} delta`);
+    if (delta.rows !== 0 || delta.costUsd !== 0) {
+      fail(`raw routing synthetic QA ${name} delta must be zero`);
+    }
+  }
+  if (syntheticReceipt.schema !== ROUTING_SYNTHETIC_QA_RECEIPT_SCHEMA
+      || syntheticReceipt.status !== 'passed'
+      || syntheticReceipt.manifestSha256 !== syntheticManifest.sha256
+      || syntheticReceipt.runtimeSha !== runtimeSha
+      || syntheticReceipt.artifactDigest !== artifactDigest
+      || syntheticReceipt.environment !== 'staging'
+      || syntheticReceipt.surface !== selectedSurface
+      || syntheticReceipt.userId !== shadowHookReceipt.dedicatedTenantId
+      || syntheticReceipt.tenantId !== shadowHookReceipt.dedicatedTenantId
+      || syntheticReceipt.userId !== syntheticReceipt.tenantId
+      || syntheticReceipt.plannedTurns !== ROUTING_SYNTHETIC_QA_PLANNED_TURNS
+      || syntheticReceipt.attemptedTurns !== ROUTING_SYNTHETIC_QA_PLANNED_TURNS
+      || syntheticReceipt.acceptedTurns !== ROUTING_SYNTHETIC_QA_PLANNED_TURNS
+      || syntheticReceipt.recordedTurns !== ROUTING_SYNTHETIC_QA_PLANNED_TURNS
+      || syntheticReceipt.httpStatusCounts['200'] !== ROUTING_SYNTHETIC_QA_PLANNED_TURNS
+      || syntheticStartedAt !== sinceInclusive
+      || syntheticCompletedAt !== untilInclusive
+      || syntheticReceipt.providerCalled !== false
+      || syntheticReceipt.externalCallPerformed !== false
+      || syntheticReceipt.domainMutationPerformed !== false) {
+    fail('raw routing synthetic QA receipt is not exact zero-provider evidence');
+  }
+  const syntheticCounts = syntheticQa.counts;
+  assertExactKeys(syntheticCounts, [
+    'inWindowBundles',
+    'matchedBundles',
+    'missingOrMalformedProvenanceBundles',
+    'manifestMismatchBundles',
+    'duplicateOrdinalBundles',
+    'missingOrdinals',
+    'hmacMismatchBundles',
+    'expectedLabelMismatchBundles',
+    'targetSurfaceNotComparedBundles',
+  ], 'raw routing synthetic QA counts');
+  if (syntheticCounts.inWindowBundles !== ROUTING_SYNTHETIC_QA_PLANNED_TURNS
+      || syntheticCounts.matchedBundles !== ROUTING_SYNTHETIC_QA_PLANNED_TURNS) {
+    fail('raw routing synthetic QA must match exactly 200 in-window bundles');
+  }
+  for (const key of [
+    'missingOrMalformedProvenanceBundles',
+    'manifestMismatchBundles',
+    'duplicateOrdinalBundles',
+    'missingOrdinals',
+    'hmacMismatchBundles',
+    'expectedLabelMismatchBundles',
+    'targetSurfaceNotComparedBundles',
+  ]) {
+    if (syntheticCounts[key] !== 0) {
+      fail(`raw routing synthetic QA ${key} must be zero`);
+    }
+  }
   const shadowBinding = report.evidence?.shadowRecorderBinding;
   assertExactKeys(
     shadowBinding,
@@ -971,6 +1176,16 @@ export function buildCapabilityEvidenceAttestation(input) {
     liveShadowPlannerDedicatedTenant: liveHealthBinding.shadowPlannerDedicatedTenant,
     liveHealthSha256: liveHealth.healthSha256,
     liveHealthCheckedAt: liveHealth.checkedAt,
+    syntheticQaContractVersion: ROUTING_SYNTHETIC_QA_CONTRACT_VERSION,
+    syntheticQaTrafficClass: ROUTING_SYNTHETIC_QA_TRAFFIC_CLASS,
+    syntheticQaManifestSchema: syntheticManifest.schema,
+    syntheticQaManifestSha256: syntheticManifest.sha256,
+    syntheticQaReceiptSchema: syntheticReceipt.schema,
+    syntheticQaReceiptSha256: syntheticReceipt.sha256,
+    syntheticQaStartedAt: syntheticStartedAt,
+    syntheticQaCompletedAt: syntheticCompletedAt,
+    syntheticQaPlannedTurns: syntheticManifest.plannedTurns,
+    syntheticQaMatchedBundles: syntheticCounts.matchedBundles,
   };
   return validateRoutingEvidence(attestation, {
     runtimeSha,

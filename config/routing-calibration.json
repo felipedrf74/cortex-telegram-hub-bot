@@ -3,7 +3,7 @@
   "provenance": {
     "source": "corpus",
     "corpusSize": 300,
-    "generatedAt": "2026-07-30T08:34:49.775Z"
+    "generatedAt": "2026-08-03T05:48:45.873Z"
   },
   "orchestrator": {
     "branches": {
@@ -24,19 +24,19 @@
     "scoreBuckets": [
       {
         "minScore": 5,
-        "calibratedPrecision": 0.8846
+        "calibratedPrecision": 0.943
       },
       {
         "minScore": 2,
-        "calibratedPrecision": 0.8984
+        "calibratedPrecision": 0.943
       },
       {
         "minScore": 1,
-        "calibratedPrecision": 0.7551
+        "calibratedPrecision": 0.8376
       },
       {
         "minScore": 0,
-        "calibratedPrecision": 0.1778
+        "calibratedPrecision": 0.1633
       }
     ]
   },

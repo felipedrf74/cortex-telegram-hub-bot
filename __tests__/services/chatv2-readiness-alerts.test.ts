@@ -127,6 +127,57 @@ describe('chatv2-readiness-alerts', () => {
       dedupeKey: 'chatv2-readiness:legacyRetirement:route_shadow_parity',
     }));
   });
+
+  it('does not page on missing retirement evidence while preserving genuine parity regressions', async () => {
+    const {
+      buildChatV2ReadinessAlertInputs,
+      selectChatV2ParityFallbackRegressionAlerts,
+    } = await import('../../src/services/chatv2-readiness-alerts');
+    const readiness = report();
+    readiness.legacyRetirement = {
+      passed: false,
+      gates: [
+        {
+          gateId: 'route_exit_replacements',
+          passed: false,
+          sampleCount: 0,
+          observed: 9,
+          threshold: 0,
+          reasonCode: 'missing_route_exit_samples',
+        },
+        {
+          gateId: 'legacy_fallback_rate',
+          passed: false,
+          sampleCount: 1,
+          observed: null,
+          threshold: 0.02,
+          reasonCode: 'missing_legacy_fallback_rate',
+        },
+        {
+          gateId: 'full_verify_clean',
+          passed: false,
+          sampleCount: 1,
+          observed: 0,
+          threshold: 1,
+        },
+        {
+          gateId: 'legacy_parity_match_rate',
+          passed: false,
+          sampleCount: 50,
+          observed: 0.94,
+          threshold: 0.95,
+        },
+      ],
+    };
+
+    const immediate = selectChatV2ParityFallbackRegressionAlerts(
+      buildChatV2ReadinessAlertInputs(readiness),
+    );
+
+    expect(immediate.map((alert) => alert.dedupeKey)).toEqual([
+      'chatv2-readiness:legacyRetirement:legacy_parity_match_rate',
+    ]);
+  });
 });
 
 function report() {

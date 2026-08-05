@@ -102,6 +102,7 @@ const STAGE_FAMILY_GATE_POLICIES: Readonly<Record<string, ChatFinalizerGatePolic
   // M14: deterministic routing-clarify terminal — fixed templated question,
   // cannot hallucinate.
   routing_clarify: 'contract_only',
+  routing_synthetic_qa: 'contract_only',
   // M19: fixed localized disclosure after both planner passes decline an
   // actionable cross-skill request; no model/tool execution in this stage.
   cross_skill_plan_declined: 'contract_only',

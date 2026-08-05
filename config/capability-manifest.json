@@ -1,6 +1,6 @@
 {
   "schema": "nexus.capability-manifest.v2",
-  "version": "2026-07-29.1",
+  "version": "2026-08-05.1",
   "schemaReferences": {
     "nexus.chat-turn.input.v1": {
       "format": "typescript",
@@ -242,20 +242,37 @@
             "meeting",
             "schedule",
             "secretary",
+            "daily\\s+planner",
             "task",
             "tasks",
             "todo",
-            "to-do"
+            "to-do",
+            "planning\\s+blocks?",
+            "focus\\s+blocks?",
+            "concentration\\s+blocks?",
+            "recipient\\s+checks?",
+            "bulk\\s+(?:messages?|emails?)",
+            "commitments?",
+            "free\\s+(?:time|slots?)"
           ],
           "pt": [
-            "tarefas?"
+            "tarefas?",
+            "secretaria",
+            "calend[aá]rio\\s+pessoal",
+            "agendamento",
+            "blocos?\\s+de\\s+(?:planejamento|planeamento|foco|concentra[cç][aã]o)",
+            "verifica[cç][aã]o\\s+de\\s+destinat[aá]rios?",
+            "mensagens?\\s+em\\s+massa",
+            "compromissos?",
+            "hor[aá]rios?\\s+livres?",
+            "(?:pautas?[\\s\\S]{0,60}reuni(?:[aã]o|[oõ]es)|reuni(?:[aã]o|[oõ]es)[\\s\\S]{0,60}pautas?)"
           ],
           "es": [
             "tareas?"
           ]
         },
         "regexFragments": [
-          "\\b(tasks?|to-?dos?|remind(?:ers?)?|(?:my\\s+)?calendar|schedule|meetings?|appointments?|(?:my\\s+)?emails?|inbox|overdue|due\\s+(?:today|tomorrow|this\\s+week)|planning|digest|unread|mark\\s+(?:as\\s+)?(?:done|complete)|pending|priority|deadline|tarefas?|lembretes?|agend(?:a|ar)|reuni[oõ]es?|compromissos?|e-?mails?|caixa\\s+de\\s+entrada|atrasad[ao]s?|pra\\s+hoje|pendentes?|prioridade|prazo)\\b",
+          "\\b(tasks?|to-?dos?|remind(?:ers?)?|(?:my\\s+)?calendar|schedule|meetings?|appointments?|(?:my\\s+)?emails?|inbox|overdue|due\\s+(?:today|tomorrow|this\\s+week)|planning|digest|unread|mark\\s+(?:as\\s+)?(?:done|complete)|priority|tarefas?|lembretes?|agend(?:a|ar)|reuni[oõ]es?|compromissos?|e-?mails?|caixa\\s+de\\s+entrada|atrasad[ao]s?|pra\\s+hoje|prioridade|prazo)\\b",
           "\\b(create|add|schedule|move|reschedule|delete|remove|cancel|summari[sz]e|review|list|show)\\b[\\s\\S]{0,80}\\b(task|tasks|to-?do|to-?dos|calendar|meeting|meetings|appointment|appointments|event|events|focus\\s+block|reminder|reminders|agenda|email|emails|inbox)\\b",
           "\\b(cria|crie|adiciona|adicione|marca|agenda|move|muda|remarca|reagenda|apaga|remove|cancela|resume|revisa|lista|mostra)\\b[\\s\\S]{0,80}\\b(tarefa|tarefas|agenda|calend[aá]rio|reuni[aã]o|reuni[oõ]es|compromisso|compromissos|evento|eventos|bloco\\s+de\\s+foco|lembrete|lembretes|e-?mail|e-?mails|caixa\\s+de\\s+entrada)\\b",
           "\\b(remind\\s+me\\s+to|set\\s+(?:me\\s+)?a\\s+reminder\\s+to|create\\s+(?:me\\s+)?a\\s+reminder\\s+to|create\\s+(?:a\\s+)?task\\s+to|add\\s+(?:a\\s+)?task\\s+to|add\\s+this\\s+to\\s+my\\s+to-?do(?:\\s+list)?|schedule\\s+time\\s+to)\\b",
@@ -270,7 +287,7 @@
           "\\b(agenda|marca|move|muda|remarca|reagenda|reserva|separa|protege)\\b[\\s\\S]{0,80}\\b(fatura|faturas|recibo|recibos|conta|contas|imposto|darf|assinatura|assinaturas|contador|contabilista)\\b[\\s\\S]{0,80}\\b(hoje|amanh[ãa]|segunda|ter[çc]a|quarta|quinta|sexta|s[áa]bado|domingo|pr[oó]xima\\s+semana|pr[oó]ximo\\s+m[eê]s|manh[ãa]|tarde|noite|[àa]s?\\s*\\d)\\b",
           "\\b(send|pay|file|review|renew|cancel|follow\\s+up\\s+on|follow\\s+up\\s+with)\\b[\\s\\S]{0,80}\\b(invoice|receipt|receipts|bill|bills|tax|darf|subscription|subscriptions|accountant)\\b[\\s\\S]{0,80}\\b(tomorrow|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday|next\\s+week|next\\s+month|morning|afternoon|evening|at\\s+\\d)\\b",
           "\\b(envia|paga|lan[çc]a|rev[eê]|renova|cancela|faz\\s+follow-?up(?:\\s+com)?|cobra)\\b[\\s\\S]{0,80}\\b(fatura|faturas|recibo|recibos|conta|contas|imposto|darf|assinatura|assinaturas|contador|contabilista)\\b[\\s\\S]{0,80}\\b(hoje|amanh[ãa]|segunda|ter[çc]a|quarta|quinta|sexta|s[áa]bado|domingo|pr[oó]xima\\s+semana|pr[oó]ximo\\s+m[eê]s|manh[ãa]|tarde|noite|[àa]s?\\s*\\d)\\b",
-          "\\b(schedule|calendar|agenda|meeting|task|reminder|remind\\s+me|set\\s+(?:a\\s+)?reminder|lembra-?me|me\\s+lembra|me\\s+lembre|follow[- ]?up|daily\\s+plan|weekly\\s+plan|plan\\s+my\\s+(?:day|week)|move|reschedule|defer|fit|find\\s+time|availability|today|tomorrow|agenda|calend[aá]rio|reuni[aã]o|lembrete|prioriza|organiza|encaixa)\\b",
+          "\\b(schedule|calendar|agenda|meeting|task|reminder|remind\\s+me|set\\s+(?:a\\s+)?reminder|lembra-?me|me\\s+lembra|me\\s+lembre|follow[- ]?up|daily\\s+plan|weekly\\s+plan|plan\\s+my\\s+(?:day|week)|move|reschedule|defer|fit|find\\s+time|availability|today|tomorrow|calend[aá]rio|reuni[aã]o|lembrete|prioriza|organiza|encaixa)\\b",
           "\\b(plan\\s+my\\s+(?:day|week)|plan\\s+(?:the\\s+)?week|schedule|calendar|agenda|find\\s+time|fit\\s+(?:it|this|that|time)|make\\s+time|time[- ]?block|block\\s+time|move|reschedule|reflow|defer|push|shift|clear\\s+(?:my\\s+)?calendar)\\b",
           "\\b(prioriti[sz]e\\s+(?:my\\s+)?(?:day|week)|what\\s+do\\s+i\\s+need\\s+to\\s+do\\s+today|what\\s+should\\s+i\\s+do\\s+today|what\\s+changed\\s+since\\s+yesterday)\\b",
           "\\b(agenda|marca|remarca|reagenda|planeia|planejar|organiza|encaixa|arranja\\s+tempo|prioriza|muda\\s+(?:isso|isto)|move\\s+(?:isso|isto))\\b",
@@ -282,7 +299,31 @@
           "\\b(remind\\s+me|reminder|lembrete|lembra-?me|lembre-?me|lembrar|avisa-?me|avise-?me|avisame|alerta-?me|recordatorio|recuerdame|recu[eé]rdame)\\b",
           "^\\s*(?:avisa|alerta)\\b(?!\\s+(?:que|es)\\b)",
           "\\b(email|mail|gmail|outlook mail|inbox|caixa de entrada)\\b",
-          "\\b(task|todo|tarefa|subtarefa|checklist|lembrete|reminder)\\b"
+          "\\b(task|todo|tarefa|subtarefa|checklist|lembrete|reminder)\\b",
+          "\\b(?:weekly\\s+)?(?:planning|focus|concentration)\\s+blocks?\\b|\\bblocos?\\s+de\\s+(?:planejamento|planeamento|foco|concentra[cç][aã]o)\\b",
+          "\\b(?:schedule|preview|outline|arrange|fit|fits|reschedule|move)\\b[\\s\\S]{0,100}\\b(?:commitments?|calendar|agenda|free\\s+(?:time|slots?)|available\\s+(?:time|slots?))\\b",
+          "\\b(?:encaixa|encaixar|organiza|organizar|remarca|remarcar|reagenda|reagendar|move|mover)\\b[\\s\\S]{0,100}\\b(?:compromissos?|agenda|calend[aá]rio|hor[aá]rios?\\s+livres?|tempo\\s+livre)\\b",
+          "\\b(?:recipient\\s+checks?|recipient\\s+review|bulk\\s+(?:messages?|emails?)|mailing\\s+list|verifica[cç][aã]o\\s+de\\s+destinat[aá]rios?|mensagens?\\s+em\\s+massa|e-?mails?\\s+em\\s+massa|lista\\s+de\\s+destinat[aá]rios?)\\b",
+          "\\b(?:reschedule|move)\\b[\\s\\S]{0,60}\\b(?:conversation|call|meeting)\\b|\\b(?:remarca|remarcar|reagenda|reagendar|move|mover)\\b[\\s\\S]{0,60}\\b(?:conversa|chamada|reuni[aã]o)\\b",
+          "\\bmessages?\\b[\\s\\S]{0,70}\\b(?:many|multiple|several)\\s+recipients?\\b|\\b(?:many|multiple|several)\\s+recipients?\\b[\\s\\S]{0,70}\\bmessages?\\b",
+          "\\b(?:recipient|recipients?)\\b[\\s\\S]{0,50}\\b(?:content\\s+checks?|safeguards?)\\b[\\s\\S]{0,60}\\bbulk\\s+messages?\\b",
+          "\\b(?:arrange|arranging|prioriti[sz]e|prioriti[sz]ing)\\b[\\s\\S]{0,70}\\b(?:busy|overloaded)\\s+(?:day|week)\\b[\\s\\S]{0,50}\\burgency\\b",
+          "\\b(?:mostre|liste|listar)\\b[\\s\\S]{0,60}\\beventos?\\b[\\s\\S]{0,50}\\bcalend[aá]rio\\b|\\b(?:excluir|exclua|apagar|apague)\\b[\\s\\S]{0,50}\\b(?:s[eé]rie\\s+de\\s+)?eventos?\\b[\\s\\S]{0,50}\\bcalend[aá]rio\\b",
+          "\\b(?:minuta|rascunho|pedido|vers[aã]o\\s+provis[oó]ria)\\b[\\s\\S]{0,80}\\b(?:mudar|mudan[cç]a\\s+de|pedir)\\b[\\s\\S]{0,50}\\b(?:hor[aá]rio|outra\\s+hora|reuni[aã]o)\\b",
+          "\\b(?:sess(?:[aã]o|ao)|hora)\\s+de\\s+(?:planeamento|planejamento|foco|concentra[cç][aã]o)\\b",
+          "\\b(?:subject\\s+lines?|messages?)\\b[\\s\\S]{0,60}\\b(?:arrived|received|inbox)\\b",
+          "\\b(?:draft|prepare|preview|write)\\b[\\s\\S]{0,60}\\b(?:reply|out-of-office|email)\\b",
+          "\\b(?:reply|out-of-office|email)\\b[\\s\\S]{0,100}\\b(?:unsent|do\\s+not\\s+send|don'?t\\s+send|leave\\s+it\\s+unsent|change\\s+no\\s+workouts?)\\b",
+          "\\b(?:unsent|do\\s+not\\s+send|don'?t\\s+send|leave\\s+it\\s+unsent|change\\s+no\\s+workouts?)\\b",
+          "\\b(?:events?|appointments?)\\b[\\s\\S]{0,60}\\b(?:overlap|start|room|notes?)\\b",
+          "\\b(?:focus\\s+time|one-on-one|client\\s+check-in)\\b",
+          "\\b(?:marque|reserve|mude|passa)\\b[\\s\\S]{0,60}\\b(?:conversa|per[ií]odo\\s+de\\s+concentra[cç][aã]o|reuni[aã]o|consulta)\\b",
+          "\\b(?:consulta|reuni[aã]o)\\b[\\s\\S]{0,60}\\b(?:marcada|sala|outra\\s+hora|hor[aá]rio\\s+diferente)\\b",
+          "\\b(?:pr[eé]via|pr[eé]-visualiza[cç][aã]o)\\b[\\s\\S]{0,50}\\be-?mail\\b",
+          "\\be-?mail\\b[\\s\\S]{0,100}\\bn[aã]o\\s+envi(?:e|es)\\b",
+          "\\bn[aã]o\\s+envi(?:e|es)\\b[\\s\\S]{0,80}\\b(?:n[aã]o|nem)\\s+(?:altere|alteres|mexa)\\b",
+          "\\blembra-me\\b[\\s\\S]{0,50}\\b(?:levantar|buscar|recolher)\\b",
+          "\\bapaga\\b[\\s\\S]{0,50}\\bmarca[cç][aã]o\\b"
         ],
         "exampleUtterances": [
           "Create a task to buy milk tomorrow",
@@ -399,61 +440,85 @@
         "locales": {
           "en": [
             "training",
+            "triathlon",
+            "triathlon\\s+(?:area|schedule|plan)",
             "workouts?",
+            "gym\\s+(?:session|workout|training|day)",
             "run",
-            "session",
             "runs?",
-            "sessions?",
+            "(?:adjust|move|reschedule|change)[\\s\\S]{0,40}sessions?",
             "active\\s+plan",
             "current\\s+plan",
             "adherence",
             "intensity",
             "recovery",
             "soreness",
-            "sore",
-            "easy"
+            "sore"
           ],
           "pt": [
             "treinos?",
+            "triatl(?:o|on)",
+            "treinamento",
+            "(?:[aá]rea\\s+(?:de\\s+)?)?triatl(?:o|on)",
             "treinar",
+            "dia\\s+de\\s+academia",
             "corrida",
-            "sess(?:ao|ão|oes|ões)",
+            "(?:ajustar|ajusta|mover|move|remarcar|remarca)[\\s\\S]{0,40}sess(?:ao|ão|oes|ões)",
             "plano\\s+(?:ativo|atual|de\\s+treino)",
             "ades[aã]o",
             "intensidade",
             "recupera(?:cao|ção)",
             "dor\\s+muscular",
             "dolorida",
-            "leve"
+            "sess(?:ao|ão)[\\s\\S]{0,80}\\d[\\d.,]*\\s+metros?[\\s\\S]{0,100}(?:comprimento|tamanho)\\s+da\\s+piscina"
           ],
           "es": [
             "entrenamientos?",
             "entrenar",
             "carrera",
-            "sesiones?",
-            "sesión",
+            "(?:ajustar|ajusta|mover|mueve|reprogramar|reprograma)[\\s\\S]{0,40}sesiones?",
             "plan\\s+(?:activo|actual|de\\s+entrenamiento)",
             "adherencia",
             "intensidad",
             "recuperaci[oó]n",
-            "dolor",
-            "suave"
+            "dolor"
           ]
         },
         "regexFragments": [
-          "\\b(workout|gym(?:\\s+session)?|running\\s+plan|cycling\\s+plan|sets?\\s*[x×]\\s*\\d|training(?:\\s+plan)?|deload|squat|deadlift|bench\\s+press|heart\\s+rate|RPE|RIR|tempo\\s+run|intervals?|FTP|soreness|recovery(?:\\s+day)?|readiness|body\\s+battery|muscle|hypertrophy|endurance|coach\\s*(?:report|briefing|rec)|lower\\s+body|upper\\s+body|periodization|mesocycle|microcycle|training\\s+week|log\\s+(?:workout|session)|workout\\s+plan|auto.?adjust|session\\s+complete|my\\s+plan|adherence|treino|corrida|pedal(?:ada)?|muscula[çc][aã]o|agachamento|supino|levantamento\\s+terra|frequ[eê]ncia\\s+card[ií]aca|dor\\s+muscular|recupera[çc][aã]o|prontid[aã]o|bateria\\s+corporal|s[eé]ries?\\s*[x×]\\s*\\d|academia|plano\\s+de\\s+treino|plano\\s+da\\s+semana|semana\\s+de\\s+treino|treino\\s+de\\s+(?:hoje|amanh[ãa]))\\b",
+          "\\b(?:triathlon|triatl(?:o|on))\\s+(?:area|schedule|plan)\\b",
+          "\\b(workout|gym\\s+(?:session|workout|training|day)|(?:biceps?\\s+)?curls?\\s+(?:at|in)\\s+(?:the\\s+)?gym|running\\s+plan|cycling\\s+plan|sets?\\s*[x×]\\s*\\d|training(?:\\s+plan)?|deload|squat|deadlift|bench\\s+press|heart\\s+rate|RPE|RIR|tempo\\s+run|intervals?|FTP|soreness|recovery(?:\\s+day)?|readiness|body\\s+battery|muscle|hypertrophy|endurance|coach\\s*(?:report|briefing|rec)|lower\\s+body|upper\\s+body|periodization|mesocycle|microcycle|training\\s+week|log\\s+(?:workout|session)|workout\\s+plan|auto.?adjust|session\\s+complete|my\\s+plan|adherence|treino|corrida|pedal(?:ada)?|muscula[çc][aã]o|agachamento|supino|levantamento\\s+terra|frequ[eê]ncia\\s+card[ií]aca|dor\\s+muscular|recupera[çc][aã]o|prontid[aã]o|bateria\\s+corporal|s[eé]ries?\\s*[x×]\\s*\\d|dia\\s+de\\s+academia|plano\\s+de\\s+treino|plano\\s+da\\s+semana|semana\\s+de\\s+treino|treino\\s+de\\s+(?:hoje|amanh[ãa]))\\b",
           "\\b(how\\s+much|how\\s+many|set|adjust|calculate|dial\\s+in|review|optimi[sz]e|what\\s+should\\s+my|what\\s+are\\s+my|help\\s+me\\s+hit)\\b[\\s\\S]{0,80}\\b(protein(?:\\s+(?:intake|target))?|macros?|calories?|carbs?|fat|electrolytes?|creatine|supplements?)\\b",
           "\\b(carnivore\\s+diet|cutting\\s+macros?|bulking\\s+macros?|maintenance\\s+calories?|sports?\\s+nutrition|performance\\s+nutrition)\\b",
           "\\b(quanto|quanta|quantos|quantas|define|ajusta|calcula|alinha|revisa|otimiza|qual\\s+(?:deve\\s+ser|é)\\s+(?:a\\s+)?minha|me\\s+ajuda\\s+a\\s+bater)\\b[\\s\\S]{0,80}\\b(prote[ií]na(?:\\s+(?:di[aá]ria|alvo))?|macros?|calorias?|carbo(?:idratos)?|gordura|eletr[oó]litos?|creatina|suplementos?)\\b",
           "\\b(dieta\\s+carn[ií]vora|macros?\\s+para\\s+(?:cut|bulk|ganhar\\s+massa|secar)|calorias?\\s+de\\s+manuten[çc][aã]o|nutri[çc][aã]o\\s+esportiva|nutri[çc][aã]o\\s+de\\s+performance)\\b",
-          "\\b(training|workouts?|gym|lift|strength|run(?:ning)?|ride|cycling|bike|recovery|session|deload|treino|corrida|pedal|muscula[cç][aã]o|recupera[cç][aã]o)\\b",
-          "\\b(move|reschedule|change|make|lighter|reduce|mover|remarcar|mudar|alterar|reduzir|reduz|tornar|deixar|cambiar|hacer|bajar)\\b.*\\b(workout|training|session|treino|sess(?:ao|ão)|entrenamiento|sesion|sesión)\\b|\\b(workout|training|session|treino|sess(?:ao|ão)|entrenamiento|sesion|sesión)\\b.*\\b(lighter|easier|easy|reduce|mais\\s+leve|leve|suave|menos\\s+intens[ao]|mas\\s+suave|más\\s+suave)\\b",
-          "\\b(treino|training|plan[o]? de treino|corrida|gym|ginasio)\\b"
+          "\\b(training|workouts?|gym\\s+(?:session|workout|training|day)|lift|strength|run(?:ning)?|rides?|cycling|bike|recovery|deload|treino|corrida|pedal(?:ada)?|ciclismo|muscula[cç][aã]o|recupera[cç][aã]o)\\b",
+          "\\b(move|reschedule|change|adjust|make|lighter|reduce|mover|remarcar|mudar|ajustar|ajusta|alterar|reduzir|reduz|tornar|deixar|cambiar|hacer|bajar)\\b.*\\b(workout|training|session|treino|sess(?:ao|ão)|entrenamiento|sesion|sesión)\\b|\\b(workout|training|session|treino|sess(?:ao|ão)|entrenamiento|sesion|sesión)\\b.*\\b(lighter|easier|easy|reduce|mais\\s+leve|leve|suave|menos\\s+intens[ao]|mas\\s+suave|más\\s+suave)\\b",
+          "\\b(treino|training|plan[o]? de treino|corrida|gym\\s+(?:session|workout|training|day))\\b",
+          "\\b(?:easy|long|recovery|tempo|interval|lighter)\\b[\\s\\S]{0,35}\\b(?:runs?|rides?|swims?)\\b|\\b(?:bike|cycling|running|swimming)\\s+(?:workouts?|sessions?|plans?)\\b|\\bworkouts?\\b|\\b(?:ciclismo|pedal(?:ada)?|corridas?)\\b",
+          "\\b(?:sess(?:[aã]o|ao)|treino)\\b[\\s\\S]{0,50}\\bnata[cç][aã]o\\b|\\bnata[cç][aã]o\\b[\\s\\S]{0,50}\\b(?:sess(?:[aã]o|ao)|treino)\\b",
+          "\\b\\d[\\d.,]*\\s+metros?\\b[\\s\\S]{0,50}\\bnata[cç][aã]o\\b|\\bnata[cç][aã]o\\b[\\s\\S]{0,50}\\b\\d[\\d.,]*\\s+metros?\\b",
+          "\\bsess(?:[aã]o|ao)\\b[\\s\\S]{0,80}\\b\\d[\\d.,]*\\s+metros?\\b[\\s\\S]{0,100}\\b(?:comprimento|tamanho)\\s+da\\s+piscina\\b",
+          "\\btreinos?\\b[\\s\\S]{0,70}\\b(?:salvos?|planeamento|planejamento|plano|semana)\\b|\\b(?:planeamento|planejamento|plano)\\b[\\s\\S]{0,70}\\btreinos?\\b",
+          "\\bcorridas?\\b[\\s\\S]{0,70}\\b(?:previstas?|planeadas?|planejadas?|plano)\\b|\\bplano\\b[\\s\\S]{0,70}\\bcorridas?\\b",
+          "\\b(?:preview|sketch|draft|outline|prepare|build)\\b[\\s\\S]{0,120}\\b(?:bike\\s+sessions?|ride\\s+workouts?|workouts?|training\\s+plans?)\\b[\\s\\S]{0,120}\\b(?:fuel(?:ing)?|snacks?|meals?|grocer(?:y|ies)|pantry)\\b",
+          "\\b(?:esbo[cç]a|esboce|pr[eé]via|prepara|prepare|estrutura|estruture)\\b[\\s\\S]{0,120}\\b(?:sess(?:[aã]o|ao)\\s+de\\s+bicicleta|treinos?|plano\\s+de\\s+treino)\\b[\\s\\S]{0,120}\\b(?:abastecimento|snacks?|refei[cç][aã]o|compras?|despensa)\\b",
+          "\\b(?:split\\s+times?|splits?)\\b[\\s\\S]{0,60}\\b(?:pool|swim|metres?|meters?|yards?)\\b",
+          "\\b(?:log|record|adjust|schedule)\\b[\\s\\S]{0,60}\\b(?:swim\\s+(?:workout|session)|cycling\\s+load|brick\\s+(?:workout|session))\\b",
+          "\\b(?:brick\\s+(?:workout|session)|race\\s+day)\\b",
+          "\\b(?:sprint[-\\s]?triathlon|triathlon)\\s+plan\\b|\\b(?:preview|sketch)\\b[\\s\\S]{0,70}\\b(?:triathlon|training)\\s+plan\\b",
+          "\\b(?:metros?\\s+nadei|bloco\\s+de\\s+treino|carga\\s+dos?\\s+meus?\\s+pr[oó]ximos?\\s+treinos?\\s+de\\s+bicicleta)\\b",
+          "\\b(?:esboce?|estrutura|prepare)\\b[\\s\\S]{0,70}\\b(?:semana\\s+de\\s+treinos?|plano\\s+de\\s+treino|triatlo\\s+sprint)\\b",
+          "\\bsemana\\s+de\\s+treinos?\\b[\\s\\S]{0,100}\\bsem\\s+(?:alterar|modificar)\\s+(?:(?:a|minha)\\s+)?agenda\\b",
+          "\\b(?:longest\\s+duration|longest)\\b[\\s\\S]{0,50}\\brun\\b|\\brun\\b[\\s\\S]{0,50}\\blongest\\s+duration\\b",
+          "\\b(?:apresenta|mostra)\\b[\\s\\S]{0,60}\\bpr[eé]-visualiza[cç][aã]o\\b[\\s\\S]{0,70}\\btriatlo\\s+sprint\\b",
+          "\\b(?:without\\s+saving|do\\s+not\\s+save)\\b[\\s\\S]{0,70}\\btraining\\s+schedule\\b"
         ],
         "exampleUtterances": [
           "I need to plan my workout",
           "gym session at 6am",
           "how much protein should I eat?",
+          "move my workout to tomorrow",
+          "Move my workout because the client call moved earlier.",
           "What is my next training session?",
           "Torna o treino de amanhã mais leve"
         ]
@@ -562,7 +627,12 @@
             "learnings?",
             "format",
             "formats?",
-            "hooks"
+            "hooks",
+            "editorial\\s+(?:briefs?|workspace|backlog)",
+            "content\\s+briefs?",
+            "research\\s+notes?",
+            "article\\s+drafts?",
+            "editorial\\s+(?:workspace|backlog)"
           ],
           "pt": [
             "conte[uú]do",
@@ -579,7 +649,13 @@
             "performou",
             "funcionando",
             "aprend(?:endo|er)",
-            "formato"
+            "formato",
+            "briefings?\\s+editoriais",
+            "espa[cç]o\\s+editorial",
+            "notas?\\s+de\\s+pesquisa",
+            "rascunhos?\\s+de\\s+artigo",
+            "(?:t[ií]tulos?|status)[\\s\\S]{0,60}pautas?(?![\\s\\S]{0,60}reuni(?:[aã]o|[oõ]es))",
+            "rascunh(?:e|a|ar)[\\s\\S]{0,50}pautas?(?![\\s\\S]{0,60}reuni(?:[aã]o|[oõ]es))"
           ],
           "es": [
             "contenido",
@@ -606,7 +682,32 @@
           "\\b(content\\s+ideas?|ideas?\\s+for\\s+(?:a\\s+)?video|better\\s+titles?\\s+for\\s+(?:a\\s+)?video|organi[sz]e\\s+my\\s+content\\s+ideas|what\\s+(?:content\\s+is\\s+already\\s+ready|is\\s+already)\\s+on\\s+my\\s+desk(?:\\s+for\\s+content)?|what\\s+performed\\s+best|what\\s+are\\s+we\\s+learning(?:\\s+this\\s+week)?|what\\s+hook(?:s)?\\s+are\\s+working|what\\s+format\\s+is\\s+(?:winning|working)|filming\\s+day|schedule\\s+filming\\s+around\\s+my\\s+week|plan\\s+filming\\s+around\\s+my\\s+week|what\\s+should\\s+i\\s+publish\\s+next|what\\s+should\\s+i\\s+work\\s+on\\s+next\\s+for\\s+content)\\b",
           "\\b(content|script|post|publish|publishing|video|film(?:ing)?|edit(?:ing)?|campaign|creator|thumbnail|hook|roteiro|conte[uú]do|publicar|grava[cç][aã]o|edi[cç][aã]o)\\b",
           "\\b(create|draft|write|prepare)\\b.*\\b(?:content\\s+)?brief(?:ing)?\\b|\\bbrief(?:ing)?\\b.*\\b(content|post|script|reel|video|newsletter)\\b|\\b(criar|cria|preparar|prepara|escrever|escreve)\\b.*\\bbrief(?:ing)?\\s+de\\s+conte[uú]do\\b|\\b(crear|preparar|escribir|redactar)\\b.*\\bbrief(?:ing)?\\s+de\\s+contenido\\b",
-          "\\b(content|conteudo|contenido|script|roteiro|guion|guión|reel|post|video|publication|publicacao|publicaci[oó]n|publish|publicar|upload|queue|tiktok|youtube|brief)\\b"
+          "\\b(content|conteudo|contenido|script|roteiro|guion|guión|reel|post|video|publication|publicacao|publicaci[oó]n|publish|publicar|upload|queue|tiktok|youtube)\\b",
+          "\\b(editorial\\s+(?:briefs?|workspace|backlog)|content\\s+briefs?|research\\s+notes?|article\\s+drafts?|briefings?\\s+editoriais|espa[cç]o\\s+editorial|fila\\s+editorial|notas?\\s+de\\s+pesquisa|rascunhos?\\s+de\\s+artigo)\\b|\\bpautas?\\b[\\s\\S]{0,70}\\b(?:espa[cç]o|fila)\\s+editorial\\b|\\b(?:espa[cç]o|fila)\\s+editorial\\b[\\s\\S]{0,70}\\bpautas?\\b",
+          "\\bsource[- ]notes?\\b[\\s\\S]{0,70}\\b(?:research|folder|titles?)\\b|\\b(?:research|folder|titles?)\\b[\\s\\S]{0,70}\\bsource[- ]notes?\\b",
+          "\\b(?:approved|current)\\s+(?:content\\s+)?briefs?\\b[\\s\\S]{0,80}\\b(?:supersed(?:e|ed|ing)|replace|replacing|safeguards?|review)\\b|\\b(?:supersed(?:e|ed|ing)|replace|replacing|safeguards?|review)\\b[\\s\\S]{0,80}\\b(?:approved|current)\\s+(?:content\\s+)?briefs?\\b",
+          "\\b(?:saved\\s+ideas?|ideas?)\\b[\\s\\S]{0,70}\\b(?:editorial\\s+)?backlog\\b[\\s\\S]{0,50}\\btheme\\b|\\btheme\\b[\\s\\S]{0,50}\\b(?:editorial\\s+)?backlog\\b[\\s\\S]{0,70}\\b(?:saved\\s+ideas?|ideas?)\\b",
+          "\\b(?:pr[eé]via|esbo[cç]o)\\b[\\s\\S]{0,60}\\bbriefing\\b[\\s\\S]{0,60}\\bguia\\b",
+          "\\b(?:t[ií]tulos?|status)\\b[\\s\\S]{0,60}\\bpautas?\\b(?![\\s\\S]{0,60}\\breuni(?:[aã]o|[oõ]es)\\b)|\\bpautas?\\b(?![\\s\\S]{0,60}\\breuni(?:[aã]o|[oõ]es)\\b)[\\s\\S]{0,60}\\b(?:t[ií]tulos?|status)\\b",
+          "\\brascunh(?:e|a|ar)\\b[\\s\\S]{0,50}\\bpautas?\\b(?![\\s\\S]{0,60}\\breuni(?:[aã]o|[oõ]es)\\b)",
+          "\\b(?:substituir|trocar|rever|revisar|revise|revisado)\\b[\\s\\S]{0,70}\\bartigo(?:\\s+j[aá])?\\s+aprovado\\b|\\bartigo(?:\\s+j[aá])?\\s+aprovado\\b[\\s\\S]{0,70}\\b(?:substituir|trocar|rever|revisar|revise|revisado)\\b",
+          "\\b(?:esbo[cç]a|esboce|prepara|prepare|estrutura|estruture)\\b[\\s\\S]{0,70}\\b(?:artigo\\s+(?:introdut[oó]rio|pr[aá]tico)|guia\\s+pr[aá]tico)\\b[\\s\\S]{0,80}\\b(?:sec[cç][oõ]es|partes|extens[aã]o|palavras?)\\b",
+          "\\b(?:write|create|draft|prepare)\\b[\\s\\S]{0,80}\\b(?:blog\\s+article|article|newsletter|marketing\\s+post)\\b",
+          "\\b(?:escreve|redige|cria|prepare|prepara)\\b[\\s\\S]{0,80}\\b(?:artigo|newsletter|publica[cç][aã]o\\s+de\\s+marketing)\\b",
+          "\\b(?:blog\\s+article|article|newsletter|marketing\\s+post|artigo)\\b",
+          "\\b(?:blog|article|social|documentary|newsletter|marketing)\\b[\\s\\S]{0,70}\\b(?:drafts?|posts?|videos?|opening|campaign|email\\s+series|editorial\\s+review)\\b",
+          "\\b(?:marketing\\s+email|email\\s+series|newsletter\\s+opening)\\b",
+          "\\b(?:three-part|multi-part|multipart)\\s+marketing\\s+email\\s+series\\b",
+          "\\b(?:approved|latest)\\s+tagline\\b[\\s\\S]{0,60}\\b(?:product\\s+)?launch\\b",
+          "\\b(?:tagline|product\\s+launch|approved\\s+article)\\b",
+          "\\b(?:publish|delete|preview)\\b[\\s\\S]{0,80}\\b(?:approved\\s+article|article|content\\s+drafts?|campaign)\\b",
+          "\\b(?:slogan|artigo|texto|publica[cç][aã]o)\\b[\\s\\S]{0,80}\\b(?:aprovad[oa]|marca|rascunho\\s+editorial|campanha|confirmar)\\b",
+          "\\b(?:aprovad[oa]|marca|rascunho\\s+editorial|campanha|confirmar)\\b[\\s\\S]{0,80}\\b(?:slogan|artigo|texto|publica[cç][aã]o)\\b",
+          "\\b(?:slogan|rascunho\\s+editorial|campanha\\s+de\\s+lan[cç]amento)\\b",
+          "\\b(?:repurpose|repurposed)\\b[\\s\\S]{0,70}\\b(?:webinar|short-form\\s+content)\\b",
+          "\\bpublica[cç][oõ]es\\b[\\s\\S]{0,80}\\b(?:programadas?|campanha\\s+de\\s+lan[cç]amento)\\b",
+          "\\bartigos?\\b[\\s\\S]{0,80}\\bcampanha\\b[\\s\\S]{0,60}\\b(?:aguardar|aguardam|revis[aã]o)\\b",
+          "\\bescreve\\b[\\s\\S]{0,50}\\bpublica[cç][aã]o\\b[\\s\\S]{0,50}\\blan[cç]amento\\b"
         ],
         "exampleUtterances": [
           "plan my youtube content",
@@ -708,12 +809,12 @@
             "summary",
             "bills?",
             "invoices?",
+            "(?:supplier|vendor)\\s+payments?",
+            "payments?\\s+(?:to\\s+)?(?:suppliers?|vendors?)",
+            "payment\\s+method",
             "subscriptions?",
             "renewals?",
-            "renew",
-            "missing",
-            "due",
-            "month"
+            "renew"
           ],
           "pt": [
             "financeir[oa]s?",
@@ -729,12 +830,12 @@
             "contas?",
             "faturas?",
             "facturas?",
+            "recibos?",
+            "pagamentos?\\s+(?:a\\s+)?fornecedores?",
+            "fornecedores?[\\s\\S]{0,30}pagamentos?",
             "assinaturas?",
             "subscri(?:c(?:ao|ão)|coes|ções)",
             "renova(?:r|m|cao|ção|coes|ções)",
-            "faltam",
-            "falta",
-            "m[eê]s",
             "financeir[oa]"
           ],
           "es": [
@@ -747,12 +848,12 @@
             "ingresos",
             "saldo",
             "facturas?",
+            "recibos?",
+            "pagos?",
+            "pagos?\\s+a\\s+proveedores?",
             "suscripciones?",
             "renovaciones?",
             "renuevan",
-            "faltan",
-            "falta",
-            "mes",
             "financier[oa]"
           ]
         },
@@ -761,8 +862,27 @@
           "\\b(create|add|log|record|categori[sz]e|analy[sz]e)\\b[\\s\\S]{0,80}\\b(expense|expenses|receipt|receipts|invoice|invoices|bill|bills|subscription|subscriptions|budget|tax(?:es)?)\\b",
           "\\b(cria|crie|adiciona|adicione|registra|registre|lan[çc]a|lan[cç]ar|cadastra|categoriza|categorize|analisa)\\b[\\s\\S]{0,80}\\b(despesa|despesas|gasto|gastos|recibo|recibos|fatura|faturas|nota\\s+fiscal|assinatura|assinaturas|or[çc]amento|imposto|impostos)\\b",
           "\\b(despesa\\s+manual|gasto\\s+manual|resumo\\s+financeiro|or[çc]amento\\s+restante|conta\\s+fiscal|contas\\s+fiscais|assinaturas?\\s+para\\s+renovar|recibos?\\s+ou\\s+faturas?\\s+ainda\\s+faltam|o\\s+que\\s+devo\\s+enviar\\s+ao\\s+meu\\s+contabilista|o\\s+que\\s+devo\\s+mandar\\s+ao\\s+meu\\s+contador|quanto\\s+gastei\\s+este\\s+mes|que\\s+faturas\\s+registei\\s+este\\s+mes|what\\s+subscriptions?\\s+renew\\s+soon|which\\s+subscriptions?\\s+renew\\s+soon|what\\s+bills?\\s+are\\s+still\\s+missing\\s+this\\s+month|what\\s+should\\s+i\\s+send\\s+to\\s+my\\s+accountant|how\\s+much\\s+did\\s+i\\s+spend\\s+this\\s+month|what\\s+invoices?\\s+did\\s+i\\s+file\\s+this\\s+month)\\b",
-          "\\b(finance|budget|afford|bill|invoice|receipts?|tax|subscription|expense|purchase|payment|transaction|money|cash|conta|or[cç]amento|fatura|recibos?|imposto|assinatura|comprar|despesas?|gastos?)\\b",
-          "\\b(finance|financas|financeiro|financeira|pagamento|stripe|invoice|fatura|recibo|receipt)\\b"
+          "\\b(finance|budget|afford|bill|invoice|receipts?|tax|subscription|expense|transaction|money|cash|conta|or[cç]amento|fatura|recibos?|imposto|assinatura|despesas?|gastos?)\\b",
+          "\\b(finance|financas|financeiro|financeira|stripe|invoice|fatura|factura|recibos?|receipt)\\b",
+          "\\b(?:supplier|vendor)\\s+(?:payments?|invoices?|bills?)\\b|\\b(?:payments?|invoices?|bills?)\\s+(?:to|from)\\s+(?:suppliers?|vendors?)\\b|\\b(?:faturas?|facturas?|recibos?|pagamentos?)\\b[\\s\\S]{0,50}\\b(?:fornecedores?|venc(?:e|em|ida|idas)|pendentes?)\\b|\\bfornecedores?\\b[\\s\\S]{0,50}\\b(?:faturas?|facturas?|recibos?|pagamentos?)\\b",
+          "\\bfaturas?\\b[\\s\\S]{0,80}\\b(?:n[aã]o\\s+pagas?|datas?\\s+de\\s+vencimento|vencimento|valores?)\\b",
+          "\\blan[cç]amentos?\\b[\\s\\S]{0,70}\\b(?:aguard(?:am|ando)|pendentes?|sem)\\b[\\s\\S]{0,40}\\brecibos?\\b",
+          "\\b(?:registro|registo|recibo)\\s+fict[ií]cio\\b[\\s\\S]{0,100}\\b(?:euros?|forma\\s+de\\s+pagamento|categoria\\s+fiscal)\\b",
+          "\\b(?:checking|savings|bank)\\b[\\s\\S]{0,60}\\b(?:accounts?|balances?|transfer)\\b|\\b(?:accounts?|balances?|transfer)\\b[\\s\\S]{0,60}\\b(?:checking|savings|bank)\\b",
+          "\\b(?:checking\\s+account|savings\\s+account|card\\s+charges?|card\\s+purchases?|emergency\\s+fund|savings\\s+target)\\b",
+          "\\b(?:card\\s+charges?|card\\s+purchases?|recategori[sz](?:e|ing)|emergency\\s+fund|savings\\s+target)\\b",
+          "\\b(?:travel|conference)\\s+budget\\b|\\bbudget\\b[\\s\\S]{0,50}\\b(?:travel|conference)\\b",
+          "\\bsubscriptions?\\b[\\s\\S]{0,50}\\b(?:due\\s+to\\s+renew|renew\\s+before|cancel)\\b",
+          "\\b(?:categori[sz]e|recategori[sz]e)\\b[\\s\\S]{0,50}\\b(?:transaction|card\\s+charge)\\b",
+          "\\b(?:travel|conference)\\s+budget\\b[\\s\\S]{0,100}\\b(?:calendar|event)\\b[\\s\\S]{0,80}\\b(?:unchanged|without\\s+changing|not\\s+change)\\b",
+          "\\b(?:income|spending)\\b[\\s\\S]{0,50}\\b(?:income|spending|calendar\\s+month)\\b",
+          "\\b(?:compras?|movimentos?|lan[cç]amentos?)\\b[\\s\\S]{0,60}\\b(?:cart[aã]o|conta\\s+[àa]\\s+ordem)\\b|\\bcart[aã]o\\b[\\s\\S]{0,60}\\b(?:compras?|movimentos?|lan[cç]amentos?)\\b",
+          "\\b(?:compras?\\s+no\\s+cart[aã]o|movimentos?\\s+superiores?|conta\\s+[àa]\\s+ordem)\\b",
+          "\\b(?:meta|reserva)\\b[\\s\\S]{0,50}\\b(?:poupan[cç]as?|emerg[eê]ncia)\\b|\\b(?:poupan[cç]as?|emerg[eê]ncia)\\b[\\s\\S]{0,50}\\b(?:meta|reserva)\\b",
+          "\\b(?:transfere?|transfira)\\b[\\s\\S]{0,80}\\b(?:conta\\s+corrente|conta\\s+[àa]\\s+ordem|poupan[cç]a)\\b",
+          "\\bor[cç]amento\\b[\\s\\S]{0,60}\\b(?:alimenta[cç][aã]o|viagem|confer[eê]ncia)\\b",
+          "\\b(?:quanto\\s+(?:ainda\\s+)?posso\\s+gastar|categoria\\s+lazer|assinaturas?\\s+ser[aã]o\\s+renovadas?)\\b",
+          "\\b(?:saldos?|movimentos?)\\b[\\s\\S]{0,70}\\b(?:conta\\s+[àa]\\s+ordem|poupan[cç]a|superiores?\\s+a)\\b"
         ],
         "exampleUtterances": [
           "what subscriptions renew soon",
@@ -863,17 +983,26 @@
             "groceries",
             "ingredients?",
             "dinner",
-            "lunch"
+            "lunch",
+            "pantry",
+            "soup",
+            "grocery\\s+orders?"
           ],
           "pt": [
             "cozinhar",
+            "cozinha",
+            "cozedura",
+            "plano\\s+de\\s+cozedura",
             "receitas?",
             "jantar",
             "almo[cç]o",
             "ingredientes?",
             "refei(?:cao|ção|coes|ções)",
             "forno",
-            "prato"
+            "prato",
+            "despensa",
+            "sopa",
+            "pedidos?\\s+de\\s+(?:mercearia|supermercado|alimentos)"
           ],
           "es": [
             "cocinar",
@@ -887,6 +1016,8 @@
           ]
         },
         "regexFragments": [
+          "\\bcooking[-\\s]+related\\s+(?:task|request)\\b",
+          "\\b(?:plano\\s+de\\s+cozedura|se[cç][aã]o\\s+de\\s+cozinhar|estado\\s+armazenado[\\s\\S]{0,60}cozinhar)\\b",
           "\\b(recipe|recipes|meal\\s+plan|meal\\s+prep|shopping\\s+list|cook(?:ing)?|ingredient|groceries|what\\s+(?:to|should\\s+I)\\s+(?:cook|eat|make)|dinner\\s+ideas?|breakfast\\s+ideas?|lunch\\s+ideas?|receita|cardápio|lista\\s+de\\s+compras|cozinhar|refeição|jantar|almoço|café\\s+da\\s+manhã)\\b",
           "\\b(recipe|recipes|meal\\s+plan|meal\\s+prep|shopping\\s+list|batch\\s+cook(?:ing)?|dinner|breakfast|lunch|snack|menu|grocer(?:y|ies)|what\\s+(?:to|should\\s+I)\\s+(?:cook|eat|make)|jantar|almo[cç]o|caf[eé]\\s+da\\s+manh[aã]|lanche|refei[çc][aã]o|lista\\s+de\\s+compras|receita)\\b",
           "caf[eé]\\s+da\\s+manh[aã]|almo[cç]o|jantar|lanche|refei[çc][aã]o|lista\\s+de\\s+compras|receita",
@@ -899,7 +1030,21 @@
           "\\b(ralar|ralada|grate|grated)\\b[\\s\\S]{0,30}\\b(cenoura|carrot)\\b[\\s\\S]{0,60}\\b(guard(?:ar|o|a)|conserv(?:ar|o|a)|armazen(?:ar|o|a)|geladeira|fridge|refrigerator|refriger(?:ar|o|a)|durar|last)\\b",
           "\\b(cook(?:ing)?|meal|meal\\s+prep|food|fuel(?:ing)?|recipe|grocery|groceries|shopping\\s+list|lunch|dinner|breakfast|cozin|refei[cç][aã]o|mercado|compras)\\b",
           "\\b(add|buy|create|adicionar|adiciona|acrescentar|acrescenta|comprar|compra|agregar|añadir|anadir|crear)\\b.*\\b(grocery|groceries|ingredient|ingredients|shopping|compras|ingredientes?|lista\\s+de\\s+compras|lista\\s+de\\s+la\\s+compra)\\b",
-          "\\b(cozinha|meal|refeicao|jantar|almoco|ceia|lanche|comida|grocery|compras|fueling|recipe|receita|receitas|dinner|lunch|breakfast|snack|ingredient|ingredients)\\b"
+          "\\b(cozinha|meal|refeicao|jantar|almoco|ceia|lanche|comida|grocery|compras|fueling|recipe|receita|receitas|dinner|lunch|breakfast|snack|ingredient|ingredients)\\b",
+          "\\b(pantry|pantry\\s+items?|lentil\\s+soup|grocery\\s+orders?|despensa|itens?\\s+da\\s+despensa|sopa\\s+de\\s+lentilhas?|pedidos?\\s+de\\s+(?:mercearia|supermercado|alimentos))\\b",
+          "\\bplanned\\b[\\s\\S]{0,50}\\bmeals?\\b|\\bmeals?\\b[\\s\\S]{0,50}\\bplanned\\b",
+          "\\bswaps?\\b[\\s\\S]{0,60}\\bingredients?\\b|\\bingredients?\\b[\\s\\S]{0,60}\\bswaps?\\b",
+          "\\b(?:pr[eé]via|esbo[cç]o)\\b[\\s\\S]{0,50}\\bcompras?\\b[\\s\\S]{0,50}\\brefei[cç][oõ]es\\s+r[aá]pidas\\b",
+          "\\bsubstituir\\b[\\s\\S]{0,50}\\bervas?\\b[\\s\\S]{0,40}\\b(?:frescas?|secas?)\\b[\\s\\S]{0,40}\\bprato\\b",
+          "\\b(?:encomendar|confirmar|confirme|verifica[cç][oõ]es|cuidados?)\\b[\\s\\S]{0,80}\\b(?:compra|encomenda)\\b[\\s\\S]{0,60}\\b(?:mercearia|alimentos|supermercado)\\b",
+          "\\b(?:mercearia|alimentos|supermercado)\\b[\\s\\S]{0,60}\\b(?:compra|encomenda)\\b[\\s\\S]{0,80}\\b(?:confirmar|verifica[cç][oõ]es|cuidados?)\\b",
+          "\\b(?:main\\s+course|food\\s+allerg(?:y|ies)|sourdough|cold-proof|bread\\s+recipe)\\b",
+          "\\b(?:sourdough|cold-proof|bread\\s+recipe)\\b",
+          "\\b(?:confirm|approve)\\b[\\s\\S]{0,70}\\bgrocery\\s+order\\b",
+          "\\b(?:confirma|aprova)\\b[\\s\\S]{0,70}\\bencomenda\\s+de\\s+mercearia\\b",
+          "\\b(?:dinner|meal-prep)\\s+plan\\b[\\s\\S]{0,70}\\b(?:food\\s+budget|without\\s+saving|do\\s+not\\s+save)\\b",
+          "\\b(?:dinner\\s+plan|meal-prep\\s+plan|food\\s+budget)\\b",
+          "\\b(?:planeje|prepara)\\b[\\s\\S]{0,60}\\b(?:comida|refei[cç][oõ]es)\\b[\\s\\S]{0,70}\\b(?:restri[cç][oõ]es\\s+alimentares|sem\\s+guardar)\\b"
         ],
         "exampleUtterances": [
           "I need a carnivore meal plan",
@@ -1000,7 +1145,8 @@
         },
         "regexFragments": [
           "\\b(reconnect|retry|sync|reauth)\\b.*\\b(connections?|integrations?|providers?|google|outlook|garmin|apple health|strava|todoist|notion)\\b|\\b(connections?|integrations?|providers?|google|outlook|garmin|apple health|strava|todoist|notion)\\b.*\\b(reconnect|retry|sync|reauth)\\b",
-          "\\b(connection|conexao|ligacao|google|outlook|garmin|health)\\b"
+          "\\b(connection|conexao|ligacao|google|outlook|garmin|health)\\b",
+          "\\b(?:check|show|verify|status|working|connected|mostr(?:a|e|ar)|verifi(?:ca|que)|estado|funcionando)\\b[\\s\\S]{0,60}\\b(?:connections?|integrations?|conex(?:[aã]o|[oõ]es|ao|oes)|integra(?:[cç][aã]o|[cç][oõ]es|cao|coes))\\b|\\b(?:connections?|integrations?|conex(?:[aã]o|[oõ]es|ao|oes)|integra(?:[cç][aã]o|[cç][oõ]es|cao|coes))\\b[\\s\\S]{0,60}\\b(?:status|working|connected|estado|funcionando)\\b"
         ],
         "exampleUtterances": [
           "reconnect my google calendar integration",

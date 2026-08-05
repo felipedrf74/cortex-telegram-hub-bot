@@ -23,8 +23,17 @@
 import Database from 'better-sqlite3';
 import { getDb } from '../database';
 import { ensureChatCoreV2AuditTables } from './model-run-audit';
+import { normalizeRoutingSyntheticQaTrafficProvenance } from '../routing-synthetic-qa-contract';
 
 export const CHAT_CORE_V2_SHADOW_GATE_READINESS_VERSION = 'chat_core_v2_shadow_gate_readiness@1.0.0';
+/**
+ * Reader-side schema pin. Keep this literal aligned with the producer and the
+ * offline divergence gate. Importing the producer here would load the full
+ * classifier/provider graph in every gate-metrics consumer (including the
+ * scheduler) merely to read a version string.
+ */
+export const CHAT_CORE_V2_SHADOW_GATE_ROUTING_DIVERGENCE_VERSION =
+  'routing_divergence_shadow@5.0.0';
 
 const SHADOW_BUNDLE_ID_LIKE = 'chatv2-shadow-replay:%';
 const HMAC_HEX_64 = /^[a-f0-9]{64}$/;
@@ -267,6 +276,7 @@ const ALLOWED_ROUTING_DIVERGENCE_KEYS = new Set([
   'releaseIdentity',
   'capabilityFlags',
   'recorderState',
+  'trafficProvenance',
   'topCandidate',
   'candidateCount',
   'surfaces',
@@ -361,6 +371,15 @@ function isSafeRoutingDivergenceRecorderState(value: unknown): boolean {
     && typeof record.shadowPlannerEffective === 'boolean';
 }
 
+function isSafeRoutingSyntheticQaTrafficProvenance(value: unknown): boolean {
+  if (value === null) return true;
+  try {
+    return normalizeRoutingSyntheticQaTrafficProvenance(value) !== null;
+  } catch {
+    return false;
+  }
+}
+
 function isSafeRoutingDivergence(value: unknown): boolean {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;
@@ -384,6 +403,8 @@ function isSafeRoutingDivergence(value: unknown): boolean {
       if (!isSafeRoutingDivergenceCapabilityFlags(leaf)) return false;
     } else if (key === 'recorderState') {
       if (!isSafeRoutingDivergenceRecorderState(leaf)) return false;
+    } else if (key === 'trafficProvenance') {
+      if (!isSafeRoutingSyntheticQaTrafficProvenance(leaf)) return false;
     } else if (key === 'surfaces') {
       if (!safeSection(leaf, ALLOWED_ROUTING_DIVERGENCE_SURFACE_KEYS, false)) return false;
     } else if (key === 'agreement') {
@@ -392,7 +413,9 @@ function isSafeRoutingDivergence(value: unknown): boolean {
       return false;
     }
   }
-  return Object.hasOwn(record, 'recorderState');
+  return record.divergenceVersion === CHAT_CORE_V2_SHADOW_GATE_ROUTING_DIVERGENCE_VERSION
+    && Object.hasOwn(record, 'recorderState')
+    && Object.hasOwn(record, 'trafficProvenance');
 }
 
 function isAllowlistedShadowResponse(response: Record<string, unknown>): boolean {

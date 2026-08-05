@@ -26,6 +26,7 @@ import {
   getOrchestratorOverrideThreshold,
   isRoutingClarifyEnabled,
   parseRoutingCalibration,
+  parseRoutingCalibrationForCorpusBaseline,
   recommendThresholdMeetingTarget,
   _resetRoutingCalibrationForTests,
   _setRoutingCalibrationForTests,
@@ -68,7 +69,7 @@ describe('routing calibration table golden contracts', () => {
     expect(parsed!.provenance).toEqual({
       source: 'corpus',
       corpusSize: 300,
-      generatedAt: '2026-07-30T08:34:49.775Z',
+      generatedAt: '2026-08-03T05:48:45.873Z',
     });
     // Partial 25/300 LLM-cache coverage cannot lower the active classifier
     // safety floor; it stays at the reviewed bootstrap value.
@@ -88,14 +89,14 @@ describe('routing calibration table golden contracts', () => {
       overrideThreshold: 0.86,
     });
     expect(parsed!.intentResolver.scoreBuckets).toEqual([
-      { minScore: 5, calibratedPrecision: 0.8846 },
-      { minScore: 2, calibratedPrecision: 0.8984 },
-      { minScore: 1, calibratedPrecision: 0.7551 },
-      { minScore: 0, calibratedPrecision: 0.1778 },
+      { minScore: 5, calibratedPrecision: 0.943 },
+      { minScore: 2, calibratedPrecision: 0.943 },
+      { minScore: 1, calibratedPrecision: 0.8376 },
+      { minScore: 0, calibratedPrecision: 0.1633 },
     ]);
     expect(parsed!.clarify).toEqual({ epsilon: 0.05, actionableFloor: 0.2 });
     expect(createHash('sha256').update(fileBytes).digest('hex')).toBe(
-      '3ac0a38b841aecb9de4b167e480d7a0458cad78a11724467dc190f9962340326',
+      'ee1ff569fe999414313c15843bca112a389c71a5b41bfcc80f380f80dbe37ede',
     );
   });
 
@@ -122,6 +123,53 @@ describe('parseRoutingCalibration fail-open validation', () => {
     const bad = JSON.parse(JSON.stringify(BOOTSTRAP_ROUTING_CALIBRATION));
     bad.orchestrator.branches.scheduling = 1.7;
     expect(parseRoutingCalibration(bad)).toBeNull();
+  });
+
+  it('rejects unordered, duplicate, or non-monotonic resolver buckets', () => {
+    const unordered = JSON.parse(JSON.stringify(BOOTSTRAP_ROUTING_CALIBRATION));
+    [unordered.intentResolver.scoreBuckets[0], unordered.intentResolver.scoreBuckets[1]] = [
+      unordered.intentResolver.scoreBuckets[1],
+      unordered.intentResolver.scoreBuckets[0],
+    ];
+    expect(parseRoutingCalibration(unordered)).toBeNull();
+
+    const duplicate = JSON.parse(JSON.stringify(BOOTSTRAP_ROUTING_CALIBRATION));
+    duplicate.intentResolver.scoreBuckets[1].minScore = duplicate.intentResolver.scoreBuckets[0].minScore;
+    expect(parseRoutingCalibration(duplicate)).toBeNull();
+
+    const nonMonotonic = JSON.parse(JSON.stringify(BOOTSTRAP_ROUTING_CALIBRATION));
+    nonMonotonic.intentResolver.scoreBuckets[1].calibratedPrecision = 0.99;
+    expect(parseRoutingCalibration(nonMonotonic)).toBeNull();
+    expect(parseRoutingCalibrationForCorpusBaseline(nonMonotonic)).not.toBeNull();
+    expect(parseRoutingCalibrationForCorpusBaseline(unordered)).toBeNull();
+    expect(parseRoutingCalibrationForCorpusBaseline(duplicate)).toBeNull();
+  });
+
+  it('rejects unsupported versions and incomplete resolver bucket topologies at both seams', () => {
+    const futureVersion = JSON.parse(JSON.stringify(BOOTSTRAP_ROUTING_CALIBRATION));
+    futureVersion.version = 'routing-calibration@999.0.0';
+
+    const missingTerminalBucket = JSON.parse(JSON.stringify(BOOTSTRAP_ROUTING_CALIBRATION));
+    missingTerminalBucket.intentResolver.scoreBuckets.pop();
+
+    const changedThreshold = JSON.parse(JSON.stringify(BOOTSTRAP_ROUTING_CALIBRATION));
+    changedThreshold.intentResolver.scoreBuckets[1].minScore = 3;
+
+    const extraBucket = JSON.parse(JSON.stringify(BOOTSTRAP_ROUTING_CALIBRATION));
+    extraBucket.intentResolver.scoreBuckets.splice(3, 0, {
+      minScore: 0.5,
+      calibratedPrecision: 0.5,
+    });
+
+    for (const candidate of [
+      futureVersion,
+      missingTerminalBucket,
+      changedThreshold,
+      extraBucket,
+    ]) {
+      expect(parseRoutingCalibration(candidate)).toBeNull();
+      expect(parseRoutingCalibrationForCorpusBaseline(candidate)).toBeNull();
+    }
   });
 
   it('rejects invalid provenance sources', () => {
@@ -191,6 +239,57 @@ describe('buildCorpusRoutingCalibration (synthetic labeled data)', () => {
     expect(byMin[1]).toBe(0.6);  // bootstrap kept (only 3 samples)
     expect(byMin[0]).toBe(0.4);  // bootstrap kept (no samples)
     expect(CALIBRATION_MIN_BUCKET_SAMPLES).toBe(10);
+  });
+
+  it('uses weighted adjacent pooling when a sparse high-score prior inverts a populated bucket', () => {
+    const baseline = JSON.parse(JSON.stringify(BOOTSTRAP_ROUTING_CALIBRATION));
+    baseline.intentResolver.scoreBuckets = [
+      { minScore: 5, calibratedPrecision: 0.8846 },
+      { minScore: 2, calibratedPrecision: 0.8984 },
+      { minScore: 1, calibratedPrecision: 0.7551 },
+      { minScore: 0, calibratedPrecision: 0.1778 },
+    ];
+    const resolver = [
+      { rawScore: 5, correct: true },
+      ...Array.from({ length: 129 }, (_, index) => ({ rawScore: 2, correct: index < 121 })),
+      ...Array.from({ length: 121 }, (_, index) => ({ rawScore: 1, correct: index < 102 })),
+      ...Array.from({ length: 49 }, (_, index) => ({ rawScore: 0, correct: index < 8 })),
+    ];
+    const table = buildCorpusRoutingCalibration({
+      orchestrator: [],
+      resolver,
+      corpusSize: 300,
+      generatedAt: '2026-08-03T05:48:45.873Z',
+      baseline,
+    });
+    expect(table.intentResolver.scoreBuckets).toEqual([
+      { minScore: 5, calibratedPrecision: 0.9341 },
+      { minScore: 2, calibratedPrecision: 0.9341 },
+      { minScore: 1, calibratedPrecision: 0.843 },
+      { minScore: 0, calibratedPrecision: 0.1633 },
+    ]);
+  });
+
+  it('pools repeated adjacent monotonicity violations to one weighted block', () => {
+    const resolver = [
+      ...Array.from({ length: 10 }, (_, index) => ({ rawScore: 5, correct: index < 4 })),
+      ...Array.from({ length: 10 }, (_, index) => ({ rawScore: 2, correct: index < 8 })),
+      ...Array.from({ length: 10 }, (_, index) => ({ rawScore: 1, correct: index < 6 })),
+      ...Array.from({ length: 10 }, (_, index) => ({ rawScore: 0, correct: index < 9 })),
+    ];
+    const table = buildCorpusRoutingCalibration({
+      orchestrator: [],
+      resolver,
+      corpusSize: 40,
+      generatedAt: '2026-08-03T00:00:00.000Z',
+      baseline: BOOTSTRAP_ROUTING_CALIBRATION,
+    });
+    expect(table.intentResolver.scoreBuckets.map((bucket) => bucket.calibratedPrecision)).toEqual([
+      0.675,
+      0.675,
+      0.675,
+      0.675,
+    ]);
   });
 
   it('derives the classifier floor and clarify actionable floor from the accuracy-target math', () => {

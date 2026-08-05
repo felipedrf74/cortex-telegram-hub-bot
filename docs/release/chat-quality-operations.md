@@ -437,6 +437,139 @@ restarts only the backend, verifies restored identity and health, and records
 `rolled_back` or `rollback_failed`; unresolved backups or unpublished receipts
 block a later release transaction.
 
+### One-time 4.14.232 shadow-hook claim recovery
+
+The staging shadow-hook transaction
+`20260802T143331Z-8ce452d0143b` on runtime
+`0c4af848349c2cf3c2c89fd4d66f039b481f62ae` and artifact
+`f8d20b5f90c1477ff3fe6178490548828e63ecf872e868b8933bcd104e5e4cd7`
+predates the explicit effective-state claim field. Its restored `.env`, failed
+receipt, expired permit, and exact backup marker form a release deadlock: the
+marker correctly blocks a new artifact, while the installed operator cannot
+complete rollback health verification without that field. This is the only
+supported legacy exception.
+
+From a clean checkout of protected main, inspect the exact repair:
+
+```text
+scripts/chat-shadow-hook-legacy-claim-repair-operator.sh inspect \
+  --runtime-sha 0c4af848349c2cf3c2c89fd4d66f039b481f62ae \
+  --artifact-digest f8d20b5f90c1477ff3fe6178490548828e63ecf872e868b8933bcd104e5e4cd7 \
+  --transaction-id 20260802T143331Z-8ce452d0143b
+```
+
+After the owner approves the exact `repairPlanDigest`, apply only that plan:
+
+```text
+NEXUS_RELEASE_OWNER_AUTHORIZED=1 \
+scripts/chat-shadow-hook-legacy-claim-repair-operator.sh apply \
+  --runtime-sha 0c4af848349c2cf3c2c89fd4d66f039b481f62ae \
+  --artifact-digest f8d20b5f90c1477ff3fe6178490548828e63ecf872e868b8933bcd104e5e4cd7 \
+  --transaction-id 20260802T143331Z-8ce452d0143b \
+  --ack-plan sha256:<exact-repair-plan-digest>
+```
+
+The hash-bound repair runs under both release locks and adds only the
+deterministic `effectiveFlags` master-kill projection to the exact legacy v1
+private claim. It does not change `.env`, restart a process, remove a marker,
+or publish a replacement capability result. Its receipt status is
+`claim_repaired`, deliberately not `passed` or `release_unblocked`.
+
+Next, from a clean detached checkout of the exact installed runtime, run the
+exact old operator to trigger its startup recovery:
+
+```text
+npm run release:chat-flags -- inspect-shadow-hook \
+  --role staging \
+  --runtime-sha 0c4af848349c2cf3c2c89fd4d66f039b481f62ae \
+  --artifact-digest f8d20b5f90c1477ff3fe6178490548828e63ecf872e868b8933bcd104e5e4cd7 \
+  --value false \
+  --transition-reason operator_rollback
+```
+
+Startup recovery in that installed operator must verify the restored
+environment, restart and health-check the backend, publish `rolled_back`, and
+remove the exact backup and permit. The command is expected to exit nonzero
+after successful startup recovery if the subsequent inspect refuses the
+already-OFF requested state; that exit is not the recovery verdict. Verify
+instead that
+`/home/dominguez/.local/state/nexus-release/chat-capability-flags/staging.json`
+is `rolled_back` for the exact transaction and release, that
+`/home/dominguez/telegram-hub-bot-staging/.env.before-chat-capability-20260802T143331Z-8ce452d0143b`
+and
+`/home/dominguez/.local/state/nexus-release/chat-capability-flags/staging.runtime-permit.json`
+are absent, and that authenticated `/health/detailed` reports the exact PM2
+release identity, a clear runtime guard, and every capability, dedicated
+route-hook, and planner assignment OFF. Only then may a new artifact enter
+normal staging preparation and smoke. Never delete the marker or permit
+manually.
+
+### One-time 4.14.232 failed observation publication recovery
+
+The staging classifier observation `20260805T163302Z-2522779e6416` on runtime
+`39965e357d19a1a44ecb167d213c6ffcf361a21b` and artifact
+`e368f1e15c3b2a84cfb798ad12621932a61fd766db6161259a7bd364cbac1535`
+completed the canonical smoke but failed the then-installed quality monitor
+before it could publish an observation receipt. The exact plan and smoke are
+durable, the successful observation receipt and sidecar are absent, and the
+classifier was subsequently returned to OFF through a passed exact-release
+transaction. That incomplete publication correctly blocks another release.
+
+From a clean checkout of protected main, inspect the exact recovery:
+
+```text
+scripts/chat-observation-legacy-failure-recovery-operator.sh inspect \
+  --runtime-sha 39965e357d19a1a44ecb167d213c6ffcf361a21b \
+  --artifact-digest e368f1e15c3b2a84cfb798ad12621932a61fd766db6161259a7bd364cbac1535 \
+  --transaction-id 20260805T163302Z-2522779e6416
+```
+
+After the owner approves the exact `recoveryPlanDigest`, apply only that plan:
+
+```text
+NEXUS_RELEASE_OWNER_AUTHORIZED=1 \
+scripts/chat-observation-legacy-failure-recovery-operator.sh apply \
+  --runtime-sha 39965e357d19a1a44ecb167d213c6ffcf361a21b \
+  --artifact-digest e368f1e15c3b2a84cfb798ad12621932a61fd766db6161259a7bd364cbac1535 \
+  --transaction-id 20260805T163302Z-2522779e6416 \
+  --ack-plan sha256:<exact-recovery-plan-digest>
+```
+
+The hash-bound transaction runs under both release locks. It revalidates the
+installed source, expired observation plan, sequence, preserved smoke bytes,
+later exact classifier-OFF receipt, environment bytes, and every global
+capability/route-hook/planner assignment OFF. It publishes an immutable
+`failure_acknowledged` recovery receipt and byte-identical smoke sidecar; it
+does not create a passing observation, enable a flag, alter `.env`, restart a
+process, or delete the failed plan or smoke. Production flag selection never
+accepts this receipt as observation evidence. The release guard accepts it
+only as terminal publication of the failed attempt. Never synthesize a passed
+observation receipt or remove the stranded files manually.
+
+This incident also left the dedicated USER/TENANT route recorder ON after
+protected main advanced beyond the installed staging release. After the
+failure receipt is published, use the narrow protected-main wrapper around the
+exact installed operator to inspect its OFF rollback:
+
+```text
+scripts/chat-shadow-hook-installed-predecessor-off-operator.sh inspect
+```
+
+After owner review of that exact `planDigest`, apply it once:
+
+```text
+NEXUS_RELEASE_OWNER_AUTHORIZED=1 \
+scripts/chat-shadow-hook-installed-predecessor-off-operator.sh apply \
+  --ack-plan sha256:<exact-recorder-OFF-plan-digest>
+```
+
+The wrapper is hard-bound to the same `39965e357d19...` staging artifact,
+verifies its installed source from the artifact manifest, and permits only
+the installed operator's `false` / `operator_rollback` transition. It does not
+provide a predecessor ON path or a general protected-main bypass. Confirm the
+receipt is `passed`/`disable` and the staging environment has zero enabled
+route-hook or planner assignments before retrying release preparation.
+
 Before collecting the first manifest-routing window for an exact candidate,
 activate only the staging route recorder for the database-attested dedicated
 evaluation identity:
@@ -467,14 +600,15 @@ The global route hook stays OFF. Authenticated `/health/detailed`
 release-attestation v2 reports only presence and effective booleans for this
 scope; it never exposes its identity.
 
-Record the canonical routing-window start no earlier than the passed receipt's
-`completedAt`. Eligible `routing_divergence_shadow@4.0.0` bundles must all bind
-that exact dedicated user and tenant, route hook effective, shadow planner not
-effective, target capability OFF, exact release identity, and the selected
-surface. The gate also hashes and binds fresh authenticated health bytes and
-the exact recorder receipt. Missing or mixed recorder metadata, a stale or
-different receipt, any planner-effective bundle, or a live-scope mismatch
-fails the entire window instead of merely excluding rows.
+Routing-window evidence uses the provider-free synthetic QA contract in
+**Phase 7.1** below. Eligible `routing_divergence_shadow@5.0.0` bundles bind
+the exact dedicated user and tenant, route hook effective, shadow planner not
+effective, target capability OFF, exact release identity, selected surface,
+and strict synthetic-QA provenance. The gate also hashes and binds fresh
+authenticated health bytes, the exact recorder receipt, the precommitted
+manifest, and its zero-provider campaign receipt. Missing or mixed recorder
+metadata, a stale or different receipt, any planner-effective bundle, or a
+live-scope mismatch fails the entire window instead of merely excluding rows.
 
 After all four manifest-routing collection windows are complete, disable the
 recorder with `inspect-shadow-hook --value false --transition-reason
@@ -579,11 +713,185 @@ Use this fixed readiness order and exact flag-to-telemetry mapping:
 | 4 | `AI_ROUTING_MANIFEST_REGISTRY` | `registrySubset` |
 
 The minimum is fixed at 200 comparisons for every surface; it is not an
-operator input and cannot be lowered after seeing results. Record one
-canonical UTC start timestamp after the exact candidate is healthy on staging,
-then record an explicit canonical UTC end timestamp after eligible staging
-traffic. With the selected flag still OFF (and only previously authorized
-flags, if any, ON), inspect that one immutable window:
+operator input and cannot be lowered after seeing results. Each surface uses a
+fresh, precommitted 200-turn manifest. No synthetic routing QA window is organic traffic.
+Its exact traffic class is
+`owner_authorized_synthetic_staging_qa`; describe it as governed synthetic
+staging evidence, never as a natural-traffic or human-traffic baseline.
+
+Each manifest contains 200 standalone natural-language turns organized into
+83 editorial scenario groups. A group is only an authoring-diversity aid; it
+is not a conversation, is not sent to the API, and does not authorize a claim
+about multi-turn behavior. Every turn carries `standalone: true` and must be
+independently understandable by the per-message router. Use English, Brazilian
+Portuguese, and European Portuguese only.
+
+The locale, stratum, and editorial-group quotas are identical for all four
+surfaces:
+
+| Dimension | Exact quota |
+| --- | --- |
+| Locale | `en-US=100`, `pt-BR=60`, `pt-PT=40` |
+| Stratum | `deterministic_state_read=80`, `missing_field_clarification=45`, `safe_write_preview_decline=35`, `restricted_side_effect_boundary=20`, `cross_skill_preview=10`, `domain_anchored_noop=10` |
+| Editorial groups | 83 total: 49 groups of two standalone turns and 34 groups of three |
+| `en-US` groups | 20 groups of two and 20 groups of three |
+| `pt-BR` groups | 15 groups of two and 10 groups of three |
+| `pt-PT` groups | 14 groups of two and 4 groups of three |
+
+The classifier and orchestrator surfaces measure only their actual five-domain
+runtime intersection. Their exact domain-by-locale matrix is:
+
+| Expected domain | `en-US` | `pt-BR` | `pt-PT` | Total |
+| --- | ---: | ---: | ---: | ---: |
+| `secretary` | 34 | 20 | 14 | 68 |
+| `triathlon` | 20 | 12 | 7 | 39 |
+| `content` | 16 | 10 | 6 | 32 |
+| `cooking` | 16 | 10 | 6 | 32 |
+| `finance` | 14 | 8 | 7 | 29 |
+| **Total** | **100** | **60** | **40** | **200** |
+
+The shadow-route and registry-subset surfaces cover all eight routable
+manifest domains. Their exact domain-by-locale matrix is:
+
+| Expected domain | `en-US` | `pt-BR` | `pt-PT` | Total |
+| --- | ---: | ---: | ---: | ---: |
+| `secretary` | 27 | 16 | 10 | 53 |
+| `triathlon` | 15 | 9 | 6 | 30 |
+| `content` | 13 | 7 | 5 | 25 |
+| `cooking` | 12 | 8 | 5 | 25 |
+| `finance` | 11 | 7 | 5 | 23 |
+| `connections` | 8 | 5 | 4 | 17 |
+| `notifications` | 7 | 4 | 3 | 14 |
+| `decision_center` | 7 | 4 | 2 | 13 |
+| **Total** | **100** | **60** | **40** | **200** |
+
+Expected labels use the resolver's coarse skill space, not granular action
+skills: `secretary -> secretary`, `triathlon -> training`, and each of
+`content`, `cooking`, `finance`, `connections`, `notifications`, and
+`decision_center` maps to the same-named resolver skill. Calendar, task,
+reminder, and mail coverage can remain an editorial worksheet dimension, but
+none is a valid `expectedResolverSkill` for the shared Secretary capability.
+
+Use a blind two-role authoring procedure before any prompt is exposed to a
+router or resolver. The author receives only the product/action ownership
+rubric and assigned quota cells, never routing regexes, manifest examples,
+corpus or chat-eval text, predecessor text, or runtime output. A separate
+labeler receives the prompts in shuffled order plus the same product ownership
+rubric and independently assigns `expectedDomain` and
+`expectedResolverSkill`. Adjudicate or replace every disagreement, ambiguous
+row, or context-dependent row before router exposure. The authoring, labeling,
+adjudication, and builder steps must not invoke a router; the live staging run
+is the first router consumer. Once built, never edit or replace a frozen
+manifest after seeing results; a failure is a routing gap, not a prompt-tuning
+invitation. This process creates agent-authored, independently labeled
+synthetic QA; it is not human traffic or a human baseline.
+
+Before execution, build the immutable manifest and check it against the
+routing corpus, chat-eval fixtures, and the strict chain of every earlier
+surface manifest:
+
+```text
+node scripts/build-routing-synthetic-qa-manifest.mjs \
+  --input <ignored-private-draft.json> \
+  --output <ignored-private-canonical-manifest.json> \
+  --runtime-sha <deployed-full-40-hex-sha> \
+  --artifact-digest <deployed-full-64-hex-sha256> \
+  --surface classifierKeyword \
+  --dedicated-id <CHAT_EVAL_DEDICATED_TENANT_ID> \
+  --reference routing_corpus=<owner-only-routing-corpus-export> \
+  --reference chat_eval_fixtures=<owner-only-chat-eval-fixture-export>
+```
+
+That first-surface command intentionally has no `--predecessor-manifest`.
+For each later surface, change `--surface` and append the real
+`--predecessor-manifest <path>` option once per earlier surface in the table's
+exact readiness order: one for `orchestratorPrimary`, two for `shadowRoute`,
+and three for `registrySubset`. The optional third typed reference is
+`--reference qa_history=<owner-only-QA-history-export>`. Do not pass an
+untyped `--reference` or use it for predecessor manifests; the builder rejects
+both. Every input and reference must be an owner-only mode-`0600` ordinary
+file.
+
+The builder invokes no router and no provider. It fails closed unless the
+matrix contains exactly 200 unique ordered standalone turns, the selected
+surface's exact locale/domain/resolver-skill/stratum and 83-editorial-group
+quotas, both mandatory typed reference lineages, the exact predecessor digest
+chain, and no exact, contiguous eight-token, or high four-gram overlap with the
+supplied references. It writes new canonical mode-`0600` bytes without
+overwriting an existing output and prints only their SHA-256, lineage, and
+aggregate counts. Record that digest before traffic.
+
+Copy the canonical manifest to an owner-only non-release staging path, then run
+the installed candidate from its selected `current` release. Supply identity
+fields in the process environment and secrets only through the protected
+staging env file; never put a token, `HEALTH_TOKEN`, or HMAC secret in argv.
+The protected staging env must provide `HEALTH_TOKEN`; this is the existing
+credential for authenticated `/health/detailed`, not the short-lived iOS JWT
+the runner creates for chat requests:
+
+```text
+cd /home/dominguez/telegram-hub-bot-staging/current
+env -i \
+  HOME=/home/dominguez USER=dominguez LOGNAME=dominguez \
+  PATH=/usr/local/bin:/usr/bin:/bin \
+  NEXUS_RELEASE_ROLE=staging \
+  NEXUS_RELEASE_SHA=<deployed-full-40-hex-sha> \
+  NEXUS_RELEASE_ARTIFACT_SHA256=<deployed-full-64-hex-sha256> \
+  DATABASE_PATH=/home/dominguez/telegram-hub-bot-staging/data/bot.db \
+  /usr/bin/node \
+    --env-file=/home/dominguez/telegram-hub-bot-staging/.env \
+    scripts/run-routing-synthetic-qa.mjs \
+    --manifest <owner-only-canonical-manifest.json> \
+    --manifest-sha256 <sha256:exact-manifest-digest>
+```
+
+The runner verifies the selected installed release marker/current symlink,
+dedicated `.invalid` identity, canonical manifest bytes, owner-only file state,
+and the shared release lock file. For every later surface it also reloads each
+prior manifest from the release-bound protected state tree, revalidates the
+current manifest against those predecessor prompts, and requires an exact
+canonical `passed` receipt for every predecessor on the same release and
+dedicated identity. The command self-enforces the release mutex:
+its entrypoint re-executes itself under non-blocking `/usr/bin/flock` on the
+shared release lock and fails closed if it cannot acquire or prove that exact
+parent/lock state. Do not wrap it in a second lock command.
+
+Before the first turn, the runner uses the protected `HEALTH_TOKEN` to require
+an authenticated healthy/connected serving-process attestation for the exact
+staging SHA and artifact, a clear runtime guard, the selected flag OFF, master
+kill OFF, the dedicated recorder effective, and the dedicated planner not
+effective. It separately mints a short-lived staging-fixture iOS JWT in memory
+for chat authentication and rejects a missing health credential or one equal
+to that JWT. Neither credential is printed or persisted.
+
+The runner then sends exactly 200 authenticated
+`POST /api/v1/chat/message` requests. Each body contains only the standalone
+text and canonical `clientMessageId`; attachments are absent. The API binds
+the raw `x-language` value to the manifest's exact `en-US`, `pt-BR`, or `pt-PT`
+locale, rejects any raw or normalized attachment, and persists the raw locale
+in synthetic provenance. The replay evidence separately binds its normalized
+route locale, zero attachment count, message length, message HMAC, and client-
+message HMAC. The staging-only terminal runs immediately after turn context,
+records the real four-surface shadow routing bundle, and returns before model
+budget, providers, connectors, tools, or domain actions. It also skips the
+ordinary idempotency claim/lifecycle-row creation and language-preference
+write; canonical turn identity is proven by the provenance, HMACs, and
+campaign receipt instead. A separate dedicated rate-limit bucket permits only
+this exact six-synthetic-header contract for the configured identity; ordinary
+or partial-header traffic keeps the normal limit.
+
+Every response must carry the exact recorded provenance, and before/after
+dedicated-identity provider-usage and attempt-reservation ledgers must have
+zero row and cost delta. Any non-200, malformed response, recorder failure,
+provider ledger change, duplicate evidence path, or release/identity mismatch
+fails without a passed receipt. The successful private manifest and receipt
+are stored under
+`/home/dominguez/.local/state/nexus-release/routing-synthetic-qa/` with mode
+`0600`. Use the receipt's exact `startedAt` and `completedAt` as the immutable
+gate window.
+
+With the selected flag still OFF (and only previously authorized flags, if
+any, ON), inspect that one immutable window:
 
 ```text
 npm run release:chat-flags -- inspect \
@@ -594,18 +902,27 @@ npm run release:chat-flags -- inspect \
   --value true \
   --transition-reason gate_pass \
   --since <YYYY-MM-DDTHH:mm:ss.sssZ> \
-  --until <YYYY-MM-DDTHH:mm:ss.sssZ>
+  --until <YYYY-MM-DDTHH:mm:ss.sssZ> \
+  --synthetic-qa-manifest-sha256 <sha256:exact-manifest-digest>
 ```
 
 The server derives the selected surface and installed telemetry versions, runs
 the provider-free divergence collector against the isolated staging database
-with `--minimum-comparisons=200`, and binds the exact `since`/`until` window
-into the plan. PASS requires at least 200 comparisons and agreement of at least
-0.99 on that one surface. Invalid, missing-identity, version-mismatched,
-out-of-window, flag-on, other-candidate, or recorder-state-mismatched bundles
-fail the governed gate. Zero eligible comparisons is a failure, not an empty
-pass. Never use an unbounded or all-surface aggregate to authorize a
-per-surface flip.
+with `--minimum-comparisons=200`, securely loads the route HMAC from the
+protected staging env, and binds the exact manifest/receipt hashes and
+`since`/`until` window into the plan. It requires exactly 200 in-window bundles,
+one per ordinal: no extras, omissions, duplicates, or relabeling. Each bundle's
+raw locale, normalized route locale, attachment-free state, message length,
+message HMAC, and client-message HMAC must match the precommitted turn. The
+resolved domain and resolver skill must match the independent expected labels,
+and the selected surface comparison must be non-null. PASS requires agreement
+of at least 0.99 on that one surface. Invalid, missing-identity, version-
+mismatched, out-of-window, flag-on, other-candidate, expected-label-mismatched,
+locale/attachment-mismatched, HMAC-mismatched, or recorder-state-mismatched
+bundles fail the governed gate. Zero eligible comparisons is a failure, not an
+empty pass. Never use an unbounded or all-surface aggregate to authorize a
+per-surface flip, and never reuse one surface's manifest or receipt for
+another.
 
 Apply only the exact inspected staging plan:
 
@@ -649,6 +966,13 @@ missing durable counters is no evidence and blocks the flip. Also review the
 actual clarification outcomes for safety and usefulness; the numeric budget
 alone is not a quality pass. Store the before/after redacted JSON and staging
 smoke receipt in the flag evidence directory.
+
+Resolver score-bucket calibration must be monotonic: a higher raw-score bucket
+cannot carry lower calibrated precision than a lower-score bucket. Corpus-mode
+generation enforces this with weighted adjacent pooling after sparse buckets
+retain their reviewed prior, and runtime parsing rejects unordered, duplicate,
+or non-monotonic buckets. Do not weaken that invariant to make a calibration
+artifact load; regenerate from the governed routing-only export instead.
 
 Run `inspect-observation` and owner-authorized `apply-observation`; production
 inspect then selects that exact strict receipt without generating traffic.
@@ -1014,38 +1338,134 @@ tested verified-success executor contract.
   producer-to-dependent regression passes.
 - Generate the first corpus calibration only from an evidence-bound,
   routing-only export. Never copy the full production database to a developer
-  machine. While holding both the release and Sonar locks, verify the exact
-  completed production release, health, database integrity, accepted snapshot
-  JSON digest, complete corpus identity, and exact LLM-cache row digest. Build
-  a fresh `0600` SQLite file containing only the 300 approved synthetic corpus
-  rows, their matching cache rows, and an empty accepted-snapshot table.
-  Omit or normalize source timestamps, suggested routes, and provider metadata
-  that calibration does not consume. The final export receipt is valid only
-  after post-export production health passes; incomplete work must retain an
-  explicitly partial receipt name/schema.
+  machine. The governed export operator must first land and be released in a
+  separate exact artifact; otherwise asking an unreleased operator to produce
+  the input for its own release creates a provenance cycle. From a clean
+  protected-main checkout of that already-running production artifact, inspect
+  the exact production state:
 
-  From a protected ignored evidence directory, run the zero-provider replay
-  with one recorded canonical timestamp:
+  ```text
+  npm run release:routing-calibration-export -- inspect \
+    --runtime-sha <production-runtime-sha> \
+    --artifact-digest <production-artifact-digest>
+  ```
+
+  Review the redacted plan and obtain Felipe's authorization for its exact
+  `sha256:` digest. Apply that same plan before its one-hour expiry:
+
+  ```text
+  NEXUS_RELEASE_OWNER_AUTHORIZED=1 \
+  npm run release:routing-calibration-export -- apply \
+    --runtime-sha <production-runtime-sha> \
+    --artifact-digest <production-artifact-digest> \
+    --ack-plan sha256:<reviewed-plan-digest>
+  ```
+
+  Apply dispatches one detached transaction. If the local process, SSH, or
+  polling is interrupted, observe that same transaction without applying it
+  again:
+
+  ```text
+  npm run release:routing-calibration-export -- collect \
+    --runtime-sha <production-runtime-sha> \
+    --artifact-digest <production-artifact-digest> \
+    --ack-plan sha256:<reviewed-plan-digest>
+  ```
+
+  `collect` derives the transaction id from the locally retained plan and can
+  publish either a complete, revalidated evidence set or a terminal partial
+  receipt whose status is exactly `failed`. A stranded `started` or
+  `exported_pending_post_health` receipt is nonterminal evidence: collection
+  refuses it and the transaction requires manual recovery under the shared
+  locks. Never re-run `apply` for that plan or lower/reset its sequence.
+  Collection also deliberately requires that the retained runtime is still
+  protected `origin/main` and still selected in production. If either identity
+  advances before collection finishes, stop: recover the retained transaction
+  manually under both shared locks and validate its immutable server-side
+  artifacts. Do not relabel nonterminal state as failed and do not treat an
+  uncollected receipt as release evidence.
+
+  Inspect and apply both hold the shared user release lock and root/Sonar lock.
+  They verify the exact installed release, PM2 identity, health, database
+  integrity, accepted-snapshot JSON digest, complete corpus identity, and exact
+  LLM-cache row digest. Apply builds a fresh `0600` SQLite file containing only
+  the 300 approved synthetic corpus rows, their matching cache rows, and an
+  intentionally empty accepted-snapshot table. It preserves `labeled_at` and
+  normalizes only creation times, suggested routes, and provider model
+  metadata. The final receipt is emitted only after source identity, locks,
+  release selector, PM2, and production health pass again. A claimed plan that
+  does not finish retains an explicitly partial receipt name/schema and cannot
+  be replayed. The operator makes zero provider calls.
+
+  Partial LLM-cache coverage is valid for export. A successful 25/300 export
+  therefore has a final passed receipt with `cacheComplete: false`; this is
+  distinct from an operational partial receipt. Only `status: failed` is a
+  collectible terminal failure; `started` and `exported_pending_post_health`
+  require manual recovery. Because the sanitized accepted-snapshot table is empty,
+  a downstream `run-routing-accuracy --gate` result of
+  `skip=no_accepted_snapshot` is never authoritative evidence.
+
+  Before generation, copy the reviewed currently deployed
+  `config/routing-calibration.json` into the protected ignored evidence
+  directory as a separate mode-`0600` baseline and record its SHA-256. The
+  baseline must not be the output path: sparse-bucket priors are weighted into
+  monotonic pooling, so using a prior output as the next baseline would make a
+  retry drift. Run the zero-provider replay with that immutable baseline and
+  one recorded canonical timestamp:
 
   ```text
   npx tsx scripts/calibrate-routing-confidence.ts \
     --db=<sanitized-routing-only-db> \
+    --baseline=<reviewed-calibration-baseline-json> \
     --out=config/routing-calibration.json \
-    --generated-at=<YYYY-MM-DDTHH:mm:ss.sssZ>
+    --generated-at=<YYYY-MM-DDTHH:mm:ss.sssZ> \
+    --export-plan=<retained-private-export-plan-json> \
+    --export-evidence=<retained-private-export-evidence-json> \
+    --export-receipt=<retained-private-final-receipt-json> \
+    --ack-plan=sha256:<owner-approved-plan-digest>
   ```
 
-  Corpus mode requires `--generated-at`; reuse that exact value for retries so
-  the reviewed artifact stays byte-reproducible. The command binds the explicit
-  database before importing the routing graph and refuses to replace an
-  initialized application database. Record labeled count, cache coverage,
-  baseline provenance, input/config hashes, and zero provider calls in ignored
+  Corpus mode requires both `--baseline` and `--generated-at`; reuse those
+  exact baseline bytes and timestamp for retries so the reviewed artifact
+  stays byte-reproducible. The sanitized database, reviewed baseline, export
+  plan, export evidence, and final receipt must each be a current-owner,
+  ordinary single-link file with exact mode `0600`, no symbolic-link path
+  component, and a current-owner private parent. The command anchors each
+  parent and file with `O_NOFOLLOW`, validates the canonical plan and final
+  receipt digests plus their release, postflight, normalization, and
+  zero-provider bindings, and requires `--ack-plan` to equal the validated
+  plan digest. It copies the captured database bytes into a private replay
+  file, independently verifies that copy against the exact export evidence,
+  opens it read-only with `query_only`, and verifies the exact routing-only
+  schema, `delete` journal mode, absence of `-wal`, `-shm`, and `-journal`
+  sidecars, empty snapshot table, integrity, and foreign keys. It then derives
+  the exact input hash, 300-row corpus identity, cache count/digest, production
+  runtime/artifact/transaction, and provider-call count from those validated
+  artifacts before importing the routing graph. The baseline must use exactly
+  `routing-calibration@1.0.0` with resolver boundaries `[5, 2, 1, 0]`; only
+  predecessor precision monotonicity is relaxed because the generator repairs
+  it. Empirical correct counts remain exact through weighted
+  Pool-Adjacent-Violators and round only once in the final table.
+
+  Replay is scoped to that explicit baseline instead of the ambient output.
+  Publication takes a calibration-specific cooperative lock and snapshots the
+  output before replay, rejects aliases and another calibration writer, writes
+  a same-parent `0644` temporary file, fsyncs it, revalidates the unchanged
+  destination immediately before an atomic rename, fsyncs the parent, and
+  verifies the published bytes. The lock cannot coordinate an unrelated
+  editor, so serialize other writes to the tracked output while this command
+  runs; do not describe the check-then-rename boundary as a filesystem CAS.
+  Use the equals forms shown above so bootstrap binding is established before
+  imports. Record the CLI-emitted labeled count, cache coverage, baseline
+  provenance and hash, input/output hashes, and zero provider calls in ignored
   evidence, then land the generated config through a normal PR.
   `classifier.lowConfidenceFloor` is an active runtime guard even while the
   manifest-prompt flag is off. It may be recalibrated only at exact full
   LLM-cache coverage (`covered === corpusSize`); partial or skewed coverage
-  retains the reviewed baseline floor. Domain-representative sampling alone is
-  not sufficient because the current observations do not carry auditable
-  stratification or weighting metadata.
+  must prove `classifierFloorCalibrated=false` and retain the reviewed baseline
+  floor of `0.6`. Domain-representative sampling alone is not sufficient
+  because the current observations do not carry auditable stratification or
+  weighting metadata.
 - Staging/real-provider eval runs (budgeted; persisted via
   `POST /api/portal/eval-history`) and the one-time immutable baseline
   acceptance (`POST /api/portal/eval-history/frozen-baseline`).

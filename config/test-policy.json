@@ -307,6 +307,27 @@
         "reason": "The lean risk-gate contract replaces critical-union and local shard behavior with exact affected selection and explicit full execution."
       },
       {
+        "test": "__tests__/scripts/routing-divergence-report.test.ts",
+        "replacementTests": [
+          "__tests__/scripts/routing-divergence-report.test.ts",
+          "__tests__/scripts/routing-synthetic-qa-manifest.test.ts"
+        ],
+        "sources": [
+          "scripts/lib/routing-synthetic-qa-manifest.mjs"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "scripts/lib/routing-synthetic-qa-manifest.mjs:562-563",
+            "anchor": "hasSharedNgram(leftTokens, rightTokens, 8)",
+            "behavior": "The dedicated manifest suite rejects synthetic prompts that share any contiguous eight-token passage, even when their broader similarity stays low.",
+            "replacementTest": "__tests__/scripts/routing-synthetic-qa-manifest.test.ts",
+            "ownerTestNamePattern": "rejects duplicate text or ids, Spanish, reference leakage, and templated within-manifest overlap$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The expanded divergence suite delegates synthetic prompt integrity to the dedicated retained manifest suite while adding exact provenance and zero-provider gate evidence."
+      },
+      {
         "test": "__tests__/scripts/static-test-dependency-map.test.ts",
         "replacementTests": [
           "__tests__/scripts/static-test-dependency-map.test.ts"
@@ -356,7 +377,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/intent-resolution/confidence.ts:388-395",
+            "pattern": "src/services/intent-resolution/confidence.ts:446-453",
             "anchor": "const coverageComplete = input.corpusSize > 0",
             "behavior": "Partial or empty LLM-cache coverage must retain the baseline classifier safety floor and report calibration as incomplete.",
             "replacementTest": "__tests__/services/intent-resolution/confidence.test.ts",

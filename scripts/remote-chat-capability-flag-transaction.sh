@@ -12,6 +12,7 @@ readonly SHADOW_HOOK_RECEIPT_SCHEMA='nexus.chat-shadow-route-hook-transaction.v1
 readonly USER_RELEASE_LOCK='/home/dominguez/.local/state/nexus-release/.release.lock'
 readonly ROOT_SONAR_LOCK='/run/lock/nexus-release-sonar.lock'
 readonly STATE_ROOT='/home/dominguez/.local/state/nexus-release/chat-capability-flags'
+readonly ROUTING_SYNTHETIC_QA_STATE_ROOT='/home/dominguez/.local/state/nexus-release/routing-synthetic-qa'
 readonly STAGING_BASE_DIR='/home/dominguez/telegram-hub-bot-staging'
 readonly PRODUCTION_BASE_DIR='/home/dominguez/telegram-hub-bot'
 readonly STAGING_BACKEND_PORT=8201
@@ -33,6 +34,7 @@ TRANSACTION_ID=''
 ACK_PLAN=''
 SINCE=''
 UNTIL=''
+SYNTHETIC_QA_MANIFEST_SHA256=''
 DEDICATED_ID=''
 
 RELEASE_DIR=''
@@ -62,6 +64,8 @@ STAGING_ENABLE_RECEIPT_FILE=''
 RAW_EVIDENCE_FILE=''
 HEALTH_EVIDENCE_FILE=''
 SHADOW_HOOK_RECEIPT_FILE=''
+SYNTHETIC_QA_MANIFEST_FILE=''
+SYNTHETIC_QA_RECEIPT_FILE=''
 DASHBOARD_EVIDENCE_FILE=''
 STAGING_SMOKE_EVIDENCE_FILE=''
 MONITOR_EVIDENCE_FILE=''
@@ -103,14 +107,15 @@ esac
 [[ "$ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]] || die 'artifact digest is invalid'
 case "$COMMAND" in
   inspect)
-    { [ "$#" -eq 3 ] || [ "$#" -eq 5 ]; } \
-      || die 'inspect requires flag, value, transition reason, and only an optional routing window'
+    { [ "$#" -eq 3 ] || [ "$#" -eq 6 ]; } \
+      || die 'inspect requires flag, value, transition reason, and only an optional routing window plus synthetic QA manifest digest'
     FLAG="$1"
     DESIRED_VALUE="$2"
     TRANSITION_REASON="$3"
-    if [ "$#" -eq 5 ]; then
+    if [ "$#" -eq 6 ]; then
       SINCE="$4"
       UNTIL="$5"
+      SYNTHETIC_QA_MANIFEST_SHA256="$6"
     fi
     case "$DESIRED_VALUE" in true|false) ;; *) die 'desired flag value is invalid' ;; esac
     case "$FLAG" in
@@ -118,12 +123,16 @@ case "$COMMAND" in
         if [ "$ROLE" = staging ] && [ "$DESIRED_VALUE" = true ]; then
           [ -n "$SINCE" ] && [ -n "$UNTIL" ] \
             || die 'staging routing enable inspect requires one explicit immutable window'
-        elif [ -n "$SINCE" ] || [ -n "$UNTIL" ]; then
+          [[ "$SYNTHETIC_QA_MANIFEST_SHA256" =~ ^sha256:[0-9a-f]{64}$ ]] \
+            || die 'staging routing enable inspect requires one exact synthetic QA manifest digest'
+        elif [ -n "$SINCE" ] || [ -n "$UNTIL" ] \
+            || [ -n "$SYNTHETIC_QA_MANIFEST_SHA256" ]; then
           die 'routing windows are accepted only for staging enables'
         fi
         ;;
       *)
         [ -z "$SINCE" ] && [ -z "$UNTIL" ] \
+          && [ -z "$SYNTHETIC_QA_MANIFEST_SHA256" ] \
           || die 'routing windows are not accepted for this flag transition'
         ;;
     esac
@@ -677,7 +686,7 @@ NODE
       "NODE_PATH=$STAGING_RELEASE_DIR/node_modules" \
       "DATABASE_PATH=$STAGING_DATABASE_PATH" \
       "$TIMEOUT_BIN" --foreground 60s \
-      "$NODE_BIN" scripts/routing-divergence-report.mjs \
+      "$NODE_BIN" --env-file="$STAGING_ENV_FILE" scripts/routing-divergence-report.mjs \
         --db="$STAGING_DATABASE_PATH" \
         --surface="$surface" \
         --minimum-comparisons=200 \
@@ -690,6 +699,9 @@ NODE
         --resolver-version="$resolver_version" \
         --shadow-hook-receipt="$SHADOW_HOOK_RECEIPT_FILE" \
         --live-health="$HEALTH_EVIDENCE_FILE" \
+        --synthetic-qa-manifest="$SYNTHETIC_QA_MANIFEST_FILE" \
+        --expected-synthetic-qa-manifest-sha256="$SYNTHETIC_QA_MANIFEST_SHA256" \
+        --synthetic-qa-receipt="$SYNTHETIC_QA_RECEIPT_FILE" \
         --gate --json > "$output"
   )
 }
@@ -1774,6 +1786,31 @@ collect_native_evidence_sources() {
   resolve_exact_staging_release
   case "$ROLE:$FLAG" in
     staging:AI_ROUTING_MANIFEST_CLASSIFIER|staging:AI_ROUTING_MANIFEST_ORCHESTRATOR|staging:AI_ROUTING_MANIFEST_SHADOW|staging:AI_ROUTING_MANIFEST_REGISTRY)
+      local qa_surface qa_digest qa_root
+      qa_surface="$(routing_surface)" || die 'routing synthetic QA surface is unavailable'
+      qa_digest="${SYNTHETIC_QA_MANIFEST_SHA256#sha256:}"
+      [[ "$qa_digest" =~ ^[0-9a-f]{64}$ ]] \
+        || die 'routing synthetic QA manifest digest is invalid'
+      qa_root="$ROUTING_SYNTHETIC_QA_STATE_ROOT/$RUNTIME_SHA-${ARTIFACT_DIGEST:0:12}/$qa_surface"
+      [ -d "$qa_root" ] && [ ! -L "$qa_root" ] \
+        && [ "$(readlink -f "$qa_root")" = "$qa_root" ] \
+        || die 'routing synthetic QA evidence directory is unsafe'
+      SYNTHETIC_QA_MANIFEST_FILE="$qa_root/$qa_digest.manifest.json"
+      SYNTHETIC_QA_RECEIPT_FILE="$qa_root/$qa_digest.receipt.json"
+      for qa_file in "$SYNTHETIC_QA_MANIFEST_FILE" "$SYNTHETIC_QA_RECEIPT_FILE"; do
+        [ -f "$qa_file" ] && [ ! -L "$qa_file" ] \
+          || die 'exact routing synthetic QA evidence is unavailable'
+        [ "$(stat -c '%U:%a:%h' "$qa_file")" = "$(id -un):600:1" ] \
+          || die 'routing synthetic QA evidence owner, mode, or link count is unsafe'
+      done
+      "$NODE_BIN" - "$SYNTHETIC_QA_MANIFEST_FILE" "$qa_digest" <<'NODE' \
+        || die 'routing synthetic QA manifest bytes do not match the precommitted SHA-256 digest'
+const crypto = require('node:crypto');
+const fs = require('node:fs');
+const [manifestFile, expectedDigest] = process.argv.slice(2);
+const actualDigest = crypto.createHash('sha256').update(fs.readFileSync(manifestFile)).digest('hex');
+if (actualDigest !== expectedDigest) process.exit(1);
+NODE
       SHADOW_HOOK_RECEIPT_FILE="$(mktemp "$STATE_ROOT/.shadow-hook-enable-receipt.XXXXXX")"
       select_exact_shadow_hook_enable_receipt "$SHADOW_HOOK_RECEIPT_FILE"
       HEALTH_EVIDENCE_FILE="$(mktemp "$STATE_ROOT/.routing-health-evidence.XXXXXX")"
@@ -2267,11 +2304,12 @@ health_once() {
     "$NODE_BIN" --env-file="$ENV_FILE" - "$BACKEND_PORT" "$CONTENT_PORT" \
       "$ROLE" "$RUNTIME_SHA" "$ARTIFACT_DIGEST" "$expected_pid" \
       "$plan_file" "$state_key" "$expected_guard" "$TRANSACTION_ID" \
-      "$PLAN_DIGEST" <<'NODE'
+      "$PLAN_DIGEST" "$HELPER" <<'NODE'
 const http = require('node:http');
 const fs = require('node:fs');
+const { pathToFileURL } = require('node:url');
 const [backendPort, contentPort, role, sha, digest, expectedPid, planFile, stateKey,
-  expectedGuard, transactionId, planDigest] = process.argv.slice(2);
+  expectedGuard, transactionId, planDigest, helperPath] = process.argv.slice(2);
 const request = (port, route, headers = {}) => new Promise((resolve, reject) => {
   const req = http.get({ hostname: '127.0.0.1', port: Number(port), path: route, headers, timeout: 5000 }, (res) => {
     let body = '';
@@ -2313,16 +2351,17 @@ const main = async () => {
   }
   const persisted = JSON.parse(fs.readFileSync(planFile, 'utf8'));
   const plan = persisted.plan ?? persisted;
-  const state = plan[stateKey];
-  if (state) {
-    const configured = { ...state };
+  if (plan[stateKey]) {
+    const helper = await import(pathToFileURL(helperPath).href);
+    const expected = helper.resolveCapabilityHealthState(plan, stateKey);
+    const configured = { ...expected.configured };
     const masterKill = configured.AI_ROUTING_MANIFEST_KILL;
     delete configured.AI_ROUTING_MANIFEST_KILL;
     if (JSON.stringify(attestation.capabilityFlags.configured) !== JSON.stringify(configured)
         || attestation.capabilityFlags.masterKill !== masterKill) {
       throw new Error('configured flag attestation mismatch');
     }
-    const effective = { ...plan[stateKey.replace('configured', 'effective')] };
+    const effective = { ...expected.effective };
     delete effective.AI_ROUTING_MANIFEST_KILL;
     if (JSON.stringify(attestation.capabilityFlags.effective) !== JSON.stringify(effective)) {
       throw new Error('effective flag attestation mismatch');
@@ -3552,6 +3591,8 @@ const source = fs.readFileSync(envFile, 'utf8');
 const stat = fs.lstatSync(envFile);
 const pm2 = JSON.parse(fs.readFileSync(pm2File, 'utf8'));
 const dedicatedTenantId = Number(dedicatedRaw);
+const configuredFlags = helper.readCapabilityFlagState(source);
+const effectiveFlags = helper.deriveEffectiveCapabilityFlagState(configuredFlags);
 let previousPlanSequence = 0;
 if (fs.existsSync(sequenceFile)) {
   const raw = fs.readFileSync(sequenceFile, 'utf8').trim();
@@ -3570,7 +3611,7 @@ const build = (generatedAt) => helper.buildShadowRouteHookPlan({
   generatedAt,
 });
 const privateStateFor = (planDigest) => ({
-  schema: 'nexus.chat-shadow-route-hook-private.v1',
+  schema: 'nexus.chat-shadow-route-hook-private.v2',
   planDigest,
   release,
   dedicatedTenantId,
@@ -3582,7 +3623,8 @@ const privateStateFor = (planDigest) => ({
     sha256: createHash('sha256').update(Buffer.from(source)).digest('hex'),
   },
   pm2,
-  configuredFlags: helper.readCapabilityFlagState(source),
+  configuredFlags,
+  effectiveFlags,
 });
 const planExists = fs.existsSync(pendingPlan);
 const privateExists = fs.existsSync(pendingPrivate);
@@ -3695,12 +3737,20 @@ if (plan.role !== role || plan.runtimeSha !== runtimeSha
   throw new Error('pending shadow-hook plan identity changed');
 }
 const privateState = JSON.parse(fs.readFileSync(pendingPrivate, 'utf8'));
-if (privateState.schema !== 'nexus.chat-shadow-route-hook-private.v1'
+if (privateState.schema !== 'nexus.chat-shadow-route-hook-private.v2'
     || privateState.planDigest !== plan.planDigest
     || privateState.release !== release
     || privateState.dedicatedTenantId !== plan.dedicatedTenantId) {
   throw new Error('pending shadow-hook private state changed');
 }
+const privateKeys = [
+  'schema', 'planDigest', 'release', 'dedicatedTenantId',
+  'environmentPrecondition', 'pm2', 'configuredFlags', 'effectiveFlags',
+];
+if (Object.keys(privateState).sort().join('\n') !== privateKeys.sort().join('\n')) {
+  throw new Error('pending shadow-hook private state schema changed');
+}
+helper.resolveCapabilityHealthState(privateState, 'configuredFlags');
 const source = fs.readFileSync(envFile, 'utf8');
 const stat = fs.lstatSync(envFile);
 helper.assertDotenvCasPrecondition({

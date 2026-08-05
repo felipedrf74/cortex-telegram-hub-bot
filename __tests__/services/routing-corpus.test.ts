@@ -522,6 +522,36 @@ describe('routing corpus labeling store', () => {
     expect(() => labelRoutingCorpusItem({ id: first.id, action: 'label' }, db)).toThrow(/labelDomain/);
   });
 
+  it('supports a read-only listing seam without creating or changing schema', () => {
+    const first = getNextPendingRoutingCorpusItem(db)!;
+    labelRoutingCorpusItem({
+      id: first.id,
+      action: 'label',
+      labelDomain: 'secretary',
+    }, db);
+    const schemaBefore = db.prepare(`
+      SELECT type, name, sql FROM sqlite_master ORDER BY type, name
+    `).all();
+
+    expect(listLabeledRoutingCorpusItems(db, { ensureTables: false }))
+      .toHaveLength(1);
+    expect(db.prepare(`
+      SELECT type, name, sql FROM sqlite_master ORDER BY type, name
+    `).all()).toEqual(schemaBefore);
+
+    const blank = new Database(':memory:');
+    try {
+      expect(() => listLabeledRoutingCorpusItems(blank, { ensureTables: false }))
+        .toThrow(/no such table: routing_corpus_items/);
+      expect(blank.prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'table'",
+      ).all()).toEqual([]);
+      expect(listLabeledRoutingCorpusItems(blank)).toEqual([]);
+    } finally {
+      blank.close();
+    }
+  });
+
   it('uses manifest action skills as candidates and validates optional skill ownership', () => {
     const candidates = getRoutingLabelCandidates();
     expect(candidates.skills).toEqual([

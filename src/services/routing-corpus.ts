@@ -850,8 +850,11 @@ function summarizeRoutingCorpusProgress(
   return progress;
 }
 
-export function listLabeledRoutingCorpusItems(db: Database.Database = getDb()): RoutingCorpusItem[] {
-  ensureRoutingCorpusTables(db);
+export function listLabeledRoutingCorpusItems(
+  db: Database.Database = getDb(),
+  options: { ensureTables?: boolean } = {},
+): RoutingCorpusItem[] {
+  if (options.ensureTables !== false) ensureRoutingCorpusTables(db);
   const rows = db.prepare(`
     SELECT * FROM routing_corpus_items
     WHERE label_status = 'labeled' AND utterance_text IS NOT NULL

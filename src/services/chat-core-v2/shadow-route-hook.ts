@@ -42,6 +42,7 @@ import {
 import { recordChatV2TraceSpan } from './trace-recorder';
 import { runWithLocalInferenceSlot } from './local-inference-concurrency-gate';
 import type { ChatV2TraceSpan } from './types';
+import type { RoutingSyntheticQaTrafficProvenance } from '../routing-synthetic-qa-contract';
 
 export const CHAT_CORE_V2_SHADOW_ROUTE_HOOK_VERSION = 'chat_core_v2_shadow_route_hook@1.0.0';
 const CHAT_CORE_V2_SHADOW_ROUTE_HASH_VERSION = 'hmac_sha256@1';
@@ -83,6 +84,8 @@ export interface RunChatCoreV2ShadowRouteHookInput {
    * prove a resolver throw can never affect the recorded turn.
    */
   routingDivergenceDeps?: RoutingDivergenceShadowDeps;
+  /** Validated staging-only provenance; omitted for every ordinary live turn. */
+  trafficProvenance?: RoutingSyntheticQaTrafficProvenance | null;
 }
 
 /**
@@ -112,6 +115,7 @@ export interface ChatCoreV2ShadowRouteHookResult {
   recorded: boolean;
   result?: ChatCoreV2ShadowTurnResult;
   replayBundleId?: string;
+  trafficProvenanceRecorded?: boolean;
   errorCode?: 'shadow_route_hook_failed' | 'shadow_route_hook_missing_hmac_secret';
 }
 
@@ -154,6 +158,11 @@ export function runChatCoreV2ShadowRouteHook(
     // in its own try/catch (never blocks or mutates the live turn) and merged
     // additively into the existing replay contextPack row shape.
     const routingDivergence = buildRoutingDivergenceSafely(input, guess);
+    const trafficProvenanceRequested = input.trafficProvenance !== undefined
+      && input.trafficProvenance !== null;
+    if (trafficProvenanceRequested && !routingDivergence?.trafficProvenance) {
+      throw new Error('routing_synthetic_qa_provenance_not_recorded');
+    }
     const replayInput = {
       result,
       contextPack: {
@@ -185,6 +194,7 @@ export function runChatCoreV2ShadowRouteHook(
       recorded: true,
       result,
       replayBundleId: replay.replayBundle.replayBundleId,
+      ...(trafficProvenanceRequested ? { trafficProvenanceRecorded: true } : {}),
     };
   } catch (err) {
     logger.warn(
@@ -197,7 +207,14 @@ export function runChatCoreV2ShadowRouteHook(
       },
       'Chat Core v2 shadow route hook failed without affecting live chat',
     );
-    return { enabled: true, recorded: false, errorCode: 'shadow_route_hook_failed' };
+    return {
+      enabled: true,
+      recorded: false,
+      ...(input.trafficProvenance !== undefined && input.trafficProvenance !== null
+        ? { trafficProvenanceRecorded: false }
+        : {}),
+      errorCode: 'shadow_route_hook_failed',
+    };
   }
 }
 
@@ -229,6 +246,9 @@ function buildRoutingDivergenceSafely(
           shadowRouteHookEffective: isChatCoreV2ShadowRouteHookEnabled(env, scope),
           shadowPlannerEffective: isChatCoreV2ShadowPlannerEnabled(env, scope),
         },
+        // Unlike test seams, provenance comes only from the validated live
+        // request context. Supplying this after the spread prevents forgery.
+        trafficProvenance: input.trafficProvenance ?? null,
       },
     );
   } catch (err) {

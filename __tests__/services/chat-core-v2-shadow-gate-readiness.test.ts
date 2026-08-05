@@ -2,10 +2,14 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 
 import {
+  CHAT_CORE_V2_SHADOW_GATE_ROUTING_DIVERGENCE_VERSION,
   evaluateChatCoreV2ShadowGateReadiness,
   runChatCoreV2ShadowRouteHook,
 } from '../../src/services/chat-core-v2';
-import { buildRoutingDivergenceShadowRecord } from '../../src/services/intent-resolution/divergence-shadow';
+import {
+  buildRoutingDivergenceShadowRecord,
+  ROUTING_DIVERGENCE_SHADOW_VERSION,
+} from '../../src/services/intent-resolution/divergence-shadow';
 import { incrementSchemaCompliance } from '../../src/services/chat-core-v2/autorevert-counters-store';
 
 let db: Database.Database;
@@ -43,6 +47,11 @@ function seedPlannerSchemaCompliance(passCount: number, failCount = 0): void {
 }
 
 describe('Chat Core v2 shadow gate readiness', () => {
+  it('pins the exact routing-divergence producer version without a runtime producer import', () => {
+    expect(CHAT_CORE_V2_SHADOW_GATE_ROUTING_DIVERGENCE_VERSION)
+      .toBe(ROUTING_DIVERGENCE_SHADOW_VERSION);
+  });
+
   beforeEach(() => {
     db = new Database(':memory:');
   });
@@ -157,7 +166,7 @@ describe('Chat Core v2 shadow gate readiness', () => {
     seedPlannerSchemaCompliance(50);
 
     const baseDivergence = {
-      divergenceVersion: 'routing_divergence_shadow@4.0.0',
+      divergenceVersion: 'routing_divergence_shadow@5.0.0',
       resolverVersion: 'manifest-intent-resolver@1.0.0',
       releaseIdentity: {
         runtimeSha: 'a'.repeat(40),
@@ -170,6 +179,7 @@ describe('Chat Core v2 shadow gate readiness', () => {
         shadowRouteHookEffective: true,
         shadowPlannerEffective: false,
       },
+      trafficProvenance: null,
       topCandidate: {
         capabilityId: 'secretary',
         domain: 'secretary',
@@ -265,10 +275,31 @@ describe('Chat Core v2 shadow gate readiness', () => {
       bundle({ ...baseDivergence, recorderState: undefined }),
       '2026-05-29T12:00:04.000Z',
     );
+    insert.run(
+      'chatv2-shadow-replay:candidate-bound-unsafe-traffic-provenance',
+      'candidate-bound-unsafe-traffic-provenance',
+      'normal',
+      '90d',
+      bundle({
+        ...baseDivergence,
+        trafficProvenance: {
+          contractVersion: 'routing-synthetic-qa-v1',
+          trafficClass: 'owner_authorized_synthetic_staging_qa',
+          manifestSha256: `sha256:${'c'.repeat(64)}`,
+          surface: 'classifierKeyword',
+          ordinal: 1,
+          plannedTurns: 200,
+          turnId: `routing-synthetic-qa-v1:${'c'.repeat(64)}:classifierKeyword:001`,
+          locale: 'en-US',
+          rawPrompt: 'must-not-pass',
+        },
+      }),
+      '2026-05-29T12:00:05.000Z',
+    );
 
     const readiness = evaluateChatCoreV2ShadowGateReadiness(db);
-    expect(readiness.rowCount).toBe(6);
-    expect(readiness.safeShapeViolationCount).toBe(4);
+    expect(readiness.rowCount).toBe(7);
+    expect(readiness.safeShapeViolationCount).toBe(5);
     expect(readiness.meetsSafeShape).toBe(false);
   });
 
@@ -281,6 +312,16 @@ describe('Chat Core v2 shadow gate readiness', () => {
       'add milk to my shopping list',
       { intent: 'create_action', domains: ['tasks'] },
       {
+        trafficProvenance: {
+          contractVersion: 'routing-synthetic-qa-v1',
+          trafficClass: 'owner_authorized_synthetic_staging_qa',
+          manifestSha256: `sha256:${'c'.repeat(64)}`,
+          surface: 'classifierKeyword',
+          ordinal: 1,
+          plannedTurns: 200,
+          turnId: `routing-synthetic-qa-v1:${'c'.repeat(64)}:classifierKeyword:001`,
+          locale: 'en-US',
+        },
         recorderState: {
           userId: '7',
           tenantId: '7',
@@ -294,6 +335,16 @@ describe('Chat Core v2 shadow gate readiness', () => {
         },
       },
     );
+    expect(produced.trafficProvenance).toEqual({
+      contractVersion: 'routing-synthetic-qa-v1',
+      trafficClass: 'owner_authorized_synthetic_staging_qa',
+      manifestSha256: `sha256:${'c'.repeat(64)}`,
+      surface: 'classifierKeyword',
+      ordinal: 1,
+      plannedTurns: 200,
+      turnId: `routing-synthetic-qa-v1:${'c'.repeat(64)}:classifierKeyword:001`,
+      locale: 'en-US',
+    });
 
     // One real hook turn creates the replay schema; the produced record is
     // then stored through the same column contract the runtime uses.

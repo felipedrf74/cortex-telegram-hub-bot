@@ -60,6 +60,10 @@ const FINANCE_RESTRICTED_ACTION_RE =
 const DECISION_NOUN_PATTERN = String.raw`(?:decision|choice|decis(?:ao|oes|ão|ões|ion|ión|iones)|escolhas?|elecci(?:on|ón|ones))`;
 const TASK_READ_QUESTION_RE =
   /\b(?:do\s+i\s+have|what\s+(?:tasks?|todos?)|which\s+(?:tasks?|todos?)|show\s+me|list|tenho|que\s+tenho|quais?\s+(?:tarefas?|tareas?)|tengo|qu[eé]\s+(?:tareas?|pendientes?))\b.*\b(?:tasks?|todos?|to-dos?|tarefas?|tareas?|complete|concluir|completar|completadas?)\b/i;
+const MEETING_AGENDA_RE =
+  /\b(?:pautas?[\s\S]{0,60}reuni(?:[aã]o|[oõ]es)|reuni(?:[aã]o|[oõ]es)[\s\S]{0,60}pautas?)\b/i;
+const CONNECTION_STATUS_RE =
+  /\b(?:check|show|verify|status|working|connected|mostr(?:a|e|ar)|verifi(?:ca|que)|estado|funcionando)\b[\s\S]{0,60}\b(?:connections?|integrations?|conex(?:[aã]o|[oõ]es|ao|oes)|integra(?:[cç][aã]o|[cç][oõ]es|cao|coes))\b|\b(?:connections?|integrations?|conex(?:[aã]o|[oõ]es|ao|oes)|integra(?:[cç][aã]o|[cç][oõ]es|cao|coes))\b[\s\S]{0,60}\b(?:status|working|connected|estado|funcionando)\b/i;
 
 export function classifyShadowRoute(text: string): ChatCoreV2ShadowRouteGuess {
   const normalized = text.trim().toLowerCase();
@@ -104,6 +108,24 @@ export function classifyShadowRoute(text: string): ChatCoreV2ShadowRouteGuess {
       confidence: 0.84,
       domains: ['secretary'],
       capabilityIds: ['secretary.schedule_event_preview'],
+    };
+  }
+
+  if (MEETING_AGENDA_RE.test(normalized)) {
+    return {
+      intent: 'app_question',
+      confidence: 0.84,
+      domains: ['secretary'],
+      capabilityIds: ['secretary.agenda_summary'],
+    };
+  }
+
+  if (CONNECTION_STATUS_RE.test(normalized)) {
+    return {
+      intent: 'app_question',
+      confidence: 0.84,
+      domains: ['connections'],
+      capabilityIds: ['connections.status'],
     };
   }
 
@@ -285,7 +307,7 @@ function isFinanceReadShortcut(text: string): boolean {
       || /\b(facturas?|suscripciones?|renovaciones?|renuevan|faltan|falta|mes|financier[oa])\b/i.test(text)
     );
   if (!hasFinanceReadSignal) return false;
-  return /\b(what|which|show|list|summary|quais?|que|o\s+que|mostra|mostrar|resumo|qué|cu[aá]les|resumen)\b/i.test(text);
+  return /\b(what|which|show|list|summary|quais?|que|o\s+que|mostra|mostre|mostrar|lista|liste|resumo|qué|cu[aá]les|resumen)\b/i.test(text);
 }
 
 function isTrainingReadShortcut(text: string): boolean {

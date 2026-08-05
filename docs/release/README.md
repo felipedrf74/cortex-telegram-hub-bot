@@ -227,6 +227,24 @@ consumes only that exact `sha256:<plan-digest>`. It runs detached through user
 systemd and publishes a strict durable receipt. A failed or partial claim is
 never replayable.
 
+The sole historical exception is the exact 4.14.232 staging shadow-hook claim
+whose rollback predated explicit effective-state persistence. Follow
+`docs/release/chat-quality-operations.md` section “One-time 4.14.232
+shadow-hook claim recovery”: protected-main inspect, owner acknowledgement of
+the exact hash-bound repair plan, repair only the missing deterministic claim
+field, then let the exact installed operator finish normal rollback recovery.
+The exception does not authorize manual marker deletion or a new release over
+unresolved state.
+
+The second and only other historical exception is the exact failed staging
+observation `20260805T163302Z-2522779e6416` on runtime `39965e357d19...`.
+Follow the one-time failed observation publication recovery in
+`docs/release/chat-quality-operations.md`: protected-main inspect, owner
+acknowledgement of the exact hash-bound plan, then publication of a distinct
+`failure_acknowledged` receipt and byte-identical sidecar. That receipt closes
+the incomplete attempt for release serialization only; it is never passing
+flag evidence and cannot authorize a production flag enable.
+
 Gate evidence is collected natively on ServerDominguez from the installed
 artifact, isolated staging `.env` and SQLite database, authenticated health,
 and `/chat-quality`; the operator accepts no evidence file and makes no

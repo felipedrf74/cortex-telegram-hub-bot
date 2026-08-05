@@ -3,6 +3,13 @@
 import { Request, Response, NextFunction } from 'express';
 import net from 'node:net';
 import { config } from '../config';
+import {
+  ROUTING_SYNTHETIC_QA_CONTRACT_VERSION,
+  ROUTING_SYNTHETIC_QA_HEADERS,
+  ROUTING_SYNTHETIC_QA_LOCALES,
+  ROUTING_SYNTHETIC_QA_PLANNED_TURNS,
+  ROUTING_SYNTHETIC_QA_SURFACES,
+} from '../services/routing-synthetic-qa-contract';
 import type { AuthenticatedRequest } from './auth-middleware';
 
 /**
@@ -28,6 +35,7 @@ import type { AuthenticatedRequest } from './auth-middleware';
 
 const userReadRequestLog = new Map<number, number[]>();
 const userRequestLog = new Map<number, number[]>();
+const routingSyntheticQaRequestLog = new Map<number, number[]>();
 const ipRequestLog = new Map<string, number[]>();
 const ipAuthRequestLog = new Map<string, number[]>();
 const ipPortalRequestLog = new Map<string, number[]>();
@@ -42,6 +50,11 @@ const USER_MAX_REQUESTS = config.ios?.rateLimit || 60;
 // keeping the app responsive. Keep reads on a separate, higher bucket so a
 // rapid tab switch does not starve the tighter mutation/chat budget.
 const USER_READ_MAX_REQUESTS = config.ios?.readRateLimit || Math.max(USER_MAX_REQUESTS, 300);
+// A fixed 200-turn owner-authorized staging QA manifest gets five requests of
+// burst headroom. The runner itself remains one-shot and aborts on the first
+// failure. This bucket cannot be selected by partial headers, other users,
+// other routes, or a non-staging runtime; those calls retain the ordinary 60.
+const ROUTING_SYNTHETIC_QA_MAX_REQUESTS = 205;
 // Unauthenticated traffic gets a TIGHTER cap because:
 //   - legitimate use is rare (register/refresh are one-shot)
 //   - abuse potential is much higher (brute-force invite codes,
@@ -85,6 +98,63 @@ function firstHeaderValue(value: string | string[] | undefined): string | undefi
   if (!raw) return undefined;
   const first = raw.split(',')[0]?.trim();
   return first || undefined;
+}
+
+function isRoutingSyntheticQaRateLimitRequest(req: Request, userId: number): boolean {
+  const nodeEnv = String(process.env.NODE_ENV ?? '').trim().toLowerCase();
+  const staging = String(process.env.STAGING ?? '').trim().toLowerCase();
+  if (
+    process.env.NEXUS_RELEASE_ROLE !== 'staging'
+    || (nodeEnv !== 'staging' && staging !== 'true' && staging !== '1')
+  ) {
+    return false;
+  }
+
+  const dedicatedRaw = String(process.env.CHAT_EVAL_DEDICATED_TENANT_ID ?? '').trim();
+  if (!/^[1-9][0-9]*$/.test(dedicatedRaw)) return false;
+  const dedicatedId = Number(dedicatedRaw);
+  if (!Number.isSafeInteger(dedicatedId) || userId !== dedicatedId) return false;
+
+  const route = (req.originalUrl || req.url || `${req.baseUrl || ''}${req.path || ''}`).split('?')[0];
+  if (req.method !== 'POST' || route !== '/api/v1/chat/message') return false;
+
+  const readCanonicalHeader = (name: string): string | null => {
+    const raw = req.headers?.[name];
+    return typeof raw === 'string' && raw.length > 0 && raw === raw.trim()
+      ? raw
+      : null;
+  };
+  const contract = readCanonicalHeader(ROUTING_SYNTHETIC_QA_HEADERS.contract);
+  const manifestSha256 = readCanonicalHeader(ROUTING_SYNTHETIC_QA_HEADERS.manifestSha256);
+  const surface = readCanonicalHeader(ROUTING_SYNTHETIC_QA_HEADERS.surface);
+  const ordinalRaw = readCanonicalHeader(ROUTING_SYNTHETIC_QA_HEADERS.ordinal);
+  const plannedTurns = readCanonicalHeader(ROUTING_SYNTHETIC_QA_HEADERS.plannedTurns);
+  const turnId = readCanonicalHeader(ROUTING_SYNTHETIC_QA_HEADERS.turnId);
+  const locale = readCanonicalHeader('x-language');
+  if (
+    contract !== ROUTING_SYNTHETIC_QA_CONTRACT_VERSION
+    || !manifestSha256
+    || !/^sha256:[0-9a-f]{64}$/.test(manifestSha256)
+    || !surface
+    || !ROUTING_SYNTHETIC_QA_SURFACES.includes(surface as typeof ROUTING_SYNTHETIC_QA_SURFACES[number])
+    || !ordinalRaw
+    || !/^[1-9][0-9]*$/.test(ordinalRaw)
+    || plannedTurns !== String(ROUTING_SYNTHETIC_QA_PLANNED_TURNS)
+    || !locale
+    || !ROUTING_SYNTHETIC_QA_LOCALES.includes(locale as typeof ROUTING_SYNTHETIC_QA_LOCALES[number])
+  ) {
+    return false;
+  }
+  const ordinal = Number(ordinalRaw);
+  if (
+    !Number.isSafeInteger(ordinal)
+    || ordinal > ROUTING_SYNTHETIC_QA_PLANNED_TURNS
+    || String(ordinal) !== ordinalRaw
+  ) {
+    return false;
+  }
+  const expectedTurnId = `${ROUTING_SYNTHETIC_QA_CONTRACT_VERSION}:${manifestSha256.slice('sha256:'.length)}:${surface}:${String(ordinal).padStart(3, '0')}`;
+  return turnId === expectedTurnId;
 }
 
 function normalizeIp(raw: string | undefined): string | null {
@@ -182,9 +252,22 @@ export function rateLimitMiddleware(req: Request, res: Response, next: NextFunct
   if (typeof userId === 'number' && userId > 0) {
     // ── Authenticated path ──
     const isRead = req.method === 'GET' || req.method === 'HEAD';
-    const bucket = isRead ? userReadRequestLog : userRequestLog;
-    const maxRequests = isRead ? USER_READ_MAX_REQUESTS : USER_MAX_REQUESTS;
-    const bucketName = isRead ? 'user-read' : 'user';
+    const isRoutingSyntheticQa = !isRead && isRoutingSyntheticQaRateLimitRequest(req, userId);
+    const bucket = isRead
+      ? userReadRequestLog
+      : isRoutingSyntheticQa
+        ? routingSyntheticQaRequestLog
+        : userRequestLog;
+    const maxRequests = isRead
+      ? USER_READ_MAX_REQUESTS
+      : isRoutingSyntheticQa
+        ? ROUTING_SYNTHETIC_QA_MAX_REQUESTS
+        : USER_MAX_REQUESTS;
+    const bucketName = isRead
+      ? 'user-read'
+      : isRoutingSyntheticQa
+        ? 'routing-synthetic-qa-user'
+        : 'user';
     const userRequests = bucket.get(userId) || [];
     const inWindow = userRequests.filter((ts) => now - ts < WINDOW_MS);
     inWindow.push(now);
@@ -243,6 +326,14 @@ setInterval(() => {
       userRequestLog.delete(userId);
     } else {
       userRequestLog.set(userId, inWindow);
+    }
+  }
+  for (const [userId, timestamps] of routingSyntheticQaRequestLog) {
+    const inWindow = timestamps.filter((ts) => now - ts < WINDOW_MS);
+    if (inWindow.length === 0) {
+      routingSyntheticQaRequestLog.delete(userId);
+    } else {
+      routingSyntheticQaRequestLog.set(userId, inWindow);
     }
   }
   for (const [ip, timestamps] of ipRequestLog) {
@@ -390,6 +481,7 @@ export function internalAiCompleteRateLimitMiddleware(req: Request, res: Respons
 export function _resetRateLimiterForTests(): void {
   userReadRequestLog.clear();
   userRequestLog.clear();
+  routingSyntheticQaRequestLog.clear();
   ipRequestLog.clear();
   ipAuthRequestLog.clear();
   ipPortalRequestLog.clear();

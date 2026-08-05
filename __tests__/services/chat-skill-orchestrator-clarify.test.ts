@@ -27,6 +27,7 @@ import {
   resetIntentVocabularyForTests,
   type CompiledCapabilityVocabulary,
 } from '../../src/services/intent-resolution/vocabulary';
+import { resolveIntent } from '../../src/services/intent-resolution/intent-resolver';
 import {
   getRoutingClarifyCounters,
   resetRoutingClarifyCountersForTests,
@@ -133,14 +134,37 @@ describe('flag ON — clarify triggers', () => {
   });
 
   it('clear winner (example-utterance match) → act, no clarify', () => {
+    const candidates = resolveIntent('Add this receipt');
+    expect(candidates.slice(0, 2).map(({ domain, rawScore }) => ({ domain, rawScore }))).toEqual([
+      { domain: 'finance', rawScore: 7 },
+      { domain: 'triathlon', rawScore: 1 },
+    ]);
     const decision = analyzeChatSkillOrchestration({
-      // Normalizes to the seeded finance example → finance bucket 0.95 vs
-      // triathlon at 0.6: the gap exceeds epsilon, so the winner acts.
+      // Monotonic calibration preserves the decisive raw-score ordering and
+      // keeps this winner outside the clarify epsilon.
       message: 'Add this receipt',
       userId: 42,
       tenantId: 42,
     });
     expect(decision.clarify).toBeNull();
+  });
+
+  it('same-bucket decisive candidates remain clarify-eligible', () => {
+    _setCompiledIntentVocabularyForTests([
+      vocabularyEntry('finance', 'finance', ['add', 'expense', 'receipt'], ['add this receipt'], 0),
+      vocabularyEntry('triathlon', 'triathlon', ['add', 'workout', 'session'], ['add this receipt'], 1),
+    ]);
+    const candidates = resolveIntent('Add this receipt');
+    expect(candidates.slice(0, 2).map(({ domain, rawScore }) => ({ domain, rawScore }))).toEqual([
+      { domain: 'finance', rawScore: 7 },
+      { domain: 'triathlon', rawScore: 6 },
+    ]);
+    const decision = analyzeChatSkillOrchestration({
+      message: 'Add this receipt',
+      userId: 42,
+      tenantId: 42,
+    });
+    expect(decision.clarify?.candidateDomains).toEqual(['finance', 'triathlon']);
   });
 
   it('reads never clarify even when candidates tie', () => {

@@ -77,7 +77,7 @@ export function patternMatch(message: string): DomainName | null {
 
 const NL_KEYWORD_ROUTES: { domain: DomainName; pattern: RegExp }[] = [
   // Domain-specific unique keywords — EN + PT-BR (checked first for specificity)
-  { domain: 'triathlon', pattern: /\b(workout|gym(?:\s+session)?|running\s+plan|cycling\s+plan|sets?\s*[x×]\s*\d|training(?:\s+plan)?|deload|squat|deadlift|bench\s+press|heart\s+rate|RPE|RIR|tempo\s+run|intervals?|FTP|soreness|recovery(?:\s+day)?|readiness|body\s+battery|muscle|hypertrophy|endurance|coach\s*(?:report|briefing|rec)|lower\s+body|upper\s+body|periodization|mesocycle|microcycle|training\s+week|log\s+(?:workout|session)|workout\s+plan|auto.?adjust|session\s+complete|my\s+plan|adherence|treino|corrida|pedal(?:ada)?|muscula[çc][aã]o|agachamento|supino|levantamento\s+terra|frequ[eê]ncia\s+card[ií]aca|dor\s+muscular|recupera[çc][aã]o|prontid[aã]o|bateria\s+corporal|s[eé]ries?\s*[x×]\s*\d|academia|plano\s+de\s+treino|plano\s+da\s+semana|semana\s+de\s+treino|treino\s+de\s+(?:hoje|amanh[ãa]))\b/i },
+  { domain: 'triathlon', pattern: /\b(workout|gym\s+(?:session|workout|training|day)|(?:biceps?\s+)?curls?\s+(?:at|in)\s+(?:the\s+)?gym|running\s+plan|cycling\s+plan|sets?\s*[x×]\s*\d|training(?:\s+plan)?|deload|squat|deadlift|bench\s+press|heart\s+rate|RPE|RIR|tempo\s+run|intervals?|FTP|soreness|recovery(?:\s+day)?|readiness|body\s+battery|muscle|hypertrophy|endurance|coach\s*(?:report|briefing|rec)|lower\s+body|upper\s+body|periodization|mesocycle|microcycle|training\s+week|log\s+(?:workout|session)|workout\s+plan|auto.?adjust|session\s+complete|my\s+plan|adherence|treino|corrida|pedal(?:ada)?|muscula[çc][aã]o|agachamento|supino|levantamento\s+terra|frequ[eê]ncia\s+card[ií]aca|dor\s+muscular|recupera[çc][aã]o|prontid[aã]o|bateria\s+corporal|s[eé]ries?\s*[x×]\s*\d|dia\s+de\s+academia|plano\s+de\s+treino|plano\s+da\s+semana|semana\s+de\s+treino|treino\s+de\s+(?:hoje|amanh[ãa]))\b/i },
   { domain: 'content', pattern: /\b(youtube|instagram|reels?|thumbnail|video\s+(?:idea|script)|content\s+(?:strategy|calendar|idea)|caption|hashtag|subscribers?|audience|viral|hook|CTA|engagement|script|title\s+ideas?|v[ií]deo|roteiro|legenda|inscritos|miniatura|conte[uú]do|id[eé]ia\s+de\s+(?:v[ií]deo|conte[uú]do)|calend[aá]rio\s+(?:de\s+)?conte[uú]do|engajamento|t[ií]tulos?)\b/i },
   { domain: 'finance', pattern: /\b(despesas?|gastos?|or[çc]amento|imposto|carn[eê]-le[aã]o|DARF|receita\s+federal|nota\s+fiscal|budget|expenses?|spending|tax(?:es)?|income\s+tax|financial|freelancer?\s+tax|dedu[çc][aã]o|faturamento|receipt|receipts|invoice|invoices|merchant|bill|bills|accountant|contador|contabilista|NF(?:-?e)?)\b/i },
   { domain: 'cooking', pattern: /\b(recipe|recipes|meal\s+plan|meal\s+prep|shopping\s+list|cook(?:ing)?|ingredient|groceries|fueling\s+issue|fueling\s+warning|what\s+(?:to|should\s+I)\s+(?:cook|eat|make)|dinner\s+ideas?|breakfast\s+ideas?|lunch\s+ideas?|receita|cardápio|lista\s+de\s+compras|cozinhar|refeição|jantar|almoço|café\s+da\s+manhã)\b/i },
@@ -85,13 +85,123 @@ const NL_KEYWORD_ROUTES: { domain: DomainName; pattern: RegExp }[] = [
   { domain: 'secretary', pattern: /\b(tasks?|to-?dos?|remind(?:ers?)?|(?:my\s+)?calendar|schedule|meetings?|appointments?|(?:my\s+)?emails?|inbox|overdue|due\s+(?:today|tomorrow|this\s+week)|planning|digest|unread|mark\s+(?:as\s+)?(?:done|complete)|pending|priority|deadline|tarefas?|lembretes?|agend(?:a|ar)|reuni[oõ]es?|compromissos?|e-?mails?|caixa\s+de\s+entrada|atrasad[ao]s?|pra\s+hoje|pendentes?|prioridade|prazo)\b/i },
 ];
 
+// Explicit Nexus product-area anchors outrank generic workflow nouns such as
+// "task", "schedule", or "summary". Keep these phrases narrow: they close
+// observed gaps where a standalone request names its owning product directly,
+// without turning ordinary uses of those generic nouns into domain signals.
+const EXPLICIT_PRODUCT_AREA_ROUTES: { domain: DomainName; pattern: RegExp }[] = [
+  { domain: 'content', pattern: /\b(?:content\s+(?:area|request|workspace|draft|preview)|request\s+(?:a\s+)?(?:safe\s+)?content|specific\s+content|publishing\s+plans?|channel\s+performance|performance\s+(?:of\s+)?(?:the\s+)?channel)\b|[aá]rea\s+de\s+conte[uú]do\b|performance[\s\S]{0,20}\bcanal\b/i },
+  { domain: 'finance', pattern: /\b(?:finance|finan[çc]as?|financeir[oa]|finance\s+(?:area|request|workspace)|specific\s+finance|an[aá]lise\s+detalhada\s+d(?:e|as?)\s+contas?)\b|[aá]rea\s+(?:de\s+)?finan[çc]as?\b|[aá]rea\s+financeir[ao]\b/i },
+  { domain: 'cooking', pattern: /\b(?:cooking[-\s]+related\s+(?:task|request)|cooking\s+(?:area|request|workspace)|cozinha|cozedura|meal\s+preparation\s+plan|planejamento\s+de\s+refei[cç][oõ]es|regras?\s+de\s+substitui[cç][aã]o\s+de\s+ingredientes|plano\s+de\s+(?:cozedura|refei[cç][oõ]es)|se[cç][aã]o\s+de\s+cozinhar)\b|[aá]rea\s+(?:de\s+)?cozinha\b/i },
+  { domain: 'triathlon', pattern: /\b(?:triathlon|triatl(?:o|on)|treinamento)\b|[aá]rea\s+(?:de\s+)?triatl(?:o|on)\b/i },
+  { domain: 'secretary', pattern: /\b(?:secretary\s+(?:area|request|workspace)|area\s+within\s+secretary|secret[aá]ria|secret[aá]ria\s+nexus|daily\s+planner|calend[aá]rio\s+pessoal|agendamento)\b|[aá]rea\s+(?:d[ae]\s+)?secret[aá]ria\b/i },
+];
+
+// Product-profile nouns exposed by the governed staging QA are deliberately
+// narrower than generic verbs such as "show", "preview", or "create".  These
+// pairs let the free classifier recognize stable Nexus-owned artifacts while
+// preserving the existing LLM fallback for genuinely ambiguous requests.
+// Keep the order aligned with primary ownership when a request mentions a
+// secondary skill (for example a marketing email, a travel budget, or an email
+// to a coach).
+const CONTENT_PRODUCT_PROFILE_PATTERNS: RegExp[] = [
+  /\b(?:blog|article|social|documentary|newsletter|marketing)\b[\s\S]{0,70}\b(?:drafts?|posts?|videos?|opening|campaign|email\s+series|editorial\s+review)\b/i,
+  /\b(?:approved|latest)\s+tagline\b[\s\S]{0,60}\b(?:product\s+)?launch\b/i,
+  /\b(?:publish|delete|preview)\b[\s\S]{0,80}\b(?:approved\s+article|article|content\s+drafts?|campaign)\b/i,
+  /\b(?:slogan|artigo|texto|publica[cç][aã]o)\b[\s\S]{0,80}\b(?:aprovad[oa]|marca|rascunho\s+editorial|campanha|confirmar)\b/i,
+  /\b(?:aprovad[oa]|marca|rascunho\s+editorial|campanha|confirmar)\b[\s\S]{0,80}\b(?:slogan|artigo|texto|publica[cç][aã]o)\b/i,
+  /\b(?:repurpose|repurposed)\b[\s\S]{0,70}\b(?:webinar|short-form\s+content)\b/i,
+  /\bpublica[cç][oõ]es\b[\s\S]{0,80}\b(?:programadas?|campanha\s+de\s+lan[cç]amento)\b/i,
+  /\bartigos?\b[\s\S]{0,80}\bcampanha\b[\s\S]{0,60}\b(?:aguardar|aguardam|revis[aã]o)\b/i,
+  /\bescreve\b[\s\S]{0,50}\bpublica[cç][aã]o\b[\s\S]{0,50}\blan[cç]amento\b/i,
+];
+
+const FINANCE_PRIMARY_CROSS_SKILL_PATTERNS: RegExp[] = [
+  /\b(?:travel|conference)\s+budget\b[\s\S]{0,100}\b(?:calendar|event)\b[\s\S]{0,80}\b(?:unchanged|without\s+changing|not\s+change)\b/i,
+  /\b(?:income|spending)\b[\s\S]{0,50}\b(?:income|spending|calendar\s+month)\b/i,
+];
+
+const FINANCE_PRODUCT_PROFILE_PATTERNS: RegExp[] = [
+  /\b(?:checking|savings|bank)\b[\s\S]{0,60}\b(?:accounts?|balances?|transfer)\b|\b(?:accounts?|balances?|transfer)\b[\s\S]{0,60}\b(?:checking|savings|bank)\b/i,
+  /\b(?:card\s+charges?|card\s+purchases?|recategori[sz](?:e|ing)|emergency\s+fund|savings\s+target)\b/i,
+  /\b(?:travel|conference)\s+budget\b|\bbudget\b[\s\S]{0,50}\b(?:travel|conference)\b/i,
+  /\bsubscriptions?\b[\s\S]{0,50}\b(?:due\s+to\s+renew|renew\s+before|cancel)\b/i,
+  /\bcancel\b[\s\S]{0,50}\bsubscriptions?\b/i,
+  /\b(?:categori[sz]e|recategori[sz]e)\b[\s\S]{0,50}\b(?:transaction|card\s+charge)\b/i,
+  ...FINANCE_PRIMARY_CROSS_SKILL_PATTERNS,
+  /\b(?:compras?|movimentos?|lan[cç]amentos?)\b[\s\S]{0,60}\b(?:cart[aã]o|conta\s+[àa]\s+ordem)\b|\bcart[aã]o\b[\s\S]{0,60}\b(?:compras?|movimentos?|lan[cç]amentos?)\b/i,
+  /\b(?:meta|reserva)\b[\s\S]{0,50}\b(?:poupan[cç]as?|emerg[eê]ncia)\b|\b(?:poupan[cç]as?|emerg[eê]ncia)\b[\s\S]{0,50}\b(?:meta|reserva)\b/i,
+  /\b(?:transfere?|transfira|transferir)\b[\s\S]{0,80}\b(?:conta\s+corrente|conta\s+[àa]\s+ordem|poupan[cç]a)\b/i,
+  /\bor[cç]amento\b[\s\S]{0,60}\b(?:alimenta[cç][aã]o|viagem|confer[eê]ncia)\b/i,
+  /\b(?:quanto\s+(?:ainda\s+)?posso\s+gastar|categoria\s+lazer|assinaturas?\s+ser[aã]o\s+renovadas?)\b/i,
+  /\b(?:saldos?|movimentos?)\b[\s\S]{0,70}\b(?:conta\s+[àa]\s+ordem|poupan[cç]a|superiores?\s+a)\b/i,
+];
+
+const SECRETARY_PRODUCT_PROFILE_PATTERNS: RegExp[] = [
+  /\b(?:subject\s+lines?|messages?)\b[\s\S]{0,60}\b(?:arrived|received|inbox)\b/i,
+  /\b(?:draft|prepare|preview|write)\b[\s\S]{0,60}\b(?:reply|out-of-office|email)\b/i,
+  /\b(?:reply|out-of-office|email)\b[\s\S]{0,80}\b(?:unsent|do\s+not\s+send|don'?t\s+send|leave\s+it\s+unsent|change\s+no\s+workouts?)\b/i,
+  /\b(?:events?|appointments?)\b[\s\S]{0,60}\b(?:overlap|start|room|notes?)\b/i,
+  /\b(?:focus\s+time|one-on-one|client\s+check-in)\b/i,
+  /\b(?:marque|reserve|mude|passa)\b[\s\S]{0,60}\b(?:conversa|per[ií]odo\s+de\s+concentra[cç][aã]o|reuni[aã]o|consulta)\b/i,
+  /\b(?:consulta|reuni[aã]o)\b[\s\S]{0,60}\b(?:marcada|sala|outra\s+hora|hor[aá]rio\s+diferente)\b/i,
+  /\b(?:sala|marcada)\b[\s\S]{0,60}\breuni[aã]o\b/i,
+  /\b(?:pr[eé]via|pr[eé]-visualiza[cç][aã]o)\b[\s\S]{0,50}\be-?mail\b[\s\S]{0,100}\bn[aã]o\s+envi(?:e|es)\b/i,
+  /\blembra-me\b[\s\S]{0,50}\b(?:levantar|buscar|recolher)\b/i,
+  /\bapaga\b[\s\S]{0,50}\bmarca[cç][aã]o\b/i,
+];
+
+const TRAINING_PRODUCT_PROFILE_PATTERNS: RegExp[] = [
+  /\b(?:split\s+times?|splits?)\b[\s\S]{0,60}\b(?:pool|swim|metres?|meters?|yards?)\b/i,
+  /\b(?:log|record|adjust|schedule)\b[\s\S]{0,60}\b(?:swim\s+(?:workout|session)|cycling\s+load|brick\s+(?:workout|session))\b/i,
+  /\b(?:sprint[-\s]?triathlon|triathlon)\s+plan\b|\b(?:preview|sketch)\b[\s\S]{0,70}\b(?:triathlon|training)\s+plan\b/i,
+  /\b(?:metros?\s+nadei|bloco\s+de\s+treino|carga\s+dos?\s+meus?\s+pr[oó]ximos?\s+treinos?\s+de\s+bicicleta)\b/i,
+  /\b(?:esboce?|estrutura|prepare)\b[\s\S]{0,70}\b(?:semana\s+de\s+treinos?|plano\s+de\s+treino|triatlo\s+sprint)\b/i,
+  /\b(?:longest\s+duration|longest)\b[\s\S]{0,50}\brun\b|\brun\b[\s\S]{0,50}\blongest\s+duration\b/i,
+  /\b(?:apresenta|mostra)\b[\s\S]{0,60}\bpr[eé]-visualiza[cç][aã]o\b[\s\S]{0,70}\btriatlo\s+sprint\b/i,
+];
+
+const COOKING_PRODUCT_PROFILE_PATTERNS: RegExp[] = [
+  /\b(?:main\s+course|food\s+allerg(?:y|ies)|sourdough|cold-proof|bread\s+recipe)\b/i,
+  /\b(?:confirm|approve)\b[\s\S]{0,70}\bgrocery\s+order\b/i,
+  /\b(?:confirma|aprova)\b[\s\S]{0,70}\bencomenda\s+de\s+mercearia\b/i,
+  /\b(?:dinner|meal-prep)\s+plan\b[\s\S]{0,70}\b(?:food\s+budget|without\s+saving|do\s+not\s+save)\b/i,
+  /\b(?:planeje|prepara)\b[\s\S]{0,60}\b(?:comida|refei[cç][oõ]es)\b[\s\S]{0,70}\b(?:restri[cç][oõ]es\s+alimentares|sem\s+guardar)\b/i,
+  /\b(?:planeje|prepara)\b[\s\S]{0,160}(?:restri[cç][oõ]es\s+alimentares|sem\s+guardar|n[aã]o\s+guardes?)/i,
+];
+
 const CONTENT_INTENT_PATTERNS: RegExp[] = [
   /\b(write|create|generate|make|draft|outline|rewrite|improve|give|suggest|organi[sz]e|prioriti[sz]e)\b[\s\S]{0,80}\b(script|caption|hook|hooks|title|titles|thumbnail|thumbnails|reel|reels|video|videos|post|posts|content)\b/i,
   /\b(escrev(?:e|a)|cria|crie|gera|gerar|faz|faça|rascunha|reescreve|melhora)\b[\s\S]{0,80}\b(roteiro|legenda|gancho|ganchos|t[íi]tulo|t[íi]tulos|miniatura|miniaturas|reel|reels|v[ií]deo|v[ií]deos|post|posts|conte[uú]do)\b/i,
+  /\b(write|create|draft|prepare)\b[\s\S]{0,80}\b(?:blog\s+article|article|newsletter|marketing\s+post)\b/i,
+  /\b(?:escreve|redige|cria|prepare|prepara)\b[\s\S]{0,80}\b(?:artigo|newsletter|publica[cç][aã]o\s+de\s+marketing)\b/i,
   /\b(help\s+me\s+script|write|draft|outline)\b[\s\S]{0,40}\b(intro|opening|outro|hook)\b/i,
   /\b(me\s+ajuda\s+a\s+escrever|escrev(?:e|a)|cria|gera)\b[\s\S]{0,40}\b(intro|abertura|gancho|encerramento)\b/i,
   /\b(id[eé]ias?\s+de\s+conte[uú]do|id[eé]ias?\s+para\s+um?\s+v[ií]deo|hooks?\s+para\s+um?\s+v[ií]deo|t[íi]tulos?\s+melhores?\s+para\s+um?\s+v[ií]deo|[âa]ngulos?\s+de\s+thumbnail|feedback\s+neste?\s+roteiro|planej(?:ar|a)\s+uma\s+grava[çc][aã]o|formatos?\s+de\s+conte[uú]do)\b/i,
   /\b(content\s+ideas?|ideas?\s+for\s+(?:a\s+)?video|better\s+titles?\s+for\s+(?:a\s+)?video|organi[sz]e\s+my\s+content\s+ideas|what\s+(?:content\s+is\s+already\s+ready|is\s+already)\s+on\s+my\s+desk(?:\s+for\s+content)?|what\s+performed\s+best|what\s+are\s+we\s+learning(?:\s+this\s+week)?|what\s+hook(?:s)?\s+are\s+working|what\s+format\s+is\s+(?:winning|working)|filming\s+day|schedule\s+filming\s+around\s+my\s+week|plan\s+filming\s+around\s+my\s+week|what\s+should\s+i\s+publish\s+next|what\s+should\s+i\s+work\s+on\s+next\s+for\s+content)\b/i,
+];
+
+// Product-owned artifacts that are stable routing signals even when the user
+// is reading, previewing, or clarifying them rather than invoking a verb from
+// the older creation-oriented patterns. Keep these bounded to Nexus nouns so
+// generic words such as "workspace", "notes", or "draft" do not become
+// catch-all content routes.
+const CONTENT_WORKSPACE_PATTERNS: RegExp[] = [
+  /\b(editorial\s+(?:briefs?|workspace|backlog)|content\s+briefs?|research\s+notes?|article\s+drafts?)\b/i,
+  /\bpautas?\b[\s\S]{0,70}\b(?:espa[cç]o|fila)\s+editorial\b|\b(?:espa[cç]o|fila)\s+editorial\b[\s\S]{0,70}\bpautas?\b|\b(briefings?\s+editoriais|espa[cç]o\s+editorial|fila\s+editorial|notas?\s+de\s+pesquisa|rascunhos?\s+de\s+artigo)\b/i,
+  /\bsource[- ]notes?\b[\s\S]{0,70}\b(?:research|folder|titles?)\b|\b(?:research|folder|titles?)\b[\s\S]{0,70}\bsource[- ]notes?\b/i,
+  /\b(?:approved|current)\s+(?:content\s+)?briefs?\b[\s\S]{0,80}\b(?:supersed(?:e|ed|ing)|replace|replacing|safeguards?|review)\b|\b(?:supersed(?:e|ed|ing)|replace|replacing|safeguards?|review)\b[\s\S]{0,80}\b(?:approved|current)\s+(?:content\s+)?briefs?\b/i,
+  /\b(?:saved\s+ideas?|ideas?)\b[\s\S]{0,70}\b(?:editorial\s+)?backlog\b[\s\S]{0,50}\btheme\b|\btheme\b[\s\S]{0,50}\b(?:editorial\s+)?backlog\b[\s\S]{0,70}\b(?:saved\s+ideas?|ideas?)\b/i,
+  /\b(?:pr[eé]via|esbo[cç]o)\b[\s\S]{0,60}\bbriefing\b[\s\S]{0,60}\bguia\b/i,
+  /\b(?:t[ií]tulos?|status)\b[\s\S]{0,60}\bpautas?\b(?![\s\S]{0,60}\breuni(?:[aã]o|[oõ]es)\b)|\bpautas?\b(?![\s\S]{0,60}\breuni(?:[aã]o|[oõ]es)\b)[\s\S]{0,60}\b(?:t[ií]tulos?|status)\b/i,
+  /\brascunh(?:e|a|ar)\b[\s\S]{0,50}\bpautas?\b(?![\s\S]{0,60}\breuni(?:[aã]o|[oõ]es)\b)/i,
+  /\b(?:substituir|trocar|rever|revisar|revise|revisado)\b[\s\S]{0,70}\bartigo(?:\s+j[aá])?\s+aprovado\b|\bartigo(?:\s+j[aá])?\s+aprovado\b[\s\S]{0,70}\b(?:substituir|trocar|rever|revisar|revise|revisado)\b/i,
+  /\b(?:esbo[cç]a|esboce|prepara|prepare|estrutura|estruture)\b[\s\S]{0,70}\b(?:artigo\s+(?:introdut[oó]rio|pr[aá]tico)|guia\s+pr[aá]tico)\b[\s\S]{0,80}\b(?:sec[cç][oõ]es|partes|extens[aã]o|palavras?)\b/i,
+];
+
+const DECISION_CENTER_WORKSPACE_PATTERNS: RegExp[] = [
+  /\b(?:show|list|review)\b[\s\S]{0,40}\b(?:pending|waiting)\s+decisions?\b/i,
+  /\b(?:pending|waiting)\s+decisions?\b/i,
 ];
 
 const FINANCE_REFINEMENT_PATTERNS = [
@@ -108,6 +218,27 @@ const FINANCE_INTENT_PATTERNS: RegExp[] = [
 const SECRETARY_INTENT_PATTERNS: RegExp[] = [
   /\b(create|add|schedule|move|reschedule|delete|remove|cancel|summari[sz]e|review|list|show)\b[\s\S]{0,80}\b(task|tasks|to-?do|to-?dos|calendar|meeting|meetings|appointment|appointments|event|events|focus\s+block|reminder|reminders|agenda|email|emails|inbox)\b/i,
   /\b(cria|crie|adiciona|adicione|marca|agenda|move|muda|remarca|reagenda|apaga|remove|cancela|resume|revisa|lista|mostra)\b[\s\S]{0,80}\b(tarefa|tarefas|agenda|calend[aá]rio|reuni[aã]o|reuni[oõ]es|compromisso|compromissos|evento|eventos|bloco\s+de\s+foco|lembrete|lembretes|e-?mail|e-?mails|caixa\s+de\s+entrada)\b/i,
+];
+
+// Scheduling remains secretary-owned when the thing being placed belongs to
+// another skill (meal prep, training, filming, etc.). These patterns encode
+// the scheduling operation and its time/calendar object together instead of
+// treating the foreign-domain noun as the owner.
+const SECRETARY_WORKSPACE_PATTERNS: RegExp[] = [
+  /\b(?:weekly\s+)?(?:planning|focus|concentration)\s+blocks?\b/i,
+  /\bblocos?\s+de\s+(?:planejamento|planeamento|foco|concentra[cç][aã]o)\b/i,
+  /\b(?:schedule|preview|outline|arrange|fit|fits|reschedule|move)\b[\s\S]{0,100}\b(?:commitments?|calendar|agenda|free\s+(?:time|slots?)|available\s+(?:time|slots?))\b/i,
+  /\b(?:encaixa|encaixar|organiza|organizar|remarca|remarcar|reagenda|reagendar|move|mover)\b[\s\S]{0,100}\b(?:compromissos?|agenda|calend[aá]rio|hor[aá]rios?\s+livres?|tempo\s+livre)\b/i,
+  /\b(?:recipient\s+checks?|recipient\s+review|bulk\s+(?:messages?|emails?)|mailing\s+list)\b/i,
+  /\b(?:verifica[cç][aã]o\s+de\s+destinat[aá]rios?|mensagens?\s+em\s+massa|e-?mails?\s+em\s+massa|lista\s+de\s+destinat[aá]rios?)\b/i,
+  /\b(?:reschedule|move)\b[\s\S]{0,60}\b(?:conversation|call|meeting)\b/i,
+  /\b(?:remarca|remarcar|reagenda|reagendar|move|mover)\b[\s\S]{0,60}\b(?:conversa|chamada|reuni[aã]o)\b/i,
+  /\bmessages?\b[\s\S]{0,70}\b(?:many|multiple|several)\s+recipients?\b|\b(?:many|multiple|several)\s+recipients?\b[\s\S]{0,70}\bmessages?\b/i,
+  /\b(?:arrange|arranging|prioriti[sz]e|prioriti[sz]ing)\b[\s\S]{0,70}\b(?:busy|overloaded)\s+(?:day|week)\b[\s\S]{0,50}\burgency\b/i,
+  /\b(?:mostre|liste|listar)\b[\s\S]{0,60}\beventos?\b[\s\S]{0,50}\bcalend[aá]rio\b|\b(?:excluir|exclua|apagar|apague)\b[\s\S]{0,50}\b(?:s[eé]rie\s+de\s+)?eventos?\b[\s\S]{0,50}\bcalend[aá]rio\b/i,
+  /\bpautas?\b[\s\S]{0,60}\breuni(?:[aã]o|[oõ]es)\b|\breuni(?:[aã]o|[oõ]es)\b[\s\S]{0,60}\bpautas?\b/i,
+  /\b(?:minuta|rascunho|pedido|vers[aã]o\s+provis[oó]ria)\b[\s\S]{0,80}\b(?:mudar|mudan[cç]a\s+de|pedir)\b[\s\S]{0,50}\b(?:hor[aá]rio|outra\s+hora|reuni[aã]o)\b/i,
+  /\b(?:sess(?:[aã]o|ao)|hora)\s+de\s+(?:planeamento|planejamento|foco|concentra[cç][aã]o)\b/i,
 ];
 
 const SECRETARY_STRONG_OPERATIONAL_PATTERNS: RegExp[] = [
@@ -137,11 +268,50 @@ const COOKING_INTENT_PATTERNS: RegExp[] = [
   /\b(ralar|ralada|grate|grated)\b[\s\S]{0,30}\b(cenoura|carrot)\b[\s\S]{0,60}\b(guard(?:ar|o|a)|conserv(?:ar|o|a)|armazen(?:ar|o|a)|geladeira|fridge|refrigerator|refriger(?:ar|o|a)|durar|last)\b/i,
 ];
 
+const COOKING_WORKSPACE_PATTERNS: RegExp[] = [
+  /\b(pantry|pantry\s+items?|lentil\s+soup|grocery\s+orders?)\b/i,
+  /\b(despensa|itens?\s+da\s+despensa|sopa\s+de\s+lentilhas?|pedidos?\s+de\s+(?:mercearia|supermercado|alimentos))\b/i,
+  /\bplanned\b[\s\S]{0,50}\bmeals?\b|\bmeals?\b[\s\S]{0,50}\bplanned\b/i,
+  /\bswaps?\b[\s\S]{0,60}\bingredients?\b|\bingredients?\b[\s\S]{0,60}\bswaps?\b/i,
+  /\b(?:pr[eé]via|esbo[cç]o)\b[\s\S]{0,50}\bcompras?\b[\s\S]{0,50}\brefei[cç][oõ]es\s+r[aá]pidas\b/i,
+  /\bsubstituir\b[\s\S]{0,50}\bervas?\b[\s\S]{0,40}\b(?:frescas?|secas?)\b[\s\S]{0,40}\bprato\b/i,
+  /\b(?:rascunho|prop[oõ]e|proponha)\b[\s\S]{0,70}\bingredientes?\b[\s\S]{0,60}\brefei[cç][oõ]es\s+r[aá]pidas\b/i,
+  /\b(?:encomendar|confirmar|confirme|verifica[cç][oõ]es|cuidados?)\b[\s\S]{0,80}\b(?:compra|encomenda)\b[\s\S]{0,60}\b(?:mercearia|alimentos|supermercado)\b/i,
+  /\b(?:mercearia|alimentos|supermercado)\b[\s\S]{0,60}\b(?:compra|encomenda)\b[\s\S]{0,80}\b(?:confirmar|verifica[cç][oõ]es|cuidados?)\b/i,
+];
+
 const TRAINING_INTENT_PATTERNS: RegExp[] = [
   /\b(how\s+much|how\s+many|set|adjust|calculate|dial\s+in|review|optimi[sz]e|what\s+should\s+my|what\s+are\s+my|help\s+me\s+hit)\b[\s\S]{0,80}\b(protein(?:\s+(?:intake|target))?|macros?|calories?|carbs?|fat|electrolytes?|creatine|supplements?)\b/i,
   /\b(carnivore\s+diet|cutting\s+macros?|bulking\s+macros?|maintenance\s+calories?|sports?\s+nutrition|performance\s+nutrition)\b/i,
   /\b(quanto|quanta|quantos|quantas|define|ajusta|calcula|alinha|revisa|otimiza|qual\s+(?:deve\s+ser|é)\s+(?:a\s+)?minha|me\s+ajuda\s+a\s+bater)\b[\s\S]{0,80}\b(prote[ií]na(?:\s+(?:di[aá]ria|alvo))?|macros?|calorias?|carbo(?:idratos)?|gordura|eletr[oó]litos?|creatina|suplementos?)\b/i,
   /\b(dieta\s+carn[ií]vora|macros?\s+para\s+(?:cut|bulk|ganhar\s+massa|secar)|calorias?\s+de\s+manuten[çc][aã]o|nutri[çc][aã]o\s+esportiva|nutri[çc][aã]o\s+de\s+performance)\b/i,
+];
+
+const TRAINING_WORKSPACE_PATTERNS: RegExp[] = [
+  /\b(?:easy|long|recovery|tempo|interval|lighter)\b[\s\S]{0,35}\b(?:runs?|rides?|swims?)\b/i,
+  /\b(?:bike|cycling|running|swimming)\s+(?:workouts?|sessions?|plans?)\b/i,
+  /\bworkouts?\b/i,
+  /\b(?:ciclismo|pedal(?:ada)?|corridas?)\b/i,
+  /\b(?:sess(?:[aã]o|ao)|treino)\b[\s\S]{0,50}\bnata[cç][aã]o\b|\bnata[cç][aã]o\b[\s\S]{0,50}\b(?:sess(?:[aã]o|ao)|treino)\b/i,
+  /\b\d[\d.,]*\s+metros?\b[\s\S]{0,50}\bnata[cç][aã]o\b|\bnata[cç][aã]o\b[\s\S]{0,50}\b\d[\d.,]*\s+metros?\b/i,
+  /\bsess(?:[aã]o|ao)\b[\s\S]{0,80}\b\d[\d.,]*\s+metros?\b[\s\S]{0,100}\b(?:comprimento|tamanho)\s+da\s+piscina\b/i,
+  /\btreinos?\b[\s\S]{0,70}\b(?:salvos?|planeamento|planejamento|plano|semana)\b|\b(?:planeamento|planejamento|plano)\b[\s\S]{0,70}\btreinos?\b/i,
+  /\bcorridas?\b[\s\S]{0,70}\b(?:previstas?|planeadas?|planejadas?|plano)\b|\bplano\b[\s\S]{0,70}\bcorridas?\b/i,
+];
+
+const TRAINING_PRIMARY_CROSS_SKILL_PATTERNS: RegExp[] = [
+  /\b(?:preview|sketch|draft|outline|prepare|build)\b[\s\S]{0,120}\b(?:bike\s+sessions?|ride\s+workouts?|workouts?|training\s+plans?)\b[\s\S]{0,120}\b(?:fuel(?:ing)?|snacks?|meals?|grocer(?:y|ies)|pantry)\b/i,
+  /\b(?:esbo[cç]a|esboce|pr[eé]via|prepara|prepare|estrutura|estruture)\b[\s\S]{0,120}\b(?:sess(?:[aã]o|ao)\s+de\s+bicicleta|treinos?|plano\s+de\s+treino)\b[\s\S]{0,120}\b(?:abastecimento|snacks?|refei[cç][aã]o|compras?|despensa)\b/i,
+];
+
+const FINANCE_WORKSPACE_PATTERNS: RegExp[] = [
+  /\b(?:supplier|vendor)\s+(?:payments?|invoices?|bills?)\b/i,
+  /\b(?:payments?|invoices?|bills?)\s+(?:to|from)\s+(?:suppliers?|vendors?)\b/i,
+  /\b(?:faturas?|facturas?|recibos?|pagamentos?)\b[\s\S]{0,50}\b(?:fornecedores?|venc(?:e|em|ida|idas)|pendentes?)\b/i,
+  /\bfornecedores?\b[\s\S]{0,50}\b(?:faturas?|facturas?|recibos?|pagamentos?)\b/i,
+  /\bfaturas?\b[\s\S]{0,80}\b(?:n[aã]o\s+pagas?|datas?\s+de\s+vencimento|vencimento|valores?)\b/i,
+  /\blan[cç]amentos?\b[\s\S]{0,70}\b(?:aguard(?:am|ando)|pendentes?|sem)\b[\s\S]{0,40}\brecibos?\b/i,
+  /\b(?:registro|registo|recibo)\s+fict[ií]cio\b[\s\S]{0,100}\b(?:euros?|forma\s+de\s+pagamento|categoria\s+fiscal)\b/i,
 ];
 
 // ─── M12 manifest convergence (flag: AI_ROUTING_MANIFEST_CLASSIFIER) ─
@@ -184,6 +354,31 @@ export function keywordMatch(message: string): DomainName | null {
   if (CONTENT_INTENT_PATTERNS.some((pattern) => pattern.test(message))) {
     return 'content';
   }
+  for (const { domain, pattern } of EXPLICIT_PRODUCT_AREA_ROUTES) {
+    if (pattern.test(message)) return domain;
+  }
+  if (CONTENT_PRODUCT_PROFILE_PATTERNS.some((pattern) => pattern.test(message))) {
+    return 'content';
+  }
+  // A finance preview remains finance-owned when the calendar reference is an
+  // explicit no-op boundary, not a scheduling request.
+  if (FINANCE_PRIMARY_CROSS_SKILL_PATTERNS.some((pattern) => pattern.test(message))) {
+    return 'finance';
+  }
+  // Meeting agendas remain Secretary-owned even when they use editorial
+  // words such as pauta, title, status, or draft.
+  if (SECRETARY_WORKSPACE_PATTERNS.some((pattern) => pattern.test(message))) {
+    return 'secretary';
+  }
+  if (SECRETARY_PRODUCT_PROFILE_PATTERNS.some((pattern) => pattern.test(message))) {
+    return 'secretary';
+  }
+  if (CONTENT_WORKSPACE_PATTERNS.some((pattern) => pattern.test(message))) {
+    return 'content';
+  }
+  if (DECISION_CENTER_WORKSPACE_PATTERNS.some((pattern) => pattern.test(message))) {
+    return 'decision_center';
+  }
   // Explicit secretary actions should beat training/topic nouns such as
   // "training" when the user is clearly asking to create, move, delete,
   // or summarize a task/calendar item.
@@ -198,11 +393,37 @@ export function keywordMatch(message: string): DomainName | null {
   if (FINANCE_INTENT_PATTERNS.some((pattern) => pattern.test(message))) {
     return 'finance';
   }
+  if (FINANCE_WORKSPACE_PATTERNS.some((pattern) => pattern.test(message))) {
+    return 'finance';
+  }
+  if (FINANCE_PRODUCT_PROFILE_PATTERNS.some((pattern) => pattern.test(message))) {
+    return 'finance';
+  }
+  // A preview whose primary artifact is a workout remains training-owned
+  // when food vocabulary is merely an ancillary fueling suggestion.
+  if (TRAINING_PRIMARY_CROSS_SKILL_PATTERNS.some((pattern) => pattern.test(message))) {
+    return 'triathlon';
+  }
+  if (TRAINING_PRODUCT_PROFILE_PATTERNS.some((pattern) => pattern.test(message))) {
+    return 'triathlon';
+  }
   // Explicit food/meal asks should beat training-topic vocabulary such as
   // "treino", "recuperação", or "leg day" when the user is clearly asking
   // for meals, recipes, menus, or shopping.
   if (COOKING_INTENT_PATTERNS.some((pattern) => pattern.test(message))) {
     return 'cooking';
+  }
+  if (COOKING_WORKSPACE_PATTERNS.some((pattern) => pattern.test(message))) {
+    return 'cooking';
+  }
+  if (COOKING_PRODUCT_PROFILE_PATTERNS.some((pattern) => pattern.test(message))) {
+    return 'cooking';
+  }
+  // A concrete workout/ride/swim remains training-owned even if the user also
+  // requests an ancillary fueling outline. Explicit meal execution was
+  // already handled by the cooking patterns above.
+  if (TRAINING_WORKSPACE_PATTERNS.some((pattern) => pattern.test(message))) {
+    return 'triathlon';
   }
   // Training should own coaching logic, target-setting, and physiology-aware
   // nutrition decisions, but not meal execution. Put these after cooking so
