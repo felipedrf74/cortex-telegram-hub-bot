@@ -242,6 +242,7 @@
             "meeting",
             "schedule",
             "secretary",
+            "daily\\s+planner",
             "task",
             "tasks",
             "todo",
@@ -256,6 +257,9 @@
           ],
           "pt": [
             "tarefas?",
+            "secretaria",
+            "calend[aá]rio\\s+pessoal",
+            "agendamento",
             "blocos?\\s+de\\s+(?:planejamento|planeamento|foco|concentra[cç][aã]o)",
             "verifica[cç][aã]o\\s+de\\s+destinat[aá]rios?",
             "mensagens?\\s+em\\s+massa",
@@ -436,6 +440,8 @@
         "locales": {
           "en": [
             "training",
+            "triathlon",
+            "triathlon\\s+(?:area|schedule|plan)",
             "workouts?",
             "gym\\s+(?:session|workout|training|day)",
             "run",
@@ -451,6 +457,9 @@
           ],
           "pt": [
             "treinos?",
+            "triatl(?:o|on)",
+            "treinamento",
+            "(?:[aá]rea\\s+(?:de\\s+)?)?triatl(?:o|on)",
             "treinar",
             "dia\\s+de\\s+academia",
             "corrida",
@@ -476,6 +485,7 @@
           ]
         },
         "regexFragments": [
+          "\\b(?:triathlon|triatl(?:o|on))\\s+(?:area|schedule|plan)\\b",
           "\\b(workout|gym\\s+(?:session|workout|training|day)|(?:biceps?\\s+)?curls?\\s+(?:at|in)\\s+(?:the\\s+)?gym|running\\s+plan|cycling\\s+plan|sets?\\s*[x×]\\s*\\d|training(?:\\s+plan)?|deload|squat|deadlift|bench\\s+press|heart\\s+rate|RPE|RIR|tempo\\s+run|intervals?|FTP|soreness|recovery(?:\\s+day)?|readiness|body\\s+battery|muscle|hypertrophy|endurance|coach\\s*(?:report|briefing|rec)|lower\\s+body|upper\\s+body|periodization|mesocycle|microcycle|training\\s+week|log\\s+(?:workout|session)|workout\\s+plan|auto.?adjust|session\\s+complete|my\\s+plan|adherence|treino|corrida|pedal(?:ada)?|muscula[çc][aã]o|agachamento|supino|levantamento\\s+terra|frequ[eê]ncia\\s+card[ií]aca|dor\\s+muscular|recupera[çc][aã]o|prontid[aã]o|bateria\\s+corporal|s[eé]ries?\\s*[x×]\\s*\\d|dia\\s+de\\s+academia|plano\\s+de\\s+treino|plano\\s+da\\s+semana|semana\\s+de\\s+treino|treino\\s+de\\s+(?:hoje|amanh[ãa]))\\b",
           "\\b(how\\s+much|how\\s+many|set|adjust|calculate|dial\\s+in|review|optimi[sz]e|what\\s+should\\s+my|what\\s+are\\s+my|help\\s+me\\s+hit)\\b[\\s\\S]{0,80}\\b(protein(?:\\s+(?:intake|target))?|macros?|calories?|carbs?|fat|electrolytes?|creatine|supplements?)\\b",
           "\\b(carnivore\\s+diet|cutting\\s+macros?|bulking\\s+macros?|maintenance\\s+calories?|sports?\\s+nutrition|performance\\s+nutrition)\\b",
@@ -980,6 +990,9 @@
           ],
           "pt": [
             "cozinhar",
+            "cozinha",
+            "cozedura",
+            "plano\\s+de\\s+cozedura",
             "receitas?",
             "jantar",
             "almo[cç]o",
@@ -1003,6 +1016,8 @@
           ]
         },
         "regexFragments": [
+          "\\bcooking[-\\s]+related\\s+(?:task|request)\\b",
+          "\\b(?:plano\\s+de\\s+cozedura|se[cç][aã]o\\s+de\\s+cozinhar|estado\\s+armazenado[\\s\\S]{0,60}cozinhar)\\b",
           "\\b(recipe|recipes|meal\\s+plan|meal\\s+prep|shopping\\s+list|cook(?:ing)?|ingredient|groceries|what\\s+(?:to|should\\s+I)\\s+(?:cook|eat|make)|dinner\\s+ideas?|breakfast\\s+ideas?|lunch\\s+ideas?|receita|cardápio|lista\\s+de\\s+compras|cozinhar|refeição|jantar|almoço|café\\s+da\\s+manhã)\\b",
           "\\b(recipe|recipes|meal\\s+plan|meal\\s+prep|shopping\\s+list|batch\\s+cook(?:ing)?|dinner|breakfast|lunch|snack|menu|grocer(?:y|ies)|what\\s+(?:to|should\\s+I)\\s+(?:cook|eat|make)|jantar|almo[cç]o|caf[eé]\\s+da\\s+manh[aã]|lanche|refei[çc][aã]o|lista\\s+de\\s+compras|receita)\\b",
           "caf[eé]\\s+da\\s+manh[aã]|almo[cç]o|jantar|lanche|refei[çc][aã]o|lista\\s+de\\s+compras|receita",
