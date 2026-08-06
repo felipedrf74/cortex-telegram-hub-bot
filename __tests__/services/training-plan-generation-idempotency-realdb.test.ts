@@ -24,10 +24,12 @@ vi.mock('../../src/utils/logger', () => ({
 }));
 
 import {
+  assertTrainingPlanGenerationIdempotencyLease,
   claimTrainingPlanGenerationIdempotency,
   completeTrainingPlanGenerationIdempotency,
   failTrainingPlanGenerationIdempotency,
   renewTrainingPlanGenerationIdempotencyLease,
+  TrainingPlanGenerationLeaseLostError,
 } from '../../src/services/training-plan-generation-idempotency';
 import type { TrainingPlanGenerationLeaseIdentity } from '../../src/services/training-plan-generation-idempotency';
 
@@ -136,6 +138,22 @@ describe('training plan generation idempotency — real SQLite', () => {
     });
   });
 
+  it('preserves a succeeded row with a missing response payload for reconciliation', () => {
+    const initialClaim = ownedClaim(claimTrainingPlanGenerationIdempotency(
+      7, 7, 'key-missing-response', 'hash-a',
+    ));
+    completeTrainingPlanGenerationIdempotency(7, 7, initialClaim, { planId: 1 }, 201);
+    realDb.prepare(`UPDATE ${TABLE} SET response_json = NULL WHERE idempotency_key = ?`)
+      .run('key-missing-response');
+
+    expect(claimTrainingPlanGenerationIdempotency(
+      7, 7, 'key-missing-response', 'hash-a',
+    )).toEqual({
+      kind: 'reconciliation_required',
+      idempotencyKey: 'key-missing-response',
+    });
+  });
+
   it('reclaims an in_progress claim whose lease has expired', () => {
     // The core F1 fix: a claim orphaned by a process death (OOM, SIGKILL,
     // deploy restart) never records an outcome, so without an expiry it stays
@@ -216,6 +234,21 @@ describe('training plan generation idempotency — real SQLite', () => {
     realDb.prepare(`UPDATE ${TABLE} SET lease_expires_at = ? WHERE idempotency_key = ?`)
       .run('2026-07-01T10:04:59.000Z', 'key-heartbeat');
     expect(renewTrainingPlanGenerationIdempotencyLease(7, 7, claim)).toBe(false);
+  });
+
+  it('asserts the exact live SQLite fence and rejects stale ownership', () => {
+    const claim = ownedClaim(claimTrainingPlanGenerationIdempotency(
+      7, 7, 'key-assert-fence', 'hash-assert-fence',
+    ));
+    expect(() => assertTrainingPlanGenerationIdempotencyLease(7, 7, claim)).not.toThrow();
+
+    realDb.prepare(`
+      UPDATE ${TABLE}
+         SET fencing_token = 'replacement-token'
+       WHERE user_id = 7 AND tenant_id = 7 AND idempotency_key = 'key-assert-fence'
+    `).run();
+    expect(() => assertTrainingPlanGenerationIdempotencyLease(7, 7, claim))
+      .toThrow(TrainingPlanGenerationLeaseLostError);
   });
 
   it('never replaces a stale successful auto-key receipt after the 90s window', () => {

@@ -250,4 +250,138 @@ describe('Training plan generation attempt status', () => {
       canStartNew: false,
     });
   });
+
+  it('fails closed for invalid keys and missing or malformed lease expiries', () => {
+    expect(getTrainingPlanGenerationAttemptStatus(12, 12, '   ')).toEqual({
+      schemaVersion: 'training_plan_generation_attempt_status.v1',
+      state: 'not_found',
+      recovery: 'check_status_again',
+      canStartNew: false,
+    });
+
+    for (const [suffix, leaseExpiry] of [
+      ['missing-expiry', null],
+      ['invalid-expiry', 'not-a-date'],
+    ] as const) {
+      const key = `ios:create:${suffix}`;
+      claimTrainingPlanGenerationIdempotency(12, 12, key, `hash-${suffix}`);
+      realDb.prepare(`
+        UPDATE training_plan_generation_idempotency_scoped
+           SET lease_expires_at = ?
+         WHERE user_id = 12 AND tenant_id = 12 AND idempotency_key = ?
+      `).run(leaseExpiry, key);
+      expect(getTrainingPlanGenerationAttemptStatus(12, 12, key)).toMatchObject({
+        state: 'unknown',
+        recovery: 'check_status_again',
+        canStartNew: false,
+      });
+    }
+
+    const sqliteKey = 'ios:create:sqlite-live-expiry';
+    claimTrainingPlanGenerationIdempotency(12, 12, sqliteKey, 'hash-sqlite-live');
+    realDb.prepare(`
+      UPDATE training_plan_generation_idempotency_scoped
+         SET lease_expires_at = '2099-01-01 00:00:00'
+       WHERE user_id = 12 AND tenant_id = 12 AND idempotency_key = ?
+    `).run(sqliteKey);
+    expect(getTrainingPlanGenerationAttemptStatus(12, 12, sqliteKey)).toMatchObject({
+      state: 'in_progress',
+      recovery: 'retry_same_attempt',
+    });
+  });
+
+  it('requires durable no-creation proof for unfenced failed rows', () => {
+    const knownKey = 'ios:create:legacy-known-no-creation';
+    const unknownKey = 'ios:create:legacy-unknown-failure';
+    const known = ownedClaim(claimTrainingPlanGenerationIdempotency(12, 12, knownKey, 'hash-known'));
+    const unknown = ownedClaim(claimTrainingPlanGenerationIdempotency(12, 12, unknownKey, 'hash-unknown'));
+    failTrainingPlanGenerationIdempotency(12, 12, known, 'TRAINING_PLAN_NEEDS_PROFILE');
+    failTrainingPlanGenerationIdempotency(12, 12, unknown, 'UNCLASSIFIED_LEGACY_FAILURE');
+    realDb.prepare(`
+      UPDATE training_plan_generation_idempotency_scoped
+         SET lease_owner = NULL, fencing_token = NULL
+       WHERE idempotency_key IN (?, ?)
+    `).run(knownKey, unknownKey);
+
+    expect(getTrainingPlanGenerationAttemptStatus(12, 12, knownKey)).toMatchObject({
+      state: 'known_no_creation',
+      recovery: 'start_new_allowed',
+      canStartNew: true,
+    });
+    expect(getTrainingPlanGenerationAttemptStatus(12, 12, unknownKey)).toMatchObject({
+      state: 'unknown',
+      recovery: 'check_status_again',
+      canStartNew: false,
+    });
+  });
+
+  it('accepts string and snake-case plan ids only with a complete scoped graph', () => {
+    const key = 'ios:create:string-plan-id';
+    const claim = ownedClaim(claimTrainingPlanGenerationIdempotency(12, 34, key, 'hash-string-id'));
+    completeTrainingPlanGenerationIdempotency(
+      12, 34, claim, { status: 'created', plan_id: '721' }, 201,
+    );
+    seedActivePlanGraph({ planId: 721, userId: 12, tenantId: 34 });
+
+    expect(getTrainingPlanGenerationAttemptStatus(12, 34, key)).toMatchObject({
+      state: 'created',
+      recovery: 'use_created_plan',
+      planId: 721,
+    });
+  });
+
+  it('rejects replay shapes that do not prove a completed created plan', () => {
+    const key = 'ios:create:replay-shape-guard';
+    const claim = ownedClaim(claimTrainingPlanGenerationIdempotency(12, 34, key, 'hash-shape'));
+    completeTrainingPlanGenerationIdempotency(12, 34, claim, { planId: 731 }, 201);
+    seedActivePlanGraph({ planId: 731, userId: 12, tenantId: 34 });
+
+    const assertUnknown = (responseJson: string): void => {
+      realDb.prepare(`
+        UPDATE training_plan_generation_idempotency_scoped
+           SET response_json = ?
+         WHERE user_id = 12 AND tenant_id = 34 AND idempotency_key = ?
+      `).run(responseJson, key);
+      expect(getTrainingPlanGenerationAttemptStatus(12, 34, key)).toMatchObject({
+        state: 'unknown',
+        recovery: 'check_status_again',
+        canStartNew: false,
+      });
+    };
+
+    assertUnknown('null');
+    assertUnknown('[]');
+    assertUnknown('{"status":"pending","planId":731}');
+    assertUnknown('{"status":"created","planId":""}');
+    assertUnknown('{"status":"created","planId":"not-a-number"}');
+    assertUnknown('{"status":"created","planId":"-7"}');
+    assertUnknown('{"status":"created","planId":0}');
+  });
+
+  it('requires an eligible lifecycle, week, and session in the replay graph', () => {
+    const key = 'ios:create:graph-completeness';
+    const claim = ownedClaim(claimTrainingPlanGenerationIdempotency(12, 34, key, 'hash-graph'));
+    completeTrainingPlanGenerationIdempotency(12, 34, claim, { planId: 741 }, 201);
+    realDb.prepare(`
+      INSERT INTO fitness_training_plans (id, user_id, tenant_id, status)
+      VALUES (741, 12, 34, '')
+    `).run();
+
+    expect(getTrainingPlanGenerationAttemptStatus(12, 34, key)).toMatchObject({ state: 'unknown' });
+
+    realDb.prepare("UPDATE fitness_training_plans SET status = 'active' WHERE id = 741").run();
+    expect(getTrainingPlanGenerationAttemptStatus(12, 34, key)).toMatchObject({ state: 'unknown' });
+
+    realDb.prepare('INSERT INTO training_weeks (id, plan_id, week_number) VALUES (1741, 741, 1)').run();
+    expect(getTrainingPlanGenerationAttemptStatus(12, 34, key)).toMatchObject({ state: 'unknown' });
+
+    realDb.prepare(`
+      INSERT INTO training_sessions (id, week_id, plan_id, day_of_week)
+      VALUES (2741, 1741, 741, 'Monday')
+    `).run();
+    expect(getTrainingPlanGenerationAttemptStatus(12, 34, key)).toMatchObject({
+      state: 'created',
+      planId: 741,
+    });
+  });
 });

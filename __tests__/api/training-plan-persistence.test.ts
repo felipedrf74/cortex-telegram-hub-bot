@@ -11,6 +11,7 @@ const mockCreateSession = vi.fn();
 const mockLinkSessionToCalendar = vi.fn();
 const mockUpdateSession = vi.fn();
 const mockUpdatePlanPreferences = vi.fn();
+const mockActivateCompatibilityPlanReplacement = vi.fn();
 const mockCreateEvent = vi.fn();
 const mockDeleteEvent = vi.fn();
 const mockLoggerWarn = vi.fn();
@@ -54,6 +55,8 @@ vi.mock('../../src/services/training-plans', async () => {
     linkSessionToCalendar: (...args: unknown[]) => mockLinkSessionToCalendar(...args),
     updateSession: (...args: unknown[]) => mockUpdateSession(...args),
     updatePlanPreferences: (...args: unknown[]) => mockUpdatePlanPreferences(...args),
+    activateCompatibilityPlanReplacement: (...args: unknown[]) =>
+      mockActivateCompatibilityPlanReplacement(...args),
   };
 });
 
@@ -125,6 +128,7 @@ import {
   lintGeneratedTrainingPlanPreflight,
   persistGeneratedTrainingPlan,
 } from '../../src/api/routes/training-plan-persistence';
+import { claimTrainingPlanGenerationIdempotency } from '../../src/services/training-plan-generation-idempotency';
 import { _resetTrainingOperationLocksForTests } from '../../src/services/training-operation-locks';
 
 async function waitForMockCallCount(mock: { mock: { calls: unknown[] } }, count: number) {
@@ -162,6 +166,7 @@ describe('training-plan-persistence', () => {
     mockLinkSessionToCalendar.mockReset();
     mockUpdateSession.mockReset();
     mockUpdatePlanPreferences.mockReset();
+    mockActivateCompatibilityPlanReplacement.mockReset();
     mockCreateEvent.mockReset();
     mockDeleteEvent.mockReset();
     mockLoggerWarn.mockReset();
@@ -180,6 +185,10 @@ describe('training-plan-persistence', () => {
     let sessionId = 2000;
     mockCreateSession.mockImplementation(() => ({ id: ++sessionId }));
     mockUpdatePlanPreferences.mockReturnValue(true);
+    mockActivateCompatibilityPlanReplacement.mockReturnValue({
+      planId: 901,
+      supersededPlanIds: [],
+    });
     mockCreateEvent.mockResolvedValue({ id: 'evt-1', source: 'google' });
     mockDeleteEvent.mockResolvedValue(undefined);
     // Slice 4.D defaults: fresh plan_version=1, no prior ownership rows,
@@ -377,6 +386,73 @@ describe('training-plan-persistence', () => {
     expect(transactionTestDb.prepare(
       "SELECT COUNT(*) AS count FROM event_outbox WHERE event_type = 'training.plan_calendar_sync.requested.v1'",
     ).get()).toEqual({ count: 1 });
+  });
+
+  it('persists an empty generated plan with the timezone stored in preferences', async () => {
+    mockCreatePlan.mockReturnValueOnce({ id: 903 });
+    const result = await persistGeneratedTrainingPlan({
+      userId: 12,
+      tenantId: 12,
+      objective: 'Profile-only recovery draft',
+      durationWeeks: 1,
+      startDate: '2026-04-19',
+      endDate: '2026-04-26',
+      now: new Date('2026-04-19T00:00:00.000Z'),
+      preferencesJson: '{"schedulingTimezone":"America/New_York"}',
+      normalizedPreferredTime: '12:00',
+      normalizedPreferredCardioTime: '07:00',
+      normalizedPreferredStrengthTime: '12:30',
+      busyWindows: [],
+      planData: {},
+    });
+
+    expect(result).toMatchObject({
+      planId: 903,
+      totalSessions: 0,
+      syncableSessions: 0,
+      calendarSyncQueued: false,
+      weekSummaries: [],
+    });
+    expect(mockCreateWeek).not.toHaveBeenCalled();
+    expect(mockCreateSession).not.toHaveBeenCalled();
+  });
+
+  it('fences compatibility activation with a generation lease and an empty expected-plan set', async () => {
+    mockCreatePlan.mockReturnValueOnce({ id: 904 });
+    const generationIdempotencyLease = claimTrainingPlanGenerationIdempotency(
+      12,
+      12,
+      'manual:persistence-activation-fence',
+      'activation-request-hash',
+    );
+    expect(generationIdempotencyLease.kind).toBe('claimed');
+    if (generationIdempotencyLease.kind !== 'claimed') return;
+
+    const result = await persistGeneratedTrainingPlan({
+      userId: 12,
+      tenantId: 12,
+      objective: 'Atomic replacement draft',
+      durationWeeks: 1,
+      startDate: '2026-04-19',
+      endDate: '2026-04-26',
+      now: new Date('2026-04-19T00:00:00.000Z'),
+      preferencesJson: '{}',
+      normalizedPreferredTime: '12:00',
+      normalizedPreferredCardioTime: '07:00',
+      normalizedPreferredStrengthTime: '12:30',
+      busyWindows: [],
+      replaceExistingActivePlan: true,
+      generationIdempotencyLease,
+      planData: {},
+    });
+
+    expect(result.planId).toBe(904);
+    expect(mockActivateCompatibilityPlanReplacement).toHaveBeenCalledWith({
+      planId: 904,
+      userId: 12,
+      tenantId: 12,
+      expectedActivePlanIds: [],
+    });
   });
 
   it('persists generated weeks and sessions, schedules events, and links created calendar events', async () => {

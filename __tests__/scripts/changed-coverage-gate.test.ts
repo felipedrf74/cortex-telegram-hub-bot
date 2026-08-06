@@ -4,6 +4,7 @@ import {
   aggregateCoverage,
   analyzeExistingCoverage,
   changedExecutableCoverage,
+  formatCoverageGateSummary,
   parseAddedLines,
   resolveExactCommit,
   thresholdFailures,
@@ -11,6 +12,23 @@ import {
 } from '../../scripts/changed-coverage-gate.mjs';
 
 describe('changed-module coverage gate', () => {
+  it('prints a concise actionable summary while the full result stays in the artifact', () => {
+    const summary = formatCoverageGateSummary({
+      verdict: 'FAIL',
+      selectedTestCount: 1_084,
+      changedCoverage: { branches: { covered: 4_274, total: 5_477, pct: 78.04 } },
+      criticalCoverage: { branches: { covered: 287, total: 412, pct: 69.66 } },
+      failures: ['critical changed modules branches 69.66% is below 85%'],
+    }, '.local/coverage/selected/changed-lines.json');
+
+    expect(summary).toContain('Changed coverage gate: FAIL');
+    expect(summary).toContain('selectedTests=1084');
+    expect(summary).toContain('criticalBranches=287/412 (69.66%)');
+    expect(summary).toContain('critical changed modules branches 69.66% is below 85%');
+    expect(summary).toContain('evidence=.local/coverage/selected/changed-lines.json');
+    expect(summary).not.toContain('changedCoverageByFile');
+  });
+
   it('analyzes the existing selected-test report without a second test invocation', () => {
     const source = fs.readFileSync('scripts/changed-coverage-gate.mjs', 'utf8');
     expect(source).not.toContain('node_modules/vitest');
