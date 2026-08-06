@@ -2,7 +2,10 @@
 
 import type { ScreenContractMeta } from './screen-contract-meta';
 import { buildScreenContractMeta } from './screen-contract-meta';
-import { sanitizeTrainingUserFacingPayload } from './training-copy-sanitizer';
+import {
+  sanitizeTrainingUserFacingPayload,
+  stripTrainingHtmlLikeMarkup,
+} from './training-copy-sanitizer';
 import type { Lang } from '../utils/i18n';
 
 export type TrainingDayStateKind =
@@ -1618,8 +1621,7 @@ function degradedHighlight(language: Lang): string {
 }
 
 function normalizeCoachReviewText(text: string): string {
-  return trimmed(text)
-    .replace(/<[^>]+>/g, '')
+  return stripTrainingHtmlLikeMarkup(trimmed(text))
     .replace(/\s{2,}/g, ' ');
 }
 

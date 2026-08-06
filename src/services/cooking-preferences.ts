@@ -245,12 +245,17 @@ function normalizeCookingPreferenceValue(kind: CookingPreferenceKind, value: str
 }
 
 function slugifyPreferenceValue(value: string): string {
-  const slug = value
+  let slug = value
     .trim()
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 80);
+    .replace(/[^a-z0-9]+/g, '-');
+  // Avoid an anchored alternation with a trailing quantified branch: CodeQL
+  // correctly treats that form as polynomial on attacker-controlled input.
+  // The replacement above collapses each invalid run to one dash, so two
+  // constant-time boundary checks preserve the existing slug contract.
+  if (slug.startsWith('-')) slug = slug.slice(1);
+  if (slug.endsWith('-')) slug = slug.slice(0, -1);
+  slug = slug.slice(0, 80);
   if (!slug) throw new Error('COOKING_PREFERENCE_INVALID: preference value is not keyable');
   return slug;
 }

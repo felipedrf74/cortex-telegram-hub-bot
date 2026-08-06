@@ -1545,13 +1545,13 @@ function appendOperationTable(lines: string[], operations: SmokeOperationResult[
       operation.expected,
       operation.actual,
       operation.status,
-      operation.evidence.map((item) => escapeMarkdownCell(oneLine(item))).join('<br>') || '-',
+      operation.evidence.map((item) => oneLine(item)).join('<br>') || '-',
     ].map(escapeMarkdownCell).join(' | ').replace(/^/, '| ').replace(/$/, ' |'));
   }
 }
 
 function escapeMarkdownCell(value: string): string {
-  return String(value).replace(/\|/g, '\\|').replace(/\n/g, '<br>');
+  return String(value).replace(/\\/g, '\\\\').replace(/\|/g, '\\|').replace(/\r\n?|\n/g, '<br>');
 }
 
 async function main(): Promise<void> {

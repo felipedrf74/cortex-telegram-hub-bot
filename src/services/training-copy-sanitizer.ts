@@ -50,6 +50,10 @@ const UNSAFE_COPY_PATTERNS: RegExp[] = [
 
 const SNAKE_ENUM_TOKEN = /\b[a-z][a-z0-9]+(?:_[a-z0-9]+){1,}\b/g;
 
+const TRAINING_THRESHOLD_TOKENS = new Set([
+  'ATL', 'CP', 'CSS', 'CTL', 'FTP', 'HRMAX', 'LTHR', 'MAP', 'MAS', 'MLSS', 'RPE', 'TSS', 'WPRIME',
+]);
+
 export interface TrainingCopySanitizerOptions {
   fallback?: string;
 }
@@ -60,7 +64,7 @@ export function sanitizeTrainingDisplayCopy(
 ): string {
   const fallback = options.fallback ?? 'Training update';
   const trimmed = typeof value === 'string'
-    ? value.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim()
+    ? stripTrainingHtmlLikeMarkup(value).replace(/\s+/g, ' ').trim()
     : '';
   if (!trimmed) return fallback;
   if (UNSAFE_COPY_PATTERNS.some((pattern) => pattern.test(trimmed))) return fallback;
@@ -70,6 +74,78 @@ export function sanitizeTrainingDisplayCopy(
 export function sanitizeTrainingDisplayCopyOrNull(value: string | null | undefined): string | null {
   if (value == null) return null;
   return sanitizeTrainingDisplayCopy(value);
+}
+
+/**
+ * Remove HTML-like spans without treating compact Training thresholds as
+ * markup. The character scanner cannot reveal a new tag through deletion,
+ * while the token exception preserves copy such as "<LT1" and paired
+ * comparisons such as "<LT1 ... > 85 rpm".
+ */
+export function stripTrainingHtmlLikeMarkup(text: string): string {
+  let output = '';
+  let insideMarkup = false;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (!insideMarkup && character === '<' && startsTrainingHtmlLikeMarkup(text, index)) {
+      insideMarkup = true;
+      continue;
+    }
+    if (insideMarkup) {
+      if (character === '>') {
+        insideMarkup = false;
+        output += ' ';
+      }
+      continue;
+    }
+    output += character;
+  }
+
+  return output.trim();
+}
+
+function startsTrainingHtmlLikeMarkup(text: string, openingIndex: number): boolean {
+  const firstCharacter = text[openingIndex + 1];
+  if (!firstCharacter) return false;
+  if (firstCharacter === '/' || firstCharacter === '!' || firstCharacter === '?' || firstCharacter === '<') {
+    return true;
+  }
+  if (!isAsciiLetter(firstCharacter)) return false;
+
+  let cursor = openingIndex + 1;
+  while (cursor < text.length && isHtmlTagNameCharacter(text[cursor])) cursor += 1;
+  const token = text.slice(openingIndex + 1, cursor);
+  const closingIndex = text.indexOf('>', cursor);
+  const remainder = text.slice(cursor, closingIndex >= 0 ? closingIndex : text.length);
+  if (isTrainingThresholdToken(token) && !hasHtmlAttributeSyntax(remainder)) return false;
+  return true;
+}
+
+function isTrainingThresholdToken(token: string): boolean {
+  const upper = token.toUpperCase();
+  return TRAINING_THRESHOLD_TOKENS.has(upper)
+    || /^(?:LT|VT|Z|RPE)\d+$/.test(upper)
+    || /^VO2(?:MAX)?$/.test(upper);
+}
+
+function hasHtmlAttributeSyntax(value: string): boolean {
+  return value.includes('=')
+    || value.includes('"')
+    || value.includes("'")
+    || value.includes('`')
+    || value.includes('/');
+}
+
+function isHtmlTagNameCharacter(character: string | undefined): boolean {
+  if (!character) return false;
+  const code = character.charCodeAt(0);
+  return isAsciiLetter(character) || (code >= 48 && code <= 57) || character === '-';
+}
+
+function isAsciiLetter(character: string): boolean {
+  const code = character.charCodeAt(0);
+  return (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
 }
 
 export function containsUnsafeTrainingDisplayCopy(value: string | null | undefined): boolean {

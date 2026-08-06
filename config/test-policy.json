@@ -645,7 +645,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/training-home-view-state.ts:388-388",
+            "pattern": "src/services/training-home-view-state.ts:391-391",
             "anchor": "if (hasConflictingSchedule(input.weekSessions, input.todaySession)) return 'conflictingSchedule';",
             "behavior": "Training Home derives real schedule conflicts from overlapping canonical sessions rather than producer-less calendar signal flags.",
             "replacementTest": "__tests__/services/training-home-view-state.test.ts",

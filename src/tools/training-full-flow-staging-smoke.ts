@@ -1003,13 +1003,14 @@ export function renderTrainingFullFlowSmokeReportMarkdown(report: SmokeReport): 
   lines.push('| Operation | Expected | Actual | Status | Evidence |');
   lines.push('| --- | --- | --- | --- | --- |');
   for (const operation of report.operations) {
-    lines.push([
+    const cells = [
       operation.operation,
       operation.expected,
       operation.actual,
       operation.status,
-      operation.evidence.map((item) => `\`${item}\``).join('<br>') || '-',
-    ].map(escapeMarkdownCell).join(' | ').replace(/^/, '| ').replace(/$/, ' |'));
+    ].map(escapeMarkdownCell);
+    cells.push(operation.evidence.map(formatMarkdownTableCodeSpan).join('<br>') || '-');
+    lines.push(cells.join(' | ').replace(/^/, '| ').replace(/$/, ' |'));
   }
   lines.push('');
   lines.push('## Cleanup Failures');
@@ -1017,7 +1018,7 @@ export function renderTrainingFullFlowSmokeReportMarkdown(report: SmokeReport): 
   if (report.cleanupFailures.length === 0) {
     lines.push('None.');
   } else {
-    for (const failure of report.cleanupFailures) lines.push(`- ${failure}`);
+    for (const failure of report.cleanupFailures) lines.push(`- ${escapeMarkdownCell(failure)}`);
   }
   lines.push('');
   lines.push('## Interpretation');
@@ -1034,7 +1035,26 @@ export function renderTrainingFullFlowSmokeReportMarkdown(report: SmokeReport): 
 }
 
 function escapeMarkdownCell(value: string): string {
-  return String(value).replace(/\|/g, '\\|').replace(/\n/g, '<br>');
+  return String(value).replace(/\\/g, '\\\\').replace(/\|/g, '\\|').replace(/\r\n?|\n/g, '<br>');
+}
+
+function formatMarkdownTableCodeSpan(value: string): string {
+  const normalized = String(value).replace(/\r\n?|\n/g, ' ');
+  let content = '';
+  // GFM consumes one immediately preceding backslash to protect a table pipe,
+  // including inside code spans. Preserve every input backslash literally and
+  // add only the structural backslash required for each pipe delimiter.
+  for (const character of normalized) content += character === '|' ? '\\|' : character;
+  const longestBacktickRun = Math.max(
+    0,
+    ...Array.from(content.matchAll(/`+/g), (match) => match[0].length),
+  );
+  const fence = '`'.repeat(longestBacktickRun + 1);
+  const needsPadding = content.startsWith('`')
+    || content.endsWith('`')
+    || (content.startsWith(' ') && content.endsWith(' ') && /[^ ]/.test(content));
+  const padding = needsPadding ? ' ' : '';
+  return `${fence}${padding}${content}${padding}${fence}`;
 }
 
 function loadRuntimeDeps(): RuntimeDeps {

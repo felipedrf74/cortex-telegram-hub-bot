@@ -409,7 +409,7 @@ function toProviderInput(item: SecretaryAgendaItem): SecretaryProviderEventInput
   };
 }
 
-function writeReport(report: SmokeReport, resultsPath: string): void {
+export function renderSecretaryCalendarStagingSmokeReportMarkdown(report: SmokeReport): string {
   const lines: string[] = [];
   const passCount = report.operations.filter((operation) => operation.status === 'pass').length;
   const failCount = report.operations.filter((operation) => operation.status === 'fail' || operation.status === 'cleanup_failed').length;
@@ -474,12 +474,16 @@ function writeReport(report: SmokeReport, resultsPath: string): void {
   lines.push('- Test events are clearly titled with `[NEXUS SECRETARY STAGING]` and the run ID.');
   lines.push('');
 
+  return `${lines.join('\n')}\n`;
+}
+
+function writeReport(report: SmokeReport, resultsPath: string): void {
   fs.mkdirSync(path.dirname(resultsPath), { recursive: true });
-  fs.writeFileSync(resultsPath, `${lines.join('\n')}\n`);
+  fs.writeFileSync(resultsPath, renderSecretaryCalendarStagingSmokeReportMarkdown(report));
 }
 
 function escapeMd(value: string): string {
-  return value.replace(/\|/g, '\\|').replace(/\n/g, '<br>');
+  return value.replace(/\\/g, '\\\\').replace(/\|/g, '\\|').replace(/\r\n?|\n/g, '<br>');
 }
 
 if (require.main === module) {
