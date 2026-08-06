@@ -5,34 +5,35 @@ Machine-readable truth: `docs/release/release-state.json`.
 ## Production
 
 - Backend version: `4.14.232`
-- Runtime commit: `39965e357d19a1a44ecb167d213c6ffcf361a21b`
-- Artifact digest: `e368f1e15c3b2a84cfb798ad12621932a61fd766db6161259a7bd364cbac1535`
-- Installed-tree digest: `3944f37f16dd1a526a53bee80758b4519298e260c6f6596d88dfad6a6dda55ae`
+- Runtime commit: `3ac5ebbe4709a1e568ee9838c70ae3984e857de6`
+- Artifact digest: `769f0f46e22d98c3ab5b4397555000434ffb3b56bbbb677dfae721a8167c8467`
+- Installed-tree digest: `00d8c5d9f779a5b0c8bf025239f188848c2227adb1512d20cda62bc148a80ee6`
 - Training catalog package: `51c1089cceb8a916abf200b5cb3688b19f5f7553990467ee0f8ef01c7c4f74bb`
 - Training release subject: `27b97ebc96e1b3bb1ee3612e63c5609b5572c9d4b58e59b8ea3e77642fb1cea3`
-- Transaction `20260805T151603Z-c9c4a522c858` completed at `2026-08-05T15:17:19.308Z` in 74.930s: readiness 13.162s, soak 61.768s.
+- Transaction `20260805T214413Z-61d0c9b8e521` completed at
+  `2026-08-05T21:45:28.188Z` in 74.134s: readiness 12.456s, soak 61.676s.
 - Backend/content health, exact PM2 identity, artifact parity, authenticated
   smoke, migration startup, database integrity, backup, and rollback passed.
-- Rollback was armed but not required; backup: `nexus-db-20260805T151612Z.sqlite.age`.
+- Rollback was armed but not required; backup: `nexus-db-20260805T214421Z.sqlite.age`.
 
 ## Artifact-Bound Evidence
 
-- Protected-main/checkpoint runs: `31008609619` / `31008781829`
-- Compact manifest SHA-256: `9da0ffac67330206c1e5c6d5a86ba3635e8e18ca6bee833a0ee4d638eafaef5d`
-- Staging/production transactions: `20260805T132230Z-bdd0efe2ae69` /
-  `20260805T151603Z-c9c4a522c858`
-- Encrypted backup SHA-256: `5f35d7369fd78c6b5db86c215b95acbe770ae69d792d3ab54c317da67eab0ee0`
+- Protected-main/checkpoint runs: `31047443271` / `31048263279`
+- Compact manifest SHA-256: `d3dba958fe9b690296bd72e7e359b7a119d0b6e952e7ada4fbed6dbec09017f8`
+- Staging/production transactions: `20260805T214301Z-16818898b3f6` /
+  `20260805T214413Z-61d0c9b8e521`
+- Encrypted backup SHA-256: `83911e31b212a4f36524a9e983484d033be9717cf35daf6091c67710ab2f4e6b`
 - The latest required fault drill remains `20260802T133139Z-1d33c71562f6`; it
   restored the predecessor in 2.696s against 120s. The current staging
   transaction then passed its normal 15s soak.
 - `./scripts/staging-smoke.sh` passed 24/24 checks. Exact-SHA `local_engine`
-  evaluation `chat-eval-2026-08-05T13-11-14-385Z` passed 7/7 scenarios at $0 actual cost.
+  evaluation `chat-eval-2026-08-05T21-29-17-164Z` passed 7/7 scenarios at $0 actual cost.
 - Evidence remains in ignored `.local/release/`, server state, and restricted CI
   artifacts; this summary is not reusable promotion evidence.
 
 ## Lean-Release Measurement
 
-- Current sample: main 13m41s, handoff 21s, checkpoint 4m21s, automated
+- Final measurement sample: main 13m41s, handoff 21s, checkpoint 4m21s, automated
   readiness 18m23s; all passed.
 - Selected/remainder/union: `6,897/10,136/17,033` tests and
   `447/693/1,140` files; partitions were disjoint and complete.
@@ -57,19 +58,20 @@ Machine-readable truth: `docs/release/release-state.json`.
 - Phase 6: 0/9 routes pass, two are insufficient and seven blocked; no legacy
   stage was disabled. Report SHA-256: `f8a00055927cb7596e1f470e619bc8ae5000689264da8c8324a3432eb7f9f842`.
 - Phase 7 reached a genuine 200/200 (100%) classifier agreement gate on the
-  current release. The staging classifier enable passed, but its observation
+  predecessor release. The staging classifier enable passed, but its observation
   failed before receipt publication because missing retirement evidence was
   incorrectly paged as a regression. The classifier rollback passed and all
   seven capability flags are OFF.
-- The failed observation plan and canonical smoke remain immutable. The
-  protected-main, hash-bound `failure_acknowledged` recovery must publish
-  before another release; it does not turn the failed attempt into a pass.
-- The dedicated staging recorder remains ON at USER/TENANT scope and must be
-  returned OFF through the exact installed-predecessor rollback operator after
-  the observation recovery and before release preparation.
-- HMAC prerequisites pass in both roles. All seven flags are configured and
-  effective OFF; master kill is available and OFF. No later capability flag
-  has started.
+- The failed observation plan and canonical smoke remain immutable. Its
+  protected-main, hash-bound `failure_acknowledged` recovery published without
+  converting the failure into a pass; classifier rollback and the predecessor
+  recorder disable both passed.
+- Routing-gate evidence does not transfer releases. The current `3ac5ebbe`
+  release has no gate yet; HMAC presence was re-attested in both roles and the
+  dedicated staging recorder is ON only at USER/TENANT scope while fresh,
+  genuine staging traffic is collected.
+- All seven capability flags are configured and effective OFF; master kill is
+  available and OFF. No later capability flag has started.
 
 ## iOS / TestFlight
 

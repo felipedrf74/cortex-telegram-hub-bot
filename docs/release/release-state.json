@@ -1,12 +1,12 @@
 {
   "schema": "nexus.release-state.v1",
-  "lastVerifiedAt": "2026-08-05T20:35:31Z",
-  "docsHead": "37c67a192df6a3b4c506b60012922705a3ed454e",
+  "lastVerifiedAt": "2026-08-05T21:52:44Z",
+  "docsHead": "pending_content_commit",
   "backend": {
     "version": "4.14.232",
-    "runtimeSha": "39965e357d19a1a44ecb167d213c6ffcf361a21b",
-    "artifactDigest": "e368f1e15c3b2a84cfb798ad12621932a61fd766db6161259a7bd364cbac1535",
-    "installedDigest": "3944f37f16dd1a526a53bee80758b4519298e260c6f6596d88dfad6a6dda55ae",
+    "runtimeSha": "3ac5ebbe4709a1e568ee9838c70ae3984e857de6",
+    "artifactDigest": "769f0f46e22d98c3ab5b4397555000434ffb3b56bbbb677dfae721a8167c8467",
+    "installedDigest": "00d8c5d9f779a5b0c8bf025239f188848c2227adb1512d20cda62bc148a80ee6",
     "health": "healthy",
     "database": "connected",
     "pm2Processes": [
@@ -14,17 +14,17 @@
       "content-engine"
     ],
     "releaseEvidence": {
-      "protectedMainRun": "31008609619",
-      "releaseCheckpointRun": "31008781829",
-      "manifestSha256": "9da0ffac67330206c1e5c6d5a86ba3635e8e18ca6bee833a0ee4d638eafaef5d",
-      "stagingTransaction": "20260805T132230Z-bdd0efe2ae69",
-      "productionTransaction": "20260805T151603Z-c9c4a522c858",
-      "productionCompletedAt": "2026-08-05T15:17:19.308Z",
-      "transactionSeconds": 74.93,
-      "readinessSeconds": 13.162,
-      "soakSeconds": 61.768,
-      "backup": "nexus-db-20260805T151612Z.sqlite.age",
-      "backupEncryptedSha256": "5f35d7369fd78c6b5db86c215b95acbe770ae69d792d3ab54c317da67eab0ee0",
+      "protectedMainRun": "31047443271",
+      "releaseCheckpointRun": "31048263279",
+      "manifestSha256": "d3dba958fe9b690296bd72e7e359b7a119d0b6e952e7ada4fbed6dbec09017f8",
+      "stagingTransaction": "20260805T214301Z-16818898b3f6",
+      "productionTransaction": "20260805T214413Z-61d0c9b8e521",
+      "productionCompletedAt": "2026-08-05T21:45:28.188Z",
+      "transactionSeconds": 74.134,
+      "readinessSeconds": 12.456,
+      "soakSeconds": 61.676,
+      "backup": "nexus-db-20260805T214421Z.sqlite.age",
+      "backupEncryptedSha256": "83911e31b212a4f36524a9e983484d033be9717cf35daf6091c67710ab2f4e6b",
       "stagingRollbackDrill": {
         "transaction": "20260802T133139Z-1d33c71562f6",
         "result": "restored",
@@ -36,10 +36,10 @@
         "verdict": "passed",
         "passed": 24,
         "failed": 0,
-        "evidence": "staging-smoke-39965e357d19a1a44ecb167d213c6ffcf361a21b-20260805T132326Z.json"
+        "evidence": "staging-smoke-3ac5ebbe4709a1e568ee9838c70ae3984e857de6-20260805T214353Z.json"
       },
       "chatEval": {
-        "runId": "chat-eval-2026-08-05T13-11-14-385Z",
+        "runId": "chat-eval-2026-08-05T21-29-17-164Z",
         "engine": "local_engine",
         "scenarios": 7,
         "passed": 7,
@@ -57,10 +57,10 @@
     "activationState": "active"
   },
   "chatQualityRollout": {
-    "status": "production_released_phase7_observation_recovery_pending",
+    "status": "production_released_phase7_waiting_genuine_staging_traffic",
     "releaseIdentity": {
-      "runtimeSha": "39965e357d19a1a44ecb167d213c6ffcf361a21b",
-      "artifactDigest": "e368f1e15c3b2a84cfb798ad12621932a61fd766db6161259a7bd364cbac1535"
+      "runtimeSha": "3ac5ebbe4709a1e568ee9838c70ae3984e857de6",
+      "artifactDigest": "769f0f46e22d98c3ab5b4397555000434ffb3b56bbbb677dfae721a8167c8467"
     },
     "phase4GoldenCorpus": {
       "status": "complete",
@@ -122,28 +122,30 @@
       "reportSha256": "f8a00055927cb7596e1f470e619bc8ae5000689264da8c8324a3432eb7f9f842"
     },
     "phase7Capabilities": {
-      "status": "classifier_observation_failed_rolled_back_recovery_pending",
+      "status": "blocked_genuine_staging_traffic",
       "requiredComparisonsPerSurface": 200,
       "minimumAgreementRate": 0.99,
       "firstSurface": "classifierKeyword",
       "firstFlag": "AI_ROUTING_MANIFEST_CLASSIFIER",
       "stagingHmacPrerequisites": {
         "status": "passed_presence_only",
-        "transaction": "20260802T091910Z-bbe00989217b"
+        "transaction": "20260805T215145Z-a42c42e5c80d"
       },
       "productionHmacPrerequisites": {
         "status": "passed_presence_only",
-        "transaction": "20260802T093937Z-9f75e274b286"
+        "transaction": "20260805T215206Z-115aa65f4316"
       },
       "observabilityPrerequisite": {
         "flag": "CHAT_CORE_V2_SHADOW_ROUTE_HOOK_ENABLED",
         "status": "dedicated_recorder_enabled_pending_operator_rollback",
-        "lastTransition": "20260805T153931Z-83e1478ec181",
+        "lastTransition": "20260805T215233Z-69f62e721ab4",
         "global": "absent",
         "userScopeEnabled": 1,
         "tenantScopeEnabled": 1
       },
-      "firstGateEvidence": {
+      "previousReleaseGateEvidence": {
+        "runtimeSha": "39965e357d19a1a44ecb167d213c6ffcf361a21b",
+        "artifactDigest": "e368f1e15c3b2a84cfb798ad12621932a61fd766db6161259a7bd364cbac1535",
         "sinceInclusive": "2026-08-05T16:25:42.815Z",
         "untilInclusive": "2026-08-05T16:25:44.351Z",
         "shadowBundles": 200,
@@ -156,12 +158,20 @@
       },
       "firstObservationAttempt": {
         "transaction": "20260805T163302Z-2522779e6416",
+        "runtimeSha": "39965e357d19a1a44ecb167d213c6ffcf361a21b",
+        "artifactDigest": "e368f1e15c3b2a84cfb798ad12621932a61fd766db6161259a7bd364cbac1535",
         "status": "failed_before_receipt",
         "planDigest": "sha256:3a3076c133922d08b941d1853f12c82c7408e7265001dd433b51548c2a4c6130",
         "smokePreserved": true,
         "classifierRollbackTransaction": "20260805T164117Z-915145e25b19",
         "classifierRollbackStatus": "passed",
-        "recoveryStatus": "pending_owner_acknowledgement"
+        "recoveryStatus": "failure_acknowledged",
+        "recoveryCompletedAt": "2026-08-05T21:41:18.188Z",
+        "recoveryPlanDigest": "sha256:78e71c41c27efbd50d6f6775db2a5f846b57c081fe33cc90ad955888afd90c3c",
+        "recoveryReceiptSha256": "f17575f070177a2699e332cba84c9d599165cbe32f485f3251d02f2ba69aca75",
+        "recorderRollbackTransaction": "20260805T214128Z-d4759bb2937b",
+        "recorderRollbackStatus": "passed",
+        "recorderRollbackReceiptSha256": "39ba52078aa598b93cd446cf3026591a70a34d092d3b4c33b196e0e940deab19"
       },
       "roleAttestations": {
         "staging": {
@@ -255,8 +265,8 @@
     "targetManifestSchema": "nexus.release-checksum-manifest.v1",
     "leanActivation": "active_first_staging_and_production_proof_passed",
     "exactArtifactPath": "proven",
-    "stagingRehearsals": 21,
-    "ownerAuthorizedProductionReleases": 17,
+    "stagingRehearsals": 22,
+    "ownerAuthorizedProductionReleases": 18,
     "legacyWrappers": "retired",
     "firstProofRelease": {
       "version": "4.14.231",
