@@ -84,7 +84,10 @@ vi.mock('../../src/services/database', () => ({
   withDatabaseForTestAsync: vi.fn(),
 }));
 
-vi.mock('../../src/portal/telemetry', () => ({
+vi.mock('../../src/portal/telemetry', async () => ({
+  ...(await vi.importActual<typeof import('../../src/portal/telemetry')>(
+    '../../src/portal/telemetry'
+  )),
   pushEvent: vi.fn(),
   _resetTelemetryForTests: vi.fn(),
   getBotRef: vi.fn(),

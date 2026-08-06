@@ -100,8 +100,10 @@ vi.mock('../../src/services/database', () => ({
   withDatabaseForTestAsync: vi.fn(),
 }));
 
-vi.mock('../../src/services/training-route-deprecation-telemetry', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../src/services/training-route-deprecation-telemetry')>()),
+vi.mock('../../src/services/training-route-deprecation-telemetry', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/training-route-deprecation-telemetry')>(
+    '../../src/services/training-route-deprecation-telemetry'
+  )),
   recordTrainingSummaryDeprecationHit: (...args: unknown[]) => (
     mockRecordTrainingSummaryDeprecationHit(...args)
   ),
@@ -128,7 +130,10 @@ vi.mock('../../src/services/oauth-store', () => ({
   isConnected: (...args: unknown[]) => mockIsConnected(...args),
 }));
 
-vi.mock('../../src/services/secretary-live-calendar-busy', () => ({
+vi.mock('../../src/services/secretary-live-calendar-busy', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/secretary-live-calendar-busy')>(
+    '../../src/services/secretary-live-calendar-busy'
+  )),
   loadLiveCalendarBusyWindowsForSecretaryIntent: (...args: unknown[]) => mockLoadLiveCalendarBusyWindows(...args),
 }));
 
@@ -358,8 +363,10 @@ vi.mock('../../src/services/secretary-scheduling-arbitrator', () => ({
   submitSecretarySchedulingIntent: (...args: unknown[]) => mockSubmitSecretarySchedulingIntent(...args),
 }));
 
-vi.mock('../../src/services/training-operation-locks', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../src/services/training-operation-locks')>()),
+vi.mock('../../src/services/training-operation-locks', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/training-operation-locks')>(
+    '../../src/services/training-operation-locks'
+  )),
   withTrainingCalendarOperationLock: (...args: unknown[]) => (
     mockWithTrainingCalendarOperationLock(...args)
   ),

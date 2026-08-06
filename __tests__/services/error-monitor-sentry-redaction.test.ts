@@ -42,7 +42,10 @@ vi.mock('../../src/services/operator-alerts', () => ({
   _setOperatorAlertDeliveryConfigForTests: vi.fn(),
 }));
 
-vi.mock('../../src/portal/telemetry', () => ({
+vi.mock('../../src/portal/telemetry', async () => ({
+  ...(await vi.importActual<typeof import('../../src/portal/telemetry')>(
+    '../../src/portal/telemetry'
+  )),
   pushEvent: vi.fn(),
   getRecentEvents: vi.fn(() => []),
   registerJob: vi.fn(),

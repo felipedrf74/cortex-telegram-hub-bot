@@ -5,8 +5,10 @@ import { createMigratedTestDatabase } from '../../src/testing/migrated-test-data
 
 const state = vi.hoisted(() => ({ db: null as any }));
 
-vi.mock('../../src/services/database', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../src/services/database')>()),
+vi.mock('../../src/services/database', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/database')>(
+    '../../src/services/database'
+  )),
   getDb: () => state.db,
 }));
 

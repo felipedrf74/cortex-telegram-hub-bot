@@ -3,7 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 let realDb: Database.Database;
 
-vi.mock('../../src/services/database', () => ({
+vi.mock('../../src/services/database', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/database')>(
+    '../../src/services/database'
+  )),
   getDb: () => {
     if (!realDb) throw new Error('test db not initialized');
     return realDb;
@@ -161,20 +164,23 @@ describe('Training plan generation attempt status', () => {
     });
   });
 
-  it.each(['canceled', 'superseded'])('returns a terminal created_inactive receipt for a scoped %s plan graph', (status) => {
-    const key = `ios:create:${status}-proof`;
-    const claim = ownedClaim(claimTrainingPlanGenerationIdempotency(12, 34, key, `hash-${status}`));
-    completeTrainingPlanGenerationIdempotency(12, 34, claim, { status: 'created', planId: 711 }, 201);
-    seedActivePlanGraph({ planId: 711, userId: 12, tenantId: 34 });
-    realDb.prepare('UPDATE fitness_training_plans SET status = ? WHERE id = 711').run(status);
+  it('returns a terminal created_inactive receipt for scoped canceled and superseded plan graphs', () => {
+    for (const [offset, status] of ['canceled', 'superseded'].entries()) {
+      const planId = 711 + offset;
+      const key = `ios:create:${status}-proof`;
+      const claim = ownedClaim(claimTrainingPlanGenerationIdempotency(12, 34, key, `hash-${status}`));
+      completeTrainingPlanGenerationIdempotency(12, 34, claim, { status: 'created', planId }, 201);
+      seedActivePlanGraph({ planId, userId: 12, tenantId: 34 });
+      realDb.prepare('UPDATE fitness_training_plans SET status = ? WHERE id = ?').run(status, planId);
 
-    expect(getTrainingPlanGenerationAttemptStatus(12, 34, key)).toEqual({
-      schemaVersion: 'training_plan_generation_attempt_status.v1',
-      state: 'created_inactive',
-      recovery: 'refresh_active_plan',
-      canStartNew: false,
-      planId: 711,
-    });
+      expect(getTrainingPlanGenerationAttemptStatus(12, 34, key)).toEqual({
+        schemaVersion: 'training_plan_generation_attempt_status.v1',
+        state: 'created_inactive',
+        recovery: 'refresh_active_plan',
+        canStartNew: false,
+        planId,
+      });
+    }
   });
 
   it('does not reveal another tenant attempt that uses the same key', () => {

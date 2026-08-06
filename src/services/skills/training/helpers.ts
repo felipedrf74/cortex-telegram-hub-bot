@@ -18,12 +18,16 @@ import {
   type TrainingPrescriptionModality,
 } from './intent-detectors';
 
-export const TRAINING_PLAN_REQUIRED_SLOTS = [
-  'objective',
-  'durationWeeks',
-  'sessionsPerWeek',
-  'startPolicy',
-] as const;
+export function buildTrainingPlanRequiredSlots() {
+  return [
+    'objective',
+    'durationWeeks',
+    'sessionsPerWeek',
+    'startPolicy',
+  ] as const;
+}
+
+export const TRAINING_PLAN_REQUIRED_SLOTS = buildTrainingPlanRequiredSlots();
 
 export interface TrainingPlanStepInput extends StepKeyInputs {
   text: string;
@@ -134,7 +138,7 @@ export function missingTrainingPlanSlots(slots: Record<string, unknown>): string
 }
 
 export function extractTrainingSessionsPerWeek(text: string): number | null {
-  const match = text.match(/\b([3-7])\s*(?:training\s+)?(?:sessions?|workouts?|days?|times|treinos?|sess(?:ion|ions|ões|oes)|sesiones?|vezes)\s*(?:a|per|por|\/)\s*(?:week|semana)\b/i);
+  const match = text.match(/\b(\d+)\s*(?:training\s+)?(?:sessions?|workouts?|days?|times|treinos?|sess(?:ion|ions|ões|oes)|sesiones?|vezes)\s*(?:a|per|por|\/)\s*(?:week|semana)\b/i);
   if (!match) return null;
   const value = Number(match[1]);
   return Number.isInteger(value) && value >= 3 && value <= 7 ? value : null;

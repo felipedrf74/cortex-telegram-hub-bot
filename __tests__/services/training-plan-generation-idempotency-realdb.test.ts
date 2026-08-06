@@ -56,7 +56,7 @@ describe('training plan generation idempotency — real SQLite', () => {
   });
 
   it('claims a fresh key and persists a real in_progress row', () => {
-    const claim = claimTrainingPlanGenerationIdempotency(7, 7, 'key-fresh', 'hash-a');
+    const claim = ownedClaim(claimTrainingPlanGenerationIdempotency(7, 7, 'key-fresh', 'hash-a'));
     expect(claim).toMatchObject({
       kind: 'claimed',
       idempotencyKey: 'key-fresh',
@@ -66,7 +66,15 @@ describe('training plan generation idempotency — real SQLite', () => {
     });
 
     const row = rowFor(7, 7, 'key-fresh');
-    expect(row).toMatchObject({ status: 'in_progress', request_hash: 'hash-a' });
+    expect(row).toMatchObject({
+      status: 'in_progress',
+      request_hash: 'hash-a',
+      lease_owner: claim.leaseOwner,
+      fencing_token: claim.fencingToken,
+      lease_expires_at: expect.any(String),
+      heartbeat_at: expect.any(String),
+      attempt_count: 1,
+    });
   });
 
   it('returns in_progress for repeated same-hash claims while the first is running', () => {

@@ -56,19 +56,31 @@ vi.mock('../../src/utils/logger', () => ({
   LOGGER_REDACTION_PATHS: [],
 }));
 
-vi.mock('../../src/services/training-signals', () => ({
+vi.mock('../../src/services/training-signals', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/training-signals')>(
+    '../../src/services/training-signals'
+  )),
   readTrainingContextAll: (...args: unknown[]) => mockReadTrainingContextAll(...args),
 }));
 
-vi.mock('../../src/services/report-document-store', () => ({
+vi.mock('../../src/services/report-document-store', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/report-document-store')>(
+    '../../src/services/report-document-store'
+  )),
   getLatestByType: (...args: unknown[]) => mockGetLatestByType(...args),
 }));
 
-vi.mock('../../src/services/coach-phase-memory', () => ({
+vi.mock('../../src/services/coach-phase-memory', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/coach-phase-memory')>(
+    '../../src/services/coach-phase-memory'
+  )),
   getCurrentCoachPhase: (...args: unknown[]) => mockGetCurrentCoachPhase(...args),
 }));
 
-vi.mock('../../src/services/training-plans', () => ({
+vi.mock('../../src/services/training-plans', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/training-plans')>(
+    '../../src/services/training-plans'
+  )),
   getActivePlans: (...args: unknown[]) => mockGetActivePlans(...args),
   getWeeksForPlan: (...args: unknown[]) => mockGetWeeksForPlan(...args),
   getSessionsForWeek: (...args: unknown[]) => mockGetSessionsForWeek(...args),

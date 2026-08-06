@@ -49,8 +49,16 @@ vi.mock('../../src/services/training-plans', () => ({
 }));
 
 vi.mock('../../src/services/training-secretary-feedback-consumer', () => ({
+  TRAINING_SECRETARY_FEEDBACK_EVENT_TYPE: 'secretary.training_feedback.requested.v1',
+  TRAINING_SECRETARY_FEEDBACK_SCHEMA_VERSION: 'secretary-training-feedback-v1',
+  registerTrainingSecretaryFeedbackConsumer: vi.fn(),
+  _resetTrainingSecretaryFeedbackConsumerForTests: vi.fn(),
+  recordTrainingSecretaryFeedback: vi.fn(),
+  consumeTrainingSecretaryFeedbackEvent: vi.fn(),
+  listTrainingSecretaryFeedbackDecisions: vi.fn(() => []),
   listCurrentTrainingSecretaryFeedbackDecisionsForPlan: (...args: unknown[]) =>
     mockListCurrentTrainingSecretaryFeedbackDecisionsForPlan(...args),
+  getLatestTrainingSecretaryFeedbackDecisionForPlan: vi.fn(() => null),
 }));
 
 import { readTrainingMeshContext } from '../../src/services/cross-agent-learning';

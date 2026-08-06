@@ -1703,7 +1703,7 @@ describe('ChatActionPlanner', () => {
     }
   });
 
-  it('does not invent a Training plan when frequency arrives without pending context', async () => {
+  it('keeps standalone Training frequency answers out of the end-to-end planner', async () => {
     const response = await tryHandleChatActionPlan({
       ...baseInput,
       text: 'Make it 4 sessions per week',

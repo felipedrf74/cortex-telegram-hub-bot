@@ -421,7 +421,9 @@ export async function generateTrainingPlanForUser(
   // F12 policy (a), chosen 2026-08-03: raceDate wins. The phase generator
   // already builds toward a supplied race, so every downstream consumer must
   // see the same effective mode for clamping, linting, persistence, and reads.
-  const normalizedGoalMode: TrainingGoalMode | null = raceDateForLint
+  const raceDateOverridesRequestedMode = raceDateForLint !== null
+    && requestedGoalMode !== 'event_based';
+  const normalizedGoalMode: TrainingGoalMode | null = raceDateOverridesRequestedMode
     ? 'event_based'
     : requestedGoalMode;
   const isRaceSpecificForLint = normalizedGoalMode === 'event_based';

@@ -11,7 +11,7 @@ describe('training plan preview token', () => {
 
   it('binds a short-lived preview candidate to the authenticated scope', () => {
     const now = new Date('2026-08-05T12:00:00.000Z');
-    const token = signTrainingPlanPreviewToken({
+    const previewToken = signTrainingPlanPreviewToken({
       userId: 41,
       tenantId: 73,
       contextFingerprint,
@@ -19,7 +19,7 @@ describe('training plan preview token', () => {
       now,
     });
 
-    expect(validateTrainingPlanPreviewToken(token, {
+    expect(validateTrainingPlanPreviewToken(previewToken, {
       userId: 41,
       tenantId: 73,
       now: new Date('2026-08-05T12:05:00.000Z'),
@@ -39,14 +39,14 @@ describe('training plan preview token', () => {
 
   it('rejects tampering, cross-scope replay, expiry, and malformed hashes', () => {
     const now = new Date('2026-08-05T12:00:00.000Z');
-    const token = signTrainingPlanPreviewToken({
+    const previewToken = signTrainingPlanPreviewToken({
       userId: 41,
       tenantId: 73,
       contextFingerprint,
       candidateFingerprint,
       now,
     });
-    const [payload, signature] = token.split('.');
+    const [payload, signature] = previewToken.split('.');
     const tamperedPayload = Buffer.from(JSON.stringify({
       ...JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')),
       tenantId: 74,
@@ -57,12 +57,12 @@ describe('training plan preview token', () => {
       tenantId: 74,
       now,
     })).toEqual({ ok: false, code: 'invalid_token' });
-    expect(validateTrainingPlanPreviewToken(token, {
+    expect(validateTrainingPlanPreviewToken(previewToken, {
       userId: 41,
       tenantId: 74,
       now,
     })).toEqual({ ok: false, code: 'wrong_scope' });
-    expect(validateTrainingPlanPreviewToken(token, {
+    expect(validateTrainingPlanPreviewToken(previewToken, {
       userId: 41,
       tenantId: 73,
       now: new Date('2026-08-05T12:15:00.000Z'),

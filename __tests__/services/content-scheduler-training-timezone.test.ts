@@ -15,7 +15,10 @@ vi.mock('../../src/config', () => ({
   },
 }));
 
-vi.mock('../../src/services/database', () => ({
+vi.mock('../../src/services/database', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/database')>(
+    '../../src/services/database'
+  )),
   getDb: vi.fn(),
 }));
 
@@ -31,7 +34,10 @@ vi.mock('../../src/utils/logger', () => ({
   LOGGER_REDACTION_PATHS: [],
 }));
 
-vi.mock('../../src/services/readiness-scorer', () => ({
+vi.mock('../../src/services/readiness-scorer', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/readiness-scorer')>(
+    '../../src/services/readiness-scorer'
+  )),
   calculateReadiness: (...args: unknown[]) => mockCalculateReadiness(...args),
 }));
 
@@ -39,22 +45,34 @@ vi.mock('../../src/services/focus-planner', () => ({
   getFocusBlockRecommendation: (...args: unknown[]) => mockGetFocusBlockRecommendation(...args),
 }));
 
-vi.mock('../../src/services/training-signals', () => ({
+vi.mock('../../src/services/training-signals', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/training-signals')>(
+    '../../src/services/training-signals'
+  )),
   readTrainingContextAll: (...args: unknown[]) => mockReadTrainingContextAll(...args),
 }));
 
-vi.mock('../../src/services/training-plans', () => ({
+vi.mock('../../src/services/training-plans', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/training-plans')>(
+    '../../src/services/training-plans'
+  )),
   getActivePlans: (...args: unknown[]) => mockGetActivePlans(...args),
   getWeeksForPlan: (...args: unknown[]) => mockGetWeeksForPlan(...args),
   getSessionsForWeek: (...args: unknown[]) => mockGetSessionsForWeek(...args),
 }));
 
-vi.mock('../../src/services/unified-calendar', () => ({
+vi.mock('../../src/services/unified-calendar', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/unified-calendar')>(
+    '../../src/services/unified-calendar'
+  )),
   getEvents: (...args: unknown[]) => mockGetEvents(...args),
   hasWritableCalendarForUser: (...args: unknown[]) => mockHasWritableCalendarForUser(...args),
 }));
 
-vi.mock('../../src/services/content-topic-workspace-compat', () => ({
+vi.mock('../../src/services/content-topic-workspace-compat', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/content-topic-workspace-compat')>(
+    '../../src/services/content-topic-workspace-compat'
+  )),
   countUpcomingContentTopicCompatibility: vi.fn(),
   createContentTopicCompatibility: vi.fn(),
   deleteContentTopicCompatibility: vi.fn(),

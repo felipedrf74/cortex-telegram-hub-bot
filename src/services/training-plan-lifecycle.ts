@@ -522,12 +522,16 @@ export function findReusableOwnershipBySessionIdentity(input: {
   const shape = String(input.sessionShapeHash || '').trim();
   const currentPlanVersion = Math.trunc(Number(input.currentPlanVersion));
   if (!identity || !shape || !Number.isFinite(currentPlanVersion) || currentPlanVersion <= 0) return null;
+  // Express the strict prior-version boundary as an inclusive upper bound so
+  // the executable arithmetic (and therefore the no-sideways-reuse contract)
+  // remains mutation-testable; SQL text itself is opaque to Stryker.
+  const maxReusablePlanVersion = currentPlanVersion - 1;
   const db = getDb();
   const tenantId = requireTenantIdParam(input.tenantId, 'findReusableOwnershipBySessionIdentity');
   const row = db.prepare(`
     SELECT * FROM training_agenda_event_ownership
     WHERE plan_id = ?
-      AND plan_version < ?
+      AND plan_version <= ?
       AND tenant_id = ?
       AND user_id = ?
       AND session_identity_key = ?
@@ -535,7 +539,7 @@ export function findReusableOwnershipBySessionIdentity(input: {
       AND status = 'active'
     ORDER BY plan_version DESC, id DESC
     LIMIT 1
-  `).get(input.planId, currentPlanVersion, tenantId, input.userId, identity, shape) as
+  `).get(input.planId, maxReusablePlanVersion, tenantId, input.userId, identity, shape) as
     | AgendaEventOwnership
     | undefined;
   return row ?? null;

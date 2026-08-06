@@ -40,7 +40,10 @@ vi.mock('../../src/services/user-service', () => ({
   getUserTimezoneById: mocks.getUserTimezoneById,
 }));
 
-vi.mock('../../src/services/database', () => ({
+vi.mock('../../src/services/database', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/database')>(
+    '../../src/services/database'
+  )),
   getDb: mocks.getDb,
 }));
 

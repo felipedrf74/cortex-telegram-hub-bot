@@ -76,6 +76,17 @@ interface DependencyAgendaRow {
   provider_sync_state: string;
 }
 
+interface TerminalDependencyRow {
+  dependencyId: string;
+  state: 'pending' | 'in_progress' | 'retryable' | 'reconcile' | 'terminal' | 'satisfied';
+  leaseToken: string | null;
+  leaseActive: number;
+  replacementAgendaItemId: string;
+  replacementVersion: number;
+  sourceSkill: SourceSkill;
+  sourceIntentId: string;
+}
+
 export interface SecretaryPreemptionDependencyBatchResult {
   results: SecretaryAgendaProviderSyncResult[];
   callsUsed: number;
@@ -1089,8 +1100,12 @@ function markDependencyFailure(
   db: Database.Database,
 ): void {
   const persist = db.transaction(() => {
-    const nowIso = new Date().toISOString();
-    const state = disposition === 'terminal' ? 'terminal' : disposition;
+    const now = new Date();
+    const nowIso = now.toISOString();
+    if (disposition === 'terminal') {
+      terminalizePreemptionOperation(claim, failureCode, now, db);
+      return;
+    }
     const write = db.prepare(`
       UPDATE secretary_agenda_preemption_dependencies
          SET state = ?, lease_token = NULL, lease_expires_at = NULL,
@@ -1100,7 +1115,7 @@ function markDependencyFailure(
          AND state = 'in_progress' AND lease_token = ?
          AND datetime(lease_expires_at) > datetime(?)
     `).run(
-      state,
+      disposition,
       disposition,
       failureCode,
       disposition === 'retryable' ? retryAfterAt : null,
@@ -1118,7 +1133,7 @@ function markDependencyFailure(
              retry_after_at = ?, updated_at = ?
        WHERE operation_id = ? AND state = 'cleanup_pending'
     `).run(
-      disposition === 'terminal' ? 'terminal_failure' : 'cleanup_blocked',
+      'cleanup_blocked',
       disposition,
       failureCode,
       disposition === 'retryable' ? retryAfterAt : null,
@@ -1126,83 +1141,239 @@ function markDependencyFailure(
       claim.operationId,
     );
     if (operationWrite.changes !== 1) throw dependencyLeaseLostError();
-    if (disposition === 'terminal') {
-      const winner = db.prepare(`
-        SELECT winner_agenda_item_id AS agendaItemId,
-               winner_agenda_version AS agendaVersion,
-               winner_source_skill AS sourceSkill
-          FROM secretary_agenda_preemption_operations
-         WHERE operation_id = ?
-      `).get(claim.operationId) as {
-        agendaItemId: string;
-        agendaVersion: number;
-        sourceSkill: SourceSkill;
-      } | undefined;
-      if (!winner) throw new Error('SECRETARY_PREEMPTION_OPERATION_MISSING');
-      const winnerWrite = db.prepare(`
-        UPDATE secretary_agenda_items
-           SET lifecycle_state = 'unscheduled',
-               decision_action = 'unscheduled',
-               decision_reason_codes_json = '["priority_preemption_dependency_terminal_failure"]',
-               decision_explanation = 'The exact provider cleanup required for this placement failed permanently.',
-               cancellation_reason = 'priority_preemption_dependency_terminal_failure',
-               updated_at = ?
-         WHERE agenda_item_id = ? AND version = ?
-           AND owner_user_id = ? AND tenant_id = ?
-           AND lifecycle_state = 'proposed' AND provider_sync_state = 'not_synced'
-           AND provider_event_id IS NULL AND provider_source IS NULL
-      `).run(
-        nowIso,
-        winner.agendaItemId,
-        winner.agendaVersion,
-        claim.ownerUserId,
-        claim.tenantId,
-      );
-      if (winnerWrite.changes !== 1) {
-        throw new Error('SECRETARY_PREEMPTION_TERMINAL_WINNER_TRUTH_MISSED');
-      }
-      const replacementWrite = db.prepare(`
-        UPDATE secretary_agenda_items
-           SET lifecycle_state = 'unscheduled', provider_sync_state = 'deleted',
-               decision_action = 'unscheduled',
-               decision_reason_codes_json = '["priority_preemption_dependency_terminal_failure"]',
-               decision_explanation = 'The original calendar event remains authoritative because exact cleanup failed.',
-               cancellation_reason = 'priority_preemption_dependency_terminal_failure',
-               updated_at = ?
-         WHERE agenda_item_id = ? AND version = ?
-           AND owner_user_id = ? AND tenant_id = ?
-           AND source_skill = ? AND source_intent_id = ?
-           AND lifecycle_state = 'proposed' AND provider_sync_state = 'not_synced'
-           AND provider_event_id IS NULL AND provider_source IS NULL
-      `).run(
-        nowIso,
-        claim.loserReplacementAgendaItemId,
-        claim.loserReplacementVersion,
-        claim.ownerUserId,
-        claim.tenantId,
-        claim.loserSourceSkill,
-        claim.loserSourceIntentId,
-      );
-      if (replacementWrite.changes !== 1) {
-        throw new Error('SECRETARY_PREEMPTION_TERMINAL_REPLACEMENT_TRUTH_MISSED');
-      }
-      emitFeedbackRequest({
-        agendaItemId: claim.loserReplacementAgendaItemId,
-        agendaVersion: claim.loserReplacementVersion,
-        ownerUserId: claim.ownerUserId,
-        tenantId: claim.tenantId,
-        sourceSkill: claim.loserSourceSkill,
-      }, db);
-      emitFeedbackRequest({
-        agendaItemId: winner.agendaItemId,
-        agendaVersion: winner.agendaVersion,
-        ownerUserId: claim.ownerUserId,
-        tenantId: claim.tenantId,
-        sourceSkill: winner.sourceSkill,
-      }, db);
-    }
   });
   persist.immediate();
+}
+
+function terminalizePreemptionOperation(
+  claim: DependencyClaim,
+  failureCode: string,
+  now: Date,
+  db: Database.Database,
+): void {
+  const nowIso = now.toISOString();
+  const winner = db.prepare(`
+    SELECT winner_agenda_item_id AS agendaItemId,
+           winner_agenda_version AS agendaVersion,
+           winner_source_skill AS sourceSkill
+      FROM secretary_agenda_preemption_operations
+     WHERE operation_id = ? AND owner_user_id = ? AND tenant_id = ?
+       AND state = 'cleanup_pending'
+  `).get(
+    claim.operationId,
+    claim.ownerUserId,
+    claim.tenantId,
+  ) as {
+    agendaItemId: string;
+    agendaVersion: number;
+    sourceSkill: SourceSkill;
+  } | undefined;
+  if (!winner) throw dependencyLeaseLostError();
+
+  const dependencies = db.prepare(`
+    SELECT dependency_id AS dependencyId, state, lease_token AS leaseToken,
+           CASE
+             WHEN state = 'in_progress'
+              AND datetime(lease_expires_at) > datetime(?) THEN 1
+             ELSE 0
+           END AS leaseActive,
+           loser_replacement_agenda_item_id AS replacementAgendaItemId,
+           loser_replacement_version AS replacementVersion,
+           loser_source_skill AS sourceSkill,
+           loser_source_intent_id AS sourceIntentId
+      FROM secretary_agenda_preemption_dependencies
+     WHERE operation_id = ? AND owner_user_id = ? AND tenant_id = ?
+     ORDER BY datetime(created_at), dependency_id
+  `).all(
+    nowIso,
+    claim.operationId,
+    claim.ownerUserId,
+    claim.tenantId,
+  ) as TerminalDependencyRow[];
+  const claimedDependency = dependencies.find((dependency) => (
+    dependency.dependencyId === claim.dependencyId
+  ));
+  if (!claimedDependency
+      || claimedDependency.state !== 'in_progress'
+      || claimedDependency.leaseToken !== claim.leaseToken
+      || claimedDependency.leaseActive !== 1) {
+    throw dependencyLeaseLostError();
+  }
+  if (dependencies.some((dependency) => (
+    dependency.dependencyId !== claim.dependencyId
+    && dependency.state === 'in_progress'
+    && dependency.leaseActive === 1
+  ))) {
+    throw new Error('SECRETARY_PREEMPTION_SIBLING_DEPENDENCY_LEASE_ACTIVE');
+  }
+
+  const terminalDependencies = dependencies.filter((dependency) => dependency.state !== 'satisfied');
+  for (const dependency of terminalDependencies) {
+    if (dependency.state === 'terminal') continue;
+    let leaseToken = dependency.leaseToken;
+    if (dependency.dependencyId !== claim.dependencyId) {
+      leaseToken = randomUUID();
+      const leaseExpiresAt = new Date(now.getTime() + claim.leaseDurationMs).toISOString();
+      const claimWrite = db.prepare(`
+        UPDATE secretary_agenda_preemption_dependencies
+           SET state = 'in_progress', lease_token = ?, lease_expires_at = ?,
+               heartbeat_at = ?, attempt_count = attempt_count + 1,
+               failure_disposition = NULL, failure_code = NULL,
+               retry_after_at = NULL, last_checked_at = ?, updated_at = ?
+         WHERE dependency_id = ? AND operation_id = ?
+           AND owner_user_id = ? AND tenant_id = ?
+           AND (
+             state IN ('pending', 'retryable', 'reconcile')
+             OR (state = 'in_progress' AND datetime(lease_expires_at) <= datetime(?))
+           )
+      `).run(
+        leaseToken,
+        leaseExpiresAt,
+        nowIso,
+        nowIso,
+        nowIso,
+        dependency.dependencyId,
+        claim.operationId,
+        claim.ownerUserId,
+        claim.tenantId,
+        nowIso,
+      );
+      if (claimWrite.changes !== 1) throw dependencyLeaseLostError();
+    }
+    const dependencyWrite = db.prepare(`
+      UPDATE secretary_agenda_preemption_dependencies
+         SET state = 'terminal', lease_token = NULL, lease_expires_at = NULL,
+             heartbeat_at = NULL, failure_disposition = 'terminal', failure_code = ?,
+             retry_after_at = NULL, last_checked_at = ?, updated_at = ?
+       WHERE dependency_id = ? AND operation_id = ?
+         AND owner_user_id = ? AND tenant_id = ?
+         AND state = 'in_progress' AND lease_token = ?
+         AND datetime(lease_expires_at) > datetime(?)
+    `).run(
+      failureCode,
+      nowIso,
+      nowIso,
+      dependency.dependencyId,
+      claim.operationId,
+      claim.ownerUserId,
+      claim.tenantId,
+      leaseToken,
+      nowIso,
+    );
+    if (dependencyWrite.changes !== 1) throw dependencyLeaseLostError();
+  }
+
+  for (const dependency of terminalDependencies) {
+    const replacementWrite = db.prepare(`
+      UPDATE secretary_agenda_items
+         SET lifecycle_state = 'unscheduled', provider_sync_state = 'deleted',
+             decision_action = 'unscheduled',
+             decision_reason_codes_json = '["priority_preemption_dependency_terminal_failure"]',
+             decision_explanation = 'The original calendar event remains authoritative because exact cleanup failed.',
+             cancellation_reason = 'priority_preemption_dependency_terminal_failure',
+             updated_at = ?
+       WHERE agenda_item_id = ? AND version = ?
+         AND owner_user_id = ? AND tenant_id = ?
+         AND source_skill = ? AND source_intent_id = ?
+         AND lifecycle_state = 'proposed' AND provider_sync_state = 'not_synced'
+         AND provider_event_id IS NULL AND provider_source IS NULL
+    `).run(
+      nowIso,
+      dependency.replacementAgendaItemId,
+      dependency.replacementVersion,
+      claim.ownerUserId,
+      claim.tenantId,
+      dependency.sourceSkill,
+      dependency.sourceIntentId,
+    );
+    if (replacementWrite.changes !== 1 && !hasTerminalReplacementTruth(
+      dependency,
+      claim.ownerUserId,
+      claim.tenantId,
+      db,
+    )) {
+      throw new Error('SECRETARY_PREEMPTION_TERMINAL_REPLACEMENT_TRUTH_MISSED');
+    }
+    emitFeedbackRequest({
+      agendaItemId: dependency.replacementAgendaItemId,
+      agendaVersion: dependency.replacementVersion,
+      ownerUserId: claim.ownerUserId,
+      tenantId: claim.tenantId,
+      sourceSkill: dependency.sourceSkill,
+    }, db);
+  }
+
+  const winnerWrite = db.prepare(`
+    UPDATE secretary_agenda_items
+       SET lifecycle_state = 'unscheduled',
+           decision_action = 'unscheduled',
+           decision_reason_codes_json = '["priority_preemption_dependency_terminal_failure"]',
+           decision_explanation = 'The exact provider cleanup required for this placement failed permanently.',
+           cancellation_reason = 'priority_preemption_dependency_terminal_failure',
+           updated_at = ?
+     WHERE agenda_item_id = ? AND version = ?
+       AND owner_user_id = ? AND tenant_id = ?
+       AND lifecycle_state = 'proposed' AND provider_sync_state = 'not_synced'
+       AND provider_event_id IS NULL AND provider_source IS NULL
+  `).run(
+    nowIso,
+    winner.agendaItemId,
+    winner.agendaVersion,
+    claim.ownerUserId,
+    claim.tenantId,
+  );
+  if (winnerWrite.changes !== 1) {
+    throw new Error('SECRETARY_PREEMPTION_TERMINAL_WINNER_TRUTH_MISSED');
+  }
+  emitFeedbackRequest({
+    agendaItemId: winner.agendaItemId,
+    agendaVersion: winner.agendaVersion,
+    ownerUserId: claim.ownerUserId,
+    tenantId: claim.tenantId,
+    sourceSkill: winner.sourceSkill,
+  }, db);
+
+  const operationWrite = db.prepare(`
+    UPDATE secretary_agenda_preemption_operations
+       SET state = 'terminal_failure', failure_disposition = 'terminal', failure_code = ?,
+           retry_after_at = NULL, updated_at = ?
+     WHERE operation_id = ? AND owner_user_id = ? AND tenant_id = ?
+       AND state = 'cleanup_pending'
+  `).run(
+    failureCode,
+    nowIso,
+    claim.operationId,
+    claim.ownerUserId,
+    claim.tenantId,
+  );
+  if (operationWrite.changes !== 1) throw dependencyLeaseLostError();
+}
+
+function hasTerminalReplacementTruth(
+  dependency: TerminalDependencyRow,
+  ownerUserId: number,
+  tenantId: string,
+  db: Database.Database,
+): boolean {
+  return Boolean(db.prepare(`
+    SELECT 1
+      FROM secretary_agenda_items
+     WHERE agenda_item_id = ? AND version = ?
+       AND owner_user_id = ? AND tenant_id = ?
+       AND source_skill = ? AND source_intent_id = ?
+       AND lifecycle_state = 'unscheduled' AND provider_sync_state = 'deleted'
+       AND decision_action = 'unscheduled'
+       AND decision_reason_codes_json = '["priority_preemption_dependency_terminal_failure"]'
+       AND cancellation_reason = 'priority_preemption_dependency_terminal_failure'
+       AND provider_event_id IS NULL AND provider_source IS NULL
+  `).get(
+    dependency.replacementAgendaItemId,
+    dependency.replacementVersion,
+    ownerUserId,
+    tenantId,
+    dependency.sourceSkill,
+    dependency.sourceIntentId,
+  ));
 }
 
 function startDependencyHeartbeat(

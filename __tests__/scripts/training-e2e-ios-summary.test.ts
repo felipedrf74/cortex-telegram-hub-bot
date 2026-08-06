@@ -89,7 +89,11 @@ exit "${testExitCode}"
     encoding: 'utf8',
     env: {
       ...process.env,
-      PATH: `${fakeBin}:/opt/homebrew/opt/node@22/bin:/usr/bin:/bin`,
+      // Keep the active Node runtime on PATH. GitHub's Linux runner installs
+      // Node under /opt/hostedtoolcache rather than Homebrew, and replacing
+      // PATH with macOS-only locations made the harness exit before it could
+      // write the unified summary that these assertions protect.
+      PATH: `${fakeBin}:${path.dirname(process.execPath)}:${process.env.PATH ?? ''}`,
       FAKE_CALL_LOG: callLogPath,
       FAKE_PREPARE_EXIT_CODE: String(prepareExitCode),
       FAKE_VERIFY_EXIT_CODE: String(verifyExitCode),

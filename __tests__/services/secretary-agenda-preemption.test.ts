@@ -998,6 +998,232 @@ describe('Secretary cross-skill preemption Stage 3', () => {
     `).get(winner.agendaItem.agendaItemId)).toEqual({ count: 2 });
   });
 
+  it('atomically terminalizes every generic version when the first edge in a multi-edge graph fails', async () => {
+    const firstWindow = {
+      start: '2026-08-10T08:00:00.000Z',
+      end: '2026-08-10T08:30:00.000Z',
+    };
+    const secondWindow = {
+      start: '2026-08-10T08:30:00.000Z',
+      end: '2026-08-10T09:00:00.000Z',
+    };
+    const first = submitSecretarySchedulingIntent({
+      ...contentLoser('content-terminal-half'),
+      requestedDurationMinutes: 30,
+      preferredWindows: [firstWindow],
+    });
+    markSecretaryAgendaProviderSyncSatisfied({
+      agendaItemId: first.agendaItem.agendaItemId,
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+      providerEventId: 'google-content-terminal-half',
+      providerSource: 'google',
+    });
+    const second = submitSecretarySchedulingIntent({
+      ...contentLoser('cooking-terminal-half'),
+      sourceSkill: 'cooking',
+      title: 'Cooking terminal half',
+      requestedDurationMinutes: 30,
+      preferredWindows: [secondWindow],
+    });
+    markSecretaryAgendaProviderSyncSatisfied({
+      agendaItemId: second.agendaItem.agendaItemId,
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+      providerEventId: 'google-cooking-terminal-half',
+      providerSource: 'google',
+    });
+    const winner = submitSecretarySchedulingIntent({
+      ...secretaryWinner('finance-terminal-multi-edge'),
+      sourceSkill: 'finance',
+      sourceEntityId: 'finance-terminal-multi-edge',
+      sourceEntityType: 'finance_focus',
+      title: 'Finance terminal multi-edge winner',
+    }, {
+      additionalBusyWindows: [
+        exactLiveWindow(first.agendaItem.agendaItemId, 'google-content-terminal-half', firstWindow),
+        exactLiveWindow(second.agendaItem.agendaItemId, 'google-cooking-terminal-half', secondWindow),
+      ],
+    });
+    const dependencies = testDb.prepare(`
+      SELECT dependency_id AS dependencyId,
+             loser_agenda_item_id AS loserAgendaItemId,
+             loser_replacement_agenda_item_id AS replacementAgendaItemId,
+             loser_replacement_version AS replacementVersion,
+             loser_provider_event_id AS providerEventId
+        FROM secretary_agenda_preemption_dependencies
+       ORDER BY datetime(created_at), dependency_id
+    `).all() as Array<{
+      dependencyId: string;
+      loserAgendaItemId: string;
+      replacementAgendaItemId: string;
+      replacementVersion: number;
+      providerEventId: string;
+    }>;
+    expect(dependencies).toHaveLength(2);
+    const provider = new ExactPreemptionProvider();
+    provider.seedLoser(
+      dependencies[0].loserAgendaItemId,
+      'foreign-provider-marker',
+      dependencies[0].providerEventId,
+    );
+    provider.seedLoser(
+      dependencies[1].loserAgendaItemId,
+      dependencies[1].loserAgendaItemId,
+      dependencies[1].providerEventId,
+    );
+    testDb.exec(`
+      CREATE TRIGGER fail_last_sibling_terminal_feedback
+      BEFORE INSERT ON event_outbox
+      WHEN NEW.event_type = 'secretary.source_feedback.requested.v1'
+        AND NEW.entity_id = '${dependencies[1].replacementAgendaItemId}'
+      BEGIN
+        SELECT RAISE(ABORT, 'injected last sibling terminal feedback failure');
+      END;
+    `);
+
+    const rolledBack = await syncSecretaryAgendaItemsToProvider({
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+    }, provider, { maxItems: 2, retryBudget: 0 });
+    expect(rolledBack).toContainEqual(expect.objectContaining({
+      action: 'failed',
+      reasonCode: 'priority_preemption_worker_failed',
+    }));
+    expect(testDb.prepare(`
+      SELECT state FROM secretary_agenda_preemption_operations
+    `).get()).toEqual({ state: 'cleanup_blocked' });
+    expect(testDb.prepare(`
+      SELECT state FROM secretary_agenda_preemption_dependencies
+       WHERE dependency_id = ?
+    `).get(dependencies[0].dependencyId)).toEqual({ state: 'retryable' });
+    expect(testDb.prepare(`
+      SELECT state FROM secretary_agenda_preemption_dependencies
+       WHERE dependency_id = ?
+    `).get(dependencies[1].dependencyId)).toEqual({ state: 'pending' });
+    const rolledBackTruth = testDb.prepare(`
+      SELECT agenda_item_id AS agendaItemId, lifecycle_state AS lifecycleState,
+             provider_sync_state AS providerSyncState
+        FROM secretary_agenda_items
+       WHERE agenda_item_id IN (?, ?, ?)
+       ORDER BY agenda_item_id, version
+    `).all(
+      dependencies[0].replacementAgendaItemId,
+      dependencies[1].replacementAgendaItemId,
+      winner.agendaItem.agendaItemId,
+    ) as Array<{ agendaItemId: string; lifecycleState: string; providerSyncState: string }>;
+    expect(rolledBackTruth).toHaveLength(3);
+    expect(new Set(rolledBackTruth.map((row) => row.agendaItemId))).toEqual(new Set([
+      dependencies[0].replacementAgendaItemId,
+      dependencies[1].replacementAgendaItemId,
+      winner.agendaItem.agendaItemId,
+    ]));
+    expect(rolledBackTruth.every((row) => (
+      row.lifecycleState === 'proposed' && row.providerSyncState === 'not_synced'
+    ))).toBe(true);
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS count FROM event_outbox
+       WHERE event_type = 'secretary.source_feedback.requested.v1'
+         AND entity_id IN (?, ?, ?)
+    `).get(
+      dependencies[0].replacementAgendaItemId,
+      dependencies[1].replacementAgendaItemId,
+      winner.agendaItem.agendaItemId,
+    )).toEqual({ count: 0 });
+
+    testDb.exec('DROP TRIGGER fail_last_sibling_terminal_feedback');
+    testDb.prepare(`
+      UPDATE secretary_agenda_preemption_dependencies SET retry_after_at = NULL
+    `).run();
+    const terminal = await syncSecretaryAgendaItemsToProvider({
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+    }, provider, { maxItems: 2, retryBudget: 0 });
+    expect(terminal).toContainEqual(expect.objectContaining({
+      action: 'failed',
+      reasonCode: 'priority_preemption_provider_identity_mismatch',
+    }));
+    expect(testDb.prepare(`
+      SELECT state, failure_disposition AS failureDisposition,
+             failure_code AS failureCode
+        FROM secretary_agenda_preemption_dependencies
+       ORDER BY datetime(created_at), dependency_id
+    `).all()).toEqual([
+      { state: 'terminal', failureDisposition: 'terminal', failureCode: 'PROVIDER_IDENTITY_MISMATCH' },
+      { state: 'terminal', failureDisposition: 'terminal', failureCode: 'PROVIDER_IDENTITY_MISMATCH' },
+    ]);
+    expect(testDb.prepare(`
+      SELECT state FROM secretary_agenda_preemption_operations
+    `).get()).toEqual({ state: 'terminal_failure' });
+    expect(testDb.prepare(`
+      SELECT agenda_item_id AS agendaItemId, version, lifecycle_state AS lifecycleState,
+             provider_sync_state AS providerSyncState, decision_action AS decisionAction,
+             decision_reason_codes_json AS reasonCodes,
+             cancellation_reason AS cancellationReason
+        FROM secretary_agenda_items
+       WHERE agenda_item_id IN (?, ?, ?)
+       ORDER BY agenda_item_id, version
+    `).all(
+      dependencies[0].replacementAgendaItemId,
+      dependencies[1].replacementAgendaItemId,
+      winner.agendaItem.agendaItemId,
+    )).toEqual(expect.arrayContaining([
+      {
+        agendaItemId: dependencies[0].replacementAgendaItemId,
+        version: dependencies[0].replacementVersion,
+        lifecycleState: 'unscheduled',
+        providerSyncState: 'deleted',
+        decisionAction: 'unscheduled',
+        reasonCodes: '["priority_preemption_dependency_terminal_failure"]',
+        cancellationReason: 'priority_preemption_dependency_terminal_failure',
+      },
+      {
+        agendaItemId: dependencies[1].replacementAgendaItemId,
+        version: dependencies[1].replacementVersion,
+        lifecycleState: 'unscheduled',
+        providerSyncState: 'deleted',
+        decisionAction: 'unscheduled',
+        reasonCodes: '["priority_preemption_dependency_terminal_failure"]',
+        cancellationReason: 'priority_preemption_dependency_terminal_failure',
+      },
+      {
+        agendaItemId: winner.agendaItem.agendaItemId,
+        version: winner.agendaItem.version,
+        lifecycleState: 'unscheduled',
+        providerSyncState: 'not_synced',
+        decisionAction: 'unscheduled',
+        reasonCodes: '["priority_preemption_dependency_terminal_failure"]',
+        cancellationReason: 'priority_preemption_dependency_terminal_failure',
+      },
+    ]));
+    const expectedFeedbackKeys = [
+      ...dependencies.map((dependency) => (
+        `secretary.source_feedback.requested:${dependency.replacementAgendaItemId}:${dependency.replacementVersion}`
+      )),
+      `secretary.source_feedback.requested:${winner.agendaItem.agendaItemId}:${winner.agendaItem.version}`,
+    ].sort();
+    const readFeedbackKeys = () => (testDb.prepare(`
+      SELECT idempotency_key AS idempotencyKey
+        FROM event_outbox
+       WHERE event_type = 'secretary.source_feedback.requested.v1'
+         AND entity_id IN (?, ?, ?)
+       ORDER BY idempotency_key
+    `).all(
+      dependencies[0].replacementAgendaItemId,
+      dependencies[1].replacementAgendaItemId,
+      winner.agendaItem.agendaItemId,
+    ) as Array<{ idempotencyKey: string }>).map((row) => row.idempotencyKey);
+    expect(readFeedbackKeys()).toEqual(expectedFeedbackKeys);
+
+    await expect(syncSecretaryAgendaItemsToProvider({
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+    }, provider, { maxItems: 2, retryBudget: 0 })).rejects.toMatchObject({
+      code: 'SECRETARY_PROVIDER_SYNC_DEAD_LETTER_BACKLOG',
+    });
+    expect(readFeedbackKeys()).toEqual(expectedFeedbackKeys);
+  });
+
   it('keeps the winner proposed until every loser in a multi-edge graph is satisfied', async () => {
     const firstWindow = {
       start: '2026-08-10T08:00:00.000Z',

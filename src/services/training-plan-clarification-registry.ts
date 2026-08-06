@@ -113,7 +113,9 @@ export function parseSessionDurationMinutesAnswer(
   gymProfile: Record<string, unknown> | null | undefined,
 ): number | undefined {
   const raw = gymProfile?.[SESSION_DURATION_MINUTES_FIELD];
-  const value = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw.trim()) : NaN;
+  // Number() already applies the ECMAScript whitespace grammar. Avoid a
+  // redundant trim whose removal is behaviorally indistinguishable.
+  const value = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : NaN;
   if (!Number.isFinite(value)) return undefined;
   const rounded = Math.round(value);
   if (rounded < SESSION_DURATION_MIN_MINUTES || rounded > SESSION_DURATION_MAX_MINUTES) {

@@ -6,13 +6,22 @@ const mocks = vi.hoisted(() => ({
   invalidateCaches: vi.fn(),
 }));
 
-vi.mock('../../src/services/secretary-scheduling-arbitrator', () => ({
+vi.mock('../../src/services/secretary-scheduling-arbitrator', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/secretary-scheduling-arbitrator')>(
+    '../../src/services/secretary-scheduling-arbitrator'
+  )),
   getSecretaryAgendaItemById: (...args: unknown[]) => mocks.getAgenda(...args),
 }));
-vi.mock('../../src/services/notification-orchestrator', () => ({
+vi.mock('../../src/services/notification-orchestrator', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/notification-orchestrator')>(
+    '../../src/services/notification-orchestrator'
+  )),
   createNotificationIntent: (...args: unknown[]) => mocks.createNotification(...args),
 }));
-vi.mock('../../src/services/cache-coherence-registry', () => ({
+vi.mock('../../src/services/cache-coherence-registry', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/cache-coherence-registry')>(
+    '../../src/services/cache-coherence-registry'
+  )),
   invalidateCookingDerivedCaches: (...args: unknown[]) => mocks.invalidateCaches(...args),
 }));
 

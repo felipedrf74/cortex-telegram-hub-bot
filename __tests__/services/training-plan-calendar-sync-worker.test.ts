@@ -64,7 +64,10 @@ vi.mock('../../src/services/secretary-scheduling-arbitrator', async () => {
   };
 });
 
-vi.mock('../../src/services/secretary-live-calendar-busy', () => ({
+vi.mock('../../src/services/secretary-live-calendar-busy', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/secretary-live-calendar-busy')>(
+    '../../src/services/secretary-live-calendar-busy'
+  )),
   loadLiveCalendarBusyWindowsForSecretaryIntent: (...args: unknown[]) =>
     mockLoadLiveCalendarBusyWindowsForSecretaryIntent(...args),
   // F29: the worker fetches once per drain through the range entry point;
@@ -89,7 +92,10 @@ vi.mock('../../src/services/provider-preferences', async () => {
   };
 });
 
-vi.mock('../../src/services/training-secretary-calendar-handoff', () => ({
+vi.mock('../../src/services/training-secretary-calendar-handoff', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/training-secretary-calendar-handoff')>(
+    '../../src/services/training-secretary-calendar-handoff'
+  )),
   syncTrainingSecretaryCalendarHandoff: (...args: unknown[]) =>
     mockSyncTrainingSecretaryCalendarHandoff(...args),
 }));

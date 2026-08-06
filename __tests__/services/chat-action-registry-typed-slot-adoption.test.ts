@@ -182,15 +182,37 @@ describe('typed slot adoption — training_plan_create (Phase 12 batch 63)', () 
     expect(result.slots).not.toHaveProperty('weeklyVolumeKm');
   });
 
-  it('validator surfaces every missing required field', () => {
+  it('validator surfaces exactly every missing required field and accepts the complete core', () => {
     const entry = findChatActionDefinition('training', 'training_plan_create')!;
     const validators = getSlotValidators(entry);
     expect(validators[0].name).toBe('required_fields');
+    const validateRequiredCore = validators[0].validate;
     const result = runSlotValidators(entry, { objective: '10K' });
     expect(result.ok).toBe(false);
-    expect(result.missing).toEqual(
-      expect.arrayContaining(['durationWeeks', 'sessionsPerWeek', 'startPolicy']),
-    );
+    expect(result.missing).toEqual(['durationWeeks', 'sessionsPerWeek', 'startPolicy']);
+
+    const complete = runSlotValidators(entry, {
+      objective: '10K',
+      durationWeeks: 12,
+      sessionsPerWeek: 4,
+      startPolicy: 'next_full_week',
+    });
+    expect(complete.ok).toBe(true);
+    expect(complete.missing).toBeUndefined();
+
+    const completeCore = {
+      objective: '10K',
+      durationWeeks: 12,
+      sessionsPerWeek: 4,
+      startPolicy: 'next_full_week',
+    };
+    expect(validateRequiredCore(completeCore)).toEqual({ ok: true, missing: undefined });
+    for (const emptyValue of [null, undefined, '']) {
+      expect(validateRequiredCore({ ...completeCore, sessionsPerWeek: emptyValue })).toEqual({
+        ok: false,
+        missing: ['sessionsPerWeek'],
+      });
+    }
   });
 });
 

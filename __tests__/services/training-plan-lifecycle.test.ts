@@ -583,6 +583,16 @@ describe('training-plan-lifecycle — findReusableOwnershipBySessionIdentity', (
     seedSession({ id: 10, planId: 1, weekId: 20, userId: 100 });
     recordCalendarOwnership({
       planId: 1,
+      planVersion: 1,
+      sessionId: 10,
+      userId: 100,
+      eventId: 'evt-prior',
+      source: 'google',
+      sessionIdentityKey: 'plan:1|week:1|day:monday|type:gym|slot:1',
+      sessionShapeHash: 'shape-a',
+    });
+    recordCalendarOwnership({
+      planId: 1,
       planVersion: 2,
       sessionId: 10,
       userId: 100,
@@ -592,14 +602,16 @@ describe('training-plan-lifecycle — findReusableOwnershipBySessionIdentity', (
       sessionShapeHash: 'shape-a',
     });
 
-    expect(findReusableOwnershipBySessionIdentityRaw({
+    const reusable = findReusableOwnershipBySessionIdentityRaw({
       planId: 1,
       currentPlanVersion: 2,
       tenantId: 100,
       userId: 100,
       sessionIdentityKey: 'plan:1|week:1|day:monday|type:gym|slot:1',
       sessionShapeHash: 'shape-a',
-    })).toBeNull();
+    });
+    expect(reusable?.calendar_event_id).toBe('evt-prior');
+    expect(reusable?.plan_version).toBe(1);
   });
 
   it('finds reusable active ownership by logical identity and shape across plan versions', () => {

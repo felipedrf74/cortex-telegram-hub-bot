@@ -60,6 +60,20 @@ describe('training-date-utils', () => {
     expect(isFutureIsoDate('2026-06-02', now, 'UTC')).toBe(false);
     expect(isFutureIsoDate('2026-06-03', now, 'UTC')).toBe(false);
     expect(isFutureIsoDate('2026-06-04', now, 'UTC')).toBe(true);
+
+    // Each Luxon operand must use the authenticated zone. These two instants
+    // independently detect a fallback on either `today` or the date-only
+    // candidate to the server's Europe/Lisbon timezone.
+    expect(isFutureIsoDate(
+      '2026-06-03',
+      new Date('2026-06-03T12:00:00.000Z'),
+      'America/Los_Angeles',
+    )).toBe(false);
+    expect(isFutureIsoDate(
+      '2026-06-03',
+      new Date('2026-06-03T00:30:00.000Z'),
+      'Asia/Tokyo',
+    )).toBe(false);
   });
 
   it('evaluates date-only deadlines in the authenticated user timezone', () => {

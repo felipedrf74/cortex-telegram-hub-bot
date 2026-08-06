@@ -11,7 +11,10 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { TRAINING_PLAN_REQUIRED_SLOTS } from '../../src/services/skills/training/helpers';
+import {
+  buildTrainingPlanRequiredSlots,
+  TRAINING_PLAN_REQUIRED_SLOTS,
+} from '../../src/services/skills/training/helpers';
 import { findChatActionDefinition } from '../../src/services/chat/registry';
 import { openSurfacePayloadForStep } from '../../src/services/chat/executor/response-cards';
 
@@ -26,6 +29,7 @@ describe('training chat/REST creation-schema drift pin (F26)', () => {
   it('pins the chat slot vocabulary', () => {
     // Stronger guarantee: chat no longer collects aliases or inputs that the
     // generation request silently drops (`weeklyVolumeKm` was the defect).
+    expect([...buildTrainingPlanRequiredSlots()]).toEqual(CANONICAL_CHAT_CREATION_SLOTS);
     expect([...TRAINING_PLAN_REQUIRED_SLOTS]).toEqual(CANONICAL_CHAT_CREATION_SLOTS);
   });
 

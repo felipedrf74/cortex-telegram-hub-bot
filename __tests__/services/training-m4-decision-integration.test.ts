@@ -6,8 +6,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockWithTrainingCalendarOperationLock = vi.hoisted(() => vi.fn());
 
-vi.mock('../../src/services/training-operation-locks', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../src/services/training-operation-locks')>()),
+vi.mock('../../src/services/training-operation-locks', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/training-operation-locks')>(
+    '../../src/services/training-operation-locks'
+  )),
   withTrainingCalendarOperationLock: (...args: unknown[]) => (
     mockWithTrainingCalendarOperationLock(...args)
   ),

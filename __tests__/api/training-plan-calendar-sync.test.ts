@@ -76,7 +76,10 @@ vi.mock('../../src/services/secretary-scheduling-arbitrator', () => ({
   markSecretaryAgendaProviderCleanupRequired: (...args: unknown[]) => mocks.markSecretaryAgendaProviderCleanupRequired(...args),
 }));
 
-vi.mock('../../src/services/secretary-live-calendar-busy', () => ({
+vi.mock('../../src/services/secretary-live-calendar-busy', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/secretary-live-calendar-busy')>(
+    '../../src/services/secretary-live-calendar-busy'
+  )),
   loadLiveCalendarBusyWindowsForSecretaryIntent: (...args: unknown[]) => mocks.loadLiveCalendarBusyWindows(...args),
 }));
 
@@ -94,7 +97,10 @@ vi.mock('../../src/services/training-calendar-link-commit', () => ({
     mocks.retireTrainingCalendarSessionMapping(...args),
 }));
 
-vi.mock('../../src/services/user-service', () => ({
+vi.mock('../../src/services/user-service', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/user-service')>(
+    '../../src/services/user-service'
+  )),
   getUserTimezoneById: (...args: unknown[]) => mocks.getUserTimezoneById(...args),
 }));
 

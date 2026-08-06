@@ -147,6 +147,677 @@
     ],
     "cleanupMappings": [
       {
+        "test": "__tests__/api/cooking-routes.test.ts",
+        "replacementTests": [
+          "__tests__/api/cooking-routes.test.ts"
+        ],
+        "sources": [
+          "src/api/routes/cooking.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/api/routes/cooking.ts:1540-1549",
+            "anchor": "if (!durableSync)",
+            "behavior": "Cooking reports a pending calendar sync instead of inventing success when Secretary cannot prove one durable provider mapping.",
+            "replacementTest": "__tests__/api/cooking-routes.test.ts",
+            "ownerTestNamePattern": "fails safely without notifying when a provider create outcome requires reconciliation$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained route suite replaces inline notification assertions with stronger durable Secretary-sync success, retry, and reconciliation guarantees."
+      },
+      {
+        "test": "__tests__/api/training-plan-calendar-sync.test.ts",
+        "replacementTests": [
+          "__tests__/api/training-plan-calendar-sync.test.ts",
+          "__tests__/services/training-calendar-link-commit-realdb.test.ts"
+        ],
+        "sources": [
+          "src/services/training-calendar-link-commit.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/training-calendar-link-commit.ts:57-62",
+            "anchor": "if (!recorded.ok)",
+            "behavior": "A provider link, session state, and exact calendar ownership commit atomically and roll back when ownership recording fails.",
+            "replacementTest": "__tests__/services/training-calendar-link-commit-realdb.test.ts",
+            "ownerTestNamePattern": "rolls back the session link and state when the ownership insert fails$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The legacy route assertions were replaced by an exact real-database atomic mapping contract plus retained route-level reflow and sync behavior."
+      },
+      {
+        "test": "__tests__/api/training-plan-generation.test.ts",
+        "replacementTests": [
+          "__tests__/api/training-plan-generation.test.ts"
+        ],
+        "sources": [
+          "src/api/routes/training-plan-generation.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/api/routes/training-plan-generation.ts:426-428",
+            "anchor": "const normalizedGoalMode: TrainingGoalMode | null = raceDateOverridesRequestedMode",
+            "behavior": "A valid future race date selects event-based generation even when the request says continuous, keeping clamping and taper validation aligned.",
+            "replacementTest": "__tests__/api/training-plan-generation.test.ts",
+            "ownerTestNamePattern": "lets a valid future race date override continuous mode and discloses the decision \\(F12\\)$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained generation suite rewrites legacy response assertions around the approved race-date-wins contract and now proves the disclosed override end to end."
+      },
+      {
+        "test": "__tests__/api/training-plan-persistence-slot-date.test.ts",
+        "replacementTests": [
+          "__tests__/api/training-plan-persistence-slot-date.test.ts"
+        ],
+        "sources": [
+          "src/api/routes/training-plan-persistence.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/api/routes/training-plan-persistence.ts:1320-1320",
+            "anchor": "DateTime.fromJSDate(input.now, { zone: timezone }).startOf('day')",
+            "behavior": "Week-one slot resolution uses the persisted plan timezone so UTC-midnight boundaries do not move a local training day.",
+            "replacementTest": "__tests__/api/training-plan-persistence-slot-date.test.ts",
+            "ownerTestNamePattern": "uses the plan timezone for the week-one past-day floor at UTC midnight$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The two removed UTC-only date assertions were replaced by a stronger persisted-timezone boundary contract."
+      },
+      {
+        "test": "__tests__/api/training-plan-persistence.test.ts",
+        "replacementTests": [
+          "__tests__/api/training-plan-persistence.test.ts",
+          "__tests__/services/training-plan-calendar-sync-worker.test.ts"
+        ],
+        "sources": [
+          "src/api/routes/training-plan-persistence.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/api/routes/training-plan-persistence.ts:586-596",
+            "anchor": "eventType: TRAINING_PLAN_CALENDAR_SYNC_REQUESTED_EVENT_TYPE,",
+            "behavior": "A syncable persisted plan emits exactly one scoped durable calendar-sync request while provider work remains outside persistence.",
+            "replacementTest": "__tests__/api/training-plan-persistence.test.ts",
+            "ownerTestNamePattern": "emits one calendar-sync outbox event inside the plan-graph transaction and performs no provider work$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "Inline provider-call assertions were deliberately removed when persistence moved to the transactional outbox; retained persistence and worker suites now own the full chain."
+      },
+      {
+        "test": "__tests__/api/training-routes.test.ts",
+        "replacementTests": [
+          "__tests__/api/training-routes.test.ts",
+          "__tests__/services/training-plan-generation-attempt-status.test.ts"
+        ],
+        "sources": [
+          "src/services/training-plan-generation-idempotency.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/training-plan-generation-idempotency.ts:405-413",
+            "anchor": "state: 'created'",
+            "behavior": "A generation receipt reports created only after scoped readback proves an active plan graph; unprovable graphs remain fail-closed.",
+            "replacementTest": "__tests__/services/training-plan-generation-attempt-status.test.ts",
+            "ownerTestNamePattern": "returns created only when the replay payload proves a scoped active plan graph$",
+            "minimumMutants": 1
+          },
+          {
+            "pattern": "src/services/training-plan-generation-idempotency.ts:414-420",
+            "anchor": "state: 'created_inactive'",
+            "behavior": "A scoped canceled or superseded plan graph returns a terminal created-inactive receipt that cannot authorize regeneration.",
+            "replacementTest": "__tests__/services/training-plan-generation-attempt-status.test.ts",
+            "ownerTestNamePattern": "returns a terminal created_inactive receipt for scoped canceled and superseded plan graphs$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The route no longer discards ambiguous successful receipts; a focused attempt-status suite now proves readback-backed recovery without duplicate-plan authority."
+      },
+      {
+        "test": "__tests__/integration/training-plan-create-cycle.test.ts",
+        "replacementTests": [
+          "__tests__/integration/training-plan-create-cycle.test.ts",
+          "__tests__/services/training-plan-calendar-sync-worker.test.ts"
+        ],
+        "sources": [
+          "src/services/event-backbone-worker.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/event-backbone-worker.ts:219-219",
+            "anchor": "jobType: 'training_plan_calendar_sync'",
+            "behavior": "The wildcard event router converts a Training calendar-sync request into the dedicated durable worker job without performing provider work itself.",
+            "replacementTest": "__tests__/services/training-plan-calendar-sync-worker.test.ts",
+            "ownerTestNamePattern": "routes the sync-request event to a durable job and drains it into linked, owned provider events$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "Create-cycle assertions now drain the real outbox and dedicated worker; the focused worker integration owns the exact router-to-provider chain."
+      },
+      {
+        "test": "__tests__/portal/portal-garmin-refresh-action.test.ts",
+        "replacementTests": [
+          "__tests__/portal/portal-garmin-refresh-action.test.ts"
+        ],
+        "sources": [
+          "src/portal/actions.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/portal/actions.ts:60-61",
+            "anchor": "if (guarded.status !== 'completed')",
+            "behavior": "Manual Garmin refresh delegates to the leased fan-out and treats every non-completed result as an overlap or disabled execution.",
+            "replacementTest": "__tests__/portal/portal-garmin-refresh-action.test.ts",
+            "ownerTestNamePattern": "reports a durable overlap without starting an unfenced fallback refresh$",
+            "minimumMutants": 1
+          },
+          {
+            "pattern": "src/portal/actions.ts:67-70",
+            "anchor": "Garmin refresh already running or temporarily disabled",
+            "behavior": "A refused Garmin refresh returns the durable overlap response instead of starting an unfenced fallback refresh.",
+            "replacementTest": "__tests__/portal/portal-garmin-refresh-action.test.ts",
+            "ownerTestNamePattern": "reports a durable overlap without starting an unfenced fallback refresh$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The direct refresh mock was replaced with the cluster-safe leased entry point and a retained overlap regression test."
+      },
+      {
+        "test": "__tests__/scripts/staging-smoke-ollama-integration.test.ts",
+        "replacementTests": [
+          "__tests__/scripts/staging-smoke-ollama-integration.test.ts",
+          "__tests__/scripts/staging-smoke-evidence.test.ts"
+        ],
+        "sources": [
+          "scripts/lib/staging-smoke-evidence.mjs"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "scripts/lib/staging-smoke-evidence.mjs:200-200",
+            "anchor": "evidence.artifactDigest !== expectedArtifactDigest",
+            "behavior": "Staging smoke evidence is accepted only when its artifact digest matches the exact release transaction.",
+            "replacementTest": "__tests__/scripts/staging-smoke-evidence.test.ts",
+            "ownerTestNamePattern": "rejects evidence with a mismatched artifactDigest$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The old assertion that release preparation omitted canonical smoke was reversed; exact classifier-bound smoke evidence is now required and validated by a focused helper suite."
+      },
+      {
+        "test": "__tests__/services/chat-action-planner.test.ts",
+        "replacementTests": [
+          "__tests__/services/chat-action-planner.test.ts",
+          "__tests__/services/training-chat-rest-convergence.test.ts",
+          "__tests__/services/00-training-pending-continuation-guard.test.ts"
+        ],
+        "sources": [
+          "src/services/skills/training/pending.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/skills/training/pending.ts:25-28",
+            "anchor": "if (!pending) return null;",
+            "behavior": "A standalone Training frequency answer cannot invent a plan and may fill slots only for an explicitly pending scoped draft.",
+            "replacementTest": "__tests__/services/00-training-pending-continuation-guard.test.ts",
+            "ownerTestNamePattern": "does not invent a Training plan when frequency arrives without pending context$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The old weekly-mileage clarification assertions were replaced by the canonical REST-frequency continuation and a stronger no-pending no-invention guarantee."
+      },
+      {
+        "test": "__tests__/services/chat-action-registry-state-required-parity.test.ts",
+        "replacementTests": [
+          "__tests__/services/chat-action-registry-state-required-parity.test.ts",
+          "__tests__/services/00-training-pending-continuation-guard.test.ts"
+        ],
+        "sources": [
+          "src/services/skills/training/pending.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/skills/training/pending.ts:36-38",
+            "anchor": "if (!pending.missingSlots.includes(slot) && collected[slot] != null) continue;",
+            "behavior": "A pending Training draft adopts a parsed weekly frequency and its provenance without overwriting already-collected canonical fields.",
+            "replacementTest": "__tests__/services/00-training-pending-continuation-guard.test.ts",
+            "ownerTestNamePattern": "adopts pending sessionsPerWeek provenance without overwriting collected canonical fields$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "State-required parity moved from weekly mileage to the canonical REST sessions-per-week vocabulary while retaining the pending-context boundary."
+      },
+      {
+        "test": "__tests__/services/chat-action-registry-typed-slot-adoption.test.ts",
+        "replacementTests": [
+          "__tests__/services/chat-action-registry-typed-slot-adoption.test.ts"
+        ],
+        "sources": [
+          "src/services/chat/registry/helpers.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/chat/registry/helpers.ts:15-19",
+            "anchor": "for (const field of fields)",
+            "behavior": "The typed Training validator reports every missing field from the canonical REST-compatible creation core.",
+            "replacementTest": "__tests__/services/chat-action-registry-typed-slot-adoption.test.ts",
+            "ownerTestNamePattern": "validator surfaces exactly every missing required field and accepts the complete core$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "Typed-slot assertions were rewritten from sport and weekly mileage to the canonical objective, duration, frequency, and start-policy contract."
+      },
+      {
+        "test": "__tests__/services/chat-triggered-onboarding.test.ts",
+        "replacementTests": [
+          "__tests__/services/chat-triggered-onboarding.test.ts"
+        ],
+        "sources": [
+          "src/services/onboarding.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/onboarding.ts:840-840",
+            "anchor": "step.required !== false && !answered.has(step.key)",
+            "behavior": "Optional canonical clarification targets never retroactively block completion of an existing sport profile.",
+            "replacementTest": "__tests__/services/chat-triggered-onboarding.test.ts",
+            "ownerTestNamePattern": "getMissingProfileFields returns all required steps when no profile exists$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The prior all-steps length assertion was replaced with required-step semantics and an explicit legacy-profile compatibility regression."
+      },
+      {
+        "test": "__tests__/services/cooking-secretary-integration.test.ts",
+        "replacementTests": [
+          "__tests__/services/cooking-secretary-integration.test.ts"
+        ],
+        "sources": [
+          "src/services/cooking-secretary-integration.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/cooking-secretary-integration.ts:53-56",
+            "anchor": "if (providerTarget !== 'google' && providerTarget !== 'outlook')",
+            "behavior": "Cooking scheduling intents persist the caller-resolved calendar provider target instead of drifting to another provider later.",
+            "replacementTest": "__tests__/services/cooking-secretary-integration.test.ts",
+            "ownerTestNamePattern": "builds meal-prep scheduling intents owned by Secretary$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "Existing fail-closed busy-window tests were updated for the new mandatory provider target, and the retained intent test proves that target reaches Secretary."
+      },
+      {
+        "test": "__tests__/services/garmin-session-store.test.ts",
+        "replacementTests": [
+          "__tests__/services/garmin-session-store.test.ts",
+          "__tests__/services/readiness-memo.test.ts"
+        ],
+        "sources": [
+          "src/services/readiness-memo.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/readiness-memo.ts:38-42",
+            "anchor": "if (memoKey.endsWith(userSuffix)) readinessMemo.delete(memoKey);",
+            "behavior": "Garmin state changes invalidate readiness memo entries for every tenant scope of exactly one user without suffix collisions.",
+            "replacementTest": "__tests__/services/readiness-memo.test.ts",
+            "ownerTestNamePattern": "evicts every tenant scope for one user without touching suffix-like users$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The obsolete exact readiness cache-key assertions were replaced by canonical memo invalidation and an exact multi-tenant user-suffix regression."
+      },
+      {
+        "test": "__tests__/services/onboarding-sport-profiles.test.ts",
+        "replacementTests": [
+          "__tests__/services/onboarding-sport-profiles.test.ts",
+          "__tests__/services/training-plan-clarification-registry.test.ts"
+        ],
+        "sources": [
+          "src/services/training-plan-clarification-registry.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/training-plan-clarification-registry.ts:115-124",
+            "anchor": "const raw = gymProfile?.[SESSION_DURATION_MINUTES_FIELD];",
+            "behavior": "Session-duration clarification accepts only bounded numeric answers from the canonical profile field.",
+            "replacementTest": "__tests__/services/training-plan-clarification-registry.test.ts",
+            "ownerTestNamePattern": "treats out-of-bounds or malformed session duration answers as unanswered$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "Onboarding burden now counts required questions while the focused clarification registry pins the optional bounded session-duration field and write contract."
+      },
+      {
+        "test": "__tests__/services/readiness-scorer.test.ts",
+        "replacementTests": [
+          "__tests__/services/readiness-scorer.test.ts"
+        ],
+        "sources": [
+          "src/services/readiness-scorer.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/readiness-scorer.ts:171-182",
+            "anchor": "dataAsOf: Number.isFinite(parsedDataAsOf) && parsedDataAsOf <= computedAtDate.getTime()",
+            "behavior": "Readiness computation time remains distinct from trustworthy non-future provider freshness while asOf stays a compatibility alias.",
+            "replacementTest": "__tests__/services/readiness-scorer.test.ts",
+            "ownerTestNamePattern": "rejects a future wearable timestamp but accepts one exactly at the computation boundary$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "Legacy asOf-only assertions were replaced with stronger computedAt, dataAsOf, coverage, and future-provider-clock guarantees."
+      },
+      {
+        "test": "__tests__/services/registry-multi-turn-es-state-injection.test.ts",
+        "replacementTests": [
+          "__tests__/services/registry-multi-turn-es-state-injection.test.ts"
+        ],
+        "sources": [
+          "src/services/skills/training/helpers.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/skills/training/helpers.ts:143-144",
+            "anchor": "return Number.isInteger(value) && value >= 3 && value <= 7 ? value : null;",
+            "behavior": "Spanish pending-plan frequency answers normalize to an integer sessionsPerWeek only inside the supported three-to-seven range.",
+            "replacementTest": "__tests__/services/registry-multi-turn-es-state-injection.test.ts",
+            "ownerTestNamePattern": "turn 2 fills sessionsPerWeek via Spanish",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The Spanish multi-turn fixture now fills canonical weekly frequency instead of collecting unused weekly mileage."
+      },
+      {
+        "test": "__tests__/services/registry-multi-turn-state-injection.test.ts",
+        "replacementTests": [
+          "__tests__/services/registry-multi-turn-state-injection.test.ts"
+        ],
+        "sources": [
+          "src/services/skills/training/helpers.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/skills/training/helpers.ts:97-106",
+            "anchor": "slots.sessionsPerWeek = sessionsPerWeek;",
+            "behavior": "A pending Training draft receives normalized sessionsPerWeek provenance from a follow-up frequency answer.",
+            "replacementTest": "__tests__/services/registry-multi-turn-state-injection.test.ts",
+            "ownerTestNamePattern": "turn 2 fills sessionsPerWeek when a pending training plan is active$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained multi-turn contract replaces weeklyVolumeKm with the REST-compatible frequency slot and keeps scoped pending-state injection."
+      },
+      {
+        "test": "__tests__/services/secretary-agenda-provider-sync.test.ts",
+        "replacementTests": [
+          "__tests__/services/secretary-agenda-provider-sync.test.ts"
+        ],
+        "sources": [
+          "src/services/secretary-agenda-provider-sync.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/secretary-agenda-provider-sync.ts:547-555",
+            "anchor": "if (unresolvedCreateAttempts.length > 0)",
+            "behavior": "An unknown provider-create outcome becomes read-only reconciliation work and is never blindly retried into a duplicate event.",
+            "replacementTest": "__tests__/services/secretary-agenda-provider-sync.test.ts",
+            "ownerTestNamePattern": "keeps the pre-effect fence when the exact-id recovery handoff insert fails$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "Earlier duplicate-id assertions were replaced by exact claim fencing, marker reconciliation, and unknown-outcome no-recreate guarantees in the retained suite."
+      },
+      {
+        "test": "__tests__/services/signals-observability.test.ts",
+        "replacementTests": [
+          "__tests__/services/signals-observability.test.ts",
+          "__tests__/services/training-orphan-calendar-signals.test.ts"
+        ],
+        "sources": [
+          "src/services/signals-observability.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/signals-observability.ts:108-111",
+            "anchor": "const score = typeof p.score === 'number' ? p.score : null;",
+            "behavior": "The retained active-signals read model renders bounded low-readiness safety copy without exposing free-form provider payloads.",
+            "replacementTest": "__tests__/services/signals-observability.test.ts",
+            "ownerTestNamePattern": "formats low_readiness with score out of 100$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "Producer-less calendar conflict and schedule-stale signal cases were removed from both sides; retained active-signal formatting plus the orphan-signal absence suite replace them."
+      },
+      {
+        "test": "__tests__/services/skills/training-parser-executor.test.ts",
+        "replacementTests": [
+          "__tests__/services/skills/training-parser-executor.test.ts",
+          "__tests__/services/training-chat-rest-schema-drift.test.ts"
+        ],
+        "sources": [
+          "src/services/skills/training/helpers.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/skills/training/helpers.ts:21-28",
+            "anchor": "export function buildTrainingPlanRequiredSlots()",
+            "behavior": "Training chat collection uses exactly the objective, durationWeeks, sessionsPerWeek, and startPolicy vocabulary accepted by REST creation.",
+            "replacementTest": "__tests__/services/training-chat-rest-schema-drift.test.ts",
+            "ownerTestNamePattern": "pins the chat slot vocabulary$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "Sport, goal, startDate, and weekly mileage parser assertions were replaced by the canonical REST creation vocabulary and a drift-pin test."
+      },
+      {
+        "test": "__tests__/services/training-date-utils.test.ts",
+        "replacementTests": [
+          "__tests__/services/training-date-utils.test.ts"
+        ],
+        "sources": [
+          "src/services/training-date-utils.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/training-date-utils.ts:124-127",
+            "anchor": "return candidate.isValid && candidate > today;",
+            "behavior": "A race date is future only when its ISO calendar day is strictly later than the authenticated user's local day boundary.",
+            "replacementTest": "__tests__/services/training-date-utils.test.ts",
+            "ownerTestNamePattern": "requires race dates to be strictly later than the user-local day$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "Three UTC-only expectations were replaced with explicit user-timezone past-date and strictly-future race-date boundaries."
+      },
+      {
+        "test": "__tests__/services/training-home-view-state.test.ts",
+        "replacementTests": [
+          "__tests__/services/training-home-view-state.test.ts",
+          "__tests__/services/training-orphan-calendar-signals.test.ts"
+        ],
+        "sources": [
+          "src/services/training-home-view-state.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/training-home-view-state.ts:388-388",
+            "anchor": "if (hasConflictingSchedule(input.weekSessions, input.todaySession)) return 'conflictingSchedule';",
+            "behavior": "Training Home derives real schedule conflicts from overlapping canonical sessions rather than producer-less calendar signal flags.",
+            "replacementTest": "__tests__/services/training-home-view-state.test.ts",
+            "ownerTestNamePattern": "marks conflicting schedule when overlapping sessions exist in the planned week$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "Orphan calendar-signal copy was removed while the retained Home suite and absence pin preserve canonical kernel-derived conflict behavior."
+      },
+      {
+        "test": "__tests__/services/training-plan-generation-idempotency-realdb.test.ts",
+        "replacementTests": [
+          "__tests__/services/training-plan-generation-idempotency-realdb.test.ts",
+          "__tests__/services/training-plan-generation-attempt-status.test.ts"
+        ],
+        "sources": [
+          "src/services/training-plan-generation-idempotency.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/training-plan-generation-idempotency.ts:458-467",
+            "anchor": "VALUES (?, ?, ?, ?, 'in_progress', ?, ?, ?, ?, ?, ?, 1)",
+            "behavior": "Every newly persisted generation claim starts in progress with an owned lease and fencing token from its first database write.",
+            "replacementTest": "__tests__/services/training-plan-generation-attempt-status.test.ts",
+            "ownerTestNamePattern": "keeps live attempts bound and authorizes a fresh re-preview only after a newly fenced lease expires$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The unsafe row-clear contract was removed; retained real-SQLite tests now prove leased claims, fencing, immutable success receipts, and bounded recovery."
+      },
+      {
+        "test": "__tests__/services/training-plan-generation-idempotency.test.ts",
+        "replacementTests": [
+          "__tests__/services/training-plan-generation-idempotency.test.ts"
+        ],
+        "sources": [
+          "src/services/training-plan-generation-idempotency.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/training-plan-generation-idempotency.ts:827-838",
+            "anchor": "lease_owner: identity.leaseOwner",
+            "behavior": "Memory-mode generation claims retain in-progress ownership until a fenced completion records the terminal response.",
+            "replacementTest": "__tests__/services/training-plan-generation-idempotency.test.ts",
+            "ownerTestNamePattern": "retains stale automatic ownership and requires the memory lease fence for completion$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "Exact legacy claim-object equality was rewritten to admit required lease fields while preserving the no-stale-replacement and replay contracts."
+      },
+      {
+        "test": "__tests__/services/training-plan-lifecycle.test.ts",
+        "replacementTests": [
+          "__tests__/services/training-plan-lifecycle.test.ts"
+        ],
+        "sources": [
+          "src/services/training-plan-lifecycle.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/training-plan-lifecycle.ts:528-528",
+            "anchor": "const maxReusablePlanVersion = currentPlanVersion - 1;",
+            "behavior": "Reusable calendar ownership must come from an older plan version with the same scoped identity and material session shape.",
+            "replacementTest": "__tests__/services/training-plan-lifecycle.test.ts",
+            "ownerTestNamePattern": "never returns a same-version sideways ownership as prior-version reuse authority$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "Reuse tests now pass the current plan version explicitly and add same-version, tenant, user, identity, and shape fences."
+      },
+      {
+        "test": "__tests__/services/training-plan-revision-outbox.test.ts",
+        "replacementTests": [
+          "__tests__/services/training-plan-revision-outbox.test.ts"
+        ],
+        "sources": [
+          "src/services/event-backbone-worker.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/event-backbone-worker.ts:196-196",
+            "anchor": "jobType: 'project_read_models'",
+            "behavior": "Projectable Training revision events enqueue exactly one idempotent read-model projection job and no calendar worker job.",
+            "replacementTest": "__tests__/services/training-plan-revision-outbox.test.ts",
+            "ownerTestNamePattern": "queues one idempotent read-model projection and no provider work$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained test replaced an order-dependent bare row read with explicit job-type selection and a negative calendar-job assertion."
+      },
+      {
+        "test": "__tests__/services/training-plan-volume-enforcement.test.ts",
+        "replacementTests": [
+          "__tests__/services/training-plan-volume-enforcement.test.ts"
+        ],
+        "sources": [
+          "src/services/training-plan-volume-enforcement.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/training-plan-volume-enforcement.ts:302-304",
+            "anchor": "? 'two_a_day_cap'",
+            "behavior": "When the athlete disables two-a-days and capacity is insufficient, volume enforcement reports an explicit structured shortfall.",
+            "replacementTest": "__tests__/services/training-plan-volume-enforcement.test.ts",
+            "ownerTestNamePattern": "surfaces a structured shortfall when the two-a-day cap makes the ask unreachable$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "Legacy generic-session fill assertions were replaced by engine-authored volume preservation, final two-a-day enforcement, and honest F10 shortfalls."
+      },
+      {
+        "test": "__tests__/services/training-plans-tools.test.ts",
+        "replacementTests": [
+          "__tests__/services/training-plans-tools.test.ts"
+        ],
+        "sources": [
+          "src/services/tool-executor.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/tool-executor.ts:834-838",
+            "anchor": "Model attempted direct training plan creation; returning plan-builder handoff instead of writing a row",
+            "behavior": "The raw model tool cannot create an active plan projection and returns a reviewed Training Plan Builder handoff instead.",
+            "replacementTest": "__tests__/services/training-plans-tools.test.ts",
+            "ownerTestNamePattern": "create_training_plan refuses to write a plan and hands off to the reviewed builder$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "Direct raw projection writer assertions were replaced by unconditional refusal, no-mutation, authorization, and reviewed-builder handoff contracts."
+      },
+      {
+        "test": "__tests__/services/training-signals.test.ts",
+        "replacementTests": [
+          "__tests__/services/training-signals.test.ts",
+          "__tests__/services/training-orphan-calendar-signals.test.ts"
+        ],
+        "sources": [
+          "src/services/training-signals.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/training-signals.ts:222-230",
+            "anchor": "signal_type: 'low_readiness'",
+            "behavior": "Low-readiness safety signals remain urgent, tenant-scoped, and visible to every sport coach through the canonical Training signal bus.",
+            "replacementTest": "__tests__/services/training-signals.test.ts",
+            "ownerTestNamePattern": "low_readiness propagates to all sports$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "Producer-less calendar signal fixtures were deleted from publishers and readers; retained wellness-safety signals and the orphan-absence suite replace them."
+      },
+      {
+        "test": "__tests__/skills/training-plans-skill.test.ts",
+        "replacementTests": [
+          "__tests__/skills/training-plans-skill.test.ts"
+        ],
+        "sources": [
+          "src/skills/skill-config.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/skills/skill-config.ts:158-161",
+            "anchor": "'create_training_plan', 'get_training_plan', 'log_training_completion'",
+            "behavior": "The Training skill exposes reviewed handoff, readback, completion, and calendar linkage without raw week, session, or update writers.",
+            "replacementTest": "__tests__/skills/training-plans-skill.test.ts",
+            "ownerTestNamePattern": "training-plans sub-skill exposes reviewed actions but no raw projection writers$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The runtime sub-skill builder and its exact contract assertion pin the reviewed action set while explicitly excluding retired raw projection writers."
+      },
+      {
         "test": "__tests__/services/garmin-adapter.test.ts",
         "replacementTests": [
           "__tests__/services/garmin-adapter.test.ts"

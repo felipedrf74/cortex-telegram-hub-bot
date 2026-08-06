@@ -107,9 +107,14 @@ describe('training-plan-clarification-registry', () => {
     expect(parseSessionDurationMinutesAnswer({ session_duration_minutes: 60 })).toBe(60);
     expect(parseSessionDurationMinutesAnswer({ session_duration_minutes: '45' })).toBe(45);
     expect(parseSessionDurationMinutesAnswer({ session_duration_minutes: '45.4' })).toBe(45);
+    expect(parseSessionDurationMinutesAnswer({ session_duration_minutes: SESSION_DURATION_MIN_MINUTES }))
+      .toBe(SESSION_DURATION_MIN_MINUTES);
+    expect(parseSessionDurationMinutesAnswer({ session_duration_minutes: SESSION_DURATION_MAX_MINUTES }))
+      .toBe(SESSION_DURATION_MAX_MINUTES);
     expect(parseSessionDurationMinutesAnswer({ session_duration_minutes: 19 })).toBeUndefined();
     expect(parseSessionDurationMinutesAnswer({ session_duration_minutes: 181 })).toBeUndefined();
     expect(parseSessionDurationMinutesAnswer({ session_duration_minutes: 'ninety' })).toBeUndefined();
+    expect(parseSessionDurationMinutesAnswer({ session_duration_minutes: ['60'] })).toBeUndefined();
     expect(parseSessionDurationMinutesAnswer({})).toBeUndefined();
     expect(parseSessionDurationMinutesAnswer(null)).toBeUndefined();
   });

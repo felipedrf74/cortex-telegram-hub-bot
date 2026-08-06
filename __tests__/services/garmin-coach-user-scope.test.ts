@@ -75,8 +75,10 @@ vi.mock('../../src/services/training-plans', () => ({
   syncSessionWithCoachRecommendation: (...args: unknown[]) => coachApplyMocks.syncSessionWithCoachRecommendation(...args),
 }));
 
-vi.mock('../../src/services/training-operation-locks', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../src/services/training-operation-locks')>()),
+vi.mock('../../src/services/training-operation-locks', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/training-operation-locks')>(
+    '../../src/services/training-operation-locks'
+  )),
   withTrainingCalendarOperationLock: (...args: unknown[]) => (
     coachApplyMocks.withTrainingCalendarOperationLock(...args)
   ),

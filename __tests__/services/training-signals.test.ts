@@ -223,11 +223,31 @@ describe('signal B — wellness signals fan out to all sports', () => {
   });
 
   it('low_readiness propagates to all sports', () => {
-    publishLowReadiness({ userId: 503, tenantId: 503, score: 25, reason: 'accumulated fatigue' });
+    const signalId = publishLowReadiness({
+      userId: 503,
+      tenantId: 503,
+      score: 25,
+      reason: 'accumulated fatigue',
+    });
     for (const sport of ['gym', 'running', 'cycling', 'swim'] as const) {
       const ctx = readTrainingContext({ userId: 503, sport });
       expect(ctx.flags.lowReadiness).toBe(true);
     }
+
+    const row = testDb.prepare(`
+      SELECT tenant_id, priority, payload
+        FROM agent_signals
+       WHERE id = ?
+    `).get(signalId) as { tenant_id: number; priority: string; payload: string };
+    expect(row.tenant_id).toBe(503);
+    expect(row.priority).toBe('urgent');
+    expect(JSON.parse(row.payload)).toMatchObject({ score: 25, reason: 'accumulated fatigue' });
+
+    expect(() => publishLowReadiness({
+      userId: 503,
+      tenantId: 0,
+      score: 25,
+    })).toThrow('publishLowReadiness requires a validated tenantId');
   });
 
   it('high_shoulder_load only reaches gym and swim', () => {

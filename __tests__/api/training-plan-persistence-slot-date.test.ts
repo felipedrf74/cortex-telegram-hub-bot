@@ -50,17 +50,17 @@ describe('training plan persistence slot-date anchoring', () => {
   it('uses the plan timezone for the week-one past-day floor at UTC midnight', () => {
     const result = resolvePlanSlotDate({
       weekNumber: 1,
-      dayIndex: 0,
-      planStartDate: '2026-04-20',
+      dayIndex: 6,
+      planStartDate: '2026-04-19',
       now: new Date('2026-04-20T00:30:00.000Z'),
       schedulingTimezone: 'America/Los_Angeles',
     });
 
     // Stronger guarantee: Sunday evening in Los Angeles must not make the
-    // plan's Monday slot look stale merely because the server is already UTC Monday.
+    // plan's Sunday slot look stale merely because the server is already UTC Monday.
     expect(result.kind).toBe('usable');
     if (result.kind === 'usable') {
-      expect(result.sessionDate.toISOString()).toBe('2026-04-20T07:00:00.000Z');
+      expect(result.sessionDate.toISOString()).toBe('2026-04-19T07:00:00.000Z');
     }
   });
 });

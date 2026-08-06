@@ -1395,10 +1395,9 @@ describe('changed-critical mutation gate', () => {
         cleanupMappings: Array<Record<string, unknown>>;
       };
     };
-    const cases = [
-      '__tests__/api/training-plan-generation.test.ts',
-      '__tests__/brand/package-manifest.test.ts',
-    ];
+    // Training plan generation now has a fresh exact mapping for this cleanup
+    // transaction; retain a completed historical transaction as the sentinel.
+    const cases = ['__tests__/brand/package-manifest.test.ts'];
     expect(policy.mutation.cleanupMappings.filter(
       (mapping) => cases.includes(String(mapping.test)),
     )).toEqual([]);

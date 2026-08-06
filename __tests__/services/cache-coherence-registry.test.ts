@@ -19,7 +19,10 @@ vi.mock('../../src/services/shared-decision-context', () => ({
   invalidateSharedDecisionContextCache: (...args: unknown[]) => mockInvalidateSharedDecisionContextCache(...args),
 }));
 
-vi.mock('../../src/services/readiness-memo', () => ({
+vi.mock('../../src/services/readiness-memo', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/readiness-memo')>(
+    '../../src/services/readiness-memo'
+  )),
   invalidateReadinessMemoForUser: (...args: unknown[]) => mockInvalidateReadinessMemoForUser(...args),
 }));
 

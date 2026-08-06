@@ -193,7 +193,7 @@ describe('Spanish multi-turn pending continuations (Phase 10 batch 52)', () => {
   });
 
   describe('training_plan_create turn-2 (Spanish weekly frequency)', () => {
-    it('turn 2 fills sessionsPerWeek via Spanish "4 sesiones por semana"', async () => {
+    it('turn 2 fills sessionsPerWeek via Spanish within the supported range', async () => {
       mockedGetActivePending.mockImplementation((opts: any) => {
         if (opts?.skill === 'training') {
           return {
@@ -207,12 +207,30 @@ describe('Spanish multi-turn pending continuations (Phase 10 batch 52)', () => {
         }
         return null;
       });
-      const turn2 = await buildChatActionPlan(input('4 sesiones por semana', 'mt-es-training'));
-      const step = turn2?.steps[0];
-      expect(step?.skill).toBe('training');
-      expect(step?.action).toBe('training_plan_create');
-      const args = step?.args as Record<string, unknown> | undefined;
-      expect(args?.sessionsPerWeek).toBe(4);
+      for (const supportedFrequency of [3, 4, 7]) {
+        const turn2 = await buildChatActionPlan(input(
+          `${supportedFrequency} sesiones por semana`,
+          'mt-es-training',
+        ));
+        const step = turn2?.steps[0];
+        expect(step?.skill).toBe('training');
+        expect(step?.action).toBe('training_plan_create');
+        const args = step?.args as Record<string, unknown> | undefined;
+        expect(args?.sessionsPerWeek).toBe(supportedFrequency);
+        expect(turn2?.telemetry.outcome).not.toBe('needs_input');
+      }
+
+      for (const unsupportedFrequency of [2, 8]) {
+        const turn2 = await buildChatActionPlan(input(
+          `${unsupportedFrequency} sesiones por semana`,
+          'mt-es-training',
+        ));
+        const step = turn2?.steps[0];
+        const args = step?.args as Record<string, unknown> | undefined;
+        expect(args?.sessionsPerWeek).toBeUndefined();
+        expect(turn2?.telemetry.outcome).toBe('needs_input');
+        expect(turn2?.debug.routingSignals).toContain('pending_training_action_unmatched_answer');
+      }
     });
   });
 });

@@ -64,6 +64,7 @@ import { TOOLS } from '../../src/services/anthropic';
 import { getSkillDefinition } from '../../src/skills/skill-config';
 import trainingManifest from '../../src/skills/training/manifest.json';
 import * as trainingPlans from '../../src/services/training-plans';
+import { logger } from '../../src/utils/logger';
 
 function executeToolCall(toolName: string, input: Record<string, any>, userId?: number, tenantId = userId): Promise<any> {
   if (!userId || !tenantId) {
@@ -266,6 +267,22 @@ describe('Training Plan Tool Handlers', () => {
     expect(result.plan_id).toBeUndefined();
     expect(String(result.error)).toContain('cannot write Training plan projections directly');
     expect(result.handoff).toBe('training_plan_builder');
+    expect(logger.warn).toHaveBeenCalledWith(
+      { userId: testUserId, tenantId: testUserId, toolName: 'create_training_plan' },
+      'Model attempted direct training plan creation; returning plan-builder handoff instead of writing a row',
+    );
+
+    const crossUserAttempt = await executeToolCall('create_training_plan', {
+      user_id: testUserId + 1,
+      name: 'Foreign user plan',
+    }, testUserId);
+    expect(crossUserAttempt).toEqual({
+      success: false,
+      error: 'create_training_plan requested a user outside the authenticated chat user',
+      code: 'AUTH_REQUIRED',
+      tool_risk: 'write',
+      confirmation_required: false,
+    });
 
     const after = testDb.prepare('SELECT COUNT(*) AS count FROM fitness_training_plans').get() as { count: number };
     expect(after.count).toBe(before.count);

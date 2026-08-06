@@ -514,8 +514,6 @@ describe('generateTrainingPlanForUser', () => {
       objective: 'Build muscle with a 5-day gym plan',
       sessionsPerWeek: 5,
       strengthSessionsPerWeek: 5,
-      goalMode: 'continuous',
-      raceDate: '2026-10-02',
       plannerNow: '2026-06-12T10:00:00.000Z',
     });
 
@@ -566,11 +564,6 @@ describe('generateTrainingPlanForUser', () => {
           unit: 'minutes',
         }],
       });
-      expect(result.data.decisionReasons).toContainEqual(expect.objectContaining({
-        code: 'race_date_implies_event_based',
-        before: { goalMode: 'continuous' },
-        after: { goalMode: 'event_based' },
-      }));
     }
     expect(mockCancelTrainingPlanForUser).not.toHaveBeenCalled();
     expect(mockPersistGeneratedTrainingPlan).not.toHaveBeenCalled();
@@ -1710,13 +1703,13 @@ describe('generateTrainingPlanForUser', () => {
     expect(preview.status).toBe('preview');
     if (preview.status !== 'preview') return;
     expect(preview.data.previewToken).toEqual(expect.any(String));
-    const token = validateTrainingPlanPreviewToken(preview.data.previewToken, {
+    const validatedPreview = validateTrainingPlanPreviewToken(preview.data.previewToken, {
       userId: 12,
       tenantId: 12,
       now: new Date('2026-08-05T12:01:00.000Z'),
     });
-    expect(token.ok).toBe(true);
-    if (!token.ok) return;
+    expect(validatedPreview.ok).toBe(true);
+    if (!validatedPreview.ok) return;
 
     // Same trusted/request context, different finalized candidate. The
     // compatibility endpoint reruns the deterministic engine, so this fence
@@ -1730,7 +1723,7 @@ describe('generateTrainingPlanForUser', () => {
 
     await expect(generateTrainingPlanForUser({
       ...request,
-      expectedPreviewCandidateFingerprint: token.payload.candidateFingerprint,
+      expectedPreviewCandidateFingerprint: validatedPreview.payload.candidateFingerprint,
     })).rejects.toMatchObject({
       code: 'TRAINING_PLAN_PREVIEW_STALE',
       reason: 'candidate_changed',

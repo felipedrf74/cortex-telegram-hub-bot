@@ -1123,6 +1123,7 @@ describe('training-plan-volume-enforcement', () => {
           provenance: 'coach_kernel_output',
         }),
       ]);
+
     });
 
     it('surfaces a structured shortfall when the two-a-day cap makes the ask unreachable', () => {
@@ -1155,6 +1156,33 @@ describe('training-plan-volume-enforcement', () => {
           requested: 10,
           achieved: 5,
           reason: 'two_a_day_cap',
+          provenance: 'coach_kernel_output',
+        }),
+      ]);
+
+      const withinSingleSessionCapacity = enforceRequestedTrainingPlanVolume(
+        { sport: 'running', weeks: [{ weekNumber: 1, sessions: [
+          { dayOfWeek: 'Monday', sessionType: 'run', title: 'Only authored run', durationMinutes: 40 },
+        ] }] },
+        {
+          sessionsPerWeek: 5,
+          runSessionsPerWeek: 5,
+          strengthSessionsPerWeek: 0,
+          preferredCardioTime: '07:00',
+          preferredStrengthTime: '12:00',
+          startDate: '2026-04-27',
+          twoADayPreference: 'never',
+        },
+      );
+      // At the exact one-session-per-day capacity boundary, the cap is not
+      // the cause: the engine authored fewer sessions than the feasible ask.
+      expect(withinSingleSessionCapacity.volumeShortfalls).toEqual([
+        expect.objectContaining({
+          weekNumber: 1,
+          kind: 'active',
+          requested: 5,
+          achieved: 1,
+          reason: 'engine_output_shortfall',
           provenance: 'coach_kernel_output',
         }),
       ]);

@@ -25,11 +25,17 @@ vi.mock('../../src/services/garmin-coach', () => ({
   applyCoachRecommendations: (...args: unknown[]) => mockApplyCoachRecommendations(...args),
 }));
 
-vi.mock('../../src/services/training-keep-original', () => ({
+vi.mock('../../src/services/training-keep-original', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/training-keep-original')>(
+    '../../src/services/training-keep-original'
+  )),
   markKeepOriginalForToday: (...args: unknown[]) => mockMarkKeepOriginalForToday(...args),
 }));
 
-vi.mock('../../src/services/training-adaptation-proposals', () => ({
+vi.mock('../../src/services/training-adaptation-proposals', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/training-adaptation-proposals')>(
+    '../../src/services/training-adaptation-proposals'
+  )),
   previewTrainingAdaptation: (...args: unknown[]) => mockPreviewTrainingAdaptation(...args),
   requestTrainingAdaptationReview: (...args: unknown[]) => mockRequestTrainingAdaptationReview(...args),
   selectTrainingAdaptationOption: (...args: unknown[]) => mockSelectTrainingAdaptationOption(...args),

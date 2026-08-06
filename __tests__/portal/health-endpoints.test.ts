@@ -134,6 +134,7 @@ vi.mock('../../src/services/database', () => ({
 
 vi.mock('../../src/services/training-route-deprecation-telemetry', () => ({
   TRAINING_SUMMARY_ROUTE_PATH: '/api/v1/training/summary',
+  recordTrainingSummaryDeprecationHit: vi.fn(),
   readTrainingSummaryDeprecationUsage: vi.fn(() => ({
     routePath: '/api/v1/training/summary',
     windowDays: 30,

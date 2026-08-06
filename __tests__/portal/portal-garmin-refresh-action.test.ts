@@ -110,7 +110,10 @@ vi.mock('../../src/services/invoice-filer', () => ({
   filePdf: vi.fn(),
 }));
 
-vi.mock('../../src/services/user-service', () => ({
+vi.mock('../../src/services/user-service', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/user-service')>(
+    '../../src/services/user-service'
+  )),
   ClosedBetaInviteRequiredError: vi.fn(),
   getClosedBetaInviteStatus: vi.fn(),
   assertClosedBetaInviteForNewUser: vi.fn(),
@@ -188,7 +191,10 @@ vi.mock('../../src/services/channel-learner', () => ({
   synthesizeKnowledge: vi.fn(),
 }));
 
-vi.mock('../../src/portal/telemetry', () => ({
+vi.mock('../../src/portal/telemetry', async () => ({
+  ...(await vi.importActual<typeof import('../../src/portal/telemetry')>(
+    '../../src/portal/telemetry'
+  )),
   pushEvent: (...args: unknown[]) => hoisted.pushEvent(...args),
   getRecentEvents: vi.fn(),
   registerJob: vi.fn(),
@@ -300,6 +306,7 @@ describe('portal action: refresh-garmin', () => {
 
     const result = await handlePortalAction('refresh-garmin');
 
+    expect(hoisted.refreshConnectedGarminUsersWithLease).toHaveBeenCalledWith('manual');
     expect(result).toEqual({
       ok: false,
       message: 'Garmin refresh already running or temporarily disabled',

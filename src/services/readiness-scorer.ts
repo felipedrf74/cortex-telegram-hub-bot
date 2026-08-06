@@ -169,11 +169,15 @@ function oldestProviderTimestamp(...values: unknown[]): string | null {
 function readinessTimestamps(dataAsOf: unknown, computedAtDate = new Date()): ReadinessTimestamps {
   const computedAt = computedAtDate.toISOString();
   const normalizedDataAsOf = normalizeProviderTimestamp(dataAsOf);
+  // The normalizer returns either a canonical ISO timestamp or null;
+  // Date.parse(String(null)) is already non-finite, so no second branch is
+  // needed to reject a missing provider timestamp.
+  const parsedDataAsOf = Date.parse(String(normalizedDataAsOf));
   return {
     computedAt,
     // Provider clocks and malformed payloads must not manufacture a source
     // freshness claim. `computedAt` remains available independently.
-    dataAsOf: normalizedDataAsOf != null && Date.parse(normalizedDataAsOf) <= computedAtDate.getTime()
+    dataAsOf: Number.isFinite(parsedDataAsOf) && parsedDataAsOf <= computedAtDate.getTime()
       ? normalizedDataAsOf
       : null,
     // `asOf` was already public and represented computation time. Keep that

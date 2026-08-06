@@ -27,20 +27,59 @@ describe('training plan generation idempotency', () => {
     _resetTrainingPlanGenerationIdempotencyForTests();
   });
 
-  it('does not replace stale automatic in-progress rows in memory mode', () => {
+  it('retains stale automatic ownership and requires the memory lease fence for completion', () => {
     vi.useFakeTimers({ shouldAdvanceTime: false });
     vi.setSystemTime(new Date('2026-04-15T12:00:00.000Z'));
 
     const key = 'auto:memory-slow-provider-request';
     const requestHash = 'same-plan-request-hash';
 
-    const first = claimTrainingPlanGenerationIdempotency(12, 34, key, requestHash);
+    const first = ownedClaim(claimTrainingPlanGenerationIdempotency(12, 34, key, requestHash));
     expect(first).toMatchObject({ kind: 'claimed', idempotencyKey: key, requestHash });
 
     vi.setSystemTime(new Date('2026-04-15T12:01:40.000Z'));
     const second = claimTrainingPlanGenerationIdempotency(12, 34, key, requestHash);
 
     expect(second).toEqual({ kind: 'in_progress', idempotencyKey: key });
+
+    const fencedKey = 'manual:memory-fenced-completion';
+    const fencedOwner = ownedClaim(claimTrainingPlanGenerationIdempotency(
+      12,
+      34,
+      fencedKey,
+      requestHash,
+    ));
+    expect(completeTrainingPlanGenerationIdempotency(
+      12,
+      34,
+      { ...fencedOwner, leaseOwner: `${fencedOwner.leaseOwner}:foreign` },
+      { planId: 901 },
+      201,
+    )).toBe(false);
+    expect(completeTrainingPlanGenerationIdempotency(
+      12,
+      34,
+      { ...fencedOwner, fencingToken: `${fencedOwner.fencingToken}:stale` },
+      { planId: 901 },
+      201,
+    )).toBe(false);
+    expect(claimTrainingPlanGenerationIdempotency(12, 34, fencedKey, requestHash)).toEqual({
+      kind: 'in_progress',
+      idempotencyKey: fencedKey,
+    });
+    expect(completeTrainingPlanGenerationIdempotency(
+      12,
+      34,
+      fencedOwner,
+      { planId: 901 },
+      201,
+    )).toBe(true);
+    expect(claimTrainingPlanGenerationIdempotency(12, 34, fencedKey, requestHash)).toEqual({
+      kind: 'replay',
+      idempotencyKey: fencedKey,
+      responseData: { planId: 901 },
+      statusCode: 201,
+    });
   });
 
   it('uses completion time as the auto-key replay freshness anchor after slow writes', () => {

@@ -220,12 +220,34 @@ describe('multi-turn turn-2 state-injection (Phase 9 batch 49)', () => {
         }
         return null;
       });
-      const turn2 = await buildChatActionPlan(input('Make it 4 sessions per week', 'en-US', 'mt-training'));
+      const turn2Input = input('Make it 4 sessions per week', 'en-US', 'mt-training');
+      const turn2 = await buildChatActionPlan(turn2Input);
       const step = turn2?.steps[0];
       expect(step?.skill).toBe('training');
       expect(step?.action).toBe('training_plan_create');
       const args = step?.args as Record<string, unknown> | undefined;
       expect(args?.sessionsPerWeek).toBe(4);
+      expect(step?.slotProvenance?.sessionsPerWeek).toEqual({
+        slot: 'sessionsPerWeek',
+        value: 4,
+        rawText: 'Make it 4 sessions per week',
+        turnId: turn2Input.messageId,
+        spanStart: null,
+        spanEnd: null,
+        sourceType: 'user_message',
+        normalizer: 'training_sessions_per_week_v1',
+        confidence: 0.96,
+        validation: 'passed',
+      });
+
+      const unmatched = await buildChatActionPlan(input(
+        'Make it 2 sessions per week',
+        'en-US',
+        'mt-training',
+      ));
+      expect(unmatched?.steps[0]?.args.sessionsPerWeek).toBeUndefined();
+      expect(unmatched?.steps[0]?.slotProvenance).toBeUndefined();
+      expect(unmatched?.telemetry.outcome).toBe('needs_input');
     });
   });
 

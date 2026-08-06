@@ -90,7 +90,10 @@ vi.mock('../../src/services/secretary-scheduling-arbitrator', async () => {
   };
 });
 
-vi.mock('../../src/services/secretary-live-calendar-busy', () => ({
+vi.mock('../../src/services/secretary-live-calendar-busy', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/secretary-live-calendar-busy')>(
+    '../../src/services/secretary-live-calendar-busy'
+  )),
   loadLiveCalendarBusyWindowsForSecretaryIntent: (...args: unknown[]) =>
     mockLoadLiveCalendarBusyWindowsForSecretaryIntent(...args),
 }));
@@ -225,6 +228,9 @@ describe('training-plan-persistence', () => {
   // outbox + dedicated worker gives durability, backoff, and the
   // "no provider work for a non-active plan" invariant.
   it('emits one calendar-sync outbox event inside the plan-graph transaction and performs no provider work', async () => {
+    // A missing lifecycle row is represented as null. The durable envelope
+    // must use version 1, not leak null into its entity/idempotency contract.
+    mockGetPlanVersion.mockReturnValueOnce(null);
     const result = await persistGeneratedTrainingPlan({
       userId: 12,
       tenantId: 12,
@@ -284,10 +290,23 @@ describe('training-plan-persistence', () => {
 
     const events = transactionTestDb.prepare(
       "SELECT * FROM event_outbox WHERE event_type = 'training.plan_calendar_sync.requested.v1'",
-    ).all() as Array<{ payload_json: string; idempotency_key: string; source_skill: string; entity_id: string }>;
+    ).all() as Array<{
+      payload_json: string;
+      idempotency_key: string;
+      source_skill: string;
+      event_type: string;
+      entity_type: string;
+      entity_id: string;
+      entity_version: number;
+      schema_version: string;
+    }>;
     expect(events).toHaveLength(1);
     expect(events[0].source_skill).toBe('training');
+    expect(events[0].event_type).toBe('training.plan_calendar_sync.requested.v1');
+    expect(events[0].entity_type).toBe('training_plan');
     expect(events[0].entity_id).toBe('901');
+    expect(events[0].entity_version).toBe(1);
+    expect(events[0].schema_version).toBe('training-plan-calendar-sync.v1');
     expect(events[0].idempotency_key).toBe('training.plan_calendar_sync.requested:901:1');
     const payload = JSON.parse(events[0].payload_json);
     expect(payload).toMatchObject({ planId: 901, planVersion: 1, syncTarget: 'google' });
@@ -314,6 +333,43 @@ describe('training-plan-persistence', () => {
     expect(result.sessionsLinked).toBe(0);
     expect(result.calendarSyncQueued).toBe(true);
     expect(result.syncableSessions).toBe(2);
+
+    // A calendar provider alone is not enough to enqueue work: without a
+    // finalized syncable session, there is nothing the worker may write.
+    mockCreatePlan.mockReturnValueOnce({ id: 902 });
+    const emptyResult = await persistGeneratedTrainingPlan({
+      userId: 12,
+      tenantId: 12,
+      objective: 'Recovery-only week',
+      durationWeeks: 1,
+      startDate: '2026-04-19',
+      endDate: '2026-04-26',
+      now: new Date('2026-04-19T00:00:00.000Z'),
+      preferencesJson: '{}',
+      normalizedPreferredTime: '12:00',
+      normalizedPreferredCardioTime: '07:00',
+      normalizedPreferredStrengthTime: '12:30',
+      busyWindows: [],
+      calendarSource: 'google',
+      planData: {
+        planName: 'Recovery Week',
+        weeks: [{
+          weekNumber: 1,
+          sessions: [{
+            dayOfWeek: 'Monday',
+            sessionType: 'rest',
+            title: 'Rest',
+            durationMinutes: 30,
+          }],
+        }],
+      },
+    });
+
+    expect(emptyResult.syncableSessions).toBe(0);
+    expect(emptyResult.calendarSyncQueued).toBe(false);
+    expect(transactionTestDb.prepare(
+      "SELECT COUNT(*) AS count FROM event_outbox WHERE event_type = 'training.plan_calendar_sync.requested.v1'",
+    ).get()).toEqual({ count: 1 });
   });
 
   it('persists generated weeks and sessions, schedules events, and links created calendar events', async () => {

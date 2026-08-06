@@ -171,7 +171,31 @@ describe('buildActiveSignalsResponse — per-type formatting', () => {
     const res = buildActiveSignalsResponse(2003);
     const s = res.signals.find((x) => x.type === 'low_readiness')!;
     expect(s.title).toBe('Low readiness');
-    expect(s.summary).toContain('28/100');
+    expect(s.summary).toBe('Garmin readiness 28/100 — coach will skip any planned hard session.');
+
+    // Historical rows may predate the typed score payload. Keep their copy
+    // bounded and useful instead of rendering an undefined provider value.
+    publishLowReadiness({
+      userId: 2004,
+      tenantId: 2004,
+      score: undefined as unknown as number,
+      reason: 'legacy payload without score',
+    });
+    const fallback = buildActiveSignalsResponse(2004).signals
+      .find((x) => x.type === 'low_readiness')!;
+    expect(fallback.summary).toBe('Garmin readiness low — coach will skip any planned hard session.');
+
+    // Persisted legacy payloads are untrusted JSON. A numeric-looking string
+    // must not bypass the typed boundary or appear as a provider score.
+    publishLowReadiness({
+      userId: 2005,
+      tenantId: 2005,
+      score: '28' as unknown as number,
+      reason: 'legacy string score',
+    });
+    const wrongType = buildActiveSignalsResponse(2005).signals
+      .find((x) => x.type === 'low_readiness')!;
+    expect(wrongType.summary).toBe('Garmin readiness low — coach will skip any planned hard session.');
   });
 
   it('surfaces structured health-intake red flags through active signals and Training Home state', () => {

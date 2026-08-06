@@ -157,7 +157,7 @@ describe('state-required fixture parity (Phase 3 batch 13)', () => {
   });
 
   describe('condition: pending_training_plan_awaiting_sessions_per_week', () => {
-    it('fills sessionsPerWeek only when a pending plan is active', async () => {
+    it('adopts pending sessionsPerWeek provenance without overwriting collected canonical fields', async () => {
       mockedGetActivePending.mockReturnValue({
         pendingActionId: 'pending-training-1',
         skill: 'training',
@@ -174,13 +174,97 @@ describe('state-required fixture parity (Phase 3 batch 13)', () => {
         ttlExpiresAt: '2026-05-15T12:00:00+01:00',
       } as any);
 
-      const plan = await buildChatActionPlan(baseInput('Make it 4 sessions per week', 'en-US'));
+      const frequencyInput = baseInput('Make it 4 sessions per week', 'en-US');
+      const plan = await buildChatActionPlan(frequencyInput);
       expect(plan).not.toBeNull();
       const step = plan?.steps[0];
       expect(step?.skill).toBe('training');
       expect(step?.action).toBe('training_plan_create');
-      const args = step?.args as Record<string, unknown> | undefined;
-      expect(args?.sessionsPerWeek).toBe(4);
+      expect(step?.args).toEqual({
+        objective: '10k',
+        durationWeeks: 12,
+        sessionsPerWeek: 4,
+        startPolicy: 'next_full_week',
+      });
+      expect(step?.slotProvenance?.sessionsPerWeek).toMatchObject({
+        slot: 'sessionsPerWeek',
+        value: 4,
+        rawText: frequencyInput.text,
+        turnId: frequencyInput.messageId,
+        sourceType: 'user_message',
+        normalizer: 'training_sessions_per_week_v1',
+        validation: 'passed',
+      });
+
+      mockedGetActivePending.mockReturnValue({
+        pendingActionId: 'pending-training-2',
+        skill: 'training',
+        action: 'training_plan_create',
+        userId: 1,
+        tenantId: 1,
+        conversationId: 'state-test',
+        collectedSlots: {
+          objective: '10k',
+          durationWeeks: 12,
+          sessionsPerWeek: 5,
+        },
+        missingSlots: ['startPolicy'],
+        ttlExpiresAt: '2026-05-15T12:00:00+01:00',
+      } as any);
+
+      const preservedPlan = await buildChatActionPlan(
+        baseInput('Make it 4 sessions per week', 'en-US'),
+      );
+      expect(preservedPlan?.steps[0]?.args).toMatchObject({
+        objective: '10k',
+        durationWeeks: 12,
+        sessionsPerWeek: 5,
+      });
+
+      // `missingSlots` is authoritative when a recovered legacy draft still
+      // carries a stale value for the slot it asks the athlete to replace.
+      mockedGetActivePending.mockReturnValue({
+        pendingActionId: 'pending-training-3',
+        skill: 'training',
+        action: 'training_plan_create',
+        userId: 1,
+        tenantId: 1,
+        conversationId: 'state-test',
+        collectedSlots: {
+          objective: '10k',
+          durationWeeks: 12,
+          sessionsPerWeek: 5,
+          startPolicy: 'next_full_week',
+        },
+        missingSlots: ['sessionsPerWeek'],
+        ttlExpiresAt: '2026-05-15T12:00:00+01:00',
+      } as any);
+      const explicitReplacement = await buildChatActionPlan(
+        baseInput('Make it 4 sessions per week', 'en-US'),
+      );
+      expect(explicitReplacement?.steps[0]?.args.sessionsPerWeek).toBe(4);
+
+      // Conversely, a null collected value is fillable even when a legacy
+      // missing-slots list forgot to name it.
+      mockedGetActivePending.mockReturnValue({
+        pendingActionId: 'pending-training-4',
+        skill: 'training',
+        action: 'training_plan_create',
+        userId: 1,
+        tenantId: 1,
+        conversationId: 'state-test',
+        collectedSlots: {
+          objective: '10k',
+          durationWeeks: 12,
+          sessionsPerWeek: null,
+        },
+        missingSlots: ['startPolicy'],
+        ttlExpiresAt: '2026-05-15T12:00:00+01:00',
+      } as any);
+      const fillsNullLegacySlot = await buildChatActionPlan(
+        baseInput('Make it 4 sessions per week', 'en-US'),
+      );
+      expect(fillsNullLegacySlot?.steps[0]?.args.sessionsPerWeek).toBe(4);
     });
 
     it('a bare frequency without a pending plan does NOT invent one', async () => {

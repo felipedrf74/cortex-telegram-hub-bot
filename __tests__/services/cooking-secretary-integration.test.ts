@@ -44,6 +44,36 @@ describe('cooking-secretary-integration', () => {
       flexibility: 'fixed',
       providerTarget: 'outlook',
     });
+
+    const googleIntent = buildCookingMealPrepSchedulingIntent({
+      userId: 42,
+      tenantId: 42,
+      week: '2026-W24',
+      title: 'Meal prep',
+      startIso: '2026-06-14T14:00:00Z',
+      endIso: '2026-06-14T16:00:00Z',
+      durationMinutes: 120,
+      mealCount: 5,
+      providerTarget: 'google',
+      additionalBusyWindows: [],
+    });
+    expect(googleIntent.providerTarget).toBe('google');
+
+    // The input is statically narrowed, but route/tool callers still cross a
+    // runtime boundary. An invalid value must fail closed rather than let
+    // Secretary persist an unrouteable provider target.
+    expect(() => buildCookingMealPrepSchedulingIntent({
+      userId: 42,
+      tenantId: 42,
+      week: '2026-W25',
+      title: 'Meal prep',
+      startIso: '2026-06-21T14:00:00Z',
+      endIso: '2026-06-21T16:00:00Z',
+      durationMinutes: 120,
+      mealCount: 5,
+      providerTarget: 'auto' as never,
+      additionalBusyWindows: [],
+    })).toThrow('COOKING_SECRETARY_PROVIDER_TARGET_REQUIRED');
   });
 
   it('requires callers to provide live calendar busy windows explicitly', () => {
