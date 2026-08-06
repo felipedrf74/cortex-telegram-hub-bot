@@ -78,6 +78,15 @@ function keyRideTemplateFor(context: EngineContext, templates: WorkoutTemplate[]
   if (isTravelOrLimitedWeek(context)) {
     return templateByIdOrType(templates, 'ride_endurance_short', 'endurance_ride');
   }
+  if (context.phase === 'deload') {
+    // A deload has a canonical tempo ceiling. Duration-only scaling left the
+    // rotating week-four threshold prescription and its public intensity
+    // metadata intact, so a 2-rides/week block reached 3/8 hard rides even
+    // though the week was labelled deload. Select the lower-intensity source
+    // template before metadata is built so REST, iOS, and the quality scorer
+    // all observe the same truthful prescription.
+    return templateByIdOrType(templates, 'ride_tempo_sweet_spot', 'tempo_ride');
+  }
   if (context.phase === 'peak') {
     return weekSlot === 0
       ? templateByIdOrType(templates, 'ride_vo2_over_under', 'vo2_ride')

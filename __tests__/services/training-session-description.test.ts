@@ -109,6 +109,67 @@ describe('training-session-description', () => {
     });
   });
 
+  describe('cycling structured intensity', () => {
+    it.each([
+      ['threshold', '223-257 W (91-105% FTP)', '8/10'],
+      ['vo2', '260-294 W (106-120% FTP)', '9/10 on reps'],
+    ])('uses the canonical %s zone when the persisted read model has a generic ride type', (
+      primaryZone,
+      expectedPower,
+      expectedRpe,
+    ) => {
+      const { sections } = buildRichSessionDescription({
+        ...baseInput,
+        sport: 'cycling',
+        session: {
+          sessionType: 'ride',
+          title: 'Quality Ride',
+          durationMinutes: 55,
+          dayOfWeek: 'Wednesday',
+          intensitySummary: {
+            primaryZone,
+            targetSummaryText: primaryZone === 'threshold'
+              ? '2x 8min threshold with warmup and cooldown.'
+              : '5x 4min vo2 with warmup and cooldown.',
+          },
+        },
+        profiles: {
+          runProfile: { ftp_watts: 245 },
+        },
+      });
+
+      // The app persists `ride` as the compatibility session type. Execution
+      // must therefore use the structured final prescription, never the title
+      // or the generic type's endurance fallback.
+      expect(sections.execution?.find((item) => item.label === 'Power')?.value).toBe(expectedPower);
+      expect(sections.execution?.find((item) => item.label === 'RPE')?.value).toBe(expectedRpe);
+    });
+
+    it('lets a final aerobic prescription override a stale threshold session type', () => {
+      const { sections } = buildRichSessionDescription({
+        ...baseInput,
+        sport: 'cycling',
+        session: {
+          sessionType: 'threshold_ride',
+          title: 'Readiness-adjusted ride',
+          durationMinutes: 45,
+          dayOfWeek: 'Wednesday',
+          intensitySummary: {
+            primaryZone: 'aerobic',
+            targetSummaryText: '45min aerobic continuous adjusted work.',
+          },
+        },
+        profiles: {
+          runProfile: { ftp_watts: 245 },
+        },
+      });
+
+      expect(sections.execution?.find((item) => item.label === 'Power')?.value)
+        .toBe('137-184 W (56-75% FTP)');
+      expect(sections.execution?.find((item) => item.label === 'RPE')?.value).toBe('4-5/10');
+    });
+  });
+
   describe('strength session', () => {
     it('emits the EXERCISES section with sets/reps/RPE/rest from input', () => {
       const { sections, text } = buildRichSessionDescription({

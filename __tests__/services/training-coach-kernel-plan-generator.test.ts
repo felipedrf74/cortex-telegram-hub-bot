@@ -1150,6 +1150,46 @@ describe('buildCoachKernelTrainingPlan — side effects', () => {
     ]);
   });
 
+  it('keeps a four-week cycling deload at tempo or below and within the hard-session ceiling', () => {
+    const plan = buildCoachKernelTrainingPlan({
+      userId: 604,
+      objective: 'Cycling durability with supporting gym work',
+      durationWeeks: 4,
+      startDate: '2026-07-06',
+      sessionsPerWeek: 4,
+      runSessionsPerWeek: 0,
+      bikeSessionsPerWeek: 2,
+      strengthSessionsPerWeek: 2,
+      preferredTime: '12:00',
+      preferredCardioTime: '07:00',
+      preferredStrengthTime: '18:00',
+      longWorkoutDay: 'Sunday',
+      notes: null,
+      fitnessProfile: { experience_level: 'intermediate', available_equipment: 'Full gym' },
+      gymProfile: { equipment_access: 'Full gym' },
+      runProfile: { ftp_watts: '245', weekly_hours: '4' },
+      goalMode: 'continuous',
+      trainingPriority: 'cycling',
+      currentReadiness: { score: 82, confidence: 'manual_check_in', dataSource: 'manual' },
+    });
+
+    const rides = (plan.weeks ?? [])
+      .flatMap((week) => week.sessions ?? [])
+      .filter((session) => session.sessionType === 'ride');
+    const hardZones = new Set(['threshold', 'vo2', 'neuromuscular']);
+    const hardRides = rides.filter((session) => hardZones.has(session.intensitySummary?.primaryZone ?? ''));
+    const deloadWeek = plan.weeks?.find((week) => week.focus === 'deload');
+    const deloadRides = (deloadWeek?.sessions ?? []).filter((session) => session.sessionType === 'ride');
+
+    // Stronger end-to-end guarantee: the public structured intensity summary,
+    // which powers the creation-quality gate and iOS, must reflect the deload.
+    // Reducing duration while retaining threshold metadata is not a deload.
+    expect(rides).toHaveLength(8);
+    expect(hardRides.length / rides.length).toBeLessThanOrEqual(0.35);
+    expect(deloadRides.length).toBeGreaterThan(0);
+    expect(deloadRides.every((session) => !hardZones.has(session.intensitySummary?.primaryZone ?? ''))).toBe(true);
+  });
+
   it.each([
     ['hybrid', 'General fitness event build'],
     ['strength', 'Strength competition preparation'],

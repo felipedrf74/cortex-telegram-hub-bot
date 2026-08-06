@@ -456,14 +456,13 @@ function runningExecution(input: SessionDescriptionInput): SessionSections['exec
 
 function cyclingExecution(input: SessionDescriptionInput): SessionSections['execution'] {
   const items: NonNullable<SessionSections['execution']> = [];
-  const sessionType = input.session.sessionType;
   const profile = input.profiles?.runProfile ?? {};
   const fitness = input.profiles?.fitnessProfile ?? {};
 
   const ftp = numericOrUndefined(profile.ftp_watts ?? fitness.ftp_watts);
   const maxHr = numericOrUndefined(fitness.max_heart_rate);
   const lthr = numericOrUndefined(fitness.threshold_heart_rate);
-  const intent = rideIntentForSessionType(sessionType);
+  const intent = rideIntentForSession(input.session);
 
   if (ftp && ftp > 0) {
     const range = powerForRideIntent(intent, ftp);
@@ -1090,6 +1089,24 @@ function hrRangeForRunIntent(
 }
 
 type RideIntent = 'recovery' | 'endurance' | 'tempo' | 'threshold' | 'vo2';
+
+function rideIntentForSession(session: SessionInput): RideIntent {
+  // Compatibility rows persist cycling sessions as the generic `ride` type,
+  // while the final canonical prescription lives in intensitySummary. Prefer
+  // that structured zone for every row so a guardrail downgrade also wins
+  // over a stale specialized type. Titles and free text are never parsed.
+  switch (session.intensitySummary?.primaryZone?.trim().toLowerCase()) {
+    case 'recovery': return 'recovery';
+    case 'aerobic': return 'endurance';
+    case 'tempo': return 'tempo';
+    case 'threshold': return 'threshold';
+    case 'vo2':
+    case 'neuromuscular':
+      return 'vo2';
+    default:
+      return rideIntentForSessionType(session.sessionType);
+  }
+}
 
 function rideIntentForSessionType(sessionType: string): RideIntent {
   switch (sessionType) {
