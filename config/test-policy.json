@@ -210,7 +210,8 @@
       {
         "test": "__tests__/api/training-plan-persistence-slot-date.test.ts",
         "replacementTests": [
-          "__tests__/api/training-plan-persistence-slot-date.test.ts"
+          "__tests__/api/training-plan-persistence-slot-date.test.ts",
+          "__tests__/api/training-plan-persistence.test.ts"
         ],
         "sources": [
           "src/api/routes/training-plan-persistence.ts"
@@ -220,8 +221,8 @@
             "pattern": "src/api/routes/training-plan-persistence.ts:1320-1320",
             "anchor": "DateTime.fromJSDate(input.now, { zone: timezone }).startOf('day')",
             "behavior": "Week-one slot resolution uses the persisted plan timezone so UTC-midnight boundaries do not move a local training day.",
-            "replacementTest": "__tests__/api/training-plan-persistence-slot-date.test.ts",
-            "ownerTestNamePattern": "uses the plan timezone for the week-one past-day floor at UTC midnight$",
+            "replacementTest": "__tests__/api/training-plan-persistence.test.ts",
+            "ownerTestNamePattern": "uses the plan timezone for the week-one past-day floor at UTC midnight when real calendar busy windows leave no valid slot$",
             "minimumMutants": 1
           }
         ],

@@ -1,7 +1,9 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { DateTime } from 'luxon';
+import { DateTime, Settings } from 'luxon';
+
+const originalDefaultZone = Settings.defaultZone;
 
 const mockCreatePlan = vi.fn();
 const mockCreateWeek = vi.fn();
@@ -135,6 +137,10 @@ async function waitForMockCallCount(mock: { mock: { calls: unknown[] } }, count:
 
 describe('training-plan-persistence', () => {
   beforeEach(() => {
+    // Stronger guarantee: the calendar-constrained timezone owner must
+    // observe removal of the explicit plan zone on every developer host and
+    // CI runner, rather than inheriting whichever system zone runs Vitest.
+    Settings.defaultZone = 'UTC';
     _resetTrainingOperationLocksForTests();
     // Phase 1B: the outbox emit joins the plan-graph transaction on this
     // shared in-memory handle; reset the table so per-test event assertions
@@ -219,6 +225,7 @@ describe('training-plan-persistence', () => {
   });
 
   afterEach(() => {
+    Settings.defaultZone = originalDefaultZone;
     _resetTrainingOperationLocksForTests();
   });
 
@@ -775,7 +782,7 @@ describe('training-plan-persistence', () => {
     expect(JSON.parse(emitted[0].payload_json).sessionIds).toHaveLength(2);
   });
 
-  it('persists a session as unscheduled when real calendar busy windows leave no valid slot', async () => {
+  it('uses the plan timezone for the week-one past-day floor at UTC midnight when real calendar busy windows leave no valid slot', async () => {
     const day = new Date('2026-04-20T00:00:00.000Z');
     const blockStart = DateTime.fromISO('2026-04-20T05:00:00', { zone: 'Europe/Lisbon' }).toUTC().toJSDate();
     const blockEnd = DateTime.fromISO('2026-04-20T21:00:00', { zone: 'Europe/Lisbon' }).toUTC().toJSDate();
