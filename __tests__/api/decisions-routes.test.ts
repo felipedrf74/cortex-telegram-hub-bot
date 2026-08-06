@@ -655,6 +655,49 @@ describe('Decision routes', () => {
     }));
   });
 
+  it.each([
+    {
+      code: 'TRAINING_OPERATION_LOCKED',
+      message: 'Another training operation is in progress. Please try again shortly.',
+      status: 409,
+      retryAfterSeconds: 30,
+    },
+    {
+      code: 'TRAINING_OPERATION_LOCK_UNAVAILABLE',
+      message: 'Training operations are temporarily unavailable. Please try again shortly.',
+      status: 503,
+      retryAfterSeconds: 5,
+    },
+  ])('preserves the retry contract for Decision-backed Training activation: $code', async ({
+    code,
+    message,
+    status,
+    retryAfterSeconds,
+  }) => {
+    const router = decisionRoutes();
+    mockPerformDecisionAction.mockRejectedValueOnce(new DecisionActionError(
+      code,
+      message,
+      status,
+      { operation: 'plan_activate', retryAfterSeconds },
+    ));
+
+    const response = await dispatch(router, 'POST', '/training-activation/actions', {}, {
+      actionId: 'activate_training_plan_revision',
+      idempotencyKey: `f35-${code.toLowerCase()}`,
+    });
+
+    expect(response.statusCode).toBe(status);
+    expect(response.headers['Retry-After']).toBe(String(retryAfterSeconds));
+    expect(response.body.error).toMatchObject({ code, message });
+    // Pin an allowlist, not just the absence of today's known lock key, so
+    // scope-bearing fields added later cannot silently cross the HTTP seam.
+    expect(response.body.error.details).toEqual({
+      operation: 'plan_activate',
+      retryAfterSeconds,
+    });
+  });
+
   it('C3: lists, creates (dont_show_type + snooze_type), and removes type suppressions from authenticated scope', async () => {
     const router = decisionRoutes();
     mockListDecisionTypeSuppressions.mockReturnValue([

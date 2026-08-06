@@ -495,6 +495,47 @@ describe('training-plan-quality-gate', () => {
     ]);
   });
 
+  it('trims preserved custom strength volume instead of inflating an explicit duration ceiling', () => {
+    const originalSetCount = 20;
+    const result = prepareTrainingPlanForQualityGate(
+      {
+        sport: 'gym',
+        weeks: [{
+          weekNumber: 1,
+          focus: 'base',
+          sessions: [{
+            dayOfWeek: 'Wednesday',
+            sessionType: 'gym',
+            title: 'Travel Strength',
+            durationMinutes: 35,
+            exercises: [
+              { name: 'Dumbbell Floor Press', sets: 5, reps: '10', rir: 2, restSec: 90 },
+              { name: 'Goblet Squat', sets: 5, reps: '10', rir: 2, restSec: 90 },
+              { name: 'Seated Dumbbell Shoulder Press', sets: 5, reps: '10', rir: 2, restSec: 90 },
+              { name: 'Dead Bug', sets: 5, reps: '10 each side', rir: 3, restSec: 60 },
+            ],
+          }],
+        }],
+      },
+      specFor({
+        daysPerWeek: 2,
+        sessionDurationMinutes: 35,
+      }),
+    );
+
+    const session = weekOneStrengthSessions(result.planData)
+      .find((candidate: any) => candidate.title === 'Travel Strength');
+    const finalSetCount = (session?.exercises ?? [])
+      .reduce((total: number, exercise: any) => total + Number(exercise.sets ?? 0), 0);
+
+    expect(session).toBeDefined();
+    expect(session.durationMinutes).toBeLessThanOrEqual(35);
+    expect(session.estimatedDurationMinutes).toBeLessThanOrEqual(42);
+    expect(finalSetCount).toBeLessThan(originalSetCount);
+    expect(result.repairActions.some((action) => /trimmed accessory volume/i.test(action))).toBe(true);
+    expect(result.repairActions.some((action) => /raised Travel Strength/i.test(action))).toBe(false);
+  });
+
   it('does not rewrite endurance sessions whose title contains strength', () => {
     const result = prepareTrainingPlanForQualityGate(
       {
@@ -525,7 +566,12 @@ describe('training-plan-quality-gate', () => {
     expect(weekOneStrengthSessions(result.planData)).toHaveLength(2);
   });
 
-  it('does not block beginner four-week strength plans that do not yet need a scheduled deload', () => {
+  it('does not make the standalone beginner spec require its normal five-week deload cadence', () => {
+    // This validator models the athlete's normal novice cadence (five weeks),
+    // so a four-week spec leaves `deloadPolicy` disabled. The production REST
+    // generator separately horizon-fits week 5 into week 4 to satisfy the
+    // stronger creation-quality load-reduction invariant; that route behavior
+    // is pinned in training-plan-create-cycle.test.ts.
     const spec = buildTrainingPlanSpec({
       userId: 12,
       objective: 'Beginner strength plan, dumbbells only',
@@ -595,6 +641,33 @@ describe('training-plan-quality-gate', () => {
     expect(week4.focus).toBe('deload');
     expect(week4.intensityPct).toBeLessThanOrEqual(58);
     expect(week4.sessions.every((session: any) => session.progression?.deload === true)).toBe(true);
+  });
+
+  it('repairs adjacent lower-heavy sessions even when the affected week is a deload', () => {
+    // Stronger safety guarantee: deload relaxes volume progression, not
+    // recovery spacing. The old repair loop skipped the whole week while the
+    // validator still (correctly) blocked adjacent lower-heavy sessions.
+    const result = prepareTrainingPlanForQualityGate(
+      {
+        sport: 'gym',
+        weeks: [{ weekNumber: 4, focus: 'deload', sessions: [] }],
+      },
+      specFor({
+        daysPerWeek: 3,
+        goal: 'strength',
+        preferredTrainingDays: ['monday', 'tuesday', 'thursday', 'saturday'],
+        progressionModel: {
+          type: 'linear_load',
+          weekCount: 4,
+          deloadPolicy: { enabled: true, everyNWeeks: 4, trigger: 'readiness_low' },
+        },
+      }),
+    );
+
+    const strength = weekOneStrengthSessions(result.planData);
+    expect(result.validation.passed).toBe(true);
+    expect(hasAdjacentLowerHeavySessions(strength)).toBe(false);
+    expect(result.repairActions.some((action) => /adjacent lower-body recovery conflict/i.test(action))).toBe(true);
   });
 
   it('aligns deload progression with focus=deload instead of fixed week modulo', () => {

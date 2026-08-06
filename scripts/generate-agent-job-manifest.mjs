@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const AGENT_JOB_MANIFEST_SCHEMA = 'nexus.agent-job-manifest.v3';
-export const AGENT_JOB_MANIFEST_VERSION = '2026-08-02.1';
+export const AGENT_JOB_MANIFEST_VERSION = '2026-08-02.6';
 
 const GEMINI_ONE_SHOT_PROVIDER_ROUTE = 'gemini-primary-openai-fallback-anthropic-gated-last-resort';
 
@@ -12,7 +12,7 @@ const noProvider = (policyOwner, tenantScope, overrides = {}) => ({
   policyOwner,
   jobVersion: '1.0.0',
   tenantScope,
-  overlapPolicy: 'runtime-process-lock',
+  overlapPolicy: 'durable-database-lease',
   retryPolicy: 'next-scheduled-run',
   providerUsage: 'none',
   providerRouting: 'not-applicable-no-model-provider',
@@ -33,7 +33,7 @@ const providerCapable = (policyOwner, tenantScope, inputFingerprint, overrides =
   policyOwner,
   jobVersion: '1.0.0',
   tenantScope,
-  overlapPolicy: 'runtime-process-lock',
+  overlapPolicy: 'durable-database-lease',
   retryPolicy: 'next-scheduled-run',
   providerUsage: 'governed-provider-capable',
   providerRouting: 'budgeted-provider-route',
@@ -98,7 +98,7 @@ const providerCapableHandler = (policyOwner, tenantScope, inputFingerprint, over
   ...overrides,
 });
 
-// This is intentionally an explicit 63-job audit, not a domain-wide default.
+// This is intentionally an explicit per-job audit, not a domain-wide default.
 // Adding a scheduler registration without a reviewed policy makes generation
 // fail. Provider usage means model-provider capability; calendar, mail, task,
 // Garmin, and invoice integrations remain described by their job policies but
@@ -205,7 +205,10 @@ export const JOB_POLICIES = Object.freeze({
     costPolicy: 'ai-cost-guardrail:coach_analysis',
     ...sharedGovernedRunner('tenant-user', { fingerprintGate: 'adapter' }),
   }),
-  garmin_keepalive: noProvider('training', 'owner-garmin-identity', { retryPolicy: 'next-scheduled-run-with-auth-refresh' }),
+  garmin_keepalive: noProvider('training', 'connected-garmin-tenant-user', {
+    overlapPolicy: 'durable-database-lease',
+    retryPolicy: 'next-scheduled-run-with-auth-refresh',
+  }),
   garmin_tenant_isolation_watcher: noProvider('training', 'configured-garmin-tenant'),
   integration_health: noProvider('operations', 'configured-integration-identities', { outputPolicy: 'redacted-integration-health-records' }),
   invoice_collection: noProvider('finance', 'active-filing-profile-tenant', { retryPolicy: 'collector-bounded-retry' }),
@@ -223,7 +226,7 @@ export const JOB_POLICIES = Object.freeze({
   shared_list: noProvider('secretary', 'active-tenant-loop', { outputPolicy: 'notification-dedupe-key' }),
   task_ledger_retention: noProvider('tasks', 'platform-retention'),
   task_sync: noProvider('tasks', 'active-and-pending-task-tenant-user', { retryPolicy: 'provider-mutation-ledger-bounded-retry', outputPolicy: 'content-hash-and-provider-link-idempotency' }),
-  task_sync_delta: noProvider('tasks', 'active-and-pending-task-tenant-user', { overlapPolicy: 'task-sync-coordinator-single-flight', outputPolicy: 'flag-gated-delta-pull-content-hash-idempotency' }),
+  task_sync_delta: noProvider('tasks', 'active-and-pending-task-tenant-user', { overlapPolicy: 'durable-database-lease-plus-task-sync-coordinator-single-flight', outputPolicy: 'flag-gated-delta-pull-content-hash-idempotency' }),
   thursday_youtube: providerCapable('content', 'eligible-active-tenant-loop', {
     enforcement: 'output-inventory-gate',
     evidence: 'rollout-independent seven-day pending inventory requests only missing output and skips when full',
@@ -238,6 +241,14 @@ export const JOB_POLICIES = Object.freeze({
     ...sharedGovernedRunner('tenant-user'),
   }),
   training_plan_adjust: noProvider('training', 'active-plan-tenant-loop', { outputPolicy: 'deterministic-threshold-adjustment' }),
+  // Calendar/provider integrations are NOT model-provider jobs (see the
+  // comment above JOB_POLICIES): like task_sync and secretary_agenda_sync,
+  // the calendar-sync drain is providerUsage 'none' with its outbound-write
+  // discipline described by the output policy.
+  training_plan_calendar_sync_worker: noProvider('training', 'durable-queue-tenant-user', {
+    retryPolicy: 'durable-queue-max-5-with-backoff',
+    outputPolicy: 'active-plan-validated-ownership-idempotent-calendar-write',
+  }),
   training_session_reminder: noProvider('training', 'active-tenant-user-training-agenda', {
     retryPolicy: 'next-five-minute-sweep-with-dedupe-and-start-expiry',
     outputPolicy: 'tenant-scoped-deduped-expiring-training-reminder',
@@ -287,6 +298,21 @@ export const DIRECT_EVENT_EFFECT_POLICIES = Object.freeze({
     runtimeGroup: 'event-backbone-default',
     retryPolicy: 'event-outbox-max-3-with-backoff',
     outputPolicy: 'validated-redacted-learning-observation-upsert',
+  }),
+  record_training_secretary_feedback_decision: noProviderHandler('training', 'durable-event-owner-and-exact-secretary-tenant', {
+    runtimeGroup: 'event-backbone-default',
+    retryPolicy: 'event-outbox-max-3-with-backoff',
+    outputPolicy: 'exact-scope-monotonic-training-feedback-state-upsert',
+  }),
+  complete_cooking_meal_prep_provider_sync: noProviderHandler('cooking', 'durable-event-owner-and-exact-secretary-tenant', {
+    runtimeGroup: 'event-backbone-default',
+    retryPolicy: 'event-outbox-max-3-with-backoff',
+    outputPolicy: 'deduped-cooking-notification-and-calendar-cache-invalidation',
+  }),
+  record_secretary_source_skill_feedback: noProviderHandler('secretary', 'durable-event-owner-and-exact-secretary-tenant', {
+    runtimeGroup: 'event-backbone-default',
+    retryPolicy: 'event-outbox-max-3-with-backoff',
+    outputPolicy: 'exact-scope-monotonic-cooking-finance-content-feedback-upsert',
   }),
 });
 
@@ -346,6 +372,11 @@ export const QUEUED_JOB_HANDLER_POLICIES = Object.freeze({
     runtimeGroup: 'event-backbone-default',
     outputPolicy: 'intentional-no-external-call-foundation-handler',
   }),
+  training_plan_calendar_sync: noProviderHandler('training', 'durable-queue-tenant-user', {
+    runtimeGroup: 'training-plan-calendar-sync',
+    retryPolicy: 'durable-queue-max-5-with-backoff',
+    outputPolicy: 'active-plan-validated-ownership-idempotent-calendar-write',
+  }),
   chat_action_fixer_review: providerCapableHandler('chat-reliability', 'durable-queue-tenant-user', {
     enforcement: 'durable-job-idempotency',
     evidence: 'tenant/user/job-type/idempotency key and completed-state exclusion',
@@ -377,10 +408,21 @@ function buildEventHandlers(eventBackboneSource) {
   const handlerBody = extractArrayBody(eventBackboneSource, 'defaultEventHandlers');
   const eventTypes = [...handlerBody.matchAll(/eventType:\s*'([^']+)'/g)].map((match) => match[1]);
   const projectableBlock = eventBackboneSource.match(/const PROJECTABLE_EVENT_TYPES\s*=\s*new Set\(\[([\s\S]*?)\]\);/)?.[1] ?? '';
-  const routedEventTypes = parseSingleQuotedValues(projectableBlock).sort();
-  const queuedJobTypes = [...new Set([...handlerBody.matchAll(/jobType:\s*'([^']+)'/g)].map((match) => match[1]))].sort();
+  // Queue-only routed events: consumed by the '*' router purely to enqueue a
+  // durable job (no read-model projection). Required so the manifest's
+  // routedEventTypes stays an honest audit of everything the router acts on.
+  const queueRoutedBlock = eventBackboneSource.match(/const QUEUE_ROUTED_EVENT_TYPES\s*=\s*new Set\(\[([\s\S]*?)\]\);/)?.[1];
+  if (queueRoutedBlock == null) throw new Error('Cannot locate runtime queue-routed event registry');
   const directEffectsBlock = eventBackboneSource.match(/export const DEFAULT_EVENT_DIRECT_EFFECTS\s*=\s*\[([\s\S]*?)\]\s*as const;/)?.[1];
   if (!directEffectsBlock) throw new Error('Cannot locate runtime direct event effect registry');
+  const directEffectEventTypes = [...directEffectsBlock.matchAll(/eventType:\s*'([^']+)'\s*,\s*effect:\s*'([^']+)'/g)]
+    .map((match) => match[1]);
+  const routedEventTypes = [...new Set([
+    ...parseSingleQuotedValues(projectableBlock),
+    ...parseSingleQuotedValues(queueRoutedBlock),
+    ...directEffectEventTypes,
+  ])].sort();
+  const queuedJobTypes = [...new Set([...handlerBody.matchAll(/jobType:\s*'([^']+)'/g)].map((match) => match[1]))].sort();
   const directEffects = [...directEffectsBlock.matchAll(/eventType:\s*'([^']+)'\s*,\s*effect:\s*'([^']+)'/g)]
     .map((match) => {
       const eventType = match[1];
@@ -401,6 +443,24 @@ function buildEventHandlers(eventBackboneSource) {
   const runtimeLearningCalls = [...eventBackboneSource.matchAll(/recordTrainingLearningObservation\(\{/g)].length;
   if (runtimeLearningCalls < registeredLearningEffects) {
     throw new Error(`Product-learning direct event effects are not all called at runtime: registered=${registeredLearningEffects} calls=${runtimeLearningCalls}`);
+  }
+  const registeredSecretaryFeedbackEffects = directEffects
+    .filter((entry) => entry.effect === 'record_training_secretary_feedback_decision').length;
+  const runtimeSecretaryFeedbackCalls = [...eventBackboneSource.matchAll(/consumeTrainingSecretaryFeedbackEvent\(event,\s*db\)/g)].length;
+  if (runtimeSecretaryFeedbackCalls < registeredSecretaryFeedbackEffects) {
+    throw new Error(`Training Secretary feedback direct event effects are not all called at runtime: registered=${registeredSecretaryFeedbackEffects} calls=${runtimeSecretaryFeedbackCalls}`);
+  }
+  const registeredCookingCompletionEffects = directEffects
+    .filter((entry) => entry.effect === 'complete_cooking_meal_prep_provider_sync').length;
+  const runtimeCookingCompletionCalls = [...eventBackboneSource.matchAll(/consumeCookingMealPrepProviderSyncCompleted\(event,\s*db\)/g)].length;
+  if (runtimeCookingCompletionCalls < registeredCookingCompletionEffects) {
+    throw new Error(`Cooking provider-sync completion effects are not all called at runtime: registered=${registeredCookingCompletionEffects} calls=${runtimeCookingCompletionCalls}`);
+  }
+  const registeredSourceSkillFeedbackEffects = directEffects
+    .filter((entry) => entry.effect === 'record_secretary_source_skill_feedback').length;
+  const runtimeSourceSkillFeedbackCalls = [...eventBackboneSource.matchAll(/consumeSecretarySourceSkillFeedbackEvent\(event,\s*db\)/g)].length;
+  if (runtimeSourceSkillFeedbackCalls < registeredSourceSkillFeedbackEffects) {
+    throw new Error(`Secretary source-skill feedback direct event effects are not all called at runtime: registered=${registeredSourceSkillFeedbackEffects} calls=${runtimeSourceSkillFeedbackCalls}`);
   }
   const discoveredEffects = new Set(directEffects.map((entry) => entry.effect));
   const unusedEffects = Object.keys(DIRECT_EVENT_EFFECT_POLICIES).filter((effect) => !discoveredEffects.has(effect));
@@ -428,13 +488,16 @@ function buildEventHandlers(eventBackboneSource) {
   return handlers;
 }
 
-function buildQueuedJobHandlers(eventBackboneSource, chatActionFixerSource) {
+function buildQueuedJobHandlers(eventBackboneSource, chatActionFixerSource, trainingCalendarSyncSource) {
   const handlerBody = extractArrayBody(eventBackboneSource, 'defaultJobHandlers');
   const handlers = [...handlerBody.matchAll(/jobType:\s*'([^']+)'[\s\S]*?idempotent:\s*(true|false)/g)]
     .map((match) => ({ jobType: match[1], idempotent: match[2] === 'true', runtimeGroup: 'event-backbone-default' }));
   const chatFixerJobType = chatActionFixerSource.match(/CHAT_ACTION_FIXER_JOB_TYPE\s*=\s*'([^']+)'/)?.[1];
   if (!chatFixerJobType) throw new Error('Cannot locate chat action fixer queued job type');
   handlers.push({ jobType: chatFixerJobType, idempotent: true, runtimeGroup: 'chat-action-fixer' });
+  const trainingCalendarSyncJobType = trainingCalendarSyncSource.match(/TRAINING_PLAN_CALENDAR_SYNC_JOB_TYPE\s*=\s*'([^']+)'/)?.[1];
+  if (!trainingCalendarSyncJobType) throw new Error('Cannot locate training plan calendar sync queued job type');
+  handlers.push({ jobType: trainingCalendarSyncJobType, idempotent: true, runtimeGroup: 'training-plan-calendar-sync' });
   const generated = handlers.map((handler) => {
     const policy = QUEUED_JOB_HANDLER_POLICIES[handler.jobType];
     if (!policy) throw new Error(`AgentJobManifest policy missing for queued job handler: ${handler.jobType}`);
@@ -455,7 +518,7 @@ function buildQueuedJobHandlers(eventBackboneSource, chatActionFixerSource) {
   return generated;
 }
 
-export function buildAgentJobManifest(source, eventBackboneSource, chatActionFixerSource) {
+export function buildAgentJobManifest(source, eventBackboneSource, chatActionFixerSource, trainingCalendarSyncSource) {
   const jobs = [];
   const pattern = /registerJob\(\s*'([^']+)'\s*,\s*'([^']+)'\s*,\s*('[^']*'|[A-Za-z_][A-Za-z0-9_]*)\s*,\s*'([^']+)'/g;
   for (const match of source.matchAll(pattern)) {
@@ -482,7 +545,7 @@ export function buildAgentJobManifest(source, eventBackboneSource, chatActionFix
     version: AGENT_JOB_MANIFEST_VERSION,
     jobs,
     eventHandlers: buildEventHandlers(eventBackboneSource),
-    queuedJobHandlers: buildQueuedJobHandlers(eventBackboneSource, chatActionFixerSource),
+    queuedJobHandlers: buildQueuedJobHandlers(eventBackboneSource, chatActionFixerSource, trainingCalendarSyncSource),
   };
 }
 
@@ -495,7 +558,8 @@ function main() {
   const source = fs.readFileSync(path.join(root, 'src/services/scheduler.ts'), 'utf8');
   const eventBackboneSource = fs.readFileSync(path.join(root, 'src/services/event-backbone-worker.ts'), 'utf8');
   const chatActionFixerSource = fs.readFileSync(path.join(root, 'src/services/chat-action-fixer-worker.ts'), 'utf8');
-  const manifest = buildAgentJobManifest(source, eventBackboneSource, chatActionFixerSource);
+  const trainingCalendarSyncSource = fs.readFileSync(path.join(root, 'src/services/training-plan-calendar-sync-worker.ts'), 'utf8');
+  const manifest = buildAgentJobManifest(source, eventBackboneSource, chatActionFixerSource, trainingCalendarSyncSource);
   const serialized = serializeAgentJobManifest(manifest);
   const relativeOutput = 'config/agent-job-manifest.json';
   const output = path.join(root, relativeOutput);

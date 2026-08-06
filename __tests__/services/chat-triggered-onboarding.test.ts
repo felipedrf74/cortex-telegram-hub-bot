@@ -177,10 +177,12 @@ describe('Phase 3 Slice A — profile field helpers', () => {
   });
 
   describe('getMissingProfileFields', () => {
-    it('returns all steps when no profile exists', () => {
+    it('returns all required steps when no profile exists', () => {
       const missing = getMissingProfileFields(200, 'triathlon-gym');
       const questionnaire = getQuestionnaire('triathlon-gym')!;
-      expect(missing).toHaveLength(questionnaire.steps.length);
+      // Optional refinement fields are answerable through the canonical route,
+      // but they must not retroactively block legacy profile completeness.
+      expect(missing).toEqual(questionnaire.steps.filter((step) => step.required !== false));
     });
 
     it('returns only the unanswered steps when a profile is partial', () => {
@@ -237,6 +239,17 @@ describe('Phase 3 Slice A — profile field helpers', () => {
         upsertProfileField(302, 'triathlon-cycling', step.key, 'x');
       }
       expect(isProfileComplete(302, 'triathlon-cycling')).toBe(true);
+    });
+
+    it('keeps a legacy gym profile complete without the optional session duration', () => {
+      const questionnaire = getQuestionnaire('triathlon-gym')!;
+      for (const step of questionnaire.steps.filter((candidate) => candidate.required !== false)) {
+        upsertProfileField(303, 'triathlon-gym', step.key, step.options?.[0] ?? '60');
+      }
+
+      expect(getProfile(303, 'triathlon-gym')!.data.session_duration_minutes).toBeUndefined();
+      expect(getMissingProfileFields(303, 'triathlon-gym')).toHaveLength(0);
+      expect(isProfileComplete(303, 'triathlon-gym')).toBe(true);
     });
   });
 });

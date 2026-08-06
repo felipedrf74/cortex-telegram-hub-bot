@@ -795,6 +795,7 @@
         "__tests__/services/energy-reserve.test.ts",
         "__tests__/services/science-policy-gate-wiring.test.ts",
         "__tests__/services/travel-windows-and-equipment.test.ts",
+        "__tests__/services/00-training-pending-continuation-guard.test.ts",
         "__tests__/api/training*.test.ts",
         "__tests__/integration/training*.test.ts",
         "__tests__/services/coach*.test.ts",

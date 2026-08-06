@@ -84,7 +84,7 @@ export interface CoachKernelReadinessInput {
   reasoning?: string | null;
   /**
    * ISO timestamp anchoring how fresh the underlying wearable data is.
-   * Mirrors `ReadinessResult.capturedAt` (`src/services/readiness-scorer.ts`).
+   * Mirrors `ReadinessResult.dataAsOf` (`src/services/readiness-scorer.ts`).
    * The kernel itself ignores this for plan generation; the field is
    * propagated through `fetchCurrentReadinessForPlan` and consumed
    * downstream by the persistence layer to compute
@@ -668,7 +668,7 @@ function buildReadinessSnapshot(input: CoachKernelTrainingPlanInput, constraints
   if (input.currentReadiness && typeof input.currentReadiness.score === 'number') {
     const score = clampReadinessScore(input.currentReadiness.score);
     return {
-      capturedAt: new Date().toISOString(),
+      capturedAt: input.currentReadiness.capturedAt ?? new Date().toISOString(),
       level: scoreToReadinessLevel(score, hasHighInjury),
       score,
       confidence: input.currentReadiness.confidence ?? 'fresh_wearable',
@@ -1069,16 +1069,47 @@ function resolveRaceCalendar(
   if (!raceDate) return [];
 
   const subtype = normalizeRaceSubtype(runProfile?.target_race, objective);
-  if (!subtype && primaryFocus !== 'triathlon' && primaryFocus !== 'marathon' && primaryFocus !== 'running') return [];
 
   return [{
     id: 'goal-race',
     name: String(runProfile?.target_race || objective).trim(),
-    discipline: primaryFocus === 'triathlon' ? 'triathlon' : 'running',
+    // A missing running subtype must never erase a valid event date. Keep the
+    // established four-value RaceEvent wire union and resolve the closest
+    // supported event discipline for broad hybrid/strength objectives.
+    discipline: resolveRaceEventDiscipline(primaryFocus, runProfile?.target_race, objective),
     subtype,
     date: raceDate,
     priority: 'a',
   }];
+}
+
+function resolveRaceEventDiscipline(
+  primaryFocus: CoachingDiscipline,
+  targetRace: unknown,
+  objective: string,
+): RaceEvent['discipline'] {
+  switch (primaryFocus) {
+    case 'triathlon':
+      return 'triathlon';
+    case 'cycling':
+      return 'cycling';
+    case 'swimming':
+      return 'swimming';
+    case 'marathon':
+    case 'running':
+      return 'running';
+    case 'hybrid':
+    case 'strength': {
+      const source = `${String(targetRace || '')} ${objective}`.toLowerCase();
+      if (/triathlon|ironman|70\.3|triatlo/.test(source)) return 'triathlon';
+      if (/cycling|cycle|bike|biking|ride|ciclismo|bicicleta/.test(source)) return 'cycling';
+      if (/swimming|swim|open water|nata[cç][aã]o/.test(source)) return 'swimming';
+      // RaceEvent intentionally has no generic/strength discipline. Running
+      // is the compatibility fallback used only to preserve event timing;
+      // the plan's primaryFocus and session mix remain unchanged.
+      return 'running';
+    }
+  }
 }
 
 function resolveConstraints(
@@ -2039,12 +2070,20 @@ function shouldScheduleDeloadWeek(args: {
   durationWeeks: number;
   experienceLevel?: AthleteState['profile']['experienceLevel'];
 }): boolean {
-  if (args.durationWeeks < 4 || args.weekNumber < 4) return false;
+  const minimumPlanWeeksForLoadReduction = 4;
+  if (args.durationWeeks < minimumPlanWeeksForLoadReduction || args.weekNumber < 4) return false;
   const cadence = args.experienceLevel === 'novice'
     ? 5
     : args.experienceLevel === 'advanced'
       ? 3
       : 4;
+  // The compatibility REST path calls this generator directly; it does not
+  // pass through coach-v2's `resolveMesocyclePlan`. Walking a five-week novice
+  // cadence from the front used to make the deload unreachable in a four-week
+  // plan (`base, base, build, build`), which the end-to-end quality contract
+  // correctly rejects. Fit only a cadence longer than the eligible horizon;
+  // full cycles and sub-four-week plans retain their existing behavior.
+  if (args.durationWeeks < cadence) return args.weekNumber === args.durationWeeks;
   return args.weekNumber % cadence === 0;
 }
 
@@ -2085,6 +2124,7 @@ function convertWeeklyPlanToLegacyWeek(weeklyPlan: WeeklyPlan, weekNumber: numbe
     focus: weeklyPlan.phase,
     intensityPct: PHASE_INTENSITY[weeklyPlan.phase],
     sessions: weeklyPlan.sessions.map(convertSessionToLegacy),
+    notes: [...weeklyPlan.notes],
     decisionReasons: weeklyPlan.decisionReasons,
   };
 }

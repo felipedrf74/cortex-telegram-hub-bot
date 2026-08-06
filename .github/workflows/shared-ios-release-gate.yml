@@ -1,0 +1,391 @@
+name: Shared iOS Release Gate — post-production
+
+on:
+  workflow_dispatch:
+    inputs:
+      backend_runtime_sha:
+        description: Exact backend SHA already promoted through the release checkpoint
+        required: true
+        type: string
+      checkpoint_run_id:
+        description: Successful Release Checkpoint workflow run ID for the backend SHA
+        required: true
+        type: string
+      checkpoint_run_attempt:
+        description: Exact successful Release Checkpoint run attempt
+        required: true
+        type: string
+      ios_sha:
+        description: Exact protected-main iOS source SHA distributed by Xcode Cloud
+        required: true
+        type: string
+      ios_source_build_number:
+        description: Source CFBundleVersion bound by both signed iOS attestations
+        required: true
+        type: string
+      production_state_base64:
+        description: Canonical base64 of the passing production transaction JSON
+        required: true
+        type: string
+      ios_contract_attestation_base64:
+        description: Canonical base64 of the signed iOS contract attestation JSON
+        required: true
+        type: string
+      ios_distribution_attestation_base64:
+        description: Canonical base64 of the signed Xcode Cloud distribution attestation JSON
+        required: true
+        type: string
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: shared-ios-release-gate-${{ inputs.backend_runtime_sha }}-${{ inputs.ios_sha }}-${{ inputs.ios_source_build_number }}
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: '22.23.1'
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  shared-release-gate:
+    name: Verify post-production backend/iOS release evidence
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment:
+      name: production-release
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ inputs.backend_runtime_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Authorize owner and bind current protected main
+        env:
+          BACKEND_RUNTIME_SHA: ${{ inputs.backend_runtime_sha }}
+          CHECKPOINT_RUN_ID: ${{ inputs.checkpoint_run_id }}
+          CHECKPOINT_RUN_ATTEMPT: ${{ inputs.checkpoint_run_attempt }}
+          IOS_SHA: ${{ inputs.ios_sha }}
+          IOS_SOURCE_BUILD_NUMBER: ${{ inputs.ios_source_build_number }}
+        run: |
+          test "$GITHUB_ACTOR" = "$GITHUB_REPOSITORY_OWNER"
+          [[ "$BACKEND_RUNTIME_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$CHECKPOINT_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$CHECKPOINT_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+          [[ "$IOS_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$IOS_SOURCE_BUILD_NUMBER" =~ ^[1-9][0-9]*$ ]]
+          test "$(git rev-parse HEAD)" = "$BACKEND_RUNTIME_SHA"
+          git fetch --no-tags origin main
+          test "$(git rev-parse origin/main)" = "$BACKEND_RUNTIME_SHA"
+
+      - name: Resolve exact successful checkpoint artifact
+        id: checkpoint
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BACKEND_RUNTIME_SHA: ${{ inputs.backend_runtime_sha }}
+          CHECKPOINT_RUN_ID: ${{ inputs.checkpoint_run_id }}
+          CHECKPOINT_RUN_ATTEMPT: ${{ inputs.checkpoint_run_attempt }}
+        run: |
+          run="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CHECKPOINT_RUN_ID")"
+          jq -e \
+            --arg repo "$GITHUB_REPOSITORY" \
+            --arg sha "$BACKEND_RUNTIME_SHA" \
+            --arg attempt "$CHECKPOINT_RUN_ATTEMPT" \
+            '.repository.full_name==$repo
+              and .path==".github/workflows/release-candidate-evidence.yml"
+              and .name=="Release Checkpoint — exact main artifact"
+              and .head_sha==$sha
+              and .head_branch=="main"
+              and .event=="workflow_dispatch"
+              and .status=="completed"
+              and .conclusion=="success"
+              and .run_attempt==($attempt|tonumber)' <<<"$run" >/dev/null
+
+          artifacts="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CHECKPOINT_RUN_ID/artifacts?per_page=100")"
+          test "$(jq -r '.total_count' <<<"$artifacts")" -le 100
+          artifact_name="release-checkpoint-$BACKEND_RUNTIME_SHA"
+          artifact_count="$(jq --arg name "$artifact_name" \
+            '[.artifacts[] | select(.name==$name and .expired==false)] | length' \
+            <<<"$artifacts")"
+          test "$artifact_count" = 1
+          artifact_id="$(jq -r --arg name "$artifact_name" \
+            '.artifacts[] | select(.name==$name and .expired==false) | .id' \
+            <<<"$artifacts")"
+          artifact_size="$(jq -r --arg name "$artifact_name" \
+            '.artifacts[] | select(.name==$name and .expired==false) | .size_in_bytes' \
+            <<<"$artifacts")"
+          [[ "$artifact_id" =~ ^[1-9][0-9]*$ ]]
+          [[ "$artifact_size" =~ ^[1-9][0-9]*$ ]]
+          test "$artifact_size" -le 4194304
+          {
+            echo "run_id=$CHECKPOINT_RUN_ID"
+            echo "artifact_id=$artifact_id"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ steps.checkpoint.outputs.artifact_id }}
+          path: .local/shared-ios-release-gate/checkpoint
+          merge-multiple: true
+          run-id: ${{ steps.checkpoint.outputs.run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Bind manifest to checkpoint and protected-main artifact identity
+        id: manifest
+        env:
+          BACKEND_RUNTIME_SHA: ${{ inputs.backend_runtime_sha }}
+          CHECKPOINT_RUN_ID: ${{ inputs.checkpoint_run_id }}
+          CHECKPOINT_RUN_ATTEMPT: ${{ inputs.checkpoint_run_attempt }}
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import path from 'node:path';
+
+          const manifestPath = path.resolve(
+            '.local/shared-ios-release-gate/checkpoint/release-manifest.json',
+          );
+          const root = path.dirname(manifestPath);
+          const entries = fs.readdirSync(root);
+          if (entries.length !== 1 || entries[0] !== path.basename(manifestPath)) {
+            throw new Error('checkpoint artifact contains unexpected entries');
+          }
+          const uid = process.getuid();
+          const directoryPathStat = fs.lstatSync(root);
+          if (!directoryPathStat.isDirectory() || directoryPathStat.isSymbolicLink()
+              || directoryPathStat.uid !== uid) {
+            throw new Error('checkpoint artifact parent is unsafe');
+          }
+          const directoryDescriptor = fs.openSync(
+            root,
+            fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW,
+          );
+          let manifestBytes;
+          try {
+            const directoryStat = fs.fstatSync(directoryDescriptor);
+            if (!directoryStat.isDirectory()
+                || directoryStat.dev !== directoryPathStat.dev
+                || directoryStat.ino !== directoryPathStat.ino
+                || directoryStat.uid !== uid) {
+              throw new Error('checkpoint artifact parent changed during verification');
+            }
+            fs.fchmodSync(directoryDescriptor, 0o700);
+            const securedDirectory = fs.fstatSync(directoryDescriptor);
+            if ((securedDirectory.mode & 0o777) !== 0o700 || securedDirectory.uid !== uid) {
+              throw new Error('checkpoint artifact parent is not private');
+            }
+
+            const filePathStat = fs.lstatSync(manifestPath);
+            if (!filePathStat.isFile() || filePathStat.isSymbolicLink()
+                || filePathStat.nlink !== 1 || filePathStat.uid !== uid
+                || filePathStat.size <= 0 || filePathStat.size > 4 * 1024 * 1024) {
+              throw new Error('checkpoint manifest is not a bounded single-link regular file');
+            }
+            const fileDescriptor = fs.openSync(
+              manifestPath,
+              fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW,
+            );
+            try {
+              const openedFile = fs.fstatSync(fileDescriptor);
+              if (openedFile.dev !== filePathStat.dev || openedFile.ino !== filePathStat.ino
+                  || openedFile.nlink !== 1 || openedFile.uid !== uid) {
+                throw new Error('checkpoint manifest changed during verification');
+              }
+              fs.fchmodSync(fileDescriptor, 0o600);
+              const securedFile = fs.fstatSync(fileDescriptor);
+              if ((securedFile.mode & 0o777) !== 0o600 || securedFile.uid !== uid
+                  || securedFile.nlink !== 1) {
+                throw new Error('checkpoint manifest is not private');
+              }
+              manifestBytes = fs.readFileSync(fileDescriptor);
+            } finally {
+              fs.closeSync(fileDescriptor);
+            }
+          } finally {
+            fs.closeSync(directoryDescriptor);
+          }
+          const manifest = JSON.parse(manifestBytes.toString('utf8'));
+          const backendSha = process.env.BACKEND_RUNTIME_SHA;
+          const checkpointRunId = Number(process.env.CHECKPOINT_RUN_ID);
+          const checkpointRunAttempt = Number(process.env.CHECKPOINT_RUN_ATTEMPT);
+          const positiveInteger = (value) => Number.isSafeInteger(value) && value > 0;
+          if (manifest.schema !== 'nexus.release-checksum-manifest.v1'
+              || manifest.sourceSha !== backendSha
+              || manifest.releaseCheckpoint?.runId !== checkpointRunId
+              || manifest.releaseCheckpoint?.runAttempt !== checkpointRunAttempt
+              || manifest.releaseCheckpoint.workflow !== 'release-candidate-evidence.yml'
+              || manifest.protectedMain.workflow !== 'ci.yml'
+              || !positiveInteger(manifest.protectedMain.runId)
+              || !positiveInteger(manifest.protectedMain.runAttempt)
+              || !/^[0-9a-f]{64}$/.test(manifest.artifact?.sha256 ?? '')
+              || manifest.artifact.name !== `release-bundle-${backendSha}-${manifest.artifact.sha256}`) {
+            throw new Error('checkpoint manifest release identity is invalid or mismatched');
+          }
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, [
+            `protected_run_id=${manifest.protectedMain.runId}`,
+            `protected_run_attempt=${manifest.protectedMain.runAttempt}`,
+            `bundle_artifact_name=${manifest.artifact.name}`,
+            `bundle_artifact_digest=${manifest.artifact.sha256}`,
+            '',
+          ].join('\n'));
+          NODE
+
+      - name: Resolve exact successful protected-main bundle artifact
+        id: protected_main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BACKEND_RUNTIME_SHA: ${{ inputs.backend_runtime_sha }}
+          PROTECTED_RUN_ID: ${{ steps.manifest.outputs.protected_run_id }}
+          PROTECTED_RUN_ATTEMPT: ${{ steps.manifest.outputs.protected_run_attempt }}
+          BUNDLE_ARTIFACT_NAME: ${{ steps.manifest.outputs.bundle_artifact_name }}
+        run: |
+          run="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PROTECTED_RUN_ID")"
+          jq -e \
+            --arg repo "$GITHUB_REPOSITORY" \
+            --arg sha "$BACKEND_RUNTIME_SHA" \
+            --arg attempt "$PROTECTED_RUN_ATTEMPT" \
+            '.repository.full_name==$repo
+              and .path==".github/workflows/ci.yml"
+              and .head_sha==$sha
+              and .head_branch=="main"
+              and .event=="push"
+              and .status=="completed"
+              and .conclusion=="success"
+              and .run_attempt==($attempt|tonumber)' <<<"$run" >/dev/null
+
+          artifacts="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PROTECTED_RUN_ID/artifacts?per_page=100")"
+          test "$(jq -r '.total_count' <<<"$artifacts")" -le 100
+          artifact_count="$(jq --arg name "$BUNDLE_ARTIFACT_NAME" \
+            '[.artifacts[] | select(.name==$name and .expired==false)] | length' \
+            <<<"$artifacts")"
+          test "$artifact_count" = 1
+          artifact_id="$(jq -r --arg name "$BUNDLE_ARTIFACT_NAME" \
+            '.artifacts[] | select(.name==$name and .expired==false) | .id' \
+            <<<"$artifacts")"
+          artifact_size="$(jq -r --arg name "$BUNDLE_ARTIFACT_NAME" \
+            '.artifacts[] | select(.name==$name and .expired==false) | .size_in_bytes' \
+            <<<"$artifacts")"
+          [[ "$artifact_id" =~ ^[1-9][0-9]*$ ]]
+          [[ "$artifact_size" =~ ^[1-9][0-9]*$ ]]
+          test "$artifact_size" -le 2147483648
+          {
+            echo "run_id=$PROTECTED_RUN_ID"
+            echo "artifact_id=$artifact_id"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ steps.protected_main.outputs.artifact_id }}
+          path: .local/shared-ios-release-gate/bundle
+          merge-multiple: true
+          run-id: ${{ steps.protected_main.outputs.run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Materialize bounded canonical evidence
+        env:
+          PRODUCTION_STATE_BASE64: ${{ inputs.production_state_base64 }}
+          IOS_CONTRACT_ATTESTATION_BASE64: ${{ inputs.ios_contract_attestation_base64 }}
+          IOS_DISTRIBUTION_ATTESTATION_BASE64: ${{ inputs.ios_distribution_attestation_base64 }}
+        run: |
+          umask 077
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import { TextDecoder } from 'node:util';
+
+          const outputRoot = path.resolve('.local/shared-ios-release-gate/evidence');
+          fs.mkdirSync(outputRoot, { recursive: true, mode: 0o700 });
+          fs.chmodSync(outputRoot, 0o700);
+          const canonicalBase64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+          const decoder = new TextDecoder('utf-8', { fatal: true });
+
+          function materializeCanonicalBase64(name, filename, maxBytes) {
+            const encoded = process.env[name] ?? '';
+            if (!encoded || encoded.length > 65535 || !canonicalBase64.test(encoded)) {
+              throw new Error(`${name} is not bounded canonical base64`);
+            }
+            const decoded = Buffer.from(encoded, 'base64');
+            if (decoded.length <= 0 || decoded.length > maxBytes
+                || decoded.toString('base64') !== encoded) {
+              throw new Error(`${name} is not bounded canonical base64`);
+            }
+            const parsed = JSON.parse(decoder.decode(decoded));
+            if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+              throw new Error(`${name} must encode one JSON object`);
+            }
+            const output = path.join(outputRoot, filename);
+            const descriptor = fs.openSync(output, 'wx', 0o600);
+            try {
+              fs.writeFileSync(descriptor, decoded);
+              fs.fsyncSync(descriptor);
+            } finally {
+              fs.closeSync(descriptor);
+            }
+          }
+
+          materializeCanonicalBase64('PRODUCTION_STATE_BASE64', 'production-state.json', 256 * 1024);
+          materializeCanonicalBase64('IOS_CONTRACT_ATTESTATION_BASE64', 'ios-contract-attestation.json', 512 * 1024);
+          materializeCanonicalBase64('IOS_DISTRIBUTION_ATTESTATION_BASE64', 'ios-distribution-attestation.json', 512 * 1024);
+          NODE
+
+      - name: Run exact shared backend and iOS release gate
+        env:
+          BACKEND_RUNTIME_SHA: ${{ inputs.backend_runtime_sha }}
+          IOS_SHA: ${{ inputs.ios_sha }}
+          IOS_SOURCE_BUILD_NUMBER: ${{ inputs.ios_source_build_number }}
+        run: |
+          node scripts/shared-ios-release-gate.mjs \
+          --manifest .local/shared-ios-release-gate/checkpoint/release-manifest.json \
+          --bundle .local/shared-ios-release-gate/bundle \
+          --production-state .local/shared-ios-release-gate/evidence/production-state.json \
+          --ios-contract-attestation .local/shared-ios-release-gate/evidence/ios-contract-attestation.json \
+          --ios-distribution-attestation .local/shared-ios-release-gate/evidence/ios-distribution-attestation.json \
+          --expect-backend-runtime-sha "$BACKEND_RUNTIME_SHA" \
+          --expect-ios-sha "$IOS_SHA" \
+          --expect-ios-build-number "$IOS_SOURCE_BUILD_NUMBER" \
+          --output .local/shared-ios-release-gate/shared-ios-release-gate-receipt.json
+
+      - name: Revalidate passing receipt identity
+        env:
+          BACKEND_RUNTIME_SHA: ${{ inputs.backend_runtime_sha }}
+          IOS_SHA: ${{ inputs.ios_sha }}
+          IOS_SOURCE_BUILD_NUMBER: ${{ inputs.ios_source_build_number }}
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import path from 'node:path';
+
+          const receiptPath = path.resolve(
+            '.local/shared-ios-release-gate/shared-ios-release-gate-receipt.json',
+          );
+          const stat = fs.lstatSync(receiptPath);
+          if (!stat.isFile() || stat.isSymbolicLink() || stat.size <= 0 || stat.size > 256 * 1024) {
+            throw new Error('shared iOS release receipt is not a bounded regular file');
+          }
+          const receipt = JSON.parse(fs.readFileSync(receiptPath, 'utf8'));
+          const backendSha = process.env.BACKEND_RUNTIME_SHA;
+          const iosSha = process.env.IOS_SHA;
+          const iosBuild = process.env.IOS_SOURCE_BUILD_NUMBER;
+          if (receipt.schema !== 'nexus.shared-ios-release-gate.v1'
+              || receipt.result !== 'passed'
+              || receipt.backend?.runtimeSha !== backendSha
+              || receipt.ios?.sourceSha !== iosSha
+              || receipt.ios?.sourceBuildNumber !== iosBuild) {
+            throw new Error('shared iOS release receipt identity is invalid or mismatched');
+          }
+          NODE
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: shared-ios-release-gate-${{ inputs.backend_runtime_sha }}-${{ inputs.ios_sha }}-build-${{ inputs.ios_source_build_number }}
+          path: .local/shared-ios-release-gate/shared-ios-release-gate-receipt.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30

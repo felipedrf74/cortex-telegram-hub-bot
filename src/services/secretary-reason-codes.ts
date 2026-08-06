@@ -23,7 +23,8 @@ export type SecretaryOutcomeReasonCode =
   | 'reflowed_to_available_window'
   | 'compressed_to_fit_capacity'
   | 'deferred_due_to_current_capacity'
-  | 'unscheduled_no_capacity';
+  | 'unscheduled_no_capacity'
+  | 'priority_preempted_by_higher_rank';
 
 // Validation failures (terminal — arbitration stops)
 export type SecretaryValidationReasonCode =
@@ -41,7 +42,9 @@ export type SecretarySlotModifierReasonCode =
   | 'duration_reduced'
   | 'fixed_intent_respected'
   | 'high_priority_intent'
-  | 'deadline_present';
+  | 'deadline_present'
+  | 'priority_preemption_candidate'
+  | 'priority_preemption_applied';
 
 // Source-skill hints (appended when a skill influences priority/intent)
 export type SecretarySourceSkillReasonCode =
@@ -54,7 +57,11 @@ export type SecretarySourceSkillReasonCode =
 export type SecretaryProviderSyncReasonCode =
   | 'provider_source_mismatch'
   | 'readback_mismatch'
-  | 'readback_verified';
+  | 'readback_verified'
+  | 'priority_preemption_dependency_terminal_failure'
+  | 'preemption_winner_provider_terminal_failure'
+  | 'preemption_canceled_before_provider_sync'
+  | 'preemption_winner_expired_before_provider_sync';
 
 export type SecretaryReasonCode =
   | SecretaryOutcomeReasonCode
@@ -70,6 +77,7 @@ const KNOWN_REASON_CODES = new Set<string>([
   'compressed_to_fit_capacity',
   'deferred_due_to_current_capacity',
   'unscheduled_no_capacity',
+  'priority_preempted_by_higher_rank',
   // validation
   'invalid_owner_scope',
   'invalid_tenant_scope',
@@ -84,6 +92,8 @@ const KNOWN_REASON_CODES = new Set<string>([
   'fixed_intent_respected',
   'high_priority_intent',
   'deadline_present',
+  'priority_preemption_candidate',
+  'priority_preemption_applied',
   // source-skill hints
   'finance_deadline_priority',
   'cooking_support_request',
@@ -93,6 +103,10 @@ const KNOWN_REASON_CODES = new Set<string>([
   'provider_source_mismatch',
   'readback_mismatch',
   'readback_verified',
+  'priority_preemption_dependency_terminal_failure',
+  'preemption_winner_provider_terminal_failure',
+  'preemption_canceled_before_provider_sync',
+  'preemption_winner_expired_before_provider_sync',
 ]);
 
 /**

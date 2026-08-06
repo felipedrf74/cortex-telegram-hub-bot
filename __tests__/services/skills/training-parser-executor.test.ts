@@ -46,7 +46,11 @@ import {
   executeTrainingPlanCreateStep,
   executeTrainingReflowStep,
 } from '../../../src/services/skills/training/executor';
-import { extractTrainingPlanSlots, extractTrainingStartDate, extractWeeklyVolumeKm } from '../../../src/services/skills/training/helpers';
+import {
+  extractTrainingPlanSlots,
+  extractTrainingSessionsPerWeek,
+  extractTrainingStartPolicy,
+} from '../../../src/services/skills/training/helpers';
 import { parseTrainingActionStep } from '../../../src/services/skills/training/parser';
 
 const NOW_ISO = '2026-05-13T10:00:00+01:00';
@@ -156,13 +160,14 @@ describe('training parser and executor hardening', () => {
     });
   });
 
-  it('extracts Portuguese running verbs as running sport', () => {
+  it('converges Portuguese sport and goal phrasing into a REST objective', () => {
     const extracted = extractTrainingPlanSlots({
       ...plannerInput('Quero correr 50 km por semana para maratona em 12 semanas começando segunda'),
       text: 'Quero correr 50 km por semana para maratona em 12 semanas começando segunda',
     });
 
-    expect(extracted.slots.sport).toBe('running');
+    expect(extracted.slots.objective).toBe('maratona');
+    expect(extracted.slots).not.toHaveProperty('sport');
   });
 
   it('stops goal extraction before Spanish duration qualifiers', () => {
@@ -171,46 +176,56 @@ describe('training parser and executor hardening', () => {
       text: 'Create a running plan para maratona en 12 semanas starting Monday, 50 km per week',
     });
 
-    expect(extracted.slots.goal).toBe('maratona');
-    expect(String(extracted.slots.goal)).not.toContain('12 semanas');
+    expect(extracted.slots.objective).toBe('maratona');
+    expect(String(extracted.slots.objective)).not.toContain('12 semanas');
   });
 
-  it('parses weekday training start dates from English and Portuguese phrases', () => {
-    expect(extractTrainingStartDate({
+  it('maps representable chat start phrases to the REST start policy', () => {
+    expect(extractTrainingStartPolicy({
       ...plannerInput('Create a training plan starting Monday'),
       text: 'Create a training plan starting Monday',
-    })?.value).toBe('2026-05-18');
+    })?.value).toBe('next_full_week');
 
-    expect(extractTrainingStartDate({
+    expect(extractTrainingStartPolicy({
       ...plannerInput('Cria um plano de treino começando segunda'),
       text: 'Cria um plano de treino começando segunda',
-    })?.value).toBe('2026-05-18');
+    })?.value).toBe('next_full_week');
+
+    expect(extractTrainingStartPolicy({
+      ...plannerInput('Create a training plan starting today'),
+      text: 'Create a training plan starting today',
+    })?.value).toBe('today');
   });
 
-  it('only extracts weekly volume when the km value is explicitly weekly', () => {
-    expect(extractWeeklyVolumeKm('I ran 10 km yesterday, plan my training for the week')).toBeNull();
-    expect(extractWeeklyVolumeKm('I am running 50 km per week')).toBe(50);
-    expect(extractWeeklyVolumeKm('Minha semana tem 42 km')).toBe(42);
+  it('extracts only the REST frequency range and drops weekly mileage', () => {
+    expect(extractTrainingSessionsPerWeek('Make it 4 sessions per week')).toBe(4);
+    expect(extractTrainingSessionsPerWeek('Quero 6 treinos por semana')).toBe(6);
+    expect(extractTrainingSessionsPerWeek('I run 50 km per week')).toBeNull();
+    expect(extractTrainingPlanSlots({
+      ...plannerInput('I run 50 km per week'),
+      text: 'I run 50 km per week',
+    }).slots).not.toHaveProperty('weeklyVolumeKm');
   });
 
   it('uses the training intent classifier to route triathlon plan creation', () => {
-    const step = parse('Build me an Ironman plan for 12 weeks starting Monday, 20 km per week');
+    const step = parse('Build me an Ironman plan for 12 weeks starting Monday, 4 sessions per week');
 
     expect(step?.skill).toBe('training');
     expect(step?.action).toBe('training_plan_create');
-    expect(step?.args.sport).toBe('triathlon');
-    expect(step?.args.goal).toBe('Ironman');
+    expect(step?.args.objective).toBe('Ironman');
+    expect(step?.args.sessionsPerWeek).toBe(4);
+    expect(step?.args.startPolicy).toBe('next_full_week');
     expect(step?.requiredArgsPresent).toBe(true);
   });
 
-  it('uses classifier modality as a sport slot fallback', () => {
+  it('uses classifier modality as an objective fallback', () => {
     const extracted = extractTrainingPlanSlots({
-      ...plannerInput('Build me an Ironman plan for 12 weeks starting Monday, 20 km per week'),
-      text: 'Build me an Ironman plan for 12 weeks starting Monday, 20 km per week',
+      ...plannerInput('Build me a cycling training plan for 12 weeks starting Monday, 4 sessions per week'),
+      text: 'Build me a cycling training plan for 12 weeks starting Monday, 4 sessions per week',
     });
 
-    expect(extracted.slots.sport).toBe('triathlon');
-    expect(extracted.provenance.sport?.normalizer).toBe('training_intent_modality_v1');
+    expect(extracted.slots.objective).toBe('cycling training');
+    expect(extracted.provenance.objective?.normalizer).toBe('training_objective_modality_v1');
   });
 
   it('routes modality-specific prescriptions that older regex gates missed', () => {

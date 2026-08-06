@@ -645,6 +645,50 @@ db.close();
     expect(run({ ...valid, schema: 'unexpected' }).status).toBe(1);
   });
 
+  it('binds the complete canonical staging smoke before allowing production SSH', () => {
+    const operator = fs.readFileSync('scripts/release-operator.sh', 'utf8');
+    const prepareStart = operator.indexOf('\n  prepare)');
+    const promoteStart = operator.indexOf('\n  promote)');
+    const prepare = operator.slice(prepareStart, promoteStart);
+    const promote = operator.slice(promoteStart);
+
+    const prepareDryRun = prepare.indexOf('if [ "$DRY_RUN" = true ]; then');
+    const validateStaging = prepare.indexOf(
+      'node scripts/release-checksum-manifest.mjs validate-state',
+    );
+    const canonicalSmoke = prepare.indexOf('"$ROOT/scripts/staging-smoke.sh"');
+    const validateEvidence = prepare.indexOf(
+      'node scripts/lib/staging-smoke-evidence.mjs validate',
+    );
+    const persistStaged = prepare.indexOf(
+      'write_local_state staged "$STAGING_STATE" "" "$STAGING_SMOKE_VALIDATION"',
+    );
+    expect(prepareStart).toBeGreaterThan(-1);
+    expect(prepareDryRun).toBeGreaterThan(-1);
+    expect(prepareDryRun).toBeLessThan(validateStaging);
+    expect(validateStaging).toBeLessThan(canonicalSmoke);
+    expect(canonicalSmoke).toBeLessThan(validateEvidence);
+    expect(validateEvidence).toBeLessThan(persistStaged);
+    expect(prepare).toContain('NEXUS_SMOKE_REQUIRE_EXACT_IDENTITY=1');
+    expect(prepare).toContain('NEXUS_RELEASE_SHA="$RUNTIME_SHA"');
+    expect(prepare).toContain('NEXUS_RELEASE_ARTIFACT_SHA256="$ARTIFACT_DIGEST"');
+    expect(prepare).toContain(
+      'NEXUS_SMOKE_CLASSIFIER_BASE_SHA="$CANONICAL_DEPLOYED_SHA"',
+    );
+
+    const promoteEvidenceGate = promote.indexOf('validate_staging_smoke_binding');
+    const promoteDryRun = promote.indexOf('if [ "$DRY_RUN" = true ]; then');
+    const firstProductionSsh = promote.indexOf('REMOTE_PRODUCTION_STATE="$(ssh');
+    // Stronger guarantee: dry-run may revalidate local prepared evidence, but
+    // neither dry-run nor production can cross the SSH boundary before it passes.
+    expect(promoteEvidenceGate).toBeGreaterThan(-1);
+    expect(promoteEvidenceGate).toBeLessThan(promoteDryRun);
+    expect(promoteDryRun).toBeLessThan(firstProductionSsh);
+    expect(operator).toContain('--expect-evidence-sha256 "$STAGING_SMOKE_EVIDENCE_SHA256"');
+    expect(operator).toContain('--expect-classifier-sha256 "$STAGING_SMOKE_CLASSIFIER_SHA256"');
+    expect(operator).toContain('--expect-binding "$STATE_FILE"');
+  });
+
   it('keeps promotion user-owned while requiring the narrow root backup service', () => {
     const operator = fs.readFileSync('scripts/release-operator.sh', 'utf8');
     const remote = fs.readFileSync('scripts/remote-user-release-transaction.sh', 'utf8');

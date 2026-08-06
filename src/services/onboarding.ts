@@ -28,6 +28,8 @@ export interface QuestionStep {
   type: AnswerType;
   options?: string[];       // For choice/multi_choice types
   validation?: RegExp;      // For text/number types
+  min?: number;             // Numeric lower bound exposed to typed clients
+  max?: number;             // Numeric upper bound exposed to typed clients
   required?: boolean;       // Default true
 }
 
@@ -281,6 +283,24 @@ export const QUESTIONNAIRES: Record<string, QuestionnaireDefinition> = {
         prompt: 'What equipment do you have access to?',
         type: 'choice',
         options: ['Full commercial gym', 'Garage gym (barbell + rack)', 'Home gym (basic)', 'Bodyweight only'],
+      },
+      {
+        // Phase 4 isolated clarification journey: this is the canonical
+        // profile target advertised by `session_duration_clarification`.
+        // It must live in the questionnaire definition or the allowlisted
+        // PATCH route rejects the server-provided resolution as an unknown
+        // field. Keep the bounds byte-for-byte aligned with the clarification
+        // registry (20...180 minutes).
+        key: 'session_duration_minutes',
+        prompt: 'How many minutes can you usually spend on each gym session?',
+        type: 'number',
+        min: 20,
+        max: 180,
+        validation: /^(?:[2-9]\d|1[0-7]\d|180)$/,
+        // Existing gym profiles predate this refinement. It is canonical and
+        // writable when the plan linter asks for it, but must not make those
+        // otherwise-complete profiles incomplete retroactively.
+        required: false,
       },
     ],
   },
@@ -817,7 +837,7 @@ export function getMissingProfileFields(
   if (!def) return [];
   const profile = getProfile(userId, profileType);
   const answered = new Set(Object.keys(profile?.data ?? {}));
-  return def.steps.filter((step) => !answered.has(step.key));
+  return def.steps.filter((step) => step.required !== false && !answered.has(step.key));
 }
 
 /**

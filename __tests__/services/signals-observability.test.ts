@@ -48,8 +48,6 @@ import {
   publishHighLegLoad,
   publishHighShoulderLoad,
   publishSessionLoad,
-  publishTrainingSessionScheduled,
-  publishCalendarConflict,
 } from '../../src/services/training-signals';
 import { recordHealthSignal } from '../../src/services/health-signals';
 import {
@@ -64,10 +62,6 @@ import {
 function freshDb(): void {
   testDb = createMigratedTestDatabase();
   setDbProvider(() => testDb as any);
-}
-
-function futureIso(hoursFromNow: number): string {
-  return new Date(Date.now() + hoursFromNow * 60 * 60 * 1_000).toISOString();
 }
 
 function trainingHomeBaseInput(
@@ -177,7 +171,31 @@ describe('buildActiveSignalsResponse — per-type formatting', () => {
     const res = buildActiveSignalsResponse(2003);
     const s = res.signals.find((x) => x.type === 'low_readiness')!;
     expect(s.title).toBe('Low readiness');
-    expect(s.summary).toContain('28/100');
+    expect(s.summary).toBe('Garmin readiness 28/100 — coach will skip any planned hard session.');
+
+    // Historical rows may predate the typed score payload. Keep their copy
+    // bounded and useful instead of rendering an undefined provider value.
+    publishLowReadiness({
+      userId: 2004,
+      tenantId: 2004,
+      score: undefined as unknown as number,
+      reason: 'legacy payload without score',
+    });
+    const fallback = buildActiveSignalsResponse(2004).signals
+      .find((x) => x.type === 'low_readiness')!;
+    expect(fallback.summary).toBe('Garmin readiness low — coach will skip any planned hard session.');
+
+    // Persisted legacy payloads are untrusted JSON. A numeric-looking string
+    // must not bypass the typed boundary or appear as a provider score.
+    publishLowReadiness({
+      userId: 2005,
+      tenantId: 2005,
+      score: '28' as unknown as number,
+      reason: 'legacy string score',
+    });
+    const wrongType = buildActiveSignalsResponse(2005).signals
+      .find((x) => x.type === 'low_readiness')!;
+    expect(wrongType.summary).toBe('Garmin readiness low — coach will skip any planned hard session.');
   });
 
   it('surfaces structured health-intake red flags through active signals and Training Home state', () => {
@@ -236,53 +254,6 @@ describe('buildActiveSignalsResponse — per-type formatting', () => {
     expect(s.title).toBe('Run done today');
     expect(s.summary).toContain('RPE 6');
     expect(s.summary).toContain('8km');
-  });
-
-  it('formats training_session_scheduled with sport and title', () => {
-    publishTrainingSessionScheduled({
-      userId: 2007,
-      tenantId: 2007,
-      sport: 'cycling',
-      sessionId: 'ride-abc',
-      startTimeIso: futureIso(2),
-      endTimeIso: futureIso(4),
-      title: 'FTP test',
-    });
-    const res = buildActiveSignalsResponse(2007);
-    const s = res.signals.find((x) => x.type === 'training_session_scheduled')!;
-    expect(s.title).toBe('Session scheduled');
-    expect(s.summary).toContain('Cycling');
-    expect(s.summary).toContain('FTP test');
-    expect(s.payload).toEqual({ sport: 'cycling', title: 'FTP test' });
-    expect(JSON.stringify(s.payload)).not.toContain('ride-abc');
-  });
-
-  it('formats calendar_conflict without exposing the private event title', () => {
-    publishTrainingSessionScheduled({
-      userId: 2008,
-      tenantId: 2008,
-      sport: 'running',
-      sessionId: 'run-1',
-      startTimeIso: futureIso(6),
-      endTimeIso: futureIso(8),
-      title: 'Intervals',
-    });
-    publishCalendarConflict({
-      userId: 2008,
-      trainingSessionId: 'run-1',
-      conflictingEventId: 'evt-meeting',
-      conflictingEventTitle: 'Team standup',
-      overlapStartIso: '2026-04-15T17:30:00Z',
-      overlapEndIso: '2026-04-15T18:00:00Z',
-    });
-    const res = buildActiveSignalsResponse(2008);
-    const s = res.signals.find((x) => x.type === 'calendar_conflict')!;
-    expect(s.title).toBe('Calendar conflict');
-    expect(s.summary).toBe('A calendar event overlaps a scheduled training session — consider moving one.');
-    expect(s.summary).not.toContain('Team standup');
-    expect(s.payload).toEqual({});
-    expect(JSON.stringify(s)).not.toContain('Team standup');
-    expect(JSON.stringify(s)).not.toContain('evt-meeting');
   });
 
   it('every formatted signal has non-empty title and summary fields', () => {

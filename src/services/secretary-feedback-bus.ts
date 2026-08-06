@@ -16,11 +16,13 @@ import type {
  * session was compressed to 45, Cooking never learned that its meal prep
  * window moved.
  *
- * This module provides a tiny single-file in-process emitter pattern. No
- * DI framework, no event-emitter library, no DB outbox. Consumers
+ * This module provides a tiny single-file in-process fast path. Consumers
  * register at module load via `registerSecretaryFeedbackConsumer`; the
- * arbitrator calls `emitSecretaryFeedback` after persist; each consumer
- * runs in a try/catch so one bad handler never breaks arbitration.
+ * arbitrator calls `emitSecretaryFeedback` after persist; each consumer runs
+ * in a try/catch so one bad handler never breaks arbitration. Training also
+ * has a durable event_outbox path (`secretary.training_feedback.requested.v1`)
+ * written atomically with the agenda version; that path is authoritative for
+ * crash/restart delivery and uses the same idempotent projection.
  *
  * Wave 1 consumers:
  * - Training (writes "compressed_session +recovery_debt" hint into the
@@ -32,7 +34,8 @@ import type {
  *   pass can refresh user-facing copy without reparsing agenda rows.
  *
  * Idempotency: handlers receive `(agendaItemId, version)` as part of the
- * feedback shape; consumers dedupe by `(agendaItemId, sourceIntentId)`.
+ * feedback shape. Training keeps one monotonic row per scoped source intent;
+ * legacy Wave 2 consumers still dedupe per agenda item + source intent.
  *
  * Plan reference: Wave 1 workstream W-B in
  * /Users/felipedominguez/.claude/plans/graceful-stirring-scone.md

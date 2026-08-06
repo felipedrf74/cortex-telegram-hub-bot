@@ -2,14 +2,12 @@
 
 import {
   getActivePendingChatAction,
-  makeSlotProvenance,
   type ChatSlotProvenance,
 } from '../../chat-action-state';
 import type { ChatActionPlan, ChatPlannerInput } from '../../chat/types';
 import type { PendingContinuationHelpers } from '../../chat/planner/pending-types';
 import {
   extractTrainingPlanSlots,
-  extractWeeklyVolumeKm,
   makeTrainingPlanStep,
   missingTrainingPlanSlots,
 } from './helpers';
@@ -25,35 +23,12 @@ export function buildPendingSlotContinuationPlan(
     skill: 'training',
     nowIso: input.nowIso,
   });
-  const weeklyVolume = extractWeeklyVolumeKm(input.text);
-
-  if (!pending) {
-    if (weeklyVolume == null) return null;
-    return helpers.buildNeedsInputPlan(input, {
-      skill: 'training',
-      action: 'training_plan_create',
-      question: input.locale?.startsWith('pt')
-        ? 'Posso usar esse volume semanal num plano de treino. Estás a criar ou ajustar um plano?'
-        : 'I can use that weekly volume for a training plan. Are we creating or adjusting a plan?',
-      args: { weeklyVolumeKm: weeklyVolume },
-      routingSignals: ['standalone_training_slot_without_pending_action'],
-    });
-  }
+  // F26 canary: canonical creation fields only continue an explicitly
+  // pending Training draft. A bare frequency answer must not invent a plan.
+  if (!pending) return null;
 
   const collected = { ...pending.collectedSlots };
   const provenance: Record<string, ChatSlotProvenance> = {};
-  if (weeklyVolume != null && pending.missingSlots.includes('weeklyVolumeKm')) {
-    collected.weeklyVolumeKm = weeklyVolume;
-    provenance.weeklyVolumeKm = makeSlotProvenance({
-      slot: 'weeklyVolumeKm',
-      value: weeklyVolume,
-      rawText: input.text,
-      turnId: input.messageId,
-      sourceType: 'user_message',
-      normalizer: 'training_weekly_volume_v1',
-      confidence: 0.96,
-    });
-  }
 
   const extracted = extractTrainingPlanSlots(input);
   for (const [slot, value] of Object.entries(extracted.slots)) {

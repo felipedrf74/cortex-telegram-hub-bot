@@ -35,21 +35,50 @@ describe('surface cache invalidators', () => {
     mockInvalidateExecutiveBriefCaches.mockReset();
   });
 
+  it('keeps the compatibility Training invalidator in parity with the canonical registry', async () => {
+    const compatibility = await import('../../src/services/training-cache-invalidator');
+    const canonical = await import('../../src/services/cache-coherence-registry');
+    const snapshotCacheEffects = () => ({
+      exact: mockClearCache.mock.calls.map(([key]) => key).sort(),
+      prefixes: mockClearCacheByPrefix.mock.calls
+        .flatMap(([value]) => Array.isArray(value) ? value : [value])
+        .sort(),
+    });
+
+    canonical.invalidateTrainingDerivedCaches(42);
+    const canonicalEffects = snapshotCacheEffects();
+
+    mockClearCache.mockReset();
+    mockClearCacheByPrefix.mockReset();
+    compatibility.invalidateTrainingDerivedCaches(42);
+
+    expect(snapshotCacheEffects()).toEqual(canonicalEffects);
+  });
+
   it('invalidates the full training-derived cache family together', async () => {
     const { invalidateTrainingDerivedCaches } = await import('../../src/services/training-cache-invalidator');
 
     invalidateTrainingDerivedCaches(42);
 
     expect(mockClearCache).toHaveBeenCalledWith('coach-briefing:42');
-    expect(mockClearCache).toHaveBeenCalledWith('readiness:42');
-    // training-home and training-summary keys are tenant-first, so the
-    // families are cleared by family prefix — a user-scoped exact key
-    // or `training-home:{userId}:` prefix would miss the routes'
-    // `…:{tenantId}:{userId}…` keys (RERUN-2 finding 3 follow-up).
+    // Stronger F34 guarantee: the released route key is tenant-first
+    // (`readiness:{tenantId}:{userId}`), so the legacy exact user key never
+    // evicted a real snapshot. The canonical invalidator clears the family.
+    expect(mockClearCache).not.toHaveBeenCalledWith('readiness:42');
+    expect(mockClearCacheByPrefix).toHaveBeenCalledWith('readiness:');
+    expect(mockClearCache).toHaveBeenCalledWith('dashboard-readiness:42');
     expect(mockClearCache).not.toHaveBeenCalledWith('training-summary:42');
-    expect(mockClearCacheByPrefix).toHaveBeenCalledWith(['training-home:', 'training-summary:']);
-    expect(mockInvalidateDashboardCaches).toHaveBeenCalledWith(42);
-    expect(mockInvalidatePlanningCaches).toHaveBeenCalledWith(42);
+    expect(mockClearCacheByPrefix).toHaveBeenCalledWith([
+      'training-home:',
+      'training-summary:',
+      'training-history:',
+      'training-load-snapshot:',
+      'cardio-progression:',
+      'strength-progression:',
+      'training-activity-weekly:',
+    ]);
+    expect(mockClearCacheByPrefix).toHaveBeenCalledWith(['dashboard:42:', 'dashboard-home:42:']);
+    expect(mockClearCacheByPrefix).toHaveBeenCalledWith(['plan:week:u:42:', 'plan:today:u:42:']);
   });
 
   it('invalidates calendar caches and downstream coordination surfaces together', async () => {
@@ -89,9 +118,17 @@ describe('surface cache invalidators', () => {
     invalidateOnboardingDerivedCaches(42, 'triathlon-running');
 
     expect(mockClearCache).toHaveBeenCalledWith('coach-briefing:42');
-    expect(mockClearCacheByPrefix).toHaveBeenCalledWith(['training-home:', 'training-summary:']);
-    expect(mockInvalidateDashboardCaches).toHaveBeenCalledWith(42);
-    expect(mockInvalidatePlanningCaches).toHaveBeenCalledWith(42);
+    expect(mockClearCacheByPrefix).toHaveBeenCalledWith(expect.arrayContaining([
+      'training-home:',
+      'training-summary:',
+      'training-history:',
+      'training-load-snapshot:',
+      'cardio-progression:',
+      'strength-progression:',
+      'training-activity-weekly:',
+    ]));
+    expect(mockClearCacheByPrefix).toHaveBeenCalledWith(['dashboard:42:', 'dashboard-home:42:']);
+    expect(mockClearCacheByPrefix).toHaveBeenCalledWith(['plan:week:u:42:', 'plan:today:u:42:']);
   });
 
   it('routes diet onboarding profile writes through cooking-derived invalidation', async () => {
@@ -156,8 +193,15 @@ describe('surface cache invalidators', () => {
     invalidateIntegrationDerivedCaches(42, 'strava');
 
     expect(mockClearCache).toHaveBeenCalledWith('coach-briefing:42');
-    expect(mockInvalidateDashboardCaches).toHaveBeenCalledWith(42);
-    expect(mockInvalidatePlanningCaches).toHaveBeenCalledWith(42);
+    expect(mockClearCacheByPrefix).toHaveBeenCalledWith(expect.arrayContaining([
+      'training-history:',
+      'training-load-snapshot:',
+      'cardio-progression:',
+      'strength-progression:',
+      'training-activity-weekly:',
+    ]));
+    expect(mockClearCacheByPrefix).toHaveBeenCalledWith(['dashboard:42:', 'dashboard-home:42:']);
+    expect(mockClearCacheByPrefix).toHaveBeenCalledWith(['plan:week:u:42:', 'plan:today:u:42:']);
   });
 
   it('falls back unknown provider connection changes to executive brief invalidation', async () => {

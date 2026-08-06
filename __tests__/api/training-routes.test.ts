@@ -6,6 +6,7 @@ import { config } from '../../src/config';
 import { resolveTrainingDay } from '../../src/services/training-date-utils';
 
 let testDb: Database.Database;
+let databaseReadFailure: Error | null = null;
 
 const mockGetCached = vi.fn();
 const mockSetCache = vi.fn();
@@ -59,12 +60,14 @@ const mockClearStoredPlansForAthlete = vi.fn();
 const mockGetStoredPlanCoveringDate = vi.fn();
 const mockLoggerError = vi.fn();
 const mockBuildActiveSignalsResponse = vi.fn();
+const mockRecordTrainingSummaryDeprecationHit = vi.fn();
 const mockInvalidateCalendarCaches = vi.fn();
 const mockInvalidateTrainingDerivedCaches = vi.fn();
 const mockReconcileOrphanedTrainingAgendaEvents = vi.fn();
 const mockSubmitSecretarySchedulingIntent = vi.fn();
 const mockLoadLiveCalendarBusyWindows = vi.fn();
 const mockIsConnected = vi.fn();
+const mockWithTrainingCalendarOperationLock = vi.hoisted(() => vi.fn());
 const mockIsUserOverDailyCap = vi.fn(() => ({
   over: false,
   spentUsd: 0,
@@ -81,7 +84,10 @@ vi.mock('../../src/services/cache-store', () => ({
 }));
 
 vi.mock('../../src/services/database', () => ({
-  getDb: () => testDb,
+  getDb: () => {
+    if (databaseReadFailure) throw databaseReadFailure;
+    return testDb;
+  },
   initDatabase: vi.fn(),
   closeDatabase: vi.fn(),
   findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
@@ -92,6 +98,15 @@ vi.mock('../../src/services/database', () => ({
   applyMigrationFileForTest: vi.fn(),
   withDatabaseForTest: vi.fn(),
   withDatabaseForTestAsync: vi.fn(),
+}));
+
+vi.mock('../../src/services/training-route-deprecation-telemetry', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/training-route-deprecation-telemetry')>(
+    '../../src/services/training-route-deprecation-telemetry'
+  )),
+  recordTrainingSummaryDeprecationHit: (...args: unknown[]) => (
+    mockRecordTrainingSummaryDeprecationHit(...args)
+  ),
 }));
 
 vi.mock('../../src/services/garmin-coach', () => ({
@@ -115,7 +130,10 @@ vi.mock('../../src/services/oauth-store', () => ({
   isConnected: (...args: unknown[]) => mockIsConnected(...args),
 }));
 
-vi.mock('../../src/services/secretary-live-calendar-busy', () => ({
+vi.mock('../../src/services/secretary-live-calendar-busy', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/secretary-live-calendar-busy')>(
+    '../../src/services/secretary-live-calendar-busy'
+  )),
   loadLiveCalendarBusyWindowsForSecretaryIntent: (...args: unknown[]) => mockLoadLiveCalendarBusyWindows(...args),
 }));
 
@@ -146,6 +164,9 @@ vi.mock('../../src/services/cache-coherence-registry', () => ({
 }));
 
 vi.mock('../../src/services/training-plans', () => ({
+  TrainingPlanReplacementConflictError: class TrainingPlanReplacementConflictError extends Error {
+    readonly code = 'TRAINING_PLAN_REPLACEMENT_CONFLICT';
+  },
   getActivePlan: (...args: unknown[]) => mockGetActivePlan(...args),
   getActivePlans: (...args: unknown[]) => mockGetActivePlans(...args),
   getCurrentWeek: (...args: unknown[]) => mockGetCurrentWeek(...args),
@@ -155,6 +176,13 @@ vi.mock('../../src/services/training-plans', () => ({
   getPlanById: (...args: unknown[]) => mockGetPlanById(...args),
   getWeeklyAdherence: (...args: unknown[]) => mockGetWeeklyAdherence(...args),
   createPlan: (...args: unknown[]) => mockCreatePlan(...args),
+  // F6: the real adapter performs predecessor CAS + supersede + activation
+  // inside persistence's transaction. This route unit suite mocks row
+  // writers; the real two-connection transition is integration-tested.
+  activateCompatibilityPlanReplacement: (input: any) => ({
+    supersededPlanIds: input.expectedActivePlanIds ?? [],
+  }),
+  activatePendingPlan: () => true,
   createWeek: (...args: unknown[]) => mockCreateWeek(...args),
   createSession: (...args: unknown[]) => mockCreateSession(...args),
   linkSessionToCalendar: (...args: unknown[]) => mockLinkSessionToCalendar(...args),
@@ -163,6 +191,7 @@ vi.mock('../../src/services/training-plans', () => ({
   markSessionCompleted: (...args: unknown[]) => mockMarkSessionCompleted(...args),
   updateSession: (...args: unknown[]) => mockUpdateSession(...args),
   updatePlanStatus: (...args: unknown[]) => mockUpdatePlanStatus(...args),
+  updatePlanPreferences: () => true,
   deletePlanHard: (...args: unknown[]) => mockDeletePlanHard(...args),
 }));
 
@@ -239,6 +268,7 @@ vi.mock('../../src/services/signals-observability', () => ({
 vi.mock('../../src/services/user-service', () => ({
   getUserLanguage: vi.fn(() => 'pt-BR'),
   getUserLanguageById: vi.fn(() => 'pt-BR'),
+  getUserTimezoneById: vi.fn(() => 'Europe/Lisbon'),
 }));
 
 vi.mock('../../src/services/integration-status', () => ({
@@ -333,11 +363,21 @@ vi.mock('../../src/services/secretary-scheduling-arbitrator', () => ({
   submitSecretarySchedulingIntent: (...args: unknown[]) => mockSubmitSecretarySchedulingIntent(...args),
 }));
 
+vi.mock('../../src/services/training-operation-locks', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/training-operation-locks')>(
+    '../../src/services/training-operation-locks'
+  )),
+  withTrainingCalendarOperationLock: (...args: unknown[]) => (
+    mockWithTrainingCalendarOperationLock(...args)
+  ),
+}));
+
 import { looksLikeTrainingCalendarEvent, trainingRoutes } from '../../src/api/routes/training';
 import {
   claimTrainingPlanGenerationIdempotency,
   completeTrainingPlanGenerationIdempotency,
 } from '../../src/services/training-plan-generation-idempotency';
+import * as trainingOperationLocksModule from '../../src/services/training-operation-locks';
 
 interface MockRes {
   statusCode: number;
@@ -455,6 +495,68 @@ function resetTrainingOperationalEnvForTests(): void {
   delete process.env.DECISION_FLOW_V1_ENFORCE_ENABLED;
 }
 
+function poisonedTrainingOperationLockError(
+  operation: trainingOperationLocksModule.TrainingOperationName,
+): trainingOperationLocksModule.TrainingOperationLockError {
+  const error = new trainingOperationLocksModule.TrainingOperationLockError(operation, 30);
+  error.message = 'SQLite lock training-calendar:user:12:tenant:34 belongs to must-not-reach-http';
+  return Object.assign(error, {
+    lockKey: 'training-calendar:user:12:tenant:34',
+    ownerToken: 'must-not-reach-http',
+    userId: 12,
+    tenantId: 34,
+  });
+}
+
+function poisonedTrainingOperationLockUnavailableError(
+  operation: trainingOperationLocksModule.TrainingOperationName,
+): Error {
+  const unavailableErrorType = (
+    trainingOperationLocksModule as unknown as Record<string, unknown>
+  ).TrainingOperationLockUnavailableError as (
+    new (operation: trainingOperationLocksModule.TrainingOperationName, retryAfterSeconds?: number) => Error
+  ) | undefined;
+  const error = unavailableErrorType
+    ? new unavailableErrorType(operation, 5)
+    : Object.assign(new Error('TRAINING_OPERATION_LOCK_UNAVAILABLE'), {
+        code: 'TRAINING_OPERATION_LOCK_UNAVAILABLE',
+        status: 503,
+        operation,
+        retryAfterSeconds: 5,
+      });
+  error.message = 'DB unavailable for training-calendar:user:12:tenant:34 owner must-not-reach-http';
+  return Object.assign(error, {
+    lockKey: 'training-calendar:user:12:tenant:34',
+    ownerToken: 'must-not-reach-http',
+    userId: 12,
+    tenantId: 34,
+  });
+}
+
+function expectSafeTrainingOperationError(
+  res: MockRes,
+  expected: {
+    status: 409 | 503;
+    code: 'TRAINING_OPERATION_LOCKED' | 'TRAINING_OPERATION_LOCK_UNAVAILABLE';
+    message: string;
+    operation: trainingOperationLocksModule.TrainingOperationName;
+    retryAfterSeconds: number;
+  },
+): void {
+  expect(res.statusCode).toBe(expected.status);
+  expect(res.headers['Retry-After']).toBe(String(expected.retryAfterSeconds));
+  expect(res.body).toMatchObject({
+    ok: false,
+    error: { code: expected.code, message: expected.message },
+  });
+  // Stronger guarantee than checking one known secret-shaped string: pinning
+  // the complete allowlist makes any future user/tenant/key/owner field fail.
+  expect(res.body.error.details).toEqual({
+    operation: expected.operation,
+    retryAfterSeconds: expected.retryAfterSeconds,
+  });
+}
+
 function trainingGenerationIdempotencyRow(idempotencyKey: string): { status: string } | undefined {
   return testDb.prepare(`
     SELECT status
@@ -474,6 +576,7 @@ describe('Training API routes', () => {
 
   beforeEach(async () => {
     testDb = new Database(':memory:');
+    databaseReadFailure = null;
     resetTrainingOperationalEnvForTests();
     config.coaching.coachKernelEquipmentAuthorityEnabled = false;
 
@@ -542,12 +645,14 @@ describe('Training API routes', () => {
     mockGetStoredPlanCoveringDate.mockReset();
     mockLoggerError.mockReset();
     mockBuildActiveSignalsResponse.mockReset();
+    mockRecordTrainingSummaryDeprecationHit.mockReset();
     mockInvalidateCalendarCaches.mockReset();
     mockInvalidateTrainingDerivedCaches.mockReset();
     mockReconcileOrphanedTrainingAgendaEvents.mockReset();
     mockSubmitSecretarySchedulingIntent.mockReset();
     mockLoadLiveCalendarBusyWindows.mockReset();
     mockIsConnected.mockReset();
+    mockWithTrainingCalendarOperationLock.mockReset();
     mockIsUserOverDailyCap.mockReset();
 
     mockGetCached.mockReturnValue(null);
@@ -558,6 +663,14 @@ describe('Training API routes', () => {
     mockGetEvents.mockResolvedValue([]);
     mockCreateEvent.mockResolvedValue({ id: 'evt-1', source: 'outlook' });
     mockIsConnected.mockImplementation((_userId: number, provider: string) => provider === 'google' || provider === 'outlook');
+    mockWithTrainingCalendarOperationLock.mockImplementation(
+      async (_input: unknown, operation: (lease: unknown) => Promise<unknown>) => {
+        // Stronger guarantee: route callbacks now receive an explicit lease
+        // fence and revalidate it at provider/local mutation boundaries.
+        const signal = new AbortController().signal;
+        return operation(Object.assign(() => {}, { signal, assertActive: vi.fn() }));
+      },
+    );
     mockLoadLiveCalendarBusyWindows.mockResolvedValue({
       windows: [],
       degraded: false,
@@ -740,7 +853,10 @@ describe('Training API routes', () => {
     );
   });
 
-  it('serves cached Coach reads before the model-backed quota gate', async () => {
+  it('serves cached Coach reads before the model-backed quota gate after current eligibility is revalidated', async () => {
+    // Stronger guarantee: cache hits may avoid model quota, but must never
+    // bypass the current active-plan/entitlement eligibility check.
+    mockGetActivePlan.mockReturnValue({ id: 44, user_id: 12, tenant_id: 12, status: 'active' });
     mockIsUserOverDailyCap.mockReturnValue({
       over: true,
       spentUsd: 0.2,
@@ -786,6 +902,38 @@ describe('Training API routes', () => {
     expect(res.body.error.code).toBe('AI_DAILY_LIMIT_REACHED');
     expect(res.body.error.details.window).toBe('daily');
     expect(mockGenerateCoachBriefing).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps Training summary available while exposing its deprecation window and aggregate hit', async () => {
+    const cachedSummary = {
+      today: null,
+      week: { sessions: [], adherence: 0, weekNumber: 0 },
+      readiness: { score: 0, factors: {}, recommendation: null },
+    };
+    mockGetCached.mockReturnValue(cachedSummary);
+
+    const res = await dispatch('GET', '/summary');
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.data).toEqual(cachedSummary);
+    expect(res.headers.Deprecation).toBe('true');
+    expect(res.headers.Sunset).toBe('Fri, 02 Oct 2026 00:00:00 GMT');
+    expect(res.headers.Link).toBe('</api/v1/training/home>; rel="successor-version"');
+    expect(mockRecordTrainingSummaryDeprecationHit).toHaveBeenCalledOnce();
+    expect(mockRecordTrainingSummaryDeprecationHit).toHaveBeenCalledWith(testDb);
+  });
+
+  it('does not make the deprecated Training summary unavailable when aggregate telemetry fails', async () => {
+    mockGetCached.mockReturnValue({ today: null, week: null, readiness: null });
+    mockRecordTrainingSummaryDeprecationHit.mockImplementationOnce(() => {
+      throw new Error('metrics store unavailable');
+    });
+
+    const res = await dispatch('GET', '/summary');
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers.Deprecation).toBe('true');
+    expect(res.body.data).toEqual({ today: null, week: null, readiness: null });
   });
 
   it('returns render-ready training home state without triggering a fresh coach generation', async () => {
@@ -1171,9 +1319,44 @@ describe('Training API routes', () => {
     expect(res.statusCode).toBe(200);
     expect(res.body.ok).toBe(true);
     expect(res.body.data.applied).toBe(1);
-    expect(mockApplyCoachRecommendations).toHaveBeenCalledWith(12, 12, ['rec-1']);
+    expect(mockWithTrainingCalendarOperationLock).toHaveBeenCalledWith(
+      { userId: 12, tenantId: 12, operation: 'coach_apply' },
+      expect.any(Function),
+    );
+    expect(mockApplyCoachRecommendations).toHaveBeenCalledWith(
+      12,
+      12,
+      ['rec-1'],
+      { lease: expect.objectContaining({ signal: expect.anything(), assertActive: expect.any(Function) }) },
+    );
 
     expect(mockInvalidateTrainingDerivedCaches).toHaveBeenCalledWith(12);
+  });
+
+  it('locks and applies coach recommendations against the delegated data owner, not the actor', async () => {
+    const res = await dispatch(
+      'POST',
+      '/coach/apply',
+      {},
+      { recommendationIds: ['rec-1'] },
+      42,
+      {},
+      77,
+    );
+
+    expect(res.statusCode).toBe(200);
+    expect(mockWithTrainingCalendarOperationLock).toHaveBeenCalledWith(
+      { userId: 77, tenantId: 77, operation: 'coach_apply' },
+      expect.any(Function),
+    );
+    expect(mockApplyCoachRecommendations).toHaveBeenCalledWith(
+      42,
+      77,
+      ['rec-1'],
+      { lease: expect.objectContaining({ signal: expect.anything(), assertActive: expect.any(Function) }) },
+    );
+    expect(mockInvalidateTrainingDerivedCaches).toHaveBeenCalledWith(77);
+    expect(mockInvalidateTrainingDerivedCaches).not.toHaveBeenCalledWith(42);
   });
 
   it('sanitizes degraded coach warnings when briefing generation fails', async () => {
@@ -1266,6 +1449,61 @@ describe('Training API routes', () => {
     expect(JSON.stringify(res.body)).not.toContain('calendar mutation failed');
   });
 
+  it('reports a safe non-retryable partial-failure contract after a provider-side coach update', async () => {
+    mockApplyCoachRecommendations.mockRejectedValueOnce(Object.assign(
+      new Error('provider event evt-private changed; sqlite path /private/db failed'),
+      {
+        code: 'COACH_APPLY_PARTIAL_FAILURE',
+        status: 409,
+        providerMutationApplied: true,
+        localSyncConfirmed: false,
+        retryable: false,
+      },
+    ));
+
+    const res = await dispatch(
+      'POST',
+      '/coach/apply',
+      {},
+      { recommendationIds: ['rec-1'] },
+    );
+
+    expect(res.statusCode).toBe(409);
+    expect(res.body.error).toEqual({
+      code: 'COACH_APPLY_PARTIAL_FAILURE',
+      message: 'Calendar changed, but Training could not confirm the matching update. Refresh before retrying.',
+      details: {
+        providerMutationApplied: true,
+        localSyncConfirmed: false,
+        retryable: false,
+      },
+    });
+    expect(JSON.stringify(res.body)).not.toMatch(/evt-private|\/private\/db/);
+  });
+
+  it('maps a stale scoped coach recommendation without calling it a provider outage', async () => {
+    mockApplyCoachRecommendations.mockRejectedValueOnce(Object.assign(new Error('foreign event private-id'), {
+      code: 'COACH_RECOMMENDATION_STALE',
+      status: 409,
+      retryable: false,
+    }));
+
+    const res = await dispatch(
+      'POST',
+      '/coach/apply',
+      {},
+      { recommendationIds: ['rec-1'] },
+    );
+
+    expect(res.statusCode).toBe(409);
+    expect(res.body.error).toEqual({
+      code: 'COACH_RECOMMENDATION_STALE',
+      message: 'This coach recommendation is stale. Refresh the coach briefing before retrying.',
+      details: { retryable: false },
+    });
+    expect(JSON.stringify(res.body)).not.toContain('private-id');
+  });
+
   it('treats training completion without an active session as a soft success', async () => {
     mockGetActivePlan.mockReturnValue(null);
 
@@ -1326,6 +1564,355 @@ describe('Training API routes', () => {
     expect(mockIsUserOverDailyCap).not.toHaveBeenCalled();
   });
 
+  it('reads generation-attempt status without exposing or mutating ownership internals', async () => {
+    process.env.TRAINING_PLAN_GENERATION_ENABLED = 'false';
+    const key = 'ios:create:route-reconciliation';
+    claimTrainingPlanGenerationIdempotency(12, 12, key, 'must-not-reach-http-request-hash');
+    const before = testDb.prepare(`
+      SELECT status, attempt_count, lease_owner, fencing_token
+        FROM training_plan_generation_idempotency_scoped
+       WHERE user_id = 12 AND tenant_id = 12 AND idempotency_key = ?
+    `).get(key);
+
+    const res = await dispatch('POST', '/plan/generation-attempt/status', {}, {
+      idempotencyKey: key,
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.data).toEqual({
+      schemaVersion: 'training_plan_generation_attempt_status.v1',
+      state: 'in_progress',
+      recovery: 'retry_same_attempt',
+      canStartNew: false,
+    });
+    expect(JSON.stringify(res.body)).not.toContain('must-not-reach-http');
+    expect(testDb.prepare(`
+      SELECT status, attempt_count, lease_owner, fencing_token
+        FROM training_plan_generation_idempotency_scoped
+       WHERE user_id = 12 AND tenant_id = 12 AND idempotency_key = ?
+    `).get(key)).toEqual(before);
+  });
+
+  it('keeps generation-attempt status isolated to the authenticated tenant', async () => {
+    const key = 'ios:create:route-tenant-isolation';
+    const claim = claimTrainingPlanGenerationIdempotency(12, 34, key, 'tenant-34-hash');
+    expect(claim.kind).toBe('claimed');
+    if (claim.kind !== 'claimed') throw new Error('expected owned generation claim');
+    completeTrainingPlanGenerationIdempotency(
+      12,
+      34,
+      claim,
+      { status: 'created', planId: 734 },
+      201,
+    );
+    mockGetPlanById.mockReturnValue({ id: 734, user_id: 12, tenant_id: 34, status: 'active' });
+    mockGetWeeksForPlan.mockReturnValue([{ id: 1734, plan_id: 734, week_number: 1 }]);
+    mockGetSessionsForWeek.mockReturnValue([{ id: 2734, plan_id: 734, week_id: 1734 }]);
+
+    const otherTenant = await dispatch(
+      'POST',
+      '/plan/generation-attempt/status',
+      {},
+      { idempotencyKey: key },
+      12,
+      {},
+      56,
+    );
+    expect(otherTenant.body.data).toEqual({
+      schemaVersion: 'training_plan_generation_attempt_status.v1',
+      state: 'not_found',
+      // Stronger guarantee: absence in this tenant is not evidence that a
+      // create did not commit elsewhere, so the client only polls status.
+      recovery: 'check_status_again',
+      canStartNew: false,
+    });
+    expect(mockGetPlanById).not.toHaveBeenCalled();
+
+    const ownerTenant = await dispatch(
+      'POST',
+      '/plan/generation-attempt/status',
+      {},
+      { idempotencyKey: key },
+      12,
+      {},
+      34,
+    );
+    expect(ownerTenant.body.data).toEqual({
+      schemaVersion: 'training_plan_generation_attempt_status.v1',
+      state: 'created',
+      recovery: 'use_created_plan',
+      canStartNew: false,
+      planId: 734,
+    });
+  });
+
+  it.each([
+    { label: 'missing', body: {} },
+    { label: 'blank', body: { idempotencyKey: '   ' } },
+    { label: 'overlong', body: { idempotencyKey: 'x'.repeat(161) } },
+    { label: 'non-string', body: { idempotencyKey: 42 } },
+  ])('rejects $label generation-attempt keys before the service read', async ({ body }) => {
+    const res = await dispatch('POST', '/plan/generation-attempt/status', {}, body);
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error).toMatchObject({
+      code: 'VALIDATION',
+      details: { field: 'idempotencyKey' },
+    });
+  });
+
+  it.each([
+    { label: 'blank body key', bodyKey: '   ', headers: {} },
+    { label: 'non-string body key', bodyKey: 42, headers: {} },
+    { label: 'overlong body key', bodyKey: 'x'.repeat(161), headers: {} },
+    { label: 'overlong header key', bodyKey: undefined, headers: { 'idempotency-key': 'x'.repeat(161) } },
+  ])('rejects an explicit $label instead of truncating or silently auto-keying generation', async ({ bodyKey, headers }) => {
+    const body: Record<string, unknown> = {
+      objective: 'Strict idempotency boundary',
+      sessionsPerWeek: 3,
+      strengthSessionsPerWeek: 2,
+    };
+    if (bodyKey !== undefined) body.idempotencyKey = bodyKey;
+
+    const res = await dispatch('POST', '/plan/generate', {}, body, 12, headers);
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error).toMatchObject({
+      code: 'VALIDATION',
+      details: { field: 'idempotencyKey' },
+    });
+    expect(mockBuildCoachKernelTrainingPlan).not.toHaveBeenCalled();
+    expect(mockCreatePlan).not.toHaveBeenCalled();
+    expect(testDb.prepare(`
+      SELECT name FROM sqlite_master
+       WHERE type = 'table' AND name = 'training_plan_generation_idempotency_scoped'
+    `).get()).toBeUndefined();
+  });
+
+  it('returns a safe 503 when authoritative attempt-status DB acquisition fails', async () => {
+    databaseReadFailure = new Error('private database path and token must not escape');
+
+    const res = await dispatch('POST', '/plan/generation-attempt/status', {}, {
+      idempotencyKey: 'ios:create:status-db-unavailable',
+    });
+
+    expect(res.statusCode).toBe(503);
+    expect(res.body.error).toEqual({
+      code: 'TRAINING_PLAN_GENERATION_STATUS_UNAVAILABLE',
+      message: 'Plan creation status is temporarily unavailable. Retry the same attempt.',
+    });
+    expect(JSON.stringify(res.body)).not.toMatch(/private database path|token/);
+  });
+
+  it('returns a safe 503 when the durable attempt-status query fails', async () => {
+    const key = 'ios:create:status-query-unavailable';
+    claimTrainingPlanGenerationIdempotency(12, 12, key, 'private-request-hash');
+    testDb.exec('DROP TABLE training_plan_generation_idempotency_scoped');
+
+    const res = await dispatch('POST', '/plan/generation-attempt/status', {}, {
+      idempotencyKey: key,
+    });
+
+    expect(res.statusCode).toBe(503);
+    expect(res.body.error.code).toBe('TRAINING_PLAN_GENERATION_STATUS_UNAVAILABLE');
+  });
+
+  it('rejects a signed preview after profile context drift before claiming idempotency', async () => {
+    let experienceLevel = 'Intermediate';
+    mockGetProfile.mockImplementation((_userId: number, profile: string) => (
+      profile === 'fitness'
+        ? { experienceLevel, available_equipment: 'Full gym' }
+        : null
+    ));
+    const request = {
+      objective: 'Build consistent running fitness',
+      durationWeeks: 4,
+      sessionsPerWeek: 3,
+      strengthSessionsPerWeek: 2,
+    };
+    const preview = await dispatch('POST', '/plan/preview', {}, request);
+    expect(preview.statusCode).toBe(200);
+    expect(preview.body.data.previewToken).toEqual(expect.any(String));
+
+    // Experience level is intentionally outside the narrow clarification
+    // hash. The full profile-context pin must still invalidate acceptance.
+    experienceLevel = 'Advanced';
+    mockBuildCoachKernelTrainingPlan.mockClear();
+    const idempotencyKey = 'ios:create:profile-context-drift';
+    const create = await dispatch('POST', '/plan/generate', {}, {
+      ...request,
+      idempotencyKey,
+      previewToken: preview.body.data.previewToken,
+    });
+
+    expect(create.statusCode).toBe(409);
+    expect(create.body.error).toMatchObject({
+      code: 'TRAINING_PLAN_PREVIEW_STALE',
+      details: { requiresPreview: true, reason: 'context_changed' },
+    });
+    expect(testDb.prepare(`
+      SELECT name FROM sqlite_master
+       WHERE type = 'table' AND name = 'training_plan_generation_idempotency_scoped'
+    `).get()).toBeUndefined();
+    expect(mockBuildCoachKernelTrainingPlan).not.toHaveBeenCalled();
+    expect(mockCreatePlan).not.toHaveBeenCalled();
+  });
+
+  it('rejects candidate drift before persistence and records proven no-creation recovery', async () => {
+    mockGetProfile.mockImplementation((_userId: number, profile: string) => (
+      profile === 'fitness'
+        ? { experienceLevel: 'Intermediate', available_equipment: 'Full gym' }
+        : null
+    ));
+    const request = {
+      objective: 'Build consistent running fitness',
+      durationWeeks: 4,
+      sessionsPerWeek: 3,
+      strengthSessionsPerWeek: 2,
+    };
+    const preview = await dispatch('POST', '/plan/preview', {}, request);
+    expect(preview.statusCode).toBe(200);
+    expect(preview.body.data.previewToken).toEqual(expect.any(String));
+
+    mockBuildCoachKernelTrainingPlan.mockReturnValue(makeKernelPlan([
+      {
+        weekNumber: 1,
+        focus: 'base',
+        intensityPct: 70,
+        sessions: [
+          {
+            dayOfWeek: 'Tuesday',
+            sessionType: 'run',
+            title: 'Changed Candidate Run',
+            durationMinutes: 60,
+            description: 'A materially different candidate.',
+            exercises: [],
+          },
+        ],
+      },
+    ]));
+    mockCreatePlan.mockClear();
+    const idempotencyKey = 'ios:create:candidate-drift';
+    const create = await dispatch('POST', '/plan/generate', {}, {
+      ...request,
+      idempotencyKey,
+      previewToken: preview.body.data.previewToken,
+    });
+
+    expect(create.statusCode).toBe(409);
+    expect(create.body.error).toMatchObject({
+      code: 'TRAINING_PLAN_PREVIEW_STALE',
+      details: { requiresPreview: true, reason: 'candidate_changed' },
+    });
+    expect(mockCreatePlan).not.toHaveBeenCalled();
+
+    const status = await dispatch('POST', '/plan/generation-attempt/status', {}, {
+      idempotencyKey,
+    });
+    expect(status.body.data).toEqual({
+      schemaVersion: 'training_plan_generation_attempt_status.v1',
+      state: 'known_no_creation',
+      recovery: 'start_new_allowed',
+      canStartNew: true,
+    });
+    expect(JSON.stringify(status.body)).not.toContain('TRAINING_PLAN_PREVIEW_STALE');
+  });
+
+  it('CAS-reclaims an expired fenced attempt with the same key after a valid fresh re-preview changes context', async () => {
+    mockGetProfile.mockImplementation((_userId: number, profile: string) => (
+      profile === 'fitness'
+        ? { experienceLevel: 'Advanced', available_equipment: 'Full gym' }
+        : null
+    ));
+    const request = {
+      objective: 'Fresh reviewed context',
+      durationWeeks: 4,
+      sessionsPerWeek: 3,
+      strengthSessionsPerWeek: 2,
+    };
+    const preview = await dispatch('POST', '/plan/preview', {}, request);
+    expect(preview.statusCode).toBe(200);
+    const idempotencyKey = 'ios:create:expired-context-repreview';
+    const oldClaim = claimTrainingPlanGenerationIdempotency(
+      12,
+      12,
+      idempotencyKey,
+      '0'.repeat(64),
+    );
+    expect(oldClaim.kind).toBe('claimed');
+    testDb.prepare(`
+      UPDATE training_plan_generation_idempotency_scoped
+         SET lease_expires_at = '2020-01-01T00:00:00.000Z'
+       WHERE user_id = 12 AND tenant_id = 12 AND idempotency_key = ?
+    `).run(idempotencyKey);
+    const before = testDb.prepare(`
+      SELECT request_hash, lease_owner, fencing_token, attempt_count
+        FROM training_plan_generation_idempotency_scoped
+       WHERE user_id = 12 AND tenant_id = 12 AND idempotency_key = ?
+    `).get(idempotencyKey) as Record<string, unknown>;
+
+    const create = await dispatch('POST', '/plan/generate', {}, {
+      ...request,
+      idempotencyKey,
+      previewToken: preview.body.data.previewToken,
+    });
+
+    expect(create.statusCode).toBe(201);
+    const after = testDb.prepare(`
+      SELECT request_hash, lease_owner, fencing_token, attempt_count, status
+        FROM training_plan_generation_idempotency_scoped
+       WHERE user_id = 12 AND tenant_id = 12 AND idempotency_key = ?
+    `).get(idempotencyKey) as Record<string, unknown>;
+    expect(after).toMatchObject({ attempt_count: 2, status: 'succeeded' });
+    expect(after.request_hash).not.toBe(before.request_hash);
+    expect(after.lease_owner).not.toBe(before.lease_owner);
+    expect(after.fencing_token).not.toBe(before.fencing_token);
+    expect(mockCreatePlan).toHaveBeenCalledOnce();
+  });
+
+  it('does not mutate an expired fenced attempt when the fresh preview token is tampered', async () => {
+    mockGetProfile.mockImplementation((_userId: number, profile: string) => (
+      profile === 'fitness'
+        ? { experienceLevel: 'Intermediate', available_equipment: 'Full gym' }
+        : null
+    ));
+    const request = {
+      objective: 'Tamper-safe re-preview',
+      durationWeeks: 4,
+      sessionsPerWeek: 3,
+      strengthSessionsPerWeek: 2,
+    };
+    const preview = await dispatch('POST', '/plan/preview', {}, request);
+    const idempotencyKey = 'ios:create:expired-tampered-repreview';
+    claimTrainingPlanGenerationIdempotency(12, 12, idempotencyKey, '1'.repeat(64));
+    testDb.prepare(`
+      UPDATE training_plan_generation_idempotency_scoped
+         SET lease_expires_at = '2020-01-01T00:00:00.000Z'
+       WHERE user_id = 12 AND tenant_id = 12 AND idempotency_key = ?
+    `).run(idempotencyKey);
+    const before = testDb.prepare(`
+      SELECT request_hash, lease_owner, fencing_token, attempt_count, status
+        FROM training_plan_generation_idempotency_scoped
+       WHERE user_id = 12 AND tenant_id = 12 AND idempotency_key = ?
+    `).get(idempotencyKey);
+    const token = String(preview.body.data.previewToken);
+
+    const create = await dispatch('POST', '/plan/generate', {}, {
+      ...request,
+      idempotencyKey,
+      previewToken: `${token.slice(0, -1)}${token.endsWith('a') ? 'b' : 'a'}`,
+    });
+
+    expect(create.statusCode).toBe(409);
+    expect(create.body.error.code).toBe('TRAINING_PLAN_PREVIEW_STALE');
+    expect(testDb.prepare(`
+      SELECT request_hash, lease_owner, fencing_token, attempt_count, status
+        FROM training_plan_generation_idempotency_scoped
+       WHERE user_id = 12 AND tenant_id = 12 AND idempotency_key = ?
+    `).get(idempotencyKey)).toEqual(before);
+    expect(mockCreatePlan).not.toHaveBeenCalled();
+  });
+
   it('blocks plan generation when the Training generation kill switch is disabled', async () => {
     process.env.TRAINING_PLAN_GENERATION_ENABLED = 'false';
 
@@ -1352,6 +1939,84 @@ describe('Training API routes', () => {
     expect(res.body.error.details).toEqual({ operation: 'calendar_writes' });
     expect(mockGetActivePlan).not.toHaveBeenCalled();
     expect(mockCreateEvent).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      label: 'generation',
+      operation: 'calendar_generate' as const,
+      path: '/plan/generate',
+      body: {
+        objective: 'General fitness',
+        preferredTime: '12:00',
+        sessionsPerWeek: 3,
+        strengthSessionsPerWeek: 2,
+        idempotencyKey: 'f35-generation-lock-contention',
+      },
+    },
+    {
+      label: 'calendar sync',
+      operation: 'calendar_sync' as const,
+      path: '/plan/sync-calendar',
+      body: {},
+    },
+    {
+      label: 'calendar reflow',
+      operation: 'calendar_reflow' as const,
+      path: '/sessions/201/reflow-confirm',
+      body: {},
+    },
+    {
+      label: 'plan cancellation',
+      operation: 'calendar_cancel' as const,
+      path: '/plan/cancel',
+      body: {},
+    },
+    {
+      label: 'coach apply',
+      operation: 'coach_apply' as const,
+      path: '/coach/apply',
+      body: { recommendationIds: ['rec-1'] },
+    },
+  ])('maps $label lock contention to the same retryable, scope-safe HTTP contract', async ({ operation, path, body }) => {
+    mockGetProfile.mockImplementation((_userId: number, profile: string) => (
+      profile === 'fitness'
+        ? { experienceLevel: 'Intermediate', available_equipment: 'Full gym' }
+        : null
+    ));
+    mockWithTrainingCalendarOperationLock.mockRejectedValueOnce(
+      poisonedTrainingOperationLockError(operation),
+    );
+
+    const res = await dispatch('POST', path, {}, body);
+
+    expectSafeTrainingOperationError(res, {
+      status: 409,
+      code: 'TRAINING_OPERATION_LOCKED',
+      message: 'Another training operation is in progress. Please try again shortly.',
+      operation,
+      retryAfterSeconds: 30,
+    });
+    expect(mockWithTrainingCalendarOperationLock).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 12, tenantId: 12, operation }),
+      expect.any(Function),
+    );
+  });
+
+  it('maps operation-lock infrastructure unavailability deliberately instead of collapsing it into INTERNAL', async () => {
+    mockWithTrainingCalendarOperationLock.mockRejectedValueOnce(
+      poisonedTrainingOperationLockUnavailableError('calendar_sync'),
+    );
+
+    const res = await dispatch('POST', '/plan/sync-calendar', {}, {});
+
+    expectSafeTrainingOperationError(res, {
+      status: 503,
+      code: 'TRAINING_OPERATION_LOCK_UNAVAILABLE',
+      message: 'Training operations are temporarily unavailable. Please try again shortly.',
+      operation: 'calendar_sync',
+      retryAfterSeconds: 5,
+    });
   });
 
   it('requires the running questionnaire before generating a marathon plan', async () => {
@@ -1392,6 +2057,10 @@ describe('Training API routes', () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.body.ok).toBe(true);
+    expect(res.body.data).toMatchObject({
+      schemaVersion: 'training_plan_generation_response.v1',
+      status: 'needs_profile',
+    });
     expect(res.body.data.needsProfile).toBe(true);
     expect(res.body.data.requiredQuestionnaireId).toBe('triathlon-running');
     expect(res.body.data.requiredQuestionnaireTitle).toContain('Running');
@@ -1452,11 +2121,17 @@ describe('Training API routes', () => {
       goalMode: 'event_based',
     });
 
-    expect(res.statusCode).toBe(200);
-    expect(res.body.ok).toBe(true);
-    expect(res.body.data.status).toBe('plan_quality_blocked');
-    expect(res.body.data.planLint.status).toBe('fail');
-    expect(res.body.data.planLint.blockers).toEqual(
+    // F27 stronger guarantee: a quality-gate block is a typed semantic
+    // rejection, while profile/answer clarification handoffs remain 200.
+    expect(res.statusCode).toBe(422);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('TRAINING_PLAN_QUALITY_BLOCKED');
+    expect(res.body.error.details).toMatchObject({
+      schemaVersion: 'training_plan_generation_response.v1',
+      status: 'plan_quality_blocked',
+    });
+    expect(res.body.error.details.planLint.status).toBe('fail');
+    expect(res.body.error.details.planLint.blockers).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ ruleId: 'race_specific_plan_requires_race_date' }),
       ]),
@@ -1498,13 +2173,17 @@ describe('Training API routes', () => {
     };
 
     const first = await dispatch('POST', '/plan/generate', {}, body);
-    expect(first.body.data.status).toBe('plan_quality_blocked');
+    // F27 stronger guarantee: retryable quality rejection uses the typed 422
+    // envelope without changing the idempotency row's retry semantics.
+    expect(first.statusCode).toBe(422);
+    expect(first.body.error.details.status).toBe('plan_quality_blocked');
     expect(trainingGenerationIdempotencyRow('quality-gate-retry-key')?.status).toBe('failed');
 
     mockBuildCoachKernelTrainingPlan.mockClear();
     const second = await dispatch('POST', '/plan/generate', {}, body);
 
-    expect(second.body.data.status).toBe('plan_quality_blocked');
+    expect(second.statusCode).toBe(422);
+    expect(second.body.error.details.status).toBe('plan_quality_blocked');
     expect(mockBuildCoachKernelTrainingPlan).toHaveBeenCalled();
     expect(trainingGenerationIdempotencyRow('quality-gate-retry-key')?.status).toBe('failed');
   });
@@ -1529,7 +2208,10 @@ describe('Training API routes', () => {
 
     const first = await dispatch('POST', '/plan/generate', {}, body);
     expect(first.statusCode).toBe(200);
-    expect(first.body.data.status).toBe('needs_clarification');
+    expect(first.body.data).toMatchObject({
+      schemaVersion: 'training_plan_generation_response.v1',
+      status: 'needs_clarification',
+    });
     expect(trainingGenerationIdempotencyRow('clarification-retry-key')?.status).toBe('failed');
 
     mockBuildCoachKernelTrainingPlan.mockClear();
@@ -1573,10 +2255,16 @@ describe('Training API routes', () => {
 
     expect(res.statusCode).toBe(201);
     expect(res.body.ok).toBe(true);
+    expect(res.body.data).toMatchObject({
+      schemaVersion: 'training_plan_generation_response.v1',
+      status: 'created',
+    });
     expect(res.body.data.status).not.toBe('plan_quality_blocked');
     expect(mockCreatePlan).toHaveBeenCalledTimes(1);
     expect(mockCreateSession).toHaveBeenCalled();
-    expect(mockCreateEvent).toHaveBeenCalled();
+    // Phase 1B: provider calendar events are created by the background
+    // calendar-sync worker after activation, never inline in the route.
+    expect(mockCreateEvent).not.toHaveBeenCalled();
   });
 
   it('schedules same-day run and gym sessions at separate preferred times', async () => {
@@ -1624,15 +2312,22 @@ describe('Training API routes', () => {
     });
 
     expect(res.statusCode).toBe(201);
-    const createdEvents = mockCreateEvent.mock.calls.map((call) => call[0]);
-    const runEvent = createdEvents.find((event) => String(event.title).includes('Base Run'));
-    const gymEvent = createdEvents.find((event) => /\bRunner Strength \(40min\)/.test(String(event.title)));
+    // Phase 1B: the separate preferred times are proven on the persisted
+    // schedule windows (the calendar-sync worker rebuilds provider event
+    // times from these rows) instead of on inline provider calls.
+    expect(mockCreateEvent).not.toHaveBeenCalled();
+    const createdSessions = mockCreateSession.mock.calls.map((call) => call[0] as Record<string, unknown>);
+    // Exact-title match: volume enforcement adds filler sessions like
+    // 'Runner Strength Support' on other days that a substring match would
+    // wrongly capture.
+    const runEvent = createdSessions.find((session) => session.title === 'Base Run');
+    const gymEvent = createdSessions.find((session) => session.title === 'Runner Strength');
 
     expect(runEvent).toBeTruthy();
     expect(gymEvent).toBeTruthy();
 
-    const runStart = new Date(String(runEvent.start));
-    const gymStart = new Date(String(gymEvent.start));
+    const runStart = new Date(String(runEvent!.scheduled_start_at));
+    const gymStart = new Date(String(gymEvent!.scheduled_start_at));
     expect(runStart.toDateString()).toBe(gymStart.toDateString());
     expect(runStart.getTime()).toBeLessThan(gymStart.getTime());
     expect((gymStart.getTime() - runStart.getTime()) / 60000).toBeGreaterThanOrEqual(300);
@@ -1676,7 +2371,6 @@ describe('Training API routes', () => {
     const first = await dispatch('POST', '/plan/generate', {}, body);
     const createPlanCountAfterFirst = mockCreatePlan.mock.calls.length;
     const createSessionCountAfterFirst = mockCreateSession.mock.calls.length;
-    const createEventCountAfterFirst = mockCreateEvent.mock.calls.length;
     mockGetPlanById.mockReturnValue({ id: first.body.data.planId, user_id: 12, tenant_id: 12, status: 'active' });
     mockGetWeeksForPlan.mockReturnValue([{ id: 3001, plan_id: first.body.data.planId, week_number: 1 }]);
     mockGetSessionsForWeek.mockReturnValue([{ id: 4001, plan_id: first.body.data.planId, week_id: 3001, status: 'scheduled' }]);
@@ -1687,13 +2381,15 @@ describe('Training API routes', () => {
     expect(second.body.data).toEqual(first.body.data);
     expect(createPlanCountAfterFirst).toBeGreaterThan(0);
     expect(createSessionCountAfterFirst).toBeGreaterThan(0);
-    expect(createEventCountAfterFirst).toBeGreaterThan(0);
     expect(mockCreatePlan).toHaveBeenCalledTimes(createPlanCountAfterFirst);
     expect(mockCreateSession).toHaveBeenCalledTimes(createSessionCountAfterFirst);
-    expect(mockCreateEvent).toHaveBeenCalledTimes(createEventCountAfterFirst);
+    // Phase 1B: routes never call providers — the replay guarantee for
+    // provider events is now the worker's ownership idempotency, covered in
+    // the training-plan-calendar-sync worker suite.
+    expect(mockCreateEvent).not.toHaveBeenCalled();
   });
 
-  it('discards a stale confirmed plan replay when the referenced plan no longer exists', async () => {
+  it('retains a succeeded receipt and blocks regeneration when the referenced plan no longer exists', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(new Date('2026-04-15T06:00:00.000Z'));
 
@@ -1718,9 +2414,7 @@ describe('Training API routes', () => {
         ],
       },
     ]));
-    mockCreatePlan
-      .mockReturnValueOnce({ id: 901 })
-      .mockReturnValueOnce({ id: 902 });
+    mockCreatePlan.mockReturnValueOnce({ id: 901 });
 
     const body = {
       objective: 'General fitness',
@@ -1738,32 +2432,93 @@ describe('Training API routes', () => {
 
     expect(first.statusCode).toBe(201);
     expect(first.body.data.planId).toBe(901);
-    expect(second.statusCode).toBe(201);
-    expect(second.body.data.planId).toBe(902);
-    expect(mockCreatePlan).toHaveBeenCalledTimes(createPlanCountAfterFirst + 1);
+    // Stronger guarantee: a missing read-model graph is not proof that the
+    // successful create never happened. Preserve the receipt and require
+    // reconciliation instead of resurrecting the plan with the same key.
+    expect(second.statusCode).toBe(409);
+    expect(second.body.error.code).toBe('TRAINING_PLAN_GENERATION_RECONCILIATION_REQUIRED');
+    expect(mockCreatePlan).toHaveBeenCalledTimes(createPlanCountAfterFirst);
+    expect(trainingGenerationIdempotencyRow('plan-create-stale')?.status).toBe('succeeded');
+  });
+
+  it('maps an unreadable succeeded receipt to reconciliation without mutating or regenerating', async () => {
+    mockGetProfile.mockImplementation((_userId: number, profile: string) => (
+      profile === 'fitness'
+        ? { experienceLevel: 'Intermediate', available_equipment: 'Full gym' }
+        : null
+    ));
+    const body = {
+      objective: 'Corrupt receipt recovery',
+      durationWeeks: 4,
+      sessionsPerWeek: 3,
+      strengthSessionsPerWeek: 2,
+      idempotencyKey: 'plan-create-corrupt-receipt',
+    };
+    const first = await dispatch('POST', '/plan/generate', {}, body);
+    expect(first.statusCode).toBe(201);
+    const createPlanCountAfterFirst = mockCreatePlan.mock.calls.length;
+    testDb.prepare(`
+      UPDATE training_plan_generation_idempotency_scoped
+         SET response_json = '{not-json'
+       WHERE user_id = 12 AND tenant_id = 12 AND idempotency_key = ?
+    `).run(body.idempotencyKey);
+
+    const second = await dispatch('POST', '/plan/generate', {}, body);
+
+    // Stronger guarantee: an unreadable successful result is reconciliation
+    // evidence, not key reuse, in-flight work, or permission to create again.
+    expect(second.statusCode).toBe(409);
+    expect(second.body.error).toMatchObject({
+      code: 'TRAINING_PLAN_GENERATION_RECONCILIATION_REQUIRED',
+      details: { idempotencyKey: body.idempotencyKey },
+    });
+    expect(mockCreatePlan).toHaveBeenCalledTimes(createPlanCountAfterFirst);
+    expect(testDb.prepare(`
+      SELECT status, response_json
+        FROM training_plan_generation_idempotency_scoped
+       WHERE user_id = 12 AND tenant_id = 12 AND idempotency_key = ?
+    `).get(body.idempotencyKey)).toMatchObject({
+      status: 'succeeded',
+      response_json: '{not-json',
+    });
   });
 
   it.each([
     {
       reason: 'plan_owner_mismatch',
+      expectedCode: 'TRAINING_PLAN_GENERATION_RECONCILIATION_REQUIRED',
       configureProof: (planId: number) => {
         mockGetPlanById.mockReturnValue({ id: planId, user_id: 99, tenant_id: 12, status: 'active' });
       },
     },
     {
       reason: 'plan_owner_mismatch',
+      expectedCode: 'TRAINING_PLAN_GENERATION_RECONCILIATION_REQUIRED',
       configureProof: (planId: number) => {
         mockGetPlanById.mockReturnValue({ id: planId, user_id: 12, tenant_id: 34, status: 'active' });
       },
     },
     {
       reason: 'plan_not_active',
+      expectedCode: 'TRAINING_PLAN_GENERATION_ALREADY_COMPLETED',
       configureProof: (planId: number) => {
         mockGetPlanById.mockReturnValue({ id: planId, user_id: 12, tenant_id: 12, status: 'canceled' });
+        mockGetWeeksForPlan.mockReturnValue([{ id: 3003, plan_id: planId, week_number: 1 }]);
+        mockGetSessionsForWeek.mockReturnValue([{ id: 4003, plan_id: planId, week_id: 3003 }]);
+      },
+    },
+    {
+      reason: 'plan_superseded',
+      expectedCode: 'TRAINING_PLAN_GENERATION_ALREADY_COMPLETED',
+      configureProof: (planId: number) => {
+        mockGetPlanById.mockReturnValue({ id: planId, user_id: 12, tenant_id: 12, status: 'superseded' });
+        mockGetWeeksForPlan.mockReturnValue([{ id: 3003, plan_id: planId, week_number: 1 }]);
+        mockGetSessionsForWeek.mockReturnValue([{ id: 4003, plan_id: planId, week_id: 3003 }]);
       },
     },
     {
       reason: 'plan_has_no_weeks',
+      expectedCode: 'TRAINING_PLAN_GENERATION_RECONCILIATION_REQUIRED',
       configureProof: (planId: number) => {
         mockGetPlanById.mockReturnValue({ id: planId, user_id: 12, tenant_id: 12, status: 'active' });
         mockGetWeeksForPlan.mockReturnValue([]);
@@ -1771,13 +2526,14 @@ describe('Training API routes', () => {
     },
     {
       reason: 'plan_has_no_sessions',
+      expectedCode: 'TRAINING_PLAN_GENERATION_RECONCILIATION_REQUIRED',
       configureProof: (planId: number) => {
         mockGetPlanById.mockReturnValue({ id: planId, user_id: 12, tenant_id: 12, status: 'active' });
         mockGetWeeksForPlan.mockReturnValue([{ id: 3003, plan_id: planId, week_number: 1 }]);
         mockGetSessionsForWeek.mockReturnValue([]);
       },
     },
-  ])('discards stale confirmed plan replay when proof fails with $reason', async ({ configureProof }) => {
+  ])('retains a confirmed receipt and blocks regeneration when proof resolves to $reason', async ({ configureProof, expectedCode }) => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(new Date('2026-04-15T06:00:00.000Z'));
 
@@ -1818,8 +2574,43 @@ describe('Training API routes', () => {
     const second = await dispatch('POST', '/plan/generate', {}, body);
 
     expect(first.statusCode).toBe(201);
-    expect(second.statusCode).toBe(201);
-    expect(mockCreatePlan).toHaveBeenCalledTimes(createPlanCountAfterFirst + 1);
+    // Stronger guarantee: lifecycle drift and integrity uncertainty never
+    // authorize a second mutation for a receipt that already says succeeded.
+    expect(second.statusCode).toBe(409);
+    expect(second.body.error.code).toBe(expectedCode);
+    expect(mockCreatePlan).toHaveBeenCalledTimes(createPlanCountAfterFirst);
+    expect(trainingGenerationIdempotencyRow('plan-create-stale-proof')?.status).toBe('succeeded');
+  });
+
+  it('retains the succeeded receipt and returns 503 when replay proof lookup throws', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date('2026-04-15T06:00:00.000Z'));
+    mockGetProfile.mockImplementation((_userId: number, profile: string) => (
+      profile === 'fitness'
+        ? { experienceLevel: 'Intermediate', available_equipment: 'Full gym' }
+        : null
+    ));
+    const body = {
+      objective: 'General fitness',
+      preferredTime: '12:00',
+      sessionsPerWeek: 3,
+      strengthSessionsPerWeek: 3,
+      idempotencyKey: 'plan-create-proof-read-failure',
+    };
+    const first = await dispatch('POST', '/plan/generate', {}, body);
+    const createPlanCountAfterFirst = mockCreatePlan.mock.calls.length;
+    mockGetPlanById.mockImplementation(() => {
+      throw new Error('private DB path must not escape');
+    });
+
+    const second = await dispatch('POST', '/plan/generate', {}, body);
+
+    expect(first.statusCode).toBe(201);
+    expect(second.statusCode).toBe(503);
+    expect(second.body.error.code).toBe('TRAINING_PLAN_GENERATION_STATUS_UNAVAILABLE');
+    expect(JSON.stringify(second.body)).not.toContain('private DB path');
+    expect(mockCreatePlan).toHaveBeenCalledTimes(createPlanCountAfterFirst);
+    expect(trainingGenerationIdempotencyRow('plan-create-proof-read-failure')?.status).toBe('succeeded');
   });
 
   it('returns 409 when a stale confirmed replay reappears after discard', async () => {
@@ -1878,7 +2669,9 @@ describe('Training API routes', () => {
 
     expect(first.statusCode).toBe(201);
     expect(second.statusCode).toBe(409);
-    expect(second.body.error.code).toBe('TRAINING_PLAN_GENERATION_IN_PROGRESS');
+    // Stronger guarantee: the route no longer deletes a successful receipt,
+    // so this trigger never fires and the original row remains authoritative.
+    expect(second.body.error.code).toBe('TRAINING_PLAN_GENERATION_RECONCILIATION_REQUIRED');
     expect(second.body.error.details).toEqual(expect.objectContaining({
       idempotencyKey: 'plan-create-stale-reappears',
     }));
@@ -1935,6 +2728,66 @@ describe('Training API routes', () => {
     expect(mockCreateEvent).toHaveBeenCalledTimes(createEventCountAfterFirst);
   });
 
+  it('regenerates instead of replaying the auto-deduped plan after a clarification answer changes the profile', async () => {
+    // Phase 2 (F2): clarification answers live in PROFILES, not the request
+    // body. Without the answers fingerprint in the request hash, an athlete
+    // who answers a clarification and immediately retries the identical
+    // request inside the 90s auto-dedupe window would get the stale
+    // pre-answer plan replayed — silently discarding their answer.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date('2026-04-15T12:00:10.000Z'));
+
+    let gymProfile: Record<string, unknown> = {};
+    mockGetProfile.mockImplementation((_userId: number, profile: string) => {
+      if (profile === 'fitness') return { experienceLevel: 'Intermediate', available_equipment: 'Full gym' };
+      if (profile === 'triathlon-gym') return gymProfile;
+      return null;
+    });
+    mockBuildCoachKernelTrainingPlan.mockReturnValue(makeKernelPlan([
+      {
+        weekNumber: 1,
+        focus: 'base',
+        intensityPct: 70,
+        sessions: [
+          {
+            dayOfWeek: 'Wednesday',
+            sessionType: 'gym',
+            title: 'Strength + Core Support',
+            durationMinutes: 40,
+            description: 'Controlled strength work.',
+            exercises: [],
+          },
+        ],
+      },
+    ]));
+
+    const body = {
+      objective: 'General fitness',
+      preferredTime: '12:00',
+      sessionsPerWeek: 3,
+      strengthSessionsPerWeek: 3,
+    };
+
+    const first = await dispatch('POST', '/plan/generate', {}, body);
+    expect(first.statusCode).toBe(201);
+    const createPlanCountAfterFirst = mockCreatePlan.mock.calls.length;
+    expect(createPlanCountAfterFirst).toBeGreaterThan(0);
+
+    // The athlete answers a clarification through the canonical profile
+    // path, then retries the same request seconds later.
+    gymProfile = { session_duration_minutes: 60 };
+    vi.setSystemTime(new Date('2026-04-15T12:00:20.000Z'));
+    mockGetPlanById.mockReturnValue({ id: first.body.data.planId, user_id: 12, tenant_id: 12, status: 'active' });
+    mockGetWeeksForPlan.mockReturnValue([{ id: 3005, plan_id: first.body.data.planId, week_number: 1 }]);
+    mockGetSessionsForWeek.mockReturnValue([{ id: 4005, plan_id: first.body.data.planId, week_id: 3005, status: 'scheduled' }]);
+    const second = await dispatch('POST', '/plan/generate', {}, body);
+
+    expect(second.statusCode).toBe(201);
+    // A changed answer must change the request hash → fresh generation, not
+    // a replay of the pre-answer plan.
+    expect(mockCreatePlan.mock.calls.length).toBe(createPlanCountAfterFirst + 1);
+  });
+
   it('auto-dedupes rapid duplicate plan creation across a minute boundary', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(new Date('2026-04-15T12:00:59.500Z'));
@@ -1971,7 +2824,6 @@ describe('Training API routes', () => {
     const first = await dispatch('POST', '/plan/generate', {}, body);
     const createPlanCountAfterFirst = mockCreatePlan.mock.calls.length;
     const createSessionCountAfterFirst = mockCreateSession.mock.calls.length;
-    const createEventCountAfterFirst = mockCreateEvent.mock.calls.length;
 
     vi.setSystemTime(new Date('2026-04-15T12:01:00.500Z'));
     mockGetPlanById.mockReturnValue({ id: first.body.data.planId, user_id: 12, tenant_id: 12, status: 'active' });
@@ -1984,10 +2836,11 @@ describe('Training API routes', () => {
     expect(second.body.data).toEqual(first.body.data);
     expect(createPlanCountAfterFirst).toBeGreaterThan(0);
     expect(createSessionCountAfterFirst).toBeGreaterThan(0);
-    expect(createEventCountAfterFirst).toBeGreaterThan(0);
     expect(mockCreatePlan).toHaveBeenCalledTimes(createPlanCountAfterFirst);
     expect(mockCreateSession).toHaveBeenCalledTimes(createSessionCountAfterFirst);
-    expect(mockCreateEvent).toHaveBeenCalledTimes(createEventCountAfterFirst);
+    // Phase 1B: routes never call providers — duplicate-event protection is
+    // the worker's ownership idempotency, covered in its own suite.
+    expect(mockCreateEvent).not.toHaveBeenCalled();
   });
 
   it('keeps stale automatic plan-generation claims in progress while the first request is still running', () => {
@@ -1998,7 +2851,7 @@ describe('Training API routes', () => {
     const requestHash = 'same-plan-request-hash';
 
     const first = claimTrainingPlanGenerationIdempotency(12, 12, key, requestHash);
-    expect(first).toEqual({ kind: 'claimed', idempotencyKey: key, requestHash });
+    expect(first).toMatchObject({ kind: 'claimed', idempotencyKey: key, requestHash });
 
     vi.setSystemTime(new Date('2026-04-15T12:01:40.000Z'));
     const second = claimTrainingPlanGenerationIdempotency(12, 12, key, requestHash);
@@ -2007,7 +2860,7 @@ describe('Training API routes', () => {
     expect(mockCreatePlan).not.toHaveBeenCalled();
   });
 
-  it('replaces stale automatic succeeded plan-generation rows as a fresh user action', () => {
+  it('preserves stale automatic succeeded plan-generation rows as immutable receipts', () => {
     vi.useFakeTimers({ shouldAdvanceTime: false });
     vi.setSystemTime(new Date('2026-04-15T12:00:00.000Z'));
 
@@ -2016,13 +2869,21 @@ describe('Training API routes', () => {
     const responseData = { planId: 901, resolvedStartDate: '2026-04-20' };
 
     const first = claimTrainingPlanGenerationIdempotency(12, 12, key, requestHash);
-    expect(first).toEqual({ kind: 'claimed', idempotencyKey: key, requestHash });
-    completeTrainingPlanGenerationIdempotency(12, 12, key, requestHash, responseData, 201);
+    expect(first).toMatchObject({ kind: 'claimed', idempotencyKey: key, requestHash });
+    if (first.kind !== 'claimed') throw new Error('expected owned claim');
+    completeTrainingPlanGenerationIdempotency(12, 12, first, responseData, 201);
 
     vi.setSystemTime(new Date('2026-04-15T12:01:40.000Z'));
     const second = claimTrainingPlanGenerationIdempotency(12, 12, key, requestHash);
 
-    expect(second).toEqual({ kind: 'claimed', idempotencyKey: key, requestHash });
+    // Stronger guarantee: even server-generated keys cannot turn a successful
+    // receipt into authority for a second plan mutation after a time window.
+    expect(second).toEqual({
+      kind: 'replay',
+      idempotencyKey: key,
+      responseData,
+      statusCode: 201,
+    });
   });
 
   it('replays slow automatic plan-generation successes from completion time', () => {
@@ -2034,10 +2895,11 @@ describe('Training API routes', () => {
     const responseData = { planId: 902, resolvedStartDate: '2026-04-20' };
 
     const first = claimTrainingPlanGenerationIdempotency(12, 12, key, requestHash);
-    expect(first).toEqual({ kind: 'claimed', idempotencyKey: key, requestHash });
+    expect(first).toMatchObject({ kind: 'claimed', idempotencyKey: key, requestHash });
 
     vi.setSystemTime(new Date('2026-04-15T12:02:00.000Z'));
-    completeTrainingPlanGenerationIdempotency(12, 12, key, requestHash, responseData, 201);
+    if (first.kind !== 'claimed') throw new Error('expected owned claim');
+    completeTrainingPlanGenerationIdempotency(12, 12, first, responseData, 201);
 
     vi.setSystemTime(new Date('2026-04-15T12:02:01.000Z'));
     const second = claimTrainingPlanGenerationIdempotency(12, 12, key, requestHash);
@@ -2098,12 +2960,17 @@ describe('Training API routes', () => {
       },
       decisionReasons: [
         {
-          code: 'schedule_compressed',
-          message: 'Compressed because only one valid training window was available.',
+          code: 'session_compressed',
+          text: 'Compressed because only one valid training window was available.',
           severity: 'info',
-          source: 'capacity_reconciliation',
+          sourceConstraint: {
+            type: 'capacity',
+            label: 'capacity_reconciliation',
+          },
           affectedEntity: { type: 'week', id: 'week-1' },
-          evidence: { beforeMinutes: 45, afterMinutes: 25 },
+          before: { minutes: 45 },
+          after: { minutes: 25 },
+          evidence: ['one_valid_training_window'],
         },
       ],
     });
@@ -2128,10 +2995,21 @@ describe('Training API routes', () => {
         field: 'available_duration',
       }),
     ]);
+    // F12 stronger guarantee: adding the race-date policy disclosure must
+    // preserve pre-existing canonical kernel reasons instead of replacing
+    // them, and every returned reason must use the typed wire vocabulary.
     expect(res.body.data.decisionReasons).toEqual([
       expect.objectContaining({
-        code: 'schedule_compressed',
-        source: 'capacity_reconciliation',
+        code: 'session_compressed',
+        sourceConstraint: expect.objectContaining({
+          type: 'capacity',
+          label: 'capacity_reconciliation',
+        }),
+      }),
+      expect.objectContaining({
+        code: 'race_date_implies_event_based',
+        before: { goalMode: null },
+        after: { goalMode: 'event_based' },
       }),
     ]);
   });
@@ -2153,7 +3031,91 @@ describe('Training API routes', () => {
     expect(res.body.ok).toBe(true);
     expect(res.body.data.skipped).toBe(true);
     expect(res.body.data.weeklyAdherence).toBe(0.4);
-    expect(mockMarkSessionSkipped).toHaveBeenCalledWith(321);
+    // F18 strengthens the released skip path: even feedback-free skips write a
+    // canonical completion row, and that service atomically applies `skipped`.
+    expect(mockLogCompletion).toHaveBeenCalledWith(expect.objectContaining({
+      session_id: 321,
+      plan_id: 44,
+      completion_state: 'skipped',
+    }));
+    expect(mockMarkSessionSkipped).not.toHaveBeenCalled();
+  });
+
+  it('F18 — /skip persists released rich feedback instead of dropping it', async () => {
+    mockGetSessionById.mockReturnValue({ id: 321, plan_id: 44, status: 'pending' });
+    mockGetPlanById.mockReturnValue({ id: 44, user_id: 12, tenant_id: 12 });
+    mockGetActivePlan.mockReturnValue(null);
+    mockLogCompletion.mockReturnValue({
+      id: 9001,
+      session_id: 321,
+      completion_state: 'skipped',
+      readiness_level: 3,
+      discomfort_flag: 1,
+      discomfort_flags_json: JSON.stringify(['knee']),
+      discomfort_locations_json: JSON.stringify(['left_knee']),
+      discomfort_details: 'Mild discomfort after warm-up',
+      substitutions_used_json: JSON.stringify(['easy_walk']),
+      missed_reason: 'schedule_conflict',
+      felt_too_hard: 1,
+      felt_too_easy: 0,
+      felt_too_long: 0,
+      felt_too_short: 0,
+      modality: 'running',
+      session_role: 'quality',
+    });
+
+    const res = await dispatch('POST', '/skip', {}, {
+      sessionId: '321',
+      completionState: 'skipped',
+      status: 'skipped',
+      skippedReason: 'schedule_conflict',
+      readinessLevel: 3,
+      discomfortFlag: true,
+      discomfortFlags: ['knee'],
+      discomfortLocations: ['left_knee'],
+      discomfortDetails: 'Mild discomfort after warm-up',
+      substitutionsUsed: ['easy_walk'],
+      feltTooHard: true,
+      modality: 'running',
+      sessionRole: 'quality',
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(mockLogCompletion).toHaveBeenCalledWith(expect.objectContaining({
+      session_id: 321,
+      plan_id: 44,
+      completion_state: 'skipped',
+      missed_reason: 'schedule_conflict',
+      readiness_level: 3,
+      discomfort_flag: true,
+      discomfort_flags_json: JSON.stringify(['knee']),
+      discomfort_locations_json: JSON.stringify(['left_knee']),
+      discomfort_details: 'Mild discomfort after warm-up',
+      substitutions_used_json: JSON.stringify(['easy_walk']),
+      felt_too_hard: true,
+      modality: 'running',
+      session_role: 'quality',
+    }));
+    expect(mockMarkSessionSkipped).not.toHaveBeenCalled();
+    expect(res.body.data).toEqual(expect.objectContaining({
+      skipped: true,
+      completionState: 'skipped',
+      feedback: expect.objectContaining({
+        sessionId: '321',
+        completionState: 'skipped',
+        status: 'skipped',
+        readinessLevel: 3,
+        discomfortFlag: true,
+        discomfortFlags: ['knee'],
+        discomfortLocations: ['left_knee'],
+        discomfortDetails: 'Mild discomfort after warm-up',
+        substitutionsUsed: ['easy_walk'],
+        skippedReason: 'schedule_conflict',
+        feltTooHard: true,
+        modality: 'running',
+        sessionRole: 'quality',
+      }),
+    }));
   });
 
   it('returns uniform 404 from /skip when the session id belongs to a different user', async () => {
@@ -2200,6 +3162,194 @@ describe('Training API routes', () => {
     expect(res.body.ok).toBe(false);
     expect(res.body.error.code).toBe('BAD_INPUT');
     expect(res.body.error.message).toContain('sessionId must be a positive integer');
+  });
+
+  it('F18 — /complete preserves partial state and all released rich feedback aliases', async () => {
+    mockGetSessionById.mockReturnValue({ id: 42, plan_id: 7, status: 'pending' });
+    mockGetPlanById.mockReturnValue({ id: 7, user_id: 12, tenant_id: 12 });
+    mockGetActivePlan.mockReturnValue(null);
+    mockLogCompletion.mockReturnValue({
+      id: 9002,
+      session_id: 42,
+      completion_state: 'partial',
+      completed_duration_sec: 28 * 60,
+      readiness_level: 4,
+      difficulty_feedback: 'hard',
+      duration_feedback: 'too_short',
+      discomfort_flag: 1,
+      discomfort_flags_json: JSON.stringify(['ankle']),
+      discomfort_locations_json: JSON.stringify(['right_ankle']),
+      discomfort_details: 'Stopped when discomfort increased',
+      substitutions_used_json: JSON.stringify(['bike']),
+      felt_too_hard: 1,
+      felt_too_easy: 0,
+      felt_too_long: 0,
+      felt_too_short: 1,
+      modality: 'running',
+      session_role: 'long_run',
+    });
+
+    const res = await dispatch('POST', '/complete', {}, {
+      sessionId: '42',
+      completionState: 'partial',
+      status: 'partial',
+      actualDurationMinutes: 28,
+      readinessLevel: 4,
+      difficulty: 'hard',
+      difficultyFeedback: 'hard',
+      durationFeedback: 'too_short',
+      discomfortFlag: true,
+      discomfortFlags: ['ankle'],
+      discomfortLocations: ['right_ankle'],
+      discomfortDetails: 'Stopped when discomfort increased',
+      substitutionsUsed: ['bike'],
+      feltTooHard: true,
+      feltTooEasy: false,
+      feltTooLong: false,
+      feltTooShort: true,
+      modality: 'running',
+      sessionRole: 'long_run',
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(mockLogCompletion).toHaveBeenCalledWith(expect.objectContaining({
+      session_id: 42,
+      plan_id: 7,
+      completion_state: 'partial',
+      completed_duration_sec: 28 * 60,
+      readiness_level: 4,
+      difficulty_feedback: 'hard',
+      duration_feedback: 'too_short',
+      discomfort_flag: true,
+      discomfort_flags_json: JSON.stringify(['ankle']),
+      discomfort_locations_json: JSON.stringify(['right_ankle']),
+      discomfort_details: 'Stopped when discomfort increased',
+      substitutions_used_json: JSON.stringify(['bike']),
+      felt_too_hard: true,
+      felt_too_easy: false,
+      felt_too_long: false,
+      felt_too_short: true,
+      modality: 'running',
+      session_role: 'long_run',
+    }));
+    expect(mockMarkSessionCompleted).not.toHaveBeenCalled();
+    expect(mockEmitDomainEvent).toHaveBeenCalledWith(expect.objectContaining({
+      payload: expect.objectContaining({
+        summary: expect.objectContaining({ status: 'partial' }),
+      }),
+    }));
+    expect(res.body.data).toEqual(expect.objectContaining({
+      completed: false,
+      completionState: 'partial',
+      feedback: expect.objectContaining({
+        sessionId: '42',
+        completionState: 'partial',
+        status: 'partial',
+        actualDurationMinutes: 28,
+        readinessLevel: 4,
+        difficulty: 'hard',
+        difficultyFeedback: 'hard',
+        durationFeedback: 'too_short',
+        discomfortFlag: true,
+        discomfortFlags: ['ankle'],
+        discomfortLocations: ['right_ankle'],
+        discomfortDetails: 'Stopped when discomfort increased',
+        substitutionsUsed: ['bike'],
+        feltTooHard: true,
+        feltTooShort: true,
+        modality: 'running',
+        sessionRole: 'long_run',
+      }),
+    }));
+  });
+
+  it('F18 — completion events expose aggregate flags and a digest-only private key', async () => {
+    mockGetSessionById.mockReturnValue({ id: 42, plan_id: 7, status: 'pending' });
+    mockGetPlanById.mockReturnValue({ id: 7, user_id: 12, tenant_id: 12 });
+    mockGetActivePlan.mockReturnValue(null);
+    mockLogCompletion.mockReturnValue({ id: 9003, completion_state: 'completed' });
+
+    const res = await dispatch('POST', '/complete', {}, {
+      sessionId: '42',
+      completionState: 'completed',
+      status: 'completed',
+      notes: 'PRIVATE_F18_NOTES_SENTINEL',
+      rpe: 9,
+      painScore: 8,
+      painLocation: 'PRIVATE_F18_PAIN_LOCATION',
+      discomfortFlag: true,
+      discomfortDetails: 'PRIVATE_F18_DISCOMFORT_DETAILS',
+    });
+
+    expect(res.statusCode).toBe(200);
+    const emitted = mockEmitDomainEvent.mock.calls.at(-1)?.[0] as {
+      privacyClassification?: string;
+      idempotencyKey?: string;
+      payload?: unknown;
+    };
+    expect(emitted).toBeDefined();
+    expect(emitted.privacyClassification).toBe('health');
+    expect(emitted.payload).toEqual(expect.objectContaining({
+      summary: expect.objectContaining({
+        status: 'completed',
+        hasNotes: true,
+        hasRpe: true,
+      }),
+    }));
+    // Stronger F18 guarantee: health values may affect a one-way digest, but
+    // no value (including RPE) is a readable segment of the durable key.
+    expect(emitted.idempotencyKey).toMatch(
+      /^training\.feedback\.recorded:12:42:completed:v2-[0-9a-f]{16}$/,
+    );
+    expect(emitted.idempotencyKey).not.toContain(':9:');
+    const serializedEvent = JSON.stringify(emitted);
+    expect(serializedEvent).not.toContain('PRIVATE_F18_NOTES_SENTINEL');
+    expect(serializedEvent).not.toContain('PRIVATE_F18_PAIN_LOCATION');
+    expect(serializedEvent).not.toContain('PRIVATE_F18_DISCOMFORT_DETAILS');
+  });
+
+  it('F18 — conflicting completionState/status aliases return 422 before mutation', async () => {
+    const res = await dispatch('POST', '/complete', {}, {
+      sessionId: '42',
+      completionState: 'partial',
+      status: 'completed',
+    });
+
+    expect(res.statusCode).toBe(422);
+    expect(res.body.error.code).toBe('TRAINING_COMPLETION_STATE_CONFLICT');
+    expect(mockLogCompletion).not.toHaveBeenCalled();
+    expect(mockMarkSessionCompleted).not.toHaveBeenCalled();
+  });
+
+  it('F18 — conflicting skippedReason/missedReason aliases return 422', async () => {
+    const res = await dispatch('POST', '/skip', {}, {
+      sessionId: '42',
+      skippedReason: 'travel',
+      missedReason: 'illness',
+    });
+
+    expect(res.statusCode).toBe(422);
+    expect(res.body.error.code).toBe('TRAINING_COMPLETION_FEEDBACK_CONFLICT');
+    expect(mockLogCompletion).not.toHaveBeenCalled();
+    expect(mockMarkSessionSkipped).not.toHaveBeenCalled();
+  });
+
+  it('F18 — absent state keeps the released legacy-completed behavior', async () => {
+    mockGetSessionById.mockReturnValue({ id: 42, plan_id: 7, status: 'pending' });
+    mockGetPlanById.mockReturnValue({ id: 7, user_id: 12, tenant_id: 12 });
+    mockGetActivePlan.mockReturnValue(null);
+    mockMarkSessionCompleted.mockReturnValue(true);
+
+    const res = await dispatch('POST', '/complete', {}, { sessionId: '42' });
+
+    // Stronger contract: only an absent state defaults to completed; explicit
+    // partial/skipped values must never pass through this legacy branch.
+    expect(res.statusCode).toBe(200);
+    expect(mockMarkSessionCompleted).toHaveBeenCalledWith(42);
+    expect(res.body.data).toEqual(expect.objectContaining({
+      completed: true,
+      completionState: 'completed',
+    }));
   });
 
   // ─── R4 P2 #1 — /complete V2 field validation hardening ───
@@ -2261,6 +3411,27 @@ describe('Training API routes', () => {
     expect(res.statusCode).toBe(400);
     expect(res.body.error.code).toBe('BAD_INPUT');
     expect(res.body.error.message).toMatch(/completedSetsJson must be ≤ 8192 characters/);
+  });
+
+  it.each([
+    ['non-finite rpe', { rpe: Number.NaN }, /rpe must be a finite number/],
+    ['null rpe', { rpe: null }, /rpe must be a finite number/],
+    ['out-of-range rpe', { rpe: 11 }, /rpe must be between 0 and 10/],
+    ['non-string notes', { notes: 42 }, /notes must be a string/],
+    ['null notes', { notes: null }, /notes must be a string/],
+    ['oversized notes', { notes: 'x'.repeat(1025) }, /notes must be ≤ 1024 characters/],
+  ] as const)('F18 — /complete rejects invalid legacy %s before mutation', async (_label, payload, expectedMessage) => {
+    // Stronger parity guarantee: legacy fields receive the same finite/range/
+    // length validation as rich /complete and /skip feedback.
+    const res = await dispatch('POST', '/complete', {}, {
+      sessionId: 'today',
+      ...payload,
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error.code).toBe('BAD_INPUT');
+    expect(res.body.error.message).toMatch(expectedMessage);
+    expect(mockGetSessionById).not.toHaveBeenCalled();
+    expect(mockLogCompletion).not.toHaveBeenCalled();
   });
 
   it('R4 P2 — /complete returns multiple errors joined when many fields are invalid', async () => {
@@ -2702,6 +3873,78 @@ describe('Training API routes', () => {
     expect(mockCreatePlan).not.toHaveBeenCalled();
   });
 
+  it('rejects same-day race dates before plan generation starts', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date('2026-06-03T12:00:00.000Z'));
+    mockGetProfile.mockReturnValue({ experienceLevel: 'intermediate' });
+
+    const res = await dispatch('POST', '/plan/generate', {}, {
+      objective: 'Race day is already here',
+      raceDate: '2026-06-03',
+    });
+
+    // F12 stronger guarantee: the boundary's "future" contract is strict;
+    // same-day input fails before the generator and uses the established
+    // non-future wire code for client compatibility.
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error.code).toBe('PAST_RACE_DATE');
+    expect(mockBuildCoachKernelTrainingPlan).not.toHaveBeenCalled();
+    expect(mockCreatePlan).not.toHaveBeenCalled();
+  });
+
+  it('rejects same-day race dates on the non-mutating preview boundary too', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date('2026-06-03T12:00:00.000Z'));
+    mockGetProfile.mockReturnValue({ experienceLevel: 'intermediate' });
+
+    const res = await dispatch('POST', '/plan/preview', {}, {
+      objective: 'Race day is already here',
+      raceDate: '2026-06-03',
+    });
+
+    // F12 stronger guarantee: preview and create share the same strict-future
+    // wire contract, so a client cannot preview semantics it cannot create.
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error.code).toBe('PAST_RACE_DATE');
+    expect(mockBuildCoachKernelTrainingPlan).not.toHaveBeenCalled();
+    expect(mockCreatePlan).not.toHaveBeenCalled();
+  });
+
+  it('returns a typed 422 when a future race date falls before the resolved plan start', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date('2026-06-10T12:00:00.000Z'));
+    mockGetProfile.mockImplementation((_userId: number, profile: string) => (
+      profile === 'fitness'
+        ? { experienceLevel: 'intermediate', available_equipment: 'Full gym' }
+        : null
+    ));
+
+    const res = await dispatch('POST', '/plan/generate', {}, {
+      objective: 'General fitness consistency',
+      startPolicy: 'next_full_week',
+      raceDate: '2026-06-13',
+    });
+
+    // F27 stronger guarantee: syntactically valid but semantically impossible
+    // input is a versioned 422, not a successful profile handoff or generic 500.
+    expect(res.statusCode).toBe(422);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error).toMatchObject({
+      code: 'RACE_DATE_BEFORE_PLAN_START',
+      details: {
+        schemaVersion: 'training_plan_generation_response.v1',
+        status: 'needs_profile',
+        validationError: {
+          code: 'RACE_DATE_BEFORE_PLAN_START',
+          raceDate: '2026-06-13',
+          resolvedStartDate: '2026-06-15',
+        },
+      },
+    });
+    expect(mockBuildCoachKernelTrainingPlan).not.toHaveBeenCalled();
+    expect(mockCreatePlan).not.toHaveBeenCalled();
+  });
+
   it('rejects unsupported selected-model parameters before generation starts', async () => {
     mockGetProfile.mockReturnValue({ experienceLevel: 'intermediate' });
 
@@ -2764,6 +4007,10 @@ describe('Training API routes', () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.body.ok).toBe(true);
+    expect(res.body.data).toMatchObject({
+      schemaVersion: 'training_plan_generation_response.v1',
+      status: 'preview',
+    });
     expect(mockBuildCoachKernelTrainingPlan).toHaveBeenCalledWith(expect.objectContaining({
       twoADayPreference: 'auto',
     }));
@@ -2786,12 +4033,15 @@ describe('Training API routes', () => {
       strengthSessionsPerWeek: 1,
     });
 
-    expect(res.statusCode).toBe(200);
-    expect(res.body.ok).toBe(true);
-    expect(res.body.data.status).toBe('plan_quality_blocked');
-    expect(res.body.data.fallbackTemplateUsed).toBe(true);
-    expect(res.body.data.message).toContain('did not save it');
-    expect(res.body.data.warnings).toEqual(
+    // F27 stronger guarantee: a fallback that cannot be persisted is an
+    // explicit semantic rejection rather than a successful generation.
+    expect(res.statusCode).toBe(422);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('TRAINING_PLAN_QUALITY_BLOCKED');
+    expect(res.body.error.details.status).toBe('plan_quality_blocked');
+    expect(res.body.error.details.fallbackTemplateUsed).toBe(true);
+    expect(res.body.error.message).toContain('did not save it');
+    expect(res.body.error.details.warnings).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ code: 'fallback_requires_review' }),
       ]),

@@ -12,9 +12,10 @@ import { getDb } from './database';
 import { logger } from '../utils/logger';
 import { normalizeTrainingExercisesJsonForWrite } from './training-exercise-identity';
 import { getTrainingExerciseIdentityV1Mode } from './runtime-flags';
-import { config } from '../config';
 import { requireTenantIdParam } from './tenant-scope';
 import { assertLegacyWeekMutationAllowed } from './training-plan-revision-legacy-guard';
+import type { TrainingCompletionState } from './training-completion-contract';
+import { resolveTrainingPlanTimezone } from './training-date-utils';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -27,7 +28,11 @@ export interface TrainingPlan {
   goal: string | null;
   duration_weeks: number;
   periodization: string;
-  status: 'active' | 'completed' | 'paused' | 'cancelled';
+  // F6 compatibility replacement uses `pending_activation` only inside its
+  // transaction and retains prior graphs as `superseded` for audit/recovery.
+  // The column has no CHECK constraint (migration 023:13), so both lifecycle
+  // values are additive without schema churn.
+  status: 'active' | 'completed' | 'paused' | 'cancelled' | 'pending_activation' | 'superseded';
   start_date: string;
   end_date: string;
   preferences_json: string | null;
@@ -56,6 +61,7 @@ export type TrainingSessionStatus =
   | 'compressed'
   | 'capped'
   | 'completed'
+  | 'partial'
   | 'skipped'
   | 'moved'
   | 'unscheduled'
@@ -132,6 +138,14 @@ export interface TrainingSession {
    */
   preferred_time_unavailable: number;
   status: TrainingSessionStatus;
+  /**
+   * Phase 1B — finalized schedule window persisted at creation time
+   * (migration 255 columns). The background calendar-sync worker rebuilds
+   * provider event times from these; rows persisted before Phase 1B have
+   * NULL here and are not calendar-syncable through the outbox path.
+   */
+  scheduled_start_at?: string | null;
+  scheduled_end_at?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -147,6 +161,32 @@ export interface TrainingCompletion {
   energy_level: number | null;
   soreness_level: number | null;
   notes: string | null;
+  completed_duration_sec: number | null;
+  completed_distance_meters: number | null;
+  completed_sets_json: string | null;
+  completed_reps_json: string | null;
+  completed_load_json: string | null;
+  rir: number | null;
+  pain_score: number | null;
+  pain_location: string | null;
+  technical_success_score: number | null;
+  missed_reason: string | null;
+  external_training_declared: number;
+  completion_state: TrainingCompletionState;
+  readiness_level: number | null;
+  difficulty_feedback: string | null;
+  duration_feedback: string | null;
+  discomfort_flag: number;
+  discomfort_flags_json: string;
+  discomfort_locations_json: string;
+  discomfort_details: string | null;
+  substitutions_used_json: string;
+  felt_too_hard: number;
+  felt_too_easy: number;
+  felt_too_long: number;
+  felt_too_short: number;
+  modality: string | null;
+  session_role: string | null;
   created_at: string;
 }
 
@@ -161,6 +201,12 @@ export interface CreatePlanInput {
   start_date: string;
   end_date: string;
   preferences_json?: string;
+  /**
+   * Defaults to `'active'` so every existing caller is unchanged. Generation
+   * passes `'pending_activation'` so the replacement is durable before the
+   * plan it replaces is removed (F6, Phase 1A-2).
+   */
+  status?: TrainingPlan['status'];
 }
 
 export interface CreateWeekInput {
@@ -195,6 +241,16 @@ export interface CreateSessionInput {
    * as `preferred_time_unavailable INTEGER` (1/0). See migration 080.
    */
   preferred_time_unavailable?: boolean;
+  /**
+   * Phase 1B (calendar-sync outbox) — the finalized schedule window,
+   * persisted so the background calendar-sync worker can rebuild provider
+   * event times from the row. Columns exist since migration 255 but had no
+   * writer on this path; the in-memory `calendarEvents` array used to be the
+   * only holder of these times, which is incompatible with post-commit
+   * provider work.
+   */
+  scheduled_start_at?: string | null;
+  scheduled_end_at?: string | null;
 }
 
 export interface LogCompletionInput {
@@ -230,6 +286,22 @@ export interface LogCompletionInput {
   missed_reason?: string;
   /** Set true when athlete did an external (unlogged) training session. */
   external_training_declared?: boolean;
+  /** Canonical state; absent preserves the released legacy-completed behavior. */
+  completion_state?: TrainingCompletionState;
+  readiness_level?: number;
+  difficulty_feedback?: string;
+  duration_feedback?: string;
+  discomfort_flag?: boolean;
+  discomfort_flags_json?: string;
+  discomfort_locations_json?: string;
+  discomfort_details?: string;
+  substitutions_used_json?: string;
+  felt_too_hard?: boolean;
+  felt_too_easy?: boolean;
+  felt_too_long?: boolean;
+  felt_too_short?: boolean;
+  modality?: string;
+  session_role?: string;
 }
 
 const TRAINING_SESSION_UPDATE_COLUMNS = new Set([
@@ -269,16 +341,98 @@ export function createPlan(input: CreatePlanInput): TrainingPlan {
   const tenantId = requireTenantIdParam(input.tenant_id, 'createPlan');
   const result = db.prepare(`
     INSERT INTO fitness_training_plans
-      (user_id, tenant_id, name, sport, goal, duration_weeks, periodization, start_date, end_date, preferences_json)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (user_id, tenant_id, name, sport, goal, duration_weeks, periodization, start_date, end_date, preferences_json, status)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     input.user_id, tenantId, input.name, input.sport, input.goal ?? null,
     input.duration_weeks, input.periodization ?? 'linear',
     input.start_date, input.end_date, input.preferences_json ?? null,
+    input.status ?? 'active',
   );
-  logger.info({ planId: result.lastInsertRowid, name: input.name }, 'Training plan created');
+  logger.info(
+    { planId: result.lastInsertRowid, name: input.name, status: input.status ?? 'active' },
+    'Training plan created',
+  );
   return getDb().prepare('SELECT * FROM fitness_training_plans WHERE id = ?')
     .get(result.lastInsertRowid) as TrainingPlan;
+}
+
+/**
+ * Promote a `pending_activation` replacement to the user's active plan
+ * (F6, Phase 1A-2).
+ *
+ * Tenant-scoped and status-qualified: the UPDATE only matches a row that is
+ * still `pending_activation` and owned by this scope, so a concurrent
+ * activation or a foreign-scope id changes nothing and returns false. Callers
+ * treat `false` as "do not proceed" and clean up the pending row.
+ */
+export function activatePendingPlan(planId: number, userId: number, tenantId: number): boolean {
+  const db = getDb();
+  const scopedTenantId = requireTenantIdParam(tenantId, 'activatePendingPlan');
+  const result = db.prepare(`
+    UPDATE fitness_training_plans
+       SET status = 'active', updated_at = datetime('now')
+     WHERE id = ? AND user_id = ? AND tenant_id = ? AND status = 'pending_activation'
+  `).run(planId, userId, scopedTenantId);
+  return result.changes === 1;
+}
+
+export class TrainingPlanReplacementConflictError extends Error {
+  readonly code = 'TRAINING_PLAN_REPLACEMENT_CONFLICT';
+
+  constructor() {
+    super('The active Training plan changed while this replacement was being built');
+    this.name = 'TrainingPlanReplacementConflictError';
+  }
+}
+
+/**
+ * F6 atomic compatibility pointer transition. The caller already owns the
+ * surrounding graph/outbox transaction; this helper performs only scoped,
+ * synchronous status CAS writes on that same database handle.
+ */
+export function activateCompatibilityPlanReplacement(input: {
+  planId: number;
+  userId: number;
+  tenantId: number;
+  expectedActivePlanIds: number[];
+}): { supersededPlanIds: number[] } {
+  const db = getDb();
+  const tenantId = requireTenantIdParam(input.tenantId, 'activateCompatibilityPlanReplacement');
+  const currentActivePlanIds = (db.prepare(`
+    SELECT id FROM fitness_training_plans
+     WHERE user_id = ? AND tenant_id = ? AND status = 'active'
+     ORDER BY id
+  `).all(input.userId, tenantId) as Array<{ id: number }>).map((row) => row.id);
+  const expectedActivePlanIds = [...input.expectedActivePlanIds].sort((a, b) => a - b);
+  if (
+    currentActivePlanIds.length !== expectedActivePlanIds.length
+    || currentActivePlanIds.some((id, index) => id !== expectedActivePlanIds[index])
+  ) {
+    throw new TrainingPlanReplacementConflictError();
+  }
+
+  if (currentActivePlanIds.length > 0) {
+    const placeholders = currentActivePlanIds.map(() => '?').join(', ');
+    const superseded = db.prepare(`
+      UPDATE fitness_training_plans
+         SET status = 'superseded', updated_at = datetime('now')
+       WHERE user_id = ? AND tenant_id = ? AND status = 'active'
+         AND id IN (${placeholders})
+    `).run(input.userId, tenantId, ...currentActivePlanIds);
+    if (superseded.changes !== currentActivePlanIds.length) {
+      throw new TrainingPlanReplacementConflictError();
+    }
+  }
+
+  const activated = db.prepare(`
+    UPDATE fitness_training_plans
+       SET status = 'active', updated_at = datetime('now')
+     WHERE id = ? AND user_id = ? AND tenant_id = ?
+       AND status = 'pending_activation'
+  `).run(input.planId, input.userId, tenantId);
+  if (activated.changes !== 1) throw new TrainingPlanReplacementConflictError();
+  return { supersededPlanIds: currentActivePlanIds };
 }
 
 /**
@@ -454,10 +608,11 @@ export function getWeeksForPlan(planId: number): TrainingWeek[] {
 }
 
 export function resolveTrainingPlanWeekNumber(
-  plan: Pick<TrainingPlan, 'start_date' | 'duration_weeks'>,
+  plan: Pick<TrainingPlan, 'start_date' | 'duration_weeks'>
+    & Partial<Pick<TrainingPlan, 'preferences_json'>>,
   options: { now?: Date; timezone?: string | null } = {},
 ): number {
-  const timezone = options.timezone || config.app?.timezone || 'Europe/Lisbon';
+  const timezone = resolveTrainingPlanTimezone(plan, options.timezone);
   const start = DateTime.fromISO(plan.start_date, { zone: timezone }).startOf('day');
   const now = DateTime.fromJSDate(options.now ?? new Date(), { zone: timezone }).startOf('day');
   if (!start.isValid || !now.isValid) return 1;
@@ -534,8 +689,8 @@ export function createSession(input: CreateSessionInput): TrainingSession {
       (week_id, plan_id, tenant_id, day_of_week, session_type, title, description,
        description_json, exercises_json, duration_minutes, intensity_text,
        calendar_event_id, calendar_source, session_identity_key, session_shape_hash,
-       preferred_time_unavailable, status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       preferred_time_unavailable, status, scheduled_start_at, scheduled_end_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     input.week_id, input.plan_id, tenantId, normalizedDay, input.session_type,
     input.title, input.description ?? null, input.description_json ?? null,
@@ -545,6 +700,7 @@ export function createSession(input: CreateSessionInput): TrainingSession {
     input.session_identity_key ?? null, input.session_shape_hash ?? null,
     input.preferred_time_unavailable ? 1 : 0,
     input.status ?? 'pending',
+    input.scheduled_start_at ?? null, input.scheduled_end_at ?? null,
   );
   return db.prepare('SELECT * FROM training_sessions WHERE id = ?')
     .get(result.lastInsertRowid) as TrainingSession;
@@ -566,6 +722,61 @@ export function getSessionById(sessionId: number): TrainingSession | null {
   const db = getDb();
   return (db.prepare('SELECT * FROM training_sessions WHERE id = ?')
     .get(sessionId) as TrainingSession | undefined) ?? null;
+}
+
+export interface TrainingSessionLookupScope {
+  userId: number;
+  tenantId: number;
+}
+
+/**
+ * Resolve a session only through its owning plan's authenticated scope.
+ *
+ * Calendar/agenda pointers are durable external identifiers and can become
+ * corrupt or misrouted. Callers that hydrate user-visible content from one of
+ * those pointers must use this loader instead of the legacy global-by-id read.
+ * The session/plan tenant equality in the JOIN also rejects internally
+ * inconsistent rows. Missing ownership tables, malformed scope, and query
+ * failures all return null so callers cannot fall back to unscoped data.
+ */
+export function getSessionByIdForScope(
+  sessionId: number,
+  scope: TrainingSessionLookupScope,
+): TrainingSession | null {
+  try {
+    if (!Number.isSafeInteger(sessionId) || sessionId <= 0) return null;
+    const scopedUserId = requireTenantIdParam(scope.userId, 'getSessionByIdForScope.userId');
+    const scopedTenantId = requireTenantIdParam(scope.tenantId, 'getSessionByIdForScope.tenantId');
+    const db = getDb();
+    return (db.prepare(`
+      SELECT sessions.*
+        FROM training_sessions sessions
+        JOIN fitness_training_plans plans
+          ON plans.id = sessions.plan_id
+         AND plans.tenant_id = sessions.tenant_id
+       WHERE sessions.id = ?
+         AND plans.user_id = ?
+         AND plans.tenant_id = ?
+         AND sessions.tenant_id = ?
+       LIMIT 1
+    `).get(
+      sessionId,
+      scopedUserId,
+      scopedTenantId,
+      scopedTenantId,
+    ) as TrainingSession | undefined) ?? null;
+  } catch (err) {
+    logger.warn(
+      {
+        err,
+        sessionId,
+        userId: scope?.userId ?? null,
+        tenantId: scope?.tenantId ?? null,
+      },
+      'Scoped Training session lookup failed — refusing unscoped hydration',
+    );
+    return null;
+  }
 }
 
 export function updateSession(
@@ -694,21 +905,8 @@ export function syncSessionWithCoachRecommendation(rec: {
   if (rec.newStart) {
     const movedAt = new Date(rec.newStart);
     if (!Number.isNaN(movedAt.getTime())) {
-      // 2026-05-18 (skill-hardening QA P1-3): the previous fallback chain
-      // included a `|| 'Europe/Lisbon'` literal, which violated plan §3.7's
-      // ground rule against single-tenant locale hardcodes. The caller
-      // (`syncSessionWithCoachRecommendation`) is now responsible for
-      // passing the user's timezone via `rec.timezone`; if missing we fall
-      // back to `config.app.timezone` (the system default) and surface a
-      // warning to logs so the gap is visible to ops. We never bake the
-      // founder's TZ into the fallback chain.
-      if (!rec.timezone && !config.app.timezone) {
-        logger.warn(
-          { eventId: rec.eventId, source: rec.source },
-          'training.coach-recommendation: no user TZ + no config TZ; defaulting to UTC',
-        );
-      }
-      const timeZone = rec.timezone || config.app.timezone || 'UTC';
+      const plan = getPlanById(session.plan_id);
+      const timeZone = resolveTrainingPlanTimezone(plan, rec.timezone);
       updates.day_of_week = movedAt.toLocaleDateString('en-US', {
         weekday: 'long',
         timeZone,
@@ -725,58 +923,182 @@ export function syncSessionWithCoachRecommendation(rec: {
 
 // ── Completion Logging ─────────────────────────────────────────────
 
+const COMPLETION_RETRY_FIELDS = [
+  'actual_exercises_json',
+  'rpe_overall',
+  'duration_minutes',
+  'energy_level',
+  'soreness_level',
+  'notes',
+  'completed_duration_sec',
+  'completed_distance_meters',
+  'completed_sets_json',
+  'completed_reps_json',
+  'completed_load_json',
+  'rir',
+  'pain_score',
+  'pain_location',
+  'technical_success_score',
+  'missed_reason',
+  'external_training_declared',
+  'completion_state',
+  'readiness_level',
+  'difficulty_feedback',
+  'duration_feedback',
+  'discomfort_flag',
+  'discomfort_flags_json',
+  'discomfort_locations_json',
+  'discomfort_details',
+  'substitutions_used_json',
+  'felt_too_hard',
+  'felt_too_easy',
+  'felt_too_long',
+  'felt_too_short',
+  'modality',
+  'session_role',
+] as const satisfies ReadonlyArray<keyof TrainingCompletion>;
+
+function normalizedCompletionWrite(
+  input: LogCompletionInput,
+  completionState: TrainingCompletionState,
+): Pick<TrainingCompletion, (typeof COMPLETION_RETRY_FIELDS)[number]> {
+  return {
+    actual_exercises_json: input.actual_exercises_json ?? null,
+    rpe_overall: input.rpe_overall ?? null,
+    duration_minutes: input.duration_minutes ?? null,
+    energy_level: input.energy_level ?? null,
+    soreness_level: input.soreness_level ?? null,
+    notes: input.notes ?? null,
+    completed_duration_sec: input.completed_duration_sec ?? null,
+    completed_distance_meters: input.completed_distance_meters ?? null,
+    completed_sets_json: input.completed_sets_json ?? null,
+    completed_reps_json: input.completed_reps_json ?? null,
+    completed_load_json: input.completed_load_json ?? null,
+    rir: input.rir ?? null,
+    pain_score: input.pain_score ?? null,
+    pain_location: input.pain_location ?? null,
+    technical_success_score: input.technical_success_score ?? null,
+    missed_reason: input.missed_reason ?? null,
+    external_training_declared: input.external_training_declared === true ? 1 : 0,
+    completion_state: completionState,
+    readiness_level: input.readiness_level ?? null,
+    difficulty_feedback: input.difficulty_feedback ?? null,
+    duration_feedback: input.duration_feedback ?? null,
+    discomfort_flag: input.discomfort_flag === true ? 1 : 0,
+    discomfort_flags_json: input.discomfort_flags_json ?? '[]',
+    discomfort_locations_json: input.discomfort_locations_json ?? '[]',
+    discomfort_details: input.discomfort_details ?? null,
+    substitutions_used_json: input.substitutions_used_json ?? '[]',
+    felt_too_hard: input.felt_too_hard === true ? 1 : 0,
+    felt_too_easy: input.felt_too_easy === true ? 1 : 0,
+    felt_too_long: input.felt_too_long === true ? 1 : 0,
+    felt_too_short: input.felt_too_short === true ? 1 : 0,
+    modality: input.modality ?? null,
+    session_role: input.session_role ?? null,
+  };
+}
+
+function isExactCompletionRetry(
+  row: TrainingCompletion,
+  expected: Pick<TrainingCompletion, (typeof COMPLETION_RETRY_FIELDS)[number]>,
+): boolean {
+  return COMPLETION_RETRY_FIELDS.every((field) => row[field] === expected[field]);
+}
+
 export function logCompletion(input: LogCompletionInput): TrainingCompletion {
   const db = getDb();
-  // Slice A0c — insert both legacy migration-023 fields AND the V2
-  // CompletionFeedbackV2 columns from migration 157. All V2 fields
-  // are optional; older callers passing only legacy fields continue
-  // to work unchanged.
-  const result = db.prepare(`
-    INSERT INTO training_completions
-      (session_id, plan_id, actual_exercises_json, rpe_overall,
-       duration_minutes, energy_level, soreness_level, notes,
-       completed_duration_sec, completed_distance_meters,
-       completed_sets_json, completed_reps_json, completed_load_json,
-       rir, pain_score, pain_location, technical_success_score,
-       missed_reason, external_training_declared)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    input.session_id,
-    input.plan_id,
-    input.actual_exercises_json ?? null,
-    input.rpe_overall ?? null,
-    input.duration_minutes ?? null,
-    input.energy_level ?? null,
-    input.soreness_level ?? null,
-    input.notes ?? null,
-    // V2 columns:
-    input.completed_duration_sec ?? null,
-    input.completed_distance_meters ?? null,
-    input.completed_sets_json ?? null,
-    input.completed_reps_json ?? null,
-    input.completed_load_json ?? null,
-    input.rir ?? null,
-    input.pain_score ?? null,
-    input.pain_location ?? null,
-    input.technical_success_score ?? null,
-    input.missed_reason ?? null,
-    input.external_training_declared === true ? 1 : 0,
-  );
-  // Also mark the session as completed
-  markSessionCompleted(input.session_id);
+  const completionState = input.completion_state ?? 'completed';
+  const normalized = normalizedCompletionWrite(input, completionState);
+  // The completion row and session state are one business write. This remains
+  // safe inside the route's surrounding outbox transaction because
+  // better-sqlite3 nests transactions with savepoints.
+  const completion = db.transaction(() => {
+    const session = db.prepare(`
+      SELECT plan_id FROM training_sessions WHERE id = ?
+    `).get(input.session_id) as { plan_id: number } | undefined;
+    if (!session || session.plan_id !== input.plan_id) {
+      throw new Error(
+        `TRAINING_COMPLETION_SESSION_PLAN_MISMATCH:${input.session_id}:${input.plan_id}`,
+      );
+    }
+
+    // A mobile retry after a lost response must not create a second action.
+    // Collapse only an exact payload replay; a materially different payload
+    // remains a later disposition and is resolved by latest-state readers.
+    const latestCompletion = db.prepare(`
+      SELECT * FROM training_completions
+       WHERE session_id = ? AND plan_id = ?
+       ORDER BY datetime(completed_at) DESC, id DESC
+       LIMIT 1
+    `).get(input.session_id, input.plan_id) as TrainingCompletion | undefined;
+    if (latestCompletion && isExactCompletionRetry(latestCompletion, normalized)) {
+      return latestCompletion;
+    }
+
+    const result = db.prepare(`
+      INSERT INTO training_completions
+        (session_id, plan_id, actual_exercises_json, rpe_overall,
+         duration_minutes, energy_level, soreness_level, notes,
+         completed_duration_sec, completed_distance_meters,
+         completed_sets_json, completed_reps_json, completed_load_json,
+         rir, pain_score, pain_location, technical_success_score,
+         missed_reason, external_training_declared, completion_state,
+         readiness_level, difficulty_feedback, duration_feedback,
+         discomfort_flag, discomfort_flags_json, discomfort_locations_json,
+         discomfort_details, substitutions_used_json, felt_too_hard,
+         felt_too_easy, felt_too_long, felt_too_short, modality, session_role)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+              ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      input.session_id,
+      input.plan_id,
+      ...COMPLETION_RETRY_FIELDS.map((field) => normalized[field]),
+    );
+
+    const stateUpdated = completionState === 'completed'
+      ? markSessionCompleted(input.session_id)
+      : completionState === 'skipped'
+        ? markSessionSkipped(input.session_id)
+        : updateSession(input.session_id, { status: 'partial' });
+    if (!stateUpdated) {
+      throw new Error(`TRAINING_COMPLETION_SESSION_STATE_WRITE_FAILED:${input.session_id}`);
+    }
+    return db.prepare('SELECT * FROM training_completions WHERE id = ?')
+      .get(result.lastInsertRowid) as TrainingCompletion;
+  })();
 
   logger.info(
     {
       sessionId: input.session_id,
-      rpe: input.rpe_overall,
-      rir: input.rir,
-      painScore: input.pain_score,
+      completionState,
+      hasRpe: input.rpe_overall != null,
+      hasRir: input.rir != null,
+      hasPainScore: input.pain_score != null,
+      hasPainLocation: Boolean(input.pain_location),
+      hasDiscomfortDetails: Boolean(input.discomfort_details),
       externalDeclared: input.external_training_declared === true,
     },
-    'Training session completed',
+    'Training completion feedback persisted',
   );
-  return db.prepare('SELECT * FROM training_completions WHERE id = ?')
-    .get(result.lastInsertRowid) as TrainingCompletion;
+  return completion;
+}
+
+/**
+ * Latest durable disposition for a plan. The session join rejects orphaned
+ * or cross-plan rows before an aggregate summary reaches another skill.
+ */
+export function getLatestCompletionForPlan(planId: number): TrainingCompletion | null {
+  const db = getDb();
+  return (db.prepare(`
+    SELECT tc.*
+      FROM training_completions tc
+      JOIN training_sessions ts
+        ON ts.id = tc.session_id
+       AND ts.plan_id = tc.plan_id
+     WHERE tc.plan_id = ?
+     ORDER BY datetime(tc.completed_at) DESC, tc.id DESC
+     LIMIT 1
+  `).get(planId) as TrainingCompletion | undefined) ?? null;
 }
 
 // ── Analytics & Auto-Adjust ────────────────────────────────────────
@@ -786,6 +1108,7 @@ export interface WeeklyAdherenceStats {
   weekNumber: number;
   totalSessions: number;
   completedSessions: number;
+  partialSessions: number;
   skippedSessions: number;
   pendingSessions: number;
   adherenceRate: number;          // 0-100
@@ -802,10 +1125,24 @@ export function getWeeklyAdherence(planId: number, weekId: number): WeeklyAdhere
   `).all(weekId, planId) as Array<{ status: string }>;
 
   const completions = db.prepare(`
-    SELECT rpe_overall, energy_level, soreness_level FROM training_completions
-    WHERE plan_id = ? AND session_id IN (
-      SELECT id FROM training_sessions WHERE week_id = ?
+    WITH ranked AS (
+      SELECT tc.rpe_overall, tc.energy_level, tc.soreness_level,
+             tc.completion_state, ts.status,
+             ROW_NUMBER() OVER (
+               PARTITION BY tc.session_id
+               ORDER BY datetime(tc.completed_at) DESC, tc.id DESC
+             ) AS row_number
+        FROM training_completions tc
+        JOIN training_sessions ts
+          ON ts.id = tc.session_id
+         AND ts.plan_id = tc.plan_id
+       WHERE tc.plan_id = ? AND ts.week_id = ?
     )
+    SELECT rpe_overall, energy_level, soreness_level
+      FROM ranked
+     WHERE row_number = 1
+       AND completion_state IN ('completed', 'partial')
+       AND status <> 'skipped'
   `).all(planId, weekId) as Array<{ rpe_overall: number | null; energy_level: number | null; soreness_level: number | null }>;
 
   const week = db.prepare('SELECT week_number FROM training_weeks WHERE id = ?')
@@ -814,6 +1151,7 @@ export function getWeeklyAdherence(planId: number, weekId: number): WeeklyAdhere
   const adherenceSessions = sessions.filter((s) => isAdherenceBearingSession(s.status));
   const total = adherenceSessions.length;
   const completed = adherenceSessions.filter(s => s.status === 'completed').length;
+  const partial = adherenceSessions.filter(s => s.status === 'partial').length;
   const skipped = adherenceSessions.filter(s => s.status === 'skipped').length;
 
   const rpValues = completions.filter(c => c.rpe_overall != null).map(c => c.rpe_overall!);
@@ -827,9 +1165,10 @@ export function getWeeklyAdherence(planId: number, weekId: number): WeeklyAdhere
     weekNumber: week?.week_number ?? 0,
     totalSessions: total,
     completedSessions: completed,
+    partialSessions: partial,
     skippedSessions: skipped,
-    pendingSessions: total - completed - skipped,
-    adherenceRate: total > 0 ? Math.round((completed / total) * 100) : 0,
+    pendingSessions: total - completed - partial - skipped,
+    adherenceRate: total > 0 ? Math.round(((completed + (partial * 0.5)) / total) * 100) : 0,
     avgRpe: avg(rpValues) != null ? Math.round(avg(rpValues)! * 10) / 10 : null,
     avgEnergy: avg(energyValues) != null ? Math.round(avg(energyValues)! * 10) / 10 : null,
     avgSoreness: avg(sorenessValues) != null ? Math.round(avg(sorenessValues)! * 10) / 10 : null,
@@ -931,8 +1270,11 @@ export function getActivePlanSummary(userId: number, tenantId: number): string |
 
     // Adherence for completed week
     const adherence = getWeeklyAdherence(plan.id, currentWeek.id);
-    if (adherence.completedSessions > 0) {
-      parts.push(`\nWeek stats: ${adherence.completedSessions}/${adherence.totalSessions} completed (${adherence.adherenceRate}%)`);
+    if (adherence.completedSessions > 0 || adherence.partialSessions > 0 || adherence.skippedSessions > 0) {
+      const partialLabel = adherence.partialSessions > 0
+        ? ` + ${adherence.partialSessions} partial`
+        : '';
+      parts.push(`\nWeek stats: ${adherence.completedSessions} completed${partialLabel} / ${adherence.totalSessions} sessions (${adherence.adherenceRate}%)`);
       if (adherence.avgRpe != null) parts.push(`Avg RPE: ${adherence.avgRpe}`);
       if (adherence.avgSoreness != null) parts.push(`Avg soreness: ${adherence.avgSoreness}/10`);
     }
@@ -960,8 +1302,12 @@ export function getPlanStats(userId: number, tenantId: number): {
   `).get(userId, tenantId) as { cnt: number }).cnt;
 
   const totalCompleted = (db.prepare(`
-    SELECT COUNT(*) as cnt FROM training_completions
-    WHERE plan_id IN (SELECT id FROM fitness_training_plans WHERE user_id = ? AND tenant_id = ?)
+    SELECT COUNT(*) AS cnt
+      FROM training_sessions sessions
+      JOIN fitness_training_plans plans ON plans.id = sessions.plan_id
+     WHERE plans.user_id = ?
+       AND plans.tenant_id = ?
+       AND sessions.status = 'completed'
   `).get(userId, tenantId) as { cnt: number }).cnt;
 
   let adherence = 0;

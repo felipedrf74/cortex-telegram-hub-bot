@@ -78,11 +78,10 @@ export function executeTrainingExplainSessionStep(
 // change; the chaining is covered via a definition mock in
 // chat-segment-router.test.ts.
 function provisionalTrainingPlanTitle(args: Record<string, unknown>): string {
-  const goal = typeof args.goal === 'string' && args.goal.trim() ? args.goal.trim() : null;
-  const sport = typeof args.sport === 'string' && args.sport.trim() ? args.sport.trim() : null;
-  if (sport && goal) return `${sport} plan — ${goal}`;
-  if (goal) return `Training plan — ${goal}`;
-  if (sport) return `${sport} training plan`;
+  const objective = typeof args.objective === 'string' && args.objective.trim()
+    ? args.objective.trim()
+    : null;
+  if (objective) return `Training plan — ${objective}`;
   return 'Training plan';
 }
 

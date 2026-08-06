@@ -796,6 +796,7 @@ export type TrainingDecisionReasonCode =
   | 'return_to_training_volume_capped'
   | 'continuous_plan_no_taper'
   | 'event_based_missing_race_date'
+  | 'race_date_implies_event_based'
   // Pre-race strength cutoff (taper wiring, 2026-07-01): strength sessions
   // inside the priority-scaled cutoff window are dropped at generation time
   // and the volume enforcer honors the week marker instead of refilling.
@@ -812,7 +813,11 @@ export type TrainingDecisionReasonCode =
   | 'equipment_conservative_default'
   | 'equipment_adaptation_applied'
   | 'endurance_coherence_warning'
-  | 'endurance_interference_warning';
+  | 'endurance_interference_warning'
+  // F9 (Phase 3): declared availability cannot cover the requested weekly
+  // frequency — the session was placed on an undeclared day (released
+  // fallback behaviour) and the athlete deserves to know.
+  | 'availability_insufficient_for_frequency';
 
 export interface TrainingDecisionReason {
   code: TrainingDecisionReasonCode;

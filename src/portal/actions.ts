@@ -5,7 +5,7 @@ import { runVoiceEvolutionAgent } from '../agents/voice-evolution-agent';
 import { runReactionRadar } from '../agents/reaction-radar-agent';
 import { runSEOAgent } from '../agents/seo-agent';
 import { runPipelineAgent } from '../agents/pipeline-agent';
-import { sendDailyBriefing, refreshConnectedGarminUsers } from '../services/scheduler';
+import { sendDailyBriefing, refreshConnectedGarminUsersWithLease } from '../services/scheduler';
 import { isMicrosoftConfigured } from '../services/microsoft-auth';
 import { isInvoiceFilingConfigured } from '../services/invoice-filer';
 import { getOwnerBootstrapTarget } from '../services/user-service';
@@ -57,7 +57,19 @@ export async function handlePortalAction(
       // `resolveGarminUserId` stopped falling back to the owner — the button
       // then always reported failure. Refresh every connected user explicitly,
       // reusing the same scoped fan-out as the cron.
-      const outcome = await refreshConnectedGarminUsers('manual');
+      const guarded = await refreshConnectedGarminUsersWithLease('manual');
+      if (guarded.status !== 'completed') {
+        pushEvent({
+          ts: new Date().toISOString(),
+          type: 'auth',
+          summary: 'Manual Garmin refresh: durable keepalive already running',
+        });
+        return {
+          ok: false,
+          message: 'Garmin refresh already running or temporarily disabled',
+        };
+      }
+      const outcome = guarded.outcome;
       if (outcome.total === 0) {
         pushEvent({ ts: new Date().toISOString(), type: 'auth', summary: 'Manual Garmin refresh: no connected users' });
         return { ok: false, message: 'No Garmin-connected users to refresh' };

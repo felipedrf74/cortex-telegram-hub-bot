@@ -298,6 +298,30 @@ describe('training cross-skill staging smoke harness', () => {
     expect(markdown).toContain('staging_prerequisites');
   });
 
+  it('escapes an existing backslash before a Markdown table delimiter and preserves ordinary cells', async () => {
+    const report = await runTrainingCrossSkillStagingSmoke({
+      userId: 42,
+      runId: 'run-markdown-escape',
+      dryRun: false,
+      now: new Date('2026-05-01T08:00:00.000Z'),
+      env: {},
+    });
+    const operation = report.operations[0]!;
+    operation.expected = 'ordinary expectation';
+    operation.actual = `${String.raw`provider path \| forged cell`}\r\nordinary continuation`;
+    operation.evidence = [String.raw`evidence path \| forged cell`, 'ordinary evidence'];
+
+    const markdown = renderCrossSkillSmokeReportMarkdown(report);
+
+    expect(markdown).toContain([
+      '| staging_prerequisites',
+      'ordinary expectation',
+      `${String.raw`provider path \\\| forged cell`}<br>ordinary continuation`,
+      'blocked',
+      `${String.raw`evidence path \\\| forged cell`}<br>ordinary evidence |`,
+    ].join(' | '));
+  });
+
   it('blocks runtime flows when staging user lacks required cross-skill fixture data', async () => {
     const report = await runTrainingCrossSkillStagingSmoke({
       userId: 42,

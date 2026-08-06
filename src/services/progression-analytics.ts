@@ -267,11 +267,25 @@ export function extractStrengthDataPoints(
   let rows: CompletionRow[] = [];
   try {
     rows = db.prepare(`
+      WITH ranked_completions AS (
+        SELECT source.*,
+               ROW_NUMBER() OVER (
+                 PARTITION BY source.session_id
+                 ORDER BY datetime(source.completed_at) DESC, source.id DESC
+               ) AS row_number
+          FROM training_completions source
+      )
       SELECT tc.completed_at, tc.actual_exercises_json
-      FROM training_completions tc
+      FROM ranked_completions tc
+      JOIN training_sessions ts
+        ON ts.id = tc.session_id
+       AND ts.plan_id = tc.plan_id
       JOIN fitness_training_plans ftp ON ftp.id = tc.plan_id
       WHERE ftp.user_id = ? AND ftp.tenant_id = ?
-        AND tc.completed_at >= ?
+        AND tc.row_number = 1
+        AND tc.completion_state IN ('completed', 'partial')
+        AND ts.status <> 'skipped'
+        AND datetime(tc.completed_at) >= datetime(?)
       ORDER BY tc.completed_at ASC
     `).all(userId, scopedTenantId, windowStart) as CompletionRow[];
   } catch (err) {
@@ -627,14 +641,27 @@ export function extractCardioDataPoints(
     // reading only the legacy column made the chart claim "No running
     // logged" while history showed the completed session.
     rows = db.prepare(`
+      WITH ranked_completions AS (
+        SELECT source.*,
+               ROW_NUMBER() OVER (
+                 PARTITION BY source.session_id
+                 ORDER BY datetime(source.completed_at) DESC, source.id DESC
+               ) AS row_number
+          FROM training_completions source
+      )
       SELECT tc.completed_at,
-             COALESCE(tc.duration_minutes, tc.completed_duration_sec / 60.0) AS duration_minutes,
+             COALESCE(tc.completed_duration_sec / 60.0, tc.duration_minutes) AS duration_minutes,
              tc.actual_exercises_json, ts.session_type
-      FROM training_completions tc
-      JOIN training_sessions ts ON ts.id = tc.session_id
+      FROM ranked_completions tc
+      JOIN training_sessions ts
+        ON ts.id = tc.session_id
+       AND ts.plan_id = tc.plan_id
       JOIN fitness_training_plans ftp ON ftp.id = tc.plan_id
       WHERE ftp.user_id = ? AND ftp.tenant_id = ?
-        AND tc.completed_at >= ?
+        AND tc.row_number = 1
+        AND tc.completion_state IN ('completed', 'partial')
+        AND ts.status <> 'skipped'
+        AND datetime(tc.completed_at) >= datetime(?)
       ORDER BY tc.completed_at ASC
     `).all(userId, scopedTenantId, windowStart) as CardioCompletionRow[];
   } catch (err) {

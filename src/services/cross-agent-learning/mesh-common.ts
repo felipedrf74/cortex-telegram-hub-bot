@@ -3,9 +3,9 @@
 /** Shared deterministic primitives for tenant-safe domain mesh adapters. */
 
 import { DateTime } from 'luxon';
-import { config } from '../../config';
 import type { UnifiedCalendarEvent } from '../unified-calendar';
 import { recordTenantScopeAnomaly } from '../tenant-scope-observability';
+import { resolveTrainingTimezone } from '../training-date-utils';
 
 export function reportInvalidMeshScope(operation: string, userId: number | null | undefined, weekStart?: string): void {
   recordTenantScopeAnomaly({
@@ -26,8 +26,8 @@ export interface WeekWindow {
   weekEnd: string;
 }
 
-export function resolveWeekWindow(weekStart?: string): WeekWindow {
-  const zone = config.app.timezone || 'Europe/Lisbon';
+export function resolveWeekWindow(weekStart?: string, timezone?: string | null): WeekWindow {
+  const zone = resolveTrainingTimezone(timezone);
   const base = weekStart
     ? DateTime.fromISO(weekStart, { zone }).startOf('day')
     : DateTime.now().setZone(zone).startOf('week');

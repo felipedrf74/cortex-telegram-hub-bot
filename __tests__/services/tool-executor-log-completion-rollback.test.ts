@@ -110,15 +110,29 @@ beforeEach(async () => {
   `).run();
   userId = Number(userRow.lastInsertRowid);
   // Seed a plan + week + session so log_training_completion has a target.
-  await executeToolCall('create_training_plan', {
-    name: 'Plan', sport: 'strength', duration_weeks: 4,
-    start_date: '2026-05-01', end_date: '2026-05-28',
-  });
-  await executeToolCall('add_training_week', { plan_id: 1, week_number: 1 });
-  await executeToolCall('add_training_session', {
-    week_id: 1, plan_id: 1, day_of_week: 'Monday',
-    session_type: 'strength', title: 'Test',
-  });
+  //
+  // Inserted directly rather than via `create_training_plan`: F13
+  // (Phase 1A-3) removed that tool's ability to write a plan row, because a
+  // model turn could use it to create an empty shell plan that shadowed the
+  // athlete's real one. This suite only needs a plan to exist as a fixture,
+  // not to exercise the tool.
+  testDb.prepare(`
+    INSERT INTO fitness_training_plans
+      (user_id, tenant_id, name, sport, duration_weeks, start_date, end_date, status)
+    VALUES (?, ?, 'Plan', 'strength', 4, '2026-05-01', '2026-05-28', 'active')
+  `).run(userId, userId);
+  // F13's stronger guarantee retires the model-visible raw week/session
+  // writers. Seed persistence fixtures directly so this suite remains about
+  // completion/outbox atomicity, not plan construction.
+  testDb.prepare(`
+    INSERT INTO training_weeks (plan_id, week_number, focus)
+    VALUES (1, 1, 'base')
+  `).run();
+  testDb.prepare(`
+    INSERT INTO training_sessions (
+      week_id, plan_id, day_of_week, session_type, title, status
+    ) VALUES (1, 1, 'Monday', 'strength', 'Test', 'pending')
+  `).run();
 });
 
 afterEach(() => {

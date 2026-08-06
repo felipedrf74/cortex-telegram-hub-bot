@@ -39,6 +39,25 @@ export function thresholdFailures(label, coverage, thresholds) {
     .map((metric) => `${label} ${metric} ${coverage[metric].pct}% is below ${thresholds[metric]}%`);
 }
 
+function branchMetricSummary(label, coverage) {
+  const branches = coverage?.branches;
+  return branches
+    ? `${label}=${branches.covered}/${branches.total} (${branches.pct}%)`
+    : `${label}=n/a`;
+}
+
+export function formatCoverageGateSummary(result, evidencePath) {
+  const lines = [
+    `Changed coverage gate: ${result.verdict}`
+      + ` selectedTests=${result.selectedTestCount}`
+      + ` ${branchMetricSummary('changedBranches', result.changedCoverage)}`
+      + ` ${branchMetricSummary('criticalBranches', result.criticalCoverage)}`
+      + ` evidence=${evidencePath}`,
+  ];
+  for (const failure of result.failures ?? []) lines.push(`- ${failure}`);
+  return `${lines.join('\n')}\n`;
+}
+
 export function validateCoverageException(exception, now = new Date()) {
   const errors = [];
   for (const field of ['file', 'owner', 'reason', 'expires']) {
@@ -274,13 +293,22 @@ function main() {
     selectedTests: selection.selected,
   });
   fs.mkdirSync(coverageDir, { recursive: true });
+  const evidencePath = path.join(coverageDir, 'changed-lines.json');
   fs.writeFileSync(
-    path.join(coverageDir, 'changed-lines.json'),
+    evidencePath,
     `${JSON.stringify(result, null, 2)}\n`,
     { mode: 0o600 },
   );
-  process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
-  if (result.failures.length > 0) process.exit(1);
+  const summary = formatCoverageGateSummary(
+    result,
+    path.relative(root, evidencePath).split(path.sep).join('/'),
+  );
+  if (result.failures.length > 0) {
+    process.stderr.write(summary);
+    process.exitCode = 1;
+  } else {
+    process.stdout.write(summary);
+  }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

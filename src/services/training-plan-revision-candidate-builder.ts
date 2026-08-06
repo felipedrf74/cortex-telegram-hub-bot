@@ -203,15 +203,83 @@ export interface BuiltTrainingPlanRevisionCandidate {
   capabilityRegistryVersion: typeof TRAINING_WORKOUT_CAPABILITY_REGISTRY_VERSION;
   causalFactors: TrainingPlanCausalFactor[];
   qualityReport: {
-    status: 'PASS';
-    checks: Array<{ code: string; status: 'PASS'; evidence: string }>;
+    status: TrainingPlanRevisionQualityStatus;
+    checks: TrainingPlanRevisionQualityCheck[];
   };
 }
 
+/**
+ * F3 (Phase 1A-1): the quality report must be able to say FAIL.
+ *
+ * Both construction sites previously hardcoded `status: 'PASS'`, and the type
+ * admitted no other value — so `quality_report_json` was an attestation
+ * record, not a gate. It could not block a zero-session candidate, or
+ * anything else. Widening the union is what lets `deriveQualityStatus` below
+ * mean something, and lets activation refuse a failing candidate.
+ */
+export type TrainingPlanRevisionQualityStatus = 'PASS' | 'FAIL';
+
 export interface TrainingPlanRevisionQualityCheck {
   code: string;
-  status: 'PASS';
+  status: TrainingPlanRevisionQualityStatus;
   evidence: string;
+}
+
+/**
+ * Compose the candidate quality report: append the active-workout floor check
+ * to the engine's own checks, then derive the report status from the result.
+ * Both construction sites go through this so neither can reintroduce a
+ * hardcoded PASS.
+ */
+export function buildQualityReport(
+  checks: readonly TrainingPlanRevisionQualityCheck[],
+  document: Pick<TrainingPlanRevisionDocument, 'weeks'>,
+): { status: TrainingPlanRevisionQualityStatus; checks: TrainingPlanRevisionQualityCheck[] } {
+  const allChecks = [...checks, buildActiveWorkoutFloorCheck(countActiveWorkouts(document))];
+  return { status: deriveQualityStatus(allChecks), checks: allChecks };
+}
+
+/** A report is PASS only when every check passed. */
+export function deriveQualityStatus(
+  checks: readonly TrainingPlanRevisionQualityCheck[],
+): TrainingPlanRevisionQualityStatus {
+  return checks.some((check) => check.status === 'FAIL') ? 'FAIL' : 'PASS';
+}
+
+/**
+ * Count workouts the athlete would actually perform. `rest` is the revision
+ * model's rest marker (see `training-typed-workout-v1.ts`), so everything
+ * else counts as trainable work.
+ */
+export function countActiveWorkouts(
+  document: Pick<TrainingPlanRevisionDocument, 'weeks'>,
+): number {
+  const weeks = Array.isArray(document?.weeks) ? document.weeks : [];
+  return weeks.reduce((count, week) => {
+    const workouts = Array.isArray(week?.workouts) ? week.workouts : [];
+    return count + workouts.filter((workout) => workout?.sessionType !== 'rest').length;
+  }, 0);
+}
+
+/**
+ * Whole-candidate volume floor — the revision-mode counterpart to the
+ * compatibility linter's `plan_has_active_training`. Counts workouts the
+ * athlete would actually perform; a candidate with none can never activate.
+ */
+export function buildActiveWorkoutFloorCheck(
+  activeWorkoutCount: number,
+): TrainingPlanRevisionQualityCheck {
+  return activeWorkoutCount > 0
+    ? {
+      code: 'ACTIVE_WORKOUT_FLOOR',
+      status: 'PASS',
+      evidence: `${activeWorkoutCount} active workout${activeWorkoutCount === 1 ? '' : 's'}`,
+    }
+    : {
+      code: 'ACTIVE_WORKOUT_FLOOR',
+      status: 'FAIL',
+      evidence: 'candidate contains zero active workouts',
+    };
 }
 
 export interface TrainingPlanRevisionCandidateBuildOptions {
@@ -301,18 +369,15 @@ function buildTrainingPlanRevisionCandidateInternal(
       policyVersion: TRAINING_TYPED_PLAN_REVISION_POLICY_VERSION,
       capabilityRegistryVersion: TRAINING_WORKOUT_CAPABILITY_REGISTRY_VERSION,
       causalFactors: typed.causalFactors,
-      qualityReport: {
-        status: 'PASS',
-        checks: [
-          ...typed.qualityChecks,
-          ...(identityMode === 'active' ? [{
-            code: 'EXERCISE_IDENTITY_CLOSURE',
-            status: 'PASS' as const,
-            evidence: `${identityCatalog?.entries.length ?? 0} canonical identities at ${TRAINING_EXERCISE_IDENTITY_POLICY_VERSION}`,
-          }] : []),
-          { code: 'CAUSAL_PERSONALIZATION', status: 'PASS', evidence: `${typed.causalFactors.length} explicit input-to-output mappings` },
-        ],
-      },
+      qualityReport: buildQualityReport([
+        ...typed.qualityChecks,
+        ...(identityMode === 'active' ? [{
+          code: 'EXERCISE_IDENTITY_CLOSURE',
+          status: 'PASS' as const,
+          evidence: `${identityCatalog?.entries.length ?? 0} canonical identities at ${TRAINING_EXERCISE_IDENTITY_POLICY_VERSION}`,
+        }] : []),
+        { code: 'CAUSAL_PERSONALIZATION', status: 'PASS', evidence: `${typed.causalFactors.length} explicit input-to-output mappings` },
+      ], document),
     };
   }
   const horizonWeeks = normalized.horizonWeeks;
@@ -410,18 +475,15 @@ function buildTrainingPlanRevisionCandidateInternal(
     policyVersion: TRAINING_PLAN_REVISION_POLICY_VERSION,
     capabilityRegistryVersion: TRAINING_WORKOUT_CAPABILITY_REGISTRY_VERSION,
     causalFactors,
-    qualityReport: {
-      status: 'PASS',
-      checks: [
-        ...qualityChecks,
-        ...(identityMode === 'active' ? [{
-          code: 'EXERCISE_IDENTITY_CLOSURE',
-          status: 'PASS' as const,
-          evidence: `${identityCatalog?.entries.length ?? 0} canonical identities at ${TRAINING_EXERCISE_IDENTITY_POLICY_VERSION}`,
-        }] : []),
-        { code: 'CAUSAL_PERSONALIZATION', status: 'PASS', evidence: `${causalFactors.length} explicit input-to-output mappings` },
-      ],
-    },
+    qualityReport: buildQualityReport([
+      ...qualityChecks,
+      ...(identityMode === 'active' ? [{
+        code: 'EXERCISE_IDENTITY_CLOSURE',
+        status: 'PASS' as const,
+        evidence: `${identityCatalog?.entries.length ?? 0} canonical identities at ${TRAINING_EXERCISE_IDENTITY_POLICY_VERSION}`,
+      }] : []),
+      { code: 'CAUSAL_PERSONALIZATION', status: 'PASS', evidence: `${causalFactors.length} explicit input-to-output mappings` },
+    ], document),
   };
 }
 

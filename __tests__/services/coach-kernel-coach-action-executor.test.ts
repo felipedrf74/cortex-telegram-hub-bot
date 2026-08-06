@@ -62,7 +62,17 @@ function seedSession(
   sessionId: number,
   weekId: number,
   planId: number,
-  overrides: Partial<{ status: string; duration_minutes: number | null; day_of_week: string; intensity_text: string }> = {},
+  overrides: Partial<{
+    status: string;
+    duration_minutes: number | null;
+    day_of_week: string;
+    intensity_text: string;
+    scheduled_start_at: string | null;
+    scheduled_end_at: string | null;
+    schedule_status: string | null;
+    calendar_event_id: string | null;
+    calendar_source: string | null;
+  }> = {},
 ): void {
   const status = overrides.status ?? 'pending';
   const day = overrides.day_of_week ?? 'Monday';
@@ -70,14 +80,33 @@ function seedSession(
   const intensity = overrides.intensity_text ?? 'aerobic';
   testDb.prepare(`
     INSERT INTO training_sessions
-      (id, week_id, plan_id, day_of_week, session_type, title, duration_minutes, intensity_text, status, created_at)
-    VALUES (?, ?, ?, ?, 'run', 'T', ?, ?, ?, datetime('now'))
-  `).run(sessionId, weekId, planId, day, duration, intensity, status);
+      (id, week_id, plan_id, day_of_week, session_type, title, duration_minutes,
+       intensity_text, status, scheduled_start_at, scheduled_end_at,
+       schedule_status, calendar_event_id, calendar_source, created_at)
+    VALUES (?, ?, ?, ?, 'run', 'T', ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+  `).run(
+    sessionId,
+    weekId,
+    planId,
+    day,
+    duration,
+    intensity,
+    status,
+    overrides.scheduled_start_at ?? null,
+    overrides.scheduled_end_at ?? null,
+    overrides.schedule_status ?? null,
+    overrides.calendar_event_id ?? null,
+    overrides.calendar_source ?? null,
+  );
 }
 
 describe('R8 P0-2 — move_session UTC weekday math', () => {
   it('"2026-05-04" (a Monday) routes to Monday — verifies getUTCDay() not local-time-shifted', () => {
-    seedPlan(1); seedWeek(10, 1); seedSession(100, 10, 1, { day_of_week: 'Friday' });
+    seedPlan(1); seedWeek(10, 1); seedSession(100, 10, 1, {
+      day_of_week: 'Friday',
+      scheduled_start_at: '2026-05-01T08:00:00.000Z',
+      scheduled_end_at: '2026-05-01T09:00:00.000Z',
+    });
     const r = executeCoachActions(testDb, {
       planId: 1,
       actions: [{ type: 'move_session', sessionId: '100', toDate: '2026-05-04', reasonCode: 'r' }],
@@ -85,11 +114,14 @@ describe('R8 P0-2 — move_session UTC weekday math', () => {
     expect(r.mutatedRows).toBe(1);
     const row = testDb.prepare('SELECT day_of_week, status FROM training_sessions WHERE id = 100').get() as { day_of_week: string; status: string };
     expect(row.day_of_week).toBe('Monday');
-    expect(row.status).toBe('moved');
+    expect(row.status).toBe('reflowed');
   });
 
   it('"2026-05-09" (a Saturday) routes to Saturday — Sun=0..Sat=6 indexing correct', () => {
-    seedPlan(1); seedWeek(10, 1); seedSession(100, 10, 1);
+    seedPlan(1); seedWeek(10, 1); seedSession(100, 10, 1, {
+      scheduled_start_at: '2026-05-04T08:00:00.000Z',
+      scheduled_end_at: '2026-05-04T09:00:00.000Z',
+    });
     const r = executeCoachActions(testDb, {
       planId: 1,
       actions: [{ type: 'move_session', sessionId: '100', toDate: '2026-05-09', reasonCode: 'r' }],
@@ -100,7 +132,10 @@ describe('R8 P0-2 — move_session UTC weekday math', () => {
   });
 
   it('"2026-05-10" (a Sunday) routes to Sunday', () => {
-    seedPlan(1); seedWeek(10, 1); seedSession(100, 10, 1);
+    seedPlan(1); seedWeek(10, 1); seedSession(100, 10, 1, {
+      scheduled_start_at: '2026-05-04T08:00:00.000Z',
+      scheduled_end_at: '2026-05-04T09:00:00.000Z',
+    });
     executeCoachActions(testDb, {
       planId: 1,
       actions: [{ type: 'move_session', sessionId: '100', toDate: '2026-05-10', reasonCode: 'r' }],
@@ -121,6 +156,99 @@ describe('R8 P0-2 — move_session UTC weekday math', () => {
     const row = testDb.prepare('SELECT day_of_week, status FROM training_sessions WHERE id = 100').get() as { day_of_week: string; status: string };
     expect(row.day_of_week).toBe('Friday');
     expect(row.status).toBe('pending');
+  });
+});
+
+describe('F24 — move_session writes canonical schedule truth and propagation scope', () => {
+  it('preserves local wall-clock time and duration across a DST boundary', () => {
+    seedPlan(1);
+    seedWeek(10, 1);
+    seedSession(100, 10, 1, {
+      day_of_week: 'Friday',
+      status: 'scheduled',
+      scheduled_start_at: '2026-03-06T12:30:00.000Z', // 07:30 America/New_York (EST)
+      scheduled_end_at: '2026-03-06T13:30:00.000Z',
+      schedule_status: 'scheduled',
+      calendar_event_id: 'evt-existing',
+      calendar_source: 'google',
+    });
+
+    const result = executeCoachActions(testDb, {
+      planId: 1,
+      schedulingTimezone: 'America/New_York',
+      actions: [{
+        type: 'move_session',
+        sessionId: '100',
+        toDate: '2026-03-09', // EDT after the spring-forward transition
+        reasonCode: 'missed_key_session_reschedule',
+      }],
+    });
+
+    const row = testDb.prepare(`
+      SELECT day_of_week, status, schedule_status, schedule_reason_code,
+             scheduled_start_at, scheduled_end_at, calendar_event_id
+      FROM training_sessions WHERE id = 100
+    `).get() as Record<string, string | null>;
+    expect(row).toMatchObject({
+      day_of_week: 'Monday',
+      status: 'reflowed',
+      schedule_status: 'reflowed',
+      schedule_reason_code: 'missed_key_session_reschedule',
+      scheduled_start_at: '2026-03-09T11:30:00.000Z',
+      scheduled_end_at: '2026-03-09T12:30:00.000Z',
+      // Durable worker owns the provider update; the DB mutation retains the
+      // linked id so retrying can update the same event rather than create.
+      calendar_event_id: 'evt-existing',
+    });
+    expect(result.affectedSessionIds).toEqual([100]);
+  });
+
+  it('fails closed when a linked session has no absolute schedule window', () => {
+    seedPlan(1);
+    seedWeek(10, 1);
+    seedSession(100, 10, 1, {
+      day_of_week: 'Friday',
+      status: 'scheduled',
+      calendar_event_id: 'evt-existing',
+      calendar_source: 'google',
+    });
+
+    const result = executeCoachActions(testDb, {
+      planId: 1,
+      schedulingTimezone: 'UTC',
+      actions: [{ type: 'move_session', sessionId: '100', toDate: '2026-05-04', reasonCode: 'r' }],
+    });
+
+    expect(result.mutatedRows).toBe(0);
+    expect(result.affectedSessionIds).toEqual([]);
+    expect(result.perActionResults[0]).toMatchObject({
+      skipped: true,
+      skipReason: 'missing_schedule_window',
+    });
+    expect(testDb.prepare(
+      'SELECT day_of_week, status FROM training_sessions WHERE id = 100',
+    ).get()).toMatchObject({ day_of_week: 'Friday', status: 'scheduled' });
+  });
+
+  it('reports only successfully mutated in-scope session ids, once each', () => {
+    seedPlan(1);
+    seedPlan(2);
+    seedWeek(10, 1);
+    seedWeek(20, 2);
+    seedSession(100, 10, 1, { status: 'scheduled' });
+    seedSession(200, 20, 2, { status: 'scheduled' });
+
+    const result = executeCoachActions(testDb, {
+      planId: 1,
+      schedulingTimezone: 'UTC',
+      actions: [
+        { type: 'scale_volume', sessionId: '100', multiplier: 0.75, reasonCode: 'a' },
+        { type: 'downgrade_intensity', sessionId: '100', targetCeiling: 'aerobic', reasonCode: 'b' },
+        { type: 'drop_session', sessionId: '200', reasonCode: 'foreign' },
+      ],
+    });
+
+    expect(result.affectedSessionIds).toEqual([100]);
   });
 });
 
@@ -278,6 +406,40 @@ describe('R8 P0-2 — pause_training on nonexistent plan id', () => {
     expect(r.mutatedRows).toBe(1);
     const row = testDb.prepare('SELECT status FROM fitness_training_plans WHERE id = 1').get() as { status: string };
     expect(row.status).toBe('paused');
+  });
+
+  it('plan pause drops and reports every actionable session, including unlinked rows', () => {
+    seedPlan(1);
+    seedWeek(10, 1);
+    seedSession(100, 10, 1, {
+      status: 'scheduled',
+      schedule_status: 'scheduled',
+      calendar_event_id: 'evt-linked',
+      calendar_source: 'google',
+    });
+    seedSession(101, 10, 1, {
+      status: 'scheduled',
+      schedule_status: 'scheduled',
+    });
+
+    const result = executeCoachActions(testDb, {
+      planId: 1,
+      actions: [{ type: 'pause_training', reasonCode: 'medical_pause', severity: 'pause' }],
+    });
+
+    // Stronger F24 guarantee: provider linkage never defines desired plan
+    // state. Every actionable session becomes canonically dropped and every
+    // id is propagated; the worker decides which rows need provider cleanup.
+    expect(result.affectedSessionIds).toEqual([100, 101]);
+    expect(testDb.prepare(`
+      SELECT id, schedule_status, schedule_reason_code
+        FROM training_sessions
+       WHERE plan_id = 1
+       ORDER BY id ASC
+    `).all()).toEqual([
+      { id: 100, schedule_status: 'dropped', schedule_reason_code: 'medical_pause' },
+      { id: 101, schedule_status: 'dropped', schedule_reason_code: 'medical_pause' },
+    ]);
   });
 });
 

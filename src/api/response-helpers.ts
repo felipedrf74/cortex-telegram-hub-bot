@@ -168,7 +168,10 @@ export function sendError(
   status = 400,
   details?: Record<string, unknown>,
 ): void {
-  if (status === 429 && typeof details?.retryAfterSeconds === 'number' && Number.isFinite(details.retryAfterSeconds)) {
+  const carriesRetryAfter = status === 429
+    || (status === 409 && code === 'TRAINING_OPERATION_LOCKED')
+    || (status === 503 && code === 'TRAINING_OPERATION_LOCK_UNAVAILABLE');
+  if (carriesRetryAfter && typeof details?.retryAfterSeconds === 'number' && Number.isFinite(details.retryAfterSeconds)) {
     res.setHeader('Retry-After', String(Math.max(1, Math.ceil(details.retryAfterSeconds))));
   }
   const existingCacheControl = typeof res.getHeader === 'function'

@@ -320,10 +320,28 @@ export const trainingSemanticFixtures: TrainingSemanticFixture[] = [
       integrations: { secretary: false, cooking: false, decisionCenter: false, chatCorrection: true },
       privacy: { userId: 113, tenantId: 113, forbiddenPreviewCopy: [] },
     },
+    // The deload week carries a real reduced-volume session. It previously
+    // used `sessions: []` as scaffolding — this fixture exists to prove a
+    // continuous plan does NOT trip `no_fake_taper_without_event`, and an
+    // empty week was the shortest way to reach that rule. Once
+    // `plan_has_active_training` (F3) began enforcing a whole-plan volume
+    // floor, the empty week made the fixture assert that a zero-session plan
+    // passes the gate — the exact defect F3 closes. A deload is reduced
+    // training, not absent training, so the fixture now models one.
     planLintInput: planLintInput({
       isRaceSpecific: false,
       raceDate: null,
-      weeks: [{ weekNumber: 1, focus: 'deload', sessions: [] }],
+      weeks: [{
+        weekNumber: 1,
+        focus: 'deload',
+        sessions: [{
+          dayOfWeek: 'tuesday',
+          sessionType: 'run',
+          title: 'Deload Aerobic Run',
+          status: 'scheduled',
+          scheduledDate: '2026-05-13T08:00:00.000Z',
+        }],
+      }],
     }),
   },
   {

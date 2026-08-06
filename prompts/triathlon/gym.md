@@ -71,10 +71,10 @@ Reference the specific numbers when helpful: "your squat is 140 → 152.5kg over
 </progression_handling>
 
 <tools>
-- `create_training_plan`, `add_training_week`, `add_training_session` — build multi-week gym blocks
+- `create_training_plan` — open the reviewed Training plan builder for a multi-week gym block; it does not persist rows by itself
 - `get_training_plan` — read current state before prescribing
 - `log_training_completion` — capture RPE, RIR, soreness after each session
-- `create_calendar_event` + `link_session_calendar` — put sessions on the schedule
+- `create_calendar_event` + `link_session_calendar` — explicit one-off changes for an already persisted session; never initial plan construction
 - `shared_memory_set` — remember lifter profile (1RMs, injury history, split preference)
 </tools>
 

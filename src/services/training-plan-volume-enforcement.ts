@@ -1,6 +1,6 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-import type { CoordinatedTrainingPlan, CoordinatedTrainingSession } from './training-plan-coordination';
+import type { CoordinatedTrainingPlan, CoordinatedTrainingSession, TrainingPlanVolumeShortfall } from './training-plan-coordination';
 import { loadCoachKnowledge } from './coach-kernel/knowledge-loader';
 import { buildStrengthSupportVariant } from './coach-kernel/support-session-builder';
 import type { CoachKnowledgeBase } from './coach-kernel/types';
@@ -31,6 +31,17 @@ export interface TrainingPlanVolumeRequest {
   preferredStrengthTime: string;
   startDate: string;
   longWorkoutDay?: string | null;
+  /**
+   * F7 (Phase 3): the athlete's two-a-day stance. 'never' is a hard per-day
+   * cap enforced HERE, after every kernel/repair pass — the kernel receives
+   * the preference as guidance, but this enforcer is the guarantee.
+   */
+  twoADayPreference?: string | null;
+}
+
+export interface FinalTrainingPlanTwoADayCapRequest {
+  startDate: string;
+  twoADayPreference?: string | null;
 }
 
 function positiveSessionRequest(value: number | null | undefined): number {
@@ -74,14 +85,57 @@ function requestedTrainingDayBudgetForSport(
   return input.requestedPrimarySessions;
 }
 
-export function enforceRequestedTrainingPlanVolume(
-  plan: CoordinatedTrainingPlan,
-  request: TrainingPlanVolumeRequest,
-): CoordinatedTrainingPlan {
-  const cloned: CoordinatedTrainingPlan = JSON.parse(JSON.stringify(plan ?? {}));
-  if (!Array.isArray(cloned.weeks)) return cloned;
+interface NormalizedTrainingPlanVolumeRequest {
+  planSport: string;
+  requestedTrainingDays: number;
+  requestedRunSessions: number;
+  requestedBikeSessions: number;
+  requestedSwimSessions: number;
+  requestedStrength: number;
+  requestedTotal: number;
+  requestedDayBudget: number;
+  defaultStrengthForGymPlan: number;
+  hasExplicitEnduranceRequest: boolean;
+  singleSessionPerDay: boolean;
+}
 
-  const planSport = String(cloned.sport || '').toLowerCase();
+type TrainingPlanVolumeSessionShape = Partial<CoordinatedTrainingSession>;
+
+interface TrainingPlanVolumeWeekShape {
+  weekNumber?: number;
+  strengthCutoffActive?: boolean;
+  sessions?: TrainingPlanVolumeSessionShape[];
+}
+
+interface TrainingPlanVolumeShape {
+  sport?: string;
+  weeks?: TrainingPlanVolumeWeekShape[];
+  volumeShortfalls?: TrainingPlanVolumeShortfall[];
+}
+
+export interface TrainingPlanWeekVolumeTargetSnapshot {
+  readonly weekNumber: number;
+  readonly allowedDays: readonly string[];
+  readonly weekTotalBudget: number;
+  readonly activeTarget: number;
+  /** Athlete-visible request target, before placement-capacity constraints. */
+  readonly requestedStrengthTarget: number;
+  /** Feasible target used only to trim/shape the schedule. */
+  readonly strengthTrimTarget: number;
+  readonly cyclingTarget: number | null;
+  readonly swimmingTarget: number | null;
+  readonly singleSessionPerDay: boolean;
+}
+
+export interface TrainingPlanVolumeTargetSnapshot {
+  readonly planSport: string;
+  readonly weeks: readonly TrainingPlanWeekVolumeTargetSnapshot[];
+}
+
+function normalizeTrainingPlanVolumeRequest(
+  planSport: string,
+  request: TrainingPlanVolumeRequest,
+): NormalizedTrainingPlanVolumeRequest {
   const requestedTrainingDays = clamp(Math.round(request.sessionsPerWeek || 5), 3, 7);
   const requestedRunSessions = positiveSessionRequest(request.runSessionsPerWeek);
   const requestedBikeSessions = positiveSessionRequest(request.bikeSessionsPerWeek);
@@ -92,103 +146,223 @@ export function enforceRequestedTrainingPlanVolume(
     requestedBikeSessions,
     requestedSwimSessions,
   });
-  const requestedStrength = clamp(Math.round(request.strengthSessionsPerWeek || 0), 0, MAX_STRENGTH_SESSIONS_PER_WEEK);
+  const requestedStrength = clamp(
+    Math.round(request.strengthSessionsPerWeek || 0),
+    0,
+    MAX_STRENGTH_SESSIONS_PER_WEEK,
+  );
   const explicitEnduranceTotal = requestedRunSessions + requestedBikeSessions + requestedSwimSessions;
   const hasExplicitEnduranceRequest = explicitEnduranceTotal > 0;
-  const hasExplicitStrengthRequest = requestedStrength > 0;
   const requestedTotal = hasExplicitEnduranceRequest
-    ? explicitEnduranceTotal + (hasExplicitStrengthRequest ? requestedStrength : 0)
+    ? explicitEnduranceTotal + (requestedStrength > 0 ? requestedStrength : 0)
     : planSport === 'running'
       ? requestedPrimarySessions + requestedStrength
       : requestedPrimarySessions;
-  const requestedDayBudget = requestedTrainingDayBudgetForSport(planSport, {
+  const singleSessionPerDay = String(request.twoADayPreference || '').trim().toLowerCase() === 'never';
+  const requestedDayBudget = singleSessionPerDay
+    ? Math.min(requestedTrainingDays, Math.max(1, requestedTotal))
+    : requestedTrainingDayBudgetForSport(planSport, {
+        requestedTrainingDays,
+        requestedPrimarySessions,
+        requestedRunSessions,
+        requestedBikeSessions,
+        requestedSwimSessions,
+        explicitEnduranceTotal,
+      });
+  return {
+    planSport,
     requestedTrainingDays,
-    requestedPrimarySessions,
     requestedRunSessions,
     requestedBikeSessions,
     requestedSwimSessions,
-    explicitEnduranceTotal,
-  });
-  const defaultStrengthForGymPlan = planSport === 'gym'
-    ? Math.min(MAX_STRENGTH_SESSIONS_PER_WEEK, requestedPrimarySessions)
-    : 0;
+    requestedStrength,
+    requestedTotal,
+    requestedDayBudget,
+    defaultStrengthForGymPlan: planSport === 'gym'
+      ? Math.min(MAX_STRENGTH_SESSIONS_PER_WEEK, requestedPrimarySessions)
+      : 0,
+    hasExplicitEnduranceRequest,
+    singleSessionPerDay,
+  };
+}
 
-  cloned.weeks = cloned.weeks.map((week) => {
-    const weekNumber = typeof week.weekNumber === 'number' ? week.weekNumber : 1;
-    const allowedDays = constrainTrainingDays(
-      allowedDaysForWeek(request.startDate, weekNumber),
-      requestedDayBudget,
-      request.longWorkoutDay,
-    );
+function buildTrainingPlanWeekVolumeTargets(
+  week: TrainingPlanVolumeWeekShape,
+  referenceSessions: CoordinatedTrainingSession[],
+  request: TrainingPlanVolumeRequest,
+  normalized: NormalizedTrainingPlanVolumeRequest,
+): TrainingPlanWeekVolumeTargetSnapshot {
+  const weekNumber = typeof week.weekNumber === 'number' ? week.weekNumber : 1;
+  const presentCardioModalities = new Set(
+    referenceSessions
+      .map((session) => cardioModality(session))
+      .filter((modality): modality is 'running' | 'cycling' | 'swimming' => modality != null),
+  );
+  const explicitCardioAsk: Record<'running' | 'cycling' | 'swimming', number> = {
+    running: normalized.requestedRunSessions,
+    cycling: normalized.requestedBikeSessions,
+    swimming: normalized.requestedSwimSessions,
+  };
+  // Multisport weeks where only SOME modality dials carry an explicit ask:
+  // the zeroed dials mean "auto", so the week budget stays at the requested
+  // training days instead of collapsing to the explicit sum.
+  const partialExplicitMultisport = normalized.hasExplicitEnduranceRequest
+    && presentCardioModalities.size >= 2
+    && [...presentCardioModalities].some((modality) => explicitCardioAsk[modality] === 0);
+  const weekRequestedTotal = partialExplicitMultisport
+    ? Math.max(normalized.requestedTotal, normalized.requestedTrainingDays)
+    : normalized.requestedTotal;
+  const effectiveDayBudget = normalized.singleSessionPerDay
+    ? Math.min(normalized.requestedTrainingDays, Math.max(1, weekRequestedTotal))
+    : normalized.requestedDayBudget;
+  const allowedDays = constrainTrainingDays(
+    allowedDaysForWeek(request.startDate, weekNumber),
+    effectiveDayBudget,
+    request.longWorkoutDay,
+  );
+  const weekStrengthCutoffActive = week.strengthCutoffActive === true;
+  const weekTotalBudget = weekStrengthCutoffActive
+    ? Math.max(1, weekRequestedTotal - normalized.requestedStrength)
+    : weekRequestedTotal;
+  const maxSessionsPerDay = normalized.singleSessionPerDay ? 1 : 2;
+  const activeTarget = Math.min(
+    weekTotalBudget,
+    Math.max(1, allowedDays.length * maxSessionsPerDay),
+  );
+  const requestedStrengthTarget = weekStrengthCutoffActive
+    ? 0
+    : normalized.requestedStrength > 0
+      ? normalized.requestedStrength
+      : normalized.defaultStrengthForGymPlan;
+  const strengthTrimTarget = Math.min(
+    activeTarget,
+    requestedStrengthTarget,
+    allowedDays.length,
+  );
+  const hasDefaultMultisportFloors = normalized.requestedBikeSessions === 0
+    && normalized.requestedSwimSessions === 0
+    && referenceSessions.some((session) => cardioModality(session) === 'cycling')
+    && referenceSessions.some((session) => cardioModality(session) === 'swimming');
+  return Object.freeze({
+    weekNumber,
+    allowedDays: Object.freeze([...allowedDays]),
+    weekTotalBudget,
+    activeTarget,
+    requestedStrengthTarget,
+    strengthTrimTarget,
+    cyclingTarget: normalized.requestedBikeSessions > 0
+      ? normalized.requestedBikeSessions
+      : hasDefaultMultisportFloors
+        ? 1
+        : null,
+    swimmingTarget: normalized.requestedSwimSessions > 0
+      ? normalized.requestedSwimSessions
+      : hasDefaultMultisportFloors
+        ? 1
+        : null,
+    singleSessionPerDay: normalized.singleSessionPerDay,
+  });
+}
+
+/**
+ * Capture request semantics before any trim/equipment/quality pass can remove
+ * the modality evidence used to interpret partial multisport dials.
+ */
+export function captureTrainingPlanVolumeTargetSnapshot(
+  plan: TrainingPlanVolumeShape,
+  request: TrainingPlanVolumeRequest,
+): TrainingPlanVolumeTargetSnapshot {
+  const planSport = String(plan?.sport || '').toLowerCase();
+  const normalizedRequest = normalizeTrainingPlanVolumeRequest(planSport, request);
+  const weeks = (Array.isArray(plan?.weeks) ? plan.weeks : []).map((week) => {
+    const referenceSessions = normalizeTrainingPlanVolumeSessions(week.sessions ?? [])
+      .filter(isScheduledSession);
+    return buildTrainingPlanWeekVolumeTargets(week, referenceSessions, request, normalizedRequest);
+  });
+  return Object.freeze({
+    planSport,
+    weeks: Object.freeze(weeks),
+  });
+}
+
+function buildTrainingPlanWeekVolumeShortfalls(
+  sessions: CoordinatedTrainingSession[],
+  targets: TrainingPlanWeekVolumeTargetSnapshot,
+): TrainingPlanVolumeShortfall[] {
+  const authoredSessions = sessions.filter(isScheduledSession);
+  const activeSessions = authoredSessions.filter((session) => !isInactiveEnforcedSession(session));
+  const shortfalls: TrainingPlanVolumeShortfall[] = [];
+  const activeCount = activeSessions.length;
+  if (activeCount < targets.weekTotalBudget) {
+    shortfalls.push({
+      weekNumber: targets.weekNumber,
+      kind: 'active',
+      requested: targets.weekTotalBudget,
+      achieved: activeCount,
+      reason: targets.singleSessionPerDay && targets.activeTarget < targets.weekTotalBudget
+        ? 'two_a_day_cap'
+        : authoredSessions.length < targets.activeTarget
+          ? 'engine_output_shortfall'
+          : 'no_available_day',
+      provenance: 'coach_kernel_output',
+    });
+  }
+  const strengthCount = activeSessions.filter(isStrengthSession).length;
+  if (strengthCount < targets.requestedStrengthTarget) {
+    const authoredStrengthCount = authoredSessions.filter(isStrengthSession).length;
+    shortfalls.push({
+      weekNumber: targets.weekNumber,
+      kind: 'strength',
+      requested: targets.requestedStrengthTarget,
+      achieved: strengthCount,
+      reason: authoredStrengthCount < targets.strengthTrimTarget
+        ? 'engine_output_shortfall'
+        : 'no_available_day',
+      provenance: 'coach_kernel_output',
+    });
+  }
+  return shortfalls;
+}
+
+export function enforceRequestedTrainingPlanVolume(
+  plan: CoordinatedTrainingPlan,
+  request: TrainingPlanVolumeRequest,
+): CoordinatedTrainingPlan {
+  const cloned: CoordinatedTrainingPlan = JSON.parse(JSON.stringify(plan ?? {}));
+  if (!Array.isArray(cloned.weeks)) return cloned;
+
+  const targetSnapshot = captureTrainingPlanVolumeTargetSnapshot(cloned, request);
+  const volumeShortfalls: TrainingPlanVolumeShortfall[] = [];
+
+  cloned.weeks = cloned.weeks.map((week, index) => {
     let sessions = (week.sessions ?? [])
       .filter(isScheduledSession)
       .map((session) => normalizeSessionDay(session))
       .filter((session): session is CoordinatedTrainingSession => Boolean(session));
-    const presentCardioModalities = new Set(
-      sessions
-        .map((session) => cardioModality(session))
-        .filter((modality): modality is 'running' | 'cycling' | 'swimming' => modality != null),
-    );
-    const explicitCardioAsk: Record<'running' | 'cycling' | 'swimming', number> = {
-      running: requestedRunSessions,
-      cycling: requestedBikeSessions,
-      swimming: requestedSwimSessions,
-    };
-    // Multisport weeks where only SOME modality dials carry an explicit ask:
-    // the zeroed dials mean "auto", so the week budget stays at the requested
-    // training days instead of collapsing to the explicit sum (a swim=2 ask
-    // on a 6-day triathlon week must not shrink the week to 3 sessions).
-    const partialExplicitMultisport = hasExplicitEnduranceRequest
-      && presentCardioModalities.size >= 2
-      && [...presentCardioModalities].some((modality) => explicitCardioAsk[modality] === 0);
-    const weekRequestedTotal = partialExplicitMultisport
-      ? Math.max(requestedTotal, requestedTrainingDays)
-      : requestedTotal;
-    // Weeks inside the pre-race strength cutoff window arrive marked by the
-    // plan generator (which owns the race calendar); refilling strength here
-    // — or backfilling the freed slots with extra cardio — would undo the
-    // taper, so the week budget shrinks by the requested strength too.
-    const weekStrengthCutoffActive = week.strengthCutoffActive === true;
-    const weekTotalBudget = weekStrengthCutoffActive
-      ? Math.max(1, weekRequestedTotal - requestedStrength)
-      : weekRequestedTotal;
-    const activeTarget = Math.min(weekTotalBudget, Math.max(1, allowedDays.length * 2));
-    const strengthTarget = weekStrengthCutoffActive ? 0 : Math.min(
-      activeTarget,
-      requestedStrength > 0 ? requestedStrength : defaultStrengthForGymPlan,
-      allowedDays.length,
-    );
+    const targets = targetSnapshot.weeks[index];
+    if (!targets) return week;
 
-    const hasDefaultMultisportFloors = requestedBikeSessions === 0
-      && requestedSwimSessions === 0
-      && sessions.some((session) => cardioModality(session) === 'cycling')
-      && sessions.some((session) => cardioModality(session) === 'swimming');
-    const cyclingTarget = requestedBikeSessions > 0
-      ? requestedBikeSessions
-      : hasDefaultMultisportFloors
-        ? 1
-        : null;
-    const swimmingTarget = requestedSwimSessions > 0
-      ? requestedSwimSessions
-      : hasDefaultMultisportFloors
-        ? 1
-        : null;
-
-    sessions = convertExtraStrengthToCardio(sessions, strengthTarget, cloned.sport, request);
-    sessions = spreadSameTypeCollisions(sessions, allowedDays);
+    sessions = trimStrengthToTarget(sessions, targets.strengthTrimTarget);
+    sessions = spreadSameTypeCollisions(sessions, targets.allowedDays);
     sessions = trimCardioModalitiesToTargets(sessions, {
-      cycling: cyclingTarget,
-      swimming: swimmingTarget,
+      cycling: targets.cyclingTarget,
+      swimming: targets.swimmingTarget,
     });
-    sessions = trimToActiveTarget(sessions, activeTarget, strengthTarget, {
-      cycling: cyclingTarget,
-      swimming: swimmingTarget,
+    sessions = trimToActiveTarget(sessions, targets.activeTarget, targets.strengthTrimTarget, {
+      cycling: targets.cyclingTarget,
+      swimming: targets.swimmingTarget,
     });
-    // Slice 4.C — pass weekNumber so the support-session-builder
-    // rotation shifts each week (0-based shift = weekNumber - 1).
-    sessions = fillMissingStrength(sessions, strengthTarget, allowedDays, cloned.sport, request, weekNumber);
-    sessions = fillMissingActiveSessions(sessions, activeTarget, allowedDays, cloned.sport, request);
-    sessions = protectHeavyLowerBeforeLongRun(sessions, request, cloned.sport, weekNumber);
+    sessions = protectHeavyLowerBeforeLongRun(sessions, request, cloned.sport, targets.weekNumber);
+    if (targets.singleSessionPerDay) {
+      // Runs LAST so doubles produced by any earlier pass (including
+      // kernel output that arrived doubled) are relocated or, when no free
+      // allowed day remains, honestly deferred — never silently kept.
+      sessions = enforceSingleSessionPerDay(sessions, targets.allowedDays);
+    }
+
+    // F10: record the gap between the athlete's ask and what could be
+    // placed, instead of letting the fill loops break silently.
+    volumeShortfalls.push(...buildTrainingPlanWeekVolumeShortfalls(sessions, targets));
 
     return {
       ...week,
@@ -196,7 +370,161 @@ export function enforceRequestedTrainingPlanVolume(
     };
   });
 
+  if (volumeShortfalls.length > 0) cloned.volumeShortfalls = volumeShortfalls;
+  else delete cloned.volumeShortfalls;
   return cloned;
+}
+
+/**
+ * Rebuild F10 metadata from the exact finalized schedule. Equipment,
+ * quality, and persistence finalization run after the primary volume pass;
+ * carrying its earlier counts forward can therefore report sessions that no
+ * longer exist or hide engine-authored sessions added later. The immutable
+ * target snapshot was captured before enforcement; achieved counts always
+ * come from `plan`.
+ */
+export function recalculateFinalTrainingPlanVolumeShortfalls<T extends TrainingPlanVolumeShape>(
+  plan: T,
+  targetSnapshot: TrainingPlanVolumeTargetSnapshot,
+): T {
+  const cloned: T = JSON.parse(JSON.stringify(plan ?? {}));
+  if (!Array.isArray(cloned.weeks)) return cloned;
+
+  const volumeShortfalls: TrainingPlanVolumeShortfall[] = [];
+
+  targetSnapshot.weeks.forEach((targets, index) => {
+    const week = cloned.weeks?.find((candidate) => candidate.weekNumber === targets.weekNumber)
+      ?? cloned.weeks?.[index];
+    volumeShortfalls.push(...buildTrainingPlanWeekVolumeShortfalls(
+      normalizeTrainingPlanVolumeSessions(week?.sessions ?? []),
+      targets,
+    ));
+  });
+
+  if (volumeShortfalls.length > 0) cloned.volumeShortfalls = volumeShortfalls;
+  else delete cloned.volumeShortfalls;
+  return cloned;
+}
+
+/**
+ * Final F7 invariant restoration. Quality enrichment and other late plan
+ * mutators run after the main volume pass, so they can accidentally recreate
+ * a doubled day. This pass is intentionally narrow: it never invents or
+ * rewrites session content; it only relocates an active duplicate within the
+ * same legal rolling week, or defers it with an honest shortfall when all
+ * remaining days are occupied.
+ */
+export function enforceFinalTrainingPlanTwoADayCap(
+  plan: CoordinatedTrainingPlan,
+  request: FinalTrainingPlanTwoADayCapRequest,
+): CoordinatedTrainingPlan {
+  const cloned: CoordinatedTrainingPlan = JSON.parse(JSON.stringify(plan ?? {}));
+  if (!Array.isArray(cloned.weeks)) return cloned;
+  if (String(request.twoADayPreference || '').trim().toLowerCase() !== 'never') return cloned;
+
+  const shortfalls = [...(cloned.volumeShortfalls ?? [])];
+  cloned.weeks = cloned.weeks.map((week) => {
+    const weekNumber = typeof week.weekNumber === 'number' ? week.weekNumber : 1;
+    const sessions = Array.isArray(week.sessions) ? week.sessions : [];
+    const activeBefore = sessions.filter((session) => !isInactiveEnforcedSession(session)).length;
+    const capped = enforceSingleSessionPerDay(
+      sessions,
+      allowedDaysForWeek(request.startDate, weekNumber),
+    );
+    const activeAfter = capped.filter((session) => !isInactiveEnforcedSession(session)).length;
+    if (activeAfter < activeBefore) {
+      const replacement: TrainingPlanVolumeShortfall = {
+        weekNumber,
+        kind: 'active',
+        requested: activeBefore,
+        achieved: activeAfter,
+        reason: 'two_a_day_cap',
+        provenance: 'coach_kernel_output',
+      };
+      const existingIndex = shortfalls.findIndex((item) => (
+        item.weekNumber === weekNumber
+        && item.kind === 'active'
+        && item.reason === 'two_a_day_cap'
+      ));
+      if (existingIndex >= 0) shortfalls[existingIndex] = replacement;
+      else shortfalls.push(replacement);
+    }
+    return { ...week, sessions: sortSessions(capped) };
+  });
+  if (shortfalls.length > 0) cloned.volumeShortfalls = shortfalls;
+  return cloned;
+}
+
+function isInactiveEnforcedSession(session: CoordinatedTrainingSession): boolean {
+  const state = String(session.scheduleState || '').toLowerCase();
+  return state === 'deferred'
+    || state === 'unscheduled'
+    || state === 'dropped'
+    || state === 'canceled'
+    || state === 'cancelled';
+}
+
+/**
+ * F7: relocate same-day extras to a free allowed day, keeping the first
+ * session of each day in place. When no free allowed day remains the extra
+ * is deferred with a reason instead of silently violating the preference.
+ */
+function enforceSingleSessionPerDay(
+  sessions: CoordinatedTrainingSession[],
+  allowedDays: readonly string[],
+): CoordinatedTrainingSession[] {
+  const next = sessions.map((session) => ({ ...session }));
+  const occupiedDays = new Set(
+    next
+      .filter((session) => !isInactiveEnforcedSession(session))
+      .map((session) => normalizeDay(session.dayOfWeek))
+      .filter((day): day is string => Boolean(day)),
+  );
+  const activeByDay = new Map<string, number[]>();
+  next.forEach((session, index) => {
+    if (isInactiveEnforcedSession(session)) return;
+    const day = normalizeDay(session.dayOfWeek);
+    if (!day) return;
+    const indexes = activeByDay.get(day) ?? [];
+    indexes.push(index);
+    activeByDay.set(day, indexes);
+  });
+  for (const [day, indexes] of activeByDay) {
+    if (indexes.length < 2) continue;
+    const keeperIndex = [...indexes].sort((left, right) => (
+      singleSessionKeeperScore(next[right]) - singleSessionKeeperScore(next[left])
+    ))[0];
+    for (const index of indexes) {
+      if (index === keeperIndex) continue;
+      const session = next[index];
+    const freeDay = allowedDays.find(
+        (candidate) => !occupiedDays.has(candidate),
+    );
+    if (freeDay) {
+      session.originalDayOfWeek = session.originalDayOfWeek ?? session.dayOfWeek;
+      session.dayOfWeek = DAY_LABEL[freeDay] ?? freeDay;
+      session.scheduleAdjustments = [...(session.scheduleAdjustments ?? []), 'reflowed'];
+      session.scheduleReason = session.scheduleReason
+        ?? 'Moved to its own day because two-a-day sessions are turned off for this athlete.';
+      occupiedDays.add(freeDay);
+      continue;
+    }
+    session.scheduleState = 'deferred';
+    session.scheduleAdjustments = [...(session.scheduleAdjustments ?? []), 'deferred'];
+    session.scheduleReason = session.scheduleReason
+      ?? 'Deferred because two-a-day sessions are turned off and no free training day remained this week.';
+    }
+  }
+  return next;
+}
+
+function singleSessionKeeperScore(session: CoordinatedTrainingSession): number {
+  const token = `${session.sessionType || ''} ${session.title || ''}`.toLowerCase();
+  if (inferTrainingSessionIsLongRun(session)) return 100;
+  if (/\brace\b/.test(token)) return 95;
+  if (/\b(interval|threshold|tempo)\b/.test(token)) return 80;
+  if (isStrengthSession(session)) return 60;
+  return 40;
 }
 
 function allowedDaysForWeek(startDate: string, weekNumber: number): string[] {
@@ -244,6 +572,20 @@ function normalizeSessionDay(session: CoordinatedTrainingSession): CoordinatedTr
   };
 }
 
+function normalizeTrainingPlanVolumeSessions(
+  sessions: TrainingPlanVolumeSessionShape[],
+): CoordinatedTrainingSession[] {
+  return sessions
+    .map((session) => normalizeSessionDay({
+      ...session,
+      dayOfWeek: String(session.dayOfWeek || ''),
+      sessionType: String(session.sessionType || ''),
+      title: String(session.title || ''),
+      durationMinutes: typeof session.durationMinutes === 'number' ? session.durationMinutes : 0,
+    }))
+    .filter((session): session is CoordinatedTrainingSession => Boolean(session));
+}
+
 function isScheduledSession(session: CoordinatedTrainingSession): boolean {
   const type = String(session.sessionType || '').toLowerCase();
   if (type === 'rest' || type === 'mobility') return false;
@@ -257,20 +599,16 @@ function isStandaloneMobilitySession(session: CoordinatedTrainingSession): boole
   return combined.includes('mobility') && exerciseCount === 0;
 }
 
-function convertExtraStrengthToCardio(
+function trimStrengthToTarget(
   sessions: CoordinatedTrainingSession[],
   strengthTarget: number,
-  sport: string | undefined,
-  request: TrainingPlanVolumeRequest,
 ): CoordinatedTrainingSession[] {
-  let strengthCount = sessions.filter(isStrengthSession).length;
-  if (strengthCount <= strengthTarget) return sessions;
-
-  return sessions.map((session, index) => {
-    if (!isStrengthSession(session) || strengthCount <= strengthTarget) return session;
-    const converted = buildCardioSupportSession(normalizeDay(session.dayOfWeek) ?? 'tuesday', sport, request, index);
-    strengthCount -= 1;
-    return converted;
+  let keptStrength = 0;
+  return sessions.filter((session) => {
+    if (!isStrengthSession(session)) return true;
+    if (keptStrength >= strengthTarget) return false;
+    keptStrength += 1;
+    return true;
   });
 }
 
@@ -342,7 +680,7 @@ function trimCardioModalitiesToTargets(
 
 function spreadSameTypeCollisions(
   sessions: CoordinatedTrainingSession[],
-  allowedDays: string[],
+  allowedDays: readonly string[],
 ): CoordinatedTrainingSession[] {
   const next = [...sessions];
   const seen = new Set<string>();
@@ -371,7 +709,7 @@ function spreadSameTypeCollisions(
 
 function chooseDayWithoutBucket(
   sessions: CoordinatedTrainingSession[],
-  allowedDays: string[],
+  allowedDays: readonly string[],
   bucket: 'strength' | 'cardio',
 ): string | null {
   const candidates = allowedDays.length > 0 ? allowedDays : [...DAY_ORDER];
@@ -380,39 +718,6 @@ function chooseDayWithoutBucket(
     if (daySessions.length >= 2) return false;
     return !daySessions.some((session) => (isStrengthSession(session) ? 'strength' : 'cardio') === bucket);
   }) ?? null;
-}
-
-function fillMissingStrength(
-  sessions: CoordinatedTrainingSession[],
-  strengthTarget: number,
-  allowedDays: string[],
-  sport: string | undefined,
-  request: TrainingPlanVolumeRequest,
-  weekNumber: number = 1,
-): CoordinatedTrainingSession[] {
-  const next = [...sessions];
-  while (countStrength(next) < strengthTarget) {
-    const day = chooseInsertionDay(next, allowedDays, 'strength');
-    if (!day) break;
-    next.push(buildStrengthSupportSession(day, sport, request, countStrength(next), weekNumber));
-  }
-  return next;
-}
-
-function fillMissingActiveSessions(
-  sessions: CoordinatedTrainingSession[],
-  activeTarget: number,
-  allowedDays: string[],
-  sport: string | undefined,
-  request: TrainingPlanVolumeRequest,
-): CoordinatedTrainingSession[] {
-  const next = [...sessions];
-  while (next.length < activeTarget) {
-    const day = chooseInsertionDay(next, allowedDays, 'cardio');
-    if (!day) break;
-    next.push(buildCardioSupportSession(day, sport, request, next.length));
-  }
-  return next;
 }
 
 function protectHeavyLowerBeforeLongRun(
@@ -557,62 +862,6 @@ function withScheduleAdjustment(
   };
 }
 
-function chooseInsertionDay(
-  sessions: CoordinatedTrainingSession[],
-  allowedDays: string[],
-  kind: 'strength' | 'cardio',
-): string | null {
-  const normalizedAllowed = allowedDays.length > 0 ? allowedDays : [...DAY_ORDER];
-  const preferredOrder = kind === 'strength'
-    ? ['monday', 'wednesday', 'friday', 'saturday', 'tuesday', 'thursday', 'sunday']
-    : ['tuesday', 'thursday', 'sunday', 'saturday', 'friday', 'wednesday', 'monday'];
-  const orderedDays = preferredOrder.filter((day) => normalizedAllowed.includes(day));
-  const fallbackDays = normalizedAllowed.filter((day) => !orderedDays.includes(day));
-  const candidates = [...orderedDays, ...fallbackDays];
-
-  for (const maxCount of [0, 1]) {
-    const day = candidates.find((candidate) => {
-      const daySessions = sessions.filter((session) => normalizeDay(session.dayOfWeek) === candidate);
-      if (daySessions.length !== maxCount) return false;
-      if (daySessions.length >= 2) return false;
-      if (kind === 'strength') return !daySessions.some(isStrengthSession);
-      return !daySessions.some((session) => !isStrengthSession(session));
-    });
-    if (day) return day;
-  }
-
-  if (kind === 'strength') return null;
-
-  return candidates.find((candidate) =>
-    sessions.filter((session) => normalizeDay(session.dayOfWeek) === candidate).length < 2
-  ) ?? null;
-}
-
-function buildStrengthSupportSession(
-  dayOfWeek: string,
-  sport: string | undefined,
-  request: TrainingPlanVolumeRequest,
-  index: number,
-  weekNumber: number = 1,
-): CoordinatedTrainingSession {
-  const knowledge = safeLoadCoachKnowledge();
-  // Slice 4.C — weekNumber is 1-based in the volume-enforcement
-  // loop; convert to 0-based for the rotation shift so week 1 has
-  // shift 0 (matches strengthVariantFor's macro-rotation anchor).
-  const weekShift = Math.max(0, weekNumber - 1);
-  const variant = buildStrengthSupportVariant(index, knowledge, weekShift);
-  const planSport = String(sport || '').toLowerCase();
-  return {
-    dayOfWeek: DAY_LABEL[dayOfWeek] ?? dayOfWeek,
-    sessionType: 'gym',
-    title: planSport === 'running' ? `Runner ${variant.title}` : variant.title,
-    durationMinutes: variant.durationMinutes,
-    preferredStartTime: request.preferredStrengthTime,
-    description: 'Strength slot added to preserve the requested weekly gym volume while keeping the load controlled.',
-    exercises: variant.exercises,
-  };
-}
-
 /**
  * Defensive loader. The coach knowledge files ship with the package
  * so the happy path never fails, but if a constrained test
@@ -626,36 +875,6 @@ function safeLoadCoachKnowledge(): CoachKnowledgeBase | undefined {
   } catch {
     return undefined;
   }
-}
-
-function buildCardioSupportSession(
-  dayOfWeek: string,
-  sport: string | undefined,
-  request: TrainingPlanVolumeRequest,
-  index: number,
-): CoordinatedTrainingSession {
-  const normalizedSport = String(sport || '').toLowerCase();
-  const sessionType = normalizedSport === 'cycling'
-    ? 'ride'
-    : normalizedSport === 'swimming'
-      ? 'swim'
-      : 'run';
-  const title = sessionType === 'ride'
-    ? 'Easy Aerobic Ride'
-    : sessionType === 'swim'
-      ? 'Easy Technique Swim'
-      : index % 2 === 0
-        ? 'Easy Aerobic Run'
-        : 'Recovery Run';
-  return {
-    dayOfWeek: DAY_LABEL[dayOfWeek] ?? dayOfWeek,
-    sessionType,
-    title,
-    durationMinutes: sessionType === 'swim' ? 35 : 40,
-    preferredStartTime: request.preferredCardioTime,
-    description: 'Aerobic support added to reach the requested weekly frequency without turning recovery days into hard sessions.',
-    exercises: [],
-  };
 }
 
 function sortSessions(sessions: CoordinatedTrainingSession[]): CoordinatedTrainingSession[] {
@@ -679,6 +898,9 @@ function applyPreferredTimes(
 
 function removableScore(session: CoordinatedTrainingSession): number {
   if (isStandaloneMobilitySession(session)) return -1;
+  // Brick work is additive transition practice, not a replacement for the
+  // standalone run/bike/swim frequencies the athlete explicitly requested.
+  if (session.sessionRole === 'brick' || /\bbrick\b/i.test(session.title || '')) return 0;
   if (/recovery|easy|support/i.test(session.title || '')) return 1;
   if (isStrengthSession(session)) return 3;
   return 2;

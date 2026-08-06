@@ -285,11 +285,10 @@ export async function evaluatePhase7CrossSkillFlagContract(
           risk: 'safe_write',
           provider: 'nexus',
           args: {
-            sport: 'running',
-            goal: 'weekly workout plan',
+            objective: 'weekly running workout plan',
             durationWeeks: 1,
-            startDate: '2026-08-03',
-            weeklyVolumeKm: 20,
+            sessionsPerWeek: 4,
+            startPolicy: 'next_full_week',
           },
           requiredArgsPresent: true,
         }),
@@ -813,6 +812,7 @@ function fixtureTrainingContext(): TrainingMeshContext {
     trainingContext: fixtureTrainingSignalContext(),
     coachBriefing: null,
     adherence: null,
+    secretaryFeedback: null,
     coachPhaseMemory: null,
     derivedSignals: [
       signal('recovery_state', { state: 'strained' }, 'urgent'),
@@ -1018,27 +1018,6 @@ function fixtureTrainingSignalContext(): TrainingContext {
   return {
     signals: [
       {
-        id: 1,
-        source_agent: 'secretary.calendar',
-        signal_type: 'calendar_conflict',
-        payload: {
-          conflict_event_title: 'Board review',
-          overlap_start: '2026-05-05T08:30:00.000Z',
-          overlap_end: '2026-05-05T09:30:00.000Z',
-        },
-        priority: 'urgent',
-        consumed_by: [],
-        status: 'active',
-        created_at: '2026-05-04T00:00:00.000Z',
-        expires_at: '2026-05-05T00:00:00.000Z',
-        tenant_id: 42,
-        user_id: 42,
-        confidence: 1,
-        format_tag: null,
-        pillar_tag: null,
-        evidence_count: 1,
-      },
-      {
         id: 2,
         source_agent: 'cooking.fueling',
         signal_type: 'fueling_gap_risk',
@@ -1108,8 +1087,6 @@ function fixtureTrainingSignalContext(): TrainingContext {
       lowAdherence: false,
       highAdherence: false,
       planDrift: false,
-      calendarConflict: true,
-      scheduleStale: false,
       fuelingGap: true,
       budgetConstraint: true,
       contentCommitment: true,
@@ -1568,13 +1545,13 @@ function appendOperationTable(lines: string[], operations: SmokeOperationResult[
       operation.expected,
       operation.actual,
       operation.status,
-      operation.evidence.map((item) => escapeMarkdownCell(oneLine(item))).join('<br>') || '-',
+      operation.evidence.map((item) => oneLine(item)).join('<br>') || '-',
     ].map(escapeMarkdownCell).join(' | ').replace(/^/, '| ').replace(/$/, ' |'));
   }
 }
 
 function escapeMarkdownCell(value: string): string {
-  return String(value).replace(/\|/g, '\\|').replace(/\n/g, '<br>');
+  return String(value).replace(/\\/g, '\\\\').replace(/\|/g, '\\|').replace(/\r\n?|\n/g, '<br>');
 }
 
 async function main(): Promise<void> {

@@ -296,6 +296,19 @@ export async function createEvent(
   }
 }
 
+export async function getEventById(
+  eventId: string,
+  source: CalendarSource,
+  userId?: number,
+): Promise<UnifiedCalendarEvent | null> {
+  if (source === 'outlook') {
+    const event = await outlookCal.getEventById(eventId, userId);
+    return event ? { ...event, source: 'outlook' } : null;
+  }
+  const event = await googleCal.getEventById(eventId, userId);
+  return event ? { ...event, source: 'google' } : null;
+}
+
 export async function updateEvent(
   data: { event_id: string; new_start?: string; new_end?: string; new_title?: string; new_description?: string },
   source: CalendarSource,

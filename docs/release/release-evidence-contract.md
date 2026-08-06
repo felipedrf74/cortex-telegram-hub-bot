@@ -92,8 +92,52 @@ node scripts/release-checksum-manifest.mjs validate-state \
   --role staging
 ```
 
+## `nexus.shared-ios-release-gate.v1`
+
+Shared backend/iOS releases add a separate post-promotion receipt. The gate
+accepts the exact backend checkpoint manifest, pristine bundle, passing
+production journal, expected backend SHA, expected iOS SHA/source build, and
+two signed iOS inputs:
+
+- `nexus.ios-contract-attestation.v2`, produced by the protected-main iOS
+  contract workflow against the fixture embedded in that exact backend bundle;
+- `nexus.ios-distribution-attestation.v2`, produced for the same iOS SHA and
+  source build by the governed Xcode Cloud distribution workflow.
+
+The canonical producer is the owner-dispatched protected-main workflow
+`.github/workflows/shared-ios-release-gate.yml` in the `production-release`
+environment. It resolves the exact successful checkpoint manifest and
+protected-main bundle by run and artifact ID, materializes bounded canonical
+evidence, and invokes `scripts/shared-ios-release-gate.mjs`. The CLI first runs
+the canonical backend manifest and production-state validators over immutable
+private snapshots. It then recomputes the bundle aggregate and
+`dist/release/backend-ios-contract-fixture.v1.json` digest, verifies both
+Ed25519 signatures against the pinned release public keys, and requires the
+compatibility attestation's backend SHA, artifact digest, fixture digest, iOS
+SHA, build number, and nine-selector suite to match exactly. The distribution
+attestation must bind that same iOS SHA/source build and must be generated at or
+after production `completedAt`; compatibility evidence must be generated no
+later than production `startedAt`.
+
+The receipt records only immutable identities and digests: backend runtime,
+artifact, manifest and fixture; production transaction and completion time;
+iOS source/distributed build identity, attestation digests, contract selection
+digest, and exported artifact digest; plus the ordered chronology timestamps. It
+contains no credentials or provider payloads. A failed signature, expired
+attestation, substituted fixture, failed production transaction, SHA/build
+drift, or reversed chronology fails closed.
+
+Only the receipt artifact uploaded by a successful run of that workflow is a
+shared-release authorization record. Direct CLI output is useful for local
+diagnosis but cannot authorize TestFlight group assignment, App Store
+submission, or user release.
+
 ## Deliberate exclusions
 
 The manifest is not cryptographically signed, contains no secrets, and does
 not authorize production by itself. SonarQube, mutation results, AWS, KVM
 drills, documentation closeout, and timing targets are not fields or gates.
+iOS compatibility evidence, distribution evidence, and the shared receipt are
+intentionally not checkpoint-manifest fields or prerequisites: they form the
+separate post-promotion gate and therefore cannot create a cross-repository
+checkpoint cycle.

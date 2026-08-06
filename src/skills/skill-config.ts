@@ -142,6 +142,27 @@ const SECRETARY_SKILL: SkillDefinition = {
   ],
 };
 
+/**
+ * Build the reviewed Training-plan capability contract on demand.
+ *
+ * Keeping this small definition behind a builder lets policy tests exercise
+ * the exact runtime action set after mutation activation; a top-level object
+ * literal is initialized before Vitest can attribute static mutants.
+ */
+export function buildTrainingPlansSubSkillDefinition(): SubSkillDefinition {
+  return {
+    name: 'training-plans',
+    description: 'Reviewed Training plan handoff, readback, completion, and calendar linkage used by all sport sub-skills',
+    enabledByDefault: true,
+    requiredTier: 'pro',
+    tools: [
+      'create_training_plan', 'get_training_plan', 'log_training_completion',
+      'link_session_calendar',
+    ],
+    cronJobs: ['training_plan_adjust'],
+  };
+}
+
 const TRIATHLON_SKILL: SkillDefinition = {
   ...CAPABILITY_SKILL_METADATA.triathlon,
   description: 'Multisport coaching — gym, running, cycling, swimming, nutrition, recovery',
@@ -214,18 +235,7 @@ const TRIATHLON_SKILL: SkillDefinition = {
     },
 
     // ── Shared capability sub-skills — cross-sport plumbing ──
-    {
-      name: 'training-plans',
-      description: 'Shared training-plan CRUD used by all sport sub-skills',
-      enabledByDefault: true,
-      requiredTier: 'pro',
-      tools: [
-        'create_training_plan', 'add_training_week', 'add_training_session',
-        'get_training_plan', 'log_training_completion', 'update_training_session',
-        'link_session_calendar',
-      ],
-      cronJobs: ['training_plan_adjust'],
-    },
+    buildTrainingPlansSubSkillDefinition(),
     {
       name: 'calendar',
       description: 'Calendar event management for training schedule',

@@ -132,6 +132,18 @@ vi.mock('../../src/services/database', () => ({
   withDatabaseForTestAsync: vi.fn(),
 }));
 
+vi.mock('../../src/services/training-route-deprecation-telemetry', () => ({
+  TRAINING_SUMMARY_ROUTE_PATH: '/api/v1/training/summary',
+  recordTrainingSummaryDeprecationHit: vi.fn(),
+  readTrainingSummaryDeprecationUsage: vi.fn(() => ({
+    routePath: '/api/v1/training/summary',
+    windowDays: 30,
+    requestCount: 17,
+    firstHitDate: '2026-07-15',
+    lastHitDate: '2026-08-02',
+  })),
+}));
+
 vi.mock('../../src/services/cache-store', () => ({
   initCacheStore: vi.fn(),
   clearExpired: vi.fn(),
@@ -552,6 +564,18 @@ describe('GET /health/detailed', () => {
         restartCount: 0,
       })],
     });
+
+    // F37 stronger guarantee: collecting aggregate deprecation evidence is
+    // insufficient unless an authenticated operator can actually review it.
+    expect(body.deprecations).toEqual({
+      trainingSummary: {
+        routePath: '/api/v1/training/summary',
+        windowDays: 30,
+        requestCount: 17,
+        firstHitDate: '2026-07-15',
+        lastHitDate: '2026-08-02',
+      },
+    });
   });
 
   it('attests the exact deployed release and configured versus effective chat flags', async () => {
@@ -795,9 +819,9 @@ describe('GET /health/detailed', () => {
     activeServer = server;
 
     const res = await fetch(`http://127.0.0.1:${port}/health/detailed`, { headers: { Authorization: 'Bearer test-health-secret' } });
-    expect(res.status).toBe(503);
-
-    const body = await res.json();
+    const rawBody = await res.text();
+    expect(res.status, rawBody).toBe(503);
+    const body = JSON.parse(rawBody);
     expect(body.status).toBe('degraded');
     expect(body.server.database).toBe('disconnected');
     expect(body.databaseProbe).toMatchObject({

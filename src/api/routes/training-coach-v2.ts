@@ -35,8 +35,11 @@ import {
 } from '../../services/coach-plan-policy';
 import {
   ReflowMissingIdempotencyKeyError,
-  executeWeekReflow,
 } from '../../services/training-week-reflow';
+import {
+  executeWeekReflowWithPropagation,
+  type TrainingReflowSyncTarget,
+} from '../../services/training-week-reflow-propagation';
 import { recordTravelWindow, findTravelWindowsInRange } from '../../services/travel-windows';
 import { recordHealthSignal, type HealthConsentScope, type InjuryStatus, type EnergyAvailabilityRisk } from '../../services/health-signals';
 import {
@@ -78,7 +81,7 @@ import {
   wireHealthSignalToSafety,
 } from '../../services/coach-kernel/safety-wiring';
 import { hashOwnerIdForLog } from './_ownership-audit';
-import { isStrictIsoDate } from '../../services/training-date-utils';
+import { isStrictIsoDate, resolveTrainingTimezone } from '../../services/training-date-utils';
 import {
   dbRowToSession,
   inferSportFromSessionType,
@@ -87,6 +90,8 @@ import {
   type DbSessionRow,
 } from './training-coach-v2-hydration';
 import { requireTenantIdParam } from '../../services/tenant-scope';
+import { getUserTimezoneById } from '../../services/user-service';
+import { trainingOperationLockPublicError } from '../../services/training-operation-locks';
 import {
   assertLegacyPlanMutationAllowed,
   assertLegacyWeekMutationAllowed,
@@ -359,6 +364,43 @@ function resolveOwnedWeek(
   return { weekId, planId: row.plan_id, userId: auth.userId, tenantId };
 }
 
+export function resolvePersistedTrainingReflowSyncTarget(
+  preferencesJson: string | null,
+): TrainingReflowSyncTarget {
+  if (!preferencesJson) return 'auto';
+  try {
+    const preferences = JSON.parse(preferencesJson) as Record<string, unknown>;
+    const spec = preferences.trainingPlanSpec;
+    if (spec && typeof spec === 'object' && !Array.isArray(spec)) {
+      const calendarPreference = (spec as Record<string, unknown>).calendarPreference;
+      if (calendarPreference && typeof calendarPreference === 'object' && !Array.isArray(calendarPreference)) {
+        const provider = (calendarPreference as Record<string, unknown>).provider;
+        if (
+          provider === 'google'
+          || provider === 'outlook'
+          || provider === 'none'
+          || provider === 'apple'
+        ) return provider;
+      }
+    }
+
+    if (preferences.trainingCalendarSource === 'google'
+        || preferences.trainingCalendarSource === 'outlook') {
+      return preferences.trainingCalendarSource;
+    }
+    // Newer compatibility plans persist this key even for an explicit
+    // no-provider choice. Null is therefore deliberate, not permission to
+    // re-resolve a provider later during reflow.
+    if (Object.prototype.hasOwnProperty.call(preferences, 'trainingCalendarSource')
+        && preferences.trainingCalendarSource === null) {
+      return 'none';
+    }
+  } catch (err) {
+    logger.warn({ err }, 'training_coach_v2.reflow_calendar_preference_unreadable');
+  }
+  return 'auto';
+}
+
 /**
  * Mount the v2 routes onto an existing training Router. Builds a
  * SUB-ROUTER so the feature-flag gate doesn't accidentally apply to
@@ -529,7 +571,7 @@ export function mountCoachV2Routes(parent: Router): Router {
   });
 
   // ── C6 — POST /week/:weekId/reflow ─────────────────────────────
-  v2.post('/week/:weekId/reflow', coachV2RateLimitMiddleware, (req: Request, res: Response) => {
+  v2.post('/week/:weekId/reflow', coachV2RateLimitMiddleware, async (req: Request, res: Response) => {
     if (!v2EnabledOrShortCircuit(res)) return;
     const rawWeekId = resolveWeekId(req, res);
     if (rawWeekId === null) return;
@@ -610,9 +652,17 @@ export function mountCoachV2Routes(parent: Router): Router {
       // state, not hardcoded placeholders.
       const db = getDb();
       const planMeta = db.prepare(`
-        SELECT id, user_id, start_date, duration_weeks, sport
+        SELECT id, user_id, start_date, duration_weeks, sport,
+               COALESCE(plan_version, 1) AS plan_version
         FROM fitness_training_plans WHERE id = ?
-      `).get(planId) as { id: number; user_id: number; start_date: string; duration_weeks: number; sport: string };
+      `).get(planId) as {
+        id: number;
+        user_id: number;
+        start_date: string;
+        duration_weeks: number;
+        sport: string;
+        plan_version: number;
+      };
 
       const weekRow = db.prepare(
         'SELECT week_number FROM training_weeks WHERE id = ? AND plan_id = ?',
@@ -648,6 +698,23 @@ export function mountCoachV2Routes(parent: Router): Router {
       const planFull = db.prepare(
         'SELECT preferences_json FROM fitness_training_plans WHERE id = ?',
       ).get(planId) as { preferences_json: string | null };
+      const reflowSyncTarget = resolvePersistedTrainingReflowSyncTarget(
+        planFull.preferences_json,
+      );
+      let persistedSchedulingTimezone: string | null = null;
+      try {
+        const parsedPreferences = planFull.preferences_json
+          ? JSON.parse(planFull.preferences_json) as Record<string, unknown>
+          : {};
+        persistedSchedulingTimezone = typeof parsedPreferences.schedulingTimezone === 'string'
+          ? parsedPreferences.schedulingTimezone
+          : null;
+      } catch {
+        persistedSchedulingTimezone = null;
+      }
+      const schedulingTimezone = resolveTrainingTimezone(
+        persistedSchedulingTimezone ?? getUserTimezoneById(auth.userId),
+      );
       // R5 P3 fix — Codex caught that reflow used the legacy wrapper
       // that discards the drop report, while coach-analysis used the
       // `WithReport` variant. So a mutating apply could silently drop
@@ -857,6 +924,7 @@ export function mountCoachV2Routes(parent: Router): Router {
                 alreadyExisted: false,
                 mutated: false,
                 mutatedRows: 0,
+                affectedSessionIds: [],
               },
               scenario,
               perActionResults: [],
@@ -896,8 +964,11 @@ export function mountCoachV2Routes(parent: Router): Router {
           ? scenario.suppressedActions ?? []
           : scenario.actions;
       const ledgerDecisionReasonCodes = ledgerActions.map((a) => a.reasonCode);
-      const result = executeWeekReflow({
+      const result = await executeWeekReflowWithPropagation({
+        userId: auth.userId,
+        tenantId: requireTenantIdParam(auth.tenantId, 'training.coach.reflow'),
         planId,
+        planVersion: planMeta.plan_version,
         weekId,
         mode,
         trigger,
@@ -920,10 +991,19 @@ export function mountCoachV2Routes(parent: Router): Router {
           // return value. No getter / no closure-over-let.
         },
         decisionReasonCodes: ledgerDecisionReasonCodes,
+        syncTarget: reflowSyncTarget,
         applyMutation: mode === 'apply'
           ? (db) => {
-              const r = executeCoachActions(db, { planId, actions: scenario.actions });
-              return { mutatedRows: r.mutatedRows, perActionResults: r.perActionResults };
+              const r = executeCoachActions(db, {
+                planId,
+                actions: scenario.actions,
+                schedulingTimezone,
+              });
+              return {
+                mutatedRows: r.mutatedRows,
+                perActionResults: r.perActionResults,
+                affectedSessionIds: r.affectedSessionIds,
+              };
             }
           : undefined,
       });
@@ -945,6 +1025,12 @@ export function mountCoachV2Routes(parent: Router): Router {
         }),
       );
     } catch (err) {
+      const lockError = trainingOperationLockPublicError(err);
+      if (lockError) {
+        res.setHeader('Retry-After', String(lockError.retryAfterSeconds));
+        sendError(res, lockError.code, lockError.message, lockError.status, lockError.details);
+        return;
+      }
       if (err instanceof ReflowMissingIdempotencyKeyError) {
         sendError(res, 'IDEMPOTENCY_REQUIRED', err.message, 400);
         return;

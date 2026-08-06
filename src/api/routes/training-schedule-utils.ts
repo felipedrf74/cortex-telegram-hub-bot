@@ -1,7 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { DateTime } from 'luxon';
-import { config } from '../../config';
+import { resolveTrainingTimezone } from '../../services/training-date-utils';
 
 export type BusyWindow = {
   startMs: number;
@@ -29,11 +29,12 @@ export function canonicalTrainingDay(value: string): string {
   return mapping[normalized] ?? value.trim();
 }
 
-export function buildBusyWindows(events: any[]): BusyWindow[] {
+export function buildBusyWindows(events: any[], schedulingTimezone?: string | null): BusyWindow[] {
+  const timezone = resolveTrainingTimezone(schedulingTimezone);
   return (events || []).flatMap((event: any) => {
     const startRaw = event.start?.dateTime || event.startDateTime || event.start;
     const endRaw = event.end?.dateTime || event.endDateTime || event.end;
-    const parsed = parseBusyWindowBounds(startRaw, endRaw, !!event.isAllDay);
+    const parsed = parseBusyWindowBounds(startRaw, endRaw, !!event.isAllDay, timezone);
     if (!parsed || parsed.endMs <= parsed.startMs) return [];
     return [{
       startMs: parsed.startMs,
@@ -47,6 +48,7 @@ function parseBusyWindowBounds(
   startRaw: unknown,
   endRaw: unknown,
   isAllDay: boolean,
+  timezone: string,
 ): { startMs: number; endMs: number } | null {
   const startText = stringValue(startRaw);
   const endText = stringValue(endRaw);
@@ -54,13 +56,12 @@ function parseBusyWindowBounds(
   const dateOnlyEnd = dateOnlyValue(endText);
 
   if (isAllDay || dateOnlyStart || dateOnlyEnd) {
-    const zone = config.app.timezone || 'Europe/Lisbon';
     const startDay = dateOnlyStart || dateOnlyValue(startText?.slice(0, 10));
     if (!startDay) return null;
     const endDay = dateOnlyEnd || dateOnlyValue(endText?.slice(0, 10));
-    const start = DateTime.fromISO(startDay, { zone }).startOf('day');
+    const start = DateTime.fromISO(startDay, { zone: timezone }).startOf('day');
     let end = endDay
-      ? DateTime.fromISO(endDay, { zone }).startOf('day')
+      ? DateTime.fromISO(endDay, { zone: timezone }).startOf('day')
       : start.plus({ days: 1 });
     if (!start.isValid || !end.isValid) return null;
     if (end <= start) end = start.plus({ days: 1 });
@@ -169,10 +170,10 @@ function tryWindowAt(
   durationMinutes: number,
   busyWindows: BusyWindow[],
   scheduledWindows: BusyWindow[],
+  timezone: string,
   notBefore?: Date,
 ): { start: Date; end: Date } | null {
-  const zone = config.app.timezone || 'Europe/Lisbon';
-  const sessionDay = DateTime.fromJSDate(sessionDate).setZone(zone);
+  const sessionDay = DateTime.fromJSDate(sessionDate).setZone(timezone);
   if (!sessionDay.isValid) return null;
   const startDateTime = DateTime.fromObject(
     {
@@ -184,7 +185,7 @@ function tryWindowAt(
       second: 0,
       millisecond: 0,
     },
-    { zone },
+    { zone: timezone },
   );
   if (!startDateTime.isValid) return null;
   const start = startDateTime.toUTC().toJSDate();
@@ -201,8 +202,9 @@ export function scheduleSessionWindow(
   preferredTime: string,
   busyWindows: BusyWindow[],
   scheduledWindows: BusyWindow[],
-  options: { notBefore?: Date } = {},
+  options: { notBefore?: Date; timezone?: string | null } = {},
 ): ScheduleSessionResult {
+  const timezone = resolveTrainingTimezone(options.timezone);
   // Stage 1: try the preferred time + symmetric ±1/±1.5/±2/±2.5 candidates.
   // Exact preferred time is the only path that counts as "preference
   // respected"; nearby fits are useful but must be reported as a shift.
@@ -215,6 +217,7 @@ export function scheduleSessionWindow(
       durationMinutes,
       busyWindows,
       scheduledWindows,
+      timezone,
       options.notBefore,
     );
     if (slot) return { ...slot, preferredTimeUnavailable: candidate !== preferredTime };
@@ -232,6 +235,7 @@ export function scheduleSessionWindow(
       durationMinutes,
       busyWindows,
       scheduledWindows,
+      timezone,
       options.notBefore,
     );
     if (slot) return { ...slot, preferredTimeUnavailable: true };
@@ -242,8 +246,7 @@ export function scheduleSessionWindow(
   // flag it as not schedulable. Training persistence and calendar sync
   // must treat this as an unscheduled session, never as an event to
   // create at 06:30.
-  const zone = config.app.timezone || 'Europe/Lisbon';
-  const sessionDay = DateTime.fromJSDate(sessionDate).setZone(zone);
+  const sessionDay = DateTime.fromJSDate(sessionDate).setZone(timezone);
   const fallbackDateTime = sessionDay.isValid
     ? DateTime.fromObject(
       {
@@ -255,7 +258,7 @@ export function scheduleSessionWindow(
         second: 0,
         millisecond: 0,
       },
-      { zone },
+      { zone: timezone },
     )
     : DateTime.fromJSDate(sessionDate).toUTC();
   const fallback = fallbackDateTime.toUTC().toJSDate();

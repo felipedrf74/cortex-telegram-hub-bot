@@ -3,6 +3,18 @@
 import Database from 'better-sqlite3';
 import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+const mockWithTrainingCalendarOperationLock = vi.hoisted(() => vi.fn());
+
+vi.mock('../../src/services/training-operation-locks', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/training-operation-locks')>(
+    '../../src/services/training-operation-locks'
+  )),
+  withTrainingCalendarOperationLock: (...args: unknown[]) => (
+    mockWithTrainingCalendarOperationLock(...args)
+  ),
+}));
+
 import { runMigrationsForTest, withDatabaseForTestAsync } from '../../src/services/database';
 import { bindTrainingPlanRevisionDecision } from '../../src/services/training-plan-revision-decision';
 import { createTrainingPlanCandidateRevision as createTrainingPlanCandidateRevisionAtRuntime } from '../../src/services/training-plan-revisions';
@@ -22,6 +34,7 @@ import {
   _resetTrainingGenerationObservabilityForTests,
   getTrainingGenerationObservabilitySnapshot,
 } from '../../src/services/training-generation-observability';
+import * as trainingOperationLocksModule from '../../src/services/training-operation-locks';
 
 const FIXED_NOW = new Date('2026-07-13T12:00:00.000Z');
 
@@ -118,6 +131,15 @@ describe('training M4 single-Decision conflict and activation gates', () => {
     authoritativeCapacityVersion = '';
     calendarEvents = [];
     calendarStatus = 'ready';
+    mockWithTrainingCalendarOperationLock.mockReset();
+    mockWithTrainingCalendarOperationLock.mockImplementation(
+      async (_input: unknown, operation: (lease: unknown) => Promise<unknown>) => {
+        // Activation now fences the pointer/projection/outbox transaction,
+        // so the test lock seam must expose the same callable lease shape.
+        const signal = new AbortController().signal;
+        return operation(Object.assign(() => {}, { signal, assertActive: vi.fn() }));
+      },
+    );
     db = createMigratedTestDatabase();
     db.prepare(`
       INSERT INTO user_profiles (user_id, profile_type, data)
@@ -324,6 +346,77 @@ describe('training M4 single-Decision conflict and activation gates', () => {
       `).all() as Array<{ contextVersion: string }>;
       expect(snapshots).toHaveLength(before.count + 1);
       expect(new Set(snapshots.map((row) => row.contextVersion))).toEqual(new Set([authoritativeCapacityVersion]));
+    });
+  });
+
+  it('keeps a contended Training activation approved and retryable with the same Decision attempt', async () => {
+    await withDatabaseForTestAsync(db, async () => {
+      const { bound, approved } = await createApprovedDecision('m4-lock-contention');
+      const lockError = new trainingOperationLocksModule.TrainingOperationLockError('plan_activate', 30);
+      lockError.message = 'SQLite lock training-calendar:user:7:tenant:7 belongs to private-owner-token';
+      Object.assign(lockError, {
+        lockKey: 'training-calendar:user:7:tenant:7',
+        ownerToken: 'private-owner-token',
+        userId: 7,
+        tenantId: 7,
+      });
+      mockWithTrainingCalendarOperationLock.mockRejectedValueOnce(lockError);
+      const actionOptions = {
+        idempotencyKey: 'm4-lock-contention-activate',
+        expectedVersion: approved.recordVersion,
+        contextVersion: approved.contextVersion,
+      };
+
+      let rejected: unknown;
+      try {
+        await performDecisionAction(
+          bound.decisionId!,
+          'activate_training_plan_revision',
+          7,
+          7,
+          actionOptions,
+        );
+      } catch (error) {
+        rejected = error;
+      }
+
+      expect(rejected).toMatchObject({
+        code: 'TRAINING_OPERATION_LOCKED',
+        status: 409,
+        message: 'Another training operation is in progress. Please try again shortly.',
+      });
+      // Exact allowlisting is stronger than looking for one lock-key prefix:
+      // it rejects every future scope/owner field regardless of its spelling.
+      expect((rejected as { details?: unknown })?.details).toEqual({
+        operation: 'plan_activate',
+        retryAfterSeconds: 30,
+      });
+      expect(db.prepare(`
+        SELECT status, decision_state AS decisionState, record_version AS recordVersion
+          FROM notification_center_items
+         WHERE item_id = ? AND user_id = 7 AND tenant_id = 7
+      `).get(bound.decisionId)).toEqual({
+        status: 'read',
+        decisionState: 'approved',
+        recordVersion: approved.recordVersion,
+      });
+      expect(db.prepare(`
+        SELECT COUNT(*) AS count
+          FROM fitness_training_plans
+         WHERE user_id = 7 AND tenant_id = 7
+      `).get()).toEqual({ count: 0 });
+
+      // The same client payload and idempotency key must remain usable after
+      // transient contention; requiring a fresh approval would make 409 a lie.
+      const retry = await performDecisionAction(
+        bound.decisionId!,
+        'activate_training_plan_revision',
+        7,
+        7,
+        actionOptions,
+      );
+      expect(retry.status).toBe('succeeded');
+      expect(db.prepare('SELECT COUNT(*) AS count FROM fitness_training_plans').get()).toEqual({ count: 1 });
     });
   });
 

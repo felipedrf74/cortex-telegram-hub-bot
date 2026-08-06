@@ -1,4 +1,12 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import Database from 'better-sqlite3';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+
+const scheduledJobStateMigration = readFileSync(
+  resolve(process.cwd(), 'migrations/275_scheduled_job_execution_state.sql'),
+  'utf8',
+);
 
 const mocks = vi.hoisted(() => ({
   findOrphanedOwnerships: vi.fn(),
@@ -10,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   getUserTimezoneById: vi.fn(),
   loggerWarn: vi.fn(),
   loggerDebug: vi.fn(),
+  getDb: vi.fn(),
 }));
 
 vi.mock('../../src/services/training-plan-lifecycle', () => ({
@@ -31,6 +40,13 @@ vi.mock('../../src/services/user-service', () => ({
   getUserTimezoneById: mocks.getUserTimezoneById,
 }));
 
+vi.mock('../../src/services/database', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/database')>(
+    '../../src/services/database'
+  )),
+  getDb: mocks.getDb,
+}));
+
 vi.mock('../../src/utils/logger', () => ({
   logger: {
     warn: mocks.loggerWarn,
@@ -41,12 +57,30 @@ vi.mock('../../src/utils/logger', () => ({
 
 import { reconcileOrphanedTrainingAgendaEvents, _resetLegacyMarkerScanGateForTests } from '../../src/services/training-agenda-reconciliation';
 
+function legacyTrainingMarkerEvent(id: string, planId = 43) {
+  return {
+    id,
+    source: 'google',
+    summary: 'Recovery Run',
+    start: '2026-06-02T12:00:00.000Z',
+    end: '2026-06-02T12:40:00.000Z',
+    description: `[NEXUS_TRAINING_IDENTITY plan=${planId};version=1;session=1099;key=x;shape=y]`,
+  };
+}
+
 describe('training-agenda-reconciliation', () => {
+  let db: Database.Database;
+
   beforeEach(() => {
-    // The legacy-marker scan runs at most once per user per day; reset the
-    // in-memory gate so every test exercises a fresh scan window.
+    // Reset one-shot implementations as well as call history. The isolated-
+    // runtime overlap test intentionally leaves its second getEvents response
+    // unused when the durable lease works; mockClear would leak that response
+    // into the following tenant-ownership case.
+    vi.resetAllMocks();
+    db = new Database(':memory:');
+    db.exec(scheduledJobStateMigration);
+    mocks.getDb.mockReturnValue(db);
     _resetLegacyMarkerScanGateForTests();
-    vi.clearAllMocks();
     mocks.findOrphanedOwnerships.mockReturnValue([]);
     mocks.findOwnershipsNeedingReconciliation.mockReturnValue([]);
     mocks.markCalendarOwnershipDeleted.mockReturnValue({ ok: true, rowsAffected: 1 });
@@ -54,6 +88,10 @@ describe('training-agenda-reconciliation', () => {
     mocks.getEvents.mockResolvedValue([]);
     mocks.getPlanById.mockReturnValue(null);
     mocks.getUserTimezoneById.mockReturnValue('UTC');
+  });
+
+  afterEach(() => {
+    db.close();
   });
 
   it('deletes orphaned agenda events by exact ownership and marks them reconciled', async () => {
@@ -336,11 +374,108 @@ describe('training-agenda-reconciliation', () => {
         description: '[NEXUS_TRAINING_IDENTITY plan=43;version=1;session=1099;key=x;shape=y]',
       },
     ]);
-    mocks.getPlanById.mockReturnValue({ id: 43, user_id: 42, status: 'active' });
+    mocks.getPlanById.mockReturnValue({ id: 43, user_id: 42, tenant_id: 42, status: 'active' });
 
     const result = await reconcileOrphanedTrainingAgendaEvents(42, 42);
 
     expect(result).toEqual({ attempted: 0, deleted: 0, failed: 0 });
     expect(mocks.deleteEvent).not.toHaveBeenCalled();
+  });
+
+  // Stronger guarantee: a failed provider read must not consume the durable
+  // daily checkpoint; the next reconciliation tick must be allowed to retry.
+  it('checkpoints a legacy scan only after the provider read succeeds', async () => {
+    mocks.getEvents
+      .mockRejectedValueOnce(new Error('calendar provider unavailable'))
+      .mockResolvedValueOnce([legacyTrainingMarkerEvent('retry-after-read-failure')]);
+    mocks.getPlanById.mockReturnValue(null);
+
+    await expect(reconcileOrphanedTrainingAgendaEvents(42, 42)).resolves.toEqual({
+      attempted: 0,
+      deleted: 0,
+      failed: 0,
+    });
+    await expect(reconcileOrphanedTrainingAgendaEvents(42, 42)).resolves.toEqual({
+      attempted: 1,
+      deleted: 1,
+      failed: 0,
+    });
+
+    expect(mocks.getEvents).toHaveBeenCalledTimes(2);
+    expect(mocks.deleteEvent).toHaveBeenCalledWith(
+      'retry-after-read-failure',
+      'google',
+      42,
+    );
+  });
+
+  // Stronger guarantee: scan cadence is keyed by the complete tenant/user
+  // boundary, so one tenant cannot suppress another tenant's cleanup window.
+  it('keeps legacy scan checkpoints isolated by tenant and user', async () => {
+    await reconcileOrphanedTrainingAgendaEvents(42, 100);
+    await reconcileOrphanedTrainingAgendaEvents(42, 200);
+
+    expect(mocks.findOwnershipsNeedingReconciliation).toHaveBeenNthCalledWith(1, 42, 100);
+    expect(mocks.findOwnershipsNeedingReconciliation).toHaveBeenNthCalledWith(2, 42, 200);
+    expect(mocks.getEvents).toHaveBeenCalledTimes(2);
+  });
+
+  // Stronger guarantee: a completed scan is a durable checkpoint and remains
+  // effective when another process/module instance starts on the same data.
+  it('retains a successful legacy scan checkpoint across runtime restart', async () => {
+    await reconcileOrphanedTrainingAgendaEvents(42, 42);
+
+    vi.resetModules();
+    const restarted = await import('../../src/services/training-agenda-reconciliation');
+    await restarted.reconcileOrphanedTrainingAgendaEvents(42, 42);
+
+    expect(mocks.getEvents).toHaveBeenCalledTimes(1);
+  });
+
+  // Stronger guarantee: the wide provider scan uses a cluster-safe lease, so
+  // isolated runtimes cannot execute the same tenant/user sweep concurrently.
+  it('allows only one in-flight legacy scan across isolated runtimes', async () => {
+    let releaseFirstScan!: (events: unknown[]) => void;
+    const firstScan = new Promise<unknown[]>((resolve) => {
+      releaseFirstScan = resolve;
+    });
+    mocks.getEvents
+      .mockImplementationOnce(() => firstScan)
+      .mockResolvedValueOnce([]);
+
+    const firstRun = reconcileOrphanedTrainingAgendaEvents(42, 42);
+    await Promise.resolve();
+    expect(mocks.getEvents).toHaveBeenCalledTimes(1);
+
+    vi.resetModules();
+    const secondRuntime = await import('../../src/services/training-agenda-reconciliation');
+    await secondRuntime.reconcileOrphanedTrainingAgendaEvents(42, 42);
+
+    releaseFirstScan([]);
+    await firstRun;
+    expect(mocks.getEvents).toHaveBeenCalledTimes(1);
+  });
+
+  // Stronger guarantee: a foreign tenant's active plan cannot protect a stale
+  // marker in the current tenant's calendar from reconciliation.
+  it('does not treat an active plan from another tenant as marker ownership', async () => {
+    mocks.getEvents.mockResolvedValue([
+      legacyTrainingMarkerEvent('foreign-tenant-plan-marker'),
+    ]);
+    mocks.getPlanById.mockReturnValue({
+      id: 43,
+      user_id: 42,
+      tenant_id: 999,
+      status: 'active',
+    });
+
+    const result = await reconcileOrphanedTrainingAgendaEvents(42, 42);
+
+    expect(result).toEqual({ attempted: 1, deleted: 1, failed: 0 });
+    expect(mocks.deleteEvent).toHaveBeenCalledWith(
+      'foreign-tenant-plan-marker',
+      'google',
+      42,
+    );
   });
 });

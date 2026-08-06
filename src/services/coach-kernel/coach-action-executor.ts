@@ -26,8 +26,10 @@
  */
 
 import type Database from 'better-sqlite3';
+import { DateTime } from 'luxon';
 
 import { logger } from '../../utils/logger';
+import { computeTrainingSessionShapeHash } from '../training-session-identity';
 import type { CoachAction } from './scenario-classifier';
 import {
   actionableStatusesSqlList,
@@ -68,17 +70,22 @@ export interface ExecuteCoachActionsInput {
   /** Plan id the actions apply to. The executor verifies plan_id on each session mutation. */
   planId: number;
   actions: readonly CoachAction[];
+  /** IANA timezone used to preserve local wall-clock time during moves. */
+  schedulingTimezone?: string;
 }
 
 export interface ExecuteCoachActionsResult {
   /** Total rows mutated across `training_sessions` + `fitness_training_plans`. */
   mutatedRows: number;
+  /** Exact, de-duplicated session ids that require durable reconciliation. */
+  affectedSessionIds: number[];
   /** Per-action breakdown — useful for the ledger after_patch_json. */
   perActionResults: Array<{
     action: CoachAction;
     mutatedRows: number;
     skipped: boolean;
     skipReason?: string;
+    affectedSessionIds?: number[];
   }>;
 }
 
@@ -102,21 +109,24 @@ export function executeCoachActions(
   input: ExecuteCoachActionsInput,
 ): ExecuteCoachActionsResult {
   let mutatedRows = 0;
+  const affectedSessionIds = new Set<number>();
   const perActionResults: ExecuteCoachActionsResult['perActionResults'] = [];
 
   for (const action of input.actions) {
-    const r = executeOne(db, input.planId, action);
+    const r = executeOne(db, input.planId, action, input.schedulingTimezone ?? 'UTC');
     mutatedRows += r.mutatedRows;
+    for (const sessionId of r.affectedSessionIds ?? []) affectedSessionIds.add(sessionId);
     perActionResults.push(r);
   }
 
-  return { mutatedRows, perActionResults };
+  return { mutatedRows, affectedSessionIds: [...affectedSessionIds], perActionResults };
 }
 
 function executeOne(
   db: Database.Database,
   planId: number,
   action: CoachAction,
+  schedulingTimezone: string,
 ): ExecuteCoachActionsResult['perActionResults'][number] {
   switch (action.type) {
     case 'drop_session': {
@@ -125,30 +135,61 @@ function executeOne(
       // R3 P1 fix — never rewrite completed/skipped/moved history.
       const r = db.prepare(`
         UPDATE training_sessions
-        SET status = 'skipped', updated_at = datetime('now')
+        SET status = 'skipped', schedule_status = 'dropped',
+            schedule_reason_code = ?, updated_at = datetime('now')
         WHERE id = ? AND plan_id = ?
           AND status IN (${ACTIONABLE_SQL_LIST})
-      `).run(id, planId);
+      `).run(action.reasonCode, id, planId);
       if (r.changes === 0) return skip(action, 'session_not_actionable');
-      return { action, mutatedRows: r.changes, skipped: false };
+      return { action, mutatedRows: r.changes, skipped: false, affectedSessionIds: [id] };
     }
     case 'move_session': {
       const id = parseSessionId(action.sessionId);
       if (id === null) return skip(action, 'invalid_session_id');
-      // toDate is an ISO date; map it to the day-of-week name for the
-      // existing schema (training_sessions.day_of_week is a string).
-      const dt = Date.parse(action.toDate);
-      if (!Number.isFinite(dt)) return skip(action, 'invalid_to_date');
-      const dayIdx = new Date(dt).getUTCDay(); // 0=Sun..6=Sat
-      const dayName = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][dayIdx];
+      const targetDate = parseStrictTargetDate(action.toDate, schedulingTimezone);
+      if (!targetDate) return skip(action, 'invalid_to_date');
+      const row = loadSessionShapeRow(db, id, planId);
+      if (!row) return skip(action, 'session_not_found_or_foreign');
+      if (!isActionableSessionStatus(row.status)) return skip(action, 'session_not_actionable');
+      const existingStart = DateTime.fromISO(String(row.scheduled_start_at || ''), { setZone: true });
+      const existingEnd = DateTime.fromISO(String(row.scheduled_end_at || ''), { setZone: true });
+      if (!existingStart.isValid
+          || !existingEnd.isValid
+          || existingEnd.toMillis() <= existingStart.toMillis()) {
+        return skip(action, 'missing_schedule_window');
+      }
+      const localStart = existingStart.setZone(schedulingTimezone);
+      const movedStart = targetDate.set({
+        hour: localStart.hour,
+        minute: localStart.minute,
+        second: localStart.second,
+        millisecond: localStart.millisecond,
+      });
+      if (!movedStart.isValid) return skip(action, 'invalid_target_local_time');
+      const movedEnd = movedStart.plus({ milliseconds: existingEnd.toMillis() - existingStart.toMillis() });
+      const dayName = movedStart.setLocale('en-US').toFormat('cccc');
+      const nextShape = computeSessionShapeHash(row, {
+        durationMinutes: row.duration_minutes,
+        intensityText: row.intensity_text,
+      });
       const r = db.prepare(`
         UPDATE training_sessions
-        SET day_of_week = ?, status = 'moved', updated_at = datetime('now')
+        SET day_of_week = ?, status = 'reflowed', schedule_status = 'reflowed',
+            schedule_reason_code = ?, scheduled_start_at = ?, scheduled_end_at = ?,
+            session_shape_hash = ?, updated_at = datetime('now')
         WHERE id = ? AND plan_id = ?
           AND status IN (${ACTIONABLE_SQL_LIST})
-      `).run(normalizeDay(dayName), id, planId);
+      `).run(
+        normalizeDay(dayName),
+        action.reasonCode,
+        movedStart.toUTC().toISO(),
+        movedEnd.toUTC().toISO(),
+        nextShape,
+        id,
+        planId,
+      );
       if (r.changes === 0) return skip(action, 'session_not_actionable');
-      return { action, mutatedRows: r.changes, skipped: false };
+      return { action, mutatedRows: r.changes, skipped: false, affectedSessionIds: [id] };
     }
     case 'scale_volume': {
       const id = parseSessionId(action.sessionId);
@@ -156,9 +197,7 @@ function executeOne(
       if (!Number.isFinite(action.multiplier) || action.multiplier <= 0) {
         return skip(action, 'invalid_multiplier');
       }
-      const row = db.prepare(
-        'SELECT duration_minutes, status FROM training_sessions WHERE id = ? AND plan_id = ?',
-      ).get(id, planId) as { duration_minutes: number | null; status: string } | undefined;
+      const row = loadSessionShapeRow(db, id, planId);
       if (!row) return skip(action, 'session_not_found_or_foreign');
       if (!isActionableSessionStatus(row.status)) {
         // R5 P2 fix — flip the in-memory check to the actionable
@@ -169,36 +208,60 @@ function executeOne(
       }
       const original = row.duration_minutes ?? 0;
       const scaled = Math.max(1, Math.round(original * action.multiplier));
+      const startMs = Date.parse(String(row.scheduled_start_at || ''));
+      const scaledEnd = Number.isFinite(startMs)
+        ? new Date(startMs + scaled * 60_000).toISOString()
+        : row.scheduled_end_at;
+      const nextShape = computeSessionShapeHash(row, { durationMinutes: scaled });
       const r = db.prepare(`
         UPDATE training_sessions
-        SET duration_minutes = ?, updated_at = datetime('now')
+        SET duration_minutes = ?, scheduled_end_at = ?, schedule_reason_code = ?,
+            session_shape_hash = ?, updated_at = datetime('now')
         WHERE id = ? AND plan_id = ?
           AND status IN (${ACTIONABLE_SQL_LIST})
-      `).run(scaled, id, planId);
+      `).run(scaled, scaledEnd, action.reasonCode, nextShape, id, planId);
       if (r.changes === 0) return skip(action, 'session_not_actionable');
-      return { action, mutatedRows: r.changes, skipped: false };
+      return { action, mutatedRows: r.changes, skipped: false, affectedSessionIds: [id] };
     }
     case 'downgrade_intensity': {
       const id = parseSessionId(action.sessionId);
       if (id === null) return skip(action, 'invalid_session_id');
       const newText = `cap@${action.targetCeiling}`;
+      const row = loadSessionShapeRow(db, id, planId);
+      if (!row) return skip(action, 'session_not_found_or_foreign');
+      if (!isActionableSessionStatus(row.status)) return skip(action, 'session_not_actionable');
+      const nextShape = computeSessionShapeHash(row, { intensityText: newText });
       const r = db.prepare(`
         UPDATE training_sessions
-        SET intensity_text = ?, updated_at = datetime('now')
+        SET intensity_text = ?, schedule_reason_code = ?, session_shape_hash = ?,
+            updated_at = datetime('now')
         WHERE id = ? AND plan_id = ?
           AND status IN (${ACTIONABLE_SQL_LIST})
-      `).run(newText, id, planId);
+      `).run(newText, action.reasonCode, nextShape, id, planId);
       if (r.changes === 0) return skip(action, 'session_not_actionable');
-      return { action, mutatedRows: r.changes, skipped: false };
+      return { action, mutatedRows: r.changes, skipped: false, affectedSessionIds: [id] };
     }
     case 'pause_training': {
       // Plan-scoped action.
+      const affected = (db.prepare(`
+        SELECT id FROM training_sessions
+        WHERE plan_id = ?
+          AND status IN (${ACTIONABLE_SQL_LIST})
+        ORDER BY id ASC
+      `).all(planId) as Array<{ id: number }>).map((row) => row.id);
       const r = db.prepare(`
         UPDATE fitness_training_plans
         SET status = 'paused', updated_at = datetime('now')
         WHERE id = ?
       `).run(planId);
-      return { action, mutatedRows: r.changes, skipped: false };
+      if (r.changes > 0 && affected.length > 0) {
+        db.prepare(`
+          UPDATE training_sessions
+          SET schedule_status = 'dropped', schedule_reason_code = ?, updated_at = datetime('now')
+          WHERE plan_id = ? AND id IN (${affected.map(() => '?').join(', ')})
+        `).run(action.reasonCode, planId, ...affected);
+      }
+      return { action, mutatedRows: r.changes, skipped: false, affectedSessionIds: affected };
     }
     case 'swap_exercise':
       return skip(action, 'exercises_json_mutation_deferred');
@@ -211,6 +274,52 @@ function executeOne(
       return skip({ type: 'pause_training', reasonCode: 'unknown', severity: 'pause' } as CoachAction, 'unknown_action_type');
     }
   }
+}
+
+interface SessionShapeRow {
+  id: number;
+  status: string;
+  session_type: string;
+  title: string;
+  description: string | null;
+  exercises_json: string | null;
+  duration_minutes: number | null;
+  intensity_text: string | null;
+  scheduled_start_at: string | null;
+  scheduled_end_at: string | null;
+}
+
+function loadSessionShapeRow(
+  db: Database.Database,
+  sessionId: number,
+  planId: number,
+): SessionShapeRow | undefined {
+  return db.prepare(`
+    SELECT id, status, session_type, title, description, exercises_json,
+           duration_minutes, intensity_text, scheduled_start_at, scheduled_end_at
+    FROM training_sessions WHERE id = ? AND plan_id = ?
+  `).get(sessionId, planId) as SessionShapeRow | undefined;
+}
+
+function computeSessionShapeHash(
+  row: SessionShapeRow,
+  overrides: { durationMinutes?: number | null; intensityText?: string | null },
+): string {
+  return computeTrainingSessionShapeHash({
+    sessionType: row.session_type,
+    title: row.title,
+    durationMinutes: overrides.durationMinutes ?? row.duration_minutes,
+    intensityText: overrides.intensityText ?? row.intensity_text,
+    exercises: row.exercises_json,
+    descriptionSections: row.description,
+  });
+}
+
+function parseStrictTargetDate(value: string, timezone: string): DateTime | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const parsed = DateTime.fromISO(value, { zone: timezone });
+  if (!parsed.isValid || parsed.toISODate() !== value) return null;
+  return parsed.startOf('day');
 }
 
 function skip(action: CoachAction, reason: string): ExecuteCoachActionsResult['perActionResults'][number] {

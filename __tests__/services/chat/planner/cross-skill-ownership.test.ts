@@ -124,7 +124,7 @@ describe('applyCrossSkillOwnershipToSteps', () => {
     const step = makeStep({
       skill: 'training',
       action: 'training_plan_create',
-      args: { sport: null, goal: null, durationWeeks: null, startDate: null, weeklyVolumeKm: null },
+      args: { objective: null, durationWeeks: null, sessionsPerWeek: null, startPolicy: null },
       requiredArgsPresent: false,
     });
     const { steps, rewrites } = applyCrossSkillOwnershipToSteps([step], 'put the workout on my calendar', INPUT);

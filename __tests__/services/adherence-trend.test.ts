@@ -68,6 +68,47 @@ function seedSessions(opts: {
 }
 
 describe('computeAdherenceTrend', () => {
+  it('does not count explicit partial or skipped feedback rows as completed adherence', () => {
+    testDb.prepare(`
+      INSERT INTO fitness_training_plans
+        (id, user_id, tenant_id, name, sport, duration_weeks, start_date, end_date, status)
+      VALUES (9, 900, 900, 'F18 adherence', 'running', 4, '2026-05-04', '2026-06-01', 'active')
+    `).run();
+    testDb.prepare('INSERT INTO training_weeks (id, plan_id, week_number) VALUES (901, 9, 2)').run();
+
+    const dispositions = [
+      { id: 9001, day: 'monday', status: 'partial' },
+      { id: 9002, day: 'tuesday', status: 'skipped' },
+      { id: 9003, day: 'wednesday', status: 'completed' },
+      { id: 9004, day: 'thursday', status: 'pending' },
+    ] as const;
+    for (const disposition of dispositions) {
+      testDb.prepare(`
+        INSERT INTO training_sessions
+          (id, week_id, plan_id, day_of_week, session_type, title, duration_minutes, status)
+        VALUES (?, 901, 9, ?, 'easy_run', 'x', 45, ?)
+      `).run(disposition.id, disposition.day, disposition.status);
+    }
+    for (const disposition of dispositions.slice(0, 3)) {
+      testDb.prepare(`
+        INSERT INTO training_completions
+          (session_id, plan_id, completion_state, duration_minutes)
+        VALUES (?, 9, ?, 30)
+      `).run(disposition.id, disposition.status);
+    }
+
+    const result = computeAdherenceTrend(900, 900, '2026-05-17T23:59:00Z', 0.70);
+
+    // Stronger F18 guarantee: a feedback row proves an action was recorded,
+    // while adherence credit follows the repository contract: completed=1,
+    // explicit partial=0.5, skipped=0.
+    expect(result.currentWeek).toMatchObject({
+      scheduled: 4,
+      completed: 1.5,
+      fraction: 0.375,
+    });
+  });
+
   it('trendLow=true when both weeks <0.70', () => {
     // 4 sessions/week × 2 weeks = 8 scheduled; 2 completed per week (50%).
     seedSessions({

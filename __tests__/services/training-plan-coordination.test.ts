@@ -5,6 +5,11 @@ import {
   buildTrainingPlanCoordination,
   type CoordinatedTrainingPlan,
 } from '../../src/services/training-plan-coordination';
+import {
+  enforceFinalTrainingPlanTwoADayCap,
+  enforceRequestedTrainingPlanVolume,
+} from '../../src/services/training-plan-volume-enforcement';
+import { buildCoachKernelTrainingPlan } from '../../src/services/training-coach-kernel-plan-generator';
 
 describe('training-plan-coordination', () => {
   it('derives real coach guardrails from cross-skill context', () => {
@@ -82,6 +87,414 @@ describe('training-plan-coordination', () => {
     expect(coordination.promptBlock).toContain('Treat supplements as pause_new');
     expect(coordination.promptBlock).toContain('Avoid back-to-back impact-heavy run days');
     expect(coordination.promptBlock).toContain('Keep lower-body strength at least one easier day away');
+  });
+
+  it('turns the active plan latest compressed Secretary decision into concrete plan guardrails', () => {
+    const coordination = buildTrainingPlanCoordination({
+      sessionsPerWeek: 6,
+      strengthSessionsPerWeek: 3,
+      longWorkoutDay: 'saturday',
+      fitnessProfile: {
+        experience_level: 'Advanced (3+ years)',
+      },
+      training: {
+        secretaryFeedback: {
+          planId: 1,
+          feedbackType: 'compressed_session',
+          status: 'compressed',
+          reasonCodes: ['compressed_to_fit_capacity', 'duration_reduced'],
+          shouldRefreshSource: true,
+          hints: ['recovery_debt', 'adapt_workload_to_capacity'],
+          scheduledDurationMinutes: 30,
+        },
+        derivedSignals: [],
+      } as any,
+      cooking: null,
+      finance: null,
+      content: null,
+      secretary: null,
+      sharedDecisionContext: '',
+    });
+
+    expect(coordination.conservativeFirstWeek).toBe(true);
+    expect(coordination.modularSessionBias).toBe(true);
+    expect(coordination.weeklySessionTarget).toBe(5);
+    expect(coordination.maxHardSessionsPerWeek).toBe(2);
+    expect(coordination.firstWeekIntensityReductionPct).toBe(4);
+    expect(coordination.promptBlock).toContain('Secretary reports that at least one plan session was compressed');
+    expect(coordination.promptBlock).toContain('conservative capacity signal');
+    expect(coordination.promptBlock).toContain('Cap truly hard sessions at 2 per week');
+  });
+
+  it('never lets Secretary-triggered strength coverage exceed the final weekly session cap', () => {
+    const coordination = buildTrainingPlanCoordination({
+      sessionsPerWeek: 7,
+      strengthSessionsPerWeek: 6,
+      longWorkoutDay: 'saturday',
+      fitnessProfile: { experience_level: 'Advanced (3+ years)' },
+      training: {
+        secretaryFeedback: {
+          planId: 1,
+          feedbackType: 'compressed_session',
+          status: 'compressed',
+          reasonCodes: ['compressed_to_fit_capacity'],
+          shouldRefreshSource: true,
+          hints: ['adapt_workload_to_capacity'],
+          scheduledDurationMinutes: 30,
+        },
+        derivedSignals: [],
+      } as any,
+      cooking: null,
+      finance: null,
+      content: null,
+      secretary: null,
+      sharedDecisionContext: '',
+    });
+    const plan: CoordinatedTrainingPlan = {
+      sport: 'strength',
+      weeks: [{
+        weekNumber: 1,
+        sessions: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
+          .map((dayOfWeek, index) => ({
+            dayOfWeek,
+            sessionType: index < 6 ? 'gym' : 'run',
+            title: index < 6 ? `Strength ${index + 1}` : 'Easy Run',
+            durationMinutes: 45,
+            description: 'Planned work.',
+            exercises: [],
+          })),
+      }],
+    };
+
+    const result = applyTrainingPlanCoordination(plan, coordination);
+    const activeSessions = result.weeks?.[0]?.sessions?.filter((session) => session.sessionType !== 'rest') ?? [];
+    const activeDays = new Set(activeSessions.map((session) => session.dayOfWeek.toLowerCase()));
+
+    expect(coordination.weeklySessionTarget).toBe(5);
+    expect(coordination.strengthSessionTarget).toBeLessThanOrEqual(coordination.weeklySessionTarget);
+    // Stronger guarantee: Secretary caps active DAYS. Physical rows can stay
+    // doubled and are governed later by the explicit two-a-day contract.
+    expect(activeDays.size).toBeLessThanOrEqual(coordination.weeklySessionTarget);
+  });
+
+  it('treats the coordination weekly target as distinct days, not physical two-a-day rows', () => {
+    const coordination = buildTrainingPlanCoordination({
+      sessionsPerWeek: 5,
+      strengthSessionsPerWeek: 5,
+      fitnessProfile: { experience_level: 'Advanced (3+ years)' },
+      gymProfile: { training_age: '5+ years' },
+      training: null,
+      cooking: null,
+      finance: null,
+      content: null,
+      secretary: null,
+      sharedDecisionContext: '',
+    });
+    const trainingDays = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'];
+    const plan: CoordinatedTrainingPlan = {
+      sport: 'hybrid',
+      weeks: [{
+        weekNumber: 1,
+        sessions: trainingDays.flatMap((dayOfWeek, index) => ([
+          {
+            dayOfWeek,
+            sessionType: 'run',
+            title: `Easy Run ${index + 1}`,
+            durationMinutes: 35,
+          },
+          {
+            dayOfWeek,
+            sessionType: 'gym',
+            title: `Strength ${index + 1}`,
+            durationMinutes: 40,
+          },
+        ])),
+      }],
+    };
+
+    const result = applyTrainingPlanCoordination(plan, coordination);
+    const active = result.weeks?.[0]?.sessions?.filter((session) => session.sessionType !== 'rest') ?? [];
+    const distinctDays = new Set(active.map((session) => session.dayOfWeek.toLowerCase()));
+    let longestStreak = 0;
+    let currentStreak = 0;
+    for (const day of ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']) {
+      currentStreak = distinctDays.has(day) ? currentStreak + 1 : 0;
+      longestStreak = Math.max(longestStreak, currentStreak);
+    }
+
+    // Stronger guarantee: the five-day cap must not collapse five legal
+    // run+strength doubles into five physical rows.
+    expect(active).toHaveLength(10);
+    expect(distinctDays.size).toBe(5);
+    expect(longestStreak).toBeLessThanOrEqual(coordination.maxConsecutiveActiveDays);
+  });
+
+  it('preserves an explicit triathlon modality mix under a Cooking nutrition advisory', () => {
+    const coordination = buildTrainingPlanCoordination({
+      sessionsPerWeek: 6,
+      strengthSessionsPerWeek: 1,
+      longWorkoutDay: 'saturday',
+      fitnessProfile: { experience_level: 'Advanced (3+ years)' },
+      gymProfile: { training_age: '5 years' },
+      runProfile: null,
+      training: null,
+      cooking: {
+        derivedSignals: [{
+          signalType: 'meal_execution_readiness',
+          payload: { status: 'at_risk' },
+        }],
+      } as any,
+      finance: null,
+      content: null,
+      secretary: null,
+      sharedDecisionContext: '',
+    });
+    const plan: CoordinatedTrainingPlan = {
+      sport: 'triathlon',
+      weeks: [{
+        weekNumber: 1,
+        sessions: [
+          { dayOfWeek: 'Monday', sessionType: 'run', title: 'Brick Run', durationMinutes: 20 },
+          {
+            dayOfWeek: 'Tuesday',
+            sessionType: 'gym',
+            sessionRole: 'strength_maintenance',
+            title: 'Strength Maintenance + Core',
+            durationMinutes: 35,
+            exercises: [{ name: 'Goblet Squat' }, { name: 'One-Arm Row' }, { name: 'Dead Bug' }],
+          },
+          { dayOfWeek: 'Wednesday', sessionType: 'run', title: 'Tempo Progression Run', durationMinutes: 45 },
+          { dayOfWeek: 'Thursday', sessionType: 'swim', title: 'Threshold Swim', durationMinutes: 45 },
+          { dayOfWeek: 'Friday', sessionType: 'ride', title: 'Endurance Ride', durationMinutes: 45 },
+          { dayOfWeek: 'Saturday', sessionType: 'run', title: 'Long Run', durationMinutes: 45 },
+          { dayOfWeek: 'Sunday', sessionType: 'swim', title: 'Technique Swim', durationMinutes: 45 },
+        ],
+      }],
+    };
+
+    const result = applyTrainingPlanCoordination(plan, coordination);
+    const active = result.weeks?.[0]?.sessions?.filter((session) =>
+      session.sessionType !== 'rest' && session.sessionType !== 'mobility'
+    ) ?? [];
+    const count = (type: string) => active.filter((session) => session.sessionType === type).length;
+    const activeDays = [...new Set(active.map((session) => session.dayOfWeek.toLowerCase()))]
+      .sort((left, right) => [
+        'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday',
+      ].indexOf(left) - [
+        'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday',
+      ].indexOf(right));
+    let longestStreak = 0;
+    let streak = 0;
+    for (const day of ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']) {
+      streak = activeDays.includes(day) ? streak + 1 : 0;
+      longestStreak = Math.max(longestStreak, streak);
+    }
+
+    expect(coordination.weeklySessionTarget).toBe(6);
+    // Coordination owns distinct active days and recovery spacing. It keeps
+    // all seven authored rows after reflow; the explicit-volume authority
+    // below removes the additive Brick row from the six-session request.
+    expect(active).toHaveLength(7);
+    expect({ run: count('run'), ride: count('ride'), swim: count('swim'), gym: count('gym') })
+      .toEqual({ run: 3, ride: 1, swim: 2, gym: 1 });
+    expect(active.some((session) => session.title === 'Brick Run')).toBe(true);
+    expect(longestStreak).toBeLessThanOrEqual(coordination.maxConsecutiveActiveDays);
+
+    const volumeEnforced = enforceRequestedTrainingPlanVolume(result, {
+      sessionsPerWeek: 6,
+      runSessionsPerWeek: 2,
+      bikeSessionsPerWeek: 1,
+      swimSessionsPerWeek: 2,
+      strengthSessionsPerWeek: 1,
+      preferredCardioTime: '07:00',
+      preferredStrengthTime: '18:00',
+      startDate: '2026-05-25',
+      longWorkoutDay: 'Saturday',
+      twoADayPreference: 'never',
+    });
+    const enforcedActive = volumeEnforced.weeks?.[0]?.sessions?.filter((session) =>
+      session.sessionType !== 'rest' && session.sessionType !== 'mobility'
+    ) ?? [];
+    expect(enforcedActive.map((session) => session.sessionType).sort())
+      .toEqual(['gym', 'ride', 'run', 'run', 'swim', 'swim']);
+    expect(volumeEnforced.volumeShortfalls ?? []).toEqual([]);
+  });
+
+  it('keeps a beginner recovery swim as swim while breaking a five-day active streak', () => {
+    const coordination = buildTrainingPlanCoordination({
+      sessionsPerWeek: 5,
+      strengthSessionsPerWeek: 1,
+      longWorkoutDay: 'saturday',
+      fitnessProfile: { experience_level: 'Beginner' },
+      gymProfile: null,
+      runProfile: null,
+      training: null,
+      cooking: null,
+      finance: null,
+      content: null,
+      secretary: null,
+      sharedDecisionContext: '',
+    });
+    const plan: CoordinatedTrainingPlan = {
+      sport: 'triathlon',
+      weeks: [{
+        weekNumber: 1,
+        sessions: [
+          {
+            dayOfWeek: 'Thursday',
+            sessionType: 'gym',
+            sessionRole: 'strength_maintenance',
+            title: 'Strength Maintenance + Core',
+            durationMinutes: 35,
+          },
+          { dayOfWeek: 'Wednesday', sessionType: 'swim', title: 'Threshold Swim', durationMinutes: 45 },
+          { dayOfWeek: 'Friday', sessionType: 'ride', title: 'Endurance Ride', durationMinutes: 45 },
+          { dayOfWeek: 'Saturday', sessionType: 'run', title: 'Long Run', durationMinutes: 45 },
+          { dayOfWeek: 'Sunday', sessionType: 'swim', title: 'Technique Swim', durationMinutes: 45 },
+        ],
+      }],
+    };
+
+    const coordinated = applyTrainingPlanCoordination(plan, coordination);
+    const volumeEnforced = enforceRequestedTrainingPlanVolume(coordinated, {
+      sessionsPerWeek: 5,
+      runSessionsPerWeek: 1,
+      bikeSessionsPerWeek: 1,
+      swimSessionsPerWeek: 2,
+      strengthSessionsPerWeek: 1,
+      preferredCardioTime: '07:00',
+      preferredStrengthTime: '18:00',
+      startDate: '2026-05-25',
+      longWorkoutDay: 'Saturday',
+      twoADayPreference: 'never',
+    });
+    const active = volumeEnforced.weeks?.[0]?.sessions?.filter((session) =>
+      session.sessionType !== 'rest' && session.sessionType !== 'mobility'
+    ) ?? [];
+
+    expect(active.map((session) => session.sessionType).sort())
+      .toEqual(['gym', 'ride', 'run', 'swim', 'swim']);
+    expect(volumeEnforced.volumeShortfalls ?? []).toEqual([]);
+  });
+
+  it('preserves the exact six-session triathlon request through kernel coordination and volume', () => {
+    const fitnessProfile = {
+      experience_level: 'Advanced (3+ years)',
+      weekly_frequency: '6+ days',
+      injuries: 'none',
+      available_equipment: 'Full gym',
+    };
+    const gymProfile = {
+      training_age: '5+ years',
+      primary_goal: 'Support other sports',
+      equipment_access: 'Full commercial gym',
+    };
+    const enduranceProfile = {
+      weekly_mileage_km: '32',
+      longest_recent_run_km: '14',
+      easy_pace_min_per_km: '5:45',
+      injury_history: 'none',
+      ftp_watts: '245',
+      cycling_weekly_hours: '3-6 hours',
+      pool_access: '25m indoor',
+      swim_pool_access: '25m indoor',
+      swim_sessions_per_week: '2',
+    };
+    const request = {
+      sessionsPerWeek: 6,
+      runSessionsPerWeek: 2,
+      bikeSessionsPerWeek: 1,
+      swimSessionsPerWeek: 2,
+      strengthSessionsPerWeek: 1,
+      preferredCardioTime: '07:00',
+      preferredStrengthTime: '18:00',
+      startDate: '2026-05-25',
+      longWorkoutDay: 'Saturday',
+      twoADayPreference: 'never',
+    } as const;
+    const kernelPlan = buildCoachKernelTrainingPlan({
+      userId: 12,
+      tenantId: 12,
+      objective: 'Triathlon discipline balance',
+      durationWeeks: 1,
+      startDate: request.startDate,
+      sessionsPerWeek: request.sessionsPerWeek,
+      runSessionsPerWeek: request.runSessionsPerWeek,
+      bikeSessionsPerWeek: request.bikeSessionsPerWeek,
+      swimSessionsPerWeek: request.swimSessionsPerWeek,
+      strengthSessionsPerWeek: request.strengthSessionsPerWeek,
+      preferredTime: '07:00',
+      preferredCardioTime: request.preferredCardioTime,
+      preferredStrengthTime: request.preferredStrengthTime,
+      longWorkoutDay: request.longWorkoutDay,
+      notes: null,
+      goalMode: 'continuous',
+      trainingPriority: 'triathlon',
+      fitnessProfile,
+      gymProfile,
+      runProfile: enduranceProfile,
+      currentReadiness: null,
+      twoADayPreference: request.twoADayPreference,
+    });
+    const coordination = buildTrainingPlanCoordination({
+      sessionsPerWeek: request.sessionsPerWeek,
+      strengthSessionsPerWeek: request.strengthSessionsPerWeek,
+      longWorkoutDay: request.longWorkoutDay,
+      fitnessProfile,
+      gymProfile,
+      runProfile: enduranceProfile,
+      training: null,
+      cooking: null,
+      finance: null,
+      content: null,
+      secretary: null,
+      sharedDecisionContext: '',
+    });
+    const coordinated = applyTrainingPlanCoordination(kernelPlan, coordination);
+    const enforced = enforceRequestedTrainingPlanVolume(coordinated, request);
+    const finalCapped = enforceFinalTrainingPlanTwoADayCap(enforced, request);
+    const active = finalCapped.weeks?.[0]?.sessions?.filter((session) =>
+      session.sessionType !== 'rest'
+      && session.sessionType !== 'mobility'
+      && !['deferred', 'unscheduled', 'dropped'].includes(String(session.scheduleState ?? ''))
+    ) ?? [];
+
+    expect(active.map((session) => session.sessionType).sort(), JSON.stringify({
+      kernel: kernelPlan.weeks?.[0]?.sessions,
+      coordinated: coordinated.weeks?.[0]?.sessions,
+      enforced: enforced.weeks?.[0]?.sessions,
+      finalCapped: finalCapped.weeks?.[0]?.sessions,
+      shortfalls: finalCapped.volumeShortfalls,
+    })).toEqual(['gym', 'ride', 'run', 'run', 'swim', 'swim']);
+    expect(finalCapped.volumeShortfalls ?? []).toEqual([]);
+  });
+
+  it('does not tell the model to recover a reflow time or session identity omitted by the privacy projection', () => {
+    const coordination = buildTrainingPlanCoordination({
+      sessionsPerWeek: 5,
+      strengthSessionsPerWeek: 2,
+      training: {
+        secretaryFeedback: {
+          planId: 1,
+          feedbackType: 'reflowed_session',
+          status: 'reflowed',
+          reasonCodes: ['reflowed_to_available_window'],
+          shouldRefreshSource: true,
+          hints: ['refresh_user_facing_time_copy'],
+          scheduledDurationMinutes: 45,
+        },
+        derivedSignals: [],
+      } as any,
+      cooking: null,
+      finance: null,
+      content: null,
+      secretary: null,
+      sharedDecisionContext: '',
+    });
+
+    expect(coordination.promptBlock).toContain('treat Secretary-owned calendar placement as authoritative');
+    expect(coordination.promptBlock).toContain('do not infer or restate its exact time');
+    expect(coordination.promptBlock).not.toContain('use the latest scheduled placement');
   });
 
   it('applies coordination rules to fallback-style plans', () => {

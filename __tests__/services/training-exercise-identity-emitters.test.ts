@@ -134,6 +134,50 @@ describe('training exercise identity emitter closure', () => {
       .toEqual([{ name: 'Banded Push-Up', sets: 3, reps: 8 }]);
   });
 
+  it('never keeps a stale exercise id after bodyweight substitution changes the movement', () => {
+    const plan: CoordinatedTrainingPlan = {
+      weeks: [{
+        weekNumber: 1,
+        sessions: [{
+          dayOfWeek: 'monday',
+          sessionType: 'gym',
+          title: 'Travel strength',
+          durationMinutes: 35,
+          exercises: [{ exerciseId: 'band_row', name: 'Band Row', sets: 3, reps: 12 }],
+        }],
+      }],
+    };
+    const adapt = (mode: 'off' | 'shadow' | 'active') => adaptTrainingPlanToAvailableEquipment(
+      plan,
+      buildTrainingEquipmentAdaptation({
+        gymProfile: { equipment_access: 'Bodyweight only' },
+        env: { TRAINING_EXERCISE_IDENTITY_V1_MODE: mode },
+      }),
+    ).weeks?.[0].sessions?.[0].exercises?.[0] as Record<string, unknown>;
+
+    expect(adapt('off')).toMatchObject({
+      name: 'Prone Snow Angel',
+      sets: 3,
+      reps: 12,
+      equipment: ['bodyweight'],
+    });
+    expect(adapt('off')).not.toHaveProperty('exerciseId');
+    expect(adapt('shadow')).toMatchObject({
+      name: 'Prone Snow Angel',
+      sets: 3,
+      reps: 12,
+      equipment: ['bodyweight'],
+    });
+    expect(adapt('shadow')).not.toHaveProperty('exerciseId');
+    expect(adapt('active')).toMatchObject({
+      exerciseId: 'prone_lat_pulldown',
+      name: 'Prone Lat Pulldown',
+      sets: 3,
+      reps: 12,
+      equipment: ['bodyweight'],
+    });
+  });
+
   it('emits stable IDs for reviewed equipment substitutions and never persists dynamic Banded names', () => {
     const plan: CoordinatedTrainingPlan = {
       weeks: [{

@@ -513,27 +513,197 @@ describe('readiness-scorer — calculateReadiness', () => {
     expect(result.factors.bodyBattery.score).toBe(60);
   });
 
-  // ── Provenance: source + asOf (Training redesign Phase 0) ──
+  // ── Provenance: computation time vs source-data freshness (F32) ──
 
-  it('stamps source garmin and a compute-time asOf on the Garmin composite path', async () => {
-    mockGarmin.getHrvData.mockResolvedValue({ hrvSummary: { lastNightAvg: 55, weeklyAvg: 50 } });
-    mockGarmin.getSleepData.mockResolvedValue({ dailySleepDTO: { sleepTimeSeconds: 28800, overallSleepScore: 80 } });
-    mockGarmin.getBodyBatteryEvents.mockResolvedValue([{ bodyBatteryLevel: 70 }]);
+  it('separates Garmin computation time from source freshness and keeps asOf as a compatibility alias', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-20T12:00:00.000Z'));
+    try {
+      const oldestContributingTimestamp = '2026-04-16T08:45:00.000Z';
+      mockGarmin.getHrvData.mockResolvedValue({
+        hrvSummary: {
+          lastNightAvg: 55,
+          weeklyAvg: 50,
+          updated_at: oldestContributingTimestamp,
+        },
+      });
+      mockGarmin.getSleepData.mockResolvedValue({
+        dailySleepDTO: {
+          sleepTimeSeconds: 28800,
+          overallSleepScore: 80,
+          updated_at: '2026-04-19T08:45:00.000Z',
+        },
+      });
+      mockGarmin.getBodyBatteryEvents.mockResolvedValue([{
+        bodyBatteryLevel: 70,
+        measurementTimestampGMT: '2026-04-19T09:45:00.000Z',
+      }]);
+      mockGarmin.getDailySummary.mockResolvedValue(null);
+      mockGarmin.getTrainingReadiness.mockResolvedValue({});
+      mockGarmin.getActivitiesByDate.mockResolvedValue(
+        Array.from({ length: 14 }, (_, index) => ({
+          activityTrainingLoad: 40,
+          startTimeGMT: new Date(Date.now() - (index + 1) * 86_400_000).toISOString(),
+        })),
+      );
+
+      const result = await calculateReadiness(1);
+
+      expect(result.source).toBe('garmin');
+      expect(result.computedAt).toBe('2026-04-20T12:00:00.000Z');
+      expect(result.asOf).toBe(result.computedAt);
+      // A complete composite carries provider freshness independently from
+      // the calculation clock; it must never inherit computedAt implicitly.
+      expect(result.dataAsOf).toBe(oldestContributingTimestamp);
+      expect(result.dataAsOf).not.toBe(result.computedAt);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not let one fresh Garmin factor upgrade stale contributing signals', async () => {
+    // F32 stronger guarantee: the readiness score is composite. Its source
+    // freshness must therefore describe the oldest contributing factor, not
+    // the newest timestamp found anywhere in the provider payloads. This
+    // fixture supplies complete weighted-factor coverage; missing coverage is
+    // now a distinct null-provenance case pinned immediately below.
+    const staleHrvTimestamp = new Date(Date.now() - 4 * 86_400_000).toISOString();
+    const freshSleepTimestamp = new Date(Date.now() - 60 * 60_000).toISOString();
+    const freshBodyBatteryTimestamp = new Date(Date.now() - 30 * 60_000).toISOString();
+    mockGarmin.getHrvData.mockResolvedValue({
+      hrvSummary: {
+        lastNightAvg: 55,
+        weeklyAvg: 50,
+        updated_at: staleHrvTimestamp,
+      },
+    });
+    mockGarmin.getSleepData.mockResolvedValue({
+      dailySleepDTO: {
+        sleepTimeSeconds: 28800,
+        overallSleepScore: 80,
+        updated_at: freshSleepTimestamp,
+      },
+    });
+    mockGarmin.getBodyBatteryEvents.mockResolvedValue([{
+      bodyBatteryLevel: 70,
+      measurementTimestampGMT: freshBodyBatteryTimestamp,
+    }]);
+    mockGarmin.getDailySummary.mockResolvedValue(null);
+    mockGarmin.getTrainingReadiness.mockResolvedValue({});
+    mockGarmin.getActivitiesByDate.mockResolvedValue(
+      Array.from({ length: 14 }, (_, index) => ({
+        activityTrainingLoad: 40,
+        startTimeGMT: new Date(Date.now() - (index + 1) * 86_400_000).toISOString(),
+      })),
+    );
+
+    const result = await calculateReadiness(1);
+
+    expect(result.source).toBe('garmin');
+    expect(result.coverage).toBe(1);
+    expect(result.dataAsOf).toBe(staleHrvTimestamp);
+  });
+
+  it('does not claim composite freshness from fresh sleep when weighted placeholder factors still contribute', async () => {
+    // F32 coverage guarantee: the Garmin composite always weights all four
+    // factors. A timestamp on the only measured factor cannot make the
+    // placeholder HRV, Body Battery, and activity contributions look fresh.
+    mockGarmin.getHrvData.mockResolvedValue({});
+    mockGarmin.getSleepData.mockResolvedValue({
+      dailySleepDTO: {
+        sleepTimeSeconds: 28800,
+        overallSleepScore: 80,
+        updated_at: '2026-08-05T08:00:00.000Z',
+      },
+    });
+    mockGarmin.getBodyBatteryEvents.mockResolvedValue([]);
+    mockGarmin.getDailySummary.mockResolvedValue(null);
     mockGarmin.getTrainingReadiness.mockResolvedValue({});
     mockGarmin.getActivitiesByDate.mockResolvedValue([]);
 
-    const before = Date.now();
     const result = await calculateReadiness(1);
-    const after = Date.now();
 
     expect(result.source).toBe('garmin');
-    expect(typeof result.asOf).toBe('string');
-    const asOfMs = Date.parse(result.asOf!);
-    expect(asOfMs).toBeGreaterThanOrEqual(before);
-    expect(asOfMs).toBeLessThanOrEqual(after);
+    expect(result.factors.hrv.score).toBeGreaterThan(0);
+    expect(result.factors.bodyBattery.score).toBeGreaterThan(0);
+    expect(result.factors.trainingLoad.score).toBeGreaterThan(0);
+    expect(result.dataAsOf).toBeNull();
+    expect(result.coverage).toBe(0.3);
+    expect(result.asOf).toBe(result.computedAt);
   });
 
-  it('stamps source whoop on the WHOOP fallback path', async () => {
+  it('rejects a future timestamp even when all weighted Garmin factors have provider coverage', async () => {
+    const recent = (minutesAgo: number) => new Date(Date.now() - minutesAgo * 60_000).toISOString();
+    mockGarmin.getHrvData.mockResolvedValue({
+      hrvSummary: {
+        lastNightAvg: 55,
+        weeklyAvg: 50,
+        updated_at: new Date(Date.now() + 60 * 60_000).toISOString(),
+      },
+    });
+    mockGarmin.getSleepData.mockResolvedValue({
+      dailySleepDTO: { sleepTimeSeconds: 28800, overallSleepScore: 80, updated_at: recent(60) },
+    });
+    mockGarmin.getBodyBatteryEvents.mockResolvedValue([{
+      bodyBatteryLevel: 70,
+      measurementTimestampGMT: recent(30),
+    }]);
+    mockGarmin.getDailySummary.mockResolvedValue(null);
+    mockGarmin.getTrainingReadiness.mockResolvedValue({});
+    mockGarmin.getActivitiesByDate.mockResolvedValue(
+      Array.from({ length: 14 }, (_, index) => ({
+        activityTrainingLoad: 40,
+        startTimeGMT: new Date(Date.now() - (index + 1) * 86_400_000).toISOString(),
+      })),
+    );
+
+    const result = await calculateReadiness(1);
+
+    expect(result.coverage).toBe(1);
+    expect(result.dataAsOf).toBeNull();
+    expect(result.asOf).toBe(result.computedAt);
+  });
+
+  it('rejects a future wearable timestamp but accepts one exactly at the computation boundary', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-20T12:00:00.000Z'));
+    try {
+      clearGarminConnection(1);
+      const snapshot = (updatedAt: string) => ({
+        provider: 'whoop',
+        date: '2026-04-20',
+        readinessScore: 81,
+        hrvMs: 64,
+        restingHeartRate: 49,
+        bodyBattery: null,
+        recoveryScore: 81,
+        raw: { recovery: { updated_at: updatedAt } },
+      });
+      mockWearableService.getReadiness
+        .mockResolvedValueOnce(snapshot('2026-04-20T12:00:00.001Z'))
+        .mockResolvedValueOnce(snapshot('2026-04-20T12:00:00.000Z'))
+        .mockResolvedValueOnce(snapshot(undefined as unknown as string));
+
+      const future = await calculateReadiness(1);
+      expect(future.computedAt).toBe('2026-04-20T12:00:00.000Z');
+      expect(future.dataAsOf).toBeNull();
+      expect(future.asOf).toBe(future.computedAt);
+
+      const exactBoundary = await calculateReadiness(1);
+      expect(exactBoundary.computedAt).toBe('2026-04-20T12:00:00.000Z');
+      expect(exactBoundary.dataAsOf).toBe('2026-04-20T12:00:00.000Z');
+      expect(exactBoundary.asOf).toBe(exactBoundary.computedAt);
+
+      const missingProviderTimestamp = await calculateReadiness(1);
+      expect(missingProviderTimestamp.computedAt).toBe('2026-04-20T12:00:00.000Z');
+      expect(missingProviderTimestamp.dataAsOf).toBeNull();
+      expect(missingProviderTimestamp.asOf).toBe(missingProviderTimestamp.computedAt);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('uses the WHOOP record timestamp as dataAsOf without changing the legacy asOf alias', async () => {
     clearGarminConnection(1);
     mockWearableService.getReadiness.mockResolvedValue({
       provider: 'whoop',
@@ -543,12 +713,18 @@ describe('readiness-scorer — calculateReadiness', () => {
       restingHeartRate: 49,
       bodyBattery: null,
       recoveryScore: 81,
-      raw: {},
+      raw: {
+        recovery: {
+          updated_at: '2026-04-16T08:45:00.000Z',
+        },
+      },
     });
 
     const result = await calculateReadiness(1);
     expect(result.source).toBe('whoop');
-    expect(Number.isFinite(Date.parse(result.asOf ?? ''))).toBe(true);
+    expect(result.dataAsOf).toBe('2026-04-16T08:45:00.000Z');
+    expect(Number.isFinite(Date.parse(result.computedAt ?? ''))).toBe(true);
+    expect(result.asOf).toBe(result.computedAt);
   });
 
   it('accepts a non-WHOOP snapshot that carries a real score', async () => {
@@ -622,11 +798,16 @@ describe('readiness-scorer — calculateReadiness', () => {
   it('stamps source apple_health on the Apple Health derived path', async () => {
     clearGarminConnection(1);
     seedAppleHealthData(1);
+    testDb.prepare(
+      `UPDATE apple_health_data SET created_at = ? WHERE user_id = ?`,
+    ).run('2026-04-16T09:15:00.000Z', 1);
 
     const result = await calculateReadiness(1);
     expect(result.reasoning).toContain('Apple Health');
     expect(result.source).toBe('apple_health');
-    expect(Number.isFinite(Date.parse(result.asOf ?? ''))).toBe(true);
+    expect(result.dataAsOf).toBe('2026-04-16T09:15:00.000Z');
+    expect(Number.isFinite(Date.parse(result.computedAt ?? ''))).toBe(true);
+    expect(result.asOf).toBe(result.computedAt);
   });
 
   // A Garmin-only iOS user syncs sleep, RHR, steps and workouts to Apple
@@ -729,7 +910,9 @@ describe('readiness-scorer — calculateReadiness', () => {
     expect(result.score).toBe(60);
     expect(result.reasonCode).toBe('WEARABLE_INTEGRATION_MISSING');
     expect(result.source).toBe('estimated');
-    expect(Number.isFinite(Date.parse(result.asOf ?? ''))).toBe(true);
+    expect(result.dataAsOf).toBeNull();
+    expect(Number.isFinite(Date.parse(result.computedAt ?? ''))).toBe(true);
+    expect(result.asOf).toBe(result.computedAt);
   });
 });
 

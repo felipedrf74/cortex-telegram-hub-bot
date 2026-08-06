@@ -35,6 +35,7 @@ function makeApplyResult(overrides: Partial<ReflowResult> = {}): ReflowResult {
     alreadyExisted: false,
     mutated: true,
     mutatedRows: 2,
+    affectedSessionIds: [101, 102],
     ...overrides,
   };
 }
@@ -73,6 +74,7 @@ describe('R4 P2 — serializeReflowResponse (happy path)', () => {
     expect(body.alreadyExisted).toBe(false);
     expect(body.mutated).toBe(true);
     expect(body.mutatedRows).toBe(2);
+    expect(body.affectedSessionIds).toEqual([101, 102]);
   });
 
   it('surfaces classifier actions + scenario + sciencePolicyVersion', () => {
@@ -126,6 +128,7 @@ describe('R4 P2 — buildReplayReflowResult + serialize (idempotency replay)', (
     expect(replay.alreadyExisted).toBe(true);
     expect(replay.mutated).toBe(false);
     expect(replay.mutatedRows).toBe(0);
+    expect(replay.affectedSessionIds).toEqual([]);
     expect(replay.mode).toBe('apply');
   });
 

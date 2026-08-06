@@ -28,6 +28,19 @@ describe('lean required CI contracts', () => {
     expect(workflow).not.toContain('workflow_dispatch:');
   });
 
+  it('gives worst-case selected coverage enough time without reducing its scope', () => {
+    const focusedJob = workflow.match(
+      /  test_focused:\n(?<body>[\s\S]*?)(?=\n  [a-z_]+:|$)/,
+    )?.groups?.body ?? '';
+
+    // A conservative multi-area change can select every group. The old
+    // 25-minute job limit killed that valid run before Vitest emitted a result.
+    expect(focusedJob).toContain('timeout-minutes: 45');
+    expect(focusedJob).toContain('--coverage');
+    expect(focusedJob).toContain('scripts/risk-gate.sh \\');
+    expect(focusedJob).not.toContain('--skip-tests');
+  });
+
   it('publishes exact selected-test metadata for the protected main SHA', () => {
     expect(workflow).toContain('NEXUS_TEST_SELECTION_OUTPUT: .local/ci-evidence/test-selection.json');
     expect(workflow).toContain('protected-main-test-selection-${{ github.run_id }}-${{ github.run_attempt }}');

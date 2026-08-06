@@ -641,7 +641,7 @@ function parseDurationMinutes(value: unknown): number | undefined {
   const direct = numericOrUndefined(value);
   if (direct !== undefined) return clamp(Math.round(direct), 15, 180);
   if (typeof value !== 'string') return undefined;
-  const match = value.toLowerCase().match(/(\d{2,3})\s*(min|minute|minutes|m)\b/);
+  const match = value.toLowerCase().match(/(\d{2,3})\s*-?\s*(min|minute|minutes|m)\b/);
   if (!match) return undefined;
   return clamp(Number(match[1]), 15, 180);
 }

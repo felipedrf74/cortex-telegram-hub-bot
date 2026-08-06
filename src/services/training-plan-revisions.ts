@@ -73,9 +73,15 @@ export interface TrainingPlanRevisionResource {
   capabilityRegistryVersion: string;
   documentSchemaVersion: string;
   document: TrainingPlanRevisionDocument | Record<string, unknown>;
+  // F3 (Phase 1A-1): `FAIL` added to both unions. Previously the report-level
+  // status admitted only PASS/LEGACY_COMPATIBILITY and the per-check status
+  // only PASS/WARNING, so no candidate could ever be *rejected* on quality —
+  // the report was an attestation, not a gate. `LEGACY_COMPATIBILITY` is
+  // retained unchanged for backfilled revisions; `WARNING` remains
+  // non-blocking. Only `FAIL` blocks activation.
   qualityReport: {
-    status: 'PASS' | 'LEGACY_COMPATIBILITY';
-    checks: Array<{ code: string; status: 'PASS' | 'WARNING'; evidence: string }>;
+    status: 'PASS' | 'FAIL' | 'LEGACY_COMPATIBILITY';
+    checks: Array<{ code: string; status: 'PASS' | 'WARNING' | 'FAIL'; evidence: string }>;
     warnings?: string[];
   };
   causalFactors: TrainingPlanCausalFactor[];
@@ -1019,11 +1025,15 @@ function insertOperation(db: Database.Database, input: {
   idempotencyKey: string;
   requestHash: string;
 }): void {
+  // Revision work is synchronous and contained by the caller's SQLite
+  // transaction: a failure rolls the operation row back with the graph. The
+  // legacy lease columns are intentionally left NULL instead of advertising a
+  // recovery/fencing mechanism that no revision worker consumes.
   db.prepare(`
     INSERT INTO training_plan_revision_operations (
       operation_id, tenant_id, user_id, operation_type, idempotency_key,
-      request_hash, status, lease_owner, lease_expires_at
-    ) VALUES (?, ?, ?, ?, ?, ?, 'IN_PROGRESS', ?, datetime('now', '+2 minutes'))
+      request_hash, status
+    ) VALUES (?, ?, ?, ?, ?, ?, 'IN_PROGRESS')
   `).run(
     input.operationId,
     input.scope.tenantId,
@@ -1031,7 +1041,6 @@ function insertOperation(db: Database.Database, input: {
     input.operationType,
     input.idempotencyKey,
     input.requestHash,
-    input.operationId,
   );
 }
 
@@ -1044,8 +1053,8 @@ function completeOperation(
   db.prepare(`
     UPDATE training_plan_revision_operations
        SET status = 'SUCCEEDED', result_family_id = ?, result_revision_id = ?,
-           response_json = ?, lease_owner = NULL, lease_expires_at = NULL,
-           updated_at = datetime('now'), completed_at = datetime('now')
+           response_json = ?, updated_at = datetime('now'),
+           completed_at = datetime('now')
      WHERE operation_id = ?
   `).run(revision.familyId, revision.revisionId, JSON.stringify(response), operationId);
 }

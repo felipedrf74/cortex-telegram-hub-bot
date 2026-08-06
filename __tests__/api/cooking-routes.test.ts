@@ -10,12 +10,16 @@ import {
 
 let testDb: Database.Database;
 const mockCalendarCreateEvent = vi.fn();
+const mockResolveCalendarWritePreference = vi.fn();
+const mockCreateSecretaryProviderAdapter = vi.fn();
+const mockSyncSecretaryAgendaItemsToProvider = vi.fn();
 const mockIsAnyCalendarConfigured = vi.fn();
 const mockHasConnectedCalendarForUser = vi.fn();
 const mockGetEventsWithDiagnostics = vi.fn();
 const mockInvalidateCookingDerivedCaches = vi.fn();
 const mockPreviewCookingMealPrepSchedulingIntent = vi.fn();
 const mockSubmitCookingMealPrepSchedulingIntent = vi.fn();
+const mockGetSecretaryAgendaItemById = vi.fn();
 const mockGetWearableReadiness = vi.fn();
 const mockLoggerWarn = vi.fn();
 
@@ -60,6 +64,37 @@ vi.mock('../../src/services/unified-calendar', () => ({
   isAnyCalendarConfigured: (...args: unknown[]) => mockIsAnyCalendarConfigured(...args),
   updateEvent: vi.fn(),
 }));
+
+vi.mock('../../src/services/provider-preferences', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/provider-preferences')>(
+    '../../src/services/provider-preferences'
+  )),
+  resolveCalendarWritePreference: (...args: unknown[]) => mockResolveCalendarWritePreference(...args),
+}));
+
+vi.mock('../../src/services/secretary-unified-calendar-provider-adapter', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/secretary-unified-calendar-provider-adapter')>(
+    '../../src/services/secretary-unified-calendar-provider-adapter'
+  )),
+  createUnifiedCalendarSecretaryProviderAdapter: (...args: unknown[]) => mockCreateSecretaryProviderAdapter(...args),
+}));
+
+vi.mock('../../src/services/secretary-agenda-provider-sync', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/secretary-agenda-provider-sync')>(
+    '../../src/services/secretary-agenda-provider-sync'
+  )),
+  syncSecretaryAgendaItemsToProvider: (...args: unknown[]) => mockSyncSecretaryAgendaItemsToProvider(...args),
+}));
+
+vi.mock('../../src/services/secretary-scheduling-arbitrator', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/secretary-scheduling-arbitrator')>(
+    '../../src/services/secretary-scheduling-arbitrator',
+  );
+  return {
+    ...actual,
+    getSecretaryAgendaItemById: (...args: unknown[]) => mockGetSecretaryAgendaItemById(...args),
+  };
+});
 
 vi.mock('../../src/services/cache-coherence-registry', () => ({
   ...{
@@ -180,12 +215,16 @@ describe('Cooking API — shopping list item updates', () => {
     setDbProvider(() => testDb);
     clearTenantScopeAnomaliesForTests();
     mockCalendarCreateEvent.mockReset();
+    mockResolveCalendarWritePreference.mockReset();
+    mockCreateSecretaryProviderAdapter.mockReset();
+    mockSyncSecretaryAgendaItemsToProvider.mockReset();
     mockIsAnyCalendarConfigured.mockReset();
     mockHasConnectedCalendarForUser.mockReset();
     mockGetEventsWithDiagnostics.mockReset();
     mockInvalidateCookingDerivedCaches.mockReset();
     mockPreviewCookingMealPrepSchedulingIntent.mockReset();
     mockSubmitCookingMealPrepSchedulingIntent.mockReset();
+    mockGetSecretaryAgendaItemById.mockReset();
     mockGetWearableReadiness.mockReset();
     mockGetWearableReadiness.mockResolvedValue(null);
     mockLoggerWarn.mockReset();
@@ -206,12 +245,36 @@ describe('Cooking API — shopping list item updates', () => {
       source: 'outlook',
       htmlLink: 'https://calendar.example/prep',
     });
+    mockResolveCalendarWritePreference.mockReturnValue({
+      source: 'outlook',
+      requested: 'auto',
+      warningCode: null,
+      warning: null,
+      availability: { google: false, outlook: true },
+    });
+    mockCreateSecretaryProviderAdapter.mockReturnValue({ source: 'outlook' });
+    mockSyncSecretaryAgendaItemsToProvider.mockResolvedValue([{
+      agendaItemId: 'sec-cooking-prep-1',
+      action: 'created',
+      providerEventId: 'evt-meal-prep',
+      providerSource: 'outlook',
+      providerSyncState: 'synced',
+      deletedDuplicateEventIds: [],
+      reasonCode: 'provider_event_created',
+    }]);
+    mockGetSecretaryAgendaItemById.mockReturnValue({
+      agendaItemId: 'sec-cooking-prep-1',
+      providerTarget: 'outlook',
+      providerEventId: 'evt-meal-prep',
+      providerSource: 'outlook',
+      providerSyncState: 'synced',
+    });
     const secretaryDecisionForInput = (input: any) => ({
       status: 'scheduled',
       reasonCodes: ['scheduled_in_available_window'],
       recommendedSlot: { start: input.startIso, end: input.endIso, label: 'meal prep window' },
       selectedSlot: { start: input.startIso, end: input.endIso, label: 'meal prep window' },
-      agendaItem: { agendaItemId: 'sec-cooking-prep-1' },
+      agendaItem: { agendaItemId: 'sec-cooking-prep-1', providerTarget: 'outlook' },
       explanation: 'scheduled',
       alternativeSlots: [],
       conflicts: [],
@@ -1164,7 +1227,7 @@ describe('Cooking API — shopping list item updates', () => {
     );
   });
 
-  it('invalidates calendar-backed surfaces after creating a meal prep event', async () => {
+  it('leaves notification and calendar-cache completion to the durable provider-sync event', async () => {
     const user = getOrCreateUser(21012, { username: 'cook12' });
     const recipe = addRecipe(user.id, 'Prep chicken', [
       { name: 'Chicken', quantity: '500', unit: 'g' },
@@ -1187,6 +1250,7 @@ describe('Cooking API — shopping list item updates', () => {
       week: '2026-04-13',
       durationMinutes: 120,
       mealCount: 1,
+      providerTarget: 'outlook',
     }));
     expect(mockSubmitCookingMealPrepSchedulingIntent).toHaveBeenCalledWith(expect.objectContaining({
       userId: user.id,
@@ -1194,24 +1258,148 @@ describe('Cooking API — shopping list item updates', () => {
       week: '2026-04-13',
       durationMinutes: 120,
       mealCount: 1,
+      providerTarget: 'outlook',
     }));
     expect(mockPreviewCookingMealPrepSchedulingIntent.mock.invocationCallOrder[0])
       .toBeLessThan(mockSubmitCookingMealPrepSchedulingIntent.mock.invocationCallOrder[0]);
     expect(mockSubmitCookingMealPrepSchedulingIntent.mock.invocationCallOrder[0])
-      .toBeLessThan(mockCalendarCreateEvent.mock.invocationCallOrder[0]);
-    expect(mockCalendarCreateEvent).toHaveBeenCalledTimes(1);
-    expect(mockInvalidateCookingDerivedCaches).toHaveBeenCalledWith(user.id, { includeCalendarSurfaces: true });
-    const notifications = listNotificationCenterItems(user.id, user.id, { sourceSkill: 'cooking' });
-    expect(notifications).toHaveLength(1);
-    expect(notifications[0]).toMatchObject({
-      sourceSkill: 'cooking',
-      type: 'reminder',
-
+      .toBeLessThan(mockSyncSecretaryAgendaItemsToProvider.mock.invocationCallOrder[0]);
+    expect(mockResolveCalendarWritePreference).toHaveBeenCalledWith(user.id, user.id);
+    expect(mockCreateSecretaryProviderAdapter).toHaveBeenCalledWith('outlook');
+    expect(mockSyncSecretaryAgendaItemsToProvider).toHaveBeenCalledWith({
+      ownerUserId: user.id,
+      tenantId: user.id,
+      includeInactive: false,
+    }, { source: 'outlook' }, expect.objectContaining({
+      agendaItemId: 'sec-cooking-prep-1',
+      retryBudget: 0,
+    }));
+    expect(mockCalendarCreateEvent).not.toHaveBeenCalled();
+    expect(res.body.data.event).toMatchObject({
+      id: 'evt-meal-prep',
+      title: 'Meal prep — Prep chicken',
+      source: 'outlook',
     });
-    // Localized from the account language now; assert the redaction guarantee
-    // rather than an English literal.
-    expect(notifications[0].safeBody).toEqual(expect.any(String));
-    expect(notifications[0].safeBody.length).toBeGreaterThan(0);
+    expect(mockInvalidateCookingDerivedCaches).not.toHaveBeenCalledWith(user.id, { includeCalendarSurfaces: true });
+    const notifications = listNotificationCenterItems(user.id, user.id, { sourceSkill: 'cooking' });
+    expect(notifications).toHaveLength(0);
+  });
+
+  it('returns the durable existing mapping when an idempotent retry has no eligible sync work', async () => {
+    const user = getOrCreateUser(21016, { username: 'cook16' });
+    const recipe = addRecipe(user.id, 'Prep lentils', [
+      { name: 'Lentils', quantity: '500', unit: 'g' },
+    ]);
+    setMealPlan(user.id, '2026-04-13', 'dinner', 'Prep lentils', { recipeId: recipe.id });
+    mockSyncSecretaryAgendaItemsToProvider.mockResolvedValueOnce([]);
+    mockGetSecretaryAgendaItemById.mockReturnValueOnce({
+      agendaItemId: 'sec-cooking-prep-1',
+      providerTarget: 'outlook',
+      providerEventId: 'evt-existing-prep',
+      providerSource: 'outlook',
+      providerSyncState: 'synced',
+    });
+    mockSubmitCookingMealPrepSchedulingIntent.mockImplementationOnce((input: any) => ({
+      status: 'scheduled',
+      reasonCodes: ['scheduled_in_available_window'],
+      selectedSlot: { start: input.startIso, end: input.endIso, label: 'meal prep window' },
+      agendaItem: {
+        agendaItemId: 'sec-cooking-prep-1',
+        providerTarget: 'outlook',
+        providerEventId: 'evt-existing-prep',
+        providerSource: 'outlook',
+        providerSyncState: 'synced',
+      },
+      explanation: 'scheduled',
+      alternativeSlots: [],
+      conflicts: [],
+      downstreamImplications: [],
+      confidence: 'high',
+    }));
+
+    const res = await dispatch('POST', '/meal-plan/create-prep-event', user.id, {
+      week: '2026-04-13',
+      dayOfWeek: 0,
+      startHour: 14,
+      durationMinutes: 120,
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.data.event).toMatchObject({
+      id: 'evt-existing-prep',
+      source: 'outlook',
+    });
+    expect(mockCalendarCreateEvent).not.toHaveBeenCalled();
+  });
+
+  it('fails safely without notifying when a provider create outcome requires reconciliation', async () => {
+    const user = getOrCreateUser(21017, { username: 'cook17' });
+    const recipe = addRecipe(user.id, 'Prep tofu', [
+      { name: 'Tofu', quantity: '500', unit: 'g' },
+    ]);
+    setMealPlan(user.id, '2026-04-13', 'dinner', 'Prep tofu', { recipeId: recipe.id });
+    mockSyncSecretaryAgendaItemsToProvider.mockResolvedValueOnce([{
+      agendaItemId: 'sec-cooking-prep-1',
+      action: 'failed',
+      providerEventId: null,
+      providerSource: 'outlook',
+      providerSyncState: 'readback_failed',
+      deletedDuplicateEventIds: [],
+      reasonCode: 'provider_create_reconciliation_required',
+    }]);
+
+    const res = await dispatch('POST', '/meal-plan/create-prep-event', user.id, {
+      week: '2026-04-13',
+      dayOfWeek: 0,
+      startHour: 14,
+      durationMinutes: 120,
+    });
+
+    expect(res.statusCode).toBe(503);
+    expect(res.body.error).toMatchObject({
+      code: 'COOKING_PREP_CALENDAR_SYNC_PENDING',
+      message: 'The meal prep block was saved, but calendar synchronization is still pending.',
+      details: {
+        agendaItemId: 'sec-cooking-prep-1',
+        reasonCode: 'provider_create_reconciliation_required',
+      },
+    });
+    expect(mockCalendarCreateEvent).not.toHaveBeenCalled();
+    expect(mockInvalidateCookingDerivedCaches).not.toHaveBeenCalled();
+    expect(listNotificationCenterItems(user.id, user.id, { sourceSkill: 'cooking' })).toHaveLength(0);
+
+    const claimHeldUser = getOrCreateUser(21019, { username: 'cook19' });
+    const claimHeldRecipe = addRecipe(claimHeldUser.id, 'Prep beans', [
+      { name: 'Beans', quantity: '500', unit: 'g' },
+    ]);
+    setMealPlan(claimHeldUser.id, '2026-04-13', 'dinner', 'Prep beans', { recipeId: claimHeldRecipe.id });
+    mockSyncSecretaryAgendaItemsToProvider.mockResolvedValueOnce([]);
+    mockGetSecretaryAgendaItemById.mockReturnValueOnce({
+      agendaItemId: 'sec-cooking-prep-1',
+      providerTarget: 'outlook',
+      providerEventId: null,
+      providerSource: null,
+      providerSyncState: 'requested',
+    });
+
+    const claimHeldResponse = await dispatch('POST', '/meal-plan/create-prep-event', claimHeldUser.id, {
+      week: '2026-04-13',
+      dayOfWeek: 0,
+      startHour: 14,
+      durationMinutes: 120,
+    });
+
+    expect(claimHeldResponse.statusCode).toBe(503);
+    expect(claimHeldResponse.body.error).toMatchObject({
+      code: 'COOKING_PREP_CALENDAR_SYNC_PENDING',
+      message: 'The meal prep block was saved, but calendar synchronization is still pending.',
+      details: {
+        agendaItemId: 'sec-cooking-prep-1',
+        reasonCode: 'provider_sync_claim_held',
+      },
+    });
+    expect(listNotificationCenterItems(claimHeldUser.id, claimHeldUser.id, { sourceSkill: 'cooking' }))
+      .toHaveLength(0);
   });
 
   it('checks the authenticated user calendar before creating a meal prep event', async () => {
@@ -1235,6 +1423,36 @@ describe('Cooking API — shopping list item updates', () => {
     expect(mockHasConnectedCalendarForUser).toHaveBeenCalledWith(user.id);
     expect(mockCalendarCreateEvent).not.toHaveBeenCalled();
     expect(mockPreviewCookingMealPrepSchedulingIntent).not.toHaveBeenCalled();
+  });
+
+  it('refuses an unavailable provider preference before Secretary persistence', async () => {
+    const user = getOrCreateUser(21018, { username: 'cook18' });
+    const recipe = addRecipe(user.id, 'Prep oats', [
+      { name: 'Oats', quantity: '500', unit: 'g' },
+    ]);
+    setMealPlan(user.id, '2026-04-13', 'breakfast', 'Prep oats', { recipeId: recipe.id });
+    mockResolveCalendarWritePreference.mockReturnValueOnce({
+      source: null,
+      requested: 'outlook',
+      warningCode: 'OUTLOOK_CALENDAR_PREFERENCE_UNAVAILABLE',
+      warning: 'Outlook Calendar is not writable.',
+      availability: { google: true, outlook: false },
+    });
+
+    const res = await dispatch('POST', '/meal-plan/create-prep-event', user.id, {
+      week: '2026-04-13',
+      dayOfWeek: 0,
+      startHour: 14,
+      durationMinutes: 120,
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error.code).toBe('OUTLOOK_CALENDAR_PREFERENCE_UNAVAILABLE');
+    // Stronger guarantee: provider refusal happens before preview/submit, so
+    // no durable agenda version can later drift onto another provider.
+    expect(mockPreviewCookingMealPrepSchedulingIntent).not.toHaveBeenCalled();
+    expect(mockSubmitCookingMealPrepSchedulingIntent).not.toHaveBeenCalled();
+    expect(mockSyncSecretaryAgendaItemsToProvider).not.toHaveBeenCalled();
   });
 
   it('fails closed when meal prep scheduling cannot verify live calendar availability', async () => {

@@ -152,7 +152,10 @@ vi.mock('../../src/services/cache-coherence-registry', () => ({
   invalidateFinanceDerivedCaches: (...args: unknown[]) => mockInvalidateFinanceDerivedCaches(...args),
 }));
 
-vi.mock('../../src/services/secretary-live-calendar-busy', () => ({
+vi.mock('../../src/services/secretary-live-calendar-busy', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/secretary-live-calendar-busy')>(
+    '../../src/services/secretary-live-calendar-busy'
+  )),
   loadLiveCalendarBusyWindowsForSecretaryIntent: (...args: unknown[]) => mockLoadLiveCalendarBusyWindows(...args),
 }));
 

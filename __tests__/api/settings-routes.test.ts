@@ -222,6 +222,28 @@ async function dispatchPushPreferencesSet(userId: number, category: string, enab
   return res;
 }
 
+async function dispatchTimezone(userId: number, timezone: unknown): Promise<MockRes> {
+  const { settingsRoutes } = await import('../../src/api/routes/settings');
+  const router = settingsRoutes();
+  const req = mockReq(userId, { timezone });
+  (req as any).method = 'POST';
+  (req as any).url = '/timezone';
+  (req as any).originalUrl = '/timezone';
+  (req as any).baseUrl = '';
+  (req as any).path = '/timezone';
+  const res = mockRes();
+
+  await new Promise<void>((resolve) => {
+    (router as any).handle(req, res, (err: any) => {
+      if (err) throw err;
+      resolve();
+    });
+    setImmediate(resolve);
+  });
+
+  return res;
+}
+
 describe('Settings language route', () => {
   beforeEach(() => {
     testDb = createMigratedTestDatabase();
@@ -248,9 +270,47 @@ describe('Settings language route', () => {
       setUserLanguage: (userId: number, language: string) => {
         testDb.prepare('UPDATE users SET language = ? WHERE id = ?').run(language, userId);
       },
+      setUserTimezone: (userId: number, timezone: string) => {
+        testDb.prepare('UPDATE users SET timezone = ? WHERE id = ?').run(timezone, userId);
+      },
     }));
     return getTenantScopeModule().then(({ clearTenantScopeAnomaliesForTests }) => {
       clearTenantScopeAnomaliesForTests();
+    });
+  });
+
+  // F11 prerequisite (Phase 3): users.timezone predates migration 271, which
+  // documented that it still had NO write path. This route is the canonical
+  // validation boundary and deliberately dumb writer seam; runtime scheduling
+  // consumes the saved zone through the separate F11 threading slice.
+  describe('timezone', () => {
+    it('accepts a valid IANA zone and persists it on the user row', async () => {
+      const res = await dispatchTimezone(1, 'America/Sao_Paulo');
+
+      expect(res.statusCode).toBe(200);
+      expect(res.body.ok).toBe(true);
+      expect(res.body.data.timezone).toBe('America/Sao_Paulo');
+      const row = testDb.prepare('SELECT timezone FROM users WHERE id = 1').get() as { timezone: string };
+      expect(row.timezone).toBe('America/Sao_Paulo');
+    });
+
+    it('rejects a non-IANA zone without touching the stored value', async () => {
+      const before = (testDb.prepare('SELECT timezone FROM users WHERE id = 1').get() as { timezone: string }).timezone;
+      const res = await dispatchTimezone(1, 'Mars/Olympus_Mons');
+
+      expect(res.statusCode).toBe(400);
+      const row = testDb.prepare('SELECT timezone FROM users WHERE id = 1').get() as { timezone: string };
+      expect(row.timezone).toBe(before);
+    });
+
+    it('rejects a missing timezone', async () => {
+      const res = await dispatchTimezone(1, undefined);
+      expect(res.statusCode).toBe(400);
+    });
+
+    it('rejects fixed-offset shorthand that is not a real IANA zone', async () => {
+      const res = await dispatchTimezone(1, 'UTC+3');
+      expect(res.statusCode).toBe(400);
     });
   });
 

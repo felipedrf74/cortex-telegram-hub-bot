@@ -24,7 +24,10 @@ describe('conflict-resolver', () => {
   it('maps existing training recovery signals to mesh priority 2', () => {
     expect(defaultMeshPriorityForSignal('low_sleep')).toBe(2);
     expect(defaultMeshPriorityForSignal('low_hrv')).toBe(2);
-    expect(defaultMeshPriorityForSignal('calendar_conflict')).toBe(2);
+    // F33 stronger guarantee: the producer-less calendar_conflict bus signal
+    // no longer has a special consumer-side priority mirror. The canonical
+    // coach-kernel conflict vocabulary remains separate and authoritative.
+    expect(defaultMeshPriorityForSignal('calendar_conflict')).toBe(3);
   });
 
   it('lets a higher-priority directive win automatically', () => {

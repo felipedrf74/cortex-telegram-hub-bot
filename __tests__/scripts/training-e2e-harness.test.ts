@@ -17,26 +17,54 @@ describe('isolated Training E2E harness', () => {
     expect(compose).toContain('${NEXUS_TRAINING_E2E_PORT_TS:-18200}:8200');
     expect(compose).toContain('${NEXUS_TRAINING_E2E_PORT_PY:-18100}:8100');
     expect(compose).toContain('PORTAL_READ_TOKEN');
+    expect(compose).toContain('IOS_API_JWT_KEYS: ""');
+    expect(compose).toContain('IOS_API_JWT_ACTIVE_KID: ""');
     expect(compose).toContain('SQLITE_JOURNAL_MODE: "DELETE"');
+    expect(compose).toContain('SQLITE_SYNCHRONOUS: "FULL"');
+    // Stronger Docker fixture guarantee: keep the documented rollback-mode
+    // posture even though live fixture writes now stay inside Linux.
+    expect(compose).toContain('SQLITE_MMAP_SIZE: "0"');
+    // Stronger lock-domain guarantee: executable fixture scripts and state
+    // are available inside the backend container, so no host process writes
+    // SQLite while the Linux backend has the database open.
+    expect(compose).toContain('${NEXUS_TRAINING_E2E_SOURCE_ROOT:?Training E2E source root is required}/scripts:/app/scripts:ro');
+    expect(compose).toContain('${NEXUS_TRAINING_E2E_ROOT:-./.local/training-e2e/default}:/app/training-e2e-state');
+    expect(compose).toContain('DATABASE_PATH: "/app/training-e2e-state/data/training-e2e.db"');
     expect(compose).toContain('TRAINING_CALENDAR_WRITES_ENABLED: "false"');
     expect(compose).toContain('TRAINING_CALENDAR_SYNC_ENABLED: "false"');
+    expect(compose).toContain('TRAINING_CALENDAR_CAPACITY_KERNEL_ENABLED: ${NEXUS_TRAINING_E2E_CAPACITY_KERNEL:-on}');
+    expect(compose).not.toContain('./content-engine:/engine');
   });
 
   it('records engine identity and refuses default local ports as evidence', () => {
     const up = read('scripts/training-e2e-up.sh');
+    const contract = read('scripts/lib/training-e2e-contract.mjs');
     const env = read('scripts/training-e2e-env.sh');
     const smoke = read('scripts/training-e2e-smoke.sh');
 
     expect(env).toContain('training_e2e_git_dir()');
     expect(env).toContain('training_e2e_git()');
     expect(up).toContain('$(training_e2e_git rev-parse --short HEAD)');
-    expect(up).toContain('export NEXUS_TRAINING_E2E_GIT_DIR="$(training_e2e_git_dir)"');
+    // Stronger provenance guarantee: resolve and validate the repository
+    // identity once, then export that same pinned value to every consumer.
+    expect(up).toContain('GIT_DIR="$(training_e2e_git_dir)"');
+    expect(up).toContain('export NEXUS_TRAINING_E2E_SOURCE_ROOT="$ROOT"');
+    expect(up).toContain('export NEXUS_TRAINING_E2E_GIT_DIR="$GIT_DIR"');
     expect(up).toContain("export NEXUS_TRAINING_E2E_GIT_DIR='$NEXUS_TRAINING_E2E_GIT_DIR'");
+    expect(up).toContain('IOS_JWT_SECRET_FILE="$STATE_DIR/quality-ios-jwt-secret"');
+    expect(up).toContain('chmod 600 "$IOS_JWT_SECRET_FILE"');
+    expect(up).toContain("export NEXUS_TRAINING_E2E_IOS_JWT_SECRET_FILE='$IOS_JWT_SECRET_FILE'");
     expect(up).toContain('process.env.NEXUS_TRAINING_E2E_GIT_DIR');
     expect(up).toContain('git --git-dir=${gitDir} --work-tree=${workTree}');
-    expect(up).toContain("commit: git('rev-parse HEAD')");
-    expect(up).toContain("backendImageName = process.env.NEXUS_TRAINING_E2E_NODE_IMAGE || 'nexus-hub-node:training-e2e'");
-    expect(up).toContain("contentImageName = process.env.NEXUS_TRAINING_E2E_CONTENT_IMAGE || 'nexus-hub-content-engine:training-e2e'");
+    // Metadata must carry the exact pre-build commit instead of re-reading a
+    // potentially changed HEAD after the containers have been built.
+    expect(up).toContain('commit: process.env.NEXUS_TRAINING_E2E_BACKEND_COMMIT');
+    // Stronger source-identity guarantee: mutable shared fallback tags are
+    // gone and both image names must carry the current run id.
+    expect(up).toContain('nexus-hub-node:training-e2e-${RUN_ID}');
+    expect(up).toContain('nexus-hub-content-engine:training-e2e-${RUN_ID}');
+    expect(up).toContain('actualContainerImageId');
+    expect(up).toContain('NEXUS_TRAINING_E2E_RESUME');
     expect(up).toContain('docker image inspect ${JSON.stringify(backendImageName)}');
     expect(up).toContain('repoDigests');
     expect(up).toContain('NEXUS_TRAINING_E2E_LIVE_CALENDAR_ACK=sandbox-non-prod-calendar');
@@ -44,10 +72,13 @@ describe('isolated Training E2E harness', () => {
     expect(up).toContain('NEXUS_TRAINING_E2E_GOOGLE_REFRESH_TOKEN');
     expect(up).toContain('NEXUS_TRAINING_E2E_OUTLOOK_REFRESH_TOKEN');
     expect(up).toContain('require_sandbox_label');
-    expect(up).toContain('GOOGLE_REFRESH_TOKEN: ""');
-    expect(up).toContain('OUTLOOK_REFRESH_TOKEN: ""');
+    expect(contract).toContain('GOOGLE_REFRESH_TOKEN: ""');
+    expect(contract).toContain('OUTLOOK_REFRESH_TOKEN: ""');
     expect(up).toContain('metadata.json');
     expect(up).toContain('liveCalendar');
+    expect(up).toContain("synchronous: 'FULL'");
+    expect(up).toContain('mmapSize: 0');
+    expect(up).toContain("fixtureLockDomain: 'container'");
     expect(up).toContain("PORT_TS\" == \"8200\"");
     expect(up).toContain("PORT_PY\" == \"8100\"");
     expect(smoke).toContain('refusing to accept default local backend port');
@@ -57,6 +88,8 @@ describe('isolated Training E2E harness', () => {
 
   it('runs iOS against an explicit dedicated simulator without shutting down unrelated simulators', () => {
     const ios = read('scripts/training-e2e-ios.sh');
+    const seed = read('scripts/training-e2e-ios-seed.mjs');
+    const seedRunner = read('scripts/training-e2e-run-ios-seed.sh');
 
     expect(ios).toContain('NEXUS_TRAINING_E2E_BASE_URL');
     expect(ios).toContain('NEXUS_TRAINING_E2E_RUN_ID="$NEXUS_TRAINING_E2E_RUN_ID"');
@@ -68,14 +101,36 @@ describe('isolated Training E2E harness', () => {
     expect(ios).toContain('NEXUS_TRAINING_E2E_CONFIG_PATH="${IOS_CONFIG_PATHS[0]}"');
     expect(ios).toContain('IOS_TEST_ARGS=("$@")');
     expect(ios).toContain('IOS_SCHEME="${NEXUS_TRAINING_E2E_IOS_SCHEME:-Nexus Hub Debug UI Smoke}"');
-    expect(ios).toContain('training-e2e-ios-seed.mjs" prepare');
-    expect(ios).toContain('training-e2e-ios-seed.mjs" cleanup');
+    // Stronger scenario guarantee: prepare/verify/cleanup are selected from
+    // one validated scenario, so cleanup cannot drift from the seeded mode.
+    expect(ios).toContain('FIXTURE_PREPARE_MODE=prepare');
+    expect(ios).toContain('FIXTURE_CLEANUP_MODE=cleanup');
+    expect(ios).toContain('IOS_SEED_RUNNER="$ROOT/scripts/training-e2e-run-ios-seed.sh"');
+    expect(ios).toContain('"$IOS_SEED_RUNNER" "$FIXTURE_PREPARE_MODE"');
+    expect(ios).toContain('"$IOS_SEED_RUNNER" "$FIXTURE_VERIFY_MODE"');
+    expect(ios).toContain('"$IOS_SEED_RUNNER" "$FIXTURE_CLEANUP_MODE"');
+    expect(ios).not.toContain('node "$ROOT/scripts/training-e2e-ios-seed.mjs"');
+    // SQLite-bearing prepare/verify/cleanup work stays in the same Linux lock
+    // domain as the backend, with host-side provenance checks around it.
+    expect(seedRunner).toContain('exec -T');
+    expect(seedRunner).toContain('NEXUS_TRAINING_E2E_IN_CONTAINER=1');
+    expect(seedRunner).toContain('NEXUS_TRAINING_E2E_ROOT=/app/training-e2e-state');
+    expect(seedRunner).toContain('NEXUS_TRAINING_E2E_AUTH_FILE=/app/training-e2e-state/local-ios-auth.json');
+    expect(seedRunner).toContain('NEXUS_TRAINING_E2E_API_BASE_URL=http://127.0.0.1:8200');
+    expect(seedRunner.match(/training-e2e-verify-freshness\.mjs/g)).toHaveLength(2);
+    expect(seed).toContain("const inContainer = process.env.NEXUS_TRAINING_E2E_IN_CONTAINER === '1'");
+    expect(seed).toContain("metadata.sqlite?.fixtureLockDomain === 'container'");
+    expect(seed).toContain("path.join(env.NEXUS_TRAINING_E2E_ROOT, 'data', 'training-e2e.db')");
+    expect(seed).toContain('NEXUS_TRAINING_E2E_API_BASE_URL');
     expect(ios).toContain('NEXUS_TRAINING_E2E_IOS_KEEP_SEEDED_PLAN');
     expect(ios).toContain('IOS_REQUIRE_UDID=1');
     expect(ios).toContain('IOS_SHUTDOWN_OTHER_SIMS=0');
     expect(ios).toContain('IOS_ALLOW_MULTIPLE_BOOTED=1');
     expect(ios).toContain('IOS_QUIT_SIMULATOR_APP=0');
     expect(ios).toContain('IOS_TRIM_SIMULATOR_PROCESSES=0');
+    // The clarification fixture must keep the required Fitness key present
+    // without accidentally resolving equipment before the athlete answers.
+    expect(seed).toContain("available_equipment: omitPlanClarifications ? 'unknown' : 'Full gym'");
     expect(ios).not.toContain('simctl shutdown all');
     expect(ios).toContain('-only-testing:"Nexus HubUITests/TrainingIsolatedBackendE2EUITests"');
     expect(ios).toContain('-only-testing:"Nexus HubUITests/TrainingFixtureBypassUITests"');
@@ -84,11 +139,30 @@ describe('isolated Training E2E harness', () => {
 
   it('exposes npm scripts for the isolated Training E2E lane', () => {
     const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string> };
+    const flowRunner = read('scripts/training-e2e-run-flow.sh');
+    const qualityRunner = read('scripts/training-e2e-run-quality.sh');
 
     expect(pkg.scripts['training:e2e:up']).toBe('scripts/training-e2e-up.sh');
     expect(pkg.scripts['training:e2e:smoke']).toBe('scripts/training-e2e-smoke.sh');
-    expect(pkg.scripts['training:e2e:flow']).toBe('scripts/training-e2e-flow.mjs');
-    expect(pkg.scripts['training:e2e:ios-seed']).toBe('scripts/training-e2e-ios-seed.mjs prepare');
+    // Stronger guarantee: lifecycle and persona database work runs inside the
+    // backend container's Linux lock domain. Host-side checks still attest the
+    // exact source and image before and after the evidence writers run.
+    expect(pkg.scripts['training:e2e:flow']).toBe('scripts/training-e2e-run-flow.sh');
+    expect(flowRunner).toContain('training-e2e-verify-freshness.mjs');
+    expect(flowRunner.match(/training-e2e-verify-freshness\.mjs/g)).toHaveLength(2);
+    expect(flowRunner).toContain('exec -T');
+    expect(flowRunner).toContain('NEXUS_TRAINING_E2E_IN_CONTAINER=1');
+    expect(flowRunner).toContain('node scripts/training-e2e-flow.mjs');
+    expect(flowRunner).toContain('npx tsx scripts/training-e2e-quality.ts');
+    // Stronger guarantee: a quality-only diagnostic rerun must preserve the
+    // same Linux SQLite lock domain as the combined lifecycle runner. The old
+    // direct tsx command reopened the bind-mounted database from macOS.
+    expect(pkg.scripts['training:e2e:quality']).toBe('scripts/training-e2e-run-quality.sh');
+    expect(qualityRunner.match(/training-e2e-verify-freshness\.mjs/g)).toHaveLength(2);
+    expect(qualityRunner).toContain('exec -T');
+    expect(qualityRunner).toContain('NEXUS_TRAINING_E2E_IN_CONTAINER=1');
+    expect(qualityRunner).toContain('npx tsx scripts/training-e2e-quality.ts');
+    expect(pkg.scripts['training:e2e:ios-seed']).toBe('scripts/training-e2e-run-ios-seed.sh prepare');
     expect(pkg.scripts['training:e2e:ios']).toBe('scripts/training-e2e-ios.sh');
     expect(pkg.scripts['training:e2e:live-calendar']).toBe('npx tsx scripts/training-e2e-live-calendar.ts');
     expect(pkg.scripts['training:e2e:down']).toBe('scripts/training-e2e-down.sh');
@@ -97,6 +171,7 @@ describe('isolated Training E2E harness', () => {
   it('covers feedback variants, repeated skips, persistence, read models, and reflow', () => {
     const flow = read('scripts/training-e2e-flow.mjs');
 
+    expect(flow).toContain('if (!inContainer && !env.NEXUS_TRAINING_E2E_GIT_DIR)');
     expect(flow).toContain('readCompletionFeedbackRows');
     expect(flow).toContain('flowAttemptId');
     expect(flow).toContain('Generated plan was not persisted in the isolated database');
@@ -108,9 +183,15 @@ describe('isolated Training E2E harness', () => {
     expect(flow).toContain('Fixture-safe E2E easy feedback');
     expect(flow).toContain('Fixture-safe E2E normal completion feedback');
     expect(flow).toContain('Fixture-safe E2E hard partial feedback with pain signal');
+    // Stronger F18/E2 guarantee: use the released explicit disposition and
+    // recompute completion percentages from post-reflow durable sessions.
+    expect(flow).toContain("completionState: 'partial'");
+    expect(flow).toContain("status: 'partial'");
+    expect(flow).toContain('const refreshedSessions = readPersistedSessions(planId)');
+    expect(flow).toContain('partialSessionIds: [hardPartialSession.id]');
     expect(flow).toContain("painLocation: 'left knee'");
     expect(flow).toContain('sorenessLevel: 8');
-    expect(flow).toContain('skipSessions.length >= 3');
+    expect(flow).toContain('skipSessionIds.length >= 3');
     expect(flow).toContain("item.status === 'partial'");
     expect(flow).toContain('/reflow-preview');
     expect(flow).toContain('readTrainingPlanRowCount');

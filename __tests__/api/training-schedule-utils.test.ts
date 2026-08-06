@@ -87,6 +87,28 @@ describe('training schedule route utilities', () => {
     ]);
   });
 
+  it('normalizes all-day busy windows in the supplied plan timezone', () => {
+    const timezone = 'America/Los_Angeles';
+    const windows = buildBusyWindows([
+      {
+        title: 'Travel day',
+        isAllDay: true,
+        start: '2026-03-08',
+        end: '2026-03-09',
+      },
+    ], timezone);
+
+    // Stronger guarantee: DST-short all-day events retain their plan-local
+    // boundaries instead of being reinterpreted in the server timezone.
+    expect(windows).toEqual([
+      {
+        title: 'Travel day',
+        startMs: DateTime.fromISO('2026-03-08', { zone: timezone }).startOf('day').toUTC().toMillis(),
+        endMs: DateTime.fromISO('2026-03-09', { zone: timezone }).startOf('day').toUTC().toMillis(),
+      },
+    ]);
+  });
+
   it('chooses preferred times by session type', () => {
     expect(preferredTimeForSessionType('gym', '12:00', '07:00', '18:00')).toBe('18:00');
     expect(preferredTimeForSessionType('run', '12:00', '07:00', '18:00')).toBe('07:00');
@@ -124,6 +146,18 @@ describe('training schedule route utilities', () => {
 
     expect(lisbonHour(scheduled.start)).toBe(12);
     expect(scheduled.preferredTimeUnavailable).toBe(false);
+  });
+
+  it('anchors preferred wall time in the supplied plan timezone after DST', () => {
+    const timezone = 'America/Los_Angeles';
+    const day = DateTime.fromISO('2026-03-09', { zone: timezone }).startOf('day').toUTC().toJSDate();
+
+    const scheduled = scheduleSessionWindow(day, 60, '07:00', [], [], { timezone });
+
+    // Stronger guarantee: a persisted 07:00 preference remains 07:00 in the
+    // plan zone after the spring DST transition, independent of host locale.
+    expect(scheduled.start.toISOString()).toBe('2026-03-09T14:00:00.000Z');
+    expect(DateTime.fromJSDate(scheduled.start).setZone(timezone).toFormat('HH:mm')).toBe('07:00');
   });
 
   it('walks the day for ANY free 60-min window when the friendly band is fully booked', () => {

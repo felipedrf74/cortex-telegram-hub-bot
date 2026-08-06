@@ -364,6 +364,33 @@ describe('PATCH /api/v1/onboarding/profile/:type/field', () => {
     expect(res.body.data.value).toBe('5:30');
   });
 
+  it('accepts the server-advertised session-duration clarification field at its bounds', async () => {
+    for (const value of ['20', '180']) {
+      const res = await dispatch(
+        'PATCH',
+        '/profile/triathlon-gym/field',
+        2010,
+        { fieldKey: 'session_duration_minutes', value },
+      );
+      expect(res.statusCode).toBe(200);
+      expect(res.body.data.fieldKey).toBe('session_duration_minutes');
+      expect(res.body.data.value).toBe(value);
+    }
+  });
+
+  it('rejects session-duration clarification values outside the advertised range', async () => {
+    for (const value of ['19', '181']) {
+      const res = await dispatch(
+        'PATCH',
+        '/profile/triathlon-gym/field',
+        2011,
+        { fieldKey: 'session_duration_minutes', value },
+      );
+      expect(res.statusCode).toBe(400);
+      expect(res.body.error.message).toContain('does not match');
+    }
+  });
+
   it('marks profileComplete: true after last field is saved', async () => {
     const questionnaire = getQuestionnaire('triathlon-swim')!;
     // Answer every field except the last via PATCH

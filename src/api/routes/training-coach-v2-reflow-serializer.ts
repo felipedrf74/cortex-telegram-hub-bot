@@ -62,6 +62,13 @@ export interface ReflowResponseBody {
   alreadyExisted: ReflowResult['alreadyExisted'];
   mutated: ReflowResult['mutated'];
   mutatedRows: ReflowResult['mutatedRows'];
+  affectedSessionIds: ReflowResult['affectedSessionIds'];
+  /** External calendar/Secretary convergence is asynchronous and truthful. */
+  propagation: {
+    state: 'not_synced';
+    pending: boolean;
+    adaptationRevision: number | null;
+  };
   /**
    * `actions[]` returned by the classifier — present on both fresh
    * apply and preview. Empty on replay (the canonical actions live in
@@ -95,6 +102,14 @@ export function serializeReflowResponse(
     alreadyExisted: input.result.alreadyExisted,
     mutated: input.result.mutated,
     mutatedRows: input.result.mutatedRows,
+    affectedSessionIds: input.result.affectedSessionIds,
+    propagation: 'propagation' in input.result
+      ? (input.result as ReflowResult & { propagation: ReflowResponseBody['propagation'] }).propagation
+      : {
+          state: 'not_synced',
+          pending: false,
+          adaptationRevision: input.result.adaptationRevision,
+        },
     actions: input.scenario?.actions ?? [],
     perActionResults: input.perActionResults ?? [],
     scenario: input.scenario ?? null,
@@ -119,5 +134,6 @@ export function buildReplayReflowResult(args: {
     alreadyExisted: true,
     mutated: false,
     mutatedRows: 0,
+    affectedSessionIds: [],
   };
 }

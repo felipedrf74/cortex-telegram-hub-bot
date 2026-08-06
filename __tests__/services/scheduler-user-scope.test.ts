@@ -55,6 +55,17 @@ const mockGetEvalTarget = vi.hoisted(() => vi.fn());
 const mockRecordOperatorAlert = vi.hoisted(() => vi.fn());
 const mockRunTaskLedgerRetentionJob = vi.hoisted(() => vi.fn());
 const mockRunPipelineAgent = vi.hoisted(() => vi.fn());
+const mockWrapJob = vi.hoisted(() => vi.fn(
+  (name: string, fn: (...args: unknown[]) => unknown, _options?: unknown) => {
+    const wrapped = vi.fn((...args: unknown[]) => fn(...args));
+    return Object.assign(wrapped, {
+      jobName: name,
+      // Preserve the callback source contract used by older scheduler wiring
+      // tests while still returning a spy for startup-wrapper assertions.
+      toString: () => fn.toString(),
+    });
+  },
+));
 
 vi.mock('node-cron', () => ({
   default: { schedule: (...args: unknown[]) => mockCronSchedule(...args) },
@@ -139,6 +150,7 @@ vi.mock('../../src/services/fiscal-bundle', () => ({
   sendFiscalBundleNow: vi.fn(),
 }));
 const mockGarminKeepAlive = vi.hoisted(() => vi.fn(async () => true));
+const mockSetGarminSilentMode = vi.hoisted(() => vi.fn());
 const mockListGarminConnectedUserIds = vi.hoisted(() => vi.fn(() => [] as number[]));
 const mockHasActiveGarminConnection = vi.hoisted(() => vi.fn(() => false));
 
@@ -149,6 +161,7 @@ vi.mock('../../src/services/garmin', () => ({
   isGarminConfigured: vi.fn(() => false),
   keepAlive: (...args: unknown[]) => mockGarminKeepAlive(...args),
   ensureAuthenticated: vi.fn(),
+  setSilentMode: (...args: unknown[]) => mockSetGarminSilentMode(...args),
 }));
 vi.mock('../../src/services/garmin-session-store', () => ({
   listGarminConnectedUserIds: (...args: unknown[]) => mockListGarminConnectedUserIds(...args),
@@ -173,7 +186,9 @@ vi.mock('../../src/services/garmin-tenant-isolation-watcher', () => ({
 }));
 vi.mock('../../src/portal/telemetry', () => ({
   registerJob: vi.fn(),
-  wrapJob: (name: string, fn: () => unknown) => Object.assign(fn, { jobName: name }),
+  wrapJob: (...args: unknown[]) => mockWrapJob(
+    ...args as [string, (...args: unknown[]) => unknown, unknown?]
+  ),
   recordGarminRefresh: vi.fn(),
   setJobFailureNotifier: vi.fn(),
   setJobEnabledChecker: vi.fn(),
@@ -371,6 +386,7 @@ import {
   runScheduledCoachBriefingForTarget,
   sendDailyBriefing,
   refreshConnectedGarminUsers,
+  refreshConnectedGarminUsersWithLease,
 } from '../../src/services/scheduler';
 import { runScheduledAutoresearch } from '../../src/services/scheduled-agent-jobs';
 import { setLastCoachState } from '../../src/domains/domain-handler';
@@ -2404,6 +2420,92 @@ describe('M6 scheduler task sync wiring', () => {
       );
     });
 
+    // Stronger guarantee: registration, execution, and the operator-facing
+    // startup summary must describe the same offset 30-minute cadence. An
+    // empty fan-out is still a successful health heartbeat, not a silent skip.
+    it('keeps cadence and health logging aligned with the executed cron', async () => {
+      const telemetry = await import('../../src/portal/telemetry');
+
+      startScheduler();
+
+      expect(telemetry.registerJob).toHaveBeenCalledWith(
+        'garmin_keepalive',
+        'Garmin Keep-Alive',
+        '5,35 * * * *',
+        'triathlon',
+      );
+      const scheduled = mockCronSchedule.mock.calls.find(
+        (call) => (call[1] as { jobName?: string }).jobName === 'garmin_keepalive',
+      );
+      expect(scheduled?.[0]).toBe('5,35 * * * *');
+      expect(scheduled?.[2]).toEqual({ timezone: 'Europe/Lisbon' });
+
+      const keepaliveJob = scheduled?.[1] as (() => Promise<unknown>) | undefined;
+      expect(keepaliveJob).toBeTypeOf('function');
+      await expect(keepaliveJob!()).resolves.toBeUndefined();
+      expect(telemetry.recordGarminRefresh).toHaveBeenCalledWith(true);
+
+      const startupSummary = vi.mocked(logger.info).mock.calls
+        .map((call) => call[0])
+        .find((message) => typeof message === 'string' && message.startsWith('Scheduler started:'));
+      expect(startupSummary).toContain('garmin-keepalive (5,35)');
+      expect(startupSummary).not.toContain('garmin-keepalive (*/30)');
+    });
+
+    it('routes startup refresh through the same named durable wrapper as cron', async () => {
+      vi.useFakeTimers();
+      mockListGarminConnectedUserIds.mockReturnValue([11]);
+      try {
+        startScheduler();
+
+        const keepaliveWrapCallIndexes = mockWrapJob.mock.calls
+          .map((call, index) => call[0] === 'garmin_keepalive' ? index : -1)
+          .filter((index) => index >= 0);
+        expect(keepaliveWrapCallIndexes).toHaveLength(2);
+        const startupCallIndex = keepaliveWrapCallIndexes[1]!;
+        expect(mockWrapJob.mock.calls[startupCallIndex]?.[2]).toEqual({
+          requestSource: 'startup',
+          storeForRecovery: false,
+        });
+
+        const startupWrapped = mockWrapJob.mock.results[startupCallIndex]?.value as ReturnType<typeof vi.fn>;
+        await vi.advanceTimersByTimeAsync(5_000);
+
+        expect(startupWrapped).toHaveBeenCalledOnce();
+        expect(mockGarminKeepAlive).toHaveBeenCalledOnce();
+        // Stronger guarantee: startup safety is request-scoped. A process-wide
+        // silent flag can suppress an unrelated interactive user's MFA flow.
+        expect(mockSetGarminSilentMode).not.toHaveBeenCalled();
+        expect(mockRunWithContext).toHaveBeenCalledWith(
+          expect.objectContaining({
+            source: 'startup',
+            tenantId: 11,
+            userId: 11,
+            garminSilent: true,
+          }),
+          expect.any(Function),
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('routes a manual refresh through the same durable global keepalive fence', async () => {
+      mockListGarminConnectedUserIds.mockReturnValue([11]);
+
+      const result = await refreshConnectedGarminUsersWithLease('manual');
+
+      expect(mockWrapJob).toHaveBeenCalledWith(
+        'garmin_keepalive',
+        expect.any(Function),
+        { requestSource: 'manual', storeForRecovery: false },
+      );
+      expect(result).toEqual({
+        status: 'completed',
+        outcome: { total: 1, refreshed: 1, failed: [] },
+      });
+    });
+
     it('refreshes every connected user, not just the first', async () => {
       mockListGarminConnectedUserIds.mockReturnValue([11, 22, 33]);
 
@@ -2413,17 +2515,29 @@ describe('M6 scheduler task sync wiring', () => {
       expect(mockGarminKeepAlive).toHaveBeenCalledTimes(3);
     });
 
-    it('scopes each refresh to its own user', async () => {
+    // Stronger guarantee: every provider refresh carries the tenant boundary
+    // as well as the user identity, even when today's canonical scope is 1:1.
+    it('scopes each refresh to its own tenant and user', async () => {
       mockListGarminConnectedUserIds.mockReturnValue([11, 22]);
 
       await refreshConnectedGarminUsers('cron:garmin_keepalive');
 
       expect(mockRunWithContext).toHaveBeenCalledWith(
-        expect.objectContaining({ source: 'cron:garmin_keepalive', userId: 11 }),
+        expect.objectContaining({
+          source: 'cron:garmin_keepalive',
+          tenantId: 11,
+          userId: 11,
+          garminSilent: true,
+        }),
         expect.any(Function),
       );
       expect(mockRunWithContext).toHaveBeenCalledWith(
-        expect.objectContaining({ source: 'cron:garmin_keepalive', userId: 22 }),
+        expect.objectContaining({
+          source: 'cron:garmin_keepalive',
+          tenantId: 22,
+          userId: 22,
+          garminSilent: true,
+        }),
         expect.any(Function),
       );
     });
@@ -2453,6 +2567,27 @@ describe('M6 scheduler task sync wiring', () => {
 
       expect(result.refreshed).toBe(1);
       expect(result.failed).toEqual([11]);
+    });
+
+    it('stops before the next user when the durable execution guard is lost', async () => {
+      mockListGarminConnectedUserIds.mockReturnValue([11, 22]);
+      const assertLeaseActive = vi.fn();
+      mockGarminKeepAlive.mockImplementation(async () => {
+        if (mockGarminKeepAlive.mock.calls.length === 1) {
+          assertLeaseActive.mockImplementation(() => {
+            throw Object.assign(new Error('lease lost'), { code: 'SCHEDULED_JOB_LEASE_LOST' });
+          });
+        }
+        return true;
+      });
+
+      await expect(refreshConnectedGarminUsers('cron:garmin_keepalive', {
+        signal: new AbortController().signal,
+        assertLeaseActive,
+      })).rejects.toMatchObject({ code: 'SCHEDULED_JOB_LEASE_LOST' });
+
+      expect(mockGarminKeepAlive).toHaveBeenCalledTimes(1);
+      expect(mockRunWithContext).toHaveBeenCalledTimes(1);
     });
   });
 });

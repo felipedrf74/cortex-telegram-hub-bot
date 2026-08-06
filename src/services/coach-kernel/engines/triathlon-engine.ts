@@ -48,7 +48,9 @@ function placementRank(session: Session): number {
 }
 
 function isHighIntensityTriathlonKey(session: Session): boolean {
-  return session.keySession && ['threshold', 'vo2', 'neuromuscular'].includes(session.intensityZone);
+  return session.keySession
+    && !['deferred', 'unscheduled', 'dropped'].includes(String(session.scheduleState ?? ''))
+    && ['tempo', 'threshold', 'vo2', 'neuromuscular'].includes(session.intensityZone);
 }
 
 function aerobicSessionTypeForSport(session: Session): Session['sessionType'] {
@@ -85,7 +87,7 @@ function softenForTriathlonSpacing(session: Session): Session {
     },
     preservedIntent: 'Kept multisport frequency while protecting recovery between quality sessions.',
   };
-  return {
+  const softened: Session = {
     ...session,
     sessionType: aerobicSessionTypeForSport(session),
     title: `${session.sport[0].toUpperCase()}${session.sport.slice(1)} Aerobic Support`,
@@ -94,7 +96,11 @@ function softenForTriathlonSpacing(session: Session): Session {
     fatigueCost: 'medium',
     keySession: false,
     plannedLoad: durationToLoad(session.durationMinutes, 'aerobic', 'medium'),
-    tags: [...new Set([...session.tags, 'triathlon_spacing_softened', 'aerobic_support'])],
+    tags: [...new Set([
+      ...session.tags.filter((tag) => !tag.startsWith('role_') && tag !== 'key_session_classified'),
+      'triathlon_spacing_softened',
+      'aerobic_support',
+    ])],
     decisionReasons: [...(session.decisionReasons ?? []), reason],
     intensityProfile: undefined,
     intensitySummary: {
@@ -105,19 +111,28 @@ function softenForTriathlonSpacing(session: Session): Session {
       targetSummaryText: `${session.durationMinutes}min aerobic support.`,
     },
   };
+  return attachTrainingSessionRole(softened);
 }
 
-function softenConsecutiveTriathlonIntensity(sessions: readonly Session[]): Session[] {
+export function softenConsecutiveTriathlonIntensity(sessions: readonly Session[]): Session[] {
+  const softenedIndexes = new Set<number>();
   let lastHighIntensityDay: number | null = null;
-  return sessions.map((session) => {
-    const dayIndex = DAY_ORDER.indexOf(session.dayOfWeek);
-    if (!isHighIntensityTriathlonKey(session) || dayIndex < 0) return session;
+  const highIntensity = sessions
+    .map((session, index) => ({ session, index, dayIndex: DAY_ORDER.indexOf(session.dayOfWeek) }))
+    .filter(({ session, dayIndex }) => isHighIntensityTriathlonKey(session) && dayIndex >= 0)
+    .sort((left, right) => left.dayIndex - right.dayIndex || left.index - right.index);
+
+  for (const { index, dayIndex } of highIntensity) {
     if (lastHighIntensityDay !== null && Math.abs(dayIndex - lastHighIntensityDay) <= 1) {
-      return softenForTriathlonSpacing(session);
+      softenedIndexes.add(index);
+      continue;
     }
     lastHighIntensityDay = dayIndex;
-    return session;
-  });
+  }
+
+  return sessions.map((session, index) =>
+    softenedIndexes.has(index) ? softenForTriathlonSpacing(session) : session
+  );
 }
 
 function spreadTriathlonSessions(context: EngineContext, sessions: readonly Session[]): Session[] {

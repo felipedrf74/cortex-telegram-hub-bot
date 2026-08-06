@@ -76,7 +76,7 @@ import {
   setCookingPreferenceMemory,
   type CookingPreferenceWriteInput,
 } from '../../services/cooking-preferences';
-import { createEvent as createCalendarEvent, hasConnectedCalendarForUser } from '../../services/unified-calendar';
+import { hasConnectedCalendarForUser } from '../../services/unified-calendar';
 import { getActivePlans, getCurrentWeek, getSessionsForWeek, getWeeksForPlan, type TrainingSession } from '../../services/training-plans';
 import { invalidateCookingDerivedCaches } from '../../services/cache-coherence-registry';
 import {
@@ -87,13 +87,16 @@ import {
 import { loadLiveCalendarBusyWindowsForSecretaryIntent } from '../../services/secretary-live-calendar-busy';
 import { runOutboxTransaction } from '../../services/event-outbox';
 import { consumeResourceBudget } from '../../services/resource-budgets';
-import { createNotificationIntent } from '../../services/notification-orchestrator';
 import { assertTenantScope } from '../../services/tenant-scope';
 import { readTrainingContextAll } from '../../services/training-signals';
 import { getReadiness as getWearableReadiness } from '../../services/wearable/wearable-service';
 import { DateTime } from 'luxon';
 import { config } from '../../config';
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';
+import { resolveCalendarWritePreference } from '../../services/provider-preferences';
+import { createUnifiedCalendarSecretaryProviderAdapter } from '../../services/secretary-unified-calendar-provider-adapter';
+import { syncSecretaryAgendaItemsToProvider } from '../../services/secretary-agenda-provider-sync';
+import { getSecretaryAgendaItemById } from '../../services/secretary-scheduling-arbitrator';
 
 type MealAdaptationKind = 'protein_up' | 'recovery' | 'carbs_up' | 'carbs_down';
 
@@ -1367,6 +1370,20 @@ export function cookingRoutes(): Router {
       return;
     }
 
+    // Resolve the writable provider before preview or submit. Refusing an
+    // ambiguous/unwritable preference must leave no Secretary agenda row for
+    // a background worker to execute against a different provider later.
+    const calendarPreference = resolveCalendarWritePreference(userId, tenantId);
+    if (!calendarPreference.source) {
+      sendError(
+        res,
+        calendarPreference.warningCode || 'CALENDAR_NOT_CONFIGURED',
+        calendarPreference.warning || 'No writable calendar provider is connected.',
+        400,
+      );
+      return;
+    }
+
     try {
       // Compute the target week's Monday (parse `week` as a local date).
       const tz = config.app.timezone;
@@ -1403,19 +1420,6 @@ export function cookingRoutes(): Router {
       const startDt = eventDay.set({ hour, minute: 0, second: 0, millisecond: 0 });
       const endDt = startDt.plus({ minutes: duration });
 
-      // Build a description that lists every planned meal for the week.
-      const mealLines = meals.map((m) => {
-        const mealDate = DateTime.fromISO(m.date).toFormat('EEE LLL d');
-        return `• ${mealDate} ${m.meal_type}: ${m.title}`;
-      });
-      const description = [
-        'Meal prep for the week. Planned meals:',
-        '',
-        ...mealLines,
-        '',
-        'Scheduled from Nexus Hub iOS — Cooking skill.',
-      ].join('\n');
-
       const title = meals.length === 1
         ? `Meal prep — ${meals[0].title}`
         : `Meal prep — ${meals.length} meals`;
@@ -1435,6 +1439,7 @@ export function cookingRoutes(): Router {
         endIso,
         durationMinutes: duration,
         mealCount: meals.length,
+        providerTarget: calendarPreference.source,
       };
       const busyWindows = await loadLiveCalendarBusyWindowsForSecretaryIntent(
         buildCookingMealPrepSchedulingIntent(secretaryInput),
@@ -1474,48 +1479,92 @@ export function cookingRoutes(): Router {
         return;
       }
 
-      const event = await createCalendarEvent({
-        title,
+      const providerTarget = secretaryDecision.agendaItem.providerTarget;
+      if (!providerTarget || providerTarget !== calendarPreference.source) {
+        sendError(
+          res,
+          'COOKING_PREP_CALENDAR_PROVIDER_CONFLICT',
+          'The meal prep block is pinned to a different calendar provider.',
+          409,
+          { agendaItemId: secretaryDecision.agendaItem.agendaItemId },
+        );
+        return;
+      }
+      const providerAdapter = createUnifiedCalendarSecretaryProviderAdapter(providerTarget);
+      const providerSyncResults = await syncSecretaryAgendaItemsToProvider({
+        ownerUserId: userId,
+        tenantId,
+        includeInactive: false,
+      }, providerAdapter, {
+        agendaItemId: secretaryDecision.agendaItem.agendaItemId,
+        // One exact row only; this is a provider-call budget, not a backlog
+        // limit. It funds marker discovery, duplicate cleanup, and adoption.
+        maxItems: 50,
+        retryBudget: 0,
+      });
+      const providerSync = providerSyncResults.find(
+        (entry) => entry.agendaItemId === secretaryDecision.agendaItem.agendaItemId,
+      );
+      const storedAgenda = getSecretaryAgendaItemById({
+        agendaItemId: secretaryDecision.agendaItem.agendaItemId,
+        ownerUserId: userId,
+        tenantId,
+      });
+      const successfulSync = providerSync
+        && providerSync.action !== 'failed'
+        && providerSync.providerSyncState === 'synced'
+        && providerSync.providerEventId
+        && storedAgenda?.providerSyncState === 'synced'
+        && storedAgenda.providerEventId === providerSync.providerEventId
+        && storedAgenda.providerSource === providerSync.providerSource
+        && storedAgenda.providerTarget === providerSync.providerSource
+        ? {
+            providerEventId: storedAgenda.providerEventId,
+            providerSource: storedAgenda.providerSource,
+          }
+        : null;
+      // An exact claimed batch intentionally returns no row when the stable
+      // intent is already fresh. Reuse only a mapping that was durable before
+      // this request; never turn a failed current sync into apparent success.
+      const existingSync = !providerSync
+        && storedAgenda?.providerSyncState === 'synced'
+        && storedAgenda.providerEventId
+        && storedAgenda.providerSource
+        && storedAgenda.providerTarget === storedAgenda.providerSource
+        ? {
+            providerEventId: storedAgenda.providerEventId,
+            providerSource: storedAgenda.providerSource,
+          }
+        : null;
+      const durableSync = successfulSync ?? existingSync;
+      if (!durableSync) {
+        sendError(
+          res,
+          'COOKING_PREP_CALENDAR_SYNC_PENDING',
+          'The meal prep block was saved, but calendar synchronization is still pending.',
+          503,
+          {
+            agendaItemId: secretaryDecision.agendaItem.agendaItemId,
+            reasonCode: providerSync?.reasonCode || 'provider_sync_claim_held',
+          },
+        );
+        return;
+      }
+      const event = {
+        id: durableSync.providerEventId,
+        summary: title,
         start: secretaryDecision.selectedSlot.start,
         end: secretaryDecision.selectedSlot.end,
-        description,
-      }, undefined, userId, { tenantId });
+        source: durableSync.providerSource,
+        // The governed sync result intentionally exposes only durable
+        // identity. Keep the response field stable without inventing a link.
+        htmlLink: null,
+      };
 
       logger.info(
         { userId, week, eventId: event.id, mealCount: meals.length, source: event.source },
         'iOS meal prep calendar event created',
       );
-      try {
-        await createNotificationIntent({
-          userId,
-          tenantId,
-          sourceSkill: 'cooking',
-          type: 'reminder',
-          // K5: this fires the moment the user creates the block, in the
-          // foreground — it confirms an action they performed two seconds ago.
-          // The durable item stays (it is a useful receipt in the inbox) but it
-          // no longer interrupts. The moment with real value is 30 minutes
-          // BEFORE the block, which needs its own scheduled producer.
-          priority: 'passive',
-          deliveryPolicy: 'in_app_only',
-          relatedEntityId: event.id,
-          relatedEntityType: 'meal_prep_block',
-          title: 'Meal prep scheduled',
-          body: `${meals.length} meal prep block scheduled.`,
-          sensitiveBody: description,
-          actionButtons: [
-            { id: 'open_detail', label: 'Open', style: 'primary' },
-            { id: 'dismiss', label: 'Not now', style: 'secondary' },
-          ],
-          deeplink: `nexus://cooking/meal-plan/${encodeURIComponent(week)}`,
-          dedupeKey: `cooking:meal-prep:${userId}:${week}:${event.id}`,
-          privacyPolicy: 'standard',
-        });
-      } catch (notificationErr) {
-        logger.warn({ err: notificationErr, userId, week, eventId: event.id }, 'Cooking notification intent emit failed');
-      }
-      invalidateCookingDerivedCaches(userId, { includeCalendarSurfaces: true });
-
       sendSuccess(res, {
         event: {
           id: event.id,

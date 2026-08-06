@@ -15,12 +15,17 @@ import { runningEngine } from './engines/running-engine';
 import { cyclingEngine } from './engines/cycling-engine';
 import { swimmingEngine } from './engines/swimming-engine';
 import { strengthEngine } from './engines/strength-engine';
-import { triathlonEngine } from './engines/triathlon-engine';
+import { softenConsecutiveTriathlonIntensity, triathlonEngine } from './engines/triathlon-engine';
 import { resolveHybridPriority } from './engines/hybrid-engine';
 import { applyGuardrails } from './guardrails';
 import { profileFollowUpNotes } from '../training-profile-model';
 import { logger } from '../../utils/logger';
-import { buildSecretaryWeeklySummary, buildWeeklyDecisionNotes, dedupeDecisionLines } from './decision-trail';
+import {
+  buildInjurySafetyDecisionReasons,
+  buildSecretaryWeeklySummary,
+  buildWeeklyDecisionNotes,
+  dedupeDecisionLines,
+} from './decision-trail';
 import { listSecretaryAgendaItems } from '../secretary-scheduling-arbitrator';
 import {
   analyzeTrainingFeedback,
@@ -107,10 +112,15 @@ function trySecretaryWeeklySummary(athleteId: number, weekStart: string): string
 
 function reconcilePlanSessions(athlete: AthleteState, weeklyPlan: WeeklyPlan): WeeklyPlan {
   const reconciliation = reconcileWeeklyCapacity(athlete, weeklyPlan.sessions);
+  const reconciledSessions = weeklyPlan.discipline === 'triathlon'
+    ? softenConsecutiveTriathlonIntensity(reconciliation.sessions)
+    : reconciliation.sessions;
   const guardrailDecisionReasons = decisionReasonsFromGuardrails(weeklyPlan.guardrailResults);
   const candidatePlan: WeeklyPlan = {
     ...weeklyPlan,
-    sessions: reconciliation.sessions,
+    // Capacity may move a quality session after the engine's first spacing
+    // pass, so triathlon hard-day spacing must be revalidated on final days.
+    sessions: reconciledSessions,
     guardrailResults: [
       ...weeklyPlan.guardrailResults,
       ...reconciliation.guardrailResults,
@@ -208,11 +218,14 @@ export function buildWeekPlan(
       ...planningNotes,
     ],
     guardrailResults: [],
+    decisionReasons: buildInjurySafetyDecisionReasons(coachingAthlete),
   };
 
   const guardedPlan = reconcilePlanSessions(
     coachingAthlete,
-    applyGuardrails(applyFeedbackToWeeklyPlan(plan, feedbackAnalysis), coachingAthlete),
+    applyGuardrails(applyFeedbackToWeeklyPlan(plan, feedbackAnalysis, {
+      strengthRecoveryRotationIndex: Math.max(0, coachingAthlete.currentBlock.weekIndex - 1),
+    }), coachingAthlete),
   );
   // C8: weave Secretary's weekly contribution into the notes when the
   // agenda store is reachable (production); silently no-op when it isn't

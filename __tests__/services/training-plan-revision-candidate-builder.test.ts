@@ -2,9 +2,13 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+  buildActiveWorkoutFloorCheck,
   buildTrainingPlanRevisionCandidate,
+  countActiveWorkouts,
+  deriveQualityStatus,
   validateTrainingPlanRevisionDocument,
   type TrainingPlanCandidateRequest,
+  type TrainingPlanRevisionDocument,
 } from '../../src/services/training-plan-revision-candidate-builder';
 
 const beginnerHome: TrainingPlanCandidateRequest = {
@@ -203,5 +207,80 @@ describe('training-plan-revision-candidate-builder', () => {
     expect(() => validateTrainingPlanRevisionDocument(invalid, {
       typedWorkoutValidationEnabled: true,
     })).toThrow(/TYPED_CANONICAL_UNKNOWN_PRESCRIPTION_FORBIDDEN|TYPED_SESSION_PRESCRIPTION_MISMATCH/);
+  });
+
+  // F3 (Phase 1A-1): the quality report must be able to fail.
+  //
+  // Both construction sites hardcoded `status: 'PASS'` and the type admitted
+  // no other value, so `quality_report_json` was an attestation record rather
+  // than a gate — it could not block a zero-workout candidate, or anything
+  // else. These pin the primitives the gate is built from.
+  describe('quality report — active workout floor', () => {
+    function doc(weeks: TrainingPlanRevisionDocument['weeks']): TrainingPlanRevisionDocument {
+      return { weeks } as TrainingPlanRevisionDocument;
+    }
+
+    function workout(sessionType: string, workoutKey: string) {
+      return { workoutKey, sessionType } as TrainingPlanRevisionDocument['weeks'][number]['workouts'][number];
+    }
+
+    it('counts only non-rest workouts as active', () => {
+      const document = doc([
+        { weekKey: 'w1', weekNumber: 1, phaseKey: 'p', loadDirection: 'BASELINE', workouts: [
+          workout('strength_hypertrophy', 'a'),
+          workout('rest', 'b'),
+        ] },
+        { weekKey: 'w2', weekNumber: 2, phaseKey: 'p', loadDirection: 'BASELINE', workouts: [
+          workout('rest', 'c'),
+        ] },
+      ]);
+      expect(countActiveWorkouts(document)).toBe(1);
+    });
+
+    it('reports zero for a rest-only document', () => {
+      const document = doc([
+        { weekKey: 'w1', weekNumber: 1, phaseKey: 'p', loadDirection: 'BASELINE', workouts: [
+          workout('rest', 'a'),
+          workout('rest', 'b'),
+        ] },
+      ]);
+      expect(countActiveWorkouts(document)).toBe(0);
+    });
+
+    it('reports zero for a document with no workouts at all', () => {
+      expect(countActiveWorkouts(doc([]))).toBe(0);
+    });
+
+    it('emits a FAIL floor check when there are no active workouts', () => {
+      const check = buildActiveWorkoutFloorCheck(0);
+      expect(check.code).toBe('ACTIVE_WORKOUT_FLOOR');
+      expect(check.status).toBe('FAIL');
+    });
+
+    it('emits a PASS floor check when active workouts exist', () => {
+      expect(buildActiveWorkoutFloorCheck(3).status).toBe('PASS');
+    });
+
+    it('derives FAIL for the whole report when any check fails', () => {
+      expect(deriveQualityStatus([
+        { code: 'A', status: 'PASS', evidence: '' },
+        { code: 'ACTIVE_WORKOUT_FLOOR', status: 'FAIL', evidence: '' },
+      ])).toBe('FAIL');
+    });
+
+    it('derives PASS only when every check passes', () => {
+      expect(deriveQualityStatus([
+        { code: 'A', status: 'PASS', evidence: '' },
+        { code: 'B', status: 'PASS', evidence: '' },
+      ])).toBe('PASS');
+      expect(deriveQualityStatus([])).toBe('PASS');
+    });
+
+    it('marks a real generated candidate PASS with a floor check present', () => {
+      const built = buildTrainingPlanRevisionCandidate(beginnerHome);
+      expect(built.qualityReport.status).toBe('PASS');
+      expect(built.qualityReport.checks.map((check) => check.code)).toContain('ACTIVE_WORKOUT_FLOOR');
+      expect(countActiveWorkouts(built.document)).toBeGreaterThan(0);
+    });
   });
 });

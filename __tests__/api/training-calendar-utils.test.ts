@@ -13,6 +13,7 @@ import {
 describe('training calendar route utilities', () => {
   it('normalizes training statuses to stable route contract values', () => {
     expect(normalizeTrainingStatus('COMPLETED')).toBe('completed');
+    expect(normalizeTrainingStatus('partial')).toBe('partial');
     expect(normalizeTrainingStatus('skipped')).toBe('skipped');
     expect(normalizeTrainingStatus('rest')).toBe('rest');
     expect(normalizeTrainingStatus('unknown')).toBe('planned');

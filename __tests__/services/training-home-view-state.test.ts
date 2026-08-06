@@ -127,15 +127,16 @@ describe('buildTrainingHomeViewState', () => {
       signals: [
         {
           id: 44,
-          type: 'training_session_scheduled',
-          title: 'training_session_scheduled',
+          type: 'low_sleep',
+          title: 'low_sleep',
           summary: 'undefined',
           priority: 'normal',
           source: 'secretary',
           createdAt: '2026-04-19T06:00:00.000Z',
           expiresAt: '2026-04-19T18:00:00.000Z',
           payload: {
-            title: 'selector_trace leaked raw validation',
+            score: 40,
+            notes: 'selector_trace leaked raw validation',
           },
         },
       ],
@@ -347,6 +348,83 @@ describe('buildTrainingHomeViewState', () => {
     expect(state.coachReview?.summary).toContain('Troca a corrida longa');
   });
 
+  it('removes incomplete HTML-like markup from coach review copy while preserving visible words', () => {
+    const state = buildTrainingHomeViewState(baseInput({
+      coachBriefing: {
+        briefing: 'Keep HR < 150 bpm and cadence > 85 rpm.',
+        recommendations: [
+          {
+            action: 'MODIFY',
+            eventId: 'evt-markup',
+            source: 'coach',
+            summary: 'Keep today easy. <script src=https://attacker.invalid/payload.js',
+          },
+        ],
+      },
+    }), 'en-US');
+
+    expect(state.coachReview?.summary).toBe('Keep today easy.');
+
+    const nestedMarkup = buildTrainingHomeViewState(baseInput({
+      coachBriefing: {
+        briefing: 'This briefing must lose to the recommendation summary.',
+        recommendations: [
+          {
+            action: 'MODIFY',
+            eventId: 'evt-nested-markup',
+            source: 'coach',
+            summary: 'Keep today easy. <<script>alert(1)</script>',
+          },
+        ],
+      },
+    }), 'en-US');
+
+    expect(nestedMarkup.coachReview?.summary).toBe('Keep today easy. alert(1)');
+
+    const formattedCopyControl = buildTrainingHomeViewState(baseInput({
+      coachBriefing: {
+        briefing: '<strong>Keep today easy</strong> before the key session.',
+        recommendations: [],
+      },
+    }), 'en-US');
+
+    expect(formattedCopyControl.coachReview?.summary).toBe('Keep today easy before the key session.');
+  });
+
+  it('preserves compact threshold notation in the selected recommendation summary', () => {
+    const state = buildTrainingHomeViewState(baseInput({
+      coachBriefing: {
+        briefing: 'This briefing must lose to the recommendation summary.',
+        recommendations: [
+          {
+            action: 'MODIFY',
+            eventId: 'evt-threshold',
+            source: 'coach',
+            summary: 'Keep effort <LT1 and cadence steady.',
+          },
+        ],
+      },
+    }), 'en-US');
+
+    expect(state.coachReview?.summary).toBe('Keep effort <LT1 and cadence steady.');
+
+    const pairedThreshold = buildTrainingHomeViewState(baseInput({
+      coachBriefing: {
+        briefing: 'This briefing must also lose to the recommendation summary.',
+        recommendations: [
+          {
+            action: 'MODIFY',
+            eventId: 'evt-paired-threshold',
+            source: 'coach',
+            summary: 'Keep effort <LT1 and cadence > 85 rpm.',
+          },
+        ],
+      },
+    }), 'en-US');
+
+    expect(pairedThreshold.coachReview?.summary).toBe('Keep effort <LT1 and cadence > 85 rpm.');
+  });
+
   it('builds a refresh-oriented coach review when no briefing exists yet', () => {
     const state = buildTrainingHomeViewState(baseInput({
       coachBriefing: null,
@@ -366,30 +444,6 @@ describe('buildTrainingHomeViewState', () => {
 
     expect(state.coachReview?.state).toBe('needsRefresh');
     expect(state.coachReview?.primaryAction.target).toBe('refreshCoach');
-  });
-
-  it('does not expose private calendar event titles in conflict reasoning', () => {
-    const state = buildTrainingHomeViewState(baseInput({
-      signals: [
-        {
-          id: 2,
-          type: 'calendar_conflict',
-          title: 'Calendar conflict',
-          summary: 'A private event overlaps training.',
-          priority: 'urgent',
-          source: 'secretary',
-          createdAt: '2026-04-19T06:00:00.000Z',
-          expiresAt: '2026-04-19T18:00:00.000Z',
-          payload: {
-            conflict_event_title: 'Private therapy appointment',
-          },
-        },
-      ],
-    }), 'en-US');
-
-    const serialized = JSON.stringify(state);
-    expect(serialized).toContain('A calendar event overlaps a scheduled training session');
-    expect(serialized).not.toContain('Private therapy appointment');
   });
 
   it('marks low confidence when the read is degraded', () => {

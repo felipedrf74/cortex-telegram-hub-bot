@@ -53,7 +53,7 @@ export function resolveTrainingDay(options: {
   timezone?: string | null;
   offsetDays?: number;
 } = {}): TrainingDayResolution {
-  const timezone = normalizeTimezone(options.timezone) ?? normalizeTimezone(config.app.timezone) ?? DEFAULT_TRAINING_TIMEZONE;
+  const timezone = resolveTrainingTimezone(options.timezone);
   const base = DateTime.fromJSDate(options.now ?? new Date(), { zone: timezone });
   const local = (base.isValid ? base : DateTime.fromJSDate(options.now ?? new Date(), { zone: DEFAULT_TRAINING_TIMEZONE }))
     .plus({ days: options.offsetDays ?? 0 })
@@ -104,13 +104,35 @@ export function isStrictIsoDate(value: unknown): value is string {
   );
 }
 
-export function isPastIsoDate(value: string, now: Date = new Date()): boolean {
-  const today = DateTime.fromJSDate(now, { zone: 'UTC' }).startOf('day');
-  const candidate = DateTime.fromISO(value, { zone: 'UTC' }).startOf('day');
+export function isPastIsoDate(
+  value: string,
+  now: Date = new Date(),
+  timezone?: string | null,
+): boolean {
+  const zone = resolveTrainingTimezone(timezone);
+  const today = DateTime.fromJSDate(now, { zone }).startOf('day');
+  const candidate = DateTime.fromISO(value, { zone }).startOf('day');
   return candidate.isValid && candidate < today;
 }
 
-function normalizeTimezone(value: string | null | undefined): string | null {
+/** True only when the ISO calendar date is later than the user-local day. */
+export function isFutureIsoDate(
+  value: string,
+  now: Date = new Date(),
+  timezone?: string | null,
+): boolean {
+  const zone = resolveTrainingTimezone(timezone);
+  const today = DateTime.fromJSDate(now, { zone }).startOf('day');
+  const candidate = DateTime.fromISO(value, { zone }).startOf('day');
+  return candidate.isValid && candidate > today;
+}
+
+/**
+ * Tolerant timezone normalization for trusted/persisted runtime context.
+ * Public settings input is strictly validated at its route boundary; this
+ * helper protects scheduling reads from legacy or corrupt stored values.
+ */
+export function normalizeTrainingTimezone(value: string | null | undefined): string | null {
   const timezone = typeof value === 'string' ? value.trim() : '';
   if (!timezone) return null;
   try {
@@ -119,4 +141,37 @@ function normalizeTimezone(value: string | null | undefined): string | null {
   } catch {
     return null;
   }
+}
+
+/** Resolve a scheduling zone with one canonical app fallback. */
+export function resolveTrainingTimezone(value?: string | null): string {
+  return normalizeTrainingTimezone(value)
+    ?? normalizeTrainingTimezone(config.app.timezone)
+    ?? DEFAULT_TRAINING_TIMEZONE;
+}
+
+/**
+ * Resolve an immutable plan scheduling zone before considering a live user or
+ * app fallback. Plans created before F11 may not have the persisted field, so
+ * malformed/legacy preference payloads deliberately fall through safely.
+ */
+export function resolveTrainingPlanTimezone(
+  plan: { preferences_json?: string | null } | null | undefined,
+  fallback?: string | null,
+): string {
+  let persistedTimezone: string | null = null;
+  if (typeof plan?.preferences_json === 'string' && plan.preferences_json.trim()) {
+    try {
+      const preferences = JSON.parse(plan.preferences_json) as unknown;
+      if (preferences && typeof preferences === 'object' && !Array.isArray(preferences)) {
+        persistedTimezone = normalizeTrainingTimezone(
+          (preferences as Record<string, unknown>).schedulingTimezone as string | null | undefined,
+        );
+      }
+    } catch {
+      // Legacy/corrupt preference blobs must not break plan reads.
+    }
+  }
+
+  return resolveTrainingTimezone(persistedTimezone ?? fallback);
 }

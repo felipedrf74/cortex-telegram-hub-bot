@@ -1,6 +1,13 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import type { CalendarSource } from './unified-calendar';
+// Runtime edge: spec → registry → onboarding. The registry imports only the
+// TYPE TrainingPlanSpecClarificationId back from this module (erased at
+// compile time), so there is no runtime cycle.
+import {
+  resolveTrainingPlanClarificationResolution,
+  type TrainingPlanClarificationResolution,
+} from './training-plan-clarification-registry';
 
 export type TrainingPlanGoal =
   | 'strength'
@@ -96,6 +103,15 @@ export interface TrainingPlanSpecClarificationIssue {
   severity: 'blocker' | 'warning';
   question: string;
   reason: string;
+  /**
+   * Phase 2 (F2): allowlisted machine-readable profile target that answers
+   * this issue, so the client renders an answerable form and saves through
+   * the canonical profile path instead of dead-ending. Null when no
+   * canonical profile field can answer the issue (the warning stays
+   * informational). Severity is decided HERE, never by the resolution —
+   * warnings carry metadata too but never gate creation.
+   */
+  resolution: TrainingPlanClarificationResolution | null;
 }
 
 export interface TrainingPlanSpecReadinessResult {
@@ -160,6 +176,7 @@ export function assessTrainingPlanSpecReadiness(
   if (highFrequencyStrength && equipmentUnknown) {
     issues.push({
       id: 'equipment_clarification',
+      resolution: resolveTrainingPlanClarificationResolution('equipment_clarification'),
       severity: 'blocker',
       question: 'What equipment should Nexus build this strength plan around?',
       reason: 'High-frequency strength plans need known equipment so exercise selection is credible and does not fall back to generic fillers.',
@@ -169,6 +186,7 @@ export function assessTrainingPlanSpecReadiness(
   if (highFrequencyStrength && !spec.sessionDurationMinutes) {
     issues.push({
       id: 'session_duration_clarification',
+      resolution: resolveTrainingPlanClarificationResolution('session_duration_clarification'),
       severity: equipmentUnknown ? 'blocker' : 'warning',
       question: 'How long should each strength session be?',
       reason: equipmentUnknown
@@ -180,6 +198,7 @@ export function assessTrainingPlanSpecReadiness(
   if (spec.goal === 'hybrid' && !spec.enduranceSchedule?.length) {
     issues.push({
       id: 'modality_priority_clarification',
+      resolution: resolveTrainingPlanClarificationResolution('modality_priority_clarification'),
       severity: 'warning',
       question: 'Are any endurance sessions protected this week?',
       reason: 'Hybrid plans are safer when lower-body strength can avoid long runs, races, or interval days.',
@@ -189,6 +208,7 @@ export function assessTrainingPlanSpecReadiness(
   if (!spec.recoveryProfile) {
     issues.push({
       id: 'recovery_feedback_clarification',
+      resolution: resolveTrainingPlanClarificationResolution('recovery_feedback_clarification'),
       severity: 'warning',
       question: 'How are sleep, soreness, and readiness right now?',
       reason: 'Nexus can start conservatively, but recovery context improves first-week load decisions.',

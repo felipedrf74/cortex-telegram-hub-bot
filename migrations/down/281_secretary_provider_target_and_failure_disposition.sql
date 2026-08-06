@@ -1,0 +1,4 @@
+DROP INDEX IF EXISTS idx_secretary_agenda_provider_target_pending;
+ALTER TABLE secretary_agenda_items DROP COLUMN provider_sync_retry_after_at;
+ALTER TABLE secretary_agenda_items DROP COLUMN provider_sync_failure_disposition;
+ALTER TABLE secretary_agenda_items DROP COLUMN provider_target;

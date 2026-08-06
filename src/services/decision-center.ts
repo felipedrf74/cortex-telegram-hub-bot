@@ -15,6 +15,7 @@ import { DateTime } from 'luxon';
 import { getDb } from './database';
 import { emitDomainEvent } from './event-outbox';
 import { incrementTrainingGenerationCounter } from './training-generation-observability';
+import { trainingOperationLockPublicError } from './training-operation-locks';
 import {
   buildSkillNotificationFixtureIntent,
   createNotificationIntent,
@@ -3985,6 +3986,30 @@ export async function performDecisionAction(
           ...privacySafeTransportErrorDetails(err),
           originalErrorLogged: true,
         });
+    if (actionId === 'activate_training_plan_revision'
+        && isRetryableTrainingOperationDecisionError(error)
+        && releaseRetryableTrainingActivationExecution(
+          record,
+          claimed.execution.action_execution_id,
+        )) {
+      logger.warn({
+        event: 'decision.training_activation_lock_retryable',
+        decisionId,
+        actionId,
+        operation: error.details?.operation,
+        errorCode: error.code,
+      }, 'Training activation deferred without consuming its Decision attempt');
+      emitDecisionLifecycleEvent({
+        decisionId,
+        userId,
+        tenantId,
+        event: 'action_retryable',
+        actionId,
+        toStatus: record.status,
+        reason: error.code,
+      });
+      throw error;
+    }
     logger.error(
       { err, decisionId, actionId, userId, tenantId },
       'Decision action failed',
@@ -7084,7 +7109,7 @@ export type DecisionLifecycleEvent =
   | 'created' | 'surfaced' | 'detail_opened' | 'viewed' | 'snoozed' | 'dismissed'
   | 'approved' | 'rejected' | 'deferred' | 'revised' | 'blocked'
   | 'revalidation_failed' | 'strong_confirmation_legacy_bypass'
-  | 'action_previewed' | 'action_started' | 'action_succeeded' | 'action_failed' | 'action_partially_failed' | 'verified'
+  | 'action_previewed' | 'action_started' | 'action_retryable' | 'action_succeeded' | 'action_failed' | 'action_partially_failed' | 'verified'
   | 'expired' | 'superseded' | 'rolled_back' | 'unblocked' | 'execution_reconciled' | 'auto_resolved';
 
 let decisionLifecycleEventWriteFailures = 0;
@@ -9785,6 +9810,15 @@ async function executeDecisionAction(
         };
       });
     } catch (error) {
+      const lockError = trainingOperationLockPublicError(error);
+      if (lockError) {
+        throw new DecisionActionError(
+          lockError.code,
+          lockError.message,
+          lockError.status,
+          lockError.details,
+        );
+      }
       if (error instanceof activation.TrainingPlanRevisionError) {
         throw new DecisionActionError(error.code, error.message, error.statusCode);
       }
@@ -10608,6 +10642,62 @@ function reconcileCompletedExecutionAfterResponseFailure(
     }, 'Completed effect could not be moved out of the active execution state');
     return 'unknown';
   }
+}
+
+function isRetryableTrainingOperationDecisionError(error: DecisionActionError): boolean {
+  return (error.code === 'TRAINING_OPERATION_LOCKED'
+      || error.code === 'TRAINING_OPERATION_LOCK_UNAVAILABLE')
+    && error.details?.operation === 'plan_activate'
+    && typeof error.details.retryAfterSeconds === 'number'
+    && Number.isFinite(error.details.retryAfterSeconds);
+}
+
+/**
+ * Lock acquisition fails before the Training activation writes anything, so
+ * consuming the Decision claim would turn a retryable 409/503 into a terminal
+ * failed card. Restore the exact pre-claim row and remove only this execution
+ * and its exclusivity claims. The version-qualified transaction refuses to
+ * overwrite any concurrent Decision mutation.
+ */
+function releaseRetryableTrainingActivationExecution(
+  record: DecisionRecord,
+  executionId: string,
+): boolean {
+  const db = getDb();
+  return db.transaction(() => {
+    const restored = db.prepare(`
+      UPDATE notification_center_items
+         SET status = ?, decision_state = ?, record_version = ?, updated_at = ?
+       WHERE item_id = ? AND user_id = ? AND tenant_id = ?
+         AND status = ? AND decision_state = 'approved' AND record_version = ?
+    `).run(
+      record.status,
+      record.decisionState,
+      record.recordVersion,
+      record.updatedAt,
+      record.itemId,
+      record.userId,
+      record.tenantId,
+      record.status,
+      record.recordVersion + 1,
+    );
+    if (restored.changes !== 1) return false;
+
+    const removedExecution = db.prepare(`
+      DELETE FROM decision_action_executions
+       WHERE action_execution_id = ? AND decision_id = ?
+         AND user_id = ? AND tenant_id = ? AND status = 'started'
+    `).run(executionId, record.itemId, record.userId, record.tenantId);
+    if (removedExecution.changes !== 1) {
+      throw new Error('DECISION_RETRYABLE_TRAINING_EXECUTION_RELEASE_FAILED');
+    }
+    db.prepare(`
+      DELETE FROM decision_exclusivity_claims
+       WHERE action_execution_id = ? AND decision_id = ?
+         AND user_id = ? AND tenant_id = ? AND status = 'started'
+    `).run(executionId, record.itemId, record.userId, record.tenantId);
+    return true;
+  })();
 }
 
 function markExecutionFailed(

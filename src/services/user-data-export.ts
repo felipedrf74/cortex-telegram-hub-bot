@@ -328,6 +328,12 @@ export interface FullUserExport {
     createdAt: string;
     updatedAt: string;
   }>;
+  trainingPlanCompatibility: {
+    plans: Array<Record<string, unknown>>;
+    weeks: Array<Record<string, unknown>>;
+    sessions: Array<Record<string, unknown>>;
+    completions: Array<Record<string, unknown>>;
+  };
   productLearningCases: Array<Record<string, unknown>>;
   productLearningCaseTransitions: Array<Record<string, unknown>>;
   productLearningCaseReviewApprovals: Array<Record<string, unknown>>;
@@ -571,6 +577,57 @@ export function exportAllUserData(userId: number): FullUserExport {
     WHERE user_id = ?
     ORDER BY created_at
   `, userId);
+  // The released compatibility plan graph predates direct user ownership on
+  // its child tables. Export those rows through the user-owned parent plan so
+  // rich completion/skip health feedback is portable without crossing users.
+  const trainingCompatibilityPlans = safeAll(db, `
+    SELECT plans.*
+      FROM fitness_training_plans AS plans
+     WHERE plans.user_id = ?
+     ORDER BY plans.id
+  `, userId).map((row: Record<string, unknown>) => {
+    const { preferences_json: preferencesJson, ...rest } = row;
+    return { ...rest, preferences: parseExportJson(preferencesJson) };
+  });
+  const trainingCompatibilityWeeks = safeAll(db, `
+    SELECT weeks.*
+      FROM training_weeks AS weeks
+      JOIN fitness_training_plans AS plans ON plans.id = weeks.plan_id
+     WHERE plans.user_id = ?
+     ORDER BY weeks.plan_id, weeks.week_number, weeks.id
+  `, userId);
+  const trainingCompatibilitySessions = safeAll(db, `
+    SELECT sessions.*
+      FROM training_sessions AS sessions
+      JOIN fitness_training_plans AS plans ON plans.id = sessions.plan_id
+     WHERE plans.user_id = ?
+     ORDER BY sessions.plan_id, sessions.id
+  `, userId).map((row: Record<string, unknown>) => {
+    const { exercises_json: exercisesJson, ...rest } = row;
+    return { ...rest, exercises: parseExportJson(exercisesJson) };
+  });
+  const trainingCompatibilityCompletions = safeAll(db, `
+    SELECT completions.*
+      FROM training_completions AS completions
+      JOIN fitness_training_plans AS plans ON plans.id = completions.plan_id
+     WHERE plans.user_id = ?
+     ORDER BY completions.plan_id, completions.completed_at, completions.id
+  `, userId).map((row: Record<string, unknown>) => {
+    const {
+      actual_exercises_json: actualExercisesJson,
+      discomfort_flags_json: discomfortFlagsJson,
+      discomfort_locations_json: discomfortLocationsJson,
+      substitutions_used_json: substitutionsUsedJson,
+      ...rest
+    } = row;
+    return {
+      ...rest,
+      actual_exercises: parseExportJson(actualExercisesJson),
+      discomfort_flags: parseExportJson(discomfortFlagsJson),
+      discomfort_locations: parseExportJson(discomfortLocationsJson),
+      substitutions_used: parseExportJson(substitutionsUsedJson),
+    };
+  });
   const trainingCapacitySnapshots = safeAll(db, `
     SELECT snapshot_id AS snapshotId, tenant_id AS tenantId,
            schema_version AS schemaVersion, context_version AS contextVersion,
@@ -820,6 +877,12 @@ export function exportAllUserData(userId: number): FullUserExport {
     skillMemories,
     trainingFeedbackDecisions,
     secretarySourceSkillFeedback,
+    trainingPlanCompatibility: {
+      plans: trainingCompatibilityPlans,
+      weeks: trainingCompatibilityWeeks,
+      sessions: trainingCompatibilitySessions,
+      completions: trainingCompatibilityCompletions,
+    },
     productLearningCases,
     productLearningCaseTransitions,
     productLearningCaseReviewApprovals,
@@ -862,7 +925,9 @@ export const ACCOUNT_DELETION_TABLES: Array<{ table: string; column: string }> =
   { table: 'shared_memory', column: 'user_id' },
   { table: 'apple_health_data', column: 'user_id' },
   { table: 'readiness_scores', column: 'user_id' },
-  { table: 'training_completions', column: 'user_id' },
+  // `training_weeks`, `training_sessions`, and `training_completions` have no
+  // direct user_id. Their ownership is derived explicitly through
+  // fitness_training_plans below for inventory, export, and erasure proof.
   { table: 'training_m4_capacity_prune_authorizations', column: 'user_id' },
   { table: 'training_m4_capacity_snapshots', column: 'user_id' },
   { table: 'product_learning_case_review_approvals', column: 'user_id' },
@@ -999,6 +1064,38 @@ function accountDeletionTablesForDb(db: any): AccountDeletionTableDescriptor[] {
   return ordered;
 }
 
+const TRAINING_COMPATIBILITY_CHILD_TABLES = [
+  'training_weeks',
+  'training_sessions',
+  'training_completions',
+] as const;
+
+function ownedTrainingCompatibilityPlanIds(db: any, userId: number): number[] {
+  if (!tableExistsForDeletion(db, 'fitness_training_plans')) return [];
+  return (db.prepare(`
+    SELECT id FROM fitness_training_plans WHERE user_id = ? ORDER BY id
+  `).all(userId) as Array<{ id: number }>).map((row) => row.id);
+}
+
+function countOwnedTrainingCompatibilityChildren(
+  db: any,
+  userId: number,
+): Partial<Record<(typeof TRAINING_COMPATIBILITY_CHILD_TABLES)[number], number>> {
+  if (!tableExistsForDeletion(db, 'fitness_training_plans')) return {};
+  const counts: Partial<Record<(typeof TRAINING_COMPATIBILITY_CHILD_TABLES)[number], number>> = {};
+  for (const table of TRAINING_COMPATIBILITY_CHILD_TABLES) {
+    if (!tableExistsForDeletion(db, table)) continue;
+    const row = db.prepare(`
+      SELECT COUNT(*) AS count
+        FROM ${quoteSqlIdentifier(table)} AS child
+        JOIN fitness_training_plans AS plans ON plans.id = child.plan_id
+       WHERE plans.user_id = ?
+    `).get(userId) as { count: number };
+    counts[table] = row.count;
+  }
+  return counts;
+}
+
 export interface AccountDeletionInventory {
   userId: number;
   generatedAt: string;
@@ -1016,6 +1113,7 @@ export function getAccountDeletionInventoryForUser(userId: number): AccountDelet
     ).get(...ownership.params) as { count: number };
     deletableTables[table] = row.count;
   }
+  Object.assign(deletableTables, countOwnedTrainingCompatibilityChildren(db, userId));
   const kvRow = db.prepare('SELECT COUNT(*) AS count FROM kv_store WHERE key LIKE ?')
     .get(`config:${userId}:%`) as { count: number };
   deletableTables.kv_store_settings = kvRow.count;
@@ -1046,6 +1144,8 @@ export function deleteAllUserData(userId: number): Record<string, number> {
   const ownedTables = accountDeletionTablesForDb(db);
 
   const deleteAll = db.transaction(() => {
+    const compatibilityPlanIds = ownedTrainingCompatibilityPlanIds(db, userId);
+    const compatibilityChildCounts = countOwnedTrainingCompatibilityChildren(db, userId);
     const trainingErasureId = `training-erasure-${randomUUID()}`;
     const hasTrainingErasureGate = tableExistsForDeletion(db, 'training_revision_erasure_authorizations');
     if (hasTrainingErasureGate) {
@@ -1061,6 +1161,25 @@ export function deleteAllUserData(userId: number): Record<string, number> {
         `DELETE FROM ${quoteSqlIdentifier(table)} WHERE ${ownership.sql}`,
       ).run(...ownership.params);
       counts[table] = result.changes;
+    }
+    // The parent-plan deletion cascades through the compatibility graph. Keep
+    // the pre-delete child counts in the legal erasure receipt instead of
+    // pretending those tables were not part of the operation.
+    Object.assign(counts, compatibilityChildCounts);
+
+    if (compatibilityPlanIds.length > 0) {
+      const placeholders = compatibilityPlanIds.map(() => '?').join(', ');
+      for (const table of TRAINING_COMPATIBILITY_CHILD_TABLES) {
+        if (!tableExistsForDeletion(db, table)) continue;
+        const remaining = db.prepare(`
+          SELECT COUNT(*) AS count
+            FROM ${quoteSqlIdentifier(table)}
+           WHERE plan_id IN (${placeholders})
+        `).get(...compatibilityPlanIds) as { count: number };
+        if (remaining.count !== 0) {
+          throw new Error(`Account deletion left compatibility Training rows in ${table}.`);
+        }
+      }
     }
 
     if (hasTrainingErasureGate) {

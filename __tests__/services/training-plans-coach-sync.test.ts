@@ -174,4 +174,42 @@ describe('Training plan coach sync', () => {
     expect(changed).toBe(true);
     expect(getSessionById(session.id)?.day_of_week).toBe('Tuesday');
   });
+
+  it('keeps coach moves pinned to the plan timezone after the user timezone changes', () => {
+    const plan = createPlan({
+      user_id: 12,
+      tenant_id: 12,
+      name: 'Timezone-pinned plan',
+      sport: 'running',
+      duration_weeks: 4,
+      start_date: '2026-04-13',
+      end_date: '2026-05-11',
+      preferences_json: JSON.stringify({ schedulingTimezone: 'America/Los_Angeles' }),
+    });
+    const week = createWeek({ plan_id: plan.id, week_number: 1 });
+    const session = createSession({
+      week_id: week.id,
+      plan_id: plan.id,
+      day_of_week: 'Wednesday',
+      session_type: 'run',
+      title: 'Late run',
+      calendar_event_id: 'evt-plan-tz',
+      calendar_source: 'outlook',
+    });
+
+    const changed = syncSessionWithCoachRecommendation({
+      eventId: 'evt-plan-tz',
+      source: 'outlook',
+      userId: 12,
+      tenantId: 12,
+      // Simulates a post-creation user setting change. Tokyo is Wednesday;
+      // the persisted plan zone is still Tuesday for this absolute instant.
+      timezone: 'Asia/Tokyo',
+      action: 'MODIFY',
+      newStart: '2026-04-15T02:30:00.000Z',
+    });
+
+    expect(changed).toBe(true);
+    expect(getSessionById(session.id)?.day_of_week).toBe('Tuesday');
+  });
 });

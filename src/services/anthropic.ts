@@ -16,7 +16,6 @@ import {
 } from '../router/classifier-prompt-builder';
 import { buildScopedStateContextPrefix } from './provider-state-context';
 import { rethrowAiUsageFailClosedError } from './api-usage-fallback';
-import { trainingExerciseToolJsonDescription } from './training-exercise-identity';
 import { detectResponseLanguage } from './chat-language-detector';
 import { getCurrentChatRequestLocale } from './chat-request-locale-context';
 
@@ -687,7 +686,8 @@ export const TOOLS: Anthropic.Tool[] = [
   },
   // ── Training Plan tools ──
   {
-    name: 'create_training_plan', description: 'Create a new periodized training plan with weeks and sessions. Creates the plan shell — then add weeks and sessions.',
+    name: 'create_training_plan',
+    description: 'Hand off to the reviewed Training plan builder for preview and confirmation. This tool never writes plan/week/session rows directly.',
     input_schema: { type: 'object' as const, properties: {
       name: { type: 'string', description: 'Plan name e.g. "12-Week Strength Base"' },
       sport: { type: 'string', description: 'strength, running, cycling, triathlon, or hybrid' },
@@ -698,31 +698,6 @@ export const TOOLS: Anthropic.Tool[] = [
       end_date: { type: 'string', description: 'ISO 8601 date' },
       preferences_json: { type: 'string', description: 'JSON with available_days, equipment, injuries, etc.' },
     }, required: ['name', 'sport', 'duration_weeks', 'start_date', 'end_date'] },
-  },
-  {
-    name: 'add_training_week', description: 'Add a training week (microcycle) to an existing plan',
-    input_schema: { type: 'object' as const, properties: {
-      plan_id: { type: 'number' },
-      week_number: { type: 'number' },
-      focus: { type: 'string', description: 'strength, hypertrophy, endurance, power, deload, recovery' },
-      intensity_pct: { type: 'number', description: 'Intensity percentage 0-110 (60 for deload)' },
-      volume_sessions: { type: 'number', description: 'Target sessions this week' },
-      notes: { type: 'string' },
-    }, required: ['plan_id', 'week_number'] },
-  },
-  {
-    name: 'add_training_session', description: 'Add a training session to a week. After adding, optionally create a calendar blocker with create_calendar_event and link it.',
-    input_schema: { type: 'object' as const, properties: {
-      week_id: { type: 'number' },
-      plan_id: { type: 'number' },
-      day_of_week: { type: 'string', description: 'Monday, Tuesday, etc.' },
-      session_type: { type: 'string', description: 'strength, running, cycling, swim, recovery, mobility' },
-      title: { type: 'string', description: 'Session title e.g. "Upper Body Push"' },
-      description: { type: 'string' },
-      exercises_json: { type: 'string', description: trainingExerciseToolJsonDescription() },
-      duration_minutes: { type: 'number' },
-      intensity_text: { type: 'string', description: 'e.g. "RPE 7", "Zone 2", "80% 1RM"' },
-    }, required: ['week_id', 'plan_id', 'day_of_week', 'session_type', 'title'] },
   },
   {
     name: 'get_training_plan', description: 'Get the active training plan with current week sessions and adherence stats',
@@ -740,18 +715,6 @@ export const TOOLS: Anthropic.Tool[] = [
       soreness_level: { type: 'number', description: '1-10' },
       actual_exercises_json: { type: 'string', description: 'JSON of what was actually done' },
       notes: { type: 'string' },
-    }, required: ['session_id'] },
-  },
-  {
-    name: 'update_training_session', description: 'Update a training session (exercises, intensity, status)',
-    input_schema: { type: 'object' as const, properties: {
-      session_id: { type: 'number' },
-      title: { type: 'string' },
-      exercises_json: { type: 'string', description: trainingExerciseToolJsonDescription() },
-      duration_minutes: { type: 'number' },
-      intensity_text: { type: 'string' },
-      description: { type: 'string' },
-      status: { type: 'string', description: 'pending, completed, skipped, moved' },
     }, required: ['session_id'] },
   },
   {

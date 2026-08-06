@@ -60,7 +60,6 @@ const DEFAULT_PRIORITY_MAP: Partial<Record<SignalType, MeshPriority>> = {
   low_readiness: 2,
   planned_hard_run: 3,
   planned_hard_ride: 3,
-  calendar_conflict: 2,
   plan_drift: 2,
   high_adherence: 4,
   low_adherence: 4,

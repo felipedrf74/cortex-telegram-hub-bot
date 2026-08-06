@@ -21,10 +21,14 @@ import {
 } from './agent-job-manifest';
 import { chatCoreV2BackgroundCommandJobHandler } from './chat-core-v2/background-command-worker';
 import { chatLegacyTimeoutContinuationJobHandler } from './chat-legacy-timeout-continuation';
+import { consumeTrainingSecretaryFeedbackEvent } from './training-secretary-feedback-consumer';
+import { consumeCookingMealPrepProviderSyncCompleted } from './cooking-calendar-sync-completion';
+import { consumeSecretarySourceSkillFeedbackEvent } from './secretary-source-skill-feedback-consumers';
 
 const PROJECTABLE_EVENT_TYPES = new Set([
   'auth.user.logged_in',
   'chat.message.created',
+  'secretary.arbitration.committed.v1',
   'secretary.agenda_item.created',
   'secretary.agenda_item.updated',
   'secretary.conflict.detected',
@@ -46,6 +50,16 @@ const PROJECTABLE_EVENT_TYPES = new Set([
   'notification.item.updated',
 ]);
 
+// Event types the '*' router consumes ONLY to enqueue a durable background
+// job — no read-model projection. Kept as a named registry (parsed by
+// scripts/generate-agent-job-manifest.mjs, like PROJECTABLE_EVENT_TYPES) so
+// AgentJobManifest lists them as routed without implying projection
+// semantics. Dispatch stays strictly 1:1: the single '*' handler branches
+// internally; never add a second consumer for one of these types.
+const QUEUE_ROUTED_EVENT_TYPES = new Set([
+  'training.plan_calendar_sync.requested.v1',
+]);
+
 // Direct effects run inside the event lease instead of creating a second
 // background_jobs row. Keep this compact registration aligned with
 // AgentJobManifest so new direct side effects cannot bypass governance.
@@ -57,6 +71,18 @@ export const DEFAULT_EVENT_DIRECT_EFFECTS = [
   {
     eventType: 'training.adaptation.rejected.v1',
     effect: 'record_training_learning_observation',
+  },
+  {
+    eventType: 'secretary.training_feedback.requested.v1',
+    effect: 'record_training_secretary_feedback_decision',
+  },
+  {
+    eventType: 'cooking.meal_prep_provider_sync.completed.v1',
+    effect: 'complete_cooking_meal_prep_provider_sync',
+  },
+  {
+    eventType: 'secretary.source_feedback.requested.v1',
+    effect: 'record_secretary_source_skill_feedback',
   },
 ] as const;
 
@@ -75,7 +101,26 @@ function normalizeEventCreatedAtUtc(value: string): string {
 export const defaultEventHandlers: EventHandler[] = [
   {
     eventType: '*',
-    handle(event, db) {
+    async handle(event, db) {
+      if (event.eventType === DEFAULT_EVENT_DIRECT_EFFECTS[4].eventType) {
+        // Generic source-skill feedback is a DB-only monotonic projection.
+        // The consumer re-reads the exact scoped agenda version and never
+        // trusts mirrored decision fields from the privacy-bounded payload.
+        consumeSecretarySourceSkillFeedbackEvent(event, db);
+        return;
+      }
+      if (event.eventType === DEFAULT_EVENT_DIRECT_EFFECTS[3].eventType) {
+        await consumeCookingMealPrepProviderSyncCompleted(event, db);
+        return;
+      }
+      if (event.eventType === DEFAULT_EVENT_DIRECT_EFFECTS[2].eventType) {
+        // F23: this DB-only projection runs under the durable event lease and
+        // does not depend on process-local feedback-bus registrations. The
+        // consumer re-reads the exact owner/tenant/version agenda row before
+        // applying its monotonic state transition.
+        consumeTrainingSecretaryFeedbackEvent(event, db);
+        return;
+      }
       if (!event.userId) return;
       if (event.eventType === DEFAULT_EVENT_DIRECT_EFFECTS[0].eventType
           && event.sourceSkill === 'training'
@@ -156,6 +201,39 @@ export const defaultEventHandlers: EventHandler[] = [
           },
           priority: 30,
           idempotencyKey: `project_read_models:${event.eventId}`,
+          correlationId: event.correlationId,
+          causationEventId: event.eventId,
+        }, db);
+      }
+      if (QUEUE_ROUTED_EVENT_TYPES.has(event.eventType)
+        && event.eventType === 'training.plan_calendar_sync.requested.v1'
+        && event.sourceSkill === 'training') {
+        // Provider calendar work must never run inside this event lease
+        // (this runtime group is providerUsage: 'none'); the dedicated
+        // training-plan-calendar-sync worker drains the queued job. Payload
+        // keys are chosen to survive the outbox privacy sanitizer — any key
+        // matching /calendar|title|description/i would arrive '[redacted]'.
+        enqueueJob({
+          tenantId: event.tenantId,
+          userId: event.userId,
+          jobType: 'training_plan_calendar_sync',
+          payload: {
+            eventId: event.eventId,
+            planId: Number(event.payload?.planId ?? event.entityId),
+            planVersion: Number(event.payload?.planVersion ?? event.entityVersion),
+            sessionIds: Array.isArray(event.payload?.sessionIds) ? event.payload.sessionIds : null,
+            syncTarget: typeof event.payload?.syncTarget === 'string' ? event.payload.syncTarget : null,
+            // F24 additive reconciliation discriminator. These key names are
+            // deliberately sanitizer-safe and keep the existing literal
+            // event/job routing contract intact.
+            operation: event.payload?.operation === 'week_reflow' ? 'week_reflow' : 'plan_create',
+            adaptationRevision: Number(event.payload?.adaptationRevision ?? 0),
+            weekId: Number(event.payload?.weekId ?? 0),
+            reflowScope: event.payload?.reflowScope === 'plan' ? 'plan' : 'week',
+          },
+          priority: 20,
+          maxAttempts: 5,
+          idempotencyKey: `training_plan_calendar_sync:${event.eventId}`,
           correlationId: event.correlationId,
           causationEventId: event.eventId,
         }, db);

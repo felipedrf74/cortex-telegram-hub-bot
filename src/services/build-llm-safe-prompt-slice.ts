@@ -65,7 +65,9 @@ export function buildLlmSafePromptSlice(entry: ChatActionDefinition): LlmSafeAct
 }
 
 function deriveDescription(entry: ChatActionDefinition): string {
-  return `${entry.skill}: ${entry.action.replace(/_/g, ' ')}`;
+  // `skill` is already a sibling field in every serialized action view, so
+  // repeating it here spends prompt budget without adding routing context.
+  return entry.action.replace(/_/g, ' ');
 }
 
 function describeSlot(name: string, action: ChatActionName): LlmSafeSlotDescriptor {
@@ -88,11 +90,14 @@ function describeSlot(name: string, action: ChatActionName): LlmSafeSlotDescript
   }
   if (
     name === 'durationWeeks' ||
-    name === 'weeklyVolumeKm' ||
+    name === 'sessionsPerWeek' ||
     name === 'amount' ||
     name === 'limit'
   ) {
     return { name, type: 'number' };
+  }
+  if (name === 'startPolicy') {
+    return { name, type: 'enum', values: ['today', 'next_full_week'] };
   }
   if (name === 'provider') {
     return {

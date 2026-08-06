@@ -74,10 +74,35 @@ export function resolveMesocyclePlan(
 ): ResolvedMesocyclePlan {
   const blockName = input.blockTemplateName ?? defaultBlockNameFor(input.level);
   const configuredTemplate = getBlockTemplate(input.principles, blockName);
-  const blockTemplate = configuredTemplate && configuredTemplate.length > 0
+  const fullBlockTemplate = configuredTemplate && configuredTemplate.length > 0
     ? configuredTemplate
     : defaultBlockFallback(input.level);
   const configuredMesocycleLength = getMesocycleLength(input.principles, input.level);
+
+  // Fit a full cycle to a shorter horizon.
+  //
+  // `weekInBlock = i % mesocycleLength` walks the template from the FRONT, so a
+  // horizon shorter than the cycle simply never reaches the tail — and the tail
+  // is where the load-reduction week lives. The novice block is five weeks
+  // (['accumulation' x4, 'deload']), so a 4-week novice plan produced four
+  // accumulation weeks and no deload at all. Keep Coach V2's mesocycle output
+  // consistent with the stronger creation-quality rule that every 4+ week
+  // plan carries a deload-like phase or a reduced final week. Compatibility
+  // REST generation uses its own phase resolver and is pinned separately in
+  // training-coach-kernel-plan-generator.test.ts; this resolver alone cannot
+  // prove the persona route.
+  //
+  // Taking the LAST `totalWeeks` entries keeps the cycle's shape and lands the
+  // deload on the final week, which is where load reduction belongs in a short
+  // block. Below four weeks nothing is compressed: the quality gate does not
+  // require a deload there, and spending a quarter of a 3-week plan on one
+  // would cost more than it protects.
+  const MIN_WEEKS_REQUIRING_LOAD_REDUCTION = 4;
+  const shouldFitBlockToHorizon = input.totalWeeks >= MIN_WEEKS_REQUIRING_LOAD_REDUCTION
+    && input.totalWeeks < fullBlockTemplate.length;
+  const blockTemplate = shouldFitBlockToHorizon
+    ? fullBlockTemplate.slice(-input.totalWeeks)
+    : fullBlockTemplate;
   const mesocycleLength = blockTemplate.length || configuredMesocycleLength;
 
   const start = Date.parse(input.startDate);

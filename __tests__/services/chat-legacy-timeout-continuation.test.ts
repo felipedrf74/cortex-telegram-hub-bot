@@ -74,6 +74,47 @@ import {
 
 const NOW = new Date('2026-07-22T10:00:00.000Z');
 
+/**
+ * Put a job into `processing` the way a real worker claim does.
+ *
+ * Migration 279 fences every `status = 'processing'` write: a fresh fencing
+ * token, a non-empty lock owner, `locked_at`, and an UNEXPIRED
+ * `lease_expires_at` must all be present or the write aborts with
+ * BACKGROUND_JOB_FENCING_VIOLATION. These suites previously conjured a lease
+ * with a bare UPDATE; that is exactly what the fence now forbids, so the
+ * abort was the fence working rather than a product defect.
+ *
+ * `leaseExpiresAt` lets a test age the lease out afterwards. The trigger is
+ * `BEFORE UPDATE OF status`, so a follow-up write that touches only
+ * `lease_expires_at` is allowed without re-fencing — which is how a genuinely
+ * stale lease arises in production.
+ */
+function claimJobAsWorker(
+  jobId: string,
+  options: { lockOwner: string; lockedAt: string; attempts?: number; leaseExpiresAt?: string },
+): void {
+  testDb.prepare(`
+    UPDATE background_jobs
+       SET status = 'processing',
+           attempts = COALESCE(?, attempts),
+           locked_at = ?,
+           lock_owner = ?,
+           fencing_token = ?,
+           lease_expires_at = datetime('now', '+15 minutes')
+     WHERE job_id = ?
+  `).run(
+    options.attempts ?? null,
+    options.lockedAt,
+    options.lockOwner,
+    `fence-${options.lockOwner}-${options.lockedAt}`,
+    jobId,
+  );
+  if (options.leaseExpiresAt) {
+    testDb.prepare('UPDATE background_jobs SET lease_expires_at = ? WHERE job_id = ?')
+      .run(options.leaseExpiresAt, jobId);
+  }
+}
+
 function readJob(jobId: string): JobRecord {
   const row = testDb.prepare('SELECT * FROM background_jobs WHERE job_id = ?').get(jobId) as Record<string, unknown>;
   return {
@@ -302,12 +343,9 @@ describe('chat legacy timeout continuation', () => {
     });
     expect((readJob(queued.jobId).payload.delivery as Record<string, unknown>).apnsDeliveredAt).toBeUndefined();
 
-    testDb.prepare(`
-      UPDATE background_jobs
-         SET status = 'processing', attempts = 1,
-             locked_at = '2026-07-22 10:00:30', lock_owner = 'retry-worker'
-       WHERE job_id = ?
-    `).run(queued.jobId);
+    claimJobAsWorker(queued.jobId, {
+      lockOwner: 'retry-worker', lockedAt: '2026-07-22 10:00:30', attempts: 1,
+    });
     mocks.push.mockResolvedValueOnce({ sent: 1, failed: 0, skipped: 0, retriable: 0, unregistered: [] });
     const retry = await processChatLegacyTimeoutContinuationJob(readJob(queued.jobId), {
       now: new Date('2026-07-22T10:00:31.000Z'),
@@ -362,12 +400,21 @@ describe('chat legacy timeout continuation', () => {
       result: { text: 'late answer', domain: 'secretary' },
       now: NOW,
     });
-    testDb.prepare(`
-      UPDATE background_jobs
-         SET status = 'processing', attempts = 1,
-             locked_at = '2026-07-22 10:00:00', lock_owner = 'old-worker'
-       WHERE job_id = ?
-    `).run(queued.jobId);
+    // Migration 279 fences every `status = 'processing'` write: a fresh
+    // fencing token, a non-empty lock owner, `locked_at`, and an UNEXPIRED
+    // `lease_expires_at` must all be present, or the write aborts with
+    // BACKGROUND_JOB_FENCING_VIOLATION. That is the fence working — a stale
+    // processing lease can no longer be conjured by a bare UPDATE.
+    //
+    // The state this test needs (an old worker holding an expired lease) is
+    // therefore constructed the way it arises in production: claim legitimately
+    // with a valid fence, then let the lease age out. The second statement does
+    // not touch `status`, and the trigger is `BEFORE UPDATE OF status`, so
+    // expiring the lease is allowed without re-fencing.
+    claimJobAsWorker(queued.jobId, {
+      lockOwner: 'old-worker', lockedAt: '2026-07-22 10:00:00', attempts: 1,
+      leaseExpiresAt: '2026-07-22 10:15:00',
+    });
     const firstSend = deferred<{ sent: number; failed: number; skipped: number; retriable: number; unregistered: string[] }>();
     mocks.push.mockImplementationOnce(() => firstSend.promise);
     const staleWorker = processChatLegacyTimeoutContinuationJob(readJob(queued.jobId), {
@@ -376,12 +423,9 @@ describe('chat legacy timeout continuation', () => {
     });
     await vi.waitFor(() => expect(mocks.push).toHaveBeenCalledTimes(1));
 
-    testDb.prepare(`
-      UPDATE background_jobs
-         SET status = 'processing', attempts = 2,
-             locked_at = '2026-07-22 10:16:00', lock_owner = 'recovery-worker'
-       WHERE job_id = ?
-    `).run(queued.jobId);
+    claimJobAsWorker(queued.jobId, {
+      lockOwner: 'recovery-worker', lockedAt: '2026-07-22 10:16:00', attempts: 2,
+    });
     const recovery = await processChatLegacyTimeoutContinuationJob(readJob(queued.jobId), {
       now: new Date('2026-07-22T10:16:01.000Z'),
       pushNotification: mocks.push,
@@ -498,8 +542,7 @@ describe('chat legacy timeout continuation', () => {
 
   it('accepts a late result for a processing lease only under exact scope, then consumes it without a second call', async () => {
     const queued = enqueue();
-    testDb.prepare("UPDATE background_jobs SET status = 'processing', locked_at = datetime('now'), lock_owner = 'test-worker' WHERE job_id = ?")
-      .run(queued.jobId);
+    claimJobAsWorker(queued.jobId, { lockOwner: 'test-worker', lockedAt: new Date().toISOString() });
     expect(attachLateChatLegacyTimeoutResult({
       jobId: queued.jobId,
       tenantId: 99,

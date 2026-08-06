@@ -30,7 +30,10 @@ import {
   deleteTrainingCalendarEventWithRetry,
   type TrainingCalendarDeleteResult,
 } from '../../services/training-calendar-provider-retry';
-import { withTrainingCalendarOperationLock } from '../../services/training-operation-locks';
+import {
+  withTrainingCalendarOperationLock,
+  type TrainingOperationLockLease,
+} from '../../services/training-operation-locks';
 import { assertLegacyPlanMutationAllowed } from '../../services/training-plan-revision-legacy-guard';
 import { requireTenantIdParam } from '../../services/tenant-scope';
 import { hashOwnerIdForLog } from './_ownership-audit';
@@ -159,8 +162,8 @@ export async function cancelTrainingPlanForUser(
       planId: typeof requestedPlanId === 'number' ? requestedPlanId : null,
       operation: 'calendar_cancel',
     },
-    () => withTrainingCancellationLock(`training-plan-cancel:${userId}:tenant:${tenantId}`, () =>
-      cancelTrainingPlanForUserLocked(userId, requestedPlanId, tenantId)),
+    (lease) => withTrainingCancellationLock(`training-plan-cancel:${userId}:tenant:${tenantId}`, () =>
+      cancelTrainingPlanForUserLocked(userId, requestedPlanId, tenantId, lease)),
   );
 }
 
@@ -168,7 +171,9 @@ async function cancelTrainingPlanForUserLocked(
   userId: number,
   requestedPlanId?: unknown,
   tenantId: number = userId,
+  lease?: TrainingOperationLockLease,
 ): Promise<TrainingPlanCancellationResult> {
+  lease?.assertActive();
   const parsedPlanId = Number(requestedPlanId);
   const hasRequestedPlan = Number.isFinite(parsedPlanId) && parsedPlanId > 0;
   const requestedPlan = hasRequestedPlan ? trainingPlans.getPlanById(parsedPlanId) : null;
@@ -216,6 +221,7 @@ async function cancelTrainingPlanForUserLocked(
   let removedPlans = 0;
 
   for (const plan of plans) {
+    lease?.assertActive();
     const weeks = trainingPlans.getWeeksForPlan(plan.id) as TrainingWeekForCancellation[];
     const sessionsByWeek = weeks.map((week) => ({
       week,
@@ -223,7 +229,12 @@ async function cancelTrainingPlanForUserLocked(
     }));
     const deletionTargets = await buildCalendarDeletionTargetsForPlan(userId, tenantId, plan, sessionsByWeek);
 
+    lease?.assertActive();
     const deletionResults = await deleteCalendarDeletionTargets(deletionTargets, userId);
+    // Provider deletes may have been in flight when ownership was lost. Do
+    // not compound that uncertain outcome with a stale local hard-delete;
+    // leave the plan graph available for reconciliation/resync.
+    lease?.assertActive();
     const planRemovedEvents = deletionResults.filter(result =>
       result.status === 'fulfilled' || isProviderEventNotFoundError(result.reason),
     ).length;
@@ -286,6 +297,7 @@ async function cancelTrainingPlanForUserLocked(
     // sessions, and completions atomically. The user_id scope on the
     // DELETE is defense-in-depth in case the ownership gate above is
     // ever weakened or bypassed.
+    lease?.assertActive();
     const removal = trainingPlans.deletePlanHard(plan.id, userId, tenantId);
 
     if (!removal.ok) {
@@ -386,7 +398,9 @@ async function cancelTrainingPlanForUserLocked(
   // blocks cancellation success.
   let reconciledExtraEvents = 0;
   try {
+    lease?.assertActive();
     const reconciliation = await reconcileOrphanedTrainingAgendaEvents(userId, tenantId);
+    lease?.assertActive();
     reconciledExtraEvents = reconciliation.deleted;
     if (reconciliation.attempted > 0) {
       logger.info(
@@ -407,6 +421,8 @@ async function cancelTrainingPlanForUserLocked(
     );
   }
   removedEvents += reconciledExtraEvents;
+
+  lease?.assertActive();
 
   logger.info({
     userId,

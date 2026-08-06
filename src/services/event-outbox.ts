@@ -72,6 +72,10 @@ export interface EventOutboxRecord {
   notBefore: string;
   lockedAt: string | null;
   lockOwner: string | null;
+  /** Present on claimed rows; optional so older/manual record fixtures remain source-compatible. */
+  fencingToken?: string | null;
+  /** Present on claimed rows; optional so older/manual record fixtures remain source-compatible. */
+  leaseExpiresAt?: string | null;
   createdAt: string;
   processedAt: string | null;
   lastError: string | null;
@@ -83,6 +87,19 @@ export interface EventHandler {
 }
 
 const MAX_EVENT_ATTEMPTS = 3;
+const EVENT_LEASE_SECONDS = 15 * 60;
+const EVENT_HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
+
+type EventLeaseIdentity = Pick<EventOutboxRecord, 'eventId' | 'lockOwner' | 'fencingToken'>;
+
+export class EventOutboxLeaseLostError extends Error {
+  readonly code = 'EVENT_OUTBOX_LEASE_LOST';
+
+  constructor() {
+    super('EVENT_OUTBOX_LEASE_LOST: event lease is expired, missing, or owned by another worker');
+    this.name = 'EventOutboxLeaseLostError';
+  }
+}
 
 export function runOutboxTransaction<T>(operation: (emit: typeof emitDomainEvent) => T): T {
   const db = getDb();
@@ -115,6 +132,8 @@ export function ensureEventOutboxTables(db: Database.Database = getDb()): void {
       not_before TEXT NOT NULL DEFAULT (datetime('now')),
       locked_at TEXT,
       lock_owner TEXT,
+      fencing_token TEXT,
+      lease_expires_at TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       processed_at TEXT,
       last_error TEXT
@@ -129,6 +148,50 @@ export function ensureEventOutboxTables(db: Database.Database = getDb()): void {
       ON event_outbox(event_type, entity_type, entity_id);
     CREATE INDEX IF NOT EXISTS idx_event_outbox_correlation
       ON event_outbox(correlation_id);
+    CREATE INDEX IF NOT EXISTS idx_event_outbox_lease_expiry
+      ON event_outbox(status, lease_expires_at);
+    -- Mixed-version safety: predecessor claim SQL cannot rotate the fencing
+    -- token or install a lease. Abort that claim before its handler executes.
+    -- Tokenless processing rows migrated in flight can still complete; this
+    -- guard applies only when a worker attempts another claim.
+    CREATE TRIGGER IF NOT EXISTS trg_event_outbox_fenced_claim_transition
+    BEFORE UPDATE OF status ON event_outbox
+    FOR EACH ROW
+    WHEN NEW.status = 'processing'
+      AND NOT (
+        NEW.fencing_token IS NOT NULL
+        AND NEW.fencing_token IS NOT OLD.fencing_token
+        AND NEW.lock_owner IS NOT NULL
+        AND length(trim(NEW.lock_owner)) > 0
+        AND NEW.locked_at IS NOT NULL
+        AND NEW.lease_expires_at IS NOT NULL
+        AND NEW.lease_expires_at > datetime('now')
+      )
+    BEGIN
+      SELECT RAISE(ABORT, 'EVENT_OUTBOX_FENCING_VIOLATION');
+    END;
+    CREATE TRIGGER IF NOT EXISTS trg_event_outbox_fenced_terminal_transition
+    BEFORE UPDATE OF status ON event_outbox
+    FOR EACH ROW
+    WHEN OLD.status = 'processing'
+      AND OLD.fencing_token IS NOT NULL
+      AND NEW.status IN ('processed', 'failed', 'dead_letter')
+      AND NOT (
+        OLD.lease_expires_at IS NOT NULL
+        AND NEW.lease_expires_at IS NULL
+        AND NEW.fencing_token IS OLD.fencing_token
+      )
+    BEGIN
+      SELECT RAISE(ABORT, 'EVENT_OUTBOX_FENCING_VIOLATION');
+    END;
+    CREATE TRIGGER IF NOT EXISTS trg_event_outbox_terminal_tombstone
+    BEFORE UPDATE OF status ON event_outbox
+    FOR EACH ROW
+    WHEN NEW.status IN ('processed', 'failed', 'dead_letter')
+      AND OLD.status != 'processing'
+    BEGIN
+      SELECT RAISE(ABORT, 'EVENT_OUTBOX_FENCING_VIOLATION');
+    END;
   `);
 }
 
@@ -183,12 +246,17 @@ const STALE_EVENT_LEASE_MINUTES = 15;
 export function claimPendingEvents(limit = 25, lockOwner = `worker-${process.pid}`, db: Database.Database = getDb()): EventOutboxRecord[] {
   ensureEventOutboxTables(db);
   const boundedLimit = Math.max(1, Math.min(Math.floor(limit), 100));
+  const effectiveLockOwner = typeof lockOwner === 'string' && lockOwner.trim()
+    ? lockOwner.trim().slice(0, 128)
+    : `worker-${process.pid}`;
   const rows = db.prepare(`
     UPDATE event_outbox
     SET status = 'processing',
         attempts = attempts + 1,
         locked_at = datetime('now'),
-        lock_owner = ?
+        lock_owner = ?,
+        fencing_token = lower(hex(randomblob(16))),
+        lease_expires_at = datetime('now', ?)
     WHERE sequence IN (
       SELECT sequence
       FROM event_outbox
@@ -198,20 +266,31 @@ export function claimPendingEvents(limit = 25, lockOwner = `worker-${process.pid
         )
         OR (
           status = 'processing'
-          AND locked_at IS NOT NULL
-          AND locked_at <= datetime('now', ?)
+          AND (
+            lease_expires_at <= datetime('now')
+            OR (
+              lease_expires_at IS NULL
+              AND locked_at IS NOT NULL
+              AND locked_at <= datetime('now', ?)
+            )
+          )
         )
       ORDER BY CASE WHEN status = 'processing' THEN 1 ELSE 0 END, created_at ASC, sequence ASC
       LIMIT ?
     )
     RETURNING *
   `);
-  return (rows.all(lockOwner, `-${STALE_EVENT_LEASE_MINUTES} minutes`, boundedLimit) as any[]).map(mapEvent);
+  return (rows.all(
+    effectiveLockOwner,
+    `+${EVENT_LEASE_SECONDS} seconds`,
+    `-${STALE_EVENT_LEASE_MINUTES} minutes`,
+    boundedLimit,
+  ) as any[]).map(mapEvent);
 }
 
 export async function processPendingEvents(
   handlers: EventHandler[],
-  opts: { limit?: number; lockOwner?: string; db?: Database.Database } = {},
+  opts: { limit?: number; lockOwner?: string; db?: Database.Database; heartbeatIntervalMs?: number } = {},
 ): Promise<{ processed: number; failed: number; deadLetter: number }> {
   const db = opts.db ?? getDb();
   const startedAt = Date.now();
@@ -220,18 +299,42 @@ export async function processPendingEvents(
   let processed = 0;
   let failed = 0;
   let deadLetter = 0;
+  let leaseLost = 0;
+  // Start every heartbeat immediately: later rows in a claimed batch must not
+  // expire while an earlier async handler is still running.
+  const heartbeats = new Map(claimed.map((event) => [
+    event.eventId,
+    startEventLeaseHeartbeat(event, db, opts.heartbeatIntervalMs),
+  ]));
 
-  for (const event of claimed) {
-    const handler = handlersByType.get(event.eventType) ?? handlersByType.get('*');
-    try {
-      if (handler) await handler.handle(event, db);
-      markEventProcessed(event.eventId, db);
-      processed += 1;
-    } catch (err) {
-      const status = markEventFailed(event.eventId, err, db);
-      if (status === 'dead_letter') deadLetter += 1;
-      else failed += 1;
+  try {
+    for (const event of claimed) {
+      const handler = handlersByType.get(event.eventType) ?? handlersByType.get('*');
+      const heartbeat = heartbeats.get(event.eventId)!;
+      try {
+        heartbeat.assertActive();
+        if (handler) await handler.handle(event, db);
+        heartbeat.assertActive();
+        if (markEventProcessed(event, db)) processed += 1;
+      } catch (err) {
+        if (err instanceof EventOutboxLeaseLostError) {
+          leaseLost += 1;
+        } else {
+          try {
+            const status = markEventFailed(event, err, db);
+            if (status === 'dead_letter') deadLetter += 1;
+            else if (status === 'failed') failed += 1;
+          } catch (markErr) {
+            if (markErr instanceof EventOutboxLeaseLostError) leaseLost += 1;
+            else throw markErr;
+          }
+        }
+      } finally {
+        heartbeat.stop();
+      }
     }
+  } finally {
+    for (const heartbeat of heartbeats.values()) heartbeat.stop();
   }
 
   logger.info(
@@ -241,6 +344,7 @@ export async function processPendingEvents(
       processed,
       failed,
       deadLetter,
+      leaseLost,
       durationMs: Date.now() - startedAt,
     },
     'event_outbox_batch',
@@ -248,43 +352,99 @@ export async function processPendingEvents(
   return { processed, failed, deadLetter };
 }
 
-export function markEventProcessed(eventId: string, db: Database.Database = getDb()): void {
-  db.prepare(`
+export function renewEventLease(
+  event: EventLeaseIdentity,
+  db: Database.Database = getDb(),
+): string {
+  const lease = requireEventLeaseIdentity(event, db);
+  if (!lease) throw new EventOutboxLeaseLostError();
+  const renewed = db.prepare(`
+    UPDATE event_outbox
+       SET locked_at = datetime('now'),
+           lease_expires_at = datetime('now', ?)
+     WHERE event_id = ?
+       AND status = 'processing'
+       AND lock_owner = ?
+       AND fencing_token = ?
+       AND lease_expires_at > datetime('now')
+    RETURNING lease_expires_at AS leaseExpiresAt
+  `).get(
+    `+${EVENT_LEASE_SECONDS} seconds`,
+    lease.eventId,
+    lease.lockOwner,
+    lease.fencingToken,
+  ) as { leaseExpiresAt: string } | undefined;
+  if (!renewed) throw new EventOutboxLeaseLostError();
+  return renewed.leaseExpiresAt;
+}
+
+export function markEventProcessed(
+  event: EventLeaseIdentity | string,
+  db: Database.Database = getDb(),
+): boolean {
+  const lease = requireEventLeaseIdentity(event, db);
+  if (!lease) return false;
+  const result = db.prepare(`
     UPDATE event_outbox
     SET status = 'processed',
         processed_at = datetime('now'),
         locked_at = NULL,
         lock_owner = NULL,
+        lease_expires_at = NULL,
         last_error = NULL
     WHERE event_id = ?
-      AND status != 'canceled'
-  `).run(eventId);
+      AND status = 'processing'
+      AND lock_owner = ?
+      AND fencing_token = ?
+      AND lease_expires_at > datetime('now')
+  `).run(lease.eventId, lease.lockOwner, lease.fencingToken);
+  if (result.changes === 0) {
+    if (readEventStatus(lease.eventId, db) === 'canceled') return false;
+    throw new EventOutboxLeaseLostError();
+  }
+  return true;
 }
 
-export function markEventFailed(eventId: string, err: unknown, db: Database.Database = getDb()): EventOutboxStatus {
-  const row = db.prepare('SELECT attempts, status FROM event_outbox WHERE event_id = ?').get(eventId) as { attempts: number; status: EventOutboxStatus } | undefined;
+export function markEventFailed(
+  event: EventLeaseIdentity | string,
+  err: unknown,
+  db: Database.Database = getDb(),
+): EventOutboxStatus {
+  const lease = requireEventLeaseIdentity(event, db);
+  if (!lease) return 'canceled';
+  const row = db.prepare('SELECT attempts, status FROM event_outbox WHERE event_id = ?').get(lease.eventId) as { attempts: number; status: EventOutboxStatus } | undefined;
   if (row?.status === 'canceled') return 'canceled';
   const attempts = row?.attempts ?? 1;
   const dead = attempts >= MAX_EVENT_ATTEMPTS;
   const delaySeconds = Math.min(3600, 2 ** Math.max(0, attempts - 1) * 30);
-  db.prepare(`
+  const result = db.prepare(`
     UPDATE event_outbox
     SET status = ?,
         not_before = datetime('now', ?),
         locked_at = NULL,
         lock_owner = NULL,
+        lease_expires_at = NULL,
         last_error = ?
     WHERE event_id = ?
-      AND status != 'canceled'
+      AND status = 'processing'
+      AND lock_owner = ?
+      AND fencing_token = ?
+      AND lease_expires_at > datetime('now')
   `).run(
     dead ? 'dead_letter' : 'failed',
     dead ? '+0 seconds' : `+${delaySeconds} seconds`,
     safeError(err),
-    eventId,
+    lease.eventId,
+    lease.lockOwner,
+    lease.fencingToken,
   );
+  if (result.changes === 0) {
+    if (readEventStatus(lease.eventId, db) === 'canceled') return 'canceled';
+    throw new EventOutboxLeaseLostError();
+  }
   if (dead) {
     logger.warn(
-      { scope: 'event_outbox', eventId, attempts, lastError: safeError(err) },
+      { scope: 'event_outbox', eventId: lease.eventId, attempts, lastError: safeError(err) },
       'event_dead_lettered',
     );
   }
@@ -312,6 +472,8 @@ export function replayEventsForType(
         not_before = datetime('now'),
         locked_at = NULL,
         lock_owner = NULL,
+        fencing_token = NULL,
+        lease_expires_at = NULL,
         processed_at = NULL,
         last_error = NULL
     WHERE event_type = ?
@@ -358,6 +520,8 @@ export function replayEvent(eventId: string, tenantId: number, db: Database.Data
         not_before = datetime('now'),
         locked_at = NULL,
         lock_owner = NULL,
+        fencing_token = NULL,
+        lease_expires_at = NULL,
         processed_at = NULL,
         last_error = NULL
     WHERE event_id = ?
@@ -375,7 +539,9 @@ export function cancelEvent(eventId: string, tenantId: number, db: Database.Data
     SET status = 'canceled',
         processed_at = datetime('now'),
         locked_at = NULL,
-        lock_owner = NULL
+        lock_owner = NULL,
+        fencing_token = NULL,
+        lease_expires_at = NULL
     WHERE event_id = ?
       AND tenant_id = ?
       AND status IN ('pending', 'failed', 'processing', 'dead_letter')
@@ -455,6 +621,53 @@ function safeError(err: unknown): string {
   return String(err).slice(0, 500);
 }
 
+function requireEventLeaseIdentity(
+  event: EventLeaseIdentity | string,
+  db: Database.Database,
+): { eventId: string; lockOwner: string; fencingToken: string } | null {
+  const eventId = typeof event === 'string' ? event : event.eventId;
+  if (typeof event !== 'string' && event.lockOwner && event.fencingToken) {
+    return { eventId, lockOwner: event.lockOwner, fencingToken: event.fencingToken };
+  }
+  // Keep the predecessor id-only signature source-compatible, but never let it
+  // bypass fencing. A cancellation remains an idempotent no-op for late work.
+  if (readEventStatus(eventId, db) === 'canceled') return null;
+  throw new EventOutboxLeaseLostError();
+}
+
+function readEventStatus(eventId: string, db: Database.Database): EventOutboxStatus | null {
+  const row = db.prepare('SELECT status FROM event_outbox WHERE event_id = ?').get(eventId) as { status: EventOutboxStatus } | undefined;
+  return row?.status ?? null;
+}
+
+function startEventLeaseHeartbeat(
+  event: EventLeaseIdentity,
+  db: Database.Database,
+  requestedIntervalMs?: number,
+): { assertActive(): void; stop(): void } {
+  const intervalMs = Number.isFinite(requestedIntervalMs)
+    ? Math.max(25, Math.min(Math.floor(requestedIntervalMs as number), EVENT_HEARTBEAT_INTERVAL_MS))
+    : EVENT_HEARTBEAT_INTERVAL_MS;
+  let renewalError: unknown = null;
+  const timer = setInterval(() => {
+    try {
+      renewEventLease(event, db);
+    } catch (err) {
+      renewalError = err;
+      clearInterval(timer);
+    }
+  }, intervalMs);
+  timer.unref();
+  return {
+    assertActive() {
+      if (renewalError) throw renewalError;
+    },
+    stop() {
+      clearInterval(timer);
+    },
+  };
+}
+
 function mapEvent(row: any): EventOutboxRecord {
   return {
     sequence: Number(row.sequence),
@@ -479,6 +692,8 @@ function mapEvent(row: any): EventOutboxRecord {
     notBefore: row.not_before,
     lockedAt: row.locked_at ?? null,
     lockOwner: row.lock_owner ?? null,
+    ...(row.status === 'processing' && row.fencing_token != null ? { fencingToken: row.fencing_token as string } : {}),
+    ...(row.status === 'processing' && row.lease_expires_at != null ? { leaseExpiresAt: row.lease_expires_at as string } : {}),
     createdAt: row.created_at,
     processedAt: row.processed_at ?? null,
     lastError: row.last_error ?? null,

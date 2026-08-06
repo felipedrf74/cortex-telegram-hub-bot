@@ -81,8 +81,10 @@ describe('garmin-session-store cache invalidation', () => {
 
     markGarminConnectionActive(86, 'athlete@example.com');
 
-    expect(mockClearCache).toHaveBeenCalledWith('readiness:86');
-    expectCachePrefixesCleared('training-summary:', 'dashboard:86:', 'dashboard-home:86:');
+    // Stronger F34 guarantee: Garmin state changes must evict tenant-first
+    // readiness rows, not the historical non-existent exact user key.
+    expect(mockClearCache).not.toHaveBeenCalledWith('readiness:86');
+    expectCachePrefixesCleared('readiness:', 'training-summary:', 'dashboard:86:', 'dashboard-home:86:');
   });
 
   it('clears readiness and dashboard caches when Garmin needs reauth', async () => {
@@ -90,8 +92,8 @@ describe('garmin-session-store cache invalidation', () => {
 
     await markGarminNeedsReauth(86, 'silent_token_load_failed');
 
-    expect(mockClearCache).toHaveBeenCalledWith('readiness:86');
-    expectCachePrefixesCleared('training-summary:', 'dashboard:86:', 'dashboard-home:86:');
+    expect(mockClearCache).not.toHaveBeenCalledWith('readiness:86');
+    expectCachePrefixesCleared('readiness:', 'training-summary:', 'dashboard:86:', 'dashboard-home:86:');
     expect(mockCreateNotificationIntent).toHaveBeenCalledWith(expect.objectContaining({
       sourceSkill: 'training',
       type: 'sync_failure',
@@ -105,8 +107,8 @@ describe('garmin-session-store cache invalidation', () => {
 
     clearGarminSession(86);
 
-    expect(mockClearCache).toHaveBeenCalledWith('readiness:86');
-    expectCachePrefixesCleared('training-summary:', 'dashboard:86:', 'dashboard-home:86:');
+    expect(mockClearCache).not.toHaveBeenCalledWith('readiness:86');
+    expectCachePrefixesCleared('readiness:', 'training-summary:', 'dashboard:86:', 'dashboard-home:86:');
   });
 
   it('returns null instead of assuming the owner when no request user is present', async () => {

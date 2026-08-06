@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { DateTime, Settings } from 'luxon';
 
 import { resolvePlanSlotDate } from '../../src/api/routes/training-plan-persistence';
 
@@ -13,7 +14,7 @@ describe('training plan persistence slot-date anchoring', () => {
 
     expect(result.kind).toBe('usable');
     if (result.kind === 'usable') {
-      expect(result.sessionDate.toISOString().slice(0, 10)).toBe('2026-04-20');
+      expect(DateTime.fromJSDate(result.sessionDate).setZone('Europe/Lisbon').toISODate()).toBe('2026-04-20');
     }
   });
 
@@ -27,7 +28,7 @@ describe('training plan persistence slot-date anchoring', () => {
 
     expect(result.kind).toBe('usable');
     if (result.kind === 'usable') {
-      expect(result.sessionDate.toISOString().slice(0, 10)).toBe('2026-06-21');
+      expect(DateTime.fromJSDate(result.sessionDate).setZone('Europe/Lisbon').toISODate()).toBe('2026-06-21');
     }
   });
 
@@ -44,5 +45,31 @@ describe('training plan persistence slot-date anchoring', () => {
       dayName: 'Monday',
       generatedOnDayName: 'Friday',
     });
+  });
+
+  it('uses the plan timezone for the week-one past-day floor at UTC midnight', () => {
+    const previousZone = Settings.defaultZone;
+    Settings.defaultZone = 'UTC';
+    try {
+      const result = resolvePlanSlotDate({
+        weekNumber: 1,
+        dayIndex: 0,
+        planStartDate: '2026-04-17',
+        now: new Date('2026-04-20T00:30:00.000Z'),
+        schedulingTimezone: 'America/Los_Angeles',
+      });
+
+      // Stronger guarantee: the diagnostic day must come from the same
+      // persisted plan zone as the past-day decision. Pinning the host zone to
+      // UTC makes the owner test kill removal of `{ zone: timezone }` on every
+      // developer machine and CI runner.
+      expect(result).toEqual({
+        kind: 'past_day_in_week_1',
+        dayName: 'Monday',
+        generatedOnDayName: 'Sunday',
+      });
+    } finally {
+      Settings.defaultZone = previousZone;
+    }
   });
 });

@@ -8,7 +8,8 @@ import { config } from '../../config';
 import { sendSuccess, sendError, sendInternalError } from '../response-helpers';
 import { getRuntimeStatus } from '../../services/runtime-status';
 import { normalizeLangHeader } from '../../services/secretary-fastpath';
-import { setUserLanguage } from '../../services/user-service';
+import { setUserLanguage, setUserTimezone } from '../../services/user-service';
+import { IANAZone } from 'luxon';
 import { getDb } from '../../services/database';
 import { getPushPreferences, setPushPreference } from '../../services/report-document-store';
 import { registerNotificationDeviceToken } from '../../services/notification-orchestrator';
@@ -207,6 +208,34 @@ export function settingsRoutes(): Router {
     } catch (err: any) {
       logger.error({ err }, 'iOS set language failed');
       sendInternalError(res, 'Unable to save language right now.');
+    }
+  });
+
+  /**
+   * POST /api/v1/settings/timezone — F11 prerequisite (Phase 3).
+   *
+   * The canonical `users.timezone` write path. The column predates migration
+   * 271; that migration documented the missing writer that left Training on
+   * the process-global config zone. Only real IANA identifiers are accepted:
+   * fixed offsets ("UTC+3") shift with DST and would silently corrupt
+   * schedule anchoring, which is the exact defect class F11 exists to fix.
+   */
+  router.post('/timezone', async (req, res: Response) => {
+    const { userId } = req as AuthenticatedRequest;
+    if (!ensureValidSettingsUserScope(res, userId, 'settings_route_timezone')) return;
+    const timezone = typeof req.body?.timezone === 'string' ? req.body.timezone.trim() : '';
+
+    if (!timezone || !IANAZone.isValidZone(timezone)) {
+      sendError(res, 'BAD_REQUEST', 'timezone must be a valid IANA zone identifier (e.g. Europe/Lisbon)');
+      return;
+    }
+
+    try {
+      setUserTimezone(userId, timezone);
+      sendSuccess(res, { timezone });
+    } catch (err: any) {
+      logger.error({ err }, 'iOS set timezone failed');
+      sendInternalError(res, 'Unable to save timezone right now.');
     }
   });
 

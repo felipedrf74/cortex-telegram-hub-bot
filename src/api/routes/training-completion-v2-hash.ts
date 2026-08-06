@@ -32,6 +32,8 @@
 import { createHash } from 'node:crypto';
 
 export interface V2CompletionFieldsForHash {
+  notes?: string | null;
+  rpe?: number | null;
   rir?: number | null;
   painScore?: number | null;
   painLocation?: string | null;
@@ -51,6 +53,21 @@ export interface V2CompletionFieldsForHash {
   // user/row/status, so the shift cannot dedupe across entities.
   energyLevel?: number | null;
   sorenessLevel?: number | null;
+  completionState?: string | null;
+  readinessLevel?: number | null;
+  difficultyFeedback?: string | null;
+  durationFeedback?: string | null;
+  discomfortFlag?: boolean | null;
+  discomfortFlagsJson?: string | null;
+  discomfortLocationsJson?: string | null;
+  discomfortDetails?: string | null;
+  substitutionsUsedJson?: string | null;
+  feltTooHard?: boolean | null;
+  feltTooEasy?: boolean | null;
+  feltTooLong?: boolean | null;
+  feltTooShort?: boolean | null;
+  modality?: string | null;
+  sessionRole?: string | null;
 }
 
 /**
@@ -95,6 +112,8 @@ export function buildV2CanonicalSummary(
   fields: V2CompletionFieldsForHash,
 ): Record<string, number | string | boolean | null> {
   return {
+    notes: stringFingerprint(fields.notes),
+    rpe: canonicalNumber(fields.rpe),
     rir: canonicalNumber(fields.rir),
     painScore: canonicalNumber(fields.painScore),
     painLocation: stringFingerprint(fields.painLocation),
@@ -108,6 +127,21 @@ export function buildV2CanonicalSummary(
     completedLoadJson: stringFingerprint(fields.completedLoadJson),
     energyLevel: canonicalNumber(fields.energyLevel),
     sorenessLevel: canonicalNumber(fields.sorenessLevel),
+    completionState: stringFingerprint(fields.completionState),
+    readinessLevel: canonicalNumber(fields.readinessLevel),
+    difficultyFeedback: stringFingerprint(fields.difficultyFeedback),
+    durationFeedback: stringFingerprint(fields.durationFeedback),
+    discomfortFlag: fields.discomfortFlag === true,
+    discomfortFlagsJson: stringFingerprint(fields.discomfortFlagsJson),
+    discomfortLocationsJson: stringFingerprint(fields.discomfortLocationsJson),
+    discomfortDetails: stringFingerprint(fields.discomfortDetails),
+    substitutionsUsedJson: stringFingerprint(fields.substitutionsUsedJson),
+    feltTooHard: fields.feltTooHard === true,
+    feltTooEasy: fields.feltTooEasy === true,
+    feltTooLong: fields.feltTooLong === true,
+    feltTooShort: fields.feltTooShort === true,
+    modality: stringFingerprint(fields.modality),
+    sessionRole: stringFingerprint(fields.sessionRole),
   };
 }
 

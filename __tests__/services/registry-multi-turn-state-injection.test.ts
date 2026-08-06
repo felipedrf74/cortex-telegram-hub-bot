@@ -16,7 +16,6 @@
 // direction fails the test.
 
 import { describe, expect, it, vi } from 'vitest';
-import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 
 vi.mock('../../src/services/chat-action-state', () => ({
   cancelPendingChatActions: vi.fn(() => 0),
@@ -203,8 +202,8 @@ describe('multi-turn turn-2 state-injection (Phase 9 batch 49)', () => {
     });
   });
 
-  describe('training_plan_create turn-2 (weekly volume)', () => {
-    it('turn 2 fills weeklyVolumeKm when pending training plan is active', async () => {
+  describe('training_plan_create turn-2 (weekly frequency)', () => {
+    it('turn 2 fills sessionsPerWeek when a pending training plan is active', async () => {
       mockedGetActivePending.mockImplementation((opts: any) => {
         if (opts?.skill === 'training') {
           return {
@@ -214,19 +213,41 @@ describe('multi-turn turn-2 state-injection (Phase 9 batch 49)', () => {
             userId: 1,
             tenantId: 1,
             conversationId: 'mt-training',
-            collectedSlots: { sport: 'running', goal: '10k', durationWeeks: 12, startDate: '2026-05-19' },
-            missingSlots: ['weeklyVolumeKm'],
+            collectedSlots: { objective: '10k', durationWeeks: 12, startPolicy: 'next_full_week' },
+            missingSlots: ['sessionsPerWeek'],
             ttlExpiresAt: '2026-05-16T13:00:00+01:00',
           } as any;
         }
         return null;
       });
-      const turn2 = await buildChatActionPlan(input('It is 20 km a week', 'en-US', 'mt-training'));
+      const turn2Input = input('Make it 4 sessions per week', 'en-US', 'mt-training');
+      const turn2 = await buildChatActionPlan(turn2Input);
       const step = turn2?.steps[0];
       expect(step?.skill).toBe('training');
       expect(step?.action).toBe('training_plan_create');
       const args = step?.args as Record<string, unknown> | undefined;
-      expect(args?.weeklyVolumeKm).toBe(20);
+      expect(args?.sessionsPerWeek).toBe(4);
+      expect(step?.slotProvenance?.sessionsPerWeek).toEqual({
+        slot: 'sessionsPerWeek',
+        value: 4,
+        rawText: 'Make it 4 sessions per week',
+        turnId: turn2Input.messageId,
+        spanStart: null,
+        spanEnd: null,
+        sourceType: 'user_message',
+        normalizer: 'training_sessions_per_week_v1',
+        confidence: 0.96,
+        validation: 'passed',
+      });
+
+      const unmatched = await buildChatActionPlan(input(
+        'Make it 2 sessions per week',
+        'en-US',
+        'mt-training',
+      ));
+      expect(unmatched?.steps[0]?.args.sessionsPerWeek).toBeUndefined();
+      expect(unmatched?.steps[0]?.slotProvenance).toBeUndefined();
+      expect(unmatched?.telemetry.outcome).toBe('needs_input');
     });
   });
 
@@ -249,103 +270,5 @@ describe('multi-turn turn-2 state-injection (Phase 9 batch 49)', () => {
         }
       }
     });
-  });
-});
-
-describe('multi-turn pending continuation with real chat-action-state persistence', () => {
-  it('MT1 turn 1 persists pending state and turn 2 reads it back with the same conversation ID', async () => {
-    vi.resetModules();
-    vi.doUnmock('../../src/services/chat-action-state');
-
-    let integrationDb: any;
-    vi.doMock('../../src/services/database', () => ({
-      getDb: () => integrationDb,
-      initDatabase: vi.fn(),
-      closeDatabase: vi.fn(),
-      findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
-    }));
-
-    integrationDb = createMigratedTestDatabase();
-
-    const previousFlag = process.env.CHAT_HYBRID_PLANNER_ENABLED;
-    process.env.CHAT_HYBRID_PLANNER_ENABLED = 'active';
-
-    try {
-      const {
-        buildChatActionPlan,
-        buildDeterministicChatActionPlan,
-      } = await import('../../src/services/chat');
-      const {
-        getActivePendingChatAction: getRealActivePendingChatAction,
-        upsertPendingChatAction: upsertRealPendingChatAction,
-      } = await import('../../src/services/chat-action-state');
-
-      const conversationId = 'mt-real-pending-training';
-      const turn1 = buildDeterministicChatActionPlan({
-        userId: 77,
-        tenantId: 88,
-        conversationId,
-        messageId: 'mt-real-turn-1',
-        locale: 'en-US',
-        timezone: 'Europe/Lisbon',
-        channel: 'api',
-        nowIso: '2026-05-16T12:00:00+01:00',
-        text: 'Build me a running 10K plan in 12 weeks starting Monday',
-      });
-
-      const turn1Step = turn1?.steps[0];
-      expect(turn1Step?.skill).toBe('training');
-      expect(turn1Step?.action).toBe('training_plan_create');
-      upsertRealPendingChatAction({
-        userId: 77,
-        tenantId: 88,
-        conversationId,
-        skill: 'training',
-        action: 'training_plan_create',
-        collectedSlots: turn1Step?.args as Record<string, unknown>,
-        missingSlots: ['startDate', 'weeklyVolumeKm'],
-        riskClass: 'R1',
-        locale: 'en-US',
-        timezone: 'Europe/Lisbon',
-        originatingSurface: 'api',
-        nowIso: '2026-05-16T12:00:00+01:00',
-      });
-      const pending = getRealActivePendingChatAction({
-        userId: 77,
-        tenantId: 88,
-        conversationId,
-        skill: 'training',
-        nowIso: '2026-05-16T12:00:00+01:00',
-      });
-      expect(pending).toBeTruthy();
-      expect(pending?.action).toBe('training_plan_create');
-      expect(pending?.missingSlots).toContain('weeklyVolumeKm');
-
-      const turn2 = await buildChatActionPlan({
-        userId: 77,
-        tenantId: 88,
-        conversationId,
-        messageId: 'mt-real-turn-2',
-        locale: 'en-US',
-        timezone: 'Europe/Lisbon',
-        channel: 'api',
-        nowIso: '2026-05-16T12:01:00+01:00',
-        text: 'It is 20 km a week',
-      });
-
-      const step = turn2?.steps[0];
-      expect(step?.skill).toBe('training');
-      expect(step?.action).toBe('training_plan_create');
-      expect(step?.args).toMatchObject({ weeklyVolumeKm: 20 });
-      expect(step?.requiredArgsPresent).toBe(false);
-    } finally {
-      if (previousFlag === undefined) {
-        delete process.env.CHAT_HYBRID_PLANNER_ENABLED;
-      } else {
-        process.env.CHAT_HYBRID_PLANNER_ENABLED = previousFlag;
-      }
-      integrationDb.close();
-      vi.resetModules();
-    }
   });
 });

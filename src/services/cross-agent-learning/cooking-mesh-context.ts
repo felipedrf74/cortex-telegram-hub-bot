@@ -126,7 +126,11 @@ export async function readCookingMeshContext(opts: {
   const totalPrepMinutes = mealProfiles.reduce((sum, profile) => sum + profile.prepMinutes, 0);
   const totalCookMinutes = mealProfiles.reduce((sum, profile) => sum + profile.cookMinutes, 0);
 
-  const activePlanMatch = findActivePlanForWeek(opts.userId, window.start);
+  const activePlanMatch = findActivePlanForWeek(
+    opts.userId,
+    opts.tenantId ?? opts.userId,
+    window.weekStart,
+  );
   const trainingSessions = activePlanMatch?.week ? getSessionsForWeek(activePlanMatch.week.id) : [];
   const scheduledTraining = trainingSessions
     .map((session) => ({

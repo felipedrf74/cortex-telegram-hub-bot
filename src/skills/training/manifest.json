@@ -37,15 +37,12 @@
     },
     {
       "module_name": "training-plans",
-      "description": "Shared training-plan CRUD used by all sport sub-skills",
+      "description": "Reviewed Training plan handoff, readback, completion, and calendar linkage used by all sport sub-skills",
       "enabled_by_default": true,
       "tools": [
         "create_training_plan",
-        "add_training_week",
-        "add_training_session",
         "get_training_plan",
         "log_training_completion",
-        "update_training_session",
         "link_session_calendar"
       ],
       "cronJobs": ["training_plan_adjust"]

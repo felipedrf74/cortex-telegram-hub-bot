@@ -215,6 +215,8 @@ SMOKE_START_AT="$(node -e 'process.stdout.write(new Date().toISOString())')"
 SMOKE_HEAD_SHA="$SMOKE_RUNTIME_SHA"
 SMOKE_BRANCH="$(cd "$LOCAL_DIR" && git branch --show-current 2>/dev/null || echo unknown)"
 SMOKE_PROFILE="nexus.staging-smoke.canonical.token-zero-locale.v2"
+SMOKE_CLASSIFIER_BASE_SHA="${NEXUS_SMOKE_CLASSIFIER_BASE_SHA:-}"
+SMOKE_CLASSIFIER_HEAD_SHA=""
 
 evidence_record() {
   # evidence_record <name> <status:passed|failed> [<detail>]
@@ -1375,6 +1377,7 @@ if [ "$DOMAIN_PROBES_ENABLED" = "1" ] && [ -x "$LOCAL_DIR/scripts/changed-area-c
     --base "$CLASSIFIER_BASE_SHA" --format json 2>/dev/null)" || CLASSIFIER_STATUS=$?
   if [ -n "${NEXUS_SMOKE_CLASSIFIER_BASE_SHA:-}" ]; then
     CLASSIFIER_HEAD="$(git -C "$LOCAL_DIR" rev-parse HEAD)"
+    SMOKE_CLASSIFIER_HEAD_SHA="$CLASSIFIER_HEAD"
     if [ "$CLASSIFIER_STATUS" -ne 0 ] || [ -z "$CLASSIFIER_JSON" ] \
       || ! printf '%s' "$CLASSIFIER_JSON" | node -e '
         let body = "";
@@ -1671,6 +1674,8 @@ NODE
         sha: process.env.SMOKE_HEAD_SHA,
         runtimeSha: process.env.SMOKE_RUNTIME_SHA,
         artifactDigest: process.env.SMOKE_ARTIFACT_DIGEST,
+        classifierBaseSha: process.env.SMOKE_CLASSIFIER_BASE_SHA || null,
+        classifierHeadSha: process.env.SMOKE_CLASSIFIER_HEAD_SHA || null,
         host: "staging",
         verdict: failed === 0 ? "passed" : "failed",
         totals: { passed, failed, total: checks.length },
@@ -1696,6 +1701,7 @@ NODE
   echo "  📝 Smoke evidence: $file"
 }
 export SMOKE_START_AT SMOKE_BRANCH SMOKE_HEAD_SHA SMOKE_RUNTIME_SHA SMOKE_ARTIFACT_DIGEST SMOKE_PROFILE
+export SMOKE_CLASSIFIER_BASE_SHA SMOKE_CLASSIFIER_HEAD_SHA
 
 # ── Summary ────────────────────────────────────────
 echo ""

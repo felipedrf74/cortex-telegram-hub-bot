@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import Database from 'better-sqlite3';
 let testDb: Database.Database;
@@ -150,5 +151,26 @@ describe('cooking preference memory adapter', () => {
       kind: 'grocery_preference',
       value: 'postgres://user:password@example/db',
     }, 70)).toThrow(/SKILL_MEMORY_UNSAFE/);
+  });
+
+  it('keeps untrusted preference-key boundary trimming linear without changing valid slugs', () => {
+    const source = readFileSync('src/services/cooking-preferences.ts', 'utf8');
+
+    // CodeQL flags the anchored alternation because its trailing branch can
+    // retry across the input. Keep the security boundary structural as well
+    // as behavioral so the polynomial form cannot be reintroduced silently.
+    expect(source).not.toContain(".replace(/^-+|-+$/g, '')");
+
+    const memory = setCookingPreferenceMemory(7, {
+      kind: 'preferred_ingredient',
+      value: '---Miso --- soup + ginger---',
+    }, 70);
+
+    expect(memory.memoryKey).toBe('preferred_ingredient.miso-soup-ginger');
+    expect(memory.memoryValue).toBe('---Miso --- soup + ginger---');
+    expect(() => setCookingPreferenceMemory(7, {
+      kind: 'preferred_ingredient',
+      value: '---+++---',
+    }, 70)).toThrow('COOKING_PREFERENCE_INVALID: preference value is not keyable');
   });
 });

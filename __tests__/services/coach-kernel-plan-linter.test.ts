@@ -81,6 +81,31 @@ describe('coach-kernel/plan-linter', () => {
       ).toBe(true);
     });
 
+    it('compares scheduled timestamps against the plan-local calendar day', () => {
+      const now = new Date('2026-04-22T00:30:00.000Z');
+      const scheduledDate = '2026-04-21T08:00:00.000Z';
+
+      // Stronger guarantee: linting the same absolute timestamps must honor
+      // the immutable plan zone instead of whichever timezone runs the process.
+      const losAngeles = lintPlan(input({
+        now,
+        timezone: 'America/Los_Angeles',
+        weeks: [week(1, [session({ scheduledDate })])],
+      }));
+      const tokyo = lintPlan(input({
+        now,
+        timezone: 'Asia/Tokyo',
+        weeks: [week(1, [session({ scheduledDate })])],
+      }));
+
+      expect(losAngeles.blockers.some((finding) => (
+        finding.ruleId === 'no_past_active_sessions'
+      ))).toBe(false);
+      expect(tokyo.blockers.some((finding) => (
+        finding.ruleId === 'no_past_active_sessions'
+      ))).toBe(true);
+    });
+
     it('does NOT flag past-dated UNSCHEDULED sessions (those are correctly marked)', () => {
       const result = lintPlan(input({
         weeks: [week(1, [
@@ -97,6 +122,86 @@ describe('coach-kernel/plan-linter', () => {
         ])],
       }));
       expect(result.status).toBe('pass');
+    });
+  });
+
+  // F3 (Phase 1A-1): whole-plan volume floor.
+  //
+  // `week_one_has_active_training` deliberately exits clean when the WHOLE
+  // plan is empty (`totalActiveTraining === 0`) — it only fires when week 1
+  // is empty *relative to* populated later weeks. Nothing else in the rule
+  // set is a whole-plan floor, so a plan with zero active sessions anywhere
+  // passed the strict preflight and was persisted as "created", after the
+  // cancellation saga had already removed the previous plan.
+  //
+  // All three production shapes collapse to the same zero count:
+  //   - every session `unscheduled` (calendar capacity exhausted),
+  //   - every session rest/deferred (safety pause rewrite),
+  //   - genuinely empty weeks.
+  describe('rule: plan_has_active_training', () => {
+    it('blocks a plan whose sessions are all unscheduled', () => {
+      const result = lintPlan(input({
+        weeks: [
+          week(1, [
+            session({ dayOfWeek: 'monday', title: 'Could Not Place', status: 'unscheduled' }),
+            session({ dayOfWeek: 'wednesday', title: 'Could Not Place', status: 'unscheduled' }),
+          ]),
+          week(2, [
+            session({ dayOfWeek: 'tuesday', title: 'Could Not Place', status: 'unscheduled' }),
+          ]),
+        ],
+      }));
+
+      expect(result.status).toBe('fail');
+      expect(result.blockers.map((blocker) => blocker.ruleId)).toContain('plan_has_active_training');
+    });
+
+    it('blocks a plan whose sessions are all rest-like and deferred', () => {
+      const result = lintPlan(input({
+        weeks: [
+          week(1, [
+            session({ dayOfWeek: 'monday', sessionType: 'rest', title: 'Safety pause', status: 'deferred' }),
+            session({ dayOfWeek: 'tuesday', sessionType: 'rest', title: 'Safety pause', status: 'deferred' }),
+          ]),
+        ],
+      }));
+
+      expect(result.status).toBe('fail');
+      expect(result.blockers.map((blocker) => blocker.ruleId)).toContain('plan_has_active_training');
+    });
+
+    it('blocks a plan whose weeks contain no sessions at all', () => {
+      const result = lintPlan(input({ weeks: [week(1, []), week(2, [])] }));
+
+      expect(result.status).toBe('fail');
+      expect(result.blockers.map((blocker) => blocker.ruleId)).toContain('plan_has_active_training');
+    });
+
+    it('passes when the plan has at least one active training session', () => {
+      const result = lintPlan(input({
+        weeks: [
+          week(1, [session({ dayOfWeek: 'monday', title: 'Easy Run' })]),
+          week(2, [session({ dayOfWeek: 'tuesday', sessionType: 'rest', title: 'Rest', status: 'deferred' })]),
+        ],
+      }));
+
+      expect(result.blockers.map((blocker) => blocker.ruleId)).not.toContain('plan_has_active_training');
+    });
+
+    it('does not double-report with week_one_has_active_training', () => {
+      // Week 1 empty + later weeks populated is the week-one rule's case, not
+      // the floor's — the floor must stay silent so the operator sees one
+      // actionable blocker rather than two.
+      const result = lintPlan(input({
+        weeks: [
+          week(1, [session({ dayOfWeek: 'monday', title: 'Could Not Place', status: 'unscheduled' })]),
+          week(2, [session({ dayOfWeek: 'tuesday', title: 'Real Run', scheduledDate: '2026-04-28T07:00:00.000Z' })]),
+        ],
+      }));
+
+      const ruleIds = result.blockers.map((blocker) => blocker.ruleId);
+      expect(ruleIds).toContain('week_one_has_active_training');
+      expect(ruleIds).not.toContain('plan_has_active_training');
     });
   });
 
@@ -547,6 +652,18 @@ describe('coach-kernel/plan-linter', () => {
       expect(result.blockers.some((blocker) => blocker.ruleId === 'race_date_must_be_future')).toBe(true);
     });
 
+    it('blocks a same-day race date even when goalMode says continuous', () => {
+      const result = lintPlan(input({
+        goalMode: 'continuous',
+        raceDate: '2026-04-22',
+      }));
+
+      // F12 stronger guarantee: "future" is strict in the plan-local day;
+      // an internal caller cannot bypass the public boundary with today.
+      expect(result.status).toBe('fail');
+      expect(result.blockers.some((blocker) => blocker.ruleId === 'race_date_must_be_future')).toBe(true);
+    });
+
     it('blocks a plan duration that overshoots the race date', () => {
       const result = lintPlan(input({
         goalMode: 'event_based',
@@ -559,16 +676,63 @@ describe('coach-kernel/plan-linter', () => {
       expect(result.blockers.some((blocker) => blocker.ruleId === 'plan_duration_overshoots_race_date')).toBe(true);
     });
 
-    it('does not apply race-date duration checks to non-event plans', () => {
+    it('blocks a strictly-future race date that precedes the resolved plan start', () => {
+      const result = lintPlan(input({
+        goalMode: 'continuous',
+        startDate: '2026-04-27',
+        raceDate: '2026-04-25',
+        durationWeeks: 4,
+      }));
+
+      // F12 policy (a) still makes this event-based: the date is future
+      // relative to NOW, but no generated week can build toward an event that
+      // occurs before week 1. Internal callers must fail closed too.
+      expect(result.status).toBe('fail');
+      const blocker = result.blockers.find((candidate) => (
+        String(candidate.ruleId) === 'race_date_precedes_plan_start'
+      ));
+      expect(blocker).toMatchObject({
+        severity: 'blocker',
+        evidence: {
+          raceDateIso: '2026-04-25',
+          startDateIso: '2026-04-27',
+        },
+      });
+    });
+
+    it('treats a future race date as event-based even when goalMode says continuous', () => {
       const result = lintPlan(input({
         goalMode: 'continuous',
         startDate: '2026-04-22',
         raceDate: '2026-05-05',
         durationWeeks: 6,
+        weeks: [week(1, [session({})], 'taper')],
       }));
 
-      expect(result.blockers.some((blocker) => blocker.ruleId === 'plan_duration_overshoots_race_date')).toBe(false);
-      expect(result.status).toBe('pass');
+      // Stronger guarantee: a valid future race date activates the same
+      // duration and taper rules as an explicit event_based request. The
+      // taper is legitimate because the event exists; the overshoot is not.
+      expect(result.blockers.some((blocker) => blocker.ruleId === 'plan_duration_overshoots_race_date')).toBe(true);
+      expect(result.blockers.some((blocker) => blocker.ruleId === 'no_fake_taper_without_event')).toBe(false);
+      expect(result.status).toBe('fail');
+    });
+
+    it('fails closed on a supplied malformed race date even in continuous mode', () => {
+      const result = lintPlan(input({
+        goalMode: 'continuous',
+        raceDate: 'not-a-date',
+      }));
+
+      // F12 stronger guarantee: internal callers cannot evade event-date
+      // validation by pairing malformed data with continuous mode. Public
+      // routes reject this earlier; the linter remains the defense in depth.
+      expect(result.status).toBe('fail');
+      expect(result.blockers.some((blocker) => (
+        blocker.ruleId === 'race_date_invalid'
+      ))).toBe(true);
+      expect(result.blockers.some((blocker) => (
+        blocker.ruleId === 'race_specific_plan_requires_race_date'
+      ))).toBe(false);
     });
   });
 
@@ -698,6 +862,22 @@ describe('coach-kernel/plan-linter', () => {
       expect(result.blockers.map((blocker) => blocker.ruleId)).toContain('endurance_interval_density');
     });
 
+    it('does not equate a controlled key long session with hard intensity', () => {
+      const result = lintPlan(input({
+        weeks: [week(1, [
+          session({ dayOfWeek: 'monday', sessionType: 'threshold_run', title: 'Threshold Run', isKey: true }),
+          session({ dayOfWeek: 'wednesday', sessionType: 'easy_run', title: 'Easy Run' }),
+          session({ dayOfWeek: 'thursday', sessionType: 'threshold_swim', title: 'Threshold Swim', sport: 'swimming', isKey: true }),
+          session({ dayOfWeek: 'saturday', sessionType: 'long_run', title: 'Long Run', isKey: true, isLongRun: true }),
+          session({ dayOfWeek: 'sunday', sessionType: 'technique_swim', title: 'Technique Swim', sport: 'swimming' }),
+        ])],
+      }));
+
+      const blockerIds = result.blockers.map((blocker) => blocker.ruleId);
+      expect(blockerIds).not.toContain('endurance_hard_easy_balance');
+      expect(blockerIds).not.toContain('endurance_interval_density');
+    });
+
     it('blocks a large long-session jump across weeks', () => {
       const result = lintPlan(input({
         weeks: [
@@ -792,6 +972,52 @@ describe('coach-kernel/plan-linter', () => {
         warnings: [],
         suggestedFixes: [],
       });
+    });
+  });
+  // F7 (Phase 3): defense-in-depth for the explicit 'never' two-a-day
+  // stance. The volume enforcer relocates or defers doubles; this rule
+  // guarantees a violating plan can never pass the strict preflight even if
+  // an upstream pass regresses.
+  describe('rule: two_a_day_cap', () => {
+    it("blocks a doubled day when twoADayPreference is 'never'", () => {
+      const result = lintPlan(input({
+        twoADayPreference: 'never',
+        weeks: [week(1, [
+          session({ dayOfWeek: 'friday', sessionType: 'run', title: 'Tempo Run' }),
+          session({ dayOfWeek: 'friday', sessionType: 'gym', title: 'Lift A' }),
+          session({ dayOfWeek: 'saturday', title: 'Long Run' }),
+        ])],
+      }));
+
+      expect(result.status).toBe('fail');
+      const finding = result.blockers.find((blocker) => blocker.ruleId === 'two_a_day_cap');
+      expect(finding).toBeTruthy();
+      expect(finding?.affectedSessions).toHaveLength(2);
+      expect(finding?.affectedSessions.every((affected) => affected.dayOfWeek === 'friday')).toBe(true);
+    });
+
+    it('ignores doubled days for every other preference value', () => {
+      for (const preference of [undefined, null, 'preferred', 'optional', 'auto']) {
+        const result = lintPlan(input({
+          twoADayPreference: preference as never,
+          weeks: [week(1, [
+            session({ dayOfWeek: 'friday', sessionType: 'run', title: 'Tempo Run' }),
+            session({ dayOfWeek: 'friday', sessionType: 'gym', title: 'Lift A' }),
+          ])],
+        }));
+        expect(result.blockers.some((blocker) => blocker.ruleId === 'two_a_day_cap')).toBe(false);
+      }
+    });
+
+    it('does not count inactive sessions toward the cap', () => {
+      const result = lintPlan(input({
+        twoADayPreference: 'never',
+        weeks: [week(1, [
+          session({ dayOfWeek: 'friday', sessionType: 'run', title: 'Tempo Run' }),
+          session({ dayOfWeek: 'friday', sessionType: 'gym', title: 'Lift A', status: 'deferred' }),
+        ])],
+      }));
+      expect(result.blockers.some((blocker) => blocker.ruleId === 'two_a_day_cap')).toBe(false);
     });
   });
 });

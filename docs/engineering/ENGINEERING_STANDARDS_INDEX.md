@@ -24,6 +24,7 @@ non-trivial changes.
 | **GenAI migration plan** | `genai-migration-plan.md` | Any migration of provider calls, model routing, prompt ownership, or generated-content runtime behavior. |
 | **JWT rotation runbook** | `jwt-rotation-runbook.md` | Any JWT signing-key rotation or authentication incident. |
 | **Training exercise media operator runbook** | `training-exercise-media-v1-operator-runbook.md` | Any Training catalog package, approval, activation, media-origin, or rollback change. |
+| **Training plan request semantics** | `training-plan-request-semantics.md` | Any change to `sessionsPerWeek` semantics or to `raceDate`/`goalMode` behaviour (F8/F12 contract + pending policy decision). |
 | **Backend Verifiable Reward Protocol companion** | `../agents/VERIFIABLE_REWARD_PROTOCOL.md` | Any change to reward verdicts, reward-check orchestration, hooks, handoff summaries, or export behavior. |
 | **Security threat model** | `../security/nexus-security-threat-model.md` | Any security scan, new deployed surface, new provider, new trust boundary, or incident review. |
 | **Security control matrix** | `../security/security-control-matrix.md` | Any auth, API, iOS storage, WebSocket, provider, CI, infra, logging, backup, or incident-response hardening. |

@@ -313,6 +313,9 @@ describe('training-plan-cancellation cascade', () => {
       sourceEntityType: 'training_session',
       ownerUserId: 61,
       tenantId: 61,
+      // Stronger provider-boundary guarantee: provider mappings may only be
+      // attached to an intent whose immutable target was selected up front.
+      providerTarget: 'outlook',
       title: 'Deleted Outlook Session',
       requestedDurationMinutes: 40,
       preferredWindows: [{
@@ -332,6 +335,7 @@ describe('training-plan-cancellation cascade', () => {
       sourceEntityType: 'training_session',
       ownerUserId: 61,
       tenantId: 61,
+      providerTarget: 'outlook',
       title: 'Delete Failed Outlook Session',
       requestedDurationMinutes: 40,
       preferredWindows: [{
@@ -412,6 +416,9 @@ describe('training-plan-cancellation cascade', () => {
       sourceEntityType: 'training_session',
       ownerUserId: 41,
       tenantId: 41,
+      // Stronger provider-boundary guarantee: each historical plan version
+      // carries the exact immutable target used by its simulated mapping.
+      providerTarget: 'google',
       title: 'V1 session',
       requestedDurationMinutes: 30,
       preferredWindows: [{
@@ -431,6 +438,7 @@ describe('training-plan-cancellation cascade', () => {
       sourceEntityType: 'training_session',
       ownerUserId: 41,
       tenantId: 41,
+      providerTarget: 'outlook',
       title: 'V2 session',
       requestedDurationMinutes: 30,
       preferredWindows: [{
@@ -472,6 +480,9 @@ describe('training-plan-cancellation cascade', () => {
       sourceEntityType: 'training_session',
       ownerUserId: 51,
       tenantId: 51,
+      // Stronger provider-boundary guarantee applies even to terminal deleted
+      // rows: their historical provider source must match the pinned target.
+      providerTarget: 'google',
       title: 'Already deleted',
       requestedDurationMinutes: 30,
       preferredWindows: [{

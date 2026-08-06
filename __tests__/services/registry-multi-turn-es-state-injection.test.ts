@@ -9,7 +9,7 @@
 //   • decision — "Opción B" / "elijo C" → choice filled
 //   • mail — "Más corto y amistoso" → refinements filled
 //   • content — "Audiencia: creadores fitness, tono directo, menos de 30 segundos"
-//   • training — "20 km por semana" → weeklyVolumeKm filled
+//   • training — "4 sesiones por semana" → sessionsPerWeek filled
 //
 // Each fixture mocks the pending-action store to claim a turn-2 plan and
 // verifies the step args contain the filled slot.
@@ -192,27 +192,45 @@ describe('Spanish multi-turn pending continuations (Phase 10 batch 52)', () => {
     });
   });
 
-  describe('training_plan_create turn-2 (Spanish weekly volume)', () => {
-    it('turn 2 fills weeklyVolumeKm via Spanish "20 km por semana"', async () => {
+  describe('training_plan_create turn-2 (Spanish weekly frequency)', () => {
+    it('turn 2 fills sessionsPerWeek via Spanish within the supported range', async () => {
       mockedGetActivePending.mockImplementation((opts: any) => {
         if (opts?.skill === 'training') {
           return {
             pendingActionId: 'pending-training-es-1', skill: 'training',
             action: 'training_plan_create', userId: 1, tenantId: 1,
             conversationId: 'mt-es-training',
-            collectedSlots: { sport: 'running', goal: '10k', durationWeeks: 12, startDate: '2026-05-19' },
-            missingSlots: ['weeklyVolumeKm'],
+            collectedSlots: { objective: '10k', durationWeeks: 12, startPolicy: 'next_full_week' },
+            missingSlots: ['sessionsPerWeek'],
             ttlExpiresAt: '2026-05-16T13:00:00+02:00',
           } as any;
         }
         return null;
       });
-      const turn2 = await buildChatActionPlan(input('20 km por semana', 'mt-es-training'));
-      const step = turn2?.steps[0];
-      expect(step?.skill).toBe('training');
-      expect(step?.action).toBe('training_plan_create');
-      const args = step?.args as Record<string, unknown> | undefined;
-      expect(args?.weeklyVolumeKm).toBe(20);
+      for (const supportedFrequency of [3, 4, 7]) {
+        const turn2 = await buildChatActionPlan(input(
+          `${supportedFrequency} sesiones por semana`,
+          'mt-es-training',
+        ));
+        const step = turn2?.steps[0];
+        expect(step?.skill).toBe('training');
+        expect(step?.action).toBe('training_plan_create');
+        const args = step?.args as Record<string, unknown> | undefined;
+        expect(args?.sessionsPerWeek).toBe(supportedFrequency);
+        expect(turn2?.telemetry.outcome).not.toBe('needs_input');
+      }
+
+      for (const unsupportedFrequency of [2, 8]) {
+        const turn2 = await buildChatActionPlan(input(
+          `${unsupportedFrequency} sesiones por semana`,
+          'mt-es-training',
+        ));
+        const step = turn2?.steps[0];
+        const args = step?.args as Record<string, unknown> | undefined;
+        expect(args?.sessionsPerWeek).toBeUndefined();
+        expect(turn2?.telemetry.outcome).toBe('needs_input');
+        expect(turn2?.debug.routingSignals).toContain('pending_training_action_unmatched_answer');
+      }
     });
   });
 });

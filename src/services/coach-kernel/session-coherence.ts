@@ -388,6 +388,41 @@ export interface TrimOverstuffedStrengthOptions {
   minimumExerciseCount?: number;
   tag?: string;
   alternative?: string;
+  /**
+   * Zero-based, deterministic rotation used only when a recovery/deload
+   * caller must truncate the exercise list. Normal strength sessions keep
+   * their canonical compound -> accessory -> core priority. Recovery blocks
+   * protect a different contiguous group before trailing content is removed
+   * so repeated short weeks do not collapse into the same two movements.
+   */
+  recoveryRotationIndex?: number;
+}
+
+function recoveryPriorityIndexes(
+  exerciseCount: number,
+  keepCount: number,
+  rotationIndex: number,
+): number[] {
+  if (exerciseCount <= 0 || keepCount <= 0) return [];
+  const boundedKeepCount = Math.min(exerciseCount, Math.max(1, Math.trunc(keepCount)));
+  const groupCount = Math.max(1, Math.ceil(exerciseCount / boundedKeepCount));
+  const normalizedRotation = ((Math.trunc(rotationIndex) % groupCount) + groupCount) % groupCount;
+  const start = normalizedRotation * boundedKeepCount;
+  const indexes = new Set<number>();
+  for (let offset = 0; offset < boundedKeepCount; offset++) {
+    indexes.add((start + offset) % exerciseCount);
+  }
+  return [...indexes].sort((left, right) => left - right);
+}
+
+export function selectStrengthExercisesForRecoveryRotation(
+  exercises: ExercisePrescription[],
+  keepCount: number,
+  rotationIndex: number,
+): ExercisePrescription[] {
+  return recoveryPriorityIndexes(exercises.length, keepCount, rotationIndex)
+    .map((index) => exercises[index])
+    .filter((exercise): exercise is ExercisePrescription => exercise != null);
 }
 
 export function trimOverstuffedStrengthSessionToDuration(
@@ -408,6 +443,15 @@ export function trimOverstuffedStrengthSessionToDuration(
   const minimumExerciseCount = options.minimumExerciseCount
     ?? (session.durationMinutes <= 30 ? 2 : session.durationMinutes <= 45 ? 3 : 4);
   let exercises = session.exercises.map((exercise) => ({ ...exercise }));
+  let originalIndexes = exercises.map((_exercise, index) => index);
+  const protectedOriginalIndexes = typeof options.recoveryRotationIndex === 'number'
+    && Number.isFinite(options.recoveryRotationIndex)
+    ? new Set(recoveryPriorityIndexes(
+      exercises.length,
+      minimumExerciseCount,
+      options.recoveryRotationIndex,
+    ))
+    : null;
   let next: Session = { ...session, exercises };
   let verdict: CoherenceVerdict = initialVerdict;
   let changed = false;
@@ -416,7 +460,11 @@ export function trimOverstuffedStrengthSessionToDuration(
     if (verdict.ok || verdict.reason !== 'overstuffed') break;
 
     if (exercises.length > minimumExerciseCount) {
-      exercises = exercises.slice(0, -1);
+      const removableIndex = protectedOriginalIndexes
+        ? findLastUnprotectedExerciseIndex(originalIndexes, protectedOriginalIndexes)
+        : exercises.length - 1;
+      exercises = exercises.filter((_exercise, index) => index !== removableIndex);
+      originalIndexes = originalIndexes.filter((_originalIndex, index) => index !== removableIndex);
       changed = true;
     } else {
       const reducerIndex = lastExerciseWithReducibleSets(exercises);
@@ -447,6 +495,16 @@ export function trimOverstuffedStrengthSessionToDuration(
     changed: true,
     verdict,
   };
+}
+
+function findLastUnprotectedExerciseIndex(
+  originalIndexes: number[],
+  protectedOriginalIndexes: Set<number>,
+): number {
+  for (let index = originalIndexes.length - 1; index >= 0; index--) {
+    if (!protectedOriginalIndexes.has(originalIndexes[index])) return index;
+  }
+  return Math.max(0, originalIndexes.length - 1);
 }
 
 function lastExerciseWithReducibleSets(exercises: ExercisePrescription[]): number {

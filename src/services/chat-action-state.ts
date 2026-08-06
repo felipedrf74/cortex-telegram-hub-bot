@@ -193,7 +193,13 @@ export function upsertPendingChatAction(input: {
 }): PendingChatAction {
   const db = getDb();
   const now = input.nowIso ?? new Date().toISOString();
-  const expiresAt = input.expiresAt ?? new Date(Date.parse(now) + ttlMsForRisk(input.riskClass)).toISOString();
+  const expiresAtCandidate = input.expiresAt
+    ?? new Date(Date.parse(now) + ttlMsForRisk(input.riskClass)).toISOString();
+  const expiresAtMs = Date.parse(expiresAtCandidate);
+  if (!Number.isFinite(expiresAtMs)) throw new Error('chat_pending_action_invalid_expiry');
+  // Persist one sortable representation because expiry sweeps use an indexed
+  // SQLite TEXT comparison rather than a provider/database datetime type.
+  const expiresAt = new Date(expiresAtMs).toISOString();
   // Pending-action rows are de-duplicated by conversation + active draft slots, not by
   // provider write idempotency. Keep this namespace separate from per-step run hashes:
   // the UPSERT guard is conversation+skill+action+active status, so equivalent datetime
@@ -554,7 +560,13 @@ function rowToTelemetry(row: Record<string, unknown>): ChatActionTelemetryRecord
 }
 
 function expireStalePendingChatActions(nowIso?: string): number {
-  const now = nowIso ?? new Date().toISOString();
+  const candidate = nowIso ?? new Date().toISOString();
+  const nowMs = Date.parse(candidate);
+  // SQLite compares these ISO timestamps as TEXT. Canonicalize offsets to UTC
+  // before the comparison so equivalent instants do not expire early. An
+  // invalid operator/job timestamp fails closed without mutating durable work.
+  if (!Number.isFinite(nowMs)) return 0;
+  const now = new Date(nowMs).toISOString();
   let total = 0;
   try {
     const statement = getDb().prepare(`

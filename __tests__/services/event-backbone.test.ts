@@ -6,6 +6,7 @@ import { join } from 'node:path';
 
 let testDb: Database.Database;
 const mockReleaseDueNotificationDeliveries = vi.hoisted(() => vi.fn());
+const mockConsumeCookingProviderSyncCompleted = vi.hoisted(() => vi.fn());
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
@@ -68,6 +69,11 @@ vi.mock('../../src/services/notification-orchestrator', () => ({
   releaseDueNotificationDeliveries: (...args: unknown[]) => mockReleaseDueNotificationDeliveries(...args),
 }));
 
+vi.mock('../../src/services/cooking-calendar-sync-completion', () => ({
+  COOKING_MEAL_PREP_PROVIDER_SYNC_COMPLETED_EVENT_TYPE: 'cooking.meal_prep_provider_sync.completed.v1',
+  consumeCookingMealPrepProviderSyncCompleted: (...args: unknown[]) => mockConsumeCookingProviderSyncCompleted(...args),
+}));
+
 import {
   cancelEvent,
   claimPendingEvents,
@@ -97,10 +103,28 @@ import { runEventBackboneCleanup } from '../../src/tools/event-backbone-cleanup'
 import { logger } from '../../src/utils/logger';
 import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 
+// Migration 279 rejects direct pending -> terminal rewrites. Cleanup fixtures
+// must model the stronger production guarantee: a fenced processing lease is
+// the only state allowed to publish a processed/dead-letter outcome.
+function moveEventFixtureToProcessed(eventId: string, db: Database.Database): void {
+  const lease = claimPendingEvents(1, `processed-fixture-${eventId}`, db)[0];
+  if (!lease || lease.eventId !== eventId) throw new Error(`failed to claim event fixture ${eventId}`);
+  expect(markEventProcessed(lease, db)).toBe(true);
+}
+
+function moveEventFixtureToDeadLetter(eventId: string, db: Database.Database): void {
+  const lease = claimPendingEvents(1, `dead-letter-fixture-${eventId}`, db)[0];
+  if (!lease || lease.eventId !== eventId) throw new Error(`failed to claim event fixture ${eventId}`);
+  db.prepare('UPDATE event_outbox SET attempts = 3 WHERE event_id = ?').run(eventId);
+  expect(markEventFailed(lease, new Error('fixture dead letter'), db)).toBe('dead_letter');
+}
+
 describe('event backbone foundation', () => {
   beforeEach(() => {
     testDb = new Database(':memory:');
     mockReleaseDueNotificationDeliveries.mockReset();
+    mockConsumeCookingProviderSyncCompleted.mockReset();
+    mockConsumeCookingProviderSyncCompleted.mockResolvedValue(undefined);
     mockReleaseDueNotificationDeliveries.mockResolvedValue({
       inspected: 0, released: 0, blocked: 0, failed: 0,
     });
@@ -157,6 +181,35 @@ describe('event backbone foundation', () => {
     expect(JSON.stringify(first.payload)).not.toContain('ACME Finance');
     expect(JSON.stringify(first.payload)).not.toContain('Drinks with John');
     expect(JSON.stringify(first.payload)).not.toContain('mental_health');
+  });
+
+  it('routes Cooking provider completion once through the single wildcard handler', async () => {
+    const input = {
+      tenantId: 7,
+      userId: 7,
+      sourceSkill: 'cooking' as const,
+      eventType: 'cooking.meal_prep_provider_sync.completed.v1',
+      entityType: 'secretary_agenda_item',
+      entityId: 'agenda-cooking-complete',
+      entityVersion: 2,
+      payload: { agendaTenantId: 'tenant-7' },
+      idempotencyKey: 'secretary.cooking_provider_sync.completed:agenda-cooking-complete:2:outlook:event-1',
+    };
+    emitDomainEvent(input);
+    emitDomainEvent(input);
+
+    expect(defaultEventHandlers).toHaveLength(1);
+    await expect(processPendingEvents(defaultEventHandlers, { limit: 10, lockOwner: 'cooking-completion-test' }))
+      .resolves.toMatchObject({ processed: 1, failed: 0 });
+    expect(mockConsumeCookingProviderSyncCompleted).toHaveBeenCalledTimes(1);
+    expect(mockConsumeCookingProviderSyncCompleted).toHaveBeenCalledWith(
+      expect.objectContaining({
+        entityId: 'agenda-cooking-complete',
+        entityVersion: 2,
+        payload: { agendaTenantId: 'tenant-7' },
+      }),
+      testDb,
+    );
   });
 
   it('enqueues content topic Secretary sync jobs from pending content events', async () => {
@@ -397,7 +450,9 @@ describe('event backbone foundation', () => {
     const claimed = claimPendingEvents(1, 'test-worker');
     expect(claimed).toHaveLength(1);
     expect(claimed[0].lockOwner).toBe('test-worker');
-    testDb.prepare("UPDATE event_outbox SET status = 'failed', locked_at = NULL, lock_owner = NULL, not_before = datetime('now') WHERE event_id = ?").run(event.eventId);
+    // Stronger guarantee: even retry fixtures must release a claimed row
+    // through the fenced transition instead of predecessor id-only SQL.
+    expect(markEventFailed(claimed[0], new Error('fixture first failure'))).toBe('failed');
 
     for (let i = 0; i < 2; i += 1) {
       testDb.prepare("UPDATE event_outbox SET not_before = datetime('now') WHERE event_id = ?").run(event.eventId);
@@ -482,7 +537,9 @@ describe('event backbone foundation', () => {
       idempotencyKey: 'stale-event',
     });
     expect(claimPendingEvents(1, 'stale-event-worker')).toHaveLength(1);
-    testDb.prepare("UPDATE event_outbox SET locked_at = datetime('now', '-20 minutes') WHERE event_id = ?").run(event.eventId);
+    // Stronger guarantee: explicit lease expiry, not an old observability
+    // timestamp, is now the sole reclaim authority for fenced claims.
+    testDb.prepare("UPDATE event_outbox SET lease_expires_at = datetime('now', '-1 second') WHERE event_id = ?").run(event.eventId);
 
     const reclaimed = claimPendingEvents(1, 'reaper-event-worker');
     expect(reclaimed.map((row) => row.eventId)).toEqual([event.eventId]);
@@ -658,7 +715,9 @@ describe('event backbone foundation', () => {
       idempotencyKey: 'stale-job',
     });
     expect(claimPendingJobs(1, 'stale-job-worker')).toHaveLength(1);
-    testDb.prepare("UPDATE background_jobs SET locked_at = datetime('now', '-20 minutes') WHERE job_id = ?").run(job.jobId);
+    // Stronger guarantee: explicit lease expiry, not an old observability
+    // timestamp, is now the sole reclaim authority for fenced claims.
+    testDb.prepare("UPDATE background_jobs SET lease_expires_at = datetime('now', '-1 second') WHERE job_id = ?").run(job.jobId);
 
     const reclaimed = claimPendingJobs(1, 'reaper-job-worker');
     expect(reclaimed.map((row) => row.jobId)).toEqual([job.jobId]);
@@ -961,8 +1020,10 @@ describe('event backbone foundation', () => {
         payload: { summary: { text: 'dead letter' } },
         idempotencyKey: 'old-dead-letter',
       }, db);
-      db.prepare("UPDATE event_outbox SET status = 'processed', processed_at = datetime('now', '-45 days') WHERE event_id = ?").run(oldProcessed.eventId);
-      db.prepare("UPDATE event_outbox SET status = 'dead_letter', processed_at = datetime('now', '-45 days') WHERE event_id = ?").run(oldDeadLetter.eventId);
+      moveEventFixtureToProcessed(oldProcessed.eventId, db);
+      moveEventFixtureToDeadLetter(oldDeadLetter.eventId, db);
+      db.prepare("UPDATE event_outbox SET processed_at = datetime('now', '-45 days') WHERE event_id IN (?, ?)")
+        .run(oldProcessed.eventId, oldDeadLetter.eventId);
     } finally {
       db.close();
     }
@@ -1026,7 +1087,9 @@ describe('event backbone foundation', () => {
           payload: { summary: { status: 'processed' } },
           idempotencyKey: `retention-${i}`,
         }, db);
-        db.prepare("UPDATE event_outbox SET status = 'processed', processed_at = datetime('now', '-45 days') WHERE event_id = ?").run(event.eventId);
+        moveEventFixtureToProcessed(event.eventId, db);
+        db.prepare("UPDATE event_outbox SET processed_at = datetime('now', '-45 days') WHERE event_id = ?")
+          .run(event.eventId);
       }
       db.prepare(`
         INSERT INTO sync_cursors (

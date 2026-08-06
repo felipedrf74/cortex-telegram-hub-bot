@@ -89,6 +89,15 @@ export interface ReflowInput {
    * ordering dependency.
    */
   applyMutation?: (db: import('better-sqlite3').Database) => ApplyMutationResult;
+  /**
+   * Runs after the fresh adaptation row exists but before the outer SQLite
+   * transaction commits. Durable propagation requests belong here so a
+   * failed outbox insert rolls back desired state, revision, and ledger.
+   */
+  afterApply?: (
+    db: import('better-sqlite3').Database,
+    context: ReflowAppliedContext,
+  ) => void;
 }
 
 /**
@@ -106,7 +115,17 @@ export type ApplyMutationResult =
        * afterPatch as `perActionResults`. Opaque to executeWeekReflow.
        */
       perActionResults?: unknown;
+      /** Exact session ids whose external schedule representation changed. */
+      affectedSessionIds?: number[];
     };
+
+export interface ReflowAppliedContext {
+  adaptationId: number;
+  adaptationRevision: number;
+  mutatedRows: number;
+  perActionResults?: unknown;
+  affectedSessionIds: number[];
+}
 
 export interface ReflowResult {
   mode: ReflowMode;
@@ -129,6 +148,7 @@ export interface ReflowResult {
    * returned no `perActionResults`.
    */
   perActionResults?: unknown;
+  affectedSessionIds: number[];
 }
 
 /**
@@ -212,6 +232,7 @@ export function executeWeekReflow(input: ReflowInput): ReflowResult {
       alreadyExisted: false,
       mutated: false,
       mutatedRows: 0,
+      affectedSessionIds: [],
     };
   }
 
@@ -237,6 +258,7 @@ export function executeWeekReflow(input: ReflowInput): ReflowResult {
       alreadyExisted: true,
       mutated: false,
       mutatedRows: 0,
+      affectedSessionIds: [],
     };
   }
 
@@ -247,6 +269,7 @@ export function executeWeekReflow(input: ReflowInput): ReflowResult {
   let result: RecordAdaptationResult;
   let mutatedRows = 0;
   let capturedPerActionResults: unknown = undefined;
+  let affectedSessionIds: number[] = [];
 
   const applyTxn = db.transaction((): RecordAdaptationResult => {
     // 1. Run the caller's mutation (if any). R8 P0-1 — the callback
@@ -263,6 +286,13 @@ export function executeWeekReflow(input: ReflowInput): ReflowResult {
         if (mr.perActionResults !== undefined) {
           capturedPerActionResults = mr.perActionResults;
         }
+        if (Array.isArray(mr.affectedSessionIds)) {
+          affectedSessionIds = [...new Set(
+            mr.affectedSessionIds
+              .map((value) => Number(value))
+              .filter((value) => Number.isSafeInteger(value) && value > 0),
+          )];
+        }
       }
     }
     // R8 P0-1 — merge perActionResults into afterPatch BEFORE
@@ -278,7 +308,7 @@ export function executeWeekReflow(input: ReflowInput): ReflowResult {
     //    (recordAdaptation uses db.transaction internally, but
     //    better-sqlite3 nests transactions as savepoints so this is
     //    safe.)
-    return recordAdaptation({
+    const recorded = recordAdaptation({
       planId: input.planId,
       scope: 'week',
       triggerType: input.trigger,
@@ -298,6 +328,23 @@ export function executeWeekReflow(input: ReflowInput): ReflowResult {
       idempotencyKey,
       actor: input.actor ?? 'user',
     });
+    if (mutatedRows > 0 && !recorded.alreadyExisted && input.afterApply) {
+      if (recorded.adaptationRevision === null) {
+        // Week-scope ledger rows must always carry the revision that fences
+        // their outbox request. Refuse to commit mutated desired state if the
+        // ledger ever violates that contract instead of emitting an unfenced
+        // provider job.
+        throw new Error('TRAINING_WEEK_REFLOW_ADAPTATION_REVISION_MISSING');
+      }
+      input.afterApply(db, {
+        adaptationId: recorded.adaptationId,
+        adaptationRevision: recorded.adaptationRevision,
+        mutatedRows,
+        perActionResults: capturedPerActionResults,
+        affectedSessionIds,
+      });
+    }
+    return recorded;
   });
 
   try {
@@ -332,5 +379,6 @@ export function executeWeekReflow(input: ReflowInput): ReflowResult {
     mutated: mutatedRows > 0 && !result.alreadyExisted,
     mutatedRows,
     perActionResults: capturedPerActionResults,
+    affectedSessionIds,
   };
 }

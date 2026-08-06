@@ -18,7 +18,10 @@ vi.mock('../../src/state/conversation', () => ({
   syncLastAssistantConversationMessage: (...args: unknown[]) => mocks.syncLastAssistantConversationMessage(...args),
 }));
 
-vi.mock('../../src/services/event-outbox', () => ({
+vi.mock('../../src/services/event-outbox', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/event-outbox')>(
+    '../../src/services/event-outbox'
+  )),
   cancelEvent: vi.fn(),
   claimPendingEvents: vi.fn(() => []),
   emitDomainEvent: (...args: unknown[]) => mocks.emitDomainEvent(...args),

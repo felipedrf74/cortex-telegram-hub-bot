@@ -219,6 +219,7 @@ export function readTrainingHistoryFromCompletions(
     session_id: number;
     session_type: string | null;
     completed_at: string;
+    completion_state: 'completed' | 'partial' | 'skipped';
     planned_duration_minutes: number | null;
     actual_duration_minutes: number | null;
     rpe_overall: number | null;
@@ -235,11 +236,21 @@ export function readTrainingHistoryFromCompletions(
   }> = [];
   try {
     rows = db.prepare(`
+      WITH ranked_completions AS (
+        SELECT tc.*,
+               ROW_NUMBER() OVER (
+                 PARTITION BY tc.session_id
+                 ORDER BY datetime(tc.completed_at) DESC, tc.id DESC
+               ) AS row_number
+          FROM training_completions tc
+      )
       SELECT ts.session_type AS session_type,
              ts.id AS session_id,
              tc.completed_at AS completed_at,
+             tc.completion_state AS completion_state,
              ts.duration_minutes AS planned_duration_minutes,
-             COALESCE(tc.duration_minutes, ts.duration_minutes, 0) AS actual_duration_minutes,
+             COALESCE(tc.completed_duration_sec / 60.0, tc.duration_minutes,
+                      ts.duration_minutes, 0) AS actual_duration_minutes,
              tc.rpe_overall AS rpe_overall,
              tc.soreness_level AS soreness_level,
              tc.energy_level AS energy_level,
@@ -251,12 +262,17 @@ export function readTrainingHistoryFromCompletions(
              tc.pain_score AS pain_score,
              tc.pain_location AS pain_location,
              tc.technical_success_score AS technical_success_score
-      FROM training_completions tc
-      JOIN training_sessions ts ON ts.id = tc.session_id
+      FROM ranked_completions tc
+      JOIN training_sessions ts
+        ON ts.id = tc.session_id
+       AND ts.plan_id = tc.plan_id
       JOIN fitness_training_plans ftp ON ftp.id = tc.plan_id
       WHERE ftp.user_id = ? AND ftp.tenant_id = ?
-        AND tc.completed_at >= ?
-        AND tc.completed_at < ?
+        AND tc.row_number = 1
+        AND tc.completion_state IN ('completed', 'partial')
+        AND ts.status <> 'skipped'
+        AND datetime(tc.completed_at) >= datetime(?)
+        AND datetime(tc.completed_at) < datetime(?)
       ORDER BY tc.completed_at ASC
     `).all(
       userId,
@@ -341,7 +357,10 @@ export function readTrainingHistoryFromCompletions(
       sorenessLevel: row.soreness_level ?? undefined,
       energyLevel: row.energy_level ?? undefined,
       distanceKm: distanceKm > 0 ? distanceKm : undefined,
-      completionStatus: plannedMinutes > 0 && actualMinutes < plannedMinutes * 0.72 ? 'partial' : 'completed',
+      completionStatus: row.completion_state === 'partial'
+        || (plannedMinutes > 0 && actualMinutes < plannedMinutes * 0.72)
+        ? 'partial'
+        : 'completed',
       completed: true,
       keySession: isLikelyKeySession(sessionType),
       feedbackTags: inferFeedbackTags(row, plannedMinutes, actualMinutes),
@@ -743,6 +762,7 @@ interface TrainingHistoryCompletionRow {
   completion_id: number;
   session_id: number;
   date_key: string;
+  completion_state: 'completed' | 'partial' | 'skipped';
   session_type: string | null;
   title: string | null;
   planned_duration_minutes: number | null;
@@ -883,13 +903,22 @@ export function getTrainingHistoryPage(
   const fetchCount = limit + 1;
 
   const completionRows = db.prepare(`
+    WITH ranked_completions AS (
+      SELECT source.*,
+             ROW_NUMBER() OVER (
+               PARTITION BY source.session_id
+               ORDER BY datetime(source.completed_at) DESC, source.id DESC
+             ) AS row_number
+        FROM training_completions source
+    )
     SELECT tc.id AS completion_id,
            tc.session_id AS session_id,
            tc.completed_at AS date_key,
+           tc.completion_state AS completion_state,
            ts.session_type AS session_type,
            ts.title AS title,
            ts.duration_minutes AS planned_duration_minutes,
-           COALESCE(tc.duration_minutes, tc.completed_duration_sec / 60.0) AS actual_duration_minutes,
+           COALESCE(tc.completed_duration_sec / 60.0, tc.duration_minutes) AS actual_duration_minutes,
            tc.completed_distance_meters AS completed_distance_meters,
            tc.rpe_overall AS rpe_overall,
            tc.energy_level AS energy_level,
@@ -897,11 +926,17 @@ export function getTrainingHistoryPage(
            tc.notes AS notes,
            ftp.name AS plan_name,
            tw.week_number AS week_number
-    FROM training_completions tc
-    JOIN training_sessions ts ON ts.id = tc.session_id
+    FROM ranked_completions tc
+    JOIN training_sessions ts
+      ON ts.id = tc.session_id
+     AND ts.plan_id = tc.plan_id
     JOIN training_weeks tw ON tw.id = ts.week_id
     JOIN fitness_training_plans ftp ON ftp.id = tc.plan_id
-    WHERE ftp.user_id = ? AND ftp.tenant_id = ?${sportClause}${completionWindow.clause}${completionKeyset.clause}
+    WHERE ftp.user_id = ? AND ftp.tenant_id = ?
+      AND tc.row_number = 1
+      AND ts.status <> 'skipped'
+      AND tc.completion_state IN ('completed', 'partial')
+      ${sportClause}${completionWindow.clause}${completionKeyset.clause}
     ORDER BY tc.completed_at DESC, tc.id DESC
     LIMIT ?
   `).all(
@@ -976,7 +1011,8 @@ export function getTrainingHistoryPage(
     // only for the payload.
     const actual = row.actual_duration_minutes;
     const status: TrainingHistoryItem['status'] =
-      planned != null && planned > 0 && actual != null && actual < planned * TRAINING_HISTORY_PARTIAL_RATIO
+      row.completion_state === 'partial'
+      || (planned != null && planned > 0 && actual != null && actual < planned * TRAINING_HISTORY_PARTIAL_RATIO)
         ? 'partial'
         : 'completed';
     merged.push({

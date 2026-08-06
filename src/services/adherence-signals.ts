@@ -137,6 +137,7 @@ function signalMatchesAdherenceSnapshot(
   const payload = signal.payload;
   return signal.signal_type === targetType
     && Number(payload.completed) === adherence.completed
+    && Number(payload.partial ?? 0) === adherence.partial
     && Number(payload.planned) === adherence.planned
     && sameIsoInstant(payload.week_start, adherence.weekStart)
     && sameIsoInstant(payload.week_end, adherence.weekEnd);
@@ -250,15 +251,18 @@ export function publishAdherenceSignalsForUser(userId: number, tenantId: number,
       userId,
       tenantId: scopedTenantId,
       completed: adherence.completed,
+      partial: adherence.partial,
       planned: adherence.planned,
       weekStart: adherence.weekStart,
       weekEnd: adherence.weekEnd,
       reason: adherence.skipped > 0
         ? `${adherence.skipped} session(s) explicitly skipped`
+        : adherence.partial > 0
+          ? `${adherence.partial} session(s) partially completed`
         : `${adherence.planned - adherence.completed} session(s) missed`,
     });
     logger.info(
-      { userId, tenantId: scopedTenantId, completed: adherence.completed, planned: adherence.planned, pct: adherence.percentage },
+      { userId, tenantId: scopedTenantId, completed: adherence.completed, partial: adherence.partial, planned: adherence.planned, pct: adherence.percentage },
       'low_adherence signal published',
     );
     return { adherence, action: 'published_low' };
@@ -269,6 +273,7 @@ export function publishAdherenceSignalsForUser(userId: number, tenantId: number,
     userId,
     tenantId: scopedTenantId,
     completed: adherence.completed,
+    partial: adherence.partial,
     planned: adherence.planned,
     weekStart: adherence.weekStart,
     weekEnd: adherence.weekEnd,

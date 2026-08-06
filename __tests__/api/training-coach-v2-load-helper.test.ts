@@ -128,11 +128,20 @@ describe('tenant scoping — computeLoadModelAndDeload', () => {
     const dayMs = 24 * 3600 * 1000;
     for (let i = 1; i <= days; i++) {
       const date = new Date(Date.now() - i * dayMs).toISOString().slice(0, 10);
+      const sessionId = planId * 1000 + i;
+      // F18: each day represents a distinct scheduled session. Reusing one
+      // session for every day would now (correctly) collapse to its latest
+      // disposition and would no longer model a multi-session load history.
+      db.prepare(`
+        INSERT INTO training_sessions
+          (id, week_id, plan_id, day_of_week, session_type, title, duration_minutes, status)
+        VALUES (?, ?, ?, 'monday', 'easy_run', 'run', 60, 'completed')
+      `).run(sessionId, planId * 100, planId);
       db.prepare(`
         INSERT INTO training_completions
           (session_id, plan_id, completed_at, rpe_overall, duration_minutes)
         VALUES (?, ?, ?, 6, 60)
-      `).run(planId * 100, planId, `${date} 10:00:00`);
+      `).run(sessionId, planId, `${date} 10:00:00`);
     }
   }
 

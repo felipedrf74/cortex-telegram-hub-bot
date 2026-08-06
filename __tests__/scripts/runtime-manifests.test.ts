@@ -34,10 +34,13 @@ describe('runtime manifests', () => {
       providerCapableJobs: 8,
       sharedRunnerJobs: 8,
       eventHandlers: 1,
-      directEventEffects: 2,
-      queuedJobHandlers: 9,
+      directEventEffects: 5,
+      // Phase 1B: +1 queued handler (training_plan_calendar_sync) in its own
+      // 'training-plan-calendar-sync' runtime group.
+      queuedJobHandlers: 10,
     });
-    expect(result).toMatchObject({ jobs: 63, scheduledJobs: 63 });
+    // Phase 1B: +1 scheduler job (training_plan_calendar_sync_worker drain).
+    expect(result).toMatchObject({ jobs: 64, scheduledJobs: 64 });
   });
 
   it('keeps parent skill and domain metadata byte-identical to CapabilityManifest generation', () => {
@@ -81,17 +84,17 @@ describe('runtime manifests', () => {
       ok: true,
       output: 'config/agent-job-manifest.json',
       schema: 'nexus.agent-job-manifest.v3',
-      jobs: 63,
+      jobs: 64,
       eventHandlers: 1,
-      directEventEffects: 2,
-      queuedJobHandlers: 9,
+      directEventEffects: 5,
+      queuedJobHandlers: 10,
     });
     expect(fs.readFileSync(manifestPath, 'utf8')).toBe(before);
 
     const manifest = JSON.parse(before);
     expect(manifest.schema).toBe('nexus.agent-job-manifest.v3');
-    expect(manifest.version).toBe('2026-08-02.1');
-    expect(manifest.jobs).toHaveLength(63);
+    expect(manifest.version).toBe('2026-08-02.6');
+    expect(manifest.jobs).toHaveLength(64);
     for (const job of manifest.jobs) {
       expect(job).toMatchObject({
         id: expect.any(String),
@@ -180,6 +183,38 @@ describe('runtime manifests', () => {
     }
   });
 
+  // Stronger guarantee: AgentJobManifest generation source-parses the literal
+  // registerJob call, so keepalive registration and execution must retain the
+  // same exact cron text while its reviewed policy stays explicitly no-model.
+  it('governs Garmin keepalive at its executed cadence with tenant scope and a durable lease', () => {
+    const schedulerSource = fs.readFileSync(path.resolve('src/services/scheduler.ts'), 'utf8');
+    const registeredSchedule = schedulerSource.match(
+      /registerJob\(\s*'garmin_keepalive'\s*,\s*'Garmin Keep-Alive'\s*,\s*'([^']+)'\s*,\s*'triathlon'/,
+    )?.[1];
+    const executedSchedule = schedulerSource.match(
+      /cron\.schedule\(\s*'([^']+)'\s*,\s*wrapJob\(\s*'garmin_keepalive'/,
+    )?.[1];
+    expect(registeredSchedule).toBe('5,35 * * * *');
+    expect(executedSchedule).toBe(registeredSchedule);
+
+    const keepalive = loadAgentJobManifest().jobs.find((job) => job.id === 'garmin_keepalive');
+    expect(keepalive).toMatchObject({
+      schedule: registeredSchedule,
+      policyOwner: 'training',
+      tenantScope: 'connected-garmin-tenant-user',
+      retryPolicy: 'next-scheduled-run-with-auth-refresh',
+      providerUsage: 'none',
+      providerRouting: 'not-applicable-no-model-provider',
+      costPolicy: 'no-model-provider-cost',
+      inputFingerprint: {
+        enforcement: 'not-applicable-no-provider',
+        unchangedInputProviderCalls: 0,
+      },
+    });
+    expect(keepalive?.overlapPolicy).toMatch(/^durable-.*lease/);
+    expect(keepalive).not.toHaveProperty('sharedRunner');
+  });
+
   it('governs notification producer sweeps with their reviewed tenant, retry, and output boundaries', () => {
     const manifest = loadAgentJobManifest();
     const jobsById = Object.fromEntries(manifest.jobs.map((job) => [job.id, job]));
@@ -237,7 +272,7 @@ describe('runtime manifests', () => {
   });
 
   it('fails closed when runtime registration drifts from the exact manifest identity', () => {
-    expect(loadAgentJobManifest().jobs).toHaveLength(63);
+    expect(loadAgentJobManifest().jobs).toHaveLength(64);
     expect(() => assertAgentJobRuntimeRegistration({
       id: 'tuesday_reels',
       name: 'Tuesday Reel Topics',
@@ -271,7 +306,7 @@ describe('runtime manifests', () => {
   it('fails closed when event or durable queued-job runtime handler registries drift', () => {
     const manifest = loadAgentJobManifest();
     expect(manifest.eventHandlers).toHaveLength(1);
-    expect(manifest.queuedJobHandlers).toHaveLength(9);
+    expect(manifest.queuedJobHandlers).toHaveLength(10);
     expect(manifest.eventHandlers[0]).toMatchObject({
       id: 'default_event_router',
       eventType: '*',
@@ -279,7 +314,28 @@ describe('runtime manifests', () => {
     });
     expect(manifest.eventHandlers[0].routedEventTypes).toContain('training.plan_revision.activated.v1');
     expect(manifest.eventHandlers[0].routedEventTypes).toContain('training.adaptation.rejected.v1');
+    // Phase 1B: the queue-only routed calendar-sync request event must stay
+    // audited on the '*' router, and its durable job must stay in the '*'
+    // router's enqueue surface even though a dedicated group drains it.
+    expect(manifest.eventHandlers[0].routedEventTypes).toContain('training.plan_calendar_sync.requested.v1');
+    expect(manifest.eventHandlers[0].routedEventTypes).toContain('secretary.arbitration.committed.v1');
+    expect(manifest.eventHandlers[0].routedEventTypes).toContain('secretary.source_feedback.requested.v1');
+    expect(manifest.eventHandlers[0].routedEventTypes).toContain('secretary.training_feedback.requested.v1');
+    expect(manifest.eventHandlers[0].queuedJobTypes).toContain('training_plan_calendar_sync');
     expect(manifest.eventHandlers[0].directEffects).toEqual([
+      expect.objectContaining({
+        id: 'complete_cooking_meal_prep_provider_sync:cooking.meal_prep_provider_sync.completed.v1',
+        eventType: 'cooking.meal_prep_provider_sync.completed.v1',
+        providerUsage: 'none',
+        tenantScope: 'durable-event-owner-and-exact-secretary-tenant',
+      }),
+      expect.objectContaining({
+        id: 'record_secretary_source_skill_feedback:secretary.source_feedback.requested.v1',
+        eventType: 'secretary.source_feedback.requested.v1',
+        providerUsage: 'none',
+        tenantScope: 'durable-event-owner-and-exact-secretary-tenant',
+        outputPolicy: 'exact-scope-monotonic-cooking-finance-content-feedback-upsert',
+      }),
       expect.objectContaining({
         id: 'record_training_learning_observation:training.adaptation.rejected.v1',
         eventType: 'training.adaptation.rejected.v1',
@@ -290,8 +346,18 @@ describe('runtime manifests', () => {
         eventType: 'training.plan_revision.activated.v1',
         providerUsage: 'none',
       }),
+      expect.objectContaining({
+        id: 'record_training_secretary_feedback_decision:secretary.training_feedback.requested.v1',
+        eventType: 'secretary.training_feedback.requested.v1',
+        providerUsage: 'none',
+        tenantScope: 'durable-event-owner-and-exact-secretary-tenant',
+      }),
     ]);
     const directEffects = [
+      {
+        eventType: 'cooking.meal_prep_provider_sync.completed.v1',
+        effect: 'complete_cooking_meal_prep_provider_sync',
+      },
       {
         eventType: 'training.plan_revision.activated.v1',
         effect: 'record_training_learning_observation',
@@ -299,6 +365,14 @@ describe('runtime manifests', () => {
       {
         eventType: 'training.adaptation.rejected.v1',
         effect: 'record_training_learning_observation',
+      },
+      {
+        eventType: 'secretary.training_feedback.requested.v1',
+        effect: 'record_training_secretary_feedback_decision',
+      },
+      {
+        eventType: 'secretary.source_feedback.requested.v1',
+        effect: 'record_secretary_source_skill_feedback',
       },
     ];
     expect(() => assertAgentEventHandlerRuntimeParity([{ eventType: '*' }], 'event-backbone-default', directEffects)).not.toThrow();
@@ -323,11 +397,32 @@ describe('runtime manifests', () => {
     expect(() => assertAgentQueuedJobHandlerRuntimeParity([
       { jobType: 'chat_action_fixer_review', idempotent: true },
     ], 'chat-action-fixer')).not.toThrow();
+    expect(() => assertAgentQueuedJobHandlerRuntimeParity([
+      { jobType: 'training_plan_calendar_sync', idempotent: true },
+    ], 'training-plan-calendar-sync')).not.toThrow();
+    expect(() => assertAgentQueuedJobHandlerRuntimeParity([], 'training-plan-calendar-sync'))
+      .toThrow(/queued job handler runtime parity mismatch/);
     expect(manifest.queuedJobHandlers
       .filter((handler) => handler.providerUsage === 'governed-provider-capable')
       .map((handler) => handler.jobType)).toEqual([
         'chat_action_fixer_review',
       ]);
+    // Phase 1B: calendar sync is an outbound-provider integration, NOT a
+    // model-provider job — mislabeling it provider-capable would trip the
+    // 8-id provider-capable list above and the shared-runner asserts.
+    expect(manifest.queuedJobHandlers.find(
+      (handler) => handler.jobType === 'training_plan_calendar_sync',
+    )).toMatchObject({
+      runtimeGroup: 'training-plan-calendar-sync',
+      providerUsage: 'none',
+      providerRouting: 'not-applicable-no-model-provider',
+      retryPolicy: 'durable-queue-max-5-with-backoff',
+      outputPolicy: 'active-plan-validated-ownership-idempotent-calendar-write',
+      inputFingerprint: {
+        enforcement: 'not-applicable-no-provider',
+        unchangedInputProviderCalls: 0,
+      },
+    });
     expect(manifest.queuedJobHandlers.find(
       (handler) => handler.jobType === 'chat_legacy_timeout_continuation',
     )).toMatchObject({

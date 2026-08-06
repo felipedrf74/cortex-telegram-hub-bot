@@ -107,7 +107,7 @@ export const simpleTaskSlotExtractor: SlotExtractor = {
 
 export const trainingPlanSlotExtractor: SlotExtractor = {
   name: 'training_plan_slots',
-  label: 'extracts sport/goal/duration/weeklyVolume/startDate from training-plan phrasings',
+  label: 'extracts REST-compatible objective/duration/frequency/start policy from training-plan phrasings',
   extract(text, ctx) {
     // `extractTrainingPlanSlots` wants a full planner-input shape; build a
     // synthetic one. The slot extractor doesn't care about userId/tenantId

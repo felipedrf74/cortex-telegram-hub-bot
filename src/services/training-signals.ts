@@ -9,8 +9,7 @@
  * primitives behind domain-meaningful names like `publishLegFatigue()`
  * or `readTrainingContext()`.
  *
- * Three cross-skill signal flows live here (Phase 1 decision 1.4 — the
- * user said "all 3, this is a must for our product"):
+ * Core cross-skill signal flows live here:
  *
  *   A. Leg fatigue  : gym coach → running/cycle coach
  *      gym publishes `high_leg_load` after heavy squats/deads at RPE >= 8,
@@ -20,13 +19,6 @@
  *      garmin sync publishes `low_sleep` / `low_hrv` / `low_readiness`
  *      when nightly sync pulls a poor reading. Any coach reads before
  *      generating a prescription and downgrades intensity.
- *
- *   C. Calendar conflict : sport coach → secretary (and back)
- *      sport coach publishes `training_session_scheduled` after adding
- *      a session to the calendar. Secretary reads these when checking
- *      for conflicts with user-created events and publishes
- *      `calendar_conflict` back.
- *
  * All signals here are PER-USER — they carry a userId and readers filter
  * to their own user. The content mesh agents are unaffected; they still
  * use the generic bus with global signals.
@@ -273,49 +265,11 @@ function safetySignalCategory(triggerType: string): 'symptom' | 'illness' | 'inj
   return 'symptom';
 }
 
-/**
- * Publish signal C part 1: sport coach just scheduled a training session
- * on the calendar. Secretary reads these to flag conflicts with user events.
- */
-export function publishTrainingSessionScheduled(opts: {
-  userId: number;
-  tenantId: number;
-  sport: 'gym' | 'running' | 'cycling' | 'swim';
-  sessionId: number | string;
-  startTimeIso: string;
-  endTimeIso: string;
-  title: string;
-  calendarEventId?: string;
-}): number {
-  const source: TrainingSource =
-    opts.sport === 'gym' ? TRAINING_SOURCE.GYM_COACH
-    : opts.sport === 'running' ? TRAINING_SOURCE.RUNNING_COACH
-    : opts.sport === 'cycling' ? TRAINING_SOURCE.CYCLE_COACH
-    : TRAINING_SOURCE.SWIM_COACH;
-
-  return writeTrainingSignal({
-    source_agent: source,
-    signal_type: 'training_session_scheduled',
-    payload: {
-      sport: opts.sport,
-      session_id: opts.sessionId,
-      start: opts.startTimeIso,
-      end: opts.endTimeIso,
-      title: opts.title,
-      calendar_event_id: opts.calendarEventId,
-    },
-    user_id: opts.userId,
-    tenant_id: opts.tenantId,
-    priority: 'normal',
-    expires_at: opts.endTimeIso, // expire when session itself is over
-  });
-}
-
 // ─── Phase 4 Slice C — Adherence publishers ─────────────────────
 
 /**
- * Publish `low_adherence` — the user has completed fewer than 60% of
- * planned sessions this week. Sport coaches read this to suggest a
+ * Publish `low_adherence` — the user's full + half-credit partial work is
+ * below 60% of planned sessions this week. Sport coaches read this to suggest a
  * deload, check in on motivation, or adjust the plan.
  *
  * Urgent priority because a missed-session pattern is time-sensitive:
@@ -327,6 +281,7 @@ export function publishLowAdherence(opts: {
   userId: number;
   tenantId: number;
   completed: number;
+  partial?: number;
   planned: number;
   weekStart: string;
   weekEnd: string;
@@ -337,9 +292,10 @@ export function publishLowAdherence(opts: {
     signal_type: 'low_adherence',
     payload: {
       completed: opts.completed,
+      partial: opts.partial ?? 0,
       planned: opts.planned,
       adherence_pct: opts.planned > 0
-        ? Math.round((opts.completed / opts.planned) * 100)
+        ? Math.round(((opts.completed + ((opts.partial ?? 0) * 0.5)) / opts.planned) * 100)
         : 0,
       week_start: opts.weekStart,
       week_end: opts.weekEnd,
@@ -361,6 +317,7 @@ export function publishHighAdherence(opts: {
   userId: number;
   tenantId: number;
   completed: number;
+  partial?: number;
   planned: number;
   weekStart: string;
   weekEnd: string;
@@ -370,6 +327,7 @@ export function publishHighAdherence(opts: {
     signal_type: 'high_adherence',
     payload: {
       completed: opts.completed,
+      partial: opts.partial ?? 0,
       planned: opts.planned,
       adherence_pct: 100,
       week_start: opts.weekStart,
@@ -434,64 +392,6 @@ export function publishPlanDrift(opts: {
     user_id: opts.userId,
     tenant_id: opts.tenantId,
     priority: 'normal',
-    expires_at: new Date(Date.now() + ttl * 3600 * 1000).toISOString(),
-  });
-}
-
-/**
- * Publish signal C part 2: secretary detected a conflict between a user
- * event and a scheduled training session. Sport coaches read this next
- * time the user asks about today's plan.
- */
-export function publishCalendarConflict(opts: {
-  userId: number;
-  trainingSessionId: number | string;
-  conflictingEventId: string;
-  conflictingEventTitle: string;
-  overlapStartIso: string;
-  overlapEndIso: string;
-}): number {
-  return writeTrainingSignal({
-    source_agent: TRAINING_SOURCE.SECRETARY_CALENDAR,
-    signal_type: 'calendar_conflict',
-    payload: {
-      training_session_id: opts.trainingSessionId,
-      conflict_event_id: opts.conflictingEventId,
-      conflict_event_title: opts.conflictingEventTitle,
-      overlap_start: opts.overlapStartIso,
-      overlap_end: opts.overlapEndIso,
-    },
-    user_id: opts.userId,
-    priority: 'urgent',
-  });
-}
-
-/**
- * Secretary/agenda lifecycle signal: the current training schedule no
- * longer matches calendar truth. Coaches should reflow/resync instead
- * of presenting the old plan as authoritative.
- */
-export function publishTrainingScheduleStale(opts: {
-  userId: number;
-  reason: string;
-  affectedSessionIds?: Array<number | string>;
-  dates?: string[];
-  source?: string;
-  ttlHours?: number;
-}): number {
-  const ttl = opts.ttlHours ?? 24;
-  return writeTrainingSignal({
-    source_agent: opts.source ?? TRAINING_SOURCE.SECRETARY_CALENDAR,
-    signal_type: 'training_schedule_stale',
-    payload: {
-      reason: opts.reason,
-      affected_session_ids: opts.affectedSessionIds ?? [],
-      dates: opts.dates ?? [],
-      requires_reflow: true,
-      requires_agenda_resync: true,
-    },
-    user_id: opts.userId,
-    priority: 'urgent',
     expires_at: new Date(Date.now() + ttl * 3600 * 1000).toISOString(),
   });
 }
@@ -565,8 +465,6 @@ const UNIVERSAL_COACH_INPUTS: SignalType[] = [
   'low_readiness',
   'safety_red_flag',
   'planned_race_this_week',
-  'calendar_conflict',
-  'training_schedule_stale',
   'fueling_gap_risk',
   'budget_remaining',
   'subscription_renewal_due',
@@ -625,9 +523,6 @@ export interface TrainingContext {
     /** Phase 4 Slice G — plan drift flag. Set when the user's
      *  actual sport distribution diverges from the plan's sport. */
     planDrift: boolean;
-    /** Secretary/agenda says the active schedule is stale or conflicted. */
-    calendarConflict: boolean;
-    scheduleStale: boolean;
     /** Cooking says planned training lacks meal/fueling support. */
     fuelingGap: boolean;
     /** Finance says training cost or supplement/equipment asks need constraint. */
@@ -672,8 +567,6 @@ export function readTrainingContext(opts: {
     lowAdherence: signals.some((s) => s.signal_type === 'low_adherence'),
     highAdherence: signals.some((s) => s.signal_type === 'high_adherence'),
     planDrift: signals.some((s) => s.signal_type === 'plan_drift'),
-    calendarConflict: signals.some((s) => s.signal_type === 'calendar_conflict'),
-    scheduleStale: signals.some((s) => s.signal_type === 'training_schedule_stale'),
     fuelingGap: signals.some((s) => s.signal_type === 'fueling_gap_risk'),
     budgetConstraint: signals.some((s) => s.signal_type === 'budget_remaining'),
     contentCommitment: signals.some((s) => s.signal_type === 'publishing_commitment'),
@@ -706,7 +599,6 @@ export function readTrainingContextAll(opts: { userId: number; tenantId?: number
     // Phase 4 Slice G — plan drift universal input.
     'plan_drift',
     // Training-centered cross-skill orchestration inputs.
-    'calendar_conflict', 'training_schedule_stale',
     'fueling_gap_risk',
     'budget_remaining', 'subscription_renewal_due',
     'publishing_commitment',
@@ -723,8 +615,6 @@ export function readTrainingContextAll(opts: { userId: number; tenantId?: number
     lowAdherence: signals.some((s) => s.signal_type === 'low_adherence'),
     highAdherence: signals.some((s) => s.signal_type === 'high_adherence'),
     planDrift: signals.some((s) => s.signal_type === 'plan_drift'),
-    calendarConflict: signals.some((s) => s.signal_type === 'calendar_conflict'),
-    scheduleStale: signals.some((s) => s.signal_type === 'training_schedule_stale'),
     fuelingGap: signals.some((s) => s.signal_type === 'fueling_gap_risk'),
     budgetConstraint: signals.some((s) => s.signal_type === 'budget_remaining'),
     contentCommitment: signals.some((s) => s.signal_type === 'publishing_commitment'),
@@ -734,39 +624,6 @@ export function readTrainingContextAll(opts: { userId: number; tenantId?: number
   };
 
   return { signals, flags };
-}
-
-/**
- * Secretary reader: get all training sessions scheduled in a time window.
- * Secretary calendar code calls this before adding a user event to check
- * if it would collide with planned training.
- */
-export function readScheduledTrainingSessions(opts: {
-  userId: number;
-  tenantId: number;
-  windowStartIso: string;
-  windowEndIso: string;
-}): AgentSignal[] {
-  const tenantId = requireTenantIdParam(opts.tenantId, 'readScheduledTrainingSessions');
-  const consumer = TRAINING_SOURCE.SECRETARY_CALENDAR;
-  const sessions = readSignals(
-    consumer,
-    ['training_session_scheduled'],
-    100,
-    opts.userId,
-    undefined,
-    tenantId,
-  );
-  const winStart = Date.parse(opts.windowStartIso);
-  const winEnd = Date.parse(opts.windowEndIso);
-  return sessions.filter((s) => {
-    const start = Date.parse(String(s.payload?.start ?? ''));
-    const end = Date.parse(String(s.payload?.end ?? ''));
-    if (!Number.isFinite(start) || !Number.isFinite(end)) return false;
-    // Overlap check: session overlaps window iff it ends after window start
-    // AND starts before window end.
-    return end > winStart && start < winEnd;
-  });
 }
 
 /** Mark a signal as consumed by the given consumer. Thin pass-through. */
@@ -791,16 +648,6 @@ export function formatTrainingContextForPrompt(ctx: TrainingContext, sport: stri
   if (ctx.flags.highLegLoad) lines.push('- HIGH LEG LOAD recently — avoid heavy lower-body today.');
   if (ctx.flags.highShoulderLoad) lines.push('- HIGH SHOULDER LOAD recently — reduce overhead/paddle work.');
   if (ctx.flags.raceThisWeek) lines.push('- RACE THIS WEEK — taper, no new stimulus.');
-  if (ctx.flags.calendarConflict) {
-    const conflict = ctx.signals.find((s) => s.signal_type === 'calendar_conflict');
-    const title = String(conflict?.payload?.conflict_event_title ?? 'calendar event');
-    lines.push(`- CALENDAR CONFLICT — ${title} overlaps training. Reflow the session and resync agenda before claiming the schedule is final.`);
-  }
-  if (ctx.flags.scheduleStale) {
-    const stale = ctx.signals.find((s) => s.signal_type === 'training_schedule_stale');
-    const reason = String(stale?.payload?.reason ?? 'availability changed');
-    lines.push(`- TRAINING SCHEDULE STALE — ${reason}. Do not show stale sessions as active; rebuild or resync the plan lifecycle first.`);
-  }
   if (ctx.flags.fuelingGap) {
     const gap = ctx.signals.find((s) => s.signal_type === 'fueling_gap_risk');
     const hardDates = Array.isArray(gap?.payload?.hard_dates_missing_meals)

@@ -64,6 +64,7 @@ import {
   chatCoreV2BackgroundCommandJobHandler,
 } from '../../src/services/chat-core-v2/background-command-worker';
 import {
+  claimPendingJobs,
   ensureBackgroundJobTables,
   processPendingJobs,
   markJobFailed,
@@ -438,11 +439,24 @@ describe('lifecycle state transitions', () => {
 // ── Worker integration (completed / failed / dead-letter / APNs / stale) ─────
 function claimOne(): JobRecord {
   // Mirror claimPendingJobs but inline so the test owns the lifecycle.
+  //
+  // Migration 279 fences the claim: `trg_background_jobs_fenced_claim_transition`
+  // aborts any `status = 'processing'` write that lacks a fresh fencing token,
+  // a non-empty lock owner, `locked_at`, and an UNEXPIRED `lease_expires_at`.
+  // This mirror predates the fence, so it began aborting with
+  // BACKGROUND_JOB_FENCING_VIOLATION — the fence working, not a defect.
+  //
+  // A mirror of a fenced claim has to carry the fence, otherwise it stops
+  // being a mirror. The token is per-claim so a second claim of the same row
+  // is a genuinely distinct owner, which is what the fence exists to tell apart.
+  const lockOwner = `chat-v2-test-worker:${process.pid}`;
+  const fencingToken = `fence-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
   const row = testDb.prepare(`
-    UPDATE background_jobs SET status='processing', attempts=attempts+1, locked_at=datetime('now'), started_at=COALESCE(started_at, datetime('now'))
+    UPDATE background_jobs SET status='processing', attempts=attempts+1, locked_at=datetime('now'), started_at=COALESCE(started_at, datetime('now')),
+      lock_owner = ?, fencing_token = ?, lease_expires_at = datetime('now', '+15 minutes')
     WHERE job_id = (SELECT job_id FROM background_jobs WHERE status IN ('pending','failed') ORDER BY created_at ASC LIMIT 1)
     RETURNING *
-  `).get() as Record<string, unknown> | undefined;
+  `).get(lockOwner, fencingToken) as Record<string, unknown> | undefined;
   if (!row) throw new Error('no claimable job');
   return {
     jobId: String(row.job_id),
@@ -579,10 +593,15 @@ describe('processBackgroundChatCommandJob integration', () => {
     // First pass → failed (attempt 1 of 3).
     const first = await processPendingJobs([chatCoreV2BackgroundCommandJobHandler], { db: testDb });
     expect(first.failed + first.deadLetter).toBe(1);
-    // Force dead-letter by exhausting attempts directly.
+    // Force dead-letter by exhausting attempts directly. The row is already
+    // failed, so preserve its terminal fencing tombstone while adjusting only
+    // retry metadata; predecessor status rewrites are intentionally rejected.
     const jobId = (testDb.prepare('SELECT job_id FROM background_jobs LIMIT 1').get() as { job_id: string }).job_id;
-    testDb.prepare("UPDATE background_jobs SET attempts = max_attempts, status='failed', not_before=datetime('now','-1 minute') WHERE job_id = ?").run(jobId);
-    const status = markJobFailed(jobId, new Error('boom'), testDb);
+    testDb.prepare("UPDATE background_jobs SET attempts = max_attempts, not_before=datetime('now','-1 minute') WHERE job_id = ?").run(jobId);
+    // Stronger guarantee: terminal writes require the current claim token;
+    // tests no longer exercise the unsafe predecessor id-only mutation.
+    const exhaustedLease = claimPendingJobs(1, 'dead-letter-fixture', testDb)[0];
+    const status = markJobFailed(exhaustedLease, new Error('boom'), testDb);
     expect(status).toBe('dead_letter');
   });
 

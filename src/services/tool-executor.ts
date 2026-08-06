@@ -48,13 +48,9 @@ import {
 } from './chat-tool-authorization';
 import { sanitizeForPromptInterpolation } from '../utils/prompt-sanitizer';
 import {
-  assertLegacyPlanGenerationAllowed,
-  assertLegacyPlanMutationAllowed,
   assertLegacySessionMutationAllowed,
-  assertLegacyWeekMutationAllowed,
 } from './training-plan-revision-legacy-guard';
 import { TrainingPlanRevisionError } from './training-plan-revision-errors';
-import { normalizeTrainingExercisesJsonForWrite } from './training-exercise-identity';
 import { captureChatContentIdea } from './content-workspace-chat-capture';
 
 // ─── Phase 3 Slice A — profile field whitelist ───────────────────
@@ -334,6 +330,21 @@ function requireOwnedTrainingSessionForTool(
     return { ok: false, error: `${toolName} cannot access that training session for the authenticated user` };
   }
   return { ...scope, session, plan };
+}
+
+function disabledRawTrainingWriterResult(toolName: string): {
+  success: false;
+  code: 'TRAINING_RAW_WRITER_DISABLED';
+  error: string;
+  handoff: 'training_plan_builder';
+} {
+  return {
+    success: false,
+    code: 'TRAINING_RAW_WRITER_DISABLED',
+    error: `${toolName} cannot write Training plan projections directly. `
+      + 'Open the reviewed training plan builder so the athlete can preview and confirm the complete plan.',
+    handoff: 'training_plan_builder',
+  };
 }
 
 export async function executeToolCall(
@@ -793,71 +804,58 @@ export async function executeToolCall(
       }
 
       // ── Training Plan tools ──
+      //
+      // F13 (Phase 1A-3): `create_training_plan` no longer writes a plan row.
+      //
+      // It used to call `trainingPlans.createPlan` directly, which inserts
+      // with `status` defaulting to `'active'` and no unique constraint on
+      // active plans. A single model turn could therefore create an empty
+      // shell plan that immediately became "the active plan" — `getActivePlan`
+      // orders by `created_at DESC` — hiding the user's real plan from Home,
+      // /today, /week and the calendar. It also bypassed the coach kernel,
+      // volume enforcement, the plan linter, the spec/readiness gate, the
+      // safety guardrails and the cancellation saga, and produced a row with
+      // `source_revision_id = NULL` that later blocks revision enrollment
+      // with TRAINING_EXISTING_ACTIVE_PLAN_NOT_REPLACEABLE_IN_M1.
+      //
+      // The enrollment-scoped `assertLegacyPlanGenerationAllowed` guard did
+      // not help: `shouldGuard` returns false for non-enrolled scopes, so in
+      // default mode it was a no-op.
+      //
+      // Plan creation has a reviewed path — preview → confirm via the plan
+      // builder — and chat already hands off to it (`training_plan_create`
+      // returns `verified_pending` with `openSurface: 'training_plan_builder'`).
+      // This tool now returns that handoff instead of writing. The released
+      // REST route `/api/v1/training/plan/generate` is untouched; raw model
+      // writers and the compatibility API are separate concerns.
       case 'create_training_plan': {
         const scope = requireTenantToolUserId(toolName, userId, input.user_id, tenantId);
         if (!scope.ok) return { error: scope.error };
-        assertLegacyPlanGenerationAllowed({ userId: scope.userId, tenantId: scope.tenantId });
-        const plan = trainingPlans.createPlan({
-          user_id: scope.userId,
-          tenant_id: scope.tenantId,
-          name: input.name,
-          sport: input.sport,
-          goal: input.goal,
-          duration_weeks: input.duration_weeks,
-          periodization: input.periodization,
-          start_date: input.start_date,
-          end_date: input.end_date,
-          preferences_json: input.preferences_json,
-        });
-        return { success: true, plan_id: plan.id, name: plan.name, status: plan.status };
+        logger.warn(
+          { userId: scope.userId, tenantId: scope.tenantId, toolName },
+          'Model attempted direct training plan creation; returning plan-builder handoff instead of writing a row',
+        );
+        return disabledRawTrainingWriterResult(toolName);
       }
 
       case 'add_training_week': {
         const scope = requireOwnedTrainingPlanForTool(toolName, input.plan_id, userId, tenantId);
         if (!scope.ok) return { error: scope.error };
-        assertLegacyPlanMutationAllowed(
-          { userId: scope.userId, tenantId: scope.tenantId },
-          scope.plan.id,
+        logger.warn(
+          { userId: scope.userId, tenantId: scope.tenantId, planId: scope.plan.id, toolName },
+          'Model attempted direct Training week mutation; returning plan-builder handoff without writing',
         );
-        const week = trainingPlans.createWeek({
-          plan_id: input.plan_id,
-          week_number: input.week_number,
-          focus: input.focus,
-          intensity_pct: input.intensity_pct,
-          volume_sessions: input.volume_sessions,
-          notes: input.notes,
-        });
-        return { success: true, week_id: week.id, week_number: week.week_number };
+        return disabledRawTrainingWriterResult(toolName);
       }
 
       case 'add_training_session': {
         const scope = requireOwnedTrainingPlanForTool(toolName, input.plan_id, userId, tenantId);
         if (!scope.ok) return { error: scope.error };
-        const weekId = typeof input.week_id === 'number' ? input.week_id : Number(input.week_id);
-        const weekBelongsToPlan = trainingPlans.getWeeksForPlan(scope.plan.id).some((week) => week.id === weekId);
-        if (!weekBelongsToPlan) {
-          return { error: 'add_training_session cannot write to a week outside the authenticated user plan' };
-        }
-        assertLegacyWeekMutationAllowed(
-          { userId: scope.userId, tenantId: scope.tenantId },
-          weekId,
+        logger.warn(
+          { userId: scope.userId, tenantId: scope.tenantId, planId: scope.plan.id, toolName },
+          'Model attempted direct Training session creation; returning plan-builder handoff without writing',
         );
-        const exercisesJson = normalizeTrainingExercisesJsonForWrite(input.exercises_json, {
-          scope: { userId: scope.userId, tenantId: scope.tenantId },
-          source: 'tool-executor.add_training_session',
-        });
-        const session = trainingPlans.createSession({
-          week_id: input.week_id,
-          plan_id: input.plan_id,
-          day_of_week: input.day_of_week,
-          session_type: input.session_type,
-          title: input.title,
-          description: input.description,
-          exercises_json: exercisesJson ?? undefined,
-          duration_minutes: input.duration_minutes,
-          intensity_text: input.intensity_text,
-        });
-        return { success: true, session_id: session.id, title: session.title, day: session.day_of_week };
+        return disabledRawTrainingWriterResult(toolName);
       }
 
       case 'get_training_plan': {
@@ -1035,6 +1033,10 @@ export async function executeToolCall(
               completed_load_json: v2LoadJson,
             });
             const v2HashHex = computeV2IdempotencyHashHex({
+              notes: typeof input.notes === 'string' ? input.notes : null,
+              rpe: typeof input.rpe_overall === 'number' && Number.isFinite(input.rpe_overall)
+                ? input.rpe_overall
+                : null,
               rir: v2Rir ?? null,
               painScore: v2PainScore ?? null,
               painLocation: v2PainLocation ?? null,
@@ -1086,7 +1088,7 @@ export async function executeToolCall(
                 action: 'updated',
               },
               privacyClassification: 'health',
-              idempotencyKey: `training.feedback.recorded:${effectiveUserId}:${input.session_id}:completed:${hasNotes}:${rpeForKey ?? 'none'}:v2-${v2HashHex}`,
+              idempotencyKey: `training.feedback.recorded:${effectiveUserId}:${input.session_id}:completed:v2-${v2HashHex}`,
             });
             // R6 P1 — return the row so the OUTER assignment only
             // happens once the transaction successfully commits.
@@ -1218,23 +1220,11 @@ export async function executeToolCall(
       case 'update_training_session': {
         const scope = requireOwnedTrainingSessionForTool(toolName, input.session_id, userId, tenantId);
         if (!scope.ok) return { error: scope.error };
-        assertLegacySessionMutationAllowed(
-          { userId: scope.userId, tenantId: scope.tenantId },
-          scope.session.id,
+        logger.warn(
+          { userId: scope.userId, tenantId: scope.tenantId, sessionId: scope.session.id, toolName },
+          'Model attempted direct Training session update; returning plan-builder handoff without writing',
         );
-        const exercisesJson = normalizeTrainingExercisesJsonForWrite(input.exercises_json, {
-          scope: { userId: scope.userId, tenantId: scope.tenantId },
-          source: 'tool-executor.update_training_session',
-        });
-        const updated = trainingPlans.updateSession(input.session_id, {
-          title: input.title,
-          exercises_json: exercisesJson ?? undefined,
-          duration_minutes: input.duration_minutes,
-          intensity_text: input.intensity_text,
-          description: input.description,
-          status: input.status,
-        });
-        return { success: updated, session_id: input.session_id };
+        return disabledRawTrainingWriterResult(toolName);
       }
 
       case 'link_session_calendar': {

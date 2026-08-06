@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: QA + release lead
-Last verified: 2026-07-25
+Last verified: 2026-08-03
 Update policy: update when test categories, evidence requirements, or
 risk-based test selection rules change. `config/test-policy.json` is the
 machine-readable tier/disposition policy; `docs/release/README.md` describes
@@ -290,7 +290,10 @@ Use the isolated harness:
 
 - `npm run training:e2e:up`
 - `npm run training:e2e:smoke`
-- `npm run training:e2e:flow`
+- `npm run training:e2e:flow` (runs the lifecycle and then all 14 canonical
+  quality personas; `npm run training:e2e:quality` is only for rerunning the
+  persona stage for diagnosis against an unchanged, already-qualified
+  lifecycle run; any harness/source edit requires a completely fresh run)
 - `npm run training:e2e:ios`
 - `npm run training:e2e:live-calendar` when, and only when, the run was
   started with explicit live sandbox calendar authorization.
@@ -298,26 +301,81 @@ Use the isolated harness:
 
 Required evidence:
 
-1. **Fresh backend/content containers from target HEAD.** Record git SHA,
-   compose project, image IDs/digests, `/api/snapshot`, backend/content
-   ports, DB path, and state directory from `.local/training-e2e/<run-id>/`.
+1. **Fresh backend/content containers from target HEAD.** Every qualifying
+   run uses run-scoped backend and content-engine image tags and records the
+   built image IDs and actual image IDs of the running containers, exact
+   backend HEAD and branch-point/base SHAs, a deterministic SHA-256 digest of
+   all staged, unstaged, and non-ignored untracked source, git status, compose
+   project, `/api/snapshot`, backend/content ports, DB path, and state
+   directory from `.local/training-e2e/<run-id>/`. The source digest publishes
+   no patch text or file contents. Startup fails if source changes during the
+   build, if a running image differs from its run-scoped built image, or if
+   the evidence validator cannot bind these identities to the exact run id.
+   Startup validation is not treated as a permanent attestation: the lifecycle
+   runner re-resolves backend HEAD, the complete dirty-tree digest, both
+   currently running compose-service container ids, their image ids, and both
+   run-scoped tag ids before work begins and again immediately before it
+   publishes lifecycle evidence. Any drift requires a completely fresh run;
+   stale lifecycle evidence cannot be promoted into persona/quality evidence.
+   An existing run directory is rejected unless
+   `NEXUS_TRAINING_E2E_RESUME=1`; resumed runs are debug only and their
+   evidence is explicitly non-qualifying. iOS commit/diff provenance remains
+   a separate contract owned by the iOS runner and must be joined only when
+   iOS evidence is claimed.
 2. **No default or shared ports.** The lane refuses 8200/8100 and uses
    project-scoped compose state plus isolated data/log mounts.
+   Docker Desktop bind mounts do not provide a safe cross-VM SQLite lock
+   domain. The auth bootstrap, lifecycle runner, persona runner, and iOS seed
+   or verification helpers that touch the live database therefore execute
+   inside the backend container; the host may attest source/images and read
+   finalized artifacts, but it must not open the database while the backend
+   is running. `training:e2e:flow` revalidates the exact host Git/image
+   identities before and after its in-container evidence writers. Any live
+   host-side SQLite access makes the run non-qualifying. The backend also pins
+   the documented Docker posture (`DELETE`, `FULL`, mmap disabled), and
+   metadata records `fixtureLockDomain: "container"`.
 3. **Provider-safe default.** Fixture/no-write mode is the default.
    `TRAINING_CALENDAR_WRITES_ENABLED=false` and
    `TRAINING_CALENDAR_SYNC_ENABLED=false` stay in the E2E compose file unless
-   Felipe explicitly authorizes live provider writes for a named run.
+   Felipe explicitly authorizes live provider writes for a named run. The
+   qualifying compose lane must not declare `env_file` or inherit
+   `.env.local`; Compose's implicit project `.env` loading is also disabled,
+   and every container receives an explicit fixture-safe allowlist.
+   This includes the same isolated `INTERNAL_API_SECRET` on backend and
+   Content engine plus explicit model-fixture/no-model-call flags. Missing
+   provider credentials stay missing rather than being inherited from a
+   developer environment.
 4. **Dedicated simulator.** iOS E2E must run with `IOS_REQUIRE_UDID=1`,
    unique DerivedData/result-bundle/summary paths, and
    `IOS_SHUTDOWN_OTHER_SIMS=0`. Cleanup is UDID-specific; do not globally
    shut down simulators that may belong to another worktree.
 5. **Active-plan seed for iOS assertions.** `npm run training:e2e:ios`
    pre-seeds a backend-generated active plan through
-   `scripts/training-e2e-ios-seed.mjs prepare`, then cancels only that
+   `scripts/training-e2e-run-ios-seed.sh prepare`, then cancels only that
    seeded plan after simulator assertions unless
    `NEXUS_TRAINING_E2E_IOS_KEEP_SEEDED_PLAN=1` is set for debugging.
+   The wrapper brackets every prepare, verify, and cleanup operation with
+   host-side freshness attestation and executes the SQLite-bearing helper
+   inside the already-running backend container. Direct host execution of the
+   seed helper is disqualified when metadata declares the container lock
+   domain.
    This seed is not a replacement for the fixture-safe backend lifecycle
    flow; it exists so XCUITest can inspect real remote Training content.
+   The default `NEXUS_TRAINING_E2E_IOS_SCENARIO=active-plan` preserves this
+   lane. The `clarification` scenario is a separate fail-closed contract:
+   `prepare-clarification` seeds the two unresolved canonical profile fields,
+   the wrapper runs only
+   `TrainingIsolatedBackendE2EUITests/test_isolatedBackendClarificationWritesProfileRepreviewsAndCreatesExactlyOnce`,
+   `verify-clarification` proves both allowlisted profile writes plus exactly
+   one persisted compatibility plan/attempt, and `cleanup-clarification` runs
+   from the exit trap. The `training_e2e_ios_run.v2` summary records the
+   scenario and distinct prepare, test, verify, and cleanup results. Its
+   cleanup evidence separates `fixturePrepared` from `planSeeded`: both are
+   true for the active-plan prepare path, while clarification prepare records
+   `fixturePrepared:true` and `planSeeded:false` because it writes incomplete
+   profiles/sentinel rather than an active plan. A UI
+   failure remains the primary exit status; otherwise verifier or cleanup
+   failure fails the lane. No simulator result substitutes for E3.
 6. **Base URL proof.** iOS tests must receive `NEXUS_TRAINING_E2E_BASE_URL`
    from the isolated run metadata and must reject default `127.0.0.1:8200`
    evidence.
@@ -332,12 +390,47 @@ Required evidence:
    adherence, fatigue/plateau, stale wearable, no wearable,
    calendar-conflicted, and race-prep personas. Fail the gate if plans are
    generic, unsafe, incoherent, repetitive, unschedulable, or lack rationale.
+   The `training_e2e_contract.v3` runner assigns each persona a distinct user
+   in the reserved local staging-fixture range and persists all five canonical
+   questionnaire profiles. Stateful personas must use real isolated rows:
+   repeated skipped sessions for poor adherence, high-strain completions plus
+   low fresh Apple Health inputs for fatigue/plateau, 48-hour-old Apple Health
+   inputs for stale wearable, zero health rows for no wearable, and bounded
+   staging-fixture busy windows for calendar conflict. Persona names, notes,
+   or scorer labels are not state evidence. Reused users, missing fixture rows,
+   incomplete profiles, and pre-isolation v2 artifacts fail closed.
+9. **Executable evidence and cleanup.**
+   `training-flow-evidence.json` uses `training_e2e_flow.v2`, binds the exact
+   metadata `runId` and isolated `baseUrl`, and embeds the freshly revalidated
+   backend Git/container/image provenance. It must contain every canonical
+   lifecycle step with an explicit `status: "pass"`; numeric HTTP status
+   values never imply success. `training-e2e-contract-evidence.json` must
+   contain exactly all 14 persona results, real preview/create/readback
+   evidence, zero fixture-lane provider state, plan/read-model/Secretary
+   invariants, and successful plan cleanup. Each persona row also records its
+   reserved user id, exact profile types, readiness source/freshness, history
+   row counts, fixture calendar row count, durable week notes, and schedule
+   state/reason codes. Both lifecycle fixtures and persona plans clean up in
+   `finally`.
+10. **Simulator versus physical device.** Simulator E1/E2 evidence is useful
+    and required for supported iOS changes, but it never satisfies an E3
+    physical-device plan/calendar gate. When no Developer Mode device is
+    available, report E3 as `MANUAL_REQUIRED`; do not relabel simulator or
+    Docker evidence as physical-device proof.
 
 Provider-live calendar lifecycle proof remains separate from fixture-safe E2E:
 activation, retry idempotency, cancellation/replacement cleanup, disconnect
 degradation, external delete/move repair-needed state, and duplicate prevention
 require dedicated non-prod provider credentials plus explicit owner
 authorization.
+
+The fixture-safe calendar-conflict persona runs the capacity kernel but never
+enables calendar writes or sync. Its reserved synthetic user is authenticated
+with a short-lived staging-fixture JWT signed from an owner-only run-scoped
+secret file under `.local/training-e2e/<run-id>/`; tokens and signing material
+must never appear in metadata or evidence. Busy windows come from the local
+`staging_fixture_calendar_events` table, while OAuth rows, provider mappings,
+ownership rows, and Secretary provider projections remain zero.
 
 Live sandbox execution starts the same isolated container lane but with a
 local-only compose override generated under `.local/training-e2e/<run-id>/`.

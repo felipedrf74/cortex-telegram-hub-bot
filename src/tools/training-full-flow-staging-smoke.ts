@@ -79,12 +79,18 @@ interface RuntimeDeps {
   completeTrainingPlanGenerationIdempotency(
     userId: number,
     tenantId: number,
-    idempotencyKey: string | null,
-    requestHash: string,
+    claim: any,
     responseData: Record<string, unknown>,
     statusCode: number,
-  ): void;
-  failTrainingPlanGenerationIdempotency(userId: number, tenantId: number, idempotencyKey: string | null, requestHash: string): void;
+  ): boolean;
+  failTrainingPlanGenerationIdempotency(userId: number, tenantId: number, claim: any): boolean;
+  /**
+   * Phase 1B: provider calendar events are created by the background
+   * calendar-sync chain, not inline in generation. The smoke drains that
+   * chain (event router + dedicated worker) before asserting provider
+   * events, mirroring what the scheduler crons do continuously in prod.
+   */
+  drainTrainingPlanCalendarSync(): Promise<void>;
 }
 
 type ProfileBackup = Record<ProfileType, { existed: boolean; data: string | null }>;
@@ -273,18 +279,22 @@ export async function runTrainingFullFlowStagingSmoke(
     const firstClaim = runtime.claimTrainingPlanGenerationIdempotency(userId, tenantId, idempotencyKey, requestHash);
     let generationResult: any = null;
     if (firstClaim.kind === 'claimed') {
-      generationResult = await runtime.generateTrainingPlanForUser({ userId, tenantId, ...generationRequest });
+      generationResult = await runtime.generateTrainingPlanForUser({
+        userId,
+        tenantId,
+        ...generationRequest,
+        generationIdempotencyLease: firstClaim,
+      });
       if (generationResult.status === 'created') {
         runtime.completeTrainingPlanGenerationIdempotency(
           userId,
           tenantId,
-          idempotencyKey,
-          requestHash,
+          firstClaim,
           generationResult.data ?? generationResult,
           201,
         );
       } else {
-        runtime.failTrainingPlanGenerationIdempotency(userId, tenantId, idempotencyKey, requestHash);
+        runtime.failTrainingPlanGenerationIdempotency(userId, tenantId, firstClaim);
       }
     }
     const secondClaim = runtime.claimTrainingPlanGenerationIdempotency(userId, tenantId, idempotencyKey, requestHash);
@@ -311,6 +321,10 @@ export async function runTrainingFullFlowStagingSmoke(
     if (!createdPlanId) {
       return finishReport(options, startedAt, prerequisites, operations, cleanupFailures);
     }
+
+    // Phase 1B: link provider events through the durable background chain
+    // before asserting on them — generation itself no longer creates any.
+    await runtime.drainTrainingPlanCalendarSync();
 
     const planWindow = planWindowFor(runtime, createdPlanId);
     const planShape = snapshotPlanShape(runtime, createdPlanId);
@@ -989,13 +1003,14 @@ export function renderTrainingFullFlowSmokeReportMarkdown(report: SmokeReport): 
   lines.push('| Operation | Expected | Actual | Status | Evidence |');
   lines.push('| --- | --- | --- | --- | --- |');
   for (const operation of report.operations) {
-    lines.push([
+    const cells = [
       operation.operation,
       operation.expected,
       operation.actual,
       operation.status,
-      operation.evidence.map((item) => `\`${item}\``).join('<br>') || '-',
-    ].map(escapeMarkdownCell).join(' | ').replace(/^/, '| ').replace(/$/, ' |'));
+    ].map(escapeMarkdownCell);
+    cells.push(operation.evidence.map(formatMarkdownTableCodeSpan).join('<br>') || '-');
+    lines.push(cells.join(' | ').replace(/^/, '| ').replace(/$/, ' |'));
   }
   lines.push('');
   lines.push('## Cleanup Failures');
@@ -1003,7 +1018,7 @@ export function renderTrainingFullFlowSmokeReportMarkdown(report: SmokeReport): 
   if (report.cleanupFailures.length === 0) {
     lines.push('None.');
   } else {
-    for (const failure of report.cleanupFailures) lines.push(`- ${failure}`);
+    for (const failure of report.cleanupFailures) lines.push(`- ${escapeMarkdownCell(failure)}`);
   }
   lines.push('');
   lines.push('## Interpretation');
@@ -1020,7 +1035,26 @@ export function renderTrainingFullFlowSmokeReportMarkdown(report: SmokeReport): 
 }
 
 function escapeMarkdownCell(value: string): string {
-  return String(value).replace(/\|/g, '\\|').replace(/\n/g, '<br>');
+  return String(value).replace(/\\/g, '\\\\').replace(/\|/g, '\\|').replace(/\r\n?|\n/g, '<br>');
+}
+
+function formatMarkdownTableCodeSpan(value: string): string {
+  const normalized = String(value).replace(/\r\n?|\n/g, ' ');
+  let content = '';
+  // GFM consumes one immediately preceding backslash to protect a table pipe,
+  // including inside code spans. Preserve every input backslash literally and
+  // add only the structural backslash required for each pipe delimiter.
+  for (const character of normalized) content += character === '|' ? '\\|' : character;
+  const longestBacktickRun = Math.max(
+    0,
+    ...Array.from(content.matchAll(/`+/g), (match) => match[0].length),
+  );
+  const fence = '`'.repeat(longestBacktickRun + 1);
+  const needsPadding = content.startsWith('`')
+    || content.endsWith('`')
+    || (content.startsWith(' ') && content.endsWith(' ') && /[^ ]/.test(content));
+  const padding = needsPadding ? ' ' : '';
+  return `${fence}${padding}${content}${padding}${fence}`;
 }
 
 function loadRuntimeDeps(): RuntimeDeps {
@@ -1060,6 +1094,14 @@ function loadRuntimeDeps(): RuntimeDeps {
       completeTrainingPlanGenerationIdempotency: require('../services/training-plan-generation-idempotency').completeTrainingPlanGenerationIdempotency,
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       failTrainingPlanGenerationIdempotency: require('../services/training-plan-generation-idempotency').failTrainingPlanGenerationIdempotency,
+      drainTrainingPlanCalendarSync: async () => {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        await require('../services/event-backbone-worker').runEventBackboneOnce({ lockOwner: 'training-full-flow-smoke' });
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        await require('../services/training-plan-calendar-sync-worker').runScheduledTrainingPlanCalendarSyncJobs({
+          lockOwner: 'training-full-flow-smoke',
+        });
+      },
     };
     return loaded;
   };
@@ -1081,6 +1123,7 @@ function loadRuntimeDeps(): RuntimeDeps {
     claimTrainingPlanGenerationIdempotency: (...args) => loadAfterDatabaseInit().claimTrainingPlanGenerationIdempotency(...args),
     completeTrainingPlanGenerationIdempotency: (...args) => loadAfterDatabaseInit().completeTrainingPlanGenerationIdempotency(...args),
     failTrainingPlanGenerationIdempotency: (...args) => loadAfterDatabaseInit().failTrainingPlanGenerationIdempotency(...args),
+    drainTrainingPlanCalendarSync: (...args) => loadAfterDatabaseInit().drainTrainingPlanCalendarSync(...args),
   };
 }
 

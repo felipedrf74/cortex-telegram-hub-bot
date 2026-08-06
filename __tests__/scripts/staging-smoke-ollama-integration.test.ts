@@ -24,6 +24,8 @@ describe('canonical staging gate Ollama integration', () => {
     );
     expect(canonical).toContain('runtimeSha: process.env.SMOKE_RUNTIME_SHA');
     expect(canonical).toContain('artifactDigest: process.env.SMOKE_ARTIFACT_DIGEST');
+    expect(canonical).toContain('classifierBaseSha: process.env.SMOKE_CLASSIFIER_BASE_SHA || null');
+    expect(canonical).toContain('classifierHeadSha: process.env.SMOKE_CLASSIFIER_HEAD_SHA || null');
     expect(canonical).toContain('nexus.staging-smoke.canonical.token-zero-locale.v2');
     expect(canonical).toContain('const evidenceStat = fs.lstatSync(file);');
     expect(canonical).toContain('evidenceStat.uid !== process.getuid()');
@@ -400,7 +402,12 @@ describe('canonical staging gate Ollama integration', () => {
       OLLAMA_ENABLED: 'false',
     })).toThrow();
 
-    expect(operator).not.toContain('scripts/staging-smoke.sh');
+    // Stronger guarantee: the narrow remote authenticated smoke remains, but
+    // prepare must also run and bind the complete canonical staging smoke.
+    expect(operator).toContain('"$ROOT/scripts/staging-smoke.sh"');
+    expect(operator).toContain('NEXUS_SMOKE_REQUIRE_EXACT_IDENTITY=1');
+    expect(operator).toContain('NEXUS_SMOKE_CLASSIFIER_BASE_SHA="$CANONICAL_DEPLOYED_SHA"');
+    expect(operator).toContain('scripts/lib/staging-smoke-evidence.mjs validate');
     expect(remote).toContain('authenticated_runtime_smoke');
     expect(remote).toContain('AUTHENTICATED_SMOKE=passed');
     expect(remote).toContain('DATABASE_INTEGRITY=passed');

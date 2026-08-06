@@ -2,16 +2,24 @@
 
 import type { AthleteState, ExercisePrescription, GuardrailResult, Session, TrainingDecisionReason, WeeklyPlan } from './types';
 import { loadCoachKnowledge } from './knowledge-loader';
-import { trimOverstuffedStrengthSessionToDuration } from './session-coherence';
+import {
+  selectStrengthExercisesForRecoveryRotation,
+  trimOverstuffedStrengthSessionToDuration,
+} from './session-coherence';
 import { cloneSessions, dayIndex, durationToLoad, isKeyEnduranceSession, isLowerBodyStrength, nextDaysFrom, sumMinutes, DAY_ORDER } from './utils';
 import { adaptSessionForPoorRecovery } from './poor-recovery-variation';
+import { replaceSessionIntensityMetadataWithFinalSteadyPrescription } from './session-intensity-metadata';
 import { getVolumeGrowthCap } from './training-principles';
 
 function compareDays(left: string, right: string): number {
   return dayIndex(left as any) - dayIndex(right as any);
 }
 
-function scaleSessionDuration(session: Session, factor: number): Session {
+function scaleSessionDuration(
+  session: Session,
+  factor: number,
+  recoveryRotationIndex?: number,
+): Session {
   const durationMinutes = Math.max(15, Math.round(session.durationMinutes * factor));
   const scaled = {
     ...session,
@@ -25,6 +33,7 @@ function scaleSessionDuration(session: Session, factor: number): Session {
   return trimOverstuffedStrengthSessionToDuration(scaled, loadCoachKnowledge(), {
     tag: 'guardrail_duration_coherent',
     alternative: 'Guardrail duration reduction trimmed trailing strength volume so the session matches the shorter slot.',
+    recoveryRotationIndex,
   }).session;
 }
 
@@ -54,8 +63,13 @@ function sessionReason(args: TrainingDecisionReason): TrainingDecisionReason {
   return args;
 }
 
-function techniqueStrengthExercisesForRedReadiness(session: Session): ExercisePrescription[] | undefined {
-  const exercises = session.exercises?.slice(0, 2) ?? [];
+function techniqueStrengthExercisesForRedReadiness(
+  session: Session,
+  recoveryRotationIndex: number,
+): ExercisePrescription[] | undefined {
+  const exercises = session.exercises
+    ? selectStrengthExercisesForRecoveryRotation(session.exercises, 2, recoveryRotationIndex)
+    : [];
   if (exercises.length === 0) return undefined;
 
   return exercises.map((exercise) => ({
@@ -196,6 +210,7 @@ function enforceDeload(plan: WeeklyPlan, athlete: AthleteState): GuardrailResult
   }
 
   plan.phase = 'deload';
+  const recoveryRotationIndex = Math.max(0, athlete.currentBlock.weekIndex - 1);
   plan.sessions = plan.sessions.map((session) => {
     if (session.sessionType === 'rest') return session;
     if (session.keySession && session.sport !== 'strength') {
@@ -204,7 +219,7 @@ function enforceDeload(plan: WeeklyPlan, athlete: AthleteState): GuardrailResult
         title: session.sessionType === 'long_run' ? 'Reduced Long Run' : `Reduced ${session.title}`,
       }, 0.75);
     }
-    return scaleSessionDuration(session, 0.7);
+    return scaleSessionDuration(session, 0.7, recoveryRotationIndex);
   });
 
   return [{
@@ -231,7 +246,12 @@ function enforceDeload(plan: WeeklyPlan, athlete: AthleteState): GuardrailResult
 }
 
 function enforceReadiness(plan: WeeklyPlan, athlete: AthleteState): GuardrailResult[] {
-  if (athlete.readiness.level === 'green' || athlete.readiness.level === 'yellow') {
+  const staleProviderReadiness = athlete.readiness.confidence === 'stale_provider'
+    || athlete.readiness.isStale === true;
+  if (
+    (athlete.readiness.level === 'green' || athlete.readiness.level === 'yellow')
+    && !staleProviderReadiness
+  ) {
     return [{
       ruleId: 'readiness',
       status: 'pass',
@@ -240,6 +260,7 @@ function enforceReadiness(plan: WeeklyPlan, athlete: AthleteState): GuardrailRes
   }
 
   const red = athlete.readiness.level === 'red';
+  const recoveryRotationIndex = Math.max(0, athlete.currentBlock.weekIndex - 1);
   const adaptationMessages: string[] = [];
   const scenarioCounts: Record<string, number> = {};
   const originalSessions = cloneSessions(plan.sessions);
@@ -261,12 +282,12 @@ function enforceReadiness(plan: WeeklyPlan, athlete: AthleteState): GuardrailRes
           ? adaptation.session.exercises
           : adaptation.session.sessionType === 'mobility'
             ? adaptation.session.exercises
-            : techniqueStrengthExercisesForRedReadiness(session),
+            : techniqueStrengthExercisesForRedReadiness(session, recoveryRotationIndex),
       };
     }
 
     const reduced = scaleSessionDuration(session, 0.75);
-    return {
+    return replaceSessionIntensityMetadataWithFinalSteadyPrescription({
       ...reduced,
       title: reduced.sessionType === 'threshold_run' || reduced.sessionType === 'interval_run'
         ? 'Aerobic Support Run'
@@ -277,29 +298,38 @@ function enforceReadiness(plan: WeeklyPlan, athlete: AthleteState): GuardrailRes
       keySession: false,
       plannedLoad: durationToLoad(reduced.durationMinutes, reduced.intensityZone === 'vo2' || reduced.intensityZone === 'threshold' ? 'aerobic' : reduced.intensityZone, reduced.fatigueCost === 'very_high' ? 'medium' : reduced.fatigueCost),
       tags: [...reduced.tags.filter((tag) => !tag.startsWith('key_')), 'readiness_adjusted'],
-    };
+    });
   });
 
   return [{
     ruleId: 'readiness',
     status: red ? 'block' : 'warn',
     adjusted: true,
-    message: red
+    message: staleProviderReadiness
+      ? 'Readiness provider data is stale. Hard or key work was downgraded until a fresh signal or manual check-in is available.'
+      : red
       ? 'Readiness is critically low. Hard work was replaced with varied low-fatigue recovery, technique, or mobility options.'
       : 'Readiness is strained. High-stress work was downgraded before prescription, with recovery variants used where fatigue risk was high.',
     decisionReasons: [sessionReason({
       code: red ? 'recovery_volume_reduced' : 'recovery_intensity_reduced',
-      text: red
+      text: staleProviderReadiness
+        ? 'Hard or key work was downgraded because the provider readiness snapshot is stale and needs a fresh signal or manual check-in.'
+        : red
         ? 'Hard work was replaced with low-fatigue recovery, technique, or mobility options because readiness is critically low.'
         : 'High-stress work was downgraded before prescription because recovery signals are strained.',
       severity: red ? 'block' : 'warning',
       affectedEntity: { type: 'week' },
-      sourceConstraint: { type: 'recovery', label: `${athlete.readiness.level} readiness` },
+      sourceConstraint: {
+        type: 'recovery',
+        label: staleProviderReadiness ? 'stale provider readiness' : `${athlete.readiness.level} readiness`,
+      },
       before: { readiness: athlete.readiness.level, score: athlete.readiness.score },
       after: { recoveryScenarios: scenarioCounts },
       preservedIntent: 'Preserved weekly continuity while reducing recovery risk.',
       evidence: [
         `readiness=${athlete.readiness.level}/${athlete.readiness.score}`,
+        `confidence=${athlete.readiness.confidence ?? 'unknown'}`,
+        `stale=${staleProviderReadiness}`,
         `adapted_sessions=${adaptationMessages.length}`,
       ],
     })],

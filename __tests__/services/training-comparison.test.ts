@@ -36,7 +36,13 @@ vi.mock('../../src/utils/logger', () => ({
   LOGGER_REDACTION_PATHS: [],
 }));
 vi.mock('../../src/config', () => ({
-  config: { financeEncryption: { enabled: false, masterKey: '' } },
+  config: {
+    financeEncryption: { enabled: false, masterKey: '' },
+    // F11 stronger guarantee: every later plan read resolves through the
+    // persisted scheduling zone and then the canonical app-zone fallback.
+    // Keep this partial config mirror honest instead of bypassing that path.
+    app: { timezone: 'Europe/Lisbon' },
+  },
 }));
 
 const mockGarmin = vi.hoisted(() => ({

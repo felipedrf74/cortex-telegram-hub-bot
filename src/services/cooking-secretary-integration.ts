@@ -18,6 +18,7 @@ export interface CookingMealPrepSecretaryInput {
   endIso: string;
   durationMinutes: number;
   mealCount: number;
+  providerTarget: 'google' | 'outlook';
   additionalBusyWindows?: SecretaryTimeWindow[];
   liveBusyWindowsDegraded?: boolean;
 }
@@ -46,10 +47,20 @@ function requireCookingLiveBusyWindows(input: CookingMealPrepSecretaryInput): { 
   return { additionalBusyWindows: input.additionalBusyWindows };
 }
 
+function requireCookingProviderTarget(
+  providerTarget: CookingMealPrepSecretaryInput['providerTarget'],
+): CookingMealPrepSecretaryInput['providerTarget'] {
+  if (providerTarget !== 'google' && providerTarget !== 'outlook') {
+    throw new Error('COOKING_SECRETARY_PROVIDER_TARGET_REQUIRED');
+  }
+  return providerTarget;
+}
+
 export function buildCookingMealPrepSchedulingIntent(
   input: CookingMealPrepSecretaryInput,
 ): SecretarySchedulingIntent {
   const tenantId = input.tenantId ?? input.userId;
+  const providerTarget = requireCookingProviderTarget(input.providerTarget);
   return {
     intentId: `cooking:meal-prep:${tenantId}:${input.userId}:${input.week}:${input.startIso}:${input.durationMinutes}`,
     sourceSkill: 'cooking',
@@ -58,6 +69,7 @@ export function buildCookingMealPrepSchedulingIntent(
     sourceEntityType: 'meal_prep_block',
     ownerUserId: input.userId,
     tenantId,
+    providerTarget,
     title: input.title,
     requestedDurationMinutes: input.durationMinutes,
     minimumDurationMinutes: Math.min(input.durationMinutes, Math.max(30, Math.round(input.durationMinutes * 0.75))),

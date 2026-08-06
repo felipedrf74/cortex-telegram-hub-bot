@@ -7,6 +7,7 @@ import {
   MOBILITY_TARGET_MIN_MINUTES,
 } from './mobility-recovery-builder';
 import { estimateStrengthSessionMinutes, trimOverstuffedStrengthSessionToDuration, validateSessionCoherence } from './session-coherence';
+import { replaceSessionIntensityMetadataWithFinalSteadyPrescription } from './session-intensity-metadata';
 import type { AthleteState, ExercisePrescription, FatigueCost, IntensityZone, Session, SessionType, Sport } from './types';
 import { clamp, dayIndex, durationToLoad } from './utils';
 
@@ -334,7 +335,7 @@ function scenarioExplanation(scenario: RecoveryScenario, session: Session, varia
     case 'post_intensity_fatigue':
       return `${session.title} became ${variant.title} after recent high-intensity work so recovery catches up.`;
     case 'low_readiness':
-      return `${session.title} became ${variant.title} because readiness is too low for the original intensity.`;
+      return `${session.title} became ${variant.title} because low readiness requires lower intensity than the original session.`;
     case 'mild_fatigue':
       return `${session.title} became ${variant.title} to preserve rhythm while reducing fatigue.`;
   }
@@ -390,7 +391,11 @@ export function adaptSessionForPoorRecovery(context: PoorRecoveryContext): PoorR
     ...context.session,
     sessionType: variant.sessionType,
     title: variant.title,
-    description: variant.description,
+    // Persist the causal adaptation on the public session itself. The
+    // separate `explanation` return value feeds internal guardrail metadata,
+    // but read-model consumers cannot see it unless it travels with the
+    // session description.
+    description: `${variant.description} ${explanation}`,
     intensityZone: variant.intensityZone,
     fatigueCost: variant.fatigueCost,
     keySession: false,
@@ -446,5 +451,6 @@ export function adaptSessionForPoorRecovery(context: PoorRecoveryContext): PoorR
     }
   }
 
+  session = replaceSessionIntensityMetadataWithFinalSteadyPrescription(session);
   return { session, scenario, explanation };
 }

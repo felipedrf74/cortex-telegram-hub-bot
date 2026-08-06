@@ -4,7 +4,7 @@ import {
   buildIntensitySummary,
   buildSessionIntensityProfile,
 } from './intensity-profile';
-import type { AthleteProfile, IntensitySegment, Session, WorkoutTemplate } from './types';
+import type { AthleteProfile, IntensitySegment, Session, SessionIntensityProfile, WorkoutTemplate } from './types';
 
 function minutes(seconds: number | undefined): number {
   if (!seconds || seconds <= 0) return 0;
@@ -49,6 +49,40 @@ export function attachSessionIntensityMetadata(
     intensitySummary: buildIntensitySummary(
       intensityProfile,
       targetSummaryText(session, intensityProfile.segments),
+    ),
+  };
+}
+
+/**
+ * Replace metadata inherited from an earlier prescription after a guardrail
+ * changes the session's zone/type. Recovery adaptations are deliberately
+ * simple continuous work; retaining the original threshold/VO2 segments
+ * would make the public read model contradict the final session.
+ */
+export function replaceSessionIntensityMetadataWithFinalSteadyPrescription(session: Session): Session {
+  if (session.sport === 'strength' || session.sessionType === 'rest' || session.durationMinutes <= 0) {
+    return {
+      ...session,
+      intensityProfile: undefined,
+      intensitySummary: undefined,
+    };
+  }
+  const intensityProfile: SessionIntensityProfile = {
+    primaryZone: session.intensityZone,
+    segments: [{
+      role: 'steady',
+      modality: session.sport,
+      durationSec: Math.round(session.durationMinutes * 60),
+      targetZone: session.intensityZone,
+    }],
+    intensityDistribution: { [session.intensityZone]: 1 },
+  };
+  return {
+    ...session,
+    intensityProfile,
+    intensitySummary: buildIntensitySummary(
+      intensityProfile,
+      `${session.durationMinutes}min ${session.intensityZone} continuous adjusted work.`,
     ),
   };
 }

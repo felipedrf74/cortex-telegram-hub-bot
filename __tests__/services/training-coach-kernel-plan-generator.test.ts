@@ -141,6 +141,103 @@ describe('buildCoachKernelTrainingPlan — side effects', () => {
     expect(weekOne!.guardrailResults.length).toBeGreaterThan(0);
   });
 
+  it('carries durable weekly notes separately from structured decision reasons', () => {
+    const plan = buildCoachKernelTrainingPlan({
+      userId: 102,
+      objective: 'General running base',
+      durationWeeks: 1,
+      startDate: '2026-04-13',
+      sessionsPerWeek: 4,
+      strengthSessionsPerWeek: 1,
+      preferredTime: '07:00',
+      preferredCardioTime: '07:00',
+      preferredStrengthTime: '18:30',
+      longWorkoutDay: 'Sunday',
+      notes: null,
+      fitnessProfile: { experience_level: 'intermediate', available_equipment: 'Dumbbells' },
+      gymProfile: { equipment_access: 'Dumbbells' },
+      runProfile: { weekly_mileage_km: '30' },
+      currentReadiness: {
+        score: 25,
+        confidence: 'stale_provider',
+        dataSource: 'garmin',
+        isStale: true,
+      },
+    });
+
+    const week = plan.weeks?.[0];
+    expect(week?.notes).toEqual(expect.arrayContaining([
+      expect.stringContaining('Weekly structure:'),
+      expect.stringContaining('Readiness confidence: provider data is stale'),
+    ]));
+    expect(week?.decisionReasons).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'recovery_volume_reduced' }),
+    ]));
+    expect(week?.notes?.every((note) => typeof note === 'string')).toBe(true);
+    expect(week?.decisionReasons?.every((reason) => typeof reason === 'object')).toBe(true);
+  });
+
+  it('persists an explicit recovery rationale and professional pain boundary for an injury-led block', () => {
+    const plan = buildCoachKernelTrainingPlan({
+      userId: 103,
+      objective: 'Conservative return around knee discomfort',
+      durationWeeks: 4,
+      startDate: '2026-08-10',
+      sessionsPerWeek: 3,
+      runSessionsPerWeek: 1,
+      strengthSessionsPerWeek: 2,
+      preferredTime: '07:00',
+      preferredCardioTime: '07:00',
+      preferredStrengthTime: '18:30',
+      longWorkoutDay: 'Sunday',
+      notes: null,
+      fitnessProfile: {
+        experience_level: 'intermediate',
+        injuries: 'Managed left knee discomfort.',
+        available_equipment: 'Dumbbells',
+      },
+      gymProfile: { equipment_access: 'Dumbbells' },
+      runProfile: { weekly_mileage_km: '12' },
+      goalMode: 'continuous',
+      trainingPriority: 'hybrid',
+    });
+
+    expect(new Set(plan.weeks.map((week) => week.focus))).toEqual(new Set(['deload']));
+    for (const week of plan.weeks) {
+      const durableNotes = week.notes.join(' ');
+      expect(durableNotes).toMatch(/maintenance\/recovery rationale:.*injury|maintenance\/recovery rationale:.*pain/i);
+      expect(durableNotes).toMatch(/pain-free.*stop if.*qualified (?:medical|healthcare)|not a clinician/i);
+    }
+    expect(plan.decisionReasons).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'pain_flag',
+        severity: 'warning',
+        text: expect.stringMatching(/pain-free.*stop if.*qualified (?:medical|healthcare)|not a clinician/i),
+      }),
+    ]));
+  });
+
+  it('treats the questionnaire "none" answer as an explicit absence of injury', () => {
+    const athlete = buildAthleteStateFromTrainingProfiles({
+      userId: 104,
+      objective: 'General fitness',
+      durationWeeks: 4,
+      startDate: '2026-08-10',
+      sessionsPerWeek: 3,
+      strengthSessionsPerWeek: 1,
+      preferredTime: '07:00',
+      preferredCardioTime: '07:00',
+      preferredStrengthTime: '18:30',
+      notes: null,
+      fitnessProfile: { injuries: 'none' },
+      gymProfile: null,
+      runProfile: { injury_history: 'none' },
+    });
+
+    expect(athlete.constraints.filter((constraint) => constraint.type === 'injury')).toEqual([]);
+    expect(athlete.readiness.painFlags).toEqual([]);
+  });
+
   it('uses the neutral yellow fallback when currentReadiness is absent', () => {
     // Backward-compat pin: existing callers that don't know about the
     // new currentReadiness field MUST still get a sensible AthleteState
@@ -611,14 +708,172 @@ describe('buildCoachKernelTrainingPlan — side effects', () => {
         dataSource: 'wearable',
         isStale: true,
         reasonCode: 'PROVIDER_STALE',
+        capturedAt: '2026-04-10T06:30:00.000Z',
         reasoning: 'Last wearable sync is stale.',
       },
     });
 
+    expect(athlete.readiness.capturedAt).toBe('2026-04-10T06:30:00.000Z');
     expect(athlete.readiness.confidence).toBe('stale_provider');
     expect(athlete.readiness.isStale).toBe(true);
     expect(athlete.readiness.reasonCode).toBe('PROVIDER_STALE');
     expect(athlete.readiness.notes?.some((note) => note.includes('provider data is stale'))).toBe(true);
+  });
+
+  it('uses stale wearable confidence to remove aggressive hard work until a manual check-in', () => {
+    const userId = 512;
+    buildCoachKernelTrainingPlan({
+      userId,
+      objective: 'Training with stale wearable inputs',
+      durationWeeks: 4,
+      startDate: '2026-08-10',
+      sessionsPerWeek: 3,
+      runSessionsPerWeek: 2,
+      bikeSessionsPerWeek: 0,
+      swimSessionsPerWeek: 0,
+      strengthSessionsPerWeek: 1,
+      preferredTime: '07:00',
+      preferredCardioTime: '07:00',
+      preferredStrengthTime: '18:00',
+      longWorkoutDay: 'Saturday',
+      notes: 'Fixture-only stale wearable canary.',
+      fitnessProfile: {
+        experience_level: 'Intermediate (1-3 years)',
+        weekly_frequency: '2-3 days',
+        preferred_training_days: 'Monday, Tuesday, Thursday, Saturday',
+        blocked_days: 'Friday',
+        training_goals: 'Endurance, Strength',
+        injuries: 'none',
+        available_equipment: 'Full gym',
+      },
+      gymProfile: {
+        training_age: '3-5 years',
+        current_split: 'No preference',
+        primary_goal: 'Support other sports',
+        sessions_per_week: '1-2',
+        equipment_access: 'Full commercial gym',
+        session_duration_minutes: '60',
+      },
+      runProfile: {
+        weekly_mileage_km: '32',
+        longest_recent_run_km: '14',
+        easy_pace_min_per_km: '5:45',
+        target_race: 'None — general fitness',
+        target_race_date: 'none',
+        preferred_workouts: 'Easy runs, Tempo, Long runs',
+        injury_history: 'none',
+        weekly_availability_days: '5',
+      },
+      goalMode: 'continuous',
+      trainingPriority: 'hybrid',
+      twoADayPreference: 'never',
+      currentReadiness: {
+        score: 88,
+        confidence: 'stale_provider',
+        dataSource: 'wearable',
+        isStale: true,
+        reasonCode: 'wearable_sync_stale',
+        capturedAt: '2026-08-08T06:00:00.000Z',
+        reasoning: 'Healthy-looking inputs are older than the freshness boundary.',
+      },
+    });
+
+    const rawWeeks = ['2026-08-10', '2026-08-17', '2026-08-24', '2026-08-31']
+      .map((weekStart) => getWeeklyPlanForWeek(userId, weekStart));
+    expect(rawWeeks.every(Boolean)).toBe(true);
+    expect(rawWeeks.every((week) => week!.notes.some((note) =>
+      /provider data is stale.*manual check-in/i.test(note)
+    ))).toBe(true);
+    expect(rawWeeks.every((week) => week!.sessions.every((session) =>
+      session.intensityZone !== 'threshold'
+      && session.intensityZone !== 'tempo'
+      && session.intensityZone !== 'vo2'
+      && session.fatigueCost !== 'high'
+      && session.fatigueCost !== 'very_high'
+    ))).toBe(true);
+    expect(rawWeeks.some((week) => week!.sessions.some((session) =>
+      session.intensityZone === 'recovery' || /easy|recovery/.test(session.sessionType)
+    ))).toBe(true);
+  });
+
+  it('keeps no-wearable two-run blocks RPE-led without making a wearable a prerequisite for quality work', () => {
+    const userId = 513;
+    buildCoachKernelTrainingPlan({
+      userId,
+      objective: 'RPE-led training without a wearable',
+      durationWeeks: 4,
+      startDate: '2026-08-10',
+      sessionsPerWeek: 3,
+      runSessionsPerWeek: 2,
+      bikeSessionsPerWeek: 0,
+      swimSessionsPerWeek: 0,
+      strengthSessionsPerWeek: 1,
+      preferredTime: '07:00',
+      preferredCardioTime: '07:00',
+      preferredStrengthTime: '18:00',
+      longWorkoutDay: 'Saturday',
+      notes: 'Fixture-only no-wearable canary.',
+      fitnessProfile: {
+        experience_level: 'Intermediate (1-3 years)',
+        weekly_frequency: '2-3 days',
+        preferred_training_days: 'Monday, Tuesday, Thursday, Saturday',
+        blocked_days: 'Friday',
+        training_goals: 'Endurance, Strength',
+        injuries: 'none',
+        available_equipment: 'Full gym',
+      },
+      gymProfile: {
+        training_age: '3-5 years',
+        current_split: 'No preference',
+        primary_goal: 'Support other sports',
+        sessions_per_week: '1-2',
+        equipment_access: 'Full commercial gym',
+        session_duration_minutes: '60',
+      },
+      runProfile: {
+        weekly_mileage_km: '32',
+        longest_recent_run_km: '14',
+        easy_pace_min_per_km: '5:45',
+        target_race: 'None — general fitness',
+        target_race_date: 'none',
+        preferred_workouts: 'Easy runs, Tempo, Long runs',
+        injury_history: 'none',
+        weekly_availability_days: '5',
+      },
+      goalMode: 'continuous',
+      trainingPriority: 'hybrid',
+      twoADayPreference: 'never',
+      currentReadiness: {
+        score: 60,
+        confidence: 'no_data',
+        dataSource: 'fallback',
+        isStale: false,
+        reasonCode: 'WEARABLE_INTEGRATION_MISSING',
+        reasoning: 'No wearable provider is connected; use subjective effort.',
+      },
+    });
+
+    const rawWeeks = ['2026-08-10', '2026-08-17', '2026-08-24', '2026-08-31']
+      .map((weekStart) => getWeeklyPlanForWeek(userId, weekStart));
+    expect(rawWeeks.every(Boolean)).toBe(true);
+
+    const runs = rawWeeks.flatMap((week) => week!.sessions)
+      .filter((session) => session.sport === 'running');
+    const hardRuns = runs.filter((session) =>
+      session.intensityZone === 'threshold'
+      || session.intensityZone === 'vo2'
+      || session.intensityZone === 'neuromuscular'
+      || /hard|threshold|interval|vo2|hill repeat/i.test(session.title)
+    );
+    expect(runs).toHaveLength(8);
+    expect(hardRuns.length / runs.length).toBeLessThanOrEqual(0.35);
+    // Stronger than simply deleting quality: a missing wearable must not be
+    // treated as a contraindication when an athlete can pace by RPE.
+    expect(hardRuns.length).toBeGreaterThan(0);
+    expect(rawWeeks.every((week) => week!.notes.some((note) =>
+      /no fresh wearable or manual readiness data.*(?:rpe|perceived effort).*manual check-in/i.test(note)
+    ))).toBe(true);
+    expect(runs.every((session) => /rpe|perceived effort/i.test(session.description))).toBe(true);
   });
 
   it('preserves manual check-in confidence instead of upgrading it to wearable truth', () => {
@@ -774,6 +1029,59 @@ describe('buildCoachKernelTrainingPlan — side effects', () => {
     expect(plan.decisionReasons?.map((reason) => reason.code)).toContain('continuous_plan_no_taper');
   });
 
+  it('fits the novice five-week deload cadence into a four-week generated plan', () => {
+    // The REST generation path calls this generator directly; the separate
+    // coach-v2 mesocycle resolver cannot protect compatibility plan creation.
+    // A four-week beginner plan therefore needs its load-reduction week fitted
+    // here, or the end-to-end quality scorer rejects the otherwise valid plan.
+    const plan = buildCoachKernelTrainingPlan({
+      userId: 611,
+      objective: 'Beginner gym strength plan',
+      durationWeeks: 4,
+      startDate: '2026-05-04',
+      sessionsPerWeek: 3,
+      strengthSessionsPerWeek: 3,
+      preferredTime: '07:00',
+      preferredCardioTime: '07:00',
+      preferredStrengthTime: '18:00',
+      longWorkoutDay: 'Saturday',
+      notes: null,
+      fitnessProfile: { experience_level: 'beginner', available_equipment: 'Full gym' },
+      gymProfile: { equipment_access: 'Full gym' },
+      runProfile: null,
+      goalMode: 'continuous',
+      trainingPriority: 'strength',
+    });
+
+    expect(plan.weeks?.map((week) => week.focus)).toEqual(['base', 'base', 'build', 'deload']);
+  });
+
+  it('keeps the full novice cadence and sub-four-week plans unchanged', () => {
+    const buildNovice = (durationWeeks: number) => buildCoachKernelTrainingPlan({
+      userId: 612 + durationWeeks,
+      objective: 'Beginner gym strength plan',
+      durationWeeks,
+      startDate: '2026-05-04',
+      sessionsPerWeek: 3,
+      strengthSessionsPerWeek: 3,
+      preferredTime: '07:00',
+      preferredCardioTime: '07:00',
+      preferredStrengthTime: '18:00',
+      longWorkoutDay: 'Saturday',
+      notes: null,
+      fitnessProfile: { experience_level: 'beginner', available_equipment: 'Full gym' },
+      gymProfile: { equipment_access: 'Full gym' },
+      runProfile: null,
+      goalMode: 'continuous' as const,
+      trainingPriority: 'strength' as const,
+    });
+
+    expect(buildNovice(5).weeks?.map((week) => week.focus))
+      .toEqual(['base', 'base', 'build', 'build', 'deload']);
+    expect(buildNovice(3).weeks?.map((week) => week.focus))
+      .toEqual(['base', 'base', 'build']);
+  });
+
   it('derives base/build/peak/taper/race phases from a real event date', () => {
     const plan = buildCoachKernelTrainingPlan({
       userId: 602,
@@ -802,6 +1110,233 @@ describe('buildCoachKernelTrainingPlan — side effects', () => {
     expect(phases).not.toContain('deload');
     expect(phases[15]).toBe('race');
     expect(plan.decisionReasons?.map((reason) => reason.code)).not.toContain('event_based_missing_race_date');
+  });
+
+  it.each([
+    ['cycling', 'Cycling FTP build', 'cycling'],
+    ['swimming', 'Swimming technique build', 'swimming'],
+  ] as const)('keeps a future %s event in the athlete race calendar without requiring a running subtype', (
+    trainingPriority,
+    objective,
+    expectedDiscipline,
+  ) => {
+    const athlete = buildAthleteStateFromTrainingProfiles({
+      userId: 603,
+      objective,
+      durationWeeks: 16,
+      startDate: '2026-05-04',
+      sessionsPerWeek: 4,
+      strengthSessionsPerWeek: 1,
+      preferredTime: '07:00',
+      preferredCardioTime: '07:00',
+      preferredStrengthTime: '12:30',
+      longWorkoutDay: 'Sunday',
+      notes: null,
+      fitnessProfile: { experience_level: 'intermediate', available_equipment: 'Full gym' },
+      gymProfile: { equipment_access: 'Full gym' },
+      runProfile: null,
+      goalMode: 'event_based',
+      trainingPriority,
+      raceDate: '2026-08-23',
+    });
+
+    // F12 stronger guarantee: race-calendar construction must not silently
+    // discard valid non-running events just because they have no run subtype.
+    expect(athlete.goals.raceCalendar).toEqual([
+      expect.objectContaining({
+        date: '2026-08-23',
+        discipline: expectedDiscipline,
+      }),
+    ]);
+  });
+
+  it('keeps a four-week cycling deload at tempo or below and within the hard-session ceiling', () => {
+    const plan = buildCoachKernelTrainingPlan({
+      userId: 604,
+      objective: 'Cycling durability with supporting gym work',
+      durationWeeks: 4,
+      startDate: '2026-07-06',
+      sessionsPerWeek: 4,
+      runSessionsPerWeek: 0,
+      bikeSessionsPerWeek: 2,
+      strengthSessionsPerWeek: 2,
+      preferredTime: '12:00',
+      preferredCardioTime: '07:00',
+      preferredStrengthTime: '18:00',
+      longWorkoutDay: 'Sunday',
+      notes: null,
+      fitnessProfile: { experience_level: 'intermediate', available_equipment: 'Full gym' },
+      gymProfile: { equipment_access: 'Full gym' },
+      runProfile: { ftp_watts: '245', weekly_hours: '4' },
+      goalMode: 'continuous',
+      trainingPriority: 'cycling',
+      currentReadiness: { score: 82, confidence: 'manual_check_in', dataSource: 'manual' },
+    });
+
+    const rides = (plan.weeks ?? [])
+      .flatMap((week) => week.sessions ?? [])
+      .filter((session) => session.sessionType === 'ride');
+    const hardZones = new Set(['threshold', 'vo2', 'neuromuscular']);
+    const hardRides = rides.filter((session) => hardZones.has(session.intensitySummary?.primaryZone ?? ''));
+    const deloadWeek = plan.weeks?.find((week) => week.focus === 'deload');
+    const deloadRides = (deloadWeek?.sessions ?? []).filter((session) => session.sessionType === 'ride');
+
+    // Stronger end-to-end guarantee: the public structured intensity summary,
+    // which powers the creation-quality gate and iOS, must reflect the deload.
+    // Reducing duration while retaining threshold metadata is not a deload.
+    expect(rides).toHaveLength(8);
+    expect(hardRides.length / rides.length).toBeLessThanOrEqual(0.35);
+    expect(deloadRides.length).toBeGreaterThan(0);
+    expect(deloadRides.every((session) => !hardZones.has(session.intensitySummary?.primaryZone ?? ''))).toBe(true);
+  });
+
+  it.each([
+    ['hybrid', 'General fitness event build'],
+    ['strength', 'Strength competition preparation'],
+  ] as const)('does not drop a valid future event for a broad %s objective', (
+    trainingPriority,
+    objective,
+  ) => {
+    const athlete = buildAthleteStateFromTrainingProfiles({
+      userId: 604,
+      objective,
+      durationWeeks: 16,
+      startDate: '2026-05-04',
+      sessionsPerWeek: 5,
+      strengthSessionsPerWeek: trainingPriority === 'strength' ? 4 : 2,
+      preferredTime: '07:00',
+      preferredCardioTime: '07:00',
+      preferredStrengthTime: '12:30',
+      longWorkoutDay: 'Sunday',
+      notes: null,
+      fitnessProfile: { experience_level: 'intermediate', available_equipment: 'Full gym' },
+      gymProfile: { equipment_access: 'Full gym' },
+      runProfile: null,
+      goalMode: 'event_based',
+      trainingPriority,
+      raceDate: '2026-08-23',
+    });
+
+    expect(athlete.goals.raceCalendar).toHaveLength(1);
+    expect(athlete.goals.raceCalendar[0]).toMatchObject({ date: '2026-08-23' });
+  });
+
+  it('applies peak/taper/race phases to a future event even for a broad hybrid objective', () => {
+    const plan = buildCoachKernelTrainingPlan({
+      userId: 605,
+      objective: 'General fitness event build',
+      durationWeeks: 16,
+      startDate: '2026-05-04',
+      sessionsPerWeek: 5,
+      strengthSessionsPerWeek: 2,
+      preferredTime: '07:00',
+      preferredCardioTime: '07:00',
+      preferredStrengthTime: '12:30',
+      longWorkoutDay: 'Sunday',
+      notes: null,
+      fitnessProfile: { experience_level: 'intermediate', available_equipment: 'Full gym' },
+      gymProfile: { equipment_access: 'Full gym' },
+      runProfile: null,
+      goalMode: 'event_based',
+      trainingPriority: 'hybrid',
+      raceDate: '2026-08-23',
+    });
+
+    const phases = plan.weeks?.map((week) => week.focus) ?? [];
+    expect(phases).toContain('peak');
+    expect(phases).toContain('taper');
+    expect(phases).toContain('race');
+    expect(plan.decisionReasons?.map((reason) => reason.code)).not.toContain('event_based_missing_race_date');
+  });
+
+  it('keeps travel-week running inside declared 35-minute windows without stacking hard work', () => {
+    const plan = buildCoachKernelTrainingPlan({
+      userId: 606,
+      objective: 'Travel-safe minimum effective training',
+      durationWeeks: 4,
+      startDate: '2026-08-10',
+      sessionsPerWeek: 3,
+      runSessionsPerWeek: 2,
+      strengthSessionsPerWeek: 1,
+      preferredTime: '07:00',
+      preferredCardioTime: '07:00',
+      preferredStrengthTime: '18:00',
+      longWorkoutDay: 'Saturday',
+      notes: 'Travel week with limited equipment. Every session must fit a 35-minute window.',
+      fitnessProfile: {
+        experience_level: 'Intermediate (1-3 years)',
+        available_equipment: 'Resistance bands',
+        preferred_training_days: 'Monday, Tuesday, Thursday, Saturday',
+      },
+      gymProfile: {
+        equipment_access: 'Bodyweight only',
+        session_duration_minutes: '35',
+      },
+      runProfile: { weekly_mileage_km: '20', weekly_availability_days: '3' },
+      goalMode: 'continuous',
+      trainingPriority: 'hybrid',
+      twoADayPreference: 'never',
+    });
+
+    for (const week of plan.weeks ?? []) {
+      expect(
+        (week.sessions ?? [])
+          .filter((session) => session.sessionType !== 'rest' && session.durationMinutes > 35)
+          .map((session) => ({ title: session.title, durationMinutes: session.durationMinutes })),
+        `week ${week.weekNumber} universal duration ceiling`,
+      ).toEqual([]);
+      const runs = (week.sessions ?? []).filter((session) => session.sessionType === 'run');
+      expect(runs, `week ${week.weekNumber} running frequency`).toHaveLength(2);
+      expect(
+        runs.filter((session) => session.durationMinutes > 35).map((session) => ({
+          title: session.title,
+          dayOfWeek: session.dayOfWeek,
+          durationMinutes: session.durationMinutes,
+        })),
+        `week ${week.weekNumber} duration`,
+      ).toEqual([]);
+      expect(runs.some((session) => /easy|recovery/i.test(session.title)), `week ${week.weekNumber} aerobic support`).toBe(true);
+      expect(runs.some((session) => /tempo|threshold|interval|hill repeat/i.test(session.title)), `week ${week.weekNumber} hard stack`).toBe(false);
+    }
+  });
+
+  it('keeps a non-travel two-run week aerobic when every running window is only 35 minutes', () => {
+    const plan = buildCoachKernelTrainingPlan({
+      userId: 607,
+      objective: 'Limited-time priority week',
+      durationWeeks: 4,
+      startDate: '2026-08-10',
+      sessionsPerWeek: 3,
+      runSessionsPerWeek: 2,
+      strengthSessionsPerWeek: 1,
+      preferredTime: '06:30',
+      preferredCardioTime: '06:30',
+      preferredStrengthTime: '18:00',
+      longWorkoutDay: 'Saturday',
+      notes: 'Every session must fit a 35-minute window.',
+      fitnessProfile: {
+        experience_level: 'Intermediate (1-3 years)',
+        available_equipment: 'Full gym',
+        preferred_training_days: 'Tuesday, Thursday, Saturday',
+        blocked_days: 'Monday, Wednesday, Friday',
+      },
+      gymProfile: {
+        equipment_access: 'Full commercial gym',
+        session_duration_minutes: '35',
+      },
+      runProfile: { weekly_mileage_km: '20', weekly_availability_days: '3' },
+      goalMode: 'continuous',
+      trainingPriority: 'hybrid',
+      twoADayPreference: 'never',
+    });
+
+    for (const week of plan.weeks ?? []) {
+      const runs = (week.sessions ?? []).filter((session) => session.sessionType === 'run');
+      expect(runs, `week ${week.weekNumber} running frequency`).toHaveLength(2);
+      expect(runs.every((session) => session.durationMinutes <= 35), `week ${week.weekNumber} duration`).toBe(true);
+      expect(runs.some((session) => /easy|recovery/i.test(session.title)), `week ${week.weekNumber} aerobic support`).toBe(true);
+      expect(runs.some((session) => /tempo|threshold|interval|hill repeat/i.test(session.title)), `week ${week.weekNumber} hard stack`).toBe(false);
+    }
   });
 
   it('creates coherent app-facing plans for every supported training discipline', () => {

@@ -3,6 +3,7 @@
 import {
   createEvent,
   deleteEvent,
+  getEventById,
   updateEvent,
   type CalendarSource,
   type UnifiedCalendarEvent,
@@ -15,7 +16,7 @@ import {
   type SecretaryProviderEvent,
   type SecretaryProviderEventInput,
 } from './secretary-agenda-provider-sync';
-import { getPlanById, getSessionById, type TrainingSession } from './training-plans';
+import { getPlanById, getSessionByIdForScope, type TrainingSession } from './training-plans';
 import {
   appendTrainingIdentityMarker,
   normalizeProviderDescriptionForMarkerParse,
@@ -42,7 +43,7 @@ export function createUnifiedCalendarSecretaryProviderAdapter(
         description: providerDescriptionForSecretaryEvent(input),
         categories: dedupeCategories(['Nexus', 'Secretary', input.sourceSkill]),
       }, source, input.ownerUserId);
-      return toSecretaryProviderEvent(event, input);
+      return toSecretaryProviderEvent(event, input, true);
     },
     async updateEvent(eventId, input) {
       const event = await updateEvent({
@@ -52,16 +53,22 @@ export function createUnifiedCalendarSecretaryProviderAdapter(
         new_end: input.endAt,
         new_description: providerDescriptionForSecretaryEvent(input),
       }, source, input.ownerUserId);
-      return toSecretaryProviderEvent(event, input);
+      return toSecretaryProviderEvent(event, input, true);
     },
     async deleteEvent(eventId, input) {
       await deleteEvent(eventId, source, input?.ownerUserId);
     },
     async getEvent(eventId, input) {
-      if (!input) return null;
-      const events = await fetchSecretaryReadbackWindow(input, source);
-      const event = events.find((candidate) => candidate.id === eventId);
-      return event ? toSecretaryProviderEvent(event, input) : null;
+      if (!input) return { status: 'unknown', reasonCode: 'provider_exact_read_scope_missing' };
+      try {
+        const event = await getEventById(eventId, source, input.ownerUserId);
+        return event
+          ? { status: 'found', event: toSecretaryProviderEvent(event, input) }
+          : { status: 'not_found' };
+      } catch {
+        logger.warn({ providerSource: source }, 'Secretary exact provider event read failed');
+        return { status: 'unknown', reasonCode: 'provider_exact_read_failed' };
+      }
     },
     async findEventsByAgendaItemId(agendaItemId, input) {
       if (!input) return [];
@@ -71,7 +78,6 @@ export function createUnifiedCalendarSecretaryProviderAdapter(
         .filter((event) => (
           extractSecretaryAgendaMarker(event.description) === agendaItemId
           || isLikelySameTrainingCalendarEvent(event, input)
-          || isLikelySameSecretaryEvent(event, input)
         ))
         .map((event) => toSecretaryProviderEvent(event, input));
     },
@@ -108,7 +114,10 @@ export function buildSecretaryCalendarDescription(input: SecretaryProviderEventI
 // Secretary rewrite. Without re-appending it here, the first Secretary update
 // of an adopted Training event would destroy the fix's own match signal.
 function providerDescriptionForSecretaryEvent(input: SecretaryProviderEventInput): string {
-  const description = buildSecretaryCalendarDescription(input);
+  const description = [
+    buildSecretaryCalendarDescription(input),
+    `${MARKER_PREFIX}:${input.agendaItemId}`,
+  ].filter(Boolean).join('\n\n');
   const session = trainingSessionForInput(input);
   if (!session) return description;
   const intent = parseTrainingSourceIntent(input.sourceIntentId);
@@ -126,9 +135,19 @@ function providerDescriptionForSecretaryEvent(input: SecretaryProviderEventInput
 
 function trainingSessionForInput(input: SecretaryProviderEventInput): TrainingSession | null {
   if (input.sourceSkill !== 'training' || input.sourceEntityType !== 'training_session') return null;
-  const sessionId = Number(input.sourceEntityId);
-  if (!Number.isFinite(sessionId) || sessionId <= 0) return null;
-  return getSessionById(Math.floor(sessionId));
+  const sessionId = positiveSafeInteger(input.sourceEntityId);
+  const userId = positiveSafeInteger(input.ownerUserId);
+  const tenantId = positiveSafeInteger(input.tenantId);
+  if (sessionId == null || userId == null || tenantId == null) return null;
+  return getSessionByIdForScope(sessionId, { userId, tenantId });
+}
+
+function positiveSafeInteger(value: unknown): number | null {
+  if (typeof value !== 'string' && typeof value !== 'number') return null;
+  const normalized = typeof value === 'string' ? value.trim() : value;
+  if (normalized === '') return null;
+  const numeric = typeof normalized === 'number' ? normalized : Number(normalized);
+  return Number.isSafeInteger(numeric) && numeric > 0 ? numeric : null;
 }
 
 // 2026-05-25 Bug #3 (Stage 1) — body hydration. Pre-fix this function
@@ -151,9 +170,7 @@ function trainingSessionForInput(input: SecretaryProviderEventInput): TrainingSe
 //      duration_minutes` — never empty when the session row exists.
 function sourceBodyForSecretaryCalendarEvent(input: SecretaryProviderEventInput): string | null {
   if (input.sourceSkill !== 'training' || input.sourceEntityType !== 'training_session') return null;
-  const sessionId = Number(input.sourceEntityId);
-  if (!Number.isFinite(sessionId) || sessionId <= 0) return null;
-  const session = getSessionById(Math.floor(sessionId));
+  const session = trainingSessionForInput(input);
   if (!session) return null;
 
   // Priority 1: stored plain-text description.
@@ -207,9 +224,8 @@ function calendarTitleForSecretaryProviderEvent(input: SecretaryProviderEventInp
   if (input.sourceSkill !== 'training' || input.sourceEntityType !== 'training_session') {
     return input.title;
   }
-  const sessionId = Number(input.sourceEntityId);
-  if (!Number.isFinite(sessionId) || sessionId <= 0) return input.title;
-  const session = getSessionById(Math.floor(sessionId));
+  if (positiveSafeInteger(input.sourceEntityId) == null) return input.title;
+  const session = trainingSessionForInput(input);
   const durationMinutes = typeof input.durationMinutes === 'number' && Number.isFinite(input.durationMinutes) && input.durationMinutes > 0
     ? Math.round(input.durationMinutes)
     : session?.duration_minutes;
@@ -237,13 +253,6 @@ function stripLeadingTrainingEmoji(title: string): string {
     .trim();
 }
 
-function isLikelySameSecretaryEvent(event: UnifiedCalendarEvent, input: SecretaryProviderEventInput): boolean {
-  if (!sameInstant(event.start, input.startAt) || !sameInstant(event.end, input.endAt)) return false;
-  const eventTitle = normalizeComparableText(event.summary);
-  return eventTitle === normalizeComparableText(input.title)
-    || eventTitle === normalizeComparableText(calendarTitleForSecretaryProviderEvent(input));
-}
-
 // Identity-marker match. Deliberately NOT gated on start/end equality: the
 // marker names the exact training session, so a same-session event at a
 // drifted slot is still the same provider event (adopt and move it, don't
@@ -255,12 +264,31 @@ function isLikelySameTrainingCalendarEvent(event: UnifiedCalendarEvent, input: S
   const sessionId = Number(input.sourceEntityId);
   if (!Number.isFinite(sessionId) || sessionId <= 0) return false;
   const marker = parseTrainingIdentityMarker(event.description);
-  if (!marker?.sessionId || marker.sessionId !== Math.floor(sessionId)) return false;
+  if (!marker?.sessionId) return false;
   const intent = parseTrainingSourceIntent(input.sourceIntentId);
   // An agenda row whose intent and entity disagree is corrupt — never guess.
   if (intent && intent.sessionId !== Math.floor(sessionId)) return false;
   if (intent && marker.planId && marker.planId !== intent.planId) return false;
-  return true;
+  if (marker.sessionId === Math.floor(sessionId)) return true;
+
+  // A regenerated plan may replace the physical session row while retaining
+  // the same provider event. Cross-version adoption is allowed only through
+  // the current scoped row's exact stable identity AND material shape. This
+  // deliberately excludes title/time matching and same-key changed sessions.
+  if (!intent || marker.planId !== intent.planId) return false;
+  if (!marker.planVersion || marker.planVersion >= intent.planVersion) return false;
+  const current = trainingSessionForInput(input);
+  if (!current || current.plan_id !== intent.planId) return false;
+  const currentKey = current.session_identity_key?.trim() ?? '';
+  const currentShape = current.session_shape_hash?.trim() ?? '';
+  const markerKey = marker.sessionIdentityKey?.trim() ?? '';
+  const markerShape = marker.sessionShapeHash?.trim() ?? '';
+  return Boolean(
+    currentKey
+    && currentShape
+    && markerKey === currentKey
+    && markerShape === currentShape,
+  );
 }
 
 function parseTrainingSourceIntent(value: string): { planId: number; planVersion: number; sessionId: number } | null {
@@ -275,17 +303,6 @@ function parseTrainingSourceIntent(value: string): { planId: number; planVersion
     planVersion: Math.floor(planVersion),
     sessionId: Math.floor(sessionId),
   };
-}
-
-function sameInstant(a: string | undefined, b: string | undefined): boolean {
-  if (!a || !b) return false;
-  const left = Date.parse(a);
-  const right = Date.parse(b);
-  return Number.isFinite(left) && Number.isFinite(right) && Math.abs(left - right) <= 1000;
-}
-
-function normalizeComparableText(value: string | undefined): string {
-  return (value ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
 export function extractSecretaryAgendaMarker(description: string | undefined): string | null {
@@ -316,18 +333,24 @@ async function fetchSecretaryReadbackWindow(
 function toSecretaryProviderEvent(
   event: UnifiedCalendarEvent,
   input: SecretaryProviderEventInput,
+  trustedWriteResult = false,
 ): SecretaryProviderEvent {
+  const markerAgendaItemId = extractSecretaryAgendaMarker(event.description);
+  const trainingOwned = isLikelySameTrainingCalendarEvent(event, input);
   return {
     eventId: event.id,
     source: event.source,
-    agendaItemId: extractSecretaryAgendaMarker(event.description) ?? input.agendaItemId,
+    // Only an exact marker (or the direct response to our own marker-bearing
+    // write) may assign Secretary ownership. Readback title/time similarity
+    // is never sufficient authority to adopt or delete an event.
+    agendaItemId: markerAgendaItemId ?? (trainingOwned || trustedWriteResult ? input.agendaItemId : ''),
     title: event.summary,
     startAt: event.start,
     endAt: event.end,
     version: input.version,
     // Canonical-event selection must never delete the event Training links
     // to; flag marker-bearing events so the sync engine prefers them.
-    trainingOwned: isLikelySameTrainingCalendarEvent(event, input) || undefined,
+    trainingOwned: trainingOwned || undefined,
   };
 }
 

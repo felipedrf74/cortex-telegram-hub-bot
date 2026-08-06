@@ -110,16 +110,14 @@ function targetedFieldQuestion(step: ChatPlanStep, field: string, pt?: boolean):
         return 'Qual é a decisão?';
       case 'sessionId':
         return 'Qual é a sessão de treino?';
-      case 'sport':
-        return 'Qual modalidade deve orientar o plano de treino?';
-      case 'goal':
+      case 'objective':
         return 'Qual é o objetivo principal do plano de treino?';
       case 'durationWeeks':
         return 'Quantas semanas deve durar o plano?';
-      case 'startDate':
-        return 'Quando queres começar o plano?';
-      case 'weeklyVolumeKm':
-        return 'Quantos quilómetros por semana estás a fazer agora?';
+      case 'sessionsPerWeek':
+        return 'Quantos dias de treino por semana queres, entre 3 e 7?';
+      case 'startPolicy':
+        return 'Queres começar hoje ou na próxima semana completa?';
       case 'receiptId':
         return 'Qual recibo ou transação devo usar?';
       case 'category':
@@ -156,16 +154,14 @@ function targetedFieldQuestion(step: ChatPlanStep, field: string, pt?: boolean):
       return 'Which decision should I use?';
     case 'sessionId':
       return 'Which training session should I use?';
-    case 'sport':
-      return 'Which sport should the training plan focus on?';
-    case 'goal':
+    case 'objective':
       return 'What is the main goal for the training plan?';
     case 'durationWeeks':
       return 'How many weeks should the plan last?';
-    case 'startDate':
-      return 'When should the plan start?';
-    case 'weeklyVolumeKm':
-      return 'What is your current weekly mileage in km?';
+    case 'sessionsPerWeek':
+      return 'How many training days per week do you want, from 3 to 7?';
+    case 'startPolicy':
+      return 'Should the plan start today or next full week?';
     case 'receiptId':
       return 'Which receipt or transaction should I use?';
     case 'category':
@@ -195,11 +191,10 @@ function fieldLabel(field: string, pt?: boolean): string {
     body: ['mensagem', 'message'],
     decisionId: ['decisão', 'decision'],
     sessionId: ['sessão de treino', 'training session'],
-    sport: ['modalidade', 'sport'],
-    goal: ['objetivo', 'goal'],
+    objective: ['objetivo', 'objective'],
     durationWeeks: ['duração em semanas', 'duration in weeks'],
-    startDate: ['data de início', 'start date'],
-    weeklyVolumeKm: ['volume semanal em km', 'weekly mileage in km'],
+    sessionsPerWeek: ['dias de treino por semana', 'training days per week'],
+    startPolicy: ['política de início', 'start policy'],
     receiptId: ['recibo ou transação', 'receipt or transaction'],
     category: ['categoria', 'category'],
     packageId: ['pacote de conteúdo', 'content package'],

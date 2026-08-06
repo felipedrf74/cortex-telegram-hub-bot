@@ -428,10 +428,13 @@ describe('canonical Content work scheduling', () => {
       preview: previewSecretarySchedulingIntent,
       submit: (intent, options) => {
         const decision = submitSecretarySchedulingIntent(intent, options);
+        // Stronger provider-boundary guarantee: simulated provider success
+        // must pin the immutable target in the same write as the source.
         testDb.prepare(`
           UPDATE secretary_agenda_items
              SET lifecycle_state = 'synced', provider_sync_state = 'synced',
-                 provider_event_id = 'provider-event-advance', provider_source = 'google'
+                 provider_event_id = 'provider-event-advance', provider_source = 'google',
+                 provider_target = 'google'
            WHERE agenda_item_id = ?
         `).run(decision.agendaItem.agendaItemId);
         return decision;
@@ -726,10 +729,13 @@ describe('canonical Content work scheduling', () => {
     const binding = testDb.prepare(`
       SELECT secretary_agenda_item_id FROM content_schedule_bindings WHERE item_id = ?
     `).get(fixture.item.id) as { secretary_agenda_item_id: string };
+    // Stronger provider-boundary guarantee: the cleanup fixture must model a
+    // mapping whose immutable target and observed source agree.
     testDb.prepare(`
       UPDATE secretary_agenda_items
          SET lifecycle_state = 'synced', provider_sync_state = 'synced',
-             provider_event_id = 'provider-cleanup-event', provider_source = 'google'
+             provider_event_id = 'provider-cleanup-event', provider_source = 'google',
+             provider_target = 'google'
        WHERE agenda_item_id = ?
     `).run(binding.secretary_agenda_item_id);
     const cancelled = cancelContentSchedule({

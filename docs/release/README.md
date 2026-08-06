@@ -201,6 +201,53 @@ unless it proves at least 60 seconds. Candidate and predecessor health budgets
 are recorded as 45 seconds each; predecessor recovery has a hard 120-second
 deadline and records its measured duration.
 
+## Shared backend/iOS closeout
+
+An iOS release that consumes a changed backend contract adds a post-promotion
+gate; it does not add fields to the backend checkpoint manifest. Before backend
+promotion, the protected iOS contract workflow decodes the exact release-bound
+fixture and emits a signed `nexus.ios-contract-attestation.v2`. After the exact
+backend production transaction passes, Xcode Cloud may build the same iOS SHA
+and source build number and emit signed
+`nexus.ios-distribution-attestation.v2` evidence.
+
+Before TestFlight group assignment, App Store submission, or user release,
+dispatch the owner-only protected-main workflow
+`.github/workflows/shared-ios-release-gate.yml` in the `production-release`
+environment. Supply the exact successful checkpoint run identity plus canonical
+base64 for the passing production transaction and both signed iOS
+attestations. The workflow resolves the checkpoint manifest and protected-main
+bundle by immutable GitHub artifact IDs, runs the gate below, revalidates the
+receipt identity, and publishes the only governed release-authorization
+artifact. A local CLI receipt is diagnostic evidence and cannot substitute for
+that successful workflow run.
+
+The workflow invokes the equivalent of:
+
+```bash
+node scripts/shared-ios-release-gate.mjs \
+  --manifest <release-manifest.json> \
+  --bundle <exact-pristine-release-bundle> \
+  --production-state <passing-production.json> \
+  --ios-contract-attestation <ios-contract-attestation.json> \
+  --ios-distribution-attestation <ios-distribution-attestation.json> \
+  --expect-backend-runtime-sha <full-backend-sha> \
+  --expect-ios-sha <full-ios-sha> \
+  --expect-ios-build-number <source-build-number> \
+  --output .local/release/shared-ios-release-gate.json
+```
+
+The command reuses the canonical backend manifest and transaction validators,
+recomputes the exact artifact and fixture identities, verifies both Ed25519
+signatures against the pinned public keys, requires matching iOS SHA/build
+identity, and proves the distribution attestation was generated after backend
+production completed. Only a `result: "passed"`
+`nexus.shared-ios-release-gate.v1` receipt closes the shared release only when
+it is uploaded by the successful owner-dispatched workflow. Contract
+compatibility evidence may predate backend promotion; distribution evidence
+may not. Record the workflow run ID and receipt artifact before any App Store
+Connect mutation.
+
 ## Chat capability transactions
 
 After the governed chat-flag operator is merged into protected main and its

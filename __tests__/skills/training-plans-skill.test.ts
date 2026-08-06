@@ -6,7 +6,12 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { DEFAULT_SKILLS, getSkillDefinition, getCronJobOwner } from '../../src/skills/skill-config';
+import {
+  DEFAULT_SKILLS,
+  buildTrainingPlansSubSkillDefinition,
+  getSkillDefinition,
+  getCronJobOwner,
+} from '../../src/skills/skill-config';
 
 describe('Training Plans Sub-Skill Config', () => {
   it('triathlon skill includes training-plans sub-skill', () => {
@@ -16,17 +21,30 @@ describe('Training Plans Sub-Skill Config', () => {
     expect(trainingPlans!.enabledByDefault).toBe(true);
   });
 
-  it('training-plans sub-skill contains all training tools', () => {
+  it('training-plans sub-skill exposes reviewed actions but no raw projection writers', () => {
     const triathlon = getSkillDefinition('triathlon');
     const tp = triathlon.subSkills.find(s => s.name === 'training-plans')!;
-    expect(tp.tools).toContain('create_training_plan');
-    expect(tp.tools).toContain('add_training_week');
-    expect(tp.tools).toContain('add_training_session');
-    expect(tp.tools).toContain('get_training_plan');
-    expect(tp.tools).toContain('log_training_completion');
-    expect(tp.tools).toContain('update_training_session');
-    expect(tp.tools).toContain('link_session_calendar');
-    expect(tp.tools).toHaveLength(7);
+    const runtimeContract = buildTrainingPlansSubSkillDefinition();
+    expect(runtimeContract).toEqual({
+      name: 'training-plans',
+      description: 'Reviewed Training plan handoff, readback, completion, and calendar linkage used by all sport sub-skills',
+      enabledByDefault: true,
+      requiredTier: 'pro',
+      tools: [
+        'create_training_plan',
+        'get_training_plan',
+        'log_training_completion',
+        'link_session_calendar',
+      ],
+      cronJobs: ['training_plan_adjust'],
+    });
+    expect(tp).toEqual(runtimeContract);
+    // F13 supersedes the old CRUD exposure: these tools bypassed candidate
+    // construction, lint, volume enforcement, and activation review.
+    expect(tp.tools).not.toContain('add_training_week');
+    expect(tp.tools).not.toContain('add_training_session');
+    expect(tp.tools).not.toContain('update_training_session');
+    expect(tp.tools).toHaveLength(4);
   });
 
   it('training_plan_adjust cron job is mapped to triathlon/training-plans', () => {

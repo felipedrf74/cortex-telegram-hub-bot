@@ -1,27 +1,20 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import * as trainingPlans from '../../services/training-plans';
+import { DateTime } from 'luxon';
+import { getDb } from '../../services/database';
 import {
   buildRichSessionDescription,
   type AthleteProfiles,
   type SessionDescriptionInput,
 } from '../../services/training-session-description';
+import { getPlanVersion } from '../../services/training-plan-lifecycle';
+import { emitDomainEvent } from '../../services/event-outbox';
 import {
-  findExistingOwnership,
-  getPlanVersion,
-  recordCalendarOwnership,
-} from '../../services/training-plan-lifecycle';
+  TRAINING_PLAN_CALENDAR_SYNC_REQUESTED_EVENT_TYPE,
+  type TrainingPlanCalendarSyncSummary,
+} from '../../services/training-plan-calendar-sync-worker';
 import {
-  markSecretaryAgendaProviderCleanupRequired,
-  markSecretaryAgendaProviderSyncSatisfied,
-  submitSecretarySchedulingIntent,
-  type SecretarySchedulingDecision,
-  type SecretarySchedulingIntent,
-} from '../../services/secretary-scheduling-arbitrator';
-import { loadLiveCalendarBusyWindowsForSecretaryIntent } from '../../services/secretary-live-calendar-busy';
-import { emojiForTrainingSession } from '../../services/training-calendar-format';
-import {
-  appendTrainingIdentityMarker,
   buildTrainingSessionIdentityKey,
   computeTrainingSessionShapeHash,
 } from '../../services/training-session-identity';
@@ -39,7 +32,10 @@ import type { TrainingSessionSection } from '../../services/coach-kernel/trainin
 import type { TrainingPlanSpec } from '../../services/training-plan-spec';
 import type { TrainingDecisionReason } from '../../services/coach-kernel/types';
 import { logger } from '../../utils/logger';
-import { withTrainingCalendarOperationLock } from '../../services/training-operation-locks';
+import {
+  withTrainingCalendarOperationLock,
+  type TrainingOperationLockLease,
+} from '../../services/training-operation-locks';
 import { requireTenantIdParam } from '../../services/tenant-scope';
 import { getTrainingExerciseIdentityV1Mode } from '../../services/runtime-flags';
 import {
@@ -48,14 +44,24 @@ import {
   type BusyWindow,
   type ScheduleSessionResult,
 } from './training-schedule-utils';
-import { createTrainingCalendarEvent } from './training-calendar-event-writer';
-import { deleteEvent, type CalendarSource } from '../../services/unified-calendar';
+import type { CalendarSource } from '../../services/unified-calendar';
 import {
   flattenTrainingExerciseTokens,
   inferTrainingSessionIsLongRun,
   inferTrainingSessionIsLowerHeavy,
 } from '../../services/training-session-classification';
 import { incrementTrainingGenerationCounter } from '../../services/training-generation-observability';
+import {
+  normalizeTrainingTimezone,
+  resolveTrainingTimezone,
+} from '../../services/training-date-utils';
+import {
+  assertTrainingPlanGenerationIdempotencyLease,
+  completeTrainingPlanGenerationIdempotency,
+  TrainingPlanGenerationLeaseLostError,
+  type TrainingPlanGenerationLeaseIdentity,
+} from '../../services/training-plan-generation-idempotency';
+export { TrainingPlanReplacementConflictError } from '../../services/training-plans';
 
 const DAY_NAMES = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
 
@@ -67,6 +73,8 @@ type GeneratedTrainingPlan = {
     weekNumber?: number;
     focus?: string;
     intensityPct?: number;
+    notes?: string[];
+    decisionReasons?: TrainingDecisionReason[];
     sessions?: Array<GeneratedTrainingSession>;
   }>;
 };
@@ -130,7 +138,42 @@ const INACTIVE_SCHEDULE_STATES = new Set<PersistableSessionScheduleState>([
 
 const PRE_PERSIST_SCHEDULE_FINALIZER_VERSION = 'training_pre_persist_schedule_finalizer_v1';
 
+/**
+ * Persist only the coach kernel's string-note contract. JSON encoding keeps
+ * note boundaries unambiguous for downstream readers and prevents malformed
+ * runtime values from being coerced into user-facing evidence.
+ */
+function serializeGeneratedWeekNotes(value: unknown): string | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const notes = value
+    .filter((note): note is string => typeof note === 'string')
+    .map((note) => note.trim())
+    .filter(Boolean);
+  return JSON.stringify(notes);
+}
+
 export interface PersistGeneratedTrainingPlanInput {
+  /** Compatibility generation replaces the predecessor in this transaction. */
+  replaceExistingActivePlan?: boolean;
+  /** Active-plan snapshot captured before candidate construction; exact CAS. */
+  expectedActivePlanIds?: number[];
+  /** F1 owner/fencing identity asserted at activation + outbox boundaries. */
+  generationIdempotencyLease?: TrainingPlanGenerationLeaseIdentity;
+  /**
+   * Pure response projection used to store the exact replay payload in the
+   * same commit as activation. No I/O is permitted in this callback.
+   */
+  buildCommittedIdempotencyResponse?: (
+    result: PersistGeneratedTrainingPlanResult,
+  ) => Record<string, unknown>;
+  /**
+   * F6 (Phase 1A-2): persist the plan as `pending_activation` instead of
+   * `active`. Readers all filter `status = 'active'`, so the replacement is
+   * durable but invisible until the caller activates it — which is what lets
+   * generation write the replacement BEFORE removing the plan it replaces.
+   * Defaults to false so every other caller keeps the released behaviour.
+   */
+  persistAsPending?: boolean;
   userId: number;
   tenantId: number;
   objective: string;
@@ -138,6 +181,12 @@ export interface PersistGeneratedTrainingPlanInput {
   startDate: string;
   endDate: string;
   now: Date;
+  /**
+   * Trusted scheduling zone resolved by the server. New plans also persist
+   * this value in preferences_json so later calendar work keeps creation-zone
+   * semantics even after the user's current timezone changes.
+   */
+  schedulingTimezone?: string;
   planData: GeneratedTrainingPlan;
   preferencesJson: string;
   normalizedPreferredTime: string;
@@ -166,6 +215,8 @@ export interface PersistGeneratedTrainingPlanInput {
   isRaceSpecific?: boolean;
   /** Request goal mode; `event_based` enables strict race-date semantics. */
   goalMode?: string | null;
+  /** F7 (Phase 3): athlete two-a-day stance; 'never' arms the per-day cap lint rule. */
+  twoADayPreference?: string | null;
   /** Explicit swim access from profile/intake; false blocks swim prescriptions. */
   hasPoolAccess?: boolean | null;
   /** True when FTP, threshold power, or equivalent cycling benchmark is known. */
@@ -175,11 +226,23 @@ export interface PersistGeneratedTrainingPlanInput {
   /** Deterministic training generation contract used by the strict quality gate. */
   trainingPlanSpec?: TrainingPlanSpec;
 }
+
 export interface PersistGeneratedTrainingPlanResult {
   planId: number;
   totalSessions: number;
+  /**
+   * Phase 1B: provider calendar work no longer runs inline, so persistence
+   * can never report created/linked events — both are always 0 here. They
+   * remain on the result so released callers keep a stable shape;
+   * `calendarSyncQueued` + `syncableSessions` describe what was actually
+   * requested through the outbox.
+   */
   eventsCreated: number;
   sessionsLinked: number;
+  /** True when a `training.plan_calendar_sync.requested.v1` event was emitted in the plan-graph transaction. */
+  calendarSyncQueued: boolean;
+  /** Count of persisted sessions eligible for a provider calendar event. */
+  syncableSessions: number;
   weekSummaries: Array<{
     weekNumber: number | undefined;
     focus: string | undefined;
@@ -204,22 +267,42 @@ export interface PersistGeneratedTrainingPlanResult {
 export function finalizeGeneratedTrainingPlanForPersistence(
   input: PersistGeneratedTrainingPlanInput,
 ): PersistGeneratedTrainingPlanInput {
-  if (isPlanScheduleFinalized(input.planData)) return input;
+  const normalizedInput = {
+    ...input,
+    schedulingTimezone: schedulingTimezoneForPersistence(input),
+  };
+  if (isPlanScheduleFinalized(normalizedInput.planData)) return normalizedInput;
 
   const scheduledWindows: BusyWindow[] = [];
   const planData: GeneratedTrainingPlan = {
-    ...input.planData,
-    weeks: (input.planData.weeks ?? []).map((weekData) => ({
+    ...normalizedInput.planData,
+    weeks: (normalizedInput.planData.weeks ?? []).map((weekData) => ({
       ...weekData,
       sessions: (weekData.sessions ?? []).map((sessionData) => finalizeGeneratedTrainingSessionSchedule({
-        input,
+        input: normalizedInput,
         weekData,
         sessionData,
         scheduledWindows,
       })),
     })),
   };
-  return { ...input, planData };
+  return { ...normalizedInput, planData };
+}
+
+function schedulingTimezoneForPersistence(input: PersistGeneratedTrainingPlanInput): string {
+  const explicit = normalizeTrainingTimezone(input.schedulingTimezone);
+  if (explicit) return explicit;
+  try {
+    const parsed = JSON.parse(input.preferencesJson) as Record<string, unknown>;
+    const persisted = normalizeTrainingTimezone(
+      typeof parsed?.schedulingTimezone === 'string' ? parsed.schedulingTimezone : null,
+    );
+    if (persisted) return persisted;
+  } catch {
+    // Malformed preferences are preserved by the existing persistence path;
+    // scheduling still gets a safe canonical fallback for this operation.
+  }
+  return resolveTrainingTimezone();
 }
 
 /**
@@ -252,15 +335,34 @@ export async function persistGeneratedTrainingPlan(
       tenantId,
       operation: 'calendar_generate',
     },
-    () => persistGeneratedTrainingPlanLocked(finalizedInput),
+    (lease) => persistGeneratedTrainingPlanLocked(finalizedInput, lease),
   );
 }
 
 async function persistGeneratedTrainingPlanLocked(
   input: PersistGeneratedTrainingPlanInput,
+  lease: TrainingOperationLockLease,
 ): Promise<PersistGeneratedTrainingPlanResult> {
   const tenantId = requireTenantIdParam(input.tenantId, 'persistGeneratedTrainingPlanLocked');
-  const preferencesJson = appendSelectorSupportDebugTraces(input.preferencesJson, input.planData, input.now);
+  const preferencesJson = appendSelectorSupportDebugTraces(input.preferencesJson, input.planData, input.now, input.userId);
+
+  // F4 (Phase 1B) — plan + weeks + sessions commit atomically or not at all.
+  //
+  // These were previously independent inserts: `createPlan`, then a
+  // `createWeek` per week, then a `createSession` per session. A throw or
+  // SQLITE_BUSY partway through left a committed plan row with a partial
+  // week/session graph and no rollback — and because generation used to
+  // delete the prior plan first, that partial state was all the user had.
+  //
+  // Only the synchronous DB phase is wrapped. Provider calls never run in
+  // this module at all (Phase 1B): the transaction emits a
+  // `training.plan_calendar_sync.requested.v1` outbox event — durable if and
+  // only if the plan graph commits — and the dedicated
+  // training_plan_calendar_sync worker performs provider HTTP after commit,
+  // once the plan is actually active.
+  const db = getDb();
+  const persistPlanGraph = db.transaction(() => {
+  lease.assertActive();
   const plan = trainingPlans.createPlan({
     user_id: input.userId,
     tenant_id: tenantId,
@@ -272,17 +374,21 @@ async function persistGeneratedTrainingPlanLocked(
     start_date: input.startDate,
     end_date: input.endDate,
     preferences_json: preferencesJson,
+    status: input.replaceExistingActivePlan || input.persistAsPending
+      ? 'pending_activation'
+      : 'active',
   });
 
   let totalSessions = 0;
+  // Phase 1B: this array only carries the identity + finalized window needed
+  // by the lint mapper and the outbox payload. Provider titles/descriptions
+  // are rebuilt from persisted rows by the calendar-sync worker.
   const calendarEvents: Array<{
     sessionId: number;
     sessionIdentityKey: string;
     sessionShapeHash: string;
-    title: string;
     start: string;
     end: string;
-    description: string;
   }> = [];
   for (const weekData of input.planData.weeks || []) {
     const sessionOrdinals = new Map<string, number>();
@@ -292,6 +398,7 @@ async function persistGeneratedTrainingPlanLocked(
       focus: weekData.focus || 'base',
       intensity_pct: weekData.intensityPct || 70,
       volume_sessions: weekData.sessions?.filter(isCalendarSchedulableTrainingSession).length || 0,
+      notes: serializeGeneratedWeekNotes(weekData.notes),
     });
 
     for (const sessionData of weekData.sessions || []) {
@@ -423,274 +530,164 @@ async function persistGeneratedTrainingPlanLocked(
         session_shape_hash: sessionShapeHash,
         preferred_time_unavailable: finalizedWindow.preferredTimeUnavailable,
         status: activeScheduleState,
+        // Phase 1B: persist the finalized window so the calendar-sync worker
+        // can rebuild provider event times from the row after commit.
+        scheduled_start_at: finalizedWindow.start.toISOString(),
+        scheduled_end_at: finalizedWindow.end.toISOString(),
       });
 
       calendarEvents.push({
         sessionId: session.id,
         sessionIdentityKey,
         sessionShapeHash,
-        title: `${emojiForTrainingSession(sessionData.sessionType)} ${sessionData.title || 'Training session'} (${durationMinutes}min)`,
         start: finalizedWindow.start.toISOString(),
         end: finalizedWindow.end.toISOString(),
-        description: appendTrainingIdentityMarker(activeDescription, {
-          planId: plan.id,
-          planVersion: getPlanVersion(plan.id) ?? 1,
-          sessionId: session.id,
-          sessionIdentityKey,
-          sessionShapeHash,
-        }),
       });
 
       totalSessions++;
     }
   }
 
-  // Slice 4.D — idempotent calendar create. Capture the plan_version
-  // once at the top of the loop; any retry of this persistence pass
-  // (e.g. a network blip + client retry) will see the same version
-  // and the (plan_id, plan_version, session_id) ownership row, so
-  // we can skip event re-creation cleanly. The DB-level unique index
-  // on (plan_id, plan_version, event_id, source) is the safety
-  // backstop for concurrent races we can't detect at the app layer.
-  const planVersionForOwnership = getPlanVersion(plan.id) ?? 1;
-  const calendarWriteSource = effectiveTrainingCalendarWriteSource(input);
-  let eventsCreated = 0;
-  let eventsAlreadyOwned = 0;
-  const createCalendarEventWithOwnership = async (
-    eventPayload: (typeof calendarEvents)[number],
-  ): Promise<'created' | 'already_owned' | 'skipped' | 'failed'> => {
-    if (calendarWriteSource === null) {
-      return 'skipped';
-    }
-    const existing = findExistingOwnership({
+    const calendarWriteSource = effectiveTrainingCalendarWriteSource(input);
+    let calendarSyncQueued = false;
+    const lint = runPlanLintGuarded({
+      input,
       planId: plan.id,
-      planVersion: planVersionForOwnership,
-      sessionId: eventPayload.sessionId,
-      tenantId,
-      userId: input.userId,
+      weeks: input.planData.weeks ?? [],
+      calendarEvents,
+      mode: 'advisor',
     });
-    if (existing) {
-      // A previous run of this loop already created + recorded the
-      // event for this session. Skip to avoid duplicate calendar
-      // entries on retry. The session row was already linked then.
-      return 'already_owned';
+    if (lint.status === 'fail') {
+      incrementTrainingGenerationCounter('final_validation_failure_total');
     }
-    let secretaryDecision: SecretarySchedulingDecision | null = null;
-    try {
-      const secretaryIntent = buildTrainingSecretaryIntent({
-        userId: input.userId,
-        tenantId,
-        planId: plan.id,
-        planVersion: planVersionForOwnership,
-        eventPayload,
-        calendarSource: calendarWriteSource ?? null,
-      });
-      const liveBusyWindows = await loadLiveCalendarBusyWindowsForSecretaryIntent(secretaryIntent);
-      if (liveBusyWindows.degraded) {
-        throw new Error('TRAINING_SECRETARY_LIVE_BUSY_WINDOWS_DEGRADED');
-      }
-      secretaryDecision = submitSecretarySchedulingIntent(
-        secretaryIntent,
-        {
-          now: input.now.toISOString(),
-          additionalBusyWindows: liveBusyWindows.windows,
-        },
-      );
-      const selectedWindow = selectedTrainingSecretaryWindow(secretaryDecision, { notBefore: input.now });
-      if (!selectedWindow) {
-        logger.warn(
-          {
-            userId: input.userId,
-            planId: plan.id,
-            planVersion: planVersionForOwnership,
-            sessionId: eventPayload.sessionId,
-            secretaryStatus: secretaryDecision.status,
-            reasonCodes: secretaryDecision.reasonCodes,
-        },
-        'Secretary did not return a schedulable Training slot; skipping calendar event create',
-      );
-        return 'skipped';
-      }
-      const event = await withTrainingCalendarSyncTimeout(
-        createTrainingCalendarEvent(
-          {
-            title: eventPayload.title,
-            start: selectedWindow.start,
-            end: selectedWindow.end,
-            description: eventPayload.description,
-          },
-          calendarWriteSource,
+
+    if (input.replaceExistingActivePlan) {
+      lease.assertActive();
+      if (input.generationIdempotencyLease) {
+        assertTrainingPlanGenerationIdempotencyLease(
           input.userId,
-          {
-            userId: input.userId,
-            tenantId,
-            sessionId: eventPayload.sessionId,
-            title: eventPayload.title,
-          },
-        ),
-        'provider_event_create',
-      );
-      trainingPlans.linkSessionToCalendar(eventPayload.sessionId, event.id, event.source);
-      // Record ownership AFTER the session linkage write so we never
-      // record an audit row for an event whose local linkage failed.
-      // The recorder is idempotent; concurrent races degrade to a
-      // safe no-op.
-      const ownership = recordCalendarOwnership({
+          tenantId,
+          input.generationIdempotencyLease,
+          db,
+        );
+      }
+
+      trainingPlans.activateCompatibilityPlanReplacement({
         planId: plan.id,
-        planVersion: planVersionForOwnership,
-        sessionId: eventPayload.sessionId,
+        userId: input.userId,
+        tenantId,
+        expectedActivePlanIds: input.expectedActivePlanIds ?? [],
+      });
+    }
+
+    // Phase 1B — the calendar-sync request is durable exactly when the plan
+    // graph + compatibility activation are. Provider work remains strictly
+    // post-commit in the dedicated worker.
+    if (calendarWriteSource !== null && calendarEvents.length > 0) {
+      const planVersion = getPlanVersion(plan.id) ?? 1;
+      emitDomainEvent({
         tenantId,
         userId: input.userId,
-        eventId: event.id,
-        source: event.source,
-        calendarId: input.trainingPlanSpec?.calendarPreference.calendarId ?? null,
-        sessionIdentityKey: eventPayload.sessionIdentityKey,
-        sessionShapeHash: eventPayload.sessionShapeHash,
-      });
-      if (!ownership.ok) {
-        trainingPlans.updateSession(eventPayload.sessionId, {
-          status: 'unscheduled',
-          calendar_event_id: null,
-          calendar_source: null,
-        });
-        const providerDeleteSucceeded = await deleteCreatedTrainingProviderEventAfterOwnershipFailure({
-          eventId: event.id,
-          source: event.source,
-          userId: input.userId,
-        });
-        markSecretaryAgendaProviderCleanupRequired({
-          agendaItemId: secretaryDecision.agendaItem.agendaItemId,
-          ownerUserId: input.userId,
-          tenantId,
-          providerEventId: providerDeleteSucceeded ? null : event.id,
-          providerSource: providerDeleteSucceeded ? null : event.source,
-          providerSyncState: providerDeleteSucceeded ? 'deleted' : 'delete_failed',
-          lifecycleState: 'unscheduled',
-          reason: 'training_provider_ownership_record_failed',
-          clearProviderMapping: providerDeleteSucceeded,
-          now: input.now.toISOString(),
-        });
-        logger.warn(
-          {
-            userId: input.userId,
-            planId: plan.id,
-            planVersion: planVersionForOwnership,
-            sessionId: eventPayload.sessionId,
-            providerEventId: event.id,
-            providerSource: event.source,
-          },
-          'Failed to record Training calendar ownership after provider create; session marked unscheduled',
-        );
-        return 'failed';
-      }
-      markSecretaryAgendaProviderSyncSatisfied({
-        agendaItemId: secretaryDecision.agendaItem.agendaItemId,
-        ownerUserId: input.userId,
-        tenantId,
-        providerEventId: event.id,
-        providerSource: event.source,
-        now: input.now.toISOString(),
-      });
-      return 'created';
-    } catch (err) {
-      if (secretaryDecision?.agendaItem?.agendaItemId) {
-        markSecretaryAgendaProviderCleanupRequired({
-          agendaItemId: secretaryDecision.agendaItem.agendaItemId,
-          ownerUserId: input.userId,
-          tenantId,
-          providerSyncState: 'create_failed',
-          lifecycleState: 'unscheduled',
-          reason: 'training_provider_event_create_failed',
-          clearProviderMapping: true,
-          now: input.now.toISOString(),
-        });
-      }
-      trainingPlans.updateSession(eventPayload.sessionId, {
-        status: 'unscheduled',
-        calendar_event_id: null,
-        calendar_source: null,
-      });
-      logger.warn(
-        {
-          err,
-          userId: input.userId,
+        sourceSkill: 'training',
+        eventType: TRAINING_PLAN_CALENDAR_SYNC_REQUESTED_EVENT_TYPE,
+        entityType: 'training_plan',
+        entityId: plan.id,
+        entityVersion: planVersion,
+        schemaVersion: 'training-plan-calendar-sync.v1',
+        payload: {
           planId: plan.id,
-          planVersion: planVersionForOwnership,
-          sessionId: eventPayload.sessionId,
+          planVersion,
+          // Ids only: the outbox payload sanitizer redacts keys matching
+          // /calendar|title|description/i and truncates long strings, so the
+          // worker re-reads full session rows instead of trusting payload.
+          sessionIds: calendarEvents.map((event) => event.sessionId),
+          syncTarget: calendarWriteSource ?? 'auto',
+          requestedSessions: calendarEvents.length,
         },
-        'Failed to create calendar event for session',
-      );
-      return 'failed';
+        privacyClassification: 'health',
+        // Distinct prefix: the outbox idempotency index is NOT scoped by
+        // event_type, so this must never collide with the activation event.
+        idempotencyKey: `training.plan_calendar_sync.requested:${plan.id}:${planVersion}`,
+      }, db);
+      calendarSyncQueued = true;
     }
-  };
 
-  const calendarEventBatches = chunkArray(calendarEvents, trainingCalendarCreateBatchSize());
-  for (const batch of calendarEventBatches) {
-    const settled = await Promise.allSettled(batch.map(createCalendarEventWithOwnership));
-    for (const result of settled) {
-      if (result.status === 'rejected') {
-        logger.warn(
-          {
-            err: result.reason,
-            userId: input.userId,
-            planId: plan.id,
-            planVersion: planVersionForOwnership,
-          },
-          'Unexpected failure while batching training calendar event creation',
-        );
-        continue;
-      }
-      if (result.value === 'created') eventsCreated++;
-      if (result.value === 'already_owned') eventsAlreadyOwned++;
-    }
-  }
-  if (eventsAlreadyOwned > 0) {
-    logger.info(
-      {
-        planId: plan.id,
-        planVersion: planVersionForOwnership,
-        eventsCreated,
-        eventsAlreadyOwned,
+    persistPlanValidationSummary({
+      planId: plan.id,
+      preferencesJson,
+      lint,
+      now: input.now,
+      strict: input.replaceExistingActivePlan === true,
+      calendarSync: {
+        schemaVersion: 1,
+        state: 'not_synced',
+        pending: calendarSyncQueued,
+        provider: calendarWriteSource ?? null,
+        requestedSessions: calendarEvents.length,
+        eventsCreated: 0,
+        eventsAttached: 0,
+        eventsUpdated: 0,
+        eventsAlreadyOwned: 0,
+        eventsFailed: 0,
+        eventsSkipped: 0,
+        lastErrorCode: null,
+        updatedAt: input.now.toISOString(),
       },
-      'persistGeneratedTrainingPlan: idempotent retry — some events already owned',
-    );
-  }
+    });
 
-  // training-expert-coach-knowledge-engine (2026-06-09):
-  // Plan-level deterministic lint. The app-facing generation route now
-  // finalizes deterministic session placement before the strict,
-  // write-free preflight. This post-persist pass remains defense-in-depth
-  // and should match the preflight shape unless an external calendar write
-  // fails or provider/Secretary availability changes after persistence.
-  const lint = runPlanLintGuarded({
-    input,
-    planId: plan.id,
-    weeks: input.planData.weeks ?? [],
-    calendarEvents,
-    mode: 'advisor',
-  });
-  if (lint.status === 'fail') {
-    incrementTrainingGenerationCounter('final_validation_failure_total');
-  }
-  persistPlanValidationSummary({
-    planId: plan.id,
-    preferencesJson,
-    lint,
-    now: input.now,
+    const result: PersistGeneratedTrainingPlanResult = {
+      planId: plan.id,
+      totalSessions,
+      eventsCreated: 0,
+      sessionsLinked: 0,
+      calendarSyncQueued,
+      syncableSessions: calendarEvents.length,
+      weekSummaries: (input.planData.weeks || []).map((weekData) => ({
+        weekNumber: weekData.weekNumber,
+        focus: weekData.focus,
+        sessionCount: weekData.sessions?.filter(isCalendarSchedulableTrainingSession).length || 0,
+      })),
+      lint,
+    };
+
+    // Re-check at the final durable boundary. Within this write transaction
+    // SQLite prevents another connection from stealing the row between the
+    // activation and outbox writes; expiry itself is still fail-closed.
+    if (input.generationIdempotencyLease) {
+      assertTrainingPlanGenerationIdempotencyLease(
+        input.userId,
+        tenantId,
+        input.generationIdempotencyLease,
+        db,
+      );
+    }
+    lease.assertActive();
+
+    // F1 + F6 crash boundary: the exact replay payload becomes `succeeded`
+    // in the same commit as graph activation and outbox emission. A process
+    // death after COMMIT but before the HTTP response therefore replays this
+    // result instead of claiming a second replacement attempt.
+    if (input.generationIdempotencyLease && input.buildCommittedIdempotencyResponse) {
+      const completed = completeTrainingPlanGenerationIdempotency(
+        input.userId,
+        tenantId,
+        input.generationIdempotencyLease,
+        input.buildCommittedIdempotencyResponse(result),
+        201,
+        db,
+      );
+      if (!completed) {
+        throw new TrainingPlanGenerationLeaseLostError();
+      }
+    }
+
+    return result;
   });
 
-  return {
-    planId: plan.id,
-    totalSessions,
-    eventsCreated,
-    sessionsLinked: eventsCreated + eventsAlreadyOwned,
-    weekSummaries: (input.planData.weeks || []).map((weekData) => ({
-      weekNumber: weekData.weekNumber,
-      focus: weekData.focus,
-      sessionCount: weekData.sessions?.filter(isCalendarSchedulableTrainingSession).length || 0,
-    })),
-    lint,
-  };
+  // Throws propagate with nothing committed — including the calendar-sync
+  // outbox event; the caller (generation) then discards the pending
+  // replacement and the athlete's existing plan stands.
+  return persistPlanGraph();
 }
 
 function isPlanScheduleFinalized(planData: GeneratedTrainingPlan): boolean {
@@ -725,6 +722,7 @@ function finalizeGeneratedTrainingSessionSchedule(args: {
     dayIndex,
     planStartDate: input.startDate,
     now: input.now,
+    schedulingTimezone: input.schedulingTimezone,
     durationMinutes,
     sessionType: base.sessionType || '',
     preferredStartTime: base.preferredStartTime,
@@ -823,6 +821,7 @@ function appendSelectorSupportDebugTraces(
   preferencesJson: string,
   planData: GeneratedTrainingPlan,
   now: Date,
+  userId?: number,
 ): string {
   const selectorTraces: Array<Record<string, unknown>> = [];
   for (const week of planData.weeks ?? []) {
@@ -855,15 +854,16 @@ function appendSelectorSupportDebugTraces(
       traces: selectorTraces,
     };
     return JSON.stringify(preferences);
-  } catch {
-    return JSON.stringify({
-      trainingSelectorSupportDebug: {
-        presentationLevel: 'support_debug',
-        schemaVersion: 1,
-        capturedAt: now.toISOString(),
-        traces: selectorTraces,
-      },
-    });
+  } catch (err) {
+    // F28 (Phase 3): support-debug traces are strictly additive. Replacing a
+    // malformed payload with a traces-only object silently destroyed
+    // requestedTargets, the spec, and the learning path — the original
+    // string, however malformed, is the athlete's payload and survives.
+    logger.warn(
+      { err, userId },
+      'appendSelectorSupportDebugTraces: malformed preferences payload; persisting it unchanged without traces',
+    );
+    return preferencesJson;
   }
 }
 
@@ -881,6 +881,13 @@ function persistPlanValidationSummary(input: {
   preferencesJson: string;
   lint: PlanLintResult;
   now: Date;
+  strict?: boolean;
+  /**
+   * Phase 1B: initial plan-level calendar consistency state, written in the
+   * same preferences pass as the lint summary so neither write clobbers the
+   * other's field.
+   */
+  calendarSync?: TrainingPlanCalendarSyncSummary;
 }): void {
   try {
     const parsed = JSON.parse(input.preferencesJson) as unknown;
@@ -893,12 +900,20 @@ function persistPlanValidationSummary(input: {
       warningRuleIds: input.lint.warnings.map((finding) => finding.ruleId),
       validatedAt: input.now.toISOString(),
     };
+    if (input.calendarSync) {
+      preferences.calendarSync = input.calendarSync;
+    }
     trainingPlans.updatePlanPreferences(input.planId, JSON.stringify(preferences));
   } catch (err) {
     logger.warn(
       { err, planId: input.planId },
       'persistGeneratedTrainingPlan: failed to persist compact final validation summary',
     );
+    // F6 stronger guarantee: compatibility replacement executes inside the
+    // activation transaction. It may not commit without its validation and
+    // calendar consistency state. Legacy standalone persistence preserves
+    // the released fail-soft behavior for malformed caller-owned JSON.
+    if (input.strict) throw err;
   }
 }
 
@@ -1011,6 +1026,7 @@ function inferPoolAccessFromProfiles(profiles?: AthleteProfiles): boolean | null
   ].filter((value) => value != null).join(' ').toLowerCase();
   if (!text.trim()) return null;
   if (/\b(no|none|without|unavailable|false)\b/.test(text)) return false;
+  if (/\b(?:25m|50m)\s+(?:indoor|outdoor)\b/.test(text)) return true;
   if (/\b(pool|open water|open-water|access|yes|true|available)\b/.test(text)) return true;
   return null;
 }
@@ -1072,11 +1088,13 @@ function runPlanLintGuarded(args: {
     const mode = args.mode ?? 'advisor';
     const lintInput: PlanLintInput = {
       now: args.input.now,
+      timezone: args.input.schedulingTimezone,
       planId: args.planId,
       startDate: args.input.startDate,
       durationWeeks: args.input.durationWeeks,
       isRaceSpecific: args.input.isRaceSpecific,
       goalMode: args.input.goalMode,
+      twoADayPreference: args.input.twoADayPreference ?? null,
       raceDate: args.input.raceDate ?? null,
       equipmentProfile: args.input.equipmentProfile,
       hasPoolAccess: args.input.hasPoolAccess ?? inferPoolAccessFromProfiles(args.input.athleteProfiles),
@@ -1171,61 +1189,7 @@ function runPlanLintGuarded(args: {
   }
 }
 
-function buildTrainingSecretaryIntent(input: {
-  userId: number;
-  tenantId: number;
-  planId: number;
-  planVersion: number;
-  calendarSource?: CalendarSource | null;
-  eventPayload: {
-    sessionId: number;
-    title: string;
-    start: string;
-    end: string;
-    sessionIdentityKey: string;
-    sessionShapeHash: string;
-  };
-}): SecretarySchedulingIntent {
-  const durationMinutes = Math.max(1, Math.round((Date.parse(input.eventPayload.end) - Date.parse(input.eventPayload.start)) / 60_000));
-  return {
-    intentId: `training:${input.planId}:${input.planVersion}:${input.eventPayload.sessionId}`,
-    sourceSkill: 'training',
-    sourceAction: 'schedule_training_session',
-    sourceEntityId: input.eventPayload.sessionId,
-    sourceEntityType: 'training_session',
-    ownerUserId: input.userId,
-    tenantId: input.tenantId,
-    title: input.eventPayload.title,
-    requestedDurationMinutes: durationMinutes,
-    minimumDurationMinutes: Math.min(durationMinutes, Math.max(20, Math.round(durationMinutes * 0.75))),
-    preferredWindows: [{
-      start: input.eventPayload.start,
-      end: input.eventPayload.end,
-      label: 'training plan slot',
-      hard: true,
-    }],
-    priority: 'high',
-    flexibility: 'fixed',
-    softPreferences: input.calendarSource ? { calendarProvider: input.calendarSource } : undefined,
-    reason: 'Training generated a scheduleable workout session.',
-    context: `plan_id=${input.planId}; plan_version=${input.planVersion}; session_identity_key=${input.eventPayload.sessionIdentityKey}; session_shape_hash=${input.eventPayload.sessionShapeHash}`,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  };
-}
 
-function selectedTrainingSecretaryWindow(
-  decision: SecretarySchedulingDecision,
-  options: { notBefore?: Date } = {},
-): { start: string; end: string } | null {
-  if (!['scheduled', 'reflowed', 'compressed'].includes(decision.status)) return null;
-  if (!decision.selectedSlot?.start || !decision.selectedSlot?.end) return null;
-  const start = Date.parse(decision.selectedSlot.start);
-  const end = Date.parse(decision.selectedSlot.end);
-  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;
-  if (options.notBefore && start < options.notBefore.getTime()) return null;
-  return { start: decision.selectedSlot.start, end: decision.selectedSlot.end };
-}
 
 function effectiveTrainingCalendarWriteSource(
   input: PersistGeneratedTrainingPlanInput,
@@ -1236,72 +1200,10 @@ function effectiveTrainingCalendarWriteSource(
   return input.calendarSource;
 }
 
-async function deleteCreatedTrainingProviderEventAfterOwnershipFailure(input: {
-  eventId: string;
-  source: CalendarSource;
-  userId: number;
-}): Promise<boolean> {
-  try {
-    await withTrainingCalendarSyncTimeout(
-      deleteEvent(input.eventId, input.source, input.userId),
-      'provider_event_delete_after_ownership_failure',
-    );
-    return true;
-  } catch (err) {
-    logger.warn(
-      {
-        err,
-        userId: input.userId,
-        providerEventId: input.eventId,
-        providerSource: input.source,
-      },
-      'Failed to delete Training calendar event after ownership failure; agenda cleanup will retry provider deletion',
-    );
-    return false;
-  }
-}
 
-export function trainingCalendarCreateBatchSize(env: Record<string, string | undefined> = process.env): number {
-  const raw = env.TRAINING_CALENDAR_CREATE_BATCH_SIZE;
-  if (raw == null || raw.trim() === '') return 5;
-  const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed)) return 5;
-  return Math.min(5, Math.max(1, parsed));
-}
 
-function trainingCalendarSyncTimeoutMs(env: Record<string, string | undefined> = process.env): number {
-  const raw = env.TRAINING_CALENDAR_SYNC_TIMEOUT_MS;
-  if (raw == null || raw.trim() === '') return 15_000;
-  const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed)) return 15_000;
-  return Math.min(30_000, Math.max(3_000, parsed));
-}
 
-async function withTrainingCalendarSyncTimeout<T>(
-  promise: Promise<T>,
-  operation: string,
-): Promise<T> {
-  let timeout: NodeJS.Timeout | undefined;
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timeout = setTimeout(() => {
-      reject(new Error(`TRAINING_CALENDAR_SYNC_TIMEOUT:${operation}`));
-    }, trainingCalendarSyncTimeoutMs());
-  });
-  try {
-    return await Promise.race([promise, timeoutPromise]);
-  } finally {
-    if (timeout) clearTimeout(timeout);
-  }
-}
 
-function chunkArray<T>(items: readonly T[], size: number): T[][] {
-  const safeSize = Math.max(1, Math.floor(size));
-  const chunks: T[][] = [];
-  for (let index = 0; index < items.length; index += safeSize) {
-    chunks.push(items.slice(index, index + safeSize));
-  }
-  return chunks;
-}
 
 function inactiveScheduleState(session: GeneratedTrainingSession): PersistableSessionScheduleState | null {
   const scheduleState = normalizedScheduleState(session);
@@ -1407,45 +1309,36 @@ type PlanSlotResolution =
       generatedOnDayName: string;
     };
 
-const DAY_NAMES_SUN_FIRST = [
-  'Sunday',
-  'Monday',
-  'Tuesday',
-  'Wednesday',
-  'Thursday',
-  'Friday',
-  'Saturday',
-];
-
 export function resolvePlanSlotDate(input: {
   weekNumber: number;
   dayIndex: number; // 0=Mon, 1=Tue, ..., 6=Sun (matches DAY_NAMES at top of file)
   planStartDate?: string;
   now: Date;
+  schedulingTimezone?: string | null;
 }): PlanSlotResolution {
-  const anchor = parsePlanStartDate(input.planStartDate, input.now);
-  anchor.setDate(anchor.getDate() + ((input.weekNumber - 1) * 7));
+  const timezone = resolveTrainingTimezone(input.schedulingTimezone);
+  const today = DateTime.fromJSDate(input.now, { zone: timezone }).startOf('day');
+  const anchor = parsePlanStartDate(input.planStartDate, input.now, timezone)
+    .plus({ weeks: input.weekNumber - 1 });
 
-  const anchorDayIndex = (anchor.getDay() + 6) % 7; // Mon=0, ..., Sun=6.
+  const anchorDayIndex = anchor.weekday - 1; // Luxon: Mon=1 ... Sun=7.
   const anchorIsSunday = anchorDayIndex === 6;
   let daysUntil = input.dayIndex - anchorDayIndex;
   if (anchorIsSunday && input.weekNumber === 1) {
     daysUntil = input.dayIndex === 6 ? 0 : input.dayIndex + 1;
   } else if (daysUntil < 0) {
     if (input.weekNumber === 1) {
-      const pastDate = new Date(anchor);
-      pastDate.setDate(pastDate.getDate() + daysUntil);
+      const pastDate = anchor.plus({ days: daysUntil });
       return {
         kind: 'past_day_in_week_1',
-        dayName: DAY_NAMES_SUN_FIRST[pastDate.getDay()],
-        generatedOnDayName: DAY_NAMES_SUN_FIRST[input.now.getDay()],
+        dayName: pastDate.setLocale('en-US').toFormat('cccc'),
+        generatedOnDayName: today.setLocale('en-US').toFormat('cccc'),
       };
     }
     daysUntil += 7;
   }
 
-  const sessionDate = new Date(anchor);
-  sessionDate.setDate(sessionDate.getDate() + daysUntil);
+  const sessionDate = anchor.plus({ days: daysUntil }).startOf('day');
 
   // PAST-DAY FLOOR: only relevant for week 1.
   //
@@ -1455,17 +1348,15 @@ export function resolvePlanSlotDate(input: {
   // added +7 here; we now mark this as a past-day rejection so the
   // session is persisted with status='unscheduled' and surfaced honestly
   // to iOS instead of silently sliding to next week's Monday.
-  const sessionDayStart = startOfLocalDay(sessionDate);
-  const todayStart = startOfLocalDay(input.now);
-  if (input.weekNumber === 1 && sessionDayStart.getTime() < todayStart.getTime()) {
+  if (input.weekNumber === 1 && sessionDate < today) {
     return {
       kind: 'past_day_in_week_1',
-      dayName: DAY_NAMES_SUN_FIRST[sessionDate.getDay()],
-      generatedOnDayName: DAY_NAMES_SUN_FIRST[input.now.getDay()],
+      dayName: sessionDate.setLocale('en-US').toFormat('cccc'),
+      generatedOnDayName: today.setLocale('en-US').toFormat('cccc'),
     };
   }
 
-  return { kind: 'usable', sessionDate };
+  return { kind: 'usable', sessionDate: sessionDate.toUTC().toJSDate() };
 }
 
 function scheduleSessionForPlan(input: {
@@ -1473,6 +1364,7 @@ function scheduleSessionForPlan(input: {
   dayIndex: number;
   planStartDate: string;
   now: Date;
+  schedulingTimezone?: string | null;
   durationMinutes: number;
   sessionType: string;
   preferredStartTime: unknown;
@@ -1488,6 +1380,7 @@ function scheduleSessionForPlan(input: {
     dayIndex: input.dayIndex,
     planStartDate: input.planStartDate,
     now: input.now,
+    schedulingTimezone: input.schedulingTimezone,
   });
 
   if (slot.kind === 'past_day_in_week_1') {
@@ -1526,7 +1419,7 @@ function scheduleSessionForPlan(input: {
     resolvedPreferredTime,
     input.busyWindows,
     input.scheduledWindows,
-    { notBefore: input.now },
+    { notBefore: input.now, timezone: input.schedulingTimezone },
   );
 
   // Don't pollute the busy-window guard with a past-day fallback marker
@@ -1542,24 +1435,16 @@ function scheduleSessionForPlan(input: {
   return scheduledWindow;
 }
 
-function parsePlanStartDate(raw: string | undefined, fallback: Date): Date {
+function parsePlanStartDate(
+  raw: string | undefined,
+  fallback: Date,
+  timezone: string,
+): DateTime {
   if (typeof raw === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(raw)) {
-    const [year, month, day] = raw.split('-').map(Number);
-    if (Number.isInteger(year) && Number.isInteger(month) && Number.isInteger(day)) {
-      // Use local midday for date-only anchors. Midnight crosses back to
-      // the prior UTC date in Europe/Lisbon during DST, which makes
-      // date-only tests and provider payloads unnecessarily brittle while
-      // preserving the intended local calendar day for downstream setHours().
-      return new Date(year, month - 1, day, 12, 0, 0, 0);
-    }
+    const parsed = DateTime.fromISO(raw, { zone: timezone }).startOf('day');
+    if (parsed.isValid) return parsed;
   }
-  return new Date(fallback);
-}
-
-function startOfLocalDay(date: Date): Date {
-  const out = new Date(date);
-  out.setHours(0, 0, 0, 0);
-  return out;
+  return DateTime.fromJSDate(fallback, { zone: timezone }).startOf('day');
 }
 
 /**

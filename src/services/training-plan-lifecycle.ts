@@ -121,7 +121,7 @@ export function recordCalendarOwnership(
     || 'training_calendar_sync_v1';
 
   const existing = db.prepare(`
-    SELECT id FROM training_agenda_event_ownership
+    SELECT id, session_id, user_id, status FROM training_agenda_event_ownership
     WHERE tenant_id = ? AND plan_id = ? AND plan_version = ? AND calendar_event_id = ? AND calendar_source = ?
     LIMIT 1
   `).get(
@@ -130,10 +130,17 @@ export function recordCalendarOwnership(
     input.planVersion,
     input.eventId,
     input.source,
-  ) as { id: number } | undefined;
+  ) as { id: number; session_id: number | null; user_id: number; status: AgendaOwnershipStatus } | undefined;
 
   if (existing) {
-    return { ok: true, created: false, ownershipId: existing.id };
+    const exactActiveOwner = existing.session_id === input.sessionId
+      && existing.user_id === input.userId
+      && existing.status === 'active';
+    return {
+      ok: exactActiveOwner,
+      created: false,
+      ownershipId: exactActiveOwner ? existing.id : null,
+    };
   }
 
   try {
@@ -172,7 +179,7 @@ export function recordCalendarOwnership(
     const message = err instanceof Error ? err.message : String(err);
     if (/UNIQUE constraint failed/i.test(message)) {
       const refetched = db.prepare(`
-        SELECT id FROM training_agenda_event_ownership
+        SELECT id, session_id, user_id, status FROM training_agenda_event_ownership
         WHERE tenant_id = ? AND plan_id = ? AND plan_version = ? AND calendar_event_id = ? AND calendar_source = ?
         LIMIT 1
       `).get(
@@ -181,8 +188,20 @@ export function recordCalendarOwnership(
         input.planVersion,
         input.eventId,
         input.source,
-      ) as { id: number } | undefined;
-      return { ok: true, created: false, ownershipId: refetched?.id ?? null };
+      ) as {
+        id: number;
+        session_id: number | null;
+        user_id: number;
+        status: AgendaOwnershipStatus;
+      } | undefined;
+      const exactActiveOwner = refetched?.session_id === input.sessionId
+        && refetched?.user_id === input.userId
+        && refetched?.status === 'active';
+      return {
+        ok: exactActiveOwner,
+        created: false,
+        ownershipId: exactActiveOwner ? refetched!.id : null,
+      };
     }
     logger.warn(
       { err, planId: input.planId, eventId: input.eventId },
@@ -427,12 +446,60 @@ export function findExistingOwnership(input: {
     SELECT * FROM training_agenda_event_ownership
     WHERE plan_id = ? AND plan_version = ? AND session_id = ? AND status = 'active'
       AND tenant_id = ?
+      AND user_id = ?
     ORDER BY id DESC
     LIMIT 1
-  `).get(input.planId, input.planVersion, input.sessionId, tenantId) as
+  `).get(input.planId, input.planVersion, input.sessionId, tenantId, input.userId) as
     | AgendaEventOwnership
     | undefined;
   return row ?? null;
+}
+
+/**
+ * F24 business-idempotency fence for reflow reconciliation. Queue leases are
+ * not owner-fenced, so the durable ownership row records the exact plan /
+ * adaptation revision whose provider and Secretary state was read back.
+ */
+export function updateCalendarOwnershipSyncVersion(input: {
+  planId: number;
+  planVersion: number;
+  sessionId: number;
+  tenantId: number;
+  userId: number;
+  eventId: string;
+  source: string;
+  syncVersion: string;
+  sessionShapeHash?: string | null;
+  verifiedAt?: string;
+}): { ok: boolean; rowsAffected: number } {
+  const db = getDb();
+  const tenantId = requireTenantIdParam(input.tenantId, 'updateCalendarOwnershipSyncVersion');
+  const result = db.prepare(`
+    UPDATE training_agenda_event_ownership
+       SET sync_version = ?,
+           session_shape_hash = COALESCE(?, session_shape_hash),
+           last_verified_at = ?
+     WHERE plan_id = ?
+       AND plan_version = ?
+       AND session_id = ?
+       AND tenant_id = ?
+       AND user_id = ?
+       AND calendar_event_id = ?
+       AND calendar_source = ?
+       AND status = 'active'
+  `).run(
+    input.syncVersion,
+    input.sessionShapeHash ?? null,
+    input.verifiedAt ?? new Date().toISOString(),
+    input.planId,
+    input.planVersion,
+    input.sessionId,
+    tenantId,
+    input.userId,
+    input.eventId,
+    input.source,
+  );
+  return { ok: result.changes === 1, rowsAffected: result.changes };
 }
 
 /**
@@ -445,6 +512,7 @@ export function findExistingOwnership(input: {
  */
 export function findReusableOwnershipBySessionIdentity(input: {
   planId: number;
+  currentPlanVersion: number;
   tenantId: number;
   userId: number;
   sessionIdentityKey: string | null | undefined;
@@ -452,12 +520,18 @@ export function findReusableOwnershipBySessionIdentity(input: {
 }): AgendaEventOwnership | null {
   const identity = String(input.sessionIdentityKey || '').trim();
   const shape = String(input.sessionShapeHash || '').trim();
-  if (!identity || !shape) return null;
+  const currentPlanVersion = Math.trunc(Number(input.currentPlanVersion));
+  if (!identity || !shape || !Number.isFinite(currentPlanVersion) || currentPlanVersion <= 0) return null;
+  // Express the strict prior-version boundary as an inclusive upper bound so
+  // the executable arithmetic (and therefore the no-sideways-reuse contract)
+  // remains mutation-testable; SQL text itself is opaque to Stryker.
+  const maxReusablePlanVersion = currentPlanVersion - 1;
   const db = getDb();
   const tenantId = requireTenantIdParam(input.tenantId, 'findReusableOwnershipBySessionIdentity');
   const row = db.prepare(`
     SELECT * FROM training_agenda_event_ownership
     WHERE plan_id = ?
+      AND plan_version <= ?
       AND tenant_id = ?
       AND user_id = ?
       AND session_identity_key = ?
@@ -465,7 +539,7 @@ export function findReusableOwnershipBySessionIdentity(input: {
       AND status = 'active'
     ORDER BY plan_version DESC, id DESC
     LIMIT 1
-  `).get(input.planId, tenantId, input.userId, identity, shape) as
+  `).get(input.planId, maxReusablePlanVersion, tenantId, input.userId, identity, shape) as
     | AgendaEventOwnership
     | undefined;
   return row ?? null;

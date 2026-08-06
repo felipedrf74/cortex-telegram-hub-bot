@@ -76,6 +76,19 @@ describe('R4 P2 — V2 completion idempotency hash', () => {
     expect(c).not.toBe(d);
   });
 
+  it('F18 — legacy notes and RPE affect only the digest, never readable key material', () => {
+    // Stronger guarantee: removing raw values from the durable key must not
+    // collapse distinct legacy feedback payloads onto one outbox event.
+    const first = computeV2IdempotencyHashHex({ notes: 'private note one', rpe: 6 });
+    const second = computeV2IdempotencyHashHex({ notes: 'private note two', rpe: 6 });
+    const third = computeV2IdempotencyHashHex({ notes: 'private note one', rpe: 7 });
+    expect(new Set([first, second, third]).size).toBe(3);
+
+    const summary = buildV2CanonicalSummary({ notes: 'private note one', rpe: 6 });
+    expect(summary.notes).toMatch(/^l\d+h[0-9a-f]+$/);
+    expect(JSON.stringify(summary)).not.toContain('private note one');
+  });
+
   it('distinct painLocation strings produce distinct hashes', () => {
     const a = computeV2IdempotencyHashHex({ painLocation: 'left achilles' });
     const b = computeV2IdempotencyHashHex({ painLocation: 'right knee' });

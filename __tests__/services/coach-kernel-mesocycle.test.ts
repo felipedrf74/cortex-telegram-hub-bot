@@ -164,4 +164,54 @@ describe('resolveMesocyclePlan — race-aware', () => {
     // Week 2 starts 14 days before race → outside B-priority 7-day taper.
     expect(plan.weeks[2].kind).not.toBe('taper');
   });
+
+  // Coach V2 has the same short-horizon shape that the isolated `beginner_gym`
+  // run exposed on the separate compatibility REST generator. The novice
+  // block is a FIVE-week cycle
+  // ['accumulation' x4, 'deload'], and `weekInBlock = i % mesocycleLength` only
+  // reaches index 3 on a 4-week horizon, so the week-5 deload is unreachable.
+  // The plan then has zero deload-like phases and no reduced final week, which
+  // `scoreDeloadLogic` blocks for 4+ week plans. This test protects Coach V2's
+  // resolver only; the REST route is covered by the generator and create-cycle
+  // regressions so this unit test is not mistaken for end-to-end proof.
+  //
+  // A block template describes a FULL cycle. When the athlete's horizon is
+  // shorter than the cycle, the cycle has to be fitted to the horizon rather
+  // than truncated at the front, or the load-reduction week falls off the end.
+  it('novice athlete: a 4-week horizon still lands the deload inside the plan', () => {
+    const plan = resolveMesocyclePlan({
+      startDate: '2026-01-05',
+      totalWeeks: 4,
+      level: 'novice',
+      principles,
+    });
+    expect(plan.weeks).toHaveLength(4);
+    expect(plan.weeks.map((week) => week.kind)).toContain('deload');
+    // Load reduction belongs at the end of a short block, not mid-plan.
+    expect(plan.weeks[3].kind).toBe('deload');
+  });
+
+  it('novice athlete: a full 5-week horizon keeps the untouched 5-week cadence', () => {
+    const plan = resolveMesocyclePlan({
+      startDate: '2026-01-05',
+      totalWeeks: 5,
+      level: 'novice',
+      principles,
+    });
+    expect(plan.weeks.map((week) => week.kind)).toEqual([
+      'accumulation', 'accumulation', 'accumulation', 'accumulation', 'deload',
+    ]);
+  });
+
+  it('very short horizons stay pure accumulation (no deload is required below 4 weeks)', () => {
+    const plan = resolveMesocyclePlan({
+      startDate: '2026-01-05',
+      totalWeeks: 3,
+      level: 'novice',
+      principles,
+    });
+    expect(plan.weeks.map((week) => week.kind)).toEqual([
+      'accumulation', 'accumulation', 'accumulation',
+    ]);
+  });
 });

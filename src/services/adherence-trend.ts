@@ -9,9 +9,9 @@
  * Consumed by C7 (week conditions aggregator) and C8 (scenario
  * classifier — low-adherence simplification policy).
  *
- * Adherence per week = completed_sessions / scheduled_sessions for
- * that week's date range. Sessions with status 'completed' or with
- * any training_completions row count as completed.
+ * Adherence per week uses canonical session disposition credit for that
+ * week's date range: completed=1, partial=0.5, skipped/pending=0. A feedback
+ * row alone is not proof of full completion.
  */
 
 import { getDb } from './database';
@@ -100,8 +100,7 @@ function computeWeekAdherence(
       w.week_number,
       s.id AS session_id,
       s.day_of_week,
-      s.status,
-      (SELECT COUNT(*) FROM training_completions WHERE session_id = s.id) AS completion_count
+      s.status
     FROM fitness_training_plans p
     JOIN training_weeks w ON w.plan_id = p.id
     JOIN training_sessions s ON s.week_id = w.id
@@ -112,7 +111,6 @@ function computeWeekAdherence(
     session_id: number;
     day_of_week: string;
     status: string;
-    completion_count: number;
   }>;
 
   let scheduled = 0;
@@ -127,7 +125,8 @@ function computeWeekAdherence(
     const sessionMs = planStartMs + (r.week_number - 1) * 7 * 24 * 3600 * 1000 + dayIdx * 24 * 3600 * 1000;
     if (sessionMs < startMs || sessionMs > endMs) continue;
     scheduled++;
-    if (r.status === 'completed' || r.completion_count > 0) completed++;
+    if (r.status === 'completed') completed += 1;
+    else if (r.status === 'partial') completed += 0.5;
   }
 
   return {

@@ -4,6 +4,7 @@ const mockClearCache = vi.fn();
 const mockClearCacheByPrefix = vi.fn();
 const mockInvalidateContextCache = vi.fn();
 const mockInvalidateSharedDecisionContextCache = vi.fn();
+const mockInvalidateReadinessMemoForUser = vi.fn();
 
 vi.mock('../../src/services/cache-store', () => ({
   clearCache: (...args: unknown[]) => mockClearCache(...args),
@@ -16,6 +17,13 @@ vi.mock('../../src/services/context-engine', () => ({
 
 vi.mock('../../src/services/shared-decision-context', () => ({
   invalidateSharedDecisionContextCache: (...args: unknown[]) => mockInvalidateSharedDecisionContextCache(...args),
+}));
+
+vi.mock('../../src/services/readiness-memo', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/readiness-memo')>(
+    '../../src/services/readiness-memo'
+  )),
+  invalidateReadinessMemoForUser: (...args: unknown[]) => mockInvalidateReadinessMemoForUser(...args),
 }));
 
 vi.mock('../../src/services/tenant-scope-observability', () => ({
@@ -59,6 +67,7 @@ describe('cache-coherence-registry', () => {
     mockClearCacheByPrefix.mockReset();
     mockInvalidateContextCache.mockReset();
     mockInvalidateSharedDecisionContextCache.mockReset();
+    mockInvalidateReadinessMemoForUser.mockReset();
     _resetDashboardCacheInvalidationStatsForTests();
   });
 
@@ -225,10 +234,14 @@ describe('cache-coherence-registry', () => {
 
     expect(clearKeys()).toEqual([
       'coach-briefing:42',
-      'readiness:42',
       'dashboard-readiness:42',
     ]);
     expect(prefixKeys()).toEqual([
+      // F34 stronger guarantee: readiness responses are keyed
+      // `readiness:{tenantId}:{userId}`. The old exact `readiness:42`
+      // invalidation matched no production row and left fresh HealthKit
+      // writes hidden behind the previous snapshot.
+      'readiness:',
       // training-home / training-summary / training-history /
       // training-load-snapshot keys are tenant-first, so the whole
       // family is cleared rather than a user-scoped prefix or exact
@@ -248,6 +261,7 @@ describe('cache-coherence-registry', () => {
       'plan:week:u:42:',
       'plan:today:u:42:',
     ]);
+    expect(mockInvalidateReadinessMemoForUser).toHaveBeenCalledWith(42);
   });
 
   it('covers the tenant-first /training/summary cache key shape on training writes', () => {

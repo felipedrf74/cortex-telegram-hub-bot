@@ -304,6 +304,23 @@ describe('SkillManager — isCronJobEnabled', () => {
 // ═══════════════════════════════════════════════════════════════════
 
 describe('Telemetry — wrapJob respects sub-skill gating', () => {
+  let telemetryDb: Database.Database;
+
+  beforeEach(async () => {
+    telemetryDb = createMigratedTestDatabase();
+    const { _resetTelemetryForTests, setDbProvider } = await import('../../src/portal/telemetry');
+    _resetTelemetryForTests();
+    // Stronger F36 guarantee: enabled jobs fail closed unless a durable lease
+    // store is explicitly injected, so the harness must boot the migrated DB.
+    setDbProvider(() => telemetryDb);
+  });
+
+  afterEach(async () => {
+    const { _resetTelemetryForTests } = await import('../../src/portal/telemetry');
+    _resetTelemetryForTests();
+    telemetryDb.close();
+  });
+
   it('wrapJob skips execution when job is disabled', async () => {
     const { setJobEnabledChecker, registerJob, wrapJob } = await import('../../src/portal/telemetry');
 

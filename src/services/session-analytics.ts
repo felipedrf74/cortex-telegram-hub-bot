@@ -93,6 +93,8 @@ export interface WeeklyAdherence {
   planned: number;
   /** Planned sessions marked completed (status = 'completed'). */
   completed: number;
+  /** Planned sessions with explicit partial credit (0.5 each). */
+  partial: number;
   /** Planned sessions the user explicitly skipped (status = 'skipped'). */
   skipped: number;
   /** Adherence ratio 0.0–1.0. Zero when planned = 0 (avoids NaN). */
@@ -314,17 +316,30 @@ function readWeeklyCompletionRows(
 
   try {
     return db.prepare(`
+      WITH ranked_completions AS (
+        SELECT source.*,
+               ROW_NUMBER() OVER (
+                 PARTITION BY source.session_id
+                 ORDER BY datetime(source.completed_at) DESC, source.id DESC
+               ) AS row_number
+          FROM training_completions source
+      )
       SELECT
         ts.session_type AS session_type,
         tc.completed_at AS completed_at,
         tc.rpe_overall AS rpe_overall,
-        tc.duration_minutes AS duration_minutes
-      FROM training_completions tc
-      JOIN training_sessions ts ON ts.id = tc.session_id
+        COALESCE(tc.completed_duration_sec / 60.0, tc.duration_minutes) AS duration_minutes
+      FROM ranked_completions tc
+      JOIN training_sessions ts
+        ON ts.id = tc.session_id
+       AND ts.plan_id = tc.plan_id
       JOIN fitness_training_plans ftp ON ftp.id = tc.plan_id
       WHERE ftp.user_id = ? AND ftp.tenant_id = ?
-        AND tc.completed_at >= ?
-        AND tc.completed_at <= ?
+        AND tc.row_number = 1
+        AND tc.completion_state IN ('completed', 'partial')
+        AND ts.status <> 'skipped'
+        AND datetime(tc.completed_at) >= datetime(?)
+        AND datetime(tc.completed_at) <= datetime(?)
     `).all(userId, tenantId, weekStart, weekEnd) as CompletionRow[];
   } catch (err) {
     logger.debug({ err, userId, tenantId }, 'training_completions query failed — returning empty summary');
@@ -400,12 +415,26 @@ function readStreakDayRows(userId: number, tenantId: number, ref: DateTime): Day
 
   try {
     return db.prepare(`
+      WITH ranked_completions AS (
+        SELECT source.*,
+               ROW_NUMBER() OVER (
+                 PARTITION BY source.session_id
+                 ORDER BY datetime(source.completed_at) DESC, source.id DESC
+               ) AS row_number
+          FROM training_completions source
+      )
       SELECT DATE(tc.completed_at) AS day,
              COUNT(*) AS session_count
-      FROM training_completions tc
+      FROM ranked_completions tc
+      JOIN training_sessions ts
+        ON ts.id = tc.session_id
+       AND ts.plan_id = tc.plan_id
       JOIN fitness_training_plans ftp ON ftp.id = tc.plan_id
       WHERE ftp.user_id = ? AND ftp.tenant_id = ?
-        AND tc.completed_at >= ?
+        AND tc.row_number = 1
+        AND tc.completion_state IN ('completed', 'partial')
+        AND ts.status <> 'skipped'
+        AND datetime(tc.completed_at) >= datetime(?)
       GROUP BY day
       ORDER BY day
     `).all(userId, tenantId, streakWindowStart) as DayCountRow[];
@@ -506,7 +535,8 @@ interface SessionStatusRow {
  * Compute this week's adherence for a user against their active
  * training plan. The ratio comes from:
  *
- *   completed sessions / planned sessions (in the current week only)
+ *   (completed sessions + 0.5 * partial sessions) / planned sessions
+ *   (in the current week only)
  *
  * The "current week" is determined by:
  *   1. Find the user's active plan (status = 'active', most recent
@@ -540,6 +570,7 @@ export function computeWeeklyAdherence(
     weekEnd,
     planned: 0,
     completed: 0,
+    partial: 0,
     skipped: 0,
     ratio: 0,
     percentage: 0,
@@ -609,8 +640,9 @@ export function computeWeeklyAdherence(
 
   const planned = sessionRows.length;
   const completed = sessionRows.filter((r) => r.status === 'completed').length;
+  const partial = sessionRows.filter((r) => r.status === 'partial').length;
   const skipped = sessionRows.filter((r) => r.status === 'skipped').length;
-  const ratio = planned > 0 ? completed / planned : 0;
+  const ratio = planned > 0 ? (completed + (partial * 0.5)) / planned : 0;
   const percentage = Math.round(ratio * 100);
 
   return {
@@ -622,6 +654,7 @@ export function computeWeeklyAdherence(
     weekEnd,
     planned,
     completed,
+    partial,
     skipped,
     ratio,
     percentage,
