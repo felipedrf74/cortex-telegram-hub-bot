@@ -73,31 +73,39 @@ STATE_FILE="$STATE_ROOT/release.json"
 MANIFEST_ROOT="$STATE_ROOT/manifests"
 BUNDLE_ROOT="$STATE_ROOT/bundles"
 TRANSACTION_ROOT="$STATE_ROOT/transactions"
+SMOKE_ROOT="$STATE_ROOT/smoke-evidence"
 
-install -d -m 700 "$ROOT/.local" "$STATE_ROOT" "$MANIFEST_ROOT" "$BUNDLE_ROOT" "$TRANSACTION_ROOT"
+install -d -m 700 "$ROOT/.local" "$STATE_ROOT" "$MANIFEST_ROOT" "$BUNDLE_ROOT" \
+  "$TRANSACTION_ROOT" "$SMOKE_ROOT"
 
 write_local_state() {
   local phase="$1"
   local staging_state="${2:-}"
   local production_state="${3:-}"
+  local staging_smoke_validation="${4:-}"
   node - "$STATE_FILE" "$phase" "$RUNTIME_SHA" "$ARTIFACT_DIGEST" "$ARTIFACT_NAME" \
     "$MANIFEST" "$MANIFEST_SHA256" "$CANONICAL_DEPLOYED_SHA" \
     "$CANONICAL_DEPLOYED_DIGEST" "$CHECKPOINT_RUN" \
-    "$SERVER" "$staging_state" "$production_state" <<'NODE'
+    "$SERVER" "$staging_state" "$production_state" "$staging_smoke_validation" <<'NODE'
 const fs=require('node:fs');const path=require('node:path');
 const [file,phase,runtimeSha,artifactDigest,artifactName,manifest,manifestSha256,
  deployedSha,deployedArtifactDigest,checkpointRun,server,
- stagingPath,productionPath]=process.argv.slice(2);
+ stagingPath,productionPath,stagingSmokeValidationPath]=process.argv.slice(2);
 const read=(filename)=>{
  if(!filename)return null;
  const value=JSON.parse(fs.readFileSync(filename,'utf8'));
  return value;
 };
+const previous=fs.existsSync(file)?JSON.parse(fs.readFileSync(file,'utf8')):null;
+const stagingSmoke=stagingSmokeValidationPath
+ ? read(stagingSmokeValidationPath)
+ : previous?.stagingSmoke??null;
 const body=Buffer.from(`${JSON.stringify({
  schema:'nexus.lean-release-state.v1',phase,runtimeSha,artifactDigest,artifactName,
  manifest:path.resolve(manifest),manifestSha256,deployedSha,deployedArtifactDigest,
  checkpointRun:Number(checkpointRun),server,
- staging:read(stagingPath),production:read(productionPath),updatedAt:new Date().toISOString(),
+ staging:read(stagingPath),stagingSmoke,production:read(productionPath),
+ updatedAt:new Date().toISOString(),
 },null,2)}\n`);
 const temporary=`${file}.next-${process.pid}`;
 const descriptor=fs.openSync(temporary,'wx',0o600);
@@ -314,6 +322,10 @@ for(const [key,value] of [
  ['STATE_DEPLOYED_DIGEST',x.deployedArtifactDigest],
  ['CHECKPOINT_RUN',x.checkpointRun],['STATE_PHASE',x.phase],
  ['STATE_SERVER',x.server],
+ ['STAGING_SMOKE_EVIDENCE',x.stagingSmoke?.evidencePath],
+ ['STAGING_SMOKE_EVIDENCE_SHA256',x.stagingSmoke?.evidenceSha256],
+ ['STAGING_SMOKE_CLASSIFIER',x.stagingSmoke?.classifierPath],
+ ['STAGING_SMOKE_CLASSIFIER_SHA256',x.stagingSmoke?.classifierSha256],
 ])console.log(`${key}=${quote(value)}`);
 NODE
 )"
@@ -322,8 +334,15 @@ NODE
     && "$MANIFEST_SHA256" =~ ^[0-9a-f]{64}$
     && "$STATE_DEPLOYED_SHA" =~ ^[0-9a-f]{40}$
     && "$STATE_DEPLOYED_DIGEST" =~ ^[0-9a-f]{64}$
+    && "$STAGING_SMOKE_EVIDENCE_SHA256" =~ ^[0-9a-f]{64}$
+    && "$STAGING_SMOKE_CLASSIFIER_SHA256" =~ ^[0-9a-f]{64}$
     && "$CHECKPOINT_RUN" =~ ^[1-9][0-9]*$ ]] || {
     echo "prepared release state identity is invalid" >&2
+    exit 1
+  }
+  [[ "$STAGING_SMOKE_EVIDENCE" == "$SMOKE_ROOT/"* \
+    && "$STAGING_SMOKE_CLASSIFIER" == "$SMOKE_ROOT/"* ]] || {
+    echo "prepared staging smoke paths are outside the private evidence root" >&2
     exit 1
   }
   [ "$MANIFEST" = "$MANIFEST_ROOT/$RUNTIME_SHA.json" ] \
@@ -344,6 +363,19 @@ NODE
     echo "prepared release server is invalid" >&2
     exit 1
   }
+}
+
+validate_staging_smoke_binding() {
+  node scripts/lib/staging-smoke-evidence.mjs validate \
+    --evidence "$STAGING_SMOKE_EVIDENCE" \
+    --classifier "$STAGING_SMOKE_CLASSIFIER" \
+    --staging-state "$STAGING_STATE" \
+    --expect-runtime-sha "$RUNTIME_SHA" \
+    --expect-artifact-digest "$ARTIFACT_DIGEST" \
+    --expect-classifier-base-sha "$CANONICAL_DEPLOYED_SHA" \
+    --expect-evidence-sha256 "$STAGING_SMOKE_EVIDENCE_SHA256" \
+    --expect-classifier-sha256 "$STAGING_SMOKE_CLASSIFIER_SHA256" \
+    --expect-binding "$STATE_FILE" >/dev/null
 }
 
 transaction_id() {
@@ -636,7 +668,36 @@ NODE
         "$EXPECTED_STAGING_PREDECESSOR_SHA" "$EXPECTED_STAGING_PREDECESSOR_DIGEST"
       poll_remote_transaction staging "$TRANSACTION_ID" "$STAGING_STATE"
     fi
-    write_local_state staged "$STAGING_STATE"
+    node scripts/release-checksum-manifest.mjs validate-state \
+      --manifest "$MANIFEST" \
+      --state "$STAGING_STATE" \
+      --role staging >/dev/null
+    STAGING_SMOKE_RUN_ID="$(transaction_id)"
+    STAGING_SMOKE_CLASSIFIER="$SMOKE_ROOT/staging-smoke-classifier-$RUNTIME_SHA-$STAGING_SMOKE_RUN_ID.json"
+    STAGING_SMOKE_EVIDENCE="$SMOKE_ROOT/staging-smoke-$RUNTIME_SHA-$STAGING_SMOKE_RUN_ID.json"
+    STAGING_SMOKE_VALIDATION="$TRANSACTION_ROOT/staging-smoke-validation-$RUNTIME_SHA-$STAGING_SMOKE_RUN_ID.json"
+    "$ROOT/scripts/changed-area-classifier.sh" \
+      --base "$CANONICAL_DEPLOYED_SHA" --format json > "$STAGING_SMOKE_CLASSIFIER"
+    chmod 600 "$STAGING_SMOKE_CLASSIFIER"
+    env \
+      DEPLOY_SERVER="$SERVER" \
+      NEXUS_RELEASE_SHA="$RUNTIME_SHA" \
+      NEXUS_RELEASE_ARTIFACT_SHA256="$ARTIFACT_DIGEST" \
+      NEXUS_SMOKE_REQUIRE_EXACT_IDENTITY=1 \
+      NEXUS_SMOKE_CLASSIFIER_BASE_SHA="$CANONICAL_DEPLOYED_SHA" \
+      NEXUS_SMOKE_EVIDENCE_DIR="$SMOKE_ROOT" \
+      NEXUS_SMOKE_EVIDENCE_PATH="$STAGING_SMOKE_EVIDENCE" \
+      "$ROOT/scripts/staging-smoke.sh"
+    node scripts/lib/staging-smoke-evidence.mjs validate \
+      --evidence "$STAGING_SMOKE_EVIDENCE" \
+      --classifier "$STAGING_SMOKE_CLASSIFIER" \
+      --staging-state "$STAGING_STATE" \
+      --expect-runtime-sha "$RUNTIME_SHA" \
+      --expect-artifact-digest "$ARTIFACT_DIGEST" \
+      --expect-classifier-base-sha "$CANONICAL_DEPLOYED_SHA" \
+      > "$STAGING_SMOKE_VALIDATION"
+    chmod 600 "$STAGING_SMOKE_VALIDATION"
+    write_local_state staged "$STAGING_STATE" "" "$STAGING_SMOKE_VALIDATION"
     printf '{"ok":true,"phase":"staged","runtimeSha":"%s","artifactDigest":"%s","checkpointRun":%s,"ownerApprovalRequired":true}\n' \
       "$RUNTIME_SHA" "$ARTIFACT_DIGEST" "$CHECKPOINT_RUN"
     ;;
@@ -675,6 +736,7 @@ NODE
       --manifest "$MANIFEST" \
       --state "$STAGING_STATE" \
       --role staging >/dev/null
+    validate_staging_smoke_binding
     node scripts/release-checksum-manifest.mjs validate \
       --manifest "$MANIFEST" \
       --bundle "$BUNDLE" \

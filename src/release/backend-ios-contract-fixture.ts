@@ -3,6 +3,8 @@
 import { buildContentHomeViewState } from '../services/content-home-view-state';
 import { buildDashboardHomeViewState } from '../services/dashboard-home-view-state';
 import { buildTrainingHomeViewState } from '../services/training-home-view-state';
+import { buildTrainingPlanGenerationResponseDiscriminator } from '../api/routes/training-plan-generation-response-contract';
+import { resolveTrainingPlanClarificationResolution } from '../services/training-plan-clarification-registry';
 import type { ScreenContractMeta } from '../services/screen-contract-meta';
 
 export const BACKEND_IOS_CONTRACT_FIXTURE_SCHEMA = 'nexus.backend-ios-contract-fixtures.v1';
@@ -120,6 +122,77 @@ export function buildBackendIosContractFixture() {
     meta: stableMeta,
   }, 'en-US');
 
+  const createdPlan = {
+    ...buildTrainingPlanGenerationResponseDiscriminator('created'),
+    planId: 9001,
+    planName: 'Release-bound hybrid plan',
+    sport: 'hybrid',
+    objective: 'Build durable strength and running fitness',
+    durationWeeks: 8,
+    resolvedStartDate: '2026-07-06',
+    calendarSource: 'google',
+    totalSessions: 32,
+    eventsCreated: 0,
+    calendarSync: {
+      provider: 'google',
+      sessionsAttempted: 32,
+      eventsCreated: 0,
+      sessionsLinked: 0,
+      sessionsFailed: 0,
+      unscheduled: 0,
+      status: 'not_synced',
+      pending: true,
+    },
+    volumeShortfalls: [],
+    warnings: [],
+    fallbackTemplateUsed: false,
+    goalMode: 'continuous',
+    trainingPriority: 'balanced',
+    raceDate: null,
+  } as const;
+
+  const equipmentResolution = resolveTrainingPlanClarificationResolution(
+    'equipment_clarification',
+  );
+  if (!equipmentResolution) {
+    throw new Error('release-bound equipment clarification resolution is missing');
+  }
+  const needsClarification = {
+    ...buildTrainingPlanGenerationResponseDiscriminator('needs_clarification'),
+    message: 'Nexus needs your available equipment before saving this plan.',
+    specReadiness: {
+      status: 'needs_clarification',
+      issues: [{
+        id: 'equipment_clarification',
+        severity: 'blocker',
+        question: 'What equipment can you use for strength sessions?',
+        reason: 'The plan cannot select safe strength exercises without declared equipment.',
+        resolution: equipmentResolution,
+      }],
+    },
+    clarificationIssues: [{
+      id: 'equipment_clarification',
+      severity: 'blocker',
+      question: 'What equipment can you use for strength sessions?',
+      reason: 'The plan cannot select safe strength exercises without declared equipment.',
+      resolution: equipmentResolution,
+    }],
+    suggestedQuestions: ['What equipment can you use for strength sessions?'],
+    fallbackTemplateUsed: false,
+    decisionReasons: [],
+    goalMode: 'continuous',
+    trainingPriority: 'balanced',
+    raceDate: null,
+  } as const;
+
+  const generationAttemptStatus = {
+    schemaVersion: 'training_plan_generation_attempt_status.v1',
+    state: 'created',
+    recovery: 'use_created_plan',
+    canStartNew: false,
+    planId: 9001,
+  } as const;
+
   return {
     schema: BACKEND_IOS_CONTRACT_FIXTURE_SCHEMA,
     contracts: [
@@ -143,6 +216,27 @@ export function buildBackendIosContractFixture() {
         path: '/api/v1/content/home',
         decoder: 'ContentHomeViewState',
         payload: contentHome,
+      },
+      {
+        id: 'training.plan.generate.created.v1',
+        method: 'POST',
+        path: '/api/v1/training/plan/generate',
+        decoder: 'PlanGenerateResponse',
+        payload: createdPlan,
+      },
+      {
+        id: 'training.plan.generate.needs-clarification.v1',
+        method: 'POST',
+        path: '/api/v1/training/plan/generate',
+        decoder: 'PlanGenerateResponse',
+        payload: needsClarification,
+      },
+      {
+        id: 'training.plan.generation-attempt-status.created.v1',
+        method: 'POST',
+        path: '/api/v1/training/plan/generation-attempt/status',
+        decoder: 'TrainingPlanGenerationAttemptStatus',
+        payload: generationAttemptStatus,
       },
     ],
   } as const;

@@ -231,15 +231,26 @@ with PM2. Verify, do not assume:
 
 ## Sequencing against the release process
 
-The backend remediation is an ordinary backend change and follows the canonical
-exact-artifact path in `docs/release/README.md`: reviewed SHA, governed test
-tier, unprivileged release candidate, protected-main signing, staging install
-under the release lock, explicit owner authorization, then the signed promotion
-transaction. An iOS binary that depends on a changed backend contract is a
-shared release and additionally needs both signed iOS attestations before the
-manifest can be signed.
+The backend remediation follows the canonical exact-artifact path in
+`docs/release/README.md`: reviewed protected-main SHA, governed checkpoint,
+staging, explicit owner authorization, and a passing production transaction.
+The backend checkpoint manifest remains backend-only; adding iOS evidence to it
+would create a circular dependency and is prohibited.
 
-Promote the backend remediation and confirm production health **before**
-uploading the replacement build, so the reviewer never meets a binary whose
-server contract is not yet live. After that upload, hold production frozen until
-Apple posts a decision.
+For a shared backend/iOS release, run the protected-main iOS compatibility
+suite against the exact backend bundle first and retain its signed contract
+attestation. Promote that exact backend artifact and require the production
+transaction to complete successfully. Only then may Xcode Cloud create the
+distribution build and signed distribution attestation. Run
+the owner-dispatched `.github/workflows/shared-ios-release-gate.yml` workflow
+with both attestations, the exact checkpoint run identity, production journal,
+backend SHA, iOS SHA, and source build number. The workflow resolves and
+validates the exact bundle and checkpoint manifest by immutable artifact ID,
+requires the distribution attestation to postdate backend production
+completion, and uploads `nexus.shared-ios-release-gate.v1` from the
+`production-release` environment.
+
+Do not assign a TestFlight group, submit the build for App Review, or release it
+to users without the successful workflow run and its passing receipt artifact;
+a locally generated receipt is not release authorization. Once submitted, hold
+the bound backend runtime and contract frozen until Apple posts a decision.

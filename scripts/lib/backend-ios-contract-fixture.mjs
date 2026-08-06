@@ -16,6 +16,24 @@ export const BACKEND_IOS_CONTRACTS = Object.freeze([
   Object.freeze({
     id: 'content.home.v1', method: 'GET', path: '/api/v1/content/home', decoder: 'ContentHomeViewState',
   }),
+  Object.freeze({
+    id: 'training.plan.generate.created.v1',
+    method: 'POST',
+    path: '/api/v1/training/plan/generate',
+    decoder: 'PlanGenerateResponse',
+  }),
+  Object.freeze({
+    id: 'training.plan.generate.needs-clarification.v1',
+    method: 'POST',
+    path: '/api/v1/training/plan/generate',
+    decoder: 'PlanGenerateResponse',
+  }),
+  Object.freeze({
+    id: 'training.plan.generation-attempt-status.created.v1',
+    method: 'POST',
+    path: '/api/v1/training/plan/generation-attempt/status',
+    decoder: 'TrainingPlanGenerationAttemptStatus',
+  }),
 ]);
 
 function fail(message) {
