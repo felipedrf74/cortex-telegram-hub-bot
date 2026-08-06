@@ -215,7 +215,9 @@ jobs:
   test_focused:
     name: 🧪 Focused tests
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # Multi-area changes can conservatively select every group with coverage;
+    # keep enough headroom for Vitest to emit its governed result artifact.
+    timeout-minutes: 45
     needs: classify
     if: ${{ needs.classify.outputs.vitest_mode == 'focused' || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
     steps:
