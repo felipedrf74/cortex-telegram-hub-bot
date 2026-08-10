@@ -2603,6 +2603,7 @@ pm2_fail_closed_is_exact
     expect(preBaseline).toContain('fail_closed_pm2_restart');
     expect(preBaseline).toContain('restarted against a different database');
     expect(preBaseline).toContain('wait_for_all_pm2_health');
+    expect(preBaseline.indexOf('set +e')).toBeLessThan(0);
     expect(preBaseline).not.toContain('mv -f');
     expect(laterRecovery).toContain('BASELINE_FILE=');
   });
@@ -2841,6 +2842,8 @@ pm2_fail_closed_is_exact
       .toBeLessThan(rebaseline.indexOf('nexus.bootstrap-rebaseline.v1'));
     expect(rebaseline).toContain('fail_closed_rebaseline');
     expect(rebaseline).toContain('trap fail_closed_rebaseline EXIT');
+    expect(rebaseline.indexOf('trap fail_closed_rebaseline EXIT HUP INT TERM'))
+      .toBeLessThan(0);
     expect(rebaseline).toContain("trap 'exit 130' INT");
     expect(rebaseline).toContain("trap 'exit 143' TERM");
     expect(rebaseline.indexOf('trap fail_closed_rebaseline EXIT'))
