@@ -96,6 +96,7 @@ describe('lean changed-area classification', () => {
 
   it.each([
     'scripts/chat-capability-flag-operator.sh',
+    'scripts/generate-python-release-lock.mjs',
     'scripts/lib/chat-capability-flag-transaction.mjs',
     'scripts/remote-chat-capability-flag-transaction.sh',
     'scripts/routing-divergence-report.mjs',
@@ -104,6 +105,12 @@ describe('lean changed-area classification', () => {
     'src/tools/chat-capability-cross-skill-preflight.ts',
     'src/tools/routing-action-skill-accuracy.ts',
     'src/tools/training-cross-skill-staging-smoke.ts',
+    'Dockerfile.release.python',
+    'content-engine/requirements.txt',
+    'content-engine/requirements-release.txt',
+    'content-engine/requirements-lock-tool.txt',
+    'content-engine/requirements-audit-tool.in',
+    'content-engine/requirements-audit-tool.txt',
   ])('classifies %s as release-operator code', (file) => {
     const result = classify([file]);
 

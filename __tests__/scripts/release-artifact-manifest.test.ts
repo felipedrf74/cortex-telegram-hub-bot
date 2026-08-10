@@ -31,6 +31,17 @@ function fixtureRoot() {
   fs.writeFileSync(path.join(root, 'config/capability-manifest.json'), '{"schemaReferences":{}}\n');
   fs.writeFileSync(path.join(root, 'package.json'), '{"version":"1.0.0"}\n');
   fs.writeFileSync(path.join(root, 'package-lock.json'), '{"lockfileVersion":3}\n');
+  fs.writeFileSync(
+    path.join(root, 'content-engine/requirements-release.txt'),
+    'fastapi==0.136.1 --hash=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n',
+  );
+  for (const auditOnlyFile of [
+    'requirements-audit-tool.in',
+    'requirements-audit-tool.txt',
+    'requirements-lock-tool.txt',
+  ]) {
+    fs.writeFileSync(path.join(root, 'content-engine', auditOnlyFile), 'audit-only\n');
+  }
   return root;
 }
 
@@ -41,6 +52,7 @@ afterEach(() => {
 describe('release artifact manifest', () => {
   it('ships only the lean server transaction and offline verification controls', () => {
     expect(RELEASE_RUNTIME_FILES).toEqual(expect.arrayContaining([
+      'content-engine/requirements-release.txt',
       'scripts/release-artifact-manifest.mjs',
       'scripts/lib/release-artifact-manifest.mjs',
       'scripts/lib/chat-capability-flag-transaction.mjs',
@@ -91,6 +103,15 @@ describe('release artifact manifest', () => {
       'console.log("cross-skill-smoke");\n',
     );
     const manifest = buildReleaseArtifactManifest(root);
+    const manifestPaths = manifest.files.map((entry) => entry.path);
+    expect(manifestPaths).toContain('content-engine/requirements-release.txt');
+    for (const auditOnlyPath of [
+      'content-engine/requirements-audit-tool.in',
+      'content-engine/requirements-audit-tool.txt',
+      'content-engine/requirements-lock-tool.txt',
+    ]) {
+      expect(manifestPaths).not.toContain(auditOnlyPath);
+    }
     const bundle = path.join(root, 'bundle');
     fs.mkdirSync(bundle);
     for (const entry of manifest.files) {
@@ -98,6 +119,8 @@ describe('release artifact manifest', () => {
       fs.mkdirSync(path.dirname(destination), { recursive: true });
       fs.copyFileSync(path.join(root, entry.path), destination);
     }
+    expect(fs.existsSync(path.join(bundle, 'content-engine/requirements-audit-tool.txt')))
+      .toBe(false);
     fs.writeFileSync(
       path.join(bundle, 'artifact-manifest.json'),
       `${JSON.stringify({ ...manifest, root: '.' }, null, 2)}\n`,

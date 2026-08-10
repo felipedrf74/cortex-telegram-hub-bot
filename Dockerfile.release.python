@@ -4,8 +4,8 @@
 # like the backend image. Differences from Dockerfile.python (local dev):
 #   - no --reload, and no bind mount expected: the copied source is the release
 #   - a non-root runtime user
-#   - dependencies installed from the pinned requirements file only, with no
-#     dev requirements
+#   - dependencies installed from the generated hash-locked release file only,
+#     with no dev requirements
 
 FROM python:3.12-slim@sha256:c3d81d25b3154142b0b42eb1e61300024426268edeb5b5a26dd7ddf64d9daf28 AS runtime
 WORKDIR /engine
@@ -16,8 +16,10 @@ RUN apt-get update \
  && groupadd --system --gid 10001 nexus \
  && useradd --system --uid 10001 --gid nexus --home-dir /engine --shell /usr/sbin/nologin nexus
 
-COPY content-engine/requirements.txt ./requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+COPY content-engine/requirements-release.txt ./requirements-release.txt
+RUN pip install --no-cache-dir --disable-pip-version-check \
+    --only-binary=:all: --require-hashes \
+    -r requirements-release.txt
 
 COPY content-engine/ ./
 

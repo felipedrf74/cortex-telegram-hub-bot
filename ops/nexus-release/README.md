@@ -1797,7 +1797,7 @@ verify_installed_runtime() {
       --expected-digest "$digest" >/dev/null || return 1
     sudo /usr/bin/node \
       /opt/nexus-release/checkout/scripts/release-runtime-dependencies.mjs \
-      verify-extracted --root "$runtime" --python-bin /usr/bin/python3.12 \
+      verify-predecessor-extracted --root "$runtime" --python-bin /usr/bin/python3.12 \
       >/dev/null || return 1
   fi
 }
@@ -2486,7 +2486,7 @@ verify_installed_runtime() {
       >/dev/null || return 1
     sudo /usr/bin/node \
       /opt/nexus-release/checkout/scripts/release-runtime-dependencies.mjs \
-      verify-extracted --root "$runtime" --python-bin /usr/bin/python3.12 \
+      verify-predecessor-extracted --root "$runtime" --python-bin /usr/bin/python3.12 \
       >/dev/null || return 1
   fi
   verified="$(sudo /usr/bin/node - "$runtime/.complete.json" \
@@ -3968,7 +3968,7 @@ verify_installed_runtime() {
       --expected-digest "$digest" >/dev/null || return 1
     sudo /usr/bin/node \
       /opt/nexus-release/checkout/scripts/release-runtime-dependencies.mjs \
-      verify-extracted --root "$runtime" --python-bin /usr/bin/python3.12 \
+      verify-predecessor-extracted --root "$runtime" --python-bin /usr/bin/python3.12 \
       >/dev/null || return 1
   fi
 }
@@ -5171,7 +5171,7 @@ verify_installed_runtime() {
   else
     sudo /usr/bin/node \
       /opt/nexus-release/checkout/scripts/release-runtime-dependencies.mjs \
-      verify-extracted --root "$runtime" --python-bin /usr/bin/python3.12 \
+      verify-predecessor-extracted --root "$runtime" --python-bin /usr/bin/python3.12 \
       >/dev/null || return 1
   fi
 }

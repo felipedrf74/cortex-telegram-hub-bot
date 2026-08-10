@@ -236,10 +236,13 @@ export function classifyChangedFiles({
     || files.some(isProductionMigrationArchivePath)
     || has(/^scripts\/(?:release-operator|promote-exact-release|build-release-runtime-dependencies|chat-capability-flag-operator|remote-chat-capability-flag-transaction|remote-user-release-transaction)\.sh$/)
     || has(/^scripts\/(?:release-artifact-manifest|release-bundle|release-checksum-manifest|release-runtime-dependencies|routing-divergence-report)\.mjs$/)
+    || has(/^scripts\/generate-python-release-lock\.mjs$/)
     || has(/^scripts\/run-routing-action-skill-accuracy\.ts$/)
     || has(/^scripts\/lib\/(?:chat-capability-flag-transaction|release-artifact-manifest|production-migration-lineage)\.mjs$/)
     || has(/^src\/services\/chat-capability-runtime-guard\.ts$/)
-    || has(/^src\/tools\/(?:chat-capability-cross-skill-preflight|routing-action-skill-accuracy|training-cross-skill-staging-smoke)\.ts$/);
+    || has(/^src\/tools\/(?:chat-capability-cross-skill-preflight|routing-action-skill-accuracy|training-cross-skill-staging-smoke)\.ts$/)
+    || has(/^Dockerfile\.release\.python$/)
+    || has(/^content-engine\/(?:requirements\.txt|requirements-release\.txt|requirements-lock-tool\.txt|requirements-audit-tool\.(?:in|txt))$/);
   flags.operationsTooling = has(/^ops\/(?:sonarqube|ollama|cloudflared)\//)
     || has(/^scripts\/(?:quality-sonar-|cloudflared-systemd-migrate|ollama-(?:lean-finalize|service-envelope-check|systemd-dropin-transaction|install-state-check))/)
     || has(/^scripts\/lib\/ollama-service-envelope\.mjs$/)

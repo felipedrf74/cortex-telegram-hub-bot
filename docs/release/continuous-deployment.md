@@ -126,6 +126,23 @@ mutation; a changed head tears down and atomically retires the exact staging
 candidate. The exact completed-payload no-op remains receipt-driven and does not
 require the network.
 
+The content-engine image and the temporary PM2 fallback dependency archive use
+the same generated Python 3.12/linux-amd64 release lock. Every direct and
+transitive requirement is exact and carries an accepted SHA-256; both builders
+invoke pip with `--require-hashes --only-binary=:all:`. The human-maintained
+`content-engine/requirements.txt` remains the reviewed direct dependency
+source, and CI rejects source/lock drift before either release artifact can be
+published. Required CI checks the committed source digest, direct pins, hashes,
+and resolver metadata without depending on runner architecture. The hosted
+Security job, image publisher, and owner-triggered fallback publisher each
+reproduce both locks with the pinned resolver. Image publication stops before
+registry login and fallback publication stops before bundle construction if
+either byte stream differs. New fallback artifacts write dependency lock v3 and
+extraction receipt v2 only. The explicit predecessor-read command can also
+verify an exact paired v2 lock/v1 receipt so the first recovery-first cutover
+does not strand the previous runtime; mixed or extra-field schema shapes remain
+invalid.
+
 Failures page the owner on a best-effort, non-gating channel. Notification
 formatter, configuration, or transport failures are caught by orchestration and
 cannot prevent rollback, receipt persistence, or the deployment verdict.

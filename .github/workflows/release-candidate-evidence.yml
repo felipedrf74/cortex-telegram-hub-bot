@@ -188,6 +188,7 @@ jobs:
           cache-dependency-path: |
             content-engine/requirements.txt
             content-engine/requirements-dev.txt
+            content-engine/requirements-release.txt
 
       - run: pip install -r content-engine/requirements.txt -r content-engine/requirements-dev.txt
       - run: python -m pytest content-engine/tests -q
@@ -262,11 +263,22 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
-          cache-dependency-path: content-engine/requirements.txt
+          cache-dependency-path: |
+            content-engine/requirements-lock-tool.txt
+            content-engine/requirements-release.txt
 
       - run: npm ci
 
       - run: npm run build
+
+      - name: Reproduce and verify the Python release closure before fallback publication
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check --require-hashes \
+            --only-binary=:all: -r content-engine/requirements-lock-tool.txt
+          node scripts/generate-python-release-lock.mjs --check
+          python -m pip install --dry-run --ignore-installed --require-hashes \
+            --only-binary=:all: -r content-engine/requirements-release.txt
 
       - name: Build and verify exact PM2 fallback bundle
         id: fallback_bundle

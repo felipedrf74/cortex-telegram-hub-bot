@@ -749,7 +749,7 @@ verify_installed_runtime() {
       --expected-runtime-sha "$sha" \
       --expected-digest "$digest" >/dev/null || return 1
     "$NODE_BIN" "$SOURCE_BUNDLE/scripts/release-runtime-dependencies.mjs" \
-      verify-extracted --root "$runtime" --python-bin "$PYTHON_BIN" \
+      verify-predecessor-extracted --root "$runtime" --python-bin "$PYTHON_BIN" \
       >/dev/null || return 1
   fi
   read -r verified_sha verified_digest < <(

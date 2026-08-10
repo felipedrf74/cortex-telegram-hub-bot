@@ -170,6 +170,17 @@ describe('CI test-runner routing', () => {
     expect(ci).toContain('name: 🧪 Tests');
   });
 
+  it('checks committed Python release-lock metadata in required CI', () => {
+    const pythonJob = jobBlock(ci, 'python-test');
+    const lockCheckAt = pythonJob.indexOf('Verify committed Python release-lock metadata');
+    const installAt = pythonJob.indexOf('name: Install dependencies');
+    expect(lockCheckAt).toBeGreaterThan(-1);
+    expect(pythonJob).toContain(
+      'node scripts/generate-python-release-lock.mjs --verify-committed',
+    );
+    expect(installAt).toBeGreaterThan(lockCheckAt);
+  });
+
   it('binds lint/typecheck and build into the required aggregate context', () => {
     const aggregate = jobBlock(ci, 'test');
     const needs = aggregate.match(/^    needs: \[(.+)\]$/m)?.[1] ?? '';
@@ -377,6 +388,9 @@ describe('release publication routing', () => {
 
   it('installs dependencies and recomputes the full verdict before image publication', () => {
     const block = jobBlock(release, 'build');
+    const pythonLockAt = block.indexOf(
+      'Reproduce and verify the Python release closure before publication',
+    );
     const installAt = block.indexOf('Install the exact host-side verification dependencies');
     const verificationAt = block.indexOf(
       'Recompute and bind the migration verdict without signing authority',
@@ -384,10 +398,16 @@ describe('release publication routing', () => {
     const registryLoginAt = block.indexOf('docker/login-action');
     const backendPublishAt = block.indexOf('Build and push the backend image');
     const contentPublishAt = block.indexOf('Build and push the content-engine image');
-    expect(installAt).toBeGreaterThan(-1);
+    expect(pythonLockAt).toBeGreaterThan(-1);
+    expect(block.slice(pythonLockAt, installAt)).toContain(
+      'node scripts/generate-python-release-lock.mjs --check',
+    );
+    expect(block.slice(pythonLockAt, installAt)).toContain('--require-hashes');
+    expect(installAt).toBeGreaterThan(pythonLockAt);
     expect(block.slice(installAt, verificationAt)).toContain('run: npm ci');
     expect(verificationAt).toBeGreaterThan(installAt);
     expect(registryLoginAt).toBeGreaterThan(verificationAt);
+    expect(registryLoginAt).toBeGreaterThan(pythonLockAt);
     expect(backendPublishAt).toBeGreaterThan(verificationAt);
     expect(contentPublishAt).toBeGreaterThan(verificationAt);
     expect(block).toContain('migration-safety-${{ steps.source.outputs.sha }}');
@@ -726,7 +746,11 @@ describe('release topology', () => {
     expect(backend).not.toContain('tsx watch');
 
     const contentEngine = readFileSync(join(root, 'Dockerfile.release.python'), 'utf8');
+    const dockerignore = readFileSync(join(root, '.dockerignore'), 'utf8');
     expect(contentEngine).toContain('USER nexus:nexus');
+    expect(contentEngine).toContain('COPY content-engine/requirements-release.txt');
+    expect(contentEngine).toContain('--only-binary=:all: --require-hashes');
+    expect(contentEngine).not.toContain('-r requirements.txt');
     // Assert the executed command, not the prose: the header comment explains
     // why --reload is absent and would otherwise match a naive search.
     const contentCmd = contentEngine
@@ -735,6 +759,23 @@ describe('release topology', () => {
       .join(' ');
     expect(contentCmd).toContain('uvicorn');
     expect(contentCmd).not.toContain('--reload');
+    for (const auditOnlyPath of [
+      'content-engine/requirements-audit-tool.in',
+      'content-engine/requirements-audit-tool.txt',
+      'content-engine/requirements-lock-tool.txt',
+    ]) {
+      expect(dockerignore).toContain(auditOnlyPath);
+    }
+
+    const security = readFileSync(join(root, '.github/workflows/security.yml'), 'utf8');
+    const securityCommands = security.replace(/\\\n\s*/g, ' ').replace(/\s+/g, ' ');
+    expect(securityCommands).toContain(
+      '--require-hashes --only-binary=:all: -r content-engine/requirements-lock-tool.txt',
+    );
+    expect(securityCommands).toContain('node scripts/generate-python-release-lock.mjs --check');
+    expect(securityCommands).toContain(
+      '--dry-run --ignore-installed --require-hashes --only-binary=:all:',
+    );
   });
 
   it('packages the locked TypeScript validator required by runtime script generation', () => {
@@ -1419,7 +1460,7 @@ describe('poller and timers', () => {
     expect(preBaseline).toContain('productionDatabaseIdentity');
     expect(preBaseline).toContain('verify_installed_runtime');
     expect(preBaseline).toContain('--verify-installed-source');
-    expect(preBaseline).toContain('verify-extracted');
+    expect(preBaseline).toContain('verify-predecessor-extracted');
     expect(preBaseline).toContain('runtime selector changed under lock');
     expect(preBaseline).toContain('PM2_AUTHORITY_OR_DAEMON_ACTIVE=0');
     expect(preBaseline).toContain('PM2_CAPTURE_IDENTITY_PROVED=1');

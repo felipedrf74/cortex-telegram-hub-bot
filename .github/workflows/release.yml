@@ -46,6 +46,7 @@ concurrency:
 
 env:
   NODE_VERSION: '22.23.1'
+  PYTHON_VERSION: '3.12.3'
 
 jobs:
   supersede:
@@ -159,6 +160,19 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Reproduce and verify the Python release closure before publication
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check --require-hashes \
+            --only-binary=:all: -r content-engine/requirements-lock-tool.txt
+          node scripts/generate-python-release-lock.mjs --check
+          python -m pip install --dry-run --ignore-installed --require-hashes \
+            --only-binary=:all: -r content-engine/requirements-release.txt
 
       - name: Install the exact host-side verification dependencies
         run: npm ci

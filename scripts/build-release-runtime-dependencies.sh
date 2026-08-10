@@ -49,8 +49,9 @@ printf '{"schema":"nexus.release-optimization-telemetry.v1","metric":"node-archi
   --disable-pip-version-check \
   --no-compile \
   --only-binary=:all: \
+  --require-hashes \
   --target "$python_stage/content-engine/vendor" \
-  --requirement content-engine/requirements.txt
+  --requirement content-engine/requirements-release.txt
 find "$python_stage/content-engine/vendor" -type d -name __pycache__ -prune -exec rm -rf -- {} +
 tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
   -C "$python_stage" -cf - content-engine/vendor \

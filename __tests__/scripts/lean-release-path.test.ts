@@ -853,7 +853,7 @@ db.close();
     );
     expect(remote).toContain(
       '"$SOURCE_BUNDLE/scripts/release-runtime-dependencies.mjs" \\\n'
-      + '      verify-extracted',
+      + '      verify-predecessor-extracted',
     );
     expect(operator).toContain('--chmod=Du=rwx,Dgo=,Fu=rw,Fgo=');
     expect(operator).toContain(
@@ -1253,6 +1253,10 @@ db.close();
     const workflow = fs.readFileSync('.github/workflows/release-candidate-evidence.yml', 'utf8');
     const ciWorkflow = fs.readFileSync('.github/workflows/ci.yml', 'utf8');
     const operator = fs.readFileSync('scripts/release-operator.sh', 'utf8');
+    const lockCheckAt = workflow.indexOf(
+      'Reproduce and verify the Python release closure before fallback publication',
+    );
+    const bundleAt = workflow.indexOf('Build and verify exact PM2 fallback bundle');
 
     expect(workflow).toContain('matrix:\n        shard: [1, 2, 3, 4]');
     expect(workflow).toContain('node scripts/release-test-remainder.mjs run');
@@ -1260,6 +1264,14 @@ db.close();
     expect(workflow).not.toContain('npm run test:full:sharded');
     expect(workflow).toContain('run-id: ${{ needs.verify-main.outputs.protected_run_id }}');
     expect(workflow).toContain('name: Build and verify exact PM2 fallback bundle');
+    expect(lockCheckAt).toBeGreaterThan(-1);
+    expect(bundleAt).toBeGreaterThan(lockCheckAt);
+    expect(workflow.slice(lockCheckAt, bundleAt)).toContain(
+      'node scripts/generate-python-release-lock.mjs --check',
+    );
+    expect(workflow.slice(lockCheckAt, bundleAt)).toContain(
+      '--dry-run --ignore-installed --require-hashes',
+    );
     expect(workflow).toContain('node scripts/release-bundle.mjs');
     expect(workflow).toContain('--output .local/release/checkpoint/bundle');
     expect(workflow).not.toContain('needs.verify-main.outputs.artifact_name');

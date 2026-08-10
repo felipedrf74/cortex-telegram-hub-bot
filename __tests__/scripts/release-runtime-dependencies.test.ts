@@ -5,12 +5,19 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  LEGACY_RUNTIME_DEPENDENCY_SCHEMA,
   RUNTIME_DEPENDENCY_SCHEMA,
   buildRuntimeDependencyLock,
+  canonicalJson,
   expandedRuntimeTreeIdentity,
   extractRuntimeArchive,
+  validateExpandedRuntimeReceipt,
   validateRuntimeDependencyLock,
 } from '../../scripts/release-runtime-dependencies.mjs';
+import {
+  assertHermeticUvEnvironment,
+  verifyCommittedPythonLocks,
+} from '../../scripts/generate-python-release-lock.mjs';
 
 const roots: string[] = [];
 
@@ -21,6 +28,10 @@ function fixtureRoot() {
   fs.mkdirSync(path.join(root, 'dist/runtime-dependencies'), { recursive: true });
   fs.writeFileSync(path.join(root, 'package-lock.json'), '{"lockfileVersion":3}\n');
   fs.writeFileSync(path.join(root, 'content-engine/requirements.txt'), 'fastapi==0.136.1\n');
+  fs.writeFileSync(
+    path.join(root, 'content-engine/requirements-release.txt'),
+    'fastapi==0.136.1 --hash=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n',
+  );
   fs.writeFileSync(path.join(root, 'dist/runtime-dependencies/node_modules.tar.gz'), 'node-archive');
   fs.writeFileSync(
     path.join(root, 'dist/runtime-dependencies/python-site-packages.tar.gz'),
@@ -55,6 +66,9 @@ describe('network-independent release runtime dependencies', () => {
     });
     expect(lock.inputs.packageLockSha256).toBe(createHash('sha256')
       .update(fs.readFileSync(path.join(root, 'package-lock.json'))).digest('hex'));
+    expect(lock.inputs.pythonReleaseRequirementsSha256).toBe(createHash('sha256')
+      .update(fs.readFileSync(path.join(root, 'content-engine/requirements-release.txt')))
+      .digest('hex'));
   });
 
   it('rejects dependency-byte drift and a non-governed build platform', () => {
@@ -80,12 +94,66 @@ describe('network-independent release runtime dependencies', () => {
       .toThrow('fields do not match the governed schema');
   });
 
+  it('accepts only an exact v2/v1 pair through predecessor verification', () => {
+    const root = fixtureRoot();
+    fs.mkdirSync(path.join(root, 'node_modules/example'), { recursive: true });
+    fs.mkdirSync(path.join(root, 'content-engine/vendor/example'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'node_modules/example/index.js'), 'module.exports = 1;\n');
+    fs.writeFileSync(
+      path.join(root, 'content-engine/vendor/example/__init__.py'),
+      'VALUE = 1\n',
+    );
+    const current = buildRuntimeDependencyLock(root, target);
+    const legacy = {
+      ...current,
+      schema: LEGACY_RUNTIME_DEPENDENCY_SCHEMA,
+      inputs: {
+        packageLockSha256: current.inputs.packageLockSha256,
+        pythonRequirementsSha256: current.inputs.pythonRequirementsSha256,
+      },
+    };
+    const receipt = {
+      schema: 'nexus.network-independent-runtime-extraction.v1',
+      status: 'passed',
+      dependencyLockDigest: createHash('sha256')
+        .update(canonicalJson(legacy)).digest('hex'),
+      packageLockSha256: legacy.inputs.packageLockSha256,
+      pythonRequirementsSha256: legacy.inputs.pythonRequirementsSha256,
+      expandedTree: expandedRuntimeTreeIdentity(root),
+      extractedAt: '2026-08-10T00:00:00.000Z',
+    };
+
+    expect(() => validateRuntimeDependencyLock(legacy, root))
+      .toThrow('fields do not match the governed schema');
+    expect(validateRuntimeDependencyLock(legacy, root, { allowLegacyV2: true }))
+      .toEqual(legacy);
+    expect(validateExpandedRuntimeReceipt(
+      receipt,
+      legacy,
+      root,
+      { allowLegacyV2: true },
+    )).toEqual(receipt);
+    expect(() => validateExpandedRuntimeReceipt(
+      { ...receipt, schema: 'nexus.network-independent-runtime-extraction.v2' },
+      legacy,
+      root,
+      { allowLegacyV2: true },
+    )).toThrow('does not match the extracted dependency tree');
+    expect(() => validateExpandedRuntimeReceipt(
+      { ...receipt, pythonReleaseRequirementsSha256: 'a'.repeat(64) },
+      legacy,
+      root,
+      { allowLegacyV2: true },
+    )).toThrow('fields do not match the governed schema');
+  });
+
   it('builds dependencies in CI and only verifies/extracts them on the server', () => {
     const extractor = fs.readFileSync('scripts/release-runtime-dependencies.mjs', 'utf8');
     const builder = fs.readFileSync('scripts/build-release-runtime-dependencies.sh', 'utf8');
     const workflow = fs.readFileSync('.github/workflows/release-candidate-evidence.yml', 'utf8');
     const ciWorkflow = fs.readFileSync('.github/workflows/ci.yml', 'utf8');
     const transaction = fs.readFileSync('scripts/remote-user-release-transaction.sh', 'utf8');
+    const cutoverRunbook = fs.readFileSync('ops/nexus-release/README.md', 'utf8');
 
     expect(extractor).toContain("handle.extractall(destination, filter='data')");
     expect(extractor).toContain("command === 'extract-runtime'");
@@ -94,6 +162,8 @@ describe('network-independent release runtime dependencies', () => {
     expect(extractor).toContain('fs.lstatSync(target)');
     expect(extractor).not.toMatch(/\b(?:pip|venv|npm)\b/);
     expect(builder).toContain("--only-binary=:all:");
+    expect(builder).toContain('--require-hashes');
+    expect(builder).toContain('--requirement content-engine/requirements-release.txt');
     expect(builder).toContain('--target "$python_stage/content-engine/vendor"');
     expect(builder).toContain('python-site-packages.tar.gz');
     expect(builder).toContain("gzip -n -6");
@@ -115,15 +185,81 @@ describe('network-independent release runtime dependencies', () => {
     expect(workflow).toContain('retention-days: 30');
     expect(workflow).not.toContain('release-runtime-dependencies.mjs extract-runtime');
     expect(transaction).toContain('release-runtime-dependencies.mjs extract-runtime');
-    expect(transaction).toContain('release-runtime-dependencies.mjs verify-extracted');
-    expect(transaction.indexOf('release-runtime-dependencies.mjs verify-extracted'))
+    expect(transaction).toContain('verify-predecessor-extracted --root "$runtime"');
+    expect(transaction).not.toContain('verify-extracted --allow-legacy-v2');
+    expect(transaction.indexOf('verify-predecessor-extracted --root "$runtime"'))
       .toBeLessThan(transaction.indexOf('start_runtime "$RELEASE_DIR"'));
+    expect(cutoverRunbook.match(
+      /verify-predecessor-extracted --root "\$runtime"/g,
+    )).toHaveLength(4);
+    expect(cutoverRunbook).not.toContain('verify-extracted --root "$runtime"');
     expect(transaction).not.toMatch(/\b(?:npm|pip|venv)\b/);
     expect(transaction).not.toContain('release-runtime-dependencies.mjs install');
     expect(workflow).toContain("PYTHON_VERSION: '3.12.3'");
     // One remaining pin, in the content-engine test job. The second occurrence
     // belonged to the removed bundle-producing build job.
     expect(ciWorkflow.match(/python-version: '3\.12\.3'/g)).toHaveLength(1);
+  });
+
+  it('keeps every release dependency exact and hash-locked', () => {
+    const sourceBytes = fs.readFileSync('content-engine/requirements.txt');
+    const source = sourceBytes.toString('utf8')
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line && !line.startsWith('#'));
+    const release = fs.readFileSync('content-engine/requirements-release.txt', 'utf8');
+    const sourceDigest = createHash('sha256').update(sourceBytes).digest('hex');
+    const blocks = release
+      .split(/(?=^[a-z0-9_.-]+==)/gim)
+      .filter((block) => /^[a-z0-9_.-]+==/i.test(block));
+    const locked = new Map<string, string>();
+
+    for (const block of blocks) {
+      const match = block.match(/^([a-z0-9_.-]+)==([^\\\s]+)/i);
+      expect(match).not.toBeNull();
+      expect(block).toMatch(/--hash=sha256:[a-f0-9]{64}/);
+      locked.set(match![1].toLowerCase(), match![2]);
+    }
+
+    expect(locked.size).toBeGreaterThan(source.length);
+    expect(release).toContain('# generator: uv 0.10.9');
+    expect(release).toContain(`# source-sha256: ${sourceDigest}`);
+    expect(release).toContain('# target: CPython 3.12 on x86_64 glibc 2.36 or newer');
+    expect(release).toContain('# index: https://pypi.org/simple');
+    expect(release).toContain(
+      '# resolution: highest; prerelease: disallow; fork-strategy: requires-python',
+    );
+    expect(release).toContain('# exclude-newer: 2026-08-10T00:00:00Z');
+    const requirementLines = release
+      .split('\n')
+      .filter((line) => !line.trimStart().startsWith('#'))
+      .join('\n');
+    expect(requirementLines).not.toMatch(/(?:git\+|https?:\/\/|--(?:extra-)?index-url)/i);
+    for (const requirement of source) {
+      const match = requirement.match(/^([a-z0-9_.-]+)(?:\[[^\]]+\])?==([^\s]+)$/i);
+      expect(match, `source requirement must be exact: ${requirement}`).not.toBeNull();
+      expect(locked.get(match![1].toLowerCase())).toBe(match![2]);
+    }
+  });
+
+  it('verifies both committed lock closures without invoking the resolver', () => {
+    expect(verifyCommittedPythonLocks()).toMatchObject({
+      release: { packageCount: 44 },
+      auditTool: { packageCount: 29 },
+    });
+  });
+
+  it('refuses ambient package-manager policy during lock generation', () => {
+    expect(() => assertHermeticUvEnvironment({ UV_RESOLUTION: 'lowest' })).toThrow(
+      'release lock generation refuses ambient package policy: UV_RESOLUTION',
+    );
+    expect(() => assertHermeticUvEnvironment({ PIP_INDEX_URL: 'https://mirror.invalid/simple' }))
+      .toThrow('release lock generation refuses ambient package policy: PIP_INDEX_URL');
+    expect(() => assertHermeticUvEnvironment({
+      PATH: process.env.PATH,
+      PIP_CACHE_DIR: '/tmp/cache-only',
+      UV_CACHE_DIR: '/tmp/cache-only',
+    })).not.toThrow();
   });
 
   it('extracts the verified Node archive without network access', () => {

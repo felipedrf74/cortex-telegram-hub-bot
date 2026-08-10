@@ -23,6 +23,7 @@ export const RELEASE_RUNTIME_FILES = Object.freeze([
   'ecosystem.release.config.js',
   'content-engine/main.py',
   'content-engine/config.py',
+  'content-engine/requirements-release.txt',
   'content-engine/requirements.txt',
   'content-engine/requirements-dev.txt',
   'content-engine/pyproject.toml',

@@ -5,7 +5,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const RUNTIME_DEPENDENCY_SCHEMA = 'nexus.release-runtime-dependencies.v2';
+export const RUNTIME_DEPENDENCY_SCHEMA = 'nexus.release-runtime-dependencies.v3';
+export const LEGACY_RUNTIME_DEPENDENCY_SCHEMA = 'nexus.release-runtime-dependencies.v2';
 const args = process.argv.slice(2);
 const command = args[0] ?? '';
 const valueOf = (name, fallback = '') => {
@@ -45,7 +46,11 @@ function exactKeys(value, expected, label) {
 }
 
 function inputIdentity(relative) {
-  return sha256(fs.readFileSync(path.join(root, relative)));
+  return inputIdentityAt(root, relative);
+}
+
+function inputIdentityAt(rootInput, relative) {
+  return sha256(fs.readFileSync(path.join(path.resolve(rootInput), relative)));
 }
 
 export function buildRuntimeDependencyLock(rootInput, target) {
@@ -65,22 +70,40 @@ export function buildRuntimeDependencyLock(rootInput, target) {
     inputs: {
       packageLockSha256: sha256(fs.readFileSync(path.join(resolvedRoot, 'package-lock.json'))),
       pythonRequirementsSha256: sha256(fs.readFileSync(path.join(resolvedRoot, 'content-engine/requirements.txt'))),
+      pythonReleaseRequirementsSha256: sha256(fs.readFileSync(
+        path.join(resolvedRoot, 'content-engine/requirements-release.txt'),
+      )),
     },
     nodeArchive,
     pythonArchive,
   };
 }
 
-export function validateRuntimeDependencyLock(lock, rootInput) {
+export function validateRuntimeDependencyLock(
+  lock,
+  rootInput,
+  { allowLegacyV2 = false } = {},
+) {
   const resolvedRoot = path.resolve(rootInput);
+  const legacyV2 = lock?.schema === LEGACY_RUNTIME_DEPENDENCY_SCHEMA;
   exactKeys(
     lock,
     ['schema', 'target', 'inputs', 'nodeArchive', 'pythonArchive'],
     'runtime dependency lock',
   );
   exactKeys(lock.target, ['os', 'osVersion', 'architecture', 'node', 'python'], 'runtime dependency target');
-  exactKeys(lock.inputs, ['packageLockSha256', 'pythonRequirementsSha256'], 'runtime dependency inputs');
-  if (lock.schema !== RUNTIME_DEPENDENCY_SCHEMA
+  exactKeys(
+    lock.inputs,
+    legacyV2 && allowLegacyV2
+      ? ['packageLockSha256', 'pythonRequirementsSha256']
+      : [
+        'packageLockSha256',
+        'pythonRequirementsSha256',
+        'pythonReleaseRequirementsSha256',
+      ],
+    'runtime dependency inputs',
+  );
+  if ((lock.schema !== RUNTIME_DEPENDENCY_SCHEMA && !(allowLegacyV2 && legacyV2))
       || lock.target.os !== 'ubuntu'
       || lock.target.osVersion !== '24.04'
       || lock.target.architecture !== 'x86_64'
@@ -91,6 +114,11 @@ export function validateRuntimeDependencyLock(lock, rootInput) {
   const expectedInputs = {
     packageLockSha256: sha256(fs.readFileSync(path.join(resolvedRoot, 'package-lock.json'))),
     pythonRequirementsSha256: sha256(fs.readFileSync(path.join(resolvedRoot, 'content-engine/requirements.txt'))),
+    ...(legacyV2 ? {} : {
+      pythonReleaseRequirementsSha256: sha256(fs.readFileSync(
+        path.join(resolvedRoot, 'content-engine/requirements-release.txt'),
+      )),
+    }),
   };
   if (canonicalJson(lock.inputs) !== canonicalJson(expectedInputs)) fail('runtime dependency input digest mismatch');
   const expectedNodePath = 'dist/runtime-dependencies/node_modules.tar.gz';
@@ -130,9 +158,9 @@ function writeLock() {
   process.stdout.write(`${JSON.stringify({ ok: true, lock: lockPath, digest: sha256(canonicalJson(lock)) })}\n`);
 }
 
-function loadAndVerify() {
+function loadAndVerify({ allowLegacyV2 = false } = {}) {
   const lock = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
-  validateRuntimeDependencyLock(lock, root);
+  validateRuntimeDependencyLock(lock, root, { allowLegacyV2 });
   return lock;
 }
 
@@ -288,11 +316,14 @@ function extractRuntime() {
   extractRuntimeDependencies(lock, root, pythonBin);
   const expandedTree = expandedRuntimeTreeIdentity(root);
   const evidence = {
-    schema: 'nexus.network-independent-runtime-extraction.v1',
+    schema: 'nexus.network-independent-runtime-extraction.v2',
     status: 'passed',
     dependencyLockDigest: sha256(canonicalJson(lock)),
     packageLockSha256: inputIdentity('package-lock.json'),
     pythonRequirementsSha256: inputIdentity('content-engine/requirements.txt'),
+    pythonReleaseRequirementsSha256: inputIdentity(
+      'content-engine/requirements-release.txt',
+    ),
     expandedTree,
     extractedAt: new Date().toISOString(),
   };
@@ -304,8 +335,50 @@ function extractRuntime() {
   process.stdout.write(`${JSON.stringify(evidence)}\n`);
 }
 
-function verifyExtractedRuntime() {
-  const lock = loadAndVerify();
+export function validateExpandedRuntimeReceipt(
+  receipt,
+  lock,
+  rootInput,
+  { allowLegacyV2 = false } = {},
+) {
+  const resolvedRoot = path.resolve(rootInput);
+  validateRuntimeDependencyLock(lock, resolvedRoot, { allowLegacyV2 });
+  const legacyV2 = lock.schema === LEGACY_RUNTIME_DEPENDENCY_SCHEMA;
+  const expectedSchema = legacyV2
+    ? 'nexus.network-independent-runtime-extraction.v1'
+    : 'nexus.network-independent-runtime-extraction.v2';
+  exactKeys(
+    receipt,
+    legacyV2
+      ? [
+        'schema', 'status', 'dependencyLockDigest', 'packageLockSha256',
+        'pythonRequirementsSha256', 'expandedTree', 'extractedAt',
+      ]
+      : [
+        'schema', 'status', 'dependencyLockDigest', 'packageLockSha256',
+        'pythonRequirementsSha256', 'pythonReleaseRequirementsSha256',
+        'expandedTree', 'extractedAt',
+      ],
+    'expanded runtime receipt',
+  );
+  if (receipt.schema !== expectedSchema
+      || receipt.status !== 'passed'
+      || receipt.dependencyLockDigest !== sha256(canonicalJson(lock))
+      || receipt.packageLockSha256 !== inputIdentityAt(resolvedRoot, 'package-lock.json')
+      || receipt.pythonRequirementsSha256
+        !== inputIdentityAt(resolvedRoot, 'content-engine/requirements.txt')
+      || (!legacyV2 && receipt.pythonReleaseRequirementsSha256
+        !== inputIdentityAt(resolvedRoot, 'content-engine/requirements-release.txt'))
+      || !Number.isFinite(Date.parse(receipt.extractedAt ?? ''))
+      || canonicalJson(receipt.expandedTree)
+        !== canonicalJson(expandedRuntimeTreeIdentity(resolvedRoot))) {
+    fail('expanded runtime receipt does not match the extracted dependency tree');
+  }
+  return receipt;
+}
+
+function verifyExtractedRuntime({ allowLegacyV2 = false } = {}) {
+  const lock = loadAndVerify({ allowLegacyV2 });
   const pythonBin = valueOf('--python-bin', '/usr/bin/python3.12');
   assertRuntimePlatform(lock, pythonBin);
   const receiptPath = path.join(root, '.network-independent-extraction.json');
@@ -314,23 +387,7 @@ function verifyExtractedRuntime() {
     fail('expanded runtime receipt is unsafe');
   }
   const receipt = JSON.parse(fs.readFileSync(receiptPath, 'utf8'));
-  exactKeys(
-    receipt,
-    [
-      'schema', 'status', 'dependencyLockDigest', 'packageLockSha256',
-      'pythonRequirementsSha256', 'expandedTree', 'extractedAt',
-    ],
-    'expanded runtime receipt',
-  );
-  if (receipt.schema !== 'nexus.network-independent-runtime-extraction.v1'
-      || receipt.status !== 'passed'
-      || receipt.dependencyLockDigest !== sha256(canonicalJson(lock))
-      || receipt.packageLockSha256 !== inputIdentity('package-lock.json')
-      || receipt.pythonRequirementsSha256 !== inputIdentity('content-engine/requirements.txt')
-      || !Number.isFinite(Date.parse(receipt.extractedAt ?? ''))
-      || canonicalJson(receipt.expandedTree) !== canonicalJson(expandedRuntimeTreeIdentity(root))) {
-    fail('expanded runtime receipt does not match the extracted dependency tree');
-  }
+  validateExpandedRuntimeReceipt(receipt, lock, root, { allowLegacyV2 });
   process.stdout.write(`${JSON.stringify({
     ok: true,
     schema: receipt.schema,
@@ -346,5 +403,9 @@ if (process.argv[1]
     process.stdout.write(`${JSON.stringify({ ok: true, digest: sha256(canonicalJson(lock)) })}\n`);
   } else if (command === 'extract-runtime') extractRuntime();
   else if (command === 'verify-extracted') verifyExtractedRuntime();
-  else fail('Usage: release-runtime-dependencies.mjs <write-lock|verify|extract-runtime|verify-extracted> --root <release>');
+  else if (command === 'verify-predecessor-extracted') {
+    verifyExtractedRuntime({ allowLegacyV2: true });
+  } else {
+    fail('Usage: release-runtime-dependencies.mjs <write-lock|verify|extract-runtime|verify-extracted|verify-predecessor-extracted> --root <release>');
+  }
 }
