@@ -17,6 +17,12 @@ const IS_STAGING = process.env.STAGING === 'true' || process.env.NODE_ENV === 's
 const IS_TEST = process.env.NODE_ENV === 'test';
 const IS_DEVELOPMENT = !process.env.NODE_ENV || process.env.NODE_ENV === 'development';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+// Container staging deliberately uses NODE_ENV=production for production-grade
+// runtime behavior. STAGING remains the authority that prevents that process
+// from being mistaken for the live production environment at rollout,
+// notification, and payment safety boundaries. Encryption requirements remain
+// production-grade in both container environments.
+const IS_LIVE_PRODUCTION = IS_PRODUCTION && !IS_STAGING;
 const PAYWALL_ENABLED = (process.env.PAYWALL_ENABLED ?? 'true') !== 'false';
 const PAYWALL_BYPASS_ALLOWED = IS_TEST || IS_DEVELOPMENT || IS_STAGING;
 const IOS_JWT_SECRET_MIN_BYTES = 32;
@@ -89,7 +95,7 @@ function contentWorkspaceRolloutMode(): ContentWorkspaceRolloutConfigMode {
 
 function parseNotificationDeliveryMode(raw = process.env.NOTIFICATION_DELIVERY_MODE): NotificationDeliveryMode {
   const normalized = (raw || '').trim().toLowerCase();
-  if (!normalized) return process.env.NODE_ENV === 'production' ? 'apns' : 'mock';
+  if (!normalized) return IS_LIVE_PRODUCTION ? 'apns' : 'mock';
   if (normalized === 'mock' || normalized === 'apns') return normalized;
   throw new Error(
     `Invalid NOTIFICATION_DELIVERY_MODE="${raw}". Expected one of: mock, apns.`,
@@ -97,7 +103,7 @@ function parseNotificationDeliveryMode(raw = process.env.NOTIFICATION_DELIVERY_M
 }
 
 function warnProductionLaunch(message: string): void {
-  if (IS_PRODUCTION && message) {
+  if (IS_LIVE_PRODUCTION && message) {
     console.warn(`[production launch warning] ${message}`);
   }
 }
@@ -891,32 +897,32 @@ const trainingPublicBetaBundleComplete = trainingPublicBetaEnabled
   && requiredTrainingPublicBetaM4Tokens.every((entry) => globalTrainingM4TokenSet.has(entry))
   && (process.env.TRAINING_PROFILE_SNAPSHOT_ENCRYPTION_KEY ?? '').length >= 32
   && globalTrainingM4ExplicitUserCapacity !== 'true';
-if (IS_PRODUCTION && trainingPublicBetaRaw && trainingPublicBetaRaw !== 'true' && trainingPublicBetaRaw !== 'false') {
+if (IS_LIVE_PRODUCTION && trainingPublicBetaRaw && trainingPublicBetaRaw !== 'true' && trainingPublicBetaRaw !== 'false') {
   throw new Error('TRAINING_PUBLIC_BETA_V1_ENABLED must be exactly true or false in production.');
 }
-if (IS_PRODUCTION && trainingPublicBetaEnabled && !trainingPublicBetaBundleComplete) {
+if (IS_LIVE_PRODUCTION && trainingPublicBetaEnabled && !trainingPublicBetaBundleComplete) {
   throw new Error(
     'TRAINING_PUBLIC_BETA_V1_ENABLED=true requires the complete global Training v1 bundle, the exact complete 28-entry M4 allowlist, a 32+ character snapshot key, and provisional explicit-user capacity disabled.',
   );
 }
-if (IS_PRODUCTION && !trainingPublicBetaEnabled && globalTrainingRevisionMode === 'active') {
+if (IS_LIVE_PRODUCTION && !trainingPublicBetaEnabled && globalTrainingRevisionMode === 'active') {
   throw new Error(
     'Global TRAINING_PLAN_REVISION_V1_MODE=active is forbidden in production; enroll explicit personal accounts with scoped USER or TENANT overrides.',
   );
 }
-if (IS_PRODUCTION && !trainingPublicBetaEnabled && globalTrainingAdaptationMode === 'active') {
+if (IS_LIVE_PRODUCTION && !trainingPublicBetaEnabled && globalTrainingAdaptationMode === 'active') {
   throw new Error(
     'Global TRAINING_ADAPTATION_V1_MODE=active is forbidden in production; enroll explicit personal accounts with scoped USER or TENANT overrides.',
   );
 }
-if (IS_PRODUCTION
+if (IS_LIVE_PRODUCTION
     && !trainingPublicBetaEnabled
     && process.env.TRAINING_DECISION_FLOW_V1_ENFORCE_ENABLED?.trim().toLowerCase() === 'true') {
   throw new Error(
     'Global TRAINING_DECISION_FLOW_V1_ENFORCE_ENABLED=true is forbidden in production unless the complete Training public-beta bundle is enabled.',
   );
 }
-if (IS_PRODUCTION && scopedTrainingAdaptationEnrollments.some(({ suffix }) =>
+if (IS_LIVE_PRODUCTION && scopedTrainingAdaptationEnrollments.some(({ suffix }) =>
   scopedTrainingValue('TRAINING_PLAN_REVISION_V1_MODE', suffix) !== 'active'
   || !scopedTrainingBooleanEnabled('TRAINING_TYPED_WORKOUT_V1_ENABLED', suffix)
   || !scopedTrainingDecisionFlowEnabled(suffix))) {
@@ -924,21 +930,21 @@ if (IS_PRODUCTION && scopedTrainingAdaptationEnrollments.some(({ suffix }) =>
     'Each scoped TRAINING_ADAPTATION_V1_MODE=active enrollment requires Training revision, typed-workout, and Decision Flow enablement for the same scope.',
   );
 }
-if (IS_PRODUCTION && !trainingPublicBetaEnabled && globalTrainingM4Allowlist) {
+if (IS_LIVE_PRODUCTION && !trainingPublicBetaEnabled && globalTrainingM4Allowlist) {
   throw new Error(
     'Global TRAINING_PLAN_M4_ALLOWLIST is forbidden in production; enroll exact mode:discipline combinations with scoped USER or TENANT overrides.',
   );
 }
-if (IS_PRODUCTION && globalTrainingM4ExplicitUserCapacity === 'true') {
+if (IS_LIVE_PRODUCTION && globalTrainingM4ExplicitUserCapacity === 'true') {
   throw new Error(
     'Global TRAINING_M4_EXPLICIT_USER_CAPACITY_ENABLED=true is forbidden in production; provisional capacity requires an exact scoped enrollment.',
   );
 }
-if (IS_PRODUCTION && scopedTrainingM4Allowlists.some(({ value }) =>
+if (IS_LIVE_PRODUCTION && scopedTrainingM4Allowlists.some(({ value }) =>
   value.split(',').map((entry) => entry.trim().toLowerCase()).some((entry) => !validTrainingM4Token.test(entry)))) {
   throw new Error('TRAINING_PLAN_M4_ALLOWLIST contains an unsupported or wildcard mode:discipline token.');
 }
-if (IS_PRODUCTION && scopedTrainingM4Allowlists.some(({ suffix }) =>
+if (IS_LIVE_PRODUCTION && scopedTrainingM4Allowlists.some(({ suffix }) =>
   scopedTrainingValue('TRAINING_PLAN_REVISION_V1_MODE', suffix) !== 'active'
   || !scopedTrainingBooleanEnabled('TRAINING_TYPED_WORKOUT_V1_ENABLED', suffix)
   || !scopedTrainingDecisionFlowEnabled(suffix))) {
@@ -946,7 +952,7 @@ if (IS_PRODUCTION && scopedTrainingM4Allowlists.some(({ suffix }) =>
     'Each scoped TRAINING_PLAN_M4_ALLOWLIST requires Training revision, typed-workout, and Decision Flow enablement for the same scope.',
   );
 }
-if (IS_PRODUCTION && scopedTrainingM4ExplicitUserCapacity.some(({ suffix }) =>
+if (IS_LIVE_PRODUCTION && scopedTrainingM4ExplicitUserCapacity.some(({ suffix }) =>
   !scopedTrainingValue('TRAINING_PLAN_M4_ALLOWLIST', suffix)
   || scopedTrainingValue('TRAINING_PLAN_REVISION_V1_MODE', suffix) !== 'active'
   || !scopedTrainingBooleanEnabled('TRAINING_TYPED_WORKOUT_V1_ENABLED', suffix)
@@ -955,7 +961,7 @@ if (IS_PRODUCTION && scopedTrainingM4ExplicitUserCapacity.some(({ suffix }) =>
     'Each scoped TRAINING_M4_EXPLICIT_USER_CAPACITY_ENABLED enrollment requires an exact M4 allowlist, Training revision, typed-workout, and Decision Flow enablement for the same scope.',
   );
 }
-if (IS_PRODUCTION && hasScopedTrainingRevisionEnrollment) {
+if (IS_LIVE_PRODUCTION && hasScopedTrainingRevisionEnrollment) {
   const snapshotKey = process.env.TRAINING_PROFILE_SNAPSHOT_ENCRYPTION_KEY ?? '';
   if (snapshotKey.length < 32) {
     throw new Error(
@@ -985,7 +991,7 @@ const apnsCredentialsConfigured = Boolean(
 );
 const resolvedNotificationDeliveryMode = config.notificationDelivery.mode;
 if (
-  IS_PRODUCTION
+  IS_LIVE_PRODUCTION
   && apnsCredentialsConfigured
   && (process.env.NOTIFICATION_DELIVERY_MODE || '').trim() === ''
 ) {
@@ -993,7 +999,7 @@ if (
     'NOTIFICATION_DELIVERY_MODE=apns is required in production when APNs credentials are configured.',
   );
 }
-if (IS_PRODUCTION && apnsCredentialsConfigured && resolvedNotificationDeliveryMode !== 'apns') {
+if (IS_LIVE_PRODUCTION && apnsCredentialsConfigured && resolvedNotificationDeliveryMode !== 'apns') {
   throw new Error(
     'NOTIFICATION_DELIVERY_MODE=apns is required in production when APNs credentials are configured.',
   );
@@ -1022,8 +1028,7 @@ if (config.ios.enabled && !config.ios.inviteCode) {
 }
 
 if (
-  process.env.NODE_ENV === 'production'
-  && !IS_STAGING
+  IS_LIVE_PRODUCTION
   && isUnsafePublicBind(config.portal.bind)
   && process.env.PORTAL_PUBLIC_BIND_ACK !== PORTAL_PUBLIC_BIND_ACK_VALUE
 ) {
@@ -1053,9 +1058,9 @@ if (config.stripe.nexusPoints.enabled) {
       'STRIPE_NEXUS_POINTS_ENABLED requires PORTAL_ADMIN_ACTOR_SIGNATURE_SECRET to be set so admin-issued purchases have signed attribution.',
     );
   }
-  if (process.env.NODE_ENV !== 'production' && /^sk_live_/.test(config.stripe.secretKey)) {
+  if (!IS_LIVE_PRODUCTION && /^sk_live_/.test(config.stripe.secretKey)) {
     throw new Error(
-      'STRIPE_SECRET_KEY appears to be a live key (sk_live_*) but NODE_ENV is not production. Refusing to start to prevent accidental live charges in staging.',
+      'STRIPE_SECRET_KEY appears to be a live key (sk_live_*) outside live production. Refusing to start to prevent accidental live charges in staging.',
     );
   }
 }
