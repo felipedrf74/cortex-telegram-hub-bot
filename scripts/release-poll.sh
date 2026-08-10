@@ -34,26 +34,26 @@ assert_lock_fd_matches_path() {
     || die "release mutex changed identity while it was acquired"
 }
 
-assert_bootstrap_pm2_guard() {
-  local active_state enabled_state status unit
-  [ -x "$SYSTEMCTL_BIN" ] || die "systemctl is required for first-bootstrap PM2 guard proof"
+assert_pm2_guard() {
+  local active_state can_start fragment guard load_state unit
+  local guard_root=/etc/systemd/system.control
+  [ -x "$SYSTEMCTL_BIN" ] || die "systemctl is required for PM2 guard proof"
+  [ -d "$guard_root" ] && [ ! -L "$guard_root" ] \
+    && [ "$(stat -Lc '%U:%G:%a' -- "$guard_root")" = root:root:755 ] \
+    || die "PM2 high-priority persistent guard root is unsafe"
   for unit in pm2-dominguez.service nexus-release-pm2-recovery-daemon.service; do
-    status=0
-    if enabled_state="$($SYSTEMCTL_BIN is-enabled "$unit" 2>&1)"; then
-      status=0
-    else
-      status=$?
-    fi
-    [ "$status" -ne 0 ] && [ "$enabled_state" = masked-runtime ] \
-      || die "$unit is not protected by the exact runtime mask"
-    status=0
-    if active_state="$($SYSTEMCTL_BIN is-active "$unit" 2>&1)"; then
-      status=0
-    else
-      status=$?
-    fi
-    [ "$status" -ne 0 ] && [ "$active_state" = inactive ] \
-      || die "$unit is not inactive during first-bootstrap mutation"
+    guard="$guard_root/$unit"
+    [ -L "$guard" ] && [ "$(readlink -- "$guard")" = /dev/null ] \
+      && [ "$(stat -c '%U:%G:%F' -- "$guard")" = \
+        'root:root:symbolic link' ] \
+      || die "$unit high-priority persistent guard is not exact"
+    load_state="$($SYSTEMCTL_BIN show "$unit" --property=LoadState --value)"
+    fragment="$($SYSTEMCTL_BIN show "$unit" --property=FragmentPath --value)"
+    can_start="$($SYSTEMCTL_BIN show "$unit" --property=CanStart --value)"
+    active_state="$($SYSTEMCTL_BIN show "$unit" --property=ActiveState --value)"
+    [ "$load_state" = masked ] && [ "$fragment" = /dev/null ] \
+      && [ "$can_start" = no ] && [ "$active_state" = inactive ] \
+      || die "$unit is not effectively blocked by its high-priority persistent guard"
   done
 }
 
@@ -120,11 +120,6 @@ assert_lock_fd_matches_path 8 "$MAINTENANCE_LOCK"
 "$FLOCK_BIN" --nonblock --conflict-exit-code 75 8
 assert_lock_fd_matches_path 8 "$MAINTENANCE_LOCK"
 
-for argument in "$@"; do
-  if [ "$argument" = --allow-first-container-bootstrap ]; then
-    assert_bootstrap_pm2_guard
-    break
-  fi
-done
+assert_pm2_guard
 
 exec "$NODE_BIN" "$ROOT/scripts/release-deploy.mjs" "$@"

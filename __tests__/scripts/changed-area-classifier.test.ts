@@ -99,6 +99,7 @@ describe('lean changed-area classification', () => {
     'scripts/generate-python-release-lock.mjs',
     'scripts/lib/chat-capability-flag-transaction.mjs',
     'scripts/remote-chat-capability-flag-transaction.sh',
+    'scripts/release-poll.sh',
     'scripts/routing-divergence-report.mjs',
     'scripts/run-routing-action-skill-accuracy.ts',
     'src/services/chat-capability-runtime-guard.ts',
@@ -111,6 +112,7 @@ describe('lean changed-area classification', () => {
     'content-engine/requirements-lock-tool.txt',
     'content-engine/requirements-audit-tool.in',
     'content-engine/requirements-audit-tool.txt',
+    'ops/nexus-release/README.md',
   ])('classifies %s as release-operator code', (file) => {
     const result = classify([file]);
 
@@ -118,6 +120,40 @@ describe('lean changed-area classification', () => {
     expect(result.tiers).toContain('T4');
     expect(result.vitest.groups).toContain('release-ops');
     expect(result.vitest.skipReason).toBeNull();
+  });
+
+  it.each([
+    'scripts/release-poll.sh',
+    'ops/nexus-release/README.md',
+    'ops/local-backup/systemd/nexus-local-backup.service',
+    'scripts/local-backup.py',
+    'scripts/local-backup-systemd-install.sh',
+  ])('classifies %s as release runtime infrastructure', (file) => {
+    const result = classify([file]);
+
+    expect(result.flags.runtimeInfra).toBe(true);
+    expect(result.flags.deployConfig).toBe(true);
+    expect(result.tiers).toContain('T4');
+    expect(result.stagingSmoke.generic).toBe(true);
+    expect(result.vitest.groups).toContain('release-ops');
+  });
+
+  it('classifies the cutover hotfix as release control-plane runtime', () => {
+    const result = classify([
+      'scripts/release-poll.sh',
+      'ops/nexus-release/README.md',
+      'ops/local-backup/systemd/nexus-local-backup.service',
+      'scripts/local-backup.py',
+    ]);
+
+    expect(result.flags).toMatchObject({
+      releaseOperator: true,
+      runtimeInfra: true,
+      deployConfig: true,
+    });
+    expect(result.tiers).toContain('T4');
+    expect(result.stagingSmoke.generic).toBe(true);
+    expect(result.vitest.groups).toContain('release-ops');
   });
 
   it('skips Vitest for a docs-only change', () => {

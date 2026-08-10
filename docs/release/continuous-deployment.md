@@ -407,7 +407,10 @@ Three boundaries carry the safety argument.
    write-ahead, so an hourly pointer update cannot redirect or strand the attempt.
 2. **Backup → migrate → switch.** The backup is the only artifact that can undo a
    migration, so it must exist before any schema change. A backup failure stops
-   the release while the predecessor is still serving.
+   the release while the predecessor is still serving. The attended first
+   cutover also compares every installed backup producer, unit, timer, and
+   sudoers byte with the resolved immutable control-plane root, reloads systemd,
+   and proves the effective pre-promotion `ExecStart` before PM2 is stopped.
 3. **Protected head → write-ahead.** The exact signed source is compared with
    public protected-main head before admission, after staging, and again after
    backup, ledger reconciliation, and exact backup-evidence revalidation. This
@@ -466,13 +469,21 @@ fails, automatic image rollback is impossible; the
 timer stays disabled and the operator uses the exact SQLite snapshot-back PM2
 procedure in `ops/nexus-release/README.md`, preserving writes accepted by the
 container database before restarting the recorded legacy runtime. The cutover
-disables the known PM2 authorities and applies exact runtime masks until that
-defined fallback. Both the container poller and legacy PM2 path hold the same
-root maintenance mutex, and the bootstrap wrapper refuses mutation unless both
-PM2 authority units remain masked and inactive. Recovery verifies each complete
+disables the known PM2 authorities and applies exact root-owned
+`/etc/systemd/system.control/<unit> -> /dev/null` guards until that defined
+fallback. These persistent control guards survive reboot and outrank
+administrator units in `/etc/systemd/system`; ordinary
+`systemctl mask --runtime` links do not. Both
+the container poller and legacy PM2 path hold the same root maintenance mutex,
+and the bootstrap wrapper refuses mutation unless both PM2 authority units
+resolve as masked, non-startable, and inactive through those exact links.
+Recovery verifies each complete
 installed runtime tree and dependencies, release marker, artifact digest,
 current selector, restarted PM2 environment, database path, and health endpoint
-against immutable capture before accepting the fallback. After forced container removal,
+against immutable capture before accepting the fallback. PM2 commands run from
+`/home/dominguez` before entering the existing `sudo -u dominguez pm2 ...`
+policy, and restart acceptance waits at most 120 seconds for all four health
+endpoints to pass in one bounded iteration. After forced container removal,
 the fallback may delete a leftover WAL/SHM pair only after proving no handles,
 an exact `0|0|0` checkpoint, no rollback journal, a single-link zero-byte regular
 WAL, and a single-link regular SHM; any other shape stops recovery.
@@ -487,11 +498,12 @@ baseline generation in fixed candidate mode. The validated
 `bootstrap-baseline.json.next-<releaseId>` is created without overwriting either
 candidate or canonical output. Only after validation does the transaction hard
 link the old canonical baseline into root-only evidence and atomically replace
-the canonical name. Any interruption leaves PM2 masked and resumes from the
+the canonical name. Any interruption leaves PM2 guarded and resumes from the
 root-owned phase record; it never moves away the only durable baseline first.
 
-Fallback admission does not assume runtime masks survive reboot. It reads the
-durable phase first, re-establishes masks for inactive authorities, and accepts
+Fallback admission re-proves the persistent control guards after every reboot
+and retry. It reads the durable phase first, re-establishes missing guards for
+inactive authorities, and accepts
 an already-running fallback only when all four PM2 rows, live PIDs, runtime and
 database identities, and health endpoints prove exact; a partial proof is
 stopped and guarded before resume. A fixed SQLite recovery temporary left by an

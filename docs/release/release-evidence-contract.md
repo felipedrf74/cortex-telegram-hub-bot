@@ -147,7 +147,8 @@ temporary file; every remnant, including partial or divergent data, stays
 offline in place for incident review. `resume-baseline` requires the
 completed checkpoint and re-proves its target identities, digests, distinct
 inodes, fresh governed backup, zero handles, and absent sidecars while PM2 stays
-runtime-masked. A PM2 restart additionally verifies the full installed source
+behind exact high-priority persistent control guards. A PM2 restart additionally
+verifies the full installed source
 tree and dependency attestation, not only the completion marker. After review,
 `reset-cutover` copies and byte-compares both complete governed data directories
 into a root-only incident, binds backups to the exact legacy production inode,
@@ -168,9 +169,11 @@ canonical swap; the sole canonical baseline is never moved away first. The
 terminal fallback state is retired only after its exact incident copy and the
 new baseline/evidence trio are durably validated.
 
-Recovery admission reads this durable phase before assuming runtime masks still
-exist. If reboot removed a mask or SIGKILL landed after PM2 start, inactive
-authorities are re-masked; an active authority is accepted only after exact
+Recovery admission reads this durable phase before trusting control guards.
+After reboot or if SIGKILL landed after PM2 start, inactive authorities receive
+exact root-owned persistent
+`/etc/systemd/system.control/<unit> -> /dev/null` guards; an active authority is
+accepted only after exact
 four-row status, SHA, artifact, cwd, executable, role/base, database inode, PID,
 installed-tree, and health proof. Only that complete proof may advance
 `backup_repointed` to `pm2_restored`; every partial proof is stopped and guarded
@@ -230,9 +233,13 @@ release-payload digest. It may resolve the mutable publication tag for discovery
 but a mismatch is rejected before the no-replace baseline publication. During
 collection and admission, the PM2 fallback and container poller share one root
 maintenance mutex; the known PM2 systemd authorities remain disabled and
-runtime-masked. A defined fallback must match the capture-bound installed legacy
+protected by exact high-priority persistent control guards. A defined fallback
+must match the capture-bound installed legacy
 runtime tree, artifact digest and marker plus every restarted PM2 app, database
-path, and health endpoint before it is accepted. If forced container removal leaves WAL/SHM
+path, and health endpoint before it is accepted. The restore caller changes to
+`/home/dominguez` before invoking the allowed `sudo -u dominguez pm2 ...`
+command, and all four health endpoints must pass in the same bounded retry
+iteration within 120 seconds. If forced container removal leaves WAL/SHM
 pathnames, fallback may remove them only after no-handle, exact zero-WAL
 checkpoint, no-journal, regular-file, single-link, and zero-byte-WAL proofs.
 
@@ -356,7 +363,10 @@ The producer records canonical `startedAt` before attempting its lock or opening
 the source database. Admission requires that timestamp to be at or after the
 release's `systemctl start` request and requires `completedAt >= startedAt`, so
 an already-activating oneshot cannot satisfy a later release request merely by
-finishing after it.
+finishing after it. First-cutover and PM2-recovery backup admission additionally
+requires the installed producer, unit, timer, and sudoers bytes to match the
+resolved immutable active control-plane tree, with exact root metadata, no unit
+drop-ins, and the expected effective pre-promotion `ExecStart`.
 The backup producer fsyncs each encrypted artifact and checksum before rename,
 fsyncs their final files and parent namespace, and only then durably publishes
 the receipt with the same file/rename/parent ordering. A passed pointer cannot

@@ -882,6 +882,7 @@ require_immutable_candidate() {
   fi
   for relative in package.json package-lock.json scripts/release-poll.sh \
     scripts/release-deploy.mjs scripts/release-state-view.mjs \
+    scripts/local-backup-systemd-install.sh scripts/local-backup.py \
     scripts/lib/release-bootstrap.mjs scripts/lib/release-environment.mjs \
     scripts/lib/release-protected-head.mjs \
     ops/nexus-release/nexus-release-state-view \
@@ -890,7 +891,13 @@ require_immutable_candidate() {
     ops/nexus-release/nexus-release-poller.service \
     ops/nexus-release/nexus-release-poller.timer \
     ops/nexus-release/nexus-release-heartbeat.service \
-    ops/nexus-release/nexus-release-heartbeat.timer; do
+    ops/nexus-release/nexus-release-heartbeat.timer \
+    ops/local-backup/systemd/nexus-local-backup.service \
+    ops/local-backup/systemd/nexus-local-backup.timer \
+    ops/local-backup/systemd/nexus-local-backup-pre-promotion.service \
+    ops/local-backup/systemd/nexus-local-backup-restore-verify.service \
+    ops/local-backup/systemd/nexus-local-backup-restore-verify.timer \
+    ops/local-backup/nexus-local-backup.sudoers; do
     test -f "$candidate/$relative" && test ! -L "$candidate/$relative" \
       || die "critical immutable candidate path is absent or symbolic: $relative"
   done
@@ -1277,6 +1284,7 @@ as_builder /usr/bin/node --input-type=module -e "
 
 for relative in package.json package-lock.json scripts/release-poll.sh \
   scripts/release-deploy.mjs scripts/release-state-view.mjs \
+  scripts/local-backup-systemd-install.sh scripts/local-backup.py \
   scripts/lib/release-bootstrap.mjs scripts/lib/release-environment.mjs \
   scripts/lib/release-protected-head.mjs \
   ops/nexus-release/nexus-release-state-view \
@@ -1285,7 +1293,13 @@ for relative in package.json package-lock.json scripts/release-poll.sh \
   ops/nexus-release/nexus-release-poller.service \
   ops/nexus-release/nexus-release-poller.timer \
   ops/nexus-release/nexus-release-heartbeat.service \
-  ops/nexus-release/nexus-release-heartbeat.timer; do
+  ops/nexus-release/nexus-release-heartbeat.timer \
+  ops/local-backup/systemd/nexus-local-backup.service \
+  ops/local-backup/systemd/nexus-local-backup.timer \
+  ops/local-backup/systemd/nexus-local-backup-pre-promotion.service \
+  ops/local-backup/systemd/nexus-local-backup-restore-verify.service \
+  ops/local-backup/systemd/nexus-local-backup-restore-verify.timer \
+  ops/local-backup/nexus-local-backup.sudoers; do
   test -f "$STAGE_DIR/$relative" && test ! -L "$STAGE_DIR/$relative" \
     || die "critical control-plane path is absent or symbolic: $relative"
 done
@@ -1709,10 +1723,39 @@ must already exist before production is stopped. Then run this block as one Bash
 transaction. It exits on the first failed assertion; do not paste individual
 lines around a failure.
 
+The transaction proves every installed local-backup executable, unit, timer,
+and sudoers byte against the real immutable active control-plane root before it
+stops PM2. If that proof reports a mismatch, keep PM2 online, first prove all
+local-backup oneshots inactive, and reinstall only from the resolved real root
+(the installer intentionally rejects the `checkout` symlink itself):
+
+```bash
+set -euo pipefail
+sudo test -L /opt/nexus-release/checkout
+test "$(sudo stat -c '%U:%G:%F' -- /opt/nexus-release/checkout)" = \
+  'root:root:symbolic link'
+ACTIVE_BACKUP_SOURCE="$(sudo readlink -f -- /opt/nexus-release/checkout)"
+[[ "$ACTIVE_BACKUP_SOURCE" =~ ^/opt/nexus-release/control-plane/[0-9a-f]{40}$ ]]
+sudo test -d "$ACTIVE_BACKUP_SOURCE" && sudo test ! -L "$ACTIVE_BACKUP_SOURCE"
+ACTIVE_BACKUP_SHA="${ACTIVE_BACKUP_SOURCE##*/}"
+test "$(sudo cat "$ACTIVE_BACKUP_SOURCE/.nexus-control-plane-ready")" = \
+  "$ACTIVE_BACKUP_SHA https://github.com/felipedrf74/cortex-telegram-hub-bot.git /usr/bin/node:v22.23.1"
+sudo "$ACTIVE_BACKUP_SOURCE/scripts/local-backup-systemd-install.sh" \
+  "$ACTIVE_BACKUP_SOURCE"
+```
+
+Then rerun the complete transaction from its first line; never resume after the
+failed proof.
+
 ```bash
 set -euo pipefail
 
 die() { printf 'CUTOVER REFUSED: %s\n' "$*" >&2; exit 1; }
+
+run_pm2_as_dominguez() {
+  local pm2_cwd=/home/dominguez
+  (cd "$pm2_cwd" && sudo -u dominguez pm2 "$@")
+}
 
 require_no_open_handles() {
   local db suffix error_file handles lsof_status
@@ -1857,25 +1900,132 @@ require_no_legacy_listeners() {
   done
 }
 
+require_local_backup_installation() {
+  local active_mode active_root destination dropins exec_start expected_sha
+  local fragment load mode relative source spec unit
+  sudo test -L /opt/nexus-release/checkout \
+    && test "$(sudo stat -c '%U:%G:%F' -- /opt/nexus-release/checkout)" = \
+      'root:root:symbolic link' \
+    || die 'active control-plane selector is unsafe'
+  active_root="$(sudo readlink -f -- /opt/nexus-release/checkout)"
+  [[ "$active_root" =~ ^/opt/nexus-release/control-plane/[0-9a-f]{40}$ ]] \
+    || die 'active control-plane selector escapes its immutable version root'
+  sudo test -d "$active_root" && sudo test ! -L "$active_root" \
+    && test "$(sudo stat -Lc '%U:%G' -- "$active_root")" = root:root \
+    || die 'active immutable control-plane root is unsafe'
+  active_mode="$(sudo stat -Lc '%a' -- "$active_root")"
+  test $((8#$active_mode & 0222)) -eq 0 \
+    || die 'active immutable control-plane root is writable'
+  expected_sha="${active_root##*/}"
+  test "$(sudo cat "$active_root/.nexus-control-plane-ready")" = \
+    "$expected_sha https://github.com/felipedrf74/cortex-telegram-hub-bot.git /usr/bin/node:v22.23.1" \
+    || die 'active immutable control-plane marker is invalid'
+  for spec in \
+    'scripts/local-backup.py|/usr/local/libexec/nexus-local-backup/local-backup.py|755' \
+    'ops/local-backup/systemd/nexus-local-backup.service|/etc/systemd/system/nexus-local-backup.service|644' \
+    'ops/local-backup/systemd/nexus-local-backup.timer|/etc/systemd/system/nexus-local-backup.timer|644' \
+    'ops/local-backup/systemd/nexus-local-backup-pre-promotion.service|/etc/systemd/system/nexus-local-backup-pre-promotion.service|644' \
+    'ops/local-backup/systemd/nexus-local-backup-restore-verify.service|/etc/systemd/system/nexus-local-backup-restore-verify.service|644' \
+    'ops/local-backup/systemd/nexus-local-backup-restore-verify.timer|/etc/systemd/system/nexus-local-backup-restore-verify.timer|644' \
+    'ops/local-backup/nexus-local-backup.sudoers|/etc/sudoers.d/nexus-local-backup|440'; do
+    IFS='|' read -r relative destination mode <<<"$spec"
+    source="$active_root/$relative"
+    sudo test -f "$source" && sudo test ! -L "$source" \
+      || die "immutable local-backup source is unsafe: $relative"
+    sudo test -f "$destination" && sudo test ! -L "$destination" \
+      && test "$(sudo stat -Lc '%U:%G:%a:%h' -- "$destination")" = \
+        "root:root:$mode:1" \
+      || die "installed local-backup asset metadata is unsafe: $destination"
+    sudo cmp -s -- "$source" "$destination" \
+      || die "installed local-backup asset differs from immutable source: $destination"
+  done
+  sudo visudo -cf /etc/sudoers.d/nexus-local-backup >/dev/null \
+    || die 'installed local-backup sudoers policy is invalid'
+  sudo systemctl daemon-reload
+  for unit in nexus-local-backup.service nexus-local-backup.timer \
+    nexus-local-backup-pre-promotion.service \
+    nexus-local-backup-restore-verify.service \
+    nexus-local-backup-restore-verify.timer; do
+    load="$(sudo systemctl show "$unit" --property=LoadState --value)"
+    fragment="$(sudo systemctl show "$unit" --property=FragmentPath --value)"
+    dropins="$(sudo systemctl show "$unit" --property=DropInPaths --value)"
+    test "$load" = loaded \
+      && test "$fragment" = "/etc/systemd/system/$unit" \
+      && test -z "$dropins" \
+      || die "$unit does not resolve to its exact installed bytes"
+  done
+  test "$(sudo systemctl show nexus-local-backup-pre-promotion.service \
+    --property=Type --value)" = oneshot \
+    || die 'pre-promotion backup unit is not Type=oneshot'
+  exec_start="$(sudo systemctl show nexus-local-backup-pre-promotion.service \
+    --property=ExecStart --value)"
+  case "$exec_start" in
+    *'path=/usr/local/libexec/nexus-local-backup/local-backup.py ; argv[]=/usr/local/libexec/nexus-local-backup/local-backup.py pre-promotion ;'*) ;;
+    *) die 'pre-promotion backup unit has an unexpected effective ExecStart' ;;
+  esac
+}
+
+PM2_GUARD_ROOT=/etc/systemd/system.control
+
+pm2_guard_path() {
+  case "$1" in
+    pm2-dominguez.service|nexus-release-pm2-recovery-daemon.service)
+      printf '%s/%s\n' "$PM2_GUARD_ROOT" "$1" ;;
+    *) return 64 ;;
+  esac
+}
+
+pm2_guard_root_is_exact() {
+  sudo test -d "$PM2_GUARD_ROOT" && sudo test ! -L "$PM2_GUARD_ROOT" \
+    && test "$(sudo stat -Lc '%U:%G:%a' -- "$PM2_GUARD_ROOT")" = root:root:755
+}
+
+ensure_pm2_guard_root() {
+  if ! sudo test -e "$PM2_GUARD_ROOT" && ! sudo test -L "$PM2_GUARD_ROOT"; then
+    sudo install -d -o root -g root -m 755 -- "$PM2_GUARD_ROOT" || return 1
+  fi
+  pm2_guard_root_is_exact
+}
+
+install_pm2_guard() {
+  local guard unit
+  unit="$1"; guard="$(pm2_guard_path "$unit")" || return 1
+  ensure_pm2_guard_root || return 1
+  if sudo test -e "$guard" || sudo test -L "$guard"; then
+    sudo test -L "$guard" || return 1
+  else
+    sudo ln -s -- /dev/null "$guard" || return 1
+  fi
+  test "$(sudo readlink -- "$guard")" = /dev/null \
+    && test "$(sudo stat -c '%U:%G:%F' -- "$guard")" = \
+      'root:root:symbolic link'
+}
+
+pm2_guard_is_exact() {
+  local active can_start fragment guard load unit
+  unit="$1"; guard="$(pm2_guard_path "$unit")" || return 1
+  pm2_guard_root_is_exact || return 1
+  sudo test -L "$guard" \
+    && test "$(sudo readlink -- "$guard")" = /dev/null \
+    && test "$(sudo stat -c '%U:%G:%F' -- "$guard")" = \
+      'root:root:symbolic link' || return 1
+  load="$(sudo systemctl show "$unit" --property=LoadState --value)" \
+    || return 1
+  fragment="$(sudo systemctl show "$unit" --property=FragmentPath --value)" \
+    || return 1
+  can_start="$(sudo systemctl show "$unit" --property=CanStart --value)" \
+    || return 1
+  active="$(sudo systemctl show "$unit" --property=ActiveState --value)" \
+    || return 1
+  test "$load" = masked && test "$fragment" = /dev/null \
+    && test "$can_start" = no && test "$active" = inactive
+}
+
 require_pm2_guard() {
-  local active_state active_status enabled_state enabled_status unit
+  local unit
   for unit in pm2-dominguez.service nexus-release-pm2-recovery-daemon.service; do
-    enabled_status=0
-    if enabled_state="$(sudo systemctl is-enabled "$unit" 2>&1)"; then
-      enabled_status=0
-    else
-      enabled_status=$?
-    fi
-    test "$enabled_status" -ne 0 && test "$enabled_state" = masked-runtime \
-      || die "$unit is not protected by the runtime mask"
-    active_status=0
-    if active_state="$(sudo systemctl is-active "$unit" 2>&1)"; then
-      active_status=0
-    else
-      active_status=$?
-    fi
-    test "$active_status" -ne 0 && test "$active_state" = inactive \
-      || die "$unit is not inactive"
+    pm2_guard_is_exact "$unit" \
+      || die "$unit is not protected by its exact high-priority runtime guard"
   done
 }
 
@@ -1907,6 +2057,7 @@ exec 9<>"$USER_RELEASE_LOCK"
 flock -n 9 || die 'another PM2 release or capability transaction is active'
 exec 8<>"$MAINTENANCE_LOCK"
 flock -n 8 || die 'another root maintenance or container release is active'
+require_local_backup_installation
 sudo test -f "$BACKUP_ENV" && sudo test ! -L "$BACKUP_ENV" \
   || die 'backup environment is missing or symbolic'
 test "$(sudo stat -Lc '%U:%G:%a:%h' -- "$BACKUP_ENV")" = 'root:root:600:1' \
@@ -1961,9 +2112,14 @@ for ROLE in production staging; do
   test "$(sudo stat -Lc '%F:%h' -- "$MARKER")" = 'regular file:1' \
     || die "$ROLE legacy runtime marker is not a single-link regular file"
   RUNTIME_SHA="$(sudo jq -er \
-    '.schema == "nexus.release-bundle.v1"
-     and (.runtimeSha | test("^[0-9a-f]{40}$"))
-     and (.artifactDigest | test("^[0-9a-f]{64}$"))
+    'select(
+       type == "object"
+       and .schema == "nexus.release-bundle.v1"
+       and (.runtimeSha | type == "string"
+         and test("^[0-9a-f]{40}$"))
+       and (.artifactDigest | type == "string"
+         and test("^[0-9a-f]{64}$"))
+     )
      | .runtimeSha' "$MARKER")" \
     || die "$ROLE legacy runtime marker is invalid"
   ARTIFACT_DIGEST="$(sudo jq -er .artifactDigest "$MARKER")"
@@ -2051,7 +2207,7 @@ require_exact_pm2_identity() {
   fi
 }
 
-PM2_JSON="$(sudo -u dominguez pm2 jlist)"
+PM2_JSON="$(run_pm2_as_dominguez jlist)"
 for APP in nexus-hub content-engine nexus-hub-staging content-engine-staging; do
   require_exact_pm2_identity "$APP" online
 done
@@ -2096,11 +2252,17 @@ else
     --arg stagingRuntimePath "$STAGING_RUNTIME" \
     --arg stagingMarkerSha256 "$STAGING_MARKER_SHA256" \
     --arg stagingDatabaseIdentity "$STAGING_DATABASE_IDENTITY" \
-    '{schema:"nexus.bootstrap-legacy-runtime-capture.v2",createdAt,
-      productionSourceSha,productionArtifactDigest,productionRuntimePath,
-      productionMarkerSha256,productionDatabaseIdentity,
-      stagingSourceSha,stagingArtifactDigest,stagingRuntimePath,
-      stagingMarkerSha256,stagingDatabaseIdentity}' >"$RUNTIME_EVIDENCE_TEMP"
+    '{schema:"nexus.bootstrap-legacy-runtime-capture.v2",createdAt:$createdAt,
+      productionSourceSha:$productionSourceSha,
+      productionArtifactDigest:$productionArtifactDigest,
+      productionRuntimePath:$productionRuntimePath,
+      productionMarkerSha256:$productionMarkerSha256,
+      productionDatabaseIdentity:$productionDatabaseIdentity,
+      stagingSourceSha:$stagingSourceSha,
+      stagingArtifactDigest:$stagingArtifactDigest,
+      stagingRuntimePath:$stagingRuntimePath,
+      stagingMarkerSha256:$stagingMarkerSha256,
+      stagingDatabaseIdentity:$stagingDatabaseIdentity}' >"$RUNTIME_EVIDENCE_TEMP"
   RUNTIME_EVIDENCE_STAGE="$RUNTIME_EVIDENCE.next-$BASHPID"
   sudo test ! -e "$RUNTIME_EVIDENCE_STAGE" \
     || die 'legacy runtime capture staging path already exists'
@@ -2116,9 +2278,9 @@ sudo sync -f "$RUNTIME_EVIDENCE"
 sudo sync -f "$(dirname "$RUNTIME_EVIDENCE")"
 
 # The first mutation happens only after the recovery identity is durable.
-sudo -u dominguez pm2 stop \
+run_pm2_as_dominguez stop \
   nexus-hub content-engine nexus-hub-staging content-engine-staging
-PM2_JSON="$(sudo -u dominguez pm2 jlist)"
+PM2_JSON="$(run_pm2_as_dominguez jlist)"
 for APP in nexus-hub content-engine nexus-hub-staging content-engine-staging; do
   require_exact_pm2_identity "$APP" stopped
 done
@@ -2129,9 +2291,11 @@ for UNIT in pm2-dominguez.service nexus-release-pm2-recovery-daemon.service; do
     not-found) ;;
     *) die "$UNIT has unsafe load state: $LOAD_STATE" ;;
   esac
-  sudo systemctl mask --runtime "$UNIT"
+  install_pm2_guard "$UNIT" \
+    || die "$UNIT high-priority runtime guard could not be installed"
 done
-sudo -u dominguez pm2 kill
+sudo systemctl daemon-reload
+run_pm2_as_dominguez kill
 require_pm2_guard
 require_no_open_handles "$OLD_PRODUCTION" "$OLD_STAGING"
 require_no_legacy_listeners
@@ -2156,6 +2320,7 @@ sudo sqlite3 "file:$OLD_STAGING?mode=ro" \
 
 # 4. Require a fresh successful governed backup receipt for the exact stopped
 # production database; a stale last-success.json is not evidence for this run.
+require_local_backup_installation
 BACKUP_REQUESTED_MS="$(date +%s%3N)"
 sudo systemctl start nexus-local-backup-pre-promotion.service
 test "$(sudo systemctl show nexus-local-backup-pre-promotion.service \
@@ -2301,8 +2466,8 @@ jq -cn --arg createdAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     "$(sudo stat -Lc '%d:%i' -- "$NEW_STAGING/bot.db")" \
   --arg targetStagingLogicalDigest \
     "$(logical_digest "$NEW_STAGING/bot.db")" \
-  '{schema:"nexus.bootstrap-database-transition.v1",createdAt,
-    runtimeCaptureSha256,
+  '{schema:"nexus.bootstrap-database-transition.v1",createdAt:$createdAt,
+    runtimeCaptureSha256:$runtimeCaptureSha256,
     legacy:{production:{path:"/home/dominguez/telegram-hub-bot/data/bot.db",
       identity:$legacyProductionIdentity,logicalDigest:$legacyProductionLogicalDigest},
       staging:{path:"/home/dominguez/telegram-hub-bot-staging/data/bot.db",
@@ -2365,6 +2530,11 @@ inspect the still-running PM2 identities and restart section 1b from its top.
 set -euo pipefail
 
 die() { printf 'PRE-BASELINE RECOVERY REFUSED: %s\n' "$*" >&2; exit 1; }
+
+run_pm2_as_dominguez() {
+  local pm2_cwd=/home/dominguez
+  (cd "$pm2_cwd" && sudo -u dominguez pm2 "$@")
+}
 
 require_no_open_handles() {
   local db error_file handles lsof_status suffix
@@ -2527,7 +2697,106 @@ require_canonical_database() {
   require_valid_sqlite "$db"
 }
 
+require_local_backup_installation() {
+  local active_mode active_root destination dropins exec_start expected_sha
+  local fragment load mode relative source spec unit
+  sudo test -L /opt/nexus-release/checkout \
+    && test "$(sudo stat -c '%U:%G:%F' -- /opt/nexus-release/checkout)" = \
+      'root:root:symbolic link' \
+    || die 'active control-plane selector is unsafe'
+  active_root="$(sudo readlink -f -- /opt/nexus-release/checkout)"
+  [[ "$active_root" =~ ^/opt/nexus-release/control-plane/[0-9a-f]{40}$ ]] \
+    || die 'active control-plane selector escapes its immutable version root'
+  sudo test -d "$active_root" && sudo test ! -L "$active_root" \
+    && test "$(sudo stat -Lc '%U:%G' -- "$active_root")" = root:root \
+    || die 'active immutable control-plane root is unsafe'
+  active_mode="$(sudo stat -Lc '%a' -- "$active_root")"
+  test $((8#$active_mode & 0222)) -eq 0 \
+    || die 'active immutable control-plane root is writable'
+  expected_sha="${active_root##*/}"
+  test "$(sudo cat "$active_root/.nexus-control-plane-ready")" = \
+    "$expected_sha https://github.com/felipedrf74/cortex-telegram-hub-bot.git /usr/bin/node:v22.23.1" \
+    || die 'active immutable control-plane marker is invalid'
+  for spec in \
+    'scripts/local-backup.py|/usr/local/libexec/nexus-local-backup/local-backup.py|755' \
+    'ops/local-backup/systemd/nexus-local-backup.service|/etc/systemd/system/nexus-local-backup.service|644' \
+    'ops/local-backup/systemd/nexus-local-backup.timer|/etc/systemd/system/nexus-local-backup.timer|644' \
+    'ops/local-backup/systemd/nexus-local-backup-pre-promotion.service|/etc/systemd/system/nexus-local-backup-pre-promotion.service|644' \
+    'ops/local-backup/systemd/nexus-local-backup-restore-verify.service|/etc/systemd/system/nexus-local-backup-restore-verify.service|644' \
+    'ops/local-backup/systemd/nexus-local-backup-restore-verify.timer|/etc/systemd/system/nexus-local-backup-restore-verify.timer|644' \
+    'ops/local-backup/nexus-local-backup.sudoers|/etc/sudoers.d/nexus-local-backup|440'; do
+    IFS='|' read -r relative destination mode <<<"$spec"
+    source="$active_root/$relative"
+    sudo test -f "$source" && sudo test ! -L "$source" \
+      || die "immutable local-backup source is unsafe: $relative"
+    sudo test -f "$destination" && sudo test ! -L "$destination" \
+      && test "$(sudo stat -Lc '%U:%G:%a:%h' -- "$destination")" = \
+        "root:root:$mode:1" \
+      || die "installed local-backup asset metadata is unsafe: $destination"
+    sudo cmp -s -- "$source" "$destination" \
+      || die "installed local-backup asset differs from immutable source: $destination"
+  done
+  sudo visudo -cf /etc/sudoers.d/nexus-local-backup >/dev/null \
+    || die 'installed local-backup sudoers policy is invalid'
+  sudo systemctl daemon-reload
+  for unit in nexus-local-backup.service nexus-local-backup.timer \
+    nexus-local-backup-pre-promotion.service \
+    nexus-local-backup-restore-verify.service \
+    nexus-local-backup-restore-verify.timer; do
+    load="$(sudo systemctl show "$unit" --property=LoadState --value)"
+    fragment="$(sudo systemctl show "$unit" --property=FragmentPath --value)"
+    dropins="$(sudo systemctl show "$unit" --property=DropInPaths --value)"
+    test "$load" = loaded \
+      && test "$fragment" = "/etc/systemd/system/$unit" \
+      && test -z "$dropins" \
+      || die "$unit does not resolve to its exact installed bytes"
+  done
+  test "$(sudo systemctl show nexus-local-backup-pre-promotion.service \
+    --property=Type --value)" = oneshot \
+    || die 'pre-promotion backup unit is not Type=oneshot'
+  exec_start="$(sudo systemctl show nexus-local-backup-pre-promotion.service \
+    --property=ExecStart --value)"
+  case "$exec_start" in
+    *'path=/usr/local/libexec/nexus-local-backup/local-backup.py ; argv[]=/usr/local/libexec/nexus-local-backup/local-backup.py pre-promotion ;'*) ;;
+    *) die 'pre-promotion backup unit has an unexpected effective ExecStart' ;;
+  esac
+}
+
+wait_for_all_pm2_health() {
+  local curl_max deadline endpoint iteration_ok remaining
+  local -a endpoints=(
+    http://127.0.0.1:8200/health
+    http://127.0.0.1:8100/health
+    http://127.0.0.1:8201/health
+    http://127.0.0.1:8101/health
+  )
+  deadline=$((SECONDS + 120))
+  while test "$SECONDS" -lt "$deadline"; do
+    iteration_ok=1
+    for endpoint in "${endpoints[@]}"; do
+      remaining=$((deadline - SECONDS))
+      if test "$remaining" -le 0; then
+        iteration_ok=0
+        break
+      fi
+      curl_max=3
+      if test "$remaining" -lt "$curl_max"; then curl_max="$remaining"; fi
+      if ! curl --fail --silent --show-error --connect-timeout 1 \
+          --max-time "$curl_max" "$endpoint" >/dev/null; then
+        iteration_ok=0
+        break
+      fi
+    done
+    test "$iteration_ok" -eq 1 && return 0
+    remaining=$((deadline - SECONDS))
+    test "$remaining" -gt 0 || break
+    sleep 1
+  done
+  return 1
+}
+
 fresh_backup_for() {
+  require_local_backup_installation
   local completed_ms expected producer_started_ms receipt requested_ms
   expected="$1"
   receipt=/srv/nexus-backups/application/state/last-success.json
@@ -2555,24 +2824,166 @@ fresh_backup_for() {
     || die 'backup completed before its producer started'
 }
 
+PM2_GUARD_ROOT=/etc/systemd/system.control
+PM2_CANONICAL_UNIT_ROOT=/etc/systemd/system
+
+pm2_guard_path() {
+  case "$1" in
+    pm2-dominguez.service|nexus-release-pm2-recovery-daemon.service)
+      printf '%s/%s\n' "$PM2_GUARD_ROOT" "$1" ;;
+    *) return 64 ;;
+  esac
+}
+
+pm2_guard_root_is_exact() {
+  sudo test -d "$PM2_GUARD_ROOT" && sudo test ! -L "$PM2_GUARD_ROOT" \
+    && test "$(sudo stat -Lc '%U:%G:%a' -- "$PM2_GUARD_ROOT")" = root:root:755
+}
+
+ensure_pm2_guard_root() {
+  if ! sudo test -e "$PM2_GUARD_ROOT" && ! sudo test -L "$PM2_GUARD_ROOT"; then
+    sudo install -d -o root -g root -m 755 -- "$PM2_GUARD_ROOT" || return 1
+  fi
+  pm2_guard_root_is_exact
+}
+
+install_pm2_guard() {
+  local guard unit
+  unit="$1"; guard="$(pm2_guard_path "$unit")" || return 1
+  ensure_pm2_guard_root || return 1
+  if sudo test -e "$guard" || sudo test -L "$guard"; then
+    sudo test -L "$guard" || return 1
+  else
+    sudo ln -s -- /dev/null "$guard" || return 1
+  fi
+  test "$(sudo readlink -- "$guard")" = /dev/null \
+    && test "$(sudo stat -c '%U:%G:%F' -- "$guard")" = \
+      'root:root:symbolic link'
+}
+
+pm2_guard_is_exact() {
+  local active can_start fragment guard load unit
+  unit="$1"; guard="$(pm2_guard_path "$unit")" || return 1
+  pm2_guard_root_is_exact || return 1
+  sudo test -L "$guard" \
+    && test "$(sudo readlink -- "$guard")" = /dev/null \
+    && test "$(sudo stat -c '%U:%G:%F' -- "$guard")" = \
+      'root:root:symbolic link' || return 1
+  load="$(sudo systemctl show "$unit" --property=LoadState --value)" \
+    || return 1
+  fragment="$(sudo systemctl show "$unit" --property=FragmentPath --value)" \
+    || return 1
+  can_start="$(sudo systemctl show "$unit" --property=CanStart --value)" \
+    || return 1
+  active="$(sudo systemctl show "$unit" --property=ActiveState --value)" \
+    || return 1
+  test "$load" = masked && test "$fragment" = /dev/null \
+    && test "$can_start" = no && test "$active" = inactive
+}
+
 require_pm2_guard() {
-  local active_state active_status enabled_state enabled_status unit
+  local unit
   for unit in pm2-dominguez.service nexus-release-pm2-recovery-daemon.service; do
-    if enabled_state="$(sudo systemctl is-enabled "$unit" 2>&1)"; then
-      enabled_status=0
-    else
-      enabled_status=$?
-    fi
-    test "$enabled_status" -ne 0 && test "$enabled_state" = masked-runtime \
-      || die "$unit is not protected by the runtime mask"
-    if active_state="$(sudo systemctl is-active "$unit" 2>&1)"; then
-      active_status=0
-    else
-      active_status=$?
-    fi
-    test "$active_status" -ne 0 && test "$active_state" = inactive \
-      || die "$unit is not inactive"
+    pm2_guard_is_exact "$unit" \
+      || die "$unit is not protected by its exact high-priority runtime guard"
   done
+}
+
+pm2_fail_closed_is_exact() {
+  local database handles listeners lsof_status path pgrep_status port suffix unit
+  for unit in pm2-dominguez.service nexus-release-pm2-recovery-daemon.service; do
+    pm2_guard_is_exact "$unit" || return 1
+  done
+  if sudo pgrep -u dominguez -f 'PM2.*God Daemon' >/dev/null; then
+    return 1
+  else
+    pgrep_status=$?
+  fi
+  test "$pgrep_status" -eq 1 || return 1
+  for port in 8100 8101 8200 8201; do
+    if listeners="$(sudo lsof -nP -t -iTCP:"$port" -sTCP:LISTEN 2>&1)"; then
+      return 1
+    else
+      lsof_status=$?
+    fi
+    test "$lsof_status" -eq 1 && test -z "$listeners" || return 1
+  done
+  for database in \
+    /home/dominguez/telegram-hub-bot/data/bot.db \
+    /home/dominguez/telegram-hub-bot-staging/data/bot.db \
+    /home/dominguez/telegram-hub-bot/data/bot.db.next-bootstrap-recovery \
+    /var/lib/nexus-hub/production/data/bot.db \
+    /var/lib/nexus-hub/production/data/bot.db.next \
+    /var/lib/nexus-hub/staging/data/bot.db \
+    /var/lib/nexus-hub/staging/data/bot.db.next; do
+    for suffix in '' -wal -shm -journal; do
+      path="$database$suffix"
+      if sudo test -e "$path" || sudo test -L "$path"; then
+        if handles="$(sudo lsof -nP -t -- "$path" 2>&1)"; then
+          return 1
+        else
+          lsof_status=$?
+        fi
+        test "$lsof_status" -eq 1 && test -z "$handles" || return 1
+      fi
+    done
+  done
+}
+
+enforce_pm2_fail_closed() {
+  local action_failed=0 unit
+  if pm2_fail_closed_is_exact; then
+    return 0
+  fi
+  run_pm2_as_dominguez stop \
+    nexus-hub content-engine nexus-hub-staging content-engine-staging \
+    || action_failed=1
+  for unit in pm2-dominguez.service nexus-release-pm2-recovery-daemon.service; do
+    sudo systemctl disable --now "$unit" || action_failed=1
+    install_pm2_guard "$unit" || action_failed=1
+  done
+  sudo systemctl daemon-reload || action_failed=1
+  run_pm2_as_dominguez kill || action_failed=1
+  if pm2_fail_closed_is_exact; then
+    return 0
+  fi
+  printf 'PM2 fail-closed postconditions remain false (action failures: %s)\n' \
+    "$action_failed" >&2
+  return 1
+}
+
+retire_canonical_pm2_guard() {
+  local active can_start canonical fragment guard legacy_guard load unit
+  unit="$1"
+  test "$unit" = pm2-dominguez.service || return 64
+  guard="$(pm2_guard_path "$unit")" || return 1
+  canonical="$PM2_CANONICAL_UNIT_ROOT/$unit"
+  legacy_guard="/run/systemd/system/$unit"
+  pm2_guard_is_exact "$unit" || return 1
+  sudo test -f "$canonical" && sudo test ! -L "$canonical" \
+    && test "$(sudo stat -Lc '%U:%G:%a:%h' -- "$canonical")" = \
+      'root:root:644:1' || return 1
+  if sudo test -e "$legacy_guard" || sudo test -L "$legacy_guard"; then
+    sudo test -L "$legacy_guard" \
+      && test "$(sudo readlink -- "$legacy_guard")" = /dev/null \
+      && test "$(sudo stat -c '%U:%G:%F' -- "$legacy_guard")" = \
+        'root:root:symbolic link' || return 1
+    sudo rm -- "$legacy_guard" || return 1
+  fi
+  sudo rm -- "$guard" || return 1
+  sudo systemctl daemon-reload || return 1
+  sudo test ! -e "$guard" && sudo test ! -L "$guard" || return 1
+  sudo test ! -e "$legacy_guard" && sudo test ! -L "$legacy_guard" || return 1
+  load="$(sudo systemctl show "$unit" --property=LoadState --value)" \
+    || return 1
+  fragment="$(sudo systemctl show "$unit" --property=FragmentPath --value)" \
+    || return 1
+  can_start="$(sudo systemctl show "$unit" --property=CanStart --value)" \
+    || return 1
+  active="$(sudo systemctl show "$unit" --property=ActiveState --value)" \
+    || return 1
+  test "$load" = loaded && test "$fragment" = "$canonical" \
+    && test "$can_start" = yes && test "$active" = inactive
 }
 
 OLD_PRODUCTION=/home/dominguez/telegram-hub-bot/data/bot.db
@@ -2675,19 +3086,35 @@ flock -n 9 || die 'another PM2 release or capability transaction is active'
 exec 8<>"$MAINTENANCE_LOCK"
 flock -n 8 || die 'another root maintenance or container release is active'
 
+# Arm fail-closed cleanup before inspecting or quiescing any possibly active
+# PM2 authority. A signal during `pm2 jlist` or the first quiescence attempt
+# must retry exact closure rather than leave a partially active daemon.
+PM2_RESTART_ARMED=1
+fail_closed_pm2_restart() {
+  local status=$?
+  trap - EXIT HUP INT TERM
+  if test "$status" -ne 0 && test "$PM2_RESTART_ARMED" -eq 1; then
+    if ! enforce_pm2_fail_closed; then
+      printf 'FATAL: PM2 restart cleanup could not prove fail-closed postconditions\n' >&2
+      exit 70
+    fi
+  fi
+  exit "$status"
+}
+trap fail_closed_pm2_restart EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 # If section 1b failed in `pm2 stop` itself, finish quiescing only after every
-# still-visible PM2 row is proven to match the immutable capture. Runtime masks
-# disappear on reboot, so inactive authorities are disabled and re-masked
-# without invoking `pm2`; `pm2 jlist` is allowed only when a service authority
-# or the already-running PM2 daemon proves that the user daemon is active.
+# still-visible PM2 row is proven to match the immutable capture. High-priority
+# persistent control guards are re-proved on every retry, so inactive authorities
+# are disabled and re-guarded without invoking `pm2`; `pm2 jlist` is allowed only when a service
+# authority or the already-running PM2 daemon proves that the user daemon is
+# active.
 PM2_ALREADY_GUARDED=1
 PM2_AUTHORITY_OR_DAEMON_ACTIVE=0
 for UNIT in pm2-dominguez.service nexus-release-pm2-recovery-daemon.service; do
-  if ENABLED_STATE="$(sudo systemctl is-enabled "$UNIT" 2>&1)"; then
-    ENABLED_STATUS=0
-  else
-    ENABLED_STATUS=$?
-  fi
   if ACTIVE_STATE="$(sudo systemctl is-active "$UNIT" 2>&1)"; then
     ACTIVE_STATUS=0
   else
@@ -2699,7 +3126,7 @@ for UNIT in pm2-dominguez.service nexus-release-pm2-recovery-daemon.service; do
       || die "$UNIT returned an inconsistent inactive state" ;;
     *) die "$UNIT has an unsafe active state: $ACTIVE_STATE" ;;
   esac
-  if test "$ENABLED_STATE" != masked-runtime || test "$ACTIVE_STATE" != inactive; then
+  if ! pm2_guard_is_exact "$UNIT" || test "$ACTIVE_STATE" != inactive; then
     PM2_ALREADY_GUARDED=0
   fi
 done
@@ -2714,7 +3141,7 @@ fi
 PM2_CAPTURE_IDENTITY_PROVED=1
 if test "$PM2_ALREADY_GUARDED" -eq 0; then
   if test "$PM2_AUTHORITY_OR_DAEMON_ACTIVE" -eq 1; then
-    if PM2_JSON="$(sudo -u dominguez pm2 jlist)" \
+    if PM2_JSON="$(run_pm2_as_dominguez jlist)" \
         && jq -e 'length == 4
           and ([.[].name] | sort == ["content-engine","content-engine-staging",
             "nexus-hub","nexus-hub-staging"])' <<<"$PM2_JSON" >/dev/null; then
@@ -2793,18 +3220,9 @@ if test "$PM2_ALREADY_GUARDED" -eq 0; then
     done
   fi
   # Quiescence is unconditional: a partial or mismatched active identity must
-  # never escape through an early assertion before both authorities are masked.
-  set +e
-  for UNIT in pm2-dominguez.service nexus-release-pm2-recovery-daemon.service; do
-    sudo systemctl disable --now "$UNIT"
-    sudo systemctl mask --runtime "$UNIT"
-  done
-  if test "$PM2_AUTHORITY_OR_DAEMON_ACTIVE" -eq 1; then
-    sudo -u dominguez pm2 stop \
-      nexus-hub content-engine nexus-hub-staging content-engine-staging
-    sudo -u dominguez pm2 kill
-  fi
-  set -e
+  # never escape through an early assertion before both authorities are guarded.
+  enforce_pm2_fail_closed \
+    || die 'PM2 fail-closed quiescence could not prove every postcondition'
 fi
 require_pm2_guard
 if sudo pgrep -u dominguez -f 'PM2.*God Daemon' >/dev/null; then
@@ -3020,6 +3438,10 @@ if test "$PRE_BASELINE_ACTION" = resume-baseline; then
   fresh_backup_for "$LIVE_PRODUCTION"
   remove_proven_stale_wal_sidecars "$LIVE_PRODUCTION" "$LIVE_STAGING"
   require_pm2_guard
+  pm2_fail_closed_is_exact \
+    || die 'pre-baseline checkpoint exit is not exactly fail-closed'
+  PM2_RESTART_ARMED=0
+  trap - EXIT HUP INT TERM
   printf 'pre-baseline transition checkpoint is current; continue with section 3a\n'
   exit 0
 fi
@@ -3067,27 +3489,12 @@ if test -z "${INCIDENT_DIR:-}"; then
   sudo chmod 700 "$INCIDENT_DIR"
 fi
 
-PM2_RESTART_ARMED=1
-fail_closed_pm2_restart() {
-  local status=$?
-  if test "$status" -ne 0 && test "$PM2_RESTART_ARMED" -eq 1; then
-    set +e
-    sudo -u dominguez pm2 stop \
-      nexus-hub content-engine nexus-hub-staging content-engine-staging
-    sudo systemctl disable --now pm2-dominguez.service
-    sudo systemctl mask --runtime pm2-dominguez.service
-    sudo systemctl mask --runtime nexus-release-pm2-recovery-daemon.service
-    sudo -u dominguez pm2 kill
-  fi
-  exit "$status"
-}
-trap fail_closed_pm2_restart EXIT
-
-sudo systemctl unmask --runtime pm2-dominguez.service
+retire_canonical_pm2_guard pm2-dominguez.service \
+  || die 'canonical PM2 high-priority runtime guard could not be retired safely'
 sudo systemctl enable --now pm2-dominguez.service
-sudo -u dominguez pm2 start content-engine content-engine-staging
-sudo -u dominguez pm2 start nexus-hub nexus-hub-staging
-PM2_JSON="$(sudo -u dominguez pm2 jlist)"
+run_pm2_as_dominguez start content-engine content-engine-staging
+run_pm2_as_dominguez start nexus-hub nexus-hub-staging
+PM2_JSON="$(run_pm2_as_dominguez jlist)"
 for APP in nexus-hub content-engine nexus-hub-staging content-engine-staging; do
   case "$APP" in
     nexus-hub)
@@ -3152,10 +3559,8 @@ for APP in nexus-hub content-engine nexus-hub-staging content-engine-staging; do
       || die "$APP restarted against a different database"
   fi
 done
-curl --fail --silent --show-error --max-time 5 http://127.0.0.1:8200/health >/dev/null
-curl --fail --silent --show-error --max-time 5 http://127.0.0.1:8100/health >/dev/null
-curl --fail --silent --show-error --max-time 5 http://127.0.0.1:8201/health >/dev/null
-curl --fail --silent --show-error --max-time 5 http://127.0.0.1:8101/health >/dev/null
+wait_for_all_pm2_health \
+  || die 'PM2 restart did not make all four health endpoints ready within 120 seconds'
 
 # Copy evidence to the incident directory without retiring either canonical
 # authority. If either copy fails, both source files remain retryable and the
@@ -3178,7 +3583,7 @@ for EVIDENCE_PAIR in \
   fi
 done
 PM2_RESTART_ARMED=0
-trap - EXIT
+trap - EXIT HUP INT TERM
 printf 'legacy PM2 restored from exact capture; evidence: %s\n' "$INCIDENT_DIR"
 ```
 
@@ -3411,22 +3816,24 @@ exec 9<>"$USER_RELEASE_LOCK"
 flock -n 9 || die 'another PM2 release or capability transaction is active'
 exec 8<>"$MAINTENANCE_LOCK"
 flock -n 8 || die 'another root maintenance or container release is active'
+PM2_GUARD_ROOT=/etc/systemd/system.control
+sudo test -d "$PM2_GUARD_ROOT" && sudo test ! -L "$PM2_GUARD_ROOT" \
+  && test "$(sudo stat -Lc '%U:%G:%a' -- "$PM2_GUARD_ROOT")" = root:root:755 \
+  || die 'PM2 high-priority runtime guard root is unsafe'
 for UNIT in pm2-dominguez.service nexus-release-pm2-recovery-daemon.service; do
-  ENABLED_STATUS=0
-  if ENABLED_STATE="$(sudo systemctl is-enabled "$UNIT" 2>&1)"; then
-    ENABLED_STATUS=0
-  else
-    ENABLED_STATUS=$?
-  fi
-  test "$ENABLED_STATUS" -ne 0 && test "$ENABLED_STATE" = masked-runtime \
-    || die "$UNIT is not protected by the runtime mask"
-  ACTIVE_STATUS=0
-  if ACTIVE_STATE="$(sudo systemctl is-active "$UNIT" 2>&1)"; then
-    ACTIVE_STATUS=0
-  else
-    ACTIVE_STATUS=$?
-  fi
-  test "$ACTIVE_STATUS" -ne 0 && test "$ACTIVE_STATE" = inactive \
+  GUARD="$PM2_GUARD_ROOT/$UNIT"
+  sudo test -L "$GUARD" \
+    && test "$(sudo readlink -- "$GUARD")" = /dev/null \
+    && test "$(sudo stat -c '%U:%G:%F' -- "$GUARD")" = \
+      'root:root:symbolic link' \
+    || die "$UNIT high-priority runtime guard is not exact"
+  test "$(sudo systemctl show "$UNIT" --property=LoadState --value)" = masked \
+    || die "$UNIT is not loaded as masked"
+  test "$(sudo systemctl show "$UNIT" --property=FragmentPath --value)" = /dev/null \
+    || die "$UNIT is not resolved through its high-priority runtime guard"
+  test "$(sudo systemctl show "$UNIT" --property=CanStart --value)" = no \
+    || die "$UNIT can still be started"
+  test "$(sudo systemctl show "$UNIT" --property=ActiveState --value)" = inactive \
     || die "$UNIT is not inactive"
 done
 
@@ -3754,11 +4161,14 @@ sudo systemctl enable nexus-release-heartbeat.timer
 Before any first-cutover poller invocation, prove the dedicated release
 Telegram path immediately. The one-shot receives only the two Telegram values
 from the root-only `poller.env`; it does not log either value or read the
-provider response body. `InvocationID` binds the proof to this exact start, and
-`journalctl --sync` flushes it before inspection, so an older successful
-heartbeat cannot authorize bootstrap. Run the complete block in one Bash shell.
-Any failure stops the cutover; do not start the bootstrap service or either
-poller service/timer without the exact `delivered:true` proof.
+provider response body. A journal sync and tail cursor captured before the
+start fence out older evidence. Post-cursor trusted fields must expose one
+validated `_SYSTEMD_INVOCATION_ID`, and a second query bound to that cursor,
+unit, and invocation must contain exactly one delivered proof. This remains
+valid even when systemd clears the unit's `InvocationID` property after exit.
+Run the complete block in one Bash shell. Any failure stops the cutover; do not
+start the bootstrap service or either poller service/timer without the exact
+`delivered:true` proof.
 
 ```bash
 set -euo pipefail
@@ -3768,23 +4178,72 @@ export PATH
 die() { printf 'HEARTBEAT LIVENESS REFUSED: %s\n' "$*" >&2; exit 1; }
 
 HEARTBEAT_UNIT=nexus-release-heartbeat.service
+HEARTBEAT_TIMER=nexus-release-heartbeat.timer
+test "$(sudo systemctl show "$HEARTBEAT_UNIT" --property=ActiveState --value)" \
+  = inactive || die 'heartbeat service is not inactive before attended proof'
+test "$(sudo systemctl show "$HEARTBEAT_TIMER" --property=ActiveState --value)" \
+  = inactive || die 'heartbeat timer is already active before attended proof'
+test "$(sudo systemctl show "$HEARTBEAT_UNIT" --property=Type --value)" \
+  = oneshot || die 'heartbeat service is not a one-shot'
+test "$(sudo systemctl show "$HEARTBEAT_UNIT" --property=RemainAfterExit --value)" \
+  = no || die 'heartbeat service retains an active state after exit'
+
+sudo journalctl --sync
+HEARTBEAT_CURSOR_OUTPUT="$(
+  sudo journalctl -n 0 --show-cursor --output=cat --no-pager --quiet
+)"
+HEARTBEAT_CURSOR_COUNT="$(
+  /usr/bin/awk '/^-- cursor: / { count += 1 } END { print count + 0 }' \
+    <<<"$HEARTBEAT_CURSOR_OUTPUT"
+)"
+test "$HEARTBEAT_CURSOR_COUNT" = 1 \
+  || die 'journal did not return exactly one pre-start tail cursor'
+HEARTBEAT_JOURNAL_CURSOR="$(
+  /usr/bin/sed -n 's/^-- cursor: //p' <<<"$HEARTBEAT_CURSOR_OUTPUT"
+)"
+test -n "$HEARTBEAT_JOURNAL_CURSOR" \
+  || die 'journal cursor is unavailable before heartbeat start'
+
 sudo systemctl start "$HEARTBEAT_UNIT" \
   || die 'dedicated release-channel heartbeat service failed'
 HEARTBEAT_RESULT="$(sudo systemctl show "$HEARTBEAT_UNIT" \
   --property=Result --value)"
 test "$HEARTBEAT_RESULT" = success \
   || die 'heartbeat unit result is not success'
-HEARTBEAT_INVOCATION_ID="$(sudo systemctl show "$HEARTBEAT_UNIT" \
-  --property=InvocationID --value)"
-[[ "$HEARTBEAT_INVOCATION_ID" =~ ^[0-9a-f]{32}$ ]] \
-  || die 'heartbeat invocation identity is unavailable'
 
 sudo journalctl --sync
-HEARTBEAT_EVIDENCE_COUNT="$(
-  sudo journalctl "_SYSTEMD_INVOCATION_ID=$HEARTBEAT_INVOCATION_ID" \
-    --output=json --no-pager --quiet \
+HEARTBEAT_POST_CURSOR_INVOCATIONS="$(
+  sudo journalctl --after-cursor="$HEARTBEAT_JOURNAL_CURSOR" \
+    "_SYSTEMD_UNIT=$HEARTBEAT_UNIT" --output=json --no-pager --quiet \
   | /usr/bin/jq -rs '
       [ .[]
+        | ._SYSTEMD_INVOCATION_ID
+        | select(type == "string" and test("^[0-9a-f]{32}$"))
+      ] | unique
+    '
+)"
+HEARTBEAT_POST_CURSOR_INVOCATION_COUNT="$(
+  /usr/bin/jq -r 'length' <<<"$HEARTBEAT_POST_CURSOR_INVOCATIONS"
+)"
+test "$HEARTBEAT_POST_CURSOR_INVOCATION_COUNT" = 1 \
+  || die 'post-cursor journal lacks exactly one heartbeat invocation'
+HEARTBEAT_INVOCATION_ID="$(
+  /usr/bin/jq -er '.[0] | select(test("^[0-9a-f]{32}$"))' \
+    <<<"$HEARTBEAT_POST_CURSOR_INVOCATIONS"
+)" || die 'heartbeat proof invocation identity is unavailable'
+
+HEARTBEAT_INVOCATION_PROOF_COUNT="$(
+  sudo journalctl --after-cursor="$HEARTBEAT_JOURNAL_CURSOR" \
+    "_SYSTEMD_UNIT=$HEARTBEAT_UNIT" \
+    "_SYSTEMD_INVOCATION_ID=$HEARTBEAT_INVOCATION_ID" \
+    --output=json --no-pager --quiet \
+  | /usr/bin/jq -rs --arg invocation "$HEARTBEAT_INVOCATION_ID" \
+      --arg unit "$HEARTBEAT_UNIT" '
+      [ .[]
+        | select(
+            ._SYSTEMD_UNIT == $unit
+            and ._SYSTEMD_INVOCATION_ID == $invocation
+          )
         | .MESSAGE
         | fromjson?
         | select(
@@ -3797,10 +4256,10 @@ HEARTBEAT_EVIDENCE_COUNT="$(
       ] | length
     '
 )"
-test "$HEARTBEAT_EVIDENCE_COUNT" = 1 \
-  || die 'exact invocation lacks one delivered heartbeat journal proof'
+test "$HEARTBEAT_INVOCATION_PROOF_COUNT" = 1 \
+  || die 'exact post-cursor invocation lacks one delivered heartbeat journal proof'
 
-sudo systemctl start nexus-release-heartbeat.timer \
+sudo systemctl start "$HEARTBEAT_TIMER" \
   || die 'weekly heartbeat timer did not start'
 ```
 
@@ -3852,6 +4311,11 @@ single-link regular SHM; any other sidecar shape is a hard refusal.
 set -euo pipefail
 
 die() { printf 'BOOTSTRAP RECOVERY REFUSED: %s\n' "$*" >&2; exit 1; }
+
+run_pm2_as_dominguez() {
+  local pm2_cwd=/home/dominguez
+  (cd "$pm2_cwd" && sudo -u dominguez pm2 "$@")
+}
 
 require_no_open_handles() {
   local db suffix error_file handles lsof_status
@@ -3973,7 +4437,106 @@ verify_installed_runtime() {
   fi
 }
 
+require_local_backup_installation() {
+  local active_mode active_root destination dropins exec_start expected_sha
+  local fragment load mode relative source spec unit
+  sudo test -L /opt/nexus-release/checkout \
+    && test "$(sudo stat -c '%U:%G:%F' -- /opt/nexus-release/checkout)" = \
+      'root:root:symbolic link' \
+    || die 'active control-plane selector is unsafe'
+  active_root="$(sudo readlink -f -- /opt/nexus-release/checkout)"
+  [[ "$active_root" =~ ^/opt/nexus-release/control-plane/[0-9a-f]{40}$ ]] \
+    || die 'active control-plane selector escapes its immutable version root'
+  sudo test -d "$active_root" && sudo test ! -L "$active_root" \
+    && test "$(sudo stat -Lc '%U:%G' -- "$active_root")" = root:root \
+    || die 'active immutable control-plane root is unsafe'
+  active_mode="$(sudo stat -Lc '%a' -- "$active_root")"
+  test $((8#$active_mode & 0222)) -eq 0 \
+    || die 'active immutable control-plane root is writable'
+  expected_sha="${active_root##*/}"
+  test "$(sudo cat "$active_root/.nexus-control-plane-ready")" = \
+    "$expected_sha https://github.com/felipedrf74/cortex-telegram-hub-bot.git /usr/bin/node:v22.23.1" \
+    || die 'active immutable control-plane marker is invalid'
+  for spec in \
+    'scripts/local-backup.py|/usr/local/libexec/nexus-local-backup/local-backup.py|755' \
+    'ops/local-backup/systemd/nexus-local-backup.service|/etc/systemd/system/nexus-local-backup.service|644' \
+    'ops/local-backup/systemd/nexus-local-backup.timer|/etc/systemd/system/nexus-local-backup.timer|644' \
+    'ops/local-backup/systemd/nexus-local-backup-pre-promotion.service|/etc/systemd/system/nexus-local-backup-pre-promotion.service|644' \
+    'ops/local-backup/systemd/nexus-local-backup-restore-verify.service|/etc/systemd/system/nexus-local-backup-restore-verify.service|644' \
+    'ops/local-backup/systemd/nexus-local-backup-restore-verify.timer|/etc/systemd/system/nexus-local-backup-restore-verify.timer|644' \
+    'ops/local-backup/nexus-local-backup.sudoers|/etc/sudoers.d/nexus-local-backup|440'; do
+    IFS='|' read -r relative destination mode <<<"$spec"
+    source="$active_root/$relative"
+    sudo test -f "$source" && sudo test ! -L "$source" \
+      || die "immutable local-backup source is unsafe: $relative"
+    sudo test -f "$destination" && sudo test ! -L "$destination" \
+      && test "$(sudo stat -Lc '%U:%G:%a:%h' -- "$destination")" = \
+        "root:root:$mode:1" \
+      || die "installed local-backup asset metadata is unsafe: $destination"
+    sudo cmp -s -- "$source" "$destination" \
+      || die "installed local-backup asset differs from immutable source: $destination"
+  done
+  sudo visudo -cf /etc/sudoers.d/nexus-local-backup >/dev/null \
+    || die 'installed local-backup sudoers policy is invalid'
+  sudo systemctl daemon-reload
+  for unit in nexus-local-backup.service nexus-local-backup.timer \
+    nexus-local-backup-pre-promotion.service \
+    nexus-local-backup-restore-verify.service \
+    nexus-local-backup-restore-verify.timer; do
+    load="$(sudo systemctl show "$unit" --property=LoadState --value)"
+    fragment="$(sudo systemctl show "$unit" --property=FragmentPath --value)"
+    dropins="$(sudo systemctl show "$unit" --property=DropInPaths --value)"
+    test "$load" = loaded \
+      && test "$fragment" = "/etc/systemd/system/$unit" \
+      && test -z "$dropins" \
+      || die "$unit does not resolve to its exact installed bytes"
+  done
+  test "$(sudo systemctl show nexus-local-backup-pre-promotion.service \
+    --property=Type --value)" = oneshot \
+    || die 'pre-promotion backup unit is not Type=oneshot'
+  exec_start="$(sudo systemctl show nexus-local-backup-pre-promotion.service \
+    --property=ExecStart --value)"
+  case "$exec_start" in
+    *'path=/usr/local/libexec/nexus-local-backup/local-backup.py ; argv[]=/usr/local/libexec/nexus-local-backup/local-backup.py pre-promotion ;'*) ;;
+    *) die 'pre-promotion backup unit has an unexpected effective ExecStart' ;;
+  esac
+}
+
+wait_for_all_pm2_health() {
+  local curl_max deadline endpoint iteration_ok remaining
+  local -a endpoints=(
+    http://127.0.0.1:8200/health
+    http://127.0.0.1:8100/health
+    http://127.0.0.1:8201/health
+    http://127.0.0.1:8101/health
+  )
+  deadline=$((SECONDS + 120))
+  while test "$SECONDS" -lt "$deadline"; do
+    iteration_ok=1
+    for endpoint in "${endpoints[@]}"; do
+      remaining=$((deadline - SECONDS))
+      if test "$remaining" -le 0; then
+        iteration_ok=0
+        break
+      fi
+      curl_max=3
+      if test "$remaining" -lt "$curl_max"; then curl_max="$remaining"; fi
+      if ! curl --fail --silent --show-error --connect-timeout 1 \
+          --max-time "$curl_max" "$endpoint" >/dev/null; then
+        iteration_ok=0
+        break
+      fi
+    done
+    test "$iteration_ok" -eq 1 && return 0
+    remaining=$((deadline - SECONDS))
+    test "$remaining" -gt 0 || break
+    sleep 1
+  done
+  return 1
+}
+
 fresh_backup_for() {
+  require_local_backup_installation
   local completed_ms expected producer_started_ms receipt requested_ms
   expected="$1"
   receipt=/srv/nexus-backups/application/state/last-success.json
@@ -4005,24 +4568,166 @@ fresh_backup_for() {
     || die 'backup completed before its producer started'
 }
 
+PM2_GUARD_ROOT=/etc/systemd/system.control
+PM2_CANONICAL_UNIT_ROOT=/etc/systemd/system
+
+pm2_guard_path() {
+  case "$1" in
+    pm2-dominguez.service|nexus-release-pm2-recovery-daemon.service)
+      printf '%s/%s\n' "$PM2_GUARD_ROOT" "$1" ;;
+    *) return 64 ;;
+  esac
+}
+
+pm2_guard_root_is_exact() {
+  sudo test -d "$PM2_GUARD_ROOT" && sudo test ! -L "$PM2_GUARD_ROOT" \
+    && test "$(sudo stat -Lc '%U:%G:%a' -- "$PM2_GUARD_ROOT")" = root:root:755
+}
+
+ensure_pm2_guard_root() {
+  if ! sudo test -e "$PM2_GUARD_ROOT" && ! sudo test -L "$PM2_GUARD_ROOT"; then
+    sudo install -d -o root -g root -m 755 -- "$PM2_GUARD_ROOT" || return 1
+  fi
+  pm2_guard_root_is_exact
+}
+
+install_pm2_guard() {
+  local guard unit
+  unit="$1"; guard="$(pm2_guard_path "$unit")" || return 1
+  ensure_pm2_guard_root || return 1
+  if sudo test -e "$guard" || sudo test -L "$guard"; then
+    sudo test -L "$guard" || return 1
+  else
+    sudo ln -s -- /dev/null "$guard" || return 1
+  fi
+  test "$(sudo readlink -- "$guard")" = /dev/null \
+    && test "$(sudo stat -c '%U:%G:%F' -- "$guard")" = \
+      'root:root:symbolic link'
+}
+
+pm2_guard_is_exact() {
+  local active can_start fragment guard load unit
+  unit="$1"; guard="$(pm2_guard_path "$unit")" || return 1
+  pm2_guard_root_is_exact || return 1
+  sudo test -L "$guard" \
+    && test "$(sudo readlink -- "$guard")" = /dev/null \
+    && test "$(sudo stat -c '%U:%G:%F' -- "$guard")" = \
+      'root:root:symbolic link' || return 1
+  load="$(sudo systemctl show "$unit" --property=LoadState --value)" \
+    || return 1
+  fragment="$(sudo systemctl show "$unit" --property=FragmentPath --value)" \
+    || return 1
+  can_start="$(sudo systemctl show "$unit" --property=CanStart --value)" \
+    || return 1
+  active="$(sudo systemctl show "$unit" --property=ActiveState --value)" \
+    || return 1
+  test "$load" = masked && test "$fragment" = /dev/null \
+    && test "$can_start" = no && test "$active" = inactive
+}
+
 require_pm2_guard() {
-  local active_state active_status enabled_state enabled_status unit
+  local unit
   for unit in pm2-dominguez.service nexus-release-pm2-recovery-daemon.service; do
-    if enabled_state="$(sudo systemctl is-enabled "$unit" 2>&1)"; then
-      enabled_status=0
-    else
-      enabled_status=$?
-    fi
-    test "$enabled_status" -ne 0 && test "$enabled_state" = masked-runtime \
-      || die "$unit is not protected by the runtime mask"
-    if active_state="$(sudo systemctl is-active "$unit" 2>&1)"; then
-      active_status=0
-    else
-      active_status=$?
-    fi
-    test "$active_status" -ne 0 && test "$active_state" = inactive \
-      || die "$unit is not inactive"
+    pm2_guard_is_exact "$unit" \
+      || die "$unit is not protected by its exact high-priority runtime guard"
   done
+}
+
+pm2_fail_closed_is_exact() {
+  local database handles listeners lsof_status path pgrep_status port suffix unit
+  for unit in pm2-dominguez.service nexus-release-pm2-recovery-daemon.service; do
+    pm2_guard_is_exact "$unit" || return 1
+  done
+  if sudo pgrep -u dominguez -f 'PM2.*God Daemon' >/dev/null; then
+    return 1
+  else
+    pgrep_status=$?
+  fi
+  test "$pgrep_status" -eq 1 || return 1
+  for port in 8100 8101 8200 8201; do
+    if listeners="$(sudo lsof -nP -t -iTCP:"$port" -sTCP:LISTEN 2>&1)"; then
+      return 1
+    else
+      lsof_status=$?
+    fi
+    test "$lsof_status" -eq 1 && test -z "$listeners" || return 1
+  done
+  for database in \
+    /home/dominguez/telegram-hub-bot/data/bot.db \
+    /home/dominguez/telegram-hub-bot-staging/data/bot.db \
+    /home/dominguez/telegram-hub-bot/data/bot.db.next-bootstrap-recovery \
+    /var/lib/nexus-hub/production/data/bot.db \
+    /var/lib/nexus-hub/production/data/bot.db.next \
+    /var/lib/nexus-hub/staging/data/bot.db \
+    /var/lib/nexus-hub/staging/data/bot.db.next; do
+    for suffix in '' -wal -shm -journal; do
+      path="$database$suffix"
+      if sudo test -e "$path" || sudo test -L "$path"; then
+        if handles="$(sudo lsof -nP -t -- "$path" 2>&1)"; then
+          return 1
+        else
+          lsof_status=$?
+        fi
+        test "$lsof_status" -eq 1 && test -z "$handles" || return 1
+      fi
+    done
+  done
+}
+
+enforce_pm2_fail_closed() {
+  local action_failed=0 unit
+  if pm2_fail_closed_is_exact; then
+    return 0
+  fi
+  run_pm2_as_dominguez stop \
+    nexus-hub content-engine nexus-hub-staging content-engine-staging \
+    || action_failed=1
+  for unit in pm2-dominguez.service nexus-release-pm2-recovery-daemon.service; do
+    sudo systemctl disable --now "$unit" || action_failed=1
+    install_pm2_guard "$unit" || action_failed=1
+  done
+  sudo systemctl daemon-reload || action_failed=1
+  run_pm2_as_dominguez kill || action_failed=1
+  if pm2_fail_closed_is_exact; then
+    return 0
+  fi
+  printf 'PM2 fail-closed postconditions remain false (action failures: %s)\n' \
+    "$action_failed" >&2
+  return 1
+}
+
+retire_canonical_pm2_guard() {
+  local active can_start canonical fragment guard legacy_guard load unit
+  unit="$1"
+  test "$unit" = pm2-dominguez.service || return 64
+  guard="$(pm2_guard_path "$unit")" || return 1
+  canonical="$PM2_CANONICAL_UNIT_ROOT/$unit"
+  legacy_guard="/run/systemd/system/$unit"
+  pm2_guard_is_exact "$unit" || return 1
+  sudo test -f "$canonical" && sudo test ! -L "$canonical" \
+    && test "$(sudo stat -Lc '%U:%G:%a:%h' -- "$canonical")" = \
+      'root:root:644:1' || return 1
+  if sudo test -e "$legacy_guard" || sudo test -L "$legacy_guard"; then
+    sudo test -L "$legacy_guard" \
+      && test "$(sudo readlink -- "$legacy_guard")" = /dev/null \
+      && test "$(sudo stat -c '%U:%G:%F' -- "$legacy_guard")" = \
+        'root:root:symbolic link' || return 1
+    sudo rm -- "$legacy_guard" || return 1
+  fi
+  sudo rm -- "$guard" || return 1
+  sudo systemctl daemon-reload || return 1
+  sudo test ! -e "$guard" && sudo test ! -L "$guard" || return 1
+  sudo test ! -e "$legacy_guard" && sudo test ! -L "$legacy_guard" || return 1
+  load="$(sudo systemctl show "$unit" --property=LoadState --value)" \
+    || return 1
+  fragment="$(sudo systemctl show "$unit" --property=FragmentPath --value)" \
+    || return 1
+  can_start="$(sudo systemctl show "$unit" --property=CanStart --value)" \
+    || return 1
+  active="$(sudo systemctl show "$unit" --property=ActiveState --value)" \
+    || return 1
+  test "$load" = loaded && test "$fragment" = "$canonical" \
+    && test "$can_start" = yes && test "$active" = inactive
 }
 
 require_canonical_database() {
@@ -4300,19 +5005,18 @@ prove_durable_running_pm2() {
   test "$backup_path" = "$PM2_PRODUCTION" \
     && test "$(sudo jq -er .backupDatabasePath "$RECOVERY_STATE")" = \
       "$PM2_PRODUCTION" || return 1
-  test "$(sudo systemctl is-active pm2-dominguez.service)" = active \
+  test "$(sudo systemctl show pm2-dominguez.service \
+      --property=LoadState --value)" = loaded \
+    && test "$(sudo systemctl show pm2-dominguez.service \
+      --property=FragmentPath --value)" = \
+      /etc/systemd/system/pm2-dominguez.service \
+    && test "$(sudo systemctl show pm2-dominguez.service \
+      --property=CanStart --value)" = yes \
+    && test "$(sudo systemctl show pm2-dominguez.service \
+      --property=ActiveState --value)" = active \
     && test "$(sudo systemctl is-enabled pm2-dominguez.service)" = enabled \
     || return 1
-  if enabled_state="$(sudo systemctl is-enabled \
-      nexus-release-pm2-recovery-daemon.service 2>&1)"; then
-    return 1
-  fi
-  case "$enabled_state" in masked|masked-runtime) ;; *) return 1 ;; esac
-  if RECOVERY_ACTIVE_STATE="$(sudo systemctl is-active \
-      nexus-release-pm2-recovery-daemon.service 2>&1)"; then
-    return 1
-  fi
-  test "$RECOVERY_ACTIVE_STATE" = inactive || return 1
+  pm2_guard_is_exact nexus-release-pm2-recovery-daemon.service || return 1
 
   for role in production staging; do
     if test "$role" = production; then
@@ -4339,7 +5043,7 @@ prove_durable_running_pm2() {
     verify_installed_runtime "$runtime" "$source_sha" "$artifact" || return 1
   done
 
-  pm2_json="$(sudo -u dominguez pm2 jlist)" || return 1
+  pm2_json="$(run_pm2_as_dominguez jlist)" || return 1
   for app in nexus-hub content-engine nexus-hub-staging content-engine-staging; do
     case "$app" in
       nexus-hub)
@@ -4377,14 +5081,7 @@ prove_durable_running_pm2() {
       test "$(jq -er .pm2_env.DATABASE_PATH <<<"$row")" = "$database" || return 1
     fi
   done
-  curl --fail --silent --show-error --max-time 5 http://127.0.0.1:8200/health \
-    >/dev/null || return 1
-  curl --fail --silent --show-error --max-time 5 http://127.0.0.1:8100/health \
-    >/dev/null || return 1
-  curl --fail --silent --show-error --max-time 5 http://127.0.0.1:8201/health \
-    >/dev/null || return 1
-  curl --fail --silent --show-error --max-time 5 http://127.0.0.1:8101/health \
-    >/dev/null || return 1
+  wait_for_all_pm2_health || return 1
   PROVED_RECOVERY_PHASE="$state_phase"
 }
 
@@ -4414,6 +5111,26 @@ flock -n 9 || die 'another PM2 release or capability transaction is active'
 exec 8<>"$MAINTENANCE_LOCK"
 flock -n 8 || die 'another root maintenance or container release is active'
 
+# Arm cleanup before observing any missing guard. The unguarded-authority
+# reconciliation below may wait for health or publish the durable recovery
+# phase; interruption anywhere in that branch must close PM2 again.
+PM2_RESTART_ARMED=1
+fail_closed_bootstrap_restart() {
+  local status=$?
+  trap - EXIT HUP INT TERM
+  if test "$status" -ne 0 && test "$PM2_RESTART_ARMED" -eq 1; then
+    if ! enforce_pm2_fail_closed; then
+      printf 'FATAL: bootstrap restart cleanup could not prove fail-closed postconditions\n' >&2
+      exit 70
+    fi
+  fi
+  exit "$status"
+}
+trap fail_closed_bootstrap_restart EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 # Read the durable phase before requiring the guard: SIGKILL can occur after
 # exact PM2 start but before `pm2_restored` publication. Accept that window only
 # when all four rows, PIDs, database inodes, runtime trees, authority units, and
@@ -4422,18 +5139,7 @@ flock -n 8 || die 'another root maintenance or container release is active'
 PM2_FORCED_GUARD=0
 PM2_GUARD_OBSERVED=1
 for UNIT in pm2-dominguez.service nexus-release-pm2-recovery-daemon.service; do
-  if ENABLED_STATE="$(sudo systemctl is-enabled "$UNIT" 2>&1)"; then
-    ENABLED_STATUS=0
-  else
-    ENABLED_STATUS=$?
-  fi
-  if ACTIVE_STATE="$(sudo systemctl is-active "$UNIT" 2>&1)"; then
-    ACTIVE_STATUS=0
-  else
-    ACTIVE_STATUS=$?
-  fi
-  if test "$ENABLED_STATUS" -eq 0 || test "$ENABLED_STATE" != masked-runtime \
-      || test "$ACTIVE_STATUS" -eq 0 || test "$ACTIVE_STATE" != inactive; then
+  if ! pm2_guard_is_exact "$UNIT"; then
     PM2_GUARD_OBSERVED=0
   fi
 done
@@ -4443,18 +5149,14 @@ if test "$PM2_GUARD_OBSERVED" -eq 0; then
       publish_early_pm2_restored \
         || die 'exact running PM2 proof could not be published durably'
     fi
+    PM2_RESTART_ARMED=0
+    trap - EXIT HUP INT TERM
     printf 'PM2 fallback was already exact and healthy; state is pm2_restored\n'
     exit 0
   fi
   PM2_FORCED_GUARD=1
-  set +e
-  sudo -u dominguez pm2 stop \
-    nexus-hub content-engine nexus-hub-staging content-engine-staging
-  sudo systemctl disable --now pm2-dominguez.service
-  sudo systemctl mask --runtime pm2-dominguez.service
-  sudo systemctl mask --runtime nexus-release-pm2-recovery-daemon.service
-  sudo -u dominguez pm2 kill
-  set -e
+  enforce_pm2_fail_closed \
+    || die 'forced PM2 guard could not prove fail-closed postconditions'
 fi
 require_pm2_guard
 test "$(sudo stat -Lc '%U:%G:%a:%h' -- "$BASELINE_FILE")" \
@@ -4653,9 +5355,10 @@ else
     --arg stagingIdentity "$PM2_STAGING_IDENTITY" \
     --arg stagingDigest "$PM2_STAGING_DIGEST" \
     --arg swappedIdentity "$SWAPPED_IDENTITY" \
-    '{schema:"nexus.bootstrap-first-cutover-recovery.v1",createdAt,
-      updatedAt:createdAt,baselineSha256,runtimeCaptureSha256,incidentDir,phase,
-      backupDatabasePath,
+    '{schema:"nexus.bootstrap-first-cutover-recovery.v1",createdAt:$createdAt,
+      updatedAt:$createdAt,baselineSha256:$baselineSha256,
+      runtimeCaptureSha256:$runtimeCaptureSha256,incidentDir:$incidentDir,
+      phase:$phase,backupDatabasePath:$backupDatabasePath,
       liveProduction:{path:"/var/lib/nexus-hub/production/data/bot.db",
         identity:$liveProductionIdentity,logicalDigest:$liveProductionDigest},
       liveStaging:{path:"/var/lib/nexus-hub/staging/data/bot.db",
@@ -4893,36 +5596,16 @@ done
 
 # This is the only success/failure branch that removes the first-cutover PM2
 # guard from the audited canonical authority. Keep the temporary recovery daemon
-# runtime-masked while disabling it, so there is no activation window between
-# unmask and stop.
-PM2_RESTART_ARMED=1
-fail_closed_bootstrap_restart() {
-  local status=$?
-  if test "$status" -ne 0 && test "$PM2_RESTART_ARMED" -eq 1; then
-    set +e
-    sudo -u dominguez pm2 stop \
-      nexus-hub content-engine nexus-hub-staging content-engine-staging
-    sudo systemctl disable --now pm2-dominguez.service
-    sudo systemctl mask --runtime pm2-dominguez.service
-    sudo systemctl mask --runtime nexus-release-pm2-recovery-daemon.service
-    sudo -u dominguez pm2 kill
-  fi
-  exit "$status"
-}
-trap fail_closed_bootstrap_restart EXIT
-TEMPORARY_PM2_LOAD_STATE="$(sudo systemctl show \
-  nexus-release-pm2-recovery-daemon.service --property=LoadState --value)"
-case "$TEMPORARY_PM2_LOAD_STATE" in
-  loaded) sudo systemctl disable --now nexus-release-pm2-recovery-daemon.service ;;
-  masked) ;;
-  not-found) ;;
-  *) die "temporary PM2 authority has unsafe load state: $TEMPORARY_PM2_LOAD_STATE" ;;
-esac
-sudo systemctl unmask --runtime pm2-dominguez.service
+# behind its high-priority runtime-control guard throughout restoration, so
+# there is no activation window.
+pm2_guard_is_exact nexus-release-pm2-recovery-daemon.service \
+  || die 'temporary PM2 authority lost its exact high-priority runtime guard'
+retire_canonical_pm2_guard pm2-dominguez.service \
+  || die 'canonical PM2 high-priority runtime guard could not be retired safely'
 sudo systemctl enable --now pm2-dominguez.service
-sudo -u dominguez pm2 start content-engine content-engine-staging
-sudo -u dominguez pm2 start nexus-hub nexus-hub-staging
-PM2_JSON="$(sudo -u dominguez pm2 jlist)"
+run_pm2_as_dominguez start content-engine content-engine-staging
+run_pm2_as_dominguez start nexus-hub nexus-hub-staging
+PM2_JSON="$(run_pm2_as_dominguez jlist)"
 for APP in nexus-hub content-engine nexus-hub-staging content-engine-staging; do
   case "$APP" in
     nexus-hub)
@@ -4988,14 +5671,12 @@ for APP in nexus-hub content-engine nexus-hub-staging content-engine-staging; do
       || die "$APP restarted against a different database"
   fi
 done
-curl --fail --silent --show-error --max-time 5 http://127.0.0.1:8200/health >/dev/null
-curl --fail --silent --show-error --max-time 5 http://127.0.0.1:8100/health >/dev/null
-curl --fail --silent --show-error --max-time 5 http://127.0.0.1:8201/health >/dev/null
-curl --fail --silent --show-error --max-time 5 http://127.0.0.1:8101/health >/dev/null
+wait_for_all_pm2_health \
+  || die 'PM2 fallback did not make all four health endpoints ready within 120 seconds'
 publish_recovery_state pm2_restored "$PM2_PRODUCTION" \
   "$(sudo stat -Lc '%d:%i' -- "$PM2_PRODUCTION")"
 PM2_RESTART_ARMED=0
-trap - EXIT
+trap - EXIT HUP INT TERM
 printf 'PM2 fallback restored; incident evidence: %s\n' "$INCIDENT_DIR"
 ```
 
@@ -5016,6 +5697,11 @@ next bootstrap unit invocation.
 set -euo pipefail
 
 die() { printf 'BOOTSTRAP REBASELINE REFUSED: %s\n' "$*" >&2; exit 1; }
+
+run_pm2_as_dominguez() {
+  local pm2_cwd=/home/dominguez
+  (cd "$pm2_cwd" && sudo -u dominguez pm2 "$@")
+}
 
 require_no_open_handles() {
   local db suffix error_file handles lsof_status
@@ -5100,7 +5786,73 @@ remove_proven_stale_wal_sidecars() {
   done
 }
 
+require_local_backup_installation() {
+  local active_mode active_root destination dropins exec_start expected_sha
+  local fragment load mode relative source spec unit
+  sudo test -L /opt/nexus-release/checkout \
+    && test "$(sudo stat -c '%U:%G:%F' -- /opt/nexus-release/checkout)" = \
+      'root:root:symbolic link' \
+    || die 'active control-plane selector is unsafe'
+  active_root="$(sudo readlink -f -- /opt/nexus-release/checkout)"
+  [[ "$active_root" =~ ^/opt/nexus-release/control-plane/[0-9a-f]{40}$ ]] \
+    || die 'active control-plane selector escapes its immutable version root'
+  sudo test -d "$active_root" && sudo test ! -L "$active_root" \
+    && test "$(sudo stat -Lc '%U:%G' -- "$active_root")" = root:root \
+    || die 'active immutable control-plane root is unsafe'
+  active_mode="$(sudo stat -Lc '%a' -- "$active_root")"
+  test $((8#$active_mode & 0222)) -eq 0 \
+    || die 'active immutable control-plane root is writable'
+  expected_sha="${active_root##*/}"
+  test "$(sudo cat "$active_root/.nexus-control-plane-ready")" = \
+    "$expected_sha https://github.com/felipedrf74/cortex-telegram-hub-bot.git /usr/bin/node:v22.23.1" \
+    || die 'active immutable control-plane marker is invalid'
+  for spec in \
+    'scripts/local-backup.py|/usr/local/libexec/nexus-local-backup/local-backup.py|755' \
+    'ops/local-backup/systemd/nexus-local-backup.service|/etc/systemd/system/nexus-local-backup.service|644' \
+    'ops/local-backup/systemd/nexus-local-backup.timer|/etc/systemd/system/nexus-local-backup.timer|644' \
+    'ops/local-backup/systemd/nexus-local-backup-pre-promotion.service|/etc/systemd/system/nexus-local-backup-pre-promotion.service|644' \
+    'ops/local-backup/systemd/nexus-local-backup-restore-verify.service|/etc/systemd/system/nexus-local-backup-restore-verify.service|644' \
+    'ops/local-backup/systemd/nexus-local-backup-restore-verify.timer|/etc/systemd/system/nexus-local-backup-restore-verify.timer|644' \
+    'ops/local-backup/nexus-local-backup.sudoers|/etc/sudoers.d/nexus-local-backup|440'; do
+    IFS='|' read -r relative destination mode <<<"$spec"
+    source="$active_root/$relative"
+    sudo test -f "$source" && sudo test ! -L "$source" \
+      || die "immutable local-backup source is unsafe: $relative"
+    sudo test -f "$destination" && sudo test ! -L "$destination" \
+      && test "$(sudo stat -Lc '%U:%G:%a:%h' -- "$destination")" = \
+        "root:root:$mode:1" \
+      || die "installed local-backup asset metadata is unsafe: $destination"
+    sudo cmp -s -- "$source" "$destination" \
+      || die "installed local-backup asset differs from immutable source: $destination"
+  done
+  sudo visudo -cf /etc/sudoers.d/nexus-local-backup >/dev/null \
+    || die 'installed local-backup sudoers policy is invalid'
+  sudo systemctl daemon-reload
+  for unit in nexus-local-backup.service nexus-local-backup.timer \
+    nexus-local-backup-pre-promotion.service \
+    nexus-local-backup-restore-verify.service \
+    nexus-local-backup-restore-verify.timer; do
+    load="$(sudo systemctl show "$unit" --property=LoadState --value)"
+    fragment="$(sudo systemctl show "$unit" --property=FragmentPath --value)"
+    dropins="$(sudo systemctl show "$unit" --property=DropInPaths --value)"
+    test "$load" = loaded \
+      && test "$fragment" = "/etc/systemd/system/$unit" \
+      && test -z "$dropins" \
+      || die "$unit does not resolve to its exact installed bytes"
+  done
+  test "$(sudo systemctl show nexus-local-backup-pre-promotion.service \
+    --property=Type --value)" = oneshot \
+    || die 'pre-promotion backup unit is not Type=oneshot'
+  exec_start="$(sudo systemctl show nexus-local-backup-pre-promotion.service \
+    --property=ExecStart --value)"
+  case "$exec_start" in
+    *'path=/usr/local/libexec/nexus-local-backup/local-backup.py ; argv[]=/usr/local/libexec/nexus-local-backup/local-backup.py pre-promotion ;'*) ;;
+    *) die 'pre-promotion backup unit has an unexpected effective ExecStart' ;;
+  esac
+}
+
 fresh_backup_for() {
+  require_local_backup_installation
   local completed_ms expected producer_started_ms receipt requested_ms
   expected="$1"
   receipt=/srv/nexus-backups/application/state/last-success.json
@@ -5125,26 +5877,131 @@ fresh_backup_for() {
     || die 'backup completed before its producer started'
 }
 
+PM2_GUARD_ROOT=/etc/systemd/system.control
+
+pm2_guard_path() {
+  case "$1" in
+    pm2-dominguez.service|nexus-release-pm2-recovery-daemon.service)
+      printf '%s/%s\n' "$PM2_GUARD_ROOT" "$1" ;;
+    *) return 64 ;;
+  esac
+}
+
+pm2_guard_root_is_exact() {
+  sudo test -d "$PM2_GUARD_ROOT" && sudo test ! -L "$PM2_GUARD_ROOT" \
+    && test "$(sudo stat -Lc '%U:%G:%a' -- "$PM2_GUARD_ROOT")" = root:root:755
+}
+
+ensure_pm2_guard_root() {
+  if ! sudo test -e "$PM2_GUARD_ROOT" && ! sudo test -L "$PM2_GUARD_ROOT"; then
+    sudo install -d -o root -g root -m 755 -- "$PM2_GUARD_ROOT" || return 1
+  fi
+  pm2_guard_root_is_exact
+}
+
+install_pm2_guard() {
+  local guard unit
+  unit="$1"; guard="$(pm2_guard_path "$unit")" || return 1
+  ensure_pm2_guard_root || return 1
+  if sudo test -e "$guard" || sudo test -L "$guard"; then
+    sudo test -L "$guard" || return 1
+  else
+    sudo ln -s -- /dev/null "$guard" || return 1
+  fi
+  test "$(sudo readlink -- "$guard")" = /dev/null \
+    && test "$(sudo stat -c '%U:%G:%F' -- "$guard")" = \
+      'root:root:symbolic link'
+}
+
+pm2_guard_is_exact() {
+  local active can_start fragment guard load unit
+  unit="$1"; guard="$(pm2_guard_path "$unit")" || return 1
+  pm2_guard_root_is_exact || return 1
+  sudo test -L "$guard" \
+    && test "$(sudo readlink -- "$guard")" = /dev/null \
+    && test "$(sudo stat -c '%U:%G:%F' -- "$guard")" = \
+      'root:root:symbolic link' || return 1
+  load="$(sudo systemctl show "$unit" --property=LoadState --value)" \
+    || return 1
+  fragment="$(sudo systemctl show "$unit" --property=FragmentPath --value)" \
+    || return 1
+  can_start="$(sudo systemctl show "$unit" --property=CanStart --value)" \
+    || return 1
+  active="$(sudo systemctl show "$unit" --property=ActiveState --value)" \
+    || return 1
+  test "$load" = masked && test "$fragment" = /dev/null \
+    && test "$can_start" = no && test "$active" = inactive
+}
+
 require_pm2_guard() {
-  local active_state active_status enabled_state enabled_status unit
+  local unit
   for unit in pm2-dominguez.service nexus-release-pm2-recovery-daemon.service; do
-    if enabled_state="$(sudo systemctl is-enabled "$unit" 2>&1)"; then
-      enabled_status=0
-    else
-      enabled_status=$?
-    fi
-    test "$enabled_status" -ne 0 \
-      && { test "$enabled_state" = masked-runtime \
-        || test "$enabled_state" = masked; } \
-      || die "$unit is not runtime- or persistently masked"
-    if active_state="$(sudo systemctl is-active "$unit" 2>&1)"; then
-      active_status=0
-    else
-      active_status=$?
-    fi
-    test "$active_status" -ne 0 && test "$active_state" = inactive \
-      || die "$unit is not inactive"
+    pm2_guard_is_exact "$unit" \
+      || die "$unit is not protected by its exact high-priority runtime guard"
   done
+}
+
+pm2_fail_closed_is_exact() {
+  local database handles listeners lsof_status path pgrep_status port suffix unit
+  for unit in pm2-dominguez.service nexus-release-pm2-recovery-daemon.service; do
+    pm2_guard_is_exact "$unit" || return 1
+  done
+  if sudo pgrep -u dominguez -f 'PM2.*God Daemon' >/dev/null; then
+    return 1
+  else
+    pgrep_status=$?
+  fi
+  test "$pgrep_status" -eq 1 || return 1
+  for port in 8100 8101 8200 8201; do
+    if listeners="$(sudo lsof -nP -t -iTCP:"$port" -sTCP:LISTEN 2>&1)"; then
+      return 1
+    else
+      lsof_status=$?
+    fi
+    test "$lsof_status" -eq 1 && test -z "$listeners" || return 1
+  done
+  for database in \
+    /home/dominguez/telegram-hub-bot/data/bot.db \
+    /home/dominguez/telegram-hub-bot-staging/data/bot.db \
+    /home/dominguez/telegram-hub-bot/data/bot.db.next-bootstrap-recovery \
+    /var/lib/nexus-hub/production/data/bot.db \
+    /var/lib/nexus-hub/production/data/bot.db.next \
+    /var/lib/nexus-hub/staging/data/bot.db \
+    /var/lib/nexus-hub/staging/data/bot.db.next; do
+    for suffix in '' -wal -shm -journal; do
+      path="$database$suffix"
+      if sudo test -e "$path" || sudo test -L "$path"; then
+        if handles="$(sudo lsof -nP -t -- "$path" 2>&1)"; then
+          return 1
+        else
+          lsof_status=$?
+        fi
+        test "$lsof_status" -eq 1 && test -z "$handles" || return 1
+      fi
+    done
+  done
+}
+
+enforce_pm2_fail_closed() {
+  local action_failed=0 unit
+  if pm2_fail_closed_is_exact; then
+    return 0
+  fi
+  run_pm2_as_dominguez stop \
+    nexus-hub content-engine nexus-hub-staging content-engine-staging \
+    || action_failed=1
+  for unit in pm2-dominguez.service nexus-release-pm2-recovery-daemon.service; do
+    sudo systemctl disable --now "$unit" || action_failed=1
+    install_pm2_guard "$unit" || action_failed=1
+  done
+  sudo systemctl daemon-reload || action_failed=1
+  run_pm2_as_dominguez kill || action_failed=1
+  if pm2_fail_closed_is_exact; then
+    return 0
+  fi
+  printf 'PM2 fail-closed postconditions remain false (action failures: %s)\n' \
+    "$action_failed" >&2
+  return 1
 }
 
 verify_installed_runtime() {
@@ -5451,9 +6308,14 @@ if ! sudo test -e "$REBASELINE_STATE" && ! sudo test -L "$REBASELINE_STATE"; the
     MARKER="$RUNTIME/.complete.json"
     sudo test -f "$MARKER" && sudo test ! -L "$MARKER" \
       || die "$ROLE runtime marker is missing or symbolic"
-    SOURCE_SHA="$(sudo jq -er '.schema == "nexus.release-bundle.v1"
-      and (.runtimeSha | test("^[0-9a-f]{40}$"))
-      and (.artifactDigest | test("^[0-9a-f]{64}$")) | .runtimeSha' "$MARKER")"
+    SOURCE_SHA="$(sudo jq -er 'select(
+      type == "object"
+      and .schema == "nexus.release-bundle.v1"
+      and (.runtimeSha | type == "string"
+        and test("^[0-9a-f]{40}$"))
+      and (.artifactDigest | type == "string"
+        and test("^[0-9a-f]{64}$"))
+    ) | .runtimeSha' "$MARKER")"
     ARTIFACT_DIGEST="$(sudo jq -er .artifactDigest "$MARKER")"
     MARKER_SHA256="$(sudo sha256sum "$MARKER" | awk '{print $1}')"
     verify_installed_runtime "$RUNTIME" "$SOURCE_SHA" "$ARTIFACT_DIGEST" \
@@ -5469,7 +6331,7 @@ if ! sudo test -e "$REBASELINE_STATE" && ! sudo test -L "$REBASELINE_STATE"; the
     fi
   done
 
-  PM2_JSON="$(sudo -u dominguez pm2 jlist)"
+  PM2_JSON="$(run_pm2_as_dominguez jlist)"
   for APP in nexus-hub content-engine nexus-hub-staging content-engine-staging; do
     case "$APP" in
       nexus-hub)
@@ -5525,19 +6387,19 @@ if ! sudo test -e "$REBASELINE_STATE" && ! sudo test -L "$REBASELINE_STATE"; the
         || die "$APP database path differs"
     fi
   done
-  test "$(sudo systemctl is-active pm2-dominguez.service)" = active \
-    || die 'canonical PM2 authority is not active'
-  test "$(sudo systemctl is-enabled pm2-dominguez.service)" = enabled \
-    || die 'canonical PM2 authority is not enabled'
-  RECOVERY_ACTIVE_STATUS=0
-  if RECOVERY_ACTIVE="$(sudo systemctl is-active \
-      nexus-release-pm2-recovery-daemon.service 2>&1)"; then
-    RECOVERY_ACTIVE_STATUS=0
-  else
-    RECOVERY_ACTIVE_STATUS=$?
-  fi
-  test "$RECOVERY_ACTIVE_STATUS" -ne 0 && test "$RECOVERY_ACTIVE" = inactive \
-    || die 'temporary PM2 authority is active'
+  test "$(sudo systemctl show pm2-dominguez.service \
+      --property=LoadState --value)" = loaded \
+    && test "$(sudo systemctl show pm2-dominguez.service \
+      --property=FragmentPath --value)" = \
+      /etc/systemd/system/pm2-dominguez.service \
+    && test "$(sudo systemctl show pm2-dominguez.service \
+      --property=CanStart --value)" = yes \
+    && test "$(sudo systemctl show pm2-dominguez.service \
+      --property=ActiveState --value)" = active \
+    && test "$(sudo systemctl is-enabled pm2-dominguez.service)" = enabled \
+    || die 'canonical PM2 authority is not exact, active, and enabled'
+  pm2_guard_is_exact nexus-release-pm2-recovery-daemon.service \
+    || die 'temporary PM2 authority lost its exact high-priority runtime guard'
 
   for DB in "$OLD_PRODUCTION" "$OLD_STAGING"; do
     sudo test -f "$DB" && sudo test ! -L "$DB" \
@@ -5589,8 +6451,8 @@ if ! sudo test -e "$REBASELINE_STATE" && ! sudo test -L "$REBASELINE_STATE"; the
     --arg stagingRuntime "$STAGING_RUNTIME" --arg stagingSha "$STAGING_SHA" \
     --arg stagingArtifact "$STAGING_ARTIFACT_DIGEST" \
     --arg stagingMarker "$STAGING_MARKER_SHA256" \
-    '{schema:"nexus.bootstrap-rebaseline.v1",createdAt,updatedAt:$createdAt,
-      phase:"admitted",incidentDir,
+    '{schema:"nexus.bootstrap-rebaseline.v1",createdAt:$createdAt,
+      updatedAt:$createdAt,phase:"admitted",incidentDir:$incidentDir,
       expectedTarget:{releaseId:$expectedReleaseId,payloadDigest:$expectedPayloadDigest},
       oldBaseline:{sha256:$oldBaselineSha256,releaseId:$oldReleaseId,
         payloadDigest:$oldTargetDigest,archivePath:$archivedBaseline},
@@ -5684,18 +6546,24 @@ fail_closed_rebaseline() {
   local status=$?
   trap - EXIT HUP INT TERM
   if test "$REBASELINE_ARMED" -eq 1; then
-    set +e
-    sudo systemctl stop nexus-release-bootstrap.service nexus-release-poller.timer
-    sudo systemctl disable --now pm2-dominguez.service
-    sudo systemctl mask --runtime pm2-dominguez.service
-    sudo systemctl mask --runtime nexus-release-pm2-recovery-daemon.service
-    sudo -u dominguez pm2 kill
+    if ! sudo systemctl stop \
+        nexus-release-bootstrap.service nexus-release-poller.timer; then
+      printf 'FATAL: rebaseline cleanup could not stop container authorities\n' >&2
+      status=70
+    fi
+    if ! enforce_pm2_fail_closed; then
+      printf 'FATAL: rebaseline cleanup could not prove PM2 fail-closed postconditions\n' >&2
+      status=70
+    fi
     printf 'rebaseline remains fail-closed; resume with state %s\n' \
       "$REBASELINE_STATE" >&2
   fi
   exit "$status"
 }
-trap fail_closed_rebaseline EXIT HUP INT TERM
+trap fail_closed_rebaseline EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # The trap is armed before the first authority or data mutation. An admitted
 # retry may already be fully quiescent; prove that without starting an empty
@@ -5723,7 +6591,8 @@ else
     || die "rebaseline PM2 daemon probe failed with status $PGREP_STATUS"
 fi
 sudo systemctl disable --now pm2-dominguez.service
-sudo systemctl mask --runtime pm2-dominguez.service
+install_pm2_guard pm2-dominguez.service \
+  || die 'canonical PM2 high-priority runtime guard could not be installed'
 RECOVERY_LOAD_STATE="$(sudo systemctl show \
   nexus-release-pm2-recovery-daemon.service --property=LoadState --value)"
 case "$RECOVERY_LOAD_STATE" in
@@ -5731,9 +6600,11 @@ case "$RECOVERY_LOAD_STATE" in
   masked|not-found) ;;
   *) die "temporary PM2 authority has unsafe load state: $RECOVERY_LOAD_STATE" ;;
 esac
-sudo systemctl mask --runtime nexus-release-pm2-recovery-daemon.service
+install_pm2_guard nexus-release-pm2-recovery-daemon.service \
+  || die 'temporary PM2 high-priority runtime guard could not be installed'
+sudo systemctl daemon-reload
 if test "$REBASELINE_PM2_LIVE" -eq 1; then
-  sudo -u dominguez pm2 kill
+  run_pm2_as_dominguez kill
 fi
 require_pm2_guard
 if sudo pgrep -u dominguez -f 'PM2.*God Daemon' >/dev/null; then
@@ -5952,11 +6823,17 @@ if test "$REBASELINE_PHASE" = backup_repointed; then
     --arg stagingRuntimePath "$STAGING_RUNTIME" \
     --arg stagingMarkerSha256 "$STAGING_MARKER_SHA256" \
     --arg stagingDatabaseIdentity "$STAGING_DATABASE_IDENTITY" \
-    '{schema:"nexus.bootstrap-legacy-runtime-capture.v2",createdAt,
-      productionSourceSha,productionArtifactDigest,productionRuntimePath,
-      productionMarkerSha256,productionDatabaseIdentity,
-      stagingSourceSha,stagingArtifactDigest,stagingRuntimePath,
-      stagingMarkerSha256,stagingDatabaseIdentity}' >"$RUNTIME_TEMP"
+    '{schema:"nexus.bootstrap-legacy-runtime-capture.v2",createdAt:$createdAt,
+      productionSourceSha:$productionSourceSha,
+      productionArtifactDigest:$productionArtifactDigest,
+      productionRuntimePath:$productionRuntimePath,
+      productionMarkerSha256:$productionMarkerSha256,
+      productionDatabaseIdentity:$productionDatabaseIdentity,
+      stagingSourceSha:$stagingSourceSha,
+      stagingArtifactDigest:$stagingArtifactDigest,
+      stagingRuntimePath:$stagingRuntimePath,
+      stagingMarkerSha256:$stagingMarkerSha256,
+      stagingDatabaseIdentity:$stagingDatabaseIdentity}' >"$RUNTIME_TEMP"
   install_or_verify_candidate "$RUNTIME_TEMP" "$RUNTIME_CANDIDATE"
   NEW_RUNTIME_SHA256="$(sha256sum "$RUNTIME_TEMP" | awk '{print $1}')"
   rm -f "$RUNTIME_TEMP"
@@ -5972,8 +6849,8 @@ if test "$REBASELINE_PHASE" = backup_repointed; then
     --arg targetProductionLogicalDigest "$PRODUCTION_LOGICAL_SHA" \
     --arg targetStagingIdentity "$TARGET_STAGING_IDENTITY" \
     --arg targetStagingLogicalDigest "$STAGING_LOGICAL_SHA" \
-    '{schema:"nexus.bootstrap-database-transition.v1",createdAt,
-      runtimeCaptureSha256,
+    '{schema:"nexus.bootstrap-database-transition.v1",createdAt:$createdAt,
+      runtimeCaptureSha256:$runtimeCaptureSha256,
       legacy:{production:{path:"/home/dominguez/telegram-hub-bot/data/bot.db",
         identity:$legacyProductionIdentity,logicalDigest:$legacyProductionLogicalDigest},
         staging:{path:"/home/dominguez/telegram-hub-bot-staging/data/bot.db",

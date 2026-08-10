@@ -12,6 +12,11 @@ latest 10. The weekly verification decrypts the newest hourly point into a
 private temporary directory, verifies it, records a receipt, and removes the
 plaintext.
 
+The hourly and pre-promotion producers open the source read-only without
+asserting SQLite immutable mode and copy it in one backup step, so a read-only
+WAL source cannot restart between chunks. Both snapshot units have a 12-minute
+start timeout, which fails before the release caller's 15-minute backup budget.
+
 Publication is power-loss ordered: each encrypted artifact and checksum is
 fsynced before and after its atomic rename and the containing directory is
 fsynced before `last-success.json` is published with the same durable ordering.
