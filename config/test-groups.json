@@ -1105,6 +1105,7 @@
         "Dockerfile*",
         "cliff.toml",
         "config/**",
+        "docs/release/evidence/retired-migrations/**",
         "docker-compose*.yml",
         "ecosystem*.js",
         "ops/**",
@@ -1156,7 +1157,8 @@
       "paths": [
         "migrations/**",
         "config/irreversible-migrations.json",
-        "config/production-migration-lineages.json"
+        "config/production-migration-lineages.json",
+        "docs/release/evidence/retired-migrations/**"
       ],
       "tests": [
         "__tests__/migrations/**/*.test.ts",

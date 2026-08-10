@@ -278,16 +278,25 @@ the poller alerts, preserves `unresolvedContractMigrations`, and remains blocked
 the first-bootstrap exception must never be reused as a maintenance bypass.
 
 The legacy PM2 ledger stores filenames rather than executed-byte hashes. In the
-secretless hosted builder, CI independently reads every configured retired file
-from its exact full Git-history source commit and verifies its SHA-256 before it
-can emit the digest-bound signing handoff. It also requires exact byte equality
-for byte-identical renumbers and identical executable SQL after deterministic
-comment/whitespace normalization for comment-only renumbers. The signed
-environment mappings admit exactly the 19 production legacy rows and those same
-19 plus four notification-renumber rows in staging; a missing or additional
-outside-inventory row is rejected. This proves the configured historical source
-bytes and their declared replacement relationship, but does not claim that those
-bytes were the ones executed by the old PM2 process.
+secretless hosted builder, ordinary lineage rows are read from their exact full
+Git-history source commit and path. Five v4 `repository_archive` rows whose
+original commits are not reachable in a hosted clone instead retain
+`sourceCommit` as historical provenance metadata and bind the exact retired
+bytes at
+`docs/release/evidence/retired-migrations/<sourceCommit>/<file>`. The hosted
+gate reads that archive only from one regular stage-0 `100644` entry in the
+candidate Git index and verifies its SHA-256; it never falls back to a locally
+available dangling commit or to worktree bytes. The archive is outside the
+executable `migrations/` directory and outside the final runtime image. The
+signed source-policy digest binds each mode and locator. CI also requires exact
+byte equality for byte-identical renumbers and identical executable SQL after
+deterministic comment/whitespace normalization for comment-only renumbers. The
+signed environment mappings admit exactly the 19 production legacy rows and
+those same 19 plus four notification-renumber rows in staging; a missing or
+additional outside-inventory row is rejected. This proves the configured source
+evidence bytes and declared replacement relationship, but neither independent
+membership of an archived row in its historical `sourceCommit` nor execution by
+the old PM2 process.
 
 For the first container cutover, the owner accepts the quiesced databases as the
 historical state boundary. The bootstrap baseline binds each database's exact

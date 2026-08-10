@@ -3308,11 +3308,18 @@ sudo systemd-run --pipe --wait \
 
 The legacy `_migrations` ledger records filenames, not byte digests. No local
 tool can retroactively prove which bytes a historical process executed. Before
-signing, the hosted full-history checkout independently reads and hashes all 23
-configured retired migration files from their exact source commits. It also
-proves byte equality for byte-identical renumbers and executable-SQL equality
-after deterministic comment/whitespace normalization for comment-only
-renumbers. Missing history, digest drift, or executable drift fails closed.
+signing, the hosted full-history checkout reads ordinary retired rows from their
+exact source commits. Five v4 `repository_archive` rows whose commits are not
+hosted-reachable preserve `sourceCommit` as historical metadata but verify their
+bytes only from the canonical candidate-index path
+`docs/release/evidence/retired-migrations/<sourceCommit>/<file>`. That locator
+must be one stage-0 regular `100644` Git entry; worktree-only, untracked,
+missing, duplicate, symlink, mismatched-path, or digest-drifted evidence fails
+closed, without fallback to a locally available dangling commit. The archive
+does not independently prove membership in the historical commit. The hosted
+gate also proves byte equality for byte-identical renumbers and executable-SQL
+equality after deterministic comment/whitespace normalization for comment-only
+renumbers.
 
 The first container release still requires explicit owner acceptance of the
 quiesced database state. Each database must contain an exact canonical prefix of

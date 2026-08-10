@@ -20,7 +20,7 @@ import {
   validateProductionShapeMigrationRehearsalEvidence,
 } from './lib/production-shape-migration-rehearsal-evidence.mjs';
 import {
-  migrationSafetyGovernanceReasons,
+  migrationSafetyGovernanceReason,
 } from './lib/migration-safety-policy-classifier.mjs';
 import {
   MIGRATION_CD_ELIGIBILITY_SCHEMA,
@@ -29,6 +29,7 @@ import {
 } from './lib/migration-cd-eligibility.mjs';
 import {
   loadProductionMigrationLineagePolicy,
+  readRepositoryArchiveFromGitIndex,
   verifyProductionMigrationLineageHistory,
 } from './lib/production-migration-lineage.mjs';
 
@@ -488,7 +489,7 @@ function checkChangedIrreversible(errors) {
   }
   const changed = changedFiles()
     .filter((file) => /^migrations\/\d{3}_.*\.sql$/.test(file)
-      || migrationSafetyGovernanceReasons.has(file));
+      || migrationSafetyGovernanceReason(file) !== null);
   const irreversibleByFile = new Map();
   for (const issue of irreversiblePolicy.integrityIssues) {
     const identityReason = issue.type === 'missing'
@@ -497,7 +498,7 @@ function checkChangedIrreversible(errors) {
     irreversibleByFile.set(issue.file, { file: issue.file, reason: identityReason });
   }
   for (const file of changed) {
-    const governanceReason = migrationSafetyGovernanceReasons.get(file);
+    const governanceReason = migrationSafetyGovernanceReason(file);
     if (governanceReason) {
       irreversibleByFile.set(file, { file, reason: governanceReason });
       continue;
@@ -656,10 +657,18 @@ try {
   releaseMigrationLineagePolicy = loadProductionMigrationLineagePolicy({ root });
   verifyProductionMigrationLineageHistory({
     policy: releaseMigrationLineagePolicy,
-    readHistoricalMigration: ({ commit, file }) => execFileSync(
+    readHistoricalMigration: ({ commit, sourcePath }) => execFileSync(
       'git',
-      ['show', `${commit}:migrations/${file}`],
+      ['show', `${commit}:${sourcePath}`],
       { cwd: root, stdio: ['ignore', 'pipe', 'ignore'] },
+    ),
+    readRepositoryArchive: ({ sourceCommit, file, sourcePath }) => (
+      readRepositoryArchiveFromGitIndex({
+        root,
+        sourceCommit,
+        file,
+        sourcePath,
+      })
     ),
     readReplacementMigration: ({ file }) => fs.readFileSync(
       path.join(root, 'migrations', file),
@@ -685,10 +694,10 @@ const {
   backupEvidence,
 } = checkChangedIrreversible(errors);
 const governanceChanges = irreversible.filter(({ file }) => (
-  migrationSafetyGovernanceReasons.has(file)
+  migrationSafetyGovernanceReason(file) !== null
 ));
 const irreversibleSchemaMigrations = irreversible.filter(({ file }) => (
-  !migrationSafetyGovernanceReasons.has(file)
+  migrationSafetyGovernanceReason(file) === null
 ));
 const cdEligibility = evaluateCdEligibility(errors, irreversible);
 // The complete ordered inventory, independent of the change delta. The delta

@@ -6,9 +6,10 @@ import {
   irreversibleMigrationReason,
   loadIrreversibleMigrationPolicy,
 } from './irreversible-migration-policy.mjs';
-import { migrationSafetyGovernanceReasons } from './migration-safety-policy-classifier.mjs';
-
-const MIGRATION_POLICY_GOVERNANCE_PATHS = new Set(migrationSafetyGovernanceReasons.keys());
+import {
+  isProductionMigrationArchivePath,
+  migrationSafetyGovernanceReason,
+} from './migration-safety-policy-classifier.mjs';
 
 export function normalizeChangedFiles(inputFiles) {
   const normalized = [];
@@ -161,6 +162,10 @@ export function classifyChangedFiles({
     nonDoc = true;
     docsOnly = false;
   }
+  if (files.some(isProductionMigrationArchivePath)) {
+    nonDoc = true;
+    docsOnly = false;
+  }
   if (!impactResolved) {
     nonDoc = true;
     docsOnly = false;
@@ -214,7 +219,9 @@ export function classifyChangedFiles({
   flags.secretary = has(/^src\/(?:domains\/secretary\/|services\/secretary-|api\/routes\/secretary|skills\/secretary\/)/)
     || has(/^__tests__\/services\/secretary-/);
   flags.portal = has(/^src\/portal\/|^__tests__\/portal\/|^scripts\/cooking-portal-browser-smoke\.ts$/);
-  const irreversiblePolicyChanged = files.some((file) => MIGRATION_POLICY_GOVERNANCE_PATHS.has(file));
+  const irreversiblePolicyChanged = files.some((file) => (
+    migrationSafetyGovernanceReason(file) !== null
+  ));
   flags.migration ||= has(/^migrations\//) || irreversiblePolicyChanged;
   flags.pythonEngine ||= has(/^content-engine\//);
   flags.appleNotificationWebhook = has(/^src\/api\/router\.ts$|^src\/api\/routes\/billing\.ts$|^src\/services\/apple-jws-verifier\.ts$|^__tests__\/security\/billing-apple-notifications-jws-verify\.test\.ts$/);
@@ -226,6 +233,7 @@ export function classifyChangedFiles({
   registryRealEval = has(/^src\/services\/chat\/registry\/|^src\/services\/registry-(?:driven-eval-scenarios|real-eval-scoring|telemetry-report|adversarial-discovery|adversarial-example-proposer|readable-intents-proposer|cross-tenant-alert-hook)\.ts$|^src\/services\/build-llm-safe-prompt-slice\.ts$|^src\/services\/skills\/|^__tests__\/services\/(?:chat-action-registry-|registry-(?:driven-eval|real-eval|telemetry-report|adversarial|readable-intents|cross-tenant))|^__tests__\/scripts\/registry-feedback-report\.test\.ts$|^scripts\/registry-feedback-report\.ts$/);
 
   flags.releaseOperator = has(/^config\/production-migration-lineages\.json$/)
+    || files.some(isProductionMigrationArchivePath)
     || has(/^scripts\/(?:release-operator|promote-exact-release|build-release-runtime-dependencies|chat-capability-flag-operator|remote-chat-capability-flag-transaction|remote-user-release-transaction)\.sh$/)
     || has(/^scripts\/(?:release-artifact-manifest|release-bundle|release-checksum-manifest|release-runtime-dependencies|routing-divergence-report)\.mjs$/)
     || has(/^scripts\/run-routing-action-skill-accuracy\.ts$/)

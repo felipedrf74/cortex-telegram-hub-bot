@@ -1,19 +1,24 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
 import { canonicalJson } from './release-canonical.mjs';
 
 export const PRODUCTION_MIGRATION_LINEAGE_SCHEMA =
-  'nexus.production-migration-lineages.v3';
+  'nexus.production-migration-lineages.v4';
 export const RELEASE_MIGRATION_RECONCILIATION_SCHEMA =
   'nexus.release-migration-reconciliation.v2';
 
 const SHA256 = /^[a-f0-9]{64}$/;
 const COMMIT_SHA = /^[a-f0-9]{40}$/;
 const MIGRATION_FILE = /^\d{3}_[^/]+\.sql$/;
+const GIT_HISTORY_SOURCE_MODE = 'git_history';
+const REPOSITORY_ARCHIVE_SOURCE_MODE = 'repository_archive';
+const REPOSITORY_ARCHIVE_DIRECTORY =
+  'docs/release/evidence/retired-migrations';
 const RELATIONSHIPS = new Set([
   'byte_identical_renumber',
   'comment_only_renumber',
@@ -269,6 +274,43 @@ function assertRegularFile(file, message) {
   if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(message);
 }
 
+function repositoryArchivePath(sourceCommit, file) {
+  return `${REPOSITORY_ARCHIVE_DIRECTORY}/${sourceCommit}/${file}`;
+}
+
+export function readRepositoryArchiveFromGitIndex({
+  root,
+  sourceCommit,
+  file,
+  sourcePath,
+  execGit = execFileSync,
+}) {
+  if (!root || !COMMIT_SHA.test(sourceCommit || '')
+    || !MIGRATION_FILE.test(file || '')
+    || sourcePath !== repositoryArchivePath(sourceCommit, file)
+    || typeof execGit !== 'function') {
+    throw new Error('repository archive locator is invalid');
+  }
+  const raw = execGit(
+    'git',
+    ['ls-files', '--stage', '-z', '--', sourcePath],
+    { cwd: root, stdio: ['ignore', 'pipe', 'ignore'] },
+  );
+  const records = Buffer.from(raw).toString('utf8').split('\0').filter(Boolean);
+  if (records.length !== 1) {
+    throw new Error(`repository archive is not an exact staged file: ${sourcePath}`);
+  }
+  const match = records[0].match(/^(100644) ([a-f0-9]{40}|[a-f0-9]{64}) 0\t(.+)$/);
+  if (!match || match[3] !== sourcePath) {
+    throw new Error(`repository archive has an unsafe staged identity: ${sourcePath}`);
+  }
+  return Buffer.from(execGit(
+    'git',
+    ['show', `:${sourcePath}`],
+    { cwd: root, stdio: ['ignore', 'pipe', 'ignore'] },
+  ));
+}
+
 export function loadProductionMigrationLineagePolicy({
   root,
   policyPath = path.join(root, 'config/production-migration-lineages.json'),
@@ -294,8 +336,14 @@ export function loadProductionMigrationLineagePolicy({
   const lineageIds = new Set();
   const retiredFiles = new Set();
   const replacementFiles = new Set();
+  const repositoryArchiveLocators = new Set();
   const migrationSets = new Set();
-  const lineages = parsed.lineages.map((lineage) => {
+  const lineages = parsed.lineages.map((candidate) => {
+    const lineage = exactKeys(
+      candidate,
+      ['id', 'reason', 'migrations'],
+      'production migration lineage policy has an invalid lineage',
+    );
     if (!lineage || typeof lineage.id !== 'string'
       || !/^[a-z0-9-]+$/.test(lineage.id)
       || typeof lineage.reason !== 'string'
@@ -311,8 +359,21 @@ export function loadProductionMigrationLineagePolicy({
     if (!sameValues(files, [...files].sort())) {
       throw new Error(`production migration lineage is not sorted: ${lineage.id}`);
     }
-    const migrations = lineage.migrations.map((entry) => {
-      const replacement = entry?.replacement;
+    const migrations = lineage.migrations.map((candidateEntry) => {
+      const hasArchiveFields = candidateEntry?.sourceMode !== undefined
+        || candidateEntry?.sourcePath !== undefined;
+      const entry = exactKeys(
+        candidateEntry,
+        hasArchiveFields
+          ? ['file', 'sha256', 'sourceCommit', 'sourceMode', 'sourcePath', 'replacement']
+          : ['file', 'sha256', 'sourceCommit', 'replacement'],
+        `production migration lineage has an invalid migration: ${lineage.id}`,
+      );
+      const replacement = exactKeys(
+        entry.replacement,
+        ['file', 'sha256', 'relationship'],
+        `production migration lineage has an invalid migration: ${lineage.id}`,
+      );
       if (!entry || typeof entry.file !== 'string' || !MIGRATION_FILE.test(entry.file)
         || !SHA256.test(entry.sha256 || '')
         || !COMMIT_SHA.test(entry.sourceCommit || '')
@@ -323,6 +384,23 @@ export function loadProductionMigrationLineagePolicy({
         || retiredFiles.has(entry.file)
         || replacementFiles.has(replacement.file)) {
         throw new Error(`production migration lineage has an invalid migration: ${lineage.id}`);
+      }
+      const sourceMode = hasArchiveFields
+        ? entry.sourceMode
+        : GIT_HISTORY_SOURCE_MODE;
+      const sourcePath = hasArchiveFields
+        ? entry.sourcePath
+        : `migrations/${entry.file}`;
+      if (hasArchiveFields && (
+        sourceMode !== REPOSITORY_ARCHIVE_SOURCE_MODE
+        || sourcePath
+          !== repositoryArchivePath(entry.sourceCommit, entry.file)
+        || repositoryArchiveLocators.has(sourcePath)
+      )) {
+        throw new Error(`production migration lineage has an invalid source: ${entry.file}`);
+      }
+      if (sourceMode === REPOSITORY_ARCHIVE_SOURCE_MODE) {
+        repositoryArchiveLocators.add(sourcePath);
       }
       retiredFiles.add(entry.file);
       replacementFiles.add(replacement.file);
@@ -348,6 +426,8 @@ export function loadProductionMigrationLineagePolicy({
         file: entry.file,
         sha256: entry.sha256,
         sourceCommit: entry.sourceCommit,
+        sourceMode,
+        sourcePath,
         replacement: Object.freeze({ ...replacement }),
       });
     });
@@ -603,40 +683,59 @@ export function releaseMigrationReconciliationDigest(value) {
 }
 
 /**
- * Prove retired migration provenance at the hosted signing boundary. Runtime
+ * Prove retired migration evidence at the hosted signing boundary. Runtime
  * images intentionally carry no Git history; they trust the signed projection.
- * CI, however, must prove every configured retired digest from the exact source
- * commit before that projection can be signed.
+ * CI reads ordinary rows from their exact source commit. Rows whose historical
+ * commit is not repository-reachable retain that commit as metadata and bind an
+ * exact non-executable archive in the signed candidate checkout instead.
  */
 export function verifyProductionMigrationLineageHistory({
   policy,
   readHistoricalMigration,
+  readRepositoryArchive,
   readReplacementMigration,
 }) {
   if (!policy?.lineages || typeof readHistoricalMigration !== 'function'
+    || typeof readRepositoryArchive !== 'function'
     || typeof readReplacementMigration !== 'function') {
     throw new Error('production migration lineage history verifier is not configured');
   }
   let verifiedCount = 0;
   for (const lineage of policy.lineages) {
     for (const migration of lineage.migrations) {
+      const sourceMode = migration.sourceMode ?? GIT_HISTORY_SOURCE_MODE;
+      const sourcePath = migration.sourcePath ?? `migrations/${migration.file}`;
+      if (![GIT_HISTORY_SOURCE_MODE, REPOSITORY_ARCHIVE_SOURCE_MODE].includes(sourceMode)) {
+        throw new Error(`retired migration source mode is invalid: ${migration.file}`);
+      }
       let bytes;
       try {
-        bytes = readHistoricalMigration({
-          commit: migration.sourceCommit,
-          file: migration.file,
-        });
+        bytes = sourceMode === REPOSITORY_ARCHIVE_SOURCE_MODE
+          ? readRepositoryArchive({
+            sourceCommit: migration.sourceCommit,
+            file: migration.file,
+            sourcePath,
+          })
+          : readHistoricalMigration({
+            commit: migration.sourceCommit,
+            file: migration.file,
+            sourcePath,
+          });
       } catch {
         bytes = null;
       }
       if (!Buffer.isBuffer(bytes) || bytes.length === 0) {
         throw new Error(
-          `retired migration is absent from its source commit: ${migration.file}`,
+          sourceMode === REPOSITORY_ARCHIVE_SOURCE_MODE
+            ? `retired migration is absent from its repository archive: ${migration.file}`
+            : `retired migration is absent from its source commit: ${migration.file}`,
         );
       }
       if (sha256(bytes) !== migration.sha256) {
         throw new Error(
-          `retired migration digest does not match its source commit: ${migration.file}`,
+          sourceMode === REPOSITORY_ARCHIVE_SOURCE_MODE
+            ? `retired migration digest does not match its repository archive: ${migration.file}`
+            : `retired migration digest does not match its source commit: ${migration.file}`,
         );
       }
       let replacementBytes;

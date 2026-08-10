@@ -5,10 +5,10 @@
     "generatorVersion": 4,
     "authoritativeFreshness": "sourceDigest",
     "sourceDigestAlgorithm": "sha256-path-git-mode-content-v2",
-    "sourceDigest": "ffd0ed79b01c6a4fed657e15e27d1f5e606bc7ae93e933953e484ffd13afcbbf",
-    "baseCommit": "004e1d83f28c478281b503d5af1a235d4086f3c9",
-    "baseCommitTimestamp": "2026-08-10T01:42:37+01:00",
-    "trackedFiles": 3198,
+    "sourceDigest": "f485de828340493a1c2f3cf17531e7a8fc54c59d8dcc1e4e416005dc8a58b35b",
+    "baseCommit": "1d3784e3eafc33de636c75b4bd53cd830cb49c68",
+    "baseCommitTimestamp": "2026-08-10T02:53:31+01:00",
+    "trackedFiles": 3203,
     "sourceFiles": 1135
   },
   "navigation": {
@@ -5692,7 +5692,7 @@
     },
     {
       "path": "ops/nexus-release/README.md",
-      "bytes": 314537,
+      "bytes": 315003,
       "generated": false
     },
     {

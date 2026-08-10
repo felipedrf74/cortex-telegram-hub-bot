@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { globToRegExp, root as repositoryRoot } from './test-policy.mjs';
+import { isProductionMigrationArchivePath } from './migration-safety-policy-classifier.mjs';
 
 export function loadTestGroups(sourceRoot = repositoryRoot) {
   const file = path.join(sourceRoot, 'config/test-groups.json');
@@ -312,15 +313,18 @@ export function contractTestsForGroups(groupNames, policy, allTests) {
 
 export function isDocsOnly(files) {
   return files.length > 0 && files.every((file) => (
-    file.startsWith('docs/')
+    !isProductionMigrationArchivePath(file) && (
+      file.startsWith('docs/')
     || file.includes('/docs/')
     || file.startsWith('.agents/')
     || file.startsWith('.claude/')
     || ['AGENTS.md', 'CHANGELOG.md', 'CLAUDE.md', 'README.md'].includes(file)
+    )
   ));
 }
 
 export function isRelevantPath(file) {
+  if (isProductionMigrationArchivePath(file)) return true;
   if (
     file.startsWith('docs/')
     || file.startsWith('.agents/')

@@ -53,7 +53,7 @@ tampering, not as a forward-compatible extension.
 | `migrations.upFileCount` / `downFileCount` | Non-negative integers |
 | `migrations.cdEligibility` | `{eligible, predecessorCompatible, reasons}` — booleans and a bounded string list |
 | `migrations.inventory` | Non-empty, strictly filename-ordered exact-key rows `{file, sha256, kind, predecessorCompatible}`; filenames are slash-free `NNN_*.sql` values with no `..`, every up migration is represented, byte digests are lowercase SHA-256, and compatibility must agree with the classified kind |
-| `migrations.reconciliation` | `nexus.release-migration-reconciliation.v2`: source-policy digest; exact production/staging lineage ids and legacy rows; retired SHA-256/source commit/replacement relationship for each row; exact digest-bound compatibility exemption with ordered old/replacement unique-index transition descriptors; and exact semantic-schema exclusions |
+| `migrations.reconciliation` | `nexus.release-migration-reconciliation.v2`: source-policy digest (including v4 archive modes/locators); exact production/staging lineage ids and legacy rows; retired SHA-256/source-commit metadata/replacement relationship for each row; exact digest-bound compatibility exemption with ordered old/replacement unique-index transition descriptors; and exact semantic-schema exclusions |
 
 The release identity is `sha256` over `{sha, backend, contentEngine, compose,
 migrations}`, truncated to 32 hex characters. It is derived only from signed,
@@ -237,18 +237,24 @@ pathnames, fallback may remove them only after no-handle, exact zero-WAL
 checkpoint, no-journal, regular-file, single-link, and zero-byte-WAL proofs.
 
 The historical PM2 ledger stored filenames, not executed-byte hashes. Before
-the signing handoff, the secretless hosted full-history builder independently
-reads every configured retired migration from its exact `sourceCommit` and
-verifies its SHA-256. It
-requires byte-identical replacements to match exactly and comment-only
-replacements to have the same executable token stream after deterministic SQL
-comment/whitespace normalization; a missing commit/file, byte mismatch, or
-executable drift fails publication. The signed projection therefore proves the
-governed historical source bytes and declared replacement relationships. The
-baseline still records the owner's acceptance of the current quiesced database
-state; it does not manufacture proof that an old PM2 process executed those
-exact historical bytes. The append-only migration gate makes that accepted
-boundary enforceable for every later release.
+the signing handoff, the secretless hosted full-history builder reads ordinary
+rows from their exact `sourceCommit` and migration path. A v4
+`repository_archive` row keeps `sourceCommit` only as historical provenance
+metadata and verifies the digest from the candidate-index archive at the one
+canonical `<sourceCommit>/<file>` locator. The locator must be one stage-0
+regular `100644` Git entry; untracked, missing, duplicate, symlink, wrong-path,
+or worktree-only bytes fail, and an available dangling source commit is never a
+fallback. The source-policy digest binds the archive mode and locator while the
+runtime v2 projection intentionally remains locator-free. The builder requires
+byte-identical replacements to match exactly and comment-only replacements to
+have the same executable token stream after deterministic SQL
+comment/whitespace normalization. The signed projection therefore proves the
+governed source-evidence bytes and declared replacement relationships. It does
+not independently prove that archived bytes belong to the historical
+`sourceCommit`, or that an old PM2 process executed them. The baseline still
+records the owner's acceptance of the current quiesced database state, and the
+append-only migration gate makes that accepted boundary enforceable for every
+later release.
 
 `nexus.release-signing-handoff.v1` is the only builder output the signing job
 accepts. Its closed manifest binds protected source SHA, successful CI run ID,

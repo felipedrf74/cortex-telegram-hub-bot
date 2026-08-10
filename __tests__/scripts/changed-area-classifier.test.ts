@@ -121,6 +121,25 @@ describe('lean changed-area classification', () => {
     });
   });
 
+  it('treats a retired-migration archive as migration governance, not docs-only', () => {
+    const result = classify([
+      'docs/release/evidence/retired-migrations/'
+        + 'cb2c262ff1f77f55ccee6267e7cf1d1970b1ff05/'
+        + '136_training_session_schedule_truth.sql',
+    ]);
+    expect(result.flags).toMatchObject({
+      docsOnly: false,
+      migration: true,
+      releaseOperator: true,
+    });
+    expect(result.tiers).toContain('T4');
+    expect(result.vitest.mode).toBe('focused');
+    expect(result.vitest.groups).toEqual(expect.arrayContaining([
+      'migrations',
+      'release-ops',
+    ]));
+  });
+
   it('keeps Python and migration safety flags independent from Vitest selection', () => {
     const python = classify(['content-engine/main.py']);
     expect(python.flags.pythonEngine).toBe(true);

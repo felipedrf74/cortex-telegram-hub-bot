@@ -62,6 +62,17 @@ export const migrationSafetyGovernanceReasons = new Map([
   ['scripts/lib/production-shape-migration-rehearsal-evidence.mjs', 'POLICY_REHEARSAL_EVIDENCE_CHANGED'],
 ]);
 
+export const PRODUCTION_MIGRATION_ARCHIVE_PREFIX =
+  'docs/release/evidence/retired-migrations/';
+
+export function isProductionMigrationArchivePath(file) {
+  return typeof file === 'string'
+    && file.startsWith(PRODUCTION_MIGRATION_ARCHIVE_PREFIX);
+}
+
 export function migrationSafetyGovernanceReason(file) {
+  if (isProductionMigrationArchivePath(file)) {
+    return 'POLICY_PRODUCTION_LINEAGE_ARCHIVE_CHANGED';
+  }
   return migrationSafetyGovernanceReasons.get(file) ?? null;
 }

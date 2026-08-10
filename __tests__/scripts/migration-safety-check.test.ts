@@ -137,7 +137,7 @@ function createReleaseBoundaryRepo(prefix: string) {
     readFileSync(join(root, 'config/production-migration-lineages.json'), 'utf8'),
   ) as { release: unknown };
   writeFileSync(join(repo, 'config/production-migration-lineages.json'), `${JSON.stringify({
-    schema: 'nexus.production-migration-lineages.v3',
+    schema: 'nexus.production-migration-lineages.v4',
     lineages: [
       {
         id: 'production-2026-05-branch-history',
@@ -666,6 +666,12 @@ describe('migration-safety-check', () => {
   it.each([
     ['config/irreversible-migrations.json', 'POLICY_REGISTRY_CHANGED'],
     ['config/production-migration-lineages.json', 'POLICY_PRODUCTION_LINEAGE_CHANGED'],
+    [
+      'docs/release/evidence/retired-migrations/'
+        + 'cb2c262ff1f77f55ccee6267e7cf1d1970b1ff05/'
+        + '136_training_session_schedule_truth.sql',
+      'POLICY_PRODUCTION_LINEAGE_ARCHIVE_CHANGED',
+    ],
     ['.github/workflows/ci.yml', 'POLICY_CI_ENTRYPOINT_CHANGED'],
     ['.github/workflows/release.yml', 'POLICY_RELEASE_PUBLISH_ENTRYPOINT_CHANGED'],
     [
