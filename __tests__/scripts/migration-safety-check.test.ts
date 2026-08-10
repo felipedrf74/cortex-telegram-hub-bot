@@ -283,6 +283,12 @@ describe('migration-safety-check', () => {
     const preCommit = readFileSync('.husky/pre-commit', 'utf8');
 
     expect(ci).toContain('--approval-mode scan');
+    expect(ci).toContain('migration_scan_status=0');
+    expect(ci.match(/\|\| migration_scan_status=\$\?/g)).toHaveLength(2);
+    expect(ci).toContain('MIGRATION_SCAN_STATUS="$migration_scan_status"');
+    expect(ci).toContain('scannerStatus !== 0');
+    expect(ci).toContain("migration verdict JSON is unreadable:");
+    expect(ci).toContain("console.error('scanner exit status =', process.env.MIGRATION_SCAN_STATUS)");
     expect(ci).not.toContain('NEXUS_MIGRATION_REVIEW_EVIDENCE_JSON');
     expect(ci).not.toContain('environment: migration-review');
     expect(riskGate).toContain('--approval-mode scan');

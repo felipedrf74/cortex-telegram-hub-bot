@@ -28,6 +28,31 @@
       "reason": "SonarQube is decommissioned by the 2026-08-07 continuous-deployment refactor. Static quality evidence is now the changed-area classifier, the risk gate, lint, typecheck, tests, the security workflow, and the docs audit; the workflow contract test asserts no Sonar tooling, npm script, or release-path gate remains."
     },
     {
+      "baseSha": "65a87ae2a0514e0fe2ad117412d23ca3f0da8d39",
+      "test": "__tests__/scripts/ollama-lean-finalize.test.ts",
+      "requiredRemovedPaths": [
+        "scripts/quality-sonar-*",
+        "ops/sonarqube/*"
+      ],
+      "replacementTests": [
+        "__tests__/scripts/ollama-lean-finalize.test.ts",
+        "__tests__/scripts/continuous-deployment-workflows.test.ts"
+      ],
+      "reason": "The retained Ollama finalization suite still proves exact release, PM2, model, and systemd-envelope safety after the retired Sonar snapshot disappears; the continuous-deployment workflow suite proves no Sonar release gate remains."
+    },
+    {
+      "baseSha": "65a87ae2a0514e0fe2ad117412d23ca3f0da8d39",
+      "test": "__tests__/scripts/shared-ios-release-gate-workflow.test.ts",
+      "requiredChangedPaths": [
+        ".github/workflows/shared-ios-release-gate.yml"
+      ],
+      "replacementTests": [
+        "__tests__/scripts/shared-ios-release-gate-workflow.test.ts",
+        "__tests__/scripts/continuous-deployment-workflows.test.ts"
+      ],
+      "reason": "The retained shared-iOS suite now proves only the owner-triggered PM2 fallback checkpoint and its checkpoint-built bundle; signed container delivery is independently governed by the continuous-deployment workflow suite."
+    },
+    {
       "baseSha": "247ac7dc940009aacb0d1419a58db4749a76c75a",
       "test": "__tests__/api/chat-content-refinement.test.ts",
       "requiredChangedPaths": [

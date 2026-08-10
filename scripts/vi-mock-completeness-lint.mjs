@@ -45,6 +45,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  evaluateViMockStrictFindings,
+  parseViMockStrictBaseline,
+  passesViMockStrictGate,
+} from './lib/vi-mock-strict-allowances.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -558,11 +563,9 @@ const summary = {
 };
 
 function readStrictBaseline() {
-  if (explicitFiles) return { partialMockCount: 0 };
-  if (!fs.existsSync(BASELINE_PATH)) return { partialMockCount: 0 };
-  const raw = fs.readFileSync(BASELINE_PATH, 'utf8');
-  const match = raw.match(/partialMockCount\s*=\s*(\d+)/);
-  return { partialMockCount: match ? Number(match[1]) : 0 };
+  if (explicitFiles) return { partialMockCount: 0, allowances: [] };
+  if (!fs.existsSync(BASELINE_PATH)) return { partialMockCount: 0, allowances: [] };
+  return parseViMockStrictBaseline(fs.readFileSync(BASELINE_PATH, 'utf8'));
 }
 
 // Aggregate by real-module to spot the most-mocked modules
@@ -586,9 +589,17 @@ const topModules = [...byModule.values()]
   .slice(0, 25);
 
 const TOP_ONLY = args.has('--top');
+const strictBaseline = STRICT ? readStrictBaseline() : null;
+const strictEvaluation = strictBaseline
+  ? evaluateViMockStrictFindings(findings, strictBaseline)
+  : null;
 
 if (JSON_OUT) {
-  console.log(JSON.stringify({ summary, topModules, findings }, null, 2));
+  console.log(JSON.stringify({
+    summary: strictEvaluation ? { ...summary, strictEvaluation } : summary,
+    topModules,
+    findings,
+  }, null, 2));
 } else {
   console.log(`# vi.mock completeness lint`);
   console.log();
@@ -598,8 +609,14 @@ if (JSON_OUT) {
   console.log(`Affected real modules: ${summary.affectedRealModules.length}`);
   console.log(`Affected test files: ${summary.affectedTestFiles.length}`);
   if (STRICT) {
-    const baseline = readStrictBaseline();
-    console.log(`Strict baseline: ${baseline.partialMockCount} partial mocks`);
+    console.log(`Strict scoped allowances: ${strictEvaluation.allowedCount} partial mocks`);
+    console.log(`Strict evaluated partial mocks: ${strictEvaluation.evaluatedPartialMockCount}`);
+    console.log(`Strict baseline: ${strictBaseline.partialMockCount} partial mocks`);
+    for (const exceeded of strictEvaluation.exceededAllowances) {
+      console.log(
+        `Strict allowance exceeded: ${exceeded.realModule} ${exceeded.count} > ${exceeded.maximum}`,
+      );
+    }
   }
   console.log();
   if (findings.length === 0) {
@@ -635,6 +652,5 @@ if (JSON_OUT) {
 }
 
 if (STRICT) {
-  const baseline = readStrictBaseline();
-  if (summary.partialMockCount > baseline.partialMockCount) process.exit(1);
+  if (!passesViMockStrictGate(strictBaseline, strictEvaluation)) process.exit(1);
 }

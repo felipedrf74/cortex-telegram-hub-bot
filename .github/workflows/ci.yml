@@ -726,21 +726,42 @@ jobs:
           # inventory against the production ledger. Eligibility from the change
           # delta alone cannot see a migration an earlier blocked release left
           # pending.
+          migration_scan_status=0
           if [ -n "$BASE" ]; then
             node scripts/migration-safety-check.mjs \
               --base "$BASE" \
               --changed-only \
               --approval-mode scan \
               --emit-inventory \
-              --json > .local/ci-evidence/migration-safety.json
+              --json > .local/ci-evidence/migration-safety.json \
+              || migration_scan_status=$?
           else
             node scripts/migration-safety-check.mjs \
               --emit-inventory \
-              --json > .local/ci-evidence/migration-safety.json
+              --json > .local/ci-evidence/migration-safety.json \
+              || migration_scan_status=$?
           fi
-          node -e "
-            const result = require('./.local/ci-evidence/migration-safety.json');
-            if (!result.ok) { process.exit(1); }
+          MIGRATION_SCAN_STATUS="$migration_scan_status" node -e "
+            const fs = require('node:fs');
+            const scannerStatus = Number(process.env.MIGRATION_SCAN_STATUS);
+            let result;
+            try {
+              result = JSON.parse(fs.readFileSync(
+                '.local/ci-evidence/migration-safety.json',
+                'utf8',
+              ));
+            } catch (error) {
+              console.error('migration safety scan failed');
+              console.error('scanner exit status =', process.env.MIGRATION_SCAN_STATUS);
+              console.error('migration verdict JSON is unreadable:', error.message);
+              process.exit(1);
+            }
+            if (!Number.isSafeInteger(scannerStatus) || scannerStatus !== 0 || !result.ok) {
+              console.error('migration safety scan failed');
+              console.error('scanner exit status =', process.env.MIGRATION_SCAN_STATUS);
+              for (const error of result.errors || []) console.error(error);
+              process.exit(1);
+            }
             const cd = result.cdEligibility;
             if (!Array.isArray(result.migrationInventory) || result.migrationInventory.length === 0) {
               console.error('migration verdict carries no inventory; --emit-inventory is required');

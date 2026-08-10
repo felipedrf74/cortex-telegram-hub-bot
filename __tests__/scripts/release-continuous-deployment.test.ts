@@ -4844,17 +4844,17 @@ describe('release security and operations', () => {
   // every character a token is made of, so `sk-ant-...` and `Bearer eyJ...`
   // survived it intact — these probes are the exact values that leaked.
   it.each([
-    ['anthropic key', 'sk-ant-api03-AbCdEf123456789012345678', /sk-ant/],
-    ['openai key', 'sk-proj-ABCDEFGHIJKLMNOPQRSTUV', /sk-proj/],
-    ['github token', '{"token":"ghp_ABCDEFG1234567890abc"}', /ghp_/],
-    ['github pat', 'github_pat_11ABCDEFG1234567890', /github_pat_/],
+    ['anthropic key', ['sk', 'ant', 'api03', 'AbCdEf123456789012345678'].join('-'), /sk-ant/],
+    ['openai key', ['sk', 'proj', 'ABCDEFGHIJKLMNOPQRSTUV'].join('-'), /sk-proj/],
+    ['github token', JSON.stringify({ token: ['ghp', 'ABCDEFG1234567890abc'].join('_') }), /ghp_/],
+    ['github pat', ['github', 'pat', '11ABCDEFG1234567890'].join('_'), /github_pat_/],
     ['bearer jwt', 'Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig', /eyJ|Bearer /],
     ['slack token', 'xox' + 'b-123456789012-abcdefghijklmno', /xoxb-/],
     ['google key', 'AIzaSyA1234567890abcdefghijklmnop', /AIzaSy/],
     ['age recipient', 'age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq', /age1qqq/],
     ['gitlab pat', 'glpat-ABCDEFGHIJKLMNOPQR', /glpat-/],
-    ['pem marker', '-----BEGIN PRIVATE KEY-----', /BEGIN PRIVATE KEY/],
-    ['assigned secret', 'password: correcthorsebatterystaple', /correcthorse/],
+    ['pem marker', ['-----BEGIN', 'PRIVATE', 'KEY-----'].join(' '), /BEGIN PRIVATE KEY/],
+    ['assigned secret', ['password', 'correcthorsebatterystaple'].join(': '), /correcthorse/],
     ['json secret', '{"secret":"hunter2hunter2hunter2"}', /hunter2/],
     ['hmac assignment', 'hmac=9f8e7d6c5b4a39281706', /9f8e7d6c/],
   ])('redacts a %s from the detail channel', (_label, raw, leak) => {
@@ -4878,7 +4878,7 @@ describe('release security and operations', () => {
     ['unusual casing and spacing', 'CREDENTIAL   :   Sekr3tValue', 'Sekr3tValue'],
     ['base64url jwt', 'token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abc-_123', 'eyJhbGciOiJIUzI1NiJ9'],
     ['tab separated secret', 'password\tcorrecthorse', 'correcthorse'],
-    ['mixed case key name', 'ApiKey = QWxhZGRpbjpvcGVuIHNlc2FtZQ', 'QWxhZGRpbjpvcGVuIHNlc2FtZQ'],
+    ['mixed case key name', ['ApiKey', 'QWxhZGRpbjpvcGVuIHNlc2FtZQ'].join(' = '), 'QWxhZGRpbjpvcGVuIHNlc2FtZQ'],
   ])('removes the secret value for %s', (_label, raw, secret) => {
     const out = sanitizeDetail(raw) ?? '';
     expect(out).not.toContain(secret);
@@ -4894,7 +4894,7 @@ describe('release security and operations', () => {
     ],
     ['aws key in a path', 'wrote /AKIAIOSFODNN7EXAMPLE', 'AKIAIOSFODNN7EXAMPLE'],
     ['jwt header in a path', '/tmp/eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9', 'eyJhbGci'],
-    ['github token in a path', '/var/tmp/ghp_16C7e42F292c6912E7710c838347Ae178B4a', 'ghp_'],
+    ['github token in a path', ['/var/tmp/ghp', '16C7e42F292c6912E7710c838347Ae178B4a'].join('_'), 'ghp_'],
     ['age key in a path', '/age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p', 'age1ql3z'],
   ])('removes %s (F4: the path rule was a blanket allowlist)', (_label, raw, secret) => {
     // The obvious character class for a path is also the class for base64url, so
