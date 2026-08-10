@@ -200,6 +200,57 @@ describe('runtime config validation', () => {
     );
   });
 
+  it('preserves staging-only validation when a container uses NODE_ENV=production', async () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    vi.stubEnv('STAGING', 'true');
+    vi.stubEnv('PAYWALL_ENABLED', 'false');
+    vi.stubEnv('FINANCE_ENCRYPTION_ENABLED', 'true');
+    vi.stubEnv('FINANCE_ENCRYPTION_KEY', 'staging-finance-key-at-least-32-chars');
+    vi.stubEnv('BACKUP_ENABLED', 'false');
+    vi.stubEnv('BACKUP_ENCRYPT', 'false');
+    vi.stubEnv('BACKUP_KEY', '');
+    vi.stubEnv('TRAINING_PUBLIC_BETA_V1_ENABLED', 'false');
+    vi.stubEnv('TRAINING_PLAN_REVISION_V1_MODE', 'active');
+    vi.stubEnv('TRAINING_ADAPTATION_V1_MODE', 'active');
+    vi.stubEnv('TRAINING_DECISION_FLOW_V1_ENFORCE_ENABLED', 'true');
+    vi.stubEnv('TRAINING_PLAN_M4_ALLOWLIST', FULL_TRAINING_M4_ALLOWLIST);
+    vi.stubEnv('APNS_ENABLED', 'true');
+    vi.stubEnv('APNS_TEAM_ID', 'TEAMID1234');
+    vi.stubEnv('APNS_KEY_ID', 'KEYID12345');
+    vi.stubEnv('APNS_AUTH_KEY_P8', '<redacted-test-apns-key>');
+    vi.stubEnv('APNS_BUNDLE_ID', 'me.nexushub.app');
+    vi.stubEnv('NOTIFICATION_DELIVERY_MODE', '');
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const { config } = await loadConfigFresh();
+
+    expect(config.billing.allowUnsafePaywallBypass).toBe(true);
+    expect(config.notificationDelivery.mode).toBe('mock');
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it('keeps encryption requirements production-grade in container staging', async () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    vi.stubEnv('STAGING', 'true');
+    vi.stubEnv('FINANCE_ENCRYPTION_ENABLED', 'true');
+    vi.stubEnv('FINANCE_ENCRYPTION_KEY', '');
+    vi.stubEnv('BACKUP_ENABLED', 'false');
+
+    await expect(loadConfigFresh()).rejects.toThrow(
+      'FINANCE_ENCRYPTION_ENABLED=true and FINANCE_ENCRYPTION_KEY are required in production.',
+    );
+
+    vi.stubEnv('FINANCE_ENCRYPTION_KEY', 'staging-finance-key-at-least-32-chars');
+    vi.stubEnv('BACKUP_ENABLED', 'true');
+    vi.stubEnv('BACKUP_ENCRYPT', 'false');
+    vi.stubEnv('BACKUP_KEY', '');
+
+    await expect(loadConfigFresh()).rejects.toThrow(
+      'BACKUP_ENABLED=true requires BACKUP_ENCRYPT=true and BACKUP_KEY in production.',
+    );
+  });
+
   it('defaults notification delivery to mock outside production and accepts explicit apns in production', async () => {
     vi.stubEnv('NOTIFICATION_DELIVERY_MODE', '');
 
@@ -291,8 +342,17 @@ describe('runtime config validation', () => {
     );
   });
 
-  it('refuses live Stripe secret keys outside production when Nexus Points are enabled', async () => {
-    vi.stubEnv('NODE_ENV', 'staging');
+  it.each([
+    { nodeEnv: 'staging', staging: 'false' },
+    { nodeEnv: 'production', staging: 'true' },
+  ])('refuses live Stripe secret keys outside live production ($nodeEnv, STAGING=$staging)', async ({
+    nodeEnv, staging,
+  }) => {
+    vi.stubEnv('NODE_ENV', nodeEnv);
+    vi.stubEnv('STAGING', staging);
+    vi.stubEnv('FINANCE_ENCRYPTION_ENABLED', 'true');
+    vi.stubEnv('FINANCE_ENCRYPTION_KEY', 'staging-finance-key-at-least-32-chars');
+    vi.stubEnv('BACKUP_ENABLED', 'false');
     vi.stubEnv('STRIPE_NEXUS_POINTS_ENABLED', 'true');
     vi.stubEnv('STRIPE_SECRET_KEY', 'sk_live_accidental');
     vi.stubEnv('STRIPE_WEBHOOK_SECRET', 'whsec_test');
@@ -302,7 +362,7 @@ describe('runtime config validation', () => {
     vi.stubEnv('PORTAL_ADMIN_ACTOR_SIGNATURE_SECRET', 'signed-actors');
 
     await expect(loadConfigFresh()).rejects.toThrow(
-      'STRIPE_SECRET_KEY appears to be a live key (sk_live_*) but NODE_ENV is not production.',
+      'STRIPE_SECRET_KEY appears to be a live key (sk_live_*) outside live production.',
     );
   });
 
