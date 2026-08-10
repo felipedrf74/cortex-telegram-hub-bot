@@ -532,7 +532,7 @@
       "reason": "The V2 normalization bridge is retired; signed OCI identity, exact container staging, and immutable VPS receipts replace its attestation path. Checksum-bound staging remains only in the PM2 first-cutover fallback."
     },
     {
-      "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
+      "baseSha": "65a87ae2a0514e0fe2ad117412d23ca3f0da8d39",
       "test": "__tests__/scripts/release-runtime-dependencies.test.ts",
       "requiredChangedPaths": [
         "scripts/build-release-runtime-dependencies.sh",
