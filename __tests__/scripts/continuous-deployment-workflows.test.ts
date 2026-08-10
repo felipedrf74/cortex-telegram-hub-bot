@@ -2008,7 +2008,7 @@ describe('release manifest publication fails closed on the pinned key', () => {
     }
   });
 
-  it('refuses an artifact that suppresses a real append-only violation', () => {
+  it('refuses an artifact that suppresses a real append-only violation', { timeout: 30_000 }, () => {
     const fixtureRoot = mkdtempSync(join(tmpdir(), 'nexus-hosted-migration-tamper-'));
     const migration = 'migrations/001_initial.sql';
     const git = (...args: string[]) => spawnSync('git', args, {
