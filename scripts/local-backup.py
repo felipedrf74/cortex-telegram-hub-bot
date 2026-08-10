@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import namedtuple
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import fcntl
@@ -16,6 +17,7 @@ import shutil
 import sqlite3
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 from typing import Iterator, NoReturn
@@ -32,6 +34,10 @@ BACKUP_PATTERN = re.compile(
     r"nexus-db-(?:[0-9]{8}T[0-9]{6}Z|[0-9]{8}|[0-9]{4}-W[0-9]{2})"
     r"\.sqlite\.age"
 )
+
+
+FileIdentity = namedtuple("FileIdentity", ("device", "inode", "uid", "gid", "mode"))
+BoundSource = namedtuple("BoundSource", ("descriptor", "identity"))
 
 
 def fail(message: str) -> NoReturn:
@@ -175,21 +181,287 @@ def integrity(path: Path) -> dict[str, object]:
     }
 
 
-def snapshot(source: Path, destination: Path) -> dict[str, object]:
-    if source.is_symlink() or not source.is_file():
-        fail("database is missing or unsafe")
-    source_database = sqlite3.connect(
-        f"{source.as_uri()}?mode=ro", uri=True, timeout=30
+def file_identity(metadata: os.stat_result) -> FileIdentity:
+    return FileIdentity(
+        device=metadata.st_dev,
+        inode=metadata.st_ino,
+        uid=metadata.st_uid,
+        gid=metadata.st_gid,
+        mode=stat.S_IMODE(metadata.st_mode),
     )
-    destination_database = sqlite3.connect(destination)
+
+
+def require_bound_path(path: Path, identity: FileIdentity, label: str) -> None:
     try:
-        # Finite page batches reopen the source read transaction between steps.
-        # A read-only WAL/SHM view can then restart every batch from page one.
-        source_database.backup(destination_database, pages=-1)
-        destination_database.commit()
+        metadata = os.stat(path, follow_symlinks=False)
+    except OSError:
+        fail(f"{label} identity changed")
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_nlink != 1
+        or file_identity(metadata) != identity
+    ):
+        fail(f"{label} identity changed")
+
+
+def bind_source_database(source: Path) -> BoundSource:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(source, flags)
+    except OSError:
+        fail("database is missing or unsafe")
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+            fail("database must be a single-link regular file")
+        identity = file_identity(metadata)
+        require_bound_path(source, identity, "database")
+        return BoundSource(descriptor=descriptor, identity=identity)
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def process_descriptor_numbers() -> set[int]:
+    directories = (
+        (Path("/proc/self/fd"),)
+        if sys.platform.startswith("linux")
+        else (Path("/proc/self/fd"), Path("/dev/fd"))
+    )
+    for directory in directories:
+        try:
+            candidates = {
+                int(entry)
+                for entry in os.listdir(directory)
+                if entry.isdecimal()
+            }
+        except OSError:
+            continue
+        # Directory enumeration can report its own already-closed descriptor.
+        # Retain only descriptors still bound in this process after the scan.
+        result: set[int] = set()
+        for descriptor in candidates:
+            try:
+                os.fstat(descriptor)
+            except OSError:
+                continue
+            result.add(descriptor)
+        return result
+    fail("cannot inspect process file descriptors")
+
+
+def require_sqlite_source_descriptors(
+    source: Path,
+    source_binding: BoundSource,
+    previous_descriptors: set[int],
+    journal_mode: str,
+) -> None:
+    required = {"database": source_binding.identity}
+    for suffix in ("-wal", "-shm"):
+        sidecar = Path(f"{source}{suffix}")
+        inspected = inspect_sqlite_sidecar(sidecar)
+        if inspected is None:
+            if journal_mode == "wal":
+                fail(f"SQLite WAL mode is missing bound database{suffix}")
+            continue
+        descriptor, identity = inspected
+        try:
+            required[f"database{suffix}"] = identity
+        finally:
+            os.close(descriptor)
+
+    new_descriptors = process_descriptor_numbers() - previous_descriptors
+    observed: set[FileIdentity] = set()
+    for descriptor in new_descriptors:
+        try:
+            metadata = os.fstat(descriptor)
+        except OSError:
+            continue
+        if not stat.S_ISREG(metadata.st_mode):
+            continue
+        if metadata.st_nlink != 1:
+            fail("SQLite descriptor set contains an unsafe regular file")
+        observed.add(file_identity(metadata))
+    missing = [label for label, identity in required.items() if identity not in observed]
+    if missing:
+        fail(f"SQLite descriptor set is missing bound {', '.join(missing)}")
+    expected = set(required.values())
+    unexpected = observed - expected
+    if unexpected:
+        fail("SQLite descriptor set contains an unbound regular file")
+
+
+def inspect_sqlite_sidecar(path: Path) -> tuple[int, FileIdentity] | None:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        fail(f"SQLite sidecar is missing or unsafe: {path.name}")
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+            fail(f"SQLite sidecar must be a single-link regular file: {path.name}")
+        identity = file_identity(metadata)
+        require_bound_path(path, identity, f"SQLite sidecar {path.name}")
+        return descriptor, identity
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def prevalidate_sqlite_sidecars(
+    source: Path, source_identity: FileIdentity
+) -> dict[str, FileIdentity | None]:
+    result: dict[str, FileIdentity | None] = {}
+    for suffix in ("-wal", "-shm"):
+        sidecar = Path(f"{source}{suffix}")
+        inspected = inspect_sqlite_sidecar(sidecar)
+        if inspected is None:
+            result[suffix] = None
+            continue
+        descriptor, identity = inspected
+        try:
+            if (
+                identity.uid != source_identity.uid
+                or identity.gid != source_identity.gid
+                or identity.mode != source_identity.mode
+            ):
+                fail(f"SQLite sidecar has unsafe ownership or mode: {sidecar.name}")
+            result[suffix] = identity
+        finally:
+            os.close(descriptor)
+    return result
+
+
+def normalize_sqlite_sidecars(
+    source: Path,
+    source_binding: BoundSource,
+    previous: dict[str, FileIdentity | None],
+) -> None:
+    source_identity = source_binding.identity
+    require_bound_path(source, source_identity, "database")
+    if file_identity(os.fstat(source_binding.descriptor)) != source_identity:
+        fail("database descriptor metadata changed")
+
+    for suffix in ("-wal", "-shm"):
+        sidecar = Path(f"{source}{suffix}")
+        inspected = inspect_sqlite_sidecar(sidecar)
+        before = previous[suffix]
+        if inspected is None:
+            if before is not None:
+                fail(f"SQLite sidecar identity changed: {sidecar.name}")
+            continue
+
+        descriptor, current = inspected
+        try:
+            same_identity = (
+                before is not None
+                and current.device == before.device
+                and current.inode == before.inode
+            )
+            if same_identity:
+                if current != before or (
+                    current.uid != source_identity.uid
+                    or current.gid != source_identity.gid
+                    or current.mode != source_identity.mode
+                ):
+                    fail(f"SQLite sidecar metadata changed: {sidecar.name}")
+                continue
+
+            source_owned = (
+                current.uid == source_identity.uid
+                and current.gid == source_identity.gid
+                and current.mode == source_identity.mode
+            )
+            if source_owned:
+                # A concurrent source owner may have created or replaced this
+                # sidecar. Its exact metadata is already safe; do not mutate it.
+                continue
+            if current.uid != 0 or os.geteuid() != 0:
+                fail(f"SQLite sidecar has unsafe owner: {sidecar.name}")
+
+            # The sidecar was absent or had a different identity before the
+            # privileged read-only open, and is owned by this process. Repair it
+            # through the already-bound descriptor; never unlink a pathname.
+            if (
+                current.uid != source_identity.uid
+                or current.gid != source_identity.gid
+            ):
+                os.fchown(descriptor, source_identity.uid, source_identity.gid)
+            os.fchmod(descriptor, source_identity.mode)
+            os.fsync(descriptor)
+            fsync_directory(source.parent)
+            normalized = file_identity(os.fstat(descriptor))
+            if normalized.device != current.device or normalized.inode != current.inode:
+                fail(f"SQLite sidecar identity changed: {sidecar.name}")
+            if (
+                normalized.uid != source_identity.uid
+                or normalized.gid != source_identity.gid
+                or normalized.mode != source_identity.mode
+            ):
+                fail(f"SQLite sidecar normalization failed: {sidecar.name}")
+            require_bound_path(sidecar, normalized, f"SQLite sidecar {sidecar.name}")
+            rebound = inspect_sqlite_sidecar(sidecar)
+            if rebound is None:
+                fail(f"SQLite sidecar identity changed: {sidecar.name}")
+            rebound_descriptor, rebound_identity = rebound
+            try:
+                if rebound_identity != normalized:
+                    fail(f"SQLite sidecar identity changed: {sidecar.name}")
+            finally:
+                os.close(rebound_descriptor)
+        finally:
+            os.close(descriptor)
+
+
+def snapshot(source: Path, destination: Path) -> dict[str, object]:
+    source_binding = bind_source_database(source)
+    sidecars: dict[str, FileIdentity | None] = {}
+    source_database: sqlite3.Connection | None = None
+    destination_database: sqlite3.Connection | None = None
+    connection_attempted = False
+    try:
+        sidecars = prevalidate_sqlite_sidecars(source, source_binding.identity)
+        try:
+            require_bound_path(source, source_binding.identity, "database")
+            previous_descriptors = process_descriptor_numbers()
+            connection_attempted = True
+            source_database = sqlite3.connect(
+                f"{source.as_uri()}?mode=ro", uri=True, timeout=30
+            )
+            # Force SQLite to initialize the WAL/SHM view before any copy work.
+            source_database.execute("PRAGMA schema_version").fetchone()
+            journal_mode_row = source_database.execute("PRAGMA journal_mode").fetchone()
+            if journal_mode_row is None:
+                fail("SQLite journal mode is unavailable")
+            journal_mode = str(journal_mode_row[0]).lower()
+            # Repair sidecars immediately, so privileged ownership does not
+            # persist for the duration of a potentially long snapshot.
+            normalize_sqlite_sidecars(source, source_binding, sidecars)
+            require_sqlite_source_descriptors(
+                source, source_binding, previous_descriptors, journal_mode
+            )
+            require_bound_path(source, source_binding.identity, "database")
+            destination_database = sqlite3.connect(destination)
+            # Finite page batches reopen the source read transaction between steps.
+            # A read-only WAL/SHM view can then restart every batch from page one.
+            source_database.backup(destination_database, pages=-1)
+            destination_database.commit()
+        finally:
+            try:
+                if destination_database is not None:
+                    destination_database.close()
+            finally:
+                if source_database is not None:
+                    source_database.close()
     finally:
-        destination_database.close()
-        source_database.close()
+        try:
+            if connection_attempted:
+                normalize_sqlite_sidecars(source, source_binding, sidecars)
+        finally:
+            os.close(source_binding.descriptor)
     destination.chmod(0o600)
     return integrity(destination)
 

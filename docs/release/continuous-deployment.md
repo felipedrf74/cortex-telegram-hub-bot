@@ -415,6 +415,14 @@ Three boundaries carry the safety argument.
    cutover also compares every installed backup producer, unit, timer, and
    sudoers byte with the resolved immutable control-plane root, reloads systemd,
    and proves the effective pre-promotion `ExecStart` before PM2 is stopped.
+   The backup and pre-promotion units keep their filesystem writable only at the
+   encrypted backup root and the two governed production database directories.
+   The producer inode-binds the source and its WAL sidecars, preserves stable
+   application-owned sidecar inodes, ownership, modes, and WAL bytes, and
+   normalizes only safe root-created sidecars to the source database UID/GID/mode
+   before copying and again after close. Normal SQLite reader coordination may
+   update SHM contents. The attended transaction separately removes only sidecars
+   whose no-handle, checkpoint, type, link-count, and zero-byte proofs all pass.
 3. **Protected head → write-ahead.** The exact signed source is compared with
    public protected-main head before admission, after staging, and again after
    backup, ledger reconciliation, and exact backup-evidence revalidation. This
