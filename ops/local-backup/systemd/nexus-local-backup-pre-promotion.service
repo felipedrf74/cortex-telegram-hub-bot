@@ -13,5 +13,8 @@ IOSchedulingPriority=6
 ProtectSystem=strict
 ProtectHome=read-only
 PrivateTmp=true
-ReadWritePaths=/srv/nexus-backups/application
+# SQLite may create WAL coordination sidecars even for a read-only source. The
+# producer inode-binds them and normalizes only safe root-created sidecars to
+# the database owner before copying; confine that write capability here.
+ReadWritePaths=/srv/nexus-backups/application -/home/dominguez/telegram-hub-bot/data -/var/lib/nexus-hub/production/data
 TimeoutStartSec=12min

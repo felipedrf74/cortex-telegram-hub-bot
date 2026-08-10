@@ -366,7 +366,15 @@ an already-activating oneshot cannot satisfy a later release request merely by
 finishing after it. First-cutover and PM2-recovery backup admission additionally
 requires the installed producer, unit, timer, and sudoers bytes to match the
 resolved immutable active control-plane tree, with exact root metadata, no unit
-drop-ins, and the expected effective pre-promotion `ExecStart`.
+drop-ins, and the expected effective pre-promotion `ExecStart`. The backup unit
+filesystem sandbox grants write access only to the encrypted backup root and the
+governed legacy/container production data directories. The producer binds the
+source database and sidecar inodes, does not replace, reown, or repermission
+stable source-owned sidecars, and normalizes only safe root-created sidecars to
+the source UID/GID/mode before copying and in its close-time finalizer. Normal
+SQLite reader coordination may update SHM contents. Admission and
+cutover still require the exact cleanup proofs before database publication or
+transition evidence.
 The backup producer fsyncs each encrypted artifact and checksum before rename,
 fsyncs their final files and parent namespace, and only then durably publishes
 the receipt with the same file/rename/parent ordering. A passed pointer cannot

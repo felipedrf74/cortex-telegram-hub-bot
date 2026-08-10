@@ -2354,6 +2354,8 @@ sudo sqlite3 "file:$OLD_STAGING?mode=ro" \
 # 4. Require a fresh successful governed backup receipt for the exact stopped
 # production database; a stale last-success.json is not evidence for this run.
 require_local_backup_installation
+remove_proven_stale_wal_sidecars "$OLD_PRODUCTION" "$OLD_STAGING"
+require_no_sqlite_sidecars "$OLD_PRODUCTION" "$OLD_STAGING"
 BACKUP_REQUESTED_MS="$(date +%s%3N)"
 sudo systemctl start nexus-local-backup-pre-promotion.service
 test "$(sudo systemctl show nexus-local-backup-pre-promotion.service \
@@ -2407,12 +2409,20 @@ sudo sqlite3 "$OLD_PRODUCTION" ".backup '$NEW_PRODUCTION/bot.db.next'"
 sudo sqlite3 "$OLD_STAGING" ".backup '$NEW_STAGING/bot.db.next'"
 require_valid_sqlite "$NEW_PRODUCTION/bot.db.next"
 require_valid_sqlite "$NEW_STAGING/bot.db.next"
+PRODUCTION_TARGET_LOGICAL_SHA="$(logical_digest "$NEW_PRODUCTION/bot.db.next")"
+STAGING_TARGET_LOGICAL_SHA="$(logical_digest "$NEW_STAGING/bot.db.next")"
+test "$PRODUCTION_TARGET_LOGICAL_SHA" = "$PRODUCTION_LOGICAL_SHA" \
+  || die 'production snapshot differs from the legacy production database'
+test "$STAGING_TARGET_LOGICAL_SHA" = "$STAGING_LOGICAL_SHA" \
+  || die 'staging snapshot differs from the legacy staging database'
+# WAL-mode read-only validation and logical dumps may create an empty WAL plus
+# a single-link SHM beside an otherwise valid snapshot. Reconcile only that
+# proven zero-WAL state after the final read, then require sidecar absence before
+# the temporary database names can be published as container targets.
+remove_proven_stale_wal_sidecars \
+  "$NEW_PRODUCTION/bot.db.next" "$NEW_STAGING/bot.db.next"
 require_no_sqlite_sidecars \
   "$NEW_PRODUCTION/bot.db.next" "$NEW_STAGING/bot.db.next"
-test "$(logical_digest "$NEW_PRODUCTION/bot.db.next")" = "$PRODUCTION_LOGICAL_SHA" \
-  || die 'production snapshot differs from the legacy production database'
-test "$(logical_digest "$NEW_STAGING/bot.db.next")" = "$STAGING_LOGICAL_SHA" \
-  || die 'staging snapshot differs from the legacy staging database'
 remove_proven_stale_wal_sidecars "$OLD_PRODUCTION" "$OLD_STAGING"
 
 sudo chmod 600 "$NEW_PRODUCTION/bot.db.next" "$NEW_STAGING/bot.db.next"
@@ -2442,6 +2452,10 @@ test "$(sudo awk -F= \
   '$1 == "NEXUS_LOCAL_BACKUP_DATABASE_PATH" { print substr($0, index($0, "=") + 1) }' \
   "$BACKUP_ENV")" = "$NEW_PRODUCTION/bot.db" \
   || die 'governed backup repoint did not settle on container production'
+remove_proven_stale_wal_sidecars \
+  "$NEW_PRODUCTION/bot.db" "$NEW_STAGING/bot.db"
+require_no_sqlite_sidecars \
+  "$NEW_PRODUCTION/bot.db" "$NEW_STAGING/bot.db"
 BACKUP_REQUESTED_MS="$(date +%s%3N)"
 sudo systemctl start nexus-local-backup-pre-promotion.service
 test "$(sudo systemctl show nexus-local-backup-pre-promotion.service \
@@ -2493,12 +2507,10 @@ jq -cn --arg createdAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   --arg legacyStagingLogicalDigest "$STAGING_LOGICAL_SHA" \
   --arg targetProductionIdentity \
     "$(sudo stat -Lc '%d:%i' -- "$NEW_PRODUCTION/bot.db")" \
-  --arg targetProductionLogicalDigest \
-    "$(logical_digest "$NEW_PRODUCTION/bot.db")" \
+  --arg targetProductionLogicalDigest "$PRODUCTION_TARGET_LOGICAL_SHA" \
   --arg targetStagingIdentity \
     "$(sudo stat -Lc '%d:%i' -- "$NEW_STAGING/bot.db")" \
-  --arg targetStagingLogicalDigest \
-    "$(logical_digest "$NEW_STAGING/bot.db")" \
+  --arg targetStagingLogicalDigest "$STAGING_TARGET_LOGICAL_SHA" \
   '{schema:"nexus.bootstrap-database-transition.v1",createdAt:$createdAt,
     runtimeCaptureSha256:$runtimeCaptureSha256,
     legacy:{production:{path:"/home/dominguez/telegram-hub-bot/data/bot.db",
@@ -2832,6 +2844,11 @@ fresh_backup_for() {
   require_local_backup_installation
   local completed_ms expected producer_started_ms receipt requested_ms
   expected="$1"
+  # Root-owned SQLite evidence reads may recreate empty WAL/SHM files. Prove
+  # them stale and remove them at the final quiesced boundary before the
+  # descriptor-bound backup producer opens the configured database.
+  remove_proven_stale_wal_sidecars "$expected"
+  require_no_sqlite_sidecars "$expected"
   receipt=/srv/nexus-backups/application/state/last-success.json
   requested_ms="$(date +%s%3N)"
   sudo systemctl start nexus-local-backup-pre-promotion.service
@@ -3496,6 +3513,8 @@ fresh_backup_for "$OLD_PRODUCTION"
 remove_proven_stale_wal_sidecars "$OLD_PRODUCTION" "$OLD_STAGING"
 require_canonical_database "$OLD_PRODUCTION" "$PRODUCTION_DATABASE_IDENTITY"
 require_canonical_database "$OLD_STAGING" "$STAGING_DATABASE_IDENTITY"
+remove_proven_stale_wal_sidecars "$OLD_PRODUCTION" "$OLD_STAGING"
+require_no_sqlite_sidecars "$OLD_PRODUCTION" "$OLD_STAGING"
 
 # Reassert the selected symlinks and the complete installed-tree/dependency
 # attestation while both release locks and the PM2 guard are still held. A
@@ -4572,6 +4591,11 @@ fresh_backup_for() {
   require_local_backup_installation
   local completed_ms expected producer_started_ms receipt requested_ms
   expected="$1"
+  # Root-owned SQLite evidence reads may recreate empty WAL/SHM files. Prove
+  # them stale and remove them at the final quiesced boundary before the
+  # descriptor-bound backup producer opens the configured database.
+  remove_proven_stale_wal_sidecars "$expected"
+  require_no_sqlite_sidecars "$expected"
   receipt=/srv/nexus-backups/application/state/last-success.json
   requested_ms="$(date +%s%3N)"
   sudo systemctl start nexus-local-backup-pre-promotion.service
@@ -5888,6 +5912,11 @@ fresh_backup_for() {
   require_local_backup_installation
   local completed_ms expected producer_started_ms receipt requested_ms
   expected="$1"
+  # Root-owned SQLite evidence reads may recreate empty WAL/SHM files. Prove
+  # them stale and remove them at the final quiesced boundary before the
+  # descriptor-bound backup producer opens the configured database.
+  remove_proven_stale_wal_sidecars "$expected"
+  require_no_sqlite_sidecars "$expected"
   receipt=/srv/nexus-backups/application/state/last-success.json
   requested_ms="$(date +%s%3N)"
   sudo systemctl start nexus-local-backup-pre-promotion.service
@@ -6659,12 +6688,13 @@ for SPEC in "$OLD_PRODUCTION:$PRODUCTION_DATABASE_IDENTITY" \
   DB="${SPEC%%:*}"; EXPECTED_IDENTITY="${SPEC#*:}"
   require_valid_sqlite "$DB"
   require_no_open_handles "$DB"
-  require_no_sqlite_sidecars "$DB"
   test "$(sudo stat -Lc '%d:%i' -- "$DB")" = "$EXPECTED_IDENTITY" \
     || die "PM2 database identity changed after quiescence: $DB"
 done
 PRODUCTION_LOGICAL_SHA="$(logical_digest "$OLD_PRODUCTION")"
 STAGING_LOGICAL_SHA="$(logical_digest "$OLD_STAGING")"
+remove_proven_stale_wal_sidecars "$OLD_PRODUCTION" "$OLD_STAGING"
+require_no_sqlite_sidecars "$OLD_PRODUCTION" "$OLD_STAGING"
 if test "$(sudo jq -r .legacy.production.logicalDigest "$REBASELINE_STATE")" = null; then
   STATE_TEMP="$(mktemp)"; STATE_STAGE="$REBASELINE_STATE.next-$BASHPID"
   sudo jq --arg productionDigest "$PRODUCTION_LOGICAL_SHA" \
@@ -6759,9 +6789,10 @@ if test "$REBASELINE_PHASE" = targets_archived; then
     "$STAGING_NEXT:$STAGING_LOGICAL_SHA"; do
     DB="${SPEC%%:*}"; EXPECTED_DIGEST="${SPEC#*:}"
     require_valid_sqlite "$DB"; require_no_open_handles "$DB"
-    require_no_sqlite_sidecars "$DB"
     test "$(logical_digest "$DB")" = "$EXPECTED_DIGEST" \
       || die "container reset candidate differs from authoritative PM2 data: $DB"
+    remove_proven_stale_wal_sidecars "$DB"
+    require_no_sqlite_sidecars "$DB"
     sudo chown 10001:10001 "$DB"; sudo chmod 600 "$DB"
     test "$(sudo stat -Lc '%U:%G:%a:%h' -- "$DB")" \
       = '10001:10001:600:1' || die "container reset candidate metadata is unsafe: $DB"
@@ -6776,9 +6807,10 @@ if test "$REBASELINE_PHASE" = targets_archived; then
     test "$(sudo stat -Lc '%U:%G:%a:%h' -- "$DB")" \
       = '10001:10001:600:1' || die "governed database metadata is unsafe: $DB"
     require_valid_sqlite "$DB"; require_no_open_handles "$DB"
-    require_no_sqlite_sidecars "$DB"
     test "$(logical_digest "$DB")" = "$EXPECTED_DIGEST" \
       || die "governed database differs from authoritative PM2 data: $DB"
+    remove_proven_stale_wal_sidecars "$DB"
+    require_no_sqlite_sidecars "$DB"
   done
   TARGET_PRODUCTION_IDENTITY="$(sudo stat -Lc '%d:%i' -- "$LIVE_PRODUCTION")"
   TARGET_STAGING_IDENTITY="$(sudo stat -Lc '%d:%i' -- "$LIVE_STAGING")"

@@ -1625,6 +1625,62 @@ fi
     expect(cutover).toContain('nexus.bootstrap-database-transition.v1');
     expect(cutover).toContain('sudo sync -f "$TRANSITION_EVIDENCE_STAGE"');
 
+    const productionTargetDigest = cutover.indexOf(
+      'PRODUCTION_TARGET_LOGICAL_SHA="$(logical_digest "$NEW_PRODUCTION/bot.db.next")"',
+    );
+    const stagingTargetDigest = cutover.indexOf(
+      'STAGING_TARGET_LOGICAL_SHA="$(logical_digest "$NEW_STAGING/bot.db.next")"',
+    );
+    const targetSidecarCleanup = cutover.indexOf(
+      'remove_proven_stale_wal_sidecars \\\n'
+        + '  "$NEW_PRODUCTION/bot.db.next" "$NEW_STAGING/bot.db.next"',
+    );
+    const targetSidecarAbsence = cutover.indexOf(
+      'require_no_sqlite_sidecars \\\n'
+        + '  "$NEW_PRODUCTION/bot.db.next" "$NEW_STAGING/bot.db.next"',
+      targetSidecarCleanup,
+    );
+    const publishProductionTarget = cutover.indexOf(
+      'sudo mv -f "$NEW_PRODUCTION/bot.db.next" "$NEW_PRODUCTION/bot.db"',
+    );
+    const finalTargetSidecarCleanup = cutover.lastIndexOf(
+      'remove_proven_stale_wal_sidecars \\\n'
+        + '  "$NEW_PRODUCTION/bot.db" "$NEW_STAGING/bot.db"',
+    );
+    const transitionEvidenceStart = cutover.indexOf(
+      'TRANSITION_EVIDENCE_TEMP="$(mktemp)"',
+      finalTargetSidecarCleanup,
+    );
+    const transitionEvidencePublish = cutover.indexOf(
+      'sudo mv -T -- "$TRANSITION_EVIDENCE_STAGE" "$TRANSITION_EVIDENCE"',
+      transitionEvidenceStart,
+    );
+    expect(productionTargetDigest).toBeGreaterThanOrEqual(0);
+    expect(stagingTargetDigest).toBeGreaterThanOrEqual(0);
+    expect(targetSidecarCleanup).toBeGreaterThan(productionTargetDigest);
+    expect(targetSidecarCleanup).toBeGreaterThan(stagingTargetDigest);
+    expect(targetSidecarAbsence).toBeGreaterThan(targetSidecarCleanup);
+    expect(publishProductionTarget).toBeGreaterThan(targetSidecarAbsence);
+    expect(finalTargetSidecarCleanup).toBeGreaterThan(publishProductionTarget);
+    expect(transitionEvidenceStart).toBeGreaterThan(finalTargetSidecarCleanup);
+    expect(transitionEvidencePublish).toBeGreaterThan(transitionEvidenceStart);
+    const postCleanupTransition = cutover.slice(
+      finalTargetSidecarCleanup,
+      transitionEvidencePublish,
+    );
+    expect(postCleanupTransition).toContain(
+      '--arg targetProductionLogicalDigest "$PRODUCTION_TARGET_LOGICAL_SHA"',
+    );
+    expect(postCleanupTransition).toContain(
+      '--arg targetStagingLogicalDigest "$STAGING_TARGET_LOGICAL_SHA"',
+    );
+    expect(postCleanupTransition).not.toContain(
+      'logical_digest "$NEW_PRODUCTION/bot.db"',
+    );
+    expect(postCleanupTransition).not.toContain(
+      'logical_digest "$NEW_STAGING/bot.db"',
+    );
+
     const loadCaseStart = cutover.indexOf('case "$LOAD_STATE" in');
     const loadCaseEnd = cutover.indexOf('\n  esac', loadCaseStart);
     expect(loadCaseStart).toBeGreaterThanOrEqual(0);
@@ -1656,6 +1712,156 @@ check_load_state
     expect(cutover).toContain('sudo sync -f "$(dirname "$TRANSITION_EVIDENCE")"');
     expect(cutover).not.toContain('sudo ln "$TRANSITION_EVIDENCE_STAGE"');
     expect(cutover).toContain('governed backup is not bound to legacy production before cutover');
+  });
+
+  it('reconciles real zero-WAL sidecars on both validated temporary snapshots', () => {
+    const runbook = readFileSync(join(root, 'ops/nexus-release/README.md'), 'utf8');
+    const cutover = bashBlockContaining(runbook, 'CUTOVER REFUSED');
+    const functions = [
+      bashFunction(cutover, 'require_no_open_handles'),
+      bashFunction(cutover, 'require_no_sqlite_sidecars'),
+      bashFunction(cutover, 'require_valid_sqlite'),
+      bashFunction(cutover, 'logical_digest'),
+      bashFunction(cutover, 'remove_proven_stale_wal_sidecars'),
+    ].join('\n\n');
+
+    const result = spawnSync('bash', ['-s'], {
+      encoding: 'utf8',
+      timeout: 15_000,
+      env: {
+        ...process.env,
+        PATH: `${process.env.PATH ?? ''}:/sbin:/usr/sbin`,
+      },
+      input: `set -euo pipefail
+fixture="$(mktemp -d)"
+trap 'rm -rf -- "$fixture"' EXIT
+
+die() {
+  printf 'fixture refused: %s\\n' "$*" >&2
+  exit 1
+}
+
+portable_links() {
+  case "$(uname -s)" in
+    Darwin) command stat -f '%l' "$1" ;;
+    *) command stat -c '%h' -- "$1" ;;
+  esac
+}
+
+portable_size() {
+  case "$(uname -s)" in
+    Darwin) command stat -f '%z' "$1" ;;
+    *) command stat -c '%s' -- "$1" ;;
+  esac
+}
+
+sudo() {
+  local format links path program size
+  program="$1"; shift
+  case "$program" in
+    lsof) return 1 ;;
+    stat)
+      test "$1" = -c
+      format="$2"; shift 2
+      test "$1" = --; shift
+      path="$1"
+      test -f "$path" && test ! -L "$path"
+      links="$(portable_links "$path")"
+      size="$(portable_size "$path")"
+      case "$format" in
+        '%F:%h:%s')
+          if test "$size" -eq 0; then
+            printf 'regular empty file:%s:%s\\n' "$links" "$size"
+          else
+            printf 'regular file:%s:%s\\n' "$links" "$size"
+          fi
+          ;;
+        '%F:%h') printf 'regular file:%s\\n' "$links" ;;
+        *) return 64 ;;
+      esac
+      ;;
+    *) command "$program" "$@" ;;
+  esac
+}
+
+${functions}
+
+production_source="$fixture/legacy-production.db"
+staging_source="$fixture/legacy-staging.db"
+production_target="$fixture/production-bot.db.next"
+staging_target="$fixture/staging-bot.db.next"
+
+for spec in \
+  "$production_source|$production_target|production" \
+  "$staging_source|$staging_target|staging"; do
+  IFS='|' read -r source target role <<<"$spec"
+  sqlite3 "$source" \
+    "PRAGMA journal_mode=WAL;
+     CREATE TABLE evidence(role TEXT PRIMARY KEY, value INTEGER NOT NULL);
+     INSERT INTO evidence(role,value) VALUES ('$role',1);
+     PRAGMA wal_checkpoint(TRUNCATE);" >/dev/null
+  sqlite3 "$source" ".backup '$target'"
+  test "$(od -An -t u1 -j 18 -N 2 "$target" | awk '{$1=$1; print}')" = '2 2'
+  # A read-only WAL open with no sidecars is SQLite-build dependent. Leave the
+  # exact real zero-WAL state observed live without a graceful connection close
+  # so every build validates and reconciles the same on-disk fixture.
+  python3 -c \
+    'import os, sqlite3, sys
+connection = sqlite3.connect(sys.argv[1])
+checkpoint = connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+assert checkpoint == (0, 0, 0), checkpoint
+os._exit(0)' "$target"
+  require_valid_sqlite "$target"
+  test -f "$target-wal" && test ! -L "$target-wal"
+  test -f "$target-shm" && test ! -L "$target-shm"
+  test "$(portable_links "$target-wal")" -eq 1
+  test "$(portable_size "$target-wal")" -eq 0
+  test "$(portable_links "$target-shm")" -eq 1
+done
+
+production_source_digest="$(logical_digest "$production_source")"
+staging_source_digest="$(logical_digest "$staging_source")"
+production_target_digest="$(logical_digest "$production_target")"
+staging_target_digest="$(logical_digest "$staging_target")"
+test "$production_target_digest" = "$production_source_digest"
+test "$staging_target_digest" = "$staging_source_digest"
+
+restore_xtrace=0
+case "$-" in
+  *x*) restore_xtrace=1; { set +x; } 2>/dev/null ;;
+esac
+remove_proven_stale_wal_sidecars "$production_target" "$staging_target"
+require_no_sqlite_sidecars "$production_target" "$staging_target"
+if test "$restore_xtrace" -eq 1; then set -x; fi
+
+production_final="$fixture/production-bot.db"
+staging_final="$fixture/staging-bot.db"
+mv -- "$production_target" "$production_final"
+mv -- "$staging_target" "$staging_final"
+
+transition_evidence="$(jq -cn \
+  --arg targetProductionLogicalDigest "$production_target_digest" \
+  --arg targetStagingLogicalDigest "$staging_target_digest" \
+  '{schema:"nexus.bootstrap-database-transition.v1",
+    target:{production:{logicalDigest:$targetProductionLogicalDigest},
+      staging:{logicalDigest:$targetStagingLogicalDigest}}}')"
+jq -e --arg production "$production_source_digest" \
+  --arg staging "$staging_source_digest" \
+  '.schema == "nexus.bootstrap-database-transition.v1"
+   and .target.production.logicalDigest == $production
+   and .target.staging.logicalDigest == $staging' \
+  <<<"$transition_evidence" >/dev/null
+
+for spec in "$production_final|production" "$staging_final|staging"; do
+  IFS='|' read -r target role <<<"$spec"
+  test "$(sqlite3 "file:$target?mode=ro&immutable=1" 'PRAGMA integrity_check;')" = ok
+  test "$(sqlite3 "file:$target?mode=ro&immutable=1" \
+    'SELECT role FROM evidence;')" = "$role"
+  require_no_sqlite_sidecars "$target"
+done
+`,
+    });
+    expect(result.status, result.stderr).toBe(0);
   });
 
   it('binds every governed backup invocation to immutable installed producer bytes', () => {
@@ -1701,21 +1907,97 @@ check_load_state
     expect(firstProof).toBeGreaterThan(proofDefinitionEnd);
     expect(firstProof).toBeLessThan(pm2Stop);
     expect(firstProof).toBeLessThan(firstBackup);
+    const cutoverBackupStarts = [
+      ...cutover.matchAll(
+        /sudo systemctl start nexus-local-backup-pre-promotion\.service/g,
+      ),
+    ].map((match) => match.index ?? -1);
+    expect(cutoverBackupStarts).toHaveLength(2);
+    for (const backupStart of cutoverBackupStarts) {
+      const cleanup = cutover.lastIndexOf(
+        'remove_proven_stale_wal_sidecars',
+        backupStart,
+      );
+      const absence = cutover.lastIndexOf(
+        'require_no_sqlite_sidecars',
+        backupStart,
+      );
+      const requested = cutover.lastIndexOf(
+        'BACKUP_REQUESTED_MS="$(date +%s%3N)"',
+        backupStart,
+      );
+      expect(cleanup).toBeGreaterThanOrEqual(0);
+      expect(absence).toBeGreaterThan(cleanup);
+      expect(requested).toBeGreaterThan(absence);
+      expect(backupStart).toBeGreaterThan(requested);
+      expect(cutover.slice(cleanup, backupStart)).not.toContain('sudo sqlite3');
+    }
 
-    for (const block of blocks.slice(1)) {
+    const expectedFreshBackupCalls = [3, 3, 1];
+    for (const [blockIndex, block] of blocks.slice(1).entries()) {
       const freshBackup = block.slice(
         block.indexOf('fresh_backup_for() {'),
         block.indexOf('\n}\n\nPM2_GUARD_ROOT=', block.indexOf('fresh_backup_for() {')),
       );
       const installationProof = freshBackup.indexOf('require_local_backup_installation');
+      const cleanup = freshBackup.indexOf(
+        'remove_proven_stale_wal_sidecars "$expected"',
+      );
+      const absence = freshBackup.indexOf(
+        'require_no_sqlite_sidecars "$expected"',
+      );
+      const requested = freshBackup.indexOf('requested_ms="$(date +%s%3N)"');
+      const backupStart = freshBackup.indexOf(
+        'sudo systemctl start nexus-local-backup-pre-promotion.service',
+      );
       expect(installationProof).toBeGreaterThanOrEqual(0);
       expect(installationProof)
-        .toBeLessThan(freshBackup.indexOf('requested_ms="$(date +%s%3N)"'));
-      expect(installationProof)
-        .toBeLessThan(freshBackup.indexOf(
-          'sudo systemctl start nexus-local-backup-pre-promotion.service',
-        ));
+        .toBeLessThan(cleanup);
+      expect(cleanup).toBeLessThan(absence);
+      expect(absence).toBeLessThan(requested);
+      expect(requested).toBeLessThan(backupStart);
+      expect(freshBackup.slice(cleanup, backupStart)).not.toContain('sudo sqlite3');
+      expect(block.match(/fresh_backup_for "/g) ?? []).toHaveLength(
+        expectedFreshBackupCalls[blockIndex],
+      );
     }
+
+    const preBaseline = blocks[1];
+    const finalLegacyValidation = preBaseline.indexOf(
+      'require_canonical_database "$OLD_STAGING" "$STAGING_DATABASE_IDENTITY"',
+    );
+    const finalLegacyCleanup = preBaseline.indexOf(
+      'remove_proven_stale_wal_sidecars "$OLD_PRODUCTION" "$OLD_STAGING"',
+      finalLegacyValidation,
+    );
+    const guardRetirement = preBaseline.indexOf(
+      'retire_canonical_pm2_guard pm2-dominguez.service',
+      finalLegacyCleanup,
+    );
+    expect(finalLegacyValidation).toBeGreaterThanOrEqual(0);
+    expect(finalLegacyCleanup).toBeGreaterThan(finalLegacyValidation);
+    expect(guardRetirement).toBeGreaterThan(finalLegacyCleanup);
+
+    const rebaseline = blocks[3];
+    const legacyDigests = rebaseline.indexOf(
+      'PRODUCTION_LOGICAL_SHA="$(logical_digest "$OLD_PRODUCTION")"',
+    );
+    const postDigestCleanup = rebaseline.indexOf(
+      'remove_proven_stale_wal_sidecars "$OLD_PRODUCTION" "$OLD_STAGING"',
+      legacyDigests,
+    );
+    expect(legacyDigests).toBeGreaterThanOrEqual(0);
+    expect(postDigestCleanup).toBeGreaterThan(legacyDigests);
+    expect(rebaseline).toContain(
+      'container reset candidate differs from authoritative PM2 data: $DB"\n'
+        + '    remove_proven_stale_wal_sidecars "$DB"\n'
+        + '    require_no_sqlite_sidecars "$DB"',
+    );
+    expect(rebaseline).toContain(
+      'governed database differs from authoritative PM2 data: $DB"\n'
+        + '    remove_proven_stale_wal_sidecars "$DB"\n'
+        + '    require_no_sqlite_sidecars "$DB"',
+    );
 
     expect(runbook).toContain(
       'ACTIVE_BACKUP_SOURCE="$(sudo readlink -f -- /opt/nexus-release/checkout)"',
