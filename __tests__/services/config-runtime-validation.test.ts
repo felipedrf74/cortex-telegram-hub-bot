@@ -217,7 +217,7 @@ describe('runtime config validation', () => {
     vi.stubEnv('APNS_ENABLED', 'true');
     vi.stubEnv('APNS_TEAM_ID', 'TEAMID1234');
     vi.stubEnv('APNS_KEY_ID', 'KEYID12345');
-    vi.stubEnv('APNS_AUTH_KEY_P8', '-----BEGIN PRIVATE KEY-----\\ntest\\n-----END PRIVATE KEY-----');
+    vi.stubEnv('APNS_AUTH_KEY_P8', '<redacted-test-apns-key>');
     vi.stubEnv('APNS_BUNDLE_ID', 'me.nexushub.app');
     vi.stubEnv('NOTIFICATION_DELIVERY_MODE', '');
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
