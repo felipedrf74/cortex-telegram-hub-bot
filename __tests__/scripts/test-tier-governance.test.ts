@@ -113,4 +113,18 @@ describe('lean test-tier governance', () => {
     ], { encoding: 'utf8' }).trim().split('\n');
     expect(sharded).toEqual(deterministic);
   });
+
+  it('extends the deadline only for coverage instrumentation', () => {
+    const runner = fs.readFileSync('scripts/run-test-tier.mjs', 'utf8');
+    const coverageFunction = runner.match(
+      /function coverageArgs\(\) \{[\s\S]*?\n\}/,
+    )?.[0];
+    expect(coverageFunction).toBeDefined();
+    expect(coverageFunction).toContain('if (!coverage) return [];');
+    expect(coverageFunction).toContain("'--testTimeout=60000'");
+    expect(runner.match(/--testTimeout=60000/g)).toHaveLength(1);
+
+    const config = fs.readFileSync('vitest.config.ts', 'utf8');
+    expect(config).toContain('testTimeout: 10000');
+  });
 });

@@ -124,6 +124,7 @@ function coverageArgs() {
   }
   return [
     '--coverage',
+    '--testTimeout=60000',
     ...(coverageBase ? [`--coverage.changed=${coverageBase}`] : []),
     '--coverage.reporter=json',
     '--coverage.reporter=json-summary',
