@@ -289,6 +289,39 @@ describe('first-container bootstrap baseline', () => {
       .toBe(baseline.databases.staging.snapshotDigest);
   });
 
+  it('accepts exact snapshots written by a different SQLite library version', () => {
+    for (const environment of ['production', 'staging'] as const) {
+      const target = join(policy.environments[environment].dataDir, 'bot.db');
+      const bytes = readFileSync(target);
+      const currentWriterVersion = bytes.readUInt32BE(96);
+      const alternateWriterVersion = currentWriterVersion === 3_045_001
+        ? 3_051_002
+        : 3_045_001;
+      bytes.writeUInt32BE(alternateWriterVersion, 96);
+      writeFileSync(target, bytes);
+    }
+
+    const baseline = createBaseline();
+    expect(baseline.legacyDatabases.production.sha256)
+      .not.toBe(baseline.databases.production.sha256);
+    expect(baseline.legacyDatabases.staging.sha256)
+      .not.toBe(baseline.databases.staging.sha256);
+    expect(baseline.legacyDatabases.production.snapshotDigest)
+      .toBe(baseline.databases.production.snapshotDigest);
+    expect(baseline.legacyDatabases.staging.snapshotDigest)
+      .toBe(baseline.databases.staging.snapshotDigest);
+  });
+
+  it('still refuses application-controlled SQLite header drift', () => {
+    const target = join(policy.environments.production.dataDir, 'bot.db');
+    const bytes = readFileSync(target);
+    bytes.writeUInt32BE(bytes.readUInt32BE(60) + 1, 60);
+    writeFileSync(target, bytes);
+
+    expect(() => createBaseline())
+      .toThrow(/production target is not the exact legacy database snapshot/);
+  });
+
   it.each([
     [
       'column order',
