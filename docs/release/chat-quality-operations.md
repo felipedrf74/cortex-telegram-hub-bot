@@ -2,7 +2,7 @@
 
 Status: current
 Owner: Felipe
-Last verified: 2026-08-02
+Last verified: 2026-08-09
 
 One page for operating the production chat-quality loop (M22).
 
@@ -61,13 +61,13 @@ One page for operating the production chat-quality loop (M22).
 
 ## Evaluation evidence
 
-- Local release evidence must run from a clean, committed checkout of the
-  exact SHA being promoted when the checkpoint manifest's cumulative
-  `releaseImpact.groups` includes `chat-secretary`. Run `./scripts/local-up.sh`,
-  followed by `./scripts/chat-eval-local.sh`. The eval overlay enforces
-  Ollama-only routing, blanks cloud credentials, and records a `local_engine`
-  run for that exact-SHA promotion gate. Non-chat releases skip this gate
-  automatically; there is no operator bypass. If Ollama is not on the default host endpoint, set
+- Local chat evaluation is a deliberate diagnostic, not a checkpoint manifest
+  or production-promotion gate. Run it from a clean, committed checkout of the
+  exact SHA being evaluated with `./scripts/local-up.sh`, followed by
+  `./scripts/chat-eval-local.sh`. The eval overlay enforces Ollama-only routing,
+  blanks cloud credentials, and records a `local_engine` run for that exact SHA.
+  Protected-main selected CI and the signed container evidence contract remain
+  the production publication gate. If Ollama is not on the default host endpoint, set
   `NEXUS_CHAT_EVAL_OLLAMA_BASE_URL`; this does not permit a cloud provider.
   If the exact-checkout Docker build fails, evaluation startup fails closed and
   records no run; it never falls back to last-known local images.
@@ -326,7 +326,16 @@ One page for operating the production chat-quality loop (M22).
 6. If readiness, signed-behavior, or route-fallback regressions fired, stop the affected soak
    and follow the alert runbook link before any further ChatV2 promotion.
 
-## Phase 7 capability-flag rollout checklist
+## PM2 first-cutover fallback: Phase 7 capability-flag rollout checklist
+
+This operator and every installed-release, `.env`, PM2 restart, or flag
+mutation procedure in this section are retained only for the owner-authorized
+first-cutover fallback during the initial 14 stable days. The default container
+control plane has no supported post-bootstrap capability-flag transaction.
+That path remains blocked until the owner approves an executor that binds exact
+authorization, the shared maintenance mutex, writer drain, database and runtime
+identity, and recovery evidence. Do not run these helpers against a container,
+edit a mounted production `.env`, or restart a container to bypass the block.
 
 Run this checklist in order through the governed operator. After the operator
 is merged, built into the exact artifact, and deployed, its only supported
@@ -342,7 +351,9 @@ The command is hardcoded to `ServerDominguez`; it has no server override and
 must never be pointed at AWS or another host. Run it from a clean checkout of
 the exact deployed runtime SHA. It executes the remote helper from the exact
 installed release directory, verifies the completion marker and artifact
-manifest, and holds the same user-release and root/Sonar locks as release
+manifest, and holds the same user-release and shared root maintenance locks
+as release (the lock path retains a historical `-sonar` filename; SonarQube
+itself was decommissioned on 2026-08-07)
 operations. Local plans and receipts remain under ignored
 `.local/release/chat-capability-flags/`; private durable state remains under
 `/home/dominguez/.local/state/nexus-release/chat-capability-flags/`.
@@ -1128,6 +1139,13 @@ fails, or chat quality/health regresses, use the governed operator to set
 tested verified-success executor contract.
 
 ## Owner-gated steps (human decisions never automated)
+
+The human labeling and approval decisions below remain owner-gated. Any command
+that reads or mutates the installed PM2 release, production database, `.env`, or
+process identity is nevertheless a first-cutover fallback procedure only. No
+equivalent post-bootstrap container maintenance transaction is implemented; it
+remains blocked under the authorization, mutex, drain, identity, and recovery
+requirements above.
 
 - Corpus label decisions are owner-gated. Private sampler/history utterances
   must be reviewed one at a time at `/routing-corpus`; they are never included

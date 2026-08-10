@@ -145,7 +145,7 @@ let localDbInitialized = false;
 
 function ensureLocalDbInitialized() {
   if (localDbInitialized) return;
-  const { initDatabase } = loadDist('services/database.js');
+  const { initDatabase } = loadDist('services/database-bootstrap.js');
   initDatabase();
   localDbInitialized = true;
 }

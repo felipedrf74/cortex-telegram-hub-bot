@@ -3,7 +3,6 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import {
   mkdirSync,
   mkdtempSync,
-  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -43,7 +42,7 @@ function envWithoutMigrationEvidence() {
   return env;
 }
 
-function sha256(value: string): string {
+function sha256(value: string | Buffer): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
@@ -60,13 +59,124 @@ function cleanGitEnv(): NodeJS.ProcessEnv {
   return env;
 }
 
-function createGovernedMigrationRepo({ registrySha }: { registrySha?: string } = {}) {
-  const repo = mkdtempSync(join(tmpdir(), 'nexus-migration-policy-'));
+const releaseBoundaryMigrationNames = new Map<number, string>([
+  [58, '058_composite_unique_constraints.sql'],
+  [246, '246_content_pipeline_workspace_exit.sql'],
+  [247, '247_content_topics_workspace_exit.sql'],
+  [248, '248_content_workspace_rollout_observability.sql'],
+  [249, '249_content_editorial_workspace_exit.sql'],
+  [250, '250_content_performance_workspace_lineage.sql'],
+  [251, '251_content_workspace_integrity.sql'],
+  [252, '252_content_legacy_script_workspace_parity.sql'],
+  [253, '253_content_legacy_idea_note_workspace_parity.sql'],
+  [283, '283_release_schema_convergence.sql'],
+]);
+
+const firstReleaseBoundarySql = [
+  'CREATE TABLE content_ref_channels (id INTEGER PRIMARY KEY, user_id INTEGER, channel_url TEXT);',
+  'CREATE TABLE content_knowledge (id INTEGER PRIMARY KEY, user_id INTEGER, category TEXT);',
+  'CREATE TABLE invoice_vendors (id INTEGER PRIMARY KEY, user_id INTEGER, sender_pattern TEXT);',
+  'CREATE TABLE video_transcripts (id INTEGER PRIMARY KEY, user_id INTEGER, video_id TEXT);',
+  '',
+].join('\n');
+
+function releaseBoundaryMigrationName(prefix: number): string {
+  return releaseBoundaryMigrationNames.get(prefix)
+    ?? `${String(prefix).padStart(3, '0')}_release_boundary_fixture.sql`;
+}
+
+function releaseBoundaryMigrationBytes(prefix: number): Buffer {
+  if (prefix === 1) return Buffer.from(firstReleaseBoundarySql);
+  if (prefix === 2) {
+    return Buffer.from(
+      'CREATE TABLE release_boundary_fixture_002 (id INTEGER PRIMARY KEY);\n',
+    );
+  }
+  if (prefix === 58 || prefix === 283) {
+    return readFileSync(join(root, 'migrations', releaseBoundaryMigrationName(prefix)));
+  }
+  return Buffer.from(
+    `CREATE TABLE release_boundary_fixture_${String(prefix).padStart(3, '0')} `
+    + '(id INTEGER PRIMARY KEY);\n',
+  );
+}
+
+function createReleaseBoundaryRepo(prefix: string) {
+  const repo = mkdtempSync(join(realpathSync(tmpdir()), prefix));
   const gitEnv = cleanGitEnv();
-  const sql = 'CREATE TABLE reviewed_value (id INTEGER PRIMARY KEY);\n';
-  const migration = 'migrations/001_reviewed_value.sql';
+  const git = (...args: string[]) => execFileSync('git', args, {
+    cwd: repo,
+    encoding: 'utf8',
+    env: gitEnv,
+  }).trim();
+  git('init', '--initial-branch=main');
+  git('config', 'user.name', 'Nexus CI Fixture');
+  git('config', 'user.email', 'ci-fixture@example.invalid');
+
   mkdirSync(join(repo, 'migrations'), { recursive: true });
   mkdirSync(join(repo, 'config'), { recursive: true });
+  const productionRetired = '900_retired_production_fixture.sql';
+  const stagingRetired = '901_retired_staging_fixture.sql';
+  const productionBytes = releaseBoundaryMigrationBytes(1);
+  const stagingBytes = releaseBoundaryMigrationBytes(2);
+  writeFileSync(join(repo, 'migrations', productionRetired), productionBytes);
+  writeFileSync(join(repo, 'migrations', stagingRetired), stagingBytes);
+  git('add', '.');
+  git('commit', '-m', 'fixture: historical retired migration lineage');
+  const sourceCommit = git('rev-parse', 'HEAD');
+  unlinkSync(join(repo, 'migrations', productionRetired));
+  unlinkSync(join(repo, 'migrations', stagingRetired));
+
+  for (let migrationPrefix = 1; migrationPrefix <= 283; migrationPrefix += 1) {
+    writeFileSync(
+      join(repo, 'migrations', releaseBoundaryMigrationName(migrationPrefix)),
+      releaseBoundaryMigrationBytes(migrationPrefix),
+    );
+  }
+  const productionPolicy = JSON.parse(
+    readFileSync(join(root, 'config/production-migration-lineages.json'), 'utf8'),
+  ) as { release: unknown };
+  writeFileSync(join(repo, 'config/production-migration-lineages.json'), `${JSON.stringify({
+    schema: 'nexus.production-migration-lineages.v3',
+    lineages: [
+      {
+        id: 'production-2026-05-branch-history',
+        reason: 'retain_verified_fixture_production_history',
+        migrations: [{
+          file: productionRetired,
+          sha256: sha256(productionBytes),
+          sourceCommit,
+          replacement: {
+            file: releaseBoundaryMigrationName(1),
+            sha256: sha256(productionBytes),
+            relationship: 'byte_identical_renumber',
+          },
+        }],
+      },
+      {
+        id: 'staging-2026-08-notification-renumber-history',
+        reason: 'retain_verified_fixture_staging_history',
+        migrations: [{
+          file: stagingRetired,
+          sha256: sha256(stagingBytes),
+          sourceCommit,
+          replacement: {
+            file: releaseBoundaryMigrationName(2),
+            sha256: sha256(stagingBytes),
+            relationship: 'byte_identical_renumber',
+          },
+        }],
+      },
+    ],
+    release: productionPolicy.release,
+  }, null, 2)}\n`);
+  return { repo, git, gitEnv };
+}
+
+function createGovernedMigrationRepo({ registrySha }: { registrySha?: string } = {}) {
+  const { repo, git, gitEnv } = createReleaseBoundaryRepo('nexus-migration-policy-');
+  const sql = 'CREATE TABLE reviewed_value (id INTEGER PRIMARY KEY);\n';
+  const migration = 'migrations/284_reviewed_value.sql';
   writeFileSync(join(repo, migration), sql);
   writeFileSync(join(repo, 'config/irreversible-migrations.json'), `${JSON.stringify({
     schema: 'nexus.irreversible-migrations.v2',
@@ -78,28 +188,34 @@ function createGovernedMigrationRepo({ registrySha }: { registrySha?: string } =
     }],
     syntaxExemptions: [],
   }, null, 2)}\n`);
-  const git = (...args: string[]) => execFileSync('git', args, {
-    cwd: repo,
-    encoding: 'utf8',
-    env: gitEnv,
-  }).trim();
-  git('init', '--initial-branch=main');
-  git('config', 'user.name', 'Nexus CI Fixture');
-  git('config', 'user.email', 'ci-fixture@example.invalid');
   git('add', '.');
   git('commit', '-m', 'fixture: reviewed migration');
   return { repo, migration, git, gitEnv, base: git('rev-parse', 'HEAD') };
 }
 
-function createProductionPolicyFixtureRepo() {
-  const repo = mkdtempSync(
-    join(realpathSync(tmpdir()), 'nexus-migration-production-policy-'),
+function createAppendOnlyMigrationRepo() {
+  const { repo, git, gitEnv } = createReleaseBoundaryRepo(
+    'nexus-migration-append-only-',
   );
-  const gitEnv = cleanGitEnv();
-  const sql = 'SELECT 1;\n';
-  const migrationFiles = readdirSync(join(root, 'migrations'))
-    .filter((file) => /^\d{3}_.*\.sql$/.test(file))
-    .sort();
+  const migration = 'migrations/284_initial_value.sql';
+  writeFileSync(
+    join(repo, migration),
+    'CREATE TABLE initial_value (id INTEGER PRIMARY KEY);\n',
+  );
+  writeFileSync(join(repo, 'config/irreversible-migrations.json'), `${JSON.stringify({
+    schema: 'nexus.irreversible-migrations.v2',
+    migrations: [],
+    syntaxExemptions: [],
+  }, null, 2)}\n`);
+  git('add', '.');
+  git('commit', '-m', 'fixture: append-only migration history');
+  return { repo, migration, git, gitEnv, base: git('rev-parse', 'HEAD') };
+}
+
+function createProductionPolicyFixtureRepo() {
+  const { repo, git, gitEnv } = createReleaseBoundaryRepo(
+    'nexus-migration-production-policy-',
+  );
   const productionPolicy = JSON.parse(
     readFileSync(join(root, 'config/irreversible-migrations.json'), 'utf8'),
   ) as {
@@ -114,49 +230,17 @@ function createProductionPolicyFixtureRepo() {
       reason: string;
     }>;
   };
-
-  mkdirSync(join(repo, 'migrations'), { recursive: true });
-  mkdirSync(join(repo, 'config'), { recursive: true });
-  for (const file of migrationFiles) {
-    writeFileSync(join(repo, 'migrations', file), sql);
-  }
   writeFileSync(join(repo, 'config/irreversible-migrations.json'), `${JSON.stringify({
     schema: productionPolicy.schema,
     migrations: productionPolicy.migrations.map((entry) => ({
       ...entry,
-      sha256: sha256(sql),
+      sha256: sha256(readFileSync(join(repo, entry.file))),
     })),
     syntaxExemptions: productionPolicy.syntaxExemptions.map((entry) => ({
       ...entry,
-      sha256: sha256(sql),
+      sha256: sha256(readFileSync(join(repo, entry.file))),
     })),
   }, null, 2)}\n`);
-  writeFileSync(join(repo, 'config/production-migration-lineages.json'), `${JSON.stringify({
-    schema: 'nexus.production-migration-lineages.v1',
-    lineages: [{
-      id: 'fixture-history',
-      reason: 'retain_verified_fixture_history',
-      migrations: [{
-        file: '000_retired_fixture.sql',
-        sha256: sha256(sql),
-        sourceCommit: 'a'.repeat(40),
-        replacement: {
-          file: migrationFiles[0],
-          sha256: sha256(sql),
-          relationship: 'byte_identical_renumber',
-        },
-      }],
-    }],
-  }, null, 2)}\n`);
-
-  const git = (...args: string[]) => execFileSync('git', args, {
-    cwd: repo,
-    encoding: 'utf8',
-    env: gitEnv,
-  }).trim();
-  git('init', '--initial-branch=main');
-  git('config', 'user.name', 'Nexus CI Fixture');
-  git('config', 'user.email', 'ci-fixture@example.invalid');
   git('add', '.');
   git('commit', '-m', 'fixture: production migration policy topology');
   return {
@@ -577,6 +661,7 @@ describe('migration-safety-check', () => {
     ['config/irreversible-migrations.json', 'POLICY_REGISTRY_CHANGED'],
     ['config/production-migration-lineages.json', 'POLICY_PRODUCTION_LINEAGE_CHANGED'],
     ['.github/workflows/ci.yml', 'POLICY_CI_ENTRYPOINT_CHANGED'],
+    ['.github/workflows/release.yml', 'POLICY_RELEASE_PUBLISH_ENTRYPOINT_CHANGED'],
     [
       '.github/workflows/release-candidate-evidence.yml',
       'POLICY_RELEASE_CHECKPOINT_ENTRYPOINT_CHANGED',
@@ -585,7 +670,36 @@ describe('migration-safety-check', () => {
     ['scripts/lib/irreversible-migration-policy.mjs', 'POLICY_ENFORCEMENT_CHANGED'],
     ['scripts/lib/production-migration-lineage.mjs', 'POLICY_PRODUCTION_LINEAGE_ENFORCEMENT_CHANGED'],
     ['scripts/lib/git-changed-paths.mjs', 'POLICY_CHANGE_DISCOVERY_CHANGED'],
+    ['scripts/lib/migration-cd-eligibility.mjs', 'POLICY_CD_ELIGIBILITY_CHANGED'],
     ['scripts/migration-safety-check.mjs', 'POLICY_GATE_CHANGED'],
+    ['scripts/release-manifest-build.mjs', 'POLICY_RELEASE_MANIFEST_SIGNER_CHANGED'],
+    ['scripts/lib/release-manifest.mjs', 'POLICY_RELEASE_MANIFEST_VALIDATION_CHANGED'],
+    ['scripts/lib/release-database.mjs', 'POLICY_RELEASE_MIGRATION_LEDGER_CHANGED'],
+    ['scripts/lib/release-deployment.mjs', 'POLICY_RELEASE_MIGRATION_ADMISSION_CHANGED'],
+    ['scripts/lib/release-registry.mjs', 'POLICY_RELEASE_MIGRATION_ORCHESTRATION_CHANGED'],
+    ['src/services/migration-runner.ts', 'POLICY_RUNTIME_MIGRATION_RUNNER_CHANGED'],
+    ['src/services/database-bootstrap.ts', 'POLICY_APPLICATION_MIGRATION_ADMISSION_CHANGED'],
+    ['src/services/database.ts', 'POLICY_APPLICATION_MIGRATION_ADMISSION_CHANGED'],
+    ['src/services/release-data-maintenance.ts', 'POLICY_RELEASE_DATA_MAINTENANCE_CHANGED'],
+    ['src/services/ios-auth-session.ts', 'POLICY_RELEASE_DATA_MAINTENANCE_CHANGED'],
+    ['src/services/user-service.ts', 'POLICY_RELEASE_DATA_MAINTENANCE_CHANGED'],
+    ['src/services/oauth-store.ts', 'POLICY_RELEASE_DATA_MAINTENANCE_CHANGED'],
+    ['src/services/oauth-token-cache-events.ts', 'POLICY_RELEASE_DATA_MAINTENANCE_CHANGED'],
+    ['src/services/oauth-connection-health.ts', 'POLICY_RELEASE_DATA_MAINTENANCE_CHANGED'],
+    ['src/services/cache-coherence-registry.ts', 'POLICY_RELEASE_DATA_MAINTENANCE_CHANGED'],
+    ['src/services/finance-tracker.ts', 'POLICY_RELEASE_DATA_MAINTENANCE_CHANGED'],
+    ['src/services/garmin-session-store.ts', 'POLICY_RELEASE_DATA_MAINTENANCE_CHANGED'],
+    ['src/utils/encryption.ts', 'POLICY_RELEASE_DATA_MAINTENANCE_CHANGED'],
+    ['src/skills/skill-manager.ts', 'POLICY_RELEASE_DATA_MAINTENANCE_CHANGED'],
+    ['src/skills/skill-config.ts', 'POLICY_RELEASE_DATA_MAINTENANCE_CHANGED'],
+    ['src/skills/registry.ts', 'POLICY_RELEASE_DATA_MAINTENANCE_CHANGED'],
+    ['src/generated/capability-skill-metadata.ts', 'POLICY_RELEASE_DATA_MAINTENANCE_CHANGED'],
+    ['config/capability-manifest.json', 'POLICY_RELEASE_DATA_MAINTENANCE_CHANGED'],
+    ['scripts/generate-capability-skill-metadata.mjs', 'POLICY_RELEASE_DATA_MAINTENANCE_CHANGED'],
+    ['src/config.ts', 'POLICY_RELEASE_DATA_MAINTENANCE_CONFIGURATION_CHANGED'],
+    ['src/tools/run-release-migrations.ts', 'POLICY_RELEASE_MIGRATOR_CHANGED'],
+    ['Dockerfile.release.node', 'POLICY_RELEASE_MIGRATION_PACKAGING_CHANGED'],
+    ['docker-compose.release.yml', 'POLICY_RELEASE_MIGRATION_ORCHESTRATION_CHANGED'],
     ['scripts/lib/migration-safety-policy-classifier.mjs', 'POLICY_CLASSIFIER_CHANGED'],
     ['scripts/changed-area-classifier.mjs', 'POLICY_CLASSIFIER_ENTRYPOINT_CHANGED'],
     ['scripts/lib/changed-area-classifier.mjs', 'POLICY_CLASSIFIER_CHANGED'],
@@ -628,9 +742,9 @@ describe('migration-safety-check', () => {
   it('compares an in-progress merge to main while preserving incoming-main deletion detection', { timeout: 30_000 }, () => {
     const fixture = createGovernedMigrationRepo();
     try {
-      const branchOnlyMigration = 'migrations/002_branch_only.sql';
-      const mainMigration = 'migrations/002_main.sql';
-      const finalMigration = 'migrations/003_branch_only.sql';
+      const branchOnlyMigration = 'migrations/285_branch_only.sql';
+      const mainMigration = 'migrations/285_main.sql';
+      const finalMigration = 'migrations/286_branch_only.sql';
 
       fixture.git('switch', '-c', 'feature');
       writeFileSync(
@@ -709,7 +823,7 @@ describe('migration-safety-check', () => {
       const fixture = createGovernedMigrationRepo();
       try {
         if (operation === 'rename') {
-          fixture.git('mv', fixture.migration, 'migrations/001_renamed_value.sql');
+          fixture.git('mv', fixture.migration, 'migrations/284_renamed_value.sql');
         } else {
           unlinkSync(join(fixture.repo, fixture.migration));
         }
@@ -744,6 +858,80 @@ describe('migration-safety-check', () => {
       }
     },
   );
+
+  it.each(['modified', 'rename', 'deletion'])(
+    'rejects a %s migration already present in the Git base even when the new SQL is compatible',
+    { timeout: 30_000 },
+    (operation) => {
+      const fixture = createAppendOnlyMigrationRepo();
+      try {
+        if (operation === 'modified') {
+          writeFileSync(
+            join(fixture.repo, fixture.migration),
+            'CREATE TABLE initial_value (id INTEGER PRIMARY KEY, note TEXT);\n',
+          );
+        } else if (operation === 'rename') {
+          fixture.git('mv', fixture.migration, 'migrations/284_renamed_value.sql');
+        } else {
+          unlinkSync(join(fixture.repo, fixture.migration));
+        }
+
+        const result = spawnSync('node', [
+          migrationSafetyScript,
+          '--root', fixture.repo,
+          '--base', fixture.base,
+          '--changed-only',
+          '--approval-mode', 'scan',
+          '--json',
+        ], { encoding: 'utf8', env: fixture.gitEnv });
+
+        expect(result.status, `${result.stdout}${result.stderr}`).toBe(1);
+        const payload = JSON.parse(result.stdout) as {
+          checks: { migrationHistoryAppendOnly: boolean };
+          errors: string[];
+        };
+        expect(payload.checks.migrationHistoryAppendOnly).toBe(false);
+        expect(payload.errors).toContain(
+          `migration_history_not_append_only:${fixture.migration}:`
+          + (operation === 'modified' ? 'modified' : 'deleted_or_renamed'),
+        );
+      } finally {
+        rmSync(fixture.repo, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it('allows a new append-only migration that is absent from the Git base', { timeout: 30_000 }, () => {
+    const fixture = createAppendOnlyMigrationRepo();
+    try {
+      const added = 'migrations/285_added_value.sql';
+      writeFileSync(
+        join(fixture.repo, added),
+        'CREATE TABLE added_value (id INTEGER PRIMARY KEY);\n',
+      );
+      const result = spawnSync('node', [
+        migrationSafetyScript,
+        '--root', fixture.repo,
+        '--base', fixture.base,
+        '--changed-only',
+        '--approval-mode', 'scan',
+        '--json',
+      ], { encoding: 'utf8', env: fixture.gitEnv });
+
+      expect(result.status, `${result.stdout}${result.stderr}`).toBe(0);
+      const payload = JSON.parse(result.stdout) as {
+        comparisonBase: string;
+        checks: { migrationHistoryAppendOnly: boolean };
+        cdEligibility: { eligible: boolean; files: Array<{ file: string }> };
+      };
+      expect(payload.comparisonBase).toBe(fixture.base);
+      expect(payload.checks.migrationHistoryAppendOnly).toBe(true);
+      expect(payload.cdEligibility.eligible).toBe(true);
+      expect(payload.cdEligibility.files.map(({ file }) => file)).toEqual([added]);
+    } finally {
+      rmSync(fixture.repo, { recursive: true, force: true });
+    }
+  });
 
   it('fails closed when registry identity disagrees with existing migration bytes', { timeout: 30_000 }, () => {
     const fixture = createGovernedMigrationRepo({ registrySha: '0'.repeat(64) });

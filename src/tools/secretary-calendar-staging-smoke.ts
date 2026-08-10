@@ -132,7 +132,8 @@ async function runSmoke(): Promise<SmokeReport> {
     return { runId, startedAt, finishedAt: new Date().toISOString(), userId: Number.isFinite(userId) ? userId : null, tenantId, providersRequested: providers, providersRun, prerequisites, operations, cleanupFailures };
   }
 
-  const { initDatabase, closeDatabase } = await import('../services/database');
+  const { initDatabase } = await import('../services/database-bootstrap');
+  const { closeDatabase } = await import('../services/database');
   const { createUnifiedCalendarSecretaryProviderAdapter } = await import('../services/secretary-unified-calendar-provider-adapter');
   const { submitSecretarySchedulingIntent, cancelSecretaryAgendaItem, getSecretaryAgendaItemById } = await import('../services/secretary-scheduling-arbitrator');
   const { syncSecretaryAgendaItemToProvider } = await import('../services/secretary-agenda-provider-sync');

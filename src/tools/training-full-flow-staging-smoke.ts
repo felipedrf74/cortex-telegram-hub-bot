@@ -1061,6 +1061,9 @@ function loadRuntimeDeps(): RuntimeDeps {
   // Lazy requires keep dotenv/env-file loading before config and provider modules initialize.
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const database = require('../services/database') as typeof import('../services/database');
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const databaseBootstrap = require('../services/database-bootstrap') as
+    typeof import('../services/database-bootstrap');
   let loaded: Omit<RuntimeDeps, 'initDatabase' | 'db'> | null = null;
   const loadAfterDatabaseInit = (): Omit<RuntimeDeps, 'initDatabase' | 'db'> => {
     if (loaded) return loaded;
@@ -1107,7 +1110,7 @@ function loadRuntimeDeps(): RuntimeDeps {
   };
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   return {
-    initDatabase: database.initDatabase,
+    initDatabase: databaseBootstrap.initDatabase,
     db: database.getDb,
     isConnected: (...args) => loadAfterDatabaseInit().isConnected(...args),
     generateTrainingPlanForUser: (...args) => loadAfterDatabaseInit().generateTrainingPlanForUser(...args),

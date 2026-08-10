@@ -46,9 +46,48 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def fsync_regular_file(path: Path) -> None:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            fail(f"durability target is not a regular file: {path.name}")
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def fsync_directory(path: Path) -> None:
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    descriptor = os.open(path, flags)
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISDIR(metadata.st_mode):
+            fail(f"durability target is not a directory: {path.name}")
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def durable_replace(temporary: Path, destination: Path) -> None:
+    """Publish one file only after its bytes and namespace are durable."""
+    fsync_regular_file(temporary)
+    os.replace(temporary, destination)
+    fsync_regular_file(destination)
+    fsync_directory(destination.parent)
+
+
 def write_json_atomic(path: Path, value: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     path.parent.chmod(0o700)
+    fsync_directory(path.parent)
+    fsync_directory(path.parent.parent)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     with temporary.open("x", encoding="utf-8") as output:
         json.dump(value, output, indent=2, sort_keys=True)
@@ -56,7 +95,7 @@ def write_json_atomic(path: Path, value: dict[str, object]) -> None:
         output.flush()
         os.fsync(output.fileno())
     temporary.chmod(0o600)
-    os.replace(temporary, path)
+    durable_replace(temporary, path)
 
 
 def load_config(path: Path) -> dict[str, str]:
@@ -161,6 +200,8 @@ def backup_lock(root: Path) -> Iterator[None]:
     if not root.is_dir():
         fail("backup root must be a directory")
     root.chmod(0o700)
+    fsync_directory(root)
+    fsync_directory(root.parent)
     lock_path = root / ".backup.lock"
     with lock_path.open("a+", encoding="utf-8") as lock:
         os.fchmod(lock.fileno(), 0o600)
@@ -181,20 +222,24 @@ def install_pair(source: Path, destination: Path, *, allow_existing: bool) -> No
         expected = checksum_path.read_text(encoding="utf-8").split()[0]
         if expected != sha256(destination):
             fail(f"existing backup checksum mismatch: {destination.name}")
+        fsync_regular_file(destination)
+        fsync_regular_file(checksum_path)
+        fsync_directory(destination.parent)
         return
     temporary = destination.with_name(f".{destination.name}.{os.getpid()}.tmp")
     shutil.copyfile(source, temporary)
     temporary.chmod(0o600)
-    os.replace(temporary, destination)
+    durable_replace(temporary, destination)
     checksum_path = destination.with_name(f"{destination.name}.sha256")
     checksum_temporary = checksum_path.with_name(
         f".{checksum_path.name}.{os.getpid()}.tmp"
     )
-    checksum_temporary.write_text(
-        f"{sha256(destination)}  {destination.name}\n", encoding="utf-8"
-    )
+    with checksum_temporary.open("x", encoding="utf-8") as output:
+        output.write(f"{sha256(destination)}  {destination.name}\n")
+        output.flush()
+        os.fsync(output.fileno())
     checksum_temporary.chmod(0o600)
-    os.replace(checksum_temporary, checksum_path)
+    durable_replace(checksum_temporary, checksum_path)
 
 
 def prune(directory: Path, retain: int) -> None:
@@ -215,25 +260,34 @@ def prune(directory: Path, retain: int) -> None:
 
 def backup(config: dict[str, str], tier: str) -> dict[str, object]:
     database, root, _identity = validate_config(config, require_identity=False)
-    now = datetime.now(timezone.utc)
-    timestamp = now.strftime("%Y%m%dT%H%M%SZ")
-    iso_year, iso_week, _ = now.isocalendar()
+    # Record the producer invocation before attempting the backup lock or opening
+    # the source database. A caller that reaches `systemctl start` while an older
+    # oneshot is already activating must be able to distinguish that older
+    # snapshot from work started for this exact request.
+    started_at = datetime.now(timezone.utc)
+    timestamp = started_at.strftime("%Y%m%dT%H%M%SZ")
+    iso_year, iso_week, _ = started_at.isocalendar()
     names = {
         "hourly": f"nexus-db-{timestamp}.sqlite.age",
-        "daily": f"nexus-db-{now:%Y%m%d}.sqlite.age",
+        "daily": f"nexus-db-{started_at:%Y%m%d}.sqlite.age",
         "weekly": f"nexus-db-{iso_year}-W{iso_week:02d}.sqlite.age",
         "pre-promotion": f"nexus-db-{timestamp}.sqlite.age",
     }
     retain = {"hourly": 24, "daily": 30, "weekly": 4, "pre-promotion": 10}
 
     with backup_lock(root):
+        tier_directories: list[Path] = []
         for directory_name in retain:
             directory = root / directory_name
             directory.mkdir(mode=0o700, exist_ok=True)
             directory.chmod(0o700)
+            fsync_directory(directory)
+            tier_directories.append(directory)
         state = root / "state"
         state.mkdir(mode=0o700, exist_ok=True)
         state.chmod(0o700)
+        fsync_directory(state)
+        fsync_directory(root)
 
         with tempfile.TemporaryDirectory(prefix=".snapshot-", dir=root) as temporary_value:
             temporary = Path(temporary_value)
@@ -274,14 +328,21 @@ def backup(config: dict[str, str], tier: str) -> dict[str, object]:
 
         for selected, count in retain.items():
             prune(root / selected, count)
+        for directory in tier_directories:
+            fsync_directory(directory)
 
-        completed_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        completed_at = datetime.now(timezone.utc).isoformat(
+            timespec="milliseconds"
+        ).replace("+00:00", "Z")
         receipt: dict[str, object] = {
             "schema": SCHEMA,
             "status": "passed",
             "kind": tier,
             "database": str(database),
             "backupRoot": str(root),
+            "startedAt": started_at.isoformat(timespec="milliseconds").replace(
+                "+00:00", "Z"
+            ),
             "completedAt": completed_at,
             "encryptedSha256": sha256(Path(next(iter(installed.values())))),
             "encryptedSizeBytes": Path(next(iter(installed.values()))).stat().st_size,

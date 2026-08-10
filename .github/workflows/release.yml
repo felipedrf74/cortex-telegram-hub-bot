@@ -1,0 +1,490 @@
+name: Release — publish signed container release
+
+# Image production and publication. Both privileged stages run ONLY after CI
+# passed on protected main, and only on separate GitHub-hosted x86_64 runners.
+# The dependency/build job never receives the long-lived signing key. The
+# protected-environment signer starts on a fresh hosted VM, installs no project
+# dependencies, and accepts only a closed, digest-bound nonsecret handoff. A
+# protected-main push also starts the credential-free no-op that supersedes an
+# older publisher:
+#
+#   - the Pi test runner cannot build an x86_64 deployable image without slow
+#     QEMU cross-building, and it is deliberately granted no registry credential
+#     (ADR-0012, refined by the 2026-08-07 continuous-deployment plan);
+#   - production runs no build or CI work at all — it only pulls digests.
+#
+# What this workflow produces is the entire deployable release:
+#   1. ghcr.io/.../nexus-hub-backend@sha256:…        (backend image)
+#   2. ghcr.io/.../nexus-hub-content-engine@sha256:… (content engine image)
+#   3. ghcr.io/.../nexus-hub-release:main            (Ed25519-signed manifest +
+#                                                     the exact Compose file)
+#
+# The VPS poller trusts (3) and nothing else. Everything it needs — signature,
+# repository and workflow identity, source SHA, both image digests, the Compose
+# digest and the migration verdict digest — is inside the signed payload.
+
+on:
+  # A protected-main push enters the same repository concurrency group as an
+  # active publisher immediately. Its credential-free superseder job cancels the
+  # older candidate without waiting for the new commit's CI to finish.
+  push:
+    branches: [main]
+  workflow_run:
+    workflows: ['CI — Risk-based parallel matrix']
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+# Latest-green. Both protected-main push notifications and successful-CI
+# publishers use this one repository-scoped group. A newer push therefore
+# cancels an in-flight publication before its own CI has completed.
+concurrency:
+  group: release-publish-main
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '22.23.1'
+
+jobs:
+  supersede:
+    name: 🛑 Supersede an older in-flight publication
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions: {}
+    steps:
+      - name: Cancel through the shared release concurrency group
+        run: echo 'Protected main advanced; any older publisher has been superseded.'
+
+  build:
+    name: 🏗️ Verify and publish immutable application images
+    # Hosted x86_64. Asserted below rather than assumed: the images must match
+    # the production architecture.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    if: >-
+      github.event_name == 'workflow_run'
+      && github.event.workflow_run.conclusion == 'success'
+      && github.event.workflow_run.head_branch == 'main'
+      && github.event.workflow_run.event == 'push'
+      && github.event.workflow_run.path == '.github/workflows/ci.yml'
+    permissions:
+      contents: read
+      packages: write
+      actions: read
+      checks: read
+    env:
+      NPM_CONFIG_AUDIT: 'false'
+      NPM_CONFIG_FUND: 'false'
+    outputs:
+      source_sha: ${{ steps.source.outputs.sha }}
+      ci_run_id: ${{ steps.source.outputs.ci_run_id }}
+      migration_base: ${{ steps.source.outputs.migration_base }}
+      backend_digest: ${{ steps.backend.outputs.digest }}
+      content_engine_digest: ${{ steps.content_engine.outputs.digest }}
+      handoff_digest: ${{ steps.handoff.outputs.digest }}
+      handoff_artifact_id: ${{ steps.handoff_upload.outputs.artifact-id }}
+    steps:
+      - name: Resolve the CI run and commit being published
+        id: source
+        env:
+          RUN_EVENT_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_EVENT_ID: ${{ github.event.workflow_run.id }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          RUN_ID="$RUN_EVENT_ID"
+          SHA="$RUN_EVENT_SHA"
+          echo "$RUN_ID" | grep -Eq '^[1-9][0-9]*$'
+          echo "$SHA" | grep -Eq '^[0-9a-f]{40}$'
+          RUN_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}")"
+          test "$(echo "$RUN_JSON" | jq -r '.id')" = "$RUN_ID"
+          test "$(echo "$RUN_JSON" | jq -r '.head_sha')" = "$SHA"
+          test "$(echo "$RUN_JSON" | jq -r '.conclusion')" = 'success'
+          test "$(echo "$RUN_JSON" | jq -r '.head_branch')" = 'main'
+          test "$(echo "$RUN_JSON" | jq -r '.event')" = 'push'
+          WORKFLOW_PATH="$(echo "$RUN_JSON" | jq -r '.path')"
+          # The Actions REST API may suffix the workflow path with the ref that
+          # supplied it. Compare the governed path while SHA checks bind revision.
+          test "${WORKFLOW_PATH%%@*}" = '.github/workflows/ci.yml'
+
+          # workflow_run exposes the completed SHA but not the `before` SHA of
+          # the push. Resolve the exact push boundary from the GitHub-owned check
+          # suite instead of accepting the selectable test runner's output. A
+          # check suite binds before -> after for the full push, so this
+          # also covers every commit in a multi-commit push.
+          CHECK_SUITE_ID="$(echo "$RUN_JSON" | jq -r '.check_suite_id')"
+          echo "$CHECK_SUITE_ID" | grep -Eq '^[1-9][0-9]*$'
+          CHECK_SUITE_JSON="$(gh api \
+            -H 'Accept: application/vnd.github+json' \
+            "repos/${GITHUB_REPOSITORY}/check-suites/${CHECK_SUITE_ID}")"
+          MIGRATION_BASE="$(echo "$CHECK_SUITE_JSON" | jq -r '.before')"
+          CHECK_SUITE_AFTER="$(echo "$CHECK_SUITE_JSON" | jq -r '.after')"
+          echo "$MIGRATION_BASE" | grep -Eq '^[0-9a-f]{40}$'
+          echo "$CHECK_SUITE_AFTER" | grep -Eq '^[0-9a-f]{40}$'
+          test "$MIGRATION_BASE" != '0000000000000000000000000000000000000000'
+          test "$CHECK_SUITE_AFTER" = "$SHA"
+          echo "$SHA" | grep -Eq '^[0-9a-f]{40}$'
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "ci_run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+          echo "migration_base=$MIGRATION_BASE" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ steps.source.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Assert the builder architecture matches production
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = 'x86_64'
+          . /etc/os-release
+          test "$ID" = 'ubuntu'
+
+      - name: Assert the published commit is the protected-main head
+        env:
+          SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          # Ancestry is not enough: every older green commit is an ancestor, so an
+          # ancestor check would let a release republish arbitrarily old code.
+          test "$(git rev-parse origin/main)" = "$SHA"
+          git merge-base --is-ancestor '${{ steps.source.outputs.migration_base }}' "$SHA"
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install the exact host-side verification dependencies
+        run: npm ci
+
+      # The migration verdict is computed on the test runner and downloaded as
+      # evidence. No field is trusted for signing: the hosted builder reruns the
+      # complete changed-scope gate against the GitHub-owned check-suite base and
+      # requires canonical equality before it reads the signing key.
+      - name: Download the migration verdict from the CI run
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: migration-safety-${{ steps.source.outputs.sha }}
+          path: .local/ci-evidence
+          run-id: ${{ steps.source.outputs.ci_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Refuse to publish without a cdEligibility verdict
+        run: |
+          set -euo pipefail
+          test -s .local/ci-evidence/migration-safety.json
+          node -e "
+            const result = require('./.local/ci-evidence/migration-safety.json');
+            if (!result.ok) throw new Error('migration safety check did not pass');
+            if (!result.cdEligibility) throw new Error('missing cdEligibility verdict');
+          "
+
+      # This process receives no signing key and runs before registry login or
+      # any moving image tag is published. It independently recomputes and
+      # canonical-compares the complete push-scoped verdict, then binds the
+      # resulting file through a step-output digest used by the later signer.
+      - name: Recompute and bind the migration verdict without signing authority
+        id: hosted_migrations
+        run: |
+          set -euo pipefail
+          mkdir -p .local/release
+          node scripts/release-manifest-build.mjs \
+            --migration-result .local/ci-evidence/migration-safety.json \
+            --migration-base '${{ steps.source.outputs.migration_base }}' \
+            --verify-migration-only .local/release/hosted-migration-safety.json \
+            | tee .local/release/hosted-migration-verification.json
+          DIGEST="$(node -e "
+            process.stdout.write(
+              require('./.local/release/hosted-migration-verification.json').digest
+            );
+          ")"
+          echo "$DIGEST" | grep -Eq '^[0-9a-f]{64}$'
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+
+      - uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push the backend image
+        id: backend
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: .
+          file: Dockerfile.release.node
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          sbom: false
+          tags: ghcr.io/${{ github.repository_owner }}/nexus-hub-backend:${{ steps.source.outputs.sha }}
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,scope=backend,mode=max
+
+      - name: Build and push the content-engine image
+        id: content_engine
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: .
+          file: Dockerfile.release.python
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          sbom: false
+          tags: ghcr.io/${{ github.repository_owner }}/nexus-hub-content-engine:${{ steps.source.outputs.sha }}
+          cache-from: type=gha,scope=content-engine
+          cache-to: type=gha,scope=content-engine,mode=max
+
+      - name: Re-assert protected-main head before emitting the signing handoff
+        env:
+          SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          test "$(git rev-parse origin/main)" = "$SHA"
+
+      # Only closed, non-executable, nonsecret evidence crosses the hosted-job
+      # boundary. Its manifest digest is a GitHub-controlled job output and the
+      # artifact is selected by immutable artifact ID in the signer.
+      - name: Build the digest-bound nonsecret signing handoff
+        id: handoff
+        run: |
+          set -euo pipefail
+          RESULT="$(node scripts/release-signing-handoff.mjs create \
+            --source-sha '${{ steps.source.outputs.sha }}' \
+            --ci-run-id '${{ steps.source.outputs.ci_run_id }}' \
+            --migration-base '${{ steps.source.outputs.migration_base }}' \
+            --backend-digest '${{ steps.backend.outputs.digest }}' \
+            --content-engine-digest '${{ steps.content_engine.outputs.digest }}' \
+            --hosted-migration-result .local/release/hosted-migration-safety.json \
+            --hosted-migration-digest '${{ steps.hosted_migrations.outputs.digest }}' \
+            --compose docker-compose.release.yml \
+            --output-directory .local/release/signing-handoff)"
+          DIGEST="$(printf '%s' "$RESULT" | jq -er '.digest')"
+          echo "$DIGEST" | grep -Eq '^[0-9a-f]{64}$'
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the immutable signing handoff
+        id: handoff_upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-signing-handoff-${{ steps.source.outputs.sha }}
+          path: .local/release/signing-handoff
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+  publish:
+    name: 🔏 Sign and publish the release pointer
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    if: >-
+      github.event_name == 'workflow_run'
+      && github.event.workflow_run.conclusion == 'success'
+      && github.event.workflow_run.head_branch == 'main'
+      && github.event.workflow_run.event == 'push'
+      && github.event.workflow_run.path == '.github/workflows/ci.yml'
+      && needs.build.result == 'success'
+    permissions:
+      contents: read
+      packages: write
+      actions: read
+      checks: read
+    environment:
+      name: release-publish
+    outputs:
+      release_digest: ${{ steps.payload.outputs.digest }}
+      cd_eligible: ${{ steps.manifest.outputs.cd_eligible }}
+    steps:
+      - name: Validate the immutable build handoff identity
+        env:
+          SOURCE_SHA: ${{ needs.build.outputs.source_sha }}
+          CI_RUN_ID: ${{ needs.build.outputs.ci_run_id }}
+          MIGRATION_BASE: ${{ needs.build.outputs.migration_base }}
+          BACKEND_DIGEST: ${{ needs.build.outputs.backend_digest }}
+          CONTENT_ENGINE_DIGEST: ${{ needs.build.outputs.content_engine_digest }}
+          HANDOFF_DIGEST: ${{ needs.build.outputs.handoff_digest }}
+          HANDOFF_ARTIFACT_ID: ${{ needs.build.outputs.handoff_artifact_id }}
+        run: |
+          set -euo pipefail
+          echo "$SOURCE_SHA" | grep -Eq '^[0-9a-f]{40}$'
+          echo "$CI_RUN_ID" | grep -Eq '^[1-9][0-9]*$'
+          echo "$MIGRATION_BASE" | grep -Eq '^[0-9a-f]{40}$'
+          echo "$BACKEND_DIGEST" | grep -Eq '^sha256:[0-9a-f]{64}$'
+          echo "$CONTENT_ENGINE_DIGEST" | grep -Eq '^sha256:[0-9a-f]{64}$'
+          test "$BACKEND_DIGEST" != "$CONTENT_ENGINE_DIGEST"
+          echo "$HANDOFF_DIGEST" | grep -Eq '^[0-9a-f]{64}$'
+          echo "$HANDOFF_ARTIFACT_ID" | grep -Eq '^[1-9][0-9]*$'
+
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ needs.build.outputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Download the exact nonsecret signing handoff by artifact ID
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.build.outputs.handoff_artifact_id }}
+          path: .local/release/signing-handoff
+          merge-multiple: true
+
+      - name: Verify the closed signing handoff before exposing the key
+        run: |
+          set -euo pipefail
+          test ! -e node_modules
+          node scripts/release-signing-handoff.mjs verify \
+            --directory .local/release/signing-handoff \
+            --expected-digest '${{ needs.build.outputs.handoff_digest }}' \
+            --source-sha '${{ needs.build.outputs.source_sha }}' \
+            --ci-run-id '${{ needs.build.outputs.ci_run_id }}' \
+            --migration-base '${{ needs.build.outputs.migration_base }}' \
+            --backend-digest '${{ needs.build.outputs.backend_digest }}' \
+            --content-engine-digest '${{ needs.build.outputs.content_engine_digest }}' \
+            | tee .local/release/signing-handoff-verification.json
+          test "$(sha256sum docker-compose.release.yml | cut -d' ' -f1)" = \
+            "$(node -e "process.stdout.write(require('./.local/release/signing-handoff-verification.json').composeDigest)")"
+
+      # This is the last secretless step. It independently revalidates the
+      # GitHub-owned CI/check-suite provenance and current public main head.
+      - name: Re-assert protected CI and main immediately before signing
+        env:
+          SHA: ${{ needs.build.outputs.source_sha }}
+          CI_RUN_ID: ${{ needs.build.outputs.ci_run_id }}
+          MIGRATION_BASE: ${{ needs.build.outputs.migration_base }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SHA"
+          RUN_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${CI_RUN_ID}")"
+          test "$(echo "$RUN_JSON" | jq -r '.id')" = "$CI_RUN_ID"
+          test "$(echo "$RUN_JSON" | jq -r '.head_sha')" = "$SHA"
+          test "$(echo "$RUN_JSON" | jq -r '.conclusion')" = 'success'
+          test "$(echo "$RUN_JSON" | jq -r '.head_branch')" = 'main'
+          test "$(echo "$RUN_JSON" | jq -r '.event')" = 'push'
+          WORKFLOW_PATH="$(echo "$RUN_JSON" | jq -r '.path')"
+          test "${WORKFLOW_PATH%%@*}" = '.github/workflows/ci.yml'
+          CHECK_SUITE_ID="$(echo "$RUN_JSON" | jq -r '.check_suite_id')"
+          echo "$CHECK_SUITE_ID" | grep -Eq '^[1-9][0-9]*$'
+          CHECK_SUITE_JSON="$(gh api \
+            -H 'Accept: application/vnd.github+json' \
+            "repos/${GITHUB_REPOSITORY}/check-suites/${CHECK_SUITE_ID}")"
+          test "$(echo "$CHECK_SUITE_JSON" | jq -r '.before')" = "$MIGRATION_BASE"
+          test "$(echo "$CHECK_SUITE_JSON" | jq -r '.after')" = "$SHA"
+          git fetch --no-tags origin main
+          test "$(git rev-parse origin/main)" = "$SHA"
+
+      - name: Build and sign the release manifest
+        id: manifest
+        env:
+          NEXUS_RELEASE_MANIFEST_SIGNING_KEY: ${{ secrets.NEXUS_RELEASE_MANIFEST_SIGNING_KEY }}
+          GITHUB_SHA: ${{ needs.build.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p .local/release/payload
+          node scripts/release-manifest-build.mjs \
+            --backend-digest '${{ needs.build.outputs.backend_digest }}' \
+            --content-engine-digest '${{ needs.build.outputs.content_engine_digest }}' \
+            --migration-base '${{ needs.build.outputs.migration_base }}' \
+            --hosted-migration-result .local/release/signing-handoff/hosted-migration-safety.json \
+            --hosted-migration-digest "$(node -e "process.stdout.write(require('./.local/release/signing-handoff-verification.json').hostedMigrationDigest)")" \
+            --public-key docs/release/evidence/release-manifest-public-key.pem \
+            --output .local/release/payload/release-manifest.json \
+            | tee .local/release/manifest-build.json
+          CD_ELIGIBLE="$(node -e "
+            process.stdout.write(String(
+              require('./.local/release/manifest-build.json').cdEligible
+            ));
+          ")"
+          echo "cd_eligible=$CD_ELIGIBLE" >> "$GITHUB_OUTPUT"
+
+      - name: Stage the release payload build context
+        run: |
+          set -euo pipefail
+          cp .local/release/signing-handoff/docker-compose.release.yml \
+            .local/release/payload/docker-compose.release.yml
+          cp Dockerfile.release.payload .local/release/payload/Dockerfile
+          test -s .local/release/payload/release-manifest.json
+          test -s .local/release/payload/docker-compose.release.yml
+
+      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+
+      - uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Re-assert protected-main head immediately before publishing the release pointer
+        env:
+          SHA: ${{ needs.build.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          test "$(git rev-parse origin/main)" = "$SHA"
+
+      # Published last, and only after both images exist, so the pointer tag can
+      # never advertise digests the registry does not hold.
+      - name: Build and push the release payload image
+        id: payload
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: .local/release/payload
+          file: .local/release/payload/Dockerfile
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          sbom: false
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/nexus-hub-release:${{ needs.build.outputs.source_sha }}
+            ghcr.io/${{ github.repository_owner }}/nexus-hub-release:main
+
+      - name: Summarize the published release
+        env:
+          SHA: ${{ needs.build.outputs.source_sha }}
+          BACKEND: ${{ needs.build.outputs.backend_digest }}
+          CONTENT: ${{ needs.build.outputs.content_engine_digest }}
+          PAYLOAD: ${{ steps.payload.outputs.digest }}
+          CD_ELIGIBLE: ${{ steps.manifest.outputs.cd_eligible }}
+        run: |
+          {
+            echo '### Published release'
+            echo
+            echo "| field | value |"
+            echo "| --- | --- |"
+            echo "| source SHA | \`$SHA\` |"
+            echo "| backend image | \`$BACKEND\` |"
+            echo "| content-engine image | \`$CONTENT\` |"
+            echo "| release payload | \`$PAYLOAD\` |"
+            echo "| CD eligible | \`$CD_ELIGIBLE\` |"
+            echo
+            if [ "$CD_ELIGIBLE" != "true" ]; then
+              echo 'This release carries a contract or destructive migration. The VPS'
+              echo 'poller will refuse it and halt deployment. The post-bootstrap'
+              echo 'container maintenance path is not implemented; an owner decision'
+              echo 'on authorization, traffic drain, and database restore is required.'
+            else
+              echo 'The VPS poller will pick this up within 30 seconds: staging first,'
+              echo 'then production with a 60-second observation window.'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The manifest is not uploaded as a workflow artifact on purpose: the
+      # release payload image is the single distribution channel, and a second
+      # copy would invite someone to deploy from the wrong one.
+      - name: Record the release identity for the run log
+        run: cat .local/release/manifest-build.json

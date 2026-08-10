@@ -2,8 +2,8 @@
 
 A one-command local-development environment for the Nexus Hub backend +
 Python content engine, with iOS Simulator wiring. It is isolated from the
-exact-artifact staging→production chain; nothing here modifies PM2 or the
-staging install on the remote Linux host.
+recovery-first container deployment pipeline; nothing here modifies remote
+staging or production, or the retained PM2 first-cutover fallback.
 
 This is the **default** local-dev path. If you need a native (non-Docker)
 runner — for example to attach a Node debugger or run with PM2 — the
@@ -247,13 +247,15 @@ new AI calls until UTC midnight. Raise the cap in your private
 
 ## Relation to the staging→prod chain
 
-- `./scripts/local-smoke.sh` is a **pre-staging filter**, not a
-  replacement for `staging-smoke.sh`. Both exist; staging-smoke runs
-  against the remote Linux box and has additional PM2 + remote-DB
-  checks. The local smoke catches "does my change even boot."
-- `release:prepare`, `release:promote`, and `release:status` are untouched by
-  this sandbox. The compact checksum manifest, exact artifact, successful
-  staging transaction, and explicit owner approval still gate production.
+- `./scripts/local-smoke.sh` is a **pre-staging filter**, not a replacement for
+  the staging and production checks in the recovery-first container pipeline.
+  The local smoke catches "does my change even boot"; it is not release
+  evidence. See `docs/release/continuous-deployment.md` and
+  `ops/nexus-release/README.md` for the current production path.
+- `release:prepare`, `release:promote`, `release:status`, the compact checksum
+  manifest, and the PM2 remote checks are retained only as the owner-authorized
+  first-cutover fallback for the initial 14 stable days. They are not the
+  default production gate.
 - The pre-commit hook prints a soft warning if the sandbox is down.
   It doesn't block commits.
 

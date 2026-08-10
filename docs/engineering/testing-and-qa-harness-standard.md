@@ -2,11 +2,12 @@
 
 Status: canonical
 Owner: QA + release lead
-Last verified: 2026-08-03
+Last verified: 2026-08-09
 Update policy: update when test categories, evidence requirements, or
 risk-based test selection rules change. `config/test-policy.json` is the
-machine-readable tier/disposition policy; `docs/release/README.md` describes
-how its conditional release result is bound to an exact artifact.
+machine-readable tier/disposition policy; `docs/release/continuous-deployment.md`
+describes how successful protected-main CI authorizes hosted release publication
+without giving the test runner registry credentials or a deploy path.
 
 This standard defines what "tested" means for Nexus Hub. It is grounded in
 the no-launch-only-validation rule that closed the v4.14.118 incident,
@@ -26,7 +27,7 @@ security standards.
 | **Staging smoke** | `scripts/staging-smoke.sh` plus domain smokes | Production-shape checks against staging; count is release-dependent |
 | **iOS XCUITest** | `Nexus HubUITests/` | SwiftUI workflow on simulator/device |
 | **iOS interaction (manual)** | QA report walk-through | Physical-device tap/scroll/navigation responsiveness |
-| **Production health** | exact-artifact promotion readiness + smoke evidence | Node `/health`, authenticated `/api/snapshot`, authenticated Content Engine, native SQLite integrity, stable PM2 cwd/SHA, and `current` symlink identity |
+| **Production health** | signed container release health + immutable receipt | Node `/health`, Content Engine health, API smoke/public status, native SQLite integrity, manifest-pinned image pair, observation, and exact predecessor recovery identity |
 | **Drill** | `__tests__/**` + scripted on staging | Synthetic alerts, identity-scan strict, vi.mock completeness |
 
 ## 2. Test quality bar (must)
@@ -114,9 +115,11 @@ Pre-commit runs the staged selection once. Pre-push performs ref safety and
 type/build checks without repeating Vitest. PR and protected-main CI collect
 coverage from the same selected invocation; there is no second coverage lane.
 
-The complete four-shard suite runs once in the explicit production release
-checkpoint. It is not scheduled nightly and it is never an automatic response
-to an ordinary code, test-infrastructure, or lockfile change.
+Protected-main CI runs the governed selected suite on the test-only runner. The
+hosted release workflow may build and publish images only after that exact CI run
+succeeds; it does not rerun tests and the test runner has no registry credential.
+`npm run test:full` and the four-shard variant remain explicit/manual diagnostic
+commands, not production-release checkpoints.
 
 Test deletion or rename requires targeted mutation evidence when the protected
 behavior survives. An entire retired subsystem avoids irrelevant mutation work
@@ -749,13 +752,10 @@ device proof. The recommended additions to lock these in:
    collect repeated samples, and compare p95 with a governed baseline. A raw
    shared-runner assertion such as "50,000 events in <1 second" must not fail
    correctness CI.
-3. **Shared-host Sonar enablement has a one-time rollout gate.** Capture at
-   least 30 sequential loopback application samples before and after one
-   successful exact-SHA advisory scan. Bind both captures and the scan evidence
-   to the same deployed runtime, and require both p50 and p95 regression to be
-   at most 5%. This is private operations evidence from
-   `quality-sonar-latency-gate.mjs`; it never becomes a PR, signing, staging,
-   or production release gate while Sonar shares the production host.
+3. **Host performance evidence is independent of release authority.** Collect
+   repeated, runtime-bound samples through the benchmark lane or an approved
+   staging observation. Advisory host measurements never grant signature,
+   registry, staging, or production authority.
 
 ## 16. Stale or skipped tests
 
@@ -767,7 +767,9 @@ mutation evidence; a rename is always treated as mutation-relevant. Retiring an
 entire subsystem is exempt from mutation only through an auditable mapping that
 proves every required implementation path was removed and every replacement
 test exists. Test cleanup never triggers the complete suite automatically; the
-four-shard suite remains the single explicit production-release checkpoint.
+full and four-shard suites remain explicit/manual diagnostic commands. The
+production publication gate is the successful protected-main CI conclusion
+described in `docs/release/continuous-deployment.md`.
 
 Additionally:
 
@@ -785,7 +787,7 @@ Tests added/modified: <count> in <files>
 Tests run locally:
   - typecheck: <pass | fail>
   - focused vitest: <count pass / count total>
-  - release Vitest tier: <affected-groups | explicit-release-checkpoint>
+  - protected-main Vitest tier: <selected-risk-gate | explicit-manual-full>
   - selected/full vitest: <count pass / count total>
   - iOS xcodebuild: <pass | fail>
   - iOS focused XCTest: <count pass / count total>

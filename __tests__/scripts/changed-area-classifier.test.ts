@@ -19,6 +19,8 @@ import {
 
 const RETIREMENT_BASE_SHA = '7b724f185580b18ce722a396b6e01d5ae268d3c1';
 const SPANISH_LOCALE_RETIREMENT_BASE_SHA = '247ac7dc940009aacb0d1419a58db4749a76c75a';
+// SonarQube decommissioning, 2026-08-07 continuous-deployment refactor.
+const SONAR_RETIREMENT_BASE_SHA = '65a87ae2a0514e0fe2ad117412d23ca3f0da8d39';
 
 function classify(files: string[]) {
   return JSON.parse(execFileSync('bash', [
@@ -33,6 +35,8 @@ describe('lean changed-area classification', () => {
   it.each([
     ['src/api/auth-middleware.ts', 'platform-security'],
     ['src/services/apple-token-revocation.ts', 'platform-security'],
+    ['src/services/database-bootstrap.ts', 'platform-security'],
+    ['src/services/database-bootstrap.ts', 'release-ops'],
     ['src/services/standalone-tool-database.ts', 'platform-security'],
     ['__tests__/services/apple-token-revocation.test.ts', 'platform-security'],
     ['__tests__/services/standalone-tool-database.test.ts', 'platform-security'],
@@ -49,6 +53,7 @@ describe('lean changed-area classification', () => {
     ['catalog/training/exercise-media/v1/manifest.json', 'training'],
     ['ecosystem.release.config.js', 'release-ops'],
     ['scripts/risk-gate.sh', 'release-ops'],
+    ['src/services/release-data-maintenance.ts', 'release-ops'],
     ['content-engine/main.py', 'content-engine'],
     ['migrations/001_initial_schema.sql', 'migrations'],
   ])('maps %s to %s', (file, group) => {
@@ -287,6 +292,7 @@ describe('lean changed-area classification', () => {
     ))).toEqual(new Set([
       RETIREMENT_BASE_SHA,
       SPANISH_LOCALE_RETIREMENT_BASE_SHA,
+      SONAR_RETIREMENT_BASE_SHA,
     ]));
 
     const artifactTest = '__tests__/scripts/release-artifact-manifest.test.ts';

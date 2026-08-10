@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: Felipe Dominguez
-Last verified: 2026-07-27
+Last verified: 2026-08-09
 Update policy: update when route families, mobile storage, provider integrations,
 or release gates change.
 
@@ -29,7 +29,8 @@ or release gates change.
 The current recovery boundary is intentionally local to ServerDominguez. It
 covers release mistakes and database corruption but not complete NVMe or host
 loss. A USB SSD, NAS, or another non-AWS host can be added later without making
-AWS part of CI, release, SonarQube, or production operation.
+AWS part of CI, release, or production operation. SonarQube was
+decommissioned on 2026-08-07 and is no longer a control surface.
 
 ## Sensitive Action Step-Up Candidates
 
@@ -49,4 +50,4 @@ Security-sensitive changes require:
 3. Tenant/BOLA regression tests when scoped data is touched.
 4. `npm run docs:audit` when security or release docs change.
 5. iOS focused MASVS tests when app storage, auth, network, APNs, or deep links change.
-6. Staging smoke before any production promotion.
+6. Exact-candidate staging smoke before any production mutation.

@@ -206,8 +206,13 @@ describe('telegram purge gate (Stage C — archive-first data migration)', () =>
     expect(userService).toMatch(/export function backfillTelegramIdentityArchive/);
     expect(userService).toMatch(/pragma_table_info\('users'\)/);
     expect(userService).toMatch(/INSERT OR IGNORE INTO telegram_identity_archive/);
-    const database = fs.readFileSync(path.join(REPO_ROOT, 'src/services/database.ts'), 'utf8');
-    expect(database).toMatch(/backfillTelegramIdentityArchive/);
+    const databaseCore = fs.readFileSync(path.join(REPO_ROOT, 'src/services/database.ts'), 'utf8');
+    const databaseBootstrap = fs.readFileSync(
+      path.join(REPO_ROOT, 'src/services/database-bootstrap.ts'),
+      'utf8',
+    );
+    expect(databaseCore).not.toMatch(/backfillTelegramIdentityArchive/);
+    expect(databaseBootstrap).toMatch(/backfillTelegramIdentityArchive/);
   });
 
   it('down migration only removes the archive table', () => {

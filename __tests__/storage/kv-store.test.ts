@@ -42,6 +42,7 @@ vi.mock('../../src/utils/logger', () => ({
 }));
 
 import { KVStore, getKV, clearKV } from '../../src/storage/kv-store';
+import { config } from '../../src/config';
 
 // ═══════════════════════════════════════════════════════════════════
 
@@ -51,6 +52,7 @@ describe('KVStore', () => {
   beforeEach(() => {
     testDb = new Database(':memory:');
     testDb.pragma('journal_mode = WAL');
+    (config.app as any).migrationsMode = 'boot';
     kv = new KVStore();
   });
 
@@ -77,6 +79,17 @@ describe('KVStore', () => {
       kv.has('c');
       kv.list('');
       expect(kv.count()).toBe(2);
+    });
+
+    it('does not create a missing table in external release mode', () => {
+      (config.app as any).migrationsMode = 'external';
+      const execSpy = vi.spyOn(testDb, 'exec');
+      expect(() => kv.get('missing')).toThrow(/no such table: kv_store/);
+      expect(execSpy).not.toHaveBeenCalled();
+      expect(testDb.prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'kv_store'",
+      ).get()).toBeUndefined();
+      execSpy.mockRestore();
     });
   });
 

@@ -212,7 +212,10 @@ export function extractRuntimeArchive(
   archive,
   destinationRoot,
   expectedPrefix,
-  pythonBin = 'python3',
+  // The pinned interpreter, not bare `python3`. `tarfile.extractall(filter=...)`
+  // needs 3.12+, and a host whose `python3` is older would otherwise fail deep
+  // inside extraction with a confusing TypeError.
+  pythonBin = '/usr/bin/python3.12',
 ) {
   const extractionTarget = path.join(destinationRoot, expectedPrefix);
   if (lexicalPathExists(extractionTarget)) {
@@ -220,6 +223,15 @@ export function extractRuntimeArchive(
   }
   const extractionProgram = String.raw`
 import pathlib, posixpath, sys, tarfile
+# Safe extraction depends on tarfile's data filter, which is 3.12+. Assert it
+# here rather than in the caller: this is the code whose safety depends on it, and
+# an older interpreter must fail with a named reason instead of a TypeError from
+# inside extractall.
+if sys.version_info < (3, 12):
+    raise SystemExit(
+        'release runtime extraction requires Python 3.12+ for tarfile data filtering; '
+        'found %d.%d.%d' % sys.version_info[:3]
+    )
 archive, destination, expected_prefix = sys.argv[1:]
 prefix = pathlib.PurePosixPath(expected_prefix)
 with tarfile.open(archive, mode='r:gz') as handle:

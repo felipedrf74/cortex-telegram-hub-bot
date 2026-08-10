@@ -5,12 +5,18 @@ import { config } from '../config';
 import { logger } from '../utils/logger';
 import { SQLiteStorage, setStorageProvider, clearStorageProvider } from './storage-provider';
 import { assertContentWorkspaceBootReadiness } from './content-workspace-boot-readiness';
-import { loadPersistedModelOverrides } from './persisted-model-overrides';
 import {
   applyMigrationFile,
   applyPendingMigrations,
+  ensureMigrationSqlFunctions,
   filterAlreadyAppliedAddColumnStatements as filterMigrationAddColumns,
+  loadReleaseMigrationPlan,
+  pendingMigrationFiles,
 } from './migration-runner';
+import {
+  assertReleaseDataMaintenanceComplete,
+  releaseDataMaintenanceIdentityFromEnvironment,
+} from './release-data-maintenance';
 
 export {
   assertNoUnexpectedMigrationPrefixCollisions,
@@ -22,148 +28,97 @@ let storage: SQLiteStorage | null = null;
 
 export function getDb(): Database.Database {
   if (!db) {
-    throw new Error('Database not initialized. Call initDatabase() first.');
+    throw new Error(
+      'Database not initialized. Call database-bootstrap initDatabase() first.',
+    );
   }
   return db;
 }
 
-export function initDatabase(): Database.Database {
-  // Initialize via StorageProvider — single connection, shared via raw()
+/**
+ * Open the process-owned connection and verify/apply the SQL migration
+ * boundary. Runtime boot and one-shot data maintenance live in
+ * database-bootstrap.ts, whose one-way imports avoid a database -> service ->
+ * database cycle.
+ */
+export function initializeDatabaseCore(): Database.Database {
   storage = new SQLiteStorage();
   storage.open(config.app.databasePath);
   setStorageProvider(storage);
-
-  // Expose raw driver for backward compatibility (state files use getDb())
   db = storage.raw();
-
   runMigrations();
-
-  try {
-    const { backfillLegacyRefreshTokenHashes } = require('./ios-auth-session');
-    const result = backfillLegacyRefreshTokenHashes();
-    if (result.hashedRows > 0 || result.clearedPlaintextRows > 0) {
-      logger.warn(
-        result,
-        'iOS auth migration: hashed legacy refresh tokens and cleared plaintext',
-      );
-    }
-  } catch (err) {
-    logger.error({ err }, 'iOS auth refresh-token hash backfill failed — investigate before next deploy');
-  }
-
-  // M21 Stage C: archive telegram identities at boot (pragma-guarded,
-  // idempotent — see migration 259 header for why this is not SQL).
-  try {
-    const { backfillTelegramIdentityArchive } = require('./user-service');
-    const archive = backfillTelegramIdentityArchive();
-    if (archive.archivedRows > 0) {
-      logger.info(archive, 'Telegram identity archive backfill copied rows');
-    }
-  } catch (err) {
-    logger.warn({ err }, 'Telegram identity archive backfill failed — non-critical, retried next boot');
-  }
-
-  // Load persisted model overrides from kv_store after migrations create the
-  // table. This is fail-closed: an invalid local-model selector must prevent
-  // startup rather than silently falling back to another routing state.
-  loadPersistedModelOverrides(() => {
-    const { loadModelOverrides } = require('./model-config');
-    loadModelOverrides();
-  });
-
-  // Load persisted settings overrides from kv_store
-  try {
-    const { DatabaseConfigProvider, setConfigProvider } = require('./config-provider');
-    const dbConfig = new DatabaseConfigProvider();
-    dbConfig.loadPersistedSettings();
-    setConfigProvider(dbConfig);
-  } catch { /* config-provider not yet available — non-critical */ }
-
-  // Seed the owner user only from explicit OWNER_TELEGRAM_ID, then verify
-  // the runtime still has an unambiguous owner bootstrap source.
-  try {
-    const { seedOwnerUser, assertOwnerBootstrapReadyForRuntime } = require('./user-service');
-    seedOwnerUser();
-    assertOwnerBootstrapReadyForRuntime();
-  } catch (err) {
-    logger.error({ err }, 'Owner bootstrap initialization failed');
-    throw err;
-  }
-
-  // OAuth encryption is mandatory: refuse to start without a key, then
-  // run a one-shot in-place migration that encrypts any legacy plaintext
-  // rows. See audit P0-7. assertOAuthEncryptionConfigured() throws if no
-  // key is set — that's intentional, the bot must not run without it.
-  const { assertOAuthEncryptionConfigured, encryptPlaintextOAuthTokens, migrateOwnerTokens } = require('./oauth-store');
-  assertOAuthEncryptionConfigured();
-  try {
-    const result = encryptPlaintextOAuthTokens();
-    if (result.encryptedRows > 0) {
-      logger.warn(
-        result,
-        `OAuth migration: encrypted ${result.encryptedRows} legacy plaintext rows in-place`,
-      );
-    } else {
-      logger.info(result, 'OAuth migration: all rows already encrypted');
-    }
-  } catch (err) {
-    logger.error({ err }, 'OAuth plaintext migration failed — investigate before next deploy');
-  }
-
-  // Finance and Garmin hold user-sensitive data that is also covered by
-  // database backups. Assert encryption at boot in production and encrypt
-  // any legacy plaintext shadow columns before the app starts serving.
-  try {
-    const { assertFinanceEncryptionConfigured, encryptPlaintextFinanceRows } = require('./finance-tracker');
-    assertFinanceEncryptionConfigured();
-    const result = encryptPlaintextFinanceRows();
-    if (result.encryptedTransactions > 0 || result.encryptedTaxEvents > 0) {
-      logger.warn(result, 'Finance migration: encrypted legacy plaintext finance rows in-place');
-    } else {
-      logger.info(result, 'Finance migration: all rows already encrypted');
-    }
-  } catch (err) {
-    logger.error({ err }, 'Finance plaintext migration failed — investigate before next deploy');
-    throw err;
-  }
-
-  try {
-    const { assertGarminEncryptionConfigured, encryptPlaintextGarminTokens } = require('./garmin-session-store');
-    assertGarminEncryptionConfigured();
-    const result = encryptPlaintextGarminTokens();
-    if (result.encryptedSessions > 0 || result.encryptedUserTokens > 0) {
-      logger.warn(result, 'Garmin migration: encrypted legacy plaintext token rows in-place');
-    } else {
-      logger.info(result, 'Garmin migration: all rows already encrypted');
-    }
-  } catch (err) {
-    logger.error({ err }, 'Garmin plaintext migration failed — investigate before next deploy');
-    throw err;
-  }
-
-  // Migrate owner's OAuth tokens from .env to per-user storage
-  try {
-    migrateOwnerTokens();
-  } catch { /* oauth-store not yet available — non-critical */ }
-
-  // Seed default skills into installed_skills table (idempotent)
-  try {
-    const { seedDefaultSkills } = require('../skills/skill-manager');
-    seedDefaultSkills();
-  } catch { /* skill-manager not yet available — non-critical */ }
-
-  logger.info({ path: config.app.databasePath }, 'Database initialized');
   return db;
+}
+
+/** Bind an already-open release database only in a fresh one-shot process. */
+export function withReleaseMaintenanceDatabase<T>(
+  releaseDatabase: Database.Database,
+  callback: () => T,
+): T {
+  const previousDb = db as Database.Database | undefined;
+  if (previousDb !== undefined || storage !== null) {
+    throw new Error('release data maintenance requires an uninitialized one-shot database process');
+  }
+  (db as any) = releaseDatabase;
+  try {
+    return callback();
+  } finally {
+    (db as any) = previousDb;
+  }
 }
 
 function runMigrations(
   options: {
     excludeFiles?: ReadonlySet<string>;
     stopBefore?: string;
+    migrationsDirectory?: string;
   } = {},
   contentWorkspaceReadinessCheck: ((database: Database.Database) => void) | null = assertContentWorkspaceBootReadiness,
 ): void {
-  applyPendingMigrations(db, { ...options, logger });
+  if (config.app.migrationsMode === 'external') {
+    // Fail closed rather than skipping quietly. A silent skip would let the
+    // application serve traffic against a schema the release never migrated;
+    // refusing to boot surfaces the missing migrator run while the previous
+    // container is still the one answering requests.
+    ensureMigrationSqlFunctions(db);
+    const plan = loadReleaseMigrationPlan(options);
+    if (!plan && process.env.NODE_ENV === 'production') {
+      throw new Error(
+        'MIGRATIONS_MODE=external requires NEXUS_RELEASE_MIGRATION_PLAN in production',
+      );
+    }
+    const releaseIdentity = releaseDataMaintenanceIdentityFromEnvironment();
+    if (plan && (
+      releaseIdentity.releaseId !== plan.identity.releaseId
+      || releaseIdentity.sourceSha !== plan.identity.sourceSha
+      || releaseIdentity.backendImageDigest !== plan.identity.backendImageDigest
+    )) {
+      throw new Error('release migration plan identity does not match the application release identity');
+    }
+    const pending = pendingMigrationFiles(db, {
+      ...options,
+      requireCompleteInventory: true,
+      allowedLegacyFiles: plan
+        ? new Set(plan.legacyRows.map((entry) => entry.file))
+        : undefined,
+      allowedForwardFiles: plan?.mode === 'rollback'
+        ? new Set(plan.forwardApplied.map((entry) => entry.file))
+        : undefined,
+    });
+    if (pending.length > 0) {
+      throw new Error(
+        `MIGRATIONS_MODE=external but ${pending.length} migration(s) are unapplied `
+        + `(first: ${pending[0]}). Run the release migrator before starting the application.`,
+      );
+    }
+    assertReleaseDataMaintenanceComplete(db, releaseIdentity);
+    logger.info(
+      { migrationsMode: 'external', releaseId: releaseIdentity.releaseId },
+      'SQL migrations and release data maintenance verified as externally completed',
+    );
+  } else {
+    applyPendingMigrations(db, { ...options, logger });
+  }
 
   if (contentWorkspaceReadinessCheck) {
     // Migrations 246, 247, 249, 250, 251, and 253 retire legacy Content
@@ -178,6 +133,7 @@ export function runMigrationsForTest(
   options: {
     excludeFiles?: readonly string[];
     stopBefore?: string;
+    migrationsDirectory?: string;
     contentWorkspaceReadinessCheck?: (database: Database.Database) => void;
   } = {},
 ): void {
@@ -187,6 +143,7 @@ export function runMigrationsForTest(
     runMigrations({
       excludeFiles: new Set(options.excludeFiles ?? []),
       stopBefore: options.stopBefore,
+      migrationsDirectory: options.migrationsDirectory,
     }, options.contentWorkspaceReadinessCheck ?? null);
   } finally {
     (db as any) = previousDb;

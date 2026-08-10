@@ -3,6 +3,7 @@
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
+import { stripSqlComments } from './migration-cd-eligibility.mjs';
 
 export const IRREVERSIBLE_MIGRATION_POLICY_SCHEMA = 'nexus.irreversible-migrations.v2';
 export const IRREVERSIBLE_MIGRATION_REVIEW_APPROVAL_SCHEMA = 'nexus.migration-review-approval.v1';
@@ -87,7 +88,8 @@ export function irreversibleMigrationReason(file, sql, policy) {
       ? null
       : `POLICY_EXEMPTION_DIGEST_DRIFT:${exemption.reason}`;
   }
-  const stripped = stripSqlComments(sql);
+  // Classifier callers may inject a Buffer-returning filesystem reader.
+  const stripped = stripSqlComments(String(sql));
   const checks = [
     ['DROP TABLE', /\bDROP\s+TABLE\b/i],
     ['DROP COLUMN', /\bDROP\s+COLUMN\b/i],
@@ -140,11 +142,4 @@ function validateIdentity({ entry, root, fileExists, readText, integrityIssues }
     }));
   }
   return Object.freeze({ ...entry, actualSha256, identity });
-}
-
-function stripSqlComments(sql) {
-  return String(sql)
-    .split('\n')
-    .map((line) => line.replace(/--.*$/, ''))
-    .join('\n');
 }

@@ -202,17 +202,21 @@ export function getEffectiveDomainModel(provider: ProviderName, domain: DomainMo
  * Load all persisted overrides from kv_store into memory.
  * Call once at startup, after database init.
  */
-export function loadModelOverrides(): void {
+export function loadModelOverrides(
+  { ensureStore = true }: { ensureStore?: boolean } = {},
+): void {
   try {
     const db = getDb();
 
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS kv_store (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL,
-        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-      )
-    `);
+    if (ensureStore) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS kv_store (
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL,
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+      `);
+    }
 
     const rows = db.prepare(
       "SELECT key, value FROM kv_store WHERE key LIKE 'model_override:%'"
@@ -236,6 +240,7 @@ export function loadModelOverrides(): void {
       logger.info({ provider, role, model }, 'Loaded model override from DB');
     }
   } catch (err) {
+    if (!ensureStore) throw err;
     if (err instanceof OllamaSmallOnlyPolicyError) throw err;
     logger.warn({ err }, 'Failed to load model overrides — using defaults');
   }

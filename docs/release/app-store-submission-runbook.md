@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: release owner (Felipe)
-Last verified: 2026-07-27
+Last verified: 2026-08-09
 Update policy: update when the App Store review outcome, subscription product
 identity, reviewer entitlement mechanism, or reviewer demo-account contract
 changes.
@@ -20,9 +20,11 @@ account provisioning, and production posture during the review window.
 
 This file is a sequence and evidence definition. It is not authorization to
 mutate production, Cloudflare, App Store Connect, or the App ID, and it does not
-assert that any remediation is deployed. Runtime truth stays in
-`docs/release/release-state.json`; the human summary stays in
-`docs/release/CURRENT_RELEASE_STATE.md`.
+assert that any remediation is deployed. Backend runtime truth stays on the VPS
+in `/var/lib/nexus-release/state/release-state.json` and the immutable receipts
+under `/var/lib/nexus-release/receipts/`. The checked-in release projection and
+`docs/release/CURRENT_RELEASE_STATE.md` are navigation and human summary only;
+neither authorizes a submission or a deployment.
 
 ## App Store Connect
 
@@ -176,8 +178,9 @@ Work these in order. Item 1 gates every other item on this list.
     gates. Do not upload through `scripts/testflight-export.sh`; the protected
     `App Store Release` Xcode Cloud workflow is the only distribution path that
     produces a signed `nexus.ios-distribution-attestation.v2`.
-14. **Freeze production between submission and approval.** No promotes, no
-    environment changes, and specifically do not set
+14. **Freeze production between submission and approval.** Keep protected main
+    unchanged so hosted publication cannot advance the release-payload discovery
+    tag, make no environment changes, and specifically do not set
     `PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED=true` — enforcement mode would
     return 403 for the reviewer's AI calls. See `docs/TOKEN-QUOTA-CONTRACT.md`
     for the observe-only default. If the reviewer was provisioned through
@@ -189,7 +192,7 @@ Work these in order. Item 1 gates every other item on this list.
 ## Pre-submission production readiness
 
 The reviewer's entire session runs against one VPS behind a Cloudflare Tunnel
-with PM2. Verify, do not assume:
+and the digest-pinned production container pair. Verify, do not assume:
 
 - The production connector runs as the reviewed `nexus-cloudflared.service`
   systemd unit rather than as detached user processes. Migration steps, the
@@ -199,10 +202,11 @@ with PM2. Verify, do not assume:
   `ops/cloudflared/systemd/nexus-cloudflared.service` and
   `ops/cloudflared/config.yml.example`. Any migration needs its own approved
   Cloudflare operations window and must not overlap the review window.
-- PM2 boot resurrection is intact. `scripts/remote-release-boot-health.sh`
-  proves the real resurrect path against the root-installed
-  `nexus.pm2-root-install.v1` attestation and a canonical sanitized dump;
-  `scripts/remote-start-sanitized-pm2.sh` is what keeps that dump secret-free.
+- The root poller state and immutable completed receipt prove the exact backend
+  and Content Engine image pair serving production. PM2 boot resurrection is
+  relevant only to the owner-authorized first-cutover fallback during the
+  initial 14 stable days; its old boot-health procedure is not current
+  container evidence.
 - An external monitor watches `https://api.nexushub.me/public-status` for the
   duration of the review window. That path is the only externally allowlisted
   route at the edge, and `scripts/cloudflare-edge-verify.sh` already asserts the
@@ -231,26 +235,20 @@ with PM2. Verify, do not assume:
 
 ## Sequencing against the release process
 
-The backend remediation follows the canonical exact-artifact path in
-`docs/release/README.md`: reviewed protected-main SHA, governed checkpoint,
-staging, explicit owner authorization, and a passing production transaction.
-The backend checkpoint manifest remains backend-only; adding iOS evidence to it
-would create a circular dependency and is prohibited.
+Backend and iOS release on decoupled cadences. A protected-main backend push
+passes selected CI, publishes signed digest-pinned container artifacts, and is
+reconciled by the VPS poller under the contract in
+`docs/release/continuous-deployment.md` and `ops/nexus-release/README.md`.
+Confirm the compatible backend contract from the authoritative root-host state
+and immutable completed receipt; an iOS build, device, shared checkpoint, and
+separate owner promotion are not backend deployment gates.
 
-For a shared backend/iOS release, run the protected-main iOS compatibility
-suite against the exact backend bundle first and retain its signed contract
-attestation. Promote that exact backend artifact and require the production
-transaction to complete successfully. Only then may Xcode Cloud create the
-distribution build and signed distribution attestation. Run
-the owner-dispatched `.github/workflows/shared-ios-release-gate.yml` workflow
-with both attestations, the exact checkpoint run identity, production journal,
-backend SHA, iOS SHA, and source build number. The workflow resolves and
-validates the exact bundle and checkpoint manifest by immutable artifact ID,
-requires the distribution attestation to postdate backend production
-completion, and uploads `nexus.shared-ios-release-gate.v1` from the
-`production-release` environment.
-
-Do not assign a TestFlight group, submit the build for App Review, or release it
-to users without the successful workflow run and its passing receipt artifact;
-a locally generated receipt is not release authorization. Once submitted, hold
-the bound backend runtime and contract frozen until Apple posts a decision.
+The iOS repository independently runs its protected-main compatibility and
+distribution checks, then the protected `App Store Release` Xcode Cloud
+workflow produces the signed distribution attestation. The former backend
+checkpoint plus `.github/workflows/shared-ios-release-gate.yml` sequence is not
+current release authorization and must not be reintroduced as a cross-repo
+dependency. Do not assign a TestFlight group, submit for App Review, or release
+to users without the iOS distribution path's own passing evidence. Once
+submitted, hold the deployed backend contract and runtime frozen until Apple
+posts a decision.

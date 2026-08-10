@@ -8,7 +8,6 @@ readonly DEPLOY_HOME='/home/dominguez'
 readonly STATE_ROOT='/home/dominguez/.local/state/nexus-release/routing-calibration-export'
 readonly USER_RELEASE_LOCK='/home/dominguez/.local/state/nexus-release/.release.lock'
 readonly ROOT_SONAR_LOCK='/run/lock/nexus-release-sonar.lock'
-readonly SONAR_RELEASE_STATE_BIN='/usr/local/sbin/quality-sonar-release-state'
 readonly NODE_BIN='/usr/bin/node'
 readonly PYTHON_BIN='/usr/bin/python3'
 readonly PM2_BIN='/usr/local/bin/pm2'
@@ -145,19 +144,6 @@ revalidate_shared_locks() {
   assert_safe_lock_file "$ROOT_SONAR_LOCK" 'root:dominguez:660'
   assert_lock_fd_matches_path 8 "$ROOT_SONAR_LOCK"
   flock -n 8 || die 'shared root/Sonar lock was lost during export'
-}
-
-assert_sonar_idle() {
-  local state
-  state="$(sudo -n "$SONAR_RELEASE_STATE_BIN" --project nexus-hub-backend --json)" \
-    || die 'Sonar Compute Engine state is unavailable'
-  "$NODE_BIN" - "$state" <<'NODE' \
-    || die 'Sonar Compute Engine is processing an advisory scan'
-const value = JSON.parse(process.argv[2]);
-if (value?.schema !== 'nexus.sonarqube-release-state.v1'
-    || value.status !== 'passed' || value.projectKey !== 'nexus-hub-backend'
-    || value.activeTasks !== 0) process.exit(1);
-NODE
 }
 
 assert_owner_controlled_directory() {
@@ -522,7 +508,6 @@ run_helper() {
 }
 
 acquire_shared_locks
-assert_sonar_idle
 resolve_exact_release
 prepare_state
 recover_interrupted_private_publications

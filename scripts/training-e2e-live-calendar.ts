@@ -10,6 +10,7 @@ type Provider = 'google' | 'outlook';
 
 type EnvMap = Record<string, string>;
 type DatabaseModule = typeof import('../src/services/database');
+type DatabaseBootstrapModule = typeof import('../src/services/database-bootstrap');
 type OAuthStoreModule = typeof import('../src/services/oauth-store');
 type UnifiedCalendarModule = typeof import('../src/services/unified-calendar');
 
@@ -101,8 +102,9 @@ async function main(): Promise<void> {
   assertLiveCalendarPrerequisites(providers);
   configureRuntimeEnvironment();
 
+  const databaseBootstrap: DatabaseBootstrapModule = await import('../src/services/database-bootstrap');
   const database = await import('../src/services/database');
-  database.initDatabase();
+  databaseBootstrap.initDatabase();
   const { getDb, closeDatabase } = database;
   oauthStore = await import('../src/services/oauth-store');
   unifiedCalendar = await import('../src/services/unified-calendar');

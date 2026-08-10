@@ -2,18 +2,19 @@
 
 Status: canonical
 Owner: backend runtime + on-call lead
-Last verified: 2026-07-27
+Last verified: 2026-08-09
 Update policy: update when health-check shape changes, when alert
 producers change, when log/metric semantics change, or when the release
 process model changes. Incident response and recovery detail lives in
-`docs/security/security-operations-runbook.md`; exact-artifact deployment
-is governed by `docs/release/README.md`.
+`docs/security/security-operations-runbook.md`; recovery-first container
+deployment is governed by `docs/release/continuous-deployment.md`. The PM2
+operator path in `docs/release/README.md` is a first-cutover fallback only.
 
 This standard is the single source of truth for how Nexus Hub's backend
 runs, logs, traces, alerts, and recovers. It is grounded in the
 Twelve-Factor App principles and OpenTelemetry-style semantics, then
-translated into the realities of the single-VPS / two-process PM2 /
-Cloudflare Tunnel deployment and its immutable release directories.
+translated into the realities of the single-VPS, digest-pinned container pair,
+Cloudflare Tunnel ingress, and recovery-first continuous deployment.
 
 ## 1. Configuration (must)
 
@@ -33,18 +34,17 @@ Cloudflare Tunnel deployment and its immutable release directories.
 
 ## 2. Process model (must)
 
-1. **Two independent PM2 processes run in production.** `nexus-hub` owns the
-   Node API/portal on port 8200 and `content-engine` owns the Python service on
-   port 8100. Neither process starts or supervises the other; PM2 restarts each
-   independently from `ecosystem.release.config.js`.
-2. **The release directory is part of process identity.** Both PM2 entries must
-   be online, carry the same `NEXUS_RELEASE_SHA`, and use the expected exact
-   release cwd (`<release>` and `<release>/content-engine`). The production
-   `current` symlink must resolve to that same release before promotion,
-   backup, readiness success, or rollback success is accepted.
+1. **Two independent containers run in production.** `backend` owns the Node
+   API/portal on container port 8200 and `content-engine` owns the Python service
+   on 8100. Compose pins each image by immutable digest, runs both as UID/GID
+   10001, and restarts them independently.
+2. **The signed release identity is the runtime identity.** Source SHA, backend
+   digest, content-engine digest, Compose digest, and release-payload digest must
+   match the verified manifest and the durable host state/receipt. A moving tag
+   discovers a payload digest but never authorizes runtime bytes.
 3. **Graceful backend shutdown handles `SIGTERM`.** The Node process closes the
    HTTP server, flushes Sentry best-effort, closes SQLite, and exits inside the
-   PM2 kill timeout. The Python process has its own PM2 lifecycle and health
+   Compose grace period. The Python container has its own lifecycle and health
    probe; do not infer its state from Node health.
 4. **No long-running blocking work in the request thread.** Heavy
    generation/sync is enqueued through scheduler/worker patterns, not
@@ -52,6 +52,9 @@ Cloudflare Tunnel deployment and its immutable release directories.
 5. **No global mutable state survives a deploy.** Any cache that
    matters (oauth-store LRU, decrypted-token LRU, provider cost
    counters) is rebuildable from SQLite or external state on cold start.
+6. **PM2 is fallback-only during bootstrap.** Its exact-artifact operator path
+   exists only to recover the first container cutover and is removed after 14
+   stable days. It is not an alternate continuous-deployment path.
 
 ## 3. Health endpoints (must)
 
@@ -59,17 +62,16 @@ Cloudflare Tunnel deployment and its immutable release directories.
    when runtime and SQLite status are healthy; the payload includes server,
    database-probe, uptime, memory, and timestamp state without secrets.
 2. **`/health/detailed` is the protected operational endpoint.** It adds cron,
-   integration, provider, PM2-supervisor, Sentry, cache, and recent-error
+   integration, provider, runtime-supervisor, Sentry, cache, and recent-error
    diagnostics. Outside local development it requires the health bearer token.
-3. **`/api/snapshot` is the authenticated running-version proof** used by exact
-   promotion to confirm the public endpoint serves the manifest package
-   version after cutover.
-4. **The PM2 `nexus-hub` and `content-engine` processes both expose
-   health.** Exact staging and production readiness probe Node and Python
-   separately, then validate authenticated Content Engine readiness, native
-   SQLite binding, live-database integrity, and two stable PM2 cwd/SHA identity
-   samples before disabling automatic rollback. Any failed candidate check
-   invokes automatic exact predecessor recovery.
+3. **`/api/snapshot` remains an authenticated running-version proof.** It is
+   useful for operator diagnosis, while continuous deployment derives release
+   authority from the signed manifest, immutable OCI digests, and host receipt.
+4. **Both containers expose independent health.** Exact staging and production
+   readiness probe Node and Python separately, validate the API smoke/public
+   status, native SQLite binding, and live-database integrity, then preserve the
+   exact predecessor image pair for recovery. A failed production observation
+   invokes automatic predecessor recovery; database-integrity failure hard-stops.
 
 ## 4. Logging (must)
 
@@ -194,44 +196,40 @@ the durable alert-contract rules are:
 
 ## 8. Rollback runbook (must)
 
-Production rollback is **always available**. The default release contract is:
+Production recovery is required, but automatic predecessor rollback is available
+only after the first completed container receipt seeds that predecessor. The
+first container switch instead uses the exact owner-authorized PM2 fallback
+transaction. Beyond that bootstrap boundary, the default release contract is:
 
-1. **Use the exact-artifact operator path:** `npm run release:status`,
-   `release:prepare`, then owner-authorized `release:promote`. The compact
-   checksum manifest and staging/production transaction state must bind the
-   same protected-main SHA and artifact digest.
-2. **Build dependencies once.** Protected-main CI creates digest-bound Node and
-   Python dependency archives. Server transactions only verify and safely
-   extract them, verify the expanded-tree receipt, and never run npm, pip,
-   venv creation, tests, or a build.
-3. **Back up before mutation.** The root-owned local backup service creates and
-   verifies an encrypted SQLite recovery point before production `current` or
-   PM2 changes. A nonzero result aborts promotion. Irreversible migrations
-   remain blocked without their explicit governed review and recovery proof.
-4. **Rollback restores the predecessor runtime.** If PM2 identity, loopback
-   health, authenticated staging smoke, or the 60-second production soak
-   fails, atomically restore `current`, recreate the exact predecessor
-   processes, and verify health. Candidate and recovery health waits are bounded, and
-   recovery duration is recorded against the 120-second objective.
-5. **Promotion is a durable user transaction.** Persist predecessor and
-   candidate identity before `current` or PM2 mutation, then run through
-   `systemd-run --user` with lingering enabled. A Mac or SSH disconnect must
-   not interrupt the server phase. The transaction journal records start,
-   completion, health, rollback, and recovery-duration evidence.
-6. **Runtime bytes are verified.** Use the existing user-owned
-   `/home/dominguez/telegram-hub-bot{,-staging}` layouts. Verify the pristine
-   bundle before copying, reject unsafe archive members, hash the expanded
-   dependency tree, and verify that receipt before candidate code runs.
-7. **The soak is evidence, not downtime.** Preserve the exact 60-second
-   production stability soak. Record service unavailability separately from
-   total cutover duration so the soak is never shortened for a headline.
-8. **Advisory work stays outside release.** Manual Sonar analysis and release
-   use the same user-owned remote mutex and cannot overlap. Sonar does not gate
-   CI, staging, or production and never starts tests.
-9. **Legacy release machinery stays retired.** Do not restore repository-sync
-   deploy wrappers, signed manifest/staging workflows, root promotion/recovery
-   control, KVM fault drills, `/srv/nexus-release` activation, duplicate state
-   stores, or AWS release dependencies. Git history is their recovery source.
+1. **Deploy only verified OCI identities.** Hosted release publication builds
+   the backend/content-engine images and a signed payload from successful
+   protected-main CI. The VPS poller deploys only immutable digests bound by that
+   signature; CI has no registry credential or deploy path.
+2. **Serialize the root transaction.** The systemd poller holds the kernel
+   release lock and the shared root maintenance mutex before it reads or mutates
+   deployment state. Receipt and state writes are durable and fail closed.
+3. **Rehearse the exact topology.** Staging runs the signed migration inventory,
+   exact Compose bytes, and exact image pair before production is eligible.
+4. **Back up before production mutation.** The root-owned local backup service
+   publishes a fresh descriptor-verified encrypted artifact. Its exact evidence
+   is persisted and reverified immediately before write-ahead state; a missing or
+   changed artifact stops before migration.
+5. **Write ahead before migration or switch.** `production_observing` is durable
+   before the production migrator and Compose switch. A crash in that window
+   recovers from the persisted backup and predecessor identities, never from a
+   moving tag or mutable backup pointer.
+6. **Rollback restores the predecessor image pair.** Failed production health or
+   the fixed 60-second observation restores the predecessor's own signed payload,
+   Compose topology, and backend/content-engine digests. Recovery duration is
+   recorded against the 120-second objective. Database-integrity failure does not
+   swap images because an older runtime cannot repair corrupt data.
+7. **Contract/destructive migrations remain blocked.** They require an
+   owner-approved drain, rehearsal, database checkpoint/restore, and exact
+   authorization contract that is intentionally not inferred by the unattended
+   poller.
+8. **PM2 is a bootstrap fallback, not the default.** The owner-approved path in
+   `docs/release/README.md` exists only for first-cutover recovery and is removed
+   after 14 stable days. Do not extend it or restore retired release machinery.
 
 ## 9. Incident runbook (must)
 
@@ -240,19 +238,27 @@ When production is degraded:
 1. **Open `/admin#alerts`** to read the active alert state.
 2. **Inspect authenticated `/health/detailed`** to identify which dependency
    degraded, and probe the content engine's `/health` independently.
-3. **`pm2 logs nexus-hub --lines 200`** for raw stack traces if the
-   alert payload is sanitized too aggressively.
-4. **`pm2 logs content-engine --lines 200`** if the independent Python process
-   is the suspect.
-5. **Use exact release evidence first.** Run `npm run release:status` and
-   inspect the compact checksum manifest, transaction journal, current release,
-   and backup identity. A failed candidate transaction restores its recorded
-   predecessor automatically; if that recovery failed, stop and repair service
-   health before submitting another owner-authorized user transaction.
-6. **Update `docs/release/CURRENT_RELEASE_STATE.md`** with the incident
-   timeline within 24 h.
+3. **Inspect the root poller journal and exact release evidence.** Use
+   `journalctl -u nexus-release-poller.service` and the root-host commands in
+   `ops/nexus-release/README.md`; do not infer release identity from a container
+   tag or a checked-in projection.
+4. **Read authoritative state before taking action.** `release:cd:ack -- --show`
+   exposes the root blocked, active, and predecessor state. The addressed root
+   receipt under `/var/lib/nexus-release/receipts/` remains authoritative;
+   `release:cd:state` revalidates recent immutable receipts while emitting only a
+   generated, non-authoritative human projection.
+5. **Let the locked poller perform supported crash recovery.** An
+   `unprovable_active_release` must not be acknowledged away. Start the poller or
+   invoke its flocked wrapper so it can verify the interrupted payload, backup,
+   database integrity, and predecessor before recovery. Missing proof remains a
+   hard stop for operator intervention; database bytes are never restored
+   automatically.
+6. **Inspect container logs only after binding them to the verified running
+   digests.** PM2 logs are relevant solely when the documented first-cutover
+   fallback is actually active during its 14-stable-day window.
 7. **Record durable follow-up in the canonical project tracker** for every
-   defect surfaced; do not create a one-off Markdown incident handoff.
+   defect surfaced; do not create a one-off Markdown incident handoff or treat
+   `CURRENT_RELEASE_STATE.md` as incident evidence.
 
 ## 10. Provider/model fallback safety (must)
 
@@ -279,7 +285,9 @@ When production is degraded:
    schemas, and enters the same path/symlink sandbox, deterministic validators,
    and run persistence as offline-local evaluation. A generic domain completion
    is never cast into a script-generation result.
-   Before the first small-only staging boot, inspect both environment values
+   The environment-mutation and PM2 staging procedure that follows is retained
+   only for the owner-authorized first-cutover fallback during the initial 14
+   stable days. Before that fallback's first small-only staging boot, inspect both environment values
    and persisted model overrides: set `OLLAMA_MODEL`,
    `OLLAMA_CLASSIFIER_MODEL`, `CHAT_CORE_V2_LOCAL_CHAT_MODEL`, and the recipe
    model to the retained 3B tag; set `CHAT_CORE_V2_LOCAL_CHAT_FAST_MODEL=off`;
@@ -295,19 +303,23 @@ When production is degraded:
 6. **Ollama has a hard host envelope.** Bind loopback-only with one loaded
    model, one parallel request, queue depth four, 4096 context, 2 CPU quota,
    `MemoryHigh=4G`, `MemoryMax=6G`, and exactly 512 MiB swap. The old staged
-   observation, cleanup, and zero-swap chain is retired. After one exact
-   release has passed both staging and production, run the root-installed
+   observation, cleanup, and zero-swap chain is retired. The finalizer procedure
+   below is PM2 first-cutover fallback only and must be completed before the
+   container bootstrap; there is no supported post-bootstrap container
+   maintenance transaction for this mutation. After one exact fallback release
+   has passed both staging and production, run the root-installed
    `nexus-ollama-lean-finalize.mjs` command first in dry-run mode. Apply
    requires the exact printed plan digest plus explicit owner authorization.
-   The command holds both the user release mutex and root Sonar lock, refuses
-   active Sonar Compute Engine work, and binds the same passing lean release
-   SHA and artifact digest across both transaction states, current symlinks,
-   and all four PM2 processes. It accepts only the audited four-tag full-digest
+   The command holds both the user fallback-release mutex and the shared root
+   maintenance mutex (whose `-sonar` filename is historical), and binds the same
+   passing PM2 fallback release SHA and artifact digest across both transaction
+   states, current symlinks, and all four PM2 processes. It accepts only the audited four-tag full-digest
    inventory, refuses a loaded deletion target, and removes only Gemma 2B,
    Qwen 27B, and Qwen 35B after the fixed envelope restarts and the retained
    3B model passes a bounded inference smoke. Restart or smoke failure restores
    the exact predecessor drop-in. A root-only receipt records before/after
-   release, PM2, Sonar, envelope, model, and rollback evidence.
+   release, PM2, envelope, model, and rollback evidence; no Sonar state is read
+   or carried.
    The envelope installer accepts only an owner-digest-verified
    Git archive whose PAX commit equals the SHA-named root bootstrap, restores
    all replaced operational assets and the exact prior service state on
@@ -322,8 +334,8 @@ When production is degraded:
    override receives only a one-use restart authorization bound to the
    transaction, candidate digest, current boot, and live rollback-helper PID;
    reboot or replay remains blocked.
-   The fixed envelope and finalizer must be installed before the small-only
-   release. Sonar remains advisory and uses the same release mutex.
+   The fixed envelope and finalizer must be installed before that cutover-era
+   small-only PM2 release. They are not a continuous-deployment gate.
 7. **Captured coach evaluations are local-only by default.** A cloud comparison
    requires an explicit cloud mode plus the per-run
    `--operator-authorize-private-cloud` acknowledgement. The script classifies
@@ -343,22 +355,22 @@ When production is degraded:
 
 ## 12. Postdeploy monitoring (must)
 
-After every production promote, within 1 h:
+After every production deployment, within 1 h:
 
 - [ ] Node `/health` returns 200 and reports healthy SQLite state.
 - [ ] Authenticated `/api/snapshot` returns the new package version.
 - [ ] Content-engine `/health` returns 200 independently.
-- [ ] PM2 `nexus-hub` is online and uptime ≥ 5 min.
-- [ ] PM2 `content-engine` is online and uptime ≥ 5 min.
+- [ ] Backend and content-engine containers run the manifest-pinned digests.
+- [ ] The immutable release receipt records `completed`, or the exact recovery
+      outcome and predecessor identity.
 - [ ] No new error-monitor alerts opened in the last 30 min.
 - [ ] No new tenant-scope alerts opened.
 - [ ] No new degraded-response alerts at unusual rate.
 - [ ] Status portal `/portal/health` is accessible.
 
-The exact promotion command enforces immediate loopback/public readiness and
-automatic rollback. No additional Ollama observation window delays customer
-availability; the separately authorized finalizer records its root-only
-receipt after the production soak.
+The poller enforces immediate loopback/public readiness, the fixed 60-second
+observation, and automatic predecessor rollback. Audit-mirror delivery remains
+non-gating and is reconciled from the immutable local receipt.
 
 ## 13. Data shape and disposability (must)
 
@@ -382,24 +394,26 @@ receipt after the production soak.
 - [ ] No open critical alerts.
 - [ ] No degraded provider state (Garmin, Google, Outlook, OAuth
       providers).
-- [ ] PM2 uptime ≥ 24 h or last restart was a planned deploy.
+- [ ] Backend and content-engine containers are healthy; any restart is explained.
 - [ ] Latest encrypted SQLite recovery point is no more than one hour old.
 
-### Weekly (Sunday 06:00 UTC, automated via
-`weekly-housekeeping.yml`)
+### Weekly (Sunday 06:00 UTC)
 
-- [ ] Smoke-evidence pruned (60-day retention).
-- [ ] Generated project map and current release-state consistency checked.
-- [ ] `npm run docs:audit` total recorded.
+- [ ] Generated project map freshness checked automatically by
+      `weekly-housekeeping.yml`.
+- [ ] `npm run docs:audit` checked automatically by
+      `weekly-housekeeping.yml`.
+- [ ] If legacy local smoke evidence is still retained, review the dry-run from
+      `scripts/smoke-evidence-prune.sh`; no scheduled destructive invocation is
+      currently authorized.
 
 ### Per-deploy
 
 - [ ] Required staging smoke suite green; check count is release-dependent.
 - [ ] Production health-check green.
-- [ ] PM2 nexus-hub + content-engine online.
-- [ ] Smoke, installed-tree, PM2-identity, staging-attestation, and production
-      evidence written under `.local/release/` or CI artifacts.
-- [ ] `docs/release/CURRENT_RELEASE_STATE.md` updated.
+- [ ] Backend and content-engine run the signed manifest digests.
+- [ ] Exact backup evidence and immutable terminal receipt are present.
+- [ ] Audit-mirror acknowledgement exists or a durable retry obligation remains.
 
 ### Per-incident
 
@@ -425,7 +439,7 @@ receipt after the production soak.
 ## 16. PR checklist (runtime/ops changes)
 
 - [ ] No new env-key without a default in `src/config.ts` AND a runbook
-      entry in `docs/release/README.md`.
+      entry in `ops/nexus-release/README.md` or the owning canonical runbook.
 - [ ] Health-check change has a corresponding `/health` or `/health/detailed`
       assertion.
 - [ ] New alert source has a runbook entry and a dedupe strategy.

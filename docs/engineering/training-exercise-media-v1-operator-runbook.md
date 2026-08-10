@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: Training media release owner (Felipe)
-Last verified: 2026-07-13
+Last verified: 2026-08-09
 Update policy: update when authored-content, package materialization, approval,
 staging activation, or production-validation contracts change.
 
@@ -202,7 +202,22 @@ Any failure is a stop condition. In particular, the Phase 0 owner statement is
 not a substitute for the separate final approval bound to the compiled package
 hash.
 
-## 5. Staging deploy, activation, and scoped smoke
+## 5. Execution-status boundary
+
+The `release:prepare` / `release:promote` procedure below targets the retained
+PM2 release tree and is available only as the owner-authorized first-cutover
+fallback during the initial 14 stable days. It is not a supported transaction
+for the default container deployment path.
+
+No supported post-bootstrap container transaction currently seeds or activates
+Training Exercise Media metadata. That path remains blocked until the owner
+approves a design that binds exact release authorization, writer drain,
+database and runtime identity, mutual exclusion, and recovery evidence. Do not
+run the seed tool directly inside a production container, mount the production
+database into an ad hoc container, or adapt the fallback procedure to bypass
+that boundary.
+
+## 6. PM2 first-cutover fallback: staging activation and scoped smoke
 
 Keep the global feature flag off. Follow the normal release identity and risk
 gates, deploy the exact reviewed source to staging, then seed and activate the
@@ -259,7 +274,7 @@ Restart staging and use an authenticated owner-device session to verify:
   recorded checksum, and retain immutable cache/security headers;
 - takedown/unavailable behavior never falls back to superseded media.
 
-## 6. Production validation, two-step seed, and promotion boundary
+## 7. PM2 first-cutover fallback: production validation and promotion
 
 Before production promotion, run the standard staging smoke and dry-run while
 the production flag remains off:

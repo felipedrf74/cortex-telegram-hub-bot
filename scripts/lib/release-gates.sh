@@ -40,6 +40,32 @@ release_require_clean_tree() {
   }
 }
 
+release_reassert_exact_protected_main() {
+  local root="$1"
+  local expected_sha="$2"
+  local checked_out_sha protected_main_sha
+  [[ "$expected_sha" =~ ^[0-9a-f]{40}$ ]] || {
+    echo "release target SHA is invalid at the transaction boundary" >&2
+    return 64
+  }
+  release_require_git_worktree "$root" || return 1
+  release_require_clean_tree "$root" >/dev/null || {
+    echo "release transaction requires a clean exact protected-main checkout" >&2
+    return 1
+  }
+  checked_out_sha="$(git -C "$root" rev-parse HEAD)" || return 1
+  [ "$checked_out_sha" = "$expected_sha" ] || {
+    echo "checked-out release target changed before transaction dispatch" >&2
+    return 1
+  }
+  git -C "$root" fetch --quiet --no-tags origin main || return 1
+  protected_main_sha="$(git -C "$root" rev-parse origin/main)" || return 1
+  [ "$protected_main_sha" = "$expected_sha" ] || {
+    echo "release target is no longer the exact current protected origin/main SHA" >&2
+    return 1
+  }
+}
+
 release_require_tracked_clean_file() {
   local root="$1"
   local relative="$2"

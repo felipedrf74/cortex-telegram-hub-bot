@@ -1,5 +1,5 @@
 {
-  "schema": "nexus.production-migration-lineages.v1",
+  "schema": "nexus.production-migration-lineages.v3",
   "lineages": [
     {
       "id": "production-2026-05-branch-history",
@@ -196,6 +196,130 @@
           }
         }
       ]
+    },
+    {
+      "id": "staging-2026-08-notification-renumber-history",
+      "reason": "retain_verified_staging_notification_history_without_replaying_renumbered_sql",
+      "migrations": [
+        {
+          "file": "228_notification_correctness_phase0.sql",
+          "sha256": "30012e303f7eac0d2dcd5d6890617123856d34ba79d4adb09aaea751c0c6fd19",
+          "sourceCommit": "06f1bad6927171013301aa82e05bde61e2b88a36",
+          "replacement": {
+            "file": "268_notification_correctness_phase0.sql",
+            "sha256": "a8523f4d7ea3a94f21fee053b59651488b263fad764bd4fb7a029f021b3cb5ed",
+            "relationship": "comment_only_renumber"
+          }
+        },
+        {
+          "file": "229_notification_marketing_consent.sql",
+          "sha256": "cbefdd8c4fa204cebd971f25707816183a7424e5d2f4bdc07d3ae1e5dda9940d",
+          "sourceCommit": "2c222519273f94629f041af900907aad5aec0603",
+          "replacement": {
+            "file": "269_notification_marketing_consent.sql",
+            "sha256": "f64f98553639834b8e3693f8a1014c6d75d086c604d3d4cddd120eba7f8121a7",
+            "relationship": "comment_only_renumber"
+          }
+        },
+        {
+          "file": "230_notification_priority_shadow.sql",
+          "sha256": "070dd9c6138408ed53580662c5c00dcfdf91830685bd6c6b040930b6e52a5d00",
+          "sourceCommit": "2c222519273f94629f041af900907aad5aec0603",
+          "replacement": {
+            "file": "270_notification_priority_shadow.sql",
+            "sha256": "b3704ff785a3b8db9b1adeb40295d1e98412d122c1b96fe9e1b01c7b811ca38e",
+            "relationship": "comment_only_renumber"
+          }
+        },
+        {
+          "file": "231_notification_device_context.sql",
+          "sha256": "d537cd7f5816276d21f40dd3bed4ad61745b7625252bd2da171b87f854263731",
+          "sourceCommit": "3861093e5ca6252d04b179865dd3d1709f741207",
+          "replacement": {
+            "file": "271_notification_device_context.sql",
+            "sha256": "fe40102702cc6ee0249503c3082fecd5027d99d3eeab6e0b92347252b81f830d",
+            "relationship": "comment_only_renumber"
+          }
+        }
+      ]
     }
-  ]
+  ],
+  "release": {
+    "environmentLineages": {
+      "production": [
+        "production-2026-05-branch-history"
+      ],
+      "staging": [
+        "production-2026-05-branch-history",
+        "staging-2026-08-notification-renumber-history"
+      ]
+    },
+    "compatibilityExemptions": [
+      {
+        "id": "release-schema-convergence-283",
+        "file": "283_release_schema_convergence.sql",
+        "sha256": "0bba559437983ed7e2f5540e18ba66a0248c1a34282b30015954ace6e29cbd32",
+        "genericKind": "contract",
+        "effectiveKind": "expand",
+        "reason": "remove_obsolete_global_unique_indexes_after_tenant_safe_composite_replacement",
+        "allowedDropIndexes": [
+          {
+            "name": "idx_ref_channels_url",
+            "tableName": "content_ref_channels",
+            "columns": ["channel_url"],
+            "unique": true,
+            "allowAbsent": true,
+            "replacement": {
+              "name": "idx_content_ref_channels_user_url",
+              "tableName": "content_ref_channels",
+              "columns": ["user_id", "channel_url"],
+              "unique": true
+            }
+          },
+          {
+            "name": "idx_transcript_video",
+            "tableName": "video_transcripts",
+            "columns": ["video_id"],
+            "unique": true,
+            "allowAbsent": true,
+            "replacement": {
+              "name": "idx_video_transcripts_user_video",
+              "tableName": "video_transcripts",
+              "columns": ["user_id", "video_id"],
+              "unique": true
+            }
+          },
+          {
+            "name": "idx_vendor_sender",
+            "tableName": "invoice_vendors",
+            "columns": ["sender_pattern"],
+            "unique": true,
+            "allowAbsent": true,
+            "replacement": {
+              "name": "idx_invoice_vendors_user_sender",
+              "tableName": "invoice_vendors",
+              "columns": ["user_id", "sender_pattern"],
+              "unique": true
+            }
+          }
+        ]
+      }
+    ],
+    "semanticSchemaExclusions": [
+      {
+        "environment": "staging",
+        "type": "index",
+        "name": "idx_staging_fixture_calendar_user_time",
+        "tableName": "staging_fixture_calendar_events",
+        "preserveData": false
+      },
+      {
+        "environment": "staging",
+        "type": "table",
+        "name": "staging_fixture_calendar_events",
+        "tableName": "staging_fixture_calendar_events",
+        "preserveData": true
+      }
+    ]
+  }
 }

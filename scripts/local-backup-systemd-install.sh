@@ -56,8 +56,7 @@ visudo -cf "$SOURCE_ROOT/ops/local-backup/nexus-local-backup.sudoers" >/dev/null
 install -d -o root -g root -m 0700 \
   /etc/nexus-local-backup \
   /srv/nexus-backups \
-  /srv/nexus-backups/application \
-  /srv/nexus-backups/sonarqube
+  /srv/nexus-backups/application
 install -D -o root -g root -m 0755 \
   "$SOURCE_ROOT/scripts/local-backup.py" \
   /usr/local/libexec/nexus-local-backup/local-backup.py

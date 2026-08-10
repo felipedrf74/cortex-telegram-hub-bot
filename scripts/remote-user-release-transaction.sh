@@ -17,12 +17,11 @@ EXPECTED_PREDECESSOR_DIGEST="${9:-}"
 TRANSFER_ROOT=/home/dominguez/.local/share/nexus-release
 STATE_ROOT=/home/dominguez/.local/state/nexus-release
 LOCK_FILE="$STATE_ROOT/.release.lock"
-ROOT_SONAR_LOCK=/run/lock/nexus-release-sonar.lock
+MAINTENANCE_LOCK=/run/lock/nexus-release-sonar.lock
 PM2_BIN="${NEXUS_RELEASE_PM2_BIN:-/usr/local/bin/pm2}"
 NODE_BIN="${NEXUS_RELEASE_NODE_BIN:-/usr/bin/node}"
 PYTHON_BIN="${NEXUS_RELEASE_PYTHON_BIN:-/usr/bin/python3.12}"
 TIMEOUT_BIN="${NEXUS_RELEASE_TIMEOUT_BIN:-/usr/bin/timeout}"
-SONAR_RELEASE_STATE_BIN=/usr/local/sbin/quality-sonar-release-state
 FAULT_INJECTION="${NEXUS_RELEASE_FAULT_AFTER_SWITCH:-}"
 CANDIDATE_HEALTH_BUDGET_SECONDS=45
 ROLLBACK_HEALTH_BUDGET_SECONDS=45
@@ -31,6 +30,21 @@ ROLLBACK_OBJECTIVE_SECONDS=120
 die() {
   echo "lean release transaction: $*" >&2
   exit 1
+}
+
+assert_safe_maintenance_lock() {
+  [ -f "$MAINTENANCE_LOCK" ] && [ ! -L "$MAINTENANCE_LOCK" ] \
+    || die "shared maintenance mutex is missing or unsafe"
+  [ "$(stat -c '%U:%G:%a' -- "$MAINTENANCE_LOCK")" = 'root:dominguez:660' ] \
+    || die "shared maintenance mutex owner or mode is unsafe"
+}
+
+assert_lock_fd_matches_path() {
+  local descriptor="$1"
+  local lock_path="$2"
+  [ "$(stat -Lc '%d:%i' -- "/proc/$$/fd/$descriptor")" \
+      = "$(stat -Lc '%d:%i' -- "$lock_path")" ] \
+    || die "shared maintenance mutex changed identity while it was acquired"
 }
 
 assert_no_unresolved_chat_capability_transaction() {
@@ -551,8 +565,6 @@ esac
 [ -x "$NODE_BIN" ] || die "Node is unavailable at $NODE_BIN"
 [ -x "$PYTHON_BIN" ] || die "Python is unavailable at $PYTHON_BIN"
 [ -x "$TIMEOUT_BIN" ] || die "timeout is unavailable at $TIMEOUT_BIN"
-[ -x "$SONAR_RELEASE_STATE_BIN" ] \
-  || die "Sonar release-state monitor is unavailable at $SONAR_RELEASE_STATE_BIN"
 [ -d "$SOURCE_BUNDLE" ] && [ ! -L "$SOURCE_BUNDLE" ] || die "source bundle is unavailable"
 
 RELEASE_NAME="${RUNTIME_SHA}-${ARTIFACT_DIGEST:0:12}"
@@ -594,12 +606,14 @@ done
 touch "$LOCK_FILE"
 chmod 600 "$LOCK_FILE"
 exec 9<>"$LOCK_FILE"
-flock -n 9 || die "another staging, production, or Sonar-sensitive release action is active"
-[ -f "$ROOT_SONAR_LOCK" ] && [ ! -L "$ROOT_SONAR_LOCK" ] \
-  && [ "$(stat -c '%U:%G:%a' "$ROOT_SONAR_LOCK")" = root:dominguez:660 ] \
-  || die "shared root release/Sonar lock is missing or unsafe"
-exec 8<>"$ROOT_SONAR_LOCK"
-flock -n 8 || die "a Sonar backup, restore, or root maintenance action is active"
+flock -n 9 || die "another staging or production release action is active"
+assert_safe_maintenance_lock
+exec 8<>"$MAINTENANCE_LOCK"
+assert_safe_maintenance_lock
+assert_lock_fd_matches_path 8 "$MAINTENANCE_LOCK"
+flock -n 8 || die "another root maintenance or container release action is active"
+assert_safe_maintenance_lock
+assert_lock_fd_matches_path 8 "$MAINTENANCE_LOCK"
 
 # The chat capability operator holds the same user release lock while it
 # mutates .env. A surviving preimage means that transaction was interrupted;
@@ -616,24 +630,6 @@ if [ "$ROLE" = production ]; then
   assert_no_unpublished_staging_chat_capability_observation
   assert_release_candidate_chat_capabilities_off /home/dominguez/telegram-hub-bot-staging/.env
 fi
-
-# The shared user lock prevents a new advisory scan from starting. Check the
-# server-side CE queue while holding it as well, so a scan whose client exited
-# after submission cannot overlap artifact extraction, staging, or promotion.
-SONAR_RELEASE_STATE="$(
-  sudo -n "$SONAR_RELEASE_STATE_BIN" --project nexus-hub-backend --json
-)" || die "Sonar Compute Engine state is unavailable"
-"$NODE_BIN" - "$SONAR_RELEASE_STATE" <<'NODE' \
-  || die "Sonar Compute Engine is processing an advisory scan"
-const value = JSON.parse(process.argv[2]);
-if (value?.schema !== 'nexus.sonarqube-release-state.v1'
-    || value.status !== 'passed'
-    || value.projectKey !== 'nexus-hub-backend'
-    || value.activeTasks !== 0) {
-  process.exit(1);
-}
-NODE
-unset SONAR_RELEASE_STATE
 
 write_state() {
   local phase="$1"

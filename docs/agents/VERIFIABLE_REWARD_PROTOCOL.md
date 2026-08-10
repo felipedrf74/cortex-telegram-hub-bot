@@ -1,14 +1,13 @@
-# Backend Verifiable Reward Protocol Companion
+# Backend Verifiable Reward Protocol
 
 Status: canonical
 Owner: backend architecture lead (Felipe)
-Last verified: 2026-06-16
+Last verified: 2026-08-10
 Update policy: update when backend-local reward commands, schema, hooks,
-or export behavior change. The workspace canonical policy is
-`/Users/felipedominguez/Desktop/Nexus Hub/docs/agent/VERIFIABLE_REWARD_PROTOCOL.md`.
+or export behavior change.
 
-This backend companion documents how the Nexus Verifiable Reward Loop is run
-inside the backend repo. It does not replace the workspace canonical policy.
+This is the canonical policy for running the Nexus Verifiable Reward Loop
+inside the backend repository.
 
 ## Scope
 
@@ -40,8 +39,9 @@ With an ignored local deliverable summary:
 node scripts/reward-check.mjs --area auto --handoff .local/reward-handoff.md --advisory
 ```
 
-Enforced release mode validates the compact checksum manifest and completed
-staging transaction:
+The retained enforced invocation below validates the PM2 fallback's compact
+checksum manifest and completed staging transaction. It is fallback-only and
+must not be presented as validation of the signed container path:
 
 ```bash
 node scripts/reward-check.mjs --area release --enforce \
@@ -49,6 +49,11 @@ node scripts/reward-check.mjs --area release --enforce \
   --staging-attestation .local/release/transactions/staging-<sha>-<digest>.json \
   --require-staging
 ```
+
+Current container evidence is the signed OCI payload plus authoritative
+root-host state and immutable receipts. Until the local reward checker has an
+exact receipt adapter, use advisory mode and report the live portion as
+`MANUAL_REQUIRED`; never feed the old checksum shape to manufacture a pass.
 
 ## Existing signals to reuse
 
@@ -61,9 +66,11 @@ duplicating their logic:
 - `npm run docs:audit`
 - `npm run verify` or focused evidence named by the handoff
 - `scripts/verify-deliverable.mjs`
-- checksum manifest identity, staging smoke, production health, and
-  rollback drill evidence when area is `release`
-- iOS build/test evidence when backend work is paired with an iOS surface
+- signed OCI release-payload identity plus validated root-host state, immutable
+  receipts, staging, production observation, and recovery evidence when area is
+  `release`
+- iOS build/test evidence on the iOS distribution cadence when an iOS surface
+  is in scope; it is not a backend deployment gate
 
 ## Verdict priority
 

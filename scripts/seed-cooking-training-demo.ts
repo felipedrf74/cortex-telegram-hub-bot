@@ -5,7 +5,8 @@ dotenv.config();
 
 import { DateTime } from 'luxon';
 import { config } from '../src/config';
-import { initDatabase, getDb, closeDatabase } from '../src/services/database';
+import { getDb, closeDatabase } from '../src/services/database';
+import { initDatabase } from '../src/services/database-bootstrap';
 import { getUserById } from '../src/services/user-service';
 import { addRecipe, generateShoppingList, setMealPlan } from '../src/services/cooking-chef';
 import { createPlan, createSession, createWeek } from '../src/services/training-plans';

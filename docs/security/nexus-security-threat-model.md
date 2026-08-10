@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: Felipe Dominguez
-Last verified: 2026-07-27
+Last verified: 2026-08-09
 Update policy: update when a deployed surface, identity boundary, provider
 integration, or release/deploy path changes.
 
@@ -10,8 +10,10 @@ integration, or release/deploy path changes.
 
 This threat model covers the deployed Nexus Hub system: Node/Express iOS API,
 Telegram bot, portal/admin routes, SQLite persistence, Python/FastAPI content
-engine, iOS SwiftUI app, provider integrations, Cloudflare Tunnel ingress, PM2
-runtime, CI/CD, backups, observability, and incident response.
+engine, iOS SwiftUI app, provider integrations, Cloudflare Tunnel ingress, the
+digest-pinned container pair and root release poller, CI/CD, backups,
+observability, and incident response. PM2 is retained only as the manual first-
+cutover fallback for 14 stable days.
 
 ## Primary Assets
 
@@ -21,10 +23,11 @@ runtime, CI/CD, backups, observability, and incident response.
   Stripe, Apple IAP, Resend, Telegram, OpenAI, Anthropic, Google GenAI.
 - Session material: iOS access/refresh tokens, device rows, OAuth states,
   portal/operator tokens, webhook secrets, JWT signing keys.
-- Operational authority: production deploy access, PM2 process control,
-  Cloudflare tunnel/API tokens, GitHub Actions, user-owned release transaction
-  state, the root-owned local-backup identity/configuration, backups, logs, and
-  Sentry.
+- Operational authority: the root systemd release poller, Docker Engine, pinned
+  release verification key, hosted release-workflow signing and registry
+  credentials, Cloudflare tunnel/API tokens, authoritative root-owned release
+  state and immutable receipts, local-backup identity/configuration, backups,
+  logs, Sentry, and first-cutover-only PM2 fallback control.
 - Trust signals: audit trail, provider sync truth, model/tool verification
   status, release evidence, incident evidence.
 
@@ -37,15 +40,21 @@ runtime, CI/CD, backups, observability, and incident response.
 - Node backend to Python content engine on loopback.
 - Node backend to external providers and model APIs.
 - Backend services to SQLite and filesystem-backed provider/session stores.
-- GitHub Actions to build/test/deploy credentials.
-- Production runtime to logs, Sentry, backups, and operator alert channels.
-- The Mac release coordinator to the user-owned ServerDominguez promotion
-  transaction. A dropped SSH session must not weaken approval or recovery.
-- Docker Engine to the advisory SonarQube/PostgreSQL containers. Docker is
-  root-equivalent host authority even though Sonar binds only to loopback.
-- The production database and Sonar PostgreSQL volumes to root-owned encrypted
-  backup storage on the same ServerDominguez disk. This is an isolation and
-  corruption boundary, not a host-loss boundary.
+- Pull-request code and workflow definitions to the protected-main CI runner,
+  which has test authority only: no registry credential, Docker, or deploy path.
+- The hosted release workflow to GHCR and the release-manifest signing key. It
+  publishes immutable application images plus a signed release-payload image;
+  it does not deploy or rerun the protected-main tests.
+- The root VPS poller to the signed release payload, root-owned policy and key,
+  Docker Engine, release locks, state, receipts, and operator alert channels.
+  Docker remains root-equivalent host authority even when application ports are
+  bound only to loopback.
+- The application containers and one-shot migrator to host-mounted SQLite data.
+- The production database to root-owned encrypted backup storage on the same
+  ServerDominguez disk. This is an isolation and corruption boundary, not a
+  host-loss boundary.
+- The first-cutover container database to the recorded PM2 database and runtime
+  fallback. That boundary exists only during the 14-stable-day fallback window.
 
 ## Attacker-Controlled Inputs
 
@@ -54,10 +63,13 @@ runtime, CI/CD, backups, observability, and incident response.
 - Provider-returned text and error payloads, calendar/event/task fields,
   transcripts, competitor examples, scraped web pages, URLs, redirects.
 - iOS deep links, APNs payload fields, local UserDefaults values, fixture flags.
-- CI inputs from pull requests, workflow files, package manifests, migrations.
-- Promotion transaction requests, Sonar scanner inputs, local encrypted backup
-  archives/checksums, rollback archives, and restore-verification output. Each
-  is untrusted until exact identity, ownership, digest, and path checks pass.
+- CI inputs from pull requests, workflow files, package manifests, migrations,
+  and migration-classifier policy.
+- Moving image tags, signed release-payload and Compose bytes, OCI digests,
+  migration verdicts, root state/receipts, local encrypted backup artifacts,
+  predecessor identities, and restore-verification output. Each is untrusted
+  until its exact signature, identity, ownership, digest, topology, and path
+  checks pass.
 
 ## Security Invariants
 
@@ -76,24 +88,33 @@ runtime, CI/CD, backups, observability, and incident response.
   stale caches before rendering user data.
 - Backups and audit evidence preserve incident accountability while minimizing
   access to sensitive user data.
-- Production promotion requires an exact protected-main SHA/digest
-  confirmation and explicit owner environment flag. Mode-0600 user-owned
-  transaction state records the predecessor before mutation; the only
-  privileged release action is the fixed root-owned pre-promotion backup unit.
-  The mandatory 60-second soak and <=120-second automatic rollback target
-  cannot be weakened by request input.
-- Advisory SonarQube cannot block or overlap a release on the shared host, has
-  no public listener or host PostgreSQL port, and becomes a required gate only
-  after moving off production.
-- Sonar persistent state uses the existing private Docker named volumes; startup
-  rejects stale/different-boot capacity evidence, incomplete firewall/routing
-  snapshots, host pressure, or an unbound small-model soak/cleanup result. A
-  dedicated project-scoped monitor helper reveals only the active-task count.
+- Only a release payload whose Ed25519 signature binds the governed repository,
+  protected-main ref, workflow/run identity, source SHA, image digests, Compose
+  digest, migration-verdict digest, timestamp, and pinned key id can acquire
+  production authority. Moving tags provide discovery only.
+- The protected-main CI runner has no registry or deploy credential. The hosted
+  release workflow receives signing authority only after independently
+  recomputing the full-push migration verdict and matching CI.
+- Root write-ahead state records the candidate, exact pre-migration backup, and
+  outgoing predecessor before migration. Backup must precede migration; a
+  failure keeps the predecessor serving. Crash recovery reopens those exact
+  artifacts rather than consulting a mutable backup pointer.
+- A release must pass staging, the production migrator, health/smoke checks, and
+  60 seconds of observation. A reversible failure restores the recorded
+  predecessor image pair within the 120-second objective; database corruption
+  hard-stops for operator recovery instead of discarding post-migration writes.
+- Unattended deployment accepts only predecessor-compatible expand/backfill
+  migrations. Contract, destructive, or unknown migrations remain blocked. The
+  required owner-authorized container maintenance executor is not implemented;
+  its exact-release authorization, quiescence, snapshot, and database-plus-
+  runtime recovery design remains owner-gated.
+- Docker is root-equivalent. Root-owned policy, release state, receipts, keys,
+  locks, and encrypted backup material stay outside the containers; application
+  ports remain loopback-bound behind Cloudflare ingress.
 - Application recovery points are SQLite-consistent, encrypted with `age`,
-  checksum-bound, retained locally as 24 hourly, 30 daily, and four weekly
-  copies, and restored only into a private scratch path during weekly
-  verification. Sonar PostgreSQL keeps seven local daily dumps and verifies
-  restore separately.
+  descriptor- and checksum-bound, retained locally as 24 hourly, 30 daily, and
+  four weekly copies, and restored only into a private scratch path during
+  verification.
 - No AWS or off-host backup service is a runtime or release dependency.
   Same-disk recovery is explicitly accepted for the current project size: it
   protects against bad releases, operator error, and database corruption, but
@@ -111,9 +132,9 @@ runtime, CI/CD, backups, observability, and incident response.
 | P1 | Mobile local data exposure | iOS local data exposure through iCloud-synced secrets, stale user cache after account switch, debug auth token in release. |
 | P2 | Observability/privacy leak | Sentry/logs include emails, health, finance, calendar text, raw model output, provider errors. |
 | P2 | Infra exposure | VPS exposure through API/staging ports reachable directly, SMB/RDP/SSH broad exposure, backups world/group-readable. |
-| P1 | Release authority or recovery bypass | Operator state or exact identity is tampered, a disconnect interrupts a non-systemd phase, rollback readiness is missing, or soak/recovery deadlines are bypassed. |
+| P1 | Release authority or recovery bypass | Signature, manifest, policy, root state, receipt, backup, or predecessor identity is tampered; write-ahead or rollback readiness is missing; or soak/recovery deadlines are bypassed. |
 | P1 | Backup recovery failure | Stale/missing local point, unreadable `age` identity, checksum drift, hostile rollback archive, a restore that touches production paths, or total host/NVMe loss under the accepted same-disk residual risk. |
-| P2 | Advisory tooling impacts production | Sonar/Docker listener exposure, container escape/root socket access, Compute Engine overlap, resource pressure, or unreviewed automatic image upgrade. |
+| P2 | Container control-plane exposure | Docker listener/socket exposure, container escape or root-policy/key access, direct application-port exposure, resource pressure, or unreviewed image/runtime change. |
 | P3 | Maturity gaps | Missing tabletop drill, incomplete control matrix, advisory-only supply-chain checks. |
 
 ## Reference Baseline

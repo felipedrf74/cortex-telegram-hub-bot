@@ -79,7 +79,6 @@ const DROP_IN_PATH = '/etc/systemd/system/ollama.service.d/override.conf';
 const LEGACY_ZERO_SWAP_PATH = '/etc/systemd/system/ollama.service.d/zz-nexus-zero-swap.conf';
 const LEGACY_ZERO_SWAP_BYTES = Buffer.from('[Service]\nMemorySwapMax=0\n');
 const OLLAMA_ORIGIN = 'http://127.0.0.1:11434';
-const SONAR_PROJECT = 'nexus-hub-backend';
 const MAX_BYTES = 1024 * 1024;
 const SHA_PATTERN = /^[0-9a-f]{40}$/u;
 const DIGEST_PATTERN = /^[0-9a-f]{64}$/u;
@@ -278,18 +277,15 @@ export function validateOllamaInventory(ollama, phase = 'before') {
   return { inventory, loaded };
 }
 
-function validateSonarState(sonar) {
-  if (sonar?.schema !== 'nexus.sonarqube-release-state.v1'
-      || sonar.status !== 'passed'
-      || sonar.projectKey !== SONAR_PROJECT
-      || sonar.activeTasks !== 0) {
-    fail('SonarQube Compute Engine is active or its state is unavailable');
-  }
-  return {
-    projectKey: SONAR_PROJECT,
-    activeTasks: 0,
-  };
-}
+// SonarQube is decommissioned (ADR-0012): `scripts/quality-sonar-*` and
+// `ops/sonarqube/` are gone, and the Compute Engine coexistence gate it enforced
+// no longer exists. The `sonar` snapshot field is removed with it rather than
+// frozen to a placeholder, so drift detection compares only state this host still
+// has: releases, PM2, Ollama, and the two drop-ins.
+//
+// The shared root maintenance mutex at ROOT_SONAR_LOCK is deliberately retained.
+// Its name is historical; what it serializes is root maintenance transactions
+// against each other, which is unrelated to SonarQube.
 
 function validateDropIn(record, { required, expectedSha256 = null, legacy = false } = {}) {
   if (!record || typeof record !== 'object') fail('Ollama drop-in evidence is missing');
@@ -319,7 +315,6 @@ export function validateFinalizationSnapshot(snapshot, {
 } = {}) {
   const releases = validateReleasePair(snapshot?.releases);
   const pm2 = validatePm2Snapshot(snapshot?.pm2, releases);
-  const sonar = validateSonarState(snapshot?.sonar);
   const ollama = validateOllamaInventory(snapshot?.ollama, inventoryPhase);
   const dropIn = validateDropIn(snapshot?.dropIn, {
     required: true,
@@ -330,7 +325,7 @@ export function validateFinalizationSnapshot(snapshot, {
     legacy: true,
   });
   if (requireLegacyAbsent && legacyZeroSwap.exists) fail('legacy zero-swap drop-in remains installed');
-  return { releases, pm2, sonar, ollama, dropIn, legacyZeroSwap };
+  return { releases, pm2, ollama, dropIn, legacyZeroSwap };
 }
 
 export function buildFinalizationPlan(validated, receiptPaths) {
@@ -343,7 +338,6 @@ export function buildFinalizationPlan(validated, receiptPaths) {
       production: validated.releases.production,
     },
     pm2: validated.pm2,
-    sonar: validated.sonar,
     ollama: {
       inventoryBefore: validated.ollama.inventory,
       deletionTargetsLoaded: validated.ollama.loaded
@@ -403,7 +397,7 @@ export async function executeOllamaFinalization(options, platform) {
   const immediateValidated = validateFinalizationSnapshot(immediateSnapshot);
   const immediatePlan = buildFinalizationPlan(immediateValidated, paths);
   if (immediatePlan.ackPlan !== options.ackPlan) {
-    fail('release, Sonar, model, PM2, or drop-in state changed; run a new dry-run');
+    fail('release, model, PM2, or drop-in state changed; run a new dry-run');
   }
 
   const startedAt = new Date().toISOString();
@@ -416,7 +410,6 @@ export async function executeOllamaFinalization(options, platform) {
     before: {
       releases: immediateValidated.releases,
       pm2: immediateValidated.pm2,
-      sonar: immediateValidated.sonar,
       ollama: immediateValidated.ollama,
       dropIn: immediateValidated.dropIn,
       legacyZeroSwap: immediateValidated.legacyZeroSwap,
@@ -468,7 +461,7 @@ export async function executeOllamaFinalization(options, platform) {
       dropIn: immediateValidated.dropIn,
       legacyZeroSwap: immediateValidated.legacyZeroSwap,
     }, paths).ackPlan !== options.ackPlan) {
-      fail('release, Sonar, PM2, or model state changed before removal');
+      fail('release, PM2, or model state changed before removal');
     }
 
     const removal = await platform.removeModels(OLLAMA_DELETE_MODELS.map(({ tag }) => tag));
@@ -487,7 +480,6 @@ export async function executeOllamaFinalization(options, platform) {
       after: {
         releases: finalValidated.releases,
         pm2: finalValidated.pm2,
-        sonar: finalValidated.sonar,
         ollama: finalValidated.ollama,
         dropIn: finalValidated.dropIn,
         legacyZeroSwap: finalValidated.legacyZeroSwap,
@@ -700,19 +692,6 @@ async function readOllamaState() {
   };
 }
 
-function readSonarState() {
-  const raw = command('/usr/local/sbin/quality-sonar-release-state', [
-    '--project',
-    SONAR_PROJECT,
-    '--json',
-  ], 'SonarQube Compute Engine state query', { timeout: 15_000 });
-  try {
-    return JSON.parse(raw);
-  } catch {
-    fail('SonarQube Compute Engine state query returned malformed JSON');
-  }
-}
-
 function readSystemdEnvelope() {
   const stdout = command('/usr/bin/systemctl', [
     'show',
@@ -755,7 +734,6 @@ function createRealPlatform() {
           production: readReleaseRecord('production', dominguezUid),
         },
         pm2: readPm2Snapshot(),
-        sonar: readSonarState(),
         ollama: await readOllamaState(),
         dropIn: readRootDropIn(DROP_IN_PATH, true),
         legacyZeroSwap: readRootDropIn(LEGACY_ZERO_SWAP_PATH, false),

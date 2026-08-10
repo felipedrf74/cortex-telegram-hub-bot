@@ -2,7 +2,8 @@
 
 import dotenv from 'dotenv';
 import { DateTime } from 'luxon';
-import { initDatabase, getDb, closeDatabase } from '../services/database';
+import { getDb, closeDatabase } from '../services/database';
+import { initDatabase } from '../services/database-bootstrap';
 import { getUserById } from '../services/user-service';
 import { addTransaction } from '../services/finance-tracker';
 import { createPlan, createSession, createWeek, deletePlanHard } from '../services/training-plans';

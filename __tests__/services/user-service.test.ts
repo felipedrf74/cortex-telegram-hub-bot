@@ -165,6 +165,18 @@ describe('user-service', () => {
       expect(users.filter(u => u.telegram_id === 111111)).toHaveLength(1);
     });
 
+    it('does not self-create an unsigned users schema in fail-closed release mode', () => {
+      testDb.close();
+      testDb = new Database(':memory:');
+      vi.stubEnv('OWNER_TELEGRAM_ID', '111111');
+
+      expect(() => seedOwnerUser({ failClosed: true }))
+        .toThrow(/requires the governed users schema/);
+      expect(testDb.prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'users'",
+      ).get()).toBeUndefined();
+    });
+
     it('exposes the explicit owner bootstrap Telegram identity helper', () => {
       vi.stubEnv('OWNER_TELEGRAM_ID', '111111');
       expect(isOwnerBootstrapTelegramId(111111)).toBe(true);

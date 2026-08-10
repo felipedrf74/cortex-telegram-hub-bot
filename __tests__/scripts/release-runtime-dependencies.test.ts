@@ -101,10 +101,19 @@ describe('network-independent release runtime dependencies', () => {
     expect(builder).toContain('"metric":"node-archive"');
     expect(builder).toContain("stat -c '%s' dist/runtime-dependencies/node_modules.tar.gz");
     expect(builder).not.toContain('release-runtime-dependencies.mjs verify --root');
-    expect(ciWorkflow).toContain('scripts/build-release-runtime-dependencies.sh');
-    expect(workflow).not.toContain('scripts/build-release-runtime-dependencies.sh');
+    // The 2026-08-07 continuous-deployment refactor moved artifact production out
+    // of ordinary CI: the deployable artifact is a container image pinned by
+    // digest. The owner-dispatched checkpoint alone builds this legacy payload
+    // for the PM2 fallback during cutover.
+    expect(ciWorkflow).not.toContain('scripts/build-release-runtime-dependencies.sh');
+    expect(ciWorkflow).not.toContain('release-bundle.mjs');
+    expect(ciWorkflow).not.toContain('release-artifact-manifest.mjs');
+    expect(workflow).toContain('scripts/build-release-runtime-dependencies.sh');
+    expect(workflow).toContain('node scripts/release-bundle.mjs');
+    expect(workflow).toContain('--output .local/release/checkpoint/bundle');
+    expect(workflow).toContain('name: ${{ steps.fallback_bundle.outputs.artifact_name }}');
+    expect(workflow).toContain('retention-days: 30');
     expect(workflow).not.toContain('release-runtime-dependencies.mjs extract-runtime');
-    expect(workflow).toContain('needs.verify-main.outputs.artifact_name');
     expect(transaction).toContain('release-runtime-dependencies.mjs extract-runtime');
     expect(transaction).toContain('release-runtime-dependencies.mjs verify-extracted');
     expect(transaction.indexOf('release-runtime-dependencies.mjs verify-extracted'))
@@ -112,7 +121,9 @@ describe('network-independent release runtime dependencies', () => {
     expect(transaction).not.toMatch(/\b(?:npm|pip|venv)\b/);
     expect(transaction).not.toContain('release-runtime-dependencies.mjs install');
     expect(workflow).toContain("PYTHON_VERSION: '3.12.3'");
-    expect(ciWorkflow.match(/python-version: '3\.12\.3'/g)).toHaveLength(2);
+    // One remaining pin, in the content-engine test job. The second occurrence
+    // belonged to the removed bundle-producing build job.
+    expect(ciWorkflow.match(/python-version: '3\.12\.3'/g)).toHaveLength(1);
   });
 
   it('extracts the verified Node archive without network access', () => {

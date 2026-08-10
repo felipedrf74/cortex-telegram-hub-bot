@@ -1,0 +1,58 @@
+[Unit]
+Description=Nexus Hub release poller (one attempt)
+Documentation=file:///opt/nexus-release/checkout/ops/nexus-release/README.md
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+ConditionPathExists=!/var/lib/nexus-release/state/control-plane-transaction.json
+
+[Service]
+Type=oneshot
+# Root-owned by design: the poller writes /var/lib/nexus-release, reads the
+# root-owned trust material and env files, drives Docker, and starts the
+# pre-migration backup unit. The Pi test runner has none of these.
+User=root
+Group=root
+UMask=0077
+WorkingDirectory=/opt/nexus-release/checkout
+
+# Load the three declared operator values. Every executable below starts through
+# env -i and forwards only those values explicitly; arbitrary or stale keys in
+# this file never reach Node, Bash, Git, Docker, Compose, or their children.
+EnvironmentFile=-/etc/nexus-release/poller.env
+UnsetEnvironment=LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT LD_DEBUG LD_PROFILE
+
+# Refuse a partial/mutable host installation before the wrapper gains deployment
+# authority. The native probe mirrors release-deploy.mjs' eager bootstrap import.
+ExecStartPre=/usr/bin/env -i PATH=/usr/bin:/bin /usr/bin/test -f /opt/nexus-release/checkout/.nexus-control-plane-ready
+ExecStartPre=/usr/bin/env -i PATH=/usr/bin:/bin HOME=/var/lib/nexus-release/home /usr/bin/node -e "if (process.version !== 'v22.23.1') process.exit(1)"
+ExecStartPre=/usr/bin/env -i PATH=/usr/bin:/bin HOME=/var/lib/nexus-release/home /usr/bin/node -e "const Database=require('/opt/nexus-release/checkout/node_modules/better-sqlite3');const db=new Database(':memory:');db.close()"
+
+# The wrapper takes the kernel flock and refuses to run without it. Serialization
+# lives there rather than here so a manual invocation is serialized identically.
+ExecStart=/usr/bin/env -i PATH=/usr/bin:/bin HOME=/var/lib/nexus-release/home DOCKER_CONFIG=/etc/nexus-release/docker NEXUS_RELEASE_AUDIT_MIRROR_HOST=${NEXUS_RELEASE_AUDIT_MIRROR_HOST} NEXUS_RELEASE_TELEGRAM_BOT_TOKEN=${NEXUS_RELEASE_TELEGRAM_BOT_TOKEN} NEXUS_RELEASE_TELEGRAM_CHAT_ID=${NEXUS_RELEASE_TELEGRAM_CHAT_ID} NEXUS_RELEASE_NODE_BIN=/usr/bin/node NEXUS_RELEASE_GIT_BIN=/usr/bin/git NEXUS_RELEASE_FLOCK_BIN=/usr/bin/flock NEXUS_RELEASE_SYSTEMCTL_BIN=/usr/bin/systemctl NEXUS_RELEASE_DOCKER_BIN=/usr/bin/docker NEXUS_RELEASE_SQLITE_BIN=/usr/bin/sqlite3 NEXUS_RELEASE_LSOF_BIN=/usr/bin/lsof NEXUS_RELEASE_SCP_BIN=/usr/bin/scp NEXUS_RELEASE_SSH_BIN=/usr/bin/ssh /opt/nexus-release/checkout/scripts/release-poll.sh
+
+# Registry discovery, bounded subprocesses, and artifact cleanup have no safe
+# finite aggregate independent of local cache state. The inner policy deadlines
+# remain authoritative; systemd must never kill the poller during mutation or
+# recovery merely because their individually-valid durations accumulated.
+TimeoutStartSec=infinity
+
+# ProtectHome=yes hides /root, so the registry credential and the audit-mirror
+# known_hosts must NOT live under /root. Both are pointed at /etc/nexus-release,
+# which ProtectSystem=full leaves readable.
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=full
+ReadOnlyPaths=/opt/nexus-release
+ReadWritePaths=/var/lib/nexus-release /var/lib/nexus-hub /srv/nexus-backups
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=nexus-release-poller

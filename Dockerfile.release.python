@@ -1,0 +1,39 @@
+# Nexus Hub — production content-engine image.
+#
+# Deployable artifact for the Python FastAPI content engine, pinned by digest
+# like the backend image. Differences from Dockerfile.python (local dev):
+#   - no --reload, and no bind mount expected: the copied source is the release
+#   - a non-root runtime user
+#   - dependencies installed from the pinned requirements file only, with no
+#     dev requirements
+
+FROM python:3.12-slim@sha256:c3d81d25b3154142b0b42eb1e61300024426268edeb5b5a26dd7ddf64d9daf28 AS runtime
+WORKDIR /engine
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl \
+ && rm -rf /var/lib/apt/lists/* \
+ && groupadd --system --gid 10001 nexus \
+ && useradd --system --uid 10001 --gid nexus --home-dir /engine --shell /usr/sbin/nologin nexus
+
+COPY content-engine/requirements.txt ./requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY content-engine/ ./
+
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV ENV=production
+ENV CONTENT_ENGINE_PORT=8100
+
+EXPOSE 8100
+
+# /health is the only route exempt from the internal-secret middleware, so it is
+# the only route a container healthcheck can use without holding a credential.
+HEALTHCHECK --interval=10s --timeout=5s --start-period=20s --retries=12 \
+  CMD curl -fsS http://127.0.0.1:8100/health || exit 1
+
+USER nexus:nexus
+# 0.0.0.0 so the backend container can reach this service over the Compose
+# network; the host publishes the port on loopback only.
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8100", "--no-access-log"]

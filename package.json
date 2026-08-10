@@ -89,11 +89,16 @@
     "release:prepare": "scripts/release-operator.sh prepare",
     "release:promote": "scripts/release-operator.sh promote",
     "release:status": "scripts/release-operator.sh status",
+    "release:cd:poll": "scripts/release-poll.sh",
+    "release:cd:ack": "node scripts/release-acknowledge.mjs",
+    "release:cd:bootstrap-baseline": "node scripts/release-bootstrap-baseline.mjs",
+    "release:cd:state": "node scripts/release-state-view.mjs",
+    "release:cd:heartbeat": "node scripts/release-heartbeat.mjs",
+    "release:cd:manifest": "node scripts/release-manifest-build.mjs",
+    "release:cd:keygen": "node scripts/release-manifest-keygen.mjs",
+    "ci:pi-readiness": "node scripts/pi-runner-readiness.mjs",
     "release:chat-flags": "scripts/chat-capability-flag-operator.sh",
     "release:routing-calibration-export": "scripts/routing-calibration-export-operator.sh",
-    "quality:sonar": "scripts/quality-sonar-scan.sh",
-    "quality:sonar:images": "scripts/quality-sonar-resolve-images.sh --verify-lock-only",
-    "quality:sonar:latency": "node scripts/quality-sonar-latency-gate.mjs",
     "precommit": "scripts/risk-gate.sh --staged"
   },
   "keywords": [
@@ -145,6 +150,7 @@
     "resend": "^6.10.0",
     "sharp": "^0.35.3",
     "stripe": "^22.0.1",
+    "typescript": "^5.9.3",
     "ws": "^8.20.0"
   },
   "devDependencies": {
@@ -160,7 +166,6 @@
     "@vitest/coverage-v8": "^4.1.8",
     "@vitest/ui": "^4.1.8",
     "tsx": "^4.23.1",
-    "typescript": "^5.9.3",
     "vitest": "^4.1.8"
   }
 }

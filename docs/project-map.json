@@ -5,11 +5,11 @@
     "generatorVersion": 4,
     "authoritativeFreshness": "sourceDigest",
     "sourceDigestAlgorithm": "sha256-path-git-mode-content-v2",
-    "sourceDigest": "5a511310532947ef043e0259d0a231c6f6861218f29c8690a6a50ab07a553220",
-    "baseCommit": "c4d4a9db311f0d4277844064f515c24ba980452f",
-    "baseCommitTimestamp": "2026-08-06T11:35:53+01:00",
-    "trackedFiles": 3165,
-    "sourceFiles": 1132
+    "sourceDigest": "ef491bd687b07ca9bc7e09ade2f70209bde9a21a5e323666166afcf070e4ca7d",
+    "baseCommit": "65a87ae2a0514e0fe2ad117412d23ca3f0da8d39",
+    "baseCommitTimestamp": "2026-08-06T11:40:57+01:00",
+    "trackedFiles": 3196,
+    "sourceFiles": 1135
   },
   "navigation": {
     "agentBootloader": "AGENTS.md",
@@ -99,7 +99,7 @@
     {
       "path": "src/services",
       "owner": "backend",
-      "files": 817
+      "files": 819
     },
     {
       "path": "src/skills",
@@ -124,7 +124,7 @@
     {
       "path": "src/tools",
       "owner": "backend",
-      "files": 25
+      "files": 26
     },
     {
       "path": "src/utils",
@@ -4527,9 +4527,9 @@
     }
   ],
   "migrations": {
-    "count": 273,
-    "latest": "migrations/282_secretary_agenda_preemption_state.sql",
-    "digest": "088b7a0f4735f3a17163aecaa9787f010c0a0b5c94ae6956de9e0e90d904a464",
+    "count": 274,
+    "latest": "migrations/283_release_schema_convergence.sql",
+    "digest": "735fbadb8f06bcfa70ddfadf283b06328f143e6d4159bd0f7314898e9bb13990",
     "files": [
       "migrations/001_initial.sql",
       "migrations/002_shared_memory.sql",
@@ -4803,7 +4803,8 @@
       "migrations/279_event_backbone_lease_fencing.sql",
       "migrations/280_secretary_agenda_arbitration_metadata.sql",
       "migrations/281_secretary_provider_target_and_failure_disposition.sql",
-      "migrations/282_secretary_agenda_preemption_state.sql"
+      "migrations/282_secretary_agenda_preemption_state.sql",
+      "migrations/283_release_schema_convergence.sql"
     ]
   },
   "capabilities": [
@@ -4919,7 +4920,7 @@
     }
   ],
   "tests": {
-    "files": 1185,
+    "files": 1190,
     "policy": "config/test-policy.json",
     "inventoryArtifact": ".local/test-inventory/test-inventory.json",
     "topLevelOwners": {
@@ -4938,10 +4939,10 @@
       "regression": 1,
       "router": 8,
       "scope": 1,
-      "scripts": 91,
+      "scripts": 95,
       "sdk": 1,
       "security": 24,
-      "services": 737,
+      "services": 738,
       "skills": 11,
       "state": 17,
       "storage": 1,
@@ -4954,10 +4955,10 @@
     "policy": "config/documentation-policy.json",
     "policySchema": "nexus.documentation-policy.v1",
     "policyVersion": "2026-07-22.1",
-    "count": 74,
-    "active": 74,
+    "count": 75,
+    "active": 75,
     "statusCounts": {
-      "canonical": 34,
+      "canonical": 35,
       "current": 2,
       "draft": 2,
       "generated": 1,
@@ -5300,6 +5301,15 @@
         "canonicalPath": "docs/release/chat-quality-operations.md"
       },
       {
+        "path": "docs/release/continuous-deployment.md",
+        "status": "canonical",
+        "active": true,
+        "owner": "release owner",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2026-10-20",
+        "canonicalPath": "docs/release/continuous-deployment.md"
+      },
+      {
         "path": "docs/release/eval-evidence/chat-eval-2026-07-31T17-19-58-073Z.md",
         "status": "canonical",
         "active": true,
@@ -5399,13 +5409,13 @@
         "canonicalPath": "ops/local-backup/README.md"
       },
       {
-        "path": "ops/sonarqube/README.md",
+        "path": "ops/nexus-release/README.md",
         "status": "supporting",
         "active": true,
         "owner": "release operations lead",
         "reviewedOn": "2026-07-22",
         "reviewDueOn": "2026-10-20",
-        "canonicalPath": "ops/sonarqube/README.md"
+        "canonicalPath": "ops/nexus-release/README.md"
       },
       {
         "path": "prompts/channel-learner.md",
@@ -5681,13 +5691,18 @@
       "generated": false
     },
     {
+      "path": "ops/nexus-release/README.md",
+      "bytes": 314537,
+      "generated": false
+    },
+    {
       "path": "src/portal/portal.html",
       "bytes": 312168,
       "generated": false
     },
     {
       "path": "package-lock.json",
-      "bytes": 301511,
+      "bytes": 301492,
       "generated": false
     },
     {

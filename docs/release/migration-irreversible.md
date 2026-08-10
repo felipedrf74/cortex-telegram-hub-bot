@@ -2,11 +2,22 @@
 
 Status: canonical release policy
 Owner: Felipe
-Last verified: 2026-07-18
+Last verified: 2026-08-09
+
+Execution status: the existing producer/promotion transaction is bound to the
+legacy PM2 release path. The container control plane intentionally blocks these
+migrations and has no post-bootstrap maintenance executor. Implementing one
+requires Felipe to choose an exact release authorization channel, the
+production traffic/write-drain primitive, and the automatic database-restore
+cutoff. After PM2 retirement this contract remains the safety specification, not
+an executable release path; do not use the first-container bootstrap override
+or ordinary acknowledgement to bypass the block.
 
 This file is an implementation and release contract. It does not claim that a
 migration has run in staging or production. Current deployed truth remains in
-`release-state.json`.
+`/var/lib/nexus-release/state/release-state.json` and the immutable receipts
+under `/var/lib/nexus-release/receipts/`; evidence outranks a stale state
+projection.
 
 `config/irreversible-migrations.json` is the canonical machine-enforced
 registry for this contract. Its v2 entries pin every governed migration and
@@ -141,6 +152,25 @@ rehearsal. The exemption applies only to SQL with SHA-256
 `3fd0e7124a2cd1c26639fa6283d0a39612bc1849171a42b68647d40c3effd58d`.
 Any byte change revokes the exemption, marks the migration irreversible, and
 fails policy identity until the new SQL and digest receive review together.
+The syntax scanner treats both line and block comments as SQL whitespace, so a
+comment inserted between destructive keywords (for example,
+`DROP/**/TABLE`) cannot bypass irreversible review.
+
+Migration 283 is generically `contract` because it drops three indexes, but its
+release-CD compatibility exemption is narrower than this maintenance contract.
+It is valid only for the exact SHA-256 recorded in
+`config/production-migration-lineages.json` and the three ordered signed
+transitions. Each transition binds the obsolete global index name to its exact
+unique table/columns (or absence), creates its exact tenant-safe unique
+replacement before the drop, and binds the replacement name/table/ordered
+columns. Bootstrap verifies both live databases globally, including the case
+where an obsolete name was drifted onto another table. Any byte, ordering, old
+definition, absent/wrong/non-unique replacement, or policy drift returns 283 to
+the ordinary irreversible path. Its exact digest also binds the single
+`content_idea_memory.feedback_sentiment TEXT NOT NULL DEFAULT 'generated'`
+addition; the generic rule blocks every such pre-existing-table constraint and
+the exemption claims no other column statement. No other `DROP INDEX` or
+`NOT NULL` addition inherits the exemption.
 
 ## Preflight evidence
 

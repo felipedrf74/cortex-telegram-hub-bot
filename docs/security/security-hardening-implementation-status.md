@@ -37,7 +37,7 @@ There are no intentionally hidden open tasks in this local pass.
 | CI/supply-chain guardrails | DONE | `.github/workflows/security.yml` adds CodeQL, npm audit, pip-audit, OpenSSF Scorecard with least-privilege job permissions; `.github/dependabot.yml` covers npm, pip, GitHub Actions. |
 | Python content-engine dependency audit | DONE | `content-engine/requirements.txt` bumps FastAPI and python-dotenv; `pip-audit` reports no known vulnerabilities. |
 | Incident response and privacy ops runbook | DONE | `docs/security/security-operations-runbook.md` covers account takeover, provider leak, cross-tenant exposure, webhook abuse, lost JWT/signing key, compromised VPS, production secret leak, restore drill, and breach checklist. |
-| Local encrypted recovery | DONE_IN_REPOSITORY | Root-owned tooling creates `age`-encrypted, checksum-bound SQLite recovery points with 24 hourly, 30 daily, four weekly, and pre-promotion retention; weekly verification restores only to a private scratch path. Sonar keeps seven local PostgreSQL dumps with separate restore verification. No AWS or off-host service is required. |
+| Local encrypted recovery | DONE_IN_REPOSITORY | Root-owned tooling creates `age`-encrypted, checksum-bound SQLite recovery points with 24 hourly, 30 daily, four weekly, and pre-promotion retention; weekly verification restores only to a private scratch path. The Sonar PostgreSQL dump retention referenced here is retired with SonarQube (2026-08-07). No AWS or off-host service is required. |
 
 ## Claude QA Follow-Up Closure
 

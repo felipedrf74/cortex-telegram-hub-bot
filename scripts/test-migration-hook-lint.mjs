@@ -15,6 +15,7 @@ export const approvedDirectMigrationReplays = new Map([
   ['__tests__/migrations/training-m4-capacity-snapshots.test.ts', { expectedCalls: 1, reason: 'One empty-database production-runner rehearsal for migration 231.' }],
   ['__tests__/services/database.test.ts', { expectedCalls: 5, reason: 'Canonical raw-SQL, production-runner, and registered SQL-function migration integrity rehearsals.' }],
   ['__tests__/services/paid-ai-cost-controls-migration-runner.test.ts', { expectedCalls: 3, reason: 'Historical edge-row, target migration, and second-pass idempotency rehearsal for migration 226.' }],
+  ['__tests__/services/external-migrations-mode.test.ts', { expectedCalls: 5, reason: 'One empty-database production-runner rehearsal, two fail-closed external-mode source probes, and two rollback-plan v3 checks proving the exact signed forward suffix is admitted while an unknown successor row is rejected.' }],
 ]);
 
 function functionName(node) {

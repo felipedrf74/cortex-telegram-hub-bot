@@ -320,6 +320,14 @@ describe('model-config', () => {
       expect(() => loadModelOverrides()).not.toThrow();
     });
 
+    it('refuses a missing kv_store in read-only external mode', () => {
+      testDb.exec('DROP TABLE IF EXISTS kv_store');
+      expect(() => loadModelOverrides({ ensureStore: false })).toThrow(/no such table: kv_store/);
+      expect(testDb.prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'kv_store'",
+      ).get()).toBeUndefined();
+    });
+
     it('fails closed on a persisted non-approved Ollama override', () => {
       testDb.prepare(`INSERT INTO kv_store (key, value) VALUES ('model_override:ollama:chat', '"qwen3.6:35b-a3b-q4_K_M"')`).run();
       expect(() => loadModelOverrides()).toThrow('model_override:ollama:chat must be');

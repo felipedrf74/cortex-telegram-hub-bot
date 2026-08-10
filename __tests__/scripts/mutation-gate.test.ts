@@ -750,6 +750,7 @@ describe('changed-critical mutation gate', () => {
     expect(isCriticalModule('src/api/auth-middleware.ts', policy.mutation.criticalModulePatterns)).toBe(true);
     expect(isCriticalModule('src/api/tenant-route-scope.ts', policy.mutation.criticalModulePatterns)).toBe(true);
     expect(isCriticalModule('src/services/content-tenant-scope.ts', policy.mutation.criticalModulePatterns)).toBe(true);
+    expect(isCriticalModule('src/services/database-bootstrap.ts', policy.mutation.criticalModulePatterns)).toBe(true);
     expect(isCriticalModule('src/services/database.ts', policy.mutation.criticalModulePatterns)).toBe(true);
     expect(isCriticalModule('src/services/migration-runner.ts', policy.mutation.criticalModulePatterns)).toBe(true);
     expect(isCriticalModule('src/services/pm2-health.ts', policy.mutation.criticalModulePatterns)).toBe(true);
