@@ -1,0 +1,17 @@
+[Unit]
+Description=Nexus Hub release poller every 30 seconds
+Documentation=file:///opt/nexus-release/checkout/ops/nexus-release/README.md
+
+[Timer]
+# 30 seconds, matching config/continuous-deployment.json > timing.pollIntervalSeconds.
+OnBootSec=60
+OnUnitInactiveSec=30
+AccuracySec=1s
+# Persistent=false on purpose: a missed window while the host was down must not
+# fire a burst of catch-up attempts when it comes back. The next tick is enough,
+# and the flock would serialize them anyway.
+Persistent=false
+Unit=nexus-release-poller.service
+
+[Install]
+WantedBy=timers.target

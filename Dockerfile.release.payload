@@ -1,0 +1,22 @@
+# Nexus Hub — release payload image.
+#
+# Carries the two files the deployment host must read before it trusts anything:
+# the Ed25519-signed release manifest and the exact Compose topology the manifest
+# pins by digest.
+#
+# Shipping these as an OCI image rather than fetching them over the registry HTTP
+# API keeps the host's dependency surface at exactly `docker`. The moving tag on
+# this image is only ever used to *discover* a digest; the signature, the source
+# SHA, both image digests, the Compose digest and the migration digest are all
+# verified before a release is accepted, so tag mutability grants no authority.
+#
+# FROM scratch means there is no base image to trust. The ENTRYPOINT exists only
+# so `docker create` has a command to record — the container is never started;
+# `docker cp` reads the files out of it and it is removed.
+
+FROM scratch
+
+COPY release-manifest.json /release/release-manifest.json
+COPY docker-compose.release.yml /release/docker-compose.release.yml
+
+ENTRYPOINT ["/release/release-manifest.json"]

@@ -8,8 +8,10 @@ coding agents. Load detail only when the task needs it.
 1. Run `git status --short --branch`.
 2. Read `docs/project-map.json` to locate code, tests, owners, skills, and docs.
 3. Read `docs/DOCS_INDEX.md` only for the relevant domain.
-4. For release work, read `docs/release/release-state.json` and use the
-   `release-operator` skill.
+4. For release work, read `docs/release/continuous-deployment.md` and
+   `ops/nexus-release/README.md`. Use the `release-operator` skill for governed
+   inspection/recovery or the explicitly owner-authorized PM2 first-cutover
+   fallback; checked-in release projections are never runtime truth.
 
 ## Safety
 

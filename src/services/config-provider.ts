@@ -298,17 +298,22 @@ export class DatabaseConfigProvider implements ConfigProvider {
     });
   }
 
-  loadPersistedSettings(tenantId: TenantId = 'default'): void {
+  loadPersistedSettings(
+    tenantId: TenantId = 'default',
+    { ensureStore = true }: { ensureStore?: boolean } = {},
+  ): void {
     try {
       const db = this._getDb();
 
-      db.exec(`
-        CREATE TABLE IF NOT EXISTS kv_store (
-          key TEXT PRIMARY KEY,
-          value TEXT NOT NULL,
-          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-        )
-      `);
+      if (ensureStore) {
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS kv_store (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+          )
+        `);
+      }
 
       const prefix = `config:${tenantId}:`;
       const rows = db.prepare(
@@ -327,6 +332,7 @@ export class DatabaseConfigProvider implements ConfigProvider {
 
       logger.info({ count: rows.length }, 'Loaded persisted settings from DB');
     } catch (err) {
+      if (!ensureStore) throw err;
       logger.warn({ err }, 'Failed to load persisted settings — using defaults');
     }
   }

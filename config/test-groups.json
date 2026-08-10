@@ -13,6 +13,46 @@
   },
   "retirementMappings": [
     {
+      "baseSha": "65a87ae2a0514e0fe2ad117412d23ca3f0da8d39",
+      "tests": [
+        "__tests__/scripts/quality-sonar-local.test.ts",
+        "__tests__/scripts/quality-sonar-scanner-pin.test.ts"
+      ],
+      "requiredRemovedPaths": [
+        "scripts/quality-sonar-*",
+        "ops/sonarqube/*"
+      ],
+      "replacementTests": [
+        "__tests__/scripts/continuous-deployment-workflows.test.ts"
+      ],
+      "reason": "SonarQube is decommissioned by the 2026-08-07 continuous-deployment refactor. Static quality evidence is now the changed-area classifier, the risk gate, lint, typecheck, tests, the security workflow, and the docs audit; the workflow contract test asserts no Sonar tooling, npm script, or release-path gate remains."
+    },
+    {
+      "baseSha": "65a87ae2a0514e0fe2ad117412d23ca3f0da8d39",
+      "test": "__tests__/scripts/ollama-lean-finalize.test.ts",
+      "requiredRemovedPaths": [
+        "scripts/quality-sonar-*",
+        "ops/sonarqube/*"
+      ],
+      "replacementTests": [
+        "__tests__/scripts/ollama-lean-finalize.test.ts",
+        "__tests__/scripts/continuous-deployment-workflows.test.ts"
+      ],
+      "reason": "The retained Ollama finalization suite still proves exact release, PM2, model, and systemd-envelope safety after the retired Sonar snapshot disappears; the continuous-deployment workflow suite proves no Sonar release gate remains."
+    },
+    {
+      "baseSha": "65a87ae2a0514e0fe2ad117412d23ca3f0da8d39",
+      "test": "__tests__/scripts/shared-ios-release-gate-workflow.test.ts",
+      "requiredChangedPaths": [
+        ".github/workflows/shared-ios-release-gate.yml"
+      ],
+      "replacementTests": [
+        "__tests__/scripts/shared-ios-release-gate-workflow.test.ts",
+        "__tests__/scripts/continuous-deployment-workflows.test.ts"
+      ],
+      "reason": "The retained shared-iOS suite now proves only the owner-triggered PM2 fallback checkpoint and its checkpoint-built bundle; signed container delivery is independently governed by the continuous-deployment workflow suite."
+    },
+    {
       "baseSha": "247ac7dc940009aacb0d1419a58db4749a76c75a",
       "test": "__tests__/api/chat-content-refinement.test.ts",
       "requiredChangedPaths": [
@@ -241,8 +281,8 @@
         "scripts/quality-sonar-cloudformation-*",
         "scripts/quality-sonar-stack.sh"
       ],
-      "replacementTests": ["__tests__/scripts/quality-sonar-local.test.ts"],
-      "reason": "AWS and root-install Sonar controls are retired while the in-place local Sonar contract remains covered."
+      "replacementTests": ["__tests__/scripts/continuous-deployment-workflows.test.ts"],
+      "reason": "SonarQube is decommissioned by the 2026-08-07 continuous-deployment refactor; the workflow contract test asserts its absence."
     },
     {
       "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
@@ -269,7 +309,7 @@
         "scripts/trusted-release-*"
       ],
       "replacementTests": ["__tests__/scripts/lean-release-path.test.ts"],
-      "reason": "Signed, shadow-evidence, root-promotion, and duplicate release controls are retired in favor of the checksum-bound lean release path."
+      "reason": "The prevention-first signing, shadow-evidence, and root-promotion controls are retired in favor of signed OCI publication, root VPS reconciliation, immutable receipts, and exact image-pair recovery. The retained lean-path regression covers only the 14-day PM2 first-cutover fallback."
     },
     {
       "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
@@ -281,7 +321,7 @@
         "__tests__/scripts/lean-release-path.test.ts",
         "__tests__/scripts/migration-safety-check.test.ts"
       ],
-      "reason": "The artifact-embedded production-shape rehearsal is retired from the lean runtime; the release checkpoint now fails irreversible migrations closed while the lean transaction verifies migration-backed startup and rollback readiness."
+      "reason": "The artifact-embedded production-shape rehearsal is retired; protected-main migration admission and hosted recomputation fail irreversible migrations closed while the VPS transaction verifies migration-backed startup and rollback readiness."
     },
     {
       "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
@@ -315,7 +355,7 @@
         "scripts/remote-rollback-drill-*"
       ],
       "replacementTests": ["__tests__/scripts/lean-release-path.test.ts"],
-      "reason": "KVM and legacy-layout rollback drills are retired while the lean predecessor rollback transaction remains covered."
+      "reason": "KVM and legacy-layout rollback drills are retired; recovery-first container CD proves the predecessor payload, Compose topology, health, and exact running image pair on every rollback. The retained lean-path regression covers only the first-cutover fallback."
     },
     {
       "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
@@ -323,14 +363,14 @@
       "requiredRemovedPaths": ["scripts/env-parity-check.sh"],
       "requiredChangedPaths": ["scripts/promote-exact-release.sh"],
       "replacementTests": ["__tests__/scripts/lean-release-path.test.ts"],
-      "reason": "The exact promotion safety contract is replaced by the lean promotion path after the old parity wrapper is retired."
+      "reason": "The old parity wrapper is retired. Signed container CD now binds staging, production, and rollback to digest-pinned OCI identities and immutable host receipts; the retained lean promotion coverage is first-cutover fallback only."
     },
     {
       "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "test": "__tests__/scripts/quality-sonar-install-transaction.test.ts",
       "requiredRemovedPaths": ["scripts/quality-sonar-install-transaction.py"],
-      "replacementTests": ["__tests__/scripts/quality-sonar-local.test.ts"],
-      "reason": "The root Sonar installation transaction is retired while the exact in-place local Sonar contract remains covered."
+      "replacementTests": ["__tests__/scripts/continuous-deployment-workflows.test.ts"],
+      "reason": "SonarQube is decommissioned; the workflow contract test asserts no Sonar tooling, npm script, or release-path gate remains."
     },
     {
       "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
@@ -343,7 +383,7 @@
         "__tests__/scripts/lean-release-path.test.ts",
         "__tests__/scripts/local-backup.test.ts"
       ],
-      "reason": "The old remote release backup wrappers are replaced by the lean pre-promotion and local backup contracts."
+      "reason": "The old remote backup wrappers are retired. The root container poller admits the shared local pre-promotion producer through fresh descriptor-bound evidence; the lean path invokes that producer only during the PM2 first-cutover fallback."
     },
     {
       "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
@@ -353,7 +393,7 @@
         "scripts/release-staging-attestation.mjs"
       ],
       "replacementTests": ["__tests__/scripts/lean-release-path.test.ts"],
-      "reason": "The separate installed-tree and staging attestations are replaced by exact checksum parity in the lean release path."
+      "reason": "Separate installed-tree and staging attestations are retired in favor of signed OCI identity, an exact container staging rehearsal, and immutable VPS receipts. Exact checksum parity remains only in the PM2 first-cutover fallback."
     },
     {
       "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
@@ -366,21 +406,21 @@
         "__tests__/scripts/lean-release-path.test.ts",
         "__tests__/scripts/risk-gate.test.ts"
       ],
-      "reason": "The duplicate focused release wrappers are replaced by affected verification and the explicit lean checkpoint."
+      "reason": "The duplicate focused release wrappers are replaced by affected verification; complete-suite commands remain explicit manual diagnostics."
     },
     {
       "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "test": "__tests__/scripts/release-gates.test.ts",
       "requiredChangedPaths": ["scripts/lib/release-gates.sh"],
       "replacementTests": ["__tests__/scripts/lean-release-path.test.ts"],
-      "reason": "The legacy multi-lock gate suite is replaced by the single-lock lean release transaction contract."
+      "reason": "The legacy multi-lock gate suite is replaced by the container poller's kernel release flock plus the shared root maintenance mutex. The lean transaction regression now covers only the PM2 first-cutover fallback."
     },
     {
       "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "test": "__tests__/scripts/release-layout-activation.test.ts",
       "requiredRemovedPaths": ["scripts/remote-release-layout-activation-control.sh"],
       "replacementTests": ["__tests__/scripts/lean-release-path.test.ts"],
-      "reason": "The legacy layout activation controller is retired while atomic current-selector promotion remains covered."
+      "reason": "The legacy layout activation controller and current-selector authority are retired from ordinary releases. Container CD restores digest-pinned image-pair and Compose identity; atomic current selection is retained only for the PM2 first-cutover fallback."
     },
     {
       "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
@@ -391,7 +431,7 @@
         "scripts/release-layout-fault-drill.mjs"
       ],
       "replacementTests": ["__tests__/scripts/lean-release-path.test.ts"],
-      "reason": "The layout fault producer chain is retired while predecessor rollback remains covered by the lean transaction."
+      "reason": "The layout fault producer chain is retired. Recovery-first container CD covers exact predecessor payload, Compose, health, and image-pair restoration; the lean transaction remains only as first-cutover fallback coverage."
     },
     {
       "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
@@ -402,7 +442,7 @@
         "scripts/request-release-quality-evidence.sh"
       ],
       "replacementTests": ["__tests__/scripts/lean-release-path.test.ts"],
-      "reason": "The separate release quality evidence request is replaced by checksum manifest identities and checkpoint results."
+      "reason": "The separate release quality evidence request is replaced by selected CI evidence, signed OCI identities, and authoritative VPS receipts."
     },
     {
       "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
@@ -413,14 +453,14 @@
         "scripts/remote-release-readiness.sh"
       ],
       "replacementTests": ["__tests__/scripts/lean-release-path.test.ts"],
-      "reason": "The old distributed readiness wrappers are replaced by the bounded lean staging and promotion transaction."
+      "reason": "The old distributed readiness wrappers are replaced by signed container staging, root-host policy validation, and immutable completion evidence. The bounded lean transaction remains only for the PM2 first-cutover fallback."
     },
     {
       "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "test": "__tests__/scripts/release-sequence.test.ts",
       "requiredRemovedPaths": ["scripts/release-sequence.mjs"],
       "replacementTests": ["__tests__/scripts/lean-release-path.test.ts"],
-      "reason": "The multi-workflow sequence coordinator is replaced by the single explicit lean release checkpoint."
+      "reason": "The multi-workflow sequence coordinator is replaced by protected-main selected CI, hosted signed publication, and VPS reconciliation."
     },
     {
       "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
@@ -431,7 +471,7 @@
         "scripts/request-staging-attestation.sh"
       ],
       "replacementTests": ["__tests__/scripts/lean-release-path.test.ts"],
-      "reason": "Signing resume helpers are retired after the compact checksum manifest replaces separate protected signatures."
+      "reason": "The old signing-resume helpers are retired. Current releases use one Ed25519-signed OCI release manifest; the compact unsigned checksum manifest is retained only for the PM2 first-cutover fallback."
     },
     {
       "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
@@ -439,30 +479,30 @@
       "requiredChangedPaths": ["scripts/lib/release-gates.sh"],
       "replacementTests": [
         "__tests__/scripts/lean-release-path.test.ts",
-        "__tests__/scripts/quality-sonar-local.test.ts"
+        "__tests__/scripts/continuous-deployment-workflows.test.ts"
       ],
-      "reason": "The release-Sonar mutex contract is replaced by advisory local Sonar and the single lean release lock."
+      "reason": "The release-Sonar mutex contract is replaced by the kernel flock the continuous-deployment poller holds; the shared root maintenance mutex is retained under ops/nexus-release/."
     },
     {
       "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "test": "__tests__/scripts/release-staging-resume.test.ts",
       "requiredRemovedPaths": ["scripts/remote-release-selector-switch.py"],
       "replacementTests": ["__tests__/scripts/lean-release-path.test.ts"],
-      "reason": "The old staging selector resume helper is replaced by the durable user-owned staging transaction."
+      "reason": "The old staging selector resume helper is retired from ordinary releases; the root poller resumes exact accepted OCI evidence and reruns isolated container staging. The user-owned selector transaction remains first-cutover fallback only."
     },
     {
       "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "test": "__tests__/scripts/release-staging-transfer-integrity.test.ts",
       "requiredChangedPaths": ["scripts/release-operator.sh"],
       "replacementTests": ["__tests__/scripts/lean-release-path.test.ts"],
-      "reason": "The old transfer verifier is replaced by one checksum-bound upload and offline staging installation."
+      "reason": "The old transfer verifier is retired from ordinary releases, which pull and verify digest-pinned OCI payloads. The checksum-bound upload and offline staging installation remain only in the PM2 first-cutover fallback."
     },
     {
       "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "test": "__tests__/scripts/remote-release-capacity.test.ts",
       "requiredRemovedPaths": ["scripts/remote-release-capacity.sh"],
       "replacementTests": ["__tests__/scripts/lean-release-path.test.ts"],
-      "reason": "The standalone capacity wrapper is retired while the lean server transaction retains bounded preflight checks."
+      "reason": "The standalone capacity wrapper is retired; current container prerequisites and bounded subprocess budgets are governed by the release policy and root poller. Lean preflight coverage remains first-cutover fallback only."
     },
     {
       "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
@@ -479,7 +519,7 @@
       "test": "__tests__/scripts/rollback-versioned-runtime.test.ts",
       "requiredRemovedPaths": ["scripts/rollback.sh"],
       "replacementTests": ["__tests__/scripts/lean-release-path.test.ts"],
-      "reason": "The standalone versioned rollback wrapper is replaced by automatic predecessor restoration in the lean transaction."
+      "reason": "The standalone versioned rollback wrapper is replaced by recovery-first container restoration of the predecessor payload, Compose topology, and exact image pair. Lean rollback coverage remains first-cutover fallback only."
     },
     {
       "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
@@ -489,10 +529,10 @@
         "scripts/trusted-release-runtime-attestation-v2-bridge.mjs"
       ],
       "replacementTests": ["__tests__/scripts/lean-release-path.test.ts"],
-      "reason": "The V2 normalization bridge is retired after checksum-bound staging and promotion replace its attestation path."
+      "reason": "The V2 normalization bridge is retired; signed OCI identity, exact container staging, and immutable VPS receipts replace its attestation path. Checksum-bound staging remains only in the PM2 first-cutover fallback."
     },
     {
-      "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
+      "baseSha": "65a87ae2a0514e0fe2ad117412d23ca3f0da8d39",
       "test": "__tests__/scripts/release-runtime-dependencies.test.ts",
       "requiredChangedPaths": [
         "scripts/build-release-runtime-dependencies.sh",
@@ -502,7 +542,7 @@
         "__tests__/scripts/release-runtime-dependencies.test.ts",
         "__tests__/scripts/lean-release-path.test.ts"
       ],
-      "reason": "The retained runtime dependency contract now covers the lean offline artifact without legacy verifier behavior."
+      "reason": "The retained runtime dependency contract now covers the immutable container control plane and production runtime packages. Its lean offline-artifact assertions apply only to the PM2 first-cutover fallback."
     },
     {
       "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
@@ -561,7 +601,7 @@
         "__tests__/scripts/migration-safety-check.test.ts",
         "__tests__/scripts/lean-release-path.test.ts"
       ],
-      "reason": "The duplicate release migration wrappers are retired while the migration policy suite and lean release checkpoint retain migration enforcement."
+      "reason": "The duplicate release migration wrappers are retired while the migration policy suite, protected-main verdict, and hosted recomputation retain migration enforcement."
     },
     {
       "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
@@ -578,7 +618,7 @@
         "__tests__/scripts/staging-smoke-ollama-integration.test.ts",
         "__tests__/scripts/lean-release-path.test.ts"
       ],
-      "reason": "The signed-manifest root staging path is replaced one-for-one by the protected checksum release and user-owned remote transaction."
+      "reason": "The former signing-era root staging path is retired. Current production uses the Ed25519-signed OCI publication and root VPS poller; the protected checksum and user-owned remote transaction remain PM2 first-cutover fallback only."
     },
     {
       "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
@@ -592,7 +632,7 @@
         "__tests__/security/github-workflow-pinning.test.ts",
         "__tests__/scripts/lean-release-path.test.ts"
       ],
-      "reason": "The signed release workflows are retired while immutable workflow actions and the exact protected-main checksum release remain pinned."
+      "reason": "The former multi-workflow signing chain is retired. Immutable workflow actions and the current hosted Ed25519-signed OCI publication remain pinned; the exact protected-main checksum workflow is manual PM2 first-cutover fallback only."
     },
     {
       "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
@@ -613,7 +653,7 @@
         "__tests__/scripts/chat-eval-local.test.ts",
         "__tests__/scripts/lean-release-path.test.ts"
       ],
-      "reason": "The retained chat evaluation gate now precedes the lean durable server transaction instead of the retired root promotion locks."
+      "reason": "Chat evaluation remains diagnostic evidence outside the unattended release authorization path. The lean durable server transaction and its ordering apply only to the PM2 first-cutover fallback."
     },
     {
       "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
@@ -664,6 +704,7 @@
         "src/services/apple-web-sign-in.ts",
         "src/services/audit-*.ts",
         "src/services/cache-*.ts",
+        "src/services/database-bootstrap.ts",
         "src/services/database.ts",
         "src/services/standalone-tool-database.ts",
         "src/services/entitlement.ts",
@@ -1064,14 +1105,22 @@
         "Dockerfile*",
         "cliff.toml",
         "config/**",
+        "docs/release/evidence/retired-migrations/**",
         "docker-compose*.yml",
         "ecosystem*.js",
         "ops/**",
         "scripts/**",
+        "content-engine/requirements.txt",
+        "content-engine/requirements-release.txt",
+        "content-engine/requirements-lock-tool.txt",
+        "content-engine/requirements-audit-tool.in",
+        "content-engine/requirements-audit-tool.txt",
         "src/release/**",
         "src/tools/**",
         "src/services/backup.ts",
+        "src/services/database-bootstrap.ts",
         "src/services/migration-runner.ts",
+        "src/services/release-data-maintenance.ts",
         "src/services/operator-alerts.ts",
         "src/services/pm2-health.ts",
         "src/services/release-runtime-identity.ts",
@@ -1113,11 +1162,13 @@
       "paths": [
         "migrations/**",
         "config/irreversible-migrations.json",
-        "config/production-migration-lineages.json"
+        "config/production-migration-lineages.json",
+        "docs/release/evidence/retired-migrations/**"
       ],
       "tests": [
         "__tests__/migrations/**/*.test.ts",
         "__tests__/services/database-migration-prefix-collisions.test.ts",
+        "__tests__/services/external-migrations-mode.test.ts",
         "__tests__/services/migration-cascade-invariants.test.ts",
         "__tests__/services/migration-runner-functions.test.ts",
         "__tests__/services/paid-ai-cost-controls-migration-runner.test.ts"

@@ -4,6 +4,7 @@ set -euo pipefail
 umask 077
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT/scripts/lib/release-gates.sh"
 SERVER="${1:?server is required}"
 SOURCE_BUNDLE="${2:?remote source bundle is required}"
 RUNTIME_SHA="${3:?runtime SHA is required}"
@@ -56,6 +57,7 @@ if (value?.backend?.runtimeSha !== expectedSha
 }
 NODE
 
+release_reassert_exact_protected_main "$ROOT" "$RUNTIME_SHA"
 ssh "$SERVER" systemd-run --user --quiet --collect \
   --unit "$UNIT" \
   --property Type=oneshot \

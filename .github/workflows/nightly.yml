@@ -1,8 +1,8 @@
 name: Nightly — Advisory maintenance
 
 # release-pipeline-risk-based-optimization (2026-05-03):
-# The complete deterministic suite belongs to the explicit release checkpoint
-# (or a deliberate manual invocation), never a calendar-triggered release gate.
+# The complete deterministic suite is a deliberate manual diagnostic, not a
+# production-release checkpoint and never a calendar-triggered release gate.
 
 on:
   schedule:

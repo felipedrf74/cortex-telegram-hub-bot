@@ -1,17 +1,68 @@
-# Lean production release
+# Release paths
 
-Nexus Hub uses one protected-main artifact, one explicit release checkpoint,
-one staging transaction, and one owner-approved production transaction.
+Nexus Hub has **one default release path and one fallback**.
+
+| Path | Status | Document |
+| --- | --- | --- |
+| Continuous deployment (containers, unattended) | **default** | [`continuous-deployment.md`](continuous-deployment.md) |
+| Lean PM2 promote (owner-approved, manual) | fallback during cutover only | this document, below |
+
+After the one-time owner-authorized first container cutover, green CI on
+protected `main` publishes signed container images and the VPS poller deploys
+them: staging, then production with a 60-second observation window and automatic
+predecessor rollback. No second per-release owner approval is involved. Read
+[`continuous-deployment.md`](continuous-deployment.md) first — it is the canonical
+description of how releases now work.
+
+## The PM2 fallback
+
+Everything from "Lean production release" onwards describes the **previous**
+owner-approved PM2 promote path. It is retained deliberately, for exactly one
+purpose: to be the manual fallback for the first container cutover.
+
+Removal criterion: **14 stable days** after the first successful containerized
+production release. That is a calendar criterion, not a release count — a quiet
+fortnight with no releases still counts, because what is being proven is that the
+container path holds, not that it has been exercised N times.
+
+While it is retained:
+
+- ordinary CI no longer produces a release bundle; the owner-dispatched
+  fallback checkpoint rebuilds the exact verified protected-main SHA on its
+  Ubuntu 24.04/x86-64 hosted runner, verifies the bundle, and uploads it only
+  for this temporary path;
+- SonarQube has been decommissioned from the repository and release control
+  plane, and its coexistence gate was removed from
+  `scripts/remote-user-release-transaction.sh`; references to Sonar below are
+  historical, while any real-host remnants still require owner verification;
+- `docs/release/release-state.json` is now a generated, non-authoritative
+  projection with no authority over signed container CD. The frozen manual
+  checkpoint still consumes it only as part of the temporary PM2 fallback
+  evidence described below.
+
+Do not extend this path. Fixes belong in the continuous-deployment path.
+
+---
+
+## Lean production release (fallback)
+
+Nexus Hub uses one exact protected-main source, one checkpoint-built artifact,
+one explicit release checkpoint, one staging transaction, and one
+owner-approved production transaction.
 Release work is sequential. SonarQube, mutation analysis, documentation
 closeout, and backup retention jobs are not release gates.
 
 ## Invariants
 
-- The target is the clean, exact current `origin/main` SHA.
+- The target is the clean, exact current `origin/main` SHA. The operator
+  refetches and reasserts that identity at the final boundary immediately
+  before every staging or production transaction submission.
 - Protected main must have successful `🧪 Tests`, `🔍 Lint & Type Check`, and
   `🔨 Build` checks.
-- The Ubuntu 24.04/x86-64 artifact uploaded by that build is the only artifact
-  staged or promoted. The release checkpoint never rebuilds it.
+- The owner-dispatched release checkpoint builds one Ubuntu 24.04/x86-64
+  artifact from that exact SHA after verifying the protected-main checks. That
+  checkpoint artifact is the only bundle staged or promoted; ordinary CI does
+  not build or publish one.
 - Protected main runs the selected safety/groups/dependents once. The release
   checkpoint runs only the untested deterministic remainder over four shards
   and proves that selected plus remainder is a disjoint, gap-free inventory.
@@ -43,15 +94,18 @@ ancestor of the target.
 The workflow:
 
 1. resolves one successful exact-SHA protected-main run;
-2. verifies the three required check jobs and the exact runtime artifact;
+2. verifies the three required check jobs and exact protected-main test
+   evidence;
 3. classifies the cumulative deployed-to-target diff into sorted release
    groups, then subtracts the exact protected-main selection and runs the deterministic
    remainder over four non-overlapping shards;
 4. proves the selected/remainder union, then runs conditional Python and
    migration safety, accepting only exact-digest-reviewed governance-only
    changes and failing closed if the candidate contains irreversible SQL;
-5. downloads and verifies the original protected-main bundle;
-6. publishes `release-checkpoint-<sha>/release-manifest.json`.
+5. builds the runtime dependency archives and bundle from the exact checkout,
+   then independently verifies and uploads that digest-named bundle;
+6. publishes `release-checkpoint-<sha>/release-manifest.json`, binding that
+   checkpoint-built bundle to the protected-main and checkpoint run identities.
 
 The compact manifest schema is documented in
 `docs/release/release-evidence-contract.md`.
@@ -83,11 +137,14 @@ To select a particular successful checkpoint:
 npm run release:prepare -- --checkpoint-run <run-id>
 ```
 
-`release:prepare` downloads the compact manifest and the original protected-main
-artifact. It verifies both locally, stores the manifest SHA-256, and uploads
-the artifact once to
+`release:prepare` downloads the compact manifest and the exact bundle from the
+same successful checkpoint run. It verifies both locally, stores the manifest
+SHA-256, and uploads the artifact once to
 `/home/dominguez/.local/share/nexus-release/incoming/`, and submits a
-`systemd-run --user` staging transaction.
+`systemd-run --user` staging transaction. Immediately before each submission
+(including both transactions in the optional fault drill), it requires a clean
+unchanged checkout, refetches `origin/main`, and fails if protected main no
+longer equals the prepared SHA.
 
 The transaction copies the pristine bundle into the existing immutable layout:
 
@@ -100,10 +157,10 @@ The transaction copies the pristine bundle into the existing immutable layout:
   releases/
 ```
 
-Production Node modules and Python site-packages are built once in protected
-CI and stored as two digest-bound archives. The transaction only verifies and
-safely extracts those archives, recomputes an expanded-tree receipt, and
-verifies that receipt before PM2. It does not run npm, pip, venv creation,
+Production Node modules and Python site-packages are built once in the manual
+checkpoint and stored as two digest-bound archives. The transaction only
+verifies and safely extracts those archives, recomputes an expanded-tree
+receipt, and verifies that receipt before PM2. It does not run npm, pip, venv creation,
 Vitest, a build, or Sonar. It atomically switches `current`, recreates only the
 two staging PM2 processes from the exact selected runtime, proves artifact
 parity, migration-backed startup, exact selector and package-version identity
@@ -157,7 +214,9 @@ release groups include `chat-secretary`, the latest `local_engine` evaluation
 for that exact target SHA must have passed before even a resume-state SSH
 query. An unrelated release skips the chat evaluation automatically. This
 decision never uses the protected-main `selectedGroups`, and there is no bypass
-environment variable.
+environment variable. After these checks and immediately before the production
+`systemd-run` submission, the production helper again requires a clean
+unchanged checkout, refetches `origin/main`, and rejects a branch advance.
 
 The production transaction:
 
@@ -216,7 +275,7 @@ dispatch the owner-only protected-main workflow
 `.github/workflows/shared-ios-release-gate.yml` in the `production-release`
 environment. Supply the exact successful checkpoint run identity plus canonical
 base64 for the passing production transaction and both signed iOS
-attestations. The workflow resolves the checkpoint manifest and protected-main
+attestations. The workflow resolves the checkpoint manifest and checkpoint-built
 bundle by immutable GitHub artifact IDs, runs the gate below, revalidates the
 receipt identity, and publishes the only governed release-authorization
 artifact. A local CLI receipt is diagnostic evidence and cannot substitute for
@@ -416,9 +475,12 @@ receipts and live evidence can establish that state. Full gate details are in
 
 ## Advisory quality and timing
 
-SonarQube is intentionally outside this path. `npm run quality:sonar` consumes
-available exact-SHA coverage but does not run tests, and it must not overlap an
-active release transaction.
+SonarQube is decommissioned (ADR-0012). `npm run quality:sonar`, the
+`scripts/quality-sonar-*` scripts and `ops/sonarqube/` no longer exist, and
+nothing in this path consults a Compute Engine state. Static quality evidence is
+now CI-native: the changed-area classifier, the risk gate, lint, typecheck,
+tests, dependency/security scanning and the docs audit. See
+`docs/release/continuous-deployment.md > Static quality evidence`.
 
 Record protected-main, checkpoint, staging, approval, promotion, and soak
 timestamps for ten releases. Targets are p50/p95 of 3/5 minutes for normal CI
@@ -509,8 +571,10 @@ health endpoints still agree. It also refuses direct apply outside the named
 detached service, holds both release/Sonar locks, and keeps a persistent
 blocker backup guarded until the canonical PM2 handoff succeeds. It removes
 only its audited legacy allowlists.
-It preserves `/var/lib/nexus-release`, Ollama, SonarQube, and the lean
-transaction state, and intentionally never mutates AWS paths. The separately
+It preserves `/var/lib/nexus-release`, Ollama, any separately owner-gated Sonar
+host remnants or backups, and the lean transaction state; it neither proves
+Sonar uninstall nor prunes that evidence. It intentionally never mutates AWS
+paths. The separately
 authorized AWS closeout removed the server AWS callers, configuration, and
 credentials; only the compliance-locked application bucket remains until its
 retention can be reverified after `2027-02-03T16:24:28Z`.

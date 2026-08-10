@@ -1,0 +1,162 @@
+# Nexus Hub — release topology for staging and production.
+#
+# ONE file serves both environments. That is deliberate: the signed release
+# manifest carries a single Compose digest, so staging must rehearse the exact
+# topology production will run. Everything that differs between the two arrives
+# through environment variables supplied by the deployment host:
+#
+#   NEXUS_BACKEND_IMAGE         backend image pinned by @sha256 digest
+#   NEXUS_CONTENT_ENGINE_IMAGE  content-engine image pinned by @sha256 digest
+#   NEXUS_RELEASE_ID            exact 32-hex deployable release identity
+#   NEXUS_RELEASE_SOURCE_SHA    exact 40-hex protected source SHA
+#   NEXUS_RELEASE_BACKEND_DIGEST exact sha256 backend image content identity
+#   NEXUS_RELEASE_ENVIRONMENT   exact migration-ledger lineage (staging/production)
+#   NEXUS_RELEASE_PLAN_DIR      root-materialized signed migration plan directory
+#   NEXUS_BACKEND_ENV_FILE      root-owned backend/migrator env file (0600)
+#   NEXUS_CONTENT_ENGINE_ENV_FILE root-owned minimal content-engine env file (0600)
+#   NEXUS_APP_STAGING           exact true/false application isolation identity
+#   NEXUS_DATA_DIR              host-mounted database directory, per environment
+#   NEXUS_BACKEND_PORT          8200 production / 8201 staging
+#   NEXUS_CONTENT_ENGINE_PORT   8100 production / 8101 staging
+#
+# The `migrator` service sits behind a Compose profile so `up` can never start
+# it. The poller runs it as an explicit one-shot after the pre-migration backup.
+# Do not invoke this Compose file bare: config, ps, up, down, and migrator renders
+# all require the exact signed candidate identity (or predecessor identity while
+# rolling back), supplied by the release registry wrapper.
+#
+# Published ports are bound to loopback. External reachability is Cloudflare
+# Tunnel's job, exactly as it was under PM2.
+
+name: ${COMPOSE_PROJECT_NAME:-nexus-release}
+
+x-release-logging: &release-logging
+  driver: local
+  options:
+    max-size: 10m
+    max-file: "5"
+
+x-release-security: &release-security
+  - no-new-privileges:true
+
+services:
+  content-engine:
+    image: ${NEXUS_CONTENT_ENGINE_IMAGE:?release content-engine image digest is required}
+    env_file:
+      - path: ${NEXUS_CONTENT_ENGINE_ENV_FILE:?root-owned content-engine env file is required}
+        required: true
+        format: raw
+    environment:
+      ENV: production
+      CONTENT_ENGINE_PORT: "8100"
+      NEXUS_BACKEND_BASE_URL: "http://backend:8200"
+      NEXUS_BACKEND_PORT: "8200"
+    ports:
+      - "127.0.0.1:${NEXUS_CONTENT_ENGINE_PORT:?content engine host port is required}:8100"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8100/health"]
+      interval: 10s
+      timeout: 5s
+      start_period: 20s
+      retries: 12
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt: *release-security
+    cpus: 1.0
+    mem_limit: 512m
+    pids_limit: 512
+    logging: *release-logging
+    stop_grace_period: 20s
+    restart: unless-stopped
+
+  backend:
+    image: ${NEXUS_BACKEND_IMAGE:?release backend image digest is required}
+    depends_on:
+      content-engine:
+        condition: service_healthy
+    env_file:
+      - path: ${NEXUS_BACKEND_ENV_FILE:?root-owned backend env file is required}
+        required: true
+        format: raw
+    environment:
+      NODE_ENV: production
+      # NODE_ENV remains production for production-grade runtime checks and
+      # optimizations. This separate identity preserves the legacy staging
+      # boundary without trusting a mutable env file to declare itself staging.
+      STAGING: ${NEXUS_APP_STAGING:?exact staging identity is required}
+      # The application verifies the migration ledger and refuses to serve when
+      # it is behind. It cannot apply migrations itself.
+      MIGRATIONS_MODE: external
+      # Exact one-shot completion proof. These explicit values override any
+      # duplicate in the mutable environment file and are required even for
+      # Compose config/ps so an unmanaged invocation fails closed.
+      NEXUS_RELEASE_ID: ${NEXUS_RELEASE_ID:?exact release ID is required}
+      NEXUS_RELEASE_SOURCE_SHA: ${NEXUS_RELEASE_SOURCE_SHA:?exact release source SHA is required}
+      NEXUS_RELEASE_BACKEND_DIGEST: ${NEXUS_RELEASE_BACKEND_DIGEST:?exact backend image digest is required}
+      NEXUS_RELEASE_ENVIRONMENT: ${NEXUS_RELEASE_ENVIRONMENT:?release environment is required}
+      NEXUS_RELEASE_MIGRATION_PLAN: /release/migration-plan.json
+      PORTAL_PORT: "8200"
+      PORTAL_BIND: "0.0.0.0"
+      PORTAL_PUBLIC_BIND_ACK: production-public-host-reviewed
+      # Service DNS on the Compose network, not a host port.
+      CONTENT_ENGINE_BASE_URL: "http://content-engine:8100"
+      CONTENT_ENGINE_PORT: "8100"
+      DATABASE_PATH: /app/data/bot.db
+      BACKUP_DIR: /app/data/backups
+    ports:
+      - "127.0.0.1:${NEXUS_BACKEND_PORT:?backend host port is required}:8200"
+    volumes:
+      - ${NEXUS_DATA_DIR:?release data directory is required}:/app/data
+      - ${NEXUS_RELEASE_PLAN_DIR:?release plan directory is required}:/release:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8200/health"]
+      interval: 10s
+      timeout: 5s
+      start_period: 45s
+      retries: 12
+    security_opt: *release-security
+    cpus: 2.0
+    mem_limit: 1g
+    pids_limit: 1024
+    logging: *release-logging
+    stop_grace_period: 30s
+    restart: unless-stopped
+
+  # One-shot migrator. Profile-gated so it never starts with `up`, and it never
+  # depends on the application containers: migrations are applied against a
+  # just-backed-up database while the previous release is still serving.
+  migrator:
+    image: ${NEXUS_BACKEND_IMAGE:?release backend image digest is required}
+    profiles:
+      - migrate
+    env_file:
+      - path: ${NEXUS_BACKEND_ENV_FILE:?root-owned backend env file is required}
+        required: true
+        format: raw
+    environment:
+      NODE_ENV: production
+      STAGING: ${NEXUS_APP_STAGING:?exact staging identity is required}
+      # The migrator is the one place allowed to apply SQL migrations and
+      # governed release data maintenance.
+      MIGRATIONS_MODE: boot
+      DATABASE_PATH: /app/data/bot.db
+      # The signed migration plan is an allowlist: the migrator refuses any
+      # pending file the plan does not authorize, or whose bytes differ from the
+      # digest CI classified.
+      NEXUS_RELEASE_MIGRATION_PLAN: /release/migration-plan.json
+      NEXUS_RELEASE_ID: ${NEXUS_RELEASE_ID:?exact release ID is required}
+      NEXUS_RELEASE_SOURCE_SHA: ${NEXUS_RELEASE_SOURCE_SHA:?exact release source SHA is required}
+      NEXUS_RELEASE_BACKEND_DIGEST: ${NEXUS_RELEASE_BACKEND_DIGEST:?exact backend image digest is required}
+      NEXUS_RELEASE_ENVIRONMENT: ${NEXUS_RELEASE_ENVIRONMENT:?release environment is required}
+    volumes:
+      - ${NEXUS_DATA_DIR:?release data directory is required}:/app/data
+      - ${NEXUS_RELEASE_PLAN_DIR:?release plan directory is required}:/release:ro
+    entrypoint: ["/usr/bin/tini", "--"]
+    command: ["node", "dist/tools/run-release-migrations.js"]
+    security_opt: *release-security
+    cpus: 2.0
+    mem_limit: 1g
+    pids_limit: 512
+    logging: *release-logging
+    restart: "no"

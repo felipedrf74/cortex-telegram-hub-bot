@@ -5,7 +5,7 @@ import dotenv from 'dotenv';
 dotenv.config({ override: true });
 
 import { runContentDiscovery } from '../src/services/content-discovery';
-import { initDatabase } from '../src/services/database';
+import { initDatabase } from '../src/services/database-bootstrap';
 
 async function main() {
   // Init DB (needed for config/logger)

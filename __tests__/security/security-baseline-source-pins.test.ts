@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { createHash } from 'node:crypto';
 import fs from 'fs';
 import path from 'path';
 
@@ -130,10 +131,34 @@ describe('Nexus security baseline source pins', () => {
     const workflow = read('.github/workflows/security.yml');
     const codeqlShadow = read('.github/codeql/deployed-source-shadow.yml');
     const dependabot = read('.github/dependabot.yml');
+    const auditToolInputBytes = read('content-engine/requirements-audit-tool.in');
+    const auditToolInput = auditToolInputBytes.trim();
+    const auditToolLock = read('content-engine/requirements-audit-tool.txt');
+    const lockGenerator = read('scripts/generate-python-release-lock.mjs');
 
     expect(workflow).toMatch(/github\/codeql-action\/init@[a-f0-9]{40}\s+# v4/);
     expect(workflow).toContain('npm audit --audit-level=high');
-    expect(workflow).toContain('pip-audit -r content-engine/requirements.txt');
+    expect(workflow).toContain('content-engine/requirements-lock-tool.txt');
+    expect(workflow).toContain('content-engine/requirements-audit-tool.txt');
+    expect(workflow).toContain('node scripts/generate-python-release-lock.mjs --check');
+    expect(workflow).toContain('--dry-run --ignore-installed --require-hashes');
+    expect(workflow).toContain('--only-binary=:all: -r content-engine/requirements-release.txt');
+    expect(workflow).toContain('pip-audit -r content-engine/requirements-release.txt');
+    expect(workflow).not.toContain('python -m pip install --upgrade pip pip-audit');
+    expect(auditToolInput).toBe('pip-audit==2.10.1');
+    expect(auditToolLock).toContain('# generator: uv 0.10.9');
+    expect(auditToolLock).toContain('# source: content-engine/requirements-audit-tool.in');
+    expect(auditToolLock).toContain(
+      `# source-sha256: ${createHash('sha256').update(auditToolInputBytes).digest('hex')}`,
+    );
+    expect(auditToolLock).toContain('# index: https://pypi.org/simple');
+    expect(auditToolLock).toContain('pip==26.2.1 \\');
+    expect(auditToolLock).toContain('pip-audit==2.10.1 \\');
+    expect(auditToolLock).toMatch(/--hash=sha256:[a-f0-9]{64}/);
+    expect(lockGenerator).toContain("sourceRelativePath: 'content-engine/requirements-audit-tool.in'");
+    expect(lockGenerator).toContain(
+      "auditTool: generatePythonAuditToolLock({ check: cliArgs.includes('--check') })",
+    );
     expect(workflow).toMatch(/ossf\/scorecard-action@[a-f0-9]{40}\s+# v2\.4\.3/);
     expect(workflow).toContain('permissions:');
     expect(workflow).not.toContain('contents: write');

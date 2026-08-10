@@ -1,9 +1,9 @@
 {
-  "version": "2026-07-27.lean.1",
+  "version": "2026-08-09.cd.1",
   "defaultTier": "affected-groups",
   "releaseEvidence": {
     "defaultTier": "affected-groups",
-    "fullTier": "explicit-release-checkpoint"
+    "fullTier": "explicit-manual-diagnostic"
   },
   "tiers": {
     "fast": {
@@ -136,6 +136,7 @@
       "src/services/*tenant-scope*.ts",
       "src/services/ai-provider.ts",
       "src/services/provider-fallback.ts",
+      "src/services/database-bootstrap.ts",
       "src/services/database.ts",
       "src/services/migration-runner.ts",
       "src/services/pm2-health.ts",

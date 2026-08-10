@@ -168,19 +168,30 @@ export function isGoogleConfigured(userId?: number): boolean {
  * the next getCalendar/getDrive/getGmail call rebuilds with the fresh
  * token instead of returning the stale singleton.
  */
-const _resetCallbacks: Array<() => void> = [];
+// Intentionally `var` without an initializer: google-auth participates in a
+// legacy service import cycle, and google-calendar/drive/gmail register their
+// reset callbacks while this module is still evaluating. A lexical `const`
+// is in the TDZ at that point; an initialized `var` would later overwrite
+// callbacks already registered by the cycle.
+// eslint-disable-next-line no-var
+var _resetCallbacks: Array<() => void> | undefined;
+
+function googleResetCallbacks(): Array<() => void> {
+  return (_resetCallbacks ??= []);
+}
 
 export function registerGoogleClientReset(fn: () => void): void {
-  _resetCallbacks.push(fn);
+  googleResetCallbacks().push(fn);
 }
 
 export function resetGoogleClients(): void {
-  for (const fn of _resetCallbacks) {
+  const callbacks = googleResetCallbacks();
+  for (const fn of callbacks) {
     try {
       fn();
     } catch (err) {
       logger.warn({ err }, 'resetGoogleClients: callback failed');
     }
   }
-  logger.info({ count: _resetCallbacks.length }, 'Google client caches reset after re-auth');
+  logger.info({ count: callbacks.length }, 'Google client caches reset after re-auth');
 }

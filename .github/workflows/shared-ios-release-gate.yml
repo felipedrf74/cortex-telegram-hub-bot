@@ -1,18 +1,22 @@
 name: Shared iOS Release Gate — post-production
 
+# Owner-triggered manual evidence retained only with the PM2 first-cutover
+# fallback. It never authorizes the default signed-container backend path and
+# never couples the independently governed backend and iOS release cadences.
+
 on:
   workflow_dispatch:
     inputs:
       backend_runtime_sha:
-        description: Exact backend SHA already promoted through the release checkpoint
+        description: Exact backend SHA promoted through the PM2 fallback checkpoint
         required: true
         type: string
       checkpoint_run_id:
-        description: Successful Release Checkpoint workflow run ID for the backend SHA
+        description: Successful PM2 fallback checkpoint run ID for the backend SHA
         required: true
         type: string
       checkpoint_run_attempt:
-        description: Exact successful Release Checkpoint run attempt
+        description: Exact successful PM2 fallback checkpoint run attempt
         required: true
         type: string
       ios_sha:
@@ -24,7 +28,7 @@ on:
         required: true
         type: string
       production_state_base64:
-        description: Canonical base64 of the passing production transaction JSON
+        description: Canonical base64 of the passing PM2 fallback production transaction JSON
         required: true
         type: string
       ios_contract_attestation_base64:
@@ -138,7 +142,7 @@ jobs:
           run-id: ${{ steps.checkpoint.outputs.run_id }}
           github-token: ${{ github.token }}
 
-      - name: Bind manifest to checkpoint and protected-main artifact identity
+      - name: Bind manifest to checkpoint-built artifact identity
         id: manifest
         env:
           BACKEND_RUNTIME_SHA: ${{ inputs.backend_runtime_sha }}
@@ -229,38 +233,19 @@ jobs:
             throw new Error('checkpoint manifest release identity is invalid or mismatched');
           }
           fs.appendFileSync(process.env.GITHUB_OUTPUT, [
-            `protected_run_id=${manifest.protectedMain.runId}`,
-            `protected_run_attempt=${manifest.protectedMain.runAttempt}`,
             `bundle_artifact_name=${manifest.artifact.name}`,
-            `bundle_artifact_digest=${manifest.artifact.sha256}`,
             '',
           ].join('\n'));
           NODE
 
-      - name: Resolve exact successful protected-main bundle artifact
-        id: protected_main
+      - name: Resolve exact successful checkpoint bundle artifact
+        id: checkpoint_bundle
         env:
           GH_TOKEN: ${{ github.token }}
-          BACKEND_RUNTIME_SHA: ${{ inputs.backend_runtime_sha }}
-          PROTECTED_RUN_ID: ${{ steps.manifest.outputs.protected_run_id }}
-          PROTECTED_RUN_ATTEMPT: ${{ steps.manifest.outputs.protected_run_attempt }}
+          CHECKPOINT_RUN_ID: ${{ steps.checkpoint.outputs.run_id }}
           BUNDLE_ARTIFACT_NAME: ${{ steps.manifest.outputs.bundle_artifact_name }}
         run: |
-          run="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PROTECTED_RUN_ID")"
-          jq -e \
-            --arg repo "$GITHUB_REPOSITORY" \
-            --arg sha "$BACKEND_RUNTIME_SHA" \
-            --arg attempt "$PROTECTED_RUN_ATTEMPT" \
-            '.repository.full_name==$repo
-              and .path==".github/workflows/ci.yml"
-              and .head_sha==$sha
-              and .head_branch=="main"
-              and .event=="push"
-              and .status=="completed"
-              and .conclusion=="success"
-              and .run_attempt==($attempt|tonumber)' <<<"$run" >/dev/null
-
-          artifacts="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PROTECTED_RUN_ID/artifacts?per_page=100")"
+          artifacts="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CHECKPOINT_RUN_ID/artifacts?per_page=100")"
           test "$(jq -r '.total_count' <<<"$artifacts")" -le 100
           artifact_count="$(jq --arg name "$BUNDLE_ARTIFACT_NAME" \
             '[.artifacts[] | select(.name==$name and .expired==false)] | length' \
@@ -276,16 +261,16 @@ jobs:
           [[ "$artifact_size" =~ ^[1-9][0-9]*$ ]]
           test "$artifact_size" -le 2147483648
           {
-            echo "run_id=$PROTECTED_RUN_ID"
+            echo "run_id=$CHECKPOINT_RUN_ID"
             echo "artifact_id=$artifact_id"
           } >> "$GITHUB_OUTPUT"
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          artifact-ids: ${{ steps.protected_main.outputs.artifact_id }}
+          artifact-ids: ${{ steps.checkpoint_bundle.outputs.artifact_id }}
           path: .local/shared-ios-release-gate/bundle
           merge-multiple: true
-          run-id: ${{ steps.protected_main.outputs.run_id }}
+          run-id: ${{ steps.checkpoint_bundle.outputs.run_id }}
           github-token: ${{ github.token }}
 
       - name: Materialize bounded canonical evidence

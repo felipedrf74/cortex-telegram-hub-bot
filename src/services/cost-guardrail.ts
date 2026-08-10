@@ -745,9 +745,10 @@ function getRollingP95CostUsd(request: AiBudgetRequest): number | null {
     const currentRunPredicate = request.runId
       ? "AND COALESCE(run_id, '') <> ?"
       : '';
+    const observedAt = new Date().toISOString();
     const params = request.runId
-      ? [request.requestSource, request.baseCategory, request.runId]
-      : [request.requestSource, request.baseCategory];
+      ? [request.requestSource, request.baseCategory, request.runId, observedAt]
+      : [request.requestSource, request.baseCategory, observedAt];
     const rows = getDb().prepare(`
       SELECT SUM(cost_usd) AS cost_usd
       FROM api_usage
@@ -755,7 +756,7 @@ function getRollingP95CostUsd(request: AiBudgetRequest): number | null {
         AND base_category = ?
         ${currentRunPredicate}
         AND cost_usd > 0
-        AND ts >= datetime('now', '-30 days')
+        AND ts >= datetime(?, '-30 days')
       GROUP BY CASE
         WHEN run_id IS NOT NULL AND trim(run_id) <> '' THEN 'run:' || run_id
         ELSE 'row:' || id

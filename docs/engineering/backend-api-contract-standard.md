@@ -2,11 +2,11 @@
 
 Status: canonical
 Owner: backend architecture lead
-Last verified: 2026-08-05
+Last verified: 2026-08-09
 Update policy: update when REST contract conventions, route shape, or
-migration discipline changes. The risk-based gate matrix at
-`docs/release/risk-based-release-gate-matrix.md` is the runtime
-companion.
+migration discipline changes. `docs/release/continuous-deployment.md` and
+`docs/release/release-evidence-contract.md` are the runtime and evidence
+companions.
 
 This standard is the single source of truth for how Nexus Hub's TypeScript
 backend (`src/`) exposes routes, validates input, shapes responses,
@@ -677,19 +677,16 @@ provider credentials. The fixture mode:
 
 ## 13. Smoke evidence (must, for production deploys)
 
-Per `docs/release/risk-based-release-gate-matrix.md`, every
-backend production deploy that touches an app-facing surface produces a
-JSON smoke evidence row under
-`.local/release/smoke-evidence/staging-smoke-<sha>-<timestamp>.json`.
-The evidence file:
+Per `docs/release/continuous-deployment.md`, staging runs the exact signed
+candidate's migrator, services, health, and authenticated smoke before any
+production mutation. The VPS records that result in root-host release state and
+the immutable terminal receipt under `/var/lib/nexus-release/receipts/`, bound
+to the source, image pair, Compose, migration verdict, signed evidence, and
+release-payload digest.
 
-- Lists the staging URL, the SHA tested, every check name and result.
-- Is uploaded as a CI artifact when it is current release proof.
-- Is pruned locally on a 60-day retention window
-  (`scripts/smoke-evidence-prune.sh`).
-
-A deploy claim without artifact-bound evidence is **rejected** by the
-release gate.
+Ignored `.local` smoke output and CI artifacts may aid diagnosis but are not
+runtime truth or deployment authorization. A deploy claim without a validated
+immutable host receipt is **rejected** by the release evidence contract.
 
 ## 14. Forbidden patterns
 

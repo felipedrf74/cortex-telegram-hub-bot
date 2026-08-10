@@ -2,7 +2,8 @@
 
 import dotenv from 'dotenv';
 import { cleanupDecisionCenterSmokeItems } from '../services/decision-center';
-import { closeDatabase, initDatabase } from '../services/database';
+import { closeDatabase } from '../services/database';
+import { initDatabase } from '../services/database-bootstrap';
 
 export const DECISION_CENTER_SMOKE_CLEANUP_LARGE_THRESHOLD = 50;
 

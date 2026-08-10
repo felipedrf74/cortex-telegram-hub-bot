@@ -1,0 +1,141 @@
+{
+  "schema": "nexus.continuous-deployment-policy.v1",
+  "version": "2026-08-09.2",
+  "trust": {
+    "repository": "felipedrf74/cortex-telegram-hub-bot",
+    "protectedRepositoryUrl": "https://github.com/felipedrf74/cortex-telegram-hub-bot.git",
+    "protectedRef": "refs/heads/main",
+    "workflow": "Release \u2014 publish signed container release",
+    "signingKeyId": "release-manifest-signing-2026-08",
+    "publicKeyPath": "/etc/nexus-release/trust/release-manifest-signing-2026-08.pem",
+    "maxManifestBytes": 1048576,
+    "maxComposeBytes": 131072,
+    "maxManifestAgeSeconds": 604800
+  },
+  "registry": {
+    "host": "ghcr.io",
+    "backendImage": "ghcr.io/felipedrf74/nexus-hub-backend",
+    "contentEngineImage": "ghcr.io/felipedrf74/nexus-hub-content-engine",
+    "releaseImage": "ghcr.io/felipedrf74/nexus-hub-release",
+    "releaseTag": "main",
+    "retainedImagePairs": 2
+  },
+  "compose": {
+    "file": "docker-compose.release.yml",
+    "backendService": "backend",
+    "contentEngineService": "content-engine",
+    "migratorService": "migrator"
+  },
+  "bootstrap": {
+    "legacyProductionDatabase": "/home/dominguez/telegram-hub-bot/data/bot.db",
+    "legacyStagingDatabase": "/home/dominguez/telegram-hub-bot-staging/data/bot.db",
+    "maxBaselineAgeSeconds": 86400,
+    "maxDatabaseBytes": 1073741824
+  },
+  "environments": {
+    "staging": {
+      "composeProject": "nexus-staging",
+      "backendPort": 8201,
+      "contentEnginePort": 8101,
+      "backendEnvFile": "/etc/nexus-release/staging-backend.env",
+      "contentEngineEnvFile": "/etc/nexus-release/staging-content-engine.env",
+      "dataDir": "/var/lib/nexus-hub/staging/data"
+    },
+    "production": {
+      "composeProject": "nexus-production",
+      "backendPort": 8200,
+      "contentEnginePort": 8100,
+      "backendEnvFile": "/etc/nexus-release/production-backend.env",
+      "contentEngineEnvFile": "/etc/nexus-release/production-content-engine.env",
+      "dataDir": "/var/lib/nexus-hub/production/data"
+    }
+  },
+  "paths": {
+    "stateDir": "/var/lib/nexus-release/state",
+    "receiptDir": "/var/lib/nexus-release/receipts",
+    "bootstrapBaselineFile": "/var/lib/nexus-release/state/bootstrap-baseline.json",
+    "lockFile": "/var/lib/nexus-release/locks/release.lock",
+    "workDir": "/var/lib/nexus-release/work",
+    "maintenanceLockFile": "/run/lock/nexus-release-sonar.lock"
+  },
+  "timing": {
+    "pollIntervalSeconds": 30,
+    "observationSeconds": 60,
+    "rollbackObjectiveSeconds": 120,
+    "healthBudgetSeconds": 45,
+    "stagingHealthBudgetSeconds": 45,
+    "migratorTimeoutSeconds": 900,
+    "backupTimeoutSeconds": 900,
+    "protectedHeadTimeoutSeconds": 15
+  },
+  "auditMirror": {
+    "enabled": true,
+    "user": "nexus-audit",
+    "path": "/var/lib/nexus-release-audit/receipts",
+    "hostEnvVar": "NEXUS_RELEASE_AUDIT_MIRROR_HOST",
+    "identityFile": "/etc/nexus-release/trust/audit-mirror-id_ed25519",
+    "timeoutSeconds": 30,
+    "knownHostsFile": "/etc/nexus-release/trust/audit-mirror-known_hosts",
+    "maxAttempts": 5,
+    "queueDir": "/var/lib/nexus-release/mirror-queue"
+  },
+  "notifications": {
+    "failureEnabled": true,
+    "recoveryEnabled": true,
+    "heartbeatEnabled": true,
+    "heartbeatSchedule": "Mon 09:00",
+    "maxMessageChars": 900
+  },
+  "piRunner": {
+    "labels": [
+      "self-hosted",
+      "linux",
+      "ARM64",
+      "nexus-pi"
+    ],
+    "requiredArch": "aarch64",
+    "requiredOs": "linux",
+    "minUsableMemoryGiB": 6,
+    "minFreeStorageGiB": 20,
+    "nodeVersion": "22.23.1",
+    "focusedSuiteBudgetSeconds": 600,
+    "requiredEgressHosts": [
+      "github.com",
+      "api.github.com",
+      "registry.npmjs.org"
+    ],
+    "forbiddenCapabilities": [
+      "docker-socket",
+      "production-secrets",
+      "deploy-key",
+      "production-audit-access"
+    ],
+    "budgetSuite": [
+      "__tests__/scripts/release-continuous-deployment.test.ts",
+      "__tests__/scripts/migration-cd-eligibility.test.ts",
+      "__tests__/services/external-migrations-mode.test.ts"
+    ]
+  },
+  "iosContractPaths": [
+    "src/release/backend-ios-contract-fixture.ts",
+    "src/services/dashboard-home-view-state.ts",
+    "src/services/training-home-view-state.ts",
+    "src/services/training-copy-sanitizer.ts",
+    "src/services/content-home-view-state.ts",
+    "src/services/screen-contract-meta.ts",
+    "src/api/routes/training-plan-generation-response-contract.ts",
+    "src/services/training-plan-clarification-registry.ts",
+    "scripts/release-bundle.mjs",
+    "scripts/lib/backend-ios-contract-fixture.mjs",
+    "__tests__/scripts/backend-ios-contract-fixture.test.ts"
+  ],
+  "backup": {
+    "root": "/srv/nexus-backups/application",
+    "receiptPath": "/srv/nexus-backups/application/state/last-success.json",
+    "maxReceiptAgeSeconds": 900,
+    "expectedDatabase": "/var/lib/nexus-hub/production/data/bot.db"
+  },
+  "retention": {
+    "workDirs": 5
+  }
+}

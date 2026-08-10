@@ -2,7 +2,7 @@
 
 Status: current
 Owner: Felipe Dominguez
-Last verified: 2026-07-27
+Last verified: 2026-08-10
 Update policy: update after each security-hardening wave, production ops window,
 or QA finding closure.
 
@@ -35,9 +35,9 @@ There are no intentionally hidden open tasks in this local pass.
 | Provider webhook security regression | DONE | Existing webhook/billing sweeps re-run: HMAC signature, provider-specific headers, replay/idempotency, Apple JWS rejection paths. |
 | iOS MASVS source pins | DONE | Keychain this-device-only/no-iCloud sync and ATS/cleartext/WebView bypass tests added. |
 | CI/supply-chain guardrails | DONE | `.github/workflows/security.yml` adds CodeQL, npm audit, pip-audit, OpenSSF Scorecard with least-privilege job permissions; `.github/dependabot.yml` covers npm, pip, GitHub Actions. |
-| Python content-engine dependency audit | DONE | `content-engine/requirements.txt` bumps FastAPI and python-dotenv; `pip-audit` reports no known vulnerabilities. |
+| Python content-engine dependency audit | DONE | The reviewed direct source generates `content-engine/requirements-release.txt`; CI byte-compares that complete hash lock and `pip-audit` reports no known vulnerabilities in its exact deployed closure. |
 | Incident response and privacy ops runbook | DONE | `docs/security/security-operations-runbook.md` covers account takeover, provider leak, cross-tenant exposure, webhook abuse, lost JWT/signing key, compromised VPS, production secret leak, restore drill, and breach checklist. |
-| Local encrypted recovery | DONE_IN_REPOSITORY | Root-owned tooling creates `age`-encrypted, checksum-bound SQLite recovery points with 24 hourly, 30 daily, four weekly, and pre-promotion retention; weekly verification restores only to a private scratch path. Sonar keeps seven local PostgreSQL dumps with separate restore verification. No AWS or off-host service is required. |
+| Local encrypted recovery | DONE_IN_REPOSITORY | Root-owned tooling creates `age`-encrypted, checksum-bound SQLite recovery points with 24 hourly, 30 daily, four weekly, and pre-promotion retention; weekly verification restores only to a private scratch path. The Sonar PostgreSQL dump retention referenced here is retired with SonarQube (2026-08-07). No AWS or off-host service is required. |
 
 ## Claude QA Follow-Up Closure
 
@@ -114,7 +114,8 @@ There are no intentionally hidden open tasks in this local pass.
 - SSRF hostile probe passed: `npx tsx` one-off against the QA corpus blocked bracketed IPv6 loopback/ULA/link-local, IPv4-mapped IPv6, decimal/octal/hex IPv4, metadata, credentialed, non-HTTPS, file, and YouTube host-spoofing URLs.
 - Backend typecheck: `npm run typecheck`
 - Backend dependency audit: `npm audit --audit-level=high`
-- Python audit: `pip-audit -r content-engine/requirements.txt`
+- Python lock check: `node scripts/generate-python-release-lock.mjs --check`
+- Python audit: `python -m pip install --disable-pip-version-check --require-hashes --only-binary=:all: -r content-engine/requirements-audit-tool.txt && pip-audit -r content-engine/requirements-release.txt`
 - Python content engine tests passed: `pytest` from a Python 3.13 virtualenv under `content-engine/`
 - Auth/OAuth/APNs-routing focused checks passed:
   `npx vitest run __tests__/services/oauth-state-store.test.ts __tests__/api/auth-routes.test.ts __tests__/security/notification-orchestrator-security.test.ts __tests__/security/billing-apple-notifications-jws-verify.test.ts --reporter=default`

@@ -112,6 +112,21 @@ function isStrongIosJwtSecret(secret: string): boolean {
     && !IOS_JWT_PLACEHOLDER_PATTERN.test(secret);
 }
 
+/**
+ * Resolve MIGRATIONS_MODE strictly. Unset means `boot`, which is what local
+ * development and tests need. Any value that is set must be exactly `boot` or
+ * `external`; anything else throws at import time so a release container fails
+ * to start rather than quietly regaining the ability to migrate itself.
+ */
+function resolveMigrationsMode(): 'boot' | 'external' {
+  const raw = process.env.MIGRATIONS_MODE;
+  if (raw === undefined || raw === '') return 'boot';
+  if (raw === 'boot' || raw === 'external') return raw;
+  throw new Error(
+    `MIGRATIONS_MODE must be "boot" or "external"; received ${JSON.stringify(raw)}`,
+  );
+}
+
 export const config = {
   isStaging: IS_STAGING,
   anthropic: {
@@ -370,6 +385,16 @@ export const config = {
     timezone: optional('TIMEZONE', 'Europe/Lisbon'),
     databasePath: optional('DATABASE_PATH', './data/bot.db'),
     logLevel: optional('LOG_LEVEL', 'info'),
+    // `external` forbids the application from applying migrations at startup.
+    // Containerized releases run a dedicated one-shot migrator against a
+    // backed-up database, so an application boot that could migrate would
+    // bypass the backup and the migration-safety gate entirely. In this mode
+    // boot verifies the ledger is current and refuses to serve if it is not.
+    //
+    // An unrecognized value is rejected rather than defaulting to `boot`. A typo
+    // like MIGRATIONS_MODE=exteral used to silently restore self-migration in a
+    // release container — the exact failure this flag exists to prevent.
+    migrationsMode: resolveMigrationsMode(),
   },
   todo: {
     defaultList: process.env.TODO_DEFAULT_LIST || 'Tasks',

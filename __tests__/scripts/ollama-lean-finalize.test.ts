@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -81,6 +81,14 @@ function inventory(includeDelete = true) {
     .map(({ tag, digest }) => ({ name: tag, model: tag, digest: `sha256:${digest}` }));
 }
 
+function receiptPaths() {
+  return {
+    result: '/var/lib/nexus-release/ollama-finalize/result.json',
+    predecessorDropIn: '/var/lib/nexus-release/ollama-finalize/predecessor',
+    legacyZeroSwap: '/var/lib/nexus-release/ollama-finalize/legacy',
+  };
+}
+
 function snapshot({
   final = false,
   candidate = false,
@@ -97,12 +105,6 @@ function snapshot({
       production: release('production'),
     },
     pm2: pm2Rows(),
-    sonar: {
-      schema: 'nexus.sonarqube-release-state.v1',
-      status: 'passed',
-      projectKey: 'nexus-hub-backend',
-      activeTasks: 0,
-    },
     ollama: {
       inventory: inventory(!final),
       loaded: loaded.map(({ tag, digest }) => ({
@@ -196,11 +198,7 @@ describe('lean Ollama finalization', () => {
 
   it('makes the dry-run plan deterministic without mutating', async () => {
     const first = validateFinalizationSnapshot(snapshot());
-    const paths = {
-      result: '/var/lib/nexus-release/ollama-finalize/result.json',
-      predecessorDropIn: '/var/lib/nexus-release/ollama-finalize/predecessor',
-      legacyZeroSwap: '/var/lib/nexus-release/ollama-finalize/legacy',
-    };
+    const paths = receiptPaths();
     expect(buildFinalizationPlan(first, paths).ackPlan)
       .toBe(buildFinalizationPlan(first, paths).ackPlan);
 
@@ -273,11 +271,91 @@ describe('lean Ollama finalization', () => {
     }
     expect(installer).toContain('00-nexus-ollama-install-guard.conf');
 
-    const sonarInstaller = readFileSync('scripts/quality-sonar-local-install.sh', 'utf8');
-    expect(sonarInstaller).toContain('scripts/quality-sonar-release-state.sh');
-    expect(sonarInstaller).toContain('/usr/local/sbin/quality-sonar-release-state');
-    expect(sonarInstaller).toContain('/etc/tmpfiles.d/nexus-release-sonar-lock.conf');
-    expect(sonarInstaller).toContain('/etc/sudoers.d/nexus-sonar-release-monitor');
-    expect(sonarInstaller).toContain('visudo -cf');
+    // SonarQube was decommissioned on 2026-08-07, so its local installer no
+    // longer exists. What survives from that surface is the shared root
+    // maintenance mutex, whose tmpfiles definition moved to ops/nexus-release/
+    // under a non-Sonar owner while keeping the historical lock path.
+    expect(existsSync('scripts/quality-sonar-local-install.sh')).toBe(false);
+    const maintenanceLock = readFileSync(
+      'ops/nexus-release/nexus-release-maintenance-lock.conf',
+      'utf8',
+    );
+    expect(maintenanceLock).toContain('/run/lock/nexus-release-sonar.lock');
+    expect(maintenanceLock).toContain('0660 root dominguez');
+  });
+
+  it('carries no Sonar state through the snapshot, plan, or receipt contract', () => {
+    // The finalizer used to shell out to /usr/local/sbin/quality-sonar-release-state
+    // and thread a `sonar` field through dry-run/apply drift detection. That binary
+    // has no source in the repository any more, so the field is removed rather than
+    // frozen to a placeholder — a placeholder would keep a dead comparison alive and
+    // hide the fact that nothing validates it.
+    const validated = validateFinalizationSnapshot(snapshot());
+    expect(Object.keys(validated).sort())
+      .toEqual(['dropIn', 'legacyZeroSwap', 'ollama', 'pm2', 'releases']);
+
+    const plan = buildFinalizationPlan(validated, receiptPaths());
+    expect(JSON.stringify(plan)).not.toMatch(/sonar/i);
+  });
+
+  it('still refuses every state surface it compares, after sonar was removed', () => {
+    // Removing `sonar` must not weaken drift detection. Each remaining surface —
+    // release identity, PM2, the Ollama inventory, the loaded models, and both
+    // drop-ins — is validated against an exact expectation, so drift is refused
+    // outright rather than surfacing as a changed digest. (The digest's job is to
+    // invalidate a stale acknowledgment between dry-run and apply; determinism for
+    // an unchanged snapshot is asserted separately above.)
+    const cases: Array<[string, () => unknown, RegExp]> = [
+      ['release artifact digest', () => {
+        const drifted = snapshot();
+        drifted.releases.production.state.artifactDigest = 'f'.repeat(64);
+        return drifted;
+      }, /current symlink is not the completed release directory/],
+      ['pm2 offline', () => {
+        const drifted = snapshot();
+        drifted.pm2[0].pm2_env.status = 'stopped';
+        return drifted;
+      }, /is not the exact online release/],
+      ['pm2 wrong cwd', () => {
+        const drifted = snapshot();
+        drifted.pm2[0].pm2_env.pm_cwd = '/somewhere/else';
+        return drifted;
+      }, /is not the exact online release/],
+      ['pm2 wrong release sha', () => {
+        const drifted = snapshot();
+        drifted.pm2[2].pm2_env.NEXUS_RELEASE_SHA = 'e'.repeat(40);
+        return drifted;
+      }, /is not the exact online release/],
+      ['ollama inventory', () => {
+        const drifted = snapshot();
+        drifted.ollama.inventory = drifted.ollama.inventory.slice(1);
+        return drifted;
+      }, /exact audited four-tag digest allowlist/],
+    ];
+
+    for (const [label, build, expected] of cases) {
+      expect(() => validateFinalizationSnapshot(build() as never), label).toThrow(expected);
+    }
+
+    // A deletion target still resident in memory blocks the run.
+    expect(() => validateFinalizationSnapshot(snapshot({ loaded: [OLLAMA_DELETE_MODELS[0]] })))
+      .toThrow(/deletion target is still loaded/);
+
+    // And the drop-in must match the digest the plan was acknowledged against.
+    expect(() => validateFinalizationSnapshot(snapshot(), {
+      expectedDropInSha256: 'a'.repeat(64),
+    })).toThrow(/changed/);
+  });
+
+  it('leaves no executable reference to the removed Sonar state binary', () => {
+    const finalizer = readFileSync('scripts/ollama-lean-finalize.mjs', 'utf8');
+    for (const line of finalizer.split('\n')) {
+      const trimmed = line.trim();
+      if (trimmed.startsWith('//') || trimmed.startsWith('*')) continue;
+      expect(trimmed).not.toContain('quality-sonar-release-state');
+      expect(trimmed).not.toContain('nexus.sonarqube-release-state.v1');
+    }
+    // The retained maintenance mutex is the one Sonar-named thing that stays.
+    expect(finalizer).toContain("'/run/lock/nexus-release-sonar.lock'");
   });
 });

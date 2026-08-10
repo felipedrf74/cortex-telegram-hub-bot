@@ -8,7 +8,8 @@
  * objects, arrays, booleans, and null.
  *
  * Uses the existing database connection from getDb() — no new connections.
- * Auto-creates the kv_store table on first access if it doesn't exist.
+ * Auto-creates the kv_store table on first access in local/boot mode. Release
+ * application containers require the migrated table and never create it.
  *
  * Usage:
  *   const kv = new KVStore();
@@ -18,6 +19,7 @@
  */
 
 import { getDb } from '../services/database';
+import { config } from '../config';
 import { logger } from '../utils/logger';
 
 // ─── Types ──────────────────────────────────────────────────────────
@@ -35,11 +37,20 @@ export class KVStore {
 
   /**
    * Ensure the kv_store table exists. Called lazily on first operation.
-   * Safe to call multiple times — uses CREATE TABLE IF NOT EXISTS.
+   * Local/boot mode uses CREATE TABLE IF NOT EXISTS; external release mode is
+   * read-only and refuses an absent table.
    */
   private ensureTable(): void {
     if (this._initialized) return;
     const db = getDb();
+    if (config.app.migrationsMode === 'external') {
+      // Release application containers are verification-only. Database startup
+      // already proved the complete migration-028 shape; later KV access may
+      // read it, but can never repair schema drift with application-side DDL.
+      db.prepare('SELECT key, value, updated_at FROM kv_store LIMIT 0').all();
+      this._initialized = true;
+      return;
+    }
     db.exec(`
       CREATE TABLE IF NOT EXISTS kv_store (
         key        TEXT PRIMARY KEY,

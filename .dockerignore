@@ -5,6 +5,9 @@ content-engine/.venv
 content-engine/.venv313
 content-engine/__pycache__
 content-engine/**/__pycache__
+content-engine/requirements-audit-tool.in
+content-engine/requirements-audit-tool.txt
+content-engine/requirements-lock-tool.txt
 
 # Local state — must NOT bake into the image
 data

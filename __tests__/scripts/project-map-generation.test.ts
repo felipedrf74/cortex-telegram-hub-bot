@@ -8,6 +8,7 @@ import {
   resolveDocumentationInventory,
   validateDocumentationPolicy,
 } from '../../scripts/lib/documentation-policy.mjs';
+import { releaseStateDocumentationIssues } from '../../scripts/lib/docs-release-state-audit.mjs';
 import { projectMapFreshnessProjection } from '../../scripts/lib/project-map-freshness.mjs';
 import {
   normalizedGitMode,
@@ -253,6 +254,53 @@ describe('project map generation', () => {
     expect(projectMapFreshnessProjection(advanced)).toBe(
       projectMapFreshnessProjection(generated.serialized),
     );
+  });
+
+  it('audits legacy and host-derived release projections by their own schema', () => {
+    const summary = [
+      'historical 4.14.232',
+      'non-authoritative',
+      '/var/lib/nexus-release/state/release-state.json',
+      '/var/lib/nexus-release/receipts/',
+    ].join('\n');
+    expect(releaseStateDocumentationIssues({
+      state: { schema: 'nexus.release-state.v1', backend: { version: '4.14.232' } },
+      releaseSummary: summary,
+    })).toEqual([]);
+    expect(releaseStateDocumentationIssues({
+      state: {
+        schema: 'nexus.release-state-view.v2',
+        generated: true,
+        authoritative: false,
+        capturedAt: '2026-08-09T12:00:00.000Z',
+        sourceSchemas: {
+          state: 'nexus.release-host-state.v1',
+          receipt: 'nexus.release-receipt.v2',
+        },
+        active: null,
+        activeReceipt: null,
+        effective: { provable: false },
+        recent: [],
+      },
+      releaseSummary: summary,
+    })).toEqual([]);
+    expect(releaseStateDocumentationIssues({
+      state: {
+        schema: 'nexus.release-state-view.v2',
+        generated: true,
+        authoritative: true,
+        capturedAt: 'not-a-timestamp',
+        sourceSchemas: {},
+        recent: null,
+      },
+      releaseSummary: '',
+    }).map((issue) => issue.type)).toEqual([
+      'release-state-view-invalid',
+      'release-state-view-invalid',
+      'release-state-view-invalid',
+      'release-state-view-invalid',
+      'release-state-view-invalid',
+    ]);
   });
 
   it('fails closed when the committed map is stale', () => {

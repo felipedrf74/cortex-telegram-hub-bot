@@ -78,7 +78,7 @@ function getEncryptionKey(): string {
 
 /**
  * Boot-time assertion: refuse to start if no encryption key is configured.
- * Called from src/services/database.ts during initDatabase().
+ * Called from src/services/database-bootstrap.ts during initDatabase().
  */
 export function assertOAuthEncryptionConfigured(): void {
   const key = getEncryptionKey();
@@ -206,7 +206,7 @@ function looksLikeEncryptedOAuthValue(value: string): boolean {
 /**
  * One-time migration: encrypts any plaintext rows in user_oauth_tokens
  * using the configured key. Idempotent — already-encrypted rows are left
- * alone. Called from initDatabase() after migrations + key assertion.
+ * alone. Called from database-bootstrap.ts after migrations + key assertion.
  *
  * Returns counts so the caller can log meaningful telemetry.
  */
@@ -475,12 +475,15 @@ export function updateAccessToken(userId: number, provider: OAuthProvider, acces
 // ─── Owner Token Migration ──────────────────────────────────────────
 
 /**
- * Migrate owner's tokens from .env to per-user storage on first boot.
- * Idempotent — skips if already migrated.
+ * Migrate owner's tokens from .env to per-user storage. Idempotent — skips if
+ * already migrated. Release containers invoke this only from the one-shot
+ * migrator and require failures to propagate before recording completion.
  */
-export function migrateOwnerTokens(): void {
+export function migrateOwnerTokens(
+  options: { failClosed?: boolean } = {},
+): void {
   try {
-    const ownerRefs = getOwnerBootstrapUserRefs();
+    const ownerRefs = getOwnerBootstrapUserRefs({ failClosed: options.failClosed });
     const primaryOwnerRef = ownerRefs[0];
     if (!primaryOwnerRef) return;
 
@@ -509,5 +512,6 @@ export function migrateOwnerTokens(): void {
     }
   } catch (err) {
     logger.warn({ err }, 'Failed to migrate owner tokens');
+    if (options.failClosed) throw err;
   }
 }

@@ -346,7 +346,8 @@ async function runSmoke(): Promise<SmokeReport> {
     };
   }
 
-  const [{ initDatabase, closeDatabase }, notificationOrchestrator] = await Promise.all([
+  const [{ initDatabase }, { closeDatabase }, notificationOrchestrator] = await Promise.all([
+    import('../services/database-bootstrap'),
     import('../services/database'),
     import('../services/notification-orchestrator'),
   ]);

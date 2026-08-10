@@ -5,9 +5,8 @@ description: Run the Nexus Verifiable Reward Loop before ending non-trivial Code
 
 # Verifiable Reward Check
 
-Use the backend companion at `docs/agents/VERIFIABLE_REWARD_PROTOCOL.md` and
-the workspace canonical policy at
-`/Users/felipedominguez/Desktop/Nexus Hub/docs/agent/VERIFIABLE_REWARD_PROTOCOL.md`.
+Use the canonical backend policy at
+`docs/agents/VERIFIABLE_REWARD_PROTOCOL.md`.
 
 Run before final handoff/final answer for non-trivial work:
 

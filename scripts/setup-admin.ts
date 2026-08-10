@@ -13,7 +13,8 @@
 import * as dotenv from 'dotenv';
 dotenv.config();
 
-import { initDatabase, getDb } from '../src/services/database';
+import { getDb } from '../src/services/database';
+import { initDatabase } from '../src/services/database-bootstrap';
 import * as crypto from 'crypto';
 
 // Initialize the database connection before any queries

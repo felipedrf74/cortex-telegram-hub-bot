@@ -330,10 +330,11 @@ async function validateArtifactsDeterministically(artifacts: GeneratedArtifact[]
         details.push({ command: `shellcheck ${a.path}`, ok: true, output: 'shellcheck not installed; skipped (advisory)' });
       }
     } else if (a.kind === 'typescript') {
-      // Project-aware typecheck would require copying the whole repo; v1
-      // does a syntactic check using --noEmit on the single file with
-      // --allowJs to be lenient. Surfaces obvious parse errors only.
-      details.push(await runValidator('npx', ['--no-install', 'tsc', '--noEmit', '--allowJs', '--target', 'es2020', absPath], sandboxRoot));
+      // Project-aware typecheck would require copying the whole repo and its
+      // dev-only @types graph. The locked TypeScript 5.9 compiler uses --noCheck
+      // for a no-network, single-file syntax pass; it still reports parse errors
+      // without pretending production carries semantic-resolution dependencies.
+      details.push(await runValidator('npx', ['--no-install', 'tsc', '--noEmit', '--noCheck', '--allowJs', '--target', 'es2020', absPath], sandboxRoot));
     } else if (a.kind === 'sql_migration') {
       const checker = path.resolve(process.cwd(), 'scripts', 'check-migrations.js');
       if (fsSync.existsSync(checker)) {

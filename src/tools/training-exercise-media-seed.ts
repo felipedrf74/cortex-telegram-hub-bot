@@ -2,7 +2,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { initDatabase } from '../services/database';
+import { initDatabase } from '../services/database-bootstrap';
 import { seedCompiledTrainingExerciseMediaPackage } from '../services/training-exercise-media-seed';
 import {
   assertCompiledTrainingExerciseMediaPackage,

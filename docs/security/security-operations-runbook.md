@@ -2,15 +2,18 @@
 
 Status: canonical
 Owner: Felipe Dominguez
-Last verified: 2026-07-23
+Last verified: 2026-08-09
 Update policy: update after any security incident, deploy path change, provider
 credential change, or infrastructure hardening change.
 
-## Do Not Mutate Production Without Approval
+## Do Not Mutate Production Outside An Authorized Path
 
-Firewall, Cloudflare, provider, APNs, payment, DNS, and production deploy changes
-require a separate approved operations window. This runbook defines the sequence
-and evidence to collect; it is not approval to mutate live infrastructure.
+Firewall, Cloudflare, provider, APNs, payment, DNS, destructive maintenance, and
+manual production changes require a separate approved operations window. The
+ordinary signed container deployment from protected main is already governed by
+selected CI, hosted artifact publication, and the root poller; it does not need a
+second per-release approval. This runbook defines sequences and evidence but is
+not authorization for any other live mutation.
 
 ## Origin And VPS Hardening Checklist
 
@@ -71,11 +74,12 @@ logs, command output, chat, or release evidence.
   integrity and foreign keys, encrypts with `age`, and keeps 24 hourly,
   30 daily, and 4 weekly recovery points under
   `/srv/nexus-backups/application`.
-- Promotion must run exactly
-  `sudo -n /usr/bin/systemctl start
-  nexus-local-backup-pre-promotion.service` before changing PM2 or the
-  production `current` symlink. The narrow sudoers rule permits no other
-  root command. A failed backup aborts promotion.
+- Before the production migrator or image switch, the root poller starts
+  `nexus-local-backup-pre-promotion.service` and admits only a fresh, exact
+  receipt for `/var/lib/nexus-hub/production/data/bot.db`. A failed, stale,
+  mismatched, or unverifiable backup aborts the release before production is
+  mutated. The direct narrow-sudo invocation is retained only for the PM2
+  first-cutover fallback.
 - Keep the latest ten pre-promotion recovery points. The weekly restore
   verifier decrypts the newest hourly point into a private temporary path,
   verifies SQLite integrity and foreign keys, writes a root-only receipt, and
@@ -88,49 +92,53 @@ logs, command output, chat, or release evidence.
   stop production, preserve the failed database, atomically install the
   verified replacement, and restart only during an owner-approved incident
   window.
-- Exact release directories remain the rollback source and keep the newest
-  five production and three staging releases. These backups are not a second
-  artifact store.
+- Signed OCI payloads and the backend/Content Engine image pair are the runtime
+  rollback source. During an attempt, retention protects the candidate, active
+  release, and immediate predecessor; after settlement it protects active and
+  predecessor. Immutable receipts are not count-pruned. Database backups are
+  recovery evidence, not a second runtime artifact store and never an automatic
+  rollback input.
 - Operational commands and the accepted single-host limitation are documented
   in `ops/local-backup/README.md`.
 
-## Advisory SonarQube Host Boundary
+## Retired: advisory SonarQube host boundary
 
-- SonarQube Community Build is advisory and is never a merge, signing,
-  staging, or promotion dependency while it shares ServerDominguez.
-- Docker and the authoritative Compose project already exist under
-  `/home/dominguez/sonarqube`. Update that project in place; do not create a
-  second stack, migrate volumes, or change Docker daemon ownership.
-- Use only the reviewed immutable images in `ops/sonarqube/compose.yaml`. Do
-  not use Watchtower, automatic image upgrades, or application-account
-  Docker-group membership.
-- Keep PostgreSQL container-internal and publish Sonar only on
-  `127.0.0.1:9000`; use an SSH tunnel for the UI, scanner, and IDE Connected
-  Mode. PostgreSQL remains 1 CPU/2 GiB and Sonar remains 2 CPUs/6 GiB. Preserve
-  the existing named volumes and `unless-stopped` policy.
-- The scan, backup, restore drill, and release transaction share
-  `/run/lock/nexus-release-sonar.lock`; a Sonar operation exits instead of
-  waiting behind a production release.
-- Give the deploy account only the exact sudoers command that returns
-  `nexus.sonarqube-release-state.v1` for `nexus-hub-backend`. Keep the dedicated
-  project monitor token root-owned mode 0600 and out of command output. Its
-  Sonar identity has only `Browse` on that project; the helper reads only the
-  project component queue and does not require project/global administration.
-- Before declaring Sonar enabled, bind one successful exact-SHA advisory scan
-  between sequential before/after application samples and require no more
-  than 5% regression in either p50 or p95. Failure stops Sonar rollout, not a
-  production release.
-- Back up Sonar PostgreSQL daily as a root-only custom-format dump under
-  `/srv/nexus-backups/sonarqube`, retaining the latest seven dumps and their
-  SHA-256 pairs. Installation leaves the timer disabled; create and verify
-  the first dump before explicitly enabling it. Failed attempts retry every
-  15 minutes without waiting behind a release, and
-  `quality-sonar-backup --verify-freshness --max-age-hours 26` must validate
-  the root-owned success receipt. Exercise a database restore into a disposable
-  PostgreSQL container and publish each result as a new root-only file.
-- Move SonarQube off the production host before making its quality gate
-  required. Operational templates and exact commands live under
-  `ops/sonarqube/`.
+SonarQube is decommissioned from the repository and release path as of
+2026-08-07. The checked-in PostgreSQL + SonarQube container definitions, backup
+and restore-drill units, scanner pin, coverage manifest, and release coexistence
+gate are removed; `ops/sonarqube/` and `scripts/quality-sonar-*` no longer exist.
+No release code consults a JVM quality service, so an advisory scan cannot block
+a production deployment. This repository state does not prove that old units or
+containers have already been uninstalled from the real host; that verification
+remains owner-gated below.
+
+Static analysis controls now in force:
+
+- CodeQL (`.github/workflows/security.yml`), which already provided the taint
+  analysis Sonar Community Build excludes.
+- `npm audit --audit-level=high --omit=dev` and `pip-audit`, plus OpenSSF
+  Scorecard, in the same workflow.
+- `tsc --strict`, the changed-area classifier, the risk gate, the changed-file
+  coverage gate, and the docs audit in `.github/workflows/ci.yml`.
+
+**Retained control.** The shared root maintenance mutex at
+`/run/lock/nexus-release-sonar.lock` survives under a historical filename. It is
+not a Sonar control: it serializes root maintenance transactions during the PM2
+first-cutover fallback — including chat capability flags, data-key rotation, and
+Ollama install/finalize — against release activity. Those helpers are not a
+supported post-bootstrap container maintenance executor; that path remains
+owner-design-gated. Its tmpfiles definition is
+`ops/nexus-release/nexus-release-maintenance-lock.conf`, still `0660 root:dominguez`.
+
+`scripts/ollama-lean-finalize.mjs` no longer queries the removed
+`/usr/local/sbin/quality-sonar-release-state` helper. Its only retained Sonar-named
+boundary is the shared maintenance mutex above; the name is historical and does
+not restore a quality-service dependency.
+
+Host backup cleanup remains owner-gated: `/srv/nexus-backups/sonarqube` may be
+pruned only after the owner verifies that SonarQube is uninstalled on the real
+host. Do not remove it while the service is still installed, because the
+retention receipt is the only evidence that its last restore drill passed.
 
 ## Incident Playbooks
 

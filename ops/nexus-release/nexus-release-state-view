@@ -1,0 +1,17 @@
+#!/bin/sh
+set -eu
+
+# Argument-free, read-only export of validated root-owned release evidence.
+# The workspace resolver is allowed to invoke this through the narrowly scoped
+# sudoers rule; all mutation entrypoints remain unavailable.
+if [ "$#" -ne 0 ]; then
+  echo "nexus-release-state-view accepts no arguments" >&2
+  exit 64
+fi
+
+exec /usr/bin/env -i \
+  PATH=/usr/bin:/bin \
+  HOME=/var/lib/nexus-release/home \
+  NODE_ENV=production \
+  /usr/bin/node \
+  /opt/nexus-release/checkout/scripts/release-state-view.mjs

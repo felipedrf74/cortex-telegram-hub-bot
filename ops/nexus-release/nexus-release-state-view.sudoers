@@ -1,0 +1,2 @@
+Cmnd_Alias NEXUS_RELEASE_STATE_VIEW = /usr/local/sbin/nexus-release-state-view
+dominguez ALL=(root) NOPASSWD: NEXUS_RELEASE_STATE_VIEW

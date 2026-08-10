@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { once } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -19,8 +20,18 @@ import {
   validateProductionShapeMigrationRehearsalEvidence,
 } from './lib/production-shape-migration-rehearsal-evidence.mjs';
 import {
-  migrationSafetyGovernanceReasons,
+  migrationSafetyGovernanceReason,
 } from './lib/migration-safety-policy-classifier.mjs';
+import {
+  MIGRATION_CD_ELIGIBILITY_SCHEMA,
+  buildMigrationInventory,
+  evaluateMigrationCdEligibility,
+} from './lib/migration-cd-eligibility.mjs';
+import {
+  loadProductionMigrationLineagePolicy,
+  readRepositoryArchiveFromGitIndex,
+  verifyProductionMigrationLineageHistory,
+} from './lib/production-migration-lineage.mjs';
 
 const args = process.argv.slice(2);
 
@@ -35,10 +46,16 @@ function hasArg(name) {
 }
 
 const root = path.resolve(readArg('--root', process.cwd()));
+let releaseMigrationLineagePolicy = null;
 const baseRef = readArg('--base', '');
 const explicitFiles = readArg('--files', '');
 const changedOnly = hasArg('--changed-only');
 const outputJson = hasArg('--json');
+// The full ordered inventory is ~45 KiB for this repository, which pushes the
+// default JSON payload past the 64 KiB pipe buffer that ordinary `execFileSync`
+// consumers read through. Only the release manifest builder needs it, so it is
+// opt-in rather than a cost every caller pays.
+const emitInventory = hasArg('--emit-inventory');
 const approvalMode = readArg('--approval-mode', changedOnly ? 'review' : 'none');
 const reviewEvidenceInput = readArg(
   '--review-evidence',
@@ -142,6 +159,15 @@ function resolveBase() {
     }
   }
   throw new Error('Could not resolve a base ref for changed-migration policy');
+}
+
+let cachedComparisonBase;
+function comparisonBaseIdentity() {
+  if (!changedOnly) return null;
+  if (cachedComparisonBase === undefined) {
+    cachedComparisonBase = activeMergeMainParent() ?? resolveBase();
+  }
+  return cachedComparisonBase;
 }
 
 function migrationFiles() {
@@ -463,7 +489,7 @@ function checkChangedIrreversible(errors) {
   }
   const changed = changedFiles()
     .filter((file) => /^migrations\/\d{3}_.*\.sql$/.test(file)
-      || migrationSafetyGovernanceReasons.has(file));
+      || migrationSafetyGovernanceReason(file) !== null);
   const irreversibleByFile = new Map();
   for (const issue of irreversiblePolicy.integrityIssues) {
     const identityReason = issue.type === 'missing'
@@ -472,7 +498,7 @@ function checkChangedIrreversible(errors) {
     irreversibleByFile.set(issue.file, { file: issue.file, reason: identityReason });
   }
   for (const file of changed) {
-    const governanceReason = migrationSafetyGovernanceReasons.get(file);
+    const governanceReason = migrationSafetyGovernanceReason(file);
     if (governanceReason) {
       irreversibleByFile.set(file, { file, reason: governanceReason });
       continue;
@@ -538,8 +564,124 @@ function verifyPolicyIdentity(errors) {
   }
 }
 
+function changedMigrationSqlPaths() {
+  return changedFiles()
+    .filter((file) => /^migrations\/\d{3}_.*\.sql$/.test(file))
+    .sort();
+}
+
+function migrationBytesAtCommit(commit, file) {
+  try {
+    return execFileSync('git', ['show', `${commit}:${file}`], {
+      cwd: root,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The migration ledger records filenames, not byte digests. Once a migration
+ * exists in the comparison base, changing its bytes would let a durable staging
+ * database skip the new SQL while production (where it is still pending) applies
+ * it. Renames and deletions have the same history-rewrite problem.
+ *
+ * New files remain editable until they land. During an in-progress feature/main
+ * merge, compare with the main parent just as changedFiles() does, so a
+ * branch-only migration can still be renamed before it first reaches main.
+ */
+function verifyMigrationHistoryAppendOnly(errors) {
+  if (!changedOnly) return;
+  const comparisonBase = comparisonBaseIdentity();
+  for (const file of changedMigrationSqlPaths()) {
+    const baseBytes = migrationBytesAtCommit(comparisonBase, file);
+    if (baseBytes === null) continue;
+
+    const absolute = path.join(root, file);
+    if (!fs.existsSync(absolute)) {
+      errors.push(`migration_history_not_append_only:${file}:deleted_or_renamed`);
+      continue;
+    }
+    const currentBytes = fs.readFileSync(absolute);
+    if (!baseBytes.equals(currentBytes)) {
+      errors.push(`migration_history_not_append_only:${file}:modified`);
+    }
+  }
+}
+
+/**
+ * Continuous-deployment eligibility, evaluated independently of
+ * `authorization.authorizesPromotion`.
+ *
+ * `authorizesPromotion` answers "has an owner approved this specific
+ * irreversible operation?". This answers a different question: "can an
+ * unattended pipeline apply these migrations and still roll back to the
+ * predecessor image?". Deriving one from the other would let an owner-approved
+ * destructive migration ride an unattended deploy, or block every ordinary
+ * additive release for want of an approval it does not need.
+ */
+function evaluateCdEligibility(errors, irreversible) {
+  if (!changedOnly) {
+    // Without a change scope there is no delta to classify, and guessing would
+    // authorize an unattended deploy over unknown schema work.
+    return {
+      schema: MIGRATION_CD_ELIGIBILITY_SCHEMA,
+      eligible: false,
+      predecessorCompatible: false,
+      reasons: ['change_scope_not_evaluated'],
+      files: [],
+    };
+  }
+  const blockingErrors = [...errors];
+  const changedMigrations = [];
+  for (const file of changedMigrationSqlPaths()) {
+    const migrationPath = path.join(root, file);
+    if (!fs.existsSync(migrationPath)) {
+      blockingErrors.push(`migration_deleted_or_renamed:${file}`);
+      continue;
+    }
+    changedMigrations.push({ file, sql: fs.readFileSync(migrationPath, 'utf8') });
+  }
+  return evaluateMigrationCdEligibility({
+    changedMigrations,
+    blockingErrors,
+    irreversibleFindings: irreversible,
+    compatibilityExemptions:
+      releaseMigrationLineagePolicy?.release.compatibilityExemptions ?? [],
+  });
+}
+
 const errors = [];
+try {
+  releaseMigrationLineagePolicy = loadProductionMigrationLineagePolicy({ root });
+  verifyProductionMigrationLineageHistory({
+    policy: releaseMigrationLineagePolicy,
+    readHistoricalMigration: ({ commit, sourcePath }) => execFileSync(
+      'git',
+      ['show', `${commit}:${sourcePath}`],
+      { cwd: root, stdio: ['ignore', 'pipe', 'ignore'] },
+    ),
+    readRepositoryArchive: ({ sourceCommit, file, sourcePath }) => (
+      readRepositoryArchiveFromGitIndex({
+        root,
+        sourceCommit,
+        file,
+        sourcePath,
+      })
+    ),
+    readReplacementMigration: ({ file }) => fs.readFileSync(
+      path.join(root, 'migrations', file),
+    ),
+  });
+} catch (error) {
+  errors.push(
+    `release_migration_reconciliation_policy_invalid:`
+    + `${error instanceof Error ? error.message : String(error)}`,
+  );
+}
 const files = migrationFiles();
+verifyMigrationHistoryAppendOnly(errors);
 verifyPolicyIdentity(errors);
 verifySequence(files, errors);
 verifyDuplicates(files, errors);
@@ -552,17 +694,37 @@ const {
   backupEvidence,
 } = checkChangedIrreversible(errors);
 const governanceChanges = irreversible.filter(({ file }) => (
-  migrationSafetyGovernanceReasons.has(file)
+  migrationSafetyGovernanceReason(file) !== null
 ));
 const irreversibleSchemaMigrations = irreversible.filter(({ file }) => (
-  !migrationSafetyGovernanceReasons.has(file)
+  migrationSafetyGovernanceReason(file) === null
 ));
+const cdEligibility = evaluateCdEligibility(errors, irreversible);
+// The complete ordered inventory, independent of the change delta. The delta
+// says what this release *changed*; the inventory says what the migrator can
+// actually apply, and only the latter can be reconciled against the ledger.
+const migrationInventory = emitInventory
+  ? buildMigrationInventory({
+    readDir: (dir) => fs.readdirSync(path.join(root, dir)),
+    readFile: (file) => fs.readFileSync(path.join(root, file)),
+    compatibilityExemptions:
+      releaseMigrationLineagePolicy?.release.compatibilityExemptions ?? [],
+  })
+  : null;
 
 const payload = {
   ok: errors.length === 0,
   generatedAt: new Date().toISOString(),
+  // Release publication independently recomputes this exact changed-scope
+  // verdict on a GitHub-hosted runner. Binding the resolved commit here lets
+  // that trusted boundary reject a self-hosted artifact that silently changed
+  // the comparison base (especially for a multi-commit push).
+  comparisonBase: comparisonBaseIdentity(),
   migrationCount: files.length,
   checks: {
+    migrationHistoryAppendOnly: !errors.some((error) => (
+      error.startsWith('migration_history_not_append_only:')
+    )),
     sequence: !errors.some((error) => error.startsWith('migration_sequence_gap')),
     duplicates: !errors.some((error) => error.startsWith('migration_duplicate_prefix')),
     cumulativeRehearsal: !errors.some((error) => error.startsWith('migration_rehearsal_failed')),
@@ -596,6 +758,9 @@ const payload = {
       && approvalMode === 'promotion'
       && errors.length === 0,
   },
+  cdEligibility,
+  migrationInventory,
+  migrationReconciliation: releaseMigrationLineagePolicy?.releaseReconciliation ?? null,
   reviewEvidence,
   rehearsalEvidence,
   finalRehearsalEvidence,
@@ -604,9 +769,19 @@ const payload = {
 };
 
 if (outputJson) {
-  process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+  // Pretty-printing the complete inventory exceeds a 64 KiB synchronous-child
+  // pipe even though the governed data fits. Keep the evidence compact when the
+  // inventory is requested so a successful child cannot return truncated JSON.
+  if (!process.stdout.write(`${JSON.stringify(payload, null, emitInventory ? 0 : 2)}\n`)) {
+    await once(process.stdout, 'drain');
+  }
 } else if (payload.ok) {
   process.stdout.write(`✅ Migration safety checks passed (${files.length} migrations)\n`);
+  if (changedOnly) {
+    process.stdout.write(cdEligibility.eligible
+      ? '   Continuous deployment eligible: expand/backfill only, predecessor-compatible\n'
+      : `   Continuous deployment blocked: ${cdEligibility.reasons.join(', ')}\n`);
+  }
   if (irreversible.length > 0) {
     if (approvalMode === 'scan') {
       process.stdout.write(`   Approval required for review subject ${payload.requiredReviewSubject.sha256}\n`);

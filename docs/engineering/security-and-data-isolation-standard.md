@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: backend security architect
-Last verified: 2026-06-16
+Last verified: 2026-08-10
 Update policy: update when threat model changes, when a new permanent gate
 is added, or when a new class of multi-tenant bug is shipped to production.
 Removing a gate requires owner approval.
@@ -32,9 +32,8 @@ candidate cross-tenant attack surface. The four tenants of focus:
 The 4.14.118-class incident (`prompts/secretary.md` literally said "You
 are Felipe's personal assistant…" and was used for every tenant) closed
 threat #2 at the prompt layer. The 4.14.127 through 4.14.129 auth
-hardening passes closed the known threat #4 P0/P1 backlog items in
-`docs/release/OPEN_ITEMS.md`; the standard below is what must continue
-to hold to prevent all four classes from returning.
+hardening passes closed the then-known threat #4 P0/P1 backlog. The standard
+below is what must continue to hold to prevent all four classes from returning.
 
 ## 2. Auth + session contract (must)
 
@@ -262,7 +261,7 @@ removal requires owner approval and a documented replacement.
 | `__tests__/security/creator-config-neutrality.test.ts` | Vitest | every PR | prompt neutrality |
 | `__tests__/services/prompt-cleanliness.test.ts` | Vitest | every PR (prompt diff) | prompt static cleanliness |
 | `vi.mock` completeness lint | `scripts/vi-mock-completeness-lint.mjs` | nightly strict | partial-mock leakage |
-| `release-doc-drift-check.sh` | nightly strict | nightly | release-state drift |
+| `release-doc-drift-check.sh` | nightly strict | nightly | canonical documentation drift |
 | Two-user matrix test | `__tests__/security/<domain>-tenant-isolation.test.ts` | every PR (per-domain diff) | cross-tenant read leak |
 | Auth-route audit log assertion | `__tests__/api/auth-routes.test.ts` | every PR (auth diff) | missing audit row |
 

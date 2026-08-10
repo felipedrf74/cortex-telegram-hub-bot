@@ -1,0 +1,30 @@
+[Unit]
+Description=Nexus Hub weekly release pipeline heartbeat
+Documentation=file:///opt/nexus-release/checkout/ops/nexus-release/README.md
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=!/var/lib/nexus-release/state/control-plane-transaction.json
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+WorkingDirectory=/opt/nexus-release/checkout
+EnvironmentFile=-/etc/nexus-release/poller.env
+UnsetEnvironment=LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT LD_DEBUG LD_PROFILE
+ExecStartPre=/usr/bin/env -i PATH=/usr/bin:/bin /usr/bin/test -f /opt/nexus-release/checkout/.nexus-control-plane-ready
+ExecStartPre=/usr/bin/env -i PATH=/usr/bin:/bin HOME=/var/lib/nexus-release/home /usr/bin/node -e "if (process.version !== 'v22.23.1') process.exit(1)"
+ExecStart=/usr/bin/env -i PATH=/usr/bin:/bin HOME=/var/lib/nexus-release/home NEXUS_RELEASE_TELEGRAM_BOT_TOKEN=${NEXUS_RELEASE_TELEGRAM_BOT_TOKEN} NEXUS_RELEASE_TELEGRAM_CHAT_ID=${NEXUS_RELEASE_TELEGRAM_CHAT_ID} /usr/bin/node /opt/nexus-release/checkout/scripts/release-heartbeat.mjs
+TimeoutStartSec=120
+
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadOnlyPaths=/opt/nexus-release
+ReadWritePaths=/var/lib/nexus-release
+PrivateTmp=yes
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=nexus-release-heartbeat

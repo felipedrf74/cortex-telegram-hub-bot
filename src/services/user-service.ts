@@ -290,10 +290,12 @@ export function resolveCanonicalUserId(userRef: number): number | null {
   return user?.id ?? null;
 }
 
-export function getOwnerBootstrapUser(): User | null {
+export function getOwnerBootstrapUser(
+  options: { failClosed?: boolean } = {},
+): User | null {
   const ownerTelegramId = getOwnerBootstrapTelegramId();
   if (!ownerTelegramId) return null;
-  seedOwnerUser();
+  seedOwnerUser(options);
   return getUserByTelegramId(ownerTelegramId);
 }
 
@@ -351,9 +353,11 @@ export function getActiveUserTargets(): UserTarget[] {
  * Returning both lets legacy owner bridges read old rows while new boot-time
  * migrations can converge on the canonical tenant key.
  */
-export function getOwnerBootstrapUserRefs(): number[] {
+export function getOwnerBootstrapUserRefs(
+  options: { failClosed?: boolean } = {},
+): number[] {
   const refs: number[] = [];
-  const owner = getOwnerBootstrapUser();
+  const owner = getOwnerBootstrapUser(options);
   if (owner?.id && !refs.includes(owner.id)) {
     refs.push(owner.id);
   }
@@ -925,7 +929,8 @@ export function deleteInviteCode(code: string): boolean {
 /**
  * Auto-create or upgrade the owner user from explicit OWNER_TELEGRAM_ID when
  * no persisted owner record already exists.
- * Call once at startup. Safe to call multiple times (idempotent).
+ * Safe to call multiple times (idempotent). Release containers call it only
+ * from the dedicated one-shot migrator; local boot mode retains startup use.
  *
  * FINAL TELEGRAM REMNANT (M21 telegram purge, 2026-07): this bootstrap
  * still SEEDS and READS users.telegram_id because production's persisted
@@ -938,28 +943,62 @@ export function deleteInviteCode(code: string): boolean {
  * introduces a canonical owner key and re-keys the persisted row
  * (archive-first groundwork: migrations/259_telegram_identity_archive.sql).
  */
-export function seedOwnerUser(): void {
+export function seedOwnerUser(
+  options: { failClosed?: boolean } = {},
+): void {
   try {
     const db = getDb();
 
-    // Ensure users table exists (in case migration hasn't run yet)
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        telegram_id INTEGER NOT NULL UNIQUE,
-        username TEXT, first_name TEXT, last_name TEXT,
-        language TEXT NOT NULL DEFAULT 'pt-BR',
-        timezone TEXT NOT NULL DEFAULT 'Europe/Lisbon',
-        tier TEXT NOT NULL DEFAULT 'free',
-        status TEXT NOT NULL DEFAULT 'active',
-        invite_code TEXT,
-        daily_message_limit INTEGER NOT NULL DEFAULT 40,
-        daily_token_limit INTEGER NOT NULL DEFAULT 100000,
-        daily_cost_limit_usd REAL NOT NULL DEFAULT 0,
-        created_at TEXT NOT NULL DEFAULT (datetime('now')),
-        last_active_at TEXT
-      )
-    `);
+    if (options.failClosed) {
+      // Release maintenance runs only after the signed SQL inventory. It must not
+      // self-heal schema drift outside that inventory, even with an idempotent
+      // CREATE TABLE. Prove the exact columns this data write depends on instead.
+      const table = db.prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'users'",
+      ).get();
+      const requiredColumns = new Set([
+        'id',
+        'telegram_id',
+        'first_name',
+        'language',
+        'tier',
+        'status',
+        'daily_message_limit',
+        'daily_token_limit',
+        'daily_cost_limit_usd',
+      ]);
+      const observedColumns = (table
+        ? db.prepare("SELECT name FROM pragma_table_info('users')").all()
+        : []) as Array<{ name: string }>;
+      const observedNames = new Set(observedColumns.map((column) => column.name));
+      const missing = [...requiredColumns].filter((column) => !observedNames.has(column));
+      if (!table || missing.length > 0) {
+        throw new Error(
+          `release owner data maintenance requires the governed users schema`
+          + (missing.length > 0 ? ` (missing: ${missing.join(', ')})` : ''),
+        );
+      }
+    } else {
+      // Local boot mode retains the historical self-heal. Release mode above is
+      // verification-only for schema and can never enter this branch.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS users (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          telegram_id INTEGER NOT NULL UNIQUE,
+          username TEXT, first_name TEXT, last_name TEXT,
+          language TEXT NOT NULL DEFAULT 'pt-BR',
+          timezone TEXT NOT NULL DEFAULT 'Europe/Lisbon',
+          tier TEXT NOT NULL DEFAULT 'free',
+          status TEXT NOT NULL DEFAULT 'active',
+          invite_code TEXT,
+          daily_message_limit INTEGER NOT NULL DEFAULT 40,
+          daily_token_limit INTEGER NOT NULL DEFAULT 100000,
+          daily_cost_limit_usd REAL NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          last_active_at TEXT
+        )
+      `);
+    }
 
     const configuredOwnerTelegramId = getConfiguredOwnerBootstrapTelegramId();
 
@@ -1030,6 +1069,7 @@ export function seedOwnerUser(): void {
     logger.info({ telegramId: configuredOwnerTelegramId }, 'Owner user seeded');
   } catch (err) {
     logger.warn({ err }, 'Failed to seed owner user');
+    if (options.failClosed) throw err;
   }
 }
 

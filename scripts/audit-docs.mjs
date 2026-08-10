@@ -8,6 +8,7 @@ import {
   gitHistoryOnlyDocumentationIssues,
   resolveDocumentationInventory,
 } from './lib/documentation-policy.mjs';
+import { releaseStateDocumentationIssues } from './lib/docs-release-state-audit.mjs';
 import { missingCanonicalRegistryMarkdownPaths } from './lib/docs-audit-paths.mjs';
 
 const root = process.cwd();
@@ -123,7 +124,7 @@ for (const file of markdown.filter((entry) => (
   add(
     'competing-current-verdict',
     file,
-    'Current release truth is limited to release-state.json and CURRENT_RELEASE_STATE.md.',
+    'Checked-in release projection is limited to release-state.json and CURRENT_RELEASE_STATE.md; live host state and immutable receipts remain authoritative.',
   );
 }
 
@@ -160,7 +161,9 @@ try {
 }
 
 if (governance) {
-  const staleTestCountPattern = /(?:\b[0-9][0-9,]*\s+(?:test(?:s| files?)?|cases?)\b|(?:test(?:s| files?)?|cases?)\s*[:=]\s*[0-9][0-9,]*)/i;
+  // A count is a same-line prose claim. Do not join a shell exit status such
+  // as `return 1` to the next command named `test` across a newline.
+  const staleTestCountPattern = /(?:\b[0-9][0-9,]*[ \t]+(?:test(?:s| files?)?|cases?)\b|(?:test(?:s| files?)?|cases?)[ \t]*[:=][ \t]*[0-9][0-9,]*)/i;
   for (const record of governance.records.filter((entry) => entry.active && entry.status !== 'generated')) {
     const content = fs.readFileSync(path.join(root, record.path), 'utf8');
     if (staleTestCountPattern.test(content)) {
@@ -222,26 +225,8 @@ if (fs.existsSync(path.join(root, 'docs/project-map.json'))) {
 }
 const state = JSON.parse(fs.readFileSync(path.join(root, 'docs/release/release-state.json'), 'utf8'));
 const releaseSummary = fs.readFileSync(path.join(root, 'docs/release/CURRENT_RELEASE_STATE.md'), 'utf8');
-const releaseSummaryValues = [
-  state.backend.version,
-  state.backend.runtimeSha,
-  state.backend.artifactDigest,
-  state.backend.installedDigest,
-  state.backend.releaseEvidence?.rcRun,
-  state.backend.releaseEvidence?.signingRun,
-  state.backend.releaseEvidence?.stagingRun,
-  state.backend.releaseEvidence?.stagingRequestId,
-  state.backend.releaseEvidence?.backup,
-  state.trainingCatalog?.compiledPackageHash,
-  state.trainingCatalog?.releaseSubjectHash,
-  state.ios?.version,
-  state.ios?.sha,
-  state.ios?.refreshFixSha,
-  state.ios?.prHeadSha,
-  state.ios?.mainSha,
-].filter((value) => typeof value === 'string' && value.length > 0);
-for (const value of releaseSummaryValues) {
-  if (!releaseSummary.includes(value)) add('release-summary-drift', 'docs/release/CURRENT_RELEASE_STATE.md', `Missing release-state value ${value}`);
+for (const issue of releaseStateDocumentationIssues({ state, releaseSummary })) {
+  add(issue.type, 'docs/release/CURRENT_RELEASE_STATE.md', issue.message);
 }
 for (const skill of tracked.filter((file) => file.startsWith('.agents/skills/') && file.endsWith('/SKILL.md'))) {
   const name = skill.split('/')[2];

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the exact Ubuntu 24.04/x86-64 dependency payload once on protected main.
+# Build the exact Ubuntu 24.04/x86-64 PM2 payload in the manual checkpoint.
 set -euo pipefail
 umask 077
 
@@ -33,8 +33,8 @@ trap cleanup EXIT
 mkdir -p "$python_stage/content-engine/vendor"
 
 # The workflow has already completed tests/build from `npm ci`. Prune that
-# lockfile-derived tree once, then archive it with normalized metadata so the
-# protected-main and RC artifact identities can be compared byte-for-byte.
+# lockfile-derived tree once, then archive it with normalized metadata for the
+# digest-bound checkpoint artifact.
 npm prune --omit=dev --no-audit --no-fund
 compression_started_ns="$(date +%s%N)"
 tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
@@ -49,8 +49,9 @@ printf '{"schema":"nexus.release-optimization-telemetry.v1","metric":"node-archi
   --disable-pip-version-check \
   --no-compile \
   --only-binary=:all: \
+  --require-hashes \
   --target "$python_stage/content-engine/vendor" \
-  --requirement content-engine/requirements.txt
+  --requirement content-engine/requirements-release.txt
 find "$python_stage/content-engine/vendor" -type d -name __pycache__ -prune -exec rm -rf -- {} +
 tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
   -C "$python_stage" -cf - content-engine/vendor \

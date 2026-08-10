@@ -69,7 +69,8 @@ async function main(): Promise<void> {
     process.exit(validation.status === 'passed' ? 0 : 1);
   }
 
-  const { closeDatabase, initDatabase } = await import('../src/services/database');
+  const { initDatabase } = await import('../src/services/database-bootstrap');
+  const { closeDatabase } = await import('../src/services/database');
   initDatabase();
   try {
     const result = seedRepoTrainingCatalogVersion({

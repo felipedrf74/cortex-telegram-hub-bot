@@ -36,7 +36,8 @@ describe('migration 251 runtime integrity readiness', () => {
         'tsx',
         '--eval',
         `
-          import { closeDatabase, initDatabase } from './src/services/database.ts';
+          import { closeDatabase } from './src/services/database.ts';
+          import { initDatabase } from './src/services/database-bootstrap.ts';
           let exitCode = 2;
           try {
             initDatabase();

@@ -510,6 +510,15 @@ describe('lean exact-artifact release path', () => {
       predecessorDigest: value.deployedDigest,
     });
     fs.mkdirSync(fakeBin);
+    fs.writeFileSync(path.join(fakeBin, 'git'), `#!/usr/bin/env bash
+case "$*" in
+  *"rev-parse --is-inside-work-tree"*) printf 'true\\n' ;;
+  *"status --porcelain --untracked-files=normal"*) ;;
+  *"rev-parse HEAD"*|*"rev-parse origin/main"*) printf '%s\\n' '${value.runtimeSha}' ;;
+  *"fetch --quiet --no-tags origin main"*) ;;
+  *) exit 64 ;;
+esac
+`, { mode: 0o755 });
     fs.writeFileSync(path.join(fakeBin, 'ssh'), `#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "${sshCalls}"
 case "$*" in
@@ -844,7 +853,7 @@ db.close();
     );
     expect(remote).toContain(
       '"$SOURCE_BUNDLE/scripts/release-runtime-dependencies.mjs" \\\n'
-      + '      verify-extracted',
+      + '      verify-predecessor-extracted',
     );
     expect(operator).toContain('--chmod=Du=rwx,Dgo=,Fu=rw,Fgo=');
     expect(operator).toContain(
@@ -1142,6 +1151,82 @@ db.close();
     expect(result.status, result.stderr).toBe(0);
   });
 
+  it('refetches protected main and rejects a branch advance at dispatch time', () => {
+    const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-release-head-'));
+    roots.push(fixtureRoot);
+    const origin = path.join(fixtureRoot, 'origin.git');
+    const publisher = path.join(fixtureRoot, 'publisher');
+    const checkout = path.join(fixtureRoot, 'checkout');
+    const gate = path.resolve('scripts/lib/release-gates.sh');
+    const git = (args: string[], cwd?: string) => execFileSync('git', args, {
+      cwd,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim();
+
+    git(['init', '--bare', origin]);
+    git(['init', '-b', 'main', publisher]);
+    git(['config', 'user.name', 'Release Fixture'], publisher);
+    git(['config', 'user.email', 'release-fixture@example.invalid'], publisher);
+    git(['config', 'commit.gpgsign', 'false'], publisher);
+    fs.writeFileSync(path.join(publisher, 'runtime.txt'), 'first\n');
+    git(['add', 'runtime.txt'], publisher);
+    git(['commit', '-m', 'first'], publisher);
+    git(['remote', 'add', 'origin', origin], publisher);
+    git(['push', '-u', 'origin', 'main'], publisher);
+    git(['clone', '--branch', 'main', origin, checkout]);
+    const expectedSha = git(['rev-parse', 'HEAD'], checkout);
+    const reassert = () => spawnSync('/bin/bash', [
+      '-s', '--', gate, checkout, expectedSha,
+    ], {
+      encoding: 'utf8',
+      input: [
+        'set -euo pipefail',
+        'source "$1"',
+        'release_reassert_exact_protected_main "$2" "$3"',
+      ].join('\n'),
+    });
+
+    const current = reassert();
+    expect(current.status, current.stderr).toBe(0);
+
+    fs.writeFileSync(path.join(publisher, 'runtime.txt'), 'second\n');
+    git(['add', 'runtime.txt'], publisher);
+    git(['commit', '-m', 'second'], publisher);
+    git(['push', 'origin', 'main'], publisher);
+
+    const stale = reassert();
+    expect(stale.status).not.toBe(0);
+    expect(stale.stderr).toContain(
+      'release target is no longer the exact current protected origin/main SHA',
+    );
+  });
+
+  it('reasserts protected main immediately before every remote transaction dispatch', () => {
+    const operator = fs.readFileSync('scripts/release-operator.sh', 'utf8');
+    const production = fs.readFileSync('scripts/promote-exact-release.sh', 'utf8');
+    const stagingBoundaries = operator.match(
+      /release_reassert_exact_protected_main "\$ROOT" "\$RUNTIME_SHA"\n\s+ssh "\$SERVER" systemd-run --user --quiet --collect/g,
+    ) ?? [];
+
+    expect(stagingBoundaries).toHaveLength(2);
+    expect(operator).toMatch(
+      /release_reassert_exact_protected_main "\$ROOT" "\$RUNTIME_SHA"\n\s+"\$ROOT\/scripts\/promote-exact-release\.sh"/,
+    );
+    expect(production).toMatch(
+      /release_reassert_exact_protected_main "\$ROOT" "\$RUNTIME_SHA"\nssh "\$SERVER" systemd-run --user --quiet --collect/,
+    );
+    const productionBoundary = production.indexOf(
+      'release_reassert_exact_protected_main "$ROOT" "$RUNTIME_SHA"',
+    );
+    expect(productionBoundary).toBeGreaterThan(
+      production.indexOf('node - "$ROOT/docs/release/release-state.json"'),
+    );
+    expect(productionBoundary).toBeLessThan(
+      production.indexOf('ssh "$SERVER" systemd-run --user'),
+    );
+  });
+
   it('reads protected release identity under macOS Bash errexit semantics', () => {
     const gate = path.resolve('scripts/lib/release-gates.sh');
     const state = path.resolve('docs/release/release-state.json');
@@ -1164,17 +1249,45 @@ db.close();
     expect(result.status, result.stderr).toBe(0);
   });
 
-  it('runs only the deterministic remainder across four shards and reuses the main artifact', () => {
+  it('runs only the deterministic remainder and builds one exact fallback artifact', () => {
     const workflow = fs.readFileSync('.github/workflows/release-candidate-evidence.yml', 'utf8');
+    const ciWorkflow = fs.readFileSync('.github/workflows/ci.yml', 'utf8');
+    const operator = fs.readFileSync('scripts/release-operator.sh', 'utf8');
+    const lockCheckAt = workflow.indexOf(
+      'Reproduce and verify the Python release closure before fallback publication',
+    );
+    const bundleAt = workflow.indexOf('Build and verify exact PM2 fallback bundle');
 
     expect(workflow).toContain('matrix:\n        shard: [1, 2, 3, 4]');
     expect(workflow).toContain('node scripts/release-test-remainder.mjs run');
     expect(workflow).toContain("--shard '${{ matrix.shard }}/4'");
     expect(workflow).not.toContain('npm run test:full:sharded');
     expect(workflow).toContain('run-id: ${{ needs.verify-main.outputs.protected_run_id }}');
-    expect(workflow).toContain('name: ${{ needs.verify-main.outputs.artifact_name }}');
-    expect(workflow).not.toContain('node scripts/release-bundle.mjs');
-    expect(workflow).not.toContain('npm run build');
+    expect(workflow).toContain('name: Build and verify exact PM2 fallback bundle');
+    expect(lockCheckAt).toBeGreaterThan(-1);
+    expect(bundleAt).toBeGreaterThan(lockCheckAt);
+    expect(workflow.slice(lockCheckAt, bundleAt)).toContain(
+      'node scripts/generate-python-release-lock.mjs --check',
+    );
+    expect(workflow.slice(lockCheckAt, bundleAt)).toContain(
+      '--dry-run --ignore-installed --require-hashes',
+    );
+    expect(workflow).toContain('node scripts/release-bundle.mjs');
+    expect(workflow).toContain('--output .local/release/checkpoint/bundle');
+    expect(workflow).not.toContain('needs.verify-main.outputs.artifact_name');
+    expect(workflow).not.toContain('prefix="release-bundle-$RUNTIME_SHA-"');
+    expect(workflow).toContain('npm run build');
+    expect(workflow).toContain('name: ${{ steps.fallback_bundle.outputs.artifact_name }}');
+    expect(workflow).toContain("artifact_name=\"release-bundle-$RUNTIME_SHA-$artifact_digest\"");
+    expect(workflow).toContain(
+      "--expect-artifact-digest '${{ steps.fallback_bundle.outputs.artifact_digest }}'",
+    );
+    expect(ciWorkflow).not.toContain('node scripts/release-bundle.mjs');
+    expect(ciWorkflow).not.toContain('scripts/build-release-runtime-dependencies.sh');
+    expect(operator).toContain(
+      'gh run download "$CHECKPOINT_RUN" --name "$ARTIFACT_NAME" --dir "$temporary"',
+    );
+    expect(operator).not.toContain('gh run download "$PROTECTED_RUN"');
     expect(workflow).not.toContain('sign-release-manifest');
     expect(workflow).toContain('--policy-file config/test-groups.json');
     expect(workflow).toContain('node scripts/changed-area-classifier.mjs');
@@ -1215,29 +1328,23 @@ db.close();
     );
   });
 
-  it('uses one user-owned remote mutex for advisory Sonar and release work', () => {
-    const scan = fs.readFileSync('scripts/quality-sonar-scan.sh', 'utf8');
+  // SonarQube was decommissioned by the 2026-08-07 continuous-deployment
+  // refactor, which removed its coexistence gate from this path. The historical
+  // root-lock filename remains only as the shared maintenance mutex that excludes
+  // the PM2 fallback from the container poller.
+  it('takes the user release lock before the shared maintenance mutex', () => {
     const remote = fs.readFileSync('scripts/remote-user-release-transaction.sh', 'utf8');
 
-    expect(scan).toContain(
-      'mutex="$state/.release.lock"',
-    );
-    expect(scan).toContain(
-      'root_mutex=/run/lock/nexus-release-sonar.lock',
-    );
-    expect(scan).toContain('flock -n 8 && flock -n 7');
     expect(remote).toContain('LOCK_FILE="$STATE_ROOT/.release.lock"');
     expect(remote).toContain(
-      'flock -n 9 || die "another staging, production, or Sonar-sensitive release action is active"',
+      'flock -n 9 || die "another staging or production release action is active"',
     );
-    expect(remote).toContain('ROOT_SONAR_LOCK=/run/lock/nexus-release-sonar.lock');
-    expect(remote).toContain(
-      'flock -n 8 || die "a Sonar backup, restore, or root maintenance action is active"',
-    );
-    expect(remote).toContain(
-      'sudo -n "$SONAR_RELEASE_STATE_BIN" --project nexus-hub-backend --json',
-    );
-    expect(remote).toContain("value.activeTasks !== 0");
+    expect(remote).toContain('MAINTENANCE_LOCK=/run/lock/nexus-release-sonar.lock');
+    expect(remote).not.toMatch(/quality-sonar|sonarqube|sonar_(?:health|scan|gate)/i);
+    expect(remote).toContain('flock -n 8 || die "another root maintenance or container release action is active"');
+    expect(remote.indexOf('flock -n 9')).toBeLessThan(remote.indexOf('flock -n 8'));
+    expect(remote).toContain("'root:dominguez:660'");
+    expect(remote).toContain('assert_lock_fd_matches_path 8 "$MAINTENANCE_LOCK"');
     expect(remote).toContain('[ "$old_release" = "$PREDECESSOR" ]');
     expect(remote).toContain('[ "$old_release" = "$CURRENT_TARGET" ]');
     expect(remote).toContain("marker?.schema!=='nexus.release-bundle.v1'");
@@ -1261,7 +1368,7 @@ db.close();
     );
     expect(installer).not.toContain('/srv/nexus-release');
     expect(backup).toContain(
-      'NEXUS_LOCAL_BACKUP_DATABASE_PATH=/home/dominguez/telegram-hub-bot/data/bot.db',
+      'NEXUS_LOCAL_BACKUP_DATABASE_PATH=/var/lib/nexus-hub/production/data/bot.db',
     );
     expect(backup).not.toContain('/srv/nexus-release');
   });

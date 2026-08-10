@@ -2,13 +2,15 @@
 
 Status: canonical
 Owner: backend cost-guardrail lead (Felipe)
-Last verified: 2026-07-10
+Last verified: 2026-08-09
 Update policy: update when entitlement eligibility, AI budget windows, public
 quota fields, Nexus Points rules, or provider-call attribution changes.
 
 Rollout state: implemented on the paid-AI cost-controls worktree. This document
-does not assert staging or production promotion; runtime truth remains in
-`docs/release/CURRENT_RELEASE_STATE.md`.
+does not assert staging or production deployment. Runtime truth remains in
+`/var/lib/nexus-release/state/release-state.json` and the immutable receipts
+under `/var/lib/nexus-release/receipts/`; checked-in release summaries are
+historical, non-authoritative projections.
 
 This is the canonical contract for model-backed access. Deterministic Secretary
 reads and actions are token-zero and remain available independently of AI
@@ -289,7 +291,10 @@ behavior, active/founder billing windows, invalid paid bounds, stale
 automation ceilings, no background Points debit, token-zero availability, and
 the stable HTTP/WebSocket contracts.
 
-Release promotion additionally requires migration rehearsal, classifier-selected
-backend verification, iOS focused tests/build, staging matrix smoke, docs audit,
-and the Verifiable Reward Loop. Production promotion requires separate owner
-authorization and live tunnel/PM2/runtime/aggregate proof.
+Backend deployment evidence follows the recovery-first release contract:
+classifier-selected protected-main CI, signed OCI artifacts, exact-candidate
+staging, and validated root-host state and immutable receipts. Changed shared
+app contracts run backend fixture checks; iOS build and device evidence belong
+to the iOS distribution cadence and are not a backend deployment gate. Manual
+infrastructure or maintenance mutations still require separate owner
+authorization; ordinary governed continuous deployment does not.

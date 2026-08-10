@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Lean exact-artifact release operator.
 #
-# prepare: resolve one successful release checkpoint, download the original
-# protected-main artifact, upload it once, and stage it through systemd-run.
+# prepare: resolve one successful release checkpoint, download its exact
+# protected-main-SHA bundle, upload it once, and stage it through systemd-run.
 # promote: require explicit owner confirmation, then submit one production
 # transaction that survives the caller's SSH session.
 set -euo pipefail
@@ -33,7 +33,7 @@ Usage:
   scripts/release-operator.sh promote --confirm SHA:DIGEST [--server HOST] [--dry-run]
   scripts/release-operator.sh status [--server HOST]
 
-`prepare` reuses the exact protected-main artifact and stops after staging.
+`prepare` reuses the exact checkpoint-built artifact and stops after staging.
 `promote` also requires NEXUS_RELEASE_OWNER_AUTHORIZED=1.
 The staging fault drill additionally requires NEXUS_RELEASE_DRILL_AUTHORIZED=1.
 USAGE
@@ -128,10 +128,6 @@ process.stdout.write(String(value));' "$(cd "$(dirname "$MANIFEST")" && pwd)/$(b
 
 require_exact_checkout() {
   release_require_git_worktree "$ROOT"
-  release_require_clean_tree "$ROOT" || {
-    echo "release commands require a clean exact protected-main checkout" >&2
-    exit 1
-  }
   RUNTIME_SHA="$(git rev-parse HEAD)"
   [[ "$RUNTIME_SHA" =~ ^[0-9a-f]{40}$ ]] || {
     echo "checked-out runtime SHA is invalid" >&2
@@ -141,11 +137,7 @@ require_exact_checkout() {
     echo "checked-out runtime SHA differs from --sha" >&2
     exit 1
   }
-  git fetch --quiet --no-tags origin main
-  [ "$(git rev-parse origin/main)" = "$RUNTIME_SHA" ] || {
-    echo "release target is not the exact current protected origin/main SHA" >&2
-    exit 1
-  }
+  release_reassert_exact_protected_main "$ROOT" "$RUNTIME_SHA"
   read -r CANONICAL_DEPLOYED_SHA CANONICAL_DEPLOYED_DIGEST < <(
     release_read_deployed_identity "$ROOT/docs/release/release-state.json"
   )
@@ -239,7 +231,6 @@ resolve_manifest_identity() {
   ARTIFACT_NAME="$(manifest_value artifact.name)"
   ARTIFACT_DIGEST="$(manifest_value artifact.sha256)"
   MANIFEST_DEPLOYED_SHA="$(manifest_value releaseImpact.deployedSha)"
-  PROTECTED_RUN="$(manifest_value protectedMain.runId)"
   MANIFEST_CHECKPOINT_RUN="$(manifest_value releaseCheckpoint.runId)"
   MIGRATION_APPROVAL_REQUIRED="$(manifest_value migrations.approvalRequired)"
   [ "$MANIFEST_CHECKPOINT_RUN" = "$CHECKPOINT_RUN" ] || {
@@ -297,7 +288,7 @@ download_bundle() {
   parent="$BUNDLE_ROOT/$RUNTIME_SHA"
   install -d -m 700 "$parent"
   temporary="$(mktemp -d "$parent/.download-$ARTIFACT_DIGEST.XXXXXX")"
-  gh run download "$PROTECTED_RUN" --name "$ARTIFACT_NAME" --dir "$temporary"
+  gh run download "$CHECKPOINT_RUN" --name "$ARTIFACT_NAME" --dir "$temporary"
   node scripts/release-artifact-manifest.mjs \
     --verify-bundle "$temporary" \
     --expected-runtime-sha "$RUNTIME_SHA" \
@@ -619,6 +610,7 @@ let body="";process.stdin.on("data",chunk=>body+=chunk);process.stdin.on("end",(
       TRANSACTION_SUFFIX="${TRANSACTION_ID##*-}"
       UNIT="nexus-release-staging-${RUNTIME_SHA:0:12}-${TRANSACTION_SUFFIX}"
       if [ "$STAGING_FAULT_AFTER_SWITCH" = true ]; then
+        release_reassert_exact_protected_main "$ROOT" "$RUNTIME_SHA"
         ssh "$SERVER" systemd-run --user --quiet --collect \
           --unit "$UNIT" \
           --property Type=oneshot \
@@ -657,6 +649,7 @@ NODE
         TRANSACTION_SUFFIX="${TRANSACTION_ID##*-}"
         UNIT="nexus-release-staging-${RUNTIME_SHA:0:12}-${TRANSACTION_SUFFIX}"
       fi
+      release_reassert_exact_protected_main "$ROOT" "$RUNTIME_SHA"
       ssh "$SERVER" systemd-run --user --quiet --collect \
         --unit "$UNIT" \
         --property Type=oneshot \
@@ -806,6 +799,7 @@ let body="";process.stdin.on("data",chunk=>body+=chunk);process.stdin.on("end",(
     fi
     if [ ! -f "$PRODUCTION_STATE" ]; then
       TRANSACTION_ID="$(transaction_id)"
+      release_reassert_exact_protected_main "$ROOT" "$RUNTIME_SHA"
       "$ROOT/scripts/promote-exact-release.sh" \
         "$SERVER" "$REMOTE_BUNDLE" "$RUNTIME_SHA" "$ARTIFACT_DIGEST" "$TRANSACTION_ID" \
         "$MANIFEST" "$MANIFEST_SHA256" "$CANONICAL_DEPLOYED_DIGEST" \

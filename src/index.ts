@@ -7,7 +7,8 @@ import './boot';
 
 import { config } from './config';
 import { logger } from './utils/logger';
-import { initDatabase, closeDatabase, getDb } from './services/database';
+import { closeDatabase, getDb } from './services/database';
+import { initDatabase } from './services/database-bootstrap';
 import { startScheduler } from './services/scheduler';
 import { setDbProvider } from './portal/telemetry';
 import {

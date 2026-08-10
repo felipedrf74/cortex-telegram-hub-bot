@@ -77,7 +77,7 @@ function parseRemoteJson(raw) {
 
 function buildRemoteRegistryProbeScript({ userId }) {
   return String.raw`
-require('./dist/services/database').initDatabase();
+require('./dist/services/database-bootstrap').initDatabase();
 const { setCache, getCached } = require('./dist/services/cache-store');
 const {
   invalidateCalendarCaches,

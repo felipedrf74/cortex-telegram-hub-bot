@@ -1,6 +1,11 @@
 # Current Release State
 
-Machine-readable truth: `docs/release/release-state.json`.
+> **Process changed 2026-08-07** — see [`continuous-deployment.md`](continuous-deployment.md).
+> Figures below are the last recorded, historical, non-authoritative *PM2* snapshot;
+> this repository projection proves no completed container receipt. Authority is VPS state at
+> `/var/lib/nexus-release/state/release-state.json` plus `/var/lib/nexus-release/receipts/`.
+
+Machine-readable projection: `docs/release/release-state.json` (generated, non-authoritative).
 
 ## Production
 
@@ -10,22 +15,19 @@ Machine-readable truth: `docs/release/release-state.json`.
 - Installed-tree digest: `00d8c5d9f779a5b0c8bf025239f188848c2227adb1512d20cda62bc148a80ee6`
 - Training catalog package: `51c1089cceb8a916abf200b5cb3688b19f5f7553990467ee0f8ef01c7c4f74bb`
 - Training release subject: `27b97ebc96e1b3bb1ee3612e63c5609b5572c9d4b58e59b8ea3e77642fb1cea3`
-- Transaction `20260805T214413Z-61d0c9b8e521` completed at
-  `2026-08-05T21:45:28.188Z` in 74.134s: readiness 12.456s, soak 61.676s.
-- Backend/content health, exact PM2 identity, artifact parity, authenticated
-  smoke, migration startup, database integrity, backup, and rollback passed.
+- Transaction `20260805T214413Z-61d0c9b8e521` completed at `2026-08-05T21:45:28.188Z`
+  in 74.134s: readiness 12.456s, soak 61.676s.
+- Backend/content health, PM2 identity, artifact parity, smoke, migration startup, database integrity, backup, and rollback passed.
 - Rollback was armed but not required; backup: `nexus-db-20260805T214421Z.sqlite.age`.
 
 ## Artifact-Bound Evidence
 
 - Protected-main/checkpoint runs: `31047443271` / `31048263279`
 - Compact manifest SHA-256: `d3dba958fe9b690296bd72e7e359b7a119d0b6e952e7ada4fbed6dbec09017f8`
-- Staging/production transactions: `20260805T214301Z-16818898b3f6` /
-  `20260805T214413Z-61d0c9b8e521`
+- Staging/production transactions: `20260805T214301Z-16818898b3f6` / `20260805T214413Z-61d0c9b8e521`
 - Encrypted backup SHA-256: `83911e31b212a4f36524a9e983484d033be9717cf35daf6091c67710ab2f4e6b`
-- The latest required fault drill remains `20260802T133139Z-1d33c71562f6`; it
-  restored the predecessor in 2.696s against 120s. The current staging
-  transaction then passed its normal 15s soak.
+- Fault drill `20260802T133139Z-1d33c71562f6` restored the predecessor in 2.696s
+  against 120s; the current staging transaction then passed its 15s soak.
 - `./scripts/staging-smoke.sh` passed 24/24 checks. Exact-SHA `local_engine`
   evaluation `chat-eval-2026-08-05T21-29-17-164Z` passed 7/7 scenarios at $0 actual cost.
 - Evidence remains in ignored `.local/release/`, server state, and restricted CI
@@ -87,8 +89,12 @@ Machine-readable truth: `docs/release/release-state.json`.
 
 ## Release Process
 
-The proven lean path remains mandatory: protected-main selection, disjoint
-checkpoint remainder, one exact artifact, staging, explicit owner approval,
-and one production transaction with backup, health, soak, and recovery.
-Staging-receipt polling defect `3b275a7209cdc2f73c86c770ac069767848a3b44`
-is closed; malformed or identity-drifting receipts fail closed.
+The current default is unattended recovery-first deployment: protected-main
+selected CI authorizes hosted publication of the signed OCI payload and image
+pair, then the VPS poller runs staging, exact backup, migration, production
+observation, and recovery while publishing immutable receipts. The checkpoint
+remainder and explicit owner-promotion procedure represented above are PM2-era
+history and remain available only as the owner-authorized first-cutover fallback
+during the initial 14 stable days. Historical staging-receipt polling defect
+`3b275a7209cdc2f73c86c770ac069767848a3b44` is closed, but its evidence is not a
+container release receipt.

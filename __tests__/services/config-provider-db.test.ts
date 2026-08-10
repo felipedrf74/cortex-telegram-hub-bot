@@ -287,6 +287,15 @@ describe('DatabaseConfigProvider', () => {
       testDb.exec('DROP TABLE IF EXISTS kv_store');
       expect(() => provider.loadPersistedSettings()).not.toThrow();
     });
+
+    it('refuses a missing kv_store in read-only external mode', () => {
+      testDb.exec('DROP TABLE IF EXISTS kv_store');
+      expect(() => provider.loadPersistedSettings('default', { ensureStore: false }))
+        .toThrow(/no such table: kv_store/);
+      expect(testDb.prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'kv_store'",
+      ).get()).toBeUndefined();
+    });
   });
 
   // ── Override chain priority ───────────────────────────────────

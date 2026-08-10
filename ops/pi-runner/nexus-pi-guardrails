@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+# Immutable test-only guard for the self-hosted CI runner.
+#
+# Installed by root at /usr/local/sbin/nexus-pi-guardrails, mode 0755, owned
+# root:root. CI runs it BEFORE any checkout, so it cannot be modified by the pull
+# request it is guarding. Nothing here reads the workspace.
+#
+# It asserts the negative capabilities: this machine runs CI verification, so it
+# must not be able to build deployable container images, deploy, publish, or read
+# production material. A runner that can reach any of these is not verification-
+# only, whatever the workflow says.
+#
+# Exit 0 = the runner is test-only. Any non-zero exit fails the CI run.
+set -euo pipefail
+
+JSON=false
+[ "${1:-}" = "--json" ] && JSON=true
+
+FAILURES=()
+CHECKS=()
+
+record() { # name result detail
+  CHECKS+=("{\"name\":\"$1\",\"result\":\"$2\",\"detail\":\"$3\"}")
+  [ "$2" = "failed" ] && FAILURES+=("$1") || true
+}
+
+refuse_path() { # name path
+  if [ -e "$2" ]; then
+    record "$1" failed "present: $2"
+  else
+    record "$1" passed "absent"
+  fi
+}
+
+refuse_directory_access() { # name path
+  if [ -L "$2" ]; then
+    record "$1" failed "symlink: $2"
+  elif [ ! -e "$2" ]; then
+    record "$1" passed "absent"
+  elif [ ! -d "$2" ]; then
+    record "$1" failed "not a directory: $2"
+  elif [ -r "$2" ] || [ -w "$2" ] || [ -x "$2" ]; then
+    record "$1" failed "runner can access: $2"
+  else
+    record "$1" passed "inaccessible to runner"
+  fi
+}
+
+# ── container-build/deploy capability ────────────────────────────────────────
+refuse_path absent_docker_socket /var/run/docker.sock
+refuse_path absent_containerd_socket /run/containerd/containerd.sock
+refuse_path absent_podman_socket /run/podman/podman.sock
+# Rootless Podman listens per-user, so the system path above never sees it.
+refuse_path absent_rootless_podman_socket "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/podman/podman.sock"
+refuse_path absent_rootless_docker_socket "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/docker.sock"
+# DOCKER_HOST can point the CLI at a remote or rootless daemon with no local socket.
+if [ -n "${DOCKER_HOST:-}" ]; then
+  record absent_docker_host_override failed "DOCKER_HOST is set"
+else
+  record absent_docker_host_override passed "unset"
+fi
+
+# A reachable Docker CLI with a working daemon is a build-and-push capability.
+if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+  record absent_docker_daemon failed "docker info succeeded"
+else
+  record absent_docker_daemon passed "no reachable daemon"
+fi
+
+# ── production material ──────────────────────────────────────────────────────
+refuse_path absent_production_backend_secrets /etc/nexus-release/production-backend.env
+refuse_path absent_production_content_secrets /etc/nexus-release/production-content-engine.env
+refuse_path absent_staging_backend_secrets /etc/nexus-release/staging-backend.env
+refuse_path absent_staging_content_secrets /etc/nexus-release/staging-content-engine.env
+refuse_path absent_release_trust /etc/nexus-release/trust
+refuse_path absent_production_state /var/lib/nexus-release/state
+# This Pi also hosts the audit mirror under a separate nexus-audit account. Its
+# root-owned parent may exist; the untrusted CI runner must not be able to list,
+# traverse, or write the account-owned 0700 final receipt directory.
+refuse_directory_access inaccessible_audit_receipts /var/lib/nexus-release-audit/receipts
+refuse_path absent_backup_root /srv/nexus-backups
+
+# ── registry credentials ─────────────────────────────────────────────────────
+# A registry credential on a test runner is a publish capability.
+REGISTRY_CREDENTIAL=""
+for candidate in "$HOME/.docker/config.json" /root/.docker/config.json \
+                 "$HOME/.config/containers/auth.json"; do
+  if [ -e "$candidate" ]; then
+    REGISTRY_CREDENTIAL="$candidate"
+    break
+  fi
+done
+if [ -n "$REGISTRY_CREDENTIAL" ]; then
+  record absent_registry_credentials failed "present: $REGISTRY_CREDENTIAL"
+else
+  record absent_registry_credentials passed "absent"
+fi
+
+# ── privilege escalation ─────────────────────────────────────────────────────
+# `sudo -n true` only catches a blanket grant. A *scoped* NOPASSWD rule — say
+# `NOPASSWD: /usr/bin/systemctl restart nexus-hub` — leaves `sudo -n true`
+# failing while still handing this account a production capability, so the
+# grant list itself has to be inspected.
+if command -v sudo >/dev/null 2>&1; then
+  if sudo -n true >/dev/null 2>&1; then
+    record absent_passwordless_sudo failed "sudo -n true succeeded"
+  else
+    record absent_passwordless_sudo passed "no blanket passwordless sudo"
+  fi
+  # `sudo -n -l` lists grants without prompting; it only produces output when at
+  # least one NOPASSWD rule applies to this account.
+  SUDO_GRANTS="$(sudo -n -l 2>/dev/null || true)"
+  if printf '%s' "$SUDO_GRANTS" | grep -qi 'NOPASSWD'; then
+    SCOPED_COUNT="$(printf '%s' "$SUDO_GRANTS" | grep -ci 'NOPASSWD' || true)"
+    record absent_scoped_passwordless_sudo failed "$SCOPED_COUNT NOPASSWD rule(s)"
+  else
+    record absent_scoped_passwordless_sudo passed "no NOPASSWD rules"
+  fi
+else
+  record absent_passwordless_sudo passed "sudo is not installed"
+  record absent_scoped_passwordless_sudo passed "sudo is not installed"
+fi
+
+if [ "$(id -u)" = "0" ]; then
+  record runner_is_unprivileged failed "running as root"
+else
+  record runner_is_unprivileged passed "uid $(id -u)"
+fi
+
+# ── deployment keys ──────────────────────────────────────────────────────────
+SSH_KEYS=0
+if [ -d "$HOME/.ssh" ]; then
+  SSH_KEYS="$(find "$HOME/.ssh" -maxdepth 1 -type f -name 'id_*' ! -name '*.pub' 2>/dev/null | wc -l | tr -d ' ')"
+fi
+if [ "$SSH_KEYS" != "0" ]; then
+  record absent_deploy_key failed "$SSH_KEYS private key(s) in ~/.ssh"
+else
+  record absent_deploy_key passed "no private ssh keys"
+fi
+
+if [ "$JSON" = true ]; then
+  printf '{"schema":"nexus.pi-runner-guardrails.v1","ok":%s,"checks":[%s]}\n' \
+    "$([ ${#FAILURES[@]} -eq 0 ] && echo true || echo false)" \
+    "$(IFS=,; echo "${CHECKS[*]}")"
+else
+  for entry in "${CHECKS[@]}"; do echo "$entry"; done
+fi
+
+if [ ${#FAILURES[@]} -ne 0 ]; then
+  echo "test-only guardrails failed: ${FAILURES[*]}" >&2
+  exit 1
+fi

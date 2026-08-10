@@ -60,7 +60,8 @@ async function main(): Promise<void> {
 
   if (writeAlerts && alertInputs.length > 0) {
     process.env.DATABASE_PATH = dbPath;
-    const { initDatabase, closeDatabase } = await import('../src/services/database');
+    const { initDatabase } = await import('../src/services/database-bootstrap');
+    const { closeDatabase } = await import('../src/services/database');
     try {
       initDatabase();
       recordResults = (await recordChatV2ReadinessOperatorAlerts(report)).results;

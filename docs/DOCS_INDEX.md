@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: backend architecture lead
-Last verified: 2026-07-17
+Last verified: 2026-08-09
 Update policy: update only when a canonical path changes
 
 Start with `docs/project-map.json`; it provides structured module, route,
@@ -12,10 +12,12 @@ review cadence through compact path rules plus explicit exceptions.
 
 | Need | Canonical source |
 | --- | --- |
-| Current production and TestFlight truth | `docs/release/release-state.json` |
-| Human release summary and operator commands | `docs/release/CURRENT_RELEASE_STATE.md`, `docs/release/README.md` |
-| Compact checksum release contract | `docs/release/release-evidence-contract.md` |
-| State-coupled migration release contract | `docs/release/migration-irreversible.md` |
+| Continuous-deployment architecture and lifecycle | `docs/release/continuous-deployment.md` |
+| VPS provisioning, bootstrap, recovery, and fallback operations | `../ops/nexus-release/README.md` |
+| Signed continuous-release evidence contract | `docs/release/release-evidence-contract.md` |
+| State-coupled migration owner and recovery contract | `docs/release/migration-irreversible.md` |
+| PM2 first-cutover fallback (14 stable days only) | `docs/release/README.md` |
+| Generated non-authoritative release projections | `docs/release/release-state.json`, `docs/release/CURRENT_RELEASE_STATE.md` |
 | App Store submission and review configuration | `docs/release/app-store-submission-runbook.md` |
 | Test tiers and dispositions | `config/test-policy.json` |
 | Documentation status, ownership, and review | `config/documentation-policy.json` |

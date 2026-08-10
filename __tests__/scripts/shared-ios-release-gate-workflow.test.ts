@@ -41,9 +41,11 @@ function runBody(stepName: string) {
   )?.groups?.body ?? '';
 }
 
-describe('protected shared iOS release gate workflow', () => {
-  it('is an owner-dispatched, protected-main production-environment gate with least privilege', () => {
+describe('retained shared iOS fallback evidence workflow', () => {
+  it('is owner-dispatched, fallback-only, decoupled, and least privilege', () => {
     expect(workflow).toContain('name: Shared iOS Release Gate — post-production');
+    expect(workflow).toContain('retained only with the PM2 first-cutover');
+    expect(workflow).toContain('never couples the independently governed backend and iOS release cadences');
     expect(workflow).not.toMatch(/^  (?:push|pull_request|schedule):/m);
     expect(workflow).toContain('environment:\n      name: production-release');
     expect(workflow).toContain('permissions:\n  actions: read\n  contents: read');
@@ -69,7 +71,7 @@ describe('protected shared iOS release gate workflow', () => {
     expect(materialize).toContain("materializeCanonicalBase64('IOS_DISTRIBUTION_ATTESTATION_BASE64'");
   });
 
-  it('downloads the exact checkpoint and protected-main bundle artifacts before validation', () => {
+  it('downloads the exact manifest and bundle artifacts from one checkpoint run', () => {
     const checkpoint = runBody('Resolve exact successful checkpoint artifact');
     expect(checkpoint).toContain('.github/workflows/release-candidate-evidence.yml');
     expect(checkpoint).toContain('.head_sha==$sha');
@@ -79,7 +81,7 @@ describe('protected shared iOS release gate workflow', () => {
     expect(checkpoint).toContain('release-checkpoint-$BACKEND_RUNTIME_SHA');
     expect(checkpoint).toContain('artifact_id=');
 
-    const manifest = runBody('Bind manifest to checkpoint and protected-main artifact identity');
+    const manifest = runBody('Bind manifest to checkpoint-built artifact identity');
     expect(manifest).toContain('manifest.releaseCheckpoint?.runId !== checkpointRunId');
     expect(manifest).toContain('manifest.releaseCheckpoint?.runAttempt !== checkpointRunAttempt');
     expect(manifest).toContain("manifest.releaseCheckpoint.workflow !== 'release-candidate-evidence.yml'");
@@ -88,21 +90,23 @@ describe('protected shared iOS release gate workflow', () => {
     expect(manifest).toContain('fs.fchmodSync(fileDescriptor, 0o600)');
     expect(manifest).toContain('(securedDirectory.mode & 0o777) !== 0o700');
     expect(manifest).toContain('(securedFile.mode & 0o777) !== 0o600');
-    expect(manifest).toContain('protected_run_id=');
     expect(manifest).toContain('bundle_artifact_name=');
 
-    const protectedMain = runBody('Resolve exact successful protected-main bundle artifact');
-    expect(protectedMain).toContain('.github/workflows/ci.yml');
-    expect(protectedMain).toContain('.head_sha==$sha');
-    expect(protectedMain).toContain('.head_branch=="main"');
-    expect(protectedMain).toContain('.event=="push"');
-    expect(protectedMain).toContain('.run_attempt==($attempt|tonumber)');
-    expect(protectedMain).toContain('artifact_id=');
+    const checkpointBundle = runBody('Resolve exact successful checkpoint bundle artifact');
+    expect(checkpointBundle).toContain(
+      'CHECKPOINT_RUN_ID: ${{ steps.checkpoint.outputs.run_id }}',
+    );
+    expect(checkpointBundle).toContain(
+      'actions/runs/$CHECKPOINT_RUN_ID/artifacts?per_page=100',
+    );
+    expect(checkpointBundle).toContain('BUNDLE_ARTIFACT_NAME');
+    expect(checkpointBundle).toContain('artifact_id=');
+    expect(checkpointBundle).not.toContain('.github/workflows/ci.yml');
 
     const downloads = [...workflow.matchAll(
-      /uses: actions\/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c[\s\S]*?artifact-ids: \$\{\{ steps\.(checkpoint|protected_main)\.outputs\.artifact_id \}\}[\s\S]*?run-id: \$\{\{ steps\.\1\.outputs\.run_id \}\}/g,
+      /uses: actions\/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c[\s\S]*?artifact-ids: \$\{\{ steps\.(checkpoint|checkpoint_bundle)\.outputs\.artifact_id \}\}[\s\S]*?run-id: \$\{\{ steps\.\1\.outputs\.run_id \}\}/g,
     )];
-    expect(downloads.map((match) => match[1])).toEqual(['checkpoint', 'protected_main']);
+    expect(downloads.map((match) => match[1])).toEqual(['checkpoint', 'checkpoint_bundle']);
   });
 
   it('runs every shared-gate validation input and uploads only its revalidated passing receipt', () => {

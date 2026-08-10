@@ -1,4 +1,11 @@
-# Lower this monthly by >=10 until <100. Baseline recalibrated on
-# 2026-07-22 after the chat rollout resolved 80 newly incomplete factories
-# and one adjacent formatter factory, improving the ratchet by ten.
-partialMockCount=989
+# Lower this monthly by >=10 until <100. The 2026-08-10 bootstrap-private
+# allowance below removes only its exact known shape; 988 remains the complete
+# evaluated legacy backlog and therefore the fail-closed global ratchet.
+partialMockCount=988
+
+# database-bootstrap.ts is the only runtime consumer of these two lifecycle
+# capabilities (pinned by external-migrations-mode.test.ts). They are private
+# bootstrap boundaries, not dependencies of the 201 database factories that
+# otherwise remain complete. The exact missing-key shape and maximum count are
+# ratcheted here; another module, another missing key, or a 202nd factory fails.
+allowExactPartialMocks=src/services/database.ts|initializeDatabaseCore,withReleaseMaintenanceDatabase|max=201
