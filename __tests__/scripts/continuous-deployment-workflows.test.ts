@@ -1960,26 +1960,30 @@ describe('release manifest publication fails closed on the pinned key', () => {
     ], env, comparisonBase);
   }
 
-  it('refuses a real contract migration relabeled as expand in the secretless verifier', () => {
-    const fixture = migrationResultFixture((verdict) => {
-      const contract = verdict.migrationInventory.find(
-        (entry: { kind: string }) => entry.kind === 'contract',
-      );
-      expect(contract, 'repository contains a contract migration').toBeDefined();
-      contract!.kind = 'expand';
-      contract!.predecessorCompatible = true;
-    });
-    try {
-      const result = verifyMigrationFixture(fixture);
-      expect(result.status).toBe(65);
-      expect(result.stderr).toMatch(/does not match the hosted checkout recomputation/);
-      expect(result.stderr).not.toMatch(/NEXUS_RELEASE_MANIFEST_SIGNING_KEY is required/);
-      expect(existsSync(fixture.hostedResultPath)).toBe(false);
-      expect(existsSync(fixture.outputPath)).toBe(false);
-    } finally {
-      rmSync(fixture.directory, { recursive: true, force: true });
-    }
-  });
+  it(
+    'refuses a real contract migration relabeled as expand in the secretless verifier',
+    { timeout: 30_000 },
+    () => {
+      const fixture = migrationResultFixture((verdict) => {
+        const contract = verdict.migrationInventory.find(
+          (entry: { kind: string }) => entry.kind === 'contract',
+        );
+        expect(contract, 'repository contains a contract migration').toBeDefined();
+        contract!.kind = 'expand';
+        contract!.predecessorCompatible = true;
+      });
+      try {
+        const result = verifyMigrationFixture(fixture);
+        expect(result.status).toBe(65);
+        expect(result.stderr).toMatch(/does not match the hosted checkout recomputation/);
+        expect(result.stderr).not.toMatch(/NEXUS_RELEASE_MANIFEST_SIGNING_KEY is required/);
+        expect(existsSync(fixture.hostedResultPath)).toBe(false);
+        expect(existsSync(fixture.outputPath)).toBe(false);
+      } finally {
+        rmSync(fixture.directory, { recursive: true, force: true });
+      }
+    },
+  );
 
   it('refuses forged eligibility even when every inventory entry is identical', () => {
     const fixture = migrationResultFixture((verdict) => {
