@@ -80,7 +80,11 @@ root-owned candidate on every activation retry.
 
 Install, upgrade, and rollback share the root-only
 `/var/lib/nexus-release/locks/control-plane.lock` transaction boundary. Before
-any timer or selector mutation, the installer syncs the complete candidate
+initial installation leaves that boundary, it exclusively creates, verifies,
+and syncs the root-only container release mutex and its parent directory; an
+exact existing mutex is accepted only for an idempotent retry. Upgrade and
+rollback require that mutex to be present and exact rather than recreating it.
+Before any timer or selector mutation, the installer syncs the complete candidate
 filesystem and durably publishes the exact-schema, root-owned mode-0600
 `/var/lib/nexus-release/state/control-plane-transaction.json`. That record binds
 the request, original and target selectors, candidate digest and staging inode,
@@ -477,6 +481,8 @@ administrator units in `/etc/systemd/system`; ordinary
 the container poller and legacy PM2 path hold the same root maintenance mutex,
 and the bootstrap wrapper refuses mutation unless both PM2 authority units
 resolve as masked, non-startable, and inactive through those exact links.
+The link target is proved separately with `readlink`; systemd's
+`FragmentPath` reports the selected control-link path itself, not `/dev/null`.
 Recovery verifies each complete
 installed runtime tree and dependencies, release marker, artifact digest,
 current selector, restarted PM2 environment, database path, and health endpoint

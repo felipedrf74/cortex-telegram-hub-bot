@@ -181,7 +181,10 @@ candidate visible to root services.
 Set `CONTROL_PLANE_MODE=initial` only on a host where all five release unit
 definitions are absent and both selectors are absent. Use `upgrade` afterward,
 or `rollback` only for the exact immutable version selected by
-`checkout.previous`. The
+`checkout.previous`. While holding the root control-plane mutex, initial mode
+exclusively creates and durably publishes the exact root-only container release
+mutex if it is absent; an exact existing mutex is accepted for an idempotent
+retry. Upgrade and rollback require that mutex to exist already. The
 placeholder SHA is deliberately invalid, so a pasted block cannot select moving
 `main` by accident. Run the complete fenced block from one root shell (`sudo -i`);
 opening the root-owned mutex from an ordinary operator shell is not equivalent.
@@ -365,6 +368,33 @@ require_transaction_file() {
     || die "control-plane transaction record is unsafe or malformed: $1"
 }
 
+release_lock_is_exact() {
+  test -f "$RELEASE_LOCK" && test ! -L "$RELEASE_LOCK" \
+    && test "$(stat -Lc '%U:%G:%a:%h' -- "$RELEASE_LOCK")" = root:root:600:1
+}
+
+require_release_lock() {
+  release_lock_is_exact || die 'release mutex is absent or unsafe'
+}
+
+prepare_release_lock() {
+  if test "$CONTROL_PLANE_MODE" = initial; then
+    if test -e "$RELEASE_LOCK" || test -L "$RELEASE_LOCK"; then
+      require_release_lock
+    else
+      ( umask 077; set -o noclobber; : >"$RELEASE_LOCK" ) 2>/dev/null \
+        || die 'exclusive initial release mutex creation failed'
+      require_release_lock
+    fi
+    # Re-sync an exact retry too: a previous shell may have exited after the
+    # exclusive create but before durably publishing the directory entry.
+    sync -f "$RELEASE_LOCK"; sync -f "$(dirname "$RELEASE_LOCK")"
+    require_release_lock
+  else
+    require_release_lock
+  fi
+}
+
 test -d "$STATE_ROOT" && test ! -L "$STATE_ROOT" \
   && test "$(stat -Lc '%U:%G:%a' -- "$STATE_ROOT")" = root:root:700 \
   || die 'control-plane state root is unsafe'
@@ -387,6 +417,7 @@ test "$(stat -Lc '%d:%i' -- /proc/$$/fd/7)" = \
 test "$(stat -Lc '%d:%i' -- /proc/$$/fd/7)" = \
   "$(stat -Lc '%d:%i' -- "$CONTROL_PLANE_LOCK")" \
   || die 'control-plane mutex changed identity after acquisition'
+prepare_release_lock
 
 if test -e "$TRANSACTION_STAGE" || test -L "$TRANSACTION_STAGE"; then
   test -f "$TRANSACTION_STAGE" && test ! -L "$TRANSACTION_STAGE" \
@@ -1356,9 +1387,7 @@ if test "$CONTROL_PLANE_MODE" != rollback; then
 fi
 
 if test "$CONTROL_PLANE_MODE" != initial; then
-  test -f "$RELEASE_LOCK" && test ! -L "$RELEASE_LOCK" \
-    && test "$(stat -Lc '%U:%G:%a:%h' -- "$RELEASE_LOCK")" = root:root:600:1 \
-    || die 'release mutex is absent or unsafe'
+  require_release_lock
   test -f "$MAINTENANCE_LOCK" && test ! -L "$MAINTENANCE_LOCK" \
     && test "$(stat -Lc '%U:%G:%a:%h' -- "$MAINTENANCE_LOCK")" = root:dominguez:660:1 \
     || die 'maintenance mutex is absent or unsafe'
@@ -2017,7 +2046,7 @@ pm2_guard_is_exact() {
     || return 1
   active="$(sudo systemctl show "$unit" --property=ActiveState --value)" \
     || return 1
-  test "$load" = masked && test "$fragment" = /dev/null \
+  test "$load" = masked && test "$fragment" = "$guard" \
     && test "$can_start" = no && test "$active" = inactive
 }
 
@@ -2288,6 +2317,10 @@ for UNIT in pm2-dominguez.service nexus-release-pm2-recovery-daemon.service; do
   LOAD_STATE="$(sudo systemctl show "$UNIT" --property=LoadState --value)"
   case "$LOAD_STATE" in
     loaded) sudo systemctl disable --now "$UNIT" ;;
+    masked)
+      test "$UNIT" = nexus-release-pm2-recovery-daemon.service \
+        || die "$UNIT is unexpectedly masked before first cutover"
+      ;;
     not-found) ;;
     *) die "$UNIT has unsafe load state: $LOAD_STATE" ;;
   esac
@@ -2877,7 +2910,7 @@ pm2_guard_is_exact() {
     || return 1
   active="$(sudo systemctl show "$unit" --property=ActiveState --value)" \
     || return 1
-  test "$load" = masked && test "$fragment" = /dev/null \
+  test "$load" = masked && test "$fragment" = "$guard" \
     && test "$can_start" = no && test "$active" = inactive
 }
 
@@ -3829,7 +3862,7 @@ for UNIT in pm2-dominguez.service nexus-release-pm2-recovery-daemon.service; do
     || die "$UNIT high-priority runtime guard is not exact"
   test "$(sudo systemctl show "$UNIT" --property=LoadState --value)" = masked \
     || die "$UNIT is not loaded as masked"
-  test "$(sudo systemctl show "$UNIT" --property=FragmentPath --value)" = /dev/null \
+  test "$(sudo systemctl show "$UNIT" --property=FragmentPath --value)" = "$GUARD" \
     || die "$UNIT is not resolved through its high-priority runtime guard"
   test "$(sudo systemctl show "$UNIT" --property=CanStart --value)" = no \
     || die "$UNIT can still be started"
@@ -4621,7 +4654,7 @@ pm2_guard_is_exact() {
     || return 1
   active="$(sudo systemctl show "$unit" --property=ActiveState --value)" \
     || return 1
-  test "$load" = masked && test "$fragment" = /dev/null \
+  test "$load" = masked && test "$fragment" = "$guard" \
     && test "$can_start" = no && test "$active" = inactive
 }
 
@@ -5929,7 +5962,7 @@ pm2_guard_is_exact() {
     || return 1
   active="$(sudo systemctl show "$unit" --property=ActiveState --value)" \
     || return 1
-  test "$load" = masked && test "$fragment" = /dev/null \
+  test "$load" = masked && test "$fragment" = "$guard" \
     && test "$can_start" = no && test "$active" = inactive
 }
 

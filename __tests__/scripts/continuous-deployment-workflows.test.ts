@@ -1,8 +1,10 @@
 import { spawnSync } from 'node:child_process';
 import { generateKeyPairSync } from 'node:crypto';
 import {
+  chmodSync,
   cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -91,6 +93,14 @@ function bashBlockContaining(source: string, marker: string): string {
   const block = blocks.find((candidate) => candidate.includes(marker));
   expect(block, `bash block containing ${marker}`).toBeDefined();
   return block!;
+}
+
+function bashFunction(source: string, name: string): string {
+  const start = source.indexOf(`${name}() {`);
+  expect(start, `bash function ${name} exists`).toBeGreaterThanOrEqual(0);
+  const end = source.indexOf('\n}\n', start);
+  expect(end, `bash function ${name} has a closing brace`).toBeGreaterThan(start);
+  return source.slice(start, end + 2);
 }
 
 function jqObjectProgramsContainingSchema(source: string, schema: string): string[] {
@@ -883,13 +893,75 @@ describe('poller and timers', () => {
     expect(wrapper).toContain('--property=FragmentPath --value');
     expect(wrapper).toContain('--property=CanStart --value');
     expect(wrapper).toContain('--property=ActiveState --value');
-    expect(wrapper).toContain('[ "$fragment" = /dev/null ]');
+    expect(wrapper).toContain('[ "$fragment" = "$guard" ]');
+    expect(wrapper).not.toContain('[ "$fragment" = /dev/null ]');
     expect(wrapper).not.toContain('is-enabled "$unit"');
     expect(wrapper).not.toContain('masked-runtime');
     expect(wrapper).toContain('\nassert_pm2_guard\n\nexec "$NODE_BIN"');
     expect(wrapper).not.toMatch(
       /if \[ "\$argument" = --allow-first-container-bootstrap \]; then\s+assert_pm2_guard/,
     );
+  });
+
+  it('accepts the persistent guard source path reported by systemd', () => {
+    const wrapper = readFileSync(join(root, 'scripts/release-poll.sh'), 'utf8');
+    const guardFunction = bashFunction(wrapper, 'assert_pm2_guard').replace(
+      'local guard_root=/etc/systemd/system.control',
+      'local guard_root="$NEXUS_TEST_GUARD_ROOT"',
+    );
+    const fixtureRoot = mkdtempSync(join(tmpdir(), 'nexus-poller-guard-'));
+    const controlRoot = join(fixtureRoot, 'etc/systemd/system.control');
+    const fakeSystemctl = join(fixtureRoot, 'systemctl');
+    try {
+      writeFileSync(fakeSystemctl, String.raw`#!/usr/bin/env bash
+set -euo pipefail
+test "$1" = show
+unit="$2"
+property="${'$'}{3#--property=}"
+case "$property" in
+  LoadState) printf 'masked\n' ;;
+  FragmentPath)
+    case "${'$'}{FAKE_FRAGMENT_MODE:-source}" in
+      source) printf '%s/%s\n' "$NEXUS_TEST_GUARD_ROOT" "$unit" ;;
+      target) printf '/dev/null\n' ;;
+      *) exit 64 ;;
+    esac
+    ;;
+  CanStart) printf 'no\n' ;;
+  ActiveState) printf 'inactive\n' ;;
+  *) exit 64 ;;
+esac
+`);
+      chmodSync(fakeSystemctl, 0o755);
+      const result = spawnSync('bash', ['-s', '--', controlRoot, fakeSystemctl], {
+        encoding: 'utf8',
+        input: `set -euo pipefail
+export NEXUS_TEST_GUARD_ROOT="$1"
+SYSTEMCTL_BIN="$2"
+mkdir -p "$NEXUS_TEST_GUARD_ROOT"
+ln -s /dev/null "$NEXUS_TEST_GUARD_ROOT/pm2-dominguez.service"
+ln -s /dev/null "$NEXUS_TEST_GUARD_ROOT/nexus-release-pm2-recovery-daemon.service"
+die() { printf 'refused: %s\\n' "$*" >&2; exit 1; }
+stat() {
+  case "$1:$2" in
+    '-Lc:%U:%G:%a') printf 'root:root:755\\n' ;;
+    '-c:%U:%G:%F') printf 'root:root:symbolic link\\n' ;;
+    *) command stat "$@" ;;
+  esac
+}
+${guardFunction}
+export FAKE_FRAGMENT_MODE=source
+assert_pm2_guard
+export FAKE_FRAGMENT_MODE=target
+if (assert_pm2_guard) >/dev/null 2>&1; then
+  exit 41
+fi
+`,
+      });
+      expect(result.status, result.stderr).toBe(0);
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
   });
 
   it('polls on the interval the policy declares', () => {
@@ -1128,11 +1200,32 @@ describe('poller and timers', () => {
     expect(provision).toContain('node_modules/better-sqlite3/package.json');
 
     const controlLock = provision.indexOf('exec 7<>"$CONTROL_PLANE_LOCK"');
+    const controlLockIdentity = provision.indexOf(
+      "control-plane mutex changed identity after acquisition",
+      controlLock,
+    );
+    const releaseLockPreparation = provision.indexOf(
+      '\nprepare_release_lock\n',
+      controlLockIdentity,
+    );
     const resumeAdmission = provision.indexOf('RESUME_TRANSACTION=0');
     const buildFetch = provision.indexOf('fetch --quiet --no-tags --depth=1');
     expect(controlLock).toBeGreaterThan(-1);
-    expect(controlLock).toBeLessThan(resumeAdmission);
+    expect(controlLockIdentity).toBeGreaterThan(controlLock);
+    expect(releaseLockPreparation).toBeGreaterThan(controlLockIdentity);
+    expect(releaseLockPreparation).toBeLessThan(resumeAdmission);
     expect(resumeAdmission).toBeLessThan(buildFetch);
+    expect(provision).toContain('release_lock_is_exact()');
+    expect(provision).toContain('prepare_release_lock()');
+    expect(provision).toContain(
+      '( umask 077; set -o noclobber; : >"$RELEASE_LOCK" ) 2>/dev/null',
+    );
+    expect(provision).toContain(
+      'sync -f "$RELEASE_LOCK"; sync -f "$(dirname "$RELEASE_LOCK")"',
+    );
+    expect(provision).toContain(
+      "test \"$(stat -Lc '%U:%G:%a:%h' -- \"$RELEASE_LOCK\")\" = root:root:600:1",
+    );
     expect(provision).toContain('nexus.control-plane-transaction.v1');
     expect(provision).toContain('keys == ["candidateDigest","createdAt","expectedMarker"');
     expect(provision).toContain("root:root:600:1");
@@ -1294,6 +1387,89 @@ describe('poller and timers', () => {
     expect(runbook).not.toContain('sudo npm --prefix /opt/nexus-release/checkout');
   });
 
+  it('creates the initial release mutex once and refuses unsafe or absent non-initial state', () => {
+    const runbook = readFileSync(join(root, 'ops/nexus-release/README.md'), 'utf8');
+    const provision = bashBlockContaining(runbook, 'CONTROL-PLANE PROVISION REFUSED');
+    const helpers = [
+      bashFunction(provision, 'release_lock_is_exact'),
+      bashFunction(provision, 'require_release_lock'),
+      bashFunction(provision, 'prepare_release_lock'),
+    ].join('\n');
+    const fixtureRoot = mkdtempSync(join(tmpdir(), 'nexus-release-lock-'));
+    const releaseLock = join(fixtureRoot, 'release.lock');
+    const syncLog = join(fixtureRoot, 'sync.log');
+    try {
+      const result = spawnSync('bash', ['-s', '--', fixtureRoot], {
+        encoding: 'utf8',
+        input: `set -euo pipefail
+FIXTURE_ROOT="$1"
+SYNC_LOG="$FIXTURE_ROOT/sync.log"
+NEXUS_TEST_UNSAFE_PATH=
+die() { printf 'refused: %s\\n' "$*" >&2; exit 1; }
+stat() {
+  if test "$1" = -Lc && test "$2" = '%U:%G:%a:%h' && test "$3" = --; then
+    test -f "$4" && test ! -L "$4" || return 1
+    if test "$4" = "$NEXUS_TEST_UNSAFE_PATH"; then
+      printf 'root:root:644:1\\n'
+    else
+      printf 'root:root:600:1\\n'
+    fi
+    return 0
+  fi
+  command stat "$@"
+}
+sync() {
+  test "$1" = -f && test "$#" -eq 2
+  printf '%s\\n' "$2" >>"$SYNC_LOG"
+}
+${helpers}
+
+CONTROL_PLANE_MODE=initial
+RELEASE_LOCK="$FIXTURE_ROOT/release.lock"
+prepare_release_lock
+printf 'sentinel\\n' >"$RELEASE_LOCK"
+prepare_release_lock
+test "$(<"$RELEASE_LOCK")" = sentinel
+
+NEXUS_TEST_UNSAFE_PATH="$FIXTURE_ROOT/unsafe.lock"
+: >"$NEXUS_TEST_UNSAFE_PATH"
+RELEASE_LOCK="$NEXUS_TEST_UNSAFE_PATH"
+if (prepare_release_lock) >/dev/null 2>&1; then
+  exit 41
+fi
+
+NEXUS_TEST_UNSAFE_PATH=
+printf 'target\\n' >"$FIXTURE_ROOT/target"
+ln -s "$FIXTURE_ROOT/target" "$FIXTURE_ROOT/symbolic.lock"
+RELEASE_LOCK="$FIXTURE_ROOT/symbolic.lock"
+if (prepare_release_lock) >/dev/null 2>&1; then
+  exit 42
+fi
+
+CONTROL_PLANE_MODE=upgrade
+RELEASE_LOCK="$FIXTURE_ROOT/missing.lock"
+if (prepare_release_lock) >/dev/null 2>&1; then
+  exit 43
+fi
+`,
+      });
+      expect(result.status, result.stderr).toBe(0);
+      const lockStat = lstatSync(releaseLock);
+      expect(lockStat.isFile()).toBe(true);
+      expect(lockStat.isSymbolicLink()).toBe(false);
+      expect(lockStat.mode & 0o777).toBe(0o600);
+      expect(readFileSync(releaseLock, 'utf8')).toBe('sentinel\n');
+      expect(readFileSync(syncLog, 'utf8').trim().split('\n')).toEqual([
+        releaseLock,
+        fixtureRoot,
+        releaseLock,
+        fixtureRoot,
+      ]);
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
   it('installs only an argument-free, env-scrubbed release state sudo capability', () => {
     const runbook = readFileSync(join(root, 'ops/nexus-release/README.md'), 'utf8');
     const operatorSkill = readFileSync(
@@ -1401,10 +1577,15 @@ describe('poller and timers', () => {
     expect(cutover.indexOf('container-path backup unit failed'))
       .toBeLessThan(cutover.lastIndexOf('remove_proven_stale_wal_sidecars'));
     expect(cutover).toContain('systemctl disable --now "$UNIT"');
+    expect(cutover).toContain(
+      'masked)\n      test "$UNIT" = nexus-release-pm2-recovery-daemon.service',
+    );
+    expect(cutover).toContain('unexpectedly masked before first cutover');
     expect(cutover).toContain('install_pm2_guard "$UNIT"');
     expect(cutover).toContain('PM2_GUARD_ROOT=/etc/systemd/system.control');
     expect(cutover).toContain('test "$load" = masked');
-    expect(cutover).toContain('test "$fragment" = /dev/null');
+    expect(cutover).toContain('test "$fragment" = "$guard"');
+    expect(cutover).not.toContain('test "$fragment" = /dev/null');
     expect(cutover).toContain('test "$can_start" = no');
     expect(cutover).not.toContain('systemctl mask --runtime');
     expect(cutover).toContain('require_pm2_guard');
@@ -1443,6 +1624,32 @@ describe('poller and timers', () => {
       ));
     expect(cutover).toContain('nexus.bootstrap-database-transition.v1');
     expect(cutover).toContain('sudo sync -f "$TRANSITION_EVIDENCE_STAGE"');
+
+    const loadCaseStart = cutover.indexOf('case "$LOAD_STATE" in');
+    const loadCaseEnd = cutover.indexOf('\n  esac', loadCaseStart);
+    expect(loadCaseStart).toBeGreaterThanOrEqual(0);
+    expect(loadCaseEnd).toBeGreaterThan(loadCaseStart);
+    const loadCase = cutover.slice(loadCaseStart, loadCaseEnd + '\n  esac'.length);
+    const loadCaseResult = spawnSync('bash', ['-s'], {
+      encoding: 'utf8',
+      input: `set -euo pipefail
+die() { return 1; }
+sudo() { return 0; }
+check_load_state() {
+${loadCase}
+}
+UNIT=nexus-release-pm2-recovery-daemon.service
+LOAD_STATE=masked
+check_load_state
+UNIT=pm2-dominguez.service
+if check_load_state; then
+  exit 41
+fi
+LOAD_STATE=loaded
+check_load_state
+`,
+    });
+    expect(loadCaseResult.status, loadCaseResult.stderr).toBe(0);
     expect(cutover).toContain(
       'sudo mv -T -- "$TRANSITION_EVIDENCE_STAGE" "$TRANSITION_EVIDENCE"',
     );
@@ -1824,10 +2031,17 @@ describe('poller and timers', () => {
     for (const block of [cutover, preBaseline, recovery, rebaseline]) {
       expect(block).toContain('install_pm2_guard()');
       expect(block).toContain('test "$load" = masked');
-      expect(block).toContain('test "$fragment" = /dev/null');
+      expect(block).toContain('test "$fragment" = "$guard"');
+      expect(block).not.toContain('test "$fragment" = /dev/null');
       expect(block).toContain('test "$can_start" = no');
       expect(block).toContain('test "$active" = inactive');
     }
+    expect(blocks[2]).toContain(
+      'systemctl show "$UNIT" --property=FragmentPath --value)" = "$GUARD"',
+    );
+    expect(blocks[2]).not.toContain(
+      'systemctl show "$UNIT" --property=FragmentPath --value)" = /dev/null',
+    );
     for (const block of [preBaseline, recovery, rebaseline]) {
       expect(block).toContain('pm2_fail_closed_is_exact()');
       expect(block).toContain('enforce_pm2_fail_closed()');
@@ -1890,6 +2104,60 @@ describe('poller and timers', () => {
       expect(block).toContain('test "$active" = inactive');
     }
 
+    const guardHelpers = [cutover, preBaseline, recovery, rebaseline].map((block) => [
+      bashFunction(block, 'pm2_guard_path'),
+      bashFunction(block, 'pm2_guard_root_is_exact'),
+      bashFunction(block, 'pm2_guard_is_exact'),
+    ].join('\n'));
+    expect(new Set(guardHelpers).size).toBe(1);
+    const guardFixture = mkdtempSync(join(tmpdir(), 'nexus-runbook-guard-'));
+    try {
+      const runbookGuard = spawnSync('bash', ['-s', '--', guardFixture], {
+        encoding: 'utf8',
+        input: `set -euo pipefail
+PM2_GUARD_ROOT="$1/etc/systemd/system.control"
+mkdir -p "$PM2_GUARD_ROOT"
+ln -s /dev/null "$PM2_GUARD_ROOT/pm2-dominguez.service"
+ln -s /dev/null "$PM2_GUARD_ROOT/nexus-release-pm2-recovery-daemon.service"
+sudo() { "$@"; }
+stat() {
+  case "$1:$2" in
+    '-Lc:%U:%G:%a') printf 'root:root:755\\n' ;;
+    '-c:%U:%G:%F') printf 'root:root:symbolic link\\n' ;;
+    *) command stat "$@" ;;
+  esac
+}
+systemctl() {
+  test "$1" = show
+  case "$3" in
+    --property=LoadState) printf 'masked\\n' ;;
+    --property=FragmentPath)
+      case "$FAKE_FRAGMENT_MODE" in
+        source) printf '%s/%s\\n' "$PM2_GUARD_ROOT" "$2" ;;
+        target) printf '/dev/null\\n' ;;
+        *) return 64 ;;
+      esac
+      ;;
+    --property=CanStart) printf 'no\\n' ;;
+    --property=ActiveState) printf 'inactive\\n' ;;
+    *) return 64 ;;
+  esac
+}
+${guardHelpers[0]}
+FAKE_FRAGMENT_MODE=source
+pm2_guard_is_exact pm2-dominguez.service
+pm2_guard_is_exact nexus-release-pm2-recovery-daemon.service
+FAKE_FRAGMENT_MODE=target
+if pm2_guard_is_exact pm2-dominguez.service; then
+  exit 41
+fi
+`,
+      });
+      expect(runbookGuard.status, runbookGuard.stderr).toBe(0);
+    } finally {
+      rmSync(guardFixture, { recursive: true, force: true });
+    }
+
     const fixtureRoot = mkdtempSync(join(tmpdir(), 'nexus-systemd-guard-'));
     try {
       const topology = spawnSync('bash', ['-s', '--', fixtureRoot], {
@@ -1911,7 +2179,7 @@ resolve_fragment() {
   local candidate
   for candidate in "$control/$unit" "$admin/$unit" "$runtime/$unit"; do
     if test -e "$candidate" || test -L "$candidate"; then
-      if test -L "$candidate"; then readlink "$candidate"; else printf '%s\n' "$candidate"; fi
+      printf '%s\n' "$candidate"
       return
     fi
   done
@@ -1930,16 +2198,16 @@ rm "$guard"; : >"$guard"
 if exact_control_guard; then exit 42; fi
 rm "$guard"; ln -s /dev/null "$guard"
 exact_control_guard
-test "$(resolve_fragment)" = /dev/null
+test "$(resolve_fragment)" = "$guard"
 # A simulated reboot clears /run but cannot remove the persistent control guard.
 rm -rf "$fixture/run"
 mkdir -p "$runtime"
-test "$(resolve_fragment)" = /dev/null
+test "$(resolve_fragment)" = "$guard"
 # Retire the lower artifact while the high-priority guard still wins, then
 # retire the control link and recover the exact administrator fragment.
 ln -s /dev/null "$legacy"
 rm "$legacy"
-test "$(resolve_fragment)" = /dev/null
+test "$(resolve_fragment)" = "$guard"
 rm "$guard"
 test "$(resolve_fragment)" = "$canonical"
 `,

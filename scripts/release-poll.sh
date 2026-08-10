@@ -51,7 +51,7 @@ assert_pm2_guard() {
     fragment="$($SYSTEMCTL_BIN show "$unit" --property=FragmentPath --value)"
     can_start="$($SYSTEMCTL_BIN show "$unit" --property=CanStart --value)"
     active_state="$($SYSTEMCTL_BIN show "$unit" --property=ActiveState --value)"
-    [ "$load_state" = masked ] && [ "$fragment" = /dev/null ] \
+    [ "$load_state" = masked ] && [ "$fragment" = "$guard" ] \
       && [ "$can_start" = no ] && [ "$active_state" = inactive ] \
       || die "$unit is not effectively blocked by its high-priority persistent guard"
   done
