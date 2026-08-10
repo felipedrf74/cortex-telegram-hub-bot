@@ -1900,6 +1900,9 @@ describe('release manifest publication fails closed on the pinned key', () => {
       timeout: 300_000,
       env: {
         ...process.env,
+        GITHUB_REPOSITORY: policy.trust.repository,
+        GITHUB_REF: policy.trust.protectedRef,
+        GITHUB_WORKFLOW: policy.trust.workflow,
         GITHUB_SHA: 'a'.repeat(40),
         GITHUB_RUN_ID: '1',
         GITHUB_RUN_ATTEMPT: '1',
@@ -2106,7 +2109,7 @@ describe('release manifest publication fails closed on the pinned key', () => {
         NEXUS_RELEASE_MANIFEST_SIGNING_KEY: privateKey
           .export({ type: 'pkcs8', format: 'pem' }).toString(),
       });
-      expect(result.status).toBe(0);
+      expect(result.status, `${result.stdout}${result.stderr}`).toBe(0);
       expect(result.stderr).toBe('');
       expect(result.stderr).not.toMatch(/does not match the hosted checkout recomputation/);
       expect(existsSync(fixture.outputPath)).toBe(true);
@@ -2193,7 +2196,7 @@ describe('release manifest publication fails closed on the pinned key', () => {
             .export({ type: 'pkcs8', format: 'pem' }).toString(),
         },
       );
-      expect(result.status).toBe(66);
+      expect(result.status, `${result.stdout}${result.stderr}`).toBe(66);
       expect(result.stderr).not.toMatch(/skipping the self-verification/);
       expect(existsSync(fixture.outputPath)).toBe(false);
     } finally {
