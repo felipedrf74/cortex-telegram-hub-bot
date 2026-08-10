@@ -261,15 +261,16 @@ function normalizedSnapshotDigest(bytes) {
   const normalized = Buffer.from(bytes);
   // SQLite `.backup` preserves every page but legitimately changes these
   // volatile header fields: WAL read/write version, file-change counter,
-  // schema cookie, and version-valid-for. SQLite's online backup API may bump
-  // the target schema cookie even when every logical page is identical.
+  // schema cookie, version-valid-for, and the last-writer SQLite version.
+  // SQLite's online backup API may bump the target schema cookie and records
+  // the destination library version even when every logical page is identical.
   // Normalizing only those header fields lets the owner prove each legacy
   // source and target snapshot carry identical database contents.
   normalized[18] = 1;
   normalized[19] = 1;
   normalized.fill(0, 24, 28);
   normalized.fill(0, 40, 44);
-  normalized.fill(0, 92, 96);
+  normalized.fill(0, 92, 100);
   return sha256(normalized);
 }
 
