@@ -244,7 +244,7 @@ export function classifyChangedFiles({
     || has(/^scripts\/(?:release-artifact-manifest|release-bundle|release-checksum-manifest|release-runtime-dependencies|routing-divergence-report)\.mjs$/)
     || has(/^scripts\/generate-python-release-lock\.mjs$/)
     || has(/^scripts\/run-routing-action-skill-accuracy\.ts$/)
-    || has(/^scripts\/lib\/(?:chat-capability-flag-transaction|release-artifact-manifest|production-migration-lineage)\.mjs$/)
+    || has(/^scripts\/lib\/(?:chat-capability-flag-transaction|release-artifact-manifest|release-bootstrap|production-migration-lineage)\.mjs$/)
     || has(/^src\/services\/chat-capability-runtime-guard\.ts$/)
     || has(/^src\/tools\/(?:chat-capability-cross-skill-preflight|routing-action-skill-accuracy|training-cross-skill-staging-smoke)\.ts$/)
     || has(/^Dockerfile\.release\.python$/)

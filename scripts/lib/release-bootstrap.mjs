@@ -207,7 +207,29 @@ export function assertReleaseBootstrapQuiescent({
   exec = spawnSync,
 }) {
   const files = databasePaths(policy, environments);
-  const candidates = files.flatMap((file) => [file, `${file}-wal`, `${file}-shm`, `${file}-journal`]);
+  const candidates = [];
+  for (const file of files) {
+    try {
+      fs.lstatSync(file);
+    } catch (error) {
+      if (error && error.code === 'ENOENT') {
+        fail('bootstrap database is missing before open-handle probe');
+      }
+      fail('bootstrap database path probe could not run');
+    }
+    candidates.push(file);
+    for (const suffix of ['-wal', '-shm', '-journal']) {
+      const sidecar = `${file}${suffix}`;
+      try {
+        fs.lstatSync(sidecar);
+        candidates.push(sidecar);
+      } catch (error) {
+        if (!(error && error.code === 'ENOENT')) {
+          fail('bootstrap database path probe could not run');
+        }
+      }
+    }
+  }
   const result = exec(lsofBin, ['-t', '--', ...candidates], {
     encoding: 'utf8',
     timeout: 30_000,

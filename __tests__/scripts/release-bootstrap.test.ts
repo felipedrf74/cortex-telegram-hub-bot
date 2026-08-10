@@ -708,4 +708,69 @@ describe('first-container bootstrap baseline', () => {
     expect(JSON.parse(readFileSync(policy.paths.bootstrapBaselineFile, 'utf8')).target)
       .toEqual(TARGET);
   });
+
+  it('does not pass absent SQLite sidecars to the lsof quiescence probe', () => {
+    const databases = [
+      policy.bootstrap.legacyProductionDatabase,
+      join(policy.environments.production.dataDir, 'bot.db'),
+      policy.bootstrap.legacyStagingDatabase,
+      join(policy.environments.staging.dataDir, 'bot.db'),
+    ];
+    const calls: string[][] = [];
+    const linuxLsof = ((_binary: string, args: string[]) => {
+      calls.push(args);
+      const missing = args.slice(2).filter((candidate) => !existsSync(candidate));
+      return missing.length > 0
+        ? {
+            status: 1,
+            stdout: '',
+            stderr: missing
+              .map((candidate) => `lsof: status error on ${candidate}: No such file or directory`)
+              .join('\n'),
+          }
+        : { status: 1, stdout: '', stderr: '' };
+    }) as any;
+
+    for (const database of databases) {
+      expect(existsSync(database)).toBe(true);
+      for (const suffix of ['-wal', '-shm', '-journal']) {
+        expect(existsSync(`${database}${suffix}`)).toBe(false);
+      }
+    }
+
+    expect(() => assertReleaseBootstrapQuiescent({ policy, exec: linuxLsof }))
+      .not.toThrow();
+    expect(calls).toEqual([['-t', '--', ...databases]]);
+  });
+
+  it.skipIf(!existsSync('/usr/bin/lsof') && !existsSync('/usr/sbin/lsof'))(
+    'accepts the quiescent database set with the platform lsof binary',
+    () => {
+      const lsofBin = existsSync('/usr/bin/lsof') ? '/usr/bin/lsof' : '/usr/sbin/lsof';
+      expect(() => assertReleaseBootstrapQuiescent({ policy, lsofBin })).not.toThrow();
+    },
+  );
+
+  it('fails closed on a missing database and still probes an existing sidecar', () => {
+    const database = policy.bootstrap.legacyProductionDatabase;
+    const sidecar = `${database}-wal`;
+    const calls: string[][] = [];
+    const noHandles = ((_binary: string, args: string[]) => {
+      calls.push(args);
+      return { status: 1, stdout: '', stderr: '' };
+    }) as any;
+
+    writeFileSync(sidecar, '');
+    expect(() => assertReleaseBootstrapQuiescent({ policy, exec: noHandles }))
+      .toThrow(/still has a SQLite wal sidecar/);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toContain(sidecar);
+
+    rmSync(sidecar);
+    rmSync(database);
+    calls.length = 0;
+    expect(() => assertReleaseBootstrapQuiescent({ policy, exec: noHandles }))
+      .toThrow(/database is missing before open-handle probe/);
+    expect(calls).toHaveLength(0);
+  });
 });

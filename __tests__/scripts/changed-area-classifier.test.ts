@@ -98,6 +98,7 @@ describe('lean changed-area classification', () => {
     'scripts/chat-capability-flag-operator.sh',
     'scripts/generate-python-release-lock.mjs',
     'scripts/lib/chat-capability-flag-transaction.mjs',
+    'scripts/lib/release-bootstrap.mjs',
     'scripts/remote-chat-capability-flag-transaction.sh',
     'scripts/release-poll.sh',
     'scripts/routing-divergence-report.mjs',
