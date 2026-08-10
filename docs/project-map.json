@@ -5,9 +5,9 @@
     "generatorVersion": 4,
     "authoritativeFreshness": "sourceDigest",
     "sourceDigestAlgorithm": "sha256-path-git-mode-content-v2",
-    "sourceDigest": "e21b2bd4380c774d01494ae70f528ae25e1e4032645dba4aa018c1996dd73237",
-    "baseCommit": "bd7e75c655eebbba05a751bd0537d43dcf127893",
-    "baseCommitTimestamp": "2026-08-10T10:56:12+01:00",
+    "sourceDigest": "42cc82c2b6532eeb024c70becff31d8ba17956a9af07c2c8545347710c9e9b7c",
+    "baseCommit": "9ffa4b12af28c92773e962d7e52b14874dd36360",
+    "baseCommitTimestamp": "2026-08-10T16:23:27+01:00",
     "trackedFiles": 3209,
     "sourceFiles": 1135
   },
@@ -5686,13 +5686,13 @@
       "generated": true
     },
     {
-      "path": "catalog/training/exercise-media/v1/media-localizations.json",
-      "bytes": 315882,
+      "path": "ops/nexus-release/README.md",
+      "bytes": 353707,
       "generated": false
     },
     {
-      "path": "ops/nexus-release/README.md",
-      "bytes": 315051,
+      "path": "catalog/training/exercise-media/v1/media-localizations.json",
+      "bytes": 315882,
       "generated": false
     },
     {

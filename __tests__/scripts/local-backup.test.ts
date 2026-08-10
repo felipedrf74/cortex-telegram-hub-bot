@@ -92,6 +92,82 @@ function run(
 }
 
 describe('same-host Nexus backups', () => {
+  it('copies through one normal read-only SQLite step before integrity verification', () => {
+    const snapshotProbe = execFileSync(
+      'python3',
+      [
+        '-c',
+        [
+          'import importlib.util,json,sys,tempfile',
+          'from pathlib import Path',
+          'spec=importlib.util.spec_from_file_location("local_backup", sys.argv[1])',
+          'module=importlib.util.module_from_spec(spec)',
+          'spec.loader.exec_module(module)',
+          'events=[]',
+          'observed={}',
+          'class Destination:',
+          '    def __init__(self, path):',
+          '        self.path=Path(path)',
+          '    def commit(self):',
+          '        events.append("commit")',
+          '    def close(self):',
+          '        events.append("close-destination")',
+          'class Source:',
+          '    def backup(self, destination, **kwargs):',
+          '        observed["backupOptions"]=kwargs',
+          '        events.append("backup")',
+          '        destination.path.write_bytes(b"snapshot")',
+          '    def close(self):',
+          '        events.append("close-source")',
+          'def connect(target, **kwargs):',
+          '    if isinstance(target, str):',
+          '        observed["sourceUri"]=target',
+          '        observed["sourceOptions"]=kwargs',
+          '        events.append("connect-source")',
+          '        return Source()',
+          '    events.append("connect-destination")',
+          '    return Destination(target)',
+          'def integrity(path):',
+          '    events.append("integrity")',
+          '    observed["destinationMode"]=oct(path.stat().st_mode & 0o777)',
+          '    return {"integrityCheck":"ok","foreignKeyCheck":"ok"}',
+          'module.sqlite3.connect=connect',
+          'module.integrity=integrity',
+          'with tempfile.TemporaryDirectory() as value:',
+          '    root=Path(value)',
+          '    source=root / "source.sqlite"',
+          '    destination=root / "destination.sqlite"',
+          '    source.write_bytes(b"source")',
+          '    observed["result"]=module.snapshot(source, destination)',
+          'observed["events"]=events',
+          'print(json.dumps(observed, sort_keys=True))',
+        ].join('\n'),
+        utility,
+      ],
+      { encoding: 'utf8' },
+    );
+
+    const observed = JSON.parse(snapshotProbe);
+    expect(observed.sourceUri).toMatch(/^file:.*\/source\.sqlite\?mode=ro$/);
+    expect(observed.sourceUri).not.toContain('immutable=1');
+    expect(observed.sourceOptions).toEqual({ timeout: 30, uri: true });
+    expect(observed.backupOptions).toEqual({ pages: -1 });
+    expect(observed.destinationMode).toBe('0o600');
+    expect(observed.result).toEqual({
+      integrityCheck: 'ok',
+      foreignKeyCheck: 'ok',
+    });
+    expect(observed.events).toEqual([
+      'connect-source',
+      'connect-destination',
+      'backup',
+      'commit',
+      'close-destination',
+      'close-source',
+      'integrity',
+    ]);
+  });
+
   it('durably installs backup bytes and namespace entries before publishing evidence', () => {
     const durabilityProbe = execFileSync(
       'python3',
@@ -315,6 +391,9 @@ describe('same-host Nexus backups', () => {
       'ops/local-backup/systemd/nexus-local-backup-restore-verify.timer',
       'utf8',
     );
+    const policy = JSON.parse(readFileSync('config/continuous-deployment.json', 'utf8'));
+    const releaseBackup = readFileSync('scripts/lib/release-backup.mjs', 'utf8');
+    const snapshotTimeoutSeconds = 12 * 60;
 
     expect(() => execFileSync('bash', ['-n', 'scripts/local-backup-systemd-install.sh']))
       .not.toThrow();
@@ -336,6 +415,15 @@ describe('same-host Nexus backups', () => {
     );
     expect(sudoers).not.toContain('/usr/local/libexec/nexus-local-backup/local-backup.py');
     expect(prePromotion).toContain('local-backup.py pre-promotion');
+    expect(prePromotion).toContain('TimeoutStartSec=12min');
+    expect(hourly).toContain('TimeoutStartSec=12min');
+    expect(policy.timing.backupTimeoutSeconds).toBe(15 * 60);
+    expect(snapshotTimeoutSeconds).toBeLessThan(policy.timing.backupTimeoutSeconds);
+    expect(releaseBackup.indexOf('policy.timing.backupTimeoutSeconds'))
+      .toBeLessThan(releaseBackup.indexOf("exec(systemctlBin, ['start', PRE_MIGRATION_BACKUP_UNIT]"));
+    expect(releaseBackup).toContain(
+      "exec(systemctlBin, ['start', PRE_MIGRATION_BACKUP_UNIT], { timeoutMs })",
+    );
     expect(prePromotion).not.toContain('ConditionPathExists');
     expect(hourly).not.toContain('ConditionPathExists');
     expect(restoreVerify).not.toContain('ConditionPathExists');

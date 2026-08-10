@@ -13,4 +13,4 @@ ProtectSystem=strict
 ProtectHome=read-only
 PrivateTmp=true
 ReadWritePaths=/srv/nexus-backups/application
-TimeoutStartSec=30min
+TimeoutStartSec=12min

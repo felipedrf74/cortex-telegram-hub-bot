@@ -232,7 +232,13 @@ export function classifyChangedFiles({
   googleDriveTenantLeak = has(/^src\/services\/(?:google-drive|google-auth)\.ts$|^__tests__\/security\/google-drive-tenant-leak\.test\.ts$|^scripts\/cleanup-tainted-google-drive-sessions\.mjs$/);
   registryRealEval = has(/^src\/services\/chat\/registry\/|^src\/services\/registry-(?:driven-eval-scenarios|real-eval-scoring|telemetry-report|adversarial-discovery|adversarial-example-proposer|readable-intents-proposer|cross-tenant-alert-hook)\.ts$|^src\/services\/build-llm-safe-prompt-slice\.ts$|^src\/services\/skills\/|^__tests__\/services\/(?:chat-action-registry-|registry-(?:driven-eval|real-eval|telemetry-report|adversarial|readable-intents|cross-tenant))|^__tests__\/scripts\/registry-feedback-report\.test\.ts$|^scripts\/registry-feedback-report\.ts$/);
 
-  flags.releaseOperator = has(/^config\/production-migration-lineages\.json$/)
+  const releaseControlPlane = has(/^ops\/nexus-release(?:\/|$)/)
+    || has(/^scripts\/release-poll\.sh$/);
+  const localBackupRuntime = has(/^ops\/local-backup(?:\/|$)/)
+    || has(/^scripts\/local-backup(?:\.py|-systemd-install\.sh)$/);
+
+  flags.releaseOperator = releaseControlPlane
+    || has(/^config\/production-migration-lineages\.json$/)
     || files.some(isProductionMigrationArchivePath)
     || has(/^scripts\/(?:release-operator|promote-exact-release|build-release-runtime-dependencies|chat-capability-flag-operator|remote-chat-capability-flag-transaction|remote-user-release-transaction)\.sh$/)
     || has(/^scripts\/(?:release-artifact-manifest|release-bundle|release-checksum-manifest|release-runtime-dependencies|routing-divergence-report)\.mjs$/)
@@ -248,6 +254,10 @@ export function classifyChangedFiles({
     || has(/^scripts\/lib\/ollama-service-envelope\.mjs$/)
     || has(/^__tests__\/scripts\/(?:quality-sonar|cloudflared-systemd-migration|ollama-lean-finalize)\.test\.ts$/);
   if (has(/^scripts\/lib\/release-gates\.sh$/)) {
+    flags.runtimeInfra = true;
+    flags.deployConfig = true;
+  }
+  if (releaseControlPlane || localBackupRuntime) {
     flags.runtimeInfra = true;
     flags.deployConfig = true;
   }

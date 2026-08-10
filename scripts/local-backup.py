@@ -183,7 +183,9 @@ def snapshot(source: Path, destination: Path) -> dict[str, object]:
     )
     destination_database = sqlite3.connect(destination)
     try:
-        source_database.backup(destination_database, pages=1024, sleep=0.025)
+        # Finite page batches reopen the source read transaction between steps.
+        # A read-only WAL/SHM view can then restart every batch from page one.
+        source_database.backup(destination_database, pages=-1)
         destination_database.commit()
     finally:
         destination_database.close()

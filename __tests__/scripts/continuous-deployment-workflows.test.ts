@@ -93,6 +93,28 @@ function bashBlockContaining(source: string, marker: string): string {
   return block!;
 }
 
+function jqObjectProgramsContainingSchema(source: string, schema: string): string[] {
+  const escapedSchema = schema.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return [...source.matchAll(new RegExp(
+    `'(\\{schema:"${escapedSchema}"[\\s\\S]*?\\})'`,
+    'g',
+  ))].map((match) => match[1]);
+}
+
+function runJqNullInputObject(
+  program: string,
+  values: Readonly<Record<string, string>>,
+): Record<string, unknown> {
+  const args = ['-cn'];
+  for (const [name, value] of Object.entries(values)) {
+    args.push('--arg', name, value);
+  }
+  args.push(program);
+  const result = spawnSync('jq', args, { encoding: 'utf8' });
+  expect(result.status, result.stderr).toBe(0);
+  return JSON.parse(result.stdout);
+}
+
 describe('CI test-runner routing', () => {
   it('routes every test, lint and check job through the resolved test runner', () => {
     const runsOn = [...ci.matchAll(/^ {4}runs-on: (.+)$/gm)].map((match) => match[1].trim());
@@ -854,6 +876,20 @@ describe('poller and timers', () => {
       .toBeLessThan(wrapper.indexOf('"$FLOCK_BIN" --nonblock --conflict-exit-code 75 8'));
     expect(wrapper.indexOf('"$FLOCK_BIN" --nonblock --conflict-exit-code 75 8'))
       .toBeLessThan(wrapper.lastIndexOf('assert_lock_fd_matches_path 8 "$MAINTENANCE_LOCK"'));
+    expect(wrapper).toContain('local guard_root=/etc/systemd/system.control');
+    expect(wrapper).toContain("stat -Lc '%U:%G:%a' -- \"$guard_root\"");
+    expect(wrapper).toContain("stat -c '%U:%G:%F' -- \"$guard\"");
+    expect(wrapper).toContain('--property=LoadState --value');
+    expect(wrapper).toContain('--property=FragmentPath --value');
+    expect(wrapper).toContain('--property=CanStart --value');
+    expect(wrapper).toContain('--property=ActiveState --value');
+    expect(wrapper).toContain('[ "$fragment" = /dev/null ]');
+    expect(wrapper).not.toContain('is-enabled "$unit"');
+    expect(wrapper).not.toContain('masked-runtime');
+    expect(wrapper).toContain('\nassert_pm2_guard\n\nexec "$NODE_BIN"');
+    expect(wrapper).not.toMatch(
+      /if \[ "\$argument" = --allow-first-container-bootstrap \]; then\s+assert_pm2_guard/,
+    );
   });
 
   it('polls on the interval the policy declares', () => {
@@ -1012,6 +1048,15 @@ describe('poller and timers', () => {
     );
     expect(provision).toContain('sudo -u dominguez test -x "$CONTROL_ROOT"');
     expect(provision).toContain('sudo -u dominguez test -x "$CONTROL_ROOT/pm2"');
+    for (const backupAsset of [
+      'scripts/local-backup-systemd-install.sh',
+      'scripts/local-backup.py',
+      'ops/local-backup/systemd/nexus-local-backup-pre-promotion.service',
+      'ops/local-backup/systemd/nexus-local-backup-restore-verify.timer',
+      'ops/local-backup/nexus-local-backup.sudoers',
+    ]) {
+      expect(provision).toContain(backupAsset);
+    }
     expect(provision).not.toContain(
       'sudo install -d -o root -g "$BUILD_GID" -m 710 "$CONTROL_ROOT"',
     );
@@ -1356,7 +1401,12 @@ describe('poller and timers', () => {
     expect(cutover.indexOf('container-path backup unit failed'))
       .toBeLessThan(cutover.lastIndexOf('remove_proven_stale_wal_sidecars'));
     expect(cutover).toContain('systemctl disable --now "$UNIT"');
-    expect(cutover).toContain('systemctl mask --runtime "$UNIT"');
+    expect(cutover).toContain('install_pm2_guard "$UNIT"');
+    expect(cutover).toContain('PM2_GUARD_ROOT=/etc/systemd/system.control');
+    expect(cutover).toContain('test "$load" = masked');
+    expect(cutover).toContain('test "$fragment" = /dev/null');
+    expect(cutover).toContain('test "$can_start" = no');
+    expect(cutover).not.toContain('systemctl mask --runtime');
     expect(cutover).toContain('require_pm2_guard');
     expect(cutover).toContain('require_no_legacy_listeners');
     expect(cutover).toContain('MAINTENANCE_LOCK=/run/lock/nexus-release-sonar.lock');
@@ -1365,14 +1415,18 @@ describe('poller and timers', () => {
     expect(cutover).toContain('productionArtifactDigest');
     expect(cutover).toContain('productionDatabaseIdentity');
     expect(cutover.indexOf('RUNTIME_EVIDENCE_STAGE='))
-      .toBeLessThan(cutover.indexOf('sudo -u dominguez pm2 stop'));
+      .toBeLessThan(cutover.indexOf(
+        'run_pm2_as_dominguez stop',
+      ));
     expect(cutover).toContain('sudo sync -f "$RUNTIME_EVIDENCE_STAGE"');
     expect(cutover).toContain(
       'sudo mv -T -- "$RUNTIME_EVIDENCE_STAGE" "$RUNTIME_EVIDENCE"',
     );
     expect(cutover).toContain('sudo sync -f "$(dirname "$RUNTIME_EVIDENCE")"');
     expect(cutover.indexOf('sudo sync -f "$(dirname "$RUNTIME_EVIDENCE")"'))
-      .toBeLessThan(cutover.indexOf('sudo -u dominguez pm2 stop'));
+      .toBeLessThan(cutover.indexOf(
+        'run_pm2_as_dominguez stop',
+      ));
     expect(cutover).not.toContain('sudo ln "$RUNTIME_EVIDENCE_STAGE"');
     const preStopTargetGuard = 'container target exists before PM2 stop';
     expect(cutover).toContain(
@@ -1380,9 +1434,13 @@ describe('poller and timers', () => {
     );
     expect(cutover).toContain('"$NEW_STAGING/bot.db" "$NEW_STAGING/bot.db.next"');
     expect(cutover.indexOf(preStopTargetGuard))
-      .toBeLessThan(cutover.indexOf('sudo -u dominguez pm2 stop'));
+      .toBeLessThan(cutover.indexOf(
+        'run_pm2_as_dominguez stop',
+      ));
     expect(cutover.indexOf('installed runtime tree differs from its captured artifact'))
-      .toBeLessThan(cutover.indexOf('sudo -u dominguez pm2 stop'));
+      .toBeLessThan(cutover.indexOf(
+        'run_pm2_as_dominguez stop',
+      ));
     expect(cutover).toContain('nexus.bootstrap-database-transition.v1');
     expect(cutover).toContain('sudo sync -f "$TRANSITION_EVIDENCE_STAGE"');
     expect(cutover).toContain(
@@ -1391,6 +1449,1051 @@ describe('poller and timers', () => {
     expect(cutover).toContain('sudo sync -f "$(dirname "$TRANSITION_EVIDENCE")"');
     expect(cutover).not.toContain('sudo ln "$TRANSITION_EVIDENCE_STAGE"');
     expect(cutover).toContain('governed backup is not bound to legacy production before cutover');
+  });
+
+  it('binds every governed backup invocation to immutable installed producer bytes', () => {
+    const runbook = readFileSync(join(root, 'ops/nexus-release/README.md'), 'utf8');
+    const cutover = bashBlockContaining(runbook, 'CUTOVER REFUSED');
+    const blocks = [
+      cutover,
+      bashBlockContaining(runbook, 'PRE-BASELINE RECOVERY REFUSED'),
+      bashBlockContaining(runbook, 'BOOTSTRAP RECOVERY REFUSED'),
+      bashBlockContaining(runbook, 'BOOTSTRAP REBASELINE REFUSED'),
+    ];
+    for (const block of blocks) {
+      expect(block).toContain('require_local_backup_installation()');
+      expect(block).toContain(
+        '[[ "$active_root" =~ ^/opt/nexus-release/control-plane/[0-9a-f]{40}$ ]]',
+      );
+      expect(block).toContain(
+        "'scripts/local-backup.py|/usr/local/libexec/nexus-local-backup/local-backup.py|755'",
+      );
+      expect(block).toContain('sudo cmp -s -- "$source" "$destination"');
+      expect(block).toContain("root:root:$mode:1");
+      expect(block).toContain('--property=FragmentPath --value');
+      expect(block).toContain('--property=DropInPaths --value');
+      expect(block).toContain('--property=ExecStart --value');
+      expect(block).toContain('argv[]=/usr/local/libexec/nexus-local-backup/local-backup.py pre-promotion ;');
+      expect(block).toContain('sudo systemctl daemon-reload');
+    }
+
+    const proofDefinitionEnd = cutover.indexOf(
+      '\n}\n\nPM2_GUARD_ROOT=',
+      cutover.indexOf('require_local_backup_installation()'),
+    );
+    const firstProof = cutover.indexOf(
+      '\nrequire_local_backup_installation\n',
+      proofDefinitionEnd,
+    );
+    const pm2Stop = cutover.indexOf(
+      'run_pm2_as_dominguez stop',
+    );
+    const firstBackup = cutover.indexOf(
+      'sudo systemctl start nexus-local-backup-pre-promotion.service',
+    );
+    expect(firstProof).toBeGreaterThan(proofDefinitionEnd);
+    expect(firstProof).toBeLessThan(pm2Stop);
+    expect(firstProof).toBeLessThan(firstBackup);
+
+    for (const block of blocks.slice(1)) {
+      const freshBackup = block.slice(
+        block.indexOf('fresh_backup_for() {'),
+        block.indexOf('\n}\n\nPM2_GUARD_ROOT=', block.indexOf('fresh_backup_for() {')),
+      );
+      const installationProof = freshBackup.indexOf('require_local_backup_installation');
+      expect(installationProof).toBeGreaterThanOrEqual(0);
+      expect(installationProof)
+        .toBeLessThan(freshBackup.indexOf('requested_ms="$(date +%s%3N)"'));
+      expect(installationProof)
+        .toBeLessThan(freshBackup.indexOf(
+          'sudo systemctl start nexus-local-backup-pre-promotion.service',
+        ));
+    }
+
+    expect(runbook).toContain(
+      'ACTIVE_BACKUP_SOURCE="$(sudo readlink -f -- /opt/nexus-release/checkout)"',
+    );
+    expect(runbook).toContain(
+      'sudo "$ACTIVE_BACKUP_SOURCE/scripts/local-backup-systemd-install.sh"',
+    );
+    expect(runbook).not.toContain(
+      'local-backup-systemd-install.sh" /opt/nexus-release/checkout',
+    );
+    const repair = bashBlockContaining(runbook, 'ACTIVE_BACKUP_SOURCE=');
+    const repairSyntax = spawnSync('bash', ['-n'], {
+      input: repair,
+      encoding: 'utf8',
+    });
+    expect(repairSyntax.status, repairSyntax.stderr).toBe(0);
+    expect(repair.trimStart()).toMatch(/^set -euo pipefail\n/);
+    expect(repair.indexOf('.nexus-control-plane-ready'))
+      .toBeLessThan(repair.indexOf('local-backup-systemd-install.sh'));
+  });
+
+  it('emits a source SHA only from valid legacy markers with the real jq filters', () => {
+    const runbook = readFileSync(join(root, 'ops/nexus-release/README.md'), 'utf8');
+    const filters = [...runbook.matchAll(
+      /(?:RUNTIME_SHA|SOURCE_SHA)="\$\(sudo jq -er(?: \\\n+)?\s*'([\s\S]*?)' "\$MARKER"\)"/g,
+    )].map((match) => match[1]);
+    const runtimeSha = 'a'.repeat(40);
+    const artifactDigest = 'b'.repeat(64);
+    const valid = {
+      schema: 'nexus.release-bundle.v1',
+      runtimeSha,
+      artifactDigest,
+    };
+    const invalid = [
+      { ...valid, schema: 'nexus.release-bundle.v0' },
+      { ...valid, runtimeSha: 'a'.repeat(39) },
+      { ...valid, artifactDigest: 'b'.repeat(63) },
+      { ...valid, runtimeSha: false },
+      { ...valid, artifactDigest: null },
+      null,
+    ];
+
+    expect(filters).toHaveLength(2);
+    for (const filter of filters) {
+      expect(filter.trimStart()).toMatch(/^select\(/);
+      const accepted = spawnSync('jq', ['-er', filter], {
+        input: JSON.stringify(valid),
+        encoding: 'utf8',
+      });
+      expect(accepted.status, accepted.stderr).toBe(0);
+      expect(accepted.stdout.trim()).toBe(runtimeSha);
+
+      for (const fixture of invalid) {
+        const rejected = spawnSync('jq', ['-er', filter], {
+          input: JSON.stringify(fixture),
+          encoding: 'utf8',
+        });
+        expect(rejected.error).toBeUndefined();
+        expect(rejected.status).not.toBe(0);
+        expect(rejected.stdout).toBe('');
+      }
+    }
+  });
+
+  it('binds every null-input cutover and recovery evidence field to its jq argument', () => {
+    const runbook = readFileSync(join(root, 'ops/nexus-release/README.md'), 'utf8');
+    const cutover = bashBlockContaining(runbook, 'CUTOVER REFUSED');
+    const preBaseline = bashBlockContaining(runbook, 'PRE-BASELINE RECOVERY REFUSED');
+    const recovery = bashBlockContaining(runbook, 'BOOTSTRAP RECOVERY REFUSED');
+    const rebaseline = bashBlockContaining(runbook, 'BOOTSTRAP REBASELINE REFUSED');
+    expect([cutover, preBaseline, recovery, rebaseline].map(
+      (block) => block.match(/\bjq -cn\b/g)?.length ?? 0,
+    )).toEqual([2, 0, 1, 3]);
+
+    const values = (...names: string[]): Record<string, string> => Object.fromEntries(
+      names.map((name) => [name, `bound:${name}`]),
+    );
+    const runtimeValues = values(
+      'createdAt',
+      'productionSourceSha',
+      'productionArtifactDigest',
+      'productionRuntimePath',
+      'productionMarkerSha256',
+      'productionDatabaseIdentity',
+      'stagingSourceSha',
+      'stagingArtifactDigest',
+      'stagingRuntimePath',
+      'stagingMarkerSha256',
+      'stagingDatabaseIdentity',
+    );
+    const runtimePrograms = [cutover, rebaseline].flatMap((block) => (
+      jqObjectProgramsContainingSchema(block, 'nexus.bootstrap-legacy-runtime-capture.v2')
+    ));
+    expect(runtimePrograms).toHaveLength(2);
+    for (const program of runtimePrograms) {
+      expect(runJqNullInputObject(program, runtimeValues)).toEqual({
+        schema: 'nexus.bootstrap-legacy-runtime-capture.v2',
+        ...runtimeValues,
+      });
+    }
+
+    const transitionValues = values(
+      'createdAt',
+      'runtimeCaptureSha256',
+      'legacyProductionIdentity',
+      'legacyProductionLogicalDigest',
+      'legacyStagingIdentity',
+      'legacyStagingLogicalDigest',
+      'targetProductionIdentity',
+      'targetProductionLogicalDigest',
+      'targetStagingIdentity',
+      'targetStagingLogicalDigest',
+    );
+    const transitionPrograms = [cutover, rebaseline].flatMap((block) => (
+      jqObjectProgramsContainingSchema(block, 'nexus.bootstrap-database-transition.v1')
+    ));
+    expect(transitionPrograms).toHaveLength(2);
+    for (const program of transitionPrograms) {
+      expect(runJqNullInputObject(program, transitionValues)).toEqual({
+        schema: 'nexus.bootstrap-database-transition.v1',
+        createdAt: transitionValues.createdAt,
+        runtimeCaptureSha256: transitionValues.runtimeCaptureSha256,
+        legacy: {
+          production: {
+            path: '/home/dominguez/telegram-hub-bot/data/bot.db',
+            identity: transitionValues.legacyProductionIdentity,
+            logicalDigest: transitionValues.legacyProductionLogicalDigest,
+          },
+          staging: {
+            path: '/home/dominguez/telegram-hub-bot-staging/data/bot.db',
+            identity: transitionValues.legacyStagingIdentity,
+            logicalDigest: transitionValues.legacyStagingLogicalDigest,
+          },
+        },
+        target: {
+          production: {
+            path: '/var/lib/nexus-hub/production/data/bot.db',
+            identity: transitionValues.targetProductionIdentity,
+            logicalDigest: transitionValues.targetProductionLogicalDigest,
+          },
+          staging: {
+            path: '/var/lib/nexus-hub/staging/data/bot.db',
+            identity: transitionValues.targetStagingIdentity,
+            logicalDigest: transitionValues.targetStagingLogicalDigest,
+          },
+        },
+        backupDatabasePath: '/var/lib/nexus-hub/production/data/bot.db',
+      });
+    }
+
+    const recoveryValues = values(
+      'createdAt',
+      'baselineSha256',
+      'runtimeCaptureSha256',
+      'incidentDir',
+      'phase',
+      'backupDatabasePath',
+      'liveProductionIdentity',
+      'liveProductionDigest',
+      'liveStagingIdentity',
+      'liveStagingDigest',
+      'observedProductionIdentity',
+      'observedProductionDigest',
+      'capturedProductionIdentity',
+      'stagingIdentity',
+      'stagingDigest',
+      'swappedIdentity',
+    );
+    const recoveryPrograms = jqObjectProgramsContainingSchema(
+      recovery,
+      'nexus.bootstrap-first-cutover-recovery.v1',
+    );
+    expect(recoveryPrograms).toHaveLength(1);
+    expect(runJqNullInputObject(recoveryPrograms[0], recoveryValues)).toEqual({
+      schema: 'nexus.bootstrap-first-cutover-recovery.v1',
+      createdAt: recoveryValues.createdAt,
+      updatedAt: recoveryValues.createdAt,
+      baselineSha256: recoveryValues.baselineSha256,
+      runtimeCaptureSha256: recoveryValues.runtimeCaptureSha256,
+      incidentDir: recoveryValues.incidentDir,
+      phase: recoveryValues.phase,
+      backupDatabasePath: recoveryValues.backupDatabasePath,
+      liveProduction: {
+        path: '/var/lib/nexus-hub/production/data/bot.db',
+        identity: recoveryValues.liveProductionIdentity,
+        logicalDigest: recoveryValues.liveProductionDigest,
+      },
+      liveStaging: {
+        path: '/var/lib/nexus-hub/staging/data/bot.db',
+        identity: recoveryValues.liveStagingIdentity,
+        logicalDigest: recoveryValues.liveStagingDigest,
+      },
+      observedPm2Production: {
+        path: '/home/dominguez/telegram-hub-bot/data/bot.db',
+        identity: recoveryValues.observedProductionIdentity,
+        logicalDigest: recoveryValues.observedProductionDigest,
+      },
+      capturedPm2ProductionIdentity: recoveryValues.capturedProductionIdentity,
+      pm2Staging: {
+        path: '/home/dominguez/telegram-hub-bot-staging/data/bot.db',
+        identity: recoveryValues.stagingIdentity,
+        logicalDigest: recoveryValues.stagingDigest,
+      },
+      swappedPm2ProductionIdentity: recoveryValues.swappedIdentity,
+    });
+
+    const rebaselineValues = values(
+      'createdAt',
+      'incidentDir',
+      'expectedReleaseId',
+      'expectedPayloadDigest',
+      'oldBaselineSha256',
+      'oldReleaseId',
+      'oldTargetDigest',
+      'archivedBaseline',
+      'runtimeEvidenceSha256',
+      'transitionEvidenceSha256',
+      'recoveryStateSha256',
+      'productionPath',
+      'productionIdentity',
+      'stagingPath',
+      'stagingIdentity',
+      'productionRuntime',
+      'productionSha',
+      'productionArtifact',
+      'productionMarker',
+      'stagingRuntime',
+      'stagingSha',
+      'stagingArtifact',
+      'stagingMarker',
+    );
+    const rebaselinePrograms = jqObjectProgramsContainingSchema(
+      rebaseline,
+      'nexus.bootstrap-rebaseline.v1',
+    );
+    expect(rebaselinePrograms).toHaveLength(1);
+    expect(runJqNullInputObject(rebaselinePrograms[0], rebaselineValues)).toEqual({
+      schema: 'nexus.bootstrap-rebaseline.v1',
+      createdAt: rebaselineValues.createdAt,
+      updatedAt: rebaselineValues.createdAt,
+      phase: 'admitted',
+      incidentDir: rebaselineValues.incidentDir,
+      expectedTarget: {
+        releaseId: rebaselineValues.expectedReleaseId,
+        payloadDigest: rebaselineValues.expectedPayloadDigest,
+      },
+      oldBaseline: {
+        sha256: rebaselineValues.oldBaselineSha256,
+        releaseId: rebaselineValues.oldReleaseId,
+        payloadDigest: rebaselineValues.oldTargetDigest,
+        archivePath: rebaselineValues.archivedBaseline,
+      },
+      oldEvidence: {
+        runtimeSha256: rebaselineValues.runtimeEvidenceSha256,
+        transitionSha256: rebaselineValues.transitionEvidenceSha256,
+        recoveryStateSha256: rebaselineValues.recoveryStateSha256,
+      },
+      legacy: {
+        production: {
+          path: rebaselineValues.productionPath,
+          identity: rebaselineValues.productionIdentity,
+          logicalDigest: null,
+        },
+        staging: {
+          path: rebaselineValues.stagingPath,
+          identity: rebaselineValues.stagingIdentity,
+          logicalDigest: null,
+        },
+      },
+      runtime: {
+        production: {
+          path: rebaselineValues.productionRuntime,
+          sourceSha: rebaselineValues.productionSha,
+          artifactDigest: rebaselineValues.productionArtifact,
+          markerSha256: rebaselineValues.productionMarker,
+        },
+        staging: {
+          path: rebaselineValues.stagingRuntime,
+          sourceSha: rebaselineValues.stagingSha,
+          artifactDigest: rebaselineValues.stagingArtifact,
+          markerSha256: rebaselineValues.stagingMarker,
+        },
+      },
+    });
+  });
+
+  it('guards administrator PM2 units through the persistent higher-priority control path', () => {
+    const runbook = readFileSync(join(root, 'ops/nexus-release/README.md'), 'utf8');
+    const blocks = [
+      bashBlockContaining(runbook, 'CUTOVER REFUSED'),
+      bashBlockContaining(runbook, 'PRE-BASELINE RECOVERY REFUSED'),
+      bashBlockContaining(runbook, 'BASELINE REFUSED'),
+      bashBlockContaining(runbook, 'BOOTSTRAP RECOVERY REFUSED'),
+      bashBlockContaining(runbook, 'BOOTSTRAP REBASELINE REFUSED'),
+    ];
+    for (const block of blocks) {
+      const syntax = spawnSync('bash', ['-n'], { input: block, encoding: 'utf8' });
+      expect(syntax.status, syntax.stderr).toBe(0);
+      expect(block).toContain('/etc/systemd/system.control');
+      expect(block).toContain('--property=LoadState --value');
+      expect(block).toContain('--property=FragmentPath --value');
+      expect(block).toContain('--property=CanStart --value');
+      expect(block).toContain('--property=ActiveState --value');
+      expect(block).not.toContain('systemctl mask --runtime');
+      expect(block).not.toContain('systemctl unmask --runtime');
+      expect(block).not.toContain('masked-runtime');
+    }
+
+    const cutover = blocks[0];
+    const preBaseline = blocks[1];
+    const recovery = blocks[3];
+    const rebaseline = blocks[4];
+    for (const block of [cutover, preBaseline, recovery, rebaseline]) {
+      expect(block).toContain('install_pm2_guard()');
+      expect(block).toContain('test "$load" = masked');
+      expect(block).toContain('test "$fragment" = /dev/null');
+      expect(block).toContain('test "$can_start" = no');
+      expect(block).toContain('test "$active" = inactive');
+    }
+    for (const block of [preBaseline, recovery, rebaseline]) {
+      expect(block).toContain('pm2_fail_closed_is_exact()');
+      expect(block).toContain('enforce_pm2_fail_closed()');
+      expect(block).toContain(
+        'local action_failed=0 unit\n  if pm2_fail_closed_is_exact; then\n'
+          + '    return 0\n  fi',
+      );
+      expect(block).toContain('run_pm2_as_dominguez kill || action_failed=1');
+      expect(block).toContain("pgrep -u dominguez -f 'PM2.*God Daemon'");
+      expect(block).toContain('-sTCP:LISTEN 2>&1');
+      expect(block).toContain('/home/dominguez/telegram-hub-bot/data/bot.db.next-bootstrap-recovery');
+      expect(block).toContain('/var/lib/nexus-hub/production/data/bot.db.next');
+      expect(block).toContain("for suffix in '' -wal -shm -journal");
+      expect(block).toContain('sudo lsof -nP -t -- "$path" 2>&1');
+      expect(block).not.toContain('cleanup_failed');
+      expect(block).toContain(
+        "printf 'PM2 fail-closed postconditions remain false (action failures: %s)\\n'",
+      );
+    }
+    expect(preBaseline).toContain(
+      "enforce_pm2_fail_closed \\\n    || die 'PM2 fail-closed quiescence could not prove every postcondition'",
+    );
+    expect(recovery).toContain(
+      "enforce_pm2_fail_closed \\\n    || die 'forced PM2 guard could not prove fail-closed postconditions'",
+    );
+    for (const trapName of [
+      'fail_closed_pm2_restart',
+      'fail_closed_bootstrap_restart',
+      'fail_closed_rebaseline',
+    ]) {
+      const block = trapName === 'fail_closed_pm2_restart'
+        ? preBaseline
+        : trapName === 'fail_closed_bootstrap_restart' ? recovery : rebaseline;
+      const handler = block.slice(
+        block.indexOf(`${trapName}()`),
+        block.indexOf(`trap ${trapName} EXIT`),
+      );
+      expect(handler).toContain('enforce_pm2_fail_closed');
+      expect(handler).toContain(
+        trapName === 'fail_closed_rebaseline' ? 'status=70' : 'exit 70',
+      );
+    }
+    for (const block of [preBaseline, recovery]) {
+      const trapAt = block.indexOf('trap fail_closed_');
+      const retireAt = block.indexOf(
+        'retire_canonical_pm2_guard pm2-dominguez.service',
+      );
+      const removeLegacyAt = block.indexOf('sudo rm -- "$legacy_guard"');
+      const removeControlAt = block.indexOf('sudo rm -- "$guard"');
+      const reloadAt = block.indexOf('sudo systemctl daemon-reload', removeControlAt);
+      const canonicalProofAt = block.indexOf('test "$load" = loaded', removeControlAt);
+      expect(trapAt).toBeGreaterThanOrEqual(0);
+      expect(trapAt).toBeLessThan(retireAt);
+      expect(removeLegacyAt).toBeLessThan(removeControlAt);
+      expect(removeControlAt).toBeLessThan(reloadAt);
+      expect(reloadAt).toBeLessThan(canonicalProofAt);
+      expect(block).toContain('sudo test ! -e "$legacy_guard"');
+      expect(block).toContain('test "$fragment" = "$canonical"');
+      expect(block).toContain('test "$can_start" = yes');
+      expect(block).toContain('test "$active" = inactive');
+    }
+
+    const fixtureRoot = mkdtempSync(join(tmpdir(), 'nexus-systemd-guard-'));
+    try {
+      const topology = spawnSync('bash', ['-s', '--', fixtureRoot], {
+        encoding: 'utf8',
+        input: String.raw`set -euo pipefail
+fixture="$1"
+unit=pm2-dominguez.service
+control="$fixture/etc/systemd/system.control"
+admin="$fixture/etc/systemd/system"
+runtime="$fixture/run/systemd/system"
+mkdir -p "$control" "$admin" "$runtime"
+canonical="$admin/$unit"
+legacy="$runtime/$unit"
+guard="$control/$unit"
+: >"$canonical"
+ln -s /dev/null "$legacy"
+
+resolve_fragment() {
+  local candidate
+  for candidate in "$control/$unit" "$admin/$unit" "$runtime/$unit"; do
+    if test -e "$candidate" || test -L "$candidate"; then
+      if test -L "$candidate"; then readlink "$candidate"; else printf '%s\n' "$candidate"; fi
+      return
+    fi
+  done
+  return 1
+}
+exact_control_guard() {
+  test -L "$guard" && test "$(readlink "$guard")" = /dev/null
+}
+
+# The ordinary runtime mask loses to the administrator unit.
+test "$(resolve_fragment)" = "$canonical"
+# A wrong target and a regular file are both rejected as guards.
+ln -s /tmp/not-dev-null "$guard"
+if exact_control_guard; then exit 41; fi
+rm "$guard"; : >"$guard"
+if exact_control_guard; then exit 42; fi
+rm "$guard"; ln -s /dev/null "$guard"
+exact_control_guard
+test "$(resolve_fragment)" = /dev/null
+# A simulated reboot clears /run but cannot remove the persistent control guard.
+rm -rf "$fixture/run"
+mkdir -p "$runtime"
+test "$(resolve_fragment)" = /dev/null
+# Retire the lower artifact while the high-priority guard still wins, then
+# retire the control link and recover the exact administrator fragment.
+ln -s /dev/null "$legacy"
+rm "$legacy"
+test "$(resolve_fragment)" = /dev/null
+rm "$guard"
+test "$(resolve_fragment)" = "$canonical"
+`,
+      });
+      expect(topology.status, topology.stderr).toBe(0);
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('runs PM2 from the dominguez home without sudo chdir-policy options', () => {
+    const runbook = readFileSync(join(root, 'ops/nexus-release/README.md'), 'utf8');
+    const blocks = [
+      bashBlockContaining(runbook, 'CUTOVER REFUSED'),
+      bashBlockContaining(runbook, 'PRE-BASELINE RECOVERY REFUSED'),
+      bashBlockContaining(runbook, 'BOOTSTRAP RECOVERY REFUSED'),
+      bashBlockContaining(runbook, 'BOOTSTRAP REBASELINE REFUSED'),
+    ];
+    const helpers: string[] = [];
+    for (const block of blocks) {
+      const start = block.indexOf('run_pm2_as_dominguez() {');
+      const end = block.indexOf('\n}\n\n', start);
+      expect(start).toBeGreaterThanOrEqual(0);
+      expect(end).toBeGreaterThan(start);
+      helpers.push(block.slice(start, end + 2));
+      expect(block.match(/sudo -u dominguez pm2/g)).toHaveLength(1);
+      expect(block.match(/run_pm2_as_dominguez (?:jlist|start|stop|kill)/g)?.length)
+        .toBeGreaterThan(0);
+      expect(block).not.toContain('--chdir=/home/dominguez');
+      expect(block).not.toMatch(/sudo -u dominguez (?:-D|--chdir)/);
+    }
+    expect(new Set(helpers).size).toBe(1);
+
+    const fixtureRoot = mkdtempSync(join(tmpdir(), 'nexus-pm2-cwd-'));
+    try {
+      const helper = helpers[0].replace(
+        'local pm2_cwd=/home/dominguez',
+        `local pm2_cwd='${fixtureRoot}'`,
+      );
+      const result = spawnSync('bash', ['-s'], {
+        encoding: 'utf8',
+        input: `set -euo pipefail
+EXPECTED_CWD='${fixtureRoot}'
+sudo() {
+  local argument
+  for argument in "$@"; do
+    case "$argument" in -D|--chdir|--chdir=*) return 91 ;; esac
+  done
+  test "$1" = -u && test "$2" = dominguez && test "$3" = pm2 || return 92
+  shift 3
+  test "$PWD" = "$EXPECTED_CWD" || return 93
+  case "$1" in
+    jlist)
+      test "$#" -eq 5 || return 94
+      test "$1" = jlist || return 95
+      test "$2" = 'two words' || return 96
+      test -z "$3" || return 97
+      test "$4" = '*' || return 98
+      test "$5" = 'literal;not-executed' || return 99
+      printf '%s|exact-argv\\n' "$PWD"
+      ;;
+    kill)
+      test "$#" -eq 1 || return 100
+      ;;
+    *) return 101 ;;
+  esac
+  return "\${FAKE_SUDO_STATUS:-0}"
+}
+${helper}
+caller_cwd="$PWD"
+output_file="$EXPECTED_CWD/pm2-output"
+run_pm2_as_dominguez jlist 'two words' '' '*' \
+  'literal;not-executed' >"$output_file"
+test "$PWD" = "$caller_cwd"
+test "$(<"$output_file")" = "$EXPECTED_CWD|exact-argv"
+set +e
+FAKE_SUDO_STATUS=37 run_pm2_as_dominguez kill >/dev/null
+status=$?
+set -e
+test "$status" -eq 37
+`,
+      });
+      expect(result.status, result.stderr).toBe(0);
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('retries all four PM2 health endpoints together until a delayed listener is ready', () => {
+    const runbook = readFileSync(join(root, 'ops/nexus-release/README.md'), 'utf8');
+    const preBaseline = bashBlockContaining(runbook, 'PRE-BASELINE RECOVERY REFUSED');
+    const recovery = bashBlockContaining(runbook, 'BOOTSTRAP RECOVERY REFUSED');
+    const helpers = [preBaseline, recovery].map((block) => {
+      const start = block.indexOf('wait_for_all_pm2_health() {');
+      const end = block.indexOf('\n}\n\nfresh_backup_for() {', start);
+      expect(start).toBeGreaterThanOrEqual(0);
+      expect(end).toBeGreaterThan(start);
+      return block.slice(start, end + 2);
+    });
+    expect(new Set(helpers).size).toBe(1);
+    for (const helper of helpers) {
+      expect(helper).toContain('deadline=$((SECONDS + 120))');
+      expect(helper).toContain('iteration_ok=1');
+      expect(helper).toContain('for endpoint in "${endpoints[@]}"');
+      expect(helper).toContain('--connect-timeout 1');
+      expect(helper).toContain('--max-time "$curl_max"');
+      expect(helper).toContain('test "$iteration_ok" -eq 1 && return 0');
+      for (const port of [8200, 8100, 8201, 8101]) {
+        expect(helper).toContain(`http://127.0.0.1:${port}/health`);
+      }
+    }
+    const preBaselineHealth = preBaseline.lastIndexOf('wait_for_all_pm2_health \\');
+    expect(preBaselineHealth).toBeGreaterThanOrEqual(0);
+    expect(preBaselineHealth)
+      .toBeLessThan(preBaseline.lastIndexOf('PM2_RESTART_ARMED=0'));
+    const durableProof = recovery.slice(
+      recovery.indexOf('prove_durable_running_pm2() {'),
+      recovery.indexOf('\n}\n\npublish_early_pm2_restored()'),
+    );
+    expect(durableProof).toContain('wait_for_all_pm2_health || return 1');
+    const recoveryHealth = recovery.lastIndexOf('wait_for_all_pm2_health \\');
+    expect(recoveryHealth).toBeGreaterThanOrEqual(0);
+    expect(recoveryHealth)
+      .toBeLessThan(recovery.lastIndexOf('PM2_RESTART_ARMED=0'));
+    expect(runbook).not.toContain(
+      'curl --fail --silent --show-error --max-time 5 http://127.0.0.1:',
+    );
+
+    const basePort = 41000 + ((process.pid % 1000) * 4);
+    const testPorts = [basePort, basePort + 1, basePort + 2, basePort + 3];
+    let executableHelper = helpers[0];
+    for (const [productionPort, testPort] of [
+      [8200, testPorts[0]],
+      [8100, testPorts[1]],
+      [8201, testPorts[2]],
+      [8101, testPorts[3]],
+    ]) {
+      executableHelper = executableHelper.replaceAll(
+        `127.0.0.1:${productionPort}`,
+        `127.0.0.1:${testPort}`,
+      );
+    }
+    executableHelper = executableHelper.replace(
+      'deadline=$((SECONDS + 120))',
+      'deadline=$((SECONDS + 10))',
+    );
+    const delayed = spawnSync('bash', ['-s'], {
+      encoding: 'utf8',
+      timeout: 15_000,
+      input: `set -euo pipefail
+server_root="$(mktemp -d)"
+: >"$server_root/health"
+pids=()
+cleanup() {
+  set +e
+  for pid in "\${pids[@]}"; do kill "$pid" 2>/dev/null; done
+  for pid in "\${pids[@]}"; do wait "$pid" 2>/dev/null; done
+  rm -rf -- "$server_root"
+}
+trap cleanup EXIT
+start_server() {
+  local port="$1" delay="$2"
+  (
+    sleep "$delay"
+    cd "$server_root"
+    exec python3 -m http.server "$port" --bind 127.0.0.1
+  ) >"$server_root/server-$port.log" 2>&1 &
+  pids+=("$!")
+}
+start_server ${testPorts[0]} 0
+start_server ${testPorts[1]} 0
+start_server ${testPorts[2]} 0
+start_server ${testPorts[3]} 4
+sleep 1
+curl() {
+  local endpoint="\${!#}" port
+  port="\${endpoint#http://127.0.0.1:}"
+  port="\${port%%/*}"
+  printf 'x\\n' >>"$server_root/count-$port"
+  command curl "$@"
+}
+${executableHelper}
+started="$SECONDS"
+wait_for_all_pm2_health
+elapsed=$((SECONDS - started))
+test "$elapsed" -ge 2 && test "$elapsed" -lt 15
+for port in ${testPorts.slice(0, 3).join(' ')}; do
+  test "$(wc -l <"$server_root/count-$port")" -ge 2
+done
+`,
+    });
+    expect(delayed.status, delayed.stderr).toBe(0);
+  });
+
+  it('returns nonzero at the PM2 health deadline when one listener never starts', () => {
+    const runbook = readFileSync(join(root, 'ops/nexus-release/README.md'), 'utf8');
+    const recovery = bashBlockContaining(runbook, 'BOOTSTRAP RECOVERY REFUSED');
+    const helperStart = recovery.indexOf('wait_for_all_pm2_health() {');
+    const helperEnd = recovery.indexOf('\n}\n\nfresh_backup_for() {', helperStart);
+    expect(helperStart).toBeGreaterThanOrEqual(0);
+    expect(helperEnd).toBeGreaterThan(helperStart);
+
+    const basePort = 49000 + ((process.pid % 1000) * 4);
+    const testPorts = [basePort, basePort + 1, basePort + 2, basePort + 3];
+    let executableHelper = recovery.slice(helperStart, helperEnd + 2);
+    for (const [productionPort, testPort] of [
+      [8200, testPorts[0]],
+      [8100, testPorts[1]],
+      [8201, testPorts[2]],
+      [8101, testPorts[3]],
+    ]) {
+      executableHelper = executableHelper.replaceAll(
+        `127.0.0.1:${productionPort}`,
+        `127.0.0.1:${testPort}`,
+      );
+    }
+    executableHelper = executableHelper.replace(
+      'deadline=$((SECONDS + 120))',
+      'deadline=$((SECONDS + 4))',
+    );
+
+    const neverReady = spawnSync('bash', ['-s'], {
+      encoding: 'utf8',
+      timeout: 10_000,
+      input: `set -euo pipefail
+server_root="$(mktemp -d)"
+: >"$server_root/health"
+pids=()
+cleanup() {
+  set +e
+  for pid in "\${pids[@]}"; do kill "$pid" 2>/dev/null; done
+  for pid in "\${pids[@]}"; do wait "$pid" 2>/dev/null; done
+  rm -rf -- "$server_root"
+}
+trap cleanup EXIT
+for port in ${testPorts.slice(0, 3).join(' ')}; do
+  (
+    cd "$server_root"
+    exec python3 -m http.server "$port" --bind 127.0.0.1
+  ) >"$server_root/server-$port.log" 2>&1 &
+  pids+=("$!")
+done
+sleep 1
+curl() {
+  local endpoint="\${!#}" port
+  port="\${endpoint#http://127.0.0.1:}"
+  port="\${port%%/*}"
+  printf 'x\\n' >>"$server_root/count-$port"
+  command curl "$@"
+}
+${executableHelper}
+started="$SECONDS"
+set +e
+wait_for_all_pm2_health
+status=$?
+set -e
+elapsed=$((SECONDS - started))
+test "$status" -eq 1
+test "$elapsed" -ge 3 && test "$elapsed" -le 6
+for port in ${testPorts.join(' ')}; do
+  test "$(wc -l <"$server_root/count-$port")" -ge 2
+done
+`,
+    });
+    expect(neverReady.status, neverReady.stderr).toBe(0);
+  });
+
+  it('preserves signal status through every PM2 restore EXIT cleanup', () => {
+    const runbook = readFileSync(join(root, 'ops/nexus-release/README.md'), 'utf8');
+    const handlers = [
+      ['PRE-BASELINE RECOVERY REFUSED', 'fail_closed_pm2_restart'],
+      ['BOOTSTRAP RECOVERY REFUSED', 'fail_closed_bootstrap_restart'],
+      ['BOOTSTRAP REBASELINE REFUSED', 'fail_closed_rebaseline'],
+    ] as const;
+    for (const [marker, handler] of handlers) {
+      const block = bashBlockContaining(runbook, marker);
+      const armed = handler === 'fail_closed_rebaseline'
+        ? 'REBASELINE_ARMED=0' : 'PM2_RESTART_ARMED=0';
+      const traps = block.split('\n').filter((line) => (
+        line === `trap ${handler} EXIT`
+        || /^trap 'exit (?:129|130|143)' (?:HUP|INT|TERM)$/.test(line)
+      ));
+      expect(traps).toHaveLength(4);
+      const handlerBody = block.slice(
+        block.indexOf(`${handler}() {`),
+        block.indexOf(`trap ${handler} EXIT`),
+      );
+      expect(handlerBody).toContain('trap - EXIT HUP INT TERM');
+      expect(block.lastIndexOf('trap - EXIT HUP INT TERM'))
+        .toBeGreaterThan(block.lastIndexOf(armed));
+      for (const [signal, expectedStatus] of [
+        ['HUP', 129],
+        ['INT', 130],
+        ['TERM', 143],
+      ] as const) {
+        const result = spawnSync('bash', ['-s'], {
+          encoding: 'utf8',
+          input: `set -euo pipefail
+${handler}() {
+  status=$?
+  trap - EXIT HUP INT TERM
+  exit "$status"
+}
+${traps.join('\n')}
+kill -${signal} "$$"
+exit 99
+`,
+        });
+        expect(result.status, result.stderr).toBe(expectedStatus);
+      }
+    }
+  });
+
+  it('arms fail-closed cleanup before early PM2 reconciliation can block or fail', () => {
+    const runbook = readFileSync(join(root, 'ops/nexus-release/README.md'), 'utf8');
+    const preBaseline = bashBlockContaining(runbook, 'PRE-BASELINE RECOVERY REFUSED');
+    const recovery = bashBlockContaining(runbook, 'BOOTSTRAP RECOVERY REFUSED');
+
+    const preBaselineTrap = preBaseline.indexOf('trap fail_closed_pm2_restart EXIT');
+    expect(preBaselineTrap).toBeGreaterThanOrEqual(0);
+    expect(preBaselineTrap).toBeLessThan(preBaseline.indexOf('PM2_ALREADY_GUARDED=1'));
+    expect(preBaselineTrap).toBeLessThan(preBaseline.indexOf(
+      'PM2_JSON="$(run_pm2_as_dominguez jlist)"',
+    ));
+    expect(preBaselineTrap).toBeLessThan(preBaseline.indexOf(
+      "enforce_pm2_fail_closed \\\n    || die 'PM2 fail-closed quiescence could not prove every postcondition'",
+    ));
+    expect(preBaseline.match(/fail_closed_pm2_restart\(\)/g)).toHaveLength(1);
+    const checkpointExit = preBaseline.slice(
+      preBaseline.indexOf('pre-baseline checkpoint exit is not exactly fail-closed'),
+      preBaseline.indexOf('\nfi\n', preBaseline.indexOf(
+        'pre-baseline checkpoint exit is not exactly fail-closed',
+      )),
+    );
+    expect(checkpointExit).toContain('PM2_RESTART_ARMED=0');
+    expect(checkpointExit).toContain('trap - EXIT HUP INT TERM');
+
+    const recoveryTrap = recovery.indexOf('trap fail_closed_bootstrap_restart EXIT');
+    const guardObservation = recovery.indexOf('PM2_GUARD_OBSERVED=1');
+    const earlyProof = recovery.indexOf('if prove_durable_running_pm2; then');
+    expect(recoveryTrap).toBeGreaterThanOrEqual(0);
+    expect(recoveryTrap).toBeLessThan(guardObservation);
+    expect(recoveryTrap).toBeLessThan(earlyProof);
+    expect(recovery.match(/fail_closed_bootstrap_restart\(\)/g)).toHaveLength(1);
+    const earlyBranchEnd = recovery.indexOf('\nrequire_pm2_guard\n', earlyProof);
+    const earlyBranch = recovery.slice(earlyProof, earlyBranchEnd);
+    const earlyPublish = earlyBranch.indexOf('publish_early_pm2_restored \\');
+    const earlyDisarm = earlyBranch.indexOf('PM2_RESTART_ARMED=0');
+    expect(earlyPublish).toBeGreaterThanOrEqual(0);
+    expect(earlyDisarm).toBeGreaterThan(earlyPublish);
+    expect(earlyBranch.indexOf('trap - EXIT HUP INT TERM')).toBeGreaterThan(earlyDisarm);
+    expect(earlyBranch.indexOf('exit 0')).toBeGreaterThan(earlyDisarm);
+    const finalPublication = recovery.lastIndexOf('publish_recovery_state pm2_restored');
+    const finalDisarm = recovery.lastIndexOf('PM2_RESTART_ARMED=0');
+    expect(finalDisarm).toBeGreaterThan(finalPublication);
+
+    const handlerStart = recovery.indexOf('fail_closed_bootstrap_restart() {');
+    const handlerEnd = recovery.indexOf('\n}\n', handlerStart);
+    const handler = recovery.slice(handlerStart, handlerEnd + 2);
+    const traps = recovery.split('\n').filter((line) => (
+      line === 'trap fail_closed_bootstrap_restart EXIT'
+      || /^trap 'exit (?:129|130|143)' (?:HUP|INT|TERM)$/.test(line)
+    ));
+    expect(traps).toHaveLength(4);
+    const healthStart = recovery.indexOf('wait_for_all_pm2_health() {');
+    const healthEnd = recovery.indexOf('\n}\n\nfresh_backup_for() {', healthStart);
+    const healthHelper = recovery.slice(healthStart, healthEnd + 2);
+
+    const fixtureRoot = mkdtempSync(join(tmpdir(), 'nexus-early-pm2-trap-'));
+    try {
+      const termCleanup = join(fixtureRoot, 'term-cleanup');
+      const term = spawnSync('bash', ['-s', '--', termCleanup], {
+        encoding: 'utf8',
+        timeout: 5_000,
+        input: `set -euo pipefail
+cleanup_receipt="$1"
+enforce_pm2_fail_closed() {
+  printf 'closed\\n' >>"$cleanup_receipt"
+}
+PM2_RESTART_ARMED=1
+${handler}
+${traps.join('\n')}
+curl() { while :; do :; done; }
+${healthHelper}
+(sleep 0.2; kill -TERM "$$") &
+wait_for_all_pm2_health
+exit 99
+`,
+      });
+      expect(term.status, term.stderr).toBe(143);
+      expect(readFileSync(termCleanup, 'utf8')).toBe('closed\n');
+
+      const publicationCleanup = join(fixtureRoot, 'publication-cleanup');
+      const branchStart = recovery.indexOf(
+        'if test "$PM2_GUARD_OBSERVED" -eq 0; then',
+      );
+      const branchEnd = recovery.indexOf('\nrequire_pm2_guard\n', branchStart);
+      const exactEarlyBranch = recovery.slice(branchStart, branchEnd);
+      const publication = spawnSync('bash', ['-s', '--', publicationCleanup], {
+        encoding: 'utf8',
+        input: `set -euo pipefail
+cleanup_receipt="$1"
+die() { exit 1; }
+enforce_pm2_fail_closed() {
+  printf 'closed\\n' >>"$cleanup_receipt"
+}
+prove_durable_running_pm2() {
+  PROVED_RECOVERY_PHASE=backup_repointed
+}
+publish_early_pm2_restored() {
+  printf 'publish-failed\\n' >>"$cleanup_receipt"
+  return 42
+}
+PM2_RESTART_ARMED=1
+${handler}
+${traps.join('\n')}
+PM2_GUARD_OBSERVED=0
+${exactEarlyBranch}
+exit 99
+`,
+      });
+      expect(publication.status, publication.stderr).toBe(1);
+      expect(readFileSync(publicationCleanup, 'utf8'))
+        .toBe('publish-failed\nclosed\n');
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps PM2 closure idempotent and preserves later failure or signal status', () => {
+    const runbook = readFileSync(join(root, 'ops/nexus-release/README.md'), 'utf8');
+    const blocks = [
+      bashBlockContaining(runbook, 'PRE-BASELINE RECOVERY REFUSED'),
+      bashBlockContaining(runbook, 'BOOTSTRAP RECOVERY REFUSED'),
+      bashBlockContaining(runbook, 'BOOTSTRAP REBASELINE REFUSED'),
+    ];
+    const enforcers = blocks.map((block) => {
+      const start = block.indexOf('enforce_pm2_fail_closed() {');
+      const end = block.indexOf('\n}\n', start);
+      expect(start).toBeGreaterThanOrEqual(0);
+      expect(end).toBeGreaterThan(start);
+      return block.slice(start, end + 2);
+    });
+    expect(new Set(enforcers).size).toBe(1);
+    const enforcer = enforcers[0];
+    expect(enforcer).toContain(
+      'if pm2_fail_closed_is_exact; then\n    return 0\n  fi',
+    );
+    expect(enforcer).toContain(
+      'if pm2_fail_closed_is_exact; then\n    return 0\n  fi',
+    );
+    expect(enforcer.trimEnd()).toMatch(/return 1\n}$/);
+
+    const recovery = blocks[1];
+    const handlerStart = recovery.indexOf('fail_closed_bootstrap_restart() {');
+    const handlerEnd = recovery.indexOf('\n}\n', handlerStart);
+    const handler = recovery.slice(handlerStart, handlerEnd + 2);
+    const traps = recovery.split('\n').filter((line) => (
+      line === 'trap fail_closed_bootstrap_restart EXIT'
+      || /^trap 'exit (?:129|130|143)' (?:HUP|INT|TERM)$/.test(line)
+    ));
+    const fixtureRoot = mkdtempSync(join(tmpdir(), 'nexus-idempotent-pm2-close-'));
+    try {
+      for (const [event, expectedStatus] of [
+        ['FAIL', 1],
+        ['HUP', 129],
+        ['INT', 130],
+        ['TERM', 143],
+      ] as const) {
+        const actions = join(fixtureRoot, `actions-${event}`);
+        const trigger = event === 'FAIL' ? 'false' : `kill -${event} "$$"`;
+        const result = spawnSync('bash', ['-s', '--', actions], {
+          encoding: 'utf8',
+          input: `set -euo pipefail
+action_receipt="$1"
+CLOSED=0
+pm2_fail_closed_is_exact() { test "$CLOSED" -eq 1; }
+run_pm2_as_dominguez() {
+  printf 'pm2:%s\\n' "$1" >>"$action_receipt"
+  test "$CLOSED" -eq 0 || return 44
+  if test "$1" = kill; then CLOSED=1; fi
+}
+sudo() {
+  printf 'sudo:%s\\n' "$*" >>"$action_receipt"
+  test "$CLOSED" -eq 0
+}
+install_pm2_guard() {
+  printf 'guard:%s\\n' "$1" >>"$action_receipt"
+  test "$CLOSED" -eq 0
+}
+${enforcer}
+PM2_RESTART_ARMED=1
+${handler}
+${traps.join('\n')}
+enforce_pm2_fail_closed
+test "$CLOSED" -eq 1
+enforce_pm2_fail_closed
+${trigger}
+exit 99
+`,
+        });
+        expect(result.status, result.stderr).toBe(expectedStatus);
+        expect(readFileSync(actions, 'utf8').trim().split('\n')).toHaveLength(7);
+      }
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a fail-closed PM2 proof while any governed database handle remains', () => {
+    const runbook = readFileSync(join(root, 'ops/nexus-release/README.md'), 'utf8');
+    const blocks = [
+      bashBlockContaining(runbook, 'PRE-BASELINE RECOVERY REFUSED'),
+      bashBlockContaining(runbook, 'BOOTSTRAP RECOVERY REFUSED'),
+      bashBlockContaining(runbook, 'BOOTSTRAP REBASELINE REFUSED'),
+    ];
+    const functions = blocks.map((block) => {
+      const start = block.indexOf('pm2_fail_closed_is_exact() {');
+      const end = block.indexOf('\n}\n\nenforce_pm2_fail_closed() {', start);
+      expect(start).toBeGreaterThanOrEqual(0);
+      expect(end).toBeGreaterThan(start);
+      return block.slice(start, end + 2);
+    });
+    expect(new Set(functions).size).toBe(1);
+
+    for (const openHandle of [0, 1]) {
+      const result = spawnSync('bash', ['-s'], {
+        encoding: 'utf8',
+        env: { ...process.env, OPEN_HANDLE: String(openHandle) },
+        input: `set -euo pipefail
+OPEN_PATH=/home/dominguez/telegram-hub-bot/data/bot.db
+pm2_guard_is_exact() { return 0; }
+sudo() {
+  case "$1" in
+    pgrep) return 1 ;;
+    test)
+      if test "$2" = -e && test "$3" = "$OPEN_PATH"; then return 0; fi
+      return 1 ;;
+    lsof)
+      if [[ " $* " == *" -iTCP:"* ]]; then return 1; fi
+      if test "\${*: -1}" = "$OPEN_PATH" && test "$OPEN_HANDLE" -eq 1; then
+        printf '4242\\n'
+        return 0
+      fi
+      return 1 ;;
+    *) return 64 ;;
+  esac
+}
+${functions[0]}
+pm2_fail_closed_is_exact
+`,
+      });
+      expect(result.status, result.stderr).toBe(openHandle === 0 ? 0 : 1);
+    }
   });
 
   it('binds bootstrap authority only after trust and registry setup', () => {
@@ -1451,7 +2554,9 @@ describe('poller and timers', () => {
     expect(runbook.indexOf('PRE-BASELINE RECOVERY REFUSED'))
       .toBeLessThan(runbook.indexOf('BOOTSTRAP RECOVERY REFUSED'));
     expect(cutover.indexOf('RUNTIME_EVIDENCE_STAGE='))
-      .toBeLessThan(cutover.indexOf('sudo -u dominguez pm2 stop'));
+      .toBeLessThan(cutover.indexOf(
+        'run_pm2_as_dominguez stop',
+      ));
     expect(preBaseline).toContain('PRE_BASELINE_ACTION');
     expect(preBaseline).toContain('recover-pm2|resume-baseline|reset-cutover');
     expect(preBaseline).toContain('bootstrap baseline exists; use the baseline-dependent recovery branch');
@@ -1470,16 +2575,20 @@ describe('poller and timers', () => {
     expect(preBaseline).toContain(
       'if test "$PM2_AUTHORITY_OR_DAEMON_ACTIVE" -eq 1; then',
     );
-    expect(preBaseline).toContain('systemctl mask --runtime "$UNIT"');
+    expect(preBaseline).toContain('install_pm2_guard "$unit"');
+    expect(preBaseline).toContain('retire_canonical_pm2_guard pm2-dominguez.service');
+    expect(preBaseline).not.toContain('systemctl mask --runtime');
     expect(preBaseline).toContain(
       'active PM2 identity mismatched the capture; authorities are now guarded; rerun recovery',
     );
     expect(preBaseline.indexOf('PM2_AUTHORITY_OR_DAEMON_ACTIVE=0'))
-      .toBeLessThan(preBaseline.indexOf('PM2_JSON="$(sudo -u dominguez pm2 jlist)"'));
+      .toBeLessThan(preBaseline.indexOf(
+        'PM2_JSON="$(run_pm2_as_dominguez jlist)"',
+      ));
     expect(preBaseline.indexOf('PM2_CAPTURE_IDENTITY_PROVED=0'))
-      .toBeLessThan(preBaseline.indexOf('set +e'));
-    expect(preBaseline.indexOf('set +e'))
-      .toBeLessThan(preBaseline.indexOf('systemctl disable --now "$UNIT"'));
+      .toBeLessThan(preBaseline.indexOf(
+        "enforce_pm2_fail_closed \\\n    || die 'PM2 fail-closed quiescence could not prove every postcondition'",
+      ));
     expect(preBaseline.indexOf('\nrequire_pm2_guard\n'))
       .toBeLessThan(preBaseline.indexOf('active PM2 identity mismatched the capture'));
     expect(preBaseline).toContain('target may contain newer or divergent data; preserved untouched');
@@ -1493,46 +2602,120 @@ describe('poller and timers', () => {
     expect(preBaseline).toContain('PM2_RESTART_ARMED=1');
     expect(preBaseline).toContain('fail_closed_pm2_restart');
     expect(preBaseline).toContain('restarted against a different database');
-    expect(preBaseline).toContain('curl --fail --silent --show-error --max-time 5');
+    expect(preBaseline).toContain('wait_for_all_pm2_health');
+    expect(preBaseline.indexOf('set +e')).toBeLessThan(0);
     expect(preBaseline).not.toContain('mv -f');
     expect(laterRecovery).toContain('BASELINE_FILE=');
   });
 
   it('requires a fresh delivered heartbeat proof before the first poller invocation', () => {
     const runbook = readFileSync(join(root, 'ops/nexus-release/README.md'), 'utf8');
+    const heartbeatUnit = readFileSync(
+      join(root, 'ops/nexus-release/nexus-release-heartbeat.service'),
+      'utf8',
+    );
     const heartbeatProof = bashBlockContaining(runbook, 'HEARTBEAT LIVENESS REFUSED');
     const syntax = spawnSync('bash', ['-n'], { input: heartbeatProof, encoding: 'utf8' });
 
     expect(syntax.status, syntax.stderr).toBe(0);
     expect(heartbeatProof.trimStart()).toMatch(/^set -euo pipefail\n/);
+    expect(heartbeatProof).toContain(
+      'sudo journalctl -n 0 --show-cursor --output=cat --no-pager --quiet',
+    );
+    expect(heartbeatProof).toContain('--property=ActiveState --value');
+    expect(heartbeatProof).toContain('--property=Type --value');
+    expect(heartbeatProof).toContain('--property=RemainAfterExit --value');
+    expect(heartbeatProof).toContain('test "$HEARTBEAT_CURSOR_COUNT" = 1');
+    expect(heartbeatProof).toContain(
+      'sudo journalctl --after-cursor="$HEARTBEAT_JOURNAL_CURSOR"',
+    );
     expect(heartbeatProof).toContain('sudo systemctl start "$HEARTBEAT_UNIT"');
     expect(heartbeatProof).toContain('--property=Result --value');
-    expect(heartbeatProof).toContain('--property=InvocationID --value');
+    expect(heartbeatProof).not.toContain('--property=InvocationID --value');
     expect(heartbeatProof).toContain('sudo journalctl --sync');
     expect(heartbeatProof).toContain(
-      'sudo journalctl "_SYSTEMD_INVOCATION_ID=$HEARTBEAT_INVOCATION_ID"',
+      '"_SYSTEMD_UNIT=$HEARTBEAT_UNIT"',
+    );
+    expect(heartbeatProof).toContain(
+      '"_SYSTEMD_INVOCATION_ID=$HEARTBEAT_INVOCATION_ID"',
+    );
+    expect(heartbeatProof).toContain(
+      '| select(type == "string" and test("^[0-9a-f]{32}$"))',
+    );
+    expect(heartbeatProof).toContain(
+      'and ._SYSTEMD_INVOCATION_ID == $invocation',
     );
     expect(heartbeatProof).toContain('--output=json --no-pager --quiet');
     expect(heartbeatProof).toContain(
       'and keys == ["delivered", "reason", "schema"]',
     );
-    expect(heartbeatProof).toContain('and .schema == "nexus.release-heartbeat.v1"');
+    expect(heartbeatProof).toContain(
+      'and .schema == "nexus.release-heartbeat.v1"',
+    );
     expect(heartbeatProof).toContain('and .delivered == true');
     expect(heartbeatProof).toContain('and .reason == "sent"');
-    expect(heartbeatProof).toContain('test "$HEARTBEAT_EVIDENCE_COUNT" = 1');
     expect(heartbeatProof).toContain(
-      'sudo systemctl start nexus-release-heartbeat.timer',
+      'test "$HEARTBEAT_POST_CURSOR_INVOCATION_COUNT" = 1',
     );
+    expect(heartbeatProof).toContain(
+      'test "$HEARTBEAT_INVOCATION_PROOF_COUNT" = 1',
+    );
+    expect(heartbeatProof).toContain(
+      'sudo systemctl start "$HEARTBEAT_TIMER"',
+    );
+    expect(heartbeatUnit).toContain('Type=oneshot');
+    expect(heartbeatUnit).not.toContain('RemainAfterExit=yes');
     expect(heartbeatProof).not.toContain('NEXUS_RELEASE_TELEGRAM_');
     expect(heartbeatProof).not.toContain('/etc/nexus-release/poller.env');
     expect(heartbeatProof).not.toContain('set -x');
+
+    const servicePrecondition = heartbeatProof.indexOf(
+      'test "$(sudo systemctl show "$HEARTBEAT_UNIT" --property=ActiveState --value)"',
+    );
+    const timerPrecondition = heartbeatProof.indexOf(
+      'test "$(sudo systemctl show "$HEARTBEAT_TIMER" --property=ActiveState --value)"',
+    );
+    const preCursorSync = heartbeatProof.indexOf('sudo journalctl --sync');
+    const cursorCapture = heartbeatProof.indexOf('HEARTBEAT_CURSOR_OUTPUT="$(');
+    const serviceStart = heartbeatProof.indexOf('sudo systemctl start "$HEARTBEAT_UNIT"');
+    const postStartSync = heartbeatProof.indexOf('sudo journalctl --sync', preCursorSync + 1);
+    const postCursorRead = heartbeatProof.indexOf(
+      'sudo journalctl --after-cursor="$HEARTBEAT_JOURNAL_CURSOR"',
+    );
+    const postCursorCount = heartbeatProof.indexOf(
+      'test "$HEARTBEAT_POST_CURSOR_INVOCATION_COUNT" = 1',
+    );
+    const invocationIdentity = heartbeatProof.indexOf('HEARTBEAT_INVOCATION_ID="$(');
+    const invocationRead = heartbeatProof.indexOf(
+      'sudo journalctl --after-cursor="$HEARTBEAT_JOURNAL_CURSOR"',
+      postCursorRead + 1,
+    );
+    const invocationCount = heartbeatProof.indexOf(
+      'test "$HEARTBEAT_INVOCATION_PROOF_COUNT" = 1',
+    );
+    const timerStartInProof = heartbeatProof.indexOf(
+      'sudo systemctl start "$HEARTBEAT_TIMER"',
+    );
+    expect(servicePrecondition).toBeGreaterThanOrEqual(0);
+    expect(servicePrecondition).toBeLessThan(timerPrecondition);
+    expect(timerPrecondition).toBeLessThan(preCursorSync);
+    expect(preCursorSync).toBeLessThan(cursorCapture);
+    expect(cursorCapture).toBeGreaterThanOrEqual(0);
+    expect(cursorCapture).toBeLessThan(serviceStart);
+    expect(serviceStart).toBeLessThan(postStartSync);
+    expect(postStartSync).toBeLessThan(postCursorRead);
+    expect(postCursorRead).toBeLessThan(postCursorCount);
+    expect(postCursorCount).toBeLessThan(invocationIdentity);
+    expect(invocationIdentity).toBeLessThan(invocationRead);
+    expect(invocationRead).toBeLessThan(invocationCount);
+    expect(invocationCount).toBeLessThan(timerStartInProof);
 
     const timerEnable = runbook.indexOf(
       'sudo systemctl enable nexus-release-heartbeat.timer',
     );
     const proofStart = runbook.indexOf('HEARTBEAT_UNIT=nexus-release-heartbeat.service');
     const heartbeatTimerStart = runbook.indexOf(
-      'sudo systemctl start nexus-release-heartbeat.timer',
+      'sudo systemctl start "$HEARTBEAT_TIMER"',
     );
     const bootstrapStart = runbook.indexOf(
       'sudo systemctl start nexus-release-bootstrap.service',
@@ -1596,7 +2779,10 @@ describe('poller and timers', () => {
     expect(recovery).toContain('sudo sync -f "$(dirname "$RECOVERY_STATE")"');
     expect(recovery).toContain('PM2 fallback was already exact and healthy');
     expect(recovery).toContain('PM2_FORCED_GUARD=1');
-    expect(recovery).toContain('set +e');
+    expect(recovery.indexOf('PM2_FORCED_GUARD=1'))
+      .toBeLessThan(recovery.indexOf(
+        "enforce_pm2_fail_closed \\\n    || die 'forced PM2 guard could not prove fail-closed postconditions'",
+      ));
     expect(recovery).toContain(
       'interrupted-restart stage differs from guarded PM2 data',
     );
@@ -1635,15 +2821,19 @@ describe('poller and timers', () => {
     expect(recovery).toContain('.database == $expectedDatabase');
     expect(recovery).toContain('.startedAt | type == "string"');
     expect(recovery).toContain('test "$producer_started_ms" -ge "$requested_ms"');
-    expect(recovery).toContain('pm2 start content-engine content-engine-staging');
-    expect(recovery).toContain('pm2 start nexus-hub nexus-hub-staging');
+    expect(recovery).toContain(
+      'run_pm2_as_dominguez start content-engine content-engine-staging',
+    );
+    expect(recovery).toContain(
+      'run_pm2_as_dominguez start nexus-hub nexus-hub-staging',
+    );
     expect(recovery).toContain('.legacyRuntime.productionSourceSha');
     expect(recovery).toContain('.legacyRuntime.stagingSourceSha');
     expect(recovery).toContain('legacy runtime capture differs from the bootstrap baseline');
     expect(recovery.indexOf('legacy runtime capture differs from the bootstrap baseline'))
-      .toBeLessThan(recovery.indexOf('systemctl unmask --runtime'));
+      .toBeLessThan(recovery.indexOf('retire_canonical_pm2_guard pm2-dominguez.service'));
     expect(recovery.indexOf('verify_installed_runtime "$EXPECTED_RUNTIME"'))
-      .toBeLessThan(recovery.indexOf('systemctl unmask --runtime'));
+      .toBeLessThan(recovery.indexOf('retire_canonical_pm2_guard pm2-dominguez.service'));
     expect(recovery).toContain('restarted with a source SHA outside the bootstrap baseline');
 
     expect(rebaseline).toContain('nexus.bootstrap-rebaseline.v1');
@@ -1651,7 +2841,12 @@ describe('poller and timers', () => {
     expect(rebaseline.indexOf('test "$OLD_RELEASE_ID" != "$EXPECTED_RELEASE_ID"'))
       .toBeLessThan(rebaseline.indexOf('nexus.bootstrap-rebaseline.v1'));
     expect(rebaseline).toContain('fail_closed_rebaseline');
+    expect(rebaseline).toContain('trap fail_closed_rebaseline EXIT');
     expect(rebaseline.indexOf('trap fail_closed_rebaseline EXIT HUP INT TERM'))
+      .toBeLessThan(0);
+    expect(rebaseline).toContain("trap 'exit 130' INT");
+    expect(rebaseline).toContain("trap 'exit 143' TERM");
+    expect(rebaseline.indexOf('trap fail_closed_rebaseline EXIT'))
       .toBeLessThan(rebaseline.lastIndexOf('systemctl disable --now pm2-dominguez.service'));
     expect(rebaseline).toContain('REBASELINE_PM2_LIVE=0');
     expect(rebaseline).toContain("pgrep -u dominguez -f 'PM2.*God Daemon'");
