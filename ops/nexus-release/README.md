@@ -5627,6 +5627,24 @@ signed schema generations match. `hold_generation_mismatch` or
 `hold_current_unavailable` is a successful immutable publication but **not** a
 pointer activation. Do not retag GHCR manually.
 
+Initial policy adoption that keeps the existing writer generation is an
+equal-generation publication and must return `move_main`. Do not dispatch the
+owner activation workflow for that case: activation deliberately refuses equal
+generations.
+
+A moved pointer does not override the signed continuous-deployment verdict.
+After a governance-only schema publication, do not acknowledge an existing
+release block or start the poller when `cdEligibility.eligible` is false and the
+candidate image pair differs from the active completed receipt. The
+controller-only bridge also requires exact image, Compose, migration inventory,
+reconciliation, and migration up/down count equality. Publish a later non-governance,
+non-control-plane successor, require `cdEligibility.eligible == true`,
+`cdEligibility.predecessorCompatible == true`, `move_main`, and the same signed
+`controlPlane.digest`, then use that exact successor for §1a, block
+acknowledgement and one attended poll. Keep the timer disabled until the
+attended poll produces a completed, provable receipt and the exact healthy
+image pair.
+
 Schema reader support must land on protected `main`, pass the exact base/head
 schema-policy gate, and be installed with the attended §1a control-plane
 transaction before the dedicated writer-only policy flip. The writer flip may
