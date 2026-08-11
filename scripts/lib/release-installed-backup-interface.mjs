@@ -11,6 +11,12 @@ export const RELEASE_INSTALLED_BACKUP_FILES = Object.freeze([
     sourceMode: 0o555,
     destinationMode: 0o755,
   }),
+  Object.freeze({
+    source: 'scripts/local-backup-retry-launcher.sh',
+    destination: '/usr/local/libexec/nexus-local-backup/local-backup-retry-launcher.sh',
+    sourceMode: 0o555,
+    destinationMode: 0o755,
+  }),
   ...[
     'nexus-local-backup.service',
     'nexus-local-backup.timer',

@@ -176,6 +176,7 @@ describe('lean changed-area classification', () => {
     'ops/nexus-release/README.md',
     'ops/local-backup/systemd/nexus-local-backup.service',
     'scripts/local-backup.py',
+    'scripts/local-backup-retry-launcher.sh',
     'scripts/local-backup-systemd-install.sh',
   ])('classifies %s as release runtime infrastructure', (file) => {
     const result = classify([file]);

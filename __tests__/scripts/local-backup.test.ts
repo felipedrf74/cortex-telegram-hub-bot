@@ -1593,6 +1593,7 @@ describe('same-host Nexus backups', () => {
 
   it('ships narrow inactive systemd assets for backup and restore verification', () => {
     const installer = readFileSync('scripts/local-backup-systemd-install.sh', 'utf8');
+    const retryLauncher = readFileSync('scripts/local-backup-retry-launcher.sh', 'utf8');
     const sudoers = readFileSync('ops/local-backup/nexus-local-backup.sudoers', 'utf8');
     const prePromotion = readFileSync(
       'ops/local-backup/systemd/nexus-local-backup-pre-promotion.service',
@@ -1620,12 +1621,15 @@ describe('same-host Nexus backups', () => {
 
     expect(() => execFileSync('bash', ['-n', 'scripts/local-backup-systemd-install.sh']))
       .not.toThrow();
+    expect(() => execFileSync('bash', ['-n', 'scripts/local-backup-retry-launcher.sh']))
+      .not.toThrow();
     expect(installer).toContain(
       'validate_root_path_chain "$SOURCE_ROOT" "local backup source root"',
     );
     expect(installer).toContain(
       'validate_root_path_chain "$SOURCE_ROOT/$source" "local backup asset ($source)"',
     );
+    expect(installer).toContain('[ -x /usr/bin/timeout ] && [ -x /usr/bin/sleep ]');
     expect(installer).toContain('validate_optional_directory_chain');
     expect(installer).toContain('validate_optional_installed_file');
     const installerPreflight = installer.indexOf(
@@ -1654,6 +1658,9 @@ describe('same-host Nexus backups', () => {
     expect(installer.slice(0, daemonReload)).toContain('sync -f "$target"');
     expect(installer).toContain('cmp -s -- "$SOURCE_ROOT/scripts/local-backup.py"');
     expect(installer).toContain(
+      'cmp -s -- "$SOURCE_ROOT/scripts/local-backup-retry-launcher.sh"',
+    );
+    expect(installer).toContain(
       'visudo -cf "$SOURCE_ROOT/ops/local-backup/nexus-local-backup.sudoers"',
     );
     expect(installer).toContain('installed local backup executable is unsafe');
@@ -1669,8 +1676,15 @@ describe('same-host Nexus backups', () => {
     expect(prePromotion).not.toContain('RuntimeDirectoryPreserve=restart');
     expect(prePromotion).not.toContain('RestartForceExitStatus=75');
     expect(prePromotion).not.toContain('SuccessExitStatus=75');
-    expect(hourly).toContain('TimeoutStartSec=18min');
-    expect(restoreVerify).toContain('TimeoutStartSec=36min');
+    expect(hourly).toContain('TimeoutStartSec=67min');
+    expect(restoreVerify).toContain('TimeoutStartSec=85min');
+    expect(hourly).toContain('local-backup-retry-launcher.sh backup');
+    expect(restoreVerify).toContain('local-backup-retry-launcher.sh restore-verify');
+    expect(retryLauncher).toContain('readonly work_timeout=18m');
+    expect(retryLauncher).toContain('readonly work_timeout=36m');
+    expect(retryLauncher).toContain('if test "$status" -ne 75; then');
+    expect(retryLauncher).toContain('"$sleep_bin" 60');
+    expect(retryLauncher).not.toContain('--foreground');
     const prePromotionWritablePaths =
       'ReadWritePaths=/srv/nexus-backups/application '
       + '-/home/dominguez/telegram-hub-bot/data '
@@ -1698,10 +1712,157 @@ describe('same-host Nexus backups', () => {
     expect(verifyTimer).toContain('OnCalendar=Sun *-*-* 04:15:00 UTC');
     expect(verifyTimer).toContain('AccuracySec=1m');
     expect(verifyTimer).not.toContain('RandomizedDelaySec');
-    expect(hourly).toContain('RestartForceExitStatus=75');
-    expect(restoreVerify).toContain('RestartForceExitStatus=75');
-    expect(hourly).toContain('RuntimeDirectoryPreserve=restart');
-    expect(restoreVerify).toContain('RuntimeDirectoryPreserve=restart');
+    expect(hourly).not.toContain('RestartForceExitStatus');
+    expect(restoreVerify).not.toContain('RestartForceExitStatus');
+    expect(hourly).not.toContain('RuntimeDirectoryPreserve');
+    expect(restoreVerify).not.toContain('RuntimeDirectoryPreserve');
+    expect(hourly).not.toContain('RestartSec');
+    expect(restoreVerify).not.toContain('RestartSec');
+  });
+
+  it('retries only exact lock contention inside one bounded oneshot activation', () => {
+    const root = mkdtempSync(join(tmpdir(), 'nexus-local-backup-retry-launcher-'));
+    chmodSync(root, 0o700);
+    const launcher = join(root, 'launcher.sh');
+    const producer = join(root, 'producer.sh');
+    const timeout = join(root, 'timeout.sh');
+    const sleep = join(root, 'sleep.sh');
+    const plan = join(root, 'plan');
+    const calls = join(root, 'calls');
+    const timeouts = join(root, 'timeouts');
+    const sleeps = join(root, 'sleeps');
+    try {
+      writeFileSync(producer, [
+        '#!/bin/sh',
+        `calls=${JSON.stringify(calls)}`,
+        `plan=${JSON.stringify(plan)}`,
+        'printf "%s\\n" "$1" >>"$calls"',
+        'attempt="$(wc -l <"$calls" | tr -d " ")"',
+        'status="$(sed -n "${attempt}p" "$plan")"',
+        'exit "$status"',
+        '',
+      ].join('\n'), { mode: 0o700 });
+      writeFileSync(timeout, [
+        '#!/bin/sh',
+        `printf '%s\\n' "$3" >>${JSON.stringify(timeouts)}`,
+        'shift 3',
+        'exec "$@"',
+        '',
+      ].join('\n'), { mode: 0o700 });
+      writeFileSync(sleep, [
+        '#!/bin/sh',
+        `printf '%s\\n' "$1" >>${JSON.stringify(sleeps)}`,
+        '',
+      ].join('\n'), { mode: 0o700 });
+      const source = readFileSync('scripts/local-backup-retry-launcher.sh', 'utf8')
+        .replace('/usr/local/libexec/nexus-local-backup/local-backup.py', producer)
+        .replace('/usr/bin/timeout', timeout)
+        .replace('/usr/bin/sleep', sleep);
+      writeFileSync(launcher, source, { mode: 0o700 });
+      chmodSync(launcher, 0o700);
+
+      writeFileSync(plan, '75\n75\n0\n', { mode: 0o600 });
+      const recovered = spawnSync(launcher, ['backup'], { encoding: 'utf8' });
+      expect(recovered.status, recovered.stderr).toBe(0);
+      expect(readFileSync(calls, 'utf8')).toBe('backup\nbackup\nbackup\n');
+      expect(readFileSync(timeouts, 'utf8')).toBe('18m\n18m\n18m\n');
+      expect(readFileSync(sleeps, 'utf8')).toBe('60\n60\n');
+
+      writeFileSync(plan, '75\n42\n', { mode: 0o600 });
+      writeFileSync(calls, '', { mode: 0o600 });
+      writeFileSync(timeouts, '', { mode: 0o600 });
+      writeFileSync(sleeps, '', { mode: 0o600 });
+      const failed = spawnSync(launcher, ['restore-verify'], { encoding: 'utf8' });
+      expect(failed.status, failed.stderr).toBe(42);
+      expect(readFileSync(calls, 'utf8')).toBe('restore-verify\nrestore-verify\n');
+      expect(readFileSync(timeouts, 'utf8')).toBe('36m\n36m\n');
+      expect(readFileSync(sleeps, 'utf8')).toBe('60\n');
+
+      expect(spawnSync(launcher, [], { encoding: 'utf8' }).status).toBe(64);
+      expect(spawnSync(launcher, ['backup', 'extra'], { encoding: 'utf8' }).status).toBe(64);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('bounds the complete producer process group on Linux', () => {
+    if (process.platform !== 'linux') return;
+    const root = mkdtempSync(join(tmpdir(), 'nexus-local-backup-timeout-group-'));
+    chmodSync(root, 0o700);
+    const launcher = join(root, 'launcher.sh');
+    const producer = join(root, 'producer.sh');
+    const childPidFile = join(root, 'child.pid');
+    let childPid = 0;
+    try {
+      writeFileSync(producer, [
+        '#!/bin/sh',
+        "trap '' TERM",
+        '(',
+        "  trap '' TERM",
+        '  while :; do /bin/sleep 1; done',
+        ') &',
+        `printf '%s\\n' "$!" >${JSON.stringify(childPidFile)}`,
+        'wait',
+        '',
+      ].join('\n'), { mode: 0o700 });
+      const source = readFileSync('scripts/local-backup-retry-launcher.sh', 'utf8')
+        .replace('/usr/local/libexec/nexus-local-backup/local-backup.py', producer)
+        .replace('readonly work_timeout=18m', 'readonly work_timeout=1s')
+        .replace('--kill-after=3m', '--kill-after=1s');
+      writeFileSync(launcher, source, { mode: 0o700 });
+      chmodSync(launcher, 0o700);
+      const execution = spawnSync(launcher, ['backup'], {
+        encoding: 'utf8',
+        timeout: 10_000,
+      });
+      expect(execution.error).toBeUndefined();
+      expect(execution.status).not.toBe(0);
+      childPid = Number(readFileSync(childPidFile, 'utf8').trim());
+      expect(Number.isSafeInteger(childPid) && childPid > 1).toBe(true);
+      let alive = true;
+      for (let attempt = 0; attempt < 20 && alive; attempt += 1) {
+        try {
+          process.kill(childPid, 0);
+          execFileSync('/bin/sleep', ['0.1']);
+        } catch (error: any) {
+          if (error?.code === 'ESRCH') alive = false;
+          else throw error;
+        }
+      }
+      expect(alive).toBe(false);
+    } finally {
+      if (childPid > 1) {
+        try { process.kill(childPid, 'SIGKILL'); } catch { /* already gone */ }
+      }
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('loads the scheduled oneshot units under the Linux systemd verifier', () => {
+    if (process.platform !== 'linux') return;
+    const root = mkdtempSync(join(tmpdir(), 'nexus-local-backup-systemd-verify-'));
+    chmodSync(root, 0o700);
+    const units = [
+      'nexus-local-backup.service',
+      'nexus-local-backup-restore-verify.service',
+    ];
+    try {
+      const paths = units.map((unit) => {
+        const source = readFileSync(join('ops/local-backup/systemd', unit), 'utf8')
+          .replace(/^ExecStart=.*$/mu, 'ExecStart=/bin/true')
+          .replace(/^ExecStopPost=.*$/mu, 'ExecStopPost=/bin/true');
+        const destination = join(root, unit);
+        writeFileSync(destination, source, { mode: 0o600 });
+        return destination;
+      });
+      const verified = spawnSync('/usr/bin/systemd-analyze', ['verify', ...paths], {
+        encoding: 'utf8',
+      });
+      expect(verified.error).toBeUndefined();
+      expect(verified.status, `${verified.stdout}\n${verified.stderr}`).toBe(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('refuses unsafe pre-existing installer targets before copy', () => {
@@ -1753,6 +1914,7 @@ describe('same-host Nexus backups', () => {
     // continuous-deployment poller environment template.
     const files = [
       'scripts/local-backup.py',
+      'scripts/local-backup-retry-launcher.sh',
       'scripts/local-backup-systemd-install.sh',
       'ops/local-backup/backup.env.example',
       'ops/nexus-release/poller.env.example',

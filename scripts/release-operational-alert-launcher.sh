@@ -38,15 +38,6 @@ if [[ -n "$residual_environment_names" ]]; then
 fi
 unset residual_environment_names
 
-# Exit 75 is the unit's governed, restartable lock-contention verdict. systemd
-# will retry it; acquiring the alert lock here would incorrectly turn an
-# intermediate catch-up attempt into a durable incident or recovery.
-if [[ "$captured_service_result" == "exit-code" \
-  && "$captured_exit_code" == "exited" \
-  && "$captured_exit_status" == "75" ]]; then
-  exit 0
-fi
-
 export PATH=/usr/bin:/bin
 export HOME=/var/lib/nexus-release
 export SERVICE_RESULT="$captured_service_result"

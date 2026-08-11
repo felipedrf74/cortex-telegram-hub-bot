@@ -1866,8 +1866,9 @@ describe('immediate systemd operational alerts', () => {
     expect(sends).toBe(0);
   });
 
-  it('does not open, resolve, or send for governed restartable lock contention', async () => {
-    const calls: string[] = [];
+  it('persists and delivers a terminal exit75 instead of suppressing it', async () => {
+    const fixture = makeAlertStoreFixture();
+    let sends = 0;
     const result = await runOperationalAlert({
       unit: 'nexus-local-backup.service',
       env: {
@@ -1875,18 +1876,28 @@ describe('immediate systemd operational alerts', () => {
         EXIT_CODE: 'exited',
         EXIT_STATUS: '75',
       },
-      alertStore: {
-        openFailure: () => { calls.push('open'); },
-        resolveSource: () => { calls.push('resolve'); },
+      policy: {},
+      alertStore: fixture.alertStore,
+      notifier: {
+        send: async () => {
+          sends += 1;
+          return { delivered: true, reason: 'sent' };
+        },
       },
-      notifier: { send: async () => { calls.push('send'); } },
     });
     expect(result).toMatchObject({
-      alerted: false,
-      reason: 'lock_retry_pending',
+      alerted: true,
+      delivered: true,
       exitCode: 0,
     });
-    expect(calls).toEqual([]);
+    expect(sends).toBe(1);
+    expect(fixture.alertStore.readState().events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        source: 'nexus-local-backup.service',
+        failureCode: 'local_backup_failed',
+        lifecycle: 'delivered',
+      }),
+    ]));
   });
 
   it('persists and sends a unit failure even when policy loading fails', async () => {
@@ -2069,15 +2080,17 @@ describe('systemd environment isolation', () => {
         : 'nexus-local-backup-restore-verify-active'}`,
     );
     expect(service).toContain('RuntimeDirectoryMode=0700');
-    expect(service).toContain('RuntimeDirectoryPreserve=restart');
     expect(service).toContain('StartLimitIntervalSec=0');
     expect(service).toContain('Restart=no');
-    expect(service).toContain('RestartForceExitStatus=75');
-    expect(service).toContain('RestartSec=1min');
+    expect(service).not.toContain('RuntimeDirectoryPreserve');
+    expect(service).not.toContain('RestartForceExitStatus');
+    expect(service).not.toContain('RestartSec');
     expect(service).not.toContain('SuccessExitStatus=75');
     expect(service).not.toContain('ExecStartPre=/usr/bin/systemctl stop');
     expect(execStart).toMatch(/^ExecStart=\/usr\/bin\/env -i PATH=\/usr\/bin:\/bin /);
-    expect(execStart).toContain('/usr/local/libexec/nexus-local-backup/local-backup.py');
+    expect(execStart).toContain(
+      '/usr/local/libexec/nexus-local-backup/local-backup-retry-launcher.sh',
+    );
     expect(execStart).not.toContain('TELEGRAM');
     expect(execStopPost).toBe(
       'ExecStopPost=/opt/nexus-release/checkout/scripts/'
@@ -2161,12 +2174,12 @@ describe('systemd environment isolation', () => {
     expect(nodeFs.existsSync(bashEnvironmentMarker)).toBe(false);
   });
 
-  it('short-circuits exact exit75 contention before the alert-lock runner starts', () => {
+  it('passes a terminal exit75 to the durable alert-lock runner', () => {
     const root = temporaryRoot('nexus-alert-retry-short-circuit-');
     const launcher = join(root, 'release-operational-alert-launcher.sh');
     const marker = join(root, 'runner-started');
     const fakeRunner = join(root, 'fake-runner');
-    writePrivate(fakeRunner, `#!/bin/sh\n/usr/bin/touch ${JSON.stringify(marker)}\nexit 99\n`);
+    writePrivate(fakeRunner, `#!/bin/sh\n/usr/bin/touch ${JSON.stringify(marker)}\nexit 0\n`);
     chmodSync(fakeRunner, 0o700);
     writePrivate(
       launcher,
@@ -2189,7 +2202,7 @@ describe('systemd environment isolation', () => {
       encoding: 'utf8',
     });
     expect(result.status, result.stderr).toBe(0);
-    expect(nodeFs.existsSync(marker)).toBe(false);
+    expect(nodeFs.existsSync(marker)).toBe(true);
   });
 
   it('keeps liveness inspection outside the lock and notification environment', () => {
@@ -2298,13 +2311,13 @@ describe('systemd environment isolation', () => {
         'nexus-local-backup.service',
         'nexus-local-backup-active',
         'ExecStart=/usr/bin/env -i',
-        'TimeoutStartSec=18min',
+        'TimeoutStartSec=67min',
       ],
       [
         'nexus-local-backup-restore-verify.service',
         'nexus-local-backup-restore-verify-active',
         'ExecStart=/usr/bin/env -i',
-        'TimeoutStartSec=36min',
+        'TimeoutStartSec=85min',
       ],
       [
         'nexus-local-backup-pre-promotion.service',
@@ -2515,6 +2528,7 @@ describe('systemd environment isolation', () => {
       'ops/nexus-release/nexus-release-backup-liveness.timer',
       'scripts/release-backup-liveness-launcher.sh',
       'scripts/release-bound-lock-runner.py',
+      'scripts/local-backup-retry-launcher.sh',
     ]));
   });
 

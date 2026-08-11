@@ -245,7 +245,7 @@ export function classifyChangedFiles({
     || has(/^scripts\/lib\/release-.*\.mjs$/)
     || has(/^scripts\/lib\/(?:migration-cd-eligibility|pm2-fallback-retirement|production-migration-lineage)\.mjs$/);
   const localBackupRuntime = has(/^ops\/local-backup(?:\/|$)/)
-    || has(/^scripts\/local-backup(?:\.py|-systemd-install\.sh)$/);
+    || has(/^scripts\/local-backup(?:\.py|-(?:retry-launcher|systemd-install)\.sh)$/);
   if (releaseControlPlane) {
     nonDoc = true;
     docsOnly = false;

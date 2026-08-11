@@ -229,6 +229,7 @@ describe('signed release control-plane identity', () => {
       'scripts/lib/release-deployment.mjs',
       'scripts/lib/release-installed-backup-interface.mjs',
       'scripts/release-artifact-manifest.mjs',
+      'scripts/local-backup-retry-launcher.sh',
       'scripts/release-backup-liveness-launcher.sh',
       'scripts/release-bound-lock-runner.py',
       'scripts/release-installed-backup-interface-check.mjs',
@@ -357,6 +358,8 @@ describe('signed release control-plane identity', () => {
     }))).toEqual([
       expect.objectContaining({ source: 'scripts/local-backup.py', sourceMode: 0o555,
         destinationMode: 0o755 }),
+      expect.objectContaining({ source: 'scripts/local-backup-retry-launcher.sh',
+        sourceMode: 0o555, destinationMode: 0o755 }),
       ...Array.from({ length: 5 }, () => expect.objectContaining({
         sourceMode: 0o444,
         destinationMode: 0o644,

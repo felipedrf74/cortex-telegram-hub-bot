@@ -10,8 +10,7 @@ EnvironmentFile=-/etc/nexus-release/poller.env
 UnsetEnvironment=LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT LD_DEBUG LD_PROFILE BASH_ENV ENV SHELLOPTS BASHOPTS PS4 NODE_OPTIONS NODE_PATH NEXUS_RELEASE_AUDIT_MIRROR_HOST
 RuntimeDirectory=nexus-local-backup-restore-verify-active
 RuntimeDirectoryMode=0700
-RuntimeDirectoryPreserve=restart
-ExecStart=/usr/bin/env -i PATH=/usr/bin:/bin /usr/local/libexec/nexus-local-backup/local-backup.py restore-verify
+ExecStart=/usr/bin/env -i PATH=/usr/bin:/bin /usr/local/libexec/nexus-local-backup/local-backup-retry-launcher.sh restore-verify
 ExecStopPost=/opt/nexus-release/checkout/scripts/release-operational-alert-launcher.sh --unit=nexus-local-backup-restore-verify.service
 StateDirectory=nexus-release/operational-alerts
 StateDirectoryMode=0700
@@ -22,8 +21,6 @@ ProtectSystem=strict
 ProtectHome=read-only
 PrivateTmp=true
 ReadWritePaths=/srv/nexus-backups/application /var/lib/nexus-release/operational-alerts
-TimeoutStartSec=36min
+TimeoutStartSec=85min
 TimeoutStopSec=3min
 Restart=no
-RestartForceExitStatus=75
-RestartSec=1min
