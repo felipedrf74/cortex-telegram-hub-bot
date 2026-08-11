@@ -1,6 +1,12 @@
 import { sanitizeDetail } from './release-state-store.mjs';
 import { fail } from './release-canonical.mjs';
 import { releaseBackupAlertContract } from './release-backup-alert-state.mjs';
+import {
+  RELEASE_DISCOVERY_ALERT_SOURCE,
+  classifyReleaseDiscoveryFailure,
+  drainDueReleaseDiscoveryAlerts,
+  releaseDiscoveryAlertContract,
+} from './release-discovery-alert-state.mjs';
 
 /**
  * Release notifications.
@@ -53,6 +59,12 @@ function shortDigest(digest) {
   return hex.slice(0, 12);
 }
 
+function operationalAlertContract(source, failureCode) {
+  return source === RELEASE_DISCOVERY_ALERT_SOURCE
+    ? releaseDiscoveryAlertContract(failureCode)
+    : releaseBackupAlertContract(source, failureCode);
+}
+
 /**
  * Build the exact message text. Kept pure and exported so the redaction rules
  * can be asserted directly, without a network stub.
@@ -75,13 +87,13 @@ export function buildReleaseNotification({ kind, policy, release }) {
       lines.push(`action: ${sanitizeDetail(release.actionRequired)}`);
     }
     if (release.alertSource) {
-      const contract = releaseBackupAlertContract(release.alertSource, release.failureCode);
+      const contract = operationalAlertContract(release.alertSource, release.failureCode);
       if (release.phase !== contract.phase || release.outcome !== contract.outcome
           || release.actionRequired !== contract.actionRequired
           || release.alertSeverity !== contract.severity
           || release.alertRunbookUrl !== contract.runbookUrl
           || release.alertDedupeKey !== contract.dedupeKey) {
-        fail('release backup alert notification contract mismatch');
+        fail('release operational alert notification contract mismatch');
       }
       lines.push(`source: ${contract.source}`);
       lines.push(`severity: ${contract.severity}`);
@@ -146,28 +158,58 @@ export function buildReleaseNotification({ kind, policy, release }) {
  * receipt path. They still need to page the owner, and a notifier failure must
  * never replace the original poll failure.
  */
-export async function reportReleaseDeploymentAbort({ notifier, error, log = () => {} }) {
-  const failureCode = sanitizeDetail(
-    error instanceof Error ? error.message : 'release verification failed',
-  ) ?? 'release verification failed';
+export async function reportReleaseDeploymentAbort({
+  notifier,
+  alertStore,
+  error,
+  log = () => {},
+}) {
+  const failureCode = classifyReleaseDiscoveryFailure(error);
   log(`release deployment aborted: ${failureCode}`);
   try {
-    await notifier.send({
-      kind: RELEASE_NOTIFICATION_KINDS.FAILURE,
-      release: {
-        releaseId: null,
-        sourceSha: null,
-        phase: 'discovery_verification',
-        outcome: 'poll_failed',
-        failureCode,
-        rollbackResult: 'not_applicable',
-        actionRequired: 'inspect release journal and active state before retrying',
-      },
-    });
+    const opened = alertStore?.openFailure({ failureCode });
+    if (!opened) throw new Error('release discovery alert store is unavailable');
+    if (opened.deduped) {
+      log(`release discovery alert deduped: ${opened.event.dedupeKey}`);
+    }
+    await drainDueReleaseDiscoveryAlerts({ store: alertStore, notifier });
   } catch {
-    log('release failure notification failed');
+    // The deployment failure remains the process verdict. Never bypass the
+    // durable source with a direct best-effort page when its state is unsafe.
+    log('release discovery alert persistence or delivery failed');
   }
   return { failureCode };
+}
+
+export async function drainReleaseDeploymentAbort({
+  alertStore,
+  notifier,
+  log = () => {},
+}) {
+  if (!alertStore) return [];
+  try {
+    return await drainDueReleaseDiscoveryAlerts({ store: alertStore, notifier });
+  } catch {
+    log('release discovery alert retry persistence or delivery failed');
+    return [];
+  }
+}
+
+export async function resolveReleaseDeploymentAbort({
+  alertStore,
+  notifier,
+  log = () => {},
+}) {
+  if (!alertStore) return null;
+  try {
+    // Persisted failures remain deliverable even when the next poll is healthy.
+    // Drain first, then rearm the edge; an undelivered open event remains due.
+    await drainDueReleaseDiscoveryAlerts({ store: alertStore, notifier });
+    return alertStore.resolve();
+  } catch {
+    log('release discovery alert recovery persistence or delivery failed');
+    return null;
+  }
 }
 
 export function createReleaseNotifier({

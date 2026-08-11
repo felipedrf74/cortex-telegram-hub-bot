@@ -1,8 +1,8 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { generateKeyPairSync, sign as cryptoSign } from 'node:crypto';
 import {
-  chmodSync, existsSync, linkSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync,
-  symlinkSync, writeFileSync,
+  chmodSync, closeSync, existsSync, linkSync, mkdtempSync, mkdirSync, openSync, readFileSync,
+  realpathSync, rmSync, statSync, symlinkSync, writeFileSync,
 } from 'node:fs';
 import * as nodeFs from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -61,8 +61,14 @@ import {
 import {
   RELEASE_NOTIFICATION_KINDS,
   buildReleaseNotification,
+  drainReleaseDeploymentAbort,
   reportReleaseDeploymentAbort,
+  resolveReleaseDeploymentAbort,
 } from '../../scripts/lib/release-notify.mjs';
+import {
+  createReleaseDiscoveryAlertStore,
+  releaseDeploymentResultProvesDiscovery,
+} from '../../scripts/lib/release-discovery-alert-state.mjs';
 import { createReleaseAuditMirror } from '../../scripts/lib/release-audit-mirror.mjs';
 import { createReleaseBackup } from '../../scripts/lib/release-backup.mjs';
 import { createReleaseDatabaseProbe } from '../../scripts/lib/release-database.mjs';
@@ -106,6 +112,28 @@ const CONTROL_PLANE = Object.freeze({
   schema: RELEASE_CONTROL_PLANE_SCHEMA,
   digest: 'e'.repeat(64),
 });
+let discoveryAlertLockDescriptors: number[] = [];
+
+function discoveryAlertStore(now = () => Date.parse('2026-08-11T09:00:00.000Z')) {
+  const stateDirectory = join(workspace, 'release-discovery-alert-state');
+  const lockFile = join(workspace, 'release-discovery-alert.lock');
+  mkdirSync(stateDirectory, { recursive: true, mode: 0o700 });
+  chmodSync(stateDirectory, 0o700);
+  writeFileSync(lockFile, '', { mode: 0o600 });
+  chmodSync(lockFile, 0o600);
+  const lockDescriptor = openSync(lockFile, 'r');
+  discoveryAlertLockDescriptors.push(lockDescriptor);
+  const metadata = statSync(stateDirectory);
+  return createReleaseDiscoveryAlertStore({
+    stateDirectory,
+    lockFile,
+    lockDescriptor,
+    expectedUid: metadata.uid,
+    expectedGid: metadata.gid,
+    lockHeld: true,
+    now,
+  });
+}
 const PREDECESSOR_COMPOSE_BYTES = Buffer.from('services:\n  backend: {}\n  legacy: {}\n');
 const PREDECESSOR_COMPOSE_DIGEST = sha256(PREDECESSOR_COMPOSE_BYTES);
 const NEWER_PAYLOAD_DIGEST = `sha256:${'6'.repeat(64)}`;
@@ -168,6 +196,7 @@ beforeEach(() => {
   // macOS exposes /var as a symlink to /private/var. Use the canonical fixture
   // root so the production payload-directory safety check stays strict.
   workspace = realpathSync(mkdtempSync(join(tmpdir(), 'nexus-cd-')));
+  discoveryAlertLockDescriptors = [];
   mkdirSync(join(workspace, 'trust'), { recursive: true });
   mkdirSync(join(workspace, 'env'), { recursive: true });
   for (const environment of ['staging', 'production']) {
@@ -190,6 +219,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  for (const descriptor of discoveryAlertLockDescriptors) closeSync(descriptor);
   rmSync(workspace, { recursive: true, force: true });
 });
 
@@ -1845,7 +1875,10 @@ describe('release state and locking', () => {
     expect(first.store.readState().active?.rollbackTarget?.payload.digest)
       .toBe(PREDECESSOR_PAYLOAD_DIGEST);
 
-    const second = await deploy({ envelope, store: first.store });
+    const second = await deploy({
+      envelope,
+      store: first.store,
+    });
     // The settled receipt plus the exact persisted OCI payload digest is enough
     // to no-op before manifest freshness is re-evaluated.
     expect(second.result.outcome).toBe(DEPLOYMENT_OUTCOMES.NOOP);
@@ -2394,7 +2427,10 @@ describe('release state and locking', () => {
     });
     expect(blocked.result.outcome).toBe(DEPLOYMENT_OUTCOMES.BLOCKED);
 
-    const next = await deploy({ store, envelope: signed(payloadFor({ sha: NEWER_SHA })) });
+    const next = await deploy({
+      store,
+      envelope: signed(payloadFor({ sha: NEWER_SHA })),
+    });
     expect(next.result.outcome).toBe(DEPLOYMENT_OUTCOMES.HALTED);
 
     store.acknowledgeBlock();
@@ -5596,17 +5632,18 @@ describe('release security and operations', () => {
     const sent: Array<Record<string, any>> = [];
     const logs: string[] = [];
     const result = await reportReleaseDeploymentAbort({
+      alertStore: discoveryAlertStore(),
       notifier: {
         send: async (entry: Record<string, any>) => {
           sent.push(entry);
-          return { delivered: true };
+          return { delivered: true, reason: 'sent' };
         },
       },
       error: new Error('payload https://user:pass@example.invalid failed verification'),
       log: (message: string) => logs.push(message),
     });
 
-    expect(result.failureCode).toBe('[redacted]');
+    expect(result.failureCode).toBe('release_discovery_failed');
     expect(logs.join('\n')).not.toContain('user:pass');
     expect(sent).toEqual([expect.objectContaining({
       kind: RELEASE_NOTIFICATION_KINDS.FAILURE,
@@ -5615,19 +5652,286 @@ describe('release security and operations', () => {
         sourceSha: null,
         phase: 'discovery_verification',
         outcome: 'poll_failed',
-        failureCode: '[redacted]',
+        failureCode: 'release_discovery_failed',
+        alertSource: 'nexus-release-poller.service',
+        alertSeverity: 'error',
+        alertDedupeKey: 'release_discovery:poll_failed',
       }),
     })]);
+  });
+
+  it('classifies an incompatible envelope without inventing an untrusted identity', async () => {
+    const sent: Array<Record<string, any>> = [];
+    const alertStore = discoveryAlertStore();
+    await reportReleaseDeploymentAbort({
+      alertStore,
+      notifier: {
+        send: async (entry: Record<string, any>) => {
+          sent.push(entry);
+          return { delivered: true, reason: 'sent' };
+        },
+      },
+      error: new Error('release manifest envelope schema is invalid'),
+    });
+
+    expect(sent).toHaveLength(1);
+    const text = buildReleaseNotification({
+      kind: RELEASE_NOTIFICATION_KINDS.FAILURE,
+      policy,
+      release: sent[0].release,
+    });
+    expect(text.split('\n')).toEqual(expect.arrayContaining([
+      'release: unknown',
+      'commit: unknown',
+      'reason: controller_schema_incompatible',
+      'action: upgrade_installed_release_controller',
+      'source: nexus-release-poller.service',
+      'severity: error',
+      'dedupe: release_discovery:poll_failed',
+      'runbook: file:///opt/nexus-release/checkout/ops/nexus-release/README.md#9-notifications',
+    ]));
   });
 
   it('preserves the original abort path when failure notification throws', async () => {
     const logs: string[] = [];
     await expect(reportReleaseDeploymentAbort({
+      alertStore: discoveryAlertStore(),
       notifier: { send: async () => { throw new Error('telegram unavailable'); } },
       error: new Error('manifest check failed'),
       log: (message: string) => logs.push(message),
-    })).resolves.toEqual({ failureCode: 'manifest check failed' });
-    expect(logs).toContain('release failure notification failed');
+    })).resolves.toEqual({ failureCode: 'release_discovery_failed' });
+    expect(logs.join('\n')).not.toContain('telegram unavailable');
+    expect(logs).not.toContain('release failure notification failed');
+  });
+
+  it('resolves discovery only from closed results that prove trusted discovery', () => {
+    const releaseId = 'a'.repeat(32);
+    expect(releaseDeploymentResultProvesDiscovery({
+      outcome: 'noop',
+      reason: 'already_completed_payload',
+      releaseId,
+    })).toBe(true);
+    expect(releaseDeploymentResultProvesDiscovery({
+      outcome: 'deferred',
+      reason: 'control_plane_mismatch',
+      releaseId,
+    })).toBe(true);
+    expect(releaseDeploymentResultProvesDiscovery({
+      outcome: 'blocked',
+      releaseId,
+      receiptDigest: 'b'.repeat(64),
+      receiptPath: `/var/lib/nexus-release/receipts/${releaseId}.json`,
+    })).toBe(true);
+    expect(releaseDeploymentResultProvesDiscovery({
+      outcome: 'refused',
+      reason: 'previously_failed_digests',
+      releaseId,
+    })).toBe(true);
+
+    expect(releaseDeploymentResultProvesDiscovery({
+      outcome: 'halted',
+      reason: 'migration_not_cd_eligible',
+      releaseId,
+    })).toBe(false);
+    expect(releaseDeploymentResultProvesDiscovery({
+      outcome: 'blocked',
+      reason: 'unprovable_active_release',
+      releaseId,
+    })).toBe(false);
+    expect(releaseDeploymentResultProvesDiscovery({
+      outcome: 'completed',
+      releaseId,
+      receiptDigest: null,
+      receiptPath: null,
+    })).toBe(false);
+    expect(releaseDeploymentResultProvesDiscovery({
+      outcome: 'rolled_back',
+      releaseId,
+      receiptDigest: 'b'.repeat(64),
+      receiptPath: `/var/lib/nexus-release/receipts/${releaseId}.json`,
+    })).toBe(false);
+    expect(releaseDeploymentResultProvesDiscovery({
+      outcome: 'noop',
+      reason: 'untrusted_reason',
+      releaseId,
+    })).toBe(false);
+  });
+
+  it('edge-dedupes a delivered incident and rearms after proved discovery recovery', async () => {
+    let nowMs = Date.parse('2026-08-11T09:00:00.000Z');
+    const alertStore = discoveryAlertStore(() => nowMs);
+    const sent: Array<Record<string, any>> = [];
+    const notifier = {
+      send: async (entry: Record<string, any>) => {
+        sent.push(entry);
+        return { delivered: true, reason: 'sent' };
+      },
+    };
+
+    for (let index = 0; index < 20; index += 1) {
+      await reportReleaseDeploymentAbort({
+        alertStore,
+        notifier,
+        error: new Error('release manifest envelope schema is invalid'),
+      });
+      nowMs += 30_000;
+    }
+    expect(sent).toHaveLength(1);
+    expect(alertStore.readState().events[0]).toMatchObject({
+      failureCode: 'controller_schema_incompatible',
+      lifecycle: 'delivered',
+      deliveryAttempts: 1,
+    });
+
+    await resolveReleaseDeploymentAbort({ alertStore, notifier });
+    nowMs += 30_000;
+    await reportReleaseDeploymentAbort({
+      alertStore,
+      notifier,
+      error: new Error('release manifest envelope schema is invalid'),
+    });
+    expect(sent).toHaveLength(2);
+    expect(alertStore.readState().events[0]).toMatchObject({
+      lifecycle: 'delivered',
+      deliveryAttempts: 1,
+    });
+  });
+
+  it('retries at 60s and 120s before a durable dead-letter', async () => {
+    let nowMs = Date.parse('2026-08-11T09:00:00.000Z');
+    const alertStore = discoveryAlertStore(() => nowMs);
+    let attempts = 0;
+    const notifier = {
+      send: async () => {
+        attempts += 1;
+        return { delivered: false, reason: 'transport_failed' };
+      },
+    };
+    const fail = () => reportReleaseDeploymentAbort({
+      alertStore,
+      notifier,
+      error: new Error('release manifest envelope schema is invalid'),
+    });
+
+    await fail();
+    nowMs += 30_000;
+    await fail();
+    expect(attempts).toBe(1);
+    nowMs += 30_000;
+    await fail();
+    expect(attempts).toBe(2);
+    nowMs += 119_000;
+    await fail();
+    expect(attempts).toBe(2);
+    nowMs += 1_000;
+    await fail();
+    expect(attempts).toBe(3);
+    expect(alertStore.readState().events[0]).toMatchObject({
+      lifecycle: 'dead_letter',
+      deliveryAttempts: 3,
+      nextAttemptAt: null,
+    });
+    nowMs += 10 * 60_000;
+    await fail();
+    expect(attempts).toBe(3);
+  });
+
+  it('keeps an undelivered event retryable when discovery recovers first', async () => {
+    let nowMs = Date.parse('2026-08-11T09:00:00.000Z');
+    const alertStore = discoveryAlertStore(() => nowMs);
+    let delivered = false;
+    const notifier = {
+      send: async () => ({ delivered, reason: delivered ? 'sent' : 'transport_failed' }),
+    };
+    await reportReleaseDeploymentAbort({
+      alertStore,
+      notifier,
+      error: new Error('manifest unavailable'),
+    });
+    await resolveReleaseDeploymentAbort({ alertStore, notifier });
+    expect(alertStore.readState()).toMatchObject({
+      condition: { status: 'healthy' },
+      events: [{ lifecycle: 'open', deliveryAttempts: 1 }],
+    });
+
+    nowMs += 60_000;
+    delivered = true;
+    await drainReleaseDeploymentAbort({ alertStore, notifier });
+    expect(alertStore.readState().events[0]).toMatchObject({
+      lifecycle: 'recovered',
+      deliveryAttempts: 2,
+    });
+  });
+
+  it('never falls back to an ad-hoc page when durable state is malformed', async () => {
+    const alertStore = discoveryAlertStore();
+    writeFileSync(
+      join(workspace, 'release-discovery-alert-state', 'release-discovery-alert.json'),
+      '{"schema":"forged"}\n',
+      { mode: 0o600 },
+    );
+    let sends = 0;
+    const logs: string[] = [];
+    await expect(reportReleaseDeploymentAbort({
+      alertStore,
+      notifier: { send: async () => { sends += 1; } },
+      error: new Error('release manifest envelope schema is invalid'),
+      log: (message: string) => logs.push(message),
+    })).resolves.toEqual({ failureCode: 'controller_schema_incompatible' });
+    expect(sends).toBe(0);
+    expect(logs).toContain('release discovery alert persistence or delivery failed');
+  });
+
+  it('descriptor-binds the release mutex and rejects state metadata drift', () => {
+    const alertStore = discoveryAlertStore();
+    alertStore.openFailure({ failureCode: 'release_discovery_failed' });
+    const stateFile = join(
+      workspace,
+      'release-discovery-alert-state',
+      'release-discovery-alert.json',
+    );
+
+    chmodSync(stateFile, 0o644);
+    expect(() => alertStore.readState()).toThrow(/state file metadata is unsafe/);
+    chmodSync(stateFile, 0o600);
+    linkSync(stateFile, `${stateFile}.hardlink`);
+    expect(() => alertStore.readState()).toThrow(/state file metadata is unsafe/);
+    rmSync(`${stateFile}.hardlink`);
+
+    const lockFile = join(workspace, 'release-discovery-alert.lock');
+    rmSync(lockFile);
+    writeFileSync(lockFile, '', { mode: 0o600 });
+    expect(() => alertStore.readState()).toThrow(/release lock metadata is unsafe/);
+  });
+
+  it('removes only exact safe stale temporary state files under the held lock', () => {
+    const alertStore = discoveryAlertStore();
+    const temporary = join(
+      workspace,
+      'release-discovery-alert-state',
+      'release-discovery-alert.json.next-123-123e4567-e89b-42d3-a456-426614174000',
+    );
+    writeFileSync(temporary, '', { mode: 0o600 });
+    expect(alertStore.readState()).toMatchObject({ condition: null, events: [] });
+    expect(existsSync(temporary)).toBe(false);
+
+    writeFileSync(`${temporary}-wrong`, '', { mode: 0o600 });
+    expect(() => alertStore.readState()).toThrow(/temporary state filename is unsafe/);
+  });
+
+  it('keeps an unavailable discovery-alert store non-gating', async () => {
+    const logs: string[] = [];
+    await expect(drainReleaseDeploymentAbort({
+      alertStore: null,
+      notifier: { send: async () => { throw new Error('must not send'); } },
+      log: (message: string) => logs.push(message),
+    })).resolves.toEqual([]);
+    await expect(resolveReleaseDeploymentAbort({
+      alertStore: null,
+      notifier: { send: async () => { throw new Error('must not send'); } },
+      log: (message: string) => logs.push(message),
+    })).resolves.toBeNull();
+    expect(logs).toEqual([]);
   });
 
   it('treats an audit-mirror failure as non-gating', async () => {

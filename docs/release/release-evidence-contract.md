@@ -640,6 +640,37 @@ leaves the immutable `<releaseId>.json` final and unrelated or malformed names
 untouched. A cleanup transport failure leaves retry and exhaustion accounting
 unchanged, and the next attempt repeats cleanup when connectivity returns.
 
+## Release discovery alert state
+
+`/var/lib/nexus-release/state/release-discovery-alert.json` is the closed
+`nexus.release-discovery-alert-state.v1` source for failures before a release
+identity is trusted. It is a root-owned mode-0600 single-link regular file under
+the existing mode-0700 release state directory. Every operation rebinds the
+inherited held release-lock descriptor to the governed lock pathname. Writes
+use exclusive mode-0600 temporary files, file `fsync`, atomic rename, and parent
+directory `fsync`; exact safe crash leftovers are removed under the same lock,
+while unknown names or metadata refuse the source.
+
+The record contains one condition and at most one
+`release_discovery:poll_failed` event. The event carries only governed
+`controller_schema_incompatible` or `release_discovery_failed` codes plus fixed
+source, phase, outcome, action, severity, runbook, lifecycle, attempt count, and
+canonical timestamps. It is persisted before attempt one; attempts two and
+three are due after 60 and 120 seconds. Attempt three failure is
+`dead_letter`; delivery or dead-letter suppresses repeated poll failures. A
+closed deployment result that can only follow signed discovery, an exact
+completed-payload no-op, or an ordinary completed/blocked/staging receipt
+changes the condition to healthy and rearms the next incident. Early durable blocks,
+crash-recovery returns, and receiptless failures are not recovery proof. Open
+delivery remains retryable across that edge and becomes `recovered` only after
+its terminal delivery state is persisted.
+
+The file is notification evidence, not deployment authority. Malformed or
+unsafe state prevents a direct fallback notification but cannot change a
+release result. Before signature verification there is no trusted release id or
+source SHA, so those message fields are intentionally `unknown`; no moving-tag
+value, exception text, log, credential, or provider response may fill them.
+
 ## Compose configuration
 
 One `docker-compose.release.yml` serves both environments, because the signed

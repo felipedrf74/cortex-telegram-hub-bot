@@ -5,10 +5,10 @@
     "generatorVersion": 4,
     "authoritativeFreshness": "sourceDigest",
     "sourceDigestAlgorithm": "sha256-path-git-mode-content-v2",
-    "sourceDigest": "1637fc1f404687ffe52b31f3ec7b1a5395f7db71e42d71e6469272bb91e6162e",
-    "baseCommit": "647c90c5542c92d83b26aed3f63a1b097e4d4dc2",
-    "baseCommitTimestamp": "2026-08-11T13:24:51+01:00",
-    "trackedFiles": 3231,
+    "sourceDigest": "c5ba2cba6688083a8bda68d156bae5d5e4c07fc0ef214938b5f654641657d47d",
+    "baseCommit": "27b5e745918d63e5c19953919101773864bfc482",
+    "baseCommitTimestamp": "2026-08-11T14:00:11+01:00",
+    "trackedFiles": 3232,
     "sourceFiles": 1135
   },
   "navigation": {
@@ -5682,7 +5682,7 @@
     },
     {
       "path": "ops/nexus-release/README.md",
-      "bytes": 462861,
+      "bytes": 464949,
       "generated": false
     },
     {
@@ -5711,13 +5711,13 @@
       "generated": false
     },
     {
-      "path": "__tests__/services/decision-center.test.ts",
-      "bytes": 271696,
+      "path": "__tests__/scripts/release-continuous-deployment.test.ts",
+      "bytes": 275374,
       "generated": false
     },
     {
-      "path": "__tests__/scripts/release-continuous-deployment.test.ts",
-      "bytes": 264782,
+      "path": "__tests__/services/decision-center.test.ts",
+      "bytes": 271696,
       "generated": false
     },
     {

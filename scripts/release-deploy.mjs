@@ -12,6 +12,10 @@ import {
   verifyReleaseBootstrapProductionBaseline,
 } from './lib/release-bootstrap.mjs';
 import { createReleaseDatabaseProbe } from './lib/release-database.mjs';
+import {
+  createReleaseDiscoveryAlertStore,
+  releaseDeploymentResultProvesDiscovery,
+} from './lib/release-discovery-alert-state.mjs';
 import { runReleaseDeployment } from './lib/release-deployment.mjs';
 import { createReleaseHealth } from './lib/release-health.mjs';
 import {
@@ -20,7 +24,9 @@ import {
 import { loadContinuousDeploymentPolicy } from './lib/release-manifest.mjs';
 import {
   createReleaseNotifier,
+  drainReleaseDeploymentAbort,
   reportReleaseDeploymentAbort,
+  resolveReleaseDeploymentAbort,
 } from './lib/release-notify.mjs';
 import { createReleaseRegistry } from './lib/release-registry.mjs';
 import { createProtectedHeadVerifier } from './lib/release-protected-head.mjs';
@@ -86,8 +92,21 @@ const installedBackupInterface = {
   verify: () => verifyInstalledReleaseBackupInterface({ root }),
 };
 const databaseProbe = createReleaseDatabaseProbe({ policy });
+let discoveryAlerts = null;
+try {
+  discoveryAlerts = createReleaseDiscoveryAlertStore({
+    stateDirectory: policy.paths.stateDir,
+    lockFile: policy.paths.lockFile,
+  });
+} catch {
+  // Notification durability is fail-closed for paging but never release
+  // authority. A bad alert store suppresses direct sends without blocking an
+  // otherwise-valid deployment or replacing its original failure verdict.
+  log('release discovery alert store is unavailable');
+}
 
 try {
+  await drainReleaseDeploymentAbort({ alertStore: discoveryAlerts, notifier, log });
   const result = await runReleaseDeployment({
     policy, controlPlane, store, registry, protectedHead, health, notifier, mirror, backup,
     installedBackupInterface, databaseProbe, log,
@@ -97,6 +116,13 @@ try {
     },
     allowFirstContainerBootstrap,
   });
+  if (releaseDeploymentResultProvesDiscovery(result)) {
+    await resolveReleaseDeploymentAbort({
+      alertStore: discoveryAlerts,
+      notifier,
+      log,
+    });
+  }
   process.stdout.write(`${JSON.stringify({
     schema: 'nexus.release-deploy-result.v1',
     outcome: result.outcome,
@@ -111,6 +137,11 @@ try {
     .includes(result.outcome);
   process.exit(failed ? 1 : 0);
 } catch (error) {
-  await reportReleaseDeploymentAbort({ notifier, error, log });
+  await reportReleaseDeploymentAbort({
+    notifier,
+    alertStore: discoveryAlerts,
+    error,
+    log,
+  });
   process.exit(1);
 }

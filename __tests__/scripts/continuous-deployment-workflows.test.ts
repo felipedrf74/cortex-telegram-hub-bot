@@ -869,6 +869,7 @@ describe('poller and timers', () => {
     expect(wrapper).toContain('--nonblock');
     expect(wrapper).toContain('--conflict-exit-code 75');
     expect(wrapper).toContain('NEXUS_RELEASE_LOCK_HELD=1');
+    expect(wrapper).toContain('NEXUS_RELEASE_LOCK_FD=9');
     expect(wrapper).toContain('scripts/release-deploy.mjs');
     expect(wrapper).not.toContain('NEXUS_RELEASE_LOCK_FILE');
     expect(wrapper).not.toContain('NEXUS_RELEASE_MAINTENANCE_LOCK_FILE');
@@ -886,6 +887,16 @@ describe('poller and timers', () => {
       .toBeLessThan(wrapper.indexOf('"$FLOCK_BIN" --nonblock --conflict-exit-code 75 8'));
     expect(wrapper.indexOf('"$FLOCK_BIN" --nonblock --conflict-exit-code 75 8'))
       .toBeLessThan(wrapper.lastIndexOf('assert_lock_fd_matches_path 8 "$MAINTENANCE_LOCK"'));
+    const lockMarkerExport = wrapper.indexOf('export NEXUS_RELEASE_LOCK_HELD=1');
+    const lockDescriptorExport = wrapper.indexOf('export NEXUS_RELEASE_LOCK_FD=9');
+    expect(lockMarkerExport)
+      .toBeGreaterThan(wrapper.lastIndexOf('assert_lock_fd_matches_path 9 "$LOCK_FILE"'));
+    expect(lockMarkerExport)
+      .toBeGreaterThan(wrapper.lastIndexOf('assert_lock_fd_matches_path 8 "$MAINTENANCE_LOCK"'));
+    expect(lockDescriptorExport).toBeGreaterThan(lockMarkerExport);
+    expect(wrapper).toContain(
+      `stat -c '%U:%G:%a:%h:%s' -- "$LOCK_FILE")" = 'root:root:600:1:0'`,
+    );
     expect(wrapper).toContain('local guard_root=/etc/systemd/system.control');
     expect(wrapper).toContain("stat -Lc '%U:%G:%a' -- \"$guard_root\"");
     expect(wrapper).toContain("stat -c '%U:%G:%F' -- \"$guard\"");
@@ -901,6 +912,30 @@ describe('poller and timers', () => {
     expect(wrapper).not.toMatch(
       /if \[ "\$argument" = --allow-first-container-bootstrap \]; then\s+assert_pm2_guard/,
     );
+  });
+
+  it('keeps discovery-alert durability bound to the held poller lock and non-gating', () => {
+    const entrypoint = readFileSync(join(root, 'scripts/release-deploy.mjs'), 'utf8');
+    const notifier = readFileSync(join(root, 'scripts/lib/release-notify.mjs'), 'utf8');
+    expect(entrypoint).toContain("from './lib/release-discovery-alert-state.mjs'");
+    expect(entrypoint).toContain('let discoveryAlerts = null');
+    expect(entrypoint).toContain('stateDirectory: policy.paths.stateDir');
+    expect(entrypoint).toContain('lockFile: policy.paths.lockFile');
+    expect(entrypoint).toContain('release discovery alert store is unavailable');
+    expect(entrypoint).toContain('await drainReleaseDeploymentAbort({');
+    expect(entrypoint).toContain('if (releaseDeploymentResultProvesDiscovery(result))');
+    expect(entrypoint).toContain('await resolveReleaseDeploymentAbort({');
+    expect(entrypoint).toContain('alertStore: discoveryAlerts');
+    expect(entrypoint).not.toContain('onDiscoveryVerified');
+    expect(notifier).toContain('release discovery alert persistence or delivery failed');
+    expect(notifier).not.toContain('inspect release journal and active state before retrying');
+
+    const run = entrypoint.indexOf('const result = await runReleaseDeployment({');
+    const proof = entrypoint.indexOf('if (releaseDeploymentResultProvesDiscovery(result))');
+    const resolve = entrypoint.indexOf('await resolveReleaseDeploymentAbort({');
+    expect(proof).toBeGreaterThan(run);
+    expect(resolve).toBeGreaterThan(proof);
+    expect(resolve).toBeLessThan(entrypoint.lastIndexOf('process.stdout.write'));
   });
 
   it('accepts the persistent guard source path reported by systemd', () => {

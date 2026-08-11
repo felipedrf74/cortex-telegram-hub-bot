@@ -227,6 +227,7 @@ describe('signed release control-plane identity', () => {
       'scripts/lib/release-backup-liveness.mjs',
       'scripts/lib/release-control-plane.mjs',
       'scripts/lib/release-deployment.mjs',
+      'scripts/lib/release-discovery-alert-state.mjs',
       'scripts/lib/release-installed-backup-interface.mjs',
       'scripts/release-artifact-manifest.mjs',
       'scripts/local-backup-retry-launcher.sh',
