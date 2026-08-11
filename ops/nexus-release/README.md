@@ -9338,6 +9338,43 @@ liveness proof for this channel — a
 silent-on-success alerting path that has quietly broken looks exactly like a
 quiet week.
 
+Failures before signature verification have their own root-owned durable source:
+`/var/lib/nexus-release/state/release-discovery-alert.json`, schema
+`nexus.release-discovery-alert-state.v1`. The poller opens and fsyncs the event
+before delivery while holding and descriptor-reproving the release mutex. One
+`release_discovery:poll_failed` edge is attempted immediately, then after 60 and
+120 seconds; a third failed attempt becomes durable `dead_letter`. A delivered
+or dead-letter event suppresses every 30-second repeat. The CLI marks the
+condition healthy only from a closed result shape that proves signed discovery,
+an exact completed-payload no-op, or an ordinary completed/blocked/staging
+receipt. An early block, crash-recovery return, or receiptless failure does not
+rearm the edge.
+
+`controller_schema_incompatible` means the installed reader cannot consume the
+published envelope and requires the attended immutable controller upgrade.
+Other pre-identity failures use `release_discovery_failed`. Telegram shows the
+fixed source, severity, dedupe key, action, and this runbook URL. `release` and
+`commit` deliberately remain `unknown` until signature verification establishes
+a trustworthy identity; filling them from a moving tag or error text would
+fabricate evidence. Raw exception text, logs, and provider bodies are never
+persisted or sent.
+
+Inspect the closed state without reading provider output:
+
+```bash
+sudo /usr/bin/jq -e '
+  .schema == "nexus.release-discovery-alert-state.v1"
+  and (.condition == null or (.condition.status == "healthy" or .condition.status == "failed"))
+  and (.events | type == "array" and length <= 1)
+' /var/lib/nexus-release/state/release-discovery-alert.json
+```
+
+An absent file means no incident has been opened. Malformed state, unsafe
+metadata, a changed lock descriptor, or an unsafe stale temporary refuses both
+state mutation and any ad-hoc fallback page, but remains non-gating for the
+release verdict. Repair the root authority from the exact immutable controller;
+do not delete or hand-edit the alert file to suppress an incident.
+
 ## 10. Raspberry Pi runner access
 
 The Pi runner account is CI-verification-only; the separate `nexus-audit`

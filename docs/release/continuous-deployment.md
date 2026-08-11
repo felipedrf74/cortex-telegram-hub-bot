@@ -747,6 +747,20 @@ structured notification fields, never admitted by the generic free-text rule.
 Preserving more free-form prose is not worth retaining plausible PIN,
 passphrase, segmented-token, or opaque-hex credential material.
 
+Poller failures that occur before a signed identity exists are edge-triggered
+through the root-owned `nexus.release-discovery-alert-state.v1` record under the
+release state directory. The held release-lock descriptor is rebound before
+every read or write; the event is fsynced before its first send, retries after
+60 and 120 seconds, and becomes durable `dead_letter` after attempt three.
+Delivered/dead-letter state suppresses the 30-second polling flood. The CLI
+resolves only from a closed result shape that proves signed discovery, an exact
+completed-payload no-op, or an ordinary completed/blocked/staging receipt; an
+earlier durable block, crash-recovery return, or receiptless failure does not. Invalid alert
+state suppresses direct fallback delivery but never changes the deployment
+verdict. Before signature verification, `releaseId` and `sourceSha` remain
+`unknown` by design while fixed source, severity, dedupe, failure code, action,
+and runbook metadata remain visible.
+
 ## Halts that need a human
 
 Continuous deployment stops and waits for acknowledgement when:

@@ -350,6 +350,26 @@
         "reason": "The old assertion that release preparation omitted canonical smoke was reversed; exact classifier-bound smoke evidence is now required and validated by a focused helper suite."
       },
       {
+        "test": "__tests__/scripts/release-continuous-deployment.test.ts",
+        "replacementTests": [
+          "__tests__/scripts/release-continuous-deployment.test.ts"
+        ],
+        "sources": [
+          "scripts/lib/release-discovery-alert-state.mjs"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "scripts/lib/release-discovery-alert-state.mjs:384-389",
+            "anchor": "if (error instanceof Error",
+            "behavior": "Pre-identity poll failures expose only the closed schema-incompatible or generic discovery failure codes instead of provider or exception text.",
+            "replacementTest": "__tests__/scripts/release-continuous-deployment.test.ts",
+            "ownerTestNamePattern": "pages sanitized discovery failures before a release identity exists$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained deployment suite replaces the raw exception-text assertion with a closed discovery failure code while preserving the original poll failure as the process verdict."
+      },
+      {
         "test": "__tests__/services/chat-action-planner.test.ts",
         "replacementTests": [
           "__tests__/services/chat-action-planner.test.ts",

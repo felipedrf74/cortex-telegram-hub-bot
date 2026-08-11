@@ -194,6 +194,12 @@ the durable alert-contract rules are:
    every 90 days on staging. The 2026-04-25 drill is the most recent
    passing one. Re-run when the production receiver changes.
 
+The release poller implements this boundary with its root-owned
+`nexus.release-discovery-alert-state.v1` source: persist before delivery,
+fixed source/severity/dedupe/runbook metadata, 60/120-second retries, durable
+dead-letter, and recovery-only rearm. It never falls back to an ad-hoc send when
+the durable source is unsafe.
+
 ## 8. Rollback runbook (must)
 
 Production recovery is required, but automatic predecessor rollback is available

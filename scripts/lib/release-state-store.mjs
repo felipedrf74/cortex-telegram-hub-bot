@@ -164,6 +164,7 @@ const GOVERNED_DETAIL_TOKENS = new Set([
   'compose_invalid',
   'container_health',
   'content_engine_health',
+  'controller_schema_incompatible',
   'controller_only_transition',
   'crash_recovery',
   'crash_recovery_detected',
@@ -178,6 +179,7 @@ const GOVERNED_DETAIL_TOKENS = new Set([
   'heartbeat_failed',
   'inspect_backup_evidence',
   'inspect_local_backup_unit',
+  'inspect_release_controller',
   'inspect_restore_verification_unit',
   'integrity_check',
   'known_hosts_not_configured',
@@ -196,6 +198,7 @@ const GOVERNED_DETAIL_TOKENS = new Set([
   'pointer_refresh_failed',
   'protected_head_unavailable',
   'protected_head_mismatch',
+  'release_discovery_failed',
   'preproduction_teardown_failed',
   'bootstrap_target_abandoned',
   'poll_failed',
@@ -216,6 +219,7 @@ const GOVERNED_DETAIL_TOKENS = new Set([
   'systemd_unit_failed',
   'transport_failed',
   'unreadable_candidate_receipt',
+  'upgrade_installed_release_controller',
 ]);
 
 // Deliberately narrow, and alphabetic-only per segment.

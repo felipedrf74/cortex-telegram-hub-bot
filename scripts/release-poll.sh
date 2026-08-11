@@ -90,10 +90,9 @@ install -d -m 700 "$(dirname "$LOCK_FILE")"
 : >>"$LOCK_FILE"
 chmod 600 "$LOCK_FILE"
 [ -f "$LOCK_FILE" ] && [ ! -L "$LOCK_FILE" ] \
-  && [ "$(stat -c '%U:%G:%a' -- "$LOCK_FILE")" = 'root:root:600' ] \
-  || die "release lock owner, mode, or type is unsafe"
+  && [ "$(stat -c '%U:%G:%a:%h:%s' -- "$LOCK_FILE")" = 'root:root:600:1:0' ] \
+  || die "release lock owner, mode, link count, size, or type is unsafe"
 
-export NEXUS_RELEASE_LOCK_HELD=1
 # LOCK ORDER (the single documented order for this host):
 #   1. the CD release lock          — serializes releases against each other
 #   2. the shared maintenance mutex — serializes releases against the retained
@@ -129,6 +128,12 @@ exec 8<>"$MAINTENANCE_LOCK"
 assert_lock_fd_matches_path 8 "$MAINTENANCE_LOCK"
 "$FLOCK_BIN" --nonblock --conflict-exit-code 75 8
 assert_lock_fd_matches_path 8 "$MAINTENANCE_LOCK"
+
+# Export serialization evidence only after both governed locks are acquired and
+# identity-reasserted. The discovery-alert store binds inherited fd 9 back to
+# the policy lock path before every state read or write.
+export NEXUS_RELEASE_LOCK_HELD=1
+export NEXUS_RELEASE_LOCK_FD=9
 
 assert_pm2_guard
 
