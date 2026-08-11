@@ -12,10 +12,66 @@ latest 10. The weekly verification decrypts the newest hourly point into a
 private temporary directory, verifies it, records a receipt, and removes the
 plaintext.
 
+The Monday 09:30 release heartbeat also validates this recovery surface. It requires
+the latest backup receipt and encrypted artifact to be no more than two hours
+old, and the immutable restore-verification receipt to be no more than eight
+days old. The release control plane also runs a failure-only service every
+minute at second 20. It drains due notification retries every minute, while a
+durable gate limits the full encrypted-artifact proof to the next wall-clock
+minute 20 and then at most once per hour. The proof holds the producer lock in
+shared nonblocking mode. An active producer marker defers only the full proof;
+due notification retries have already drained and the minute timer retries the
+proof without advancing its hourly gate. Producers publish distinct runtime
+intent markers before Python. Scheduled backup/restore contention persists a
+root-only retry record and returns exit 75 for a systemd retry one minute later;
+pre-promotion retains the bounded 330-second exclusive-lock wait. Retry state
+is capped at 45 attempts and 45 minutes, survives only automatic restarts, and
+is cleared on acquisition, exhaustion, or terminal unit stop. The weekly
+heartbeat waits up to 90 minutes for every producer marker,
+then acquires the same descriptor-bound shared lock and has a separate
+five-minute proof bound; its service has a 100-minute aggregate timeout. Thus a
+producer already active prevents a new failure-only reader, while a reader
+already active makes a scheduled producer retry without paging and makes
+pre-promotion wait rather than fail. The weekly heartbeat
+remains the only success notification.
+
+The verifier accepts only the closed producer receipts and the exact
+root-owned mode-0600 checksum companion for every present `.age` artifact. A
+checksum is one canonical line containing the lowercase SHA-256 digest, two
+spaces, the exact artifact basename, and a newline. An hourly retention pass
+may legitimately prune both the artifact and checksum named by a still-fresh
+weekly restore receipt; a half-pair is invalid. If both remain, they are
+descriptor-bound and re-hashed. The verifier also descriptor-binds
+`/etc/nexus-local-backup/backup.env`, the configured age identity, and
+`/usr/bin/age-keygen`, then derives the public recipient under a scrubbed
+environment and requires it to match the closed config without retaining or
+logging identity bytes. Missing, unsafe, mismatched, future-dated, stale, or
+noncanonical evidence pages as a release failure and makes the checker exit
+nonzero.
+
+Backup, restore-verification, and liveness failures share the root-owned
+`/var/lib/nexus-release/operational-alerts` outbox. A failure is persisted
+before delivery attempt 1; attempts 2 and 3 become due after 60 and 120 seconds
+respectively, on separate timer invocations. A third transport failure becomes
+durable `dead_letter` state, keeps the service nonzero, and is never silently
+treated as delivered. A later proved success records recovery without sending
+a recovery message and rearms the same failure code. An undelivered open event
+continues retrying even if its source recovers between attempts. Do not edit
+the outbox JSON: repair the source or notification channel and run its exact
+systemd unit successfully. A proved source recovery closes delivered and
+dead-letter history so a later incident pages again.
+
 The hourly and pre-promotion producers open the source read-only without
 asserting SQLite immutable mode and copy it in one backup step, so a read-only
-WAL source cannot restart between chunks. Both snapshot units have a 12-minute
-start timeout, which fails before the release caller's 15-minute backup budget.
+WAL source cannot restart between chunks. The hourly and pre-promotion snapshot
+units have an 18-minute start timeout; restore verification has 36 minutes.
+The release caller has a 22-minute backup budget, which outlives the snapshot
+unit and its bounded service settlement with margin.
+The weekly restore timer is fixed at Sunday 04:15 UTC with one-minute
+accuracy and no randomized delay. If its full service and stop budgets overlap
+the earliest 05:00 hourly backup, the hourly unit's governed exit-75 state
+machine retries instead of failing or paging; the same contract covers
+Persistent timer catch-up after a reboot.
 
 Publication is power-loss ordered: each encrypted artifact and checksum is
 fsynced before and after its atomic rename and the containing directory is
@@ -38,7 +94,24 @@ an older already-activating oneshot is never mistaken for a fresh backup.
    SQLite path confirmed. After container cutover the production source must be
    `/var/lib/nexus-hub/production/data/bot.db`; the old PM2 path is valid only
    during the owner-authorized first-cutover fallback.
-4. Validate and prove one round trip:
+4. Provision the dedicated release Telegram bot/chat in
+   `/etc/nexus-release/poller.env`. The hourly and restore-verification units
+   use that channel only for immediate failure alerts. They start the Python
+   producer through a clean `env -i`, so neither credential reaches
+   `local-backup.py`, its arguments, or its output. `ExecStopPost` inherits the
+   two notification values only as environment, binds the nonsecret unit
+   identity in an exact reviewed CLI argument, reads systemd's native
+   `SERVICE_RESULT`, and invokes an immutable privileged launcher. Before Node
+   starts, that launcher erases every inherited exported name and reconstructs
+   an allowlist containing only a fixed `PATH`/`HOME`, the native service
+   result, and the two notification values. It then invokes the immutable alert
+   helper with the exact nonsecret unit argument bound by the service. A stale
+   environment-file unit identity cannot override that argument. Credentials
+   never appear in a command argument; arbitrary stale poller variables, the
+   audit-mirror host, and language-runtime injection controls do not reach
+   Node. Raw journals and provider response bodies are never notification
+   inputs.
+5. Validate and prove one round trip:
 
    ```sh
    sudo /usr/local/libexec/nexus-local-backup/local-backup.py verify-config
@@ -46,7 +119,7 @@ an older already-activating oneshot is never mistaken for a fresh backup.
    sudo /usr/local/libexec/nexus-local-backup/local-backup.py restore-verify
    ```
 
-5. Enable the two timers only after the proof succeeds:
+6. Enable the two timers only after the proof succeeds:
 
    ```sh
    sudo systemctl enable --now \
@@ -79,3 +152,9 @@ sudo /usr/local/libexec/nexus-local-backup/local-backup.py restore-verify \
   --backup /srv/nexus-backups/application/hourly/REPLACE.sqlite.age \
   --destination /srv/nexus-backups/application/manual-restore.sqlite
 ```
+
+An owner-invoked restore with `--destination` intentionally writes a manual
+receipt variant that is not accepted as scheduled restore-liveness authority.
+Run the scheduled `nexus-local-backup-restore-verify.service` afterward to
+publish the closed no-destination receipt before relying on a healthy release
+heartbeat.

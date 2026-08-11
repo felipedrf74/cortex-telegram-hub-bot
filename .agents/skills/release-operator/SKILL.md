@@ -111,11 +111,59 @@ receipt proof is `MANUAL_REQUIRED`. Do not deploy, mutate production, restore a
 database, change trust/configuration, or improvise a second release path without
 explicit owner authorization.
 
+An installed local-backup interface mismatch requires the attended immutable
+controller transaction in `ops/nexus-release/README.md` §1a before any ordinary
+deployment. That transaction snapshots the poller, heartbeat, backup, and
+restore-verify timer bits plus target-aware poller and backup-liveness desired
+state, proves all three backup oneshots inactive, installs the producer/five
+units/sudoers only from the immutable selected target, and re-proves exact
+bytes/effective fragments. All five timers stay inactive through post-gate
+service proofs; backup-liveness is proved through the governed force-proof
+oneshot, not its cadence-gated timer service. Terminal finalization re-proves
+the full signed controller and native closure before restoring saved-active
+bits. Never copy those files ad hoc
+or weaken the runtime verifier.
+
 ## First-cutover-only PM2 fallback
 
 The legacy PM2 procedure is not the default release workflow. It exists only for
-the one-time first container cutover and its 14-day rollback window. Follow the
-audited procedure in
+the one-time first container cutover and its exact receipt-anchored 14-day
+rollback window. Inspect retirement only with the root-owned installed checkout:
+
+```bash
+sudo /usr/bin/env -i PATH=/usr/bin:/bin HOME=/var/lib/nexus-release/home \
+  /usr/bin/node /opt/nexus-release/checkout/scripts/retire-pm2-fallback.mjs
+```
+
+Before the deadline, `stable_window_open` is the correct fail-closed result.
+After an eligible dry-run, live apply still requires explicit owner authorization,
+the exact four-part active/anchor receipt confirmation, and the detached direct
+Node `systemd-run` procedure in `ops/nexus-release/README.md` §11. Never manually
+unmask/start PM2, delete its files, use
+`scripts/retire-legacy-release-machinery.sh` as a substitute, or remove the
+durable journal/tombstone to escape a blocked resume. The two
+`/etc/systemd/system.control` guards and every legacy data/config tree are
+permanent preservation boundaries.
+
+Crash recovery is phase-bound. A systemd unlink may leave only an exact subset
+of the admitted artifacts. The package closure is atomically detached on the
+same filesystem before recursive removal, and the durable manifest authorizes
+only the exact remaining quarantine entries on resume. Never remove, replace,
+or hand-edit the journal, tombstone, quarantine, closure manifest, or terminal
+receipt.
+
+Retirement evidence keeps two baseline digests distinct: `baselineSha256` is
+the exact immutable baseline file-byte hash, while
+`baselineAuthorizationDigest` is the canonical-JSON hash already bound by the
+anchor receipt's staging and production bootstrap checks. Neither substitutes
+for the other.
+
+An in-progress retirement journal blocks the ordinary poller and bootstrap. The
+completed tombstone permanently blocks only the one-time bootstrap/PM2 fallback;
+ordinary container releases and heartbeat continue. Never delete either gate to
+change those semantics.
+
+For the attended first cutover itself, follow
 `ops/nexus-release/README.md#1b-quiesced-transition-of-the-existing-production-and-staging-databases`;
 do not copy old PM2 commands into routine release prompts or handoffs.
 

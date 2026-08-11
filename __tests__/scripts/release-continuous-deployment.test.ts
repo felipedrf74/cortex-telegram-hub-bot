@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { generateKeyPairSync } from 'node:crypto';
+import { generateKeyPairSync, sign as cryptoSign } from 'node:crypto';
 import {
   chmodSync, existsSync, linkSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync,
   symlinkSync, writeFileSync,
@@ -10,12 +10,19 @@ import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { canonicalJson, sha256 } from '../../scripts/lib/release-canonical.mjs';
+import { RELEASE_CONTROL_PLANE_SCHEMA } from '../../scripts/lib/release-control-plane.mjs';
 import {
   evaluateMigrationCdEligibility,
   classifyMigrationSql,
   splitSqlStatements,
 } from '../../scripts/lib/migration-cd-eligibility.mjs';
 import {
+  LEGACY_RELEASE_MANIFEST_PAYLOAD_SCHEMA,
+  LEGACY_RELEASE_MANIFEST_SCHEMA,
+  LEGACY_RELEASE_MANIFEST_SCHEMA_VERSION,
+  RELEASE_MANIFEST_PAYLOAD_SCHEMA,
+  RELEASE_MANIFEST_SCHEMA,
+  RELEASE_MANIFEST_SCHEMA_VERSION,
   buildReleaseManifestPayload,
   loadContinuousDeploymentPolicy,
   migrationVerdictDigest,
@@ -26,10 +33,14 @@ import {
 } from '../../scripts/lib/release-manifest.mjs';
 import {
   BLOCK_REASONS,
+  LEGACY_RELEASE_RECEIPT_SCHEMA,
+  RELEASE_RECEIPT_SCHEMA,
   RELEASE_RECEIPT_OUTCOMES,
   RELEASE_STATUSES,
+  assertReleaseReceiptShape,
   assertReleaseStateShape,
   createReleaseStateStore,
+  releaseEvidenceDigest,
   resolveEffectiveRelease,
   sanitizeDetail,
 } from '../../scripts/lib/release-state-store.mjs';
@@ -71,6 +82,9 @@ import {
   createProtectedHeadVerifier,
   PROTECTED_HEAD_RESULTS,
 } from '../../scripts/lib/release-protected-head.mjs';
+import {
+  releaseMigrationReconciliationDigest,
+} from '../../scripts/lib/production-migration-lineage.mjs';
 
 const repoRoot = resolve(process.cwd());
 const basePolicy = loadContinuousDeploymentPolicy(repoRoot);
@@ -88,6 +102,10 @@ const ACTIVE_PAYLOAD_DIGEST = `sha256:${'8'.repeat(64)}`;
 // A completed release records the payload that carried its signed manifest and
 // Compose file; a rollback re-extracts exactly that payload.
 const PREDECESSOR_PAYLOAD_DIGEST = `sha256:${'9'.repeat(64)}`;
+const CONTROL_PLANE = Object.freeze({
+  schema: RELEASE_CONTROL_PLANE_SCHEMA,
+  digest: 'e'.repeat(64),
+});
 const PREDECESSOR_COMPOSE_BYTES = Buffer.from('services:\n  backend: {}\n  legacy: {}\n');
 const PREDECESSOR_COMPOSE_DIGEST = sha256(PREDECESSOR_COMPOSE_BYTES);
 const NEWER_PAYLOAD_DIGEST = `sha256:${'6'.repeat(64)}`;
@@ -97,6 +115,14 @@ const CONVERGENCE_MIGRATION_SHA256 =
   '0bba559437983ed7e2f5540e18ba66a0248c1a34282b30015954ace6e29cbd32';
 
 let workspace: string;
+
+function backupTestAuthority() {
+  return {
+    expectedUid: typeof process.getuid === 'function' ? process.getuid() : 0,
+    expectedGid: typeof process.getgid === 'function' ? process.getgid() : 0,
+    backupTrustAnchor: workspace,
+  };
+}
 let publicKeyPath: string;
 let privateKeyPem: string;
 let policy: ReturnType<typeof loadContinuousDeploymentPolicy>;
@@ -198,7 +224,7 @@ function payloadFor(overrides: Record<string, unknown> = {}) {
       predecessorCompatible: true,
     },
   ].sort((left, right) => String(left.file).localeCompare(String(right.file)));
-  const reconciliation = {
+  const defaultReconciliation = {
     schema: 'nexus.release-migration-reconciliation.v2',
     sourcePolicySha256: 'f'.repeat(64),
     environments: {
@@ -264,6 +290,8 @@ function payloadFor(overrides: Record<string, unknown> = {}) {
       preserveData: true,
     }],
   };
+  const reconciliation = (overrides.reconciliation as typeof defaultReconciliation | undefined)
+    ?? defaultReconciliation;
   base.upFileCount = inventory.length;
   // The digest is derived, never invented: it must equal what the verifier
   // recomputes from the verdict AND the inventory the manifest carries.
@@ -291,6 +319,8 @@ function payloadFor(overrides: Record<string, unknown> = {}) {
       path: policy.compose.file,
       digest: (overrides.composeDigest as string) ?? sha256(COMPOSE_BYTES),
     },
+    controlPlane: (overrides.controlPlane as typeof CONTROL_PLANE | undefined)
+      ?? CONTROL_PLANE,
     migrations,
     policy,
   });
@@ -321,6 +351,30 @@ function signed(payload: ReturnType<typeof payloadFor>) {
     keyId: policy.trust.signingKeyId,
     policy,
   });
+}
+
+function legacyPayloadFor(payload: ReturnType<typeof payloadFor>) {
+  const { controlPlane: _controlPlane, ...legacyFields } = payload;
+  return {
+    ...legacyFields,
+    schema: LEGACY_RELEASE_MANIFEST_PAYLOAD_SCHEMA,
+    schemaVersion: LEGACY_RELEASE_MANIFEST_SCHEMA_VERSION,
+  };
+}
+
+function legacySigned(payload: ReturnType<typeof payloadFor>) {
+  const legacyPayload = legacyPayloadFor(payload);
+  return {
+    schema: LEGACY_RELEASE_MANIFEST_SCHEMA,
+    keyId: policy.trust.signingKeyId,
+    signatureAlgorithm: 'ed25519',
+    payload: legacyPayload,
+    signature: cryptoSign(
+      null,
+      Buffer.from(canonicalJson(legacyPayload)),
+      privateKeyPem,
+    ).toString('base64'),
+  };
 }
 
 function stateEvidenceFor(payload: ReturnType<typeof payloadFor>) {
@@ -397,6 +451,11 @@ interface RegistryScript {
   predecessorPayloadMissing?: boolean;
   predecessorPayloadInitiallyAbsent?: boolean;
   predecessorComposeBytes?: Buffer;
+  predecessorEnvelope?: unknown;
+  activePayloadMissing?: boolean;
+  activeComposeBytes?: Buffer;
+  activeEnvelope?: unknown;
+  candidateComposeBytes?: Buffer;
 }
 
 function fakeRegistry(
@@ -471,9 +530,23 @@ function fakeRegistry(
             throw new Error('predecessor payload not present in the registry');
           }
           return {
-            manifestBytes: Buffer.from(`${JSON.stringify(signed(predecessorPayloadFor()))}\n`),
+            manifestBytes: Buffer.from(`${JSON.stringify(
+              script.predecessorEnvelope ?? signed(predecessorPayloadFor()),
+            )}\n`),
             composeBytes: script.predecessorComposeBytes ?? PREDECESSOR_COMPOSE_BYTES,
             composePath: join(destinationDir, 'predecessor-compose.yml'),
+            payloadDir: destinationDir,
+          };
+        }
+        if (reference.includes(ACTIVE_PAYLOAD_DIGEST.replace('sha256:', ''))) {
+          advanceClock(script.activePayloadExtractDelayMs ?? 0);
+          if (script.activePayloadMissing) {
+            throw new Error('active payload not present in the registry');
+          }
+          return {
+            manifestBytes: Buffer.from(`${JSON.stringify(script.activeEnvelope ?? envelope)}\n`),
+            composeBytes: script.activeComposeBytes ?? COMPOSE_BYTES,
+            composePath: join(destinationDir, 'active-compose.yml'),
             payloadDir: destinationDir,
           };
         }
@@ -485,7 +558,7 @@ function fakeRegistry(
         }
         return {
           manifestBytes: Buffer.from(`${JSON.stringify(chosen)}\n`),
-          composeBytes: COMPOSE_BYTES,
+          composeBytes: script.candidateComposeBytes ?? COMPOSE_BYTES,
           composePath: join(destinationDir, 'docker-compose.release.yml'),
           payloadDir: destinationDir,
         };
@@ -709,7 +782,7 @@ function fakeBackupEvidence() {
     encryptedSha256: 'd'.repeat(64),
     encryptedSizeBytes: 4096,
     database: '/var/lib/nexus-hub/production/data/bot.db',
-    startedAt: '2026-08-07T09:59:59.000Z',
+    startedAt: '2026-08-07T10:00:00.000Z',
     completedAt: '2026-08-07T10:00:00.000Z',
   };
 }
@@ -731,13 +804,34 @@ function fakeBackup(result: 'passed' | 'failed' = 'passed') {
   };
 }
 
+function fakeInstalledBackupInterface(results: boolean[] = [true]) {
+  const calls: number[] = [];
+  return {
+    calls,
+    verify: () => {
+      calls.push(calls.length + 1);
+      const passed = results.length > 1 ? results.shift()! : results[0];
+      return { schema: 'nexus.release-installed-backup-interface.v1', passed };
+    },
+  };
+}
+
 function exactRecoveryBackupFixture(pointer: 'missing' | 'overwritten' = 'missing') {
   const root = join(workspace, `exact-recovery-backup-${pointer}`);
-  const artifact = join(root, 'nexus-db-20260807T100000Z.sqlite.age');
+  const artifact = join(root, 'pre-promotion', 'nexus-db-20260807T100000Z.sqlite.age');
   const receiptPath = join(root, 'state', 'last-success.json');
   const bytes = Buffer.from('exact-pre-migration-encrypted-bytes');
-  mkdirSync(root, { recursive: true });
-  writeFileSync(artifact, bytes);
+  mkdirSync(join(root, 'pre-promotion'), { recursive: true, mode: 0o700 });
+  chmodSync(root, 0o700);
+  chmodSync(join(root, 'pre-promotion'), 0o700);
+  writeFileSync(artifact, bytes, { mode: 0o600 });
+  chmodSync(artifact, 0o600);
+  writeFileSync(
+    `${artifact}.sha256`,
+    `${sha256(bytes)}  ${artifact.split('/').at(-1)}\n`,
+    { mode: 0o600 },
+  );
+  chmodSync(`${artifact}.sha256`, 0o600);
   if (pointer === 'overwritten') {
     mkdirSync(join(root, 'state'), { recursive: true });
     writeFileSync(receiptPath, JSON.stringify({
@@ -753,10 +847,11 @@ function exactRecoveryBackupFixture(pointer: 'missing' | 'overwritten' = 'missin
     encryptedSha256: sha256(bytes),
     encryptedSizeBytes: bytes.length,
     database: '/var/lib/nexus-hub/production/data/bot.db',
-    startedAt: '2026-08-07T09:59:59.000Z',
+    startedAt: '2026-08-07T10:00:00.000Z',
     completedAt: '2026-08-07T10:00:00.000Z',
   };
   const backup = createReleaseBackup({
+    ...backupTestAuthority(),
     policy: {
       ...policy,
       backup: { ...policy.backup, root, receiptPath },
@@ -767,13 +862,24 @@ function exactRecoveryBackupFixture(pointer: 'missing' | 'overwritten' = 'missin
 
 function admissionPointerRaceBackupFixture() {
   const root = join(workspace, 'admission-pointer-race-backup');
-  const artifact = join(root, 'nexus-db-20260807T100000Z.sqlite.age');
+  const artifact = join(root, 'pre-promotion', 'nexus-db-20260807T100000Z.sqlite.age');
   const receiptPath = join(root, 'state', 'last-success.json');
   const completedAt = '2026-08-07T10:00:00.000Z';
   const startedAt = completedAt;
   const bytes = Buffer.from('freshly-admitted-pre-migration-bytes');
-  mkdirSync(join(root, 'state'), { recursive: true });
-  writeFileSync(artifact, bytes);
+  mkdirSync(join(root, 'state'), { recursive: true, mode: 0o700 });
+  mkdirSync(join(root, 'pre-promotion'), { recursive: true, mode: 0o700 });
+  chmodSync(root, 0o700);
+  chmodSync(join(root, 'state'), 0o700);
+  chmodSync(join(root, 'pre-promotion'), 0o700);
+  writeFileSync(artifact, bytes, { mode: 0o600 });
+  chmodSync(artifact, 0o600);
+  writeFileSync(
+    `${artifact}.sha256`,
+    `${sha256(bytes)}  ${artifact.split('/').at(-1)}\n`,
+    { mode: 0o600 },
+  );
+  chmodSync(`${artifact}.sha256`, 0o600);
   const evidence = {
     artifact: 'nexus-db-20260807T100000Z.sqlite.age',
     artifactPath: artifact,
@@ -794,16 +900,24 @@ function admissionPointerRaceBackupFixture() {
     encryptedSha256: evidence.encryptedSha256,
     encryptedSizeBytes: evidence.encryptedSizeBytes,
     installed: { 'pre-promotion': artifact },
-    retention: { 'pre-promotion': 10 },
+    retention: { hourly: 24, daily: 30, weekly: 4, 'pre-promotion': 10 },
+    plaintextSha256: 'a'.repeat(64),
+    plaintextSizeBytes: 4096,
+    integrityCheck: 'ok',
+    foreignKeyCheck: 'ok',
   };
   const real = createReleaseBackup({
+    ...backupTestAuthority(),
     policy: {
       ...policy,
       backup: { ...policy.backup, root, receiptPath },
     },
     now: () => Date.parse(completedAt),
     exec: (_bin: string, args: string[]) => {
-      if (args[0] === 'start') writeFileSync(receiptPath, JSON.stringify(freshReceipt));
+      if (args[0] === 'start') {
+        writeFileSync(receiptPath, JSON.stringify(freshReceipt), { mode: 0o600 });
+        chmodSync(receiptPath, 0o600);
+      }
       return { status: 0, stdout: args[0] === 'show' ? 'success\n' : '', stderr: '' };
     },
   });
@@ -827,7 +941,8 @@ function admissionPointerRaceBackupFixture() {
         kind: 'hourly',
         startedAt: '2026-08-07T10:04:59.000Z',
         completedAt: '2026-08-07T10:05:00.000Z',
-      }));
+      }), { mode: 0o600 });
+      chmodSync(receiptPath, 0o600);
       return admitted;
     },
   };
@@ -905,6 +1020,123 @@ function seedPredecessor(store: ReturnType<typeof makeStore>) {
   });
 }
 
+function seedLegacyPredecessor(store: ReturnType<typeof makeStore>) {
+  const predecessorPayload = predecessorPayloadFor();
+  const legacyPayload = legacyPayloadFor(predecessorPayload);
+  const state = store.readState();
+  store.writeState({
+    ...state,
+    predecessor: {
+      releaseId: releaseIdFor(legacyPayload),
+      sourceSha: legacyPayload.source.sha,
+      images: legacyPayload.images,
+      payload: {
+        digest: PREDECESSOR_PAYLOAD_DIGEST,
+        composeDigest: PREDECESSOR_COMPOSE_DIGEST,
+      },
+    },
+  });
+}
+
+function seedCompletedLegacyRelease(
+  store: ReturnType<typeof makeStore>,
+  current: ReturnType<typeof payloadFor>,
+) {
+  const payload = legacyPayloadFor(current);
+  const envelope = legacySigned(current);
+  const releaseId = releaseIdFor(payload);
+  const manifestDigest = sha256(canonicalJson(envelope));
+  const evidenceDigest = releaseEvidenceDigest({
+    manifestPayload: payload,
+    manifestDigest,
+    keyId: policy.trust.signingKeyId,
+    releasePayloadDigest: ACTIVE_PAYLOAD_DIGEST,
+  });
+  store.beginAttempt({
+    manifestPayload: payload,
+    releaseId,
+    payloadDigest: ACTIVE_PAYLOAD_DIGEST,
+    manifestDigest,
+    keyId: policy.trust.signingKeyId,
+  });
+  const backupEvidence = fakeBackupEvidence();
+  store.recordStatus({
+    manifestPayload: payload,
+    releaseId,
+    status: RELEASE_STATUSES.PRODUCTION_OBSERVING,
+    payloadDigest: ACTIVE_PAYLOAD_DIGEST,
+    manifestDigest,
+    keyId: policy.trust.signingKeyId,
+    backupEvidence,
+  });
+  store.completeRelease({ releaseId, status: RELEASE_STATUSES.COMPLETED });
+  store.recordAcceptedRunId(payload.source.runId);
+  const passedPhase = { result: 'passed', checks: [], durationMs: 0 };
+  const completedAt = '2026-08-07T10:00:02.000Z';
+  store.writeReceipt({
+    schema: LEGACY_RELEASE_RECEIPT_SCHEMA,
+    releaseId,
+    sourceSha: payload.source.sha,
+    createdAt: payload.createdAt,
+    completedAt,
+    evidenceDigest,
+    identity: {
+      repository: payload.source.repository,
+      ref: payload.source.ref,
+      workflow: payload.source.workflow,
+      runId: payload.source.runId,
+      runAttempt: payload.source.runAttempt,
+      manifestDigest,
+      keyId: policy.trust.signingKeyId,
+      releasePayloadDigest: ACTIVE_PAYLOAD_DIGEST,
+    },
+    images: payload.images,
+    compose: payload.compose,
+    migrations: {
+      digest: payload.migrations.digest,
+      reconciliationDigest: releaseMigrationReconciliationDigest(
+        payload.migrations.reconciliation,
+      ),
+      upFileCount: payload.migrations.upFileCount,
+      downFileCount: payload.migrations.downFileCount,
+      eligible: payload.migrations.cdEligibility.eligible,
+      predecessorCompatible: payload.migrations.cdEligibility.predecessorCompatible,
+      reasons: payload.migrations.cdEligibility.reasons,
+    },
+    staging: passedPhase,
+    production: passedPhase,
+    backup: { result: 'passed', artifact: backupEvidence.artifact },
+    rollback: {
+      result: 'not_required',
+      restored: null,
+      incidentRecoveryDurationMs: 0,
+      predecessorSwitchDurationMs: 0,
+      predecessorSwitchObjectiveSeconds: policy.timing.rollbackObjectiveSeconds,
+    },
+    outcome: RELEASE_RECEIPT_OUTCOMES.COMPLETED,
+    failureCode: null,
+  });
+  return { envelope, payload, releaseId };
+}
+
+const controllerOnlyIneligibleVerdict = Object.freeze({
+  eligible: false,
+  predecessorCompatible: true,
+  reasons: ['controller governance changed without deployable migration changes'],
+});
+
+function controllerOnlyCandidate(overrides: Record<string, unknown> = {}) {
+  return payloadFor({
+    sha: NEWER_SHA,
+    runId: '4243',
+    ...overrides,
+    migrations: {
+      cdEligibility: controllerOnlyIneligibleVerdict,
+      ...(overrides.migrations as object ?? {}),
+    },
+  });
+}
+
 async function deploy(options: {
   script?: RegistryScript;
   envelope?: unknown;
@@ -934,6 +1166,8 @@ async function deploy(options: {
       headSha: string | null;
     };
   };
+  controlPlane?: typeof CONTROL_PLANE;
+  installedBackupInterface?: ReturnType<typeof fakeInstalledBackupInterface>;
   notificationDelayMs?: number[];
   nowMs?: number;
 } = {}) {
@@ -948,6 +1182,8 @@ async function deploy(options: {
   });
   const mirror = options.mirror ?? fakeMirror();
   const backup = options.backup ?? fakeBackup();
+  const installedBackupInterface = options.installedBackupInterface
+    ?? fakeInstalledBackupInterface();
   const databaseProbe = options.databaseProbe ?? fakeDatabaseProbe();
   const registryHarness = fakeRegistry(
     options.script ?? {},
@@ -987,12 +1223,14 @@ async function deploy(options: {
 
   const result = await runReleaseDeployment({
     policy,
+    controlPlane: options.controlPlane ?? CONTROL_PLANE,
     store,
     registry: registryHarness.registry as never,
     health: health.health as never,
     notifier: notifier.notifier as never,
     mirror: mirror.mirror as never,
     backup: backup as never,
+    installedBackupInterface: installedBackupInterface as never,
     databaseProbe: databaseProbe.probe as never,
     protectedHead: protectedHead as never,
     bootstrap: options.bootstrap ?? defaultBootstrap,
@@ -1003,6 +1241,7 @@ async function deploy(options: {
   });
   return {
     result, store, health, notifier, mirror, registryHarness, databaseProbe,
+    installedBackupInterface,
     protectedHeadCalls,
     advance: (ms: number) => { now += ms; },
   };
@@ -1346,12 +1585,14 @@ describe('release state and locking', () => {
 
     await runReleaseDeployment({
       policy,
+      controlPlane: CONTROL_PLANE,
       store: wrapped as never,
       registry: harness.registry as never,
       health: health.health as never,
       notifier: fakeNotifier().notifier as never,
       mirror: fakeMirror().mirror as never,
       backup: fakeBackup() as never,
+      installedBackupInterface: fakeInstalledBackupInterface() as never,
       databaseProbe: fakeDatabaseProbe().probe as never,
       protectedHead: fakeProtectedHead() as never,
       clock: () => now,
@@ -1372,6 +1613,24 @@ describe('release state and locking', () => {
     expect(receipt).not.toBeNull();
     expect(receipt!.outcome).toBe('completed');
     expect(() => store.writeReceipt(receipt!)).toThrow(/refusing to overwrite the immutable file/);
+  });
+
+  it('binds receipt schema bidirectionally to the signed control-plane field', async () => {
+    const { store, result } = await deploy();
+    const current = store.readReceipt(result.releaseId!)!;
+    expect(current.schema).toBe(RELEASE_RECEIPT_SCHEMA);
+    const { controlPlane: _controlPlane, ...missingControlPlane } = current;
+    expect(() => assertReleaseReceiptShape(missingControlPlane))
+      .toThrow(/schema and controlPlane presence do not match/i);
+
+    const legacyStore = makeStore(() => new Date('2026-08-07T10:00:02.000Z'));
+    const legacy = seedCompletedLegacyRelease(legacyStore, payloadFor());
+    const legacyReceipt = legacyStore.readReceipt(legacy.releaseId)!;
+    expect(legacyReceipt.schema).toBe(LEGACY_RELEASE_RECEIPT_SCHEMA);
+    expect(() => assertReleaseReceiptShape({
+      ...legacyReceipt,
+      controlPlane: CONTROL_PLANE,
+    })).toThrow(/schema and controlPlane presence do not match/i);
   });
 
   it('never leaves an empty receipt behind when the write fails mid-way', () => {
@@ -1529,6 +1788,7 @@ describe('release state and locking', () => {
       source: { sha: receipt.sourceSha },
       images: receipt.images,
       compose: receipt.compose,
+      controlPlane: receipt.controlPlane,
       migrations: receipt.migrations,
     } as never)).toBe(result.releaseId);
     writeFileSync(receiptPath, JSON.stringify(receipt));
@@ -1641,6 +1901,224 @@ describe('release state and locking', () => {
     const right = payloadFor();
     expect(releaseIdFor(left)).toBe(releaseIdFor(right));
     expect(releaseIdFor(payloadFor({ sha: NEWER_SHA }))).not.toBe(releaseIdFor(left));
+    expect(releaseIdFor(payloadFor({
+      controlPlane: { ...CONTROL_PLANE, digest: 'f'.repeat(64) },
+    }))).not.toBe(releaseIdFor(left));
+  });
+
+  it('defers a controller-incompatible release before governed deployment mutation', async () => {
+    const store = makeStore();
+    seedPredecessor(store);
+    const before = canonicalJson(store.readState());
+    const deployed = await deploy({
+      store,
+      controlPlane: { ...CONTROL_PLANE, digest: 'f'.repeat(64) },
+    });
+
+    expect(deployed.result).toMatchObject({
+      outcome: DEPLOYMENT_OUTCOMES.DEFERRED,
+      reason: 'control_plane_mismatch',
+      releaseId: releaseIdFor(payloadFor()),
+    });
+    expect(canonicalJson(store.readState())).toBe(before);
+    expect(deployed.protectedHeadCalls).toEqual([]);
+    expect(deployed.databaseProbe.ledgerCalls).toEqual([]);
+    expect(deployed.registryHarness.calls.filter((call) => (
+      ['pruneImages', 'pruneWorkDirs', 'composeConfigValid', 'composeUp',
+        'composeDown', 'composeRunMigrator'].includes(call.kind)
+    ))).toEqual([]);
+  });
+
+  it('requires installed backup authority proof before candidate admission', async () => {
+    const store = makeStore();
+    seedPredecessor(store);
+    const before = canonicalJson(store.readState());
+    const installedBackupInterface = fakeInstalledBackupInterface([false]);
+
+    await expect(deploy({ store, installedBackupInterface }))
+      .rejects.toThrow(/installed backup interface does not match/i);
+
+    expect(installedBackupInterface.calls).toEqual([1]);
+    expect(canonicalJson(store.readState())).toBe(before);
+  });
+
+  it('re-proves installed backup authority after staging and before starting backup', async () => {
+    const store = makeStore();
+    seedPredecessor(store);
+    const installedBackupInterface = fakeInstalledBackupInterface([true, false]);
+    const backing = fakeBackup();
+    let backupStarts = 0;
+    const backup = {
+      ...backing,
+      createPreMigrationBackup: (input: { environment?: string }) => {
+        backupStarts += 1;
+        return backing.createPreMigrationBackup(input);
+      },
+    };
+
+    await expect(deploy({
+      store,
+      installedBackupInterface,
+      backup: backup as never,
+    })).rejects.toThrow(/installed backup interface does not match/i);
+
+    expect(installedBackupInterface.calls).toEqual([1, 2]);
+    expect(backupStarts).toBe(0);
+    expect(store.readState().active?.status).toBe(RELEASE_STATUSES.STAGING_HEALTHY);
+  });
+
+  it('admits an ineligible v3 controller-only publication over an eligible retained v2 release', async () => {
+    const store = makeStore(() => new Date('2026-08-07T10:00:02.000Z'));
+    const current = payloadFor({ runId: '4242' });
+    const retained = seedCompletedLegacyRelease(store, current);
+    const candidate = controllerOnlyCandidate();
+    expect(retained.payload.migrations.cdEligibility.eligible).toBe(true);
+    expect(candidate.migrations.cdEligibility.eligible).toBe(false);
+    expect(candidate.migrations.digest).not.toBe(retained.payload.migrations.digest);
+
+    const deployed = await deploy({
+      store,
+      envelope: signed(candidate),
+      script: { activeEnvelope: retained.envelope },
+    });
+
+    expect(deployed.result.outcome).toBe(DEPLOYMENT_OUTCOMES.COMPLETED);
+    const receipt = store.readReceipt(deployed.result.releaseId!)!;
+    expect(receipt.migrations.eligible).toBe(false);
+    expect(receipt.staging.checks).toContainEqual({
+      name: 'controller_only_transition',
+      result: 'passed',
+      durationMs: 0,
+      detail: 'controller_only_transition',
+    });
+    expect(sanitizeDetail(receipt.staging.checks.find((check) => (
+      check.name === 'controller_only_transition'
+    ))?.detail)).toBe('controller_only_transition');
+    expect(store.readReceipt(deployed.result.releaseId!)).toEqual(receipt);
+    const retainedExtract = deployed.registryHarness.calls.findIndex((call) => (
+      call.kind === `extract:${policy.registry.releaseImage}@${ACTIVE_PAYLOAD_DIGEST}`
+    ));
+    const firstComposeOperation = deployed.registryHarness.calls.findIndex((call) => (
+      ['composeConfigValid', 'composeRunMigrator', 'composeUp'].includes(call.kind)
+    ));
+    expect(retainedExtract).toBeGreaterThan(-1);
+    expect(firstComposeOperation).toBeGreaterThan(retainedExtract);
+  });
+
+  it('admits the same exact-content bridge over a retained v3 release with an older controller', async () => {
+    const store = makeStore();
+    seedPredecessor(store);
+    const oldControlPlane = { ...CONTROL_PLANE, digest: 'd'.repeat(64) };
+    const current = payloadFor({ controlPlane: oldControlPlane, runId: '4242' });
+    const active = await deploy({
+      store,
+      envelope: signed(current),
+      controlPlane: oldControlPlane,
+      script: { payloadDigests: [ACTIVE_PAYLOAD_DIGEST] },
+    });
+    expect(active.result.outcome).toBe(DEPLOYMENT_OUTCOMES.COMPLETED);
+    expect(store.readReceipt(active.result.releaseId!)?.schema).toBe(RELEASE_RECEIPT_SCHEMA);
+
+    const candidate = controllerOnlyCandidate();
+    const deployed = await deploy({
+      store,
+      envelope: signed(candidate),
+      script: { activeEnvelope: signed(current) },
+    });
+
+    expect(deployed.result.outcome).toBe(DEPLOYMENT_OUTCOMES.COMPLETED);
+    expect(store.readReceipt(deployed.result.releaseId!)?.staging.checks)
+      .toContainEqual(expect.objectContaining({ name: 'controller_only_transition' }));
+  });
+
+  it.each([
+    ['migration inventory', (current: ReturnType<typeof payloadFor>) => ({
+      candidate: controllerOnlyCandidate({
+        inventory: current.migrations.inventory.map((entry, index) => (
+          index === 0 ? { ...entry, sha256: 'c'.repeat(64) } : entry
+        )),
+      }),
+      script: {},
+    })],
+    ['migration reconciliation', (current: ReturnType<typeof payloadFor>) => ({
+      candidate: controllerOnlyCandidate({
+        reconciliation: {
+          ...current.migrations.reconciliation,
+          sourcePolicySha256: '0'.repeat(64),
+        },
+      }),
+      script: {},
+    })],
+    ['migration count', () => ({
+      candidate: controllerOnlyCandidate({ migrations: { downFileCount: 42 } }),
+      script: {},
+    })],
+    ['image identity', () => ({
+      candidate: controllerOnlyCandidate({
+        images: {
+          ...IMAGES,
+          backend: { ...IMAGES.backend, digest: `sha256:${'0'.repeat(64)}` },
+        },
+      }),
+      script: {},
+    })],
+    ['Compose identity', () => {
+      const bytes = Buffer.from('services:\n  backend:\n    labels: [controller-drift]\n');
+      return {
+        candidate: controllerOnlyCandidate({ composeDigest: sha256(bytes) }),
+        script: { candidateComposeBytes: bytes },
+      };
+    }],
+  ])('refuses controller-only authorization on one-field %s drift', async (_label, build) => {
+    const store = makeStore(() => new Date('2026-08-07T10:00:02.000Z'));
+    const current = payloadFor({ runId: '4242' });
+    const retained = seedCompletedLegacyRelease(store, current);
+    const { candidate, script } = build(current);
+    const deployed = await deploy({
+      store,
+      envelope: signed(candidate),
+      script: { ...script, activeEnvelope: retained.envelope },
+    });
+
+    expect(deployed.result.outcome).toBe(DEPLOYMENT_OUTCOMES.BLOCKED);
+    expect(store.readState().active?.releaseId).toBe(retained.releaseId);
+    expect(deployed.registryHarness.calls.filter((call) => (
+      ['composeConfigValid', 'composeRunMigrator', 'composeUp', 'composeDown'].includes(call.kind)
+    ))).toEqual([]);
+    expect(deployed.registryHarness.calls.filter((call) => (
+      call.kind === 'pruneImages'
+      && [policy.registry.backendImage, policy.registry.contentEngineImage]
+        .includes(call.repository ?? '')
+    ))).toEqual([]);
+  });
+
+  it.each([
+    ['missing', (retained: ReturnType<typeof seedCompletedLegacyRelease>) => ({
+      activeEnvelope: retained.envelope,
+      activePayloadMissing: true,
+    })],
+    ['unverifiable', () => ({
+      activeEnvelope: legacySigned(payloadFor({ sha: 'c'.repeat(40), runId: '4242' })),
+    })],
+  ])('refuses controller-only authorization when the retained payload is %s', async (
+    _label,
+    activeScript,
+  ) => {
+    const store = makeStore(() => new Date('2026-08-07T10:00:02.000Z'));
+    const current = payloadFor({ runId: '4242' });
+    const retained = seedCompletedLegacyRelease(store, current);
+    const candidate = controllerOnlyCandidate();
+    const deployed = await deploy({
+      store,
+      envelope: signed(candidate),
+      script: activeScript(retained),
+    });
+
+    expect(deployed.result.outcome).toBe(DEPLOYMENT_OUTCOMES.BLOCKED);
+    expect(store.readState().active?.releaseId).toBe(retained.releaseId);
+    expect(deployed.registryHarness.calls.filter((call) => (
+      ['composeConfigValid', 'composeRunMigrator', 'composeUp', 'composeDown'].includes(call.kind)
+    ))).toEqual([]);
   });
 
   it.each([
@@ -2305,6 +2783,26 @@ describe('release failure handling', () => {
     expect(kinds).toContain(RELEASE_NOTIFICATION_KINDS.RECOVERY);
   });
 
+  it('restores the retained v2 predecessor after admitting a controller-bound release', async () => {
+    const store = makeStore();
+    seedLegacyPredecessor(store);
+    const predecessor = predecessorPayloadFor();
+    const deployed = await deploy({
+      store,
+      script: { predecessorEnvelope: legacySigned(predecessor) },
+      health: fakeHealth({ degradeAfterProbes: 2, clock: () => 0 }),
+    });
+
+    expect(deployed.result.outcome).toBe(DEPLOYMENT_OUTCOMES.ROLLED_BACK);
+    expect(store.readState().predecessor?.releaseId)
+      .toBe(releaseIdFor(legacyPayloadFor(predecessor)));
+    const productionUps = deployed.registryHarness.calls.filter((call) => (
+      call.kind === 'composeUp' && call.environment === 'production'
+    ));
+    expect(productionUps).toHaveLength(2);
+    expect(productionUps[1].images).toEqual(legacyPayloadFor(predecessor).images);
+  });
+
   it('binds predecessor boot to the verified successor forward-applied suffix', async () => {
     const successorEntry = {
       file: '284_successor_expand.sql',
@@ -2578,9 +3076,8 @@ describe('release failure handling', () => {
     expect(notifier.sent[0].release.actionRequired).toMatch(
       /owner decision required.*maintenance path is not implemented/,
     );
-    // This exits before staging/completion, but discovery artifacts must still
-    // be bounded while the candidate, active release, and predecessor remain
-    // protected.
+    // Content-addressed release discovery stays bounded, but an ineligible
+    // candidate cannot mutate application-image retention before authorization.
     const imagePrunes = new Map(registryHarness.calls
       .filter((call) => call.kind === 'pruneImages')
       .map((call) => [call.repository, call.keepDigests]));
@@ -2589,16 +3086,8 @@ describe('release failure handling', () => {
       ACTIVE_PAYLOAD_DIGEST,
       PREDECESSOR_PAYLOAD_DIGEST,
     ]);
-    expect(imagePrunes.get(policy.registry.backendImage)).toEqual([
-      BACKEND_DIGEST,
-      ACTIVE_BACKEND_DIGEST,
-      PREDECESSOR_BACKEND_DIGEST,
-    ]);
-    expect(imagePrunes.get(policy.registry.contentEngineImage)).toEqual([
-      CONTENT_DIGEST,
-      ACTIVE_CONTENT_DIGEST,
-      PREDECESSOR_CONTENT_DIGEST,
-    ]);
+    expect(imagePrunes.get(policy.registry.backendImage)).toBeUndefined();
+    expect(imagePrunes.get(policy.registry.contentEngineImage)).toBeUndefined();
     const workPrune = registryHarness.calls.find((call) => call.kind === 'pruneWorkDirs');
     expect(workPrune?.keepDirs?.map((dir) => dir.split('/').at(-1))).toEqual([
       PAYLOAD_DIGEST.replace('sha256:', ''),
@@ -4095,12 +4584,14 @@ describe('write-ahead state precedes the database mutation', () => {
     const now = Date.parse('2026-08-07T10:00:05.000Z');
     await runReleaseDeployment({
       policy,
+      controlPlane: CONTROL_PLANE,
       store: wrapped as never,
       registry: registryHarness.registry as never,
       health: fakeHealth({ clock: () => now }).health as never,
       notifier: fakeNotifier().notifier as never,
       mirror: fakeMirror().mirror as never,
       backup: fakeBackup() as never,
+      installedBackupInterface: fakeInstalledBackupInterface() as never,
       databaseProbe: fakeDatabaseProbe().probe as never,
       protectedHead: fakeProtectedHead() as never,
       clock: () => now,
@@ -4115,6 +4606,34 @@ describe('write-ahead state precedes the database mutation', () => {
     // Mutation-admitting state is durable BEFORE the migrator touches the database.
     expect(observingAt).toBeLessThan(migratorAt);
     expect(migratorAt).toBeLessThan(upAt);
+  });
+
+  it('settles verified interrupted v2 state with an unambiguous legacy v2 receipt', async () => {
+    const store = makeStore(() => new Date('2026-08-07T10:00:02.000Z'));
+    seedPredecessor(store);
+    const current = payloadFor();
+    const payload = legacyPayloadFor(current);
+    const envelope = legacySigned(current);
+    const releaseId = releaseIdFor(payload);
+    const manifestDigest = sha256(canonicalJson(envelope));
+    store.recordStatus({
+      manifestPayload: payload,
+      releaseId,
+      status: RELEASE_STATUSES.PRODUCTION_OBSERVING,
+      payloadDigest: PAYLOAD_DIGEST,
+      manifestDigest,
+      keyId: policy.trust.signingKeyId,
+      backupEvidence: fakeBackupEvidence(),
+    });
+
+    const recovered = await deploy({ store, envelope });
+
+    expect(recovered.result.outcome).toBe(DEPLOYMENT_OUTCOMES.ROLLED_BACK);
+    const receipt = store.readReceipt(releaseId)!;
+    expect(receipt.schema).toBe(LEGACY_RELEASE_RECEIPT_SCHEMA);
+    expect(receipt).not.toHaveProperty('controlPlane');
+    expect(assertReleaseReceiptShape(receipt)).toEqual(receipt);
+    expect(recovered.installedBackupInterface.calls).toEqual([]);
   });
 
   it('recovers a crash-between-status-and-receipt from the exact rollback target', async () => {
@@ -4795,6 +5314,28 @@ describe('release security and operations', () => {
     })).toThrow(/do not match the governed schema/);
   });
 
+  it('requires the controller-bound v3 profile for candidates but can verify a retained v2 predecessor', () => {
+    const current = payloadFor();
+    expect(current).toMatchObject({
+      schema: RELEASE_MANIFEST_PAYLOAD_SCHEMA,
+      schemaVersion: RELEASE_MANIFEST_SCHEMA_VERSION,
+      controlPlane: CONTROL_PLANE,
+    });
+    expect(RELEASE_MANIFEST_SCHEMA).toBe('nexus.release-manifest.v3');
+
+    const legacyPayload = legacyPayloadFor(current);
+    const legacyEnvelope = legacySigned(current);
+    const nowMs = Date.parse('2026-08-07T10:00:05Z');
+    expect(() => verifyReleaseManifest({ envelope: legacyEnvelope, policy, nowMs }))
+      .toThrow(/envelope schema is invalid|not admissible/i);
+    expect(verifyReleaseManifest({
+      envelope: legacyEnvelope,
+      policy,
+      nowMs,
+      allowLegacyControlPlane: true,
+    }).releaseId).toBe(releaseIdFor(legacyPayload));
+  });
+
   it('rejects a stale or future-dated manifest', () => {
     const envelope = signed(payloadFor());
     expect(() => verifyReleaseManifest({
@@ -5238,41 +5779,73 @@ describe('release security and operations', () => {
     // into the exec double's `start` branch. Pre-writing it instead would make
     // every case fail the freshness check first and mask what is being tested.
     function receiptFixture(dir: string, overrides: Record<string, unknown> = {}) {
-      const artifact = join(dir, 'nexus-db-20260807T120000Z.sqlite.age');
-      const receiptPath = join(dir, 'last-success.json');
+      const receiptStartedAt = String(overrides.startedAt ?? new Date().toISOString());
+      const producerStamp = `${receiptStartedAt.slice(0, 10).replaceAll('-', '')}T${receiptStartedAt
+        .slice(11, 19).replaceAll(':', '')}Z`;
+      const artifact = join(dir, 'pre-promotion', `nexus-db-${producerStamp}.sqlite.age`);
+      const receiptPath = join(dir, 'state', 'last-success.json');
       const publish = () => {
+        mkdirSync(join(dir, 'pre-promotion'), { recursive: true, mode: 0o700 });
+        mkdirSync(join(dir, 'state'), { recursive: true, mode: 0o700 });
+        chmodSync(dir, 0o700);
+        chmodSync(join(dir, 'pre-promotion'), 0o700);
+        chmodSync(join(dir, 'state'), 0o700);
         const bytes = (overrides.artifactBytes as string | Buffer) ?? 'encrypted-bytes';
-        if (!(overrides.skipArtifact === true)) writeFileSync(artifact, bytes);
+        if (!(overrides.skipArtifact === true)) {
+          writeFileSync(artifact, bytes, { mode: 0o600 });
+          chmodSync(artifact, 0o600);
+          const digest = sha256(Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes));
+          const checksum = `${artifact}.sha256`;
+          writeFileSync(checksum, `${digest}  ${artifact.split('/').at(-1)}\n`, { mode: 0o600 });
+          chmodSync(checksum, 0o600);
+        }
         const size = overrides.skipArtifact === true ? 15 : statSync(artifact).size;
-        const completedAt = new Date().toISOString();
+        const completedAt = String(overrides.completedAt ?? receiptStartedAt);
         const receipt = {
           schema: 'nexus.local-backup.v1',
           status: 'passed',
           kind: 'pre-promotion',
           database: '/var/lib/nexus-hub/production/data/bot.db',
           backupRoot: dir,
-          startedAt: completedAt,
+          startedAt: receiptStartedAt,
           completedAt,
           // A receipt that does not actually describe its artifact is not
           // evidence; the digest is computed from the bytes on disk.
           encryptedSha256: sha256(Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes)),
           encryptedSizeBytes: size,
           installed: { 'pre-promotion': artifact },
-          retention: { 'pre-promotion': 10 },
+          retention: { hourly: 24, daily: 30, weekly: 4, 'pre-promotion': 10 },
+          plaintextSha256: 'a'.repeat(64),
+          plaintextSizeBytes: 4096,
+          integrityCheck: 'ok',
+          foreignKeyCheck: 'ok',
           ...overrides,
         };
         delete (receipt as Record<string, unknown>).skipArtifact;
         delete (receipt as Record<string, unknown>).artifactBytes;
-        writeFileSync(receiptPath, JSON.stringify(receipt));
+        writeFileSync(receiptPath, JSON.stringify(receipt), { mode: 0o600 });
+        chmodSync(receiptPath, 0o600);
       };
-      return { receiptPath, artifact, publish, root: dir };
+      return {
+        receiptPath,
+        artifact,
+        publish,
+        root: dir,
+        requestedAt: Date.parse(receiptStartedAt),
+      };
     }
 
     function backupFor(
-      fixture: { receiptPath: string; publish: () => void; root: string },
+      fixture: {
+        receiptPath: string;
+        publish: () => void;
+        root: string;
+        requestedAt?: number;
+      },
       unitResult = 'success',
     ) {
       return createReleaseBackup({
+        ...backupTestAuthority(),
         policy: {
           ...policy,
           backup: { ...policy.backup, receiptPath: fixture.receiptPath, root: fixture.root },
@@ -5284,11 +5857,17 @@ describe('release security and operations', () => {
           }
           return { status: 0, stdout: `${unitResult}\n`, stderr: '' };
         },
+        now: () => fixture.requestedAt ?? Date.now(),
       });
     }
 
     const run = (
-      fixture: { receiptPath: string; publish: () => void; root: string },
+      fixture: {
+        receiptPath: string;
+        publish: () => void;
+        root: string;
+        requestedAt?: number;
+      },
       unitResult?: string,
     ) => (
       backupFor(fixture, unitResult).createPreMigrationBackup({ environment: 'production' })
@@ -5298,6 +5877,61 @@ describe('release security and operations', () => {
     // by size alone, so same-sized tampering passed and the receipt's digest was
     // carried as evidence without anything ever comparing it to the bytes.
     // Reproduction script: .local/repro/g3.mjs.
+    it.each([
+      ['missing plaintext digest', (receipt: Record<string, any>) => {
+        delete receipt.plaintextSha256;
+      }],
+      ['failed integrity', (receipt: Record<string, any>) => {
+        receipt.integrityCheck = 'failed';
+      }],
+      ['failed foreign-key check', (receipt: Record<string, any>) => {
+        receipt.foreignKeyCheck = 'failed';
+      }],
+      ['retention drift', (receipt: Record<string, any>) => {
+        receipt.retention.hourly = 23;
+      }],
+      ['an unexpected field', (receipt: Record<string, any>) => {
+        receipt.untrusted = true;
+      }],
+    ])('rejects the closed producer receipt schema with %s', (_label, mutate) => {
+      const fixture = receiptFixture(mkdtempSync(join(workspace, 'backup-receipt-claims-')));
+      fixture.publish();
+      const receipt = JSON.parse(readFileSync(fixture.receiptPath, 'utf8'));
+      mutate(receipt);
+      writeFileSync(fixture.receiptPath, JSON.stringify(receipt), { mode: 0o600 });
+      chmodSync(fixture.receiptPath, 0o600);
+
+      const result = backupFor(fixture).readBackupReceipt({
+        environment: 'production',
+        notBeforeMs: 0,
+      });
+      expect(result.ok).toBe(false);
+      expect(result.detail).toMatch(/closed producer schema|recovery claims|retention/);
+    });
+
+    it.each([
+      ['missing', (checksum: string) => rmSync(checksum)],
+      ['wrong basename', (checksum: string, fixture: ReturnType<typeof receiptFixture>) => {
+        writeFileSync(checksum, `${'0'.repeat(64)}  wrong.sqlite.age\n`, { mode: 0o600 });
+      }],
+      ['trailing bytes', (checksum: string, fixture: ReturnType<typeof receiptFixture>) => {
+        const receipt = JSON.parse(readFileSync(fixture.receiptPath, 'utf8'));
+        writeFileSync(checksum, `${receipt.encryptedSha256}  ${fixture.artifact.split('/').at(-1)}\nextra\n`, { mode: 0o600 });
+      }],
+      ['hardlink', (checksum: string) => linkSync(checksum, `${checksum}.second-link`)],
+      ['unsafe mode', (checksum: string) => chmodSync(checksum, 0o640)],
+    ])('rejects a %s checksum companion during release admission', (_label, mutate) => {
+      const fixture = receiptFixture(mkdtempSync(join(workspace, 'backup-checksum-claims-')));
+      fixture.publish();
+      mutate(`${fixture.artifact}.sha256`, fixture);
+      const result = backupFor(fixture).readBackupReceipt({
+        environment: 'production',
+        notBeforeMs: 0,
+      });
+      expect(result.ok).toBe(false);
+      expect(result.detail).toMatch(/checksum/);
+    });
+
     it('rejects same-sized tampering of the encrypted artifact', () => {
       const dir = mkdtempSync(join(workspace, 'backup-tamper-'));
       const fixture = receiptFixture(dir);
@@ -5319,11 +5953,17 @@ describe('release security and operations', () => {
       });
       fixture.publish();
       let descriptorReadFileCalls = 0;
+      let artifactFd: number | null = null;
       const readLengths: number[] = [];
       const fileSystem = {
         ...nodeFs,
+        openSync(target: string, flags: string | number, mode?: number) {
+          const descriptor = nodeFs.openSync(target, flags, mode);
+          if (target === fixture.artifact) artifactFd = descriptor;
+          return descriptor;
+        },
         readFileSync(target: any, ...args: any[]) {
-          if (typeof target === 'number') {
+          if (target === artifactFd) {
             descriptorReadFileCalls += 1;
             throw new Error('whole-file descriptor reads are forbidden');
           }
@@ -5336,6 +5976,7 @@ describe('release security and operations', () => {
         },
       };
       const backup = createReleaseBackup({
+        ...backupTestAuthority(),
         policy: {
           ...policy,
           backup: { ...policy.backup, receiptPath: fixture.receiptPath, root: fixture.root },
@@ -5377,6 +6018,7 @@ describe('release security and operations', () => {
         },
       };
       const backup = createReleaseBackup({
+        ...backupTestAuthority(),
         policy: {
           ...policy,
           backup: { ...policy.backup, receiptPath: fixture.receiptPath, root: fixture.root },
@@ -5397,16 +6039,72 @@ describe('release security and operations', () => {
       const fixture = receiptFixture(realRoot, { backupRoot: linkedRoot });
       fixture.publish();
       const backup = createReleaseBackup({
+        ...backupTestAuthority(),
         policy: {
           ...policy,
-          backup: { ...policy.backup, receiptPath: fixture.receiptPath, root: linkedRoot },
+          backup: {
+            ...policy.backup,
+            receiptPath: join(linkedRoot, 'state', 'last-success.json'),
+            root: linkedRoot,
+          },
         },
       });
 
       const result = backup.readBackupReceipt({ environment: 'production', notBeforeMs: 0 });
 
       expect(result.ok).toBe(false);
-      expect(result.detail).toMatch(/root.*non-symlink directory/i);
+      expect(result.detail).toMatch(/receipt directory authority|root.*ancestor chain/i);
+    });
+
+    it.each([
+      ['root', (fixture: ReturnType<typeof receiptFixture>) => chmodSync(fixture.root, 0o755)],
+      ['state', (fixture: ReturnType<typeof receiptFixture>) => {
+        chmodSync(join(fixture.root, 'state'), 0o755);
+      }],
+      ['pre-promotion tier', (fixture: ReturnType<typeof receiptFixture>) => {
+        chmodSync(join(fixture.root, 'pre-promotion'), 0o755);
+      }],
+    ])('rejects unsafe private directory mode on the %s', (_label, mutate) => {
+      const fixture = receiptFixture(mkdtempSync(join(workspace, 'backup-private-mode-')));
+      fixture.publish();
+      mutate(fixture);
+      const result = backupFor(fixture).readBackupReceipt({
+        environment: 'production',
+        notBeforeMs: 0,
+      });
+      expect(result.ok).toBe(false);
+      expect(result.detail).toMatch(/authority|identity|unsafe/);
+    });
+
+    it('rejects a group/world-writable ancestor above the governed root', () => {
+      const unsafeParent = mkdtempSync(join(workspace, 'backup-unsafe-parent-'));
+      chmodSync(unsafeParent, 0o777);
+      const dir = join(unsafeParent, 'application');
+      mkdirSync(dir, { mode: 0o700 });
+      const fixture = receiptFixture(dir);
+      fixture.publish();
+      const result = backupFor(fixture).readBackupReceipt({
+        environment: 'production',
+        notBeforeMs: 0,
+      });
+      expect(result.ok).toBe(false);
+      expect(result.detail).toMatch(/authority|ancestor chain|unsafe/);
+    });
+
+    it('uses fixed root ownership in production rather than the invoking uid', () => {
+      if ((process.getuid?.() ?? 0) === 0) return;
+      const fixture = receiptFixture(mkdtempSync(join(workspace, 'backup-fixed-owner-')));
+      fixture.publish();
+      const backup = createReleaseBackup({
+        policy: {
+          ...policy,
+          backup: { ...policy.backup, receiptPath: fixture.receiptPath, root: fixture.root },
+        },
+        backupTrustAnchor: workspace,
+      });
+      const result = backup.readBackupReceipt({ environment: 'production', notBeforeMs: 0 });
+      expect(result.ok).toBe(false);
+      expect(result.detail).toMatch(/authority|unsafe/);
     });
 
     it('rejects a governed root namespace replacement after descriptor binding', () => {
@@ -5435,6 +6133,7 @@ describe('release security and operations', () => {
         },
       };
       const backup = createReleaseBackup({
+        ...backupTestAuthority(),
         policy: {
           ...policy,
           backup: { ...policy.backup, receiptPath: fixture.receiptPath, root: fixture.root },
@@ -5445,7 +6144,85 @@ describe('release security and operations', () => {
       const result = backup.readBackupReceipt({ environment: 'production', notBeforeMs: 0 });
 
       expect(result.ok).toBe(false);
-      expect(result.detail).toMatch(/root identity changed|artifact or governed root identity changed/i);
+      expect(result.detail).toMatch(
+        /root identity changed|artifact or governed root identity changed|directory authority changed/i,
+      );
+    });
+
+    it('replaces a pending success when authority changes at the final retained recheck', () => {
+      const dir = mkdtempSync(join(workspace, 'backup-final-authority-race-'));
+      const fixture = receiptFixture(dir);
+      fixture.publish();
+      let artifactFd: number | undefined;
+      let mutated = false;
+      const fileSystem = {
+        ...nodeFs,
+        openSync(target: string, flags: string | number, mode?: number) {
+          const descriptor = nodeFs.openSync(target, flags, mode);
+          if (target === fixture.artifact) artifactFd = descriptor;
+          return descriptor;
+        },
+        closeSync(descriptor: number) {
+          nodeFs.closeSync(descriptor);
+          if (descriptor === artifactFd && !mutated) {
+            mutated = true;
+            chmodSync(dir, 0o755);
+          }
+        },
+      };
+      const backup = createReleaseBackup({
+        ...backupTestAuthority(),
+        policy: {
+          ...policy,
+          backup: { ...policy.backup, receiptPath: fixture.receiptPath, root: fixture.root },
+        },
+        fileSystem,
+      });
+
+      const result = backup.readBackupReceipt({ environment: 'production', notBeforeMs: 0 });
+
+      expect(mutated).toBe(true);
+      expect(result.ok).toBe(false);
+      expect(result.detail).toMatch(/directory authority changed/);
+    });
+
+    it('closes retained root bindings when the explicit root descriptor open fails', () => {
+      const dir = mkdtempSync(join(workspace, 'backup-root-open-close-'));
+      const fixture = receiptFixture(dir);
+      fixture.publish();
+      let rootOpens = 0;
+      let openedCount = 0;
+      let closedCount = 0;
+      const fileSystem = {
+        ...nodeFs,
+        openSync(target: string, flags: string | number, mode?: number) {
+          if (target === dir && ++rootOpens === 3) {
+            const error = Object.assign(new Error('injected root open failure'), { code: 'EIO' });
+            throw error;
+          }
+          const descriptor = nodeFs.openSync(target, flags, mode);
+          openedCount += 1;
+          return descriptor;
+        },
+        closeSync(descriptor: number) {
+          closedCount += 1;
+          nodeFs.closeSync(descriptor);
+        },
+      };
+      const backup = createReleaseBackup({
+        ...backupTestAuthority(),
+        policy: {
+          ...policy,
+          backup: { ...policy.backup, receiptPath: fixture.receiptPath, root: fixture.root },
+        },
+        fileSystem,
+      });
+
+      const result = backup.readBackupReceipt({ environment: 'production', notBeforeMs: 0 });
+
+      expect(result.ok).toBe(false);
+      expect(result.detail).toMatch(/root could not be opened/);
+      expect(closedCount).toBe(openedCount);
     });
 
     it('rejects a symlinked artifact', () => {
@@ -5476,17 +6253,18 @@ describe('release security and operations', () => {
           if (target === fixture.artifact) artifactOpenCount += 1;
           return nodeFs.openSync(target, flags);
         },
-        fstatSync(fd: number) {
+        fstatSync(fd: number, options?: JsonObject) {
           const stat = nodeFs.fstatSync(fd);
-          if (!swapped) {
+          if (artifactOpenCount > 0 && !swapped) {
             swapped = true;
             rmSync(fixture.artifact);
             symlinkSync(outside, fixture.artifact);
           }
-          return stat;
+          return options?.bigint ? nodeFs.fstatSync(fd, { bigint: true }) : stat;
         },
       };
       const backup = createReleaseBackup({
+        ...backupTestAuthority(),
         policy: {
           ...policy,
           backup: { ...policy.backup, receiptPath: fixture.receiptPath, root: fixture.root },
@@ -5498,7 +6276,7 @@ describe('release security and operations', () => {
 
       expect(artifactOpenCount).toBe(1);
       expect(result.ok).toBe(false);
-      expect(result.detail).toMatch(/identity changed|could not be resolved|regular file/);
+      expect(result.detail).toMatch(/identity changed|could not be resolved|regular file|link count/);
     });
 
     it('rejects a hardlink inside the governed root to a file outside it', () => {
@@ -5526,12 +6304,13 @@ describe('release security and operations', () => {
       const outsideDir = mkdtempSync(join(workspace, 'backup-outside-root-'));
       const outside = join(outsideDir, 'nexus-db-20260807T120000Z.sqlite.age');
       writeFileSync(outside, readFileSync(fixture.artifact));
+      chmodSync(outside, 0o600);
       const receipt = JSON.parse(readFileSync(fixture.receiptPath, 'utf8'));
       receipt.installed['pre-promotion'] = outside;
       writeFileSync(fixture.receiptPath, JSON.stringify(receipt));
       const result = backup.readBackupReceipt({ environment: 'production', notBeforeMs: 0 });
       expect(result.ok).toBe(false);
-      expect(result.detail).toMatch(/outside the governed backup root/);
+      expect(result.detail).toMatch(/producer topology|outside the governed backup root/);
     });
 
     it('rejects an escape through a symlinked parent directory', () => {
@@ -5542,6 +6321,7 @@ describe('release security and operations', () => {
       const outDir = mkdtempSync(join(workspace, 'outdir-'));
       const real = join(outDir, 'nexus-db-20260807T120000Z.sqlite.age');
       writeFileSync(real, readFileSync(fixture.artifact));
+      chmodSync(real, 0o600);
       const linked = join(dir, 'linked');
       symlinkSync(outDir, linked);
       const receipt = JSON.parse(readFileSync(fixture.receiptPath, 'utf8'));
@@ -5549,7 +6329,7 @@ describe('release security and operations', () => {
       writeFileSync(fixture.receiptPath, JSON.stringify(receipt));
       const result = backup.readBackupReceipt({ environment: 'production', notBeforeMs: 0 });
       expect(result.ok).toBe(false);
-      expect(result.detail).toMatch(/outside the governed backup root/);
+      expect(result.detail).toMatch(/producer topology|outside the governed backup root/);
     });
 
     it('passes on a fresh receipt naming the production database', () => {
@@ -5565,6 +6345,7 @@ describe('release security and operations', () => {
         completedAt: new Date(requestedAt + 5_000).toISOString(),
       });
       const backup = createReleaseBackup({
+        ...backupTestAuthority(),
         policy: {
           ...policy,
           backup: { ...policy.backup, receiptPath: fixture.receiptPath, root: fixture.root },
@@ -5593,8 +6374,10 @@ describe('release security and operations', () => {
     });
 
     it('fails when the unit succeeds but publishes no receipt', () => {
+      mkdirSync(join(workspace, 'state'), { mode: 0o700 });
+      chmodSync(join(workspace, 'state'), 0o700);
       const result = run({
-        receiptPath: join(workspace, 'absent.json'),
+        receiptPath: join(workspace, 'state', 'last-success.json'),
         publish: () => {},
         root: workspace,
       });

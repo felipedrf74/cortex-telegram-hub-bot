@@ -3,10 +3,10 @@ Description=Nexus Hub weekly release pipeline heartbeat
 Documentation=file:///opt/nexus-release/checkout/ops/nexus-release/README.md
 
 [Timer]
-# Monday 09:00 local, matching config/continuous-deployment.json >
+# Monday 09:30 local, matching config/continuous-deployment.json >
 # notifications.heartbeatSchedule. The pipeline is silent on success, so this is
 # the only signal that distinguishes a quiet week from a broken notifier.
-OnCalendar=Mon 09:00
+OnCalendar=Mon 09:30
 AccuracySec=5m
 Persistent=true
 Unit=nexus-release-heartbeat.service

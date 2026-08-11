@@ -153,18 +153,64 @@ cannot prevent rollback, receipt persistence, or the deployment verdict.
 Successes are silent, which is why the weekly heartbeat exists: without it, a
 broken notifier is indistinguishable from a quiet quarter.
 
+The heartbeat is also the recovery-surface liveness fence. It descriptor-binds
+the root-owned backup and restore-verification receipts, re-hashes the current
+encrypted backup, and requires backup evidence no older than two hours and a
+successful restore verification no older than eight days. Hourly retention may
+prune the exact artifact named by a still-fresh restore receipt; a present file
+is always re-hashed, while a safely absent file leaves that immutable receipt as
+the proof. Unsafe, mismatched, future-dated, or stale evidence sends a sanitized
+failure and makes the heartbeat fail instead of announcing health. Separately,
+the hourly backup and weekly restore units page immediately from `ExecStopPost`
+on failure. Their Python process starts under `env -i`; only the alert helper
+inherits the dedicated release-channel credentials, never raw journal output.
+
 ## What the poller trusts
 
 Two independently pinned facts: the signed release manifest inside the release
 payload image, and the current public protected-main head.
 
-`nexus.release-manifest.v2` is an Ed25519 envelope over a canonical-JSON payload
+`nexus.release-manifest.v3` is an Ed25519 envelope over a canonical-JSON payload
 carrying the schema version, source SHA, workflow run identity, both image
 digests, the Compose digest, the migration verdict digest, the complete
-migration-reconciliation policy, and a timestamp. The poller verifies the
-signature against a root-owned pinned public key, then verifies that the
-repository, protected ref, workflow name and key id are the governed ones, then
-verifies the Compose bytes hash to the signed digest.
+migration-reconciliation policy, a governed control-plane digest, and a
+timestamp. The control-plane digest covers the transitive runtime modules,
+deployment policy, installed unit/sudoers/backup interface sources, and the
+selected native dependency lock closure. The poller verifies the signature
+against a root-owned pinned public key, then verifies that the repository,
+protected ref, workflow name and key id are the governed ones, then verifies the
+Compose bytes hash to the signed digest.
+
+The installed controller computes the same governed identity from its immutable
+checkout. A mismatch returns `control_plane_mismatch` and defers before any
+deployment state, Compose, application-image retention, or existing discovery
+cache mutation. The owner must first install the exact signed control plane with
+the attended upgrade transaction; an older controller cannot silently operate a
+newer release policy.
+
+The attended transaction must also install the descriptor-bound local-backup
+producer, five unit/timer files, and sudoers policy from that same immutable
+root. Ordinary polling byte-compares those live root-owned files, validates
+sudoers, and requires exact systemd fragment paths, no drop-ins, loaded units,
+and no pending daemon reload before candidate discovery; it repeats the proof
+after staging immediately before starting backup. Drift fails before production
+authority is used. Receiptless crash recovery remains available because it
+rehashes already-persisted backup evidence and does not start the producer.
+This v3 runtime support for retained v2 release evidence is separate from an
+attended selector rollback: the version-compatible upgrade transaction performs
+that rollback proof and never assumes the older immutable tree contains new v3
+checker files.
+
+The first v3 publication after that upgrade has one fail-closed compatibility
+bridge when its migration summary is ineligible only because controller
+governance changed. Before any deployment mutation, the poller reopens and
+signature-verifies the exact active v2/v3 OCI payload and binds it to completed
+receipt and state. Installed and candidate control-plane identities must match,
+and candidate versus retained images, Compose, complete migration inventory,
+reconciliation projection, and up/down counts must be exact. Only classifier
+verdict fields and the migration digest that includes them are ignored. Missing
+retained evidence or any drift refuses authorization; a passing bridge still
+runs ordinary staging, backup, migration, production, and receipt gates.
 
 Every rejection is fail-closed. An unknown key id, a drifted repository or
 workflow, a non-protected ref, a malformed digest, a stale timestamp, or an
@@ -757,15 +803,20 @@ GitHub-hosted CI. An untrusted fork therefore cannot persist on the Pi, and the
 Pi cannot indirectly authorize release signing. It is granted no container-build
 daemon, production secrets, deploy key, registry/publication path, or access to
 production audit receipts.
-CI asserts that on every self-hosted run:
+CI asserts this on every dynamically routed self-hosted **job allocation**:
 
 ```bash
 /usr/local/sbin/nexus-pi-guardrails --json
 ```
 
-That root-owned guard runs before checkout, so repository code cannot weaken its
-own boundary. `node scripts/pi-runner-readiness.mjs --capabilities-only` remains
-a repository-side diagnostic, not the CI trust anchor.
+The installed guard is the first step of each dynamically routed job, before
+checkout or any other repository-controlled command. Each allocation revalidates
+the guard and its parent as root-owned and non-writable by the runner, rejects a
+symlink, and then invokes the guard. The separate `runner_guardrails` job is an
+early graph gate, not proof for later jobs: GitHub may schedule two jobs with the
+same labels on different machines. `node scripts/pi-runner-readiness.mjs
+--capabilities-only` remains a repository-side diagnostic, not the CI trust
+anchor.
 
 The same machine may host `/var/lib/nexus-release-audit/receipts` for the
 separate `nexus-audit` account. The runner guard permits that root-owned

@@ -1,10 +1,12 @@
 #!/usr/bin/env node
+import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 import { createReleaseAuditMirror } from './lib/release-audit-mirror.mjs';
 import { createReleaseBackup } from './lib/release-backup.mjs';
+import { computeReleaseControlPlaneIdentity } from './lib/release-control-plane.mjs';
 import {
   verifyReleaseBootstrapBaseline,
   verifyReleaseBootstrapProductionBaseline,
@@ -12,6 +14,9 @@ import {
 import { createReleaseDatabaseProbe } from './lib/release-database.mjs';
 import { runReleaseDeployment } from './lib/release-deployment.mjs';
 import { createReleaseHealth } from './lib/release-health.mjs';
+import {
+  verifyInstalledReleaseBackupInterface,
+} from './lib/release-installed-backup-interface.mjs';
 import { loadContinuousDeploymentPolicy } from './lib/release-manifest.mjs';
 import {
   createReleaseNotifier,
@@ -29,7 +34,6 @@ import { createReleaseStateStore } from './lib/release-state-store.mjs';
  */
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const policy = loadContinuousDeploymentPolicy(root);
 const cliArgs = process.argv.slice(2);
 const bootstrapFlag = '--allow-first-container-bootstrap';
 if (cliArgs.some((argument) => argument !== bootstrapFlag)
@@ -38,6 +42,27 @@ if (cliArgs.some((argument) => argument !== bootstrapFlag)
   process.exit(64);
 }
 const allowFirstContainerBootstrap = cliArgs.includes(bootstrapFlag);
+const retirementJournal = '/var/lib/nexus-release/state/pm2-fallback-retirement.json';
+const retiredTombstone = '/var/lib/nexus-release/state/pm2-fallback-retired.json';
+function retirementGatePresent(file) {
+  try {
+    fs.lstatSync(file);
+    return true;
+  } catch (error) {
+    if (error?.code === 'ENOENT') return false;
+    throw error;
+  }
+}
+if (retirementGatePresent(retirementJournal)) {
+  process.stderr.write('release refused while PM2 fallback retirement is in progress\n');
+  process.exit(75);
+}
+if (allowFirstContainerBootstrap && retirementGatePresent(retiredTombstone)) {
+  process.stderr.write('first-container bootstrap is permanently barred after PM2 retirement\n');
+  process.exit(75);
+}
+const policy = loadContinuousDeploymentPolicy(root);
+const controlPlane = computeReleaseControlPlaneIdentity(root);
 
 function log(message) {
   process.stdout.write(`${JSON.stringify({
@@ -57,11 +82,15 @@ const health = createReleaseHealth({});
 const notifier = createReleaseNotifier({ policy, log });
 const mirror = createReleaseAuditMirror({ policy, log });
 const backup = createReleaseBackup({ policy, log });
+const installedBackupInterface = {
+  verify: () => verifyInstalledReleaseBackupInterface({ root }),
+};
 const databaseProbe = createReleaseDatabaseProbe({ policy });
 
 try {
   const result = await runReleaseDeployment({
-    policy, store, registry, protectedHead, health, notifier, mirror, backup, databaseProbe, log,
+    policy, controlPlane, store, registry, protectedHead, health, notifier, mirror, backup,
+    installedBackupInterface, databaseProbe, log,
     bootstrap: {
       verify: (input) => verifyReleaseBootstrapBaseline({ ...input, root }),
       verifyProduction: (input) => verifyReleaseBootstrapProductionBaseline({ ...input, root }),

@@ -4,7 +4,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { classifyDeletedTests } from '../../scripts/test-cleanup-classifier.mjs';
-import { assertResolvedChangeImpact } from '../../scripts/lib/changed-area-classifier.mjs';
+import {
+  assertResolvedChangeImpact,
+  classifyChangedFiles,
+} from '../../scripts/lib/changed-area-classifier.mjs';
+import {
+  releaseControlPlaneFingerprint,
+} from '../../scripts/lib/release-control-plane.mjs';
 import {
   classifyTestGroups,
   loadTestGroups,
@@ -32,6 +38,40 @@ function classify(files: string[]) {
 }
 
 describe('lean changed-area classification', () => {
+  it('classifies every signed control-plane file as release runtime evidence', () => {
+    const root = process.cwd();
+    const fingerprint = releaseControlPlaneFingerprint(root, {
+      runtimeVersion: '22.23.1',
+    });
+    expect(fingerprint.files.length).toBeGreaterThan(40);
+    expect(
+      fingerprint.dependencies.packageLock.packages.length,
+    ).toBeGreaterThan(0);
+
+    const governedInputs = [
+      ...fingerprint.files.map(({ path: file }) => file),
+      // The locked dependency closure is computed from the exact npm manifests,
+      // so either manifest can change the signed controller identity.
+      'package.json',
+      'package-lock.json',
+    ];
+    for (const file of governedInputs) {
+      const result = classifyChangedFiles({
+        files: [file],
+        root,
+        generatedAt: '2026-08-11T00:00:00Z',
+      });
+      expect(result.flags.runtimeInfra, file).toBe(true);
+      expect(result.flags.deployConfig, file).toBe(true);
+      if (file === 'package.json' || file === 'package-lock.json') {
+        expect(result.flags.releaseOperator, file).toBe(true);
+      }
+      expect(result.tiers, file).toContain('T4');
+      expect(result.stagingSmoke.generic, file).toBe(true);
+      expect(result.vitest.globs, file).toContain('__tests__/scripts/*.test.ts');
+    }
+  });
+
   it.each([
     ['src/api/auth-middleware.ts', 'platform-security'],
     ['src/services/apple-token-revocation.ts', 'platform-security'],
@@ -100,6 +140,10 @@ describe('lean changed-area classification', () => {
     'scripts/lib/chat-capability-flag-transaction.mjs',
     'scripts/lib/release-bootstrap.mjs',
     'scripts/remote-chat-capability-flag-transaction.sh',
+    'scripts/remote-pm2-root-install.sh',
+    'scripts/remote-start-sanitized-pm2.sh',
+    'scripts/remote-user-release-transaction.sh',
+    'scripts/release-bound-lock-runner.py',
     'scripts/release-poll.sh',
     'scripts/routing-divergence-report.mjs',
     'scripts/run-routing-action-skill-accuracy.ts',
@@ -125,6 +169,9 @@ describe('lean changed-area classification', () => {
 
   it.each([
     'scripts/release-poll.sh',
+    'scripts/remote-pm2-root-install.sh',
+    'scripts/remote-start-sanitized-pm2.sh',
+    'scripts/remote-user-release-transaction.sh',
     'ops/nexus-release/README.md',
     'ops/local-backup/systemd/nexus-local-backup.service',
     'scripts/local-backup.py',

@@ -220,33 +220,55 @@ CONTROL_PLANE_LOCK=/var/lib/nexus-release/locks/control-plane.lock
 STATE_ROOT=/var/lib/nexus-release/state
 TRANSACTION_STATE=/var/lib/nexus-release/state/control-plane-transaction.json
 TRANSACTION_STAGE=/var/lib/nexus-release/state/control-plane-transaction.json.next
+POST_GATE_STATE=/var/lib/nexus-release/state/control-plane-post-gate.json
+FINALIZATION_STATE=/var/lib/nexus-release/state/control-plane-finalization.json
 EXPECTED_MARKER="$SOURCE_SHA $SOURCE_REPOSITORY /usr/bin/node:v22.23.1"
 STAGE_DIR=
 TIMER_FAILSAFE_ARMED=0
 TRANSACTION_DURABLE=0
+TRANSACTION_PHASE=
+RESUME_FROM_PHASE=
 ORPHAN_STAGE_PRESENT=0
 SOURCE_LIST_TEMP=
 SOURCE_MANIFEST_TEMP=
 FORBID_UNTRACKED_MARKER=0
 
 disable_control_plane_timers_fail_safe() {
-  local heartbeat_status poller_status
+  local backup_status heartbeat_status liveness_status poller_status restore_status
   test "$TIMER_FAILSAFE_ARMED" -eq 1 || return 0
   # Keep failures inside conditionals so the ERR trap cannot recursively invoke
   # this fail-safe while it is already handling an error.
-  if sudo systemctl disable --now nexus-release-poller.timer; then
+  if disable_timer_if_present nexus-release-poller.timer; then
     poller_status=0
   else
     poller_status=$?
   fi
-  if sudo systemctl disable --now nexus-release-heartbeat.timer; then
+  if disable_timer_if_present nexus-release-heartbeat.timer; then
     heartbeat_status=0
   else
     heartbeat_status=$?
   fi
-  if test "$poller_status" -ne 0 || test "$heartbeat_status" -ne 0; then
-    printf 'CONTROL-PLANE FAIL-SAFE: timer disable failed (poller=%s heartbeat=%s)\n' \
-      "$poller_status" "$heartbeat_status" >&2
+  if disable_timer_if_present nexus-local-backup.timer; then
+    backup_status=0
+  else
+    backup_status=$?
+  fi
+  if disable_timer_if_present nexus-local-backup-restore-verify.timer; then
+    restore_status=0
+  else
+    restore_status=$?
+  fi
+  if disable_timer_if_present nexus-release-backup-liveness.timer; then
+    liveness_status=0
+  else
+    liveness_status=$?
+  fi
+  if test "$poller_status" -ne 0 || test "$heartbeat_status" -ne 0 \
+      || test "$backup_status" -ne 0 || test "$restore_status" -ne 0 \
+      || test "$liveness_status" -ne 0; then
+    printf 'CONTROL-PLANE FAIL-SAFE: timer disable failed (poller=%s heartbeat=%s backup=%s restore=%s liveness=%s)\n' \
+      "$poller_status" "$heartbeat_status" "$backup_status" "$restore_status" \
+      "$liveness_status" >&2
   fi
   return 0
 }
@@ -314,10 +336,18 @@ transaction_file_is_valid() {
     && test "$(stat -Lc '%U:%G:%a:%h' -- "$file")" = root:root:600:1 \
     || return 1
   jq -e '
-    keys == ["candidateDigest","createdAt","expectedMarker",
-      "heartbeatTimerWasActive","heartbeatTimerWasEnabled","mode","operation",
+    keys == ["backupTimerWasActive","backupTimerWasEnabled",
+      "candidateDigest","controlPlaneDigest","controlPlaneSchema",
+      "createdAt","expectedMarker",
+      "heartbeatTimerWasActive","heartbeatTimerWasEnabled",
+      "livenessTimerDesiredActive","livenessTimerDesiredEnabled",
+      "livenessTimerWasActive","livenessTimerWasEnabled",
+      "mode","operation",
       "originalActivePath","originalPreviousPath","phase",
-      "pollerTimerWasActive","pollerTimerWasEnabled","schema","sourceRepository",
+      "pollerTimerDesiredActive","pollerTimerDesiredEnabled",
+      "pollerTimerWasActive","pollerTimerWasEnabled",
+      "restoreVerifyTimerWasActive","restoreVerifyTimerWasEnabled",
+      "schema","sourceRepository",
       "stageIdentity","stagePath","targetPath","targetSha","updatedAt"]
     and .schema == "nexus.control-plane-transaction.v1"
     and (.operation == "install" or .operation == "rollback")
@@ -325,6 +355,11 @@ transaction_file_is_valid() {
     and (.operation == (if .mode == "rollback" then "rollback" else "install" end))
     and (.targetSha | type == "string" and test("^[0-9a-f]{40}$"))
     and (.candidateDigest | type == "string" and test("^[0-9a-f]{64}$"))
+    and (.controlPlaneDigest | type == "string" and test("^[0-9a-f]{64}$"))
+    and (.controlPlaneSchema == "nexus.release-control-plane.v1"
+      or (.mode == "rollback"
+        and .controlPlaneSchema == "nexus.control-plane-tree.v1"
+        and .controlPlaneDigest == .candidateDigest))
     and .sourceRepository == "https://github.com/felipedrf74/cortex-telegram-hub-bot.git"
     and .expectedMarker == (.targetSha + " " + .sourceRepository
       + " /usr/bin/node:v22.23.1")
@@ -341,7 +376,15 @@ transaction_file_is_valid() {
     and (if .mode == "initial" then
         .originalActivePath == "" and .originalPreviousPath == ""
         and .pollerTimerWasActive == 0 and .pollerTimerWasEnabled == 0
+        and .pollerTimerDesiredActive == 0
+        and .pollerTimerDesiredEnabled == 0
         and .heartbeatTimerWasActive == 0 and .heartbeatTimerWasEnabled == 0
+        and .livenessTimerWasActive == 0 and .livenessTimerWasEnabled == 0
+        and .livenessTimerDesiredActive == 0
+        and .livenessTimerDesiredEnabled == 0
+        and .backupTimerWasActive == 0 and .backupTimerWasEnabled == 0
+        and .restoreVerifyTimerWasActive == 0
+        and .restoreVerifyTimerWasEnabled == 0
       elif .mode == "upgrade" then
         .originalActivePath != "" and .originalActivePath != .targetPath
       else
@@ -350,11 +393,17 @@ transaction_file_is_valid() {
         and .originalPreviousPath == .targetPath
       end)
     and ([.pollerTimerWasActive,.pollerTimerWasEnabled,
-          .heartbeatTimerWasActive,.heartbeatTimerWasEnabled]
+          .pollerTimerDesiredActive,.pollerTimerDesiredEnabled,
+          .heartbeatTimerWasActive,.heartbeatTimerWasEnabled,
+          .livenessTimerWasActive,.livenessTimerWasEnabled,
+          .livenessTimerDesiredActive,.livenessTimerDesiredEnabled,
+          .backupTimerWasActive,.backupTimerWasEnabled,
+          .restoreVerifyTimerWasActive,.restoreVerifyTimerWasEnabled]
       | all(. == 0 or . == 1))
     and (.phase == "prepared" or .phase == "candidate_installed"
       or .phase == "previous_selected" or .phase == "active_selected"
-      or .phase == "capabilities_installed" or .phase == "units_reloaded"
+      or .phase == "capabilities_installed"
+      or .phase == "backup_interface_installed" or .phase == "units_reloaded"
       or .phase == "timers_restored" or .phase == "complete")
     and (.createdAt | type == "string"
       and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
@@ -395,6 +444,60 @@ prepare_release_lock() {
   fi
 }
 
+trusted_destination_ancestor_identity() {
+  /usr/bin/node --input-type=module - 0 0 / "$@" <<'NODE'
+import fs from 'node:fs';
+import path from 'node:path';
+const expectedUid = Number(process.argv[2]);
+const expectedGid = Number(process.argv[3]);
+const boundary = process.argv[4];
+const destinations = process.argv.slice(5);
+if (!Number.isSafeInteger(expectedUid) || expectedUid < 0
+    || !Number.isSafeInteger(expectedGid) || expectedGid < 0
+    || !path.isAbsolute(boundary) || path.resolve(boundary) !== boundary
+    || destinations.length === 0) process.exit(10);
+const identities = new Map();
+for (const destination of destinations) {
+  if (!path.isAbsolute(destination) || path.resolve(destination) !== destination) {
+    throw new Error(`destination is not a normalized absolute path: ${destination}`);
+  }
+  const relative = path.relative(boundary, destination);
+  if (relative === '' || relative === '..' || relative.startsWith(`..${path.sep}`)
+      || path.isAbsolute(relative)) {
+    throw new Error(`destination escaped its ancestor boundary: ${destination}`);
+  }
+  let ancestor = path.dirname(destination);
+  for (;;) {
+    const before = fs.lstatSync(ancestor);
+    if (!before.isDirectory() || before.isSymbolicLink()
+        || before.uid !== expectedUid || before.gid !== expectedGid
+        || (before.mode & 0o022) !== 0) {
+      throw new Error(`destination ancestor is unsafe: ${ancestor}`);
+    }
+    const after = fs.lstatSync(ancestor);
+    if (after.dev !== before.dev || after.ino !== before.ino
+        || after.mode !== before.mode || after.uid !== before.uid
+        || after.gid !== before.gid) {
+      throw new Error(`destination ancestor changed during proof: ${ancestor}`);
+    }
+    const identity = `${before.dev}:${before.ino}:${before.mode & 0o7777}`;
+    if (identities.has(ancestor) && identities.get(ancestor) !== identity) {
+      throw new Error(`destination ancestor identity conflicted: ${ancestor}`);
+    }
+    identities.set(ancestor, identity);
+    if (ancestor === boundary) break;
+    if (ancestor === path.parse(ancestor).root) {
+      throw new Error(`destination ancestor escaped its boundary: ${destination}`);
+    }
+    ancestor = path.dirname(ancestor);
+  }
+}
+for (const [ancestor, identity] of [...identities].sort(([left], [right]) => (
+  left < right ? -1 : left > right ? 1 : 0
+))) process.stdout.write(`${ancestor}\t${identity}\n`);
+NODE
+}
+
 test -d "$STATE_ROOT" && test ! -L "$STATE_ROOT" \
   && test "$(stat -Lc '%U:%G:%a' -- "$STATE_ROOT")" = root:root:700 \
   || die 'control-plane state root is unsafe'
@@ -418,6 +521,388 @@ test "$(stat -Lc '%d:%i' -- /proc/$$/fd/7)" = \
   "$(stat -Lc '%d:%i' -- "$CONTROL_PLANE_LOCK")" \
   || die 'control-plane mutex changed identity after acquisition'
 prepare_release_lock
+
+if test -e "$FINALIZATION_STATE" || test -L "$FINALIZATION_STATE"; then
+  require_transaction_file "$FINALIZATION_STATE"
+  test "$(jq -er .phase "$FINALIZATION_STATE")" = complete \
+    || die 'control-plane finalization is not at the durable complete phase'
+  for conflicting in "$TRANSACTION_STATE" "$TRANSACTION_STAGE" "$POST_GATE_STATE"; do
+    test ! -e "$conflicting" && test ! -L "$conflicting" \
+      || die "control-plane finalization conflicts with another journal: $conflicting"
+  done
+  jq -e --arg mode "$CONTROL_PLANE_MODE" --arg sha "$SOURCE_SHA" \
+    --arg repository "$SOURCE_REPOSITORY" --arg marker "$EXPECTED_MARKER" \
+    --arg target "$VERSION_ROOT/$SOURCE_SHA" \
+    --arg operation "$TRANSACTION_OPERATION" '
+      .operation == $operation and .mode == $mode and .targetSha == $sha
+      and .sourceRepository == $repository and .expectedMarker == $marker
+      and .targetPath == $target
+    ' "$FINALIZATION_STATE" >/dev/null \
+    || die 'control-plane finalization belongs to a different request'
+
+  FINAL_TARGET="$VERSION_ROOT/$SOURCE_SHA"
+  FINAL_ORIGINAL_ACTIVE="$(jq -r .originalActivePath "$FINALIZATION_STATE")"
+  test -L "$ACTIVE_LINK" \
+    && test "$(readlink -f -- "$ACTIVE_LINK")" = "$FINAL_TARGET" \
+    || die 'finalization active selector changed'
+  if test -n "$FINAL_ORIGINAL_ACTIVE"; then
+    test -L "$PREVIOUS_LINK" \
+      && test "$(readlink -f -- "$PREVIOUS_LINK")" = "$FINAL_ORIGINAL_ACTIVE" \
+      || die 'finalization previous selector changed'
+  else
+    test ! -e "$PREVIOUS_LINK" && test ! -L "$PREVIOUS_LINK" \
+      || die 'initial finalization unexpectedly has a predecessor'
+  fi
+  test -d "$FINAL_TARGET" && test ! -L "$FINAL_TARGET" \
+    && test "$(<"$FINAL_TARGET/.nexus-control-plane-ready")" = "$EXPECTED_MARKER" \
+    || die 'finalization immutable target evidence changed'
+  test -z "$(find "$FINAL_TARGET" -xdev \( ! -user root -o ! -group root \
+    -o ! -type l -perm /222 \) -print -quit)" \
+    || die 'finalization immutable target ownership or mode changed'
+  FINAL_JOURNAL_DIGEST="$(jq -er .candidateDigest "$FINALIZATION_STATE")"
+  test -f "$FINAL_TARGET/.nexus-control-plane-tree.sha256" \
+    && test ! -L "$FINAL_TARGET/.nexus-control-plane-tree.sha256" \
+    && test "$(stat -Lc '%U:%G:%a:%h' -- \
+      "$FINAL_TARGET/.nexus-control-plane-tree.sha256")" = root:root:444:1 \
+    && test "$(<"$FINAL_TARGET/.nexus-control-plane-tree.sha256")" = \
+      "$FINAL_JOURNAL_DIGEST" \
+    || die 'finalization recorded candidate digest changed'
+  FINAL_CALCULATED_DIGEST="$(/usr/bin/node --input-type=module - \
+    "$FINAL_TARGET" <<'NODE'
+import { createHash } from 'node:crypto';
+import { lstatSync, readFileSync, readdirSync, readlinkSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+const root = resolve(process.argv[2]);
+const hash = createHash('sha256');
+const fileDigest = (file) => createHash('sha256').update(readFileSync(file)).digest('hex');
+const visit = (relative = '') => {
+  const absolute = relative ? join(root, relative) : root;
+  const stat = lstatSync(absolute);
+  const type = stat.isDirectory() ? 'directory'
+    : stat.isFile() ? 'file' : stat.isSymbolicLink() ? 'symlink' : 'unsupported';
+  if (type === 'unsupported') throw new Error(`unsupported candidate object: ${relative}`);
+  if (relative !== '.nexus-control-plane-tree.sha256') {
+    hash.update(`${JSON.stringify({
+      path: relative || '.', type, mode: stat.mode & 0o7777,
+      value: type === 'file' ? fileDigest(absolute)
+        : type === 'symlink' ? readlinkSync(absolute) : '',
+    })}\n`);
+  }
+  if (type === 'directory') {
+    for (const name of readdirSync(absolute).sort()) {
+      visit(relative ? `${relative}/${name}` : name);
+    }
+  }
+};
+visit();
+process.stdout.write(`${hash.digest('hex')}\n`);
+NODE
+  )" || die 'finalization candidate digest recomputation failed'
+  test "$FINAL_CALCULATED_DIGEST" = "$FINAL_JOURNAL_DIGEST" \
+    || die 'finalization immutable candidate differs from its durable digest'
+
+  FINAL_IDENTITY_DESCRIPTOR="$FINAL_TARGET/ops/nexus-release/release-control-plane-inputs.json"
+  FINAL_IDENTITY_MODULE="$FINAL_TARGET/scripts/lib/release-control-plane.mjs"
+  if { test -e "$FINAL_IDENTITY_DESCRIPTOR" || test -L "$FINAL_IDENTITY_DESCRIPTOR"; } \
+      || { test -e "$FINAL_IDENTITY_MODULE" || test -L "$FINAL_IDENTITY_MODULE"; }; then
+    test -f "$FINAL_IDENTITY_DESCRIPTOR" && test ! -L "$FINAL_IDENTITY_DESCRIPTOR" \
+      && test -f "$FINAL_IDENTITY_MODULE" && test ! -L "$FINAL_IDENTITY_MODULE" \
+      || die 'finalization target has a partial signed control-plane identity pair'
+    FINAL_CONTROL_PLANE_IDENTITY="$(/usr/bin/node --input-type=module - \
+      "$FINAL_TARGET" <<'NODE'
+import { createRequire } from 'node:module';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+const root = process.argv[2];
+if (process.version !== 'v22.23.1') process.exit(10);
+const { computeReleaseControlPlaneIdentity } = await import(pathToFileURL(
+  join(root, 'scripts/lib/release-control-plane.mjs'),
+));
+const identity = computeReleaseControlPlaneIdentity(root, { runtimeVersion: '22.23.1' });
+const require = createRequire(join(root, 'package.json'));
+const Database = require('better-sqlite3');
+const database = new Database(':memory:');
+database.prepare('SELECT 1').get();
+database.close();
+process.stdout.write(`${identity.schema} ${identity.digest}\n`);
+NODE
+    )" || die 'finalization signed control-plane/native dependency proof failed'
+  else
+    test "$CONTROL_PLANE_MODE" = rollback \
+      || die 'finalization target lacks a signed control-plane identity outside rollback'
+    FINAL_CONTROL_PLANE_IDENTITY="nexus.control-plane-tree.v1 $FINAL_JOURNAL_DIGEST"
+  fi
+  test "$FINAL_CONTROL_PLANE_IDENTITY" = \
+    "$(jq -r '[.controlPlaneSchema,.controlPlaneDigest] | join(" ")' \
+      "$FINALIZATION_STATE")" \
+    || die 'finalization control-plane identity changed'
+
+  for unit in nexus-release-bootstrap.service nexus-release-poller.service \
+    nexus-release-poller.timer nexus-release-heartbeat.service \
+    nexus-release-heartbeat.timer; do
+    test -f "/etc/systemd/system/$unit" && test ! -L "/etc/systemd/system/$unit" \
+      && test "$(stat -Lc '%U:%G:%a:%h' -- "/etc/systemd/system/$unit")" = \
+        root:root:644:1 \
+      && cmp -s -- "$FINAL_TARGET/ops/nexus-release/$unit" \
+        "/etc/systemd/system/$unit" \
+      && test "$(systemctl show "$unit" --property=LoadState --value)" = loaded \
+      && test "$(systemctl show "$unit" --property=FragmentPath --value)" = \
+        "/etc/systemd/system/$unit" \
+      && test -z "$(systemctl show "$unit" --property=DropInPaths --value)" \
+      && test "$(systemctl show "$unit" --property=NeedDaemonReload --value)" = no \
+      || die "finalization release-unit proof failed: $unit"
+  done
+  FINAL_CAPABILITY_ANCESTORS="$(trusted_destination_ancestor_identity \
+    /usr/local/sbin/nexus-release-state-view \
+    /etc/sudoers.d/nexus-release-state-view)" \
+    || die 'finalization capability ancestor proof failed'
+  for final_capability in \
+    'ops/nexus-release/nexus-release-state-view|/usr/local/sbin/nexus-release-state-view|755' \
+    'ops/nexus-release/nexus-release-state-view.sudoers|/etc/sudoers.d/nexus-release-state-view|440'; do
+    IFS='|' read -r final_relative final_destination final_mode \
+      <<<"$final_capability"
+    test -f "$final_destination" && test ! -L "$final_destination" \
+      && test "$(stat -Lc '%U:%G:%a:%h' -- "$final_destination")" = \
+        "root:root:$final_mode:1" \
+      && cmp -s -- "$FINAL_TARGET/$final_relative" "$final_destination" \
+      || die "finalization installed capability changed: $final_destination"
+  done
+  /usr/sbin/visudo -cf /etc/sudoers.d/nexus-release-state-view >/dev/null \
+    || die 'finalization state-view sudoers proof failed'
+  /usr/bin/sudo -u dominguez /usr/bin/sudo -n \
+    /usr/local/sbin/nexus-release-state-view >/dev/null \
+    || die 'finalization delegated state-view proof failed'
+  test "$(trusted_destination_ancestor_identity \
+    /usr/local/sbin/nexus-release-state-view \
+    /etc/sudoers.d/nexus-release-state-view)" = \
+      "$FINAL_CAPABILITY_ANCESTORS" \
+    || die 'finalization capability ancestor identity changed'
+  if test -f "$FINAL_TARGET/ops/nexus-release/nexus-release-backup-liveness-force.service" \
+      && test -f "$FINAL_TARGET/ops/nexus-release/nexus-release-backup-liveness.service" \
+      && test -f "$FINAL_TARGET/ops/nexus-release/nexus-release-backup-liveness.timer" \
+      && test -f "$FINAL_TARGET/scripts/release-backup-liveness-launcher.sh"; then
+    for unit in nexus-release-backup-liveness-force.service \
+      nexus-release-backup-liveness.service \
+      nexus-release-backup-liveness.timer; do
+      test -f "/etc/systemd/system/$unit" && test ! -L "/etc/systemd/system/$unit" \
+        && test "$(stat -Lc '%U:%G:%a:%h' -- "/etc/systemd/system/$unit")" = \
+          root:root:644:1 \
+        && cmp -s -- "$FINAL_TARGET/ops/nexus-release/$unit" \
+          "/etc/systemd/system/$unit" \
+        && test "$(systemctl show "$unit" --property=LoadState --value)" = loaded \
+        && test "$(systemctl show "$unit" --property=FragmentPath --value)" = \
+          "/etc/systemd/system/$unit" \
+        && test -z "$(systemctl show "$unit" --property=DropInPaths --value)" \
+        && test "$(systemctl show "$unit" --property=NeedDaemonReload --value)" = no \
+        || die "finalization liveness unit proof failed: $unit"
+    done
+  else
+    test ! -e /etc/systemd/system/nexus-release-backup-liveness-force.service \
+      && test ! -L /etc/systemd/system/nexus-release-backup-liveness-force.service \
+      && test ! -e /etc/systemd/system/nexus-release-backup-liveness.service \
+      && test ! -L /etc/systemd/system/nexus-release-backup-liveness.service \
+      && test ! -e /etc/systemd/system/nexus-release-backup-liveness.timer \
+      && test ! -L /etc/systemd/system/nexus-release-backup-liveness.timer \
+      || die 'finalization retained liveness authority for an old target'
+  fi
+  for final_backup_spec in \
+    'scripts/local-backup.py|/usr/local/libexec/nexus-local-backup/local-backup.py|755' \
+    'ops/local-backup/systemd/nexus-local-backup.service|/etc/systemd/system/nexus-local-backup.service|644' \
+    'ops/local-backup/systemd/nexus-local-backup.timer|/etc/systemd/system/nexus-local-backup.timer|644' \
+    'ops/local-backup/systemd/nexus-local-backup-pre-promotion.service|/etc/systemd/system/nexus-local-backup-pre-promotion.service|644' \
+    'ops/local-backup/systemd/nexus-local-backup-restore-verify.service|/etc/systemd/system/nexus-local-backup-restore-verify.service|644' \
+    'ops/local-backup/systemd/nexus-local-backup-restore-verify.timer|/etc/systemd/system/nexus-local-backup-restore-verify.timer|644' \
+    'ops/local-backup/nexus-local-backup.sudoers|/etc/sudoers.d/nexus-local-backup|440'; do
+    IFS='|' read -r final_relative final_destination final_mode \
+      <<<"$final_backup_spec"
+    test -f "$final_destination" && test ! -L "$final_destination" \
+      && test "$(stat -Lc '%U:%G:%a:%h' -- "$final_destination")" = \
+        "root:root:$final_mode:1" \
+      && cmp -s -- "$FINAL_TARGET/$final_relative" "$final_destination" \
+      || die "finalization installed backup authority changed: $final_destination"
+  done
+  /usr/sbin/visudo -cf /etc/sudoers.d/nexus-local-backup >/dev/null \
+    || die 'finalization local-backup sudoers proof failed'
+  for unit in nexus-local-backup.service nexus-local-backup.timer \
+    nexus-local-backup-pre-promotion.service \
+    nexus-local-backup-restore-verify.service \
+    nexus-local-backup-restore-verify.timer; do
+    test "$(systemctl show "$unit" --property=LoadState --value)" = loaded \
+      && test "$(systemctl show "$unit" --property=FragmentPath --value)" = \
+        "/etc/systemd/system/$unit" \
+      && test -z "$(systemctl show "$unit" --property=DropInPaths --value)" \
+      && test "$(systemctl show "$unit" --property=NeedDaemonReload --value)" = no \
+      || die "finalization effective backup unit changed: $unit"
+  done
+  if test -f "$FINAL_TARGET/scripts/release-installed-backup-interface-check.mjs" \
+      && test ! -L "$FINAL_TARGET/scripts/release-installed-backup-interface-check.mjs"; then
+    /usr/bin/env -i PATH=/usr/bin:/bin HOME=/var/lib/nexus-release/home \
+      /usr/bin/node \
+      "$FINAL_TARGET/scripts/release-installed-backup-interface-check.mjs" >/dev/null \
+      || die 'finalization installed backup-interface proof failed'
+  else
+    test "$CONTROL_PLANE_MODE" = rollback \
+      || die 'finalization backup-interface checker is absent outside rollback'
+  fi
+
+  final_timer_bits() {
+    local active enabled fragment load_state unit
+    unit="$1"
+    load_state="$(systemctl show "$unit" --property=LoadState --value)"
+    if test "$load_state" = not-found; then
+      active="$(systemctl show "$unit" --property=ActiveState --value)"
+      fragment="$(systemctl show "$unit" --property=FragmentPath --value)"
+      test "$active" = inactive && test -z "$fragment" \
+        || die "finalization timer is not exactly absent: $unit"
+      printf '0 0\n'
+      return
+    fi
+    test "$load_state" = loaded \
+      || die "finalization timer load state is inadmissible: $unit ($load_state)"
+    active="$(systemctl show "$unit" --property=ActiveState --value)"
+    enabled="$(systemctl show "$unit" --property=UnitFileState --value)"
+    case "$active" in active) active=1 ;; inactive) active=0 ;;
+      *) die "finalization timer active state is inadmissible: $unit ($active)" ;; esac
+    case "$enabled" in enabled) enabled=1 ;; disabled) enabled=0 ;;
+      *) die "finalization timer enabled state is inadmissible: $unit ($enabled)" ;; esac
+    printf '%s %s\n' "$active" "$enabled"
+  }
+
+  require_final_timer_pending_or_terminal() {
+    local current desired_active desired_enabled pending terminal unit
+    unit="$1"; desired_active="$2"; desired_enabled="$3"
+    current="$(final_timer_bits "$unit")"
+    pending="0 $desired_enabled"
+    terminal="$desired_active $desired_enabled"
+    test "$current" = "$pending" || test "$current" = "$terminal" \
+      || die "finalization timer is neither pending nor terminal: $unit"
+  }
+
+  FINAL_POLLER_ACTIVE="$(jq -er .pollerTimerDesiredActive "$FINALIZATION_STATE")"
+  FINAL_POLLER_ENABLED="$(jq -er .pollerTimerDesiredEnabled "$FINALIZATION_STATE")"
+  FINAL_HEARTBEAT_ACTIVE="$(jq -er .heartbeatTimerWasActive "$FINALIZATION_STATE")"
+  FINAL_HEARTBEAT_ENABLED="$(jq -er .heartbeatTimerWasEnabled "$FINALIZATION_STATE")"
+  FINAL_LIVENESS_ACTIVE="$(jq -er .livenessTimerDesiredActive "$FINALIZATION_STATE")"
+  FINAL_LIVENESS_ENABLED="$(jq -er .livenessTimerDesiredEnabled "$FINALIZATION_STATE")"
+  FINAL_BACKUP_ACTIVE="$(jq -er .backupTimerWasActive "$FINALIZATION_STATE")"
+  FINAL_BACKUP_ENABLED="$(jq -er .backupTimerWasEnabled "$FINALIZATION_STATE")"
+  FINAL_RESTORE_ACTIVE="$(jq -er .restoreVerifyTimerWasActive "$FINALIZATION_STATE")"
+  FINAL_RESTORE_ENABLED="$(jq -er .restoreVerifyTimerWasEnabled "$FINALIZATION_STATE")"
+  if test "$FINAL_LIVENESS_ACTIVE" -eq 1; then
+    test "$(systemctl show nexus-release-backup-liveness-force.service \
+        --property=LoadState --value)" = loaded \
+      && test "$(systemctl show nexus-release-backup-liveness-force.service \
+        --property=ActiveState --value)" = inactive \
+      && test "$(systemctl show nexus-release-backup-liveness-force.service \
+        --property=Result --value)" = success \
+      && test "$(systemctl show nexus-release-backup-liveness-force.service \
+        --property=ExecMainStatus --value)" = 0 \
+      || die 'finalization lacks the durable forced backup-liveness proof'
+  fi
+  require_final_timer_pending_or_terminal nexus-release-poller.timer \
+    "$FINAL_POLLER_ACTIVE" "$FINAL_POLLER_ENABLED"
+  require_final_timer_pending_or_terminal nexus-release-heartbeat.timer \
+    "$FINAL_HEARTBEAT_ACTIVE" "$FINAL_HEARTBEAT_ENABLED"
+  require_final_timer_pending_or_terminal nexus-release-backup-liveness.timer \
+    "$FINAL_LIVENESS_ACTIVE" "$FINAL_LIVENESS_ENABLED"
+  require_final_timer_pending_or_terminal nexus-local-backup.timer \
+    "$FINAL_BACKUP_ACTIVE" "$FINAL_BACKUP_ENABLED"
+  require_final_timer_pending_or_terminal nexus-local-backup-restore-verify.timer \
+    "$FINAL_RESTORE_ACTIVE" "$FINAL_RESTORE_ENABLED"
+  if test "$(final_timer_bits nexus-release-poller.timer)" = \
+      "0 $FINAL_POLLER_ENABLED" && test "$FINAL_POLLER_ACTIVE" -eq 1; then
+    test "$(systemctl show nexus-release-poller.service --property=ActiveState --value)" = \
+      inactive \
+      && test "$(systemctl show nexus-release-poller.service --property=Result --value)" = \
+        success \
+      && test "$(systemctl show nexus-release-poller.service --property=ExecMainStatus --value)" = \
+        0 \
+      || die 'finalization found a poller attempt or failure before terminal activation'
+  fi
+
+  if test "$CONTROL_PLANE_MODE" != initial; then
+    require_release_lock
+    test -f "$MAINTENANCE_LOCK" && test ! -L "$MAINTENANCE_LOCK" \
+      && test "$(stat -Lc '%U:%G:%a:%h' -- "$MAINTENANCE_LOCK")" = \
+        root:dominguez:660:1 \
+      || die 'finalization maintenance mutex is unsafe'
+    exec 9<>"$RELEASE_LOCK"
+    test "$(stat -Lc '%d:%i' -- /proc/$$/fd/9)" = \
+      "$(stat -Lc '%d:%i' -- "$RELEASE_LOCK")" \
+      || die 'release mutex changed before finalization acquisition'
+    /usr/bin/flock -n 9 || die 'release authority is active during finalization'
+    test "$(stat -Lc '%d:%i' -- /proc/$$/fd/9)" = \
+      "$(stat -Lc '%d:%i' -- "$RELEASE_LOCK")" \
+      || die 'release mutex changed after finalization acquisition'
+    exec 8<>"$MAINTENANCE_LOCK"
+    test "$(stat -Lc '%d:%i' -- /proc/$$/fd/8)" = \
+      "$(stat -Lc '%d:%i' -- "$MAINTENANCE_LOCK")" \
+      || die 'maintenance mutex changed before finalization acquisition'
+    /usr/bin/flock -n 8 || die 'root maintenance is active during finalization'
+    test "$(stat -Lc '%d:%i' -- /proc/$$/fd/8)" = \
+      "$(stat -Lc '%d:%i' -- "$MAINTENANCE_LOCK")" \
+      || die 'maintenance mutex changed after finalization acquisition'
+    exec 8>&-; exec 9>&-
+  fi
+  resume_final_timer() {
+    local current desired_active desired_enabled unit
+    unit="$1"; desired_active="$2"; desired_enabled="$3"
+    current="$(final_timer_bits "$unit")"
+    if test "$current" = "0 $desired_enabled" && test "$desired_active" -eq 1; then
+      systemctl start "$unit" || die "terminal timer activation failed: $unit"
+    fi
+    test "$(final_timer_bits "$unit")" = "$desired_active $desired_enabled" \
+      || die "terminal timer bits differ from durable desired state: $unit"
+  }
+  resume_final_timer nexus-release-heartbeat.timer \
+    "$FINAL_HEARTBEAT_ACTIVE" "$FINAL_HEARTBEAT_ENABLED"
+  resume_final_timer nexus-release-backup-liveness.timer \
+    "$FINAL_LIVENESS_ACTIVE" "$FINAL_LIVENESS_ENABLED"
+  resume_final_timer nexus-local-backup.timer \
+    "$FINAL_BACKUP_ACTIVE" "$FINAL_BACKUP_ENABLED"
+  resume_final_timer nexus-local-backup-restore-verify.timer \
+    "$FINAL_RESTORE_ACTIVE" "$FINAL_RESTORE_ENABLED"
+  resume_final_timer nexus-release-poller.timer \
+    "$FINAL_POLLER_ACTIVE" "$FINAL_POLLER_ENABLED"
+  FINAL_POLLER_RESTART_DEFERRED=0
+  if test "$(jq -er .pollerTimerWasActive "$FINALIZATION_STATE")" -eq 1 \
+      && test "$FINAL_POLLER_ACTIVE" -eq 0; then
+    FINAL_POLLER_RESTART_DEFERRED=1
+  fi
+  require_transaction_file "$FINALIZATION_STATE"
+  rm -f -- "$FINALIZATION_STATE"
+  sync -f "$STATE_ROOT"
+  test ! -e "$FINALIZATION_STATE" && test ! -L "$FINALIZATION_STATE" \
+    || die 'terminal control-plane finalization journal was not retired'
+  TRANSACTION_DURABLE=0
+  printf 'completed immutable control-plane finalization %s; mode=%s; pollerRestartDeferred=%s\n' \
+    "$SOURCE_SHA" "$CONTROL_PLANE_MODE" "$FINAL_POLLER_RESTART_DEFERRED"
+  exit 0
+fi
+
+if test -e "$POST_GATE_STATE" || test -L "$POST_GATE_STATE"; then
+  require_transaction_file "$POST_GATE_STATE"
+  test "$(jq -er .phase "$POST_GATE_STATE")" = complete \
+    || die 'post-gate transaction is not at the durable complete phase'
+  test ! -e "$TRANSACTION_STATE" && test ! -L "$TRANSACTION_STATE" \
+    || die 'gating and post-gate transaction records both exist'
+  test ! -e "$TRANSACTION_STAGE" && test ! -L "$TRANSACTION_STAGE" \
+    || die 'post-gate transaction conflicts with a staged transaction record'
+  test ! -e "$FINALIZATION_STATE" && test ! -L "$FINALIZATION_STATE" \
+    || die 'post-gate transaction conflicts with finalization state'
+  jq -e --arg mode "$CONTROL_PLANE_MODE" --arg sha "$SOURCE_SHA" \
+    --arg repository "$SOURCE_REPOSITORY" --arg marker "$EXPECTED_MARKER" \
+    --arg target "$VERSION_ROOT/$SOURCE_SHA" \
+    --arg operation "$TRANSACTION_OPERATION" '
+      .operation == $operation and .mode == $mode and .targetSha == $sha
+      and .sourceRepository == $repository and .expectedMarker == $marker
+      and .targetPath == $target
+    ' "$POST_GATE_STATE" >/dev/null \
+    || die 'post-gate transaction belongs to a different request'
+  mv -T -- "$POST_GATE_STATE" "$TRANSACTION_STATE"
+  sync -f "$TRANSACTION_STATE"; sync -f "$STATE_ROOT"
+  require_transaction_file "$TRANSACTION_STATE"
+fi
 
 if test -e "$TRANSACTION_STAGE" || test -L "$TRANSACTION_STAGE"; then
   test -f "$TRANSACTION_STAGE" && test ! -L "$TRANSACTION_STAGE" \
@@ -881,8 +1366,160 @@ process.stdout.write(`${hash.digest('hex')}\n`);
 NODE
 }
 
+candidate_control_plane_identity() {
+  local candidate candidate_digest descriptor module
+  candidate="$1"; candidate_digest="$2"
+  descriptor="$candidate/ops/nexus-release/release-control-plane-inputs.json"
+  module="$candidate/scripts/lib/release-control-plane.mjs"
+  if { test -e "$descriptor" || test -L "$descriptor"; } \
+      || { test -e "$module" || test -L "$module"; }; then
+    test -f "$descriptor" && test ! -L "$descriptor" \
+      && test -f "$module" && test ! -L "$module" \
+      || die 'immutable candidate has a partial signed control-plane identity pair'
+    /usr/bin/node --input-type=module - "$candidate" <<'NODE'
+import { createRequire } from 'node:module';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+const root = process.argv[2];
+if (process.version !== 'v22.23.1') process.exit(10);
+const { computeReleaseControlPlaneIdentity } = await import(pathToFileURL(
+  join(root, 'scripts/lib/release-control-plane.mjs'),
+));
+const identity = computeReleaseControlPlaneIdentity(root, { runtimeVersion: '22.23.1' });
+const require = createRequire(join(root, 'package.json'));
+const Database = require('better-sqlite3');
+const database = new Database(':memory:');
+database.prepare('SELECT 1').get();
+database.close();
+process.stdout.write(`${identity.schema} ${identity.digest}\n`);
+NODE
+  else
+    test "$CONTROL_PLANE_MODE" = rollback \
+      || die 'new controller candidate lacks its signed control-plane identity'
+    printf 'nexus.control-plane-tree.v1 %s\n' "$candidate_digest"
+  fi
+}
+
+require_installed_backup_verifier_pair() {
+  local candidate
+  candidate="$1"
+  if test -e "$candidate/scripts/release-installed-backup-interface-check.mjs" \
+      || test -L "$candidate/scripts/release-installed-backup-interface-check.mjs" \
+      || test -e "$candidate/scripts/lib/release-installed-backup-interface.mjs" \
+      || test -L "$candidate/scripts/lib/release-installed-backup-interface.mjs"; then
+    test -f "$candidate/scripts/release-installed-backup-interface-check.mjs" \
+      && test ! -L "$candidate/scripts/release-installed-backup-interface-check.mjs" \
+      && test -f "$candidate/scripts/lib/release-installed-backup-interface.mjs" \
+      && test ! -L "$candidate/scripts/lib/release-installed-backup-interface.mjs" \
+      || die 'immutable candidate has a partial installed-backup verifier'
+  else
+    test "$CONTROL_PLANE_MODE" = rollback \
+      || die 'new controller candidate lacks its installed-backup verifier'
+  fi
+}
+
+candidate_liveness_pair_state() {
+  local candidate force launcher service timer
+  candidate="$1"
+  launcher="$candidate/scripts/release-backup-liveness-launcher.sh"
+  force="$candidate/ops/nexus-release/nexus-release-backup-liveness-force.service"
+  service="$candidate/ops/nexus-release/nexus-release-backup-liveness.service"
+  timer="$candidate/ops/nexus-release/nexus-release-backup-liveness.timer"
+  if { test -e "$launcher" || test -L "$launcher"; } \
+      || { test -e "$force" || test -L "$force"; } \
+      || { test -e "$service" || test -L "$service"; } \
+      || { test -e "$timer" || test -L "$timer"; }; then
+    test -f "$launcher" && test ! -L "$launcher" \
+      && test "$(stat -Lc '%U:%G:%a:%h' -- "$launcher")" = root:root:555:1 \
+      && test -f "$service" && test ! -L "$service" \
+      && test "$(stat -Lc '%U:%G:%a:%h' -- "$service")" = root:root:444:1 \
+      && test -f "$force" && test ! -L "$force" \
+      && test "$(stat -Lc '%U:%G:%a:%h' -- "$force")" = root:root:444:1 \
+      && test -f "$timer" && test ! -L "$timer" \
+      && test "$(stat -Lc '%U:%G:%a:%h' -- "$timer")" = root:root:444:1 \
+      || die 'immutable candidate has a partial or unsafe backup-liveness unit set'
+    printf 'present\n'
+  else
+    printf 'absent\n'
+  fi
+}
+
+candidate_post_gate_guards_state() {
+  local absent candidate full legacy exists_guard symlink_guard unit
+  candidate="$1"; absent=0; full=0; legacy=0
+  for unit in nexus-release-bootstrap.service nexus-release-poller.service; do
+    exists_guard=0; symlink_guard=0
+    if grep -Fx \
+        'ConditionPathExists=!/var/lib/nexus-release/state/control-plane-post-gate.json' \
+        "$candidate/ops/nexus-release/$unit" >/dev/null; then
+      exists_guard=1
+    fi
+    if grep -Fx \
+        'ConditionPathIsSymbolicLink=!/var/lib/nexus-release/state/control-plane-post-gate.json' \
+        "$candidate/ops/nexus-release/$unit" >/dev/null; then
+      symlink_guard=1
+    fi
+    if test "$exists_guard:$symlink_guard" = 1:1; then
+      full=$((full + 1))
+    elif test "$exists_guard:$symlink_guard" = 1:0; then
+      legacy=$((legacy + 1))
+    elif test "$exists_guard:$symlink_guard" = 0:0; then
+      absent=$((absent + 1))
+    else
+      die "immutable candidate has an unpaired post-gate workload guard: $unit"
+    fi
+  done
+  case "$full:$legacy:$absent" in
+    2:0:0) printf 'present\n' ;;
+    0:2:0) printf 'legacy\n' ;;
+    0:0:2) printf 'absent\n' ;;
+    *) die 'immutable candidate has a partial post-gate workload guard' ;;
+  esac
+}
+
+candidate_transaction_guards_state() {
+  local candidate expected liveness_state symlink_count unit
+  candidate="$1"; expected=3; symlink_count=0
+  for unit in nexus-release-bootstrap.service nexus-release-poller.service \
+    nexus-release-heartbeat.service; do
+    grep -Fx \
+      'ConditionPathExists=!/var/lib/nexus-release/state/control-plane-transaction.json' \
+      "$candidate/ops/nexus-release/$unit" >/dev/null \
+      || die "candidate unit lacks the durable transaction gate: $unit"
+    if grep -Fx \
+        'ConditionPathIsSymbolicLink=!/var/lib/nexus-release/state/control-plane-transaction.json' \
+        "$candidate/ops/nexus-release/$unit" >/dev/null; then
+      symlink_count=$((symlink_count + 1))
+    fi
+  done
+  liveness_state="$(candidate_liveness_pair_state "$candidate")"
+  if test "$liveness_state" = present; then
+    expected=5
+    for unit in nexus-release-backup-liveness-force.service \
+      nexus-release-backup-liveness.service; do
+      grep -Fx \
+        'ConditionPathExists=!/var/lib/nexus-release/state/control-plane-transaction.json' \
+        "$candidate/ops/nexus-release/$unit" >/dev/null \
+        || die "candidate backup-liveness service lacks the durable transaction gate: $unit"
+      if grep -Fx \
+          'ConditionPathIsSymbolicLink=!/var/lib/nexus-release/state/control-plane-transaction.json' \
+          "$candidate/ops/nexus-release/$unit" >/dev/null; then
+        symlink_count=$((symlink_count + 1))
+      fi
+    done
+  fi
+  if test "$symlink_count" -eq "$expected"; then
+    printf 'present\n'
+  elif test "$symlink_count" -eq 0; then
+    printf 'legacy\n'
+  else
+    die 'immutable candidate has partial transaction symlink guards'
+  fi
+}
+
 require_immutable_candidate() {
-  local calculated candidate expected_digest recorded relative unit
+  local calculated candidate expected_digest liveness_state post_gate_state \
+    recorded relative transaction_guard_state unit
   candidate="$1"; expected_digest="${2:-}"
   test -d "$candidate" && test ! -L "$candidate" \
     || die "immutable candidate is absent or symbolic: $candidate"
@@ -932,12 +1569,18 @@ require_immutable_candidate() {
     test -f "$candidate/$relative" && test ! -L "$candidate/$relative" \
       || die "critical immutable candidate path is absent or symbolic: $relative"
   done
-  for unit in nexus-release-bootstrap.service nexus-release-poller.service \
-    nexus-release-heartbeat.service; do
-    grep -Fx 'ConditionPathExists=!/var/lib/nexus-release/state/control-plane-transaction.json' \
-      "$candidate/ops/nexus-release/$unit" >/dev/null \
-      || die "candidate unit lacks the durable transaction gate: $unit"
-  done
+  require_installed_backup_verifier_pair "$candidate"
+  liveness_state="$(candidate_liveness_pair_state "$candidate")"
+  post_gate_state="$(candidate_post_gate_guards_state "$candidate")"
+  transaction_guard_state="$(candidate_transaction_guards_state "$candidate")"
+  if test "$CONTROL_PLANE_MODE" != rollback; then
+    test "$liveness_state" = present \
+      || die 'new controller candidate lacks its backup-liveness unit set'
+    test "$post_gate_state" = present \
+      || die 'new controller candidate lacks its post-gate workload guards'
+    test "$transaction_guard_state" = present \
+      || die 'new controller candidate lacks transaction symlink guards'
+  fi
   /usr/bin/node --input-type=module -e "
     import { createRequire } from 'node:module';
     if (process.version !== 'v22.23.1') process.exit(10);
@@ -950,6 +1593,11 @@ require_immutable_candidate() {
     await import('file://$candidate/scripts/lib/release-environment.mjs');
     await import('file://$candidate/scripts/lib/release-protected-head.mjs');
   " || die 'immutable candidate Node/native proof failed'
+  if test -f "$candidate/scripts/lib/release-installed-backup-interface.mjs"; then
+    /usr/bin/node --input-type=module -e \
+      "await import('file://$candidate/scripts/lib/release-installed-backup-interface.mjs')" \
+      || die 'immutable candidate installed-backup verifier import failed'
+  fi
 }
 
 read_timer_bits() {
@@ -972,6 +1620,38 @@ read_timer_bits() {
   printf '%s %s\n' "$active" "$unit_file_state"
 }
 
+read_timer_bits_or_absent() {
+  local active fragment load_state unit
+  unit="$1"
+  load_state="$(systemctl show --property=LoadState --value "$unit")" \
+    || die "cannot read timer load state: $unit"
+  if test "$load_state" = loaded; then
+    read_timer_bits "$unit"
+    return
+  fi
+  active="$(systemctl show --property=ActiveState --value "$unit")" \
+    || die "cannot read absent timer active state: $unit"
+  fragment="$(systemctl show --property=FragmentPath --value "$unit")" \
+    || die "cannot read absent timer fragment: $unit"
+  test "$load_state" = not-found && test "$active" = inactive && test -z "$fragment" \
+    || die "timer is neither exactly loaded nor exactly absent: $unit"
+  printf '0 0\n'
+}
+
+disable_timer_if_present() {
+  local load_state unit
+  unit="$1"
+  load_state="$(systemctl show --property=LoadState --value "$unit")" || return 1
+  case "$load_state" in
+    loaded) systemctl disable --now "$unit" ;;
+    not-found)
+      test "$(systemctl show --property=ActiveState --value "$unit")" = inactive \
+        && test -z "$(systemctl show --property=FragmentPath --value "$unit")"
+      ;;
+    *) return 1 ;;
+  esac
+}
+
 require_no_physical_unit_dropins() {
   local dropin_name unit_path unit_paths_output
   if ! unit_paths_output="$(/usr/bin/env -i PATH=/usr/bin:/bin \
@@ -985,6 +1665,9 @@ require_no_physical_unit_dropins() {
       nexus-release-bootstrap.service.d nexus-release-poller.service.d \
       nexus-release-poller.timer.d nexus-release-heartbeat.service.d \
       nexus-release-heartbeat.timer.d \
+      nexus-release-backup-liveness-force.service.d \
+      nexus-release-backup-liveness.service.d \
+      nexus-release-backup-liveness.timer.d \
       nexus-release-.service.d nexus-.service.d service.d \
       nexus-release-.timer.d nexus-.timer.d timer.d; do
       test ! -e "$unit_path/$dropin_name" && test ! -L "$unit_path/$dropin_name" \
@@ -1004,14 +1687,18 @@ require_initial_no_authority() {
     case "$unit_path" in /*) ;; *) die "systemd returned a relative unit path: $unit_path" ;; esac
     for unit in nexus-release-bootstrap.service nexus-release-poller.service \
       nexus-release-poller.timer nexus-release-heartbeat.service \
-      nexus-release-heartbeat.timer; do
+      nexus-release-heartbeat.timer nexus-release-backup-liveness-force.service \
+      nexus-release-backup-liveness.service \
+      nexus-release-backup-liveness.timer; do
       test ! -e "$unit_path/$unit" && test ! -L "$unit_path/$unit" \
         || die "initial mode found physical release-unit definition: $unit_path/$unit"
     done
   done <<<"$unit_paths_output"
   for unit in nexus-release-bootstrap.service nexus-release-poller.service \
     nexus-release-poller.timer nexus-release-heartbeat.service \
-    nexus-release-heartbeat.timer; do
+    nexus-release-heartbeat.timer nexus-release-backup-liveness-force.service \
+    nexus-release-backup-liveness.service \
+    nexus-release-backup-liveness.timer; do
     if ! load_state="$(systemctl show --property=LoadState --value "$unit")"; then
       die "cannot read initial release-unit load state: $unit"
     fi
@@ -1030,7 +1717,108 @@ require_initial_no_authority() {
   done
 }
 
-require_exact_effective_systemd_units() {
+require_initial_no_backup_authority() {
+  local active dropin fragment load_state path unit
+  for path in \
+    /usr/local/libexec/nexus-local-backup/local-backup.py \
+    /etc/sudoers.d/nexus-local-backup \
+    /etc/systemd/system/nexus-local-backup.service \
+    /etc/systemd/system/nexus-local-backup.timer \
+    /etc/systemd/system/nexus-local-backup-pre-promotion.service \
+    /etc/systemd/system/nexus-local-backup-restore-verify.service \
+    /etc/systemd/system/nexus-local-backup-restore-verify.timer; do
+    test ! -e "$path" && test ! -L "$path" \
+      || die "initial mode found installed local-backup authority: $path"
+  done
+  for unit in nexus-local-backup.service nexus-local-backup.timer \
+    nexus-local-backup-pre-promotion.service \
+    nexus-local-backup-restore-verify.service \
+    nexus-local-backup-restore-verify.timer; do
+    load_state="$(systemctl show --property=LoadState --value "$unit")"
+    active="$(systemctl show --property=ActiveState --value "$unit")"
+    fragment="$(systemctl show --property=FragmentPath --value "$unit")"
+    dropin="$(systemctl show --property=DropInPaths --value "$unit")"
+    test "$load_state" = not-found && test "$active" = inactive \
+      && test -z "$fragment" && test -z "$dropin" \
+      || die "initial mode found effective local-backup authority: $unit"
+  done
+}
+
+installed_liveness_pair_state() {
+  local allow_partial force service timer unit_path
+  allow_partial="${1:-0}"
+  force=/etc/systemd/system/nexus-release-backup-liveness-force.service
+  service=/etc/systemd/system/nexus-release-backup-liveness.service
+  timer=/etc/systemd/system/nexus-release-backup-liveness.timer
+  if { test ! -e "$force" && test ! -L "$force"; } \
+      && { test ! -e "$service" && test ! -L "$service"; } \
+      && { test ! -e "$timer" && test ! -L "$timer"; }; then
+    printf 'absent\n'
+    return
+  fi
+  if test -f "$force" && test ! -L "$force" \
+      && test "$(stat -Lc '%U:%G:%a:%h' -- "$force")" = root:root:644:1 \
+      && test -f "$service" && test ! -L "$service" \
+      && test "$(stat -Lc '%U:%G:%a:%h' -- "$service")" = root:root:644:1 \
+      && test -f "$timer" && test ! -L "$timer" \
+      && test "$(stat -Lc '%U:%G:%a:%h' -- "$timer")" = root:root:644:1; then
+    printf 'present\n'
+    return
+  fi
+  if test "$allow_partial" -eq 1; then
+    for unit_path in "$force" "$service" "$timer"; do
+      if test -e "$unit_path" || test -L "$unit_path"; then
+        test -f "$unit_path" && test ! -L "$unit_path" \
+          && test "$(stat -Lc '%U:%G:%a:%h' -- "$unit_path")" = root:root:644:1 \
+          || die "installed backup-liveness transition unit is unsafe: $unit_path"
+      fi
+    done
+    printf 'partial\n'
+    return
+  fi
+  die 'installed backup-liveness unit set is partial or unsafe'
+}
+
+require_selected_liveness_interface() {
+  local active candidate_state dropin fragment installed_state load_state unit
+  active="$1"
+  candidate_state="$(candidate_liveness_pair_state "$active")"
+  installed_state="$(installed_liveness_pair_state)"
+  if test "$candidate_state" = present; then
+    test "$installed_state" = present \
+      || die 'selected controller backup-liveness unit set is not installed'
+    for unit in nexus-release-backup-liveness-force.service \
+      nexus-release-backup-liveness.service \
+      nexus-release-backup-liveness.timer; do
+      cmp -s -- "$active/ops/nexus-release/$unit" "/etc/systemd/system/$unit" \
+        || die "installed backup-liveness unit differs from selected controller: $unit"
+      load_state="$(systemctl show "$unit" --property=LoadState --value)"
+      fragment="$(systemctl show "$unit" --property=FragmentPath --value)"
+      dropin="$(systemctl show "$unit" --property=DropInPaths --value)"
+      test "$load_state" = loaded \
+        && test "$fragment" = "/etc/systemd/system/$unit" \
+        && test -z "$dropin" \
+        && test "$(systemctl show "$unit" --property=NeedDaemonReload --value)" = no \
+        || die "effective backup-liveness unit is not exact: $unit"
+    done
+  else
+    test "$installed_state" = absent \
+      || die 'retained controller unexpectedly has installed backup-liveness units'
+    for unit in nexus-release-backup-liveness-force.service \
+      nexus-release-backup-liveness.service \
+      nexus-release-backup-liveness.timer; do
+      load_state="$(systemctl show "$unit" --property=LoadState --value)"
+      fragment="$(systemctl show "$unit" --property=FragmentPath --value)"
+      dropin="$(systemctl show "$unit" --property=DropInPaths --value)"
+      test "$load_state" = not-found \
+        && test "$(systemctl show "$unit" --property=ActiveState --value)" = inactive \
+        && test -z "$fragment" && test -z "$dropin" \
+        || die "retained controller has effective backup-liveness authority: $unit"
+    done
+  fi
+}
+
+require_exact_effective_core_systemd_units() {
   local dropin fragment load_state unit
   for unit in nexus-release-bootstrap.service nexus-release-poller.service \
     nexus-release-poller.timer nexus-release-heartbeat.service \
@@ -1051,9 +1839,18 @@ require_exact_effective_systemd_units() {
   done
 }
 
+require_exact_effective_systemd_units() {
+  local active
+  require_exact_effective_core_systemd_units
+  active="$(selector_or_absent "$ACTIVE_LINK")"
+  test -n "$active" || die 'effective release-unit proof has no active controller'
+  require_selected_liveness_interface "$active"
+}
+
 require_control_plane_services_settled() {
-  local active load_state require_loaded unit
+  local active allow_transition_partial liveness_state load_state require_loaded unit
   require_loaded="${1:-0}"
+  allow_transition_partial="${2:-0}"
   for unit in nexus-release-poller.service nexus-release-bootstrap.service \
     nexus-release-heartbeat.service; do
     if ! load_state="$(systemctl show --property=LoadState --value "$unit")"; then
@@ -1071,10 +1868,118 @@ require_control_plane_services_settled() {
       *) die "root control-plane service is not settled: $unit ($load_state/$active)" ;;
     esac
   done
+  liveness_state="$(installed_liveness_pair_state "$allow_transition_partial")"
+  for unit in nexus-release-backup-liveness-force.service \
+    nexus-release-backup-liveness.service; do
+    load_state="$(systemctl show "$unit" --property=LoadState --value)"
+    active="$(systemctl show "$unit" --property=ActiveState --value)"
+    if test "$liveness_state" = present; then
+      case "$load_state:$active" in loaded:inactive|loaded:failed) ;;
+        *) die "backup-liveness service is not settled: $unit ($load_state/$active)" ;; esac
+    elif test "$liveness_state" = partial; then
+      case "$load_state:$active" in
+        loaded:inactive|loaded:failed|not-found:inactive) ;;
+        *) die "transition backup-liveness service is not settled: $unit ($load_state/$active)" ;;
+      esac
+    else
+      test "$load_state:$active" = not-found:inactive \
+        || die "absent backup-liveness service is not settled: $unit ($load_state/$active)"
+    fi
+  done
+}
+
+require_poller_service_clean() {
+  local active exec_status load_state result unit
+  unit=nexus-release-poller.service
+  load_state="$(systemctl show "$unit" --property=LoadState --value)"
+  active="$(systemctl show "$unit" --property=ActiveState --value)"
+  result="$(systemctl show "$unit" --property=Result --value)"
+  exec_status="$(systemctl show "$unit" --property=ExecMainStatus --value)"
+  test "$load_state:$active:$result:$exec_status" = loaded:inactive:success:0 \
+    || die "poller service is not clean before authority restoration: $load_state/$active/$result/$exec_status"
+}
+
+require_local_backup_services_settled() {
+  local active fragment load_state unit
+  for unit in nexus-local-backup.service \
+    nexus-local-backup-pre-promotion.service \
+    nexus-local-backup-restore-verify.service; do
+    load_state="$(systemctl show --property=LoadState --value "$unit")" \
+      || die "cannot read local-backup service load state: $unit"
+    active="$(systemctl show --property=ActiveState --value "$unit")" \
+      || die "cannot read local-backup service active state: $unit"
+    fragment="$(systemctl show --property=FragmentPath --value "$unit")" \
+      || die "cannot read local-backup service fragment: $unit"
+    case "$load_state:$active" in
+      loaded:inactive) test -n "$fragment" ;;
+      not-found:inactive) test -z "$fragment" ;;
+      *) false ;;
+    esac || die "local-backup service is not settled: $unit ($load_state/$active)"
+  done
+}
+
+verify_installed_backup_interface() {
+  local active_root destination destination_mode source source_mode spec unit
+  active_root="$(selector_or_absent "$ACTIVE_LINK")"
+  test "$active_root" = "$TARGET" \
+    || die 'installed local-backup proof is not using the transaction target'
+  for spec in \
+    'scripts/local-backup.py|/usr/local/libexec/nexus-local-backup/local-backup.py|555|755' \
+    'ops/local-backup/systemd/nexus-local-backup.service|/etc/systemd/system/nexus-local-backup.service|444|644' \
+    'ops/local-backup/systemd/nexus-local-backup.timer|/etc/systemd/system/nexus-local-backup.timer|444|644' \
+    'ops/local-backup/systemd/nexus-local-backup-pre-promotion.service|/etc/systemd/system/nexus-local-backup-pre-promotion.service|444|644' \
+    'ops/local-backup/systemd/nexus-local-backup-restore-verify.service|/etc/systemd/system/nexus-local-backup-restore-verify.service|444|644' \
+    'ops/local-backup/systemd/nexus-local-backup-restore-verify.timer|/etc/systemd/system/nexus-local-backup-restore-verify.timer|444|644' \
+    'ops/local-backup/nexus-local-backup.sudoers|/etc/sudoers.d/nexus-local-backup|444|440'; do
+    IFS='|' read -r source destination source_mode destination_mode <<<"$spec"
+    source="$active_root/$source"
+    test -f "$source" && test ! -L "$source" \
+      && test "$(stat -Lc '%U:%G:%a:%h' -- "$source")" = \
+        "root:root:$source_mode:1" \
+      || die "governed immutable local-backup source is unsafe: $source"
+    test -f "$destination" && test ! -L "$destination" \
+      && test "$(stat -Lc '%U:%G:%a:%h' -- "$destination")" = \
+        "root:root:$destination_mode:1" \
+      && cmp -s -- "$source" "$destination" \
+      || die "installed local-backup authority differs from source: $destination"
+  done
+  /usr/sbin/visudo -cf /etc/sudoers.d/nexus-local-backup >/dev/null \
+    || die 'installed local-backup sudoers policy is invalid'
+  for unit in nexus-local-backup.service nexus-local-backup.timer \
+    nexus-local-backup-pre-promotion.service \
+    nexus-local-backup-restore-verify.service \
+    nexus-local-backup-restore-verify.timer; do
+    test "$(systemctl show "$unit" --property=LoadState --value)" = loaded \
+      && test "$(systemctl show "$unit" --property=FragmentPath --value)" = \
+        "/etc/systemd/system/$unit" \
+      && test -z "$(systemctl show "$unit" --property=DropInPaths --value)" \
+      && test "$(systemctl show "$unit" --property=NeedDaemonReload --value)" = no \
+      || die "installed local-backup effective unit is not exact: $unit"
+  done
+  # Exact unit-byte binding above also binds each governed ExecStopPost. New
+  # controllers add the descriptor-safe verifier; a retained older rollback
+  # target is accepted only through this equivalent inline proof.
+  if test -f "$active_root/scripts/release-installed-backup-interface-check.mjs" \
+      && test ! -L "$active_root/scripts/release-installed-backup-interface-check.mjs"; then
+    /usr/bin/env -i PATH=/usr/bin:/bin HOME=/var/lib/nexus-release/home \
+      /usr/bin/node \
+      /opt/nexus-release/checkout/scripts/release-installed-backup-interface-check.mjs \
+      >/dev/null \
+      || die 'installed local-backup checker refused the active controller'
+  else
+    test "$CONTROL_PLANE_MODE" = rollback \
+      || die 'installed local-backup checker is absent outside rollback'
+  fi
 }
 
 require_installed_transaction_gate() {
-  local unit
+  local active allow_transition_partial liveness_state post_gate_state \
+    transaction_guard_state unit
+  allow_transition_partial="${1:-0}"
+  active="$(selector_or_absent "$ACTIVE_LINK")"
+  test -n "$active" || die 'transaction-gate proof has no selected controller'
+  post_gate_state="$(candidate_post_gate_guards_state "$active")"
+  transaction_guard_state="$(candidate_transaction_guards_state "$active")"
   for unit in nexus-release-bootstrap.service nexus-release-poller.service \
     nexus-release-heartbeat.service; do
     test -f "/etc/systemd/system/$unit" && test ! -L "/etc/systemd/system/$unit" \
@@ -1084,7 +1989,55 @@ require_installed_transaction_gate() {
     grep -Fx 'ConditionPathExists=!/var/lib/nexus-release/state/control-plane-transaction.json' \
       "/etc/systemd/system/$unit" >/dev/null \
       || die "installed service cannot honor the durable transaction gate: $unit"
+    if test "$transaction_guard_state" = present \
+        && test "$allow_transition_partial" -eq 0; then
+      grep -Fx \
+        'ConditionPathIsSymbolicLink=!/var/lib/nexus-release/state/control-plane-transaction.json' \
+        "/etc/systemd/system/$unit" >/dev/null \
+        || die "installed service cannot honor a symbolic transaction gate: $unit"
+    fi
   done
+  if test "$post_gate_state" = present; then
+    if test "$allow_transition_partial" -eq 0; then
+      for unit in nexus-release-bootstrap.service nexus-release-poller.service; do
+        grep -Fx \
+          'ConditionPathExists=!/var/lib/nexus-release/state/control-plane-post-gate.json' \
+          "/etc/systemd/system/$unit" >/dev/null \
+          || die "installed service cannot honor the post-gate journal: $unit"
+        grep -Fx \
+          'ConditionPathIsSymbolicLink=!/var/lib/nexus-release/state/control-plane-post-gate.json' \
+          "/etc/systemd/system/$unit" >/dev/null \
+          || die "installed service cannot honor a symbolic post-gate journal: $unit"
+      done
+    fi
+  elif test "$post_gate_state" = absent; then
+    test "$CONTROL_PLANE_MODE" = rollback \
+      || die 'selected controller lacks post-gate guards outside rollback'
+  elif test "$post_gate_state" != legacy; then
+    die 'selected controller post-gate guard state is unsupported'
+  fi
+  liveness_state="$(installed_liveness_pair_state "$allow_transition_partial")"
+  if test "$liveness_state" = present || test "$liveness_state" = partial; then
+    for unit in nexus-release-backup-liveness-force.service \
+      nexus-release-backup-liveness.service; do
+      if test "$liveness_state" = partial \
+          && test ! -e "/etc/systemd/system/$unit" \
+          && test ! -L "/etc/systemd/system/$unit"; then
+        continue
+      fi
+      grep -Fx \
+        'ConditionPathExists=!/var/lib/nexus-release/state/control-plane-transaction.json' \
+        "/etc/systemd/system/$unit" >/dev/null \
+        || die "installed backup-liveness service cannot honor the transaction gate: $unit"
+      if test "$transaction_guard_state" = present \
+          && test "$allow_transition_partial" -eq 0; then
+        grep -Fx \
+          'ConditionPathIsSymbolicLink=!/var/lib/nexus-release/state/control-plane-transaction.json' \
+          "/etc/systemd/system/$unit" >/dev/null \
+          || die "installed backup-liveness service cannot honor a symbolic transaction gate: $unit"
+      fi
+    done
+  fi
 }
 
 selector_or_absent() {
@@ -1124,9 +2077,11 @@ publish_selector() {
 }
 
 install_atomic_root_file() {
-  local destination expected mode source stage
+  local ancestor_identity destination expected mode source stage
   source="$1"; destination="$2"; mode="$3"; stage="$destination.next-control-plane"
   expected="root:root:$mode:1"
+  ancestor_identity="$(trusted_destination_ancestor_identity "$destination")" \
+    || die "installed control-plane ancestor is unsafe: $destination"
   if test -e "$destination" || test -L "$destination"; then
     test -f "$destination" && test ! -L "$destination" \
       && test "$(stat -Lc '%U:%G:%a:%h' -- "$destination")" = "$expected" \
@@ -1155,11 +2110,18 @@ install_atomic_root_file() {
   test "$(stat -Lc '%U:%G:%a:%h' -- "$destination")" = "$expected" \
     && cmp -s -- "$source" "$destination" \
     || die "atomic control-plane file publication failed: $destination"
+  test "$(trusted_destination_ancestor_identity "$destination")" = \
+      "$ancestor_identity" \
+    || die "installed control-plane ancestor changed: $destination"
 }
 
 prove_installed_control_plane() {
-  local active unit
+  local active capability_ancestors unit
   active="$1"
+  capability_ancestors="$(trusted_destination_ancestor_identity \
+    /usr/local/sbin/nexus-release-state-view \
+    /etc/sudoers.d/nexus-release-state-view)" \
+    || die 'installed capability ancestor proof failed'
   test "$(stat -Lc '%U:%G:%a:%h' -- /usr/local/sbin/nexus-release-state-view)" \
     = root:root:755:1 \
     && cmp -s -- "$active/ops/nexus-release/nexus-release-state-view" \
@@ -1172,6 +2134,9 @@ prove_installed_control_plane() {
     || die 'installed state-view sudoers rule differs from the selected candidate'
   /usr/sbin/visudo -cf /etc/sudoers.d/nexus-release-state-view >/dev/null \
     || die 'installed state-view sudoers rule is invalid'
+  /usr/bin/sudo -u dominguez /usr/bin/sudo -n \
+    /usr/local/sbin/nexus-release-state-view >/dev/null \
+    || die 'installed delegated state-view proof failed'
   for unit in nexus-release-bootstrap.service nexus-release-poller.service \
     nexus-release-poller.timer nexus-release-heartbeat.service \
     nexus-release-heartbeat.timer; do
@@ -1179,10 +2144,16 @@ prove_installed_control_plane() {
       && cmp -s -- "$active/ops/nexus-release/$unit" "/etc/systemd/system/$unit" \
       || die "installed unit differs from selected candidate: $unit"
   done
+  require_selected_liveness_interface "$active"
+  test "$(trusted_destination_ancestor_identity \
+    /usr/local/sbin/nexus-release-state-view \
+    /etc/sudoers.d/nexus-release-state-view)" = "$capability_ancestors" \
+    || die 'installed capability ancestor identity changed'
 }
 
 require_installed_transition_bytes() {
-  local destination entry incoming mode outgoing relative unit
+  local destination entry incoming incoming_liveness mode outgoing \
+    outgoing_liveness relative unit
   outgoing="$1"; incoming="$2"
   for entry in \
     'ops/nexus-release/nexus-release-state-view:/usr/local/sbin/nexus-release-state-view:755' \
@@ -1206,20 +2177,107 @@ require_installed_transition_bytes() {
         || cmp -s -- "$incoming/ops/nexus-release/$unit" "$destination"; } \
       || die "installed transition unit differs from both durable versions: $unit"
   done
+  outgoing_liveness="$(candidate_liveness_pair_state "$outgoing")"
+  incoming_liveness="$(candidate_liveness_pair_state "$incoming")"
+  for unit in nexus-release-backup-liveness-force.service \
+    nexus-release-backup-liveness.service \
+    nexus-release-backup-liveness.timer; do
+    destination="/etc/systemd/system/$unit"
+    if test -e "$destination" || test -L "$destination"; then
+      test -f "$destination" && test ! -L "$destination" \
+        && test "$(stat -Lc '%U:%G:%a:%h' -- "$destination")" = root:root:644:1 \
+        && { { test "$outgoing_liveness" = present \
+              && cmp -s -- "$outgoing/ops/nexus-release/$unit" "$destination"; } \
+          || { test "$incoming_liveness" = present \
+              && cmp -s -- "$incoming/ops/nexus-release/$unit" "$destination"; }; } \
+        || die "installed liveness transition unit is unsafe or unknown: $unit"
+    else
+      test "$outgoing_liveness" = absent || test "$incoming_liveness" = absent \
+        || die "installed liveness transition unit disappeared: $unit"
+    fi
+  done
+}
+
+require_installed_initial_transition_bytes() {
+  local destination entry incoming mode relative unit
+  incoming="$1"
+  for entry in \
+    'ops/nexus-release/nexus-release-state-view:/usr/local/sbin/nexus-release-state-view:755' \
+    'ops/nexus-release/nexus-release-state-view.sudoers:/etc/sudoers.d/nexus-release-state-view:440'; do
+    IFS=: read -r relative destination mode <<<"$entry"
+    if test -e "$destination" || test -L "$destination"; then
+      test -f "$destination" && test ! -L "$destination" \
+        && test "$(stat -Lc '%U:%G:%a:%h' -- "$destination")" = "root:root:$mode:1" \
+        && cmp -s -- "$incoming/$relative" "$destination" \
+        || die "initial transition file differs from its durable candidate: $destination"
+    fi
+  done
+  if test -e /etc/sudoers.d/nexus-release-state-view; then
+    /usr/sbin/visudo -cf /etc/sudoers.d/nexus-release-state-view >/dev/null \
+      || die 'initial transition sudoers rule is invalid'
+  fi
+  for unit in nexus-release-bootstrap.service nexus-release-poller.service \
+    nexus-release-poller.timer nexus-release-heartbeat.service \
+    nexus-release-heartbeat.timer nexus-release-backup-liveness-force.service \
+    nexus-release-backup-liveness.service \
+    nexus-release-backup-liveness.timer; do
+    destination="/etc/systemd/system/$unit"
+    if test -e "$destination" || test -L "$destination"; then
+      test -f "$destination" && test ! -L "$destination" \
+        && test "$(stat -Lc '%U:%G:%a:%h' -- "$destination")" = root:root:644:1 \
+        && cmp -s -- "$incoming/ops/nexus-release/$unit" "$destination" \
+        || die "initial transition unit differs from its durable candidate: $unit"
+    fi
+  done
+}
+
+remove_installed_liveness_for_absent_target() {
+  local destination installed_path outgoing outgoing_state stage unit
+  outgoing="$1"
+  outgoing_state="$(candidate_liveness_pair_state "$outgoing")"
+  for unit in nexus-release-backup-liveness-force.service \
+    nexus-release-backup-liveness.service \
+    nexus-release-backup-liveness.timer; do
+    destination="/etc/systemd/system/$unit"
+    stage="$destination.next-control-plane"
+    for installed_path in "$destination" "$stage"; do
+      if test -e "$installed_path" || test -L "$installed_path"; then
+        test "$outgoing_state" = present \
+          && test -f "$installed_path" && test ! -L "$installed_path" \
+          && test "$(stat -Lc '%U:%G:%a:%h' -- "$installed_path")" = root:root:644:1 \
+          && cmp -s -- "$outgoing/ops/nexus-release/$unit" "$installed_path" \
+          || die "rollback liveness removal path is unsafe or unknown: $installed_path"
+        rm -f -- "$installed_path"
+        sync -f /etc/systemd/system
+      fi
+    done
+  done
 }
 
 publish_transaction_phase() {
   local local_record phase
   phase="$1"; local_record="$(mktemp)"
-  jq -cn --arg candidateDigest "$CANDIDATE_DIGEST" \
+  jq -cn --argjson backupTimerWasActive "$BACKUP_TIMER_WAS_ACTIVE" \
+    --argjson backupTimerWasEnabled "$BACKUP_TIMER_WAS_ENABLED" \
+    --arg candidateDigest "$CANDIDATE_DIGEST" \
+    --arg controlPlaneDigest "$CONTROL_PLANE_DIGEST" \
+    --arg controlPlaneSchema "$CONTROL_PLANE_SCHEMA" \
     --arg createdAt "$TRANSACTION_CREATED_AT" --arg expectedMarker "$EXPECTED_MARKER" \
     --argjson heartbeatTimerWasActive "$HEARTBEAT_TIMER_WAS_ACTIVE" \
     --argjson heartbeatTimerWasEnabled "$HEARTBEAT_TIMER_WAS_ENABLED" \
+    --argjson livenessTimerDesiredActive "$LIVENESS_TIMER_DESIRED_ACTIVE" \
+    --argjson livenessTimerDesiredEnabled "$LIVENESS_TIMER_DESIRED_ENABLED" \
+    --argjson livenessTimerWasActive "$LIVENESS_TIMER_WAS_ACTIVE" \
+    --argjson livenessTimerWasEnabled "$LIVENESS_TIMER_WAS_ENABLED" \
     --arg mode "$CONTROL_PLANE_MODE" --arg operation "$TRANSACTION_OPERATION" \
     --arg originalActivePath "$ORIGINAL_ACTIVE_PATH" \
     --arg originalPreviousPath "$ORIGINAL_PREVIOUS_PATH" --arg phase "$phase" \
+    --argjson pollerTimerDesiredActive "$POLLER_TIMER_DESIRED_ACTIVE" \
+    --argjson pollerTimerDesiredEnabled "$POLLER_TIMER_DESIRED_ENABLED" \
     --argjson pollerTimerWasActive "$POLLER_TIMER_WAS_ACTIVE" \
     --argjson pollerTimerWasEnabled "$POLLER_TIMER_WAS_ENABLED" \
+    --argjson restoreVerifyTimerWasActive "$RESTORE_VERIFY_TIMER_WAS_ACTIVE" \
+    --argjson restoreVerifyTimerWasEnabled "$RESTORE_VERIFY_TIMER_WAS_ENABLED" \
     --arg sourceRepository "$SOURCE_REPOSITORY" --arg stageIdentity "$STAGE_IDENTITY" \
     --arg stagePath "$RECORDED_STAGE_PATH" --arg targetPath "$TARGET" \
     --arg targetSha "$SOURCE_SHA" --arg updatedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
@@ -1227,12 +2285,23 @@ publish_transaction_phase() {
        targetSha:$targetSha,sourceRepository:$sourceRepository,
        expectedMarker:$expectedMarker,targetPath:$targetPath,
        stagePath:$stagePath,stageIdentity:$stageIdentity,
-       candidateDigest:$candidateDigest,originalActivePath:$originalActivePath,
+       candidateDigest:$candidateDigest,controlPlaneSchema:$controlPlaneSchema,
+       controlPlaneDigest:$controlPlaneDigest,originalActivePath:$originalActivePath,
        originalPreviousPath:$originalPreviousPath,
+       pollerTimerDesiredActive:$pollerTimerDesiredActive,
+       pollerTimerDesiredEnabled:$pollerTimerDesiredEnabled,
        pollerTimerWasActive:$pollerTimerWasActive,
        pollerTimerWasEnabled:$pollerTimerWasEnabled,
        heartbeatTimerWasActive:$heartbeatTimerWasActive,
        heartbeatTimerWasEnabled:$heartbeatTimerWasEnabled,
+       livenessTimerWasActive:$livenessTimerWasActive,
+       livenessTimerWasEnabled:$livenessTimerWasEnabled,
+       livenessTimerDesiredActive:$livenessTimerDesiredActive,
+       livenessTimerDesiredEnabled:$livenessTimerDesiredEnabled,
+       backupTimerWasActive:$backupTimerWasActive,
+       backupTimerWasEnabled:$backupTimerWasEnabled,
+       restoreVerifyTimerWasActive:$restoreVerifyTimerWasActive,
+       restoreVerifyTimerWasEnabled:$restoreVerifyTimerWasEnabled,
        phase:$phase,createdAt:$createdAt,updatedAt:$updatedAt}
     ' >"$local_record" || { rm -f -- "$local_record"; die 'transaction JSON creation failed'; }
   if test -e "$TRANSACTION_STAGE" || test -L "$TRANSACTION_STAGE"; then
@@ -1249,6 +2318,7 @@ publish_transaction_phase() {
   sync -f "$TRANSACTION_STATE"; sync -f "$STATE_ROOT"
   require_transaction_file "$TRANSACTION_STATE"
   TRANSACTION_DURABLE=1
+  TRANSACTION_PHASE="$phase"
 }
 
 if test "$CONTROL_PLANE_MODE" = initial \
@@ -1256,6 +2326,7 @@ if test "$CONTROL_PLANE_MODE" = initial \
   # Establish the no-authority premise before running untrusted lifecycle code;
   # it is re-proved immediately before the durable gate is published.
   require_initial_no_authority
+  require_initial_no_backup_authority
 fi
 
 if test "$RESUME_TRANSACTION" -eq 0 && test -n "$STAGE_DIR"; then
@@ -1310,12 +2381,15 @@ as_builder /usr/bin/node --input-type=module -e "
   db.close();
   await import('file://$STAGE_DIR/scripts/lib/release-bootstrap.mjs');
   await import('file://$STAGE_DIR/scripts/lib/release-environment.mjs');
+  await import('file://$STAGE_DIR/scripts/lib/release-installed-backup-interface.mjs');
   await import('file://$STAGE_DIR/scripts/lib/release-protected-head.mjs');
 " || die 'Node-22 better-sqlite3 import/execute proof failed'
 
 for relative in package.json package-lock.json scripts/release-poll.sh \
   scripts/release-deploy.mjs scripts/release-state-view.mjs \
+  scripts/release-installed-backup-interface-check.mjs \
   scripts/local-backup-systemd-install.sh scripts/local-backup.py \
+  scripts/lib/release-installed-backup-interface.mjs \
   scripts/lib/release-bootstrap.mjs scripts/lib/release-environment.mjs \
   scripts/lib/release-protected-head.mjs \
   ops/nexus-release/nexus-release-state-view \
@@ -1411,15 +2485,33 @@ fi
 
 if test "$RESUME_TRANSACTION" -eq 1; then
   CANDIDATE_DIGEST="$(jq -er .candidateDigest "$TRANSACTION_STATE")"
+  CONTROL_PLANE_SCHEMA="$(jq -er .controlPlaneSchema "$TRANSACTION_STATE")"
+  CONTROL_PLANE_DIGEST="$(jq -er .controlPlaneDigest "$TRANSACTION_STATE")"
   TRANSACTION_CREATED_AT="$(jq -er .createdAt "$TRANSACTION_STATE")"
+  TRANSACTION_PHASE="$(jq -er .phase "$TRANSACTION_STATE")"
+  RESUME_FROM_PHASE="$TRANSACTION_PHASE"
   ORIGINAL_ACTIVE_PATH="$(jq -r .originalActivePath "$TRANSACTION_STATE")"
   ORIGINAL_PREVIOUS_PATH="$(jq -r .originalPreviousPath "$TRANSACTION_STATE")"
   RECORDED_STAGE_PATH="$(jq -r .stagePath "$TRANSACTION_STATE")"
   STAGE_IDENTITY="$(jq -r .stageIdentity "$TRANSACTION_STATE")"
   POLLER_TIMER_WAS_ACTIVE="$(jq -er .pollerTimerWasActive "$TRANSACTION_STATE")"
   POLLER_TIMER_WAS_ENABLED="$(jq -er .pollerTimerWasEnabled "$TRANSACTION_STATE")"
+  POLLER_TIMER_DESIRED_ACTIVE="$(jq -er .pollerTimerDesiredActive "$TRANSACTION_STATE")"
+  POLLER_TIMER_DESIRED_ENABLED="$(jq -er .pollerTimerDesiredEnabled "$TRANSACTION_STATE")"
   HEARTBEAT_TIMER_WAS_ACTIVE="$(jq -er .heartbeatTimerWasActive "$TRANSACTION_STATE")"
   HEARTBEAT_TIMER_WAS_ENABLED="$(jq -er .heartbeatTimerWasEnabled "$TRANSACTION_STATE")"
+  LIVENESS_TIMER_WAS_ACTIVE="$(jq -er .livenessTimerWasActive "$TRANSACTION_STATE")"
+  LIVENESS_TIMER_WAS_ENABLED="$(jq -er .livenessTimerWasEnabled "$TRANSACTION_STATE")"
+  LIVENESS_TIMER_DESIRED_ACTIVE="$(jq -er \
+    .livenessTimerDesiredActive "$TRANSACTION_STATE")"
+  LIVENESS_TIMER_DESIRED_ENABLED="$(jq -er \
+    .livenessTimerDesiredEnabled "$TRANSACTION_STATE")"
+  BACKUP_TIMER_WAS_ACTIVE="$(jq -er .backupTimerWasActive "$TRANSACTION_STATE")"
+  BACKUP_TIMER_WAS_ENABLED="$(jq -er .backupTimerWasEnabled "$TRANSACTION_STATE")"
+  RESTORE_VERIFY_TIMER_WAS_ACTIVE="$(jq -er \
+    .restoreVerifyTimerWasActive "$TRANSACTION_STATE")"
+  RESTORE_VERIFY_TIMER_WAS_ENABLED="$(jq -er \
+    .restoreVerifyTimerWasEnabled "$TRANSACTION_STATE")"
 else
   ORIGINAL_ACTIVE_PATH="$(selector_or_absent "$ACTIVE_LINK")"
   ORIGINAL_PREVIOUS_PATH="$(selector_or_absent "$PREVIOUS_LINK")"
@@ -1437,13 +2529,21 @@ else
     systemctl daemon-reload
     require_exact_effective_systemd_units
     require_control_plane_services_settled 1
+    require_local_backup_services_settled
+    verify_installed_backup_interface
     if test "$CONTROL_PLANE_MODE" = initial; then
       test "$(read_timer_bits nexus-release-poller.timer)" = '0 0' \
         && test "$(read_timer_bits nexus-release-heartbeat.timer)" = '0 0' \
-        || die 'completed initial install has release timer authority'
+        && test "$(read_timer_bits nexus-release-backup-liveness.timer)" = '0 0' \
+        && test "$(read_timer_bits nexus-local-backup.timer)" = '0 0' \
+        && test "$(read_timer_bits nexus-local-backup-restore-verify.timer)" = '0 0' \
+        || die 'completed initial install has timer authority'
     else
       read_timer_bits nexus-release-poller.timer >/dev/null
       read_timer_bits nexus-release-heartbeat.timer >/dev/null
+      read_timer_bits_or_absent nexus-release-backup-liveness.timer >/dev/null
+      read_timer_bits nexus-local-backup.timer >/dev/null
+      read_timer_bits nexus-local-backup-restore-verify.timer >/dev/null
     fi
     printf 'immutable control plane %s is already complete; mode=%s\n' \
       "$SOURCE_SHA" "$CONTROL_PLANE_MODE"
@@ -1453,7 +2553,12 @@ else
     test -z "$ORIGINAL_ACTIVE_PATH" && test -z "$ORIGINAL_PREVIOUS_PATH" \
       || die 'initial install found an existing selector'
     POLLER_TIMER_WAS_ACTIVE=0; POLLER_TIMER_WAS_ENABLED=0
+    POLLER_TIMER_DESIRED_ACTIVE=0; POLLER_TIMER_DESIRED_ENABLED=0
     HEARTBEAT_TIMER_WAS_ACTIVE=0; HEARTBEAT_TIMER_WAS_ENABLED=0
+    LIVENESS_TIMER_WAS_ACTIVE=0; LIVENESS_TIMER_WAS_ENABLED=0
+    LIVENESS_TIMER_DESIRED_ACTIVE=0; LIVENESS_TIMER_DESIRED_ENABLED=0
+    BACKUP_TIMER_WAS_ACTIVE=0; BACKUP_TIMER_WAS_ENABLED=0
+    RESTORE_VERIFY_TIMER_WAS_ACTIVE=0; RESTORE_VERIFY_TIMER_WAS_ENABLED=0
   elif test "$CONTROL_PLANE_MODE" = upgrade; then
     test -n "$ORIGINAL_ACTIVE_PATH" && test "$ORIGINAL_ACTIVE_PATH" != "$TARGET" \
       || die 'upgrade requires a distinct active predecessor'
@@ -1475,17 +2580,67 @@ else
     HEARTBEAT_BITS="$(read_timer_bits nexus-release-heartbeat.timer)" \
       || die 'heartbeat timer snapshot failed'
     read -r HEARTBEAT_TIMER_WAS_ACTIVE HEARTBEAT_TIMER_WAS_ENABLED <<<"$HEARTBEAT_BITS"
+    LIVENESS_BITS="$(read_timer_bits_or_absent nexus-release-backup-liveness.timer)" \
+      || die 'backup-liveness timer snapshot failed'
+    read -r LIVENESS_TIMER_WAS_ACTIVE LIVENESS_TIMER_WAS_ENABLED \
+      <<<"$LIVENESS_BITS"
+    require_local_backup_services_settled
+    BACKUP_BITS="$(read_timer_bits nexus-local-backup.timer)" \
+      || die 'backup timer snapshot failed'
+    read -r BACKUP_TIMER_WAS_ACTIVE BACKUP_TIMER_WAS_ENABLED <<<"$BACKUP_BITS"
+    RESTORE_VERIFY_BITS="$(read_timer_bits nexus-local-backup-restore-verify.timer)" \
+      || die 'restore-verify timer snapshot failed'
+    read -r RESTORE_VERIFY_TIMER_WAS_ACTIVE RESTORE_VERIFY_TIMER_WAS_ENABLED \
+      <<<"$RESTORE_VERIFY_BITS"
   fi
   if test -n "$STAGE_DIR"; then
     require_immutable_candidate "$STAGE_DIR"
+    TARGET_LIVENESS_STATE="$(candidate_liveness_pair_state "$STAGE_DIR")"
+    TARGET_POST_GATE_STATE="$(candidate_post_gate_guards_state "$STAGE_DIR")"
     CANDIDATE_DIGEST="$(<"$STAGE_DIR/.nexus-control-plane-tree.sha256")"
     RECORDED_STAGE_PATH="$STAGE_DIR"
     STAGE_IDENTITY="$(stat -Lc '%d:%i' -- "$STAGE_DIR")"
   else
     require_immutable_candidate "$TARGET"
+    TARGET_LIVENESS_STATE="$(candidate_liveness_pair_state "$TARGET")"
+    TARGET_POST_GATE_STATE="$(candidate_post_gate_guards_state "$TARGET")"
     CANDIDATE_DIGEST="$(<"$TARGET/.nexus-control-plane-tree.sha256")"
     RECORDED_STAGE_PATH=
     STAGE_IDENTITY=
+  fi
+  CONTROL_PLANE_IDENTITY="$(candidate_control_plane_identity \
+    "${RECORDED_STAGE_PATH:-$TARGET}" "$CANDIDATE_DIGEST")" \
+    || die 'candidate control-plane identity proof failed'
+  read -r CONTROL_PLANE_SCHEMA CONTROL_PLANE_DIGEST <<<"$CONTROL_PLANE_IDENTITY"
+  [[ "$CONTROL_PLANE_SCHEMA" =~ ^nexus\.(release-control-plane|control-plane-tree)\.v1$ ]] \
+    && [[ "$CONTROL_PLANE_DIGEST" =~ ^[0-9a-f]{64}$ ]] \
+    || die 'candidate control-plane identity is malformed'
+  if test "$CONTROL_PLANE_MODE" = initial; then
+    test "$TARGET_LIVENESS_STATE" = present \
+      || die 'initial controller lacks the signed backup-liveness unit set'
+  else
+    if test "$TARGET_POST_GATE_STATE" = present; then
+      POLLER_TIMER_DESIRED_ACTIVE="$POLLER_TIMER_WAS_ACTIVE"
+      POLLER_TIMER_DESIRED_ENABLED="$POLLER_TIMER_WAS_ENABLED"
+    else
+      test "$CONTROL_PLANE_MODE" = rollback \
+        || die 'only rollback may select a controller without post-gate guards'
+      POLLER_TIMER_DESIRED_ACTIVE=0
+      POLLER_TIMER_DESIRED_ENABLED="$POLLER_TIMER_WAS_ENABLED"
+    fi
+  fi
+  if test "$CONTROL_PLANE_MODE" = initial; then
+    : # Initial liveness desired bits were fixed at 0/0 before candidate build.
+  elif test "$TARGET_LIVENESS_STATE" = present; then
+    # Preserve an existing operator decision. A newly introduced unit set snapshots
+    # as 0/0 and is activated only by the separate attended post-transaction step.
+    LIVENESS_TIMER_DESIRED_ACTIVE="$LIVENESS_TIMER_WAS_ACTIVE"
+    LIVENESS_TIMER_DESIRED_ENABLED="$LIVENESS_TIMER_WAS_ENABLED"
+  else
+    test "$CONTROL_PLANE_MODE" = rollback \
+      || die 'only rollback may select a controller without backup-liveness units'
+    LIVENESS_TIMER_DESIRED_ACTIVE=0
+    LIVENESS_TIMER_DESIRED_ENABLED=0
   fi
   # `sync -f` is syncfs: flush the complete immutable candidate filesystem and
   # its publication parent before the separately mounted state record can claim
@@ -1499,6 +2654,7 @@ else
   fi
   if test "$CONTROL_PLANE_MODE" = initial; then
     require_initial_no_authority
+    require_initial_no_backup_authority
   else
     # The outgoing installed services must already observe the gate; otherwise
     # a kill after state publication but before timer disable could restore
@@ -1514,15 +2670,43 @@ else
     test "$(read_timer_bits nexus-release-heartbeat.timer)" = \
       "$HEARTBEAT_TIMER_WAS_ACTIVE $HEARTBEAT_TIMER_WAS_ENABLED" \
       || die 'heartbeat timer changed after its exact snapshot'
+    test "$(read_timer_bits_or_absent nexus-release-backup-liveness.timer)" = \
+      "$LIVENESS_TIMER_WAS_ACTIVE $LIVENESS_TIMER_WAS_ENABLED" \
+      || die 'backup-liveness timer changed after its exact snapshot'
+    test "$(read_timer_bits nexus-local-backup.timer)" = \
+      "$BACKUP_TIMER_WAS_ACTIVE $BACKUP_TIMER_WAS_ENABLED" \
+      || die 'backup timer changed after its exact snapshot'
+    test "$(read_timer_bits nexus-local-backup-restore-verify.timer)" = \
+      "$RESTORE_VERIFY_TIMER_WAS_ACTIVE $RESTORE_VERIFY_TIMER_WAS_ENABLED" \
+      || die 'restore-verify timer changed after its exact snapshot'
   fi
   TRANSACTION_CREATED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   publish_transaction_phase prepared
+  RESUME_FROM_PHASE=prepared
 fi
+
+# From the first durable timer snapshot until final gate retirement, every
+# error path disables all five release/backup timers. Initial records zero
+# authority; upgrade/rollback persist the exact live bits plus target-aware
+# backup-liveness desired bits proved above.
+TIMER_FAILSAFE_ARMED=1
+
+for TIMER_UNIT in nexus-release-poller.timer nexus-release-heartbeat.timer \
+  nexus-release-backup-liveness.timer nexus-local-backup.timer \
+  nexus-local-backup-restore-verify.timer; do
+  disable_timer_if_present "$TIMER_UNIT" \
+    || die "timer could not be disabled for control-plane transition: $TIMER_UNIT"
+  test "$(read_timer_bits_or_absent "$TIMER_UNIT")" = '0 0' \
+    || die "timer retained authority during control-plane transition: $TIMER_UNIT"
+done
+unset TIMER_UNIT
+require_local_backup_services_settled
+require_control_plane_services_settled 0 "$RESUME_TRANSACTION"
 
 if test "$RESUME_TRANSACTION" -eq 1; then
   require_no_physical_unit_dropins
   if test "$CONTROL_PLANE_MODE" != initial; then
-    require_installed_transaction_gate
+    require_installed_transaction_gate 1
   fi
 fi
 
@@ -1550,17 +2734,57 @@ else
   require_immutable_candidate "$TARGET" "$CANDIDATE_DIGEST"
 fi
 
-if test "$RESUME_TRANSACTION" -eq 1 \
-    && test "$CONTROL_PLANE_MODE" != initial; then
-  if test -d "$TARGET" && test ! -L "$TARGET"; then
-    TRANSITION_CANDIDATE_PATH="$TARGET"
+if test -d "$TARGET" && test ! -L "$TARGET"; then
+  TRANSITION_CANDIDATE_PATH="$TARGET"
+else
+  TRANSITION_CANDIDATE_PATH="$RECORDED_STAGE_PATH"
+fi
+TARGET_LIVENESS_STATE="$(candidate_liveness_pair_state "$TRANSITION_CANDIDATE_PATH")"
+TARGET_POST_GATE_STATE="$(candidate_post_gate_guards_state "$TRANSITION_CANDIDATE_PATH")"
+CURRENT_CONTROL_PLANE_IDENTITY="$(candidate_control_plane_identity \
+  "$TRANSITION_CANDIDATE_PATH" "$CANDIDATE_DIGEST")" \
+  || die 'durable candidate control-plane identity proof failed'
+test "$CURRENT_CONTROL_PLANE_IDENTITY" = "$CONTROL_PLANE_SCHEMA $CONTROL_PLANE_DIGEST" \
+  || die 'durable candidate control-plane identity changed'
+if test "$CONTROL_PLANE_MODE" = initial; then
+  test "$TARGET_POST_GATE_STATE" = present \
+    && test "$POLLER_TIMER_WAS_ACTIVE $POLLER_TIMER_WAS_ENABLED" = '0 0' \
+    && test "$POLLER_TIMER_DESIRED_ACTIVE $POLLER_TIMER_DESIRED_ENABLED" = '0 0' \
+    || die 'initial poller transaction state is incoherent'
+elif test "$TARGET_POST_GATE_STATE" = present; then
+  test "$POLLER_TIMER_DESIRED_ACTIVE $POLLER_TIMER_DESIRED_ENABLED" = \
+    "$POLLER_TIMER_WAS_ACTIVE $POLLER_TIMER_WAS_ENABLED" \
+    || die 'guarded target poller desired state changed its operator snapshot'
+else
+  test "$CONTROL_PLANE_MODE" = rollback \
+    && test "$POLLER_TIMER_DESIRED_ACTIVE" -eq 0 \
+    && test "$POLLER_TIMER_DESIRED_ENABLED" -eq "$POLLER_TIMER_WAS_ENABLED" \
+    || die 'unguarded rollback target must defer an active poller restart'
+fi
+if test "$CONTROL_PLANE_MODE" = initial; then
+  test "$TARGET_LIVENESS_STATE" = present \
+    && test "$LIVENESS_TIMER_WAS_ACTIVE $LIVENESS_TIMER_WAS_ENABLED" = '0 0' \
+    && test "$LIVENESS_TIMER_DESIRED_ACTIVE $LIVENESS_TIMER_DESIRED_ENABLED" = '0 0' \
+    || die 'initial backup-liveness transaction state is incoherent'
+elif test "$TARGET_LIVENESS_STATE" = present; then
+  test "$LIVENESS_TIMER_DESIRED_ACTIVE $LIVENESS_TIMER_DESIRED_ENABLED" = \
+    "$LIVENESS_TIMER_WAS_ACTIVE $LIVENESS_TIMER_WAS_ENABLED" \
+    || die 'backup-liveness desired state does not preserve the operator snapshot'
+else
+  test "$CONTROL_PLANE_MODE" = rollback \
+    && test "$LIVENESS_TIMER_DESIRED_ACTIVE $LIVENESS_TIMER_DESIRED_ENABLED" = '0 0' \
+    || die 'rollback to a controller without backup-liveness must desire 0/0'
+fi
+
+if test "$RESUME_TRANSACTION" -eq 1; then
+  if test "$CONTROL_PLANE_MODE" = initial; then
+    require_installed_initial_transition_bytes "$TRANSITION_CANDIDATE_PATH"
   else
-    TRANSITION_CANDIDATE_PATH="$RECORDED_STAGE_PATH"
+    require_installed_transition_bytes \
+      "$ORIGINAL_ACTIVE_PATH" "$TRANSITION_CANDIDATE_PATH"
   fi
-  require_installed_transition_bytes \
-    "$ORIGINAL_ACTIVE_PATH" "$TRANSITION_CANDIDATE_PATH"
   systemctl daemon-reload
-  require_exact_effective_systemd_units
+  require_exact_effective_core_systemd_units
 fi
 
 CURRENT_ACTIVE_PATH="$(selector_or_absent "$ACTIVE_LINK")"
@@ -1580,16 +2804,6 @@ if test "$CURRENT_ACTIVE_PATH" = "$TARGET"; then
   test "$CURRENT_PREVIOUS_PATH" = "$ORIGINAL_ACTIVE_PATH" \
     || die 'active selector advanced without its exact predecessor'
 fi
-
-if test "$CONTROL_PLANE_MODE" != initial; then
-  TIMER_FAILSAFE_ARMED=1
-  systemctl disable --now nexus-release-poller.timer nexus-release-heartbeat.timer
-  test "$(read_timer_bits nexus-release-poller.timer)" = '0 0' \
-    || die 'poller timer did not become inactive and disabled'
-  test "$(read_timer_bits nexus-release-heartbeat.timer)" = '0 0' \
-    || die 'heartbeat timer did not become inactive and disabled'
-fi
-require_control_plane_services_settled 0
 
 if test -n "$RECORDED_STAGE_PATH" && test -d "$RECORDED_STAGE_PATH"; then
   mv -T -- "$RECORDED_STAGE_PATH" "$TARGET"
@@ -1626,39 +2840,88 @@ sudo -u dominguez sudo -n /usr/local/sbin/nexus-release-state-view >/dev/null \
   || die 'delegated state-view proof failed'
 publish_transaction_phase capabilities_installed
 
+case "$RESUME_FROM_PHASE" in
+  backup_interface_installed|units_reloaded|timers_restored|complete)
+    # The durable phase says installation completed. Re-proof only; do not
+    # rewrite authority-bearing backup files on a later-phase resume.
+    verify_installed_backup_interface
+    ;;
+  prepared|candidate_installed|previous_selected|active_selected|capabilities_installed)
+    require_local_backup_services_settled
+    "$TARGET/scripts/local-backup-systemd-install.sh" "$TARGET"
+    verify_installed_backup_interface
+    publish_transaction_phase backup_interface_installed
+    ;;
+  *) die "unsupported backup-interface resume phase: $RESUME_FROM_PHASE" ;;
+esac
+
 for unit in nexus-release-bootstrap.service nexus-release-poller.service \
   nexus-release-poller.timer nexus-release-heartbeat.service \
   nexus-release-heartbeat.timer; do
   install_atomic_root_file "$TARGET/ops/nexus-release/$unit" \
     "/etc/systemd/system/$unit" 644
 done
+if test "$TARGET_LIVENESS_STATE" = present; then
+  for unit in nexus-release-backup-liveness-force.service \
+    nexus-release-backup-liveness.service \
+    nexus-release-backup-liveness.timer; do
+    install_atomic_root_file "$TARGET/ops/nexus-release/$unit" \
+      "/etc/systemd/system/$unit" 644
+  done
+else
+  remove_installed_liveness_for_absent_target "$ORIGINAL_ACTIVE_PATH"
+fi
 require_no_physical_unit_dropins
 systemctl daemon-reload
 require_exact_effective_systemd_units
 prove_installed_control_plane "$TARGET"
 publish_transaction_phase units_reloaded
 
-# Restore all four persisted bits while the transaction file still gates every
-# executable service. Any partial restore is disabled again on the next retry.
-systemctl disable --now nexus-release-poller.timer nexus-release-heartbeat.timer
+# Restore only the exact enabled bits for the four established timers and the
+# target-aware liveness timer while the transaction file still gates release
+# execution. All five active bits remain zero until post-gate service proofs
+# finish. Any partial restore is disabled again on the next retry.
+require_local_backup_services_settled
+verify_installed_backup_interface
+for TIMER_UNIT in nexus-release-poller.timer nexus-release-heartbeat.timer \
+  nexus-release-backup-liveness.timer nexus-local-backup.timer \
+  nexus-local-backup-restore-verify.timer; do
+  disable_timer_if_present "$TIMER_UNIT" \
+    || die "timer could not be disabled before exact restore: $TIMER_UNIT"
+done
+unset TIMER_UNIT
 if test "$HEARTBEAT_TIMER_WAS_ENABLED" -eq 1; then
   systemctl enable nexus-release-heartbeat.timer
 fi
-if test "$POLLER_TIMER_WAS_ENABLED" -eq 1; then
+if test "$POLLER_TIMER_DESIRED_ENABLED" -eq 1; then
   systemctl enable nexus-release-poller.timer
 fi
-if test "$HEARTBEAT_TIMER_WAS_ACTIVE" -eq 1; then
-  systemctl start nexus-release-heartbeat.timer
+if test "$BACKUP_TIMER_WAS_ENABLED" -eq 1; then
+  systemctl enable nexus-local-backup.timer
 fi
-if test "$POLLER_TIMER_WAS_ACTIVE" -eq 1; then
-  systemctl start nexus-release-poller.timer
+if test "$RESTORE_VERIFY_TIMER_WAS_ENABLED" -eq 1; then
+  systemctl enable nexus-local-backup-restore-verify.timer
+fi
+if test "$LIVENESS_TIMER_DESIRED_ENABLED" -eq 1; then
+  test "$TARGET_LIVENESS_STATE" = present \
+    || die 'cannot enable absent backup-liveness timer authority'
+  systemctl enable nexus-release-backup-liveness.timer
 fi
 test "$(read_timer_bits nexus-release-poller.timer)" = \
-  "$POLLER_TIMER_WAS_ACTIVE $POLLER_TIMER_WAS_ENABLED" \
-  || die 'poller timer state differs from its durable snapshot'
+  "0 $POLLER_TIMER_DESIRED_ENABLED" \
+  || die 'poller timer became active before post-gate proofs completed'
 test "$(read_timer_bits nexus-release-heartbeat.timer)" = \
-  "$HEARTBEAT_TIMER_WAS_ACTIVE $HEARTBEAT_TIMER_WAS_ENABLED" \
-  || die 'heartbeat timer state differs from its durable snapshot'
+  "0 $HEARTBEAT_TIMER_WAS_ENABLED" \
+  || die 'heartbeat timer became active before post-gate proofs completed'
+test "$(read_timer_bits nexus-local-backup.timer)" = \
+  "0 $BACKUP_TIMER_WAS_ENABLED" \
+  || die 'backup timer became active before post-gate proofs completed'
+test "$(read_timer_bits nexus-local-backup-restore-verify.timer)" = \
+  "0 $RESTORE_VERIFY_TIMER_WAS_ENABLED" \
+  || die 'restore-verify timer became active before post-gate proofs completed'
+test "$(read_timer_bits_or_absent nexus-release-backup-liveness.timer)" = \
+  "0 $LIVENESS_TIMER_DESIRED_ENABLED" \
+  || die 'backup-liveness timer became active before post-gate proofs completed'
 publish_transaction_phase timers_restored
 
 test "$(selector_or_absent "$ACTIVE_LINK")" = "$TARGET" \
@@ -1669,7 +2932,9 @@ require_immutable_candidate "$TARGET" "$CANDIDATE_DIGEST"
 require_no_physical_unit_dropins
 prove_installed_control_plane "$TARGET"
 require_exact_effective_systemd_units
+verify_installed_backup_interface
 require_control_plane_services_settled 1
+require_poller_service_clean
 publish_transaction_phase complete
 
 # Complete is durable but remains a gate. Re-prove every authority-bearing byte,
@@ -1680,37 +2945,172 @@ require_immutable_candidate "$TARGET" "$CANDIDATE_DIGEST"
 require_no_physical_unit_dropins
 prove_installed_control_plane "$TARGET"
 require_exact_effective_systemd_units
+verify_installed_backup_interface
 require_control_plane_services_settled 1
+require_poller_service_clean
 test "$(read_timer_bits nexus-release-poller.timer)" = \
-  "$POLLER_TIMER_WAS_ACTIVE $POLLER_TIMER_WAS_ENABLED"
+  "0 $POLLER_TIMER_DESIRED_ENABLED"
 test "$(read_timer_bits nexus-release-heartbeat.timer)" = \
-  "$HEARTBEAT_TIMER_WAS_ACTIVE $HEARTBEAT_TIMER_WAS_ENABLED"
+  "0 $HEARTBEAT_TIMER_WAS_ENABLED"
+test "$(read_timer_bits nexus-local-backup.timer)" = \
+  "0 $BACKUP_TIMER_WAS_ENABLED"
+test "$(read_timer_bits nexus-local-backup-restore-verify.timer)" = \
+  "0 $RESTORE_VERIFY_TIMER_WAS_ENABLED"
+test "$(read_timer_bits_or_absent nexus-release-backup-liveness.timer)" = \
+  "0 $LIVENESS_TIMER_DESIRED_ENABLED"
+test ! -e "$POST_GATE_STATE" && test ! -L "$POST_GATE_STATE" \
+  || die 'post-gate record path became occupied'
+test ! -e "$FINALIZATION_STATE" && test ! -L "$FINALIZATION_STATE" \
+  || die 'finalization record path became occupied'
+
+# Retire the gating name atomically, but retain the exact complete journal until
+# the services whose timers must return active have run successfully against
+# the selected controller. Every timer remains inactive during these proofs.
+# A killed retry promotes this same-request record
+# back to the gating name before doing any further work.
 TIMER_FAILSAFE_ARMED=0
-rm -f -- "$TRANSACTION_STATE"
-sync -f "$STATE_ROOT"
+mv -T -- "$TRANSACTION_STATE" "$POST_GATE_STATE"
+sync -f "$POST_GATE_STATE"; sync -f "$STATE_ROOT"
+require_transaction_file "$POST_GATE_STATE"
+test "$(jq -er .phase "$POST_GATE_STATE")" = complete \
+  || die 'post-gate record lost its durable complete phase'
 test ! -e "$TRANSACTION_STATE" && test ! -L "$TRANSACTION_STATE" \
-  || die 'completed transaction gate was not retired'
+  || die 'post-gate publication retained the gating transaction name'
+
+start_and_prove_post_gate_service() {
+  local active exec_status load_state result unit
+  unit="$1"
+  systemctl reset-failed "$unit" \
+    || die "post-gate service failure state could not be reset: $unit"
+  systemctl start "$unit" \
+    || die "post-gate service execution failed: $unit"
+  load_state="$(systemctl show "$unit" --property=LoadState --value)"
+  active="$(systemctl show "$unit" --property=ActiveState --value)"
+  result="$(systemctl show "$unit" --property=Result --value)"
+  exec_status="$(systemctl show "$unit" --property=ExecMainStatus --value)"
+  test "$load_state:$active:$result:$exec_status" = loaded:inactive:success:0 \
+    || die "post-gate service result is not exact: $unit ($load_state/$active/$result/$exec_status)"
+}
+
+if test "$HEARTBEAT_TIMER_WAS_ACTIVE" -eq 1; then
+  start_and_prove_post_gate_service nexus-release-heartbeat.service
+fi
+if test "$LIVENESS_TIMER_DESIRED_ACTIVE" -eq 1; then
+  test "$TARGET_LIVENESS_STATE" = present \
+    || die 'post-gate backup-liveness service is absent'
+  start_and_prove_post_gate_service nexus-release-backup-liveness-force.service
+fi
+
+test "$(selector_or_absent "$ACTIVE_LINK")" = "$TARGET"
+test "$(selector_or_absent "$PREVIOUS_LINK")" = "$ORIGINAL_ACTIVE_PATH"
+require_immutable_candidate "$TARGET" "$CANDIDATE_DIGEST"
+require_no_physical_unit_dropins
+prove_installed_control_plane "$TARGET"
+require_exact_effective_systemd_units
+verify_installed_backup_interface
+require_control_plane_services_settled 1
+require_poller_service_clean
+test "$(read_timer_bits nexus-release-poller.timer)" = \
+  "0 $POLLER_TIMER_DESIRED_ENABLED"
+test "$(read_timer_bits nexus-release-heartbeat.timer)" = \
+  "0 $HEARTBEAT_TIMER_WAS_ENABLED"
+test "$(read_timer_bits nexus-local-backup.timer)" = \
+  "0 $BACKUP_TIMER_WAS_ENABLED"
+test "$(read_timer_bits nexus-local-backup-restore-verify.timer)" = \
+  "0 $RESTORE_VERIFY_TIMER_WAS_ENABLED"
+test "$(read_timer_bits_or_absent nexus-release-backup-liveness.timer)" = \
+  "0 $LIVENESS_TIMER_DESIRED_ENABLED"
+require_transaction_file "$POST_GATE_STATE"
+test ! -e "$FINALIZATION_STATE" && test ! -L "$FINALIZATION_STATE" \
+  || die 'finalization path became occupied during post-gate proofs'
+mv -T -- "$POST_GATE_STATE" "$FINALIZATION_STATE"
+sync -f "$FINALIZATION_STATE"; sync -f "$STATE_ROOT"
+require_transaction_file "$FINALIZATION_STATE"
+test ! -e "$POST_GATE_STATE" && test ! -L "$POST_GATE_STATE" \
+  || die 'terminal finalization retained the post-gate journal name'
+
+# Post-gate service proofs are complete. The finalization journal is recovery
+# authority only, not a workload gate: release both deployment mutexes before
+# restoring poller activity so its first admitted run cannot fail on our locks.
+if test "$CONTROL_PLANE_MODE" != initial; then
+  exec 8>&-; exec 9>&-
+fi
+start_terminal_timer_if_active() {
+  local desired unit
+  unit="$1"; desired="$2"
+  if test "$desired" -eq 1; then
+    systemctl start "$unit" \
+      || die "terminal timer activation failed: $unit"
+  fi
+}
+start_terminal_timer_if_active nexus-release-heartbeat.timer \
+  "$HEARTBEAT_TIMER_WAS_ACTIVE"
+start_terminal_timer_if_active nexus-release-backup-liveness.timer \
+  "$LIVENESS_TIMER_DESIRED_ACTIVE"
+start_terminal_timer_if_active nexus-local-backup.timer \
+  "$BACKUP_TIMER_WAS_ACTIVE"
+start_terminal_timer_if_active nexus-local-backup-restore-verify.timer \
+  "$RESTORE_VERIFY_TIMER_WAS_ACTIVE"
+start_terminal_timer_if_active nexus-release-poller.timer \
+  "$POLLER_TIMER_DESIRED_ACTIVE"
+test "$(read_timer_bits nexus-release-poller.timer)" = \
+  "$POLLER_TIMER_DESIRED_ACTIVE $POLLER_TIMER_DESIRED_ENABLED" \
+  || die 'terminal poller timer state differs from its durable desired state'
+test "$(read_timer_bits nexus-release-heartbeat.timer)" = \
+  "$HEARTBEAT_TIMER_WAS_ACTIVE $HEARTBEAT_TIMER_WAS_ENABLED" \
+  || die 'terminal heartbeat timer state differs from its durable snapshot'
+test "$(read_timer_bits nexus-local-backup.timer)" = \
+  "$BACKUP_TIMER_WAS_ACTIVE $BACKUP_TIMER_WAS_ENABLED" \
+  || die 'terminal backup timer state differs from its durable snapshot'
+test "$(read_timer_bits nexus-local-backup-restore-verify.timer)" = \
+  "$RESTORE_VERIFY_TIMER_WAS_ACTIVE $RESTORE_VERIFY_TIMER_WAS_ENABLED" \
+  || die 'terminal restore-verify timer state differs from its durable snapshot'
+test "$(read_timer_bits_or_absent nexus-release-backup-liveness.timer)" = \
+  "$LIVENESS_TIMER_DESIRED_ACTIVE $LIVENESS_TIMER_DESIRED_ENABLED" \
+  || die 'terminal backup-liveness timer state differs from its durable target'
+POLLER_RESTART_DEFERRED=0
+if test "$POLLER_TIMER_WAS_ACTIVE" -eq 1 \
+    && test "$POLLER_TIMER_DESIRED_ACTIVE" -eq 0; then
+  POLLER_RESTART_DEFERRED=1
+fi
+require_transaction_file "$FINALIZATION_STATE"
+rm -f -- "$FINALIZATION_STATE"
+sync -f "$STATE_ROOT"
+test ! -e "$FINALIZATION_STATE" && test ! -L "$FINALIZATION_STATE" \
+  && test ! -e "$POST_GATE_STATE" && test ! -L "$POST_GATE_STATE" \
+  && test ! -e "$TRANSACTION_STATE" && test ! -L "$TRANSACTION_STATE" \
+  || die 'completed control-plane journals were not retired'
 TRANSACTION_DURABLE=0
-printf 'completed immutable control-plane transaction %s; mode=%s\n' \
-  "$SOURCE_SHA" "$CONTROL_PLANE_MODE"
+printf 'completed immutable control-plane transaction %s; mode=%s; pollerRestartDeferred=%s\n' \
+  "$SOURCE_SHA" "$CONTROL_PLANE_MODE" "$POLLER_RESTART_DEFERRED"
 ```
 
-`initial` installs and reloads unit definitions but starts and enables nothing.
+`initial` requires both release and local-backup authority to be absent, then
+installs the seven local-backup producer/unit/sudoers files and the release unit
+definitions from the immutable target. It starts and enables nothing.
 Resume only at the next applicable step in the canonical first-install order
 above; do not infer execution order from the section numbers. Only section 6 may
 start the first-bootstrap unit, and only the completed bootstrap receipt may
 authorize enabling the ordinary poller timer.
 
 During `upgrade`, candidate construction has no runtime authority. Activation is
-serialized by both governed mutexes, both timers are stopped, every oneshot must
-be settled, and both timers are disabled across reboot before any link or unit
-bytes change. The prior timer active/enabled state is restored exactly only
-after activation and `daemon-reload` succeed. The ERR/EXIT fail-safe remains
-armed until all four saved timer states are re-proven; any earlier exit disables
-and stops both timers again. A failure after that boundary leaves them stopped
-and disabled; do not improvise a partial restart. Both
-immutable version directories and `checkout.previous` remain, so
-rollback does not depend on GitHub or npm still being available.
+serialized by both governed mutexes. Before the durable snapshot, all three
+local-backup oneshots must be inactive. The transaction persists the four
+established poller, heartbeat, backup, and restore-verify timers' eight snapshot
+bits, a target-aware poller desired pair, and the backup-liveness timer's prior
+and target-aware desired pairs: fourteen exact timer bits in total. An existing
+liveness unit set preserves the operator snapshot, an absent-to-present set
+remains 0/0, and a retained old rollback target forces liveness to 0/0. All five timers
+are stopped and disabled across reboot before any selector or authority-bearing
+file changes. After selector activation, the transaction installs and
+byte-proves the local-backup producer, five units/timers, and sudoers policy from
+the immutable target, including exact effective fragments, empty drop-ins, and
+`NeedDaemonReload=no`. It restores only the governed enabled bits while keeping
+all five timers inactive. The ERR/EXIT fail-safe remains armed through that
+gating phase; any earlier exit disables and stops all five timers again. Do not
+improvise a partial restart. Both immutable version directories and
+`checkout.previous` remain, so rollback does not depend on GitHub or npm still
+being available.
 
 Rollback uses the same durable transaction above, not a second volatile link
 swap. Re-run the **complete** fenced block in this section from its first
@@ -1722,20 +3122,253 @@ only these owner-reviewed inputs:
 
 Do not paste only those assignments or resume at an internal phase. The shared
 control-plane mutex and exact root-owned transaction record supply the original
-active/predecessor selectors, candidate digest, and all four timer bits after
+active/predecessor selectors, candidate digest, and all persisted timer bits after
 any SIGKILL or reboot. A same-request retry re-proves those durable identities,
-disables both timers behind the transaction gate, reconciles the two selectors,
-capability, sudoers bytes, unit files, daemon reload, and exact timer states, and
-only then retires the gate. A different mode, SHA, repository, marker, candidate,
-or selector refuses without replacing the retained versions.
+disables all five timers behind the transaction gate, reconciles the two
+selectors, installs or re-proves the rollback target's exact local-backup
+interface, installs or removes the target-aware liveness unit set, then restores
+only enabled bits before post-gate proofs and terminal active-bit restoration. A
+retained pre-checker target remains rollback-compatible only through the inline exact
+byte/metadata/systemd proof; a partial checker/module pair refuses. A different
+mode, SHA, repository, marker, candidate, or selector refuses without replacing
+the retained versions.
 
-The shared ERR/EXIT fail-safe stays armed until both enabled states and both
-active states match their durable values. The transaction record itself gates
-bootstrap, poller, and heartbeat execution through each individual restore
-step. All five installed fragments must remain the exact governed main files;
-any exact-name, dash-prefix, or type-wide systemd drop-in is forbidden. Never
-delete either version or manually change timer enablement while that root-owned
-gate exists; rerun the complete same-mode transaction instead.
+The shared ERR/EXIT fail-safe stays armed until all five inactive/enabled
+intermediate states match the durable record. The transaction record gates
+bootstrap, poller, heartbeat, and installed backup-liveness execution through
+that phase. Durable completion atomically becomes the post-gate journal, which
+continues to gate bootstrap and poller while all five timers remain inactive.
+Required heartbeat and liveness oneshots must then succeed. A second full
+candidate, installed-interface, effective-unit, selector, and timer reproof
+atomically promotes the journal to terminal finalization state. Finalization
+recomputes the complete immutable tree digest, signed control-plane identity,
+and Node-22 native dependency proof before starting any saved-active timer; a
+retry accepts only pending or exact terminal timer states. All five core
+installed fragments and the optional three liveness fragments must remain the
+exact governed main files; any exact-name, dash-prefix, or type-wide systemd
+drop-in is forbidden. Never delete either version or manually change timer
+enablement while any of the three root-owned journals exists; rerun the complete
+same-mode transaction instead.
+
+For a controller that introduces the backup-liveness unit set while the live
+timer was absent, section 1a deliberately preserves 0/0. After section 1a has fully
+retired all transaction journals, the backup policy, encrypted receipt, and
+restore proof are live, and the owner explicitly attends the first activation,
+run this whole block once. It preserves an existing operator decision: 1/1 is
+accepted only as an already completed activation with a successful service
+result; 0/0 runs the governed forced proof before enabling the timer; any partial
+state refuses.
+
+```bash
+sudo -i
+set -euo pipefail
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+die() { printf 'BACKUP-LIVENESS ACTIVATION REFUSED: %s\n' "$*" >&2; exit 1; }
+
+CONTROL_PLANE_LOCK=/var/lib/nexus-release/locks/control-plane.lock
+RELEASE_LOCK=/var/lib/nexus-release/locks/release.lock
+MAINTENANCE_LOCK=/run/lock/nexus-release-sonar.lock
+STATE_ROOT=/var/lib/nexus-release/state
+TRANSACTION_STATE="$STATE_ROOT/control-plane-transaction.json"
+POST_GATE_STATE="$STATE_ROOT/control-plane-post-gate.json"
+FINALIZATION_STATE="$STATE_ROOT/control-plane-finalization.json"
+ACTIVE_LINK=/opt/nexus-release/checkout
+VERSION_ROOT=/opt/nexus-release/control-plane
+SERVICE=nexus-release-backup-liveness-force.service
+TIMER=nexus-release-backup-liveness.timer
+
+test "$EUID" -eq 0 || die 'run the complete activation from one root shell'
+test ! -e "$TRANSACTION_STATE" && test ! -L "$TRANSACTION_STATE" \
+  && test ! -e "$POST_GATE_STATE" && test ! -L "$POST_GATE_STATE" \
+  && test ! -e "$FINALIZATION_STATE" && test ! -L "$FINALIZATION_STATE" \
+  || die 'a control-plane transaction, post-gate proof, or finalization is active'
+for lock_spec in \
+  "$CONTROL_PLANE_LOCK|root:root:600:1|7" \
+  "$RELEASE_LOCK|root:root:600:1|9" \
+  "$MAINTENANCE_LOCK|root:dominguez:660:1|8"; do
+  IFS='|' read -r lock expected fd <<<"$lock_spec"
+  test -f "$lock" && test ! -L "$lock" \
+    && test "$(stat -Lc '%U:%G:%a:%h' -- "$lock")" = "$expected" \
+    || die "governed lock is unsafe: $lock"
+  case "$fd" in
+    7) exec 7<>"$lock" ;;
+    8) exec 8<>"$lock" ;;
+    9) exec 9<>"$lock" ;;
+    *) die "unexpected governed lock descriptor: $fd" ;;
+  esac
+  test "$(stat -Lc '%d:%i' -- "/proc/$$/fd/$fd")" = \
+    "$(stat -Lc '%d:%i' -- "$lock")" \
+    || die "governed lock changed before acquisition: $lock"
+  flock -n "$fd" || die "governed lock is busy: $lock"
+done
+unset expected fd lock lock_spec
+test ! -e "$TRANSACTION_STATE" && test ! -L "$TRANSACTION_STATE" \
+  && test ! -e "$POST_GATE_STATE" && test ! -L "$POST_GATE_STATE" \
+  && test ! -e "$FINALIZATION_STATE" && test ! -L "$FINALIZATION_STATE" \
+  || die 'a control-plane transaction appeared after lock acquisition'
+
+test -L "$ACTIVE_LINK" || die 'active controller selector is not symbolic'
+ACTIVE="$(readlink -f -- "$ACTIVE_LINK")"
+[[ "$ACTIVE" =~ ^$VERSION_ROOT/[0-9a-f]{40}$ ]] \
+  || die 'active controller selector escaped the immutable version root'
+test -d "$ACTIVE" && test ! -L "$ACTIVE" \
+  || die 'active immutable controller is unsafe'
+for relative in nexus-release-backup-liveness-force.service \
+  nexus-release-backup-liveness.service \
+  nexus-release-backup-liveness.timer; do
+  source="$ACTIVE/ops/nexus-release/$relative"
+  installed="/etc/systemd/system/$relative"
+  test -f "$source" && test ! -L "$source" \
+    && test "$(stat -Lc '%U:%G:%a:%h' -- "$source")" = root:root:444:1 \
+    || die "signed liveness source is unsafe: $relative"
+  test -f "$installed" && test ! -L "$installed" \
+    && test "$(stat -Lc '%U:%G:%a:%h' -- "$installed")" = root:root:644:1 \
+    && cmp -s -- "$source" "$installed" \
+    || die "installed liveness unit differs from the active controller: $relative"
+  test "$(systemctl show "$relative" --property=LoadState --value)" = loaded \
+    && test "$(systemctl show "$relative" --property=FragmentPath --value)" = \
+      "$installed" \
+    && test -z "$(systemctl show "$relative" --property=DropInPaths --value)" \
+    && test "$(systemctl show "$relative" --property=NeedDaemonReload --value)" = no \
+    || die "effective liveness unit is not exact: $relative"
+done
+launcher="$ACTIVE/scripts/release-backup-liveness-launcher.sh"
+test -f "$launcher" && test ! -L "$launcher" \
+  && test "$(stat -Lc '%U:%G:%a:%h' -- "$launcher")" = root:root:555:1 \
+  || die 'signed liveness launcher is unsafe'
+
+timer_bits() {
+  local active enabled
+  active="$(systemctl show "$TIMER" --property=ActiveState --value)"
+  enabled="$(systemctl show "$TIMER" --property=UnitFileState --value)"
+  case "$active" in active) active=1 ;; inactive) active=0 ;;
+    *) die "liveness timer active state is inadmissible: $active" ;; esac
+  case "$enabled" in enabled) enabled=1 ;; disabled) enabled=0 ;;
+    *) die "liveness timer enabled state is inadmissible: $enabled" ;; esac
+  printf '%s %s\n' "$active" "$enabled"
+}
+
+case "$(timer_bits)" in
+  '0 0')
+    systemctl reset-failed "$SERVICE" \
+      || die 'liveness service failure state could not be reset'
+    systemctl start "$SERVICE" || die 'attended liveness service check failed'
+    test "$(systemctl show "$SERVICE" --property=LoadState --value)" = loaded \
+      && test "$(systemctl show "$SERVICE" --property=ActiveState --value)" = inactive \
+      && test "$(systemctl show "$SERVICE" --property=Result --value)" = success \
+      && test "$(systemctl show "$SERVICE" --property=ExecMainStatus --value)" = 0 \
+      || die 'attended liveness service result is not exact'
+    systemctl enable --now "$TIMER" \
+      || die 'liveness timer activation failed'
+    ;;
+  '1 1')
+    test "$(systemctl show "$SERVICE" --property=Result --value)" = success \
+      && test "$(systemctl show "$SERVICE" --property=ExecMainStatus --value)" = 0 \
+      || die 'already-active liveness timer lacks a successful service result'
+    ;;
+  *) die 'liveness timer is in a partial active/enabled state' ;;
+esac
+test "$(timer_bits)" = '1 1' || die 'liveness timer did not reach exact 1/1'
+test ! -e "$TRANSACTION_STATE" && test ! -L "$TRANSACTION_STATE" \
+  && test ! -e "$POST_GATE_STATE" && test ! -L "$POST_GATE_STATE" \
+  && test ! -e "$FINALIZATION_STATE" && test ! -L "$FINALIZATION_STATE" \
+  || die 'control-plane transaction state appeared during activation'
+printf 'backup-liveness service proved and timer active/enabled\n'
+```
+
+### Retained-old rollback poller restart
+
+A rollback target retained from before the post-gate conditions cannot safely
+restore an active poller inside section 1a. In that one case the terminal output
+reports `pollerRestartDeferred=1`, preserves the timer's enabled bit, and leaves
+its active bit at zero. Only after all three control-plane journals are absent
+and the owner explicitly attends the deferred restart, run this complete block.
+It does not enable a timer that was disabled.
+
+```bash
+sudo -i
+set -euo pipefail
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+export PATH
+die() { printf 'DEFERRED POLLER RESTART REFUSED: %s\n' "$*" >&2; exit 1; }
+
+CONTROL_LOCK=/var/lib/nexus-release/locks/control-plane.lock
+RELEASE_LOCK=/var/lib/nexus-release/locks/release.lock
+MAINTENANCE_LOCK=/run/lock/nexus-release-sonar.lock
+STATE_ROOT=/var/lib/nexus-release/state
+ACTIVE_LINK=/opt/nexus-release/checkout
+VERSION_ROOT=/opt/nexus-release/control-plane
+POLLER_UNIT=nexus-release-poller.service
+POLLER_TIMER=nexus-release-poller.timer
+
+test "$EUID" -eq 0 || die 'run the complete restart from one root shell'
+for state in control-plane-transaction.json control-plane-post-gate.json \
+  control-plane-finalization.json pm2-fallback-retirement.json \
+  pm2-fallback-retired.json; do
+  test ! -e "$STATE_ROOT/$state" && test ! -L "$STATE_ROOT/$state" \
+    || die "conflicting authority state exists: $state"
+done
+test -f "$CONTROL_LOCK" && test ! -L "$CONTROL_LOCK" \
+  && test "$(stat -Lc '%U:%G:%a:%h' -- "$CONTROL_LOCK")" = root:root:600:1 \
+  || die 'control-plane mutex is unsafe'
+test -f "$RELEASE_LOCK" && test ! -L "$RELEASE_LOCK" \
+  && test "$(stat -Lc '%U:%G:%a:%h' -- "$RELEASE_LOCK")" = root:root:600:1 \
+  || die 'release mutex is unsafe'
+test -f "$MAINTENANCE_LOCK" && test ! -L "$MAINTENANCE_LOCK" \
+  && test "$(stat -Lc '%U:%G:%a:%h' -- "$MAINTENANCE_LOCK")" = \
+    root:dominguez:660:1 || die 'maintenance mutex is unsafe'
+exec 7<>"$CONTROL_LOCK"; flock -n 7 || die 'control-plane authority is active'
+exec 9<>"$RELEASE_LOCK"; flock -n 9 || die 'release authority is active'
+exec 8<>"$MAINTENANCE_LOCK"; flock -n 8 || die 'root maintenance is active'
+for state in control-plane-transaction.json control-plane-post-gate.json \
+  control-plane-finalization.json pm2-fallback-retirement.json \
+  pm2-fallback-retired.json; do
+  test ! -e "$STATE_ROOT/$state" && test ! -L "$STATE_ROOT/$state" \
+    || die "conflicting authority appeared after locking: $state"
+done
+
+test -L "$ACTIVE_LINK" || die 'active controller selector is not symbolic'
+ACTIVE="$(readlink -f -- "$ACTIVE_LINK")"
+[[ "$ACTIVE" =~ ^$VERSION_ROOT/[0-9a-f]{40}$ ]] \
+  || die 'active controller escaped the immutable version root'
+SOURCE="$ACTIVE/ops/nexus-release/$POLLER_UNIT"
+INSTALLED="/etc/systemd/system/$POLLER_UNIT"
+test -f "$SOURCE" && test ! -L "$SOURCE" \
+  && test "$(stat -Lc '%U:%G:%a:%h' -- "$SOURCE")" = root:root:444:1 \
+  || die 'retained poller source is unsafe'
+! grep -Fqx \
+  'ConditionPathExists=!/var/lib/nexus-release/state/control-plane-post-gate.json' \
+  "$SOURCE" || die 'selected controller already has the post-gate condition'
+! grep -Fqx \
+  'ConditionPathIsSymbolicLink=!/var/lib/nexus-release/state/control-plane-post-gate.json' \
+  "$SOURCE" || die 'selected controller already has the post-gate symlink condition'
+test -f "$INSTALLED" && test ! -L "$INSTALLED" \
+  && test "$(stat -Lc '%U:%G:%a:%h' -- "$INSTALLED")" = root:root:644:1 \
+  && cmp -s -- "$SOURCE" "$INSTALLED" \
+  && test "$(systemctl show "$POLLER_UNIT" --property=LoadState --value)" = loaded \
+  && test "$(systemctl show "$POLLER_UNIT" --property=FragmentPath --value)" = \
+    "$INSTALLED" \
+  && test -z "$(systemctl show "$POLLER_UNIT" --property=DropInPaths --value)" \
+  && test "$(systemctl show "$POLLER_UNIT" --property=NeedDaemonReload --value)" = no \
+  || die 'installed retained poller unit is not exact'
+POLLER_ACTIVE="$(systemctl show "$POLLER_TIMER" --property=ActiveState --value)"
+POLLER_ENABLED="$(systemctl show "$POLLER_TIMER" --property=UnitFileState --value)"
+case "$POLLER_ACTIVE" in active|inactive) ;; *) die 'poller timer active state is unsafe' ;; esac
+case "$POLLER_ENABLED" in enabled|disabled) ;; *) die 'poller timer enabled state is unsafe' ;; esac
+if test "$POLLER_ACTIVE" = inactive; then
+  test "$(systemctl show "$POLLER_UNIT" --property=ActiveState --value)" = inactive \
+    && test "$(systemctl show "$POLLER_UNIT" --property=Result --value)" = success \
+    && test "$(systemctl show "$POLLER_UNIT" --property=ExecMainStatus --value)" = 0 \
+    || die 'poller service is not clean before deferred restart'
+  exec 8>&-; exec 9>&-
+  systemctl start "$POLLER_TIMER" || die 'deferred poller timer restart failed'
+fi
+test "$(systemctl show "$POLLER_TIMER" --property=ActiveState --value)" = active \
+  && test "$(systemctl show "$POLLER_TIMER" --property=UnitFileState --value)" = \
+    "$POLLER_ENABLED" || die 'deferred poller timer state is not exact'
+printf 'deferred retained-old poller restart completed; enabled=%s\n' "$POLLER_ENABLED"
+```
 
 ## 1b. Quiesced transition of the existing production and staging databases
 
@@ -2575,6 +4208,15 @@ inspect the still-running PM2 identities and restart section 1b from its top.
 set -euo pipefail
 
 die() { printf 'PRE-BASELINE RECOVERY REFUSED: %s\n' "$*" >&2; exit 1; }
+
+PM2_RETIREMENT_JOURNAL=/var/lib/nexus-release/state/pm2-fallback-retirement.json
+PM2_RETIRED_TOMBSTONE=/var/lib/nexus-release/state/pm2-fallback-retired.json
+for PM2_RETIREMENT_GATE in "$PM2_RETIREMENT_JOURNAL" "$PM2_RETIRED_TOMBSTONE"; do
+  sudo test ! -e "$PM2_RETIREMENT_GATE" \
+    && sudo test ! -L "$PM2_RETIREMENT_GATE" \
+    || die "PM2 fallback retirement gate exists: $PM2_RETIREMENT_GATE"
+done
+unset PM2_RETIREMENT_GATE
 
 run_pm2_as_dominguez() {
   local pm2_cwd=/home/dominguez
@@ -4364,6 +6006,15 @@ set -euo pipefail
 
 die() { printf 'BOOTSTRAP RECOVERY REFUSED: %s\n' "$*" >&2; exit 1; }
 
+PM2_RETIREMENT_JOURNAL=/var/lib/nexus-release/state/pm2-fallback-retirement.json
+PM2_RETIRED_TOMBSTONE=/var/lib/nexus-release/state/pm2-fallback-retired.json
+for PM2_RETIREMENT_GATE in "$PM2_RETIREMENT_JOURNAL" "$PM2_RETIRED_TOMBSTONE"; do
+  sudo test ! -e "$PM2_RETIREMENT_GATE" \
+    && sudo test ! -L "$PM2_RETIREMENT_GATE" \
+    || die "PM2 fallback retirement gate exists: $PM2_RETIREMENT_GATE"
+done
+unset PM2_RETIREMENT_GATE
+
 run_pm2_as_dominguez() {
   local pm2_cwd=/home/dominguez
   (cd "$pm2_cwd" && sudo -u dominguez pm2 "$@")
@@ -5754,6 +7405,15 @@ next bootstrap unit invocation.
 set -euo pipefail
 
 die() { printf 'BOOTSTRAP REBASELINE REFUSED: %s\n' "$*" >&2; exit 1; }
+
+PM2_RETIREMENT_JOURNAL=/var/lib/nexus-release/state/pm2-fallback-retirement.json
+PM2_RETIRED_TOMBSTONE=/var/lib/nexus-release/state/pm2-fallback-retired.json
+for PM2_RETIREMENT_GATE in "$PM2_RETIREMENT_JOURNAL" "$PM2_RETIRED_TOMBSTONE"; do
+  sudo test ! -e "$PM2_RETIREMENT_GATE" \
+    && sudo test ! -L "$PM2_RETIREMENT_GATE" \
+    || die "PM2 fallback retirement gate exists: $PM2_RETIREMENT_GATE"
+done
+unset PM2_RETIREMENT_GATE
 
 run_pm2_as_dominguez() {
   local pm2_cwd=/home/dominguez
@@ -7434,8 +9094,9 @@ notifications.
 
 ### Install the immutable test-only guard
 
-CI runs this **before** any checkout, from a root-owned path outside the
-workspace, so a pull request cannot modify the check that is guarding it:
+CI runs this as the first step of every dynamically routed self-hosted job,
+**before** any checkout or other repository-controlled command, from a root-owned
+path outside the workspace:
 
 ```bash
 getent passwd nexus-ci >/dev/null \
@@ -7471,12 +9132,138 @@ selecting GitHub-hosted runners until the complete live proof succeeds.
 The runner account must not be able to reach `/var/run/docker.sock`,
 `/etc/nexus-release/*.env`, the audit-mirror key,
 `/var/lib/nexus-release-audit/receipts`, or `/var/lib/nexus-release`.
-CI re-asserts this before checkout through the installed, root-owned
-`/usr/local/sbin/nexus-pi-guardrails --json`. The repository readiness script is
-a provisioning diagnostic, not the immutable CI guard.
+CI re-asserts this separately on every job allocation through the installed,
+root-owned `/usr/local/sbin/nexus-pi-guardrails --json`. A successful
+`runner_guardrails` job is only an early graph gate; it cannot attest a later job
+that GitHub may place on another machine with the same labels. The repository
+readiness script is a provisioning diagnostic, not the immutable CI guard.
 
 ## 11. PM2 during cutover
 
-Keep PM2 installed and stopped for the first cutover. Remove it after 14 stable
-days. Its configs and the previous release transaction remain in the repository
-for that window; see `docs/release/README.md`.
+Keep PM2 installed but stopped and permanently guarded during the first-cutover
+recovery window. Retirement becomes eligible exactly 14 days after the
+`completedAt` of the first completed container receipt bound by
+`bootstrap-baseline.json`; a remembered cutover time, release count, or current
+health alone is not admission evidence.
+
+The implementation may be installed before that deadline. Live apply must wait
+until the dry-run admits all of the following at one locked observation:
+
+- the canonical baseline and its exact completed anchor receipt match source,
+  manifest, payload, and both digest-bound bootstrap checks; `baselineSha256`
+  and both receipt hashes bind exact immutable file bytes, while the distinct
+  `baselineAuthorizationDigest` is the canonical-JSON digest bound by those
+  existing bootstrap checks;
+- current state resolves to the exact active immutable `completed` receipt with
+  no block, recovery gate, control-plane transaction, rebaseline stage, or PM2
+  install journal, and that v3 receipt's control-plane schema/digest equals the
+  identity recomputed from `/opt/nexus-release/checkout`; the complete immutable
+  tree digest is recomputed and its selected `better-sqlite3` binding must load
+  and execute a query at admission;
+- NTP is synchronized; production and staging have their exact healthy active
+  images; the poller, heartbeat, backup-liveness, backup, and restore-verify
+  timers are enabled and active; the poller, backup, and restore services have
+  settled successfully;
+- no PM2 process or open closure handle exists, and the root PM2 launcher,
+  package lock, closure, and
+  `/var/lib/nexus-release-promotion/pm2-root-install.v1.json` exactly match their
+  attestation;
+- neither legacy `bot.db` nor an existing `-wal`, `-shm`, or `-journal` sidecar
+  has an open handle; the latest encrypted backup is at most two hours old and
+  restore-verification evidence is at most eight days old;
+- both `pm2-dominguez.service` and
+  `nexus-release-pm2-recovery-daemon.service` resolve only through their exact
+  root-owned `/etc/systemd/system.control/<unit> -> /dev/null` guards and cannot
+  start.
+
+Dry-run from the installed, immutable control-plane checkout. It takes the
+control-plane, user-release, and shared maintenance flocks and performs no host
+mutation. Exit 75 with `stable_window_open` before the exact deadline is the
+expected result, not authorization to override it:
+
+```bash
+sudo /usr/bin/env -i \
+  PATH=/usr/bin:/bin \
+  HOME=/var/lib/nexus-release/home \
+  /usr/bin/node \
+  /opt/nexus-release/checkout/scripts/retire-pm2-fallback.mjs
+```
+
+An eligible result prints the exact four-part confirmation:
+`<active-release-id>:<active-receipt-sha256>:<anchor-release-id>:<anchor-receipt-sha256>`.
+Apply only that value with explicit owner authorization. The service must be
+detached from SSH and execute Node directly so `SYSTEMD_EXEC_PID` identifies the
+retirement process; do not add `--wait` or `--pipe`:
+
+```bash
+PM2_RETIRE_CONFIRM='<exact confirmation from the immediately preceding dry-run>'
+PM2_RETIRE_UNIT="nexus-pm2-fallback-retirement-$(date -u +%Y%m%dT%H%M%SZ)"
+
+sudo /usr/bin/systemd-run \
+  --unit="$PM2_RETIRE_UNIT" \
+  --no-block \
+  --property=Type=exec \
+  --property=RemainAfterExit=yes \
+  --working-directory=/opt/nexus-release/checkout \
+  --setenv=NEXUS_RELEASE_OWNER_AUTHORIZED=1 \
+  --setenv=PATH=/usr/bin:/bin \
+  /usr/bin/node \
+  /opt/nexus-release/checkout/scripts/retire-pm2-fallback.mjs \
+  --apply --confirm "$PM2_RETIRE_CONFIRM"
+
+sudo /usr/bin/systemctl show "${PM2_RETIRE_UNIT}.service" \
+  --property=ActiveState,SubState,Result,ExecMainStatus --no-pager
+sudo /usr/bin/journalctl -u "${PM2_RETIRE_UNIT}.service" --no-pager
+```
+
+The write-ahead transaction is resumable and monotonic:
+`admitted -> fallback_barred -> systemd_retired -> closure_detached ->
+package_retired -> verified`.
+It writes
+`/var/lib/nexus-release/state/pm2-fallback-retirement.json`, then publishes the
+no-replace `pm2-fallback-retired.json` tombstone before removing any executable
+authority. It deletes the journal only after the immutable terminal receipt and
+retained closure manifest are durable under
+`/var/lib/nexus-release/retirements/pm2-fallback/`. A crash or
+failed verification is not permission to restore PM2 or remove evidence: rerun
+the detached apply with the same confirmation so the exact durable phase can
+resume. A malformed/conflicting journal, tombstone, or receipt blocks.
+
+The removal allowlist is closed: the two canonical PM2 unit files and their
+`multi-user.target.wants` links when captured by the plan,
+`/usr/local/bin/pm2`,
+`/usr/local/share/nexus-release/pm2-package-lock.json`, the attestation above,
+and only its exact `/opt/nexus-release/pm2/<version>` closure. Before recursive
+removal, the closure is atomically renamed on the same filesystem to the
+transaction-derived
+`/opt/nexus-release/.pm2-fallback-retirement-<transaction-id>` quarantine. The
+durable manifest binds every admitted path, type, mode, size, and file digest;
+a crash during unit unlink, detachment, or purge may resume only the exact
+remaining subset. Filesystem crossings, symbolic links, changed entries, and
+new quarantine paths refuse instead of being deleted. The quarantine must be
+absent when the terminal receipt is published.
+
+The two `system.control` guards remain forever. Preserve both legacy checkout/config
+trees, `/home/dominguez/.pm2`, `/etc/nexus-release`, `/var/lib/nexus-release`,
+`/var/lib/nexus-hub`, and `/srv/nexus-backups/application`; the transaction has
+no allowlisted mutation for unrelated content in them. Its only
+`/var/lib/nexus-release` mutations are the exact journal, tombstone, terminal
+receipt, and retained closure-manifest evidence paths named above.
+`scripts/retire-legacy-release-machinery.sh` is not this procedure and must not
+be reused for it.
+
+Runtime gates distinguish an interrupted transaction from completed retirement.
+The ordinary poller service and wrapper refuse while
+`pm2-fallback-retirement.json` exists, but the terminal tombstone does not block
+later container releases. The one-time bootstrap service refuses either file.
+Heartbeat remains available so backup/notification liveness stays observable.
+Before any attended PM2 fallback attempt, root must prove that neither file nor
+a symlink at either name exists; the user transaction also requires the canonical
+PM2 unit to be exact and active, so the permanent guard blocks a direct revival:
+
+```bash
+sudo test ! -e /var/lib/nexus-release/state/pm2-fallback-retirement.json
+sudo test ! -L /var/lib/nexus-release/state/pm2-fallback-retirement.json
+sudo test ! -e /var/lib/nexus-release/state/pm2-fallback-retired.json
+sudo test ! -L /var/lib/nexus-release/state/pm2-fallback-retired.json
+```

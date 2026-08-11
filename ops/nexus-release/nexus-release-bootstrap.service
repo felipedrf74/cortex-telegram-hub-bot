@@ -5,6 +5,13 @@ After=network-online.target docker.service
 Wants=network-online.target
 Requires=docker.service
 ConditionPathExists=!/var/lib/nexus-release/state/control-plane-transaction.json
+ConditionPathIsSymbolicLink=!/var/lib/nexus-release/state/control-plane-transaction.json
+ConditionPathExists=!/var/lib/nexus-release/state/control-plane-post-gate.json
+ConditionPathIsSymbolicLink=!/var/lib/nexus-release/state/control-plane-post-gate.json
+ConditionPathExists=!/var/lib/nexus-release/state/pm2-fallback-retirement.json
+ConditionPathIsSymbolicLink=!/var/lib/nexus-release/state/pm2-fallback-retirement.json
+ConditionPathExists=!/var/lib/nexus-release/state/pm2-fallback-retired.json
+ConditionPathIsSymbolicLink=!/var/lib/nexus-release/state/pm2-fallback-retired.json
 ConditionPathExists=/var/lib/nexus-release/state/bootstrap-baseline.json
 
 [Service]

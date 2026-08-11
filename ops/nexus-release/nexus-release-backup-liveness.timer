@@ -1,0 +1,12 @@
+[Unit]
+Description=Nexus Hub durable backup alert retry and liveness cadence
+Documentation=file:///opt/nexus-release/checkout/ops/local-backup/README.md
+
+[Timer]
+OnCalendar=*-*-* *:*:20
+AccuracySec=1s
+Persistent=true
+Unit=nexus-release-backup-liveness.service
+
+[Install]
+WantedBy=timers.target

@@ -6,6 +6,7 @@ import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 import { canonicalJson, sha256 } from './lib/release-canonical.mjs';
+import { computeReleaseControlPlaneIdentity } from './lib/release-control-plane.mjs';
 import {
   buildReleaseManifestPayload,
   loadContinuousDeploymentPolicy,
@@ -286,6 +287,16 @@ const migrationDigest = migrationVerdictDigest(
   hostedMigrationInventory,
   trustedMigrationResult.migrationReconciliation,
 );
+let controlPlane;
+try {
+  controlPlane = computeReleaseControlPlaneIdentity(root);
+} catch (error) {
+  process.stderr.write(
+    'refusing to sign: governed release control-plane identity could not be computed: '
+    + `${error instanceof Error ? error.message : 'unknown error'}\n`,
+  );
+  process.exit(65);
+}
 
 const payload = buildReleaseManifestPayload({
   createdAt,
@@ -302,6 +313,7 @@ const payload = buildReleaseManifestPayload({
     contentEngine: { repository: policy.registry.contentEngineImage, digest: contentEngineDigest },
   },
   compose: { path: policy.compose.file, digest: composeDigest },
+  controlPlane,
   migrations: {
     digest: migrationDigest,
     upFileCount,
@@ -370,6 +382,7 @@ process.stdout.write(`${JSON.stringify({
   output: outputPath,
   sourceSha: payload.source.sha,
   manifestDigest: sha256(canonicalJson(envelope)),
+  controlPlaneDigest: controlPlane.digest,
   composeDigest,
   migrationDigest,
   migrationComparisonBase: trustedMigrationResult.comparisonBase,

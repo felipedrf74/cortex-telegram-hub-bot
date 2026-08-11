@@ -28,7 +28,7 @@ value substring the container value instead of interpolating from the poller;
 quote-wrapped and inline-comment legacy dotenv forms are refused. No secret
 value or environment-file digest is emitted in receipts.
 
-## `nexus.release-manifest.v2`
+## `nexus.release-manifest.v3`
 
 The only artifact the deployment host trusts. An Ed25519 envelope over a
 canonical-JSON payload; the signature is verified against a root-owned pinned
@@ -40,7 +40,7 @@ tampering, not as a forward-compatible extension.
 
 | Payload field | Contract |
 | --- | --- |
-| `schema` / `schemaVersion` | `nexus.release-manifest-payload.v2` / `2` |
+| `schema` / `schemaVersion` | `nexus.release-manifest-payload.v3` / `3` |
 | `createdAt` | Canonical UTC timestamp; rejected if future-dated beyond 5 minutes of skew or older than `trust.maxManifestAgeSeconds` |
 | `source.repository` | Must equal the governed repository |
 | `source.ref` | Must equal the protected ref |
@@ -49,6 +49,7 @@ tampering, not as a forward-compatible extension.
 | `source.runId` / `source.runAttempt` | Positive integer strings |
 | `images.backend` / `images.contentEngine` | `{repository, digest}`; repository must equal the governed image, digest must be `sha256:<64 hex>`, and the two digests must differ |
 | `compose.path` / `compose.digest` | Governed Compose filename and the SHA-256 of its exact bytes |
+| `controlPlane.schema` / `controlPlane.digest` | `nexus.release-control-plane.v1` and the canonical SHA-256 of the governed controller runtime fingerprint |
 | `migrations.digest` | SHA-256 over the canonical eligibility summary, complete ordered migration inventory, and complete reconciliation projection |
 | `migrations.upFileCount` / `downFileCount` | Non-negative integers |
 | `migrations.cdEligibility` | `{eligible, predecessorCompatible, reasons}` — booleans and a bounded string list |
@@ -56,13 +57,71 @@ tampering, not as a forward-compatible extension.
 | `migrations.reconciliation` | `nexus.release-migration-reconciliation.v2`: source-policy digest (including v4 archive modes/locators); exact production/staging lineage ids and legacy rows; retired SHA-256/source-commit metadata/replacement relationship for each row; exact digest-bound compatibility exemption with ordered old/replacement unique-index transition descriptors; and exact semantic-schema exclusions |
 
 The release identity is `sha256` over `{sha, backend, contentEngine, compose,
-migrations}`, truncated to 32 hex characters. It is derived only from signed,
-immutable deployable content. Publication metadata is deliberately not an input:
+migrations, controlPlane}`, truncated to 32 hex characters. It is derived only
+from signed, immutable deployable content. Publication metadata is deliberately not an input:
 the receipt preserves the exact accepted `runId`, `runAttempt`, full-manifest
 digest, and OCI release-payload digest, while a later CI run publishing the same
 deployable identity is refused as already settled and cannot overwrite that
-first authorizing receipt. A changed source, image pair, Compose digest, or
-migration digest is a different release.
+first authorizing receipt. A changed source, image pair, Compose digest,
+migration digest, or control-plane digest is a different release.
+
+`ops/nexus-release/release-control-plane-inputs.json` defines the controller compatibility
+surface. Its fingerprint discovers the complete local-import closure of the
+governed controller entrypoints and combines exact file bytes/executable bits
+with the continuous-deployment policy, systemd/sudoers/backup-interface inputs,
+the exact Node runtime version, and only the production package-lock closure
+actually imported by that runtime (`better-sqlite3` and its transitives).
+Application code and unrelated package-lock rows are deliberately absent, so an
+app-only commit can retain the same controller digest and deploy without an
+attended control-plane upgrade. Fingerprinting also requires the executing Node
+runtime to equal the descriptor's exact version; a signer or installed poller
+running different Node bytes fails instead of merely hashing the claimed value.
+
+The signer computes that identity from its exact hosted checkout. The installed
+poller independently computes it from `/opt/nexus-release/checkout` and compares
+it with the signed field after signature verification but before Compose
+validation, runtime-plan creation, state writes, application-image operations,
+or cache pruning. A mismatch returns `deferred`; the immutable payload pull and
+extraction required to discover and verify the signed manifest are the only
+preceding local materialization. The attended immutable-checkout upgrade makes
+the digests equal before the timer can admit that release.
+
+Checkout identity alone does not grant the root backup producer authority. For
+every ordinary candidate, the controller also descriptor-reads and byte-compares
+the governed producer, five backup/restore units and timers, and sudoers policy
+against their installed copies; it requires exact root ownership, modes, and
+single-link regular files, validates installed sudoers, and requires each unit's
+effective `LoadState`, `FragmentPath`, empty `DropInPaths`, and
+`NeedDaemonReload=no`. This read-only proof runs before candidate discovery and
+again immediately before the backup unit can start. A mismatch therefore cannot
+reach staging on its first observation or cross from an already-staged retry
+into backup/production. Receiptless crash recovery deliberately precedes the
+gate because it never starts the installed producer and must not be stranded by
+unrelated unit drift.
+
+Version 2 envelopes have no controller identity. A v2 controller rejects the v3
+envelope and its extra signed field fail-closed. A v3 controller never admits a
+v2 manifest as a new candidate; it accepts v2 only when re-verifying an already
+recorded predecessor or interrupted legacy release so the first v3 deployment
+does not strand the established rollback target. That is a runtime
+manifest/receipt recovery contract, not an attended control-plane selector
+rollback contract: a retained v2 controller tree is not required to contain or
+execute v3 checker entrypoints. Selector rollback uses the version-compatible
+transaction proof from the attended installer before returning authority to the
+older immutable tree.
+
+The first v3 publication after an attended controller upgrade may be summary
+ineligible solely because the governance inputs used to classify it changed.
+That one bridge is admitted only when the installed control plane already equals
+the signed candidate and the poller reopens the exact active OCI digest, verifies
+its retained v2 or v3 signature, and binds it back to completed receipt and
+state. Candidate and retained payloads must have identical image repositories
+and digests, Compose identity, complete migration inventory, complete
+reconciliation projection, and up/down counts. Only the classifier verdict
+fields and `migrations.digest` that encodes those fields are excluded from this
+comparison. Missing retained evidence or any deployable drift refuses the
+exception; authorization still runs the normal staging, backup, migration, and
+production evidence path.
 
 The deployment host recomputes `migrations.digest` from the signed eligibility
 summary, inventory, and reconciliation and requires the inventory length to
@@ -112,19 +171,37 @@ mode-0600, single-link
 `/var/lib/nexus-release/state/control-plane-transaction.json`. Before its first
 authority mutation, that exact-schema record durably binds operation/mode,
 source and target identities, original active/previous selectors, candidate
-digest and stage inode, phase, and both timers' active/enabled bits. The record
-is simultaneously the systemd execution gate for bootstrap, poller, and
-heartbeat. After SIGKILL or reboot, only the same request may resume: it must
+digest and stage inode, phase, the four established timers' eight snapshot
+active/enabled bits, the poller timer's target-aware desired pair, and the
+backup-liveness timer's prior and target-aware desired pairs: fourteen exact
+timer bits. The record is simultaneously the systemd
+execution gate for bootstrap, poller, heartbeat, and backup-liveness when that
+three-unit set is installed. After SIGKILL or reboot, only the same request may resume: it must
 revalidate the record, candidate, exact selector pre/post identities, atomic
-fixed-file publications, daemon reload, settled services, and all four saved
-timer states. Every service and timer must have the governed
+fixed-file publications, daemon reload, settled services, and all saved and
+desired timer states. Every service and timer must have the governed
 `/etc/systemd/system` fragment and an empty effective `DropInPaths`; physical
 exact-name, dash-prefix, and type-wide drop-in tiers across the systemd unit
-search path are blocking. The gate is removed and its parent synced only after
-a durable complete phase and a second full reproof. Initial mode proves all
+search path are blocking. After a durable complete phase and a second full
+reproof, the gating record is atomically renamed to a validated post-gate
+journal that continues to gate bootstrap and poller while all five timers remain
+inactive. Saved-active heartbeat and backup-liveness require exact successful
+oneshot proofs against the selected controller; backup-liveness uses the governed
+force-proof service, never the cadence-gated timer service. A final full reproof
+then atomically promotes the record to terminal finalization state. Before any
+timer start, finalization recomputes the complete immutable tree digest, signed
+control-plane identity, Node-22 native dependency proof, installed authority,
+and exact effective units; a retry admits only the pending inactive state or the
+exact terminal state for each timer. Initial mode proves all
 physical unit definitions absent before build and again before gate publication;
 rollback is admitted only when the requested immutable target is exactly
-`checkout.previous`. Any malformed state/stage object, request mismatch,
+`checkout.previous`; a retained target without the signed three-unit liveness
+set removes only the exact outgoing installed set and forces desired liveness
+bits to 0/0.
+A retained target without the post-gate poller condition preserves its enabled
+bit but forces desired active to 0; restarting that timer is a separate attended
+action after all journals are absent.
+Any malformed state/stage object, request mismatch,
 third selector identity, candidate drift, or unknown timer/service probe status
 is blocking evidence, never a reason to resnapshot or rebuild.
 
@@ -359,6 +436,16 @@ recovery identity. Fresh admission returns the complete verified fields to the
 deployment, which descriptor-reverifies those exact bytes before persisting
 them; crash recovery uses only persisted `active.backupEvidence`, even if the
 pointer has since been overwritten or removed.
+A separate weekly heartbeat descriptor-binds that pointer, the current encrypted
+artifact, and the latest restore-verification receipt. It rehashes the current
+artifact and requires it to be no older than two hours; restore evidence must be
+no older than eight days. A restored artifact that remains present is rehashed,
+while safe hourly-retention pruning leaves its immutable restore receipt as the
+accepted proof. Invalid, mismatched, future-dated, or stale evidence fails the
+heartbeat and pages through sanitized fields. Hourly backup and weekly restore
+`ExecStopPost` hooks page immediately on unit failure, and the Python jobs run
+under `env -i` so only the alert helper receives dedicated release-channel
+credentials.
 The producer records canonical `startedAt` before attempting its lock or opening
 the source database. Admission requires that timestamp to be at or after the
 release's `systemctl start` request and requires `completedAt >= startedAt`, so
@@ -412,7 +499,7 @@ mid-attempt claims. Public protected-head checks after staging and again at the
 last non-mutating pre-write-ahead boundary supersede an outdated signed source;
 the moving publication tag cannot do so by itself.
 
-## `nexus.release-receipt.v2`
+## `nexus.release-receipt.v3`
 
 Immutable, one per release identity, written atomically (per-writer temp file,
 `fsync`, `rename`, parent-directory `fsync`). Overwriting one is refused.
@@ -421,12 +508,21 @@ Fields: release id, source SHA, created/completed timestamps; `evidenceDigest`;
 verified identity (repository, ref, workflow, run id, run attempt, manifest
 digest, key id, and the
 exact OCI release-payload digest extracted by the poller); both image digests;
-Compose path and digest; the migration verdict and reconciliation digest;
+Compose path and digest; the signed control-plane identity; the migration
+verdict and reconciliation digest;
 `staging` and `production`
 phases each with `{result, checks[], durationMs}`; `backup` `{result, artifact}`;
 `rollback` `{result, restored, incidentRecoveryDurationMs,
 predecessorSwitchDurationMs, predecessorSwitchObjectiveSeconds}`; `outcome`;
 `failureCode`.
+
+Receipt v3 requires the signed `controlPlane` field. Retained receipt v2 is an
+explicit legacy read shape and forbids that field. New v3 candidates always
+write v3; the only writer of v2 is crash recovery settling an already-active,
+signature-verified manifest v2 payload, because inventing a controller identity
+would change its historical release and evidence digests. Schema and field
+presence are checked bidirectionally, so adding `controlPlane` to v2 or removing
+it from v3 is rejected rather than interpreted as a downgrade.
 
 A `completed` receipt requires passing production observation plus exact running
 image-digest checks for both governed services. `incidentRecoveryDurationMs`
@@ -443,8 +539,9 @@ original failure.
 
 `evidenceDigest` is SHA-256 over every claim admitted from the verified signed
 manifest: full repository/ref/workflow/run provenance, source SHA, manifest and
-key identity, exact OCI payload, images, Compose, the complete migration
-summary, and the signed reconciliation digest. It is separate from `releaseId`:
+key identity, exact OCI payload, images, Compose, control-plane identity, the
+complete migration summary, and the signed reconciliation digest. It is
+separate from `releaseId`:
 the latter remains the idempotent deployable-content identity, while the
 evidence digest binds which CI run, signed verdict, and exact legacy/drift policy
 authorized it.
@@ -453,7 +550,10 @@ Receipt reads validate the exact schema, field types, numeric bounds, governed
 artifact names, phase/result consistency, Compose and migration digests, and
 rollback image identity. The requested filename id must equal the embedded id,
 and the release id is recomputed from source SHA, both image digests, Compose
-digest, and migration digest. The evidence digest is independently recomputed
+digest, migration digest, and (for receipts generated from v3 manifests)
+control-plane identity. Pre-controller-binding receipts omit that field and
+retain their original release-id calculation so an installed upgrade can still
+prove the current predecessor. The evidence digest is independently recomputed
 from every signed claim. Before a receipt can outrank active state, those same
 fields, its OCI release-payload digest, and its evidence digest must match the
 write-ahead active identity; a `rolled_back` receipt must also match the

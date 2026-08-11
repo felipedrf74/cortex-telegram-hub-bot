@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { canonicalJson, fail, sha256 } from './release-canonical.mjs';
+import { assertReleaseControlPlaneShape } from './release-control-plane.mjs';
 import { assertLockHeld } from './release-lock.mjs';
 import {
   parseReleaseManifestBytes,
@@ -11,6 +12,7 @@ import {
 } from './release-manifest.mjs';
 import {
   BLOCK_REASONS,
+  LEGACY_RELEASE_RECEIPT_SCHEMA,
   RELEASE_RECEIPT_SCHEMA,
   RELEASE_STATUSES,
   assertBackupEvidenceShape,
@@ -283,6 +285,10 @@ function verifyRetainedReleasePayload({
     // Freshness governed first acceptance. A retained immutable predecessor is
     // reverified at its signed creation time so expiry cannot disable rollback.
     nowMs: Date.parse(envelope.payload.createdAt),
+    // The first controller-bound release must still be able to restore the
+    // already-accepted v2 predecessor. This exception is never used for a newly
+    // discovered candidate.
+    allowLegacyControlPlane: true,
   });
   verifyComposeBytes({ payload: retained.payload, bytes: extracted.composeBytes, policy });
   if (retained.releaseId !== expected.releaseId
@@ -363,6 +369,9 @@ function buildReceipt({
   failureCode,
   policy,
 }) {
+  const controlPlane = payload.controlPlane
+    ? { ...payload.controlPlane }
+    : null;
   const evidenceDigest = releaseEvidenceDigest({
     manifestPayload: payload,
     manifestDigest: verified.manifestDigest,
@@ -370,7 +379,10 @@ function buildReceipt({
     releasePayloadDigest,
   });
   return {
-    schema: RELEASE_RECEIPT_SCHEMA,
+    // Newly admitted candidates are manifest v3 and always produce receipt v3.
+    // Only crash recovery of an already-active, verified manifest v2 payload
+    // may finish the legacy receipt shape without inventing a signed identity.
+    schema: controlPlane ? RELEASE_RECEIPT_SCHEMA : LEGACY_RELEASE_RECEIPT_SCHEMA,
     releaseId,
     sourceSha: payload.source.sha,
     createdAt,
@@ -395,6 +407,7 @@ function buildReceipt({
       contentEngine: { ...payload.images.contentEngine },
     },
     compose: { ...payload.compose },
+    ...(controlPlane ? { controlPlane } : {}),
     migrations: {
       digest: payload.migrations.digest,
       reconciliationDigest: releaseMigrationReconciliationDigest(
@@ -423,6 +436,151 @@ function imagePairMatches(left, right) {
     && left.backend?.digest === right.backend?.digest
     && left.contentEngine?.repository === right.contentEngine?.repository
     && left.contentEngine?.digest === right.contentEngine?.digest;
+}
+
+function controllerOnlyTransitionContextMatches({
+  payload,
+  installedControlPlane,
+  state,
+  effective,
+  completedReceipt,
+}) {
+  if (payload?.migrations?.cdEligibility?.eligible !== false
+      || effective?.provable !== true
+      || effective.source !== 'receipt'
+      || effective.status !== RELEASE_STATUSES.COMPLETED
+      || completedReceipt?.outcome !== 'completed'
+      || effective.releaseId !== completedReceipt.releaseId
+      || state?.active?.releaseId !== completedReceipt.releaseId
+      || state.active.status !== RELEASE_STATUSES.COMPLETED
+      || state?.predecessor?.releaseId !== completedReceipt.releaseId
+      || completedReceipt.sourceSha !== state.active.sourceSha
+      || completedReceipt.sourceSha !== state.predecessor.sourceSha
+      || completedReceipt.identity?.releasePayloadDigest !== state.active.payload?.digest
+      || completedReceipt.compose?.digest !== state.active.payload?.composeDigest
+      || completedReceipt.compose?.digest !== state.predecessor.payload?.composeDigest
+      || completedReceipt.evidenceDigest !== state.active.evidenceDigest
+      || !imagePairMatches(completedReceipt.images, state.active.images)
+      || !imagePairMatches(completedReceipt.images, state.predecessor.images)
+      || state.blocked !== null
+      || state.unresolvedContractMigrations !== null) {
+    return false;
+  }
+  try {
+    assertReleaseControlPlaneShape(
+      installedControlPlane,
+      'installed release control plane',
+    );
+    assertReleaseControlPlaneShape(
+      payload.controlPlane,
+      'controller-only candidate controlPlane',
+    );
+  } catch {
+    return false;
+  }
+  return canonicalJson(payload.controlPlane) === canonicalJson(installedControlPlane)
+    && (!completedReceipt.controlPlane
+      || canonicalJson(payload.controlPlane) !== canonicalJson(completedReceipt.controlPlane));
+}
+
+/**
+ * The first controller-bound publication may inherit the completed release's
+ * summary-ineligible migration verdict even though it changes no application
+ * or migration bytes. The verdict itself and `migrations.digest` necessarily
+ * differ because the digest binds the classifier result. Admit the transition
+ * only after reopening the retained signed payload and proving its deployable
+ * inventory, reconciliation, image, and Compose bytes are exactly unchanged.
+ */
+export function isControllerOnlyReleaseTransition({
+  payload,
+  installedControlPlane,
+  state,
+  effective,
+  completedReceipt,
+  retainedPayload,
+}) {
+  if (!controllerOnlyTransitionContextMatches({
+    payload,
+    installedControlPlane,
+    state,
+    effective,
+    completedReceipt,
+  }) || !retainedPayload) {
+    return false;
+  }
+  if (retainedPayload.controlPlane
+      && canonicalJson(payload.controlPlane) === canonicalJson(retainedPayload.controlPlane)) {
+    return false;
+  }
+  return imagePairMatches(payload.images, completedReceipt.images)
+    && imagePairMatches(payload.images, state.active.images)
+    && imagePairMatches(payload.images, state.predecessor.images)
+    && imagePairMatches(payload.images, retainedPayload.images)
+    && canonicalJson(payload.compose) === canonicalJson(completedReceipt.compose)
+    && canonicalJson(payload.compose) === canonicalJson(retainedPayload.compose)
+    && payload.compose.digest === state.active.payload.composeDigest
+    && payload.compose.digest === state.predecessor.payload.composeDigest
+    && payload.migrations.upFileCount === retainedPayload.migrations?.upFileCount
+    && payload.migrations.downFileCount === retainedPayload.migrations?.downFileCount
+    && canonicalJson(payload.migrations.inventory)
+      === canonicalJson(retainedPayload.migrations?.inventory)
+    && canonicalJson(payload.migrations.reconciliation)
+      === canonicalJson(retainedPayload.migrations?.reconciliation);
+}
+
+function verifyControllerOnlyRetainedPayload({
+  policy,
+  registry,
+  state,
+  completedReceipt,
+}) {
+  const active = state.active;
+  const activeRef = `${policy.registry.releaseImage}@${active.payload.digest}`;
+  registry.pull(activeRef);
+  const activeDir = path.join(
+    policy.paths.workDir,
+    active.payload.digest.replace('sha256:', ''),
+  );
+  const extracted = registry.extractReleasePayload({
+    reference: activeRef,
+    destinationDir: activeDir,
+  });
+  const envelope = parseReleaseManifestBytes({ bytes: extracted.manifestBytes, policy });
+  const retained = verifyReleaseManifest({
+    envelope,
+    policy,
+    nowMs: Date.parse(active.startedAt),
+    allowLegacyControlPlane: true,
+  });
+  verifyComposeBytes({ payload: retained.payload, bytes: extracted.composeBytes, policy });
+  const evidenceDigest = releaseEvidenceDigest({
+    manifestPayload: retained.payload,
+    manifestDigest: retained.manifestDigest,
+    keyId: policy.trust.signingKeyId,
+    releasePayloadDigest: active.payload.digest,
+  });
+  const receiptHasControlPlane = Object.hasOwn(completedReceipt, 'controlPlane');
+  const payloadHasControlPlane = Object.hasOwn(retained.payload, 'controlPlane');
+  if (retained.releaseId !== active.releaseId
+      || retained.releaseId !== completedReceipt.releaseId
+      || retained.payload.source.sha !== active.sourceSha
+      || retained.payload.source.sha !== completedReceipt.sourceSha
+      || !imagePairMatches(retained.payload.images, active.images)
+      || !imagePairMatches(retained.payload.images, completedReceipt.images)
+      || canonicalJson(retained.payload.compose) !== canonicalJson(completedReceipt.compose)
+      || retained.payload.compose.digest !== active.payload.composeDigest
+      || completedReceipt.identity.manifestDigest !== retained.manifestDigest
+      || completedReceipt.identity.keyId !== policy.trust.signingKeyId
+      || completedReceipt.identity.releasePayloadDigest !== active.payload.digest
+      || completedReceipt.evidenceDigest !== evidenceDigest
+      || active.evidenceDigest !== evidenceDigest
+      || receiptHasControlPlane !== payloadHasControlPlane
+      || (receiptHasControlPlane
+        && canonicalJson(completedReceipt.controlPlane)
+          !== canonicalJson(retained.payload.controlPlane))) {
+    fail('retained active payload does not match completed receipt and state identity');
+  }
+  return retained.payload;
 }
 
 /**
@@ -620,6 +778,9 @@ async function recoverUnprovableActiveRelease({
       envelope,
       policy,
       nowMs: Date.parse(active.startedAt),
+      // Recovery may need to settle the last release accepted by the v2
+      // controller before the attended controller upgrade.
+      allowLegacyControlPlane: true,
     });
     payload = verified.payload;
     verifyComposeBytes({ payload, bytes: extracted.composeBytes, policy });
@@ -1002,12 +1163,14 @@ async function recoverUnprovableActiveRelease({
 
 export async function runReleaseDeployment({
   policy,
+  controlPlane,
   store,
   registry,
   health,
   notifier: notificationDelivery,
   mirror: mirrorDelivery,
   backup,
+  installedBackupInterface,
   databaseProbe,
   bootstrap = null,
   protectedHead,
@@ -1021,6 +1184,17 @@ export async function runReleaseDeployment({
   if (!protectedHead || typeof protectedHead.verify !== 'function') {
     fail('protected-head verifier is required');
   }
+  assertReleaseControlPlaneShape(controlPlane, 'installed release control plane');
+  const proveInstalledBackupInterface = () => {
+    if (!installedBackupInterface || typeof installedBackupInterface.verify !== 'function') {
+      fail('installed backup-interface verifier is required');
+    }
+    const proof = installedBackupInterface.verify();
+    if (!proof || proof.passed !== true) {
+      fail('installed backup interface does not match the governed control plane');
+    }
+    return proof;
+  };
 
   const iso = () => new Date(clock()).toISOString();
   const startedAt = iso();
@@ -1220,6 +1394,12 @@ export async function runReleaseDeployment({
     };
   }
 
+  // Crash recovery and durable blocks are resolved before this gate because
+  // neither path starts the installed backup producer. Every ordinary candidate
+  // (including a quiet no-op) must prove that live root backup authority exactly
+  // matches this immutable controller before registry discovery can proceed.
+  proveInstalledBackupInterface();
+
   const resumingAcceptedPreProduction = effective.source === 'state'
     && [RELEASE_STATUSES.ELIGIBLE, RELEASE_STATUSES.STAGING_HEALTHY]
       .includes(effective.status)
@@ -1252,19 +1432,17 @@ export async function runReleaseDeployment({
     state.active?.rollbackTarget?.payload?.digest,
   ].filter(Boolean))];
 
-  // Candidate failures and quiet NOOP polls must still bound discovery
-  // artifacts. Protect every payload that could be the current candidate,
-  // accepted active release, or rollback predecessor; prune only older local
-  // payload images/directories before any early return below.
-  registry.pruneImages({
-    repository: policy.registry.releaseImage,
-    keepDigests: protectedPayloadDigests,
-  });
-  registry.pruneWorkDirs({
-    keepDirs: protectedPayloadDigests.map((digest) => (
-      path.join(policy.paths.workDir, digest.replace('sha256:', ''))
-    )),
-  });
+  const prunePayloadDiscoveryArtifacts = () => {
+    registry.pruneImages({
+      repository: policy.registry.releaseImage,
+      keepDigests: protectedPayloadDigests,
+    });
+    registry.pruneWorkDirs({
+      keepDirs: protectedPayloadDigests.map((digest) => (
+        path.join(policy.paths.workDir, digest.replace('sha256:', ''))
+      )),
+    });
+  };
 
   // Manifest freshness gates first acceptance, not quiet observation of an
   // already-settled release. The immutable receipt proves the active release,
@@ -1276,6 +1454,9 @@ export async function runReleaseDeployment({
       && state.active?.releaseId === effective.releaseId
       && effective.releasePayloadDigest === payloadDigest
       && state.active?.payload?.digest === payloadDigest) {
+    // Quiet exact-payload polls do not reopen the manifest, but must still keep
+    // the bounded discovery cache healthy.
+    prunePayloadDiscoveryArtifacts();
     return {
       outcome: DEPLOYMENT_OUTCOMES.NOOP,
       reason: 'already_completed_payload',
@@ -1303,7 +1484,60 @@ export async function runReleaseDeployment({
   });
   const payload = verified.payload;
   const releaseId = verified.releaseId;
+  if (canonicalJson(payload.controlPlane) !== canonicalJson(controlPlane)) {
+    log(`release ${releaseId} requires an attended control-plane upgrade; deferring`);
+    return {
+      outcome: DEPLOYMENT_OUTCOMES.DEFERRED,
+      reason: 'control_plane_mismatch',
+      releaseId,
+    };
+  }
+  // A controller-incompatible publication may be discovered and signature
+  // checked, but it cannot mutate deployment state, Compose, application image
+  // retention, or remove existing cache entries. Only the immutable discovery
+  // payload needed to read the signature has been materialized at this point.
   verifyComposeBytes({ payload, bytes: extracted.composeBytes, policy });
+  let controllerOnlyAuthorized = false;
+  if (!payload.migrations.cdEligibility.eligible) {
+    let completedReceipt = null;
+    try {
+      completedReceipt = effective.source === 'receipt' && effective.releaseId
+        ? store.readReceipt(effective.releaseId)
+        : null;
+    } catch {
+      completedReceipt = null;
+    }
+    if (controllerOnlyTransitionContextMatches({
+      payload,
+      installedControlPlane: controlPlane,
+      state,
+      effective,
+      completedReceipt,
+    })) {
+      try {
+        const retainedPayload = verifyControllerOnlyRetainedPayload({
+          policy,
+          registry,
+          state,
+          completedReceipt,
+        });
+        controllerOnlyAuthorized = isControllerOnlyReleaseTransition({
+          payload,
+          installedControlPlane: controlPlane,
+          state,
+          effective,
+          completedReceipt,
+          retainedPayload,
+        });
+      } catch {
+        log(`release ${releaseId} retained active payload could not authorize a controller-only transition`);
+      }
+    }
+  }
+  // Controller-only proof may materialize the exact retained active payload,
+  // but no deployment state, application image, or Compose operation occurs
+  // until that signed comparison has finished.
+  prunePayloadDiscoveryArtifacts();
   if (resumingAcceptedPayload
       && (releaseId !== state.active.releaseId
         || payload.source.sha !== state.active.sourceSha
@@ -1427,28 +1661,6 @@ export async function runReleaseDeployment({
       ...(supersededBy ? { supersededBy } : {}),
     };
   }
-
-  // Bound application images even when this candidate is later refused or
-  // fails in staging. Until the candidate settles, all three roles may be
-  // recovery-relevant: candidate, active release, and active predecessor.
-  registry.pruneImages({
-    repository: payload.images.backend.repository,
-    keepDigests: [...new Set([
-      payload.images.backend.digest,
-      state.active?.images?.backend?.digest,
-      state.predecessor?.images?.backend?.digest,
-      state.active?.rollbackTarget?.images?.backend?.digest,
-    ].filter(Boolean))],
-  });
-  registry.pruneImages({
-    repository: payload.images.contentEngine.repository,
-    keepDigests: [...new Set([
-      payload.images.contentEngine.digest,
-      state.active?.images?.contentEngine?.digest,
-      state.predecessor?.images?.contentEngine?.digest,
-      state.active?.rollbackTarget?.images?.contentEngine?.digest,
-    ].filter(Boolean))],
-  });
 
   // There is no container predecessor before the first successful cutover.
   // Unattended production mutation is therefore impossible to recover with the
@@ -1678,7 +1890,9 @@ export async function runReleaseDeployment({
     return { outcome, releaseId, receiptDigest: written.digest, receiptPath: written.path, mirrored };
   }
 
-  if (!payload.migrations.cdEligibility.eligible && !bootstrapAuthorized) {
+  if (!payload.migrations.cdEligibility.eligible
+      && !bootstrapAuthorized
+      && !controllerOnlyAuthorized) {
     // Contract and destructive migrations require a separate owner-authorized
     // maintenance transaction. That container transaction is intentionally not
     // implemented until its authority, drain, and database-restore policy is
@@ -1728,6 +1942,33 @@ export async function runReleaseDeployment({
     // one-shot first-cutover exception.
     log(`release ${releaseId} owner bootstrap authorizes the semantically rehearsed pending inventory`);
   }
+  if (controllerOnlyAuthorized) {
+    log(
+      `release ${releaseId} controller-only transition authorized by exact retained signed `
+      + 'image, Compose, migration inventory, reconciliation, and count equality',
+    );
+  }
+
+  // Once eligibility has been proved, bound application images for every
+  // recovery-relevant role before accepting the attempt into release state.
+  registry.pruneImages({
+    repository: payload.images.backend.repository,
+    keepDigests: [...new Set([
+      payload.images.backend.digest,
+      state.active?.images?.backend?.digest,
+      state.predecessor?.images?.backend?.digest,
+      state.active?.rollbackTarget?.images?.backend?.digest,
+    ].filter(Boolean))],
+  });
+  registry.pruneImages({
+    repository: payload.images.contentEngine.repository,
+    keepDigests: [...new Set([
+      payload.images.contentEngine.digest,
+      state.active?.images?.contentEngine?.digest,
+      state.predecessor?.images?.contentEngine?.digest,
+      state.active?.rollbackTarget?.images?.contentEngine?.digest,
+    ].filter(Boolean))],
+  });
 
   store.beginAttempt({
     manifestPayload: payload,
@@ -1778,6 +2019,14 @@ export async function runReleaseDeployment({
   // ── staging ────────────────────────────────────────────────────────────────
   const stagingStart = clock();
   const stagingChecks = [];
+  if (controllerOnlyAuthorized) {
+    stagingChecks.push({
+      name: 'controller_only_transition',
+      result: 'passed',
+      durationMs: 0,
+      detail: 'controller_only_transition',
+    });
+  }
   if (bootstrapAuthorized) {
     stagingChecks.push({
       name: 'owner_bootstrap_baseline',
@@ -2010,6 +2259,9 @@ export async function runReleaseDeployment({
 
   // ── production ─────────────────────────────────────────────────────────────
   // The environment names which database the receipt must cover.
+  // Re-prove after staging so a stale reload or replaced installed unit cannot
+  // enter the backup/production boundary on the strength of an earlier check.
+  proveInstalledBackupInterface();
   const backupResult = backup.createPreMigrationBackup({ environment: 'production' });
   let verifiedBackup = backupResult.result === 'passed' && backupResult.evidence
     ? reverifyBackupEvidence({

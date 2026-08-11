@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import argparse
 from collections import namedtuple
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
 import fcntl
 import hashlib
@@ -34,6 +34,18 @@ BACKUP_PATTERN = re.compile(
     r"nexus-db-(?:[0-9]{8}T[0-9]{6}Z|[0-9]{8}|[0-9]{4}-W[0-9]{2})"
     r"\.sqlite\.age"
 )
+BACKUP_LOCK_WAIT_SECONDS = 330.0
+BACKUP_LOCK_RETRY_SECONDS = 0.1
+LOCK_RETRY_SCHEMA = "nexus.local-backup-lock-retry.v1"
+LOCK_RETRY_WINDOW_NS = 45 * 60 * 1_000_000_000
+LOCK_RETRY_MAX_ATTEMPTS = 45
+MAX_RETRY_CLOCK_NS = (2**63) - 1
+LOCK_RETRY_STATE_PATHS = {
+    "backup": Path("/run/nexus-local-backup-active/lock-retry.json"),
+    "restore-verify": Path(
+        "/run/nexus-local-backup-restore-verify-active/lock-retry.json"
+    ),
+}
 
 
 FileIdentity = namedtuple("FileIdentity", ("device", "inode", "uid", "gid", "mode"))
@@ -52,6 +64,238 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def expected_private_owner() -> tuple[int, int]:
+    if os.environ.get("NEXUS_LOCAL_BACKUP_TEST_MODE") == "1":
+        return os.getuid(), os.getgid()
+    return 0, 0
+
+
+def file_snapshot(metadata: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
+def directory_identity(metadata: os.stat_result) -> tuple[int, int]:
+    return metadata.st_dev, metadata.st_ino
+
+
+def assert_trusted_directory(
+    metadata: os.stat_result, label: str, *, private: bool
+) -> None:
+    expected_uid, expected_gid = expected_private_owner()
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or metadata.st_nlink < 1
+        or (private and metadata.st_uid != expected_uid)
+        or (private and metadata.st_gid != expected_gid)
+        or (private and stat.S_IMODE(metadata.st_mode) != 0o700)
+        or (not private and metadata.st_uid not in {0, expected_uid})
+        or (not private and stat.S_IMODE(metadata.st_mode) & 0o022)
+    ):
+        fail(f"{label} has unsafe directory metadata")
+
+
+@contextmanager
+def bound_governed_directories(root: Path, tier: str | None = None) -> Iterator[None]:
+    """Bind the private backup root/tier and its nearest trusted parent.
+
+    Production walks from `/`; test mode may anchor at the fixture parent so
+    macOS's `/var` compatibility symlink does not weaken production semantics.
+    Every opened component remains bound until the caller completes.
+    """
+    target = root if tier is None else root / tier
+    if not target.is_absolute() or target == Path("/"):
+        fail("backup directory path is not governed")
+    if os.environ.get("NEXUS_LOCAL_BACKUP_TEST_MODE") == "1":
+        configured_anchor = os.environ.get("NEXUS_LOCAL_BACKUP_TEST_TRUST_ANCHOR")
+        anchor = Path(configured_anchor) if configured_anchor else root.parent
+    else:
+        anchor = Path("/")
+    try:
+        relative = target.relative_to(anchor)
+    except ValueError:
+        fail("backup directory escapes its trusted anchor")
+    paths = [anchor]
+    current = anchor
+    for component in relative.parts:
+        current /= component
+        paths.append(current)
+    bindings: list[tuple[Path, int, os.stat_result, bool]] = []
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        for candidate in paths:
+            descriptor = os.open(candidate, flags)
+            bindings.append((candidate, descriptor, os.fstat(descriptor), candidate in {root, target}))
+            named = candidate.lstat()
+            opened = bindings[-1][2]
+            private = candidate in {root, target}
+            assert_trusted_directory(opened, "backup directory", private=private)
+            assert_trusted_directory(named, "backup directory", private=private)
+            if directory_identity(opened) != directory_identity(named):
+                fail("backup directory descriptor and path disagree")
+        yield
+        for candidate, descriptor, opened, private in bindings:
+            current_descriptor = os.fstat(descriptor)
+            current_path = candidate.lstat()
+            assert_trusted_directory(current_descriptor, "backup directory", private=private)
+            assert_trusted_directory(current_path, "backup directory", private=private)
+            if (
+                directory_identity(current_descriptor) != directory_identity(opened)
+                or directory_identity(current_path) != directory_identity(opened)
+            ):
+                fail("backup directory changed during verification")
+    except OSError as error:
+        fail(f"backup directory could not be descriptor-bound: {type(error).__name__}")
+    finally:
+        for _candidate, descriptor, _opened, _private in reversed(bindings):
+            os.close(descriptor)
+
+
+def assert_private_regular(
+    metadata: os.stat_result, label: str, *, empty: bool = False
+) -> None:
+    expected_uid, expected_gid = expected_private_owner()
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_nlink != 1
+        or metadata.st_uid != expected_uid
+        or metadata.st_gid != expected_gid
+        or stat.S_IMODE(metadata.st_mode) != 0o600
+        or (empty and metadata.st_size != 0)
+        or (not empty and metadata.st_size <= 0)
+    ):
+        fail(f"{label} has unsafe metadata")
+
+
+def reassert_bound_file(
+    path: Path, descriptor: int, opened: os.stat_result, label: str, *, empty: bool = False
+) -> None:
+    current_descriptor = os.fstat(descriptor)
+    current_path = path.lstat()
+    assert_private_regular(current_descriptor, label, empty=empty)
+    assert_private_regular(current_path, label, empty=empty)
+    if (
+        file_snapshot(current_descriptor) != file_snapshot(opened)
+        or file_snapshot(current_path) != file_snapshot(opened)
+    ):
+        fail(f"{label} changed during verification")
+
+
+@contextmanager
+def bound_private_file(path: Path, label: str, *, empty: bool = False) -> Iterator[tuple[int, os.stat_result]]:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(path, flags)
+        opened = os.fstat(descriptor)
+        named = path.lstat()
+        assert_private_regular(opened, label, empty=empty)
+        assert_private_regular(named, label, empty=empty)
+        if file_snapshot(opened) != file_snapshot(named):
+            fail(f"{label} descriptor and path disagree")
+        yield descriptor, opened
+        reassert_bound_file(path, descriptor, opened, label, empty=empty)
+    except (OSError, UnicodeError) as error:
+        fail(f"{label} could not be descriptor-bound: {type(error).__name__}")
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def sha256_descriptor(descriptor: int, size: int) -> str:
+    digest = hashlib.sha256()
+    position = 0
+    while position < size:
+        block = os.pread(descriptor, min(1024 * 1024, size - position), position)
+        if not block:
+            fail("encrypted backup ended during hashing")
+        digest.update(block)
+        position += len(block)
+    return digest.hexdigest()
+
+
+@contextmanager
+def bound_backup_pair(
+    root: Path,
+    artifact: Path,
+    *,
+    expected_tier: str | None = None,
+    expected_digest: str | None = None,
+    expected_size: int | None = None,
+) -> Iterator[tuple[int, str, int]]:
+    tiers = {"hourly", "daily", "weekly", "pre-promotion"}
+    tier = artifact.parent.name
+    if expected_tier is not None and tier != expected_tier:
+        fail("selected backup is outside its governed tier")
+    if tier not in tiers or artifact.parent != root / tier or not BACKUP_PATTERN.fullmatch(artifact.name):
+        fail("selected backup path is not governed")
+    checksum = artifact.with_name(f"{artifact.name}.sha256")
+    with ExitStack() as stack:
+        stack.enter_context(bound_governed_directories(root, tier))
+        artifact_descriptor, artifact_metadata = stack.enter_context(
+            bound_private_file(artifact, "encrypted backup")
+        )
+        checksum_descriptor, _checksum_metadata = stack.enter_context(
+            bound_private_file(checksum, "encrypted backup checksum")
+        )
+        observed_digest = sha256_descriptor(artifact_descriptor, artifact_metadata.st_size)
+        canonical = f"{observed_digest}  {artifact.name}\n".encode("ascii")
+        checksum_bytes = os.pread(checksum_descriptor, len(canonical) + 1, 0)
+        if checksum_bytes != canonical:
+            fail("encrypted backup checksum is not canonical")
+        if expected_digest is not None and observed_digest != expected_digest:
+            fail("encrypted backup digest does not match its receipt")
+        if expected_size is not None and artifact_metadata.st_size != expected_size:
+            fail("encrypted backup size does not match its receipt")
+        yield artifact_descriptor, observed_digest, artifact_metadata.st_size
+
+
+def validate_backup_pair(
+    root: Path,
+    artifact: Path,
+    *,
+    expected_tier: str | None = None,
+    expected_digest: str | None = None,
+    expected_size: int | None = None,
+) -> tuple[str, int]:
+    with bound_backup_pair(
+        root,
+        artifact,
+        expected_tier=expected_tier,
+        expected_digest=expected_digest,
+        expected_size=expected_size,
+    ) as (_descriptor, digest, size):
+        return digest, size
+
+
+def copy_bound_descriptor(descriptor: int, size: int, destination: Path) -> None:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
+    output = os.open(destination, flags, 0o600)
+    try:
+        position = 0
+        while position < size:
+            block = os.pread(descriptor, min(1024 * 1024, size - position), position)
+            if not block:
+                fail("bound recovery input ended during copy")
+            written = os.write(output, block)
+            if written != len(block):
+                fail("bound recovery input copy was incomplete")
+            position += written
+        os.fsync(output)
+    finally:
+        os.close(output)
+
+
 def fsync_regular_file(path: Path) -> None:
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     descriptor = os.open(path, flags)
@@ -62,6 +306,245 @@ def fsync_regular_file(path: Path) -> None:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+
+
+def lock_retry_state_path(source: str) -> Path | None:
+    if source not in LOCK_RETRY_STATE_PATHS:
+        return None
+    if os.environ.get("NEXUS_LOCAL_BACKUP_TEST_MODE") == "1":
+        test_directory = os.environ.get("NEXUS_LOCAL_BACKUP_TEST_RETRY_DIRECTORY")
+        return Path(test_directory) / f"{source}.json" if test_directory else None
+    return LOCK_RETRY_STATE_PATHS[source]
+
+
+def retry_clock_ns() -> int:
+    if os.environ.get("NEXUS_LOCAL_BACKUP_TEST_MODE") == "1":
+        observed = time.time_ns()
+    else:
+        clock_id = getattr(time, "CLOCK_BOOTTIME", None)
+        clock_gettime_ns = getattr(time, "clock_gettime_ns", None)
+        if clock_id is None or not callable(clock_gettime_ns):
+            fail("boot-time retry clock is unavailable")
+        try:
+            observed = clock_gettime_ns(clock_id)
+        except (OSError, ValueError):
+            fail("boot-time retry clock could not be read")
+    if (
+        isinstance(observed, bool)
+        or not isinstance(observed, int)
+        or observed < 0
+        or observed > MAX_RETRY_CLOCK_NS
+    ):
+        fail("boot-time retry clock is invalid")
+    return observed
+
+
+@contextmanager
+def bound_retry_directory(directory: Path) -> Iterator[int]:
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(directory, flags)
+        opened = os.fstat(descriptor)
+        named = directory.lstat()
+        assert_trusted_directory(opened, "lock retry directory", private=True)
+        assert_trusted_directory(named, "lock retry directory", private=True)
+        if directory_identity(opened) != directory_identity(named):
+            fail("lock retry directory descriptor and path disagree")
+        yield descriptor
+        current_descriptor = os.fstat(descriptor)
+        current_path = directory.lstat()
+        assert_trusted_directory(current_descriptor, "lock retry directory", private=True)
+        assert_trusted_directory(current_path, "lock retry directory", private=True)
+        if (
+            directory_identity(current_descriptor) != directory_identity(opened)
+            or directory_identity(current_path) != directory_identity(opened)
+        ):
+            fail("lock retry directory changed")
+    except OSError as error:
+        fail(f"lock retry directory could not be descriptor-bound: {type(error).__name__}")
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def read_retry_state(path: Path, source: str, now_ns: int) -> dict[str, object] | None:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor: int | None = None
+    try:
+        try:
+            descriptor = os.open(path, flags)
+        except FileNotFoundError:
+            return None
+        metadata = os.fstat(descriptor)
+        named = path.lstat()
+        assert_private_regular(metadata, "lock retry state")
+        assert_private_regular(named, "lock retry state")
+        if file_snapshot(metadata) != file_snapshot(named):
+            fail("lock retry state descriptor and path disagree")
+        if metadata.st_size > 1024:
+            fail("lock retry state is oversized")
+        raw = os.pread(descriptor, metadata.st_size + 1, 0)
+        if len(raw) != metadata.st_size:
+            fail("lock retry state changed during read")
+        reassert_bound_file(path, descriptor, metadata, "lock retry state")
+        try:
+            state = json.loads(raw.decode("utf-8", errors="strict"))
+        except (UnicodeError, json.JSONDecodeError):
+            fail("lock retry state is invalid")
+    except OSError as error:
+        fail(f"lock retry state could not be descriptor-bound: {type(error).__name__}")
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+    if not isinstance(state, dict) or set(state) != {
+        "schema", "source", "startedBoottimeNs", "attempts"
+    }:
+        fail("lock retry state fields are invalid")
+    started = state.get("startedBoottimeNs")
+    attempts = state.get("attempts")
+    if (
+        state.get("schema") != LOCK_RETRY_SCHEMA
+        or state.get("source") != source
+        or isinstance(started, bool)
+        or not isinstance(started, int)
+        or started < 0
+        or started > MAX_RETRY_CLOCK_NS
+        or started > now_ns
+        or isinstance(attempts, bool)
+        or not isinstance(attempts, int)
+        or attempts < 1
+        or attempts > LOCK_RETRY_MAX_ATTEMPTS
+    ):
+        fail("lock retry state values are invalid")
+    return state
+
+
+def write_retry_state(path: Path, state: dict[str, object]) -> None:
+    payload = (json.dumps(state, sort_keys=True, separators=(",", ":")) + "\n").encode("ascii")
+    flags = os.O_RDWR | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor: int | None = None
+    created = False
+    try:
+        try:
+            descriptor = os.open(path, flags | os.O_CREAT | os.O_EXCL, 0o600)
+            created = True
+        except FileExistsError:
+            descriptor = os.open(path, flags)
+            opened = os.fstat(descriptor)
+            named = path.lstat()
+            assert_private_regular(opened, "lock retry state")
+            assert_private_regular(named, "lock retry state")
+            if file_snapshot(opened) != file_snapshot(named):
+                fail("lock retry state descriptor and path disagree")
+        os.ftruncate(descriptor, 0)
+        if os.write(descriptor, payload) != len(payload):
+            fail("lock retry state write was incomplete")
+        os.fsync(descriptor)
+        current_descriptor = os.fstat(descriptor)
+        current_path = path.lstat()
+        assert_private_regular(current_descriptor, "lock retry state")
+        assert_private_regular(current_path, "lock retry state")
+        if file_snapshot(current_descriptor) != file_snapshot(current_path):
+            fail("lock retry state descriptor and path disagree")
+        if created:
+            fsync_directory(path.parent)
+    except OSError as error:
+        fail(f"lock retry state could not be written: {type(error).__name__}")
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def clear_retry_state(path: Path | None) -> None:
+    if path is None:
+        return
+    try:
+        parent_metadata = path.parent.lstat()
+    except FileNotFoundError:
+        return
+    if not stat.S_ISDIR(parent_metadata.st_mode) or path.parent.is_symlink():
+        fail("lock retry directory is unsafe")
+    with bound_retry_directory(path.parent):
+        descriptor: int | None = None
+        try:
+            flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+            try:
+                descriptor = os.open(path, flags)
+            except FileNotFoundError:
+                return
+            opened = os.fstat(descriptor)
+            named = path.lstat()
+            assert_private_regular(opened, "lock retry state")
+            assert_private_regular(named, "lock retry state")
+            if file_snapshot(opened) != file_snapshot(named):
+                fail("lock retry state descriptor and path disagree")
+            os.unlink(path)
+            fsync_directory(path.parent)
+            if path.exists() or path.is_symlink():
+                fail("lock retry state removal was not durable")
+        except OSError as error:
+            fail(f"lock retry state could not be cleared: {type(error).__name__}")
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+
+
+def begin_lock_retry(path: Path | None, source: str) -> bool:
+    if path is None:
+        return False
+    now_ns = retry_clock_ns()
+    with bound_retry_directory(path.parent):
+        state = read_retry_state(path, source, now_ns)
+        if state is None:
+            started = now_ns
+            attempts = 1
+        else:
+            started = int(state["startedBoottimeNs"])
+            attempts = int(state["attempts"]) + 1
+        if (
+            now_ns - started >= LOCK_RETRY_WINDOW_NS
+            or attempts > LOCK_RETRY_MAX_ATTEMPTS
+        ):
+            clear_retry_state(path)
+            return False
+        write_retry_state(path, {
+            "schema": LOCK_RETRY_SCHEMA,
+            "source": source,
+            "startedBoottimeNs": started,
+            "attempts": attempts,
+        })
+        return True
+
+
+def retry_state_allows_attempt(path: Path | None, source: str) -> bool:
+    if path is None:
+        return True
+    try:
+        parent_metadata = path.parent.lstat()
+    except FileNotFoundError:
+        return True
+    if not stat.S_ISDIR(parent_metadata.st_mode) or path.parent.is_symlink():
+        fail("lock retry directory is unsafe")
+    now_ns = retry_clock_ns()
+    with bound_retry_directory(path.parent):
+        state = read_retry_state(path, source, now_ns)
+        if state is None:
+            return True
+        started = int(state["startedBoottimeNs"])
+        attempts = int(state["attempts"])
+        if (
+            now_ns - started >= LOCK_RETRY_WINDOW_NS
+            or attempts >= LOCK_RETRY_MAX_ATTEMPTS
+        ):
+            clear_retry_state(path)
+            return False
+        return True
 
 
 def fsync_directory(path: Path) -> None:
@@ -467,23 +950,68 @@ def snapshot(source: Path, destination: Path) -> dict[str, object]:
 
 
 @contextmanager
-def backup_lock(root: Path) -> Iterator[None]:
-    if root.is_symlink():
-        fail("backup root must not be a symlink")
-    root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    if not root.is_dir():
-        fail("backup root must be a directory")
-    root.chmod(0o700)
-    fsync_directory(root)
-    fsync_directory(root.parent)
-    lock_path = root / ".backup.lock"
-    with lock_path.open("a+", encoding="utf-8") as lock:
-        os.fchmod(lock.fileno(), 0o600)
+def backup_lock(root: Path, *, retry_source: str | None = None) -> Iterator[None]:
+    with ExitStack() as stack:
+        stack.enter_context(bound_governed_directories(root.parent))
         try:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            fail("another backup or restore verification is active")
-        yield
+            root.mkdir(mode=0o700)
+            fsync_directory(root.parent)
+        except FileExistsError:
+            pass
+        stack.enter_context(bound_governed_directories(root))
+        fsync_directory(root)
+        lock_path = root / ".backup.lock"
+        flags = (
+            os.O_RDWR
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        lock_descriptor: int | None = None
+        created = False
+        try:
+            try:
+                lock_descriptor = os.open(
+                    lock_path, flags | os.O_CREAT | os.O_EXCL, 0o600
+                )
+                created = True
+            except FileExistsError:
+                lock_descriptor = os.open(lock_path, flags)
+            opened_lock = os.fstat(lock_descriptor)
+            named_lock = lock_path.lstat()
+            assert_private_regular(opened_lock, "backup lock", empty=True)
+            assert_private_regular(named_lock, "backup lock", empty=True)
+            if file_snapshot(opened_lock) != file_snapshot(named_lock):
+                fail("backup lock descriptor and path disagree")
+            if created:
+                os.fsync(lock_descriptor)
+                fsync_directory(root)
+            retry_path = lock_retry_state_path(retry_source) if retry_source else None
+            if retry_source and not retry_state_allows_attempt(retry_path, retry_source):
+                fail("backup lock retry deadline or attempt limit was exhausted")
+            deadline = time.monotonic() + BACKUP_LOCK_WAIT_SECONDS
+            while True:
+                try:
+                    fcntl.flock(lock_descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if retry_source:
+                        if begin_lock_retry(retry_path, retry_source):
+                            raise SystemExit(75)
+                        fail("backup lock retry deadline or attempt limit was exhausted")
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        fail("another backup or restore verification remained active")
+                    time.sleep(min(BACKUP_LOCK_RETRY_SECONDS, remaining))
+            reassert_bound_file(lock_path, lock_descriptor, opened_lock, "backup lock", empty=True)
+            if retry_source:
+                clear_retry_state(lock_retry_state_path(retry_source))
+            yield
+            reassert_bound_file(lock_path, lock_descriptor, opened_lock, "backup lock", empty=True)
+        except OSError as error:
+            fail(f"backup lock could not be descriptor-bound: {type(error).__name__}")
+        finally:
+            if lock_descriptor is not None:
+                os.close(lock_descriptor)
 
 
 def install_pair(source: Path, destination: Path, *, allow_existing: bool) -> None:
@@ -491,11 +1019,11 @@ def install_pair(source: Path, destination: Path, *, allow_existing: bool) -> No
         if not allow_existing or destination.is_symlink() or not destination.is_file():
             fail(f"backup target already exists or is unsafe: {destination.name}")
         checksum_path = destination.with_name(f"{destination.name}.sha256")
-        if checksum_path.is_symlink() or not checksum_path.is_file():
-            fail(f"existing backup checksum is missing or unsafe: {destination.name}")
-        expected = checksum_path.read_text(encoding="utf-8").split()[0]
-        if expected != sha256(destination):
-            fail(f"existing backup checksum mismatch: {destination.name}")
+        validate_backup_pair(
+            destination.parent.parent,
+            destination,
+            expected_tier=destination.parent.name,
+        )
         fsync_regular_file(destination)
         fsync_regular_file(checksum_path)
         fsync_directory(destination.parent)
@@ -514,6 +1042,11 @@ def install_pair(source: Path, destination: Path, *, allow_existing: bool) -> No
         os.fsync(output.fileno())
     checksum_temporary.chmod(0o600)
     durable_replace(checksum_temporary, checksum_path)
+    validate_backup_pair(
+        destination.parent.parent,
+        destination,
+        expected_tier=destination.parent.name,
+    )
 
 
 def prune(directory: Path, retain: int) -> None:
@@ -549,7 +1082,7 @@ def backup(config: dict[str, str], tier: str) -> dict[str, object]:
     }
     retain = {"hourly": 24, "daily": 30, "weekly": 4, "pre-promotion": 10}
 
-    with backup_lock(root):
+    with backup_lock(root, retry_source="backup" if tier == "backup" else None):
         tier_directories: list[Path] = []
         for directory_name in retain:
             directory = root / directory_name
@@ -608,6 +1141,12 @@ def backup(config: dict[str, str], tier: str) -> dict[str, object]:
         completed_at = datetime.now(timezone.utc).isoformat(
             timespec="milliseconds"
         ).replace("+00:00", "Z")
+        receipt_artifact = Path(next(iter(installed.values())))
+        receipt_digest, receipt_size = validate_backup_pair(
+            root,
+            receipt_artifact,
+            expected_tier=receipt_artifact.parent.name,
+        )
         receipt: dict[str, object] = {
             "schema": SCHEMA,
             "status": "passed",
@@ -618,8 +1157,8 @@ def backup(config: dict[str, str], tier: str) -> dict[str, object]:
                 "+00:00", "Z"
             ),
             "completedAt": completed_at,
-            "encryptedSha256": sha256(Path(next(iter(installed.values())))),
-            "encryptedSizeBytes": Path(next(iter(installed.values()))).stat().st_size,
+            "encryptedSha256": receipt_digest,
+            "encryptedSizeBytes": receipt_size,
             "installed": installed,
             "retention": retain,
             **metadata,
@@ -639,23 +1178,31 @@ def decrypt_and_verify(
     config: dict[str, str], backup_path: Path | None, destination: Path | None
 ) -> dict[str, object]:
     _database, root, identity = validate_config(config, require_identity=True)
-    with backup_lock(root):
+    with backup_lock(root, retry_source="restore-verify"):
         selected = backup_path or newest_backup(root)
-        if selected.is_symlink() or not selected.is_file():
-            fail("selected backup is missing or unsafe")
-        selected = selected.resolve(strict=True)
-        if root.resolve(strict=True) not in selected.parents:
-            fail("selected backup is outside the configured root")
-        expected_checksum = selected.with_name(f"{selected.name}.sha256")
-        if not expected_checksum.is_file() or expected_checksum.is_symlink():
-            fail("selected backup checksum is missing or unsafe")
-        expected = expected_checksum.read_text(encoding="utf-8").split()[0]
-        if expected != sha256(selected):
-            fail("selected backup checksum mismatch")
-
+        expected_tier = "hourly" if backup_path is None else selected.parent.name
         with tempfile.TemporaryDirectory(prefix=".restore-", dir=root) as temporary_value:
             temporary = Path(temporary_value)
             temporary.chmod(0o700)
+            encrypted_copy = temporary / "selected.sqlite.age"
+            with bound_backup_pair(
+                root,
+                selected,
+                expected_tier=expected_tier,
+            ) as (selected_descriptor, expected, encrypted_size):
+                copy_bound_descriptor(selected_descriptor, encrypted_size, encrypted_copy)
+            if sha256(encrypted_copy) != expected:
+                fail("private encrypted backup copy changed")
+            identity_copy = temporary / "age-identity.txt"
+            with bound_private_file(identity, "age identity") as (
+                identity_descriptor,
+                identity_metadata,
+            ):
+                copy_bound_descriptor(
+                    identity_descriptor,
+                    identity_metadata.st_size,
+                    identity_copy,
+                )
             plaintext = temporary / "restored.sqlite"
             age_binary = os.environ.get("NEXUS_LOCAL_BACKUP_AGE_BIN", "age")
             subprocess.run(
@@ -663,10 +1210,10 @@ def decrypt_and_verify(
                     age_binary,
                     "--decrypt",
                     "--identity",
-                    str(identity),
+                    str(identity_copy),
                     "--output",
                     str(plaintext),
-                    str(selected),
+                    str(encrypted_copy),
                 ],
                 check=True,
                 stdout=subprocess.DEVNULL,
@@ -697,7 +1244,7 @@ def decrypt_and_verify(
         return result
 
 
-def verify_freshness(config: dict[str, str], max_age_hours: int) -> dict[str, object]:
+def verify_freshness_locked(config: dict[str, str], max_age_hours: int) -> dict[str, object]:
     _database, root, _identity = validate_config(config, require_identity=False)
     receipt_path = root / "state" / "last-success.json"
     if receipt_path.is_symlink() or not receipt_path.is_file():
@@ -719,8 +1266,13 @@ def verify_freshness(config: dict[str, str], max_age_hours: int) -> dict[str, ob
     if not isinstance(selected_value, str) or not selected_value:
         fail(f"last-success receipt has no {selected_tier} backup")
     selected = Path(selected_value)
-    if not selected.is_file() or sha256(selected) != receipt.get("encryptedSha256"):
-        fail("last successful backup no longer matches its receipt")
+    validate_backup_pair(
+        root,
+        selected,
+        expected_tier=selected_tier,
+        expected_digest=receipt.get("encryptedSha256"),
+        expected_size=receipt.get("encryptedSizeBytes"),
+    )
     return {
         "schema": "nexus.local-backup-freshness.v1",
         "status": "passed",
@@ -728,6 +1280,12 @@ def verify_freshness(config: dict[str, str], max_age_hours: int) -> dict[str, ob
         "ageSeconds": int(age_seconds),
         "maxAgeHours": max_age_hours,
     }
+
+
+def verify_freshness(config: dict[str, str], max_age_hours: int) -> dict[str, object]:
+    _database, root, _identity = validate_config(config, require_identity=False)
+    with backup_lock(root):
+        return verify_freshness_locked(config, max_age_hours)
 
 
 def main() -> None:

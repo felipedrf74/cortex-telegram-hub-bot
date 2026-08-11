@@ -1227,7 +1227,25 @@ fi
       "test \"$(stat -Lc '%U:%G:%a:%h' -- \"$RELEASE_LOCK\")\" = root:root:600:1",
     );
     expect(provision).toContain('nexus.control-plane-transaction.v1');
-    expect(provision).toContain('keys == ["candidateDigest","createdAt","expectedMarker"');
+    expect(provision).toContain(
+      'keys == ["backupTimerWasActive","backupTimerWasEnabled",',
+    );
+    for (const transactionField of [
+      'backupTimerWasActive',
+      'backupTimerWasEnabled',
+      'controlPlaneSchema',
+      'controlPlaneDigest',
+      'pollerTimerDesiredActive',
+      'pollerTimerDesiredEnabled',
+      'livenessTimerWasActive',
+      'livenessTimerWasEnabled',
+      'livenessTimerDesiredActive',
+      'livenessTimerDesiredEnabled',
+      'restoreVerifyTimerWasActive',
+      'restoreVerifyTimerWasEnabled',
+    ]) {
+      expect(provision).toContain(transactionField);
+    }
     expect(provision).toContain("root:root:600:1");
     expect(provision).toContain('sync -f "$TRANSACTION_STATE"; sync -f "$STATE_ROOT"');
     expect(provision).not.toContain('source "$TRANSACTION_STATE"');
@@ -1259,9 +1277,7 @@ fi
     const adoptedSync = provision.indexOf('sync -f "$TARGET"', candidateSync);
     const versionParentSync = provision.indexOf('sync -f "$VERSION_ROOT"', adoptedSync);
     const finalInitialReproof = provision.lastIndexOf('require_initial_no_authority');
-    const disable = provision.indexOf(
-      'systemctl disable --now nexus-release-poller.timer nexus-release-heartbeat.timer',
-    );
+    const disable = provision.indexOf('disable_timer_if_present "$TIMER_UNIT"', prepared);
     const candidateMove = provision.indexOf('mv -T -- "$RECORDED_STAGE_PATH" "$TARGET"');
     expect(prepared).toBeGreaterThan(-1);
     expect(candidateSync).toBeGreaterThan(-1);
@@ -1287,21 +1303,73 @@ fi
     expect(provision).toContain('--property=ActiveState --value');
     expect(provision).toContain('--property=UnitFileState --value');
     expect(provision).toContain('timer unit-file state is not admissible');
+    expect(provision).toContain('require_local_backup_services_settled()');
+    expect(provision).toContain('verify_installed_backup_interface()');
+    expect(provision).toContain(
+      "'scripts/local-backup.py|/usr/local/libexec/nexus-local-backup/local-backup.py|555|755'",
+    );
+    expect(provision).toContain(
+      "'ops/local-backup/systemd/nexus-local-backup.service|/etc/systemd/system/nexus-local-backup.service|444|644'",
+    );
+    expect(provision).toContain('require_installed_backup_verifier_pair()');
+    expect(provision).toContain(
+      "test \"$CONTROL_PLANE_MODE\" = rollback \\\n      || die 'new controller candidate lacks its installed-backup verifier'",
+    );
+    expect(provision).toContain(
+      "test \"$CONTROL_PLANE_MODE\" = rollback \\\n      || die 'installed local-backup checker is absent outside rollback'",
+    );
+
+    expect(provision).toContain('candidate_transaction_guards_state()');
+    expect(provision).toContain('new controller candidate lacks transaction symlink guards');
+    expect(provision).toContain(
+      'installed service cannot honor a symbolic transaction gate',
+    );
+    expect(provision).toContain(
+      'installed service cannot honor a symbolic post-gate journal',
+    );
+    expect(provision).toContain(
+      'candidate backup-liveness service lacks the durable transaction gate',
+    );
+    expect(provision).toContain('nexus-release-backup-liveness-force.service');
+    expect(provision).toContain(
+      'start_and_prove_post_gate_service nexus-release-backup-liveness-force.service',
+    );
+    expect(provision).not.toContain(
+      'start_and_prove_post_gate_service nexus-release-backup-liveness.service',
+    );
+    expect(provision).toContain(
+      'ConditionPathIsSymbolicLink=!/var/lib/nexus-release/state/control-plane-transaction.json',
+    );
+    expect(provision).toContain(
+      'ConditionPathIsSymbolicLink=!/var/lib/nexus-release/state/control-plane-post-gate.json',
+    );
 
     const previousPhase = provision.indexOf('publish_transaction_phase previous_selected');
     const activePhase = provision.indexOf('publish_transaction_phase active_selected');
     const capabilitiesPhase = provision.indexOf('publish_transaction_phase capabilities_installed');
+    const backupInterfacePhase = provision.indexOf(
+      'publish_transaction_phase backup_interface_installed',
+    );
     const reloadPhase = provision.indexOf('publish_transaction_phase units_reloaded');
     const timersPhase = provision.indexOf('publish_transaction_phase timers_restored');
     const completePhase = provision.indexOf('publish_transaction_phase complete');
-    const retireGate = provision.indexOf('rm -f -- "$TRANSACTION_STATE"');
+    const retireGate = provision.indexOf('mv -T -- "$TRANSACTION_STATE" "$POST_GATE_STATE"');
+    const enterFinalization = provision.indexOf(
+      'mv -T -- "$POST_GATE_STATE" "$FINALIZATION_STATE"',
+      retireGate,
+    );
+    const retireFinalization = provision.indexOf('rm -f -- "$FINALIZATION_STATE"',
+      enterFinalization);
     expect(candidateMove).toBeLessThan(previousPhase);
     expect(previousPhase).toBeLessThan(activePhase);
     expect(activePhase).toBeLessThan(capabilitiesPhase);
-    expect(capabilitiesPhase).toBeLessThan(reloadPhase);
+    expect(capabilitiesPhase).toBeLessThan(backupInterfacePhase);
+    expect(backupInterfacePhase).toBeLessThan(reloadPhase);
     expect(reloadPhase).toBeLessThan(timersPhase);
     expect(timersPhase).toBeLessThan(completePhase);
     expect(completePhase).toBeLessThan(retireGate);
+    expect(retireGate).toBeLessThan(enterFinalization);
+    expect(enterFinalization).toBeLessThan(retireFinalization);
     expect(provision).toContain('install_atomic_root_file()');
     expect(provision).toContain('selector staging remnant is unsafe');
     expect(provision).toContain('systemctl daemon-reload');
@@ -1314,17 +1382,22 @@ fi
     expect(installedDaemonReload).toBeLessThan(effectiveUnitProof);
     expect(effectiveUnitProof).toBeLessThan(reloadPhase);
     expect(provision.lastIndexOf('require_exact_effective_systemd_units'))
-      .toBeLessThan(retireGate);
+      .toBeLessThan(enterFinalization);
     expect(provision).toContain('require_installed_transition_bytes()');
-    expect(provision).toContain('systemctl start nexus-release-poller.timer');
-    expect(provision).toContain('systemctl start nexus-release-heartbeat.timer');
+    expect(provision).toContain('start_terminal_timer_if_active nexus-release-poller.timer');
+    expect(provision).toContain('start_terminal_timer_if_active nexus-release-heartbeat.timer');
+    expect(provision).toContain('start_terminal_timer_if_active nexus-local-backup.timer');
+    expect(provision).toContain(
+      'start_terminal_timer_if_active nexus-local-backup-restore-verify.timer',
+    );
     expect(provision).toContain('prove_installed_control_plane "$TARGET"');
     expect(provision.lastIndexOf('require_immutable_candidate "$TARGET" "$CANDIDATE_DIGEST"'))
-      .toBeLessThan(retireGate);
+      .toBeLessThan(enterFinalization);
     expect(provision.lastIndexOf('read_timer_bits nexus-release-heartbeat.timer'))
-      .toBeLessThan(retireGate);
+      .toBeLessThan(retireFinalization);
     expect(provision.indexOf('TIMER_FAILSAFE_ARMED=0')).toBeLessThan(retireGate);
-    expect(provision.indexOf('sync -f "$STATE_ROOT"', retireGate)).toBeGreaterThan(retireGate);
+    expect(provision.indexOf('sync -f "$STATE_ROOT"', retireFinalization))
+      .toBeGreaterThan(retireFinalization);
     expect(provision).not.toContain('sudo mv "$STAGE_DIR" "$VERSION_ROOT/$SOURCE_SHA"');
     expect(provision).not.toContain('CONTROL-PLANE ROLLBACK REFUSED');
     expect(runbook).toContain('Rollback uses the same durable transaction above');
@@ -1341,6 +1414,9 @@ fi
       const unit = readFileSync(join(root, 'ops/nexus-release', unitName), 'utf8');
       expect(unit).toContain(
         'ConditionPathExists=!/var/lib/nexus-release/state/control-plane-transaction.json',
+      );
+      expect(unit).toContain(
+        'ConditionPathIsSymbolicLink=!/var/lib/nexus-release/state/control-plane-transaction.json',
       );
       expect(unit).toContain(
         'ExecStartPre=/usr/bin/env -i PATH=/usr/bin:/bin /usr/bin/test -f '
@@ -1360,6 +1436,12 @@ fi
       'nexus-release-poller.service',
     ]) {
       const unit = readFileSync(join(root, 'ops/nexus-release', unitName), 'utf8');
+      expect(unit).toContain(
+        'ConditionPathExists=!/var/lib/nexus-release/state/control-plane-post-gate.json',
+      );
+      expect(unit).toContain(
+        'ConditionPathIsSymbolicLink=!/var/lib/nexus-release/state/control-plane-post-gate.json',
+      );
       expect(unit).toContain("require('/opt/nexus-release/checkout/node_modules/better-sqlite3')");
       expect(unit).toContain('/usr/bin/env -i PATH=/usr/bin:/bin');
       expect(unit).toContain('NEXUS_RELEASE_NODE_BIN=/usr/bin/node');
@@ -1375,10 +1457,11 @@ fi
       'utf8',
     );
     expect(heartbeat).toContain(
-      'ExecStart=/usr/bin/env -i PATH=/usr/bin:/bin HOME=/var/lib/nexus-release/home '
-      + 'NEXUS_RELEASE_TELEGRAM_BOT_TOKEN=${NEXUS_RELEASE_TELEGRAM_BOT_TOKEN} '
-      + 'NEXUS_RELEASE_TELEGRAM_CHAT_ID=${NEXUS_RELEASE_TELEGRAM_CHAT_ID} '
-      + '/usr/bin/node /opt/nexus-release/checkout/scripts/release-heartbeat.mjs',
+      'ExecStart=/opt/nexus-release/checkout/scripts/'
+      + 'release-backup-liveness-launcher.sh --weekly',
+    );
+    expect(heartbeat.match(/^ExecStart=(.+)$/m)?.[1]).not.toContain(
+      'NEXUS_RELEASE_TELEGRAM_',
     );
     expect(heartbeat.match(/^ExecStart=(.+)$/m)?.[1]).not.toContain('AUDIT_MIRROR_HOST');
     expect(pollerEnv).not.toContain('NEXUS_RELEASE_NODE_BIN=');
@@ -3512,9 +3595,9 @@ ${metadataGuard}
       join(root, 'ops/nexus-release/nexus-release-heartbeat.timer'),
       'utf8',
     );
-    expect(timer).toContain('OnCalendar=Mon 09:00');
+    expect(timer).toContain('OnCalendar=Mon 09:30');
     expect(policy.notifications.heartbeatEnabled).toBe(true);
-    expect(policy.notifications.heartbeatSchedule).toBe('Mon 09:00');
+    expect(policy.notifications.heartbeatSchedule).toBe('Mon 09:30');
   });
 
   it('keeps observation and rollback budgets aligned with the plan', () => {
@@ -4103,6 +4186,25 @@ describe('CI runner-guardrails graph semantics', () => {
     return jobs;
   }
 
+  function parseSteps(jobBody: string): string[] {
+    const lines = jobBody.split('\n');
+    const stepsAt = lines.findIndex((line) => /^ {4}steps:\s*$/.test(line));
+    if (stepsAt === -1) return [];
+
+    const steps: string[][] = [];
+    let current: string[] | null = null;
+    for (const line of lines.slice(stepsAt + 1)) {
+      if (/^      -(?:\s|$)/.test(line)) {
+        if (current) steps.push(current);
+        current = [line];
+        continue;
+      }
+      if (current) current.push(line);
+    }
+    if (current) steps.push(current);
+    return steps.map((step) => step.join('\n'));
+  }
+
   const ci = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8');
   const jobs = parseJobs(ci);
 
@@ -4115,7 +4217,7 @@ describe('CI runner-guardrails graph semantics', () => {
     expect(jobs.runner_guardrails.if).toBeUndefined();
   });
 
-  it('keeps only the self-hosted guard step conditional', () => {
+  it('keeps hosted/self-hosted branching at step level', () => {
     const body = jobs.runner_guardrails.body;
     expect(body).toMatch(/if: needs\.runner\.outputs\.is_self_hosted == 'true'/);
     expect(body).toMatch(/if: needs\.runner\.outputs\.is_self_hosted != 'true'/);
@@ -4137,6 +4239,68 @@ describe('CI runner-guardrails graph semantics', () => {
       .filter(([, job]) => !job.needs.includes('runner_guardrails'))
       .map(([name]) => name);
     expect(missing).toEqual([]);
+  });
+
+  it('binds the root-owned guard to every dynamic runner allocation before checkout', () => {
+    // A successful guardrails job does not prove that a later job received the
+    // same machine: GitHub may allocate any runner matching the dynamic label
+    // set. Each allocated job must therefore establish the boundary itself as
+    // its first step, before checkout or any other repository-controlled step.
+    const dynamicJobs = Object.entries(jobs)
+      .filter(([, job]) => job.runsOn?.includes('needs.runner.outputs.labels'));
+    expect(dynamicJobs.length).toBeGreaterThan(4);
+
+    for (const [name, job] of dynamicJobs) {
+      const firstStep = parseSteps(job.body)[0] ?? '';
+      expect(firstStep, `${name} must guard its own allocation first`).toContain(
+        'name: Assert this allocated runner is test-only',
+      );
+      expect(firstStep, `${name} guard must be self-hosted-only`).toContain(
+        "if: needs.runner.outputs.is_self_hosted == 'true'",
+      );
+      expect(firstStep, `${name} must use the installed guard`).toContain(
+        'GUARD=/usr/local/sbin/nexus-pi-guardrails',
+      );
+      const rejectsGuardSymlink = /(?:test ! -L "\$GUARD"|if \[ -L "\$GUARD" \]; then)/
+        .test(firstStep) || (
+        firstStep.includes('if [ -L "$target" ]; then')
+        && firstStep.includes('assert_trusted "$GUARD"')
+      );
+      expect(
+        rejectsGuardSymlink,
+        `${name} must reject a replaceable symlink`,
+      ).toBe(true);
+      expect(firstStep, `${name} must bind the guard parent`).toContain(
+        'dirname "$GUARD"',
+      );
+      const exactInstallAssertions = firstStep.match(/= "0:0:755"/g) ?? [];
+      const flexibleTrustAssertions = firstStep.includes('if [ "$owner" != "0" ]; then')
+        && firstStep.includes('8#$mode & 8#022')
+        && firstStep.includes('assert_trusted "$GUARD"')
+        && firstStep.includes('assert_trusted "$(dirname "$GUARD")"');
+      expect(
+        exactInstallAssertions.length === 2 || flexibleTrustAssertions,
+        `${name} must bind root ownership and non-writable modes for the guard and parent`,
+      ).toBe(true);
+      const bindsFullAncestorChain = firstStep.includes(
+        'for ancestor in /usr/local /usr /',
+      ) || (
+        firstStep.includes('assert_trusted /usr/local')
+        && firstStep.includes('assert_trusted /usr ')
+        && firstStep.includes('assert_trusted / ')
+      );
+      expect(
+        bindsFullAncestorChain,
+        `${name} must bind every guard ancestor through the filesystem root`,
+      ).toBe(true);
+      expect(firstStep, `${name} must require a regular guard file`).toContain(
+        'test -f "$GUARD"',
+      );
+      expect(firstStep, `${name} must reject a hard-linked guard`).toContain(
+        `stat -c '%h' "$GUARD"`,
+      );
+      expect(firstStep, `${name} must execute the guard`).toContain('"$GUARD" --json');
+    }
   });
 
   it('asserts ownership and permissions, not merely runner writability', () => {

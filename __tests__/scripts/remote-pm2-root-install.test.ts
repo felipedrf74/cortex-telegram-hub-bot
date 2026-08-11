@@ -144,6 +144,30 @@ function install(f: ReturnType<typeof fixture>, extraEnv: Record<string, string>
 }
 
 describe('offline root PM2 closure installation', () => {
+  it.each([
+    'pm2-fallback-retirement.json',
+    'pm2-fallback-retired.json',
+  ])('refuses %s before mutating root PM2 authority', (gate) => {
+    const f = fixture();
+    const stateRoot = path.join(f.testRoot, 'var/lib/nexus-release/state');
+    fs.mkdirSync(stateRoot, { recursive: true });
+    if (gate === 'pm2-fallback-retired.json') {
+      fs.symlinkSync('missing-retired-evidence', path.join(stateRoot, gate));
+    } else {
+      fs.writeFileSync(path.join(stateRoot, gate), '{}\n');
+    }
+
+    const result = install(f);
+
+    expect(result.status).toBe(78);
+    expect(result.stderr).toContain('barred by fallback retirement evidence');
+    expect(fs.existsSync(path.join(f.testRoot, 'opt/nexus-release/pm2'))).toBe(false);
+    expect(fs.existsSync(path.join(
+      f.testRoot,
+      'var/lib/nexus-release-promotion/pm2-install-in-progress.v1.json',
+    ))).toBe(false);
+  });
+
   it('installs a regular immutable launcher and exact-lock attestation without npm', () => {
     expect(process.version).toBe('v22.23.1');
     const f = fixture();
