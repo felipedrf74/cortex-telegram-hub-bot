@@ -23,10 +23,11 @@ shared nonblocking mode. An active producer marker defers only the full proof;
 due notification retries have already drained and the minute timer retries the
 proof without advancing its hourly gate. Producers publish distinct runtime
 intent markers before Python. Scheduled backup/restore contention persists a
-root-only retry record and returns exit 75 for a systemd retry one minute later;
+root-only retry record and returns exit 75 to a fixed privileged launcher,
+which waits one minute and retries inside the same oneshot activation;
 pre-promotion retains the bounded 330-second exclusive-lock wait. Retry state
-is capped at 45 attempts and 45 minutes, survives only automatic restarts, and
-is cleared on acquisition, exhaustion, or terminal unit stop. The weekly
+is capped at 45 attempts and 45 minutes and is cleared on acquisition or
+exhaustion. The weekly
 heartbeat waits up to 90 minutes for every producer marker,
 then acquires the same descriptor-bound shared lock and has a separate
 five-minute proof bound; its service has a 100-minute aggregate timeout. Thus a
@@ -63,14 +64,19 @@ dead-letter history so a later incident pages again.
 
 The hourly and pre-promotion producers open the source read-only without
 asserting SQLite immutable mode and copy it in one backup step, so a read-only
-WAL source cannot restart between chunks. The hourly and pre-promotion snapshot
-units have an 18-minute start timeout; restore verification has 36 minutes.
-The release caller has a 22-minute backup budget, which outlives the snapshot
-unit and its bounded service settlement with margin.
+WAL source cannot restart between chunks. Each hourly producer attempt and the
+pre-promotion snapshot have an 18-minute work bound; each restore-verification
+attempt has a 36-minute work bound. The scheduled hourly and restore units have
+67- and 85-minute aggregate bounds, respectively, covering the 45-minute
+contention window plus one final work attempt, process-group termination, and
+scheduling margin. The release caller has a 22-minute backup budget, which
+applies only to the
+non-retrying pre-promotion snapshot and outlives its bounded service settlement
+with margin.
 The weekly restore timer is fixed at Sunday 04:15 UTC with one-minute
 accuracy and no randomized delay. If its full service and stop budgets overlap
-the earliest 05:00 hourly backup, the hourly unit's governed exit-75 state
-machine retries instead of failing or paging; the same contract covers
+the earliest 05:00 hourly backup, the hourly unit's governed launcher retries
+exit 75 instead of failing or paging; the same contract covers
 Persistent timer catch-up after a reboot.
 
 Publication is power-loss ordered: each encrypted artifact and checksum is

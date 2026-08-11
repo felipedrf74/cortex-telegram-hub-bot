@@ -57,20 +57,6 @@ export async function runOperationalAlert({
     };
   }
 
-  if (env.SERVICE_RESULT === 'exit-code'
-      && env.EXIT_CODE === 'exited'
-      && env.EXIT_STATUS === '75') {
-    return {
-      schema: RELEASE_OPERATIONAL_ALERT_SCHEMA,
-      accepted: true,
-      alerted: false,
-      delivered: false,
-      reason: 'lock_retry_pending',
-      unit,
-      exitCode: 0,
-    };
-  }
-
   if (env.SERVICE_RESULT === 'success') {
     try {
       alertStore?.resolveSource(unit);

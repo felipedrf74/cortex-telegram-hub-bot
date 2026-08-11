@@ -28,6 +28,7 @@ const SPANISH_LOCALE_RETIREMENT_BASE_SHA = '247ac7dc940009aacb0d1419a58db4749a76
 // SonarQube decommissioning, 2026-08-07 continuous-deployment refactor.
 const SONAR_RETIREMENT_BASE_SHA = '65a87ae2a0514e0fe2ad117412d23ca3f0da8d39';
 const CONTROL_PLANE_RETIREMENT_BASE_SHA = '852116a7ee17562418779ee396095de2cd05e699';
+const RECOVERY_HOTFIX_RETIREMENT_BASE_SHA = 'b439fa86631e10be76e75615f47eda1b995b29a3';
 
 function classify(files: string[]) {
   return JSON.parse(execFileSync('bash', [
@@ -176,6 +177,7 @@ describe('lean changed-area classification', () => {
     'ops/nexus-release/README.md',
     'ops/local-backup/systemd/nexus-local-backup.service',
     'scripts/local-backup.py',
+    'scripts/local-backup-retry-launcher.sh',
     'scripts/local-backup-systemd-install.sh',
   ])('classifies %s as release runtime infrastructure', (file) => {
     const result = classify([file]);
@@ -405,6 +407,7 @@ describe('lean changed-area classification', () => {
       SPANISH_LOCALE_RETIREMENT_BASE_SHA,
       SONAR_RETIREMENT_BASE_SHA,
       CONTROL_PLANE_RETIREMENT_BASE_SHA,
+      RECOVERY_HOTFIX_RETIREMENT_BASE_SHA,
     ]));
 
     const controlPlaneRetirements = policy.retirementMappings.filter((mapping: {
@@ -434,6 +437,30 @@ describe('lean changed-area classification', () => {
       }),
     ]));
     expect(controlPlaneRetirements).toHaveLength(3);
+
+    const recoveryHotfixRetirements = policy.retirementMappings.filter((mapping: {
+      baseSha?: string;
+    }) => mapping.baseSha === RECOVERY_HOTFIX_RETIREMENT_BASE_SHA);
+    expect(recoveryHotfixRetirements).toEqual([
+      expect.objectContaining({
+        test: '__tests__/scripts/release-operational-liveness.test.ts',
+        baselineOwnerPaths: [
+          'scripts/release-operational-alert-launcher.sh',
+          'scripts/release-operational-alert.mjs',
+        ],
+        requiredChangedPaths: [
+          'ops/local-backup/systemd/nexus-local-backup-restore-verify.service',
+          'ops/local-backup/systemd/nexus-local-backup.service',
+          'scripts/local-backup-retry-launcher.sh',
+          'scripts/release-operational-alert-launcher.sh',
+          'scripts/release-operational-alert.mjs',
+        ],
+        replacementTests: [
+          '__tests__/scripts/local-backup.test.ts',
+          '__tests__/scripts/release-operational-liveness.test.ts',
+        ],
+      }),
+    ]);
 
     const artifactTest = '__tests__/scripts/release-artifact-manifest.test.ts';
     const matches = policy.retirementMappings.filter((mapping: {

@@ -331,12 +331,15 @@ if test "$CONTROL_PLANE_MODE" != rollback; then
   test -x /usr/bin/systemd-run || die '/usr/bin/systemd-run is missing'
   test -x /usr/bin/pgrep || die '/usr/bin/pgrep is missing'
   test -x /usr/bin/lsof || die '/usr/bin/lsof is missing'
+  test -x /usr/bin/timeout || die '/usr/bin/timeout is missing'
+  test -x /usr/bin/sleep || die '/usr/bin/sleep is missing'
 fi
 test -x /usr/bin/flock || die '/usr/bin/flock is missing'
 test -x /usr/bin/jq || die '/usr/bin/jq is missing'
 test -x /usr/bin/systemd-analyze || die '/usr/bin/systemd-analyze is missing'
 if test "$CONTROL_PLANE_MODE" != rollback; then
-  test "$(PATH=/usr/bin:/bin /usr/bin/npm --version | cut -d. -f1)" -ge 10 \
+  test "$(cd / && /usr/bin/env -i HOME=/root PATH=/usr/bin:/bin \
+    NPM_CONFIG_USERCONFIG=/dev/null /usr/bin/npm --version | cut -d. -f1)" -ge 10 \
     || die 'npm 10 or newer is required'
 fi
 
@@ -718,6 +721,7 @@ NODE
   fi
   for final_backup_spec in \
     'scripts/local-backup.py|/usr/local/libexec/nexus-local-backup/local-backup.py|755' \
+    'scripts/local-backup-retry-launcher.sh|/usr/local/libexec/nexus-local-backup/local-backup-retry-launcher.sh|755' \
     'ops/local-backup/systemd/nexus-local-backup.service|/etc/systemd/system/nexus-local-backup.service|644' \
     'ops/local-backup/systemd/nexus-local-backup.timer|/etc/systemd/system/nexus-local-backup.timer|644' \
     'ops/local-backup/systemd/nexus-local-backup-pre-promotion.service|/etc/systemd/system/nexus-local-backup-pre-promotion.service|644' \
@@ -1073,6 +1077,59 @@ as_builder() {
     GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
     GIT_TERMINAL_PROMPT=0 NPM_CONFIG_CACHE="$STAGE_DIR/.npm-cache" \
     "$@"
+}
+
+normalize_builder_tracked_modes() {
+  local candidate
+  candidate="$1"
+  as_builder /usr/bin/node --input-type=module - "$candidate" <<'NODE'
+import { spawnSync } from 'node:child_process';
+import { chmodSync, lstatSync } from 'node:fs';
+import { join, posix, resolve } from 'node:path';
+import { TextDecoder } from 'node:util';
+
+const root = resolve(process.argv[2]);
+const listed = spawnSync(
+  '/usr/bin/git', ['-C', root, 'ls-files', '--stage', '-z'],
+  { maxBuffer: 16 * 1024 * 1024 },
+);
+if (listed.error || listed.signal || listed.status !== 0 || listed.stderr.length !== 0) {
+  throw new Error('tracked-mode inventory failed');
+}
+if (listed.stdout.length === 0 || listed.stdout.at(-1) !== 0) {
+  throw new Error('tracked-mode inventory is empty or unterminated');
+}
+const rows = new TextDecoder('utf-8', { fatal: true })
+  .decode(listed.stdout.subarray(0, -1)).split('\0');
+for (const row of rows) {
+  const separator = row.indexOf('\t');
+  if (separator < 0) throw new Error('tracked-mode row is malformed');
+  const header = row.slice(0, separator);
+  const path = row.slice(separator + 1);
+  const matched = /^(100644|100755|120000) (?:[0-9a-f]{40}|[0-9a-f]{64}) 0$/
+    .exec(header);
+  if (!matched || path.length === 0 || path.startsWith('/') || path.includes('\\')
+      || posix.normalize(path) !== path || path.split('/').includes('..')) {
+    throw new Error('tracked-mode entry is unsafe');
+  }
+  const absolute = join(root, ...path.split('/'));
+  const before = lstatSync(absolute);
+  if (matched[1] === '120000') {
+    if (!before.isSymbolicLink()) throw new Error(`tracked symlink changed type: ${path}`);
+    continue;
+  }
+  if (!before.isFile() || before.isSymbolicLink()) {
+    throw new Error(`tracked file changed type: ${path}`);
+  }
+  const mode = matched[1] === '100755' ? 0o755 : 0o644;
+  chmodSync(absolute, mode);
+  const after = lstatSync(absolute);
+  if (!after.isFile() || after.isSymbolicLink() || (after.mode & 0o7777) !== mode
+      || after.dev !== before.dev || after.ino !== before.ino) {
+    throw new Error(`tracked file mode normalization failed: ${path}`);
+  }
+}
+NODE
 }
 
 require_safe_candidate_tree() {
@@ -1562,6 +1619,7 @@ require_immutable_candidate() {
   for relative in package.json package-lock.json scripts/release-poll.sh \
     scripts/release-deploy.mjs scripts/release-state-view.mjs \
     scripts/local-backup-systemd-install.sh scripts/local-backup.py \
+    scripts/local-backup-retry-launcher.sh \
     scripts/lib/release-bootstrap.mjs scripts/lib/release-environment.mjs \
     scripts/lib/release-protected-head.mjs \
     ops/nexus-release/nexus-release-state-view \
@@ -1732,6 +1790,7 @@ require_initial_no_backup_authority() {
   local active dropin fragment load_state path unit
   for path in \
     /usr/local/libexec/nexus-local-backup/local-backup.py \
+    /usr/local/libexec/nexus-local-backup/local-backup-retry-launcher.sh \
     /etc/sudoers.d/nexus-local-backup \
     /etc/systemd/system/nexus-local-backup.service \
     /etc/systemd/system/nexus-local-backup.timer \
@@ -1936,6 +1995,7 @@ verify_installed_backup_interface() {
     || die 'installed local-backup proof is not using the transaction target'
   for spec in \
     'scripts/local-backup.py|/usr/local/libexec/nexus-local-backup/local-backup.py|555|755' \
+    'scripts/local-backup-retry-launcher.sh|/usr/local/libexec/nexus-local-backup/local-backup-retry-launcher.sh|555|755' \
     'ops/local-backup/systemd/nexus-local-backup.service|/etc/systemd/system/nexus-local-backup.service|444|644' \
     'ops/local-backup/systemd/nexus-local-backup.timer|/etc/systemd/system/nexus-local-backup.timer|444|644' \
     'ops/local-backup/systemd/nexus-local-backup-pre-promotion.service|/etc/systemd/system/nexus-local-backup-pre-promotion.service|444|644' \
@@ -2380,6 +2440,8 @@ FETCHED_SHA="$(as_builder /usr/bin/git -C "$STAGE_DIR" rev-parse --verify 'FETCH
 test "$FETCHED_SHA" = "$SOURCE_SHA" \
   || die 'protected main no longer equals the exact owner-reviewed SHA'
 as_builder /usr/bin/git -C "$STAGE_DIR" checkout --quiet --detach "$SOURCE_SHA"
+normalize_builder_tracked_modes "$STAGE_DIR" \
+  || die 'candidate tracked-mode normalization failed'
 require_builder_git_exact "$STAGE_DIR" "$FORBID_UNTRACKED_MARKER"
 test -f "$STAGE_DIR/package.json" && test ! -L "$STAGE_DIR/package.json" \
   || die 'package.json is absent or symbolic'
@@ -2424,6 +2486,7 @@ for relative in package.json package-lock.json scripts/release-poll.sh \
   scripts/release-deploy.mjs scripts/release-state-view.mjs \
   scripts/release-installed-backup-interface-check.mjs \
   scripts/local-backup-systemd-install.sh scripts/local-backup.py \
+  scripts/local-backup-retry-launcher.sh \
   scripts/lib/release-installed-backup-interface.mjs \
   scripts/lib/release-bootstrap.mjs scripts/lib/release-environment.mjs \
   scripts/lib/release-protected-head.mjs \
@@ -3120,6 +3183,163 @@ printf 'completed immutable control-plane transaction %s; mode=%s; pollerRestart
   "$SOURCE_SHA" "$CONTROL_PLANE_MODE" "$POLLER_RESTART_DEFERRED"
 ```
 
+### Emergency abort of a `capabilities_installed` upgrade
+
+Do not rerun §1a, request ordinary rollback, reboot, or edit its journal when an
+`upgrade` is durably stuck at `capabilities_installed`. The narrowly scoped
+abort tool supports only that exact phase. It restores the controller recorded
+as `originalActivePath`; it is not a general control-plane rollback command.
+
+The existing §1a gate cannot provision a different SHA. Provision a separate,
+minimal two-script recovery tree from one owner-reviewed protected-main hotfix.
+The hotfix evidence must publish the exact source SHA, two committed file
+hashes, descriptor hash, and resulting immutable-tree digest. The deterministic
+target name is authority; a crash before its atomic rename leaves only a
+non-authoritative unique staging directory, while a crash after rename leaves a
+fully synced tree that the same command can re-prove.
+
+```bash
+set -euo pipefail
+PATH=/usr/bin:/bin
+export PATH
+RECOVERY_SOURCE_SHA='<owner-reviewed protected-main hotfix 40-hex SHA>'
+RECOVERY_TREE_DIGEST='<owner-reviewed immutable-tree 64-hex SHA-256>'
+WRAPPER_SHA256='<owner-reviewed 64-lowercase-hex SHA-256>'
+MODULE_SHA256='<owner-reviewed 64-lowercase-hex SHA-256>'
+DESCRIPTOR_SHA256='<owner-reviewed 64-lowercase-hex SHA-256>'
+SOURCE_CHECKOUT='<clean exact hotfix checkout absolute path>'
+BUNDLE_PARENT=/opt/nexus-release/recovery-tools/control-plane
+TOOL_ROOT="$BUNDLE_PARENT/$RECOVERY_SOURCE_SHA"
+
+test "$(/usr/bin/git -C "$SOURCE_CHECKOUT" rev-parse HEAD)" = "$RECOVERY_SOURCE_SHA"
+test -z "$(/usr/bin/git -C "$SOURCE_CHECKOUT" status --porcelain=v1)"
+printf '%s  %s\n%s  %s\n%s  %s\n' \
+  "$WRAPPER_SHA256" \
+    "$SOURCE_CHECKOUT/scripts/release-control-plane-abort-recovery.sh" \
+  "$MODULE_SHA256" \
+    "$SOURCE_CHECKOUT/scripts/release-control-plane-abort-recovery.mjs" \
+  "$DESCRIPTOR_SHA256" \
+    "$SOURCE_CHECKOUT/ops/nexus-release/release-control-plane-inputs.json" \
+  | /usr/bin/sha256sum -c -
+
+sudo install -d -o root -g root -m 0700 \
+  /opt/nexus-release/recovery-tools "$BUNDLE_PARENT"
+if ! sudo test -e "$TOOL_ROOT" && ! sudo test -L "$TOOL_ROOT"; then
+  STAGE="$(sudo mktemp -d "$BUNDLE_PARENT/.${RECOVERY_SOURCE_SHA}.candidate.XXXXXX")"
+  sudo install -d -o root -g root -m 0755 \
+    "$STAGE/scripts" "$STAGE/ops" "$STAGE/ops/nexus-release"
+  sudo install -o root -g root -m 0555 \
+    "$SOURCE_CHECKOUT/scripts/release-control-plane-abort-recovery.sh" \
+    "$STAGE/scripts/"
+  sudo install -o root -g root -m 0444 \
+    "$SOURCE_CHECKOUT/scripts/release-control-plane-abort-recovery.mjs" \
+    "$STAGE/scripts/"
+  sudo install -o root -g root -m 0444 \
+    "$SOURCE_CHECKOUT/ops/nexus-release/release-control-plane-inputs.json" \
+    "$STAGE/ops/nexus-release/"
+  MARKER_TEMP="$(mktemp)"; DIGEST_TEMP="$(mktemp)"
+  trap 'rm -f -- "$MARKER_TEMP" "$DIGEST_TEMP"' EXIT
+  printf '%s %s %s\n' "$RECOVERY_SOURCE_SHA" \
+    'https://github.com/felipedrf74/cortex-telegram-hub-bot.git' \
+    '/usr/bin/node:v22.23.1' >"$MARKER_TEMP"
+  printf '%064d\n' 0 >"$DIGEST_TEMP"
+  sudo install -o root -g root -m 0444 "$MARKER_TEMP" \
+    "$STAGE/.nexus-control-plane-ready"
+  sudo install -o root -g root -m 0444 "$DIGEST_TEMP" \
+    "$STAGE/.nexus-control-plane-tree.sha256"
+  sudo chmod 0555 "$STAGE/scripts" "$STAGE/ops/nexus-release" \
+    "$STAGE/ops" "$STAGE"
+  # Rehash the root-owned, frozen copies before importing any staged code. The
+  # earlier checkout proof cannot prevent a same-user swap between read/copy.
+  printf '%s  %s\n%s  %s\n%s  %s\n' \
+    "$WRAPPER_SHA256" \
+      "$STAGE/scripts/release-control-plane-abort-recovery.sh" \
+    "$MODULE_SHA256" \
+      "$STAGE/scripts/release-control-plane-abort-recovery.mjs" \
+    "$DESCRIPTOR_SHA256" \
+      "$STAGE/ops/nexus-release/release-control-plane-inputs.json" \
+    | sudo /usr/bin/sha256sum -c -
+  CALCULATED_DIGEST="$(sudo /usr/bin/node --input-type=module - "$STAGE" <<'NODE'
+import { pathToFileURL } from 'node:url';
+const root = process.argv[2];
+const module = await import(pathToFileURL(
+  `${root}/scripts/release-control-plane-abort-recovery.mjs`,
+));
+process.stdout.write(`${module.computeImmutableTreeDigest(root)}\n`);
+NODE
+  )"
+  test "$CALCULATED_DIGEST" = "$RECOVERY_TREE_DIGEST"
+  printf '%s\n' "$CALCULATED_DIGEST" >"$DIGEST_TEMP"
+  sudo install -o root -g root -m 0444 "$DIGEST_TEMP" \
+    "$STAGE/.nexus-control-plane-tree.sha256"
+  for durable in \
+    "$STAGE/scripts/release-control-plane-abort-recovery.sh" \
+    "$STAGE/scripts/release-control-plane-abort-recovery.mjs" \
+    "$STAGE/ops/nexus-release/release-control-plane-inputs.json" \
+    "$STAGE/.nexus-control-plane-ready" \
+    "$STAGE/.nexus-control-plane-tree.sha256" \
+    "$STAGE/scripts" "$STAGE/ops/nexus-release" "$STAGE/ops" "$STAGE"; do
+    sudo sync -f "$durable"
+  done
+  sudo mv -T -- "$STAGE" "$TOOL_ROOT"
+  sudo sync -f "$TOOL_ROOT"; sudo sync -f "$BUNDLE_PARENT"
+fi
+
+# A retry may enter with TOOL_ROOT already published. Re-prove its exact
+# committed code and descriptor before importing or invoking either executable.
+printf '%s  %s\n%s  %s\n%s  %s\n' \
+  "$WRAPPER_SHA256" \
+    "$TOOL_ROOT/scripts/release-control-plane-abort-recovery.sh" \
+  "$MODULE_SHA256" \
+    "$TOOL_ROOT/scripts/release-control-plane-abort-recovery.mjs" \
+  "$DESCRIPTOR_SHA256" \
+    "$TOOL_ROOT/ops/nexus-release/release-control-plane-inputs.json" \
+  | sudo /usr/bin/sha256sum -c -
+PROVED_DIGEST="$(sudo /usr/bin/node --input-type=module - "$TOOL_ROOT" <<'NODE'
+import { pathToFileURL } from 'node:url';
+const root = process.argv[2];
+const module = await import(pathToFileURL(
+  `${root}/scripts/release-control-plane-abort-recovery.mjs`,
+));
+process.stdout.write(`${module.computeImmutableTreeDigest(root)}\n`);
+NODE
+)"
+test "$PROVED_DIGEST" = "$RECOVERY_TREE_DIGEST"
+
+sudo "$TOOL_ROOT/scripts/release-control-plane-abort-recovery.sh" \
+  --target-sha '<journal targetSha>' \
+  --original-sha '<journal originalActivePath basename>' \
+  --application-release-id '<active completed 32-hex releaseId>' \
+  --application-source-sha '<active completed 40-hex sourceSha>' \
+  --application-receipt-sha256 '<SHA-256 of its immutable receipt bytes>' \
+  --recovery-source-sha "$RECOVERY_SOURCE_SHA" \
+  --recovery-source-tree-digest "$RECOVERY_TREE_DIGEST"
+```
+
+The tool binds the control-plane, release, and maintenance locks in that order.
+Before mutation it proves the exact v1 journal and phase, both selectors, the
+target/original/predecessor immutable trees, the completed application receipt,
+the immutable owner-reviewed recovery source,
+the known mixed installed bytes, inactive services, and five suppressed timer
+states. It then durably advances
+`control-plane-abort-recovery.json` after each idempotent phase. Rerun only the
+same command after interruption; different identities are refused.
+
+Recovery restores the recorded-original state-view and sudoers files, five core
+units, and seven legacy local-backup files. Target-only liveness files are
+removed only when their bytes are exact and known. The original transaction
+gate remains present through durable `recovery_complete`; it is then renamed to
+`control-plane-aborted-<targetSha>.json`. Terminal evidence is retained at
+`control-plane-abort-recovery-<targetSha>.json`. Heartbeat and local-backup timer
+intent is restored, but poller and target-only liveness remain `0/0`; this is
+deliberate because the recorded v2 poller cannot consume the active v3 release
+envelope.
+
+After terminal proof, build and publish a new protected-main hotfix SHA and run
+a fresh attended §1a `upgrade` to that new SHA. Do not reactivate the old poller.
+The successful fresh transaction installs the compatible reader and owns final
+poller activation.
+
 `initial` requires both release and local-backup authority to be absent, then
 installs the seven local-backup producer/unit/sudoers files and the release unit
 definitions from the immutable target. It starts and enables nothing.
@@ -3619,6 +3839,7 @@ require_local_backup_installation() {
     || die 'active immutable control-plane marker is invalid'
   for spec in \
     'scripts/local-backup.py|/usr/local/libexec/nexus-local-backup/local-backup.py|755' \
+    'scripts/local-backup-retry-launcher.sh|/usr/local/libexec/nexus-local-backup/local-backup-retry-launcher.sh|755' \
     'ops/local-backup/systemd/nexus-local-backup.service|/etc/systemd/system/nexus-local-backup.service|644' \
     'ops/local-backup/systemd/nexus-local-backup.timer|/etc/systemd/system/nexus-local-backup.timer|644' \
     'ops/local-backup/systemd/nexus-local-backup-pre-promotion.service|/etc/systemd/system/nexus-local-backup-pre-promotion.service|644' \
@@ -4441,6 +4662,7 @@ require_local_backup_installation() {
     || die 'active immutable control-plane marker is invalid'
   for spec in \
     'scripts/local-backup.py|/usr/local/libexec/nexus-local-backup/local-backup.py|755' \
+    'scripts/local-backup-retry-launcher.sh|/usr/local/libexec/nexus-local-backup/local-backup-retry-launcher.sh|755' \
     'ops/local-backup/systemd/nexus-local-backup.service|/etc/systemd/system/nexus-local-backup.service|644' \
     'ops/local-backup/systemd/nexus-local-backup.timer|/etc/systemd/system/nexus-local-backup.timer|644' \
     'ops/local-backup/systemd/nexus-local-backup-pre-promotion.service|/etc/systemd/system/nexus-local-backup-pre-promotion.service|644' \
@@ -6197,6 +6419,7 @@ require_local_backup_installation() {
     || die 'active immutable control-plane marker is invalid'
   for spec in \
     'scripts/local-backup.py|/usr/local/libexec/nexus-local-backup/local-backup.py|755' \
+    'scripts/local-backup-retry-launcher.sh|/usr/local/libexec/nexus-local-backup/local-backup-retry-launcher.sh|755' \
     'ops/local-backup/systemd/nexus-local-backup.service|/etc/systemd/system/nexus-local-backup.service|644' \
     'ops/local-backup/systemd/nexus-local-backup.timer|/etc/systemd/system/nexus-local-backup.timer|644' \
     'ops/local-backup/systemd/nexus-local-backup-pre-promotion.service|/etc/systemd/system/nexus-local-backup-pre-promotion.service|644' \
@@ -7560,6 +7783,7 @@ require_local_backup_installation() {
     || die 'active immutable control-plane marker is invalid'
   for spec in \
     'scripts/local-backup.py|/usr/local/libexec/nexus-local-backup/local-backup.py|755' \
+    'scripts/local-backup-retry-launcher.sh|/usr/local/libexec/nexus-local-backup/local-backup-retry-launcher.sh|755' \
     'ops/local-backup/systemd/nexus-local-backup.service|/etc/systemd/system/nexus-local-backup.service|644' \
     'ops/local-backup/systemd/nexus-local-backup.timer|/etc/systemd/system/nexus-local-backup.timer|644' \
     'ops/local-backup/systemd/nexus-local-backup-pre-promotion.service|/etc/systemd/system/nexus-local-backup-pre-promotion.service|644' \

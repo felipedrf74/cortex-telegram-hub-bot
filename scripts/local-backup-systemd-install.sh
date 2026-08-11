@@ -81,6 +81,7 @@ destination_file_identity() {
   local target
   for target in \
     /usr/local/libexec/nexus-local-backup/local-backup.py \
+    /usr/local/libexec/nexus-local-backup/local-backup-retry-launcher.sh \
     /etc/systemd/system/nexus-local-backup.service \
     /etc/systemd/system/nexus-local-backup.timer \
     /etc/systemd/system/nexus-local-backup-pre-promotion.service \
@@ -97,6 +98,7 @@ durably_sync_installed_authority() {
   local target
   for target in \
     /usr/local/libexec/nexus-local-backup/local-backup.py \
+    /usr/local/libexec/nexus-local-backup/local-backup-retry-launcher.sh \
     /etc/systemd/system/nexus-local-backup.service \
     /etc/systemd/system/nexus-local-backup.timer \
     /etc/systemd/system/nexus-local-backup-pre-promotion.service \
@@ -104,7 +106,7 @@ durably_sync_installed_authority() {
     /etc/systemd/system/nexus-local-backup-restore-verify.timer \
     /etc/sudoers.d/nexus-local-backup; do
     validate_optional_installed_file "$target" \
-      "$([ "$target" = /usr/local/libexec/nexus-local-backup/local-backup.py ] \
+      "$([[ "$target" == /usr/local/libexec/nexus-local-backup/* ]] \
         && printf 755 \
         || { [ "$target" = /etc/sudoers.d/nexus-local-backup ] \
           && printf 440 || printf 644; })" || return 1
@@ -135,6 +137,10 @@ SOURCE_ROOT="${1:-}"
   echo "local backup installer must run as root" >&2
   exit 1
 }
+[ -x /usr/bin/timeout ] && [ -x /usr/bin/sleep ] || {
+  echo "local backup retry runtime is unavailable" >&2
+  exit 1
+}
 [[ "$SOURCE_ROOT" == /* && "$SOURCE_ROOT" != / && -d "$SOURCE_ROOT" && ! -L "$SOURCE_ROOT" ]] \
   || { echo "source root must be an absolute non-symlink directory" >&2; exit 1; }
 validate_root_path_chain "$SOURCE_ROOT" "local backup source root" || exit 1
@@ -142,6 +148,7 @@ SOURCE_ROOT="$(realpath -e -- "$SOURCE_ROOT")"
 
 for source in \
   scripts/local-backup.py \
+  scripts/local-backup-retry-launcher.sh \
   ops/local-backup/systemd/nexus-local-backup.service \
   ops/local-backup/systemd/nexus-local-backup.timer \
   ops/local-backup/systemd/nexus-local-backup-pre-promotion.service \
@@ -168,6 +175,7 @@ for destination in \
 done
 for destination_spec in \
   '/usr/local/libexec/nexus-local-backup/local-backup.py|755' \
+  '/usr/local/libexec/nexus-local-backup/local-backup-retry-launcher.sh|755' \
   '/etc/systemd/system/nexus-local-backup.service|644' \
   '/etc/systemd/system/nexus-local-backup.timer|644' \
   '/etc/systemd/system/nexus-local-backup-pre-promotion.service|644' \
@@ -188,6 +196,9 @@ DESTINATION_ANCESTORS_BEFORE="$(destination_ancestor_identity)" || exit 1
 install -o root -g root -m 0755 \
   "$SOURCE_ROOT/scripts/local-backup.py" \
   /usr/local/libexec/nexus-local-backup/local-backup.py
+install -o root -g root -m 0755 \
+  "$SOURCE_ROOT/scripts/local-backup-retry-launcher.sh" \
+  /usr/local/libexec/nexus-local-backup/local-backup-retry-launcher.sh
 for unit in \
   nexus-local-backup.service \
   nexus-local-backup.timer \
@@ -204,6 +215,8 @@ install -o root -g root -m 0440 \
 visudo -cf /etc/sudoers.d/nexus-local-backup >/dev/null
 [ "$(stat -c '%U:%G:%a' /usr/local/libexec/nexus-local-backup/local-backup.py)" = root:root:755 ] \
   || { echo "installed local backup executable is unsafe" >&2; exit 1; }
+[ "$(stat -c '%U:%G:%a' /usr/local/libexec/nexus-local-backup/local-backup-retry-launcher.sh)" = root:root:755 ] \
+  || { echo "installed local backup retry launcher is unsafe" >&2; exit 1; }
 [ "$(stat -c '%U:%G:%a' /etc/sudoers.d/nexus-local-backup)" = root:root:440 ] \
   || { echo "installed local backup sudoers policy is unsafe" >&2; exit 1; }
 DESTINATION_FILES_BEFORE="$(destination_file_identity)" || exit 1
@@ -212,6 +225,9 @@ DESTINATION_FILES_BEFORE="$(destination_file_identity)" || exit 1
 cmp -s -- "$SOURCE_ROOT/scripts/local-backup.py" \
   /usr/local/libexec/nexus-local-backup/local-backup.py \
   || { echo "installed local backup producer differs from source" >&2; exit 1; }
+cmp -s -- "$SOURCE_ROOT/scripts/local-backup-retry-launcher.sh" \
+  /usr/local/libexec/nexus-local-backup/local-backup-retry-launcher.sh \
+  || { echo "installed local backup retry launcher differs from source" >&2; exit 1; }
 for unit in \
   nexus-local-backup.service \
   nexus-local-backup.timer \

@@ -1100,6 +1100,12 @@ fi
     expect(provision).toContain("fetch --quiet --no-tags --depth=1 \\\n  origin \"$SOURCE_REF\"");
     expect(provision).toContain('test "$FETCHED_SHA" = "$SOURCE_SHA"');
     expect(provision).toContain('test "$(/usr/bin/node --version)" = v22.23.1');
+    expect(provision).toContain("test -x /usr/bin/timeout || die '/usr/bin/timeout is missing'");
+    expect(provision).toContain("test -x /usr/bin/sleep || die '/usr/bin/sleep is missing'");
+    expect(provision).toContain(
+      'cd / && /usr/bin/env -i HOME=/root PATH=/usr/bin:/bin \\\n'
+      + '    NPM_CONFIG_USERCONFIG=/dev/null /usr/bin/npm --version',
+    );
     expect(provision).toContain(
       'sudo install -d -o root -g root -m 711 "$CONTROL_ROOT"',
     );
@@ -1123,6 +1129,7 @@ fi
     for (const backupAsset of [
       'scripts/local-backup-systemd-install.sh',
       'scripts/local-backup.py',
+      'scripts/local-backup-retry-launcher.sh',
       'ops/local-backup/systemd/nexus-local-backup-pre-promotion.service',
       'ops/local-backup/systemd/nexus-local-backup-restore-verify.timer',
       'ops/local-backup/nexus-local-backup.sudoers',
@@ -1133,7 +1140,10 @@ fi
       'sudo install -d -o root -g "$BUILD_GID" -m 710 "$CONTROL_ROOT"',
     );
     const asBuilderStart = provision.indexOf('as_builder() {');
-    const asBuilderEnd = provision.indexOf('\n}\n\nrequire_safe_candidate_tree', asBuilderStart);
+    const asBuilderEnd = provision.indexOf(
+      '\n}\n\nnormalize_builder_tracked_modes',
+      asBuilderStart,
+    );
     expect(asBuilderStart).toBeGreaterThan(-1);
     expect(asBuilderEnd).toBeGreaterThan(asBuilderStart);
     const asBuilder = provision.slice(asBuilderStart, asBuilderEnd);
@@ -1148,6 +1158,22 @@ fi
     expect(asBuilder).toContain('--property=ProtectControlGroups=yes \\');
     expect(asBuilder).toContain('--property=ReadWritePaths="$STAGE_DIR" \\');
     expect(asBuilder).not.toContain('sudo -u "$BUILD_USER"');
+    const trackedModeNormalizerStart = provision.indexOf('normalize_builder_tracked_modes() {');
+    const trackedModeNormalizerEnd = provision.indexOf(
+      '\n}\n\nrequire_safe_candidate_tree',
+      trackedModeNormalizerStart,
+    );
+    expect(trackedModeNormalizerStart).toBeGreaterThan(asBuilderEnd);
+    expect(trackedModeNormalizerEnd).toBeGreaterThan(trackedModeNormalizerStart);
+    const trackedModeNormalizer = provision.slice(
+      trackedModeNormalizerStart,
+      trackedModeNormalizerEnd + 2,
+    );
+    expect(trackedModeNormalizer).toContain("'ls-files', '--stage', '-z'");
+    expect(trackedModeNormalizer).toContain('100644|100755|120000');
+    expect(trackedModeNormalizer).toContain('new TextDecoder(\'utf-8\', { fatal: true })');
+    expect(trackedModeNormalizer).toContain('after.dev !== before.dev');
+    expect(trackedModeNormalizer).toContain('after.ino !== before.ino');
     expect(provision).toContain('/usr/bin/pgrep -u "$BUILD_UID"');
     expect(provision).toContain("*) die 'cannot prove the dedicated build account is quiescent'");
     expect(provision).toContain('/usr/bin/lsof -nP -F pfn +D "$candidate"');
@@ -1309,6 +1335,10 @@ fi
       "'scripts/local-backup.py|/usr/local/libexec/nexus-local-backup/local-backup.py|555|755'",
     );
     expect(provision).toContain(
+      "'scripts/local-backup-retry-launcher.sh|/usr/local/libexec/"
+      + "nexus-local-backup/local-backup-retry-launcher.sh|555|755'",
+    );
+    expect(provision).toContain(
       "'ops/local-backup/systemd/nexus-local-backup.service|/etc/systemd/system/nexus-local-backup.service|444|644'",
     );
     expect(provision).toContain('require_installed_backup_verifier_pair()');
@@ -1468,6 +1498,59 @@ fi
     expect(pollerEnv).not.toContain('NEXUS_RELEASE_FLOCK_BIN=');
     expect(pollerEnv).not.toContain('NEXUS_RELEASE_GIT_BIN=');
     expect(runbook).not.toContain('sudo npm --prefix /opt/nexus-release/checkout');
+  });
+
+  it('normalizes restrictive builder checkout modes before immutable freeze', () => {
+    const runbook = readFileSync(join(root, 'ops/nexus-release/README.md'), 'utf8');
+    const provision = bashBlockContaining(runbook, 'CONTROL-PLANE PROVISION REFUSED');
+    const start = provision.indexOf('normalize_builder_tracked_modes() {');
+    const end = provision.indexOf('\n}\n\nrequire_safe_candidate_tree', start);
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    const normalizer = provision.slice(start, end + 2);
+    const programMarker = "<<'NODE'\n";
+    const programStart = normalizer.indexOf(programMarker);
+    const programEnd = normalizer.lastIndexOf('\nNODE');
+    expect(programStart).toBeGreaterThanOrEqual(0);
+    expect(programEnd).toBeGreaterThan(programStart);
+    const normalizerProgram = normalizer.slice(programStart + programMarker.length, programEnd);
+    const fixtureRoot = mkdtempSync(join(tmpdir(), 'nexus-builder-modes-'));
+    const plain = join(fixtureRoot, 'plain.txt');
+    const executable = join(fixtureRoot, 'executable.sh');
+    try {
+      writeFileSync(plain, 'plain\n', { mode: 0o644 });
+      writeFileSync(executable, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+      expect(spawnSync('git', ['init', '--quiet', fixtureRoot], { encoding: 'utf8' }).status)
+        .toBe(0);
+      expect(spawnSync('git', ['-C', fixtureRoot, 'add', '--', 'plain.txt', 'executable.sh'], {
+        encoding: 'utf8',
+      }).status).toBe(0);
+      expect(spawnSync('git', ['-C', fixtureRoot, 'update-index', '--chmod=-x', 'plain.txt'], {
+        encoding: 'utf8',
+      }).status).toBe(0);
+      expect(spawnSync('git', ['-C', fixtureRoot, 'update-index', '--chmod=+x', 'executable.sh'], {
+        encoding: 'utf8',
+      }).status).toBe(0);
+      chmodSync(plain, 0o600);
+      chmodSync(executable, 0o700);
+
+      const execution = spawnSync(
+        process.execPath,
+        ['--input-type=module', '-', fixtureRoot],
+        { encoding: 'utf8', input: normalizerProgram },
+      );
+      expect(execution.status, execution.stderr).toBe(0);
+      expect(lstatSync(plain).mode & 0o7777).toBe(0o644);
+      expect(lstatSync(executable).mode & 0o7777).toBe(0o755);
+
+      chmodSync(plain, (lstatSync(plain).mode & 0o7777) & ~0o222);
+      chmodSync(executable, (lstatSync(executable).mode & 0o7777) & ~0o222);
+      expect(lstatSync(plain).mode & 0o7777).toBe(0o444);
+      expect(lstatSync(executable).mode & 0o7777).toBe(0o555);
+    } finally {
+      chmodSync(fixtureRoot, 0o700);
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
   });
 
   it('creates the initial release mutex once and refuses unsafe or absent non-initial state', () => {
@@ -1963,6 +2046,10 @@ done
       );
       expect(block).toContain(
         "'scripts/local-backup.py|/usr/local/libexec/nexus-local-backup/local-backup.py|755'",
+      );
+      expect(block).toContain(
+        "'scripts/local-backup-retry-launcher.sh|/usr/local/libexec/"
+        + "nexus-local-backup/local-backup-retry-launcher.sh|755'",
       );
       expect(block).toContain('sudo cmp -s -- "$source" "$destination"');
       expect(block).toContain("root:root:$mode:1");
