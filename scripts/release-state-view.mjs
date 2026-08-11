@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -14,13 +15,15 @@ import {
 } from './lib/release-state-store.mjs';
 
 /**
- * Generate the non-gating operational view of release state.
+ * Generate the bounded operational view of release state.
  *
  * `docs/release/release-state.json` used to be canonical, and gating on it is
  * what produced the whole bot-PR reconciliation subsystem. It is now a generated
- * projection: refreshed on demand, clearly labelled non-authoritative, and read
- * by nothing in the deployment path. Observable receipts and runtime evidence
- * outrank it, always.
+ * projection: refreshed on demand and clearly labelled non-authoritative.
+ * Observable receipts and runtime evidence outrank its projected release-truth
+ * fields, always. The two root-lstat PM2 retirement booleans are a separate
+ * fail-closed lifecycle interlock consumed by the legacy user release
+ * transaction; they are not inferred from the projection.
  *
  * Usage:
  *   node scripts/release-state-view.mjs --output docs/release/release-state.json
@@ -34,6 +37,21 @@ function arg(name, fallback = '') {
 }
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const pm2RetirementJournal =
+  '/var/lib/nexus-release/state/pm2-fallback-retirement.json';
+const pm2RetiredTombstone =
+  '/var/lib/nexus-release/state/pm2-fallback-retired.json';
+
+function pathPresentByLstat(file) {
+  try {
+    fs.lstatSync(file);
+    return true;
+  } catch (error) {
+    if (error?.code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
 const policy = loadContinuousDeploymentPolicy(root);
 const store = createReleaseStateStore({
   stateDir: policy.paths.stateDir,
@@ -105,6 +123,8 @@ const view = {
       releasePayloadDigest: activeReceipt.identity.releasePayloadDigest,
     }
     : null,
+  pm2FallbackRetirementInProgress: pathPresentByLstat(pm2RetirementJournal),
+  pm2FallbackRetired: pathPresentByLstat(pm2RetiredTombstone),
 };
 const output = arg('--output');
 if (output) {

@@ -682,6 +682,62 @@
       ],
       "replacementTests": ["__tests__/scripts/ollama-lean-finalize.test.ts"],
       "reason": "The large-model cleanup contract is replaced by the exact-release-bound, dry-run-first Ollama finalization transaction."
+    },
+    {
+      "baseSha": "852116a7ee17562418779ee396095de2cd05e699",
+      "test": "__tests__/scripts/continuous-deployment-workflows.test.ts",
+      "baselineOwnerPaths": [
+        "config/continuous-deployment.json",
+        "ops/nexus-release/README.md",
+        "ops/nexus-release/nexus-release-heartbeat.service",
+        "ops/nexus-release/nexus-release-heartbeat.timer"
+      ],
+      "requiredChangedPaths": [
+        "config/continuous-deployment.json",
+        "ops/nexus-release/README.md",
+        "ops/nexus-release/nexus-release-heartbeat.service",
+        "ops/nexus-release/nexus-release-heartbeat.timer"
+      ],
+      "replacementTests": [
+        "__tests__/scripts/continuous-deployment-workflows.test.ts",
+        "__tests__/scripts/release-operational-liveness.test.ts"
+      ],
+      "reason": "The retained workflow contract replaces the two-timer direct-heartbeat assertions with the five-timer crash-resumable control-plane transaction, while the operational-liveness suite owns the scrubbed heartbeat launcher and collision-safe schedule."
+    },
+    {
+      "baseSha": "852116a7ee17562418779ee396095de2cd05e699",
+      "test": "__tests__/scripts/project-map-generation.test.ts",
+      "baselineOwnerPaths": [
+        "scripts/lib/docs-release-state-audit.mjs"
+      ],
+      "requiredChangedPaths": [
+        "scripts/lib/docs-release-state-audit.mjs"
+      ],
+      "replacementTests": [
+        "__tests__/scripts/project-map-generation.test.ts",
+        "__tests__/scripts/pm2-fallback-retirement.test.ts"
+      ],
+      "reason": "The retained project-map fixture replaces the v2-only state view with the v3 receipt schema and explicit PM2 fallback retirement state, whose lifecycle is proven by the dedicated retirement suite."
+    },
+    {
+      "baseSha": "852116a7ee17562418779ee396095de2cd05e699",
+      "test": "__tests__/scripts/release-continuous-deployment.test.ts",
+      "baselineOwnerPaths": [
+        "scripts/lib/release-backup.mjs",
+        "scripts/lib/release-deployment.mjs",
+        "scripts/lib/release-manifest.mjs"
+      ],
+      "requiredChangedPaths": [
+        "scripts/lib/release-backup.mjs",
+        "scripts/lib/release-deployment.mjs",
+        "scripts/lib/release-manifest.mjs"
+      ],
+      "replacementTests": [
+        "__tests__/scripts/release-continuous-deployment.test.ts",
+        "__tests__/scripts/release-control-plane.test.ts",
+        "__tests__/scripts/release-operational-liveness.test.ts"
+      ],
+      "reason": "The retained deployment suite replaces v2 signing, eager-pruning, and permissive backup fixtures with v3 controller binding, defer-before-mutation behavior, and closed backup authority; the focused controller and liveness suites prove those new boundaries directly."
     }
   ],
   "groups": {

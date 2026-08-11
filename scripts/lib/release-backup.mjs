@@ -34,8 +34,48 @@ export const PRE_MIGRATION_BACKUP_KIND = 'pre-promotion';
 
 const MAX_RECEIPT_BYTES = 64 * 1024;
 const BACKUP_HASH_CHUNK_BYTES = 1024 * 1024;
-const CANONICAL_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
+const CANONICAL_TIMESTAMP = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})\.(\d{3})Z$/;
 const HEX_SHA256 = /^[0-9a-f]{64}$/;
+const BACKUP_RECEIPT_FIELDS = Object.freeze([
+  'schema', 'status', 'kind', 'database', 'backupRoot', 'startedAt', 'completedAt',
+  'encryptedSha256', 'encryptedSizeBytes', 'installed', 'retention',
+  'plaintextSha256', 'plaintextSizeBytes', 'integrityCheck', 'foreignKeyCheck',
+]);
+const PRODUCER_RETENTION = Object.freeze({
+  hourly: 24,
+  daily: 30,
+  weekly: 4,
+  'pre-promotion': 10,
+});
+
+function exactKeys(value, expected) {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    && JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...expected].sort());
+}
+
+function strictTimestamp(value) {
+  if (typeof value !== 'string') return null;
+  const match = CANONICAL_TIMESTAMP.exec(value);
+  if (!match) return null;
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) return null;
+  const date = new Date(parsed);
+  const expected = match.slice(1, 7).map(Number);
+  const actual = [
+    date.getUTCFullYear(), date.getUTCMonth() + 1, date.getUTCDate(),
+    date.getUTCHours(), date.getUTCMinutes(), date.getUTCSeconds(),
+  ];
+  return actual.every((part, index) => part === expected[index]) ? parsed : null;
+}
+
+function producerPrePromotionPath(root, startedAt) {
+  const parsed = strictTimestamp(startedAt);
+  if (parsed === null) return null;
+  const value = new Date(parsed).toISOString();
+  const name = `nexus-db-${value.slice(0, 10).replaceAll('-', '')}T${value
+    .slice(11, 19).replaceAll(':', '')}Z.sqlite.age`;
+  return path.join(root, PRE_MIGRATION_BACKUP_KIND, name);
+}
 
 export function createReleaseBackup({
   policy,
@@ -44,6 +84,9 @@ export function createReleaseBackup({
   now = () => Date.now(),
   log = () => {},
   fileSystem = fs,
+  expectedUid = 0,
+  expectedGid = 0,
+  backupTrustAnchor = '/',
 }) {
   const backupRoot = policy.backup?.root;
   const receiptPath = policy.backup?.receiptPath;
@@ -77,6 +120,80 @@ export function createReleaseBackup({
         === statTimestamp(right, 'mtimeNs', 'mtimeMs')
       && statTimestamp(left, 'ctimeNs', 'ctimeMs')
         === statTimestamp(right, 'ctimeNs', 'ctimeMs');
+  }
+
+  function permissionBits(metadata) {
+    return Number(metadata.mode) & 0o777;
+  }
+
+  function assertDirectoryAuthority(metadata, { privateDirectory }) {
+    if (!metadata.isDirectory() || metadata.isSymbolicLink?.() || Number(metadata.nlink) < 1) {
+      throw new Error('unsafe directory type');
+    }
+    if (privateDirectory) {
+      if (!sameStatValue(metadata.uid, expectedUid)
+          || !sameStatValue(metadata.gid, expectedGid)
+          || permissionBits(metadata) !== 0o700) {
+        throw new Error('unsafe private directory metadata');
+      }
+    } else if (![0, expectedUid].some((uid) => sameStatValue(metadata.uid, uid))
+        || (permissionBits(metadata) & 0o022) !== 0) {
+      throw new Error('unsafe ancestor directory metadata');
+    }
+  }
+
+  function bindDirectoryAuthority(anchor, target, privateDirectories) {
+    const normalizedAnchor = path.resolve(anchor);
+    const normalizedTarget = path.resolve(target);
+    const relative = path.relative(normalizedAnchor, normalizedTarget);
+    if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+      throw new Error('directory authority escapes anchor');
+    }
+    const paths = [normalizedAnchor];
+    let current = normalizedAnchor;
+    if (relative) {
+      for (const component of relative.split(path.sep)) {
+        current = path.join(current, component);
+        paths.push(current);
+      }
+    }
+    const bindings = [];
+    try {
+      for (const candidate of paths) {
+        const descriptor = fileSystem.openSync(
+          candidate,
+          fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW,
+        );
+        const opened = fileSystem.fstatSync(descriptor, { bigint: true });
+        const named = fileSystem.lstatSync(candidate, { bigint: true });
+        const privateDirectory = privateDirectories.includes(path.resolve(candidate));
+        assertDirectoryAuthority(opened, { privateDirectory });
+        assertDirectoryAuthority(named, { privateDirectory });
+        if (!sameFileIdentity(opened, named)) throw new Error('directory path and fd disagree');
+        bindings.push({ candidate, descriptor, metadata: opened, privateDirectory });
+      }
+      return bindings;
+    } catch (error) {
+      for (const binding of bindings.reverse()) fileSystem.closeSync(binding.descriptor);
+      throw error;
+    }
+  }
+
+  function reassertDirectoryAuthority(bindings) {
+    for (const binding of bindings) {
+      const opened = fileSystem.fstatSync(binding.descriptor, { bigint: true });
+      const named = fileSystem.lstatSync(binding.candidate, { bigint: true });
+      assertDirectoryAuthority(opened, binding);
+      assertDirectoryAuthority(named, binding);
+      if (!sameFileIdentity(opened, binding.metadata)
+          || !sameFileIdentity(named, binding.metadata)) {
+        throw new Error('directory authority changed');
+      }
+    }
+  }
+
+  function closeDirectoryAuthority(bindings) {
+    for (const binding of [...bindings].reverse()) fileSystem.closeSync(binding.descriptor);
   }
 
   function isWithinRoot(candidate, root) {
@@ -174,21 +291,42 @@ export function createReleaseBackup({
       };
     }
 
+    let rootBindings = [];
+    try {
+      rootBindings = bindDirectoryAuthority(
+        backupTrustAnchor,
+        backupRoot,
+        [path.resolve(backupRoot)],
+      );
+    } catch {
+      return { ok: false, detail: 'governed backup root ancestor chain is unsafe' };
+    }
     let rootFd;
+    let tierFd;
     try {
       rootFd = fileSystem.openSync(
         backupRoot,
         fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW,
       );
     } catch (error) {
+      try {
+        closeDirectoryAuthority(rootBindings);
+      } catch {
+        // The verification verdict is already fail-closed; cleanup must not
+        // turn an unavailable root into an accepted proof.
+      }
       if (error?.code === 'ELOOP' || error?.code === 'ENOTDIR') {
         return { ok: false, detail: 'governed backup root is not a non-symlink directory' };
       }
       return { ok: false, detail: 'governed backup root could not be opened' };
     }
 
+    let verificationResult;
+    let finalAuthorityChanged = false;
+    let tierIdentity;
     try {
-      let rootStat;
+      verificationResult = (() => {
+        let rootStat;
       let rootPathStat;
       let resolvedRoot;
       try {
@@ -201,12 +339,42 @@ export function createReleaseBackup({
       if (!rootStat.isDirectory()
           || rootPathStat.isSymbolicLink()
           || !rootPathStat.isDirectory()
-          || !sameFileIdentity(rootPathStat, rootStat)) {
+          || !sameFileIdentity(rootPathStat, rootStat)
+          || !sameStatValue(rootStat.nlink, rootPathStat.nlink)
+          || !sameStatValue(rootStat.uid, expectedUid)
+          || !sameStatValue(rootStat.gid, expectedGid)
+          || permissionBits(rootStat) !== 0o700
+          || permissionBits(rootPathStat) !== 0o700) {
         return { ok: false, detail: 'governed backup root identity is invalid' };
       }
 
       const artifactPath = expected.artifactPath;
+      const expectedArtifactPath = producerPrePromotionPath(backupRoot, expected.startedAt);
+      if (expectedArtifactPath === null || path.resolve(artifactPath) !== path.resolve(expectedArtifactPath)) {
+        return { ok: false, detail: 'backup artifact path does not match producer topology' };
+      }
+      const tierPath = path.join(backupRoot, PRE_MIGRATION_BACKUP_KIND);
+      try {
+        tierFd = fileSystem.openSync(
+          tierPath,
+          fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW,
+        );
+        const tierStat = fileSystem.fstatSync(tierFd, { bigint: true });
+        const tierPathStat = fileSystem.lstatSync(tierPath, { bigint: true });
+        if (!tierStat.isDirectory() || tierPathStat.isSymbolicLink()
+            || !tierPathStat.isDirectory() || !sameFileIdentity(tierStat, tierPathStat)
+            || !sameStatValue(tierStat.uid, rootStat.uid)
+            || !sameStatValue(tierStat.gid, rootStat.gid)
+            || permissionBits(tierStat) !== 0o700
+            || permissionBits(tierPathStat) !== 0o700) {
+          return { ok: false, detail: 'backup pre-promotion tier identity is invalid' };
+        }
+        tierIdentity = tierStat;
+      } catch {
+        return { ok: false, detail: 'backup pre-promotion tier could not be descriptor-bound' };
+      }
       let artifactFd;
+      let checksumFd;
       try {
         artifactFd = fileSystem.openSync(
           artifactPath,
@@ -231,6 +399,11 @@ export function createReleaseBackup({
         if (!sameStatValue(artifactStat.nlink, 1)) {
           return { ok: false, detail: 'backup artifact link count must be exactly one' };
         }
+        if (!sameStatValue(artifactStat.uid, rootStat.uid)
+            || !sameStatValue(artifactStat.gid, rootStat.gid)
+            || permissionBits(artifactStat) !== 0o600) {
+          return { ok: false, detail: 'backup artifact ownership or mode is unsafe' };
+        }
         if (!sameStatValue(artifactStat.size, expected.encryptedSizeBytes)) {
           return { ok: false, detail: 'backup artifact size does not match its evidence' };
         }
@@ -246,6 +419,42 @@ export function createReleaseBackup({
         }
         if (!isWithinRoot(resolvedArtifact, resolvedRoot)) {
           return { ok: false, detail: 'backup artifact resolves outside the governed backup root' };
+        }
+
+        const checksumPath = `${artifactPath}.sha256`;
+        try {
+          checksumFd = fileSystem.openSync(
+            checksumPath,
+            fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW,
+          );
+        } catch (error) {
+          if (error?.code === 'ELOOP') {
+            return { ok: false, detail: 'backup checksum is not a regular file' };
+          }
+          return { ok: false, detail: 'backup checksum companion is missing' };
+        }
+        let checksumStat;
+        let resolvedChecksum;
+        try {
+          checksumStat = fileSystem.fstatSync(checksumFd, { bigint: true });
+          resolvedChecksum = resolveOpenedPath(checksumFd, checksumPath, checksumStat);
+        } catch {
+          return { ok: false, detail: 'backup checksum identity could not be resolved' };
+        }
+        const expectedChecksum = Buffer.from(
+          `${expected.encryptedSha256}  ${path.basename(artifactPath)}\n`,
+          'ascii',
+        );
+        if (!checksumStat.isFile() || !sameStatValue(checksumStat.nlink, 1)
+            || !sameStatValue(checksumStat.uid, rootStat.uid)
+            || !sameStatValue(checksumStat.gid, rootStat.gid)
+            || permissionBits(checksumStat) !== 0o600
+            || !sameStatValue(checksumStat.size, expectedChecksum.length)) {
+          return { ok: false, detail: 'backup checksum metadata is unsafe' };
+        }
+        if (!isWithinRoot(resolvedChecksum, resolvedRoot)
+            || path.dirname(resolvedChecksum) !== path.dirname(resolvedArtifact)) {
+          return { ok: false, detail: 'backup checksum resolves outside its artifact directory' };
         }
 
         let observedSha256;
@@ -265,6 +474,21 @@ export function createReleaseBackup({
         if (confirmedSha256 !== observedSha256) {
           return { ok: false, detail: 'backup artifact changed during verification' };
         }
+        try {
+          const checksumBytes = Buffer.alloc(expectedChecksum.length);
+          const bytesRead = fileSystem.readSync(
+            checksumFd,
+            checksumBytes,
+            0,
+            checksumBytes.length,
+            0,
+          );
+          if (bytesRead !== expectedChecksum.length || !checksumBytes.equals(expectedChecksum)) {
+            return { ok: false, detail: 'backup checksum is not canonical' };
+          }
+        } catch {
+          return { ok: false, detail: 'backup checksum could not be read for verification' };
+        }
 
         // Refuse mutation or namespace replacement of either side. BigInt stats
         // retain nanosecond mtime/ctime where Node exposes them; the second digest
@@ -274,11 +498,15 @@ export function createReleaseBackup({
         let currentArtifactPathStat;
         let currentRootDescriptorStat;
         let currentRootPathStat;
+        let currentChecksumDescriptorStat;
+        let currentChecksumPathStat;
         try {
           currentArtifactDescriptorStat = fileSystem.fstatSync(artifactFd, { bigint: true });
           currentArtifactPathStat = fileSystem.lstatSync(artifactPath, { bigint: true });
           currentRootDescriptorStat = fileSystem.fstatSync(rootFd, { bigint: true });
           currentRootPathStat = fileSystem.lstatSync(backupRoot, { bigint: true });
+          currentChecksumDescriptorStat = fileSystem.fstatSync(checksumFd, { bigint: true });
+          currentChecksumPathStat = fileSystem.lstatSync(checksumPath, { bigint: true });
         } catch {
           return { ok: false, detail: 'backup artifact or governed root identity changed during verification' };
         }
@@ -295,22 +523,85 @@ export function createReleaseBackup({
             || !sameFileIdentity(currentRootPathStat, rootStat)) {
           return { ok: false, detail: 'backup artifact or governed root identity changed during verification' };
         }
+        if (!sameArtifactSnapshot(currentChecksumDescriptorStat, checksumStat)
+            || currentChecksumPathStat.isSymbolicLink()
+            || !currentChecksumPathStat.isFile()
+            || !sameArtifactSnapshot(currentChecksumPathStat, checksumStat)
+            || !sameStatValue(currentChecksumDescriptorStat.nlink, 1)
+            || !sameStatValue(currentChecksumPathStat.nlink, 1)) {
+          return { ok: false, detail: 'backup checksum identity changed during verification' };
+        }
+        try {
+          reassertDirectoryAuthority(rootBindings);
+          const currentTierDescriptor = fileSystem.fstatSync(tierFd, { bigint: true });
+          const currentTierPath = fileSystem.lstatSync(tierPath, { bigint: true });
+          assertDirectoryAuthority(currentTierDescriptor, { privateDirectory: true });
+          assertDirectoryAuthority(currentTierPath, { privateDirectory: true });
+          if (!sameFileIdentity(currentTierDescriptor, currentTierPath)) {
+            throw new Error('tier descriptor and path disagree');
+          }
+        } catch {
+          return { ok: false, detail: 'backup directory authority changed during verification' };
+        }
 
         return { ok: true, detail: null, ...expected };
       } finally {
+        if (checksumFd !== undefined) {
+          try {
+            fileSystem.closeSync(checksumFd);
+          } catch {
+            // Verification already failed closed on the bound checksum identity.
+          }
+        }
         try {
           fileSystem.closeSync(artifactFd);
         } catch {
           // Verification is already bound to the descriptor identity and bytes.
         }
       }
+      })();
+      try {
+        // This is deliberately outside the result-producing body. A mutation
+        // after its last in-scope check must replace a pending success verdict,
+        // while descriptor cleanup below must not replace either verdict.
+        reassertDirectoryAuthority(rootBindings);
+        if (tierFd !== undefined && tierIdentity !== undefined) {
+          const currentTierDescriptor = fileSystem.fstatSync(tierFd, { bigint: true });
+          const tierPath = path.join(backupRoot, PRE_MIGRATION_BACKUP_KIND);
+          const currentTierPath = fileSystem.lstatSync(tierPath, { bigint: true });
+          assertDirectoryAuthority(currentTierDescriptor, { privateDirectory: true });
+          assertDirectoryAuthority(currentTierPath, { privateDirectory: true });
+          if (!sameFileIdentity(currentTierDescriptor, tierIdentity)
+              || !sameFileIdentity(currentTierPath, tierIdentity)) {
+            throw new Error('tier authority changed');
+          }
+        }
+      } catch {
+        finalAuthorityChanged = true;
+      }
     } finally {
+      if (tierFd !== undefined) {
+        try {
+          fileSystem.closeSync(tierFd);
+        } catch {
+          // The tier identity is rechecked through the retained root/artifact proof.
+        }
+      }
       try {
         fileSystem.closeSync(rootFd);
       } catch {
         // Closing cannot redirect the root identity used for the completed proof.
       }
+      try {
+        closeDirectoryAuthority(rootBindings);
+      } catch {
+        // Closing retained descriptors cannot strengthen or weaken the proof.
+      }
     }
+    if (finalAuthorityChanged) {
+      return { ok: false, detail: 'backup directory authority changed during verification' };
+    }
+    return verificationResult;
   }
 
   /**
@@ -322,23 +613,60 @@ export function createReleaseBackup({
     if (!receiptPath) {
       return { ok: false, detail: 'backup receipt path is not configured' };
     }
-    let stat;
+    if (path.resolve(receiptPath) !== path.resolve(
+      path.join(backupRoot, 'state', 'last-success.json'),
+    )) {
+      return { ok: false, detail: 'backup receipt path does not match producer topology' };
+    }
+    let stateBindings = [];
     try {
-      stat = fileSystem.lstatSync(receiptPath);
+      stateBindings = bindDirectoryAuthority(
+        backupTrustAnchor,
+        path.dirname(receiptPath),
+        [path.resolve(backupRoot), path.resolve(path.dirname(receiptPath))],
+      );
     } catch {
-      return { ok: false, detail: 'backup receipt is missing' };
+      return { ok: false, detail: 'backup receipt directory authority is unsafe' };
     }
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.size === 0 || stat.size > MAX_RECEIPT_BYTES) {
-      return { ok: false, detail: 'backup receipt is not a bounded regular file' };
-    }
-
+    let receiptFd;
     let receipt;
     try {
-      receipt = JSON.parse(fileSystem.readFileSync(receiptPath, 'utf8'));
-    } catch {
-      return { ok: false, detail: 'backup receipt is not valid json' };
+      receiptFd = fileSystem.openSync(
+        receiptPath,
+        fs.constants.O_RDONLY | fs.constants.O_CLOEXEC | fs.constants.O_NOFOLLOW,
+      );
+      const opened = fileSystem.fstatSync(receiptFd, { bigint: true });
+      const named = fileSystem.lstatSync(receiptPath, { bigint: true });
+      if (!opened.isFile() || named.isSymbolicLink() || !named.isFile()
+          || !sameArtifactSnapshot(opened, named)
+          || !sameStatValue(opened.nlink, 1) || !sameStatValue(named.nlink, 1)
+          || !sameStatValue(opened.uid, expectedUid) || !sameStatValue(named.uid, expectedUid)
+          || !sameStatValue(opened.gid, expectedGid) || !sameStatValue(named.gid, expectedGid)
+          || permissionBits(opened) !== 0o600 || permissionBits(named) !== 0o600
+          || Number(opened.size) <= 0 || Number(opened.size) > MAX_RECEIPT_BYTES) {
+        return { ok: false, detail: 'backup receipt is not a private bounded regular file' };
+      }
+      receipt = JSON.parse(fileSystem.readFileSync(receiptFd, 'utf8'));
+      const afterDescriptor = fileSystem.fstatSync(receiptFd, { bigint: true });
+      const afterPath = fileSystem.lstatSync(receiptPath, { bigint: true });
+      if (!sameArtifactSnapshot(opened, afterDescriptor)
+          || !sameArtifactSnapshot(opened, afterPath)) {
+        return { ok: false, detail: 'backup receipt changed during verification' };
+      }
+      reassertDirectoryAuthority(stateBindings);
+    } catch (error) {
+      if (error instanceof SyntaxError) {
+        return { ok: false, detail: 'backup receipt is not valid json' };
+      }
+      return { ok: false, detail: 'backup receipt is missing' };
+    } finally {
+      if (receiptFd !== undefined) fileSystem.closeSync(receiptFd);
+      closeDirectoryAuthority(stateBindings);
     }
 
+    if (!exactKeys(receipt, BACKUP_RECEIPT_FIELDS)) {
+      return { ok: false, detail: 'backup receipt fields are not the closed producer schema' };
+    }
     if (receipt?.schema !== BACKUP_RECEIPT_SCHEMA) {
       return { ok: false, detail: 'backup receipt schema is unsupported' };
     }
@@ -368,19 +696,13 @@ export function createReleaseBackup({
       return { ok: false, detail: 'backup receipt root does not match policy' };
     }
 
-    if (!CANONICAL_TIMESTAMP.test(String(receipt.startedAt ?? ''))) {
+    const startedAtMs = strictTimestamp(receipt.startedAt);
+    if (startedAtMs === null) {
       return { ok: false, detail: 'backup receipt start time is not canonical' };
     }
-    const startedAtMs = Date.parse(receipt.startedAt);
-    if (!Number.isFinite(startedAtMs)) {
-      return { ok: false, detail: 'backup receipt start time is unparseable' };
-    }
-    if (!CANONICAL_TIMESTAMP.test(String(receipt.completedAt ?? ''))) {
+    const completedAtMs = strictTimestamp(receipt.completedAt);
+    if (completedAtMs === null) {
       return { ok: false, detail: 'backup receipt completion time is not canonical' };
-    }
-    const completedAtMs = Date.parse(receipt.completedAt);
-    if (!Number.isFinite(completedAtMs)) {
-      return { ok: false, detail: 'backup receipt completion time is unparseable' };
     }
     // `systemctl start` succeeds when a oneshot is already activating. Completion
     // freshness alone would therefore admit a snapshot whose producer invocation
@@ -399,6 +721,9 @@ export function createReleaseBackup({
     if (now() - completedAtMs > maxAgeSeconds * 1000) {
       return { ok: false, detail: 'backup receipt is stale' };
     }
+    if (completedAtMs > now()) {
+      return { ok: false, detail: 'backup receipt is future-dated' };
+    }
 
     if (!HEX_SHA256.test(String(receipt.encryptedSha256 ?? ''))) {
       return { ok: false, detail: 'backup receipt has no encrypted digest' };
@@ -406,9 +731,22 @@ export function createReleaseBackup({
     if (!Number.isSafeInteger(receipt.encryptedSizeBytes) || receipt.encryptedSizeBytes <= 0) {
       return { ok: false, detail: 'backup receipt has no encrypted size' };
     }
+    if (!HEX_SHA256.test(receipt.plaintextSha256)
+        || !Number.isSafeInteger(receipt.plaintextSizeBytes)
+        || receipt.plaintextSizeBytes <= 0
+        || receipt.integrityCheck !== 'ok'
+        || receipt.foreignKeyCheck !== 'ok') {
+      return { ok: false, detail: 'backup receipt recovery claims are invalid' };
+    }
+    if (!exactKeys(receipt.retention, Object.keys(PRODUCER_RETENTION))
+        || !Object.entries(PRODUCER_RETENTION).every(
+          ([tier, count]) => receipt.retention[tier] === count,
+        )) {
+      return { ok: false, detail: 'backup receipt retention is invalid' };
+    }
 
     const installed = receipt.installed;
-    if (!installed || typeof installed !== 'object' || Array.isArray(installed)) {
+    if (!exactKeys(installed, [PRE_MIGRATION_BACKUP_KIND])) {
       return { ok: false, detail: 'backup receipt has no installed artifacts' };
     }
     const artifactPath = installed[PRE_MIGRATION_BACKUP_KIND];

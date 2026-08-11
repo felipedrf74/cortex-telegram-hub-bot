@@ -13,6 +13,7 @@ import {
   sha256,
 } from './release-canonical.mjs';
 import { releaseIdFor } from './release-manifest.mjs';
+import { assertReleaseControlPlaneShape } from './release-control-plane.mjs';
 
 /**
  * Authoritative release state and immutable receipts on the deployment host.
@@ -33,7 +34,8 @@ import { releaseIdFor } from './release-manifest.mjs';
  */
 
 export const RELEASE_STATE_SCHEMA = 'nexus.release-host-state.v1';
-export const RELEASE_RECEIPT_SCHEMA = 'nexus.release-receipt.v2';
+export const LEGACY_RELEASE_RECEIPT_SCHEMA = 'nexus.release-receipt.v2';
+export const RELEASE_RECEIPT_SCHEMA = 'nexus.release-receipt.v3';
 
 export const RELEASE_STATUSES = Object.freeze({
   ELIGIBLE: 'eligible',
@@ -153,11 +155,16 @@ const GOVERNED_DETAIL_TOKENS = new Set([
   'audit_mirror',
   'backend_health',
   'backend_public_status',
+  'backup_evidence_invalid',
+  'backup_liveness',
+  'backup_policy_invalid',
+  'backup_receipt_stale',
   'bootstrap_production_revalidation',
   'bootstrap_revalidation',
   'compose_invalid',
   'container_health',
   'content_engine_health',
+  'controller_only_transition',
   'crash_recovery',
   'crash_recovery_detected',
   'crash_recovery_write_ahead',
@@ -168,9 +175,15 @@ const GOVERNED_DETAIL_TOKENS = new Set([
   'first_container_bootstrap_baseline_invalid',
   'foreign_key_check',
   'host_not_configured',
+  'heartbeat_failed',
+  'inspect_backup_evidence',
+  'inspect_local_backup_unit',
+  'inspect_restore_verification_unit',
   'integrity_check',
   'known_hosts_not_configured',
   'ledger_reconciliation',
+  'local_backup',
+  'local_backup_failed',
   'mirror_exhausted',
   'mirror_failed',
   'non_monotonic_source_order',
@@ -196,7 +209,11 @@ const GOVERNED_DETAIL_TOKENS = new Set([
   'rollback_compose_start',
   'rollback_identity',
   'rollback_predecessor_topology',
+  'restore_verification',
+  'restore_verification_failed',
+  'restore_verification_stale',
   'staging_migrator',
+  'systemd_unit_failed',
   'transport_failed',
   'unreadable_candidate_receipt',
 ]);
@@ -575,6 +592,12 @@ export function releaseEvidenceDigest({
     reconciliationDigest,
     'release evidence migration reconciliation digest',
   );
+  const controlPlane = manifestPayload.controlPlane
+    ? assertReleaseControlPlaneShape(
+        manifestPayload.controlPlane,
+        'release evidence controlPlane',
+      )
+    : null;
   return sha256(canonicalJson({
     source: {
       repository: manifestPayload.source.repository,
@@ -590,6 +613,7 @@ export function releaseEvidenceDigest({
       contentEngine: { ...manifestPayload.images.contentEngine },
     },
     compose: { ...manifestPayload.compose },
+    ...(controlPlane ? { controlPlane: { ...controlPlane } } : {}),
     migrations: {
       digest: manifestPayload.migrations.digest,
       reconciliationDigest,
@@ -1135,13 +1159,20 @@ export function assertReleaseReceiptShape(receipt) {
   // mirror outcome recorded inside it could never be accurate at write time, and
   // a receipt that gets rewritten after the fact is not immutable. Mirror
   // outcomes live in state evidence and in the failure notification instead.
+  const hasControlPlane = Object.hasOwn(receipt ?? {}, 'controlPlane');
+  const legacy = receipt?.schema === LEGACY_RELEASE_RECEIPT_SCHEMA;
+  const current = receipt?.schema === RELEASE_RECEIPT_SCHEMA;
+  if (!legacy && !current) fail('release receipt schema is unsupported');
+  if ((legacy && hasControlPlane) || (current && !hasControlPlane)) {
+    fail('release receipt schema and controlPlane presence do not match');
+  }
   exactKeys(receipt, [
     'schema', 'releaseId', 'sourceSha', 'createdAt', 'completedAt', 'evidenceDigest',
     'identity', 'images',
-    'compose', 'migrations', 'staging', 'production', 'backup', 'rollback',
+    'compose', ...(hasControlPlane ? ['controlPlane'] : []),
+    'migrations', 'staging', 'production', 'backup', 'rollback',
     'outcome', 'failureCode',
   ], 'release receipt');
-  if (receipt.schema !== RELEASE_RECEIPT_SCHEMA) fail('release receipt schema is unsupported');
   assertReleaseId(receipt.releaseId, 'release receipt releaseId');
   assertFullSha(receipt.sourceSha, 'release receipt sourceSha');
   assertCanonicalTimestamp(receipt.createdAt, 'release receipt createdAt');
@@ -1172,6 +1203,9 @@ export function assertReleaseReceiptShape(receipt) {
   const compose = exactKeys(receipt.compose, ['path', 'digest'], 'release receipt compose');
   assertRelativeArtifactPath(compose.path, 'release receipt compose path');
   assertHexSha256(compose.digest, 'release receipt compose digest');
+  const controlPlane = hasControlPlane
+    ? assertReleaseControlPlaneShape(receipt.controlPlane, 'release receipt controlPlane')
+    : null;
 
   const migrations = exactKeys(receipt.migrations, [
     'digest', 'reconciliationDigest', 'upFileCount', 'downFileCount', 'eligible',
@@ -1335,6 +1369,7 @@ export function assertReleaseReceiptShape(receipt) {
     source: { sha: receipt.sourceSha },
     images: receipt.images,
     compose: receipt.compose,
+    ...(controlPlane ? { controlPlane } : {}),
     migrations: receipt.migrations,
   });
   if (receipt.releaseId !== expectedReleaseId) {
@@ -1352,6 +1387,7 @@ export function assertReleaseReceiptShape(receipt) {
       },
       images: receipt.images,
       compose: receipt.compose,
+      ...(controlPlane ? { controlPlane } : {}),
       migrations: {
         digest: migrations.digest,
         reconciliationDigest: migrations.reconciliationDigest,

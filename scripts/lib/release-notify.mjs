@@ -1,5 +1,6 @@
 import { sanitizeDetail } from './release-state-store.mjs';
 import { fail } from './release-canonical.mjs';
+import { releaseBackupAlertContract } from './release-backup-alert-state.mjs';
 
 /**
  * Release notifications.
@@ -19,6 +20,15 @@ export const RELEASE_NOTIFICATION_KINDS = Object.freeze({
   FAILURE: 'failure',
   RECOVERY: 'recovery',
   HEARTBEAT: 'heartbeat',
+});
+
+export const RELEASE_FAILSAFE_NOTIFICATION_POLICY = Object.freeze({
+  notifications: Object.freeze({
+    failureEnabled: true,
+    recoveryEnabled: true,
+    heartbeatEnabled: true,
+    maxMessageChars: 900,
+  }),
 });
 
 const MAX_MESSAGE_CHARS_FLOOR = 200;
@@ -64,6 +74,20 @@ export function buildReleaseNotification({ kind, policy, release }) {
     if (release.actionRequired) {
       lines.push(`action: ${sanitizeDetail(release.actionRequired)}`);
     }
+    if (release.alertSource) {
+      const contract = releaseBackupAlertContract(release.alertSource, release.failureCode);
+      if (release.phase !== contract.phase || release.outcome !== contract.outcome
+          || release.actionRequired !== contract.actionRequired
+          || release.alertSeverity !== contract.severity
+          || release.alertRunbookUrl !== contract.runbookUrl
+          || release.alertDedupeKey !== contract.dedupeKey) {
+        fail('release backup alert notification contract mismatch');
+      }
+      lines.push(`source: ${contract.source}`);
+      lines.push(`severity: ${contract.severity}`);
+      lines.push(`dedupe: ${contract.dedupeKey}`);
+      lines.push(`runbook: ${contract.runbookUrl}`);
+    }
     if (Number.isFinite(release.incidentRecoverySeconds)) {
       lines.push(`incident recovery seconds: ${roundedNonNegative(release.incidentRecoverySeconds)}`);
     }
@@ -99,6 +123,16 @@ export function buildReleaseNotification({ kind, policy, release }) {
     lines.push(`status: ${sanitizeDetail(release.status) ?? 'idle'}`);
     lines.push(`blocked: ${release.blocked ? (sanitizeDetail(release.blocked) ?? 'yes') : 'no'}`);
     lines.push(`completed releases recorded: ${Number(release.completedCount ?? 0)}`);
+    if (Number.isFinite(release.backupAgeSeconds)) {
+      lines.push(`encrypted backup age seconds: ${roundedNonNegative(release.backupAgeSeconds)}`);
+    }
+    if (Number.isFinite(release.restoreVerificationAgeSeconds)) {
+      lines.push(
+        `restore verification age seconds: ${roundedNonNegative(
+          release.restoreVerificationAgeSeconds,
+        )}`,
+      );
+    }
   } else {
     fail(`unknown release notification kind ${kind}`);
   }

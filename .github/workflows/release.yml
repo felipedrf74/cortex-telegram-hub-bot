@@ -424,7 +424,16 @@ jobs:
               require('./.local/release/manifest-build.json').cdEligible
             ));
           ")"
+          CONTROL_PLANE_DIGEST="$(node -e "
+            const build = require('./.local/release/manifest-build.json');
+            const envelope = require('./.local/release/payload/release-manifest.json');
+            if (envelope.schema !== 'nexus.release-manifest.v3') process.exit(2);
+            if (envelope.payload?.controlPlane?.digest !== build.controlPlaneDigest) process.exit(3);
+            process.stdout.write(build.controlPlaneDigest);
+          ")"
+          echo "$CONTROL_PLANE_DIGEST" | grep -Eq '^[0-9a-f]{64}$'
           echo "cd_eligible=$CD_ELIGIBLE" >> "$GITHUB_OUTPUT"
+          echo "control_plane_digest=$CONTROL_PLANE_DIGEST" >> "$GITHUB_OUTPUT"
 
       - name: Stage the release payload build context
         run: |

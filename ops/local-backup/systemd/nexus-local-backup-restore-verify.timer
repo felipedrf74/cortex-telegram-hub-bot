@@ -2,9 +2,9 @@
 Description=Weekly Nexus Hub local backup restore verification
 
 [Timer]
-OnCalendar=Sun *-*-* 04:30:00 UTC
+OnCalendar=Sun *-*-* 04:15:00 UTC
 Persistent=true
-RandomizedDelaySec=15m
+AccuracySec=1m
 Unit=nexus-local-backup-restore-verify.service
 
 [Install]

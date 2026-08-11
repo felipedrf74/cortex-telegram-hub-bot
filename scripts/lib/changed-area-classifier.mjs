@@ -232,10 +232,24 @@ export function classifyChangedFiles({
   googleDriveTenantLeak = has(/^src\/services\/(?:google-drive|google-auth)\.ts$|^__tests__\/security\/google-drive-tenant-leak\.test\.ts$|^scripts\/cleanup-tainted-google-drive-sessions\.mjs$/);
   registryRealEval = has(/^src\/services\/chat\/registry\/|^src\/services\/registry-(?:driven-eval-scenarios|real-eval-scoring|telemetry-report|adversarial-discovery|adversarial-example-proposer|readable-intents-proposer|cross-tenant-alert-hook)\.ts$|^src\/services\/build-llm-safe-prompt-slice\.ts$|^src\/services\/skills\/|^__tests__\/services\/(?:chat-action-registry-|registry-(?:driven-eval|real-eval|telemetry-report|adversarial|readable-intents|cross-tenant))|^__tests__\/scripts\/registry-feedback-report\.test\.ts$|^scripts\/registry-feedback-report\.ts$/);
 
-  const releaseControlPlane = has(/^ops\/nexus-release(?:\/|$)/)
-    || has(/^scripts\/release-poll\.sh$/);
+  // Keep CI evidence selection aligned with the signed controller fingerprint.
+  // A controller module or trust/config input can change release authority even
+  // when no application source or ops README changes in the same commit.
+  const releaseControlPlane = has(/^(?:package\.json|package-lock\.json)$/)
+    || has(/^ops\/nexus-release(?:\/|$)/)
+    || has(/^config\/continuous-deployment\.json$/)
+    || has(/^docs\/release\/evidence\/release-manifest-public-key\.pem$/)
+    || has(/^scripts\/release-.*\.(?:mjs|py|sh)$/)
+    || has(/^scripts\/remote-(?:pm2-root-install|start-sanitized-pm2|user-release-transaction)\.sh$/)
+    || has(/^scripts\/retire-pm2-fallback\.mjs$/)
+    || has(/^scripts\/lib\/release-.*\.mjs$/)
+    || has(/^scripts\/lib\/(?:migration-cd-eligibility|pm2-fallback-retirement|production-migration-lineage)\.mjs$/);
   const localBackupRuntime = has(/^ops\/local-backup(?:\/|$)/)
     || has(/^scripts\/local-backup(?:\.py|-systemd-install\.sh)$/);
+  if (releaseControlPlane) {
+    nonDoc = true;
+    docsOnly = false;
+  }
 
   flags.releaseOperator = releaseControlPlane
     || has(/^config\/production-migration-lineages\.json$/)

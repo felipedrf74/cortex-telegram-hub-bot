@@ -65,7 +65,7 @@
     "healthBudgetSeconds": 45,
     "stagingHealthBudgetSeconds": 45,
     "migratorTimeoutSeconds": 900,
-    "backupTimeoutSeconds": 900,
+    "backupTimeoutSeconds": 1320,
     "protectedHeadTimeoutSeconds": 15
   },
   "auditMirror": {
@@ -83,7 +83,7 @@
     "failureEnabled": true,
     "recoveryEnabled": true,
     "heartbeatEnabled": true,
-    "heartbeatSchedule": "Mon 09:00",
+    "heartbeatSchedule": "Mon 09:30",
     "maxMessageChars": 900
   },
   "piRunner": {

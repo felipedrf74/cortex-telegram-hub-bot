@@ -1,7 +1,7 @@
 const LEGACY_SCHEMA = 'nexus.release-state.v1';
 const HOST_VIEW_SCHEMA = 'nexus.release-state-view.v2';
 const HOST_STATE_SCHEMA = 'nexus.release-host-state.v1';
-const RECEIPT_SCHEMA = 'nexus.release-receipt.v2';
+const RECEIPT_SCHEMA = 'nexus.release-receipt.v3';
 
 function canonicalTimestamp(value) {
   return typeof value === 'string'
@@ -63,7 +63,9 @@ function hostViewIssues(state, releaseSummary) {
       || !hasOwn(state, 'active')
       || !hasOwn(state, 'activeReceipt')
       || !hasOwn(state, 'effective')
-      || typeof state.effective?.provable !== 'boolean') {
+      || typeof state.effective?.provable !== 'boolean'
+      || typeof state.pm2FallbackRetirementInProgress !== 'boolean'
+      || typeof state.pm2FallbackRetired !== 'boolean') {
     invalid('Host-derived release projection is missing its bounded evidence view.');
   }
   if (!releaseSummary.includes('non-authoritative')

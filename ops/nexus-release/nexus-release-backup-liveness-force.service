@@ -1,10 +1,12 @@
 [Unit]
-Description=Nexus Hub weekly release pipeline heartbeat
-Documentation=file:///opt/nexus-release/checkout/ops/nexus-release/README.md
+Description=Nexus Hub attended forced backup liveness proof
+Documentation=file:///opt/nexus-release/checkout/ops/local-backup/README.md
 After=network-online.target
 Wants=network-online.target
 ConditionPathExists=!/var/lib/nexus-release/state/control-plane-transaction.json
 ConditionPathIsSymbolicLink=!/var/lib/nexus-release/state/control-plane-transaction.json
+ConditionPathExists=!/var/lib/nexus-release/state/pm2-fallback-retirement.json
+ConditionPathIsSymbolicLink=!/var/lib/nexus-release/state/pm2-fallback-retirement.json
 
 [Service]
 Type=oneshot
@@ -16,16 +18,19 @@ EnvironmentFile=-/etc/nexus-release/poller.env
 UnsetEnvironment=LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT LD_DEBUG LD_PROFILE BASH_ENV ENV SHELLOPTS BASHOPTS PS4 NODE_OPTIONS NODE_PATH NEXUS_RELEASE_AUDIT_MIRROR_HOST
 ExecStartPre=/usr/bin/env -i PATH=/usr/bin:/bin /usr/bin/test -f /opt/nexus-release/checkout/.nexus-control-plane-ready
 ExecStartPre=/usr/bin/env -i PATH=/usr/bin:/bin HOME=/var/lib/nexus-release/home /usr/bin/node -e "if (process.version !== 'v22.23.1') process.exit(1)"
-ExecStart=/opt/nexus-release/checkout/scripts/release-backup-liveness-launcher.sh --weekly
-TimeoutStartSec=100min
+ExecStart=/opt/nexus-release/checkout/scripts/release-backup-liveness-launcher.sh --failure-only-force
+StateDirectory=nexus-release/operational-alerts
+StateDirectoryMode=0700
+TimeoutStartSec=11min
 TimeoutStopSec=15s
 
 NoNewPrivileges=yes
 ProtectHome=yes
 ProtectSystem=strict
-ReadOnlyPaths=/opt/nexus-release /var/lib/nexus-release /etc/nexus-local-backup -/srv/nexus-backups/application
+ReadOnlyPaths=/opt/nexus-release /var/lib/nexus-release/state /etc/nexus-local-backup -/srv/nexus-backups/application
+ReadWritePaths=/var/lib/nexus-release/operational-alerts
 PrivateTmp=yes
 
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=nexus-release-heartbeat
+SyslogIdentifier=nexus-release-backup-liveness-force

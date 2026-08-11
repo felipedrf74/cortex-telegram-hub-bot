@@ -12,6 +12,8 @@ GIT_COMMIT="${3:?Git commit is required}"
 ECOSYSTEM_FILE="${4:?ecosystem filename is required}"
 APP_CSV="${5:?comma-separated PM2 app names are required}"
 ALLOWED_ENV_CSV="${6:?comma-separated allowed app environment names are required}"
+SUDO_BIN=/usr/bin/sudo
+STATE_VIEW_BIN=/usr/local/sbin/nexus-release-state-view
 
 case "$REMOTE_DIR" in
   /*) ;;
@@ -39,6 +41,57 @@ if [ -z "$NODE_BIN" ] || [ ! -x "$NODE_BIN" ]; then
   echo "Node executable is missing" >&2
   exit 2
 fi
+
+assert_pm2_fallback_not_retired() {
+  local retirement_status state_view
+  [ -x "$SUDO_BIN" ] && [ -x "$STATE_VIEW_BIN" ] \
+    || { echo "privileged release state view is unavailable" >&2; return 1; }
+  state_view="$("$SUDO_BIN" -n "$STATE_VIEW_BIN")" \
+    || { echo "cannot obtain the privileged release state view" >&2; return 1; }
+  retirement_status="$(
+    printf '%s' "$state_view" | "$NODE_BIN" -e '
+const chunks = [];
+let size = 0;
+process.stdin.on("data", (chunk) => {
+  size += chunk.length;
+  if (size > 262144) process.exit(1);
+  chunks.push(chunk);
+});
+process.stdin.on("end", () => {
+  try {
+    const view = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    const expected = [
+      "active", "activeReceipt", "authoritative", "blocked", "capturedAt",
+      "effective", "generated", "generatedAt", "lastRecovery", "note",
+      "pm2FallbackRetired", "pm2FallbackRetirementInProgress", "predecessor",
+      "recent", "schema", "sourceSchemas",
+    ].sort();
+    if (JSON.stringify(Object.keys(view).sort()) !== JSON.stringify(expected)
+        || JSON.stringify(Object.keys(view.sourceSchemas ?? {}).sort())
+          !== JSON.stringify(["receipt", "state"])
+        || view.schema !== "nexus.release-state-view.v2"
+        || view.generated !== true
+        || view.authoritative !== false
+        || view.sourceSchemas.state !== "nexus.release-host-state.v1"
+        || view.sourceSchemas.receipt !== "nexus.release-receipt.v3"
+        || typeof view.pm2FallbackRetirementInProgress !== "boolean"
+        || typeof view.pm2FallbackRetired !== "boolean") process.exit(1);
+    process.stdout.write(
+      view.pm2FallbackRetirementInProgress || view.pm2FallbackRetired
+        ? "blocked"
+        : "clear",
+    );
+  } catch {
+    process.exit(1);
+  }
+});
+'
+  )" || { echo "privileged release state view contract is invalid" >&2; return 1; }
+  [ "$retirement_status" = clear ] \
+    || { echo "PM2 sanitizer is barred by fallback retirement evidence" >&2; return 1; }
+}
+assert_pm2_fallback_not_retired || exit 78
+
 if ! [[ "$GIT_COMMIT" =~ ^[0-9a-f]{7,64}$ ]] && [ "$GIT_COMMIT" != "rollback-unknown" ]; then
   echo "release identity must be a hexadecimal revision or rollback-unknown" >&2
   exit 2

@@ -22,6 +22,9 @@ PM2_BIN="${NEXUS_RELEASE_PM2_BIN:-/usr/local/bin/pm2}"
 NODE_BIN="${NEXUS_RELEASE_NODE_BIN:-/usr/bin/node}"
 PYTHON_BIN="${NEXUS_RELEASE_PYTHON_BIN:-/usr/bin/python3.12}"
 TIMEOUT_BIN="${NEXUS_RELEASE_TIMEOUT_BIN:-/usr/bin/timeout}"
+SYSTEMCTL_BIN="${NEXUS_RELEASE_SYSTEMCTL_BIN:-/usr/bin/systemctl}"
+SUDO_BIN=/usr/bin/sudo
+STATE_VIEW_BIN=/usr/local/sbin/nexus-release-state-view
 FAULT_INJECTION="${NEXUS_RELEASE_FAULT_AFTER_SWITCH:-}"
 CANDIDATE_HEALTH_BUDGET_SECONDS=45
 ROLLBACK_HEALTH_BUDGET_SECONDS=45
@@ -45,6 +48,71 @@ assert_lock_fd_matches_path() {
   [ "$(stat -Lc '%d:%i' -- "/proc/$$/fd/$descriptor")" \
       = "$(stat -Lc '%d:%i' -- "$lock_path")" ] \
     || die "shared maintenance mutex changed identity while it was acquired"
+}
+
+assert_pm2_fallback_not_retired() {
+  local canonical_guard=/etc/systemd/system.control/pm2-dominguez.service
+  local retirement_status state_view
+  [ -x "$SUDO_BIN" ] && [ -x "$STATE_VIEW_BIN" ] \
+    || die "privileged release state view is unavailable"
+  if ! state_view="$("$SUDO_BIN" -n "$STATE_VIEW_BIN")"; then
+    die "cannot obtain the privileged release state view"
+  fi
+  retirement_status="$(
+    printf '%s' "$state_view" | "$NODE_BIN" -e '
+const chunks = [];
+let size = 0;
+process.stdin.on("data", (chunk) => {
+  size += chunk.length;
+  if (size > 262144) process.exit(1);
+  chunks.push(chunk);
+});
+process.stdin.on("end", () => {
+  try {
+    const view = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    const expected = [
+      "active", "activeReceipt", "authoritative", "blocked", "capturedAt",
+      "effective", "generated", "generatedAt", "lastRecovery", "note",
+      "pm2FallbackRetired", "pm2FallbackRetirementInProgress", "predecessor",
+      "recent", "schema", "sourceSchemas",
+    ].sort();
+    const keys = Object.keys(view).sort();
+    const sourceKeys = Object.keys(view.sourceSchemas ?? {}).sort();
+    if (JSON.stringify(keys) !== JSON.stringify(expected)
+        || JSON.stringify(sourceKeys) !== JSON.stringify(["receipt", "state"])
+        || view.schema !== "nexus.release-state-view.v2"
+        || view.generated !== true
+        || view.authoritative !== false
+        || view.sourceSchemas.state !== "nexus.release-host-state.v1"
+        || view.sourceSchemas.receipt !== "nexus.release-receipt.v3"
+        || typeof view.pm2FallbackRetirementInProgress !== "boolean"
+        || typeof view.pm2FallbackRetired !== "boolean") {
+      process.exit(1);
+    }
+    process.stdout.write(
+      view.pm2FallbackRetirementInProgress || view.pm2FallbackRetired
+        ? "blocked"
+        : "clear",
+    );
+  } catch {
+    process.exit(1);
+  }
+});
+'
+  )" || die "privileged release state view contract is invalid"
+  [ "$retirement_status" = clear ] \
+    || die "PM2 fallback retirement journal or tombstone exists"
+  if [ -L "$canonical_guard" ] \
+      && [ "$(readlink -- "$canonical_guard")" = /dev/null ]; then
+    die "PM2 fallback is barred by its persistent retirement guard"
+  fi
+  [ -x "$SYSTEMCTL_BIN" ] || die "systemctl is required for PM2 fallback authority proof"
+  [ "$($SYSTEMCTL_BIN show pm2-dominguez.service --property=LoadState --value)" = loaded ] \
+    && [ "$($SYSTEMCTL_BIN show pm2-dominguez.service --property=FragmentPath --value)" \
+      = /etc/systemd/system/pm2-dominguez.service ] \
+    && [ "$($SYSTEMCTL_BIN show pm2-dominguez.service --property=CanStart --value)" = yes ] \
+    && [ "$($SYSTEMCTL_BIN show pm2-dominguez.service --property=ActiveState --value)" = active ] \
+    || die "canonical PM2 fallback authority is not exact and active"
 }
 
 assert_no_unresolved_chat_capability_transaction() {
@@ -614,6 +682,7 @@ assert_lock_fd_matches_path 8 "$MAINTENANCE_LOCK"
 flock -n 8 || die "another root maintenance or container release action is active"
 assert_safe_maintenance_lock
 assert_lock_fd_matches_path 8 "$MAINTENANCE_LOCK"
+assert_pm2_fallback_not_retired
 
 # The chat capability operator holds the same user release lock while it
 # mutates .env. A surviving preimage means that transaction was interrupted;

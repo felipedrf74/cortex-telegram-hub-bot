@@ -5,10 +5,10 @@
     "generatorVersion": 4,
     "authoritativeFreshness": "sourceDigest",
     "sourceDigestAlgorithm": "sha256-path-git-mode-content-v2",
-    "sourceDigest": "f0c4e48fa732e2a9b9bb03920b891a2215b998c10f8dc6b2f04c8679e1371def",
-    "baseCommit": "b2c0f9a1c2e9c46bd516cae1e34382d6d2c9d2cd",
-    "baseCommitTimestamp": "2026-08-11T00:41:59+01:00",
-    "trackedFiles": 3209,
+    "sourceDigest": "ba11f51c4fc054baa5e70fa9a3e8d155b260e49812fbba9926a603db5b1519f3",
+    "baseCommit": "8a35ff1bc85d03488286d35a78d3a1f3a336b36f",
+    "baseCommitTimestamp": "2026-08-11T08:33:27+01:00",
+    "trackedFiles": 3227,
     "sourceFiles": 1135
   },
   "navigation": {
@@ -4920,7 +4920,7 @@
     }
   ],
   "tests": {
-    "files": 1192,
+    "files": 1195,
     "policy": "config/test-policy.json",
     "inventoryArtifact": ".local/test-inventory/test-inventory.json",
     "topLevelOwners": {
@@ -4939,7 +4939,7 @@
       "regression": 1,
       "router": 8,
       "scope": 1,
-      "scripts": 97,
+      "scripts": 100,
       "sdk": 1,
       "security": 24,
       "services": 738,
@@ -5681,14 +5681,14 @@
       "generated": false
     },
     {
+      "path": "ops/nexus-release/README.md",
+      "bytes": 450059,
+      "generated": false
+    },
+    {
       "path": "catalog/training/exercise-media/v1/accessibility-scaffolds.draft.json",
       "bytes": 385997,
       "generated": true
-    },
-    {
-      "path": "ops/nexus-release/README.md",
-      "bytes": 356873,
-      "generated": false
     },
     {
       "path": "catalog/training/exercise-media/v1/media-localizations.json",
@@ -5713,6 +5713,11 @@
     {
       "path": "__tests__/services/decision-center.test.ts",
       "bytes": 271696,
+      "generated": false
+    },
+    {
+      "path": "__tests__/scripts/release-continuous-deployment.test.ts",
+      "bytes": 264782,
       "generated": false
     },
     {

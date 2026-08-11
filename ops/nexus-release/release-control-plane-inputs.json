@@ -1,0 +1,51 @@
+{
+  "schema": "nexus.release-control-plane-inputs.v1",
+  "nodeVersion": "22.23.1",
+  "entrypoints": [
+    "scripts/release-acknowledge.mjs",
+    "scripts/release-artifact-manifest.mjs",
+    "scripts/release-bootstrap-baseline.mjs",
+    "scripts/release-deploy.mjs",
+    "scripts/release-heartbeat.mjs",
+    "scripts/release-installed-backup-interface-check.mjs",
+    "scripts/release-operational-alert.mjs",
+    "scripts/release-runtime-dependencies.mjs",
+    "scripts/release-state-view.mjs",
+    "scripts/retire-pm2-fallback.mjs"
+  ],
+  "staticFiles": [
+    "config/continuous-deployment.json",
+    "docs/release/evidence/release-manifest-public-key.pem",
+    "ops/local-backup/backup.env.example",
+    "ops/local-backup/nexus-local-backup.sudoers",
+    "ops/local-backup/systemd/nexus-local-backup-pre-promotion.service",
+    "ops/local-backup/systemd/nexus-local-backup-restore-verify.service",
+    "ops/local-backup/systemd/nexus-local-backup-restore-verify.timer",
+    "ops/local-backup/systemd/nexus-local-backup.service",
+    "ops/local-backup/systemd/nexus-local-backup.timer",
+    "ops/nexus-release/nexus-release-backup-liveness-force.service",
+    "ops/nexus-release/nexus-release-backup-liveness.service",
+    "ops/nexus-release/nexus-release-backup-liveness.timer",
+    "ops/nexus-release/nexus-release-bootstrap.service",
+    "ops/nexus-release/nexus-release-heartbeat.service",
+    "ops/nexus-release/nexus-release-heartbeat.timer",
+    "ops/nexus-release/nexus-release-maintenance-lock.conf",
+    "ops/nexus-release/nexus-release-poller.service",
+    "ops/nexus-release/nexus-release-poller.timer",
+    "ops/nexus-release/nexus-release-state-view",
+    "ops/nexus-release/nexus-release-state-view.sudoers",
+    "ops/nexus-release/poller.env.example",
+    "scripts/local-backup-systemd-install.sh",
+    "scripts/local-backup.py",
+    "scripts/release-backup-liveness-launcher.sh",
+    "scripts/release-bound-lock-runner.py",
+    "scripts/release-operational-alert-launcher.sh",
+    "scripts/release-poll.sh",
+    "scripts/remote-pm2-root-install.sh",
+    "scripts/remote-start-sanitized-pm2.sh",
+    "scripts/remote-user-release-transaction.sh"
+  ],
+  "npmDependencies": [
+    "better-sqlite3"
+  ]
+}

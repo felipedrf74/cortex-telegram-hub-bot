@@ -24,10 +24,17 @@ import {
   fail,
   sha256,
 } from './release-canonical.mjs';
+import {
+  RELEASE_CONTROL_PLANE_SCHEMA,
+  assertReleaseControlPlaneShape,
+} from './release-control-plane.mjs';
 
-export const RELEASE_MANIFEST_SCHEMA = 'nexus.release-manifest.v2';
-export const RELEASE_MANIFEST_PAYLOAD_SCHEMA = 'nexus.release-manifest-payload.v2';
-export const RELEASE_MANIFEST_SCHEMA_VERSION = 2;
+export const RELEASE_MANIFEST_SCHEMA = 'nexus.release-manifest.v3';
+export const RELEASE_MANIFEST_PAYLOAD_SCHEMA = 'nexus.release-manifest-payload.v3';
+export const RELEASE_MANIFEST_SCHEMA_VERSION = 3;
+export const LEGACY_RELEASE_MANIFEST_SCHEMA = 'nexus.release-manifest.v2';
+export const LEGACY_RELEASE_MANIFEST_PAYLOAD_SCHEMA = 'nexus.release-manifest-payload.v2';
+export const LEGACY_RELEASE_MANIFEST_SCHEMA_VERSION = 2;
 export const CONTINUOUS_DEPLOYMENT_POLICY_PATH = 'config/continuous-deployment.json';
 
 const MAX_PUBLIC_KEY_BYTES = 4 * 1024;
@@ -776,6 +783,7 @@ export function buildReleaseManifestPayload({
   images,
   compose,
   migrations,
+  controlPlane,
   policy,
 }) {
   const payload = {
@@ -798,6 +806,10 @@ export function buildReleaseManifestPayload({
       },
     },
     compose: { path: compose?.path, digest: compose?.digest },
+    controlPlane: {
+      schema: controlPlane?.schema,
+      digest: controlPlane?.digest,
+    },
     migrations: {
       digest: migrations?.digest,
       upFileCount: migrations?.upFileCount,
@@ -811,15 +823,32 @@ export function buildReleaseManifestPayload({
   return payload;
 }
 
-export function assertReleaseManifestPayloadShape(payload, policy) {
-  exactKeys(payload, [
-    'schema', 'schemaVersion', 'createdAt', 'source', 'images', 'compose', 'migrations',
-  ], 'release manifest payload');
-  if (payload.schema !== RELEASE_MANIFEST_PAYLOAD_SCHEMA) {
-    fail('release manifest payload schema is invalid');
-  }
-  if (payload.schemaVersion !== RELEASE_MANIFEST_SCHEMA_VERSION) {
-    fail('release manifest payload schema version is unsupported');
+export function assertReleaseManifestPayloadShape(
+  payload,
+  policy,
+  { allowLegacyControlPlane = false } = {},
+) {
+  const legacy = payload?.schema === LEGACY_RELEASE_MANIFEST_PAYLOAD_SCHEMA
+    && payload?.schemaVersion === LEGACY_RELEASE_MANIFEST_SCHEMA_VERSION;
+  if (legacy) {
+    if (!allowLegacyControlPlane) {
+      fail('legacy release manifest payload is not admissible as a new candidate');
+    }
+    exactKeys(payload, [
+      'schema', 'schemaVersion', 'createdAt', 'source', 'images', 'compose', 'migrations',
+    ], 'legacy release manifest payload');
+  } else {
+    exactKeys(payload, [
+      'schema', 'schemaVersion', 'createdAt', 'source', 'images', 'compose',
+      'controlPlane', 'migrations',
+    ], 'release manifest payload');
+    if (payload.schema !== RELEASE_MANIFEST_PAYLOAD_SCHEMA) {
+      fail('release manifest payload schema is invalid');
+    }
+    if (payload.schemaVersion !== RELEASE_MANIFEST_SCHEMA_VERSION) {
+      fail('release manifest payload schema version is unsupported');
+    }
+    assertReleaseControlPlaneShape(payload.controlPlane, 'release manifest controlPlane');
   }
   assertCanonicalTimestamp(payload.createdAt, 'release manifest createdAt');
 
@@ -976,12 +1005,15 @@ export function verifyReleaseManifest({
   policy,
   publicKeyPath = policy?.trust?.publicKeyPath,
   nowMs = Date.now(),
+  allowLegacyControlPlane = false,
 }) {
   if (!policy) fail('release manifest verification requires the deployment policy');
   exactKeys(envelope, [
     'schema', 'keyId', 'signatureAlgorithm', 'payload', 'signature',
   ], 'release manifest envelope');
-  if (envelope.schema !== RELEASE_MANIFEST_SCHEMA) {
+  const legacyEnvelope = envelope.schema === LEGACY_RELEASE_MANIFEST_SCHEMA;
+  if (envelope.schema !== RELEASE_MANIFEST_SCHEMA
+      && !(allowLegacyControlPlane && legacyEnvelope)) {
     fail('release manifest envelope schema is invalid');
   }
   if (envelope.keyId !== policy.trust.signingKeyId) {
@@ -997,7 +1029,13 @@ export function verifyReleaseManifest({
     fail('release manifest signature is malformed');
   }
 
-  const payload = assertReleaseManifestPayloadShape(envelope.payload, policy);
+  const payload = assertReleaseManifestPayloadShape(envelope.payload, policy, {
+    allowLegacyControlPlane,
+  });
+  if ((legacyEnvelope && payload.schema !== LEGACY_RELEASE_MANIFEST_PAYLOAD_SCHEMA)
+      || (!legacyEnvelope && payload.schema !== RELEASE_MANIFEST_PAYLOAD_SCHEMA)) {
+    fail('release manifest envelope and payload schemas do not match');
+  }
 
   const createdAtMs = Date.parse(payload.createdAt);
   const maxAgeMs = Number(policy.trust.maxManifestAgeSeconds ?? 0) * 1000;
@@ -1042,6 +1080,14 @@ export function releaseIdFor(payload) {
     contentEngine: payload.images.contentEngine.digest,
     compose: payload.compose.digest,
     migrations: payload.migrations.digest,
+    ...(payload.controlPlane
+      ? {
+          controlPlane: {
+            schema: payload.controlPlane.schema ?? RELEASE_CONTROL_PLANE_SCHEMA,
+            digest: payload.controlPlane.digest,
+          },
+        }
+      : {}),
   })).slice(0, 32);
 }
 

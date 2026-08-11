@@ -4,7 +4,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { classifyDeletedTests } from '../../scripts/test-cleanup-classifier.mjs';
-import { assertResolvedChangeImpact } from '../../scripts/lib/changed-area-classifier.mjs';
+import {
+  assertResolvedChangeImpact,
+  classifyChangedFiles,
+} from '../../scripts/lib/changed-area-classifier.mjs';
+import {
+  releaseControlPlaneFingerprint,
+} from '../../scripts/lib/release-control-plane.mjs';
 import {
   classifyTestGroups,
   loadTestGroups,
@@ -21,6 +27,7 @@ const RETIREMENT_BASE_SHA = '7b724f185580b18ce722a396b6e01d5ae268d3c1';
 const SPANISH_LOCALE_RETIREMENT_BASE_SHA = '247ac7dc940009aacb0d1419a58db4749a76c75a';
 // SonarQube decommissioning, 2026-08-07 continuous-deployment refactor.
 const SONAR_RETIREMENT_BASE_SHA = '65a87ae2a0514e0fe2ad117412d23ca3f0da8d39';
+const CONTROL_PLANE_RETIREMENT_BASE_SHA = '852116a7ee17562418779ee396095de2cd05e699';
 
 function classify(files: string[]) {
   return JSON.parse(execFileSync('bash', [
@@ -32,6 +39,40 @@ function classify(files: string[]) {
 }
 
 describe('lean changed-area classification', () => {
+  it('classifies every signed control-plane file as release runtime evidence', () => {
+    const root = process.cwd();
+    const fingerprint = releaseControlPlaneFingerprint(root, {
+      runtimeVersion: '22.23.1',
+    });
+    expect(fingerprint.files.length).toBeGreaterThan(40);
+    expect(
+      fingerprint.dependencies.packageLock.packages.length,
+    ).toBeGreaterThan(0);
+
+    const governedInputs = [
+      ...fingerprint.files.map(({ path: file }) => file),
+      // The locked dependency closure is computed from the exact npm manifests,
+      // so either manifest can change the signed controller identity.
+      'package.json',
+      'package-lock.json',
+    ];
+    for (const file of governedInputs) {
+      const result = classifyChangedFiles({
+        files: [file],
+        root,
+        generatedAt: '2026-08-11T00:00:00Z',
+      });
+      expect(result.flags.runtimeInfra, file).toBe(true);
+      expect(result.flags.deployConfig, file).toBe(true);
+      if (file === 'package.json' || file === 'package-lock.json') {
+        expect(result.flags.releaseOperator, file).toBe(true);
+      }
+      expect(result.tiers, file).toContain('T4');
+      expect(result.stagingSmoke.generic, file).toBe(true);
+      expect(result.vitest.globs, file).toContain('__tests__/scripts/*.test.ts');
+    }
+  });
+
   it.each([
     ['src/api/auth-middleware.ts', 'platform-security'],
     ['src/services/apple-token-revocation.ts', 'platform-security'],
@@ -100,6 +141,10 @@ describe('lean changed-area classification', () => {
     'scripts/lib/chat-capability-flag-transaction.mjs',
     'scripts/lib/release-bootstrap.mjs',
     'scripts/remote-chat-capability-flag-transaction.sh',
+    'scripts/remote-pm2-root-install.sh',
+    'scripts/remote-start-sanitized-pm2.sh',
+    'scripts/remote-user-release-transaction.sh',
+    'scripts/release-bound-lock-runner.py',
     'scripts/release-poll.sh',
     'scripts/routing-divergence-report.mjs',
     'scripts/run-routing-action-skill-accuracy.ts',
@@ -125,6 +170,9 @@ describe('lean changed-area classification', () => {
 
   it.each([
     'scripts/release-poll.sh',
+    'scripts/remote-pm2-root-install.sh',
+    'scripts/remote-start-sanitized-pm2.sh',
+    'scripts/remote-user-release-transaction.sh',
     'ops/nexus-release/README.md',
     'ops/local-backup/systemd/nexus-local-backup.service',
     'scripts/local-backup.py',
@@ -356,7 +404,36 @@ describe('lean changed-area classification', () => {
       RETIREMENT_BASE_SHA,
       SPANISH_LOCALE_RETIREMENT_BASE_SHA,
       SONAR_RETIREMENT_BASE_SHA,
+      CONTROL_PLANE_RETIREMENT_BASE_SHA,
     ]));
+
+    const controlPlaneRetirements = policy.retirementMappings.filter((mapping: {
+      baseSha?: string;
+    }) => mapping.baseSha === CONTROL_PLANE_RETIREMENT_BASE_SHA);
+    expect(controlPlaneRetirements).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        test: '__tests__/scripts/continuous-deployment-workflows.test.ts',
+        baselineOwnerPaths: expect.arrayContaining([
+          'config/continuous-deployment.json',
+          'ops/nexus-release/README.md',
+          'ops/nexus-release/nexus-release-heartbeat.service',
+          'ops/nexus-release/nexus-release-heartbeat.timer',
+        ]),
+      }),
+      expect.objectContaining({
+        test: '__tests__/scripts/project-map-generation.test.ts',
+        baselineOwnerPaths: ['scripts/lib/docs-release-state-audit.mjs'],
+      }),
+      expect.objectContaining({
+        test: '__tests__/scripts/release-continuous-deployment.test.ts',
+        baselineOwnerPaths: expect.arrayContaining([
+          'scripts/lib/release-backup.mjs',
+          'scripts/lib/release-deployment.mjs',
+          'scripts/lib/release-manifest.mjs',
+        ]),
+      }),
+    ]));
+    expect(controlPlaneRetirements).toHaveLength(3);
 
     const artifactTest = '__tests__/scripts/release-artifact-manifest.test.ts';
     const matches = policy.retirementMappings.filter((mapping: {

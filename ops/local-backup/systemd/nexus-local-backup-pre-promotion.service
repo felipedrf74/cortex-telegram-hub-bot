@@ -5,7 +5,9 @@ Description=Nexus Hub encrypted pre-promotion SQLite backup
 Type=oneshot
 User=root
 Group=root
-ExecStart=/usr/local/libexec/nexus-local-backup/local-backup.py pre-promotion
+RuntimeDirectory=nexus-local-backup-pre-promotion-active
+RuntimeDirectoryMode=0700
+ExecStart=/usr/bin/env -i PATH=/usr/bin:/bin /usr/local/libexec/nexus-local-backup/local-backup.py pre-promotion
 UMask=0077
 Nice=5
 IOSchedulingClass=best-effort
@@ -17,4 +19,4 @@ PrivateTmp=true
 # producer inode-binds them and normalizes only safe root-created sidecars to
 # the database owner before copying; confine that write capability here.
 ReadWritePaths=/srv/nexus-backups/application -/home/dominguez/telegram-hub-bot/data -/var/lib/nexus-hub/production/data
-TimeoutStartSec=12min
+TimeoutStartSec=18min

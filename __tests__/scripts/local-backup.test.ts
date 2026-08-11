@@ -1,11 +1,16 @@
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { once } from 'node:events';
 import {
   chmodSync,
+  linkSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
+  statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -85,6 +90,7 @@ function run(
       env: {
         ...process.env,
         NEXUS_LOCAL_BACKUP_TEST_MODE: '1',
+        NEXUS_LOCAL_BACKUP_TEST_TRUST_ANCHOR: fixture.root,
         NEXUS_LOCAL_BACKUP_AGE_BIN: fixture.fakeAge,
       },
     },
@@ -92,6 +98,36 @@ function run(
 }
 
 describe('same-host Nexus backups', () => {
+  it('anchors Linux fixtures at an explicit private directory and rejects escapes', () => {
+    const fixture = createFixture();
+    const probe = (anchor: string) => spawnSync('python3', [
+      '-c',
+      [
+        'import importlib.util,os,pathlib,sys',
+        'os.environ["NEXUS_LOCAL_BACKUP_TEST_MODE"]="1"',
+        'os.environ["NEXUS_LOCAL_BACKUP_TEST_TRUST_ANCHOR"]=sys.argv[3]',
+        'spec=importlib.util.spec_from_file_location("local_backup",sys.argv[1])',
+        'module=importlib.util.module_from_spec(spec)',
+        'spec.loader.exec_module(module)',
+        'with module.bound_governed_directories(pathlib.Path(sys.argv[2])):',
+        '  pass',
+      ].join('\n'),
+      utility,
+      fixture.root,
+      anchor,
+    ], { encoding: 'utf8' });
+    try {
+      const anchored = probe(fixture.root);
+      expect(anchored.status, anchored.stderr).toBe(0);
+
+      const escaped = probe(fixture.backupRoot);
+      expect(escaped.status).toBe(1);
+      expect(escaped.stderr).toContain('backup directory escapes its trusted anchor');
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
   it('copies through one normal read-only SQLite step before integrity verification', () => {
     const snapshotProbe = execFileSync(
       'python3',
@@ -1133,7 +1169,335 @@ describe('same-host Nexus backups', () => {
 
       const verify = run(fixture, 'restore-verify', '--backup', backup);
       expect(verify.status).not.toBe(0);
-      expect(verify.stderr).toContain('selected backup checksum mismatch');
+      expect(verify.stderr).toContain('encrypted backup checksum is not canonical');
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ['missing', (checksum: string) => rmSync(checksum)],
+    ['wrong basename', (checksum: string, artifact: string, digest: string) => {
+      writeFileSync(checksum, `${digest}  wrong.sqlite.age\n`);
+    }],
+    ['trailing bytes', (checksum: string, artifact: string, digest: string) => {
+      writeFileSync(checksum, `${digest}  ${artifact.split('/').at(-1)}\nextra\n`);
+    }],
+    ['invalid UTF-8', (checksum: string) => writeFileSync(checksum, Buffer.from([0xff, 0x0a]))],
+    ['hardlink', (checksum: string) => linkSync(checksum, `${checksum}.second-link`)],
+    ['unsafe mode', (checksum: string) => chmodSync(checksum, 0o640)],
+  ])('rejects a %s checksum at both freshness and restore seams', (_label, mutate) => {
+    const fixture = createFixture();
+    try {
+      const created = run(fixture, 'backup');
+      expect(created.status, created.stderr).toBe(0);
+      const receipt = JSON.parse(created.stdout);
+      const artifact = receipt.installed.hourly as string;
+      mutate(`${artifact}.sha256`, artifact, receipt.encryptedSha256 as string);
+
+      const freshness = run(fixture, 'verify-freshness', '--max-age-hours', '26');
+      expect(freshness.status).not.toBe(0);
+      const restore = run(fixture, 'restore-verify', '--backup', artifact);
+      expect(restore.status).not.toBe(0);
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a symlinked governed backup tier at freshness and restore seams', () => {
+    const fixture = createFixture();
+    try {
+      const created = run(fixture, 'backup');
+      expect(created.status, created.stderr).toBe(0);
+      const artifact = JSON.parse(created.stdout).installed.hourly as string;
+      const hourly = join(fixture.backupRoot, 'hourly');
+      const parked = join(fixture.backupRoot, 'hourly-parked');
+      renameSync(hourly, parked);
+      symlinkSync(parked, hourly, 'dir');
+
+      expect(run(fixture, 'verify-freshness', '--max-age-hours', '26').status).not.toBe(0);
+      expect(run(fixture, 'restore-verify', '--backup', artifact).status).not.toBe(0);
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it('decrypts only private descriptor copies after the governed artifact and identity are swapped', () => {
+    const fixture = createFixture();
+    try {
+      const created = run(fixture, 'backup');
+      expect(created.status, created.stderr).toBe(0);
+      const artifact = JSON.parse(created.stdout).installed.hourly as string;
+      const observed = join(fixture.root, 'decrypt-argv');
+      writeFileSync(fixture.fakeAge, [
+        '#!/bin/sh',
+        'set -eu',
+        `mv ${JSON.stringify(artifact)} ${JSON.stringify(`${artifact}.parked`)}`,
+        `printf corrupt > ${JSON.stringify(artifact)}`,
+        `chmod 600 ${JSON.stringify(artifact)}`,
+        `mv ${JSON.stringify(fixture.identity)} ${JSON.stringify(`${fixture.identity}.parked`)}`,
+        `printf invalid > ${JSON.stringify(fixture.identity)}`,
+        `chmod 600 ${JSON.stringify(fixture.identity)}`,
+        `printf '%s\\n' "$@" > ${JSON.stringify(observed)}`,
+        'output=""',
+        'input=""',
+        'while [ "$#" -gt 0 ]; do',
+        '  case "$1" in',
+        '    --encrypt|--decrypt) shift ;;',
+        '    --recipient|--identity) shift 2 ;;',
+        '    --output) output="$2"; shift 2 ;;',
+        '    *) input="$1"; shift ;;',
+        '  esac',
+        'done',
+        'cp "$input" "$output"',
+        '',
+      ].join('\n'), { mode: 0o755 });
+      chmodSync(fixture.fakeAge, 0o755);
+
+      const restored = run(fixture, 'restore-verify', '--backup', artifact);
+      expect(restored.status, restored.stderr).toBe(0);
+      const argv = readFileSync(observed, 'utf8').trim().split('\n');
+      const identityArgument = argv[argv.indexOf('--identity') + 1];
+      const inputArgument = argv.at(-1)!;
+      expect(identityArgument).toContain(`${fixture.backupRoot}/.restore-`);
+      expect(inputArgument).toContain(`${fixture.backupRoot}/.restore-`);
+      expect(identityArgument).not.toBe(fixture.identity);
+      expect(inputArgument).not.toBe(artifact);
+      expect(readFileSync(artifact, 'utf8')).toBe('corrupt');
+      expect(readFileSync(fixture.identity, 'utf8')).toBe('invalid');
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it('durably creates the backup lock once and reuses the same governed inode', () => {
+    const fixture = createFixture();
+    try {
+      const first = run(fixture, 'backup');
+      expect(first.status, first.stderr).toBe(0);
+      const lock = join(fixture.backupRoot, '.backup.lock');
+      const initial = statSync(lock);
+      execFileSync('/bin/sleep', ['1.1']);
+      const second = run(fixture, 'backup');
+      expect(second.status, second.stderr).toBe(0);
+      const existing = statSync(lock);
+      expect(existing.ino).toBe(initial.ino);
+      expect(existing.size).toBe(0);
+      expect(existing.nlink).toBe(1);
+      expect(existing.mode & 0o777).toBe(0o600);
+      const source = readFileSync(utility, 'utf8');
+      expect(source).toContain('flags | os.O_CREAT | os.O_EXCL');
+      expect(source).toContain('except FileExistsError:');
+      expect(source).toContain('if created:\n                os.fsync(lock_descriptor)');
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it('uses a required integer boot-time clock in production and a cross-process test clock', () => {
+    const probe = spawnSync('python3', [
+      '-c',
+      [
+        'import importlib.util,os,sys',
+        'os.environ.pop("NEXUS_LOCAL_BACKUP_TEST_MODE",None)',
+        'spec=importlib.util.spec_from_file_location("local_backup",sys.argv[1])',
+        'module=importlib.util.module_from_spec(spec)',
+        'spec.loader.exec_module(module)',
+        'observed=[]',
+        'module.time.CLOCK_BOOTTIME=777',
+        'module.time.clock_gettime_ns=lambda clock_id: observed.append(clock_id) or 123',
+        'assert module.retry_clock_ns() == 123',
+        'assert observed == [777]',
+        'delattr(module.time,"CLOCK_BOOTTIME")',
+        'try:',
+        '  module.retry_clock_ns()',
+        'except SystemExit as error:',
+        '  assert "boot-time retry clock is unavailable" in str(error.code)',
+        'else:',
+        '  raise AssertionError("missing CLOCK_BOOTTIME was accepted")',
+        'os.environ["NEXUS_LOCAL_BACKUP_TEST_MODE"]="1"',
+        'module.time.time_ns=lambda:456',
+        'assert module.retry_clock_ns() == 456',
+      ].join('\n'),
+      utility,
+    ], { encoding: 'utf8' });
+    expect(probe.status, probe.stderr).toBe(0);
+  });
+
+  it('persists immediate exit75 catch-up retries and clears them after the lock is available', async () => {
+    const fixture = createFixture();
+    const retryDirectory = join(fixture.root, 'retry-state');
+    mkdirSync(retryDirectory, { mode: 0o700 });
+    chmodSync(retryDirectory, 0o700);
+    const scheduled = (...args: string[]) => spawnSync(
+      'python3',
+      [utility, '--config', fixture.config, ...args],
+      {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          NEXUS_LOCAL_BACKUP_TEST_MODE: '1',
+          NEXUS_LOCAL_BACKUP_TEST_TRUST_ANCHOR: fixture.root,
+          NEXUS_LOCAL_BACKUP_TEST_RETRY_DIRECTORY: retryDirectory,
+          NEXUS_LOCAL_BACKUP_AGE_BIN: fixture.fakeAge,
+        },
+      },
+    );
+    try {
+      const seeded = scheduled('backup');
+      expect(seeded.status, seeded.stderr).toBe(0);
+      const holder = spawn('python3', [
+        '-c',
+        [
+          'import importlib.util, os, pathlib, sys, time',
+          'os.environ["NEXUS_LOCAL_BACKUP_TEST_MODE"]="1"',
+          'os.environ["NEXUS_LOCAL_BACKUP_TEST_TRUST_ANCHOR"]=str(pathlib.Path(sys.argv[2]).parent)',
+          'spec=importlib.util.spec_from_file_location("local_backup",sys.argv[1])',
+          'module=importlib.util.module_from_spec(spec)',
+          'spec.loader.exec_module(module)',
+          'with module.backup_lock(pathlib.Path(sys.argv[2])):',
+          '  print("ready",flush=True)',
+          '  time.sleep(10)',
+        ].join('\n'),
+        utility,
+        fixture.backupRoot,
+      ], { stdio: ['ignore', 'pipe', 'pipe'] });
+      await once(holder.stdout, 'data');
+
+      const backupContended = scheduled('backup');
+      const restoreContended = scheduled('restore-verify');
+      expect(backupContended.status, backupContended.stderr).toBe(75);
+      expect(restoreContended.status, restoreContended.stderr).toBe(75);
+      expect(JSON.parse(readFileSync(join(retryDirectory, 'backup.json'), 'utf8')))
+        .toMatchObject({ schema: 'nexus.local-backup-lock-retry.v1', attempts: 1 });
+      expect(JSON.parse(readFileSync(join(retryDirectory, 'restore-verify.json'), 'utf8')))
+        .toMatchObject({ schema: 'nexus.local-backup-lock-retry.v1', attempts: 1 });
+
+      holder.kill('SIGTERM');
+      await once(holder, 'exit');
+      execFileSync('/bin/sleep', ['1.1']);
+      const backupAfterRelease = scheduled('backup');
+      expect(backupAfterRelease.status, backupAfterRelease.stderr).toBe(0);
+      const restoreAfterRelease = scheduled('restore-verify');
+      expect(restoreAfterRelease.status, restoreAfterRelease.stderr).toBe(0);
+      expect(() => statSync(join(retryDirectory, 'backup.json'))).toThrow();
+      expect(() => statSync(join(retryDirectory, 'restore-verify.json'))).toThrow();
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it('caps catch-up contention at 45 attempts and converts exhaustion to ordinary failure', () => {
+    const fixture = createFixture();
+    const retryDirectory = join(fixture.root, 'retry-state');
+    mkdirSync(retryDirectory, { mode: 0o700 });
+    chmodSync(retryDirectory, 0o700);
+    try {
+      expect(run(fixture, 'backup').status).toBe(0);
+      const probe = spawnSync('python3', [
+        '-c',
+        [
+          'import importlib.util, json, os, pathlib, sys',
+          'os.environ["NEXUS_LOCAL_BACKUP_TEST_MODE"]="1"',
+          'os.environ["NEXUS_LOCAL_BACKUP_TEST_TRUST_ANCHOR"]=str(pathlib.Path(sys.argv[2]).parent)',
+          'os.environ["NEXUS_LOCAL_BACKUP_TEST_RETRY_DIRECTORY"]=sys.argv[3]',
+          'spec=importlib.util.spec_from_file_location("local_backup",sys.argv[1])',
+          'module=importlib.util.module_from_spec(spec)',
+          'spec.loader.exec_module(module)',
+          'module.retry_clock_ns=lambda:1000',
+          'def blocked(*_args): raise BlockingIOError()',
+          'module.fcntl.flock=blocked',
+          'root=pathlib.Path(sys.argv[2])',
+          'for expected in range(1,46):',
+          '  try:',
+          '    with module.backup_lock(root,retry_source="backup"): pass',
+          '  except SystemExit as error:',
+          '    assert error.code == 75, error.code',
+          '  state=json.loads((pathlib.Path(sys.argv[3])/"backup.json").read_text())',
+          '  assert state["attempts"] == expected',
+          'try:',
+          '  with module.backup_lock(root,retry_source="backup"): pass',
+          'except SystemExit as error:',
+          '  assert error.code != 75',
+          'else:',
+          '  raise AssertionError("exhaustion unexpectedly acquired the lock")',
+          'assert not (pathlib.Path(sys.argv[3])/"backup.json").exists()',
+          'retry=pathlib.Path(sys.argv[3])/"backup.json"',
+          'module.fcntl.flock=lambda *_args:None',
+          'module.write_retry_state(retry,{"schema":module.LOCK_RETRY_SCHEMA,"source":"backup","startedBoottimeNs":1000,"attempts":1})',
+          'module.retry_clock_ns=lambda:1000+module.LOCK_RETRY_WINDOW_NS',
+          'entered=False',
+          'try:',
+          '  with module.backup_lock(root,retry_source="backup"): entered=True',
+          'except SystemExit as error:',
+          '  assert error.code != 75',
+          'assert not entered and not retry.exists()',
+          'module.retry_clock_ns=lambda:1000',
+          'module.write_retry_state(retry,{"schema":module.LOCK_RETRY_SCHEMA,"source":"backup","startedBoottimeNs":1000,"attempts":45})',
+          'entered=False',
+          'try:',
+          '  with module.backup_lock(root,retry_source="backup"): entered=True',
+          'except SystemExit as error:',
+          '  assert error.code != 75',
+          'assert not entered and not retry.exists()',
+        ].join('\n'),
+        utility,
+        fixture.backupRoot,
+        retryDirectory,
+      ], { encoding: 'utf8' });
+      expect(probe.status, probe.stderr).toBe(0);
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects expired or capped cross-process retry state before acquiring a free lock', () => {
+    const fixture = createFixture();
+    const retryDirectory = join(fixture.root, 'retry-state');
+    mkdirSync(retryDirectory, { mode: 0o700 });
+    chmodSync(retryDirectory, 0o700);
+    const retryState = join(retryDirectory, 'backup.json');
+    const scheduledBackup = () => spawnSync(
+      'python3',
+      [utility, '--config', fixture.config, 'backup'],
+      {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          NEXUS_LOCAL_BACKUP_TEST_MODE: '1',
+          NEXUS_LOCAL_BACKUP_TEST_TRUST_ANCHOR: fixture.root,
+          NEXUS_LOCAL_BACKUP_TEST_RETRY_DIRECTORY: retryDirectory,
+          NEXUS_LOCAL_BACKUP_AGE_BIN: fixture.fakeAge,
+        },
+      },
+    );
+    const writeState = (startedBoottimeNs: bigint, attempts: number) => {
+      writeFileSync(
+        retryState,
+        '{'
+          + `"attempts":${attempts},`
+          + '"schema":"nexus.local-backup-lock-retry.v1",'
+          + '"source":"backup",'
+          + `"startedBoottimeNs":${startedBoottimeNs}`
+          + '}\n',
+        { mode: 0o600 },
+      );
+      chmodSync(retryState, 0o600);
+    };
+    try {
+      expect(run(fixture, 'backup').status).toBe(0);
+      const wallNowNs = BigInt(Date.now()) * 1_000_000n;
+      writeState(wallNowNs - (45n * 60n * 1_000_000_000n), 1);
+      const expired = scheduledBackup();
+      expect(expired.status, expired.stderr).toBe(1);
+      expect(expired.stderr).toContain('retry deadline or attempt limit was exhausted');
+      expect(() => statSync(retryState)).toThrow();
+
+      writeState(wallNowNs - 1_000_000_000n, 45);
+      const capped = scheduledBackup();
+      expect(capped.status, capped.stderr).toBe(1);
+      expect(capped.stderr).toContain('retry deadline or attempt limit was exhausted');
+      expect(() => statSync(retryState)).toThrow();
     } finally {
       rmSync(fixture.root, { recursive: true, force: true });
     }
@@ -1252,7 +1616,7 @@ describe('same-host Nexus backups', () => {
     );
     const policy = JSON.parse(readFileSync('config/continuous-deployment.json', 'utf8'));
     const releaseBackup = readFileSync('scripts/lib/release-backup.mjs', 'utf8');
-    const snapshotTimeoutSeconds = 12 * 60;
+    const snapshotTimeoutSeconds = 18 * 60;
 
     expect(() => execFileSync('bash', ['-n', 'scripts/local-backup-systemd-install.sh']))
       .not.toThrow();
@@ -1262,6 +1626,33 @@ describe('same-host Nexus backups', () => {
     expect(installer).toContain(
       'validate_root_path_chain "$SOURCE_ROOT/$source" "local backup asset ($source)"',
     );
+    expect(installer).toContain('validate_optional_directory_chain');
+    expect(installer).toContain('validate_optional_installed_file');
+    const installerPreflight = installer.indexOf(
+      'validate_optional_installed_file "$destination"',
+    );
+    const producerInstall = installer.indexOf(
+      'install -o root -g root -m 0755',
+      installerPreflight,
+    );
+    expect(installerPreflight).toBeGreaterThanOrEqual(0);
+    expect(producerInstall).toBeGreaterThan(installerPreflight);
+    expect(installer).toContain('destination_ancestor_identity');
+    expect(installer).toContain('DESTINATION_ANCESTORS_BEFORE');
+    expect(installer).toContain('destination ancestors changed during byte proof');
+    expect(installer).toContain('destination ancestors changed during systemd proof');
+    expect(installer).toContain('durably_sync_installed_authority()');
+    const durabilityCall = installer.lastIndexOf('\ndurably_sync_installed_authority \\');
+    const durabilityIdentityRecheck = installer.indexOf(
+      'destination files changed during durability proof',
+      durabilityCall,
+    );
+    const daemonReload = installer.indexOf('systemctl daemon-reload', durabilityCall);
+    expect(durabilityCall).toBeGreaterThan(producerInstall);
+    expect(durabilityIdentityRecheck).toBeGreaterThan(durabilityCall);
+    expect(daemonReload).toBeGreaterThan(durabilityIdentityRecheck);
+    expect(installer.slice(0, daemonReload)).toContain('sync -f "$target"');
+    expect(installer).toContain('cmp -s -- "$SOURCE_ROOT/scripts/local-backup.py"');
     expect(installer).toContain(
       'visudo -cf "$SOURCE_ROOT/ops/local-backup/nexus-local-backup.sudoers"',
     );
@@ -1274,17 +1665,26 @@ describe('same-host Nexus backups', () => {
     );
     expect(sudoers).not.toContain('/usr/local/libexec/nexus-local-backup/local-backup.py');
     expect(prePromotion).toContain('local-backup.py pre-promotion');
-    expect(prePromotion).toContain('TimeoutStartSec=12min');
-    expect(hourly).toContain('TimeoutStartSec=12min');
-    const governedWritablePaths =
+    expect(prePromotion).toContain('TimeoutStartSec=18min');
+    expect(prePromotion).not.toContain('RuntimeDirectoryPreserve=restart');
+    expect(prePromotion).not.toContain('RestartForceExitStatus=75');
+    expect(prePromotion).not.toContain('SuccessExitStatus=75');
+    expect(hourly).toContain('TimeoutStartSec=18min');
+    expect(restoreVerify).toContain('TimeoutStartSec=36min');
+    const prePromotionWritablePaths =
       'ReadWritePaths=/srv/nexus-backups/application '
       + '-/home/dominguez/telegram-hub-bot/data '
       + '-/var/lib/nexus-hub/production/data';
-    expect(prePromotion).toContain(governedWritablePaths);
-    expect(hourly).toContain(governedWritablePaths);
+    const hourlyWritablePaths =
+      'ReadWritePaths=/srv/nexus-backups/application '
+      + '/var/lib/nexus-release/operational-alerts '
+      + '-/home/dominguez/telegram-hub-bot/data '
+      + '-/var/lib/nexus-hub/production/data';
+    expect(prePromotion).toContain(prePromotionWritablePaths);
+    expect(hourly).toContain(hourlyWritablePaths);
     expect(prePromotion).not.toContain('telegram-hub-bot-staging');
     expect(hourly).not.toContain('telegram-hub-bot-staging');
-    expect(policy.timing.backupTimeoutSeconds).toBe(15 * 60);
+    expect(policy.timing.backupTimeoutSeconds).toBe(22 * 60);
     expect(snapshotTimeoutSeconds).toBeLessThan(policy.timing.backupTimeoutSeconds);
     expect(releaseBackup.indexOf('policy.timing.backupTimeoutSeconds'))
       .toBeLessThan(releaseBackup.indexOf("exec(systemctlBin, ['start', PRE_MIGRATION_BACKUP_UNIT]"));
@@ -1295,7 +1695,55 @@ describe('same-host Nexus backups', () => {
     expect(hourly).not.toContain('ConditionPathExists');
     expect(restoreVerify).not.toContain('ConditionPathExists');
     expect(timer).toContain('OnCalendar=hourly');
-    expect(verifyTimer).toContain('OnCalendar=Sun *-*-* 04:30:00 UTC');
+    expect(verifyTimer).toContain('OnCalendar=Sun *-*-* 04:15:00 UTC');
+    expect(verifyTimer).toContain('AccuracySec=1m');
+    expect(verifyTimer).not.toContain('RandomizedDelaySec');
+    expect(hourly).toContain('RestartForceExitStatus=75');
+    expect(restoreVerify).toContain('RestartForceExitStatus=75');
+    expect(hourly).toContain('RuntimeDirectoryPreserve=restart');
+    expect(restoreVerify).toContain('RuntimeDirectoryPreserve=restart');
+  });
+
+  it('refuses unsafe pre-existing installer targets before copy', () => {
+    const installer = readFileSync('scripts/local-backup-systemd-install.sh', 'utf8');
+    const start = installer.indexOf('validate_optional_installed_file() {');
+    const end = installer.indexOf('\n\npath_chain_identity()', start);
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    const helper = installer.slice(start, end);
+    const root = mkdtempSync(join(tmpdir(), 'nexus-backup-installer-target-'));
+    const uid = process.getuid?.() ?? 0;
+    const gid = process.getgid?.() ?? 0;
+    const statShim = process.platform === 'darwin'
+      ? "stat() { /usr/bin/stat -f '%u:%g:%Lp:%l' -- \"${!#}\"; }\n"
+      : '';
+    const validate = (target: string, mode = '644', expectedUid = uid) => spawnSync(
+      'bash',
+      ['-c', `${statShim}${helper}\nvalidate_optional_installed_file "$1" "$2" "$3" "$4"`,
+        'installer-preflight', target, mode, String(expectedUid), String(gid)],
+      { encoding: 'utf8' },
+    );
+    try {
+      const safe = join(root, 'safe');
+      writeFileSync(safe, 'safe\n', { mode: 0o644 });
+      chmodSync(safe, 0o644);
+      expect(validate(safe).status).toBe(0);
+
+      const symbolic = join(root, 'symbolic');
+      symlinkSync(safe, symbolic);
+      expect(validate(symbolic).status).not.toBe(0);
+
+      const hardlinked = join(root, 'hardlinked');
+      linkSync(safe, hardlinked);
+      expect(validate(safe).status).not.toBe(0);
+      rmSync(hardlinked);
+
+      expect(validate(safe, '644', uid + 1).status).not.toBe(0);
+      chmodSync(safe, 0o600);
+      expect(validate(safe).status).not.toBe(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('does not retain AWS, object-store, or long-lived credential interfaces', () => {

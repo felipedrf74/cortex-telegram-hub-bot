@@ -14,6 +14,13 @@ predecessor rollback. No second per-release owner approval is involved. Read
 [`continuous-deployment.md`](continuous-deployment.md) first — it is the canonical
 description of how releases now work.
 
+The unattended path still refuses when installed controller or local-backup
+authority differs from the selected immutable controller. Repair that boundary
+only with the attended, crash-resumable §1a transaction in
+`ops/nexus-release/README.md`; it preserves the exact poller, heartbeat, backup,
+restore-verify, and target-aware backup-liveness timer state while reinstalling
+and re-proving the governed backup interface before ordinary deployment resumes.
+
 ## The PM2 fallback
 
 Everything from "Lean production release" onwards describes the **previous**
@@ -24,6 +31,27 @@ Removal criterion: **14 stable days** after the first successful containerized
 production release. That is a calendar criterion, not a release count — a quiet
 fortnight with no releases still counts, because what is being proven is that the
 container path holds, not that it has been exercised N times.
+
+The clock is not an operator-entered date. Retirement admission derives it from
+the `completedAt` of the immutable completed receipt named by the canonical
+first-cutover baseline, and requires that receipt's exact
+`owner_bootstrap_baseline` and `bootstrap_production_revalidation` checks to bind
+the baseline's canonical authorization digest. It also re-proves the exact current active completed receipt,
+its installed v3 control-plane identity, live encrypted backup/restore evidence,
+legacy database-handle quiescence, container images/health, timers, locks,
+persistent PM2 guards, and root PM2 installation attestation. Baseline and
+receipt SHA-256 values bind immutable file bytes; the separately named
+`baselineAuthorizationDigest` binds the normalized baseline value used by the
+existing bootstrap checks. Use
+`node scripts/retire-pm2-fallback.mjs` only through the
+attended procedure in `ops/nexus-release/README.md` §11. The similarly named
+`scripts/retire-legacy-release-machinery.sh` below retires a different historical
+surface and is not the container-era PM2 fallback retirement command.
+
+Retirement removes executable PM2 authority, not recovery evidence or data. The
+two `/etc/systemd/system.control` links to `/dev/null` remain permanent. The PM2
+home, both legacy checkouts, `/etc/nexus-release`, `/var/lib/nexus-release`,
+`/var/lib/nexus-hub`, and application backups are preserved.
 
 While it is retained:
 
@@ -494,6 +522,15 @@ root-owned promotion control, KVM fault-drill environment, layout migration,
 and legacy rollback/restore scripts are retired. Git history is the recovery
 source for their code. The installed legacy units were removed after the lean
 path completed its first staging and production proof.
+
+This historical cleanup is separate from §11's fail-closed PM2 fallback
+retirement transaction. Do not substitute this script for
+`scripts/retire-pm2-fallback.mjs` and do not add the current container release
+state, configuration, receipts, or guards to its deletion surface. The PM2
+transaction first atomically detaches the admitted closure to its
+transaction-derived same-filesystem quarantine, then resumes a manifest-bound
+non-following purge after crashes; never delete that quarantine or its retained
+manifest manually.
 
 After that proof, inspect the exact allowlisted retirement plan:
 

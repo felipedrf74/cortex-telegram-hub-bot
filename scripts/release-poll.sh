@@ -26,6 +26,16 @@ die() {
   exit 1
 }
 
+PM2_RETIREMENT_JOURNAL=/var/lib/nexus-release/state/pm2-fallback-retirement.json
+PM2_RETIRED_TOMBSTONE=/var/lib/nexus-release/state/pm2-fallback-retired.json
+if [ -e "$PM2_RETIREMENT_JOURNAL" ] || [ -L "$PM2_RETIREMENT_JOURNAL" ]; then
+  die "PM2 fallback retirement is in progress"
+fi
+if [ "${1:-}" = --allow-first-container-bootstrap ] \
+    && { [ -e "$PM2_RETIRED_TOMBSTONE" ] || [ -L "$PM2_RETIRED_TOMBSTONE" ]; }; then
+  die "first-container bootstrap is permanently barred after PM2 fallback retirement"
+fi
+
 assert_lock_fd_matches_path() {
   local descriptor="$1"
   local lock_path="$2"

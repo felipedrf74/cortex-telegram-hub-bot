@@ -41,11 +41,13 @@ if [ "$TEST_MODE" = 1 ]; then
   LINK="$TEST_ROOT/usr/local/bin/pm2"
   STATE_ROOT="$TEST_ROOT/var/lib/nexus-release-promotion"
   TRUSTED_LOCK="$TEST_ROOT/usr/local/share/nexus-release/pm2-package-lock.json"
+  RETIREMENT_STATE_ROOT="$TEST_ROOT/var/lib/nexus-release/state"
 else
   PREFIX=/opt/nexus-release/pm2
   LINK=/usr/local/bin/pm2
   STATE_ROOT=/var/lib/nexus-release-promotion
   TRUSTED_LOCK=/usr/local/share/nexus-release/pm2-package-lock.json
+  RETIREMENT_STATE_ROOT=/var/lib/nexus-release/state
   archive_real="$(realpath -e -- "$ARCHIVE")"
   [ "$archive_real" = "$ARCHIVE" ] || {
     echo "root PM2 closure archive path must be canonical" >&2
@@ -62,9 +64,33 @@ else
     current="$(dirname -- "$current")"
   done
 fi
-[ -f "$TRUSTED_LOCK" ] && [ ! -L "$TRUSTED_LOCK" ] || {
-  echo "root PM2 exact package lock is unavailable" >&2
-  exit 1
+
+assert_pm2_fallback_not_retired() {
+  local status
+  if "$NODE_BIN" - \
+    "$RETIREMENT_STATE_ROOT/pm2-fallback-retirement.json" \
+    "$RETIREMENT_STATE_ROOT/pm2-fallback-retired.json" <<'NODE'
+const fs = require('node:fs');
+for (const file of process.argv.slice(2)) {
+  try {
+    fs.lstatSync(file);
+    process.exit(78);
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+}
+NODE
+  then
+    return 0
+  else
+    status=$?
+    if [ "$status" -eq 78 ]; then
+      echo "root PM2 installation is barred by fallback retirement evidence" >&2
+      return 78
+    fi
+    echo "root PM2 retirement gate could not be proved absent" >&2
+    return 1
+  fi
 }
 [ -x "$NODE_BIN" ] && [ ! -L "$NODE_BIN" ] || {
   echo "root PM2 Node runtime is unavailable" >&2
@@ -82,6 +108,12 @@ if [ "$TEST_MODE" != 1 ]; then
     exit 1
   }
 fi
+assert_pm2_fallback_not_retired
+
+[ -f "$TRUSTED_LOCK" ] && [ ! -L "$TRUSTED_LOCK" ] || {
+  echo "root PM2 exact package lock is unavailable" >&2
+  exit 1
+}
 
 observed_sha256="$(sha256sum -- "$ARCHIVE" | cut -d' ' -f1)"
 [ "$observed_sha256" = "$EXPECTED_SHA256" ] || {
