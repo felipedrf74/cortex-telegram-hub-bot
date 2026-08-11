@@ -6794,7 +6794,7 @@ if test "$REBASELINE_PHASE" = targets_archived; then
     remove_proven_stale_wal_sidecars "$DB"
     require_no_sqlite_sidecars "$DB"
     sudo chown 10001:10001 "$DB"; sudo chmod 600 "$DB"
-    test "$(sudo stat -Lc '%U:%G:%a:%h' -- "$DB")" \
+    test "$(sudo stat -Lc '%u:%g:%a:%h' -- "$DB")" \
       = '10001:10001:600:1' || die "container reset candidate metadata is unsafe: $DB"
   done
   sudo mv -T -- "$PRODUCTION_NEXT" "$LIVE_PRODUCTION"
@@ -6804,7 +6804,7 @@ if test "$REBASELINE_PHASE" = targets_archived; then
   for SPEC in "$LIVE_PRODUCTION:$PRODUCTION_LOGICAL_SHA" \
     "$LIVE_STAGING:$STAGING_LOGICAL_SHA"; do
     DB="${SPEC%%:*}"; EXPECTED_DIGEST="${SPEC#*:}"
-    test "$(sudo stat -Lc '%U:%G:%a:%h' -- "$DB")" \
+    test "$(sudo stat -Lc '%u:%g:%a:%h' -- "$DB")" \
       = '10001:10001:600:1' || die "governed database metadata is unsafe: $DB"
     require_valid_sqlite "$DB"; require_no_open_handles "$DB"
     test "$(logical_digest "$DB")" = "$EXPECTED_DIGEST" \
