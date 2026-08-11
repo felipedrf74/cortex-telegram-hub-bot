@@ -193,6 +193,15 @@ so the canonical repository must be anonymously readable. If that changes, stop
 and define a separately owner-reviewed source transport; do not add a token to
 the command, repository URL, checkout, or npm configuration.
 
+The only legacy guard bridge accepted by `upgrade` is the exact immutable
+`852116a7ee17562418779ee396095de2cd05e699` predecessor: its bootstrap,
+poller, and heartbeat units all carry the durable transaction existence guard,
+while its bootstrap and poller units uniformly predate the post-gate guard.
+Current controllers require both existence and symlink guards for both gates.
+Any other legacy, mixed, partial, marker-drifted, or selector-drifted state
+refuses before the durable transaction record is published. Rollback retains
+its separately governed compatibility semantics.
+
 ```bash
 set -euo pipefail
 umask 077
@@ -223,6 +232,8 @@ TRANSACTION_STAGE=/var/lib/nexus-release/state/control-plane-transaction.json.ne
 POST_GATE_STATE=/var/lib/nexus-release/state/control-plane-post-gate.json
 FINALIZATION_STATE=/var/lib/nexus-release/state/control-plane-finalization.json
 EXPECTED_MARKER="$SOURCE_SHA $SOURCE_REPOSITORY /usr/bin/node:v22.23.1"
+LEGACY_UPGRADE_PREDECESSOR_SHA=852116a7ee17562418779ee396095de2cd05e699
+LEGACY_UPGRADE_PREDECESSOR_MARKER="$LEGACY_UPGRADE_PREDECESSOR_SHA $SOURCE_REPOSITORY /usr/bin/node:v22.23.1"
 STAGE_DIR=
 TIMER_FAILSAFE_ARMED=0
 TRANSACTION_DURABLE=0
@@ -1972,6 +1983,26 @@ verify_installed_backup_interface() {
   fi
 }
 
+selected_guard_pair_is_compatible() {
+  local active marker post_gate_state transaction_guard_state
+  active="$1"; post_gate_state="$2"; transaction_guard_state="$3"
+  if test "$CONTROL_PLANE_MODE" = rollback; then
+    return 0
+  fi
+  test "$CONTROL_PLANE_MODE" = upgrade || return 1
+  if test "$post_gate_state:$transaction_guard_state" = present:present; then
+    return 0
+  fi
+  test "$post_gate_state:$transaction_guard_state" = absent:legacy \
+    || return 1
+  test "$active" = "$VERSION_ROOT/$LEGACY_UPGRADE_PREDECESSOR_SHA" \
+    || return 1
+  marker="$active/.nexus-control-plane-ready"
+  test -f "$marker" && test ! -L "$marker" \
+    && test "$(stat -Lc '%U:%G:%a:%h' -- "$marker")" = root:root:444:1 \
+    && test "$(<"$marker")" = "$LEGACY_UPGRADE_PREDECESSOR_MARKER"
+}
+
 require_installed_transaction_gate() {
   local active allow_transition_partial liveness_state post_gate_state \
     transaction_guard_state unit
@@ -1980,6 +2011,9 @@ require_installed_transaction_gate() {
   test -n "$active" || die 'transaction-gate proof has no selected controller'
   post_gate_state="$(candidate_post_gate_guards_state "$active")"
   transaction_guard_state="$(candidate_transaction_guards_state "$active")"
+  selected_guard_pair_is_compatible \
+    "$active" "$post_gate_state" "$transaction_guard_state" \
+    || die 'selected controller guard pair is incompatible with the requested operation'
   for unit in nexus-release-bootstrap.service nexus-release-poller.service \
     nexus-release-heartbeat.service; do
     test -f "/etc/systemd/system/$unit" && test ! -L "/etc/systemd/system/$unit" \
@@ -2012,7 +2046,8 @@ require_installed_transaction_gate() {
     fi
   elif test "$post_gate_state" = absent; then
     test "$CONTROL_PLANE_MODE" = rollback \
-      || die 'selected controller lacks post-gate guards outside rollback'
+      || test "$CONTROL_PLANE_MODE" = upgrade \
+      || die 'selected controller lacks post-gate guards outside upgrade or rollback'
   elif test "$post_gate_state" != legacy; then
     die 'selected controller post-gate guard state is unsupported'
   fi

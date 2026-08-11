@@ -1170,4 +1170,188 @@ require_installed_backup_verifier_pair "$2"
       'start_and_prove_post_gate_service nexus-release-backup-liveness.service',
     );
   });
+
+  it('admits only the exact legacy predecessor guard pair during upgrade', () => {
+    const runbook = fs.readFileSync('ops/nexus-release/README.md', 'utf8');
+    const sectionStart = runbook.indexOf('## 1a. Immutable control-plane install or upgrade');
+    const blockStart = runbook.indexOf('```bash\n', sectionStart) + '```bash\n'.length;
+    const blockEnd = runbook.indexOf('\n```', blockStart);
+    const upgradeBlock = runbook.slice(blockStart, blockEnd);
+    const guardHelpers = upgradeBlock.match(
+      /(candidate_post_gate_guards_state\(\) \{[\s\S]*?\n\})\n\n(candidate_transaction_guards_state\(\) \{[\s\S]*?\n\})\n\nrequire_immutable_candidate/u,
+    );
+    const compatibilityHelper = upgradeBlock.match(
+      /(selected_guard_pair_is_compatible\(\) \{[\s\S]*?\n\})\n\nrequire_installed_transaction_gate/u,
+    )?.[1];
+    const installedGate = upgradeBlock.match(
+      /(require_installed_transaction_gate\(\) \{[\s\S]*?\n\})\n\nselector_or_absent/u,
+    )?.[1];
+    expect(guardHelpers).toBeTruthy();
+    expect(compatibilityHelper).toBeTruthy();
+    expect(installedGate).toBeTruthy();
+    const compatibilityCall = installedGate!.indexOf('selected_guard_pair_is_compatible');
+    const installedGuardReads = installedGate!.indexOf(
+      'for unit in nexus-release-bootstrap.service',
+    );
+    expect(compatibilityCall).toBeGreaterThan(-1);
+    expect(installedGuardReads).toBeGreaterThan(-1);
+    expect(compatibilityCall).toBeLessThan(installedGuardReads);
+    expect(upgradeBlock).toContain('require_installed_transaction_gate 1');
+
+    const predecessorSha = '852116a7ee17562418779ee396095de2cd05e699';
+    const repository = 'https://github.com/felipedrf74/cortex-telegram-hub-bot.git';
+    const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'legacy-controller-guard-'));
+    temporaryRoots.push(fixtureRoot);
+    const versionRoot = path.join(fixtureRoot, 'control-plane');
+    const predecessorRoot = path.join(versionRoot, predecessorSha);
+    const predecessorUnitRoot = path.join(predecessorRoot, 'ops', 'nexus-release');
+    fs.mkdirSync(predecessorUnitRoot, { recursive: true });
+    const predecessorUnitHashes: Record<string, string> = {
+      'nexus-release-bootstrap.service':
+        '8dcfbb1bb2e3f67ba4aa6b2591a85c1a2012cf84765021b5fcecfb1e7c6ae4a1',
+      'nexus-release-poller.service':
+        '81a527e9b9a66b12e5eb6ac8bd58a49b81e85ec91ed4705dd0f3680f3c9c5097',
+      'nexus-release-heartbeat.service':
+        '07a73b5aee2c5b9fe0782c76060aa533518a6f4346af2a428705f5e87982ba01',
+    };
+    for (const [unit, expectedHash] of Object.entries(predecessorUnitHashes)) {
+      const historical = spawnSync(
+        'git',
+        ['show', `${predecessorSha}:ops/nexus-release/${unit}`],
+        { encoding: 'utf8' },
+      );
+      expect(historical.status, historical.stderr).toBe(0);
+      expect(sha256(Buffer.from(historical.stdout))).toBe(expectedHash);
+      fs.writeFileSync(path.join(predecessorUnitRoot, unit), historical.stdout);
+    }
+    fs.writeFileSync(
+      path.join(predecessorRoot, '.nexus-control-plane-ready'),
+      `${predecessorSha} ${repository} /usr/bin/node:v22.23.1\n`,
+    );
+
+    const classify = (name: string, root: string) => spawnSync(
+      'bash',
+      ['-c', `
+set -euo pipefail
+die() { printf '%s\\n' "$*" >&2; exit 1; }
+candidate_liveness_pair_state() { printf 'absent\\n'; }
+${guardHelpers![1]}
+${guardHelpers![2]}
+"$1" "$2"
+`, 'fixture', name, root],
+      { encoding: 'utf8' },
+    );
+    const postGateState = classify(
+      'candidate_post_gate_guards_state',
+      predecessorRoot,
+    );
+    const transactionState = classify(
+      'candidate_transaction_guards_state',
+      predecessorRoot,
+    );
+    expect(postGateState).toMatchObject({ status: 0, stdout: 'absent\n' });
+    expect(transactionState).toMatchObject({ status: 0, stdout: 'legacy\n' });
+
+    const compatible = (
+      mode: 'initial' | 'upgrade' | 'rollback',
+      active: string,
+      postGate: string,
+      transaction: string,
+      markerMetadata = 'root:root:444:1',
+    ) => spawnSync('bash', ['-c', `
+set -euo pipefail
+CONTROL_PLANE_MODE="$1"
+VERSION_ROOT="$2"
+LEGACY_UPGRADE_PREDECESSOR_SHA="$3"
+SOURCE_REPOSITORY="$4"
+LEGACY_UPGRADE_PREDECESSOR_MARKER="$LEGACY_UPGRADE_PREDECESSOR_SHA $SOURCE_REPOSITORY /usr/bin/node:v22.23.1"
+MARKER_METADATA="$8"
+stat() { printf '%s\\n' "$MARKER_METADATA"; }
+${compatibilityHelper!}
+selected_guard_pair_is_compatible "$5" "$6" "$7"
+`, 'fixture', mode, versionRoot, predecessorSha, repository,
+    active, postGate, transaction, markerMetadata], { encoding: 'utf8' });
+
+    expect(compatible(
+      'upgrade',
+      predecessorRoot,
+      postGateState.stdout.trim(),
+      transactionState.stdout.trim(),
+    ).status).toBe(0);
+    expect(compatible('upgrade', fixtureRoot, 'present', 'present').status).toBe(0);
+    for (const [postGate, transaction] of [
+      ['present', 'legacy'],
+      ['absent', 'present'],
+      ['legacy', 'legacy'],
+    ]) {
+      expect(compatible('upgrade', predecessorRoot, postGate, transaction).status)
+        .not.toBe(0);
+    }
+
+    const otherRoot = path.join(versionRoot, '8'.repeat(40));
+    fs.mkdirSync(otherRoot, { recursive: true });
+    fs.copyFileSync(
+      path.join(predecessorRoot, '.nexus-control-plane-ready'),
+      path.join(otherRoot, '.nexus-control-plane-ready'),
+    );
+    expect(compatible('upgrade', otherRoot, 'absent', 'legacy').status).not.toBe(0);
+    fs.writeFileSync(
+      path.join(predecessorRoot, '.nexus-control-plane-ready'),
+      'marker drift\n',
+    );
+    expect(compatible('upgrade', predecessorRoot, 'absent', 'legacy').status)
+      .not.toBe(0);
+    fs.writeFileSync(
+      path.join(predecessorRoot, '.nexus-control-plane-ready'),
+      `${predecessorSha} ${repository} /usr/bin/node:v22.23.1\n`,
+    );
+    expect(compatible(
+      'upgrade',
+      predecessorRoot,
+      'absent',
+      'legacy',
+      'root:root:640:1',
+    ).status).not.toBe(0);
+    const markerTarget = path.join(predecessorRoot, '.marker-target');
+    fs.renameSync(path.join(predecessorRoot, '.nexus-control-plane-ready'), markerTarget);
+    fs.symlinkSync(markerTarget, path.join(predecessorRoot, '.nexus-control-plane-ready'));
+    expect(compatible('upgrade', predecessorRoot, 'absent', 'legacy').status)
+      .not.toBe(0);
+    expect(compatible('rollback', predecessorRoot, 'absent', 'legacy').status).toBe(0);
+    expect(compatible('rollback', otherRoot, 'legacy', 'present').status).toBe(0);
+
+    const partialTransactionRoot = path.join(fixtureRoot, 'partial-transaction');
+    fs.cpSync(predecessorRoot, partialTransactionRoot, { recursive: true });
+    fs.appendFileSync(
+      path.join(
+        partialTransactionRoot,
+        'ops/nexus-release/nexus-release-heartbeat.service',
+      ),
+      'ConditionPathIsSymbolicLink=!/var/lib/nexus-release/state/control-plane-transaction.json\n',
+    );
+    expect(classify('candidate_transaction_guards_state', partialTransactionRoot))
+      .toMatchObject({
+        status: 1,
+        stderr: expect.stringContaining('partial transaction symlink guards'),
+      });
+
+    const partialPostGateRoot = path.join(fixtureRoot, 'partial-post-gate');
+    fs.cpSync(predecessorRoot, partialPostGateRoot, { recursive: true });
+    fs.appendFileSync(
+      path.join(
+        partialPostGateRoot,
+        'ops/nexus-release/nexus-release-bootstrap.service',
+      ),
+      [
+        'ConditionPathExists=!/var/lib/nexus-release/state/control-plane-post-gate.json',
+        'ConditionPathIsSymbolicLink=!/var/lib/nexus-release/state/control-plane-post-gate.json',
+        '',
+      ].join('\n'),
+    );
+    expect(classify('candidate_post_gate_guards_state', partialPostGateRoot))
+      .toMatchObject({
+        status: 1,
+        stderr: expect.stringContaining('partial post-gate workload guard'),
+      });
+  });
 });
