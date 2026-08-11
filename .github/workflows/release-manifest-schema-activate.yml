@@ -1,0 +1,246 @@
+name: Release — activate manifest schema pointer
+
+# Exceptional reader-first bridge. Ordinary publication may publish an exact
+# source-SHA payload while withholding :main when the signed schema generation
+# differs from the current pointer. Only the repository owner, from protected
+# main and through the release-publish environment, may attest that the exact
+# signed candidate controller is installed and move that immutable digest.
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact current protected-main source SHA
+        required: true
+        type: string
+      release_payload_digest:
+        description: Exact candidate release payload OCI digest (sha256:...)
+        required: true
+        type: string
+      current_pointer_digest:
+        description: Exact currently observed :main OCI digest (sha256:...)
+        required: true
+        type: string
+      installed_control_plane_digest:
+        description: Owner-observed installed controller digest (64 lowercase hex)
+        required: true
+        type: string
+      confirm:
+        description: Type activate-manifest-schema-pointer
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: '22.23.1'
+
+jobs:
+  admission:
+    name: 🔐 Bind owner activation to protected main
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      source_sha: ${{ steps.bind.outputs.source_sha }}
+    steps:
+      - name: Refuse non-owner, non-main, or malformed activation inputs
+        env:
+          ACTOR: ${{ github.actor }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          OWNER: ${{ github.repository_owner }}
+          REF: ${{ github.ref }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          CANDIDATE_DIGEST: ${{ inputs.release_payload_digest }}
+          CURRENT_DIGEST: ${{ inputs.current_pointer_digest }}
+          INSTALLED_CONTROL_PLANE_DIGEST: ${{ inputs.installed_control_plane_digest }}
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          test "$ACTOR" = "$OWNER"
+          test "$TRIGGERING_ACTOR" = "$OWNER"
+          test "$REF" = 'refs/heads/main'
+          test "$CONFIRM" = 'activate-manifest-schema-pointer'
+          echo "$SOURCE_SHA" | grep -Eq '^[0-9a-f]{40}$'
+          echo "$CANDIDATE_DIGEST" | grep -Eq '^sha256:[0-9a-f]{64}$'
+          echo "$CURRENT_DIGEST" | grep -Eq '^sha256:[0-9a-f]{64}$'
+          test "$CANDIDATE_DIGEST" != "$CURRENT_DIGEST"
+          echo "$INSTALLED_CONTROL_PLANE_DIGEST" | grep -Eq '^[0-9a-f]{64}$'
+
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Bind the request to the exact current protected-main commit
+        id: bind
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git rev-parse origin/main)" = "$SOURCE_SHA"
+          echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+
+  activate:
+    name: 🔏 Activate the owner-observed reader transition
+    needs: admission
+    concurrency:
+      group: release-publish-main
+      cancel-in-progress: false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    environment:
+      name: release-publish
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ needs.admission.outputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+
+      - uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify both signed payloads and the owner-observed controller identity
+        id: verify
+        env:
+          IMAGE: ghcr.io/${{ github.repository_owner }}/nexus-hub-release
+          SOURCE_SHA: ${{ needs.admission.outputs.source_sha }}
+          CANDIDATE_DIGEST: ${{ inputs.release_payload_digest }}
+          CURRENT_DIGEST: ${{ inputs.current_pointer_digest }}
+          INSTALLED_CONTROL_PLANE_DIGEST: ${{ inputs.installed_control_plane_digest }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          git fetch --no-tags origin main
+          test "$(git rev-parse origin/main)" = "$SOURCE_SHA"
+          mkdir -p .local/release/schema-activation
+
+          extract_manifest() {
+            local reference="$1"
+            local output="$2"
+            local container_id
+            docker pull --quiet "$reference"
+            container_id="$(docker create "$reference")"
+            echo "$container_id" | grep -Eq '^[0-9a-f]{12,64}$'
+            if ! docker cp \
+              "$container_id:/release/release-manifest.json" "$output"; then
+              docker rm --force "$container_id" >/dev/null 2>&1 || true
+              return 1
+            fi
+            docker rm --force "$container_id" >/dev/null
+            test -s "$output"
+          }
+
+          resolve_digest() {
+            local reference="$1"
+            docker image inspect --format '{{json .RepoDigests}}' "$reference" \
+              | IMAGE="$IMAGE" node -e '
+                  const fs = require("node:fs");
+                  const values = JSON.parse(fs.readFileSync(0, "utf8"));
+                  const prefix = `${process.env.IMAGE}@`;
+                  const digests = [...new Set(values
+                    .filter((value) => value.startsWith(prefix))
+                    .map((value) => value.slice(prefix.length)))];
+                  if (digests.length !== 1 || !/^sha256:[0-9a-f]{64}$/.test(digests[0])) {
+                    process.exit(1);
+                  }
+                  process.stdout.write(digests[0]);
+                '
+          }
+
+          extract_manifest \
+            "$IMAGE@$CANDIDATE_DIGEST" \
+            .local/release/schema-activation/candidate-manifest.json
+          extract_manifest \
+            "$IMAGE@$CURRENT_DIGEST" \
+            .local/release/schema-activation/current-manifest.json
+          docker pull --quiet "$IMAGE:main"
+          test "$(resolve_digest "$IMAGE:main")" = "$CURRENT_DIGEST"
+
+          node scripts/release-manifest-pointer-guard.mjs \
+            --activation \
+            --candidate-manifest .local/release/schema-activation/candidate-manifest.json \
+            --current-manifest .local/release/schema-activation/current-manifest.json \
+            --expected-candidate-sha "$SOURCE_SHA" \
+            --expected-installed-control-plane-digest "$INSTALLED_CONTROL_PLANE_DIGEST" \
+            --public-key docs/release/evidence/release-manifest-public-key.pem \
+            | tee .local/release/schema-activation/decision.json
+          test "$(node -e \
+            "process.stdout.write(require('./.local/release/schema-activation/decision.json').decision)")" \
+            = 'activate_main'
+          echo 'decision=activate_main' >> "$GITHUB_OUTPUT"
+
+      - name: Re-assert every bound identity and move the exact digest
+        env:
+          IMAGE: ghcr.io/${{ github.repository_owner }}/nexus-hub-release
+          SOURCE_SHA: ${{ needs.admission.outputs.source_sha }}
+          CANDIDATE_DIGEST: ${{ inputs.release_payload_digest }}
+          CURRENT_DIGEST: ${{ inputs.current_pointer_digest }}
+        run: |
+          set -euo pipefail
+          resolve_digest() {
+            local reference="$1"
+            docker image inspect --format '{{json .RepoDigests}}' "$reference" \
+              | IMAGE="$IMAGE" node -e '
+                  const fs = require("node:fs");
+                  const values = JSON.parse(fs.readFileSync(0, "utf8"));
+                  const prefix = `${process.env.IMAGE}@`;
+                  const digests = [...new Set(values
+                    .filter((value) => value.startsWith(prefix))
+                    .map((value) => value.slice(prefix.length)))];
+                  if (digests.length !== 1 || !/^sha256:[0-9a-f]{64}$/.test(digests[0])) {
+                    process.exit(1);
+                  }
+                  process.stdout.write(digests[0]);
+                '
+          }
+          git fetch --no-tags origin main
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git rev-parse origin/main)" = "$SOURCE_SHA"
+          docker pull --quiet "$IMAGE:main"
+          test "$(resolve_digest "$IMAGE:main")" = "$CURRENT_DIGEST"
+          docker buildx imagetools create \
+            --prefer-index=false \
+            --tag "$IMAGE:main" "$IMAGE@$CANDIDATE_DIGEST"
+          docker pull --quiet "$IMAGE:main"
+          test "$(resolve_digest "$IMAGE:main")" = "$CANDIDATE_DIGEST"
+          git fetch --no-tags origin main
+          test "$(git rev-parse origin/main)" = "$SOURCE_SHA"
+
+      - name: Record the exceptional activation evidence
+        env:
+          SOURCE_SHA: ${{ needs.admission.outputs.source_sha }}
+          CANDIDATE_DIGEST: ${{ inputs.release_payload_digest }}
+          PREVIOUS_POINTER_DIGEST: ${{ inputs.current_pointer_digest }}
+          INSTALLED_CONTROL_PLANE_DIGEST: ${{ inputs.installed_control_plane_digest }}
+        run: |
+          {
+            echo '### Manifest schema pointer activated'
+            echo
+            echo "- source SHA: \`$SOURCE_SHA\`"
+            echo "- candidate payload: \`$CANDIDATE_DIGEST\`"
+            echo "- previous pointer: \`$PREVIOUS_POINTER_DIGEST\`"
+            echo "- owner-observed installed controller: \`$INSTALLED_CONTROL_PLANE_DIGEST\`"
+            echo
+            echo 'The controller value is an attended owner observation, not a'
+            echo 'machine-generated host attestation. Both registry manifests and'
+            echo 'their schema generations were independently signature-verified.'
+          } >> "$GITHUB_STEP_SUMMARY"

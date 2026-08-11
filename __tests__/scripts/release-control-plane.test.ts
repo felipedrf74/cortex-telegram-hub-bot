@@ -223,17 +223,21 @@ describe('signed release control-plane identity', () => {
       'ops/nexus-release/nexus-release-heartbeat.service',
       'ops/nexus-release/nexus-release-heartbeat.timer',
       'ops/nexus-release/nexus-release-poller.service',
+      'ops/nexus-release/release-manifest-schema-policy.json',
       'scripts/lib/pm2-fallback-retirement.mjs',
       'scripts/lib/release-backup-liveness.mjs',
       'scripts/lib/release-control-plane.mjs',
       'scripts/lib/release-deployment.mjs',
       'scripts/lib/release-discovery-alert-state.mjs',
       'scripts/lib/release-installed-backup-interface.mjs',
+      'scripts/lib/release-manifest-schema-policy.mjs',
       'scripts/release-artifact-manifest.mjs',
       'scripts/local-backup-retry-launcher.sh',
       'scripts/release-backup-liveness-launcher.sh',
       'scripts/release-bound-lock-runner.py',
       'scripts/release-installed-backup-interface-check.mjs',
+      'scripts/release-manifest-pointer-guard.mjs',
+      'scripts/release-manifest-schema-guard.mjs',
       'scripts/release-operational-alert-launcher.sh',
       'scripts/release-operational-alert.mjs',
       'scripts/release-poll.sh',
@@ -448,9 +452,12 @@ describe('signed release control-plane identity', () => {
       .toThrow(/effective definition differs/i);
   });
 
-  it('makes signed publication assert the v3 envelope carries the computed controller digest', () => {
+  it('makes signed publication assert the configured writer carries its controller digest', () => {
     const workflow = readFileSync(join(repoRoot, '.github/workflows/release.yml'), 'utf8');
-    expect(workflow).toContain("envelope.schema !== 'nexus.release-manifest.v3'");
+    expect(workflow).toContain("require('./ops/nexus-release/release-manifest-schema-policy.json')");
+    expect(workflow).toContain('envelope.schema !== writer.envelopeSchema');
+    expect(workflow).toContain('envelope.payload?.schemaVersion !== writer.generation');
+    expect(workflow).toContain('writer.requiresControlPlane');
     expect(workflow).toContain('envelope.payload?.controlPlane?.digest !== build.controlPlaneDigest');
     expect(workflow).toContain('control_plane_digest=$CONTROL_PLANE_DIGEST');
   });

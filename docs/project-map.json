@@ -5,10 +5,10 @@
     "generatorVersion": 4,
     "authoritativeFreshness": "sourceDigest",
     "sourceDigestAlgorithm": "sha256-path-git-mode-content-v2",
-    "sourceDigest": "238f0c094840d839d56ed6294ae2d57c729524ba45a8bfc1e81c25743789a7ca",
-    "baseCommit": "3eb50f8aea53199666dd6f344045a26cfd328bd0",
-    "baseCommitTimestamp": "2026-08-11T16:51:23+01:00",
-    "trackedFiles": 3232,
+    "sourceDigest": "8bb62db3f3e887a082cfcf4cea16f1c61d1adc5bae7924759c228c9b5ef02cb8",
+    "baseCommit": "103a1398cd8b3cc2035844d2cddf400fb1c1c7ab",
+    "baseCommitTimestamp": "2026-08-11T19:46:45+01:00",
+    "trackedFiles": 3239,
     "sourceFiles": 1135
   },
   "navigation": {
@@ -4920,7 +4920,7 @@
     }
   ],
   "tests": {
-    "files": 1196,
+    "files": 1198,
     "policy": "config/test-policy.json",
     "inventoryArtifact": ".local/test-inventory/test-inventory.json",
     "topLevelOwners": {
@@ -4939,7 +4939,7 @@
       "regression": 1,
       "router": 8,
       "scope": 1,
-      "scripts": 101,
+      "scripts": 103,
       "sdk": 1,
       "security": 24,
       "services": 738,
@@ -5682,7 +5682,7 @@
     },
     {
       "path": "ops/nexus-release/README.md",
-      "bytes": 464949,
+      "bytes": 468518,
       "generated": false
     },
     {
@@ -5712,7 +5712,7 @@
     },
     {
       "path": "__tests__/scripts/release-continuous-deployment.test.ts",
-      "bytes": 275374,
+      "bytes": 280052,
       "generated": false
     },
     {

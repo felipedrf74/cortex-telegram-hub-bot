@@ -15,6 +15,10 @@ import {
   verifyComposeBytes,
   verifyReleaseManifest,
 } from './lib/release-manifest.mjs';
+import {
+  RELEASE_MANIFEST_VERIFICATION_MODES,
+  loadReleaseManifestSchemaPolicy,
+} from './lib/release-manifest-schema-policy.mjs';
 import { createReleaseRegistry } from './lib/release-registry.mjs';
 
 const args = process.argv.slice(2);
@@ -70,6 +74,7 @@ assertOwnerExpectedBootstrapTarget({
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const policy = loadContinuousDeploymentPolicy(root);
+const schemaPolicy = loadReleaseManifestSchemaPolicy(root);
 const outputPolicy = resolveReleaseBootstrapBaselineOutputPolicy({
   policy,
   expectedReleaseId,
@@ -95,7 +100,13 @@ const extracted = registry.extractReleasePayload({
   destinationDir: targetDir,
 });
 const envelope = parseReleaseManifestBytes({ bytes: extracted.manifestBytes, policy });
-const verified = verifyReleaseManifest({ envelope, policy, nowMs: Date.now() });
+const verified = verifyReleaseManifest({
+  envelope,
+  policy,
+  schemaPolicy,
+  nowMs: Date.now(),
+  verificationMode: RELEASE_MANIFEST_VERIFICATION_MODES.CANDIDATE,
+});
 verifyComposeBytes({ payload: verified.payload, bytes: extracted.composeBytes, policy });
 assertOwnerExpectedBootstrapTarget({
   expectedReleaseId,

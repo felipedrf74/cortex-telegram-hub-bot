@@ -5618,6 +5618,79 @@ The key id, repository, protected ref and workflow name the poller requires are
 in `config/continuous-deployment.json > trust`. A manifest that does not match
 all of them is refused.
 
+## 2a. Manifest schema reader-first activation
+
+Ordinary publication always pushes the signed release payload under its exact
+source-SHA tag first. The publisher signature-verifies that candidate and the
+current `nexus-hub-release:main` manifest, then moves `:main` only when their
+signed schema generations match. `hold_generation_mismatch` or
+`hold_current_unavailable` is a successful immutable publication but **not** a
+pointer activation. Do not retag GHCR manually.
+
+Schema reader support must land on protected `main`, pass the exact base/head
+schema-policy gate, and be installed with the attended §1a control-plane
+transaction before the dedicated writer-only policy flip. The writer flip may
+change only `ops/nexus-release/release-manifest-schema-policy.json` and the
+generated project map. Policy v1 never removes a generation row or a candidate
+or retained reader; any later retirement needs a new, separately reviewed
+evidence contract.
+
+When the automatic publisher withholds `:main`, first require all §1a journals
+absent, the exact candidate selected at `/opt/nexus-release/checkout`, and its
+installed fragment/interface proofs green. Compute the active immutable
+controller identity locally on the server; this command prints no secret:
+
+```bash
+INSTALLED_CONTROL_PLANE_DIGEST="$(
+  ssh -t ServerDominguez \
+    "sudo /usr/bin/env -i PATH=/usr/bin:/bin /usr/bin/node --input-type=module -" <<'NODE'
+import { pathToFileURL } from 'node:url';
+const root = '/opt/nexus-release/checkout';
+const module = await import(pathToFileURL(
+  `${root}/scripts/lib/release-control-plane.mjs`,
+));
+const identity = module.computeReleaseControlPlaneIdentity(root, {
+  runtimeVersion: '22.23.1',
+});
+process.stdout.write(`${identity.digest}\n`);
+NODE
+)"
+test "${#INSTALLED_CONTROL_PLANE_DIGEST}" = 64
+```
+
+Compare that value to the signed candidate `controlPlane.digest`, and obtain the
+exact candidate payload digest and the exact current `:main` digest from the
+completed publisher's pointer-guard evidence. Then dispatch from an authenticated
+repository-owner session only:
+
+```bash
+REPOSITORY=felipedrf74/cortex-telegram-hub-bot
+: "${SOURCE_SHA:?exact current protected-main SHA}"
+: "${RELEASE_PAYLOAD_DIGEST:?exact withheld candidate sha256 digest}"
+: "${CURRENT_POINTER_DIGEST:?exact observed current :main sha256 digest}"
+: "${INSTALLED_CONTROL_PLANE_DIGEST:?exact owner-observed installed digest}"
+test "$(gh api "repos/$REPOSITORY/commits/main" --jq .sha)" = "$SOURCE_SHA"
+gh workflow run release-manifest-schema-activate.yml \
+  --repo "$REPOSITORY" \
+  --ref main \
+  -f source_sha="$SOURCE_SHA" \
+  -f release_payload_digest="$RELEASE_PAYLOAD_DIGEST" \
+  -f current_pointer_digest="$CURRENT_POINTER_DIGEST" \
+  -f installed_control_plane_digest="$INSTALLED_CONTROL_PLANE_DIGEST" \
+  -f confirm=activate-manifest-schema-pointer
+```
+
+The dispatch shares `release-publish-main` concurrency and the
+`release-publish` environment. It refuses a non-owner original actor or rerun
+triggering actor, non-main workflow,
+changed protected-main SHA, changed current pointer, bad signature, non-increasing
+generation, or control-plane mismatch; it reasserts the exact pointer and main
+SHA after retagging. Its installed-controller input is explicitly an attended
+owner observation, not a machine-generated host attestation. Require the run to
+finish `success` and its summary to contain the four exact reviewed identities
+before one attended poll. Keep the poller timer disabled until that poll writes a
+completed/provable receipt and both exact images are healthy.
+
 ## 3. Registry access
 
 The poller pulls from GHCR as root. Log in once with a read-only token:

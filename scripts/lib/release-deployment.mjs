@@ -11,6 +11,9 @@ import {
   verifyReleaseManifest,
 } from './release-manifest.mjs';
 import {
+  RELEASE_MANIFEST_VERIFICATION_MODES,
+} from './release-manifest-schema-policy.mjs';
+import {
   BLOCK_REASONS,
   LEGACY_RELEASE_RECEIPT_SCHEMA,
   RELEASE_RECEIPT_SCHEMA,
@@ -285,10 +288,7 @@ function verifyRetainedReleasePayload({
     // Freshness governed first acceptance. A retained immutable predecessor is
     // reverified at its signed creation time so expiry cannot disable rollback.
     nowMs: Date.parse(envelope.payload.createdAt),
-    // The first controller-bound release must still be able to restore the
-    // already-accepted v2 predecessor. This exception is never used for a newly
-    // discovered candidate.
-    allowLegacyControlPlane: true,
+    verificationMode: RELEASE_MANIFEST_VERIFICATION_MODES.RETAINED,
   });
   verifyComposeBytes({ payload: retained.payload, bytes: extracted.composeBytes, policy });
   if (retained.releaseId !== expected.releaseId
@@ -550,7 +550,7 @@ function verifyControllerOnlyRetainedPayload({
     envelope,
     policy,
     nowMs: Date.parse(active.startedAt),
-    allowLegacyControlPlane: true,
+    verificationMode: RELEASE_MANIFEST_VERIFICATION_MODES.RETAINED,
   });
   verifyComposeBytes({ payload: retained.payload, bytes: extracted.composeBytes, policy });
   const evidenceDigest = releaseEvidenceDigest({
@@ -778,9 +778,7 @@ async function recoverUnprovableActiveRelease({
       envelope,
       policy,
       nowMs: Date.parse(active.startedAt),
-      // Recovery may need to settle the last release accepted by the v2
-      // controller before the attended controller upgrade.
-      allowLegacyControlPlane: true,
+      verificationMode: RELEASE_MANIFEST_VERIFICATION_MODES.RETAINED,
     });
     payload = verified.payload;
     verifyComposeBytes({ payload, bytes: extracted.composeBytes, policy });
@@ -1179,6 +1177,7 @@ export async function runReleaseDeployment({
   log = () => {},
   env = process.env,
   requireLock = true,
+  schemaPolicy,
 }) {
   if (requireLock) assertLockHeld(env);
   if (!protectedHead || typeof protectedHead.verify !== 'function') {
@@ -1476,11 +1475,15 @@ export async function runReleaseDeployment({
   const verified = verifyReleaseManifest({
     envelope,
     policy,
+    schemaPolicy,
     // This exact content-addressed payload already passed freshness before its
     // pre-production write-ahead state was persisted. Re-check its signature at
     // the immutable first-acceptance time; later retries may advance updatedAt,
     // but a different payload still uses the current clock.
     nowMs: resumingAcceptedPayload ? Date.parse(state.active.startedAt) : clock(),
+    verificationMode: resumingAcceptedPayload
+      ? RELEASE_MANIFEST_VERIFICATION_MODES.RETAINED
+      : RELEASE_MANIFEST_VERIFICATION_MODES.CANDIDATE,
   });
   const payload = verified.payload;
   const releaseId = verified.releaseId;
@@ -2202,7 +2205,9 @@ export async function runReleaseDeployment({
         const pointerVerified = verifyReleaseManifest({
           envelope: pointerEnvelope,
           policy,
+          schemaPolicy,
           nowMs: clock(),
+          verificationMode: RELEASE_MANIFEST_VERIFICATION_MODES.CANDIDATE,
         });
         if (pointerVerified.payload.source.sha !== promotionHead.headSha) {
           log('ignoring moving release pointer whose signed source is not protected-main head');

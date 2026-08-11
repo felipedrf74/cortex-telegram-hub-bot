@@ -675,6 +675,10 @@ describe('migration-safety-check', () => {
     ['.github/workflows/ci.yml', 'POLICY_CI_ENTRYPOINT_CHANGED'],
     ['.github/workflows/release.yml', 'POLICY_RELEASE_PUBLISH_ENTRYPOINT_CHANGED'],
     [
+      '.github/workflows/release-manifest-schema-activate.yml',
+      'POLICY_RELEASE_MANIFEST_SCHEMA_ACTIVATION_CHANGED',
+    ],
+    [
       '.github/workflows/release-candidate-evidence.yml',
       'POLICY_RELEASE_CHECKPOINT_ENTRYPOINT_CHANGED',
     ],
@@ -685,7 +689,23 @@ describe('migration-safety-check', () => {
     ['scripts/lib/migration-cd-eligibility.mjs', 'POLICY_CD_ELIGIBILITY_CHANGED'],
     ['scripts/migration-safety-check.mjs', 'POLICY_GATE_CHANGED'],
     ['scripts/release-manifest-build.mjs', 'POLICY_RELEASE_MANIFEST_SIGNER_CHANGED'],
+    [
+      'scripts/release-manifest-schema-guard.mjs',
+      'POLICY_RELEASE_MANIFEST_SCHEMA_GUARD_CHANGED',
+    ],
+    [
+      'scripts/release-manifest-pointer-guard.mjs',
+      'POLICY_RELEASE_MANIFEST_POINTER_GUARD_CHANGED',
+    ],
     ['scripts/lib/release-manifest.mjs', 'POLICY_RELEASE_MANIFEST_VALIDATION_CHANGED'],
+    [
+      'scripts/lib/release-manifest-schema-policy.mjs',
+      'POLICY_RELEASE_MANIFEST_SCHEMA_ENFORCEMENT_CHANGED',
+    ],
+    [
+      'ops/nexus-release/release-manifest-schema-policy.json',
+      'POLICY_RELEASE_MANIFEST_SCHEMA_POLICY_CHANGED',
+    ],
     ['scripts/lib/release-database.mjs', 'POLICY_RELEASE_MIGRATION_LEDGER_CHANGED'],
     ['scripts/lib/release-deployment.mjs', 'POLICY_RELEASE_MIGRATION_ADMISSION_CHANGED'],
     ['scripts/lib/release-registry.mjs', 'POLICY_RELEASE_MIGRATION_ORCHESTRATION_CHANGED'],
