@@ -350,6 +350,26 @@
         "reason": "The old assertion that release preparation omitted canonical smoke was reversed; exact classifier-bound smoke evidence is now required and validated by a focused helper suite."
       },
       {
+        "test": "__tests__/scripts/continuous-deployment-workflows.test.ts",
+        "replacementTests": [
+          "__tests__/scripts/release-manifest-pointer-guard.test.ts"
+        ],
+        "sources": [
+          "scripts/release-manifest-pointer-guard.mjs"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "scripts/release-manifest-pointer-guard.mjs:208-210",
+            "anchor": "decision: candidate === current",
+            "behavior": "Automatic publication moves the :main pointer only when the verified current and candidate manifests use the same schema generation; a generation mismatch is held for owner activation.",
+            "replacementTest": "__tests__/scripts/release-manifest-pointer-guard.test.ts",
+            "ownerTestNamePattern": "moves automatically only when both verified generations are equal$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The workflow contract replaces an adjacent always-moving :main publication step with immutable exact-SHA payload publication followed by a signed generation guard; the focused pointer-guard suite owns equal-generation automatic movement."
+      },
+      {
         "test": "__tests__/scripts/release-continuous-deployment.test.ts",
         "replacementTests": [
           "__tests__/scripts/release-continuous-deployment.test.ts"

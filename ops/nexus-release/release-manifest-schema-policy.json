@@ -1,0 +1,25 @@
+{
+  "schema": "nexus.release-manifest-schema-policy.v1",
+  "writerGeneration": 3,
+  "candidateReaders": [
+    3
+  ],
+  "retainedReaders": [
+    2,
+    3
+  ],
+  "generations": [
+    {
+      "generation": 2,
+      "envelopeSchema": "nexus.release-manifest.v2",
+      "payloadSchema": "nexus.release-manifest-payload.v2",
+      "requiresControlPlane": false
+    },
+    {
+      "generation": 3,
+      "envelopeSchema": "nexus.release-manifest.v3",
+      "payloadSchema": "nexus.release-manifest-payload.v3",
+      "requiresControlPlane": true
+    }
+  ]
+}

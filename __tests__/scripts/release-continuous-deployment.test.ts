@@ -32,6 +32,10 @@ import {
   verifyReleaseManifest,
 } from '../../scripts/lib/release-manifest.mjs';
 import {
+  RELEASE_MANIFEST_VERIFICATION_MODES,
+  loadReleaseManifestSchemaPolicy,
+} from '../../scripts/lib/release-manifest-schema-policy.mjs';
+import {
   BLOCK_REASONS,
   LEGACY_RELEASE_RECEIPT_SCHEMA,
   RELEASE_RECEIPT_SCHEMA,
@@ -94,6 +98,7 @@ import {
 
 const repoRoot = resolve(process.cwd());
 const basePolicy = loadContinuousDeploymentPolicy(repoRoot);
+const manifestSchemaPolicy = loadReleaseManifestSchemaPolicy(repoRoot);
 
 const SOURCE_SHA = 'a'.repeat(40);
 const NEWER_SHA = 'b'.repeat(40);
@@ -353,6 +358,8 @@ function payloadFor(overrides: Record<string, unknown> = {}) {
       ?? CONTROL_PLANE,
     migrations,
     policy,
+    schemaPolicy: (overrides.schemaPolicy as typeof manifestSchemaPolicy | undefined)
+      ?? manifestSchemaPolicy,
   });
 }
 
@@ -1197,6 +1204,7 @@ async function deploy(options: {
     };
   };
   controlPlane?: typeof CONTROL_PLANE;
+  schemaPolicy?: typeof manifestSchemaPolicy;
   installedBackupInterface?: ReturnType<typeof fakeInstalledBackupInterface>;
   notificationDelayMs?: number[];
   nowMs?: number;
@@ -1268,6 +1276,7 @@ async function deploy(options: {
     clock,
     log: () => {},
     env: { [LOCK_HELD_ENV]: '1' },
+    schemaPolicy: options.schemaPolicy,
   });
   return {
     result, store, health, notifier, mirror, registryHarness, databaseProbe,
@@ -3267,6 +3276,50 @@ describe('migration admission is reconciled against the ledger', () => {
 });
 
 describe('anti-replay and monotonic source ordering', () => {
+  it('uses retained schema support only for an exact already-accepted pre-production payload', async () => {
+    const retiredCandidatePolicy = {
+      ...manifestSchemaPolicy,
+      writerGeneration: 4,
+      candidateReaders: [4],
+      retainedReaders: [2, 3, 4],
+      generations: [
+        ...manifestSchemaPolicy.generations,
+        {
+          generation: 4,
+          envelopeSchema: 'nexus.release-manifest.v4',
+          payloadSchema: 'nexus.release-manifest-payload.v4',
+          requiresControlPlane: true,
+        },
+      ],
+    } as any;
+    const payload = payloadFor({ sha: NEWER_SHA, runId: '8799' });
+    const envelope = signed(payload);
+    const releaseId = releaseIdFor(payload);
+
+    await expect(deploy({
+      envelope,
+      schemaPolicy: retiredCandidatePolicy,
+    })).rejects.toThrow(/generation 3 is not readable in candidate mode/i);
+
+    const store = makeStore();
+    seedPredecessor(store);
+    store.recordStatus({
+      manifestPayload: payload,
+      releaseId,
+      status: RELEASE_STATUSES.ELIGIBLE,
+      payloadDigest: PAYLOAD_DIGEST,
+      ...stateEvidenceFor(payload),
+    });
+    store.recordAcceptedRunId(payload.source.runId);
+
+    const resumed = await deploy({
+      store,
+      envelope,
+      schemaPolicy: retiredCandidatePolicy,
+    });
+    expect(resumed.result.outcome).toBe(DEPLOYMENT_OUTCOMES.COMPLETED);
+  });
+
   it.each([
     RELEASE_STATUSES.ELIGIBLE,
     RELEASE_STATUSES.STAGING_HEALTHY,
@@ -5254,7 +5307,12 @@ describe('release security and operations', () => {
       keyId: policy.trust.signingKeyId,
       policy,
     });
-    expect(() => verifyReleaseManifest({ envelope, policy, nowMs: Date.parse('2026-08-07T10:00:05Z') }))
+    expect(() => verifyReleaseManifest({
+      envelope,
+      policy,
+      nowMs: Date.parse('2026-08-07T10:00:05Z'),
+      verificationMode: RELEASE_MANIFEST_VERIFICATION_MODES.CANDIDATE,
+    }))
       .toThrow(/signature is invalid/);
   });
 
@@ -5272,6 +5330,7 @@ describe('release security and operations', () => {
     };
     expect(() => verifyReleaseManifest({
       envelope: tampered, policy, nowMs: Date.parse('2026-08-07T10:00:05Z'),
+      verificationMode: RELEASE_MANIFEST_VERIFICATION_MODES.CANDIDATE,
     })).toThrow(/signature is invalid/);
   });
 
@@ -5315,6 +5374,7 @@ describe('release security and operations', () => {
       envelope: { ...envelope, keyId: 'some-other-key' },
       policy,
       nowMs: Date.parse('2026-08-07T10:00:05Z'),
+      verificationMode: RELEASE_MANIFEST_VERIFICATION_MODES.CANDIDATE,
     })).toThrow(/not the pinned signing key/);
   });
 
@@ -5338,6 +5398,7 @@ describe('release security and operations', () => {
     };
     expect(() => verifyReleaseManifest({
       envelope: swapped, policy, nowMs: Date.parse('2026-08-07T10:00:05Z'),
+      verificationMode: RELEASE_MANIFEST_VERIFICATION_MODES.CANDIDATE,
     })).toThrow(/migration digest does not match/);
   });
 
@@ -5347,6 +5408,7 @@ describe('release security and operations', () => {
       envelope: { ...envelope, extra: 'surprise' },
       policy,
       nowMs: Date.parse('2026-08-07T10:00:05Z'),
+      verificationMode: RELEASE_MANIFEST_VERIFICATION_MODES.CANDIDATE,
     })).toThrow(/do not match the governed schema/);
   });
 
@@ -5357,28 +5419,91 @@ describe('release security and operations', () => {
       schemaVersion: RELEASE_MANIFEST_SCHEMA_VERSION,
       controlPlane: CONTROL_PLANE,
     });
+    expect(current.schemaVersion).toBe(manifestSchemaPolicy.writerGeneration);
     expect(RELEASE_MANIFEST_SCHEMA).toBe('nexus.release-manifest.v3');
 
     const legacyPayload = legacyPayloadFor(current);
     const legacyEnvelope = legacySigned(current);
     const nowMs = Date.parse('2026-08-07T10:00:05Z');
-    expect(() => verifyReleaseManifest({ envelope: legacyEnvelope, policy, nowMs }))
-      .toThrow(/envelope schema is invalid|not admissible/i);
+    expect(() => verifyReleaseManifest({
+      envelope: signed(current),
+      policy,
+      nowMs,
+    })).toThrow(/verification mode is unsupported/);
+    expect(verifyReleaseManifest({
+      envelope: signed(current),
+      policy,
+      nowMs,
+      verificationMode: RELEASE_MANIFEST_VERIFICATION_MODES.CANDIDATE,
+    }).releaseId).toBe(releaseIdFor(current));
+    expect(legacyPayload).not.toHaveProperty('controlPlane');
+    expect(() => verifyReleaseManifest({
+      envelope: legacyEnvelope,
+      policy,
+      nowMs,
+      verificationMode: RELEASE_MANIFEST_VERIFICATION_MODES.CANDIDATE,
+    })).toThrow(/generation.*candidate|not readable/i);
     expect(verifyReleaseManifest({
       envelope: legacyEnvelope,
       policy,
       nowMs,
-      allowLegacyControlPlane: true,
+      verificationMode: RELEASE_MANIFEST_VERIFICATION_MODES.RETAINED,
     }).releaseId).toBe(releaseIdFor(legacyPayload));
+    expect(verifyReleaseManifest({
+      envelope: signed(current),
+      policy,
+      nowMs,
+      verificationMode: RELEASE_MANIFEST_VERIFICATION_MODES.RETAINED,
+    }).releaseId).toBe(releaseIdFor(current));
+  });
+
+  it('builds and signs the schema policy writer generation', () => {
+    const legacyWriterPolicy = {
+      ...manifestSchemaPolicy,
+      writerGeneration: LEGACY_RELEASE_MANIFEST_SCHEMA_VERSION,
+      candidateReaders: [LEGACY_RELEASE_MANIFEST_SCHEMA_VERSION],
+    };
+    const payload = payloadFor({ schemaPolicy: legacyWriterPolicy });
+    expect(payload).toMatchObject({
+      schema: LEGACY_RELEASE_MANIFEST_PAYLOAD_SCHEMA,
+      schemaVersion: LEGACY_RELEASE_MANIFEST_SCHEMA_VERSION,
+    });
+    expect(payload).not.toHaveProperty('controlPlane');
+    expect(signReleaseManifest({
+      payload,
+      privateKeyPem,
+      keyId: policy.trust.signingKeyId,
+      policy,
+      schemaPolicy: legacyWriterPolicy,
+    }).schema).toBe(LEGACY_RELEASE_MANIFEST_SCHEMA);
+  });
+
+  it('rejects mismatched envelope and payload schema generations', () => {
+    const current = payloadFor();
+    const nowMs = Date.parse('2026-08-07T10:00:05Z');
+    expect(() => verifyReleaseManifest({
+      envelope: { ...signed(current), schema: LEGACY_RELEASE_MANIFEST_SCHEMA },
+      policy,
+      nowMs,
+      verificationMode: RELEASE_MANIFEST_VERIFICATION_MODES.RETAINED,
+    })).toThrow(/envelope and payload schema generations do not match/);
+    expect(() => verifyReleaseManifest({
+      envelope: { ...legacySigned(current), schema: RELEASE_MANIFEST_SCHEMA },
+      policy,
+      nowMs,
+      verificationMode: RELEASE_MANIFEST_VERIFICATION_MODES.RETAINED,
+    })).toThrow(/envelope and payload schema generations do not match/);
   });
 
   it('rejects a stale or future-dated manifest', () => {
     const envelope = signed(payloadFor());
     expect(() => verifyReleaseManifest({
       envelope, policy, nowMs: Date.parse('2026-08-01T10:00:00Z'),
+      verificationMode: RELEASE_MANIFEST_VERIFICATION_MODES.CANDIDATE,
     })).toThrow(/createdAt is in the future/);
     expect(() => verifyReleaseManifest({
       envelope, policy, nowMs: Date.parse('2026-09-30T10:00:00Z'),
+      verificationMode: RELEASE_MANIFEST_VERIFICATION_MODES.CANDIDATE,
     })).toThrow(/older than the accepted freshness window/);
   });
 

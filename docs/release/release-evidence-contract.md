@@ -110,7 +110,30 @@ execute v3 checker entrypoints. Selector rollback uses the version-compatible
 transaction proof from the attended installer before returning authority to the
 older immutable tree.
 
-The first v3 publication after an attended controller upgrade may be summary
+The signed envelope version is selected by the closed
+`nexus.release-manifest-schema-policy.v1` file. Its generation rows and retained
+and candidate reader sets are append-only. Exact Git base/head verification in
+CI, the hosted builder, and the fresh signer permits a writer change only to a
+generation already candidate-readable in the exact base policy. The writer flip
+is a dedicated policy-only change (plus the generated project map), so reader
+support must have shipped on protected `main` one release earlier. Fresh
+candidates use `candidateReaders`; only an exact content-addressed payload
+already persisted in eligible/staging state may use `retainedReaders` to resume.
+
+Publication separates immutable payload availability from moving-pointer
+authority. Every signed payload is first published under its exact source SHA.
+The automatic publisher signature-verifies the candidate in candidate mode and
+the existing `:main` envelope in retained mode, derives both generations from
+their signed payloads, and retags only when the generations are equal. A missing
+pointer or generation mismatch leaves `:main` unchanged. The owner-only schema
+activation workflow can bridge an increasing generation only after binding the
+exact protected-main SHA, candidate/current OCI digests, and an attended
+owner-observed installed control-plane digest equal to the signed candidate.
+That observation is not represented as a machine-generated host attestation.
+Both workflows share one concurrency group and reassert the public pointer and
+protected-main identity around the retag.
+
+The first v3 pointer activation after an attended controller upgrade may be summary
 ineligible solely because the governance inputs used to classify it changed.
 That one bridge is admitted only when the installed control plane already equals
 the signed candidate and the poller reopens the exact active OCI digest, verifies

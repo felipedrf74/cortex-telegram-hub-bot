@@ -14,6 +14,10 @@ import {
   signReleaseManifest,
   verifyReleaseManifest,
 } from './lib/release-manifest.mjs';
+import {
+  RELEASE_MANIFEST_VERIFICATION_MODES,
+  loadReleaseManifestSchemaPolicy,
+} from './lib/release-manifest-schema-policy.mjs';
 
 /**
  * Verify migration evidence or build and sign the release manifest in CI.
@@ -262,6 +266,7 @@ if (verifyMigrationOnly) {
 
 // From this point on, the self-hosted artifact is deliberately out of scope.
 // Only the hosted recomputation can influence signed manifest fields.
+const schemaPolicy = loadReleaseManifestSchemaPolicy(root);
 const trustedMigrationResult = hostedMigrationResult;
 const hostedMigrationInventory = trustedMigrationResult.migrationInventory;
 
@@ -327,6 +332,7 @@ const payload = buildReleaseManifestPayload({
     reconciliation: trustedMigrationResult.migrationReconciliation,
   },
   policy,
+  schemaPolicy,
 });
 
 const envelope = signReleaseManifest({
@@ -334,6 +340,7 @@ const envelope = signReleaseManifest({
   privateKeyPem: signingKey,
   keyId: policy.trust.signingKeyId,
   policy,
+  schemaPolicy,
 });
 
 // Verify what we just signed against the governed pinned public key, in CI,
@@ -365,7 +372,14 @@ if (!/-----BEGIN PUBLIC KEY-----/.test(pinnedKeyBytes)) {
   process.exit(66);
 }
 try {
-  verifyReleaseManifest({ envelope, policy, publicKeyPath, nowMs: Date.parse(createdAt) });
+  verifyReleaseManifest({
+    envelope,
+    policy,
+    schemaPolicy,
+    publicKeyPath,
+    nowMs: Date.parse(createdAt),
+    verificationMode: RELEASE_MANIFEST_VERIFICATION_MODES.CANDIDATE,
+  });
 } catch (error) {
   process.stderr.write(
     'the signed manifest does not verify against the governed pinned public key: '

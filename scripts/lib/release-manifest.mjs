@@ -6,6 +6,7 @@ import {
 } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import {
   assertMigrationInventoryShape,
@@ -28,10 +29,30 @@ import {
   RELEASE_CONTROL_PLANE_SCHEMA,
   assertReleaseControlPlaneShape,
 } from './release-control-plane.mjs';
+import {
+  RELEASE_MANIFEST_VERIFICATION_MODES,
+  assertReleaseManifestGenerationReadable,
+  getReleaseManifestGeneration,
+  loadReleaseManifestSchemaPolicy,
+} from './release-manifest-schema-policy.mjs';
 
-export const RELEASE_MANIFEST_SCHEMA = 'nexus.release-manifest.v3';
-export const RELEASE_MANIFEST_PAYLOAD_SCHEMA = 'nexus.release-manifest-payload.v3';
-export const RELEASE_MANIFEST_SCHEMA_VERSION = 3;
+const RELEASE_MANIFEST_CODE_ROOT = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '../..',
+);
+const DEFAULT_RELEASE_MANIFEST_SCHEMA_POLICY = loadReleaseManifestSchemaPolicy(
+  RELEASE_MANIFEST_CODE_ROOT,
+);
+const WRITER_RELEASE_MANIFEST_GENERATION = getReleaseManifestGeneration(
+  DEFAULT_RELEASE_MANIFEST_SCHEMA_POLICY,
+  DEFAULT_RELEASE_MANIFEST_SCHEMA_POLICY.writerGeneration,
+);
+
+export const RELEASE_MANIFEST_SCHEMA = WRITER_RELEASE_MANIFEST_GENERATION.envelopeSchema;
+export const RELEASE_MANIFEST_PAYLOAD_SCHEMA = WRITER_RELEASE_MANIFEST_GENERATION.payloadSchema;
+export const RELEASE_MANIFEST_SCHEMA_VERSION = WRITER_RELEASE_MANIFEST_GENERATION.generation;
+// Historical v2 identities remain exported for retained-state and receipt
+// compatibility code even after a future policy stops admitting generation 2.
 export const LEGACY_RELEASE_MANIFEST_SCHEMA = 'nexus.release-manifest.v2';
 export const LEGACY_RELEASE_MANIFEST_PAYLOAD_SCHEMA = 'nexus.release-manifest-payload.v2';
 export const LEGACY_RELEASE_MANIFEST_SCHEMA_VERSION = 2;
@@ -785,10 +806,15 @@ export function buildReleaseManifestPayload({
   migrations,
   controlPlane,
   policy,
+  schemaPolicy = DEFAULT_RELEASE_MANIFEST_SCHEMA_POLICY,
 }) {
+  const writerGeneration = getReleaseManifestGeneration(
+    schemaPolicy,
+    schemaPolicy?.writerGeneration,
+  );
   const payload = {
-    schema: RELEASE_MANIFEST_PAYLOAD_SCHEMA,
-    schemaVersion: RELEASE_MANIFEST_SCHEMA_VERSION,
+    schema: writerGeneration.payloadSchema,
+    schemaVersion: writerGeneration.generation,
     createdAt,
     source: {
       repository: source?.repository,
@@ -806,10 +832,14 @@ export function buildReleaseManifestPayload({
       },
     },
     compose: { path: compose?.path, digest: compose?.digest },
-    controlPlane: {
-      schema: controlPlane?.schema,
-      digest: controlPlane?.digest,
-    },
+    ...(writerGeneration.requiresControlPlane
+      ? {
+          controlPlane: {
+            schema: controlPlane?.schema,
+            digest: controlPlane?.digest,
+          },
+        }
+      : {}),
     migrations: {
       digest: migrations?.digest,
       upFileCount: migrations?.upFileCount,
@@ -819,36 +849,39 @@ export function buildReleaseManifestPayload({
       reconciliation: migrations?.reconciliation,
     },
   };
-  assertReleaseManifestPayloadShape(payload, policy);
+  assertReleaseManifestPayloadShape(payload, policy, {
+    schemaPolicy,
+    verificationMode: RELEASE_MANIFEST_VERIFICATION_MODES.CANDIDATE,
+  });
   return payload;
 }
 
 export function assertReleaseManifestPayloadShape(
   payload,
   policy,
-  { allowLegacyControlPlane = false } = {},
+  {
+    schemaPolicy = DEFAULT_RELEASE_MANIFEST_SCHEMA_POLICY,
+    verificationMode,
+  } = {},
 ) {
-  const legacy = payload?.schema === LEGACY_RELEASE_MANIFEST_PAYLOAD_SCHEMA
-    && payload?.schemaVersion === LEGACY_RELEASE_MANIFEST_SCHEMA_VERSION;
-  if (legacy) {
-    if (!allowLegacyControlPlane) {
-      fail('legacy release manifest payload is not admissible as a new candidate');
-    }
-    exactKeys(payload, [
-      'schema', 'schemaVersion', 'createdAt', 'source', 'images', 'compose', 'migrations',
-    ], 'legacy release manifest payload');
-  } else {
+  const generation = assertReleaseManifestGenerationReadable(
+    schemaPolicy,
+    payload?.schemaVersion,
+    verificationMode,
+  );
+  if (payload?.schema !== generation.payloadSchema) {
+    fail('release manifest payload schema does not match its schema generation');
+  }
+  if (generation.requiresControlPlane) {
     exactKeys(payload, [
       'schema', 'schemaVersion', 'createdAt', 'source', 'images', 'compose',
       'controlPlane', 'migrations',
     ], 'release manifest payload');
-    if (payload.schema !== RELEASE_MANIFEST_PAYLOAD_SCHEMA) {
-      fail('release manifest payload schema is invalid');
-    }
-    if (payload.schemaVersion !== RELEASE_MANIFEST_SCHEMA_VERSION) {
-      fail('release manifest payload schema version is unsupported');
-    }
     assertReleaseControlPlaneShape(payload.controlPlane, 'release manifest controlPlane');
+  } else {
+    exactKeys(payload, [
+      'schema', 'schemaVersion', 'createdAt', 'source', 'images', 'compose', 'migrations',
+    ], 'release manifest payload');
   }
   assertCanonicalTimestamp(payload.createdAt, 'release manifest createdAt');
 
@@ -970,8 +1003,25 @@ export function migrationVerdictDigest(cdEligibility, inventory, reconciliation)
   }));
 }
 
-export function signReleaseManifest({ payload, privateKeyPem, keyId, policy }) {
-  assertReleaseManifestPayloadShape(payload, policy);
+export function signReleaseManifest({
+  payload,
+  privateKeyPem,
+  keyId,
+  policy,
+  schemaPolicy = DEFAULT_RELEASE_MANIFEST_SCHEMA_POLICY,
+}) {
+  const writerGeneration = getReleaseManifestGeneration(
+    schemaPolicy,
+    schemaPolicy?.writerGeneration,
+  );
+  if (payload?.schemaVersion !== writerGeneration.generation
+      || payload?.schema !== writerGeneration.payloadSchema) {
+    fail('release manifest payload does not use the configured writer generation');
+  }
+  assertReleaseManifestPayloadShape(payload, policy, {
+    schemaPolicy,
+    verificationMode: RELEASE_MANIFEST_VERIFICATION_MODES.CANDIDATE,
+  });
   if (keyId !== policy.trust.signingKeyId) {
     fail('release manifest signing key id is not the governed key id');
   }
@@ -986,7 +1036,7 @@ export function signReleaseManifest({ payload, privateKeyPem, keyId, policy }) {
   }
   const signature = cryptoSign(null, Buffer.from(canonicalJson(payload)), privateKey);
   return {
-    schema: RELEASE_MANIFEST_SCHEMA,
+    schema: writerGeneration.envelopeSchema,
     keyId,
     signatureAlgorithm: 'ed25519',
     payload,
@@ -1005,16 +1055,20 @@ export function verifyReleaseManifest({
   policy,
   publicKeyPath = policy?.trust?.publicKeyPath,
   nowMs = Date.now(),
-  allowLegacyControlPlane = false,
+  schemaPolicy = DEFAULT_RELEASE_MANIFEST_SCHEMA_POLICY,
+  verificationMode,
 }) {
   if (!policy) fail('release manifest verification requires the deployment policy');
   exactKeys(envelope, [
     'schema', 'keyId', 'signatureAlgorithm', 'payload', 'signature',
   ], 'release manifest envelope');
-  const legacyEnvelope = envelope.schema === LEGACY_RELEASE_MANIFEST_SCHEMA;
-  if (envelope.schema !== RELEASE_MANIFEST_SCHEMA
-      && !(allowLegacyControlPlane && legacyEnvelope)) {
-    fail('release manifest envelope schema is invalid');
+  const payload = assertReleaseManifestPayloadShape(envelope.payload, policy, {
+    schemaPolicy,
+    verificationMode,
+  });
+  const generation = getReleaseManifestGeneration(schemaPolicy, payload.schemaVersion);
+  if (envelope.schema !== generation.envelopeSchema) {
+    fail('release manifest envelope and payload schema generations do not match');
   }
   if (envelope.keyId !== policy.trust.signingKeyId) {
     fail('release manifest key id is not the pinned signing key');
@@ -1027,14 +1081,6 @@ export function verifyReleaseManifest({
   const signature = Buffer.from(envelope.signature, 'base64');
   if (signature.length !== 64 || signature.toString('base64') !== envelope.signature) {
     fail('release manifest signature is malformed');
-  }
-
-  const payload = assertReleaseManifestPayloadShape(envelope.payload, policy, {
-    allowLegacyControlPlane,
-  });
-  if ((legacyEnvelope && payload.schema !== LEGACY_RELEASE_MANIFEST_PAYLOAD_SCHEMA)
-      || (!legacyEnvelope && payload.schema !== RELEASE_MANIFEST_PAYLOAD_SCHEMA)) {
-    fail('release manifest envelope and payload schemas do not match');
   }
 
   const createdAtMs = Date.parse(payload.createdAt);

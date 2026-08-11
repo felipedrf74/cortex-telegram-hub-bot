@@ -239,6 +239,10 @@ jobs:
             echo "Change base is missing or unsafe; refusing partial classification." >&2
             exit 1
           }
+          node scripts/release-manifest-schema-guard.mjs \
+            --base "$BASE_REF" \
+            --head "$(git rev-parse HEAD)" \
+            | tee /tmp/release-manifest-schema-guard.json
           echo "base_sha=$BASE_REF" >> "$GITHUB_OUTPUT"
           TEST_CLEANUP="$(node scripts/test-cleanup-classifier.mjs --base "$BASE_REF" --field requiresMutation)"
           chmod +x scripts/changed-area-classifier.sh

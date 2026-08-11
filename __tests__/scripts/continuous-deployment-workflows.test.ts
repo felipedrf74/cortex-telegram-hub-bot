@@ -39,6 +39,10 @@ const root = resolve(process.cwd());
 const workflowsDir = join(root, '.github/workflows');
 const ci = readFileSync(join(workflowsDir, 'ci.yml'), 'utf8');
 const release = readFileSync(join(workflowsDir, 'release.yml'), 'utf8');
+const schemaActivation = readFileSync(
+  join(workflowsDir, 'release-manifest-schema-activate.yml'),
+  'utf8',
+);
 const manifestBuilder = readFileSync(join(root, 'scripts/release-manifest-build.mjs'), 'utf8');
 const signingHandoff = readFileSync(join(root, 'scripts/release-signing-handoff.mjs'), 'utf8');
 const policy = JSON.parse(readFileSync(join(root, 'config/continuous-deployment.json'), 'utf8'));
@@ -371,6 +375,27 @@ describe('release publication routing', () => {
     expect(release).toContain("test \"$(echo \"$RUN_JSON\" | jq -r '.head_sha')\" = \"$SHA\"");
   });
 
+  it('recomputes the exact manifest-schema transition in CI and again before publication', () => {
+    const classify = jobBlock(ci, 'classify');
+    const builder = jobBlock(release, 'build');
+    const publisher = jobBlock(release, 'publish');
+    expect(classify).toContain('node scripts/release-manifest-schema-guard.mjs');
+    expect(classify).toContain('--base "$BASE_REF"');
+    expect(classify).toContain('--head "$(git rev-parse HEAD)"');
+    expect(classify.indexOf('release-manifest-schema-guard.mjs'))
+      .toBeLessThan(classify.indexOf('scripts/changed-area-classifier.sh'));
+    expect(builder).toContain('node scripts/release-manifest-schema-guard.mjs');
+    expect(builder).toContain("--base '${{ steps.source.outputs.migration_base }}'");
+    expect(builder).toContain("--head '${{ steps.source.outputs.sha }}'");
+    expect(builder.indexOf('release-manifest-schema-guard.mjs'))
+      .toBeLessThan(builder.indexOf('Build and push the backend image'));
+    expect(publisher).toContain('Recompute the schema transition in the fresh signer');
+    expect(publisher).toContain("--base '${{ needs.build.outputs.migration_base }}'");
+    expect(publisher).toContain("--head '${{ needs.build.outputs.source_sha }}'");
+    expect(publisher.indexOf('release-manifest-schema-guard.mjs'))
+      .toBeLessThan(publisher.indexOf('Build and sign the release manifest'));
+  });
+
   it('documents a live unattended signing-environment admission gate', () => {
     const runbook = readFileSync(join(root, 'ops/nexus-release/README.md'), 'utf8');
     expect(runbook).toContain('repos/$REPOSITORY/rules/branches/main');
@@ -404,7 +429,7 @@ describe('release publication routing', () => {
   it('publishes application images only under source-SHA tags', () => {
     const backend = stepBlock(release, 'Build and push the backend image');
     const contentEngine = stepBlock(release, 'Build and push the content-engine image');
-    const payload = stepBlock(release, 'Build and push the release payload image');
+    const payload = stepBlock(release, 'Build and push the exact-SHA release payload image');
 
     expect(backend).toContain(
       'nexus-hub-backend:${{ steps.source.outputs.sha }}',
@@ -415,7 +440,8 @@ describe('release publication routing', () => {
     expect(release).not.toContain('nexus-hub-backend:main');
     expect(release).not.toContain('nexus-hub-content-engine:main');
     expect(payload).toContain('nexus-hub-release:${{ needs.build.outputs.source_sha }}');
-    expect(payload).toContain('nexus-hub-release:main');
+    expect(payload).not.toContain('nexus-hub-release:main');
+    expect(schemaActivation).toContain('--tag "$IMAGE:main" "$IMAGE@$CANDIDATE_DIGEST"');
   });
 
   it('installs dependencies and recomputes the full verdict before image publication', () => {
@@ -546,10 +572,14 @@ describe('release publication routing', () => {
       'Re-assert protected CI and main immediately before signing',
     );
     const signerAt = publisher.indexOf('Build and sign the release manifest');
-    const prePointerAt = publisher.indexOf(
-      'Re-assert protected-main head immediately before publishing the release pointer',
+    const prePayloadAt = publisher.indexOf(
+      'Re-assert protected-main head immediately before publishing the exact release payload',
     );
-    const payloadAt = publisher.indexOf('Build and push the release payload image');
+    const payloadAt = publisher.indexOf('Build and push the exact-SHA release payload image');
+    const pointerGuardAt = publisher.indexOf('Compare signed release-pointer schema generations');
+    const pointerMoveAt = publisher.indexOf(
+      'Move the release pointer only for an equal signed schema generation',
+    );
     const signerStepAt = publisher.lastIndexOf('\n      - name:', signerAt);
     const payloadStepAt = publisher.lastIndexOf('\n      - name:', payloadAt);
     expect(backendAt).toBeGreaterThan(-1);
@@ -559,23 +589,65 @@ describe('release publication routing', () => {
     expect(preSignAt).toBeGreaterThan(-1);
     expect(signerAt).toBeGreaterThan(preSignAt);
     expect(signerStepAt).toBeGreaterThan(preSignAt);
-    expect(prePointerAt).toBeGreaterThan(signerAt);
-    expect(payloadAt).toBeGreaterThan(prePointerAt);
-    expect(payloadStepAt).toBeGreaterThan(prePointerAt);
+    expect(prePayloadAt).toBeGreaterThan(signerAt);
+    expect(payloadAt).toBeGreaterThan(prePayloadAt);
+    expect(payloadStepAt).toBeGreaterThan(prePayloadAt);
+    expect(pointerGuardAt).toBeGreaterThan(payloadAt);
+    expect(pointerMoveAt).toBeGreaterThan(pointerGuardAt);
 
     // Both authority checks are adjacent to the operation they guard. An early
     // main-head check is insufficient because image builds can outlive a newer
     // protected-main push.
     expect(publisher.slice(preSignAt, signerStepAt)).not.toMatch(/\n {6}- /);
-    expect(publisher.slice(prePointerAt, payloadStepAt)).not.toMatch(/\n {6}- /);
+    expect(publisher.slice(prePayloadAt, payloadStepAt)).not.toMatch(/\n {6}- /);
     for (const stepName of [
       'Re-assert protected CI and main immediately before signing',
-      'Re-assert protected-main head immediately before publishing the release pointer',
+      'Re-assert protected-main head immediately before publishing the exact release payload',
     ]) {
       const check = stepBlock(release, stepName);
       expect(check).toContain('git fetch --no-tags origin main');
       expect(check).toContain('test "$(git rev-parse origin/main)" = "$SHA"');
     }
+    const pointerGuard = stepBlock(release, 'Compare signed release-pointer schema generations');
+    const pointerMove = stepBlock(
+      release,
+      'Move the release pointer only for an equal signed schema generation',
+    );
+    expect(pointerGuard).toContain('scripts/release-manifest-pointer-guard.mjs');
+    expect(pointerGuard).toContain('--candidate-manifest');
+    expect(pointerGuard).toContain('--current-manifest');
+    expect(pointerGuard).toContain('hold_generation_mismatch');
+    expect(pointerMove).toContain("if: steps.pointer_guard.outputs.decision == 'move_main'");
+    expect(pointerMove).toContain('test "$(resolve_digest "$IMAGE:main")" = "$EXPECTED_CURRENT_DIGEST"');
+    expect(pointerMove).toContain('--prefer-index=false');
+    expect(pointerMove).toContain('--tag "$IMAGE:main" "$IMAGE@$CANDIDATE_DIGEST"');
+    expect(pointerMove).toContain('test "$(resolve_digest "$IMAGE:main")" = "$CANDIDATE_DIGEST"');
+  });
+
+  it('keeps schema activation owner-only, protected-main-bound, and separately approved', () => {
+    const topLevel = schemaActivation.slice(0, schemaActivation.indexOf('\njobs:\n'));
+    const admission = jobBlock(schemaActivation, 'admission');
+    const activate = jobBlock(schemaActivation, 'activate');
+    expect(release).not.toContain('workflow_dispatch');
+    expect(schemaActivation).toContain('workflow_dispatch:');
+    expect(topLevel).not.toContain('concurrency:');
+    expect(admission).not.toContain('concurrency:');
+    expect(activate).toContain('concurrency:\n      group: release-publish-main');
+    expect(activate).toContain('cancel-in-progress: false');
+    expect(schemaActivation).toContain('test "$ACTOR" = "$OWNER"');
+    expect(schemaActivation).toContain('TRIGGERING_ACTOR: ${{ github.triggering_actor }}');
+    expect(schemaActivation).toContain('test "$TRIGGERING_ACTOR" = "$OWNER"');
+    expect(schemaActivation).toContain("test \"$REF\" = 'refs/heads/main'");
+    expect(schemaActivation).toContain('environment:\n      name: release-publish');
+    expect(schemaActivation).toContain('packages: write');
+    expect(schemaActivation).toContain('--activation');
+    expect(schemaActivation).toContain('--expected-installed-control-plane-digest');
+    expect(schemaActivation).toContain('test "$(git rev-parse origin/main)" = "$SOURCE_SHA"');
+    expect(schemaActivation).toContain('test "$(resolve_digest "$IMAGE:main")" = "$CURRENT_DIGEST"');
+    expect(schemaActivation).toContain('--prefer-index=false');
+    expect(schemaActivation).toContain('--tag "$IMAGE:main" "$IMAGE@$CANDIDATE_DIGEST"');
+    expect(schemaActivation).toContain('machine-generated host attestation');
+    expect(schemaActivation).not.toContain('NEXUS_RELEASE_MANIFEST_SIGNING_KEY');
   });
 
   it('does not claim an unavailable destructive-migration executor exists', () => {

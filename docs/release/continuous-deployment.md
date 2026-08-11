@@ -188,6 +188,39 @@ cache mutation. The owner must first install the exact signed control plane with
 the attended upgrade transaction; an older controller cannot silently operate a
 newer release policy.
 
+Manifest evolution is governed by
+`ops/nexus-release/release-manifest-schema-policy.json`. The policy names the
+single writer generation, the generations accepted for fresh candidates, the
+larger retained-evidence reader set, and immutable generation rows. CI and the
+fresh release signer recompute the exact push-base/head transition. Generation
+rows and both reader sets are append-only in policy v1; a writer may advance
+only to a generation that the exact base commit already accepted as a candidate,
+and that dedicated writer-flip commit may change only the policy and generated
+project map. Reader support therefore must reach protected `main` in an earlier
+release than the writer flip. Before activating that flip, the owner must
+separately install the exact signed reader-enabled controller and prove its
+digest; Git history alone does not attest host capability. An exact already-accepted
+pre-production payload is reverified with the retained reader set; a newly
+discovered payload always uses the candidate set.
+
+The hosted publisher first pushes the signed payload under its immutable source
+SHA only. It then extracts and signature-verifies both that candidate and the
+current `:main` payload. The moving pointer advances automatically only when the
+two signed schema generations are equal. A missing current pointer or a newer
+candidate generation leaves `:main` unchanged while preserving the exact-SHA
+payload for inspection. A generation downgrade fails the release.
+
+The exceptional
+`.github/workflows/release-manifest-schema-activate.yml` dispatch shares the
+publisher concurrency group and `release-publish` environment. It admits only
+the repository owner from current protected `main`, binds the exact candidate
+and current OCI digests, signature-verifies both manifests, and requires the
+owner-observed installed control-plane digest to equal the signed candidate
+before retagging that exact candidate. The workflow reasserts the current
+pointer and protected-main SHA immediately before and after the move. The host
+digest is explicitly attended owner evidence, not a machine attestation; without
+that observation the pointer remains withheld.
+
 The attended transaction must also install the descriptor-bound local-backup
 producer, five unit/timer files, and sudoers policy from that same immutable
 root. Ordinary polling byte-compares those live root-owned files, validates
@@ -201,7 +234,7 @@ attended selector rollback: the version-compatible upgrade transaction performs
 that rollback proof and never assumes the older immutable tree contains new v3
 checker files.
 
-The first v3 publication after that upgrade has one fail-closed compatibility
+The first v3 pointer activation after that upgrade has one fail-closed compatibility
 bridge when its migration summary is ineligible only because controller
 governance changed. Before any deployment mutation, the poller reopens and
 signature-verifies the exact active v2/v3 OCI payload and binds it to completed
