@@ -27,6 +27,7 @@ const RETIREMENT_BASE_SHA = '7b724f185580b18ce722a396b6e01d5ae268d3c1';
 const SPANISH_LOCALE_RETIREMENT_BASE_SHA = '247ac7dc940009aacb0d1419a58db4749a76c75a';
 // SonarQube decommissioning, 2026-08-07 continuous-deployment refactor.
 const SONAR_RETIREMENT_BASE_SHA = '65a87ae2a0514e0fe2ad117412d23ca3f0da8d39';
+const CONTROL_PLANE_RETIREMENT_BASE_SHA = '852116a7ee17562418779ee396095de2cd05e699';
 
 function classify(files: string[]) {
   return JSON.parse(execFileSync('bash', [
@@ -403,7 +404,36 @@ describe('lean changed-area classification', () => {
       RETIREMENT_BASE_SHA,
       SPANISH_LOCALE_RETIREMENT_BASE_SHA,
       SONAR_RETIREMENT_BASE_SHA,
+      CONTROL_PLANE_RETIREMENT_BASE_SHA,
     ]));
+
+    const controlPlaneRetirements = policy.retirementMappings.filter((mapping: {
+      baseSha?: string;
+    }) => mapping.baseSha === CONTROL_PLANE_RETIREMENT_BASE_SHA);
+    expect(controlPlaneRetirements).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        test: '__tests__/scripts/continuous-deployment-workflows.test.ts',
+        baselineOwnerPaths: expect.arrayContaining([
+          'config/continuous-deployment.json',
+          'ops/nexus-release/README.md',
+          'ops/nexus-release/nexus-release-heartbeat.service',
+          'ops/nexus-release/nexus-release-heartbeat.timer',
+        ]),
+      }),
+      expect.objectContaining({
+        test: '__tests__/scripts/project-map-generation.test.ts',
+        baselineOwnerPaths: ['scripts/lib/docs-release-state-audit.mjs'],
+      }),
+      expect.objectContaining({
+        test: '__tests__/scripts/release-continuous-deployment.test.ts',
+        baselineOwnerPaths: expect.arrayContaining([
+          'scripts/lib/release-backup.mjs',
+          'scripts/lib/release-deployment.mjs',
+          'scripts/lib/release-manifest.mjs',
+        ]),
+      }),
+    ]));
+    expect(controlPlaneRetirements).toHaveLength(3);
 
     const artifactTest = '__tests__/scripts/release-artifact-manifest.test.ts';
     const matches = policy.retirementMappings.filter((mapping: {
