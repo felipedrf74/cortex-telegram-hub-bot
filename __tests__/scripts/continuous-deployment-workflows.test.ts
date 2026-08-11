@@ -3453,6 +3453,45 @@ pm2_fail_closed_is_exact
     expect(rebaseline).toContain('publish_rebaseline_phase complete');
   });
 
+  it('accepts unmapped numeric owners for rebaseline container databases', () => {
+    const runbook = readFileSync(join(root, 'ops/nexus-release/README.md'), 'utf8');
+    const rebaseline = bashBlockContaining(runbook, 'BOOTSTRAP REBASELINE REFUSED');
+    const metadataGuards = [...rebaseline.matchAll(
+      /test "\$\(sudo stat -Lc '[^']+' -- "\$DB"\)" \\\n\s+= '10001:10001:600:1' \|\| die "[^"]+"/g,
+    )].map((match) => match[0]);
+    expect(metadataGuards).toHaveLength(2);
+
+    const fakeBin = mkdtempSync(join(tmpdir(), 'nexus-rebaseline-owner-'));
+    const fakeSudo = join(fakeBin, 'sudo');
+    writeFileSync(fakeSudo, `#!/usr/bin/env bash
+set -euo pipefail
+test "$1" = stat
+shift
+case "$1:$2" in
+  '-Lc:%u:%g:%a:%h') printf '10001:10001:600:1\\n' ;;
+  '-Lc:%U:%G:%a:%h') printf 'UNKNOWN:UNKNOWN:600:1\\n' ;;
+  *) printf 'unexpected fake stat invocation: %s\\n' "$*" >&2; exit 64 ;;
+esac
+`);
+    chmodSync(fakeSudo, 0o755);
+
+    try {
+      for (const metadataGuard of metadataGuards) {
+        const result = spawnSync('bash', ['-c', `set -euo pipefail
+die() { printf '%s\\n' "$*" >&2; exit 1; }
+DB=/tmp/nexus-unmapped-owner.db
+${metadataGuard}
+`], {
+          encoding: 'utf8',
+          env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH ?? ''}` },
+        });
+        expect(result.status, result.stderr).toBe(0);
+      }
+    } finally {
+      rmSync(fakeBin, { recursive: true, force: true });
+    }
+  });
+
   it('prevents systemd from imposing an unsafe aggregate release deadline', () => {
     const bootstrap = readFileSync(
       join(root, 'ops/nexus-release/nexus-release-bootstrap.service'),
