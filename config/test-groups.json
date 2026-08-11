@@ -1,5 +1,5 @@
 {
-  "version": "2026-08-05.1",
+  "version": "2026-08-11.1",
   "core": {
     "targetSeconds": 30,
     "tests": [
@@ -738,6 +738,26 @@
         "__tests__/scripts/release-operational-liveness.test.ts"
       ],
       "reason": "The retained deployment suite replaces v2 signing, eager-pruning, and permissive backup fixtures with v3 controller binding, defer-before-mutation behavior, and closed backup authority; the focused controller and liveness suites prove those new boundaries directly."
+    },
+    {
+      "baseSha": "b439fa86631e10be76e75615f47eda1b995b29a3",
+      "test": "__tests__/scripts/release-operational-liveness.test.ts",
+      "baselineOwnerPaths": [
+        "scripts/release-operational-alert-launcher.sh",
+        "scripts/release-operational-alert.mjs"
+      ],
+      "requiredChangedPaths": [
+        "ops/local-backup/systemd/nexus-local-backup-restore-verify.service",
+        "ops/local-backup/systemd/nexus-local-backup.service",
+        "scripts/local-backup-retry-launcher.sh",
+        "scripts/release-operational-alert-launcher.sh",
+        "scripts/release-operational-alert.mjs"
+      ],
+      "replacementTests": [
+        "__tests__/scripts/local-backup.test.ts",
+        "__tests__/scripts/release-operational-liveness.test.ts"
+      ],
+      "reason": "The retained liveness suite retires systemd-level exit-75 restart suppression: the bounded retry launcher now owns transient lock contention inside one oneshot activation, while any terminal exit 75 reaches the durable operational-alert outbox; the local-backup suite proves both launcher outcomes."
     }
   ],
   "groups": {

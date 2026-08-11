@@ -1507,9 +1507,13 @@ fi
     const end = provision.indexOf('\n}\n\nrequire_safe_candidate_tree', start);
     expect(start).toBeGreaterThanOrEqual(0);
     expect(end).toBeGreaterThan(start);
-    const normalizer = provision.slice(start, end + 2)
-      .replaceAll('/usr/bin/node', process.execPath)
-      .replaceAll("'/usr/bin/git'", "'git'");
+    const normalizer = provision.slice(start, end + 2);
+    const programMarker = "<<'NODE'\n";
+    const programStart = normalizer.indexOf(programMarker);
+    const programEnd = normalizer.lastIndexOf('\nNODE');
+    expect(programStart).toBeGreaterThanOrEqual(0);
+    expect(programEnd).toBeGreaterThan(programStart);
+    const normalizerProgram = normalizer.slice(programStart + programMarker.length, programEnd);
     const fixtureRoot = mkdtempSync(join(tmpdir(), 'nexus-builder-modes-'));
     const plain = join(fixtureRoot, 'plain.txt');
     const executable = join(fixtureRoot, 'executable.sh');
@@ -1530,12 +1534,11 @@ fi
       chmodSync(plain, 0o600);
       chmodSync(executable, 0o700);
 
-      const execution = spawnSync('bash', ['-c', [
-        'set -euo pipefail',
-        'as_builder() { "$@"; }',
-        normalizer,
-        'normalize_builder_tracked_modes "$1"',
-      ].join('\n'), 'tracked-mode-test', fixtureRoot], { encoding: 'utf8' });
+      const execution = spawnSync(
+        process.execPath,
+        ['--input-type=module', '-', fixtureRoot],
+        { encoding: 'utf8', input: normalizerProgram },
+      );
       expect(execution.status, execution.stderr).toBe(0);
       expect(lstatSync(plain).mode & 0o7777).toBe(0o644);
       expect(lstatSync(executable).mode & 0o7777).toBe(0o755);
