@@ -65,6 +65,20 @@ function temporaryRoot(prefix: string) {
   return root;
 }
 
+function governedTemporaryRoot(prefix: string) {
+  const root = nodeFs.realpathSync(mkdtempSync(join(repoRoot, `.${prefix}`)));
+  chmodSync(root, 0o700);
+  fixtureRoots.push(root);
+  return root;
+}
+
+function boundLockTemporaryRoot(prefix: string) {
+  if (process.platform === 'linux') return governedTemporaryRoot(prefix);
+  const root = nodeFs.realpathSync(temporaryRoot(prefix));
+  chmodSync(root, 0o700);
+  return root;
+}
+
 function writePrivate(file: string, body: string | Buffer) {
   mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
   chmodSync(dirname(file), 0o700);
@@ -1332,8 +1346,7 @@ describe('durable backup alert lifecycle', () => {
   });
 
   it('descriptor-binds lock parents, lock paths, and the exact inherited child fd', () => {
-    const root = nodeFs.realpathSync(temporaryRoot('nexus-bound-lock-runner-'));
-    chmodSync(root, 0o700);
+    const root = boundLockTemporaryRoot('nexus-bound-lock-runner-');
     const runner = join(repoRoot, 'scripts', 'release-bound-lock-runner.py');
     const execute = (body: string, ...args: string[]) => spawnSync('python3', [
       '-c',
@@ -1432,10 +1445,32 @@ describe('durable backup alert lifecycle', () => {
     expect(result.status, result.stderr).toBe(70);
   });
 
+  it('rejects Linux-style sticky world-writable lock ancestors', () => {
+    const root = governedTemporaryRoot('nexus-bound-lock-untrusted-');
+    chmodSync(root, 0o1777);
+    const safe = join(root, 'safe');
+    mkdirSync(safe, { mode: 0o700 });
+    const lock = join(safe, 'alert.lock');
+    const runner = join(repoRoot, 'scripts', 'release-bound-lock-runner.py');
+    const execution = spawnSync('python3', [
+      '-c',
+      [
+        'import importlib.util,os,pathlib,sys',
+        'spec=importlib.util.spec_from_file_location("bound_runner",sys.argv[1])',
+        'module=importlib.util.module_from_spec(spec)',
+        'spec.loader.exec_module(module)',
+        'with module.bound_lock(pathlib.Path(sys.argv[2]),create=True,expected_uid=os.getuid(),expected_gid=os.getgid()):',
+        '  pass',
+      ].join('\n'),
+      runner,
+      lock,
+    ], { encoding: 'utf8' });
+    expect(execution.status, execution.stderr).toBe(70);
+  });
+
   it('passes the exact bound lock descriptor through GNU timeout on Linux', () => {
     if (process.platform !== 'linux' || !nodeFs.existsSync('/usr/bin/timeout')) return;
-    const root = nodeFs.realpathSync(temporaryRoot('nexus-bound-lock-timeout-'));
-    chmodSync(root, 0o700);
+    const root = boundLockTemporaryRoot('nexus-bound-lock-timeout-');
     const lock = join(root, 'alert.lock');
     const runner = join(repoRoot, 'scripts', 'release-bound-lock-runner.py');
     const execution = spawnSync('python3', [
@@ -1457,8 +1492,7 @@ describe('durable backup alert lifecycle', () => {
   });
 
   it('reopens the governed alert lock when concurrent writers race its first creation', async () => {
-    const root = nodeFs.realpathSync(temporaryRoot('nexus-bound-lock-create-race-'));
-    chmodSync(root, 0o700);
+    const root = boundLockTemporaryRoot('nexus-bound-lock-create-race-');
     const lock = join(root, 'alert.lock');
     const barrier = join(root, 'creator-ready-');
     const runner = join(repoRoot, 'scripts', 'release-bound-lock-runner.py');
@@ -1504,7 +1538,8 @@ describe('durable backup alert lifecycle', () => {
   });
 
   it('coordinates the producer and liveness lock in both directions', async () => {
-    const root = temporaryRoot('nexus-backup-coordination-');
+    const fixtureRoot = temporaryRoot('nexus-backup-coordination-');
+    const root = join(fixtureRoot, 'backups');
     const lock = join(root, '.backup.lock');
     writePrivate(lock, '');
     const producerModule = join(repoRoot, 'scripts', 'local-backup.py');
@@ -1607,9 +1642,9 @@ describe('durable backup alert lifecycle', () => {
 
   it('coordinates the actual bound runner and producer in both directions on Linux', async () => {
     if (process.platform !== 'linux' || !nodeFs.existsSync('/usr/bin/timeout')) return;
-    const root = mkdtempSync(join(repoRoot, '.nexus-bound-runner-integration-'));
-    fixtureRoots.push(root);
-    chmodSync(root, 0o700);
+    const fixtureRoot = governedTemporaryRoot('nexus-bound-runner-integration-');
+    const root = join(fixtureRoot, 'backups');
+    mkdirSync(root, { mode: 0o700 });
     const lock = join(root, '.backup.lock');
     writePrivate(lock, '');
     const ready = join(root, 'reader-ready');

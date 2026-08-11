@@ -90,6 +90,7 @@ function run(
       env: {
         ...process.env,
         NEXUS_LOCAL_BACKUP_TEST_MODE: '1',
+        NEXUS_LOCAL_BACKUP_TEST_TRUST_ANCHOR: fixture.root,
         NEXUS_LOCAL_BACKUP_AGE_BIN: fixture.fakeAge,
       },
     },
@@ -97,6 +98,36 @@ function run(
 }
 
 describe('same-host Nexus backups', () => {
+  it('anchors Linux fixtures at an explicit private directory and rejects escapes', () => {
+    const fixture = createFixture();
+    const probe = (anchor: string) => spawnSync('python3', [
+      '-c',
+      [
+        'import importlib.util,os,pathlib,sys',
+        'os.environ["NEXUS_LOCAL_BACKUP_TEST_MODE"]="1"',
+        'os.environ["NEXUS_LOCAL_BACKUP_TEST_TRUST_ANCHOR"]=sys.argv[3]',
+        'spec=importlib.util.spec_from_file_location("local_backup",sys.argv[1])',
+        'module=importlib.util.module_from_spec(spec)',
+        'spec.loader.exec_module(module)',
+        'with module.bound_governed_directories(pathlib.Path(sys.argv[2])):',
+        '  pass',
+      ].join('\n'),
+      utility,
+      fixture.root,
+      anchor,
+    ], { encoding: 'utf8' });
+    try {
+      const anchored = probe(fixture.root);
+      expect(anchored.status, anchored.stderr).toBe(0);
+
+      const escaped = probe(fixture.backupRoot);
+      expect(escaped.status).toBe(1);
+      expect(escaped.stderr).toContain('backup directory escapes its trusted anchor');
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
   it('copies through one normal read-only SQLite step before integrity verification', () => {
     const snapshotProbe = execFileSync(
       'python3',
@@ -1306,6 +1337,7 @@ describe('same-host Nexus backups', () => {
         env: {
           ...process.env,
           NEXUS_LOCAL_BACKUP_TEST_MODE: '1',
+          NEXUS_LOCAL_BACKUP_TEST_TRUST_ANCHOR: fixture.root,
           NEXUS_LOCAL_BACKUP_TEST_RETRY_DIRECTORY: retryDirectory,
           NEXUS_LOCAL_BACKUP_AGE_BIN: fixture.fakeAge,
         },
@@ -1433,6 +1465,7 @@ describe('same-host Nexus backups', () => {
         env: {
           ...process.env,
           NEXUS_LOCAL_BACKUP_TEST_MODE: '1',
+          NEXUS_LOCAL_BACKUP_TEST_TRUST_ANCHOR: fixture.root,
           NEXUS_LOCAL_BACKUP_TEST_RETRY_DIRECTORY: retryDirectory,
           NEXUS_LOCAL_BACKUP_AGE_BIN: fixture.fakeAge,
         },
