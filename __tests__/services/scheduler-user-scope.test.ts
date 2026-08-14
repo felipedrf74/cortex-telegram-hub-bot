@@ -156,6 +156,11 @@ const mockHasActiveGarminConnection = vi.hoisted(() => vi.fn(() => false));
 
 vi.mock('../../src/services/garmin-coach', () => ({
   generateCoachBriefing: (...args: unknown[]) => mockGenerateCoachBriefing(...args),
+  runWithCoachBriefingAccountAdmissions: async (
+    _userId: number,
+    _options: Record<string, unknown>,
+    operation: (abortSignal: AbortSignal) => Promise<unknown>,
+  ) => operation(new AbortController().signal),
 }));
 vi.mock('../../src/services/garmin', () => ({
   isGarminConfigured: vi.fn(() => false),
@@ -2025,6 +2030,7 @@ describe('scheduler tenant scoping', () => {
       meteringUserId: 11,
       budgetRequestSource: 'automation',
       budgetJobName: 'garmin_coach',
+      abortSignal: expect.any(AbortSignal),
     });
     expect(mockGenerateCoachBriefing).toHaveBeenNthCalledWith(2, 22, {
       garminSilent: true,
@@ -2032,6 +2038,7 @@ describe('scheduler tenant scoping', () => {
       meteringUserId: 22,
       budgetRequestSource: 'automation',
       budgetJobName: 'garmin_coach',
+      abortSignal: expect.any(AbortSignal),
     });
     expect(mockRunWithContext).toHaveBeenCalledWith(
       expect.objectContaining({ source: 'cron:garmin_coach', userId: 11 }),
@@ -2081,6 +2088,7 @@ describe('scheduler tenant scoping', () => {
       meteringUserId: 11,
       budgetRequestSource: 'automation',
       budgetJobName: 'garmin_coach',
+      abortSignal: expect.any(AbortSignal),
       budgetRunId: 'scheduler-test-run',
     }));
   });
@@ -2111,6 +2119,7 @@ describe('scheduler tenant scoping', () => {
       meteringUserId: 11,
       budgetRequestSource: 'automation',
       budgetJobName: 'garmin_coach',
+      abortSignal: expect.any(AbortSignal),
     });
     expect(mockGenerateCoachBriefing).not.toHaveBeenCalledWith(22, expect.anything());
     expect(mockGetActivePlan).not.toHaveBeenCalledWith(22, 22);
@@ -2149,6 +2158,7 @@ describe('scheduler tenant scoping', () => {
       meteringUserId: 11,
       budgetRequestSource: 'automation',
       budgetJobName: 'garmin_coach',
+      abortSignal: expect.any(AbortSignal),
     });
     expect(mockGenerateCoachBriefing).not.toHaveBeenCalledWith(22, expect.anything());
     expect(mockStoreAndPushReport).toHaveBeenCalledTimes(1);
@@ -2198,6 +2208,7 @@ describe('scheduler tenant scoping', () => {
       meteringUserId: 11,
       budgetRequestSource: 'automation',
       budgetJobName: 'garmin_coach',
+      abortSignal: expect.any(AbortSignal),
     });
     expect(mockGenerateCoachBriefing).not.toHaveBeenCalledWith(22, expect.anything());
     expect(mockStoreAndPushReport).toHaveBeenCalledTimes(1);

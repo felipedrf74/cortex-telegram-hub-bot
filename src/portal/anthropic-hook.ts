@@ -137,8 +137,23 @@ export async function trackedCreate(
   client: Anthropic,
   params: Anthropic.MessageCreateParamsNonStreaming,
   category: string,
-  options?: { userId?: number; tenantId?: number; isUserMessage?: boolean; timeoutMs?: number },
+  options?: {
+    userId?: number;
+    tenantId?: number;
+    isUserMessage?: boolean;
+    timeoutMs?: number;
+    abortSignal?: AbortSignal;
+  },
 ): Promise<Anthropic.Message> {
+  const throwIfCancelled = (): void => {
+    if (!options?.abortSignal?.aborted) return;
+    if (options.abortSignal.reason instanceof Error) throw options.abortSignal.reason;
+    throw Object.assign(new Error('anthropic_request_cancelled'), {
+      name: 'AbortError',
+      code: 'CHAT_REQUEST_CANCELLED',
+    });
+  };
+  throwIfCancelled();
   // ── Kill switch — see the doc block above ──
   if (!isAnthropicRuntimeEnabled()) {
     const msg =
@@ -212,14 +227,17 @@ export async function trackedCreate(
       // headroom decision. Callers retain their explicit provider fallback.
       const stream = await client.messages.stream(
         { ...requestParams, stream: true },
-        { maxRetries: 0 },
+        { maxRetries: 0, ...(options?.abortSignal ? { signal: options.abortSignal } : {}) },
       );
       return stream.finalMessage();
     })();
     response = await withTimeout(streamPromise, AI_CALL_TIMEOUT_MS, { onTimeout: recordTimeoutEstimate });
   } else {
     response = await withTimeout(
-      client.messages.create(requestParams, { maxRetries: 0 }),
+      client.messages.create(requestParams, {
+        maxRetries: 0,
+        ...(options?.abortSignal ? { signal: options.abortSignal } : {}),
+      }),
       AI_CALL_TIMEOUT_MS,
       { onTimeout: recordTimeoutEstimate },
     );
@@ -364,5 +382,6 @@ export async function trackedCreate(
     logger.warn({ err: settleErr, apiUsageId, userId }, 'nexus_points: Anthropic usage settlement failed');
   }
 
+  throwIfCancelled();
   return response;
 }

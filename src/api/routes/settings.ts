@@ -17,6 +17,7 @@ import { isValidTenantUserId, recordTenantScopeAnomaly } from '../../services/te
 import {
   deleteAllUserDataForAccountDeletion,
   exportContentWorkspaceData,
+  exportSkillInferenceData,
   getAccountDeletionInventoryForUser,
 } from '../../services/user-data-export';
 import { logAudit } from '../../services/audit-trail';
@@ -353,6 +354,11 @@ export function settingsRoutes(): Router {
           .localeCompare(String(left[descendingField] ?? '')));
       };
       userData.contentWorkspace = contentWorkspace;
+      if (contentWorkspace.warnings.length > 0) {
+        userData.degraded = true;
+        userData.warnings = contentWorkspace.warnings;
+      }
+      userData.skillInference = exportSkillInferenceData(userId, tenantId);
       userData.contentScripts = contentRecords('content_scripts', 'created_at');
       userData.contentPerformance = contentRecords('content_performance', 'logged_at');
       userData.contentLearnedPatterns = contentRecords('content_learned_patterns');
@@ -465,6 +471,7 @@ export function settingsRoutes(): Router {
             contentWorkspace.tables.map((table) => [table.name, table.records.length]),
           ),
           exportErrors: [],
+          exportWarnings: contentWorkspace.warnings.map((warning) => warning.code),
         },
         ipAddress: req.ip,
       });
@@ -510,6 +517,25 @@ export function settingsRoutes(): Router {
         },
       });
     } catch (err: any) {
+      if (err?.code === 'ACCOUNT_DELETION_IN_PROGRESS') {
+        sendError(
+          res,
+          'ACCOUNT_DELETION_IN_PROGRESS',
+          'Account deletion is already in progress.',
+          409,
+        );
+        return;
+      }
+      if (err?.code === 'ACCOUNT_DELETION_INFERENCE_DRAIN_TIMEOUT') {
+        sendError(
+          res,
+          'ACCOUNT_DELETION_INFERENCE_DRAIN_TIMEOUT',
+          'Active model work is still stopping. Retry account deletion shortly.',
+          503,
+          { retryable: true },
+        );
+        return;
+      }
       logger.error({ err }, 'iOS account deletion failed');
       sendInternalError(res, 'Unable to delete the account right now.');
     }

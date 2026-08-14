@@ -57,11 +57,16 @@ export class AnthropicProvider implements AIProvider {
   ): Promise<ClassificationResult> {
     // O3-A11: classify options bag. Anthropic attribution already
     // happens via trackedCreate inside classifyMessage; the options
-    // arrive here only for interface compliance + forward-compat with
-    // future per-call timeout/cancellation features. Pass userId/tenantId
-    // through so the legacy classifyMessage path can route them to
-    // trackedCreate.
-    return classifyMessage(message, activeContext, options?.userId, options?.tenantId);
+    // arrive here only for interface compliance. Pass attribution and
+    // cancellation through so classifyMessage can preserve both at every
+    // provider hop.
+    return classifyMessage(
+      message,
+      activeContext,
+      options?.userId,
+      options?.tenantId,
+      options?.abortSignal,
+    );
   }
 
   async callDomain(

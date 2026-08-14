@@ -28,12 +28,107 @@ function parseNullableNonNegativeNumber(value: unknown): number | null {
   return Number(value);
 }
 
+const LOCAL_PLAN_INTEGER_FIELDS = [
+  { body: 'localOperationsHourly', column: 'local_operations_hourly', maximum: 10_000 },
+  { body: 'localOperationsDaily', column: 'local_operations_daily', maximum: 100_000 },
+  { body: 'longformScriptsDaily', column: 'longform_scripts_daily', maximum: 1_000 },
+  { body: 'activeContentJobs', column: 'active_content_jobs', maximum: 100 },
+  { body: 'ordinaryContextTokens', column: 'ordinary_context_tokens', maximum: 16_384 },
+  { body: 'contentContextTokens', column: 'content_context_tokens', maximum: 16_384 },
+  { body: 'scriptSegmentOutputTokens', column: 'script_segment_output_tokens', maximum: 6_144 },
+  { body: 'localQueueWeight', column: 'local_queue_weight', maximum: 10 },
+] as const;
+
+const LOCAL_PLAN_DECIMAL_FIELDS = [
+  { body: 'localCloudFallbackRunUsd', column: 'local_cloud_fallback_run_usd', maximum: 100 },
+  { body: 'localCloudFallbackDailyUsd', column: 'local_cloud_fallback_daily_usd', maximum: 1_000 },
+] as const;
+
+type LocalPlanBodyField = typeof LOCAL_PLAN_INTEGER_FIELDS[number]['body'];
+type LocalPlanDecimalBodyField = typeof LOCAL_PLAN_DECIMAL_FIELDS[number]['body'];
+
+interface PersistedLocalPlanLimits {
+  local_operations_hourly: number;
+  local_operations_daily: number;
+  longform_scripts_daily: number;
+  ordinary_context_tokens: number;
+  content_context_tokens: number;
+  script_segment_output_tokens: number;
+  local_cloud_fallback_run_usd: number;
+  local_cloud_fallback_daily_usd: number;
+}
+
+function parseLocalPlanFields(body: Record<string, unknown>): {
+  values: Partial<Record<LocalPlanBodyField, number>>;
+  error: string | null;
+} {
+  const values: Partial<Record<LocalPlanBodyField, number>> = {};
+  for (const field of LOCAL_PLAN_INTEGER_FIELDS) {
+    if (!Object.prototype.hasOwnProperty.call(body, field.body)) continue;
+    const value = body[field.body];
+    if (!Number.isSafeInteger(value) || Number(value) < 0 || Number(value) > field.maximum) {
+      return {
+        values: {},
+        error: `${field.body} must be an integer from 0 to ${field.maximum}`,
+      };
+    }
+    values[field.body] = Number(value);
+  }
+  return { values, error: null };
+}
+
+function parseLocalPlanDecimalFields(body: Record<string, unknown>): {
+  values: Partial<Record<LocalPlanDecimalBodyField, number>>;
+  error: string | null;
+} {
+  const values: Partial<Record<LocalPlanDecimalBodyField, number>> = {};
+  for (const field of LOCAL_PLAN_DECIMAL_FIELDS) {
+    if (!Object.prototype.hasOwnProperty.call(body, field.body)) continue;
+    const value = Number(body[field.body]);
+    if (!Number.isFinite(value) || value < 0 || value > field.maximum) {
+      return { values: {}, error: `${field.body} must be from 0 to ${field.maximum}` };
+    }
+    values[field.body] = value;
+  }
+  return { values, error: null };
+}
+
+function validateLocalPlanRelationships(
+  current: PersistedLocalPlanLimits,
+  integers: Partial<Record<LocalPlanBodyField, number>>,
+  decimals: Partial<Record<LocalPlanDecimalBodyField, number>>,
+): string | null {
+  const hourly = integers.localOperationsHourly ?? current.local_operations_hourly;
+  const daily = integers.localOperationsDaily ?? current.local_operations_daily;
+  const scripts = integers.longformScriptsDaily ?? current.longform_scripts_daily;
+  const ordinaryContext = integers.ordinaryContextTokens ?? current.ordinary_context_tokens;
+  const contentContext = integers.contentContextTokens ?? current.content_context_tokens;
+  const segmentOutput = integers.scriptSegmentOutputTokens ?? current.script_segment_output_tokens;
+  const fallbackRun = decimals.localCloudFallbackRunUsd ?? current.local_cloud_fallback_run_usd;
+  const fallbackDaily = decimals.localCloudFallbackDailyUsd ?? current.local_cloud_fallback_daily_usd;
+
+  if (hourly > daily) return 'localOperationsHourly cannot exceed localOperationsDaily';
+  if (scripts > daily) return 'longformScriptsDaily cannot exceed localOperationsDaily';
+  if (ordinaryContext > contentContext) return 'ordinaryContextTokens cannot exceed contentContextTokens';
+  if (segmentOutput > contentContext) return 'scriptSegmentOutputTokens cannot exceed contentContextTokens';
+  if (fallbackRun > fallbackDaily) return 'localCloudFallbackRunUsd cannot exceed localCloudFallbackDailyUsd';
+  return null;
+}
+
 export function registerPortalPlanRoutes(app: express.Express): void {
   app.get('/api/plans', requirePortalAdminToken, (_req: Request, res: Response) => {
     try {
       const db = getDb();
       const rows = db.prepare(
-        'SELECT plan_id, display_name, daily_cost_usd, monthly_cost_usd, daily_token_limit, daily_message_limit, allowed_skills_json, per_skill_caps_json, metadata_json, active, updated_at FROM plan_configs ORDER BY plan_id',
+        `SELECT plan_id, display_name, daily_cost_usd, monthly_cost_usd,
+                daily_token_limit, daily_message_limit, allowed_skills_json,
+                per_skill_caps_json, metadata_json, active, updated_at,
+                local_operations_hourly, local_operations_daily,
+                longform_scripts_daily, active_content_jobs,
+                ordinary_context_tokens, content_context_tokens,
+                script_segment_output_tokens, local_queue_weight,
+                local_cloud_fallback_run_usd, local_cloud_fallback_daily_usd
+         FROM plan_configs ORDER BY plan_id`,
       ).all() as Array<{
         plan_id: string;
         display_name: string;
@@ -46,6 +141,16 @@ export function registerPortalPlanRoutes(app: express.Express): void {
         metadata_json: string;
         active: number;
         updated_at: string;
+        local_operations_hourly: number;
+        local_operations_daily: number;
+        longform_scripts_daily: number;
+        active_content_jobs: number;
+        ordinary_context_tokens: number;
+        content_context_tokens: number;
+        script_segment_output_tokens: number;
+        local_queue_weight: number;
+        local_cloud_fallback_run_usd: number;
+        local_cloud_fallback_daily_usd: number;
       }>;
 
       res.json({
@@ -63,6 +168,16 @@ export function registerPortalPlanRoutes(app: express.Express): void {
           allowedSkills: safeJsonArray(row.allowed_skills_json),
           perSkillCaps: safeJsonObject(row.per_skill_caps_json),
           metadata: safeJsonObject(row.metadata_json),
+          localOperationsHourly: row.local_operations_hourly,
+          localOperationsDaily: row.local_operations_daily,
+          longformScriptsDaily: row.longform_scripts_daily,
+          activeContentJobs: row.active_content_jobs,
+          ordinaryContextTokens: row.ordinary_context_tokens,
+          contentContextTokens: row.content_context_tokens,
+          scriptSegmentOutputTokens: row.script_segment_output_tokens,
+          localQueueWeight: row.local_queue_weight,
+          localCloudFallbackRunUsd: row.local_cloud_fallback_run_usd,
+          localCloudFallbackDailyUsd: row.local_cloud_fallback_daily_usd,
           active: row.active === 1,
           updatedAt: row.updated_at,
         })),
@@ -80,7 +195,7 @@ export function registerPortalPlanRoutes(app: express.Express): void {
         return;
       }
 
-      const body = req.body ?? {};
+      const body = (req.body ?? {}) as Record<string, unknown>;
       const dailyCostUsd = Number(body.dailyCostUsd);
       if (!Number.isFinite(dailyCostUsd) || dailyCostUsd < 0) {
         res.status(400).json({ ok: false, message: 'dailyCostUsd must be a non-negative number' });
@@ -120,8 +235,42 @@ export function registerPortalPlanRoutes(app: express.Express): void {
       const allowedSkills = Array.isArray(body.allowedSkills)
         ? body.allowedSkills.filter((skill: unknown): skill is string => typeof skill === 'string')
         : null;
+      const localPlan = parseLocalPlanFields(body);
+      if (localPlan.error) {
+        res.status(400).json({ ok: false, message: localPlan.error });
+        return;
+      }
+      const localPlanDecimals = parseLocalPlanDecimalFields(body);
+      if (localPlanDecimals.error) {
+        res.status(400).json({ ok: false, message: localPlanDecimals.error });
+        return;
+      }
+      if (planId === 'free'
+          && (Object.values(localPlan.values).some((value) => value !== 0)
+            || Object.values(localPlanDecimals.values).some((value) => value !== 0))) {
+        res.status(400).json({ ok: false, message: 'Free local-model limits must remain zero' });
+        return;
+      }
 
       const db = getDb();
+      const currentLocalPlan = db.prepare(`SELECT local_operations_hourly, local_operations_daily,
+          longform_scripts_daily, ordinary_context_tokens, content_context_tokens,
+          script_segment_output_tokens, local_cloud_fallback_run_usd,
+          local_cloud_fallback_daily_usd
+        FROM plan_configs WHERE plan_id = ?`).get(planId) as PersistedLocalPlanLimits | undefined;
+      if (!currentLocalPlan) {
+        res.status(404).json({ ok: false, message: 'Plan configuration was not found' });
+        return;
+      }
+      const localRelationshipError = validateLocalPlanRelationships(
+        currentLocalPlan,
+        localPlan.values,
+        localPlanDecimals.values,
+      );
+      if (localRelationshipError) {
+        res.status(400).json({ ok: false, message: localRelationshipError });
+        return;
+      }
       const sets: string[] = ['daily_cost_usd = ?'];
       const values: unknown[] = [dailyCostUsd];
       if (monthlyCostUsd !== undefined) {
@@ -139,6 +288,18 @@ export function registerPortalPlanRoutes(app: express.Express): void {
       if (allowedSkills) {
         sets.push('allowed_skills_json = ?');
         values.push(JSON.stringify(allowedSkills));
+      }
+      for (const field of LOCAL_PLAN_INTEGER_FIELDS) {
+        const value = localPlan.values[field.body];
+        if (value === undefined) continue;
+        sets.push(`${field.column} = ?`);
+        values.push(value);
+      }
+      for (const field of LOCAL_PLAN_DECIMAL_FIELDS) {
+        const value = localPlanDecimals.values[field.body];
+        if (value === undefined) continue;
+        sets.push(`${field.column} = ?`);
+        values.push(value);
       }
       sets.push("updated_at = datetime('now')");
       values.push(planId);
@@ -161,6 +322,8 @@ export function registerPortalPlanRoutes(app: express.Express): void {
         dailyTokenLimit,
         dailyMessageLimit,
         allowedSkills: allowedSkills ?? undefined,
+        ...localPlan.values,
+        ...localPlanDecimals.values,
       });
       res.json({ ok: true });
     } catch (err) {

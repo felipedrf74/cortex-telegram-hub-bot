@@ -25,6 +25,7 @@ import {
 import { actionToStepType, buildStepIdempotencyKey, pickExpectedFields } from '../../skills/step-builder';
 import { isChatEscalationReviewerEnabled, isChatLlmTier1Enabled, isChatLlmTier2Enabled } from '../../runtime-flags';
 import type { ChatActionPlan, ChatPlannerInput, ChatPlanStep } from '../types';
+import { throwIfChatRequestCancelled } from '../request-cancellation';
 import { logger } from '../../../utils/logger';
 import { sanitizePlannerArgs } from './arg-sanitizer';
 import { rethrowAiUsageFailClosedError } from '../../api-usage-fallback';
@@ -315,6 +316,7 @@ export async function tryBuildLlmStructuredPlan(input: ChatPlannerInput): Promis
     }
     return plan;
   } catch (err) {
+    throwIfChatRequestCancelled(input.abortSignal, err);
     rethrowAiUsageFailClosedError(err);
     logger.debug({ err, userId: input.userId, tenantId: input.tenantId }, 'chat action llm structured planner unavailable');
     return null;
@@ -338,6 +340,7 @@ export async function tryBuildTier1ClassifierPlan(input: ChatPlannerInput): Prom
         userId: input.userId,
         tenantId: input.tenantId,
         timeoutMs: 1800,
+        abortSignal: input.abortSignal,
       },
     );
     const plan = parseTier1ClassifierJson(text, input);
@@ -349,6 +352,7 @@ export async function tryBuildTier1ClassifierPlan(input: ChatPlannerInput): Prom
     }
     return plan;
   } catch (err) {
+    throwIfChatRequestCancelled(input.abortSignal, err);
     rethrowAiUsageFailClosedError(err);
     logger.debug({ err, userId: input.userId, tenantId: input.tenantId }, 'chat action tier1 classifier unavailable');
     return null;
@@ -380,6 +384,7 @@ export async function tryBuildEscalationReviewerPlan(input: ChatPlannerInput): P
     }
     return plan;
   } catch (err) {
+    throwIfChatRequestCancelled(input.abortSignal, err);
     rethrowAiUsageFailClosedError(err);
     logger.debug({ err, userId: input.userId, tenantId: input.tenantId }, 'chat action escalation reviewer unavailable');
     return null;
@@ -404,10 +409,12 @@ async function completeStructuredPlannerWithCascade(
           userId: input.userId,
           tenantId: input.tenantId,
           timeoutMs: 3500,
+          abortSignal: input.abortSignal,
         },
       );
       return { text, provider: 'gemini', model: CHAT_LLM_TIER2_GEMINI_MODEL };
     } catch (err) {
+      throwIfChatRequestCancelled(input.abortSignal, err);
       rethrowAiUsageFailClosedError(err);
       logger.warn({ err, userId: input.userId, tenantId: input.tenantId }, 'Gemini chat action planner failed, trying OpenAI nano fallback');
     }
@@ -429,6 +436,7 @@ async function completeStructuredPlannerWithCascade(
       userId: input.userId,
       tenantId: input.tenantId,
       timeoutMs: 3500,
+      abortSignal: input.abortSignal,
     },
   );
   return { text, provider: 'openai', model: CHAT_LLM_TIER2_OPENAI_FALLBACK_MODEL };
@@ -452,10 +460,12 @@ async function completeEscalationReviewerWithCascade(
           userId: input.userId,
           tenantId: input.tenantId,
           timeoutMs: 4500,
+          abortSignal: input.abortSignal,
         },
       );
       return { text, provider: 'gemini', model: CHAT_LLM_TIER3_GEMINI_MODEL };
     } catch (err) {
+      throwIfChatRequestCancelled(input.abortSignal, err);
       rethrowAiUsageFailClosedError(err);
       logger.warn({ err, userId: input.userId, tenantId: input.tenantId }, 'Gemini chat action reviewer failed, trying OpenAI mini fallback');
     }
@@ -477,6 +487,7 @@ async function completeEscalationReviewerWithCascade(
       userId: input.userId,
       tenantId: input.tenantId,
       timeoutMs: 4500,
+      abortSignal: input.abortSignal,
     },
   );
   return { text, provider: 'openai', model: CHAT_LLM_TIER3_OPENAI_FALLBACK_MODEL };

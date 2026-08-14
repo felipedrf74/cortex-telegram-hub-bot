@@ -70,6 +70,7 @@ export function createActionPlannerStage(variant: ActionPlannerVariant): ChatSta
         locale: chatCoreV2RouteLocale,
         timezone: getUserTimezoneById(userId),
         requireSafeWriteConfirmation: true,
+        abortSignal: ctx.abortSignal,
         ...(variant === 'deterministic' ? { allowModelPlanner: false } : {}),
       });
       if (!actionResult) return { kind: 'continue' };

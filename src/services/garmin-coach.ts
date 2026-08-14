@@ -39,6 +39,10 @@ import { requireTenantIdParam } from './tenant-scope';
 import { rethrowAiUsageFailClosedError } from './api-usage-fallback';
 import { withAiBudgetReservation, type AiRequestSource } from './cost-guardrail';
 import {
+  isSkillInferenceAccountDeletionError,
+  runWithSkillInferenceAccountAdmission,
+} from './skill-inference-service';
+import {
   withTrainingCalendarOperationLock,
   type TrainingOperationLockLease,
 } from './training-operation-locks';
@@ -216,6 +220,8 @@ export interface CoachBriefingOptions {
   budgetJobName?: string;
   /** Immutable governed agent-job run id for provider usage attribution. */
   budgetRunId?: string | null;
+  /** Owning HTTP, WebSocket, scheduler, or account-erasure cancellation. */
+  abortSignal?: AbortSignal;
 }
 
 export interface CoachRecommendationApplyScope {
@@ -696,11 +702,90 @@ function buildCoachAnalysisPayload(
 
 // ─── Main coach function ──────────────────────────────────────────────
 
+async function runCoachBriefingWithAccountAdmissions<T>(
+  accountIds: number[],
+  callerSignal: AbortSignal | undefined,
+  operation: (abortSignal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const admit = async (index: number, parentSignal: AbortSignal | undefined): Promise<T> => {
+    if (index >= accountIds.length) {
+      if (!parentSignal) throw new Error('Coach briefing account admission is required.');
+      return operation(parentSignal);
+    }
+    return runWithSkillInferenceAccountAdmission({
+      userId: accountIds[index],
+      abortSignal: parentSignal,
+    }, (accountAbortSignal) => admit(index + 1, accountAbortSignal));
+  };
+  return admit(0, callerSignal);
+}
+
 export async function generateCoachBriefing(
   userId?: number,
   opts: CoachBriefingOptions = {},
 ): Promise<CoachBriefingResult> {
+  return runWithCoachBriefingAccountLifecycle(
+    userId,
+    opts,
+    (briefing) => briefing,
+  );
+}
+
+/** Hold both the data owner's and metering actor's account lifecycles. */
+export async function runWithCoachBriefingAccountAdmissions<T>(
+  userId: number | undefined,
+  opts: CoachBriefingOptions,
+  operation: (abortSignal: AbortSignal) => Promise<T>,
+): Promise<T> {
   const briefingTenantId = requireTenantIdParam(opts.tenantId, 'generateCoachBriefing');
+  const meteringScope = resolveCoachAnalysisMeteringScope(
+    opts.meteringUserId ?? userId,
+    briefingTenantId,
+  );
+  const accountIds = [...new Set([briefingTenantId, meteringScope.userId])]
+    .filter((accountId) => Number.isSafeInteger(accountId) && accountId > 0);
+  return runCoachBriefingWithAccountAdmissions(accountIds, opts.abortSignal, operation);
+}
+
+/**
+ * Keep generation and caller-owned publication/persistence inside one account
+ * lifecycle. Training REST and scheduler callers use this form so account
+ * erasure cannot drain after provider bookkeeping but before their cache,
+ * conversation, or report writes have settled.
+ */
+export async function runWithCoachBriefingAccountLifecycle<T>(
+  userId: number | undefined,
+  opts: CoachBriefingOptions,
+  consume: (briefing: CoachBriefingResult, abortSignal: AbortSignal) => T | Promise<T>,
+): Promise<T> {
+  const briefingTenantId = requireTenantIdParam(opts.tenantId, 'generateCoachBriefing');
+  const meteringScope = resolveCoachAnalysisMeteringScope(
+    opts.meteringUserId ?? userId,
+    briefingTenantId,
+  );
+  return runWithCoachBriefingAccountAdmissions(
+    userId,
+    opts,
+    async (accountAbortSignal) => {
+      const briefing = await generateCoachBriefingAdmitted(
+        userId,
+        opts,
+        briefingTenantId,
+        meteringScope,
+        accountAbortSignal,
+      );
+      return consume(briefing, accountAbortSignal);
+    },
+  );
+}
+
+async function generateCoachBriefingAdmitted(
+  userId: number | undefined,
+  opts: CoachBriefingOptions,
+  briefingTenantId: number,
+  meteringScope: CoachAnalysisMeteringScope,
+  accountAbortSignal: AbortSignal,
+): Promise<CoachBriefingResult> {
   const errors: string[] = [];
   const collectStart = Date.now();
   let garminData: GarminCoachData | null = null;
@@ -836,14 +921,15 @@ ${payloadStr}
     // matches Sonnet quality for analytical prompts of this shape.
     // Falls back to Anthropic if Gemini is not configured or fails. See
     // audit P0-8.
-    const meteringScope = resolveCoachAnalysisMeteringScope(
-      opts.meteringUserId ?? userId,
-      briefingTenantId,
-    );
     const meteringScopePayload = { userId: meteringScope.userId, tenantId: meteringScope.tenantId };
     const meteringUserId = meteringScopePayload.userId;
     const meteringTenantId = meteringScopePayload.tenantId;
-    const coachAnalysisMeteringOptions = { maxTokens: COACH_ANALYSIS_MAX_TOKENS, userId: meteringUserId, tenantId: meteringTenantId };
+    const coachAnalysisMeteringOptions = {
+      maxTokens: COACH_ANALYSIS_MAX_TOKENS,
+      userId: meteringUserId,
+      tenantId: meteringTenantId,
+      abortSignal: accountAbortSignal,
+    };
     const coachAnalysisScopeBoundary = { maxTokens: COACH_ANALYSIS_MAX_TOKENS, userId: meteringScope.userId, tenantId: meteringScope.tenantId };
     if (
       coachAnalysisMeteringOptions.userId !== coachAnalysisScopeBoundary.userId ||
@@ -892,13 +978,17 @@ ${payloadStr}
             // as Gemini; provider switching cannot restore the discarded bulk.
             system: systemPrompt,
             messages: [{ role: 'user', content: userPrompt }],
-          }, 'coach_analysis', { userId: meteringUserId, tenantId: meteringTenantId });
+          }, 'coach_analysis', {
+            userId: meteringUserId,
+            tenantId: meteringTenantId,
+            abortSignal: accountAbortSignal,
+          });
           return response.content
             .filter((c): c is Anthropic.TextBlock => c.type === 'text')
             .map((c) => c.text)
             .join('');
         },
-        { maxTokens: COACH_ANALYSIS_MAX_TOKENS, userId: meteringUserId, tenantId: meteringTenantId },
+        coachAnalysisMeteringOptions,
       ));
 
     const analysisMs = Date.now() - analysisStart;
@@ -934,6 +1024,7 @@ ${payloadStr}
       analysisMs,
     };
   } catch (err) {
+    if (isSkillInferenceAccountDeletionError(err)) throw err;
     rethrowAiUsageFailClosedError(err);
     logger.error({ err }, 'Coach analysis failed');
     return {

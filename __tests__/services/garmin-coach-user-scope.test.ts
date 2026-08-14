@@ -29,6 +29,7 @@ const mockIsOwnerUserRef = vi.fn();
 const mockHasActiveGarminConnection = vi.fn();
 const mockGetDb = vi.fn();
 const mockWithAiBudgetReservation = vi.hoisted(() => vi.fn());
+const mockRunWithSkillInferenceAccountAdmission = vi.hoisted(() => vi.fn());
 const coachApplyMocks = vi.hoisted(() => ({
   getSessionByCalendarEvent: vi.fn(),
   syncSessionWithCoachRecommendation: vi.fn(),
@@ -142,6 +143,15 @@ vi.mock('../../src/services/cost-guardrail', () => ({
   withAiBudgetReservation: (...args: unknown[]) => mockWithAiBudgetReservation(...args),
 }));
 
+vi.mock('../../src/services/skill-inference-service', () => ({
+  isSkillInferenceAccountDeletionError: (error: unknown) => (
+    (error as { code?: string } | null)?.code === 'ACCOUNT_DELETION_IN_PROGRESS'
+  ),
+  runWithSkillInferenceAccountAdmission: (...args: unknown[]) => (
+    mockRunWithSkillInferenceAccountAdmission(...args)
+  ),
+}));
+
 import {
   applyCoachRecommendation,
   applyCoachRecommendations,
@@ -151,6 +161,7 @@ import {
   buildCoachAnalysisSystemPrompt,
   generateCoachBriefing,
   resolveCoachAnalysisMeteringScope,
+  runWithCoachBriefingAccountLifecycle,
 } from '../../src/services/garmin-coach';
 
 describe('garmin-coach user scoping', () => {
@@ -158,6 +169,12 @@ describe('garmin-coach user scoping', () => {
     vi.clearAllMocks();
     mockWithAiBudgetReservation.mockImplementation(
       async (_request: unknown, fn: () => Promise<unknown>) => fn(),
+    );
+    mockRunWithSkillInferenceAccountAdmission.mockImplementation(
+      async (
+        input: { abortSignal?: AbortSignal },
+        operation: (abortSignal: AbortSignal) => Promise<unknown>,
+      ) => operation(input.abortSignal ?? new AbortController().signal),
     );
 
     mockFetchDailyCoachData.mockResolvedValue({
@@ -283,7 +300,11 @@ describe('garmin-coach user scoping', () => {
       expect.anything(),
       expect.objectContaining({ system: primarySystemPrompt }),
       'coach_analysis',
-      { userId: 42, tenantId: 42 },
+      expect.objectContaining({
+        userId: 42,
+        tenantId: 42,
+        abortSignal: expect.objectContaining({ aborted: false }),
+      }),
     );
   });
 
@@ -304,8 +325,82 @@ describe('garmin-coach user scoping', () => {
       expect.anything(),
       expect.anything(),
       'coach_analysis',
-      { userId: 42, tenantId: 77 },
+      expect.objectContaining({
+        userId: 42,
+        tenantId: 77,
+        abortSignal: expect.objectContaining({ aborted: false }),
+      }),
     );
+    expect(mockRunWithSkillInferenceAccountAdmission).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ userId: 77 }),
+      expect.any(Function),
+    );
+    expect(mockRunWithSkillInferenceAccountAdmission).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ userId: 42 }),
+      expect.any(Function),
+    );
+    expect(options).toMatchObject({
+      abortSignal: expect.objectContaining({ aborted: false }),
+    });
+  });
+
+  it('keeps caller publication inside both Coach account admissions', async () => {
+    const order: string[] = [];
+    mockRunWithSkillInferenceAccountAdmission.mockImplementation(
+      async (
+        input: { userId: number; abortSignal?: AbortSignal },
+        operation: (abortSignal: AbortSignal) => Promise<unknown>,
+      ) => {
+        order.push(`enter:${input.userId}`);
+        const result = await operation(input.abortSignal ?? new AbortController().signal);
+        order.push(`release:${input.userId}`);
+        return result;
+      },
+    );
+
+    const consumed = await runWithCoachBriefingAccountLifecycle(
+      77,
+      { tenantId: 77, meteringUserId: 42 },
+      (briefing, abortSignal) => {
+        expect(abortSignal.aborted).toBe(false);
+        order.push('publish');
+        return briefing.message;
+      },
+    );
+
+    expect(consumed).toContain('DAILY COACH BRIEFING');
+    expect(order).toEqual(['enter:77', 'enter:42', 'publish', 'release:42', 'release:77']);
+  });
+
+  it('does not collect data or call a provider when either scoped account cannot be admitted', async () => {
+    const deletion = Object.assign(new Error('account deletion in progress'), {
+      code: 'ACCOUNT_DELETION_IN_PROGRESS',
+    });
+    mockRunWithSkillInferenceAccountAdmission
+      .mockImplementationOnce(async (
+        input: { abortSignal?: AbortSignal },
+        operation: (abortSignal: AbortSignal) => Promise<unknown>,
+      ) => operation(input.abortSignal ?? new AbortController().signal))
+      .mockRejectedValueOnce(deletion);
+
+    await expect(generateCoachBriefing(77, { tenantId: 77, meteringUserId: 42 }))
+      .rejects.toBe(deletion);
+
+    expect(mockFetchDailyCoachData).not.toHaveBeenCalled();
+    expect(mockGetEvents).not.toHaveBeenCalled();
+    expect(mockTryComplete).not.toHaveBeenCalled();
+  });
+
+  it('propagates account erasure from the provider boundary instead of returning a coach fallback', async () => {
+    const deletion = Object.assign(new Error('account deletion in progress'), {
+      code: 'ACCOUNT_DELETION_IN_PROGRESS',
+    });
+    mockTryComplete.mockRejectedValueOnce(deletion);
+
+    await expect(generateCoachBriefing(42, { tenantId: 42 }))
+      .rejects.toBe(deletion);
   });
 
   it('requires tenant scope for coach briefing generation', async () => {

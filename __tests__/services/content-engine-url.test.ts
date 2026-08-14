@@ -21,6 +21,7 @@ import {
   contentEngineApiBaseUrl,
   deepSearch,
   ForwardedAiBudgetError,
+  ForwardedLocalInferenceError,
   getScript,
   getSources,
 } from '../../src/services/content-engine';
@@ -120,6 +121,52 @@ describe('content-engine client base URL', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it('reconstructs public-safe local capacity failures without exposing Python internals', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      ok: false,
+      error: {
+        code: 'LOCAL_QUEUE_FULL',
+        message: 'Local inference queue is full.',
+        details: { retryable: true, providerRaw: 'must-not-cross' },
+      },
+    }), {
+      status: 503,
+      headers: { 'Content-Type': 'application/json' },
+    })));
+
+    const error = await getSources('safe topic').catch((caught) => caught) as ForwardedLocalInferenceError;
+
+    expect(error).toBeInstanceOf(ForwardedLocalInferenceError);
+    expect(error).toMatchObject({
+      code: 'LOCAL_QUEUE_FULL',
+      status: 503,
+      publicMessage: 'Local inference queue is full.',
+      details: { retryable: true },
+    });
+    expect(error.details).not.toHaveProperty('providerRaw');
+  });
+
+  it.each([
+    ['INTERNAL_ATTRIBUTION_INVALID', 403],
+    ['INTERNAL_INFERENCE_ATTRIBUTION_INVALID', 403],
+    ['INTERNAL_INFERENCE_ATTRIBUTION_MISMATCH', 403],
+    ['ACCOUNT_DELETION_IN_PROGRESS', 409],
+  ] as const)('forwards stable Content inference denial %s', async (code, status) => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      error: { code, message: 'Signed Content inference scope was rejected.' },
+    }), {
+      status,
+      headers: { 'Content-Type': 'application/json' },
+    })));
+
+    await expect(getSources('safe topic')).rejects.toMatchObject({
+      name: 'ForwardedLocalInferenceError',
+      code,
+      status,
+      publicMessage: 'Signed Content inference scope was rejected.',
+    });
+  });
+
   it('allowlists forwarded details and clamps oversized Retry-After values', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
       error: {
@@ -186,6 +233,54 @@ describe('content-engine client base URL', () => {
       code: 'CONTENT_OUTPUT_LOCALE_MISMATCH',
       boundary: 'content-engine-script',
     });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(cacheMocks.setCache).not.toHaveBeenCalled();
+  });
+
+  it('preserves caller cancellation through the Python hop and never caches an undelivered script', async () => {
+    const controller = new AbortController();
+    const cancellation = Object.assign(new Error('content client disconnected'), {
+      name: 'AbortError',
+      code: 'CONTENT_ENGINE_CLIENT_DISCONNECTED',
+    });
+    let fetchStarted!: () => void;
+    const started = new Promise<void>((resolve) => { fetchStarted = resolve; });
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => (
+      new Promise<Response>((_resolve, reject) => {
+        expect(init?.signal).toBeDefined();
+        expect(init?.signal).not.toBe(controller.signal);
+        expect(init?.signal?.aborted).toBe(false);
+        fetchStarted();
+        init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true });
+      })
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const execution = getScript(
+      'Safe topic',
+      'general',
+      1,
+      'Reel',
+      'quick',
+      null,
+      'en-US',
+      'structured',
+      42,
+      undefined,
+      null,
+      'detailed',
+      false,
+      null,
+      null,
+      42,
+      undefined,
+      undefined,
+      { abortSignal: controller.signal },
+    );
+    await started;
+    controller.abort(cancellation);
+
+    await expect(execution).rejects.toBe(cancellation);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(cacheMocks.setCache).not.toHaveBeenCalled();
   });

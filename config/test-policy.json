@@ -343,7 +343,7 @@
             "anchor": "evidence.artifactDigest !== expectedArtifactDigest",
             "behavior": "Staging smoke evidence is accepted only when its artifact digest matches the exact release transaction.",
             "replacementTest": "__tests__/scripts/staging-smoke-evidence.test.ts",
-            "ownerTestNamePattern": "rejects evidence with a mismatched artifactDigest$",
+            "ownerTestNamePattern": "rejects evidence with a mismatched artifact digest$",
             "minimumMutants": 1
           }
         ],
@@ -929,7 +929,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/ollama-provider.ts:1906-1911",
+            "pattern": "src/services/ollama-provider.ts:2030-2030",
             "anchor": "'chat_content_model_authored_short_rejected'",
             "behavior": "Deferred short-comparison usage is attributed only after validation and distinguishes accepted output from rejected output.",
             "replacementTest": "__tests__/services/ollama-provider.test.ts",
@@ -1103,23 +1103,22 @@
       {
         "test": "__tests__/scripts/ollama-operational-transactions.test.ts",
         "replacementTests": [
-          "__tests__/scripts/ollama-lean-systemd.test.ts",
-          "__tests__/scripts/ollama-lean-finalize.test.ts"
+          "__tests__/scripts/ollama-lean-systemd.test.ts"
         ],
         "sources": [
           "scripts/ollama-systemd-dropin-transaction.mjs"
         ],
         "mutationTargets": [
           {
-            "pattern": "scripts/ollama-systemd-dropin-transaction.mjs:306-306",
+            "pattern": "scripts/ollama-systemd-dropin-transaction.mjs:375-375",
             "anchor": "observedDigest !== identity.retainedModelDigest",
-            "behavior": "The retained install transaction refuses to commit if the independently observed 3B model digest changes.",
+            "behavior": "The retained install transaction refuses to commit if the independently observed signed-manifest model digest changes.",
             "replacementTest": "__tests__/scripts/ollama-lean-systemd.test.ts",
             "ownerTestNamePattern": "fails closed if the retained-model digest changes before commit$",
             "minimumMutants": 1
           },
           {
-            "pattern": "scripts/ollama-systemd-dropin-transaction.mjs:922-922",
+            "pattern": "scripts/ollama-systemd-dropin-transaction.mjs:993-993",
             "anchor": "journal.priorService.enabledState === 'enabled'",
             "behavior": "Rollback restores the exact predecessor enablement instead of leaving the candidate service enabled.",
             "replacementTest": "__tests__/scripts/ollama-lean-systemd.test.ts",
@@ -1127,7 +1126,7 @@
             "minimumMutants": 1
           },
           {
-            "pattern": "scripts/ollama-systemd-dropin-transaction.mjs:927-927",
+            "pattern": "scripts/ollama-systemd-dropin-transaction.mjs:998-998",
             "anchor": "journal.priorService.activeState === 'active'",
             "behavior": "Rollback restores the exact predecessor active state instead of leaving the candidate service running.",
             "replacementTest": "__tests__/scripts/ollama-lean-systemd.test.ts",
@@ -1135,7 +1134,7 @@
             "minimumMutants": 1
           },
           {
-            "pattern": "scripts/ollama-systemd-dropin-transaction.mjs:1129-1129",
+            "pattern": "scripts/ollama-systemd-dropin-transaction.mjs:1206-1206",
             "anchor": "state.activeState !== 'active' || state.enabledState !== 'enabled'",
             "behavior": "A durable installer receipt is committed only after the exact candidate service is both active and enabled.",
             "replacementTest": "__tests__/scripts/ollama-lean-systemd.test.ts",
@@ -1143,20 +1142,19 @@
             "minimumMutants": 1
           }
         ],
-        "reason": "The live SHA-bound installer transaction is retained in a focused suite while the obsolete 24-hour observation controller is replaced by exact-release-bound lean finalization."
+        "reason": "The live SHA-bound installer and rollback transaction is retained in the focused systemd suite; finalization has its own independent ownership and is not a replacement for this removed suite."
       },
       {
         "test": "__tests__/scripts/ollama-systemd-envelope.test.ts",
         "replacementTests": [
-          "__tests__/scripts/ollama-lean-systemd.test.ts",
-          "__tests__/scripts/ollama-lean-finalize.test.ts"
+          "__tests__/scripts/ollama-lean-systemd.test.ts"
         ],
         "sources": [
           "scripts/lib/ollama-service-envelope.mjs"
         ],
         "mutationTargets": [
           {
-            "pattern": "scripts/lib/ollama-service-envelope.mjs:74-74",
+            "pattern": "scripts/lib/ollama-service-envelope.mjs:79-79",
             "anchor": "if (actual !== expected)",
             "behavior": "The retained envelope checker rejects public binding, queue drift, and any non-baseline fixed Ollama environment value.",
             "replacementTest": "__tests__/scripts/ollama-lean-systemd.test.ts",
@@ -1164,15 +1162,23 @@
             "minimumMutants": 1
           },
           {
-            "pattern": "scripts/lib/ollama-service-envelope.mjs:88-95",
-            "anchor": "observed.memoryMaxBytes !== OLLAMA_ENVELOPE.memoryMaxBytes",
-            "behavior": "The retained envelope checker enforces the exact 4 GiB soft cap, 6 GiB hard cap, 512 MiB swap cap, and 200 percent CPU quota.",
+            "pattern": "scripts/lib/ollama-service-envelope.mjs:94-101",
+            "anchor": "observed.memoryMaxBytes !== expectedEnvelope.memoryMaxBytes",
+            "behavior": "The local-primary envelope checker enforces the exact 18 GiB soft cap, 20 GiB hard cap, and zero-swap policy.",
+            "replacementTest": "__tests__/scripts/ollama-lean-systemd.test.ts",
+            "ownerTestNamePattern": "checks the effective loopback, memory, CPU, queue, and single-model limits$",
+            "minimumMutants": 1
+          },
+          {
+            "pattern": "scripts/lib/ollama-service-envelope.mjs:102-107",
+            "anchor": "observed.cpuQuotaUsecPerSec !== expectedEnvelope.cpuQuotaUsecPerSec",
+            "behavior": "The local-primary envelope checker enforces the exact 800 percent CPU quota and low-priority Nice value.",
             "replacementTest": "__tests__/scripts/ollama-lean-systemd.test.ts",
             "ownerTestNamePattern": "checks the effective loopback, memory, CPU, queue, and single-model limits$",
             "minimumMutants": 1
           }
         ],
-        "reason": "The fixed loopback one-model envelope remains behaviorally covered while the separate zero-swap transition is retired in favor of the permanent 512 MiB lean baseline."
+        "reason": "The fixed loopback one-model envelope remains behaviorally covered under the approved 20 GiB, eight-CPU, zero-swap local-primary policy."
       },
       {
         "test": "__tests__/services/chat-core-v2-background-command.test.ts",

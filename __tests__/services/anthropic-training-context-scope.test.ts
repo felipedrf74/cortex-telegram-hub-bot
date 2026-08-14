@@ -61,7 +61,37 @@ describe('Anthropic training-context tenant scope', () => {
     expect(mockReadTrainingContextAll).toHaveBeenNthCalledWith(2, { userId: 306, tenantId: 901 });
   });
 
+  it('forwards cancellation through the Anthropic tool-continuation hop', async () => {
+    const controller = new AbortController();
+    const cancelled = Object.assign(new Error('Request was aborted.'), {
+      name: 'APIUserAbortError',
+    });
+    mockTrackedCreate.mockRejectedValueOnce(cancelled);
+
+    await expect(continueWithToolResults(
+      'secretary',
+      [],
+      'Cancel this continuation',
+      '',
+      [],
+      undefined,
+      {
+        filteredTools: [],
+        userId: 306,
+        tenantId: 901,
+        abortSignal: controller.signal,
+      },
+    )).rejects.toBe(cancelled);
+
+    expect(mockTrackedCreate.mock.calls[0]?.[3]).toMatchObject({
+      userId: 306,
+      tenantId: 901,
+      abortSignal: controller.signal,
+    });
+  });
+
   it('uses the supplied ScriptGen schema as the actual system prompt without tools or tenant enrichment', async () => {
+    const controller = new AbortController();
     const result = await callStructuredGeneration({
       systemPrompt: 'Return only JSON matching SCHEMA_X.',
       userPrompt: 'Create the requested helper.',
@@ -71,6 +101,7 @@ describe('Anthropic training-context tenant scope', () => {
       tenantId: 901,
       category: 'cloud_script_generation_artifacts',
       responseFormat: 'json',
+      abortSignal: controller.signal,
     });
 
     expect(result).toEqual({ text: 'Scoped response', stopReason: 'end_turn' });
@@ -84,7 +115,12 @@ describe('Anthropic training-context tenant scope', () => {
     });
     expect(request).not.toHaveProperty('tools');
     expect(category).toBe('cloud_script_generation_artifacts');
-    expect(attribution).toEqual({ userId: 306, tenantId: 901, isUserMessage: true });
+    expect(attribution).toEqual({
+      userId: 306,
+      tenantId: 901,
+      isUserMessage: true,
+      abortSignal: controller.signal,
+    });
     expect(mockBuildKnowledgePromptBlock).not.toHaveBeenCalled();
     expect(mockReadTrainingContextAll).not.toHaveBeenCalled();
   });

@@ -174,6 +174,40 @@ describe('content script route contract utilities', () => {
     });
   });
 
+  it('treats authenticated source metadata as an input echo for durable jobs only', () => {
+    const result = {
+      topic: 'Creator workflow',
+      script: 'Start with one concrete constraint. Show the evidence, then finish with one useful action.',
+      hook: 'Build the argument from evidence.',
+      title_options: ['An evidence-led workflow'],
+      sources_used: [{
+        title: 'Fonte externa em português',
+        url: 'https://example.test/source',
+        source_type: 'user_supplied',
+        relevance_note: 'Esta fonte explica o contexto e preserva a descrição original do utilizador.',
+      }],
+    };
+    const build = (sourceMetadataIsRequestEcho?: boolean) => buildScriptSuccessResponse({
+      result,
+      language: 'en-US',
+      sourceMetadataIsRequestEcho,
+      format: 'YouTube',
+      renderMode: 'structured',
+      scriptStyle: 'detailed',
+      generationMode: 'standard',
+      startMs: Date.now() - 10,
+      cacheHit: false,
+    });
+
+    expect(() => build()).toThrow(expect.objectContaining({
+      code: 'CONTENT_OUTPUT_LOCALE_MISMATCH',
+    }));
+    expect(build(true).sourcesUsed).toContainEqual(expect.objectContaining({
+      title: 'Fonte externa em português',
+      relevanceNote: 'Esta fonte explica o contexto e preserva a descrição original do utilizador.',
+    }));
+  });
+
   it('preserves every engine-generated script character beyond the bounded quality structure', () => {
     const longScript = [
       ...Array.from({ length: 24 }, (_, index) => `Section ${index + 1}: detailed user-owned script body.`),

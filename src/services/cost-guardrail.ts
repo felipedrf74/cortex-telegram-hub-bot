@@ -48,6 +48,11 @@ import {
   type AiRequestSource,
 } from './api-usage-attribution';
 import {
+  CLASSIFIER_SHADOW_JOB_NAME,
+  LOCAL_PRIMARY_SHADOW_CATEGORY_PREFIX,
+  LOCAL_PRIMARY_SHADOW_JOB_NAME,
+} from './local-inference-vocabulary';
+import {
   getApiUsagePersistenceFailure,
   tryRecoverApiUsagePersistenceFailure,
 } from './api-usage-fallback';
@@ -132,6 +137,8 @@ export interface AiBudgetRequest {
    * reserved slice.
    */
   hardJobCostLimitUsd?: number;
+  /** Daily ceiling for cloud attempts emitted by governed SkillInference runs. */
+  hardLocalFallbackDailyCostLimitUsd?: number;
   automationPriority?: AiAutomationPriority;
 }
 
@@ -149,6 +156,7 @@ export interface SignedOuterAiBudgetReservation {
   runId: string | null;
   hardRunCostLimitUsd?: number;
   hardJobCostLimitUsd?: number;
+  hardLocalFallbackDailyCostLimitUsd?: number;
 }
 
 interface ActiveAiBudgetReservationContext extends SignedOuterAiBudgetReservation {
@@ -358,6 +366,9 @@ export function getDailyQuotaStatus(
         SUM(CASE WHEN ts >= datetime(?) AND ts < datetime(?) THEN 1 ELSE 0 END) AS calls
       FROM api_usage
       WHERE ${usageScopePredicate}
+        AND COALESCE(job_name, '') NOT IN (?, ?)
+        AND instr(COALESCE(base_category, category), ?) <> 1
+        AND COALESCE(base_category, category) <> ?
         AND ts >= datetime(?)
         AND ts < datetime(?)
     `).get(
@@ -367,6 +378,10 @@ export function getDailyQuotaStatus(
       month.start, month.end,
       day.start, day.end,
       ...usageScopeParams,
+      LOCAL_PRIMARY_SHADOW_JOB_NAME,
+      CLASSIFIER_SHADOW_JOB_NAME,
+      LOCAL_PRIMARY_SHADOW_CATEGORY_PREFIX,
+      CLASSIFIER_SHADOW_JOB_NAME,
       month.start < day.start ? month.start : day.start,
       month.end > day.end ? month.end : day.end,
     ) as {
@@ -645,8 +660,17 @@ export function checkGlobalCostGuardrail(): { totalUsd: number; limitUsd: number
     const db = getDb();
     const row = db.prepare(`
       SELECT COALESCE(SUM(cost_usd), 0) as total
-      FROM api_usage WHERE ts >= date('now')
-    `).get() as { total: number };
+      FROM api_usage
+      WHERE ts >= date('now')
+        AND COALESCE(job_name, '') NOT IN (?, ?)
+        AND instr(COALESCE(base_category, category), ?) <> 1
+        AND COALESCE(base_category, category) <> ?
+    `).get(
+      LOCAL_PRIMARY_SHADOW_JOB_NAME,
+      CLASSIFIER_SHADOW_JOB_NAME,
+      LOCAL_PRIMARY_SHADOW_CATEGORY_PREFIX,
+      CLASSIFIER_SHADOW_JOB_NAME,
+    ) as { total: number };
 
     const limit = config.aiSafety.globalDailyLimitUsd;
     const half = limit * 0.5;
@@ -791,7 +815,9 @@ function tryGetCurrentRunSpentUsd(request: AiBudgetRequest): number | null {
     `).get(...params) as { cost_usd?: number } | undefined;
     const value = Number(row?.cost_usd ?? 0);
     if (!Number.isFinite(value)) return null;
-    const reserved = request.hardRunCostLimitUsd !== undefined || request.hardJobCostLimitUsd !== undefined
+    const reserved = request.hardRunCostLimitUsd !== undefined
+      || request.hardJobCostLimitUsd !== undefined
+      || request.hardLocalFallbackDailyCostLimitUsd !== undefined
       ? tryGetHardAttemptReservedUsd(request, false)
       : 0;
     return reserved == null ? null : Math.max(0, value) + reserved;
@@ -822,6 +848,49 @@ function tryGetCurrentJobSpentUsd(request: AiBudgetRequest): number | null {
     if (!Number.isFinite(value)) return null;
     const reserved = tryGetHardAttemptReservedUsd(request, true);
     return reserved == null ? null : Math.max(0, value) + reserved;
+  } catch {
+    return null;
+  }
+}
+
+function localFallbackDailyCommittedUsd(
+  db: ReturnType<typeof getDb>,
+  request: AiBudgetRequest,
+): number {
+  const usage = db.prepare(`
+    SELECT COALESCE(SUM(a.cost_usd), 0) AS amount
+      FROM api_usage a
+      LEFT JOIN skill_inference_runs r ON r.run_id = a.run_id
+     WHERE a.user_id = ?
+       AND (r.evaluation_mode = 'production'
+         OR a.job_name = 'chat_core_v2_cloud_allowlist_fallback')
+       AND COALESCE(a.provider, '') <> 'ollama'
+       AND a.cost_usd > 0
+       AND a.ts >= date('now')
+  `).get(request.userId) as { amount?: number } | undefined;
+  const reserved = db.prepare(`
+    SELECT COALESCE(SUM(ar.reserved_cost_usd), 0) AS amount
+      FROM ai_provider_attempt_reservations ar
+      LEFT JOIN skill_inference_runs r ON r.run_id = ar.run_id
+     WHERE ar.user_id = ?
+       AND (r.evaluation_mode = 'production'
+         OR ar.job_name = 'chat_core_v2_cloud_allowlist_fallback')
+       AND COALESCE(ar.provider, '') <> 'ollama'
+       AND ar.created_at >= date('now')
+  `).get(request.userId) as { amount?: number } | undefined;
+  const usageUsd = Number(usage?.amount ?? 0);
+  const reservedUsd = Number(reserved?.amount ?? 0);
+  if (!Number.isFinite(usageUsd) || usageUsd < 0 || !Number.isFinite(reservedUsd) || reservedUsd < 0) {
+    throw new Error('invalid local fallback daily cost scope');
+  }
+  return usageUsd + reservedUsd;
+}
+
+function tryGetLocalFallbackDailyCommittedUsd(request: AiBudgetRequest): number | null {
+  try {
+    const db = getDb();
+    ensureHardAttemptReservationTable(db);
+    return localFallbackDailyCommittedUsd(db, request);
   } catch {
     return null;
   }
@@ -947,6 +1016,15 @@ function reserveHardProviderAttempt(input: {
           || hardJobLimitUsd <= 0
           || hardScopeCommittedUsd(db, input.request, true) + input.maxCostUsd > hardJobLimitUsd + Number.EPSILON
         ) return 'limit_exceeded';
+      }
+      if (input.request.hardLocalFallbackDailyCostLimitUsd !== undefined) {
+        const dailyLimitUsd = Number(input.request.hardLocalFallbackDailyCostLimitUsd);
+        if (!Number.isFinite(dailyLimitUsd)
+            || dailyLimitUsd <= 0
+            || localFallbackDailyCommittedUsd(db, input.request) + input.maxCostUsd
+              > dailyLimitUsd + Number.EPSILON) {
+          return 'limit_exceeded';
+        }
       }
       db.prepare(`
         INSERT INTO ai_provider_attempt_reservations (
@@ -1414,6 +1492,23 @@ export function checkAiBudget(request: AiBudgetRequest): AiBudgetDecision {
     }
   }
 
+  if (request.hardLocalFallbackDailyCostLimitUsd !== undefined) {
+    const hardLimitUsd = Number(request.hardLocalFallbackDailyCostLimitUsd);
+    const dailyCommittedUsd = tryGetLocalFallbackDailyCommittedUsd(request);
+    if (!Number.isFinite(hardLimitUsd)
+        || hardLimitUsd <= 0
+        || dailyCommittedUsd == null
+        || dailyCommittedUsd + reservedCostUsd > hardLimitUsd + Number.EPSILON) {
+      return deniedDecision(quota, reservedCostUsd, {
+        code: 'SERVICE_DEGRADED',
+        status: 429,
+        window: 'daily',
+        message: 'Cloud fallback was stopped because this plan\'s local-primary daily fallback ceiling was reached. No additional model call was made.',
+        unblocksAt: quota.dailyResetAt,
+      });
+    }
+  }
+
   if (quota.blockReason === 'entitlement_error') {
     return deniedDecision(quota, reservedCostUsd, {
       code: 'SERVICE_DEGRADED',
@@ -1549,7 +1644,7 @@ export class AiBudgetError extends Error {
 function createActiveReservationContext(
   lease: SqliteCostLockLease,
   userId: number,
-  input: Partial<Pick<AiBudgetRequest, 'requestSource' | 'baseCategory' | 'jobName' | 'runId' | 'hardRunCostLimitUsd' | 'hardJobCostLimitUsd'>> = {},
+  input: Partial<Pick<AiBudgetRequest, 'requestSource' | 'baseCategory' | 'jobName' | 'runId' | 'hardRunCostLimitUsd' | 'hardJobCostLimitUsd' | 'hardLocalFallbackDailyCostLimitUsd'>> = {},
 ): ActiveAiBudgetReservationContext {
   return {
     userId,
@@ -1560,6 +1655,9 @@ function createActiveReservationContext(
     runId: input.runId ?? crypto.randomUUID(),
     ...(input.hardRunCostLimitUsd !== undefined ? { hardRunCostLimitUsd: input.hardRunCostLimitUsd } : {}),
     ...(input.hardJobCostLimitUsd !== undefined ? { hardJobCostLimitUsd: input.hardJobCostLimitUsd } : {}),
+    ...(input.hardLocalFallbackDailyCostLimitUsd !== undefined
+      ? { hardLocalFallbackDailyCostLimitUsd: input.hardLocalFallbackDailyCostLimitUsd }
+      : {}),
     active: true,
     approved: false,
   };
@@ -1595,6 +1693,9 @@ export function getActiveAiBudgetReservationMarker(
     runId: active.runId,
     ...(active.hardRunCostLimitUsd !== undefined ? { hardRunCostLimitUsd: active.hardRunCostLimitUsd } : {}),
     ...(active.hardJobCostLimitUsd !== undefined ? { hardJobCostLimitUsd: active.hardJobCostLimitUsd } : {}),
+    ...(active.hardLocalFallbackDailyCostLimitUsd !== undefined
+      ? { hardLocalFallbackDailyCostLimitUsd: active.hardLocalFallbackDailyCostLimitUsd }
+      : {}),
   };
 }
 
@@ -1617,7 +1718,8 @@ export function assertAiBudgetReservationForProvider(input: {
   const active = currentActiveAiBudgetReservation();
   if (!isPaidAiCostControlsEnforcementEnabled()) {
     const hasHardCeiling = active?.hardRunCostLimitUsd !== undefined
-      || active?.hardJobCostLimitUsd !== undefined;
+      || active?.hardJobCostLimitUsd !== undefined
+      || active?.hardLocalFallbackDailyCostLimitUsd !== undefined;
     if (!hasHardCeiling) return;
   }
   const userMatches = active?.requestSource === 'system'
@@ -1653,6 +1755,9 @@ export function assertAiBudgetReservationForProvider(input: {
     runId: active.runId,
     ...(active.hardRunCostLimitUsd !== undefined ? { hardRunCostLimitUsd: active.hardRunCostLimitUsd } : {}),
     ...(active.hardJobCostLimitUsd !== undefined ? { hardJobCostLimitUsd: active.hardJobCostLimitUsd } : {}),
+    ...(active.hardLocalFallbackDailyCostLimitUsd !== undefined
+      ? { hardLocalFallbackDailyCostLimitUsd: active.hardLocalFallbackDailyCostLimitUsd }
+      : {}),
   };
   const provider = String(input.provider || '').trim().toLowerCase();
   const model = String(input.model || '').trim();
@@ -1715,7 +1820,9 @@ export function assertAiBudgetReservationForProvider(input: {
     recordAiBudgetDeferral(request, decision);
     throw new AiBudgetError(decision);
   }
-  if (active.hardRunCostLimitUsd !== undefined || active.hardJobCostLimitUsd !== undefined) {
+  if (active.hardRunCostLimitUsd !== undefined
+      || active.hardJobCostLimitUsd !== undefined
+      || active.hardLocalFallbackDailyCostLimitUsd !== undefined) {
     const attemptReservation = provider && model
       ? reserveHardProviderAttempt({
         request,
@@ -1792,6 +1899,8 @@ export async function withSignedOuterAiBudgetReservation<T>(
     && (marker.runId ?? null) === (request.runId ?? null)
     && (marker.hardRunCostLimitUsd ?? null) === (request.hardRunCostLimitUsd ?? null)
     && (marker.hardJobCostLimitUsd ?? null) === (request.hardJobCostLimitUsd ?? null)
+    && (marker.hardLocalFallbackDailyCostLimitUsd ?? null)
+      === (request.hardLocalFallbackDailyCostLimitUsd ?? null)
     && typeof marker.reservationId === 'string'
     && marker.reservationId.length >= 16;
   if (!markerMatchesRequest || !isLiveOuterReservation(lockUserId, marker.reservationId)) {
@@ -2097,7 +2206,16 @@ export function getUserDailySpend(userId: number): { totalUsd: number; messageCo
       WHERE user_id = ?
         AND COALESCE(request_source, 'interactive') <> 'system'
         AND ts >= date('now')
-    `).get(userId) as { total: number; count: number };
+        AND COALESCE(job_name, '') NOT IN (?, ?)
+        AND instr(COALESCE(base_category, category), ?) <> 1
+        AND COALESCE(base_category, category) <> ?
+    `).get(
+      userId,
+      LOCAL_PRIMARY_SHADOW_JOB_NAME,
+      CLASSIFIER_SHADOW_JOB_NAME,
+      LOCAL_PRIMARY_SHADOW_CATEGORY_PREFIX,
+      CLASSIFIER_SHADOW_JOB_NAME,
+    ) as { total: number; count: number };
     return { totalUsd: row.total, messageCount: row.count };
   } catch {
     return { totalUsd: 0, messageCount: 0 };
@@ -2116,8 +2234,19 @@ export function getSpendByProvider(
     const db = getDb();
     // Use parameterized query to prevent SQL injection
     const filterDate = date || new Date().toISOString().slice(0, 10);
-    const predicates = ['ts >= date(?)'];
-    const params: any[] = [filterDate];
+    const predicates = [
+      'ts >= date(?)',
+      "COALESCE(job_name, '') NOT IN (?, ?)",
+      'instr(COALESCE(base_category, category), ?) <> 1',
+      'COALESCE(base_category, category) <> ?',
+    ];
+    const params: any[] = [
+      filterDate,
+      LOCAL_PRIMARY_SHADOW_JOB_NAME,
+      CLASSIFIER_SHADOW_JOB_NAME,
+      LOCAL_PRIMARY_SHADOW_CATEGORY_PREFIX,
+      CLASSIFIER_SHADOW_JOB_NAME,
+    ];
     if (scope.userId != null) {
       predicates.push('user_id = ?');
       params.push(scope.userId);

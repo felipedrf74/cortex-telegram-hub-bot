@@ -49,6 +49,15 @@ describe('Internal Routes — structural', () => {
     expect(routesSrc).toContain('jsonMode,');
   });
 
+  it('binds both local-primary and legacy cloud completions to the Content Engine connection', () => {
+    expect(routesSrc).toContain('const requestAbortController = new AbortController();');
+    expect(routesSrc).toContain("req.once('aborted', abortForDisconnectedContentEngine);");
+    expect(routesSrc).toContain("res.once('close', abortForDisconnectedContentEngine);");
+    expect(routesSrc).toContain('abortSignal: activeAbortSignal');
+    expect(routesSrc).toContain('runWithSkillInferenceAccountAdmission({');
+    expect(routesSrc).toContain('isProviderRequestCancellation(err)');
+  });
+
   it('keeps mixed-trust content-engine guidance out of the provider system instruction', () => {
     expect(routesSrc).toContain('INTERNAL_AI_PROXY_SYSTEM_INSTRUCTION');
     expect(routesSrc).toContain('buildInternalAiProxyUserPrompt(system, prompt, jsonMode)');

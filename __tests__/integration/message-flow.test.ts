@@ -40,6 +40,17 @@ vi.mock('../../src/services/provider-registry', () => ({
   }),
 }));
 
+vi.mock('../../src/services/skill-inference-service', () => ({
+  runWithSkillInferenceAccountAdmission: (
+    _input: unknown,
+    operation: (signal: AbortSignal) => Promise<unknown>,
+  ) => operation(new AbortController().signal),
+  isSkillInferenceAccountDeletionError: (error: unknown) => (
+    Boolean(error && typeof error === 'object'
+      && (error as { code?: unknown }).code === 'ACCOUNT_DELETION_IN_PROGRESS')
+  ),
+}));
+
 vi.mock('../../src/state/conversation', () => ({
   getConversationHistory: vi.fn().mockReturnValue([]),
   addToConversation: vi.fn(),

@@ -10,7 +10,14 @@
  * - Half-open recovery: after cooldown, probe the primary once to check recovery
  */
 
-import { AIProvider, AICallResult, AIToolResultMessage, CallDomainOptions, ClassifyOptions } from './ai-provider';
+import {
+  AIProvider,
+  AICallResult,
+  AIToolResultMessage,
+  CallDomainOptions,
+  ClassifyOptions,
+  isProviderRequestCancellation,
+} from './ai-provider';
 import { DomainName, DomainMessage, ClassificationResult } from '../domains/types';
 import { logger } from '../utils/logger';
 import { getCurrentContext } from '../utils/request-context';
@@ -21,6 +28,8 @@ import {
   validateStructuredOutputValue,
 } from './structured-output-schema';
 import { resolveManifestClassifierDisposition } from '../router/classifier-prompt-builder';
+import { localPrimaryInferenceConfig } from './local-primary-config';
+import { LocalLLMError, shouldIncrementCircuit } from './local-llm-error';
 
 // ─── Error Classification ─────────────────────────────────────────
 // Only retryable errors should trigger circuit-breaker failures and fallback.
@@ -50,6 +59,16 @@ function privateOptionalCloudWorkloadError(taskType: TaskType): Error {
     new Error(`private_optional_cloud_workload_forbidden:${taskType}`),
     { code: 'PRIVATE_OPTIONAL_CLOUD_WORKLOAD_FORBIDDEN', taskType },
   );
+}
+
+function throwIfOptionalTaskCancelled(abortSignal?: AbortSignal, error?: unknown): void {
+  if (error !== undefined && isProviderRequestCancellation(error)) throw error;
+  if (!abortSignal?.aborted) return;
+  if (abortSignal.reason instanceof Error) throw abortSignal.reason;
+  throw Object.assign(new Error('optional_provider_request_cancelled'), {
+    name: 'AbortError',
+    code: 'INFERENCE_CANCELLED',
+  });
 }
 
 function isTruncatedDomainResult(result: unknown): boolean {
@@ -152,6 +171,7 @@ function openToolUseIdsFromConversation(toolConversation: Array<{ role: string; 
 
 function isRetryableError(err: any): boolean {
   if (err?.name === 'ApiUsagePersistenceError' || err?.code === 'AI_USAGE_PERSISTENCE_FAILED' || err?.name === 'AiBudgetError') return false;
+  if (isProviderRequestCancellation(err)) return false;
   const status = err?.status ?? err?.statusCode ?? err?.error_code;
   // 429 = rate limited (retryable after backoff)
   if (status === 429) return true;
@@ -798,9 +818,13 @@ export class TaskRoutingProvider implements AIProvider {
         logger.debug(attemptMeta, 'AI provider routing attempt succeeded');
         return result;
       } catch (err) {
+        // Caller cancellation is not provider-health evidence. It must not
+        // open a circuit, increment failure metrics, emit a fallback event,
+        // or dispatch the secondary provider.
+        if (isProviderRequestCancellation(err)) throw err;
         const retryable = isRetryableError(err);
         const errorSummary = summarizeProviderError(err, retryable);
-        if (retryable) {
+        if (retryable && shouldRecordCircuitFailure(err)) {
           primaryBreaker.recordFailure();
         }
         // Always track metrics regardless of retryability
@@ -958,6 +982,9 @@ export class TaskRoutingProvider implements AIProvider {
       logger.info(fallbackMeta, 'AI provider fallback succeeded');
       return result;
     } catch (fallbackErr) {
+      // A cancellation observed by the fallback remains caller-owned rather
+      // than becoming a provider failure in health telemetry.
+      if (isProviderRequestCancellation(fallbackErr)) throw fallbackErr;
       const retryable = isRetryableError(fallbackErr);
       const errorSummary = summarizeProviderError(fallbackErr, retryable);
       // Codex QA round 9: skip metric increments for AIProviderTruncatedError
@@ -1005,6 +1032,50 @@ export class TaskRoutingProvider implements AIProvider {
   }
 
   // ─── AIProvider interface ─────────────────────────────────────────
+
+  /**
+   * Run the explicit Ollama classifier used by detached shadow evaluation
+   * through this router's provider circuit without enabling fallback. Shadow
+   * must compare against the named local provider, but it must still share the
+   * same health state as normal routed work.
+   */
+  async classifyShadowWithProvider(
+    provider: AIProvider,
+    message: string,
+    activeContext?: { domain: DomainName; lastAssistantMessage: string },
+    options?: ClassifyOptions,
+  ): Promise<ClassificationResult> {
+    if (options?.source !== 'shadow') {
+      throw Object.assign(new Error('explicit_classifier_attempt_requires_shadow_source'), {
+        code: 'CLASSIFIER_SHADOW_SOURCE_REQUIRED',
+      });
+    }
+    const breaker = this.getBreaker(provider.name);
+    const metrics = this.getMetrics(provider.name);
+    if (!breaker.canAttempt()) {
+      metrics.circuitOpenCount++;
+      throw Object.assign(new Error(`provider_circuit_open:${provider.name}`), {
+        code: 'circuit_open',
+        provider: provider.name,
+      });
+    }
+    try {
+      const result = await provider.classify(message, activeContext, options);
+      breaker.recordSuccess();
+      metrics.usageCount++;
+      metrics.lastSuccessAt = new Date().toISOString();
+      return result;
+    } catch (error) {
+      if (isProviderRequestCancellation(error)) throw error;
+      if (isRetryableError(error) && shouldRecordCircuitFailure(error)) {
+        breaker.recordFailure();
+      }
+      metrics.usageCount++;
+      metrics.failureCount++;
+      metrics.lastFailureAt = new Date().toISOString();
+      throw error;
+    }
+  }
 
   async classify(
     message: string,
@@ -1060,6 +1131,15 @@ export class TaskRoutingProvider implements AIProvider {
         fm.lastSuccessAt = new Date().toISOString();
         return fallbackResult;
       } catch (err) {
+        if (isProviderRequestCancellation(err)) throw err;
+        if (options?.abortSignal?.aborted) {
+          const reason = options.abortSignal.reason;
+          if (isProviderRequestCancellation(reason)) throw reason;
+          throw Object.assign(new Error('classify_request_cancelled'), {
+            name: 'AbortError',
+            code: 'CHAT_REQUEST_CANCELLED',
+          });
+        }
         logger.warn(
           { err: err instanceof Error ? err.message : String(err) },
           'low-confidence fallback classify failed — returning primary result',
@@ -1361,6 +1441,7 @@ export class TaskRoutingProvider implements AIProvider {
       ownerSkill: callerOpts.ownerSkill,
       executeIntent: callerOpts.executeIntent,
       currentTurnOnly: callerOpts.currentTurnOnly,
+      abortSignal: callerOpts.abortSignal,
     };
 
     return {
@@ -1510,22 +1591,49 @@ export class TaskRoutingProvider implements AIProvider {
       userId?: number;
       tenantId?: number;
       numPredict?: number;
+      abortSignal?: AbortSignal;
+      localAdmission?: unknown;
+      cloudFallbackBoundary?: unknown;
     };
+    throwIfOptionalTaskCancelled(taskRecord.abortSignal);
 
-    // ServerDominguez is small-model-only. Normal local inference is limited
-    // to two explicitly calibrated roles. Missing/generic/complex work goes
-    // directly to the privacy-gated cloud sentinel instead of manufacturing
-    // a local provider failure. Offline work additionally requires the
-    // explicit evaluation gate (and require-local for script generation).
+    // Local inference uses one active signed-manifest model and explicitly
+    // calibrated workload roles. Missing/generic/complex work goes directly
+    // to the privacy-gated cloud sentinel instead of manufacturing a local
+    // provider failure. Offline work additionally requires the explicit
+    // evaluation gate (and require-local for script generation).
     const role = taskRecord.workloadRole;
-    const runtimeLocalRole = role === 'validated_local_chat' || role === 'classifier_shadow';
+    const runtimeLocalRole = role === 'validated_local_chat'
+      || role === 'classifier_shadow'
+      || role === 'skill_inference';
     const offlineRoleEnabled = role === 'offline_evaluation'
       && config.localLLMEvaluation.enabled
       && (taskType !== 'scriptGeneration' || config.localLLMEvaluation.requireLocalForScriptGen);
-    const localRoleUnavailable = taskType === 'scriptGeneration'
+    const localRoleUnavailable = taskRecord.localAdmission === 'force_cloud' || (taskType === 'scriptGeneration'
       ? (!config.localLLMEvaluation.enabled || !config.localLLMEvaluation.requireLocalForScriptGen)
-      : (!runtimeLocalRole && !offlineRoleEnabled);
+      : (!runtimeLocalRole && !offlineRoleEnabled));
     const configuredLocalUnavailable = pair.primary.name === 'unavailable:ollama';
+    if (role === 'skill_inference' && taskRecord.localAdmission !== 'force_cloud'
+        && pair.primary.name !== 'ollama') {
+      throw Object.assign(new Error('skill_inference_local_primary_must_be_ollama'), {
+        code: 'SKILL_INFERENCE_LOCAL_PRIMARY_REQUIRED',
+      });
+    }
+    if (role === 'skill_inference' && taskRecord.localAdmission === 'force_cloud') {
+      if (pair.fallback !== 'approved_cloud_reasoning') {
+        throw Object.assign(new Error('skill_inference_approved_cloud_fallback_required'), {
+          code: 'SKILL_INFERENCE_APPROVED_CLOUD_FALLBACK_REQUIRED',
+        });
+      }
+      return this.dispatchFallbackForOptionalMethod(
+        taskType,
+        pair,
+        methodName,
+        task,
+        taskRecord,
+        new Error(`local_route_not_selected:${taskType}`),
+      );
+    }
     if ((pair.primary.name === 'ollama' || configuredLocalUnavailable)
         && pair.fallback === 'approved_cloud_reasoning'
         && (localRoleUnavailable || configuredLocalUnavailable)) {
@@ -1551,16 +1659,21 @@ export class TaskRoutingProvider implements AIProvider {
         );
       } else {
         try {
+          throwIfOptionalTaskCancelled(taskRecord.abortSignal);
           const result = await (primaryMethod as (t: unknown) => Promise<unknown>).call(pair.primary, task);
+          throwIfOptionalTaskCancelled(taskRecord.abortSignal);
           primaryBreaker.recordSuccess();
           const pm = this.getMetrics(pair.primary.name);
           pm.usageCount++;
           pm.lastSuccessAt = new Date().toISOString();
           return result;
         } catch (err) {
+          // Optional local/script routes share the same caller-cancellation
+          // contract as callDomain: cancellation is not provider-health
+          // evidence and must not increment metrics or enter fallback policy.
+          throwIfOptionalTaskCancelled(taskRecord.abortSignal, err);
           const retryable = isRetryableError(err);
-          const isOperational = isOperationalLocalLLMError(err);
-          if (retryable && !isOperational) {
+          if (retryable && shouldRecordCircuitFailure(err)) {
             primaryBreaker.recordFailure();
           }
           const pm = this.getMetrics(pair.primary.name);
@@ -1579,13 +1692,21 @@ export class TaskRoutingProvider implements AIProvider {
 
     // Circuit open OR primary missing the optional method — go straight
     // to fallback dispatch with a synthetic error reason.
+    const unavailableReason = Object.assign(
+      new Error(`primary_unavailable:${pair.primary.name}.${methodName}`),
+      {
+        code: primaryBreaker.getState() === CircuitState.OPEN
+          ? 'circuit_open'
+          : 'primary_optional_method_unavailable',
+      },
+    );
     return this.dispatchFallbackForOptionalMethod(
       taskType,
       pair,
       methodName,
       task,
       taskRecord,
-      new Error(`primary_unavailable:${pair.primary.name}.${methodName}`),
+      unavailableReason,
     );
   }
 
@@ -1606,10 +1727,44 @@ export class TaskRoutingProvider implements AIProvider {
       userId?: number;
       tenantId?: number;
       numPredict?: number;
+      abortSignal?: AbortSignal;
+      localAdmission?: unknown;
+      cloudFallbackBoundary?: unknown;
     },
     primaryError: unknown,
   ): Promise<unknown> {
     const fallback = pair.fallback;
+    throwIfOptionalTaskCancelled(taskRecord.abortSignal, primaryError);
+
+    if (taskRecord.localAdmission === 'local_only') {
+      throw primaryError;
+    }
+
+    if (taskRecord.workloadRole === 'skill_inference'
+        && taskRecord.allowCloudEscalation !== true) {
+      throw Object.assign(new Error('skill_inference_cloud_escalation_not_authorized'), {
+        code: 'SKILL_INFERENCE_CLOUD_ESCALATION_NOT_AUTHORIZED',
+      });
+    }
+
+    const runCloudAttempt = async <T>(providerCall: () => Promise<T>): Promise<T> => {
+      throwIfOptionalTaskCancelled(taskRecord.abortSignal);
+      const boundary = taskRecord.cloudFallbackBoundary;
+      if (taskRecord.workloadRole === 'skill_inference' && typeof boundary !== 'function') {
+        throw Object.assign(new Error('skill_inference_cloud_budget_boundary_required'), {
+          code: 'SKILL_INFERENCE_CLOUD_BUDGET_BOUNDARY_REQUIRED',
+        });
+      }
+      const invokeProvider = async (): Promise<T> => {
+        throwIfOptionalTaskCancelled(taskRecord.abortSignal);
+        const result = await providerCall();
+        throwIfOptionalTaskCancelled(taskRecord.abortSignal);
+        return result;
+      };
+      return typeof boundary === 'function'
+        ? (boundary as (call: () => Promise<T>) => Promise<T>)(invokeProvider)
+        : invokeProvider();
+    };
 
     // ── Sentinel: 'none' ─ no escalation ────────────────────────────
     if (fallback === 'none') {
@@ -1618,6 +1773,25 @@ export class TaskRoutingProvider implements AIProvider {
         'Primary failed and fallback is sentinel "none" — surfacing error without escalation',
       );
       throw primaryError;
+    }
+
+    // Preserve the stable workload-specific rollback contract before the
+    // generic private-optional cloud guard. Both branches remain local-only;
+    // this code tells callers that validated Chat lost its required provider.
+    if (taskType === 'localReasoning'
+        && taskRecord.workloadRole === 'validated_local_chat') {
+      throw Object.assign(
+        new Error('validated_local_chat_local_provider_unavailable'),
+        { code: 'VALIDATED_LOCAL_CHAT_LOCAL_PROVIDER_UNAVAILABLE' },
+      );
+    }
+
+    // Private optional workloads are never sent to any cloud provider. Keep
+    // this boundary above both the approved-cloud sentinel and legacy real-
+    // provider branches so configuration drift cannot bypass the privacy
+    // classification by selecting a concrete fallback provider.
+    if (taskRecord.containsPrivateData === true) {
+      throw privateOptionalCloudWorkloadError(taskType);
     }
 
     // ── Sentinel: 'approved_cloud_reasoning' ─ quality + privacy gate ──
@@ -1642,27 +1816,11 @@ export class TaskRoutingProvider implements AIProvider {
         : typeof taskRecord.description === 'string' ? taskRecord.description
         : '';
 
-      // A validated private local-chat request is intentionally local-only.
-      // This explicit guard is independent of the current cloud privacy mode,
-      // so disabling/rolling back Ollama can never turn a local chat into a
-      // raw cloud request through a future operator setting.
-      if (taskType === 'localReasoning'
-          && taskRecord.workloadRole === 'validated_local_chat') {
-        throw Object.assign(
-          new Error('validated_local_chat_local_provider_unavailable'),
-          { code: 'VALIDATED_LOCAL_CHAT_LOCAL_PROVIDER_UNAVAILABLE' },
-        );
-      }
-
       // The optional ScriptGen and larger-reasoning adapters are public or
       // pre-redacted only. This hard boundary intentionally ignores the
       // process-wide allow_raw setting and onUnapproved policy so an operator
       // environment drift cannot turn either workload into a private-data
       // transport.
-      if (taskRecord.containsPrivateData === true) {
-        throw privateOptionalCloudWorkloadError(taskType);
-      }
-
       const applyCloudGateRejection = (rejection: { reason: string; warning: string }): never => {
         const policy = effectiveOnUnapprovedPolicy();
         logger.warn(
@@ -1708,11 +1866,18 @@ export class TaskRoutingProvider implements AIProvider {
         const fm = this.getMetrics(approval.providerName);
         fm.fallbackTriggerCount++;
         try {
-          const result = await runApprovedCloudScriptGenerationPipeline(cloudTask, approval.permit);
+          const result = await runCloudAttempt(
+            () => runApprovedCloudScriptGenerationPipeline(
+              cloudTask,
+              approval.permit,
+              { abortSignal: taskRecord.abortSignal },
+            ),
+          );
           fm.usageCount++;
           fm.lastSuccessAt = new Date().toISOString();
           return result;
         } catch (err) {
+          throwIfOptionalTaskCancelled(taskRecord.abortSignal, err);
           fm.usageCount++;
           fm.failureCount++;
           fm.lastFailureAt = new Date().toISOString();
@@ -1786,10 +1951,16 @@ export class TaskRoutingProvider implements AIProvider {
         const tenantId = Number.isFinite(taskRecord.tenantId)
           ? Math.max(0, Math.floor(taskRecord.tenantId!))
           : Math.max(0, Math.floor(ctx?.tenantId ?? userId));
+        // The 6,144-token ceiling belongs to the signed SkillInference
+        // contract. Legacy optional cloud reasoning remains byte-compatible
+        // with its historical 4,096-token cap while local-primary is OFF.
+        const outputTokenCap = taskRecord.workloadRole === 'skill_inference'
+          ? localPrimaryInferenceConfig.maxOutputTokens
+          : 4_096;
         const maxTokens = Number.isFinite(taskRecord.numPredict) && (taskRecord.numPredict ?? 0) > 0
-          ? Math.min(4096, Math.floor(taskRecord.numPredict!))
+          ? Math.min(outputTokenCap, Math.floor(taskRecord.numPredict!))
           : 2048;
-        const cloudResult = await structuredCall.call(selection.provider, {
+        const cloudResult = await runCloudAttempt(() => structuredCall.call(selection.provider, {
           systemPrompt,
           userPrompt: prompt,
           model: selection.model,
@@ -1798,8 +1969,9 @@ export class TaskRoutingProvider implements AIProvider {
           tenantId,
           category: 'cloud_local_reasoning',
           responseFormat: taskRecord.outputSchema === undefined ? 'text' : 'json',
+          abortSignal: taskRecord.abortSignal,
           ...(taskRecord.outputSchema !== undefined ? { jsonSchema: taskRecord.outputSchema } : {}),
-        });
+        }));
         if (typeof cloudResult?.text !== 'string') {
           throw cloudLocalReasoningContractError('missing_text');
         }
@@ -1835,6 +2007,7 @@ export class TaskRoutingProvider implements AIProvider {
           },
         };
       } catch (err) {
+        throwIfOptionalTaskCancelled(taskRecord.abortSignal, err);
         fm.usageCount++;
         fm.failureCount++;
         fm.lastFailureAt = new Date().toISOString();
@@ -1855,11 +2028,14 @@ export class TaskRoutingProvider implements AIProvider {
     const fm = this.getMetrics(fallbackProvider.name);
     fm.fallbackTriggerCount++;
     try {
-      const result = await (fallbackMethod as (t: unknown) => Promise<unknown>).call(fallbackProvider, task);
+      const result = await runCloudAttempt(
+        () => (fallbackMethod as (t: unknown) => Promise<unknown>).call(fallbackProvider, task),
+      );
       fm.usageCount++;
       fm.lastSuccessAt = new Date().toISOString();
       return result;
     } catch (fallbackErr) {
+      throwIfOptionalTaskCancelled(taskRecord.abortSignal, fallbackErr);
       fm.usageCount++;
       fm.failureCount++;
       fm.lastFailureAt = new Date().toISOString();
@@ -1868,16 +2044,6 @@ export class TaskRoutingProvider implements AIProvider {
   }
 }
 
-/**
- * Recognize LocalLLMError kinds that are "operational" (busy / overflow
- * / unsupported) rather than provider faults. Used by
- * `dispatchOptionalTaskMethod` to skip circuit-breaker increments for
- * these — busy ≠ broken.
- */
-function isOperationalLocalLLMError(err: unknown): boolean {
-  if (!err || typeof err !== 'object') return false;
-  const kind = (err as { kind?: string }).kind;
-  return kind === 'capacity_exceeded'
-    || kind === 'input_token_overflow'
-    || kind === 'unsupported_capability';
+function shouldRecordCircuitFailure(err: unknown): boolean {
+  return !(err instanceof LocalLLMError) || shouldIncrementCircuit(err.kind);
 }

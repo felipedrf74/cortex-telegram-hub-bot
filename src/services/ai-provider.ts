@@ -46,6 +46,12 @@ export interface AICallResult {
     promptEvalDurationNs?: number;
     evalCount?: number;
     evalDurationNs?: number;
+    /** Approximate time to first generated token from Ollama timing counters. */
+    firstTokenMs?: number;
+    inputTokens?: number;
+    outputTokens?: number;
+    /** Internal inference-ledger run that produced this provider result. */
+    inferenceRunId?: string;
     promptTokensPerSec?: number;
     generationTokensPerSec?: number;
     totalTokensPerSec?: number;
@@ -270,6 +276,12 @@ export interface CallDomainOptions {
    * the current turn. Providers must not send history or saved state when set.
    */
   currentTurnOnly?: boolean;
+  /**
+   * Request cancellation owned by the caller. Providers must forward this to
+   * their native HTTP client and must not start a retry or secondary fallback
+   * after it is aborted.
+   */
+  abortSignal?: AbortSignal;
 }
 
 /**
@@ -296,6 +308,8 @@ export interface StructuredGenerationRequest {
   responseFormat: 'text' | 'json';
   /** Optional schema sent to capable providers and always revalidated locally. */
   jsonSchema?: unknown;
+  /** Caller-owned cancellation propagated through SDK calls and retry waits. */
+  abortSignal?: AbortSignal;
 }
 
 export interface StructuredGenerationResult {
@@ -448,7 +462,7 @@ export interface AIProvider {
   // so it doesn't clash with the routing-layer's signature.
 }
 
-/** Provider-agnostic health snapshot surfaced at `/health/detailed`. */
+/** Provider-agnostic health snapshot surfaced by health/admin diagnostics. */
 export interface ProviderHealthSnapshot {
   name: string;
   healthy: boolean;
@@ -466,6 +480,13 @@ export interface ProviderHealthSnapshot {
   lastError?: string;
   /** Available KB from /proc/meminfo (Linux only; informational). */
   memAvailableKb?: number;
+  /** Signed local-model identity expected by the running release. */
+  activeModel?: string;
+  activeModelDigest?: string;
+  /** Digest independently observed from the local runtime. */
+  observedModelDigest?: string;
+  manifestVersion?: string;
+  transport?: 'unix_socket_gateway' | 'direct_loopback';
 }
 
 /**
@@ -491,6 +512,21 @@ function isUsagePersistenceFailure(error: unknown): boolean {
     || candidate?.name === 'AiBudgetError';
 }
 
+export function isProviderRequestCancellation(error: unknown): boolean {
+  const candidate = error as {
+    name?: unknown;
+    code?: unknown;
+    constructor?: { name?: unknown };
+  } | null;
+  const errorName = String(candidate?.name ?? '');
+  const constructorName = String(candidate?.constructor?.name ?? '');
+  return errorName === 'AbortError'
+    || constructorName === 'AbortError'
+    || errorName === 'APIUserAbortError'
+    || constructorName === 'APIUserAbortError'
+    || /(?:^|_)(?:abort(?:ed)?|cancel(?:ed|led)?)(?:$|_)/iu.test(String(candidate?.code ?? ''));
+}
+
 /**
  * Wraps a primary and fallback provider. If the primary throws, the
  * fallback is used transparently. Useful for high-availability setups.
@@ -514,7 +550,7 @@ export class FallbackProvider implements AIProvider {
     try {
       return await this.primary.classify(message, activeContext, options);
     } catch (err) {
-      if (isUsagePersistenceFailure(err)) throw err;
+      if (isUsagePersistenceFailure(err) || isProviderRequestCancellation(err)) throw err;
       this.onFallback?.(err as Error, 'classify');
       return this.fallback.classify(message, activeContext, options);
     }
@@ -530,7 +566,7 @@ export class FallbackProvider implements AIProvider {
     try {
       return await this.primary.callDomain(domain, history, currentMessage, stateContext, optionsOrMaxTokens);
     } catch (err) {
-      if (isUsagePersistenceFailure(err)) throw err;
+      if (isUsagePersistenceFailure(err) || isProviderRequestCancellation(err)) throw err;
       this.onFallback?.(err as Error, 'callDomain');
       return this.fallback.callDomain(domain, history, currentMessage, stateContext, optionsOrMaxTokens);
     }
@@ -547,7 +583,7 @@ export class FallbackProvider implements AIProvider {
     try {
       return await this.primary.continueWithToolResults(domain, history, currentMessage, stateContext, toolConversation, options);
     } catch (err) {
-      if (isUsagePersistenceFailure(err)) throw err;
+      if (isUsagePersistenceFailure(err) || isProviderRequestCancellation(err)) throw err;
       this.onFallback?.(err as Error, 'continueWithToolResults');
       return this.fallback.continueWithToolResults(domain, history, currentMessage, stateContext, toolConversation, options);
     }

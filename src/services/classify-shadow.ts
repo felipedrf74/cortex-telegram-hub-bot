@@ -19,8 +19,8 @@
  *   so `getActiveProvider()` would return Gemini → would shadow Gemini
  *   against itself → useless agreement signal.
  *
- * O3-A18 — Timeout cancels via AbortController so the underlying
- *   Ollama fetch is actually terminated (not just the local promise).
+ * O3-A18 — The provider owns the timeout controller. Internal shadow
+ *   deadlines remain timeout evidence and never masquerade as caller aborts.
  *
  * O3-A19 — No recursion: when the live path is Ollama (post-cutover),
  *   skip shadow entirely. Belt+suspenders: the live classifier also
@@ -48,12 +48,17 @@
 import { config } from '../config';
 import { getDb } from './database';
 import { logger } from '../utils/logger';
+import { CLASSIFIER_SHADOW_JOB_NAME } from './local-inference-vocabulary';
 import { getProvider, getActiveProvider } from './provider-registry';
 import { hmacSha256 } from '../utils/hmac';
 import { generateRequestId } from '../utils/request-context';
 import type { ClassificationResult, DomainName } from '../domains/types';
 import { withAiBudgetReservation } from './cost-guardrail';
 import { getEffectiveEntitlement } from './entitlement';
+import {
+  isSkillInferenceAccountDeletionError,
+  runWithSkillInferenceAccountAdmission,
+} from './skill-inference-account-lifecycle';
 
 // ─── Knobs ────────────────────────────────────────────────────────
 
@@ -82,6 +87,7 @@ let queued = 0;
 
 let warnedNoSecret = false;
 let warnedNoProvider = false;
+let warnedNoRouter = false;
 
 // ─── Public API ───────────────────────────────────────────────────
 
@@ -106,11 +112,29 @@ export interface ShadowClassifyInput {
  * Never throws to the caller. All failure modes log and return.
  */
 export async function runOllamaShadowClassification(input: ShadowClassifyInput): Promise<void> {
+  if (!input.userId || input.userId <= 0) return;
+  try {
+    await runWithSkillInferenceAccountAdmission(
+      { userId: input.userId },
+      (abortSignal) => runOllamaShadowClassificationAdmitted(input, abortSignal),
+    );
+  } catch (error) {
+    if (!isSkillInferenceAccountDeletionError(error)) {
+      logger.warn({
+        errorName: error instanceof Error ? error.name : typeof error,
+      }, 'classify-shadow: account-scoped execution failed');
+    }
+  }
+}
+
+async function runOllamaShadowClassificationAdmitted(
+  input: ShadowClassifyInput,
+  accountAbortSignal: AbortSignal,
+): Promise<void> {
   if (!config.localLLM?.classifyShadow) return;
   if (MAX_IN_FLIGHT === 0) return;
   // Shadow evaluation is never a reason to run a model for a Free or otherwise
   // ineligible user. Fail closed when identity/entitlement lookup is absent.
-  if (!input.userId || input.userId <= 0) return;
   try {
     if (!getEffectiveEntitlement(input.userId).aiAccessAllowed) return;
   } catch {
@@ -130,7 +154,6 @@ export async function runOllamaShadowClassification(input: ShadowClassifyInput):
     logger.debug({ requestId }, 'classify-shadow skipped — live path already ollama');
     return;
   }
-
   // Concurrency cap — drop silently when over capacity.
   if (inFlight >= MAX_IN_FLIGHT && queued >= MAX_QUEUE) {
     logger.debug(
@@ -168,9 +191,24 @@ export async function runOllamaShadowClassification(input: ShadowClassifyInput):
     }
     return;
   }
+  if (!active) {
+    queued--;
+    if (!warnedNoRouter) {
+      warnedNoRouter = true;
+      logger.warn(
+        { requestId },
+        'classify-shadow: active routing provider unavailable — skipping governed local comparison',
+      );
+    }
+    return;
+  }
 
   const messageHash = hmacSha256(secret, input.message.trim().toLowerCase());
   const db = getDb();
+  if (accountAbortSignal.aborted) {
+    queued--;
+    return;
+  }
 
   // O3-A21: row inserted upfront with Gemini baseline + model metadata.
   // The Ollama columns get UPDATEd below when the shadow call returns
@@ -208,13 +246,13 @@ export async function runOllamaShadowClassification(input: ShadowClassifyInput):
   // this loop runs at most MAX_QUEUE iterations of 50ms each).
   while (inFlight >= MAX_IN_FLIGHT) {
     await new Promise<void>((r) => setTimeout(r, 50));
+    if (accountAbortSignal.aborted) {
+      queued--;
+      return;
+    }
   }
   queued--;
   inFlight++;
-
-  // O3-A18: AbortController so timeout cancels the underlying fetch.
-  const controller = new AbortController();
-  const timeoutHandle = setTimeout(() => controller.abort('shadow_timeout'), SHADOW_TIMEOUT_MS);
 
   const start = Date.now();
   let ollamaResult: ClassificationResult | null = null;
@@ -226,22 +264,24 @@ export async function runOllamaShadowClassification(input: ShadowClassifyInput):
       // value. Use the shared system lock/budget so fire-and-forget shadow work
       // cannot wait on the live chat's same-user lock or spend Nexus Points.
       requestSource: 'system',
-      baseCategory: 'classify_shadow',
-      jobName: 'classify_shadow',
+      baseCategory: CLASSIFIER_SHADOW_JOB_NAME,
+      jobName: CLASSIFIER_SHADOW_JOB_NAME,
       runId: requestId,
-    }, () => ollama.classify(input.message, input.activeContext, {
+    }, () => active.classifyShadowWithProvider(ollama, input.message, input.activeContext, {
       userId: input.userId,
       tenantId: input.tenantId,
       requestId,
       source: 'shadow',         // O3-A19: label this as shadow telemetry
       recordUsage: true,        // zero-cost api_usage row + local capacity accounting
+      // This is an internal provider deadline, not caller cancellation.
+      // Ollama owns the timeout controller and reports LocalLLMError('timeout')
+      // so provider health and shadow evidence retain the right semantics.
       timeoutMs: SHADOW_TIMEOUT_MS,
-      abortSignal: controller.signal,  // O3-A18: real cancellation
+      abortSignal: accountAbortSignal,
     }));
   } catch (err) {
     ollamaError = err instanceof Error ? err.message : String(err);
   } finally {
-    clearTimeout(timeoutHandle);
     inFlight--;
   }
 

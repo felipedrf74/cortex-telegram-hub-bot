@@ -114,6 +114,8 @@ export interface ChatPlannerInput {
   blockNonReadOnlyPlans?: boolean;
   /** Keep deterministic parsing/execution available without permitting LLM planner tiers. */
   allowModelPlanner?: boolean;
+  /** Caller/account lifecycle cancellation for model calls and pre-execution fences. */
+  abortSignal?: AbortSignal;
   routeStartedAtMs?: number;
 }
 

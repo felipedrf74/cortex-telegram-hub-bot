@@ -79,6 +79,23 @@ vi.mock('../../src/services/database', () => ({
   withDatabaseForTestAsync: vi.fn(),
 }));
 
+vi.mock('../../src/services/skill-inference-service', () => ({
+  runWithSkillInferenceAccountAdmission: (
+    input: { userId: number; abortSignal?: AbortSignal },
+    operation: (signal: AbortSignal) => Promise<unknown>,
+  ) => {
+    const fence = testDb.prepare(`SELECT 1 AS present
+      FROM local_inference_account_deletion_fences
+      WHERE user_id = ? AND expires_at > ?`).get(input.userId, Date.now());
+    if (fence) {
+      throw Object.assign(new Error('account_deletion_in_progress'), {
+        code: 'ACCOUNT_DELETION_IN_PROGRESS',
+      });
+    }
+    return operation(input.abortSignal ?? new AbortController().signal);
+  },
+}));
+
 // ─── Imports ─────────────────────────────────────────────────────────
 
 import {
@@ -97,6 +114,8 @@ import { now } from '../../src/utils/date-parser';
 import { callDomain, continueWithToolResults } from '../../src/services/anthropic';
 import { setCookingPreferenceMemory } from '../../src/services/cooking-preferences';
 import { runWithChatRequestLocale } from '../../src/services/chat-request-locale-context';
+import { isChatShadowBaselineEligible } from '../../src/services/chat-shadow-baseline';
+import * as cookingSafetyPolicy from '../../src/services/cooking-safety-policy';
 
 // Use the provider-routed mocks (domain-handler now calls getActiveProvider().callDomain)
 const mockCallDomain = mockCallDomainFn;
@@ -381,6 +400,23 @@ describe('handleSimpleDomain', () => {
     expect(result.text).toContain('Your next race is in 3 weeks.');
     expect(result.text).toMatch(/não um profissional de saúde|not a clinician/);
     expect(mockCallDomain).toHaveBeenCalledOnce();
+    expect(isChatShadowBaselineEligible(result)).toBe(true);
+  });
+
+  it('does not enter the legacy domain provider path while account deletion is fenced', async () => {
+    testDb.prepare(`INSERT INTO local_inference_account_deletion_fences (
+      user_id, fence_token, runtime_instance_id, expires_at
+    ) VALUES (?, ?, ?, ?)`).run(
+      42,
+      '00000000-0000-4000-8000-000000000042',
+      '00000000-0000-4000-8000-000000000099',
+      Date.now() + 60_000,
+    );
+
+    await expect(handleSimpleDomain('content', 'Write a hook', 5, 42, undefined, 42))
+      .rejects.toMatchObject({ code: 'ACCOUNT_DELETION_IN_PROGRESS' });
+    expect(mockCallDomain).not.toHaveBeenCalled();
+    expect(mockDirectAnthropicCall).not.toHaveBeenCalled();
   });
 
   it('anchors a direct today-workout answer without replacing provider detail', async () => {
@@ -596,7 +632,39 @@ describe('handleSimpleDomain', () => {
 
     expect(result.text).toContain('preferência de segurança culinária');
     expect(result.text).not.toContain('amendoim triturado');
+    expect(isChatShadowBaselineEligible(result)).toBe(false);
     expect(addToConversation).toHaveBeenCalledWith(188, 'cooking', 'assistant', result.text, 188);
+  });
+
+  it('fails cooking safety evaluation closed and excludes the refusal from shadow evidence', async () => {
+    ensureUser(191);
+    mockCallDomain.mockResolvedValue({
+      text: 'Serve a normal vegetable soup.',
+      toolCalls: [],
+      stopReason: 'end_turn',
+    } as any);
+    const evaluator = vi.spyOn(cookingSafetyPolicy, 'evaluateCookingSafetyText')
+      .mockImplementationOnce(() => {
+        throw new Error('injected cooking safety evaluator failure');
+      });
+
+    try {
+      const result = await handleSimpleDomain(
+        'cooking',
+        'Give me a soup recipe',
+        5,
+        191,
+        undefined,
+        191,
+      );
+
+      expect(result.text).toContain('saved cooking safety preference');
+      expect(result.text).not.toContain('normal vegetable soup');
+      expect(isChatShadowBaselineEligible(result)).toBe(false);
+      expect(addToConversation).toHaveBeenCalledWith(191, 'cooking', 'assistant', result.text, 191);
+    } finally {
+      evaluator.mockRestore();
+    }
   });
 
   it('resolves tenant scope internally before enforcing legacy cooking answers', async () => {
@@ -612,6 +680,7 @@ describe('handleSimpleDomain', () => {
 
     expect(result.text).toContain('saved cooking safety preference');
     expect(result.text).not.toContain('crushed peanuts');
+    expect(isChatShadowBaselineEligible(result)).toBe(false);
     expect(addToConversation).toHaveBeenCalledWith(189, 'cooking', 'assistant', result.text);
   });
 
@@ -868,6 +937,27 @@ describe('handleSimpleDomain', () => {
         maxTokensOverride: undefined,
       }),
     );
+    expect(mockDirectAnthropicContinue).not.toHaveBeenCalled();
+  });
+
+  it('does not mark a direct-provider cooking safety refusal as a shadow baseline', async () => {
+    process.env.ANTHROPIC_ENABLED = 'true';
+    process.env.ANTHROPIC_API_KEY = 'test-anthropic-key';
+    ensureUser(190);
+    setCookingPreferenceMemory(190, { kind: 'allergy', value: 'walnuts' }, 190);
+    mockGetActiveProvider.mockReturnValue(null);
+    mockEnsureActiveProvider.mockReturnValue(null);
+    mockDirectAnthropicCall.mockResolvedValue({
+      text: 'Top the meal with chopped walnuts.',
+      toolCalls: [],
+      stopReason: 'end_turn',
+    } as any);
+
+    const result = await handleSimpleDomain('cooking', 'Give me a dinner idea', 5, 190, undefined, 190);
+
+    expect(result.text).toContain('saved cooking safety preference');
+    expect(result.text).not.toContain('chopped walnuts');
+    expect(isChatShadowBaselineEligible(result)).toBe(false);
     expect(mockDirectAnthropicContinue).not.toHaveBeenCalled();
   });
 

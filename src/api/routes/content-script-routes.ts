@@ -1,6 +1,6 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import {
@@ -35,6 +35,7 @@ import {
   getScript,
   SYNTHETIC_EVALUATION_SCRIPT_EXECUTION_POLICY,
 } from '../../services/content-engine';
+import { ForwardedLocalInferenceError } from '../../services/content-engine-error-contract';
 import { buildScriptPreflightBrief } from '../../services/content-script-quality';
 import { buildAuthorizedContentReferenceContext } from '../../services/content-reference-context';
 import { completeOneShotWithFallback, completeOneShotWithSearch } from '../../services/gemini-provider';
@@ -89,6 +90,18 @@ import {
 import { CONTENT_LIVE_EVAL_HARD_MAX_USD_PER_SAMPLE } from '../../services/content-live-evaluation-artifact';
 import { isLoopbackRequest } from '../secret-guards';
 import { getDb } from '../../services/database';
+import { localPrimaryInferenceConfig } from '../../services/local-primary-config';
+import { getLocalInferenceRuntimeControl } from '../../services/local-inference-runtime-control';
+import { buildContentEngineScriptCategory } from '../../services/local-inference-vocabulary';
+import {
+  executeSkillInference,
+  isLocalInferenceUserEnrolled,
+  rejectSkillInferenceApplicationResult,
+  rejectSkillInferenceApplicationOperationResults,
+  runWithSkillInferenceAccountAdmission,
+  SkillInferencePolicyError,
+} from '../../services/skill-inference-service';
+import { isProviderRequestCancellation } from '../../services/ai-provider';
 import {
   assertContentOutputLanguageFields,
   assertContentScriptOutputLanguage,
@@ -109,6 +122,23 @@ const CONTENT_SCRIPT_EDIT_MAX_INPUT_CHARS = 20_000;
 const CONTENT_SCRIPT_EDIT_MAX_ACTION_CHARS = 80;
 const CONTENT_SCRIPT_EDIT_MAX_INSTRUCTION_CHARS = 600;
 const CONTENT_SCRIPT_EDIT_MAX_OUTPUT_CHARS = 24_000;
+
+function isContentLocalPrimaryUserEnrolled(userId: number): boolean {
+  if (!localPrimaryInferenceConfig.contentProxyEnabled) return false;
+  const control = getLocalInferenceRuntimeControl();
+  return control.mode === 'active'
+    || (control.mode === 'canary'
+      && isLocalInferenceUserEnrolled(userId, control.rolloutPercent));
+}
+
+function throwIfContentScriptRequestCancelled(signal: AbortSignal): void {
+  if (!signal.aborted) return;
+  if (signal.reason instanceof Error) throw signal.reason;
+  throw Object.assign(new Error('content_script_request_cancelled'), {
+    name: 'AbortError',
+    code: 'CONTENT_SCRIPT_REQUEST_CANCELLED',
+  });
+}
 
 export function registerContentScriptRoutes(
   router: Router,
@@ -214,6 +244,18 @@ export function registerContentScriptRoutes(
     const targetScriptStyle = resolveScriptStyle(scriptStyle ?? style);
     const startMs = Date.now();
     let targetLanguage: Lang = requestLanguage;
+    let localScriptOperationId: string | null = null;
+    const requestAbortController = new AbortController();
+    const abortOnClientDisconnect = (): void => {
+      if (res.writableEnded || requestAbortController.signal.aborted) return;
+      requestAbortController.abort(Object.assign(new Error('content_script_client_disconnected'), {
+        name: 'AbortError',
+        code: 'CONTENT_SCRIPT_CLIENT_DISCONNECTED',
+      }));
+    };
+    if (typeof req.once === 'function') req.once('aborted', abortOnClientDisconnect);
+    if (typeof res.once === 'function') res.once('close', abortOnClientDisconnect);
+    if (req.aborted || res.destroyed) abortOnClientDisconnect();
 
     try {
       // CONT-M4: load the user's Voice DNA memory from content_knowledge
@@ -305,6 +347,15 @@ export function registerContentScriptRoutes(
         );
         return;
       }
+
+      // Keep one account-deletion admission across Python generation,
+      // deterministic validation, persistence, and public delivery. Nested
+      // inference calls may release earlier, but user-owned rows cannot be
+      // recreated after erasure while this outer lifecycle is still active.
+      await runWithSkillInferenceAccountAdmission({
+        userId,
+        abortSignal: requestAbortController.signal,
+      }, async (accountAbortSignal) => {
 
       // Quota proximity is response telemetry only. The canonical reservation
       // below is the sole authority that can allow or deny provider work.
@@ -433,6 +484,26 @@ export function registerContentScriptRoutes(
         promptTokens: compiledPrompt.tokenEstimate,
       });
 
+      const localContentEnrolled = isContentLocalPrimaryUserEnrolled(userId)
+        && !liveEvalContext
+        && routeDecision.route !== 'high_risk_review';
+      localScriptOperationId = localContentEnrolled ? randomUUID() : null;
+      const cloudProviderBoundary = <T,>(providerCall: () => Promise<T>): Promise<T> => (
+        withAiBudgetReservation({
+          userId,
+          requestSource: 'interactive',
+          baseCategory: liveEvalContext ? 'content_live_eval' : buildContentEngineScriptCategory(genMode),
+          jobName: liveEvalContext ? `content_live_eval:${liveEvalContext.scenario.id}` : 'content_script_generate',
+          runId: liveEvalContext?.runId ?? getCurrentRequestId() ?? null,
+          estimatedCostUsd: liveEvalContext
+            ? CONTENT_LIVE_EVAL_HARD_MAX_USD_PER_SAMPLE
+            : estimatedCost.estimatedCostUsd,
+          ...(liveEvalContext ? {
+            hardRunCostLimitUsd: liveEvalContext.budgetUsd,
+            hardJobCostLimitUsd: CONTENT_LIVE_EVAL_HARD_MAX_USD_PER_SAMPLE,
+          } : {}),
+        }, providerCall)
+      );
       const result = await getScript(
         topic.trim(),
         scriptTopicContext?.niche || niche || 'general',
@@ -450,23 +521,27 @@ export function registerContentScriptRoutes(
         resolvedRegenerationSeed,
         creatorProfile,
         tenantId,
-        (providerCall) => withAiBudgetReservation({
-          userId,
-          requestSource: 'interactive',
-          baseCategory: liveEvalContext ? 'content_live_eval' : `content_engine_script_${genMode}`,
-          jobName: liveEvalContext ? `content_live_eval:${liveEvalContext.scenario.id}` : 'content_script_generate',
-          runId: liveEvalContext?.runId ?? getCurrentRequestId() ?? null,
-          estimatedCostUsd: liveEvalContext
-            ? CONTENT_LIVE_EVAL_HARD_MAX_USD_PER_SAMPLE
-            : estimatedCost.estimatedCostUsd,
-          ...(liveEvalContext ? {
-            hardRunCostLimitUsd: liveEvalContext.budgetUsd,
-            hardJobCostLimitUsd: CONTENT_LIVE_EVAL_HARD_MAX_USD_PER_SAMPLE,
-          } : {}),
-        }, providerCall),
+        localContentEnrolled ? undefined : cloudProviderBoundary,
         liveEvalContext ? SYNTHETIC_EVALUATION_SCRIPT_EXECUTION_POLICY : undefined,
+        {
+          ...(localScriptOperationId ? { operationId: localScriptOperationId } : {}),
+          localPrimaryAdmitted: localContentEnrolled,
+          abortSignal: accountAbortSignal,
+        },
       );
+      // The Python request may resolve at the same moment an account-erasure
+      // fence aborts this lifecycle. Re-check before any locale/safety branch
+      // can publish a response or mutate application-owned evidence.
+      throwIfContentScriptRequestCancelled(accountAbortSignal);
       if (hasContentScriptResultLocaleMismatch(targetLanguage, result)) {
+        if (localScriptOperationId) {
+          rejectSkillInferenceApplicationOperationResults({
+            operationId: localScriptOperationId,
+            tenantId,
+            userId,
+            reason: 'content_script_final_locale_mismatch',
+          });
+        }
         generationObservation.complete('blocked', 'output_safety_block');
         recordContentWorkspaceQualitySignal('generation_output_blocked');
         logger.warn(
@@ -558,6 +633,14 @@ export function registerContentScriptRoutes(
         },
       });
       if (scriptResponse.scriptSafety.blocked) {
+        if (localScriptOperationId) {
+          rejectSkillInferenceApplicationOperationResults({
+            operationId: localScriptOperationId,
+            tenantId,
+            userId,
+            reason: 'content_script_final_safety_block',
+          });
+        }
         generationObservation.complete('blocked', 'output_safety_block');
         recordContentWorkspaceQualitySignal('generation_output_blocked');
         logger.warn(
@@ -586,6 +669,7 @@ export function registerContentScriptRoutes(
       // locale contract and the script-safety gate. A provider-valid payload
       // can still fail during deterministic response assembly, and that
       // failure must remain genuinely mutation-free.
+      throwIfContentScriptRequestCancelled(accountAbortSignal);
       if (canPersistSourcePackage) {
         try {
           const persisted = persistContentArtifacts({
@@ -625,6 +709,7 @@ export function registerContentScriptRoutes(
             reason: 'review_required_degraded_generation',
           };
         } else {
+          throwIfContentScriptRequestCancelled(accountAbortSignal);
           try {
             const saved = saveGeneratedScriptToWorkspace({
               scope: { tenantId, userId },
@@ -690,10 +775,36 @@ export function registerContentScriptRoutes(
         recordContentWorkspaceQualitySignal('factuality_warning');
       }
       recordContentWorkspaceProductSignal('script_generated');
+      throwIfContentScriptRequestCancelled(accountAbortSignal);
       generationObservation.complete('success');
       sendSuccess(res, savedIdea ? { ...scriptResponse, savedIdea } : scriptResponse);
+      });
     } catch (err: any) {
+      if (err?.code === 'ACCOUNT_DELETION_IN_PROGRESS') {
+        generationObservation.complete('blocked', 'internal_failure');
+        if (!res.headersSent && !res.destroyed) {
+          sendError(
+            res,
+            'ACCOUNT_DELETION_IN_PROGRESS',
+            'No new content generation can start while this account is being deleted.',
+            409,
+          );
+        }
+        return;
+      }
+      if (requestAbortController.signal.aborted || isProviderRequestCancellation(err)) {
+        generationObservation.complete('blocked', 'provider_failure');
+        return;
+      }
       if (err instanceof ContentOutputLanguageMismatchError) {
+        if (localScriptOperationId) {
+          rejectSkillInferenceApplicationOperationResults({
+            operationId: localScriptOperationId,
+            tenantId,
+            userId,
+            reason: 'content_script_engine_locale_mismatch',
+          });
+        }
         generationObservation.complete('blocked', 'output_safety_block');
         recordContentWorkspaceQualitySignal('generation_output_blocked');
         logger.warn(
@@ -703,10 +814,27 @@ export function registerContentScriptRoutes(
         sendContentScriptLocaleMismatch(res, requestLanguage);
         return;
       }
+      if (err instanceof ForwardedLocalInferenceError) {
+        generationObservation.completeFromError(err);
+        if (err.status === 429 || err.status === 503) res.setHeader('Retry-After', '60');
+        sendError(res, err.code, err.publicMessage, err.status, err.details);
+        return;
+      }
+      if (localScriptOperationId) {
+        rejectSkillInferenceApplicationOperationResults({
+          operationId: localScriptOperationId,
+          tenantId,
+          userId,
+          reason: 'content_script_public_delivery_failed',
+        });
+      }
       generationObservation.completeFromError(err);
       logger.error({ err, topicLength: typeof topic === 'string' ? topic.trim().length : 0 }, 'iOS content/script failed');
       if (sendAiBudgetError(res, err)) return;
       sendInternalError(res, 'Script generation failed');
+    } finally {
+      if (typeof req.off === 'function') req.off('aborted', abortOnClientDisconnect);
+      if (typeof res.off === 'function') res.off('close', abortOnClientDisconnect);
     }
   }));
 
@@ -811,7 +939,23 @@ export function registerContentScriptRoutes(
     }
 
     const startMs = Date.now();
+    const requestAbortController = new AbortController();
+    const abortOnClientDisconnect = (): void => {
+      if (res.writableEnded || requestAbortController.signal.aborted) return;
+      requestAbortController.abort(Object.assign(new Error('content_research_refresh_client_disconnected'), {
+        name: 'AbortError',
+        code: 'CONTENT_SCRIPT_CLIENT_DISCONNECTED',
+      }));
+    };
+    if (typeof req.once === 'function') req.once('aborted', abortOnClientDisconnect);
+    if (typeof res.once === 'function') res.once('close', abortOnClientDisconnect);
+    if (req.aborted || res.destroyed) abortOnClientDisconnect();
     try {
+      await runWithSkillInferenceAccountAdmission({
+        userId,
+        abortSignal: requestAbortController.signal,
+      }, async (accountAbortSignal) => {
+      throwIfContentScriptRequestCancelled(accountAbortSignal);
       const budgetState: ContentBudgetState = isPaidAiCostControlsEnforcementEnabled()
         ? budgetStateFromQuota(getDailyQuotaStatus(userId, { requestSource: 'interactive' }))
         : 'healthy';
@@ -837,7 +981,13 @@ export function registerContentScriptRoutes(
             ? 'Return source notes only in English. Do not emit Spanish output.'
             : `Return source notes only in ${requestLanguage === 'pt-PT' ? 'European Portuguese' : 'pt-BR'}. Do not emit Spanish output.`,
         ].join('\n');
-        const providerOptions = { maxTokens: 900, temperature: 0.2, userId, tenantId: routeTenantId };
+        const providerOptions = {
+          maxTokens: 900,
+          temperature: 0.2,
+          userId,
+          tenantId: routeTenantId,
+          abortSignal: accountAbortSignal,
+        };
         let openAiAttempted = false;
         const completeWithBoundedOpenAi = async () => {
           openAiAttempted = true;
@@ -854,6 +1004,8 @@ export function registerContentScriptRoutes(
           try {
             return await completeWithBoundedOpenAi();
           } catch (err) {
+            if (isProviderRequestCancellation(err)) throw err;
+            throwIfContentScriptRequestCancelled(accountAbortSignal);
             rethrowAiUsageFailClosedError(err);
             logger.warn({ err }, 'Bounded OpenAI research refresh failed; trying Gemini grounding');
           }
@@ -869,6 +1021,8 @@ export function registerContentScriptRoutes(
           );
           return { ...result, researchProvider: 'gemini-search' };
         } catch (err) {
+          if (isProviderRequestCancellation(err)) throw err;
+          throwIfContentScriptRequestCancelled(accountAbortSignal);
           geminiError = err;
           if (!isProviderHeadroomDenial(err)) rethrowAiUsageFailClosedError(err);
         }
@@ -880,12 +1034,15 @@ export function registerContentScriptRoutes(
           try {
             return await completeWithBoundedOpenAi();
           } catch (err) {
+            if (isProviderRequestCancellation(err)) throw err;
+            throwIfContentScriptRequestCancelled(accountAbortSignal);
             rethrowAiUsageFailClosedError(err);
             if (!isProviderHeadroomDenial(geminiError)) throw err;
           }
         }
         throw geminiError;
       });
+      throwIfContentScriptRequestCancelled(accountAbortSignal);
       if (hasContentOutputLocaleMismatch(requestLanguage, text)) {
         sendError(
           res,
@@ -917,10 +1074,26 @@ export function registerContentScriptRoutes(
         appliedMode: 'research_refresh',
         warnings: refreshedSummary.length === 0 ? ['No fresh source summary was returned.'] : [],
       }));
+      });
     } catch (err: any) {
+      if (err?.code === 'ACCOUNT_DELETION_IN_PROGRESS') {
+        if (!res.headersSent && !res.destroyed) {
+          sendError(
+            res,
+            'ACCOUNT_DELETION_IN_PROGRESS',
+            'No new Content research can start while this account is being deleted.',
+            409,
+          );
+        }
+        return;
+      }
+      if (requestAbortController.signal.aborted || isProviderRequestCancellation(err)) return;
       logger.error({ err, topicLength: topic.length }, 'iOS content/script research refresh failed');
       if (sendAiBudgetError(res, err)) return;
       sendInternalError(res, 'Research refresh failed');
+    } finally {
+      if (typeof req.removeListener === 'function') req.removeListener('aborted', abortOnClientDisconnect);
+      if (typeof res.removeListener === 'function') res.removeListener('close', abortOnClientDisconnect);
     }
   }));
 }
@@ -1014,7 +1187,23 @@ async function handleScriptEditRoute(
   }
 
   const startMs = Date.now();
+  const requestAbortController = new AbortController();
+  const abortOnClientDisconnect = (): void => {
+    if (res.writableEnded || requestAbortController.signal.aborted) return;
+    requestAbortController.abort(Object.assign(new Error('content_script_edit_client_disconnected'), {
+      name: 'AbortError',
+      code: 'CONTENT_SCRIPT_CLIENT_DISCONNECTED',
+    }));
+  };
+  if (typeof req.once === 'function') req.once('aborted', abortOnClientDisconnect);
+  if (typeof res.once === 'function') res.once('close', abortOnClientDisconnect);
+  if (req.aborted || res.destroyed) abortOnClientDisconnect();
   try {
+    await runWithSkillInferenceAccountAdmission({
+      userId,
+      abortSignal: requestAbortController.signal,
+    }, async (accountAbortSignal) => {
+    throwIfContentScriptRequestCancelled(accountAbortSignal);
     const budgetState: ContentBudgetState = isPaidAiCostControlsEnforcementEnabled()
       ? budgetStateFromQuota(getDailyQuotaStatus(userId, { requestSource: 'interactive' }))
       : 'healthy';
@@ -1029,13 +1218,53 @@ async function handleScriptEditRoute(
       requestLanguage,
     });
     const baseCategory = options.kind === 'expand' ? 'content_script_expand' : 'content_script_rewrite';
-    const { text, provider } = await withAiBudgetReservation({
-      userId,
-      requestSource: 'interactive',
-      baseCategory,
-      jobName: baseCategory,
-      runId: getCurrentRequestId() ?? null,
-    }, () => completeOneShotWithFallback(
+    const operationId = getCurrentRequestId() ?? randomUUID();
+    // The operation id may be client-derived and replayed. Ledger run ids are
+    // independently server-minted so a retry cannot collide with an earlier
+    // inference stage's primary key.
+    const governedRunId = `content-edit:${randomUUID()}`;
+    const requestedOutputTokens = options.kind === 'expand' ? 1800 : 900;
+    const localEditEnrolled = routeDecision.route !== 'high_risk_review'
+      && isContentLocalPrimaryUserEnrolled(userId);
+    const completion = localEditEnrolled
+      ? await executeSkillInference({
+        tenantId: routeTenantId,
+        userId,
+        skillId: 'content',
+        taskType: `content_script_${options.kind}`,
+        riskClass: 'low',
+        executionClass: 'interactive',
+        operationId,
+        runId: governedRunId,
+        prompt: userPrompt,
+        applicationGuidance: systemPrompt,
+        schemaId: 'text',
+        requestedOutputTokens,
+        temperature: options.kind === 'expand' ? 0.45 : 0.35,
+        containsPrivateData: true,
+        allowCloudEscalation: false,
+        redactionRequired: false,
+        requestSource: 'interactive',
+        budgetRequest: {
+          userId,
+          requestSource: 'interactive',
+          baseCategory,
+          jobName: baseCategory,
+          runId: operationId,
+        },
+        cloudBudgetBoundary: async () => {
+          throw new Error('Private Content edits are local-only after local admission');
+        },
+        abortSignal: accountAbortSignal,
+        deadlineMs: 45_000,
+      })
+      : await withAiBudgetReservation({
+        userId,
+        requestSource: 'interactive',
+        baseCategory,
+        jobName: baseCategory,
+        runId: operationId,
+      }, () => completeOneShotWithFallback(
         systemPrompt,
         userPrompt,
         baseCategory,
@@ -1043,14 +1272,25 @@ async function handleScriptEditRoute(
           throw new Error('Anthropic fallback disabled for content script edit path');
         },
         {
-          maxTokens: options.kind === 'expand' ? 1800 : 900,
+          maxTokens: requestedOutputTokens,
           temperature: options.kind === 'expand' ? 0.45 : 0.35,
           userId,
           tenantId: routeTenantId,
+          abortSignal: accountAbortSignal,
         },
       ));
+    throwIfContentScriptRequestCancelled(accountAbortSignal);
+    const { text, provider } = completion;
     const edited = typeof text === 'string' && text.trim().length > 0 ? text : '';
     if (edited.length > CONTENT_SCRIPT_EDIT_MAX_OUTPUT_CHARS) {
+      if (localEditEnrolled) {
+        rejectSkillInferenceApplicationResult({
+          runId: governedRunId,
+          tenantId: routeTenantId,
+          userId,
+          reason: 'content_script_edit_output_too_large',
+        });
+      }
       sendError(
         res,
         'CONTENT_SCRIPT_EDIT_OUTPUT_TOO_LARGE',
@@ -1067,6 +1307,14 @@ async function handleScriptEditRoute(
       return;
     }
     if (edited && hasContentOutputLocaleMismatch(requestLanguage, edited)) {
+      if (localEditEnrolled) {
+        rejectSkillInferenceApplicationResult({
+          runId: governedRunId,
+          tenantId: routeTenantId,
+          userId,
+          reason: 'content_script_edit_locale_mismatch',
+        });
+      }
       sendError(
         res,
         'CONTENT_SCRIPT_EDIT_LOCALE_MISMATCH',
@@ -1092,7 +1340,20 @@ async function handleScriptEditRoute(
       appliedMode: options.kind,
       warnings: edited ? [] : ['The edit provider returned an empty response; original script was preserved.'],
     }));
+    });
   } catch (err: any) {
+    if (err?.code === 'ACCOUNT_DELETION_IN_PROGRESS') {
+      if (!res.headersSent && !res.destroyed) {
+        sendError(
+          res,
+          'ACCOUNT_DELETION_IN_PROGRESS',
+          'No new Content edit can start while this account is being deleted.',
+          409,
+        );
+      }
+      return;
+    }
+    if (requestAbortController.signal.aborted || isProviderRequestCancellation(err)) return;
     logger.error({
       err,
       topicLength: topic.length,
@@ -1100,7 +1361,14 @@ async function handleScriptEditRoute(
       editKind: options.kind,
     }, `iOS content/script ${options.kind} failed`);
     if (sendAiBudgetError(res, err)) return;
+    if (err instanceof SkillInferencePolicyError) {
+      sendError(res, err.code, err.message, err.status, err.details);
+      return;
+    }
     sendInternalError(res, options.kind === 'expand' ? 'Script expansion failed' : 'Script rewrite failed');
+  } finally {
+    if (typeof req.removeListener === 'function') req.removeListener('aborted', abortOnClientDisconnect);
+    if (typeof res.removeListener === 'function') res.removeListener('close', abortOnClientDisconnect);
   }
 }
 

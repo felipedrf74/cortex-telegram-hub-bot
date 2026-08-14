@@ -155,6 +155,20 @@ describe('ChatActionPlanner', () => {
     testDb?.close();
   });
 
+  it('rejects an already-cancelled action-planner turn before planning or execution', async () => {
+    const controller = new AbortController();
+    const accountDeletion = Object.assign(new Error('account deletion started'), {
+      name: 'AbortError',
+      code: 'ACCOUNT_DELETION_IN_PROGRESS',
+    });
+    controller.abort(accountDeletion);
+
+    await expect(tryHandleChatActionPlan({
+      ...baseInput,
+      abortSignal: controller.signal,
+    })).rejects.toBe(accountDeletion);
+  });
+
   it('asks a clarifying question instead of guessing for ambiguous schedule requests', async () => {
     const plan = await buildChatActionPlan({
       ...baseInput,

@@ -89,15 +89,27 @@ function makeResponse() {
   return { payload, res };
 }
 
-function makeDbRecorder(rows: unknown[] = []) {
+function makeDbRecorder(rows: unknown[] = [], currentPlan: Record<string, number> | undefined = {
+  local_operations_hourly: 20,
+  local_operations_daily: 100,
+  longform_scripts_daily: 6,
+  ordinary_context_tokens: 8192,
+  content_context_tokens: 12288,
+  script_segment_output_tokens: 5120,
+  local_cloud_fallback_run_usd: 0.15,
+  local_cloud_fallback_daily_usd: 0.40,
+}) {
   const runs: Array<{ sql: string; args: unknown[] }> = [];
   const all = vi.fn(() => rows);
+  const get = vi.fn(() => currentPlan);
   return {
     all,
+    get,
     runs,
     db: {
       prepare: vi.fn((sql: string) => ({
         all,
+        get,
         run: vi.fn((...args: unknown[]) => {
           runs.push({ sql, args });
         }),
@@ -139,6 +151,16 @@ describe('portal plan routes', () => {
         allowed_skills_json: '["secretary"]',
         per_skill_caps_json: '{"secretary":1}',
         metadata_json: '{"badge":"starter"}',
+        local_operations_hourly: 0,
+        local_operations_daily: 0,
+        longform_scripts_daily: 0,
+        active_content_jobs: 0,
+        ordinary_context_tokens: 0,
+        content_context_tokens: 0,
+        script_segment_output_tokens: 0,
+        local_queue_weight: 0,
+        local_cloud_fallback_run_usd: 0,
+        local_cloud_fallback_daily_usd: 0,
         active: 1,
         updated_at: '2026-04-21T00:00:00.000Z',
       },
@@ -163,6 +185,16 @@ describe('portal plan routes', () => {
         allowedSkills: ['secretary'],
         perSkillCaps: { secretary: 1 },
         metadata: { badge: 'starter' },
+        localOperationsHourly: 0,
+        localOperationsDaily: 0,
+        longformScriptsDaily: 0,
+        activeContentJobs: 0,
+        ordinaryContextTokens: 0,
+        contentContextTokens: 0,
+        scriptSegmentOutputTokens: 0,
+        localQueueWeight: 0,
+        localCloudFallbackRunUsd: 0,
+        localCloudFallbackDailyUsd: 0,
         active: true,
         updatedAt: '2026-04-21T00:00:00.000Z',
       }],
@@ -241,6 +273,81 @@ describe('portal plan routes', () => {
     expect(recorder.runs).toEqual([]);
   });
 
+  it('rejects out-of-envelope local-model plan limits before mutating state', () => {
+    const recorder = makeDbRecorder();
+    hoisted.getDb.mockReturnValue(recorder.db);
+    const { app, routes } = makeApp();
+    registerPortalPlanRoutes(app as any);
+    const handler = routes.get('PUT /api/plans/:planId')?.[2]!;
+    const { payload, res } = makeResponse();
+
+    handler({
+      params: { planId: 'max' },
+      body: { dailyCostUsd: 0.06, contentContextTokens: 32_768 },
+    }, res);
+
+    expect(payload.statusCode).toBe(400);
+    expect(payload.body).toEqual({
+      ok: false,
+      message: 'contentContextTokens must be an integer from 0 to 16384',
+    });
+    expect(recorder.runs).toEqual([]);
+  });
+
+  it('rejects invalid local-to-cloud fallback ceilings before mutating state', () => {
+    const recorder = makeDbRecorder();
+    hoisted.getDb.mockReturnValue(recorder.db);
+    const { app, routes } = makeApp();
+    registerPortalPlanRoutes(app as any);
+    const handler = routes.get('PUT /api/plans/:planId')?.[2]!;
+    const { payload, res } = makeResponse();
+
+    handler({
+      params: { planId: 'pro' },
+      body: { dailyCostUsd: 0.04, localCloudFallbackDailyUsd: -0.01 },
+    }, res);
+
+    expect(payload.statusCode).toBe(400);
+    expect(payload.body).toEqual({
+      ok: false,
+      message: 'localCloudFallbackDailyUsd must be from 0 to 1000',
+    });
+    expect(recorder.runs).toEqual([]);
+  });
+
+  it('rejects incoherent local limits, including partial updates against durable values', () => {
+    const recorder = makeDbRecorder();
+    hoisted.getDb.mockReturnValue(recorder.db);
+    const { app, routes } = makeApp();
+    registerPortalPlanRoutes(app as any);
+    const handler = routes.get('PUT /api/plans/:planId')?.[2]!;
+    const first = makeResponse();
+
+    handler({
+      params: { planId: 'pro' },
+      body: { dailyCostUsd: 0.04, localOperationsHourly: 101 },
+    }, first.res);
+
+    expect(first.payload.statusCode).toBe(400);
+    expect(first.payload.body).toEqual({
+      ok: false,
+      message: 'localOperationsHourly cannot exceed localOperationsDaily',
+    });
+    expect(recorder.runs).toEqual([]);
+
+    const second = makeResponse();
+    handler({
+      params: { planId: 'pro' },
+      body: { dailyCostUsd: 0.04, localCloudFallbackRunUsd: 0.41 },
+    }, second.res);
+    expect(second.payload.statusCode).toBe(400);
+    expect(second.payload.body).toEqual({
+      ok: false,
+      message: 'localCloudFallbackRunUsd cannot exceed localCloudFallbackDailyUsd',
+    });
+    expect(recorder.runs).toEqual([]);
+  });
+
   it('keeps the Free model-backed budget fixed at zero', () => {
     const recorder = makeDbRecorder();
     hoisted.getDb.mockReturnValue(recorder.db);
@@ -274,6 +381,16 @@ describe('portal plan routes', () => {
         dailyTokenLimit: 1000,
         dailyMessageLimit: 50,
         allowedSkills: ['secretary', 'training', 12],
+        localOperationsHourly: 40,
+        localOperationsDaily: 200,
+        longformScriptsDaily: 20,
+        activeContentJobs: 2,
+        ordinaryContextTokens: 12_288,
+        contentContextTokens: 16_384,
+        scriptSegmentOutputTokens: 6_144,
+        localQueueWeight: 2,
+        localCloudFallbackRunUsd: 0.25,
+        localCloudFallbackDailyUsd: 0.60,
       },
     };
     const { app, routes } = makeApp();
@@ -284,8 +401,11 @@ describe('portal plan routes', () => {
     handler(req, res);
 
     expect(recorder.runs).toEqual([{
-      sql: "UPDATE plan_configs SET daily_cost_usd = ?, monthly_cost_usd = ?, daily_token_limit = ?, daily_message_limit = ?, allowed_skills_json = ?, updated_at = datetime('now') WHERE plan_id = ?",
-      args: [0.75, 1.8, 1000, 50, JSON.stringify(['secretary', 'training']), 'max'],
+      sql: "UPDATE plan_configs SET daily_cost_usd = ?, monthly_cost_usd = ?, daily_token_limit = ?, daily_message_limit = ?, allowed_skills_json = ?, local_operations_hourly = ?, local_operations_daily = ?, longform_scripts_daily = ?, active_content_jobs = ?, ordinary_context_tokens = ?, content_context_tokens = ?, script_segment_output_tokens = ?, local_queue_weight = ?, local_cloud_fallback_run_usd = ?, local_cloud_fallback_daily_usd = ?, updated_at = datetime('now') WHERE plan_id = ?",
+      args: [
+        0.75, 1.8, 1000, 50, JSON.stringify(['secretary', 'training']),
+        40, 200, 20, 2, 12_288, 16_384, 6_144, 2, 0.25, 0.60, 'max',
+      ],
     }]);
     expect(hoisted.setPlanDailyCostCapOverride).toHaveBeenCalledWith('max', 0.75);
     expect(hoisted.setPlanMonthlyCostCapOverride).toHaveBeenCalledWith('max', 1.8);
@@ -297,6 +417,16 @@ describe('portal plan routes', () => {
       dailyTokenLimit: 1000,
       dailyMessageLimit: 50,
       allowedSkills: ['secretary', 'training'],
+      localOperationsHourly: 40,
+      localOperationsDaily: 200,
+      longformScriptsDaily: 20,
+      activeContentJobs: 2,
+      ordinaryContextTokens: 12_288,
+      contentContextTokens: 16_384,
+      scriptSegmentOutputTokens: 6_144,
+      localQueueWeight: 2,
+      localCloudFallbackRunUsd: 0.25,
+      localCloudFallbackDailyUsd: 0.60,
     });
     expect(payload.body).toEqual({ ok: true });
   });

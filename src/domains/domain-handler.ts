@@ -70,6 +70,8 @@ import {
   buildChatReplyLanguagePromptBlock,
   getCurrentChatRequestLocale,
 } from '../services/chat-request-locale-context';
+import { runWithSkillInferenceAccountAdmission } from '../services/skill-inference-service';
+import { markChatShadowBaselineEligible } from '../services/chat-shadow-baseline';
 
 // ─── Phase 3 Slice A — Chat-triggered onboarding ────────────────────
 //
@@ -642,7 +644,38 @@ export async function handleSimpleDomain(
   // conservative defaults (e.g., finance routes to cloud when
   // ownerSkill is missing).
   phaseKHints?: { ownerSkill?: string; executeIntent?: boolean },
+  callerAbortSignal?: AbortSignal,
 ): Promise<DomainResponse> {
+  const operation = (abortSignal?: AbortSignal) => handleSimpleDomainAdmitted(
+    domain,
+    message,
+    maxIterations,
+    userId,
+    maxTokensOverride,
+    tenantId,
+    phaseKHints,
+    abortSignal,
+  );
+  if (typeof userId === 'number' && Number.isSafeInteger(userId) && userId > 0) {
+    return runWithSkillInferenceAccountAdmission({
+      userId,
+      abortSignal: callerAbortSignal,
+    }, operation);
+  }
+  return operation(callerAbortSignal);
+}
+
+async function handleSimpleDomainAdmitted(
+  domain: DomainName,
+  message: string,
+  maxIterations = 5,
+  userId?: number,
+  maxTokensOverride?: number,
+  tenantId?: number,
+  phaseKHints?: { ownerSkill?: string; executeIntent?: boolean },
+  accountAbortSignal?: AbortSignal,
+): Promise<DomainResponse> {
+  throwIfAccountModelWorkAborted(accountAbortSignal);
   const hasUserScope = typeof userId === 'number';
   const currentTurnOnly = hasUserScope && shouldUseCurrentTurnOnly(domain, message);
   const history = hasUserScope && !currentTurnOnly
@@ -656,6 +689,7 @@ export async function handleSimpleDomain(
   const stateContext = replyLanguageBlock
     ? `${baseStateContext}\n\n${replyLanguageBlock}`
     : baseStateContext;
+  throwIfAccountModelWorkAborted(accountAbortSignal);
 
   try {
     // Get the active routing provider (handles fallback + circuit breaker)
@@ -677,6 +711,7 @@ export async function handleSimpleDomain(
         continueDirectAnthropicWithToolResults,
         tenantId,
         currentTurnOnly,
+        accountAbortSignal,
       );
     }
 
@@ -703,7 +738,9 @@ export async function handleSimpleDomain(
       ownerSkill: derivedOwnerSkill,
       executeIntent: phaseKHints?.executeIntent,
       currentTurnOnly,
+      ...(accountAbortSignal ? { abortSignal: accountAbortSignal } : {}),
     });
+    throwIfAccountModelWorkAborted(accountAbortSignal);
     let finalText = result.text;
 
     logger.debug({ domain, provider: provider.name, hasTools: result.toolCalls.length > 0 }, 'Domain call completed via routing provider');
@@ -729,6 +766,7 @@ export async function handleSimpleDomain(
       // Execute tool calls in parallel
       const toolResults = await Promise.all(
         result.toolCalls.map(async (tc) => {
+          throwIfAccountModelWorkAborted(accountAbortSignal);
           if (currentTurnOnly) {
             logger.info(
               { domain, userId, tenantId, tool: tc.name },
@@ -751,6 +789,7 @@ export async function handleSimpleDomain(
             return { type: 'tool_result' as const, tool_use_id: tc.id, content };
           }
           const toolResult = await executeScopedToolCall(tc.name, tc.input as Record<string, any>, userId, tenantId);
+          throwIfAccountModelWorkAborted(accountAbortSignal);
           let content = JSON.stringify(toolResult);
           if (content.length > 2000) content = content.slice(0, 2000) + '...(truncated)';
           return { type: 'tool_result' as const, tool_use_id: tc.id, content };
@@ -768,6 +807,7 @@ export async function handleSimpleDomain(
         userId,
         tenantId,
       );
+      throwIfAccountModelWorkAborted(accountAbortSignal);
 
       // Build tool conversation in provider-agnostic format
       toolConversation.push(
@@ -783,7 +823,9 @@ export async function handleSimpleDomain(
         tenantId,
         toolLoopProviderName: result.routedProviderName,
         currentTurnOnly,
+        ...(accountAbortSignal ? { abortSignal: accountAbortSignal } : {}),
       });
+      throwIfAccountModelWorkAborted(accountAbortSignal);
       finalText = result.text;
     }
 
@@ -818,9 +860,17 @@ export async function handleSimpleDomain(
         : normalizeReplyForUserLanguage(finalText, userId);
     finalText = anchorTodayWorkoutAnswer(domain, message, finalText);
     finalText = applyCoachAnswerSafety(domain, message, finalText, userId, currentTurnOnly);
-    finalText = enforceCookingDomainAnswerSafety(domain, finalText, userId, tenantId, currentTurnOnly);
+    const cookingSafety = enforceCookingDomainAnswerSafety(
+      domain,
+      finalText,
+      userId,
+      tenantId,
+      currentTurnOnly,
+    );
+    finalText = cookingSafety.text;
 
     if (hasUserScope && !currentTurnOnly) {
+      throwIfAccountModelWorkAborted(accountAbortSignal);
       const storedText = toolsUsed.length > 0
         ? `[Tools: ${[...new Set(toolsUsed)].join(', ')}]\n${finalText}`
         : finalText;
@@ -828,8 +878,20 @@ export async function handleSimpleDomain(
       addScopedConversation(userId, domain, 'assistant', storedText, tenantId);
     }
 
-    return { text: finalText, domain };
+    throwIfAccountModelWorkAborted(accountAbortSignal);
+    return markChatShadowBaselineEligible({
+      text: finalText,
+      domain,
+    }, !legacyWriteBlocked
+        && !cookingSafety.replaced
+        && result.toolCalls.length === 0
+        && result.stopReason !== 'max_tokens'
+        && result.stopReason !== 'length'
+        && finalText.trim().length > 0);
   } catch (err: unknown) {
+    if (accountAbortSignal?.aborted) {
+      throw accountAbortSignal.reason instanceof Error ? accountAbortSignal.reason : err;
+    }
     if (err instanceof AITimeoutError) {
       return { text: '⏱ Sorry, I took too long to respond. Please try again with a simpler question.', domain };
     }
@@ -847,14 +909,18 @@ async function handleWithDirectCalls(
   callDomainFn: (...args: any[]) => Promise<any>, continueWithToolResultsFn: (...args: any[]) => Promise<any>,
   tenantId?: number,
   currentTurnOnly = false,
+  accountAbortSignal?: AbortSignal,
 ): Promise<DomainResponse> {
+  throwIfAccountModelWorkAborted(accountAbortSignal);
   const directOptions = {
     maxTokensOverride,
     userId,
     tenantId,
     currentTurnOnly,
+    ...(accountAbortSignal ? { abortSignal: accountAbortSignal } : {}),
   };
   let result = await callDomainFn(domain, history, message, stateContext, directOptions);
+  throwIfAccountModelWorkAborted(accountAbortSignal);
   let finalText = result.text;
 
   const toolConversation: any[] = [];
@@ -873,6 +939,7 @@ async function handleWithDirectCalls(
     }
     const toolResults = await Promise.all(
       result.toolCalls.map(async (tc: any) => {
+        throwIfAccountModelWorkAborted(accountAbortSignal);
         if (currentTurnOnly) {
           logger.info(
             { domain, userId, tenantId, tool: tc.name, path: 'direct-calls' },
@@ -895,6 +962,7 @@ async function handleWithDirectCalls(
           return { type: 'tool_result' as const, tool_use_id: tc.id, content };
         }
         const toolResult = await executeScopedToolCall(tc.name, tc.input as Record<string, any>, userId, tenantId);
+        throwIfAccountModelWorkAborted(accountAbortSignal);
         let content = JSON.stringify(toolResult);
         // Truncate large results (consistent with primary path)
         if (content.length > 2000) content = content.slice(0, 2000) + '...(truncated)';
@@ -910,11 +978,13 @@ async function handleWithDirectCalls(
       userId,
       tenantId,
     );
+    throwIfAccountModelWorkAborted(accountAbortSignal);
     toolConversation.push(
       { role: 'assistant' as const, content: assistantContent },
       { role: 'user' as const, content: toolResults },
     );
     result = await continueWithToolResultsFn(domain, history, message, stateContext, toolConversation, userId, directOptions);
+    throwIfAccountModelWorkAborted(accountAbortSignal);
     finalText = result.text;
   }
 
@@ -947,9 +1017,17 @@ async function handleWithDirectCalls(
       : normalizeReplyForUserLanguage(finalText, userId);
   finalText = anchorTodayWorkoutAnswer(domain, message, finalText);
   finalText = applyCoachAnswerSafety(domain, message, finalText, userId, currentTurnOnly);
-  finalText = enforceCookingDomainAnswerSafety(domain, finalText, userId, tenantId, currentTurnOnly);
+  const cookingSafety = enforceCookingDomainAnswerSafety(
+    domain,
+    finalText,
+    userId,
+    tenantId,
+    currentTurnOnly,
+  );
+  finalText = cookingSafety.text;
 
   if (typeof userId === 'number' && !currentTurnOnly) {
+    throwIfAccountModelWorkAborted(accountAbortSignal);
     addScopedConversation(userId, domain, 'user', message, tenantId);
     const storedText = toolsUsed.length > 0
       ? `[Tools: ${[...new Set(toolsUsed)].join(', ')}]\n${finalText}`
@@ -957,7 +1035,25 @@ async function handleWithDirectCalls(
     addScopedConversation(userId, domain, 'assistant', storedText, tenantId);
   }
 
-  return { text: finalText, domain };
+  throwIfAccountModelWorkAborted(accountAbortSignal);
+  return markChatShadowBaselineEligible({
+    text: finalText,
+    domain,
+  }, !legacyWriteBlocked
+      && !cookingSafety.replaced
+      && (!result.toolCalls || result.toolCalls.length === 0)
+      && result.stopReason !== 'max_tokens'
+      && result.stopReason !== 'length'
+      && finalText.trim().length > 0);
+}
+
+function throwIfAccountModelWorkAborted(abortSignal?: AbortSignal): void {
+  if (!abortSignal?.aborted) return;
+  if (abortSignal.reason instanceof Error) throw abortSignal.reason;
+  throw Object.assign(new Error('Account-scoped model work was cancelled.'), {
+    name: 'AbortError',
+    code: 'ABORT_ERR',
+  });
 }
 
 // ─── Coach / health-guidance answer safety ───────────────────────────
@@ -1059,9 +1155,9 @@ function enforceCookingDomainAnswerSafety(
   userId?: number,
   tenantId?: number,
   currentTurnOnly = false,
-): string {
+): { text: string; replaced: boolean } {
   if (domain !== 'cooking' || typeof userId !== 'number') {
-    return finalText;
+    return { text: finalText, replaced: false };
   }
   const resolvedTenantId = currentTurnOnly
     ? null
@@ -1072,7 +1168,7 @@ function enforceCookingDomainAnswerSafety(
     const evaluation = currentTurnOnly
       ? evaluateCookingSafetyTextForProfile({}, 'legacy_domain_answer', [finalText])
       : evaluateCookingSafetyText(userId, resolvedTenantId!, 'legacy_domain_answer', [finalText]);
-    if (!evaluation.blocked) return finalText;
+    if (!evaluation.blocked) return { text: finalText, replaced: false };
     logger.warn(
       {
         userId,
@@ -1082,14 +1178,20 @@ function enforceCookingDomainAnswerSafety(
       },
       'COOKING_SAFETY_BLOCKED',
     );
-    return renderCookingSafetyBlockedResponse(
-      currentTurnOnly ? getCurrentChatRequestLocale() : getSafetyCopyLanguage(userId),
-    );
+    return {
+      text: renderCookingSafetyBlockedResponse(
+        currentTurnOnly ? getCurrentChatRequestLocale() : getSafetyCopyLanguage(userId),
+      ),
+      replaced: true,
+    };
   } catch (err) {
     logger.warn({ err, userId, tenantId: resolvedTenantId }, 'Cooking domain answer safety check failed; returning safe refusal');
-    return renderCookingSafetyBlockedResponse(
-      currentTurnOnly ? getCurrentChatRequestLocale() : getSafetyCopyLanguage(userId),
-    );
+    return {
+      text: renderCookingSafetyBlockedResponse(
+        currentTurnOnly ? getCurrentChatRequestLocale() : getSafetyCopyLanguage(userId),
+      ),
+      replaced: true,
+    };
   }
 }
 

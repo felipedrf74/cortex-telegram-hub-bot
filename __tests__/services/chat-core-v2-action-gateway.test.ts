@@ -105,6 +105,23 @@ describe('ChatCoreV2 action gateway', () => {
     }));
   });
 
+  it('does not treat descriptive complete content as a task-completion write', () => {
+    for (const text of [
+      'Give me a complete chicken bowl recipe for two people.',
+      'Write a complete YouTube script about local models.',
+    ]) {
+      expect(detectChatCoreV2WriteIntent(text)).toEqual(expect.objectContaining({
+        mayMutate: false,
+        detectedIntent: 'none',
+      }));
+    }
+
+    expect(detectChatCoreV2WriteIntent('Mark it complete')).toEqual(expect.objectContaining({
+      mayMutate: true,
+      detectedIntent: 'task_complete',
+    }));
+  });
+
   it('does not treat task-status read questions as completion writes', () => {
     for (const text of [
       'Do I have tasks to complete today?',

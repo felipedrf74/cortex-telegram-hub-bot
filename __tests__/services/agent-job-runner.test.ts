@@ -20,6 +20,13 @@ type TestOutput = { accepted: boolean; score: number };
 const AUTORESEARCH_ROUTE = 'gemini-or-openai-primary-anthropic-fallback';
 const CONTENT_ROUTE = 'grounded-provider-fallback-route';
 
+async function passThroughAccountAdmission<T>(
+  _input: { userId: number; abortSignal?: AbortSignal },
+  operation: (abortSignal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  return operation(new AbortController().signal);
+}
+
 function insertUsage(
   db: Database.Database,
   runId: string,
@@ -54,6 +61,7 @@ function deterministicDependencies(
     db,
     randomUUID: () => `${prefix}-${++sequence}`,
     sleep: async () => {},
+    accountAdmission: passThroughAccountAdmission,
   };
 }
 
@@ -163,6 +171,94 @@ describe('shared governed agent job runner', () => {
       providerCalls: 0,
     });
     expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it('holds one user account admission through validation, usage settlement, and notification', async () => {
+    const order: string[] = [];
+    const scope = { tenantId: 9, userId: 9 };
+    const accountAdmission = vi.fn(async (
+      input: { userId: number },
+      operation: (signal: AbortSignal) => Promise<unknown>,
+    ) => {
+      expect(input).toEqual({ userId: 9 });
+      order.push('admission-start');
+      try {
+        return await operation(new AbortController().signal);
+      } finally {
+        order.push('admission-release');
+      }
+    });
+    const adapter: GovernedAgentJobAdapter<TestInput, TestOutput> = {
+      jobId: 'tuesday_reels',
+      providerRouting: CONTENT_ROUTE,
+      prepare: () => {
+        order.push('prepare');
+        return {
+          kind: 'ready',
+          input: { promptState: 'private-user-input' },
+          fingerprintMaterial: { state: 'private-user-input' },
+        };
+      },
+      execute: async ({ runId, abortSignal }) => {
+        expect(abortSignal).toBeInstanceOf(AbortSignal);
+        order.push('execute');
+        insertUsage(db, runId, scope);
+        return { accepted: true, score: 0.9 };
+      },
+      validateOutput: () => order.push('validate'),
+      notify: async () => {
+        order.push('notify');
+      },
+    };
+    const dependencies = deterministicDependencies(db, 'account-admission');
+    dependencies.accountAdmission = accountAdmission as AgentJobRunnerDependencies['accountAdmission'];
+
+    await runGovernedAgentJob(adapter, scope, dependencies);
+
+    expect(accountAdmission).toHaveBeenCalledTimes(1);
+    expect(order).toEqual([
+      'admission-start',
+      'prepare',
+      'execute',
+      'validate',
+      'notify',
+      'admission-release',
+    ]);
+  });
+
+  it('rejects a user-attributed governed job at the real account-deletion fence before provider work', async () => {
+    db.prepare(`INSERT INTO users (
+      id, telegram_id, first_name, language, timezone, tier, status, auth_provider,
+      created_at, last_active_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`)
+      .run(19, 19, 'Fenced user', 'en-US', 'Europe/Lisbon', 'pro', 'active', 'telegram');
+    db.prepare(`INSERT INTO local_inference_account_deletion_fences (
+      user_id, fence_token, runtime_instance_id, expires_at
+    ) VALUES (?, ?, ?, ?)`)
+      .run(
+        19,
+        '11111111-1111-4111-8111-111111111119',
+        '22222222-2222-4222-8222-222222222229',
+        Date.now() + 60_000,
+      );
+    const execute = vi.fn(async () => ({ accepted: true, score: 0.9 }));
+    const adapter: GovernedAgentJobAdapter<TestInput, TestOutput> = {
+      jobId: 'tuesday_reels',
+      providerRouting: CONTENT_ROUTE,
+      prepare: () => ({
+        kind: 'ready',
+        input: { promptState: 'must-not-run' },
+        fingerprintMaterial: { state: 'must-not-run' },
+      }),
+      execute,
+      validateOutput: () => {},
+    };
+    const dependencies = deterministicDependencies(db, 'real-fence');
+    delete dependencies.accountAdmission;
+
+    await expect(runGovernedAgentJob(adapter, { tenantId: 19, userId: 19 }, dependencies))
+      .rejects.toMatchObject({ code: 'ACCOUNT_DELETION_IN_PROGRESS' });
+    expect(execute).not.toHaveBeenCalled();
   });
 
   it('fails closed on invalid tenant scope or unavailable audit stores before execution', async () => {

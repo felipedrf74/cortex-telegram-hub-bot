@@ -1,10 +1,11 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RouteResult } from '../../src/router';
 
 const hoisted = vi.hoisted(() => ({
   listLegacyToolLoopCheckpoints: vi.fn(() => [] as Array<{ toolName: string; sequence: number; completedAt: string }>),
+  accountAdmission: vi.fn(),
 }));
 
 // M18: the timeout path lazily reads checkpointed tool progress from the
@@ -12,6 +13,10 @@ const hoisted = vi.hoisted(() => ({
 vi.mock('../../src/services/chat-action-run-store', async () => ({
   ...(await vi.importActual('../../src/services/chat-action-run-store')),
   listLegacyToolLoopCheckpoints: (...args: unknown[]) => hoisted.listLegacyToolLoopCheckpoints(...args as []),
+}));
+
+vi.mock('../../src/services/skill-inference-service', () => ({
+  runWithSkillInferenceAccountAdmission: (...args: unknown[]) => hoisted.accountAdmission(...args as []),
 }));
 
 import {
@@ -24,6 +29,23 @@ import {
 import { getCurrentChatRequestLocale } from '../../src/services/chat-request-locale-context';
 
 describe('chat message execution helpers', () => {
+  beforeEach(() => {
+    hoisted.accountAdmission.mockImplementation(async (
+      input: { abortSignal?: AbortSignal },
+      operation: (signal: AbortSignal) => Promise<unknown>,
+    ) => {
+      const controller = new AbortController();
+      const forwardAbort = () => controller.abort(input.abortSignal?.reason);
+      if (input.abortSignal?.aborted) forwardAbort();
+      else input.abortSignal?.addEventListener('abort', forwardAbort, { once: true });
+      try {
+        return await operation(controller.signal);
+      } finally {
+        input.abortSignal?.removeEventListener('abort', forwardAbort);
+      }
+    });
+  });
+
   afterEach(() => {
     vi.useRealTimers();
     vi.clearAllMocks();
@@ -41,7 +63,7 @@ describe('chat message execution helpers', () => {
       domain: 'secretary',
     });
 
-    expect(handler).toHaveBeenCalledWith('What is next?', 42, 1001);
+    expect(handler).toHaveBeenCalledWith('What is next?', 42, 1001, expect.any(AbortSignal));
     expect(vi.getTimerCount()).toBe(0);
   });
 
@@ -63,6 +85,39 @@ describe('chat message execution helpers', () => {
     )).resolves.toMatchObject({ text: 'locale=en-US' });
   });
 
+  it('forwards caller cancellation to the handler and preserves the exact reason before timeout', async () => {
+    const controller = new AbortController();
+    const cancellation = Object.assign(new Error('client disconnected'), {
+      name: 'AbortError',
+      code: 'CHAT_REQUEST_CANCELLED',
+    });
+    const handler = vi.fn((
+      _message: string,
+      _userId?: number,
+      _tenantId?: number,
+      abortSignal?: AbortSignal,
+    ) => (
+      new Promise<never>((_resolve, reject) => {
+        abortSignal?.addEventListener('abort', () => reject(abortSignal.reason), { once: true });
+      })
+    ));
+
+    const execution = executeChatDomainHandler(
+      handler,
+      'cancel this request',
+      42,
+      1001,
+      undefined,
+      'req-cancelled',
+      undefined,
+      { locale: 'en-US', abortSignal: controller.signal },
+    );
+    controller.abort(cancellation);
+
+    await expect(execution).rejects.toBe(cancellation);
+    expect(handler).toHaveBeenCalledWith('cancel this request', 42, 1001, expect.any(AbortSignal));
+  });
+
   it('fails with the existing iOS-safe timeout before the client gives up', async () => {
     vi.useFakeTimers();
     const handler = vi.fn(() => new Promise<never>(() => {}));
@@ -72,7 +127,7 @@ describe('chat message execution helpers', () => {
     await vi.advanceTimersByTimeAsync(CHAT_DOMAIN_HANDLER_TIMEOUT_MS);
 
     await timeoutExpectation;
-    expect(handler).toHaveBeenCalledWith('slow request', 42, undefined);
+    expect(handler).toHaveBeenCalledWith('slow request', 42, undefined, expect.any(AbortSignal));
   });
 
   // ─── M18: typed timeout + checkpointed partial progress ───────────
@@ -114,7 +169,24 @@ describe('chat message execution helpers', () => {
       resolveHandler = resolve;
     }));
     const enqueue = vi.fn(() => ({ jobId: 'job-m18', notificationPolicy: 'apns' as const }));
-    const attachLateResult = vi.fn();
+    const lifecycle: string[] = [];
+    let resolveAdmissionRelease!: () => void;
+    const admissionReleased = new Promise<void>((resolve) => {
+      resolveAdmissionRelease = resolve;
+    });
+    hoisted.accountAdmission.mockImplementationOnce(async (
+      _input: unknown,
+      operation: (signal: AbortSignal) => Promise<unknown>,
+    ) => {
+      lifecycle.push('admission-start');
+      try {
+        return await operation(new AbortController().signal);
+      } finally {
+        lifecycle.push('admission-release');
+        resolveAdmissionRelease();
+      }
+    });
+    const attachLateResult = vi.fn(() => lifecycle.push('late-result-attached'));
     const attachLateFailure = vi.fn();
 
     const execution = executeChatDomainHandler(
@@ -139,12 +211,17 @@ describe('chat message execution helpers', () => {
     expect(err.continuation).toEqual({ jobId: 'job-m18', notificationPolicy: 'apns' });
 
     resolveHandler({ text: 'late answer', domain: 'secretary' });
-    await Promise.resolve();
+    await admissionReleased;
     expect(attachLateResult).toHaveBeenCalledWith(
       { jobId: 'job-m18', notificationPolicy: 'apns' },
       { text: 'late answer', domain: 'secretary' },
     );
     expect(attachLateFailure).not.toHaveBeenCalled();
+    expect(lifecycle).toEqual([
+      'admission-start',
+      'late-result-attached',
+      'admission-release',
+    ]);
   });
 
   it('durably marks a detached foreground rejection so the worker fails honestly instead of re-running the provider', async () => {

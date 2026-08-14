@@ -23,14 +23,14 @@ function parseArgs(argv) {
     } else if (arg === '--systemctl-bin') {
       options.systemctlBin = argv[++index];
     } else if (arg === '--help' || arg === '-h') {
-      process.stdout.write('Usage: ollama-service-envelope-check.mjs [--expected-swap-bytes 536870912]\n');
+      process.stdout.write('Usage: ollama-service-envelope-check.mjs [--expected-swap-bytes 0]\n');
       process.exit(0);
     } else {
       fail(`unknown argument: ${arg}`, 64);
     }
   }
   if (options.expectedSwapBytes !== OLLAMA_ENVELOPE.memorySwapBaselineBytes) {
-    fail('--expected-swap-bytes must be 536870912', 64);
+    fail('--expected-swap-bytes must be 0', 64);
   }
   if (options.systemctlBin !== 'systemctl' && process.env.NEXUS_OLLAMA_SYSTEMD_TEST_MODE !== '1') {
     fail('--systemctl-bin is test-only', 64);

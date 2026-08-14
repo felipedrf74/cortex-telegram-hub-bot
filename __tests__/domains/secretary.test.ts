@@ -10,6 +10,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { isChatShadowBaselineEligible } from '../../src/services/chat-shadow-baseline';
 
 // ─── Mock all dependencies ──────────────────────────────────────────
 
@@ -26,6 +27,17 @@ const mockEnsureActiveProvider = vi.fn(() => null);
 vi.mock('../../src/services/provider-registry', () => ({
   getActiveProvider: (...args: unknown[]) => mockGetActiveProvider(...args),
   ensureActiveProvider: (...args: unknown[]) => mockEnsureActiveProvider(...args),
+}));
+
+vi.mock('../../src/services/skill-inference-service', () => ({
+  runWithSkillInferenceAccountAdmission: (
+    _input: unknown,
+    operation: (signal: AbortSignal) => Promise<unknown>,
+  ) => operation(new AbortController().signal),
+  isSkillInferenceAccountDeletionError: (error: unknown) => (
+    Boolean(error && typeof error === 'object'
+      && (error as { code?: unknown }).code === 'ACCOUNT_DELETION_IN_PROGRESS')
+  ),
 }));
 
 vi.mock('../../src/state/conversation', () => ({
@@ -238,6 +250,7 @@ describe('handleSecretary', () => {
 
     const result = await handleSecretary('Give me a concise secretary summary', 42);
     expect(result).toEqual({ text: 'You have 3 tasks today.', domain: 'secretary' });
+    expect(isChatShadowBaselineEligible(result)).toBe(true);
     expect(mockCallDomain).toHaveBeenCalledOnce();
   });
 
@@ -334,8 +347,33 @@ describe('handleSecretary', () => {
 
     const result = await handleSecretary('Explain what you can verify', 42, 42);
     expect(result.text).toBe('Repaired safely.');
+    expect(isChatShadowBaselineEligible(result)).toBe(false);
     expect(mockProviderCall).toHaveBeenCalledTimes(2);
     expect(mockProviderCall.mock.calls.every((call) => (call[4] as any)?.filteredTools?.length === 0)).toBe(true);
+    expect(mockProviderContinue).not.toHaveBeenCalled();
+  });
+
+  it('does not mark structured-reasoning unavailable copy as a legacy shadow baseline', async () => {
+    process.env.SECRETARY_REASONING_V1_MODE = 'active';
+    mockEnsureActiveProvider.mockReturnValue({
+      name: 'structured-provider',
+      callDomain: (...args: unknown[]) => mockProviderCall(...args),
+      continueWithToolResults: (...args: unknown[]) => mockProviderContinue(...args),
+      classify: vi.fn(),
+    });
+    mockProviderCall.mockResolvedValue({
+      text: 'not-json',
+      toolCalls: [],
+      stopReason: 'end_turn',
+    } as any);
+
+    const result = await handleSecretary('Summarize only what you can verify', 42, 42);
+
+    expect(result.text).toBe(
+      'I could not verify enough context to answer safely. Please try again or ask a more specific question.',
+    );
+    expect(isChatShadowBaselineEligible(result)).toBe(false);
+    expect(mockProviderCall).toHaveBeenCalledTimes(2);
     expect(mockProviderContinue).not.toHaveBeenCalled();
   });
 
@@ -386,7 +424,10 @@ describe('handleSecretary', () => {
       [],
       'Hello',
       expect.any(String),
-      undefined,
+      expect.objectContaining({
+        userId: 77,
+        abortSignal: expect.any(AbortSignal),
+      }),
       77,
     );
   });

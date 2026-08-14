@@ -22,6 +22,10 @@ import {
   resolveManifestSkillForDomain,
 } from './classifier-prompt-builder';
 import { isCurrentChatLiveEvalLocalEngine } from '../services/chat-live-evaluation-context';
+import {
+  isSkillInferenceAccountDeletionError,
+  runWithSkillInferenceAccountAdmission,
+} from '../services/skill-inference-service';
 
 export interface ConversationContext {
   domain: DomainName;
@@ -477,6 +481,8 @@ export function buildClassifierHints(): string {
  * row falls back to `user_id = 0` as before.
  */
 export interface ClassifyWithClaudeOptions {
+  /** Caller/client lifecycle; exact abort reasons propagate through providers. */
+  abortSignal?: AbortSignal;
   /**
    * M13 durable-pin scope decision (adversarial-review follow-up, 2026-07):
    * the low-confidence fallback below may consult the DURABLE per-user
@@ -501,6 +507,31 @@ export async function classifyWithClaude(
   userId?: number,
   tenantId?: number,
   options?: ClassifyWithClaudeOptions,
+): Promise<ClassificationResult> {
+  const operation = (abortSignal?: AbortSignal) => classifyWithClaudeAdmitted(
+    message,
+    activeContext,
+    userId,
+    tenantId,
+    options,
+    abortSignal,
+  );
+  if (typeof userId === 'number' && Number.isSafeInteger(userId) && userId > 0) {
+    return runWithSkillInferenceAccountAdmission({
+      userId,
+      abortSignal: options?.abortSignal,
+    }, operation);
+  }
+  return operation(options?.abortSignal);
+}
+
+async function classifyWithClaudeAdmitted(
+  message: string,
+  activeContext?: ConversationContext | null,
+  userId?: number,
+  tenantId?: number,
+  options?: ClassifyWithClaudeOptions,
+  accountAbortSignal?: AbortSignal,
 ): Promise<ClassificationResult> {
   // Phase K Codex round-11 fix (F-new-4): the legacy
   // services/anthropic.classifyMessage path uses
@@ -551,6 +582,7 @@ export async function classifyWithClaude(
           userId,
           tenantId,
           source: isCurrentChatLiveEvalLocalEngine() ? 'evaluation' : 'live',
+          ...(accountAbortSignal ? { abortSignal: accountAbortSignal } : {}),
         },
       );
       // Defensive guard (Codex Mac sync round-1 fix): routing-provider
@@ -564,6 +596,9 @@ export async function classifyWithClaude(
       result = raw;
     } catch (err) {
       rethrowAiUsageFailClosedError(err);
+      if (isSkillInferenceAccountDeletionError(err) || accountAbortSignal?.aborted) {
+        throw accountAbortSignal?.reason instanceof Error ? accountAbortSignal.reason : err;
+      }
       // Routing-provider classify failures should not block the chat
       // turn — log and fall through to the legacy classifier so the
       // request keeps moving. The routing provider's circuit-breaker
@@ -573,10 +608,26 @@ export async function classifyWithClaude(
         { err: err instanceof Error ? err.message : String(err) },
         'Routing-provider classify failed — falling back to legacy classifyMessage',
       );
-      result = await classifyMessage(liveMessage, activeContext ?? undefined, userId, tenantId);
+      result = accountAbortSignal
+        ? await classifyMessage(
+          liveMessage,
+          activeContext ?? undefined,
+          userId,
+          tenantId,
+          accountAbortSignal,
+        )
+        : await classifyMessage(liveMessage, activeContext ?? undefined, userId, tenantId);
     }
   } else {
-    result = await classifyMessage(liveMessage, activeContext ?? undefined, userId, tenantId);
+    result = accountAbortSignal
+      ? await classifyMessage(
+        liveMessage,
+        activeContext ?? undefined,
+        userId,
+        tenantId,
+        accountAbortSignal,
+      )
+      : await classifyMessage(liveMessage, activeContext ?? undefined, userId, tenantId);
   }
   const liveDurationMs = Date.now() - liveStart;
 

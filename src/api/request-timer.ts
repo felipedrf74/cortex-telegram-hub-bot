@@ -27,6 +27,10 @@ interface LatencyEntry {
 
 const MAX_ENTRIES = 500;
 const latencyBuffer: LatencyEntry[] = [];
+const AI_ROUTE_BUCKETS = new Set(['/chat', '/content', '/internal', '/ai-reports']);
+const END_USER_ERROR_EXCLUDED_BUCKETS = new Set([
+  '/internal', '/health', '/metrics', '/ai-reports', '/admin', '/local-inference', '/unknown',
+]);
 
 // ── Route normalization ──────────────────────────────────────────
 // Collapse dynamic segments into a stable prefix for aggregation.
@@ -35,7 +39,7 @@ const latencyBuffer: LatencyEntry[] = [];
 
 function normalizeRoute(path: string): string {
   // Strip /api/v1/ prefix
-  const stripped = path.replace(/^\/api\/v1\//, '');
+  const stripped = path.replace(/^\/api\/v1\//, '').replace(/^\/+/, '');
   // Take first segment as the route bucket
   const first = stripped.split('/')[0] || 'unknown';
   return `/${first}`;
@@ -106,6 +110,76 @@ export function getLatencySummary(): RouteSummary[] {
   }
 
   return summaries.sort((a, b) => b.count - a.count);
+}
+
+export interface NonAiLatencySnapshot {
+  sampleCount: number;
+  p95Ms: number | null;
+  oldestSampleAt: string | null;
+  newestSampleAt: string | null;
+}
+
+export interface EndUserApiErrorSnapshot {
+  sampleCount: number;
+  serverErrorCount: number;
+  serverErrorRatePercent: number | null;
+  oldestSampleAt: string | null;
+  newestSampleAt: string | null;
+}
+
+/**
+ * Bounded process-local evidence for the rollout guard. AI-heavy buckets are
+ * excluded so the metric detects collateral API regression rather than the
+ * generation latency the inference ledger already measures.
+ */
+export function getNonAiLatencySnapshot(since?: string | null): NonAiLatencySnapshot {
+  const sinceMs = since ? Date.parse(since) : Number.NEGATIVE_INFINITY;
+  const entries = latencyBuffer.filter((entry) => (
+    !AI_ROUTE_BUCKETS.has(entry.route)
+    && (!Number.isFinite(sinceMs) || entry.timestamp >= sinceMs)
+  ));
+  if (entries.length === 0) {
+    return { sampleCount: 0, p95Ms: null, oldestSampleAt: null, newestSampleAt: null };
+  }
+  const durations = entries.map((entry) => entry.durationMs).sort((left, right) => left - right);
+  const timestamps = entries.map((entry) => entry.timestamp);
+  return {
+    sampleCount: entries.length,
+    p95Ms: percentile(durations, 0.95),
+    oldestSampleAt: new Date(Math.min(...timestamps)).toISOString(),
+    newestSampleAt: new Date(Math.max(...timestamps)).toISOString(),
+  };
+}
+
+/**
+ * Process-local public API reliability evidence. Expected client denials
+ * (4xx entitlement, validation, and rate-limit responses) are not regressions;
+ * only user-visible 5xx responses contribute to this release guard.
+ */
+export function getEndUserApiErrorSnapshot(since?: string | null): EndUserApiErrorSnapshot {
+  const sinceMs = since ? Date.parse(since) : Number.NEGATIVE_INFINITY;
+  const entries = latencyBuffer.filter((entry) => (
+    !END_USER_ERROR_EXCLUDED_BUCKETS.has(entry.route)
+    && (!Number.isFinite(sinceMs) || entry.timestamp >= sinceMs)
+  ));
+  if (entries.length === 0) {
+    return {
+      sampleCount: 0,
+      serverErrorCount: 0,
+      serverErrorRatePercent: null,
+      oldestSampleAt: null,
+      newestSampleAt: null,
+    };
+  }
+  const serverErrorCount = entries.filter((entry) => entry.statusCode >= 500).length;
+  const timestamps = entries.map((entry) => entry.timestamp);
+  return {
+    sampleCount: entries.length,
+    serverErrorCount,
+    serverErrorRatePercent: Number(((serverErrorCount / entries.length) * 100).toFixed(3)),
+    oldestSampleAt: new Date(Math.min(...timestamps)).toISOString(),
+    newestSampleAt: new Date(Math.max(...timestamps)).toISOString(),
+  };
 }
 
 function percentile(sorted: number[], p: number): number {

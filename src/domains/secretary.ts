@@ -58,6 +58,11 @@ import {
   buildChatReplyLanguagePromptBlock,
   getCurrentChatRequestLocale,
 } from '../services/chat-request-locale-context';
+import {
+  isSkillInferenceAccountDeletionError,
+  runWithSkillInferenceAccountAdmission,
+} from '../services/skill-inference-service';
+import { markChatShadowBaselineEligible } from '../services/chat-shadow-baseline';
 import type { Lang } from '../utils/i18n';
 
 function requestLocaleToSecretaryLanguage(locale: string | null): Lang | undefined {
@@ -117,6 +122,25 @@ export interface SecretaryReasoningFinalization {
   snapshotId: string;
   contextVersion: string;
   repairAttempted: boolean;
+}
+
+function throwIfSecretaryAccountModelWorkAborted(abortSignal?: AbortSignal): void {
+  if (!abortSignal?.aborted) return;
+  if (abortSignal.reason instanceof Error) throw abortSignal.reason;
+  throw Object.assign(new Error('Account-scoped Secretary model work was cancelled.'), {
+    name: 'AbortError',
+    code: 'ABORT_ERR',
+  });
+}
+
+function rethrowSecretaryAccountModelWorkCancellation(
+  error: unknown,
+  abortSignal?: AbortSignal,
+): void {
+  if (isSkillInferenceAccountDeletionError(error) || abortSignal?.aborted) {
+    if (abortSignal?.reason instanceof Error) throw abortSignal.reason;
+    throw error;
+  }
 }
 
 type SecretaryStructuredModelCall = (prompt: string) => Promise<AICallResult>;
@@ -708,7 +732,34 @@ function secretaryStateContextCopy(language: string) {
   };
 }
 
-export async function handleSecretary(message: string, userId?: number, tenantId?: number): Promise<DomainResponse> {
+export async function handleSecretary(
+  message: string,
+  userId?: number,
+  tenantId?: number,
+  callerAbortSignal?: AbortSignal,
+): Promise<DomainResponse> {
+  const operation = (abortSignal?: AbortSignal) => handleSecretaryAdmitted(
+    message,
+    userId,
+    tenantId,
+    abortSignal,
+  );
+  if (typeof userId === 'number' && Number.isSafeInteger(userId) && userId > 0) {
+    return runWithSkillInferenceAccountAdmission({
+      userId,
+      abortSignal: callerAbortSignal,
+    }, operation);
+  }
+  return operation(callerAbortSignal);
+}
+
+async function handleSecretaryAdmitted(
+  message: string,
+  userId: number | undefined,
+  tenantId: number | undefined,
+  accountAbortSignal?: AbortSignal,
+): Promise<DomainResponse> {
+  throwIfSecretaryAccountModelWorkAborted(accountAbortSignal);
   const hasUserScope = typeof userId === 'number';
   const requestLocale = getCurrentChatRequestLocale();
 
@@ -724,10 +775,12 @@ export async function handleSecretary(message: string, userId?: number, tenantId
     // Record in conversation history so the next AI turn has context
     // about what the user just asked. Tag the assistant message with the
     // pattern id so future debugging can spot fastpath responses in logs.
+    throwIfSecretaryAccountModelWorkAborted(accountAbortSignal);
     addScopedConversation(userId, 'user', message, tenantId);
     addScopedConversation(userId, 'assistant', `[fastpath:${fastpath.patternId}]\n${fastpath.response.text}`, tenantId);
     return fastpath.response;
   }
+  throwIfSecretaryAccountModelWorkAborted(accountAbortSignal);
 
   const history = hasUserScope ? (getConversationHistory(userId, DOMAIN, tenantId) ?? []) : [];
   const scopedTenantId = hasUserScope ? (typeof tenantId === 'number' ? tenantId : userId) : null;
@@ -751,6 +804,7 @@ export async function handleSecretary(message: string, userId?: number, tenantId
       })
       : Promise.resolve(null),
   ]);
+  throwIfSecretaryAccountModelWorkAborted(accountAbortSignal);
   const reasoningSession: SecretaryReasoningSession = { mode: reasoningMode, snapshot };
   if (reasoningMode !== 'off' && snapshot) {
     logger.info({
@@ -807,20 +861,21 @@ export async function handleSecretary(message: string, userId?: number, tenantId
   //     and passed to whichever provider runs)
   //   - Circuit breaker fallback (if Gemini fails, falls back to
   //     Anthropic Haiku — same fallback the chat domains get)
-    const provider = getActiveProvider() || ensureActiveProvider();
-    if (!provider) {
-      if (!canUseDirectAnthropicFallback()) {
-        return buildAIUnavailableResponse(DOMAIN, userId);
-      }
-    // Fallback to direct Anthropic — same call signatures the legacy
-      // path used. The Anthropic SDK client is lazy-initialized inside
-      // anthropic.ts so this static import is cheap; the test suites
-      // can mock the imports normally without dynamic-require gotchas.
-      return await handleSecretaryWithDirectAnthropic(
-        userId, message, history, stateContext, directCallDomain, directContinueWithToolResults, userId, tenantId,
-        reasoningSession,
-      );
+  const provider = getActiveProvider() || ensureActiveProvider();
+  if (!provider) {
+    if (!canUseDirectAnthropicFallback()) {
+      return buildAIUnavailableResponse(DOMAIN, userId);
     }
+    // Fallback to direct Anthropic — same call signatures the legacy
+    // path used. The Anthropic SDK client is lazy-initialized inside
+    // anthropic.ts so this static import is cheap; the test suites
+    // can mock the imports normally without dynamic-require gotchas.
+    return await handleSecretaryWithDirectAnthropic(
+      userId, message, history, stateContext, directCallDomain, directContinueWithToolResults, userId, tenantId,
+      reasoningSession,
+      accountAbortSignal,
+    );
+  }
 
   if (reasoningMode === 'active' && snapshot && scopedTenantId !== null && typeof userId === 'number') {
     const selected = await runSecretaryStructuredReasoning({
@@ -832,14 +887,19 @@ export async function handleSecretary(message: string, userId?: number, tenantId
         userId,
         tenantId: scopedTenantId,
         filteredTools: [],
+        ...(accountAbortSignal ? { abortSignal: accountAbortSignal } : {}),
       }),
+      abortSignal: accountAbortSignal,
     });
+    throwIfSecretaryAccountModelWorkAborted(accountAbortSignal);
     const finalization = await persistSecretaryPreviewIfNeeded(selected, snapshot, userId, scopedTenantId);
+    throwIfSecretaryAccountModelWorkAborted(accountAbortSignal);
     const finalText = normalizeSecretaryReplyForRequest(finalization.text, userId);
     if (hasUserScope) {
       addScopedConversation(userId, 'user', message, tenantId);
       addScopedConversation(userId, 'assistant', finalText, tenantId);
     }
+    throwIfSecretaryAccountModelWorkAborted(accountAbortSignal);
     return { text: finalText, domain: DOMAIN };
   }
 
@@ -853,7 +913,9 @@ export async function handleSecretary(message: string, userId?: number, tenantId
         userId,
         tenantId: scopedTenantId ?? undefined,
         filteredTools: [],
+        ...(accountAbortSignal ? { abortSignal: accountAbortSignal } : {}),
       }),
+      abortSignal: accountAbortSignal,
     })
     : null;
 
@@ -864,7 +926,9 @@ export async function handleSecretary(message: string, userId?: number, tenantId
   let result = await provider.callDomain(DOMAIN, history, message, stateContext, {
     userId,
     tenantId,
+    ...(accountAbortSignal ? { abortSignal: accountAbortSignal } : {}),
   });
+  throwIfSecretaryAccountModelWorkAborted(accountAbortSignal);
   let finalText = result.text;
 
   logger.debug(
@@ -893,6 +957,7 @@ export async function handleSecretary(message: string, userId?: number, tenantId
     // Execute all tool calls in parallel, truncate large results
     const toolResults = await Promise.all(
       result.toolCalls.map(async (tc) => {
+        throwIfSecretaryAccountModelWorkAborted(accountAbortSignal);
         if (reasoningSession.mode === 'active') {
           return {
             type: 'tool_result' as const,
@@ -916,6 +981,7 @@ export async function handleSecretary(message: string, userId?: number, tenantId
           return { type: 'tool_result' as const, tool_use_id: tc.id, content };
         }
         const toolResult = await executeScopedToolCall(tc.name, tc.input as Record<string, any>, userId, tenantId);
+        throwIfSecretaryAccountModelWorkAborted(accountAbortSignal);
         let content = JSON.stringify(toolResult);
         if (content.length > 2000) content = content.slice(0, 2000) + '...(truncated)';
         return { type: 'tool_result' as const, tool_use_id: tc.id, content };
@@ -935,7 +1001,9 @@ export async function handleSecretary(message: string, userId?: number, tenantId
       userId,
       tenantId,
       toolLoopProviderName: result.routedProviderName,
+      ...(accountAbortSignal ? { abortSignal: accountAbortSignal } : {}),
     });
+    throwIfSecretaryAccountModelWorkAborted(accountAbortSignal);
     finalText = result.text;
     logger.debug({ iteration: iterations, hasText: !!finalText, toolCalls: result.toolCalls.length }, 'Continue result');
   }
@@ -945,9 +1013,19 @@ export async function handleSecretary(message: string, userId?: number, tenantId
   }
 
   // Guard against empty response (can happen after errors exhaust tool iterations)
-  if (!finalText || !finalText.trim()) {
+  const providerResponsePresent = Boolean(finalText && finalText.trim());
+  if (!providerResponsePresent) {
     finalText = unverifiedCompletionReply(userId);
   }
+  const shadowBaselineEligible = !legacyWriteBlocked
+    // Active structured reasoning returns through the dedicated branch above.
+    // Fail closed if a future refactor reaches this legacy branch: finalized
+    // suppress/unavailable copy is deterministic, not a model baseline.
+    && reasoningSession.mode !== 'active'
+    && result.toolCalls.length === 0
+    && result.stopReason !== 'max_tokens'
+    && result.stopReason !== 'length'
+    && providerResponsePresent;
 
   if (!legacyWriteBlocked && reasoningSession.mode === 'active' && reasoningSession.snapshot) {
     const finalized = finalizeSecretaryReasoningText(finalText, reasoningSession.snapshot, userId);
@@ -973,6 +1051,7 @@ export async function handleSecretary(message: string, userId?: number, tenantId
   finalText = normalizeSecretaryReplyForRequest(finalText, userId);
 
   if (shadowRun) {
+    throwIfSecretaryAccountModelWorkAborted(accountAbortSignal);
     const shadow = await shadowRun;
     logger.info({
       event: 'secretary.shadow_outcome_compared',
@@ -990,6 +1069,7 @@ export async function handleSecretary(message: string, userId?: number, tenantId
 
   // Store conversation — include tool summary so future turns have context
   if (hasUserScope) {
+    throwIfSecretaryAccountModelWorkAborted(accountAbortSignal);
     addScopedConversation(userId, 'user', message, tenantId);
     const storedText = toolsUsed.length > 0
       ? `[Tools: ${[...new Set(toolsUsed)].join(', ')}]\n${finalText}`
@@ -997,7 +1077,11 @@ export async function handleSecretary(message: string, userId?: number, tenantId
     addScopedConversation(userId, 'assistant', storedText, tenantId);
   }
 
-  return { text: finalText, domain: DOMAIN };
+  throwIfSecretaryAccountModelWorkAborted(accountAbortSignal);
+  return markChatShadowBaselineEligible(
+    { text: finalText, domain: DOMAIN },
+    shadowBaselineEligible,
+  );
 }
 
 /**
@@ -1021,13 +1105,20 @@ async function handleSecretaryWithDirectAnthropic(
   userId: number | undefined,
   tenantId?: number,
   reasoningSession: SecretaryReasoningSession = { mode: 'off', snapshot: null },
+  accountAbortSignal?: AbortSignal,
 ): Promise<DomainResponse> {
+  throwIfSecretaryAccountModelWorkAborted(accountAbortSignal);
   const structuredCall: SecretaryStructuredModelCall = (prompt) => callDomain(
     DOMAIN,
     [],
     message,
     prompt,
-    { filteredTools: [], userId, tenantId } satisfies CallDomainOptions,
+    {
+      filteredTools: [],
+      userId,
+      tenantId,
+      ...(accountAbortSignal ? { abortSignal: accountAbortSignal } : {}),
+    } satisfies CallDomainOptions,
     userId,
   );
   if (reasoningSession.mode === 'active' && reasoningSession.snapshot) {
@@ -1037,15 +1128,19 @@ async function handleSecretaryWithDirectAnthropic(
       tenantId,
       mode: 'active',
       call: structuredCall,
+      abortSignal: accountAbortSignal,
     });
+    throwIfSecretaryAccountModelWorkAborted(accountAbortSignal);
     const finalization = typeof uid === 'number'
       ? await persistSecretaryPreviewIfNeeded(selected, reasoningSession.snapshot, uid, tenantId ?? uid)
       : selected;
+    throwIfSecretaryAccountModelWorkAborted(accountAbortSignal);
     const text = normalizeSecretaryReplyForRequest(finalization.text, uid);
     if (typeof uid === 'number') {
       addScopedConversation(uid, 'user', message, tenantId);
       addScopedConversation(uid, 'assistant', text, tenantId);
     }
+    throwIfSecretaryAccountModelWorkAborted(accountAbortSignal);
     return { text, domain: DOMAIN };
   }
   const shadowRun = reasoningSession.mode === 'shadow' && reasoningSession.snapshot
@@ -1055,10 +1150,23 @@ async function handleSecretaryWithDirectAnthropic(
       tenantId,
       mode: 'shadow',
       call: structuredCall,
+      abortSignal: accountAbortSignal,
     })
     : null;
 
-  let result = await callDomain(DOMAIN, history, message, stateContext, undefined, userId);
+  let result = await callDomain(
+    DOMAIN,
+    history,
+    message,
+    stateContext,
+    {
+      userId,
+      tenantId,
+      ...(accountAbortSignal ? { abortSignal: accountAbortSignal } : {}),
+    } satisfies CallDomainOptions,
+    userId,
+  );
+  throwIfSecretaryAccountModelWorkAborted(accountAbortSignal);
   let finalText = result.text;
 
   const toolConversation: any[] = [];
@@ -1077,6 +1185,7 @@ async function handleSecretaryWithDirectAnthropic(
 
     const toolResults = await Promise.all(
       result.toolCalls.map(async (tc: any) => {
+        throwIfSecretaryAccountModelWorkAborted(accountAbortSignal);
         if (reasoningSession.mode === 'active') {
           return {
             type: 'tool_result' as const,
@@ -1100,6 +1209,7 @@ async function handleSecretaryWithDirectAnthropic(
           return { type: 'tool_result' as const, tool_use_id: tc.id, content };
         }
         const toolResult = await executeScopedToolCall(tc.name, tc.input as Record<string, any>, userId, tenantId);
+        throwIfSecretaryAccountModelWorkAborted(accountAbortSignal);
         let content = JSON.stringify(toolResult);
         if (content.length > 2000) content = content.slice(0, 2000) + '...(truncated)';
         return { type: 'tool_result' as const, tool_use_id: tc.id, content };
@@ -1111,7 +1221,20 @@ async function handleSecretaryWithDirectAnthropic(
       { role: 'user' as const, content: toolResults },
     );
 
-    result = await continueWithToolResults(DOMAIN, history, message, stateContext, toolConversation, userId);
+    result = await continueWithToolResults(
+      DOMAIN,
+      history,
+      message,
+      stateContext,
+      toolConversation,
+      userId,
+      {
+        userId,
+        tenantId,
+        ...(accountAbortSignal ? { abortSignal: accountAbortSignal } : {}),
+      } satisfies CallDomainOptions,
+    );
+    throwIfSecretaryAccountModelWorkAborted(accountAbortSignal);
     finalText = result.text;
   }
 
@@ -1119,9 +1242,18 @@ async function handleSecretaryWithDirectAnthropic(
     finalText = buildLegacyWriteBlockedReply(uid);
   }
 
-  if (!finalText || !finalText.trim()) {
+  const providerResponsePresent = Boolean(finalText && finalText.trim());
+  if (!providerResponsePresent) {
     finalText = unverifiedCompletionReply(uid);
   }
+  const shadowBaselineEligible = !legacyWriteBlocked
+    // Active structured reasoning returns through the dedicated branch above.
+    // Keep any defensive legacy-path finalization out of shadow baselines.
+    && reasoningSession.mode !== 'active'
+    && result.toolCalls.length === 0
+    && result.stopReason !== 'max_tokens'
+    && result.stopReason !== 'length'
+    && providerResponsePresent;
 
   if (!legacyWriteBlocked && reasoningSession.mode === 'active' && reasoningSession.snapshot) {
     const finalized = finalizeSecretaryReasoningText(finalText, reasoningSession.snapshot, uid);
@@ -1138,6 +1270,7 @@ async function handleSecretaryWithDirectAnthropic(
   finalText = normalizeSecretaryReplyForRequest(finalText, uid);
 
   if (shadowRun) {
+    throwIfSecretaryAccountModelWorkAborted(accountAbortSignal);
     const shadow = await shadowRun;
     logger.info({
       event: 'secretary.shadow_outcome_compared',
@@ -1154,6 +1287,7 @@ async function handleSecretaryWithDirectAnthropic(
   }
 
   if (typeof uid === 'number') {
+    throwIfSecretaryAccountModelWorkAborted(accountAbortSignal);
     addScopedConversation(uid, 'user', message, tenantId);
     const storedText = toolsUsed.length > 0
       ? `[Tools: ${[...new Set(toolsUsed)].join(', ')}]\n${finalText}`
@@ -1161,7 +1295,11 @@ async function handleSecretaryWithDirectAnthropic(
     addScopedConversation(uid, 'assistant', storedText, tenantId);
   }
 
-  return { text: finalText, domain: DOMAIN };
+  throwIfSecretaryAccountModelWorkAborted(accountAbortSignal);
+  return markChatShadowBaselineEligible(
+    { text: finalText, domain: DOMAIN },
+    shadowBaselineEligible,
+  );
 }
 
 export function finalizeSecretaryReasoningText(
@@ -1261,11 +1399,13 @@ async function runSecretaryStructuredReasoning(input: {
   tenantId?: number;
   mode: 'active' | 'shadow';
   call: SecretaryStructuredModelCall;
+  abortSignal?: AbortSignal;
 }): Promise<SecretaryReasoningFinalization> {
   let firstResult: AICallResult;
   try {
     firstResult = await input.call(buildSecretaryReasoningPrompt(input.snapshot));
   } catch (err) {
+    rethrowSecretaryAccountModelWorkCancellation(err, input.abortSignal);
     logger.warn({
       event: 'secretary.candidate_schema_failed',
       failureType: err instanceof Error ? err.name : typeof err,
@@ -1317,6 +1457,7 @@ async function runSecretaryStructuredReasoning(input: {
   try {
     repairResult = await input.call(buildSecretaryReasoningRepairPrompt(input.snapshot, firstValidation.issues));
   } catch (err) {
+    rethrowSecretaryAccountModelWorkCancellation(err, input.abortSignal);
     logger.warn({
       event: 'secretary.candidate_schema_failed',
       failureType: err instanceof Error ? err.name : typeof err,

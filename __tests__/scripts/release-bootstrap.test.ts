@@ -50,6 +50,10 @@ function createLegacyDatabase(
       applied_at TEXT DEFAULT (datetime('now'))
     );
     CREATE TABLE baseline_marker (value TEXT NOT NULL);
+    CREATE TABLE plan_configs (
+      plan_id TEXT PRIMARY KEY,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
     CREATE TABLE content_ref_channels (user_id INTEGER, channel_url TEXT);
     CREATE UNIQUE INDEX idx_content_ref_channels_user_url
       ON content_ref_channels(user_id, channel_url);
@@ -179,7 +183,14 @@ describe('first-container bootstrap baseline', () => {
         staging: { dataDir: join(workspace, 'staging') },
       },
     };
-    const files = migrationInventory.slice(0, -1).map((entry) => entry.file);
+    // The captured legacy databases predate the governed convergence
+    // migration. New additive suffixes must remain pending after 283 rather
+    // than making the fixture falsely claim 283 was already applied.
+    const convergenceIndex = migrationInventory.findIndex(
+      (entry) => entry.file === '283_release_schema_convergence.sql',
+    );
+    if (convergenceIndex < 0) throw new Error('release convergence migration missing from inventory');
+    const files = migrationInventory.slice(0, convergenceIndex).map((entry) => entry.file);
     createLegacyDatabase(
       policy.bootstrap.legacyProductionDatabase,
       files,
@@ -280,7 +291,10 @@ describe('first-container bootstrap baseline', () => {
     expect(baseline.databases.production.ledger.legacyRows).toHaveLength(19);
     expect(baseline.databases.staging.ledger.legacyRows).toHaveLength(23);
     expect(baseline.databases.production.ledger.pending)
-      .toEqual([expect.objectContaining({ file: '283_release_schema_convergence.sql' })]);
+      .toEqual([
+        expect.objectContaining({ file: '283_release_schema_convergence.sql' }),
+        expect.objectContaining({ file: '284_local_primary_inference_foundation.sql' }),
+      ]);
     expect(baseline.databases.production.sha256)
       .not.toBe(baseline.databases.staging.sha256);
     expect(baseline.legacyDatabases.production.snapshotDigest)

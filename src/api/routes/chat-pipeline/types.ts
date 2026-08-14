@@ -21,6 +21,7 @@ import type { safeRecordChatV2DeterministicReadEvidence } from '../../../service
 import type { safeRecordChatV2CompletionEvidence } from '../../../services/chat-v2-completion-evidence';
 import type { ChatCoreV2LegacyFallbackAttribution } from './support';
 import type { RoutingSyntheticQaTrafficProvenance } from '../../../services/routing-synthetic-qa-contract';
+import type { AiBudgetRequest } from '../../../services/cost-guardrail';
 
 export type RecordDeterministicReadEvidenceFn = (
   response: Parameters<typeof safeRecordChatV2DeterministicReadEvidence>[0]['response'],
@@ -58,10 +59,20 @@ export interface ChatTurnCtx {
   requestStartedAt: number;
   chatRequestId: string;
   latency: ChatLatencyTracker;
+  /** Aborted when the HTTP client disconnects before the response finishes. */
+  abortSignal?: AbortSignal;
   /** Lazily acquires the per-user AI budget reservation (route-owned). */
-  ensureModelBudget: (logMessage: string) => Promise<boolean>;
+  ensureModelBudget: (
+    logMessage: string,
+    overrides?: Partial<Pick<
+      AiBudgetRequest,
+      'runId' | 'hardRunCostLimitUsd' | 'hardLocalFallbackDailyCostLimitUsd'
+    >>,
+  ) => Promise<boolean>;
   /** Validated staging-only synthetic routing QA provenance; absent on ordinary traffic. */
   routingSyntheticQa?: RoutingSyntheticQaTrafficProvenance | null;
+  /** One-shot local shadow start owned by the final visible model response. */
+  pendingLocalPrimaryChatShadow?: (() => void) | null;
 
   // ── Accumulated by idempotency_claim ────────────────────────────
   isNewUserFlow?: boolean;

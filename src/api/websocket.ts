@@ -48,6 +48,8 @@ import {
 import { runWithChatRequestLocale } from '../services/chat-request-locale-context';
 import { normalizeSupportedLang } from '../utils/i18n';
 import { buildManifestClassifierTerminalResponse } from '../services/chat-manifest-classifier-terminal';
+import { runWithSkillInferenceAccountAdmission } from '../services/skill-inference-service';
+import { isProviderRequestCancellation } from '../services/ai-provider';
 
 const WEBSOCKET_RATE_WINDOW_MS = 60_000;
 const WEBSOCKET_PING_INTERVAL_MS = 30_000;
@@ -241,7 +243,12 @@ function registerWebSocketConnection(remoteIp: string): () => void {
   };
 }
 
-function getDomainHandlers(): Record<string, (message: string, userId?: number, tenantId?: number) => Promise<{ text: string; domain: DomainName }>> {
+function getDomainHandlers(): Record<string, (
+  message: string,
+  userId?: number,
+  tenantId?: number,
+  abortSignal?: AbortSignal,
+) => Promise<{ text: string; domain: DomainName }>> {
   const { handleSecretary } = require('../domains/secretary');
   const { handleTriathlon } = require('../domains/triathlon');
   const { handleContent } = require('../domains/content-creator');
@@ -302,17 +309,25 @@ export async function executeWebSocketDomainHandlerWithLocale<
   message: string;
   userId: number;
   tenantId: number;
-  handler: (message: string, userId?: number, tenantId?: number) => Promise<T>;
+  abortSignal?: AbortSignal;
+  handler: (
+    message: string,
+    userId?: number,
+    tenantId?: number,
+    abortSignal?: AbortSignal,
+  ) => Promise<T>;
 }): Promise<{ response: T; languageGuard: WebSocketResponseLanguageGuard }> {
   // Spanish remains accepted only as an authored-input compatibility signal.
   // A confident Spanish message therefore selects the English response
   // contract even when an old/stored preference still points at Portuguese.
   // Uncertain input fails open to the stored locale, preserving regional PT.
+  throwIfWebSocketRequestAborted(input.abortSignal);
   const effectiveLocale = resolveWebSocketResponseLocale(input.locale, input.message);
   const response = await runWithChatRequestLocale(
     effectiveLocale,
-    () => input.handler(input.message, input.userId, input.tenantId),
+    () => input.handler(input.message, input.userId, input.tenantId, input.abortSignal),
   );
+  throwIfWebSocketRequestAborted(input.abortSignal);
   const fidelity = checkResponseLocaleFidelity(effectiveLocale, response.text);
   const strictShortLanguage = detectStrictShortResponseLanguage(
     response.text,
@@ -342,6 +357,32 @@ export async function executeWebSocketDomainHandlerWithLocale<
   };
 }
 
+function webSocketClientDisconnectedError(): Error {
+  return Object.assign(new Error('websocket_client_disconnected'), {
+    name: 'AbortError',
+    code: 'CHAT_REQUEST_CANCELLED',
+  });
+}
+
+function throwIfWebSocketRequestAborted(abortSignal?: AbortSignal): void {
+  if (!abortSignal?.aborted) return;
+  throw abortSignal.reason instanceof Error
+    ? abortSignal.reason
+    : webSocketClientDisconnectedError();
+}
+
+function sendTrackedWebSocketFrame(
+  ws: WebSocket,
+  frame: Record<string, unknown>,
+  options: { abortSignal?: AbortSignal; onPublished?: () => void } = {},
+): boolean {
+  throwIfWebSocketRequestAborted(options.abortSignal);
+  if (ws.readyState !== WebSocket.OPEN) throw webSocketClientDisconnectedError();
+  ws.send(JSON.stringify(frame));
+  options.onPublished?.();
+  return true;
+}
+
 async function streamTextFrame(
   ws: WebSocket,
   input: {
@@ -349,21 +390,33 @@ async function streamTextFrame(
     messageId: string;
     userId: number;
     tenantId: number;
+    abortSignal?: AbortSignal;
+    onFirstChunk?: () => void;
   },
 ): Promise<void> {
   const chunkSize = 20;
+  let firstChunkPublished = false;
+  throwIfWebSocketRequestAborted(input.abortSignal);
   for (let i = 0; i < input.text.length; i += chunkSize) {
+    throwIfWebSocketRequestAborted(input.abortSignal);
+    if (ws.readyState !== WebSocket.OPEN) {
+      if (input.abortSignal) throw webSocketClientDisconnectedError();
+      return;
+    }
     const chunk = input.text.slice(i, i + chunkSize);
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({
-        type: 'chunk',
-        text: chunk,
-        messageId: input.messageId,
-        userId: input.userId,
-        tenantId: input.tenantId,
-      }));
+    ws.send(JSON.stringify({
+      type: 'chunk',
+      text: chunk,
+      messageId: input.messageId,
+      userId: input.userId,
+      tenantId: input.tenantId,
+    }));
+    if (!firstChunkPublished) {
+      firstChunkPublished = true;
+      input.onFirstChunk?.();
     }
     await new Promise(resolve => setTimeout(resolve, 30));
+    throwIfWebSocketRequestAborted(input.abortSignal);
   }
 }
 
@@ -375,8 +428,11 @@ async function trySendTokenZeroSecretaryRead(
     userId: number;
     tenantId: number;
     locale: 'pt-BR' | 'pt-PT' | 'en-US';
+    abortSignal: AbortSignal;
+    onPublished: () => void;
   },
 ): Promise<boolean> {
+  throwIfWebSocketRequestAborted(input.abortSignal);
   const read = tryBuildChatCoreV2DeterministicReadRoute({
     normalizedText: input.text,
     userId: input.userId,
@@ -398,17 +454,20 @@ async function trySendTokenZeroSecretaryRead(
     messageId: input.messageId,
     userId: input.userId,
     tenantId: input.tenantId,
+    abortSignal: input.abortSignal,
+    onFirstChunk: input.onPublished,
   });
-  if (ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({
-      type: 'done',
-      messageId: input.messageId,
-      domain: 'secretary',
-      userId: input.userId,
-      tenantId: input.tenantId,
-      metadata: { ...built.response.metadata, tokenZero: true },
-    }));
-  }
+  sendTrackedWebSocketFrame(ws, {
+    type: 'done',
+    messageId: input.messageId,
+    domain: 'secretary',
+    userId: input.userId,
+    tenantId: input.tenantId,
+    metadata: { ...built.response.metadata, tokenZero: true },
+  }, {
+    abortSignal: input.abortSignal,
+    onPublished: input.onPublished,
+  });
   return true;
 }
 
@@ -417,62 +476,66 @@ type WebSocketActionResult = NonNullable<Awaited<ReturnType<typeof tryHandleChat
 async function sendWebSocketActionResult(
   ws: WebSocket,
   actionResult: WebSocketActionResult,
-  input: { messageId: string; userId: number; tenantId: number },
+  input: {
+    messageId: string;
+    userId: number;
+    tenantId: number;
+    abortSignal: AbortSignal;
+    onPublished: () => void;
+  },
 ): Promise<void> {
   const response = actionResult.response;
   const actionError = response.metadata?.error as { code?: string; message?: string; details?: unknown } | undefined;
   if (actionError?.code === 'TIER_REQUIRED' || actionError?.code === 'ACCESS_CHECK_UNAVAILABLE') {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({
-        type: 'error',
-        code: actionError.code,
-        message: actionError.message || response.text,
-        details: actionError.details ?? null,
-        ...input,
-      }));
-    }
+    sendTrackedWebSocketFrame(ws, {
+      type: 'error',
+      code: actionError.code,
+      message: actionError.message || response.text,
+      details: actionError.details ?? null,
+      messageId: input.messageId,
+      userId: input.userId,
+      tenantId: input.tenantId,
+    }, input);
     return;
   }
   const hasWriteStep = actionResult.plan.steps.some((step) => step.risk !== 'read_only');
   const actionStatus = hasWriteStep && actionResult.status === 'needs_confirmation'
     ? 'ACTION_CONFIRMATION_REQUIRED'
     : response.metadata?.actionStatus ?? actionResult.status;
-  if (ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({
-      type: 'status',
-      messageId: input.messageId,
-      status: actionStatus,
-      metadata: {
-        type: response.metadata?.type,
-        actionStatus,
-        involvedSkills: response.metadata?.involvedSkills,
-      },
-      userId: input.userId,
-      tenantId: input.tenantId,
-    }));
-  }
+  sendTrackedWebSocketFrame(ws, {
+    type: 'status',
+    messageId: input.messageId,
+    status: actionStatus,
+    metadata: {
+      type: response.metadata?.type,
+      actionStatus,
+      involvedSkills: response.metadata?.involvedSkills,
+    },
+    userId: input.userId,
+    tenantId: input.tenantId,
+  }, input);
   await streamTextFrame(ws, {
     text: response.text,
     messageId: input.messageId,
     userId: input.userId,
     tenantId: input.tenantId,
+    abortSignal: input.abortSignal,
+    onFirstChunk: input.onPublished,
   });
-  if (ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({
-      type: 'done',
-      messageId: input.messageId,
-      domain: response.domain,
-      userId: input.userId,
-      tenantId: input.tenantId,
-      metadata: {
-        ...response.metadata,
-        ...(hasWriteStep && actionResult.status === 'needs_confirmation'
-          ? { actionStatus: 'ACTION_CONFIRMATION_REQUIRED' }
-          : {}),
-        tokenZero: true,
-      },
-    }));
-  }
+  sendTrackedWebSocketFrame(ws, {
+    type: 'done',
+    messageId: input.messageId,
+    domain: response.domain,
+    userId: input.userId,
+    tenantId: input.tenantId,
+    metadata: {
+      ...response.metadata,
+      ...(hasWriteStep && actionResult.status === 'needs_confirmation'
+        ? { actionStatus: 'ACTION_CONFIRMATION_REQUIRED' }
+        : {}),
+      tokenZero: true,
+    },
+  }, input);
 }
 
 /**
@@ -597,6 +660,7 @@ export function attachWebSocket(server: http.Server): void {
     if (typeof (pingInterval as any).unref === 'function') (pingInterval as any).unref();
 
     ws.on('message', async (data) => {
+      let modelResponsePublished = false;
       try {
         if (!consumeWebSocketMessageBudget(ws as any)) {
           pushEvent({
@@ -703,13 +767,21 @@ export function attachWebSocket(server: http.Server): void {
         const userId = (ws as any).userId as number;
         const tenantId = (ws as any).tenantId as number;
         if (msg.type !== 'message' || !msg.text) return;
-        if (tenantId !== resolveCurrentTenantIdForUser(userId)) {
-          ws.send(JSON.stringify({ type: 'error', message: 'Tenant scope changed. Please reconnect.' }));
-          ws.close(4003, 'Tenant scope changed');
-          return;
-        }
+        const clientAbortController = new AbortController();
+        const abortMessageOnSocketClose = (): void => {
+          if (clientAbortController.signal.aborted) return;
+          clientAbortController.abort(webSocketClientDisconnectedError());
+        };
+        ws.once('close', abortMessageOnSocketClose);
+        ws.once('error', abortMessageOnSocketClose);
+        try {
+          if (tenantId !== resolveCurrentTenantIdForUser(userId)) {
+            ws.send(JSON.stringify({ type: 'error', message: 'Tenant scope changed. Please reconnect.' }));
+            ws.close(4003, 'Tenant scope changed');
+            return;
+          }
 
-        await runWithContext(
+          await runWithContext(
           { requestId: generateRequestId(), source: 'http', userId, tenantId },
           async () => {
             const messageId = `msg-${Date.now()}`;
@@ -722,42 +794,84 @@ export function attachWebSocket(server: http.Server): void {
             // Resolve deterministic Secretary reads before acquiring the AI
             // lock. Free users and quota-exhausted paid users must not queue
             // behind a long provider call for token-zero state access.
-            if (await trySendTokenZeroSecretaryRead(ws, {
+            const tokenZeroReadHandled = await runWithSkillInferenceAccountAdmission({
+              userId,
+              abortSignal: clientAbortController.signal,
+            }, (accountAbortSignal) => trySendTokenZeroSecretaryRead(ws, {
               text: messageText,
               messageId,
               userId,
               tenantId,
               locale: responseLocale,
-            })) {
+              abortSignal: accountAbortSignal,
+              onPublished: () => { modelResponsePublished = true; },
+            }));
+            if (tokenZeroReadHandled) {
               return;
             }
 
-            const deterministicAction = await tryHandleChatActionPlan({
-              text: messageText,
+            const deterministicActionHandled = await runWithSkillInferenceAccountAdmission({
               userId,
-              tenantId,
-              conversationId: typeof msg.clientMessageId === 'string' && msg.clientMessageId.trim()
-                ? msg.clientMessageId.trim()
-                : messageId,
-              messageId,
-              channel: 'ios',
-              locale: responseLocale,
-              timezone: getUserTimezoneById(userId),
-              requireSafeWriteConfirmation: true,
-              blockNonReadOnlyPlans: true,
-              allowModelPlanner: false,
+              abortSignal: clientAbortController.signal,
+            }, async (accountAbortSignal) => {
+              const deterministicAction = await tryHandleChatActionPlan({
+                text: messageText,
+                userId,
+                tenantId,
+                conversationId: typeof msg.clientMessageId === 'string' && msg.clientMessageId.trim()
+                  ? msg.clientMessageId.trim()
+                  : messageId,
+                messageId,
+                channel: 'ios',
+                locale: responseLocale,
+                timezone: getUserTimezoneById(userId),
+                requireSafeWriteConfirmation: true,
+                blockNonReadOnlyPlans: true,
+                allowModelPlanner: false,
+                abortSignal: accountAbortSignal,
+              });
+              if (!deterministicAction) return false;
+              await sendWebSocketActionResult(ws, deterministicAction, {
+                messageId,
+                userId,
+                tenantId,
+                abortSignal: accountAbortSignal,
+                onPublished: () => { modelResponsePublished = true; },
+              });
+              return true;
             });
-            if (deterministicAction) {
-              await sendWebSocketActionResult(ws, deterministicAction, { messageId, userId, tenantId });
-              return;
-            }
+            if (deterministicActionHandled) return;
 
-            await withAiBudgetReservation({
+            // Once this turn enters the paid/model-backed block, keep both the
+            // account-deletion fence and client lifecycle attached through
+            // routing, validation, and the final WebSocket frame.
+            await runWithSkillInferenceAccountAdmission({
+              userId,
+              abortSignal: clientAbortController.signal,
+            }, (accountAbortSignal) => withAiBudgetReservation({
               userId,
               requestSource: 'interactive',
               baseCategory: 'ios_websocket_chat',
               jobName: 'ios_websocket',
             }, async () => {
+            const streamModelResponse = (input: {
+              text: string;
+              messageId: string;
+              userId: number;
+              tenantId: number;
+            }) => streamTextFrame(ws, {
+              ...input,
+              abortSignal: accountAbortSignal,
+              onFirstChunk: () => { modelResponsePublished = true; },
+            });
+            const sendModelFrame = (frame: Record<string, unknown>): boolean => sendTrackedWebSocketFrame(
+              ws,
+              frame,
+              {
+                abortSignal: accountAbortSignal,
+                onPublished: () => { modelResponsePublished = true; },
+              },
+            );
             const preRoutingDecision = analyzeChatSkillOrchestration({
               message: messageText,
               userId,
@@ -797,30 +911,27 @@ export function attachWebSocket(server: http.Server): void {
                     { userId, tenantId, domain: preGateDomain, userTier: tierResult.userTier, requiredTier: tierResult.requiredTier, reason: tierResult.reason },
                     'iOS WebSocket tier gate blocked',
                   );
-                  if (ws.readyState === WebSocket.OPEN) {
-                    ws.send(JSON.stringify({
-                      type: 'error',
-                      code: 'TIER_REQUIRED',
-                      message: `This feature requires the ${tierResult.requiredTier} tier. Your current tier: ${tierResult.userTier}.`,
-                      details: {
-                        domain: preGateDomain,
-                        userTier: tierResult.userTier,
-                        requiredTier: tierResult.requiredTier,
-                      },
-                    }));
-                  }
+                  sendModelFrame({
+                    type: 'error',
+                    code: 'TIER_REQUIRED',
+                    message: `This feature requires the ${tierResult.requiredTier} tier. Your current tier: ${tierResult.userTier}.`,
+                    details: {
+                      domain: preGateDomain,
+                      userTier: tierResult.userTier,
+                      requiredTier: tierResult.requiredTier,
+                    },
+                  });
                   return;
                 }
               }
             } catch (err) {
               logger.warn({ err, userId, tenantId, domain: preGateDomain }, 'iOS WebSocket tier gate check failed — fail-closed');
-              if (ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({
-                  type: 'error',
-                  code: 'ACCESS_CHECK_UNAVAILABLE',
-                  message: 'Nexus could not verify access for this request. Please reconnect and try again.',
-                  details: { domain: preGateDomain },
-                }));
+              if (sendModelFrame({
+                type: 'error',
+                code: 'ACCESS_CHECK_UNAVAILABLE',
+                message: 'Nexus could not verify access for this request. Please reconnect and try again.',
+                details: { domain: preGateDomain },
+              })) {
                 ws.close(1011, 'Access check unavailable');
               }
               return;
@@ -839,121 +950,116 @@ export function attachWebSocket(server: http.Server): void {
               timezone: getUserTimezoneById(userId),
               requireSafeWriteConfirmation: true,
               blockNonReadOnlyPlans: true,
+              abortSignal: accountAbortSignal,
             });
             if (actionResult) {
               const response = actionResult.response;
               const actionError = response.metadata?.error as { code?: string; message?: string; details?: unknown } | undefined;
               if (actionError?.code === 'TIER_REQUIRED' || actionError?.code === 'ACCESS_CHECK_UNAVAILABLE') {
-                if (ws.readyState === WebSocket.OPEN) {
-                  ws.send(JSON.stringify({
-                    type: 'error',
-                    code: actionError.code,
-                    message: actionError.message || response.text,
-                    details: actionError.details ?? null,
-                    messageId,
-                    userId,
-                    tenantId,
-                  }));
-                }
+                sendModelFrame({
+                  type: 'error',
+                  code: actionError.code,
+                  message: actionError.message || response.text,
+                  details: actionError.details ?? null,
+                  messageId,
+                  userId,
+                  tenantId,
+                });
                 return;
               }
               const hasWriteStep = actionResult.plan.steps.some((step) => step.risk !== 'read_only');
               if (hasWriteStep && actionResult.status === 'needs_confirmation') {
-                if (ws.readyState === WebSocket.OPEN) {
-                  ws.send(JSON.stringify({
-                    type: 'status',
-                    messageId,
-                    status: 'ACTION_CONFIRMATION_REQUIRED',
-                    metadata: {
-                      type: 'chat_action_confirmation_required',
-                      actionStatus: 'ACTION_CONFIRMATION_REQUIRED',
-                      involvedSkills: response.metadata?.involvedSkills,
-                    },
-                    userId,
-                    tenantId,
-                  }));
-                }
-                await streamTextFrame(ws, {
+                sendModelFrame({
+                  type: 'status',
+                  messageId,
+                  status: 'ACTION_CONFIRMATION_REQUIRED',
+                  metadata: {
+                    type: 'chat_action_confirmation_required',
+                    actionStatus: 'ACTION_CONFIRMATION_REQUIRED',
+                    involvedSkills: response.metadata?.involvedSkills,
+                  },
+                  userId,
+                  tenantId,
+                });
+                await streamModelResponse({
                   text: response.text,
                   messageId,
                   userId,
                   tenantId,
                 });
-                if (ws.readyState === WebSocket.OPEN) {
-                  ws.send(JSON.stringify({
-                    type: 'done',
-                    messageId,
-                    domain: response.domain,
-                    userId,
-                    tenantId,
-                    metadata: {
-                      ...response.metadata,
-                      actionStatus: 'ACTION_CONFIRMATION_REQUIRED',
-                    },
-                  }));
-                }
-                return;
-              }
-              if (ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({
-                  type: 'status',
-                  messageId,
-                  status: response.metadata?.actionStatus ?? actionResult.status,
-                  metadata: {
-                    type: response.metadata?.type,
-                    actionStatus: response.metadata?.actionStatus,
-                    involvedSkills: response.metadata?.involvedSkills,
-                  },
-                  userId,
-                  tenantId,
-                }));
-              }
-              await streamTextFrame(ws, {
-                text: response.text,
-                messageId,
-                userId,
-                tenantId,
-              });
-              if (ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({
+                sendModelFrame({
                   type: 'done',
                   messageId,
                   domain: response.domain,
                   userId,
                   tenantId,
-                  metadata: response.metadata,
-                }));
+                  metadata: {
+                    ...response.metadata,
+                    actionStatus: 'ACTION_CONFIRMATION_REQUIRED',
+                  },
+                });
+                return;
               }
+              sendModelFrame({
+                type: 'status',
+                messageId,
+                status: response.metadata?.actionStatus ?? actionResult.status,
+                metadata: {
+                  type: response.metadata?.type,
+                  actionStatus: response.metadata?.actionStatus,
+                  involvedSkills: response.metadata?.involvedSkills,
+                },
+                userId,
+                tenantId,
+              });
+              await streamModelResponse({
+                text: response.text,
+                messageId,
+                userId,
+                tenantId,
+              });
+              sendModelFrame({
+                type: 'done',
+                messageId,
+                domain: response.domain,
+                userId,
+                tenantId,
+                metadata: response.metadata,
+              });
               return;
             }
 
-            const rawRoute = await routeMessage(messageText, undefined, userId, tenantId);
+            const rawRoute = await routeMessage(
+              messageText,
+              undefined,
+              userId,
+              tenantId,
+              accountAbortSignal,
+            );
             if (rawRoute.disposition) {
               const classifierTerminal = buildManifestClassifierTerminalResponse(
                 rawRoute.disposition,
                 responseLocale,
               );
-              await streamTextFrame(ws, {
+              await streamModelResponse({
                 text: classifierTerminal.text,
                 messageId,
                 userId,
                 tenantId,
               });
-              if (ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({
-                  type: 'done',
-                  messageId,
-                  domain: classifierTerminal.domain,
-                  userId,
-                  tenantId,
-                  metadata: {
-                    type: 'chat_manifest_classifier_terminal',
-                    disposition: classifierTerminal.disposition,
-                    actionStatus: classifierTerminal.actionStatus,
-                    reasonCodes: classifierTerminal.reasonCodes,
-                  },
-                }));
-              }
+              sendModelFrame({
+                type: 'done',
+                messageId,
+                domain: classifierTerminal.domain,
+                userId,
+                tenantId,
+                metadata: {
+                  type: 'chat_manifest_classifier_terminal',
+                  disposition: classifierTerminal.disposition,
+                  actionStatus: classifierTerminal.actionStatus,
+                  reasonCodes: classifierTerminal.reasonCodes,
+                },
+              });
               logger.info(
                 { userId, tenantId, disposition: classifierTerminal.disposition },
                 'iOS WebSocket chat terminated on an explicit manifest-classifier outcome',
@@ -985,21 +1091,19 @@ export function attachWebSocket(server: http.Server): void {
               const text = preTurnContract?.language === 'pt' || preTurnContract?.language === 'mixed'
                 ? 'Não vou executar ações destrutivas por streaming sem uma confirmação verificada no Nexus. Abre o app/Decision Center para rever e confirmar com segurança.'
                 : 'I will not execute destructive streaming actions without verified Nexus confirmation. Open the app or Decision Center to review and confirm safely.';
-              await streamTextFrame(ws, { text, messageId, userId, tenantId });
-              if (ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({
-                  type: 'done',
-                  messageId,
-                  domain: route.domain,
-                  userId,
-                  tenantId,
-                  metadata: {
-                    type: 'chat_destructive_guardrail',
-                    riskClass: preTurnContract?.riskClass ?? 'destructive',
-                    routeKind: preTurnContract?.routeKind ?? 'action',
-                  },
-                }));
-              }
+              await streamModelResponse({ text, messageId, userId, tenantId });
+              sendModelFrame({
+                type: 'done',
+                messageId,
+                domain: route.domain,
+                userId,
+                tenantId,
+                metadata: {
+                  type: 'chat_destructive_guardrail',
+                  riskClass: preTurnContract?.riskClass ?? 'destructive',
+                  routeKind: preTurnContract?.routeKind ?? 'action',
+                },
+              });
               logger.warn({ userId, tenantId, domain: route.domain }, 'iOS WebSocket destructive chat turn blocked');
               return;
             }
@@ -1022,26 +1126,25 @@ export function attachWebSocket(server: http.Server): void {
                 tenantId,
                 groundingRequired: preTurnContract.groundingRequired,
                 localContext,
+                abortSignal: accountAbortSignal,
               });
-              await streamTextFrame(ws, { text: research.text, messageId, userId, tenantId });
-              if (ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({
-                  type: 'done',
-                  messageId,
-                  domain: researchDomain,
-                  userId,
-                  tenantId,
-                  metadata: {
-                    type: 'chat_internet_research',
-                    webSources: research.sources,
-                    degraded: research.degraded,
-                    degradedReason: research.degradedReason ?? null,
-                    routeKind: preTurnContract.routeKind,
-                    groundingRequired: preTurnContract.groundingRequired,
-                    contextCompiler: research.context ?? null,
-                  },
-                }));
-              }
+              await streamModelResponse({ text: research.text, messageId, userId, tenantId });
+              sendModelFrame({
+                type: 'done',
+                messageId,
+                domain: researchDomain,
+                userId,
+                tenantId,
+                metadata: {
+                  type: 'chat_internet_research',
+                  webSources: research.sources,
+                  degraded: research.degraded,
+                  degradedReason: research.degradedReason ?? null,
+                  routeKind: preTurnContract.routeKind,
+                  groundingRequired: preTurnContract.groundingRequired,
+                  contextCompiler: research.context ?? null,
+                },
+              });
               logger.info(
                 { userId, tenantId, domain: researchDomain, sourceCount: research.sources.length, degraded: research.degraded },
                 'iOS WebSocket handled selective internet research turn',
@@ -1053,7 +1156,7 @@ export function attachWebSocket(server: http.Server): void {
             const handler = handlers[route.domain];
 
             if (!handler) {
-              ws.send(JSON.stringify({ type: 'error', message: `No handler for ${route.domain}` }));
+              sendModelFrame({ type: 'error', message: `No handler for ${route.domain}` });
               return;
             }
 
@@ -1064,6 +1167,7 @@ export function attachWebSocket(server: http.Server): void {
               message: route.strippedMessage,
               userId,
               tenantId,
+              abortSignal: accountAbortSignal,
               handler,
             });
             const result = executed.response;
@@ -1081,28 +1185,44 @@ export function attachWebSocket(server: http.Server): void {
               );
             }
 
-            await streamTextFrame(ws, { text: result.text, messageId, userId, tenantId });
+            await streamModelResponse({ text: result.text, messageId, userId, tenantId });
 
             // Send completion
-            if (ws.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify({
-                type: 'done',
-                messageId,
-                domain: result.domain || route.domain,
-                userId,
-                tenantId,
-                metadata: executed.languageGuard.contained
-                  ? {
-                    type: 'chat_response_locale_contained',
-                    responseLanguageGuard: executed.languageGuard,
-                  }
-                  : null,
-              }));
-            }
+            sendModelFrame({
+              type: 'done',
+              messageId,
+              domain: result.domain || route.domain,
+              userId,
+              tenantId,
+              metadata: executed.languageGuard.contained
+                ? {
+                  type: 'chat_response_locale_contained',
+                  responseLanguageGuard: executed.languageGuard,
+                }
+                : null,
             });
+            }));
           },
-        );
+          );
+        } finally {
+          ws.off('close', abortMessageOnSocketClose);
+          ws.off('error', abortMessageOnSocketClose);
+        }
       } catch (err: any) {
+        if (err?.code === 'ACCOUNT_DELETION_IN_PROGRESS') {
+          if (!modelResponsePublished && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({
+              type: 'error',
+              code: 'ACCOUNT_DELETION_IN_PROGRESS',
+              message: 'No new chat work can start while this account is being deleted.',
+            }));
+          }
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.close(4003, 'Account unavailable');
+          }
+          return;
+        }
+        if (isProviderRequestCancellation(err)) return;
         const budgetErrorFrame = buildWebSocketAiBudgetErrorFrame(
           err,
           (ws as any).userId,

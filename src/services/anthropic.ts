@@ -1165,7 +1165,7 @@ import type {
   StructuredGenerationRequest,
   StructuredGenerationResult,
 } from './ai-provider';
-import { normalizeCallDomainOptions } from './ai-provider';
+import { isProviderRequestCancellation, normalizeCallDomainOptions } from './ai-provider';
 
 /** Service availability filter — removes tools for unconfigured services. */
 function serviceAvailabilityFilter(tool: Anthropic.Tool): boolean {
@@ -1275,6 +1275,7 @@ export async function classifyMessage(
   activeConversationContext?: { domain: DomainName; lastAssistantMessage: string } | null,
   userId?: number,
   tenantId?: number,
+  abortSignal?: AbortSignal,
 ): Promise<{ domain: DomainName; confidence: number; skill?: string }> {
   function inferFallbackDomain(): DomainName {
     if (activeConversationContext?.domain) {
@@ -1336,13 +1337,20 @@ ${message}`;
           max_tokens: 100,
           system: systemPrompt,
           messages: [{ role: 'user', content: classifierInput }],
-        }, 'classify_message', { userId, tenantId });
+        }, 'classify_message', { userId, tenantId, abortSignal });
         return response.content
           .filter((b): b is Anthropic.TextBlock => b.type === 'text')
           .map((b) => b.text)
           .join('');
       },
-      { model: config.gemini.classifierModel, maxTokens: 100, temperature: 0, userId, tenantId },
+      {
+        model: config.gemini.classifierModel,
+        maxTokens: 100,
+        temperature: 0,
+        userId,
+        tenantId,
+        abortSignal,
+      },
     );
 
     // Strip markdown code fences (either provider may wrap JSON)
@@ -1370,6 +1378,14 @@ ${message}`;
     }
     return skill !== undefined ? { domain, confidence, skill } : { domain, confidence };
   } catch (err) {
+    if (isProviderRequestCancellation(err)) throw err;
+    if (abortSignal?.aborted) {
+      if (isProviderRequestCancellation(abortSignal.reason)) throw abortSignal.reason;
+      throw Object.assign(new Error('provider_request_cancelled'), {
+        name: 'AbortError',
+        code: 'CHAT_REQUEST_CANCELLED',
+      });
+    }
     rethrowAiUsageFailClosedError(err);
     const fallbackDomain = inferFallbackDomain();
     logger.error(
@@ -1412,6 +1428,7 @@ export async function callStructuredGeneration(
     userId: request.userId,
     tenantId: request.tenantId,
     isUserMessage: true,
+    abortSignal: request.abortSignal,
   });
   return {
     text: response.content
@@ -1530,7 +1547,12 @@ export async function callDomain(
       system,
       messages,
       ...(useTools ? { tools: domainTools } : {}),
-    }, `domain_${domain}`, { userId: meteredUserId, tenantId: opts.tenantId, isUserMessage: true });
+    }, `domain_${domain}`, {
+      userId: meteredUserId,
+      tenantId: opts.tenantId,
+      isUserMessage: true,
+      abortSignal: opts.abortSignal,
+    });
   } catch (err) {
     logger.error({ err, domain }, 'Anthropic API call failed in callDomain');
     throw err;
@@ -1646,7 +1668,11 @@ export async function continueWithToolResults(
       system,
       messages,
       ...(useTools ? { tools: domainTools } : {}),
-    }, 'tool_continuation', { userId: meteredUserId, tenantId: opts.tenantId });
+    }, 'tool_continuation', {
+      userId: meteredUserId,
+      tenantId: opts.tenantId,
+      abortSignal: opts.abortSignal,
+    });
   } catch (err) {
     logger.error({ err, domain }, 'Anthropic API call failed in continueWithToolResults');
     throw err;

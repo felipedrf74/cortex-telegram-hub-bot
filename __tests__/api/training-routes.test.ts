@@ -13,6 +13,7 @@ const mockSetCache = vi.fn();
 const mockClearCache = vi.fn();
 const mockClearCacheByPrefix = vi.fn();
 const mockGenerateCoachBriefing = vi.fn();
+const mockRunWithCoachBriefingAccountAdmissions = vi.fn();
 const mockApplyCoachRecommendations = vi.fn();
 const mockGetLatestByType = vi.fn();
 const mockDeleteReportsByType = vi.fn();
@@ -111,6 +112,17 @@ vi.mock('../../src/services/training-route-deprecation-telemetry', async () => (
 
 vi.mock('../../src/services/garmin-coach', () => ({
   generateCoachBriefing: (...args: unknown[]) => mockGenerateCoachBriefing(...args),
+  runWithCoachBriefingAccountAdmissions: (...args: unknown[]) => (
+    mockRunWithCoachBriefingAccountAdmissions(...args)
+  ),
+  runWithCoachBriefingAccountLifecycle: async (
+    userId: number,
+    options: Record<string, unknown>,
+    consume: (briefing: unknown, abortSignal: AbortSignal) => unknown,
+  ) => consume(
+    await mockGenerateCoachBriefing(userId, options),
+    new AbortController().signal,
+  ),
   applyCoachRecommendations: (...args: unknown[]) => mockApplyCoachRecommendations(...args),
 }));
 
@@ -595,6 +607,12 @@ describe('Training API routes', () => {
     mockClearCache.mockReset();
     mockClearCacheByPrefix.mockReset();
     mockGenerateCoachBriefing.mockReset();
+    mockRunWithCoachBriefingAccountAdmissions.mockReset();
+    mockRunWithCoachBriefingAccountAdmissions.mockImplementation(async (
+      _userId: number,
+      _options: Record<string, unknown>,
+      operation: (abortSignal: AbortSignal) => unknown,
+    ) => operation(new AbortController().signal));
     mockApplyCoachRecommendations.mockReset();
     mockGetLatestByType.mockReset();
     mockDeleteReportsByType.mockReset();
@@ -851,6 +869,31 @@ describe('Training API routes', () => {
       expect.any(Object),
       expect.any(Number),
     );
+  });
+
+  it.each([
+    ['GET', '/coach', { refresh: 'true' }, undefined],
+    ['POST', '/coach/report', {}, { refresh: true }],
+  ] as const)('does not replace account-erasure cancellation with a deterministic %s %s fallback', async (
+    method,
+    path,
+    query,
+    body,
+  ) => {
+    mockGetActivePlan.mockReturnValue({ id: 44, user_id: 12, tenant_id: 12, status: 'active' });
+    mockGenerateCoachBriefing.mockRejectedValueOnce(Object.assign(
+      new Error('account deletion in progress'),
+      { code: 'ACCOUNT_DELETION_IN_PROGRESS' },
+    ));
+
+    const res = await dispatch(method, path, query, body);
+
+    expect(res.statusCode).toBe(409);
+    expect(res.body).toMatchObject({
+      ok: false,
+      error: { code: 'ACCOUNT_DELETION_IN_PROGRESS' },
+    });
+    expect(mockSetCache).not.toHaveBeenCalled();
   });
 
   it('serves cached Coach reads before the model-backed quota gate after current eligibility is revalidated', async () => {
@@ -1404,11 +1447,51 @@ describe('Training API routes', () => {
     expect(res.body.data.warnings).toContain('Coach AI unavailable; deterministic fallback used.');
     expect(res.body.data.briefing).toContain('Leitura rápida do coach');
     expect(JSON.stringify(res.body)).not.toContain('upstream garmin timeout');
+    expect(mockRunWithCoachBriefingAccountAdmissions).toHaveBeenCalledWith(
+      12,
+      expect.objectContaining({
+        tenantId: 12,
+        meteringUserId: 12,
+        budgetJobName: 'coach_refresh_fallback',
+      }),
+      expect.any(Function),
+    );
     expect(mockSetCache).not.toHaveBeenCalledWith(
       'coach-briefing:12',
       expect.anything(),
       expect.anything(),
     );
+  });
+
+  it.each([
+    ['GET', '/coach', { refresh: 'true' }, undefined],
+    ['POST', '/coach/report', {}, { refresh: true }],
+  ] as const)('does not publish a deterministic %s %s fallback when fallback admission is fenced', async (
+    method,
+    path,
+    query,
+    body,
+  ) => {
+    mockGetActivePlan.mockReturnValue({
+      id: 44,
+      user_id: 12,
+      tenant_id: 12,
+      status: 'active',
+    });
+    mockGenerateCoachBriefing.mockRejectedValueOnce(new Error('provider unavailable'));
+    mockRunWithCoachBriefingAccountAdmissions.mockRejectedValueOnce(Object.assign(
+      new Error('account deletion in progress'),
+      { code: 'ACCOUNT_DELETION_IN_PROGRESS' },
+    ));
+
+    const res = await dispatch(method, path, query, body);
+
+    expect(res.statusCode).toBe(409);
+    expect(res.body).toMatchObject({
+      ok: false,
+      error: { code: 'ACCOUNT_DELETION_IN_PROGRESS' },
+    });
+    expect(mockSetCache).not.toHaveBeenCalled();
   });
 
   it('returns uncached readiness unavailable state when readiness scoring fails', async () => {

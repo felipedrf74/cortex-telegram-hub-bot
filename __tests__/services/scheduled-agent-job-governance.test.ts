@@ -72,6 +72,9 @@ function insertUsage(runId: string, tenantId: number, userId: number): void {
 describe('remaining scheduled agent-job governance', () => {
   beforeEach(() => {
     testDb = createMigratedTestDatabase();
+    testDb.prepare(
+      "INSERT INTO users (id, telegram_id, tier, status) VALUES (42, 4200, 'pro', 'active')",
+    ).run();
     channelMocks.plan.mockReset();
     channelMocks.processScope.mockReset();
   });

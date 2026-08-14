@@ -28,8 +28,9 @@ import { getDb } from './database';
 import { logger } from '../utils/logger';
 import {
   assertSmallOnlyOllamaModel,
-  OLLAMA_SMALL_ONLY_MODEL,
+  OLLAMA_FAST_MODEL_DISABLED,
   OllamaSmallOnlyPolicyError,
+  tryGetLocalModelManifest,
 } from './ollama-model-policy';
 
 // ─── Types ──────────────────────────────────────────────────────────
@@ -81,7 +82,15 @@ function captureDefaults(): void {
 captureDefaults();
 
 function getDefaultModel(provider: ProviderName, role: ModelRole): string {
+  if (provider === 'ollama') return getCurrentOllamaModelOption();
   return DEFAULTS[cacheKey(provider, role)] || 'unknown';
+}
+
+function getCurrentOllamaModelOption(): string {
+  const loaded = tryGetLocalModelManifest({ fresh: true });
+  if (!loaded.ok) return OLLAMA_FAST_MODEL_DISABLED;
+  return loaded.manifest.models.find((model) => model.id === loaded.manifest.activeModelId)?.ollamaTag
+    ?? OLLAMA_FAST_MODEL_DISABLED;
 }
 
 /**
@@ -99,6 +108,9 @@ function domainDefaultTier(domain: DomainModelRole): ModelRole {
  * Returns the override if set, otherwise the default from config.ts.
  */
 export function getActiveModel(provider: ProviderName, role: ModelRole): string {
+  // The signed manifest is the sole local-model authority. A process-lifetime
+  // cache or a persisted portal override must not survive a manifest rotation.
+  if (provider === 'ollama') return getDefaultModel(provider, role);
   const key = cacheKey(provider, role);
   return overrides.get(key) ?? getDefaultModel(provider, role);
 }
@@ -312,12 +324,14 @@ export const MODEL_OPTIONS: Record<ProviderName, { chat: string[]; classifier: s
     chat: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash-lite'],
     classifier: ['gemini-2.5-flash-lite', 'gemini-2.5-flash'],
   },
-  // ServerDominguez local inference is intentionally small-only. Complex
-  // reasoning escalates through the approved cloud gate, never a large local
-  // model selected from the portal.
-  ollama: {
-    chat: [OLLAMA_SMALL_ONLY_MODEL],
-    classifier: [OLLAMA_SMALL_ONLY_MODEL],
+  // Local selection follows the fresh signed manifest. The getter prevents a
+  // long-lived portal process from advertising a model retired by rotation.
+  get ollama() {
+    const activeModel = getCurrentOllamaModelOption();
+    return {
+      chat: [activeModel],
+      classifier: [activeModel],
+    };
   },
 };
 

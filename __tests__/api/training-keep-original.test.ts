@@ -84,6 +84,19 @@ vi.mock('../../src/services/database', () => ({
 
 vi.mock('../../src/services/garmin-coach', () => ({
   generateCoachBriefing: (...args: unknown[]) => mockGenerateCoachBriefing(...args),
+  runWithCoachBriefingAccountAdmissions: async (
+    _userId: number,
+    _options: Record<string, unknown>,
+    operation: (abortSignal: AbortSignal) => unknown,
+  ) => operation(new AbortController().signal),
+  runWithCoachBriefingAccountLifecycle: async (
+    userId: number,
+    options: Record<string, unknown>,
+    consume: (briefing: unknown, abortSignal: AbortSignal) => unknown,
+  ) => consume(
+    await mockGenerateCoachBriefing(userId, options),
+    new AbortController().signal,
+  ),
   applyCoachRecommendations: (...args: unknown[]) => mockApplyCoachRecommendations(...args),
 }));
 

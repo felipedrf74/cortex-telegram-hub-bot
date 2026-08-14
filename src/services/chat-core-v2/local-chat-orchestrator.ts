@@ -5,9 +5,29 @@ import { randomUUID } from 'crypto';
 import { config } from '../../config';
 import { logger } from '../../utils/logger';
 import { rethrowAiUsageFailClosedError } from '../api-usage-fallback';
-import { safeRecordChatV2CloudAllowlistEvidence } from '../chat-cloud-allowlist-evidence';
 import { ensureActiveProvider } from '../provider-registry';
+import { safeRecordChatV2CloudAllowlistEvidence } from '../chat-cloud-allowlist-evidence';
 import type { LocalReasoningResult, LocalReasoningTask } from '../ollama-provider';
+import {
+  executeSkillInference,
+  getLatestSkillInferenceOperationRunId,
+  getSkillInferenceCloudFallbackCostCaps,
+  getSkillInferenceExternalCloudFallbackEligibility,
+  isSkillInferenceAccountDeletionError,
+  isLocalInferenceUserEnrolled,
+  rejectSkillInferenceApplicationResult,
+  rejectSkillInferenceApplicationOperationResults,
+  recordSkillInferenceExternalCloudAttempt,
+  runWithSkillInferenceAccountAdmission,
+  scheduleSkillInferenceShadowAttempt,
+  SkillInferencePolicyError,
+} from '../skill-inference-service';
+import { LOCAL_PRIMARY_SHADOW_JOB_NAME } from '../local-inference-vocabulary';
+import { runWithApiUsageAttribution } from '../api-usage-attribution';
+import { isProviderRequestCancellation } from '../ai-provider';
+import type { SkillInferenceSkill } from '../skill-inference-profiles';
+import { localPrimaryInferenceConfig } from '../local-primary-config';
+import { getLocalInferenceRuntimeControl } from '../local-inference-runtime-control';
 import {
   COMPOSED_ANSWER_DRAFT_SCHEMA_VERSION,
   type ComposedAnswerDraft,
@@ -19,8 +39,8 @@ import { buildLocalChatCloudAllowlistPacket } from './cloud-allowlist-answer-pac
 import type { CloudAllowlistPacketResult } from './cloud-allowlist-packet';
 import { buildChatCoreV2FailureObservabilityEvent } from './failure-observability';
 import {
-  getLocalInferenceGateSnapshot,
-  runWithLocalInferenceSlot,
+  getLegacyLocalInferenceGateSnapshot,
+  runWithLegacyLocalInferenceSlot,
 } from './local-inference-concurrency-gate';
 import {
   evaluateChatCoreV2QueueFallback,
@@ -39,8 +59,8 @@ import { maybeRecordCanaryTurn } from './canary-turn-log';
 import { resolveKeepAliveForRole } from './model-residency-policy';
 import {
   assertSmallOnlyOllamaModel,
+  getActiveLocalModel,
   OLLAMA_FAST_MODEL_DISABLED,
-  OLLAMA_SMALL_ONLY_MODEL,
 } from '../ollama-model-policy';
 import {
   CHAT_CORE_V2_EVIDENCE_ITEM_SCHEMA_VERSION,
@@ -97,9 +117,9 @@ export const CHAT_CORE_V2_LOCAL_CHAT_FAST_MODEL_DEFAULT = OLLAMA_FAST_MODEL_DISA
 /**
  * The literal env value that DISABLES the fast path (WP-11, §5.A). Setting
  * `CHAT_CORE_V2_LOCAL_CHAT_FAST_MODEL=off` forces the standard model even for
- * trivial turns. This is the inner kill-switch for the fast model; the OUTER
- * kill-switch (orchestrator mode=off via isChatCoreV2LocalChatVisibleEnabled)
- * still dominates and makes the whole local-chat path inert.
+ * trivial turns. This is the inner kill-switch for the legacy fast model. The
+ * governed path ignores model overrides and is controlled by the signed model
+ * manifest, audited runtime mode, and LOCAL_PRIMARY_LLM_HARD_KILL.
  */
 const CHAT_CORE_V2_LOCAL_CHAT_FAST_MODEL_DISABLED_LITERAL = 'off';
 
@@ -122,12 +142,30 @@ export interface ChatCoreV2LocalChatTurnInput {
   surface: ChatCoreV2AllowedSurface;
   recentTurns?: ChatCoreV2LocalChatRecentTurn[];
   cloudAllowlistPacket?: CloudAllowlistPacketResult | null;
+  /** Server-classified turn risk; high/destructive work never enters local generation. */
+  riskClass?: 'low' | 'medium' | 'high' | 'destructive';
   // WP-17 (§5.F): the lean, projection-only memory loaded for this tenant+user.
   // Injected into the system prompt ONLY when mode != off, and EVERY value is
   // sentinel-wrapped + 200-char-capped before it reaches the prompt (see
   // buildMemoryContextPromptBlock). Absent/empty ⇒ no memory block ⇒ the prompt
   // is byte-identical to the legacy (no-memory) prompt.
   memoryContext?: ChatCoreV2MemoryContextItem[];
+  /** Acquires the existing cloud-dollar reservation only for a real cloud attempt. */
+  cloudBudgetBoundary?: <T>(
+    providerCall: () => Promise<T>,
+    fallbackBudget?: {
+      runId: string;
+      hardRunCostLimitUsd: number;
+      hardLocalFallbackDailyCostLimitUsd: number;
+    },
+  ) => Promise<T>;
+  /** Cancellation propagated from the owning HTTP request or background job. */
+  abortSignal?: AbortSignal;
+  /**
+   * Hands a detached shadow start to the downstream visible owner. The owner
+   * must invoke it only after publishing a successful, non-degraded answer.
+   */
+  deferShadowUntilVisibleOwner?: (scheduleShadow: () => void) => void;
   env?: NodeJS.ProcessEnv;
 }
 
@@ -148,6 +186,212 @@ export interface ChatCoreV2LocalChatTurnResult {
   };
   modelMetadata?: LocalReasoningResult['providerMetadata'];
   degraded: boolean;
+}
+
+export function isLocalPrimaryChatUserEnrolled(userId: number): boolean {
+  if (!localPrimaryInferenceConfig.chatEnabled || !Number.isSafeInteger(userId) || userId <= 0) return false;
+  const control = getLocalInferenceRuntimeControl();
+  return control.mode === 'active'
+    || (control.mode === 'canary'
+      && isLocalInferenceUserEnrolled(userId, control.rolloutPercent));
+}
+
+function isLocalPrimaryChatShadowEnabled(): boolean {
+  return localPrimaryInferenceConfig.chatEnabled
+    && getLocalInferenceRuntimeControl().mode === 'shadow';
+}
+
+function scheduleLocalPrimaryChatShadow(
+  input: ChatCoreV2LocalChatTurnInput,
+  locale: ChatCoreV2Locale,
+): void {
+  const skillId = resolveChatSkill(input);
+  scheduleSkillInferenceShadowAttempt({
+    tenantId: input.tenantId,
+    userId: input.userId,
+    skillId,
+    taskType: 'chat_read_only_generation',
+    riskClass: resolveChatSkillRisk(input, skillId),
+    executionClass: 'interactive',
+    operationId: input.requestId,
+    runId: `local-chat-shadow:${randomUUID()}`,
+    prompt: buildUserPrompt(input, locale, isRecipeRequest(foldForIntent(input.normalizedText)), null),
+    applicationGuidance: buildSystemPrompt(locale, false, null),
+    schemaId: 'text',
+    requestedOutputTokens: DEFAULT_LOCAL_CHAT_NUM_PREDICT,
+    temperature: 0.2,
+    containsPrivateData: true,
+    allowCloudEscalation: false,
+    redactionRequired: false,
+    requestSource: 'interactive',
+    budgetRequest: {
+      userId: input.userId,
+      requestSource: 'interactive',
+      baseCategory: 'ios_chat_message',
+      jobName: LOCAL_PRIMARY_SHADOW_JOB_NAME,
+      runId: input.requestId,
+    },
+    cloudBudgetBoundary: async () => {
+      throw new Error('Local-primary shadow evaluation is local-only');
+    },
+    deadlineMs: 45_000,
+  });
+}
+
+function deferLocalPrimaryChatShadowToVisibleOwner(
+  input: ChatCoreV2LocalChatTurnInput,
+  locale: ChatCoreV2Locale,
+): void {
+  input.deferShadowUntilVisibleOwner?.(() => scheduleLocalPrimaryChatShadow(input, locale));
+}
+
+function resolveChatSkill(input: ChatCoreV2LocalChatTurnInput): SkillInferenceSkill {
+  const [domain] = inferLocalAnswerDomains(input.normalizedText);
+  if (domain === 'training'
+      && /\b(?:triathlon|triatlo|swim|swimming|bike|cycling|run|running)\b/i.test(input.normalizedText)) {
+    return 'triathlon';
+  }
+  if (domain === 'content' || domain === 'training' || domain === 'cooking' || domain === 'finance') {
+    return domain;
+  }
+  return 'secretary';
+}
+
+function resolveChatSkillRisk(
+  input: ChatCoreV2LocalChatTurnInput,
+  skillId: SkillInferenceSkill,
+): 'low' | 'medium' | 'high' {
+  if (input.riskClass === 'high' || input.riskClass === 'destructive') return 'high';
+  if (input.riskClass === 'medium') return 'medium';
+  return skillId === 'cooking' || skillId === 'training' ? 'medium' : 'low';
+}
+
+function rejectGovernedChatResult(
+  input: ChatCoreV2LocalChatTurnInput,
+  reason: string,
+): void {
+  rejectSkillInferenceApplicationOperationResults({
+    operationId: input.requestId,
+    tenantId: input.tenantId,
+    userId: input.userId,
+    reason,
+  });
+}
+
+function rejectGovernedChatStage(
+  input: ChatCoreV2LocalChatTurnInput,
+  result: LocalReasoningResult,
+  reason: string,
+): void {
+  const runId = result.providerMetadata?.inferenceRunId;
+  if (!runId) return;
+  rejectSkillInferenceApplicationResult({
+    runId,
+    tenantId: input.tenantId,
+    userId: input.userId,
+    reason,
+  });
+}
+
+function createGovernedLocalChatProvider(input: ChatCoreV2LocalChatTurnInput): {
+  dispatchLocalReasoning(task: LocalReasoningTask): Promise<LocalReasoningResult>;
+} {
+  const primaryRunId = `local-chat:${randomUUID()}`;
+  let invocation = 0;
+  return {
+    async dispatchLocalReasoning(task: LocalReasoningTask): Promise<LocalReasoningResult> {
+      invocation += 1;
+      const skillId = resolveChatSkill(input);
+      const stageRunId = invocation === 1
+        ? primaryRunId
+        : `${primaryRunId.slice(0, 140)}:repair:${invocation}`;
+      const fallbackCostCaps = getSkillInferenceCloudFallbackCostCaps(input.userId);
+      const result = await executeSkillInference({
+        tenantId: input.tenantId,
+        userId: input.userId,
+        skillId,
+        taskType: 'chat_read_only_generation',
+        riskClass: resolveChatSkillRisk(input, skillId),
+        executionClass: 'interactive',
+        operationId: input.requestId,
+        runId: stageRunId,
+        prompt: task.prompt,
+        applicationGuidance: task.systemContext,
+        schemaId: task.outputSchema === undefined ? 'text' : 'generic_json',
+        outputSchema: task.outputSchema,
+        requestedOutputTokens: task.numPredict,
+        temperature: task.temperature,
+        containsPrivateData: true,
+        allowCloudEscalation: false,
+        redactionRequired: false,
+        requestSource: 'interactive',
+        budgetRequest: {
+          userId: input.userId,
+          requestSource: 'interactive',
+          baseCategory: 'ios_chat_message',
+          jobName: 'chat_core_v2_local_answer',
+          runId: input.requestId,
+        },
+        cloudBudgetBoundary: async (_request, providerCall) => (
+          runChatCloudBudgetBoundary(input, providerCall, {
+            runId: stageRunId,
+            hardRunCostLimitUsd: fallbackCostCaps.perRunUsd,
+            hardLocalFallbackDailyCostLimitUsd: fallbackCostCaps.perDayUsd,
+          })
+        ),
+        abortSignal: input.abortSignal ?? task.abortSignal,
+        deadlineMs: task.timeoutMs,
+      });
+      return {
+        text: result.text,
+        parsed: result.parsed,
+        stopReason: result.stopReason,
+        providerMetadata: {
+          providerUsed: result.provider,
+          modelUsed: result.model ?? 'local-primary',
+          modelDigest: result.modelDigest,
+          fallbackUsed: result.route !== 'local',
+          fallbackReason: result.fallbackReason,
+          firstTokenMs: result.firstTokenMs,
+          promptEvalCount: result.inputTokens,
+          evalCount: result.outputTokens,
+          inputTokens: result.inputTokens,
+          outputTokens: result.outputTokens,
+          generationTokensPerSec: result.throughputTokensPerSecond,
+          inferenceRunId: result.runId,
+        },
+      };
+    },
+  };
+}
+
+async function runChatCloudBudgetBoundary<T>(
+  input: ChatCoreV2LocalChatTurnInput,
+  providerCall: () => Promise<T>,
+  fallbackBudget: {
+    runId: string;
+    hardRunCostLimitUsd: number;
+    hardLocalFallbackDailyCostLimitUsd: number;
+  },
+): Promise<T> {
+  throwIfChatRequestCancelled(input);
+  if (!input.cloudBudgetBoundary) {
+    throw Object.assign(new Error('chat_cloud_budget_boundary_required'), {
+      code: 'CHAT_CLOUD_BUDGET_BOUNDARY_REQUIRED',
+    });
+  }
+  return input.cloudBudgetBoundary(() => {
+    throwIfChatRequestCancelled(input);
+    return providerCall();
+  }, fallbackBudget);
+}
+
+function throwIfChatRequestCancelled(input: ChatCoreV2LocalChatTurnInput): void {
+  if (!input.abortSignal?.aborted) return;
+  throw Object.assign(new Error('chat_request_cancelled'), {
+    name: 'AbortError',
+    code: 'CHAT_REQUEST_CANCELLED',
+  });
 }
 
 const CHAT_CORE_V2_LOCAL_CHAT_SCHEMA_VERSION = 'chat_core_v2_local_chat@1.0.0';
@@ -243,20 +487,47 @@ export async function runChatCoreV2LocalChatTurn(
   input: ChatCoreV2LocalChatTurnInput,
 ): Promise<ChatCoreV2LocalChatTurnResult | null> {
   const env = input.env ?? process.env;
-  if (!isChatCoreV2LocalChatVisibleEnabled(env, {
+  const governedLocalPrimary = isLocalPrimaryChatUserEnrolled(input.userId);
+  const shadowLocalPrimary = !governedLocalPrimary && isLocalPrimaryChatShadowEnabled();
+  const legacyVisible = isChatCoreV2LocalChatVisibleEnabled(env, {
     surface: input.surface,
     userId: input.userId,
     tenantId: input.tenantId,
-  })) {
+  });
+  if (!governedLocalPrimary && !legacyVisible && !shadowLocalPrimary) {
+    return null;
+  }
+  if ((governedLocalPrimary || shadowLocalPrimary)
+      && (input.riskClass === 'high' || input.riskClass === 'destructive')) {
+    // The upstream research/guarded/legacy owners retain these turns. Local
+    // inference may explain low/medium-risk material but cannot silently
+    // relabel medical, regulated-finance, legal, or destructive work as low.
     return null;
   }
 
   const writeIntent = detectChatCoreV2WriteIntent(input.normalizedText);
   if (writeIntent.mayMutate) return null;
-  if (!areLocalAnswerDomainsAllowed(input, env)) return null;
+  // The versioned skill profile is the governed read-only allowlist. A
+  // detached shadow may evaluate beyond the legacy allowlist, but it must not
+  // widen the visible legacy owner's domains. Preserve that owner gate and
+  // schedule only the non-visible comparison when the domain is excluded.
+  if (!governedLocalPrimary && legacyVisible && !areLocalAnswerDomainsAllowed(input, env)) {
+    if (shadowLocalPrimary) {
+      deferLocalPrimaryChatShadowToVisibleOwner(input, normalizeLocale(input.locale));
+    }
+    return null;
+  }
 
   const locale = normalizeLocale(input.locale);
   const foldedMessage = foldForIntent(input.normalizedText);
+  const deferShadowUntilVisibleWorkCompletes = shadowLocalPrimary && legacyVisible;
+  if (shadowLocalPrimary) {
+    if (!legacyVisible) {
+      deferLocalPrimaryChatShadowToVisibleOwner(input, locale);
+      return null;
+    }
+  }
+  const runVisibleWork = async (): Promise<ChatCoreV2LocalChatTurnResult> => {
   const recipeRequest = isRecipeRequest(foldedMessage);
   const cookingResponseRequest = recipeRequest
     || inferLocalAnswerDomains(input.normalizedText).includes('cooking')
@@ -265,10 +536,11 @@ export async function runChatCoreV2LocalChatTurn(
     return buildTemplatedCookingIdeaResponse(input, locale);
   }
 
-  const provider = ensureActiveProvider();
-  if (!provider) {
-    return buildDegradedResponse(input, 'provider_not_configured');
-  }
+  const governedProvider = governedLocalPrimary
+    ? createGovernedLocalChatProvider(input)
+    : null;
+  const provider = governedProvider ?? ensureActiveProvider();
+  if (!provider) return buildDegradedResponse(input, 'provider_not_configured');
 
   const cloudAllowlistPacket = input.cloudAllowlistPacket ?? buildLocalChatCloudAllowlistPacket({
     normalizedText: input.normalizedText,
@@ -279,7 +551,9 @@ export async function runChatCoreV2LocalChatTurn(
     env,
   });
   recordLocalChatCloudAllowlistPacketAudit(input, cloudAllowlistPacket);
-  const queueFallbackDecision = evaluateLocalQueueFallbackBeforeInference(input, env, cloudAllowlistPacket);
+  const queueFallbackDecision: ChatCoreV2QueueFallbackDecision = governedLocalPrimary
+    ? { kind: 'wait_for_local', reasonCode: 'queue_below_threshold' }
+    : evaluateLocalQueueFallbackBeforeInference(input, env, cloudAllowlistPacket);
   const queueFallbackObservabilityEvent = buildQueueFallbackObservabilityEvent(input, queueFallbackDecision);
   logQueueFallbackDecision(input, queueFallbackDecision, queueFallbackObservabilityEvent);
   if (queueFallbackDecision.kind === 'fail_visible') {
@@ -296,11 +570,25 @@ export async function runChatCoreV2LocalChatTurn(
       });
     }
     try {
-      const cloudAnswer = await dispatchCloudAllowlistAnswer(cloudAllowlistPacket.packet, {
+      const fallbackCostCaps = getSkillInferenceCloudFallbackCostCaps(input.userId);
+      const cloudAnswer = await runWithSkillInferenceAccountAdmission({
         userId: input.userId,
-        tenantId: input.tenantId,
-        requestId: input.requestId,
-      });
+        abortSignal: input.abortSignal,
+      }, (accountAbortSignal) => runChatCloudBudgetBoundary({
+        ...input,
+        abortSignal: accountAbortSignal,
+      }, () => (
+        dispatchCloudAllowlistAnswer(cloudAllowlistPacket.packet, {
+          userId: input.userId,
+          tenantId: input.tenantId,
+          requestId: input.requestId,
+          abortSignal: accountAbortSignal,
+        })
+      ), {
+        runId: input.requestId,
+        hardRunCostLimitUsd: fallbackCostCaps.perRunUsd,
+        hardLocalFallbackDailyCostLimitUsd: fallbackCostCaps.perDayUsd,
+      }));
       const locale = normalizeLocale(input.locale);
       const guarded = applyNoUnverifiedSuccessClaimGuard(cloudAnswer.text, locale, input.normalizedText);
       const cloudSafetySurface = resolveCookingSafetySurfaceForAnswer({
@@ -388,7 +676,15 @@ export async function runChatCoreV2LocalChatTurn(
         degraded: false,
       };
     } catch (err) {
+      if (isSkillInferenceAccountDeletionError(err)) throw err;
+      if (isProviderRequestCancellation(err) || input.abortSignal?.aborted === true) {
+        const reason = input.abortSignal?.reason;
+        throw reason instanceof Error ? reason : err;
+      }
       rethrowAiUsageFailClosedError(err);
+      if (errorCode(err) === 'CHAT_CLOUD_BUDGET_DENIED') {
+        return buildCloudBudgetDeniedResponse(input);
+      }
       logger.warn(
         {
           requestId: input.requestId,
@@ -412,22 +708,21 @@ export async function runChatCoreV2LocalChatTurn(
   const recipeTimeoutMs = readPositiveInt(env.CHAT_CORE_V2_LOCAL_CHAT_RECIPE_TIMEOUT_MS, DEFAULT_RECIPE_TIMEOUT_MS);
   // WP-11 (D3 latency fast-model). Classify the reasoning tier once and let the
   // resolver decide whether the smaller/faster model is safe. `fastModelUsed` is
-  // surfaced in metadata so the 1.5B quality tradeoff is observable. This is
-  // ONLY reachable inside runChatCoreV2LocalChatTurn, which is already gated by
-  // isChatCoreV2LocalChatVisibleEnabled (false when orchestrator mode=off), so
-  // shipping with mode=off changes nothing — the outer kill-switch dominates.
+  // surfaced in metadata so the legacy 1.5B quality tradeoff is observable.
+  // Governed local-primary dispatch ignores the legacy model override while
+  // retaining this metadata contract for backward compatibility.
   const reasoningTier = classifyLocalReasoningTier({
     normalizedText: input.normalizedText,
     recentTurns: input.recentTurns,
   });
   const fastModelUsed = shouldUseFastModel(env, recipeRequest, reasoningTier);
-  // WP-17 (§5.F): build the sentinel-wrapped memory block ONLY when mode != off.
-  // The whole local-chat path is already gated off when mode=off (see
-  // isChatCoreV2LocalChatVisibleEnabled), but we re-assert the gate here so the
-  // injection decision is explicit and behavior-preserving with mode=off.
+  // WP-17 (§5.F): the sentinel-wrapped memory block is enabled by either the
+  // legacy activation or an enrolled governed request. Non-enrolled legacy
+  // traffic remains byte-for-byte controlled by its existing mode.
   const activationMode = resolveChatCoreV2ActivationConfig(env).mode;
-  const keepAliveSeconds = activationMode === 'off' ? undefined : resolveKeepAliveForRole('planner_3b', env);
-  const memoryPromptBlock = activationMode === 'off'
+  const contextEnabled = governedLocalPrimary || activationMode !== 'off';
+  const keepAliveSeconds = contextEnabled ? resolveKeepAliveForRole('planner_3b', env) : undefined;
+  const memoryPromptBlock = !contextEnabled
     ? null
     : buildMemoryContextPromptBlock(input.memoryContext, input.tenantId, input.userId);
   const cookingSafetyPromptBlock = cookingResponseRequest ? buildCookingSafetyPromptBlock(input, locale) : null;
@@ -449,10 +744,18 @@ export async function runChatCoreV2LocalChatTurn(
     timeoutMs: recipeRequest ? Math.max(baseTimeoutMs, recipeTimeoutMs) : baseTimeoutMs,
     keepAliveSeconds,
     temperature: 0.2,
+    abortSignal: input.abortSignal,
   };
 
+  let governedApplicationOutputProduced = false;
   try {
-    const result = await runWithLocalInferenceSlot(() => provider.dispatchLocalReasoning(task)) as LocalReasoningResult;
+    const result = governedLocalPrimary
+      ? await provider.dispatchLocalReasoning(task) as LocalReasoningResult
+      : await runWithLegacyLocalInferenceSlot(
+        () => provider.dispatchLocalReasoning(task),
+        env as NodeJS.ProcessEnv,
+      ) as LocalReasoningResult;
+    governedApplicationOutputProduced = governedLocalPrimary;
     const stopReason = typeof result.stopReason === 'string'
       ? result.stopReason
       : '';
@@ -462,13 +765,31 @@ export async function runChatCoreV2LocalChatTurn(
     const draft = result.parsed !== undefined
       ? normalizeDraft(result.parsed, locale)
       : buildDraftFromPlainText(result.text, locale);
+    let applicationResult = result;
     let fullDraftTextForSafety = extractDraftTextForSafety(result, draft.text);
     if (recipeRequest && shouldRepairRecipeDraft(draft.text, stopReason, hitOutputCap)) {
-      const repaired = await tryRepairRecipeDraft(provider, input, locale, draft.text, env);
+      if (governedLocalPrimary) {
+        rejectGovernedChatStage(input, result, 'recipe_initial_draft_incomplete');
+      }
+      const repaired = await tryRepairRecipeDraft(
+        provider,
+        input,
+        locale,
+        draft.text,
+        env,
+        governedLocalPrimary,
+      );
       if (!repaired) {
+        if (governedLocalPrimary) {
+          rejectGovernedChatResult(input, 'recipe_generation_incomplete');
+          throw Object.assign(new Error('recipe_generation_incomplete'), {
+            code: 'INFERENCE_APPLICATION_VALIDATION_FAILED',
+          });
+        }
         return buildHelpfulFallbackResponse(input, 'recipe_generation_incomplete', result.providerMetadata);
       }
       fullDraftTextForSafety = repaired.text;
+      applicationResult = repaired.result;
       draft.text = truncate(repaired.text, 1600);
       draft.reasonCodes = [...draft.reasonCodes, 'recipe_model_repair'];
     } else if (!recipeRequest && (stopReason === 'length' || hitOutputCap)) {
@@ -492,6 +813,12 @@ export async function runChatCoreV2LocalChatTurn(
         },
         'Chat Core v2 local answer truncated — surfacing degraded fallback instead of clipped text',
       );
+      if (governedLocalPrimary) {
+        rejectGovernedChatResult(input, 'local_answer_truncated');
+        throw Object.assign(new Error('local_answer_truncated'), {
+          code: 'INFERENCE_OUTPUT_TRUNCATED',
+        });
+      }
       return buildHelpfulFallbackResponse(input, 'local_answer_truncated', result.providerMetadata);
     }
     const safetySurface = resolveCookingSafetySurfaceForAnswer({
@@ -504,6 +831,7 @@ export async function runChatCoreV2LocalChatTurn(
     if (safetySurface) {
       const safetyBlock = evaluateLocalCookingSafety(input, locale, safetySurface, [fullDraftTextForSafety]);
       if (safetyBlock) {
+        if (governedLocalPrimary) rejectGovernedChatResult(input, 'cooking_safety_blocked');
         return buildCookingSafetyBlockedLocalResponse(input, locale, safetyBlock, result.providerMetadata, {
           reasoningTier,
           fastModelUsed,
@@ -512,7 +840,18 @@ export async function runChatCoreV2LocalChatTurn(
       }
     }
     const guarded = applyNoUnverifiedSuccessClaimGuard(draft.text, locale, input.normalizedText);
-    const localeChecked = await maybeRepairLocaleDrift(provider, input, locale, guarded.text, env);
+    if (governedLocalPrimary && guarded.rewritten) {
+      rejectGovernedChatResult(input, 'unverified_action_claim_rewritten');
+    }
+    const localeChecked = await maybeRepairLocaleDrift(
+      provider,
+      input,
+      locale,
+      guarded.text,
+      env,
+      governedLocalPrimary ? applicationResult : undefined,
+      governedLocalPrimary,
+    );
     // Guardrail copy is appended AFTER the locale-drift repair on purpose:
     // the deterministic referral copy is English-sourced, and letting the
     // drift repairer see it would send the safety line back through the
@@ -542,6 +881,12 @@ export async function runChatCoreV2LocalChatTurn(
         { requestId: input.requestId, userId: input.userId, tenantId: input.tenantId, issues: composed.issues },
         'Chat Core v2 local chat final answer composition failed',
       );
+      if (governedLocalPrimary) {
+        rejectGovernedChatResult(input, 'final_answer_composition_failed');
+        throw Object.assign(new Error('final_answer_composition_failed'), {
+          code: 'INFERENCE_APPLICATION_VALIDATION_FAILED',
+        });
+      }
       return buildHelpfulFallbackResponse(input, 'final_answer_composition_failed', result.providerMetadata);
     }
 
@@ -587,6 +932,24 @@ export async function runChatCoreV2LocalChatTurn(
     };
   } catch (err) {
     rethrowAiUsageFailClosedError(err);
+    if (isSkillInferenceAccountDeletionError(err)) throw err;
+    if (isProviderRequestCancellation(err) || input.abortSignal?.aborted) {
+      const reason = input.abortSignal?.reason;
+      throw reason instanceof Error ? reason : err;
+    }
+    const localPolicyCode = err && typeof err === 'object'
+      && typeof (err as { code?: unknown }).code === 'string'
+      ? String((err as { code: string }).code)
+      : '';
+    if (governedLocalPrimary && localPolicyCode === 'LOCAL_FAIR_USE_REACHED') {
+      return buildLocalFairUseResponse(input);
+    }
+    if (governedLocalPrimary && governedApplicationOutputProduced) {
+      // executeSkillInference records a valid provider result before the chat
+      // application validators run. Any later exception is still pre-delivery,
+      // so invalidate every contributing local stage before considering cloud.
+      rejectGovernedChatResult(input, 'local_post_processing_failed');
+    }
     logger.warn(
       {
         requestId: input.requestId,
@@ -596,7 +959,248 @@ export async function runChatCoreV2LocalChatTurn(
       },
       'Chat Core v2 local chat LLM failed',
     );
+    const cloudFallback = governedLocalPrimary
+      ? await tryCloudAllowlistAfterLocalFailure(
+        input,
+        cloudAllowlistPacket,
+        recipeRequest,
+        cookingResponseRequest,
+        err,
+      )
+      : null;
+    if (cloudFallback) return cloudFallback;
+    throwIfChatRequestCancelled(input);
     return buildHelpfulFallbackResponse(input, 'local_llm_failed');
+  }
+  };
+
+  const visibleResult = await runVisibleWork();
+  // Only a successful, non-degraded owner answer is a valid comparison
+  // baseline. Thrown failures bypass this point, while canned/degraded
+  // fallbacks return without creating misleading shadow evidence.
+  const eligibleShadowBaseline = !visibleResult.degraded
+    && visibleResult.response.metadata.localModelBypassed !== true
+    && visibleResult.response.metadata.safetyBlocked !== true;
+  if (deferShadowUntilVisibleWorkCompletes && eligibleShadowBaseline) {
+    try {
+      deferLocalPrimaryChatShadowToVisibleOwner(input, locale);
+    } catch (shadowError) {
+      logger.warn({
+        requestId: input.requestId,
+        userId: input.userId,
+        tenantId: input.tenantId,
+        errorName: shadowError instanceof Error ? shadowError.name : typeof shadowError,
+      }, 'Unable to hand off detached Chat shadow to the visible owner');
+    }
+  }
+  return visibleResult;
+}
+
+async function tryCloudAllowlistAfterLocalFailure(
+  input: ChatCoreV2LocalChatTurnInput,
+  packet: CloudAllowlistPacketResult,
+  recipeRequest: boolean,
+  cookingResponseRequest: boolean,
+  localError: unknown,
+): Promise<ChatCoreV2LocalChatTurnResult | null> {
+  if (!packet.ok || !input.cloudBudgetBoundary || input.abortSignal?.aborted) return null;
+  const localErrorName = localError instanceof Error ? localError.name : '';
+  const localErrorCode = localError && typeof localError === 'object'
+    && typeof (localError as { code?: unknown }).code === 'string'
+    ? String((localError as { code: string }).code)
+    : '';
+  if (isProviderRequestCancellation({ name: localErrorName, code: localErrorCode })) return null;
+  if (localError instanceof SkillInferencePolicyError && localError.status < 500) return null;
+  const runId = getLatestSkillInferenceOperationRunId({
+    operationId: input.requestId,
+    tenantId: input.tenantId,
+    userId: input.userId,
+  });
+  if (!runId) return null;
+  const fallbackEligibility = getSkillInferenceExternalCloudFallbackEligibility({
+    runId,
+    tenantId: input.tenantId,
+    userId: input.userId,
+  });
+  if (!fallbackEligibility.allowed) return null;
+  const fallbackReason = localErrorCode
+    ? localErrorCode.slice(0, 160)
+    : localError instanceof Error ? localError.name.slice(0, 160) : 'local_inference_failure';
+  const startedAt = Date.now();
+  let externalAttemptRecorded = false;
+  let externalAttemptStarted = false;
+  const fallbackCostCaps = getSkillInferenceCloudFallbackCostCaps(input.userId);
+  try {
+    throwIfChatRequestCancelled(input);
+    const answer = await runWithSkillInferenceAccountAdmission({
+      userId: input.userId,
+      abortSignal: input.abortSignal,
+    }, (accountAbortSignal) => runWithApiUsageAttribution({
+      requestSource: 'interactive',
+      baseCategory: 'ios_chat_message',
+      jobName: 'chat_core_v2_cloud_allowlist_fallback',
+      runId,
+    }, () => runChatCloudBudgetBoundary({
+      ...input,
+      abortSignal: accountAbortSignal,
+    }, () => (
+      dispatchCloudAllowlistAnswer(packet.packet, {
+        userId: input.userId,
+        tenantId: input.tenantId,
+        requestId: input.requestId,
+        abortSignal: accountAbortSignal,
+        onProviderAttempt: () => { externalAttemptStarted = true; },
+      })
+    ), {
+      runId,
+      hardRunCostLimitUsd: fallbackCostCaps.perRunUsd,
+      hardLocalFallbackDailyCostLimitUsd: fallbackCostCaps.perDayUsd,
+    })));
+    const metadata = answer.providerMetadata;
+    const recordSuccessfulExternalAttempt = (): void => {
+      // Mark before entering the recorder. If the recorder itself rejects the
+      // transition, the catch path must never make the same write a second time.
+      externalAttemptRecorded = true;
+      recordSkillInferenceExternalCloudAttempt({
+        runId,
+        tenantId: input.tenantId,
+        userId: input.userId,
+        outcome: 'success',
+        provider: typeof metadata.providerUsed === 'string' ? metadata.providerUsed : 'approved-cloud',
+        model: typeof metadata.modelUsed === 'string' ? metadata.modelUsed : undefined,
+        fallbackReason,
+        durationMs: Date.now() - startedAt,
+        firstTokenMs: typeof metadata.firstTokenMs === 'number' ? metadata.firstTokenMs : undefined,
+        inputTokens: typeof metadata.inputTokens === 'number' ? metadata.inputTokens : undefined,
+        outputTokens: typeof metadata.outputTokens === 'number' ? metadata.outputTokens : undefined,
+      });
+    };
+    const locale = normalizeLocale(input.locale);
+    const guarded = applyNoUnverifiedSuccessClaimGuard(answer.text, locale, input.normalizedText);
+    const safetySurface = resolveCookingSafetySurfaceForAnswer({
+      userId: input.userId,
+      tenantId: input.tenantId,
+      recipeRequest,
+      inputCookingRequest: cookingResponseRequest,
+      packetDomain: packet.packet.domain,
+      answerText: guarded.text,
+    });
+    if (safetySurface) {
+      const blocked = evaluateLocalCookingSafety(input, locale, safetySurface, [guarded.text]);
+      if (blocked) {
+        externalAttemptRecorded = true;
+        recordSkillInferenceExternalCloudAttempt({
+          runId,
+          tenantId: input.tenantId,
+          userId: input.userId,
+          outcome: 'failure',
+          provider: typeof metadata.providerUsed === 'string' ? metadata.providerUsed : 'approved-cloud',
+          model: typeof metadata.modelUsed === 'string' ? metadata.modelUsed : undefined,
+          fallbackReason: 'cloud_cooking_safety_blocked',
+          durationMs: Date.now() - startedAt,
+          firstTokenMs: typeof metadata.firstTokenMs === 'number' ? metadata.firstTokenMs : undefined,
+          inputTokens: typeof metadata.inputTokens === 'number' ? metadata.inputTokens : undefined,
+          outputTokens: typeof metadata.outputTokens === 'number' ? metadata.outputTokens : undefined,
+        });
+        return buildCookingSafetyBlockedLocalResponse(input, locale, blocked, answer.providerMetadata);
+      }
+    }
+    const baseDraft = buildDraftFromPlainText(guarded.text, locale, ['local_failure_cloud_allowlist']);
+    const coachSafety = applyCoachSafetyToLocalAnswer(
+      input,
+      locale,
+      packet.packet.domain ?? 'chat',
+      baseDraft.text,
+    );
+    const draft: ComposedAnswerDraft = {
+      ...baseDraft,
+      text: coachSafety.text,
+      reasonCodes: [
+        ...baseDraft.reasonCodes,
+        ...(guarded.rewritten ? ['anti_claim_guard_rewritten'] : []),
+        ...(coachSafety.reasonCode ? [coachSafety.reasonCode] : []),
+      ],
+    };
+    const composed = composeChatCoreV2FinalAnswer({ draft, expectedLocale: locale });
+    if (!composed.ok || !composed.response) {
+      externalAttemptRecorded = true;
+      recordSkillInferenceExternalCloudAttempt({
+        runId,
+        tenantId: input.tenantId,
+        userId: input.userId,
+        outcome: 'failure',
+        provider: typeof metadata.providerUsed === 'string' ? metadata.providerUsed : 'approved-cloud',
+        model: typeof metadata.modelUsed === 'string' ? metadata.modelUsed : undefined,
+        fallbackReason: 'cloud_application_validation_failed',
+        durationMs: Date.now() - startedAt,
+        firstTokenMs: typeof metadata.firstTokenMs === 'number' ? metadata.firstTokenMs : undefined,
+        inputTokens: typeof metadata.inputTokens === 'number' ? metadata.inputTokens : undefined,
+        outputTokens: typeof metadata.outputTokens === 'number' ? metadata.outputTokens : undefined,
+      });
+      return null;
+    }
+    recordSuccessfulExternalAttempt();
+    return {
+      response: {
+        id: `msg-${randomUUID()}`,
+        text: composed.response.text,
+        domain: packet.packet.domain ?? 'chat',
+        routeMethod: 'chat-core-v2-cloud-allowlist',
+        confidence: guarded.rewritten ? 0.7 : 0.88,
+        buttons: null,
+        metadata: {
+          type: 'chat_core_v2_cloud_allowlist',
+          localFallbackReason: localError instanceof Error ? localError.name : 'local_inference_failure',
+          providerMetadata: answer.providerMetadata,
+          antiClaimGuardRewritten: guarded.rewritten,
+        },
+        timestamp: new Date().toISOString(),
+        responseCards: [],
+      },
+      modelMetadata: answer.providerMetadata,
+      degraded: false,
+    };
+  } catch (error) {
+    const accountDeletion = isSkillInferenceAccountDeletionError(error);
+    const cancelled = accountDeletion
+      || isProviderRequestCancellation(error)
+      || input.abortSignal?.aborted === true;
+    if (externalAttemptStarted && !externalAttemptRecorded) {
+      externalAttemptRecorded = true;
+      try {
+        recordSkillInferenceExternalCloudAttempt({
+          runId,
+          tenantId: input.tenantId,
+          userId: input.userId,
+          outcome: cancelled ? 'cancelled' : 'failure',
+          provider: 'cloud-gate',
+          fallbackReason: error && typeof error === 'object'
+            && typeof (error as { code?: unknown }).code === 'string'
+            ? String((error as { code: string }).code).slice(0, 160)
+            : error instanceof Error ? error.name.slice(0, 160) : 'cloud_fallback_failure',
+          durationMs: Date.now() - startedAt,
+        });
+      } catch (recordError) {
+        // The primary provider/cancellation error remains authoritative. In
+        // particular, never let the post-delivery guard double-throw from this
+        // catch path; its incident service has already forced routing OFF.
+        logger.error({
+          requestId: input.requestId,
+          runId,
+          recordError: recordError instanceof Error ? recordError.message : String(recordError),
+        }, 'Unable to finalize external cloud-attempt telemetry');
+      }
+    }
+    if (cancelled) {
+      if (accountDeletion) throw error;
+      const reason = input.abortSignal?.reason;
+      throw reason instanceof Error ? reason : error;
+    }
+    rethrowAiUsageFailClosedError(error);
+    if (errorCode(error) === 'CHAT_CLOUD_BUDGET_DENIED') {
+      return buildCloudBudgetDeniedResponse(input);
+    }
+    return null;
   }
 }
 
@@ -767,6 +1371,9 @@ function buildCookingSafetyBlockedLocalResponse(
       confidence: 0.2,
       buttons: null,
       metadata: {
+        // Supplemental observability may not override the authoritative
+        // safety decision or any of its protected evidence fields.
+        ...extraMetadata,
         type: 'chat_core_v2_local_llm',
         schemaVersion: CHAT_CORE_V2_LOCAL_CHAT_SCHEMA_VERSION,
         compositionMode: 'templated',
@@ -777,7 +1384,6 @@ function buildCookingSafetyBlockedLocalResponse(
         safetyIssueCount: evaluation.issues.length,
         finalAnswerComposerVersion: CHAT_CORE_V2_FINAL_ANSWER_COMPOSER_VERSION,
         providerMetadata,
-        ...extraMetadata,
       },
       timestamp: new Date().toISOString(),
       responseCards: [],
@@ -1102,11 +1708,14 @@ async function maybeRepairLocaleDrift(
   locale: ChatCoreV2Locale,
   text: string,
   env: EnvLike,
+  sourceResult?: LocalReasoningResult,
+  governedLocalPrimary = false,
 ): Promise<{ text: string; repaired: boolean; reasonCode?: string }> {
   if (!hasLikelyLocaleDrift(text, locale)) {
     return { text, repaired: false };
   }
-  const repaired = await tryRepairLocaleDrift(provider, input, locale, text, env);
+  if (sourceResult) rejectGovernedChatStage(input, sourceResult, 'local_answer_locale_mismatch');
+  const repaired = await tryRepairLocaleDrift(provider, input, locale, text, env, governedLocalPrimary);
   if (repaired && !hasLikelyLocaleDrift(repaired.text, locale)) {
     return {
       text: repaired.text,
@@ -1147,9 +1756,10 @@ async function tryRepairLocaleDrift(
   locale: ChatCoreV2Locale,
   text: string,
   env: EnvLike,
+  governedLocalPrimary: boolean,
 ): Promise<{ text: string } | null> {
   try {
-    const result = await runWithLocalInferenceSlot(() => provider.dispatchLocalReasoning({
+    const repairTask: LocalReasoningTask = {
       workloadRole: 'validated_local_chat',
       systemContext: [
         'You are Nexus Hub answer locale repair.',
@@ -1177,9 +1787,20 @@ async function tryRepairLocaleDrift(
         ? undefined
         : resolveKeepAliveForRole('planner_3b', env),
       temperature: 0,
-    })) as LocalReasoningResult;
+      abortSignal: input.abortSignal,
+    };
+    const result = governedLocalPrimary
+      ? await provider.dispatchLocalReasoning(repairTask) as LocalReasoningResult
+      : await runWithLegacyLocalInferenceSlot(
+        () => provider.dispatchLocalReasoning(repairTask),
+        env as NodeJS.ProcessEnv,
+      ) as LocalReasoningResult;
     const repairedText = truncate(String(result.text ?? '').trim(), 1600);
-    return repairedText ? { text: repairedText } : null;
+    if (!repairedText || hasLikelyLocaleDrift(repairedText, locale)) {
+      rejectGovernedChatStage(input, result, 'locale_repair_invalid');
+      return null;
+    }
+    return { text: repairedText };
   } catch (err) {
     rethrowAiUsageFailClosedError(err);
     logger.warn(
@@ -1215,12 +1836,12 @@ function buildDegradedResponse(
       confidence: 0.2,
       buttons: null,
       metadata: {
+        ...extraMetadata,
         type: 'chat_core_v2_local_llm',
         schemaVersion: CHAT_CORE_V2_LOCAL_CHAT_SCHEMA_VERSION,
         degraded: true,
         reason,
         validationIssues,
-        ...extraMetadata,
         providerMetadata,
       },
       timestamp: new Date().toISOString(),
@@ -1239,7 +1860,7 @@ function evaluateLocalQueueFallbackBeforeInference(
   const activation = resolveChatCoreV2ActivationConfig(env);
   return evaluateChatCoreV2QueueFallback({
     activation,
-    queue: getLocalInferenceGateSnapshot(env as NodeJS.ProcessEnv),
+    queue: getLegacyLocalInferenceGateSnapshot(env as NodeJS.ProcessEnv),
     policy: resolveChatCoreV2QueueFallbackPolicy(env),
     cloudPacket: cloudAllowlistPacket,
     requestAllowsBackground: false,
@@ -1377,6 +1998,39 @@ function buildHelpfulFallbackResponse(
   };
 }
 
+function buildLocalFairUseResponse(
+  input: ChatCoreV2LocalChatTurnInput,
+): ChatCoreV2LocalChatTurnResult {
+  const result = buildHelpfulFallbackResponse(input, 'LOCAL_FAIR_USE_REACHED');
+  const locale = normalizeLocale(input.locale);
+  result.response.text = locale.startsWith('pt')
+    ? 'Atingiste o limite de utilização do modelo local neste período. Tenta novamente mais tarde; nenhuma chamada cloud foi feita.'
+    : 'You reached the local-model fair-use limit for this period. Try again later; no cloud call was made.';
+  result.response.metadata.fallbackKind = 'local_fair_use_limit';
+  result.response.metadata.retryable = true;
+  return result;
+}
+
+function buildCloudBudgetDeniedResponse(
+  input: ChatCoreV2LocalChatTurnInput,
+): ChatCoreV2LocalChatTurnResult {
+  const result = buildHelpfulFallbackResponse(input, 'CHAT_CLOUD_BUDGET_DENIED');
+  const locale = normalizeLocale(input.locale);
+  result.response.text = locale.startsWith('pt')
+    ? 'O modelo local não conseguiu concluir esta resposta e o limite de fallback cloud foi atingido. Tenta novamente mais tarde.'
+    : 'The local model could not complete this answer and the cloud-fallback allowance is exhausted. Try again later.';
+  result.response.metadata.fallbackKind = 'cloud_budget_denied';
+  result.response.metadata.policyCode = 'CHAT_CLOUD_BUDGET_DENIED';
+  result.response.metadata.retryable = true;
+  return result;
+}
+
+function errorCode(error: unknown): string {
+  return error && typeof error === 'object' && typeof (error as { code?: unknown }).code === 'string'
+    ? String((error as { code: string }).code)
+    : '';
+}
+
 function helpfulFallbackText(message: string, locale: ChatCoreV2Locale): string {
   const folded = foldForIntent(message);
   if (isRecipeRequest(folded)) return recipeUnavailableText(locale);
@@ -1471,10 +2125,11 @@ async function tryRepairRecipeDraft(
   locale: ChatCoreV2Locale,
   partialText: string,
   env: EnvLike,
-): Promise<{ text: string } | null> {
+  governedLocalPrimary: boolean,
+): Promise<{ text: string; result: LocalReasoningResult } | null> {
   try {
     const cookingSafetyPromptBlock = buildCookingSafetyPromptBlock(input, locale);
-    const result = await runWithLocalInferenceSlot(() => provider.dispatchLocalReasoning({
+    const repairTask: LocalReasoningTask = {
       workloadRole: 'validated_local_chat',
       systemContext: [
         'You are Nexus Hub recipe composer.',
@@ -1509,9 +2164,20 @@ async function tryRepairRecipeDraft(
         ? undefined
         : resolveKeepAliveForRole('planner_3b', env),
       temperature: 0.2,
-    })) as LocalReasoningResult;
+      abortSignal: input.abortSignal,
+    };
+    const result = governedLocalPrimary
+      ? await provider.dispatchLocalReasoning(repairTask) as LocalReasoningResult
+      : await runWithLegacyLocalInferenceSlot(
+        () => provider.dispatchLocalReasoning(repairTask),
+        env as NodeJS.ProcessEnv,
+      ) as LocalReasoningResult;
     const text = String(result.text ?? '').trim();
-    return shouldRepairRecipeDraft(text, String(result.stopReason ?? ''), false) ? null : { text };
+    if (shouldRepairRecipeDraft(text, String(result.stopReason ?? ''), false)) {
+      rejectGovernedChatStage(input, result, 'recipe_repair_incomplete');
+      return null;
+    }
+    return { text, result };
   } catch (err) {
     rethrowAiUsageFailClosedError(err);
     logger.warn(
@@ -1674,7 +2340,7 @@ export function resolveLocalChatModel(
   const selected = String(env.CHAT_CORE_V2_LOCAL_CHAT_MODEL ?? '').trim()
     || config.ollama.classifierModel
     || config.ollama.model
-    || OLLAMA_SMALL_ONLY_MODEL;
+    || getActiveLocalModel({ fresh: true }).ollamaTag;
   return assertSmallOnlyOllamaModel(selected, 'CHAT_CORE_V2_LOCAL_CHAT_MODEL');
 }
 

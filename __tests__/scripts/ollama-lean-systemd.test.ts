@@ -68,14 +68,14 @@ describe('lean Ollama installer and fixed systemd envelope', () => {
     });
     expect(valid.status, valid.stderr).toBe(0);
     expect(JSON.parse(valid.stdout)).toEqual({
-      contextLength: 4096,
+      contextLength: 16384,
       maxQueue: 4,
       numParallel: 1,
       maxLoadedModels: 1,
-      memoryHigh: '4G',
-      memoryMax: '6G',
-      cpuQuota: '200%',
-      memorySwapMax: '512M',
+      memoryHigh: '18G',
+      memoryMax: '20G',
+      cpuQuota: '800%',
+      memorySwapMax: '0',
     });
 
     for (const variable of ENVELOPE_VARIABLES) {
@@ -95,16 +95,18 @@ describe('lean Ollama installer and fixed systemd envelope', () => {
     executable(systemctl, `#!/usr/bin/env node
 const host = process.env.FAKE_OLLAMA_HOST || '127.0.0.1:11434';
 const queue = process.env.FAKE_OLLAMA_QUEUE || '4';
-const memoryHigh = process.env.FAKE_MEMORY_HIGH || '4294967296';
-const memoryMax = process.env.FAKE_MEMORY_MAX || '6442450944';
-const memorySwap = process.env.FAKE_MEMORY_SWAP || '536870912';
-const cpuQuota = process.env.FAKE_CPU_QUOTA || '2s';
+const memoryHigh = process.env.FAKE_MEMORY_HIGH || '19327352832';
+const memoryMax = process.env.FAKE_MEMORY_MAX || '21474836480';
+const memorySwap = process.env.FAKE_MEMORY_SWAP || '0';
+const cpuQuota = process.env.FAKE_CPU_QUOTA || '8s';
+const nice = process.env.FAKE_NICE || '10';
 process.stdout.write([
-  'Environment=OLLAMA_HOST=' + host + ' OLLAMA_CONTEXT_LENGTH=4096 OLLAMA_MAX_QUEUE=' + queue + ' OLLAMA_NUM_PARALLEL=1 OLLAMA_MAX_LOADED_MODELS=1',
+  'Environment=OLLAMA_HOST=' + host + ' OLLAMA_CONTEXT_LENGTH=16384 OLLAMA_MAX_QUEUE=' + queue + ' OLLAMA_NUM_PARALLEL=1 OLLAMA_MAX_LOADED_MODELS=1',
   'MemoryHigh=' + memoryHigh,
   'MemoryMax=' + memoryMax,
   'MemorySwapMax=' + memorySwap,
   'CPUQuotaPerSecUSec=' + cpuQuota,
+  'Nice=' + nice,
   '',
 ].join('\\n'));
 `);
@@ -114,22 +116,23 @@ process.stdout.write([
     };
     const valid = runNode(
       ENVELOPE_CHECKER,
-      ['--systemctl-bin', systemctl, '--expected-swap-bytes', '536870912'],
+      ['--systemctl-bin', systemctl, '--expected-swap-bytes', '0'],
       environment,
     );
     expect(valid.status, valid.stderr).toBe(0);
     expect(JSON.parse(valid.stdout)).toMatchObject({
       ok: true,
-      expectedSwapBytes: 536870912,
+      expectedSwapBytes: 0,
       observed: {
-        contextLength: 4096,
+        contextLength: 16384,
+        nice: 10,
         maxQueue: 4,
         numParallel: 1,
         maxLoadedModels: 1,
-        memoryHighBytes: 4294967296,
-        memoryMaxBytes: 6442450944,
-        memorySwapMaxBytes: 536870912,
-        cpuQuotaUsecPerSec: 2000000,
+        memoryHighBytes: 19327352832,
+        memoryMaxBytes: 21474836480,
+        memorySwapMaxBytes: 0,
+        cpuQuotaUsecPerSec: 8000000,
       },
     });
 
@@ -152,26 +155,26 @@ process.stdout.write([
     const memoryHighDrift = runNode(
       ENVELOPE_CHECKER,
       ['--systemctl-bin', systemctl],
-      { ...environment, FAKE_MEMORY_HIGH: '5368709120' },
+      { ...environment, FAKE_MEMORY_HIGH: '18253611008' },
     );
     expect(memoryHighDrift.status).not.toBe(0);
-    expect(memoryHighDrift.stderr).toContain('MemoryHigh must be exactly 4 GiB');
+    expect(memoryHighDrift.stderr).toContain('MemoryHigh must be exactly 18 GiB');
 
     const memoryDrift = runNode(
       ENVELOPE_CHECKER,
       ['--systemctl-bin', systemctl],
-      { ...environment, FAKE_MEMORY_MAX: '7516192768' },
+      { ...environment, FAKE_MEMORY_MAX: '20401094656' },
     );
     expect(memoryDrift.status).not.toBe(0);
-    expect(memoryDrift.stderr).toContain('MemoryMax must be exactly 6 GiB');
+    expect(memoryDrift.stderr).toContain('MemoryMax must be exactly 20 GiB');
 
     const memorySwapDrift = runNode(
       ENVELOPE_CHECKER,
       ['--systemctl-bin', systemctl],
-      { ...environment, FAKE_MEMORY_SWAP: '0' },
+      { ...environment, FAKE_MEMORY_SWAP: '536870912' },
     );
     expect(memorySwapDrift.status).not.toBe(0);
-    expect(memorySwapDrift.stderr).toContain('MemorySwapMax must be exactly 536870912 bytes');
+    expect(memorySwapDrift.stderr).toContain('MemorySwapMax must be exactly 0 bytes');
 
     const cpuDrift = runNode(
       ENVELOPE_CHECKER,
@@ -179,15 +182,23 @@ process.stdout.write([
       { ...environment, FAKE_CPU_QUOTA: '3s' },
     );
     expect(cpuDrift.status).not.toBe(0);
-    expect(cpuDrift.stderr).toContain('CPUQuota must be exactly 200%');
+    expect(cpuDrift.stderr).toContain('CPUQuota must be exactly 800%');
+
+    const niceDrift = runNode(
+      ENVELOPE_CHECKER,
+      ['--systemctl-bin', systemctl],
+      { ...environment, FAKE_NICE: '0' },
+    );
+    expect(niceDrift.status).not.toBe(0);
+    expect(niceDrift.stderr).toContain('Nice must be exactly 10');
 
     const zeroSwap = runNode(
       ENVELOPE_CHECKER,
-      ['--systemctl-bin', systemctl, '--expected-swap-bytes', '0'],
+      ['--systemctl-bin', systemctl, '--expected-swap-bytes', '536870912'],
       environment,
     );
     expect(zeroSwap.status).toBe(64);
-    expect(zeroSwap.stderr).toContain('--expected-swap-bytes must be 536870912');
+    expect(zeroSwap.stderr).toContain('--expected-swap-bytes must be 0');
   });
 
   it('keeps provenance verification and all post-replacement checks inside rollback', () => {
@@ -198,6 +209,11 @@ process.stdout.write([
     expect(source).not.toContain('curl -fsSL https://ollama.com/install.sh');
     expect(source).not.toMatch(/\bollama pull\b/u);
     expect(source).not.toContain('chown -R /var/lib/ollama');
+    expect(source).toContain('.trim().toLowerCase().replace(/^sha256:/u, "")');
+    expect(source).toContain('winners.length === 1 && winners[0]?.id === active?.id');
+
+    const transactionSource = fs.readFileSync(TRANSACTION, 'utf8');
+    expect(transactionSource).toContain("winners.length !== 1 || winners[0]?.id !== active?.id");
 
     const begin = source.indexOf('"$transaction_helper" begin');
     const authorize = source.indexOf('"$transaction_helper" authorize-restart');

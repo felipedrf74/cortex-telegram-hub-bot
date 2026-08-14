@@ -43,6 +43,7 @@ import { recordChatV2TraceSpan } from './trace-recorder';
 import { runWithLocalInferenceSlot } from './local-inference-concurrency-gate';
 import type { ChatV2TraceSpan } from './types';
 import type { RoutingSyntheticQaTrafficProvenance } from '../routing-synthetic-qa-contract';
+import { runWithSkillInferenceAccountAdmission } from '../skill-inference-service';
 
 export const CHAT_CORE_V2_SHADOW_ROUTE_HOOK_VERSION = 'chat_core_v2_shadow_route_hook@1.0.0';
 const CHAT_CORE_V2_SHADOW_ROUTE_HASH_VERSION = 'hmac_sha256@1';
@@ -86,6 +87,8 @@ export interface RunChatCoreV2ShadowRouteHookInput {
   routingDivergenceDeps?: RoutingDivergenceShadowDeps;
   /** Validated staging-only provenance; omitted for every ordinary live turn. */
   trafficProvenance?: RoutingSyntheticQaTrafficProvenance | null;
+  /** Internal cancellation fence for the detached local planner lifecycle. */
+  abortSignal?: AbortSignal;
 }
 
 /**
@@ -366,20 +369,28 @@ export async function runShadowPlannerSideEffect(
 ): Promise<void> {
   try {
     const db = deps.db ?? input.db ?? getDb();
-    const now = deps.now ?? input.now ?? new Date();
-    const runPlanner = deps.runPlanner ?? buildLocalReasoningPlanner(input);
-    if (!runPlanner) return; // No local provider configured => nothing to observe.
+    await runWithSkillInferenceAccountAdmission({
+      userId: input.userId,
+      abortSignal: input.abortSignal,
+    }, async (accountAbortSignal) => {
+      const now = deps.now ?? input.now ?? new Date();
+      const runPlanner = deps.runPlanner ?? buildLocalReasoningPlanner({
+        ...input,
+        abortSignal: accountAbortSignal,
+      });
+      if (!runPlanner) return; // No local provider configured => nothing to observe.
 
-    const plannerInput = buildShadowPlannerTurnInput(input, guess, now);
-    const result = await planChatCoreV2ShadowTurnWithPlanner(plannerInput, {
-      runPlanner,
-      schemaComplianceDb: db,
-      now,
-    });
+      const plannerInput = buildShadowPlannerTurnInput(input, guess, now);
+      const result = await planChatCoreV2ShadowTurnWithPlanner(plannerInput, {
+        runPlanner,
+        schemaComplianceDb: db,
+        now,
+      });
 
-    const recordSpan = deps.recordSpan ?? defaultRecordSpan;
-    const span = result.traceSpans.find((s) => s.name === 'shadow_planner');
-    if (span) recordSpan(span, db);
+      const recordSpan = deps.recordSpan ?? defaultRecordSpan;
+      const span = result.traceSpans.find((s) => s.name === 'shadow_planner');
+      if (span) recordSpan(span, db);
+    }, db);
   } catch (err) {
     // Belt-and-suspenders: never throw out of the side effect. The live caller
     // also wraps this in `.catch`, but a planner observation failure is purely
@@ -482,6 +493,7 @@ function buildLocalReasoningPlanner(
         numCtx: CHAT_TURN_PLAN_MICRO_ULTRA_COMPACT_OPTIONS.numCtx,
         numPredict: CHAT_TURN_PLAN_MICRO_ULTRA_COMPACT_OPTIONS.numPredict,
         temperature: CHAT_TURN_PLAN_MICRO_ULTRA_COMPACT_OPTIONS.temperature,
+        abortSignal: input.abortSignal,
       }),
     ) as { text?: unknown };
     return String(result?.text ?? '');

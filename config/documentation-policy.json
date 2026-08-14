@@ -1,7 +1,7 @@
 {
   "$schema": "./documentation-policy.schema.json",
   "schema": "nexus.documentation-policy.v1",
-  "version": "2026-07-22.1",
+  "version": "2026-08-12.1",
   "statusDefinitions": {
     "canonical": { "active": true },
     "current": { "active": true },
@@ -162,6 +162,12 @@
     },
     "docs/legal/data-retention.md": {
       "status": "canonical",
+      "reviewIntervalDays": 90
+    },
+    "docs/engineering/local-primary-inference-standard.md": {
+      "status": "canonical",
+      "owner": "backend architecture and inference operations leads",
+      "reviewedOn": "2026-08-13",
       "reviewIntervalDays": 90
     },
     "docs/release/CURRENT_RELEASE_STATE.md": {

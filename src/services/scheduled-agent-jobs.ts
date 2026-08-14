@@ -111,10 +111,11 @@ function channelRelearnAdapter(input: {
         systemScopeChanged: input.systemScopeChanged,
       },
     }),
-    async execute({ input: prepared, runId }) {
+    async execute({ input: prepared, runId, abortSignal }) {
       const result = await processChannelRelearnScope(prepared.force, prepared.scopeUserId, {
         runId,
         systemScopeChanged: prepared.systemScopeChanged,
+        abortSignal,
       });
       if (result.failed > 0) throw new ChannelRelearnScopeExecutionError(result);
       return result;
@@ -337,7 +338,7 @@ function topicAdapter(
         fingerprintMaterial: { format, sourceJob, missingCount },
       };
     },
-    execute: async ({ scope, input, runId }) => runWithContext(
+    execute: async ({ scope, input, runId, abortSignal }) => runWithContext(
       { source: `cron:${sourceJob}`, userId: scope.userId, tenantId: scope.tenantId },
       async () => generateAndStoreTopicCandidates(
         scope.userId,
@@ -349,6 +350,7 @@ function topicAdapter(
           requestSource: 'automation',
           jobName: sourceJob,
           runId,
+          abortSignal,
         },
       ),
     ),
@@ -419,7 +421,7 @@ function weeklyContentAdapter(): GovernedAgentJobAdapter<WeeklyContentInput, Wee
         fingerprintMaterial: { missingReels, missingYoutube, sourceJob: 'friday_weekly' },
       };
     },
-    execute: async ({ scope, input, runId }) => runWithContext(
+    execute: async ({ scope, input, runId, abortSignal }) => runWithContext(
       { source: 'cron:friday_weekly', userId: scope.userId, tenantId: scope.tenantId },
       async () => generateWeeklyPackage(
         scope.userId,
@@ -429,6 +431,7 @@ function weeklyContentAdapter(): GovernedAgentJobAdapter<WeeklyContentInput, Wee
           requestSource: 'automation',
           jobName: 'friday_weekly',
           runId,
+          abortSignal,
         },
       ),
     ),

@@ -10,6 +10,20 @@ import { logger } from './utils/logger';
 import { closeDatabase, getDb } from './services/database';
 import { initDatabase } from './services/database-bootstrap';
 import { startScheduler } from './services/scheduler';
+import {
+  beginContentScriptJobShutdown,
+  startContentScriptJobRecoveryLoop,
+  stopContentScriptJobRecoveryLoop,
+  waitForContentScriptJobWorkersToStop,
+} from './services/content-script-jobs';
+import {
+  startLocalInferenceAutoRollbackMonitor,
+  stopLocalInferenceAutoRollbackMonitor,
+} from './services/local-inference-auto-rollback';
+import {
+  reconcileLocalInferenceRuntimeControlAtStartup,
+  tripLocalInferenceEmergencyOffLatch,
+} from './services/local-inference-runtime-control';
 import { setDbProvider } from './portal/telemetry';
 import {
   setDbProvider as setBusDbProvider,
@@ -59,6 +73,26 @@ async function main(): Promise<void> {
 
   // Initialize database
   initDatabase();
+
+  if (backgroundServicesEnabled) {
+    try {
+      const reconciliation = reconcileLocalInferenceRuntimeControlAtStartup();
+      if (reconciliation.reconciled) {
+        logger.error(
+          { reason: reconciliation.reason },
+          'Persisted local inference OFF during protective startup reconciliation',
+        );
+      }
+    } catch (error) {
+      // Preserve cloud-capable application startup while closing local
+      // admission in-process. The durable row still requires owner repair.
+      tripLocalInferenceEmergencyOffLatch('startup_runtime_reconciliation_failed');
+      logger.error(
+        { errorName: error instanceof Error ? error.name : typeof error },
+        'Local inference startup reconciliation failed; emergency-latched OFF',
+      );
+    }
+  }
 
   // Encrypted receipt-analysis replay payloads are intentionally short-lived.
   // Scrub every expired payload at startup while retaining the terminal row
@@ -180,6 +214,8 @@ async function main(): Promise<void> {
   // Start scheduler
   if (backgroundServicesEnabled) {
     startScheduler();
+    startContentScriptJobRecoveryLoop();
+    startLocalInferenceAutoRollbackMonitor();
   } else {
     logger.info(
       {
@@ -200,6 +236,19 @@ async function main(): Promise<void> {
   // Graceful shutdown — release port before exiting so the next instance starts clean
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutting down...');
+    beginContentScriptJobShutdown();
+    const requeuedScriptJobs = stopContentScriptJobRecoveryLoop();
+    stopLocalInferenceAutoRollbackMonitor();
+    if (requeuedScriptJobs > 0) {
+      logger.info({ requeuedScriptJobs }, 'Requeued active Content script jobs before shutdown');
+    }
+    const unsettledScriptWorkers = await waitForContentScriptJobWorkersToStop();
+    if (unsettledScriptWorkers > 0) {
+      logger.error(
+        { unsettledScriptWorkers },
+        'Content script workers did not settle; preserving the open SQLite handle until process termination',
+      );
+    }
     if (portalServer) {
       await new Promise<void>((resolve) => portalServer!.close(() => resolve()));
     }
@@ -207,8 +256,8 @@ async function main(): Promise<void> {
     // error reports aren't lost. 2s timeout — beyond that we move on.
     // No-ops if Sentry was never initialized (empty DSN).
     try { await flushSentry(2000); } catch { /* best effort */ }
-    closeDatabase();
-    process.exit(0);
+    if (unsettledScriptWorkers === 0) closeDatabase();
+    process.exit(unsettledScriptWorkers === 0 ? 0 : 1);
   };
 
   process.on('SIGINT', () => shutdown('SIGINT'));

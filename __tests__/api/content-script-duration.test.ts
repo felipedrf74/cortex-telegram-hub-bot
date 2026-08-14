@@ -204,8 +204,8 @@ vi.mock('../../src/services/content-novelty-reuse', async (importOriginal) => ({
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => ({
-    prepare: () => ({
-      get: vi.fn(() => null),
+    prepare: (sql: string) => ({
+      get: vi.fn(() => sql.includes('FROM users') ? { status: 'active' } : null),
       all: vi.fn(() => []),
       run: vi.fn(),
     }),
@@ -1079,6 +1079,9 @@ describe('Content API — script duration presets', () => {
     expect(response.body.data.research.route).toBe('reused_research');
     expect(response.body.data.research.sourceSummary).toEqual(['Prior compact source package.']);
     expect(mockCompleteOneShotWithFallback).toHaveBeenCalledTimes(1);
+    expect(mockCompleteOneShotWithFallback.mock.calls[0]?.[4]).toMatchObject({
+      abortSignal: expect.any(AbortSignal),
+    });
     expect(mockGetScript).not.toHaveBeenCalled();
     expect(mockWithAiBudgetReservation).toHaveBeenCalledWith(
       expect.objectContaining({ baseCategory: 'content_script_expand', jobName: 'content_script_expand' }),
@@ -1286,6 +1289,9 @@ describe('Content API — script duration presets', () => {
     expect(response.body.data.research.route).toBe('fresh_compact');
     expect(response.body.data.research.sourceSummary.join(' ')).toContain('Source note');
     expect(mockCompleteOneShotWithSearch).toHaveBeenCalledTimes(1);
+    expect(mockCompleteOneShotWithSearch.mock.calls[0]?.[3]).toMatchObject({
+      abortSignal: expect.any(AbortSignal),
+    });
     expect(mockGetScript).not.toHaveBeenCalled();
     expect(mockWithAiBudgetReservation).toHaveBeenCalledWith(
       expect.objectContaining({ baseCategory: 'content_research_refresh', jobName: 'content_research_refresh' }),

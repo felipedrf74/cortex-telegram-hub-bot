@@ -61,6 +61,13 @@ vi.mock('../../src/services/cost-guardrail', () => ({
   withAiBudgetReservation: (...args: unknown[]) => mockWithAiBudgetReservation(...args),
 }));
 
+vi.mock('../../src/services/skill-inference-service', () => ({
+  runWithSkillInferenceAccountAdmission: (
+    input: { abortSignal?: AbortSignal },
+    operation: (signal: AbortSignal) => Promise<unknown>,
+  ) => operation(input.abortSignal ?? new AbortController().signal),
+}));
+
 vi.mock('../../src/utils/logger', () => ({
   logger: mockLogger,
   LOGGER_REDACTION_PATHS: [],

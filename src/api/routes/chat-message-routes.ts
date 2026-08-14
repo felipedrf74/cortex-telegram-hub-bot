@@ -17,7 +17,7 @@ import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
 import { pushEvent } from '../../portal/telemetry';
 import { getUserById, getUserLanguageById, getUserTimezoneById } from '../../services/user-service';
-import { acquireAiBudgetReservation } from '../../services/cost-guardrail';
+import { acquireAiBudgetReservation, type AiBudgetRequest } from '../../services/cost-guardrail';
 import { getCurrentRequestId } from '../../utils/request-context';
 import { executeConfirmedChatActionRuns } from '../../services/chat';
 import { getPendingChatActionById } from '../../services/chat-action-state';
@@ -28,7 +28,7 @@ import {
   rememberCompletedChatConfirmation,
 } from '../../services/chat-pending-confirmations';
 import { validateChatConfirmationToken } from '../../services/chat-confirmation-token';
-import { asyncHandler, sendAiBudgetError, sendInternalError } from '../response-helpers';
+import { asyncHandler, sendAiBudgetError, sendError, sendInternalError } from '../response-helpers';
 import {
   claimPendingChatCoreV2Command,
   clearPendingChatCoreV2Command,
@@ -47,6 +47,7 @@ import {
 import { sendRetryableChatFailureResponseIfNeeded } from './chat-message-degraded-response';
 import { buildChatCoreV2CommandConfirmationShortcutResponse } from './chat-core-v2-command-confirmation-response';
 import { isPendingChatWorkCancellationTurn } from '../../services/chat-pending-cancellation';
+import { isProviderRequestCancellation } from '../../services/ai-provider';
 // M6 stage-trace seam: no-op unless CHAT_STAGE_TRACE / the test seam is on.
 // The route records request_received; every other checkpoint family records
 // its stage inside its chat-pipeline stage module.
@@ -81,6 +82,7 @@ import {
   recordConfirmedChatActionWriteEvidence,
   recordConfirmedChatCoreV2CommandWriteEvidence,
 } from './chat-pipeline/write-evidence';
+import { runWithSkillInferenceAccountAdmission } from '../../services/skill-inference-service';
 
 type ChatRouteScopeGuard = (
   res: Response,
@@ -504,26 +506,68 @@ export function registerChatMessageRoutes(
       clientMessageId ?? idempotencyKey ?? req.header('x-idempotency-key') ?? req.header('x-client-message-id'),
     );
     const userMessageId = buildUserMessageId(scopedClientMessageId, requestStartedAt);
+    const requestAbortController = new AbortController();
+    const abortOnClientDisconnect = (): void => {
+      if (!res.writableEnded && !requestAbortController.signal.aborted) {
+        requestAbortController.abort(Object.assign(new Error('chat_client_disconnected'), {
+          name: 'AbortError',
+          code: 'CHAT_CLIENT_DISCONNECTED',
+        }));
+      }
+    };
+    if (typeof res.once === 'function') res.once('close', abortOnClientDisconnect);
+    if (res.destroyed) abortOnClientDisconnect();
     try {
-      const ensureModelBudget = async (_logMessage: string): Promise<boolean> => {
-        if (modelBudgetAllowed) return true;
+      const ensureModelBudget = async (
+        _logMessage: string,
+        overrides: Partial<Pick<
+          AiBudgetRequest,
+          'runId' | 'hardRunCostLimitUsd' | 'hardLocalFallbackDailyCostLimitUsd'
+        >> = {},
+      ): Promise<boolean> => {
+        const requestsFallbackCeiling = overrides.runId !== undefined
+          || overrides.hardRunCostLimitUsd !== undefined
+          || overrides.hardLocalFallbackDailyCostLimitUsd !== undefined;
+        if (modelBudgetAllowed && !requestsFallbackCeiling) return true;
+        if (modelBudgetAllowed && requestsFallbackCeiling) {
+          // Upgrade the route's generic reservation to the exact inference-run
+          // fallback scope before any cloud provider call. Releasing first
+          // avoids nested acquisition of the same serialized user lock.
+          aiBudgetReservation.release?.();
+          aiBudgetReservation.release = null;
+          modelBudgetAllowed = false;
+        }
         if (!aiBudgetReservation.release) {
+          const liveEvalRunCap = liveEvalContext?.budget.targetCeilingUsd;
+          const requestedRunCap = overrides.hardRunCostLimitUsd;
+          const hardRunCostLimitUsd = liveEvalRunCap !== undefined && requestedRunCap !== undefined
+            ? Math.min(liveEvalRunCap, requestedRunCap)
+            : liveEvalRunCap ?? requestedRunCap;
           aiBudgetReservation.release = await acquireAiBudgetReservation({
             userId,
             requestSource: 'interactive',
             baseCategory: liveEvalContext?.targetBaseCategory ?? 'ios_chat_message',
             jobName: liveEvalContext?.scenarioId
               ? `chat_live_eval:${liveEvalContext.scenarioId}`
-              : 'ios_chat_message',
-            runId: liveEvalContext?.runId
+              : requestsFallbackCeiling
+                ? 'chat_core_v2_cloud_allowlist_fallback'
+                : 'ios_chat_message',
+            runId: overrides.runId
+              ?? liveEvalContext?.runId
               ?? getCurrentRequestId()
               ?? (req as any).requestId
               ?? `chat-${requestStartedAt}`,
             ...(liveEvalContext ? {
               estimatedCostUsd: 0,
               exactHardCostEstimate: true,
-              hardRunCostLimitUsd: liveEvalContext.budget.targetCeilingUsd,
+              ...(hardRunCostLimitUsd !== undefined ? { hardRunCostLimitUsd } : {}),
             } : {}),
+            ...(!liveEvalContext && hardRunCostLimitUsd !== undefined
+              ? { hardRunCostLimitUsd }
+              : {}),
+            ...(overrides.hardLocalFallbackDailyCostLimitUsd !== undefined
+              ? { hardLocalFallbackDailyCostLimitUsd: overrides.hardLocalFallbackDailyCostLimitUsd }
+              : {}),
           });
         }
         modelBudgetAllowed = true;
@@ -534,21 +578,59 @@ export function registerChatMessageRoutes(
 
       recordChatStage(chatRequestId, 'request_received');
 
-      const runPipeline = () => runChatMessagePipeline({
-        req,
-        res,
+      // Hold one account-deletion admission across the full turn, including
+      // application validation and response persistence. Individual provider
+      // paths may acquire nested admissions so they can abort immediately, but
+      // this outer lifecycle prevents a completed model call from releasing
+      // the erasure fence before its user-owned records are committed.
+      const runPipeline = () => runWithSkillInferenceAccountAdmission({
         userId,
-        tenantId,
-        normalizedText,
-        normalizedTextLower,
-        normalizedAttachments,
-        scopedClientMessageId,
-        userMessageId,
-        requestStartedAt,
-        chatRequestId,
-        latency,
-        ensureModelBudget,
-        routingSyntheticQa: routingSyntheticQaContext,
+        abortSignal: requestAbortController.signal,
+      }, async (accountAbortSignal) => {
+        try {
+          await runChatMessagePipeline({
+            req,
+            res,
+            userId,
+            tenantId,
+            normalizedText,
+            normalizedTextLower,
+            normalizedAttachments,
+            scopedClientMessageId,
+            userMessageId,
+            requestStartedAt,
+            chatRequestId,
+            latency,
+            abortSignal: accountAbortSignal,
+            ensureModelBudget,
+            routingSyntheticQa: routingSyntheticQaContext,
+          });
+        } catch (pipelineError) {
+          if (accountAbortSignal.aborted
+            || requestAbortController.signal.aborted
+            || isProviderRequestCancellation(pipelineError)
+          ) {
+            throw pipelineError;
+          }
+          // Preserve the pre-existing precedence: a denied cloud/model budget
+          // is a policy terminal, never a retryable provider degradation.
+          if (!res.headersSent && sendAiBudgetError(res, pipelineError)) return;
+          // Keep degraded response construction, persistence, state sync, and
+          // publication inside the same account admission as the healthy turn.
+          // Account erasure cannot drain between provider failure and this
+          // terminal write, and a partial response never changes providers.
+          if (!res.headersSent && await sendRetryableChatFailureResponseIfNeeded({
+            err: pipelineError,
+            res,
+            userId,
+            tenantId,
+            normalizedText,
+            chatRequestId,
+            userMessageId,
+            clientMessageId: scopedClientMessageId ?? undefined,
+          })) return;
+          throw pipelineError;
+        }
       });
       if (liveEvalContext) {
         await runWithChatLiveEvalContext(liveEvalContext, runPipeline);
@@ -556,21 +638,32 @@ export function registerChatMessageRoutes(
         await runPipeline();
       }
     } catch (err: any) {
+      if (err?.code === 'ACCOUNT_DELETION_IN_PROGRESS') {
+        if (!res.headersSent) {
+          sendError(
+            res,
+            'ACCOUNT_DELETION_IN_PROGRESS',
+            'No new chat work can start while this account is being deleted.',
+            409,
+          );
+        }
+        return;
+      }
+      if (requestAbortController.signal.aborted || isProviderRequestCancellation(err)) {
+        // A terminal client/provider cancellation owns no response contract.
+        // In particular, do not emit portal errors or attempt a 500 write on a
+        // socket whose close event already aborted the provider chain.
+        return;
+      }
       const chatRequestId = getCurrentRequestId() || (req as any).requestId || `chat-${Date.now()}`;
       if (!res.headersSent && sendAiBudgetError(res, err)) return;
-      // Codex QA round 4 / 5: the idempotency ids are now hoisted above
-      // the try block, so they're in scope here and can flow into the
-      // degraded-response persistence path.
-      if (await sendRetryableChatFailureResponseIfNeeded({
-        err,
-        res,
-        userId,
-        tenantId,
-        normalizedText,
-        chatRequestId,
-        userMessageId,
-        clientMessageId: scopedClientMessageId ?? undefined,
-      })) return;
+      // Retryable degraded terminals are handled inside runPipeline while the
+      // account admission is still held. Reaching this catch means no governed
+      // degraded response was produced.
+      if (res.headersSent) {
+        logger.error({ err, platform: 'ios', chatRequestId, tenantId, userId }, 'iOS chat/message failed after response publication');
+        return;
+      }
       pushEvent({
         ts: new Date().toISOString(),
         type: 'error',
@@ -581,6 +674,7 @@ export function registerChatMessageRoutes(
       logger.error({ err, textLength: normalizedText.length, platform: 'ios', chatRequestId, tenantId, userId }, 'iOS chat/message failed');
       sendInternalError(res, 'Failed to process message');
     } finally {
+      if (typeof res.off === 'function') res.off('close', abortOnClientDisconnect);
       // Release the classified source/job/base/run reservation so the next
       // concurrent request can run its own check -> provider -> usage cycle.
       aiBudgetReservation.release?.();

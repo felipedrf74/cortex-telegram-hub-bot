@@ -56,6 +56,7 @@ export const internetResearchStage: ChatStage = {
       tenantId,
       groundingRequired: preTurnContract.groundingRequired,
       localContext,
+      abortSignal: ctx.abortSignal,
     });
     latency.mark('internet_research_completed');
     const chatCoreV2ResearchOwner = isChatCoreV2VisibleNaturalLanguageOwnerActive(tenantId);

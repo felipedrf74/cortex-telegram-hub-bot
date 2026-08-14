@@ -19,9 +19,11 @@
  * Mount BEFORE authMiddleware in router.ts.
  */
 
+import { randomUUID } from 'node:crypto';
 import { Router, Request, Response } from 'express';
 import { logger } from '../../utils/logger';
 import { config } from '../../config';
+import { localPrimaryInferenceConfig } from '../../services/local-primary-config';
 import { sendAiBudgetError, sendError } from '../response-helpers';
 import { isLoopbackRequest, secureSecretMatches } from '../secret-guards';
 import {
@@ -44,6 +46,21 @@ import {
 } from '../../services/cost-guardrail';
 import { settleNexusPointOverageForUser } from '../../services/nexus-points';
 import { contentLiveEvalInternalEnvelopeWithinLimits } from '../../services/content-live-evaluation-artifact';
+import {
+  consumeInternalInferenceRequestNonce,
+  verifyInternalInferenceRequestProof,
+  verifyInternalInferenceAttributionToken,
+} from '../../services/internal-inference-attribution';
+import {
+  executeSkillInference,
+  rejectSkillInferenceApplicationResult,
+  runWithSkillInferenceAccountAdmission,
+  scheduleSkillInferenceShadowAttempt,
+  SkillInferencePolicyError,
+} from '../../services/skill-inference-service';
+import { getLocalInferenceRuntimeControl } from '../../services/local-inference-runtime-control';
+import { isContentEngineScriptCategory } from '../../services/local-inference-vocabulary';
+import { isProviderRequestCancellation } from '../../services/ai-provider';
 
 const INTERNAL_AI_PROXY_SYSTEM_INSTRUCTION = [
   'You are Nexus Hub\'s output-only internal text-generation boundary.',
@@ -67,30 +84,41 @@ function buildInternalAiProxyUserPrompt(system: string, prompt: string, jsonMode
 
 function resolveInternalAiTimeoutMs(category: string, maxTokens: number): number | undefined {
   const normalized = String(category || '').toLowerCase();
-  if (normalized.startsWith('content_engine_script')) return 180_000;
+  if (isContentEngineScriptCategory(normalized)) return 180_000;
   if (normalized.startsWith('content_engine_deepsearch')) return 180_000;
   if (normalized.startsWith('content_engine')) return Math.max(90_000, Math.min(180_000, maxTokens * 25));
   return undefined;
 }
 
-function sendInvalidInternalAiAttribution(res: Response): void {
-  // Invalid/expired signed re-entry is a metering-integrity failure. Surface a
-  // stable degraded response so Python and the outer app route can preserve it
-  // instead of converting it to a generic 500 or a separately billed system
-  // call.
+function contentEngineClientDisconnectedError(): Error {
+  return Object.assign(new Error('content_engine_client_disconnected'), {
+    name: 'AbortError',
+    code: 'CONTENT_ENGINE_CLIENT_DISCONNECTED',
+  });
+}
+
+function throwIfInternalAiCompleteCancelled(abortSignal?: AbortSignal): void {
+  if (!abortSignal?.aborted) return;
+  throw abortSignal.reason instanceof Error
+    ? abortSignal.reason
+    : contentEngineClientDisconnectedError();
+}
+
+function sendInvalidInternalInferenceAttribution(res: Response): void {
   sendError(
     res,
-    'SERVICE_DEGRADED',
-    'AI-backed features are temporarily degraded because usage attribution could not be verified. Token-zero reads remain available.',
-    429,
-    {
-      serviceDegraded: true,
-      window: 'global',
-      unblocksAt: null,
-      retryAfterSeconds: 60,
-      error: 'rate_limited',
-      retryable: true,
-    },
+    'INTERNAL_INFERENCE_ATTRIBUTION_INVALID',
+    'Internal inference attribution is invalid or expired.',
+    403,
+  );
+}
+
+function sendInvalidLegacyInternalAttribution(res: Response): void {
+  sendError(
+    res,
+    'INTERNAL_ATTRIBUTION_INVALID',
+    'Internal usage attribution is invalid or expired.',
+    403,
   );
 }
 
@@ -167,7 +195,7 @@ export function internalRoutes(): Router {
       const suppliedTenantId = normalizeOptionalScopeId(tenantId);
       const verifiedAttribution = verifyInternalAttributionToken(attributionToken, category);
       if (attributionToken != null && !verifiedAttribution) {
-        sendInvalidInternalAiAttribution(res);
+        sendInvalidLegacyInternalAttribution(res);
         return;
       }
       const scopedUserId = verifiedAttribution?.userId ?? 0;
@@ -311,11 +339,20 @@ export function internalRoutes(): Router {
   //   userId?: number,       // ignored unless attributionToken verifies
   //   tenantId?: number,     // ignored unless attributionToken verifies
   //   attributionToken?: string,
+  //   skillId?, taskType?, riskClass?, executionClass?, schemaId?, runId?,
+  //   inferenceAttributionProof?,
   // }
   //
   // Response: { text: string, provider: string }
   // This handler also has a tighter dedicated limiter after the router-local internal limiter.
   router.post('/ai-complete', internalAiCompleteRateLimitMiddleware, async (req: Request, res: Response) => {
+    const requestAbortController = new AbortController();
+    const abortForDisconnectedContentEngine = (): void => {
+      if (res.writableEnded || requestAbortController.signal.aborted) return;
+      requestAbortController.abort(contentEngineClientDisconnectedError());
+    };
+    req.once('aborted', abortForDisconnectedContentEngine);
+    res.once('close', abortForDisconnectedContentEngine);
     try {
       const {
         prompt: rawPrompt, system: rawSystem = '', category: rawCategory,
@@ -324,6 +361,14 @@ export function internalRoutes(): Router {
         userId,
         tenantId,
         attributionToken,
+        inferenceAttributionToken,
+        inferenceAttributionProof,
+        skillId,
+        taskType,
+        riskClass,
+        executionClass,
+        schemaId,
+        runId,
       } = req.body;
 
       const prompt = normalizeBoundedString(rawPrompt, 200_000);
@@ -337,6 +382,149 @@ export function internalRoutes(): Router {
       }
 
       const userPrompt = buildInternalAiProxyUserPrompt(system, prompt, jsonMode);
+
+      // New local-primary path. Its token carries authenticated identity,
+      // operation attribution, and privacy classification but never cloud
+      // budget approval. Private Content requests are local-only here; a cloud
+      // attempt remains impossible until a future pre-redaction contract can
+      // prove that the outbound payload is no longer private.
+      if (inferenceAttributionToken !== undefined) {
+        if (!localPrimaryInferenceConfig.contentProxyEnabled) {
+          sendError(res, 'LOCAL_PRIMARY_DISABLED', 'Local-primary Content inference is not enabled.', 409);
+          return;
+        }
+        if (attributionToken !== undefined) {
+          sendError(res, 'BAD_REQUEST', 'Only one internal attribution mechanism may be supplied.', 400);
+          return;
+        }
+        const inferenceClaims = verifyInternalInferenceAttributionToken(inferenceAttributionToken);
+        if (!inferenceClaims) {
+          sendInvalidInternalInferenceAttribution(res);
+          return;
+        }
+        if (!inferenceClaims.allowedCategories.includes(category)) {
+          sendError(
+            res,
+            'INTERNAL_INFERENCE_ATTRIBUTION_MISMATCH',
+            'Internal inference category is outside the signed operation scope.',
+            403,
+          );
+          return;
+        }
+        const expectedExecutionClass = (
+          isContentEngineScriptCategory(inferenceClaims.category)
+          || isContentEngineScriptCategory(category)
+        )
+          ? 'background'
+          : 'interactive';
+        if (skillId !== 'content'
+            || taskType !== category
+            || riskClass !== 'low'
+            || executionClass !== expectedExecutionClass
+            || schemaId !== (jsonMode ? 'generic_json' : 'text')
+            || typeof runId !== 'string'
+            || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(runId)) {
+          sendError(res, 'BAD_REQUEST', 'Internal inference metadata does not match the signed Content policy.', 400);
+          return;
+        }
+        if (!verifyInternalInferenceRequestProof(
+          inferenceClaims,
+          inferenceAttributionProof,
+          {
+            category,
+            runId,
+            prompt,
+            system,
+            maxTokens,
+            temperature,
+            jsonMode,
+            skillId,
+            taskType,
+            riskClass,
+            executionClass,
+            schemaId,
+          },
+        )) {
+          sendError(
+            res,
+            'INTERNAL_INFERENCE_PROOF_INVALID',
+            'Internal inference request proof is missing or invalid.',
+            403,
+          );
+          return;
+        }
+        if (!consumeInternalInferenceRequestNonce(inferenceClaims, runId)) {
+          sendError(res, 'INTERNAL_INFERENCE_REPLAY', 'Internal inference request nonce was already consumed.', 409);
+          return;
+        }
+        const budgetRequest: AiBudgetRequest = {
+          userId: inferenceClaims.userId,
+          requestSource: inferenceClaims.requestSource,
+          baseCategory: inferenceClaims.baseCategory,
+          jobName: inferenceClaims.jobName,
+          runId: inferenceClaims.operationId,
+        };
+        const result = await executeSkillInference({
+            tenantId: inferenceClaims.tenantId,
+            userId: inferenceClaims.userId,
+            skillId: 'content',
+            taskType: category,
+            riskClass: 'low',
+            executionClass: expectedExecutionClass,
+            operationId: inferenceClaims.operationId,
+            runId,
+            prompt: userPrompt,
+            applicationGuidance: INTERNAL_AI_PROXY_SYSTEM_INSTRUCTION,
+            schemaId,
+            ...(jsonMode ? { outputSchema: { type: ['object', 'array'] } } : {}),
+            requestedOutputTokens: maxTokens,
+            temperature,
+            containsPrivateData: inferenceClaims.privacyClass === 'private',
+            // Private payloads stay local-only. Redacted/public workloads still
+            // need the signed claim plus the cloud privacy and budget gates.
+            allowCloudEscalation: inferenceClaims.cloudEscalationAllowed
+              && inferenceClaims.privacyClass !== 'private',
+            redactionRequired: inferenceClaims.privacyClass === 'private',
+            requestSource: inferenceClaims.requestSource,
+            budgetRequest,
+            cloudBudgetBoundary: (request, providerCall) => withAiBudgetReservation(request, providerCall),
+            abortSignal: requestAbortController.signal,
+            deadlineMs: resolveInternalAiTimeoutMs(category, maxTokens),
+        });
+        if (requestAbortController.signal.aborted || req.aborted || res.destroyed) {
+          rejectSkillInferenceApplicationResult({
+            runId: result.runId,
+            tenantId: inferenceClaims.tenantId,
+            userId: inferenceClaims.userId,
+            reason: 'content_engine_client_disconnected_before_delivery',
+          });
+          return;
+        }
+        logger.info({
+          category,
+          provider: result.provider,
+          route: result.route,
+          chars: result.text.length,
+          userId: inferenceClaims.userId,
+          tenantId: inferenceClaims.tenantId,
+          runId: result.runId,
+        }, 'Skill inference completion for Python engine');
+        res.json({
+          text: result.text,
+          provider: result.provider,
+          route: result.route,
+          runId: result.runId,
+          model: result.model,
+          modelDigest: result.modelDigest,
+          fallbackReason: result.fallbackReason,
+          queueWaitMs: result.queueWaitMs,
+          firstTokenMs: result.firstTokenMs,
+          throughputTokensPerSecond: result.throughputTokensPerSecond,
+          durationMs: result.durationMs,
+        });
+        return;
+      }
+
       const suppliedUserId = normalizeOptionalScopeId(userId);
       const suppliedTenantId = normalizeOptionalScopeId(tenantId);
       const verifiedAttribution = verifyInternalAttributionToken(attributionToken, category);
@@ -344,7 +532,7 @@ export function internalRoutes(): Router {
         // Never silently convert a failed signed re-entry into a separately
         // billed system call. The caller must retry with the original signed
         // category/run or omit attribution for an intentional system job.
-        sendInvalidInternalAiAttribution(res);
+        sendInvalidLegacyInternalAttribution(res);
         return;
       }
       const scopedUserId = verifiedAttribution?.userId ?? 0;
@@ -395,14 +583,52 @@ export function internalRoutes(): Router {
         ...(outerReservation?.hardJobCostLimitUsd !== undefined
           ? { hardJobCostLimitUsd: outerReservation.hardJobCostLimitUsd }
           : {}),
+        ...(outerReservation?.hardLocalFallbackDailyCostLimitUsd !== undefined
+          ? { hardLocalFallbackDailyCostLimitUsd: outerReservation.hardLocalFallbackDailyCostLimitUsd }
+          : {}),
       };
-      const invokeProvider = () => completeOneShotWithFallback(
+      const scheduleContentShadowAfterVisibleSuccess = verifiedAttribution
+          && scopedUserId > 0
+          && scopedTenantId > 0
+          && category.startsWith('content_')
+          && localPrimaryInferenceConfig.contentProxyEnabled
+          && getLocalInferenceRuntimeControl().mode === 'shadow'
+        ? () => scheduleSkillInferenceShadowAttempt({
+          tenantId: scopedTenantId,
+          userId: scopedUserId,
+          skillId: 'content',
+          taskType: category,
+          riskClass: 'low',
+          executionClass: 'background',
+          operationId: outerReservation?.runId ?? `content-shadow:${randomUUID()}`,
+          runId: `content-shadow:${randomUUID()}`,
+          prompt: userPrompt,
+          applicationGuidance: INTERNAL_AI_PROXY_SYSTEM_INSTRUCTION,
+          schemaId: jsonMode ? 'generic_json' : 'text',
+          ...(jsonMode ? { outputSchema: { type: ['object', 'array'] } } : {}),
+          requestedOutputTokens: maxTokens,
+          temperature,
+          containsPrivateData: true,
+          allowCloudEscalation: false,
+          redactionRequired: true,
+          requestSource: budgetRequest.requestSource,
+          budgetRequest,
+          cloudBudgetBoundary: async () => {
+            throw new Error('Local-primary shadow evaluation is local-only');
+          },
+          deadlineMs: resolveInternalAiTimeoutMs(category, maxTokens),
+        })
+        : null;
+      const completeAndDeliver = async (activeAbortSignal: AbortSignal): Promise<void> => {
+        throwIfInternalAiCompleteCancelled(activeAbortSignal);
+        const invokeProvider = () => completeOneShotWithFallback(
           INTERNAL_AI_PROXY_SYSTEM_INSTRUCTION,
           userPrompt,
           category,
           // Anthropic fallback thunk — only fires if ANTHROPIC_ENABLED=true
           // and ANTHROPIC_API_KEY is configured.
           async () => {
+            throwIfInternalAiCompleteCancelled(activeAbortSignal);
             const { trackedCreate } = require('../../portal/anthropic-hook');
             const Anthropic = require('@anthropic-ai/sdk');
             const client = new Anthropic.default({ apiKey: config.anthropic?.apiKey || '', maxRetries: 0 });
@@ -412,7 +638,12 @@ export function internalRoutes(): Router {
               max_tokens: maxTokens,
               system: INTERNAL_AI_PROXY_SYSTEM_INSTRUCTION,
               messages: [{ role: 'user', content: userPrompt }],
-            }, category, { userId: scopedUserId, tenantId: scopedTenantId });
+            }, category, {
+              userId: scopedUserId,
+              tenantId: scopedTenantId,
+              abortSignal: activeAbortSignal,
+            });
+            throwIfInternalAiCompleteCancelled(activeAbortSignal);
             return response.content
               .filter((b: any) => b.type === 'text')
               .map((b: any) => b.text)
@@ -425,29 +656,76 @@ export function internalRoutes(): Router {
             jsonMode,
             userId: scopedUserId,
             tenantId: scopedTenantId,
+            abortSignal: activeAbortSignal,
           },
         );
 
-      // Signed re-entry proves the outer TS route still owns this user's
-      // SQLite lock, avoiding a same-user nested-lock deadlock. Every other
-      // call (including unsigned legacy/system traffic) gets its own canonical
-      // reservation before any provider is invoked.
-      const { text, provider } = outerReservation
-        ? await withSignedOuterAiBudgetReservation(budgetRequest, outerReservation, invokeProvider)
-        : await withAiBudgetReservation(budgetRequest, invokeProvider);
+        // Signed re-entry proves the outer TS route still owns this user's
+        // SQLite lock, avoiding a same-user nested-lock deadlock. Every other
+        // call (including unsigned legacy/system traffic) gets its own canonical
+        // reservation before any provider is invoked.
+        const { text, provider } = outerReservation
+          ? await withSignedOuterAiBudgetReservation(budgetRequest, outerReservation, invokeProvider)
+          : await withAiBudgetReservation(budgetRequest, invokeProvider);
 
-      logger.info({
-        category,
-        provider,
-        chars: text.length,
-        userId: scopedUserId ?? null,
-        tenantId: scopedTenantId ?? null,
-      }, 'AI completion for Python engine');
-      res.json({ text, provider });
+        throwIfInternalAiCompleteCancelled(activeAbortSignal);
+        logger.info({
+          category,
+          provider,
+          chars: text.length,
+          userId: scopedUserId ?? null,
+          tenantId: scopedTenantId ?? null,
+        }, 'AI completion for Python engine');
+        if (res.destroyed || req.aborted) throw contentEngineClientDisconnectedError();
+        res.json({ text, provider });
+        throwIfInternalAiCompleteCancelled(activeAbortSignal);
+        if (scheduleContentShadowAfterVisibleSuccess) {
+          try {
+            scheduleContentShadowAfterVisibleSuccess();
+          } catch (shadowError) {
+            logger.warn({
+              category,
+              errorName: shadowError instanceof Error ? shadowError.name : typeof shadowError,
+            }, 'Unable to schedule detached Content shadow after visible completion');
+          }
+        }
+      };
+
+      if (scopedUserId > 0) {
+        await runWithSkillInferenceAccountAdmission({
+          userId: scopedUserId,
+          abortSignal: requestAbortController.signal,
+        }, completeAndDeliver);
+      } else {
+        await completeAndDeliver(requestAbortController.signal);
+      }
     } catch (err: any) {
+      if (res.headersSent || res.writableEnded) return;
+      if (err?.code === 'ACCOUNT_DELETION_IN_PROGRESS') {
+        sendError(
+          res,
+          'ACCOUNT_DELETION_IN_PROGRESS',
+          'No new Content model work can run while this account is being deleted.',
+          409,
+        );
+        return;
+      }
+      if (err?.code === 'CONTENT_ENGINE_CLIENT_DISCONNECTED'
+          || isProviderRequestCancellation(err)
+          || req.aborted
+          || (res.destroyed && !res.writableEnded)) {
+        return;
+      }
       logger.error({ err }, 'Internal ai-complete failed');
       if (sendAiBudgetError(res, err)) return;
+      if (err instanceof SkillInferencePolicyError) {
+        sendError(res, err.code, err.message, err.status, err.details);
+        return;
+      }
       sendError(res, 'AI_COMPLETE_FAILED', 'AI completion failed', 500);
+    } finally {
+      req.removeListener('aborted', abortForDisconnectedContentEngine);
+      res.removeListener('close', abortForDisconnectedContentEngine);
     }
   });
 

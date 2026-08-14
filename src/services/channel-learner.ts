@@ -100,7 +100,16 @@ type AIMeteringScope = {
 type ChannelAiBudgetContext = Pick<
   AiBudgetRequest,
   'requestSource' | 'jobName' | 'runId' | 'estimatedCostUsd'
->;
+> & { abortSignal?: AbortSignal };
+
+function throwIfChannelLearningAborted(abortSignal?: AbortSignal): void {
+  if (!abortSignal?.aborted) return;
+  if (abortSignal.reason instanceof Error) throw abortSignal.reason;
+  throw Object.assign(new Error('channel_learning_cancelled'), {
+    name: 'AbortError',
+    code: 'ACCOUNT_DELETION_IN_PROGRESS',
+  });
+}
 
 function recordChannelSynthesisContractDeferral(
   userId: number,
@@ -738,7 +747,10 @@ async function extractPatternsForCreatorContext(
         system: extractionSystemPrompt,
         messages: [{ role: 'user', content: prompt }],
         temperature: 0.3, // Lower temp for more consistent analysis
-      }, 'channel_analysis', meteringScope);
+      }, 'channel_analysis', {
+        ...meteringScope,
+        abortSignal: budgetContext.abortSignal,
+      });
       return response.content
         .filter((b): b is Anthropic.TextBlock => b.type === 'text')
         .map((b) => b.text)
@@ -749,6 +761,7 @@ async function extractPatternsForCreatorContext(
       maxTokens: CHANNEL_LEARNING_MAX_OUTPUT_TOKENS,
       temperature: 0.3,
       ...meteringScope,
+      abortSignal: budgetContext.abortSignal,
     },
   ));
 
@@ -908,7 +921,11 @@ async function synthesizeKnowledge(
             system: synthesisSystemPrompt,
             messages: [{ role: 'user', content: userPrompt }],
             temperature: 0.3,
-          }, 'knowledge_synthesis', { userId: scopedUserId, tenantId: scopedUserId });
+          }, 'knowledge_synthesis', {
+            userId: scopedUserId,
+            tenantId: scopedUserId,
+            abortSignal: budgetContext.abortSignal,
+          });
           return response.content
             .filter((block): block is Anthropic.TextBlock => block.type === 'text')
             .map((block) => block.text)
@@ -920,6 +937,7 @@ async function synthesizeKnowledge(
           temperature: 0.3,
           userId: scopedUserId,
           tenantId: scopedUserId,
+          abortSignal: budgetContext.abortSignal,
         },
       ));
 
@@ -1364,8 +1382,14 @@ export interface ChannelRelearnResult {
 export async function processAllChannels(
   force = false,
   userId?: number,
-  options: { requestSource?: 'interactive' | 'automation' | 'system'; jobName?: string; runId?: string | null } = {},
+  options: {
+    requestSource?: 'interactive' | 'automation' | 'system';
+    jobName?: string;
+    runId?: string | null;
+    abortSignal?: AbortSignal;
+  } = {},
 ): Promise<ChannelRelearnResult> {
+  throwIfChannelLearningAborted(options.abortSignal);
   let analyzed = 0;
   let failed = 0;
   let skippedNoNewVideos = 0;
@@ -1475,6 +1499,7 @@ export async function processAllChannels(
         requestSource: ch.user_id && ch.user_id > 0 ? requestSource : 'system',
         jobName,
         runId: scopeRunId,
+        abortSignal: options.abortSignal,
       },
     });
     if (result.skipped) skippedNoNewVideos++;
@@ -1483,6 +1508,7 @@ export async function processAllChannels(
     else failed++;
     // Rate limit: wait 2s between channels to avoid YouTube API quota issues
     await new Promise((r) => setTimeout(r, 2000));
+    throwIfChannelLearningAborted(options.abortSignal);
   }
 
   // Re-analyze active channels (skip fresh ones unless forced)
@@ -1498,6 +1524,7 @@ export async function processAllChannels(
         requestSource: ch.user_id && ch.user_id > 0 ? requestSource : 'system',
         jobName,
         runId: scopeRunId,
+        abortSignal: options.abortSignal,
       },
     });
     if (result.skipped) skippedNoNewVideos++;
@@ -1505,6 +1532,7 @@ export async function processAllChannels(
     else if (result.success) analyzed++;
     else failed++;
     await new Promise((r) => setTimeout(r, 2000));
+    throwIfChannelLearningAborted(options.abortSignal);
   }
 
   // Synthesize knowledge if anything was actually (re-)analyzed. Channels
@@ -1518,6 +1546,7 @@ export async function processAllChannels(
       requestSource: userId != null && userId > 0 ? requestSource : 'system',
       jobName,
       runId: scopeRunId,
+      abortSignal: options.abortSignal,
     });
     synthesisDeferred = !synthesized;
   } else if (allSkippedNoNewVideos) {
@@ -1571,13 +1600,14 @@ export function planChannelRelearnScopes(): ChannelRelearnScopePlan {
 export async function processChannelRelearnScope(
   force: boolean,
   scopeUserId: number | undefined,
-  options: { runId: string; systemScopeChanged: boolean },
+  options: { runId: string; systemScopeChanged: boolean; abortSignal?: AbortSignal },
 ): Promise<ChannelRelearnResult> {
   const scopeRequestSource = scopeUserId != null && scopeUserId > 0 ? 'automation' as const : 'system' as const;
   const result = await processAllChannels(force, scopeUserId, {
     requestSource: scopeRequestSource,
     jobName: 'channel_relearn',
     runId: options.runId,
+    abortSignal: options.abortSignal,
   });
 
   if (scopeUserId == null) return result;
@@ -1591,6 +1621,7 @@ export async function processChannelRelearnScope(
     requestSource: 'automation',
     jobName: 'channel_relearn',
     runId: options.runId,
+    abortSignal: options.abortSignal,
   });
   return {
     ...result,

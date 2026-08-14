@@ -26,6 +26,7 @@ import { config } from '../config';
 import { logger } from '../utils/logger';
 import { trackedCreate } from '../portal/anthropic-hook';
 import { completeOneShotWithFallback } from '../services/gemini-provider';
+import { runWithSkillInferenceAccountAdmission } from '../services/skill-inference-service';
 import { getActiveUserTargets, type UserTarget } from '../services/user-service';
 import { contentScopeParams, contentScopePredicate, ensureContentTenantScopeColumns } from '../services/content-tenant-scope';
 import { createLazyAnthropicClient } from '../services/anthropic-lazy-client';
@@ -466,7 +467,10 @@ export async function runVoiceEvolutionAgent(): Promise<void> {
       try {
         const result = await withVoiceEvolutionTenantClaim(
           target.tenantId,
-          () => runVoiceEvolutionForTarget(target),
+          () => runWithSkillInferenceAccountAdmission(
+            { userId: target.tenantId },
+            (abortSignal) => runVoiceEvolutionForTarget(target, { abortSignal }),
+          ),
         );
         signalsProduced += result.signalsProduced;
         signalsConsumed += result.signalsConsumed;
@@ -526,7 +530,7 @@ export interface VoiceEvolutionTargetResult {
 
 export async function runVoiceEvolutionForTarget(
   target: UserTarget,
-  options: { runId?: string | null } = {},
+  options: { runId?: string | null; abortSignal?: AbortSignal } = {},
 ): Promise<VoiceEvolutionTargetResult> {
   const start = Date.now();
   let signalsProduced = 0;
@@ -656,13 +660,19 @@ export async function runVoiceEvolutionForTarget(
             max_tokens: 4096,
             messages: [{ role: 'user', content: prompt }],
             temperature: 0.3,
-          }, 'voice_evolution', { userId, tenantId });
+          }, 'voice_evolution', { userId, tenantId, abortSignal: options.abortSignal });
           return response.content
             .filter((b): b is Anthropic.TextBlock => b.type === 'text')
             .map(b => b.text)
             .join('');
         },
-        { maxTokens: 4096, temperature: 0.3, userId, tenantId },
+        {
+          maxTokens: 4096,
+          temperature: 0.3,
+          userId,
+          tenantId,
+          abortSignal: options.abortSignal,
+        },
       ));
       if (typeof providerResult?.text !== 'string') {
         throw new VoiceEvolutionProviderSchemaError(
@@ -916,11 +926,11 @@ function scheduledVoiceEvolutionAdapter(
         fingerprintMaterial: { target: target.tenantId, gate: VOICE_EVOLUTION_FINGERPRINT_VERSION },
       };
     },
-    async execute({ runId }) {
+    async execute({ runId, abortSignal }) {
       try {
         return await withVoiceEvolutionTenantClaim(
           target.tenantId,
-          () => runVoiceEvolutionForTarget(target, { runId }),
+          () => runVoiceEvolutionForTarget(target, { runId, abortSignal }),
         );
       } catch (error) {
         if (!(error instanceof AiBudgetError)) throw error;

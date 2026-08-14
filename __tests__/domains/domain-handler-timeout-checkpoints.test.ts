@@ -125,6 +125,9 @@ function deferred<T>() {
 beforeEach(() => {
   vi.clearAllMocks();
   testDb = createMigratedTestDatabase();
+  testDb.prepare(
+    "INSERT INTO users (id, telegram_id, tier, status) VALUES (?, ?, 'pro', 'active')",
+  ).run(USER_ID, 9_000_042);
   delete process.env.ANTHROPIC_ENABLED;
   delete process.env.ANTHROPIC_API_KEY;
   mockGetCurrentRequestId.mockReturnValue(RUN_ID);

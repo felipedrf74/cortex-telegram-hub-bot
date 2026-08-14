@@ -8,6 +8,7 @@ import {
   type AgentJobManifestEntry,
 } from './agent-job-manifest';
 import { getDb } from './database';
+import { runWithSkillInferenceAccountAdmission } from './skill-inference-service';
 
 export type AgentJobRunStatus =
   | 'success'
@@ -46,6 +47,8 @@ export interface AgentJobExecutionContext<Input> {
   input: Input;
   runId: string;
   attempt: number;
+  /** Account deletion and caller cancellation for the complete governed run. */
+  abortSignal?: AbortSignal;
 }
 
 export interface AgentJobOutcome<Output> {
@@ -98,6 +101,10 @@ export interface AgentJobRunnerDependencies {
   now?: () => Date;
   randomUUID?: () => string;
   sleep?: (ms: number) => Promise<void>;
+  /** Test seam; runtime always uses the shared durable account admission. */
+  accountAdmission?: typeof runWithSkillInferenceAccountAdmission;
+  /** Internal signal supplied by the exported account-admitted wrapper. */
+  accountAbortSignal?: AbortSignal;
   /** Test-only policy injection; runtime callers always load AgentJobManifest. */
   manifestEntry?: AgentJobManifestEntry;
 }
@@ -436,6 +443,44 @@ export async function runGovernedAgentJob<Input, Output>(
   dependencies: AgentJobRunnerDependencies = {},
 ): Promise<AgentJobOutcome<Output>> {
   const entry = dependencies.manifestEntry ?? getAgentJobManifestEntry(adapter.jobId);
+  // Preserve governance-error precedence before touching account state.
+  assertPolicyAndScope(
+    entry,
+    adapter as GovernedAgentJobAdapter<unknown, unknown>,
+    scope,
+  );
+  const db = dependencies.db ?? getDb();
+  const execute = (accountAbortSignal?: AbortSignal) => runGovernedAgentJobInternal(
+    adapter,
+    scope,
+    {
+      ...dependencies,
+      db,
+      manifestEntry: entry,
+      accountAbortSignal,
+    },
+  );
+
+  // Platform-scoped evaluation has no account owner to fence. Every
+  // user-attributed governed job holds the same registry entry from private
+  // input preparation through output validation, persistence, usage
+  // settlement, and notification.
+  if (scope.userId <= 0) return execute();
+  const accountAdmission = dependencies.accountAdmission
+    ?? runWithSkillInferenceAccountAdmission;
+  return accountAdmission(
+    { userId: scope.userId },
+    (accountAbortSignal) => execute(accountAbortSignal),
+    db,
+  );
+}
+
+async function runGovernedAgentJobInternal<Input, Output>(
+  adapter: GovernedAgentJobAdapter<Input, Output>,
+  scope: AgentJobScope,
+  dependencies: AgentJobRunnerDependencies = {},
+): Promise<AgentJobOutcome<Output>> {
+  const entry = dependencies.manifestEntry ?? getAgentJobManifestEntry(adapter.jobId);
   assertPolicyAndScope(
     entry,
     adapter as GovernedAgentJobAdapter<unknown, unknown>,
@@ -596,12 +641,15 @@ export async function runGovernedAgentJob<Input, Output>(
       });
 
       try {
+        throwIfAgentJobAborted(dependencies.accountAbortSignal);
         const output = await adapter.execute({
           scope,
           input: preparation.input,
           runId,
           attempt,
+          abortSignal: dependencies.accountAbortSignal,
         });
+        throwIfAgentJobAborted(dependencies.accountAbortSignal);
         adapter.validateOutput(output, preparation.input);
         const usage = collectUsage(db, runId, scope);
         if (usage.scopeViolations !== 0) throw new AgentJobUsageScopeError();
@@ -689,6 +737,15 @@ export async function runGovernedAgentJob<Input, Output>(
   } finally {
     inFlightClaims.delete(claimKey);
   }
+}
+
+function throwIfAgentJobAborted(abortSignal?: AbortSignal): void {
+  if (!abortSignal?.aborted) return;
+  if (abortSignal.reason instanceof Error) throw abortSignal.reason;
+  throw Object.assign(new Error('agent_job_cancelled'), {
+    name: 'AbortError',
+    code: 'ACCOUNT_DELETION_IN_PROGRESS',
+  });
 }
 
 export function resetAgentJobRunnerForTests(): void {

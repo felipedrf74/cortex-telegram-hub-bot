@@ -21,6 +21,9 @@ export interface DispatchCloudAllowlistAnswerOptions {
   userId?: number;
   tenantId?: number;
   requestId?: string;
+  abortSignal?: AbortSignal;
+  /** Called immediately before the concrete paid provider method is invoked. */
+  onProviderAttempt?: () => void;
   selectProvider?: (request: CloudReasoningRequest) => Promise<CloudReasoningResolution>;
 }
 
@@ -28,6 +31,7 @@ export async function dispatchCloudAllowlistAnswer(
   packet: CloudAllowlistPacket,
   options: DispatchCloudAllowlistAnswerOptions = {},
 ): Promise<CloudAllowlistAnswerResult> {
+  throwIfCloudAllowlistCancelled(options.abortSignal);
   if (!validateCloudAllowlistPacket(packet)) {
     throw new Error('cloud_allowlist_answer_rejected:invalid_packet');
   }
@@ -37,11 +41,14 @@ export async function dispatchCloudAllowlistAnswer(
     containsPrivateData: false,
     allowCloudEscalation: true,
   });
+  throwIfCloudAllowlistCancelled(options.abortSignal);
 
   if (selection.rejected) {
     throw new Error(`cloud_allowlist_answer_rejected:${selection.reason}:${selection.warning}`);
   }
 
+  throwIfCloudAllowlistCancelled(options.abortSignal);
+  options.onProviderAttempt?.();
   const result = await selection.provider.callDomain(
     packet.domain,
     [],
@@ -54,6 +61,7 @@ export async function dispatchCloudAllowlistAnswer(
       userId: options.userId,
       tenantId: options.tenantId,
       maxTokensOverride: 180,
+      abortSignal: options.abortSignal,
     },
   );
   const providerMetadata = { ...(result.providerMetadata ?? {}) };
@@ -71,6 +79,14 @@ export async function dispatchCloudAllowlistAnswer(
       requestId: options.requestId,
     },
   };
+}
+
+function throwIfCloudAllowlistCancelled(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  throw Object.assign(new Error('cloud_allowlist_answer_cancelled'), {
+    name: 'AbortError',
+    code: 'CHAT_REQUEST_CANCELLED',
+  });
 }
 
 export function buildCloudAllowlistAnswerPrompt(packet: CloudAllowlistPacket): string {

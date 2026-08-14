@@ -6,7 +6,12 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { FallbackProvider, getModelRouting } from '../../src/services/ai-provider';
+import { APIUserAbortError } from 'openai';
+import {
+  FallbackProvider,
+  getModelRouting,
+  isProviderRequestCancellation,
+} from '../../src/services/ai-provider';
 import type { AIProvider, AICallResult, ProviderModelConfig } from '../../src/services/ai-provider';
 import type { ClassificationResult } from '../../src/domains/types';
 
@@ -110,6 +115,48 @@ describe('FallbackProvider', () => {
       expect(fallback.callDomain).toHaveBeenCalledWith(
         'secretary', history, 'hi', 'state', options,
       );
+    });
+
+    it('never invokes the fallback provider after caller cancellation', async () => {
+      const cancelled = Object.assign(new Error('cancelled'), {
+        name: 'AbortError',
+        code: 'CHAT_REQUEST_CANCELLED',
+      });
+      primary.callDomain.mockRejectedValue(cancelled);
+
+      await expect(provider.callDomain('secretary', [], 'hi', '', {
+        abortSignal: new AbortController().signal,
+      })).rejects.toBe(cancelled);
+
+      expect(onFallback).not.toHaveBeenCalled();
+      expect(fallback.callDomain).not.toHaveBeenCalled();
+    });
+
+    it('recognizes the installed OpenAI SDK user-abort error without dispatching fallback', async () => {
+      const cancelled = new APIUserAbortError();
+      primary.callDomain.mockRejectedValue(cancelled);
+
+      expect(isProviderRequestCancellation(cancelled)).toBe(true);
+      await expect(provider.callDomain('secretary', [], 'hi', ''))
+        .rejects.toBe(cancelled);
+
+      expect(onFallback).not.toHaveBeenCalled();
+      expect(fallback.callDomain).not.toHaveBeenCalled();
+    });
+
+    it('does not mistake an ECONNABORTED transport timeout for caller cancellation', async () => {
+      const transportTimeout = Object.assign(new Error('socket timeout'), {
+        code: 'ECONNABORTED',
+        status: 503,
+      });
+      primary.callDomain.mockRejectedValue(transportTimeout);
+      fallback.callDomain.mockResolvedValue(mockResult);
+
+      await expect(provider.callDomain('secretary', [], 'hi', ''))
+        .resolves.toEqual(mockResult);
+
+      expect(onFallback).toHaveBeenCalledWith(transportTimeout, 'callDomain');
+      expect(fallback.callDomain).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -267,8 +314,10 @@ describe('AnthropicProvider', () => {
       expect(result).toEqual({ domain: 'triathlon', confidence: 0.95 });
       // Option 3 (O3-A11): AnthropicProvider.classify forwards
       // options?.userId + options?.tenantId to classifyMessage. With no
-      // options arg, both come through as undefined → 4-arg call.
-      expect(mockClassify).toHaveBeenCalledWith('workout plan', undefined, undefined, undefined);
+      // options arg, attribution and cancellation come through as undefined.
+      expect(mockClassify).toHaveBeenCalledWith(
+        'workout plan', undefined, undefined, undefined, undefined,
+      );
     });
 
     it('passes context through', async () => {
@@ -276,8 +325,30 @@ describe('AnthropicProvider', () => {
       const ctx = { domain: 'content' as const, lastAssistantMessage: 'Your reel is ready' };
 
       await provider.classify('thanks', ctx);
-      // Option 3 (O3-A11): same 4-arg forwarding as above.
-      expect(mockClassify).toHaveBeenCalledWith('thanks', ctx, undefined, undefined);
+      // Option 3 (O3-A11): same forwarding as above.
+      expect(mockClassify).toHaveBeenCalledWith(
+        'thanks', ctx, undefined, undefined, undefined,
+      );
+    });
+
+    it('forwards classifier cancellation to the underlying provider chain', async () => {
+      const controller = new AbortController();
+      const cancelled = Object.assign(new Error('request cancelled'), {
+        name: 'AbortError',
+        code: 'CHAT_REQUEST_CANCELLED',
+      });
+      controller.abort(cancelled);
+      mockClassify.mockRejectedValue(cancelled);
+
+      await expect(provider.classify('stop', undefined, {
+        userId: 42,
+        tenantId: 84,
+        abortSignal: controller.signal,
+      })).rejects.toBe(cancelled);
+
+      expect(mockClassify).toHaveBeenCalledWith(
+        'stop', undefined, 42, 84, controller.signal,
+      );
     });
   });
 

@@ -8,10 +8,10 @@ ARCHITECTURE (April 2026):
     POST /api/v1/internal/ai-complete
 
   The TS backend handles:
-    1. Provider cascade: Gemini → OpenAI → Anthropic (if enabled)
-    2. Usage metering (api_usage + usage_metering tables)
-    3. Telemetry events
-    4. Kill switch enforcement
+    1. Signed local-primary Content routing for attributed eligible calls
+    2. Policy-controlled cloud routing for legacy or explicitly eligible calls
+    3. Usage metering, inference telemetry, and provider fallbacks
+    4. Privacy, budget, kill-switch, and capacity enforcement
 
   This means Python never needs API keys for AI providers — it only
   needs INTERNAL_API_SECRET to talk to the TS backend.
@@ -21,10 +21,15 @@ ARCHITECTURE (April 2026):
   is unchanged — callers don't need to update.
 """
 
+import base64
+import hashlib
+import hmac
 import json
 import logging
 import os
 import re
+import struct
+import uuid
 from contextvars import ContextVar
 from typing import Any
 
@@ -55,11 +60,31 @@ _ATTRIBUTION_CONTEXT: ContextVar[dict[str, Any] | None] = ContextVar(
     default=None,
 )
 
+
 _STABLE_AI_BUDGET_CODES = {
     "AI_PLAN_REQUIRED",
     "AI_DAILY_LIMIT_REACHED",
     "AI_MONTHLY_LIMIT_REACHED",
     "SERVICE_DEGRADED",
+}
+
+_STABLE_LOCAL_INFERENCE_CODES = {
+    "LOCAL_PRIMARY_DISABLED",
+    "LOCAL_PLAN_REQUIRED",
+    "LOCAL_FAIR_USE_REACHED",
+    "LOCAL_CAPACITY_BUSY",
+    "LOCAL_QUEUE_FULL",
+    "LOCAL_QUEUE_DEADLINE",
+    "PRIVATE_LOCAL_ROUTE_UNAVAILABLE",
+    "INFERENCE_PROVIDER_UNAVAILABLE",
+    "INFERENCE_CONTEXT_LIMIT_EXCEEDED",
+    "INFERENCE_EMPTY_OUTPUT",
+    "INFERENCE_SCHEMA_VALUE_INVALID",
+    "LOCAL_INFERENCE_ATTRIBUTION_UNAVAILABLE",
+    "INTERNAL_ATTRIBUTION_INVALID",
+    "INTERNAL_INFERENCE_ATTRIBUTION_INVALID",
+    "INTERNAL_INFERENCE_ATTRIBUTION_MISMATCH",
+    "ACCOUNT_DELETION_IN_PROGRESS",
 }
 
 
@@ -89,7 +114,7 @@ class AiProxyError(Exception):
 
 
 def _stable_ai_proxy_error(response: httpx.Response) -> AiProxyError | None:
-    if response.status_code not in (403, 429):
+    if response.status_code not in (400, 403, 409, 429, 500, 502, 503):
         return None
     try:
         payload = response.json()
@@ -104,10 +129,31 @@ def _stable_ai_proxy_error(response: httpx.Response) -> AiProxyError | None:
     if not isinstance(error, dict):
         return None
     code = error.get("code")
-    if code not in _STABLE_AI_BUDGET_CODES:
+    if code not in _STABLE_AI_BUDGET_CODES and code not in _STABLE_LOCAL_INFERENCE_CODES:
         return None
-    expected_status = 403 if code == "AI_PLAN_REQUIRED" else 429
-    if response.status_code != expected_status:
+    expected_statuses = {
+        "AI_PLAN_REQUIRED": {403},
+        "AI_DAILY_LIMIT_REACHED": {429},
+        "AI_MONTHLY_LIMIT_REACHED": {429},
+        "SERVICE_DEGRADED": {429},
+        "LOCAL_PRIMARY_DISABLED": {409},
+        "LOCAL_PLAN_REQUIRED": {403},
+        "LOCAL_FAIR_USE_REACHED": {429},
+        "LOCAL_CAPACITY_BUSY": {503},
+        "LOCAL_QUEUE_FULL": {503},
+        "LOCAL_QUEUE_DEADLINE": {503},
+        "LOCAL_INFERENCE_ATTRIBUTION_UNAVAILABLE": {503},
+        "INTERNAL_ATTRIBUTION_INVALID": {403},
+        "INTERNAL_INFERENCE_ATTRIBUTION_INVALID": {403},
+        "INTERNAL_INFERENCE_ATTRIBUTION_MISMATCH": {403},
+        "ACCOUNT_DELETION_IN_PROGRESS": {409},
+        "PRIVATE_LOCAL_ROUTE_UNAVAILABLE": {503},
+        "INFERENCE_PROVIDER_UNAVAILABLE": {503},
+        "INFERENCE_CONTEXT_LIMIT_EXCEEDED": {400},
+        "INFERENCE_EMPTY_OUTPUT": {502},
+        "INFERENCE_SCHEMA_VALUE_INVALID": {502},
+    }
+    if response.status_code not in expected_statuses.get(code, set()):
         return None
     message = error.get("message")
     details = error.get("details")
@@ -124,12 +170,16 @@ def set_attribution_context(
     user_id: int | None = None,
     tenant_id: int | None = None,
     attribution_token: str | None = None,
+    inference_attribution_token: str | None = None,
+    inference_proof_key: str | None = None,
 ):
     """Install request-scoped user/tenant attribution for downstream AI calls."""
     return _ATTRIBUTION_CONTEXT.set({
         "user_id": user_id,
         "tenant_id": tenant_id,
         "attribution_token": attribution_token,
+        "inference_attribution_token": inference_attribution_token,
+        "inference_proof_key": inference_proof_key,
     })
 
 
@@ -223,6 +273,72 @@ BROKEN OUTPUT:
         return None
 
 
+def _canonical_inference_temperature(value: float) -> str:
+    normalized = float(value)
+    # Collapse signed zero, then encode the shared IEEE-754 value directly.
+    # Decimal tie-breaking differs between Python and JavaScript, so rounded
+    # decimal text is not a safe cross-language authentication contract.
+    if normalized == 0:
+        normalized = 0.0
+    return struct.pack(">d", normalized).hex()
+
+
+_ECMASCRIPT_TRIM_CHARS = (
+    "\u0009\u000b\u000c\u0020\u00a0\ufeff"
+    "\u000a\u000d\u2028\u2029"
+    "\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a"
+    "\u202f\u205f\u3000"
+)
+
+
+def _canonical_inference_text(value: str) -> str:
+    """Match ECMAScript String.trim without Python-only whitespace drift."""
+    return value.strip(_ECMASCRIPT_TRIM_CHARS)
+
+
+def _build_internal_inference_request_proof(
+    proof_key: str,
+    *,
+    category: str,
+    run_id: str,
+    prompt: str,
+    system: str,
+    max_tokens: int,
+    temperature: float,
+    json_mode: bool,
+    skill_id: str,
+    task_type: str,
+    risk_class: str,
+    execution_class: str,
+    schema_id: str,
+) -> str | None:
+    """MAC the exact internal inference request without sending the proof key."""
+    try:
+        padding = "=" * (-len(proof_key) % 4)
+        key = base64.urlsafe_b64decode(proof_key + padding)
+        if len(key) != 32:
+            return None
+        payload = "\n".join([
+            "nexus-skill-inference-v1",
+            category,
+            run_id,
+            skill_id,
+            task_type,
+            risk_class,
+            execution_class,
+            schema_id,
+            str(int(max_tokens)),
+            _canonical_inference_temperature(temperature),
+            "true" if json_mode else "false",
+            hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+            hashlib.sha256(system.encode("utf-8")).hexdigest(),
+        ]).encode("utf-8")
+        signature = hmac.new(key, payload, hashlib.sha256).digest()
+        return base64.urlsafe_b64encode(signature).decode("ascii").rstrip("=")
+    except (TypeError, ValueError):
+        return None
+
+
 async def ask_claude(
     prompt: str,
     system: str = "",
@@ -234,10 +350,12 @@ async def ask_claude(
     user_id: int | None = None,
     tenant_id: int | None = None,
     attribution_token: str | None = None,
+    inference_attribution_token: str | None = None,
+    inference_proof_key: str | None = None,
 ) -> str:
     """Send a prompt through the TS AI proxy and return the text response.
 
-    Routes through Gemini → OpenAI → Anthropic cascade on the TS side.
+    Routes through the governed TS inference/provider boundary.
     The `model` parameter is kept for backward compat but is ignored —
     the TS backend picks the best available provider.
     """
@@ -254,10 +372,18 @@ async def ask_claude(
     effective_user_id = user_id if user_id is not None else context.get("user_id")
     effective_tenant_id = tenant_id if tenant_id is not None else context.get("tenant_id")
     effective_attribution_token = attribution_token or context.get("attribution_token")
+    effective_inference_attribution_token = (
+        inference_attribution_token or context.get("inference_attribution_token")
+    )
+    effective_inference_proof_key = (
+        inference_proof_key or context.get("inference_proof_key")
+    )
 
+    canonical_prompt = _canonical_inference_text(prompt)
+    canonical_system = _canonical_inference_text(system)
     body = {
-        "prompt": prompt,
-        "system": system,
+        "prompt": canonical_prompt,
+        "system": canonical_system,
         "category": category,
         "maxTokens": max_tokens,
         "temperature": temperature,
@@ -269,6 +395,47 @@ async def ask_claude(
         body["tenantId"] = effective_tenant_id
     if effective_attribution_token:
         body["attributionToken"] = effective_attribution_token
+    if effective_inference_attribution_token:
+        if not effective_inference_proof_key:
+            raise AiProxyError(
+                status_code=503,
+                code="LOCAL_INFERENCE_ATTRIBUTION_UNAVAILABLE",
+                message="Local-primary Content request proof is unavailable.",
+                details={"retryable": True},
+            )
+        body["inferenceAttributionToken"] = effective_inference_attribution_token
+        body["runId"] = str(uuid.uuid4())
+        body["skillId"] = "content"
+        body["taskType"] = category
+        body["riskClass"] = "low"
+        # Signed local-primary grants currently originate only at the durable
+        # script boundary. Nested deep-search/synthesis calls remain background
+        # work even though their individual category is not script-prefixed.
+        body["executionClass"] = "background"
+        body["schemaId"] = "generic_json" if json_mode else "text"
+        proof = _build_internal_inference_request_proof(
+            effective_inference_proof_key,
+            category=category,
+            run_id=body["runId"],
+            prompt=canonical_prompt,
+            system=canonical_system,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            json_mode=json_mode,
+            skill_id=body["skillId"],
+            task_type=body["taskType"],
+            risk_class=body["riskClass"],
+            execution_class=body["executionClass"],
+            schema_id=body["schemaId"],
+        )
+        if proof is None:
+            raise AiProxyError(
+                status_code=503,
+                code="LOCAL_INFERENCE_ATTRIBUTION_UNAVAILABLE",
+                message="Local-primary Content request proof could not be created.",
+                details={"retryable": True},
+            )
+        body["inferenceAttributionProof"] = proof
 
     async with httpx.AsyncClient(timeout=300.0) as client:
         try:
@@ -281,6 +448,17 @@ async def ask_claude(
             stable_error = _stable_ai_proxy_error(e.response)
             if stable_error is not None:
                 raise stable_error from None
+            if effective_inference_attribution_token:
+                # A signed local-primary workload must never be converted by
+                # script_writer into a plausible deterministic success. Keep
+                # unknown proxy/configuration failures public-safe and
+                # retryable while preserving the local-only privacy boundary.
+                raise AiProxyError(
+                    status_code=503,
+                    code="LOCAL_INFERENCE_FAILED",
+                    message="Local content generation is temporarily unavailable.",
+                    details={"retryable": True},
+                ) from None
             logger.error(
                 "AI proxy HTTP error %d for category=%s (%d chars)",
                 e.response.status_code,
@@ -290,6 +468,23 @@ async def ask_claude(
             raise RuntimeError(f"AI proxy error {e.response.status_code} for category={category}")
         except httpx.TimeoutException:
             logger.error("AI proxy timeout after 300s for category=%s", category)
+            if effective_inference_attribution_token:
+                raise AiProxyError(
+                    status_code=503,
+                    code="LOCAL_INFERENCE_FAILED",
+                    message="Local content generation timed out. Please retry.",
+                    details={"retryable": True},
+                ) from None
+            raise
+        except httpx.RequestError:
+            logger.error("AI proxy transport failure for category=%s", category)
+            if effective_inference_attribution_token:
+                raise AiProxyError(
+                    status_code=503,
+                    code="LOCAL_INFERENCE_FAILED",
+                    message="Local content generation is temporarily unavailable.",
+                    details={"retryable": True},
+                ) from None
             raise
 
         data = resp.json()

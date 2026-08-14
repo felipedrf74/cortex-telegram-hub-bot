@@ -6,6 +6,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { APIUserAbortError } from 'openai';
 import {
   CircuitBreaker,
   CircuitState,
@@ -17,6 +18,23 @@ import {
 } from '../../src/services/provider-fallback';
 import type { AIProvider, AICallResult } from '../../src/services/ai-provider';
 import type { ClassificationResult } from '../../src/domains/types';
+import { LocalLLMError } from '../../src/services/local-llm-error';
+
+const optionalCloudMocks = vi.hoisted(() => {
+  const provider = {
+    name: 'gemini',
+    callStructuredGeneration: vi.fn(),
+  };
+  return {
+    provider,
+    selectApprovedCloudReasoningProvider: vi.fn(async () => ({
+      rejected: false as const,
+      provider,
+      model: 'gemini-test-model',
+      privacyAction: 'sent_raw' as const,
+    })),
+  };
+});
 
 // ─── Mocks ─────────────────────────────────────────────────────────
 
@@ -26,6 +44,16 @@ vi.mock('../../src/utils/logger', () => ({
     trace: vi.fn(), child: vi.fn().mockReturnThis(),
   },
   LOGGER_REDACTION_PATHS: [],
+}));
+
+vi.mock('../../src/services/cloud-reasoning-gate', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/cloud-reasoning-gate')>()),
+  selectApprovedCloudReasoningProvider: () => optionalCloudMocks.selectApprovedCloudReasoningProvider(),
+}));
+
+vi.mock('../../src/services/provider-registry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/provider-registry')>()),
+  getProvider: () => optionalCloudMocks.provider,
 }));
 
 function createMockProvider(name: string): AIProvider & {
@@ -182,6 +210,12 @@ describe('TaskRoutingProvider', () => {
     openai = createMockProvider('openai');
     gemini = createMockProvider('gemini');
     onFallback = vi.fn();
+    optionalCloudMocks.provider.callStructuredGeneration.mockReset();
+    optionalCloudMocks.provider.callStructuredGeneration.mockResolvedValue({
+      text: 'cloud answer',
+      stopReason: 'stop',
+    });
+    optionalCloudMocks.selectApprovedCloudReasoningProvider.mockClear();
     provider = new TaskRoutingProvider(buildConfig(), onFallback);
   });
 
@@ -189,6 +223,261 @@ describe('TaskRoutingProvider', () => {
     expect(provider.name).toContain('anthropic');
     expect(provider.name).toContain('openai');
     expect(provider.name).toContain('gemini');
+  });
+
+  it('runs explicit classifier shadow work through the shared provider circuit without fallback', async () => {
+    const ollama = createMockProvider('ollama');
+    ollama.classify.mockRejectedValue(new LocalLLMError('timeout'));
+    const routed = new TaskRoutingProvider(buildConfig({
+      circuitBreaker: { failureThreshold: 1, cooldownMs: 60_000 },
+    }), onFallback);
+
+    await expect(routed.classifyShadowWithProvider(ollama, 'classify this', undefined, {
+      source: 'shadow',
+    })).rejects.toMatchObject({ kind: 'timeout' });
+    expect(routed.getCircuitState('ollama')).toBe(CircuitState.OPEN);
+
+    await expect(routed.classifyShadowWithProvider(ollama, 'classify this', undefined, {
+      source: 'shadow',
+    })).rejects.toMatchObject({ code: 'circuit_open' });
+    expect(ollama.classify).toHaveBeenCalledTimes(1);
+    expect(onFallback).not.toHaveBeenCalled();
+  });
+
+  it('does not mark classifier shadow queue pressure as provider-health failure', async () => {
+    const ollama = createMockProvider('ollama');
+    ollama.classify.mockRejectedValue(new LocalLLMError('capacity_exceeded'));
+    const routed = new TaskRoutingProvider(buildConfig({
+      circuitBreaker: { failureThreshold: 1, cooldownMs: 60_000 },
+    }), onFallback);
+
+    await expect(routed.classifyShadowWithProvider(ollama, 'classify this', undefined, {
+      source: 'shadow',
+    })).rejects.toMatchObject({ kind: 'capacity_exceeded' });
+    expect(routed.getCircuitState('ollama')).toBe(CircuitState.CLOSED);
+  });
+
+  it('never escalates a skill-inference request when its signed authority denies cloud', async () => {
+    const localFailure = Object.assign(new Error('local timeout'), { code: 'ETIMEDOUT' });
+    const ollama = {
+      ...createMockProvider('ollama'),
+      localReason: vi.fn().mockRejectedValue(localFailure),
+    };
+    const cloudBoundary = vi.fn(async (call: () => Promise<unknown>) => call());
+    const localPrimary = new TaskRoutingProvider(buildConfig({
+      localReasoning: { primary: ollama, fallback: 'approved_cloud_reasoning' },
+    }));
+
+    await expect(localPrimary.dispatchLocalReasoning({
+      workloadRole: 'skill_inference',
+      prompt: 'redacted content request',
+      containsPrivateData: false,
+      allowCloudEscalation: false,
+      localAdmission: 'eligible',
+      cloudFallbackBoundary: cloudBoundary,
+    })).rejects.toMatchObject({ code: 'SKILL_INFERENCE_CLOUD_ESCALATION_NOT_AUTHORIZED' });
+    expect(cloudBoundary).not.toHaveBeenCalled();
+  });
+
+  it('does not count or route around caller cancellation from optional local reasoning', async () => {
+    const cancelled = new APIUserAbortError();
+    const ollama = {
+      ...createMockProvider('ollama'),
+      localReason: vi.fn().mockRejectedValue(cancelled),
+    };
+    const cloudBoundary = vi.fn(async (call: () => Promise<unknown>) => call());
+    const localPrimary = new TaskRoutingProvider(buildConfig({
+      localReasoning: { primary: ollama, fallback: 'approved_cloud_reasoning' },
+      circuitBreaker: { failureThreshold: 1, cooldownMs: 60_000 },
+    }));
+
+    await expect(localPrimary.dispatchLocalReasoning({
+      workloadRole: 'skill_inference',
+      prompt: 'cancel this local operation',
+      containsPrivateData: false,
+      allowCloudEscalation: true,
+      localAdmission: 'eligible',
+      cloudFallbackBoundary: cloudBoundary,
+    })).rejects.toBe(cancelled);
+
+    expect(cloudBoundary).not.toHaveBeenCalled();
+    expect(localPrimary.getProviderHealth().ollama).toEqual({
+      circuit: { state: CircuitState.CLOSED, failures: 0 },
+      metrics: {
+        usageCount: 0,
+        failureCount: 0,
+        fallbackTriggerCount: 0,
+        circuitOpenCount: 0,
+        lastSuccessAt: null,
+        lastFailureAt: null,
+      },
+    });
+  });
+
+  it('surfaces a typed circuit-open reason for a local-only skill-inference attempt', async () => {
+    const ollama = {
+      ...createMockProvider('ollama'),
+      localReason: vi.fn().mockRejectedValue(Object.assign(new Error('local timeout'), {
+        code: 'ETIMEDOUT',
+      })),
+    };
+    const localPrimary = new TaskRoutingProvider(buildConfig({
+      localReasoning: { primary: ollama, fallback: 'approved_cloud_reasoning' },
+      circuitBreaker: { failureThreshold: 1, cooldownMs: 60_000 },
+    }));
+    const task = {
+      workloadRole: 'skill_inference' as const,
+      prompt: 'private local work',
+      containsPrivateData: true,
+      allowCloudEscalation: false,
+      localAdmission: 'local_only' as const,
+    };
+
+    await expect(localPrimary.dispatchLocalReasoning(task)).rejects.toMatchObject({ code: 'ETIMEDOUT' });
+    await expect(localPrimary.dispatchLocalReasoning(task)).rejects.toMatchObject({ code: 'circuit_open' });
+    expect(ollama.localReason).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['local_only', 'eligible'] as const)(
+    'fails %s skill inference closed when routing primary is not Ollama',
+    async (localAdmission) => {
+      const cloudPrimary = {
+        ...createMockProvider('gemini'),
+        localReason: vi.fn().mockResolvedValue({ text: 'must not run' }),
+      };
+      const drifted = new TaskRoutingProvider(buildConfig({
+        localReasoning: { primary: cloudPrimary, fallback: 'approved_cloud_reasoning' },
+      }));
+
+      await expect(drifted.dispatchLocalReasoning({
+        workloadRole: 'skill_inference',
+        prompt: 'private request',
+        containsPrivateData: true,
+        allowCloudEscalation: false,
+        localAdmission,
+      })).rejects.toMatchObject({ code: 'SKILL_INFERENCE_LOCAL_PRIMARY_REQUIRED' });
+      expect(cloudPrimary.localReason).not.toHaveBeenCalled();
+    },
+  );
+
+  it('requires the approved cloud sentinel before force-cloud skill inference', async () => {
+    const ollama = {
+      ...createMockProvider('ollama'),
+      localReason: vi.fn().mockResolvedValue({ text: 'must not run' }),
+    };
+    const drifted = new TaskRoutingProvider(buildConfig({
+      localReasoning: { primary: ollama, fallback: 'none' },
+    }));
+
+    await expect(drifted.dispatchLocalReasoning({
+      workloadRole: 'skill_inference',
+      prompt: 'public request',
+      containsPrivateData: false,
+      allowCloudEscalation: true,
+      localAdmission: 'force_cloud',
+      cloudFallbackBoundary: vi.fn(),
+    })).rejects.toMatchObject({ code: 'SKILL_INFERENCE_APPROVED_CLOUD_FALLBACK_REQUIRED' });
+    expect(ollama.localReason).not.toHaveBeenCalled();
+  });
+
+  it('acquires the cloud budget boundary only after the local optional method fails', async () => {
+    const callOrder: string[] = [];
+    const ollama = {
+      ...createMockProvider('ollama'),
+      localReason: vi.fn(async () => {
+        callOrder.push('local_failed');
+        throw Object.assign(new Error('local timeout'), { code: 'ETIMEDOUT' });
+      }),
+    };
+    optionalCloudMocks.provider.callStructuredGeneration.mockImplementationOnce(async () => {
+      callOrder.push('cloud_called');
+      return { text: 'cloud answer', stopReason: 'stop' };
+    });
+    const cloudBoundary = vi.fn(async (providerCall: () => Promise<unknown>) => {
+      callOrder.push('budget_acquired');
+      return providerCall();
+    });
+    const localPrimary = new TaskRoutingProvider(buildConfig({
+      localReasoning: { primary: ollama, fallback: 'approved_cloud_reasoning' },
+    }));
+
+    await expect(localPrimary.dispatchLocalReasoning({
+      workloadRole: 'skill_inference',
+      prompt: 'public content request',
+      systemContext: 'Return plain text.',
+      userId: 42,
+      tenantId: 84,
+      containsPrivateData: false,
+      allowCloudEscalation: true,
+      localAdmission: 'eligible',
+      cloudFallbackBoundary: cloudBoundary,
+    })).resolves.toMatchObject({ text: 'cloud answer' });
+
+    expect(callOrder).toEqual(['local_failed', 'budget_acquired', 'cloud_called']);
+    expect(cloudBoundary).toHaveBeenCalledTimes(1);
+  });
+
+  it('forwards cancellation into approved structured cloud generation and records no provider outcome after abort', async () => {
+    const controller = new AbortController();
+    const accountDeletion = Object.assign(new Error('account deletion started'), {
+      name: 'AbortError',
+      code: 'ACCOUNT_DELETION_IN_PROGRESS',
+    });
+    const ollama = {
+      ...createMockProvider('ollama'),
+      localReason: vi.fn().mockRejectedValue(Object.assign(new Error('local timeout'), {
+        code: 'ETIMEDOUT',
+      })),
+    };
+    optionalCloudMocks.provider.callStructuredGeneration.mockImplementationOnce(async (
+      request: { abortSignal?: AbortSignal },
+    ) => {
+      expect(request.abortSignal).toBe(controller.signal);
+      controller.abort(accountDeletion);
+      // Simulate an SDK that resolves despite the native signal. The routing
+      // boundary must still reject before success metrics or delivery.
+      return { text: 'must not be delivered', stopReason: 'stop' };
+    });
+    const cloudBoundary = vi.fn(async (providerCall: () => Promise<unknown>) => providerCall());
+    const localPrimary = new TaskRoutingProvider(buildConfig({
+      localReasoning: { primary: ollama, fallback: 'approved_cloud_reasoning' },
+    }));
+
+    await expect(localPrimary.dispatchLocalReasoning({
+      workloadRole: 'skill_inference',
+      prompt: 'public content request',
+      systemContext: 'Return plain text.',
+      userId: 42,
+      tenantId: 84,
+      containsPrivateData: false,
+      allowCloudEscalation: true,
+      localAdmission: 'eligible',
+      cloudFallbackBoundary: cloudBoundary,
+      abortSignal: controller.signal,
+    })).rejects.toBe(accountDeletion);
+
+    expect(cloudBoundary).toHaveBeenCalledTimes(1);
+    expect(localPrimary.getProviderHealth().gemini.metrics).toMatchObject({
+      usageCount: 0,
+      failureCount: 0,
+      fallbackTriggerCount: 1,
+    });
+  });
+
+  it('surfaces primary_optional_method_unavailable without touching cloud when fallback is none', async () => {
+    const ollamaWithoutLocalReason = createMockProvider('ollama');
+    const localOnly = new TaskRoutingProvider(buildConfig({
+      localReasoning: { primary: ollamaWithoutLocalReason, fallback: 'none' },
+    }));
+
+    await expect(localOnly.dispatchLocalReasoning({
+      workloadRole: 'skill_inference',
+      prompt: 'private local request',
+      containsPrivateData: true,
+      allowCloudEscalation: false,
+      localAdmission: 'local_only',
+    })).rejects.toMatchObject({ code: 'primary_optional_method_unavailable' });
+    expect(optionalCloudMocks.provider.callStructuredGeneration).not.toHaveBeenCalled();
   });
 
   // ─── classify (routes to "classify" task type) ─────────────────
@@ -266,6 +555,20 @@ describe('TaskRoutingProvider', () => {
       expect(anthropic.classify).toHaveBeenCalledTimes(1);
       expect(openai.classify).toHaveBeenCalledTimes(1);
       expect(result).toEqual(lowConfCooking);
+    });
+
+    it('O3-A7: preserves cancellation from the low-confidence fallback classifier', async () => {
+      const lowConfCooking: ClassificationResult = { domain: 'cooking', confidence: 0.4 };
+      const cancelled = Object.assign(new Error('request cancelled'), {
+        name: 'AbortError',
+        code: 'CHAT_REQUEST_CANCELLED',
+      });
+      anthropic.classify.mockResolvedValue(lowConfCooking);
+      openai.classify.mockRejectedValue(cancelled);
+
+      await expect(provider.classify('test', undefined, {
+        abortSignal: new AbortController().signal,
+      })).rejects.toBe(cancelled);
     });
 
     it.each(['clarify', 'none'] as const)(
@@ -699,6 +1002,32 @@ describe('TaskRoutingProvider', () => {
   // ─── Circuit breaker integration ────────────────────────────────
 
   describe('circuit breaker auto-switch', () => {
+    it('does not count or route around an OpenAI SDK caller cancellation', async () => {
+      const cfg = buildConfig({
+        circuitBreaker: { failureThreshold: 1, cooldownMs: 60000 },
+      });
+      const p = new TaskRoutingProvider(cfg, onFallback);
+      const cancelled = new APIUserAbortError();
+      openai.callDomain.mockRejectedValue(cancelled);
+
+      await expect(p.callDomain('content', [], 'cancel this turn', ''))
+        .rejects.toBe(cancelled);
+
+      expect(gemini.callDomain).not.toHaveBeenCalled();
+      expect(onFallback).not.toHaveBeenCalled();
+      expect(p.getProviderHealth().openai).toEqual({
+        circuit: { state: CircuitState.CLOSED, failures: 0 },
+        metrics: {
+          usageCount: 0,
+          failureCount: 0,
+          fallbackTriggerCount: 0,
+          circuitOpenCount: 0,
+          lastSuccessAt: null,
+          lastFailureAt: null,
+        },
+      });
+    });
+
     it('skips primary after consecutive failures (circuit opens)', async () => {
       const cfg = buildConfig({
         circuitBreaker: { failureThreshold: 2, cooldownMs: 60000 },

@@ -203,12 +203,16 @@ prewarm_ollama_for_eval() {
   # evidence.
   docker compose "${COMPOSE_ARGS[@]}" exec -T nexus-hub node - <<'NODE'
 const baseUrl = String(process.env.OLLAMA_BASE_URL ?? '').trim().replace(/\/+$/, '');
-const model = String(
-  process.env.OLLAMA_MODEL ?? 'qwen2.5:3b-instruct-q4_K_M',
-).trim();
+const manifest = require('/app/config/local-model-manifest.json');
+const active = Array.isArray(manifest.models)
+  ? manifest.models.find((entry) => entry.id === manifest.activeModelId)
+  : null;
+const model = String(process.env.OLLAMA_MODEL ?? active?.ollamaTag ?? '').trim();
 
 (async () => {
-  if (!baseUrl || !model) throw new Error('missing configured Ollama endpoint or model');
+  if (!baseUrl || !model || model !== active?.ollamaTag) {
+    throw new Error('missing endpoint or configured model differs from signed manifest');
+  }
   const response = await fetch(`${baseUrl}/api/chat`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },

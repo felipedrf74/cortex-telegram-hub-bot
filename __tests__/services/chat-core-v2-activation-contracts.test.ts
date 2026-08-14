@@ -345,12 +345,12 @@ describe('ChatCoreV2 activation contracts', () => {
     expect(backgroundJobRequiresAbortSignal('superseded')).toBe(true);
   });
 
-  it('keeps 3B as the only foreground model in the residency policy', () => {
+  it('keeps the signed-manifest model as the only foreground residency', () => {
     expect(CHAT_CORE_V2_MODEL_RESIDENCY_POLICIES.filter((policy) => policy.foregroundAllowed))
       .toEqual([expect.objectContaining({ role: 'planner_3b', defaultKeepAlive: '-1' })]);
   });
 
-  it('resolves every residency role to the sole approved 3B model', () => {
+  it('resolves every residency role to the sole signed-manifest model', () => {
     const resolved = resolveChatCoreV2ModelResidencyConfig({
       OLLAMA_CLASSIFIER_MODEL: 'qwen2.5:3b-instruct-q4_K_M',
       OLLAMA_MODEL: 'qwen2.5:3b-instruct-q4_K_M',

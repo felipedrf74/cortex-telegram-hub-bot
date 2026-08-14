@@ -167,12 +167,16 @@ async function dispatchAccountDelete(userId: number): Promise<MockRes> {
   (req as any).path = '/account';
   const res = mockRes();
 
-  await new Promise<void>((resolve) => {
-    (router as any).handle(req, res, (err: any) => {
-      if (err) throw err;
+  await new Promise<void>((resolve, reject) => {
+    const writeJson = res.json.bind(res);
+    res.json = (body: any) => {
+      writeJson(body);
       resolve();
+      return res;
+    };
+    (router as any).handle(req, res, (err: any) => {
+      if (err) reject(err);
     });
-    setImmediate(resolve);
   });
 
   return res;
@@ -573,6 +577,27 @@ describe('Settings language route', () => {
       message: expect.stringContaining('does not cancel'),
       managementUrl: 'https://apps.apple.com/account/subscriptions',
     });
+  });
+
+  it('returns a stable conflict for a concurrent same-runtime account deletion', async () => {
+    const {
+      beginSkillInferenceAccountDeletionFence,
+      clearSkillInferenceAccountDeletionFence,
+    } = await import('../../src/services/skill-inference-service');
+    const fenceToken = beginSkillInferenceAccountDeletionFence(1, testDb);
+
+    try {
+      const res = await dispatchAccountDelete(1);
+
+      expect(res.statusCode).toBe(409);
+      expect(res.body).toMatchObject({
+        ok: false,
+        error: { code: 'ACCOUNT_DELETION_IN_PROGRESS' },
+      });
+      expect(testDb.prepare('SELECT id FROM users WHERE id = 1').get()).toBeTruthy();
+    } finally {
+      clearSkillInferenceAccountDeletionFence(1, fenceToken, testDb);
+    }
   });
 
   it('completes account deletion when a third-party revocation call fails', async () => {

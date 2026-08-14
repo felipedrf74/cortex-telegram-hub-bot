@@ -21,7 +21,10 @@ import { collectAmazonInvoices, formatAmazonNotification, isAmazonConfigured } f
 import { collectUberInvoices, formatUberNotification, isUberConfigured } from './uber-collector';
 import { createScraperMfaInteractiveCallbacks } from './scraper-mfa-reply';
 import { getFiscalCollectionSummary, isFiscalBundleDue, sendFiscalBundleNow } from './fiscal-bundle';
-import { generateCoachBriefing } from './garmin-coach';
+import {
+  generateCoachBriefing,
+  runWithCoachBriefingAccountAdmissions,
+} from './garmin-coach';
 import {
   isGarminConfigured,
   keepAlive as garminKeepAlive,
@@ -3437,16 +3440,21 @@ export async function sendCoachBriefingForTarget(
     logger.debug({ userId: target.tenantId }, '[scheduler] coach briefing skipped: no health data source for user');
     return { status: 'skipped', recommendations: 0, errors: 0 };
   }
-  return runWithContext({ source: 'cron:garmin_coach', userId: target.tenantId }, async () => {
+  const coachOptions = {
+    tenantId: target.tenantId,
+    meteringUserId: target.tenantId,
+    garminSilent: true,
+    budgetRequestSource: 'automation' as const,
+    budgetJobName: 'garmin_coach',
+    ...(options.runId ? { budgetRunId: options.runId } : {}),
+  };
+  return runWithCoachBriefingAccountAdmissions(target.tenantId, coachOptions, async (abortSignal) => (
+    runWithContext({ source: 'cron:garmin_coach', userId: target.tenantId }, async () => {
       let result;
       try {
         result = await generateCoachBriefing(target.tenantId, {
-          tenantId: target.tenantId,
-          meteringUserId: target.tenantId,
-          garminSilent: true,
-          budgetRequestSource: 'automation',
-          budgetJobName: 'garmin_coach',
-          ...(options.runId ? { budgetRunId: options.runId } : {}),
+          ...coachOptions,
+          abortSignal,
         });
       } catch (err) {
         if (err instanceof AiBudgetError) {
@@ -3562,7 +3570,8 @@ export async function sendCoachBriefingForTarget(
         recommendations: result.recommendations.length,
         errors: result.errors.length,
       } as const;
-    });
+    })
+  ));
 }
 
 class CoachBriefingDispatchError extends Error {

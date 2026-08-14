@@ -127,11 +127,17 @@ function normalizeOuterReservation(
   const hardJobCostLimitUsd = record.hardJobCostLimitUsd === undefined
     ? undefined
     : Number(record.hardJobCostLimitUsd);
+  const hardLocalFallbackDailyCostLimitUsd = record.hardLocalFallbackDailyCostLimitUsd === undefined
+    ? undefined
+    : Number(record.hardLocalFallbackDailyCostLimitUsd);
   if (!reservationId || reservationId.length < 16) return null;
   if (!baseCategory) return null;
   if (requestSource !== 'interactive' && requestSource !== 'automation' && requestSource !== 'system') return null;
   if (hardRunCostLimitUsd !== undefined && (!Number.isFinite(hardRunCostLimitUsd) || hardRunCostLimitUsd <= 0)) return null;
   if (hardJobCostLimitUsd !== undefined && (!Number.isFinite(hardJobCostLimitUsd) || hardJobCostLimitUsd <= 0)) return null;
+  if (hardLocalFallbackDailyCostLimitUsd !== undefined
+      && (!Number.isFinite(hardLocalFallbackDailyCostLimitUsd)
+        || hardLocalFallbackDailyCostLimitUsd <= 0)) return null;
   // Provider category and outer workload base category are separate signed
   // claims. HMAC verification above protects both; they need not be equal.
   return {
@@ -142,5 +148,8 @@ function normalizeOuterReservation(
     runId,
     ...(hardRunCostLimitUsd !== undefined ? { hardRunCostLimitUsd } : {}),
     ...(hardJobCostLimitUsd !== undefined ? { hardJobCostLimitUsd } : {}),
+    ...(hardLocalFallbackDailyCostLimitUsd !== undefined
+      ? { hardLocalFallbackDailyCostLimitUsd }
+      : {}),
   };
 }

@@ -133,6 +133,9 @@ describe('chat action retry policy and fixer worker', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-05-23T10:00:00.000Z'));
     testDb = createMigratedTestDatabase();
+    testDb.prepare(
+      "INSERT INTO users (id, telegram_id, tier, status) VALUES (?, ?, 'pro', 'active')",
+    ).run(input.userId, 9_009_050);
     process.env.NODE_ENV = 'test';
     process.env.NOTIFICATION_DELIVERY_MODE = 'mock';
     ensureBackgroundJobTables(testDb);

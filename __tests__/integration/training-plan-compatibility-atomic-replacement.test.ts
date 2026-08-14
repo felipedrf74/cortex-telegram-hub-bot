@@ -219,6 +219,10 @@ describe('compatibility Training plan atomic replacement', () => {
   });
 
   it('lets only one of two concurrent replacement snapshots activate', async () => {
+    vi.useFakeTimers({
+      now: new Date('2026-05-25T10:00:00.000Z'),
+      toFake: ['Date'],
+    });
     harness = createTrainingE2EHarness();
     harness.seedTrainingUser();
 

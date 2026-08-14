@@ -149,10 +149,10 @@ function platformFor(snapshots: ReturnType<typeof snapshot>[], restartError?: Er
     installEnvelope: vi.fn(async () => undefined),
     restartAndValidateEnvelope: vi.fn(async () => {
       if (restartError) throw restartError;
-      return { memorySwapMaxBytes: 536870912, listeners: ['127.0.0.1:11434'] };
+      return { memorySwapMaxBytes: 0, listeners: ['127.0.0.1:11434'] };
     }),
     readEffectiveEnvelope: vi.fn(async () => ({
-      memorySwapMaxBytes: 536870912,
+      memorySwapMaxBytes: 0,
       listeners: ['127.0.0.1:11434'],
     })),
     smokeRetainedModel: vi.fn(async () => ({
@@ -246,23 +246,24 @@ describe('lean Ollama finalization', () => {
     });
   });
 
-  it('pins loopback and the fixed 512 MiB systemd envelope', () => {
+  it('pins loopback and the fixed 20 GiB zero-swap systemd envelope', () => {
     const effective = [
-      'Environment=OLLAMA_HOST=127.0.0.1:11434 OLLAMA_CONTEXT_LENGTH=4096 OLLAMA_MAX_QUEUE=4 OLLAMA_NUM_PARALLEL=1 OLLAMA_MAX_LOADED_MODELS=1',
-      'MemoryHigh=4294967296',
-      'MemoryMax=6442450944',
-      'MemorySwapMax=536870912',
-      'CPUQuotaPerSecUSec=2s',
+      'Environment=OLLAMA_HOST=127.0.0.1:11434 OLLAMA_CONTEXT_LENGTH=16384 OLLAMA_MAX_QUEUE=4 OLLAMA_NUM_PARALLEL=1 OLLAMA_MAX_LOADED_MODELS=1',
+      'MemoryHigh=19327352832',
+      'MemoryMax=21474836480',
+      'MemorySwapMax=0',
+      'CPUQuotaPerSecUSec=8s',
+      'Nice=10',
     ].join('\n');
-    expect(parseAndValidateOllamaEnvelope(effective, 536870912))
-      .toMatchObject({ memorySwapMaxBytes: 536870912, cpuQuotaUsecPerSec: 2000000 });
+    expect(parseAndValidateOllamaEnvelope(effective, 0))
+      .toMatchObject({ memorySwapMaxBytes: 0, cpuQuotaUsecPerSec: 8000000, nice: 10 });
     expect(() => parseAndValidateOllamaEnvelope(effective.replace(
       '127.0.0.1:11434',
       '0.0.0.0:11434',
-    ), 536870912)).toThrow('OLLAMA_HOST');
+    ), 0)).toThrow('OLLAMA_HOST');
   });
 
-  it('installs only the lean finalizer and permanent install guard', () => {
+  it('installs the governed host tools, socket policy, manifest, and permanent install guard', () => {
     const installer = readFileSync('scripts/install-ollama.sh', 'utf8');
     const transaction = readFileSync('scripts/ollama-systemd-dropin-transaction.mjs', 'utf8');
     for (const source of [installer, transaction]) {
@@ -270,6 +271,12 @@ describe('lean Ollama finalization', () => {
       expect(source).not.toMatch(/ollama-(?:observation|soak-evidence|large-model-cleanup|zero-swap)/);
     }
     expect(installer).toContain('00-nexus-ollama-install-guard.conf');
+    expect(installer).toContain('local-inference-socket-transaction.mjs');
+    expect(installer).toContain('local-model-benchmark-envelope-transaction.mjs');
+    expect(installer).toContain('nexus-local-inference-sockets.conf');
+    expect(transaction).toContain("'/usr/local/sbin/nexus-local-model-manifest.json'");
+    expect(transaction).toContain("'/usr/local/sbin/nexus-local-inference-sockets.conf'");
+    expect(transaction).toContain("'/usr/local/sbin/nexus-local-model-benchmark-envelope-transaction.mjs'");
 
     // SonarQube was decommissioned on 2026-08-07, so its local installer no
     // longer exists. What survives from that surface is the shared root

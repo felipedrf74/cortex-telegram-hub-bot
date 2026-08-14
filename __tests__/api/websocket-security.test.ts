@@ -239,6 +239,26 @@ describe('WebSocket security boundary helpers', () => {
     expect(source).toContain("type: 'status'");
     expect(source).toContain("status: 'ACTION_CONFIRMATION_REQUIRED'");
     expect(source).toContain("actionStatus: 'ACTION_CONFIRMATION_REQUIRED'");
+    expect(source).toContain('const clientAbortController = new AbortController();');
+    expect(source).toContain("ws.once('close', abortMessageOnSocketClose);");
+    expect(source).toContain("ws.once('error', abortMessageOnSocketClose);");
+    expect(source).toContain('abortSignal: clientAbortController.signal');
+    expect(source).toContain('abortSignal: accountAbortSignal');
+    expect(source).toContain('const deterministicActionHandled = await runWithSkillInferenceAccountAdmission({');
+    expect(source).toContain('sendTrackedWebSocketFrame(');
+    expect(source).toContain('onPublished: () => { modelResponsePublished = true; }');
+  });
+
+  it('does not emit an account-deletion error after model output was published', () => {
+    const source = fs.readFileSync(path.resolve(__dirname, '../../src/api/websocket.ts'), 'utf8');
+    expect(source).toContain('let modelResponsePublished = false;');
+    expect(source).toContain('onFirstChunk: () => { modelResponsePublished = true; }');
+    expect(source).toContain('abortSignal: accountAbortSignal');
+    expect(source).toContain('throwIfWebSocketRequestAborted(input.abortSignal);');
+    expect(source).toContain('if (ws.readyState !== WebSocket.OPEN) throw webSocketClientDisconnectedError();');
+    expect(source).toContain('if (!modelResponsePublished && ws.readyState === WebSocket.OPEN)');
+    expect(source).toContain("ws.close(4003, 'Account unavailable');");
+    expect(source).toContain('if (isProviderRequestCancellation(err)) return;');
   });
 
   it('terminates explicit manifest-classifier outcomes before skill orchestration and domain handlers', () => {
@@ -262,7 +282,7 @@ describe('WebSocket security boundary helpers', () => {
 
     const source = fs.readFileSync(path.resolve(__dirname, '../../src/api/websocket.ts'), 'utf8');
     const localeResolutionIndex = source.indexOf('const responseLocale = resolveWebSocketResponseLocale(');
-    const tokenZeroIndex = source.indexOf('if (await trySendTokenZeroSecretaryRead(ws, {');
+    const tokenZeroIndex = source.indexOf('const tokenZeroReadHandled = await runWithSkillInferenceAccountAdmission({');
     const firstPlannerIndex = source.indexOf('const deterministicAction = await tryHandleChatActionPlan({');
     const secondPlannerIndex = source.indexOf('const actionResult = await tryHandleChatActionPlan({');
 
@@ -271,6 +291,9 @@ describe('WebSocket security boundary helpers', () => {
     expect(firstPlannerIndex).toBeGreaterThan(tokenZeroIndex);
     expect(secondPlannerIndex).toBeGreaterThan(firstPlannerIndex);
     expect(source.slice(tokenZeroIndex, firstPlannerIndex)).toContain('locale: responseLocale');
+    expect(source.slice(tokenZeroIndex, firstPlannerIndex)).toContain('trySendTokenZeroSecretaryRead(ws, {');
+    expect(source.slice(tokenZeroIndex, firstPlannerIndex)).toContain('abortSignal: accountAbortSignal');
+    expect(source.slice(tokenZeroIndex, firstPlannerIndex)).toContain('modelResponsePublished = true');
     expect(source.slice(firstPlannerIndex, secondPlannerIndex)).toContain('locale: responseLocale');
     expect(source.slice(secondPlannerIndex)).toContain('locale: responseLocale');
     expect(source).toContain('locale: input.locale');
@@ -349,7 +372,7 @@ describe('WebSocket security boundary helpers', () => {
     const source = fs.readFileSync(path.resolve(__dirname, '../../src/api/websocket.ts'), 'utf8');
     const containmentIndex = source.indexOf('const executed = await executeWebSocketDomainHandlerWithLocale({');
     const firstGenericChunkIndex = source.indexOf(
-      'await streamTextFrame(ws, { text: result.text, messageId, userId, tenantId });',
+      'await streamModelResponse({ text: result.text, messageId, userId, tenantId });',
       containmentIndex,
     );
     expect(containmentIndex).toBeGreaterThan(-1);
@@ -377,6 +400,33 @@ describe('WebSocket security boundary helpers', () => {
       expected: 'en',
       detected: 'en',
     });
+  });
+
+  it('forwards the exact cancellation signal through the locale-guarded domain handler', async () => {
+    const controller = new AbortController();
+    const cancellation = Object.assign(new Error('socket disconnected'), {
+      name: 'AbortError',
+      code: 'CHAT_REQUEST_CANCELLED',
+    });
+    const handler = async (
+      _message: string,
+      _userId?: number,
+      _tenantId?: number,
+      abortSignal?: AbortSignal,
+    ): Promise<{ text: string; domain: 'secretary' }> => {
+      expect(abortSignal).toBe(controller.signal);
+      controller.abort(cancellation);
+      return { text: 'This result must not be published.', domain: 'secretary' };
+    };
+
+    await expect(executeWebSocketDomainHandlerWithLocale({
+      locale: 'en-US',
+      message: 'Show my priorities',
+      userId: 42,
+      tenantId: 42,
+      abortSignal: controller.signal,
+      handler,
+    })).rejects.toBe(cancellation);
   });
 
   it.each([

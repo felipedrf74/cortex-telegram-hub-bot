@@ -15,6 +15,7 @@ import logging
 from models.requests import ScriptRequest, ScriptResponse
 from models.research import SourceReference
 from services.claude_client import AiProxyError, ask_claude, MODEL
+from services.inference_vocabulary import build_content_engine_script_category
 from services.creative.prompt_compiler import PromptSection, compile_prompt
 
 logger = logging.getLogger("content-engine.script")
@@ -1315,7 +1316,7 @@ This metadata block is mandatory in draft, quick, standard, and deep modes."""
             model=MODEL,
             max_tokens=max_tokens,
             temperature=0.62 if normalized_mode == "draft" else SCRIPT_TEMPERATURE,
-            category=f"content_engine_script_{normalized_mode}",
+            category=build_content_engine_script_category(normalized_mode),
             user_id=req.user_id,
             tenant_id=req.tenant_id,
             attribution_token=req.internal_attribution_token,
@@ -1367,7 +1368,7 @@ This metadata block is mandatory in draft, quick, standard, and deep modes."""
                 model=MODEL,
                 max_tokens=max(max_tokens, 1800),
                 temperature=0.45,
-                category=f"content_engine_script_{normalized_mode}",
+                category=build_content_engine_script_category(normalized_mode),
                 user_id=req.user_id,
                 tenant_id=req.tenant_id,
                 attribution_token=req.internal_attribution_token,

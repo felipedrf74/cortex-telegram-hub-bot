@@ -241,11 +241,17 @@ describe('canHandle predicates', () => {
     expect(destructiveConfirmationHoldStage.canHandle(holdCtx(false, false))).toBe(false);
   });
 
-  it('chat_core_v2_local_answer skips slash commands and attachments', () => {
+  it('chat_core_v2_local_answer skips slash commands, attachments, and high-risk turns', () => {
     expect(v2LocalAnswerStage.canHandle(ctxWith())).toBe(true);
     expect(v2LocalAnswerStage.canHandle(ctxWith({ normalizedText: '/day', normalizedTextLower: '/day' }))).toBe(false);
     expect(v2LocalAnswerStage.canHandle(ctxWith({ normalizedAttachments: [{} as never] }))).toBe(false);
     expect(v2LocalAnswerStage.canHandle(ctxWith({ normalizedText: '' }))).toBe(false);
+    expect(v2LocalAnswerStage.canHandle(ctxWith({
+      preTurnContract: { riskClass: 'high' } as never,
+    }))).toBe(false);
+    expect(v2LocalAnswerStage.canHandle(ctxWith({
+      preTurnContract: { riskClass: 'destructive' } as never,
+    }))).toBe(false);
   });
 });
 

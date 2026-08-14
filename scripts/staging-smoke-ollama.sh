@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # scripts/staging-smoke-ollama.sh
 # ----------------------------------------------------------------------------
-# Ollama-specific staging smoke. Runs after install AND after the backend deploy
-# that ships the OllamaProvider. Gated on `OLLAMA_ENABLED=true` in .env.
+# Legacy PM2-topology compatibility smoke retained for historical release
+# rehearsal only. Current signed-OCI production readiness uses the attended
+# systemd/socket transactions and the pull-only release poller's Compose smoke;
+# the installer no longer directs operators to this script.
 #
 # Exits non-zero if any required check fails. Authenticated backend checks and
-# the direct 3B round-trip are promotion gates; there are no warn-only routes.
+# the direct manifest-model round-trip are promotion gates; there are no
+# warn-only routes.
 #
 # Hook into scripts/staging-smoke.sh as:
 #   if grep -qE '^OLLAMA_ENABLED=true' .env; then bash scripts/staging-smoke-ollama.sh; fi
@@ -18,7 +21,7 @@ NEXUS_HUB_BASE_URL="${NEXUS_HUB_BASE_URL:-http://127.0.0.1:8200}"
 QUEUE_BACKEND="${LOCAL_LLM_QUEUE_BACKEND:-memory}"
 EXPECTED_PM2_NAME="${PM2_APP_NAME:-nexus-hub}"
 PM2_BIN="${PM2_BIN:-$(command -v pm2 2>/dev/null || true)}"
-SMALL_ONLY_MODEL="qwen2.5:3b-instruct-q4_K_M"
+MODEL_MANIFEST_PATH="${LOCAL_MODEL_MANIFEST_PATH:-config/local-model-manifest.json}"
 DISALLOWED_REASONING_MODEL_TOKEN_PATTERN='(^|[^a-z0-9])(flash|nano|mini|haiku|lite|classifier|fast)([^a-z0-9]|$)'
 INVENTORY_PHASE="${OLLAMA_INVENTORY_PHASE:-final}"
 case "${INVENTORY_PHASE}" in
@@ -50,6 +53,42 @@ for required_command in curl jq ss; do
     exit 3
   fi
 done
+if [ ! -f "${MODEL_MANIFEST_PATH}" ] || [ -L "${MODEL_MANIFEST_PATH}" ]; then
+  printf 'FAIL: signed local-model manifest is missing or unsafe: %s\n' "${MODEL_MANIFEST_PATH}" >&2
+  exit 3
+fi
+if ! jq -e '
+    .schemaVersion == "nexus.local-model-manifest.v1"
+    and (.selectionStatus == "control_only" or .selectionStatus == "production_selected")
+    and (
+      (.selectionStatus == "control_only" and .selectionEvidence == null)
+      or
+      (.selectionStatus == "production_selected"
+        and (.selectionEvidence.winningCandidateId == .activeModelId)
+        and (.selectionEvidence.benchmarkReportDigest | test("^sha256:[0-9a-f]{64}$"))
+        and (.selectionEvidence.benchmarkCompletedAt
+          | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{3})?Z$"))
+        and (.selectionEvidence.benchmarkHostRollbackReceiptDigest | test("^sha256:[0-9a-f]{64}$"))
+        and ([
+          .selectionEvidence.corpusReference,
+          .selectionEvidence.licenseReviewReference,
+          .selectionEvidence.ownerApprovalReference
+        ] | all(type == "string" and (length > 0) and (length <= 512))))
+    )
+    and (. as $root | any(.models[];
+      .id == $root.activeModelId
+      and .productionEligible == true
+      and .evidenceStatus == "verified"
+      and (.digest | test("^sha256:[0-9a-f]{64}$"))
+      and ($root.selectionStatus != "production_selected" or .role == "winner")))
+  ' "${MODEL_MANIFEST_PATH}" >/dev/null; then
+  printf 'FAIL: signed local-model manifest has no verified digest-pinned active model\n' >&2
+  exit 3
+fi
+ACTIVE_MODEL=$(jq -er '. as $root | .models[] | select(.id == $root.activeModelId) | .ollamaTag' \
+  "${MODEL_MANIFEST_PATH}")
+ACTIVE_MODEL_DIGEST=$(jq -er '. as $root | .models[] | select(.id == $root.activeModelId) | .digest | sub("^sha256:"; "")' \
+  "${MODEL_MANIFEST_PATH}")
 if [ -z "${PM2_BIN}" ] || [[ "${PM2_BIN}" != /* ]] || [ ! -x "${PM2_BIN}" ]; then
   printf 'FAIL: PM2_BIN must name an absolute executable PM2 launcher\n' >&2
   exit 3
@@ -90,32 +129,23 @@ echo "→ Ollama daemon"
 check "GET /api/version" curl -fsS "${OLLAMA_BASE_URL}/api/version"
 check "GET /api/ps" curl -fsS "${OLLAMA_BASE_URL}/api/ps"
 
-echo "→ Small-only model inventory"
-if [ "${INVENTORY_PHASE}" = final ]; then
-  inventory_filter='.models | length == 1 and .[0].name == $model'
-else
-  # The release gate is valid before and after the separately authorized
-  # finalizer. It accepts the exact audited four-tag inventory or the sole
-  # retained tag, never a partial or extra set.
-  inventory_filter='([.models[].name] | sort) as $names
-    | ($names == ([$model] | sort)
-      or $names == ([$model, $remove1, $remove2, $remove3] | sort))'
-fi
+echo "→ Signed-manifest model inventory"
 if curl -fsS "${OLLAMA_BASE_URL}/api/tags" \
-    | jq -e --arg model "${SMALL_ONLY_MODEL}" \
-      --arg remove1 'gemma2:2b-instruct-q4_K_M' \
-      --arg remove2 'qwen3.6:27b-q4_K_M' \
-      --arg remove3 'qwen3.6:35b-a3b-q4_K_M' \
-      "${inventory_filter}" >/dev/null; then
-  printf '  ✓ inventory matches %s phase policy\n' "${INVENTORY_PHASE}"; pass=$((pass+1))
+    | jq -e --arg model "${ACTIVE_MODEL}" --arg digest "${ACTIVE_MODEL_DIGEST}" '
+      [.models[]
+        | select((.name == $model or .model == $model)
+          and ((.digest // "" | sub("^sha256:"; "")) == $digest))]
+      | length == 1
+    ' >/dev/null; then
+  printf '  ✓ active model tag and digest match the signed manifest\n'; pass=$((pass+1))
 else
-  printf '  ✗ model inventory violates %s phase policy\n' "${INVENTORY_PHASE}"; fail=$((fail+1))
+  printf '  ✗ active model is absent or its digest differs from the signed manifest\n'; fail=$((fail+1))
 fi
 
 if curl -fsS "${OLLAMA_BASE_URL}/api/ps" \
-    | jq -e --arg model "${SMALL_ONLY_MODEL}" \
-      'all(.models[]?; .name == $model)' >/dev/null; then
-  printf '  ✓ every loaded model satisfies the small-only policy\n'; pass=$((pass+1))
+    | jq -e --arg model "${ACTIVE_MODEL}" \
+      '(.models | length) <= 1 and all(.models[]?; .name == $model or .model == $model)' >/dev/null; then
+  printf '  ✓ at most one model is loaded and it matches the signed manifest\n'; pass=$((pass+1))
 else
   printf '  ✗ a non-approved model is loaded\n'; fail=$((fail+1))
 fi
@@ -147,7 +177,7 @@ fi
 echo "→ Exact PM2 routing/model policy"
 if "${PM2_BIN}" jlist 2>/dev/null | jq -e \
     --arg name "${EXPECTED_PM2_NAME}" \
-    --arg model "${SMALL_ONLY_MODEL}" \
+    --arg model "${ACTIVE_MODEL}" \
     --arg disallowed_model_pattern "${DISALLOWED_REASONING_MODEL_TOKEN_PATTERN}" '
       [.[] | select(.name == $name and .pm2_env.status == "online") | .pm2_env] as $apps
       | ($apps | length) == 1
@@ -185,14 +215,14 @@ if "${PM2_BIN}" jlist 2>/dev/null | jq -e \
         and $apps[0].CHAT_CORE_V2_LOCAL_CHAT_RECIPE_MODEL == $model
         and ($apps[0].CHAT_CORE_V2_LOCAL_CHAT_FAST_MODEL | ascii_downcase) == "off"
     ' >/dev/null; then
-  printf '  ✓ live PM2 config is fail-closed cloud reasoning plus exact Gemini/3B runtime roles\n'; pass=$((pass+1))
+  printf '  ✓ live PM2 config is fail-closed cloud reasoning plus exact manifest-model roles\n'; pass=$((pass+1))
 else
-  printf '  ✗ live PM2 config violates the fail-closed cloud reasoning or explicit Gemini/3B role policy\n'; fail=$((fail+1))
+  printf '  ✗ live PM2 config violates the fail-closed cloud reasoning or manifest-model role policy\n'; fail=$((fail+1))
 fi
 
-# ── Required direct 3B round-trip ───────────────────────────────────────────
-echo "→ Required small-only inference round-trip"
-smoke_payload=$(jq -nc --arg model "${SMALL_ONLY_MODEL}" '{
+# ── Required direct manifest-model round-trip ───────────────────────────────
+echo "→ Required signed-manifest inference round-trip"
+smoke_payload=$(jq -nc --arg model "${ACTIVE_MODEL}" '{
   model: $model,
   messages: [{role: "user", content: "Return JSON with ok=true."}],
   stream: false,
@@ -209,12 +239,12 @@ smoke_payload=$(jq -nc --arg model "${SMALL_ONLY_MODEL}" '{
 if curl -fsS -X POST "${OLLAMA_BASE_URL}/api/chat" \
     -H 'Content-Type: application/json' \
     --data-binary "${smoke_payload}" > "${SMOKE_RESPONSE_FILE}" \
-    && jq -e --arg model "${SMALL_ONLY_MODEL}" \
+    && jq -e --arg model "${ACTIVE_MODEL}" \
       '.model == $model and (.message.content | fromjson | .ok == true)' \
       "${SMOKE_RESPONSE_FILE}" >/dev/null; then
-  printf '  ✓ 3B structured round-trip passed\n'; pass=$((pass+1))
+  printf '  ✓ signed-manifest structured round-trip passed\n'; pass=$((pass+1))
 else
-  printf '  ✗ 3B structured round-trip failed\n'; fail=$((fail+1))
+  printf '  ✗ signed-manifest structured round-trip failed\n'; fail=$((fail+1))
 fi
 
 # ── Summary ─────────────────────────────────────────────────────────────────

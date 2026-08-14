@@ -2,18 +2,18 @@
 # scripts/install-ollama.sh
 # ----------------------------------------------------------------------------
 # Install and configure Ollama as a loopback-only systemd service for the
-# single approved Nexus Hub model: qwen2.5:3b-instruct-q4_K_M.
+# active digest-pinned model in the signed Nexus local-model manifest.
 #
 # Idempotent: safe to re-run. The resource envelope is fixed and rejects all
 # environment overrides. Only non-envelope installer behavior remains tunable.
 #
 # Operator notes:
 #   - Loopback-only bind (OLLAMA_HOST=127.0.0.1:11434). Never expose to LAN/WAN.
-#   - The retained small model must already match its reviewed exact digest.
+#   - The active manifest model must already match its reviewed exact digest.
 #   - MemoryHigh applies soft pressure (kernel reclaims pages) before MemoryMax
 #     hard-kills. MemorySwapMax limits runaway swap thrash on a CPU-only host.
 #   - Operational rollback disables Ollama and uses the existing approved cloud
-#     route; this installer never pre-pulls or selects a large local model.
+#     route; this installer never pulls a model or changes the signed selection.
 # ----------------------------------------------------------------------------
 set -euo pipefail
 umask 077
@@ -98,19 +98,17 @@ for envelope_variable in "${ENVELOPE_VARIABLES[@]}"; do
   fi
 done
 
-readonly OLLAMA_CONTEXT_LENGTH="4096"
+readonly OLLAMA_CONTEXT_LENGTH="16384"
 readonly OLLAMA_MAX_QUEUE="4"
 readonly OLLAMA_NUM_PARALLEL="1"
 readonly OLLAMA_MAX_LOADED_MODELS="1"
-readonly OLLAMA_MEMORY_HIGH="4G"
-readonly OLLAMA_MEMORY_MAX="6G"
-readonly OLLAMA_MEMORY_SWAP_MAX="512M"
-readonly OLLAMA_CPU_QUOTA="200%"
+readonly OLLAMA_MEMORY_HIGH="18G"
+readonly OLLAMA_MEMORY_MAX="20G"
+readonly OLLAMA_MEMORY_SWAP_MAX="0"
+readonly OLLAMA_CPU_QUOTA="800%"
 
 # ── Non-envelope installer tunables ─────────────────────────────────────────
 REQUIRED_FREE_GB="${REQUIRED_FREE_GB:-8}"
-PRIMARY_MODEL="qwen2.5:3b-instruct-q4_K_M"
-RETAINED_MODEL_DIGEST="357c53fb659c5076de1d65ccb0b397446227b71a42be9d1603d46168015c9e4b"
 OLLAMA_BINARY=/usr/local/bin/ollama
 OLLAMA_BINARY_SHA256="b2e45ade9cb754a079f74645e1183d613f582d98f7354b05f4f9a5bd81f8e0c9"
 OLLAMA_VERSION_OUTPUT="ollama version is 0.24.0"
@@ -122,7 +120,7 @@ OLLAMA_CPUWEIGHT="${OLLAMA_CPUWEIGHT:-25}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 if [ "${1:-}" = "--verify-envelope-only" ] && [ "$#" -eq 1 ]; then
-  printf '{"contextLength":4096,"maxQueue":4,"numParallel":1,"maxLoadedModels":1,"memoryHigh":"4G","memoryMax":"6G","cpuQuota":"200%%","memorySwapMax":"512M"}\n'
+  printf '{"contextLength":16384,"maxQueue":4,"numParallel":1,"maxLoadedModels":1,"memoryHigh":"18G","memoryMax":"20G","cpuQuota":"800%%","memorySwapMax":"0"}\n'
   exit 0
 fi
 [ "$#" -eq 4 ] || fail \
@@ -159,16 +157,20 @@ validate_root_path_chain "$SCRIPT_DIR" "reviewed Ollama installer source"
 validate_root_path_chain "$SOURCE_ROOT" "reviewed Ollama bootstrap source"
 validate_root_path_chain "$SOURCE_ARCHIVE" "reviewed Ollama bootstrap archive"
 reviewed_assets=(
-  install-ollama.sh
-  ollama-lean-finalize.mjs
-  ollama-service-envelope-check.mjs
-  lib/ollama-service-envelope.mjs
-  ollama-systemd-dropin-transaction.mjs
-  ollama-install-state-check.mjs
-  systemd/00-nexus-ollama-install-guard.conf
+  scripts/install-ollama.sh
+  scripts/ollama-lean-finalize.mjs
+  scripts/ollama-service-envelope-check.mjs
+  scripts/lib/ollama-service-envelope.mjs
+  scripts/ollama-systemd-dropin-transaction.mjs
+  scripts/ollama-install-state-check.mjs
+  scripts/local-inference-socket-transaction.mjs
+  scripts/local-model-benchmark-envelope-transaction.mjs
+  scripts/systemd/00-nexus-ollama-install-guard.conf
+  scripts/systemd/nexus-local-inference-sockets.conf
+  config/local-model-manifest.json
 )
 for reviewed_asset in "${reviewed_assets[@]}"; do
-  validate_root_path_chain "$SCRIPT_DIR/$reviewed_asset" "reviewed Ollama asset ($reviewed_asset)"
+  validate_root_path_chain "$SOURCE_ROOT/$reviewed_asset" "reviewed Ollama asset ($reviewed_asset)"
 done
 archive_sha256="$(sha256sum -- "$SOURCE_ARCHIVE" | cut -d' ' -f1)"
 [ "$archive_sha256" = "$EXPECTED_ARCHIVE_SHA256" ] \
@@ -183,7 +185,7 @@ import tarfile
 
 archive_path, source_root, source_sha, *assets = sys.argv[1:]
 source_root_path = pathlib.Path(source_root)
-required = {f"scripts/{asset}" for asset in assets}
+required = set(assets)
 with tarfile.open(archive_path, mode="r:*") as archive:
     if archive.pax_headers.get("comment") != source_sha:
         raise SystemExit("Ollama install archive verifier: Git archive commit does not match source SHA")
@@ -197,8 +199,12 @@ with tarfile.open(archive_path, mode="r:*") as archive:
             raise SystemExit(f"Ollama install archive verifier: duplicate member {member.name}")
         if not member.isreg() or member.issym() or member.islnk():
             raise SystemExit(f"Ollama install archive verifier: required member is not regular: {member.name}")
-        if relative == "scripts/ollama-systemd-dropin-transaction.mjs" and not (member.mode & 0o111):
-            raise SystemExit("Ollama install archive verifier: transaction helper is not executable")
+        if relative in {
+            "scripts/ollama-systemd-dropin-transaction.mjs",
+            "scripts/local-inference-socket-transaction.mjs",
+            "scripts/local-model-benchmark-envelope-transaction.mjs",
+        } and not (member.mode & 0o111):
+            raise SystemExit(f"Ollama install archive verifier: transaction helper is not executable: {relative}")
         members[relative] = member
     missing = sorted(required - members.keys())
     if missing:
@@ -212,11 +218,68 @@ with tarfile.open(archive_path, mode="r:*") as archive:
         local_path = source_root_path / relative
         if not local_path.is_file() or local_path.is_symlink():
             raise SystemExit(f"Ollama install archive verifier: unsafe source {relative}")
-        if relative == "scripts/ollama-systemd-dropin-transaction.mjs" and not os.access(local_path, os.X_OK):
-            raise SystemExit("Ollama install archive verifier: local transaction helper is not executable")
+        if relative in {
+            "scripts/ollama-systemd-dropin-transaction.mjs",
+            "scripts/local-inference-socket-transaction.mjs",
+            "scripts/local-model-benchmark-envelope-transaction.mjs",
+        } and not os.access(local_path, os.X_OK):
+            raise SystemExit(f"Ollama install archive verifier: local transaction helper is not executable: {relative}")
         if hashlib.sha256(local_path.read_bytes()).hexdigest() != archive_digest:
             raise SystemExit(f"Ollama install archive verifier: source drift for {relative}")
 PY
+
+# The release-signed manifest is the only model-selection authority. The
+# installer validates and records that exact tag/digest but never downloads it.
+mapfile -t active_model_identity < <(node - "$SOURCE_ROOT/config/local-model-manifest.json" <<'NODE'
+const fs = require('node:fs');
+const manifest = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+const active = Array.isArray(manifest.models)
+  ? manifest.models.find((model) => model?.id === manifest.activeModelId)
+  : null;
+const winners = Array.isArray(manifest.models)
+  ? manifest.models.filter((model) => model?.role === 'winner')
+  : [];
+const digest = String(active?.digest || '');
+const evidence = manifest.selectionEvidence;
+const productionEvidenceValid = manifest.selectionStatus !== 'production_selected' || (
+  evidence && typeof evidence === 'object' && !Array.isArray(evidence)
+  && evidence.winningCandidateId === manifest.activeModelId
+  && /^sha256:[0-9a-f]{64}$/u.test(evidence.benchmarkReportDigest || '')
+  && typeof evidence.benchmarkCompletedAt === 'string'
+  && !Number.isNaN(Date.parse(evidence.benchmarkCompletedAt))
+  && new Date(evidence.benchmarkCompletedAt).toISOString() === evidence.benchmarkCompletedAt
+  && /^sha256:[0-9a-f]{64}$/u.test(evidence.benchmarkHostRollbackReceiptDigest || '')
+  && [
+    'corpusReference',
+    'licenseReviewReference',
+    'ownerApprovalReference',
+  ]
+    .every((field) => typeof evidence[field] === 'string'
+      && evidence[field].trim().length > 0
+      && evidence[field].trim().length <= 512)
+);
+const selectionValid = manifest.schemaVersion === 'nexus.local-model-manifest.v1'
+  && ['control_only', 'production_selected'].includes(manifest.selectionStatus)
+  && (manifest.selectionStatus !== 'control_only' || manifest.selectionEvidence === null)
+  && (manifest.selectionStatus === 'control_only'
+    ? winners.length === 0
+    : winners.length === 1 && winners[0]?.id === active?.id)
+  && productionEvidenceValid
+  && active?.productionEligible === true
+  && active?.evidenceStatus === 'verified'
+  && typeof active?.ollamaTag === 'string'
+  && active.ollamaTag.length > 0
+  && /^sha256:[0-9a-f]{64}$/u.test(digest)
+  && (manifest.selectionStatus !== 'production_selected' || active.role === 'winner');
+if (!selectionValid) process.exit(2);
+process.stdout.write(`${active.ollamaTag}\n${digest.slice('sha256:'.length)}\n`);
+NODE
+)
+[ "${#active_model_identity[@]}" -eq 2 ] \
+  || fail "signed local-model manifest has no verified digest-pinned active model" 77
+readonly PRIMARY_MODEL="${active_model_identity[0]}"
+readonly RETAINED_MODEL_DIGEST="${active_model_identity[1]}"
+unset active_model_identity
 validate_root_path_chain "$OLLAMA_BINARY" "reviewed Ollama binary"
 [ -f "$OLLAMA_BINARY" ] && [ ! -L "$OLLAMA_BINARY" ] \
   && [ "$(stat -c '%U:%G:%a' -- "$OLLAMA_BINARY")" = root:root:755 ] \
@@ -250,7 +313,7 @@ process.stdin.on("end", () => {
   const matches = Array.isArray(value?.models)
     ? value.models.filter((row) => row?.name === tag || row?.model === tag)
     : [];
-  const actual = String(matches[0]?.digest || "").replace(/^sha256:/u, "");
+  const actual = String(matches[0]?.digest || "").trim().toLowerCase().replace(/^sha256:/u, "");
   if (matches.length !== 1 || actual !== digest) process.exit(3);
 });' "$PRIMARY_MODEL" "$RETAINED_MODEL_DIGEST" \
     || fail "retained Ollama model is absent or differs from the reviewed exact digest" 77
@@ -259,7 +322,7 @@ process.stdin.on("end", () => {
 verify_retained_model_identity
 log "Pre-flight: disk, memory, OS"
 if [ -n "${OLLAMA_PRIMARY_MODEL:-}" ] && [ "${OLLAMA_PRIMARY_MODEL}" != "${PRIMARY_MODEL}" ]; then
-  fail "small-only policy rejects OLLAMA_PRIMARY_MODEL=${OLLAMA_PRIMARY_MODEL}; expected ${PRIMARY_MODEL}" 6
+  fail "signed-manifest policy rejects OLLAMA_PRIMARY_MODEL=${OLLAMA_PRIMARY_MODEL}; expected ${PRIMARY_MODEL}" 6
 fi
 if [ -n "${OLLAMA_OPERATIONAL_ROLLBACK_MODEL:-}" ]; then
   fail "OLLAMA_OPERATIONAL_ROLLBACK_MODEL is removed; rollback by disabling Ollama" 7
@@ -386,15 +449,15 @@ Environment="OLLAMA_MAX_LOADED_MODELS=${OLLAMA_MAX_LOADED_MODELS}"
 Environment="OLLAMA_NUM_PARALLEL=${OLLAMA_NUM_PARALLEL}"
 Environment="OLLAMA_MAX_QUEUE=${OLLAMA_MAX_QUEUE}"
 
-# Context + KV cache are bounded for the 3B classifier/planner workload.
+# Context + KV cache are bounded by the production manifest envelope.
 Environment="OLLAMA_CONTEXT_LENGTH=${OLLAMA_CONTEXT_LENGTH}"
 Environment="OLLAMA_KV_CACHE_TYPE=q8_0"
 Environment="OLLAMA_FLASH_ATTENTION=1"
 
-# Keep the sole 3B model warm; the service-level memory ceiling remains hard.
+# Keep the sole manifest-selected model warm; the cgroup memory ceiling remains hard.
 Environment="OLLAMA_KEEP_ALIVE=-1"
 
-# Bounded cold-load timeout for the 1.9 GB model.
+# Bounded cold-load timeout for the single resident model.
 Environment="OLLAMA_LOAD_TIMEOUT=${OLLAMA_LOAD_TIMEOUT}"
 
 # Disable any cloud-pull behavior in Ollama (defense-in-depth; we want pulls
@@ -446,7 +509,7 @@ systemctl enable --now ollama
 systemctl restart ollama
 
 log "Verifying effective fixed systemd envelope"
-/usr/bin/env node "/usr/local/sbin/nexus-ollama-service-envelope-check.mjs" --expected-swap-bytes 536870912 \
+/usr/bin/env node "/usr/local/sbin/nexus-ollama-service-envelope-check.mjs" --expected-swap-bytes 0 \
   || fail "effective Ollama resource envelope differs from the fixed installation policy" 9
 
 # ── Wait for daemon ─────────────────────────────────────────────────────────
@@ -507,14 +570,16 @@ transaction_candidate=""
 # ── Done ────────────────────────────────────────────────────────────────────
 log "Install complete"
 echo "  daemon:    127.0.0.1:11434 (loopback only)"
-echo "  model:     ${PRIMARY_MODEL} (small-only)"
+echo "  model:     ${PRIMARY_MODEL} (signed manifest)"
 echo "  systemd:   MemoryHigh=${OLLAMA_MEMORY_HIGH} MemoryMax=${OLLAMA_MEMORY_MAX} MemorySwapMax=${OLLAMA_MEMORY_SWAP_MAX} CPUQuota=${OLLAMA_CPU_QUOTA} CPUWeight=${OLLAMA_CPUWEIGHT} Nice=${OLLAMA_NICE}"
 echo
 echo "Next steps (operator):"
 echo "  1. Verify in browser: curl -s http://127.0.0.1:11434/api/ps"
-echo "  2. Run scripts/staging-smoke-ollama.sh with HEALTH_TOKEN configured."
-echo "  3. After the exact staging and production release passes, run:"
-echo "     sudo /usr/local/sbin/nexus-ollama-lean-finalize.mjs --dry-run"
-echo "     then apply only with the owner-authorized printed plan digest."
-echo "  4. Operational rollback: set OLLAMA_ENABLED=false and restart Nexus Hub;"
+echo "  2. Run /usr/local/sbin/nexus-local-model-benchmark-envelope-transaction.mjs plan --candidate-id <signed-manifest-id>; apply the same candidate ID and receipt-rollback each controlled benchmark window."
+echo "  3. After signing the winner, rerun this installer from that exact settled protected-main release to install its manifest/model identity."
+echo "  4. Then run /usr/local/sbin/nexus-local-inference-socket-transaction.mjs plan and inspect its owner acknowledgement digest."
+echo "  5. Apply that exact socket plan only in the attended host transaction; signed Compose remains unchanged until its receipt exists."
+echo "  6. The legacy lean finalizer is control-model cleanup only; do not run it"
+echo "     for a production-selected winner."
+echo "  7. Operational rollback: set local inference mode off;"
 echo "     approved Gemini/cloud routing remains available."

@@ -46,11 +46,15 @@ import { resolveApiUsageAttribution } from '../../src/services/api-usage-attribu
 import { runWithContext } from '../../src/utils/request-context';
 
 function acquire(userId: number) {
-  return acquireAiBudgetReservation({
+  return runWithContext({
+    source: 'http',
+    userId,
+    tenantId: userId,
+  }, () => acquireAiBudgetReservation({
     userId,
     requestSource: 'interactive',
     baseCategory: 'chat_secretary',
-  });
+  }));
 }
 
 describe('cost guardrail SQLite advisory lock', () => {
@@ -70,6 +74,7 @@ describe('cost guardrail SQLite advisory lock', () => {
         cost_usd REAL NOT NULL DEFAULT 0,
         request_source TEXT NOT NULL DEFAULT 'interactive',
         base_category TEXT,
+        job_name TEXT,
         run_id TEXT
       );
       CREATE TABLE user_ai_budget_overrides (

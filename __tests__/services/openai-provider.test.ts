@@ -6,7 +6,7 @@
  * format mapping between Anthropic and OpenAI formats.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // ─── Mock OpenAI SDK ────────────────────────────────────────────────
 
@@ -204,6 +204,7 @@ describe('OpenAIProvider', () => {
 
   it('maps approved cloud reasoning to a real system message, exact model, schema mode, and no tools', async () => {
     mockChatResponse('{"answer":"bounded"}');
+    const controller = new AbortController();
     const schema = {
       type: 'object',
       additionalProperties: false,
@@ -221,6 +222,7 @@ describe('OpenAIProvider', () => {
       category: 'cloud_local_reasoning',
       responseFormat: 'json',
       jsonSchema: schema,
+      abortSignal: controller.signal,
     });
 
     expect(result).toEqual({ text: '{"answer":"bounded"}', stopReason: 'stop' });
@@ -242,6 +244,10 @@ describe('OpenAIProvider', () => {
       },
     });
     expect(request.tools).toBeUndefined();
+    expect(mockCreate.mock.calls[0][1]).toMatchObject({
+      maxRetries: 0,
+      signal: controller.signal,
+    });
     expect(mockAssertAiBudgetReservationForProvider).toHaveBeenCalledWith(
       expect.objectContaining({
         userId: 306,
@@ -724,6 +730,29 @@ describe('OpenAIProvider', () => {
       expect(tools).toHaveLength(1);
       expect(tools[0].function.name).toBe('ms_todo_create_task');
     });
+
+    it('forwards tool-continuation cancellation to the SDK and stops retries', async () => {
+      const controller = new AbortController();
+      const cancelled = Object.assign(new Error('Request was aborted.'), {
+        name: 'APIUserAbortError',
+      });
+      mockCreate.mockRejectedValueOnce(cancelled);
+
+      await expect(provider.continueWithToolResults(
+        'secretary',
+        [],
+        'Cancel this continuation',
+        '',
+        [],
+        { filteredTools: [], abortSignal: controller.signal },
+      )).rejects.toBe(cancelled);
+
+      expect(mockCreate).toHaveBeenCalledTimes(1);
+      expect(mockCreate.mock.calls[0]?.[1]).toMatchObject({
+        maxRetries: 0,
+        signal: controller.signal,
+      });
+    });
   });
 
   // ── Token tracking ────────────────────────────────────────────────
@@ -891,6 +920,26 @@ describe('OpenAIProvider', () => {
         'openai_classify',
         null,
       );
+    });
+
+    it('forwards classify cancellation to the SDK and never converts it to a secretary result', async () => {
+      const controller = new AbortController();
+      const cancelled = Object.assign(new Error('Request was aborted.'), {
+        name: 'APIUserAbortError',
+      });
+      mockCreate.mockRejectedValueOnce(cancelled);
+
+      await expect(provider.classify('hello', undefined, {
+        userId: 25,
+        tenantId: 42,
+        abortSignal: controller.signal,
+      })).rejects.toBe(cancelled);
+
+      expect(mockCreate).toHaveBeenCalledTimes(1);
+      expect(mockCreate.mock.calls[0]?.[1]).toMatchObject({
+        maxRetries: 0,
+        signal: controller.signal,
+      });
     });
 
     it('uses openai_tool_continuation category for tool result calls', async () => {

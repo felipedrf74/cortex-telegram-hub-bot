@@ -11,6 +11,7 @@ import {
   buildCapabilitySkillMetadata,
   serializeCapabilitySkillMetadata,
 } from './generate-capability-skill-metadata.mjs';
+import { validateLocalModelManifest } from './validate-local-model-manifest.mjs';
 
 const root = process.cwd();
 const readJson = (file) => JSON.parse(fs.readFileSync(path.join(root, file), 'utf8'));
@@ -243,6 +244,7 @@ if (errors.length) {
   console.error(errors.join('\n'));
   process.exit(1);
 }
+validateLocalModelManifest();
 console.log(JSON.stringify({
   ok: true,
   capabilities: runtimeCapabilityIds.length,

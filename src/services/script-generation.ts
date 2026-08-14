@@ -43,7 +43,7 @@ import { config } from '../config';
 import { logger } from '../utils/logger';
 import { getDb } from './database';
 import { LocalLLMError } from './local-llm-error';
-import type { AIProvider } from './ai-provider';
+import { isProviderRequestCancellation, type AIProvider } from './ai-provider';
 import {
   canonicalCloudScriptGenerationOutboundInput,
   consumeCloudScriptGenerationApproval,
@@ -286,36 +286,59 @@ function assertNoSymlinkAncestors(absPath: string, sandboxRoot: string): void {
 
 interface ValidationDetail { command: string; ok: boolean; output?: string }
 
-async function runValidator(cmd: string, args: string[], cwd: string): Promise<ValidationDetail> {
+async function runValidator(
+  cmd: string,
+  args: string[],
+  cwd: string,
+  abortSignal?: AbortSignal,
+): Promise<ValidationDetail> {
   const command = `${cmd} ${args.join(' ')}`.trim();
+  throwIfScriptGenerationCancelled(abortSignal);
   try {
-    const { stdout, stderr } = await execFileAsync(cmd, args, { cwd, shell: false, timeout: 60_000 });
+    const { stdout, stderr } = await execFileAsync(cmd, args, {
+      cwd,
+      shell: false,
+      timeout: 60_000,
+      signal: abortSignal,
+    });
+    throwIfScriptGenerationCancelled(abortSignal);
     return { command, ok: true, output: (stdout || stderr || '').slice(0, 1200) };
   } catch (err) {
+    throwIfScriptGenerationCancelled(abortSignal, err);
     const msg = (err as { stdout?: string; stderr?: string; message?: string });
     return { command, ok: false, output: ((msg.stderr || msg.stdout || msg.message || '') as string).slice(0, 1200) };
   }
 }
 
-async function commandAvailable(cmd: string): Promise<boolean> {
+async function commandAvailable(cmd: string, abortSignal?: AbortSignal): Promise<boolean> {
+  throwIfScriptGenerationCancelled(abortSignal);
   try {
-    await execFileAsync('command', ['-v', cmd], { shell: false });
+    await execFileAsync('command', ['-v', cmd], { shell: false, signal: abortSignal });
+    throwIfScriptGenerationCancelled(abortSignal);
     return true;
-  } catch {
+  } catch (error) {
+    throwIfScriptGenerationCancelled(abortSignal, error);
     // `command` is a shell builtin and not always present as a binary;
     // fall back to `which`.
     try {
-      await execFileAsync('which', [cmd], { shell: false });
+      await execFileAsync('which', [cmd], { shell: false, signal: abortSignal });
+      throwIfScriptGenerationCancelled(abortSignal);
       return true;
-    } catch {
+    } catch (fallbackError) {
+      throwIfScriptGenerationCancelled(abortSignal, fallbackError);
       return false;
     }
   }
 }
 
-async function validateArtifactsDeterministically(artifacts: GeneratedArtifact[], sandboxRoot: string): Promise<ValidationDetail[]> {
+async function validateArtifactsDeterministically(
+  artifacts: GeneratedArtifact[],
+  sandboxRoot: string,
+  abortSignal?: AbortSignal,
+): Promise<ValidationDetail[]> {
   const details: ValidationDetail[] = [];
   for (const a of artifacts) {
+    throwIfScriptGenerationCancelled(abortSignal);
     const absPath = path.resolve(sandboxRoot, a.path);
     // Defensive: path safety has already been Zod-validated, but recheck
     // after resolve to catch any normalization tricks.
@@ -323,9 +346,9 @@ async function validateArtifactsDeterministically(artifacts: GeneratedArtifact[]
     assertNoSymlinkAncestors(absPath, sandboxRoot);
 
     if (a.kind === 'shell_script') {
-      details.push(await runValidator('bash', ['-n', absPath], sandboxRoot));
-      if (await commandAvailable('shellcheck')) {
-        details.push(await runValidator('shellcheck', [absPath], sandboxRoot));
+      details.push(await runValidator('bash', ['-n', absPath], sandboxRoot, abortSignal));
+      if (await commandAvailable('shellcheck', abortSignal)) {
+        details.push(await runValidator('shellcheck', [absPath], sandboxRoot, abortSignal));
       } else {
         details.push({ command: `shellcheck ${a.path}`, ok: true, output: 'shellcheck not installed; skipped (advisory)' });
       }
@@ -334,11 +357,11 @@ async function validateArtifactsDeterministically(artifacts: GeneratedArtifact[]
       // dev-only @types graph. The locked TypeScript 5.9 compiler uses --noCheck
       // for a no-network, single-file syntax pass; it still reports parse errors
       // without pretending production carries semantic-resolution dependencies.
-      details.push(await runValidator('npx', ['--no-install', 'tsc', '--noEmit', '--noCheck', '--allowJs', '--target', 'es2020', absPath], sandboxRoot));
+      details.push(await runValidator('npx', ['--no-install', 'tsc', '--noEmit', '--noCheck', '--allowJs', '--target', 'es2020', absPath], sandboxRoot, abortSignal));
     } else if (a.kind === 'sql_migration') {
       const checker = path.resolve(process.cwd(), 'scripts', 'check-migrations.js');
       if (fsSync.existsSync(checker)) {
-        details.push(await runValidator('node', [checker], sandboxRoot));
+        details.push(await runValidator('node', [checker], sandboxRoot, abortSignal));
       } else {
         details.push({ command: 'check-migrations.js', ok: true, output: 'checker not present; skipped (advisory)' });
       }
@@ -346,6 +369,7 @@ async function validateArtifactsDeterministically(artifacts: GeneratedArtifact[]
       details.push({ command: `validate(${a.kind}) ${a.path}`, ok: true, output: 'no validator registered for this kind' });
     }
   }
+  throwIfScriptGenerationCancelled(abortSignal);
   return details;
 }
 
@@ -516,6 +540,53 @@ interface ScriptGenerationPersistenceContext {
   requireDurableAudit?: boolean;
 }
 
+async function cleanupCancelledScriptGenerationArtifacts(input: {
+  files: Iterable<string>;
+  directories: Iterable<string>;
+  sandboxRoot: string;
+  sandboxWasCreated: boolean;
+}): Promise<void> {
+  for (const filePath of input.files) {
+    try {
+      await fs.unlink(filePath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        logger.warn({ filePath }, 'script-generation: unable to remove cancelled artifact');
+      }
+    }
+  }
+
+  const directories = [...input.directories]
+    .filter(directory => directory !== input.sandboxRoot)
+    .sort((a, b) => b.length - a.length);
+  if (input.sandboxWasCreated) directories.push(input.sandboxRoot);
+  for (const directory of directories) {
+    try {
+      // rmdir removes only empty directories. Never recursively remove a
+      // pre-existing sandbox or content another invocation may own.
+      await fs.rmdir(directory);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT' && code !== 'ENOTEMPTY') {
+        logger.warn({ directory }, 'script-generation: unable to remove cancelled empty directory');
+      }
+    }
+  }
+}
+
+function missingArtifactDirectories(parent: string, sandboxRoot: string): string[] {
+  const missing: string[] = [];
+  let cursor = parent;
+  while (cursor !== sandboxRoot) {
+    assertPathInsideSandbox(path.join(cursor, '.directory-scope'), sandboxRoot);
+    if (!fsSync.existsSync(cursor)) missing.push(cursor);
+    const next = path.dirname(cursor);
+    if (next === cursor) break;
+    cursor = next;
+  }
+  return missing;
+}
+
 /**
  * Materialize, validate, and persist a schema-validated artifact bundle.
  * Both transports enter this exact function, so a cloud response cannot
@@ -528,55 +599,98 @@ async function finalizeScriptGenerationRun(args: {
   startedAtMs: number;
   full: ScriptGenResult;
   persistence?: ScriptGenerationPersistenceContext;
+  abortSignal?: AbortSignal;
 }): Promise<ScriptGenResult> {
   const sandboxRoot = sandboxRootFor(args.runId);
-  await ensureSandbox(sandboxRoot);
+  const sandboxWasCreated = !fsSync.existsSync(sandboxRoot);
+  const createdFiles = new Set<string>();
+  const createdDirectories = new Set<string>();
 
-  for (const a of args.full.artifacts) {
-    const absPath = path.resolve(sandboxRoot, a.path);
-    assertPathInsideSandbox(absPath, sandboxRoot);
+  try {
+    throwIfScriptGenerationCancelled(args.abortSignal);
+    await ensureSandbox(sandboxRoot);
+    throwIfScriptGenerationCancelled(args.abortSignal);
 
-    // The symlink check MUST run before mkdir. mkdir(recursive) may traverse
-    // an existing sandbox-internal symlink and mutate its external target.
-    assertNoSymlinkAncestors(absPath, sandboxRoot);
-    await fs.mkdir(path.dirname(absPath), { recursive: true });
-    try {
-      const realParent = fsSync.realpathSync(path.dirname(absPath));
-      assertPathInsideSandbox(path.join(realParent, path.basename(absPath)), sandboxRoot);
-    } catch {
-      throw new Error(`unsafe artifact path failed realpath containment check: ${a.path}`);
+    for (const a of args.full.artifacts) {
+      throwIfScriptGenerationCancelled(args.abortSignal);
+      const absPath = path.resolve(sandboxRoot, a.path);
+      assertPathInsideSandbox(absPath, sandboxRoot);
+
+      // The symlink check MUST run before mkdir. mkdir(recursive) may traverse
+      // an existing sandbox-internal symlink and mutate its external target.
+      assertNoSymlinkAncestors(absPath, sandboxRoot);
+      const parent = path.dirname(absPath);
+      const missingDirectories = missingArtifactDirectories(parent, sandboxRoot);
+      await fs.mkdir(parent, { recursive: true });
+      for (const directory of missingDirectories) createdDirectories.add(directory);
+      throwIfScriptGenerationCancelled(args.abortSignal);
+      try {
+        const realParent = fsSync.realpathSync(parent);
+        assertPathInsideSandbox(path.join(realParent, path.basename(absPath)), sandboxRoot);
+      } catch {
+        throw new Error(`unsafe artifact path failed realpath containment check: ${a.path}`);
+      }
+
+      // Exclusive create refuses overwrite and leaf-symlink replacement.
+      // Track the path only after this invocation successfully created it;
+      // otherwise a same-run race followed by cancellation could unlink a
+      // file another invocation won between the existence check and `wx`.
+      await fs.writeFile(absPath, a.content, { flag: 'wx', mode: a.executable ? 0o755 : 0o644 });
+      createdFiles.add(absPath);
+      throwIfScriptGenerationCancelled(args.abortSignal);
     }
 
-    // Exclusive create refuses overwrite and leaf-symlink replacement.
-    await fs.writeFile(absPath, a.content, { flag: 'wx', mode: a.executable ? 0o755 : 0o644 });
+    const details = await validateArtifactsDeterministically(
+      args.full.artifacts,
+      sandboxRoot,
+      args.abortSignal,
+    );
+    throwIfScriptGenerationCancelled(args.abortSignal);
+    const allOk = details.every(d => d.ok);
+    const validationStatus: ScriptGenResult['validation_status'] = details.length === 0
+      ? 'skipped'
+      : (allOk ? 'passed' : 'failed');
+
+    const result: ScriptGenResult = {
+      ...args.full,
+      validation_status: validationStatus,
+      validation_details: details,
+      sandbox_path: sandboxRoot,
+      run_id: args.runId,
+    };
+
+    throwIfScriptGenerationCancelled(args.abortSignal);
+    const persisted = persistRunRecord({
+      runId: args.runId,
+      task: args.task,
+      result,
+      durationMs: Date.now() - args.startedAtMs,
+      ...args.persistence,
+    });
+    if (args.persistence?.requireDurableAudit && !persisted) {
+      throw cloudContractError('audit_persistence_failed');
+    }
+
+    throwIfScriptGenerationCancelled(args.abortSignal);
+    return result;
+  } catch (error) {
+    let cancellation: unknown;
+    try {
+      throwIfScriptGenerationCancelled(args.abortSignal, error);
+    } catch (cancelledError) {
+      cancellation = cancelledError;
+    }
+    if (cancellation !== undefined) {
+      await cleanupCancelledScriptGenerationArtifacts({
+        files: createdFiles,
+        directories: createdDirectories,
+        sandboxRoot,
+        sandboxWasCreated,
+      });
+      throw cancellation;
+    }
+    throw error;
   }
-
-  const details = await validateArtifactsDeterministically(args.full.artifacts, sandboxRoot);
-  const allOk = details.every(d => d.ok);
-  const validationStatus: ScriptGenResult['validation_status'] = details.length === 0
-    ? 'skipped'
-    : (allOk ? 'passed' : 'failed');
-
-  const result: ScriptGenResult = {
-    ...args.full,
-    validation_status: validationStatus,
-    validation_details: details,
-    sandbox_path: sandboxRoot,
-    run_id: args.runId,
-  };
-
-  const persisted = persistRunRecord({
-    runId: args.runId,
-    task: args.task,
-    result,
-    durationMs: Date.now() - args.startedAtMs,
-    ...args.persistence,
-  });
-  if (args.persistence?.requireDurableAudit && !persisted) {
-    throw cloudContractError('audit_persistence_failed');
-  }
-
-  return result;
 }
 
 export interface ApprovedCloudScriptGenerationTask extends ScriptGenTask {
@@ -671,6 +785,21 @@ function scriptPlansMatch(expected: ScriptGenPlan, actual: ScriptGenPlan): boole
 
 const CLOUD_TRUNCATED_STOP_REASONS = new Set(['max_tokens', 'MAX_TOKENS', 'length', 'LENGTH']);
 
+function throwIfScriptGenerationCancelled(
+  abortSignal?: AbortSignal,
+  error?: unknown,
+): void {
+  if (abortSignal?.aborted) {
+    if (abortSignal.reason instanceof Error) throw abortSignal.reason;
+    if (error !== undefined && isProviderRequestCancellation(error)) throw error;
+    throw Object.assign(new Error('script_generation_cancelled'), {
+      name: 'AbortError',
+      code: 'INFERENCE_CANCELLED',
+    });
+  }
+  if (error !== undefined && isProviderRequestCancellation(error)) throw error;
+}
+
 async function runApprovedCloudStructuredCall<T>(args: {
   provider: AIProvider;
   model: string;
@@ -679,10 +808,12 @@ async function runApprovedCloudStructuredCall<T>(args: {
   userPrompt: string;
   maxTokens: number;
   step: 'plan' | 'script';
+  abortSignal?: AbortSignal;
   validate: (parsed: unknown) => { ok: true; value: T } | { ok: false; reason: string };
 }): Promise<T> {
   let lastError = 'unattempted';
   for (let attempt = 0; attempt < 2; attempt++) {
+    throwIfScriptGenerationCancelled(args.abortSignal);
     const correction = attempt === 0
       ? ''
       : `\n\nThe previous response violated the required contract (${lastError}). Retry once. Return only the exact JSON object.`;
@@ -699,7 +830,9 @@ async function runApprovedCloudStructuredCall<T>(args: {
         ? 'cloud_script_generation_plan'
         : 'cloud_script_generation_artifacts',
       responseFormat: 'json',
+      abortSignal: args.abortSignal,
     });
+    throwIfScriptGenerationCancelled(args.abortSignal);
     if (CLOUD_TRUNCATED_STOP_REASONS.has(response.stopReason)) {
       lastError = 'truncated_output';
       continue;
@@ -735,7 +868,9 @@ async function runApprovedCloudStructuredCall<T>(args: {
 export async function runApprovedCloudScriptGenerationPipeline(
   task: ApprovedCloudScriptGenerationTask,
   permit: ApprovedCloudScriptGenerationPermit,
+  options: { abortSignal?: AbortSignal } = {},
 ): Promise<ScriptGenResult> {
+  throwIfScriptGenerationCancelled(options.abortSignal);
   task = parseApprovedCloudScriptGenerationTask(task);
   let selection: ReturnType<typeof consumeCloudScriptGenerationApproval>;
   try {
@@ -760,6 +895,7 @@ export async function runApprovedCloudScriptGenerationPipeline(
     userPrompt: canonicalUserPrompt,
     maxTokens: 3000,
     step: 'plan',
+    abortSignal: options.abortSignal,
     validate: (parsed) => {
       const validated = validatePlanPayload(parsed);
       return validated.ok
@@ -768,6 +904,7 @@ export async function runApprovedCloudScriptGenerationPipeline(
     },
   });
 
+  throwIfScriptGenerationCancelled(options.abortSignal);
   const full = await runApprovedCloudStructuredCall<ScriptGenResult>({
     provider: selection.provider,
     model: selection.model,
@@ -776,6 +913,7 @@ export async function runApprovedCloudScriptGenerationPipeline(
     userPrompt: `${canonicalUserPrompt}\n\n[Prior plan JSON]\n${JSON.stringify(plan)}`,
     maxTokens: 4096,
     step: 'script',
+    abortSignal: options.abortSignal,
     validate: (parsed) => {
       const validated = validateArtifactsPayload(parsed);
       if (!validated.ok) return { ok: false, reason: validated.reason };
@@ -786,11 +924,13 @@ export async function runApprovedCloudScriptGenerationPipeline(
     },
   });
 
+  throwIfScriptGenerationCancelled(options.abortSignal);
   return finalizeScriptGenerationRun({
     task,
     runId,
     startedAtMs,
     full,
+    abortSignal: options.abortSignal,
     persistence: {
       providerName: selection.provider.name,
       modelName: selection.model,
@@ -808,6 +948,7 @@ export async function runScriptGenerationPipeline(
   task: ScriptGenTask,
   ollama: OllamaProvider,
 ): Promise<ScriptGenResult> {
+  throwIfScriptGenerationCancelled(task.abortSignal);
   const runId = task.runId || randomUUID();
   const t0 = Date.now();
   const userId = task.userId ?? 0;
@@ -845,11 +986,13 @@ export async function runScriptGenerationPipeline(
         top_k: 20,
       },
     },
+    abortSignal: task.abortSignal,
     validate: (parsed) => validatePlanPayload(parsed).ok
       ? { ok: true, value: parsed as ScriptGenPlan }
       : { ok: false, reason: (validatePlanPayload(parsed) as { ok: false; reason: string }).reason },
     step: 'plan',
   });
+  throwIfScriptGenerationCancelled(task.abortSignal);
 
   // Early-return path: if the plan says it needs cloud reasoning and we're
   // in evaluation mode, return the plan + recommendation without invoking
@@ -863,6 +1006,7 @@ export async function runScriptGenerationPipeline(
       validation_details: [{ command: 'plan-only', ok: true, output: 'requires_cloud_reasoning=true; evaluation mode declined to escalate' }],
       run_id: runId,
     };
+    throwIfScriptGenerationCancelled(task.abortSignal);
     persistRunRecord({
       runId,
       task,
@@ -870,6 +1014,7 @@ export async function runScriptGenerationPipeline(
       durationMs: Date.now() - t0,
       metaJson: { reason: 'requires_cloud_reasoning_in_evaluation_mode' },
     });
+    throwIfScriptGenerationCancelled(task.abortSignal);
     return result;
   }
 
@@ -901,15 +1046,23 @@ export async function runScriptGenerationPipeline(
         top_k: 20,
       },
     },
+    abortSignal: task.abortSignal,
     validate: (parsed) => {
       const v = validateArtifactsPayload(parsed);
       return v.ok ? { ok: true, value: v.full } : { ok: false, reason: v.reason };
     },
     step: 'script',
   });
+  throwIfScriptGenerationCancelled(task.abortSignal);
 
   // ── Steps 3 + 4: shared sandboxed validation and persistence ───
-  return finalizeScriptGenerationRun({ task, runId, startedAtMs: t0, full });
+  return finalizeScriptGenerationRun({
+    task,
+    runId,
+    startedAtMs: t0,
+    full,
+    abortSignal: task.abortSignal,
+  });
 }
 
 // ─── Internal: structured call with one-shot retry on invalid JSON ─
@@ -921,11 +1074,13 @@ async function runStructuredCall<T>(args: {
   userId: number;
   tenantId: number;
   request: Parameters<OllamaProvider['chatPrimitive']>[0]['request'];
+  abortSignal?: AbortSignal;
   validate: (parsed: unknown) => { ok: true; value: T } | { ok: false; reason: string };
   step: 'plan' | 'script';
 }): Promise<T> {
   let lastError: string | undefined;
   for (let attempt = 0; attempt < 2; attempt++) {
+    throwIfScriptGenerationCancelled(args.abortSignal);
     const messages = attempt === 0
       ? args.request.messages
       : [
@@ -940,8 +1095,10 @@ async function runStructuredCall<T>(args: {
       category: args.category,
       userId: args.userId,
       tenantId: args.tenantId,
+      externalSignal: args.abortSignal,
       request: { ...args.request, messages },
     });
+    throwIfScriptGenerationCancelled(args.abortSignal);
 
     // v2.7 (angry-QA-found): the previous local regex
     //   `text.replace(/<think>[\s\S]*?<\/think>/g, '').trim()`
@@ -960,11 +1117,13 @@ async function runStructuredCall<T>(args: {
     try {
       parsed = JSON.parse(text);
     } catch {
+      throwIfScriptGenerationCancelled(args.abortSignal);
       lastError = 'json_parse_failure';
       continue;
     }
     const v = args.validate(parsed);
     if (v.ok) return v.value;
+    throwIfScriptGenerationCancelled(args.abortSignal);
     lastError = v.reason;
   }
   throw new LocalLLMError('invalid_json', { taskType: 'scriptGeneration', step: args.step, reason: lastError });

@@ -13,6 +13,61 @@ const mocks = vi.hoisted(() => ({
   hasCookingSafetyPreferences: vi.fn(() => false),
   renderCookingSafetyBlockedResponse: vi.fn(() => 'I cannot suggest that option because it conflicts with a saved cooking safety preference.\nI can help with a safe alternative.'),
   renderCookingSafetyPromptBlockForUser: vi.fn(() => '<cooking_safety_preferences>\nAllergies: peanuts\n</cooking_safety_preferences>'),
+  localPrimaryChatEnabled: false,
+  localPrimaryMode: 'off' as 'off' | 'shadow' | 'canary' | 'active',
+  executeSkillInference: vi.fn(),
+  scheduleShadowAttempt: vi.fn(),
+  rejectApplicationResult: vi.fn(),
+  rejectApplicationOperationResults: vi.fn(),
+  getLatestOperationRunId: vi.fn(),
+  getExternalCloudFallbackEligibility: vi.fn(),
+  recordExternalCloudAttempt: vi.fn(),
+  runWithAccountAdmission: vi.fn(),
+  finalAnswerCompositionError: null as Error | null,
+  logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+}));
+
+vi.mock('../../src/utils/logger', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/utils/logger')>()),
+  logger: mocks.logger,
+}));
+
+vi.mock('../../src/services/local-primary-config', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/services/local-primary-config')>();
+  return {
+    ...actual,
+    localPrimaryInferenceConfig: {
+      ...actual.localPrimaryInferenceConfig,
+      get chatEnabled() { return mocks.localPrimaryChatEnabled; },
+    },
+  };
+});
+
+vi.mock('../../src/services/local-inference-runtime-control', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/local-inference-runtime-control')>()),
+  getLocalInferenceRuntimeControl: () => ({
+    environment: 'staging',
+    mode: mocks.localPrimaryMode,
+    rolloutPercent: mocks.localPrimaryMode === 'active' ? 100 : 0,
+  }),
+}));
+
+vi.mock('../../src/services/skill-inference-service', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/skill-inference-service')>()),
+  executeSkillInference: (...args: unknown[]) => mocks.executeSkillInference(...args),
+  scheduleSkillInferenceShadowAttempt: (...args: unknown[]) => mocks.scheduleShadowAttempt(...args),
+  isLocalInferenceUserEnrolled: () => mocks.localPrimaryMode === 'active',
+  rejectSkillInferenceApplicationResult: (...args: unknown[]) => mocks.rejectApplicationResult(...args),
+  rejectSkillInferenceApplicationOperationResults: (...args: unknown[]) => (
+    mocks.rejectApplicationOperationResults(...args)
+  ),
+  getLatestSkillInferenceOperationRunId: (...args: unknown[]) => mocks.getLatestOperationRunId(...args),
+  getSkillInferenceCloudFallbackCostCaps: () => ({ perRunUsd: 0.15, perDayUsd: 0.4 }),
+  getSkillInferenceExternalCloudFallbackEligibility: (...args: unknown[]) => (
+    mocks.getExternalCloudFallbackEligibility(...args)
+  ),
+  recordSkillInferenceExternalCloudAttempt: (...args: unknown[]) => mocks.recordExternalCloudAttempt(...args),
+  runWithSkillInferenceAccountAdmission: (...args: unknown[]) => mocks.runWithAccountAdmission(...args),
 }));
 
 vi.mock('../../src/services/provider-registry', () => ({
@@ -28,6 +83,21 @@ vi.mock('../../src/services/chat-core-v2/cloud-allowlist-answer', () => ({
 vi.mock('../../src/services/chat-cloud-allowlist-evidence', () => ({
   safeRecordChatV2CloudAllowlistEvidence: mocks.safeRecordChatV2CloudAllowlistEvidence,
 }));
+
+vi.mock('../../src/services/chat-core-v2/final-answer-composer', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/services/chat-core-v2/final-answer-composer')>();
+  return {
+    ...actual,
+    composeChatCoreV2FinalAnswer: (...args: Parameters<typeof actual.composeChatCoreV2FinalAnswer>) => {
+      const injected = mocks.finalAnswerCompositionError;
+      if (injected) {
+        mocks.finalAnswerCompositionError = null;
+        throw injected;
+      }
+      return actual.composeChatCoreV2FinalAnswer(...args);
+    },
+  };
+});
 
 vi.mock('../../src/services/cooking-safety-policy', () => ({
   cookingSafetyLogPayload: vi.fn((evaluation: any) => ({
@@ -75,6 +145,23 @@ function baseEnv(overrides: Record<string, string | undefined> = {}): NodeJS.Pro
   } as NodeJS.ProcessEnv;
 }
 
+function governedInferenceResult(text: string, runId: string) {
+  return {
+    text,
+    provider: 'ollama',
+    route: 'local',
+    model: 'qwen2.5:3b-instruct-q4_K_M',
+    modelDigest: 'sha256:357c53fb659c5076de1d65ccb0b397446227b71a42be9d1603d46168015c9e4b',
+    runId,
+    operationId: 'governed-chat-operation',
+    validationStatus: 'not_requested',
+    queueWaitMs: 0,
+    outputTokens: 40,
+    durationMs: 100,
+    stopReason: 'stop',
+  };
+}
+
 describe('ChatCoreV2 local chat orchestrator', () => {
   beforeEach(() => {
     mocks.dispatchLocalReasoning.mockReset();
@@ -92,6 +179,28 @@ describe('ChatCoreV2 local chat orchestrator', () => {
     mocks.renderCookingSafetyBlockedResponse.mockClear();
     mocks.renderCookingSafetyPromptBlockForUser.mockClear();
     mocks.maybeRecordCanaryTurn.mockReturnValue(true);
+    mocks.localPrimaryChatEnabled = false;
+    mocks.localPrimaryMode = 'off';
+    mocks.executeSkillInference.mockReset();
+    mocks.scheduleShadowAttempt.mockReset();
+    mocks.rejectApplicationResult.mockReset();
+    mocks.rejectApplicationOperationResults.mockReset();
+    mocks.getLatestOperationRunId.mockReset();
+    mocks.getLatestOperationRunId.mockImplementation(() => {
+      const calls = mocks.executeSkillInference.mock.calls;
+      const request = calls[calls.length - 1]?.[0] as { runId?: string } | undefined;
+      return request?.runId ?? null;
+    });
+    mocks.getExternalCloudFallbackEligibility.mockReset();
+    mocks.getExternalCloudFallbackEligibility.mockReturnValue({ allowed: true });
+    mocks.recordExternalCloudAttempt.mockReset();
+    mocks.finalAnswerCompositionError = null;
+    mocks.runWithAccountAdmission.mockReset();
+    mocks.runWithAccountAdmission.mockImplementation(async (
+      input: { abortSignal?: AbortSignal },
+      operation: (abortSignal: AbortSignal) => Promise<unknown>,
+    ) => operation(input.abortSignal ?? new AbortController().signal));
+    Object.values(mocks.logger).forEach((method) => method.mockReset());
     _resetLocalInferenceGateForTests();
   });
 
@@ -107,6 +216,569 @@ describe('ChatCoreV2 local chat orchestrator', () => {
       userId: 42,
       tenantId: 84,
     })).toBe(false);
+  });
+
+  it('schedules a private local-only shadow comparison without taking ownership of the live answer', async () => {
+    mocks.localPrimaryChatEnabled = true;
+    mocks.localPrimaryMode = 'shadow';
+    let releaseShadow!: () => void;
+
+    await expect(runChatCoreV2LocalChatTurn({
+      normalizedText: 'Help me outline this idea.',
+      userId: 42,
+      tenantId: 84,
+      requestId: 'shadow-chat-operation',
+      locale: 'en',
+      surface: 'ios',
+      deferShadowUntilVisibleOwner: (scheduleShadow) => {
+        releaseShadow = scheduleShadow;
+      },
+      env: baseEnv({ CHAT_CORE_V2_LOCAL_CHAT_LLM_MODE: 'off' }),
+    })).resolves.toBeNull();
+
+    expect(mocks.scheduleShadowAttempt).not.toHaveBeenCalled();
+    releaseShadow();
+    expect(mocks.scheduleShadowAttempt).toHaveBeenCalledWith(expect.objectContaining({
+      tenantId: 84,
+      userId: 42,
+      operationId: 'shadow-chat-operation',
+      containsPrivateData: true,
+      allowCloudEscalation: false,
+    }));
+    expect(mocks.executeSkillInference).not.toHaveBeenCalled();
+    expect(mocks.dispatchLocalReasoning).not.toHaveBeenCalled();
+  });
+
+  it('leaves high-risk turns with guarded owners instead of relabelling them for local inference', async () => {
+    mocks.localPrimaryChatEnabled = true;
+    mocks.localPrimaryMode = 'active';
+
+    await expect(runChatCoreV2LocalChatTurn({
+      normalizedText: 'Tell me exactly which investment I should buy today.',
+      userId: 42,
+      tenantId: 84,
+      requestId: 'regulated-finance-operation',
+      locale: 'en',
+      surface: 'ios',
+      riskClass: 'high',
+      env: baseEnv(),
+    })).resolves.toBeNull();
+
+    expect(mocks.executeSkillInference).not.toHaveBeenCalled();
+    expect(mocks.scheduleShadowAttempt).not.toHaveBeenCalled();
+    expect(mocks.dispatchLocalReasoning).not.toHaveBeenCalled();
+  });
+
+  it('hands shadow admission to the visible owner only after the legacy local answer completes', async () => {
+    mocks.localPrimaryChatEnabled = true;
+    mocks.localPrimaryMode = 'shadow';
+    let releaseVisible!: () => void;
+    let releaseShadow: (() => void) | undefined;
+    mocks.dispatchLocalReasoning.mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => { releaseVisible = resolve; });
+      return {
+        text: 'A visible legacy answer.',
+        providerMetadata: { providerUsed: 'ollama', modelUsed: 'legacy-local' },
+      };
+    });
+
+    const visibleAbort = new AbortController();
+    const visibleTurn = runChatCoreV2LocalChatTurn({
+      normalizedText: 'Help me outline this idea.',
+      userId: 42,
+      tenantId: 84,
+      requestId: 'shadow-after-visible-operation',
+      locale: 'en',
+      surface: 'ios',
+      abortSignal: visibleAbort.signal,
+      deferShadowUntilVisibleOwner: (scheduleShadow) => {
+        releaseShadow = scheduleShadow;
+      },
+      env: baseEnv(),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(mocks.dispatchLocalReasoning).toHaveBeenCalledTimes(1);
+    expect(mocks.scheduleShadowAttempt).not.toHaveBeenCalled();
+    expect(releaseShadow).toBeUndefined();
+
+    releaseVisible();
+    await expect(visibleTurn).resolves.toMatchObject({ degraded: false });
+    expect(releaseShadow).toBeTypeOf('function');
+    expect(mocks.scheduleShadowAttempt).not.toHaveBeenCalled();
+
+    releaseShadow?.();
+    expect(mocks.scheduleShadowAttempt).toHaveBeenCalledWith(expect.objectContaining({
+      operationId: 'shadow-after-visible-operation',
+    }));
+    expect(mocks.scheduleShadowAttempt.mock.calls[0]?.[0]).not.toHaveProperty('abortSignal');
+  });
+
+  it('does not record detached shadow evidence when the visible owner turn fails closed', async () => {
+    mocks.localPrimaryChatEnabled = true;
+    mocks.localPrimaryMode = 'shadow';
+    const persistenceFailure = Object.assign(new Error('usage persistence failed'), {
+      name: 'ApiUsagePersistenceError',
+      code: 'AI_USAGE_PERSISTENCE_FAILED',
+    });
+    mocks.dispatchLocalReasoning.mockRejectedValueOnce(persistenceFailure);
+
+    await expect(runChatCoreV2LocalChatTurn({
+      normalizedText: 'Help me outline this idea.',
+      userId: 42,
+      tenantId: 84,
+      requestId: 'shadow-visible-failed-operation',
+      locale: 'en',
+      surface: 'ios',
+      env: baseEnv(),
+    })).rejects.toBe(persistenceFailure);
+
+    expect(mocks.scheduleShadowAttempt).not.toHaveBeenCalled();
+  });
+
+  it('does not compare a shadow run against a degraded visible fallback', async () => {
+    mocks.localPrimaryChatEnabled = true;
+    mocks.localPrimaryMode = 'shadow';
+    mocks.dispatchLocalReasoning.mockRejectedValueOnce(new Error('visible provider unavailable'));
+
+    await expect(runChatCoreV2LocalChatTurn({
+      normalizedText: 'Help me outline this idea.',
+      userId: 42,
+      tenantId: 84,
+      requestId: 'shadow-visible-degraded-operation',
+      locale: 'en',
+      surface: 'ios',
+      env: baseEnv(),
+    })).resolves.toMatchObject({ degraded: true });
+
+    expect(mocks.scheduleShadowAttempt).not.toHaveBeenCalled();
+  });
+
+  it('surfaces governed local fair-use exhaustion without spending a cloud fallback', async () => {
+    mocks.localPrimaryChatEnabled = true;
+    mocks.localPrimaryMode = 'active';
+    mocks.executeSkillInference.mockRejectedValue(Object.assign(new Error('fair use reached'), {
+      code: 'LOCAL_FAIR_USE_REACHED',
+      status: 429,
+    }));
+    const cloudBoundary = vi.fn(async (call: () => Promise<unknown>) => call());
+
+    const result = await runChatCoreV2LocalChatTurn({
+      normalizedText: 'Help me plan this.',
+      userId: 42,
+      tenantId: 84,
+      requestId: 'fair-use-chat-operation',
+      locale: 'en',
+      surface: 'ios',
+      cloudBudgetBoundary: cloudBoundary,
+      env: baseEnv(),
+    });
+
+    expect(result).toMatchObject({
+      degraded: true,
+      response: {
+        metadata: {
+          reason: 'LOCAL_FAIR_USE_REACHED',
+          fallbackKind: 'local_fair_use_limit',
+        },
+      },
+    });
+    expect(result?.response.text).toContain('fair-use limit');
+    expect(cloudBoundary).not.toHaveBeenCalled();
+    expect(mocks.dispatchCloudAllowlistAnswer).not.toHaveBeenCalled();
+  });
+
+  it('propagates governed local-chat cancellation without logging degradation or starting fallback', async () => {
+    mocks.localPrimaryChatEnabled = true;
+    mocks.localPrimaryMode = 'active';
+    const controller = new AbortController();
+    const cancelled = Object.assign(new Error('request cancelled'), {
+      name: 'AbortError',
+      code: 'CHAT_REQUEST_CANCELLED',
+    });
+    mocks.executeSkillInference.mockImplementationOnce(async () => {
+      controller.abort(cancelled);
+      throw cancelled;
+    });
+    const cloudBoundary = vi.fn(async (call: () => Promise<unknown>) => call());
+
+    await expect(runChatCoreV2LocalChatTurn({
+      normalizedText: 'Help me plan this.',
+      userId: 42,
+      tenantId: 84,
+      requestId: 'cancelled-chat-operation',
+      locale: 'en',
+      surface: 'ios',
+      cloudBudgetBoundary: cloudBoundary,
+      abortSignal: controller.signal,
+      env: baseEnv(),
+    })).rejects.toBe(cancelled);
+
+    expect(cloudBoundary).not.toHaveBeenCalled();
+    expect(mocks.dispatchCloudAllowlistAnswer).not.toHaveBeenCalled();
+    expect(mocks.logger.warn).not.toHaveBeenCalledWith(
+      expect.anything(),
+      'Chat Core v2 local chat LLM failed',
+    );
+  });
+
+  it('rejects an incomplete initial local recipe stage while accepting its bounded repair', async () => {
+    mocks.localPrimaryChatEnabled = true;
+    mocks.localPrimaryMode = 'active';
+    mocks.executeSkillInference
+      .mockImplementationOnce(async (request: { runId: string }) => (
+        governedInferenceResult('Ingredients: chicken.', request.runId)
+      ))
+      .mockImplementationOnce(async (request: { runId: string }) => governedInferenceResult([
+        '**Chicken bowl**',
+        '**Serves:** 2',
+        '**Prep:** 10 minutes',
+        '**Cook:** 20 minutes',
+        '**Macros per serving (estimated):** Protein 35 g; Fat 12 g; Carbs 40 g; Calories 410 kcal',
+        '**Ingredients:** chicken, rice, peppers, olive oil, lemon',
+        '**Method:** 1. Cook the rice. 2. Cook chicken to a safe temperature. 3. Sauté peppers. 4. Assemble and serve.',
+      ].join('\n'), request.runId));
+
+    const result = await runChatCoreV2LocalChatTurn({
+      normalizedText: 'Give me a complete chicken bowl recipe for two people.',
+      userId: 84,
+      tenantId: 84,
+      requestId: 'governed-chat-operation',
+      locale: 'en-US',
+      surface: 'ios',
+      env: baseEnv(),
+    });
+
+    expect(result?.degraded).toBe(false);
+    expect(result?.response.text).toContain('Chicken bowl');
+    expect(mocks.executeSkillInference).toHaveBeenCalledTimes(2);
+    const initialRunId = (mocks.executeSkillInference.mock.calls[0]?.[0] as { runId: string }).runId;
+    const repairRunId = (mocks.executeSkillInference.mock.calls[1]?.[0] as { runId: string }).runId;
+    expect(initialRunId).toMatch(/^local-chat:[0-9a-f-]{36}$/u);
+    expect(initialRunId).not.toContain('governed-chat-operation');
+    expect(repairRunId).toBe(`${initialRunId}:repair:2`);
+    expect(mocks.rejectApplicationResult).toHaveBeenCalledWith(expect.objectContaining({
+      runId: initialRunId,
+      reason: 'recipe_initial_draft_incomplete',
+    }));
+    expect(mocks.rejectApplicationResult).not.toHaveBeenCalledWith(expect.objectContaining({
+      runId: repairRunId,
+    }));
+  });
+
+  it('uses the server-minted governed run id when recording an outer cloud fallback', async () => {
+    mocks.localPrimaryChatEnabled = true;
+    mocks.localPrimaryMode = 'active';
+    mocks.executeSkillInference.mockRejectedValueOnce(Object.assign(new Error('local timeout'), {
+      code: 'LOCAL_INFERENCE_TIMEOUT',
+    }));
+    mocks.dispatchCloudAllowlistAnswer.mockResolvedValueOnce({
+      text: 'Use one small next action and review it tomorrow.',
+      providerMetadata: { providerUsed: 'gemini', modelUsed: 'cloud-model' },
+    });
+    const cloudBoundary = vi.fn(async (call: () => Promise<unknown>) => call());
+    const packet = {
+      schemaVersion: 'cloud_allowlist_packet@1.0.0' as const,
+      intent: 'answer' as const,
+      capabilityId: 'chat.general_answer',
+      domain: 'content' as const,
+      hmacEntityIds: [],
+      evidenceFingerprints: ['evidence:server-minted-run'],
+      locale: 'en' as const,
+      complexityScore: 0.2,
+      escalationReason: 'cloud_allowlist_candidate' as const,
+    };
+
+    const result = await runChatCoreV2LocalChatTurn({
+      normalizedText: 'Give me one next action.',
+      userId: 42,
+      tenantId: 84,
+      requestId: 'client-controlled-request-id',
+      locale: 'en',
+      surface: 'ios',
+      cloudAllowlistPacket: { ok: true, packet },
+      cloudBudgetBoundary: cloudBoundary,
+      env: baseEnv(),
+    });
+
+    expect(result?.response.routeMethod).toBe('chat-core-v2-cloud-allowlist');
+    const governedRunId = (mocks.executeSkillInference.mock.calls[0]?.[0] as { runId: string }).runId;
+    expect(governedRunId).toMatch(/^local-chat:[0-9a-f-]{36}$/u);
+    expect(governedRunId).not.toContain('client-controlled-request-id');
+    expect(mocks.recordExternalCloudAttempt).toHaveBeenCalledWith(expect.objectContaining({
+      runId: governedRunId,
+      tenantId: 84,
+      userId: 42,
+      outcome: 'success',
+    }));
+  });
+
+  it('invalidates a produced local run before an outer cloud fallback starts', async () => {
+    mocks.localPrimaryChatEnabled = true;
+    mocks.localPrimaryMode = 'active';
+    mocks.executeSkillInference.mockImplementationOnce(async (request: { runId: string }) => ({
+      ...governedInferenceResult('Use fresh ingredients and keep the preparation simple.', request.runId),
+      outputTokens: 20,
+    }));
+    mocks.finalAnswerCompositionError = new Error('unexpected local post-processing failure');
+    mocks.dispatchCloudAllowlistAnswer.mockResolvedValueOnce({
+      text: 'Use fresh ingredients and keep the preparation simple.',
+      providerMetadata: { providerUsed: 'gemini', modelUsed: 'cloud-model' },
+    });
+    const packet = {
+      schemaVersion: 'cloud_allowlist_packet@1.0.0' as const,
+      intent: 'answer' as const,
+      capabilityId: 'chat.general_answer',
+      domain: 'cooking' as const,
+      hmacEntityIds: [],
+      evidenceFingerprints: ['evidence:post-processing'],
+      locale: 'en' as const,
+      complexityScore: 0.2,
+      escalationReason: 'cloud_allowlist_candidate' as const,
+    };
+
+    const result = await runChatCoreV2LocalChatTurn({
+      normalizedText: 'Explain safe storage for leftovers from dinner.',
+      userId: 42,
+      tenantId: 84,
+      requestId: 'post-processing-operation',
+      locale: 'en',
+      surface: 'ios',
+      cloudAllowlistPacket: { ok: true, packet },
+      cloudBudgetBoundary: async (call) => call(),
+      env: baseEnv(),
+    });
+
+    expect(result?.response.routeMethod).toBe('chat-core-v2-cloud-allowlist');
+    expect(mocks.rejectApplicationOperationResults).toHaveBeenCalledWith(expect.objectContaining({
+      operationId: 'post-processing-operation',
+      reason: 'local_post_processing_failed',
+    }));
+    expect(mocks.rejectApplicationOperationResults.mock.invocationCallOrder[0])
+      .toBeLessThan(mocks.dispatchCloudAllowlistAnswer.mock.invocationCallOrder[0]!);
+  });
+
+  it('does not invoke the external-attempt recorder twice when its delivery guard rejects', async () => {
+    mocks.localPrimaryChatEnabled = true;
+    mocks.localPrimaryMode = 'active';
+    mocks.executeSkillInference.mockRejectedValueOnce(Object.assign(new Error('local timeout'), {
+      code: 'LOCAL_INFERENCE_TIMEOUT',
+    }));
+    mocks.dispatchCloudAllowlistAnswer.mockResolvedValueOnce({
+      text: 'Choose one small next action.',
+      providerMetadata: { providerUsed: 'gemini', modelUsed: 'cloud-model' },
+    });
+    mocks.recordExternalCloudAttempt.mockImplementationOnce(() => {
+      throw Object.assign(new Error('fallback forbidden after delivery'), {
+        code: 'POST_DELIVERY_CLOUD_FALLBACK_FORBIDDEN',
+      });
+    });
+    const packet = {
+      schemaVersion: 'cloud_allowlist_packet@1.0.0' as const,
+      intent: 'answer' as const,
+      capabilityId: 'chat.general_answer',
+      domain: 'content' as const,
+      hmacEntityIds: [],
+      evidenceFingerprints: ['evidence:delivery-guard'],
+      locale: 'en' as const,
+      complexityScore: 0.2,
+      escalationReason: 'cloud_allowlist_candidate' as const,
+    };
+
+    const result = await runChatCoreV2LocalChatTurn({
+      normalizedText: 'Give me one next action.',
+      userId: 42,
+      tenantId: 84,
+      requestId: 'delivery-guard-operation',
+      locale: 'en',
+      surface: 'ios',
+      cloudAllowlistPacket: { ok: true, packet },
+      cloudBudgetBoundary: async (call) => call(),
+      env: baseEnv(),
+    });
+
+    expect(result?.degraded).toBe(true);
+    expect(mocks.recordExternalCloudAttempt).toHaveBeenCalledTimes(1);
+  });
+
+  it('rethrows cloud-fallback cancellation and records the attempt as cancelled', async () => {
+    mocks.localPrimaryChatEnabled = true;
+    mocks.localPrimaryMode = 'active';
+    mocks.executeSkillInference.mockRejectedValueOnce(Object.assign(new Error('local timeout'), {
+      code: 'LOCAL_INFERENCE_TIMEOUT',
+    }));
+    const controller = new AbortController();
+    const cancelled = Object.assign(new Error('request cancelled during cloud fallback'), {
+      name: 'AbortError',
+      code: 'CHAT_REQUEST_CANCELLED',
+    });
+    mocks.dispatchCloudAllowlistAnswer.mockImplementationOnce(async (
+      _packet: unknown,
+      options: { onProviderAttempt?: () => void },
+    ) => {
+      options.onProviderAttempt?.();
+      controller.abort(cancelled);
+      throw cancelled;
+    });
+    const packet = {
+      schemaVersion: 'cloud_allowlist_packet@1.0.0' as const,
+      intent: 'answer' as const,
+      capabilityId: 'chat.general_answer',
+      domain: 'content' as const,
+      hmacEntityIds: [],
+      evidenceFingerprints: ['evidence:cancelled-fallback'],
+      locale: 'en' as const,
+      complexityScore: 0.2,
+      escalationReason: 'cloud_allowlist_candidate' as const,
+    };
+
+    await expect(runChatCoreV2LocalChatTurn({
+      normalizedText: 'Give me one next action.',
+      userId: 42,
+      tenantId: 84,
+      requestId: 'cancelled-cloud-fallback-operation',
+      locale: 'en',
+      surface: 'ios',
+      cloudAllowlistPacket: { ok: true, packet },
+      cloudBudgetBoundary: async (call) => call(),
+      abortSignal: controller.signal,
+      env: baseEnv(),
+    })).rejects.toBe(cancelled);
+
+    expect(mocks.recordExternalCloudAttempt).toHaveBeenCalledTimes(1);
+    expect(mocks.recordExternalCloudAttempt).toHaveBeenCalledWith(expect.objectContaining({
+      outcome: 'cancelled',
+    }));
+  });
+
+  it('threads account-deletion cancellation through the external cloud fallback', async () => {
+    mocks.localPrimaryChatEnabled = true;
+    mocks.localPrimaryMode = 'active';
+    mocks.executeSkillInference.mockRejectedValueOnce(Object.assign(new Error('local timeout'), {
+      code: 'LOCAL_INFERENCE_TIMEOUT',
+    }));
+    const accountController = new AbortController();
+    const accountDeletion = Object.assign(new Error('account deletion started'), {
+      name: 'AbortError',
+      code: 'ACCOUNT_DELETION_IN_PROGRESS',
+    });
+    mocks.runWithAccountAdmission.mockImplementationOnce(async (
+      _input: unknown,
+      operation: (abortSignal: AbortSignal) => Promise<unknown>,
+    ) => {
+      const work = operation(accountController.signal);
+      accountController.abort(accountDeletion);
+      return work;
+    });
+    mocks.dispatchCloudAllowlistAnswer.mockImplementationOnce(async (
+      _packet: unknown,
+      options: { abortSignal: AbortSignal; onProviderAttempt?: () => void },
+    ) => {
+      options.onProviderAttempt?.();
+      return new Promise((_resolve, reject) => {
+        const rejectFromAbort = () => reject(options.abortSignal.reason);
+        if (options.abortSignal.aborted) rejectFromAbort();
+        else options.abortSignal.addEventListener('abort', rejectFromAbort, { once: true });
+      });
+    });
+    const packet = {
+      schemaVersion: 'cloud_allowlist_packet@1.0.0' as const,
+      intent: 'answer' as const,
+      capabilityId: 'chat.general_answer',
+      domain: 'content' as const,
+      hmacEntityIds: [],
+      evidenceFingerprints: ['evidence:account-deletion-fallback'],
+      locale: 'en' as const,
+      complexityScore: 0.2,
+      escalationReason: 'cloud_allowlist_candidate' as const,
+    };
+
+    await expect(runChatCoreV2LocalChatTurn({
+      normalizedText: 'Give me one next action.',
+      userId: 42,
+      tenantId: 84,
+      requestId: 'account-deletion-cloud-fallback-operation',
+      locale: 'en',
+      surface: 'ios',
+      cloudAllowlistPacket: { ok: true, packet },
+      cloudBudgetBoundary: async (call) => call(),
+      env: baseEnv(),
+    })).rejects.toBe(accountDeletion);
+
+    expect(mocks.runWithAccountAdmission).toHaveBeenCalledTimes(1);
+    expect(mocks.recordExternalCloudAttempt).toHaveBeenCalledWith(expect.objectContaining({
+      outcome: 'cancelled',
+      fallbackReason: 'ACCOUNT_DELETION_IN_PROGRESS',
+    }));
+  });
+
+  it('surfaces typed cloud-budget denial after a governed local failure', async () => {
+    mocks.localPrimaryChatEnabled = true;
+    mocks.localPrimaryMode = 'active';
+    mocks.executeSkillInference.mockRejectedValueOnce(Object.assign(new Error('local timeout'), {
+      code: 'LOCAL_INFERENCE_TIMEOUT',
+    }));
+    const packet = {
+      schemaVersion: 'cloud_allowlist_packet@1.0.0' as const,
+      intent: 'answer' as const,
+      capabilityId: 'chat.general_answer',
+      domain: 'content' as const,
+      hmacEntityIds: [],
+      evidenceFingerprints: ['evidence:budget-denied'],
+      locale: 'en' as const,
+      complexityScore: 0.2,
+      escalationReason: 'cloud_allowlist_candidate' as const,
+    };
+
+    const result = await runChatCoreV2LocalChatTurn({
+      normalizedText: 'Give me one next action.',
+      userId: 42,
+      tenantId: 84,
+      requestId: 'cloud-budget-denied-operation',
+      locale: 'en',
+      surface: 'ios',
+      cloudAllowlistPacket: { ok: true, packet },
+      cloudBudgetBoundary: async () => {
+        throw Object.assign(new Error('budget exhausted'), { code: 'CHAT_CLOUD_BUDGET_DENIED' });
+      },
+      env: baseEnv(),
+    });
+
+    expect(result).toMatchObject({
+      degraded: true,
+      response: {
+        metadata: {
+          reason: 'CHAT_CLOUD_BUDGET_DENIED',
+          fallbackKind: 'cloud_budget_denied',
+          policyCode: 'CHAT_CLOUD_BUDGET_DENIED',
+        },
+      },
+    });
+    expect(mocks.dispatchCloudAllowlistAnswer).not.toHaveBeenCalled();
+  });
+
+  it('does not count a local answer that the deterministic anti-claim guard rewrites', async () => {
+    mocks.localPrimaryChatEnabled = true;
+    mocks.localPrimaryMode = 'active';
+    mocks.executeSkillInference.mockResolvedValueOnce(
+      governedInferenceResult('I created and saved your weekly plan.', 'local-chat:anti-claim'),
+    );
+
+    const result = await runChatCoreV2LocalChatTurn({
+      normalizedText: 'What should I prioritize this week?',
+      userId: 84,
+      tenantId: 84,
+      requestId: 'governed-chat-operation',
+      locale: 'en-US',
+      surface: 'ios',
+      env: baseEnv(),
+    });
+
+    expect(result?.response.text).toContain('I did not execute an action');
+    expect(mocks.rejectApplicationOperationResults).toHaveBeenCalledWith(expect.objectContaining({
+      operationId: 'governed-chat-operation',
+      reason: 'unverified_action_claim_rewritten',
+    }));
   });
 
   it('does not visible-enable canary mode in production without an explicit allow flag', () => {
@@ -186,6 +858,34 @@ describe('ChatCoreV2 local chat orchestrator', () => {
     expect(result).toBeNull();
     expect(mocks.dispatchLocalReasoning).not.toHaveBeenCalled();
     expect(mocks.maybeRecordCanaryTurn).not.toHaveBeenCalled();
+  });
+
+  it('keeps the legacy domain allowlist authoritative while fleet shadow remains detached', async () => {
+    mocks.localPrimaryChatEnabled = true;
+    mocks.localPrimaryMode = 'shadow';
+    let releaseShadow!: () => void;
+
+    const result = await runChatCoreV2LocalChatTurn({
+      normalizedText: 'Explain my finance summary for this month',
+      userId: 42,
+      tenantId: 84,
+      requestId: 'shadow-domain-excluded',
+      locale: 'en',
+      surface: 'ios',
+      deferShadowUntilVisibleOwner: (scheduleShadow) => {
+        releaseShadow = scheduleShadow;
+      },
+      env: baseEnv({ CHAT_CORE_V2_ALLOWED_DOMAINS: 'content' }),
+    });
+
+    expect(result).toBeNull();
+    expect(mocks.dispatchLocalReasoning).not.toHaveBeenCalled();
+    expect(mocks.scheduleShadowAttempt).not.toHaveBeenCalled();
+    releaseShadow();
+    expect(mocks.scheduleShadowAttempt).toHaveBeenCalledWith(expect.objectContaining({
+      operationId: 'shadow-domain-excluded',
+      skillId: 'finance',
+    }));
   });
 
   it('returns a validated local LLM response for non-write chat using constrained plain text by default', async () => {
@@ -349,6 +1049,57 @@ describe('ChatCoreV2 local chat orchestrator', () => {
     );
   });
 
+  it('does not use a deterministic cooking template as a shadow quality baseline', async () => {
+    mocks.localPrimaryChatEnabled = true;
+    mocks.localPrimaryMode = 'shadow';
+
+    await expect(runChatCoreV2LocalChatTurn({
+      normalizedText: 'Give me a simple recipe idea for two people',
+      userId: 42,
+      tenantId: 84,
+      requestId: 'shadow-template-not-baseline',
+      locale: 'en',
+      surface: 'ios',
+      env: baseEnv(),
+    })).resolves.toMatchObject({
+      degraded: false,
+      response: { metadata: { localModelBypassed: true } },
+    });
+
+    expect(mocks.scheduleShadowAttempt).not.toHaveBeenCalled();
+  });
+
+  it('does not use a cooking policy refusal as a shadow quality baseline', async () => {
+    mocks.localPrimaryChatEnabled = true;
+    mocks.localPrimaryMode = 'shadow';
+    mocks.evaluateCookingSafetyText.mockReturnValue({
+      blocked: true,
+      surface: 'chat_core_v2_cooking',
+      issues: [{
+        code: 'ALLERGY_CONFLICT',
+        severity: 'blocker',
+        surface: 'chat_core_v2_cooking',
+        term: 'peanuts',
+        source: 'cooking_preference_profile',
+      }],
+    });
+
+    await expect(runChatCoreV2LocalChatTurn({
+      normalizedText: 'Give me a simple recipe idea for two people',
+      userId: 42,
+      tenantId: 84,
+      requestId: 'shadow-policy-refusal-not-baseline',
+      locale: 'en',
+      surface: 'ios',
+      env: baseEnv(),
+    })).resolves.toMatchObject({
+      degraded: false,
+      response: { metadata: { safetyBlocked: true } },
+    });
+
+    expect(mocks.scheduleShadowAttempt).not.toHaveBeenCalled();
+  });
+
   it('repairs obvious wrong-language local answers before returning them', async () => {
     mocks.dispatchLocalReasoning
       .mockResolvedValueOnce({
@@ -428,6 +1179,49 @@ describe('ChatCoreV2 local chat orchestrator', () => {
       localeRepairApplied: true,
       draftReasonCodes: expect.arrayContaining(['locale_model_repair']),
     }));
+  });
+
+  it('keeps legacy locale repairs inside the shared single-generation scheduler', async () => {
+    let activeCalls = 0;
+    let maximumActiveCalls = 0;
+    mocks.dispatchLocalReasoning.mockImplementation(async (task: { systemContext?: string }) => {
+      activeCalls += 1;
+      maximumActiveCalls = Math.max(maximumActiveCalls, activeCalls);
+      await Promise.resolve();
+      const repairing = task.systemContext?.includes('answer locale repair') === true;
+      activeCalls -= 1;
+      return {
+        text: repairing
+          ? 'Podes escolher uma única próxima ação pequena.'
+          : '¿Quieres elegir una sola acción pequeña?',
+        providerMetadata: { providerUsed: 'ollama', modelUsed: 'legacy-local' },
+      };
+    });
+
+    const turns = await Promise.all([
+      runChatCoreV2LocalChatTurn({
+        normalizedText: 'Como posso manter foco hoje?',
+        userId: 42,
+        tenantId: 84,
+        requestId: 'legacy-repair-scheduler-1',
+        locale: 'pt-PT',
+        surface: 'ios',
+        env: baseEnv(),
+      }),
+      runChatCoreV2LocalChatTurn({
+        normalizedText: 'Como posso organizar o dia?',
+        userId: 43,
+        tenantId: 84,
+        requestId: 'legacy-repair-scheduler-2',
+        locale: 'pt-PT',
+        surface: 'ios',
+        env: baseEnv(),
+      }),
+    ]);
+
+    expect(turns.every((turn) => turn?.response.metadata.localeRepairApplied === true)).toBe(true);
+    expect(mocks.dispatchLocalReasoning).toHaveBeenCalledTimes(4);
+    expect(maximumActiveCalls).toBe(1);
   });
 
   it('fails visibly on local queue pressure when explicitly configured without using cloud', async () => {
@@ -534,6 +1328,7 @@ describe('ChatCoreV2 local chat orchestrator', () => {
       locale: 'pt-BR',
       surface: 'ios',
       cloudAllowlistPacket: { ok: true, packet },
+      cloudBudgetBoundary: async (providerCall) => providerCall(),
       env,
     });
 
@@ -548,13 +1343,213 @@ describe('ChatCoreV2 local chat orchestrator', () => {
         reasonCode: 'cloud_allowlist_packet_safe',
       }),
     }));
-    expect(mocks.dispatchCloudAllowlistAnswer).toHaveBeenCalledWith(packet, {
+    expect(mocks.dispatchCloudAllowlistAnswer).toHaveBeenCalledWith(packet, expect.objectContaining({
       userId: 42,
       tenantId: 84,
       requestId: 'req-cloud-second',
-    });
+      abortSignal: expect.any(AbortSignal),
+    }));
     expect(mocks.dispatchLocalReasoning).toHaveBeenCalledTimes(1);
 
+    releaseFirst();
+    await first;
+  });
+
+  it('rethrows account-deletion cancellation from queue cloud fallback', async () => {
+    const env = baseEnv({
+      CHAT_CORE_V2_ALLOW_CLOUD_FALLBACK: 'true',
+      CHAT_CORE_V2_LOCAL_INFERENCE_MAX_CONCURRENCY: '1',
+      CHAT_CORE_V2_QUEUE_FALLBACK_MODE: 'cloud_allowlist',
+      CHAT_CORE_V2_QUEUE_CLOUD_AFTER_QUEUED_COUNT: '0',
+    });
+    let releaseFirst!: () => void;
+    mocks.dispatchLocalReasoning.mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => { releaseFirst = resolve; });
+      return {
+        text: 'First local response.',
+        providerMetadata: { providerUsed: 'ollama', modelUsed: 'legacy-local' },
+      };
+    });
+    const accountDeletion = Object.assign(new Error('account deletion started'), {
+      name: 'AbortError',
+      code: 'ACCOUNT_DELETION_IN_PROGRESS',
+    });
+    mocks.runWithAccountAdmission.mockImplementationOnce(async (
+      _input: unknown,
+      operation: (abortSignal: AbortSignal) => Promise<unknown>,
+    ) => {
+      const controller = new AbortController();
+      const work = operation(controller.signal);
+      controller.abort(accountDeletion);
+      return work;
+    });
+    mocks.dispatchCloudAllowlistAnswer.mockImplementationOnce(async (
+      _packet: unknown,
+      options: { abortSignal: AbortSignal },
+    ) => new Promise((_resolve, reject) => {
+      const rejectFromAbort = () => reject(options.abortSignal.reason);
+      if (options.abortSignal.aborted) rejectFromAbort();
+      else options.abortSignal.addEventListener('abort', rejectFromAbort, { once: true });
+    }));
+    const first = runChatCoreV2LocalChatTurn({
+      normalizedText: 'How do I stay focused?',
+      userId: 42,
+      tenantId: 84,
+      requestId: 'account-deletion-queue-first',
+      locale: 'en',
+      surface: 'ios',
+      env,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const packet = {
+      schemaVersion: 'cloud_allowlist_packet@1.0.0' as const,
+      intent: 'answer' as const,
+      capabilityId: 'chat.general_answer',
+      domain: 'content' as const,
+      hmacEntityIds: [],
+      evidenceFingerprints: ['evidence:account-deletion-queue'],
+      locale: 'en' as const,
+      complexityScore: 0.2,
+      escalationReason: 'cloud_allowlist_candidate' as const,
+    };
+
+    await expect(runChatCoreV2LocalChatTurn({
+      normalizedText: 'Give me one next action.',
+      userId: 42,
+      tenantId: 84,
+      requestId: 'account-deletion-queue-second',
+      locale: 'en',
+      surface: 'ios',
+      cloudAllowlistPacket: { ok: true, packet },
+      cloudBudgetBoundary: async (providerCall) => providerCall(),
+      env,
+    })).rejects.toBe(accountDeletion);
+
+    expect(mocks.runWithAccountAdmission).toHaveBeenCalledTimes(1);
+    releaseFirst();
+    await first;
+  });
+
+  it('fails closed before queue cloud dispatch when the cloud budget boundary is omitted', async () => {
+    const env = baseEnv({
+      CHAT_CORE_V2_ALLOW_CLOUD_FALLBACK: 'true',
+      CHAT_CORE_V2_LOCAL_INFERENCE_MAX_CONCURRENCY: '1',
+      CHAT_CORE_V2_QUEUE_FALLBACK_MODE: 'cloud_allowlist',
+      CHAT_CORE_V2_QUEUE_CLOUD_AFTER_QUEUED_COUNT: '0',
+    });
+    let releaseFirst!: () => void;
+    mocks.dispatchLocalReasoning.mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => { releaseFirst = resolve; });
+      return {
+        text: 'First local answer.',
+        providerMetadata: { providerUsed: 'ollama', modelUsed: 'legacy-local' },
+      };
+    });
+    const first = runChatCoreV2LocalChatTurn({
+      normalizedText: 'How can I focus?',
+      userId: 42,
+      tenantId: 84,
+      requestId: 'queue-boundary-first',
+      locale: 'en',
+      surface: 'ios',
+      env,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const packet = {
+      schemaVersion: 'cloud_allowlist_packet@1.0.0' as const,
+      intent: 'answer' as const,
+      capabilityId: 'chat.general_answer',
+      domain: 'content' as const,
+      hmacEntityIds: [],
+      evidenceFingerprints: ['evidence:boundary'],
+      locale: 'en',
+      complexityScore: 0.2,
+      escalationReason: 'cloud_allowlist_candidate' as const,
+    };
+
+    const second = await runChatCoreV2LocalChatTurn({
+      normalizedText: 'Give me one next step.',
+      userId: 42,
+      tenantId: 84,
+      requestId: 'queue-boundary-second',
+      locale: 'en',
+      surface: 'ios',
+      cloudAllowlistPacket: { ok: true, packet },
+      env,
+    });
+
+    expect(second).toMatchObject({
+      degraded: true,
+      response: { metadata: { reason: 'cloud_allowlist_answer_failed' } },
+    });
+    expect(mocks.dispatchCloudAllowlistAnswer).not.toHaveBeenCalled();
+    releaseFirst();
+    await first;
+  });
+
+  it('returns a typed degraded response when queue cloud fallback has no remaining budget', async () => {
+    const env = baseEnv({
+      CHAT_CORE_V2_ALLOW_CLOUD_FALLBACK: 'true',
+      CHAT_CORE_V2_LOCAL_INFERENCE_MAX_CONCURRENCY: '1',
+      CHAT_CORE_V2_QUEUE_FALLBACK_MODE: 'cloud_allowlist',
+      CHAT_CORE_V2_QUEUE_CLOUD_AFTER_QUEUED_COUNT: '0',
+    });
+    let releaseFirst!: () => void;
+    mocks.dispatchLocalReasoning.mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => { releaseFirst = resolve; });
+      return {
+        text: 'First local answer.',
+        providerMetadata: { providerUsed: 'ollama', modelUsed: 'legacy-local' },
+      };
+    });
+    const first = runChatCoreV2LocalChatTurn({
+      normalizedText: 'How can I focus?',
+      userId: 42,
+      tenantId: 84,
+      requestId: 'queue-budget-first',
+      locale: 'en',
+      surface: 'ios',
+      env,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const packet = {
+      schemaVersion: 'cloud_allowlist_packet@1.0.0' as const,
+      intent: 'answer' as const,
+      capabilityId: 'chat.general_answer',
+      domain: 'content' as const,
+      hmacEntityIds: [],
+      evidenceFingerprints: ['evidence:budget'],
+      locale: 'en',
+      complexityScore: 0.2,
+      escalationReason: 'cloud_allowlist_candidate' as const,
+    };
+
+    const second = await runChatCoreV2LocalChatTurn({
+      normalizedText: 'Give me one next step.',
+      userId: 42,
+      tenantId: 84,
+      requestId: 'queue-budget-second',
+      locale: 'en',
+      surface: 'ios',
+      cloudAllowlistPacket: { ok: true, packet },
+      cloudBudgetBoundary: async () => {
+        throw Object.assign(new Error('budget exhausted'), { code: 'CHAT_CLOUD_BUDGET_DENIED' });
+      },
+      env,
+    });
+
+    expect(second).toMatchObject({
+      degraded: true,
+      response: {
+        metadata: {
+          reason: 'CHAT_CLOUD_BUDGET_DENIED',
+          fallbackKind: 'cloud_budget_denied',
+          policyCode: 'CHAT_CLOUD_BUDGET_DENIED',
+          retryable: true,
+        },
+      },
+    });
+    expect(mocks.dispatchCloudAllowlistAnswer).not.toHaveBeenCalled();
     releaseFirst();
     await first;
   });
@@ -624,6 +1619,7 @@ describe('ChatCoreV2 local chat orchestrator', () => {
       locale: 'en',
       surface: 'ios',
       cloudAllowlistPacket: { ok: true, packet },
+      cloudBudgetBoundary: async (providerCall) => providerCall(),
       env,
     });
 
@@ -708,6 +1704,7 @@ describe('ChatCoreV2 local chat orchestrator', () => {
       locale: 'en',
       surface: 'ios',
       cloudAllowlistPacket: { ok: true, packet },
+      cloudBudgetBoundary: async (providerCall) => providerCall(),
       env,
     });
 
@@ -776,6 +1773,7 @@ describe('ChatCoreV2 local chat orchestrator', () => {
       locale: 'en',
       surface: 'ios',
       cloudAllowlistPacket: { ok: true, packet },
+      cloudBudgetBoundary: async (providerCall) => providerCall(),
       env,
     });
 
@@ -833,6 +1831,7 @@ describe('ChatCoreV2 local chat orchestrator', () => {
       requestId: 'req-producer-second',
       locale: 'pt-BR',
       surface: 'ios',
+      cloudBudgetBoundary: async (providerCall) => providerCall(),
       env,
     });
 

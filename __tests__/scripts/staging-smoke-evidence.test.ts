@@ -188,10 +188,19 @@ describe('release staging smoke evidence', () => {
     ['profile', 'unexpected-profile'],
     ['host', 'production'],
     ['runtimeSha', 'd'.repeat(40)],
-    ['artifactDigest', 'e'.repeat(64)],
   ] as const)('rejects evidence with a mismatched %s', (field, value) => {
     const fixture = validFixture();
     rewritePrivateJson(fixture.evidencePath, { ...fixture.evidence, [field]: value });
+
+    expect(() => validateFixture(fixture)).toThrow('identity or verdict is invalid');
+  });
+
+  it('rejects evidence with a mismatched artifact digest', () => {
+    const fixture = validFixture();
+    rewritePrivateJson(fixture.evidencePath, {
+      ...fixture.evidence,
+      artifactDigest: 'e'.repeat(64),
+    });
 
     expect(() => validateFixture(fixture)).toThrow('identity or verdict is invalid');
   });

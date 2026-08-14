@@ -199,6 +199,8 @@ export function buildScriptCreatorProfile(params: {
 export function buildScriptSuccessResponse(params: {
   result: ContentScriptEngineResult;
   language?: string;
+  /** Source metadata came from immutable request input rather than the model. */
+  sourceMetadataIsRequestEcho?: boolean;
   format: ScriptFormat;
   renderMode: ScriptRenderMode;
   scriptStyle: ScriptStyle;
@@ -240,7 +242,12 @@ export function buildScriptSuccessResponse(params: {
     qualityGate,
   } = params;
   const language = normalizeSupportedLang(params.language, 'en-US');
-  assertContentScriptOutputLanguage(language, result, 'content-script-response-input');
+  assertContentScriptOutputLanguage(
+    language,
+    result,
+    'content-script-response-input',
+    { sourceMetadataIsRequestEcho: params.sourceMetadataIsRequestEcho === true },
+  );
 
   const rawSources = Array.isArray(result.sources_used) ? result.sources_used : [];
   const sources = rawSources.filter((source) => !isMockContentSource({
@@ -442,7 +449,12 @@ export function buildScriptSuccessResponse(params: {
     cacheHit,
     usageImpact: cacheHit ? 'none' : generationMode === 'deep' ? 'high' : generationMode === 'draft' ? 'low' : generationMode,
   };
-  assertContentScriptPublicOutputLanguage(language, response, 'content-script-public-response');
+  assertContentScriptPublicOutputLanguage(
+    language,
+    response,
+    'content-script-public-response',
+    { sourceMetadataIsRequestEcho: params.sourceMetadataIsRequestEcho === true },
+  );
   return response;
 }
 

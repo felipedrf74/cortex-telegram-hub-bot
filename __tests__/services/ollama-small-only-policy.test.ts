@@ -3,19 +3,36 @@ import { describe, expect, it } from 'vitest';
 
 import {
   assertSmallOnlyOllamaModel,
+  getActiveLocalModel,
   OLLAMA_FAST_MODEL_DISABLED,
-  OLLAMA_SMALL_ONLY_MODEL,
   resolveOllamaSmallOnlyRuntimeConfig,
 } from '../../src/services/ollama-model-policy';
 
-describe('Ollama small-only policy', () => {
-  it('defaults every local role to 3B and disables the absent fast path', () => {
+describe('Ollama signed-manifest policy', () => {
+  it('defaults every local role to the active manifest model and disables the absent fast path', () => {
+    const activeModel = getActiveLocalModel().ollamaTag;
     expect(resolveOllamaSmallOnlyRuntimeConfig({})).toEqual({
-      model: OLLAMA_SMALL_ONLY_MODEL,
-      classifierModel: OLLAMA_SMALL_ONLY_MODEL,
-      localChatModel: OLLAMA_SMALL_ONLY_MODEL,
-      localChatRecipeModel: OLLAMA_SMALL_ONLY_MODEL,
+      manifestAvailable: true,
+      manifestErrorCode: null,
+      model: activeModel,
+      classifierModel: activeModel,
+      localChatModel: activeModel,
+      localChatRecipeModel: activeModel,
       localChatFastModel: OLLAMA_FAST_MODEL_DISABLED,
+    });
+  });
+
+  it('returns an all-off provider configuration when the packaged manifest cannot be loaded', () => {
+    expect(resolveOllamaSmallOnlyRuntimeConfig({}, {
+      manifestLoader: () => { throw new Error('corrupt manifest contents'); },
+    })).toEqual({
+      manifestAvailable: false,
+      manifestErrorCode: 'model_manifest_unavailable',
+      model: 'off',
+      classifierModel: 'off',
+      localChatModel: 'off',
+      localChatRecipeModel: 'off',
+      localChatFastModel: 'off',
     });
   });
 
@@ -30,9 +47,9 @@ describe('Ollama small-only policy', () => {
       .toThrow(`${key} must be`);
   });
 
-  it('rejects the removed local rollback variable even when it names 3B', () => {
+  it('rejects the removed local rollback variable even when it names the active model', () => {
     expect(() => resolveOllamaSmallOnlyRuntimeConfig({
-      OLLAMA_OPERATIONAL_ROLLBACK_MODEL: OLLAMA_SMALL_ONLY_MODEL,
+      OLLAMA_OPERATIONAL_ROLLBACK_MODEL: getActiveLocalModel().ollamaTag,
     })).toThrow('OLLAMA_OPERATIONAL_ROLLBACK_MODEL (removed)');
 
     const configSource = readFileSync('src/config.ts', 'utf8');
@@ -49,21 +66,23 @@ describe('Ollama small-only policy', () => {
   it('pins the installer to the bounded service policy', () => {
     const source = readFileSync('scripts/install-ollama.sh', 'utf8');
     for (const required of [
-      'PRIMARY_MODEL="qwen2.5:3b-instruct-q4_K_M"',
-      'readonly OLLAMA_MEMORY_HIGH="4G"',
-      'readonly OLLAMA_MEMORY_MAX="6G"',
-      'readonly OLLAMA_MEMORY_SWAP_MAX="512M"',
-      'readonly OLLAMA_CONTEXT_LENGTH="4096"',
+      'config/local-model-manifest.json',
+      'readonly PRIMARY_MODEL="${active_model_identity[0]}"',
+      'readonly RETAINED_MODEL_DIGEST="${active_model_identity[1]}"',
+      'readonly OLLAMA_MEMORY_HIGH="18G"',
+      'readonly OLLAMA_MEMORY_MAX="20G"',
+      'readonly OLLAMA_MEMORY_SWAP_MAX="0"',
+      'readonly OLLAMA_CONTEXT_LENGTH="16384"',
       'readonly OLLAMA_MAX_QUEUE="4"',
       'readonly OLLAMA_NUM_PARALLEL="1"',
       'readonly OLLAMA_MAX_LOADED_MODELS="1"',
-      'readonly OLLAMA_CPU_QUOTA="200%"',
+      'readonly OLLAMA_CPU_QUOTA="800%"',
       'Environment="OLLAMA_MAX_LOADED_MODELS=${OLLAMA_MAX_LOADED_MODELS}"',
       'Environment="OLLAMA_NUM_PARALLEL=${OLLAMA_NUM_PARALLEL}"',
       'CPUQuota=${OLLAMA_CPU_QUOTA}',
       'CPUWeight=${OLLAMA_CPUWEIGHT}',
       'Nice=${OLLAMA_NICE}',
-      'nexus-ollama-service-envelope-check.mjs" --expected-swap-bytes 536870912',
+      'nexus-ollama-service-envelope-check.mjs" --expected-swap-bytes 0',
     ]) {
       expect(source).toContain(required);
     }
@@ -76,11 +95,12 @@ describe('Ollama small-only policy', () => {
     const source = readFileSync('scripts/staging-smoke-ollama.sh', 'utf8');
     expect(source).toContain('HEALTH_TOKEN is required');
     expect(source).toContain('-H @"${AUTH_HEADER_FILE}"');
-    expect(source).toContain('Required small-only inference round-trip');
-    expect(source).toContain('length == 1 and .[0].name == $model');
+    expect(source).toContain('Required signed-manifest inference round-trip');
+    expect(source).toContain('active model tag and digest match the signed manifest');
+    expect(source).toContain('(.models | length) <= 1');
     expect(source).toContain('OLLAMA_INVENTORY_PHASE');
     expect(source).toContain('final|release');
-    expect(source).toContain('[$model, $remove1, $remove2, $remove3]');
+    expect(source).toContain('LOCAL_MODEL_MANIFEST_PATH');
     expect(source).toContain('.providers.gemini.circuit.state == "CLOSED"');
     expect(source).toContain('.providers.ollama.circuit.state == "CLOSED"');
     expect(source).toContain('$apps[0].AI_CLASSIFY_PRIMARY == "gemini"');
@@ -125,6 +145,22 @@ describe('Ollama small-only policy', () => {
     expect(source).toContain('queueState[key] = (queueState[key] as number) + 1;');
     expect(source).toContain('queueState[key] = (queueState[key] as number) - 1;');
     expect(source).not.toMatch(/\(queueState\[key\] as number\)(?:\+\+|--)/);
+  });
+
+  it('binds queued dispatch tag and digest checks to one fresh manifest snapshot', () => {
+    const source = readFileSync('src/services/ollama-provider.ts', 'utf8');
+    const dispatchBoundary = source.slice(
+      source.indexOf('const invokeOllama = async () => {'),
+      source.indexOf('const t0 = Date.now();', source.indexOf('const invokeOllama = async () => {')),
+    );
+
+    expect(dispatchBoundary).toContain('const manifest = getLocalModelManifest({ fresh: true });');
+    expect(dispatchBoundary).toContain(
+      'const activeModel = manifest.models.find((model) => model.id === manifest.activeModelId)!;',
+    );
+    expect(dispatchBoundary).toContain('`ollama_request:${taskType}:dispatch`');
+    expect(dispatchBoundary).toContain('{ expectedModel: activeModel.ollamaTag }');
+    expect(dispatchBoundary).not.toContain('getActiveLocalModel(');
   });
 
   it('keeps full script generation and larger reasoning cloud-gated by default', () => {

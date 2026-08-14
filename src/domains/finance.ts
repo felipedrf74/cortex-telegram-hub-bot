@@ -3,6 +3,11 @@
 import { DomainResponse } from './types';
 import { handleSimpleDomain } from './domain-handler';
 
-export async function handleFinance(message: string, userId?: number, tenantId?: number): Promise<DomainResponse> {
-  return handleSimpleDomain('finance', message, 5, userId, undefined, tenantId);
+export async function handleFinance(
+  message: string,
+  userId?: number,
+  tenantId?: number,
+  abortSignal?: AbortSignal,
+): Promise<DomainResponse> {
+  return handleSimpleDomain('finance', message, 5, userId, undefined, tenantId, undefined, abortSignal);
 }

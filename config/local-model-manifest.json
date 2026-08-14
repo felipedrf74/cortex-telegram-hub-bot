@@ -1,0 +1,98 @@
+{
+  "schemaVersion": "nexus.local-model-manifest.v1",
+  "manifestVersion": "2026-08-12.1",
+  "selectionStatus": "control_only",
+  "selectionEvidence": null,
+  "activeModelId": "qwen2.5-3b-control",
+  "models": [
+    {
+      "id": "qwen2.5-3b-control",
+      "ollamaTag": "qwen2.5:3b-instruct-q4_K_M",
+      "role": "control",
+      "license": "Apache-2.0",
+      "quantization": "Q4_K_M",
+      "promptTemplate": "ollama-library-default",
+      "runtimeVersion": "0.24.0",
+      "evidenceStatus": "verified",
+      "digest": "sha256:357c53fb659c5076de1d65ccb0b397446227b71a42be9d1603d46168015c9e4b",
+      "maxContextTokens": 4096,
+      "productionEligible": true
+    },
+    {
+      "id": "qwen3.5-9b-candidate",
+      "ollamaTag": "qwen3.5:9b",
+      "role": "candidate",
+      "license": "Apache-2.0",
+      "quantization": "official-ollama-package-to-verify",
+      "promptTemplate": "ollama-library-default-to-verify",
+      "runtimeVersion": "0.24.0",
+      "evidenceStatus": "candidate_unverified",
+      "digest": null,
+      "maxContextTokens": 16384,
+      "productionEligible": false
+    },
+    {
+      "id": "ministral-3-14b-candidate",
+      "ollamaTag": "ministral-3:14b",
+      "role": "candidate",
+      "license": "Apache-2.0",
+      "quantization": "official-ollama-package-to-verify",
+      "promptTemplate": "ollama-library-default-to-verify",
+      "runtimeVersion": "0.24.0",
+      "evidenceStatus": "candidate_unverified",
+      "digest": null,
+      "maxContextTokens": 16384,
+      "productionEligible": false
+    },
+    {
+      "id": "gemma-3-12b-candidate",
+      "ollamaTag": "gemma3:12b",
+      "role": "candidate",
+      "license": "Gemma",
+      "quantization": "official-ollama-package-to-verify",
+      "promptTemplate": "ollama-library-default-to-verify",
+      "runtimeVersion": "0.24.0",
+      "evidenceStatus": "candidate_unverified",
+      "digest": null,
+      "maxContextTokens": 16384,
+      "productionEligible": false
+    },
+    {
+      "id": "gpt-oss-20b-candidate",
+      "ollamaTag": "gpt-oss:20b",
+      "role": "candidate",
+      "license": "Apache-2.0",
+      "quantization": "official-ollama-package-to-verify",
+      "promptTemplate": "ollama-library-default-to-verify",
+      "runtimeVersion": "0.24.0",
+      "evidenceStatus": "candidate_unverified",
+      "digest": null,
+      "maxContextTokens": 16384,
+      "productionEligible": false
+    }
+  ],
+  "productionEnvelope": {
+    "cpuQuotaPercent": 800,
+    "memoryHighBytes": 19327352832,
+    "memoryMaxBytes": 21474836480,
+    "memorySwapMaxBytes": 0,
+    "minimumHostAvailableBytes": 6442450944,
+    "maxLoadedModels": 1,
+    "parallelGenerations": 1,
+    "waitingQueueDepth": 4,
+    "maxContextTokens": 16384,
+    "nice": 10
+  },
+  "benchmarkEnvelope": {
+    "cpuQuotaPercent": 800,
+    "memoryHighBytes": 23622320128,
+    "memoryMaxBytes": 25769803776,
+    "memorySwapMaxBytes": 0,
+    "minimumHostAvailableBytes": 6442450944,
+    "maxLoadedModels": 1,
+    "parallelGenerations": 1,
+    "waitingQueueDepth": 4,
+    "maxContextTokens": 16384,
+    "nice": 10
+  }
+}

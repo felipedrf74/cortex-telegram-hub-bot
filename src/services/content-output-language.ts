@@ -124,11 +124,17 @@ export interface ContentScriptLanguageFields {
   expand_options?: unknown;
 }
 
+interface ContentScriptLanguageValidationOptions {
+  /** Treat source title/note spans as authenticated request echoes. */
+  sourceMetadataIsRequestEcho?: boolean;
+}
+
 /** Validate every independently displayed script field before use or storage. */
 export function assertContentScriptOutputLanguage(
   language: unknown,
   result: ContentScriptLanguageFields,
   boundary: string,
+  options: ContentScriptLanguageValidationOptions = {},
 ): Lang {
   const normalizedLanguage = normalizeContentOutputLanguage(language);
   if (typeof result.script !== 'string' || !result.script.trim()) {
@@ -144,13 +150,15 @@ export function assertContentScriptOutputLanguage(
   appendGeneratedTextArray(fields, result.hashtags, normalizedLanguage, boundary);
   appendGeneratedTextArray(fields, result.warnings, normalizedLanguage, boundary);
   appendGeneratedTextArray(fields, result.quality_warnings, normalizedLanguage, boundary);
-  appendGeneratedObjectTextField(
-    fields,
-    result.sources_used,
-    'relevance_note',
-    normalizedLanguage,
-    boundary,
-  );
+  if (!options.sourceMetadataIsRequestEcho) {
+    appendGeneratedObjectTextField(
+      fields,
+      result.sources_used,
+      'relevance_note',
+      normalizedLanguage,
+      boundary,
+    );
+  }
   appendGeneratedObjectTextField(
     fields,
     result.expand_options,
@@ -170,6 +178,7 @@ export function assertContentScriptPublicOutputLanguage(
   language: unknown,
   value: unknown,
   boundary: string,
+  options: ContentScriptLanguageValidationOptions = {},
 ): Lang {
   const normalizedLanguage = normalizeContentOutputLanguage(language);
   const response = generatedRecord(value, normalizedLanguage, boundary);
@@ -184,6 +193,14 @@ export function assertContentScriptPublicOutputLanguage(
       normalizedLanguage,
       boundary,
     ),
+    ...(options.sourceMetadataIsRequestEcho
+      ? generatedObjectTextValues(
+        response.sourcesUsed,
+        'relevanceNote',
+        normalizedLanguage,
+        boundary,
+      )
+      : []),
   ];
   const fields: unknown[] = [
     response.script,
@@ -195,7 +212,9 @@ export function assertContentScriptPublicOutputLanguage(
   appendGeneratedTextArray(fields, response.hashtags, normalizedLanguage, boundary);
   appendGeneratedTextArray(fields, response.warnings, normalizedLanguage, boundary);
   appendGeneratedTextArray(fields, response.qualityWarnings, normalizedLanguage, boundary);
-  appendGeneratedObjectTextField(fields, response.sourcesUsed, 'relevanceNote', normalizedLanguage, boundary);
+  if (!options.sourceMetadataIsRequestEcho) {
+    appendGeneratedObjectTextField(fields, response.sourcesUsed, 'relevanceNote', normalizedLanguage, boundary);
+  }
   appendGeneratedObjectTextField(fields, response.expandOptions, 'label', normalizedLanguage, boundary);
   appendGeneratedObjectTextField(fields, response.nextActions, 'label', normalizedLanguage, boundary);
 
