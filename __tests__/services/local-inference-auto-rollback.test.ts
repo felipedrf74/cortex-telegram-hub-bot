@@ -10,21 +10,32 @@ const safetyIncidentsMock = vi.hoisted(() => vi.fn(() => []));
 vi.mock('../../src/services/local-primary-config', () => ({
   localPrimaryInferenceConfig: { autoRollbackEnabled: true },
 }));
-vi.mock('../../src/services/database', () => ({ getDb: () => { throw new Error('explicit database required'); } }));
+vi.mock('../../src/services/database', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/database')>('../../src/services/database')),
+  getDb: () => { throw new Error('explicit database required'); },
+}));
 vi.mock('../../src/services/local-inference-reporting', () => ({
   buildLocalInferenceSummary: (...args: unknown[]) => summaryMock(...args),
 }));
-vi.mock('../../src/services/local-inference-runtime-control', () => ({
+vi.mock('../../src/services/local-inference-runtime-control', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/local-inference-runtime-control')>(
+    '../../src/services/local-inference-runtime-control',
+  )),
   getLocalInferenceRuntimeControl: () => ({ mode: 'active', environment: 'production' }),
   setLocalInferenceRuntimeControl: (...args: unknown[]) => setControlMock(...args),
 }));
-vi.mock('../../src/services/user-service', () => ({
+vi.mock('../../src/services/user-service', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/user-service')>('../../src/services/user-service')),
   getOwnerBootstrapTarget: () => ownerTargetMock(),
 }));
-vi.mock('../../src/services/local-inference-safety-incidents', () => ({
+vi.mock('../../src/services/local-inference-safety-incidents', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/local-inference-safety-incidents')>(
+    '../../src/services/local-inference-safety-incidents',
+  )),
   listRecentCriticalLocalInferenceSafetyIncidents: (...args: unknown[]) => safetyIncidentsMock(...args),
 }));
-vi.mock('../../src/utils/logger', () => ({
+vi.mock('../../src/utils/logger', async () => ({
+  ...(await vi.importActual<typeof import('../../src/utils/logger')>('../../src/utils/logger')),
   logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
 }));
 

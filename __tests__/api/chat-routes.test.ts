@@ -428,8 +428,10 @@ vi.mock('../../src/services/gemini-provider', () => ({
   completeOneShotWithSearch: (...args: unknown[]) => mockCompleteOneShotWithSearch(...args),
 }));
 
-vi.mock('../../src/services/local-primary-config', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../src/services/local-primary-config')>();
+vi.mock('../../src/services/local-primary-config', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/local-primary-config')>(
+    '../../src/services/local-primary-config',
+  );
   return {
     ...actual,
     localPrimaryInferenceConfig: {
@@ -440,8 +442,10 @@ vi.mock('../../src/services/local-primary-config', async (importOriginal) => {
   };
 });
 
-vi.mock('../../src/services/local-inference-runtime-control', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../src/services/local-inference-runtime-control')>()),
+vi.mock('../../src/services/local-inference-runtime-control', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/local-inference-runtime-control')>(
+    '../../src/services/local-inference-runtime-control',
+  )),
   getLocalInferenceRuntimeControl: () => ({
     environment: 'staging',
     mode: localPrimaryShortcutMocks.mode,
@@ -449,8 +453,10 @@ vi.mock('../../src/services/local-inference-runtime-control', async (importOrigi
   }),
 }));
 
-vi.mock('../../src/services/skill-inference-service', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../src/services/skill-inference-service')>()),
+vi.mock('../../src/services/skill-inference-service', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/skill-inference-service')>(
+    '../../src/services/skill-inference-service',
+  )),
   isLocalInferenceUserEnrolled: () => {
     localPrimaryShortcutMocks.enrollmentChecks += 1;
     return localPrimaryShortcutMocks.enrolled;

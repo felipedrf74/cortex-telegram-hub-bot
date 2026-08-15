@@ -22,7 +22,10 @@ vi.mock('../../src/services/local-primary-config', () => ({
     get contentSpecialistsEnabled() { return agentMocks.contentSpecialistsEnabled; },
   },
 }));
-vi.mock('../../src/services/skill-inference-service', () => ({
+vi.mock('../../src/services/skill-inference-service', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/skill-inference-service')>(
+    '../../src/services/skill-inference-service',
+  )),
   executeSkillInference: (...args: unknown[]) => agentMocks.executeSkillInference(...args),
   isLocalInferenceUserEnrolled: () => agentMocks.localUserEnrolled,
   isSkillInferenceAccountDeletionError: (error: unknown) => (
@@ -32,7 +35,10 @@ vi.mock('../../src/services/skill-inference-service', () => ({
   rejectSkillInferenceApplicationResult: (...args: unknown[]) => agentMocks.rejectApplicationResult(...args),
   runWithSkillInferenceAccountAdmission: (...args: unknown[]) => agentMocks.runWithAccountAdmission(...args),
 }));
-vi.mock('../../src/services/local-inference-runtime-control', () => ({
+vi.mock('../../src/services/local-inference-runtime-control', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/local-inference-runtime-control')>(
+    '../../src/services/local-inference-runtime-control',
+  )),
   getLocalInferenceRuntimeControl: () => ({
     mode: agentMocks.localControlMode,
     rolloutPercent: agentMocks.localRolloutPercent,

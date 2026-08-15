@@ -22,8 +22,10 @@ const localRoutingState = vi.hoisted(() => ({
   enrolled: false,
 }));
 
-vi.mock('../../src/services/local-primary-config', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../src/services/local-primary-config')>();
+vi.mock('../../src/services/local-primary-config', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/local-primary-config')>(
+    '../../src/services/local-primary-config',
+  );
   return {
     ...actual,
     localPrimaryInferenceConfig: {
@@ -33,8 +35,10 @@ vi.mock('../../src/services/local-primary-config', async (importOriginal) => {
   };
 });
 
-vi.mock('../../src/services/local-inference-runtime-control', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../src/services/local-inference-runtime-control')>();
+vi.mock('../../src/services/local-inference-runtime-control', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/local-inference-runtime-control')>(
+    '../../src/services/local-inference-runtime-control',
+  );
   return {
     ...actual,
     getLocalInferenceRuntimeControl: () => ({
@@ -45,8 +49,10 @@ vi.mock('../../src/services/local-inference-runtime-control', async (importOrigi
   };
 });
 
-vi.mock('../../src/services/skill-inference-service', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../src/services/skill-inference-service')>();
+vi.mock('../../src/services/skill-inference-service', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/skill-inference-service')>(
+    '../../src/services/skill-inference-service',
+  );
   return {
     ...actual,
     isLocalInferenceUserEnrolled: () => localRoutingState.enrolled,
@@ -106,8 +112,10 @@ vi.mock('../../src/services/cost-guardrail', () => {
   };
 });
 
-vi.mock('../../src/services/content-engine', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../src/services/content-engine')>();
+vi.mock('../../src/services/content-engine', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/content-engine')>(
+    '../../src/services/content-engine',
+  );
   return {
     ...actual,
     getScript: (...args: unknown[]) => {

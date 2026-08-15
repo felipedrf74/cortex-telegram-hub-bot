@@ -173,7 +173,10 @@ vi.mock('../../src/services/entitlement', () => ({
   getEffectiveEntitlement: () => ({ aiAccessAllowed: entitlementState.aiAccessAllowed }),
 }));
 
-vi.mock('../../src/services/skill-inference-account-lifecycle', () => ({
+vi.mock('../../src/services/skill-inference-account-lifecycle', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/skill-inference-account-lifecycle')>(
+    '../../src/services/skill-inference-account-lifecycle',
+  )),
   isSkillInferenceAccountDeletionError: () => false,
   runWithSkillInferenceAccountAdmission: async (
     input: { abortSignal?: AbortSignal },

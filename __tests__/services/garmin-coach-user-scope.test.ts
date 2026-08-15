@@ -143,7 +143,10 @@ vi.mock('../../src/services/cost-guardrail', () => ({
   withAiBudgetReservation: (...args: unknown[]) => mockWithAiBudgetReservation(...args),
 }));
 
-vi.mock('../../src/services/skill-inference-service', () => ({
+vi.mock('../../src/services/skill-inference-service', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/skill-inference-service')>(
+    '../../src/services/skill-inference-service',
+  )),
   isSkillInferenceAccountDeletionError: (error: unknown) => (
     (error as { code?: string } | null)?.code === 'ACCOUNT_DELETION_IN_PROGRESS'
   ),

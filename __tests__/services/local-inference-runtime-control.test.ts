@@ -29,7 +29,10 @@ vi.mock('../../src/services/local-primary-config', () => ({
   localPrimaryInferenceConfig: localPrimaryConfigMock,
 }));
 
-vi.mock('../../src/services/ollama-model-policy', () => {
+vi.mock('../../src/services/ollama-model-policy', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/ollama-model-policy')>(
+    '../../src/services/ollama-model-policy',
+  );
   const manifest = () => ({
     manifestVersion: '2026-08-12.1',
     activeModelId: 'production-winner',
@@ -40,6 +43,7 @@ vi.mock('../../src/services/ollama-model-policy', () => {
     }],
   });
   return {
+    ...actual,
     getLocalModelManifest: manifest,
     tryGetLocalModelManifest: () => ({ ok: true as const, manifest: manifest() }),
   };

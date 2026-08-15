@@ -27,13 +27,15 @@ const mocks = vi.hoisted(() => ({
   logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
-vi.mock('../../src/utils/logger', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../src/utils/logger')>()),
+vi.mock('../../src/utils/logger', async () => ({
+  ...(await vi.importActual<typeof import('../../src/utils/logger')>('../../src/utils/logger')),
   logger: mocks.logger,
 }));
 
-vi.mock('../../src/services/local-primary-config', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../src/services/local-primary-config')>();
+vi.mock('../../src/services/local-primary-config', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/local-primary-config')>(
+    '../../src/services/local-primary-config',
+  );
   return {
     ...actual,
     localPrimaryInferenceConfig: {
@@ -43,8 +45,10 @@ vi.mock('../../src/services/local-primary-config', async (importOriginal) => {
   };
 });
 
-vi.mock('../../src/services/local-inference-runtime-control', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../src/services/local-inference-runtime-control')>()),
+vi.mock('../../src/services/local-inference-runtime-control', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/local-inference-runtime-control')>(
+    '../../src/services/local-inference-runtime-control',
+  )),
   getLocalInferenceRuntimeControl: () => ({
     environment: 'staging',
     mode: mocks.localPrimaryMode,
@@ -52,8 +56,10 @@ vi.mock('../../src/services/local-inference-runtime-control', async (importOrigi
   }),
 }));
 
-vi.mock('../../src/services/skill-inference-service', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../src/services/skill-inference-service')>()),
+vi.mock('../../src/services/skill-inference-service', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/skill-inference-service')>(
+    '../../src/services/skill-inference-service',
+  )),
   executeSkillInference: (...args: unknown[]) => mocks.executeSkillInference(...args),
   scheduleSkillInferenceShadowAttempt: (...args: unknown[]) => mocks.scheduleShadowAttempt(...args),
   isLocalInferenceUserEnrolled: () => mocks.localPrimaryMode === 'active',
@@ -84,8 +90,10 @@ vi.mock('../../src/services/chat-cloud-allowlist-evidence', () => ({
   safeRecordChatV2CloudAllowlistEvidence: mocks.safeRecordChatV2CloudAllowlistEvidence,
 }));
 
-vi.mock('../../src/services/chat-core-v2/final-answer-composer', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../src/services/chat-core-v2/final-answer-composer')>();
+vi.mock('../../src/services/chat-core-v2/final-answer-composer', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/chat-core-v2/final-answer-composer')>(
+    '../../src/services/chat-core-v2/final-answer-composer',
+  );
   return {
     ...actual,
     composeChatCoreV2FinalAnswer: (...args: Parameters<typeof actual.composeChatCoreV2FinalAnswer>) => {

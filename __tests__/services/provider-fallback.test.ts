@@ -46,13 +46,17 @@ vi.mock('../../src/utils/logger', () => ({
   LOGGER_REDACTION_PATHS: [],
 }));
 
-vi.mock('../../src/services/cloud-reasoning-gate', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../src/services/cloud-reasoning-gate')>()),
+vi.mock('../../src/services/cloud-reasoning-gate', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/cloud-reasoning-gate')>(
+    '../../src/services/cloud-reasoning-gate',
+  )),
   selectApprovedCloudReasoningProvider: () => optionalCloudMocks.selectApprovedCloudReasoningProvider(),
 }));
 
-vi.mock('../../src/services/provider-registry', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../src/services/provider-registry')>()),
+vi.mock('../../src/services/provider-registry', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/provider-registry')>(
+    '../../src/services/provider-registry',
+  )),
   getProvider: () => optionalCloudMocks.provider,
 }));
 

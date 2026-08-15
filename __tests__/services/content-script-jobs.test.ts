@@ -36,7 +36,10 @@ const ACTIVE_MODEL_DIGEST = 'sha256:357c53fb659c5076de1d65ccb0b397446227b71a42be
 vi.mock('../../src/services/local-primary-config', () => ({
   localPrimaryInferenceConfig: localPrimaryConfigMock,
 }));
-vi.mock('../../src/services/local-inference-runtime-control', () => ({
+vi.mock('../../src/services/local-inference-runtime-control', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/local-inference-runtime-control')>(
+    '../../src/services/local-inference-runtime-control',
+  )),
   getLocalInferenceRuntimeControl: (db?: {
     prepare: (sql: string) => { get: (...args: unknown[]) => unknown };
   }) => {
@@ -57,21 +60,34 @@ vi.mock('../../src/services/local-inference-runtime-control', () => ({
     };
   },
 }));
-vi.mock('../../src/utils/logger', () => ({
+vi.mock('../../src/utils/logger', async () => ({
+  ...(await vi.importActual<typeof import('../../src/utils/logger')>('../../src/utils/logger')),
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
-vi.mock('../../src/services/entitlement', () => ({
+vi.mock('../../src/services/entitlement', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/entitlement')>('../../src/services/entitlement')),
   getEffectiveEntitlement: () => ({ plan: 'pro', aiAccessAllowed: true }),
 }));
-vi.mock('../../src/services/user-service', () => ({
+vi.mock('../../src/services/user-service', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/user-service')>('../../src/services/user-service')),
   getUserLanguageById: () => contentJobMocks.userLanguage,
 }));
-vi.mock('../../src/state/content-references', () => ({ getAllKnowledge: () => [] }));
-vi.mock('../../src/services/content-engine', () => ({
+vi.mock('../../src/state/content-references', async () => ({
+  ...(await vi.importActual<typeof import('../../src/state/content-references')>(
+    '../../src/state/content-references',
+  )),
+  getAllKnowledge: () => [],
+}));
+vi.mock('../../src/services/content-engine', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/content-engine')>('../../src/services/content-engine')),
   __esModule: true,
 }));
-vi.mock('../../src/services/skill-inference-service', () => {
+vi.mock('../../src/services/skill-inference-service', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/skill-inference-service')>(
+    '../../src/services/skill-inference-service',
+  );
   return {
+    ...actual,
     executeSkillInference: (...args: unknown[]) => inferenceMock(...args),
     isSkillInferenceAccountDeletionFenced: () => contentJobMocks.accountDeletionFenced,
     isLocalInferenceUserEnrolled: (...args: unknown[]) => contentJobMocks.isEnrolled(...args),
@@ -82,7 +98,10 @@ vi.mock('../../src/services/skill-inference-service', () => {
     SkillInferencePolicyError: MockSkillInferencePolicyError,
   };
 });
-vi.mock('../../src/api/routes/content-script-route-utils', () => ({
+vi.mock('../../src/api/routes/content-script-route-utils', async () => ({
+  ...(await vi.importActual<typeof import('../../src/api/routes/content-script-route-utils')>(
+    '../../src/api/routes/content-script-route-utils',
+  )),
   buildUserVoiceMemory: () => 'pinned creator voice',
   resolveScriptGenerationMode: (value: unknown) => value === 'deep' ? 'deep' : 'standard',
   resolveScriptRenderMode: () => 'structured',
@@ -101,7 +120,10 @@ vi.mock('../../src/api/routes/content-script-route-utils', () => ({
     };
   },
 }));
-vi.mock('../../src/services/content-output-language', () => ({
+vi.mock('../../src/services/content-output-language', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/content-output-language')>(
+    '../../src/services/content-output-language',
+  )),
   ContentOutputLanguageMismatchError: MockContentOutputLanguageMismatchError,
   assertContentOutputLanguageFields: vi.fn(() => {
     if (contentJobMocks.outputLanguageMismatchesRemaining > 0) {

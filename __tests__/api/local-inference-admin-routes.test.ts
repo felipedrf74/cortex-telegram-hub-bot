@@ -21,28 +21,53 @@ vi.mock('express-rate-limit', () => ({
   ipKeyGenerator: (value: string) => value,
   rateLimit: () => (_req: Request, _res: Response, next: NextFunction) => next(),
 }));
-vi.mock('../../src/api/secret-guards', () => ({
+vi.mock('../../src/api/secret-guards', async () => ({
+  ...(await vi.importActual<typeof import('../../src/api/secret-guards')>(
+    '../../src/api/secret-guards',
+  )),
   requirePortalAdminToken: (_req: Request, _res: Response, next: NextFunction) => next(),
 }));
-vi.mock('../../src/api/rate-limiter', () => ({ extractClientIp: () => '127.0.0.1' }));
+vi.mock('../../src/api/rate-limiter', async () => ({
+  ...(await vi.importActual<typeof import('../../src/api/rate-limiter')>('../../src/api/rate-limiter')),
+  extractClientIp: () => '127.0.0.1',
+}));
 vi.mock('../../src/services/local-inference-reporting', () => ({
   buildLocalInferenceSummary: mocks.buildSummary,
 }));
-vi.mock('../../src/services/provider-registry', () => ({ getProvider: mocks.getProvider }));
-vi.mock('../../src/services/database', () => ({ getDb: mocks.getDb }));
-vi.mock('../../src/services/local-inference-runtime-control', () => ({
+vi.mock('../../src/services/provider-registry', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/provider-registry')>(
+    '../../src/services/provider-registry',
+  )),
+  getProvider: mocks.getProvider,
+}));
+vi.mock('../../src/services/database', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/database')>('../../src/services/database')),
+  getDb: mocks.getDb,
+}));
+vi.mock('../../src/services/local-inference-runtime-control', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/local-inference-runtime-control')>(
+    '../../src/services/local-inference-runtime-control',
+  )),
   drainLocalInferenceWaitingQueueForRuntimeOff: mocks.drainWaiting,
   getLocalInferenceRuntimeControl: mocks.getControl,
   LocalInferenceRuntimeControlError: class extends Error {},
   setLocalInferenceRuntimeControl: mocks.setControl,
 }));
-vi.mock('../../src/services/user-service', () => ({ getOwnerBootstrapTarget: mocks.getOwnerTarget }));
-vi.mock('../../src/portal/admin-audit', () => ({ insertPortalAdminMutationAuditStrict: mocks.insertAudit }));
-vi.mock('../../src/api/request-timer', () => ({
+vi.mock('../../src/services/user-service', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/user-service')>('../../src/services/user-service')),
+  getOwnerBootstrapTarget: mocks.getOwnerTarget,
+}));
+vi.mock('../../src/portal/admin-audit', async () => ({
+  ...(await vi.importActual<typeof import('../../src/portal/admin-audit')>('../../src/portal/admin-audit')),
+  insertPortalAdminMutationAuditStrict: mocks.insertAudit,
+}));
+vi.mock('../../src/api/request-timer', async () => ({
+  ...(await vi.importActual<typeof import('../../src/api/request-timer')>('../../src/api/request-timer')),
   getEndUserApiErrorSnapshot: mocks.getEndUserErrors,
   getNonAiLatencySnapshot: mocks.getNonAiLatency,
 }));
-vi.mock('../../src/utils/logger', () => ({
+vi.mock('../../src/utils/logger', async () => ({
+  ...(await vi.importActual<typeof import('../../src/utils/logger')>('../../src/utils/logger')),
   logger: {
     info: vi.fn(), warn: mocks.loggerWarn, error: vi.fn(), debug: vi.fn(), trace: vi.fn(),
   },

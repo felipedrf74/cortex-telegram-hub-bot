@@ -79,7 +79,10 @@ vi.mock('../../src/services/database', () => ({
   withDatabaseForTestAsync: vi.fn(),
 }));
 
-vi.mock('../../src/services/skill-inference-service', () => ({
+vi.mock('../../src/services/skill-inference-service', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/skill-inference-service')>(
+    '../../src/services/skill-inference-service',
+  )),
   runWithSkillInferenceAccountAdmission: (
     input: { userId: number; abortSignal?: AbortSignal },
     operation: (signal: AbortSignal) => Promise<unknown>,

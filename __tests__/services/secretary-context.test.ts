@@ -80,7 +80,10 @@ vi.mock('../../src/services/provider-registry', () => ({
   getActiveProvider: (...args: unknown[]) => mockGetActiveProvider(...args),
   ensureActiveProvider: (...args: unknown[]) => mockEnsureActiveProvider(...args),
 }));
-vi.mock('../../src/services/skill-inference-service', () => ({
+vi.mock('../../src/services/skill-inference-service', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/skill-inference-service')>(
+    '../../src/services/skill-inference-service',
+  )),
   runWithSkillInferenceAccountAdmission: (
     _input: unknown,
     operation: (signal: AbortSignal) => Promise<unknown>,

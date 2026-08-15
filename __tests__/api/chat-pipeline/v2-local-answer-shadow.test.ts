@@ -13,12 +13,15 @@ const hoisted = vi.hoisted(() => ({
   logger: { info: vi.fn(), warn: vi.fn() },
 }));
 
-vi.mock('../../../src/utils/logger', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../../src/utils/logger')>()),
+vi.mock('../../../src/utils/logger', async () => ({
+  ...(await vi.importActual<typeof import('../../../src/utils/logger')>('../../../src/utils/logger')),
   logger: hoisted.logger,
 }));
 
-vi.mock('../../../src/api/routes/chat-message-shortcuts', () => ({
+vi.mock('../../../src/api/routes/chat-message-shortcuts', async () => ({
+  ...(await vi.importActual<typeof import('../../../src/api/routes/chat-message-shortcuts')>(
+    '../../../src/api/routes/chat-message-shortcuts',
+  )),
   isContentModelBackedChatShortcutRequest: vi.fn(() => false),
   resolveLocalPrimaryContentChatShortcutAdmission: vi.fn(() => null),
   tryBuildLocalPrimaryContentChatShortcutResponse: vi.fn(async () => null),
@@ -30,20 +33,32 @@ vi.mock('../../../src/services/chat-core-v2', () => ({
   runChatCoreV2LocalChatTurn: (...args: unknown[]) => hoisted.runLocalChatTurn(...args),
 }));
 
-vi.mock('../../../src/api/routes/chat-message-finalizer', () => ({
+vi.mock('../../../src/api/routes/chat-message-finalizer', async () => ({
+  ...(await vi.importActual<typeof import('../../../src/api/routes/chat-message-finalizer')>(
+    '../../../src/api/routes/chat-message-finalizer',
+  )),
   finalizeChatMessageResponse: (...args: unknown[]) => hoisted.finalizeResponse(...args),
 }));
 
-vi.mock('../../../src/api/routes/chat-message-context', () => ({
+vi.mock('../../../src/api/routes/chat-message-context', async () => ({
+  ...(await vi.importActual<typeof import('../../../src/api/routes/chat-message-context')>(
+    '../../../src/api/routes/chat-message-context',
+  )),
   rememberChatActiveDomain: (...args: unknown[]) => hoisted.rememberActiveDomain(...args),
 }));
 
-vi.mock('../../../src/api/routes/chat-persistence', () => ({
+vi.mock('../../../src/api/routes/chat-persistence', async () => ({
+  ...(await vi.importActual<typeof import('../../../src/api/routes/chat-persistence')>(
+    '../../../src/api/routes/chat-persistence',
+  )),
   persistExchange: (...args: unknown[]) => hoisted.persistExchange(...args),
   syncConversationStateForShortcut: (...args: unknown[]) => hoisted.syncConversationState(...args),
 }));
 
-vi.mock('../../../src/services/chat-stage-trace', () => ({
+vi.mock('../../../src/services/chat-stage-trace', async () => ({
+  ...(await vi.importActual<typeof import('../../../src/services/chat-stage-trace')>(
+    '../../../src/services/chat-stage-trace',
+  )),
   recordChatStage: (...args: unknown[]) => hoisted.recordChatStage(...args),
 }));
 
@@ -51,15 +66,24 @@ vi.mock('../../../src/api/routes/chat-message-tier-gate', () => ({
   sendChatTierRequiredIfNeeded: vi.fn(() => false),
 }));
 
-vi.mock('../../../src/api/routes/chat-pipeline/support', () => ({
+vi.mock('../../../src/api/routes/chat-pipeline/support', async () => ({
+  ...(await vi.importActual<typeof import('../../../src/api/routes/chat-pipeline/support')>(
+    '../../../src/api/routes/chat-pipeline/support',
+  )),
   buildRecentTurnsForChatCoreV2: vi.fn(() => []),
 }));
 
-vi.mock('../../../src/services/content-engine', () => ({
+vi.mock('../../../src/services/content-engine', async () => ({
+  ...(await vi.importActual<typeof import('../../../src/services/content-engine')>(
+    '../../../src/services/content-engine',
+  )),
   ForwardedLocalInferenceError: class ForwardedLocalInferenceError extends Error {},
 }));
 
-vi.mock('../../../src/services/skill-inference-service', () => ({
+vi.mock('../../../src/services/skill-inference-service', async () => ({
+  ...(await vi.importActual<typeof import('../../../src/services/skill-inference-service')>(
+    '../../../src/services/skill-inference-service',
+  )),
   SkillInferencePolicyError: class SkillInferencePolicyError extends Error {},
 }));
 

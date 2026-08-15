@@ -34,10 +34,12 @@ vi.mock('../../src/services/database', () => ({
   assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
   filterAlreadyAppliedAddColumnStatements: vi.fn((sql: string) => sql),
   runMigrationsForTest: vi.fn(),
+  initializeDatabaseCore: vi.fn(),
   stripWrappingTransactionStatements: vi.fn((sql: string) => sql),
   applyMigrationFileForTest: vi.fn(),
   withDatabaseForTest: vi.fn(),
   withDatabaseForTestAsync: vi.fn(),
+  withReleaseMaintenanceDatabase: vi.fn(),
 }));
 
 vi.mock('../../src/config', () => ({
@@ -206,7 +208,7 @@ describe('internal routes runtime hardening', () => {
 
   it('uses signed attribution tenant id for scoped performance summaries', async () => {
     const { createInternalAttributionToken } = await import('../../src/services/internal-attribution');
-    const token = createInternalAttributionToken({
+    const attributionToken = createInternalAttributionToken({
       userId: 7,
       tenantId: 77,
       category: 'content_engine_report',
@@ -219,7 +221,7 @@ describe('internal routes runtime hardening', () => {
     const res = await fetchJson(app, '/api/v1/internal/performance-summary?days=7&tenantId=77', {
       headers: {
         'x-internal-secret': 'test-internal-secret',
-        'x-internal-attribution-token': token!,
+        'x-internal-attribution-token': attributionToken!,
       },
     });
 
@@ -544,7 +546,7 @@ describe('internal routes runtime hardening', () => {
       ),
     }));
     const { createInternalAttributionToken } = await import('../../src/services/internal-attribution');
-    const token = createInternalAttributionToken({
+    const attributionToken = createInternalAttributionToken({
       userId: 123,
       tenantId: 456,
       category: 'content_engine_script_draft',
@@ -559,7 +561,7 @@ describe('internal routes runtime hardening', () => {
     const body = JSON.stringify({
       prompt: 'write a cancellable legacy draft',
       category: 'content_engine_script_draft',
-      attributionToken: token,
+      attributionToken,
     });
     const request = http.request({
       host: '127.0.0.1',
@@ -854,12 +856,12 @@ describe('internal routes runtime hardening', () => {
       }),
     }));
     const { createInternalAttributionToken } = await import('../../src/services/internal-attribution');
-    const token = createInternalAttributionToken({
+    const attributionToken = createInternalAttributionToken({
       userId: 123,
       tenantId: 456,
       category: 'content_engine_script_draft',
     });
-    expect(token).toBeTruthy();
+    expect(attributionToken).toBeTruthy();
 
     const { internalRoutes } = await import('../../src/api/routes/internal');
     const app = express();
@@ -877,7 +879,7 @@ describe('internal routes runtime hardening', () => {
         category: 'content_engine_script_draft',
         userId: 999,
         tenantId: 999,
-        attributionToken: token,
+        attributionToken,
       },
     });
 
@@ -898,7 +900,7 @@ describe('internal routes runtime hardening', () => {
       }),
     }));
     const { createInternalAttributionToken } = await import('../../src/services/internal-attribution');
-    const token = createInternalAttributionToken({
+    const attributionToken = createInternalAttributionToken({
       userId: 123,
       tenantId: 456,
       category: 'content_engine_script_draft',
@@ -917,7 +919,7 @@ describe('internal routes runtime hardening', () => {
       body: {
         prompt: 'write a scoped draft',
         category: 'content_engine_script_draft',
-        attributionToken: token,
+        attributionToken,
       },
     });
 
@@ -938,7 +940,7 @@ describe('internal routes runtime hardening', () => {
       expect(visibleProviderCompleted).toBe(true);
     });
     const { createInternalAttributionToken } = await import('../../src/services/internal-attribution');
-    const token = createInternalAttributionToken({
+    const attributionToken = createInternalAttributionToken({
       userId: 123,
       tenantId: 456,
       category: 'content_engine_script_draft',
@@ -957,7 +959,7 @@ describe('internal routes runtime hardening', () => {
       body: {
         prompt: 'write a scoped draft',
         category: 'content_engine_script_draft',
-        attributionToken: token,
+        attributionToken,
       },
     });
 
@@ -976,7 +978,7 @@ describe('internal routes runtime hardening', () => {
       completeOneShotWithFallback: complete,
     }));
     const { createInternalAttributionToken } = await import('../../src/services/internal-attribution');
-    const token = createInternalAttributionToken({
+    const attributionToken = createInternalAttributionToken({
       userId: 123,
       tenantId: 456,
       category: 'content_engine_script_draft',
@@ -998,7 +1000,7 @@ describe('internal routes runtime hardening', () => {
         category: 'content_engine_script_draft_json_repair',
         userId: 123,
         tenantId: 456,
-        attributionToken: token,
+        attributionToken,
       },
     });
 

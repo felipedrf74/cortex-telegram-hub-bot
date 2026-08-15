@@ -12,8 +12,12 @@ vi.mock('../../src/config', () => ({
     },
   },
 }));
-vi.mock('../../src/services/database', () => ({ getDb: () => state.db }));
-vi.mock('../../src/utils/logger', () => ({
+vi.mock('../../src/services/database', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/database')>('../../src/services/database')),
+  getDb: () => state.db,
+}));
+vi.mock('../../src/utils/logger', async () => ({
+  ...(await vi.importActual<typeof import('../../src/utils/logger')>('../../src/utils/logger')),
   logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 

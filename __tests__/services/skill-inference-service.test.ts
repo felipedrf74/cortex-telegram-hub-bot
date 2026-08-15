@@ -12,17 +12,25 @@ const { dispatchMock, modelPolicyMock, warningMock } = vi.hoisted(() => ({
 }));
 
 vi.mock('../../src/config', () => ({ config: { isStaging: true, ollama: { enabled: true } } }));
-vi.mock('../../src/services/database', () => ({ getDb: () => { throw new Error('explicit test database required'); } }));
-vi.mock('../../src/services/entitlement', () => ({
+vi.mock('../../src/services/database', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/database')>('../../src/services/database')),
+  getDb: () => { throw new Error('explicit test database required'); },
+}));
+vi.mock('../../src/services/entitlement', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/entitlement')>('../../src/services/entitlement')),
   getEffectiveEntitlement: () => ({ plan: 'pro', aiAccessAllowed: true }),
 }));
 vi.mock('../../src/services/provider-registry', () => ({
   ensureActiveProvider: () => ({ dispatchLocalReasoning: (...args: unknown[]) => dispatchMock(...args) }),
 }));
-vi.mock('../../src/services/user-service', () => ({
+vi.mock('../../src/services/user-service', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/user-service')>('../../src/services/user-service')),
   getOwnerBootstrapTarget: () => ({ tenantId: 42, telegramId: 99 }),
 }));
-vi.mock('../../src/services/ollama-model-policy', () => ({
+vi.mock('../../src/services/ollama-model-policy', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/ollama-model-policy')>(
+    '../../src/services/ollama-model-policy',
+  )),
   getLocalModelManifest: () => {
     if (modelPolicyMock.unavailable) throw new Error('manifest unavailable');
     return {
@@ -52,10 +60,14 @@ vi.mock('../../src/services/ollama-model-policy', () => ({
       },
     },
 }));
-vi.mock('../../src/services/api-usage-attribution', () => ({
+vi.mock('../../src/services/api-usage-attribution', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/api-usage-attribution')>(
+    '../../src/services/api-usage-attribution',
+  )),
   runWithApiUsageAttribution: (_attribution: unknown, call: () => unknown) => call(),
 }));
-vi.mock('../../src/utils/logger', () => ({
+vi.mock('../../src/utils/logger', async () => ({
+  ...(await vi.importActual<typeof import('../../src/utils/logger')>('../../src/utils/logger')),
   logger: {
     warn: (...args: unknown[]) => warningMock(...args),
     error: vi.fn(),

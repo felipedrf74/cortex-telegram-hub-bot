@@ -8,7 +8,10 @@ const jobMocks = vi.hoisted(() => ({
   retry: vi.fn(),
 }));
 
-vi.mock('../../src/services/content-script-jobs', () => {
+vi.mock('../../src/services/content-script-jobs', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/content-script-jobs')>(
+    '../../src/services/content-script-jobs',
+  );
   class ContentScriptJobError extends Error {
     constructor(
       readonly code: string,
@@ -19,6 +22,7 @@ vi.mock('../../src/services/content-script-jobs', () => {
     }
   }
   return {
+    ...actual,
     ContentScriptJobError,
     createContentScriptJob: (...args: unknown[]) => jobMocks.create(...args),
     getContentScriptJob: (...args: unknown[]) => jobMocks.get(...args),

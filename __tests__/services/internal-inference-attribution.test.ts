@@ -64,7 +64,7 @@ describe('internal inference attribution', () => {
   });
 
   it('signs scope, operation, privacy, and cloud authority without a budget reservation', () => {
-    const token = createInternalInferenceAttributionToken({
+    const attributionToken = createInternalInferenceAttributionToken({
       userId: 42,
       tenantId: 42,
       category: 'content_engine_script_standard',
@@ -77,7 +77,7 @@ describe('internal inference attribution', () => {
       nowMs: 1_000_000,
     });
     expect(verifyInternalInferenceAttributionToken(
-      token,
+      attributionToken,
       'content_engine_script_standard',
       1_010_000,
     )).toMatchObject({
@@ -88,7 +88,7 @@ describe('internal inference attribution', () => {
       cloudEscalationAllowed: false,
     });
     expect(JSON.stringify(verifyInternalInferenceAttributionToken(
-      token,
+      attributionToken,
       'content_engine_script_standard',
       1_010_000,
     ))).not.toContain('reservation');
@@ -117,7 +117,7 @@ describe('internal inference attribution', () => {
   });
 
   it('rejects cross-category replay, tampering, and expiry', () => {
-    const token = createInternalInferenceAttributionToken({
+    const attributionToken = createInternalInferenceAttributionToken({
       userId: 7,
       tenantId: 7,
       category: 'content_engine_script_quick',
@@ -129,9 +129,9 @@ describe('internal inference attribution', () => {
       ttlSeconds: 30,
       nowMs: 1_000_000,
     })!;
-    expect(verifyInternalInferenceAttributionToken(token, 'another_category', 1_001_000)).toBeNull();
-    expect(verifyInternalInferenceAttributionToken(`${token.slice(0, -1)}x`, 'content_engine_script_quick', 1_001_000)).toBeNull();
-    expect(verifyInternalInferenceAttributionToken(token, 'content_engine_script_quick', 1_100_000)).toBeNull();
+    expect(verifyInternalInferenceAttributionToken(attributionToken, 'another_category', 1_001_000)).toBeNull();
+    expect(verifyInternalInferenceAttributionToken(`${attributionToken.slice(0, -1)}x`, 'content_engine_script_quick', 1_001_000)).toBeNull();
+    expect(verifyInternalInferenceAttributionToken(attributionToken, 'content_engine_script_quick', 1_100_000)).toBeNull();
   });
 
   it('requires proof of possession bound to the exact delegated request', () => {
@@ -184,7 +184,7 @@ describe('internal inference attribution', () => {
   });
 
   it('rejects ambiguous token segments and invalid signed time windows', () => {
-    const token = createInternalInferenceAttributionToken({
+    const attributionToken = createInternalInferenceAttributionToken({
       userId: 7,
       tenantId: 7,
       category: 'content_engine_script_quick',
@@ -196,12 +196,12 @@ describe('internal inference attribution', () => {
       nowMs: 1_000_000,
     })!;
     expect(verifyInternalInferenceAttributionToken(
-      `${token}.ignored`,
+      `${attributionToken}.ignored`,
       'content_engine_script_quick',
       1_001_000,
     )).toBeNull();
 
-    const [payload] = token.split('.');
+    const [payload] = attributionToken.split('.');
     const claims = JSON.parse(Buffer.from(payload!, 'base64url').toString('utf8')) as Record<string, unknown>;
     claims.issuedAt = 10_000;
     claims.expiresAt = 14_000;
@@ -218,7 +218,7 @@ describe('internal inference attribution', () => {
   });
 
   it('permits distinct Content stages but rejects an exact delegated-request replay', () => {
-    const token = createInternalInferenceAttributionToken({
+    const attributionToken = createInternalInferenceAttributionToken({
       userId: 42,
       tenantId: 42,
       category: 'content_engine_script_standard',
@@ -230,7 +230,7 @@ describe('internal inference attribution', () => {
       nowMs: 1_000_000,
     });
     const claims = verifyInternalInferenceAttributionToken(
-      token,
+      attributionToken,
       'content_engine_script_standard',
       1_001_000,
     )!;
@@ -257,7 +257,7 @@ describe('internal inference attribution', () => {
         consumed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY (token_id, request_nonce)
       )`);
-      const token = createInternalInferenceAttributionToken({
+      const attributionToken = createInternalInferenceAttributionToken({
         userId: 42,
         tenantId: 42,
         category: 'content_engine_script_standard',
@@ -269,7 +269,7 @@ describe('internal inference attribution', () => {
         nowMs: 1_000_000,
       });
       const claims = verifyInternalInferenceAttributionToken(
-        token,
+        attributionToken,
         'content_engine_script_standard',
         1_001_000,
       )!;

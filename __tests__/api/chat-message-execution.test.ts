@@ -15,7 +15,10 @@ vi.mock('../../src/services/chat-action-run-store', async () => ({
   listLegacyToolLoopCheckpoints: (...args: unknown[]) => hoisted.listLegacyToolLoopCheckpoints(...args as []),
 }));
 
-vi.mock('../../src/services/skill-inference-service', () => ({
+vi.mock('../../src/services/skill-inference-service', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/skill-inference-service')>(
+    '../../src/services/skill-inference-service',
+  )),
   runWithSkillInferenceAccountAdmission: (...args: unknown[]) => hoisted.accountAdmission(...args as []),
 }));
 

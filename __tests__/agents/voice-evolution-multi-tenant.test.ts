@@ -32,7 +32,9 @@ vi.mock('../../src/config', () => ({
 }));
 
 vi.mock('@anthropic-ai/sdk', () => ({
-  default: vi.fn(() => ({})),
+  default: vi.fn(function AnthropicSdkMock() {
+    return {};
+  }),
 }));
 
 vi.mock('../../src/portal/anthropic-hook', () => ({
@@ -61,7 +63,10 @@ vi.mock('../../src/services/cost-guardrail', () => ({
   withAiBudgetReservation: (...args: unknown[]) => mockWithAiBudgetReservation(...args),
 }));
 
-vi.mock('../../src/services/skill-inference-service', () => ({
+vi.mock('../../src/services/skill-inference-service', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/skill-inference-service')>(
+    '../../src/services/skill-inference-service',
+  )),
   runWithSkillInferenceAccountAdmission: (
     input: { abortSignal?: AbortSignal },
     operation: (signal: AbortSignal) => Promise<unknown>,

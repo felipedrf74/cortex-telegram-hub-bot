@@ -5,11 +5,18 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const modelPolicyState = vi.hoisted(() => ({ manifestAvailable: true }));
 
-vi.mock('../../src/services/database', () => ({ getDb: () => { throw new Error('explicit database required'); } }));
-vi.mock('../../src/services/entitlement', () => ({
+vi.mock('../../src/services/database', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/database')>('../../src/services/database')),
+  getDb: () => { throw new Error('explicit database required'); },
+}));
+vi.mock('../../src/services/entitlement', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/entitlement')>('../../src/services/entitlement')),
   getEffectiveEntitlement: () => ({ plan: 'pro' }),
 }));
-vi.mock('../../src/services/local-inference-scheduler', () => ({
+vi.mock('../../src/services/local-inference-scheduler', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/local-inference-scheduler')>(
+    '../../src/services/local-inference-scheduler',
+  )),
   localInferenceScheduler: {
     snapshot: () => ({
       activeCount: 0, queuedCount: 0, interactiveQueuedCount: 0,
@@ -17,8 +24,10 @@ vi.mock('../../src/services/local-inference-scheduler', () => ({
     }),
   },
 }));
-vi.mock('../../src/services/ollama-model-policy', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../src/services/ollama-model-policy')>();
+vi.mock('../../src/services/ollama-model-policy', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/ollama-model-policy')>(
+    '../../src/services/ollama-model-policy',
+  );
   return {
     ...actual,
     tryGetLocalModelManifest: () => (

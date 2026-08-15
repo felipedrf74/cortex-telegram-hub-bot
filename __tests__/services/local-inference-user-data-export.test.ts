@@ -9,11 +9,15 @@ const encryptionConfig = vi.hoisted(() => ({
   scriptJobPreviousEncryptionKeys: [] as string[],
 }));
 
-vi.mock('../../src/services/database', () => ({ getDb: () => testDb }));
+vi.mock('../../src/services/database', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/database')>('../../src/services/database')),
+  getDb: () => testDb,
+}));
 vi.mock('../../src/services/local-primary-config', () => ({
   localPrimaryInferenceConfig: encryptionConfig,
 }));
-vi.mock('../../src/utils/logger', () => ({
+vi.mock('../../src/utils/logger', async () => ({
+  ...(await vi.importActual<typeof import('../../src/utils/logger')>('../../src/utils/logger')),
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
