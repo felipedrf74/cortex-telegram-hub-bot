@@ -10,7 +10,7 @@
  *   2. OllamaProvider.classify accepts ClassifyOptions
  *   3. Runtime shadow work is independently budgeted and metered
  *   4. Free/ineligible users do not trigger shadow model calls
- *   5. abortSignal forwarded to fetch via callOllamaForTask (O3-A18)
+ *   5. the internal shadow deadline stays a provider timeout, not caller cancellation
  *   6. Compact prompt used when OLLAMA_CLASSIFIER_PROMPT_VERSION=v1 (O3-A14)
  *   7. Compact prompt absent → long prompt fallback
  *   8. Compact prompt enum and key phrases present
@@ -81,6 +81,7 @@ const {
   insertedRowIds,
   updateCalls,
   providerHolder,
+  routedShadowCalls,
   budgetRequests,
   entitlementState,
 } = vi.hoisted(() => {
@@ -93,6 +94,7 @@ const {
     ollama: { name: string; classify?: (...args: unknown[]) => Promise<unknown> } | null;
     nextRowId: number;
   } = { active: null, ollama: null, nextRowId: 1 };
+  const _routedShadowCalls: unknown[][] = [];
   const _budgetRequests: unknown[] = [];
   const _entitlementState = { aiAccessAllowed: true };
   return {
@@ -101,6 +103,7 @@ const {
     insertedRowIds: _insertedRowIds,
     updateCalls: _updateCalls,
     providerHolder: _providerHolder,
+    routedShadowCalls: _routedShadowCalls,
     budgetRequests: _budgetRequests,
     entitlementState: _entitlementState,
   };
@@ -143,7 +146,17 @@ vi.mock('../../src/services/database', () => ({
 
 vi.mock('../../src/services/provider-registry', () => ({
   getProvider: (name: string) => (name === 'ollama' ? providerHolder.ollama : null),
-  getActiveProvider: () => providerHolder.active,
+  getActiveProvider: () => (providerHolder.active ? {
+    ...providerHolder.active,
+    classifyShadowWithProvider: (
+      provider: { classify?: (...args: unknown[]) => Promise<unknown> },
+      ...args: unknown[]
+    ) => {
+      routedShadowCalls.push([provider, ...args]);
+      if (typeof provider.classify !== 'function') throw new Error('shadow provider has no classifier');
+      return provider.classify(...args);
+    },
+  } : null),
   clearProviderCache: vi.fn(),
   createRoutingProvider: vi.fn(),
   ensureActiveProvider: vi.fn(),
@@ -158,6 +171,17 @@ vi.mock('../../src/services/cost-guardrail', () => ({
 
 vi.mock('../../src/services/entitlement', () => ({
   getEffectiveEntitlement: () => ({ aiAccessAllowed: entitlementState.aiAccessAllowed }),
+}));
+
+vi.mock('../../src/services/skill-inference-account-lifecycle', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/skill-inference-account-lifecycle')>(
+    '../../src/services/skill-inference-account-lifecycle',
+  )),
+  isSkillInferenceAccountDeletionError: () => false,
+  runWithSkillInferenceAccountAdmission: async (
+    input: { abortSignal?: AbortSignal },
+    operation: (abortSignal: AbortSignal) => Promise<unknown>,
+  ) => operation(input.abortSignal ?? new AbortController().signal),
 }));
 
 // ─── Imports under test (after mocks) ──────────────────────────────
@@ -176,6 +200,7 @@ beforeEach(() => {
   dbRows.length = 0;
   insertedRowIds.length = 0;
   updateCalls.length = 0;
+  routedShadowCalls.length = 0;
   budgetRequests.length = 0;
   entitlementState.aiAccessAllowed = true;
   providerHolder.nextRowId = 1;
@@ -340,6 +365,8 @@ describe('runOllamaShadowClassification', () => {
     // The explicit ollama mock was called — confirming we did NOT fall
     // back to getActiveProvider's Gemini.
     expect(ollamaClassify).toHaveBeenCalledTimes(1);
+    expect(routedShadowCalls).toHaveLength(1);
+    expect(routedShadowCalls[0]?.[0]).toBe(providerHolder.ollama);
     expect(dbRows).toHaveLength(1);
   });
 
@@ -434,7 +461,9 @@ describe('runOllamaShadowClassification', () => {
     expect(passedOptions).toBeDefined();
     expect(passedOptions!.source).toBe('shadow');
     expect(passedOptions!.recordUsage).toBe(true);
+    expect(passedOptions!.timeoutMs).toBe(5000);
     expect(passedOptions!.abortSignal).toBeInstanceOf(AbortSignal);
+    expect(passedOptions!.abortSignal!.aborted).toBe(false);
     expect(budgetRequests).toEqual([expect.objectContaining({
       userId: 1,
       requestSource: 'system',
@@ -465,28 +494,22 @@ describe('runOllamaShadowClassification', () => {
     expect(dbRows).toHaveLength(0);
   });
 
-  it('O3-A18: timeout fires abortSignal so abort propagates to fetch', async () => {
+  it('O3-A18: records the provider-owned shadow deadline as timeout rather than caller cancellation', async () => {
     process.env.CLASSIFY_SHADOW_HASH_SECRET = 'test-secret-' + 'x'.repeat(32);
 
     providerHolder.active = { name: 'gemini' };
-    let capturedSignal: AbortSignal | undefined;
     const ollamaClassify = vi.fn((_msg: string, _ctx: unknown, opts: ClassifyOptions) => {
-      capturedSignal = opts.abortSignal;
-      // Return a promise that resolves to a rejection only via abort.
-      return new Promise<never>((_, reject) => {
-        opts.abortSignal?.addEventListener('abort', () => reject(new Error('AbortError: shadow_timeout')));
-      });
+      expect(opts.timeoutMs).toBe(5000);
+      expect(opts.abortSignal).toBeInstanceOf(AbortSignal);
+      expect(opts.abortSignal!.aborted).toBe(false);
+      return Promise.reject(Object.assign(new Error('LocalLLMError: timeout'), {
+        name: 'LocalLLMError',
+        kind: 'timeout',
+      }));
     });
     providerHolder.ollama = { name: 'ollama', classify: ollamaClassify as never };
 
-    // Use real timers + a fast SHADOW_TIMEOUT_MS read at module load.
-    // The classify-shadow module already imported with whatever
-    // OLLAMA_CLASSIFY_TIMEOUT_MS was when this test file loaded (5000ms
-    // from .env). Wait that long would slow tests; instead, the test
-    // pivots: we set the env, manually advance via setTimeout, and
-    // expect the abort to propagate via the addEventListener wired
-    // above. To keep tests fast, manually trigger abort.
-    const promise = runOllamaShadowClassification({
+    await runOllamaShadowClassification({
       message: 'test',
       userId: 1,
       tenantId: 1,
@@ -495,28 +518,10 @@ describe('runOllamaShadowClassification', () => {
       geminiDurationMs: 1000,
     });
 
-    // Give the shadow runner a tick to register its abort listener,
-    // then manually abort the captured signal to simulate timeout.
-    await new Promise<void>((r) => setTimeout(r, 30));
-    if (capturedSignal && !capturedSignal.aborted) {
-      // Use the SAME mechanism the real timeout uses — but since
-      // capturedSignal is read-only, abort the underlying controller
-      // via dispatching the abort event directly is the only way. The
-      // production code's own setTimeout fires the abort; for the test
-      // we just verify the signal was wired correctly. Wait for the
-      // real timeout to fire instead.
-    }
-    // Wait for the SHADOW_TIMEOUT_MS to fire from within the production code.
-    await new Promise<void>((r) => setTimeout(r, 5200));
-    await promise;
-
-    expect(capturedSignal).toBeInstanceOf(AbortSignal);
-    expect(capturedSignal!.aborted).toBe(true);
-
     // The UPDATE recorded the error message.
     expect(updateCalls).toHaveLength(1);
     const errorField = updateCalls[0][3];
     expect(typeof errorField).toBe('string');
-    expect(errorField as string).toMatch(/abort|timeout/i);
-  }, 15000);
+    expect(errorField as string).toMatch(/timeout/i);
+  });
 });

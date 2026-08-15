@@ -336,6 +336,16 @@ vi.mock('../../src/state/fiscal-collection-profiles', () => ({
 vi.mock('../../src/services/garmin-coach', () => ({
   applyCoachRecommendations: vi.fn(),
   generateCoachBriefing: vi.fn(),
+  runWithCoachBriefingAccountAdmissions: vi.fn(async (
+    _userId: number,
+    _options: Record<string, unknown>,
+    operation: (abortSignal: AbortSignal) => Promise<unknown>,
+  ) => operation(new AbortController().signal)),
+  runWithCoachBriefingAccountLifecycle: vi.fn(async (
+    _userId: number,
+    _options: Record<string, unknown>,
+    consume: (briefing: undefined, abortSignal: AbortSignal) => unknown,
+  ) => consume(undefined, new AbortController().signal)),
 }));
 
 vi.mock('../../src/services/onboarding', () => ({

@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: backend runtime + on-call lead
-Last verified: 2026-08-09
+Last verified: 2026-08-13
 Update policy: update when health-check shape changes, when alert
 producers change, when log/metric semantics change, or when the release
 process model changes. Incident response and recovery detail lives in
@@ -151,6 +151,12 @@ The current metric surfaces are:
    A gate may be removed only from observed zero deltas across two supported
    release windows, no kill-switch activation, successful migration/readiness
    rehearsal, and supported-client capability adoption.
+10. **Local-primary inference evidence**: the portal-admin-only
+    `/api/v1/admin/local-inference/summary` surface provides aggregate
+    provider/workload baseline, local/fallback share, schema quality, latency,
+    capacity, script-job, and cost evidence. It exposes no prompts, generated
+    content, or user ids. Counterfactual savings are labelled estimates; live
+    invoices, host/cgroup receipts, and store prices remain external evidence.
 
 Training learning producers persist closed outcome codes plus tenant-scoped
 SHA-256 fingerprints only. They must not persist raw plan edits, exercise ids,
@@ -268,20 +274,99 @@ When production is degraded:
 
 ## 10. Provider/model fallback safety (must)
 
-1. **`completeOneShotWithFallback(taskType, prompt, opts)`** is the
-   default routing helper. It calls Gemini first (per
-   `providerRouting`); on failure or quota cap, falls back to Anthropic;
-   on second failure, OpenAI.
+1. **Runtime code uses provider routing abstractions.** The legacy one-shot
+   helper calls Gemini primary, then its configured Gemini fallback model,
+   then OpenAI, and only then an explicitly enabled Anthropic thunk. New
+   local-primary work routes through `SkillInferenceService` and its approved
+   cloud boundary instead of calling this cascade directly.
 2. **Fallback is logged with full primary→fallback metadata.** Operators
    can dashboard fallback rate per task type to detect provider
    degradation early.
-3. **The `degraded: true` envelope on app-facing routes** signals to iOS
+3. **Caller cancellation is terminal.** DOM/Undici aborts and cloud-SDK abort
+   classes are normalized before retry and breaker accounting; no later model
+   or provider hop may start after cancellation.
+4. **The `degraded: true` envelope on app-facing routes** signals to iOS
    that the response is best-effort. iOS renders a banner.
-4. **No silent quota cap.** When a per-user or global cap is hit, the
+5. **No silent quota cap.** When a per-user or global cap is hit, the
    user-facing response is `429 RATE_LIMITED` with an `error.code` and a
    `retryAfter` hint.
-5. **ServerDominguez is small-model only.** The only permitted Ollama tag is
-   `qwen2.5:3b-instruct-q4_K_M`; the absent fast-chat path defaults off.
+6. **Container local-primary inference is a separate, default-off runtime.**
+   `config/local-model-manifest.json` is packaged in the signed backend image;
+   environment selectors may name only its active production-eligible model,
+   and production `canary` or `active` mode requires a digest-pinned benchmark
+   winner. Backend containers reach host Ollama only through the least-privilege
+   Unix-socket gateway command in the same signed image. The gateway has no
+   application secrets, database, published port, or arbitrary proxy surface;
+   it permits only health/version/tags/loaded-model/show/chat operations for the
+   active model and independently caps context, output, request size, response
+   size, residency, and deadlines. It defensively enforces the signed one-active
+   generation/four-waiter envelope and revalidates that envelope when each
+   queued request is dispatched; the application scheduler remains the sole
+   product priority queue. A missing resident model triggers one
+   single-flight gateway-owned warm request for the fixed signed model before
+   the original request proceeds; client fields cannot influence that call.
+   Production and staging use separate
+   UID-10001-owned mode-0700 socket directories. The bridge is added to the
+   signed Compose topology only after the attended host preflight creates and
+   verifies those directories and the Ollama service envelope.
+
+   Runtime admission has default-off feature flags plus the audited
+   `off | shadow | canary | active` database control. An owner/admin mutation
+   records the actor, previous and next mode, percentage, manifest, reason, and
+   evidence reference in the same transaction. Mode `off` rejects waiting
+   in-memory requests after that audited transaction commits and rejects new
+   Content jobs; already durable jobs remain `waiting_capacity` at encrypted
+   checkpoints and do not spend cloud budget. Shadow evaluation is detached
+   from the cloud response and records a separate attempt only after a
+   successful, non-degraded visible result, without adding local latency to the
+   user-visible request. The environment hard kill is an
+   attended emergency control. One model is resident, one generation runs at a
+   time, four interactive requests may wait, and Max/Pro scheduling is weighted
+   2:1 with starvation protection. The production host envelope is 8 CPUs,
+   `MemoryHigh=18G`, `MemoryMax=20G`, zero swap, `Nice=10`, and at least 6 GiB available
+   host memory; 24 GiB is benchmark-only. Cloud budget is acquired lazily only
+   around an actual approved cloud attempt, with ordinary daily/monthly limits
+   plus plan-owned hard local-fallback run/day ceilings and durable per-provider
+   attempt reservations. Private Content payloads are
+   local-only after local-primary admission, including script stages,
+   rewrite/expand, Chat Content refinement, and specialist groups. With local
+   routing OFF or outside the cohort, independently authorized legacy cloud
+   paths remain available. Async script jobs generate a validated outline and
+   then one bounded section at a time, renewing the lease and encrypting each
+   validated checkpoint before starting the next section. They fail visibly
+   without cloud until an authenticated redaction and cloud-escalation contract
+   is implemented; the legacy attribution token is not sufficient authority
+   for job fallback.
+
+   The additive Content job API is `POST /api/v1/content/script-jobs`, tenant-
+   scoped `GET`, `POST .../cancel`, and `POST .../retry`. It exposes the six
+   declared durable states and returns a result only after final validation.
+   Existing synchronous routes remain compatible and may report `ollama` in
+   their additive provider field. Content Engine delegation uses a separately
+   transported request-proof key plus an encrypted token envelope; the exact
+   normalized callback is MACed before a shared SQLite nonce ledger atomically
+   consumes its run UUID. Token-only replay or request mutation is rejected
+   before Python work can reach inference.
+
+   The application rollback monitor uses governed inference telemetry plus a
+   bounded process-local request ring. It turns routing OFF for the documented
+   local success/fallback/Chat/script thresholds, script-job p95 above 12
+   minutes, non-AI p95 regression above 5%, public 5xx regression above 0.5
+   percentage points, host-view memory below 6 GiB, any host-view swap, manifest
+   outage/version drift, specialist-profile drift, or observed local-model
+   digest drift. A
+   restart begins a new current request sample window. `/proc/meminfo` and the
+   request ring are immediate guards; the attended cgroup/host receipt and host
+   observability remain the authoritative sustained-capacity evidence.
+   Classifier shadow uses its explicit Ollama provider through the same routing
+   provider circuit, without enabling fallback; local queue pressure does not
+   count as provider-health failure.
+7. **The PM2 first-cutover fallback remains fallback-only.** Until the attended
+   local-primary host transaction occurs, the authoritative release-state
+   projection continues to describe the observed 3B/4G/6G host preimage. That
+   is historical live-state evidence, not the target envelope encoded by this
+   release. The fallback's Ollama selectors must repeat the active signed
+   manifest tag; the absent fast-chat path defaults off.
    Classification remains Gemini-primary. Full script generation and larger
    reasoning route through the approved cloud/privacy gate and fail visibly
    when the content or model is not approved; local execution requires an
@@ -293,10 +378,10 @@ When production is degraded:
    is never cast into a script-generation result.
    The environment-mutation and PM2 staging procedure that follows is retained
    only for the owner-authorized first-cutover fallback during the initial 14
-   stable days. Before that fallback's first small-only staging boot, inspect both environment values
-   and persisted model overrides: set `OLLAMA_MODEL`,
+   stable days. Before that fallback's first staging boot, inspect both
+   environment values and persisted model overrides: set `OLLAMA_MODEL`,
    `OLLAMA_CLASSIFIER_MODEL`, `CHAT_CORE_V2_LOCAL_CHAT_MODEL`, and the recipe
-   model to the retained 3B tag; set `CHAT_CORE_V2_LOCAL_CHAT_FAST_MODEL=off`;
+   model to the active signed-manifest tag; set `CHAT_CORE_V2_LOCAL_CHAT_FAST_MODEL=off`;
    remove the retired `OLLAMA_OPERATIONAL_ROLLBACK_MODEL`; and remove or replace
    every persisted Ollama override. Startup and per-request dispatch reject any
    remaining large-model selector instead of silently changing it. The Ollama
@@ -304,29 +389,14 @@ When production is degraded:
    plus the live PM2 environment: Gemini is the classification primary,
    classification and local chat are shadow-only, local script/reasoning
    evaluation is off, cloud fallbacks are the approved reasoning gate, and all
-   local model selectors are explicit 3B values with fast chat off. Missing
+   local model selectors repeat the signed manifest with fast chat off. Missing
    settings do not inherit defaults during this promotion check.
-6. **Ollama has a hard host envelope.** Bind loopback-only with one loaded
-   model, one parallel request, queue depth four, 4096 context, 2 CPU quota,
-   `MemoryHigh=4G`, `MemoryMax=6G`, and exactly 512 MiB swap. The old staged
-   observation, cleanup, and zero-swap chain is retired. The finalizer procedure
-   below is PM2 first-cutover fallback only and must be completed before the
-   container bootstrap; there is no supported post-bootstrap container
-   maintenance transaction for this mutation. After one exact fallback release
-   has passed both staging and production, run the root-installed
-   `nexus-ollama-lean-finalize.mjs` command first in dry-run mode. Apply
-   requires the exact printed plan digest plus explicit owner authorization.
-   The command holds both the user fallback-release mutex and the shared root
-   maintenance mutex (whose `-sonar` filename is historical), and binds the same
-   passing PM2 fallback release SHA and artifact digest across both transaction
-   states, current symlinks, and all four PM2 processes. It accepts only the audited four-tag full-digest
-   inventory, refuses a loaded deletion target, and removes only Gemma 2B,
-   Qwen 27B, and Qwen 35B after the fixed envelope restarts and the retained
-   3B model passes a bounded inference smoke. Restart or smoke failure restores
-   the exact predecessor drop-in. A root-only receipt records before/after
-   release, PM2, envelope, model, and rollback evidence; no Sonar state is read
-   or carried.
-   The envelope installer accepts only an owner-digest-verified
+8. **The attended local-primary host transaction owns the new envelope.** It
+   binds loopback-only Ollama to one loaded model, one parallel request, queue
+   depth four, 16K maximum context, 8 CPU quota, `MemoryHigh=18G`,
+   `MemoryMax=20G`, and zero swap. The former PM2 lean finalizer is not the
+   local-primary entrypoint and must not be used to select, pull, or activate a
+   benchmark winner. The envelope installer accepts only an owner-digest-verified
    Git archive whose PAX commit equals the SHA-named root bootstrap, restores
    all replaced operational assets and the exact prior service state on
    failure, and must not install a binary or pull a mutable model tag.
@@ -339,10 +409,19 @@ When production is degraded:
    predecessor-backup garbage collection. An active predecessor with no prior
    override receives only a one-use restart authorization bound to the
    transaction, candidate digest, current boot, and live rollback-helper PID;
-   reboot or replay remains blocked.
-   The fixed envelope and finalizer must be installed before that cutover-era
-   small-only PM2 release. They are not a continuous-deployment gate.
-7. **Captured coach evaluations are local-only by default.** A cloud comparison
+   reboot or replay remains blocked. The separately acknowledged socket
+   transaction verifies the settled signed release, Ollama 0.24+, model digest,
+   host RAM/disk/swap, effective envelope, loopback listener, tmpfiles policy,
+   and staging/production directory preimage before mutation. It shares the
+   release maintenance mutex, emits a root-owned receipt, and has a bounded
+   rollback for both the activated tmpfiles policy and empty directories so
+   reboot cannot recreate a reverted socket boundary. None of these host
+   transactions is a continuous application-deployment gate. A receipt-bound benchmark transaction
+   may temporarily apply `MemoryHigh=22G` and `MemoryMax=24G` only while both
+   gateway sockets are absent. It keeps zero swap, 8 CPUs, and `Nice=10`, uses
+   the same maintenance mutex, and will not finish rollback until the 18G/20G
+   production envelope is effective again.
+9. **Captured coach evaluations are local-only by default.** A cloud comparison
    requires an explicit cloud mode plus the per-run
    `--operator-authorize-private-cloud` acknowledgement. The script classifies
    captured Garmin prompts as private and calls the configured cloud provider

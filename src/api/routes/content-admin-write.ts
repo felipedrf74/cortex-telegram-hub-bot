@@ -44,6 +44,10 @@ import { getContentPerformanceAggregate } from '../../state/content-performance-
 // CONTENT-UI-O4: portal canonical lifecycle alias
 import { summarizeCanonicalLifecycle } from '../../state/content-lifecycle';
 import { isOwnedYoutubeChannelMarker } from '../../services/youtube-channel-scope';
+import {
+  isSkillInferenceAccountDeletionError,
+  runWithSkillInferenceAccountAdmission,
+} from '../../services/skill-inference-account-lifecycle';
 
 function sendSuccess(res: Response, data: Record<string, unknown> = {}): void {
   res.json({ ok: true, ...data });
@@ -563,12 +567,28 @@ export function contentAdminWriteRoutes(): Router {
            AND ${contentScopePredicate()}
       `).get(id, ...contentScopeParams(scope.userId, scope.tenantId));
       if (!channel) return sendError(res, 'NOT_FOUND', 'Channel not found in requested scope', 404);
-      const { analyzeChannel } = await import('../../services/channel-learner');
-      const result = await analyzeChannel(id);
-      sendSuccess(res, { analysis: result });
+      await runWithSkillInferenceAccountAdmission({ userId: scope.userId }, async (abortSignal) => {
+        const { analyzeChannel } = await import('../../services/channel-learner');
+        const result = await analyzeChannel(id, {
+          budgetContext: {
+            requestSource: 'interactive',
+            jobName: 'channel_reanalyze_manual',
+            abortSignal,
+          },
+        });
+        sendSuccess(res, { analysis: result });
+      });
     } catch (err: any) {
       logger.error({ err }, 'Portal: reanalyze channel failed');
       if (sendAiBudgetError(res, err)) return;
+      if (isSkillInferenceAccountDeletionError(err)) {
+        return sendError(
+          res,
+          'ACCOUNT_DELETION_IN_PROGRESS',
+          'No new channel analysis can start while this account is being deleted.',
+          409,
+        );
+      }
       sendInternalError(res, 'Failed to reanalyze');
     }
   });
@@ -586,15 +606,26 @@ export function contentAdminWriteRoutes(): Router {
       );
     }
     try {
-      const { processAllChannels } = await import('../../services/channel-learner');
-      const result = await processAllChannels(true, scope.userId, {
-        requestSource: 'interactive',
-        jobName: 'channel_relearn_manual',
+      await runWithSkillInferenceAccountAdmission({ userId: scope.userId }, async (abortSignal) => {
+        const { processAllChannels } = await import('../../services/channel-learner');
+        const result = await processAllChannels(true, scope.userId, {
+          requestSource: 'interactive',
+          jobName: 'channel_relearn_manual',
+          abortSignal,
+        });
+        sendSuccess(res, { result });
       });
-      sendSuccess(res, { result });
     } catch (err: any) {
       logger.error({ err }, 'Portal: channel relearn failed');
       if (sendAiBudgetError(res, err)) return;
+      if (isSkillInferenceAccountDeletionError(err)) {
+        return sendError(
+          res,
+          'ACCOUNT_DELETION_IN_PROGRESS',
+          'No new channel learning can start while this account is being deleted.',
+          409,
+        );
+      }
       sendInternalError(res, 'Failed to run channel relearn');
     }
   });

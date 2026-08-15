@@ -20,6 +20,16 @@ const calendarMocks = vi.hoisted(() => ({
   isGoogleCalendarConfigured: vi.fn(() => false),
   isOutlookCalendarConfigured: vi.fn(() => false),
 }));
+const localPrimaryShortcutMocks = vi.hoisted(() => ({
+  chatEnabled: false,
+  contentProxyEnabled: false,
+  mode: 'off' as 'off' | 'shadow' | 'canary' | 'active',
+  rolloutPercent: 0,
+  enrolled: false,
+  enrollmentChecks: 0,
+  executeSkillInference: vi.fn(),
+  rejectApplicationResult: vi.fn(),
+}));
 
 const mockRouteMessage = vi.fn();
 const mockKeywordMatch = vi.fn(() => null);
@@ -355,9 +365,19 @@ vi.mock('../../src/domains/cooking', () => ({
   handleCooking: vi.fn(async () => ({ text: 'Cooking.', domain: 'cooking' as const })),
 }));
 
-vi.mock('../../src/services/content-engine', () => ({
-  getScript: (...args: unknown[]) => mockGetScript(...args),
-}));
+vi.mock('../../src/services/content-engine', async () => {
+  const errorContract = await vi.importActual<typeof import('../../src/services/content-engine-error-contract')>(
+    '../../src/services/content-engine-error-contract',
+  );
+  const executionPolicy = await vi.importActual<typeof import('../../src/services/content-script-execution-policy')>(
+    '../../src/services/content-script-execution-policy',
+  );
+  return {
+    ForwardedLocalInferenceError: errorContract.ForwardedLocalInferenceError,
+    DEFAULT_SCRIPT_GENERATION_EXECUTION_POLICY: executionPolicy.DEFAULT_SCRIPT_GENERATION_EXECUTION_POLICY,
+    getScript: (...args: unknown[]) => mockGetScript(...args),
+  };
+});
 
 vi.mock('../../src/services/content-intelligence', () => ({
   getActiveContentPillars: (...args: unknown[]) => mockGetActiveContentPillars(...args),
@@ -406,6 +426,43 @@ vi.mock('../../src/services/fiscal-bundle', () => ({
 vi.mock('../../src/services/gemini-provider', () => ({
   completeOneShotWithFallback: (...args: unknown[]) => mockCompleteOneShotWithFallback(...args),
   completeOneShotWithSearch: (...args: unknown[]) => mockCompleteOneShotWithSearch(...args),
+}));
+
+vi.mock('../../src/services/local-primary-config', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/local-primary-config')>(
+    '../../src/services/local-primary-config',
+  );
+  return {
+    ...actual,
+    localPrimaryInferenceConfig: {
+      ...actual.localPrimaryInferenceConfig,
+      get chatEnabled() { return localPrimaryShortcutMocks.chatEnabled; },
+      get contentProxyEnabled() { return localPrimaryShortcutMocks.contentProxyEnabled; },
+    },
+  };
+});
+
+vi.mock('../../src/services/local-inference-runtime-control', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/local-inference-runtime-control')>(
+    '../../src/services/local-inference-runtime-control',
+  )),
+  getLocalInferenceRuntimeControl: () => ({
+    environment: 'staging',
+    mode: localPrimaryShortcutMocks.mode,
+    rolloutPercent: localPrimaryShortcutMocks.rolloutPercent,
+  }),
+}));
+
+vi.mock('../../src/services/skill-inference-service', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/skill-inference-service')>(
+    '../../src/services/skill-inference-service',
+  )),
+  isLocalInferenceUserEnrolled: () => {
+    localPrimaryShortcutMocks.enrollmentChecks += 1;
+    return localPrimaryShortcutMocks.enrolled;
+  },
+  executeSkillInference: (...args: unknown[]) => localPrimaryShortcutMocks.executeSkillInference(...args),
+  rejectSkillInferenceApplicationResult: (...args: unknown[]) => localPrimaryShortcutMocks.rejectApplicationResult(...args),
 }));
 
 vi.mock('../../src/domains/domain-handler', () => ({
@@ -495,17 +552,25 @@ interface MockRes {
   statusCode: number;
   body: any;
   headers: Record<string, string>;
+  destroyed: boolean;
+  writableEnded: boolean;
   status(code: number): MockRes;
   setHeader(name: string, value: string): MockRes;
   getHeader(name: string): string | undefined;
   json(body: any): MockRes;
+  once(event: string, listener: () => void): MockRes;
+  off(event: string, listener: () => void): MockRes;
+  emitForTest(event: string): void;
 }
 
 function mockRes(): MockRes {
+  const listeners = new Map<string, Set<() => void>>();
   const r: MockRes = {
     statusCode: 200,
     body: null,
     headers: {},
+    destroyed: false,
+    writableEnded: false,
     status(code: number) { r.statusCode = code; return r; },
     setHeader(name: string, value: string) {
       r.headers[name.toLowerCase()] = value;
@@ -514,7 +579,23 @@ function mockRes(): MockRes {
     getHeader(name: string) {
       return r.headers[name.toLowerCase()];
     },
-    json(body: any) { r.body = body; return r; },
+    json(body: any) { r.body = body; r.writableEnded = true; return r; },
+    once(event: string, listener: () => void) {
+      const eventListeners = listeners.get(event) ?? new Set<() => void>();
+      eventListeners.add(listener);
+      listeners.set(event, eventListeners);
+      return r;
+    },
+    off(event: string, listener: () => void) {
+      listeners.get(event)?.delete(listener);
+      return r;
+    },
+    emitForTest(event: string) {
+      if (event === 'close') r.destroyed = true;
+      const eventListeners = [...(listeners.get(event) ?? [])];
+      listeners.get(event)?.clear();
+      for (const listener of eventListeners) listener();
+    },
   };
   return r;
 }
@@ -538,6 +619,7 @@ async function dispatch(
   body?: any,
   headers: Record<string, string> = {},
   tenantId = userId,
+  onResponseReady?: (response: MockRes) => void,
 ): Promise<MockRes> {
   const router = chatRoutes();
   const req = mockReq(userId, body, headers, tenantId);
@@ -563,6 +645,7 @@ async function dispatch(
       if (err) throw err;
       resolve();
     });
+    onResponseReady?.(res);
     setImmediate(resolve);
   });
 
@@ -736,6 +819,14 @@ describe('Chat API routes', () => {
     calendarMocks.isOutlookCalendarConfigured.mockReset();
     calendarMocks.isGoogleCalendarConfigured.mockReturnValue(false);
     calendarMocks.isOutlookCalendarConfigured.mockReturnValue(false);
+    localPrimaryShortcutMocks.chatEnabled = false;
+    localPrimaryShortcutMocks.contentProxyEnabled = false;
+    localPrimaryShortcutMocks.mode = 'off';
+    localPrimaryShortcutMocks.rolloutPercent = 0;
+    localPrimaryShortcutMocks.enrolled = false;
+    localPrimaryShortcutMocks.enrollmentChecks = 0;
+    localPrimaryShortcutMocks.executeSkillInference.mockReset();
+    localPrimaryShortcutMocks.rejectApplicationResult.mockReset();
 
     mockTryDeterministicChatCommand.mockResolvedValue(null);
     mockKeywordMatch.mockReturnValue(null);
@@ -2559,6 +2650,7 @@ describe('Chat API routes', () => {
       'Olá eu gostaria de ralar uma cenoura como que conservo ela na geladeira por vários dias',
       7001,
       7001,
+      expect.any(AbortSignal),
     );
   });
 
@@ -2843,10 +2935,99 @@ describe('Chat API routes', () => {
       'en-US',
       'chat',
       7001,
+      undefined,
+      undefined,
+      'detailed',
+      false,
+      undefined,
+      undefined,
+      7001,
+      undefined,
+      {
+        cache: 'default',
+        intelligenceSignals: 'default',
+      },
+      expect.objectContaining({
+        operationId: expect.any(String),
+        abortSignal: expect.any(AbortSignal),
+        localPrimaryAdmitted: false,
+      }),
     );
     expect(mockAddToConversation).toHaveBeenCalledWith(7001, 'content', 'user', 'Write a short script about recovery after hard intervals in English', 7001);
     expect(mockAddToConversation).toHaveBeenCalledWith(7001, 'content', 'assistant', expect.stringContaining('Short script'), 7001);
     expect(vi.mocked(handleContent)).not.toHaveBeenCalled();
+  });
+
+  it('gives an enrolled local-primary script shortcut precedence over generic local Chat without cloud budget', async () => {
+    localPrimaryShortcutMocks.contentProxyEnabled = true;
+    localPrimaryShortcutMocks.mode = 'active';
+    localPrimaryShortcutMocks.rolloutPercent = 100;
+    localPrimaryShortcutMocks.enrolled = true;
+    mockRouteMessage.mockResolvedValue({
+      domain: 'content',
+      method: 'keyword',
+      confidence: 0.97,
+      strippedMessage: 'Write a short script about recovery after hard intervals',
+    });
+    mockGetScript.mockResolvedValueOnce({
+      topic: 'Recovery after intervals',
+      script: 'The local structured script body.',
+      hook: 'Recovery is part of the workout.',
+      title_options: ['Recover better'],
+      sources_used: [],
+      estimated_duration: '0:45-0:55',
+      duration_ms: 900,
+      hashtags: ['#running'],
+      caption: 'Caption',
+      cta: 'Save this.',
+      degraded: false,
+      warnings: [],
+    });
+
+    const messageRes = await dispatch('POST', '/message', 7001, {
+      text: 'Write a short script about recovery after hard intervals in English',
+    });
+
+    expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+    expect(messageRes.body).toMatchObject({
+      domain: 'content',
+      routeMethod: 'content-script',
+    });
+    expect(messageRes.body.text).toContain('The local structured script body.');
+    expect(mockGetScript).toHaveBeenCalledTimes(1);
+    expect(mockIsUserOverDailyCap).not.toHaveBeenCalled();
+    expect(localPrimaryShortcutMocks.executeSkillInference).not.toHaveBeenCalled();
+  });
+
+  it('checks Content entitlement before invoking an enrolled local-primary script shortcut', async () => {
+    localPrimaryShortcutMocks.contentProxyEnabled = true;
+    localPrimaryShortcutMocks.mode = 'active';
+    localPrimaryShortcutMocks.rolloutPercent = 100;
+    localPrimaryShortcutMocks.enrolled = true;
+    mockCheckSkillAccess.mockReturnValue({
+      allowed: false,
+      userTier: 'free',
+      requiredTier: 'pro',
+      reason: 'upgrade_required',
+    });
+    mockRouteMessage.mockResolvedValue({
+      domain: 'content',
+      method: 'keyword',
+      confidence: 0.97,
+      strippedMessage: 'Write a short script about recovery after hard intervals',
+    });
+
+    const messageRes = await dispatch('POST', '/message', 7001, {
+      text: 'Write a short script about recovery after hard intervals in English',
+    });
+
+    expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(403);
+    expect(messageRes.body.error).toMatchObject({
+      code: 'TIER_REQUIRED',
+      details: { domain: 'content' },
+    });
+    expect(mockGetScript).not.toHaveBeenCalled();
+    expect(mockIsUserOverDailyCap).not.toHaveBeenCalled();
   });
 
   it('routes help me script prompts through the canonical content script pipeline', async () => {
@@ -2895,6 +3076,22 @@ describe('Chat API routes', () => {
       'en-US',
       'chat',
       7001,
+      undefined,
+      undefined,
+      'detailed',
+      false,
+      undefined,
+      undefined,
+      7001,
+      undefined,
+      {
+        cache: 'default',
+        intelligenceSignals: 'default',
+      },
+      expect.objectContaining({
+        operationId: expect.any(String),
+        localPrimaryAdmitted: false,
+      }),
     );
     expect(vi.mocked(handleContent)).not.toHaveBeenCalled();
   });
@@ -2981,9 +3178,226 @@ describe('Chat API routes', () => {
         maxTokens: 1200,
         temperature: 0.5,
         userId: 7001,
+        abortSignal: expect.any(AbortSignal),
       }),
     );
     expect(vi.mocked(handleContent)).not.toHaveBeenCalled();
+  });
+
+  it('aborts a legacy cloud content refinement when the HTTP response closes', async () => {
+    mockRouteMessage.mockResolvedValueOnce({
+      domain: 'content',
+      method: 'context',
+      confidence: 0.91,
+      strippedMessage: 'make it shorter',
+    });
+    mockGetLastAssistantMessage.mockReturnValue('A cloud-owned draft that must stop with its request.');
+    let propagatedSignal: AbortSignal | undefined;
+    mockCompleteOneShotWithFallback.mockImplementationOnce(
+      (
+        _systemPrompt: string,
+        _userPrompt: string,
+        _category: string,
+        _fallback: () => Promise<string>,
+        options: { abortSignal?: AbortSignal },
+      ) => new Promise((_resolve, reject) => {
+        propagatedSignal = options.abortSignal;
+        const rejectCancelled = () => reject(options.abortSignal?.reason ?? Object.assign(
+          new Error('cancelled'),
+          { name: 'AbortError' },
+        ));
+        if (options.abortSignal?.aborted) rejectCancelled();
+        else options.abortSignal?.addEventListener('abort', rejectCancelled, { once: true });
+      }),
+    );
+
+    const response = await dispatch('POST', '/message', 7001, {
+      text: 'make it shorter',
+    }, {
+      'x-language': 'en-US',
+    }, 7001, (res) => {
+      setImmediate(() => res.emitForTest('close'));
+    });
+
+    expect(propagatedSignal?.aborted).toBe(true);
+    expect(propagatedSignal?.reason).toMatchObject({
+      name: 'AbortError',
+      code: 'CHAT_CLIENT_DISCONNECTED',
+    });
+    expect(response.destroyed).toBe(true);
+    expect(response.body).toBeNull();
+  });
+
+  it('uses local-primary for an enrolled private content refinement without a cloud call', async () => {
+    localPrimaryShortcutMocks.chatEnabled = true;
+    localPrimaryShortcutMocks.mode = 'active';
+    localPrimaryShortcutMocks.rolloutPercent = 100;
+    localPrimaryShortcutMocks.enrolled = true;
+    localPrimaryShortcutMocks.executeSkillInference.mockResolvedValueOnce({
+      text: 'Tighter local revised draft.',
+      provider: 'ollama',
+      route: 'local',
+      runId: 'content-refine:test',
+    });
+    mockRouteMessage.mockResolvedValueOnce({
+      domain: 'content',
+      method: 'context',
+      confidence: 0.91,
+      strippedMessage: 'make it shorter',
+    });
+    mockGetLastAssistantMessage.mockReturnValue(
+      'Recovery is where adaptation happens after hard intervals. Sleep and fuel both matter.',
+    );
+
+    const refineRes = await dispatch('POST', '/message', 7001, {
+      text: 'make it shorter',
+    }, {
+      'x-language': 'en-US',
+    });
+
+    expect(refineRes.statusCode, JSON.stringify(refineRes.body)).toBe(200);
+    expect(refineRes.body.text).toBe('Tighter local revised draft.');
+    expect(refineRes.body.metadata).toMatchObject({
+      provider: 'ollama',
+      route: 'local',
+    });
+    expect(localPrimaryShortcutMocks.executeSkillInference).toHaveBeenCalledWith(expect.objectContaining({
+      skillId: 'content',
+      taskType: 'content_chat_refine',
+      containsPrivateData: true,
+      allowCloudEscalation: false,
+      abortSignal: expect.any(AbortSignal),
+    }));
+    expect(localPrimaryShortcutMocks.enrollmentChecks).toBe(0);
+    expect(mockCompleteOneShotWithFallback).not.toHaveBeenCalled();
+  });
+
+  it('aborts an enrolled local refinement when the HTTP response closes', async () => {
+    localPrimaryShortcutMocks.chatEnabled = true;
+    localPrimaryShortcutMocks.mode = 'active';
+    localPrimaryShortcutMocks.rolloutPercent = 100;
+    localPrimaryShortcutMocks.enrolled = true;
+    mockRouteMessage.mockResolvedValueOnce({
+      domain: 'content',
+      method: 'context',
+      confidence: 0.91,
+      strippedMessage: 'make it shorter',
+    });
+    mockGetLastAssistantMessage.mockReturnValue('A private draft that should stay local.');
+    let propagatedSignal: AbortSignal | undefined;
+    localPrimaryShortcutMocks.executeSkillInference.mockImplementationOnce(
+      (request: { abortSignal?: AbortSignal }) => new Promise((_resolve, reject) => {
+        propagatedSignal = request.abortSignal;
+        const rejectCancelled = () => reject(request.abortSignal?.reason ?? Object.assign(
+          new Error('cancelled'),
+          { name: 'AbortError' },
+        ));
+        if (request.abortSignal?.aborted) rejectCancelled();
+        else request.abortSignal?.addEventListener('abort', rejectCancelled, { once: true });
+      }),
+    );
+
+    const response = await dispatch('POST', '/message', 7001, {
+      text: 'make it shorter',
+    }, {
+      'x-language': 'en-US',
+    }, 7001, (res) => {
+      setImmediate(() => res.emitForTest('close'));
+    });
+
+    expect(propagatedSignal?.aborted).toBe(true);
+    expect(propagatedSignal?.reason).toMatchObject({
+      name: 'AbortError',
+      code: 'CHAT_CLIENT_DISCONNECTED',
+    });
+    expect(response.destroyed).toBe(true);
+    expect(response.body).toBeNull();
+    expect(mockCompleteOneShotWithFallback).not.toHaveBeenCalled();
+  });
+
+  it('preserves a typed local fair-use denial on the enrolled content shortcut', async () => {
+    localPrimaryShortcutMocks.chatEnabled = true;
+    localPrimaryShortcutMocks.mode = 'active';
+    localPrimaryShortcutMocks.rolloutPercent = 100;
+    localPrimaryShortcutMocks.enrolled = true;
+    const { SkillInferencePolicyError } = await import('../../src/services/skill-inference-service');
+    localPrimaryShortcutMocks.executeSkillInference.mockRejectedValueOnce(
+      new SkillInferencePolicyError(
+        'LOCAL_FAIR_USE_REACHED',
+        'Local model fair-use limit reached.',
+        429,
+        { hourlyLimit: 20, dailyLimit: 100 },
+      ),
+    );
+    mockRouteMessage.mockResolvedValueOnce({
+      domain: 'content',
+      method: 'context',
+      confidence: 0.91,
+      strippedMessage: 'make it shorter',
+    });
+    mockGetLastAssistantMessage.mockReturnValue('A private draft that should remain local.');
+
+    const refineRes = await dispatch('POST', '/message', 7001, {
+      text: 'make it shorter',
+    }, {
+      'x-language': 'en-US',
+    });
+
+    expect(refineRes.statusCode, JSON.stringify(refineRes.body)).toBe(429);
+    expect(refineRes.body).toMatchObject({
+      ok: false,
+      error: {
+        code: 'LOCAL_FAIR_USE_REACHED',
+        details: { hourlyLimit: 20, dailyLimit: 100 },
+      },
+    });
+    expect(mockCompleteOneShotWithFallback).not.toHaveBeenCalled();
+  });
+
+  it('withholds a legacy cloud refinement that contradicts the requested response locale', async () => {
+    mockRouteMessage.mockResolvedValueOnce({
+      domain: 'content',
+      method: 'context',
+      confidence: 0.91,
+      strippedMessage: 'make it shorter',
+    });
+    mockGetLastAssistantMessage.mockReturnValue('An existing English draft.');
+    mockCompleteOneShotWithFallback.mockResolvedValueOnce({
+      text: 'Resposta revista em português.',
+      provider: 'gemini',
+    });
+
+    const refineRes = await dispatch('POST', '/message', 7001, {
+      text: 'make it shorter',
+    }, {
+      'x-language': 'en-US',
+    });
+
+    expect(refineRes.statusCode, JSON.stringify(refineRes.body)).toBe(200);
+    expect(refineRes.body.text).toBe('I could not safely present that response in English. Please try again.');
+    expect(refineRes.body.text).not.toContain('Resposta revista');
+    expect(refineRes.body.metadata).toMatchObject({
+      type: 'content_refine',
+      sourceLength: 'An existing English draft.'.length,
+      degraded: false,
+      responseLanguageGuard: {
+        action: 'replaced',
+        reason: 'response_locale_mismatch',
+        expected: 'en',
+        detected: 'pt',
+      },
+      responseQuality: {
+        status: 'repaired',
+        issues: expect.arrayContaining(['response_locale_mismatch']),
+      },
+      chatReasoning: {
+        fallbackUsed: true,
+        fallback: {
+          fallbackReason: 'response_locale_mismatch_blocked',
+          retryable: true,
+        },
+      },
+    });
   });
 
   it('returns a conservative shortened fallback when live content refinement is unavailable', async () => {
@@ -7407,6 +7821,62 @@ describe('Chat API routes', () => {
     expect(routeSource.indexOf("res.setHeader('Cache-Control'")).toBeLessThan(routeSource.indexOf('ensureValidChatRouteScope'));
     expect(routeSource.indexOf("res.setHeader('Cache-Control'")).toBeLessThan(routeSource.indexOf('res.status(400)'));
     expect(routeSource.indexOf("res.setHeader('Cache-Control'")).toBeLessThan(routeSource.indexOf('res.status(404)'));
+  });
+
+  it('persists retryable degraded terminals before account admission release', () => {
+    const source = fs.readFileSync(path.resolve(__dirname, '../../src/api/routes/chat-message-routes.ts'), 'utf-8');
+    const pipelineStart = source.indexOf('const runPipeline = () => runWithSkillInferenceAccountAdmission');
+    const pipelineEnd = source.indexOf('      if (liveEvalContext) {', pipelineStart);
+    const pipelineSource = source.slice(pipelineStart, pipelineEnd);
+
+    expect(pipelineStart).toBeGreaterThanOrEqual(0);
+    expect(pipelineSource).toContain('await runChatMessagePipeline({');
+    expect(pipelineSource).toContain('await sendRetryableChatFailureResponseIfNeeded({');
+    expect(pipelineSource.indexOf('await runChatMessagePipeline({')).toBeLessThan(
+      pipelineSource.indexOf('await sendRetryableChatFailureResponseIfNeeded({'),
+    );
+    expect(pipelineSource.indexOf('sendAiBudgetError(res, pipelineError)')).toBeLessThan(
+      pipelineSource.indexOf('await sendRetryableChatFailureResponseIfNeeded({'),
+    );
+    expect(pipelineSource).toContain('if (!res.headersSent');
+
+    const catchStart = source.indexOf('} catch (err: any) {', pipelineStart);
+    const finallyStart = source.indexOf('} finally {', catchStart);
+    const catchSource = source.slice(catchStart, finallyStart);
+
+    expect(catchSource).not.toContain('sendRetryableChatFailureResponseIfNeeded');
+  });
+
+  it('terminates provider or client cancellation before degraded, portal, log, or 500 handling', () => {
+    const source = fs.readFileSync(path.resolve(__dirname, '../../src/api/routes/chat-message-routes.ts'), 'utf-8');
+    const pipelineStart = source.indexOf('const runPipeline = () => runWithSkillInferenceAccountAdmission');
+    const pipelineEnd = source.indexOf('      if (liveEvalContext) {', pipelineStart);
+    const pipelineSource = source.slice(pipelineStart, pipelineEnd);
+    const innerCancellationGuard = pipelineSource.indexOf('accountAbortSignal.aborted');
+    const degradedHandler = pipelineSource.indexOf('sendRetryableChatFailureResponseIfNeeded');
+
+    expect(innerCancellationGuard).toBeGreaterThanOrEqual(0);
+    expect(innerCancellationGuard).toBeLessThan(
+      pipelineSource.indexOf('sendAiBudgetError(res, pipelineError)'),
+    );
+    expect(innerCancellationGuard).toBeLessThan(degradedHandler);
+
+    const catchStart = source.indexOf('} catch (err: any) {', pipelineEnd);
+    const finallyStart = source.indexOf('} finally {', catchStart);
+    const catchSource = source.slice(catchStart, finallyStart);
+    const cancellationGuard = catchSource.indexOf(
+      'requestAbortController.signal.aborted || isProviderRequestCancellation(err)',
+    );
+
+    expect(cancellationGuard).toBeGreaterThanOrEqual(0);
+    for (const forbiddenAfterCancellation of [
+      'sendAiBudgetError',
+      'pushEvent',
+      'logger.error',
+      'sendInternalError',
+    ]) {
+      expect(cancellationGuard).toBeLessThan(catchSource.indexOf(forbiddenAfterCancellation));
+    }
   });
 
   describe('M5 task callback edges (ledger and legacy flag-off)', () => {

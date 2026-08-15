@@ -957,6 +957,53 @@ describe('deleteAllUserData', () => {
     expect(counts['users']).toBe(1);
   });
 
+  it('inventories and erases every current user-keyed API cache family without prefix collisions', () => {
+    seedUser(testDb, 1);
+    seedUser(testDb, 2, { username: 'other' });
+    const insert = testDb.prepare(`
+      INSERT INTO api_cache (cache_key, value_json, expires_at)
+      VALUES (?, ?, '2099-01-01T00:00:00.000Z')
+    `);
+    const ownerKeys = [
+      'u:1:wearable:summary:2026-08-10',
+      'plan:week:u:1:t:17:2026-08-10',
+      'script-v8:private-topic:scope:1:tenant:17',
+      'coach-briefing:1',
+      'dashboard-readiness:1',
+      'training:keep-original:1:2026-08-10',
+      'chat-cmd:17:1:en-US:show-my-day',
+      'dashboard:17:1:en-US',
+      'dashboard-home:17:1:en-US',
+      'readiness:17:1',
+      'training-home:17:1:en-US',
+      'training-summary:17:1',
+      'cardio-progression:17:1:running:8',
+      'strength-progression:17:1:8',
+      'training-activity-weekly:17:1',
+      'training-history:17:1:all:25',
+      'training-load-snapshot:17:1',
+      'unified-inbox:1:tenant:17:20',
+      'unified-inbox-unread:1:tenant:17',
+    ];
+    const retainedKeys = [
+      'u:10:dashboard',
+      'dashboard:1:2:en-US',
+      'script-v8:other-topic:scope:10:tenant:17',
+      'global:duration:1:value',
+    ];
+    for (const key of ownerKeys) insert.run(key, JSON.stringify({ private: key }));
+    for (const key of retainedKeys) insert.run(key, JSON.stringify({ retained: key }));
+
+    const inventory = getAccountDeletionInventoryForUser(1);
+    expect(inventory.deletableTables.api_cache).toBe(ownerKeys.length);
+
+    const counts = deleteAllUserData(1);
+
+    expect(counts.api_cache).toBe(ownerKeys.length);
+    expect(testDb.prepare('SELECT cache_key FROM api_cache ORDER BY cache_key').all())
+      .toEqual(retainedKeys.sort().map((cache_key) => ({ cache_key })));
+  });
+
   it('discovers and erases receipt AI execution rows by user across tenant scopes', () => {
     testDb.prepare(`
       INSERT INTO receipt_ai_transfer_executions (
@@ -1507,7 +1554,10 @@ describe('account deletion OAuth revocation', () => {
 
     expect(fetchMock).toHaveBeenCalledOnce();
     expect(counts.user_oauth_tokens).toBe(1);
+    expect(counts.local_inference_account_deletion_fences).toBe(1);
     expect(testDb.prepare('SELECT 1 FROM user_oauth_tokens WHERE user_id = 1').get()).toBeUndefined();
+    expect(testDb.prepare(`SELECT 1 FROM local_inference_account_deletion_fences
+      WHERE user_id = 1`).get()).toBeUndefined();
   });
 
   it('bounds every third-party revocation with an abort signal', async () => {
@@ -1539,6 +1589,23 @@ describe('account deletion OAuth revocation', () => {
     expect(counts.user_oauth_tokens).toBe(1);
     expect(counts.users).toBe(1);
     expect(testDb.prepare('SELECT 1 FROM users WHERE telegram_id = 1').get()).toBeUndefined();
+  });
+
+  it('releases only its account-inference fence when transactional erasure fails', async () => {
+    seedUser(testDb, 1);
+    testDb.exec(`CREATE TRIGGER test_block_account_delete
+      BEFORE DELETE ON users
+      WHEN OLD.telegram_id = 1
+      BEGIN
+        SELECT RAISE(ABORT, 'injected account deletion failure');
+      END;`);
+
+    await expect(deleteAllUserDataForAccountDeletion(1))
+      .rejects.toThrow('injected account deletion failure');
+
+    expect(testDb.prepare(`SELECT 1 FROM local_inference_account_deletion_fences
+      WHERE user_id = 1`).get()).toBeUndefined();
+    expect(testDb.prepare('SELECT 1 FROM users WHERE telegram_id = 1').get()).toBeDefined();
   });
 });
 

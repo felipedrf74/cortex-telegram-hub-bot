@@ -1,8 +1,55 @@
+import asyncio
 import importlib
 import sys
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
+
+
+def test_attributed_content_operation_is_cancelled_when_the_client_disconnects(monkeypatch):
+    _reload_content_engine(monkeypatch, secret="valid-secret")
+    research = importlib.import_module("routers.research")
+
+    async def scenario():
+        disconnected = asyncio.Event()
+        operation_started = asyncio.Event()
+        operation_cancelled = asyncio.Event()
+
+        class DisconnectingRequest:
+            async def is_disconnected(self):
+                await disconnected.wait()
+                return True
+
+        async def operation():
+            operation_started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                operation_cancelled.set()
+                raise
+
+        task = asyncio.create_task(research._with_ai_attribution(
+            SimpleNamespace(
+                user_id=7,
+                tenant_id=44,
+                internal_attribution_token=None,
+                internal_inference_attribution_token="signed-local-token",
+                internal_inference_proof_key="signed-proof-key",
+            ),
+            operation,
+            client_request=DisconnectingRequest(),
+        ))
+        await operation_started.wait()
+        disconnected.set()
+        try:
+            await task
+            raise AssertionError("expected disconnect cancellation")
+        except asyncio.CancelledError:
+            pass
+        assert operation_cancelled.is_set()
+
+    asyncio.run(scenario())
 
 
 def _reload_content_engine(monkeypatch, *, secret: str = "test-content-engine-secret", env: str = "test"):
@@ -161,6 +208,8 @@ def test_book_extract_installs_request_attribution_context(monkeypatch):
         "user_id": 7,
         "tenant_id": 44,
         "attribution_token": "signed-token",
+        "inference_attribution_token": None,
+        "inference_proof_key": None,
     }
 
 
@@ -199,6 +248,8 @@ def test_report_post_installs_request_attribution_context(monkeypatch):
         "user_id": 7,
         "tenant_id": 44,
         "attribution_token": "signed-report-token",
+        "inference_attribution_token": None,
+        "inference_proof_key": None,
     }
 
 
@@ -264,6 +315,8 @@ def test_hotnews_get_installs_empty_attribution_context(monkeypatch):
         "user_id": None,
         "tenant_id": None,
         "attribution_token": None,
+        "inference_attribution_token": None,
+        "inference_proof_key": None,
     }
 
 
@@ -295,6 +348,8 @@ def test_report_get_installs_empty_attribution_context(monkeypatch):
         "user_id": None,
         "tenant_id": None,
         "attribution_token": None,
+        "inference_attribution_token": None,
+        "inference_proof_key": None,
     }
 
 

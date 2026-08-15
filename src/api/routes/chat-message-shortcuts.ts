@@ -5,7 +5,11 @@ import { randomUUID } from 'crypto';
 import type { RouteResult } from '../../router';
 import type { DomainName } from '../../domains/types';
 import { logger } from '../../utils/logger';
-import { getScript } from '../../services/content-engine';
+import {
+  DEFAULT_SCRIPT_GENERATION_EXECUTION_POLICY,
+  ForwardedLocalInferenceError,
+  getScript,
+} from '../../services/content-engine';
 import { completeOneShotWithFallback } from '../../services/gemini-provider';
 import {
   parseContentScriptShortcut,
@@ -34,8 +38,21 @@ import {
   getUserBrandVoiceForChatScript,
 } from './chat-script-shortcut-response';
 import { rethrowAiUsageFailClosedError } from '../../services/api-usage-fallback';
+import { localPrimaryInferenceConfig } from '../../services/local-primary-config';
+import { getLocalInferenceRuntimeControl } from '../../services/local-inference-runtime-control';
+import {
+  executeSkillInference,
+  isLocalInferenceUserEnrolled,
+  rejectSkillInferenceApplicationResult,
+  SkillInferencePolicyError,
+} from '../../services/skill-inference-service';
+import {
+  assertContentOutputLanguageFields,
+  ContentOutputLanguageMismatchError,
+} from '../../services/content-output-language';
+import { getCurrentRequestId } from '../../utils/request-context';
 
-type ActiveChatContext = {
+export type ActiveChatContext = {
   domain: DomainName;
   lastAssistantMessage: string;
 } | null;
@@ -56,8 +73,91 @@ export type ChatShortcutRouteResult = {
   conversationDomain: DomainName;
 };
 
+export type LocalPrimaryContentChatShortcutAdmission = 'content' | 'chat';
+
 function buildChatWarningCode(code: 'content_engine_unavailable' | 'content_refine_unavailable'): string[] {
   return [code];
+}
+
+function isChatLocalPrimaryUserEnrolled(userId: number): boolean {
+  if (!localPrimaryInferenceConfig.chatEnabled) return false;
+  const control = getLocalInferenceRuntimeControl();
+  return control.mode === 'active'
+    || (control.mode === 'canary'
+      && isLocalInferenceUserEnrolled(userId, control.rolloutPercent));
+}
+
+function isContentLocalPrimaryUserEnrolled(userId: number): boolean {
+  if (!localPrimaryInferenceConfig.contentProxyEnabled) return false;
+  const control = getLocalInferenceRuntimeControl();
+  return control.mode === 'active'
+    || (control.mode === 'canary'
+      && isLocalInferenceUserEnrolled(userId, control.rolloutPercent));
+}
+
+export function isContentModelBackedChatShortcutRequest(input: {
+  normalizedText: string;
+  activeContext: ActiveChatContext;
+}): boolean {
+  if (parseContentScriptShortcut(input.normalizedText)) return true;
+  return input.activeContext?.domain === 'content'
+    && isContentRefinementFollowUp(input.normalizedText)
+    && Boolean(extractContentRefinementSourceText(input.activeContext.lastAssistantMessage));
+}
+
+/**
+ * Resolve early Content ownership without invoking a model or a tier gate.
+ * A non-enrolled request remains entirely under the legacy route, preserving
+ * its classifier, budget, trace, and response contracts.
+ */
+export function resolveLocalPrimaryContentChatShortcutAdmission(input: {
+  normalizedText: string;
+  activeContext: ActiveChatContext;
+  userId: number;
+}): LocalPrimaryContentChatShortcutAdmission | null {
+  if (parseContentScriptShortcut(input.normalizedText)) {
+    return isContentLocalPrimaryUserEnrolled(input.userId) ? 'content' : null;
+  }
+  const refinementRequest = input.activeContext?.domain === 'content'
+    && isContentRefinementFollowUp(input.normalizedText)
+    && Boolean(extractContentRefinementSourceText(input.activeContext.lastAssistantMessage));
+  if (!refinementRequest) return null;
+  return isChatLocalPrimaryUserEnrolled(input.userId) ? 'chat' : null;
+}
+
+/**
+ * Own explicit script/refinement commands before the generic local Chat
+ * answerer. The same existing shortcut contract remains the response owner;
+ * this wrapper only avoids the legacy classifier/cloud-budget preflight when
+ * the corresponding local-primary route is actually admitted.
+ */
+export async function tryBuildLocalPrimaryContentChatShortcutResponse(input: {
+  normalizedText: string;
+  userId: number;
+  tenantId: number;
+  userLanguage: string;
+  activeContext: ActiveChatContext;
+  abortSignal?: AbortSignal;
+  localPrimaryAdmission?: LocalPrimaryContentChatShortcutAdmission;
+}): Promise<ChatShortcutRouteResult | null> {
+  const scriptRequest = parseContentScriptShortcut(input.normalizedText);
+  const refinementRequest = input.activeContext?.domain === 'content'
+    && isContentRefinementFollowUp(input.normalizedText)
+    && Boolean(extractContentRefinementSourceText(input.activeContext.lastAssistantMessage));
+  if (!scriptRequest && !refinementRequest) return null;
+  const localPrimaryAdmission = input.localPrimaryAdmission
+    ?? resolveLocalPrimaryContentChatShortcutAdmission(input);
+  if (!localPrimaryAdmission) return null;
+  return tryBuildContentShortcutResponse({
+    ...input,
+    localPrimaryAdmission,
+    route: {
+      domain: 'content',
+      method: refinementRequest ? 'context' : 'pattern',
+      confidence: 0.99,
+      strippedMessage: input.normalizedText,
+    },
+  });
 }
 
 function buildShortcutResponse(input: {
@@ -91,6 +191,8 @@ async function tryBuildContentShortcutResponse(input: {
   tenantId: number;
   userLanguage: string;
   activeContext: ActiveChatContext;
+  localPrimaryAdmission?: 'content' | 'chat';
+  abortSignal?: AbortSignal;
 }): Promise<ChatShortcutRouteResult | null> {
   const { route, normalizedText, userId, tenantId, userLanguage, activeContext } = input;
   const contentStateShortcut = parseContentStateShortcut(normalizedText);
@@ -121,6 +223,20 @@ async function tryBuildContentShortcutResponse(input: {
         requestedLanguage,
         'chat',
         userId,
+        undefined,
+        undefined,
+        'detailed',
+        false,
+        undefined,
+        undefined,
+        tenantId,
+        undefined,
+        DEFAULT_SCRIPT_GENERATION_EXECUTION_POLICY,
+        {
+          operationId: getCurrentRequestId() ?? randomUUID(),
+          abortSignal: input.abortSignal,
+          localPrimaryAdmitted: input.localPrimaryAdmission === 'content',
+        },
       );
 
       return buildShortcutResponse({
@@ -132,6 +248,9 @@ async function tryBuildContentShortcutResponse(input: {
       });
     } catch (err) {
       rethrowAiUsageFailClosedError(err);
+      if (input.abortSignal?.aborted
+          || err instanceof SkillInferencePolicyError
+          || err instanceof ForwardedLocalInferenceError) throw err;
       logger.warn(
         {
           err,
@@ -161,23 +280,79 @@ async function tryBuildContentShortcutResponse(input: {
     const requestedLanguage = resolveRequestedScriptLanguage(normalizedText, userLanguage);
     const sourceText = extractContentRefinementSourceText(activeContext.lastAssistantMessage);
     try {
-      const { text: refinedText } = await completeOneShotWithFallback(
-        buildContentRefinementSystemPrompt(requestedLanguage),
-        buildContentRefinementUserPrompt(sourceText, normalizedText, requestedLanguage),
-        'content_chat_refine',
-        async () => {
-          throw new Error('Anthropic fallback disabled');
-        },
-        {
-          maxTokens: 1200,
-          temperature: 0.5,
-          userId,
+      const operationId = getCurrentRequestId() ?? randomUUID();
+      const governedRunId = `content-refine:${randomUUID()}`;
+      const systemPrompt = buildContentRefinementSystemPrompt(requestedLanguage);
+      const userPrompt = buildContentRefinementUserPrompt(sourceText, normalizedText, requestedLanguage);
+      const localRefinementEnrolled = input.localPrimaryAdmission === 'chat'
+        || (input.localPrimaryAdmission === undefined && isChatLocalPrimaryUserEnrolled(userId));
+      const completion = localRefinementEnrolled
+        ? await executeSkillInference({
           tenantId,
-        },
-      );
+          userId,
+          skillId: 'content',
+          taskType: 'content_chat_refine',
+          riskClass: 'low',
+          executionClass: 'interactive',
+          operationId,
+          runId: governedRunId,
+          prompt: userPrompt,
+          applicationGuidance: systemPrompt,
+          schemaId: 'text',
+          requestedOutputTokens: 1200,
+          temperature: 0.5,
+          containsPrivateData: true,
+          allowCloudEscalation: false,
+          redactionRequired: false,
+          requestSource: 'interactive',
+          budgetRequest: {
+            userId,
+            requestSource: 'interactive',
+            baseCategory: 'content_chat_refine',
+            jobName: 'content_chat_refine',
+            runId: operationId,
+          },
+          cloudBudgetBoundary: async () => {
+            throw new Error('Private Chat refinement is local-only after local admission');
+          },
+          abortSignal: input.abortSignal,
+          deadlineMs: 45_000,
+        })
+        : await completeOneShotWithFallback(
+          systemPrompt,
+          userPrompt,
+          'content_chat_refine',
+          async () => {
+            throw new Error('Anthropic fallback disabled');
+          },
+          {
+            maxTokens: 1200,
+            temperature: 0.5,
+            userId,
+            tenantId,
+            abortSignal: input.abortSignal,
+          },
+        );
+      const refinedText = completion.text.trim();
+      try {
+        if (localRefinementEnrolled) {
+          assertContentOutputLanguageFields(requestedLanguage, [refinedText], 'content-chat-refine');
+        }
+      } catch (error) {
+        if (error instanceof ContentOutputLanguageMismatchError) {
+          rejectSkillInferenceApplicationResult({
+            runId: governedRunId,
+            tenantId,
+            userId,
+            reason: 'content_chat_refine_locale_mismatch',
+          });
+          throw error;
+        }
+        throw error;
+      }
 
       return buildShortcutResponse({
-        text: refinedText.trim(),
+        text: refinedText,
         domain: 'content',
         routeMethod: 'content-refine',
         confidence: route.confidence,
@@ -185,10 +360,18 @@ async function tryBuildContentShortcutResponse(input: {
           type: 'content_refine',
           sourceLength: sourceText.length,
           degraded: false,
+          ...(localRefinementEnrolled ? {
+            provider: completion.provider,
+            route: 'local',
+            localeFallbackApplied: false,
+          } : {}),
         },
       });
     } catch (err) {
       rethrowAiUsageFailClosedError(err);
+      if (input.abortSignal?.aborted
+          || err instanceof SkillInferencePolicyError
+          || err instanceof ForwardedLocalInferenceError) throw err;
       logger.warn(
         {
           err,
@@ -301,6 +484,7 @@ export async function tryBuildChatMessageShortcutResponse(input: {
   tenantId: number;
   userLanguage: string;
   activeContext: ActiveChatContext;
+  abortSignal?: AbortSignal;
 }): Promise<ChatShortcutRouteResult | null> {
   if (input.route.domain === 'content') {
     return tryBuildContentShortcutResponse(input);

@@ -9,6 +9,8 @@
  * module reads recent `api_usage` rows where `provider='ollama'` and
  * `local_request_units > 0` and applies per-user daily, hourly, and
  * script-generation-daily caps from `config.ollama.rateLimit`.
+ * Local-primary and classifier shadow rows remain telemetry-only and are
+ * excluded from every visible-user counter.
  *
  * Returns `{ allowed: false, reasonScope }` when over a cap; the
  * OllamaProvider raises `LocalLLMError('capacity_exceeded', { scope })`
@@ -24,6 +26,11 @@
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import { getDb } from './database';
+import {
+  CLASSIFIER_SHADOW_JOB_NAME,
+  LOCAL_PRIMARY_SHADOW_CATEGORY_PREFIX,
+  LOCAL_PRIMARY_SHADOW_JOB_NAME,
+} from './local-inference-vocabulary';
 
 export type LocalLLMRateLimitScope = 'general' | 'script';
 
@@ -41,11 +48,13 @@ function isColumnPresent(): boolean {
   try {
     const db = getDb();
     const rows = db.prepare(`PRAGMA table_info(api_usage)`).all() as Array<{ name: string }>;
-    const present = rows.some(r => r.name === 'local_request_units');
+    const columns = new Set(rows.map((row) => row.name));
+    const present = ['local_request_units', 'job_name', 'base_category']
+      .every((column) => columns.has(column));
     cachedColumnPresent = present;
     if (!present && !schemaWarningEmitted) {
       schemaWarningEmitted = true;
-      logger.warn('local-llm-rate-limiter: api_usage.local_request_units column missing; rate limiter is permissive until migration applied');
+      logger.warn('local-llm-rate-limiter: governed api_usage attribution columns missing; rate limiter is permissive until migrations are applied');
     }
     return present;
   } catch {
@@ -82,8 +91,17 @@ export function checkAndConsumeLocalLLMRateLimit(
         WHERE provider = 'ollama'
           AND user_id = ?
           AND local_request_units > 0
+          AND COALESCE(job_name, '') NOT IN (?, ?)
+          AND instr(COALESCE(base_category, category), ?) <> 1
+          AND COALESCE(base_category, category) <> ?
           AND ts >= datetime('now', '-1 hour')
-      `).get(input.userId) as { n: number } | undefined;
+      `).get(
+        input.userId,
+        LOCAL_PRIMARY_SHADOW_JOB_NAME,
+        CLASSIFIER_SHADOW_JOB_NAME,
+        LOCAL_PRIMARY_SHADOW_CATEGORY_PREFIX,
+        CLASSIFIER_SHADOW_JOB_NAME,
+      ) as { n: number } | undefined;
       if (row && row.n >= cfg.perUserHourly) {
         return { allowed: false, reasonScope: 'user_hourly', retryAfterSec: 3600 };
       }
@@ -97,8 +115,17 @@ export function checkAndConsumeLocalLLMRateLimit(
         WHERE provider = 'ollama'
           AND user_id = ?
           AND local_request_units > 0
+          AND COALESCE(job_name, '') NOT IN (?, ?)
+          AND instr(COALESCE(base_category, category), ?) <> 1
+          AND COALESCE(base_category, category) <> ?
           AND ts >= datetime('now', '-1 day')
-      `).get(input.userId) as { n: number } | undefined;
+      `).get(
+        input.userId,
+        LOCAL_PRIMARY_SHADOW_JOB_NAME,
+        CLASSIFIER_SHADOW_JOB_NAME,
+        LOCAL_PRIMARY_SHADOW_CATEGORY_PREFIX,
+        CLASSIFIER_SHADOW_JOB_NAME,
+      ) as { n: number } | undefined;
       if (row && row.n >= cfg.perUserDaily) {
         return { allowed: false, reasonScope: 'user_daily', retryAfterSec: 24 * 3600 };
       }
@@ -112,9 +139,18 @@ export function checkAndConsumeLocalLLMRateLimit(
         WHERE provider = 'ollama'
           AND user_id = ?
           AND local_request_units > 0
+          AND COALESCE(job_name, '') NOT IN (?, ?)
+          AND instr(COALESCE(base_category, category), ?) <> 1
+          AND COALESCE(base_category, category) <> ?
           AND category LIKE 'script_gen%'
           AND ts >= datetime('now', '-1 day')
-      `).get(input.userId) as { n: number } | undefined;
+      `).get(
+        input.userId,
+        LOCAL_PRIMARY_SHADOW_JOB_NAME,
+        CLASSIFIER_SHADOW_JOB_NAME,
+        LOCAL_PRIMARY_SHADOW_CATEGORY_PREFIX,
+        CLASSIFIER_SHADOW_JOB_NAME,
+      ) as { n: number } | undefined;
       if (row && row.n >= cfg.scriptGenPerUserDaily) {
         return { allowed: false, reasonScope: 'script_daily', retryAfterSec: 24 * 3600 };
       }

@@ -19,8 +19,25 @@
  * runtime helpers; tests must call `_resetLocalInferenceGateForTests()`.
  */
 
-let activeCount = 0;
-const waiters: Array<{ enqueuedAt: number; resolve: () => void }> = [];
+import { localInferenceScheduler } from '../local-inference-scheduler';
+import { getLocalInferenceRuntimeControl } from '../local-inference-runtime-control';
+
+// The pre-local-primary ChatCoreV2 rollout has its own independently
+// configurable gate and queue telemetry. Keep that state isolated so the
+// default-OFF release remains behavior-compatible, while every Ollama call
+// made during a local-primary rollout (including shadow evaluation) continues
+// through the process-wide scheduler below.
+let legacyActiveCount = 0;
+const legacyWaiters: Array<{ enqueuedAt: number; resolve: () => void }> = [];
+
+function localPrimarySchedulerOwnsLegacyTraffic(): boolean {
+  try {
+    const mode = getLocalInferenceRuntimeControl().mode;
+    return mode === 'shadow' || mode === 'canary' || mode === 'active';
+  } catch {
+    return false;
+  }
+}
 
 export interface LocalInferenceGateSnapshot {
   activeCount: number;
@@ -29,7 +46,7 @@ export interface LocalInferenceGateSnapshot {
   estimatedWaitMs?: number;
 }
 
-export function resolveLocalInferenceMaxConcurrency(
+export function resolveLegacyLocalInferenceMaxConcurrency(
   env: NodeJS.ProcessEnv = process.env,
 ): number {
   const raw = Number.parseInt(
@@ -39,60 +56,98 @@ export function resolveLocalInferenceMaxConcurrency(
   return Number.isFinite(raw) && raw >= 1 ? raw : 1;
 }
 
+export async function runWithLegacyLocalInferenceSlot<T>(
+  fn: () => Promise<T>,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<T> {
+  // Preserve the pre-existing configurable gate while local-primary is OFF.
+  // As soon as governed evaluation or serving begins, every Ollama generation
+  // shares the process-wide one-generation scheduler, including non-enrolled
+  // legacy turns.
+  if (localPrimarySchedulerOwnsLegacyTraffic()) {
+    return runWithLocalInferenceSlot(fn, env);
+  }
+  const max = resolveLegacyLocalInferenceMaxConcurrency(env);
+  if (legacyActiveCount >= max) {
+    await new Promise<void>((resolve) => {
+      legacyWaiters.push({
+        enqueuedAt: Date.now(),
+        resolve: () => {
+          legacyActiveCount += 1;
+          resolve();
+        },
+      });
+    });
+  } else {
+    legacyActiveCount += 1;
+  }
+  try {
+    return await fn();
+  } finally {
+    legacyActiveCount = Math.max(0, legacyActiveCount - 1);
+    const next = legacyWaiters.shift();
+    if (next) next.resolve();
+  }
+}
+
+export function getLegacyLocalInferenceGateSnapshot(
+  env: NodeJS.ProcessEnv = process.env,
+): LocalInferenceGateSnapshot {
+  if (localPrimarySchedulerOwnsLegacyTraffic()) {
+    return getLocalInferenceGateSnapshot(env);
+  }
+  const oldestWaiter = legacyWaiters[0];
+  return {
+    activeCount: legacyActiveCount,
+    queuedCount: legacyWaiters.length,
+    maxConcurrency: resolveLegacyLocalInferenceMaxConcurrency(env),
+    estimatedWaitMs: oldestWaiter ? Math.max(0, Date.now() - oldestWaiter.enqueuedAt) : undefined,
+  };
+}
+
+export function resolveLocalInferenceMaxConcurrency(
+  _env: NodeJS.ProcessEnv = process.env,
+): number {
+  return 1;
+}
+
 /**
  * Runs `fn` while holding one local-inference slot, waiting if the configured
  * concurrency limit is already reached. The slot is always released, including
  * when `fn` rejects.
  */
-export async function runWithLocalInferenceSlot<T>(
+export function runWithLocalInferenceSlot<T>(
   fn: () => Promise<T>,
-  env: NodeJS.ProcessEnv = process.env,
+  _env: NodeJS.ProcessEnv = process.env,
 ): Promise<T> {
-  const max = resolveLocalInferenceMaxConcurrency(env);
-  await acquireSlot(max);
-  try {
-    return await fn();
-  } finally {
-    releaseSlot();
-  }
+  const result = localInferenceScheduler.schedule({
+    weight: 1,
+    executionClass: 'interactive',
+    deadlineMs: 45_000,
+    run: fn,
+  }).then((scheduled) => scheduled.value);
+  // A caller can attach its rejection handler after the queue deadline fires.
+  // Mark this derived promise handled immediately without changing what the
+  // caller observes when it later awaits the original promise.
+  void result.catch(() => undefined);
+  return result;
 }
 
 export function getLocalInferenceGateSnapshot(
-  env: NodeJS.ProcessEnv = process.env,
+  _env: NodeJS.ProcessEnv = process.env,
 ): LocalInferenceGateSnapshot {
-  const oldestWaiter = waiters[0];
+  const snapshot = localInferenceScheduler.snapshot();
   return {
-    activeCount,
-    queuedCount: waiters.length,
-    maxConcurrency: resolveLocalInferenceMaxConcurrency(env),
-    estimatedWaitMs: oldestWaiter ? Math.max(0, Date.now() - oldestWaiter.enqueuedAt) : undefined,
+    activeCount: snapshot.activeCount,
+    queuedCount: snapshot.queuedCount,
+    maxConcurrency: snapshot.maxConcurrency,
+    estimatedWaitMs: snapshot.oldestQueueWaitMs,
   };
-}
-
-function acquireSlot(max: number): Promise<void> {
-  if (activeCount < max) {
-    activeCount += 1;
-    return Promise.resolve();
-  }
-  return new Promise<void>((resolve) => {
-    waiters.push({
-      enqueuedAt: Date.now(),
-      resolve: () => {
-        activeCount += 1;
-        resolve();
-      },
-    });
-  });
-}
-
-function releaseSlot(): void {
-  activeCount = Math.max(0, activeCount - 1);
-  const next = waiters.shift();
-  if (next) next.resolve();
 }
 
 /** Test-only: reset module-scoped slot state between tests. */
 export function _resetLocalInferenceGateForTests(): void {
-  activeCount = 0;
-  waiters.length = 0;
+  localInferenceScheduler.resetForTests();
+  legacyActiveCount = 0;
+  legacyWaiters.length = 0;
 }

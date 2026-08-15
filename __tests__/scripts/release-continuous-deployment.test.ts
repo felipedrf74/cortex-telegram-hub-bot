@@ -429,11 +429,13 @@ function releaseIdentityFor(payload: ReturnType<typeof payloadFor>) {
   };
 }
 
-function makeStore(now?: () => Date) {
+function makeStore(
+  now: () => Date = () => new Date('2026-08-07T10:00:05.000Z'),
+) {
   return createReleaseStateStore({
     stateDir: policy.paths.stateDir,
     receiptDir: policy.paths.receiptDir,
-    ...(now ? { now } : {}),
+    now,
   });
 }
 
@@ -1545,7 +1547,8 @@ describe('release state and locking', () => {
   });
 
   it('resumes an accepted first bootstrap with production-only baseline checks', async () => {
-    const store = makeStore();
+    const acceptedAt = new Date('2026-08-07T10:00:05.000Z');
+    const store = makeStore(() => acceptedAt);
     const payload = payloadFor();
     const envelope = signed(payload);
     const releaseId = releaseIdFor(payload);
@@ -2048,7 +2051,7 @@ describe('release state and locking', () => {
   });
 
   it('admits the same exact-content bridge over a retained v3 release with an older controller', async () => {
-    const store = makeStore();
+    const store = makeStore(() => new Date('2026-08-07T10:00:02.000Z'));
     seedPredecessor(store);
     const oldControlPlane = { ...CONTROL_PLANE, digest: 'd'.repeat(64) };
     const current = payloadFor({ controlPlane: oldControlPlane, runId: '4242' });

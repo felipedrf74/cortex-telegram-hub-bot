@@ -22,15 +22,18 @@ import {
   authorizeChatActionPlanSteps,
   buildChatActionAccessDeniedResponse,
 } from './authorization';
+import { throwIfChatRequestCancelled } from './request-cancellation';
 
 export async function tryHandleChatActionPlan(
   input: ChatPlannerInput,
   deps: ChatActionPlannerDeps = {},
 ): Promise<{ plan: ChatActionPlan; response: ChatActionRouteResponse; status: ChatActionStatus } | null> {
+  throwIfChatRequestCancelled(input.abortSignal);
   const routeStartedAtMs = Date.now();
   const plannerMode = getChatHybridPlannerMode(process.env, { userId: input.userId, tenantId: input.tenantId });
   if (plannerMode === 'off') return null;
   const plan = await buildChatActionPlan({ ...input, routeStartedAtMs });
+  throwIfChatRequestCancelled(input.abortSignal);
   if (!plan) return null;
   const authorization = authorizeChatActionPlanSteps({
     userId: input.userId,
@@ -75,6 +78,8 @@ export async function tryHandleChatActionPlan(
     return null;
   }
   const resolvedDeps = resolveChatActionPlannerDeps(deps);
+  throwIfChatRequestCancelled(input.abortSignal);
   const response = await executeChatActionPlan(plan, { ...input, routeStartedAtMs }, resolvedDeps);
+  throwIfChatRequestCancelled(input.abortSignal);
   return { plan, response, status: String(response.metadata.actionStatus || 'planned') as ChatActionStatus };
 }

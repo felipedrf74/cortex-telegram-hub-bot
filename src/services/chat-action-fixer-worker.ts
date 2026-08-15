@@ -87,6 +87,7 @@ export function buildChatActionFixerJobHandler(options: {
   db?: Database.Database;
   runId?: string | null;
   requireTenantUserScope?: boolean;
+  abortSignal?: AbortSignal;
 } = {}): JobHandler {
   return {
     jobType: CHAT_ACTION_FIXER_JOB_TYPE,
@@ -107,7 +108,10 @@ export function buildChatActionFixerJobHandler(options: {
         }
         : await (options.proposeCorrection
           ? options.proposeCorrection(payload)
-          : callAnthropicChatActionFixer(payload, { runId: options.runId }));
+          : callAnthropicChatActionFixer(payload, {
+            runId: options.runId,
+            abortSignal: options.abortSignal,
+          }));
       const safeProposal = sanitizeFixerProposal(payload, proposal);
       if (!safeProposal.proposed_step) {
         logger.info({
@@ -133,6 +137,7 @@ export async function processChatActionFixerJobs(options: {
   jobIds?: string[];
   runId?: string | null;
   requireTenantUserScope?: boolean;
+  abortSignal?: AbortSignal;
   proposeCorrection?: (payload: ChatActionFixerPayload) => Promise<ChatActionFixerProposal> | ChatActionFixerProposal;
 } = {}): Promise<{ completed: number; failed: number; deadLetter: number; skipped: number }> {
   const handlers = [buildChatActionFixerJobHandler({
@@ -140,6 +145,7 @@ export async function processChatActionFixerJobs(options: {
     db: options.db,
     runId: options.runId,
     requireTenantUserScope: options.requireTenantUserScope,
+    abortSignal: options.abortSignal,
   })];
   assertAgentQueuedJobHandlerRuntimeParity(handlers, 'chat-action-fixer');
   return processPendingJobs(handlers, {
@@ -206,13 +212,14 @@ function scheduledChatActionFixerAdapter(
         status: job.status,
       },
     }),
-    async execute({ input, runId }) {
+    async execute({ input, runId, abortSignal }) {
       const result = await processChatActionFixerJobs({
         limit: 1,
         lockOwner: options.lockOwner,
         db: options.db,
         jobIds: [input.jobId],
         runId,
+        abortSignal,
         requireTenantUserScope: true,
         proposeCorrection: options.proposeCorrection,
       });
@@ -293,7 +300,7 @@ export function buildFixerPayload(review: EnqueueChatActionFixerReviewInput): Ch
 
 export async function callAnthropicChatActionFixer(
   payload: ChatActionFixerPayload,
-  options: { runId?: string | null } = {},
+  options: { runId?: string | null; abortSignal?: AbortSignal } = {},
 ): Promise<ChatActionFixerProposal> {
   const eligibility = resolveAiAutomationEligibility(payload.userId, payload.sourceSkill);
   if (!eligibility.allowed) {
@@ -337,6 +344,7 @@ export async function callAnthropicChatActionFixer(
       userId: payload.userId,
       tenantId: payload.tenantId,
       timeoutMs: 30_000,
+      abortSignal: options.abortSignal,
     }));
   } catch (err) {
     if (!(err instanceof AiBudgetError)) throw err;

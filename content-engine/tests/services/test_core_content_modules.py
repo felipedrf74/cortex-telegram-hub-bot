@@ -169,6 +169,15 @@ def test_claude_client_extracts_nested_json_from_text():
     assert claude_client._extract_json_candidate(raw) == '{"items": [{"id": 1}]}'
 
 
+def test_claude_client_canonical_temperature_collapses_signed_zero():
+    assert claude_client._canonical_inference_temperature(-0.0) == "0000000000000000"
+    assert claude_client._canonical_inference_temperature(0.0) == "0000000000000000"
+
+
+def test_claude_client_canonical_temperature_uses_exact_ieee_754_value():
+    assert claude_client._canonical_inference_temperature(0.7) == "3fe6666666666666"
+
+
 async def test_claude_client_ask_json_parses_proxy_text(monkeypatch):
     async def fake_ask(*args, **kwargs):
         return "```json\n{\"answer\":\"tenant-42\"}\n```"
@@ -225,6 +234,82 @@ def test_claude_client_parses_stable_ai_proxy_error():
     assert error.public_message == "Monthly AI quota reached."
     assert error.details["window"] == "monthly"
     assert error.retry_after == "321"
+
+
+def test_claude_client_parses_stable_local_capacity_error():
+    request = claude_client.httpx.Request("POST", "http://backend.test/api/v1/internal/ai-complete")
+    response = claude_client.httpx.Response(
+        503,
+        request=request,
+        json={
+            "ok": False,
+            "error": {
+                "code": "LOCAL_QUEUE_FULL",
+                "message": "Local inference queue is full.",
+                "details": {"retryable": True},
+            },
+        },
+    )
+
+    error = claude_client._stable_ai_proxy_error(response)
+
+    assert isinstance(error, claude_client.AiProxyError)
+    assert error.status_code == 503
+    assert error.code == "LOCAL_QUEUE_FULL"
+    assert error.details == {"retryable": True}
+
+
+def test_claude_client_preserves_stable_local_attribution_unavailable_error():
+    request = claude_client.httpx.Request("POST", "http://backend.test/api/v1/internal/ai-complete")
+    response = claude_client.httpx.Response(
+        503,
+        request=request,
+        json={
+            "ok": False,
+            "error": {
+                "code": "LOCAL_INFERENCE_ATTRIBUTION_UNAVAILABLE",
+                "message": "Local-primary Content attribution is temporarily unavailable.",
+                "details": {"retryable": True},
+            },
+        },
+    )
+
+    error = claude_client._stable_ai_proxy_error(response)
+
+    assert isinstance(error, claude_client.AiProxyError)
+    assert error.status_code == 503
+    assert error.code == "LOCAL_INFERENCE_ATTRIBUTION_UNAVAILABLE"
+    assert error.details == {"retryable": True}
+
+
+@pytest.mark.parametrize(
+    ("code", "status"),
+    [
+        ("INTERNAL_ATTRIBUTION_INVALID", 403),
+        ("INTERNAL_INFERENCE_ATTRIBUTION_INVALID", 403),
+        ("INTERNAL_INFERENCE_ATTRIBUTION_MISMATCH", 403),
+        ("ACCOUNT_DELETION_IN_PROGRESS", 409),
+    ],
+)
+def test_claude_client_preserves_stable_inference_errors(code, status):
+    request = claude_client.httpx.Request("POST", "http://backend.test/api/v1/internal/ai-complete")
+    response = claude_client.httpx.Response(
+        status,
+        request=request,
+        json={
+            "ok": False,
+            "error": {
+                "code": code,
+                "message": "Internal inference attribution was rejected.",
+            },
+        },
+    )
+
+    error = claude_client._stable_ai_proxy_error(response)
+
+    assert isinstance(error, claude_client.AiProxyError)
+    assert error.status_code == status
+    assert error.code == code
 
 
 async def test_claude_client_raw_fallback_when_repair_fails(monkeypatch):

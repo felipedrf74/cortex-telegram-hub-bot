@@ -88,6 +88,9 @@ interface MockResponse {
 describe('content agent job routes', () => {
   beforeEach(() => {
     testDb = createMigratedTestDatabase();
+    testDb.prepare(
+      "INSERT INTO users (id, telegram_id, tier, status) VALUES (?, ?, 'pro', 'active')",
+    ).run(OWNER.userId, 9_000_501);
     agentRouteMocks.completeOneShotWithFallback.mockReset();
     agentRouteMocks.completeOneShotWithFallback.mockRejectedValue(new Error('specialist provider unavailable'));
     agentRouteMocks.withAiBudgetReservation.mockReset();

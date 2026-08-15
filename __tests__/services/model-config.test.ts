@@ -12,6 +12,7 @@
  * - MODEL_OPTIONS validation
  */
 
+import fs, { readFileSync } from 'node:fs';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
@@ -91,6 +92,7 @@ import {
   VALID_ROLES,
 } from '../../src/services/model-config';
 import { config } from '../../src/config';
+import { resetLocalModelManifestCacheForTests } from '../../src/services/ollama-model-policy';
 
 const mockConfig = config as { anthropic: Record<string, any>; openai: Record<string, any>; gemini: Record<string, any> };
 
@@ -393,11 +395,34 @@ describe('model-config', () => {
       expect(MODEL_OPTIONS.openai.classifier).toContain('gpt-5.4-nano');
     });
 
-    it('exposes exactly one small-only Ollama model', () => {
+    it('exposes exactly the signed-manifest Ollama model', () => {
       expect(MODEL_OPTIONS.ollama).toEqual({
         chat: ['qwen2.5:3b-instruct-q4_K_M'],
         classifier: ['qwen2.5:3b-instruct-q4_K_M'],
       });
+    });
+
+    it('refreshes Ollama defaults and options after a signed-manifest rotation', () => {
+      const manifest = JSON.parse(readFileSync('config/local-model-manifest.json', 'utf8'));
+      const rotated = manifest.models[1];
+      rotated.productionEligible = true;
+      rotated.evidenceStatus = 'verified';
+      rotated.digest = `sha256:${'a'.repeat(64)}`;
+      manifest.activeModelId = rotated.id;
+
+      const readSpy = vi.spyOn(fs, 'readFileSync')
+        .mockImplementation(() => JSON.stringify(manifest));
+      try {
+        resetLocalModelManifestCacheForTests();
+        expect(getActiveModel('ollama', 'chat')).toBe(rotated.ollamaTag);
+        expect(MODEL_OPTIONS.ollama).toEqual({
+          chat: [rotated.ollamaTag],
+          classifier: [rotated.ollamaTag],
+        });
+      } finally {
+        readSpy.mockRestore();
+        resetLocalModelManifestCacheForTests();
+      }
     });
   });
 

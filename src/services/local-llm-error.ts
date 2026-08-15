@@ -24,6 +24,8 @@ export type LocalLLMErrorKind =
   | 'invalid_json'
   /** /api/version failed, daemon down. IS a circuit failure. */
   | 'provider_unhealthy'
+  /** Governed Unix socket is absent, inaccessible, or not accepting connections. IS a circuit failure. */
+  | 'transport_unavailable'
   /** Tool-use, streaming, or another capability requested but not implemented in v1. NOT a circuit failure — routes around. */
   | 'unsupported_capability'
   /** OOM scraper detected. IS a circuit failure, severity=fatal, opens immediately. */
@@ -76,6 +78,7 @@ export class LocalLLMError extends Error {
       case 'capacity_exceeded': this.status = 503; this.retryable = true; break;
       case 'timeout':           this.status = 504; this.retryable = true; break;
       case 'provider_unhealthy':this.status = 502; this.retryable = true; break;
+      case 'transport_unavailable': this.status = 503; this.retryable = true; break;
       case 'model_oom':         this.status = 500; this.retryable = true; break;
       case 'model_missing':     this.status = 404; this.retryable = true; break;
       case 'unsupported_capability': this.status = 501; this.retryable = false; break;
@@ -106,6 +109,7 @@ export function shouldIncrementCircuit(kind: LocalLLMErrorKind): boolean {
       return false;
     case 'timeout':
     case 'provider_unhealthy':
+    case 'transport_unavailable':
     case 'model_oom':
     case 'model_missing':
       return true;

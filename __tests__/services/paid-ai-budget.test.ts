@@ -102,10 +102,15 @@ function createSchema(): void {
       cost_usd REAL NOT NULL DEFAULT 0,
       duration_ms INTEGER NOT NULL DEFAULT 0,
       pricing_status TEXT NOT NULL DEFAULT 'legacy',
+      provider TEXT,
       request_source TEXT NOT NULL DEFAULT 'interactive',
       job_name TEXT,
       base_category TEXT,
       run_id TEXT
+    );
+    CREATE TABLE skill_inference_runs (
+      run_id TEXT PRIMARY KEY,
+      evaluation_mode TEXT NOT NULL DEFAULT 'production'
     );
     CREATE TABLE user_ai_budget_overrides (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2045,7 +2050,76 @@ describe('paid AI budget enforcement', () => {
     });
   });
 
-  it('signs and propagates both hard ceilings and rejects re-entry tampering', async () => {
+  it('enforces a durable per-run ceiling across sequential local-to-cloud attempts', async () => {
+    process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
+    addPaidUser(911, 'max');
+
+    await withAiBudgetReservation({
+      userId: 911,
+      requestSource: 'interactive',
+      baseCategory: 'ios_chat_message',
+      jobName: 'chat_core_v2_cloud_allowlist_fallback',
+      runId: 'local-fallback-run-cap',
+      estimatedCostUsd: 0.001,
+      hardRunCostLimitUsd: 0.01,
+      hardLocalFallbackDailyCostLimitUsd: 0.60,
+    }, async () => {
+      expect(() => assertAiBudgetReservationForProvider({
+        userId: 911,
+        category: 'chat_secretary',
+        provider: 'openai',
+        model: 'gpt-5-mini',
+        maxCostUsd: 0.006,
+      })).not.toThrow();
+      expect(() => assertAiBudgetReservationForProvider({
+        userId: 911,
+        category: 'chat_secretary',
+        provider: 'openai',
+        model: 'gpt-5-mini',
+        maxCostUsd: 0.005,
+      })).toThrowError(AiBudgetError);
+    });
+
+    expect(db.prepare(`SELECT COUNT(*) AS count FROM ai_provider_attempt_reservations
+      WHERE run_id = 'local-fallback-run-cap'`).get()).toEqual({ count: 1 });
+  });
+
+  it('enforces the plan daily local-to-cloud fallback ceiling before dispatch', async () => {
+    process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
+    addPaidUser(912, 'pro');
+
+    await withAiBudgetReservation({
+      userId: 912,
+      requestSource: 'interactive',
+      baseCategory: 'ios_chat_message',
+      jobName: 'chat_core_v2_cloud_allowlist_fallback',
+      runId: 'local-fallback-daily-cap',
+      estimatedCostUsd: 0.001,
+      hardRunCostLimitUsd: 0.15,
+      hardLocalFallbackDailyCostLimitUsd: 0.40,
+    }, async () => {
+      db.prepare(`INSERT INTO ai_provider_attempt_reservations (
+        user_id, request_source, base_category, job_name, run_id,
+        provider, model, provider_category, reserved_cost_usd
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(912, 'interactive', 'ios_chat_message',
+          'chat_core_v2_cloud_allowlist_fallback', 'previous-local-fallback',
+          'openai', 'gpt-5-mini', 'chat_secretary', 0.395);
+
+      expect(() => assertAiBudgetReservationForProvider({
+        userId: 912,
+        category: 'chat_secretary',
+        provider: 'openai',
+        model: 'gpt-5-mini',
+        maxCostUsd: 0.01,
+      })).toThrowError(AiBudgetError);
+    });
+
+    expect(db.prepare(`SELECT COUNT(*) AS count FROM ai_provider_attempt_reservations
+      WHERE run_id = 'local-fallback-daily-cap'`).get()).toEqual({ count: 0 });
+  });
+
+  it('signs and propagates every hard ceiling and rejects re-entry tampering', async () => {
     process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
     vi.stubEnv('INTERNAL_ATTRIBUTION_SECRET', 'test-internal-attribution-secret');
     addPaidUser(82);
@@ -2059,16 +2133,25 @@ describe('paid AI budget enforcement', () => {
       estimatedCostUsd: 0.001,
       hardRunCostLimitUsd: 0.05,
       hardJobCostLimitUsd: 0.01,
+      hardLocalFallbackDailyCostLimitUsd: 0.40,
     }, async () => {
       const marker = getActiveAiBudgetReservationMarker(82, 'content_engine_script_standard');
-      expect(marker).toMatchObject({ hardRunCostLimitUsd: 0.05, hardJobCostLimitUsd: 0.01 });
+      expect(marker).toMatchObject({
+        hardRunCostLimitUsd: 0.05,
+        hardJobCostLimitUsd: 0.01,
+        hardLocalFallbackDailyCostLimitUsd: 0.40,
+      });
       const token = createInternalAttributionToken({
         userId: 82,
         tenantId: 82,
         category: 'content_engine_script_standard',
       });
       const claims = verifyInternalAttributionToken(token, 'content_engine_script_standard');
-      expect(claims?.outerReservation).toMatchObject({ hardRunCostLimitUsd: 0.05, hardJobCostLimitUsd: 0.01 });
+      expect(claims?.outerReservation).toMatchObject({
+        hardRunCostLimitUsd: 0.05,
+        hardJobCostLimitUsd: 0.01,
+        hardLocalFallbackDailyCostLimitUsd: 0.40,
+      });
 
       const matchingRequest = {
         userId: 82,
@@ -2078,6 +2161,7 @@ describe('paid AI budget enforcement', () => {
         runId: 'content-live-signed',
         hardRunCostLimitUsd: 0.05,
         hardJobCostLimitUsd: 0.01,
+        hardLocalFallbackDailyCostLimitUsd: 0.40,
       };
       await expect(withSignedOuterAiBudgetReservation(
         matchingRequest,

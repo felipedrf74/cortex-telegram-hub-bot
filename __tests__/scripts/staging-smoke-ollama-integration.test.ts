@@ -327,8 +327,9 @@ describe('canonical staging gate Ollama integration', () => {
     expect(canonical).toContain('evidence_record "Ollama release policy"');
     expect(ollama).toContain('final|release');
     expect(ollama).toContain('PM2_BIN must name an absolute executable PM2 launcher');
-    expect(ollama).toContain('$names == ([$model] | sort)');
-    expect(ollama).toContain('$names == ([$model, $remove1, $remove2, $remove3] | sort)');
+    expect(ollama).toContain('LOCAL_MODEL_MANIFEST_PATH');
+    expect(ollama).toContain('active model tag and digest match the signed manifest');
+    expect(ollama).toContain('(.models | length) <= 1');
     expect(ollama).toContain('test($disallowed_model_pattern)');
     expect(ollama).not.toContain('test("flash|nano|mini|haiku|lite|classifier|fast")');
     const pattern = ollama.match(

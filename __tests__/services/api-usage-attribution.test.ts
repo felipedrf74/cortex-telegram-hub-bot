@@ -3,9 +3,12 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { insertApiUsageFallback } from '../../src/services/api-usage-fallback';
 import {
+  enterApiUsageAttribution,
+  getCurrentApiUsageAttribution,
   resolveApiUsageAttribution,
   runWithApiUsageAttribution,
 } from '../../src/services/api-usage-attribution';
+import { runWithContext } from '../../src/utils/request-context';
 
 describe('api_usage workload attribution', () => {
   let db: Database.Database;
@@ -79,6 +82,59 @@ describe('api_usage workload attribution', () => {
       jobName: null,
       baseCategory: 'autoresearch_topic_gen',
       runId: null,
+    });
+  });
+
+  it('keeps a detached shadow scope above its still-open visible request attribution', async () => {
+    await runWithContext({
+      requestId: 'visible-request',
+      source: 'http',
+      userId: 42,
+      tenantId: 42,
+    }, async () => {
+      const restore = enterApiUsageAttribution({
+        requestSource: 'interactive',
+        jobName: 'ios_chat_message',
+        baseCategory: 'ios_chat_message',
+        runId: 'visible-run',
+      });
+      try {
+        await runWithApiUsageAttribution({
+          jobName: 'local_primary_shadow',
+          baseCategory: 'local_primary_shadow:ios_chat_message',
+          runId: 'shadow-run',
+        }, async () => {
+          await Promise.resolve();
+          expect(resolveApiUsageAttribution('ollama_local_reasoning', 42)).toEqual({
+            requestSource: 'interactive',
+            jobName: 'local_primary_shadow',
+            baseCategory: 'local_primary_shadow:ios_chat_message',
+            runId: 'shadow-run',
+          });
+          expect(getCurrentApiUsageAttribution()).toMatchObject({
+            jobName: 'local_primary_shadow',
+            baseCategory: 'local_primary_shadow:ios_chat_message',
+          });
+        });
+      } finally {
+        restore();
+      }
+    });
+  });
+
+  it('normalizes a partial shadow marker into one atomic usage identity', () => {
+    expect(resolveApiUsageAttribution('ollama_local_reasoning', 42, {
+      jobName: 'local_primary_shadow',
+      baseCategory: 'ios_chat_message',
+    })).toMatchObject({
+      jobName: 'local_primary_shadow',
+      baseCategory: 'local_primary_shadow:ios_chat_message',
+    });
+    expect(resolveApiUsageAttribution('classify_message', 42, {
+      jobName: 'CLASSIFY_SHADOW',
+    })).toMatchObject({
+      jobName: 'classify_shadow',
+      baseCategory: 'classify_shadow',
     });
   });
 });

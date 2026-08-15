@@ -36,6 +36,7 @@ import {
   StructuredGenerationRequest,
   StructuredGenerationResult,
   getModelRouting,
+  isProviderRequestCancellation,
   normalizeCallDomainOptions,
 } from './ai-provider';
 import type Anthropic from '@anthropic-ai/sdk';
@@ -562,6 +563,16 @@ function rethrowUsagePersistenceFailure(error: unknown): void {
   }
 }
 
+function throwIfOneShotCancelled(abortSignal?: AbortSignal, error?: unknown): void {
+  if (error !== undefined && isProviderRequestCancellation(error)) throw error;
+  if (!abortSignal?.aborted) return;
+  if (abortSignal.reason instanceof Error) throw abortSignal.reason;
+  throw Object.assign(new Error('provider_request_cancelled'), {
+    name: 'AbortError',
+    code: 'CHAT_REQUEST_CANCELLED',
+  });
+}
+
 /**
  * A provider-side safety block is a DECISION, not an outage.
  *
@@ -611,6 +622,19 @@ type OneShotOptions = {
   thinkingBudget?: number;
   /** Optional caller-specific retry cap; bounded by the global safety cap. */
   maxRetries?: number;
+  /** Caller cancellation prevents retries and every later provider hop. */
+  abortSignal?: AbortSignal;
+};
+
+type VisionOneShotOptions = {
+  model?: string;
+  maxTokens?: number;
+  temperature?: number;
+  userId?: number;
+  tenantId?: number;
+  timeoutMs?: number;
+  maxRetries?: number;
+  abortSignal?: AbortSignal;
 };
 
 const SEARCH_PROMPT_PRIVACY_PATTERNS: Array<[RegExp, string]> = [
@@ -638,6 +662,7 @@ export async function completeOneShot(
   category: string,
   options?: OneShotOptions,
 ): Promise<string> {
+  throwIfOneShotCancelled(options?.abortSignal);
   if (options?.responseJsonSchema !== undefined && options.jsonMode !== true) {
     throw new Error('responseJsonSchema requires jsonMode: true');
   }
@@ -670,6 +695,7 @@ export async function completeOneShot(
             },
           }
         : {}),
+      ...(options?.abortSignal ? { abortSignal: options.abortSignal } : {}),
     }),
   });
 
@@ -724,6 +750,7 @@ export async function completeOneShot(
     options?.userId ?? 0,
     options?.tenantId ?? options?.userId ?? 0,
   );
+  throwIfOneShotCancelled(options?.abortSignal);
 
   // A safety-blocked candidate carries no text. Returning '' here used to
   // look like a successful empty answer; surface it as a mapped,
@@ -860,12 +887,15 @@ async function withOneShotPrimaryRetry<T>(
   fn: () => Promise<T>,
   logContext: { category: string; model: string },
   maxRetriesOverride?: number,
+  abortSignal?: AbortSignal,
 ): Promise<T> {
   const maxRetries = resolveOneShotMaxRetries(maxRetriesOverride);
   for (let attempt = 1; ; attempt++) {
+    throwIfOneShotCancelled(abortSignal);
     try {
       return await fn();
     } catch (err) {
+      throwIfOneShotCancelled(abortSignal, err);
       const info = extractGeminiErrorInfo(err);
       try {
         (err as { geminiOneShotAttempts?: number }).geminiOneShotAttempts = attempt;
@@ -883,7 +913,7 @@ async function withOneShotPrimaryRetry<T>(
         code: safeProviderFailureCode(info.code),
         backoffMs,
       }, 'Gemini one-shot primary retrying after transient error');
-      await _sleep.fn(backoffMs);
+      await _sleep.fn(backoffMs, abortSignal);
     }
   }
 }
@@ -912,8 +942,9 @@ export async function completeOneShotWithSearch(
   systemPrompt: string,
   userPrompt: string,
   category: string,
-  options?: { model?: string; maxTokens?: number; temperature?: number; userId?: number; tenantId?: number },
+  options?: VisionOneShotOptions,
 ): Promise<{ text: string; sources: string[] }> {
+  throwIfOneShotCancelled(options?.abortSignal);
   if (!isGeminiProviderConfigured()) {
     throw new Error('Gemini provider not configured (GEMINI_API_KEY missing)');
   }
@@ -933,6 +964,7 @@ export async function completeOneShotWithSearch(
     generationConfig: withGeminiSafetySettings({
       maxOutputTokens: maxTokens,
       temperature,
+      ...(options?.abortSignal ? { abortSignal: options.abortSignal } : {}),
     }),
     tools: [{ googleSearch: {} }] as any,
   });
@@ -953,7 +985,7 @@ export async function completeOneShotWithSearch(
     maxCostUsd,
   });
   const start = Date.now();
-  const timeoutMs = config.aiSafety.callTimeoutMs;
+  const timeoutMs = options?.timeoutMs ?? config.aiSafety.callTimeoutMs;
   const result = await withTimeout(
     genModel.generateContent([{ text: safeUserPrompt }]),
     timeoutMs,
@@ -983,6 +1015,7 @@ export async function completeOneShotWithSearch(
     groundingUsed ? getProviderToolFeeUsd('gemini_grounded_prompt') : 0,
     groundingUsed ? 1 : 0,
   );
+  throwIfOneShotCancelled(options?.abortSignal);
 
   const finishReason = String((result.response as any).candidates?.[0]?.finishReason ?? '').trim();
   if (finishReason && !/^stop$/i.test(finishReason)) {
@@ -1033,8 +1066,9 @@ export async function completeVisionOneShot(
   userPrompt: string,
   image: { base64: string; mimeType: string },
   category: string,
-  options?: { model?: string; maxTokens?: number; temperature?: number; userId?: number; tenantId?: number },
+  options?: VisionOneShotOptions,
 ): Promise<string> {
+  throwIfOneShotCancelled(options?.abortSignal);
   if (!isGeminiProviderConfigured()) {
     throw new Error('Gemini provider not configured (GEMINI_API_KEY missing)');
   }
@@ -1068,7 +1102,7 @@ export async function completeVisionOneShot(
     maxCostUsd,
   });
   const start = Date.now();
-  const timeoutMs = config.aiSafety.callTimeoutMs;
+  const timeoutMs = options?.timeoutMs ?? config.aiSafety.callTimeoutMs;
   const result = await withTimeout(
     genModel.generateContent([
       // Image MUST come before the text prompt — Gemini's own docs recommend
@@ -1099,6 +1133,7 @@ export async function completeVisionOneShot(
     options?.userId ?? 0,
     options?.tenantId ?? options?.userId ?? 0,
   );
+  throwIfOneShotCancelled(options?.abortSignal);
 
   // A safety-blocked candidate carries no text. Returning '' here used to
   // look like a successful empty answer; surface it as a mapped,
@@ -1132,8 +1167,9 @@ export async function completeVisionOneShotWithFallback(
   image: { base64: string; mimeType: string },
   category: string,
   anthropicFallback: () => Promise<string>,
-  options?: { model?: string; maxTokens?: number; temperature?: number; userId?: number; tenantId?: number },
+  options?: VisionOneShotOptions,
 ): Promise<{ text: string; provider: 'gemini' | 'openai' | 'anthropic' }> {
+  throwIfOneShotCancelled(options?.abortSignal);
   // Stage 1: Gemini (primary) — bounded retry on transient errors so a
   // single 503 burst doesn't skip the cheap primary model entirely.
   if (isGeminiProviderConfigured()) {
@@ -1142,9 +1178,12 @@ export async function completeVisionOneShotWithFallback(
       const text = await withOneShotPrimaryRetry(
         () => completeVisionOneShot(systemPrompt, userPrompt, image, category, options),
         { category, model: primaryModel },
+        options?.maxRetries,
+        options?.abortSignal,
       );
       return { text, provider: 'gemini' };
     } catch (err) {
+      throwIfOneShotCancelled(options?.abortSignal, err);
       rethrowUsagePersistenceFailure(err);
       rethrowProviderSafetyBlock(err);
       const { status, code } = extractGeminiErrorInfo(err);
@@ -1165,6 +1204,7 @@ export async function completeVisionOneShotWithFallback(
   // Dynamic require to avoid a circular import chain between the two
   // provider modules at load time.
   try {
+    throwIfOneShotCancelled(options?.abortSignal);
     const openai = require('./openai-provider') as typeof import('./openai-provider');
     if (openai.isOpenAIConfigured()) {
       const text = await openai.completeVisionOneShot(
@@ -1177,6 +1217,7 @@ export async function completeVisionOneShotWithFallback(
       return { text, provider: 'openai' };
     }
   } catch (err) {
+    throwIfOneShotCancelled(options?.abortSignal, err);
     rethrowUsagePersistenceFailure(err);
     const { status, code } = extractGeminiErrorInfo(err);
     logger.warn({
@@ -1195,7 +1236,9 @@ export async function completeVisionOneShotWithFallback(
   // call fires, the kill switch in anthropic-hook.ts will throw before
   // the SDK actually hits Anthropic.
   if (canUseAnthropicRuntimeFallback()) {
+    throwIfOneShotCancelled(options?.abortSignal);
     const text = await anthropicFallback();
+    throwIfOneShotCancelled(options?.abortSignal);
     return { text, provider: 'anthropic' };
   }
 
@@ -1237,6 +1280,7 @@ export async function completeOneShotWithFallback(
   anthropicFallback: () => Promise<string>,
   options?: OneShotOptions,
 ): Promise<{ text: string; provider: 'gemini' | 'openai' | 'anthropic' }> {
+  throwIfOneShotCancelled(options?.abortSignal);
   // Stage 1: Gemini (primary) — bounded retry on transient errors so a
   // single 503 burst doesn't skip the cheap primary model entirely.
   if (isGeminiProviderConfigured()) {
@@ -1246,9 +1290,11 @@ export async function completeOneShotWithFallback(
         () => completeOneShot(systemPrompt, userPrompt, category, options),
         { category, model: primaryModel },
         options?.maxRetries,
+        options?.abortSignal,
       );
       return { text, provider: 'gemini' };
     } catch (err) {
+      throwIfOneShotCancelled(options?.abortSignal, err);
       rethrowUsagePersistenceFailure(err);
       rethrowProviderSafetyBlock(err);
       const { status, code } = extractGeminiErrorInfo(err);
@@ -1266,6 +1312,7 @@ export async function completeOneShotWithFallback(
           );
           return { text, provider: 'gemini' };
         } catch (fallbackErr) {
+          throwIfOneShotCancelled(options?.abortSignal, fallbackErr);
           rethrowUsagePersistenceFailure(fallbackErr);
           rethrowProviderSafetyBlock(fallbackErr);
           const fallbackInfo = extractGeminiErrorInfo(fallbackErr);
@@ -1281,6 +1328,7 @@ export async function completeOneShotWithFallback(
   // See `completeVisionOneShotWithFallback` above for the full rationale.
   // Dynamic require to avoid circular import between provider modules.
   try {
+    throwIfOneShotCancelled(options?.abortSignal);
     const openai = require('./openai-provider') as typeof import('./openai-provider');
     if (openai.isOpenAIConfigured()) {
       const text = await openai.completeOneShot(
@@ -1292,13 +1340,16 @@ export async function completeOneShotWithFallback(
       return { text, provider: 'openai' };
     }
   } catch (err) {
+    throwIfOneShotCancelled(options?.abortSignal, err);
     rethrowUsagePersistenceFailure(err);
     logger.warn({ err, category }, 'OpenAI fallback also failed, trying Anthropic (if enabled)');
   }
 
   // Stage 3: Anthropic thunk — only if explicitly re-enabled
   if (canUseAnthropicRuntimeFallback()) {
+    throwIfOneShotCancelled(options?.abortSignal);
     const text = await anthropicFallback();
+    throwIfOneShotCancelled(options?.abortSignal);
     return { text, provider: 'anthropic' };
   }
 
@@ -1431,8 +1482,32 @@ function extractFunctionCalls(result: GenerateContentResult, nextId: () => strin
   }));
 }
 
-/** Injectable sleep — override `.fn` in tests to avoid real setTimeout waits. */
-export const _sleep = { fn: (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms)) };
+/** Injectable, cancellation-aware sleep — tests may replace `.fn`. */
+export const _sleep = {
+  fn: (ms: number, abortSignal?: AbortSignal): Promise<void> => {
+    if (!abortSignal) return new Promise(resolve => setTimeout(resolve, ms));
+    try {
+      throwIfOneShotCancelled(abortSignal);
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    return new Promise((resolve, reject) => {
+      const onAbort = () => {
+        clearTimeout(timer);
+        try {
+          throwIfOneShotCancelled(abortSignal);
+        } catch (error) {
+          reject(error);
+        }
+      };
+      const timer = setTimeout(() => {
+        abortSignal.removeEventListener('abort', onAbort);
+        resolve();
+      }, ms);
+      abortSignal.addEventListener('abort', onAbort, { once: true });
+    });
+  },
+};
 
 function safeParse(json: string): Record<string, unknown> {
   try {
@@ -1487,13 +1562,18 @@ export class GeminiProvider implements AIProvider {
     fn: () => Promise<T>,
     maxRetries = 3,
     onTimeout?: () => void,
+    abortSignal?: AbortSignal,
   ): Promise<T> {
     const AI_CALL_TIMEOUT_MS = getAICallTimeoutMs();
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
-        return await withTimeout(fn(), AI_CALL_TIMEOUT_MS, { onTimeout });
+        throwIfOneShotCancelled(abortSignal);
+        const result = await withTimeout(fn(), AI_CALL_TIMEOUT_MS, { onTimeout });
+        throwIfOneShotCancelled(abortSignal);
+        return result;
       } catch (err: unknown) {
+        throwIfOneShotCancelled(abortSignal, err);
         // Budget and durable-metering denials are terminal policy errors, not
         // provider availability failures. Preserve their identity so callers
         // emit the stable 403/429 contract and the breaker/fallback layers do
@@ -1519,7 +1599,7 @@ export class GeminiProvider implements AIProvider {
           code: safeProviderFailureCode(info.code),
           backoffMs,
         }, 'Gemini retrying after error');
-        await _sleep.fn(backoffMs);
+        await _sleep.fn(backoffMs, abortSignal);
       }
     }
     throw new Error('withRetry: unreachable');
@@ -1533,6 +1613,7 @@ export class GeminiProvider implements AIProvider {
     filteredTools: Anthropic.Tool[],
     structuredJson = false,
     structuredJsonSchema?: unknown,
+    abortSignal?: AbortSignal,
   ) {
     return getClient().getGenerativeModel({
       model: modelName,
@@ -1541,6 +1622,7 @@ export class GeminiProvider implements AIProvider {
         maxOutputTokens,
         ...(structuredJson ? { responseMimeType: 'application/json' } : {}),
         ...(structuredJsonSchema !== undefined ? { responseJsonSchema: structuredJsonSchema } : {}),
+        ...(abortSignal ? { abortSignal } : {}),
       }),
       ...(useTools && filteredTools.length > 0 ? {
         tools: [{ functionDeclarations: toGeminiFunctionDeclarations(filteredTools) }],
@@ -1561,6 +1643,7 @@ export class GeminiProvider implements AIProvider {
     maxRetries = 3,
     structuredJson = false,
     structuredJsonSchema?: unknown,
+    abortSignal?: AbortSignal,
   ): Promise<GenerateContentResult> {
     const maxOutputTokens = maxTokensOverride || routing.maxTokens;
     const model = this.buildModel(
@@ -1571,6 +1654,7 @@ export class GeminiProvider implements AIProvider {
       filteredTools,
       structuredJson,
       structuredJsonSchema,
+      abortSignal,
     );
 
     const maxCostUsd = computeProviderCallCostUpperBoundUsd({
@@ -1581,6 +1665,12 @@ export class GeminiProvider implements AIProvider {
     });
     const start = Date.now();
     const result = await this.withRetry(() => {
+      if (abortSignal?.aborted) {
+        throw Object.assign(new Error('gemini_request_cancelled'), {
+          name: 'AbortError',
+          code: 'CHAT_REQUEST_CANCELLED',
+        });
+      }
       // Revalidate live lock ownership for every concrete SDK attempt, not
       // only once before the provider's retry loop begins.
       assertAiBudgetReservationForProvider({
@@ -1598,7 +1688,7 @@ export class GeminiProvider implements AIProvider {
       tenantId: usageContext?.tenantId ?? usageContext?.userId ?? 0,
       maxCostUsd,
       timeoutMs: getAICallTimeoutMs(),
-    }));
+    }), abortSignal);
     const durationMs = Date.now() - start;
 
     await logRequiredGeminiUsage(
@@ -1628,6 +1718,7 @@ export class GeminiProvider implements AIProvider {
     const failClosedOnError = options?.source === 'evaluation'
       && options.failClosedOnError === true;
     try {
+      throwIfOneShotCancelled(options?.abortSignal);
       let userContent = message;
       if (activeContext) {
         userContent = `[ACTIVE CONVERSATION — domain: "${activeContext.domain}"]
@@ -1656,6 +1747,7 @@ ${message}`;
         ? 0
         : 3;
       const result = await this.withRetry(() => {
+        throwIfOneShotCancelled(options?.abortSignal);
         assertAiBudgetReservationForProvider({
           userId: usageUserId,
           category: 'gemini_classify',
@@ -1671,7 +1763,7 @@ ${message}`;
         tenantId: usageTenantId,
         maxCostUsd,
         timeoutMs: getAICallTimeoutMs(),
-      }));
+      }), options?.abortSignal);
       const durationMs = Date.now() - start;
 
       await logRequiredGeminiUsage(
@@ -1682,6 +1774,7 @@ ${message}`;
         usageUserId,
         usageTenantId,
       );
+      throwIfOneShotCancelled(options?.abortSignal);
 
       let text = extractText(result);
       text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
@@ -1711,6 +1804,7 @@ ${message}`;
       if (confidence < 0.6) return { domain: 'secretary', confidence };
       return skill !== undefined ? { domain, confidence, skill } : { domain, confidence };
     } catch (err: unknown) {
+      throwIfOneShotCancelled(options?.abortSignal, err);
       rethrowUsagePersistenceFailure(err);
       if (failClosedOnError) {
         // Never attach `err` here. Provider errors and JSON parse failures can
@@ -1755,6 +1849,7 @@ ${message}`;
       3,
       request.responseFormat === 'json',
       request.jsonSchema,
+      request.abortSignal,
     );
     return {
       text: extractText(result),
@@ -1822,6 +1917,10 @@ ${message}`;
       `gemini_domain_${domain}`,
       opts.maxTokensOverride,
       { userId: opts.userId, tenantId: opts.tenantId },
+      3,
+      false,
+      undefined,
+      opts.abortSignal,
     );
 
     const safetyBlock = detectGeminiSafetyBlock(result);
@@ -1948,6 +2047,10 @@ ${message}`;
       'gemini_tool_continuation',
       opts.maxTokensOverride,
       { userId: opts.userId, tenantId: opts.tenantId },
+      3,
+      false,
+      undefined,
+      opts.abortSignal,
     );
 
     const safetyBlock = detectGeminiSafetyBlock(result);

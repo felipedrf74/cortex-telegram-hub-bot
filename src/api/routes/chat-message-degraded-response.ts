@@ -22,6 +22,11 @@ import {
 } from './chat-persistence';
 import { finalizeChatMessageResponse } from './chat-message-finalizer';
 
+/**
+ * Build and publish the retryable degraded terminal. Runtime callers must
+ * retain the user account-inference admission until this promise settles,
+ * because it persists both conversation rows and shortcut state.
+ */
 export async function sendRetryableChatFailureResponseIfNeeded(opts: {
   err: unknown;
   res: Response;

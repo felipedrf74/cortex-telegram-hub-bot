@@ -5,11 +5,11 @@
     "generatorVersion": 4,
     "authoritativeFreshness": "sourceDigest",
     "sourceDigestAlgorithm": "sha256-path-git-mode-content-v2",
-    "sourceDigest": "f55395f5e3fc9fcec0ae7d2d29ef5f50ca8a12684b0b11a8135c0aa51e578376",
-    "baseCommit": "ef2d43b25b277d68effa13a6e13bc43d955c51ad",
-    "baseCommitTimestamp": "2026-08-11T20:48:21+01:00",
-    "trackedFiles": 3239,
-    "sourceFiles": 1135
+    "sourceDigest": "ad1e7346be433e290b0b3d1a0458713e97b4c5dab92575cf4b92c7cd7d0ce3ed",
+    "baseCommit": "9ec8a4cccb91551155291966e24592520f2a733a",
+    "baseCommitTimestamp": "2026-08-15T01:08:27+01:00",
+    "trackedFiles": 3302,
+    "sourceFiles": 1163
   },
   "navigation": {
     "agentBootloader": "AGENTS.md",
@@ -34,7 +34,7 @@
     {
       "path": "src/api",
       "owner": "backend",
-      "files": 164
+      "files": 166
     },
     {
       "path": "src/boot.ts",
@@ -99,7 +99,7 @@
     {
       "path": "src/services",
       "owner": "backend",
-      "files": 819
+      "files": 843
     },
     {
       "path": "src/skills",
@@ -124,7 +124,7 @@
     {
       "path": "src/tools",
       "owner": "backend",
-      "files": 26
+      "files": 28
     },
     {
       "path": "src/utils",
@@ -1142,6 +1142,30 @@
       "owner": "backend"
     },
     {
+      "method": "GET",
+      "path": "/api/v1/admin/local-inference/runtime-control",
+      "localPath": "/runtime-control",
+      "mountPath": "/api/v1/admin/local-inference",
+      "source": "src/api/routes/local-inference-admin.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/local-inference/runtime-control",
+      "localPath": "/runtime-control",
+      "mountPath": "/api/v1/admin/local-inference",
+      "source": "src/api/routes/local-inference-admin.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/local-inference/summary",
+      "localPath": "/summary",
+      "mountPath": "/api/v1/admin/local-inference",
+      "source": "src/api/routes/local-inference-admin.ts",
+      "owner": "backend"
+    },
+    {
       "method": "POST",
       "path": "/api/v1/admin/product-learning/physical-device-observations",
       "localPath": "/physical-device-observations",
@@ -1843,6 +1867,38 @@
       "localPath": "/script",
       "mountPath": "/api/v1/content",
       "source": "src/api/routes/content-script-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/content/script-jobs",
+      "localPath": "/script-jobs",
+      "mountPath": "/api/v1/content",
+      "source": "src/api/routes/content-script-job-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/content/script-jobs/:jobId",
+      "localPath": "/script-jobs/:jobId",
+      "mountPath": "/api/v1/content",
+      "source": "src/api/routes/content-script-job-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/content/script-jobs/:jobId/cancel",
+      "localPath": "/script-jobs/:jobId/cancel",
+      "mountPath": "/api/v1/content",
+      "source": "src/api/routes/content-script-job-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/content/script-jobs/:jobId/retry",
+      "localPath": "/script-jobs/:jobId/retry",
+      "mountPath": "/api/v1/content",
+      "source": "src/api/routes/content-script-job-routes.ts",
       "owner": "content"
     },
     {
@@ -4527,9 +4583,9 @@
     }
   ],
   "migrations": {
-    "count": 274,
-    "latest": "migrations/283_release_schema_convergence.sql",
-    "digest": "735fbadb8f06bcfa70ddfadf283b06328f143e6d4159bd0f7314898e9bb13990",
+    "count": 275,
+    "latest": "migrations/284_local_primary_inference_foundation.sql",
+    "digest": "46c0b52b2b8b8e5c8c660926120bd7c65d7dc1101f3f4be0c25b17d370ddf299",
     "files": [
       "migrations/001_initial.sql",
       "migrations/002_shared_memory.sql",
@@ -4804,7 +4860,8 @@
       "migrations/280_secretary_agenda_arbitration_metadata.sql",
       "migrations/281_secretary_provider_target_and_failure_disposition.sql",
       "migrations/282_secretary_agenda_preemption_state.sql",
-      "migrations/283_release_schema_convergence.sql"
+      "migrations/283_release_schema_convergence.sql",
+      "migrations/284_local_primary_inference_foundation.sql"
     ]
   },
   "capabilities": [
@@ -4920,13 +4977,13 @@
     }
   ],
   "tests": {
-    "files": 1198,
+    "files": 1222,
     "policy": "config/test-policy.json",
     "inventoryArtifact": ".local/test-inventory/test-inventory.json",
     "topLevelOwners": {
       "adapters": 2,
       "agents": 4,
-      "api": 156,
+      "api": 160,
       "billing": 1,
       "brand": 1,
       "cli": 2,
@@ -4934,15 +4991,15 @@
       "domains": 5,
       "integration": 4,
       "lib": 1,
-      "migrations": 31,
+      "migrations": 32,
       "portal": 59,
       "regression": 1,
       "router": 8,
       "scope": 1,
-      "scripts": 103,
+      "scripts": 105,
       "sdk": 1,
       "security": 24,
-      "services": 738,
+      "services": 755,
       "skills": 11,
       "state": 17,
       "storage": 1,
@@ -4954,11 +5011,11 @@
   "documentation": {
     "policy": "config/documentation-policy.json",
     "policySchema": "nexus.documentation-policy.v1",
-    "policyVersion": "2026-07-22.1",
-    "count": 75,
-    "active": 75,
+    "policyVersion": "2026-08-12.1",
+    "count": 76,
+    "active": 76,
     "statusCounts": {
-      "canonical": 35,
+      "canonical": 36,
       "current": 2,
       "draft": 2,
       "generated": 1,
@@ -5155,6 +5212,15 @@
         "reviewedOn": "2026-07-22",
         "reviewDueOn": "2027-01-18",
         "canonicalPath": "docs/engineering/jwt-rotation-runbook.md"
+      },
+      {
+        "path": "docs/engineering/local-primary-inference-standard.md",
+        "status": "canonical",
+        "active": true,
+        "owner": "backend architecture and inference operations leads",
+        "reviewedOn": "2026-08-13",
+        "reviewDueOn": "2026-11-11",
+        "canonicalPath": "docs/engineering/local-primary-inference-standard.md"
       },
       {
         "path": "docs/engineering/offline-first-tasks-architecture.md",
@@ -5701,18 +5767,18 @@
       "generated": false
     },
     {
+      "path": "__tests__/api/chat-routes.test.ts",
+      "bytes": 307342,
+      "generated": false
+    },
+    {
       "path": "package-lock.json",
       "bytes": 301494,
       "generated": false
     },
     {
-      "path": "__tests__/api/chat-routes.test.ts",
-      "bytes": 289081,
-      "generated": false
-    },
-    {
       "path": "__tests__/scripts/release-continuous-deployment.test.ts",
-      "bytes": 280052,
+      "bytes": 280200,
       "generated": false
     },
     {

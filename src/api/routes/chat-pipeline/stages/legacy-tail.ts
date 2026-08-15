@@ -30,7 +30,10 @@ import {
   buildChatTimeoutPartialReplyText,
   executeChatDomainHandler,
 } from '../../chat-message-execution';
-import type { ChatDomainExecutionResult } from '../../chat-message-execution';
+import type {
+  ChatDomainExecutionResult,
+  ChatMessageResponseEnvelope,
+} from '../../chat-message-execution';
 import { finalizeChatAnswerMetadata, finalizeChatMessageResponse } from '../../chat-message-finalizer';
 import { maybeCacheChatCommandResponse } from '../../chat-message-local-responses';
 import { sendChatTierRequiredIfNeeded } from '../../chat-message-tier-gate';
@@ -42,6 +45,10 @@ import { tryBuildChatMessageShortcutResponse } from '../../chat-message-shortcut
 import { recordChatStage } from '../../../../services/chat-stage-trace';
 import { buildBlocksFromMarkdown } from '../../../../services/chat-response-blocks';
 import { buildChatResponseSufficiencyMetadata } from '../../../../services/chat-response-sufficiency';
+import {
+  isChatShadowBaselineEligible,
+  isPublishedChatShadowBaselineEligible,
+} from '../../../../services/chat-shadow-baseline';
 import { buildManifestClassifierTerminalResponse } from '../../../../services/chat-manifest-classifier-terminal';
 import {
   attachLateChatLegacyTimeoutResult,
@@ -50,6 +57,37 @@ import {
 } from '../../../../services/chat-legacy-timeout-continuation';
 import { applyTurnContractRouteHint, newAssistantMessageId } from '../support';
 import { routedChatTurnCtx, type ChatStage, type ChatStageResult, type ChatTurnCtx } from '../types';
+
+function throwIfLegacyChatRequestCancelled(abortSignal?: AbortSignal): void {
+  if (!abortSignal?.aborted) return;
+  if (abortSignal.reason instanceof Error) throw abortSignal.reason;
+  throw Object.assign(new Error('chat_request_cancelled'), {
+    name: 'AbortError',
+    code: 'CHAT_REQUEST_CANCELLED',
+  });
+}
+
+function releaseLocalPrimaryShadowAfterVisibleAnswer(
+  ctx: ChatTurnCtx,
+  result: ChatDomainExecutionResult,
+  response: ChatMessageResponseEnvelope,
+): void {
+  const scheduleShadow = ctx.pendingLocalPrimaryChatShadow;
+  ctx.pendingLocalPrimaryChatShadow = null;
+  if (!scheduleShadow
+      || !isChatShadowBaselineEligible(result)
+      || !isPublishedChatShadowBaselineEligible(response.metadata)) return;
+  try {
+    scheduleShadow();
+  } catch (error) {
+    logger.warn({
+      chatRequestId: ctx.chatRequestId,
+      userId: ctx.userId,
+      tenantId: ctx.tenantId,
+      errorName: error instanceof Error ? error.name : typeof error,
+    }, 'Unable to schedule detached Chat shadow after visible legacy completion');
+  }
+}
 
 export const legacyTailStage: ChatStage = {
   name: 'legacy_tail',
@@ -63,7 +101,9 @@ export const legacyTailStage: ChatStage = {
       scopedClientMessageId, userMessageId, requestStartedAt, chatRequestId,
       latency, chatCoreV2RouteLocale, recordLegacyFallbackSample,
       ensureModelBudget, activeContext, preTurnContract, isNewUserFlow,
+      abortSignal,
     } = routedChatTurnCtx(ctx);
+    throwIfLegacyChatRequestCancelled(abortSignal);
 
     // Route the message (handles both commands and natural language).
     // April 9 2026: thread userId into routeMessage so the classifier
@@ -72,7 +112,9 @@ export const legacyTailStage: ChatStage = {
     // classification cost was orphaned under user_id=0 and the
     // per-user cap (isUserOverDailyCap) couldn't see the spend.
     if (!await ensureModelBudget('iOS chat provider routing blocked by AI budget')) return { kind: 'respond' };
-    const rawRoute = await routeMessage(normalizedText, activeContext, userId, tenantId);
+    throwIfLegacyChatRequestCancelled(abortSignal);
+    const rawRoute = await routeMessage(normalizedText, activeContext, userId, tenantId, abortSignal);
+    throwIfLegacyChatRequestCancelled(abortSignal);
     latency.mark('routed');
     recordChatStage(chatRequestId, 'legacy_route');
 
@@ -141,6 +183,7 @@ export const legacyTailStage: ChatStage = {
           : {}),
         requestStartedAt,
       });
+      throwIfLegacyChatRequestCancelled(abortSignal);
       persistExchange(userId, userMessageId, normalizedText, response.id, response, tenantId, {
         clientMessageId: scopedClientMessageId,
         requestId: chatRequestId,
@@ -158,6 +201,7 @@ export const legacyTailStage: ChatStage = {
         { chatRequestId, userId, tenantId, disposition: terminal.disposition },
         'iOS chat terminated on an explicit manifest-classifier outcome',
       );
+      throwIfLegacyChatRequestCancelled(abortSignal);
       res.json(response);
       return { kind: 'respond' };
     }
@@ -197,12 +241,14 @@ export const legacyTailStage: ChatStage = {
     );
 
     // Track domain for continuity
+    throwIfLegacyChatRequestCancelled(abortSignal);
     rememberChatActiveDomain(userId, route.domain, Date.now(), tenantId);
 
     // ─── Phase 1 Slice C — Tier gate for iOS chat entrypoint ───
     // Two-layer check (legacy chat-handler parity): explicit disable
     // first, then tier requirement. Fail-open on errors so a bus of
     // signal service issue never locks users out of their data.
+    throwIfLegacyChatRequestCancelled(abortSignal);
     if (sendChatTierRequiredIfNeeded(res, userId, route.domain)) return { kind: 'respond' };
 
     // Execute domain handler
@@ -221,7 +267,9 @@ export const legacyTailStage: ChatStage = {
       tenantId,
       userLanguage: chatCoreV2RouteLocale,
       activeContext,
+      abortSignal,
     });
+    throwIfLegacyChatRequestCancelled(abortSignal);
     if (shortcutResult) {
       recordChatStage(chatRequestId, 'domain_shortcut');
       const { conversationDomain } = shortcutResult;
@@ -242,11 +290,14 @@ export const legacyTailStage: ChatStage = {
         stageFamily: 'domain_shortcut',
         requestStartedAt,
       });
+      throwIfLegacyChatRequestCancelled(abortSignal);
       persistExchange(userId, userMessageId, normalizedText, response.id, response, tenantId, {
         clientMessageId: scopedClientMessageId,
         requestId: chatRequestId,
       });
+      throwIfLegacyChatRequestCancelled(abortSignal);
       syncConversationStateForShortcut(userId, conversationDomain, normalizedText, response.text, tenantId);
+      throwIfLegacyChatRequestCancelled(abortSignal);
       res.json(response);
       return { kind: 'respond' };
     }
@@ -318,9 +369,10 @@ export const legacyTailStage: ChatStage = {
             });
           },
         },
-        { locale: chatCoreV2RouteLocale },
+        { locale: chatCoreV2RouteLocale, abortSignal },
       ));
     } catch (err) {
+      throwIfLegacyChatRequestCancelled(abortSignal);
       if (!(err instanceof ChatDomainTimeoutError) || err.checkpoints.length === 0) throw err;
       timeoutPartial = err;
       logger.warn(
@@ -358,6 +410,7 @@ export const legacyTailStage: ChatStage = {
         },
       };
     }
+    throwIfLegacyChatRequestCancelled(abortSignal);
     latency.mark('domain_handler_completed');
     recordChatStage(chatRequestId, 'legacy_response');
     // A confirmed attempt consumes its durable staged grant even when the HTTP
@@ -365,6 +418,7 @@ export const legacyTailStage: ChatStage = {
     // in-memory, per-target single-use grants; any later recovery is a new
     // attempt and must re-enter confirmation instead of inheriting this grant.
     if (routingDecision.safety.explicitConfirmation) {
+      throwIfLegacyChatRequestCancelled(abortSignal);
       clearPendingChatConfirmation(userId, tenantId);
     }
 
@@ -436,14 +490,17 @@ export const legacyTailStage: ChatStage = {
     }
 
     // Cache the response if it was a deterministic command
+    throwIfLegacyChatRequestCancelled(abortSignal);
     maybeCacheChatCommandResponse(userId, normalizedTextLower, response, tenantId);
 
+    throwIfLegacyChatRequestCancelled(abortSignal);
     persistExchange(userId, userMessageId, normalizedText, response.id, response, tenantId, {
       clientMessageId: scopedClientMessageId,
       requestId: chatRequestId,
     });
     // M13: durable continuity — the legacy terminal now knows the persisted
     // assistant message id (the earlier pin at routing time had no id yet).
+    throwIfLegacyChatRequestCancelled(abortSignal);
     rememberChatActiveDomain(userId, response.domain || route.domain, Date.now(), tenantId, {
       conversationId: scopedClientMessageId ?? chatRequestId,
       lastAssistantMessageId: response.id,
@@ -459,11 +516,13 @@ export const legacyTailStage: ChatStage = {
       },
       'iOS chat request completed',
     );
+    throwIfLegacyChatRequestCancelled(abortSignal);
     if (timeoutPartial?.continuation) {
       res.status(202).json(response);
     } else {
       res.json(response);
     }
+    releaseLocalPrimaryShadowAfterVisibleAnswer(ctx, result, response);
     return { kind: 'respond' };
   },
 };

@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: backend cost-guardrail lead (Felipe)
-Last verified: 2026-08-09
+Last verified: 2026-08-13
 Update policy: update when entitlement eligibility, AI budget windows, public
 quota fields, Nexus Points rules, or provider-call attribution changes.
 
@@ -107,6 +107,69 @@ are immutable zeroes: stale positive plan rows, runtime setters, and dormant
 per-user overrides are ignored until a canonical paid/founder entitlement is
 eligible.
 
+Local-primary model operations are admitted separately from cloud dollars.
+`plan_configs` owns hourly/daily local operations, long-form script counts,
+active Content jobs, ordinary and Content context ceilings, per-section output
+ceilings, queue weight, and hard local-to-cloud fallback ceilings. Pro defaults
+are 20/hour, 100/day, 6 scripts/day, one active job, 8K ordinary/12K Content
+context, 5,120 output tokens per section, queue weight 1, and `$0.15` per
+fallback run/`$0.40` per UTC day. Max defaults are 40/hour, 200/day, 20
+scripts/day, two active jobs, 12K ordinary/16K Content context, 6,144 output
+tokens per section, queue weight 2, and `$0.25` per run/`$0.60` per UTC day.
+Owner defaults are `$2.00` per run and `$10.00` per UTC day. The per-section
+value applies only to Content;
+ordinary Chat and every non-Content skill output is hard-capped at 4,096 tokens
+for Pro, Max, and owner. Owner Content sections share the 6,144-token ceiling.
+One user-visible operation consumes one fair-use
+unit; internal sections, repairs, and continuations remain telemetry but do not
+consume extra operations. A failed capacity admission (`LOCAL_CAPACITY_BUSY`,
+`LOCAL_QUEUE_FULL`, or `LOCAL_QUEUE_DEADLINE`) remains telemetry but consumes
+no operation unit; a user cancellation after admission does consume the unit.
+Local Ollama attempts retain `cost_usd=0` and
+`local_request_units=1`. Creating a long-form job consumes its daily script
+operation once it can be admitted to work; cancellation does not refund that
+daily operation, although cancelled jobs no longer occupy an active-job slot.
+The owner plan API reads, bounds, updates, and audits every local field,
+including both fallback ceilings; no runtime caller may substitute an
+environment-only value.
+
+Cloud allowance is not a prerequisite for local admission. It is checked only
+after a local failure is eligible for fallback and immediately before a
+concrete cloud provider attempt. That boundary enforces entitlement, privacy,
+the ordinary daily/monthly cloud windows, and the additional per-run/per-day
+local-fallback ceilings. A durable provider-attempt reservation records the
+provider/model maximum before dispatch, so retries, sequential fallback hops,
+and concurrent callbacks cannot each spend the same remaining headroom.
+
+Long-form Content jobs are private and local-only in the first rollout. They
+persist the encrypted pinned creator voice and supplied sources, outline, and
+each validated section under one user-visible operation. No cloud budget is
+reserved for those stages, and no legacy internal attribution token can
+authorize fallback. Cloud fallback for a job remains
+disabled until a server-authenticated redaction and escalation claim is stored
+with that job; synchronous legacy Content generation retains its existing cloud
+budget path.
+
+The same privacy boundary applies to enrolled private Content rewrite/expand,
+Chat Content refinement, and local specialist-group calls. After local
+admission they do not reserve cloud dollars or export their payload on local
+failure; invalid output is withheld and the request degrades, fails visibly,
+or remains resumable. With local routing OFF or outside the enrolled cohort,
+the pre-existing cloud path retains its normal entitlement, privacy, and
+atomic budget guard.
+
+The proposed `$9.99` Pro and `$14.99` Max prices are not active pricing. They
+require the separately governed 30-day quality, reliability, local-share,
+fallback, contribution-margin, and live Stripe/App Store proof. Until that
+owner transaction succeeds, the display prices and billing products remain
+`$14.99` and `$19.99`.
+
+Chat, Content specialist batching, script jobs, and automatic rollback have
+separate default-OFF environment controls documented in
+`docs/engineering/local-primary-inference-standard.md`. Runtime mode remains
+the authoritative audited admission switch. Owner reporting exposes actual
+cloud/tool spend separately from clearly labelled counterfactual savings.
+
 ## Atomic provider-call guard
 
 Every provider call must execute through the SQLite-locked budget wrapper.
@@ -120,9 +183,12 @@ Inside one user-scoped lock, it must:
    later stages reserve only the unspent remainder of the 125% whole-run
    envelope, with a conservative unexpected-stage floor.
 4. Check daily, monthly, and (for background work) automation headroom before
-   every concrete provider attempt. Automation also supplies the full-quality
-   request's provider-enforced maximum cost as a floor, so a call defers rather
-   than crossing either 30% ceiling.
+   every concrete provider attempt. Governed local-to-cloud work additionally
+   checks the active plan's hard run and UTC-day fallback ceilings against both
+   settled usage and durable in-flight provider-attempt reservations.
+   Automation also supplies the full-quality request's provider-enforced
+   maximum cost as a floor, so a call defers rather than crossing either 30%
+   ceiling.
 5. Invoke the provider only when allowed. Opaque SDK retries are disabled where
    the runtime has an explicit retry loop, so each retry repeats the check.
 6. Persist actual `api_usage` before releasing the lock and settle only an
@@ -138,6 +204,11 @@ not block a request. Provider writes add:
 - `provider_tool_cost_usd`
 - `web_search_requests`
 - `grounded_search_prompts`
+
+`ai_provider_attempt_reservations` is conservative dispatch evidence for hard
+run/job/fallback ceilings, not a second billed-usage ledger. Reservations stay
+committed because a timed-out or abandoned provider request may still be
+billed; actual invoices and `api_usage` remain economics truth.
 
 Anthropic and OpenAI web search are metered at their per-call list prices;
 Gemini grounding is metered at its post-free-tier per-prompt list price. The

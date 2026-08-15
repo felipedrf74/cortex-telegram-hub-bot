@@ -18,6 +18,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { promises as nodeFs } from 'fs';
 import { rm } from 'fs/promises';
 import * as path from 'path';
 
@@ -166,7 +167,12 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  for (const runId of ['dispatch-cloud-script-test', 'dispatch-cloud-audit-failure']) {
+  for (const runId of [
+    'dispatch-cloud-script-test',
+    'dispatch-cloud-audit-failure',
+    'dispatch-cloud-finalization-cancelled',
+    'dispatch-cloud-finalization-race',
+  ]) {
     await rm(path.resolve('data/script-gen-runs', runId), { recursive: true, force: true });
   }
 });
@@ -705,6 +711,182 @@ describe('small-only production dispatch', () => {
       expect(request.systemPrompt).not.toContain('PUBLIC_DOMAIN_CONTEXT_MARKER');
       expect(request).not.toHaveProperty('tools');
     }
+  });
+
+  it('forwards cancellation into approved-cloud ScriptGen and never starts its second pass', async () => {
+    mockConfig.localLLMEvaluation.enabled = false;
+    const primary = ollamaPrimaryThatFails as unknown as AIProvider;
+    const trp = new TaskRoutingProvider({
+      classify: { primary },
+      chat: { primary },
+      'tool-use': { primary },
+      scriptGeneration: { primary, fallback: 'approved_cloud_reasoning' },
+      circuitBreaker: { failureThreshold: 3, cooldownMs: 60000 },
+    });
+    const controller = new AbortController();
+    const cancellation = Object.assign(new Error('account deletion in progress'), {
+      name: 'AbortError',
+      code: 'ACCOUNT_DELETION_IN_PROGRESS',
+    });
+    const plan = {
+      plan: ['Create a release helper'],
+      files_to_create: [],
+      files_to_modify: [],
+      commands_to_run: [],
+      risk_level: 'low',
+      requires_cloud_reasoning: true,
+      requires_human_approval: false,
+    };
+    cloudProvider.callStructuredGeneration = async (request: unknown) => {
+      cloudStructuredGenerationSpy(request);
+      controller.abort(cancellation);
+      return { text: JSON.stringify(plan), toolCalls: [], stopReason: 'stop' };
+    };
+
+    await expect(trp.dispatchScriptGeneration({
+      description: 'create a release helper',
+      containsPrivateData: false,
+      abortSignal: controller.signal,
+    })).rejects.toBe(cancellation);
+
+    expect(cloudStructuredGenerationSpy).toHaveBeenCalledTimes(1);
+    expect(cloudStructuredGenerationSpy.mock.calls[0]?.[0]).toMatchObject({
+      abortSignal: controller.signal,
+    });
+    expect(cloudCallDomainSpy).not.toHaveBeenCalled();
+  });
+
+  it('cancels shared ScriptGen finalization, removes invocation-owned artifacts, and skips audit persistence', async () => {
+    const {
+      parseApprovedCloudScriptGenerationTask,
+      runApprovedCloudScriptGenerationPipeline,
+    } = await import('../../src/services/script-generation');
+    const { approveCloudScriptGeneration } = await import('../../src/services/cloud-reasoning-gate');
+    const controller = new AbortController();
+    const cancellation = Object.assign(new Error('client disconnected during finalization'), {
+      name: 'AbortError',
+      code: 'CHAT_REQUEST_CANCELLED',
+    });
+    const task = parseApprovedCloudScriptGenerationTask({
+      description: 'create a cancellable public helper',
+      containsPrivateData: false,
+      runId: 'dispatch-cloud-finalization-cancelled',
+    });
+    const plan = {
+      plan: ['Create helper'],
+      files_to_create: ['cancelled-helper.md'],
+      files_to_modify: [],
+      commands_to_run: [],
+      risk_level: 'low',
+      requires_cloud_reasoning: true,
+      requires_human_approval: false,
+    };
+    cloudResponseQueue.push(
+      { text: JSON.stringify(plan), toolCalls: [], stopReason: 'stop' },
+      {
+        text: JSON.stringify({
+          ...plan,
+          artifacts: [{ path: 'cancelled-helper.md', kind: 'markdown', content: '# cancelled\n' }],
+          validation_steps: [],
+        }),
+        toolCalls: [],
+        stopReason: 'stop',
+      },
+    );
+    const approval = await approveCloudScriptGeneration(task, () => cloudProvider as AIProvider);
+    if (!('permit' in approval)) throw new Error('expected approved cloud ScriptGen permit');
+
+    const originalMkdir = nodeFs.mkdir.bind(nodeFs) as (...args: any[]) => Promise<any>;
+    const mkdirSpy = vi.spyOn(nodeFs, 'mkdir').mockImplementation(async (...args: any[]) => {
+      const [target] = args;
+      const result = await originalMkdir(...args);
+      if (String(target).endsWith(`${path.sep}sandbox`)) controller.abort(cancellation);
+      return result;
+    });
+
+    try {
+      await expect(runApprovedCloudScriptGenerationPipeline(
+        task,
+        approval.permit,
+        { abortSignal: controller.signal },
+      )).rejects.toBe(cancellation);
+    } finally {
+      mkdirSpy.mockRestore();
+    }
+
+    expect(mockAuditInsert).not.toHaveBeenCalled();
+    await expect(nodeFs.access(path.resolve(
+      'data/script-gen-runs/dispatch-cloud-finalization-cancelled/sandbox',
+    ))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('preserves a same-run artifact created by another writer when cancellation loses the exclusive-create race', async () => {
+    const {
+      parseApprovedCloudScriptGenerationTask,
+      runApprovedCloudScriptGenerationPipeline,
+    } = await import('../../src/services/script-generation');
+    const { approveCloudScriptGeneration } = await import('../../src/services/cloud-reasoning-gate');
+    const controller = new AbortController();
+    const cancellation = Object.assign(new Error('cancelled after competing artifact create'), {
+      name: 'AbortError',
+      code: 'CHAT_REQUEST_CANCELLED',
+    });
+    const task = parseApprovedCloudScriptGenerationTask({
+      description: 'create a public helper without deleting a competing artifact',
+      containsPrivateData: false,
+      runId: 'dispatch-cloud-finalization-race',
+    });
+    const plan = {
+      plan: ['Create helper'],
+      files_to_create: ['winner.md'],
+      files_to_modify: [],
+      commands_to_run: [],
+      risk_level: 'low',
+      requires_cloud_reasoning: true,
+      requires_human_approval: false,
+    };
+    cloudResponseQueue.push(
+      { text: JSON.stringify(plan), toolCalls: [], stopReason: 'stop' },
+      {
+        text: JSON.stringify({
+          ...plan,
+          artifacts: [{ path: 'winner.md', kind: 'markdown', content: '# model output\n' }],
+          validation_steps: [],
+        }),
+        toolCalls: [],
+        stopReason: 'stop',
+      },
+    );
+    const approval = await approveCloudScriptGeneration(task, () => cloudProvider as AIProvider);
+    if (!('permit' in approval)) throw new Error('expected approved cloud ScriptGen permit');
+
+    const artifactPath = path.resolve(
+      'data/script-gen-runs/dispatch-cloud-finalization-race/sandbox/winner.md',
+    );
+    const originalWriteFile = nodeFs.writeFile.bind(nodeFs) as (...args: any[]) => Promise<any>;
+    let competingWriteInjected = false;
+    const writeFileSpy = vi.spyOn(nodeFs, 'writeFile').mockImplementation(async (...args: any[]) => {
+      const [target] = args;
+      if (!competingWriteInjected && String(target) === artifactPath) {
+        competingWriteInjected = true;
+        await originalWriteFile(artifactPath, '# competing writer\n', { flag: 'wx' });
+        controller.abort(cancellation);
+      }
+      return originalWriteFile(...args);
+    });
+
+    try {
+      await expect(runApprovedCloudScriptGenerationPipeline(
+        task,
+        approval.permit,
+        { abortSignal: controller.signal },
+      )).rejects.toBe(cancellation);
+    } finally {
+      writeFileSpy.mockRestore();
+    }
+
+    await expect(nodeFs.readFile(artifactPath, 'utf8')).resolves.toBe('# competing writer\n');
+    expect(mockAuditInsert).not.toHaveBeenCalled();
   });
 
   it('fails closed after one bounded retry when cloud JSON is invalid', async () => {

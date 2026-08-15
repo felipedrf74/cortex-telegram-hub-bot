@@ -277,9 +277,19 @@ vi.mock('../../src/services/decision-center', () => ({
 // Content engine is an external Python subprocess — never reachable in tests.
 // The domain_shortcut corpus turn drives the content script shortcut against
 // this deterministic mock.
-vi.mock('../../src/services/content-engine', () => ({
-  getScript: (...args: unknown[]) => mockGetScript(...args as []),
-}));
+vi.mock('../../src/services/content-engine', async () => {
+  const errorContract = await vi.importActual<typeof import('../../src/services/content-engine-error-contract')>(
+    '../../src/services/content-engine-error-contract',
+  );
+  const executionPolicy = await vi.importActual<typeof import('../../src/services/content-script-execution-policy')>(
+    '../../src/services/content-script-execution-policy',
+  );
+  return {
+    ForwardedLocalInferenceError: errorContract.ForwardedLocalInferenceError,
+    DEFAULT_SCRIPT_GENERATION_EXECUTION_POLICY: executionPolicy.DEFAULT_SCRIPT_GENERATION_EXECUTION_POLICY,
+    getScript: (...args: unknown[]) => mockGetScript(...args as []),
+  };
+});
 
 // Finance state shortcut dependencies (token-zero corpus turn).
 vi.mock('../../src/services/invoice-collector', () => ({

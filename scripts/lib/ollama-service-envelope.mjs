@@ -1,14 +1,15 @@
 import { spawnSync } from 'node:child_process';
 
 export const OLLAMA_ENVELOPE = Object.freeze({
-  contextLength: '4096',
+  contextLength: '16384',
   maxQueue: '4',
   numParallel: '1',
   maxLoadedModels: '1',
-  memoryHighBytes: 4 * 1024 * 1024 * 1024,
-  memoryMaxBytes: 6 * 1024 * 1024 * 1024,
-  memorySwapBaselineBytes: 512 * 1024 * 1024,
-  cpuQuotaUsecPerSec: 2_000_000,
+  memoryHighBytes: 18 * 1024 * 1024 * 1024,
+  memoryMaxBytes: 20 * 1024 * 1024 * 1024,
+  memorySwapBaselineBytes: 0,
+  cpuQuotaUsecPerSec: 8_000_000,
+  nice: 10,
 });
 
 const REQUIRED_ENVIRONMENT = Object.freeze({
@@ -33,7 +34,7 @@ function parseProperties(stdout) {
     if (properties.has(key)) fail(`systemctl show returned duplicate ${key}`);
     properties.set(key, line.slice(separator + 1));
   }
-  for (const key of ['Environment', 'MemoryHigh', 'MemoryMax', 'MemorySwapMax', 'CPUQuotaPerSecUSec']) {
+  for (const key of ['Environment', 'MemoryHigh', 'MemoryMax', 'MemorySwapMax', 'CPUQuotaPerSecUSec', 'Nice']) {
     if (!properties.has(key)) fail(`systemctl show omitted ${key}`);
   }
   return properties;
@@ -63,9 +64,13 @@ function durationToUsec(value) {
   return result;
 }
 
-export function parseAndValidateOllamaEnvelope(stdout, expectedSwapBytes) {
-  if (expectedSwapBytes !== OLLAMA_ENVELOPE.memorySwapBaselineBytes) {
-    fail('expected swap must be the fixed 512 MiB baseline');
+export function parseAndValidateOllamaEnvelope(
+  stdout,
+  expectedSwapBytes,
+  expectedEnvelope = OLLAMA_ENVELOPE,
+) {
+  if (expectedSwapBytes !== expectedEnvelope.memorySwapBaselineBytes) {
+    fail('expected swap must be the fixed zero-swap baseline');
   }
   const properties = parseProperties(stdout);
   const environment = properties.get('Environment');
@@ -83,15 +88,23 @@ export function parseAndValidateOllamaEnvelope(stdout, expectedSwapBytes) {
     memoryMaxBytes: exactNonnegativeInteger(properties.get('MemoryMax'), 'MemoryMax'),
     memorySwapMaxBytes: exactNonnegativeInteger(properties.get('MemorySwapMax'), 'MemorySwapMax'),
     cpuQuotaUsecPerSec: durationToUsec(properties.get('CPUQuotaPerSecUSec')),
+    nice: Number(properties.get('Nice')),
   };
 
-  if (observed.memoryHighBytes !== OLLAMA_ENVELOPE.memoryHighBytes) fail('effective MemoryHigh must be exactly 4 GiB');
-  if (observed.memoryMaxBytes !== OLLAMA_ENVELOPE.memoryMaxBytes) fail('effective MemoryMax must be exactly 6 GiB');
+  if (observed.memoryHighBytes !== expectedEnvelope.memoryHighBytes) {
+    fail(`effective MemoryHigh must be exactly ${expectedEnvelope.memoryHighBytes / 1024 ** 3} GiB`);
+  }
+  if (observed.memoryMaxBytes !== expectedEnvelope.memoryMaxBytes) {
+    fail(`effective MemoryMax must be exactly ${expectedEnvelope.memoryMaxBytes / 1024 ** 3} GiB`);
+  }
   if (observed.memorySwapMaxBytes !== expectedSwapBytes) {
     fail(`effective MemorySwapMax must be exactly ${expectedSwapBytes} bytes`);
   }
-  if (observed.cpuQuotaUsecPerSec !== OLLAMA_ENVELOPE.cpuQuotaUsecPerSec) {
-    fail('effective CPUQuota must be exactly 200%');
+  if (observed.cpuQuotaUsecPerSec !== expectedEnvelope.cpuQuotaUsecPerSec) {
+    fail('effective CPUQuota must be exactly 800%');
+  }
+  if (!Number.isInteger(observed.nice) || observed.nice !== expectedEnvelope.nice) {
+    fail('effective Nice must be exactly 10');
   }
 
   return observed;
@@ -110,6 +123,7 @@ export function readAndValidateOllamaEnvelope({
     '--property=MemoryMax',
     '--property=MemorySwapMax',
     '--property=CPUQuotaPerSecUSec',
+    '--property=Nice',
   ], {
     encoding: 'utf8',
     shell: false,

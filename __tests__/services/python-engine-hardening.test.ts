@@ -160,7 +160,13 @@ describe('Python main.py — inbound internal auth', () => {
 
 describe('TypeScript content-engine callers — outbound internal auth', () => {
   it('forwards INTERNAL_API_SECRET from the shared content-engine client', () => {
-    const src = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'services', 'content-engine.ts'), 'utf-8');
+    const src = [
+      'content-engine.ts',
+      'content-engine-http.ts',
+    ].map((filename) => fs.readFileSync(
+      path.join(__dirname, '..', '..', 'src', 'services', filename),
+      'utf-8',
+    )).join('\n');
     expect(src).toContain('X-Internal-Secret');
     expect(src).toContain('config.contentEngine.internalApiSecret');
   });
@@ -252,7 +258,8 @@ describe('Python script_writer.py — JSON metadata parsing', () => {
   });
 
   it('passes category to ask_claude', () => {
-    expect(src).toContain('category=f"content_engine_script_{normalized_mode}"');
+    expect(src).toContain('from services.inference_vocabulary import build_content_engine_script_category');
+    expect(src).toContain('category=build_content_engine_script_category(normalized_mode)');
     expect(src).toContain('attribution_token=req.internal_attribution_token');
   });
 

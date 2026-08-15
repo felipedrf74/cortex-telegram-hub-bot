@@ -523,6 +523,20 @@ vi.mock('../../src/services/anthropic', () => ({
   classifyMessage: vi.fn(),
 }));
 
+vi.mock('../../src/services/skill-inference-service', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/skill-inference-service')>(
+    '../../src/services/skill-inference-service',
+  )),
+  runWithSkillInferenceAccountAdmission: (
+    _input: unknown,
+    operation: (signal: AbortSignal) => Promise<unknown>,
+  ) => operation(new AbortController().signal),
+  isSkillInferenceAccountDeletionError: (error: unknown) => (
+    Boolean(error && typeof error === 'object'
+      && (error as { code?: unknown }).code === 'ACCOUNT_DELETION_IN_PROGRESS')
+  ),
+}));
+
 // Also mock the logger so tests don't produce output
 vi.mock('../../src/utils/logger', () => ({
   logger: {

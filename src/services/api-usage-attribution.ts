@@ -5,6 +5,12 @@ import {
   getCurrentContext,
   type RequestContext,
 } from '../utils/request-context';
+import {
+  buildLocalPrimaryShadowCategory,
+  CLASSIFIER_SHADOW_JOB_NAME,
+  isLocalPrimaryShadowCategory,
+  LOCAL_PRIMARY_SHADOW_JOB_NAME,
+} from './local-inference-vocabulary';
 
 export type AiRequestSource = 'interactive' | 'automation' | 'system';
 
@@ -85,16 +91,36 @@ export function resolveApiUsageAttribution(
   ) as Partial<ApiUsageAttribution>;
   const requestContext = getCurrentContext();
   const current = {
-    ...(apiUsageContext.getStore() ?? {}),
     ...(requestContext ? apiUsageContextByRequest.get(requestContext) ?? {} : {}),
+    // AsyncLocalStorage is the narrower scope. A detached local-primary
+    // shadow can start while the visible route still owns request-scoped
+    // attribution, so the nested async scope must win that race.
+    ...(apiUsageContext.getStore() ?? {}),
     ...definedExplicit,
   };
   const requestSource = current.requestSource
     ?? (Number.isFinite(userId) && userId > 0 ? 'interactive' : 'system');
+  let jobName = clean(current.jobName);
+  let baseCategory = clean(current.baseCategory) ?? normalizeBaseCategory(category);
+  // Shadow identity is an atomic attribution contract. Normalizing either
+  // marker into both fields prevents a partial or precedence-regressed row
+  // from entering user/economics denominators.
+  const normalizedJobName = jobName?.toLowerCase() ?? null;
+  if (normalizedJobName === LOCAL_PRIMARY_SHADOW_JOB_NAME
+      || isLocalPrimaryShadowCategory(baseCategory)) {
+    jobName = LOCAL_PRIMARY_SHADOW_JOB_NAME;
+    if (!isLocalPrimaryShadowCategory(baseCategory)) {
+      baseCategory = buildLocalPrimaryShadowCategory(baseCategory);
+    }
+  } else if (normalizedJobName === CLASSIFIER_SHADOW_JOB_NAME
+      || baseCategory.toLowerCase() === CLASSIFIER_SHADOW_JOB_NAME) {
+    jobName = CLASSIFIER_SHADOW_JOB_NAME;
+    baseCategory = CLASSIFIER_SHADOW_JOB_NAME;
+  }
   return {
     requestSource,
-    jobName: clean(current.jobName),
-    baseCategory: clean(current.baseCategory) ?? normalizeBaseCategory(category),
+    jobName,
+    baseCategory,
     runId: clean(current.runId),
   };
 }
@@ -106,5 +132,5 @@ export function getCurrentApiUsageAttribution(): Partial<ApiUsageAttribution> | 
     : undefined;
   const asyncContext = apiUsageContext.getStore();
   if (!requestAttribution && !asyncContext) return undefined;
-  return { ...(asyncContext ?? {}), ...(requestAttribution ?? {}) };
+  return { ...(requestAttribution ?? {}), ...(asyncContext ?? {}) };
 }

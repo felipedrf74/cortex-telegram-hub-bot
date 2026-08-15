@@ -23,6 +23,7 @@ import {
   StructuredGenerationRequest,
   StructuredGenerationResult,
   getModelRouting,
+  isProviderRequestCancellation,
   normalizeCallDomainOptions,
 } from './ai-provider';
 import { DomainName, DomainMessage, ClassificationResult } from '../domains/types';
@@ -100,6 +101,8 @@ type OneShotOptions = {
   jsonMode?: boolean;
   /** Optional caller-specific retry cap for latency-bounded workflows. */
   maxRetries?: number;
+  /** Caller cancellation prevents SDK retries and later provider fallback. */
+  abortSignal?: AbortSignal;
 };
 
 const warnedUnresolvedModels = new Set<string>();
@@ -150,6 +153,7 @@ async function trackedCompletion(
   userId: number = 0,
   tenantId: number = userId,
   timeoutMs?: number,
+  abortSignal?: AbortSignal,
 ): Promise<OpenAI.ChatCompletion> {
   const AI_CALL_TIMEOUT_MS = timeoutMs ?? getAICallTimeoutMs();
 
@@ -172,7 +176,10 @@ async function trackedCompletion(
   });
   const start = Date.now();
   const response = await withTimeout(
-    client.chat.completions.create(params),
+    client.chat.completions.create(
+      params,
+      abortSignal ? { maxRetries: 0, signal: abortSignal } : undefined,
+    ),
     AI_CALL_TIMEOUT_MS,
     {
       onTimeout: () => {
@@ -343,8 +350,10 @@ export async function completeOneShot(
       options?.userId ?? 0,
       options?.tenantId ?? options?.userId ?? 0,
       options?.timeoutMs,
+      options?.abortSignal,
     ),
     normalizeRetryCount(options?.maxRetries, 3),
+    options?.abortSignal,
   );
 
   return response.choices[0]?.message?.content ?? '';
@@ -395,7 +404,10 @@ export async function completeOneShotWithWebSearch(
       hasUnboundedProviderInjectedContext: true,
     });
     return withTimeout(
-      getClient().responses.create(request, { maxRetries: 0 }),
+      getClient().responses.create(request, {
+        maxRetries: 0,
+        ...(options?.abortSignal ? { signal: options.abortSignal } : {}),
+      }),
       timeoutMs,
       {
         onTimeout: () => {
@@ -417,7 +429,7 @@ export async function completeOneShotWithWebSearch(
         },
       },
     );
-  }) as any;
+  }, normalizeRetryCount(options?.maxRetries, 3), options?.abortSignal) as any;
   const webSearchRequests = countOpenAiWebSearchCalls(response);
 
   await recordOpenAIResponseUsage({
@@ -431,6 +443,9 @@ export async function completeOneShotWithWebSearch(
       webSearchRequests * getProviderToolFeeUsd('openai_web_search'),
     webSearchRequests,
   });
+  if (options?.abortSignal?.aborted) {
+    throw openAiCancellationError(options.abortSignal);
+  }
 
   const text = extractOpenAIResponseText(response);
   if (!text) {
@@ -472,7 +487,7 @@ export async function completeVisionOneShot(
   userPrompt: string,
   image: { base64: string; mimeType: string },
   category: string,
-  options?: { model?: string; maxTokens?: number; temperature?: number; userId?: number; tenantId?: number },
+  options?: OneShotOptions,
 ): Promise<string> {
   if (!isOpenAIConfigured()) {
     throw new Error('OpenAI provider not configured (OPENAI_API_KEY missing)');
@@ -503,7 +518,11 @@ export async function completeVisionOneShot(
       category,
       options?.userId ?? 0,
       options?.tenantId ?? options?.userId ?? 0,
+      options?.timeoutMs,
+      options?.abortSignal,
     ),
+    normalizeRetryCount(options?.maxRetries, 3),
+    options?.abortSignal,
   );
 
   return response.choices[0]?.message?.content ?? '';
@@ -667,18 +686,56 @@ function numberFromUnknown(value: unknown): number | null {
 
 // ─── Retry on 429 / 5xx ─────────────────────────────────────────────
 
-/** Injectable sleep — override `.fn` in tests to avoid real setTimeout waits. */
-export const _sleep = { fn: (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms)) };
+function openAiCancellationError(abortSignal: AbortSignal): Error {
+  return abortSignal.reason instanceof Error
+    ? abortSignal.reason
+    : Object.assign(new Error('openai_request_cancelled'), {
+      name: 'AbortError',
+      code: 'CHAT_REQUEST_CANCELLED',
+    });
+}
+
+/** Injectable, cancellation-aware sleep — tests may replace `.fn`. */
+export const _sleep = {
+  fn: (ms: number, abortSignal?: AbortSignal): Promise<void> => {
+    if (!abortSignal) return new Promise(resolve => setTimeout(resolve, ms));
+    if (abortSignal.aborted) return Promise.reject(openAiCancellationError(abortSignal));
+    return new Promise((resolve, reject) => {
+      const onAbort = () => {
+        clearTimeout(timer);
+        reject(openAiCancellationError(abortSignal));
+      };
+      const timer = setTimeout(() => {
+        abortSignal.removeEventListener('abort', onAbort);
+        resolve();
+      }, ms);
+      abortSignal.addEventListener('abort', onAbort, { once: true });
+    });
+  },
+};
 
 /**
  * Retry on OpenAI rate limit (429) and transient server errors (500, 502, 503).
  * Uses exponential backoff with jitter. Max 3 retries.
  */
-async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
+async function withRetry<T>(
+  fn: () => Promise<T>,
+  maxRetries = 3,
+  abortSignal?: AbortSignal,
+): Promise<T> {
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      return await fn();
+      if (abortSignal?.aborted) {
+        throw openAiCancellationError(abortSignal);
+      }
+      const result = await fn();
+      if (abortSignal?.aborted) throw openAiCancellationError(abortSignal);
+      return result;
     } catch (err: unknown) {
+      if (isProviderRequestCancellation(err)) {
+        throw err;
+      }
+      if (abortSignal?.aborted) throw openAiCancellationError(abortSignal);
       const e = err as { status?: number; response?: { status?: number }; headers?: Record<string, string> };
       const status = e?.status ?? e?.response?.status;
       const isRetryable = status === 429 || status === 500 || status === 502 || status === 503;
@@ -691,7 +748,7 @@ async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
         : (2 ** attempt) * 1000 + Math.random() * 500;
 
       logger.warn({ status, attempt, waitMs }, 'OpenAI retryable error, backing off');
-      await _sleep.fn(waitMs);
+      await _sleep.fn(waitMs, abortSignal);
     }
   }
   throw new Error('withRetry: unreachable');
@@ -835,7 +892,9 @@ export class OpenAIProvider implements AIProvider {
       request.category,
       request.userId,
       request.tenantId,
-    ));
+      undefined,
+      request.abortSignal,
+    ), 3, request.abortSignal);
     const choice = response.choices[0];
     return {
       text: choice?.message?.content ?? '',
@@ -870,7 +929,9 @@ ${message}`;
             { role: 'system', content: getClassifierSystemPrompt() },
             { role: 'user', content: userContent },
           ],
-        }, 100), 'openai_classify', usageUserId, usageTenantId, options?.timeoutMs)
+        }, 100), 'openai_classify', usageUserId, usageTenantId, options?.timeoutMs, options?.abortSignal),
+        3,
+        options?.abortSignal,
       );
 
       let text = response.choices[0]?.message?.content || '';
@@ -888,6 +949,7 @@ ${message}`;
       if (confidence < 0.6) return { domain: 'secretary', confidence };
       return { domain, confidence };
     } catch (err) {
+      if (isProviderRequestCancellation(err)) throw err;
       rethrowAiUsageFailClosedError(err);
       logger.error({ err }, 'OpenAI classification failed, defaulting to secretary');
       return { domain: 'secretary', confidence: 0 };
@@ -934,8 +996,13 @@ ${message}`;
         model: routing.model,
         messages,
         ...(tools.length > 0 ? { tools } : {}),
-      }, opts.maxTokensOverride || routing.maxTokens), `openai_domain_${domain}`, opts.userId ?? 0, opts.tenantId ?? opts.userId ?? 0)
-    );
+      }, opts.maxTokensOverride || routing.maxTokens),
+      `openai_domain_${domain}`,
+      opts.userId ?? 0,
+      opts.tenantId ?? opts.userId ?? 0,
+      undefined,
+      opts.abortSignal,
+    ), 3, opts.abortSignal);
 
     const choice = response.choices[0];
     return {
@@ -1010,12 +1077,22 @@ ${message}`;
       }
     }
 
-    const response = await withRetry(() =>
-      trackedCompletion(getClient(), withTokenLimit({
-        model: routing.model,
-        messages,
-        ...(tools.length > 0 ? { tools } : {}),
-      }, opts.maxTokensOverride || routing.maxTokens), 'openai_tool_continuation', opts.userId ?? 0, opts.tenantId ?? opts.userId ?? 0)
+    const response = await withRetry(
+      () => trackedCompletion(
+        getClient(),
+        withTokenLimit({
+          model: routing.model,
+          messages,
+          ...(tools.length > 0 ? { tools } : {}),
+        }, opts.maxTokensOverride || routing.maxTokens),
+        'openai_tool_continuation',
+        opts.userId ?? 0,
+        opts.tenantId ?? opts.userId ?? 0,
+        undefined,
+        opts.abortSignal,
+      ),
+      3,
+      opts.abortSignal,
     );
 
     const choice = response.choices[0];

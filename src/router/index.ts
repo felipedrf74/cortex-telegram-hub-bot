@@ -279,7 +279,16 @@ export async function routeMessage(
   activeContext?: ConversationContext | null,
   userId?: number,
   tenantId?: number,
+  abortSignal?: AbortSignal,
 ): Promise<RouteResult> {
+  if (abortSignal?.aborted) {
+    throw abortSignal.reason instanceof Error
+      ? abortSignal.reason
+      : Object.assign(new Error('chat_routing_cancelled'), {
+        name: 'AbortError',
+        code: 'CHAT_REQUEST_CANCELLED',
+      });
+  }
   // Step 1: Try pattern matching (explicit /commands always win)
   const patternDomain = patternMatch(message);
   if (patternDomain) {
@@ -427,7 +436,21 @@ export async function routeMessage(
   // Step 3: Claude classifier for genuinely ambiguous messages.
   // Pass activeContext if available so the classifier has conversation history.
   // Pass userId so the api_usage row attributes the cost to the caller.
-  const classification = await classifyWithClaude(message, activeContext ?? undefined, userId, tenantId);
+  const classification = await classifyWithClaude(
+    message,
+    activeContext ?? undefined,
+    userId,
+    tenantId,
+    { abortSignal },
+  );
+  if (abortSignal?.aborted) {
+    throw abortSignal.reason instanceof Error
+      ? abortSignal.reason
+      : Object.assign(new Error('chat_routing_cancelled'), {
+        name: 'AbortError',
+        code: 'CHAT_REQUEST_CANCELLED',
+      });
+  }
   logger.debug(
     { domain: classification.domain, confidence: classification.confidence, method: 'classifier', hadActiveContext: !!activeContext },
     'Routed by classifier',

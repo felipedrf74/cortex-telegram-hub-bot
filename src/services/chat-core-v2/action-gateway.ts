@@ -144,6 +144,7 @@ export interface ChatCoreV2WriteIntentGuardTelemetry {
 
 const TASK_NOUN_RE = /\b(tasks?|todos?|to-dos?|tarefas?|tareas?)\b/i;
 const TASK_COMPLETE_RE = /\b(mark|complete|finish|done|tick|check|concluir|conclui|conclua|completar|terminar|finalizar|marca|marcar|marque)\b/i;
+const BARE_TASK_COMPLETE_COMMAND_RE = /\b(?:(?:mark|tick|check|marca|marcar|marque)\b[^.!?]{0,80}\b(?:complete|done|conclu[ií]d[ao]|feita|feito)|(?:complete|finish|concluir|conclua|terminar|finalizar)\s+(?:it|that|this|isso|isto|esa|eso))\b/i;
 const TASK_CREATE_RE = /\b(create|make|add|new|cria|criar|crie|adiciona|adicione|adicionar|nova?|crea|crear|agrega|agregar|añade|añadir|anade|anadir)\b/i;
 const TASK_DELETE_UPDATE_RE = /\b(delete|remove|rename|change|edit|update|apaga|apagar|apague|deleta|deletar|remove|remova|remover|renomeia|renomeie|renomear|altera|altere|alterar|edita|editar|borra|borrar|elimina|eliminar|cambia|cambiar|actualiza|actualizar)\b/i;
 const SUBTASK_RE = /\b(sub\s*-?\s*tasks?|subtarefas?|subtareas?|check\s*-?\s*list|checklist)\b/i;
@@ -200,7 +201,11 @@ export function detectChatCoreV2WriteIntent(text: string): ChatCoreV2WriteIntent
   const isReadQuestion = isReadQuestionLike(normalized);
   const hasTaskNoun = TASK_NOUN_RE.test(normalized);
   const hasSubtask = SUBTASK_RE.test(normalized);
-  const hasTaskComplete = TASK_COMPLETE_RE.test(normalized) && (hasTaskNoun || /\b(done|complete[d]?|conclu[ií]da|conclu[ií]do|feita|feito)\b/i.test(normalized));
+  // Bare "complete" is often an adjective in read-only generation requests
+  // ("a complete recipe/script"). Require either a task noun or an explicit
+  // referential command such as "mark it complete" before claiming a write.
+  const hasTaskComplete = TASK_COMPLETE_RE.test(normalized)
+    && (hasTaskNoun || BARE_TASK_COMPLETE_COMMAND_RE.test(normalized));
   const hasTaskCreate = TASK_CREATE_RE.test(normalized) && (hasTaskNoun || hasSubtask);
   const hasTaskDeleteUpdate = TASK_DELETE_UPDATE_RE.test(normalized) && hasTaskNoun;
 

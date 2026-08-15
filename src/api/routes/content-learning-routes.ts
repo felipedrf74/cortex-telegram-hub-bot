@@ -31,6 +31,10 @@ import {
   recordContentPerformanceOutcome,
 } from '../../services/content-performance-lineage';
 import { ContentWorkspaceWriteDisabledError } from '../../services/content-workspace-capabilities';
+import {
+  isSkillInferenceAccountDeletionError,
+  runWithSkillInferenceAccountAdmission,
+} from '../../services/skill-inference-service';
 
 type ContentTopicGeneratorFormat = 'reel' | 'youtube';
 type ResolveContentLanguage = (req: Pick<AuthenticatedRequest, 'header'>, userId: number) => Lang;
@@ -90,12 +94,30 @@ export function registerContentLearningRoutes(
 
     const startMs = Date.now();
     try {
-      const { generateAndStoreTopicCandidates } = await import('../../services/content-workflow');
-      const result = await generateAndStoreTopicCandidates(userId, format, sourceJob, tenantId);
-      invalidateContentDerivedCaches(userId);
-      sendSuccess(res, buildGeneratedTopicCandidatesResponse(result, format, sourceJob, startMs));
+      await runWithSkillInferenceAccountAdmission({ userId }, async (abortSignal) => {
+        const { generateAndStoreTopicCandidates } = await import('../../services/content-workflow');
+        const result = await generateAndStoreTopicCandidates(
+          userId,
+          format,
+          sourceJob,
+          tenantId,
+          5,
+          { requestSource: 'interactive', abortSignal },
+        );
+        invalidateContentDerivedCaches(userId);
+        sendSuccess(res, buildGeneratedTopicCandidatesResponse(result, format, sourceJob, startMs));
+      });
     } catch (err) {
       if (sendAiBudgetError(res, err)) return;
+      if (isSkillInferenceAccountDeletionError(err)) {
+        sendError(
+          res,
+          'ACCOUNT_DELETION_IN_PROGRESS',
+          'No new Content generation can start while this account is being deleted.',
+          409,
+        );
+        return;
+      }
       throw err;
     }
   }));
@@ -281,12 +303,28 @@ export function registerContentLearningRoutes(
     const startMs = Date.now();
 
     try {
-      const { generateWeeklyPackage } = await import('../../services/content-workflow');
-      const result = await generateWeeklyPackage(userId, tenantId);
-      invalidateContentDerivedCaches(userId);
-      sendSuccess(res, buildWeeklyPackageResponse(result, startMs));
+      await runWithSkillInferenceAccountAdmission({ userId }, async (abortSignal) => {
+        const { generateWeeklyPackage } = await import('../../services/content-workflow');
+        const result = await generateWeeklyPackage(
+          userId,
+          tenantId,
+          {},
+          { requestSource: 'interactive', abortSignal },
+        );
+        invalidateContentDerivedCaches(userId);
+        sendSuccess(res, buildWeeklyPackageResponse(result, startMs));
+      });
     } catch (err) {
       if (sendAiBudgetError(res, err)) return;
+      if (isSkillInferenceAccountDeletionError(err)) {
+        sendError(
+          res,
+          'ACCOUNT_DELETION_IN_PROGRESS',
+          'No new Content generation can start while this account is being deleted.',
+          409,
+        );
+        return;
+      }
       throw err;
     }
   }));

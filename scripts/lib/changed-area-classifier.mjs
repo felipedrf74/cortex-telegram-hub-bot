@@ -156,6 +156,7 @@ export function classifyChangedFiles({
   let garminAppleHealthCascade = false;
   let googleDriveTenantLeak = false;
   let registryRealEval = false;
+  let localPrimaryInference = false;
 
   if (files.some((file) => !(/\.md$/.test(file) || /^docs\//.test(file) || /\/docs\//.test(file)
     || file === 'CHANGELOG.md' || /^prompts\/.*\.md$/.test(file)))) {
@@ -264,7 +265,8 @@ export function classifyChangedFiles({
     || has(/^Dockerfile\.release\.python$/)
     || has(/^content-engine\/(?:requirements\.txt|requirements-release\.txt|requirements-lock-tool\.txt|requirements-audit-tool\.(?:in|txt))$/);
   flags.operationsTooling = has(/^ops\/(?:sonarqube|ollama|cloudflared)\//)
-    || has(/^scripts\/(?:quality-sonar-|cloudflared-systemd-migrate|ollama-(?:lean-finalize|service-envelope-check|systemd-dropin-transaction|install-state-check))/)
+    || has(/^scripts\/(?:quality-sonar-|cloudflared-systemd-migrate|local-inference-socket-transaction|local-model-benchmark-envelope-transaction|ollama-(?:lean-finalize|service-envelope-check|systemd-dropin-transaction|install-state-check))/)
+    || has(/^scripts\/systemd\/nexus-local-inference-sockets\.conf$/)
     || has(/^scripts\/lib\/ollama-service-envelope\.mjs$/)
     || has(/^__tests__\/scripts\/(?:quality-sonar|cloudflared-systemd-migration|ollama-lean-finalize)\.test\.ts$/);
   if (has(/^scripts\/lib\/release-gates\.sh$/)) {
@@ -286,7 +288,10 @@ export function classifyChangedFiles({
   flags.highFanIn = has(/^src\/(?:config|index)\.ts$|^src\/services\/(?:database|db|tenant-scope)\.ts$|^src\/api\/router\.ts$/);
 
   flags.attachment = has(/^src\/api\/routes\/chat-message-attachments|^src\/api\/routes\/chat-attachments|^__tests__\/api\/chat-attachments|^__tests__\/api\/chat-message-attachments|^__tests__\/services\/fiscal-bundle-attachments/);
-  flags.modelRouting = has(/^src\/services\/(?:domain-provider-router|ollama-model-policy|ollama-provider|model-config)|^src\/portal\/provider-routes|^__tests__\/services\/(?:domain-provider-router|model-routing-|ollama-small-only-policy|ollama-provider|model-config)/);
+  flags.modelRouting = has(/^config\/local-model-manifest\.json$|^scripts\/validate-local-model-manifest\.mjs$|^src\/services\/(?:domain-provider-router|local-model-|ollama-model-policy|ollama-provider|model-config)|^src\/tools\/local-model-bakeoff\.ts$|^src\/portal\/provider-routes|^__tests__\/services\/(?:domain-provider-router|local-model-|model-routing-|ollama-small-only-policy|ollama-provider|model-config)/);
+  localPrimaryInference = has(
+    /^config\/local-model-manifest\.json$|^migrations\/(?:down\/)?284_|^src\/(?:api\/(?:request-timer|routes\/(?:content|content-script-job-routes|content-script-routes|internal|local-inference-admin))|portal\/plan-routes|services\/(?:api-usage-attribution|chat-core-v2\/(?:local-chat-orchestrator|local-inference-concurrency-gate|model-residency-policy)|classify-shadow|content-agent-jobs|content-engine(?:-script-attribution|-script-runtime)?|content-script-job|cost-guardrail|internal-inference-attribution|local-inference-|local-llm-(?:error|rate-limiter)|local-model-|local-primary-|ollama-(?:model-policy|provider|transport)|provider-fallback|skill-inference-|user-data-export)|tools\/(?:local-model-bakeoff|ollama-unix-gateway))|^content-engine\/(?:models\/requests|routers\/research|services\/(?:claude_client|inference_vocabulary|creative\/script_writer)|tests\/)|^scripts\/(?:local-inference-|local-model-|validate-local-model-manifest)|^__tests__\/(?:api\/(?:content-script-job-routes|content-script-quota|internal-routes-runtime|local-inference-admin-routes|request-timer-local-inference)|migrations\/local-primary-inference-foundation|portal\/portal-plan-routes|scripts\/(?:local-inference-|local-model-)|services\/(?:api-usage-attribution|chat-core-v2-local-|content-agent-jobs|content-script-job|cost-guardrail|internal-inference-attribution|local-inference-|local-llm-rate-limiter|local-model-|local-primary-|ollama-(?:transport|unix-gateway)|option-3-classifier|paid-ai-budget|provider-fallback|skill-inference-))/,
+  );
   flags.personalizationScope = has(/^src\/services\/(?:cooking-preferences|finance-preferences|skill-memory)|^src\/state\/content-references|^__tests__\/services\/(?:cooking-preferences|finance-preferences|skill-memory|content-references)/);
   flags.logger = has(/^src\/utils\/(?:logger|redact|log-context)|^__tests__\/utils\/logger-|^__tests__\/api\/secret-guards/);
   flags.scheduler = has(
@@ -359,6 +364,33 @@ export function classifyChangedFiles({
       addVitest(flags.portal, '__tests__/portal/*.test.ts');
       addVitest(flags.attachment, '__tests__/api/chat-attachments*.test.ts', '__tests__/api/chat-message-attachments*.test.ts', '__tests__/services/fiscal-bundle-attachments*.test.ts', '__tests__/security/**/*.test.ts');
       addVitest(flags.modelRouting, '__tests__/services/domain-provider-router*.test.ts', '__tests__/services/model-routing-*.test.ts', '__tests__/services/ollama-small-only-policy.test.ts', '__tests__/services/ollama-provider.test.ts', '__tests__/services/model-config.test.ts');
+      addVitest(
+        localPrimaryInference,
+        '__tests__/api/content-script-job-routes.test.ts',
+        '__tests__/api/content-script-quota.test.ts',
+        '__tests__/api/internal-routes-runtime.test.ts',
+        '__tests__/api/local-inference-admin-routes.test.ts',
+        '__tests__/api/request-timer-local-inference.test.ts',
+        '__tests__/migrations/local-primary-inference-foundation.test.ts',
+        '__tests__/portal/portal-plan-routes.test.ts',
+        '__tests__/scripts/local-inference-*.test.ts',
+        '__tests__/scripts/local-model-*.test.ts',
+        '__tests__/services/content-script-job*.test.ts',
+        '__tests__/services/content-agent-jobs.test.ts',
+        '__tests__/services/cost-guardrail.test.ts',
+        '__tests__/services/internal-inference-attribution.test.ts',
+        '__tests__/services/chat-core-v2-local-*.test.ts',
+        '__tests__/services/local-inference-*.test.ts',
+        '__tests__/services/local-llm-rate-limiter.test.ts',
+        '__tests__/services/local-model-*.test.ts',
+        '__tests__/services/local-primary-*.test.ts',
+        '__tests__/services/ollama-transport.test.ts',
+        '__tests__/services/ollama-unix-gateway.test.ts',
+        '__tests__/services/option-3-classifier.test.ts',
+        '__tests__/services/paid-ai-budget.test.ts',
+        '__tests__/services/provider-fallback.test.ts',
+        '__tests__/services/skill-inference-*.test.ts',
+      );
       addVitest(flags.personalizationScope, '__tests__/services/cooking-preferences*.test.ts', '__tests__/services/finance-preferences*.test.ts', '__tests__/services/skill-memory*.test.ts', '__tests__/services/content-references*.test.ts', '__tests__/security/**/*.test.ts');
       addVitest(
         flags.contentAgent,
@@ -409,6 +441,8 @@ export function classifyChangedFiles({
       addVitest(
         flags.operationsTooling,
         '__tests__/scripts/cloudflared-systemd-migration.test.ts',
+        '__tests__/scripts/local-inference-socket-transaction.test.ts',
+        '__tests__/scripts/local-model-benchmark-envelope-transaction.test.ts',
         '__tests__/scripts/ollama-lean-finalize.test.ts',
       );
       if (flags.contentPromptCleanliness) pytestGlobs.push('content-engine/tests/test_prompt_cleanliness.py');

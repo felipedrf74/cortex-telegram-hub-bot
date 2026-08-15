@@ -8,6 +8,46 @@ const agentMocks = vi.hoisted(() => ({
   completeOneShotWithFallback: vi.fn(),
   withAiBudgetReservation: vi.fn(),
   getUserLanguage: vi.fn(() => 'en-US'),
+  executeSkillInference: vi.fn(),
+  rejectApplicationResult: vi.fn(),
+  runWithAccountAdmission: vi.fn(),
+  contentSpecialistsEnabled: false,
+  localControlMode: 'off' as 'off' | 'shadow' | 'canary' | 'active',
+  localRolloutPercent: 0,
+  localUserEnrolled: false,
+}));
+
+vi.mock('../../src/services/local-primary-config', () => ({
+  localPrimaryInferenceConfig: {
+    get contentSpecialistsEnabled() { return agentMocks.contentSpecialistsEnabled; },
+  },
+}));
+vi.mock('../../src/services/skill-inference-service', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/skill-inference-service')>(
+    '../../src/services/skill-inference-service',
+  )),
+  executeSkillInference: (...args: unknown[]) => agentMocks.executeSkillInference(...args),
+  isLocalInferenceUserEnrolled: () => agentMocks.localUserEnrolled,
+  isSkillInferenceAccountDeletionError: (error: unknown) => (
+    Boolean(error && typeof error === 'object'
+      && (error as { code?: unknown }).code === 'ACCOUNT_DELETION_IN_PROGRESS')
+  ),
+  rejectSkillInferenceApplicationResult: (...args: unknown[]) => agentMocks.rejectApplicationResult(...args),
+  runWithSkillInferenceAccountAdmission: (...args: unknown[]) => agentMocks.runWithAccountAdmission(...args),
+}));
+vi.mock('../../src/services/local-inference-runtime-control', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/local-inference-runtime-control')>(
+    '../../src/services/local-inference-runtime-control',
+  )),
+  getLocalInferenceRuntimeControl: () => ({
+    mode: agentMocks.localControlMode,
+    rolloutPercent: agentMocks.localRolloutPercent,
+    environment: 'staging',
+    manifestVersion: 'test-manifest',
+    activeModelId: 'test-model',
+    reason: 'test',
+    updatedAt: null,
+  }),
 }));
 
 vi.mock('../../src/services/gemini-provider', async () => {
@@ -82,6 +122,17 @@ describe('canonical Content specialist jobs', () => {
     agentMocks.withAiBudgetReservation.mockImplementation(async (_request, callback) => callback());
     agentMocks.getUserLanguage.mockReset();
     agentMocks.getUserLanguage.mockReturnValue('en-US');
+    agentMocks.executeSkillInference.mockReset();
+    agentMocks.rejectApplicationResult.mockReset();
+    agentMocks.runWithAccountAdmission.mockReset();
+    agentMocks.runWithAccountAdmission.mockImplementation(async (
+      input: { abortSignal?: AbortSignal },
+      operation: (abortSignal: AbortSignal) => Promise<unknown>,
+    ) => operation(input.abortSignal ?? new AbortController().signal));
+    agentMocks.contentSpecialistsEnabled = false;
+    agentMocks.localControlMode = 'off';
+    agentMocks.localRolloutPercent = 0;
+    agentMocks.localUserEnrolled = false;
   });
 
   afterEach(() => db.close());
@@ -304,6 +355,308 @@ describe('canonical Content specialist jobs', () => {
       specialistExecutionBasis: 'provider_routed',
       specialistProvider: 'gemini',
       specialistFallbackReason: null,
+    });
+  });
+
+  it('keeps every local specialist batch within the Pro output ceiling while retaining seven role records', async () => {
+    agentMocks.contentSpecialistsEnabled = true;
+    agentMocks.localControlMode = 'active';
+    agentMocks.localRolloutPercent = 100;
+    let activeInferenceCalls = 0;
+    let maximumConcurrentInferenceCalls = 0;
+    agentMocks.executeSkillInference.mockImplementation(async (request: {
+      outputSchema: { properties: { outputs: { items: { properties: { role: { enum: ContentAgentRole[] } } } } } };
+    }) => {
+      activeInferenceCalls += 1;
+      maximumConcurrentInferenceCalls = Math.max(
+        maximumConcurrentInferenceCalls,
+        activeInferenceCalls,
+      );
+      await Promise.resolve();
+      const roles = request.outputSchema.properties.outputs.items.properties.role.enum;
+      const result = {
+        text: 'group',
+        parsed: {
+          schemaVersion: 'content-agent-specialist-group-v1',
+          outputs: roles.map((role) => JSON.parse(validProviderCompletion(role, 'gemini').text)),
+        },
+        provider: 'ollama',
+        route: 'local',
+        runId: `run-${roles.join('-')}`,
+        operationId: 'grouped-specialists',
+        validationStatus: 'valid',
+        queueWaitMs: 0,
+        durationMs: 10,
+      };
+      activeInferenceCalls -= 1;
+      return result;
+    });
+    const fixture = seedFixture(db, 'local-grouped');
+    const job = createFixtureJob(db, fixture, 'local-grouped');
+
+    const completed = await runContentAgentJob({
+      scope: OWNER,
+      jobKey: job.jobKey,
+      idempotencyKey: 'run-agent-local-grouped-001',
+    }, db);
+
+    expect(agentMocks.executeSkillInference).toHaveBeenCalledTimes(5);
+    expect(agentMocks.executeSkillInference.mock.calls.map(([request]) => (
+      (request as { requestedOutputTokens: number }).requestedOutputTokens
+    ))).toEqual([3_000, 3_600, 4_500, 3_000, 1_500]);
+    expect(agentMocks.withAiBudgetReservation).not.toHaveBeenCalled();
+    expect(agentMocks.completeOneShotWithFallback).not.toHaveBeenCalled();
+    expect(agentMocks.rejectApplicationResult).not.toHaveBeenCalled();
+    expect(maximumConcurrentInferenceCalls).toBe(1);
+    expect(completed.value.steps).toHaveLength(7);
+    expect(completed.value.steps.map((step) => step.dependencyGroup)).toEqual([1, 1, 2, 3, 3, 3, 4]);
+    expect(completed.value.steps.every((step) => (
+      step.summary.basis === 'provider_routed'
+      && step.summary.provider === 'ollama'
+      && step.summary.independentReviewPerformed === true
+    ))).toBe(true);
+    expect(completed.value.proposals.map((proposal) => proposal.role)).toEqual([
+      'writer', 'editor', 'platform_adapter',
+    ]);
+  });
+
+  it('rejects local specialist evidence when lease loss discards the generated group', async () => {
+    agentMocks.contentSpecialistsEnabled = true;
+    agentMocks.localControlMode = 'active';
+    agentMocks.localRolloutPercent = 100;
+    let jobKey = '';
+    const discardedRunId = 'content-specialist-lease-discarded-run';
+    agentMocks.executeSkillInference.mockImplementationOnce(async (request: {
+      outputSchema: { properties: { outputs: { items: { properties: { role: { enum: ContentAgentRole[] } } } } } };
+    }) => {
+      const roles = request.outputSchema.properties.outputs.items.properties.role.enum;
+      db.prepare(`UPDATE content_agent_jobs
+        SET lease_token = 'replacement-worker-token', lease_expires_at = ?
+        WHERE job_key = ?`).run(new Date(Date.now() + 60_000).toISOString(), jobKey);
+      return {
+        text: 'group',
+        parsed: {
+          schemaVersion: 'content-agent-specialist-group-v1',
+          outputs: roles.map((role) => JSON.parse(validProviderCompletion(role, 'gemini').text)),
+        },
+        provider: 'ollama',
+        route: 'local',
+        runId: discardedRunId,
+        operationId: 'content-specialist-lease-discarded',
+        validationStatus: 'valid',
+        queueWaitMs: 0,
+        durationMs: 10,
+      };
+    });
+    const fixture = seedFixture(db, 'local-grouped-lease-loss');
+    const job = createFixtureJob(db, fixture, 'local-grouped-lease-loss');
+    jobKey = job.jobKey;
+
+    await expect(runContentAgentJob({
+      scope: OWNER,
+      jobKey,
+      idempotencyKey: 'run-agent-local-grouped-lease-loss-001',
+    }, db)).rejects.toMatchObject({ code: 'CONTENT_AGENT_JOB_LEASE_LOST' });
+    expect(agentMocks.rejectApplicationResult).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runId: discardedRunId,
+        tenantId: OWNER.tenantId,
+        userId: OWNER.userId,
+        reason: 'content_specialist_checkpoint_not_committed_content_agent_job_lease_lost',
+      }),
+      db,
+    );
+  });
+
+  it('rejects an earlier split-batch run when a later batch aborts before checkpointing', async () => {
+    agentMocks.contentSpecialistsEnabled = true;
+    agentMocks.localControlMode = 'active';
+    agentMocks.localRolloutPercent = 100;
+    const accountDeletion = Object.assign(new Error('account deletion started'), {
+      name: 'AbortError',
+      code: 'ACCOUNT_DELETION_IN_PROGRESS',
+    });
+    let callNumber = 0;
+    agentMocks.executeSkillInference.mockImplementation(async (request: {
+      outputSchema: { properties: { outputs: { items: { properties: { role: { enum: ContentAgentRole[] } } } } } };
+    }) => {
+      callNumber += 1;
+      if (callNumber === 4) throw accountDeletion;
+      const roles = request.outputSchema.properties.outputs.items.properties.role.enum;
+      return {
+        text: 'group',
+        parsed: {
+          schemaVersion: 'content-agent-specialist-group-v1',
+          outputs: roles.map((role) => JSON.parse(validProviderCompletion(role, 'gemini').text)),
+        },
+        provider: 'ollama',
+        route: 'local',
+        runId: `split-batch-run-${callNumber}`,
+        operationId: 'content-specialist-split-batch-abort',
+        validationStatus: 'valid',
+        queueWaitMs: 0,
+        durationMs: 10,
+      };
+    });
+    const fixture = seedFixture(db, 'local-grouped-split-abort');
+    const job = createFixtureJob(db, fixture, 'local-grouped-split-abort');
+
+    await expect(runContentAgentJob({
+      scope: OWNER,
+      jobKey: job.jobKey,
+      idempotencyKey: 'run-agent-local-grouped-split-abort-001',
+    }, db)).rejects.toBe(accountDeletion);
+    expect(agentMocks.rejectApplicationResult).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runId: 'split-batch-run-3',
+        reason: 'content_specialist_group_not_checkpointed_account_deletion_in_progress',
+      }),
+      db,
+    );
+    expect(agentMocks.rejectApplicationResult).not.toHaveBeenCalledWith(
+      expect.objectContaining({ runId: 'split-batch-run-1' }),
+      db,
+    );
+    expect(agentMocks.rejectApplicationResult).not.toHaveBeenCalledWith(
+      expect.objectContaining({ runId: 'split-batch-run-2' }),
+      db,
+    );
+  });
+
+  it('repairs only an invalid local specialist subset and records the rejected first group result', async () => {
+    agentMocks.contentSpecialistsEnabled = true;
+    agentMocks.localControlMode = 'active';
+    agentMocks.localRolloutPercent = 100;
+    let callNumber = 0;
+    agentMocks.executeSkillInference.mockImplementation(async (request: {
+      outputSchema: { properties: { outputs: { items: { properties: { role: { enum: ContentAgentRole[] } } } } } };
+    }) => {
+      callNumber += 1;
+      const roles = request.outputSchema.properties.outputs.items.properties.role.enum;
+      const outputs = roles.map((role) => JSON.parse(validProviderCompletion(role, 'gemini').text));
+      if (callNumber === 1) {
+        const research = outputs.find((output) => output.role === 'research');
+        if (research) research.title = '';
+      }
+      return {
+        text: 'group',
+        parsed: { schemaVersion: 'content-agent-specialist-group-v1', outputs },
+        provider: 'ollama',
+        route: 'local',
+        runId: `run-${callNumber}`,
+        operationId: 'grouped-specialists-repair',
+        validationStatus: 'valid',
+        queueWaitMs: 0,
+        durationMs: 10,
+      };
+    });
+    const fixture = seedFixture(db, 'local-grouped-repair');
+    const job = createFixtureJob(db, fixture, 'local-grouped-repair');
+
+    const completed = await runContentAgentJob({
+      scope: OWNER,
+      jobKey: job.jobKey,
+      idempotencyKey: 'run-agent-local-grouped-repair-001',
+    }, db);
+
+    expect(agentMocks.executeSkillInference).toHaveBeenCalledTimes(6);
+    expect(agentMocks.executeSkillInference.mock.calls[1]?.[0]).toMatchObject({
+      taskType: 'content_specialist_group_repair',
+    });
+    expect(agentMocks.rejectApplicationResult).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runId: 'run-1',
+        reason: 'content_specialist_group_subset_invalid',
+      }),
+      db,
+    );
+    expect(completed.value.steps).toHaveLength(7);
+    expect(completed.value.steps.every((step) => step.summary.provider === 'ollama')).toBe(true);
+  });
+
+  it('stops grouped local specialist repair when account deletion cancels inference', async () => {
+    agentMocks.contentSpecialistsEnabled = true;
+    agentMocks.localControlMode = 'active';
+    agentMocks.localRolloutPercent = 100;
+    const accountDeletion = Object.assign(new Error('account deletion started'), {
+      name: 'AbortError',
+      code: 'ACCOUNT_DELETION_IN_PROGRESS',
+    });
+    agentMocks.executeSkillInference
+      .mockResolvedValueOnce({
+        text: 'group',
+        parsed: {
+          schemaVersion: 'content-agent-specialist-group-v1',
+          outputs: [
+            JSON.parse(validProviderCompletion('strategy', 'gemini').text),
+            { ...JSON.parse(validProviderCompletion('research', 'gemini').text), title: '' },
+          ],
+        },
+        provider: 'ollama',
+        route: 'local',
+        runId: 'account-deletion-group-first',
+        operationId: 'account-deletion-group-repair',
+        validationStatus: 'valid',
+        queueWaitMs: 0,
+        durationMs: 10,
+      })
+      .mockRejectedValueOnce(accountDeletion);
+    const fixture = seedFixture(db, 'account-deletion-group-repair');
+    const job = createFixtureJob(db, fixture, 'account-deletion-group-repair');
+
+    await expect(runContentAgentJob({
+      scope: OWNER,
+      jobKey: job.jobKey,
+      idempotencyKey: 'run-agent-account-deletion-group-repair-001',
+    }, db)).rejects.toBe(accountDeletion);
+
+    expect(agentMocks.executeSkillInference).toHaveBeenCalledTimes(2);
+    expect(getContentAgentJob(OWNER, job.jobKey, db)).toMatchObject({ status: 'failed' });
+  });
+
+  it('keeps the legacy cloud specialist workflow when runtime control is off', async () => {
+    agentMocks.contentSpecialistsEnabled = true;
+    agentMocks.localControlMode = 'off';
+    agentMocks.completeOneShotWithFallback.mockImplementation(async (
+      _system: unknown,
+      _user: unknown,
+      rawCategory: unknown,
+    ) => validProviderCompletion(
+      String(rawCategory).replace('content_agent_', '') as ContentAgentRole,
+      'gemini',
+    ));
+    const fixture = seedFixture(db, 'local-control-off');
+
+    const completed = await runFixtureJob(db, fixture, 'local-control-off');
+
+    expect(agentMocks.withAiBudgetReservation).toHaveBeenCalledTimes(1);
+    expect(agentMocks.runWithAccountAdmission).toHaveBeenCalledTimes(7);
+    expect(agentMocks.completeOneShotWithFallback).toHaveBeenCalledTimes(7);
+    expect(agentMocks.executeSkillInference).not.toHaveBeenCalled();
+    expect(completed.steps).toHaveLength(7);
+    expect(completed.steps.every((step) => step.summary.provider === 'gemini')).toBe(true);
+  });
+
+  it('stops the legacy cloud specialist job when account deletion aborts provider admission', async () => {
+    agentMocks.contentSpecialistsEnabled = true;
+    agentMocks.localControlMode = 'off';
+    const accountDeletion = Object.assign(new Error('account deletion started'), {
+      name: 'AbortError',
+      code: 'ACCOUNT_DELETION_IN_PROGRESS',
+    });
+    agentMocks.runWithAccountAdmission.mockRejectedValue(accountDeletion);
+    const fixture = seedFixture(db, 'account-deletion-cloud');
+    const job = createFixtureJob(db, fixture, 'account-deletion-cloud');
+
+    await expect(runContentAgentJob({
+      scope: OWNER,
+      jobKey: job.jobKey,
+      idempotencyKey: 'run-agent-account-deletion-cloud-001',
+    }, db)).rejects.toBe(accountDeletion);
+
+    expect(agentMocks.completeOneShotWithFallback).not.toHaveBeenCalled();
+    expect(getContentAgentJob(OWNER, job.jobKey, db)).toMatchObject({
+      status: 'failed',
     });
   });
 

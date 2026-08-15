@@ -6,7 +6,7 @@
  * for FallbackProvider, and format edge cases.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // ─── Mock Gemini SDK ────────────────────────────────────────────────
 
@@ -239,6 +239,7 @@ describe('GeminiProvider', () => {
 
   it('forwards a generic reasoning schema through Gemini JSON mode without domain tools or state', async () => {
     mockGeminiResponse('{"answer":"bounded"}', [], 'STOP');
+    const controller = new AbortController();
     const schema = {
       type: 'object',
       additionalProperties: false,
@@ -256,6 +257,7 @@ describe('GeminiProvider', () => {
       category: 'cloud_local_reasoning',
       responseFormat: 'json',
       jsonSchema: schema,
+      abortSignal: controller.signal,
     });
 
     const request = lastGenerateRequest();
@@ -266,6 +268,7 @@ describe('GeminiProvider', () => {
     expect(request.config.systemInstruction).toBe('SYSTEM_BOUNDARY_MARKER');
     expect(request.config.responseMimeType).toBe('application/json');
     expect(request.config.responseJsonSchema).toEqual(schema);
+    expect(request.config.abortSignal).toBe(controller.signal);
     expect(request.config.tools).toBeUndefined();
     expect(mockAssertAiBudgetReservationForProvider).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -275,6 +278,41 @@ describe('GeminiProvider', () => {
         model: 'gemini-2.5-pro',
       }),
     );
+  });
+
+  it('preserves the exact account-lifecycle abort after a structured response resolves', async () => {
+    const controller = new AbortController();
+    const cancellation = Object.assign(new Error('account deletion in progress'), {
+      name: 'AbortError',
+      code: 'ACCOUNT_DELETION_IN_PROGRESS',
+    });
+    mockGenerateContent.mockImplementationOnce(async () => {
+      controller.abort(cancellation);
+      return {
+        text: '{"answer":"must not publish"}',
+        functionCalls: [],
+        candidates: [{ finishReason: 'STOP' }],
+        usageMetadata: {
+          promptTokenCount: 100,
+          candidatesTokenCount: 50,
+          totalTokenCount: 150,
+        },
+      };
+    });
+
+    await expect(provider.callStructuredGeneration({
+      systemPrompt: 'SYSTEM_BOUNDARY_MARKER',
+      userPrompt: 'USER_BOUNDARY_MARKER',
+      model: 'gemini-2.5-pro',
+      maxTokens: 777,
+      userId: 306,
+      tenantId: 901,
+      category: 'cloud_local_reasoning',
+      responseFormat: 'json',
+      abortSignal: controller.signal,
+    })).rejects.toBe(cancellation);
+
+    expect(mockGenerateContent).toHaveBeenCalledTimes(1);
   });
 
   it('rejects a model name that merely contains gemini without calling the provider', async () => {
@@ -634,6 +672,26 @@ describe('GeminiProvider', () => {
       );
     });
 
+    it('never retries or cascades to another provider after caller cancellation', async () => {
+      const cancelled = Object.assign(new Error('request cancelled'), {
+        name: 'AbortError',
+        code: 'CHAT_REQUEST_CANCELLED',
+      });
+      mockGenerateContent.mockRejectedValueOnce(cancelled);
+      const anthropicFallback = vi.fn(async () => 'anthropic text');
+
+      await expect(completeOneShotWithFallback(
+        'System prompt',
+        'User prompt',
+        'coach_analysis',
+        anthropicFallback,
+        { maxTokens: 32 },
+      )).rejects.toBe(cancelled);
+
+      expect(mockGenerateContent).toHaveBeenCalledTimes(1);
+      expect(anthropicFallback).not.toHaveBeenCalled();
+    });
+
     it('GEMINI_ONESHOT_MAX_RETRIES=0 disables primary retry (single attempt then fallback)', async () => {
       process.env.GEMINI_ONESHOT_MAX_RETRIES = '0';
       mockGenerateContent
@@ -828,6 +886,20 @@ describe('GeminiProvider', () => {
 
       const result = await provider.classify('hello');
       expect(result).toEqual({ domain: 'secretary', confidence: 0 });
+    });
+
+    it('propagates classifier cancellation instead of returning a secretary fallback', async () => {
+      const cancelled = Object.assign(new Error('request cancelled'), {
+        name: 'AbortError',
+        code: 'CHAT_REQUEST_CANCELLED',
+      });
+      mockGenerateContent.mockRejectedValueOnce(cancelled);
+
+      await expect(provider.classify('hello', undefined, {
+        abortSignal: new AbortController().signal,
+      })).rejects.toBe(cancelled);
+
+      expect(mockGenerateContent).toHaveBeenCalledTimes(1);
     });
 
     it('uses exactly one provider attempt when a governed evaluation requests the one-attempt policy', async () => {
@@ -1218,6 +1290,27 @@ describe('GeminiProvider', () => {
         c.role === 'user' && c.parts.some((p: any) => p.functionResponse),
       );
       expect(responseMsg).toBeDefined();
+    });
+
+    it('forwards cancellation through the Gemini tool-continuation hop', async () => {
+      const controller = new AbortController();
+      const cancelled = Object.assign(new Error('request cancelled'), {
+        name: 'AbortError',
+        code: 'CHAT_REQUEST_CANCELLED',
+      });
+      mockGenerateContent.mockRejectedValueOnce(cancelled);
+
+      await expect(provider.continueWithToolResults(
+        'secretary',
+        [],
+        'Cancel this continuation',
+        '',
+        [],
+        { filteredTools: [], abortSignal: controller.signal },
+      )).rejects.toBe(cancelled);
+
+      expect(mockGenerateContent).toHaveBeenCalledTimes(1);
+      expect(mockGenerateContent.mock.calls[0]?.[0]?.config?.abortSignal).toBe(controller.signal);
     });
   });
 

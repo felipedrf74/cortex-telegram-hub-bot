@@ -21,6 +21,10 @@ import {
 import { logger } from '../utils/logger';
 import { randomUUID } from 'node:crypto';
 import { decryptTrainingProfileSnapshot } from './training-profile-snapshot-encryption';
+import {
+  ContentScriptJobEncryptionError,
+  decryptContentScriptJobJson,
+} from './content-script-job-encryption';
 
 // ── Finance Export (existing) ───────────────────────────────────────
 
@@ -201,24 +205,86 @@ export async function revokeThirdPartyOAuthTokensForUser(userId: number): Promis
 }
 
 export async function deleteAllUserDataForAccountDeletion(userId: number): Promise<Record<string, number>> {
+  const [inferenceFence, contentJobs] = await Promise.all([
+    import('./skill-inference-account-lifecycle'),
+    import('./content-script-job-account-lifecycle'),
+  ]);
+  let fenceToken: string;
   try {
-    // The per-provider outcomes are the ONLY evidence that revocation ran:
-    // the credentials are erased microseconds later, and the Apple call in
-    // particular cannot be exercised against the live endpoint from a test.
-    // `provider`, `attempted`, `status`, and `statusCode` carry no secrets.
-    const revocations = await revokeThirdPartyOAuthTokensForUser(userId);
-    logger.info(
-      { userId, revocations, event: 'account_deletion.revocation' },
-      'Third-party revocation completed before account deletion',
-    );
+    // The durable row blocks replacement inference throughout remote token
+    // revocation; the in-process registry aborts requests already inside the
+    // provider boundary. Failure to acquire this fence must fail the deletion
+    // request instead of allowing erased telemetry to be recreated afterward.
+    fenceToken = inferenceFence.beginSkillInferenceAccountDeletionFence(userId, getDb());
   } catch (err) {
-    // Article 17 erasure must not depend on a third party staying reachable.
-    // Per-provider failures already degrade to a recorded outcome inside
-    // `revokeOneThirdPartyProvider`; this boundary covers the surrounding
-    // schema probes so a deletion can never 500 on the revocation phase.
-    logger.warn({ err, userId }, 'Third-party revocation phase failed before account deletion');
+    logger.error({ err, userId }, 'Unable to acquire the account-deletion inference fence');
+    throw err;
   }
-  return deleteAllUserData(userId);
+  const cancelUnfinishedScripts = (phase: 'before_revocation' | 'before_erasure') => {
+    try {
+      const cancelledScriptJobs = contentJobs.cancelContentScriptJobsForAccountDeletion(userId, getDb());
+      if (cancelledScriptJobs > 0) {
+        logger.info(
+          { userId, cancelledScriptJobs, phase, event: 'account_deletion.content_jobs_cancelled' },
+          'Active Content script jobs were fenced before account deletion',
+        );
+      }
+    } catch (err) {
+      // The durable inference fence remains authoritative for new provider
+      // admission, and the immediate final erasure still removes owned rows.
+      logger.warn({ err, userId, phase }, 'Unable to pre-cancel Content script jobs before account deletion');
+    }
+  };
+
+  let deletionCompleted = false;
+  try {
+    cancelUnfinishedScripts('before_revocation');
+    await inferenceFence.waitForSkillInferenceAccountAdmissionsToDrain(userId);
+
+    try {
+      // The per-provider outcomes are the ONLY evidence that revocation ran:
+      // the credentials are erased microseconds later, and the Apple call in
+      // particular cannot be exercised against the live endpoint from a test.
+      // `provider`, `attempted`, `status`, and `statusCode` carry no secrets.
+      const revocations = await revokeThirdPartyOAuthTokensForUser(userId);
+      logger.info(
+        { userId, revocations, event: 'account_deletion.revocation' },
+        'Third-party revocation completed before account deletion',
+      );
+    } catch (revocationError) {
+      // Article 17 erasure must not depend on a third party or an optional
+      // predecessor credential table staying reachable. Individual provider
+      // failures already degrade to typed outcomes; this catches schema probes.
+      logger.warn(
+        { err: revocationError, userId },
+        'Third-party revocation phase failed before account deletion',
+      );
+    }
+    // Close the revocation interval: a request accepted just before the durable
+    // fence was observed may have created a script row after the first sweep.
+    // This second sweep and the erasure transaction are synchronous, so no new
+    // JavaScript admission can interleave between them in the one-backend
+    // release topology.
+    cancelUnfinishedScripts('before_erasure');
+    const counts = deleteAllUserData(userId);
+    deletionCompleted = true;
+    return counts;
+  } catch (err) {
+    // Release the exact fence if transactional local erasure fails, allowing an
+    // honest retry without reopening another deletion process's fence.
+    logger.warn({ err, userId }, 'Account deletion failed before local erasure completed');
+    throw err;
+  } finally {
+    if (!deletionCompleted) {
+      try {
+        inferenceFence.clearSkillInferenceAccountDeletionFence(userId, fenceToken, getDb());
+      } catch (cleanupError) {
+        // The row expires after 15 minutes, so a process/storage failure cannot
+        // strand the account indefinitely even when cleanup is unavailable.
+        logger.error({ err: cleanupError, userId }, 'Unable to release failed account-deletion inference fence');
+      }
+    }
+  }
 }
 
 export function countUserFinanceData(userId: number): { transactions: number; taxEvents: number } {
@@ -250,6 +316,11 @@ export interface FullUserExport {
   notes: Array<{ content: string; domain: string; createdAt: string }>;
   savedIdeas: Array<{ title: string; content: string; createdAt: string }>;
   contentWorkspace: ContentWorkspaceExport;
+  skillInference: {
+    runs: Array<Record<string, unknown>>;
+    attempts: Array<Record<string, unknown>>;
+    safetyIncidents: Array<Record<string, unknown>>;
+  };
   sharedMemory: Array<{ key: string; value: string; updatedAt: string }>;
   finance: UserFinanceExport;
   oauthConnections: Array<{ provider: string; connectedAt: string }>;
@@ -361,6 +432,14 @@ export type ContentWorkspaceExportTable = {
 export interface ContentWorkspaceExport {
   schemaVersion: 'content-workspace-export-v1';
   tables: ContentWorkspaceExportTable[];
+  warnings: Array<{
+    code:
+      | 'CONTENT_SCRIPT_JOB_KEY_VERSION_UNAVAILABLE'
+      | 'CONTENT_SCRIPT_JOB_ENCRYPTION_KEY_UNAVAILABLE';
+    table: 'content_script_jobs';
+    recordId: string;
+    unavailableFields: string[];
+  }>;
 }
 
 const LEGACY_CONTENT_EXPORT_TABLES = new Set([
@@ -380,14 +459,18 @@ function isContentExportTable(table: string): boolean {
  *
  * This intentionally discovers current ownership columns instead of relying on
  * a hand-maintained list. A Content table that exists but cannot be queried is
- * a hard failure: returning a successful, incomplete privacy archive would be
- * less truthful than asking the caller to retry.
+ * a hard failure. The only exceptions are a retired historical script-job key
+ * or an unavailable export key: the export returns all still-readable records
+ * plus an explicit, field-level partial-archive warning. Corrupt ciphertext and
+ * malformed envelopes remain hard failures because silently omitting them would
+ * be misleading.
  */
 export function exportContentWorkspaceData(
   userId: number,
   tenantId?: number,
 ): ContentWorkspaceExport {
   const db = getDb();
+  const warnings: ContentWorkspaceExport['warnings'] = [];
   const tables = accountDeletionTablesForDb(db)
     .filter(({ table }) => isContentExportTable(table))
     .sort((left, right) => left.table.localeCompare(right.table))
@@ -399,9 +482,18 @@ export function exportContentWorkspaceData(
       const params = descriptor.hasTenantId && typeof tenantId === 'number'
         ? [...ownership.params, tenantId]
         : ownership.params;
-      const records = db.prepare(
+      let records = db.prepare(
         `SELECT * FROM ${quoteSqlIdentifier(descriptor.table)} WHERE (${ownership.sql})${tenantClause}`,
       ).all(...params) as Array<Record<string, unknown>>;
+
+      if (descriptor.table === 'content_script_jobs') {
+        records = records.map((record) => exportContentScriptJobRecord(
+          db,
+          record,
+          userId,
+          warnings,
+        ));
+      }
 
       return {
         name: descriptor.table,
@@ -413,7 +505,139 @@ export function exportContentWorkspaceData(
   return {
     schemaVersion: 'content-workspace-export-v1',
     tables,
+    warnings,
   };
+}
+
+function exportContentScriptJobRecord(
+  db: ReturnType<typeof getDb>,
+  record: Record<string, unknown>,
+  userId: number,
+  warnings: ContentWorkspaceExport['warnings'],
+): Record<string, unknown> {
+  const jobId = typeof record.job_id === 'string' ? record.job_id : '';
+  const exported = { ...record };
+  const unavailableFields: string[] = [];
+  const unavailableFieldsByCode = new Map<ContentWorkspaceExport['warnings'][number]['code'], string[]>();
+  const decryptForExport = <T>(stored: string, field: string): T | null => {
+    try {
+      return decryptContentScriptJobJson<T>(stored, userId);
+    } catch (error) {
+      if (error instanceof ContentScriptJobEncryptionError
+          && (error.code === 'CONTENT_SCRIPT_JOB_KEY_VERSION_UNAVAILABLE'
+            || error.code === 'CONTENT_SCRIPT_JOB_ENCRYPTION_KEY_UNAVAILABLE')) {
+        unavailableFields.push(field);
+        const warningCode = error.code as ContentWorkspaceExport['warnings'][number]['code'];
+        const fields = unavailableFieldsByCode.get(warningCode) ?? [];
+        fields.push(field);
+        unavailableFieldsByCode.set(warningCode, fields);
+        return null;
+      }
+      throw error;
+    }
+  };
+  const requestCiphertext = typeof record.request_json === 'string' ? record.request_json : '';
+  const resultCiphertext = typeof record.result_json === 'string' ? record.result_json : '';
+  exported.request = requestCiphertext
+    ? decryptForExport<Record<string, unknown>>(requestCiphertext, 'request')
+    : null;
+  exported.result = resultCiphertext
+    ? decryptForExport<Record<string, unknown>>(resultCiphertext, 'result')
+    : null;
+  const checkpointRows = jobId ? db.prepare(`
+    SELECT section_index, section_key, state, word_budget, output_json,
+           validation_json, route, model_digest, created_at, updated_at
+      FROM content_script_job_checkpoints
+     WHERE job_id = ?
+     ORDER BY section_index
+  `).all(jobId) as Array<Record<string, unknown>> : [];
+  exported.checkpoints = checkpointRows.map((checkpoint) => ({
+    sectionIndex: checkpoint.section_index,
+    sectionKey: checkpoint.section_key,
+    state: checkpoint.state,
+    wordBudget: checkpoint.word_budget,
+    output: typeof checkpoint.output_json === 'string'
+      ? decryptForExport<unknown>(
+        checkpoint.output_json,
+        `checkpoints[${String(checkpoint.section_index)}].output`,
+      )
+      : null,
+    validation: typeof checkpoint.validation_json === 'string'
+      ? JSON.parse(checkpoint.validation_json)
+      : null,
+    route: checkpoint.route,
+    modelDigest: checkpoint.model_digest,
+    createdAt: checkpoint.created_at,
+    updatedAt: checkpoint.updated_at,
+  }));
+  for (const field of [
+    'request_json',
+    'result_json',
+    'lease_token',
+    'lease_expires_at',
+  ]) delete exported[field];
+  if (unavailableFields.length > 0) {
+    exported.decryptionStatus = unavailableFieldsByCode.has('CONTENT_SCRIPT_JOB_ENCRYPTION_KEY_UNAVAILABLE')
+      ? 'partial_encryption_key_unavailable'
+      : 'partial_historical_key_unavailable';
+    exported.unavailableEncryptedFields = [...unavailableFields];
+    for (const [code, fields] of unavailableFieldsByCode) {
+      warnings.push({
+        code,
+        table: 'content_script_jobs',
+        recordId: jobId,
+        unavailableFields: [...fields],
+      });
+    }
+  }
+  return exported;
+}
+
+export function exportSkillInferenceData(
+  userId: number,
+  tenantId?: number,
+): FullUserExport['skillInference'] {
+  const db = getDb();
+  const effectiveTenantId = typeof tenantId === 'number' ? tenantId : userId;
+  const runs = db.prepare(`
+    SELECT run_id AS runId, operation_id AS operationId, tenant_id AS tenantId,
+           plan_id AS planId,
+           skill_id AS skillId, task_type AS taskType, risk_class AS riskClass,
+           execution_class AS executionClass, evaluation_mode AS evaluationMode,
+           local_admission_requested AS localAdmissionRequested,
+           profile_version AS profileVersion,
+           status, final_route AS finalRoute, provider, model_id AS modelId,
+           model_digest AS modelDigest, validation_status AS validationStatus,
+           fallback_reason AS fallbackReason, input_tokens AS inputTokens,
+           output_tokens AS outputTokens, queue_wait_ms AS queueWaitMs,
+           first_token_ms AS firstTokenMs,
+           generation_tokens_per_second AS generationTokensPerSecond,
+           duration_ms AS durationMs, created_at AS createdAt,
+           started_at AS startedAt, completed_at AS completedAt
+      FROM skill_inference_runs
+     WHERE tenant_id = ? AND user_id = ? ORDER BY created_at
+  `).all(effectiveTenantId, userId) as FullUserExport['skillInference']['runs'];
+  const attempts = db.prepare(`
+    SELECT a.id AS attemptId, a.run_id AS runId,
+           a.attempt_number AS attemptNumber, a.route, a.provider,
+           a.model_id AS modelId, a.model_digest AS modelDigest,
+           a.outcome, a.failure_reason AS failureReason,
+           a.input_tokens AS inputTokens, a.output_tokens AS outputTokens,
+           a.queue_wait_ms AS queueWaitMs, a.first_token_ms AS firstTokenMs,
+           a.generation_tokens_per_second AS generationTokensPerSecond,
+           a.duration_ms AS durationMs, a.created_at AS createdAt
+      FROM skill_inference_attempts a
+      JOIN skill_inference_runs r ON r.run_id = a.run_id
+     WHERE r.tenant_id = ? AND r.user_id = ? ORDER BY a.id
+  `).all(effectiveTenantId, userId) as FullUserExport['skillInference']['attempts'];
+  const safetyIncidents = db.prepare(`
+    SELECT id AS incidentId, environment, incident_code AS incidentCode,
+           source, tenant_id AS tenantId, user_id AS userId,
+           run_id AS runId, blocked, created_at AS createdAt
+      FROM local_inference_safety_incidents
+     WHERE tenant_id = ? AND user_id = ? ORDER BY created_at
+  `).all(effectiveTenantId, userId) as FullUserExport['skillInference']['safetyIncidents'];
+  return { runs, attempts, safetyIncidents };
 }
 
 export function exportAllUserData(userId: number): FullUserExport {
@@ -444,6 +668,7 @@ export function exportAllUserData(userId: number): FullUserExport {
   // authenticated tenant context. Tenant-scoped HTTP exports pass tenantId
   // explicitly at the route boundary.
   const contentWorkspace = exportContentWorkspaceData(userId);
+  const skillInference = exportSkillInferenceData(userId, userId);
   const savedIdeas = (contentWorkspace.tables.find(({ name }) => name === 'saved_ideas')?.records ?? [])
     .map((row) => ({
       title: String(row.title ?? ''),
@@ -857,6 +1082,7 @@ export function exportAllUserData(userId: number): FullUserExport {
     notes,
     savedIdeas,
     contentWorkspace,
+    skillInference,
     sharedMemory,
     finance,
     oauthConnections: oauthRows.map((c: any) => ({ provider: c.provider, connectedAt: c.created_at })),
@@ -976,6 +1202,9 @@ export const ACCOUNT_DELETION_TABLES: Array<{ table: string; column: string }> =
 
 const ACCOUNT_DELETION_RETAINED_TABLES = new Set([
   'audit_trail',
+  'local_inference_runtime_control',
+  'local_inference_control_events',
+  'local_inference_safety_incidents',
   '_migrations',
 ]);
 
@@ -1070,6 +1299,74 @@ const TRAINING_COMPATIBILITY_CHILD_TABLES = [
   'training_completions',
 ] as const;
 
+const LOCAL_INFERENCE_CASCADE_CHILD_TABLES = [
+  {
+    childTable: 'content_script_job_checkpoints',
+    childForeignKey: 'job_id',
+    parentTable: 'content_script_jobs',
+    parentPrimaryKey: 'job_id',
+    parentOwnerColumn: 'owner_user_id',
+  },
+  {
+    childTable: 'skill_inference_attempts',
+    childForeignKey: 'run_id',
+    parentTable: 'skill_inference_runs',
+    parentPrimaryKey: 'run_id',
+    parentOwnerColumn: 'user_id',
+  },
+] as const;
+
+function ownedLocalInferenceCascadeChildState(
+  db: any,
+  userId: number,
+): {
+  counts: Record<string, number>;
+  parentIdsByChild: Map<string, Array<string | number>>;
+} {
+  const counts: Record<string, number> = {};
+  const parentIdsByChild = new Map<string, Array<string | number>>();
+  for (const relation of LOCAL_INFERENCE_CASCADE_CHILD_TABLES) {
+    if (!tableExistsForDeletion(db, relation.parentTable)
+        || !tableExistsForDeletion(db, relation.childTable)) continue;
+    const parentIds = (db.prepare(`SELECT ${quoteSqlIdentifier(relation.parentPrimaryKey)} AS id
+      FROM ${quoteSqlIdentifier(relation.parentTable)}
+      WHERE ${quoteSqlIdentifier(relation.parentOwnerColumn)} = ?`)
+      .all(userId) as Array<{ id: string | number }>).map((row) => row.id);
+    parentIdsByChild.set(relation.childTable, parentIds);
+    const row = db.prepare(`SELECT COUNT(*) AS count
+      FROM ${quoteSqlIdentifier(relation.childTable)} AS child
+      JOIN ${quoteSqlIdentifier(relation.parentTable)} AS parent
+        ON parent.${quoteSqlIdentifier(relation.parentPrimaryKey)} = child.${quoteSqlIdentifier(relation.childForeignKey)}
+      WHERE parent.${quoteSqlIdentifier(relation.parentOwnerColumn)} = ?`)
+      .get(userId) as { count: number };
+    counts[relation.childTable] = row.count;
+  }
+  return { counts, parentIdsByChild };
+}
+
+function assertLocalInferenceCascadeChildrenDeleted(
+  db: any,
+  parentIdsByChild: Map<string, Array<string | number>>,
+): void {
+  for (const relation of LOCAL_INFERENCE_CASCADE_CHILD_TABLES) {
+    const parentIds = parentIdsByChild.get(relation.childTable) ?? [];
+    if (parentIds.length === 0 || !tableExistsForDeletion(db, relation.childTable)) continue;
+    // Keep verification below SQLite's host-parameter ceiling even for
+    // long-lived accounts with many script jobs or inference runs.
+    for (let offset = 0; offset < parentIds.length; offset += 500) {
+      const batch = parentIds.slice(offset, offset + 500);
+      const placeholders = batch.map(() => '?').join(', ');
+      const remaining = db.prepare(`SELECT COUNT(*) AS count
+        FROM ${quoteSqlIdentifier(relation.childTable)}
+        WHERE ${quoteSqlIdentifier(relation.childForeignKey)} IN (${placeholders})`)
+        .get(...batch) as { count: number };
+      if (remaining.count !== 0) {
+        throw new Error(`Account deletion left cascade-owned rows in ${relation.childTable}.`);
+      }
+    }
+  }
+}
+
 function ownedTrainingCompatibilityPlanIds(db: any, userId: number): number[] {
   if (!tableExistsForDeletion(db, 'fitness_training_plans')) return [];
   return (db.prepare(`
@@ -1103,6 +1400,52 @@ export interface AccountDeletionInventory {
   retainedTables: Record<string, { reason: string }>;
 }
 
+/**
+ * Current personal cache key families. `api_cache` predates ownership columns,
+ * so Article 17 must use the bounded key grammar rather than a broad numeric
+ * substring match (which could confuse user 1 with user 10).
+ */
+function accountOwnedApiCachePatterns(userId: number): string[] {
+  const id = String(userId);
+  return [
+    `u:${id}:%`,
+    `%:u:${id}:%`,
+    `%:scope:${id}:%`,
+    `coach-briefing:${id}`,
+    `dashboard-readiness:${id}`,
+    `training:keep-original:${id}:%`,
+    `chat-cmd:%:${id}:%`,
+    `dashboard:%:${id}:%`,
+    `dashboard-home:%:${id}:%`,
+    `readiness:%:${id}`,
+    `training-home:%:${id}:%`,
+    `training-summary:%:${id}`,
+    `cardio-progression:%:${id}:%`,
+    `strength-progression:%:${id}:%`,
+    `training-activity-weekly:%:${id}`,
+    `training-history:%:${id}:%`,
+    `training-load-snapshot:%:${id}`,
+    `unified-inbox:${id}:tenant:%`,
+    `unified-inbox-unread:${id}:tenant:%`,
+  ];
+}
+
+function accountOwnedApiCachePredicate(userId: number): { sql: string; params: string[] } {
+  const params = accountOwnedApiCachePatterns(userId);
+  return {
+    sql: params.map(() => 'cache_key LIKE ?').join(' OR '),
+    params,
+  };
+}
+
+function countAccountOwnedApiCacheRows(db: any, userId: number): number {
+  if (!tableExistsForDeletion(db, 'api_cache')) return 0;
+  const ownership = accountOwnedApiCachePredicate(userId);
+  const row = db.prepare(`SELECT COUNT(*) AS count FROM api_cache WHERE ${ownership.sql}`)
+    .get(...ownership.params) as { count: number };
+  return row.count;
+}
+
 export function getAccountDeletionInventoryForUser(userId: number): AccountDeletionInventory {
   const db = getDb();
   const deletableTables: Record<string, number> = {};
@@ -1114,6 +1457,8 @@ export function getAccountDeletionInventoryForUser(userId: number): AccountDelet
     deletableTables[table] = row.count;
   }
   Object.assign(deletableTables, countOwnedTrainingCompatibilityChildren(db, userId));
+  Object.assign(deletableTables, ownedLocalInferenceCascadeChildState(db, userId).counts);
+  deletableTables.api_cache = countAccountOwnedApiCacheRows(db, userId);
   const kvRow = db.prepare('SELECT COUNT(*) AS count FROM kv_store WHERE key LIKE ?')
     .get(`config:${userId}:%`) as { count: number };
   deletableTables.kv_store_settings = kvRow.count;
@@ -1128,6 +1473,15 @@ export function getAccountDeletionInventoryForUser(userId: number): AccountDelet
     retainedTables: {
       audit_trail: {
         reason: 'Retained as legal proof of export, consent, and deletion events under GDPR Article 17(3)(e).',
+      },
+      local_inference_runtime_control: {
+        reason: 'Environment-wide operational state contains no subject prompt or generated content and cannot be deleted per account.',
+      },
+      local_inference_control_events: {
+        reason: 'Environment-wide security and release-control evidence is retained independently of subject content; actor ids are operational audit attribution.',
+      },
+      local_inference_safety_incidents: {
+        reason: 'Content-free critical safety evidence is retained after tenant, user, and run identifiers are irreversibly pseudonymized.',
       },
     },
   };
@@ -1146,6 +1500,7 @@ export function deleteAllUserData(userId: number): Record<string, number> {
   const deleteAll = db.transaction(() => {
     const compatibilityPlanIds = ownedTrainingCompatibilityPlanIds(db, userId);
     const compatibilityChildCounts = countOwnedTrainingCompatibilityChildren(db, userId);
+    const localInferenceCascadeState = ownedLocalInferenceCascadeChildState(db, userId);
     const trainingErasureId = `training-erasure-${randomUUID()}`;
     const hasTrainingErasureGate = tableExistsForDeletion(db, 'training_revision_erasure_authorizations');
     if (hasTrainingErasureGate) {
@@ -1154,6 +1509,16 @@ export function deleteAllUserData(userId: number): Record<string, number> {
           erasure_id, subject_user_id, reason, expires_at
         ) VALUES (?, ?, 'ACCOUNT_DELETION', datetime('now', '+5 minutes'))
       `).run(trainingErasureId, userId);
+    }
+    if (tableExistsForDeletion(db, 'local_inference_safety_incidents')) {
+      // Preserve security evidence without retaining a subject identifier.
+      // The row id produces a non-reversible unique marker, avoiding collisions
+      // in the five-minute dedupe index when multiple deleted subjects shared
+      // the same incident shape.
+      const pseudonymized = db.prepare(`UPDATE local_inference_safety_incidents
+        SET tenant_id = NULL, user_id = NULL, run_id = 'erased-subject:' || id
+        WHERE tenant_id = ? OR user_id = ?`).run(userId, userId);
+      counts.local_inference_safety_incidents_pseudonymized = pseudonymized.changes;
     }
     for (const { table, columns } of ownedTables) {
       const ownership = buildOwnershipPredicate(columns, userId);
@@ -1166,6 +1531,7 @@ export function deleteAllUserData(userId: number): Record<string, number> {
     // the pre-delete child counts in the legal erasure receipt instead of
     // pretending those tables were not part of the operation.
     Object.assign(counts, compatibilityChildCounts);
+    Object.assign(counts, localInferenceCascadeState.counts);
 
     if (compatibilityPlanIds.length > 0) {
       const placeholders = compatibilityPlanIds.map(() => '?').join(', ');
@@ -1181,6 +1547,11 @@ export function deleteAllUserData(userId: number): Record<string, number> {
         }
       }
     }
+
+    assertLocalInferenceCascadeChildrenDeleted(
+      db,
+      localInferenceCascadeState.parentIdsByChild,
+    );
 
     if (hasTrainingErasureGate) {
       const remaining = [
@@ -1214,6 +1585,15 @@ export function deleteAllUserData(userId: number): Record<string, number> {
     const kvResult = db.prepare("DELETE FROM kv_store WHERE key LIKE ?").run(`config:${userId}:%`);
     counts['kv_store_settings'] = kvResult.changes;
 
+    if (tableExistsForDeletion(db, 'api_cache')) {
+      const cacheOwnership = accountOwnedApiCachePredicate(userId);
+      const cacheResult = db.prepare(`DELETE FROM api_cache WHERE ${cacheOwnership.sql}`)
+        .run(...cacheOwnership.params);
+      counts.api_cache = cacheResult.changes;
+    } else {
+      counts.api_cache = 0;
+    }
+
     // Delete user record last
     const userResult = db.prepare('DELETE FROM users WHERE id = ? OR telegram_id = ?').run(userId, userId);
     counts['users'] = userResult.changes;
@@ -1231,6 +1611,9 @@ export function deleteAllUserData(userId: number): Record<string, number> {
       .get(`config:${userId}:%`) as { count: number };
     if (remainingSettings.count !== 0) {
       throw new Error('Account deletion left user-owned settings rows.');
+    }
+    if (countAccountOwnedApiCacheRows(db, userId) !== 0) {
+      throw new Error('Account deletion left user-owned API cache rows.');
     }
     const remainingUsers = db.prepare('SELECT COUNT(*) AS count FROM users WHERE id = ? OR telegram_id = ?')
       .get(userId, userId) as { count: number };

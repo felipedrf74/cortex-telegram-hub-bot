@@ -19,6 +19,10 @@
  * the SDK, vi.fn on individual methods).
  */
 
+import fs from 'node:fs';
+import http from 'node:http';
+import os from 'node:os';
+import path from 'node:path';
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 
 // Mock config BEFORE importing the provider so its module-load reads see
@@ -164,6 +168,10 @@ import {
   CHAT_LIVE_EVAL_LOCAL_BUDGET,
 } from '../../src/services/chat-live-evaluation-contract';
 import { runWithChatRequestLocale } from '../../src/services/chat-request-locale-context';
+import {
+  getActiveLocalModel,
+  resetLocalModelManifestCacheForTests,
+} from '../../src/services/ollama-model-policy';
 
 // Bring fetch under our control.
 const originalFetch = globalThis.fetch;
@@ -194,9 +202,9 @@ function makeChatResponse(payload: {
   }), { status: 200, headers: { 'Content-Type': 'application/json' } });
 }
 
-function makeTagsResponse() {
+function makeTagsResponse(digest = getActiveLocalModel().digest ?? 'missing') {
   return new Response(JSON.stringify({
-    models: [{ name: 'qwen2.5:3b-instruct-q4_K_M', digest: 'sha256:abc' }],
+    models: [{ name: 'qwen2.5:3b-instruct-q4_K_M', digest }],
   }), { status: 200 });
 }
 
@@ -2711,6 +2719,364 @@ describe('OllamaProvider — scoped state context', () => {
 });
 
 describe('OllamaProvider — explicit workload roles', () => {
+  it('reports manifest unavailability without probing the gateway or throwing from diagnostics', async () => {
+    const provider = new OllamaProvider();
+    resetLocalModelManifestCacheForTests();
+    const readSpy = vi.spyOn(fs, 'readFileSync').mockImplementation(() => {
+      throw new Error('packaged manifest unavailable');
+    });
+
+    try {
+      await expect(provider.getProviderHealth()).resolves.toMatchObject({
+        healthy: false,
+        degraded: true,
+        warning: 'model_manifest_unavailable',
+        lastError: 'model_manifest_unavailable',
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      readSpy.mockRestore();
+      resetLocalModelManifestCacheForTests();
+    }
+  });
+
+  it('bounds all provider-health gateway probes and verifies the signed resident model', async () => {
+    const activeModel = getActiveLocalModel();
+    fetchMock
+      .mockResolvedValueOnce(new Response(JSON.stringify({ version: '0.24.0' }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        models: [{ name: activeModel.ollamaTag }],
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        models: [{ name: activeModel.ollamaTag, digest: activeModel.digest }],
+      }), { status: 200 }));
+
+    await expect(new OllamaProvider().getProviderHealth()).resolves.toMatchObject({
+      healthy: true,
+      modelsLoaded: [activeModel.ollamaTag],
+      activeModel: activeModel.ollamaTag,
+      activeModelDigest: activeModel.digest,
+      observedModelDigest: activeModel.digest,
+      transport: 'direct_loopback',
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const firstSignal = (fetchMock.mock.calls[0]?.[1] as RequestInit | undefined)?.signal;
+    const secondSignal = (fetchMock.mock.calls[1]?.[1] as RequestInit | undefined)?.signal;
+    const thirdSignal = (fetchMock.mock.calls[2]?.[1] as RequestInit | undefined)?.signal;
+    expect(firstSignal).toBeInstanceOf(AbortSignal);
+    expect(secondSignal).toBe(firstSignal);
+    expect(thirdSignal).toBe(firstSignal);
+  });
+
+  it('marks model health degraded when more than the signed model is resident', async () => {
+    const activeModel = getActiveLocalModel();
+    fetchMock
+      .mockResolvedValueOnce(new Response(JSON.stringify({ version: '0.24.0' }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        models: [{ name: activeModel.ollamaTag }, { name: 'unexpected:latest' }],
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        models: [{ name: activeModel.ollamaTag, digest: activeModel.digest }],
+      }), { status: 200 }));
+
+    await expect(new OllamaProvider().getProviderHealth()).resolves.toMatchObject({
+      healthy: false,
+      degraded: true,
+      warning: 'multiple_models_loaded',
+    });
+  });
+
+  it('accepts Ollama bare-hex inventory while reporting the canonical signed digest', async () => {
+    const activeModel = getActiveLocalModel();
+    fetchMock
+      .mockResolvedValueOnce(new Response(JSON.stringify({ version: '0.24.0' }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        models: [{ name: activeModel.ollamaTag }],
+      }), { status: 200 }))
+      .mockResolvedValueOnce(makeTagsResponse(String(activeModel.digest).replace(/^sha256:/u, '')));
+
+    await expect(new OllamaProvider().getProviderHealth()).resolves.toMatchObject({
+      healthy: true,
+      activeModelDigest: activeModel.digest,
+      observedModelDigest: activeModel.digest,
+    });
+  });
+
+  it('reports an explicit warning when the bounded runtime-version probe fails', async () => {
+    const activeModel = getActiveLocalModel();
+    fetchMock
+      .mockResolvedValueOnce(new Response('{}', { status: 503 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        models: [{ name: activeModel.ollamaTag }],
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        models: [{ name: activeModel.ollamaTag, digest: activeModel.digest }],
+      }), { status: 200 }));
+
+    await expect(new OllamaProvider().getProviderHealth()).resolves.toMatchObject({
+      healthy: false,
+      degraded: true,
+      warning: 'version_unavailable',
+    });
+  });
+
+  it('pins governed skill inference to the signed active model instead of caller/config overrides', async () => {
+    fetchMock
+      .mockResolvedValueOnce(makeTagsResponse())
+      .mockResolvedValueOnce(makeChatResponse({ content: 'governed answer' }));
+
+    const result = await new OllamaProvider().localReason({
+      workloadRole: 'skill_inference',
+      prompt: 'bounded governed request',
+      modelOverride: 'unapproved:latest',
+      think: false,
+      numCtx: 4096,
+      numPredict: 128,
+    });
+
+    const [, fetchOptions] = fetchMock.mock.calls[1] as [string, { body: string }];
+    const request = JSON.parse(fetchOptions.body) as { model: string };
+    expect(request.model).toBe('qwen2.5:3b-instruct-q4_K_M');
+    expect(result.providerMetadata.modelUsed).toBe('qwen2.5:3b-instruct-q4_K_M');
+  });
+
+  it('rejects governed inference before generation when the live digest differs from the manifest', async () => {
+    fetchMock.mockResolvedValueOnce(makeTagsResponse(`sha256:${'0'.repeat(64)}`));
+
+    await expect(new OllamaProvider().localReason({
+      workloadRole: 'skill_inference',
+      prompt: 'must remain digest pinned',
+      think: false,
+      numCtx: 4096,
+      numPredict: 128,
+    })).rejects.toMatchObject({
+      kind: 'model_missing',
+      meta: expect.objectContaining({ reason: 'signed_manifest_digest_mismatch' }),
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain('/api/tags');
+  });
+
+  it('does not reuse a cached digest when an authoritative lookup omits the active model', async () => {
+    const provider = new OllamaProvider();
+    fetchMock
+      .mockResolvedValueOnce(makeTagsResponse())
+      .mockResolvedValueOnce(makeChatResponse({ content: 'approved model answer' }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ models: [] }), { status: 200 }))
+      .mockResolvedValueOnce(makeChatResponse({ content: 'must never be dispatched' }));
+
+    await expect(provider.localReason({
+      workloadRole: 'skill_inference',
+      prompt: 'populate the current signed digest',
+      think: false,
+      numCtx: 4096,
+      numPredict: 128,
+    })).resolves.toMatchObject({ text: 'approved model answer' });
+
+    await expect(provider.localReason({
+      workloadRole: 'skill_inference',
+      prompt: 'require a new authoritative digest lookup',
+      think: false,
+      numCtx: 4096,
+      numPredict: 128,
+    })).rejects.toMatchObject({
+      kind: 'model_missing',
+      meta: expect.objectContaining({
+        reason: 'signed_manifest_digest_mismatch',
+        actualDigest: 'unresolved',
+      }),
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(String(fetchMock.mock.calls[2]?.[0])).toContain('/api/tags');
+  });
+
+  it.each([
+    ['duplicates the active model', () => new Response(JSON.stringify({
+      models: [
+        { name: getActiveLocalModel().ollamaTag, digest: getActiveLocalModel().digest },
+        { name: getActiveLocalModel().ollamaTag, digest: getActiveLocalModel().digest },
+      ],
+    }), { status: 200 })],
+    ['returns a malformed active-model digest', () => new Response(JSON.stringify({
+      models: [{ name: getActiveLocalModel().ollamaTag, digest: 'not-a-sha256-digest' }],
+    }), { status: 200 })],
+  ])('does not reuse a cached digest when an authoritative lookup %s', async (_label, lookupResponse) => {
+    const provider = new OllamaProvider();
+    fetchMock
+      .mockResolvedValueOnce(makeTagsResponse())
+      .mockResolvedValueOnce(makeChatResponse({ content: 'approved model answer' }))
+      .mockImplementationOnce(lookupResponse)
+      .mockResolvedValueOnce(makeChatResponse({ content: 'must never be dispatched' }));
+
+    await expect(provider.localReason({
+      workloadRole: 'skill_inference',
+      prompt: 'populate the current signed digest',
+      think: false,
+      numCtx: 4096,
+      numPredict: 128,
+    })).resolves.toMatchObject({ text: 'approved model answer' });
+
+    await expect(provider.localReason({
+      workloadRole: 'skill_inference',
+      prompt: 'require a unique normalized digest',
+      think: false,
+      numCtx: 4096,
+      numPredict: 128,
+    })).rejects.toMatchObject({
+      kind: 'model_missing',
+      meta: expect.objectContaining({
+        reason: 'signed_manifest_digest_mismatch',
+        actualDigest: 'unresolved',
+      }),
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(String(fetchMock.mock.calls[2]?.[0])).toContain('/api/tags');
+  });
+
+  it.each([
+    ['returns a non-OK response', () => Promise.resolve(new Response('{}', { status: 503 }))],
+    ['fails transport', () => Promise.reject(new Error('connection refused'))],
+  ])('fails governed generation closed when the authoritative digest lookup %s', async (_label, lookup) => {
+    const provider = new OllamaProvider();
+    fetchMock
+      .mockResolvedValueOnce(makeTagsResponse())
+      .mockResolvedValueOnce(makeChatResponse({ content: 'approved model answer' }))
+      .mockImplementationOnce(lookup)
+      .mockResolvedValueOnce(makeChatResponse({ content: 'must never be dispatched' }));
+
+    await expect(provider.localReason({
+      workloadRole: 'skill_inference',
+      prompt: 'populate the current signed digest',
+      think: false,
+      numCtx: 4096,
+      numPredict: 128,
+    })).resolves.toMatchObject({ text: 'approved model answer' });
+
+    await expect(provider.localReason({
+      workloadRole: 'skill_inference',
+      prompt: 'fail closed before generation',
+      think: false,
+      numCtx: 4096,
+      numPredict: 128,
+    })).rejects.toMatchObject({
+      kind: 'model_missing',
+      meta: expect.objectContaining({
+        reason: 'signed_manifest_digest_mismatch',
+        actualDigest: 'unresolved',
+      }),
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(String(fetchMock.mock.calls[2]?.[0])).toContain('/api/tags');
+  });
+
+  it('fails governed production inference closed when the Unix gateway socket is missing', async () => {
+    const previous = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    try {
+      await expect(new OllamaProvider().localReason({
+        workloadRole: 'skill_inference',
+        prompt: 'must use the production gateway',
+      })).rejects.toMatchObject({
+        kind: 'provider_unhealthy',
+        meta: expect.objectContaining({ reason: 'production_gateway_socket_required' }),
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      if (previous === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = previous;
+    }
+  });
+
+  it('maps a real missing Unix gateway socket to typed transport unavailability before generation', async () => {
+    const previousNodeEnv = process.env.NODE_ENV;
+    const previousSocketPath = process.env.OLLAMA_GATEWAY_SOCKET_PATH;
+    const requestSpy = vi.spyOn(http, 'request');
+    const missingSocketPath = path.join(
+      fs.realpathSync(os.tmpdir()),
+      `nexus-ollama-provider-missing-${process.pid}-${Date.now()}.sock`,
+    );
+    process.env.NODE_ENV = 'production';
+    process.env.OLLAMA_GATEWAY_SOCKET_PATH = missingSocketPath;
+    vi.resetModules();
+    try {
+      const { OllamaProvider: SocketBoundOllamaProvider } = await import(
+        '../../src/services/ollama-provider'
+      );
+      await expect(new SocketBoundOllamaProvider().localReason({
+        workloadRole: 'skill_inference',
+        prompt: 'must fail before generation on a missing governed socket',
+      })).rejects.toMatchObject({
+        kind: 'transport_unavailable',
+        meta: expect.objectContaining({
+          reason: 'governed_gateway_socket_unavailable',
+          code: 'ENOENT',
+        }),
+      });
+      const unixRequestPaths = requestSpy.mock.calls.map((call) => {
+        const target = call[0] as string | URL | http.RequestOptions;
+        if (typeof target === 'string' || target instanceof URL) return String(target);
+        return target.path;
+      });
+      expect(unixRequestPaths).toEqual(['/api/tags']);
+      expect(unixRequestPaths).not.toContain('/api/chat');
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      requestSpy.mockRestore();
+      if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = previousNodeEnv;
+      if (previousSocketPath === undefined) delete process.env.OLLAMA_GATEWAY_SOCKET_PATH;
+      else process.env.OLLAMA_GATEWAY_SOCKET_PATH = previousSocketPath;
+      vi.resetModules();
+    }
+  });
+
+  it.each([
+    {
+      name: 'residency failure',
+      body: { error: 'active_model_not_resident' },
+      kind: 'provider_unhealthy',
+      reason: 'active_model_not_resident',
+    },
+    {
+      name: 'upstream failure',
+      body: { error: 'ollama_upstream_unavailable' },
+      kind: 'provider_unhealthy',
+      reason: 'ollama_upstream_unavailable',
+    },
+    {
+      name: 'explicit queue pressure',
+      body: { error: 'daemon_queue_full' },
+      kind: 'capacity_exceeded',
+      reason: 'daemon_queue_full',
+    },
+    {
+      name: 'unknown gateway outage',
+      body: { error: 'maintenance' },
+      kind: 'provider_unhealthy',
+      reason: 'gateway_service_unavailable',
+    },
+  ])('maps gateway 503 $name without misattributing the failure', async ({ body, kind, reason }) => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(body), {
+      status: 503,
+      headers: { 'content-type': 'application/json' },
+    }));
+
+    await expect(new OllamaProvider().localReason({
+      workloadRole: 'validated_local_chat',
+      prompt: 'bounded local chat',
+      think: false,
+      numCtx: 4096,
+      numPredict: 128,
+    })).rejects.toMatchObject({
+      kind,
+      meta: expect.objectContaining({ reason, status: 503 }),
+    });
+  });
+
   it('allows validated local chat in normal runtime without evaluation mode', async () => {
     const mod = await import('../../src/config');
     const originalEnabled = mod.config.localLLMEvaluation.enabled;
@@ -2879,6 +3245,32 @@ describe('OllamaProvider — timeout maps to LocalLLMError(timeout)', () => {
     });
     const p = new OllamaProvider();
     await expect(p.classify('hello', undefined, { source: 'shadow' })).rejects.toMatchObject({ kind: 'timeout' });
+  });
+
+  it('preserves caller cancellation instead of mapping it to a provider timeout', async () => {
+    const controller = new AbortController();
+    const cancelled = Object.assign(new Error('request cancelled'), {
+      name: 'AbortError',
+      code: 'CHAT_REQUEST_CANCELLED',
+    });
+    fetchMock.mockImplementationOnce((_url: string, opts: { signal?: AbortSignal }) => (
+      new Promise((_resolve, reject) => {
+        opts.signal?.addEventListener('abort', () => {
+          const err = new Error('aborted');
+          err.name = 'AbortError';
+          reject(err);
+        });
+      })
+    ));
+    const p = new OllamaProvider();
+    const pending = p.classify('hello', undefined, {
+      source: 'shadow',
+      abortSignal: controller.signal,
+    });
+
+    controller.abort(cancelled);
+
+    await expect(pending).rejects.toBe(cancelled);
   });
 });
 

@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { getModelPricingTable } from './model-pricing';
+import { buildContentEngineScriptCategory } from './local-inference-vocabulary';
 
 export const CONTENT_LIVE_EVAL_SCHEMA_VERSION = 'nexus.content-live-eval.v2' as const;
 export const CONTENT_LIVE_EVAL_ROUTING_PATH = 'canonical_content_script' as const;
@@ -43,10 +44,11 @@ export const CONTENT_LIVE_EVAL_OPT_IN = 'I_ACCEPT_LIVE_PROVIDER_COSTS' as const;
  * router. This is deliberately finite: arbitrary category suffixes cannot
  * inherit live-evaluation authority.
  */
+const contentLiveEvalStandardCategory = buildContentEngineScriptCategory('standard');
 export const CONTENT_LIVE_EVAL_PROVIDER_CATEGORIES = Object.freeze([
-  'content_engine_script_standard',
-  'content_engine_script_standard_gemini_model_fallback',
-  'content_engine_script_standard_openai_fallback',
+  contentLiveEvalStandardCategory,
+  `${contentLiveEvalStandardCategory}_gemini_model_fallback`,
+  `${contentLiveEvalStandardCategory}_openai_fallback`,
 ] as const);
 
 export function isContentLiveEvalProviderCategory(category: string): boolean {

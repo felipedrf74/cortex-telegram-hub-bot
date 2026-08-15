@@ -20,6 +20,7 @@ import { registerContentNotificationRoutes } from './content-notification-routes
 import { registerContentPipelineRoutes } from './content-pipeline-routes';
 import { registerContentReferenceRoutes } from './content-reference-routes';
 import { registerContentScriptRoutes } from './content-script-routes';
+import { registerContentScriptJobRoutes } from './content-script-job-routes';
 import { registerContentTopicRoutes } from './content-topic-routes';
 import { registerContentCreatorProfileRoutes } from './content-creator-profile-routes';
 import { registerContentAgencyRoutes } from './content-agency-routes';
@@ -188,6 +189,7 @@ export function contentRoutes(): Router {
   registerContentIntelligenceRoutes(router, resolveContentLanguage, ensureValidContentRouteScope);
 
   registerContentScriptRoutes(router, resolveContentLanguage, ensureValidContentRouteScope);
+  registerContentScriptJobRoutes(router, ensureValidContentRouteScope);
 
   registerContentReferenceRoutes(router, ensureValidContentRouteScope);
   registerContentLearningRoutes(router, resolveContentLanguage, ensureValidContentRouteScope);

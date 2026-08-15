@@ -129,6 +129,7 @@ vi.mock('../../../src/services/chat-core-v2/background-lifecycle', async (import
 import { legacyTailStage } from '../../../src/api/routes/chat-pipeline/stages/legacy-tail';
 import { ChatDomainTimeoutError } from '../../../src/api/routes/chat-message-execution';
 import type { ChatTurnCtx } from '../../../src/api/routes/chat-pipeline/types';
+import { markChatShadowBaselineEligible } from '../../../src/services/chat-shadow-baseline';
 
 function buildCtx(overrides: Partial<ChatTurnCtx> & Record<string, unknown> = {}): { ctx: ChatTurnCtx; json: ReturnType<typeof vi.fn>; status: ReturnType<typeof vi.fn> } {
   const json = vi.fn();
@@ -175,7 +176,13 @@ beforeEach(() => {
   );
   hoisted.finalizeChatAnswerMetadata.mockImplementation((input: { responseText: string; existingMetadata?: Record<string, unknown> | null }) => ({
     text: input.responseText,
-    metadata: { ...(input.existingMetadata ?? {}), finalized: true },
+    metadata: {
+      ...(input.existingMetadata ?? {}),
+      finalized: true,
+      chatReasoning: { fallbackUsed: false },
+      finalAnswerComposition: { ok: true },
+      responseQuality: { status: 'pass' },
+    },
     contract: {},
   }));
 });
@@ -185,6 +192,32 @@ afterEach(() => {
 });
 
 describe('legacy_tail M18 timeout catch', () => {
+  it('threads client cancellation through routing and the legacy domain handler without persisting a reply', async () => {
+    const controller = new AbortController();
+    const cancellation = Object.assign(new Error('client disconnected'), {
+      name: 'AbortError',
+      code: 'CHAT_REQUEST_CANCELLED',
+    });
+    hoisted.executeChatDomainHandler.mockImplementation(async (...args: unknown[]) => {
+      expect(args[7]).toMatchObject({ abortSignal: controller.signal });
+      controller.abort(cancellation);
+      throw cancellation;
+    });
+    const { ctx, json } = buildCtx({ abortSignal: controller.signal });
+
+    await expect(legacyTailStage.handle(ctx)).rejects.toBe(cancellation);
+
+    expect(hoisted.routeMessage).toHaveBeenCalledWith(
+      'plan my day',
+      null,
+      42,
+      42,
+      controller.signal,
+    );
+    expect(hoisted.persistExchange).not.toHaveBeenCalled();
+    expect(json).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['clarify', 'routing-clarify', 'needs_clarification'],
     ['none', 'unsupported', 'blocked'],
@@ -281,10 +314,70 @@ describe('legacy_tail M18 timeout catch', () => {
   it('propagates non-timeout errors untouched', async () => {
     const boom = new Error('provider exploded');
     hoisted.executeChatDomainHandler.mockRejectedValue(boom);
+    const pendingLocalPrimaryChatShadow = vi.fn();
 
-    const { ctx, json } = buildCtx();
+    const { ctx, json } = buildCtx({ pendingLocalPrimaryChatShadow });
     await expect(legacyTailStage.handle(ctx)).rejects.toBe(boom);
     expect(json).not.toHaveBeenCalled();
+    expect(pendingLocalPrimaryChatShadow).not.toHaveBeenCalled();
+  });
+
+  it('releases a deferred local shadow only after publishing an eligible visible model answer', async () => {
+    const order: string[] = [];
+    const pendingLocalPrimaryChatShadow = vi.fn(() => order.push('shadow'));
+    hoisted.executeChatDomainHandler.mockResolvedValue(markChatShadowBaselineEligible({
+      text: 'A complete cloud-owned answer.',
+      domain: 'secretary',
+    }, true));
+
+    const { ctx, json } = buildCtx({ pendingLocalPrimaryChatShadow });
+    json.mockImplementation(() => {
+      order.push('visible_response');
+    });
+    await legacyTailStage.handle(ctx);
+
+    expect(order).toEqual(['visible_response', 'shadow']);
+    expect(pendingLocalPrimaryChatShadow).toHaveBeenCalledTimes(1);
+    expect(ctx.pendingLocalPrimaryChatShadow).toBeNull();
+  });
+
+  it('discards a deferred local shadow when the visible terminal is deterministic or degraded', async () => {
+    const pendingLocalPrimaryChatShadow = vi.fn();
+    hoisted.executeChatDomainHandler.mockResolvedValue({
+      text: 'AI is temporarily unavailable.',
+      domain: 'secretary',
+    });
+
+    const { ctx, json } = buildCtx({ pendingLocalPrimaryChatShadow });
+    await legacyTailStage.handle(ctx);
+
+    expect(json).toHaveBeenCalledTimes(1);
+    expect(pendingLocalPrimaryChatShadow).not.toHaveBeenCalled();
+    expect(ctx.pendingLocalPrimaryChatShadow).toBeNull();
+  });
+
+  it('discards a deferred local shadow when final validation repairs the visible model answer', async () => {
+    const pendingLocalPrimaryChatShadow = vi.fn();
+    hoisted.executeChatDomainHandler.mockResolvedValue(markChatShadowBaselineEligible({
+      text: 'I published the requested item.',
+      domain: 'secretary',
+    }, true));
+    hoisted.finalizeChatAnswerMetadata.mockReturnValueOnce({
+      text: 'I could not verify that action.',
+      metadata: {
+        chatReasoning: { fallbackUsed: true },
+        finalAnswerComposition: { ok: false },
+        responseQuality: { status: 'repaired' },
+      },
+      contract: {},
+    });
+
+    const { ctx, json } = buildCtx({ pendingLocalPrimaryChatShadow });
+    await legacyTailStage.handle(ctx);
+
+    expect(json).toHaveBeenCalledTimes(1);
+    expect(pendingLocalPrimaryChatShadow).not.toHaveBeenCalled();
+    expect(ctx.pendingLocalPrimaryChatShadow).toBeNull();
   });
 
   it('consumes the staged destructive confirmation on timeout so any later recovery must re-confirm', async () => {

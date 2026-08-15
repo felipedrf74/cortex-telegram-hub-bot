@@ -22,6 +22,7 @@ non-trivial changes.
 | **Testing and QA harness** | `testing-and-qa-harness-standard.md` | Any test addition, classifier change, smoke script change, or evidence-claim review. |
 | **Offline-first Tasks architecture** | `offline-first-tasks-architecture.md` | Any backend or iOS change to Tasks identity, sync state, mutation replay, provider mappings, or offline storage. |
 | **GenAI migration plan** | `genai-migration-plan.md` | Any migration of provider calls, model routing, prompt ownership, or generated-content runtime behavior. |
+| **Local-primary inference** | `local-primary-inference-standard.md` | Any local model, specialist profile, gateway, inference scheduler, fallback, script-job, bakeoff, or local pricing-gate change. |
 | **JWT rotation runbook** | `jwt-rotation-runbook.md` | Any JWT signing-key rotation or authentication incident. |
 | **Training exercise media operator runbook** | `training-exercise-media-v1-operator-runbook.md` | Any Training catalog package, approval, activation, media-origin, or rollback change. |
 | **Training plan request semantics** | `training-plan-request-semantics.md` | Any change to `sessionsPerWeek` semantics or to `raceDate`/`goalMode` behaviour (F8/F12 contract + pending policy decision). |

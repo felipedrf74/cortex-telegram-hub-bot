@@ -130,4 +130,41 @@ describe('ChatCoreV2 cloud allowlist answer dispatcher', () => {
 
     expect(selectProvider).not.toHaveBeenCalled();
   });
+
+  it('does not select or call a cloud provider after request cancellation', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const selectProvider = vi.fn();
+
+    await expect(dispatchCloudAllowlistAnswer(SAFE_PACKET, {
+      abortSignal: controller.signal,
+      selectProvider,
+    })).rejects.toMatchObject({
+      name: 'AbortError',
+      code: 'CHAT_REQUEST_CANCELLED',
+    });
+
+    expect(selectProvider).not.toHaveBeenCalled();
+  });
+
+  it('rechecks cancellation after provider selection and before the paid call', async () => {
+    const controller = new AbortController();
+    const callDomain = vi.fn();
+    const provider = { name: 'gemini', callDomain } as never;
+
+    await expect(dispatchCloudAllowlistAnswer(SAFE_PACKET, {
+      abortSignal: controller.signal,
+      selectProvider: async () => {
+        controller.abort();
+        return {
+          rejected: false,
+          provider,
+          model: 'gemini-2.5-pro',
+          privacyAction: 'sent_raw',
+        };
+      },
+    })).rejects.toMatchObject({ name: 'AbortError' });
+
+    expect(callDomain).not.toHaveBeenCalled();
+  });
 });

@@ -11,6 +11,7 @@ const classify = vi.hoisted(() => vi.fn(async () => ({
   domain: 'content' as const,
   confidence: 0.91,
 })));
+const legacyClassify = vi.hoisted(() => vi.fn());
 
 vi.mock('../../src/services/provider-registry', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../src/services/provider-registry')>(),
@@ -19,11 +20,25 @@ vi.mock('../../src/services/provider-registry', async (importOriginal) => ({
 
 vi.mock('../../src/services/anthropic', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../src/services/anthropic')>(),
-  classifyMessage: vi.fn(),
+  classifyMessage: legacyClassify,
 }));
 
 vi.mock('../../src/services/classify-shadow', () => ({
   runOllamaShadowClassification: vi.fn(),
+}));
+
+vi.mock('../../src/services/skill-inference-service', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/skill-inference-service')>(
+    '../../src/services/skill-inference-service',
+  )),
+  runWithSkillInferenceAccountAdmission: (
+    _input: unknown,
+    operation: (signal: AbortSignal) => Promise<unknown>,
+  ) => operation(new AbortController().signal),
+  isSkillInferenceAccountDeletionError: (error: unknown) => (
+    Boolean(error && typeof error === 'object'
+      && (error as { code?: unknown }).code === 'ACCOUNT_DELETION_IN_PROGRESS')
+  ),
 }));
 
 import { classifyWithClaude } from '../../src/router/classifier';
@@ -50,7 +65,24 @@ describe('classifier governed live-eval source', () => {
     expect(classify).toHaveBeenCalledWith(
       'Give me launch content ideas',
       undefined,
-      { userId: 42, tenantId: 42, source: 'evaluation' },
+      expect.objectContaining({
+        userId: 42,
+        tenantId: 42,
+        source: 'evaluation',
+        abortSignal: expect.any(AbortSignal),
+      }),
     );
+  });
+
+  it('does not turn account-deletion cancellation into a legacy classifier fallback', async () => {
+    classify.mockRejectedValueOnce(Object.assign(new Error('account deletion started'), {
+      code: 'ACCOUNT_DELETION_IN_PROGRESS',
+    }));
+
+    await expect(runWithChatLiveEvalContext(evalContext, () => (
+      classifyWithClaude('Give me launch content ideas', undefined, 42, 42)
+    ))).rejects.toMatchObject({ code: 'ACCOUNT_DELETION_IN_PROGRESS' });
+
+    expect(legacyClassify).not.toHaveBeenCalled();
   });
 });

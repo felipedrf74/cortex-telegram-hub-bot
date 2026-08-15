@@ -34,14 +34,12 @@ const MAX_BYTES = 1024 * 1024;
 const MAX_SYSTEMCTL_EXECUTABLE_BYTES = 4 * 1024 * 1024;
 const MAX_RUNTIME_BINARY_BYTES = 256 * 1024 * 1024;
 const PRODUCTION_TAGS_URL = 'http://127.0.0.1:11434/api/tags';
-const PRODUCTION_RUNTIME_IDENTITY = Object.freeze({
+const PRODUCTION_RUNTIME_CORE_IDENTITY = Object.freeze({
   binaryPath: '/usr/local/bin/ollama',
   binarySha256: 'b2e45ade9cb754a079f74645e1183d613f582d98f7354b05f4f9a5bd81f8e0c9',
   version: 'ollama version is 0.24.0',
   serviceFragment: '/etc/systemd/system/ollama.service',
   serviceFragmentSha256: '72b23db27bcd69aa9c05226285a928ae8520dac108736072a33cea35bbcccdda',
-  retainedModel: 'qwen2.5:3b-instruct-q4_K_M',
-  retainedModelDigest: '357c53fb659c5076de1d65ccb0b397446227b71a42be9d1603d46168015c9e4b',
 });
 const PRODUCTION_ASSET_LAYOUT = Object.freeze([
   ['scripts/ollama-lean-finalize.mjs', '/usr/local/sbin/nexus-ollama-lean-finalize.mjs', 0o700],
@@ -49,7 +47,11 @@ const PRODUCTION_ASSET_LAYOUT = Object.freeze([
   ['scripts/lib/ollama-service-envelope.mjs', '/usr/local/sbin/lib/ollama-service-envelope.mjs', 0o700],
   ['scripts/ollama-systemd-dropin-transaction.mjs', '/usr/local/sbin/nexus-ollama-systemd-dropin-transaction.mjs', 0o700],
   ['scripts/ollama-install-state-check.mjs', '/usr/local/sbin/nexus-ollama-install-state-check.mjs', 0o700],
+  ['scripts/local-inference-socket-transaction.mjs', '/usr/local/sbin/nexus-local-inference-socket-transaction.mjs', 0o700],
+  ['scripts/local-model-benchmark-envelope-transaction.mjs', '/usr/local/sbin/nexus-local-model-benchmark-envelope-transaction.mjs', 0o700],
+  ['config/local-model-manifest.json', '/usr/local/sbin/nexus-local-model-manifest.json', 0o644],
   ['scripts/systemd/00-nexus-ollama-install-guard.conf', '/etc/systemd/system/ollama.service.d/00-nexus-ollama-install-guard.conf', 0o644],
+  ['scripts/systemd/nexus-local-inference-sockets.conf', '/usr/local/sbin/nexus-local-inference-sockets.conf', 0o644],
 ]);
 
 function fail(message, exitCode = 1) {
@@ -198,7 +200,70 @@ function command(options, args, label, accepted = [0]) {
   return (result.stdout || '').trim();
 }
 
-function validateRuntimeIdentity(identity, { verifyFiles = true, verifyVersion = false } = {}) {
+function selectedManifestModel(sourceRoot) {
+  if (!isAbsolute(sourceRoot || '') || resolve(sourceRoot) !== sourceRoot) {
+    fail('signed local-model manifest source root is invalid');
+  }
+  const manifestPath = join(sourceRoot, 'config/local-model-manifest.json');
+  validateTrustedPathChain(manifestPath, 'signed local-model manifest', 'file');
+  validateRegular(manifestPath, 'signed local-model manifest', { owner: expectedUid() });
+  let manifest;
+  try {
+    manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+  } catch {
+    fail('signed local-model manifest is malformed');
+  }
+  const active = Array.isArray(manifest?.models)
+    ? manifest.models.find((model) => model?.id === manifest.activeModelId)
+    : null;
+  const winners = Array.isArray(manifest?.models)
+    ? manifest.models.filter((model) => model?.role === 'winner')
+    : [];
+  const digest = String(active?.digest || '');
+  const evidence = manifest?.selectionEvidence;
+  const productionEvidenceValid = manifest?.selectionStatus !== 'production_selected' || (
+    evidence && typeof evidence === 'object' && !Array.isArray(evidence)
+    && evidence.winningCandidateId === manifest.activeModelId
+    && /^sha256:[0-9a-f]{64}$/u.test(evidence.benchmarkReportDigest || '')
+    && typeof evidence.benchmarkCompletedAt === 'string'
+    && !Number.isNaN(Date.parse(evidence.benchmarkCompletedAt))
+    && new Date(evidence.benchmarkCompletedAt).toISOString() === evidence.benchmarkCompletedAt
+    && /^sha256:[0-9a-f]{64}$/u.test(evidence.benchmarkHostRollbackReceiptDigest || '')
+    && [
+      'corpusReference',
+      'licenseReviewReference',
+      'ownerApprovalReference',
+    ]
+      .every((field) => typeof evidence[field] === 'string'
+        && evidence[field].trim().length > 0
+        && evidence[field].trim().length <= 512)
+  );
+  if (manifest?.schemaVersion !== 'nexus.local-model-manifest.v1'
+      || !['control_only', 'production_selected'].includes(manifest.selectionStatus)
+      || (manifest.selectionStatus === 'control_only' && manifest.selectionEvidence !== null)
+      || (manifest.selectionStatus === 'control_only'
+        ? winners.length !== 0
+        : winners.length !== 1 || winners[0]?.id !== active?.id)
+      || !productionEvidenceValid
+      || active?.productionEligible !== true
+      || active?.evidenceStatus !== 'verified'
+      || typeof active?.ollamaTag !== 'string'
+      || active.ollamaTag.length < 1
+      || !/^sha256:[0-9a-f]{64}$/u.test(digest)
+      || (manifest.selectionStatus === 'production_selected' && active.role !== 'winner')) {
+    fail('signed local-model manifest has no verified digest-pinned active model');
+  }
+  return {
+    retainedModel: active.ollamaTag,
+    retainedModelDigest: digest.slice('sha256:'.length),
+  };
+}
+
+function validateRuntimeIdentity(identity, {
+  verifyFiles = true,
+  verifyVersion = false,
+  sourceRoot = null,
+} = {}) {
   exactKeys(identity, [
     'binaryPath',
     'binarySha256',
@@ -219,7 +284,11 @@ function validateRuntimeIdentity(identity, { verifyFiles = true, verifyVersion =
     fail('Ollama runtime identity is invalid');
   }
   if (!testMode()) {
-    for (const [key, expected] of Object.entries(PRODUCTION_RUNTIME_IDENTITY)) {
+    const expectedIdentity = {
+      ...PRODUCTION_RUNTIME_CORE_IDENTITY,
+      ...selectedManifestModel(sourceRoot),
+    };
+    for (const [key, expected] of Object.entries(expectedIdentity)) {
       if (identity[key] !== expected) fail(`Ollama runtime identity changed: ${key}`);
     }
   }
@@ -302,7 +371,7 @@ function observeRetainedModel(options, identity) {
                 || model?.model === identity.retainedModel,
             )
             : [];
-          const observedDigest = String(matches[0]?.digest || '').replace(/^sha256:/u, '');
+          const observedDigest = String(matches[0]?.digest || '').trim().toLowerCase().replace(/^sha256:/u, '');
           if (matches.length !== 1 || observedDigest !== identity.retainedModelDigest) {
             fail('retained Ollama model changed before transaction commit');
           }
@@ -381,7 +450,6 @@ function readJournal(options) {
       || !/^[0-9a-f]{64}$/u.test(value.candidateSha256 || '')) {
     fail('Ollama install journal identity is invalid');
   }
-  validateRuntimeIdentity(value.runtimeIdentity);
   exactKeys(
     value.sourceProvenance,
     ['sourceRoot', 'sourceSha', 'archiveSha256'],
@@ -398,6 +466,9 @@ function readJournal(options) {
       !== `/var/lib/nexus-release-bootstrap/${value.sourceProvenance.sourceSha}/source`) {
     fail('Ollama install journal source root is not SHA-bound');
   }
+  validateRuntimeIdentity(value.runtimeIdentity, {
+    sourceRoot: value.sourceProvenance.sourceRoot,
+  });
   for (const [index, asset] of value.assets.entries()) {
     exactKeys(
       asset,
@@ -987,7 +1058,10 @@ function begin(options, candidate, installerPid, provenance, runtimeIdentity) {
         !== `/var/lib/nexus-release-bootstrap/${provenance.sourceSha}/source`) {
     fail('Ollama source root is not bound to its exact SHA');
   }
-  validateRuntimeIdentity(runtimeIdentity, { verifyVersion: true });
+  validateRuntimeIdentity(runtimeIdentity, {
+    verifyVersion: true,
+    sourceRoot: provenance.sourceRoot,
+  });
   validateRegular(candidate, 'candidate Ollama systemd drop-in', {
     mode: 0o600,
     owner: expectedUid(),
@@ -1122,7 +1196,10 @@ function authorize(options, installerPid) {
 async function commit(options) {
   const journal = readJournal(options);
   if (journal.status !== 'restart_authorized') fail('Ollama transaction lacks restart authorization');
-  validateRuntimeIdentity(journal.runtimeIdentity, { verifyVersion: true });
+  validateRuntimeIdentity(journal.runtimeIdentity, {
+    verifyVersion: true,
+    sourceRoot: journal.sourceProvenance.sourceRoot,
+  });
   validateRegular(options.dropIn, 'candidate Ollama systemd drop-in', { mode: 0o644 });
   if (sha256File(options.dropIn) !== journal.candidateSha256) fail('candidate Ollama drop-in changed');
   const state = serviceState(options);

@@ -7,7 +7,7 @@ import { handleFinance } from '../../domains/finance';
 import { getLastCoachState } from '../../domains/domain-handler';
 import { handleSecretary } from '../../domains/secretary';
 import { handleTriathlon } from '../../domains/triathlon';
-import type { DomainName } from '../../domains/types';
+import type { DomainName, DomainResponse } from '../../domains/types';
 import { getChatMessageById } from '../../services/chat-history-store';
 import { getIntegrationSummary } from '../../services/integration-status';
 import { getNotificationProfileIfExists } from '../../services/notification-orchestrator';
@@ -52,7 +52,8 @@ export type ChatDomainHandler = (
   message: string,
   userId?: number,
   tenantId?: number,
-) => Promise<{ text: string; domain: DomainName; metadata?: Record<string, unknown> | null }>;
+  abortSignal?: AbortSignal,
+) => Promise<DomainResponse & { metadata?: Record<string, unknown> | null }>;
 
 function manifestTailLocale(message: string): 'en' | 'pt' {
   const requestLocale = getCurrentChatRequestLocale();

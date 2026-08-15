@@ -53,19 +53,19 @@ Environment="OLLAMA_MODELS=/var/lib/ollama/models"
 Environment="OLLAMA_MAX_LOADED_MODELS=1"
 Environment="OLLAMA_NUM_PARALLEL=1"
 Environment="OLLAMA_MAX_QUEUE=4"
-Environment="OLLAMA_CONTEXT_LENGTH=4096"
+Environment="OLLAMA_CONTEXT_LENGTH=16384"
 Environment="OLLAMA_KV_CACHE_TYPE=q8_0"
 Environment="OLLAMA_FLASH_ATTENTION=1"
 Environment="OLLAMA_KEEP_ALIVE=-1"
 Environment="OLLAMA_LOAD_TIMEOUT=5m"
 Environment="OLLAMA_NO_CLOUD=1"
 Environment="OLLAMA_DEBUG_LOG_REQUESTS=0"
-MemoryHigh=4G
-MemoryMax=6G
-MemorySwapMax=512M
+MemoryHigh=18G
+MemoryMax=20G
+MemorySwapMax=0
 Nice=10
 CPUWeight=25
-CPUQuota=200%
+CPUQuota=800%
 Restart=on-failure
 RestartSec=10
 `;
@@ -115,7 +115,7 @@ function timestamp(value, label) {
 }
 
 function normalizeDigest(value, label) {
-  const normalized = String(value || '').replace(/^sha256:/u, '');
+  const normalized = String(value || '').trim().toLowerCase().replace(/^sha256:/u, '');
   if (!DIGEST_PATTERN.test(normalized)) fail(`${label} is not a full lowercase SHA-256 digest`);
   return normalized;
 }
@@ -355,11 +355,12 @@ export function buildFinalizationPlan(validated, receiptPaths) {
         maxLoadedModels: 1,
         numParallel: 1,
         maxQueue: 4,
-        contextLength: 4096,
+        contextLength: Number(OLLAMA_ENVELOPE.contextLength),
         memoryHighBytes: OLLAMA_ENVELOPE.memoryHighBytes,
         memoryMaxBytes: OLLAMA_ENVELOPE.memoryMaxBytes,
         memorySwapMaxBytes: OLLAMA_ENVELOPE.memorySwapBaselineBytes,
         cpuQuotaUsecPerSec: OLLAMA_ENVELOPE.cpuQuotaUsecPerSec,
+        nice: OLLAMA_ENVELOPE.nice,
       },
     },
     receipt: receiptPaths,
@@ -702,6 +703,7 @@ function readSystemdEnvelope() {
     '--property=MemoryMax',
     '--property=MemorySwapMax',
     '--property=CPUQuotaPerSecUSec',
+    '--property=Nice',
   ], 'effective Ollama envelope query');
   return parseAndValidateOllamaEnvelope(stdout, OLLAMA_ENVELOPE.memorySwapBaselineBytes);
 }

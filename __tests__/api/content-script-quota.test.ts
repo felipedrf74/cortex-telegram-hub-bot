@@ -10,7 +10,62 @@ const mockIsUserOverDailyCap = vi.fn((..._args: unknown[]) => ({
 }));
 const mockWithAiBudgetReservation = vi.fn();
 const mockGetScriptProvider = vi.fn();
+const mockExecuteSkillInference = vi.fn();
+const mockRunWithSkillInferenceAccountAdmission = vi.fn();
+const mockRejectSkillInferenceApplicationResult = vi.fn();
+const mockRejectSkillInferenceApplicationOperationResults = vi.fn();
 const mockLoggerError = vi.fn();
+const localRoutingState = vi.hoisted(() => ({
+  contentProxyEnabled: false,
+  mode: 'off' as 'off' | 'shadow' | 'canary' | 'active',
+  rolloutPercent: 0,
+  enrolled: false,
+}));
+
+vi.mock('../../src/services/local-primary-config', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/local-primary-config')>(
+    '../../src/services/local-primary-config',
+  );
+  return {
+    ...actual,
+    localPrimaryInferenceConfig: {
+      ...actual.localPrimaryInferenceConfig,
+      get contentProxyEnabled() { return localRoutingState.contentProxyEnabled; },
+    },
+  };
+});
+
+vi.mock('../../src/services/local-inference-runtime-control', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/local-inference-runtime-control')>(
+    '../../src/services/local-inference-runtime-control',
+  );
+  return {
+    ...actual,
+    getLocalInferenceRuntimeControl: () => ({
+      environment: 'staging',
+      mode: localRoutingState.mode,
+      rolloutPercent: localRoutingState.rolloutPercent,
+    }),
+  };
+});
+
+vi.mock('../../src/services/skill-inference-service', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/skill-inference-service')>(
+    '../../src/services/skill-inference-service',
+  );
+  return {
+    ...actual,
+    isLocalInferenceUserEnrolled: () => localRoutingState.enrolled,
+    executeSkillInference: (...args: unknown[]) => mockExecuteSkillInference(...args),
+    runWithSkillInferenceAccountAdmission: (...args: unknown[]) => (
+      mockRunWithSkillInferenceAccountAdmission(...args)
+    ),
+    rejectSkillInferenceApplicationResult: (...args: unknown[]) => mockRejectSkillInferenceApplicationResult(...args),
+    rejectSkillInferenceApplicationOperationResults: (...args: unknown[]) => (
+      mockRejectSkillInferenceApplicationOperationResults(...args)
+    ),
+  };
+});
 
 vi.mock('../../src/utils/logger', () => ({
   logger: {
@@ -57,13 +112,19 @@ vi.mock('../../src/services/cost-guardrail', () => {
   };
 });
 
-vi.mock('../../src/services/content-engine', () => ({
-  getScript: (...args: unknown[]) => {
-    const providerBoundary = args[16] as ((providerCall: () => Promise<unknown>) => Promise<unknown>) | undefined;
-    const providerCall = () => mockGetScriptProvider(...args.slice(0, 16));
-    return providerBoundary ? providerBoundary(providerCall) : providerCall();
-  },
-}));
+vi.mock('../../src/services/content-engine', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/content-engine')>(
+    '../../src/services/content-engine',
+  );
+  return {
+    ...actual,
+    getScript: (...args: unknown[]) => {
+      const providerBoundary = args[16] as ((providerCall: () => Promise<unknown>) => Promise<unknown>) | undefined;
+      const providerCall = () => mockGetScriptProvider(...args);
+      return providerBoundary ? providerBoundary(providerCall) : providerCall();
+    },
+  };
+});
 
 vi.mock('../../src/services/user-service', () => ({
   // Identity-safety: content-script-routes uses the strict by-id helper.
@@ -98,13 +159,13 @@ function mockRes(): MockRes {
   return response;
 }
 
-function mockReq(body: any, userId?: number | null): Request {
+function mockReq(body: any, userId?: number | null, routePath = '/script'): Request {
   return {
     method: 'POST',
-    url: '/script',
-    originalUrl: '/script',
+    url: routePath,
+    originalUrl: routePath,
     baseUrl: '',
-    path: '/script',
+    path: routePath,
     query: {},
     params: {},
     headers: {},
@@ -112,13 +173,14 @@ function mockReq(body: any, userId?: number | null): Request {
     socket: { remoteAddress: '127.0.0.1' },
     body,
     userId,
+    tenantId: userId,
   } as any;
 }
 
-async function dispatch(body: any, userId: number | null = 12): Promise<MockRes> {
+async function dispatch(body: any, userId: number | null = 12, routePath = '/script'): Promise<MockRes> {
   const { contentRoutes } = await import('../../src/api/routes/content');
   const router = contentRoutes();
-  const req = mockReq(body, userId);
+  const req = mockReq(body, userId, routePath);
   const res = mockRes();
 
   await new Promise<void>((resolve) => {
@@ -137,6 +199,18 @@ describe('Content API — script quota enforcement', () => {
     mockIsUserOverDailyCap.mockReset();
     mockWithAiBudgetReservation.mockReset();
     mockGetScriptProvider.mockReset();
+    mockExecuteSkillInference.mockReset();
+    mockRunWithSkillInferenceAccountAdmission.mockReset();
+    mockRunWithSkillInferenceAccountAdmission.mockImplementation(async (
+      input: { abortSignal?: AbortSignal },
+      operation: (abortSignal: AbortSignal) => Promise<unknown>,
+    ) => operation(input.abortSignal ?? new AbortController().signal));
+    mockRejectSkillInferenceApplicationResult.mockReset();
+    mockRejectSkillInferenceApplicationOperationResults.mockReset();
+    localRoutingState.contentProxyEnabled = false;
+    localRoutingState.mode = 'off';
+    localRoutingState.rolloutPercent = 0;
+    localRoutingState.enrolled = false;
     mockIsUserOverDailyCap.mockReturnValue({
       over: true,
       spentUsd: 0.2,
@@ -190,6 +264,253 @@ describe('Content API — script quota enforcement', () => {
       retryable: true,
     });
     expect(mockGetScriptProvider).not.toHaveBeenCalled();
+  });
+
+  it('does not reserve cloud dollars before an enrolled local-primary script attempt', async () => {
+    localRoutingState.contentProxyEnabled = true;
+    localRoutingState.mode = 'active';
+    localRoutingState.rolloutPercent = 100;
+    localRoutingState.enrolled = true;
+    mockGetScriptProvider.mockRejectedValueOnce(new Error('local_route_reached'));
+
+    const response = await dispatch({
+      topic: 'A safe local content workflow',
+      format: 'Reel',
+    });
+
+    expect(response.statusCode).toBe(500);
+    expect(mockGetScriptProvider).toHaveBeenCalledTimes(1);
+    expect(mockWithAiBudgetReservation).not.toHaveBeenCalled();
+  });
+
+  it('keeps the existing cloud reservation for a non-enrolled canary user', async () => {
+    localRoutingState.contentProxyEnabled = true;
+    localRoutingState.mode = 'canary';
+    localRoutingState.rolloutPercent = 25;
+    localRoutingState.enrolled = false;
+
+    const response = await dispatch({
+      topic: 'A safe cloud-backed content workflow',
+      format: 'Reel',
+    });
+
+    expect(response.statusCode).toBe(429);
+    expect(mockWithAiBudgetReservation).toHaveBeenCalledTimes(1);
+    expect(mockGetScriptProvider).not.toHaveBeenCalled();
+  });
+
+  it('returns a retryable public-safe capacity error instead of a degraded local script', async () => {
+    localRoutingState.contentProxyEnabled = true;
+    localRoutingState.mode = 'active';
+    localRoutingState.rolloutPercent = 100;
+    localRoutingState.enrolled = true;
+    const { ForwardedLocalInferenceError } = await import('../../src/services/content-engine');
+    mockGetScriptProvider.mockRejectedValueOnce(new ForwardedLocalInferenceError({
+      code: 'LOCAL_QUEUE_FULL',
+      status: 503,
+      message: 'Local inference queue is full.',
+      details: { retryable: true },
+    }));
+
+    const response = await dispatch({ topic: 'A safe capacity check', format: 'Reel' });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.body.error).toMatchObject({
+      code: 'LOCAL_QUEUE_FULL',
+      details: { retryable: true },
+    });
+    expect(response.headers['retry-after']).toBe('60');
+    expect(mockWithAiBudgetReservation).not.toHaveBeenCalled();
+  });
+
+  it('does not count a locally generated script that the public safety gate withholds', async () => {
+    localRoutingState.contentProxyEnabled = true;
+    localRoutingState.mode = 'active';
+    localRoutingState.rolloutPercent = 100;
+    localRoutingState.enrolled = true;
+    mockGetScriptProvider.mockResolvedValueOnce({
+      topic: 'Fluxo local seguro',
+      script: 'RAW_PROVIDER_OUTPUT\nEste texto deve ser retido antes da entrega.',
+      hook: 'Revê este fluxo local.',
+      title_options: ['Fluxo local seguro'],
+      sources_used: [],
+      estimated_duration: '1:00',
+      duration_ms: 100,
+      hashtags: [],
+      caption: '',
+      cta: 'Revê o resultado.',
+      degraded: false,
+      warnings: [],
+    });
+
+    const response = await dispatch({ topic: 'Fluxo local seguro', format: 'Reel' });
+
+    expect(response.statusCode).toBe(422);
+    expect(response.body.error.code).toBe('CONTENT_SCRIPT_OUTPUT_BLOCKED');
+    expect(mockRejectSkillInferenceApplicationOperationResults).toHaveBeenCalledWith(expect.objectContaining({
+      tenantId: 12,
+      userId: 12,
+      reason: 'content_script_final_safety_block',
+    }));
+    expect(mockWithAiBudgetReservation).not.toHaveBeenCalled();
+  });
+
+  it('holds account admission across synchronous script generation and passes its signal to Python', async () => {
+    localRoutingState.contentProxyEnabled = true;
+    localRoutingState.mode = 'active';
+    localRoutingState.rolloutPercent = 100;
+    localRoutingState.enrolled = true;
+    const accountController = new AbortController();
+    mockRunWithSkillInferenceAccountAdmission.mockImplementationOnce(async (
+      input: { userId: number; abortSignal?: AbortSignal },
+      operation: (abortSignal: AbortSignal) => Promise<unknown>,
+    ) => {
+      expect(input).toMatchObject({ userId: 12, abortSignal: expect.any(AbortSignal) });
+      return operation(accountController.signal);
+    });
+    mockGetScriptProvider.mockResolvedValueOnce({
+      topic: 'Fluxo local seguro',
+      script: 'RAW_PROVIDER_OUTPUT\nEste texto deve ser retido antes da entrega.',
+      hook: 'Revê este fluxo local.',
+      title_options: ['Fluxo local seguro'],
+      sources_used: [],
+      estimated_duration: '1:00',
+      duration_ms: 100,
+      hashtags: [],
+      caption: '',
+      cta: 'Revê o resultado.',
+      degraded: false,
+      warnings: [],
+    });
+
+    const response = await dispatch({ topic: 'Fluxo local seguro', format: 'Reel' });
+
+    expect(response.statusCode).toBe(422);
+    expect(mockRunWithSkillInferenceAccountAdmission).toHaveBeenCalledTimes(1);
+    const runtimeOptions = mockGetScriptProvider.mock.calls[0]?.[18] as { abortSignal?: AbortSignal };
+    expect(runtimeOptions.abortSignal).toBe(accountController.signal);
+  });
+
+  it('returns a conflict without starting Python when account deletion already owns the fence', async () => {
+    mockRunWithSkillInferenceAccountAdmission.mockRejectedValueOnce(Object.assign(
+      new Error('account deletion started'),
+      { code: 'ACCOUNT_DELETION_IN_PROGRESS' },
+    ));
+
+    const response = await dispatch({ topic: 'Do not recreate my content', format: 'Reel' });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.body.error.code).toBe('ACCOUNT_DELETION_IN_PROGRESS');
+    expect(mockGetScriptProvider).not.toHaveBeenCalled();
+    expect(mockWithAiBudgetReservation).not.toHaveBeenCalled();
+  });
+
+  it('routes an enrolled private rewrite locally without reserving cloud budget', async () => {
+    localRoutingState.contentProxyEnabled = true;
+    localRoutingState.mode = 'active';
+    localRoutingState.rolloutPercent = 100;
+    localRoutingState.enrolled = true;
+    const accountController = new AbortController();
+    mockRunWithSkillInferenceAccountAdmission.mockImplementationOnce(async (
+      input: { userId: number; abortSignal?: AbortSignal },
+      operation: (abortSignal: AbortSignal) => Promise<unknown>,
+    ) => {
+      expect(input).toMatchObject({ userId: 12, abortSignal: expect.any(AbortSignal) });
+      return operation(accountController.signal);
+    });
+    mockExecuteSkillInference.mockResolvedValueOnce({
+      text: 'Roteiro revisto com uma abertura mais direta e clara.',
+      provider: 'ollama',
+      route: 'local',
+      runId: 'content-edit:test',
+    });
+
+    const response = await dispatch({
+      topic: 'Como criar um produto SaaS',
+      script: 'Roteiro original do utilizador.',
+      action: 'rewrite_hook',
+    }, 12, '/script/rewrite');
+
+    expect(response.statusCode, JSON.stringify(response.body)).toBe(200);
+    expect(response.body.data.editPatch).toMatchObject({
+      operation: 'rewrite',
+      proposedText: 'Roteiro revisto com uma abertura mais direta e clara.',
+    });
+    expect(mockExecuteSkillInference).toHaveBeenCalledWith(expect.objectContaining({
+      skillId: 'content',
+      taskType: 'content_script_rewrite',
+      containsPrivateData: true,
+      allowCloudEscalation: false,
+      runId: expect.stringMatching(/^content-edit:[0-9a-f-]{36}$/u),
+      abortSignal: accountController.signal,
+    }));
+    const inferenceRequest = mockExecuteSkillInference.mock.calls[0]?.[0] as {
+      operationId: string;
+      runId: string;
+    };
+    expect(inferenceRequest.runId).not.toBe(`content-edit:${inferenceRequest.operationId}`);
+    expect(mockRunWithSkillInferenceAccountAdmission).toHaveBeenCalledTimes(1);
+    expect(mockWithAiBudgetReservation).not.toHaveBeenCalled();
+  });
+
+  it('rejects a rewrite before provider admission while account deletion owns the fence', async () => {
+    mockRunWithSkillInferenceAccountAdmission.mockRejectedValueOnce(Object.assign(
+      new Error('account deletion started'),
+      { code: 'ACCOUNT_DELETION_IN_PROGRESS' },
+    ));
+
+    const response = await dispatch({
+      topic: 'Do not recreate this draft',
+      script: 'Private draft pending deletion.',
+      action: 'rewrite_hook',
+    }, 12, '/script/rewrite');
+
+    expect(response.statusCode).toBe(409);
+    expect(response.body.error.code).toBe('ACCOUNT_DELETION_IN_PROGRESS');
+    expect(mockExecuteSkillInference).not.toHaveBeenCalled();
+    expect(mockWithAiBudgetReservation).not.toHaveBeenCalled();
+  });
+
+  it('rejects research refresh before search admission while account deletion owns the fence', async () => {
+    mockRunWithSkillInferenceAccountAdmission.mockRejectedValueOnce(Object.assign(
+      new Error('account deletion started'),
+      { code: 'ACCOUNT_DELETION_IN_PROGRESS' },
+    ));
+
+    const response = await dispatch({
+      topic: 'Do not refresh research for this account',
+      script: 'Private draft pending deletion.',
+    }, 12, '/script/research-refresh');
+
+    expect(response.statusCode).toBe(409);
+    expect(response.body.error.code).toBe('ACCOUNT_DELETION_IN_PROGRESS');
+    expect(mockWithAiBudgetReservation).not.toHaveBeenCalled();
+  });
+
+  it('withholds an invalid enrolled local edit without exporting the private draft to cloud', async () => {
+    localRoutingState.contentProxyEnabled = true;
+    localRoutingState.mode = 'active';
+    localRoutingState.rolloutPercent = 100;
+    localRoutingState.enrolled = true;
+    mockExecuteSkillInference.mockResolvedValueOnce({
+      text: 'Here is the rewritten English hook.',
+      provider: 'ollama',
+      route: 'local',
+      runId: 'content-edit:test',
+    });
+
+    const response = await dispatch({
+      topic: 'Como criar um produto SaaS',
+      script: 'Roteiro original do utilizador.',
+      action: 'rewrite_hook',
+    }, 12, '/script/rewrite');
+
+    expect(response.statusCode).toBe(502);
+    expect(response.body.error.code).toBe('CONTENT_SCRIPT_EDIT_LOCALE_MISMATCH');
+    expect(mockRejectSkillInferenceApplicationResult).toHaveBeenCalledWith(expect.objectContaining({
+      reason: 'content_script_edit_locale_mismatch',
+    }));
+    expect(mockWithAiBudgetReservation).not.toHaveBeenCalled();
   });
 
   it('rejects invalid authenticated user scope before starting a budget reservation', async () => {

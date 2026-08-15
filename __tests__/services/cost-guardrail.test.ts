@@ -257,6 +257,25 @@ describe('isUserOverDailyCap', () => {
     expect(r99.callsToday).toBe(1);
   });
 
+  it('excludes local-primary and classifier shadow rows from user spend and call analytics', () => {
+    const insert = testDb.prepare(`
+      INSERT INTO api_usage (
+        category, model, provider, user_id, input_tokens, output_tokens,
+        cost_usd, duration_ms, request_source, job_name, base_category
+      ) VALUES (?, 'local-control', 'ollama', 42, 100, 50, 0, 200, 'interactive', ?, ?)
+    `);
+    insert.run(
+      'local_reasoning',
+      'local_primary_shadow',
+      'local_primary_shadow:ios_chat_message',
+    );
+    insert.run('classify_shadow', 'classify_shadow', 'classify_shadow');
+
+    const result = isUserOverDailyCap(42);
+    expect(result.callsToday).toBe(0);
+    expect(result.spentUsd).toBe(0);
+  });
+
   it('ignores rows written without a userId (user_id=0 fallback)', () => {
     // A system call with no attached user (e.g. scheduled coach briefing)
     testDb.prepare(`
@@ -471,6 +490,15 @@ describe('getUserDailySpend', () => {
     stmt.run('domain_secretary', 'claude-haiku-4-5-20251001', 100, 50, 0.10, 50);
     stmt.run('domain_content', 'claude-sonnet-4-6', 500, 200, 0.15, 120);
     stmt.run('domain_triathlon', 'claude-sonnet-4-6', 800, 300, 0.15, 180);
+    testDb.prepare(`INSERT INTO api_usage (
+      category, base_category, job_name, model, provider, user_id,
+      input_tokens, output_tokens, cost_usd, duration_ms
+    ) VALUES (?, ?, ?, 'shadow-model', 'gemini', 7, 100, 50, 9.99, 10)`)
+      .run(
+        'local_primary_shadow:ios_chat_message',
+        'local_primary_shadow:ios_chat_message',
+        'local_primary_shadow',
+      );
 
     const result = getUserDailySpend(7);
     expect(result.totalUsd).toBeCloseTo(0.4, 2);
@@ -495,6 +523,11 @@ describe('getSpendByProvider', () => {
     stmt.run('domain_training', 'claude-sonnet', 7, 7, 'anthropic', 100, 50, 0.11, 10);
     stmt.run('domain_training', 'gemini-flash', 8, 8, 'gemini', 100, 50, 0.23, 10);
     stmt.run('domain_training', 'gpt-4.1', 7, 99, 'openai', 100, 50, 0.31, 10);
+    testDb.prepare(`INSERT INTO api_usage (
+      category, base_category, job_name, model, tenant_id, user_id, provider,
+      input_tokens, output_tokens, cost_usd, duration_ms
+    ) VALUES (?, ?, ?, 'shadow-model', 7, 7, 'gemini', 100, 50, 9.99, 10)`)
+      .run('classify_shadow', 'classify_shadow', 'classify_shadow');
 
     expect(getSpendByProvider(undefined, { userId: 7, tenantId: 7 })).toMatchObject({
       anthropic: 0.11,

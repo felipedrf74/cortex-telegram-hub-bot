@@ -222,6 +222,16 @@ wrapper changes:
 5. **Tool filter applied per task type** — a tool not authorized for
    the active task type is not exposed to the model.
 
+### 8A. Account-erasure model-work registry (must, when a provider entrypoint changes)
+
+Tests must prove the ordinary active-account path still executes, a durable
+account-deletion fence rejects before provider work, and an in-flight operation
+retains admission through validation, persistence, usage settlement, and final
+publication. Timeout-detached work must retain its own admission through the
+late-result or late-failure write. Account-deletion tests also seed at least two
+numeric user ids and verify user-keyed cache removal cannot confuse prefixes
+such as user `1` and user `10`.
+
 ## 9. Prompt context isolation (must, when prompt or context code touched)
 
 1. **`buildKnowledgePromptBlock(userId)`** called twice with different

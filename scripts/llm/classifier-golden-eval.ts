@@ -25,7 +25,7 @@
  *
  * Usage:
  *   npx tsx scripts/llm/classifier-golden-eval.ts
- *   OLLAMA_CLASSIFIER_MODEL=qwen2.5:3b-instruct-q4_K_M npx tsx scripts/llm/classifier-golden-eval.ts
+ *   OLLAMA_CLASSIFIER_MODEL=<signed-active-tag> npx tsx scripts/llm/classifier-golden-eval.ts
  *
  * Exit 0 if all gates pass. Exit 1 otherwise.
  */
@@ -34,10 +34,15 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 const BASE_URL = process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434';
-const SMALL_ONLY_MODEL = 'qwen2.5:3b-instruct-q4_K_M';
-const MODEL = process.env.OLLAMA_CLASSIFIER_MODEL || SMALL_ONLY_MODEL;
-if (MODEL !== SMALL_ONLY_MODEL) {
-  throw new Error(`small-only policy rejects OLLAMA_CLASSIFIER_MODEL=${MODEL}`);
+const LOCAL_MODEL_MANIFEST = JSON.parse(
+  fs.readFileSync(path.resolve(process.cwd(), 'config/local-model-manifest.json'), 'utf8'),
+) as { activeModelId?: string; models?: Array<{ id?: string; ollamaTag?: string }> };
+const ACTIVE_MODEL = LOCAL_MODEL_MANIFEST.models
+  ?.find((entry) => entry.id === LOCAL_MODEL_MANIFEST.activeModelId)?.ollamaTag;
+if (!ACTIVE_MODEL) throw new Error('signed local-model manifest has no active Ollama tag');
+const MODEL = process.env.OLLAMA_CLASSIFIER_MODEL || ACTIVE_MODEL;
+if (MODEL !== ACTIVE_MODEL) {
+  throw new Error(`signed-manifest policy rejects OLLAMA_CLASSIFIER_MODEL=${MODEL}; expected ${ACTIVE_MODEL}`);
 }
 const PROMPT_VERSION = process.env.OLLAMA_CLASSIFIER_PROMPT_VERSION || 'v1';
 

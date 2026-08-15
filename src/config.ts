@@ -5,8 +5,9 @@ import { contentLiveEvalDotenvOptions } from './services/content-live-evaluation
 import { resolveOllamaSmallOnlyRuntimeConfig } from './services/ollama-model-policy';
 dotenv.config(contentLiveEvalDotenvOptions());
 
-// Fail at process startup before provider registration if any environment
-// variable can select a local model outside the ServerDominguez 3B allowlist.
+// Invalid model overrides still fail startup when the signed manifest is
+// available. A missing/corrupt packaged manifest instead disables Ollama so
+// the cloud-capable application can boot with local routing fail-closed.
 const OLLAMA_MODELS = resolveOllamaSmallOnlyRuntimeConfig(process.env);
 
 // STAGING flag set by ecosystem.staging.config.js. When true, certain
@@ -241,7 +242,10 @@ export const config = {
   // enabled, the registry exposes the OllamaProvider; routing only kicks
   // in once AI_CLASSIFY_PRIMARY=ollama (or scriptGeneration / localReasoning).
   ollama: {
-    enabled: (process.env.OLLAMA_ENABLED || 'false') === 'true',
+    enabled: (process.env.OLLAMA_ENABLED || 'false') === 'true'
+      && OLLAMA_MODELS.manifestAvailable,
+    manifestAvailable: OLLAMA_MODELS.manifestAvailable,
+    manifestErrorCode: OLLAMA_MODELS.manifestErrorCode,
     baseUrl: process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434',
     model: OLLAMA_MODELS.model,
     classifierModel: OLLAMA_MODELS.classifierModel,
@@ -252,12 +256,12 @@ export const config = {
     secretaryMaxTokens: optionalInt('OLLAMA_SECRETARY_MAX_TOKENS', 4096, { min: 64, max: 4096 }),
     // Provider-level ceiling. Interactive local-chat paths apply their own
     // substantially lower deadlines; this remains generous for bounded
-    // background 3B evaluation while the circuit breaker stays authoritative.
+    // background signed-model evaluation while the circuit breaker stays authoritative.
     timeoutMs: optionalInt('OLLAMA_TIMEOUT_MS', 360000, { min: 1000, max: 600000 }),
 
     // Per-task input/output token caps (plan A10 — conservative estimator).
     // Classify output stays small (128); script/reasoning limits remain bounded
-    // for compatibility but all calls resolve to the sole approved 3B model.
+    // for compatibility but all calls resolve to the sole signed active model.
     tokenCaps: {
       classifyMaxInput: optionalInt('OLLAMA_CLASSIFY_MAX_INPUT_TOKENS', 1500, { min: 128 }),
       classifyMaxOutput: optionalInt('OLLAMA_CLASSIFY_MAX_OUTPUT_TOKENS', 128, { min: 16 }),
@@ -310,7 +314,7 @@ export const config = {
       'flash,flash-lite,nano,mini,haiku,lite,classifier,fast')
       .split(',').map(s => s.trim().toLowerCase()).filter(Boolean),
     // A privacy or quality rejection must surface explicitly. There is no
-    // large local model to silently substitute under the small-only policy.
+    // second local model to silently substitute outside the signed one-model policy.
     onUnapproved: (process.env.CLOUD_REASONING_ON_UNAPPROVED_MODEL || 'fail_visibly') as
       'return_local_result_with_warning' | 'fail_visibly' | 'allow',
     privacy: {

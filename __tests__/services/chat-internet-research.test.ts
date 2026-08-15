@@ -115,6 +115,41 @@ describe('chat internet research', () => {
     expect(result.sources).toEqual(['https://example.com/current-guidance']);
   });
 
+  it('keeps account cancellation terminal when a search provider resolves after abort', async () => {
+    const controller = new AbortController();
+    const accountDeletion = Object.assign(new Error('account deletion started'), {
+      name: 'AbortError',
+      code: 'ACCOUNT_DELETION_IN_PROGRESS',
+    });
+    mockCompleteOneShotWithSearch.mockImplementationOnce(async (
+      _system: string,
+      _prompt: string,
+      _category: string,
+      options: { abortSignal?: AbortSignal },
+    ) => {
+      expect(options.abortSignal).toBe(controller.signal);
+      controller.abort(accountDeletion);
+      return {
+        text: 'This answer must not be published.',
+        sources: ['https://example.com/not-published'],
+      };
+    });
+
+    await expect(buildChatInternetResearchAnswer({
+      message: 'Search current public guidance.',
+      language: 'en',
+      skill: 'chat',
+      expectedResponseShape: 'direct_answer',
+      userId: 123,
+      tenantId: 456,
+      abortSignal: controller.signal,
+    })).rejects.toBe(accountDeletion);
+
+    expect(mockCompleteOneShotWithSearch).toHaveBeenCalledTimes(1);
+    expect(mockTrackedCreate).not.toHaveBeenCalled();
+    expect(mockCompleteOneShotWithOpenAIWebSearch).not.toHaveBeenCalled();
+  });
+
   it('uses bounded exponential spacing between repeated web-search retries', async () => {
     vi.stubEnv('CHAT_INTERNET_RESEARCH_MAX_ATTEMPTS', '3');
     vi.stubEnv('CHAT_INTERNET_RESEARCH_RETRY_DELAY_MS', '5');

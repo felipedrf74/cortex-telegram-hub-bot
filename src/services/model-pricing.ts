@@ -154,6 +154,10 @@ const MODEL_PRICING: ModelPricing[] = [
   // so getOrThrow / computeModelUsageCostUsd resolves cleanly without
   // firing the operator alert for unknown models.
   { provider: 'ollama', model: 'qwen2.5:3b-instruct-q4_K_M', inputUsdPerMillion: 0, outputUsdPerMillion: 0 },
+  { provider: 'ollama', model: 'qwen3.5:9b', inputUsdPerMillion: 0, outputUsdPerMillion: 0 },
+  { provider: 'ollama', model: 'ministral-3:14b', inputUsdPerMillion: 0, outputUsdPerMillion: 0 },
+  { provider: 'ollama', model: 'gemma3:12b', inputUsdPerMillion: 0, outputUsdPerMillion: 0 },
+  { provider: 'ollama', model: 'gpt-oss:20b', inputUsdPerMillion: 0, outputUsdPerMillion: 0 },
 ];
 
 const UNRESOLVED_MODEL_SENTINEL_PRICING = {

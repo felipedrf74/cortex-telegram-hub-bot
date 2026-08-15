@@ -3,7 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   _resetLocalInferenceGateForTests,
   getLocalInferenceGateSnapshot,
+  getLegacyLocalInferenceGateSnapshot,
   resolveLocalInferenceMaxConcurrency,
+  resolveLegacyLocalInferenceMaxConcurrency,
+  runWithLegacyLocalInferenceSlot,
   runWithLocalInferenceSlot,
 } from '../../src/services/chat-core-v2/local-inference-concurrency-gate';
 
@@ -39,15 +42,35 @@ describe('ChatCoreV2 local inference concurrency gate', () => {
     expect(resolveLocalInferenceMaxConcurrency(envWith())).toBe(1);
     expect(resolveLocalInferenceMaxConcurrency(envWith('0'))).toBe(1);
     expect(resolveLocalInferenceMaxConcurrency(envWith('not-a-number'))).toBe(1);
-    expect(resolveLocalInferenceMaxConcurrency(envWith('3'))).toBe(3);
+    expect(resolveLocalInferenceMaxConcurrency(envWith('3'))).toBe(1);
   });
 
   it('serializes local inference when max concurrency is 1', async () => {
     expect(await trackPeakConcurrency(envWith('1'), 4)).toBe(1);
   });
 
-  it('allows the configured concurrency above 1', async () => {
-    expect(await trackPeakConcurrency(envWith('2'), 4)).toBe(2);
+  it('ignores the retired Chat-only concurrency override and remains globally serialized', async () => {
+    expect(await trackPeakConcurrency(envWith('2'), 4)).toBe(1);
+  });
+
+  it('preserves the legacy Chat-only gate and queue telemetry while local-primary is off', async () => {
+    const env = envWith('3');
+    expect(resolveLegacyLocalInferenceMaxConcurrency(env)).toBe(3);
+    let active = 0;
+    let peak = 0;
+    const tasks = Array.from({ length: 6 }, () => runWithLegacyLocalInferenceSlot(async () => {
+      active += 1;
+      peak = Math.max(peak, active);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      active -= 1;
+    }, env));
+    await Promise.all(tasks);
+    expect(peak).toBe(3);
+    expect(getLegacyLocalInferenceGateSnapshot(env)).toMatchObject({
+      activeCount: 0,
+      queuedCount: 0,
+      maxConcurrency: 3,
+    });
   });
 
   it('releases the slot even when the task throws', async () => {
@@ -72,7 +95,8 @@ describe('ChatCoreV2 local inference concurrency gate', () => {
     }, env);
 
     const second = runWithLocalInferenceSlot(async () => true, env);
-    await vi.runAllTimersAsync();
+    await Promise.resolve();
+    await Promise.resolve();
     vi.setSystemTime(new Date('2026-05-29T12:00:03.000Z'));
 
     expect(getLocalInferenceGateSnapshot(env)).toEqual({

@@ -107,6 +107,28 @@ describe('script-pipeline: canonical path', () => {
     expect(workflow.formatScriptToText).toBeDefined();
     expect(typeof workflow.formatScriptToText).toBe('function');
   });
+
+  it('threads cancellation through local model calls, validators, cleanup, and final persistence', () => {
+    const fs = require('fs');
+    const path = require('path');
+    const pipelineSource = fs.readFileSync(
+      path.resolve(__dirname, '../../src/services/script-generation.ts'),
+      'utf8',
+    );
+    const providerSource = fs.readFileSync(
+      path.resolve(__dirname, '../../src/services/ollama-provider.ts'),
+      'utf8',
+    );
+
+    expect(providerSource).toContain('abortSignal?: AbortSignal;');
+    expect(pipelineSource).toContain('externalSignal: args.abortSignal');
+    expect(pipelineSource).toContain('signal: abortSignal');
+    expect(pipelineSource).toContain('abortSignal: task.abortSignal');
+    expect(pipelineSource).toContain('cleanupCancelledScriptGenerationArtifacts');
+    expect(pipelineSource).toContain('await fs.unlink(filePath)');
+    expect(pipelineSource).toContain('await fs.rmdir(directory)');
+    expect(pipelineSource).not.toContain('fs.rm(sandboxRoot, { recursive: true');
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -201,7 +223,7 @@ describe('script-pipeline: cache key hardening', () => {
 
     const cacheLookup = engineSource.indexOf('const cached = getCached<ScriptResponse>(normalizedKey)');
     const providerBoundary = engineSource.indexOf('const result = providerBoundary');
-    const tokenMint = engineSource.indexOf('internal_attribution_token: createInternalAttributionToken');
+    const tokenMint = engineSource.indexOf('buildContentEngineScriptAttribution({');
     const freshProviderCallback = engineSource.indexOf('const invokeFreshProviderPath');
     expect(cacheLookup).toBeGreaterThan(-1);
     expect(providerBoundary).toBeGreaterThan(cacheLookup);

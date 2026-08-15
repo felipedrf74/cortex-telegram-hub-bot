@@ -10,6 +10,7 @@ import type { ChatDomainHandler } from './chat-message-context';
 import type { ChatResponseBlock } from '../../services/chat-response-blocks';
 import type { ChatResponseCard } from '../../services/chat-response-cards';
 import { runWithChatRequestLocale } from '../../services/chat-request-locale-context';
+import { runWithSkillInferenceAccountAdmission } from '../../services/skill-inference-service';
 
 export const CHAT_DOMAIN_HANDLER_TIMEOUT_MS = 40_000;
 
@@ -135,6 +136,23 @@ export type ChatMessageResponseEnvelope = {
   responseCards?: ChatResponseCard[];
 };
 
+function chatDomainRequestCancelledError(): Error {
+  return Object.assign(new Error('chat_request_cancelled'), {
+    name: 'AbortError',
+    code: 'CHAT_REQUEST_CANCELLED',
+  });
+}
+
+function chatDomainRequestAbortReason(abortSignal?: AbortSignal): Error {
+  return abortSignal?.reason instanceof Error
+    ? abortSignal.reason
+    : chatDomainRequestCancelledError();
+}
+
+function throwIfChatDomainRequestAborted(abortSignal?: AbortSignal): void {
+  if (abortSignal?.aborted) throw chatDomainRequestAbortReason(abortSignal);
+}
+
 export async function executeChatDomainHandler(
   handler: ChatDomainHandler,
   message: string,
@@ -158,11 +176,39 @@ export async function executeChatDomainHandler(
   },
   requestContext?: {
     locale?: string | null;
+    abortSignal?: AbortSignal;
   },
 ): Promise<ChatDomainExecutionResult> {
+  let lateContinuationRef: ChatDomainTimeoutContinuationRef | null = null;
   const handlerPromise = runWithChatRequestLocale(
     requestContext?.locale,
-    () => handler(message, userId, tenantId),
+    () => runWithSkillInferenceAccountAdmission({
+      userId,
+      abortSignal: requestContext?.abortSignal,
+    }, async (accountAbortSignal) => {
+      try {
+        throwIfChatDomainRequestAborted(accountAbortSignal);
+        const result = await handler(message, userId, tenantId, accountAbortSignal);
+        throwIfChatDomainRequestAborted(accountAbortSignal);
+        if (lateContinuationRef && continuation) {
+          try {
+            continuation.attachLateResult(lateContinuationRef, result);
+          } catch {
+            // The durable deadline still fails honestly without a re-run.
+          }
+        }
+        return result;
+      } catch (error) {
+        if (lateContinuationRef && continuation) {
+          try {
+            continuation.attachLateFailure(lateContinuationRef, error);
+          } catch {
+            // The durable deadline still fails honestly without a re-run.
+          }
+        }
+        throw error;
+      }
+    }),
   );
   let timeout: ReturnType<typeof setTimeout> | undefined;
   const timeoutPromise = new Promise<never>((_, reject) => {
@@ -178,32 +224,34 @@ export async function executeChatDomainHandler(
           continuationRef = null;
         }
       }
-      if (continuationRef && continuation) {
-        void handlerPromise.then(
-          (result) => {
-            try {
-              continuation.attachLateResult(continuationRef as ChatDomainTimeoutContinuationRef, result);
-            } catch {
-              // The durable deadline still fails honestly without a re-run.
-            }
-          },
-          (error) => {
-            try {
-              continuation.attachLateFailure(continuationRef as ChatDomainTimeoutContinuationRef, error);
-            } catch {
-              // The durable deadline still fails honestly without a re-run.
-            }
-          },
-        );
-      }
+      lateContinuationRef = continuationRef;
       reject(new ChatDomainTimeoutError(chatRequestId ?? null, checkpoints, continuationRef));
     }, timeoutMs);
   });
 
+  let removeAbortListener: (() => void) | undefined;
+  const abortPromise = requestContext?.abortSignal
+    ? new Promise<never>((_, reject) => {
+      const signal = requestContext.abortSignal as AbortSignal;
+      const rejectForAbort = () => reject(chatDomainRequestAbortReason(signal));
+      if (signal.aborted) {
+        rejectForAbort();
+        return;
+      }
+      signal.addEventListener('abort', rejectForAbort, { once: true });
+      removeAbortListener = () => signal.removeEventListener('abort', rejectForAbort);
+    })
+    : null;
+
   try {
-    return await Promise.race([handlerPromise, timeoutPromise]);
+    return await Promise.race([
+      handlerPromise,
+      timeoutPromise,
+      ...(abortPromise ? [abortPromise] : []),
+    ]);
   } finally {
     if (timeout) clearTimeout(timeout);
+    removeAbortListener?.();
   }
 }
 

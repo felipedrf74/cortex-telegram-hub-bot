@@ -9,6 +9,8 @@ class AttributionFields(BaseModel):
     user_id: int | None = Field(default=None)
     tenant_id: int | None = Field(default=None)
     internal_attribution_token: str | None = Field(default=None)
+    internal_inference_attribution_token: str | None = Field(default=None)
+    internal_inference_proof_key: str | None = Field(default=None)
     source_package_id: str | None = Field(default=None)
     voice_card_version: str | None = Field(default=None)
     draft_id: str | None = Field(default=None)
@@ -122,6 +124,8 @@ class ScriptRequest(BaseModel):
     user_id: int | None = Field(default=None)
     tenant_id: int | None = Field(default=None)
     internal_attribution_token: str | None = Field(default=None)
+    internal_inference_attribution_token: str | None = Field(default=None)
+    internal_inference_proof_key: str | None = Field(default=None)
     force_refresh: bool = Field(default=False)
     regeneration_seed: str | None = Field(default=None)
 

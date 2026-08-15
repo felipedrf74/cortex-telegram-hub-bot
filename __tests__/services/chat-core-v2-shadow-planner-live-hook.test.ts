@@ -96,6 +96,20 @@ let db: Database.Database;
 describe('Chat Core v2 shadow planner live hook (Batch-A)', () => {
   beforeEach(() => {
     db = new Database(':memory:');
+    db.exec(`
+      CREATE TABLE users (
+        id INTEGER PRIMARY KEY,
+        status TEXT NOT NULL
+      );
+      INSERT INTO users (id, status) VALUES (42, 'active');
+      CREATE TABLE local_inference_account_deletion_fences (
+        user_id INTEGER PRIMARY KEY CHECK (user_id > 0),
+        fence_token TEXT NOT NULL UNIQUE CHECK (length(fence_token) = 36),
+        runtime_instance_id TEXT NOT NULL CHECK (length(runtime_instance_id) = 36),
+        expires_at INTEGER NOT NULL CHECK (expires_at > 0),
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      );
+    `);
     dispatchLocalReasoning.mockReset();
     _resetLocalInferenceGateForTests();
   });

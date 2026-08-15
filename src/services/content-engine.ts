@@ -1,19 +1,48 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
-
 import crypto from 'crypto';
 import { config } from '../config';
 import { logger } from '../utils/logger';
-import { getCurrentRequestId, generateRequestId } from '../utils/request-context';
 import type { AgentSignal } from './intelligence-bus';
 import { buildCurrentCreatorProfilePayload } from './content-engine-profile-payload';
-import { assertContentScriptOutputLanguage, ContentOutputLanguageMismatchError, normalizeContentOutputLanguage } from './content-output-language';
-import { createInternalAttributionToken } from './internal-attribution';
+import { assertContentScriptOutputLanguage, ContentOutputLanguageMismatchError } from './content-output-language';
+import { buildContentEngineScriptAttribution } from './content-engine-script-attribution';
+import {
+  isContentLocalPrimaryAdmitted,
+  normalizeScriptLanguage,
+  normalizeScriptRenderMode,
+  normalizeScriptStyle,
+  type ScriptGenerationMode,
+  type ScriptProviderBoundary,
+  type ScriptRenderMode,
+  type ScriptRuntimeOptions,
+  type ScriptStyle,
+} from './content-engine-script-runtime';
 import { requireTenantIdParam } from './tenant-scope';
-import { ForwardedAiBudgetError, parseForwardedAiBudgetError } from './content-engine-error-contract';
+import {
+  engineFetch,
+  throwIfContentEngineRequestCancelled,
+  withRetry,
+} from './content-engine-http';
 import { buildContentEngineCacheLogContext } from './content-engine-log-context';
 import { DEFAULT_SCRIPT_GENERATION_EXECUTION_POLICY, SYNTHETIC_EVALUATION_SCRIPT_EXECUTION_POLICY, type ScriptGenerationExecutionPolicy } from './content-script-execution-policy';
-export { ForwardedAiBudgetError, parseForwardedAiBudgetError, type ForwardedAiBudgetCode } from './content-engine-error-contract';
+export {
+  ForwardedAiBudgetError,
+  ForwardedLocalInferenceError,
+  parseForwardedAiBudgetError,
+  parseForwardedContentEngineError,
+  parseForwardedLocalInferenceError,
+  type ForwardedAiBudgetCode,
+  type ForwardedLocalInferenceCode,
+} from './content-engine-error-contract';
 export { DEFAULT_SCRIPT_GENERATION_EXECUTION_POLICY, SYNTHETIC_EVALUATION_SCRIPT_EXECUTION_POLICY, type ScriptGenerationExecutionPolicy } from './content-script-execution-policy';
+export { contentEngineApiBaseUrl, isContentEngineHealthy } from './content-engine-http';
+export type {
+  ScriptGenerationMode,
+  ScriptProviderBoundary,
+  ScriptRenderMode,
+  ScriptRuntimeOptions,
+  ScriptStyle,
+} from './content-engine-script-runtime';
 
 // ── Types mirroring Python Pydantic models ──────────────────────────
 
@@ -23,7 +52,6 @@ export interface SourceReference {
   source_type: string;
   relevance_note: string;
 }
-
 export interface ContentBrief {
   title: string;
   hook: string;
@@ -37,19 +65,16 @@ export interface ContentBrief {
   time_sensitive: boolean;
   why_now: string;
 }
-
 export interface DeepSearchResponse {
   query: string;
   briefs: ContentBrief[];
   search_count: number;
   duration_ms: number;
 }
-
 export interface SourcesResponse {
   query: string;
   sources: SourceReference[];
 }
-
 export interface TrendingTopic {
   topic: string;
   heat_score: number;
@@ -57,25 +82,21 @@ export interface TrendingTopic {
   first_seen: string | null;
   niche: string;
 }
-
 export interface HotNewsResponse {
   topics: TrendingTopic[];
   generated_at: string;
 }
-
 export interface TrendingResponse {
   topics: TrendingTopic[];
   niche: string;
   duration_ms: number;
   generated_at: string;
 }
-
 export interface ReactionResponse {
   query: string;
   briefs: ContentBrief[];
   duration_ms: number;
 }
-
 export interface HooksResponse {
   topic: string;
   niche: string;
@@ -84,7 +105,6 @@ export interface HooksResponse {
   degraded?: boolean;
   warnings?: string[];
 }
-
 export interface ScriptResponse {
   topic: string;
   script: string;
@@ -113,7 +133,6 @@ export interface ScriptResponse {
   prompt_budget?: Record<string, unknown>;
   research_route?: Record<string, unknown>;
 }
-
 export interface ScriptTopicContext {
   ideaId?: number | null;
   pipelineId?: number | null;
@@ -180,102 +199,6 @@ export interface ReportResponse {
   duration_ms: number;
 }
 
-export function contentEngineApiBaseUrl(rawBaseUrl = config.contentEngine.baseUrl): string {
-  const trimmed = (rawBaseUrl || `http://localhost:${config.contentEngine.port}`)
-    .trim()
-    .replace(/\/+$/, '');
-  return trimmed.endsWith('/api/v1') ? trimmed : `${trimmed}/api/v1`;
-}
-
-const BASE_URL = contentEngineApiBaseUrl();
-
-let _lastHealthCheck = 0;
-let _isHealthy = true;
-let _consecutiveFailures = 0;
-const HEALTH_CHECK_INTERVAL_MS = 60_000; // 1 minute between probes
-const CIRCUIT_BREAKER_THRESHOLD = 3;     // 3 consecutive failures → fail-fast
-const CIRCUIT_BREAKER_COOLDOWN_MS = 5 * 60_000; // 5 minutes
-
-export async function isContentEngineHealthy(): Promise<boolean> {
-  if (Date.now() - _lastHealthCheck < HEALTH_CHECK_INTERVAL_MS) return _isHealthy;
-  try {
-    const res = await fetch(`${BASE_URL.replace('/api/v1', '')}/health`, {
-      signal: AbortSignal.timeout(5000),
-    });
-    _isHealthy = res.ok;
-    _consecutiveFailures = _isHealthy ? 0 : _consecutiveFailures + 1;
-  } catch {
-    _isHealthy = false;
-    _consecutiveFailures++;
-  }
-  _lastHealthCheck = Date.now();
-  return _isHealthy;
-}
-
-async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
-  // Circuit breaker: fail-fast if engine has been down
-  if (_consecutiveFailures >= CIRCUIT_BREAKER_THRESHOLD) {
-    if (Date.now() - _lastHealthCheck < CIRCUIT_BREAKER_COOLDOWN_MS) {
-      throw new Error('Content engine circuit breaker OPEN — too many consecutive failures. Cooling down.');
-    }
-    // Cooldown expired, reset and try
-    _consecutiveFailures = 0;
-  }
-
-  let lastError: Error = new Error('Unknown');
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    try {
-      const result = await fn();
-      _consecutiveFailures = 0; // success resets the counter
-      return result;
-    } catch (err) {
-      // Stable entitlement/quota errors are policy decisions, not engine
-      // availability failures. Retrying can spend again and must not advance
-      // the content-engine circuit breaker.
-      if (err instanceof ForwardedAiBudgetError) throw err;
-      lastError = err as Error;
-      _consecutiveFailures++;
-      if (attempt < maxRetries) {
-        const delayMs = Math.pow(2, attempt + 1) * 1000; // 2s, 4s, 8s
-        logger.warn({ attempt, delayMs, error: lastError.message }, 'Content engine call failed, retrying');
-        await new Promise(r => setTimeout(r, delayMs));
-      }
-    }
-  }
-  throw lastError;
-}
-
-async function engineFetch<T>(path: string, options?: RequestInit, timeoutMs = 30_000): Promise<T> {
-  const url = `${BASE_URL}${path}`;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-
-  // Propagate request tracing to the Python content-engine.
-  const requestId = getCurrentRequestId() || generateRequestId();
-
-  try {
-    const res = await fetch(url, {
-      ...options,
-      signal: controller.signal,
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Request-Id': requestId,
-        'X-Internal-Secret': config.contentEngine.internalApiSecret,
-        ...options?.headers,
-      },
-    });
-    if (!res.ok) {
-      const body = await res.text();
-      const budgetError = parseForwardedAiBudgetError(res, body);
-      if (budgetError) throw budgetError;
-      throw new Error(`Content Engine ${res.status}: ${body}`);
-    }
-    return res.json() as Promise<T>;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 export async function deepSearch(query: string, niches?: string[], maxResults = 10): Promise<DeepSearchResponse> {
   const creatorPayload = buildCurrentCreatorProfilePayload(null, 'content_engine_deepsearch');
   return withRetry(() => engineFetch<DeepSearchResponse>('/deepsearch', {
@@ -317,38 +240,12 @@ export async function getHooks(topic: string, niche = 'general', count = 8): Pro
   }, 45_000);
 }
 
-// Mode controls three levers: cache behavior, signal window, and timeout.
-//   Draft:    compact draft pack, cache-first, no signals, 45s timeout (~70-85% cheaper)
-//   Quick:    cache-first (48h), no signals, 60s timeout  (~$0.003 cached, ~$0.005 fresh)
-//   Standard: cache 24h, compact signal window, 120s timeout (~$0.01-0.02)
-//   Deep:     skip cache, explicit deep research, 300s timeout (~$0.02-0.05)
-
-export type ScriptGenerationMode = 'draft' | 'quick' | 'standard' | 'deep';
-export type ScriptRenderMode = 'structured' | 'chat';
-export type ScriptStyle = 'detailed' | 'bullets';
-export type ScriptProviderBoundary = <T>(providerCall: () => Promise<T>) => Promise<T>;
-
 const MODE_CONFIG: Record<ScriptGenerationMode, { cacheTtl: number; signalDays: number; timeoutMs: number }> = {
   draft:    { cacheTtl: 48 * 3600, signalDays: 0,  timeoutMs: 45_000 },
   quick:    { cacheTtl: 48 * 3600, signalDays: 0,  timeoutMs: 60_000 },
   standard: { cacheTtl: 24 * 3600, signalDays: 14, timeoutMs: 120_000 },
   deep:     { cacheTtl: 0,         signalDays: 90, timeoutMs: 300_000 },
 };
-
-function normalizeScriptLanguage(language?: string | null): string { return typeof language === 'string' && language.trim() ? normalizeContentOutputLanguage(language) : 'pt-BR'; }
-
-function normalizeScriptRenderMode(renderMode?: string | null): ScriptRenderMode {
-  return String(renderMode || 'structured').trim().toLowerCase() === 'chat'
-    ? 'chat'
-    : 'structured';
-}
-
-function normalizeScriptStyle(style?: string | null): ScriptStyle {
-  const normalized = String(style || 'detailed').trim().toLowerCase();
-  return ['bullet', 'bullets', 'outline', 'pontos'].includes(normalized)
-    ? 'bullets'
-    : 'detailed';
-}
 
 function hashBrandVoice(brandVoice?: string | null): string {
   const normalized = (brandVoice || '').trim();
@@ -498,7 +395,9 @@ export async function getScript(
   regenerationSeed?: string | null, creatorProfile?: string | null, tenantId?: number,
   providerBoundary?: ScriptProviderBoundary,
   executionPolicy: ScriptGenerationExecutionPolicy = DEFAULT_SCRIPT_GENERATION_EXECUTION_POLICY,
+  runtimeOptions: ScriptRuntimeOptions = {},
 ): Promise<ScriptResponse> {
+  throwIfContentEngineRequestCancelled(runtimeOptions.abortSignal);
   const cfg = MODE_CONFIG[mode];
   const requestTimeoutMs = executionPolicy === SYNTHETIC_EVALUATION_SCRIPT_EXECUTION_POLICY
     ? Math.min(cfg.timeoutMs, 85_000)
@@ -527,13 +426,16 @@ export async function getScript(
   if (executionPolicy.cache === 'default' && cfg.cacheTtl > 0 && !forceRefresh) {
     try {
       const { getCached } = await import('./cache-store');
+      throwIfContentEngineRequestCancelled(runtimeOptions.abortSignal);
       const cached = getCached<ScriptResponse>(normalizedKey);
       if (cached) {
+        throwIfContentEngineRequestCancelled(runtimeOptions.abortSignal);
         assertContentScriptOutputLanguage(normalizedLanguage, cached, 'content-engine-script-cache');
         logger.info(buildContentEngineCacheLogContext(topic, mode, true), 'Script cache hit — returning cached result');
         return cached;
       }
     } catch (error) {
+      throwIfContentEngineRequestCancelled(runtimeOptions.abortSignal, error);
       if (error instanceof ContentOutputLanguageMismatchError) throw error;
       // Cache unavailable: generate fresh.
     }
@@ -544,6 +446,7 @@ export async function getScript(
   if (executionPolicy.intelligenceSignals === 'default' && cfg.signalDays > 0) {
     try {
       const { readSignals } = await import('./intelligence-bus');
+      throwIfContentEngineRequestCancelled(runtimeOptions.abortSignal);
       const signalTypes = [
         'hook_effectiveness', 'voice_pattern', 'voice_phrase_trend',
         'channel_dna', 'book_knowledge', 'keyword_rank_change',
@@ -561,13 +464,15 @@ export async function getScript(
         payload: s.payload,
       }));
       logger.info({ signalCount: contextSignals.length, rawSignalCount: raw.length, mode, signalDays: cfg.signalDays }, 'Injecting ranked bus signals');
-    } catch {
+    } catch (error) {
+      throwIfContentEngineRequestCancelled(runtimeOptions.abortSignal, error);
       // Bus unavailable — generate without signals (backward compatible)
     }
   }
 
   const invokeFreshProviderPath = () => engineFetch<ScriptResponse>('/script', {
     method: 'POST',
+    signal: runtimeOptions.abortSignal,
     body: JSON.stringify({
       topic, niche, format, mode,
       language: normalizedLanguage,
@@ -583,14 +488,15 @@ export async function getScript(
       creator_profile: creatorProfile || undefined,
       user_id: userId ?? undefined,
       tenant_id: tenantId ?? undefined,
-      // This token must be minted inside providerBoundary when one is
-      // supplied. Its signed outer-reservation marker lets Python callbacks
-      // re-enter the live lock instead of deadlocking on a nested user lock.
-      internal_attribution_token: createInternalAttributionToken({
-        userId: userId ?? 0,
-        tenantId: tenantId ?? userId ?? 0,
-        category: `content_engine_script_${mode}`,
-      }) ?? undefined,
+      ...buildContentEngineScriptAttribution({
+        contentProxyEnabled: runtimeOptions.localPrimaryAdmitted
+          ?? isContentLocalPrimaryAdmitted(userId),
+        providerBoundarySupplied: Boolean(providerBoundary),
+        userId,
+        tenantId,
+        mode,
+        operationId: runtimeOptions.operationId,
+      }),
       force_refresh: forceRefresh || undefined,
       regeneration_seed: regenerationSeed || undefined,
     }),
@@ -598,17 +504,23 @@ export async function getScript(
   const result = providerBoundary
     ? await providerBoundary(invokeFreshProviderPath)
     : await invokeFreshProviderPath();
+  throwIfContentEngineRequestCancelled(runtimeOptions.abortSignal);
   assertContentScriptOutputLanguage(normalizedLanguage, result, 'content-engine-script');
 
   // ── Cache store (skip for deep mode) ───────────────────────────
   if (executionPolicy.cache === 'default' && cfg.cacheTtl > 0 && (!forceRefresh || Boolean(regenerationSeed?.trim()))) {
     try {
       const { setCache } = await import('./cache-store');
+      throwIfContentEngineRequestCancelled(runtimeOptions.abortSignal);
       setCache(normalizedKey, result, cfg.cacheTtl);
       logger.info(buildContentEngineCacheLogContext(topic, mode, false, cfg.cacheTtl), 'Script cached');
-    } catch { /* cache store failed — non-fatal */ }
+    } catch (error) {
+      throwIfContentEngineRequestCancelled(runtimeOptions.abortSignal, error);
+      // Cache store failed — non-fatal.
+    }
   }
 
+  throwIfContentEngineRequestCancelled(runtimeOptions.abortSignal);
   return result;
 }
 

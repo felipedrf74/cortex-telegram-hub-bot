@@ -110,7 +110,7 @@ export interface ScheduledInventoryRequest {
 export type ContentAiBudgetContext = Pick<
   AiBudgetRequest,
   'requestSource' | 'jobName' | 'runId' | 'estimatedCostUsd'
->;
+> & { abortSignal?: AbortSignal };
 
 // ─── Database helpers ───────────────────────────────────────────────
 
@@ -425,7 +425,7 @@ async function completeTopicGeneration(
       system: cachedSystem,
       messages: [{ role: 'user', content: boundedPrompt }],
       ...(searchTools ? { tools: searchTools } : {}),
-    } as any, category, { userId, tenantId });
+    } as any, category, { userId, tenantId, abortSignal: budgetContext.abortSignal });
     let webSearchRequests = Number(
       (response as any).usage?.server_tool_use?.web_search_requests ?? 0,
     );
@@ -442,7 +442,11 @@ async function completeTopicGeneration(
           { role: 'assistant', content: response.content as any },
         ],
         ...(searchTools ? { tools: searchTools } : {}),
-      } as any, `${category}_continuation`, { userId, tenantId });
+      } as any, `${category}_continuation`, {
+        userId,
+        tenantId,
+        abortSignal: budgetContext.abortSignal,
+      });
       webSearchRequests += Number(
         (finalResponse as any).usage?.server_tool_use?.web_search_requests ?? 0,
       );
@@ -473,7 +477,7 @@ async function completeTopicGeneration(
           boundedSystemPrompt,
           boundedUserMessage,
           `${category}_openai_web_search`,
-          { maxTokens, userId, tenantId },
+          { maxTokens, userId, tenantId, abortSignal: budgetContext.abortSignal },
         );
         if (grounded.sources.length === 0) {
           throw new Error('OpenAI topic generation returned without grounding sources');
@@ -491,7 +495,13 @@ async function completeTopicGeneration(
           boundedUserMessage,
           category,
           completeWithAnthropic,
-          { model: CONTENT_TOPIC_MODEL, maxTokens, userId, tenantId },
+          {
+            model: CONTENT_TOPIC_MODEL,
+            maxTokens,
+            userId,
+            tenantId,
+            abortSignal: budgetContext.abortSignal,
+          },
         );
         return {
           ...generated,
@@ -517,7 +527,13 @@ async function completeTopicGeneration(
           fallbackPrompt,
           category,
           () => completeWithAnthropic(fallbackPrompt, undefined),
-          { model: CONTENT_TOPIC_MODEL, maxTokens, userId, tenantId },
+          {
+            model: CONTENT_TOPIC_MODEL,
+            maxTokens,
+            userId,
+            tenantId,
+            abortSignal: budgetContext.abortSignal,
+          },
         );
         return { ...generated, grounded: false };
       }
@@ -545,7 +561,7 @@ async function completeTopicGeneration(
           boundedSystemPrompt,
           boundedUserMessage,
           category,
-          { maxTokens, userId, tenantId },
+          { maxTokens, userId, tenantId, abortSignal: budgetContext.abortSignal },
         );
         if (grounded.sources.length === 0) {
           throw new Error('Gemini topic generation returned without grounding sources');
@@ -565,7 +581,13 @@ async function completeTopicGeneration(
       boundedUserMessage,
       category,
       completeWithAnthropic,
-      { model: CONTENT_TOPIC_MODEL, maxTokens, userId, tenantId },
+      {
+        model: CONTENT_TOPIC_MODEL,
+        maxTokens,
+        userId,
+        tenantId,
+        abortSignal: budgetContext.abortSignal,
+      },
     );
     return { ...generated, grounded: false };
   });

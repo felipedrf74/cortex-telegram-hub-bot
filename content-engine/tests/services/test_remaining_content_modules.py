@@ -2,6 +2,7 @@ import ast
 import asyncio
 import builtins
 import importlib
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -134,6 +135,179 @@ async def test_ai_proxy_uses_request_scoped_attribution_context(monkeypatch):
     assert captured["json"]["tenantId"] == 44
     assert captured["json"]["attributionToken"] == "signed-token"
     assert captured["json"]["category"] == "content_engine_hook"
+
+
+@pytest.mark.parametrize(
+    "category",
+    ["content_engine_script_standard", "content_engine_deepsearch"],
+)
+async def test_ai_proxy_uses_local_inference_attribution_without_cloud_budget_token(
+    monkeypatch,
+    category,
+):
+    captured = {}
+
+    class StubResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"text": "ok", "provider": "ollama"}
+
+    class StubClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def post(self, url, json, headers):
+            captured["json"] = json
+            return StubResponse()
+
+    monkeypatch.setattr(claude_client, "_FIXTURE_MODE", False)
+    monkeypatch.setattr(claude_client, "_INTERNAL_SECRET", "test-secret")
+    monkeypatch.setattr(claude_client.httpx, "AsyncClient", StubClient)
+
+    token = claude_client.set_attribution_context(
+        user_id=7,
+        tenant_id=44,
+        inference_attribution_token="signed-inference-token",
+        inference_proof_key="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    )
+    try:
+        text = await claude_client.ask_claude(
+            "prompt",
+            category=category,
+            json_mode=True,
+        )
+    finally:
+        claude_client.reset_attribution_context(token)
+
+    assert text == "ok"
+    assert captured["json"]["inferenceAttributionToken"] == "signed-inference-token"
+    assert captured["json"]["inferenceAttributionProof"]
+    assert captured["json"]["inferenceAttributionProof"] != "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    assert "attributionToken" not in captured["json"]
+    assert captured["json"]["skillId"] == "content"
+    assert captured["json"]["executionClass"] == "background"
+    assert captured["json"]["schemaId"] == "generic_json"
+    assert re.fullmatch(
+        r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}",
+        captured["json"]["runId"],
+    )
+
+
+async def test_local_inference_proof_uses_the_exact_ecmascript_trimmed_wire_text(monkeypatch):
+    captured = {}
+
+    class StubResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"text": "ok", "provider": "ollama"}
+
+    class StubClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def post(self, url, json, headers):
+            captured["json"] = json
+            return StubResponse()
+
+    monkeypatch.setattr(claude_client, "_FIXTURE_MODE", False)
+    monkeypatch.setattr(claude_client, "_INTERNAL_SECRET", "test-secret")
+    monkeypatch.setattr(claude_client.httpx, "AsyncClient", StubClient)
+    proof_key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    prompt = "\u00a0\u0085prompt\u0085\u00a0"
+    system = "\u3000\u001csystem\u001c\u3000"
+    token = claude_client.set_attribution_context(
+        user_id=7,
+        tenant_id=44,
+        inference_attribution_token="signed-inference-token",
+        inference_proof_key=proof_key,
+    )
+    try:
+        await claude_client.ask_claude(
+            prompt,
+            system=system,
+            category="content_engine_script_standard",
+        )
+    finally:
+        claude_client.reset_attribution_context(token)
+
+    body = captured["json"]
+    assert body["prompt"] == "\u0085prompt\u0085"
+    assert body["system"] == "\u001csystem\u001c"
+    assert body["inferenceAttributionProof"] == claude_client._build_internal_inference_request_proof(
+        proof_key,
+        category=body["category"],
+        run_id=body["runId"],
+        prompt=body["prompt"],
+        system=body["system"],
+        max_tokens=body["maxTokens"],
+        temperature=body["temperature"],
+        json_mode=body["jsonMode"],
+        skill_id=body["skillId"],
+        task_type=body["taskType"],
+        risk_class=body["riskClass"],
+        execution_class=body["executionClass"],
+        schema_id=body["schemaId"],
+    )
+
+
+async def test_local_inference_unknown_proxy_failure_never_becomes_degraded_script_input(monkeypatch):
+    request = claude_client.httpx.Request("POST", "http://backend.test/api/v1/internal/ai-complete")
+    response = claude_client.httpx.Response(
+        500,
+        request=request,
+        json={"ok": False, "error": {"code": "AI_COMPLETE_FAILED", "message": "hidden"}},
+    )
+
+    class StubClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def post(self, url, json, headers):
+            return response
+
+    monkeypatch.setattr(claude_client, "_FIXTURE_MODE", False)
+    monkeypatch.setattr(claude_client, "_INTERNAL_SECRET", "test-secret")
+    monkeypatch.setattr(claude_client.httpx, "AsyncClient", StubClient)
+    token = claude_client.set_attribution_context(
+        user_id=7,
+        tenant_id=7,
+        inference_attribution_token="signed-inference-token",
+        inference_proof_key="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    )
+    try:
+        with pytest.raises(claude_client.AiProxyError) as caught:
+            await claude_client.ask_claude(
+                "prompt",
+                category="content_engine_script_standard",
+            )
+    finally:
+        claude_client.reset_attribution_context(token)
+
+    assert caught.value.status_code == 503
+    assert caught.value.code == "LOCAL_INFERENCE_FAILED"
+    assert caught.value.details == {"retryable": True}
 
 
 class StubSearcher:

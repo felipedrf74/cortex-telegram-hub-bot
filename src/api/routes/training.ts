@@ -15,7 +15,11 @@ import { markKeepOriginalForToday } from '../../services/training-keep-original'
 import { recordTrainingSummaryDeprecationHit } from '../../services/training-route-deprecation-telemetry';
 import * as trainingPlans from '../../services/training-plans';
 import { sendAiBudgetError, sendSuccess, sendError, sendInternalError } from '../response-helpers';
-import { applyCoachRecommendations, generateCoachBriefing } from '../../services/garmin-coach';
+import {
+  applyCoachRecommendations,
+  runWithCoachBriefingAccountAdmissions,
+  runWithCoachBriefingAccountLifecycle,
+} from '../../services/garmin-coach';
 import { buildActiveSignalsResponse } from '../../services/signals-observability';
 import {
   looksLikeTrainingCalendarEvent,
@@ -66,6 +70,7 @@ import {
   trainingOperationLockPublicError,
   withTrainingCalendarOperationLock,
 } from '../../services/training-operation-locks';
+import { isSkillInferenceAccountDeletionError } from '../../services/skill-inference-service';
 
 export { looksLikeTrainingCalendarEvent } from './training-calendar-utils';
 
@@ -269,6 +274,37 @@ async function buildDeterministicCoachFallback(
     deterministicFallback: true,
     cachedAt: new Date().toISOString(),
   };
+}
+
+function throwIfCoachFallbackAccountAborted(abortSignal: AbortSignal): void {
+  if (!abortSignal.aborted) return;
+  if (abortSignal.reason instanceof Error) throw abortSignal.reason;
+  throw Object.assign(new Error('Coach fallback stopped because account deletion is in progress.'), {
+    code: 'ACCOUNT_DELETION_IN_PROGRESS',
+  });
+}
+
+async function runAdmittedDeterministicCoachFallback<T>(
+  dataUserId: number,
+  meteringUserId: number,
+  language: Lang,
+  budgetJobName: 'coach_refresh_fallback' | 'coach_report_fallback',
+  publish: (fallback: Record<string, unknown>) => T,
+): Promise<T | null> {
+  return runWithCoachBriefingAccountAdmissions(dataUserId, {
+    tenantId: dataUserId,
+    meteringUserId,
+    budgetRequestSource: 'interactive',
+    budgetJobName,
+  }, async (accountAbortSignal) => {
+    throwIfCoachFallbackAccountAborted(accountAbortSignal);
+    const fallback = await buildDeterministicCoachFallback(dataUserId, dataUserId, language);
+    // The deterministic reads can yield. Re-check the erasure signal before
+    // the synchronous state/cache publication so no row is recreated after
+    // the account lifecycle starts draining.
+    throwIfCoachFallbackAccountAborted(accountAbortSignal);
+    return fallback ? publish(fallback) : null;
+  });
 }
 
 function parsePersistedStringArray(value: unknown): string[] {
@@ -539,49 +575,61 @@ export function trainingRoutes(): Router {
     }
 
     try {
-      const briefing = await generateCoachBriefing(dataUserId, {
+      const hydratedPayload = await runWithCoachBriefingAccountLifecycle(dataUserId, {
         tenantId: dataUserId,
         meteringUserId: userId,
         budgetRequestSource: 'interactive',
         budgetJobName: 'coach_refresh',
+      }, (briefing) => {
+        // `briefing.message` is the only briefing text field on
+        // CoachBriefingResult; hydration and cache persistence stay inside the
+        // same account lifecycle as generation so erasure cannot race them.
+        const payload = {
+          briefing: briefing?.message || 'No coach briefing available.',
+          recommendations: briefing?.recommendations || [],
+          garminData: null as unknown,
+          cachedAt: new Date().toISOString(),
+        };
+        const hydrated = syncCoachStateForUser(dataUserId, payload);
+        setCache(cacheKey, hydrated, COACH_BRIEFING_TTL);
+        return hydrated;
       });
-
-      // `briefing.message` is the only briefing text field on CoachBriefingResult;
-      // garminData is hydrated later via syncCoachStateForUser and the cache-restore
-      // path, not by generateCoachBriefing itself. Previous fallbacks to
-      // briefing?.text / briefing?.briefing / briefing?.garminData were dead code
-      // (those keys never exist on the return type) and the inline `require()`
-      // hid the type mismatch.
-      const payload = {
-        briefing: briefing?.message || 'No coach briefing available.',
-        recommendations: briefing?.recommendations || [],
-        garminData: null as unknown,
-        cachedAt: new Date().toISOString(),
-      };
-
-      const hydratedPayload = syncCoachStateForUser(dataUserId, payload);
-      setCache(cacheKey, hydratedPayload, COACH_BRIEFING_TTL);
       sendSuccess(res, hydratedPayload);
     } catch (err: any) {
+      if (isSkillInferenceAccountDeletionError(err)) {
+        sendError(res, 'ACCOUNT_DELETION_IN_PROGRESS', 'Coach generation is unavailable while this account is being deleted.', 409);
+        return;
+      }
       logger.error({ err }, 'iOS training/coach failed');
       if (sendAiBudgetError(res, err)) return;
-      const fallback = await buildDeterministicCoachFallback(dataUserId, dataUserId, language).catch((fallbackErr) => {
+      let hydratedFallback: Record<string, unknown> | null = null;
+      try {
+        hydratedFallback = await runAdmittedDeterministicCoachFallback(
+          dataUserId,
+          userId,
+          language,
+          'coach_refresh_fallback',
+          (fallback) => syncCoachStateForUser(dataUserId, {
+            ...fallback,
+            degraded: true,
+            warnings: [
+              ...(
+                Array.isArray(fallback.warnings)
+                  ? fallback.warnings.filter((warning: unknown): warning is string => typeof warning === 'string')
+                  : []
+              ),
+              'Coach AI unavailable; deterministic fallback used.',
+            ],
+          }),
+        );
+      } catch (fallbackErr) {
+        if (isSkillInferenceAccountDeletionError(fallbackErr)) {
+          sendError(res, 'ACCOUNT_DELETION_IN_PROGRESS', 'Coach generation is unavailable while this account is being deleted.', 409);
+          return;
+        }
         logger.debug({ err: fallbackErr, userId, tenantId: dataUserId }, 'training/coach deterministic fallback failed');
-        return null;
-      });
-      if (fallback) {
-        const hydratedFallback = syncCoachStateForUser(dataUserId, {
-          ...fallback,
-          degraded: true,
-          warnings: [
-            ...(
-              Array.isArray((fallback as any).warnings)
-                ? (fallback as any).warnings.filter((warning: unknown): warning is string => typeof warning === 'string')
-                : []
-            ),
-            'Coach AI unavailable; deterministic fallback used.',
-          ],
-        });
+      }
+      if (hydratedFallback) {
         sendSuccess(res, hydratedFallback);
         return;
       }
@@ -630,27 +678,50 @@ export function trainingRoutes(): Router {
     }
 
     try {
-      const briefing = await generateCoachBriefing(dataUserId, {
+      const reportPayload = await runWithCoachBriefingAccountLifecycle(dataUserId, {
         tenantId: dataUserId,
         meteringUserId: userId,
         budgetRequestSource: 'interactive',
         budgetJobName: 'coach_report',
+      }, (briefing) => {
+        const payload = syncCoachStateForUser(dataUserId, {
+          briefing: briefing?.message || 'No coach briefing available.',
+          recommendations: briefing?.recommendations || [],
+          garminData: null as unknown,
+          cachedAt: new Date().toISOString(),
+        });
+        setCache(cacheKey, payload, COACH_BRIEFING_TTL);
+        return buildCoachReportResponse(payload, language);
       });
-      const payload = syncCoachStateForUser(dataUserId, {
-        briefing: briefing?.message || 'No coach briefing available.',
-        recommendations: briefing?.recommendations || [],
-        garminData: null as unknown,
-        cachedAt: new Date().toISOString(),
-      });
-      setCache(cacheKey, payload, COACH_BRIEFING_TTL);
-      sendSuccess(res, buildCoachReportResponse(payload, language));
+      sendSuccess(res, reportPayload);
     } catch (err: any) {
+      if (isSkillInferenceAccountDeletionError(err)) {
+        sendError(res, 'ACCOUNT_DELETION_IN_PROGRESS', 'Coach generation is unavailable while this account is being deleted.', 409);
+        return;
+      }
       logger.error({ err, userId, tenantId: dataUserId }, 'iOS training/coach/report failed');
       if (sendAiBudgetError(res, err)) return;
-      const fallback = await buildDeterministicCoachFallback(dataUserId, dataUserId, language).catch(() => null);
-      if (fallback) {
-        const payload = syncCoachStateForUser(dataUserId, fallback);
-        sendSuccess(res, buildCoachReportResponse(payload, language));
+      let fallbackReport: Record<string, unknown> | null = null;
+      try {
+        fallbackReport = await runAdmittedDeterministicCoachFallback(
+          dataUserId,
+          userId,
+          language,
+          'coach_report_fallback',
+          (fallback) => buildCoachReportResponse(
+            syncCoachStateForUser(dataUserId, fallback),
+            language,
+          ),
+        );
+      } catch (fallbackErr) {
+        if (isSkillInferenceAccountDeletionError(fallbackErr)) {
+          sendError(res, 'ACCOUNT_DELETION_IN_PROGRESS', 'Coach generation is unavailable while this account is being deleted.', 409);
+          return;
+        }
+        logger.debug({ err: fallbackErr, userId, tenantId: dataUserId }, 'training/coach/report deterministic fallback failed');
+      }
+      if (fallbackReport) {
+        sendSuccess(res, fallbackReport);
         return;
       }
       sendSuccess(res, buildCoachReportResponse({

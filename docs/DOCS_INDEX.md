@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: backend architecture lead
-Last verified: 2026-08-09
+Last verified: 2026-08-12
 Update policy: update only when a canonical path changes
 
 Start with `docs/project-map.json`; it provides structured module, route,
@@ -25,6 +25,7 @@ review cadence through compact path rules plus explicit exceptions.
 | Security controls and operations | `docs/security/security-control-matrix.md`, `docs/security/security-operations-runbook.md` |
 | Threat model | `docs/security/nexus-security-threat-model.md` |
 | Paid-AI and quota contract | `docs/TOKEN-QUOTA-CONTRACT.md` |
+| Local-primary inference architecture and rollout | `docs/engineering/local-primary-inference-standard.md` |
 | Reward verification | `docs/agents/VERIFIABLE_REWARD_PROTOCOL.md` |
 | Legal and retention | `docs/legal/` |
 | Local runtime | `docs/local-dev/README.md` |

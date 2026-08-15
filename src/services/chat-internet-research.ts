@@ -27,6 +27,7 @@ import {
   detectStrictShortResponseLanguage,
   expectedLanguageForLocale,
 } from './chat-language-detector';
+import { throwIfChatRequestCancelled } from './chat/request-cancellation';
 
 const anthropicWebSearchClient = createLazyAnthropicClient({ maxRetries: 2 });
 
@@ -39,6 +40,7 @@ export interface ChatInternetResearchInput {
   tenantId: number;
   groundingRequired?: NexusChatGroundingRequirement;
   localContext?: string | null;
+  abortSignal?: AbortSignal;
 }
 
 export interface ChatInternetResearchResult {
@@ -68,6 +70,7 @@ export type ChatInternetResearchSafeQueryPacket =
 export async function buildChatInternetResearchAnswer(
   input: ChatInternetResearchInput,
 ): Promise<ChatInternetResearchResult> {
+  throwIfChatRequestCancelled(input.abortSignal);
   const localized = researchLocalization(input.language);
   const safeQuery = buildChatInternetResearchSafeQueryPacket(input);
   if (!safeQuery.ok) {
@@ -95,6 +98,7 @@ export async function buildChatInternetResearchAnswer(
         tenantId: input.tenantId,
         maxTokens: maxTokensForShape(input.expectedResponseShape),
         temperature: 0.35,
+        abortSignal: input.abortSignal,
       },
       input.language,
     );
@@ -136,6 +140,7 @@ export async function buildChatInternetResearchAnswer(
       context,
     };
   } catch (err) {
+    throwIfChatRequestCancelled(input.abortSignal, err);
     rethrowUsagePersistenceFailure(err);
     logger.warn(
       { err, userId: input.userId, tenantId: input.tenantId, skill: input.skill },
@@ -154,9 +159,16 @@ async function completeOneShotWithSearchWithRetry(
   systemPrompt: string,
   userPrompt: string,
   category: string,
-  options: { maxTokens: number; temperature: number; userId: number; tenantId: number },
+  options: {
+    maxTokens: number;
+    temperature: number;
+    userId: number;
+    tenantId: number;
+    abortSignal?: AbortSignal;
+  },
   language: NexusChatLanguage,
 ): Promise<{ text: string; sources: string[] }> {
+  throwIfChatRequestCancelled(options.abortSignal);
   const maxAttempts = researchProviderMaxAttempts();
   let lastError: unknown;
   let openAiAttempted = false;
@@ -166,8 +178,10 @@ async function completeOneShotWithSearchWithRetry(
       return ensureUsableResearchResult(
         await completeOneShotWithWebSearch(systemPrompt, userPrompt, `${category}_openai_web_search`, options),
         language,
+        options.abortSignal,
       );
     } catch (err) {
+      throwIfChatRequestCancelled(options.abortSignal, err);
       // A denial or metering failure on the cheapest grounded provider is
       // terminal. Availability/quality failures may still compare Gemini.
       rethrowUsagePersistenceFailure(err);
@@ -180,11 +194,14 @@ async function completeOneShotWithSearchWithRetry(
   }
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
+      throwIfChatRequestCancelled(options.abortSignal);
       return ensureUsableResearchResult(
         await completeOneShotWithSearch(systemPrompt, userPrompt, category, options),
         language,
+        options.abortSignal,
       );
     } catch (err) {
+      throwIfChatRequestCancelled(options.abortSignal, err);
       if (isProviderHeadroomDenial(err)) {
         // This is a pre-network denial for Gemini's concrete maximum, not a
         // failed paid call. Stop retrying the unaffordable provider and try the
@@ -199,7 +216,7 @@ async function completeOneShotWithSearchWithRetry(
         { err, attempt, maxAttempts, userId: options.userId, tenantId: options.tenantId },
         'Chat internet research attempt failed; retrying',
       );
-      await sleep(researchProviderRetryDelayMs(attempt));
+      await sleep(researchProviderRetryDelayMs(attempt), options.abortSignal);
     }
   }
   if (isProviderHeadroomDenial(lastError) && !openAiAttempted && isOpenAIConfigured()) {
@@ -211,8 +228,10 @@ async function completeOneShotWithSearchWithRetry(
       return ensureUsableResearchResult(
         await completeOneShotWithWebSearch(systemPrompt, userPrompt, `${category}_openai_web_search`, options),
         language,
+        options.abortSignal,
       );
     } catch (fallbackErr) {
+      throwIfChatRequestCancelled(options.abortSignal, fallbackErr);
       rethrowUsagePersistenceFailure(fallbackErr);
       logger.warn(
         { err: fallbackErr, userId: options.userId, tenantId: options.tenantId },
@@ -230,8 +249,10 @@ async function completeOneShotWithSearchWithRetry(
       return ensureUsableResearchResult(
         await completeOneShotWithAnthropicWebSearch(systemPrompt, userPrompt, category, options),
         language,
+        options.abortSignal,
       );
     } catch (fallbackErr) {
+      throwIfChatRequestCancelled(options.abortSignal, fallbackErr);
       rethrowUsagePersistenceFailure(fallbackErr);
       logger.warn(
         { err: fallbackErr, userId: options.userId, tenantId: options.tenantId },
@@ -248,8 +269,10 @@ async function completeOneShotWithSearchWithRetry(
       return ensureUsableResearchResult(
         await completeOneShotWithWebSearch(systemPrompt, userPrompt, `${category}_openai_web_search`, options),
         language,
+        options.abortSignal,
       );
     } catch (fallbackErr) {
+      throwIfChatRequestCancelled(options.abortSignal, fallbackErr);
       rethrowUsagePersistenceFailure(fallbackErr);
       logger.warn(
         { err: fallbackErr, userId: options.userId, tenantId: options.tenantId },
@@ -278,7 +301,9 @@ function rethrowUsagePersistenceFailure(error: unknown): void {
 function ensureUsableResearchResult(
   result: { text: string; sources: string[] },
   language: NexusChatLanguage,
+  abortSignal?: AbortSignal,
 ): { text: string; sources: string[] } {
+  throwIfChatRequestCancelled(abortSignal);
   const text = normalizeResearchAnswerText(result.text, language);
   if (isResearchProviderRefusal(text)) {
     throw new Error('research_provider_refusal');
@@ -330,7 +355,13 @@ async function completeOneShotWithAnthropicWebSearch(
   systemPrompt: string,
   userPrompt: string,
   category: string,
-  options: { maxTokens: number; temperature: number; userId: number; tenantId: number },
+  options: {
+    maxTokens: number;
+    temperature: number;
+    userId: number;
+    tenantId: number;
+    abortSignal?: AbortSignal;
+  },
 ): Promise<{ text: string; sources: string[] }> {
   const response = await trackedCreate(anthropicWebSearchClient.get(), {
     model: config.anthropic.classifierModel,
@@ -342,6 +373,7 @@ async function completeOneShotWithAnthropicWebSearch(
   } as any, `${category}_anthropic_web_search`, {
     userId: options.userId,
     tenantId: options.tenantId,
+    abortSignal: options.abortSignal,
   });
   return extractAnthropicWebSearchResult(response);
 }
@@ -393,9 +425,26 @@ function researchProviderRetryDelayMs(attempt = 1): number {
   return Math.min(Math.round(backoff), 10_000);
 }
 
-function sleep(ms: number): Promise<void> {
+function sleep(ms: number, abortSignal?: AbortSignal): Promise<void> {
+  throwIfChatRequestCancelled(abortSignal);
   if (ms <= 0) return Promise.resolve();
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  if (!abortSignal) return new Promise((resolve) => setTimeout(resolve, ms));
+  throwIfChatRequestCancelled(abortSignal);
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      try {
+        throwIfChatRequestCancelled(abortSignal);
+      } catch (error) {
+        reject(error);
+      }
+    };
+    const timer = setTimeout(() => {
+      abortSignal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    abortSignal.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 export function buildChatInternetResearchSafeQueryPacket(

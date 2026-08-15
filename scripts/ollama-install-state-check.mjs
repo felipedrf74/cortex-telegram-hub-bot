@@ -56,6 +56,55 @@ function sha256(path) {
   return createHash('sha256').update(readFileSync(path)).digest('hex');
 }
 
+function selectedManifestModel(sourceRoot) {
+  const manifestPath = join(sourceRoot, 'config/local-model-manifest.json');
+  secureRegularFile(manifestPath, 'signed local-model manifest', 0o644);
+  let manifest;
+  try {
+    manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+  } catch {
+    fail('signed local-model manifest is malformed');
+  }
+  const active = Array.isArray(manifest?.models)
+    ? manifest.models.find((model) => model?.id === manifest.activeModelId)
+    : null;
+  const digest = String(active?.digest || '');
+  const evidence = manifest?.selectionEvidence;
+  const productionEvidenceValid = manifest?.selectionStatus !== 'production_selected' || (
+    evidence && typeof evidence === 'object' && !Array.isArray(evidence)
+    && evidence.winningCandidateId === manifest.activeModelId
+    && /^sha256:[0-9a-f]{64}$/u.test(evidence.benchmarkReportDigest || '')
+    && typeof evidence.benchmarkCompletedAt === 'string'
+    && !Number.isNaN(Date.parse(evidence.benchmarkCompletedAt))
+    && new Date(evidence.benchmarkCompletedAt).toISOString() === evidence.benchmarkCompletedAt
+    && /^sha256:[0-9a-f]{64}$/u.test(evidence.benchmarkHostRollbackReceiptDigest || '')
+    && [
+      'corpusReference',
+      'licenseReviewReference',
+      'ownerApprovalReference',
+    ]
+      .every((field) => typeof evidence[field] === 'string'
+        && evidence[field].trim().length > 0
+        && evidence[field].trim().length <= 512)
+  );
+  if (manifest?.schemaVersion !== 'nexus.local-model-manifest.v1'
+      || !['control_only', 'production_selected'].includes(manifest.selectionStatus)
+      || (manifest.selectionStatus === 'control_only' && manifest.selectionEvidence !== null)
+      || !productionEvidenceValid
+      || active?.productionEligible !== true
+      || active?.evidenceStatus !== 'verified'
+      || typeof active?.ollamaTag !== 'string'
+      || active.ollamaTag.length < 1
+      || !/^sha256:[0-9a-f]{64}$/u.test(digest)
+      || (manifest.selectionStatus === 'production_selected' && active.role !== 'winner')) {
+    fail('signed local-model manifest has no verified digest-pinned active model');
+  }
+  return {
+    tag: active.ollamaTag,
+    digest: digest.slice('sha256:'.length),
+  };
+}
+
 function pathExists(path) {
   try {
     lstatSync(path);
@@ -221,6 +270,7 @@ if (value.schema !== 'nexus.ollama-systemd-install-journal.v1'
   fail('Ollama installation is incomplete or its candidate identity changed');
 }
 if (!testMode) {
+  const selectedModel = selectedManifestModel(value.sourceProvenance.sourceRoot);
   if (value.runtimeIdentity.binaryPath !== '/usr/local/bin/ollama'
       || value.runtimeIdentity.binarySha256
         !== 'b2e45ade9cb754a079f74645e1183d613f582d98f7354b05f4f9a5bd81f8e0c9'
@@ -228,9 +278,8 @@ if (!testMode) {
       || value.runtimeIdentity.serviceFragment !== '/etc/systemd/system/ollama.service'
       || value.runtimeIdentity.serviceFragmentSha256
         !== '72b23db27bcd69aa9c05226285a928ae8520dac108736072a33cea35bbcccdda'
-      || value.runtimeIdentity.retainedModel !== 'qwen2.5:3b-instruct-q4_K_M'
-      || value.runtimeIdentity.retainedModelDigest
-        !== '357c53fb659c5076de1d65ccb0b397446227b71a42be9d1603d46168015c9e4b') {
+      || value.runtimeIdentity.retainedModel !== selectedModel.tag
+      || value.runtimeIdentity.retainedModelDigest !== selectedModel.digest) {
     fail('Ollama runtime identity differs from the reviewed transition');
   }
   const binaryInfo = secureRegularFile(

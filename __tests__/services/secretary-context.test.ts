@@ -80,6 +80,19 @@ vi.mock('../../src/services/provider-registry', () => ({
   getActiveProvider: (...args: unknown[]) => mockGetActiveProvider(...args),
   ensureActiveProvider: (...args: unknown[]) => mockEnsureActiveProvider(...args),
 }));
+vi.mock('../../src/services/skill-inference-service', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/skill-inference-service')>(
+    '../../src/services/skill-inference-service',
+  )),
+  runWithSkillInferenceAccountAdmission: (
+    _input: unknown,
+    operation: (signal: AbortSignal) => Promise<unknown>,
+  ) => operation(new AbortController().signal),
+  isSkillInferenceAccountDeletionError: (error: unknown) => (
+    Boolean(error && typeof error === 'object'
+      && (error as { code?: unknown }).code === 'ACCOUNT_DELETION_IN_PROGRESS')
+  ),
+}));
 vi.mock('../../src/services/tool-executor', () => ({
   executeToolCall: vi.fn(),
 }));

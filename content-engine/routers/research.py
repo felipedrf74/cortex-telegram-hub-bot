@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+import asyncio
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from types import SimpleNamespace
 from models.requests import (
     DeepSearchRequest, DeepSearchResponse, SourcesResponse, HotNewsRequest, HotNewsResponse,
@@ -33,13 +35,45 @@ def get_orchestrator() -> ResearchOrchestrator:
     return _orchestrator
 
 
-async def _with_ai_attribution(req, operation):
+async def _run_until_client_disconnect(request: Request, operation):
+    operation_task = asyncio.create_task(operation())
+
+    async def wait_for_disconnect():
+        while not await request.is_disconnected():
+            await asyncio.sleep(0.05)
+
+    disconnect_task = asyncio.create_task(wait_for_disconnect())
+    try:
+        done, _ = await asyncio.wait(
+            {operation_task, disconnect_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if operation_task in done:
+            return await operation_task
+        operation_task.cancel()
+        try:
+            await operation_task
+        except asyncio.CancelledError:
+            pass
+        raise asyncio.CancelledError("content_engine_client_disconnected")
+    finally:
+        for task in (operation_task, disconnect_task):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(operation_task, disconnect_task, return_exceptions=True)
+
+
+async def _with_ai_attribution(req, operation, client_request: Request | None = None):
     token = set_attribution_context(
         user_id=getattr(req, "user_id", None),
         tenant_id=getattr(req, "tenant_id", None),
         attribution_token=getattr(req, "internal_attribution_token", None),
+        inference_attribution_token=getattr(req, "internal_inference_attribution_token", None),
+        inference_proof_key=getattr(req, "internal_inference_proof_key", None),
     )
     try:
+        if client_request is not None:
+            return await _run_until_client_disconnect(client_request, operation)
         return await operation()
     finally:
         reset_attribution_context(token)
@@ -158,12 +192,17 @@ async def generate_hooks(req: HooksRequest) -> HooksResponse:
 @router.post("/script", response_model=ScriptResponse)
 async def generate_script(
     req: ScriptRequest,
+    request: Request,
     orch: ResearchOrchestrator = Depends(get_orchestrator),
 ) -> ScriptResponse:
     """Generate a full video script with research baked in."""
     from services.creative import script_writer
     _creative_topic_guard(req.topic, "script")
-    return await _with_ai_attribution(req, lambda: script_writer.generate(req, orch))
+    return await _with_ai_attribution(
+        req,
+        lambda: script_writer.generate(req, orch),
+        client_request=request,
+    )
 
 
 @router.post("/titles", response_model=TitlesResponse)

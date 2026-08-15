@@ -156,9 +156,9 @@ describe('global cost guardrail for REST AI routes', () => {
 
   it('keeps iOS WebSocket token-zero work before the model reservation', () => {
     const source = fs.readFileSync(path.resolve(__dirname, '../../src/api/websocket.ts'), 'utf8');
-    const tokenZeroIndex = source.indexOf('if (await trySendTokenZeroSecretaryRead(ws');
+    const tokenZeroIndex = source.indexOf('const tokenZeroReadHandled = await runWithSkillInferenceAccountAdmission');
     const actionPlanIndex = source.indexOf('const deterministicAction = await tryHandleChatActionPlan');
-    const reservationIndex = source.indexOf('await withAiBudgetReservation({');
+    const reservationIndex = source.indexOf('withAiBudgetReservation({');
     const providerRoutingIndex = source.indexOf('const rawRoute = await routeMessage');
 
     expect(tokenZeroIndex).toBeGreaterThan(-1);

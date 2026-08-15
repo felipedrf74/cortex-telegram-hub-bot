@@ -37,6 +37,7 @@ import {
   CallDomainOptions,
   ClassifyOptions,
   ProviderHealthSnapshot,
+  isProviderRequestCancellation,
   normalizeCallDomainOptions,
 } from './ai-provider';
 import { DomainName, DomainMessage, ClassificationResult } from '../domains/types';
@@ -51,7 +52,15 @@ import {
   type LocalLLMRateLimitScope,
 } from './local-llm-rate-limiter';
 import { buildScopedStateContextPrefix } from './provider-state-context';
-import { assertSmallOnlyOllamaModel } from './ollama-model-policy';
+import {
+  assertSmallOnlyOllamaModel,
+  getActiveLocalModel,
+  getLocalModelManifest,
+  tryGetLocalModelManifest,
+} from './ollama-model-policy';
+import { OllamaTransportError, ollamaTransportFetch } from './ollama-transport';
+import { localPrimaryInferenceConfig } from './local-primary-config';
+import { validateStructuredOutputValue } from './structured-output-schema';
 import { detectResponseLanguage } from './chat-language-detector';
 import { getCurrentChatRequestLocale } from './chat-request-locale-context';
 import { assessChatResearchAnswerCompleteness } from './chat-research-answer-quality';
@@ -62,6 +71,11 @@ import {
   isManifestClassifierPromptEnabled,
   resolveManifestClassifierDisposition,
 } from '../router/classifier-prompt-builder';
+import {
+  normalizeOllamaModelDigest,
+  ollamaModelDigestsEqual,
+} from './ollama-model-digest';
+import { CLASSIFIER_SHADOW_JOB_NAME } from './local-inference-vocabulary';
 
 // ─── Public types for the new task dispatch paths ──────────────────
 
@@ -76,13 +90,14 @@ export type OllamaTaskType =
 /**
  * Explicit workload identity enforced at the final boundary before an
  * Ollama HTTP request is admitted. Production local inference is deliberately
- * limited to the two calibrated small-model roles below. Larger/generic work
- * may use the privacy-gated cloud route, but must never acquire a local role by
- * inference from a category string or task type.
+ * limited to the calibrated roles below and the one active signed-manifest
+ * model. Generic work must never acquire a local role by inference from a
+ * category string or task type.
  */
 export type OllamaWorkloadRole =
   | 'validated_local_chat'
   | 'classifier_shadow'
+  | 'skill_inference'
   | 'offline_evaluation';
 
 export interface ScriptGenTask {
@@ -93,6 +108,8 @@ export interface ScriptGenTask {
   tenantId?: number;
   /** Run id used for sandbox directory naming. Caller may pass a UUID. */
   runId?: string;
+  /** Caller lifecycle; cancellation stops local passes, validators, and persistence. */
+  abortSignal?: AbortSignal;
 }
 
 export interface GeneratedArtifact {
@@ -150,13 +167,19 @@ export interface LocalReasoningTask {
   keepAliveSeconds?: number;
   /** Optional caller abort signal composed into the Ollama fetch. */
   abortSignal?: AbortSignal;
+  /** Server-owned routing hint; never trusted from a public request body. */
+  localAdmission?: 'eligible' | 'force_cloud' | 'local_only';
+  /** Applied only around an actual cloud provider attempt. */
+  cloudFallbackBoundary?: <T>(providerCall: () => Promise<T>) => Promise<T>;
 }
 
 function assertAllowedOllamaWorkloadRole(
   workloadRole: unknown,
   taskType: OllamaTaskType,
 ): asserts workloadRole is OllamaWorkloadRole {
-  if (workloadRole === 'validated_local_chat' || workloadRole === 'classifier_shadow') {
+  if (workloadRole === 'validated_local_chat'
+      || workloadRole === 'classifier_shadow'
+      || workloadRole === 'skill_inference') {
     return;
   }
   if (workloadRole === 'offline_evaluation') {
@@ -1047,6 +1070,7 @@ interface DerivedMetrics {
   totalTokensPerSec?: number;
   isColdLoad?: boolean;
   warmGenerationMs?: number;
+  firstTokenMs?: number;
 }
 
 interface DeferredOllamaUsage {
@@ -1083,6 +1107,12 @@ function deriveMetrics(resp: OllamaChatResponse): DerivedMetrics {
   if (resp.eval_duration !== undefined) {
     m.warmGenerationMs = Math.round(resp.eval_duration / 1e6);
   }
+  if (resp.total_duration !== undefined && resp.eval_duration !== undefined) {
+    // Ollama's non-streaming response does not expose an on-chunk timestamp.
+    // total_duration - eval_duration is its native prefill/load approximation
+    // and is the closest server-side time-to-first-token signal available.
+    m.firstTokenMs = Math.max(0, Math.round((resp.total_duration - resp.eval_duration) / 1e6));
+  }
   return m;
 }
 
@@ -1092,19 +1122,52 @@ interface ModelDigestEntry { digest: string; ts: number }
 const modelDigestCache = new Map<string, ModelDigestEntry>();
 const DIGEST_CACHE_MS = 5 * 60 * 1000;
 
-async function getModelDigest(baseUrl: string, model: string): Promise<string | undefined> {
+async function getModelDigest(
+  baseUrl: string,
+  model: string,
+  options: { allowCache?: boolean } = {},
+): Promise<string | undefined> {
+  const allowCache = options.allowCache !== false;
   const cached = modelDigestCache.get(model);
-  if (cached && (Date.now() - cached.ts) < DIGEST_CACHE_MS) return cached.digest;
+  if (allowCache && cached && (Date.now() - cached.ts) < DIGEST_CACHE_MS) return cached.digest;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10_000);
+  timeout.unref?.();
   try {
-    const resp = await fetch(`${baseUrl}/api/tags`, { method: 'GET' });
-    if (!resp.ok) return cached?.digest;
-    const json = await resp.json() as { models?: Array<{ name: string; digest: string }> };
-    for (const m of json.models || []) {
-      modelDigestCache.set(m.name, { digest: m.digest, ts: Date.now() });
+    const resp = await ollamaTransportFetch({
+      baseUrl,
+      socketPath: localPrimaryInferenceConfig.gatewaySocketPath,
+    }, '/api/tags', { method: 'GET', signal: controller.signal });
+    if (!resp.ok) return allowCache ? cached?.digest : undefined;
+    const json = await resp.json() as {
+      models?: Array<{ name?: unknown; model?: unknown; digest?: unknown }>;
+    };
+    const matches = Array.isArray(json.models)
+      ? json.models.filter((entry) => entry?.name === model || entry?.model === model)
+      : [];
+    const freshDigest = matches.length === 1
+      ? normalizeOllamaModelDigest(matches[0]?.digest)
+      : null;
+    if (!freshDigest) {
+      // A successful authoritative inventory response supersedes any prior
+      // cache entry. Missing, duplicate, or malformed target identity must not
+      // make allowCache=false silently reuse an older signed digest.
+      modelDigestCache.delete(model);
+      return undefined;
     }
-    return modelDigestCache.get(model)?.digest;
-  } catch {
-    return cached?.digest;
+    modelDigestCache.set(model, { digest: freshDigest, ts: Date.now() });
+    return freshDigest;
+  } catch (error) {
+    if (!allowCache && error instanceof OllamaTransportError) {
+      throw new LocalLLMError('transport_unavailable', {
+        reason: 'governed_gateway_socket_unavailable',
+        code: error.systemCode,
+        model,
+      });
+    }
+    return allowCache ? cached?.digest : undefined;
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
@@ -1238,34 +1301,87 @@ async function ollamaChat(
   let externalAbortListener: (() => void) | undefined;
   if (externalSignal) {
     if (externalSignal.aborted) {
-      ctrl.abort();
+      ctrl.abort(externalSignal.reason);
     } else {
-      externalAbortListener = () => ctrl.abort();
+      externalAbortListener = () => ctrl.abort(externalSignal.reason);
       externalSignal.addEventListener('abort', externalAbortListener, { once: true });
     }
   }
   try {
-    const resp = await fetch(`${config.ollama.baseUrl}/api/chat`, {
+    // A caller can cancel while this request is waiting in the application
+    // scheduler or resolving the signed model digest. Native fetch rejects a
+    // pre-aborted signal, but transports and test doubles are not required to
+    // install that behavior themselves. Preserve the caller's exact reason
+    // before dispatch so cancellation cannot become an orphaned request.
+    if (externalSignal?.aborted) {
+      throw externalSignal.reason ?? Object.assign(new Error('ollama_request_cancelled'), {
+        name: 'AbortError',
+        code: 'CHAT_REQUEST_CANCELLED',
+      });
+    }
+    const resp = await ollamaTransportFetch({
+      baseUrl: config.ollama.baseUrl,
+      socketPath: localPrimaryInferenceConfig.gatewaySocketPath,
+    }, '/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(req),
       signal: ctrl.signal,
     });
     if (!resp.ok) {
-      // 404 from Ollama means model not loaded / not in library; 503 means
-      // queue full at the daemon side; 5xx is generic server error.
+      // 404 from Ollama means model not loaded / not in library. Gateway 503
+      // responses are typed by their safe error body; residency/upstream
+      // failures must never masquerade as queue pressure.
       const text = await resp.text().catch(() => '');
       if (resp.status === 404 || /model.*not.*found/i.test(text)) {
         throw new LocalLLMError('model_missing', { model: req.model, status: resp.status, body: text.slice(0, 400) });
       }
       if (resp.status === 503) {
-        throw new LocalLLMError('capacity_exceeded', { reason: 'daemon_queue_full', status: 503 });
+        let gatewayError = '';
+        try {
+          const parsed = JSON.parse(text) as { error?: unknown };
+          gatewayError = typeof parsed.error === 'string' ? parsed.error : '';
+        } catch { /* safe plain-text classification below */ }
+        if (gatewayError === 'active_model_not_resident') {
+          throw new LocalLLMError('provider_unhealthy', {
+            reason: 'active_model_not_resident',
+            status: 503,
+          });
+        }
+        if (gatewayError === 'ollama_upstream_unavailable') {
+          throw new LocalLLMError('provider_unhealthy', {
+            reason: 'ollama_upstream_unavailable',
+            status: 503,
+          });
+        }
+        if (gatewayError === 'daemon_queue_full' || /(?:queue|capacity).*(?:full|exceeded)|overloaded/iu.test(text)) {
+          throw new LocalLLMError('capacity_exceeded', { reason: 'daemon_queue_full', status: 503 });
+        }
+        throw new LocalLLMError('provider_unhealthy', {
+          reason: 'gateway_service_unavailable',
+          status: 503,
+          body: text.slice(0, 400),
+        });
       }
       throw new LocalLLMError('provider_unhealthy', { status: resp.status, body: text.slice(0, 400) });
     }
     return await resp.json() as OllamaChatResponse;
   } catch (err) {
+    if (externalSignal?.aborted) {
+      if (isProviderRequestCancellation(externalSignal.reason)) throw externalSignal.reason;
+      throw Object.assign(new Error('ollama_request_cancelled'), {
+        name: 'AbortError',
+        code: 'CHAT_REQUEST_CANCELLED',
+      });
+    }
     if (err instanceof LocalLLMError) throw err;
+    if (err instanceof OllamaTransportError) {
+      throw new LocalLLMError('transport_unavailable', {
+        reason: 'governed_gateway_socket_unavailable',
+        code: err.systemCode,
+        model: req.model,
+      });
+    }
     const code = (err as { name?: string; code?: string }).name;
     if (code === 'AbortError') {
       throw new LocalLLMError('timeout', { timeoutMs, model: req.model });
@@ -1362,7 +1478,11 @@ async function logOllamaUsage(
 
 // ─── Per-task token-cap enforcement ─────────────────────────────────
 
-function enforceInputTokenCap(taskType: OllamaTaskType, parts: ReadonlyArray<string | null | undefined>): void {
+function enforceInputTokenCap(
+  taskType: OllamaTaskType,
+  parts: ReadonlyArray<string | null | undefined>,
+  capOverride?: number,
+): void {
   const caps = config.ollama.tokenCaps;
   let cap: number | undefined;
   switch (taskType) {
@@ -1372,6 +1492,7 @@ function enforceInputTokenCap(taskType: OllamaTaskType, parts: ReadonlyArray<str
     case 'chat':             cap = caps.localReasoningMaxInput; break; // chat reuses the larger cap
     default:                 cap = caps.classifyMaxInput; break;
   }
+  cap = capOverride ?? cap;
   if (cap === undefined) return;
   const estimated = estimateTokensTotal(parts);
   if (estimated > cap) {
@@ -1604,9 +1725,9 @@ export class OllamaProvider implements AIProvider {
     enforceInputTokenCap('classify', [sys, message]);
 
     // O3-A14: classifier-specific request body knobs. Defaults sized for
-    // qwen2.5:3b on this CPU: num_ctx=2048 (compact prompt + short user
-    // message fits comfortably), num_predict=32 (JSON output is ~20
-    // tokens). Both env-overridable for future tuning.
+    // The compact classifier contract fits in num_ctx=2048 and normally emits
+    // fewer than 32 tokens. Both remain env-overridable for measured tuning of
+    // the signed active model.
     const classifierNumCtx = Math.min(4096, readPositiveInt('OLLAMA_CLASSIFIER_NUM_CTX', 2048));
     const classifierNumPredict = readPositiveInt('OLLAMA_CLASSIFIER_NUM_PREDICT', 32);
 
@@ -1660,7 +1781,7 @@ export class OllamaProvider implements AIProvider {
             ? 'offline_evaluation'
             : undefined,
         category: options?.source === 'shadow'
-          ? 'classify_shadow'
+          ? CLASSIFIER_SHADOW_JOB_NAME
           : options?.source === 'evaluation'
             ? 'classify_evaluation'
             : 'classify_message',
@@ -2024,17 +2145,63 @@ export class OllamaProvider implements AIProvider {
 
   async localReason(task: LocalReasoningTask): Promise<LocalReasoningResult> {
     assertAllowedOllamaWorkloadRole(task.workloadRole, 'localReasoning');
+    if (task.workloadRole === 'skill_inference'
+        && process.env.NODE_ENV === 'production'
+        && !localPrimaryInferenceConfig.gatewaySocketPath.trim()) {
+      throw new LocalLLMError('provider_unhealthy', {
+        reason: 'production_gateway_socket_required',
+      });
+    }
     const sys = task.systemContext ?? 'You are an expert reasoning assistant.';
-    enforceInputTokenCap('localReasoning', [sys, task.prompt]);
-    const numCtx = Number.isFinite(task.numCtx) && (task.numCtx ?? 0) > 0
-      ? Math.min(4096, Math.floor(task.numCtx!))
-      : 4096;
-    const numPredict = Number.isFinite(task.numPredict) && (task.numPredict ?? 0) > 0
-      ? Math.floor(task.numPredict!)
-      : outputCapFor('localReasoning');
+    const governedSkillInference = task.workloadRole === 'skill_inference';
+    let numCtx: number;
+    let numPredict: number;
+    if (governedSkillInference) {
+      const modelContextCap = Math.min(
+        getActiveLocalModel().maxContextTokens,
+        localPrimaryInferenceConfig.maxContextTokens,
+      );
+      numCtx = Number.isFinite(task.numCtx) && (task.numCtx ?? 0) > 0
+        ? Math.min(modelContextCap, Math.floor(task.numCtx!))
+        : modelContextCap;
+      const requestedNumPredict = Number.isFinite(task.numPredict) && (task.numPredict ?? 0) > 0
+        ? Math.min(Math.floor(task.numPredict!), localPrimaryInferenceConfig.maxOutputTokens)
+        : outputCapFor('localReasoning');
+      const estimatedInputTokens = estimateTokensTotal([sys, task.prompt]);
+      const generationHeadroom = 128;
+      const availableOutputTokens = numCtx - estimatedInputTokens - generationHeadroom;
+      if (availableOutputTokens < 1) {
+        throw new LocalLLMError('input_token_overflow', {
+          taskType: 'localReasoning',
+          estimatedInputTokens,
+          cap: Math.max(1, numCtx - generationHeadroom),
+          capReason: 'context_must_reserve_generation_headroom',
+        });
+      }
+      enforceInputTokenCap(
+        'localReasoning',
+        [sys, task.prompt],
+        Math.max(1, numCtx - Math.min(requestedNumPredict, availableOutputTokens) - generationHeadroom),
+      );
+      numPredict = Math.min(requestedNumPredict, availableOutputTokens);
+    } else {
+      // Preserve the pre-local-primary contract byte-for-byte when the caller
+      // uses the legacy validated-local-chat/research path. This keeps the new
+      // context-reservation policy from changing existing queue/fallback and
+      // budget behavior while all local-primary flags are OFF.
+      enforceInputTokenCap('localReasoning', [sys, task.prompt]);
+      numCtx = Number.isFinite(task.numCtx) && (task.numCtx ?? 0) > 0
+        ? Math.min(4096, Math.floor(task.numCtx!))
+        : 4096;
+      numPredict = Number.isFinite(task.numPredict) && (task.numPredict ?? 0) > 0
+        ? Math.floor(task.numPredict!)
+        : outputCapFor('localReasoning');
+    }
 
     const request: OllamaChatRequest = {
-      model: task.modelOverride?.trim() || config.ollama.model,
+      model: task.workloadRole === 'skill_inference'
+        ? getActiveLocalModel().ollamaTag
+        : task.modelOverride?.trim() || config.ollama.model,
       messages: [
         { role: 'system', content: sys },
         { role: 'user', content: task.prompt },
@@ -2071,6 +2238,15 @@ export class OllamaProvider implements AIProvider {
       } catch {
         throw new LocalLLMError('invalid_json', { taskType: 'localReasoning', body: text.slice(0, 400) });
       }
+      if (governedSkillInference) {
+        const validation = validateStructuredOutputValue(parsed, task.outputSchema);
+        if (!validation.valid) {
+          throw new LocalLLMError('invalid_json', {
+            taskType: 'localReasoning',
+            reason: validation.reason ?? 'schema_value_invalid',
+          });
+        }
+      }
     }
     const md = deriveMetrics(result.response);
     return {
@@ -2086,6 +2262,9 @@ export class OllamaProvider implements AIProvider {
         evalCount: md.evalCount,
         promptEvalCount: md.promptEvalCount,
         generationTokensPerSec: md.generationTokensPerSec,
+        firstTokenMs: md.firstTokenMs,
+        inputTokens: md.promptEvalCount,
+        outputTokens: md.evalCount,
         isColdLoad: md.isColdLoad,
       },
     };
@@ -2115,38 +2294,101 @@ export class OllamaProvider implements AIProvider {
 
   async getProviderHealth(): Promise<ProviderHealthSnapshot> {
     const startedAt = Date.now();
+    const transportKind = localPrimaryInferenceConfig.gatewaySocketPath
+      ? 'unix_socket_gateway' as const
+      : 'direct_loopback' as const;
+    const manifestLoad = tryGetLocalModelManifest({ fresh: true });
+    if (!manifestLoad.ok) {
+      return {
+        name: 'ollama',
+        healthy: false,
+        latencyMs: Date.now() - startedAt,
+        modelsLoaded: [],
+        queueDepth: queueState.totalDepth,
+        degraded: true,
+        warning: manifestLoad.code,
+        lastError: manifestLoad.code,
+        transport: transportKind,
+      };
+    }
+    const manifest = manifestLoad.manifest;
+    const activeModel = manifest.models.find((model) => model.id === manifest.activeModelId)!;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10_000);
+    timeout.unref?.();
     try {
-      const verResp = await fetch(`${config.ollama.baseUrl}/api/version`, { method: 'GET' });
+      const transport = {
+        baseUrl: config.ollama.baseUrl,
+        socketPath: localPrimaryInferenceConfig.gatewaySocketPath,
+      };
+      const verResp = await ollamaTransportFetch(transport, '/api/version', {
+        method: 'GET',
+        signal: controller.signal,
+      });
       const versionOk = verResp.ok;
-      const psResp = await fetch(`${config.ollama.baseUrl}/api/ps`, { method: 'GET' });
+      const psResp = await ollamaTransportFetch(transport, '/api/ps', {
+        method: 'GET',
+        signal: controller.signal,
+      });
       const psJson = psResp.ok ? (await psResp.json()) as { models?: Array<{ name: string }> } : { models: [] };
       const modelsLoaded = (psJson.models || []).map(m => m.name);
+      const tagsResp = await ollamaTransportFetch(transport, '/api/tags', {
+        method: 'GET',
+        signal: controller.signal,
+      });
+      const tagsJson = tagsResp.ok
+        ? (await tagsResp.json()) as { models?: Array<{ name: string; digest: string }> }
+        : { models: [] };
+      const activeDigest = normalizeOllamaModelDigest((tagsJson.models || [])
+        .find((model) => model.name === activeModel.ollamaTag)?.digest) ?? undefined;
+      const activeModelLoaded = modelsLoaded.includes(activeModel.ollamaTag);
+      const singleModelLoaded = modelsLoaded.length === 1;
+      const activeModelIdentityValid = ollamaModelDigestsEqual(activeDigest, activeModel.digest);
       const latencyMs = Date.now() - startedAt;
 
-      // Memory pressure (A7): degraded if MemAvailable < 1.5 GB.
+      // The production contract reserves at least 6 GiB for Nexus and the OS.
       let memAvailableKb = 0;
-      let degraded = false;
-      let warning: string | undefined;
+      let memoryPressure = false;
       try {
         const fs = require('fs') as typeof import('fs');
         const meminfo = fs.readFileSync('/proc/meminfo', 'utf-8');
         const m = /MemAvailable:\s+(\d+)\s+kB/.exec(meminfo);
         if (m) memAvailableKb = parseInt(m[1], 10);
-        if (memAvailableKb > 0 && memAvailableKb < 1.5 * 1024 * 1024) {
-          degraded = true;
-          warning = 'memory_pressure';
-        }
+        const minimumAvailableKb = (manifest.productionEnvelope.minimumHostAvailableBytes
+          ?? 6 * 1024 ** 3) / 1024;
+        memoryPressure = memAvailableKb > 0 && memAvailableKb < minimumAvailableKb;
       } catch { /* /proc/meminfo not always available (e.g., in tests) */ }
+      const healthy = versionOk && psResp.ok && tagsResp.ok
+        && activeModelLoaded && singleModelLoaded && activeModelIdentityValid;
+      const degraded = !healthy || memoryPressure;
+      const warning = !versionOk
+        ? 'version_unavailable'
+        : (!psResp.ok || !tagsResp.ok)
+          ? 'model_state_unavailable'
+          : !activeModelIdentityValid
+            ? 'signed_model_digest_mismatch'
+            : !activeModelLoaded
+              ? 'active_model_not_loaded'
+              : !singleModelLoaded
+                ? 'multiple_models_loaded'
+                : memoryPressure
+                  ? 'memory_pressure'
+                  : undefined;
 
       return {
         name: 'ollama',
-        healthy: versionOk,
+        healthy,
         latencyMs,
         modelsLoaded,
         queueDepth: queueState.totalDepth,
         degraded,
         memAvailableKb: memAvailableKb || undefined,
         warning,
+        activeModel: activeModel.ollamaTag,
+        activeModelDigest: activeModel.digest ?? undefined,
+        observedModelDigest: activeDigest,
+        manifestVersion: manifest.manifestVersion,
+        transport: transportKind,
       };
     } catch (err) {
       return {
@@ -2157,7 +2399,13 @@ export class OllamaProvider implements AIProvider {
         queueDepth: queueState.totalDepth,
         degraded: true,
         lastError: (err as Error)?.message,
+        activeModel: activeModel.ollamaTag,
+        activeModelDigest: activeModel.digest ?? undefined,
+        manifestVersion: manifest.manifestVersion,
+        transport: transportKind,
       };
+    } finally {
+      clearTimeout(timeout);
     }
   }
 
@@ -2217,20 +2465,23 @@ export class OllamaProvider implements AIProvider {
     // role cannot consume local capacity or reach the daemon.
     assertAllowedOllamaWorkloadRole(workloadRole, taskType);
     assertSmallOnlyOllamaModel(request.model, `ollama_request:${taskType}`);
+    const governedSkillInference = workloadRole === 'skill_inference';
     // Entitlement/budget denial must happen before the local capacity meter.
     // Otherwise an ineligible request could consume a per-user/global Ollama
     // rate-limit unit even though it is forbidden from reaching the model.
-    assertAiBudgetReservationForProvider({
-      userId,
-      category,
-      provider: 'ollama',
-      model: request.model,
-      maxCostUsd: 0,
-    });
+    if (!governedSkillInference) {
+      assertAiBudgetReservationForProvider({
+        userId,
+        category,
+        provider: 'ollama',
+        model: request.model,
+        maxCostUsd: 0,
+      });
+    }
 
     // Explicit offline recordUsage=false calls bypass rate-limiting. Runtime
     // shadow calls are metered and therefore take the normal path.
-    if (recordUsage) {
+    if (recordUsage && !governedSkillInference) {
       const scope = rateLimitScope(taskType);
       const rate = checkAndConsumeLocalLLMRateLimit({ userId, scope });
       if (!rate.allowed) {
@@ -2242,25 +2493,61 @@ export class OllamaProvider implements AIProvider {
       }
     }
 
-    return withQueueSlot(taskType, async () => {
+    const invokeOllama = async () => {
       // Queue wait can be non-trivial. Revalidate immediately before the HTTP
       // request so a provider call never relies only on a stale pre-queue
       // decision (the first check above still keeps ineligible work out early).
-      assertAiBudgetReservationForProvider({
-        userId,
-        category,
-        provider: 'ollama',
-        model: request.model,
-        maxCostUsd: 0,
-      });
+      if (!governedSkillInference) {
+        assertAiBudgetReservationForProvider({
+          userId,
+          category,
+          provider: 'ollama',
+          model: request.model,
+          maxCostUsd: 0,
+        });
+      }
+      const manifest = getLocalModelManifest({ fresh: true });
+      const activeModel = manifest.models.find((model) => model.id === manifest.activeModelId)!;
+      // Bind the mutable tag, pinned digest, and selection status to this one
+      // fresh manifest snapshot. A queued request may have been admitted under
+      // an older manifest; it must not dispatch that old tag after activation
+      // changes while separately validating a new winner's digest.
+      assertSmallOnlyOllamaModel(
+        request.model,
+        `ollama_request:${taskType}:dispatch`,
+        { expectedModel: activeModel.ollamaTag },
+      );
+      let modelDigest: string | undefined;
+      if (manifest.selectionStatus === 'production_selected' || governedSkillInference) {
+        // A production winner is security/release identity, not best-effort
+        // telemetry. Governed evaluation traffic also pins the verified
+        // control digest so a mutable tag change cannot contaminate bakeoff or
+        // durable script checkpoints. Resolve and compare immediately before
+        // any generation leaves the gateway.
+        modelDigest = await getModelDigest(
+          config.ollama.baseUrl,
+          request.model,
+          { allowCache: false },
+        );
+        if (!ollamaModelDigestsEqual(modelDigest, activeModel.digest)) {
+          throw new LocalLLMError('model_missing', {
+            taskType,
+            model: request.model,
+            reason: 'signed_manifest_digest_mismatch',
+            expectedDigest: activeModel.digest,
+            actualDigest: modelDigest ?? 'unresolved',
+          });
+        }
+      }
       const t0 = Date.now();
       const effectiveTimeoutMs = timeoutMsOverride ?? config.ollama.timeoutMs;
       const response = await ollamaChat(request, effectiveTimeoutMs, externalSignal);
       const durationMs = Date.now() - t0;
+      if (manifest.selectionStatus !== 'production_selected' && !governedSkillInference) {
+        modelDigest = await getModelDigest(config.ollama.baseUrl, request.model);
+      }
 
       const md = deriveMetrics(response);
-      const modelDigest = await getModelDigest(config.ollama.baseUrl, request.model);
-
       // Telemetry — never includes thinking content. Shadow calls are
       // marked so log readers can filter.
       logger.info(
@@ -2306,7 +2593,12 @@ export class OllamaProvider implements AIProvider {
           }
           : {}),
       };
-    });
+    };
+    // SkillInferenceService already owns the one-active/four-waiting product
+    // scheduler. Sending governed calls through the legacy provider queue as
+    // well would create two independent deadlines and make weighted priority
+    // unverifiable. The daemon's OLLAMA_MAX_QUEUE remains the final defense.
+    return governedSkillInference ? invokeOllama() : withQueueSlot(taskType, invokeOllama);
   }
 }
 
@@ -2328,7 +2620,7 @@ export interface LocalReasoningOneShotOptions {
   maxTokens?: number;
   /** Defaults to 0.2 (matches localReason). */
   temperature?: number;
-  /** Context window. Defaults to the small-only 4096 service limit. */
+  /** Context window. Defaults to the signed active model's service limit. */
   numCtx?: number;
   /**
    * Thinking toggle. Defaults to FALSE for bounded synthesis latency.
