@@ -45,10 +45,21 @@ production socket directories.
 
 The exact host sequence is:
 
+Before step 1, create a Git archive from the exact settled protected-main SHA
+with the `source/` prefix, record its SHA-256 as the owner acknowledgement, and
+stage both the root-owned archive and extracted tree only at
+`/var/lib/nexus-release-bootstrap/<source-sha>/source.tar.gz` and `source/`.
+Every path component must be root-owned and non-writable by group/other. The
+installer rejects any other source path, archive digest, or Git archive commit
+binding; operational assets must never be copied around that contract.
+
 1. Run the archive/digest-authorized `scripts/install-ollama.sh` transaction
    from the root-owned protected-main source. It verifies the active manifest
    tag/digest and applies the 18GB/20GB, 8-CPU, zero-swap service envelope with
-   its existing predecessor rollback and receipt.
+   its existing predecessor rollback and receipt. On an upgrade, the permanent
+   install guard/checker may differ from the new source only when their exact
+   bytes are attested by the preceding complete install receipt and its retained
+   root-owned source archive; the transaction backs them up before replacement.
 2. With both gateway sockets absent, use
    `/usr/local/sbin/nexus-local-model-benchmark-envelope-transaction.mjs
    plan --candidate-id <signed-manifest-id>`. The candidate must already be

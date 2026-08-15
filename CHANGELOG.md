@@ -11,6 +11,11 @@ All notable changes to Nexus Hub (formerly Cortex Telegram Hub Bot) are document
   for Content and eligible read-only Chat and skill workloads, including
   specialist profiles, durable script jobs, guarded fallback, signed host
   boundaries, observability, and rollback controls.
+- Admit Ollama host upgrades only when a differing installed guard/checker is
+  bound to its preceding complete receipt and retained root-owned source
+  archive, preserving rollback and reboot fail-closed behavior.
+- Keep immutable controller finalization compatible with systemd garbage
+  collection by resetting only services that are actually in the failed state.
 
 ### Release verification and learning governance
 

@@ -163,6 +163,7 @@ reviewed_assets=(
   scripts/lib/ollama-service-envelope.mjs
   scripts/ollama-systemd-dropin-transaction.mjs
   scripts/ollama-install-state-check.mjs
+  scripts/ollama-installed-predecessor-check.mjs
   scripts/local-inference-socket-transaction.mjs
   scripts/local-model-benchmark-envelope-transaction.mjs
   scripts/systemd/00-nexus-ollama-install-guard.conf
@@ -377,23 +378,32 @@ elif [ -e /var/run/reboot-required ]; then
   fail "complete the pending maintenance reboot before installing Ollama" 75
 fi
 
-# The permanent guard is installed by the reviewed promotion/Sonar bootstrap.
-# It must already be exact before the journal can exist, so a reboot or daemon
-# restart in the journal-to-candidate window still fails closed.
+# The permanent guard and checker must either match this exact source or be
+# attested by the preceding complete, archive-bound install receipt. The latter
+# is the governed upgrade path: the transaction journals and backs up the
+# attested predecessor before replacing the checker first, so any reboot in the
+# replacement window remains fail-closed.
 installed_state_checker=/usr/local/sbin/nexus-ollama-install-state-check.mjs
 installed_install_guard=/etc/systemd/system/ollama.service.d/00-nexus-ollama-install-guard.conf
 [ -f "$installed_state_checker" ] && [ ! -L "$installed_state_checker" ] \
   && [ "$(stat -c '%U:%G:%a' -- "$installed_state_checker")" = root:root:700 ] \
-  && [ "$(sha256sum -- "$installed_state_checker" | cut -d' ' -f1)" \
-    = "$(sha256sum -- "$SCRIPT_DIR/ollama-install-state-check.mjs" | cut -d' ' -f1)" ] \
   || fail "reviewed permanent Ollama install-state checker is not bootstrapped" 77
 [ -f "$installed_install_guard" ] && [ ! -L "$installed_install_guard" ] \
   && [ "$(stat -c '%U:%G:%a' -- "$installed_install_guard")" = root:root:644 ] \
-  && [ "$(sha256sum -- "$installed_install_guard" | cut -d' ' -f1)" \
-    = "$(sha256sum -- "$SCRIPT_DIR/systemd/00-nexus-ollama-install-guard.conf" | cut -d' ' -f1)" ] \
   || fail "reviewed permanent Ollama install guard is not bootstrapped" 77
 validate_root_path_chain "$installed_state_checker" "installed Ollama install-state checker"
 validate_root_path_chain "$installed_install_guard" "installed Ollama install guard"
+if [ "$(sha256sum -- "$installed_state_checker" | cut -d' ' -f1)" \
+      = "$(sha256sum -- "$SCRIPT_DIR/ollama-install-state-check.mjs" | cut -d' ' -f1)" ] \
+    && [ "$(sha256sum -- "$installed_install_guard" | cut -d' ' -f1)" \
+      = "$(sha256sum -- "$SCRIPT_DIR/systemd/00-nexus-ollama-install-guard.conf" | cut -d' ' -f1)" ]; then
+  log "Permanent Ollama guard already matches the reviewed source"
+else
+  /usr/bin/env node "$SCRIPT_DIR/ollama-installed-predecessor-check.mjs" \
+    >/dev/null \
+    || fail "installed Ollama guard/checker is neither current nor receipt-attested" 77
+  log "Accepted the exact receipt-attested Ollama guard predecessor"
+fi
 systemctl daemon-reload
 [ "$(systemctl show ollama.service --property=NeedDaemonReload --value --no-pager)" = no ] \
   || fail "systemd did not load the permanent Ollama install guard" 77
