@@ -44,6 +44,7 @@ const PRODUCTION_RUNTIME_CORE_IDENTITY = Object.freeze({
 const PRODUCTION_ASSET_LAYOUT = Object.freeze([
   ['scripts/ollama-lean-finalize.mjs', '/usr/local/sbin/nexus-ollama-lean-finalize.mjs', 0o700],
   ['scripts/ollama-service-envelope-check.mjs', '/usr/local/sbin/nexus-ollama-service-envelope-check.mjs', 0o700],
+  ['scripts/lib/ollama-model-digest.mjs', '/usr/local/sbin/lib/ollama-model-digest.mjs', 0o700],
   ['scripts/lib/ollama-service-envelope.mjs', '/usr/local/sbin/lib/ollama-service-envelope.mjs', 0o700],
   ['scripts/ollama-systemd-dropin-transaction.mjs', '/usr/local/sbin/nexus-ollama-systemd-dropin-transaction.mjs', 0o700],
   ['scripts/ollama-install-state-check.mjs', '/usr/local/sbin/nexus-ollama-install-state-check.mjs', 0o700],

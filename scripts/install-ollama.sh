@@ -160,6 +160,7 @@ reviewed_assets=(
   scripts/install-ollama.sh
   scripts/ollama-lean-finalize.mjs
   scripts/ollama-service-envelope-check.mjs
+  scripts/lib/ollama-model-digest.mjs
   scripts/lib/ollama-service-envelope.mjs
   scripts/ollama-systemd-dropin-transaction.mjs
   scripts/ollama-install-state-check.mjs
