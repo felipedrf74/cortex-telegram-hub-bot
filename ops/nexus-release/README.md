@@ -3078,8 +3078,16 @@ test ! -e "$TRANSACTION_STATE" && test ! -L "$TRANSACTION_STATE" \
 start_and_prove_post_gate_service() {
   local active exec_status load_state result unit
   unit="$1"
-  systemctl reset-failed "$unit" \
-    || die "post-gate service failure state could not be reset: $unit"
+  load_state="$(systemctl show "$unit" --property=LoadState --value)"
+  active="$(systemctl show "$unit" --property=ActiveState --value)"
+  case "$load_state:$active" in
+    loaded:inactive) ;;
+    loaded:failed)
+      systemctl reset-failed "$unit" \
+        || die "post-gate service failure state could not be reset: $unit"
+      ;;
+    *) die "post-gate service is not ready to start: $unit ($load_state/$active)" ;;
+  esac
   systemctl start "$unit" \
     || die "post-gate service execution failed: $unit"
   load_state="$(systemctl show "$unit" --property=LoadState --value)"

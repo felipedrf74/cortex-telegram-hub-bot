@@ -1471,6 +1471,15 @@ fi
     expect(provision).toContain(
       'start_and_prove_post_gate_service nexus-release-backup-liveness-force.service',
     );
+    const postGateProof = provision.match(
+      /start_and_prove_post_gate_service\(\) \{[\s\S]*?\n\}/u,
+    )?.[0];
+    expect(postGateProof).toBeTruthy();
+    expect(postGateProof).toContain('case "$load_state:$active" in');
+    expect(postGateProof).toContain('loaded:inactive) ;;');
+    expect(postGateProof).toContain('loaded:failed)');
+    expect(postGateProof!.indexOf('loaded:failed)'))
+      .toBeLessThan(postGateProof!.indexOf('systemctl reset-failed "$unit"'));
     expect(provision).not.toContain(
       'start_and_prove_post_gate_service nexus-release-backup-liveness.service',
     );

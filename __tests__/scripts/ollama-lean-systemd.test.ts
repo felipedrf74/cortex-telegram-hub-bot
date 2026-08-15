@@ -9,6 +9,7 @@ const INSTALLER = path.resolve('scripts/install-ollama.sh');
 const ENVELOPE_CHECKER = path.resolve('scripts/ollama-service-envelope-check.mjs');
 const TRANSACTION = path.resolve('scripts/ollama-systemd-dropin-transaction.mjs');
 const INSTALL_STATE = path.resolve('scripts/ollama-install-state-check.mjs');
+const PREDECESSOR_CHECK = path.resolve('scripts/ollama-installed-predecessor-check.mjs');
 const RETAINED_MODEL = 'qwen2.5:3b-instruct-q4_K_M';
 const RETAINED_DIGEST =
   '357c53fb659c5076de1d65ccb0b397446227b71a42be9d1603d46168015c9e4b';
@@ -55,6 +56,83 @@ describe('lean Ollama installer and fixed systemd envelope', () => {
   beforeEach(() => {
     root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-ollama-envelope-')));
     fs.chmodSync(root, 0o700);
+  });
+
+  it('admits only an archive- and receipt-attested installed guard predecessor', () => {
+    const sourceSha = 'a'.repeat(40);
+    const bootstrap = path.join(root, 'bootstrap', sourceSha);
+    const sourceRoot = path.join(bootstrap, 'source');
+    const sourceScripts = path.join(sourceRoot, 'scripts');
+    const sourceSystemd = path.join(sourceScripts, 'systemd');
+    const installed = path.join(root, 'installed');
+    const state = path.join(root, 'state');
+    for (const directory of [sourceSystemd, installed, state]) {
+      fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+    }
+    const sourceChecker = path.join(sourceScripts, 'ollama-install-state-check.mjs');
+    const sourceGuard = path.join(sourceSystemd, '00-nexus-ollama-install-guard.conf');
+    const installedChecker = path.join(installed, 'nexus-ollama-install-state-check.mjs');
+    const installedGuard = path.join(installed, '00-nexus-ollama-install-guard.conf');
+    const archive = path.join(bootstrap, 'source.tar.gz');
+    const receipt = path.join(state, 'install-receipt.v1.json');
+    const checkerBytes = '#!/usr/bin/env node\nprocess.exit(1);\n';
+    const guardBytes = '[Service]\n'
+      + 'ExecStartPre=+/usr/local/sbin/nexus-ollama-install-state-check.mjs\n';
+    fs.writeFileSync(sourceChecker, checkerBytes, { mode: 0o755 });
+    fs.writeFileSync(sourceGuard, guardBytes, { mode: 0o644 });
+    fs.writeFileSync(installedChecker, checkerBytes, { mode: 0o700 });
+    fs.writeFileSync(installedGuard, guardBytes, { mode: 0o644 });
+    fs.writeFileSync(archive, 'reviewed archive bytes', { mode: 0o600 });
+    fs.writeFileSync(receipt, `${JSON.stringify({
+      schema: 'nexus.ollama-systemd-install-receipt.v1',
+      status: 'complete',
+      transactionId: '11111111-2222-3333-4444-555555555555',
+      target: '/etc/systemd/system/ollama.service.d/override.conf',
+      candidateSha256: 'b'.repeat(64),
+      sourceProvenance: {
+        sourceRoot,
+        sourceSha,
+        archiveSha256: createHash('sha256').update('reviewed archive bytes').digest('hex'),
+      },
+      runtimeIdentity: {},
+      retainedModelObservation: {},
+      assets: [
+        {
+          target: installedChecker,
+          sha256: createHash('sha256').update(checkerBytes).digest('hex'),
+          mode: 0o700,
+        },
+        {
+          target: installedGuard,
+          sha256: createHash('sha256').update(guardBytes).digest('hex'),
+          mode: 0o644,
+        },
+      ],
+      service: {},
+      completedAt: '2026-08-15T00:00:00.000Z',
+    })}\n`, { mode: 0o600 });
+
+    const environment = {
+      ...cleanEnvironment(),
+      NEXUS_OLLAMA_PREDECESSOR_TEST_MODE: '1',
+      NEXUS_OLLAMA_PREDECESSOR_TEST_ROOT: root,
+    };
+    const valid = runNode(
+      PREDECESSOR_CHECK,
+      [receipt, installedChecker, installedGuard],
+      environment,
+    );
+    expect(valid.status, valid.stderr).toBe(0);
+    expect(JSON.parse(valid.stdout)).toMatchObject({ ok: true, sourceSha });
+
+    fs.writeFileSync(installedChecker, `${checkerBytes}// drift\n`, { mode: 0o700 });
+    const drift = runNode(
+      PREDECESSOR_CHECK,
+      [receipt, installedChecker, installedGuard],
+      environment,
+    );
+    expect(drift.status).toBe(77);
+    expect(drift.stderr).toContain('installed predecessor differs from its prior receipt');
   });
 
   afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -206,6 +284,7 @@ process.stdout.write([
     expect(source).toContain('archive.pax_headers.get("comment") != source_sha');
     expect(source).toContain('bootstrap source archive digest does not match');
     expect(source).toContain('source drift for');
+    expect(source).toContain('ollama-installed-predecessor-check.mjs');
     expect(source).not.toContain('curl -fsSL https://ollama.com/install.sh');
     expect(source).not.toMatch(/\bollama pull\b/u);
     expect(source).not.toContain('chown -R /var/lib/ollama');
