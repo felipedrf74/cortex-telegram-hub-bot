@@ -314,6 +314,54 @@ process.stdout.write([
     expect(rollbackBoundary).toEqual([...rollbackBoundary].sort((left, right) => left - right));
     expect(source).toContain('trap transaction_cleanup EXIT');
   });
+
+  it('installs every relative library imported by the host transaction CLIs', () => {
+    const installerSource = fs.readFileSync(INSTALLER, 'utf8');
+    const transactionSource = fs.readFileSync(TRANSACTION, 'utf8');
+    const layoutStart = transactionSource.indexOf('const PRODUCTION_ASSET_LAYOUT = Object.freeze([');
+    const layoutEnd = transactionSource.indexOf(']);', layoutStart);
+    expect(layoutStart).toBeGreaterThanOrEqual(0);
+    expect(layoutEnd).toBeGreaterThan(layoutStart);
+    const layoutSource = transactionSource.slice(layoutStart, layoutEnd);
+    const installedAssets = new Map(
+      [...layoutSource.matchAll(
+        /\[\s*['"]([^'"]+)['"]\s*,\s*['"]([^'"]+)['"]\s*,\s*0o(?:644|700)\s*\]/gu,
+      )].map((match) => [match[1]!, match[2]!] as const),
+    );
+    const pending = [
+      'scripts/local-model-benchmark-envelope-transaction.mjs',
+      'scripts/local-inference-socket-transaction.mjs',
+    ];
+    const visited = new Set<string>();
+
+    while (pending.length > 0) {
+      const sourcePath = pending.shift()!;
+      if (visited.has(sourcePath)) continue;
+      visited.add(sourcePath);
+      const installedPath = installedAssets.get(sourcePath);
+      expect(installedPath, `${sourcePath} is absent from the production asset layout`).toBeTruthy();
+      const source = fs.readFileSync(sourcePath, 'utf8');
+      const relativeImports = [
+        ...source.matchAll(/\bfrom\s*['"]([^'"]+)['"]/gu),
+        ...source.matchAll(/\bimport\s*['"]([^'"]+)['"]/gu),
+        ...source.matchAll(/\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/gu),
+      ].map((match) => match[1]!).filter((specifier) => specifier.startsWith('.'));
+
+      for (const specifier of relativeImports) {
+        const dependencySource = path.posix.normalize(
+          path.posix.join(path.posix.dirname(sourcePath), specifier),
+        );
+        const dependencyTarget = path.posix.normalize(
+          path.posix.join(path.posix.dirname(installedPath!), specifier),
+        );
+        expect(installerSource).toContain(dependencySource);
+        expect(installedAssets.get(dependencySource)).toBe(dependencyTarget);
+        pending.push(dependencySource);
+      }
+    }
+
+    expect(visited).toContain('scripts/lib/ollama-model-digest.mjs');
+  });
 });
 
 describe('lean Ollama systemd install transaction', () => {

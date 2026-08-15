@@ -16,6 +16,8 @@ All notable changes to Nexus Hub (formerly Cortex Telegram Hub Bot) are document
   archive, preserving rollback and reboot fail-closed behavior.
 - Keep immutable controller finalization compatible with systemd garbage
   collection by resetting only services that are actually in the failed state.
+- Install the shared model-digest library required by both attended host
+  transaction CLIs, and regression-check the complete installed import closure.
 
 ### Release verification and learning governance
 
