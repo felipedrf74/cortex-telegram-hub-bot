@@ -64,9 +64,14 @@ binding; operational assets must never be copied around that contract.
    `/usr/local/sbin/nexus-local-model-benchmark-envelope-transaction.mjs
    plan --candidate-id <signed-manifest-id>`. The candidate must already be
    installed through the attended host CLI; the transaction resolves its exact
-   `/api/tags` digest and binds that identity into the plan and receipt. Inspect
-   the release/manifest/host/drop-in preimage, and apply the same candidate ID
-   with only its exact acknowledgement. This temporarily raises systemd to 22GB/24GB while
+   `/api/tags` digest and binds that identity into the plan and receipt. The
+   plan reports the current host-pressure observation, while its acknowledgement
+   binds the release, manifest, signed host-admission thresholds, and exact
+   drop-in bytes. Volatile `MemAvailable` bytes are deliberately not hashed;
+   apply re-reads and enforces live headroom and swap immediately before the
+   write, then records that admission observation in the receipt. Inspect that
+   plan and apply the same candidate ID with only its exact acknowledgement.
+   This temporarily raises systemd to 22GB/24GB while
    retaining 8 CPUs, zero swap, Nice 10, one loaded model, and one generation.
    Its apply output returns a `receiptSha256` value used as the exact rollback
    acknowledgement.

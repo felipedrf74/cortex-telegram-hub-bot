@@ -18,6 +18,9 @@ All notable changes to Nexus Hub (formerly Cortex Telegram Hub Bot) are document
   collection by resetting only services that are actually in the failed state.
 - Install the shared model-digest library required by both attended host
   transaction CLIs, and regression-check the complete installed import closure.
+- Keep benchmark-envelope acknowledgements stable across harmless live-memory
+  drift while rechecking signed headroom and swap limits immediately before
+  mutation and recording the accepted observation in the receipt.
 
 ### Release verification and learning governance
 
