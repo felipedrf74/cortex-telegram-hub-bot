@@ -5,6 +5,13 @@ All notable changes to Nexus Hub (formerly Cortex Telegram Hub Bot) are document
 ---
 ## [Unreleased]
 
+### Local-primary inference
+
+- Establish the default-OFF local-primary, cloud-backed inference foundation
+  for Content and eligible read-only Chat and skill workloads, including
+  specialist profiles, durable script jobs, guarded fallback, signed host
+  boundaries, observability, and rollback controls.
+
 ### Release verification and learning governance
 
 - Replace raw full-suite count floors with an exact, protected-main-verified
