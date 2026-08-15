@@ -244,20 +244,36 @@ function releaseEvidence() {
   };
 }
 
-function hostPressure() {
+export function assertBenchmarkHostPressure(observation, envelope) {
+  const availableBytes = observation?.availableBytes;
+  const swapUsedBytes = observation?.swapUsedBytes;
+  const minimumAvailableBytes = envelope?.minimumHostAvailableBytes;
+  const maximumSwapUsedBytes = envelope?.memorySwapMaxBytes;
+  if (!Number.isSafeInteger(minimumAvailableBytes) || minimumAvailableBytes < 0
+      || !Number.isSafeInteger(maximumSwapUsedBytes) || maximumSwapUsedBytes < 0) {
+    fail('signed benchmark host policy is invalid');
+  }
+  if (!Number.isSafeInteger(availableBytes) || availableBytes < minimumAvailableBytes) {
+    fail('host has less than the signed minimum available memory');
+  }
+  if (!Number.isSafeInteger(swapUsedBytes) || swapUsedBytes < 0
+      || swapUsedBytes > maximumSwapUsedBytes) {
+    fail('host swap exceeds the signed benchmark limit');
+  }
+  return { availableBytes, swapUsedBytes };
+}
+
+function hostPressure(envelope) {
   const text = readFileSync('/proc/meminfo', 'utf8');
   const values = new Map([...text.matchAll(/^([A-Za-z_()]+):\s+(\d+)\s+kB$/gmu)]
     .map((match) => [match[1], Number(match[2]) * 1024]));
   const availableBytes = values.get('MemAvailable');
   const swapTotal = values.get('SwapTotal');
   const swapFree = values.get('SwapFree');
-  if (!Number.isSafeInteger(availableBytes) || availableBytes < 6 * 1024 ** 3) {
-    fail('host has less than 6 GiB available before the benchmark window');
-  }
-  if (!Number.isSafeInteger(swapTotal) || !Number.isSafeInteger(swapFree) || swapTotal - swapFree !== 0) {
-    fail('host swap must be unused before the benchmark window');
-  }
-  return { availableBytes, swapUsedBytes: 0 };
+  const swapUsedBytes = Number.isSafeInteger(swapTotal) && Number.isSafeInteger(swapFree)
+    ? swapTotal - swapFree
+    : null;
+  return assertBenchmarkHostPressure({ availableBytes, swapUsedBytes }, envelope);
 }
 
 function assertGatewaysStopped() {
@@ -267,14 +283,22 @@ function assertGatewaysStopped() {
 }
 
 export function buildBenchmarkEnvelopePlan(evidence) {
+  const hostPolicy = {
+    minimumAvailableBytes: evidence.manifest.benchmarkEnvelope.minimumHostAvailableBytes,
+    maximumSwapUsedBytes: evidence.manifest.benchmarkEnvelope.memorySwapMaxBytes,
+  };
   const core = {
     schema: 'nexus.local-model-benchmark-envelope-plan.v1',
     release: evidence.release,
     manifest: evidence.manifest,
-    host: evidence.host,
+    hostPolicy,
     dropIn: evidence.dropIn,
   };
-  return { ...core, ackPlan: `sha256:${sha256(stableJson(core))}` };
+  return {
+    ...core,
+    hostObservation: evidence.host,
+    ackPlan: `sha256:${sha256(stableJson(core))}`,
+  };
 }
 
 async function inspect(candidateId) {
@@ -294,7 +318,7 @@ async function inspect(candidateId) {
       ...candidate,
       benchmarkEnvelope: manifest.envelope,
     },
-    host: hostPressure(),
+    host: hostPressure(manifest.envelope),
     dropIn: { path: DROP_IN_PATH, state: 'absent', sha256: sha256(bytes), mode: 0o644 },
   });
 }
@@ -365,6 +389,7 @@ async function applyLocked(candidateId, ackPlan) {
   ensureReceiptRoot();
   const bytes = benchmarkDropInBytes(before.manifest.benchmarkEnvelope);
   try {
+    const activationHostObservation = hostPressure(before.manifest.benchmarkEnvelope);
     atomicWrite(DROP_IN_PATH, bytes, 0o644);
     restartOllama('benchmark apply');
     const observed = readEffectiveEnvelope(expectedRuntimeEnvelope(before.manifest.benchmarkEnvelope));
@@ -377,6 +402,10 @@ async function applyLocked(candidateId, ackPlan) {
       ackPlan,
       release: before.release,
       manifest: before.manifest,
+      hostAdmission: {
+        policy: before.hostPolicy,
+        observed: activationHostObservation,
+      },
       dropIn: before.dropIn,
       observed,
       activatedAt: new Date().toISOString(),

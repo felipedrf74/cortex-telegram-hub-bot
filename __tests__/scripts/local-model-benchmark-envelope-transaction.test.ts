@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import {
+  assertBenchmarkHostPressure,
   assertBenchmarkDropInRollbackBytes,
   buildBenchmarkEnvelopePlan,
   resolveInstalledCandidateIdentity,
@@ -44,17 +45,57 @@ function evidence() {
 }
 
 describe('local-model benchmark envelope transaction', () => {
-  it('binds owner acknowledgement to release, manifest, host, and exact drop-in bytes', () => {
+  it('binds owner acknowledgement to immutable host policy without hashing volatile pressure', () => {
     const first = buildBenchmarkEnvelopePlan(evidence());
     const replay = buildBenchmarkEnvelopePlan(evidence());
-    const changed = buildBenchmarkEnvelopePlan({
+    const changedObservation = buildBenchmarkEnvelopePlan({
+      ...evidence(),
+      host: { availableBytes: 8 * 1024 ** 3 + 4096, swapUsedBytes: 0 },
+    });
+    const changedPolicy = buildBenchmarkEnvelopePlan({
+      ...evidence(),
+      manifest: {
+        ...evidence().manifest,
+        benchmarkEnvelope: {
+          ...evidence().manifest.benchmarkEnvelope,
+          minimumHostAvailableBytes: 7 * 1024 ** 3,
+        },
+      },
+    });
+    const changedManifest = buildBenchmarkEnvelopePlan({
       ...evidence(),
       manifest: { ...evidence().manifest, manifestVersion: '2026-08-12.2' },
     });
 
     expect(first.ackPlan).toMatch(/^sha256:[0-9a-f]{64}$/u);
     expect(replay.ackPlan).toBe(first.ackPlan);
-    expect(changed.ackPlan).not.toBe(first.ackPlan);
+    expect(changedObservation.ackPlan).toBe(first.ackPlan);
+    expect(changedObservation.hostObservation).not.toEqual(first.hostObservation);
+    expect(changedPolicy.ackPlan).not.toBe(first.ackPlan);
+    expect(changedManifest.ackPlan).not.toBe(first.ackPlan);
+  });
+
+  it('rechecks live host headroom and swap against the acknowledged policy', () => {
+    const envelope = evidence().manifest.benchmarkEnvelope;
+    expect(assertBenchmarkHostPressure({
+      availableBytes: envelope.minimumHostAvailableBytes,
+      swapUsedBytes: envelope.memorySwapMaxBytes,
+    }, envelope)).toEqual({
+      availableBytes: envelope.minimumHostAvailableBytes,
+      swapUsedBytes: envelope.memorySwapMaxBytes,
+    });
+    expect(() => assertBenchmarkHostPressure({
+      availableBytes: envelope.minimumHostAvailableBytes - 1,
+      swapUsedBytes: 0,
+    }, envelope)).toThrow('host has less than the signed minimum available memory');
+    expect(() => assertBenchmarkHostPressure({
+      availableBytes: envelope.minimumHostAvailableBytes,
+      swapUsedBytes: 1,
+    }, envelope)).toThrow('host swap exceeds the signed benchmark limit');
+    expect(() => assertBenchmarkHostPressure({
+      availableBytes: envelope.minimumHostAvailableBytes,
+      swapUsedBytes: -1,
+    }, envelope)).toThrow('host swap exceeds the signed benchmark limit');
   });
 
   it('canonicalizes the bare digest shape returned by Ollama inventory', () => {
