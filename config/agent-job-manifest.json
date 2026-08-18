@@ -3,6 +3,30 @@
   "version": "2026-08-02.6",
   "jobs": [
     {
+      "id": "ai_credit_sweeper",
+      "name": "Stale AI-Credit Reservation Sweep",
+      "schedule": "30 * * * *",
+      "domain": "system",
+      "lifecycle": "active",
+      "policyOwner": "billing",
+      "jobVersion": "1.0.0",
+      "tenantScope": "platform-tenant-scoped-ledger",
+      "overlapPolicy": "durable-database-lease",
+      "retryPolicy": "next-scheduled-run",
+      "providerUsage": "none",
+      "providerRouting": "not-applicable-no-model-provider",
+      "costPolicy": "no-model-provider-cost",
+      "latencyPolicy": "callback-owned-no-model-budget",
+      "outputPolicy": "job-specific-validated-write",
+      "notificationPolicy": "job-specific",
+      "inputFingerprint": {
+        "enforcement": "not-applicable-no-provider",
+        "unchangedInputProviderCalls": 0,
+        "evidence": "source-audit:no-model-provider-boundary",
+        "tests": []
+      }
+    },
+    {
       "id": "amazon_collection",
       "name": "Amazon Collection",
       "schedule": "15 9 1 * *",
@@ -13,6 +37,30 @@
       "tenantScope": "owner-integration-profile",
       "overlapPolicy": "durable-database-lease",
       "retryPolicy": "collector-bounded-retry",
+      "providerUsage": "none",
+      "providerRouting": "not-applicable-no-model-provider",
+      "costPolicy": "no-model-provider-cost",
+      "latencyPolicy": "callback-owned-no-model-budget",
+      "outputPolicy": "job-specific-validated-write",
+      "notificationPolicy": "job-specific",
+      "inputFingerprint": {
+        "enforcement": "not-applicable-no-provider",
+        "unchangedInputProviderCalls": 0,
+        "evidence": "source-audit:no-model-provider-boundary",
+        "tests": []
+      }
+    },
+    {
+      "id": "apple_inbox_retry",
+      "name": "Apple Inbox Reconciliation",
+      "schedule": "*/15 * * * *",
+      "domain": "system",
+      "lifecycle": "active",
+      "policyOwner": "billing",
+      "jobVersion": "1.0.0",
+      "tenantScope": "durable-apple-notification-inbox",
+      "overlapPolicy": "durable-database-lease",
+      "retryPolicy": "next-scheduled-run",
       "providerUsage": "none",
       "providerRouting": "not-applicable-no-model-provider",
       "costPolicy": "no-model-provider-cost",

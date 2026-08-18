@@ -43,6 +43,7 @@ import {
   reserveContentScriptJobCredits,
   settleContentScriptJobCredits,
 } from '../../src/services/content-script-job-credits';
+import { cancelContentScriptJobsForAccountDeletion } from '../../src/services/content-script-job-account-lifecycle';
 
 const NOW = new Date('2026-08-18T12:00:00.000Z');
 const PERIOD_END = new Date('2026-09-01T00:00:00.000Z');
@@ -152,6 +153,24 @@ describe('content-script-job-credits', () => {
       tenantId: 51, userId: 51, jobId: 'script_job_capped', plan: 'pro', longForm: true, now: NOW,
     });
     expect(capped).toMatchObject({ kind: 'denied', code: 'AI_CREDIT_DAILY_CAP', statusCode: 429 });
+  });
+
+  it('account-deletion cancellation releases held job reservations', () => {
+    reserve();
+    db.prepare(`INSERT INTO content_script_jobs (
+      job_id, tenant_id, owner_user_id, plan_id, idempotency_key, request_hash,
+      operation_id, request_json, target_duration_seconds, status, stage,
+      progress_percent, model_digest
+    ) VALUES (?, 40, 40, 'pro', 'idem-lifecycle', ?,
+              'op-lifecycle', '{}', 900, 'queued', 'queued', 0, ?)`)
+      .run(JOB, 'a'.repeat(64), `sha256:${'b'.repeat(64)}`);
+
+    expect(cancelContentScriptJobsForAccountDeletion(40)).toBe(1);
+
+    const wallet = getAiCreditWallet(40, 'pro', NOW);
+    expect(wallet.reservedCredits).toBe(0);
+    expect(wallet.availableCredits).toBe(500);
+    expect(db.prepare("SELECT state FROM ai_credit_reservations").get()).toEqual({ state: 'released' });
   });
 
   it('never breaks the job transition when settlement faults', () => {

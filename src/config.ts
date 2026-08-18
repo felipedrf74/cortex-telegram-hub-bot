@@ -828,6 +828,12 @@ export const config = {
       pack250: process.env.APPLE_PRODUCT_ID_PACK_250 || '',
       pack600: process.env.APPLE_PRODUCT_ID_PACK_600 || '',
     },
+    // Independent pack/Apple-fulfillment kill switch (plan §5). Default OFF:
+    // pack notifications defer in the durable inbox — no ledger writes, no
+    // attempt burn — until fulfillment is explicitly enabled.
+    applePackFulfillmentEnabled:
+      (process.env.APPLE_PACK_FULFILLMENT_ENABLED || 'false') === 'true'
+      && (process.env.APPLE_PACK_FULFILLMENT_KILL_SWITCH || 'false') !== 'true',
     anonymousCheckoutEnabled: (process.env.ANONYMOUS_CHECKOUT_ENABLED || 'true') === 'true',
   },
 

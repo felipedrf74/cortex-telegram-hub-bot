@@ -1206,6 +1206,15 @@ const ACCOUNT_DELETION_RETAINED_TABLES = new Set([
   'local_inference_control_events',
   'local_inference_safety_incidents',
   '_migrations',
+  // Hybrid AI credit ledger (plan §4): billing evidence is append-only and
+  // under statutory retention, and the ledger's schema triggers abort DELETE
+  // by design — enumerating these tables would abort and roll back the whole
+  // erasure. Rows carry only internal numeric ids (no PII, which is erased
+  // elsewhere in this transaction); the erasure/pseudonymization policy for
+  // financial evidence is the NH-0035 owner+counsel decision.
+  'ai_credit_lots',
+  'ai_credit_reservations',
+  'ai_credit_captures',
 ]);
 
 type AccountOwnershipColumn = 'user_id' | 'owner_user_id';

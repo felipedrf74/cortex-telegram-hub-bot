@@ -18,6 +18,7 @@
  */
 
 import { getDb } from './database';
+import { config } from '../config';
 import { logger } from '../utils/logger';
 import { verifyAppleJws } from './apple-jws-verifier';
 import {
@@ -54,8 +55,17 @@ export type IngestAppleNotificationResult =
 export type ProcessAppleNotificationResult =
   | { kind: 'processed'; row: AppleInboxRow; handled: boolean }
   | { kind: 'failed'; row: AppleInboxRow; error: string }
+  | { kind: 'deferred'; row: AppleInboxRow }
   | { kind: 'not_found'; inboxId: number }
   | { kind: 'exhausted'; row: AppleInboxRow };
+
+/** Pack work is deferred — not failed — while its kill switch is off. */
+class PackFulfillmentDisabledError extends Error {
+  constructor() {
+    super('Apple pack fulfillment is disabled; notification retained as pending');
+    this.name = 'PackFulfillmentDisabledError';
+  }
+}
 
 interface RawRow {
   id: number;
@@ -155,6 +165,10 @@ function applyStoredNotification(row: RawRow): boolean {
   const productId = typeof inner.productId === 'string' ? inner.productId : '';
   const packItem = resolveBillingCatalogItemByAppleProductId(productId);
 
+  if (packItem && !config.hybridCommerce.applePackFulfillmentEnabled) {
+    throw new PackFulfillmentDisabledError();
+  }
+
   if (packItem && isPackPurchaseType(row.notification_type)) {
     const userId = resolveUserIdFromAppleAppAccountToken(inner.appAccountToken);
     if (!userId) {
@@ -196,8 +210,11 @@ function applyStoredNotification(row: RawRow): boolean {
         return true;
       }
     }
-    logger.warn({ inboxId: row.id }, 'Apple pack reversal matched no credit lot');
-    return false;
+    // A reversal with no matching lot must not be marked processed: the
+    // purchase may still be pending/failed in this inbox. Failing keeps the
+    // reversal retryable so it lands after the purchase does; exhausted rows
+    // stay visible for reconciliation instead of silently vanishing.
+    throw new Error('pack reversal matched no credit lot; retained for reconciliation');
   }
 
   return handleAppleNotification(row.notification_type, signedTransactionInfo, {
@@ -225,6 +242,11 @@ export function processStoredAppleNotification(inboxId: number, now: Date = new 
     if (!updated) throw new Error('apple-notification-inbox: processed readback failed');
     return { kind: 'processed', row: mapRow(updated), handled };
   } catch (error) {
+    if (error instanceof PackFulfillmentDisabledError) {
+      // Kill switch off: keep the row pending without burning an attempt so
+      // enabling fulfillment later replays every deferred purchase intact.
+      return { kind: 'deferred', row: mapRow(row) };
+    }
     const message = error instanceof Error ? error.message.slice(0, LAST_ERROR_MAX_LENGTH) : 'unknown error';
     db.prepare(
       `UPDATE apple_notification_inbox
@@ -246,6 +268,7 @@ export function processPendingAppleNotifications(input: { limit?: number; now?: 
   processed: number;
   failed: number;
   exhausted: number;
+  deferred: number;
 } {
   const db = getDb();
   const now = input.now ?? new Date();
@@ -257,12 +280,13 @@ export function processPendingAppleNotifications(input: { limit?: number; now?: 
        LIMIT ?`,
     )
     .all(MAX_PROCESS_ATTEMPTS, Math.max(1, Math.min(input.limit ?? 25, 100))) as Array<{ id: number }>;
-  const counts = { processed: 0, failed: 0, exhausted: 0 };
+  const counts = { processed: 0, failed: 0, exhausted: 0, deferred: 0 };
   for (const { id } of rows) {
     const result = processStoredAppleNotification(id, now);
     if (result.kind === 'processed') counts.processed += 1;
     else if (result.kind === 'failed') counts.failed += 1;
     else if (result.kind === 'exhausted') counts.exhausted += 1;
+    else if (result.kind === 'deferred') counts.deferred += 1;
   }
   return counts;
 }

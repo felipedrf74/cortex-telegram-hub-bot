@@ -4,6 +4,7 @@ import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 let db: Database.Database;
+let packFulfillmentEnabled = true;
 const jwsFixtures = new Map<string, Record<string, unknown>>();
 const mockHandleAppleNotification = vi.fn(() => true);
 
@@ -23,10 +24,13 @@ vi.mock('../../src/config', async (importOriginal) => {
     ...actual,
     config: {
       ...actual.config,
-      hybridCommerce: {
-        stripePriceIds: { planProMonthly: '', planMaxMonthly: '', pack100: '', pack250: '', pack600: '' },
-        appleProductIds: { pack100: 'nx.pack.100.v1', pack250: 'nx.pack.250.v1', pack600: '' },
-        anonymousCheckoutEnabled: true,
+      get hybridCommerce() {
+        return {
+          stripePriceIds: { planProMonthly: '', planMaxMonthly: '', pack100: '', pack250: '', pack600: '' },
+          appleProductIds: { pack100: 'nx.pack.100.v1', pack250: 'nx.pack.250.v1', pack600: '' },
+          applePackFulfillmentEnabled: packFulfillmentEnabled,
+          anonymousCheckoutEnabled: true,
+        };
       },
     },
   };
@@ -108,6 +112,7 @@ describe('apple-notification-inbox', () => {
     applyMigrationFileForTest(db, '285_ai_credit_ledger_foundation.sql');
     applyMigrationFileForTest(db, '286_apple_notification_inbox.sql');
     jwsFixtures.clear();
+    packFulfillmentEnabled = true;
     mockHandleAppleNotification.mockClear();
     mockHandleAppleNotification.mockReturnValue(true);
   });
@@ -192,7 +197,7 @@ describe('apple-notification-inbox', () => {
       now: NOW,
     });
     const failed = processPendingAppleNotifications({ now: NOW });
-    expect(failed).toEqual({ processed: 0, failed: 1, exhausted: 0 });
+    expect(failed).toEqual({ processed: 0, failed: 1, exhausted: 0, deferred: 0 });
     const row = db.prepare("SELECT state, attempts, last_error FROM apple_notification_inbox WHERE notification_uuid = 'uuid-late'").get() as any;
     expect(row.state).toBe('failed');
     expect(row.attempts).toBe(1);
@@ -204,7 +209,7 @@ describe('apple-notification-inbox', () => {
       data: { signedTransactionInfo: 'inner-late', environment: 'Production' },
     });
     const recovered = processPendingAppleNotifications({ now: NOW });
-    expect(recovered).toEqual({ processed: 1, failed: 0, exhausted: 0 });
+    expect(recovered).toEqual({ processed: 1, failed: 0, exhausted: 0, deferred: 0 });
     expect(getAiCreditWallet(40, 'pro', NOW).purchasedRemaining).toBe(100);
   });
 
@@ -215,6 +220,44 @@ describe('apple-notification-inbox', () => {
     const outcome = processStoredAppleNotification(stored.row.id, NOW);
     expect(outcome).toMatchObject({ kind: 'failed' });
     expect(db.prepare('SELECT COUNT(*) AS count FROM ai_credit_lots').get()).toEqual({ count: 0 });
+  });
+
+  it('defers pack work without burning attempts while the kill switch is off, then fulfills', () => {
+    packFulfillmentEnabled = false;
+    seedPackNotification({ outerKey: 'outer-1', innerKey: 'inner-1' });
+    const stored = ingest('outer-1');
+    if (stored.kind !== 'stored') throw new Error('unreachable');
+
+    expect(processStoredAppleNotification(stored.row.id, NOW)).toMatchObject({ kind: 'deferred' });
+    expect(processPendingAppleNotifications({ now: NOW })).toEqual({ processed: 0, failed: 0, exhausted: 0, deferred: 1 });
+    const row = db.prepare('SELECT state, attempts FROM apple_notification_inbox WHERE id = ?').get(stored.row.id) as any;
+    expect(row).toEqual({ state: 'pending', attempts: 0 });
+    expect(db.prepare('SELECT COUNT(*) AS count FROM ai_credit_lots').get()).toEqual({ count: 0 });
+
+    packFulfillmentEnabled = true;
+    expect(processPendingAppleNotifications({ now: NOW })).toEqual({ processed: 1, failed: 0, exhausted: 0, deferred: 0 });
+    expect(getAiCreditWallet(40, 'pro', NOW).purchasedRemaining).toBe(100);
+  });
+
+  it('keeps an unmatched pack reversal retryable until its purchase lands', () => {
+    // REFUND arrives before its purchase was ever processed.
+    seedPackNotification({ outerKey: 'outer-refund-first', innerKey: 'inner-refund-first', notificationType: 'REFUND', transactionId: 'apple-txn-race' });
+    const refund = ingest('outer-refund-first', 'REFUND');
+    if (refund.kind !== 'stored') throw new Error('unreachable');
+    const refunded = processStoredAppleNotification(refund.row.id, NOW);
+    expect(refunded.kind).toBe('failed');
+    if (refunded.kind !== 'failed') throw new Error('unreachable');
+    expect(refunded.error).toContain('reconciliation');
+
+    // The purchase lands later; the retried reversal then revokes it.
+    seedPackNotification({ outerKey: 'outer-late-purchase', innerKey: 'inner-late-purchase', transactionId: 'apple-txn-race' });
+    const purchase = ingest('outer-late-purchase');
+    if (purchase.kind !== 'stored') throw new Error('unreachable');
+    expect(processStoredAppleNotification(purchase.row.id, NOW).kind).toBe('processed');
+    expect(getAiCreditWallet(40, 'pro', NOW).purchasedRemaining).toBe(100);
+
+    expect(processPendingAppleNotifications({ now: NOW })).toEqual({ processed: 1, failed: 0, exhausted: 0, deferred: 0 });
+    expect(getAiCreditWallet(40, 'pro', NOW).purchasedRemaining).toBe(0);
   });
 
   it('stops retrying after the attempt budget and enforces inbox immutability', () => {

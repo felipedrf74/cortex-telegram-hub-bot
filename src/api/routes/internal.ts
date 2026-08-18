@@ -166,6 +166,19 @@ export function internalRoutes(): Router {
   //   requestId?: string, // for tracing
   // }
   // The router-local internal limiter is mounted before shared-secret validation and every handler.
+  // Activation-time operation (Addendum B / NH-0029): runs the idempotent
+  // Nexus Points cutover. Gated on the cutover flag so it cannot execute
+  // before the owner flips activation; the operation audit-logs itself.
+  router.post('/nexus-points-cutover', async (_req: Request, res: Response) => {
+    if (!config.hybridCredits.pointsCutover) {
+      sendError(res, 'CUTOVER_NOT_ACTIVE', 'HYBRID_CREDITS_POINTS_CUTOVER is not enabled', 409);
+      return;
+    }
+    const { runNexusPointsCutover } = require('../../services/nexus-points');
+    const result = runNexusPointsCutover();
+    res.json({ success: true, data: result });
+  });
+
   router.post('/report-usage', async (req: Request, res: Response) => {
     try {
       const {

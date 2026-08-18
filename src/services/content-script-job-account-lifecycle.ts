@@ -2,6 +2,7 @@
 
 import type Database from 'better-sqlite3';
 import { getDb } from './database';
+import { settleContentScriptJobCredits } from './content-script-job-credits';
 
 export interface ActiveContentScriptJobLease {
   leaseToken: string;
@@ -25,11 +26,11 @@ export function cancelContentScriptJobsForAccountDeletion(
   }
   const timestamp = new Date().toISOString();
   const cancelled = db.transaction(() => {
-    const rows = db.prepare(`SELECT job_id, lease_token
+    const rows = db.prepare(`SELECT job_id, tenant_id, lease_token
       FROM content_script_jobs
       WHERE owner_user_id = ?
         AND status IN ('queued', 'running', 'waiting_capacity')`)
-      .all(userId) as Array<{ job_id: string; lease_token: string | null }>;
+      .all(userId) as Array<{ job_id: string; tenant_id: number; lease_token: string | null }>;
     if (rows.length === 0) return { changes: 0, rows };
 
     db.prepare(`UPDATE content_script_job_checkpoints
@@ -52,6 +53,14 @@ export function cancelContentScriptJobsForAccountDeletion(
   }).immediate();
 
   for (const row of cancelled.rows) {
+    // Cancellation is a terminal transition: release each job's credit
+    // reservation so account deletion never strands held credits.
+    settleContentScriptJobCredits({
+      tenantId: row.tenant_id,
+      userId,
+      jobId: row.job_id,
+      outcome: 'released',
+    });
     const activeLease = activeContentScriptJobLeases.get(row.job_id);
     if (!activeLease || activeLease.leaseToken !== row.lease_token) continue;
     activeLease.controller.abort(Object.assign(new Error('account_deleted'), {

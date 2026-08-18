@@ -1560,6 +1560,35 @@ describe('account deletion OAuth revocation', () => {
       WHERE user_id = 1`).get()).toBeUndefined();
   });
 
+  it('erases the account cleanly while retaining append-only credit-ledger evidence', async () => {
+    seedUser(testDb, 1);
+    testDb.prepare(`
+      INSERT INTO ai_credit_lots (
+        user_id, lot_type, credits_granted, granted_at, expires_at,
+        source_kind, source_ref, provider, provider_transaction_id
+      ) VALUES (1, 'purchased', 100, '2026-08-18T10:00:00.000Z', NULL,
+                'provider_purchase', 'apple:txn-erase', 'apple', 'txn-erase')
+    `).run();
+    testDb.prepare(`
+      INSERT INTO ai_credit_reservations (
+        user_id, operation_class, credits, tenant_scope, workload,
+        request_hash, client_operation_id, reserved_at, reserved_day
+      ) VALUES (1, 'standard', 1, 'tenant-1', 'chat', 'hash-erase', 'op-erase',
+                '2026-08-18T10:00:00.000Z', '2026-08-18')
+    `).run();
+
+    const counts = await deleteAllUserDataForAccountDeletion(1);
+
+    expect(counts.users).toBe(1);
+    expect(testDb.prepare('SELECT 1 FROM users WHERE telegram_id = 1').get()).toBeUndefined();
+    // Billing evidence is retained under statutory retention (plan §4); the
+    // append-only triggers would otherwise abort and roll back the whole
+    // erasure. The full financial-evidence policy is NH-0035.
+    expect(testDb.prepare('SELECT COUNT(*) AS c FROM ai_credit_lots WHERE user_id = 1').get()).toEqual({ c: 1 });
+    expect(testDb.prepare('SELECT COUNT(*) AS c FROM ai_credit_reservations WHERE user_id = 1').get()).toEqual({ c: 1 });
+    expect(counts).not.toHaveProperty('ai_credit_lots');
+  });
+
   it('bounds every third-party revocation with an abort signal', async () => {
     seedUser(testDb, 1);
     testDb.prepare(`
