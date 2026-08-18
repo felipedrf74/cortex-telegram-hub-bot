@@ -1,14 +1,14 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-import Database from 'better-sqlite3';
+import type Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
-import { applyMigrationFileForTest, runMigrationsForTest } from '../../src/services/database';
+import { applyMigrationFileForTest } from '../../src/services/database';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 
 const MIGRATION_FILE = '285_ai_credit_ledger_foundation.sql';
 
 function createMigratedDb(): Database.Database {
-  const db = new Database(':memory:');
-  runMigrationsForTest(db);
+  const db = createMigratedTestDatabase({ stopBefore: MIGRATION_FILE });
   applyMigrationFileForTest(db, MIGRATION_FILE);
   return db;
 }

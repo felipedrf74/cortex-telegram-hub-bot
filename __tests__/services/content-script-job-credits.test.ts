@@ -37,7 +37,7 @@ vi.mock('../../src/utils/logger', () => ({
   LOGGER_REDACTION_PATHS: [],
 }));
 
-import { applyMigrationFileForTest, runMigrationsForTest } from '../../src/services/database';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import { getAiCreditWallet, grantMonthlyAiCredits, grantPromotionalAiCredits } from '../../src/services/ai-credit-ledger';
 import {
   reserveContentScriptJobCredits,
@@ -74,9 +74,7 @@ function settle(outcome: 'captured' | 'released', overrides: Record<string, unkn
 
 describe('content-script-job-credits', () => {
   beforeEach(() => {
-    db = new Database(':memory:');
-    runMigrationsForTest(db);
-    applyMigrationFileForTest(db, '285_ai_credit_ledger_foundation.sql');
+    db = createMigratedTestDatabase();
     hybridCreditsEnabled = true;
     grantMonthlyAiCredits({ userId: 40, plan: 'pro', periodKey: '2026-08', periodEnd: PERIOD_END, now: NOW });
   });

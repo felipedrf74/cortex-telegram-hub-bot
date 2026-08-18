@@ -46,7 +46,7 @@ vi.mock('../../src/utils/logger', () => ({
   LOGGER_REDACTION_PATHS: [],
 }));
 
-import { applyMigrationFileForTest, runMigrationsForTest } from '../../src/services/database';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import { getAiCreditWallet, grantMonthlyAiCredits } from '../../src/services/ai-credit-ledger';
 import {
   AiCreditAdmissionDeniedError,
@@ -75,9 +75,7 @@ function reservationCount(): number {
 
 describe('ai-credit-admission', () => {
   beforeEach(() => {
-    db = new Database(':memory:');
-    runMigrationsForTest(db);
-    applyMigrationFileForTest(db, '285_ai_credit_ledger_foundation.sql');
+    db = createMigratedTestDatabase();
     hybridCreditsEnabled = true;
     resolvedPlan = 'pro';
     grantMonthlyAiCredits({ userId: 40, plan: 'pro', periodKey: '2026-08', periodEnd: PERIOD_END, now: NOW });

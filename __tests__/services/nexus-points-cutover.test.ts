@@ -37,7 +37,7 @@ vi.mock('../../src/utils/logger', () => ({
   LOGGER_REDACTION_PATHS: [],
 }));
 
-import { applyMigrationFileForTest, runMigrationsForTest } from '../../src/services/database';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import {
   NEXUS_POINTS_NONEXPIRING_AT,
   getNexusPointBalance,
@@ -86,8 +86,7 @@ function expiryOf(id: number): { expires_at: string; status: string } {
 
 describe('nexus points cutover (NH-0029)', () => {
   beforeEach(() => {
-    db = new Database(':memory:');
-    runMigrationsForTest(db);
+    db = createMigratedTestDatabase();
     pointsCutoverActive = false;
     seedCredit.counter = 0;
   });

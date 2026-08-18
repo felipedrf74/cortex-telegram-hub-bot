@@ -62,7 +62,7 @@ vi.mock('../../src/utils/logger', () => ({
   LOGGER_REDACTION_PATHS: [],
 }));
 
-import { applyMigrationFileForTest, runMigrationsForTest } from '../../src/services/database';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import { getAiCreditWallet } from '../../src/services/ai-credit-ledger';
 import {
   ingestVerifiedAppleNotification,
@@ -107,10 +107,7 @@ function ingest(outerKey: string, notificationType = 'ONE_TIME_CHARGE') {
 
 describe('apple-notification-inbox', () => {
   beforeEach(() => {
-    db = new Database(':memory:');
-    runMigrationsForTest(db);
-    applyMigrationFileForTest(db, '285_ai_credit_ledger_foundation.sql');
-    applyMigrationFileForTest(db, '286_apple_notification_inbox.sql');
+    db = createMigratedTestDatabase();
     jwsFixtures.clear();
     packFulfillmentEnabled = true;
     mockHandleAppleNotification.mockClear();
