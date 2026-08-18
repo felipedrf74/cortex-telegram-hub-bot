@@ -666,6 +666,28 @@ export function listAiCreditLots(userId: number): AiCreditLot[] {
   return rows.map(mapLot);
 }
 
+/**
+ * All reservations sharing one request identity (e.g. a durable job and its
+ * user-initiated retries), oldest first. Async operations settle against the
+ * newest still-reserved entry.
+ */
+export function listAiCreditReservationsForRequest(input: {
+  tenantScope: string;
+  userId: number;
+  workload: string;
+  requestHash: string;
+}): AiCreditReservation[] {
+  const db = getDb();
+  const rows = db
+    .prepare(
+      `SELECT * FROM ai_credit_reservations
+       WHERE tenant_scope = ? AND user_id = ? AND workload = ? AND request_hash = ?
+       ORDER BY id ASC`,
+    )
+    .all(input.tenantScope, input.userId, input.workload, input.requestHash) as ReservationRow[];
+  return rows.map(mapReservation);
+}
+
 /** Provider-event binding lookup for refunds, disputes, and revocations. */
 export function findAiCreditLotByProviderTransaction(
   provider: AiCreditProvider,

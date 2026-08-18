@@ -28,6 +28,11 @@ import {
   encryptContentScriptJobJson,
 } from './content-script-job-encryption';
 import { getLocalInferenceRuntimeControl } from './local-inference-runtime-control';
+import {
+  reserveContentScriptJobCredits,
+  settleContentScriptJobCredits,
+} from './content-script-job-credits';
+import type { BillingPlan } from './plan-quotas';
 import { localInferenceScheduler } from './local-inference-scheduler';
 import { localPrimaryInferenceConfig } from './local-primary-config';
 import { getLocalModelManifest } from './ollama-model-policy';
@@ -517,6 +522,19 @@ export function createContentScriptJob(input: {
       }
       return { row: winner, replayed: true };
     }
+    // Shared-credit reservation joins the same atomic admission: a credit
+    // denial rolls the inserted job back, and a job-insert race never
+    // reserves. Entitlement and plan limits already ran above (plan order).
+    const credits = reserveContentScriptJobCredits({
+      tenantId: input.tenantId,
+      userId: input.userId,
+      jobId,
+      plan: limits.plan as BillingPlan,
+      longForm: isLongFormScriptDuration(request.targetDurationSeconds),
+    });
+    if (credits.kind === 'denied') {
+      throw new ContentScriptJobError(credits.code, credits.message, credits.statusCode);
+    }
     return {
       row: readRow(db, input.tenantId, input.userId, jobId)!,
       replayed: false,
@@ -645,6 +663,17 @@ function requeueInfrastructureFailure(
         leaseToken,
       );
     if (changed.changes !== 1) return null;
+    if (terminal) {
+      // Infrastructure-retry exhaustion is a terminal failure: release the
+      // job's credit reservation. Non-terminal requeues keep it held so the
+      // resumed attempt never charges twice.
+      settleContentScriptJobCredits({
+        tenantId: row.tenant_id,
+        userId: row.owner_user_id,
+        jobId,
+        outcome: 'released',
+      });
+    }
     const updated = db.prepare('SELECT * FROM content_script_jobs WHERE job_id = ?')
       .get(jobId) as JobRow;
     return { job: mapJob(updated), terminal };
@@ -1977,6 +2006,14 @@ export async function runContentScriptJob(
         409,
       );
     }
+    // Validated user-visible result: capture the job's credit reservation
+    // exactly once. Sections, repairs, and continuations never charged.
+    settleContentScriptJobCredits({
+      tenantId: row.tenant_id,
+      userId: row.owner_user_id,
+      jobId,
+      outcome: 'captured',
+    });
     return mapJob(db.prepare('SELECT * FROM content_script_jobs WHERE job_id = ?').get(jobId) as JobRow);
   } catch (error) {
     const failureReason = localInferenceFailureReason(error);
@@ -2014,7 +2051,7 @@ export async function runContentScriptJob(
     const warningCodes = error instanceof ContentScriptFinalValidationError
       ? error.warningCodes
       : [];
-    db.prepare(`UPDATE content_script_jobs
+    const stopped = db.prepare(`UPDATE content_script_jobs
       SET status = ?, stage = ?, last_error_code = ?, lease_token = NULL,
           lease_expires_at = NULL,
           warning_codes_json = ?,
@@ -2022,6 +2059,14 @@ export async function runContentScriptJob(
           updated_at = ?
       WHERE job_id = ? AND status = 'running' AND lease_token = ?`)
       .run(status, status, code, JSON.stringify(warningCodes), status, timestamp, timestamp, jobId, token);
+    if (stopped.changes === 1) {
+      settleContentScriptJobCredits({
+        tenantId: row.tenant_id,
+        userId: row.owner_user_id,
+        jobId,
+        outcome: 'released',
+      });
+    }
     logger.warn({ jobId, code, status }, 'Content script job stopped');
     throw error;
   } finally {
@@ -2084,6 +2129,12 @@ export function cancelContentScriptJob(input: {
       ).changes;
   }).immediate();
   if (changed > 0) {
+    settleContentScriptJobCredits({
+      tenantId: input.tenantId,
+      userId: input.userId,
+      jobId: input.jobId,
+      outcome: 'released',
+    });
     controllers.get(input.jobId)?.controller.abort(Object.assign(new Error('script_job_cancelled'), {
       name: 'AbortError',
       code: 'SCRIPT_JOB_CANCELLED',
@@ -2171,6 +2222,19 @@ export function retryContentScriptJob(input: {
       .run(durableProgress, timestamp, timestamp, input.jobId, input.tenantId, input.userId);
     if (changed.changes !== 1) {
       throw new ContentScriptJobError('CONTENT_SCRIPT_JOB_RETRY_RACE', 'The script job changed while retrying.', 409);
+    }
+    // A user-initiated retry of a failed/cancelled job is a new user-visible
+    // generation attempt: it reserves fresh credits (the prior reservation
+    // released at failure), and a denial rolls the requeue back.
+    const credits = reserveContentScriptJobCredits({
+      tenantId: input.tenantId,
+      userId: input.userId,
+      jobId: input.jobId,
+      plan: limits.plan as BillingPlan,
+      longForm: isLongFormScriptDuration(row.target_duration_seconds),
+    });
+    if (credits.kind === 'denied') {
+      throw new ContentScriptJobError(credits.code, credits.message, credits.statusCode);
     }
     return { row: readRow(db, input.tenantId, input.userId, input.jobId)!, changed: true };
   }).immediate();
