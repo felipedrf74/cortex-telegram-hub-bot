@@ -5,11 +5,11 @@
     "generatorVersion": 4,
     "authoritativeFreshness": "sourceDigest",
     "sourceDigestAlgorithm": "sha256-path-git-mode-content-v2",
-    "sourceDigest": "3aaa42d314e4cd41c030c35a685cc00ca984296de1ef934270e6338ce9635f9c",
-    "baseCommit": "e63e00d22db5a76587e12fdda476199922fe737e",
-    "baseCommitTimestamp": "2026-08-18T13:42:48+01:00",
-    "trackedFiles": 3310,
-    "sourceFiles": 1165
+    "sourceDigest": "13f5a49aee6bcaa7fe4eda19124119773826a5b44c13b4bd16296ea1cb77f468",
+    "baseCommit": "69092488f14fe83ea977ec25a52b48267e30d295",
+    "baseCommitTimestamp": "2026-08-18T14:16:47+01:00",
+    "trackedFiles": 3318,
+    "sourceFiles": 1168
   },
   "navigation": {
     "agentBootloader": "AGENTS.md",
@@ -99,7 +99,7 @@
     {
       "path": "src/services",
       "owner": "backend",
-      "files": 845
+      "files": 848
     },
     {
       "path": "src/skills",
@@ -1366,6 +1366,14 @@
       "owner": "backend"
     },
     {
+      "method": "GET",
+      "path": "/api/v1/billing/catalog",
+      "localPath": "/catalog",
+      "mountPath": "/api/v1/billing",
+      "source": "src/api/routes/billing.ts",
+      "owner": "backend"
+    },
+    {
       "method": "POST",
       "path": "/api/v1/billing/checkout",
       "localPath": "/checkout",
@@ -1377,6 +1385,14 @@
       "method": "POST",
       "path": "/api/v1/billing/claim-website-checkout",
       "localPath": "/claim-website-checkout",
+      "mountPath": "/api/v1/billing",
+      "source": "src/api/routes/billing.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/billing/credits-checkout",
+      "localPath": "/credits-checkout",
       "mountPath": "/api/v1/billing",
       "source": "src/api/routes/billing.ts",
       "owner": "backend"
@@ -1409,6 +1425,14 @@
       "method": "GET",
       "path": "/api/v1/billing/usage",
       "localPath": "/usage",
+      "mountPath": "/api/v1/billing",
+      "source": "src/api/routes/billing.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/billing/wallet",
+      "localPath": "/wallet",
       "mountPath": "/api/v1/billing",
       "source": "src/api/routes/billing.ts",
       "owner": "backend"
@@ -4583,9 +4607,9 @@
     }
   ],
   "migrations": {
-    "count": 276,
-    "latest": "migrations/285_ai_credit_ledger_foundation.sql",
-    "digest": "5961acbe83754585d67946a8a18a1e1d3d89ee3a0cf2d894ab868336b8bd154c",
+    "count": 277,
+    "latest": "migrations/286_apple_notification_inbox.sql",
+    "digest": "0a0b6086fedd1e6ea7127226832e4dc8715c3e0390cf50ff94fc247804645e0f",
     "files": [
       "migrations/001_initial.sql",
       "migrations/002_shared_memory.sql",
@@ -4862,7 +4886,8 @@
       "migrations/282_secretary_agenda_preemption_state.sql",
       "migrations/283_release_schema_convergence.sql",
       "migrations/284_local_primary_inference_foundation.sql",
-      "migrations/285_ai_credit_ledger_foundation.sql"
+      "migrations/285_ai_credit_ledger_foundation.sql",
+      "migrations/286_apple_notification_inbox.sql"
     ]
   },
   "capabilities": [
@@ -4978,13 +5003,13 @@
     }
   ],
   "tests": {
-    "files": 1224,
+    "files": 1227,
     "policy": "config/test-policy.json",
     "inventoryArtifact": ".local/test-inventory/test-inventory.json",
     "topLevelOwners": {
       "adapters": 2,
       "agents": 4,
-      "api": 160,
+      "api": 161,
       "billing": 1,
       "brand": 1,
       "cli": 2,
@@ -5000,7 +5025,7 @@
       "scripts": 105,
       "sdk": 1,
       "security": 24,
-      "services": 756,
+      "services": 758,
       "skills": 11,
       "state": 17,
       "storage": 1,

@@ -1032,6 +1032,7 @@
         "src/domains/finance.ts",
         "src/api/routes/billing*.ts",
         "src/api/routes/finance*.ts",
+        "src/services/apple-notification-inbox.ts",
         "src/services/billing-catalog.ts",
         "src/services/finance-*.ts",
         "src/services/fiscal-*.ts",
@@ -1044,6 +1045,7 @@
       ],
       "tests": [
         "__tests__/api/billing-catalog.test.ts",
+        "__tests__/services/apple-notification-inbox.test.ts",
         "__tests__/billing/**/*.test.ts",
         "__tests__/services/paid-ai-budget.test.ts",
         "__tests__/services/paid-ai-cost-controls-migration.test.ts",

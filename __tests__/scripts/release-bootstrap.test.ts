@@ -295,6 +295,7 @@ describe('first-container bootstrap baseline', () => {
         expect.objectContaining({ file: '283_release_schema_convergence.sql' }),
         expect.objectContaining({ file: '284_local_primary_inference_foundation.sql' }),
         expect.objectContaining({ file: '285_ai_credit_ledger_foundation.sql' }),
+        expect.objectContaining({ file: '286_apple_notification_inbox.sql' }),
       ]);
     expect(baseline.databases.production.sha256)
       .not.toBe(baseline.databases.staging.sha256);

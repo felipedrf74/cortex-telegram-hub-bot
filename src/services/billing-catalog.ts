@@ -120,3 +120,13 @@ export function getBillingCatalog(): { catalogVersion: string; items: BillingCat
 export function resolveBillingCatalogItem(catalogItemId: string): ResolvedBillingCatalogItem | null {
   return catalogDefinitions().find((item) => item.id === catalogItemId) ?? null;
 }
+
+/** Apple consumable fulfillment resolves packs by their provisioned product id. */
+export function resolveBillingCatalogItemByAppleProductId(
+  appleProductId: string,
+): ResolvedBillingCatalogItem | null {
+  if (!appleProductId) return null;
+  return catalogDefinitions().find(
+    (item) => item.kind === 'credit_pack' && item.appleProductId === appleProductId,
+  ) ?? null;
+}

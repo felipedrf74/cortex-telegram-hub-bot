@@ -48,6 +48,10 @@ import { productLearningAdminRoutes } from './routes/product-learning-admin';
 import { localInferenceAdminRoutes } from './routes/local-inference-admin';
 import { verifyAppleJws } from '../services/apple-jws-verifier';
 import { handleAppleNotification } from '../services/stripe-service';
+import {
+  ingestVerifiedAppleNotification,
+  processStoredAppleNotification,
+} from '../services/apple-notification-inbox';
 import { captureMessage } from '../services/error-tracker';
 import { logger } from '../utils/logger';
 
@@ -242,13 +246,44 @@ export function createApiRouter(): Router {
       // notificationUUID drives replay de-duplication and `environment` is
       // recorded as provenance; both live on the outer (already verified)
       // envelope, so they are threaded through rather than re-decoded.
-      const processed = handleAppleNotification(notificationType, signedTransactionInfo, {
-        notificationUUID: typeof notificationUUID === 'string' ? notificationUUID : null,
+      const normalizedUuid = typeof notificationUUID === 'string' && notificationUUID.trim()
+        ? notificationUUID.trim()
+        : null;
+      const context = {
+        notificationUUID: normalizedUuid,
         subtype: typeof subtype === 'string' ? subtype : null,
         environment: typeof data?.environment === 'string' ? data.environment : null,
-      });
+      };
 
-      res.status(200).json({ handled: processed });
+      if (!normalizedUuid) {
+        // Without a notificationUUID there is no durable identity to store
+        // under; fall back to the direct handler.
+        const processed = handleAppleNotification(notificationType, signedTransactionInfo, context);
+        res.status(200).json({ handled: processed });
+        return;
+      }
+
+      // Durable inbox (plan §3): persist the verified notification BEFORE
+      // processing. A storage failure returns a retryable status so Apple
+      // redelivers; a processing failure keeps the stored row for internal
+      // retry and still acknowledges receipt.
+      let stored;
+      try {
+        stored = ingestVerifiedAppleNotification({
+          notificationUuid: normalizedUuid,
+          notificationType,
+          subtype: context.subtype,
+          environment: context.environment,
+          signedPayload,
+        });
+      } catch (storageErr) {
+        logger.error({ err: storageErr }, 'Apple notification inbox storage failed; requesting redelivery');
+        res.status(503).json({ handled: false, reason: 'storage unavailable' });
+        return;
+      }
+
+      const outcome = processStoredAppleNotification(stored.row.id);
+      res.status(200).json({ handled: outcome.kind === 'processed' && outcome.handled });
     } catch (err: any) {
       // Never return errors to Apple — always 200
       logger.error({ err }, 'Apple notification handler error');

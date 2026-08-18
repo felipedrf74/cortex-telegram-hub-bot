@@ -665,3 +665,16 @@ export function listAiCreditLots(userId: number): AiCreditLot[] {
     .all(userId) as LotRow[];
   return rows.map(mapLot);
 }
+
+/** Provider-event binding lookup for refunds, disputes, and revocations. */
+export function findAiCreditLotByProviderTransaction(
+  provider: AiCreditProvider,
+  providerTransactionId: string,
+): AiCreditLot | null {
+  if (!providerTransactionId) return null;
+  const db = getDb();
+  const row = db
+    .prepare(`${LOT_WITH_CAPTURED_SQL} WHERE l.provider = ? AND l.provider_transaction_id = ?`)
+    .get(provider, providerTransactionId) as LotRow | undefined;
+  return row ? mapLot(row) : null;
+}
