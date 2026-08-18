@@ -1,6 +1,8 @@
 import crypto from 'crypto';
 import express from 'express';
 import http from 'http';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -225,21 +227,9 @@ describe('Apple App Store Server Notifications JWS verification', () => {
         environment        TEXT,
         processed_at       TEXT NOT NULL DEFAULT (datetime('now'))
       );
-      CREATE TABLE apple_notification_inbox (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        notification_uuid TEXT NOT NULL,
-        notification_type TEXT NOT NULL,
-        subtype TEXT,
-        environment TEXT,
-        signed_payload TEXT NOT NULL,
-        state TEXT NOT NULL DEFAULT 'pending',
-        attempts INTEGER NOT NULL DEFAULT 0,
-        last_error TEXT,
-        received_at TEXT NOT NULL,
-        processed_at TEXT
-      );
-      CREATE UNIQUE INDEX idx_apple_notification_inbox_uuid
-        ON apple_notification_inbox (notification_uuid);
+      -- Real migration SQL, so these route tests face the actual append-only
+      -- and state-transition triggers rather than a permissive hand-rolled
+      -- table (a suite that passes with the guards deleted proves nothing).
       CREATE TABLE nexus_point_credits (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER NOT NULL,
@@ -260,6 +250,10 @@ describe('Apple App Store Server Notifications JWS verification', () => {
         UNIQUE(provider, provider_transaction_id)
       );
     `);
+    testDb.exec(readFileSync(
+      resolve(__dirname, '../../migrations/286_apple_notification_inbox.sql'),
+      'utf8',
+    ));
     mockCaptureMessage.mockReset();
     mockRecordOperatorAlert.mockReset();
   });

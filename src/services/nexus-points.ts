@@ -614,8 +614,15 @@ export interface NexusPointsCutoverResult {
  * Historical receipts, consumption, and audit rows are untouched; only the
  * expiry (and the restored Apple lots' status) changes. Safe to re-run: a
  * second invocation matches nothing.
+ *
+ * Defense in depth: the internal route gates on the cutover flag, and this
+ * function refuses independently so no other caller can strip expiries while
+ * the legacy points economy is still live.
  */
 export function runNexusPointsCutover(now: Date = new Date()): NexusPointsCutoverResult {
+  if (!isNexusPointsCutoverActive()) {
+    throw new Error('NEXUS_POINTS_CUTOVER_INACTIVE: enable HYBRID_CREDITS_POINTS_CUTOVER before running the cutover');
+  }
   const db = getDb();
   const nowIso = now.toISOString();
   const result = db.transaction((): NexusPointsCutoverResult => {

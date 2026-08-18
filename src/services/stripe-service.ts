@@ -369,6 +369,16 @@ export function fulfillStripeCreditPackCheckout(session: any): boolean {
     ? session.metadata.catalogItemId
     : '';
   if (!catalogItemId) return false;
+  // Money first: delayed-notification methods fire completed with
+  // payment_status 'unpaid'/'no_payment_required'. Only a paid session grants
+  // credits; async_payment_succeeded re-delivers the paid session later.
+  if (session?.payment_status !== 'paid') {
+    logger.info(
+      { sessionId: session?.id, catalogItemId, paymentStatus: session?.payment_status },
+      'Stripe pack checkout is not paid yet; deferring fulfillment',
+    );
+    return false;
+  }
   const userId = parseInt(session?.metadata?.userId || '0', 10);
   if (!Number.isInteger(userId) || userId <= 0) {
     logger.warn({ sessionId: session?.id, catalogItemId }, 'Stripe pack checkout has no owner binding; refusing to guess');
@@ -379,11 +389,28 @@ export function fulfillStripeCreditPackCheckout(session: any): boolean {
     logger.warn({ sessionId: session?.id, catalogItemId }, 'Stripe pack checkout references an unknown catalog item; no grant');
     return false;
   }
+  // Financial idempotency keys on the payment intent only. Falling back to the
+  // session id would let the completed and async_payment_succeeded deliveries
+  // of one purchase dedupe against different identities and grant twice.
   const providerTransactionId = typeof session?.payment_intent === 'string'
     ? session.payment_intent
-    : session?.payment_intent?.id || session?.id || '';
+    : session?.payment_intent?.id || '';
   if (!providerTransactionId) {
-    logger.warn({ sessionId: session?.id, catalogItemId }, 'Stripe pack checkout has no payment identity; no grant');
+    logger.warn(
+      { sessionId: session?.id, catalogItemId },
+      'Stripe pack checkout has no payment_intent; deferring to reconciliation instead of keying on the session id',
+    );
+    return false;
+  }
+  // The amount actually charged must match the catalog price, so a tampered
+  // or stale session cannot buy a large pack for a small charge.
+  const expectedAmountCents = Math.round(item.displayPriceUsd * 100);
+  const paidAmountCents = typeof session?.amount_total === 'number' ? session.amount_total : null;
+  if (paidAmountCents !== null && paidAmountCents !== expectedAmountCents) {
+    logger.error(
+      { sessionId: session?.id, catalogItemId, paidAmountCents, expectedAmountCents },
+      'Stripe pack checkout amount does not match the catalog price; refusing to grant',
+    );
     return false;
   }
   const granted = grantPurchasedAiCredits({
@@ -412,6 +439,16 @@ export function handleStripeCreditPackReversal(charge: any, reason: 'refund' | '
     ? charge.payment_intent
     : charge?.payment_intent?.id || '';
   if (!paymentIntent) return false;
+  // charge.refunded also fires for partial refunds. Revoking a whole lot for
+  // a partial refund would delete credits the user still paid for; partials
+  // are left for manual/reconciliation handling.
+  if (reason === 'refund' && charge?.refunded !== true) {
+    logger.warn(
+      { paymentIntent, amountRefunded: charge?.amount_refunded, amount: charge?.amount },
+      'Stripe partial refund on a pack charge; lot left intact for reconciliation',
+    );
+    return false;
+  }
   const lot = findAiCreditLotByProviderTransaction('stripe', paymentIntent);
   if (!lot) return false;
   revokeAiCreditLot({ lotId: lot.id, reason });

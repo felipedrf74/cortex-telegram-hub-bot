@@ -31,3 +31,20 @@ export function getAiCreditOperationCost(operationClass: AiCreditOperationClass)
 export function isAllowedPromotionalExpiryDays(days: number): boolean {
   return PROMOTIONAL_EXPIRY_ALLOWED_DAYS.includes(days);
 }
+
+/**
+ * Plan §2 availability: deep reasoning and scripts are "Unavailable" on Free
+ * (and the free-equivalent beta plan). Enforced at reservation so no caller
+ * can admit an unavailable class regardless of balance.
+ */
+const RESTRICTED_PLAN_OPERATION_CLASSES: ReadonlySet<AiCreditOperationClass> = new Set(['standard']);
+
+export function isOperationClassAvailableForPlan(
+  plan: string,
+  operationClass: AiCreditOperationClass,
+): boolean {
+  if (plan === 'free' || plan === 'beta') {
+    return RESTRICTED_PLAN_OPERATION_CLASSES.has(operationClass);
+  }
+  return true;
+}

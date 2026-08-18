@@ -189,6 +189,14 @@ export function createWebhookRouter(options: WebhookRouterOptions = {}): Router 
           fulfillStripeCreditPackCheckout(event.data.object);
           await handleStripeNexusPointsEvent(event);
           break;
+        case 'checkout.session.async_payment_failed':
+          // A delayed payment that ultimately failed must not leave credits
+          // behind; nothing was granted unless a paid delivery arrived first.
+          handleStripeCreditPackReversal(
+            { payment_intent: (event.data.object as any)?.payment_intent, refunded: true },
+            'refund',
+          );
+          break;
         case 'charge.refunded':
           handleStripeCreditPackReversal(event.data.object, 'refund');
           await handleStripeNexusPointsEvent(event);

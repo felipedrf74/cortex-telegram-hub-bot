@@ -1215,6 +1215,13 @@ const ACCOUNT_DELETION_RETAINED_TABLES = new Set([
   'ai_credit_lots',
   'ai_credit_reservations',
   'ai_credit_captures',
+  // Apple notification evidence is likewise append-only (its DELETE trigger
+  // would abort the erasure transaction) and is billing evidence under plan
+  // §4. Note its `signed_payload` retains Apple-issued purchase identifiers
+  // including appAccountToken, which the owner-held JWT secret can reverse to
+  // this user id — reducing or pseudonymizing that payload after processing
+  // is part of the NH-0035 owner+counsel decision.
+  'apple_notification_inbox',
 ]);
 
 type AccountOwnershipColumn = 'user_id' | 'owner_user_id';

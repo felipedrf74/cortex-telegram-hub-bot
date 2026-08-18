@@ -67,10 +67,16 @@ export function reserveContentScriptJobCredits(input: {
     : deliveryMode === 'scheduled'
       ? 'scheduled_script'
       : 'standard_script';
+  // Delivery mode prices the operation whenever it is requested: a short job
+  // that asks for priority scheduling buys priority and pays for it. Only
+  // plain standard short jobs fall back to a standard operation.
+  const operationClass = input.longForm || deliveryMode !== 'standard'
+    ? scriptClass
+    : 'standard';
   const admitted = reserveAiCredits({
     userId: input.userId,
     plan: input.plan,
-    operationClass: input.longForm ? scriptClass : 'standard',
+    operationClass,
     replayScope: {
       tenantScope,
       workload: CONTENT_SCRIPT_JOB_CREDITS_WORKLOAD,
@@ -92,6 +98,14 @@ export function reserveContentScriptJobCredits(input: {
       code: 'CONTENT_SCRIPT_CREDITS_REPLAY_SETTLED',
       message: 'This script operation already settled its credits.',
       statusCode: 409,
+    };
+  }
+  if (admitted.kind === 'operation_not_available') {
+    return {
+      kind: 'denied',
+      code: 'AI_OPERATION_NOT_AVAILABLE',
+      message: `Script generation is not available on the ${admitted.plan} plan.`,
+      statusCode: 403,
     };
   }
   if (admitted.kind === 'daily_cap_exceeded') {

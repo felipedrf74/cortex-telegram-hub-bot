@@ -57,6 +57,8 @@ function packSession(overrides: Record<string, unknown> = {}) {
   return {
     id: 'cs_test_1',
     mode: 'payment',
+    payment_status: 'paid',
+    amount_total: 499,
     payment_intent: 'pi_pack_1',
     metadata: { userId: '40', catalogItemId: 'pack.credits.100' },
     ...overrides,
@@ -105,14 +107,49 @@ describe('stripe credit-pack fulfillment', () => {
     expect(db.prepare('SELECT COUNT(*) AS count FROM ai_credit_lots').get()).toEqual({ count: 0 });
   });
 
-  it('revokes only the originating lot on refund or dispute', () => {
+  it('revokes only the originating lot on a full refund or dispute', () => {
     handleCheckoutCompleted(packSession());
     handleCheckoutCompleted(packSession({ payment_intent: 'pi_pack_keep', metadata: { userId: '40', catalogItemId: 'pack.credits.100' } }));
     expect(getAiCreditWallet(40, 'pro', NOW).purchasedRemaining).toBe(200);
 
-    expect(handleStripeCreditPackReversal({ payment_intent: 'pi_pack_1' }, 'refund')).toBe(true);
+    expect(handleStripeCreditPackReversal({ payment_intent: 'pi_pack_1', refunded: true }, 'refund')).toBe(true);
     expect(getAiCreditWallet(40, 'pro', NOW).purchasedRemaining).toBe(100);
-    expect(handleStripeCreditPackReversal({ payment_intent: 'pi_unknown' }, 'dispute')).toBe(false);
+    expect(handleStripeCreditPackReversal({ payment_intent: 'pi_unknown', refunded: true }, 'dispute')).toBe(false);
+    expect(getAiCreditWallet(40, 'pro', NOW).purchasedRemaining).toBe(100);
+  });
+
+  it('refuses to grant credits before the money settles (QA P0-2)', () => {
+    // Delayed-notification methods fire completed with payment_status unpaid.
+    expect(fulfillStripeCreditPackCheckout(packSession({ payment_status: 'unpaid' }))).toBe(false);
+    expect(fulfillStripeCreditPackCheckout(packSession({ payment_status: 'no_payment_required' }))).toBe(false);
+    expect(db.prepare('SELECT COUNT(*) AS count FROM ai_credit_lots').get()).toEqual({ count: 0 });
+  });
+
+  it('refuses a session whose charged amount does not match the catalog price', () => {
+    expect(fulfillStripeCreditPackCheckout(packSession({ amount_total: 1 }))).toBe(false);
+    expect(db.prepare('SELECT COUNT(*) AS count FROM ai_credit_lots').get()).toEqual({ count: 0 });
+  });
+
+  it('never keys financial idempotency on the session id (QA P1-3)', () => {
+    // completed without a payment_intent then async_payment_succeeded with one
+    // previously granted twice for a single purchase.
+    expect(fulfillStripeCreditPackCheckout(packSession({ payment_intent: null }))).toBe(false);
+    expect(fulfillStripeCreditPackCheckout(packSession({ payment_intent: 'pi_late' }))).toBe(true);
+    expect(db.prepare('SELECT COUNT(*) AS count FROM ai_credit_lots').get()).toEqual({ count: 1 });
+    expect(getAiCreditWallet(40, 'pro', NOW).purchasedRemaining).toBe(100);
+  });
+
+  it('accepts the expanded payment_intent object form on reversal', () => {
+    handleCheckoutCompleted(packSession());
+    expect(handleStripeCreditPackReversal({ payment_intent: { id: 'pi_pack_1' }, refunded: true }, 'refund')).toBe(true);
+  });
+
+  it('leaves the lot intact on a partial refund (QA P2-10)', () => {
+    handleCheckoutCompleted(packSession());
+    expect(handleStripeCreditPackReversal(
+      { payment_intent: 'pi_pack_1', amount: 499, amount_refunded: 1, refunded: false },
+      'refund',
+    )).toBe(false);
     expect(getAiCreditWallet(40, 'pro', NOW).purchasedRemaining).toBe(100);
   });
 });

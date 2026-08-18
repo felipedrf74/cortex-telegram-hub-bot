@@ -8,6 +8,7 @@ import path from 'path';
 import {
   attachWebSocket,
   buildWebSocketAiBudgetErrorFrame,
+  buildWebSocketAiCreditErrorFrame,
   DEFAULT_WEBSOCKET_AUTH_TIMEOUT_MS,
   DEFAULT_WEBSOCKET_MAX_CONNECTIONS,
   DEFAULT_WEBSOCKET_MAX_CONNECTIONS_PER_IP,
@@ -22,6 +23,12 @@ import {
   webSocketFrameByteLength,
   webSocketMaxPayloadBytes,
 } from '../../src/api/websocket';
+import {
+  AiCreditAdmissionDeniedError,
+  AiCreditInFlightError,
+  AiCreditReplaySettledError,
+} from '../../src/services/ai-credit-admission';
+import type { AiCreditReservation } from '../../src/services/ai-credit-ledger';
 import { detectResponseLanguage } from '../../src/services/chat-language-detector';
 import { getCurrentChatRequestLocale } from '../../src/services/chat-request-locale-context';
 
@@ -557,4 +564,97 @@ describe('WebSocket security boundary helpers', () => {
       });
     },
   );
+});
+
+describe('buildWebSocketAiCreditErrorFrame', () => {
+  const reservation = { id: 1, state: 'reserved' } as unknown as AiCreditReservation;
+
+  it('maps an insufficient-credits denial to the structured frame with the pack CTA', () => {
+    const frame = buildWebSocketAiCreditErrorFrame(
+      new AiCreditAdmissionDeniedError({
+        kind: 'insufficient_credits',
+        requiredCredits: 3,
+        availableCredits: 1,
+        packCtaEligible: true,
+      }),
+      7,
+      42,
+    );
+    expect(frame).toEqual({
+      type: 'error',
+      code: 'INSUFFICIENT_AI_CREDITS',
+      message: 'You do not have enough AI credits for this request.',
+      details: { requiredCredits: 3, availableCredits: 1, packCtaEligible: true },
+      userId: 7,
+      tenantId: 42,
+    });
+  });
+
+  it('maps a daily-cap denial with the exact cap and remaining amounts', () => {
+    const frame = buildWebSocketAiCreditErrorFrame(
+      new AiCreditAdmissionDeniedError({
+        kind: 'daily_cap_exceeded',
+        requiredCredits: 1,
+        dailyCapCredits: 5,
+        dailyRemainingCredits: 0,
+      }),
+      7,
+      42,
+    );
+    expect(frame).toEqual({
+      type: 'error',
+      code: 'AI_CREDIT_DAILY_CAP',
+      message: 'You have reached your daily AI credit limit.',
+      details: { requiredCredits: 1, dailyCapCredits: 5, dailyRemainingCredits: 0 },
+      userId: 7,
+      tenantId: 42,
+    });
+  });
+
+  it('maps a plan-availability denial without leaking balance details', () => {
+    const frame = buildWebSocketAiCreditErrorFrame(
+      new AiCreditAdmissionDeniedError({
+        kind: 'operation_not_available',
+        operationClass: 'deep',
+        plan: 'free',
+      }),
+      7,
+      42,
+    );
+    expect(frame).toEqual({
+      type: 'error',
+      code: 'AI_OPERATION_NOT_AVAILABLE',
+      message: 'This capability is not included in your current plan.',
+      details: { operationClass: 'deep', plan: 'free' },
+      userId: 7,
+      tenantId: 42,
+    });
+  });
+
+  it('maps in-flight and settled replays to their duplicate frames', () => {
+    expect(buildWebSocketAiCreditErrorFrame(new AiCreditInFlightError(reservation), 7, 42)).toEqual({
+      type: 'error',
+      code: 'AI_CREDIT_OPERATION_IN_FLIGHT',
+      message: 'This message is already being processed.',
+      userId: 7,
+      tenantId: 42,
+    });
+    expect(buildWebSocketAiCreditErrorFrame(
+      new AiCreditReplaySettledError({ ...reservation, state: 'captured' } as unknown as AiCreditReservation),
+      7,
+      42,
+    )).toEqual({
+      type: 'error',
+      code: 'AI_CREDIT_REPLAY_SETTLED',
+      message: 'This message was already processed.',
+      userId: 7,
+      tenantId: 42,
+    });
+  });
+
+  it('returns null for errors that are not credit-policy errors, with or without ids', () => {
+    expect(buildWebSocketAiCreditErrorFrame(new Error('boom'), 7, 42)).toBeNull();
+    expect(buildWebSocketAiCreditErrorFrame(new Error('boom'))).toBeNull();
+    expect(buildWebSocketAiCreditErrorFrame(null)).toBeNull();
+  });
 });

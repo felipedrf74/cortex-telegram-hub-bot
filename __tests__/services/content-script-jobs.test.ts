@@ -1882,6 +1882,35 @@ describe('durable Content script jobs', () => {
     db.close();
   });
 
+  it('re-defers a scheduled job to the next batch window on user retry', async () => {
+    const db = database();
+    const service = await import('../../src/services/content-script-jobs');
+    const failed = service.createContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      idempotencyKey: 'retry-scheduled-deferral',
+      request: { topic: 'Scheduled retry keeps its window', format: 'YouTube', maxDurationMinutes: 8, language: 'en', deliveryMode: 'scheduled' },
+    }, db);
+    db.prepare(`UPDATE content_script_jobs
+      SET status = 'failed', stage = 'failed', last_error_code = 'LOCAL_INFERENCE_FAILED',
+          next_attempt_at = NULL
+      WHERE job_id = ?`).run(failed.job.jobId);
+
+    expect(service.retryContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      jobId: failed.job.jobId,
+    }, db)).toMatchObject({ status: 'queued' });
+    // The persisted delivery_mode column is the source of truth: the retry
+    // re-defers instead of letting a scheduled job jump the standard queue.
+    expect(db.prepare(`SELECT delivery_mode, next_attempt_at
+      FROM content_script_jobs WHERE job_id = ?`).get(failed.job.jobId)).toEqual({
+      delivery_mode: 'scheduled',
+      next_attempt_at: service.scheduledBatchWindowStart(new Date()),
+    });
+    db.close();
+  });
+
   it('bounds explicit regeneration retries for one durable job', async () => {
     const db = database();
     const service = await import('../../src/services/content-script-jobs');

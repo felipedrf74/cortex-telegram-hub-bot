@@ -1219,6 +1219,34 @@
           }
         ],
         "reason": "The retained Decision Center test replaces assertions for the permanently disabled retry CTA with assertions that the contract removes retry and exposes an honest reconnect navigation action."
+      },
+      {
+        "test": "__tests__/services/stripe-pack-fulfillment.test.ts",
+        "replacementTests": [
+          "__tests__/services/stripe-pack-fulfillment.test.ts"
+        ],
+        "sources": [
+          "src/services/stripe-service.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/stripe-service.ts:445-445",
+            "anchor": "reason === 'refund' && charge?.refunded !== true",
+            "behavior": "A refund reversal revokes the originating credit lot only when the charge is fully refunded; a partial refund must not delete credits the user still paid for.",
+            "replacementTest": "__tests__/services/stripe-pack-fulfillment.test.ts",
+            "ownerTestNamePattern": "leaves the lot intact on a partial refund",
+            "minimumMutants": 1
+          },
+          {
+            "pattern": "src/services/stripe-service.ts:450-450",
+            "anchor": "return false",
+            "behavior": "A partial refund exits without revoking, leaving the lot intact for reconciliation rather than reporting a successful reversal.",
+            "replacementTest": "__tests__/services/stripe-pack-fulfillment.test.ts",
+            "ownerTestNamePattern": "leaves the lot intact on a partial refund",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "Hostile QA P2-10 tightened reversal semantics: the bare revokes-on-refund assertions were replaced by full-refund-only revocation plus a partial-refund-intact guarantee owned by the retained suite."
       }
     ],
     "ownerTestMappings": [],

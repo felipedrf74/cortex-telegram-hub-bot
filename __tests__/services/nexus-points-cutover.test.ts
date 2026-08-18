@@ -116,7 +116,13 @@ describe('nexus points cutover (NH-0029)', () => {
     expect(expiryOf(after.creditId as number).expires_at).toBe(NEXUS_POINTS_NONEXPIRING_AT);
   });
 
+  it('refuses to run while the cutover flag is off', () => {
+    seedCredit();
+    expect(() => runNexusPointsCutover(NOW)).toThrow(/NEXUS_POINTS_CUTOVER_INACTIVE/);
+  });
+
   it('migrates unexpired purchased lots and restores only unspent expired Apple lots', () => {
+    pointsCutoverActive = true;
     const activeUnexpired = seedCredit();
     const expiredAppleUnspent = seedCredit({ provider: 'apple', expires_at: PAST, status: 'expired' });
     const expiredAppleSpent = seedCredit({ provider: 'apple', expires_at: PAST, status: 'expired', points_remaining: 0, usd_allowance_remaining: 0 });

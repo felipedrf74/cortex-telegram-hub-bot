@@ -26,6 +26,7 @@ import {
   resolveUserIdFromAppleAppAccountToken,
 } from './stripe-service';
 import { resolveBillingCatalogItemByAppleProductId } from './billing-catalog';
+import { recordOperatorAlert } from './operator-alerts';
 import {
   findAiCreditLotByProviderTransaction,
   grantPurchasedAiCredits,
@@ -34,6 +35,11 @@ import {
 
 const MAX_PROCESS_ATTEMPTS = 5;
 const LAST_ERROR_MAX_LENGTH = 300;
+const MAX_CONSUMABLE_QUANTITY = 100;
+
+function isProductionRuntime(): boolean {
+  return (process.env.NODE_ENV || '') === 'production';
+}
 
 export interface AppleInboxRow {
   id: number;
@@ -169,6 +175,13 @@ function applyStoredNotification(row: RawRow): boolean {
     throw new PackFulfillmentDisabledError();
   }
 
+  // Sandbox and TestFlight notifications carry valid Apple signatures and the
+  // same bundle id. A sandbox purchase must never mint spendable production
+  // credit: ledger grants require a Production-environment notification.
+  if (packItem && isProductionRuntime() && row.environment !== 'Production') {
+    throw new Error(`refusing ledger grant for non-production environment: ${row.environment ?? 'unknown'}`);
+  }
+
   if (packItem && isPackPurchaseType(row.notification_type)) {
     const userId = resolveUserIdFromAppleAppAccountToken(inner.appAccountToken);
     if (!userId) {
@@ -178,11 +191,17 @@ function applyStoredNotification(row: RawRow): boolean {
     if (!transactionId) {
       throw new Error('pack purchase has no transactionId');
     }
+    // Apple charges for the full consumable quantity; crediting once would
+    // undercharge the user's balance for a multi-quantity purchase.
+    const rawQuantity = typeof inner.quantity === 'number' ? inner.quantity : 1;
+    if (!Number.isInteger(rawQuantity) || rawQuantity < 1 || rawQuantity > MAX_CONSUMABLE_QUANTITY) {
+      throw new Error(`pack purchase has an unsupported quantity: ${String(inner.quantity)}`);
+    }
     const granted = grantPurchasedAiCredits({
       userId,
       provider: 'apple',
       providerTransactionId: transactionId,
-      credits: packItem.credits ?? 0,
+      credits: (packItem.credits ?? 0) * rawQuantity,
     });
     if (granted.kind === 'rejected') {
       throw new Error(`pack grant rejected: ${granted.reason}`);
@@ -229,7 +248,22 @@ export function processStoredAppleNotification(inboxId: number, now: Date = new 
   const row = getRawRow(inboxId);
   if (!row) return { kind: 'not_found', inboxId };
   if (row.state === 'processed') return { kind: 'processed', row: mapRow(row), handled: false };
-  if (row.attempts >= MAX_PROCESS_ATTEMPTS) return { kind: 'exhausted', row: mapRow(row) };
+  if (row.attempts >= MAX_PROCESS_ATTEMPTS) {
+    // An exhausted row is money or entitlement that never landed; it must be
+    // visible to an operator rather than silently parked forever.
+    recordOperatorAlert({
+      source: 'apple_notifications',
+      severity: 'warning',
+      dedupeKey: `apple_inbox_exhausted:${row.notification_uuid}`,
+      title: 'Apple notification exhausted its retries',
+      metadata: {
+        notificationUuid: row.notification_uuid,
+        notificationType: row.notification_type,
+        attempts: row.attempts,
+      },
+    });
+    return { kind: 'exhausted', row: mapRow(row) };
+  }
 
   try {
     const handled = applyStoredNotification(row);
@@ -272,10 +306,21 @@ export function processPendingAppleNotifications(input: { limit?: number; now?: 
 } {
   const db = getDb();
   const now = input.now ?? new Date();
+  // Deferred pack rows keep attempts at 0 forever while their kill switch is
+  // off. Selecting them by received_at would park them permanently at the head
+  // of every pass and starve retryable subscription notifications behind them,
+  // so they are excluded while fulfillment is disabled.
+  const packProductIds = config.hybridCommerce.applePackFulfillmentEnabled
+    ? []
+    : Object.values(config.hybridCommerce.appleProductIds).filter(Boolean);
+  const excludeDeferredPacks = packProductIds.length > 0
+    ? "AND NOT (notification_type = 'ONE_TIME_CHARGE' AND state = 'pending' AND attempts = 0)"
+    : '';
   const rows = db
     .prepare(
       `SELECT id FROM apple_notification_inbox
        WHERE state IN ('pending', 'failed') AND attempts < ?
+       ${excludeDeferredPacks}
        ORDER BY received_at ASC
        LIMIT ?`,
     )

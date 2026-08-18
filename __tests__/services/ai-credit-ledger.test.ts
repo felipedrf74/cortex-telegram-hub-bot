@@ -137,6 +137,27 @@ describe('ai-credit-ledger', () => {
     });
   });
 
+  it('refuses restricted operation classes on free and beta plans regardless of balance', () => {
+    // A funded free wallet still cannot buy deep reasoning or scripts (§2
+    // availability): the class gate outranks the balance check.
+    grantMonthlyAiCredits({ userId: 52, plan: 'free', periodKey: '2026-08', periodEnd: PERIOD_END, now: NOW });
+    for (const operationClass of ['deep', 'standard_script', 'scheduled_script', 'priority_script'] as const) {
+      const denied = reserveAiCredits({
+        userId: 52,
+        plan: 'free',
+        operationClass,
+        replayScope: scope(`na-${operationClass}`, 52),
+        now: NOW,
+      });
+      expect(denied).toEqual({ kind: 'operation_not_available', operationClass, plan: 'free' });
+    }
+    const beta = reserveAiCredits({ userId: 53, plan: 'beta', operationClass: 'deep', replayScope: scope('nb', 53), now: NOW });
+    expect(beta).toEqual({ kind: 'operation_not_available', operationClass: 'deep', plan: 'beta' });
+    // Standard stays available on free, and paid plans keep every class.
+    const freeStandard = reserveAiCredits({ userId: 52, plan: 'free', operationClass: 'standard', replayScope: scope('ns', 52), now: NOW });
+    expect(freeStandard.kind).toBe('reserved');
+  });
+
   it('serializes competing reserves so the last credit is spent exactly once', () => {
     grantPromotionalAiCredits({ userId: 40, promotionId: 'one-credit', credits: 1, expiryDays: 30, now: NOW });
     const first = reserveAiCredits({ userId: 40, plan: 'pro', operationClass: 'standard', replayScope: scope('r1'), now: NOW });

@@ -57,6 +57,15 @@ export function validateRateCard(rates) {
   if (missing.length > 0) {
     throw new Error(`rate card is incomplete (actual account rates required): ${missing.join(', ')}`);
   }
+  // Addendum C invariant: scheduled and standard scripts both charge 10
+  // credits; scheduled runs in the off-peak batch window and must not cost
+  // more to serve. A rate card pricing scheduledScript above standardScript
+  // breaks the delivery economics and fails closed.
+  const scheduled = rates.providerRatesUsdPerMTok.scheduledScript;
+  const standard = rates.providerRatesUsdPerMTok.standardScript;
+  if (scheduled.input > standard.input || scheduled.output > standard.output) {
+    throw new Error('rate card invalid: scheduledScript rates exceed standardScript rates (Addendum C: scheduled <= standard)');
+  }
   return rates;
 }
 

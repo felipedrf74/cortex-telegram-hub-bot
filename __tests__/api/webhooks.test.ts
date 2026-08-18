@@ -41,6 +41,8 @@ const serviceMocks = vi.hoisted(() => ({
     return this;
   }),
   handleCheckoutCompleted: vi.fn(),
+  fulfillStripeCreditPackCheckout: vi.fn(),
+  handleStripeCreditPackReversal: vi.fn(),
   handleSubscriptionUpdated: vi.fn(),
   handleSubscriptionDeleted: vi.fn(),
   handleInvoicePaymentFailed: vi.fn(),
@@ -56,6 +58,8 @@ vi.mock('stripe', () => ({
 vi.mock('../../src/services/stripe-service', () => ({
   isStripeConfigured: vi.fn(() => true),
   handleCheckoutCompleted: (...args: unknown[]) => serviceMocks.handleCheckoutCompleted(...args),
+  fulfillStripeCreditPackCheckout: (...args: unknown[]) => serviceMocks.fulfillStripeCreditPackCheckout(...args),
+  handleStripeCreditPackReversal: (...args: unknown[]) => serviceMocks.handleStripeCreditPackReversal(...args),
   handleSubscriptionUpdated: (...args: unknown[]) => serviceMocks.handleSubscriptionUpdated(...args),
   handleSubscriptionDeleted: (...args: unknown[]) => serviceMocks.handleSubscriptionDeleted(...args),
   handleInvoicePaymentFailed: (...args: unknown[]) => serviceMocks.handleInvoicePaymentFailed(...args),
@@ -399,6 +403,21 @@ describe('POST /webhooks/stripe', () => {
     expect(serviceMocks.stripeConstructEvent).toHaveBeenCalledWith(expect.any(Buffer), 'sig_test', 'whsec_test_webhook');
     expect(serviceMocks.handleStripeNexusPointsEvent).toHaveBeenCalledWith(event);
     expect(serviceMocks.handleCheckoutCompleted).not.toHaveBeenCalled();
+  });
+
+  it('reverses a credit-pack session when its async payment fails', async () => {
+    const session = { id: 'cs_pack_async_fail', mode: 'payment', payment_intent: 'pi_async_fail', metadata: { catalogItemId: 'pack_100' } };
+    const event = { id: 'evt_async_fail', type: 'checkout.session.async_payment_failed', data: { object: session } };
+    serviceMocks.stripeConstructEvent.mockReturnValue(event);
+    serviceMocks.handleStripeNexusPointsEvent.mockResolvedValue(false);
+
+    const res = await postStripeWebhook(JSON.stringify({ id: 'evt_async_fail' }));
+
+    expect(res.status).toBe(200);
+    expect(serviceMocks.handleStripeCreditPackReversal).toHaveBeenCalledWith(
+      { payment_intent: 'pi_async_fail', refunded: true },
+      'refund',
+    );
   });
 
   it('preserves subscription checkout handling when Nexus Points handler declines the event', async () => {

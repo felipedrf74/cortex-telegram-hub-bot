@@ -341,8 +341,10 @@ local-primary inference standard:
   every label.
 - Standard, Scheduled, and Priority are queue-and-scheduling semantics with
   the §2 pricing (10/10/12 credits): priority jobs order ahead of other
-  queued jobs at candidate selection; scheduled jobs defer their start to the
-  next off-peak batch window ("Have it ready tomorrow"); standard jobs run in
+  queued jobs within the same plan queue-weight class at candidate selection
+  (plan fairness — the 2:1 high-weight burst — still applies across classes);
+  scheduled jobs defer their start to the next off-peak batch window ("Have
+  it ready tomorrow") and re-defer on user retry; standard jobs run in
   arrival order. The user-facing labels remain exactly the §1 strings.
 - Per-class cloud provider bindings are configured at activation together
   with the cloud-fallback rate evidence; they are not hardcoded in the

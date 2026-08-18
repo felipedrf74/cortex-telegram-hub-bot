@@ -35,7 +35,12 @@ export interface BillingCatalogItem {
   dailyCreditCap?: number;
   credits?: number;
   requiresActivePaidPlan: boolean;
+  /** True when ANY channel can sell this item; clients read the per-channel flags. */
   purchasable: boolean;
+  /** Web (Stripe) availability: needs a Price object and the web sales switch. */
+  stripePurchasable: boolean;
+  /** iOS (StoreKit) availability: needs a product id and Apple fulfillment. */
+  applePurchasable: boolean;
   unavailableReason?: 'provider_price_missing' | 'fulfillment_pending';
 }
 
@@ -68,6 +73,10 @@ function catalogDefinitions(): ResolvedBillingCatalogItem[] {
     stripePriceId: stripePriceId || null,
     appleProductId: null,
     purchasable: Boolean(stripePriceId),
+    // Subscriptions sell on the web through Stripe; iOS uses its own
+    // StoreKit subscription products, which this catalog does not price.
+    stripePurchasable: Boolean(stripePriceId),
+    applePurchasable: false,
     ...(stripePriceId ? {} : { unavailableReason: 'provider_price_missing' as const }),
   });
 
@@ -79,8 +88,12 @@ function catalogDefinitions(): ResolvedBillingCatalogItem[] {
     stripePriceId: string,
     appleProductId: string,
   ): ResolvedBillingCatalogItem => {
-    const providerConfigured = Boolean(stripePriceId);
-    const purchasable = providerConfigured && isStripePackSalesEnabled();
+    // Channels are independent: iOS buys packs through StoreKit while the web
+    // buys through Stripe, so one channel being unconfigured must not report
+    // the item unavailable on the other.
+    const stripePurchasable = Boolean(stripePriceId) && isStripePackSalesEnabled();
+    const applePurchasable = Boolean(appleProductId) && config.hybridCommerce.applePackFulfillmentEnabled;
+    const purchasable = stripePurchasable || applePurchasable;
     return {
       id,
       kind: 'credit_pack',
@@ -91,10 +104,12 @@ function catalogDefinitions(): ResolvedBillingCatalogItem[] {
       stripePriceId: stripePriceId || null,
       appleProductId: appleProductId || null,
       purchasable,
+      stripePurchasable,
+      applePurchasable,
       ...(purchasable
         ? {}
         : {
-          unavailableReason: (providerConfigured
+          unavailableReason: (Boolean(stripePriceId) || Boolean(appleProductId)
             ? 'fulfillment_pending'
             : 'provider_price_missing') as 'fulfillment_pending' | 'provider_price_missing',
         }),

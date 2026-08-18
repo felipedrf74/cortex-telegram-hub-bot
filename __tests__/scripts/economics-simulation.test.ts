@@ -43,6 +43,12 @@ describe('economics simulation', () => {
     expect(() => computeEconomics({} as any)).toThrow(/incomplete/);
   });
 
+  it('fails closed when scheduled rates exceed standard rates', () => {
+    const rates = healthyRateCard() as any;
+    rates.providerRatesUsdPerMTok.scheduledScript = { input: 0.60, output: 2.50 };
+    expect(() => validateRateCard(rates)).toThrow(/scheduledScript rates exceed/);
+  });
+
   it('rejects the checked-in template outright', () => {
     const template = JSON.parse(
       readFileSync(join(process.cwd(), 'config/economics-rate-card.template.json'), 'utf8'),
