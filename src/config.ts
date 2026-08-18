@@ -808,6 +808,26 @@ export const config = {
       && (process.env.HYBRID_AI_CREDITS_KILL_SWITCH || 'false') !== 'true',
   },
 
+  // ── Hybrid AI commerce catalog (plan §3) ──────────────────────────
+  // Provider objects are provisioned externally (NH-0036); an absent id keeps
+  // the matching catalog item fail-closed as not purchasable. Anonymous email
+  // checkout stops accepting new sessions when the sunset flag flips at launch.
+  hybridCommerce: {
+    stripePriceIds: {
+      planProMonthly: process.env.STRIPE_PRICE_ID_PLAN_PRO_MONTHLY || '',
+      planMaxMonthly: process.env.STRIPE_PRICE_ID_PLAN_MAX_MONTHLY || '',
+      pack100: process.env.STRIPE_PRICE_ID_PACK_100 || '',
+      pack250: process.env.STRIPE_PRICE_ID_PACK_250 || '',
+      pack600: process.env.STRIPE_PRICE_ID_PACK_600 || '',
+    },
+    appleProductIds: {
+      pack100: process.env.APPLE_PRODUCT_ID_PACK_100 || '',
+      pack250: process.env.APPLE_PRODUCT_ID_PACK_250 || '',
+      pack600: process.env.APPLE_PRODUCT_ID_PACK_600 || '',
+    },
+    anonymousCheckoutEnabled: (process.env.ANONYMOUS_CHECKOUT_ENABLED || 'true') === 'true',
+  },
+
   // ── AI Safety ─────────────────────────────────────────────────────
   aiSafety: {
     callTimeoutMs: optionalInt('AI_CALL_TIMEOUT_MS', 30000, { min: 1 }),
