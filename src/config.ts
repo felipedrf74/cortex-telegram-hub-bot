@@ -800,6 +800,48 @@ export const config = {
     allowUnsafePaywallBypass: PAYWALL_BYPASS_ALLOWED,
   },
 
+  // ── Hybrid AI credits (plan §2) ───────────────────────────────────
+  // Credit-ledger admission stays OFF until the same release's production
+  // verification completes; the kill switch always wins over the enable flag.
+  hybridCredits: {
+    enabled: (process.env.HYBRID_AI_CREDITS_ENABLED || 'false') === 'true'
+      && (process.env.HYBRID_AI_CREDITS_KILL_SWITCH || 'false') !== 'true',
+    // Addendum B: after the cutover flips at launch, no new purchased lot may
+    // ship with an expiry. Default OFF until the activation moment.
+    pointsCutover: (process.env.HYBRID_CREDITS_POINTS_CUTOVER || 'false') === 'true',
+  },
+
+  // ── Hybrid AI commerce catalog (plan §3) ──────────────────────────
+  // Provider objects are provisioned externally (NH-0036); an absent id keeps
+  // the matching catalog item fail-closed as not purchasable. Anonymous email
+  // checkout stops accepting new sessions when the sunset flag flips at launch.
+  hybridCommerce: {
+    stripePriceIds: {
+      planProMonthly: process.env.STRIPE_PRICE_ID_PLAN_PRO_MONTHLY || '',
+      planMaxMonthly: process.env.STRIPE_PRICE_ID_PLAN_MAX_MONTHLY || '',
+      pack100: process.env.STRIPE_PRICE_ID_PACK_100 || '',
+      pack250: process.env.STRIPE_PRICE_ID_PACK_250 || '',
+      pack600: process.env.STRIPE_PRICE_ID_PACK_600 || '',
+    },
+    appleProductIds: {
+      pack100: process.env.APPLE_PRODUCT_ID_PACK_100 || '',
+      pack250: process.env.APPLE_PRODUCT_ID_PACK_250 || '',
+      pack600: process.env.APPLE_PRODUCT_ID_PACK_600 || '',
+    },
+    // Independent pack/Apple-fulfillment kill switch (plan §5). Default OFF:
+    // pack notifications defer in the durable inbox — no ledger writes, no
+    // attempt burn — until fulfillment is explicitly enabled.
+    applePackFulfillmentEnabled:
+      (process.env.APPLE_PACK_FULFILLMENT_ENABLED || 'false') === 'true'
+      && (process.env.APPLE_PACK_FULFILLMENT_KILL_SWITCH || 'false') !== 'true',
+    // Web pack sales switch (plan §5). Gates NEW pack checkouts only; webhook
+    // fulfillment of already-paid sessions always runs.
+    stripePackFulfillmentEnabled:
+      (process.env.STRIPE_PACK_FULFILLMENT_ENABLED || 'false') === 'true'
+      && (process.env.STRIPE_PACK_FULFILLMENT_KILL_SWITCH || 'false') !== 'true',
+    anonymousCheckoutEnabled: (process.env.ANONYMOUS_CHECKOUT_ENABLED || 'true') === 'true',
+  },
+
   // ── AI Safety ─────────────────────────────────────────────────────
   aiSafety: {
     callTimeoutMs: optionalInt('AI_CALL_TIMEOUT_MS', 30000, { min: 1 }),

@@ -1432,6 +1432,8 @@ export function startScheduler(): void {
   registerJob('weekly_review',      'Weekly Review',         '*/5 * * * *',     'secretary');
   registerJob('shared_list',        'Shared List Check',     '*/5 * * * *',     'secretary');
   registerJob('midnight_cleanup',   'Midnight Cleanup',      '0 0 * * *',       'system');
+  registerJob('apple_inbox_retry',  'Apple Inbox Reconciliation', '*/15 * * * *', 'system');
+  registerJob('ai_credit_sweeper',  'Stale AI-Credit Reservation Sweep', '30 * * * *', 'system');
   // content_discovery removed — replaced by content-workflow (tue/thu/fri topic candidates)
   registerJob('invoice_collection', 'Invoice Collection',    '0 9 1 * *',       'invoices');
   registerJob('fiscal_bundle',      'Fiscal Bundle Delivery','10 8 * * *',      'invoices');
@@ -1505,6 +1507,28 @@ export function startScheduler(): void {
   // we return 'skipped' so wrapJob does NOT persist a job_history row.
   // This eliminates ~6,700 wasted rows/week observed in production at 1
   // active user — see audit P0-2.
+  // Plan §3 scheduled App Store reconciliation: retry pending/failed inbox
+  // rows so a processing fault (or the pack kill switch flipping on) never
+  // loses a paid notification. Inert when the inbox is empty.
+  cron.schedule('*/15 * * * *', wrapJob('apple_inbox_retry', async () => {
+    const { processPendingAppleNotifications } = require('./apple-notification-inbox');
+    const counts = processPendingAppleNotifications();
+    if (counts.processed + counts.failed + counts.exhausted + counts.deferred === 0) return 'skipped';
+    logger.info(counts, 'Apple notification inbox reconciliation pass');
+  }));
+
+  // Release AI-credit reservations that never settled (crashed worker, lost
+  // process). 24h is far beyond any legitimate operation; purchase-linked
+  // admissions are excluded by design because none exist as reservations.
+  cron.schedule('30 * * * *', wrapJob('ai_credit_sweeper', async () => {
+    const { expireStaleAiCreditReservations } = require('./ai-credit-ledger');
+    const expired = expireStaleAiCreditReservations({
+      olderThan: new Date(Date.now() - 24 * 60 * 60 * 1000),
+    });
+    if (expired === 0) return 'skipped';
+    logger.warn({ expired }, 'Expired stale AI-credit reservations');
+  }));
+
   cron.schedule('* * * * *', wrapJob('reminders', async () => {
     if (remindersJobInFlight) {
       logger.warn({ job: 'reminders' }, 'Skipping reminder cron tick because previous tick is still running');

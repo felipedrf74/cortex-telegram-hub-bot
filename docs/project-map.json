@@ -5,11 +5,11 @@
     "generatorVersion": 4,
     "authoritativeFreshness": "sourceDigest",
     "sourceDigestAlgorithm": "sha256-path-git-mode-content-v2",
-    "sourceDigest": "6c373ccf067fb3436e3dee9fae2153393ec04774bd0ede0f601e506ba3ed996a",
-    "baseCommit": "33c476787f2e33d5755c5bc74173a8a6f4757f3d",
-    "baseCommitTimestamp": "2026-08-15T08:10:58+01:00",
-    "trackedFiles": 3303,
-    "sourceFiles": 1163
+    "sourceDigest": "41e46776ffda33037acb926bc9e9b19be0e28d20c6ddec129bc7bee6bb8d314d",
+    "baseCommit": "d0eb770d3452fa785ba40ad953ffdd938fc904c7",
+    "baseCommitTimestamp": "2026-08-18T17:52:00+01:00",
+    "trackedFiles": 3325,
+    "sourceFiles": 1169
   },
   "navigation": {
     "agentBootloader": "AGENTS.md",
@@ -99,7 +99,7 @@
     {
       "path": "src/services",
       "owner": "backend",
-      "files": 843
+      "files": 849
     },
     {
       "path": "src/skills",
@@ -1366,6 +1366,14 @@
       "owner": "backend"
     },
     {
+      "method": "GET",
+      "path": "/api/v1/billing/catalog",
+      "localPath": "/catalog",
+      "mountPath": "/api/v1/billing",
+      "source": "src/api/routes/billing.ts",
+      "owner": "backend"
+    },
+    {
       "method": "POST",
       "path": "/api/v1/billing/checkout",
       "localPath": "/checkout",
@@ -1377,6 +1385,14 @@
       "method": "POST",
       "path": "/api/v1/billing/claim-website-checkout",
       "localPath": "/claim-website-checkout",
+      "mountPath": "/api/v1/billing",
+      "source": "src/api/routes/billing.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/billing/credits-checkout",
+      "localPath": "/credits-checkout",
       "mountPath": "/api/v1/billing",
       "source": "src/api/routes/billing.ts",
       "owner": "backend"
@@ -1409,6 +1425,14 @@
       "method": "GET",
       "path": "/api/v1/billing/usage",
       "localPath": "/usage",
+      "mountPath": "/api/v1/billing",
+      "source": "src/api/routes/billing.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/billing/wallet",
+      "localPath": "/wallet",
       "mountPath": "/api/v1/billing",
       "source": "src/api/routes/billing.ts",
       "owner": "backend"
@@ -2979,6 +3003,14 @@
       "localPath": "/api/v1/internal/chat-core-v2/shadow-gate-readiness",
       "mountPath": "/",
       "source": "src/portal/chat-core-v2-gate-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/internal/nexus-points-cutover",
+      "localPath": "/nexus-points-cutover",
+      "mountPath": "/api/v1/internal",
+      "source": "src/api/routes/internal.ts",
       "owner": "backend"
     },
     {
@@ -4583,9 +4615,9 @@
     }
   ],
   "migrations": {
-    "count": 275,
-    "latest": "migrations/284_local_primary_inference_foundation.sql",
-    "digest": "46c0b52b2b8b8e5c8c660926120bd7c65d7dc1101f3f4be0c25b17d370ddf299",
+    "count": 277,
+    "latest": "migrations/286_apple_notification_inbox.sql",
+    "digest": "0a0b6086fedd1e6ea7127226832e4dc8715c3e0390cf50ff94fc247804645e0f",
     "files": [
       "migrations/001_initial.sql",
       "migrations/002_shared_memory.sql",
@@ -4861,7 +4893,9 @@
       "migrations/281_secretary_provider_target_and_failure_disposition.sql",
       "migrations/282_secretary_agenda_preemption_state.sql",
       "migrations/283_release_schema_convergence.sql",
-      "migrations/284_local_primary_inference_foundation.sql"
+      "migrations/284_local_primary_inference_foundation.sql",
+      "migrations/285_ai_credit_ledger_foundation.sql",
+      "migrations/286_apple_notification_inbox.sql"
     ]
   },
   "capabilities": [
@@ -4977,13 +5011,13 @@
     }
   ],
   "tests": {
-    "files": 1222,
+    "files": 1231,
     "policy": "config/test-policy.json",
     "inventoryArtifact": ".local/test-inventory/test-inventory.json",
     "topLevelOwners": {
       "adapters": 2,
       "agents": 4,
-      "api": 160,
+      "api": 161,
       "billing": 1,
       "brand": 1,
       "cli": 2,
@@ -4991,15 +5025,15 @@
       "domains": 5,
       "integration": 4,
       "lib": 1,
-      "migrations": 32,
+      "migrations": 33,
       "portal": 59,
       "regression": 1,
       "router": 8,
       "scope": 1,
-      "scripts": 105,
+      "scripts": 106,
       "sdk": 1,
       "security": 24,
-      "services": 755,
+      "services": 761,
       "skills": 11,
       "state": 17,
       "storage": 1,
@@ -5012,10 +5046,10 @@
     "policy": "config/documentation-policy.json",
     "policySchema": "nexus.documentation-policy.v1",
     "policyVersion": "2026-08-12.1",
-    "count": 76,
-    "active": 76,
+    "count": 77,
+    "active": 77,
     "statusCounts": {
-      "canonical": 36,
+      "canonical": 37,
       "current": 2,
       "draft": 2,
       "generated": 1,
@@ -5383,6 +5417,15 @@
         "reviewedOn": "2026-07-22",
         "reviewDueOn": "2027-01-18",
         "canonicalPath": "docs/release/eval-evidence/chat-eval-2026-07-31T17-19-58-073Z.md"
+      },
+      {
+        "path": "docs/release/hybrid-ai-commerce-production-plan.md",
+        "status": "canonical",
+        "active": true,
+        "owner": "release owner",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2026-10-20",
+        "canonicalPath": "docs/release/hybrid-ai-commerce-production-plan.md"
       },
       {
         "path": "docs/release/migration-irreversible.md",

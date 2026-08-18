@@ -3,6 +3,7 @@
 import { Router, Request, Response } from 'express';
 import express from 'express';
 import { createPublicCheckoutSession, isStripeConfigured } from '../../services/stripe-service';
+import { config } from '../../config';
 import { hashWaitlistIpAddress } from '../../services/waitlist-ip-hash';
 import { hashEmail } from '../../utils/identity';
 import { logger } from '../../utils/logger';
@@ -94,6 +95,13 @@ export function createPublicBillingRouter(): Router {
   });
 
   router.post('/checkout', json, async (req: Request, res: Response) => {
+    // Anonymous email checkout stops accepting NEW sessions once the hybrid
+    // commerce sunset flips at launch (plan §3); in-flight claim sessions
+    // continue through their existing compatibility path.
+    if (!config.hybridCommerce.anonymousCheckoutEnabled) {
+      res.status(410).json({ ok: false, error: 'Anonymous checkout is closed. Sign in to subscribe.' });
+      return;
+    }
     if (!isStripeConfigured()) {
       res.status(503).json({ ok: false, error: 'Stripe billing is not configured.' });
       return;

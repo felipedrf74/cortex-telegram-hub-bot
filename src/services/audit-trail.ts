@@ -22,6 +22,7 @@ export type AuditAction =
   | 'privacy_consent'
   | 'billing.nexus_points.checkout_started'
   | 'nexus_points.transfer'
+  | 'nexus_points.cutover'
   /**
    * Portal admin mutation — founder grant/revoke, user tier change,
    * skill override, plan-config edit. Added 2026-04-21 so Felipe (or

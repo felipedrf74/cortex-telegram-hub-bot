@@ -36,6 +36,7 @@ import {
 import { buildSimpleStateContext } from '../domains/domain-handler';
 import type { NexusChatOwnerSkill } from '../services/chat-answer-contract';
 import { withAiBudgetReservation } from '../services/cost-guardrail';
+import { withAiCreditAdmission } from '../services/ai-credit-admission';
 import { toStableAiBudgetError } from './response-helpers';
 import { tryBuildChatCoreV2DeterministicReadRoute } from '../services/chat-core-v2';
 import { buildChatCoreV2DeterministicReadShortcutResponse } from './routes/chat-core-v2-deterministic-read-response';
@@ -784,7 +785,15 @@ export function attachWebSocket(server: http.Server): void {
           await runWithContext(
           { requestId: generateRequestId(), source: 'http', userId, tenantId },
           async () => {
-            const messageId = `msg-${Date.now()}`;
+            // The message id is the credit-admission replay identity. A
+            // client-supplied id makes reconnect retries idempotent; the
+            // fallback must be unique per frame (Date.now() collides for
+            // frames landing in the same millisecond, which would let N
+            // concurrent turns share one reservation).
+            const clientMessageId = typeof (msg as { clientMessageId?: unknown }).clientMessageId === 'string'
+              ? String((msg as { clientMessageId: string }).clientMessageId).trim().slice(0, 80)
+              : '';
+            const messageId = clientMessageId ? `client-${clientMessageId}` : `msg-${generateRequestId()}`;
             const messageText = String(msg.text);
             const responseLocale = resolveWebSocketResponseLocale(
               getUserLanguageById(userId),
@@ -848,7 +857,13 @@ export function attachWebSocket(server: http.Server): void {
             await runWithSkillInferenceAccountAdmission({
               userId,
               abortSignal: clientAbortController.signal,
-            }, (accountAbortSignal) => withAiBudgetReservation({
+            }, (accountAbortSignal) => withAiCreditAdmission({
+              userId,
+              tenantScope: String(tenantId),
+              operationClass: 'standard',
+              workload: 'ios_websocket_chat',
+              clientOperationId: messageId,
+            }, () => withAiBudgetReservation({
               userId,
               requestSource: 'interactive',
               baseCategory: 'ios_websocket_chat',
@@ -1201,7 +1216,7 @@ export function attachWebSocket(server: http.Server): void {
                 }
                 : null,
             });
-            }));
+            })));
           },
           );
         } finally {

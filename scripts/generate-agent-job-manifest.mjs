@@ -214,6 +214,8 @@ export const JOB_POLICIES = Object.freeze({
   invoice_collection: noProvider('finance', 'active-filing-profile-tenant', { retryPolicy: 'collector-bounded-retry' }),
   invoice_queue: noProvider('finance', 'durable-invoice-queue-tenant', { retryPolicy: 'durable-queue-bounded-retry' }),
   midnight_cleanup: noProvider('operations', 'platform-retention'),
+  apple_inbox_retry: noProvider('billing', 'durable-apple-notification-inbox'),
+  ai_credit_sweeper: noProvider('billing', 'platform-tenant-scoped-ledger'),
   nexus_points_expiry: noProvider('billing', 'platform-tenant-scoped-ledger'),
   notification_release: noProvider('notifications', 'durable-notification-tenant-user', { retryPolicy: 'delivery-policy-retry-and-dead-letter' }),
   operator_alert_delivery: noProvider('operations', 'durable-operator-alert-queue', { retryPolicy: 'delivery-retry-and-dead-letter' }),

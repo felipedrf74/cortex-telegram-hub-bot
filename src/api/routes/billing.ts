@@ -17,6 +17,8 @@ import { sendSuccess, sendError, asyncHandler } from '../response-helpers';
 import {
   isStripeConfigured,
   getSubscriptionStatus,
+  createCheckoutSession,
+  createCreditPackCheckoutSession,
   createCheckoutSessionForPlan,
   createPortalSession,
   handleAppleTransaction,
@@ -47,6 +49,13 @@ import {
   validateCurrentLegalAcceptance,
 } from '../../services/legal-consent';
 import { getEffectiveEntitlement } from '../../services/entitlement';
+import {
+  BILLING_CATALOG_VERSION,
+  getBillingCatalog,
+  resolveBillingCatalogItem,
+} from '../../services/billing-catalog';
+import { getAiCreditWallet } from '../../services/ai-credit-ledger';
+import { resolveBillingPlanForUser } from '../../services/plan-quotas';
 
 const STRIPE_NEXUS_CHECKOUT_BODY_LIMIT_BYTES = 8 * 1024;
 const STRIPE_NEXUS_CHECKOUT_BODY_FIELDS = new Set(['packageId']);
@@ -144,6 +153,92 @@ export function billingRoutes(): Router {
       boostAvailable: usage.boostAvailable,
       ...buildQuotaUsagePayload(usage),
     });
+  }));
+
+  /**
+   * GET /api/v1/billing/catalog
+   * Token-zero: server-owned versioned catalog (hybrid AI plan §3).
+   * Clients submit catalog item ids only; provider identifiers never leave
+   * the server.
+   */
+  router.get('/catalog', asyncHandler(async (req: Request, res: Response) => {
+    const userId = (req as any).userId;
+    sendSuccess(res, {
+      ...getBillingCatalog(),
+      plan: resolveBillingPlanForUser(userId),
+    });
+  }));
+
+  /**
+   * GET /api/v1/billing/wallet
+   * Token-zero: shared AI-credit wallet separating included, promotional,
+   * purchased, reserved, and available credits (hybrid AI plan §3).
+   */
+  router.get('/wallet', asyncHandler(async (req: Request, res: Response) => {
+    const userId = (req as any).userId;
+    const plan = resolveBillingPlanForUser(userId);
+    sendSuccess(res, {
+      catalogVersion: BILLING_CATALOG_VERSION,
+      plan,
+      wallet: getAiCreditWallet(userId, plan),
+    });
+  }));
+
+  /**
+   * POST /api/v1/billing/credits-checkout
+   * Catalog-item checkout for the hybrid AI plans and credit packs.
+   * Body: { catalogItemId, acceptedLegal, successUrl?, cancelUrl? }.
+   * Clients cannot select prices, credits, providers, or amounts.
+   */
+  router.post('/credits-checkout', asyncHandler(async (req: Request, res: Response) => {
+    const userId = (req as any).userId;
+    const item = resolveBillingCatalogItem(String(req.body?.catalogItemId || ''));
+    if (!item) {
+      sendError(res, 'UNKNOWN_CATALOG_ITEM', 'catalogItemId is not in the current catalog', 404);
+      return;
+    }
+    if (item.requiresActivePaidPlan) {
+      const entitlement = getEffectiveEntitlement(userId);
+      const paidActive = (entitlement.plan === 'pro' || entitlement.plan === 'max')
+        && entitlement.status === 'active';
+      if (!paidActive) {
+        sendError(res, 'PACK_REQUIRES_PAID_PLAN', 'Credit packs require an active Pro or Max subscription', 403);
+        return;
+      }
+    }
+    if (!item.purchasable || !item.stripePriceId) {
+      const reason = item.unavailableReason === 'fulfillment_pending'
+        ? 'This item is not yet available for purchase'
+        : 'Checkout for this item is not configured';
+      sendError(res, 'CATALOG_ITEM_UNAVAILABLE', reason, 503);
+      return;
+    }
+    if (!isStripeConfigured()) {
+      sendError(res, 'NOT_CONFIGURED', 'Stripe billing is not configured', 503);
+      return;
+    }
+    const acceptedLegal = req.body?.acceptedLegal as LegalAcceptanceInput | null | undefined;
+    const legalAcceptance = validateCurrentLegalAcceptance(acceptedLegal);
+    if (!legalAcceptance.ok) {
+      sendError(res, 'LEGAL_CONSENT_REQUIRED', legalAcceptance.reason || 'Current legal acceptance is required', 400);
+      return;
+    }
+    const successUrl = safeCheckoutUrl(req.body?.successUrl, 'https://nexushub.me/?checkout=success');
+    const cancelUrl = safeCheckoutUrl(req.body?.cancelUrl, 'https://nexushub.me/?checkout=canceled');
+    await recordCurrentLegalConsentForUser(
+      userId,
+      acceptedLegal as LegalAcceptanceInput,
+      legalConsentContextFromRequest(req, 'billing_credits_checkout'),
+    );
+    const url = item.kind === 'credit_pack'
+      ? await createCreditPackCheckoutSession(
+        userId,
+        { catalogItemId: item.id, priceId: item.stripePriceId },
+        successUrl,
+        cancelUrl,
+      )
+      : await createCheckoutSession(userId, item.stripePriceId, successUrl, cancelUrl);
+    sendSuccess(res, { url, catalogVersion: BILLING_CATALOG_VERSION, catalogItemId: item.id });
   }));
 
   /**
