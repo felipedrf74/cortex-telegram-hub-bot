@@ -9,10 +9,9 @@
  *   user-initiated retry) reserves; internal sections, checkpoints, repair,
  *   continuation, and infrastructure requeues settle against that single
  *   reservation and never charge again.
- * - Long-form jobs charge the script class (10 credits); shorter jobs charge
- *   a standard operation (1). Priority/scheduled delivery classes join when
- *   the delivery-mode routing lands; until then every script job admits as
- *   the standard script class.
+ * - Long-form jobs charge their delivery class (Addendum C): standard and
+ *   scheduled scripts cost 10 credits, priority scripts 12; shorter jobs
+ *   charge a standard operation (1).
  * - Settlement follows job truth: `completed` captures once, `failed` and
  *   `cancelled` release. Settlement runs even if the admission flag was
  *   turned off mid-flight, so an admitted reservation never strands.
@@ -44,6 +43,7 @@ export function reserveContentScriptJobCredits(input: {
   jobId: string;
   plan: BillingPlan;
   longForm: boolean;
+  deliveryMode?: 'standard' | 'scheduled' | 'priority';
   now?: Date;
 }): ReserveContentScriptJobCreditsResult {
   if (!isAiCreditAdmissionEnabled()) return { kind: 'disabled' };
@@ -61,10 +61,16 @@ export function reserveContentScriptJobCredits(input: {
     // under it instead of minting a second charge.
     return { kind: 'reserved', reservation: latest };
   }
+  const deliveryMode = input.deliveryMode ?? 'standard';
+  const scriptClass = deliveryMode === 'priority'
+    ? 'priority_script'
+    : deliveryMode === 'scheduled'
+      ? 'scheduled_script'
+      : 'standard_script';
   const admitted = reserveAiCredits({
     userId: input.userId,
     plan: input.plan,
-    operationClass: input.longForm ? 'standard_script' : 'standard',
+    operationClass: input.longForm ? scriptClass : 'standard',
     replayScope: {
       tenantScope,
       workload: CONTENT_SCRIPT_JOB_CREDITS_WORKLOAD,

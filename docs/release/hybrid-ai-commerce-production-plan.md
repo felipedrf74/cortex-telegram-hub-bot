@@ -330,6 +330,24 @@ plan capability.
   version identity; the local-model manifest standard gains a device-model
   appendix before any activation.
 
+### Addendum C — Delivery modes and script routing composition (owner-authorized 2026-08-18)
+
+Resolves the conflict between the §1 script routing table and the landed
+local-primary inference standard:
+
+- The local-primary runtime remains the primary script route for enrolled
+  users; the §1 cloud delivery classes define the eligible cloud
+  fallback/delivery tiers at activation. Provider and model names stay out of
+  every label.
+- Standard, Scheduled, and Priority are queue-and-scheduling semantics with
+  the §2 pricing (10/10/12 credits): priority jobs order ahead of other
+  queued jobs at candidate selection; scheduled jobs defer their start to the
+  next off-peak batch window ("Have it ready tomorrow"); standard jobs run in
+  arrival order. The user-facing labels remain exactly the §1 strings.
+- Per-class cloud provider bindings are configured at activation together
+  with the cloud-fallback rate evidence; they are not hardcoded in the
+  runtime.
+
 ### Addendum B — Interim pricing vs credit-ledger reconciliation (2026-08-18)
 
 Branch `feature/hybrid-ai-plan-pricing-20260818` stages display repricing
