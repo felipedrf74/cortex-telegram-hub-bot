@@ -515,8 +515,6 @@
       .skills-grid {
         grid-template-columns: repeat(3, 1fr);
       }
-      .skills-grid .skill-card:nth-child(4) { grid-column: 1 / 2; }
-      .skills-grid .skill-card:nth-child(5) { grid-column: 2 / 4; }
     }
     .skill-card {
       position: relative;
@@ -900,11 +898,11 @@
       display: grid;
       grid-template-columns: 1fr;
       gap: var(--s-4);
-      max-width: 780px;
+      max-width: 1040px;
       margin: 0 auto;
     }
     @media (min-width: 640px) {
-      .packs-grid { grid-template-columns: repeat(2, 1fr); }
+      .packs-grid { grid-template-columns: repeat(3, 1fr); }
     }
     .pack-card {
       padding: var(--s-6);
@@ -961,6 +959,26 @@
       line-height: 1.6;
     }
     .packs-math strong { color: var(--brand-300); }
+
+    /* ─── APP STORE CTA (three operator-controlled states) ───── */
+    .appstore-cta {
+      margin-top: 24px;
+      text-align: center;
+      font-size: 15px;
+      color: var(--text-muted);
+    }
+    .appstore-cta__unavailable, .appstore-cta__approved, .appstore-cta__public { display: none; }
+    .appstore-cta[data-appstore-state="unavailable"] .appstore-cta__unavailable { display: inline; }
+    .appstore-cta[data-appstore-state="approved"] .appstore-cta__approved { display: inline; }
+    .appstore-cta[data-appstore-state="public"] .appstore-cta__public {
+      display: inline-block;
+      padding: 10px 22px;
+      border-radius: var(--r-full);
+      background: var(--brand-500);
+      color: #fff;
+      font-weight: 700;
+      text-decoration: none;
+    }
 
     /* ─── PROFILE QUIZ (4 buttons) ──────────────────────────── */
     /* Click-to-personalize: writes to localStorage, swaps the final-CTA
@@ -1220,7 +1238,7 @@
   <section class="section" id="skills">
     <div class="container">
       <div class="section__label" data-i18n="skills.label">O produto</div>
-      <h2 class="section__title" data-i18n="skills.title">Cinco skills. Um cérebro. Zero apps novos para aprender.</h2>
+      <h2 class="section__title" data-i18n="skills.title">Seis skills. Um cérebro. Zero apps novos para aprender.</h2>
       <p class="section__subtitle" data-i18n="skills.subtitle">
         Cada skill resolve um domínio inteiro. E diferente dos apps que usas hoje, elas falam entre si — porque vivem no mesmo cérebro.
       </p>
@@ -1232,6 +1250,15 @@
           <div class="skill-card__name" data-i18n="skills.secretary_name">Secretary</div>
           <p class="skill-card__desc" data-i18n="skills.secretary_desc">
             Calendário, tarefas, lembretes. Conversa com seu Garmin e seu plano de treino para nunca marcar uma reunião longa num dia de prontidão ruim.
+          </p>
+        </div>
+
+        <!-- Tasks -->
+        <div class="skill-card skill-card--tasks">
+          <div class="skill-card__icon">✅</div>
+          <div class="skill-card__name" data-i18n="skills.tasks_name">Tasks</div>
+          <p class="skill-card__desc" data-i18n="skills.tasks_desc">
+            Captura instantânea, sincronização com Microsoft To Do, prioridades P1–P4. Suas tarefas seguem você entre chat, app e calendário — sem duplicar nada.
           </p>
         </div>
 
@@ -1352,7 +1379,7 @@
         <!-- PRO -->
         <div class="tier">
           <div class="tier__name" data-i18n="pricing.pro_name">Pro</div>
-          <div class="tier__tagline" data-i18n="pricing.pro_tagline">Todas as 5 skills. Limites confortáveis em IA.</div>
+          <div class="tier__tagline" data-i18n="pricing.pro_tagline">Todas as 6 skills. Créditos partilhados de IA.</div>
           <div class="tier__price">
             <span class="tier__price-currency" data-price-symbol>$</span>
             <span class="tier__price-amount" data-price-tier="pro">9.99</span>
@@ -1360,9 +1387,9 @@
           </div>
           <div class="tier__price-alt" data-price-alt-tier="pro" data-i18n="pricing.pro_alt_monthly_usd">Moeda local e impostos finais aparecem no checkout seguro.</div>
           <ul class="tier__features">
-            <li data-i18n="pricing.pro_f1">Todas as 5 skills desbloqueadas</li>
-            <li data-i18n="pricing.pro_f2">Secretary, Finance, Cooking: uso ilimitado</li>
-            <li data-i18n="pricing.pro_f3">Content + Training: 10 chamadas de IA/dia (fair use)</li>
+            <li data-i18n="pricing.pro_f1">Todas as 6 skills desbloqueadas</li>
+            <li data-i18n="pricing.pro_f2">500 créditos de IA por mês, partilhados entre skills</li>
+            <li data-i18n="pricing.pro_f3">Scripts de 15 min: padrão, agendado ou prioritário</li>
             <li data-i18n="pricing.pro_f4">Integrações Garmin, Google Calendar, Outlook</li>
             <li data-i18n="pricing.pro_f5">OCR de recibos via foto</li>
             <li data-i18n="pricing.pro_f6">App iOS + portal web</li>
@@ -1384,8 +1411,8 @@
           <div class="tier__price-alt" data-price-alt-tier="max" data-i18n="pricing.max_alt_monthly_usd">Moeda local e impostos finais aparecem no checkout seguro.</div>
           <ul class="tier__features">
             <li data-i18n="pricing.max_f1">Tudo do Pro</li>
-            <li data-i18n="pricing.max_f2">Content + Training: IA ILIMITADA</li>
-            <li data-i18n="pricing.max_f3">Ambos os Power Packs incluídos</li>
+            <li data-i18n="pricing.max_f2">1.200 créditos de IA por mês, partilhados</li>
+            <li data-i18n="pricing.max_f3">Mais scripts longos por dia e fila prioritária</li>
             <li data-i18n="pricing.max_f4">Suporte prioritário por e-mail</li>
             <li data-i18n="pricing.max_f5">Acesso antecipado a novas skills</li>
           </ul>
@@ -1415,45 +1442,65 @@
     </div>
   </section>
 
-  <!-- ═══════════════════ POWER PACKS ═══════════════════ -->
-  <section class="section section--alt">
+  <!-- ═══════════════════ AI CREDIT PACKS ═══════════════════ -->
+  <section class="section section--alt" id="credit-packs">
     <div class="container">
-      <div class="section__label" data-i18n="packs.label">Power Packs</div>
-      <h2 class="section__title" data-i18n="packs.title">Precisas de mais IA numa skill específica?</h2>
+      <div class="section__label" data-i18n="packs.label">Packs de créditos</div>
+      <h2 class="section__title" data-i18n="packs.title">Precisas de mais créditos num mês pesado?</h2>
       <p class="section__subtitle" data-i18n="packs.subtitle">
-        Dois add-ons para usuários do Pro. O Max já os inclui automaticamente.
+        Compras únicas para assinantes Pro e Max. Créditos comprados nunca expiram.
       </p>
 
       <div class="packs-grid">
-        <!-- Content Creator Pack -->
         <div class="pack-card">
-          <div class="pack-card__icon">🎬</div>
-          <div class="pack-card__name" data-i18n="packs.content_name">Content Creator Pack</div>
+          <div class="pack-card__icon">⚡</div>
+          <div class="pack-card__name" data-i18n="packs.p100_name">100 créditos de IA</div>
           <div class="pack-card__price">
-            <span data-price-symbol>$</span><strong data-price-tier="contentPack">15</strong>
-            <span data-i18n="pricing.per_month">/mês</span>
+            <span data-price-symbol>$</span><strong data-price-tier="pack100">4.99</strong>
+            <span data-i18n="packs.one_time">uma vez</span>
           </div>
-          <p class="pack-card__desc" data-i18n="packs.content_desc">
-            Scripts ilimitados, pesquisa profunda no YouTube, análise de canais de referência, extração de Voice DNA dos seus vídeos passados.
+          <p class="pack-card__desc" data-i18n="packs.p100_desc">
+            Cerca de 100 interações padrão extra — ou 10 scripts completos de 15 minutos.
           </p>
         </div>
 
-        <!-- AI Coach Pack -->
         <div class="pack-card">
-          <div class="pack-card__icon">🏋️</div>
-          <div class="pack-card__name" data-i18n="packs.coach_name">AI Coach Pack</div>
+          <div class="pack-card__icon">⚡</div>
+          <div class="pack-card__name" data-i18n="packs.p250_name">250 créditos de IA</div>
           <div class="pack-card__price">
-            <span data-price-symbol>$</span><strong data-price-tier="coachPack">12</strong>
-            <span data-i18n="pricing.per_month">/mês</span>
+            <span data-price-symbol>$</span><strong data-price-tier="pack250">9.99</strong>
+            <span data-i18n="packs.one_time">uma vez</span>
           </div>
-          <p class="pack-card__desc" data-i18n="packs.coach_desc">
-            Briefings ilimitados do coach Garmin, planos de treino adaptativos, previsão de tempo de prova, análise de progressão de carga.
+          <p class="pack-card__desc" data-i18n="packs.p250_desc">
+            O equilíbrio para semanas de produção intensa de conteúdo e pesquisa profunda.
+          </p>
+        </div>
+
+        <div class="pack-card">
+          <div class="pack-card__icon">⚡</div>
+          <div class="pack-card__name" data-i18n="packs.p600_name">600 créditos de IA</div>
+          <div class="pack-card__price">
+            <span data-price-symbol>$</span><strong data-price-tier="pack600">19.99</strong>
+            <span data-i18n="packs.one_time">uma vez</span>
+          </div>
+          <p class="pack-card__desc" data-i18n="packs.p600_desc">
+            O melhor preço por crédito. Sessenta scripts completos ou seiscentas interações padrão.
           </p>
         </div>
       </div>
 
       <div class="packs-math" data-i18n-html="packs.math">
-        💡 <strong>Max inclui os packs por $14.99/mês.</strong> <strong>Pro começa em $9.99/mês.</strong>
+        💡 <strong>Créditos comprados não expiram</strong> e são debitados depois dos créditos do plano.
+      </div>
+
+      <!-- App Store CTA. data-appstore-state is operator-controlled at
+           release time: unavailable → approved → public. The official badge
+           and the apps.apple.com link render ONLY in the public state, after
+           the listing is independently verified (plan §3). -->
+      <div class="appstore-cta" id="appstore-cta" data-appstore-state="unavailable" data-appstore-url="">
+        <span class="appstore-cta__unavailable" data-i18n="appstore.unavailable">📱 App iOS em beta privada — o portal web já está aberto.</span>
+        <span class="appstore-cta__approved" data-i18n="appstore.approved">📱 App iOS aprovado — link público da App Store em breve.</span>
+        <a class="appstore-cta__public" rel="noopener" data-i18n="appstore.public">📱 Baixar na App Store</a>
       </div>
     </div>
   </section>
@@ -1540,6 +1587,20 @@
 
   <!-- ═══════════════════ SCRIPTS ═══════════════════ -->
   <script>
+    // App Store CTA (plan §3): the public state's link activates only with an
+    // allowlisted apps.apple.com URL; anything else keeps the badge inert.
+    (function initAppStoreCta() {
+      const cta = document.getElementById('appstore-cta');
+      if (!cta) return;
+      const link = cta.querySelector('.appstore-cta__public');
+      const url = cta.getAttribute('data-appstore-url') || '';
+      if (link && /^https:\/\/apps\.apple\.com\//.test(url)) {
+        link.setAttribute('href', url);
+      } else if (cta.getAttribute('data-appstore-state') === 'public') {
+        cta.setAttribute('data-appstore-state', 'approved');
+      }
+    })();
+
     // ════════════════════════════════════════════════════════════
     // i18n SYSTEM — Portuguese (default) / English
     // ════════════════════════════════════════════════════════════
@@ -1610,10 +1671,12 @@
 
         // Skills grid
         'skills.label': 'O produto',
-        'skills.title': 'Cinco skills. Um cérebro. Zero apps novos para aprender.',
+        'skills.title': 'Seis skills. Um cérebro. Zero apps novos para aprender.',
         'skills.subtitle': 'Cada skill resolve um domínio inteiro. E diferente dos apps que usas hoje, elas falam entre si — porque vivem no mesmo cérebro.',
         'skills.secretary_name': 'Secretary',
         'skills.secretary_desc': 'Calendário, tarefas, lembretes. Conversa com seu Garmin e seu plano de treino para nunca marcar uma reunião longa num dia de prontidão ruim.',
+        'skills.tasks_name': 'Tasks',
+        'skills.tasks_desc': 'Captura instantânea, sincronização com Microsoft To Do, prioridades P1–P4. Suas tarefas seguem você entre chat, app e calendário — sem duplicar nada.',
         'skills.training_name': 'Training',
         'skills.training_desc': 'Briefings do coach IA, planos adaptativos, prontidão diária do Garmin. O personal trainer que você não pode pagar — mas agora em inteligência.',
         'skills.cooking_name': 'Cooking',
@@ -1647,12 +1710,12 @@
         'pricing.toggle_monthly': 'Mensal',
         'pricing.per_month': '/mês',
         'pricing.pro_name': 'Pro',
-        'pricing.pro_tagline': 'Todas as 5 skills. Limites confortáveis em IA.',
+        'pricing.pro_tagline': 'Todas as 6 skills. Créditos partilhados de IA.',
         'pricing.pro_alt_monthly_usd': 'Moeda local e impostos finais aparecem no checkout seguro.',
         'pricing.pro_alt_annual_usd': 'mensal apenas',
-        'pricing.pro_f1': 'Todas as 5 skills desbloqueadas',
-        'pricing.pro_f2': 'Secretary, Finance, Cooking: uso ilimitado',
-        'pricing.pro_f3': 'Content + Training: 10 chamadas de IA/dia (fair use)',
+        'pricing.pro_f1': 'Todas as 6 skills desbloqueadas',
+        'pricing.pro_f2': '500 créditos de IA por mês, partilhados entre skills',
+        'pricing.pro_f3': 'Scripts de 15 min: padrão, agendado ou prioritário',
         'pricing.pro_f4': 'Integrações Garmin, Google Calendar, Outlook',
         'pricing.pro_f5': 'OCR de recibos via foto',
         'pricing.pro_f6': 'App iOS + portal web',
@@ -1664,8 +1727,8 @@
         'pricing.max_alt_monthly_usd': 'Moeda local e impostos finais aparecem no checkout seguro.',
         'pricing.max_alt_annual_usd': 'mensal apenas',
         'pricing.max_f1': 'Tudo do Pro',
-        'pricing.max_f2': 'Content + Training: IA ILIMITADA',
-        'pricing.max_f3': 'Ambos os Power Packs incluídos',
+        'pricing.max_f2': '1.200 créditos de IA por mês, partilhados',
+        'pricing.max_f3': 'Mais scripts longos por dia e fila prioritária',
         'pricing.max_f4': 'Suporte prioritário por e-mail',
         'pricing.max_f5': 'Acesso antecipado a novas skills',
         'pricing.max_checkout': 'Assinar Max',
@@ -1678,15 +1741,21 @@
         'beta.reserved': 'dentro',
         'beta.remaining': 'restantes',
 
-        // Power Packs
-        'packs.label': 'Power Packs',
-        'packs.title': 'Precisas de mais IA numa skill específica?',
-        'packs.subtitle': 'Dois add-ons para usuários do Pro. O Max já os inclui automaticamente.',
-        'packs.content_name': 'Content Creator Pack',
-        'packs.content_desc': 'Scripts ilimitados, pesquisa profunda no YouTube, análise de canais de referência, extração de Voice DNA dos seus vídeos passados.',
-        'packs.coach_name': 'AI Coach Pack',
-        'packs.coach_desc': 'Briefings ilimitados do coach Garmin, planos de treino adaptativos, previsão de tempo de prova, análise de progressão de carga.',
-        'packs.math': '💡 <strong>Max inclui os packs por $14.99/mês.</strong> <strong>Pro começa em $9.99/mês.</strong>',
+        // Credit packs
+        'packs.label': 'Packs de créditos',
+        'packs.title': 'Precisas de mais créditos num mês pesado?',
+        'packs.subtitle': 'Compras únicas para assinantes Pro e Max. Créditos comprados nunca expiram.',
+        'packs.one_time': 'uma vez',
+        'packs.p100_name': '100 créditos de IA',
+        'packs.p100_desc': 'Cerca de 100 interações padrão extra — ou 10 scripts completos de 15 minutos.',
+        'packs.p250_name': '250 créditos de IA',
+        'packs.p250_desc': 'O equilíbrio para semanas de produção intensa de conteúdo e pesquisa profunda.',
+        'packs.p600_name': '600 créditos de IA',
+        'packs.p600_desc': 'O melhor preço por crédito. Sessenta scripts completos ou seiscentas interações padrão.',
+        'packs.math': '💡 <strong>Créditos comprados não expiram</strong> e são debitados depois dos créditos do plano.',
+        'appstore.unavailable': '📱 App iOS em beta privada — o portal web já está aberto.',
+        'appstore.approved': '📱 App iOS aprovado — link público da App Store em breve.',
+        'appstore.public': '📱 Baixar na App Store',
         'checkout.email_prompt': 'Qual e-mail deve receber a assinatura?',
         'checkout.starting': 'Abrindo checkout...',
         'checkout.error': 'Não foi possível abrir o checkout. Tenta novamente.',
@@ -1765,10 +1834,12 @@
 
         // Skills grid
         'skills.label': 'The product',
-        'skills.title': 'Five skills. One brain. Zero new apps to learn.',
+        'skills.title': 'Six skills. One brain. Zero new apps to learn.',
         'skills.subtitle': "Each skill solves a whole domain. And unlike the apps you're using today, they talk to each other — because they live in the same brain.",
         'skills.secretary_name': 'Secretary',
         'skills.secretary_desc': "Calendar, tasks, reminders. Talks to your Garmin and your training plan so it never books a long meeting on a poor-recovery day.",
+        'skills.tasks_name': 'Tasks',
+        'skills.tasks_desc': 'Instant capture, Microsoft To Do sync, P1\u2013P4 priorities. Your tasks follow you across chat, app, and calendar \u2014 nothing duplicated.',
         'skills.training_name': 'Training',
         'skills.training_desc': "AI coach briefings, adaptive plans, daily Garmin readiness. The personal trainer you can't afford — except smarter.",
         'skills.cooking_name': 'Cooking',
@@ -1802,12 +1873,12 @@
         'pricing.toggle_monthly': 'Monthly',
         'pricing.per_month': '/mo',
         'pricing.pro_name': 'Pro',
-        'pricing.pro_tagline': 'All 5 skills. Comfortable AI limits.',
+        'pricing.pro_tagline': 'All 6 skills. Shared AI credits.',
         'pricing.pro_alt_monthly_usd': 'Local currency and final tax are shown at secure checkout.',
         'pricing.pro_alt_annual_usd': 'monthly only',
-        'pricing.pro_f1': 'All 5 skills unlocked',
-        'pricing.pro_f2': 'Secretary, Finance, Cooking: unlimited usage',
-        'pricing.pro_f3': 'Content + Training: 10 AI calls/day (fair use)',
+        'pricing.pro_f1': 'All 6 skills unlocked',
+        'pricing.pro_f2': '500 AI credits per month, shared across skills',
+        'pricing.pro_f3': '15-minute scripts: standard, scheduled, or priority',
         'pricing.pro_f4': 'Garmin, Google Calendar, Outlook integrations',
         'pricing.pro_f5': 'Photo-to-receipt OCR',
         'pricing.pro_f6': 'iOS app + web portal',
@@ -1819,8 +1890,8 @@
         'pricing.max_alt_monthly_usd': 'Local currency and final tax are shown at secure checkout.',
         'pricing.max_alt_annual_usd': 'monthly only',
         'pricing.max_f1': 'Everything in Pro',
-        'pricing.max_f2': 'Content + Training: UNLIMITED AI',
-        'pricing.max_f3': 'Both Power Packs included',
+        'pricing.max_f2': '1,200 AI credits per month, shared',
+        'pricing.max_f3': 'More daily long-form scripts and a priority queue',
         'pricing.max_f4': 'Priority email support',
         'pricing.max_f5': 'Early access to new skills',
         'pricing.max_checkout': 'Subscribe Max',
@@ -1833,15 +1904,21 @@
         'beta.reserved': 'in',
         'beta.remaining': 'remaining',
 
-        // Power Packs
-        'packs.label': 'Power Packs',
-        'packs.title': 'Need more AI in a specific skill?',
-        'packs.subtitle': "Two add-ons for Pro users. Max includes both automatically.",
-        'packs.content_name': 'Content Creator Pack',
-        'packs.content_desc': 'Unlimited scripts, deep YouTube research, reference-channel analysis, Voice DNA extraction from your past videos.',
-        'packs.coach_name': 'AI Coach Pack',
-        'packs.coach_desc': 'Unlimited Garmin coach briefings, adaptive training plans, race-time prediction, load progression analysis.',
-        'packs.math': '💡 <strong>Max includes both packs for $14.99/mo.</strong> <strong>Pro starts at $9.99/mo.</strong>',
+        // Credit packs
+        'packs.label': 'Credit packs',
+        'packs.title': 'Need more credits in a heavy month?',
+        'packs.subtitle': 'One-time purchases for Pro and Max subscribers. Purchased credits never expire.',
+        'packs.one_time': 'one time',
+        'packs.p100_name': '100 AI credits',
+        'packs.p100_desc': 'About 100 extra standard interactions — or 10 full 15-minute scripts.',
+        'packs.p250_name': '250 AI credits',
+        'packs.p250_desc': 'The sweet spot for heavy content-production and deep-research weeks.',
+        'packs.p600_name': '600 AI credits',
+        'packs.p600_desc': 'The best per-credit price. Sixty full scripts or six hundred standard interactions.',
+        'packs.math': '💡 <strong>Purchased credits never expire</strong> and are spent after your plan credits.',
+        'appstore.unavailable': '📱 iOS app in private beta — the web portal is already open.',
+        'appstore.approved': '📱 iOS app approved — public App Store link coming shortly.',
+        'appstore.public': '📱 Download on the App Store',
         'checkout.email_prompt': 'Which email should receive the subscription?',
         'checkout.starting': 'Opening checkout...',
         'checkout.error': 'Could not open checkout. Please try again.',
