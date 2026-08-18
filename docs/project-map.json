@@ -5,10 +5,10 @@
     "generatorVersion": 4,
     "authoritativeFreshness": "sourceDigest",
     "sourceDigestAlgorithm": "sha256-path-git-mode-content-v2",
-    "sourceDigest": "6c373ccf067fb3436e3dee9fae2153393ec04774bd0ede0f601e506ba3ed996a",
-    "baseCommit": "33c476787f2e33d5755c5bc74173a8a6f4757f3d",
-    "baseCommitTimestamp": "2026-08-15T08:10:58+01:00",
-    "trackedFiles": 3303,
+    "sourceDigest": "cf57e6a39a57029ea83b19058446b4f62fd814bde99f04fe0571c792a3afb97b",
+    "baseCommit": "d984c886e1c0fa198875516dbdec249280664e31",
+    "baseCommitTimestamp": "2026-08-15T09:20:51+01:00",
+    "trackedFiles": 3304,
     "sourceFiles": 1163
   },
   "navigation": {
@@ -5012,10 +5012,10 @@
     "policy": "config/documentation-policy.json",
     "policySchema": "nexus.documentation-policy.v1",
     "policyVersion": "2026-08-12.1",
-    "count": 76,
-    "active": 76,
+    "count": 77,
+    "active": 77,
     "statusCounts": {
-      "canonical": 36,
+      "canonical": 37,
       "current": 2,
       "draft": 2,
       "generated": 1,
@@ -5383,6 +5383,15 @@
         "reviewedOn": "2026-07-22",
         "reviewDueOn": "2027-01-18",
         "canonicalPath": "docs/release/eval-evidence/chat-eval-2026-07-31T17-19-58-073Z.md"
+      },
+      {
+        "path": "docs/release/hybrid-ai-commerce-production-plan.md",
+        "status": "canonical",
+        "active": true,
+        "owner": "release owner",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2026-10-20",
+        "canonicalPath": "docs/release/hybrid-ai-commerce-production-plan.md"
       },
       {
         "path": "docs/release/migration-irreversible.md",

@@ -16,6 +16,11 @@ This is the canonical contract for model-backed access. Deterministic Secretary
 reads and actions are token-zero and remain available independently of AI
 eligibility or quota state.
 
+The owner-approved target entitlement model (credit-based plans, packs, and
+routing) is defined in `docs/release/hybrid-ai-commerce-production-plan.md`.
+This contract remains the runtime authority until that plan's credit ledger
+ships and is activated.
+
 ## Eligibility is the authority
 
 `src/services/entitlement.ts#getEffectiveEntitlement()` is the only authority

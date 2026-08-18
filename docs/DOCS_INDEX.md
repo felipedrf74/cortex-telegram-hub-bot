@@ -25,6 +25,7 @@ review cadence through compact path rules plus explicit exceptions.
 | Security controls and operations | `docs/security/security-control-matrix.md`, `docs/security/security-operations-runbook.md` |
 | Threat model | `docs/security/nexus-security-threat-model.md` |
 | Paid-AI and quota contract | `docs/TOKEN-QUOTA-CONTRACT.md` |
+| Hybrid AI, pricing, commerce, and production plan | `docs/release/hybrid-ai-commerce-production-plan.md` |
 | Local-primary inference architecture and rollout | `docs/engineering/local-primary-inference-standard.md` |
 | Reward verification | `docs/agents/VERIFIABLE_REWARD_PROTOCOL.md` |
 | Legal and retention | `docs/legal/` |
