@@ -1,0 +1,24 @@
+{
+  "_comment": "Economics rate-card template (plan §4, NH-0034/NH-0036). Fill every null with ACTUAL provider-account rates and measured p95 tokens; the simulation fails closed on any null. Do not substitute public list prices when the account contract or invoice provides the applicable rate.",
+  "version": null,
+  "capturedAt": null,
+  "providerRatesUsdPerMTok": {
+    "standardOp": { "input": null, "output": null },
+    "deepOp": { "input": null, "output": null },
+    "standardScript": { "input": null, "output": null },
+    "scheduledScript": { "input": null, "output": null },
+    "priorityScript": { "input": null, "output": null }
+  },
+  "p95Tokens": {
+    "standardOp": { "input": null, "output": null },
+    "deepOp": { "input": null, "output": null },
+    "script": { "input": null, "output": null }
+  },
+  "searchToolUsdPerOp": null,
+  "stripeFeePct": null,
+  "stripeFeeFixedUsd": null,
+  "appleProceedsPct": null,
+  "vpsAllocationUsdPerPaidUser": null,
+  "refundsPct": null,
+  "taxesPct": null
+}
