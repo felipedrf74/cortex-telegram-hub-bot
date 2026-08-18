@@ -551,3 +551,47 @@ describe('runtime config validation', () => {
     await expect(loadConfigFresh()).resolves.toHaveProperty('config');
   });
 });
+
+describe('hybrid flag live getters (QA P2-13)', () => {
+  beforeEach(() => {
+    applyMinimalConfigEnv();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    process.env = { ...ORIGINAL_ENV };
+  });
+
+  it('re-reads activation and kill switches on every access without a restart', async () => {
+    const { config } = await loadConfigFresh();
+
+    // Credits admission: enable, then kill mid-process.
+    vi.stubEnv('HYBRID_AI_CREDITS_ENABLED', 'true');
+    vi.stubEnv('HYBRID_AI_CREDITS_KILL_SWITCH', 'false');
+    expect(config.hybridCredits.enabled).toBe(true);
+    vi.stubEnv('HYBRID_AI_CREDITS_KILL_SWITCH', 'true');
+    expect(config.hybridCredits.enabled).toBe(false);
+    vi.stubEnv('HYBRID_AI_CREDITS_ENABLED', 'false');
+    vi.stubEnv('HYBRID_AI_CREDITS_KILL_SWITCH', 'false');
+    expect(config.hybridCredits.enabled).toBe(false);
+
+    // Points cutover flips live too.
+    expect(config.hybridCredits.pointsCutover).toBe(false);
+    vi.stubEnv('HYBRID_CREDITS_POINTS_CUTOVER', 'true');
+    expect(config.hybridCredits.pointsCutover).toBe(true);
+
+    // Apple pack fulfillment: default OFF, enable, then kill.
+    expect(config.hybridCommerce.applePackFulfillmentEnabled).toBe(false);
+    vi.stubEnv('APPLE_PACK_FULFILLMENT_ENABLED', 'true');
+    expect(config.hybridCommerce.applePackFulfillmentEnabled).toBe(true);
+    vi.stubEnv('APPLE_PACK_FULFILLMENT_KILL_SWITCH', 'true');
+    expect(config.hybridCommerce.applePackFulfillmentEnabled).toBe(false);
+
+    // Stripe pack sales: same shape.
+    expect(config.hybridCommerce.stripePackFulfillmentEnabled).toBe(false);
+    vi.stubEnv('STRIPE_PACK_FULFILLMENT_ENABLED', 'true');
+    expect(config.hybridCommerce.stripePackFulfillmentEnabled).toBe(true);
+    vi.stubEnv('STRIPE_PACK_FULFILLMENT_KILL_SWITCH', 'true');
+    expect(config.hybridCommerce.stripePackFulfillmentEnabled).toBe(false);
+  });
+});

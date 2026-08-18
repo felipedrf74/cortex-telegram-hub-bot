@@ -150,6 +150,16 @@ describe('content-script-job-credits', () => {
     expect(getAiCreditWallet(40, 'pro', NOW).dailyUsedCredits).toBe(10);
   });
 
+  it('denies script classes outright on the free plan (§2 availability)', () => {
+    const denied = reserve({ userId: 60, plan: 'free', jobId: 'script_job_free' });
+    expect(denied).toEqual({
+      kind: 'denied',
+      code: 'AI_OPERATION_NOT_AVAILABLE',
+      message: 'Script generation is not available on the free plan.',
+      statusCode: 403,
+    });
+  });
+
   it('denies with exact amounts and does not admit', () => {
     const denied = reserveContentScriptJobCredits({
       tenantId: 50, userId: 50, jobId: 'script_job_poor', plan: 'pro', longForm: true, now: NOW,

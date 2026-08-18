@@ -203,4 +203,16 @@ describe('ai-credit-admission', () => {
       expect(error).toBeInstanceOf(AiCreditAdmissionDeniedError);
     }
   });
+
+  it('renders a distinct denial message for every denial kind', () => {
+    expect(new AiCreditAdmissionDeniedError({
+      kind: 'insufficient_credits', requiredCredits: 3, availableCredits: 1, packCtaEligible: true,
+    }).message).toBe('Insufficient AI credits: required 3, available 1');
+    expect(new AiCreditAdmissionDeniedError({
+      kind: 'daily_cap_exceeded', requiredCredits: 1, dailyCapCredits: 5, dailyRemainingCredits: 0,
+    }).message).toBe('Daily AI credit cap reached: required 1, remaining 0');
+    expect(new AiCreditAdmissionDeniedError({
+      kind: 'operation_not_available', operationClass: 'deep', plan: 'free',
+    }).message).toBe('Operation class deep is not available on the free plan');
+  });
 });

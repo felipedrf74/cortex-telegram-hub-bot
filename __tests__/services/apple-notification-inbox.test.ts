@@ -79,6 +79,7 @@ function seedPackNotification(input: {
   productId?: string;
   transactionId?: string;
   appAccountToken?: string;
+  quantity?: unknown;
 }): void {
   jwsFixtures.set(input.outerKey, {
     notificationType: input.notificationType ?? 'ONE_TIME_CHARGE',
@@ -91,6 +92,7 @@ function seedPackNotification(input: {
     transactionId: input.transactionId ?? 'apple-txn-1',
     originalTransactionId: input.transactionId ?? 'apple-txn-1',
     appAccountToken: input.appAccountToken ?? 'token-40',
+    ...(input.quantity !== undefined ? { quantity: input.quantity } : {}),
   });
 }
 
@@ -145,6 +147,49 @@ describe('apple-notification-inbox', () => {
     expect(processStoredAppleNotification(second.row.id, NOW)).toMatchObject({ kind: 'processed', handled: true });
     expect(getAiCreditWallet(40, 'pro', NOW).purchasedRemaining).toBe(100);
     expect(db.prepare('SELECT COUNT(*) AS count FROM ai_credit_lots').get()).toEqual({ count: 1 });
+  });
+
+  it('multiplies pack credits by the transaction quantity within the bound (QA P2-11)', () => {
+    seedPackNotification({ outerKey: 'outer-q3', innerKey: 'inner-q3', transactionId: 'apple-txn-q3', quantity: 3 });
+    const stored = ingest('outer-q3');
+    if (stored.kind !== 'stored') throw new Error('unreachable');
+    expect(processStoredAppleNotification(stored.row.id, NOW)).toMatchObject({ kind: 'processed', handled: true });
+    expect(getAiCreditWallet(40, 'pro', NOW).purchasedRemaining).toBe(300);
+  });
+
+  it('refuses out-of-bound or non-integer quantities instead of guessing', () => {
+    for (const [key, quantity] of [['q0', 0], ['qbig', 250], ['qfrac', 1.5]] as const) {
+      seedPackNotification({
+        outerKey: `outer-${key}`,
+        innerKey: `inner-${key}`,
+        transactionId: `apple-txn-${key}`,
+        quantity,
+      });
+      const stored = ingest(`outer-${key}`);
+      if (stored.kind !== 'stored') throw new Error('unreachable');
+      expect(processStoredAppleNotification(stored.row.id, NOW)).toMatchObject({ kind: 'failed' });
+    }
+    expect(getAiCreditWallet(40, 'pro', NOW).purchasedRemaining).toBe(0);
+  });
+
+  it('refuses sandbox pack notifications in a production runtime (QA P1-5)', () => {
+    seedPackNotification({ outerKey: 'outer-sbx', innerKey: 'inner-sbx', transactionId: 'apple-txn-sbx' });
+    const stored = ingestVerifiedAppleNotification({
+      notificationUuid: 'uuid-outer-sbx',
+      notificationType: 'ONE_TIME_CHARGE',
+      subtype: null,
+      environment: 'Sandbox',
+      signedPayload: 'outer-sbx',
+      now: NOW,
+    });
+    if (stored.kind !== 'stored') throw new Error('unreachable');
+    vi.stubEnv('NODE_ENV', 'production');
+    try {
+      expect(processStoredAppleNotification(stored.row.id, NOW)).toMatchObject({ kind: 'failed' });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    expect(getAiCreditWallet(40, 'pro', NOW).purchasedRemaining).toBe(0);
   });
 
   it('revokes only the originating lot on a pack refund', () => {

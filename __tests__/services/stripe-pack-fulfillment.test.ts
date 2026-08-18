@@ -139,6 +139,11 @@ describe('stripe credit-pack fulfillment', () => {
     expect(getAiCreditWallet(40, 'pro', NOW).purchasedRemaining).toBe(100);
   });
 
+  it('accepts the expanded payment_intent object form on reversal', () => {
+    handleCheckoutCompleted(packSession());
+    expect(handleStripeCreditPackReversal({ payment_intent: { id: 'pi_pack_1' }, refunded: true }, 'refund')).toBe(true);
+  });
+
   it('leaves the lot intact on a partial refund (QA P2-10)', () => {
     handleCheckoutCompleted(packSession());
     expect(handleStripeCreditPackReversal(
