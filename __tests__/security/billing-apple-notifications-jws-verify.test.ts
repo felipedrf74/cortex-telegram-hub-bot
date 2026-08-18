@@ -125,6 +125,27 @@ function appleNotification(notificationType: string, innerJws: string): string {
   });
 }
 
+function appleNotificationWithUuid(
+  notificationType: string,
+  innerJws: string,
+  notificationUUID: string,
+): string {
+  return signJws({
+    notificationType,
+    notificationUUID,
+    data: {
+      signedTransactionInfo: innerJws,
+      environment: 'Production',
+    },
+  });
+}
+
+function inboxRow(uuid: string): { state: string; attempts: number; last_error: string | null } | undefined {
+  return testDb.prepare(
+    'SELECT state, attempts, last_error FROM apple_notification_inbox WHERE notification_uuid = ?',
+  ).get(uuid) as { state: string; attempts: number; last_error: string | null } | undefined;
+}
+
 function seedSubscription(transactionId = '2000000123456789'): void {
   testDb.prepare(`
     INSERT INTO subscriptions (
@@ -204,6 +225,21 @@ describe('Apple App Store Server Notifications JWS verification', () => {
         environment        TEXT,
         processed_at       TEXT NOT NULL DEFAULT (datetime('now'))
       );
+      CREATE TABLE apple_notification_inbox (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        notification_uuid TEXT NOT NULL,
+        notification_type TEXT NOT NULL,
+        subtype TEXT,
+        environment TEXT,
+        signed_payload TEXT NOT NULL,
+        state TEXT NOT NULL DEFAULT 'pending',
+        attempts INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        received_at TEXT NOT NULL,
+        processed_at TEXT
+      );
+      CREATE UNIQUE INDEX idx_apple_notification_inbox_uuid
+        ON apple_notification_inbox (notification_uuid);
       CREATE TABLE nexus_point_credits (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER NOT NULL,
@@ -372,5 +408,78 @@ describe('Apple App Store Server Notifications JWS verification', () => {
         productId: 'me.nexushub.points.small',
       }),
     }));
+  });
+
+  it('persists a UUID-bearing notification durably before processing it', async () => {
+    seedSubscription();
+    const inner = signJws({
+      bundleId: 'me.nexushub.app',
+      originalTransactionId: '2000000123456789',
+      expiresDate: '2026-09-15T12:00:00.000Z',
+    });
+
+    const response = await postAppleNotification(
+      appleNotificationWithUuid('DID_RENEW', inner, 'uuid-durable-1'),
+    );
+
+    expect(response).toEqual({ status: 200, body: { handled: true } });
+    expect(inboxRow('uuid-durable-1')).toEqual({ state: 'processed', attempts: 1, last_error: null });
+    expect(subscriptionRow()).toEqual({
+      status: 'active',
+      current_period_end: '2026-09-15T12:00:00.000Z',
+    });
+  });
+
+  it('asks Apple to redeliver when durable storage is unavailable', async () => {
+    seedSubscription();
+    testDb.exec('DROP TABLE apple_notification_inbox');
+    const inner = signJws({
+      bundleId: 'me.nexushub.app',
+      originalTransactionId: '2000000123456789',
+    });
+
+    const response = await postAppleNotification(
+      appleNotificationWithUuid('DID_RENEW', inner, 'uuid-storage-down'),
+    );
+
+    expect(response).toEqual({ status: 503, body: { handled: false, reason: 'storage unavailable' } });
+  });
+
+  it('retains a failed notification for internal retry instead of losing it behind a 200', async () => {
+    testDb.exec('DROP TABLE subscriptions');
+    const inner = signJws({
+      bundleId: 'me.nexushub.app',
+      originalTransactionId: '2000000123456789',
+      expiresDate: '2026-09-15T12:00:00.000Z',
+    });
+
+    const response = await postAppleNotification(
+      appleNotificationWithUuid('DID_RENEW', inner, 'uuid-retained'),
+    );
+
+    expect(response).toEqual({ status: 200, body: { handled: false } });
+    const row = inboxRow('uuid-retained');
+    expect(row?.state).toBe('failed');
+    expect(row?.attempts).toBe(1);
+    expect(row?.last_error).toBeTruthy();
+  });
+
+  it('deduplicates redelivered notifications by UUID without reprocessing', async () => {
+    seedSubscription();
+    const inner = signJws({
+      bundleId: 'me.nexushub.app',
+      originalTransactionId: '2000000123456789',
+      expiresDate: '2026-09-15T12:00:00.000Z',
+    });
+    const payload = appleNotificationWithUuid('DID_RENEW', inner, 'uuid-dupe');
+
+    expect((await postAppleNotification(payload)).status).toBe(200);
+    const second = await postAppleNotification(payload);
+
+    expect(second).toEqual({ status: 200, body: { handled: false } });
+    expect(testDb.prepare(
+      "SELECT COUNT(*) AS c FROM apple_notification_inbox WHERE notification_uuid = 'uuid-dupe'",
+    ).get()).toEqual({ c: 1 });
+    expect(inboxRow('uuid-dupe')?.state).toBe('processed');
   });
 });
