@@ -806,6 +806,9 @@ export const config = {
   hybridCredits: {
     enabled: (process.env.HYBRID_AI_CREDITS_ENABLED || 'false') === 'true'
       && (process.env.HYBRID_AI_CREDITS_KILL_SWITCH || 'false') !== 'true',
+    // Addendum B: after the cutover flips at launch, no new purchased lot may
+    // ship with an expiry. Default OFF until the activation moment.
+    pointsCutover: (process.env.HYBRID_CREDITS_POINTS_CUTOVER || 'false') === 'true',
   },
 
   // ── Hybrid AI commerce catalog (plan §3) ──────────────────────────

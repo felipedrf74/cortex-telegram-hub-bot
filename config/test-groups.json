@@ -1046,6 +1046,7 @@
       "tests": [
         "__tests__/api/billing-catalog.test.ts",
         "__tests__/services/apple-notification-inbox.test.ts",
+        "__tests__/services/nexus-points-cutover.test.ts",
         "__tests__/billing/**/*.test.ts",
         "__tests__/services/paid-ai-budget.test.ts",
         "__tests__/services/paid-ai-cost-controls-migration.test.ts",

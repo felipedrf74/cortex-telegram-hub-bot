@@ -1,6 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { getDb } from './database';
+import { config } from '../config';
 import { logger } from '../utils/logger';
 import { getActiveUserAiBudgetOverride } from './ai-budget-overrides';
 import { getEffectiveEntitlement } from './entitlement';
@@ -8,6 +9,19 @@ import { logAudit } from './audit-trail';
 
 export const NEXUS_POINT_USD_ALLOWANCE = 0.001;
 export const NEXUS_POINT_EXPIRY_DAYS = 30;
+
+/**
+ * Nonexpiring sentinel (hybrid AI plan §3 / Addendum B, NH-0029). The schema
+ * requires a NOT NULL expiry, so "never expires" is this far-future instant.
+ * Every consumer — balance filters, nearest-expiry debit order, expiring-soon
+ * windows, and the expiry sweep — treats it correctly without changes, and it
+ * deliberately sorts LAST in the nearest-expiry-first debit order.
+ */
+export const NEXUS_POINTS_NONEXPIRING_AT = '9999-12-31T00:00:00.000Z';
+
+export function isNexusPointsCutoverActive(): boolean {
+  return config.hybridCredits?.pointsCutover === true;
+}
 
 export type NexusPointPackageId =
   | 'me.nexushub.points.small'
@@ -118,7 +132,11 @@ export function grantNexusPoints(input: GrantNexusPointsInput): GrantNexusPoints
   const pkg = getNexusPointPackage(input.productId);
   if (!pkg) throw new Error(`Unknown Nexus Points product: ${input.productId}`);
   const purchasedAt = input.purchasedAt ?? new Date();
-  const expiresAt = new Date(purchasedAt.getTime() + NEXUS_POINT_EXPIRY_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  // Post-cutover, purchases at the legacy product ids keep their point
+  // economics (plan §3) but never expire (Addendum B).
+  const expiresAt = isNexusPointsCutoverActive()
+    ? NEXUS_POINTS_NONEXPIRING_AT
+    : new Date(purchasedAt.getTime() + NEXUS_POINT_EXPIRY_DAYS * 24 * 60 * 60 * 1000).toISOString();
   const db = getDb();
   const metadataJson = stringifyCreditMetadata(input.metadata, input.provider, input.providerTransactionId);
   const result = db.prepare(`
@@ -277,7 +295,7 @@ export function getNexusPointBalance(userId: number, now = new Date()): NexusPoi
     return {
       pointsBalance: roundPoints(row.points_balance ?? usdToPoints(row.usd_balance ?? 0)),
       usdBalance: roundUsd(row.usd_balance ?? 0),
-      nextCreditExpiryAt: row.next_expiry ?? null,
+      nextCreditExpiryAt: row.next_expiry === NEXUS_POINTS_NONEXPIRING_AT ? null : row.next_expiry ?? null,
       pointsExpiringSoon: roundPoints(expiring.points_expiring ?? usdToPoints(expiring.usd_expiring ?? 0)),
       usdExpiringSoon: roundUsd(expiring.usd_expiring ?? 0),
     };
@@ -578,4 +596,60 @@ function parseCreditMetadata(value: string | null | undefined): Record<string, u
   } catch {
     return { parseError: true };
   }
+}
+
+export interface NexusPointsCutoverResult {
+  unexpiredMigrated: number;
+  appleRestored: number;
+}
+
+/**
+ * One-time, idempotent Addendum B cutover (NH-0029), run at activation:
+ *
+ * - every active, unexpired purchased lot becomes nonexpiring;
+ * - identifiable unspent EXPIRED Apple purchase lots are restored to active
+ *   and nonexpiring (plan §3) — refunded and revoked lots are never touched,
+ *   and expired Stripe lots are deliberately not restored.
+ *
+ * Historical receipts, consumption, and audit rows are untouched; only the
+ * expiry (and the restored Apple lots' status) changes. Safe to re-run: a
+ * second invocation matches nothing.
+ */
+export function runNexusPointsCutover(now: Date = new Date()): NexusPointsCutoverResult {
+  const db = getDb();
+  const nowIso = now.toISOString();
+  const result = db.transaction((): NexusPointsCutoverResult => {
+    const unexpired = db.prepare(`
+      UPDATE nexus_point_credits
+      SET expires_at = ?, updated_at = ?
+      WHERE source = 'purchase'
+        AND status = 'active'
+        AND expires_at > ?
+        AND expires_at != ?
+    `).run(NEXUS_POINTS_NONEXPIRING_AT, nowIso, nowIso, NEXUS_POINTS_NONEXPIRING_AT).changes;
+    const restored = db.prepare(`
+      UPDATE nexus_point_credits
+      SET expires_at = ?, status = 'active', updated_at = ?
+      WHERE source = 'purchase'
+        AND provider = 'apple'
+        AND status IN ('active', 'expired')
+        AND points_remaining > 0
+        AND expires_at <= ?
+    `).run(NEXUS_POINTS_NONEXPIRING_AT, nowIso, nowIso).changes;
+    return { unexpiredMigrated: unexpired, appleRestored: restored };
+  }).immediate();
+  if (result.unexpiredMigrated > 0 || result.appleRestored > 0) {
+    logAudit({
+      userId: 0,
+      tenantId: 0,
+      actorId: 0,
+      action: 'nexus_points.cutover',
+      resource: 'nexus_points',
+      details: {
+        unexpiredMigrated: result.unexpiredMigrated,
+        appleRestored: result.appleRestored,
+      },
+    });
+  }
+  return result;
 }
