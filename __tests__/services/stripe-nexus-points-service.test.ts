@@ -18,6 +18,7 @@ const hoisted = vi.hoisted(() => {
     stripe: {
       secretKey: 'sk_test_points',
       webhookSecret: 'whsec_points',
+      managedPaymentsSandboxEnabled: true,
       nexusPoints: {
         enabled: true,
         priceIds: {
@@ -142,6 +143,7 @@ describe('stripe-nexus-points-service', () => {
     testDb = new Database(':memory:');
     createSchema();
     vi.clearAllMocks();
+    hoisted.config.stripe.managedPaymentsSandboxEnabled = true;
     hoisted.config.stripe.nexusPoints.enabled = true;
     hoisted.stripeCreate.mockResolvedValue({ id: 'cs_new', url: 'https://checkout.stripe.test/session' });
     hoisted.stripeRetrieveCharge.mockResolvedValue({ payment_intent: null });
@@ -171,9 +173,13 @@ describe('stripe-nexus-points-service', () => {
 
       const minuteBucket = Math.floor(Date.now() / 60000);
       expect(result).toEqual({ sessionId: 'cs_new', checkoutUrl: 'https://checkout.stripe.test/session' });
+      expect(hoisted.stripeCtor).toHaveBeenCalledWith('sk_test_points', {
+        apiVersion: '2026-03-04.preview',
+      });
       expect(hoisted.stripeCreate).toHaveBeenCalledWith(expect.objectContaining({
         mode: 'payment',
         line_items: [{ price: 'price_points_medium', quantity: 1 }],
+        managed_payments: { enabled: true },
         success_url: 'https://nexushub.me/user?nexusPointsCheckout=success',
         cancel_url: 'https://nexushub.me/user?nexusPointsCheckout=canceled',
         client_reference_id: '42',
@@ -194,6 +200,24 @@ describe('stripe-nexus-points-service', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('uses the stable API without Managed Payments when the sandbox flag is disabled', async () => {
+    hoisted.config.stripe.managedPaymentsSandboxEnabled = false;
+    _resetStripeNexusPointsClientForTests();
+
+    await createNexusPointsCheckoutSession({
+      userId: 42,
+      tenantId: 42,
+      packageId: 'me.nexushub.points.small',
+      source: 'web',
+    });
+
+    expect(hoisted.stripeCtor).toHaveBeenCalledWith('sk_test_points', {
+      apiVersion: '2026-02-25.clover',
+    });
+    const [checkoutParams] = hoisted.stripeCreate.mock.calls[0];
+    expect(checkoutParams).not.toHaveProperty('managed_payments');
   });
 
   it('dedupes double-click checkout creation with a minute-scoped idempotency key', async () => {
@@ -320,6 +344,16 @@ describe('stripe-nexus-points-service', () => {
       data: { object: paidSession({ payment_status: 'unpaid' }) },
     });
 
+    expect(testDb.prepare('SELECT COUNT(*) AS count FROM nexus_point_credits').get()).toEqual({ count: 0 });
+  });
+
+  it('recognizes delayed payment failure without granting credits', async () => {
+    const handled = await handleStripeNexusPointsEvent({
+      type: 'checkout.session.async_payment_failed',
+      data: { object: paidSession({ payment_status: 'unpaid' }) },
+    });
+
+    expect(handled).toBe(true);
     expect(testDb.prepare('SELECT COUNT(*) AS count FROM nexus_point_credits').get()).toEqual({ count: 0 });
   });
 

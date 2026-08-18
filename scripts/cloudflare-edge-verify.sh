@@ -86,8 +86,8 @@ else
   failures=$((failures + 1))
 fi
 
-if grep -q '\$14\.99/month or R\$69\.99/month' "$llms_file" \
-  && grep -q '\$24\.99/month or R\$119\.99/month' "$llms_file"; then
+if grep -q '\$9\.99/month (USD)' "$llms_file" \
+  && grep -q '\$14\.99/month (USD)' "$llms_file"; then
   echo "[PASS] llms.txt contains current Pro/Max prices"
 else
   echo "[FAIL] llms.txt does not contain current Pro/Max prices"

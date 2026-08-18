@@ -92,9 +92,9 @@ vi.mock('../../src/services/cost-guardrail', () => ({
     nextCreditExpiryAt: usage.nextCreditExpiryAt,
     pointsPurchaseAvailable: usage.pointsPurchaseAvailable,
     nexusPointPackages: [
-      { productId: 'me.nexushub.points.small', label: 'small', points: 300 },
-      { productId: 'me.nexushub.points.medium', label: 'medium', points: 600 },
-      { productId: 'me.nexushub.points.large', label: 'large', points: 1200 },
+      { productId: 'me.nexushub.points.small', label: 'small', points: 100 },
+      { productId: 'me.nexushub.points.medium', label: 'medium', points: 250 },
+      { productId: 'me.nexushub.points.large', label: 'large', points: 600 },
     ],
   }),
   isUserOverDailyCap: vi.fn(() => ({
@@ -143,9 +143,9 @@ vi.mock('../../src/services/entitlement', () => ({
 vi.mock('../../src/services/nexus-points', () => ({
   isNexusPointProductId: (productId: string) => productId.startsWith('me.nexushub.points.'),
   listNexusPointPackages: vi.fn(() => [
-    { productId: 'me.nexushub.points.small', label: 'small', priceUsd: 5, points: 300, usdAllowance: 0.30, aiOnlyMarginPct: 94, netMarginAfterAppleCutPct: 91.4 },
-    { productId: 'me.nexushub.points.medium', label: 'medium', priceUsd: 10, points: 600, usdAllowance: 0.60, aiOnlyMarginPct: 94, netMarginAfterAppleCutPct: 91.4 },
-    { productId: 'me.nexushub.points.large', label: 'large', priceUsd: 20, points: 1200, usdAllowance: 1.20, aiOnlyMarginPct: 94, netMarginAfterAppleCutPct: 91.4 },
+    { productId: 'me.nexushub.points.small', label: 'small', priceUsd: 4.99, points: 100, usdAllowance: 0.10, aiOnlyMarginPct: 98, netMarginAfterAppleCutPct: 97.1 },
+    { productId: 'me.nexushub.points.medium', label: 'medium', priceUsd: 9.99, points: 250, usdAllowance: 0.25, aiOnlyMarginPct: 97.5, netMarginAfterAppleCutPct: 96.4 },
+    { productId: 'me.nexushub.points.large', label: 'large', priceUsd: 19.99, points: 600, usdAllowance: 0.60, aiOnlyMarginPct: 97, netMarginAfterAppleCutPct: 95.7 },
   ]),
   grantNexusPoints: (...args: unknown[]) => mockGrantNexusPoints(...args),
 }));
@@ -269,7 +269,7 @@ describe('billing routes', () => {
     mockGrantNexusPoints.mockReturnValue({
       granted: true,
       creditId: 77,
-      package: { productId: 'me.nexushub.points.small', label: 'small', priceUsd: 5, points: 300, usdAllowance: 0.30, aiOnlyMarginPct: 94, netMarginAfterAppleCutPct: 91.4 },
+      package: { productId: 'me.nexushub.points.small', label: 'small', priceUsd: 4.99, points: 100, usdAllowance: 0.10, aiOnlyMarginPct: 98, netMarginAfterAppleCutPct: 97.1 },
     });
     mockCreateNexusPointsCheckoutSession.mockReset();
     mockCreateNexusPointsCheckoutSession.mockResolvedValue({ sessionId: 'cs_points', checkoutUrl: 'https://checkout.stripe.test/points' });
@@ -599,9 +599,9 @@ describe('billing routes', () => {
       monthlyResetsAt: '2026-06-01T00:00:00.000Z',
     });
     expect(res.body.data.nexusPointPackages).toEqual(expect.arrayContaining([
-      expect.objectContaining({ productId: 'me.nexushub.points.small', points: 300 }),
-      expect.objectContaining({ productId: 'me.nexushub.points.medium', points: 600 }),
-      expect.objectContaining({ productId: 'me.nexushub.points.large', points: 1200 }),
+      expect.objectContaining({ productId: 'me.nexushub.points.small', points: 100 }),
+      expect.objectContaining({ productId: 'me.nexushub.points.medium', points: 250 }),
+      expect.objectContaining({ productId: 'me.nexushub.points.large', points: 600 }),
     ]));
     expect(JSON.stringify(res.body.data)).not.toMatch(/usd|allowance/i);
   });
@@ -649,7 +649,7 @@ describe('billing routes', () => {
       nexusPointsPurchase: {
         granted: true,
         productId: 'me.nexushub.points.small',
-        points: 300,
+        points: 100,
       },
     });
     expect(JSON.stringify(res.body.data.nexusPointsPurchase)).not.toMatch(/usd|allowance/i);

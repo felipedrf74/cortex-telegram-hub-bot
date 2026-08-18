@@ -3863,7 +3863,7 @@ table.legacy th {
       '</div>').join('');
       const pointOptions = (pointsData.packages || []).map(pkg =>
         '<option value="' + esc(pkg.productId) + '">' +
-          '$' + Number(pkg.priceUsd || 0).toFixed(0) + ' · ' + Number(pkg.points || 0).toLocaleString() + ' NP' +
+          '$' + Number(pkg.priceUsd || 0).toFixed(2) + ' · ' + Number(pkg.points || 0).toLocaleString() + ' NP' +
         '</option>'
       ).join('');
       const budget = budgetData || {};

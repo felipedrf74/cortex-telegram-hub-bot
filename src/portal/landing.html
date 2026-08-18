@@ -6,7 +6,7 @@
      April 9 2026 rewrite: positioning pivoted from "AI + ADHD" to the
      "Hybrid Operator" target user (self-employed person who trains seriously,
      tracks macros, and runs their own business ops). New business model is
-     Option G: Pro $14.99/mo + Max $19.99/mo, with Content Creator Pack and AI Coach
+     Option G: Pro $9.99/mo + Max $14.99/mo, with Content Creator Pack and AI Coach
      Pack as add-ons for Pro users. The old Founder/Free/Ultra 3-tier structure
      is gone. FAQ, integrations grid, 3-step how-it-works are also gone —
      replaced by a Skills grid, cross-domain scenarios, and a profile quiz. -->
@@ -1340,17 +1340,11 @@
         Planos Pro e Max para o lançamento público. Preços de fundador podem bloquear enquanto a campanha estiver ativa.
       </p>
 
-      <!-- Pricing toggles: monthly-only + USD↔BRL.
-           State is held in the data-period and data-currency attrs on
-           this wrapper. The initPricingToggle() / initCurrencyToggle()
-           JS handlers walk [data-price-*] nodes and swap the number. -->
+      <!-- USD reference prices. Stripe Adaptive Pricing displays eligible
+           local currencies and final tax in secure Checkout. -->
       <div class="pricing-controls" data-period="monthly" data-currency="USD" id="pricing-section">
         <div class="seg-toggle" role="group" aria-label="Billing period">
           <button type="button" class="seg-toggle__btn" data-period="monthly" aria-pressed="true" data-i18n="pricing.toggle_monthly">Mensal</button>
-        </div>
-        <div class="seg-toggle" role="group" aria-label="Currency">
-          <button type="button" class="seg-toggle__btn" data-currency="USD" aria-pressed="true">USD</button>
-          <button type="button" class="seg-toggle__btn" data-currency="BRL" aria-pressed="false">BRL</button>
         </div>
       </div>
 
@@ -1361,10 +1355,10 @@
           <div class="tier__tagline" data-i18n="pricing.pro_tagline">Todas as 5 skills. Limites confortáveis em IA.</div>
           <div class="tier__price">
             <span class="tier__price-currency" data-price-symbol>$</span>
-            <span class="tier__price-amount" data-price-tier="pro">14.99</span>
+            <span class="tier__price-amount" data-price-tier="pro">9.99</span>
             <span class="tier__price-period" data-i18n="pricing.per_month">/mês</span>
           </div>
-          <div class="tier__price-alt" data-price-alt-tier="pro" data-i18n="pricing.pro_alt_monthly_usd">também em BRL por R$74,99/mês</div>
+          <div class="tier__price-alt" data-price-alt-tier="pro" data-i18n="pricing.pro_alt_monthly_usd">Moeda local e impostos finais aparecem no checkout seguro.</div>
           <ul class="tier__features">
             <li data-i18n="pricing.pro_f1">Todas as 5 skills desbloqueadas</li>
             <li data-i18n="pricing.pro_f2">Secretary, Finance, Cooking: uso ilimitado</li>
@@ -1384,10 +1378,10 @@
           <div class="tier__tagline" data-i18n="pricing.max_tagline">Tudo desbloqueado. O OS completo.</div>
           <div class="tier__price">
             <span class="tier__price-currency" data-price-symbol>$</span>
-            <span class="tier__price-amount" data-price-tier="max">19.99</span>
+            <span class="tier__price-amount" data-price-tier="max">14.99</span>
             <span class="tier__price-period" data-i18n="pricing.per_month">/mês</span>
           </div>
-          <div class="tier__price-alt" data-price-alt-tier="max" data-i18n="pricing.max_alt_monthly_usd">também em BRL por R$99,99/mês</div>
+          <div class="tier__price-alt" data-price-alt-tier="max" data-i18n="pricing.max_alt_monthly_usd">Moeda local e impostos finais aparecem no checkout seguro.</div>
           <ul class="tier__features">
             <li data-i18n="pricing.max_f1">Tudo do Pro</li>
             <li data-i18n="pricing.max_f2">Content + Training: IA ILIMITADA</li>
@@ -1459,7 +1453,7 @@
       </div>
 
       <div class="packs-math" data-i18n-html="packs.math">
-        💡 <strong>Max inclui os packs por $19.99/mês.</strong> <strong>Pro começa em $14.99/mês.</strong>
+        💡 <strong>Max inclui os packs por $14.99/mês.</strong> <strong>Pro começa em $9.99/mês.</strong>
       </div>
     </div>
   </section>
@@ -1654,10 +1648,8 @@
         'pricing.per_month': '/mês',
         'pricing.pro_name': 'Pro',
         'pricing.pro_tagline': 'Todas as 5 skills. Limites confortáveis em IA.',
-        'pricing.pro_alt_monthly_usd': 'também em BRL por R$74,99/mês',
+        'pricing.pro_alt_monthly_usd': 'Moeda local e impostos finais aparecem no checkout seguro.',
         'pricing.pro_alt_annual_usd': 'mensal apenas',
-        'pricing.pro_alt_monthly_brl': 'também em USD por $14.99/mês',
-        'pricing.pro_alt_annual_brl': 'mensal apenas',
         'pricing.pro_f1': 'Todas as 5 skills desbloqueadas',
         'pricing.pro_f2': 'Secretary, Finance, Cooking: uso ilimitado',
         'pricing.pro_f3': 'Content + Training: 10 chamadas de IA/dia (fair use)',
@@ -1669,10 +1661,8 @@
         'pricing.max_badge': 'Maior valor',
         'pricing.max_name': 'Max',
         'pricing.max_tagline': 'Tudo desbloqueado. O OS completo.',
-        'pricing.max_alt_monthly_usd': 'também em BRL por R$99,99/mês',
+        'pricing.max_alt_monthly_usd': 'Moeda local e impostos finais aparecem no checkout seguro.',
         'pricing.max_alt_annual_usd': 'mensal apenas',
-        'pricing.max_alt_monthly_brl': 'também em USD por $19.99/mês',
-        'pricing.max_alt_annual_brl': 'mensal apenas',
         'pricing.max_f1': 'Tudo do Pro',
         'pricing.max_f2': 'Content + Training: IA ILIMITADA',
         'pricing.max_f3': 'Ambos os Power Packs incluídos',
@@ -1696,7 +1686,7 @@
         'packs.content_desc': 'Scripts ilimitados, pesquisa profunda no YouTube, análise de canais de referência, extração de Voice DNA dos seus vídeos passados.',
         'packs.coach_name': 'AI Coach Pack',
         'packs.coach_desc': 'Briefings ilimitados do coach Garmin, planos de treino adaptativos, previsão de tempo de prova, análise de progressão de carga.',
-        'packs.math': '💡 <strong>Max inclui os packs por $19.99/mês.</strong> <strong>Pro começa em $14.99/mês.</strong>',
+        'packs.math': '💡 <strong>Max inclui os packs por $14.99/mês.</strong> <strong>Pro começa em $9.99/mês.</strong>',
         'checkout.email_prompt': 'Qual e-mail deve receber a assinatura?',
         'checkout.starting': 'Abrindo checkout...',
         'checkout.error': 'Não foi possível abrir o checkout. Tenta novamente.',
@@ -1813,10 +1803,8 @@
         'pricing.per_month': '/mo',
         'pricing.pro_name': 'Pro',
         'pricing.pro_tagline': 'All 5 skills. Comfortable AI limits.',
-        'pricing.pro_alt_monthly_usd': 'also available in BRL at R$74.99/mo',
+        'pricing.pro_alt_monthly_usd': 'Local currency and final tax are shown at secure checkout.',
         'pricing.pro_alt_annual_usd': 'monthly only',
-        'pricing.pro_alt_monthly_brl': 'also available in USD at $14.99/mo',
-        'pricing.pro_alt_annual_brl': 'monthly only',
         'pricing.pro_f1': 'All 5 skills unlocked',
         'pricing.pro_f2': 'Secretary, Finance, Cooking: unlimited usage',
         'pricing.pro_f3': 'Content + Training: 10 AI calls/day (fair use)',
@@ -1828,10 +1816,8 @@
         'pricing.max_badge': 'Best value',
         'pricing.max_name': 'Max',
         'pricing.max_tagline': 'Everything unlocked. The full OS.',
-        'pricing.max_alt_monthly_usd': 'also available in BRL at R$99.99/mo',
+        'pricing.max_alt_monthly_usd': 'Local currency and final tax are shown at secure checkout.',
         'pricing.max_alt_annual_usd': 'monthly only',
-        'pricing.max_alt_monthly_brl': 'also available in USD at $19.99/mo',
-        'pricing.max_alt_annual_brl': 'monthly only',
         'pricing.max_f1': 'Everything in Pro',
         'pricing.max_f2': 'Content + Training: UNLIMITED AI',
         'pricing.max_f3': 'Both Power Packs included',
@@ -1855,7 +1841,7 @@
         'packs.content_desc': 'Unlimited scripts, deep YouTube research, reference-channel analysis, Voice DNA extraction from your past videos.',
         'packs.coach_name': 'AI Coach Pack',
         'packs.coach_desc': 'Unlimited Garmin coach briefings, adaptive training plans, race-time prediction, load progression analysis.',
-        'packs.math': '💡 <strong>Max includes both packs for $19.99/mo.</strong> <strong>Pro starts at $14.99/mo.</strong>',
+        'packs.math': '💡 <strong>Max includes both packs for $14.99/mo.</strong> <strong>Pro starts at $9.99/mo.</strong>',
         'checkout.email_prompt': 'Which email should receive the subscription?',
         'checkout.starting': 'Opening checkout...',
         'checkout.error': 'Could not open checkout. Please try again.',
@@ -1977,32 +1963,24 @@
     }
 
     // ════════════════════════════════════════════════════════════
-    // PRICING TOGGLES (monthly-only + USD↔BRL)
+    // PRICING DISPLAY (monthly USD reference prices)
     // ════════════════════════════════════════════════════════════
     //
-    // The pricing section holds TWO independent segmented controls:
-    // billing period (monthly) and currency (USD | BRL). State
-    // lives on the #pricing-section wrapper as data-period and
-    // data-currency attributes, which are read by applyPricingState()
-    // to update every [data-price-tier] and [data-price-symbol] node.
+    // Stripe Adaptive Pricing displays eligible local currencies and final
+    // tax in Checkout; the landing page keeps one USD reference price.
     //
-    // Price matrix (intentionally hard-coded — these are strategic
-    // numbers from the Option G pricing brainstorm, not server-driven):
+    // Price matrix (intentionally hard-coded — keep aligned with the
+    // sandbox Stripe price ids in .env.example):
     //
-    //   USD monthly: Pro $14.99, Max $19.99, Content $15, Coach $12
-    //   BRL monthly: Pro R$74.99, Max R$99.99, Content R$69, Coach R$59
+    //   USD monthly: Pro $9.99, Max $14.99, Content $15, Coach $12
     //
     // When these need to change, edit PRICING_TABLE below and the
-    // PT/EN alt-text keys above — nothing else.
+    // PT/EN local-currency helper keys above — nothing else.
 
     const PRICING_TABLE = {
       USD: {
         symbol: '$',
-        monthly: { pro: 14.99, max: 19.99, contentPack: 15, coachPack: 12 },
-      },
-      BRL: {
-        symbol: 'R$',
-        monthly: { pro: 74.99, max: 99.99, contentPack: 69, coachPack: 59 },
+        monthly: { pro: 9.99, max: 14.99, contentPack: 15, coachPack: 12 },
       },
     };
 
@@ -2047,9 +2025,6 @@
       wrap.querySelectorAll('.seg-toggle__btn[data-period]').forEach((btn) => {
         btn.setAttribute('aria-pressed', btn.getAttribute('data-period') === period ? 'true' : 'false');
       });
-      wrap.querySelectorAll('.seg-toggle__btn[data-currency]').forEach((btn) => {
-        btn.setAttribute('aria-pressed', btn.getAttribute('data-currency') === currency ? 'true' : 'false');
-      });
     }
 
     function initPricingToggle() {
@@ -2058,12 +2033,6 @@
       wrap.querySelectorAll('.seg-toggle__btn[data-period]').forEach((btn) => {
         btn.addEventListener('click', () => {
           wrap.setAttribute('data-period', btn.getAttribute('data-period'));
-          applyPricingState();
-        });
-      });
-      wrap.querySelectorAll('.seg-toggle__btn[data-currency]').forEach((btn) => {
-        btn.addEventListener('click', () => {
-          wrap.setAttribute('data-currency', btn.getAttribute('data-currency'));
           applyPricingState();
         });
       });
@@ -2151,8 +2120,7 @@
     })();
 
     function getPricingCurrency() {
-      const wrap = document.getElementById('pricing-section');
-      return (wrap?.getAttribute('data-currency') || 'USD').toLowerCase();
+      return 'usd';
     }
 
     function initCheckoutButtons() {

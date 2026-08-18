@@ -41,10 +41,12 @@ const serviceMocks = vi.hoisted(() => ({
     return this;
   }),
   handleCheckoutCompleted: vi.fn(),
+  handleCheckoutPaymentFailed: vi.fn(),
   fulfillStripeCreditPackCheckout: vi.fn(),
   handleStripeCreditPackReversal: vi.fn(),
   handleSubscriptionUpdated: vi.fn(),
   handleSubscriptionDeleted: vi.fn(),
+  handleInvoicePaid: vi.fn(),
   handleInvoicePaymentFailed: vi.fn(),
   hasProcessedStripeWebhookEvent: vi.fn(),
   markStripeWebhookEventProcessed: vi.fn(),
@@ -58,10 +60,12 @@ vi.mock('stripe', () => ({
 vi.mock('../../src/services/stripe-service', () => ({
   isStripeConfigured: vi.fn(() => true),
   handleCheckoutCompleted: (...args: unknown[]) => serviceMocks.handleCheckoutCompleted(...args),
+  handleCheckoutPaymentFailed: (...args: unknown[]) => serviceMocks.handleCheckoutPaymentFailed(...args),
   fulfillStripeCreditPackCheckout: (...args: unknown[]) => serviceMocks.fulfillStripeCreditPackCheckout(...args),
   handleStripeCreditPackReversal: (...args: unknown[]) => serviceMocks.handleStripeCreditPackReversal(...args),
   handleSubscriptionUpdated: (...args: unknown[]) => serviceMocks.handleSubscriptionUpdated(...args),
   handleSubscriptionDeleted: (...args: unknown[]) => serviceMocks.handleSubscriptionDeleted(...args),
+  handleInvoicePaid: (...args: unknown[]) => serviceMocks.handleInvoicePaid(...args),
   handleInvoicePaymentFailed: (...args: unknown[]) => serviceMocks.handleInvoicePaymentFailed(...args),
   hasProcessedStripeWebhookEvent: (...args: unknown[]) => serviceMocks.hasProcessedStripeWebhookEvent(...args),
   markStripeWebhookEventProcessed: (...args: unknown[]) => serviceMocks.markStripeWebhookEventProcessed(...args),
@@ -194,8 +198,12 @@ beforeEach(() => {
   serviceMocks.invalidateTaskCaches.mockClear();
   serviceMocks.stripeConstructEvent.mockReset();
   serviceMocks.handleCheckoutCompleted.mockReset();
+  serviceMocks.handleCheckoutPaymentFailed.mockReset();
+  serviceMocks.fulfillStripeCreditPackCheckout.mockReset();
+  serviceMocks.handleStripeCreditPackReversal.mockReset();
   serviceMocks.handleSubscriptionUpdated.mockReset();
   serviceMocks.handleSubscriptionDeleted.mockReset();
+  serviceMocks.handleInvoicePaid.mockReset();
   serviceMocks.handleInvoicePaymentFailed.mockReset();
   serviceMocks.hasProcessedStripeWebhookEvent.mockReset();
   serviceMocks.hasProcessedStripeWebhookEvent.mockReturnValue(false);
@@ -420,6 +428,19 @@ describe('POST /webhooks/stripe', () => {
     );
   });
 
+  it('fulfills credit-pack sessions on the synchronous completed event', async () => {
+    const session = { id: 'cs_pack', mode: 'payment', payment_status: 'paid', metadata: { catalogItemId: 'pack_100' } };
+    const event = { id: 'evt_pack', type: 'checkout.session.completed', data: { object: session } };
+    serviceMocks.stripeConstructEvent.mockReturnValue(event);
+    serviceMocks.handleStripeNexusPointsEvent.mockResolvedValue(false);
+
+    const res = await postStripeWebhook(JSON.stringify({ id: 'evt_pack' }));
+
+    expect(res.status).toBe(200);
+    expect(serviceMocks.fulfillStripeCreditPackCheckout).toHaveBeenCalledWith(session);
+    expect(serviceMocks.handleCheckoutCompleted).not.toHaveBeenCalled();
+  });
+
   it('preserves subscription checkout handling when Nexus Points handler declines the event', async () => {
     const session = { id: 'cs_sub', mode: 'subscription' };
     const event = { id: 'evt_sub', type: 'checkout.session.completed', data: { object: session } };
@@ -430,6 +451,42 @@ describe('POST /webhooks/stripe', () => {
 
     expect(res.status).toBe(200);
     expect(serviceMocks.handleCheckoutCompleted).toHaveBeenCalledWith(session);
+  });
+
+  it('activates delayed subscription checkout only after async payment succeeds', async () => {
+    const session = { id: 'cs_delayed_sub', mode: 'subscription', payment_status: 'paid' };
+    const event = { id: 'evt_delayed_sub', type: 'checkout.session.async_payment_succeeded', data: { object: session } };
+    serviceMocks.stripeConstructEvent.mockReturnValue(event);
+    serviceMocks.handleStripeNexusPointsEvent.mockResolvedValue(false);
+
+    const res = await postStripeWebhook(JSON.stringify({ id: event.id }));
+
+    expect(res.status).toBe(200);
+    expect(serviceMocks.handleCheckoutCompleted).toHaveBeenCalledWith(session);
+  });
+
+  it('records failed delayed subscription checkout without activating it', async () => {
+    const session = { id: 'cs_failed_sub', mode: 'subscription', payment_status: 'unpaid' };
+    const event = { id: 'evt_failed_sub', type: 'checkout.session.async_payment_failed', data: { object: session } };
+    serviceMocks.stripeConstructEvent.mockReturnValue(event);
+
+    const res = await postStripeWebhook(JSON.stringify({ id: event.id }));
+
+    expect(res.status).toBe(200);
+    expect(serviceMocks.handleStripeNexusPointsEvent).toHaveBeenCalledWith(event);
+    expect(serviceMocks.handleCheckoutPaymentFailed).toHaveBeenCalledWith(session);
+    expect(serviceMocks.handleCheckoutCompleted).not.toHaveBeenCalled();
+  });
+
+  it('restores an existing Stripe subscription after invoice payment recovery', async () => {
+    const invoice = { id: 'in_paid', customer: 'cus_paid' };
+    const event = { id: 'evt_invoice_paid', type: 'invoice.paid', data: { object: invoice } };
+    serviceMocks.stripeConstructEvent.mockReturnValue(event);
+
+    const res = await postStripeWebhook(JSON.stringify({ id: event.id }));
+
+    expect(res.status).toBe(200);
+    expect(serviceMocks.handleInvoicePaid).toHaveBeenCalledWith(invoice);
   });
 
   it('returns 400 for invalid Stripe signatures', async () => {
