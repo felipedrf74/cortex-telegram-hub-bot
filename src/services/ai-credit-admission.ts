@@ -35,14 +35,28 @@ export interface AiCreditAdmissionInput {
   operationClass: AiCreditOperationClass;
   workload: string;
   clientOperationId: string;
-  /** Defaults to the client operation id when the caller has no content hash. */
+  /**
+   * Server-computed content hash. Interactive callers MUST pass a hash of the
+   * actual request so two different messages that reuse one client id resolve
+   * to different reservations. Defaulting to the client id (below) is only
+   * safe for callers whose client id is already content-unique.
+   */
   requestHash?: string;
+  /**
+   * Durable jobs (content scripts) legitimately re-enter their own in-flight
+   * reservation on retry. Interactive paths must NOT: an in-flight replay
+   * there is a concurrent duplicate and re-running would bill one reservation
+   * for two provider calls. Default false rejects in-flight replays.
+   */
+  allowInFlightReplay?: boolean;
   now?: Date;
 }
 
 export type AiCreditDenial = Extract<
   ReserveAiCreditsResult,
-  { kind: 'insufficient_credits' } | { kind: 'daily_cap_exceeded' }
+  | { kind: 'insufficient_credits' }
+  | { kind: 'daily_cap_exceeded' }
+  | { kind: 'operation_not_available' }
 >;
 
 export class AiCreditAdmissionDeniedError extends Error {
@@ -51,7 +65,9 @@ export class AiCreditAdmissionDeniedError extends Error {
     super(
       denial.kind === 'insufficient_credits'
         ? `Insufficient AI credits: required ${denial.requiredCredits}, available ${denial.availableCredits}`
-        : `Daily AI credit cap reached: required ${denial.requiredCredits}, remaining ${denial.dailyRemainingCredits}`,
+        : denial.kind === 'daily_cap_exceeded'
+          ? `Daily AI credit cap reached: required ${denial.requiredCredits}, remaining ${denial.dailyRemainingCredits}`
+          : `Operation class ${denial.operationClass} is not available on the ${denial.plan} plan`,
     );
     this.name = 'AiCreditAdmissionDeniedError';
   }
@@ -62,6 +78,14 @@ export class AiCreditReplaySettledError extends Error {
   constructor(readonly reservation: AiCreditReservation) {
     super(`AI credit operation already settled as ${reservation.state}; not dispatching again`);
     this.name = 'AiCreditReplaySettledError';
+  }
+}
+
+export class AiCreditInFlightError extends Error {
+  readonly code = 'AI_CREDIT_OPERATION_IN_FLIGHT';
+  constructor(readonly reservation: AiCreditReservation) {
+    super('An identical operation is already in progress; not dispatching a second provider call');
+    this.name = 'AiCreditInFlightError';
   }
 }
 
@@ -102,6 +126,13 @@ export async function withAiCreditAdmission<T>(
   } else if (admitted.kind === 'replay') {
     if (admitted.reservation.state !== 'reserved') {
       throw new AiCreditReplaySettledError(admitted.reservation);
+    }
+    // A still-reserved replay is a concurrent duplicate. Re-entering run()
+    // would dispatch a second provider call billed to one reservation — the
+    // amplification vector. Only durable jobs that explicitly continue their
+    // own in-flight operation may pass allowInFlightReplay.
+    if (!input.allowInFlightReplay) {
+      throw new AiCreditInFlightError(admitted.reservation);
     }
     reservation = admitted.reservation;
   } else {

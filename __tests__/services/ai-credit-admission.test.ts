@@ -148,15 +148,50 @@ describe('ai-credit-admission', () => {
     expect(getAiCreditWallet(40, 'pro', NOW).dailyUsedCredits).toBe(1);
   });
 
-  it('continues an in-flight replay under the same reservation and settles once', async () => {
-    const result = await withAiCreditAdmission(admissionInput('retry'), async () =>
-      withAiCreditAdmission(admissionInput('retry'), async () => 'inner'),
+  it('refuses a concurrent in-flight replay instead of billing one reservation for two runs', async () => {
+    // QA P0-1: re-entering run() under an existing reserved reservation let a
+    // client reuse one operation id for N provider calls on 1 credit.
+    const inner = vi.fn(async () => 'inner');
+    await expect(
+      withAiCreditAdmission(admissionInput('dup'), async () =>
+        withAiCreditAdmission(admissionInput('dup'), inner),
+      ),
+    ).rejects.toMatchObject({ code: 'AI_CREDIT_OPERATION_IN_FLIGHT' });
+    expect(inner).not.toHaveBeenCalled();
+    expect(reservationCount()).toBe(1);
+    // The outer operation failed, so its reservation released.
+    expect(getAiCreditWallet(40, 'pro', NOW).dailyUsedCredits).toBe(0);
+  });
+
+  it('lets durable jobs continue their own in-flight reservation when they opt in', async () => {
+    const result = await withAiCreditAdmission(
+      { ...admissionInput('job'), allowInFlightReplay: true },
+      async () => withAiCreditAdmission(
+        { ...admissionInput('job'), allowInFlightReplay: true },
+        async () => 'inner',
+      ),
     );
     expect(result).toBe('inner');
     expect(reservationCount()).toBe(1);
     const wallet = getAiCreditWallet(40, 'pro', NOW);
     expect(wallet.dailyUsedCredits).toBe(1);
     expect(wallet.availableCredits).toBe(499);
+  });
+
+  it('separates two different messages that reuse one client operation id', async () => {
+    // The caller supplies a server-computed content hash; distinct content
+    // must never collapse into one charge.
+    const first = await withAiCreditAdmission(
+      { ...admissionInput('shared'), requestHash: 'hash-message-a' },
+      async () => 'a',
+    );
+    const second = await withAiCreditAdmission(
+      { ...admissionInput('shared'), requestHash: 'hash-message-b' },
+      async () => 'b',
+    );
+    expect([first, second]).toEqual(['a', 'b']);
+    expect(reservationCount()).toBe(2);
+    expect(getAiCreditWallet(40, 'pro', NOW).dailyUsedCredits).toBe(2);
   });
 
   it('exposes typed denial classes for callers', async () => {

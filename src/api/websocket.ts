@@ -11,6 +11,7 @@
  */
 
 import http from 'http';
+import { createHash } from 'crypto';
 import { WebSocketServer, WebSocket, type RawData } from 'ws';
 import { logger } from '../utils/logger';
 import { routeMessage } from '../router';
@@ -36,7 +37,12 @@ import {
 import { buildSimpleStateContext } from '../domains/domain-handler';
 import type { NexusChatOwnerSkill } from '../services/chat-answer-contract';
 import { withAiBudgetReservation } from '../services/cost-guardrail';
-import { withAiCreditAdmission } from '../services/ai-credit-admission';
+import {
+  AiCreditAdmissionDeniedError,
+  AiCreditInFlightError,
+  AiCreditReplaySettledError,
+  withAiCreditAdmission,
+} from '../services/ai-credit-admission';
 import { toStableAiBudgetError } from './response-helpers';
 import { tryBuildChatCoreV2DeterministicReadRoute } from '../services/chat-core-v2';
 import { buildChatCoreV2DeterministicReadShortcutResponse } from './routes/chat-core-v2-deterministic-read-response';
@@ -81,6 +87,63 @@ export function buildWebSocketAiBudgetErrorFrame(
     userId,
     tenantId,
   };
+}
+
+/**
+ * Structured credit-policy frames (plan §2): an insufficient balance returns
+ * the exact required and available amounts plus the pack CTA eligibility,
+ * instead of leaking an internal error string.
+ */
+export function buildWebSocketAiCreditErrorFrame(
+  error: unknown,
+  userId?: number,
+  tenantId?: number,
+): Record<string, unknown> | null {
+  if (error instanceof AiCreditAdmissionDeniedError) {
+    const denial = error.denial;
+    if (denial.kind === 'operation_not_available') {
+      return {
+        type: 'error',
+        code: 'AI_OPERATION_NOT_AVAILABLE',
+        message: 'This capability is not included in your current plan.',
+        details: { operationClass: denial.operationClass, plan: denial.plan },
+        userId,
+        tenantId,
+      };
+    }
+    return {
+      type: 'error',
+      code: denial.kind === 'insufficient_credits' ? 'INSUFFICIENT_AI_CREDITS' : 'AI_CREDIT_DAILY_CAP',
+      message: denial.kind === 'insufficient_credits'
+        ? 'You do not have enough AI credits for this request.'
+        : 'You have reached your daily AI credit limit.',
+      details: denial.kind === 'insufficient_credits'
+        ? {
+          requiredCredits: denial.requiredCredits,
+          availableCredits: denial.availableCredits,
+          packCtaEligible: denial.packCtaEligible,
+        }
+        : {
+          requiredCredits: denial.requiredCredits,
+          dailyCapCredits: denial.dailyCapCredits,
+          dailyRemainingCredits: denial.dailyRemainingCredits,
+        },
+      userId,
+      tenantId,
+    };
+  }
+  if (error instanceof AiCreditInFlightError || error instanceof AiCreditReplaySettledError) {
+    return {
+      type: 'error',
+      code: error.code,
+      message: error instanceof AiCreditInFlightError
+        ? 'This message is already being processed.'
+        : 'This message was already processed.',
+      userId,
+      tenantId,
+    };
+  }
+  return null;
 }
 
 function normalizedAllowedWebSocketOrigins(): Set<string> {
@@ -863,6 +926,11 @@ export function attachWebSocket(server: http.Server): void {
               operationClass: 'standard',
               workload: 'ios_websocket_chat',
               clientOperationId: messageId,
+              // Server-computed content hash: two different messages reusing
+              // one client id must never resolve to one reservation.
+              requestHash: createHash('sha256')
+                .update(`${userId}:${tenantId}:${messageText}`)
+                .digest('hex'),
             }, () => withAiBudgetReservation({
               userId,
               requestSource: 'interactive',
@@ -1238,6 +1306,21 @@ export function attachWebSocket(server: http.Server): void {
           return;
         }
         if (isProviderRequestCancellation(err)) return;
+        const creditErrorFrame = buildWebSocketAiCreditErrorFrame(
+          err,
+          (ws as any).userId,
+          (ws as any).tenantId,
+        );
+        if (creditErrorFrame) {
+          logger.warn(
+            { userId: (ws as any).userId, code: creditErrorFrame.code, platform: 'ios_ws' },
+            'iOS WebSocket blocked by AI credit policy',
+          );
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify(creditErrorFrame));
+          }
+          return;
+        }
         const budgetErrorFrame = buildWebSocketAiBudgetErrorFrame(
           err,
           (ws as any).userId,

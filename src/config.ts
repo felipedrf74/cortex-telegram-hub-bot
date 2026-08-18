@@ -804,11 +804,17 @@ export const config = {
   // Credit-ledger admission stays OFF until the same release's production
   // verification completes; the kill switch always wins over the enable flag.
   hybridCredits: {
-    enabled: (process.env.HYBRID_AI_CREDITS_ENABLED || 'false') === 'true'
-      && (process.env.HYBRID_AI_CREDITS_KILL_SWITCH || 'false') !== 'true',
+    // Live getters: activation and kill switches re-read the environment on
+    // every admission so an operator flip takes effect without a restart.
+    get enabled(): boolean {
+      return (process.env.HYBRID_AI_CREDITS_ENABLED || 'false') === 'true'
+        && (process.env.HYBRID_AI_CREDITS_KILL_SWITCH || 'false') !== 'true';
+    },
     // Addendum B: after the cutover flips at launch, no new purchased lot may
     // ship with an expiry. Default OFF until the activation moment.
-    pointsCutover: (process.env.HYBRID_CREDITS_POINTS_CUTOVER || 'false') === 'true',
+    get pointsCutover(): boolean {
+      return (process.env.HYBRID_CREDITS_POINTS_CUTOVER || 'false') === 'true';
+    },
   },
 
   // ── Hybrid AI commerce catalog (plan §3) ──────────────────────────
@@ -831,14 +837,16 @@ export const config = {
     // Independent pack/Apple-fulfillment kill switch (plan §5). Default OFF:
     // pack notifications defer in the durable inbox — no ledger writes, no
     // attempt burn — until fulfillment is explicitly enabled.
-    applePackFulfillmentEnabled:
-      (process.env.APPLE_PACK_FULFILLMENT_ENABLED || 'false') === 'true'
-      && (process.env.APPLE_PACK_FULFILLMENT_KILL_SWITCH || 'false') !== 'true',
+    get applePackFulfillmentEnabled(): boolean {
+      return (process.env.APPLE_PACK_FULFILLMENT_ENABLED || 'false') === 'true'
+        && (process.env.APPLE_PACK_FULFILLMENT_KILL_SWITCH || 'false') !== 'true';
+    },
     // Web pack sales switch (plan §5). Gates NEW pack checkouts only; webhook
     // fulfillment of already-paid sessions always runs.
-    stripePackFulfillmentEnabled:
-      (process.env.STRIPE_PACK_FULFILLMENT_ENABLED || 'false') === 'true'
-      && (process.env.STRIPE_PACK_FULFILLMENT_KILL_SWITCH || 'false') !== 'true',
+    get stripePackFulfillmentEnabled(): boolean {
+      return (process.env.STRIPE_PACK_FULFILLMENT_ENABLED || 'false') === 'true'
+        && (process.env.STRIPE_PACK_FULFILLMENT_KILL_SWITCH || 'false') !== 'true';
+    },
     anonymousCheckoutEnabled: (process.env.ANONYMOUS_CHECKOUT_ENABLED || 'true') === 'true',
   },
 

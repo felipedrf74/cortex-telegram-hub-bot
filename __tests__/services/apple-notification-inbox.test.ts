@@ -226,7 +226,10 @@ describe('apple-notification-inbox', () => {
     if (stored.kind !== 'stored') throw new Error('unreachable');
 
     expect(processStoredAppleNotification(stored.row.id, NOW)).toMatchObject({ kind: 'deferred' });
-    expect(processPendingAppleNotifications({ now: NOW })).toEqual({ processed: 0, failed: 0, exhausted: 0, deferred: 1 });
+    // QA P1-4: deferred pack rows are excluded from the retry selection while
+    // fulfillment is off, so they cannot park at the head of every pass and
+    // starve retryable subscription notifications behind them.
+    expect(processPendingAppleNotifications({ now: NOW })).toEqual({ processed: 0, failed: 0, exhausted: 0, deferred: 0 });
     const row = db.prepare('SELECT state, attempts FROM apple_notification_inbox WHERE id = ?').get(stored.row.id) as any;
     expect(row).toEqual({ state: 'pending', attempts: 0 });
     expect(db.prepare('SELECT COUNT(*) AS count FROM ai_credit_lots').get()).toEqual({ count: 0 });
@@ -234,6 +237,24 @@ describe('apple-notification-inbox', () => {
     packFulfillmentEnabled = true;
     expect(processPendingAppleNotifications({ now: NOW })).toEqual({ processed: 1, failed: 0, exhausted: 0, deferred: 0 });
     expect(getAiCreditWallet(40, 'pro', NOW).purchasedRemaining).toBe(100);
+  });
+
+  it('does not let deferred pack rows starve other retryable notifications', () => {
+    packFulfillmentEnabled = false;
+    for (let i = 0; i < 30; i += 1) {
+      seedPackNotification({ outerKey: `outer-defer-${i}`, innerKey: `inner-defer-${i}`, transactionId: `txn-defer-${i}` });
+      ingest(`outer-defer-${i}`);
+    }
+    jwsFixtures.set('outer-sub-behind', {
+      notificationType: 'DID_RENEW',
+      data: { signedTransactionInfo: 'inner-sub-behind', environment: 'Production' },
+    });
+    jwsFixtures.set('inner-sub-behind', { bundleId: 'me.nexushub.app', productId: 'me.nexushub.pro.monthly', transactionId: 'sub-1' });
+    ingest('outer-sub-behind', 'DID_RENEW');
+
+    const pass = processPendingAppleNotifications({ now: NOW });
+    expect(pass.processed).toBe(1);
+    expect(mockHandleAppleNotification).toHaveBeenCalledTimes(1);
   });
 
   it('keeps an unmatched pack reversal retryable until its purchase lands', () => {

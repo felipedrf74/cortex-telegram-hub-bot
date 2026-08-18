@@ -9,8 +9,9 @@
  *   catalog, and provider wiring ship in later phases of the plan.
  * - Admission order is entitlement first: callers resolve the effective plan
  *   through `entitlement.ts` / `plan-quotas.ts` BEFORE reserving. The ledger
- *   never derives ownership or plan from client-supplied data, and
- *   operation-class availability per plan is enforced by admission, not here.
+ *   never derives ownership or plan from client-supplied data. Operation-
+ *   class availability per plan (§2 "Unavailable" cells) IS enforced here at
+ *   reservation, so no caller can admit an unavailable class.
  * - Lots and captures are append-only (schema triggers enforce this);
  *   reservations settle exactly once: reserved -> captured/released/expired.
  * - Debit order at capture: monthly credits, nearest-expiry promotional
@@ -27,6 +28,7 @@ import {
   AiCreditOperationClass,
   getAiCreditOperationCost,
   isAllowedPromotionalExpiryDays,
+  isOperationClassAvailableForPlan,
 } from './ai-credit-policy';
 
 export type AiCreditLotType = 'monthly' | 'promotional' | 'purchased';
@@ -95,6 +97,11 @@ export type ReserveAiCreditsResult =
       requiredCredits: number;
       dailyCapCredits: number;
       dailyRemainingCredits: number;
+    }
+  | {
+      kind: 'operation_not_available';
+      operationClass: AiCreditOperationClass;
+      plan: BillingPlan;
     };
 
 export type SettleAiCreditsResult =
@@ -320,6 +327,13 @@ export function reserveAiCredits(input: {
     if (existing) {
       return { kind: 'replay', reservation: mapReservation(existing) };
     }
+    if (!isOperationClassAvailableForPlan(input.plan, input.operationClass)) {
+      return {
+        kind: 'operation_not_available',
+        operationClass: input.operationClass,
+        plan: input.plan,
+      };
+    }
     const policy = getPlanCreditPolicy(input.plan);
     const day = toUtcDay(now);
     const dailyUsed = sumDailyCommittedCredits(input.userId, day);
@@ -366,7 +380,7 @@ export function reserveAiCredits(input: {
     }
     return { kind: 'reserved', reservation };
   });
-  return tx();
+  return tx.immediate();
 }
 
 /**
@@ -420,7 +434,7 @@ export function captureAiCreditReservation(input: {
     }
     return { kind: 'captured', reservation, captureShortfall: remainingToCapture };
   });
-  return tx();
+  return tx.immediate();
 }
 
 /** Release returns the reserved credits on cancellation or failure. */
@@ -448,7 +462,7 @@ export function releaseAiCreditReservation(input: {
     }
     return { kind: 'released', reservation };
   });
-  return tx();
+  return tx.immediate();
 }
 
 /**
@@ -473,7 +487,7 @@ export function expireStaleAiCreditReservations(input: { olderThan: Date; now?: 
     }
     return expired;
   });
-  return tx();
+  return tx.immediate();
 }
 
 function getLotById(lotId: number): LotRow | undefined {
@@ -553,7 +567,7 @@ export function grantMonthlyAiCredits(input: {
     });
     return { kind: 'granted', lot };
   });
-  return tx();
+  return tx.immediate();
 }
 
 export function grantPromotionalAiCredits(input: {
@@ -589,7 +603,7 @@ export function grantPromotionalAiCredits(input: {
     });
     return { kind: 'granted', lot };
   });
-  return tx();
+  return tx.immediate();
 }
 
 /**
@@ -630,7 +644,7 @@ export function grantPurchasedAiCredits(input: {
     });
     return { kind: 'granted', lot };
   });
-  return tx();
+  return tx.immediate();
 }
 
 /**
@@ -655,7 +669,7 @@ export function revokeAiCreditLot(input: {
     if (!lot) throw new Error('ai-credit-ledger: revoke readback failed');
     return { kind: 'revoked', lot: mapLot(lot) };
   });
-  return tx();
+  return tx.immediate();
 }
 
 export function listAiCreditLots(userId: number): AiCreditLot[] {

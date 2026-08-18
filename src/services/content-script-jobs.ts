@@ -32,6 +32,7 @@ import {
   reserveContentScriptJobCredits,
   settleContentScriptJobCredits,
 } from './content-script-job-credits';
+import { recordOperatorAlert } from './operator-alerts';
 import type { BillingPlan } from './plan-quotas';
 import { localInferenceScheduler } from './local-inference-scheduler';
 import { localPrimaryInferenceConfig } from './local-primary-config';
@@ -155,6 +156,7 @@ interface JobRow {
   model_digest: string | null;
   attempt_count: number;
   infrastructure_requeue_count: number;
+  delivery_mode: string | null;
   final_repair_count: number;
   next_attempt_at: string | null;
   lease_token: string | null;
@@ -2041,12 +2043,27 @@ export async function runContentScriptJob(
     }
     // Validated user-visible result: capture the job's credit reservation
     // exactly once. Sections, repairs, and continuations never charged.
-    settleContentScriptJobCredits({
+    const captureOutcome = settleContentScriptJobCredits({
       tenantId: row.tenant_id,
       userId: row.owner_user_id,
       jobId,
       outcome: 'captured',
     });
+    if (captureOutcome.kind !== 'captured' && captureOutcome.kind !== 'no_reservation') {
+      // A delivered script whose credits never captured is revenue leaked
+      // (e.g. the sweeper expired a long-requeued reservation).
+      logger.error(
+        { jobId, settlement: captureOutcome.kind },
+        'Content script completed without capturing its credit reservation',
+      );
+      recordOperatorAlert({
+        source: 'ai_credits',
+        severity: 'warning',
+        dedupeKey: `content_script_uncaptured:${jobId}`,
+        title: 'Delivered script did not capture credits',
+        metadata: { jobId, settlement: captureOutcome.kind },
+      });
+    }
     return mapJob(db.prepare('SELECT * FROM content_script_jobs WHERE job_id = ?').get(jobId) as JobRow);
   } catch (error) {
     const failureReason = localInferenceFailureReason(error);
@@ -2243,16 +2260,23 @@ export function retryContentScriptJob(input: {
 
     const durableProgress = checkpointDerivedProgress(db, input.jobId);
     const timestamp = new Date().toISOString();
+    // The persisted delivery_mode column is the single source of truth for the
+    // job's pinned delivery class; a scheduled retry re-defers to the next
+    // batch window rather than jumping the standard queue.
+    const retryDeliveryMode = resolveScriptDeliveryMode(row.delivery_mode ?? 'standard');
+    const retryDeferredStart = retryDeliveryMode === 'scheduled'
+      ? scheduledBatchWindowStart(new Date())
+      : null;
     const changed = db.prepare(`UPDATE content_script_jobs
       SET status = 'queued', stage = 'queued', progress_percent = MAX(progress_percent, ?),
           cancellation_requested_at = NULL, last_error_code = NULL,
           warning_codes_json = '[]', completed_at = NULL,
           infrastructure_requeue_count = 0, final_repair_count = 0,
-          next_attempt_at = NULL,
+          next_attempt_at = ?,
           fair_use_admitted_at = ?, updated_at = ?
       WHERE job_id = ? AND tenant_id = ? AND owner_user_id = ?
         AND status IN ('failed', 'cancelled')`)
-      .run(durableProgress, timestamp, timestamp, input.jobId, input.tenantId, input.userId);
+      .run(durableProgress, retryDeferredStart, timestamp, timestamp, input.jobId, input.tenantId, input.userId);
     if (changed.changes !== 1) {
       throw new ContentScriptJobError('CONTENT_SCRIPT_JOB_RETRY_RACE', 'The script job changed while retrying.', 409);
     }
@@ -2260,14 +2284,6 @@ export function retryContentScriptJob(input: {
     // generation attempt: it reserves fresh credits (the prior reservation
     // released at failure) at the job's pinned delivery class, and a denial
     // rolls the requeue back.
-    const retryDeliveryMode = ((): 'standard' | 'scheduled' | 'priority' => {
-      try {
-        const pinned = decryptContentScriptJobJson(row.request_json, input.userId) as { deliveryMode?: unknown };
-        return resolveScriptDeliveryMode(pinned.deliveryMode);
-      } catch {
-        return 'standard';
-      }
-    })();
     const credits = reserveContentScriptJobCredits({
       tenantId: input.tenantId,
       userId: input.userId,
@@ -2341,6 +2357,12 @@ export function recoverContentScriptJobs(
       AND (j.next_attempt_at IS NULL OR j.next_attempt_at <= ?)
     ORDER BY CASE WHEN j.delivery_mode = 'priority' THEN 0 ELSE 1 END,
              j.updated_at ASC, j.created_at ASC`)
+    /* Priority ordering contract (Addendum C): priority orders ahead of other
+     * queued jobs WITHIN the same plan queue-weight class. The weighted burst
+     * below (2 high-weight : 1 normal) is the plan-fairness layer and is
+     * allowed to interleave a normal-weight priority job behind high-weight
+     * standard jobs; priority buys position inside the owner's class, not a
+     * bypass of plan fairness. */
     .iterate(now) as IterableIterator<{
       job_id: string;
       owner_user_id: number;
