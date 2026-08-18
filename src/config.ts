@@ -834,6 +834,11 @@ export const config = {
     applePackFulfillmentEnabled:
       (process.env.APPLE_PACK_FULFILLMENT_ENABLED || 'false') === 'true'
       && (process.env.APPLE_PACK_FULFILLMENT_KILL_SWITCH || 'false') !== 'true',
+    // Web pack sales switch (plan §5). Gates NEW pack checkouts only; webhook
+    // fulfillment of already-paid sessions always runs.
+    stripePackFulfillmentEnabled:
+      (process.env.STRIPE_PACK_FULFILLMENT_ENABLED || 'false') === 'true'
+      && (process.env.STRIPE_PACK_FULFILLMENT_KILL_SWITCH || 'false') !== 'true',
     anonymousCheckoutEnabled: (process.env.ANONYMOUS_CHECKOUT_ENABLED || 'true') === 'true',
   },
 

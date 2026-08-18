@@ -14,12 +14,14 @@ import { config } from '../config';
 export const BILLING_CATALOG_VERSION = '2026-08-18.1';
 
 /**
- * Credit-pack fulfillment (durable webhook -> purchased credit lot) ships with
- * the Apple JWS / pack-consumable work (NH-0028). Until that path exists,
- * selling a pack would take money without granting credits, so packs stay
- * fail-closed regardless of provider configuration.
+ * Web pack sales open only when the Stripe fulfillment switch is on
+ * (STRIPE_PACK_FULFILLMENT_ENABLED, default OFF): selling a pack without its
+ * webhook fulfillment path would take money without granting credits. The
+ * switch gates NEW checkouts; fulfillment of paid sessions always runs.
  */
-export const PACK_FULFILLMENT_READY = false;
+function isStripePackSalesEnabled(): boolean {
+  return config.hybridCommerce.stripePackFulfillmentEnabled === true;
+}
 
 export type BillingCatalogItemKind = 'subscription' | 'credit_pack';
 
@@ -78,7 +80,7 @@ function catalogDefinitions(): ResolvedBillingCatalogItem[] {
     appleProductId: string,
   ): ResolvedBillingCatalogItem => {
     const providerConfigured = Boolean(stripePriceId);
-    const purchasable = providerConfigured && PACK_FULFILLMENT_READY;
+    const purchasable = providerConfigured && isStripePackSalesEnabled();
     return {
       id,
       kind: 'credit_pack',

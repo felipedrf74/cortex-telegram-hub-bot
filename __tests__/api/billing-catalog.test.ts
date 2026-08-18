@@ -11,10 +11,12 @@ let stripePriceIds = {
   pack600: '',
 };
 let anonymousCheckoutEnabled = true;
+let stripePackSalesEnabled = false;
 let stripeConfigured = true;
 let entitlement: { plan: string; status: string } = { plan: 'pro', status: 'active' };
 
 const mockCreateCheckoutSession = vi.fn(async () => 'https://checkout.stripe.test/session');
+const mockCreateCreditPackCheckoutSession = vi.fn(async () => 'https://checkout.stripe.test/pack-session');
 const mockCreatePublicCheckoutSession = vi.fn(async () => 'https://checkout.stripe.test/public');
 const mockRecordLegalConsent = vi.fn(async () => undefined);
 
@@ -28,6 +30,8 @@ vi.mock('../../src/config', async (importOriginal) => {
         return {
           stripePriceIds,
           appleProductIds: { pack100: '', pack250: '', pack600: '' },
+          applePackFulfillmentEnabled: false,
+          stripePackFulfillmentEnabled: stripePackSalesEnabled,
           anonymousCheckoutEnabled,
         };
       },
@@ -41,6 +45,7 @@ vi.mock('../../src/services/stripe-service', async (importOriginal) => {
     ...actual,
     isStripeConfigured: () => stripeConfigured,
     createCheckoutSession: (...args: unknown[]) => mockCreateCheckoutSession(...(args as [])),
+    createCreditPackCheckoutSession: (...args: unknown[]) => mockCreateCreditPackCheckoutSession(...(args as [])),
     createPublicCheckoutSession: (...args: unknown[]) => mockCreatePublicCheckoutSession(...(args as [])),
   };
 });
@@ -165,9 +170,11 @@ describe('billing catalog, wallet, and credits checkout', () => {
   beforeEach(() => {
     stripePriceIds = { planProMonthly: '', planMaxMonthly: '', pack100: '', pack250: '', pack600: '' };
     anonymousCheckoutEnabled = true;
+    stripePackSalesEnabled = false;
     stripeConfigured = true;
     entitlement = { plan: 'pro', status: 'active' };
     mockCreateCheckoutSession.mockClear();
+    mockCreateCreditPackCheckoutSession.mockClear();
     mockCreatePublicCheckoutSession.mockClear();
   });
 
@@ -241,6 +248,22 @@ describe('billing catalog, wallet, and credits checkout', () => {
     });
     expect(res.statusCode).toBe(503);
     expect(res.body.error.code).toBe('CATALOG_ITEM_UNAVAILABLE');
+    expect(mockCreateCheckoutSession).not.toHaveBeenCalled();
+  });
+
+  it('sells packs through a payment-mode session once the sales switch is on', async () => {
+    stripePackSalesEnabled = true;
+    stripePriceIds.pack100 = 'price_pack100_test';
+    const res = await dispatch(billingRoutes(), 'POST', '/credits-checkout', {
+      catalogItemId: 'pack.credits.100',
+      acceptedLegal: LEGAL,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.body.data.url).toBe('https://checkout.stripe.test/pack-session');
+    expect(mockCreateCreditPackCheckoutSession).toHaveBeenCalledTimes(1);
+    const [userId, packInput] = mockCreateCreditPackCheckoutSession.mock.calls[0] as unknown as [number, { catalogItemId: string; priceId: string }];
+    expect(userId).toBe(22);
+    expect(packInput).toEqual({ catalogItemId: 'pack.credits.100', priceId: 'price_pack100_test' });
     expect(mockCreateCheckoutSession).not.toHaveBeenCalled();
   });
 

@@ -18,6 +18,7 @@ import {
   isStripeConfigured,
   getSubscriptionStatus,
   createCheckoutSession,
+  createCreditPackCheckoutSession,
   createCheckoutSessionForPlan,
   createPortalSession,
   handleAppleTransaction,
@@ -229,7 +230,14 @@ export function billingRoutes(): Router {
       acceptedLegal as LegalAcceptanceInput,
       legalConsentContextFromRequest(req, 'billing_credits_checkout'),
     );
-    const url = await createCheckoutSession(userId, item.stripePriceId, successUrl, cancelUrl);
+    const url = item.kind === 'credit_pack'
+      ? await createCreditPackCheckoutSession(
+        userId,
+        { catalogItemId: item.id, priceId: item.stripePriceId },
+        successUrl,
+        cancelUrl,
+      )
+      : await createCheckoutSession(userId, item.stripePriceId, successUrl, cancelUrl);
     sendSuccess(res, { url, catalogVersion: BILLING_CATALOG_VERSION, catalogItemId: item.id });
   }));
 

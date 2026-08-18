@@ -34,6 +34,8 @@ import { findNexusUserByTodoistId } from '../../services/task-store/todoist-adap
 import { invalidateTaskCaches } from '../../services/cache-coherence-registry';
 import {
   handleCheckoutCompleted,
+  fulfillStripeCreditPackCheckout,
+  handleStripeCreditPackReversal,
   handleInvoicePaymentFailed,
   handleSubscriptionDeleted,
   handleSubscriptionUpdated,
@@ -184,8 +186,15 @@ export function createWebhookRouter(options: WebhookRouterOptions = {}): Router 
           }
           break;
         case 'checkout.session.async_payment_succeeded':
+          fulfillStripeCreditPackCheckout(event.data.object);
+          await handleStripeNexusPointsEvent(event);
+          break;
         case 'charge.refunded':
+          handleStripeCreditPackReversal(event.data.object, 'refund');
+          await handleStripeNexusPointsEvent(event);
+          break;
         case 'charge.dispute.created':
+          handleStripeCreditPackReversal(event.data.object, 'dispute');
           await handleStripeNexusPointsEvent(event);
           break;
         case 'customer.subscription.updated':

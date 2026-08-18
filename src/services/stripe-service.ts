@@ -19,6 +19,12 @@ import { isPublicEmailSyntaxValid, normalizePublicEmail } from './waitlist-email
 import { hashEmail } from '../utils/identity';
 import { logger } from '../utils/logger';
 import { isNexusPointProductId, revokeNexusPointsCredit } from './nexus-points';
+import { resolveBillingCatalogItem } from './billing-catalog';
+import {
+  findAiCreditLotByProviderTransaction,
+  grantPurchasedAiCredits,
+  revokeAiCreditLot,
+} from './ai-credit-ledger';
 import { recordOperatorAlert } from './operator-alerts';
 import {
   sendCancellationConfirmation,
@@ -315,6 +321,104 @@ export async function createCheckoutSession(
   return session.url;
 }
 
+/**
+ * One-time payment session for an AI-credit pack (plan §3, NH-0027/NH-0028).
+ * The price id and credit amount are server-resolved from the catalog; the
+ * session carries only the catalog item id and owner binding for fulfillment.
+ */
+export async function createCreditPackCheckoutSession(
+  userId: number,
+  input: { catalogItemId: string; priceId: string },
+  successUrl: string,
+  cancelUrl: string,
+): Promise<string> {
+  const stripe = getStripe();
+  const db = getDb();
+  const existing = db.prepare(
+    "SELECT provider_customer_id FROM subscriptions WHERE user_id = ? AND provider = 'stripe'"
+  ).get(userId) as { provider_customer_id: string } | undefined;
+
+  const sessionParams: any = {
+    mode: 'payment',
+    line_items: [{ price: input.priceId, quantity: 1 }],
+    success_url: successUrl,
+    cancel_url: cancelUrl,
+    metadata: { userId: String(userId), catalogItemId: input.catalogItemId },
+  };
+  if (existing?.provider_customer_id) {
+    sessionParams.customer = existing.provider_customer_id;
+  } else {
+    sessionParams.customer_creation = 'always';
+  }
+
+  const session = await stripe.checkout.sessions.create(sessionParams);
+  if (!session.url) throw new Error('Stripe returned no checkout URL');
+  logger.info({ userId, catalogItemId: input.catalogItemId, sessionId: session.id }, 'Stripe credit-pack checkout session created');
+  return session.url;
+}
+
+/**
+ * Fulfill a completed payment-mode pack session by granting the purchased
+ * credit lot. Runs regardless of the sales kill switch: the switch stops new
+ * checkouts, never fulfillment of money already taken. Grants dedupe on the
+ * payment intent, so duplicate and out-of-order webhooks are safe. Forged or
+ * unknown catalog ids and missing owner bindings fail closed with no grant.
+ */
+export function fulfillStripeCreditPackCheckout(session: any): boolean {
+  const catalogItemId = typeof session?.metadata?.catalogItemId === 'string'
+    ? session.metadata.catalogItemId
+    : '';
+  if (!catalogItemId) return false;
+  const userId = parseInt(session?.metadata?.userId || '0', 10);
+  if (!Number.isInteger(userId) || userId <= 0) {
+    logger.warn({ sessionId: session?.id, catalogItemId }, 'Stripe pack checkout has no owner binding; refusing to guess');
+    return false;
+  }
+  const item = resolveBillingCatalogItem(catalogItemId);
+  if (!item || item.kind !== 'credit_pack' || !item.credits) {
+    logger.warn({ sessionId: session?.id, catalogItemId }, 'Stripe pack checkout references an unknown catalog item; no grant');
+    return false;
+  }
+  const providerTransactionId = typeof session?.payment_intent === 'string'
+    ? session.payment_intent
+    : session?.payment_intent?.id || session?.id || '';
+  if (!providerTransactionId) {
+    logger.warn({ sessionId: session?.id, catalogItemId }, 'Stripe pack checkout has no payment identity; no grant');
+    return false;
+  }
+  const granted = grantPurchasedAiCredits({
+    userId,
+    provider: 'stripe',
+    providerTransactionId,
+    credits: item.credits,
+  });
+  if (granted.kind === 'rejected') {
+    logger.error({ sessionId: session?.id, catalogItemId, reason: granted.reason }, 'Stripe pack grant rejected');
+    return false;
+  }
+  logger.info(
+    { sessionId: session?.id, catalogItemId, replay: granted.kind === 'already_granted' },
+    'Stripe credit-pack purchase settled against the ledger',
+  );
+  return true;
+}
+
+/**
+ * Refunds and disputes revoke only the originating pack lot; no matching lot
+ * is a no-op here because the charge may belong to subscriptions or points.
+ */
+export function handleStripeCreditPackReversal(charge: any, reason: 'refund' | 'dispute'): boolean {
+  const paymentIntent = typeof charge?.payment_intent === 'string'
+    ? charge.payment_intent
+    : charge?.payment_intent?.id || '';
+  if (!paymentIntent) return false;
+  const lot = findAiCreditLotByProviderTransaction('stripe', paymentIntent);
+  if (!lot) return false;
+  revokeAiCreditLot({ lotId: lot.id, reason });
+  logger.info({ lotId: lot.id, reason }, 'Stripe pack reversal revoked the originating credit lot');
+  return true;
+}
+
 export async function createCheckoutSessionForPlan(
   userId: number,
   plan: string,
@@ -418,6 +522,12 @@ export async function createPortalSession(userId: number, returnUrl: string): Pr
 // ── Webhook Handlers ────────────────────────────────────────────────
 
 export function handleCheckoutCompleted(session: any): void {
+  // Payment-mode credit-pack sessions settle against the ledger and never
+  // touch subscription state.
+  if (session?.mode === 'payment' && typeof session?.metadata?.catalogItemId === 'string') {
+    fulfillStripeCreditPackCheckout(session);
+    return;
+  }
   const userId = parseInt(session.metadata?.userId || '0', 10);
   const subscriptionId = typeof session.subscription === 'string'
     ? session.subscription
