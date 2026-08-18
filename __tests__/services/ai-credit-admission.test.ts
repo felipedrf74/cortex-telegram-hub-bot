@@ -30,9 +30,13 @@ vi.mock('../../src/config', async (importOriginal) => {
   };
 });
 
-vi.mock('../../src/services/plan-quotas', () => ({
-  resolveBillingPlanForUser: vi.fn(() => resolvedPlan),
-}));
+vi.mock('../../src/services/plan-quotas', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/services/plan-quotas')>();
+  return {
+    ...actual,
+    resolveBillingPlanForUser: vi.fn(() => resolvedPlan),
+  };
+});
 
 vi.mock('../../src/utils/logger', () => ({
   logger: {

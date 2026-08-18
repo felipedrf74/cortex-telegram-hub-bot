@@ -93,14 +93,22 @@ vi.mock('../../src/services/legal-consent', async (importOriginal) => {
   };
 });
 
-vi.mock('../../src/services/cost-guardrail', () => ({
-  buildQuotaUsagePayload: vi.fn(() => ({})),
-  isUserOverDailyCap: vi.fn(() => ({})),
-}));
+vi.mock('../../src/services/cost-guardrail', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/services/cost-guardrail')>();
+  return {
+    ...actual,
+    buildQuotaUsagePayload: vi.fn(() => ({})),
+    isUserOverDailyCap: vi.fn(() => ({})),
+  };
+});
 
-vi.mock('../../src/services/audit-trail', () => ({
-  logAudit: vi.fn(),
-}));
+vi.mock('../../src/services/audit-trail', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/services/audit-trail')>();
+  return {
+    ...actual,
+    logAudit: vi.fn(),
+  };
+});
 
 vi.mock('../../src/utils/logger', () => ({
   logger: {
