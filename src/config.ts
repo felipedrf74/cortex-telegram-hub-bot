@@ -800,6 +800,14 @@ export const config = {
     allowUnsafePaywallBypass: PAYWALL_BYPASS_ALLOWED,
   },
 
+  // ── Hybrid AI credits (plan §2) ───────────────────────────────────
+  // Credit-ledger admission stays OFF until the same release's production
+  // verification completes; the kill switch always wins over the enable flag.
+  hybridCredits: {
+    enabled: (process.env.HYBRID_AI_CREDITS_ENABLED || 'false') === 'true'
+      && (process.env.HYBRID_AI_CREDITS_KILL_SWITCH || 'false') !== 'true',
+  },
+
   // ── AI Safety ─────────────────────────────────────────────────────
   aiSafety: {
     callTimeoutMs: optionalInt('AI_CALL_TIMEOUT_MS', 30000, { min: 1 }),

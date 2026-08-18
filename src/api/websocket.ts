@@ -36,6 +36,7 @@ import {
 import { buildSimpleStateContext } from '../domains/domain-handler';
 import type { NexusChatOwnerSkill } from '../services/chat-answer-contract';
 import { withAiBudgetReservation } from '../services/cost-guardrail';
+import { withAiCreditAdmission } from '../services/ai-credit-admission';
 import { toStableAiBudgetError } from './response-helpers';
 import { tryBuildChatCoreV2DeterministicReadRoute } from '../services/chat-core-v2';
 import { buildChatCoreV2DeterministicReadShortcutResponse } from './routes/chat-core-v2-deterministic-read-response';
@@ -848,7 +849,13 @@ export function attachWebSocket(server: http.Server): void {
             await runWithSkillInferenceAccountAdmission({
               userId,
               abortSignal: clientAbortController.signal,
-            }, (accountAbortSignal) => withAiBudgetReservation({
+            }, (accountAbortSignal) => withAiCreditAdmission({
+              userId,
+              tenantScope: String(tenantId),
+              operationClass: 'standard',
+              workload: 'ios_websocket_chat',
+              clientOperationId: messageId,
+            }, () => withAiBudgetReservation({
               userId,
               requestSource: 'interactive',
               baseCategory: 'ios_websocket_chat',
@@ -1201,7 +1208,7 @@ export function attachWebSocket(server: http.Server): void {
                 }
                 : null,
             });
-            }));
+            })));
           },
           );
         } finally {
