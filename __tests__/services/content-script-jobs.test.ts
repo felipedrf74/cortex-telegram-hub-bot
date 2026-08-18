@@ -136,6 +136,9 @@ vi.mock('../../src/services/content-output-language', async () => ({
 const migrationSql = readFileSync(
   resolve(__dirname, '../../migrations/284_local_primary_inference_foundation.sql'),
   'utf8',
+) + readFileSync(
+  resolve(__dirname, '../../migrations/287_content_script_delivery_modes.sql'),
+  'utf8',
 );
 
 function database(): Database.Database {
@@ -1992,5 +1995,27 @@ describe('durable Content script jobs', () => {
       request: { topic: 'Long form remains available', format: 'YouTube', maxDurationMinutes: 8, language: 'en' },
     }, db)).not.toThrow();
     db.close();
+  });
+});
+
+describe('delivery modes (Addendum C)', () => {
+  it('validates delivery modes, defaults to standard, and keeps the plan labels', async () => {
+    const { resolveScriptDeliveryMode, CONTENT_SCRIPT_DELIVERY_LABELS } = await import('../../src/services/content-script-jobs');
+    expect(resolveScriptDeliveryMode(undefined)).toBe('standard');
+    expect(resolveScriptDeliveryMode('scheduled')).toBe('scheduled');
+    expect(resolveScriptDeliveryMode('priority')).toBe('priority');
+    expect(() => resolveScriptDeliveryMode('rush')).toThrow(/deliveryMode/);
+    expect(CONTENT_SCRIPT_DELIVERY_LABELS).toEqual({
+      standard: "We'll notify you when your script is ready.",
+      scheduled: 'Have it ready tomorrow.',
+      priority: 'Starts immediately.',
+    });
+  });
+
+  it('defers scheduled delivery to the next 03:00 UTC batch window', async () => {
+    const { scheduledBatchWindowStart } = await import('../../src/services/content-script-jobs');
+    expect(scheduledBatchWindowStart(new Date('2026-08-18T12:00:00.000Z'))).toBe('2026-08-19T03:00:00.000Z');
+    expect(scheduledBatchWindowStart(new Date('2026-08-18T02:59:59.000Z'))).toBe('2026-08-18T03:00:00.000Z');
+    expect(scheduledBatchWindowStart(new Date('2026-08-18T03:00:00.000Z'))).toBe('2026-08-19T03:00:00.000Z');
   });
 });

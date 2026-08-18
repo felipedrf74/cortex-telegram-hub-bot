@@ -100,6 +100,7 @@ export interface ContentScriptJobRequest {
   niche: string;
   format: 'YouTube' | 'Reel';
   mode: 'draft' | 'quick' | 'standard' | 'deep';
+  deliveryMode: 'standard' | 'scheduled' | 'priority';
   language: string;
   renderMode: 'structured' | 'chat';
   scriptStyle: 'detailed' | 'bullets';
@@ -223,6 +224,29 @@ type ContentScriptPublicRequest = Omit<
   | 'pinnedSources'
 >;
 
+/** User-facing delivery labels (plan §1); provider names never appear. */
+export const CONTENT_SCRIPT_DELIVERY_LABELS = Object.freeze({
+  standard: "We'll notify you when your script is ready.",
+  scheduled: 'Have it ready tomorrow.',
+  priority: 'Starts immediately.',
+} as const);
+
+export function resolveScriptDeliveryMode(value: unknown): 'standard' | 'scheduled' | 'priority' {
+  if (value === undefined || value === null || value === '') return 'standard';
+  if (value === 'standard' || value === 'scheduled' || value === 'priority') return value;
+  throw new ContentScriptJobError('VALIDATION', 'deliveryMode must be standard, scheduled, or priority');
+}
+
+/**
+ * Scheduled delivery ("Have it ready tomorrow", Addendum C) defers the start
+ * to the next off-peak batch window at 03:00 UTC strictly in the future.
+ */
+export function scheduledBatchWindowStart(now: Date): string {
+  const window = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 3, 0, 0));
+  if (window.getTime() <= now.getTime()) window.setUTCDate(window.getUTCDate() + 1);
+  return window.toISOString();
+}
+
 function normalizeRequest(input: Record<string, unknown>, userId: number): ContentScriptPublicRequest {
   const topic = typeof input.topic === 'string' ? input.topic.trim() : '';
   if (!topic || topic.length > 2_000) {
@@ -237,6 +261,7 @@ function normalizeRequest(input: Record<string, unknown>, userId: number): Conte
     niche: typeof input.niche === 'string' && input.niche.trim() ? input.niche.trim().slice(0, 160) : 'general',
     format,
     mode: resolveScriptGenerationMode(input.mode),
+    deliveryMode: resolveScriptDeliveryMode(input.deliveryMode),
     language: resolveScriptTargetLanguage(input.language, userId, getUserLanguageById),
     renderMode: resolveScriptRenderMode(input.renderMode),
     scriptStyle: resolveScriptStyle(input.scriptStyle ?? input.style),
@@ -492,11 +517,16 @@ export function createContentScriptJob(input: {
     }
 
     const jobId = `script_job_${crypto.randomUUID()}`;
+    // Scheduled delivery defers the start to the next batch window; the
+    // candidate selector honors next_attempt_at (Addendum C).
+    const deferredStart = request.deliveryMode === 'scheduled'
+      ? scheduledBatchWindowStart(new Date())
+      : null;
     const inserted = db.prepare(`INSERT INTO content_script_jobs (
       job_id, tenant_id, owner_user_id, plan_id, idempotency_key, request_hash,
       operation_id, request_json, target_duration_seconds,
-      status, stage, progress_percent, model_digest
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', 'queued', 0, ?)
+      status, stage, progress_percent, model_digest, delivery_mode, next_attempt_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', 'queued', 0, ?, ?, ?)
     ON CONFLICT(tenant_id, owner_user_id, idempotency_key) DO NOTHING`)
       .run(
         jobId,
@@ -509,6 +539,8 @@ export function createContentScriptJob(input: {
         encryptContentScriptJobJson(request, input.userId),
         request.targetDurationSeconds,
         activeModel.digest,
+        request.deliveryMode,
+        deferredStart,
       );
     if (inserted.changes !== 1) {
       const winner = db.prepare(`SELECT * FROM content_script_jobs
@@ -531,6 +563,7 @@ export function createContentScriptJob(input: {
       jobId,
       plan: limits.plan as BillingPlan,
       longForm: isLongFormScriptDuration(request.targetDurationSeconds),
+      deliveryMode: request.deliveryMode,
     });
     if (credits.kind === 'denied') {
       throw new ContentScriptJobError(credits.code, credits.message, credits.statusCode);
@@ -2225,13 +2258,23 @@ export function retryContentScriptJob(input: {
     }
     // A user-initiated retry of a failed/cancelled job is a new user-visible
     // generation attempt: it reserves fresh credits (the prior reservation
-    // released at failure), and a denial rolls the requeue back.
+    // released at failure) at the job's pinned delivery class, and a denial
+    // rolls the requeue back.
+    const retryDeliveryMode = ((): 'standard' | 'scheduled' | 'priority' => {
+      try {
+        const pinned = decryptContentScriptJobJson(row.request_json, input.userId) as { deliveryMode?: unknown };
+        return resolveScriptDeliveryMode(pinned.deliveryMode);
+      } catch {
+        return 'standard';
+      }
+    })();
     const credits = reserveContentScriptJobCredits({
       tenantId: input.tenantId,
       userId: input.userId,
       jobId: input.jobId,
       plan: limits.plan as BillingPlan,
       longForm: isLongFormScriptDuration(row.target_duration_seconds),
+      deliveryMode: retryDeliveryMode,
     });
     if (credits.kind === 'denied') {
       throw new ContentScriptJobError(credits.code, credits.message, credits.statusCode);
@@ -2296,7 +2339,8 @@ export function recoverContentScriptJobs(
     LEFT JOIN plan_configs p ON p.plan_id = j.plan_id AND p.active = 1
     WHERE j.status IN ('queued', 'waiting_capacity')
       AND (j.next_attempt_at IS NULL OR j.next_attempt_at <= ?)
-    ORDER BY j.updated_at ASC, j.created_at ASC`)
+    ORDER BY CASE WHEN j.delivery_mode = 'priority' THEN 0 ELSE 1 END,
+             j.updated_at ASC, j.created_at ASC`)
     .iterate(now) as IterableIterator<{
       job_id: string;
       owner_user_id: number;

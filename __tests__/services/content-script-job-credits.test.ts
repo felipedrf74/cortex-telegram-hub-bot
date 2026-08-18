@@ -97,6 +97,16 @@ describe('content-script-job-credits', () => {
     expect(short).toMatchObject({ kind: 'reserved', reservation: { operationClass: 'standard', credits: 1 } });
   });
 
+  it('prices delivery modes per plan §2: scheduled 10, priority 12', () => {
+    const scheduled = reserve({ jobId: 'script_job_sched', deliveryMode: 'scheduled' });
+    expect(scheduled).toMatchObject({ kind: 'reserved', reservation: { operationClass: 'scheduled_script', credits: 10 } });
+    const priority = reserve({ jobId: 'script_job_prio', deliveryMode: 'priority' });
+    expect(priority).toMatchObject({ kind: 'reserved', reservation: { operationClass: 'priority_script', credits: 12 } });
+    // Short jobs stay standard operations regardless of delivery mode.
+    const short = reserve({ jobId: 'script_job_short_prio', longForm: false, deliveryMode: 'priority' });
+    expect(short).toMatchObject({ kind: 'reserved', reservation: { operationClass: 'standard', credits: 1 } });
+  });
+
   it('captures once on completion; repeated settlement is idempotent', () => {
     reserve();
     expect(settle('captured')).toEqual({ kind: 'captured' });

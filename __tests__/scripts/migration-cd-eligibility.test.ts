@@ -364,7 +364,7 @@ describe('migration inventory', () => {
     });
     const onDisk = readdirSync(join(root, 'migrations'))
       .filter((file) => /^\d{3}_.*\.sql$/.test(file));
-    expect(inventory).toHaveLength(277);
+    expect(inventory).toHaveLength(278);
     expect(inventory).toHaveLength(onDisk.length);
     expect(() => assertMigrationInventoryShape(inventory)).not.toThrow();
     for (const entry of inventory) {
@@ -372,7 +372,7 @@ describe('migration inventory', () => {
       expect(typeof entry.predecessorCompatible).toBe('boolean');
     }
     expect(inventory.at(-1)).toMatchObject({
-      file: '286_apple_notification_inbox.sql',
+      file: '287_content_script_delivery_modes.sql',
       kind: 'expand',
       predecessorCompatible: true,
     });
@@ -466,7 +466,7 @@ describe('migration inventory', () => {
     // still-green zero-unknown assertion. Deliberate policy changes update this
     // exact snapshot together.
     const compatible = inventory.filter((entry) => entry.predecessorCompatible).length;
-    expect(compatible).toBe(149);
+    expect(compatible).toBe(150);
   });
 });
 
@@ -675,7 +675,7 @@ describe('second-round adversarial probes', () => {
     // block every release for a classifier gap rather than a real risk.
     const dir = join(process.cwd(), 'migrations');
     const files = readdirSync(dir).filter((file) => /^\d{3}_.*\.sql$/.test(file));
-    expect(files.length).toBe(277);
+    expect(files.length).toBe(278);
     const unknown = files.filter(
       (file) => classifyMigrationSql(readFileSync(join(dir, file), 'utf8')).kind === 'unknown',
     );
