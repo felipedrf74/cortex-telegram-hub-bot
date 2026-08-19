@@ -16,6 +16,12 @@ vi.mock('../../src/services/audit-trail', async (importOriginal) => ({
   logAudit: logAuditMock,
 }));
 
+const recordOperatorAlertMock = vi.hoisted(() => vi.fn());
+vi.mock('../../src/services/operator-alerts', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/operator-alerts')>()),
+  recordOperatorAlert: recordOperatorAlertMock,
+}));
+
 import {
   HYBRID_KILL_SWITCH_KEYS,
   _resetHybridKillSwitchCacheForTests,
@@ -59,6 +65,7 @@ beforeEach(() => {
   recreateControlTables();
   _resetHybridKillSwitchCacheForTests();
   logAuditMock.mockClear();
+  recordOperatorAlertMock.mockClear();
   delete process.env.HYBRID_AI_CREDITS_ENABLED;
   delete process.env.HYBRID_AI_CREDITS_KILL_SWITCH;
   delete process.env.APPLE_PACK_FULFILLMENT_ENABLED;
@@ -137,6 +144,12 @@ describe('hybrid-runtime-kill-switches', () => {
     testDb.exec('DROP TABLE hybrid_commerce_control_events; DROP TABLE hybrid_commerce_runtime_control;');
     _resetHybridKillSwitchCacheForTests();
     expect(isHybridKillSwitchEngaged('hybrid_credits')).toBe(false);
+    // QA4 P2-6: fail-open is deliberate but never silent — every failed
+    // control read raises a critical operator alert.
+    expect(recordOperatorAlertMock).toHaveBeenCalledWith(expect.objectContaining({
+      severity: 'critical',
+      dedupeKey: 'hybrid_kill_switch_control_read_failed',
+    }));
     process.env.HYBRID_AI_CREDITS_ENABLED = 'true';
     expect(isAiCreditAdmissionEnabled()).toBe(true);
     // The env kill switch stays authoritative while the DB surface is down.

@@ -9,8 +9,14 @@
  * holds from StoreKit; the server re-verifies every claim independently:
  *
  * - Apple's x5c chain signs the transaction (same verifier as the inbox).
+ * - The bundleId must match this app's identity — Apple's chain is common to
+ *   every App Store app, so signature validity alone does not bind the
+ *   transaction to Nexus Hub (same rule the notification inbox enforces).
  * - The product must be a known credit-pack consumable from the catalog.
  * - The environment must be Production unless sandbox grants are allowed.
+ * - A revoked transaction (refund/chargeback: revocationDate or
+ *   revocationReason present) never mints credit, even when the original
+ *   notification was lost and no lot exists to revoke.
  * - The appAccountToken must resolve to the AUTHENTICATED caller — a stolen
  *   or replayed transaction belonging to another account is refused without
  *   revealing whether the transaction exists.
@@ -27,6 +33,7 @@ import {
 } from './apple-notification-inbox';
 import { isApplePackFulfillmentActive } from './hybrid-runtime-kill-switches';
 import { resolveUserIdFromAppleAppAccountToken } from './stripe-service';
+import { config } from '../config';
 import { logger } from '../utils/logger';
 
 export const MAX_RESTORE_TRANSACTIONS_PER_REQUEST = 8;
@@ -36,8 +43,10 @@ export type ApplePackRestorationOutcome =
   | 'credited'
   | 'already_credited'
   | 'not_a_pack'
+  | 'wrong_bundle'
   | 'wrong_account'
   | 'environment_refused'
+  | 'revoked'
   | 'invalid_transaction'
   | 'grant_rejected';
 
@@ -85,6 +94,13 @@ function restoreOne(userId: number, jws: string): ApplePackRestorationItemResult
     return { outcome: 'invalid_transaction' };
   }
 
+  // Apple's signing chain is shared by every App Store app; only the inner
+  // bundleId binds the transaction to this app. Required, never optional.
+  const bundleId = typeof inner.bundleId === 'string' ? inner.bundleId : '';
+  if (bundleId !== config.appleAppStoreServerApi.bundleId) {
+    return { outcome: 'wrong_bundle' };
+  }
+
   const productId = typeof inner.productId === 'string' ? inner.productId : '';
   const packItem = resolveBillingCatalogItemByAppleProductId(productId);
   if (!packItem) return { outcome: 'not_a_pack' };
@@ -110,6 +126,13 @@ function restoreOne(userId: number, jws: string): ApplePackRestorationItemResult
   const rawQuantity = typeof inner.quantity === 'number' ? inner.quantity : 1;
   if (!Number.isInteger(rawQuantity) || rawQuantity < 1 || rawQuantity > MAX_CONSUMABLE_QUANTITY) {
     return { outcome: 'invalid_transaction', catalogItemId: packItem.id, transactionId };
+  }
+
+  // A refunded/revoked purchase must never restore credit: restoration is the
+  // one path where the revoking notification may also have been lost, so the
+  // ledger has no lot to revoke afterwards.
+  if (inner.revocationDate != null || inner.revocationReason != null) {
+    return { outcome: 'revoked', catalogItemId: packItem.id, transactionId };
   }
 
   const granted = grantPurchasedAiCredits({
