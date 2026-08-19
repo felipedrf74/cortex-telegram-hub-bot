@@ -13,6 +13,18 @@
   },
   "retirementMappings": [
     {
+      "baseSha": "98ec86210f34ad94ea250c8a1eb10ea71aee2db4",
+      "test": "__tests__/services/apple-notification-inbox.test.ts",
+      "requiredChangedPaths": [
+        "__tests__/services/apple-notification-inbox.test.ts",
+        "src/services/apple-notification-inbox.ts"
+      ],
+      "replacementTests": [
+        "__tests__/services/apple-notification-inbox.test.ts"
+      ],
+      "reason": "QA3 hardening replaced the NODE_ENV-gated sandbox refusal and retryable-quantity assertions with strictly stronger guarantees in the same retained suite: an explicit APPLE_ALLOW_SANDBOX_GRANTS opt-in with verified-payload environment precedence, non-retryable quantity exhaustion with critical alerts, unresolvable-charge hard failure, and product-id-scoped deferral."
+    },
+    {
       "baseSha": "fb78be73e9880a4a9f77f193c6477d7a0203d4df",
       "test": "__tests__/billing/pricing-display-contract.test.ts",
       "requiredChangedPaths": [
