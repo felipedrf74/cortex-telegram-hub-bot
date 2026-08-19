@@ -404,6 +404,50 @@ describe('apple-notification-inbox', () => {
     expect(getAiCreditWallet(40, 'pro', NOW).purchasedRemaining).toBe(0);
   });
 
+  it('alerts on retry-exhausted rows the scheduled pass can never select (QA5 P2)', () => {
+    // The pending selector requires attempts < MAX, so an exhausted row was
+    // never passed to processStoredAppleNotification and its alert was
+    // unreachable: money Apple collected sat ungrantable with zero signal.
+    seedPackNotification({ outerKey: 'outer-exhausted', innerKey: 'inner-exhausted', transactionId: 'txn-exhausted' });
+    const stored = ingest('outer-exhausted');
+    if (stored.kind !== 'stored') throw new Error('unreachable');
+    db.prepare("UPDATE apple_notification_inbox SET attempts = 5, state = 'failed' WHERE id = ?").run(stored.row.id);
+
+    const pass = processPendingAppleNotifications({ now: NOW });
+    expect(pass.exhausted).toBe(1);
+    expect(db.prepare(
+      "SELECT COUNT(*) AS count FROM operator_alerts WHERE dedupe_key LIKE 'apple_inbox_exhausted:%'",
+    ).get()).toEqual({ count: 1 });
+
+    // Repeated passes dedupe to one open alert rather than piling up.
+    processPendingAppleNotifications({ now: NOW });
+    expect(db.prepare(
+      "SELECT COUNT(*) AS count FROM operator_alerts WHERE dedupe_key LIKE 'apple_inbox_exhausted:%'",
+    ).get()).toEqual({ count: 1 });
+  });
+
+  it('excludes deferred pack rows that already reached failed (QA5 P2 starvation)', () => {
+    // The old exclusion required state='pending' AND attempts=0, so a pack row
+    // that had already failed kept its place at the head of every pass.
+    packFulfillmentEnabled = false;
+    for (let i = 0; i < 30; i += 1) {
+      seedPackNotification({ outerKey: `outer-failed-${i}`, innerKey: `inner-failed-${i}`, transactionId: `txn-failed-${i}` });
+      const row = ingest(`outer-failed-${i}`);
+      if (row.kind !== 'stored') throw new Error('unreachable');
+      db.prepare("UPDATE apple_notification_inbox SET attempts = 1, state = 'failed' WHERE id = ?").run(row.row.id);
+    }
+    jwsFixtures.set('outer-sub-starved', {
+      notificationType: 'DID_RENEW',
+      data: { signedTransactionInfo: 'inner-sub-starved', environment: 'Production' },
+    });
+    jwsFixtures.set('inner-sub-starved', { bundleId: 'me.nexushub.app', productId: 'me.nexushub.pro.monthly', transactionId: 'sub-starved' });
+    ingest('outer-sub-starved', 'DID_RENEW');
+
+    const pass = processPendingAppleNotifications({ now: NOW });
+    expect(pass.processed).toBe(1);
+    expect(mockHandleAppleNotification).toHaveBeenCalledTimes(1);
+  });
+
   it('stops retrying after the attempt budget and enforces inbox immutability', () => {
     seedPackNotification({ outerKey: 'outer-1', innerKey: 'inner-1' });
     const stored = ingest('outer-1');

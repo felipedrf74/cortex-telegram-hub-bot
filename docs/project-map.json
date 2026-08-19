@@ -5,11 +5,11 @@
     "generatorVersion": 4,
     "authoritativeFreshness": "sourceDigest",
     "sourceDigestAlgorithm": "sha256-path-git-mode-content-v2",
-    "sourceDigest": "b43aca3a7e68a94fc19ef9ba7b8cc72e842ff0efdf74a88265ced624d8bd874d",
-    "baseCommit": "eb851b1bd1502f7cdd60d573fbb20035682338df",
-    "baseCommitTimestamp": "2026-08-19T18:36:39+01:00",
-    "trackedFiles": 3347,
-    "sourceFiles": 1176
+    "sourceDigest": "92989b39ac6f9f2069d93889e6da6b3b46d1f9c7db0174cfefe5f514d222bf99",
+    "baseCommit": "202f318a123513f4a3f058fd496182107145045a",
+    "baseCommitTimestamp": "2026-08-19T20:04:46+01:00",
+    "trackedFiles": 3357,
+    "sourceFiles": 1178
   },
   "navigation": {
     "agentBootloader": "AGENTS.md",
@@ -34,7 +34,7 @@
     {
       "path": "src/api",
       "owner": "backend",
-      "files": 167
+      "files": 168
     },
     {
       "path": "src/boot.ts",
@@ -99,7 +99,7 @@
     {
       "path": "src/services",
       "owner": "backend",
-      "files": 855
+      "files": 856
     },
     {
       "path": "src/skills",
@@ -891,6 +891,14 @@
       "localPath": "/",
       "mountPath": "/api/v1",
       "source": "src/api/router.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/ai-credit-grants",
+      "localPath": "/",
+      "mountPath": "/api/v1/admin/ai-credit-grants",
+      "source": "src/api/routes/ai-credit-grants-admin.ts",
       "owner": "backend"
     },
     {
@@ -4639,9 +4647,9 @@
     }
   ],
   "migrations": {
-    "count": 280,
-    "latest": "migrations/289_hybrid_runtime_hardening.sql",
-    "digest": "c14bbc0bbd4842dc6debe9081d57371685d7748d471ed6f73a7978160d7bf9d5",
+    "count": 282,
+    "latest": "migrations/291_ai_credit_lot_reconciliation_cursor.sql",
+    "digest": "9f73e633ec83ead474a7597d43e76e8fe3826f14529358bdd71e0cb91790c79d",
     "files": [
       "migrations/001_initial.sql",
       "migrations/002_shared_memory.sql",
@@ -4922,7 +4930,9 @@
       "migrations/286_apple_notification_inbox.sql",
       "migrations/287_content_script_delivery_modes.sql",
       "migrations/288_apple_inbox_product_id.sql",
-      "migrations/289_hybrid_runtime_hardening.sql"
+      "migrations/289_hybrid_runtime_hardening.sql",
+      "migrations/290_plan_longform_script_allowance.sql",
+      "migrations/291_ai_credit_lot_reconciliation_cursor.sql"
     ]
   },
   "capabilities": [
@@ -5038,7 +5048,7 @@
     }
   ],
   "tests": {
-    "files": 1239,
+    "files": 1242,
     "policy": "config/test-policy.json",
     "inventoryArtifact": ".local/test-inventory/test-inventory.json",
     "topLevelOwners": {
@@ -5060,7 +5070,7 @@
       "scripts": 107,
       "sdk": 1,
       "security": 24,
-      "services": 767,
+      "services": 770,
       "skills": 11,
       "state": 17,
       "storage": 1,
@@ -5073,10 +5083,10 @@
     "policy": "config/documentation-policy.json",
     "policySchema": "nexus.documentation-policy.v1",
     "policyVersion": "2026-08-12.1",
-    "count": 77,
-    "active": 77,
+    "count": 78,
+    "active": 78,
     "statusCounts": {
-      "canonical": 37,
+      "canonical": 38,
       "current": 2,
       "draft": 2,
       "generated": 1,
@@ -5453,6 +5463,15 @@
         "reviewedOn": "2026-07-22",
         "reviewDueOn": "2026-10-20",
         "canonicalPath": "docs/release/hybrid-ai-commerce-production-plan.md"
+      },
+      {
+        "path": "docs/release/hybrid-commerce-qa-remediation-log.md",
+        "status": "canonical",
+        "active": true,
+        "owner": "release owner",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2026-10-20",
+        "canonicalPath": "docs/release/hybrid-commerce-qa-remediation-log.md"
       },
       {
         "path": "docs/release/migration-irreversible.md",

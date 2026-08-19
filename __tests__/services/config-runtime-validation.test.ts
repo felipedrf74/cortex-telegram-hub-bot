@@ -136,6 +136,36 @@ describe('runtime config validation', () => {
     });
   });
 
+  it('fails fast when live production boots with the Stripe sandbox checkout hatch on (QA5 P0-1)', async () => {
+    applySafeProductionEnv();
+    vi.stubEnv('STRIPE_SANDBOX_CHECKOUT_ALLOWED', 'true');
+
+    await expect(loadConfigFresh()).rejects.toThrow(
+      /STRIPE_SANDBOX_CHECKOUT_ALLOWED=true is forbidden in live production/,
+    );
+  });
+
+  it('allows the sandbox checkout hatch in staging, which is what it exists for', async () => {
+    applySafeProductionEnv();
+    vi.stubEnv('STAGING', 'true');
+    vi.stubEnv('STRIPE_SANDBOX_CHECKOUT_ALLOWED', 'true');
+
+    await expect(loadConfigFresh()).resolves.toBeDefined();
+  });
+
+  it('closes anonymous email checkout by default (QA5 P1-6 plan §3 sunset)', async () => {
+    applyMinimalConfigEnv();
+    // Unset must mean CLOSED: the launch sunset cannot depend on an operator
+    // remembering to set a flag, and this path takes no legal consent.
+    vi.stubEnv('ANONYMOUS_CHECKOUT_ENABLED', '');
+    const { config: closedByDefault } = await loadConfigFresh();
+    expect(closedByDefault.hybridCommerce.anonymousCheckoutEnabled).toBe(false);
+
+    vi.stubEnv('ANONYMOUS_CHECKOUT_ENABLED', 'true');
+    const { config: explicitlyOpen } = await loadConfigFresh();
+    expect(explicitlyOpen.hybridCommerce.anonymousCheckoutEnabled).toBe(true);
+  });
+
   it('fails fast when production tries to boot with PAYWALL_ENABLED=false', async () => {
     applySafeProductionEnv();
     vi.stubEnv('PAYWALL_ENABLED', 'false');
@@ -611,7 +641,10 @@ describe('hybrid flag live getters (QA P2-13)', () => {
     vi.stubEnv('STRIPE_PACK_FULFILLMENT_KILL_SWITCH', 'true');
     expect(config.hybridCommerce.stripePackFulfillmentEnabled).toBe(false);
 
-    // Anonymous checkout sunset flips live too (QA3 P3-13).
+    // Anonymous checkout sunset flips live too (QA3 P3-13), from a default
+    // that is now CLOSED rather than open (QA5 P1-6).
+    expect(config.hybridCommerce.anonymousCheckoutEnabled).toBe(false);
+    vi.stubEnv('ANONYMOUS_CHECKOUT_ENABLED', 'true');
     expect(config.hybridCommerce.anonymousCheckoutEnabled).toBe(true);
     vi.stubEnv('ANONYMOUS_CHECKOUT_ENABLED', 'false');
     expect(config.hybridCommerce.anonymousCheckoutEnabled).toBe(false);

@@ -13,6 +13,7 @@ let stripePriceIds = {
 let appleProductIds = { pack100: '', pack250: '', pack600: '' };
 let anonymousCheckoutEnabled = true;
 let stripePackSalesEnabled = false;
+let applePackSalesEnabled = false;
 let stripeConfigured = true;
 let entitlement: { plan: string; status: string } = { plan: 'pro', status: 'active' };
 
@@ -31,7 +32,7 @@ vi.mock('../../src/config', async (importOriginal) => {
         return {
           stripePriceIds,
           appleProductIds,
-          applePackFulfillmentEnabled: false,
+          applePackFulfillmentEnabled: applePackSalesEnabled,
           stripePackFulfillmentEnabled: stripePackSalesEnabled,
           anonymousCheckoutEnabled,
         };
@@ -181,6 +182,7 @@ describe('billing catalog, wallet, and credits checkout', () => {
     appleProductIds = { pack100: '', pack250: '', pack600: '' };
     anonymousCheckoutEnabled = true;
     stripePackSalesEnabled = false;
+    applePackSalesEnabled = false;
     stripeConfigured = true;
     entitlement = { plan: 'pro', status: 'active' };
     mockCreateCheckoutSession.mockClear();
@@ -293,6 +295,22 @@ describe('billing catalog, wallet, and credits checkout', () => {
     expect(userId).toBe(22);
     expect(packInput).toEqual({ catalogItemId: 'pack.credits.100', priceId: 'price_pack100_test' });
     expect(mockCreateCheckoutSession).not.toHaveBeenCalled();
+  });
+
+  it('refuses web pack checkout when only the Apple channel is live (QA5 P1-3)', async () => {
+    // The Stripe pack kill switch is engaged (stripePackSalesEnabled=false)
+    // while Apple sells packs. Gating on the cross-channel OR would leave web
+    // checkout open and make the Stripe kill switch ineffective.
+    applePackSalesEnabled = true;
+    stripePriceIds.pack100 = 'price_pack100_test';
+    appleProductIds.pack100 = 'me.nexushub.credits.pack100';
+    const res = await dispatch(billingRoutes(), 'POST', '/credits-checkout', {
+      catalogItemId: 'pack.credits.100',
+      acceptedLegal: LEGAL,
+    });
+    expect(res.statusCode).toBe(503);
+    expect(res.body.error.code).toBe('CATALOG_ITEM_UNAVAILABLE');
+    expect(mockCreateCreditPackCheckoutSession).not.toHaveBeenCalled();
   });
 
   it('creates subscription checkout with the server-resolved price id only', async () => {

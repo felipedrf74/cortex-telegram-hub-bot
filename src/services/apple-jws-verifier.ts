@@ -65,6 +65,37 @@ function assertCertificateIsTimeValid(cert: crypto.X509Certificate): void {
   }
 }
 
+/**
+ * Apple's App Store Server Notification / transaction leaf carries the
+ * marker extension OID 1.2.840.113635.100.6.11.1 (the same OID Apple's own
+ * server library requires). DER encoding of that OID, used as a byte probe:
+ * every X.509 extension identifier appears verbatim in the certificate DER.
+ */
+const APP_STORE_NOTIFICATION_OID_DER = Buffer.from([
+  0x06, 0x0a, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x63, 0x64, 0x06, 0x0b, 0x01,
+]);
+
+export interface AppleLeafCertificateFacts {
+  ca: boolean;
+  raw: Buffer;
+}
+
+/**
+ * QA5 P2 (jws-no-leaf-purpose-check): chaining to Apple Root CA G3 is not
+ * sufficient — that root signs every App Store developer's certificates, and
+ * the chain walk alone accepted both a sibling end-entity certificate and an
+ * intermediate CA signing directly. The leaf must be an end entity AND carry
+ * the App Store marker OID.
+ */
+export function assertAppleAppStoreLeaf(leaf: AppleLeafCertificateFacts): void {
+  if (leaf.ca) {
+    throw new Error('APPLE_JWS_LEAF_NOT_END_ENTITY');
+  }
+  if (!Buffer.from(leaf.raw).includes(APP_STORE_NOTIFICATION_OID_DER)) {
+    throw new Error('APPLE_JWS_LEAF_NOT_APP_STORE');
+  }
+}
+
 function assertAppleRootedCertificateChain(x5c: string[]): crypto.X509Certificate {
   const providedChain = x5c.map(parseX5cCertificate);
   const trustedRoots = getTrustedRootCertificates();
@@ -98,6 +129,7 @@ function assertAppleRootedCertificateChain(x5c: string[]): crypto.X509Certificat
     }
   }
 
+  assertAppleAppStoreLeaf({ ca: chain[0].ca, raw: chain[0].raw });
   return chain[0];
 }
 
@@ -133,6 +165,12 @@ export function verifyAppleJws<TPayload = Record<string, unknown>>(
     payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8')) as TPayload;
   } catch {
     throw new Error('APPLE_JWS_INVALID_PAYLOAD');
+  }
+
+  // Apple signs with ES256. Pin it so a header can never nominate a weaker or
+  // absent algorithm (QA5 P2 jws-no-leaf-purpose-check).
+  if (header.alg !== 'ES256') {
+    throw new Error('APPLE_JWS_UNSUPPORTED_ALG');
   }
 
   const x5c = header.x5c;

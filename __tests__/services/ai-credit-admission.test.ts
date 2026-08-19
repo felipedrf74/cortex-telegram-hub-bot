@@ -51,7 +51,8 @@ vi.mock('../../src/utils/logger', () => ({
 }));
 
 import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
-import { getAiCreditWallet, grantMonthlyAiCredits } from '../../src/services/ai-credit-ledger';
+import { getAiCreditWallet, grantMonthlyAiCredits, listAiCreditLots } from '../../src/services/ai-credit-ledger';
+import { resolveMonthlyProvisioningPeriod } from '../../src/services/ai-credit-provisioning';
 import {
   AiCreditAdmissionDeniedError,
   AiCreditReplaySettledError,
@@ -82,7 +83,16 @@ describe('ai-credit-admission', () => {
     db = createMigratedTestDatabase();
     hybridCreditsEnabled = true;
     resolvedPlan = 'pro';
-    grantMonthlyAiCredits({ userId: 40, plan: 'pro', periodKey: '2026-08', periodEnd: PERIOD_END, now: NOW });
+    // Admission provisions the period's included lot itself (QA5 P1-2), so the
+    // manual grant here uses the SAME period key it would derive — otherwise
+    // the two lots stack and every balance assertion doubles.
+    grantMonthlyAiCredits({
+      userId: 40,
+      plan: 'pro',
+      periodKey: resolveMonthlyProvisioningPeriod(40, NOW).periodKey,
+      periodEnd: PERIOD_END,
+      now: NOW,
+    });
   });
 
   afterEach(() => {
@@ -98,7 +108,10 @@ describe('ai-credit-admission', () => {
   });
 
   it('denies before dispatch with the exact amounts when credits are missing', async () => {
+    // Plan §2 gives free 60 included credits, so "no credits" means a plan
+    // whose allowance is zero — not merely an unprovisioned account.
     resolvedPlan = 'free';
+    db.prepare("UPDATE plan_configs SET monthly_ai_credits = 0 WHERE plan_id = 'free'").run();
     const run = vi.fn(async () => 'never');
     await expect(
       withAiCreditAdmission(admissionInput('denied', { userId: 50, tenantScope: 'tenant-50' }), run),
@@ -194,8 +207,28 @@ describe('ai-credit-admission', () => {
     expect(getAiCreditWallet(40, 'pro', NOW).dailyUsedCredits).toBe(2);
   });
 
+  it('provisions the included monthly lot on first admission (QA5 P1-2)', async () => {
+    // A paid user with no pre-existing lot must be admitted, not denied:
+    // nothing else in the runtime mints included credits.
+    resolvedPlan = 'max';
+    expect(listAiCreditLots(60)).toHaveLength(0);
+    await expect(
+      withAiCreditAdmission(admissionInput('provision', { userId: 60, tenantScope: 'tenant-60' }), async () => 'ran'),
+    ).resolves.toBe('ran');
+    const lots = listAiCreditLots(60);
+    expect(lots).toHaveLength(1);
+    expect(lots[0]).toMatchObject({ lotType: 'monthly', creditsGranted: 1200 });
+    expect(getAiCreditWallet(60, 'max', NOW).availableCredits).toBe(1199);
+
+    // Idempotent: a second operation reuses the same lot, never mints another.
+    await withAiCreditAdmission(admissionInput('provision-2', { userId: 60, tenantScope: 'tenant-60' }), async () => 'again');
+    expect(listAiCreditLots(60)).toHaveLength(1);
+    expect(getAiCreditWallet(60, 'max', NOW).availableCredits).toBe(1198);
+  });
+
   it('exposes typed denial classes for callers', async () => {
     resolvedPlan = 'free';
+    db.prepare("UPDATE plan_configs SET monthly_ai_credits = 0 WHERE plan_id = 'free'").run();
     try {
       await withAiCreditAdmission(admissionInput('typed', { userId: 51, tenantScope: 'tenant-51' }), async () => 'x');
       throw new Error('expected denial');

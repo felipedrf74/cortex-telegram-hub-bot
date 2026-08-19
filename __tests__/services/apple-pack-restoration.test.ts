@@ -156,6 +156,29 @@ describe('apple pack restoration (NH-0041)', () => {
     expect(listAiCreditLots(40)).toHaveLength(0);
   });
 
+  it('refuses a transaction the durable inbox already recorded as refunded (QA5 P2)', () => {
+    // The exposed window: the refund notification failed processing (so no lot
+    // was ever revoked) and the client replays the JWS it cached BEFORE the
+    // refund, which therefore carries no revocationDate.
+    fixture('inner-refund-record', { transactionId: 'tx-refunded' });
+    fixture('outer-refund-record', { data: { signedTransactionInfo: 'inner-refund-record' } });
+    db.prepare(`INSERT INTO apple_notification_inbox
+      (notification_uuid, notification_type, signed_payload, state, attempts, received_at)
+      VALUES ('uuid-refund', 'REFUND', 'outer-refund-record', 'failed', 5, '2026-08-18T00:00:00.000Z')`)
+      .run();
+
+    const result = restoreApplePackTransactions({
+      userId: 40,
+      signedTransactions: [validTransaction({ transactionId: 'tx-refunded' })],
+    });
+    expect(result).toEqual({
+      kind: 'processed',
+      results: [{ outcome: 'revoked', catalogItemId: 'pack_100', transactionId: 'tx-refunded' }],
+    });
+    expect(getAiCreditWallet(40, 'pro').purchasedRemaining).toBe(0);
+    expect(listAiCreditLots(40)).toHaveLength(0);
+  });
+
   it('multiplies credits by the Apple quantity like the inbox path', () => {
     const result = restoreApplePackTransactions({
       userId: 40,

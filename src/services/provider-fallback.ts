@@ -22,7 +22,7 @@ import { DomainName, DomainMessage, ClassificationResult } from '../domains/type
 import { logger } from '../utils/logger';
 import { getCurrentContext } from '../utils/request-context';
 import { config } from '../config';
-import { assertFreeTierCloudDispatchAllowed } from './free-tier-inference-binding';
+import { assertFreeTierCloudDispatchAllowed, isFreeTierCloudInferenceBlockedError } from './free-tier-inference-binding';
 import {
   canonicalizeStructuredOutputSchema,
   validateStructuredOutputSchema,
@@ -173,6 +173,10 @@ function openToolUseIdsFromConversation(toolConversation: Array<{ role: string; 
 function isRetryableError(err: any): boolean {
   if (err?.name === 'ApiUsagePersistenceError' || err?.code === 'AI_USAGE_PERSISTENCE_FAILED' || err?.name === 'AiBudgetError') return false;
   if (isProviderRequestCancellation(err)) return false;
+  // Free-tier local-only policy refusal: never a provider-health signal, so
+  // never retryable at this layer (QA5 P1-4). It is re-thrown earlier in the
+  // catch, but keep the classifier correct for any other caller.
+  if (isFreeTierCloudInferenceBlockedError(err)) return false;
   const status = err?.status ?? err?.statusCode ?? err?.error_code;
   // 429 = rate limited (retryable after backoff)
   if (status === 429) return true;
@@ -823,6 +827,11 @@ export class TaskRoutingProvider implements AIProvider {
         // open a circuit, increment failure metrics, emit a fallback event,
         // or dispatch the secondary provider.
         if (isProviderRequestCancellation(err)) throw err;
+        // A free-tier local-only policy refusal is a per-user decision, not
+        // provider health. Hoist it out of the fallback closure before any
+        // metric/circuit/fallback bookkeeping so one free user's turns cannot
+        // trip a shared circuit breaker for every tenant (QA5 P1-4).
+        if (isFreeTierCloudInferenceBlockedError(err)) throw err;
         const retryable = isRetryableError(err);
         const errorSummary = summarizeProviderError(err, retryable);
         if (retryable && shouldRecordCircuitFailure(err)) {

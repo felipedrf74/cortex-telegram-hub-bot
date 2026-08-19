@@ -47,6 +47,7 @@ import { eventBackboneAdminRoutes } from './routes/event-backbone-admin';
 import { productLearningAdminRoutes } from './routes/product-learning-admin';
 import { localInferenceAdminRoutes } from './routes/local-inference-admin';
 import { hybridKillSwitchesAdminRoutes } from './routes/hybrid-kill-switches-admin';
+import { aiCreditGrantsAdminRoutes } from './routes/ai-credit-grants-admin';
 import { verifyAppleJws } from '../services/apple-jws-verifier';
 import { handleAppleNotification } from '../services/stripe-service';
 import {
@@ -179,6 +180,7 @@ export function createApiRouter(): Router {
   router.use('/admin/product-learning', productLearningAdminRoutes());
   router.use('/admin/local-inference', localInferenceAdminRoutes());
   router.use('/admin/hybrid-kill-switches', hybridKillSwitchesAdminRoutes());
+  router.use('/admin/ai-credit-grants', aiCreditGrantsAdminRoutes());
 
   // Apple App Store Server Notifications — public (no JWT).
   // Apple sends lifecycle events (renewal, expiry, refund) server-to-server.

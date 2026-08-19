@@ -59,8 +59,16 @@ interface ControlRow {
 const CACHE_TTL_MS = 5_000;
 let cache: { at: number; engaged: Set<HybridKillSwitchKey> } | null = null;
 
+// Failed reads are never cached, so an unreadable control table would alert on
+// every admission — an alert storm precisely during a database incident, when
+// the alert store itself is degraded. One alert per window is enough to tell
+// the operator to reach for the env switch.
+const CONTROL_READ_ALERT_INTERVAL_MS = 60_000;
+let lastControlReadAlertAt = 0;
+
 export function _resetHybridKillSwitchCacheForTests(): void {
   cache = null;
+  lastControlReadAlertAt = 0;
 }
 
 function readEngagedKeys(): Set<HybridKillSwitchKey> {
@@ -78,6 +86,11 @@ function readEngagedKeys(): Set<HybridKillSwitchKey> {
     // loudly: an unreadable control table means an engaged DB kill switch is
     // NOT being enforced, and the operator must fall back to env switches.
     logger.error({ err }, 'hybrid-kill-switches: control read failed; env switches remain authoritative');
+    const sinceLastAlert = now - lastControlReadAlertAt;
+    if (lastControlReadAlertAt !== 0 && sinceLastAlert < CONTROL_READ_ALERT_INTERVAL_MS) {
+      return engaged;
+    }
+    lastControlReadAlertAt = now;
     try {
       recordOperatorAlert({
         severity: 'critical',

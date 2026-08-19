@@ -5,8 +5,11 @@
  * (docs/release/hybrid-ai-commerce-production-plan.md §2).
  *
  * Contract:
- * - Default OFF: nothing in the runtime consumes this ledger yet. Admission,
- *   catalog, and provider wiring ship in later phases of the plan.
+ * - Default OFF, but fully wired: with `HYBRID_AI_CREDITS_ENABLED` on, chat
+ *   turns and content script jobs reserve/capture here through
+ *   `ai-credit-admission`, and included monthly lots are provisioned lazily
+ *   by `ai-credit-provisioning`. While the flag is off every path is a
+ *   passthrough with no ledger reads or writes.
  * - Admission order is entitlement first: callers resolve the effective plan
  *   through `entitlement.ts` / `plan-quotas.ts` BEFORE reserving. The ledger
  *   never derives ownership or plan from client-supplied data. Operation-
@@ -128,6 +131,23 @@ export type RevokeAiCreditLotResult =
 interface PlanCreditPolicy {
   monthlyCredits: number;
   dailyCapCredits: number;
+}
+
+// ── Grant-path registry (QA5 P1-2 activation guard) ─────────────────
+// Admission may only be enabled while some runtime path can actually mint
+// lots. Modules that provide one register at import time; startup asserts the
+// registry is non-empty so "credits on, nothing grants" fails loudly at boot
+// instead of denying every paid operation at runtime.
+export const MONTHLY_INCLUDED_GRANT_PATH = 'monthly_included' as const;
+
+const registeredGrantPaths = new Set<string>();
+
+export function registerAiCreditGrantPath(name: string): void {
+  if (name) registeredGrantPaths.add(name);
+}
+
+export function listRegisteredAiCreditGrantPaths(): string[] {
+  return [...registeredGrantPaths].sort();
 }
 
 function toIso(value: Date): string {

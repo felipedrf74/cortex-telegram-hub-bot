@@ -62,21 +62,38 @@ vi.mock('../../src/utils/logger', () => ({
 import { createApiRouter } from '../../src/api/router';
 
 const TEST_PRIVATE_KEY = `-----BEGIN EC PRIVATE KEY-----
-MHcCAQEEIDZI3ek/mxC/IgvB8aaT5qN+pmhkjYHVepK7SqIgpYGEoAoGCCqGSM49
-AwEHoUQDQgAEL0e17hakzfDppYuAEMnSVYTXAFVb4XbS8LRsIrdrPMO/47dSjV9V
-ii8/E8trqU5tbOMZjLDNKIsEi0RBpMTKQw==
+MHcCAQEEIKKlnm4QVvm2iRiZIQk3z9LoSp3Qfg+BYqppbqrNrELRoAoGCCqGSM49
+AwEHoUQDQgAEfh4HI0N08AE333/rs33FPUdMbVw1otJGnZ2VTAKdpS/9FBMSTAMu
+Trgz4fUtTACWEQcEoMRXbIUKqdx4NS2PvA==
 -----END EC PRIVATE KEY-----`;
 
+// QA5 P2: the leaf must look like a real Apple App Store signer — an END
+// ENTITY (CA:FALSE) carrying OID 1.2.840.113635.100.6.11.1 — because the
+// verifier now refuses CA certs and non-App-Store leaves. TEST_ROOT_CERT is
+// the injected trust anchor; TEST_CERT is the leaf it issued.
 const TEST_CERT = `-----BEGIN CERTIFICATE-----
-MIIBlDCCATmgAwIBAgIUf1VFq+akd1t7HBC3RVy3gbVFu1wwCgYIKoZIzj0EAwIw
-HzEdMBsGA1UEAwwUTmV4dXMgVGVzdCBBcHBsZSBKV1MwHhcNMjYwNTA4MjIxNzEw
-WhcNMzYwNTA1MjIxNzEwWjAfMR0wGwYDVQQDDBROZXh1cyBUZXN0IEFwcGxlIEpX
-UzBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABC9Hte4WpM3w6aWLgBDJ0lWE1wBV
-W+F20vC0bCK3azzDv+O3Uo1fVYovPxPLa6lObWzjGYywzSiLBItEQaTEykOjUzBR
-MB0GA1UdDgQWBBRicbLILuQ7lucMuZYpR5Vi2/vTTzAfBgNVHSMEGDAWgBRicbLI
-LuQ7lucMuZYpR5Vi2/vTTzAPBgNVHRMBAf8EBTADAQH/MAoGCCqGSM49BAMCA0kA
-MEYCIQC0nMB+TnCrKHMIFv5Jv8bQ0ZPnc1QLLfZu+v/049ZSaAIhAK1GmpOwTAaw
-1b4Hjfx2J+n9Dtm7Noen9pzXXyqXEctN
+MIIBtDCCAVmgAwIBAgIUTOoZaqPVNPR7EZbgQ5YuEu1thukwCgYIKoZIzj0EAwIw
+IDEeMBwGA1UEAwwVTmV4dXMgVGVzdCBBcHBsZSBSb290MB4XDTI2MDgxOTIxMDQ0
+MloXDTM2MDgxNjIxMDQ0MlowHzEdMBsGA1UEAwwUTmV4dXMgVGVzdCBBcHBsZSBK
+V1MwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAR+HgcjQ3TwATfff+uzfcU9R0xt
+XDWi0kadnZVMAp2lL/0UExJMAy5OuDPh9S1MAJYRBwSgxFdshQqp3Hg1LY+8o3Iw
+cDAMBgNVHRMBAf8EAjAAMA4GA1UdDwEB/wQEAwIHgDAQBgoqhkiG92NkBgsBBAIF
+ADAdBgNVHQ4EFgQUSaP3XvDlO1O/kof4X/75OxduiRQwHwYDVR0jBBgwFoAULA7Z
+yELA6a7ZNrTP0TJPR4trJAgwCgYIKoZIzj0EAwIDSQAwRgIhAKm8r2pwo1GmQEIJ
+ffVLO/mpaDKJ9Vo346g2dEjg7d0MAiEA9SgwxHEef4EIsGSdAeNCe9wUfjCDc4HA
+vg59DRoVpU8=
+-----END CERTIFICATE-----`;
+
+const TEST_ROOT_CERT = `-----BEGIN CERTIFICATE-----
+MIIBljCCATugAwIBAgIUVUucVLfZRYajBrNF+s0gmYASObswCgYIKoZIzj0EAwIw
+IDEeMBwGA1UEAwwVTmV4dXMgVGVzdCBBcHBsZSBSb290MB4XDTI2MDgxOTIxMDQ0
+MloXDTM2MDgxNjIxMDQ0MlowIDEeMBwGA1UEAwwVTmV4dXMgVGVzdCBBcHBsZSBS
+b290MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAERBp9+bJ0BkXyOzRU6ZBwqsfu
+NDsf5iKo414PXyaH5QmO9l9Pl6w2CbndldoA8morsINWxoDQ0QEwT2vn6FpwDqNT
+MFEwHQYDVR0OBBYEFCwO2chCwOmu2Ta0z9EyT0eLayQIMB8GA1UdIwQYMBaAFCwO
+2chCwOmu2Ta0z9EyT0eLayQIMA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwID
+SQAwRgIhAMm0Ktszs6qMMgj+tFpTZE8uAzP0ogiNsfmI33be/zluAiEA3vY/B/jV
+UC1GzG3S7k7VeY/f34k3zX3VPeQT6e3S/Ok=
 -----END CERTIFICATE-----`;
 
 const ORIGINAL_APPLE_JWS_TEST_ROOT_CERT_PEM = process.env.APPLE_JWS_TEST_ROOT_CERT_PEM;
@@ -91,7 +108,9 @@ function certToX5c(certPem: string): string {
 function signJws(payload: Record<string, unknown>, headerOverrides: Record<string, unknown> = {}): string {
   const header = {
     alg: 'ES256',
-    x5c: [certToX5c(TEST_CERT)],
+    // Present the full chain leaf -> root, as Apple does. With only the leaf,
+    // the verifier appends the bundled Apple root and the chain walk fails.
+    x5c: [certToX5c(TEST_CERT), certToX5c(TEST_ROOT_CERT)],
     ...headerOverrides,
   };
   const encodedHeader = Buffer.from(JSON.stringify(header)).toString('base64url');
@@ -202,7 +221,7 @@ async function postAppleNotification(signedPayload: string): Promise<{ status: n
 
 describe('Apple App Store Server Notifications JWS verification', () => {
   beforeEach(() => {
-    process.env.APPLE_JWS_TEST_ROOT_CERT_PEM = TEST_CERT;
+    process.env.APPLE_JWS_TEST_ROOT_CERT_PEM = TEST_ROOT_CERT;
     testDb = new Database(':memory:');
     testDb.exec(`
       CREATE TABLE subscriptions (

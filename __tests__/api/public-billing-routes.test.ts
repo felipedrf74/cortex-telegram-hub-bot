@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import express from 'express';
 
 const hoisted = vi.hoisted(() => ({
@@ -46,7 +46,21 @@ describe('public billing routes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     _resetPublicBillingRateLimiterForTests();
+    // The plan §3 sunset now defaults CLOSED (QA5 P1-6), so exercising the
+    // anonymous path requires opting in explicitly.
+    vi.stubEnv('ANONYMOUS_CHECKOUT_ENABLED', 'true');
     hoisted.createPublicCheckoutSession.mockResolvedValue('https://checkout.stripe.test/session');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('refuses anonymous checkout when the sunset default applies (QA5 P1-6)', async () => {
+    vi.stubEnv('ANONYMOUS_CHECKOUT_ENABLED', '');
+    const res = await dispatch({ email: 'buyer@example.com', plan: 'pro', currency: 'usd' });
+    expect(res.statusCode).toBe(410);
+    expect(hoisted.createPublicCheckoutSession).not.toHaveBeenCalled();
   });
 
   it('starts website checkout with allowlisted email, plan, and currency only', async () => {

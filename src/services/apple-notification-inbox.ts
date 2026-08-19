@@ -21,7 +21,7 @@ import { getDb } from './database';
 import { config } from '../config';
 import { isApplePackFulfillmentActive } from './hybrid-runtime-kill-switches';
 import { logger } from '../utils/logger';
-import { verifyAppleJws } from './apple-jws-verifier';
+import { decodeAppleJwsPayload, verifyAppleJws } from './apple-jws-verifier';
 import {
   handleAppleNotification,
   resolveUserIdFromAppleAppAccountToken,
@@ -47,6 +47,48 @@ export const MAX_CONSUMABLE_QUANTITY = 100;
  */
 export function isSandboxGrantAllowed(): boolean {
   return process.env.APPLE_ALLOW_SANDBOX_GRANTS === 'true';
+}
+
+/** Bounded scan: reversals are rare, and this runs only on the restore path. */
+const REVERSAL_LOOKUP_SCAN_CAP = 2_000;
+
+/**
+ * True when the durable inbox already holds an Apple-signed REFUND/REVOKE for
+ * this transaction, in ANY state (QA5 P2 restore-refund-window-open).
+ *
+ * The restoration endpoint verifies only the JWS the client submits, so a user
+ * who cached a transaction JWS before refunding could replay it and mint
+ * credits while the server held Apple's own refund notice on disk — including
+ * when that notice failed processing and never revoked anything.
+ */
+export function hasRecordedAppleReversalForTransaction(transactionId: string): boolean {
+  const id = String(transactionId || '').trim();
+  if (!id) return false;
+  try {
+    const rows = getDb()
+      .prepare(`SELECT signed_payload AS signedPayload
+                  FROM apple_notification_inbox
+                 WHERE notification_type IN ('REFUND', 'REVOKE')
+                 ORDER BY id DESC LIMIT ${REVERSAL_LOOKUP_SCAN_CAP}`)
+      .all() as Array<{ signedPayload: string }>;
+    for (const row of rows) {
+      try {
+        const outer = decodeAppleJwsPayload<any>(String(row.signedPayload ?? ''));
+        const innerJws = outer?.data?.signedTransactionInfo;
+        if (typeof innerJws !== 'string') continue;
+        const inner = decodeAppleJwsPayload<any>(innerJws);
+        if (inner?.transactionId === id || inner?.originalTransactionId === id) return true;
+      } catch {
+        // An undecodable stored row cannot prove a reversal; keep scanning.
+      }
+    }
+    return false;
+  } catch (err) {
+    // Fail CLOSED: if the reversal record cannot be read, do not mint credit
+    // on a transaction that may already be refunded.
+    logger.error({ err, transactionId: id }, 'apple-notification-inbox: reversal lookup failed; refusing to treat as clean');
+    return true;
+  }
 }
 
 /** Non-retryable inbox faults: retries cannot fix them, so the row fails
@@ -296,6 +338,27 @@ function applyStoredNotification(row: RawRow): boolean {
     });
     throw new Error(`ONE_TIME_CHARGE for unresolvable product id: ${productId || 'unknown'}`);
   }
+  if (!handledByLegacy && isPackReversalType(row.notification_type)) {
+    // A refund/revoke whose product id resolves to no catalog pack (the
+    // APPLE_PRODUCT_ID_* env is unset) previously fell through both the pack
+    // branch and the ONE_TIME_CHARGE trap, and was marked processed with no
+    // revocation and no signal — the user kept credits Apple refunded
+    // (QA5 P2 pack-reversal-swallowed-when-product-id-unset).
+    recordOperatorAlert({
+      source: 'apple_notifications',
+      severity: 'critical',
+      dedupeKey: `apple_inbox_unresolvable_reversal:${row.notification_uuid}`,
+      title: 'Apple reversal matched no catalog pack and no legacy product',
+      detail: 'A REFUND/REVOKE could not be attributed, so no credit was revoked. Check APPLE_PRODUCT_ID_* configuration.',
+      suspectedArea: 'billing',
+      metadata: {
+        notificationUuid: row.notification_uuid,
+        notificationType: row.notification_type,
+        productId,
+      },
+    });
+    throw new Error(`${row.notification_type} for unresolvable product id: ${productId || 'unknown'}`);
+  }
   return handledByLegacy;
 }
 
@@ -385,8 +448,12 @@ export function processPendingAppleNotifications(input: { limit?: number; now?: 
     : Object.values(config.hybridCommerce.appleProductIds).filter(Boolean);
   // Exclusion selects on the STORED product id (QA3 P2-11), so a legacy
   // points ONE_TIME_CHARGE is never parked behind the pack kill switch.
+  // It must NOT also require state='pending' AND attempts=0 (QA5 P2
+  // deferred-pack-starves-retry-head-failed-state): a pack row that already
+  // reached 'failed' keeps its old received_at, is re-selected every pass,
+  // defers again, and starves newer notifications behind it forever.
   const excludeDeferredPacks = packProductIds.length > 0
-    ? `AND NOT (notification_type = 'ONE_TIME_CHARGE' AND state = 'pending' AND attempts = 0
+    ? `AND NOT (notification_type = 'ONE_TIME_CHARGE'
         AND product_id IN (${packProductIds.map(() => '?').join(', ')}))`
     : '';
   const rows = db
@@ -410,5 +477,45 @@ export function processPendingAppleNotifications(input: { limit?: number; now?: 
     else if (result.kind === 'exhausted') counts.exhausted += 1;
     else if (result.kind === 'deferred') counts.deferred += 1;
   }
+
+  // The selector above can never return an exhausted row (attempts < MAX), so
+  // the exhausted-row alert was unreachable from the only scheduled caller
+  // (QA5 P2 exhausted-inbox-rows-never-alert). Money Apple already collected
+  // would sit ungrantable with zero signal. Surface them explicitly; the alert
+  // dedupe key keeps repeated passes to one open alert per notification.
+  counts.exhausted += alertOnExhaustedAppleNotifications();
   return counts;
+}
+
+/** Raise one operator alert per stuck, retry-exhausted inbox row. */
+function alertOnExhaustedAppleNotifications(limit = 50): number {
+  const rows = getDb()
+    .prepare(
+      `SELECT notification_uuid, notification_type, attempts
+         FROM apple_notification_inbox
+        WHERE state != 'processed' AND attempts >= ?
+        ORDER BY received_at ASC
+        LIMIT ?`,
+    )
+    .all(MAX_PROCESS_ATTEMPTS, limit) as Array<{
+      notification_uuid: string;
+      notification_type: string;
+      attempts: number;
+    }>;
+  for (const row of rows) {
+    recordOperatorAlert({
+      source: 'apple_notifications',
+      severity: 'warning',
+      dedupeKey: `apple_inbox_exhausted:${row.notification_uuid}`,
+      title: 'Apple notification exhausted its retries',
+      detail: 'The notification will not be retried again; entitlement or credit it carries has not landed.',
+      suspectedArea: 'billing',
+      metadata: {
+        notificationUuid: row.notification_uuid,
+        notificationType: row.notification_type,
+        attempts: row.attempts,
+      },
+    });
+  }
+  return rows.length;
 }

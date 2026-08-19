@@ -65,8 +65,16 @@ vi.mock('../../src/services/database', async () => {
     prepare: (sql: string) => {
       if (sql.includes('sqlite_master')) return { get: () => ({ name: 'script_generation_runs' }) };
       if (sql.includes('PRAGMA table_info')) return { all: () => requiredColumns.map(name => ({ name })) };
+      // Count ONLY the script-generation audit insert. Unrelated writes from
+      // other services (e.g. an operator health alert) are not what these
+      // privacy assertions are about, and treating every statement as an
+      // audit insert made the assertions fire on unrelated behavior.
+      const isScriptGenerationAudit = sql.includes('script_generation_runs');
       return {
+        all: () => [],
+        get: () => undefined,
         run: (...args: unknown[]) => {
+          if (!isScriptGenerationAudit) return { changes: 1 };
           mockAuditInsert(...args);
           if (mockAuditState.insertFails) throw new Error('synthetic audit persistence failure');
           return { changes: 1 };
