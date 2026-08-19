@@ -7,6 +7,19 @@
 
 Machine-readable projection: `docs/release/release-state.json` (generated, non-authoritative).
 
+## Container-era candidate status — 2026-08-19
+
+- Active container release (authoritative VPS receipt): `d984c886`, release id
+  `1fa90d04…`, completed `2026-08-15T08:35:51Z`, payload `sha256:f1eda79f…`.
+- The `3970fac7` payload (hybrid AI QA3 + NH-0040/41, default-OFF) published
+  `14:42Z` but its delta touched `src/config.ts`, so unattended CD halted by
+  design (`migration_not_cd_eligible`, candidate `d9ac4a92…`,
+  `POLICY_RELEASE_DATA_MAINTENANCE_CONFIGURATION_CHANGED`).
+- Remediation: owner ack of the exact blocked id, then this clean-delta docs
+  commit republishes an eligible payload with identical application code.
+  Pending migrations 283–289 all evaluate predecessor-compatible (283 via its
+  governed exemption). Poller GHCR read credential replaced `2026-08-19`.
+
 ## Production
 
 - Backend version: `4.14.232`
@@ -35,45 +48,24 @@ Machine-readable projection: `docs/release/release-state.json` (generated, non-a
 
 ## Lean-Release Measurement
 
-- Final measurement sample: main 13m41s, handoff 21s, checkpoint 4m21s, automated
-  readiness 18m23s; all passed.
-- Selected/remainder/union: `6,897/10,136/17,033` tests and
-  `447/693/1,140` files; partitions were disjoint and complete.
-- Ten of ten releases are measured. Stable nearest-rank p50/p95:
-  main 7m01s/17m33s; handoff 55s/8m13s; checkpoint 4m21s/5m33s;
-  automated readiness 16m21s/21m43s.
-- Median improvement against 19m40s is 3m19s (16.86%); all ten promotions
-  passed. Escaped-critical-defect review remains monitoring.
-- The protected-main artifact was reused unchanged; hosts ran no build or test.
+- Ten of ten measured releases passed (p50/p95: main 7m01s/17m33s, handoff
+  55s/8m13s, checkpoint 4m21s/5m33s, readiness 16m21s/21m43s); median
+  improvement 3m19s (16.86%). Partitions `6,897/10,136/17,033` tests were
+  disjoint and complete; the protected-main artifact was reused unchanged.
 
 ## Chat Quality Rollout
 
-- Phases 1–4 are complete: the 300 reviewed rows, domain-routing snapshot, and
-  first corpus calibration are deployed. Bootstrap cache coverage is 25/300,
-  with 25/25 secretary rows correct; action-skill accuracy is not claimed.
-- The production-bound sanitized corpus export completed with zero provider
-  calls. Its plan/receipt-bound monotonic calibration was verified and released
-  in `53164d51fa775d287732e71f8fed62cf2604b2a7`.
-- Phase 5 staging baseline `chat-eval-2026-07-31T17-19-58-073Z` is frozen with
-  immutable hashes. Its acknowledged `operator_checkout_only` provenance is
-  surfaced and is not represented as production evidence.
-- Phase 6: 0/9 routes pass, two are insufficient and seven blocked; no legacy
-  stage was disabled. Report SHA-256: `f8a00055927cb7596e1f470e619bc8ae5000689264da8c8324a3432eb7f9f842`.
-- Phase 7 reached a genuine 200/200 (100%) classifier agreement gate on the
-  predecessor release. The staging classifier enable passed, but its observation
-  failed before receipt publication because missing retirement evidence was
-  incorrectly paged as a regression. The classifier rollback passed and all
-  seven capability flags are OFF.
-- The failed observation plan and canonical smoke remain immutable. Its
-  protected-main, hash-bound `failure_acknowledged` recovery published without
-  converting the failure into a pass; classifier rollback and the predecessor
-  recorder disable both passed.
-- Routing-gate evidence does not transfer releases. The current `3ac5ebbe`
-  release has no gate yet; HMAC presence was re-attested in both roles and the
-  dedicated staging recorder is ON only at USER/TENANT scope while fresh,
-  genuine staging traffic is collected.
-- All seven capability flags are configured and effective OFF; master kill is
-  available and OFF. No later capability flag has started.
+- Phases 1–4 deployed (300 reviewed rows, routing snapshot, first calibration;
+  bootstrap cache 25/300 with 25/25 secretary rows). Sanitized corpus exported
+  with zero provider calls; calibration released in `53164d51`.
+- Phase 5 staging baseline `chat-eval-2026-07-31T17-19-58-073Z` frozen with
+  immutable hashes (`operator_checkout_only` provenance, not production
+  evidence). Phase 6: 0/9 routes pass (report SHA-256 `f8a00055…`).
+- Phase 7 hit a genuine 200/200 classifier gate on the predecessor; the staging
+  observation failure was recovered as hash-bound `failure_acknowledged`
+  without converting to a pass; classifier rollback passed. All seven
+  capability flags remain OFF (master kill available); routing-gate evidence
+  does not transfer releases, and `3ac5ebbe` has no gate yet.
 
 ## iOS / TestFlight
 
