@@ -56,9 +56,10 @@ describe('owner-confirmed subscription price display contract', () => {
     expect(landing).toContain('appstore-cta__approved');
     expect(landing).toContain('appstore-cta__public');
     // The official link activates only at release time, by operator edit,
-    // with an allowlisted URL — never pre-baked into the page.
-    expect(landing).toContain('data-appstore-url=""');
-    expect(landing).not.toContain('https://apps.apple.com/');
+    // with an allowlisted URL — never pre-baked into the page. The init
+    // guard strips any non-apps.apple.com href rather than writing one.
+    expect(landing).toContain("new URL(href).origin === 'https://apps.apple.com'");
+    expect(landing).not.toContain('appstore-cta__public" rel="noopener" href');
   });
 
   it('renders credit-pack prices with cents on user and operator surfaces', () => {

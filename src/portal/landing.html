@@ -1494,10 +1494,12 @@
       </div>
 
       <!-- App Store CTA. data-appstore-state is operator-controlled at
-           release time: unavailable → approved → public. The official badge
-           and the apps.apple.com link render ONLY in the public state, after
-           the listing is independently verified (plan §3). -->
-      <div class="appstore-cta" id="appstore-cta" data-appstore-state="unavailable" data-appstore-url="">
+           release time: unavailable → approved → public. Flipping to public
+           also sets the anchor's href to the verified apps.apple.com listing;
+           the init script strips any non-allowlisted href and downgrades the
+           state, so the official link renders ONLY after independent
+           verification (plan §3). -->
+      <div class="appstore-cta" id="appstore-cta" data-appstore-state="unavailable">
         <span class="appstore-cta__unavailable" data-i18n="appstore.unavailable">📱 App iOS em beta privada — o portal web já está aberto.</span>
         <span class="appstore-cta__approved" data-i18n="appstore.approved">📱 App iOS aprovado — link público da App Store em breve.</span>
         <a class="appstore-cta__public" rel="noopener" data-i18n="appstore.public">📱 Baixar na App Store</a>
@@ -1587,17 +1589,26 @@
 
   <!-- ═══════════════════ SCRIPTS ═══════════════════ -->
   <script>
-    // App Store CTA (plan §3): the public state's link activates only with an
-    // allowlisted apps.apple.com URL; anything else keeps the badge inert.
+    // App Store CTA (plan §3): the operator sets the anchor's href when
+    // flipping to public. This guard never WRITES an href — it only strips a
+    // non-allowlisted one and downgrades the state, so the official badge
+    // cannot point anywhere but the verified apps.apple.com listing.
     (function initAppStoreCta() {
       const cta = document.getElementById('appstore-cta');
       if (!cta) return;
       const link = cta.querySelector('.appstore-cta__public');
-      const url = cta.getAttribute('data-appstore-url') || '';
-      if (link && /^https:\/\/apps\.apple\.com\//.test(url)) {
-        link.setAttribute('href', url);
-      } else if (cta.getAttribute('data-appstore-state') === 'public') {
-        cta.setAttribute('data-appstore-state', 'approved');
+      const href = (link && link.getAttribute('href')) || '';
+      let allowed = false;
+      try {
+        allowed = new URL(href).origin === 'https://apps.apple.com';
+      } catch {
+        allowed = false;
+      }
+      if (!allowed) {
+        if (link) link.removeAttribute('href');
+        if (cta.getAttribute('data-appstore-state') === 'public') {
+          cta.setAttribute('data-appstore-state', 'approved');
+        }
       }
     })();
 
