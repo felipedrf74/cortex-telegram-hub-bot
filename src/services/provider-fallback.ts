@@ -173,10 +173,8 @@ function openToolUseIdsFromConversation(toolConversation: Array<{ role: string; 
 function isRetryableError(err: any): boolean {
   if (err?.name === 'ApiUsagePersistenceError' || err?.code === 'AI_USAGE_PERSISTENCE_FAILED' || err?.name === 'AiBudgetError') return false;
   if (isProviderRequestCancellation(err)) return false;
-  // Free-tier local-only policy refusal: never a provider-health signal, so
-  // never retryable at this layer (QA5 P1-4). It is re-thrown earlier in the
-  // catch, but keep the classifier correct for any other caller.
-  if (isFreeTierCloudInferenceBlockedError(err)) return false;
+  // A free-tier local-only refusal never reaches here: both the primary and
+  // fallback catches re-throw it before any retry classification (QA5 P1-4).
   const status = err?.status ?? err?.statusCode ?? err?.error_code;
   // 429 = rate limited (retryable after backoff)
   if (status === 429) return true;
@@ -995,6 +993,10 @@ export class TaskRoutingProvider implements AIProvider {
       // A cancellation observed by the fallback remains caller-owned rather
       // than becoming a provider failure in health telemetry.
       if (isProviderRequestCancellation(fallbackErr)) throw fallbackErr;
+      // Same for a free-tier policy refusal: when the primary circuit is open
+      // the guard first runs on THIS leg, and counting it would blame the
+      // fallback provider for a per-user policy decision (QA5 P1-4).
+      if (isFreeTierCloudInferenceBlockedError(fallbackErr)) throw fallbackErr;
       const retryable = isRetryableError(fallbackErr);
       const errorSummary = summarizeProviderError(fallbackErr, retryable);
       // Codex QA round 9: skip metric increments for AIProviderTruncatedError

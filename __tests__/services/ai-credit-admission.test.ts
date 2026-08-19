@@ -226,6 +226,54 @@ describe('ai-credit-admission', () => {
     expect(getAiCreditWallet(60, 'max', NOW).availableCredits).toBe(1198);
   });
 
+  it('refuses to start with credits enabled and no grant path (QA5 P1-2)', async () => {
+    const ledger = await import('../../src/services/ai-credit-ledger');
+    const { assertAiCreditActivationReady } = await import('../../src/services/ai-credit-admission');
+
+    // Provisioning registers on import, so the wired runtime passes.
+    hybridCreditsEnabled = true;
+    expect(ledger.listRegisteredAiCreditGrantPaths()).toContain(ledger.MONTHLY_INCLUDED_GRANT_PATH);
+    expect(() => assertAiCreditActivationReady()).not.toThrow();
+
+    // With credits off the guard is a no-op regardless of registration.
+    hybridCreditsEnabled = false;
+    expect(() => assertAiCreditActivationReady()).not.toThrow();
+
+    // With credits on and nothing registered, boot must fail loudly rather
+    // than let admission deny every paid operation at runtime.
+    hybridCreditsEnabled = true;
+    const listSpy = vi.spyOn(ledger, 'listRegisteredAiCreditGrantPaths').mockReturnValue([]);
+    try {
+      expect(() => assertAiCreditActivationReady()).toThrow(/no AI credit grant path is registered/);
+    } finally {
+      listSpy.mockRestore();
+    }
+  });
+
+  it('provisions nothing for a plan whose allowance is zero', async () => {
+    const { ensureMonthlyAiCreditsForUser } = await import('../../src/services/ai-credit-provisioning');
+    db.prepare("UPDATE plan_configs SET monthly_ai_credits = 0 WHERE plan_id = 'free'").run();
+    expect(ensureMonthlyAiCreditsForUser({ userId: 70, plan: 'free', now: NOW }))
+      .toEqual({ kind: 'not_applicable', reason: 'plan_grants_no_monthly_credits' });
+    expect(listAiCreditLots(70)).toHaveLength(0);
+
+    // A malformed caller identity is rejected, never guessed.
+    expect(ensureMonthlyAiCreditsForUser({ userId: 0, plan: 'pro', now: NOW }))
+      .toEqual({ kind: 'failed', reason: 'invalid userId' });
+  });
+
+  it('anchors the included lot to a paid billing period when one exists', async () => {
+    const { resolveMonthlyProvisioningPeriod } = await import('../../src/services/ai-credit-provisioning');
+    // No subscription row: the calendar month anchors the period.
+    expect(resolveMonthlyProvisioningPeriod(40, NOW).periodKey).toBe('cal:2026-08');
+
+    db.prepare(`INSERT INTO subscriptions (user_id, plan, period, status, provider, current_period_end)
+      VALUES (71, 'pro', 'monthly', 'active', 'stripe', ?)`).run(PERIOD_END.toISOString());
+    const anchored = resolveMonthlyProvisioningPeriod(71, NOW);
+    expect(anchored.periodKey).toBe(`sub:${PERIOD_END.toISOString()}`);
+    expect(anchored.periodEnd.toISOString()).toBe(PERIOD_END.toISOString());
+  });
+
   it('exposes typed denial classes for callers', async () => {
     resolvedPlan = 'free';
     db.prepare("UPDATE plan_configs SET monthly_ai_credits = 0 WHERE plan_id = 'free'").run();
