@@ -158,6 +158,28 @@ describe('ai-credit-ledger', () => {
     expect(freeStandard.kind).toBe('reserved');
   });
 
+  it('denies a replay of a restricted class after a plan downgrade (QA3 P2-12)', () => {
+    grantMonthlyAiCredits({ userId: 54, plan: 'pro', periodKey: '2026-08', periodEnd: PERIOD_END, now: NOW });
+    const reserved = reserveAiCredits({
+      userId: 54,
+      plan: 'pro',
+      operationClass: 'standard_script',
+      replayScope: scope('dg', 54),
+      now: NOW,
+    });
+    expect(reserved.kind).toBe('reserved');
+    // Same scope replayed after downgrading to free: availability outranks
+    // replay, so the restricted class cannot be re-entered.
+    const replayed = reserveAiCredits({
+      userId: 54,
+      plan: 'free',
+      operationClass: 'standard_script',
+      replayScope: scope('dg', 54),
+      now: NOW,
+    });
+    expect(replayed).toEqual({ kind: 'operation_not_available', operationClass: 'standard_script', plan: 'free' });
+  });
+
   it('serializes competing reserves so the last credit is spent exactly once', () => {
     grantPromotionalAiCredits({ userId: 40, promotionId: 'one-credit', credits: 1, expiryDays: 30, now: NOW });
     const first = reserveAiCredits({ userId: 40, plan: 'pro', operationClass: 'standard', replayScope: scope('r1'), now: NOW });

@@ -18,9 +18,11 @@ describe('owner-confirmed subscription price display contract', () => {
 
     expect(env).toContain(`STRIPE_PRICE_PRO_MONTHLY=${CANONICAL.proPriceId}  # Pro ${CANONICAL.proUsd}/mo USD reference price`);
     expect(env).toContain(`STRIPE_PRICE_MAX_MONTHLY=${CANONICAL.maxPriceId}  # Max ${CANONICAL.maxUsd}/mo USD reference price`);
-    expect(env).toContain('STRIPE_PRICE_ID_POINTS_SMALL=price_1U55D63kbWVFdS609PBBp7ek   # 100 credits · $4.99');
-    expect(env).toContain('STRIPE_PRICE_ID_POINTS_MEDIUM=price_1U55DN3kbWVFdS60vjYzf3Ij  # 250 credits · $9.99');
-    expect(env).toContain('STRIPE_PRICE_ID_POINTS_LARGE=price_1U55Dd3kbWVFdS601IUwkSe3   # 600 credits · $19.99');
+    // Legacy points products keep their ORIGINAL economics (plan §3, QA3
+    // P0-1): the $x.99 price points belong to the NEW credit packs only.
+    expect(env).toContain('STRIPE_PRICE_ID_POINTS_SMALL=   # 300 points · $5');
+    expect(env).toContain('STRIPE_PRICE_ID_POINTS_MEDIUM=  # 600 points · $10');
+    expect(env).toContain('STRIPE_PRICE_ID_POINTS_LARGE=   # 1,200 points · $20');
   });
 
   it('keeps the portal landing price matrix and alt copy aligned', () => {
@@ -72,7 +74,7 @@ describe('owner-confirmed subscription price display contract', () => {
       `Pro at \`${CANONICAL.proUsd}\` and Max at \`${CANONICAL.maxUsd}\``,
     );
     expect(read('docs/TOKEN-QUOTA-CONTRACT.md')).toContain(
-      '| Small | `me.nexushub.points.small` | $4.99 | 100 | $0.10 | 30 days |',
+      '| Small | `me.nexushub.points.small` | $5 | 300 | $0.30 | 30 days |',
     );
   });
 

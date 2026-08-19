@@ -22,6 +22,10 @@ vi.mock('../../src/config', async (importOriginal) => {
     ...actual,
     config: {
       ...actual.config,
+      stripe: {
+        ...actual.config.stripe,
+        secretKey: 'sk_test_pack_suite',
+      },
       get hybridCommerce() {
         return {
           stripePriceIds: { planProMonthly: '', planMaxMonthly: '', pack100: 'price_pack100', pack250: '', pack600: '' },
@@ -49,6 +53,10 @@ import {
   fulfillStripeCreditPackCheckout,
   handleCheckoutCompleted,
   handleStripeCreditPackReversal,
+  StripeTestModeCheckoutError,
+  assertStripeCheckoutKeyMode,
+  stripeEventLivemodeMatchesKey,
+  stripeKeyMode,
 } from '../../src/services/stripe-service';
 
 const NOW = new Date('2026-08-18T12:00:00.000Z');
@@ -59,6 +67,7 @@ function packSession(overrides: Record<string, unknown> = {}) {
     mode: 'payment',
     payment_status: 'paid',
     amount_total: 499,
+    currency: 'usd',
     payment_intent: 'pi_pack_1',
     metadata: { userId: '40', catalogItemId: 'pack.credits.100' },
     ...overrides,
@@ -125,6 +134,19 @@ describe('stripe credit-pack fulfillment', () => {
     expect(db.prepare('SELECT COUNT(*) AS count FROM ai_credit_lots').get()).toEqual({ count: 0 });
   });
 
+  it('refuses non-USD presentment and absent amounts instead of matching numerically (QA3 P1-5/P2-8)', () => {
+    // Zero-decimal JPY would numerically match the USD cents amount.
+    expect(fulfillStripeCreditPackCheckout(packSession({
+      currency: 'jpy',
+      amount_total: 499,
+    }))).toBe(false);
+    // A missing amount is a refusal, not a pass.
+    expect(fulfillStripeCreditPackCheckout(packSession({ amount_total: undefined }))).toBe(false);
+    // A missing currency is equally a refusal.
+    expect(fulfillStripeCreditPackCheckout(packSession({ currency: undefined }))).toBe(false);
+    expect(db.prepare('SELECT COUNT(*) AS count FROM ai_credit_lots').get()).toEqual({ count: 0 });
+  });
+
   it('refuses a session whose charged amount does not match the catalog price', () => {
     expect(fulfillStripeCreditPackCheckout(packSession({ amount_total: 1 }))).toBe(false);
     expect(db.prepare('SELECT COUNT(*) AS count FROM ai_credit_lots').get()).toEqual({ count: 0 });
@@ -151,5 +173,30 @@ describe('stripe credit-pack fulfillment', () => {
       'refund',
     )).toBe(false);
     expect(getAiCreditWallet(40, 'pro', NOW).purchasedRemaining).toBe(100);
+  });
+});
+
+describe('stripe key-mode and livemode enforcement (QA3 P1-2)', () => {
+  it('derives the key mode from the configured secret', () => {
+    expect(stripeKeyMode()).toBe('test');
+  });
+
+  it('refuses new checkout sessions on a non-live key unless sandbox checkout is explicitly allowed', () => {
+    expect(() => assertStripeCheckoutKeyMode()).toThrow(StripeTestModeCheckoutError);
+    vi.stubEnv('STRIPE_SANDBOX_CHECKOUT_ALLOWED', 'true');
+    try {
+      expect(() => assertStripeCheckoutKeyMode()).not.toThrow();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('rejects events whose livemode disagrees with the key and passes synthetic fixtures without the boolean', () => {
+    // Configured key is test-mode: a live event must be rejected.
+    expect(stripeEventLivemodeMatchesKey({ livemode: true })).toBe(false);
+    expect(stripeEventLivemodeMatchesKey({ livemode: false })).toBe(true);
+    // Absence of the boolean only occurs in synthetic fixtures; signature
+    // verification already binds origin for real deliveries.
+    expect(stripeEventLivemodeMatchesKey({})).toBe(true);
   });
 });

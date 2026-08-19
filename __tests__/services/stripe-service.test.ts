@@ -153,6 +153,9 @@ function appleTransactionJws(payload: Record<string, unknown>): string {
 
 describe('stripe service billing reconciliation', () => {
   beforeEach(() => {
+    // This suite legitimately exercises sandbox checkout flows with a test
+    // key; the QA3 P1-2 key-mode gate is opted out explicitly here.
+    vi.stubEnv('STRIPE_SANDBOX_CHECKOUT_ALLOWED', 'true');
     testDb = new Database(':memory:');
     createSchema(testDb);
     hoisted.stripeConfig.managedPaymentsSandboxEnabled = true;

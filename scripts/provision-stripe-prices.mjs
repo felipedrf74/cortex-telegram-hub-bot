@@ -166,6 +166,12 @@ async function main() {
     console.error('STRIPE_SECRET_KEY is required (never pass it as an argument).');
     process.exit(2);
   }
+  // A live key mutates the real account: require an explicit --live-ok so a
+  // copy-pasted sandbox command can never run against production by accident.
+  if (secretKey.startsWith('sk_live_') && apply && !process.argv.includes('--live-ok')) {
+    console.error('Refusing --apply with a LIVE key: add --live-ok to confirm.');
+    process.exit(2);
+  }
   const { default: Stripe } = await import('stripe');
   const stripe = new Stripe(secretKey);
 

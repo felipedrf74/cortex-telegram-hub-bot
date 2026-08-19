@@ -610,5 +610,10 @@ describe('hybrid flag live getters (QA P2-13)', () => {
     expect(config.hybridCommerce.stripePackFulfillmentEnabled).toBe(true);
     vi.stubEnv('STRIPE_PACK_FULFILLMENT_KILL_SWITCH', 'true');
     expect(config.hybridCommerce.stripePackFulfillmentEnabled).toBe(false);
+
+    // Anonymous checkout sunset flips live too (QA3 P3-13).
+    expect(config.hybridCommerce.anonymousCheckoutEnabled).toBe(true);
+    vi.stubEnv('ANONYMOUS_CHECKOUT_ENABLED', 'false');
+    expect(config.hybridCommerce.anonymousCheckoutEnabled).toBe(false);
   });
 });

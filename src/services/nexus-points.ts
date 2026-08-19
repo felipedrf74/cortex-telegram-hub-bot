@@ -39,32 +39,37 @@ export interface NexusPointPackage {
 }
 
 export const NEXUS_POINT_PACKAGES: Record<NexusPointPackageId, NexusPointPackage> = {
+  // Plan §3: the legacy points products keep their ORIGINAL economics — the
+  // $x.99 price points belong to the NEW versioned credit packs
+  // (pack.credits.*), never to these live product ids. QA round 3 (P0-1)
+  // caught an in-place repricing that granted a third of the points for the
+  // same Apple charge; this block is the restored pre-repricing truth.
   'me.nexushub.points.small': {
     productId: 'me.nexushub.points.small',
     label: 'small',
-    priceUsd: 4.99,
-    points: 100,
-    usdAllowance: 0.10,
-    aiOnlyMarginPct: 98,
-    netMarginAfterAppleCutPct: 97.1,
+    priceUsd: 5,
+    points: 300,
+    usdAllowance: 0.30,
+    aiOnlyMarginPct: 94,
+    netMarginAfterAppleCutPct: 91.4,
   },
   'me.nexushub.points.medium': {
     productId: 'me.nexushub.points.medium',
     label: 'medium',
-    priceUsd: 9.99,
-    points: 250,
-    usdAllowance: 0.25,
-    aiOnlyMarginPct: 97.5,
-    netMarginAfterAppleCutPct: 96.4,
+    priceUsd: 10,
+    points: 600,
+    usdAllowance: 0.60,
+    aiOnlyMarginPct: 94,
+    netMarginAfterAppleCutPct: 91.4,
   },
   'me.nexushub.points.large': {
     productId: 'me.nexushub.points.large',
     label: 'large',
-    priceUsd: 19.99,
-    points: 600,
-    usdAllowance: 0.60,
-    aiOnlyMarginPct: 97,
-    netMarginAfterAppleCutPct: 95.7,
+    priceUsd: 20,
+    points: 1200,
+    usdAllowance: 1.20,
+    aiOnlyMarginPct: 94,
+    netMarginAfterAppleCutPct: 91.4,
   },
 };
 

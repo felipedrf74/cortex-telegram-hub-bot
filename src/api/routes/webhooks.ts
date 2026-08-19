@@ -34,6 +34,7 @@ import { findNexusUserByTodoistId } from '../../services/task-store/todoist-adap
 import { invalidateTaskCaches } from '../../services/cache-coherence-registry';
 import {
   handleCheckoutCompleted,
+  stripeEventLivemodeMatchesKey,
   fulfillStripeCreditPackCheckout,
   handleStripeCreditPackReversal,
   handleCheckoutPaymentFailed,
@@ -172,6 +173,17 @@ export function createWebhookRouter(options: WebhookRouterOptions = {}): Router 
     } catch (err: any) {
       logger.warn({ err: err.message }, 'Stripe webhook verification failed');
       res.status(400).json({ error: 'Webhook signature verification failed' });
+      return;
+    }
+
+    // Cross-mode events never reach a handler: a test-mode event must not
+    // mutate entitlement state under a live key, nor the reverse (QA3 P1-2).
+    if (!stripeEventLivemodeMatchesKey(event)) {
+      logger.warn(
+        { eventId: event.id, type: event.type, livemode: event.livemode },
+        'Stripe webhook rejected: event livemode does not match the configured key mode',
+      );
+      res.status(400).json({ error: 'Event livemode does not match this endpoint' });
       return;
     }
 

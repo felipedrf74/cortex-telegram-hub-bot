@@ -345,7 +345,14 @@ local-primary inference standard:
   (plan fairness — the 2:1 high-weight burst — still applies across classes);
   scheduled jobs defer their start to the next off-peak batch window ("Have
   it ready tomorrow") and re-defer on user retry; standard jobs run in
-  arrival order. The user-facing labels remain exactly the §1 strings.
+  arrival order. The runtime executes ONE generation at a time and never
+  preempts: "Starts immediately" therefore means "takes the next generation
+  slot, ahead of every queued job in its class" — an in-flight generation
+  finishes first. Job creation is refused entirely when the local runtime is
+  not admitting, so priority can never be charged where the selector cannot
+  order it. The user-facing labels remain exactly the §1 strings; whether the
+  Priority label should say "Jumps the queue" instead is an owner copy
+  decision (QA3 P1-6).
 - Per-class cloud provider bindings are configured at activation together
   with the cloud-fallback rate evidence; they are not hardcoded in the
   runtime.

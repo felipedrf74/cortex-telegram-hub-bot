@@ -850,7 +850,9 @@ export const config = {
       return (process.env.STRIPE_PACK_FULFILLMENT_ENABLED || 'false') === 'true'
         && (process.env.STRIPE_PACK_FULFILLMENT_KILL_SWITCH || 'false') !== 'true';
     },
-    anonymousCheckoutEnabled: (process.env.ANONYMOUS_CHECKOUT_ENABLED || 'true') === 'true',
+    get anonymousCheckoutEnabled(): boolean {
+      return (process.env.ANONYMOUS_CHECKOUT_ENABLED || 'true') === 'true';
+    },
   },
 
   // ── AI Safety ─────────────────────────────────────────────────────
