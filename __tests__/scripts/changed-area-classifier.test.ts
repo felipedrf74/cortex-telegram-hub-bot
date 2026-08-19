@@ -30,6 +30,8 @@ const SONAR_RETIREMENT_BASE_SHA = '65a87ae2a0514e0fe2ad117412d23ca3f0da8d39';
 const CONTROL_PLANE_RETIREMENT_BASE_SHA = '852116a7ee17562418779ee396095de2cd05e699';
 const RECOVERY_HOTFIX_RETIREMENT_BASE_SHA = 'b439fa86631e10be76e75615f47eda1b995b29a3';
 const LOCAL_PRIMARY_RETIREMENT_BASE_SHA = '1af3fd89edcfa6aadbf65b778d3509a876cddf96';
+// Owner-approved hybrid plan-3 repricing (NH-0039 reconciliation).
+const REPRICING_RETIREMENT_BASE_SHA = 'fb78be73e9880a4a9f77f193c6477d7a0203d4df';
 
 function classify(files: string[]) {
   return JSON.parse(execFileSync('bash', [
@@ -410,6 +412,7 @@ describe('lean changed-area classification', () => {
       CONTROL_PLANE_RETIREMENT_BASE_SHA,
       RECOVERY_HOTFIX_RETIREMENT_BASE_SHA,
       LOCAL_PRIMARY_RETIREMENT_BASE_SHA,
+      REPRICING_RETIREMENT_BASE_SHA,
     ]));
 
     const controlPlaneRetirements = policy.retirementMappings.filter((mapping: {
