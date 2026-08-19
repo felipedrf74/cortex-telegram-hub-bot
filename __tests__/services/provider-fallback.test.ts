@@ -50,7 +50,7 @@ vi.mock('../../src/services/cloud-reasoning-gate', async () => ({
   ...(await vi.importActual<typeof import('../../src/services/cloud-reasoning-gate')>(
     '../../src/services/cloud-reasoning-gate',
   )),
-  selectApprovedCloudReasoningProvider: () => optionalCloudMocks.selectApprovedCloudReasoningProvider(),
+  selectApprovedCloudReasoningProvider: (...args: unknown[]) => optionalCloudMocks.selectApprovedCloudReasoningProvider(...args),
 }));
 
 vi.mock('../../src/services/provider-registry', async () => ({
@@ -419,6 +419,49 @@ describe('TaskRoutingProvider', () => {
 
     expect(callOrder).toEqual(['local_failed', 'budget_acquired', 'cloud_called']);
     expect(cloudBoundary).toHaveBeenCalledTimes(1);
+  });
+
+  it('forwards a valid script delivery class to the cloud gate and strips an invalid one', async () => {
+    const failingOllama = () => ({
+      ...createMockProvider('ollama'),
+      localReason: vi.fn().mockRejectedValue(Object.assign(new Error('local timeout'), { code: 'ETIMEDOUT' })),
+    });
+    const localPrimary = new TaskRoutingProvider(buildConfig({
+      localReasoning: { primary: failingOllama(), fallback: 'approved_cloud_reasoning' },
+    }));
+    const boundary = async (providerCall: () => Promise<unknown>) => providerCall();
+
+    await expect(localPrimary.dispatchLocalReasoning({
+      workloadRole: 'skill_inference',
+      prompt: 'scheduled script section',
+      containsPrivateData: false,
+      allowCloudEscalation: true,
+      scriptDeliveryMode: 'scheduled',
+      localAdmission: 'eligible',
+      cloudFallbackBoundary: boundary,
+    })).resolves.toMatchObject({ text: expect.any(String) });
+    expect(optionalCloudMocks.selectApprovedCloudReasoningProvider).toHaveBeenLastCalledWith(
+      expect.objectContaining({ scriptDeliveryMode: 'scheduled' }),
+      expect.anything(),
+      null,
+    );
+
+    const secondDispatch = new TaskRoutingProvider(buildConfig({
+      localReasoning: { primary: failingOllama(), fallback: 'approved_cloud_reasoning' },
+    }));
+    await expect(secondDispatch.dispatchLocalReasoning({
+      workloadRole: 'skill_inference',
+      prompt: 'forged delivery class',
+      containsPrivateData: false,
+      allowCloudEscalation: true,
+      // Not one of the three classes: the gate request must not carry it.
+      scriptDeliveryMode: 'bogus' as never,
+      localAdmission: 'eligible',
+      cloudFallbackBoundary: boundary,
+    })).resolves.toMatchObject({ text: expect.any(String) });
+    const lastRequest = optionalCloudMocks.selectApprovedCloudReasoningProvider.mock.lastCall?.[0] as Record<string, unknown>;
+    expect(lastRequest).toBeDefined();
+    expect('scriptDeliveryMode' in lastRequest).toBe(false);
   });
 
   it('forwards cancellation into approved structured cloud generation and records no provider outcome after abort', async () => {

@@ -76,6 +76,13 @@ export interface CloudReasoningRequest {
   containsPrivateData: boolean;
   allowCloudEscalation?: boolean;
   /**
+   * §1/Addendum C: which script delivery class this escalation serves.
+   * When a per-class binding is configured (CLOUD_SCRIPT_*_PROVIDER/MODEL),
+   * it overrides the global reasoning pair for this request — and still
+   * passes the identical disallow/approved/preview checks below.
+   */
+  scriptDeliveryMode?: 'standard' | 'scheduled' | 'priority';
+  /**
    * v3.1: kept in the type for backwards-compat with existing callers,
    * but no longer changes gate behavior. Setting this on a private-data
    * request reaches the same `redaction_unsupported` rejection as the
@@ -240,11 +247,23 @@ export async function selectApprovedCloudReasoningProvider(
   if (!cfg.enabled) {
     return { rejected: true, reason: 'disabled', warning: 'cloud_reasoning_fallback_disabled' };
   }
-  if (!cfg.provider || !cfg.model) {
+  // Per-class script binding (Addendum C): only a COMPLETE pair overrides —
+  // a half-configured binding falls back to the global pair rather than
+  // mixing providers and models.
+  const binding = request.scriptDeliveryMode
+    ? cfg.scriptDeliveryBindings?.[request.scriptDeliveryMode] ?? null
+    : null;
+  const effectiveProvider = binding && binding.provider && binding.model
+    ? binding.provider
+    : cfg.provider;
+  const effectiveModel = binding && binding.provider && binding.model
+    ? binding.model
+    : cfg.model;
+  if (!effectiveProvider || !effectiveModel) {
     return { rejected: true, reason: 'unconfigured', warning: 'no_approved_cloud_reasoning_model_configured' };
   }
 
-  const modelLower = cfg.model.toLowerCase();
+  const modelLower = effectiveModel.toLowerCase();
   if (matchesDisallowedSubstring(modelLower, cfg.disallowedSubstrings)) {
     return {
       rejected: true,
@@ -285,21 +304,21 @@ export async function selectApprovedCloudReasoningProvider(
   if (!cfg.allowPreviewModels && hasNonNegatedPreviewToken(modelLower)) {
     return { rejected: true, reason: 'preview_blocked', warning: 'preview_model_blocked' };
   }
-  if (!isProviderCompatibleReasoningModel(cfg.provider, cfg.model)) {
+  if (!isProviderCompatibleReasoningModel(effectiveProvider, effectiveModel)) {
     return {
       rejected: true,
       reason: 'provider_model_mismatch',
       warning: 'configured_cloud_provider_model_mismatch',
     };
   }
-  if (cfg.provider === 'anthropic' && !isAnthropicRuntimeEnabled()) {
+  if (effectiveProvider === 'anthropic' && !isAnthropicRuntimeEnabled()) {
     return { rejected: true, reason: 'provider_unavailable', warning: 'cloud_provider_unavailable' };
   }
-  const provider = getProvider(cfg.provider);
+  const provider = getProvider(effectiveProvider);
   if (!provider) {
     return { rejected: true, reason: 'provider_unavailable', warning: 'cloud_provider_unavailable' };
   }
-  if (provider.name.trim().toLowerCase() !== cfg.provider.trim().toLowerCase()) {
+  if (provider.name.trim().toLowerCase() !== effectiveProvider.trim().toLowerCase()) {
     return {
       rejected: true,
       reason: 'provider_identity_mismatch',
@@ -369,7 +388,7 @@ export async function selectApprovedCloudReasoningProvider(
       return {
         rejected: false,
         provider,
-        model: cfg.model,
+        model: effectiveModel,
         privacyAction: 'sent_raw',
       };
     }
@@ -379,7 +398,7 @@ export async function selectApprovedCloudReasoningProvider(
   return {
     rejected: false,
     provider,
-    model: cfg.model,
+    model: effectiveModel,
     privacyAction: 'sent_raw',
   };
 }

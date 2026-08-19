@@ -308,6 +308,52 @@ export function getSubscriptionStatus(userId: number): SubscriptionStatus {
   };
 }
 
+// ── Key-mode and livemode enforcement (QA3 P1-2) ────────────────────
+// A test-mode key in a production runtime lets anyone buy real entitlements
+// with 4242… cards. Two independent guards close that: new checkout sessions
+// refuse a non-live key unless sandbox checkout is explicitly allowed, and
+// webhook events whose livemode disagrees with the configured key mode are
+// rejected before any handler runs.
+
+export function stripeKeyMode(): 'live' | 'test' | 'unknown' {
+  const key = config.stripe.secretKey || '';
+  if (key.startsWith('sk_live_') || key.startsWith('rk_live_')) return 'live';
+  if (key.startsWith('sk_test_') || key.startsWith('rk_test_')) return 'test';
+  return 'unknown';
+}
+
+export function isStripeSandboxCheckoutAllowed(): boolean {
+  return process.env.STRIPE_SANDBOX_CHECKOUT_ALLOWED === 'true';
+}
+
+export class StripeTestModeCheckoutError extends Error {
+  readonly code = 'STRIPE_TEST_MODE_CHECKOUT_DISABLED';
+  constructor() {
+    super('Refusing to create a checkout session with a non-live Stripe key; set STRIPE_SANDBOX_CHECKOUT_ALLOWED=true only in sandbox runtimes');
+    this.name = 'StripeTestModeCheckoutError';
+  }
+}
+
+export function assertStripeCheckoutKeyMode(): void {
+  if (stripeKeyMode() !== 'live' && !isStripeSandboxCheckoutAllowed()) {
+    throw new StripeTestModeCheckoutError();
+  }
+}
+
+/**
+ * A signature-verified Stripe event still carries its mode: reject any event
+ * whose livemode disagrees with the configured key so a test-mode event can
+ * never mutate entitlement state under a live key, or vice versa. Events
+ * without the boolean (only synthetic fixtures) pass through — a real Stripe
+ * delivery always carries it and signature verification already binds origin.
+ */
+export function stripeEventLivemodeMatchesKey(event: { livemode?: unknown }): boolean {
+  if (typeof event?.livemode !== 'boolean') return true;
+  const mode = stripeKeyMode();
+  if (mode === 'unknown') return false;
+  return event.livemode === (mode === 'live');
+}
+
 // ── Checkout Session ────────────────────────────────────────────────
 
 export async function createCheckoutSession(
@@ -317,6 +363,7 @@ export async function createCheckoutSession(
   cancelUrl: string,
   billingContext?: { plan: StripeBillingPlan; currency: StripeBillingCurrency },
 ): Promise<string> {
+  assertStripeCheckoutKeyMode();
   const stripe = getStripe();
 
   // Look up existing Stripe customer for this user
@@ -369,6 +416,7 @@ export async function createCreditPackCheckoutSession(
   successUrl: string,
   cancelUrl: string,
 ): Promise<string> {
+  assertStripeCheckoutKeyMode();
   const stripe = getStripe();
   const db = getDb();
   const existing = db.prepare(
@@ -439,14 +487,28 @@ export function fulfillStripeCreditPackCheckout(session: any): boolean {
     );
     return false;
   }
-  // The amount actually charged must match the catalog price, so a tampered
-  // or stale session cannot buy a large pack for a small charge.
+  // The amount actually charged must match the catalog price IN ITS CURRENCY
+  // (QA3 P1-5): amount_total is minor units of session.currency, and
+  // zero-decimal currencies (JPY, KRW) would otherwise match numerically at a
+  // fraction of the price. Catalog prices are USD; any other presentment
+  // currency defers to reconciliation rather than guessing a conversion.
+  const sessionCurrency = typeof session?.currency === 'string'
+    ? session.currency.toLowerCase()
+    : '';
+  if (sessionCurrency !== 'usd') {
+    logger.error(
+      { sessionId: session?.id, catalogItemId, sessionCurrency },
+      'Stripe pack checkout currency is not the catalog currency; deferring to reconciliation',
+    );
+    return false;
+  }
+  // A missing amount is a refusal, not a pass (QA3 P2-8).
   const expectedAmountCents = Math.round(item.displayPriceUsd * 100);
   const paidAmountCents = typeof session?.amount_total === 'number' ? session.amount_total : null;
-  if (paidAmountCents !== null && paidAmountCents !== expectedAmountCents) {
+  if (paidAmountCents === null || paidAmountCents !== expectedAmountCents) {
     logger.error(
       { sessionId: session?.id, catalogItemId, paidAmountCents, expectedAmountCents },
-      'Stripe pack checkout amount does not match the catalog price; refusing to grant',
+      'Stripe pack checkout amount is absent or does not match the catalog price; refusing to grant',
     );
     return false;
   }
@@ -520,6 +582,7 @@ export async function createPublicCheckoutSession(input: {
   }
 
   const resolved = assertCheckoutPlanCurrency(input.plan, input.currency);
+  assertStripeCheckoutKeyMode();
   const stripe = getStripe();
   const emailHash = hashEmail(normalizedEmail);
 

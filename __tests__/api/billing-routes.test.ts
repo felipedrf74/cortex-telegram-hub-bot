@@ -143,9 +143,9 @@ vi.mock('../../src/services/entitlement', () => ({
 vi.mock('../../src/services/nexus-points', () => ({
   isNexusPointProductId: (productId: string) => productId.startsWith('me.nexushub.points.'),
   listNexusPointPackages: vi.fn(() => [
-    { productId: 'me.nexushub.points.small', label: 'small', priceUsd: 4.99, points: 100, usdAllowance: 0.10, aiOnlyMarginPct: 98, netMarginAfterAppleCutPct: 97.1 },
-    { productId: 'me.nexushub.points.medium', label: 'medium', priceUsd: 9.99, points: 250, usdAllowance: 0.25, aiOnlyMarginPct: 97.5, netMarginAfterAppleCutPct: 96.4 },
-    { productId: 'me.nexushub.points.large', label: 'large', priceUsd: 19.99, points: 600, usdAllowance: 0.60, aiOnlyMarginPct: 97, netMarginAfterAppleCutPct: 95.7 },
+    { productId: 'me.nexushub.points.small', label: 'small', priceUsd: 5, points: 300, usdAllowance: 0.30, aiOnlyMarginPct: 94, netMarginAfterAppleCutPct: 91.4 },
+    { productId: 'me.nexushub.points.medium', label: 'medium', priceUsd: 10, points: 600, usdAllowance: 0.60, aiOnlyMarginPct: 94, netMarginAfterAppleCutPct: 91.4 },
+    { productId: 'me.nexushub.points.large', label: 'large', priceUsd: 20, points: 1200, usdAllowance: 1.20, aiOnlyMarginPct: 94, netMarginAfterAppleCutPct: 91.4 },
   ]),
   grantNexusPoints: (...args: unknown[]) => mockGrantNexusPoints(...args),
 }));
@@ -269,7 +269,7 @@ describe('billing routes', () => {
     mockGrantNexusPoints.mockReturnValue({
       granted: true,
       creditId: 77,
-      package: { productId: 'me.nexushub.points.small', label: 'small', priceUsd: 4.99, points: 100, usdAllowance: 0.10, aiOnlyMarginPct: 98, netMarginAfterAppleCutPct: 97.1 },
+      package: { productId: 'me.nexushub.points.small', label: 'small', priceUsd: 5, points: 300, usdAllowance: 0.30, aiOnlyMarginPct: 94, netMarginAfterAppleCutPct: 91.4 },
     });
     mockCreateNexusPointsCheckoutSession.mockReset();
     mockCreateNexusPointsCheckoutSession.mockResolvedValue({ sessionId: 'cs_points', checkoutUrl: 'https://checkout.stripe.test/points' });
@@ -649,7 +649,7 @@ describe('billing routes', () => {
       nexusPointsPurchase: {
         granted: true,
         productId: 'me.nexushub.points.small',
-        points: 100,
+        points: 300,
       },
     });
     expect(JSON.stringify(res.body.data.nexusPointsPurchase)).not.toMatch(/usd|allowance/i);

@@ -254,6 +254,10 @@ describe('Apple App Store Server Notifications JWS verification', () => {
       resolve(__dirname, '../../migrations/286_apple_notification_inbox.sql'),
       'utf8',
     ));
+    testDb.exec(readFileSync(
+      resolve(__dirname, '../../migrations/288_apple_inbox_product_id.sql'),
+      'utf8',
+    ));
     mockCaptureMessage.mockReset();
     mockRecordOperatorAlert.mockReset();
   });

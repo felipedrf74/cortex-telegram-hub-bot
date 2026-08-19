@@ -59,6 +59,11 @@ vi.mock('stripe', () => ({
 
 vi.mock('../../src/services/stripe-service', () => ({
   isStripeConfigured: vi.fn(() => true),
+  // Mirrors the real helper under this suite's sk_test key: live events are
+  // cross-mode, test events match, fixtures without the boolean pass.
+  stripeEventLivemodeMatchesKey: (event: { livemode?: unknown }) => (
+    typeof event?.livemode === 'boolean' ? event.livemode === false : true
+  ),
   handleCheckoutCompleted: (...args: unknown[]) => serviceMocks.handleCheckoutCompleted(...args),
   handleCheckoutPaymentFailed: (...args: unknown[]) => serviceMocks.handleCheckoutPaymentFailed(...args),
   fulfillStripeCreditPackCheckout: (...args: unknown[]) => serviceMocks.fulfillStripeCreditPackCheckout(...args),
@@ -426,6 +431,23 @@ describe('POST /webhooks/stripe', () => {
       { payment_intent: 'pi_async_fail', refunded: true },
       'refund',
     );
+  });
+
+  it('rejects an event whose livemode disagrees with the configured key before any handler runs (QA3 P1-2)', async () => {
+    const event = {
+      id: 'evt_crossmode',
+      type: 'checkout.session.completed',
+      livemode: true, // key in this suite is sk_test
+      data: { object: { id: 'cs_live', mode: 'payment', metadata: { catalogItemId: 'pack_100' } } },
+    };
+    serviceMocks.stripeConstructEvent.mockReturnValue(event);
+
+    const res = await postStripeWebhook(JSON.stringify({ id: 'evt_crossmode' }));
+
+    expect(res.status).toBe(400);
+    expect(serviceMocks.fulfillStripeCreditPackCheckout).not.toHaveBeenCalled();
+    expect(serviceMocks.handleCheckoutCompleted).not.toHaveBeenCalled();
+    expect(serviceMocks.markStripeWebhookEventProcessed).not.toHaveBeenCalled();
   });
 
   it('fulfills credit-pack sessions on the synchronous completed event', async () => {

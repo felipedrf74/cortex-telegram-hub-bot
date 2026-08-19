@@ -162,10 +162,10 @@ describe('Nexus Points ledger', () => {
     testDb.close();
   });
 
-  it('grants the $4.99/$9.99/$19.99 packages with the configured Nexus Point economics', () => {
-    expect(NEXUS_POINT_PACKAGES['me.nexushub.points.small']).toMatchObject({ priceUsd: 4.99, points: 100, usdAllowance: 0.10, aiOnlyMarginPct: 98, netMarginAfterAppleCutPct: 97.1 });
-    expect(NEXUS_POINT_PACKAGES['me.nexushub.points.medium']).toMatchObject({ priceUsd: 9.99, points: 250, usdAllowance: 0.25, aiOnlyMarginPct: 97.5, netMarginAfterAppleCutPct: 96.4 });
-    expect(NEXUS_POINT_PACKAGES['me.nexushub.points.large']).toMatchObject({ priceUsd: 19.99, points: 600, usdAllowance: 0.60, aiOnlyMarginPct: 97, netMarginAfterAppleCutPct: 95.7 });
+  it('grants the $5/$10/$20 packages with the configured Nexus Point economics', () => {
+    expect(NEXUS_POINT_PACKAGES['me.nexushub.points.small']).toMatchObject({ priceUsd: 5, points: 300, usdAllowance: 0.30, aiOnlyMarginPct: 94, netMarginAfterAppleCutPct: 91.4 });
+    expect(NEXUS_POINT_PACKAGES['me.nexushub.points.medium']).toMatchObject({ priceUsd: 10, points: 600, usdAllowance: 0.60 });
+    expect(NEXUS_POINT_PACKAGES['me.nexushub.points.large']).toMatchObject({ priceUsd: 20, points: 1200, usdAllowance: 1.20 });
   });
 
   it('grants credits for 30 days and ignores duplicate provider transactions', () => {
@@ -189,8 +189,8 @@ describe('Nexus Points ledger', () => {
     expect(duplicate.granted).toBe(false);
     expect(testDb.prepare('SELECT COUNT(*) AS count FROM nexus_point_credits').get()).toEqual({ count: 1 });
     const row = testDb.prepare('SELECT points_granted, usd_allowance_granted, expires_at FROM nexus_point_credits').get() as any;
-    expect(row.points_granted).toBe(100);
-    expect(row.usd_allowance_granted).toBe(0.10);
+    expect(row.points_granted).toBe(300);
+    expect(row.usd_allowance_granted).toBe(0.30);
     expect(row.expires_at).toBe('2026-06-19T12:00:00.000Z');
   });
 
@@ -233,16 +233,16 @@ describe('Nexus Points ledger', () => {
       purchasedAt: new Date('2026-05-19T12:00:00.000Z'),
     });
 
-    const result = debitNexusPoints(11, 0.15, { category: 'daily_ai_overage' });
+    const result = debitNexusPoints(11, 0.35, { category: 'daily_ai_overage' });
 
-    expect(result).toEqual({ usdDebited: 0.15, pointsDebited: 150 });
+    expect(result).toEqual({ usdDebited: 0.35, pointsDebited: 350 });
     const rows = testDb.prepare(`
       SELECT provider_transaction_id, usd_allowance_remaining
       FROM nexus_point_credits
       ORDER BY expires_at ASC
     `).all() as Array<{ provider_transaction_id: string; usd_allowance_remaining: number }>;
     expect(rows[0]).toMatchObject({ provider_transaction_id: 'tx-early', usd_allowance_remaining: 0 });
-    expect(rows[1].usd_allowance_remaining).toBeCloseTo(0.05, 8);
+    expect(rows[1].usd_allowance_remaining).toBeCloseTo(0.25, 8);
   });
 
   it('ignores expired credits in active balance', () => {
@@ -281,8 +281,8 @@ describe('Nexus Points ledger', () => {
       previousStatus: 'active',
       userId: 16,
       productId: 'me.nexushub.points.medium',
-      pointsGranted: 250,
-      pointsRemaining: 250,
+      pointsGranted: 600,
+      pointsRemaining: 600,
     });
     const row = testDb.prepare(`
       SELECT status, points_remaining, usd_allowance_remaining
@@ -315,7 +315,7 @@ describe('Nexus Points ledger', () => {
       provider: 'stripe',
       providerTransactionId: 'pi_lookup',
       productId: 'me.nexushub.points.small',
-      pointsGranted: 100,
+      pointsGranted: 300,
       metadata: { sessionId: 'cs_lookup' },
     });
     expect(lookupNexusPointCreditByProviderTransaction('stripe', 'pi_missing')).toBeNull();
@@ -342,7 +342,7 @@ describe('Nexus Points ledger', () => {
     expect(debit.usd_cost_debited).toBeCloseTo(0.005, 8);
     expect(debit.points_debited).toBeCloseTo(5, 8);
     const balance = getNexusPointBalance(13, new Date('2026-05-20T12:01:00.000Z'));
-    expect(balance.usdBalance).toBeCloseTo(0.095, 8);
+    expect(balance.usdBalance).toBeCloseTo(0.295, 8);
   });
 
   it('settlement is idempotent for concurrent calls on the same api_usage row', async () => {
@@ -400,7 +400,7 @@ describe('Nexus Points ledger', () => {
     await settleNexusPointOverageForUser(22, automationUsageId);
 
     expect(testDb.prepare('SELECT COUNT(*) AS count FROM nexus_point_debits WHERE user_id = 22').get()).toEqual({ count: 0 });
-    expect(getNexusPointBalance(22, new Date('2026-05-20T12:01:00.000Z')).usdBalance).toBeCloseTo(0.1, 8);
+    expect(getNexusPointBalance(22, new Date('2026-05-20T12:01:00.000Z')).usdBalance).toBeCloseTo(0.3, 8);
   });
 
   it('keeps purchased Points dormant for a Free account', async () => {
@@ -416,7 +416,7 @@ describe('Nexus Points ledger', () => {
     await settleNexusPointOverageForUser(23, usageId);
 
     expect(testDb.prepare('SELECT COUNT(*) AS count FROM nexus_point_debits WHERE user_id = 23').get()).toEqual({ count: 0 });
-    expect(getNexusPointBalance(23, new Date('2026-05-20T12:01:00.000Z')).usdBalance).toBeCloseTo(0.1, 8);
+    expect(getNexusPointBalance(23, new Date('2026-05-20T12:01:00.000Z')).usdBalance).toBeCloseTo(0.3, 8);
   });
 
   it('settles the larger monthly overage when the daily allowance is still available', async () => {

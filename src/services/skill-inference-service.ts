@@ -77,6 +77,9 @@ export interface SkillInferenceRequest {
   containsPrivateData: boolean;
   allowCloudEscalation: boolean;
   redactionRequired?: boolean;
+  /** Addendum C: delivery class for script-job stages — selects the bound
+   * cloud tier at the reasoning gate when escalation is permitted. */
+  scriptDeliveryMode?: 'standard' | 'scheduled' | 'priority';
   requestSource: AiRequestSource;
   budgetRequest: AiBudgetRequest;
   cloudBudgetBoundary: <T>(request: AiBudgetRequest, providerCall: () => Promise<T>) => Promise<T>;
@@ -988,6 +991,9 @@ async function executeSkillInferenceInternal(
       allowCloudEscalation: request.allowCloudEscalation,
       containsPrivateData: request.containsPrivateData,
       redactionRequired: request.redactionRequired,
+      ...(request.scriptDeliveryMode !== undefined
+        ? { scriptDeliveryMode: request.scriptDeliveryMode }
+        : {}),
       outputSchema: request.outputSchema,
       numCtx: contextTokens,
       numPredict: outputTokens,

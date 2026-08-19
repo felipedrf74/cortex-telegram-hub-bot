@@ -43,6 +43,13 @@ function stripeMock(overrides: {
 }
 
 describe('NH-0036 Stripe provisioning', () => {
+  it('requires an explicit --live-ok before applying with a live key (QA3 P3-16)', async () => {
+    const { readFileSync } = await import('node:fs');
+    const source = readFileSync('scripts/provision-stripe-prices.mjs', 'utf8');
+    expect(source).toContain("secretKey.startsWith('sk_live_') && apply && !process.argv.includes('--live-ok')");
+    expect(source).toContain('Refusing --apply with a LIVE key');
+  });
+
   it('covers exactly the five §3 catalog objects at the §2 price points', () => {
     expect(CATALOG_STRIPE_OBJECTS.map((spec) => [spec.envVar, spec.unitAmount])).toEqual([
       ['STRIPE_PRICE_ID_PLAN_PRO_MONTHLY', 999],

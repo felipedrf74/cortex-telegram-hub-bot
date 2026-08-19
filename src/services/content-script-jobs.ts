@@ -1055,6 +1055,9 @@ async function runLocalStage(
     containsPrivateData: true,
     allowCloudEscalation: false,
     redactionRequired: true,
+    // Addendum C: carried so an activation-time escalation policy selects
+    // this job's bound cloud tier; inert while escalation stays false.
+    scriptDeliveryMode: resolveScriptDeliveryMode(row.delivery_mode ?? 'standard'),
     requestSource: 'automation',
     budgetRequest: {
       userId: row.owner_user_id,
@@ -2346,6 +2349,9 @@ export function recoverContentScriptJobs(
   }
   const control = getLocalInferenceRuntimeControl(db);
   if (control.mode !== 'active' && control.mode !== 'canary') return recovered;
+  // Single-flight by design: one active generation, no preemption. Priority
+  // buys the next slot via the ORDER BY below, never an interrupt — Addendum
+  // C states this constraint explicitly (QA3 P1-6).
   if (controllers.size > 0) return recovered;
   const capacity = localInferenceScheduler.snapshot();
   if (capacity.activeCount > 0 || capacity.queuedCount > 0) return recovered;

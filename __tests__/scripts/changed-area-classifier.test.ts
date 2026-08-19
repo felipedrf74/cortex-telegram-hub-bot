@@ -32,6 +32,8 @@ const RECOVERY_HOTFIX_RETIREMENT_BASE_SHA = 'b439fa86631e10be76e75615f47eda1b995
 const LOCAL_PRIMARY_RETIREMENT_BASE_SHA = '1af3fd89edcfa6aadbf65b778d3509a876cddf96';
 // Owner-approved hybrid plan-3 repricing (NH-0039 reconciliation).
 const REPRICING_RETIREMENT_BASE_SHA = 'fb78be73e9880a4a9f77f193c6477d7a0203d4df';
+// QA3 inbox hardening (sandbox flag, non-retryable quantities, hard fails).
+const QA3_INBOX_RETIREMENT_BASE_SHA = '98ec86210f34ad94ea250c8a1eb10ea71aee2db4';
 
 function classify(files: string[]) {
   return JSON.parse(execFileSync('bash', [
@@ -413,6 +415,7 @@ describe('lean changed-area classification', () => {
       RECOVERY_HOTFIX_RETIREMENT_BASE_SHA,
       LOCAL_PRIMARY_RETIREMENT_BASE_SHA,
       REPRICING_RETIREMENT_BASE_SHA,
+      QA3_INBOX_RETIREMENT_BASE_SHA,
     ]));
 
     const controlPlaneRetirements = policy.retirementMappings.filter((mapping: {

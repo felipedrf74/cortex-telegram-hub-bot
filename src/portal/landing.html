@@ -893,7 +893,7 @@
       width: 0%;
     }
 
-    /* ─── POWER PACKS (2 add-on cards below pricing) ─────────── */
+    /* ─── AI CREDIT PACKS (3 one-time cards below pricing) ───── */
     .packs-grid {
       display: grid;
       grid-template-columns: 1fr;
@@ -1456,7 +1456,7 @@
           <div class="pack-card__icon">⚡</div>
           <div class="pack-card__name" data-i18n="packs.p100_name">100 créditos de IA</div>
           <div class="pack-card__price">
-            <span data-price-symbol>$</span><strong data-price-tier="pack100">4.99</strong>
+            <span>$</span><strong data-price-tier="pack100">4.99</strong>
             <span data-i18n="packs.one_time">uma vez</span>
           </div>
           <p class="pack-card__desc" data-i18n="packs.p100_desc">
@@ -1468,7 +1468,7 @@
           <div class="pack-card__icon">⚡</div>
           <div class="pack-card__name" data-i18n="packs.p250_name">250 créditos de IA</div>
           <div class="pack-card__price">
-            <span data-price-symbol>$</span><strong data-price-tier="pack250">9.99</strong>
+            <span>$</span><strong data-price-tier="pack250">9.99</strong>
             <span data-i18n="packs.one_time">uma vez</span>
           </div>
           <p class="pack-card__desc" data-i18n="packs.p250_desc">
@@ -1480,7 +1480,7 @@
           <div class="pack-card__icon">⚡</div>
           <div class="pack-card__name" data-i18n="packs.p600_name">600 créditos de IA</div>
           <div class="pack-card__price">
-            <span data-price-symbol>$</span><strong data-price-tier="pack600">19.99</strong>
+            <span>$</span><strong data-price-tier="pack600">19.99</strong>
             <span data-i18n="packs.one_time">uma vez</span>
           </div>
           <p class="pack-card__desc" data-i18n="packs.p600_desc">
@@ -2060,15 +2060,17 @@
     // Price matrix (intentionally hard-coded — keep aligned with the
     // sandbox Stripe price ids in .env.example):
     //
-    //   USD monthly: Pro $9.99, Max $14.99, Content $15, Coach $12
+    //   USD monthly: Pro $9.99, Max $14.99
     //
-    // When these need to change, edit PRICING_TABLE below and the
+    // The one-time credit packs are USD-only static cards (their symbols are
+    // plain text, not [data-price-symbol]); Adaptive Pricing localizes at
+    // checkout. When plan prices change, edit PRICING_TABLE below and the
     // PT/EN local-currency helper keys above — nothing else.
 
     const PRICING_TABLE = {
       USD: {
         symbol: '$',
-        monthly: { pro: 9.99, max: 14.99, contentPack: 15, coachPack: 12 },
+        monthly: { pro: 9.99, max: 14.99 },
       },
     };
 

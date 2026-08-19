@@ -157,7 +157,7 @@ describe('apple-notification-inbox', () => {
     expect(getAiCreditWallet(40, 'pro', NOW).purchasedRemaining).toBe(300);
   });
 
-  it('refuses out-of-bound or non-integer quantities instead of guessing', () => {
+  it('treats out-of-bound quantities as non-retryable: immediate exhaustion plus a critical alert (QA3 P3-14)', () => {
     for (const [key, quantity] of [['q0', 0], ['qbig', 250], ['qfrac', 1.5]] as const) {
       seedPackNotification({
         outerKey: `outer-${key}`,
@@ -167,29 +167,83 @@ describe('apple-notification-inbox', () => {
       });
       const stored = ingest(`outer-${key}`);
       if (stored.kind !== 'stored') throw new Error('unreachable');
-      expect(processStoredAppleNotification(stored.row.id, NOW)).toMatchObject({ kind: 'failed' });
+      const result = processStoredAppleNotification(stored.row.id, NOW);
+      expect(result).toMatchObject({ kind: 'failed' });
+      // Retries cannot fix a quantity: the row is exhausted at once.
+      expect(db.prepare('SELECT attempts FROM apple_notification_inbox WHERE id = ?').get(stored.row.id))
+        .toEqual({ attempts: 5 });
     }
+    const alerts = db.prepare(
+      "SELECT COUNT(*) AS count FROM operator_alerts WHERE dedupe_key LIKE 'apple_inbox_nonretryable:%'",
+    ).get() as { count: number };
+    expect(alerts.count).toBe(3);
     expect(getAiCreditWallet(40, 'pro', NOW).purchasedRemaining).toBe(0);
   });
 
-  it('refuses sandbox pack notifications in a production runtime (QA P1-5)', () => {
+  it('refuses sandbox pack notifications by default and allows them only via the explicit flag (QA3 P2-9)', () => {
+    const sandboxIngest = (uuid: string, outerKey: string) => {
+      const stored = ingestVerifiedAppleNotification({
+        notificationUuid: uuid,
+        notificationType: 'ONE_TIME_CHARGE',
+        subtype: null,
+        environment: 'Sandbox',
+        signedPayload: outerKey,
+        now: NOW,
+      });
+      if (stored.kind !== 'stored') throw new Error('unreachable');
+      return stored.row.id;
+    };
+    // Default: refused everywhere — NODE_ENV plays no part. The VERIFIED
+    // outer payload carries the Sandbox claim.
     seedPackNotification({ outerKey: 'outer-sbx', innerKey: 'inner-sbx', transactionId: 'apple-txn-sbx' });
-    const stored = ingestVerifiedAppleNotification({
-      notificationUuid: 'uuid-outer-sbx',
+    jwsFixtures.set('outer-sbx', {
       notificationType: 'ONE_TIME_CHARGE',
-      subtype: null,
-      environment: 'Sandbox',
-      signedPayload: 'outer-sbx',
-      now: NOW,
+      notificationUUID: 'uuid-outer-sbx',
+      data: { signedTransactionInfo: 'inner-sbx', environment: 'Sandbox' },
     });
-    if (stored.kind !== 'stored') throw new Error('unreachable');
-    vi.stubEnv('NODE_ENV', 'production');
+    expect(processStoredAppleNotification(sandboxIngest('uuid-outer-sbx', 'outer-sbx'), NOW))
+      .toMatchObject({ kind: 'failed' });
+    expect(getAiCreditWallet(40, 'pro', NOW).purchasedRemaining).toBe(0);
+
+    // Staging opts in deliberately with the flag.
+    seedPackNotification({ outerKey: 'outer-sbx2', innerKey: 'inner-sbx2', transactionId: 'apple-txn-sbx2' });
+    jwsFixtures.set('outer-sbx2', {
+      notificationType: 'ONE_TIME_CHARGE',
+      notificationUUID: 'uuid-outer-sbx2',
+      data: { signedTransactionInfo: 'inner-sbx2', environment: 'Sandbox' },
+    });
+    vi.stubEnv('APPLE_ALLOW_SANDBOX_GRANTS', 'true');
     try {
-      expect(processStoredAppleNotification(stored.row.id, NOW)).toMatchObject({ kind: 'failed' });
+      expect(processStoredAppleNotification(sandboxIngest('uuid-outer-sbx2', 'outer-sbx2'), NOW))
+        .toMatchObject({ kind: 'processed', handled: true });
     } finally {
       vi.unstubAllEnvs();
     }
-    expect(getAiCreditWallet(40, 'pro', NOW).purchasedRemaining).toBe(0);
+    expect(getAiCreditWallet(40, 'pro', NOW).purchasedRemaining).toBe(100);
+  });
+
+  it('hard-fails a paid charge whose product resolves to nothing, with an operator alert (QA3 P1-3)', () => {
+    // Fulfillment ON, but the product id matches neither a catalog pack nor a
+    // legacy product the delegate handler recognizes.
+    mockHandleAppleNotification.mockReturnValue(false);
+    seedPackNotification({
+      outerKey: 'outer-unres',
+      innerKey: 'inner-unres',
+      transactionId: 'apple-txn-unres',
+      productId: 'nx.unknown.product',
+    });
+    const stored = ingest('outer-unres');
+    if (stored.kind !== 'stored') throw new Error('unreachable');
+    const result = processStoredAppleNotification(stored.row.id, NOW);
+    expect(result).toMatchObject({ kind: 'failed' });
+    // Retryable — pasting the product ids later lands the grant.
+    expect(db.prepare('SELECT state, attempts FROM apple_notification_inbox WHERE id = ?').get(stored.row.id))
+      .toEqual({ state: 'failed', attempts: 1 });
+    const alerts = db.prepare(
+      "SELECT COUNT(*) AS count FROM operator_alerts WHERE dedupe_key LIKE 'apple_inbox_unresolvable_charge:%'",
+    ).get() as { count: number };
+    expect(alerts.count).toBe(1);
+    mockHandleAppleNotification.mockReturnValue(true);
   });
 
   it('revokes only the originating lot on a pack refund', () => {
@@ -253,6 +307,33 @@ describe('apple-notification-inbox', () => {
     const recovered = processPendingAppleNotifications({ now: NOW });
     expect(recovered).toEqual({ processed: 1, failed: 0, exhausted: 0, deferred: 0 });
     expect(getAiCreditWallet(40, 'pro', NOW).purchasedRemaining).toBe(100);
+  });
+
+  it('parks only STORED pack product ids behind the kill switch — a legacy points charge stays retryable (QA3 P2-11)', () => {
+    packFulfillmentEnabled = false;
+    // A pending, never-attempted legacy points ONE_TIME_CHARGE (product id is
+    // NOT a configured pack) must be selected and delegated, not excluded.
+    seedPackNotification({
+      outerKey: 'outer-legacy-pts',
+      innerKey: 'inner-legacy-pts',
+      transactionId: 'apple-txn-legacy',
+      productId: 'me.nexushub.points.small',
+    });
+    const points = ingest('outer-legacy-pts');
+    if (points.kind !== 'stored') throw new Error('unreachable');
+    // A pack row with the SAME shape defers and is excluded from the sweep.
+    seedPackNotification({ outerKey: 'outer-pack-park', innerKey: 'inner-pack-park', transactionId: 'apple-txn-park' });
+    const pack = ingest('outer-pack-park');
+    if (pack.kind !== 'stored') throw new Error('unreachable');
+
+    const pass = processPendingAppleNotifications({ now: NOW });
+    // The legacy charge processed via the delegate; the pack stayed parked.
+    expect(pass).toEqual({ processed: 1, failed: 0, exhausted: 0, deferred: 0 });
+    expect(db.prepare('SELECT state, attempts, product_id FROM apple_notification_inbox WHERE id = ?').get(pack.row.id))
+      .toEqual({ state: 'pending', attempts: 0, product_id: 'nx.pack.100.v1' });
+    expect(db.prepare('SELECT state FROM apple_notification_inbox WHERE id = ?').get(points.row.id))
+      .toEqual({ state: 'processed' });
+    packFulfillmentEnabled = true;
   });
 
   it('fails a pack purchase without a resolvable appAccountToken instead of guessing ownership', () => {

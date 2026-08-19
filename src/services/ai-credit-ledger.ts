@@ -323,16 +323,18 @@ export function reserveAiCredits(input: {
   const cost = getAiCreditOperationCost(input.operationClass);
   const packCtaEligible = input.plan === 'pro' || input.plan === 'max';
   const tx = db.transaction((): ReserveAiCreditsResult => {
-    const existing = getReservationByReplayScope(input.userId, input.replayScope);
-    if (existing) {
-      return { kind: 'replay', reservation: mapReservation(existing) };
-    }
+    // Availability outranks replay (QA3 P2-12): a scope reserved on a paid
+    // plan must not be replayable into a restricted class after a downgrade.
     if (!isOperationClassAvailableForPlan(input.plan, input.operationClass)) {
       return {
         kind: 'operation_not_available',
         operationClass: input.operationClass,
         plan: input.plan,
       };
+    }
+    const existing = getReservationByReplayScope(input.userId, input.replayScope);
+    if (existing) {
+      return { kind: 'replay', reservation: mapReservation(existing) };
     }
     const policy = getPlanCreditPolicy(input.plan);
     const day = toUtcDay(now);

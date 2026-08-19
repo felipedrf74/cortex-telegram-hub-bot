@@ -37,8 +37,25 @@ const MAX_PROCESS_ATTEMPTS = 5;
 const LAST_ERROR_MAX_LENGTH = 300;
 const MAX_CONSUMABLE_QUANTITY = 100;
 
-function isProductionRuntime(): boolean {
-  return (process.env.NODE_ENV || '') === 'production';
+/**
+ * Sandbox grants are opt-in by explicit flag, not inferred from NODE_ENV
+ * (QA3 P2-9): both staging and production containers run NODE_ENV=production,
+ * so an env-based gate made the pack path untestable anywhere but production.
+ * Default refuses non-Production notifications everywhere; staging sets
+ * APPLE_ALLOW_SANDBOX_GRANTS=true deliberately.
+ */
+function isSandboxGrantAllowed(): boolean {
+  return process.env.APPLE_ALLOW_SANDBOX_GRANTS === 'true';
+}
+
+/** Non-retryable inbox faults: retries cannot fix them, so the row fails
+ * closed immediately with an operator alert instead of burning five attempts
+ * while the money sits ungrantable (QA3 P3-14). */
+class NonRetryableInboxError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'NonRetryableInboxError';
+  }
 }
 
 export interface AppleInboxRow {
@@ -122,6 +139,20 @@ export function ingestVerifiedAppleNotification(input: {
 }): IngestAppleNotificationResult {
   const db = getDb();
   const now = input.now ?? new Date();
+  // Best-effort product identity at ingest (QA3 P2-11): the retry selector
+  // needs it in SQL. A malformed inner payload stores NULL and never blocks
+  // durable ingestion — full verification still happens at processing time.
+  let ingestProductId: string | null = null;
+  try {
+    const outer = verifyAppleJws(input.signedPayload, { requireX5c: false }).payload as Record<string, any>;
+    const innerJws = outer?.data?.signedTransactionInfo;
+    if (typeof innerJws === 'string' && innerJws) {
+      const inner = verifyAppleJws(innerJws, { requireX5c: false }).payload as Record<string, any>;
+      ingestProductId = typeof inner.productId === 'string' && inner.productId ? inner.productId : null;
+    }
+  } catch {
+    ingestProductId = null;
+  }
   const tx = db.transaction((): IngestAppleNotificationResult => {
     const existing = db
       .prepare('SELECT * FROM apple_notification_inbox WHERE notification_uuid = ?')
@@ -131,8 +162,8 @@ export function ingestVerifiedAppleNotification(input: {
       .prepare(
         `INSERT INTO apple_notification_inbox (
            notification_uuid, notification_type, subtype, environment,
-           signed_payload, received_at
-         ) VALUES (?, ?, ?, ?, ?, ?)`,
+           signed_payload, received_at, product_id
+         ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         input.notificationUuid,
@@ -141,6 +172,7 @@ export function ingestVerifiedAppleNotification(input: {
         input.environment ?? null,
         input.signedPayload,
         now.toISOString(),
+        ingestProductId,
       );
     const row = getRawRow(Number(inserted.lastInsertRowid));
     if (!row) throw new Error('apple-notification-inbox: insert readback failed');
@@ -178,8 +210,13 @@ function applyStoredNotification(row: RawRow): boolean {
   // Sandbox and TestFlight notifications carry valid Apple signatures and the
   // same bundle id. A sandbox purchase must never mint spendable production
   // credit: ledger grants require a Production-environment notification.
-  if (packItem && isProductionRuntime() && row.environment !== 'Production') {
-    throw new Error(`refusing ledger grant for non-production environment: ${row.environment ?? 'unknown'}`);
+  // The VERIFIED outer payload's environment claim outranks the ingest-time
+  // hint on the row; absent both, the grant is refused as unknown provenance.
+  const notificationEnvironment = typeof outer?.data?.environment === 'string'
+    ? outer.data.environment
+    : row.environment;
+  if (packItem && notificationEnvironment !== 'Production' && !isSandboxGrantAllowed()) {
+    throw new Error(`refusing ledger grant for non-production environment: ${notificationEnvironment ?? 'unknown'}`);
   }
 
   if (packItem && isPackPurchaseType(row.notification_type)) {
@@ -195,7 +232,7 @@ function applyStoredNotification(row: RawRow): boolean {
     // undercharge the user's balance for a multi-quantity purchase.
     const rawQuantity = typeof inner.quantity === 'number' ? inner.quantity : 1;
     if (!Number.isInteger(rawQuantity) || rawQuantity < 1 || rawQuantity > MAX_CONSUMABLE_QUANTITY) {
-      throw new Error(`pack purchase has an unsupported quantity: ${String(inner.quantity)}`);
+      throw new NonRetryableInboxError(`pack purchase has an unsupported quantity: ${String(inner.quantity)}`);
     }
     const granted = grantPurchasedAiCredits({
       userId,
@@ -236,11 +273,29 @@ function applyStoredNotification(row: RawRow): boolean {
     throw new Error('pack reversal matched no credit lot; retained for reconciliation');
   }
 
-  return handleAppleNotification(row.notification_type, signedTransactionInfo, {
+  const handledByLegacy = handleAppleNotification(row.notification_type, signedTransactionInfo, {
     notificationUUID: row.notification_uuid,
     subtype: row.subtype,
     environment: row.environment,
   });
+  if (!handledByLegacy && row.notification_type === 'ONE_TIME_CHARGE') {
+    // A paid consumable that resolves to NO catalog pack and NO legacy points
+    // product is money with no destination — the exact trap of enabling pack
+    // fulfillment before the APPLE_PRODUCT_ID_* env is pasted (QA3 P1-3).
+    // Failing keeps it retryable so pasting the ids later lands the grant.
+    recordOperatorAlert({
+      source: 'apple_notifications',
+      severity: 'critical',
+      dedupeKey: `apple_inbox_unresolvable_charge:${row.notification_uuid}`,
+      title: 'Apple ONE_TIME_CHARGE matched no catalog pack and no legacy product',
+      metadata: {
+        notificationUuid: row.notification_uuid,
+        productId,
+      },
+    });
+    throw new Error(`ONE_TIME_CHARGE for unresolvable product id: ${productId || 'unknown'}`);
+  }
+  return handledByLegacy;
 }
 
 export function processStoredAppleNotification(inboxId: number, now: Date = new Date()): ProcessAppleNotificationResult {
@@ -282,11 +337,25 @@ export function processStoredAppleNotification(inboxId: number, now: Date = new 
       return { kind: 'deferred', row: mapRow(row) };
     }
     const message = error instanceof Error ? error.message.slice(0, LAST_ERROR_MAX_LENGTH) : 'unknown error';
+    const nonRetryable = error instanceof NonRetryableInboxError;
+    if (nonRetryable) {
+      recordOperatorAlert({
+        source: 'apple_notifications',
+        severity: 'critical',
+        dedupeKey: `apple_inbox_nonretryable:${row.notification_uuid}`,
+        title: 'Apple notification failed a non-retryable check',
+        metadata: {
+          notificationUuid: row.notification_uuid,
+          notificationType: row.notification_type,
+          error: message,
+        },
+      });
+    }
     db.prepare(
       `UPDATE apple_notification_inbox
-       SET state = 'failed', attempts = attempts + 1, last_error = ?
+       SET state = 'failed', attempts = ?, last_error = ?
        WHERE id = ?`,
-    ).run(message, row.id);
+    ).run(nonRetryable ? MAX_PROCESS_ATTEMPTS : row.attempts + 1, message, row.id);
     const updated = getRawRow(row.id);
     if (!updated) throw new Error('apple-notification-inbox: failure readback failed');
     logger.warn({ inboxId: row.id, error: message }, 'Apple notification processing failed; retained for retry');
@@ -313,8 +382,11 @@ export function processPendingAppleNotifications(input: { limit?: number; now?: 
   const packProductIds = config.hybridCommerce.applePackFulfillmentEnabled
     ? []
     : Object.values(config.hybridCommerce.appleProductIds).filter(Boolean);
+  // Exclusion selects on the STORED product id (QA3 P2-11), so a legacy
+  // points ONE_TIME_CHARGE is never parked behind the pack kill switch.
   const excludeDeferredPacks = packProductIds.length > 0
-    ? "AND NOT (notification_type = 'ONE_TIME_CHARGE' AND state = 'pending' AND attempts = 0)"
+    ? `AND NOT (notification_type = 'ONE_TIME_CHARGE' AND state = 'pending' AND attempts = 0
+        AND product_id IN (${packProductIds.map(() => '?').join(', ')}))`
     : '';
   const rows = db
     .prepare(
@@ -324,7 +396,11 @@ export function processPendingAppleNotifications(input: { limit?: number; now?: 
        ORDER BY received_at ASC
        LIMIT ?`,
     )
-    .all(MAX_PROCESS_ATTEMPTS, Math.max(1, Math.min(input.limit ?? 25, 100))) as Array<{ id: number }>;
+    .all(
+      MAX_PROCESS_ATTEMPTS,
+      ...packProductIds.length > 0 ? packProductIds : [],
+      Math.max(1, Math.min(input.limit ?? 25, 100)),
+    ) as Array<{ id: number }>;
   const counts = { processed: 0, failed: 0, exhausted: 0, deferred: 0 };
   for (const { id } of rows) {
     const result = processStoredAppleNotification(id, now);

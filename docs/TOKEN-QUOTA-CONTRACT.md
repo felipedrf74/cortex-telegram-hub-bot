@@ -243,9 +243,9 @@ not fund automations or system jobs.
 
 | Package | Product ID | Price | Points | AI allowance | Expiry |
 | --- | --- | ---: | ---: | ---: | --- |
-| Small | `me.nexushub.points.small` | $4.99 | 100 | $0.10 | 30 days |
-| Medium | `me.nexushub.points.medium` | $9.99 | 250 | $0.25 | 30 days |
-| Large | `me.nexushub.points.large` | $19.99 | 600 | $0.60 | 30 days |
+| Small | `me.nexushub.points.small` | $5 | 300 | $0.30 | 30 days |
+| Medium | `me.nexushub.points.medium` | $10 | 600 | $0.60 | 30 days |
+| Large | `me.nexushub.points.large` | $20 | 1200 | $1.20 | 30 days |
 
 `1 Nexus Point = $0.001` of internal provider-cost allowance. App copy uses
 Nexus Points rather than raw tokens or dollar values.
