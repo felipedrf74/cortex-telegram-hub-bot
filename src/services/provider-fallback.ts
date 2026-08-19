@@ -1594,6 +1594,7 @@ export class TaskRoutingProvider implements AIProvider {
       abortSignal?: AbortSignal;
       localAdmission?: unknown;
       cloudFallbackBoundary?: unknown;
+      scriptDeliveryMode?: unknown;
     };
     throwIfOptionalTaskCancelled(taskRecord.abortSignal);
 
@@ -1730,6 +1731,7 @@ export class TaskRoutingProvider implements AIProvider {
       abortSignal?: AbortSignal;
       localAdmission?: unknown;
       cloudFallbackBoundary?: unknown;
+      scriptDeliveryMode?: unknown;
     },
     primaryError: unknown,
   ): Promise<unknown> {
@@ -1922,6 +1924,13 @@ export class TaskRoutingProvider implements AIProvider {
             containsPrivateData: taskRecord.containsPrivateData,
             allowCloudEscalation: taskRecord.allowCloudEscalation,
             redactionRequired: taskRecord.redactionRequired,
+            // Addendum C: the script delivery class selects its bound cloud
+            // tier at the gate (unset classes use the global pair).
+            ...(taskRecord.scriptDeliveryMode === 'standard'
+              || taskRecord.scriptDeliveryMode === 'scheduled'
+              || taskRecord.scriptDeliveryMode === 'priority'
+              ? { scriptDeliveryMode: taskRecord.scriptDeliveryMode }
+              : {}),
           },
           (name: string) => getProvider(name),
           null,

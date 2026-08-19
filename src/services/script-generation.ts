@@ -698,6 +698,9 @@ export interface ApprovedCloudScriptGenerationTask extends ScriptGenTask {
   containsPrivateData: boolean;
   allowCloudEscalation?: boolean;
   redactionRequired?: boolean;
+  /** Addendum C: which delivery class this generation serves — selects the
+   * per-class cloud tier binding at the reasoning gate when configured. */
+  scriptDeliveryMode?: 'standard' | 'scheduled' | 'priority';
 }
 
 export class CloudScriptGenerationContractError extends Error {
@@ -770,6 +773,11 @@ export function parseApprovedCloudScriptGenerationTask(task: unknown): ApprovedC
       : {}),
     ...(task.redactionRequired !== undefined
       ? { redactionRequired: task.redactionRequired as boolean }
+      : {}),
+    ...(task.scriptDeliveryMode === 'standard'
+      || task.scriptDeliveryMode === 'scheduled'
+      || task.scriptDeliveryMode === 'priority'
+      ? { scriptDeliveryMode: task.scriptDeliveryMode }
       : {}),
   };
 }

@@ -301,6 +301,32 @@ export const config = {
 
   // ── Quality + privacy gate for complex cloud reasoning fallback ──
   cloudReasoningFallback: {
+    // §1 activation bindings (Addendum C): the cloud delivery tier PER script
+    // class — e.g. standard→Flex, scheduled→Batch, priority→Standard — is
+    // bound at activation with rate evidence (NH-0036), never hardcoded.
+    // Unset classes fall back to the single global provider/model pair below,
+    // and EVERY binding still passes the same disallow/approved/preview
+    // checks: class bindings cannot bypass the quality gate.
+    scriptDeliveryBindings: {
+      get standard(): { provider: string; model: string } {
+        return {
+          provider: process.env.CLOUD_SCRIPT_STANDARD_PROVIDER || '',
+          model: process.env.CLOUD_SCRIPT_STANDARD_MODEL || '',
+        };
+      },
+      get scheduled(): { provider: string; model: string } {
+        return {
+          provider: process.env.CLOUD_SCRIPT_SCHEDULED_PROVIDER || '',
+          model: process.env.CLOUD_SCRIPT_SCHEDULED_MODEL || '',
+        };
+      },
+      get priority(): { provider: string; model: string } {
+        return {
+          provider: process.env.CLOUD_SCRIPT_PRIORITY_PROVIDER || '',
+          model: process.env.CLOUD_SCRIPT_PRIORITY_MODEL || '',
+        };
+      },
+    },
     enabled: (process.env.CLOUD_REASONING_FALLBACK_ENABLED || 'false') === 'true',
     provider: (process.env.CLOUD_REASONING_PROVIDER || '') as '' | 'gemini' | 'openai' | 'anthropic',
     model: process.env.CLOUD_REASONING_MODEL || '',
