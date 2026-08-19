@@ -7,18 +7,23 @@
 
 Machine-readable projection: `docs/release/release-state.json` (generated, non-authoritative).
 
-## Container-era candidate status — 2026-08-19
+## Container release — completed 2026-08-19
 
-- Active container release (authoritative VPS receipt): `d984c886`, release id
-  `1fa90d04…`, completed `2026-08-15T08:35:51Z`, payload `sha256:f1eda79f…`.
-- The `3970fac7` payload (hybrid AI QA3 + NH-0040/41, default-OFF) published
-  `14:42Z` but its delta touched `src/config.ts`, so unattended CD halted by
-  design (`migration_not_cd_eligible`, candidate `d9ac4a92…`,
-  `POLICY_RELEASE_DATA_MAINTENANCE_CONFIGURATION_CHANGED`).
-- Remediation: owner ack of the exact blocked id, then this clean-delta docs
-  commit republishes an eligible payload with identical application code.
-  Pending migrations 283–289 all evaluate predecessor-compatible (283 via its
-  governed exemption). Poller GHCR read credential replaced `2026-08-19`.
+- Active release (authoritative VPS receipt `nexus.release-receipt.v3`):
+  source `c5a7ae674e09effc796363be6e1a2df044c7eb7d`, release id
+  `0899260290ed401a0a262e35a5ea4484`, completed `2026-08-19T16:12:53.991Z`,
+  payload `sha256:14a807f4f7129209f76545778bcbb1b68f99fa894d7ca7072e04a89f92b428d1`.
+- Ships the hybrid AI commerce lineage (QA3 remediation `a7964fbe`,
+  NH-0040/41 `3970fac7`) with every activation flag default-OFF; backend image
+  `sha256:5ade7861…`, content engine `sha256:db726461…`; migrations 283–289
+  applied; pre-promotion backup `nexus-db-20260819T161141Z.sqlite.age`
+  (sha256 `1483715055da…`).
+- Deployment history: the `3970fac7` payload halted unattended CD by design
+  (`migration_not_cd_eligible`: its delta touched `src/config.ts`); the owner
+  acknowledged candidate `d9ac4a92…` and this clean-delta docs payload
+  deployed the identical application code. Poller GHCR read credential
+  replaced `2026-08-19` (read:packages-only). Post-deploy: `/public-status`
+  ok, production and staging containers healthy, `blocked: null`.
 
 ## Production
 
