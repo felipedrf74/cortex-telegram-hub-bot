@@ -41,7 +41,12 @@ export type AuditAction =
   | 'invoice_vendor_create'
   | 'invoice_vendor_disable'
   | 'invoice_scan_on_demand'
-  | 'invoice_scraper_mfa_reply';
+  | 'invoice_scraper_mfa_reply'
+  /**
+   * 2026-08-19 (NH-0040): audited money-adjacent operator actions — the
+   * time-limited administrative credit grant producer.
+   */
+  | 'ai_credit_admin_grant';
 
 export interface AuditEntry {
   userId: number;

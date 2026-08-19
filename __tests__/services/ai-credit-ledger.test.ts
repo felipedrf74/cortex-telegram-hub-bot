@@ -15,6 +15,15 @@ vi.mock('../../src/services/database', async (importOriginal) => {
   };
 });
 
+const logAuditMock = vi.hoisted(() => vi.fn());
+vi.mock('../../src/services/audit-trail', () => ({
+  logAudit: logAuditMock,
+}));
+const recordOperatorAlertMock = vi.hoisted(() => vi.fn(() => ({ ok: true, action: 'created' })));
+vi.mock('../../src/services/operator-alerts', () => ({
+  recordOperatorAlert: recordOperatorAlertMock,
+}));
+
 vi.mock('../../src/utils/logger', () => ({
   logger: {
     info: vi.fn(),
@@ -37,9 +46,12 @@ import {
   grantPromotionalAiCredits,
   grantPurchasedAiCredits,
   listAiCreditLots,
+  grantAdminAiCredits,
   releaseAiCreditReservation,
   reserveAiCredits,
   revokeAiCreditLot,
+  ADMIN_GRANT_MAX_CREDITS,
+  ADMIN_GRANT_MAX_EXPIRY_DAYS,
 } from '../../src/services/ai-credit-ledger';
 import type { AiCreditReplayScope } from '../../src/services/ai-credit-ledger';
 
@@ -331,5 +343,100 @@ describe('ai-credit-ledger', () => {
       state: 'expired',
     });
     expect(getAiCreditWallet(40, 'pro', NOW).reservedCredits).toBe(0);
+  });
+
+  describe('admin grants (NH-0040)', () => {
+    it('grants an audited, time-limited promotional-class lot idempotently', () => {
+      logAuditMock.mockClear();
+      const granted = grantAdminAiCredits({
+        userId: 40, grantId: 'incident-2026-08-19', credits: 25, expiryDays: 14,
+        actorUserId: 7, reason: 'support recovery: lost pack fulfillment window', now: NOW,
+      });
+      expect(granted.kind).toBe('granted');
+      if (granted.kind !== 'granted') throw new Error('unreachable');
+      expect(granted.lot.lotType).toBe('promotional');
+      expect(granted.lot.expiresAt).toBe(new Date(NOW.getTime() + 14 * 24 * 60 * 60 * 1000).toISOString());
+      expect(logAuditMock).toHaveBeenCalledWith(expect.objectContaining({
+        action: 'ai_credit_admin_grant',
+        actorId: 7,
+        userId: 40,
+      }));
+
+      const replay = grantAdminAiCredits({
+        userId: 40, grantId: 'incident-2026-08-19', credits: 25, expiryDays: 14,
+        actorUserId: 7, reason: 'retry', now: NOW,
+      });
+      expect(replay.kind).toBe('already_granted');
+      expect(logAuditMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects unbounded, unattributed, or unreasoned grants', () => {
+      const base = { userId: 40, grantId: 'g1', credits: 10, expiryDays: 30, actorUserId: 7, reason: 'ok', now: NOW };
+      expect(grantAdminAiCredits({ ...base, grantId: '  ' }).kind).toBe('rejected');
+      expect(grantAdminAiCredits({ ...base, reason: '' }).kind).toBe('rejected');
+      expect(grantAdminAiCredits({ ...base, actorUserId: 0 }).kind).toBe('rejected');
+      expect(grantAdminAiCredits({ ...base, credits: ADMIN_GRANT_MAX_CREDITS + 1 }).kind).toBe('rejected');
+      expect(grantAdminAiCredits({ ...base, credits: 0 }).kind).toBe('rejected');
+      expect(grantAdminAiCredits({ ...base, expiryDays: 0 }).kind).toBe('rejected');
+      expect(grantAdminAiCredits({ ...base, expiryDays: ADMIN_GRANT_MAX_EXPIRY_DAYS + 1 }).kind).toBe('rejected');
+    });
+
+    it('burns admin grants before purchased credits in debit order', () => {
+      grantAdminAiCredits({ userId: 40, grantId: 'g2', credits: 1, expiryDays: 30, actorUserId: 7, reason: 'ok', now: NOW });
+      grantPurchasedAiCredits({ userId: 40, provider: 'stripe', providerTransactionId: 'tx-admin-order', credits: 5, now: NOW });
+      const reserved = reserveAiCredits({ userId: 40, plan: 'pro', operationClass: 'standard', replayScope: scope('admin-order'), now: NOW });
+      expect(reserved.kind).toBe('reserved');
+      if (reserved.kind !== 'reserved') throw new Error('unreachable');
+      captureAiCreditReservation({ reservationId: reserved.reservation.id, now: NOW });
+      const lots = listAiCreditLots(40, NOW);
+      const adminLot = lots.find((lot) => lot.sourceRef === 'g2');
+      const purchasedLot = lots.find((lot) => lot.sourceRef === 'stripe:tx-admin-order');
+      expect(adminLot?.creditsRemaining).toBe(0);
+      expect(purchasedLot?.creditsRemaining).toBe(5);
+    });
+  });
+
+  describe('capture integrity (NH-0040/NH-0041)', () => {
+    it('refuses to capture a reserved reservation that already has capture rows', () => {
+      recordOperatorAlertMock.mockClear();
+      grantPromotionalAiCredits({ userId: 40, promotionId: 'conflict-pin', credits: 5, expiryDays: 30, now: NOW });
+      const reserved = reserveAiCredits({ userId: 40, plan: 'pro', operationClass: 'standard', replayScope: scope('conflict-pin'), now: NOW });
+      expect(reserved.kind).toBe('reserved');
+      if (reserved.kind !== 'reserved') throw new Error('unreachable');
+      const lot = listAiCreditLots(40, NOW).find((entry) => entry.sourceRef === 'conflict-pin');
+      // Forge ledger corruption: a capture row exists while the reservation
+      // state still says 'reserved'.
+      db.prepare(
+        'INSERT INTO ai_credit_captures (reservation_id, lot_id, user_id, credits, created_at) VALUES (?, ?, ?, ?, ?)',
+      ).run(reserved.reservation.id, lot?.id, 40, 1, NOW.toISOString());
+      const settled = captureAiCreditReservation({ reservationId: reserved.reservation.id, now: NOW });
+      expect(settled).toEqual({ kind: 'capture_conflict', reservationId: reserved.reservation.id });
+      expect(recordOperatorAlertMock).toHaveBeenCalledWith(expect.objectContaining({
+        severity: 'critical',
+        dedupeKey: `ai_credit_capture_conflict:${reserved.reservation.id}`,
+      }));
+      // No second allocation happened.
+      const rows = db.prepare('SELECT COUNT(*) AS n FROM ai_credit_captures WHERE reservation_id = ?')
+        .get(reserved.reservation.id) as { n: number };
+      expect(rows.n).toBe(1);
+    });
+
+    it('raises an operator alert on a capture shortfall, not only an evidence row', () => {
+      recordOperatorAlertMock.mockClear();
+      grantPromotionalAiCredits({ userId: 40, promotionId: 'shortfall', credits: 3, expiryDays: 30, now: NOW });
+      const reserved = reserveAiCredits({ userId: 40, plan: 'pro', operationClass: 'deep', replayScope: { ...scope('shortfall'), workload: 'deep' }, now: NOW });
+      expect(reserved.kind).toBe('reserved');
+      if (reserved.kind !== 'reserved') throw new Error('unreachable');
+      const lots = listAiCreditLots(40, NOW);
+      revokeAiCreditLot({ lotId: lots[0].id, reason: 'refund mid-operation', now: NOW });
+      const settled = captureAiCreditReservation({ reservationId: reserved.reservation.id, now: NOW });
+      expect(settled.kind).toBe('captured');
+      if (settled.kind !== 'captured') throw new Error('unreachable');
+      expect(settled.captureShortfall).toBe(3);
+      expect(recordOperatorAlertMock).toHaveBeenCalledWith(expect.objectContaining({
+        severity: 'warning',
+        dedupeKey: `ai_credit_capture_shortfall:${reserved.reservation.id}`,
+      }));
+    });
   });
 });

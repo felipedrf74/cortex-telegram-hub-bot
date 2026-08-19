@@ -616,6 +616,12 @@ export interface NexusPointsCutoverResult {
  *   and nonexpiring (plan §3) — refunded and revoked lots are never touched,
  *   and expired Stripe lots are deliberately not restored.
  *
+ * The Apple restore window is BOUNDED (NH-0041): only lots that expired
+ * within NEXUS_POINTS_APPLE_RESTORE_WINDOW_DAYS before the cutover (default
+ * 1095 days, covering Apple's refund/report horizon with margin) are
+ * restored. Anything older stays expired — an unbounded restore would mint
+ * spendable balance from arbitrarily old expired purchases in one flip.
+ *
  * Historical receipts, consumption, and audit rows are untouched; only the
  * expiry (and the restored Apple lots' status) changes. Safe to re-run: a
  * second invocation matches nothing.
@@ -624,6 +630,16 @@ export interface NexusPointsCutoverResult {
  * function refuses independently so no other caller can strip expiries while
  * the legacy points economy is still live.
  */
+export const NEXUS_POINTS_APPLE_RESTORE_WINDOW_DAYS_DEFAULT = 1095;
+
+/** Bounded restore window; overridable at activation, never unbounded. */
+export function getNexusPointsAppleRestoreWindowDays(): number {
+  const raw = Number.parseInt(process.env.NEXUS_POINTS_APPLE_RESTORE_WINDOW_DAYS || '', 10);
+  return Number.isInteger(raw) && raw >= 1 && raw <= 3650
+    ? raw
+    : NEXUS_POINTS_APPLE_RESTORE_WINDOW_DAYS_DEFAULT;
+}
+
 export function runNexusPointsCutover(now: Date = new Date()): NexusPointsCutoverResult {
   if (!isNexusPointsCutoverActive()) {
     throw new Error('NEXUS_POINTS_CUTOVER_INACTIVE: enable HYBRID_CREDITS_POINTS_CUTOVER before running the cutover');
@@ -639,6 +655,9 @@ export function runNexusPointsCutover(now: Date = new Date()): NexusPointsCutove
         AND expires_at > ?
         AND expires_at != ?
     `).run(NEXUS_POINTS_NONEXPIRING_AT, nowIso, nowIso, NEXUS_POINTS_NONEXPIRING_AT).changes;
+    const windowStartIso = new Date(
+      now.getTime() - getNexusPointsAppleRestoreWindowDays() * 24 * 60 * 60 * 1000,
+    ).toISOString();
     const restored = db.prepare(`
       UPDATE nexus_point_credits
       SET expires_at = ?, status = 'active', updated_at = ?
@@ -647,7 +666,8 @@ export function runNexusPointsCutover(now: Date = new Date()): NexusPointsCutove
         AND status IN ('active', 'expired')
         AND points_remaining > 0
         AND expires_at <= ?
-    `).run(NEXUS_POINTS_NONEXPIRING_AT, nowIso, nowIso).changes;
+        AND expires_at >= ?
+    `).run(NEXUS_POINTS_NONEXPIRING_AT, nowIso, nowIso, windowStartIso).changes;
     return { unexpiredMigrated: unexpired, appleRestored: restored };
   }).immediate();
   if (result.unexpiredMigrated > 0 || result.appleRestored > 0) {

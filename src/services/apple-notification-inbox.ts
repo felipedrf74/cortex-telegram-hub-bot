@@ -19,6 +19,7 @@
 
 import { getDb } from './database';
 import { config } from '../config';
+import { isApplePackFulfillmentActive } from './hybrid-runtime-kill-switches';
 import { logger } from '../utils/logger';
 import { verifyAppleJws } from './apple-jws-verifier';
 import {
@@ -35,7 +36,7 @@ import {
 
 const MAX_PROCESS_ATTEMPTS = 5;
 const LAST_ERROR_MAX_LENGTH = 300;
-const MAX_CONSUMABLE_QUANTITY = 100;
+export const MAX_CONSUMABLE_QUANTITY = 100;
 
 /**
  * Sandbox grants are opt-in by explicit flag, not inferred from NODE_ENV
@@ -44,7 +45,7 @@ const MAX_CONSUMABLE_QUANTITY = 100;
  * Default refuses non-Production notifications everywhere; staging sets
  * APPLE_ALLOW_SANDBOX_GRANTS=true deliberately.
  */
-function isSandboxGrantAllowed(): boolean {
+export function isSandboxGrantAllowed(): boolean {
   return process.env.APPLE_ALLOW_SANDBOX_GRANTS === 'true';
 }
 
@@ -203,7 +204,7 @@ function applyStoredNotification(row: RawRow): boolean {
   const productId = typeof inner.productId === 'string' ? inner.productId : '';
   const packItem = resolveBillingCatalogItemByAppleProductId(productId);
 
-  if (packItem && !config.hybridCommerce.applePackFulfillmentEnabled) {
+  if (packItem && !isApplePackFulfillmentActive()) {
     throw new PackFulfillmentDisabledError();
   }
 
@@ -379,7 +380,7 @@ export function processPendingAppleNotifications(input: { limit?: number; now?: 
   // off. Selecting them by received_at would park them permanently at the head
   // of every pass and starve retryable subscription notifications behind them,
   // so they are excluded while fulfillment is disabled.
-  const packProductIds = config.hybridCommerce.applePackFulfillmentEnabled
+  const packProductIds = isApplePackFulfillmentActive()
     ? []
     : Object.values(config.hybridCommerce.appleProductIds).filter(Boolean);
   // Exclusion selects on the STORED product id (QA3 P2-11), so a legacy

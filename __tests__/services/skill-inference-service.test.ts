@@ -5,20 +5,22 @@ import { resolve } from 'node:path';
 import Database from 'better-sqlite3';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { dispatchMock, modelPolicyMock, warningMock } = vi.hoisted(() => ({
+const { dispatchMock, modelPolicyMock, warningMock, entitlementMock, freeTierFlagMock } = vi.hoisted(() => ({
   dispatchMock: vi.fn(),
   modelPolicyMock: { unavailable: false },
   warningMock: vi.fn(),
+  entitlementMock: { plan: 'pro', aiAccessAllowed: true },
+  freeTierFlagMock: { enabled: false },
 }));
 
-vi.mock('../../src/config', () => ({ config: { isStaging: true, ollama: { enabled: true } } }));
+vi.mock('../../src/config', () => ({ config: { isStaging: true, ollama: { enabled: true }, freeTierLocalInference: freeTierFlagMock } }));
 vi.mock('../../src/services/database', async () => ({
   ...(await vi.importActual<typeof import('../../src/services/database')>('../../src/services/database')),
   getDb: () => { throw new Error('explicit test database required'); },
 }));
 vi.mock('../../src/services/entitlement', async () => ({
   ...(await vi.importActual<typeof import('../../src/services/entitlement')>('../../src/services/entitlement')),
-  getEffectiveEntitlement: () => ({ plan: 'pro', aiAccessAllowed: true }),
+  getEffectiveEntitlement: () => ({ ...entitlementMock }),
 }));
 vi.mock('../../src/services/provider-registry', () => ({
   ensureActiveProvider: () => ({ dispatchLocalReasoning: (...args: unknown[]) => dispatchMock(...args) }),
@@ -131,6 +133,9 @@ describe('skill inference service', () => {
     dispatchMock.mockReset();
     warningMock.mockReset();
     modelPolicyMock.unavailable = false;
+    entitlementMock.plan = 'pro';
+    entitlementMock.aiAccessAllowed = true;
+    freeTierFlagMock.enabled = false;
     const { localInferenceScheduler } = await import('../../src/services/local-inference-scheduler');
     const { resetLocalInferenceEmergencyOffLatchForTests } = await import(
       '../../src/services/local-inference-runtime-control'
@@ -1746,5 +1751,114 @@ describe('skill inference service', () => {
     expect(db.prepare(`SELECT tenant_id, user_id FROM local_inference_safety_incidents
       WHERE source = 'invalid-optional-scope'`).get()).toEqual({ tenant_id: null, user_id: null });
     db.close();
+  });
+
+  describe('free-tier local-only binding (NH-0040)', () => {
+    const freeRequest = (overrides: Record<string, unknown> = {}) => ({
+      tenantId: 42,
+      userId: 42,
+      skillId: 'content' as const,
+      taskType: 'free_chat',
+      riskClass: 'low' as const,
+      executionClass: 'interactive' as const,
+      operationId: `free-op-${String(overrides.operationId ?? 'default')}`,
+      prompt: 'Answer briefly.',
+      schemaId: 'text',
+      containsPrivateData: false,
+      allowCloudEscalation: false,
+      requestSource: 'interactive' as const,
+      budgetRequest: { userId: 42, requestSource: 'interactive' as const, baseCategory: 'free_chat' },
+      cloudBudgetBoundary: async (_request: unknown, call: () => Promise<unknown>) => call(),
+      ...overrides,
+    });
+
+    it('keeps free plans fully denied while the binding is OFF', async () => {
+      entitlementMock.plan = 'free';
+      entitlementMock.aiAccessAllowed = false;
+      const db = database();
+      const { executeSkillInference } = await import('../../src/services/skill-inference-service');
+      await expect(executeSkillInference(freeRequest() as never, db))
+        .rejects.toMatchObject({ code: 'LOCAL_PLAN_REQUIRED' });
+      expect(dispatchMock).not.toHaveBeenCalled();
+      db.close();
+    });
+
+    it('serves a bound free account on the local lane with cloud escalation forced off', async () => {
+      entitlementMock.plan = 'free';
+      entitlementMock.aiAccessAllowed = false;
+      freeTierFlagMock.enabled = true;
+      const db = database();
+      db.prepare(`UPDATE local_inference_runtime_control
+        SET mode = 'active', rollout_percent = 100, model_manifest_version = 'test-v1',
+            active_model_digest = 'sha256:test', skill_profile_version = 'nexus-skill-inference-v1'
+        WHERE environment = 'staging'`).run();
+      dispatchMock.mockResolvedValueOnce({
+        text: 'local answer',
+        providerMetadata: { providerUsed: 'ollama', modelUsed: 'control', modelDigest: 'sha256:test' },
+      });
+      const { executeSkillInference } = await import('../../src/services/skill-inference-service');
+      const result = await executeSkillInference(freeRequest({
+        operationId: 'local-served',
+        // Even a forged escalation request must not open the cloud path.
+        allowCloudEscalation: true,
+      }) as never, db);
+      expect(result).toMatchObject({ route: 'local', text: 'local answer' });
+      expect(dispatchMock).toHaveBeenCalledTimes(1);
+      expect(dispatchMock.mock.calls[0]?.[0]).toMatchObject({
+        localAdmission: 'local_only',
+        allowCloudEscalation: false,
+      });
+      db.close();
+    });
+
+    it('returns a retryable capacity response instead of cloud when the local route is unavailable', async () => {
+      entitlementMock.plan = 'free';
+      entitlementMock.aiAccessAllowed = false;
+      freeTierFlagMock.enabled = true;
+      const db = database();
+      // Runtime control stays 'off': no local route for this account.
+      const { executeSkillInference } = await import('../../src/services/skill-inference-service');
+      await expect(executeSkillInference(freeRequest({
+        operationId: 'capacity',
+        allowCloudEscalation: true,
+      }) as never, db)).rejects.toMatchObject({ code: 'FREE_TIER_LOCAL_CAPACITY', status: 503 });
+      expect(dispatchMock).not.toHaveBeenCalled();
+      db.close();
+    });
+
+    it('never escalates to cloud after a failed local attempt on a bound plan', async () => {
+      entitlementMock.plan = 'beta';
+      entitlementMock.aiAccessAllowed = false;
+      freeTierFlagMock.enabled = true;
+      const db = database();
+      db.prepare(`UPDATE local_inference_runtime_control
+        SET mode = 'active', rollout_percent = 100, model_manifest_version = 'test-v1',
+            active_model_digest = 'sha256:test', skill_profile_version = 'nexus-skill-inference-v1'
+        WHERE environment = 'staging'`).run();
+      const localFailure = Object.assign(new Error('local timeout'), { code: 'ETIMEDOUT' });
+      dispatchMock.mockRejectedValueOnce(localFailure);
+      const { executeSkillInference } = await import('../../src/services/skill-inference-service');
+      await expect(executeSkillInference(freeRequest({
+        operationId: 'no-cloud-after-local',
+        allowCloudEscalation: true,
+      }) as never, db)).rejects.toBeTruthy();
+      // Exactly one (local) dispatch: no force_cloud second attempt.
+      expect(dispatchMock).toHaveBeenCalledTimes(1);
+      expect(dispatchMock.mock.calls[0]?.[0]).toMatchObject({ localAdmission: 'local_only' });
+      db.close();
+    });
+
+    it('reports bound accounts ineligible for the external cloud fallback', async () => {
+      entitlementMock.plan = 'free';
+      freeTierFlagMock.enabled = true;
+      const db = database();
+      const { getSkillInferenceExternalCloudFallbackEligibility } = await import(
+        '../../src/services/skill-inference-service'
+      );
+      expect(getSkillInferenceExternalCloudFallbackEligibility({
+        runId: 'any-run', tenantId: 42, userId: 42,
+      }, db)).toEqual({ allowed: false, reason: 'free_tier_local_only' });
+      db.close();
+    });
   });
 });

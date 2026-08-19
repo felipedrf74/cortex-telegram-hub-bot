@@ -13,6 +13,17 @@ export type AiCreditOperationClass =
   | 'scheduled_script'
   | 'priority_script';
 
+/**
+ * Explicit policy status for the `deep` class (NH-0040): the plan prices
+ * deep reasoning/research at 3 credits, but no standalone deep-reasoning
+ * user surface exists in the runtime yet — the cloud-allowlist chat fallback
+ * is a degraded answer path, not deep reasoning, and content research runs
+ * inside script-class jobs. The class is RESERVED, not retired: pricing is
+ * live policy the moment the surface ships, and an enforcement test pins
+ * that no runtime workload admits `deep` until that deliberate change.
+ */
+export const DEEP_OPERATION_CLASS_STATUS = 'reserved_pending_deep_surface' as const;
+
 export const AI_CREDIT_OPERATION_COSTS: Readonly<Record<AiCreditOperationClass, number>> = Object.freeze({
   standard: 1,
   deep: 3,

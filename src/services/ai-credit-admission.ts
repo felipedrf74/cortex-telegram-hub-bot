@@ -19,6 +19,7 @@
 
 import { config } from '../config';
 import { logger } from '../utils/logger';
+import { isHybridKillSwitchEngaged } from './hybrid-runtime-kill-switches';
 import { resolveBillingPlanForUser } from './plan-quotas';
 import type { AiCreditOperationClass } from './ai-credit-policy';
 import {
@@ -90,7 +91,13 @@ export class AiCreditInFlightError extends Error {
 }
 
 export function isAiCreditAdmissionEnabled(): boolean {
-  return config.hybridCredits?.enabled === true;
+  return config.hybridCredits?.enabled === true
+    && !isHybridKillSwitchEngaged('hybrid_credits');
+}
+
+export interface AiCreditAdmissionContext {
+  /** Null when admission is disabled and the wrapper is a passthrough. */
+  reservationId: number | null;
 }
 
 /**
@@ -99,10 +106,10 @@ export function isAiCreditAdmissionEnabled(): boolean {
  */
 export async function withAiCreditAdmission<T>(
   input: AiCreditAdmissionInput,
-  run: () => Promise<T>,
+  run: (context: AiCreditAdmissionContext) => Promise<T>,
 ): Promise<T> {
   if (!isAiCreditAdmissionEnabled()) {
-    return run();
+    return run({ reservationId: null });
   }
 
   const plan = resolveBillingPlanForUser(input.userId);
@@ -140,7 +147,7 @@ export async function withAiCreditAdmission<T>(
   }
 
   try {
-    const result = await run();
+    const result = await run({ reservationId: reservation.id });
     const settled = captureAiCreditReservation({ reservationId: reservation.id, now: input.now });
     if (settled.kind !== 'captured' && !(settled.kind === 'invalid_state' && settled.state === 'captured')) {
       logger.warn(

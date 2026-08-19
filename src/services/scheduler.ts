@@ -1433,6 +1433,7 @@ export function startScheduler(): void {
   registerJob('shared_list',        'Shared List Check',     '*/5 * * * *',     'secretary');
   registerJob('midnight_cleanup',   'Midnight Cleanup',      '0 0 * * *',       'system');
   registerJob('apple_inbox_retry',  'Apple Inbox Reconciliation', '*/15 * * * *', 'system');
+  registerJob('apple_transaction_reconciliation', 'App Store Transaction Reconciliation', '45 6 * * *', 'system');
   registerJob('ai_credit_sweeper',  'Stale AI-Credit Reservation Sweep', '30 * * * *', 'system');
   // content_discovery removed — replaced by content-workflow (tue/thu/fri topic candidates)
   registerJob('invoice_collection', 'Invoice Collection',    '0 9 1 * *',       'invoices');
@@ -1515,6 +1516,15 @@ export function startScheduler(): void {
     const counts = processPendingAppleNotifications();
     if (counts.processed + counts.failed + counts.exhausted + counts.deferred === 0) return 'skipped';
     logger.info(counts, 'Apple notification inbox reconciliation pass');
+  }));
+
+  // Plan §3 (NH-0041): daily independent check behind the notification inbox.
+  // Credential-gated — inert until the App Store Server API key exists.
+  cron.schedule('45 6 * * *', wrapJob('apple_transaction_reconciliation', async () => {
+    const { runAppleTransactionReconciliation } = require('./apple-transaction-reconciliation');
+    const result = await runAppleTransactionReconciliation();
+    if (result.kind !== 'completed') return 'skipped';
+    logger.info(result, 'App Store transaction reconciliation pass');
   }));
 
   // Release AI-credit reservations that never settled (crashed worker, lost

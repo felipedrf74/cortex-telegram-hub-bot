@@ -75,6 +75,30 @@
       }
     },
     {
+      "id": "apple_transaction_reconciliation",
+      "name": "App Store Transaction Reconciliation",
+      "schedule": "45 6 * * *",
+      "domain": "system",
+      "lifecycle": "active",
+      "policyOwner": "billing",
+      "jobVersion": "1.0.0",
+      "tenantScope": "ledger-apple-lot-scan",
+      "overlapPolicy": "single-daily-run",
+      "retryPolicy": "next-scheduled-run",
+      "providerUsage": "none",
+      "providerRouting": "not-applicable-no-model-provider",
+      "costPolicy": "no-model-provider-cost",
+      "latencyPolicy": "callback-owned-no-model-budget",
+      "outputPolicy": "job-specific-validated-write",
+      "notificationPolicy": "job-specific",
+      "inputFingerprint": {
+        "enforcement": "not-applicable-no-provider",
+        "unchangedInputProviderCalls": 0,
+        "evidence": "source-audit:no-model-provider-boundary",
+        "tests": []
+      }
+    },
+    {
       "id": "autoresearch",
       "name": "Autoresearch",
       "schedule": "19 1 * * 0",

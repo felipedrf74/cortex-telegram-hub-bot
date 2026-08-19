@@ -352,6 +352,14 @@ export interface FullUserExport {
   notificationTypeSuppressions: Array<{ sourceSkill: string; type: string; mode: string; until: string | null; createdAt: string }>;
   notificationEngagementEvents: Array<{ sourceSkill: string; type: string; eventType: string; actionId: string | null; createdAt: string }>;
   notificationPriorityShadow: Array<{ sourceSkill: string; type: string; declaredPriority: string; effectivePriority: string; actualDecision: string; score: number; tier: string; createdAt: string }>;
+  // NH-0041: subject ACCESS covers the billing evidence that erasure
+  // deliberately preserves (append-only ledger + Apple inbox metadata).
+  billing: {
+    aiCreditLots: Array<Record<string, unknown>>;
+    aiCreditReservations: Array<Record<string, unknown>>;
+    aiCreditCaptures: Array<Record<string, unknown>>;
+    appleNotifications: Array<Record<string, unknown>>;
+  };
   garminSessions: Array<{ lastRefreshedAt: string | null; createdAt: string; updatedAt: string }>;
   agentSignals: Array<{ sourceAgent: string; signalType: string; status: string; createdAt: string }>;
   encryptionMeta: Array<{ keyVersion: number; encryptedAt: string; updatedAt: string }>;
@@ -640,6 +648,56 @@ export function exportSkillInferenceData(
   return { runs, attempts, safetyIncidents };
 }
 
+const APPLE_INBOX_EXPORT_SCAN_CAP = 5_000;
+
+/**
+ * Inbox rows carry no user_id; a row belongs to the requesting user when its
+ * decoded transaction id matches one of the user's own Apple lots. The JWS
+ * payload is base64-decoded for matching only and is never exported.
+ */
+function exportAppleNotificationMetadataForUser(
+  db: ReturnType<typeof getDb>,
+  userId: number,
+): Array<Record<string, unknown>> {
+  const ownedIds = new Set(
+    (safeAll(db,
+      "SELECT provider_transaction_id AS id FROM ai_credit_lots WHERE user_id = ? AND provider = 'apple' AND provider_transaction_id IS NOT NULL",
+      userId) as Array<{ id: string }>).map((row) => row.id),
+  );
+  if (ownedIds.size === 0) return [];
+  const rows = safeAll(db,
+    `SELECT notification_type AS notificationType, product_id AS productId, state,
+            environment, received_at AS receivedAt, signed_payload AS signedPayload
+       FROM apple_notification_inbox ORDER BY id DESC LIMIT ${APPLE_INBOX_EXPORT_SCAN_CAP}`) as Array<Record<string, unknown>>;
+  const matched: Array<Record<string, unknown>> = [];
+  for (const row of rows) {
+    const ids = decodeAppleInboxTransactionIds(String(row.signedPayload ?? ''));
+    if (!ids.some((id) => ownedIds.has(id))) continue;
+    const { signedPayload: _omitted, ...metadata } = row;
+    matched.push(metadata);
+  }
+  return matched;
+}
+
+function decodeAppleInboxTransactionIds(signedPayload: string): string[] {
+  try {
+    const outer = decodeJwsPayload(signedPayload);
+    const innerJws = outer?.data?.signedTransactionInfo;
+    if (typeof innerJws !== 'string') return [];
+    const inner = decodeJwsPayload(innerJws);
+    return [inner?.transactionId, inner?.originalTransactionId]
+      .filter((id): id is string => typeof id === 'string' && id.length > 0);
+  } catch {
+    return [];
+  }
+}
+
+function decodeJwsPayload(jws: string): Record<string, any> | null {
+  const parts = jws.split('.');
+  if (parts.length !== 3) return null;
+  return JSON.parse(Buffer.from(parts[1]!, 'base64url').toString('utf8'));
+}
+
 export function exportAllUserData(userId: number): FullUserExport {
   const db = getDb();
 
@@ -741,6 +799,23 @@ export function exportAllUserData(userId: number): FullUserExport {
        FROM notification_priority_shadow WHERE user_id = ? ORDER BY created_at`, userId);
   const garminSessions = safeAll(db,
     'SELECT last_refreshed_at as lastRefreshedAt, created_at as createdAt, updated_at as updatedAt FROM garmin_sessions WHERE user_id = ?', userId);
+  // NH-0041 DSAR billing section. The ledger rows are the user's charge
+  // evidence; the Apple inbox has no user_id column, so rows are matched by
+  // decoding each stored transaction id against the user's own Apple lots
+  // (metadata only — the signed payload itself is never exported).
+  const aiCreditLots = safeAll(db,
+    `SELECT lot_type as lotType, credits_granted as creditsGranted, granted_at as grantedAt,
+            expires_at as expiresAt, source_kind as sourceKind, source_ref as sourceRef,
+            provider, provider_transaction_id as providerTransactionId, status
+       FROM ai_credit_lots WHERE user_id = ? ORDER BY id`, userId);
+  const aiCreditReservations = safeAll(db,
+    `SELECT operation_class as operationClass, credits, state, workload,
+            reserved_at as reservedAt, settled_at as settledAt, capture_shortfall as captureShortfall
+       FROM ai_credit_reservations WHERE user_id = ? ORDER BY id`, userId);
+  const aiCreditCaptures = safeAll(db,
+    `SELECT reservation_id as reservationId, lot_id as lotId, credits, created_at as createdAt
+       FROM ai_credit_captures WHERE user_id = ? ORDER BY id`, userId);
+  const appleNotifications = exportAppleNotificationMetadataForUser(db, userId);
   const agentSignals = safeAll(db,
     'SELECT source_agent as sourceAgent, signal_type as signalType, status, created_at as createdAt FROM agent_signals WHERE user_id = ? ORDER BY created_at', userId);
   const encryptionMeta = safeAll(db,
@@ -1095,6 +1170,12 @@ export function exportAllUserData(userId: number): FullUserExport {
     notificationTypeSuppressions,
     notificationEngagementEvents,
     notificationPriorityShadow,
+    billing: {
+      aiCreditLots,
+      aiCreditReservations,
+      aiCreditCaptures,
+      appleNotifications,
+    },
     garminSessions,
     agentSignals,
     encryptionMeta,

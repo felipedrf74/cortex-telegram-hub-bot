@@ -20,6 +20,14 @@ import type { AIProvider, AICallResult } from '../../src/services/ai-provider';
 import type { ClassificationResult } from '../../src/domains/types';
 import { LocalLLMError } from '../../src/services/local-llm-error';
 
+const freeTierAssertMock = vi.hoisted(() => vi.fn());
+vi.mock('../../src/services/free-tier-inference-binding', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/free-tier-inference-binding')>(
+    '../../src/services/free-tier-inference-binding',
+  )),
+  assertFreeTierCloudDispatchAllowed: (...args: unknown[]) => freeTierAssertMock(...args),
+}));
+
 const optionalCloudMocks = vi.hoisted(() => {
   const provider = {
     name: 'gemini',
@@ -220,6 +228,7 @@ describe('TaskRoutingProvider', () => {
       stopReason: 'stop',
     });
     optionalCloudMocks.selectApprovedCloudReasoningProvider.mockClear();
+    freeTierAssertMock.mockReset();
     provider = new TaskRoutingProvider(buildConfig(), onFallback);
   });
 
@@ -462,6 +471,58 @@ describe('TaskRoutingProvider', () => {
     const lastRequest = optionalCloudMocks.selectApprovedCloudReasoningProvider.mock.lastCall?.[0] as Record<string, unknown>;
     expect(lastRequest).toBeDefined();
     expect('scriptDeliveryMode' in lastRequest).toBe(false);
+  });
+
+  describe('free-tier local-only dispatch guard (NH-0040)', () => {
+    class BindingBlocked extends Error {
+      readonly code = 'FREE_TIER_LOCAL_ONLY';
+    }
+
+    it('consults the binding for cloud chat and tool-use dispatch with the caller identity', async () => {
+      openai.callDomain.mockResolvedValue(OK_RESULT);
+      anthropic.callDomain.mockResolvedValue(OK_RESULT);
+      await provider.callDomain('content', [], 'msg', '', { userId: 77 });
+      expect(freeTierAssertMock).toHaveBeenCalledWith(expect.objectContaining({
+        userId: 77,
+        surface: 'legacy_chat_cloud_dispatch',
+      }));
+      freeTierAssertMock.mockClear();
+      await provider.callDomain('secretary', [], 'msg', '', { userId: 77 });
+      expect(freeTierAssertMock).toHaveBeenCalledWith(expect.objectContaining({
+        userId: 77,
+        surface: 'legacy_chat_cloud_dispatch',
+      }));
+    });
+
+    it('blocks a bound account before any cloud provider runs, including the fallback leg', async () => {
+      freeTierAssertMock.mockImplementation(() => { throw new BindingBlocked('blocked'); });
+      await expect(provider.callDomain('content', [], 'msg', '', { userId: 77 }))
+        .rejects.toMatchObject({ code: 'FREE_TIER_LOCAL_ONLY' });
+      expect(openai.callDomain).not.toHaveBeenCalled();
+      expect(gemini.callDomain).not.toHaveBeenCalled();
+    });
+
+    it('lets a local ollama chat leg run unguarded so the binding never blocks local inference', async () => {
+      const ollama = createMockProvider('ollama');
+      ollama.callDomain.mockResolvedValue(OK_RESULT);
+      freeTierAssertMock.mockImplementation(() => { throw new BindingBlocked('blocked'); });
+      const localChat = new TaskRoutingProvider(buildConfig({
+        chat: { primary: ollama, fallback: undefined },
+      }), onFallback);
+      await expect(localChat.callDomain('content', [], 'msg', '', { userId: 77 }))
+        .resolves.toBeTruthy();
+      expect(ollama.callDomain).toHaveBeenCalledTimes(1);
+      expect(freeTierAssertMock).not.toHaveBeenCalled();
+    });
+
+    it('guards tool continuations the same way', async () => {
+      freeTierAssertMock.mockImplementation(() => { throw new BindingBlocked('blocked'); });
+      await expect(provider.continueWithToolResults('content', [], 'msg', '', [], { userId: 77 }))
+        .rejects.toMatchObject({ code: 'FREE_TIER_LOCAL_ONLY' });
+      expect(freeTierAssertMock).toHaveBeenCalledWith(expect.objectContaining({
+        surface: 'legacy_chat_cloud_tool_continuation',
+      }));
+    });
   });
 
   it('forwards cancellation into approved structured cloud generation and records no provider outcome after abort', async () => {

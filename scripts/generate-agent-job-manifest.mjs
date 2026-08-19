@@ -215,6 +215,7 @@ export const JOB_POLICIES = Object.freeze({
   invoice_queue: noProvider('finance', 'durable-invoice-queue-tenant', { retryPolicy: 'durable-queue-bounded-retry' }),
   midnight_cleanup: noProvider('operations', 'platform-retention'),
   apple_inbox_retry: noProvider('billing', 'durable-apple-notification-inbox'),
+  apple_transaction_reconciliation: noProvider('billing', 'ledger-apple-lot-scan', { overlapPolicy: 'single-daily-run' }),
   ai_credit_sweeper: noProvider('billing', 'platform-tenant-scoped-ledger'),
   nexus_points_expiry: noProvider('billing', 'platform-tenant-scoped-ledger'),
   notification_release: noProvider('notifications', 'durable-notification-tenant-user', { retryPolicy: 'delivery-policy-retry-and-dead-letter' }),

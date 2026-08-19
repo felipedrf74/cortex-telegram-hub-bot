@@ -65,6 +65,7 @@ import { logger } from '../utils/logger';
 import { AIProvider } from './ai-provider';
 import { createHash } from 'crypto';
 import { isAnthropicRuntimeEnabled } from './runtime-flags';
+import { isHybridKillSwitchEngaged } from './hybrid-runtime-kill-switches';
 // v3.0/v3.1: `OllamaProvider` is kept as a type-only import for
 // backwards-compat in the `selectApprovedCloudReasoningProvider`
 // signature. The local model is NOT on the privacy escalation path in
@@ -246,6 +247,9 @@ export async function selectApprovedCloudReasoningProvider(
   // ── Quality gate ────────────────────────────────────────────────
   if (!cfg.enabled) {
     return { rejected: true, reason: 'disabled', warning: 'cloud_reasoning_fallback_disabled' };
+  }
+  if (isHybridKillSwitchEngaged('cloud_reasoning_fallback')) {
+    return { rejected: true, reason: 'disabled', warning: 'cloud_reasoning_fallback_kill_switch_engaged' };
   }
   // Per-class script binding (Addendum C): only a COMPLETE pair overrides —
   // a half-configured binding falls back to the global pair rather than

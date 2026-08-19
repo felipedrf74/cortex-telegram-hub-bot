@@ -22,6 +22,7 @@ import { DomainName, DomainMessage, ClassificationResult } from '../domains/type
 import { logger } from '../utils/logger';
 import { getCurrentContext } from '../utils/request-context';
 import { config } from '../config';
+import { assertFreeTierCloudDispatchAllowed } from './free-tier-inference-binding';
 import {
   canonicalizeStructuredOutputSchema,
   validateStructuredOutputSchema,
@@ -1295,9 +1296,21 @@ export class TaskRoutingProvider implements AIProvider {
       ? { ...opts.callOptions, filteredTools: [] }
       : opts.callOptions;
 
-    return this.executeWithFallback(taskType, (p) =>
-      p.callDomain(domain, routedHistory, currentMessage, routedStateContext, routedCallOptions)
-        .then((result) => stampRoutedProvider(result, p.name)),
+    return this.executeWithFallback(taskType, (p) => {
+      // Plan §1 row 1 (NH-0040): locally-bound accounts never dispatch a
+      // CLOUD chat generation, including as a fallback after a local
+      // attempt. Both domain-dispatch task types are user-visible chat
+      // (secretary/triathlon resolve to tool-use); platform classification
+      // uses classify() and keeps its §1 fallback for every tier.
+      if ((taskType === 'chat' || taskType === 'tool-use') && p.name !== 'ollama') {
+        assertFreeTierCloudDispatchAllowed({
+          userId: routedCallOptions.userId,
+          surface: 'legacy_chat_cloud_dispatch',
+        });
+      }
+      return p.callDomain(domain, routedHistory, currentMessage, routedStateContext, routedCallOptions)
+        .then((result) => stampRoutedProvider(result, p.name));
+    },
     pair, {
       callKind: 'domain',
       category: `domain_${domain}`,
@@ -1359,9 +1372,16 @@ export class TaskRoutingProvider implements AIProvider {
       ? { ...opts.callOptions, filteredTools: [] }
       : opts.callOptions;
 
-    return this.executeWithFallback(taskType, (p) =>
-      p.continueWithToolResults(domain, routedHistory, currentMessage, routedStateContext, toolConversation, routedCallOptions)
-        .then((result) => stampRoutedProvider(result, p.name)),
+    return this.executeWithFallback(taskType, (p) => {
+      if ((taskType === 'chat' || taskType === 'tool-use') && p.name !== 'ollama') {
+        assertFreeTierCloudDispatchAllowed({
+          userId: routedCallOptions.userId,
+          surface: 'legacy_chat_cloud_tool_continuation',
+        });
+      }
+      return p.continueWithToolResults(domain, routedHistory, currentMessage, routedStateContext, toolConversation, routedCallOptions)
+        .then((result) => stampRoutedProvider(result, p.name));
+    },
     pair, {
       callKind: 'tool-continuation',
       category: 'tool_continuation',

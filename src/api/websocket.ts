@@ -43,6 +43,7 @@ import {
   AiCreditReplaySettledError,
   withAiCreditAdmission,
 } from '../services/ai-credit-admission';
+import { getAiCreditReplayResult, rememberAiCreditReplayResult } from '../services/ai-credit-replay-cache';
 import { toStableAiBudgetError } from './response-helpers';
 import { tryBuildChatCoreV2DeterministicReadRoute } from '../services/chat-core-v2';
 import { buildChatCoreV2DeterministicReadShortcutResponse } from './routes/chat-core-v2-deterministic-read-response';
@@ -94,6 +95,26 @@ export function buildWebSocketAiBudgetErrorFrame(
  * the exact required and available amounts plus the pack CTA eligibility,
  * instead of leaking an internal error string.
  */
+/**
+ * QA3 P3-17: a settled replay whose answer is still in the bounded replay
+ * cache resends that answer instead of surfacing AI_CREDIT_REPLAY_SETTLED.
+ * Returns true when the cached answer was streamed to the client.
+ */
+export async function trySendSettledReplayAnswer(ws: WebSocket, error: unknown): Promise<boolean> {
+  if (!(error instanceof AiCreditReplaySettledError)) return false;
+  const replayText = getAiCreditReplayResult(error.reservation.id);
+  if (!replayText || ws.readyState !== WebSocket.OPEN) return false;
+  await streamTextFrame(ws, {
+    text: replayText,
+    // The reservation's replay identity carries the client message id this
+    // retry re-sent; the resend answers that same message.
+    messageId: error.reservation.clientOperationId,
+    userId: (ws as any).userId,
+    tenantId: (ws as any).tenantId,
+  });
+  return true;
+}
+
 export function buildWebSocketAiCreditErrorFrame(
   error: unknown,
   userId?: number,
@@ -931,7 +952,7 @@ export function attachWebSocket(server: http.Server): void {
               requestHash: createHash('sha256')
                 .update(`${userId}:${tenantId}:${messageText}`)
                 .digest('hex'),
-            }, () => withAiBudgetReservation({
+            }, (creditAdmission) => withAiBudgetReservation({
               userId,
               requestSource: 'interactive',
               baseCategory: 'ios_websocket_chat',
@@ -946,6 +967,13 @@ export function attachWebSocket(server: http.Server): void {
               ...input,
               abortSignal: accountAbortSignal,
               onFirstChunk: () => { modelResponsePublished = true; },
+            }).then(() => {
+              // QA3 P3-17: a published answer becomes replayable for the
+              // reconnect window so a genuine retry of this settled
+              // reservation gets the result back, not a replay error.
+              if (creditAdmission.reservationId !== null) {
+                rememberAiCreditReplayResult(creditAdmission.reservationId, input.text);
+              }
             });
             const sendModelFrame = (frame: Record<string, unknown>): boolean => sendTrackedWebSocketFrame(
               ws,
@@ -1306,6 +1334,7 @@ export function attachWebSocket(server: http.Server): void {
           return;
         }
         if (isProviderRequestCancellation(err)) return;
+        if (!modelResponsePublished && await trySendSettledReplayAnswer(ws, err)) return;
         const creditErrorFrame = buildWebSocketAiCreditErrorFrame(
           err,
           (ws as any).userId,
