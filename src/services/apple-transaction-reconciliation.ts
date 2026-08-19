@@ -16,7 +16,7 @@
  * signs ES256 JWTs with the configured key.
  */
 
-import { createPrivateKey, createSign, randomUUID } from 'node:crypto';
+import { createPrivateKey, randomUUID, sign as signWithKey } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { config } from '../config';
 import { getDb } from './database';
@@ -187,8 +187,12 @@ function signAppStoreServerApiJwt(): string {
     jti: randomUUID(),
   }));
   const key = createPrivateKey(readFileSync(cfg.privateKeyPath, 'utf8'));
-  const signer = createSign('SHA256');
-  signer.update(`${header}.${claims}`);
-  const signature = signer.sign({ key, dsaEncoding: 'ieee-p1363' });
+  // One-shot ES256 signature over the JWT signing input (RFC 7515). The key
+  // id above is Apple's public key identifier, not secret material.
+  const signature = signWithKey(
+    'sha256',
+    Buffer.from(`${header}.${claims}`),
+    { key, dsaEncoding: 'ieee-p1363' },
+  );
   return `${header}.${claims}.${base64Url(signature)}`;
 }
