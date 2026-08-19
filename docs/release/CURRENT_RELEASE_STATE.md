@@ -24,10 +24,11 @@ Machine-readable projection: `docs/release/release-state.json` (generated, non-a
   handoff named a superseded receipt (corrected above; audits now run under a
   promotion freeze — no merges to main until the verdict lands). P1-2 the
   checkout key-mode guard dead-ends all web checkout on the test key while the
-  Nexus Points path stayed unguarded (guard now uniform; owner must set
-  `STRIPE_SANDBOX_CHECKOUT_ALLOWED=true` deliberately or install a live key).
-  P1-3 `CLOUD_REASONING_FALLBACK_ENABLED=true` in production contradicts the
-  default-OFF claim (owner env action pending; claim withdrawn here). P2-4/
+  Nexus Points path stayed unguarded (guard now uniform; owner declared the
+  deliberate sandbox posture `STRIPE_SANDBOX_CHECKOUT_ALLOWED=true` on
+  2026-08-19 in production+staging env). P1-3 resolved the same day: owner set
+  `CLOUD_REASONING_FALLBACK_ENABLED=false`, restoring default-OFF. Both take
+  effect from the release carrying this note (env re-reads on recreate). P2-4/
   P2-5 restore-packs now refuses foreign-bundle and revoked transactions.
   P2-6 decided: the DB kill switch fails open to env-only behavior by design,
   now monitored — an unreadable control table raises a critical operator
@@ -51,10 +52,9 @@ Machine-readable projection: `docs/release/release-state.json` (generated, non-a
 - Compact manifest SHA-256: `d3dba958fe9b690296bd72e7e359b7a119d0b6e952e7ada4fbed6dbec09017f8`
 - Staging/production transactions: `20260805T214301Z-16818898b3f6` / `20260805T214413Z-61d0c9b8e521`
 - Encrypted backup SHA-256: `83911e31b212a4f36524a9e983484d033be9717cf35daf6091c67710ab2f4e6b`
-- Fault drill `20260802T133139Z-1d33c71562f6` restored predecessor in 2.696s/120s.
-- staging-smoke 24/24; exact-SHA `local_engine` eval `chat-eval-2026-08-05T21-29-17-164Z` 7/7 at $0.
-- Evidence remains in ignored `.local/release/`, server state, and restricted CI
-  artifacts; this summary is not reusable promotion evidence.
+- Fault drill `20260802T133139Z-1d33c71562f6` restored predecessor in 2.696s/120s;
+  staging-smoke 24/24; exact-SHA `local_engine` eval 7/7 at $0.
+- Evidence: ignored `.local/release/`, server state, restricted CI artifacts.
 
 ## Lean-Release Measurement
 
