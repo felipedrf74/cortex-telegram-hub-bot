@@ -128,8 +128,13 @@ function catalogDefinitions(): ResolvedBillingCatalogItem[] {
 /** Client-safe catalog view: provider identifiers never leave the server. */
 export function getBillingCatalog(): { catalogVersion: string; items: BillingCatalogItem[] } {
   const items = catalogDefinitions().map((item) => {
-    const { stripePriceId: _stripe, appleProductId: _apple, ...clientSafe } = item;
-    return clientSafe;
+    const { stripePriceId: _stripe, appleProductId, ...clientSafe } = item;
+    // Apple product ids are public App Store identifiers — iOS needs them to
+    // bind catalog items to StoreKit products dynamically. Stripe price ids
+    // stay server-only: web checkout sessions are created server-side.
+    return item.kind === 'credit_pack' && appleProductId
+      ? { ...clientSafe, appleProductId }
+      : clientSafe;
   });
   return { catalogVersion: BILLING_CATALOG_VERSION, items };
 }

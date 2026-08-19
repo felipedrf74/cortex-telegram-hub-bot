@@ -10,6 +10,7 @@ let stripePriceIds = {
   pack250: '',
   pack600: '',
 };
+let appleProductIds = { pack100: '', pack250: '', pack600: '' };
 let anonymousCheckoutEnabled = true;
 let stripePackSalesEnabled = false;
 let stripeConfigured = true;
@@ -29,7 +30,7 @@ vi.mock('../../src/config', async (importOriginal) => {
       get hybridCommerce() {
         return {
           stripePriceIds,
-          appleProductIds: { pack100: '', pack250: '', pack600: '' },
+          appleProductIds,
           applePackFulfillmentEnabled: false,
           stripePackFulfillmentEnabled: stripePackSalesEnabled,
           anonymousCheckoutEnabled,
@@ -177,6 +178,7 @@ const LEGAL = { termsVersion: 'current', privacyVersion: 'current' };
 describe('billing catalog, wallet, and credits checkout', () => {
   beforeEach(() => {
     stripePriceIds = { planProMonthly: '', planMaxMonthly: '', pack100: '', pack250: '', pack600: '' };
+    appleProductIds = { pack100: '', pack250: '', pack600: '' };
     anonymousCheckoutEnabled = true;
     stripePackSalesEnabled = false;
     stripeConfigured = true;
@@ -209,7 +211,25 @@ describe('billing catalog, wallet, and credits checkout', () => {
     });
     for (const item of items) {
       expect(item).not.toHaveProperty('stripePriceId');
-      expect(item).not.toHaveProperty('appleProductId');
+      if (item.kind === 'subscription') {
+        expect(item).not.toHaveProperty('appleProductId');
+      }
+    }
+  });
+
+  it('exposes configured Apple product ids on packs only, never Stripe prices', async () => {
+    appleProductIds.pack100 = 'me.nexushub.credits.pack100';
+    const res = await dispatch(billingRoutes(), 'GET', '/catalog');
+    expect(res.statusCode).toBe(200);
+    const byId = new Map(res.body.data.items.map((item: any) => [item.id, item]));
+    // iOS binds catalog packs to StoreKit products by this public identifier.
+    expect((byId.get('pack.credits.100') as any).appleProductId).toBe('me.nexushub.credits.pack100');
+    // An unconfigured pack omits the field instead of sending an empty string.
+    expect(byId.get('pack.credits.250') as any).not.toHaveProperty('appleProductId');
+    // Subscriptions and Stripe identifiers never leave the server.
+    expect(byId.get('plan.pro.monthly') as any).not.toHaveProperty('appleProductId');
+    for (const item of res.body.data.items) {
+      expect(item).not.toHaveProperty('stripePriceId');
     }
   });
 

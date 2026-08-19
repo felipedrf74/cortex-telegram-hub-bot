@@ -32,6 +32,36 @@ describe('owner-confirmed subscription price display contract', () => {
     expect(landing).not.toContain('data-currency="BRL"');
   });
 
+  it('displays the plan section 3 catalog: six skills, shared credits, delivery modes, three packs', () => {
+    const landing = read('src/portal/landing.html');
+
+    // Six skills, credit-based plans — no unlimited claims, no Power Packs.
+    expect(landing).toContain('Six skills. One brain.');
+    expect(landing).toContain('500 AI credits per month, shared across skills');
+    expect(landing).toContain('1,200 AI credits per month, shared');
+    expect(landing).toContain('15-minute scripts: standard, scheduled, or priority');
+    expect(landing).not.toMatch(/UNLIMITED AI|IA ILIMITADA|uso ilimitado|Power Pack/);
+
+    // The three one-time credit packs at the section 2 price points.
+    expect(landing).toContain('data-price-tier="pack100">4.99');
+    expect(landing).toContain('data-price-tier="pack250">9.99');
+    expect(landing).toContain('data-price-tier="pack600">19.99');
+    expect(landing).toContain('Purchased credits never expire');
+  });
+
+  it('ships the App Store CTA in the unavailable state with no store link baked in', () => {
+    const landing = read('src/portal/landing.html');
+
+    expect(landing).toContain('data-appstore-state="unavailable"');
+    expect(landing).toContain('appstore-cta__approved');
+    expect(landing).toContain('appstore-cta__public');
+    // The official link activates only at release time, by operator edit,
+    // with an allowlisted URL — never pre-baked into the page. The init
+    // guard strips any non-apps.apple.com href rather than writing one.
+    expect(landing).toContain("new URL(href).origin === 'https://apps.apple.com'");
+    expect(landing).not.toContain('appstore-cta__public" rel="noopener" href');
+  });
+
   it('renders credit-pack prices with cents on user and operator surfaces', () => {
     expect(read('src/portal/user-login.html')).toContain("Number(pkg.priceUsd).toFixed(2)");
     expect(read('src/portal/portal.html')).toContain("Number(pkg.priceUsd || 0).toFixed(2)");
