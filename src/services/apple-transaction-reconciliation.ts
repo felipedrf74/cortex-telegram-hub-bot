@@ -154,9 +154,8 @@ function buildAppStoreServerApiClient(): AppleTransactionInfoClient {
     : 'https://api.storekit.itunes.apple.com';
   return {
     async getTransactionInfo(transactionId: string) {
-      const token = signAppStoreServerApiJwt();
       const response = await fetch(`${host}/inApps/v1/transactions/${encodeURIComponent(transactionId)}`, {
-        headers: { Authorization: `Bearer ${token}` },
+        headers: { Authorization: `Bearer ${signAppStoreServerApiJwt()}` },
       });
       if (response.status === 404) return { kind: 'not_found' as const };
       if (!response.ok) {
