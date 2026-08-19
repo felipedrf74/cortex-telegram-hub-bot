@@ -5,6 +5,7 @@ import type Database from 'better-sqlite3';
 import { logger } from '../utils/logger';
 import { getDb } from './database';
 import { getEffectiveEntitlement } from './entitlement';
+import { isFreeTierLocalOnlyBindingEnabled, isLocalOnlyBoundPlan } from './free-tier-inference-binding';
 import { ensureActiveProvider } from './provider-registry';
 import { getLocalModelManifest } from './ollama-model-policy';
 import { runWithApiUsageAttribution, type AiRequestSource } from './api-usage-attribution';
@@ -159,6 +160,15 @@ function compiledPlanPolicy(plan: string, content: boolean): PlanLocalPolicy {
   };
   if (plan === 'max') return { hourly: 40, daily: 200, contextTokens: content ? 16384 : 12288, outputTokens: content ? 6144 : 4096, queueWeight: 2, cloudFallbackRunUsd: 0.25, cloudFallbackDailyUsd: 0.60 };
   if (plan === 'pro') return { hourly: 20, daily: 100, contextTokens: content ? 12288 : 8192, outputTokens: content ? 5120 : 4096, queueWeight: 1, cloudFallbackRunUsd: 0.15, cloudFallbackDailyUsd: 0.40 };
+  // Plan §1 row 1 / §2: with the free-tier local-only binding active, free
+  // and beta accounts get the Free local policy (5 daily local operations
+  // matching the daily credit cap, zero cloud budget). Migration 289 persists
+  // the same values in plan_configs; this compiled fallback keeps the lane
+  // usable if that row is missing or corrupt. Binding OFF keeps the
+  // historical no-local-operations policy.
+  if ((plan === 'free' || plan === 'beta') && isFreeTierLocalOnlyBindingEnabled()) {
+    return { hourly: 5, daily: 5, contextTokens: 4096, outputTokens: 2048, queueWeight: 1, cloudFallbackRunUsd: 0, cloudFallbackDailyUsd: 0 };
+  }
   return { hourly: 0, daily: 0, contextTokens: 0, outputTokens: 0, queueWeight: 0, cloudFallbackRunUsd: 0, cloudFallbackDailyUsd: 0 };
 }
 
@@ -432,6 +442,7 @@ export type SkillInferenceExternalCloudFallbackEligibility =
   | {
       allowed: false;
       reason: 'run_missing' | 'scope_mismatch' | 'not_failed' | 'cancelled' | 'already_completed'
+        | 'free_tier_local_only'
         | 'account_deletion_in_progress';
     };
 
@@ -454,6 +465,12 @@ export function getSkillInferenceExternalCloudFallbackEligibility(input: {
 }, db: Database.Database = getDb()): SkillInferenceExternalCloudFallbackEligibility {
   if (isSkillInferenceAccountDeletionFenced(input.userId, db)) {
     return { allowed: false, reason: 'account_deletion_in_progress' };
+  }
+  // Plan §1 row 1: locally-bound accounts never take the external cloud
+  // fallback; the orchestrator surfaces the retryable capacity response.
+  if (isFreeTierLocalOnlyBindingEnabled()
+      && isLocalOnlyBoundPlan(getEffectiveEntitlement(input.userId).plan)) {
+    return { allowed: false, reason: 'free_tier_local_only' };
   }
   const run = db.prepare(`SELECT status, final_route, fallback_reason FROM skill_inference_runs
     WHERE run_id = ? AND tenant_id = ? AND user_id = ?`)
@@ -806,7 +823,13 @@ async function executeSkillInferenceInternal(
   }
 
   const entitlement = getEffectiveEntitlement(request.userId);
-  if (!entitlement.aiAccessAllowed) {
+  // Plan §1 row 1: while the binding is active, free/beta accounts are
+  // admitted for LOCAL-ONLY execution even though general (cloud-capable)
+  // model access stays denied. Cloud spend paths keep reading
+  // aiAccessAllowed, which remains false for these plans.
+  const freeTierLocalBinding = isFreeTierLocalOnlyBindingEnabled()
+    && isLocalOnlyBoundPlan(entitlement.plan);
+  if (!entitlement.aiAccessAllowed && !freeTierLocalBinding) {
     throw new SkillInferencePolicyError('LOCAL_PLAN_REQUIRED', 'This plan does not include model-backed operations.', 403);
   }
   const policy = readPlanPolicy(request.userId, profile.contextPolicy === 'content', db);
@@ -918,6 +941,16 @@ async function executeSkillInferenceInternal(
       .run(timestamp, timestamp, runId);
   }).immediate();
 
+  if (evaluationMode === 'production' && freeTierLocalBinding && !localRouteAvailable) {
+    // Never cloud for locally-bound plans: a missing local route is a
+    // retryable capacity response, not an escalation opportunity.
+    completeRun(db, { runId, status: 'failed', fallbackReason: 'FREE_TIER_LOCAL_CAPACITY' });
+    throw new SkillInferencePolicyError(
+      'FREE_TIER_LOCAL_CAPACITY',
+      'Free-plan AI runs on Nexus local capacity only. Please retry shortly.',
+      503,
+    );
+  }
   if (evaluationMode === 'production'
       && request.containsPrivateData
       && !localRouteAvailable
@@ -988,7 +1021,7 @@ async function executeSkillInferenceInternal(
       systemContext: [profile.systemPolicy, applicationGuidanceOverride?.trim() || ''].filter(Boolean).join('\n\n'),
       userId: request.userId,
       tenantId: request.tenantId,
-      allowCloudEscalation: request.allowCloudEscalation,
+      allowCloudEscalation: freeTierLocalBinding ? false : request.allowCloudEscalation,
       containsPrivateData: request.containsPrivateData,
       redactionRequired: request.redactionRequired,
       ...(request.scriptDeliveryMode !== undefined
@@ -1187,7 +1220,9 @@ async function executeSkillInferenceInternal(
           }
         }
         if (localFailure !== undefined) {
-          if (!request.allowCloudEscalation) throw localFailure;
+          // Locally-bound plans surface the local failure as-is: a failed
+          // local attempt is never an authorization to spend cloud.
+          if (!request.allowCloudEscalation || freeTierLocalBinding) throw localFailure;
           result = await executeAndMap({
             admission: 'force_cloud',
             attemptNumber: repairable ? 3 : 2,

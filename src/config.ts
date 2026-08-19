@@ -829,6 +829,28 @@ export const config = {
     allowUnsafePaywallBypass: PAYWALL_BYPASS_ALLOWED,
   },
 
+  // ── Free-tier local-only binding (plan §1 row 1) ──────────────────
+  // When active, free/beta accounts run user-visible AI on local inference
+  // only and cloud dispatch returns a retryable capacity response. Default
+  // OFF until the local lane is active for chat; the kill switch always wins.
+  freeTierLocalInference: {
+    get enabled(): boolean {
+      return (process.env.FREE_TIER_LOCAL_ONLY_ENABLED || 'false') === 'true'
+        && (process.env.FREE_TIER_LOCAL_ONLY_KILL_SWITCH || 'false') !== 'true';
+    },
+  },
+
+  // ── App Store Server API (NH-0041 reconciliation) ─────────────────
+  // Credential-gated: reconciliation stays inert until NH-0036 provisions
+  // the issuer id, key id, and .p8 key. bundleId reuses the app identity.
+  appleAppStoreServerApi: {
+    issuerId: process.env.APP_STORE_SERVER_API_ISSUER_ID || '',
+    keyId: process.env.APP_STORE_SERVER_API_KEY_ID || '',
+    privateKeyPath: process.env.APP_STORE_SERVER_API_PRIVATE_KEY_PATH || '',
+    environment: process.env.APP_STORE_SERVER_API_ENVIRONMENT || 'Production',
+    bundleId: process.env.APNS_BUNDLE_ID || 'me.nexushub.app',
+  },
+
   // ── Hybrid AI credits (plan §2) ───────────────────────────────────
   // Credit-ledger admission stays OFF until the same release's production
   // verification completes; the kill switch always wins over the enable flag.

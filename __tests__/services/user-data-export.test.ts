@@ -376,6 +376,58 @@ describe('exportAllUserData', () => {
     expect(exported.conversations[0].domain).toBe('secretary');
   });
 
+  it('includes the billing evidence in subject access: ledger rows and matched Apple inbox metadata (NH-0041)', () => {
+    seedUser(testDb, 1);
+    seedUser(testDb, 2);
+    testDb.prepare(`
+      INSERT INTO ai_credit_lots (user_id, lot_type, credits_granted, granted_at, expires_at,
+                                  source_kind, source_ref, provider, provider_transaction_id)
+      VALUES (1, 'purchased', 100, '2026-08-01T00:00:00.000Z', NULL,
+              'provider_purchase', 'apple:tx-mine', 'apple', 'tx-mine')
+    `).run();
+    testDb.prepare(`
+      INSERT INTO ai_credit_lots (user_id, lot_type, credits_granted, granted_at, expires_at,
+                                  source_kind, source_ref, provider, provider_transaction_id)
+      VALUES (2, 'purchased', 250, '2026-08-01T00:00:00.000Z', NULL,
+              'provider_purchase', 'apple:tx-other', 'apple', 'tx-other')
+    `).run();
+    testDb.prepare(`
+      INSERT INTO ai_credit_reservations (user_id, operation_class, credits, state, tenant_scope,
+                                          workload, request_hash, client_operation_id, reserved_at, reserved_day)
+      VALUES (1, 'standard', 1, 'captured', 'tenant-1', 'chat', 'h1', 'op1', '2026-08-02T00:00:00.000Z', '2026-08-02')
+    `).run();
+
+    const jwsPayload = (inner) => {
+      const enc = (obj) => Buffer.from(JSON.stringify(obj)).toString('base64url');
+      const innerJws = ['h', enc(inner), 's'].join('.');
+      return ['h', enc({ data: { signedTransactionInfo: innerJws } }), 's'].join('.');
+    };
+    const insertInbox = testDb.prepare(`
+      INSERT INTO apple_notification_inbox (notification_uuid, notification_type, environment, state,
+                                            signed_payload, product_id, received_at)
+      VALUES (?, ?, 'Production', 'processed', ?, ?, '2026-08-01T01:00:00.000Z')
+    `);
+    insertInbox.run('uuid-mine', 'ONE_TIME_CHARGE', jwsPayload({ transactionId: 'tx-mine' }), 'me.nexushub.pack100');
+    insertInbox.run('uuid-other', 'ONE_TIME_CHARGE', jwsPayload({ transactionId: 'tx-other' }), 'me.nexushub.pack100');
+
+    const exported = exportAllUserData(1);
+    expect(exported.billing.aiCreditLots).toHaveLength(1);
+    expect(exported.billing.aiCreditLots[0]).toMatchObject({ providerTransactionId: 'tx-mine' });
+    expect(exported.billing.aiCreditReservations).toHaveLength(1);
+    expect(exported.billing.appleNotifications).toHaveLength(1);
+    expect(exported.billing.appleNotifications[0]).toMatchObject({
+      notificationType: 'ONE_TIME_CHARGE',
+      productId: 'me.nexushub.pack100',
+    });
+    // Metadata only: the signed payload itself is never exported.
+    expect(exported.billing.appleNotifications[0]).not.toHaveProperty('signedPayload');
+
+    const other = exportAllUserData(2);
+    expect(other.billing.aiCreditLots).toHaveLength(1);
+    expect(other.billing.aiCreditLots[0]).toMatchObject({ providerTransactionId: 'tx-other' });
+    expect(other.billing.appleNotifications).toHaveLength(1);
+  });
+
   it('exports only safe, scoped OAuth connection-health metadata', () => {
     seedUser(testDb, 1);
     seedUser(testDb, 2);

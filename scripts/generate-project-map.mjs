@@ -442,6 +442,32 @@ if (stdout) {
   const current = fs.existsSync(outputPath) ? fs.readFileSync(outputPath, 'utf8') : '';
   if (projectMapFreshnessProjection(current) !== projectMapFreshnessProjection(serialized)) {
     console.error(`Project map drift: run npm run project:map and commit ${outputRelative}.`);
+    // Name the divergence so an environment-dependent input is diagnosable
+    // from the failing log instead of guesswork (values stay bounded).
+    try {
+      const committed = JSON.parse(current);
+      const regenerated = JSON.parse(serialized);
+      for (const key of ['sourceDigest', 'trackedFiles', 'sourceFiles']) {
+        if (JSON.stringify(committed.generatedFrom?.[key]) !== JSON.stringify(regenerated.generatedFrom?.[key])) {
+          console.error(`  generatedFrom.${key}: committed=${JSON.stringify(committed.generatedFrom?.[key])} regenerated=${JSON.stringify(regenerated.generatedFrom?.[key])}`);
+        }
+      }
+      const keys = new Set([...Object.keys(committed), ...Object.keys(regenerated)]);
+      for (const key of keys) {
+        if (key === 'generatedFrom') continue;
+        const left = JSON.stringify(committed[key]);
+        const right = JSON.stringify(regenerated[key]);
+        if (left !== right) {
+          console.error(`  ${key}: differs (committed ${String(left).length} chars vs regenerated ${String(right).length} chars)`);
+          if (String(left).length < 600 && String(right).length < 600) {
+            console.error(`    committed=${left}`);
+            console.error(`    regenerated=${right}`);
+          }
+        }
+      }
+    } catch {
+      console.error('  (divergence detail unavailable: unparseable map)');
+    }
     process.exit(1);
   }
   console.log(JSON.stringify({ ok: true, ...summary }, null, 2));

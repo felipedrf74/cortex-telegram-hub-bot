@@ -29,6 +29,7 @@ import {
   APPLE_SUBSCRIPTION_PRODUCT_IDS,
 } from '../../services/stripe-service';
 import { verifyAppleJws } from '../../services/apple-jws-verifier';
+import { restoreApplePackTransactions } from '../../services/apple-pack-restoration';
 import { safeCheckoutUrl } from './public-billing';
 import { buildQuotaUsagePayload, isUserOverDailyCap } from '../../services/cost-guardrail';
 import {
@@ -433,6 +434,39 @@ export function billingRoutes(): Router {
    * public key is extracted and the ES256 signature is verified against
    * header.payload. This catches any payload modification after Apple signed it.
    */
+  /**
+   * POST /api/v1/billing/apple/restore-packs (NH-0041)
+   * Recovery for pack purchases Apple settled but the notification inbox
+   * lost. Body: { signedTransactions: string[] }. Every transaction is
+   * independently re-verified; grants are idempotent per Apple transaction.
+   */
+  router.post('/apple/restore-packs', asyncHandler(async (req: Request, res: Response) => {
+    const userId = (req as any).userId;
+    const result = restoreApplePackTransactions({
+      userId,
+      signedTransactions: (req.body ?? {}).signedTransactions,
+    });
+    if (result.kind === 'fulfillment_disabled') {
+      sendError(res, 'APPLE_PACK_FULFILLMENT_DISABLED', 'Apple pack fulfillment is currently disabled.', 503);
+      return;
+    }
+    if (result.kind === 'invalid_request') {
+      sendError(res, 'BAD_REQUEST', result.reason, 400);
+      return;
+    }
+    const credited = result.results.filter((item) => item.outcome === 'credited').length;
+    if (credited > 0) {
+      logAudit({
+        userId,
+        actorId: userId,
+        action: 'create',
+        resource: 'ai_credit_pack_restoration',
+        details: { credited, submitted: result.results.length },
+      });
+    }
+    sendSuccess(res, { results: result.results });
+  }));
+
   router.post('/apple-verify', asyncHandler(async (req: Request, res: Response) => {
     const userId = (req as any).userId;
     const { jwsTransaction } = req.body;

@@ -17,6 +17,7 @@
 import { getDb } from './database';
 import { config } from '../config';
 import { logger } from '../utils/logger';
+import { isFreeTierLocalOnlyBindingEnabled, isLocalOnlyBoundPlan } from './free-tier-inference-binding';
 import crypto from 'crypto';
 import { AsyncLocalStorage } from 'async_hooks';
 import { DateTime } from 'luxon';
@@ -435,7 +436,17 @@ export function getDailyQuotaStatus(
     const automationMonthlyCapUsd = monthlyCapUsd * AUTOMATION_BUDGET_FRACTION;
     const automationDailyOver = automationDailyCapUsd > 0 && automationDailySpent >= automationDailyCapUsd;
     const automationMonthlyOver = automationMonthlyCapUsd > 0 && automationMonthlySpent >= automationMonthlyCapUsd;
-    const accessAllowed = isSystem || Boolean(entitlement?.aiAccessAllowed);
+    // Plan §1 row 1: while the free-tier local-only binding is active,
+    // free/beta interactive turns are admitted so the LOCAL lane can serve
+    // them. Cloud spend stays fenced by the dispatch-layer binding guards
+    // and by the plans' zero cloud-fallback budgets.
+    const freeTierLocalAdmission = !isSystem
+      && requestSource === 'interactive'
+      && isFreeTierLocalOnlyBindingEnabled()
+      && isLocalOnlyBoundPlan(plan);
+    const accessAllowed = isSystem
+      || Boolean(entitlement?.aiAccessAllowed)
+      || freeTierLocalAdmission;
     const automationAllowed = isSystem || Boolean(entitlement?.automationAllowed);
     const policyOver = !accessAllowed
       || (requestSource === 'automation' && (!automationAllowed || automationDailyOver || automationMonthlyOver))

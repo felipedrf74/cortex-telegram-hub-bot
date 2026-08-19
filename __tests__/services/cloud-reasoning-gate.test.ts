@@ -43,6 +43,11 @@ const { mockConfig } = vi.hoisted(() => {
 });
 
 vi.mock('../../src/config', () => ({ config: mockConfig }));
+const killSwitchEngagedMock = vi.hoisted(() => vi.fn(() => false));
+vi.mock('../../src/services/hybrid-runtime-kill-switches', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/hybrid-runtime-kill-switches')>()),
+  isHybridKillSwitchEngaged: killSwitchEngagedMock,
+}));
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
   LOGGER_REDACTION_PATHS: [],
@@ -94,6 +99,8 @@ function getProviderFn(name: string): AIProvider | null {
 }
 
 beforeEach(() => {
+  killSwitchEngagedMock.mockReset();
+  killSwitchEngagedMock.mockReturnValue(false);
   // Reset config to defaults for each test
   mockConfig.cloudReasoningFallback = {
     enabled: true,
@@ -124,6 +131,19 @@ describe('Quality gate — approved-model selection', () => {
       expect(result.model).toBe('gemini-2.5-pro');
       expect(result.provider.name).toBe('gemini');
       expect(result.privacyAction).toBe('sent_raw');
+    }
+  });
+
+  it('rejects while the cloud_reasoning_fallback kill switch is engaged (NH-0040)', async () => {
+    killSwitchEngagedMock.mockReturnValue(true);
+    const result = await selectApprovedCloudReasoningProvider(
+      { prompt: 'x', containsPrivateData: false },
+      getProviderFn,
+    );
+    expect(result.rejected).toBe(true);
+    if (result.rejected) {
+      expect(result.reason).toBe('disabled');
+      expect(result.warning).toBe('cloud_reasoning_fallback_kill_switch_engaged');
     }
   });
 

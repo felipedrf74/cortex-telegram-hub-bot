@@ -220,6 +220,10 @@ export function createPortalServer(): http.Server {
       '/api/v1/admin/local-inference',
       createAdminPreBodyGuard({ bucketName: 'admin-local-inference-ip' }),
     );
+    app.use(
+      '/api/v1/admin/hybrid-kill-switches',
+      createAdminPreBodyGuard({ bucketName: 'admin-hybrid-kill-switches-ip' }),
+    );
     app.use('/api/v1/billing/nexus-points/stripe-checkout', (req: Request, res: Response, next: NextFunction) => {
       const rawLength = req.headers['content-length'];
       const contentLength = Array.isArray(rawLength) ? Number(rawLength[0]) : Number(rawLength || 0);

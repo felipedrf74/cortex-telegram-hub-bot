@@ -37,6 +37,11 @@ vi.mock('../../src/config', () => ({
     app: { timezone: 'Europe/Lisbon' },
     billing: { paywallEnabled: true, allowUnsafePaywallBypass: true },
     aiSafety: { callTimeoutMs: 30000, globalDailyLimitUsd: 10.0, alertThresholdPercent: 0.8 },
+    freeTierLocalInference: {
+      get enabled(): boolean {
+        return process.env.FREE_TIER_LOCAL_ONLY_ENABLED === 'true';
+      },
+    },
   },
 }));
 
@@ -200,6 +205,22 @@ describe('isUserOverDailyCap', () => {
     expect(result.blockReason).toBe('plan_required');
     expect(result.callsToday).toBe(0);
     expect(result.boostAvailable).toBe(false);
+  });
+
+  it('admits free interactive turns under the local-only binding without opening cloud spend (NH-0040)', () => {
+    process.env.FREE_TIER_LOCAL_ONLY_ENABLED = 'true';
+    try {
+      const result = isUserOverDailyCap(12345);
+      // Admission opens (the local lane can serve the turn)…
+      expect(result.over).toBe(false);
+      // …but the underlying entitlement keeps cloud spend closed: zero
+      // included budget and no paid model eligibility.
+      expect(result.entitlement?.aiAccessAllowed).toBe(false);
+      expect(result.capUsd).toBe(0);
+      expect(result.totalRemainingUsd).toBe(0);
+    } finally {
+      delete process.env.FREE_TIER_LOCAL_ONLY_ENABLED;
+    }
   });
 
   it('keeps dormant per-user overrides from surfacing Free included budget', () => {

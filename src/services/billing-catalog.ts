@@ -10,6 +10,7 @@
  */
 
 import { config } from '../config';
+import { isApplePackFulfillmentActive, isStripePackFulfillmentActive } from './hybrid-runtime-kill-switches';
 
 export const BILLING_CATALOG_VERSION = '2026-08-18.1';
 
@@ -20,7 +21,7 @@ export const BILLING_CATALOG_VERSION = '2026-08-18.1';
  * switch gates NEW checkouts; fulfillment of paid sessions always runs.
  */
 function isStripePackSalesEnabled(): boolean {
-  return config.hybridCommerce.stripePackFulfillmentEnabled === true;
+  return isStripePackFulfillmentActive();
 }
 
 export type BillingCatalogItemKind = 'subscription' | 'credit_pack';
@@ -92,7 +93,7 @@ function catalogDefinitions(): ResolvedBillingCatalogItem[] {
     // buys through Stripe, so one channel being unconfigured must not report
     // the item unavailable on the other.
     const stripePurchasable = Boolean(stripePriceId) && isStripePackSalesEnabled();
-    const applePurchasable = Boolean(appleProductId) && config.hybridCommerce.applePackFulfillmentEnabled;
+    const applePurchasable = Boolean(appleProductId) && isApplePackFulfillmentActive();
     const purchasable = stripePurchasable || applePurchasable;
     return {
       id,

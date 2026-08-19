@@ -23,6 +23,8 @@
 
 import { getDb } from './database';
 import { logger } from '../utils/logger';
+import { recordOperatorAlert } from './operator-alerts';
+import { logAudit } from './audit-trail';
 import type { BillingPlan } from './plan-quotas';
 import {
   AiCreditOperationClass,
@@ -108,7 +110,10 @@ export type SettleAiCreditsResult =
   | { kind: 'captured'; reservation: AiCreditReservation; captureShortfall: number }
   | { kind: 'released'; reservation: AiCreditReservation }
   | { kind: 'invalid_state'; reservationId: number; state: AiCreditReservationState }
-  | { kind: 'not_found'; reservationId: number };
+  | { kind: 'not_found'; reservationId: number }
+  /** NH-0040 double-capture proof: a still-reserved reservation that already
+   * has capture rows is ledger corruption — refuse instead of re-allocating. */
+  | { kind: 'capture_conflict'; reservationId: number };
 
 export type GrantAiCreditsResult =
   | { kind: 'granted'; lot: AiCreditLot }
@@ -407,6 +412,27 @@ export function captureAiCreditReservation(input: {
     if (row.state !== 'reserved') {
       return { kind: 'invalid_state', reservationId: row.id, state: row.state };
     }
+    // Double-capture proof (NH-0040): the state machine says this reservation
+    // never captured, so any existing capture row is corruption. A schema-level
+    // unique index on this pre-existing table would classify as a contract
+    // migration and freeze CD, so the guard lives here, inside the same
+    // immediate transaction that performs the allocation.
+    const existingCaptures = db
+      .prepare('SELECT COUNT(*) AS n FROM ai_credit_captures WHERE reservation_id = ?')
+      .get(row.id) as { n: number };
+    if (existingCaptures.n > 0) {
+      recordOperatorAlert({
+        severity: 'critical',
+        source: 'ai-credit-ledger',
+        dedupeKey: `ai_credit_capture_conflict:${row.id}`,
+        title: 'AI credit capture conflict',
+        detail: `Reservation ${row.id} is marked reserved but already has ${existingCaptures.n} capture row(s); refusing a second allocation.`,
+        metadata: { reservationId: row.id, userId: row.user_id, existingCaptureRows: existingCaptures.n },
+        suspectedArea: 'billing',
+        userImpact: 'none_capture_refused',
+      });
+      return { kind: 'capture_conflict', reservationId: row.id };
+    }
     let remainingToCapture = row.credits;
     const insertCapture = db.prepare(
       `INSERT INTO ai_credit_captures (reservation_id, lot_id, user_id, credits, created_at)
@@ -429,6 +455,19 @@ export function captureAiCreditReservation(input: {
         { reservationId: row.id, captureShortfall: remainingToCapture },
         'ai-credit-ledger capture shortfall: usable lots shrank between reserve and capture',
       );
+      // NH-0041: a shortfall means a mid-operation revocation/expiry left part
+      // of a delivered operation unbilled. Raise an operator alert instead of
+      // leaving only the evidence row for a reconciliation pass to find.
+      recordOperatorAlert({
+        severity: 'warning',
+        source: 'ai-credit-ledger',
+        dedupeKey: `ai_credit_capture_shortfall:${row.id}`,
+        title: 'AI credit capture shortfall',
+        detail: `Reservation ${row.id} captured ${row.credits - remainingToCapture}/${row.credits} credits; usable lots shrank mid-operation.`,
+        metadata: { reservationId: row.id, userId: row.user_id, shortfall: remainingToCapture },
+        suspectedArea: 'billing',
+        userImpact: 'none_user_kept_result',
+      });
     }
     const reservation = getAiCreditReservation(row.id);
     if (!reservation) {
@@ -606,6 +645,69 @@ export function grantPromotionalAiCredits(input: {
     return { kind: 'granted', lot };
   });
   return tx.immediate();
+}
+
+/** Plan §2: administrative overrides are audited and time-limited. */
+export const ADMIN_GRANT_MAX_CREDITS = 5_000;
+export const ADMIN_GRANT_MAX_EXPIRY_DAYS = 90;
+
+/**
+ * Audited, time-limited administrative credit grant (support or incident
+ * recovery only). Grants land as promotional-class lots so they burn before
+ * purchased credits and always expire; the grant id is idempotent per user.
+ */
+export function grantAdminAiCredits(input: {
+  userId: number;
+  grantId: string;
+  credits: number;
+  expiryDays: number;
+  actorUserId: number;
+  reason: string;
+  now?: Date;
+}): GrantAiCreditsResult {
+  const db = getDb();
+  const now = input.now ?? new Date();
+  const grantId = input.grantId.trim();
+  const reason = input.reason.trim();
+  if (!grantId) return { kind: 'rejected', reason: 'grantId is required' };
+  if (!reason) return { kind: 'rejected', reason: 'a non-empty reason is required' };
+  if (!Number.isSafeInteger(input.actorUserId) || input.actorUserId <= 0) {
+    return { kind: 'rejected', reason: 'an authenticated operator actor is required' };
+  }
+  if (!Number.isInteger(input.credits) || input.credits <= 0 || input.credits > ADMIN_GRANT_MAX_CREDITS) {
+    return { kind: 'rejected', reason: `credits must be a positive integer up to ${ADMIN_GRANT_MAX_CREDITS}` };
+  }
+  if (!Number.isInteger(input.expiryDays) || input.expiryDays < 1 || input.expiryDays > ADMIN_GRANT_MAX_EXPIRY_DAYS) {
+    return { kind: 'rejected', reason: `expiryDays must be between 1 and ${ADMIN_GRANT_MAX_EXPIRY_DAYS}` };
+  }
+  const tx = db.transaction((): GrantAiCreditsResult => {
+    const existing = db
+      .prepare(`${LOT_WITH_CAPTURED_SQL} WHERE l.user_id = ? AND l.source_kind = 'admin_grant' AND l.source_ref = ?`)
+      .get(input.userId, grantId) as LotRow | undefined;
+    if (existing) return { kind: 'already_granted', lot: mapLot(existing) };
+    const expiresAt = new Date(now.getTime() + input.expiryDays * 24 * 60 * 60 * 1000);
+    const lot = insertLot({
+      userId: input.userId,
+      lotType: 'promotional',
+      credits: input.credits,
+      grantedAt: toIso(now),
+      expiresAt: toIso(expiresAt),
+      sourceKind: 'admin_grant',
+      sourceRef: grantId,
+    });
+    return { kind: 'granted', lot };
+  });
+  const result = tx.immediate();
+  if (result.kind === 'granted') {
+    logAudit({
+      userId: input.userId,
+      actorId: input.actorUserId,
+      action: 'ai_credit_admin_grant',
+      resource: `ai_credit_lot:${result.lot.id}`,
+      details: { grantId, credits: input.credits, expiryDays: input.expiryDays, reason },
+    });
+  }
+  return result;
 }
 
 /**

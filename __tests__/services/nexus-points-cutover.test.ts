@@ -144,6 +144,35 @@ describe('nexus points cutover (NH-0029)', () => {
     expect(runNexusPointsCutover(NOW)).toEqual({ unexpiredMigrated: 0, appleRestored: 0 });
   });
 
+  it('bounds the Apple restore window: lots expired before the window stay expired (NH-0041)', () => {
+    pointsCutoverActive = true;
+    const withinWindow = seedCredit({ provider: 'apple', expires_at: PAST, status: 'expired' });
+    // Expired far beyond the restore window (default 1095 days).
+    const ancient = seedCredit({ provider: 'apple', expires_at: '2020-01-01T00:00:00.000Z', status: 'expired' });
+
+    const result = runNexusPointsCutover(NOW);
+    expect(result.appleRestored).toBe(1);
+    expect(expiryOf(withinWindow).status).toBe('active');
+    expect(expiryOf(ancient)).toMatchObject({ expires_at: '2020-01-01T00:00:00.000Z', status: 'expired' });
+  });
+
+  it('honors a configured restore window override and rejects invalid values', () => {
+    pointsCutoverActive = true;
+    const recentPast = seedCredit({ provider: 'apple', expires_at: PAST, status: 'expired' });
+    process.env.NEXUS_POINTS_APPLE_RESTORE_WINDOW_DAYS = '7';
+    try {
+      // PAST is ~49 days before NOW: outside a 7-day window.
+      expect(runNexusPointsCutover(NOW).appleRestored).toBe(0);
+      expect(expiryOf(recentPast).status).toBe('expired');
+
+      process.env.NEXUS_POINTS_APPLE_RESTORE_WINDOW_DAYS = 'not-a-number';
+      expect(runNexusPointsCutover(NOW).appleRestored).toBe(1);
+      expect(expiryOf(recentPast).status).toBe('active');
+    } finally {
+      delete process.env.NEXUS_POINTS_APPLE_RESTORE_WINDOW_DAYS;
+    }
+  });
+
   it('keeps nonexpiring lots visible in the balance without a phantom expiry date', () => {
     seedCredit({ expires_at: NEXUS_POINTS_NONEXPIRING_AT });
     const balance = getNexusPointBalance(40, NOW);

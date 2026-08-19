@@ -1482,6 +1482,65 @@ describe('durable Content script jobs', () => {
     db.close();
   });
 
+  it('sweep requeues never clobber a scheduled deferral: the batch window still gates dispatch (NH-0041)', async () => {
+    const db = database();
+    const service = await import('../../src/services/content-script-jobs');
+    const scheduledJob = service.createContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      idempotencyKey: 'sweep-respects-scheduled-window',
+      request: { topic: 'Tomorrow batch', format: 'YouTube', maxDurationMinutes: 8, language: 'en', deliveryMode: 'scheduled' },
+    }, db);
+    const windowBefore = (db.prepare('SELECT next_attempt_at FROM content_script_jobs WHERE job_id = ?')
+      .get(scheduledJob.job.jobId) as { next_attempt_at: string | null }).next_attempt_at;
+    expect(windowBefore).not.toBeNull();
+    expect(new Date(windowBefore as string).getTime()).toBeGreaterThan(Date.now());
+
+    // The scheduled job occupies the plan's active-job slot, so the crashed
+    // job is forged directly as a running row instead of a second admission.
+    const crashedJobId = 'script_job_sweep-crashed-standard';
+    db.prepare(`INSERT INTO content_script_jobs (
+        job_id, tenant_id, owner_user_id, plan_id, idempotency_key, request_hash,
+        operation_id, request_json, target_duration_seconds,
+        status, stage, progress_percent, model_digest, delivery_mode,
+        lease_token, lease_expires_at
+      ) SELECT ?, tenant_id, owner_user_id, plan_id, ?, ?, ?, request_json,
+               target_duration_seconds, 'running', 'final_validation', 95,
+               model_digest, 'standard', 'expired-token', '2000-01-01T00:00:00.000Z'
+        FROM content_script_jobs WHERE job_id = ?`)
+      .run(crashedJobId, 'sweep-crashed-standard', 'a'.repeat(64), 'content-script:sweep-crashed', scheduledJob.job.jobId);
+    const crashed = { job: { jobId: crashedJobId } };
+
+    const scheduled: string[] = [];
+    // Sweep pass: requeues the crashed job with backoff; the scheduled job's
+    // deferral is untouched and nothing dispatches before its window.
+    expect(service.recoverContentScriptJobs(db, { schedule: (jobId) => scheduled.push(jobId) })).toBe(1);
+    expect(scheduled).toEqual([]);
+    const windowAfterSweep = (db.prepare('SELECT next_attempt_at FROM content_script_jobs WHERE job_id = ?')
+      .get(scheduledJob.job.jobId) as { next_attempt_at: string | null }).next_attempt_at;
+    expect(windowAfterSweep).toBe(windowBefore);
+
+    // Past the infra backoff (well past 24h of repeated sweeps), only the
+    // requeued standard job dispatches; the scheduled window still gates.
+    await vi.advanceTimersByTimeAsync(15_000);
+    service.recoverContentScriptJobs(db, { schedule: (jobId) => scheduled.push(jobId) });
+    expect(scheduled).toEqual([crashed.job.jobId]);
+    expect((db.prepare('SELECT next_attempt_at FROM content_script_jobs WHERE job_id = ?')
+      .get(scheduledJob.job.jobId) as { next_attempt_at: string | null }).next_attempt_at).toBe(windowBefore);
+
+    // Once the batch window arrives, the scheduled job dispatches normally.
+    db.prepare(`UPDATE content_script_jobs
+      SET status = 'cancelled', stage = 'cancelled',
+          cancellation_requested_at = '2026-08-19T12:00:00.000Z'
+      WHERE job_id = ?`).run(crashed.job.jobId);
+    const untilWindow = new Date(windowBefore as string).getTime() - Date.now() + 1_000;
+    await vi.advanceTimersByTimeAsync(untilWindow);
+    scheduled.length = 0;
+    service.recoverContentScriptJobs(db, { schedule: (jobId) => scheduled.push(jobId) });
+    expect(scheduled).toContain(scheduledJob.job.jobId);
+    db.close();
+  });
+
   it('recovers a stale heartbeat before lease expiry without stealing a fresh lease', async () => {
     const db = database();
     const service = await import('../../src/services/content-script-jobs');

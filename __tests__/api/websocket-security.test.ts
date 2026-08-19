@@ -23,6 +23,11 @@ import {
   webSocketFrameByteLength,
   webSocketMaxPayloadBytes,
 } from '../../src/api/websocket';
+import { trySendSettledReplayAnswer } from '../../src/api/websocket';
+import {
+  _resetAiCreditReplayCacheForTests,
+  rememberAiCreditReplayResult,
+} from '../../src/services/ai-credit-replay-cache';
 import {
   AiCreditAdmissionDeniedError,
   AiCreditInFlightError,
@@ -656,5 +661,56 @@ describe('buildWebSocketAiCreditErrorFrame', () => {
     expect(buildWebSocketAiCreditErrorFrame(new Error('boom'), 7, 42)).toBeNull();
     expect(buildWebSocketAiCreditErrorFrame(new Error('boom'))).toBeNull();
     expect(buildWebSocketAiCreditErrorFrame(null)).toBeNull();
+  });
+
+  describe('settled-replay answer resend (QA3 P3-17)', () => {
+    const settledError = () => new AiCreditReplaySettledError({
+      ...reservation,
+      id: 91,
+      state: 'captured',
+      clientOperationId: 'msg-91',
+    } as unknown as AiCreditReservation);
+
+    function fakeOpenWs(): { ws: any; frames: Array<Record<string, unknown>> } {
+      const frames: Array<Record<string, unknown>> = [];
+      return {
+        frames,
+        ws: {
+          readyState: 1, // WebSocket.OPEN
+          userId: 7,
+          tenantId: 42,
+          send: (payload: string) => { frames.push(JSON.parse(payload)); },
+        },
+      };
+    }
+
+    beforeEach(() => {
+      _resetAiCreditReplayCacheForTests();
+    });
+
+    it('streams the cached answer back to the same client message id', async () => {
+      rememberAiCreditReplayResult(91, 'the original answer');
+      const { ws, frames } = fakeOpenWs();
+      await expect(trySendSettledReplayAnswer(ws, settledError())).resolves.toBe(true);
+      expect(frames.length).toBeGreaterThan(0);
+      expect(frames.every((frame) => frame.messageId === 'msg-91')).toBe(true);
+      const text = frames.map((frame) => frame.text ?? frame.delta ?? '').join('');
+      expect(text).toContain('the original answer');
+    });
+
+    it('declines when the cache misses or the error is not a settled replay', async () => {
+      const { ws, frames } = fakeOpenWs();
+      await expect(trySendSettledReplayAnswer(ws, settledError())).resolves.toBe(false);
+      await expect(trySendSettledReplayAnswer(ws, new Error('boom'))).resolves.toBe(false);
+      expect(frames).toHaveLength(0);
+    });
+
+    it('declines on a closed socket instead of throwing', async () => {
+      rememberAiCreditReplayResult(91, 'late answer');
+      const { ws, frames } = fakeOpenWs();
+      ws.readyState = 3; // CLOSED
+      await expect(trySendSettledReplayAnswer(ws, settledError())).resolves.toBe(false);
+      expect(frames).toHaveLength(0);
+    });
   });
 });
