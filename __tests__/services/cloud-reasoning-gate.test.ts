@@ -44,7 +44,8 @@ const { mockConfig } = vi.hoisted(() => {
 
 vi.mock('../../src/config', () => ({ config: mockConfig }));
 const killSwitchEngagedMock = vi.hoisted(() => vi.fn(() => false));
-vi.mock('../../src/services/hybrid-runtime-kill-switches', () => ({
+vi.mock('../../src/services/hybrid-runtime-kill-switches', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/hybrid-runtime-kill-switches')>()),
   isHybridKillSwitchEngaged: killSwitchEngagedMock,
 }));
 vi.mock('../../src/utils/logger', () => ({

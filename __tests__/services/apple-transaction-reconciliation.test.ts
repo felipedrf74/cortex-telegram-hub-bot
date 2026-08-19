@@ -26,7 +26,8 @@ vi.mock('../../src/services/hybrid-runtime-kill-switches', async (importOriginal
 });
 
 const recordOperatorAlertMock = vi.hoisted(() => vi.fn(() => ({ ok: true, action: 'created' })));
-vi.mock('../../src/services/operator-alerts', () => ({
+vi.mock('../../src/services/operator-alerts', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/operator-alerts')>()),
   recordOperatorAlert: recordOperatorAlertMock,
 }));
 

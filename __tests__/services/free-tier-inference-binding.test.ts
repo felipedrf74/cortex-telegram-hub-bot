@@ -3,7 +3,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const entitlementMock = vi.hoisted(() => vi.fn());
-vi.mock('../../src/services/entitlement', () => ({
+vi.mock('../../src/services/entitlement', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/entitlement')>()),
   getEffectiveEntitlement: entitlementMock,
 }));
 

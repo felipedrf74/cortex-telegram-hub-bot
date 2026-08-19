@@ -16,11 +16,13 @@ vi.mock('../../src/services/database', async (importOriginal) => {
 });
 
 const logAuditMock = vi.hoisted(() => vi.fn());
-vi.mock('../../src/services/audit-trail', () => ({
+vi.mock('../../src/services/audit-trail', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/audit-trail')>()),
   logAudit: logAuditMock,
 }));
 const recordOperatorAlertMock = vi.hoisted(() => vi.fn(() => ({ ok: true, action: 'created' })));
-vi.mock('../../src/services/operator-alerts', () => ({
+vi.mock('../../src/services/operator-alerts', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/operator-alerts')>()),
   recordOperatorAlert: recordOperatorAlertMock,
 }));
 

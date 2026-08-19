@@ -5,12 +5,14 @@ import Database from 'better-sqlite3';
 
 const testDb = new Database(':memory:');
 
-vi.mock('../../src/services/database', () => ({
+vi.mock('../../src/services/database', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/database')>()),
   getDb: () => testDb,
 }));
 
 const logAuditMock = vi.hoisted(() => vi.fn());
-vi.mock('../../src/services/audit-trail', () => ({
+vi.mock('../../src/services/audit-trail', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/audit-trail')>()),
   logAudit: logAuditMock,
 }));
 
