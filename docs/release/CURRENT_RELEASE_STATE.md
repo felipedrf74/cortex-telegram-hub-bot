@@ -7,23 +7,31 @@
 
 Machine-readable projection: `docs/release/release-state.json` (generated, non-authoritative).
 
-## Container release — completed 2026-08-19
+## Container release — 2026-08-19 (QA4 remediation lineage)
 
-- Active release (authoritative VPS receipt `nexus.release-receipt.v3`):
-  source `c5a7ae674e09effc796363be6e1a2df044c7eb7d`, release id
-  `0899260290ed401a0a262e35a5ea4484`, completed `2026-08-19T16:12:53.991Z`,
-  payload `sha256:14a807f4f7129209f76545778bcbb1b68f99fa894d7ca7072e04a89f92b428d1`.
-- Ships the hybrid AI commerce lineage (QA3 remediation `a7964fbe`,
-  NH-0040/41 `3970fac7`) with every activation flag default-OFF; backend image
-  `sha256:5ade7861…`, content engine `sha256:db726461…`; migrations 283–289
-  applied; pre-promotion backup `nexus-db-20260819T161141Z.sqlite.age`
-  (sha256 `1483715055da…`).
-- Deployment history: the `3970fac7` payload halted unattended CD by design
-  (`migration_not_cd_eligible`: its delta touched `src/config.ts`); the owner
-  acknowledged candidate `d9ac4a92…` and this clean-delta docs payload
-  deployed the identical application code. Poller GHCR read credential
-  replaced `2026-08-19` (read:packages-only). Post-deploy: `/public-status`
-  ok, production and staging containers healthy, `blocked: null`.
+- Every merge to protected main mints a new receipt, so this file records the
+  chain and the authority, never a frozen head: read the active receipt from
+  `sudo -n /usr/local/sbin/nexus-release-state-view` at audit time. Last
+  read: source `e1c33aa8ccb3e50ce06b926faa94f94d75e148fc`, release id
+  `7f8808b8e9aed6c30976a301a879bcb7`, completed `2026-08-19T16:23:59.542Z`,
+  payload `sha256:21e94aa00d87…`, backup `nexus-db-20260819T162247Z.sqlite.age`.
+  It superseded the docs-only `c5a7ae67` receipt `0899260290…` (retained as
+  rollbackTarget) with identical images: backend `sha256:5ade7861…`, content
+  engine `sha256:db726461…`; migrations 283–289 applied. Governance halt on
+  `3970fac7` (`migration_not_cd_eligible`, config.ts delta) owner-acked as
+  `d9ac4a92…`; poller GHCR read credential replaced 2026-08-19.
+- Adversarial QA round 4 (NH-0037) returned NO-GO. Findings and state: P0-1
+  handoff named a superseded receipt (corrected above; audits now run under a
+  promotion freeze — no merges to main until the verdict lands). P1-2 the
+  checkout key-mode guard dead-ends all web checkout on the test key while the
+  Nexus Points path stayed unguarded (guard now uniform; owner must set
+  `STRIPE_SANDBOX_CHECKOUT_ALLOWED=true` deliberately or install a live key).
+  P1-3 `CLOUD_REASONING_FALLBACK_ENABLED=true` in production contradicts the
+  default-OFF claim (owner env action pending; claim withdrawn here). P2-4/
+  P2-5 restore-packs now refuses foreign-bundle and revoked transactions.
+  P2-6 decided: the DB kill switch fails open to env-only behavior by design,
+  now monitored — an unreadable control table raises a critical operator
+  alert; the env switch remains the fail-safe stop.
 
 ## Production
 
@@ -33,10 +41,9 @@ Machine-readable projection: `docs/release/release-state.json` (generated, non-a
 - Installed-tree digest: `00d8c5d9f779a5b0c8bf025239f188848c2227adb1512d20cda62bc148a80ee6`
 - Training catalog package: `51c1089cceb8a916abf200b5cb3688b19f5f7553990467ee0f8ef01c7c4f74bb`
 - Training release subject: `27b97ebc96e1b3bb1ee3612e63c5609b5572c9d4b58e59b8ea3e77642fb1cea3`
-- Transaction `20260805T214413Z-61d0c9b8e521` completed at `2026-08-05T21:45:28.188Z`
-  in 74.134s: readiness 12.456s, soak 61.676s.
-- Backend/content health, PM2 identity, artifact parity, smoke, migration startup, database integrity, backup, and rollback passed.
-- Rollback was armed but not required; backup: `nexus-db-20260805T214421Z.sqlite.age`.
+- Transaction `20260805T214413Z-61d0c9b8e521` completed 2026-08-05 in 74.134s;
+  all health/parity/smoke/migration/integrity/backup/rollback checks passed;
+  backup `nexus-db-20260805T214421Z.sqlite.age` (rollback armed, unused).
 
 ## Artifact-Bound Evidence
 
@@ -44,19 +51,15 @@ Machine-readable projection: `docs/release/release-state.json` (generated, non-a
 - Compact manifest SHA-256: `d3dba958fe9b690296bd72e7e359b7a119d0b6e952e7ada4fbed6dbec09017f8`
 - Staging/production transactions: `20260805T214301Z-16818898b3f6` / `20260805T214413Z-61d0c9b8e521`
 - Encrypted backup SHA-256: `83911e31b212a4f36524a9e983484d033be9717cf35daf6091c67710ab2f4e6b`
-- Fault drill `20260802T133139Z-1d33c71562f6` restored the predecessor in 2.696s
-  against 120s; the current staging transaction then passed its 15s soak.
-- `./scripts/staging-smoke.sh` passed 24/24 checks. Exact-SHA `local_engine`
-  evaluation `chat-eval-2026-08-05T21-29-17-164Z` passed 7/7 scenarios at $0 actual cost.
+- Fault drill `20260802T133139Z-1d33c71562f6` restored predecessor in 2.696s/120s.
+- staging-smoke 24/24; exact-SHA `local_engine` eval `chat-eval-2026-08-05T21-29-17-164Z` 7/7 at $0.
 - Evidence remains in ignored `.local/release/`, server state, and restricted CI
   artifacts; this summary is not reusable promotion evidence.
 
 ## Lean-Release Measurement
 
-- Ten of ten measured releases passed (p50/p95: main 7m01s/17m33s, handoff
-  55s/8m13s, checkpoint 4m21s/5m33s, readiness 16m21s/21m43s); median
-  improvement 3m19s (16.86%). Partitions `6,897/10,136/17,033` tests were
-  disjoint and complete; the protected-main artifact was reused unchanged.
+- Ten of ten measured releases passed; median improvement 3m19s (16.86%);
+  test partitions disjoint and complete; protected-main artifact reused unchanged.
 
 ## Chat Quality Rollout
 

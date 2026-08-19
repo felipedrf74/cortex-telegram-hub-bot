@@ -68,6 +68,7 @@ afterEach(() => {
 
 describe('apple pack restoration (NH-0041)', () => {
   const validTransaction = (overrides: Record<string, unknown> = {}) => fixture(`jws-${JSON.stringify(overrides)}`, {
+    bundleId: 'me.nexushub.app',
     productId: 'me.nexushub.pack100',
     environment: 'Production',
     appAccountToken: 'token-40',
@@ -113,7 +114,7 @@ describe('apple pack restoration (NH-0041)', () => {
       userId: 40,
       signedTransactions: [
         validTransaction({ environment: 'Sandbox', transactionId: 'tx-sandbox' }),
-        fixture('jws-unknown-product', { productId: 'me.nexushub.points.small', environment: 'Production' }),
+        fixture('jws-unknown-product', { bundleId: 'me.nexushub.app', productId: 'me.nexushub.points.small', environment: 'Production' }),
         'jws-never-signed',
         validTransaction({ quantity: 0, transactionId: 'tx-qty' }),
       ],
@@ -127,6 +128,32 @@ describe('apple pack restoration (NH-0041)', () => {
       'invalid_transaction',
     ]);
     expect(getAiCreditWallet(40, 'pro').purchasedRemaining).toBe(0);
+  });
+
+  it('refuses foreign-app and revoked transactions without minting credit (QA4 P2-4/P2-5)', () => {
+    const results = restoreApplePackTransactions({
+      userId: 40,
+      signedTransactions: [
+        // Apple-signed but for another developer's app: signature validity
+        // alone must never bind a transaction to Nexus Hub.
+        validTransaction({ bundleId: 'com.attacker.someotherapp', transactionId: 'tx-foreign-bundle' }),
+        validTransaction({ bundleId: undefined, transactionId: 'tx-missing-bundle' }),
+        // Refunded purchase whose revoking notification was also lost.
+        validTransaction({ revocationDate: 1766000000000, transactionId: 'tx-revoked' }),
+        // Reason code 0 (Apple: refunded for app issue) must still refuse.
+        validTransaction({ revocationReason: 0, transactionId: 'tx-revoked-reason' }),
+      ],
+    });
+    expect(results.kind).toBe('processed');
+    if (results.kind !== 'processed') throw new Error('unreachable');
+    expect(results.results.map((r) => r.outcome)).toEqual([
+      'wrong_bundle',
+      'wrong_bundle',
+      'revoked',
+      'revoked',
+    ]);
+    expect(getAiCreditWallet(40, 'pro').purchasedRemaining).toBe(0);
+    expect(listAiCreditLots(40)).toHaveLength(0);
   });
 
   it('multiplies credits by the Apple quantity like the inbox path', () => {

@@ -10,15 +10,20 @@
  *   killed when EITHER the env switch or the DB row says so.
  * - Every DB flip writes an append-only event row and an audit_trail entry
  *   with operator attribution, which env flips cannot provide.
- * - Reads fail open (env-only behavior) if the control table is unreadable:
- *   a DB hiccup must not disable commerce that the environment allows, and
- *   the env kill switch remains available as the emergency stop.
+ * - Reads fail open (env-only behavior) if the control table is unreadable.
+ *   DECIDED POSTURE (QA4 P2-6): fail-open is deliberate — a DB hiccup must
+ *   not disable commerce that the environment allows, and the env kill
+ *   switch remains the fail-safe emergency stop that needs no DB. The cost
+ *   (an engaged DB switch silently losing effect during a DB incident) is
+ *   made loud instead of silent: every failed control read raises a critical
+ *   operator alert so the operator knows to reach for the env switch.
  */
 
 import { config } from '../config';
 import { getDb } from './database';
 import { logger } from '../utils/logger';
 import { logAudit } from './audit-trail';
+import { recordOperatorAlert } from './operator-alerts';
 
 export type HybridKillSwitchKey =
   | 'hybrid_credits'
@@ -69,8 +74,24 @@ function readEngagedKeys(): Set<HybridKillSwitchKey> {
     for (const row of rows) engaged.add(row.control_key);
     cache = { at: now, engaged };
   } catch (err) {
-    // Fail open to env-only behavior; never cache a failed read.
-    logger.warn({ err }, 'hybrid-kill-switches: control read failed; env switches remain authoritative');
+    // Fail open to env-only behavior; never cache a failed read. Escalate
+    // loudly: an unreadable control table means an engaged DB kill switch is
+    // NOT being enforced, and the operator must fall back to env switches.
+    logger.error({ err }, 'hybrid-kill-switches: control read failed; env switches remain authoritative');
+    try {
+      recordOperatorAlert({
+        severity: 'critical',
+        source: 'hybrid-kill-switches',
+        dedupeKey: 'hybrid_kill_switch_control_read_failed',
+        title: 'Hybrid kill-switch control table unreadable',
+        detail: 'hybrid_commerce_runtime_control could not be read; DB kill switches are not enforceable until it recovers. Env kill switches remain the only effective stop.',
+        suspectedArea: 'billing',
+        userImpact: 'db_kill_switches_unenforceable',
+      });
+    } catch {
+      // The alert store shares the database; during a full DB outage the
+      // logger line above is the remaining signal.
+    }
     return engaged;
   }
   return engaged;

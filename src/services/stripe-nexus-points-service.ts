@@ -30,6 +30,7 @@ import {
   revokeNexusPointsCredit,
 } from './nexus-points';
 import { recordOperatorAlert } from './operator-alerts';
+import { assertStripeCheckoutKeyMode } from './stripe-service';
 import { getDb } from './database';
 import {
   STRIPE_MANAGED_PAYMENTS_API_VERSION,
@@ -122,6 +123,9 @@ export function resolvePackageIdForStripePriceId(priceId: string): NexusPointPac
 export async function createNexusPointsCheckoutSession(
   input: CreateNexusPointsCheckoutSessionInput,
 ): Promise<NexusPointsCheckoutSessionResult> {
+  // Uniform key-mode guard with every other checkout surface: a non-live key
+  // never mints a session unless the sandbox posture is explicitly declared.
+  assertStripeCheckoutKeyMode();
   if (!isStripeNexusPointsConfigured()) {
     throw new Error('STRIPE_NEXUS_POINTS_NOT_CONFIGURED');
   }

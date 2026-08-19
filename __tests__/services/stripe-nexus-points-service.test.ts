@@ -143,6 +143,9 @@ describe('stripe-nexus-points-service', () => {
     testDb = new Database(':memory:');
     createSchema();
     vi.clearAllMocks();
+    // Tests run on an sk_test_ key; declare the sandbox posture explicitly so
+    // the uniform checkout key-mode guard admits session creation.
+    process.env.STRIPE_SANDBOX_CHECKOUT_ALLOWED = 'true';
     hoisted.config.stripe.managedPaymentsSandboxEnabled = true;
     hoisted.config.stripe.nexusPoints.enabled = true;
     hoisted.stripeCreate.mockResolvedValue({ id: 'cs_new', url: 'https://checkout.stripe.test/session' });
@@ -155,7 +158,27 @@ describe('stripe-nexus-points-service', () => {
   });
 
   afterEach(() => {
+    delete process.env.STRIPE_SANDBOX_CHECKOUT_ALLOWED;
     testDb.close();
+  });
+
+  it('refuses to mint a session on a non-live key unless the sandbox posture is declared (QA4 P1-2)', async () => {
+    delete process.env.STRIPE_SANDBOX_CHECKOUT_ALLOWED;
+    await expect(createNexusPointsCheckoutSession({
+      userId: 42,
+      tenantId: 42,
+      packageId: 'me.nexushub.points.small',
+      source: 'web',
+    })).rejects.toMatchObject({ name: 'StripeTestModeCheckoutError' });
+    expect(hoisted.stripeCreate).not.toHaveBeenCalled();
+
+    process.env.STRIPE_SANDBOX_CHECKOUT_ALLOWED = 'true';
+    await expect(createNexusPointsCheckoutSession({
+      userId: 42,
+      tenantId: 42,
+      packageId: 'me.nexushub.points.small',
+      source: 'web',
+    })).resolves.toEqual({ sessionId: 'cs_new', checkoutUrl: 'https://checkout.stripe.test/session' });
   });
 
   it('creates one-time Checkout Sessions with strict metadata and configured price ids', async () => {
