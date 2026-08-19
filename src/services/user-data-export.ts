@@ -359,6 +359,10 @@ export interface FullUserExport {
     aiCreditReservations: Array<Record<string, unknown>>;
     aiCreditCaptures: Array<Record<string, unknown>>;
     appleNotifications: Array<Record<string, unknown>>;
+    // Erasure clears these two, so Article 15 access must also disclose them
+    // (QA5 P2 dsar-export-omits-subscription-and-web-checkout-tables).
+    subscriptions: Array<Record<string, unknown>>;
+    webCheckouts: Array<Record<string, unknown>>;
   };
   garminSessions: Array<{ lastRefreshedAt: string | null; createdAt: string; updatedAt: string }>;
   agentSignals: Array<{ sourceAgent: string; signalType: string; status: string; createdAt: string }>;
@@ -816,6 +820,24 @@ export function exportAllUserData(userId: number): FullUserExport {
     `SELECT reservation_id as reservationId, lot_id as lotId, credits, created_at as createdAt
        FROM ai_credit_captures WHERE user_id = ? ORDER BY id`, userId);
   const appleNotifications = exportAppleNotificationMetadataForUser(db, userId);
+  // Both tables are erased on deletion, so access must disclose them too.
+  // Provider customer/subscription ids are the subject's own identifiers.
+  const subscriptions = safeAll(db,
+    `SELECT plan, period, status, provider,
+            provider_subscription_id as providerSubscriptionId,
+            provider_customer_id as providerCustomerId,
+            current_period_start as currentPeriodStart,
+            current_period_end as currentPeriodEnd,
+            cancel_at_period_end as cancelAtPeriodEnd,
+            created_at as createdAt, updated_at as updatedAt
+       FROM subscriptions WHERE user_id = ? ORDER BY id`, userId);
+  const webCheckouts = safeAll(db,
+    `SELECT email, plan, currency, price_id as priceId, status,
+            stripe_checkout_session_id as stripeCheckoutSessionId,
+            stripe_customer_id as stripeCustomerId,
+            stripe_subscription_id as stripeSubscriptionId,
+            created_at as createdAt, updated_at as updatedAt
+       FROM stripe_web_checkouts WHERE user_id = ? ORDER BY id`, userId);
   const agentSignals = safeAll(db,
     'SELECT source_agent as sourceAgent, signal_type as signalType, status, created_at as createdAt FROM agent_signals WHERE user_id = ? ORDER BY created_at', userId);
   const encryptionMeta = safeAll(db,
@@ -1175,6 +1197,8 @@ export function exportAllUserData(userId: number): FullUserExport {
       aiCreditReservations,
       aiCreditCaptures,
       appleNotifications,
+      subscriptions,
+      webCheckouts,
     },
     garminSessions,
     agentSignals,

@@ -9,6 +9,7 @@ import { config } from './config';
 import { logger } from './utils/logger';
 import { closeDatabase, getDb } from './services/database';
 import { initDatabase } from './services/database-bootstrap';
+import { assertAiCreditActivationReady } from './services/ai-credit-admission';
 import { startScheduler } from './services/scheduler';
 import {
   beginContentScriptJobShutdown,
@@ -73,6 +74,10 @@ async function main(): Promise<void> {
 
   // Initialize database
   initDatabase();
+
+  // Credit admission may not be enabled without a path that mints lots;
+  // otherwise every paid AI operation is denied at the first user turn.
+  assertAiCreditActivationReady();
 
   if (backgroundServicesEnabled) {
     try {

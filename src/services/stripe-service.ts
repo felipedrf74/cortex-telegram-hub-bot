@@ -323,6 +323,12 @@ export function stripeKeyMode(): 'live' | 'test' | 'unknown' {
 }
 
 export function isStripeSandboxCheckoutAllowed(): boolean {
+  // The sandbox hatch is a staging/sandbox affordance only. In live
+  // production it must never disable the test-key guard, regardless of the
+  // env flag — otherwise a test-mode key mints real entitlements from
+  // 4242… cards (QA5 P0-1). Boot already refuses the flag here; this is the
+  // runtime backstop if the flag is somehow present.
+  if (config.isLiveProduction) return false;
   return process.env.STRIPE_SANDBOX_CHECKOUT_ALLOWED === 'true';
 }
 
@@ -348,6 +354,11 @@ export function assertStripeCheckoutKeyMode(): void {
  * delivery always carries it and signature verification already binds origin.
  */
 export function stripeEventLivemodeMatchesKey(event: { livemode?: unknown }): boolean {
+  // Live production is fail-closed: only a genuine livemode:true event may
+  // mutate entitlement state, and a missing boolean is rejected rather than
+  // waved through (QA5 P0-1). Synthetic test fixtures omit the field and run
+  // only outside live production, where the mode-equality check applies.
+  if (config.isLiveProduction) return event?.livemode === true;
   if (typeof event?.livemode !== 'boolean') return true;
   const mode = stripeKeyMode();
   if (mode === 'unknown') return false;

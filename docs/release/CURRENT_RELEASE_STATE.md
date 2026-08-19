@@ -7,32 +7,32 @@
 
 Machine-readable projection: `docs/release/release-state.json` (generated, non-authoritative).
 
-## Container release — 2026-08-19 (QA4 remediation lineage)
+## Container release — 2026-08-19 (hybrid commerce QA remediation lineage)
 
 - Every merge to protected main mints a new receipt, so this file records the
   chain and the authority, never a frozen head: read the active receipt from
-  `sudo -n /usr/local/sbin/nexus-release-state-view` at audit time. Last
-  read: source `e1c33aa8ccb3e50ce06b926faa94f94d75e148fc`, release id
-  `7f8808b8e9aed6c30976a301a879bcb7`, completed `2026-08-19T16:23:59.542Z`,
-  payload `sha256:21e94aa00d87…`, backup `nexus-db-20260819T162247Z.sqlite.age`.
-  It superseded the docs-only `c5a7ae67` receipt `0899260290…` (retained as
-  rollbackTarget) with identical images: backend `sha256:5ade7861…`, content
-  engine `sha256:db726461…`; migrations 283–289 applied. Governance halt on
-  `3970fac7` (`migration_not_cd_eligible`, config.ts delta) owner-acked as
-  `d9ac4a92…`; poller GHCR read credential replaced 2026-08-19.
-- Adversarial QA round 4 (NH-0037) returned NO-GO. Findings and state: P0-1
-  handoff named a superseded receipt (corrected above; audits now run under a
-  promotion freeze — no merges to main until the verdict lands). P1-2 the
-  checkout key-mode guard dead-ends all web checkout on the test key while the
-  Nexus Points path stayed unguarded (guard now uniform; owner declared the
-  deliberate sandbox posture `STRIPE_SANDBOX_CHECKOUT_ALLOWED=true` on
-  2026-08-19 in production+staging env). P1-3 resolved the same day: owner set
-  `CLOUD_REASONING_FALLBACK_ENABLED=false`, restoring default-OFF. Both take
-  effect from the release carrying this note (env re-reads on recreate). P2-4/
-  P2-5 restore-packs now refuses foreign-bundle and revoked transactions.
-  P2-6 decided: the DB kill switch fails open to env-only behavior by design,
-  now monitored — an unreadable control table raises a critical operator
-  alert; the env switch remains the fail-safe stop.
+  `sudo -n /usr/local/sbin/nexus-release-state-view` at audit time. Backup and
+  receipt evidence: `sudo -n /usr/local/sbin/nexus-release-audit-evidence`.
+  Lineage this day: `3970fac7` (governance-halted by design on its config.ts
+  delta, owner-acked `d9ac4a92…`) → `c5a7ae67` → `e1c33aa8` → `eb851b1b`
+  (QA4 remediation) → `202f318a` (env posture) → this release. Any change to
+  `src/config.ts` halts unattended CD and needs an owner `release:cd:ack`.
+- Adversarial QA rounds 4 and 5 (NH-0037) both returned NO-GO; every P0/P1 and
+  applicable P2 is closed in this release. Full findings and resolutions:
+  [`hybrid-commerce-qa-remediation-log.md`](hybrid-commerce-qa-remediation-log.md).
+- **Round 5 P0-1 was live in production**: `STRIPE_SANDBOX_CHECKOUT_ALLOWED=true`
+  disarmed the guard that stops a test-mode key minting real entitlements, and
+  anonymous checkout defaulted open, so an unauthenticated visitor could mint a
+  permanent Pro/Max entitlement with a Stripe test card. The hatch is now scoped
+  to non-live production, webhook livemode fails closed there, and the
+  anonymous sunset defaults CLOSED. **Owner action: unset
+  `STRIPE_SANDBOX_CHECKOUT_ALLOWED` in the production env — this release
+  refuses to boot while it is set.**
+- Credit admission is now safe to enable: included monthly lots are provisioned
+  lazily (nothing minted them before, so enabling credits denied every paid AI
+  operation), an audited admin grant route exists, and startup refuses
+  credits-on with no registered grant path. Migrations 290 (plan-locked
+  long-form allowance) and 291 (reconciliation cursor) are backfill/expand.
 
 ## Production
 

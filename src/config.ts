@@ -136,6 +136,7 @@ function resolveMigrationsMode(): 'boot' | 'external' {
 
 export const config = {
   isStaging: IS_STAGING,
+  isLiveProduction: IS_LIVE_PRODUCTION,
   anthropic: {
     // April 9 2026 — Anthropic kill switch. The cost dashboard showed
     // $0.20/day still burning on Claude calls via fallback paths
@@ -898,8 +899,12 @@ export const config = {
       return (process.env.STRIPE_PACK_FULFILLMENT_ENABLED || 'false') === 'true'
         && (process.env.STRIPE_PACK_FULFILLMENT_KILL_SWITCH || 'false') !== 'true';
     },
+    // Plan §3: anonymous email checkout stops accepting NEW sessions at
+    // launch. The sunset defaults CLOSED — an unset var must not silently
+    // leave the unauthenticated, consent-less checkout path open in
+    // production (QA5 P1-6). Opt back in only with an explicit 'true'.
     get anonymousCheckoutEnabled(): boolean {
-      return (process.env.ANONYMOUS_CHECKOUT_ENABLED || 'true') === 'true';
+      return (process.env.ANONYMOUS_CHECKOUT_ENABLED || 'false') === 'true';
     },
   },
 
@@ -1150,6 +1155,18 @@ if (
 ) {
   throw new Error(
     'STRIPE_MANAGED_PAYMENTS_SANDBOX_ENABLED=true requires STRIPE_SECRET_KEY to be a Stripe test key (sk_test_*).',
+  );
+}
+
+// QA5 P0-1: the sandbox checkout hatch disables the test-key guard whose own
+// contract is "a test-mode key in a production runtime lets anyone buy real
+// entitlements with 4242… cards." It exists for sandbox/staging only. Fail
+// fast if it is ever set in live production, mirroring the live-key guard
+// above. isStripeSandboxCheckoutAllowed() also ignores the flag at runtime in
+// live production as defense in depth, but boot must refuse the misconfig.
+if (IS_LIVE_PRODUCTION && process.env.STRIPE_SANDBOX_CHECKOUT_ALLOWED === 'true') {
+  throw new Error(
+    'STRIPE_SANDBOX_CHECKOUT_ALLOWED=true is forbidden in live production: it would let anyone mint paid entitlements with a Stripe test card. Unset it and install a live key, or leave production checkout fail-closed.',
   );
 }
 

@@ -26,9 +26,11 @@ import {
   AiCreditReservation,
   ReserveAiCreditsResult,
   captureAiCreditReservation,
+  listRegisteredAiCreditGrantPaths,
   releaseAiCreditReservation,
   reserveAiCredits,
 } from './ai-credit-ledger';
+import { ensureMonthlyAiCreditsForUser } from './ai-credit-provisioning';
 
 export interface AiCreditAdmissionInput {
   userId: number;
@@ -95,6 +97,22 @@ export function isAiCreditAdmissionEnabled(): boolean {
     && !isHybridKillSwitchEngaged('hybrid_credits');
 }
 
+/**
+ * Activation guard (QA5 P1-2). Enabling credit admission while no runtime
+ * path can mint lots denies 100% of paid AI, silently. Startup calls this so
+ * the misconfiguration fails at boot instead of at the first user turn.
+ */
+export function assertAiCreditActivationReady(): void {
+  if (config.hybridCredits?.enabled !== true) return;
+  const paths = listRegisteredAiCreditGrantPaths();
+  if (paths.length === 0) {
+    throw new Error(
+      'HYBRID_AI_CREDITS_ENABLED=true but no AI credit grant path is registered: admission would deny every paid operation. Wire monthly provisioning before enabling credits.',
+    );
+  }
+  logger.info({ grantPaths: paths }, 'ai-credit-admission: activation ready');
+}
+
 export interface AiCreditAdmissionContext {
   /** Null when admission is disabled and the wrapper is a passthrough. */
   reservationId: number | null;
@@ -113,6 +131,11 @@ export async function withAiCreditAdmission<T>(
   }
 
   const plan = resolveBillingPlanForUser(input.userId);
+  // Included monthly credits are provisioned lazily, immediately before the
+  // first reservation of a period. Without this, admission denies every paid
+  // operation because nothing else in the runtime mints an included lot
+  // (QA5 P1-2). Idempotent per (user, period) and non-throwing.
+  ensureMonthlyAiCreditsForUser({ userId: input.userId, plan, now: input.now });
   const replayScope = {
     tenantScope: input.tenantScope,
     workload: input.workload,

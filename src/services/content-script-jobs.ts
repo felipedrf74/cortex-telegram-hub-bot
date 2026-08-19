@@ -362,9 +362,12 @@ function planLimits(db: Database.Database, userId: number): { active: number; da
   if (!entitlement.aiAccessAllowed) {
     throw new ContentScriptJobError('AI_PLAN_REQUIRED', 'Long-form script jobs require an active paid plan.', 403);
   }
-  const fallback = entitlement.plan === 'max' ? { active: 2, daily: 20, plan: entitlement.plan }
+  // Plan §2 locks daily long-form scripts at Pro 2 / Max 4. Keep this fallback
+  // identical to the migration seed so a missing plan_configs row cannot
+  // re-introduce the over-grant the DB row was corrected for (QA5 P1-5).
+  const fallback = entitlement.plan === 'max' ? { active: 2, daily: 4, plan: entitlement.plan }
     : entitlement.plan === 'owner' ? { active: 20, daily: 1000, plan: entitlement.plan }
-      : { active: 1, daily: 6, plan: entitlement.plan };
+      : { active: 1, daily: 2, plan: entitlement.plan };
   const row = db.prepare(`SELECT active_content_jobs, longform_scripts_daily
     FROM plan_configs WHERE plan_id = ? AND active = 1`)
     .get(entitlement.plan) as { active_content_jobs: number; longform_scripts_daily: number } | undefined;

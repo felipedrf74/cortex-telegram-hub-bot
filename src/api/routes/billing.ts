@@ -56,6 +56,8 @@ import {
   resolveBillingCatalogItem,
 } from '../../services/billing-catalog';
 import { getAiCreditWallet } from '../../services/ai-credit-ledger';
+import { isAiCreditAdmissionEnabled } from '../../services/ai-credit-admission';
+import { ensureMonthlyAiCreditsForUser } from '../../services/ai-credit-provisioning';
 import { resolveBillingPlanForUser } from '../../services/plan-quotas';
 
 const STRIPE_NEXUS_CHECKOUT_BODY_LIMIT_BYTES = 8 * 1024;
@@ -178,6 +180,12 @@ export function billingRoutes(): Router {
   router.get('/wallet', asyncHandler(async (req: Request, res: Response) => {
     const userId = (req as any).userId;
     const plan = resolveBillingPlanForUser(userId);
+    // Provision the period's included lot before reporting the balance, so a
+    // paid user never sees availableCredits: 0 beside planMonthlyCredits:
+    // 1200 while credits are enabled (QA5 P1-2). No-op when credits are off.
+    if (isAiCreditAdmissionEnabled()) {
+      ensureMonthlyAiCreditsForUser({ userId, plan });
+    }
     sendSuccess(res, {
       catalogVersion: BILLING_CATALOG_VERSION,
       plan,
@@ -207,7 +215,10 @@ export function billingRoutes(): Router {
         return;
       }
     }
-    if (!item.purchasable || !item.stripePriceId) {
+    // Gate on the STRIPE channel specifically, not the cross-channel OR: with
+    // Apple live, item.purchasable stays true while the Stripe pack kill
+    // switch is engaged, which would leave web pack checkout open (QA5 P1-3).
+    if (!item.stripePurchasable || !item.stripePriceId) {
       const reason = item.unavailableReason === 'fulfillment_pending'
         ? 'This item is not yet available for purchase'
         : 'Checkout for this item is not configured';

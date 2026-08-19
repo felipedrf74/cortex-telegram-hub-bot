@@ -34,11 +34,22 @@ export function isFreeTierLocalOnlyBindingEnabled(): boolean {
 export class FreeTierCloudInferenceBlockedError extends Error {
   readonly code = FREE_TIER_LOCAL_ONLY_ERROR_CODE;
   readonly httpStatus = 503;
+  // Retryable to the CLIENT (capacity-style 503: try again shortly), but this
+  // is a per-user POLICY decision, never provider-health evidence. The
+  // provider-fallback layer must not read this flag as a retryable provider
+  // failure — see isFreeTierCloudInferenceBlockedError and the early re-throw
+  // in executeWithFallback (QA5 P1-4).
   readonly retryable = true;
   constructor(readonly surface: string) {
     super('Free-plan AI runs on Nexus local capacity only. Please retry shortly.');
     this.name = 'FreeTierCloudInferenceBlockedError';
   }
+}
+
+/** True for a free-tier local-only policy refusal, from any module boundary. */
+export function isFreeTierCloudInferenceBlockedError(err: unknown): err is FreeTierCloudInferenceBlockedError {
+  return err instanceof FreeTierCloudInferenceBlockedError
+    || !!(err && typeof err === 'object' && (err as any).code === FREE_TIER_LOCAL_ONLY_ERROR_CODE);
 }
 
 // Guards sit on per-call dispatch paths; memoize the plan lookup briefly so

@@ -22,7 +22,7 @@ import { DomainName, DomainMessage, ClassificationResult } from '../domains/type
 import { logger } from '../utils/logger';
 import { getCurrentContext } from '../utils/request-context';
 import { config } from '../config';
-import { assertFreeTierCloudDispatchAllowed } from './free-tier-inference-binding';
+import { assertFreeTierCloudDispatchAllowed, isFreeTierCloudInferenceBlockedError } from './free-tier-inference-binding';
 import {
   canonicalizeStructuredOutputSchema,
   validateStructuredOutputSchema,
@@ -173,6 +173,8 @@ function openToolUseIdsFromConversation(toolConversation: Array<{ role: string; 
 function isRetryableError(err: any): boolean {
   if (err?.name === 'ApiUsagePersistenceError' || err?.code === 'AI_USAGE_PERSISTENCE_FAILED' || err?.name === 'AiBudgetError') return false;
   if (isProviderRequestCancellation(err)) return false;
+  // A free-tier local-only refusal never reaches here: both the primary and
+  // fallback catches re-throw it before any retry classification (QA5 P1-4).
   const status = err?.status ?? err?.statusCode ?? err?.error_code;
   // 429 = rate limited (retryable after backoff)
   if (status === 429) return true;
@@ -823,6 +825,11 @@ export class TaskRoutingProvider implements AIProvider {
         // open a circuit, increment failure metrics, emit a fallback event,
         // or dispatch the secondary provider.
         if (isProviderRequestCancellation(err)) throw err;
+        // A free-tier local-only policy refusal is a per-user decision, not
+        // provider health. Hoist it out of the fallback closure before any
+        // metric/circuit/fallback bookkeeping so one free user's turns cannot
+        // trip a shared circuit breaker for every tenant (QA5 P1-4).
+        if (isFreeTierCloudInferenceBlockedError(err)) throw err;
         const retryable = isRetryableError(err);
         const errorSummary = summarizeProviderError(err, retryable);
         if (retryable && shouldRecordCircuitFailure(err)) {
@@ -986,6 +993,10 @@ export class TaskRoutingProvider implements AIProvider {
       // A cancellation observed by the fallback remains caller-owned rather
       // than becoming a provider failure in health telemetry.
       if (isProviderRequestCancellation(fallbackErr)) throw fallbackErr;
+      // Same for a free-tier policy refusal: when the primary circuit is open
+      // the guard first runs on THIS leg, and counting it would blame the
+      // fallback provider for a per-user policy decision (QA5 P1-4).
+      if (isFreeTierCloudInferenceBlockedError(fallbackErr)) throw fallbackErr;
       const retryable = isRetryableError(fallbackErr);
       const errorSummary = summarizeProviderError(fallbackErr, retryable);
       // Codex QA round 9: skip metric increments for AIProviderTruncatedError

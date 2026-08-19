@@ -156,6 +156,70 @@ describe('apple pack restoration (NH-0041)', () => {
     expect(listAiCreditLots(40)).toHaveLength(0);
   });
 
+  it('refuses a transaction the durable inbox already recorded as refunded (QA5 P2)', () => {
+    // The exposed window: the refund notification failed processing (so no lot
+    // was ever revoked) and the client replays the JWS it cached BEFORE the
+    // refund, which therefore carries no revocationDate.
+    fixture('inner-refund-record', { transactionId: 'tx-refunded' });
+    fixture('outer-refund-record', { data: { signedTransactionInfo: 'inner-refund-record' } });
+    db.prepare(`INSERT INTO apple_notification_inbox
+      (notification_uuid, notification_type, signed_payload, state, attempts, received_at)
+      VALUES ('uuid-refund', 'REFUND', 'outer-refund-record', 'failed', 5, '2026-08-18T00:00:00.000Z')`)
+      .run();
+
+    const result = restoreApplePackTransactions({
+      userId: 40,
+      signedTransactions: [validTransaction({ transactionId: 'tx-refunded' })],
+    });
+    expect(result).toEqual({
+      kind: 'processed',
+      results: [{ outcome: 'revoked', catalogItemId: 'pack_100', transactionId: 'tx-refunded' }],
+    });
+    expect(getAiCreditWallet(40, 'pro').purchasedRemaining).toBe(0);
+    expect(listAiCreditLots(40)).toHaveLength(0);
+  });
+
+  it('ignores unrelated and undecodable reversal rows when checking for a refund', () => {
+    // A REFUND for a DIFFERENT transaction, and a row whose payload cannot be
+    // decoded, must neither block this restore nor throw.
+    fixture('inner-other-refund', { transactionId: 'tx-someone-else' });
+    fixture('outer-other-refund', { data: { signedTransactionInfo: 'inner-other-refund' } });
+    db.prepare(`INSERT INTO apple_notification_inbox
+      (notification_uuid, notification_type, signed_payload, state, attempts, received_at)
+      VALUES ('uuid-other', 'REFUND', 'outer-other-refund', 'processed', 1, '2026-08-18T00:00:00.000Z'),
+             ('uuid-broken', 'REVOKE', 'not-a-registered-fixture', 'failed', 5, '2026-08-18T00:00:00.000Z')`)
+      .run();
+
+    const result = restoreApplePackTransactions({
+      userId: 40,
+      signedTransactions: [validTransaction({ transactionId: 'tx-clean' })],
+    });
+    expect(result).toEqual({
+      kind: 'processed',
+      results: [{ outcome: 'credited', catalogItemId: 'pack_100', transactionId: 'tx-clean' }],
+    });
+    expect(getAiCreditWallet(40, 'pro').purchasedRemaining).toBe(100);
+  });
+
+  it('matches a reversal recorded against the original transaction id', () => {
+    fixture('inner-orig-refund', { originalTransactionId: 'tx-original' });
+    fixture('outer-orig-refund', { data: { signedTransactionInfo: 'inner-orig-refund' } });
+    db.prepare(`INSERT INTO apple_notification_inbox
+      (notification_uuid, notification_type, signed_payload, state, attempts, received_at)
+      VALUES ('uuid-orig', 'REVOKE', 'outer-orig-refund', 'pending', 0, '2026-08-18T00:00:00.000Z')`)
+      .run();
+
+    const result = restoreApplePackTransactions({
+      userId: 40,
+      signedTransactions: [validTransaction({ transactionId: 'tx-original' })],
+    });
+    expect(result).toEqual({
+      kind: 'processed',
+      results: [{ outcome: 'revoked', catalogItemId: 'pack_100', transactionId: 'tx-original' }],
+    });
+    expect(listAiCreditLots(40)).toHaveLength(0);
+  });
+
   it('multiplies credits by the Apple quantity like the inbox path', () => {
     const result = restoreApplePackTransactions({
       userId: 40,

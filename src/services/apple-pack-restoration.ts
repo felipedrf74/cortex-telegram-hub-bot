@@ -28,6 +28,7 @@ import { verifyAppleJws } from './apple-jws-verifier';
 import { resolveBillingCatalogItemByAppleProductId } from './billing-catalog';
 import { grantPurchasedAiCredits } from './ai-credit-ledger';
 import {
+  hasRecordedAppleReversalForTransaction,
   isSandboxGrantAllowed,
   MAX_CONSUMABLE_QUANTITY,
 } from './apple-notification-inbox';
@@ -132,6 +133,18 @@ function restoreOne(userId: number, jws: string): ApplePackRestorationItemResult
   // one path where the revoking notification may also have been lost, so the
   // ledger has no lot to revoke afterwards.
   if (inner.revocationDate != null || inner.revocationReason != null) {
+    return { outcome: 'revoked', catalogItemId: packItem.id, transactionId };
+  }
+
+  // The client-submitted JWS reflects the transaction as it was when the app
+  // cached it. Apple's own refund notice may have arrived since — including
+  // one that failed processing and revoked nothing — so consult the durable
+  // inbox before minting.
+  if (hasRecordedAppleReversalForTransaction(transactionId)) {
+    logger.warn(
+      { userId, catalogItemId: packItem.id },
+      'apple-pack-restoration: refusing a transaction with a recorded reversal',
+    );
     return { outcome: 'revoked', catalogItemId: packItem.id, transactionId };
   }
 

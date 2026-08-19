@@ -90,21 +90,35 @@ export async function runAppleTransactionReconciliation(options: {
   }
 
   const now = options.now ?? new Date();
-  const windowDays = options.windowDays ?? 30;
+  // Apple's refund horizon is 90 days, so a 30-day window left the last two
+  // months of purchases unreconciled (QA5 P2
+  // recon-window-shorter-than-apple-refund-window).
+  const windowDays = options.windowDays ?? 90;
   const limit = Math.min(Math.max(options.limit ?? 200, 1), 1_000);
   const since = new Date(now.getTime() - windowDays * 24 * 60 * 60 * 1000).toISOString();
+  // `ORDER BY id LIMIT n` alone re-checked the same head every pass, so lots
+  // beyond the limit were never reached. Rotate by least-recently-checked
+  // (never-checked first) so consecutive passes advance through the window.
   const lots = getDb().prepare(`
-    SELECT id, user_id, provider_transaction_id
-    FROM ai_credit_lots
-    WHERE provider = 'apple' AND status = 'active'
-      AND provider_transaction_id IS NOT NULL AND granted_at >= ?
-    ORDER BY id LIMIT ?
+    SELECT l.id, l.user_id, l.provider_transaction_id
+    FROM ai_credit_lots l
+    LEFT JOIN ai_credit_lot_reconciliation_state s ON s.lot_id = l.id
+    WHERE l.provider = 'apple' AND l.status = 'active'
+      AND l.provider_transaction_id IS NOT NULL AND l.granted_at >= ?
+    ORDER BY COALESCE(s.checked_at, '') ASC, l.id ASC LIMIT ?
   `).all(since, limit) as ReconcilableLotRow[];
 
   let revoked = 0;
   let missingTransactions = 0;
   let errors = 0;
+  const stampChecked = getDb().prepare(
+    `INSERT INTO ai_credit_lot_reconciliation_state (lot_id, checked_at) VALUES (?, ?)
+     ON CONFLICT(lot_id) DO UPDATE SET checked_at = excluded.checked_at`,
+  );
   for (const lot of lots) {
+    // Stamp before the network call: a lot that consistently errors must not
+    // monopolize every pass and starve the rest of the window.
+    stampChecked.run(lot.id, now.toISOString());
     try {
       const info = await client.getTransactionInfo(lot.provider_transaction_id);
       if (info.kind === 'not_found') {

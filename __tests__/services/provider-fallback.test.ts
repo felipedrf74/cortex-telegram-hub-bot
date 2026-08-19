@@ -502,6 +502,59 @@ describe('TaskRoutingProvider', () => {
       expect(gemini.callDomain).not.toHaveBeenCalled();
     });
 
+    it('never records a policy refusal as provider health (QA5 P1-4)', async () => {
+      // A per-user policy refusal used to fall through isRetryableError's
+      // "assume retryable" default, so three free-plan turns opened the
+      // shared circuit and degraded every other tenant for the cooldown.
+      const routed = new TaskRoutingProvider(buildConfig({
+        circuitBreaker: { failureThreshold: 3, cooldownMs: 60_000 },
+      }), onFallback);
+      freeTierAssertMock.mockImplementation(() => { throw new BindingBlocked('blocked'); });
+
+      for (let i = 0; i < 3; i += 1) {
+        await expect(routed.callDomain('content', [], 'msg', '', { userId: 77 }))
+          .rejects.toMatchObject({ code: 'FREE_TIER_LOCAL_ONLY' });
+      }
+
+      expect(routed.getCircuitState('openai')).toBe(CircuitState.CLOSED);
+      // The fallback leg is never reached, so gemini has no breaker at all.
+      expect(routed.getCircuitState('gemini')).toBeUndefined();
+      expect(onFallback).not.toHaveBeenCalled();
+      expect(openai.callDomain).not.toHaveBeenCalled();
+      expect(gemini.callDomain).not.toHaveBeenCalled();
+
+      // The healthy primary still serves the very next paid-user turn.
+      freeTierAssertMock.mockReset();
+      openai.callDomain.mockResolvedValue(OK_RESULT);
+      await expect(routed.callDomain('content', [], 'msg', '', { userId: 88 }))
+        .resolves.toMatchObject({ text: 'ok' });
+      expect(openai.callDomain).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not blame the fallback provider when the primary circuit is open (QA5 P1-4)', async () => {
+      // With the primary circuit open the guard first runs on the FALLBACK
+      // leg, so the refusal must be hoisted out there too.
+      const routed = new TaskRoutingProvider(buildConfig({
+        circuitBreaker: { failureThreshold: 1, cooldownMs: 60_000 },
+      }), onFallback);
+      openai.callDomain.mockRejectedValueOnce(Object.assign(new Error('upstream 503'), { status: 503 }));
+      gemini.callDomain.mockResolvedValue(OK_RESULT);
+      await expect(routed.callDomain('content', [], 'msg', '', { userId: 88 }))
+        .resolves.toMatchObject({ text: 'ok' });
+      expect(routed.getCircuitState('openai')).toBe(CircuitState.OPEN);
+
+      freeTierAssertMock.mockImplementation(() => { throw new BindingBlocked('blocked'); });
+      await expect(routed.callDomain('content', [], 'msg', '', { userId: 77 }))
+        .rejects.toMatchObject({ code: 'FREE_TIER_LOCAL_ONLY' });
+
+      // The fallback provider stayed healthy: a policy refusal is not its
+      // fault, and it was never dispatched for the refused turn.
+      expect(routed.getCircuitState('gemini')).not.toBe(CircuitState.OPEN);
+      // Only the first (allowed) turn reached the fallback provider; the
+      // refused turn never dispatched it.
+      expect(gemini.callDomain).toHaveBeenCalledTimes(1);
+    });
+
     it('lets a local ollama chat leg run unguarded so the binding never blocks local inference', async () => {
       const ollama = createMockProvider('ollama');
       ollama.callDomain.mockResolvedValue(OK_RESULT);
