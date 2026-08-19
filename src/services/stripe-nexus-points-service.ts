@@ -31,9 +31,13 @@ import {
 } from './nexus-points';
 import { recordOperatorAlert } from './operator-alerts';
 import { getDb } from './database';
+import {
+  STRIPE_MANAGED_PAYMENTS_API_VERSION,
+  STRIPE_MANAGED_PAYMENTS_CHECKOUT_OPTIONS,
+} from './stripe-managed-payments';
 
 type StripeInstance = InstanceType<typeof StripeLib>;
-const STRIPE_NEXUS_POINTS_API_VERSION = '2026-02-25.clover' as any;
+const STRIPE_NEXUS_POINTS_API_VERSION = '2026-02-25.clover' as const;
 const NOTE_METADATA_MAX_LENGTH = 280;
 const ACTOR_METADATA_MAX_LENGTH = 160;
 const DEFAULT_METADATA_MAX_LENGTH = 500;
@@ -77,7 +81,9 @@ export function initializeStripeClient(): StripeInstance | null {
       throw new Error('Stripe Nexus Points is enabled but STRIPE_SECRET_KEY is missing');
     }
     stripeClient = new StripeLib(config.stripe.secretKey, {
-      apiVersion: STRIPE_NEXUS_POINTS_API_VERSION,
+      apiVersion: (config.stripe.managedPaymentsSandboxEnabled
+        ? STRIPE_MANAGED_PAYMENTS_API_VERSION
+        : STRIPE_NEXUS_POINTS_API_VERSION) as any,
     });
   }
   return stripeClient;
@@ -158,6 +164,9 @@ export async function createNexusPointsCheckoutSession(
     metadata,
     payment_intent_data: { metadata },
   };
+  if (config.stripe.managedPaymentsSandboxEnabled) {
+    sessionParams.managed_payments = { ...STRIPE_MANAGED_PAYMENTS_CHECKOUT_OPTIONS };
+  }
   const customer = lookupStripeCustomerForNexusPoints(input.userId);
   if (customer.providerCustomerId) {
     sessionParams.customer = customer.providerCustomerId;
@@ -222,6 +231,8 @@ export async function handleStripeNexusPointsEvent(event: any): Promise<boolean>
     case 'checkout.session.completed':
     case 'checkout.session.async_payment_succeeded':
       return processCheckoutSession(event.data.object, event.type);
+    case 'checkout.session.async_payment_failed':
+      return processCheckoutPaymentFailed(event.data.object, event.type);
     case 'charge.refunded':
       return processChargeRefunded(event.data.object);
     case 'charge.dispute.created':
@@ -229,6 +240,14 @@ export async function handleStripeNexusPointsEvent(event: any): Promise<boolean>
     default:
       return false;
   }
+}
+
+function processCheckoutPaymentFailed(session: any, eventType: string): boolean {
+  if (session.mode !== 'payment') return false;
+  const metadata = session.metadata ?? {};
+  if (!metadata.packageId && !metadata.nexusInternalSku) return false;
+  logger.info({ eventType, sessionId: session.id }, 'Stripe Nexus Points delayed payment failed; no credits granted');
+  return true;
 }
 
 function stripePriceIdForPackage(packageId: NexusPointPackageId): string {

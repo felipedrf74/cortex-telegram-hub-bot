@@ -31,6 +31,10 @@ import {
   sendPaymentFailed,
   sendPaymentReceipt,
 } from './email-sender';
+import {
+  STRIPE_MANAGED_PAYMENTS_API_VERSION,
+  STRIPE_MANAGED_PAYMENTS_CHECKOUT_OPTIONS,
+} from './stripe-managed-payments';
 
 // Stripe v17+ uses a different export shape. The namespace for types
 // is accessed via the default export's type definitions.
@@ -68,6 +72,11 @@ function resolvePlan(priceId: string): { plan: string; period: string } | null {
   if (matches(s.priceProYearlyBrl))  return { plan: 'pro', period: 'yearly' };
   if (matches(s.priceMaxMonthlyBrl)) return { plan: 'max', period: 'monthly' };
   if (matches(s.priceMaxYearlyBrl))  return { plan: 'max', period: 'yearly' };
+  // EUR prices (optional; USD prices use Stripe Adaptive Pricing by default)
+  if (matches(s.priceProMonthlyEur)) return { plan: 'pro', period: 'monthly' };
+  if (matches(s.priceProYearlyEur))  return { plan: 'pro', period: 'yearly' };
+  if (matches(s.priceMaxMonthlyEur)) return { plan: 'max', period: 'monthly' };
+  if (matches(s.priceMaxYearlyEur))  return { plan: 'max', period: 'yearly' };
   return null;
 }
 
@@ -76,10 +85,11 @@ export function resolveStripePriceId(plan: string, currency: string): string | n
   const normalizedCurrency = String(currency || '').toLowerCase();
   const { stripe: s } = config;
 
-  if (normalizedPlan === 'pro' && normalizedCurrency === 'usd') return s.priceProMonthly || null;
-  if (normalizedPlan === 'pro' && normalizedCurrency === 'brl') return s.priceProMonthlyBrl || null;
-  if (normalizedPlan === 'max' && normalizedCurrency === 'usd') return s.priceMaxMonthly || null;
-  if (normalizedPlan === 'max' && normalizedCurrency === 'brl') return s.priceMaxMonthlyBrl || null;
+  // New Checkout sessions always use the USD reference prices. A retained
+  // client may still request "brl"; Stripe Adaptive Pricing localizes the
+  // presented amount without routing that buyer onto an old explicit BRL Price.
+  if (normalizedPlan === 'pro' && ['usd', 'brl'].includes(normalizedCurrency)) return s.priceProMonthly || null;
+  if (normalizedPlan === 'max' && ['usd', 'brl'].includes(normalizedCurrency)) return s.priceMaxMonthly || null;
   return null;
 }
 
@@ -156,6 +166,19 @@ function stripeTimestampToIso(value: unknown): string | null {
   return new Date(numeric * 1000).toISOString();
 }
 
+function stripeObjectId(value: unknown): string | null {
+  if (typeof value === 'string' && value) return value;
+  if (value && typeof value === 'object' && typeof (value as any).id === 'string') {
+    return (value as any).id;
+  }
+  return null;
+}
+
+function invoiceSubscriptionId(invoice: any): string | null {
+  return stripeObjectId(invoice?.parent?.subscription_details?.subscription)
+    ?? stripeObjectId(invoice?.subscription);
+}
+
 function primarySubscriptionItem(subscription: any): any | null {
   const item = subscription?.items?.data?.[0];
   return item && typeof item === 'object' ? item : null;
@@ -187,7 +210,7 @@ function getBillingEmailContextForUser(userId: number): BillingEmailContext | nu
   return row ?? null;
 }
 
-function getBillingEmailContextForCustomer(customerId: string): BillingEmailContext | null {
+function getBillingEmailContextForSubscription(subscriptionId: string): BillingEmailContext | null {
   const db = getDb();
   const row = db.prepare(`
     SELECT
@@ -198,11 +221,10 @@ function getBillingEmailContextForCustomer(customerId: string): BillingEmailCont
       u.first_name AS firstName
     FROM subscriptions s
     LEFT JOIN users u ON u.id = s.user_id
-    WHERE s.provider_customer_id = ?
+    WHERE s.provider_subscription_id = ?
       AND s.provider = 'stripe'
-    ORDER BY s.updated_at DESC, s.id DESC
     LIMIT 1
-  `).get(customerId) as BillingEmailContext | undefined;
+  `).get(subscriptionId) as BillingEmailContext | undefined;
   return row ?? null;
 }
 
@@ -216,13 +238,19 @@ function queuePaymentEmail(kind: string, to: string, send: Promise<boolean>): vo
 
 let stripeClient: StripeInstance | null = null;
 
+export function _resetStripeClientForTests(): void {
+  stripeClient = null;
+}
+
 function getStripe(): StripeInstance {
   if (!stripeClient) {
     if (!config.stripe.secretKey) {
       throw new Error('Stripe not configured (STRIPE_SECRET_KEY missing)');
     }
     stripeClient = new StripeLib(config.stripe.secretKey, {
-      apiVersion: STRIPE_API_VERSION,
+      apiVersion: (config.stripe.managedPaymentsSandboxEnabled
+        ? STRIPE_MANAGED_PAYMENTS_API_VERSION
+        : STRIPE_API_VERSION) as any,
     });
   }
   return stripeClient;
@@ -287,6 +315,7 @@ export async function createCheckoutSession(
   priceId: string,
   successUrl: string,
   cancelUrl: string,
+  billingContext?: { plan: StripeBillingPlan; currency: StripeBillingCurrency },
 ): Promise<string> {
   const stripe = getStripe();
 
@@ -296,22 +325,30 @@ export async function createCheckoutSession(
     "SELECT provider_customer_id FROM subscriptions WHERE user_id = ? AND provider = 'stripe'"
   ).get(userId) as { provider_customer_id: string } | undefined;
 
+  const metadata = {
+    userId: String(userId),
+    ...(billingContext ? {
+      plan: billingContext.plan,
+      currency: billingContext.currency,
+    } : {}),
+  };
   const sessionParams: any = {
     mode: 'subscription',
     line_items: [{ price: priceId, quantity: 1 }],
     success_url: successUrl,
     cancel_url: cancelUrl,
-    metadata: { userId: String(userId) },
-    subscription_data: {
-      metadata: { userId: String(userId) },
-    },
+    metadata,
+    subscription_data: { metadata },
   };
 
-  // Reuse existing Stripe customer if we have one
+  if (config.stripe.managedPaymentsSandboxEnabled) {
+    sessionParams.managed_payments = { ...STRIPE_MANAGED_PAYMENTS_CHECKOUT_OPTIONS };
+  }
+
+  // Reuse an existing Stripe customer. When omitted, subscription Checkout
+  // creates one automatically; customer_creation is not valid in this mode.
   if (existing?.provider_customer_id) {
     sessionParams.customer = existing.provider_customer_id;
-  } else {
-    sessionParams.customer_creation = 'always';
   }
 
   const session = await stripe.checkout.sessions.create(sessionParams);
@@ -464,7 +501,10 @@ export async function createCheckoutSessionForPlan(
   cancelUrl: string,
 ): Promise<string> {
   const resolved = assertCheckoutPlanCurrency(plan, currency);
-  return createCheckoutSession(userId, resolved.priceId, successUrl, cancelUrl);
+  return createCheckoutSession(userId, resolved.priceId, successUrl, cancelUrl, {
+    plan: resolved.plan,
+    currency: resolved.currency,
+  });
 }
 
 export async function createPublicCheckoutSession(input: {
@@ -483,7 +523,7 @@ export async function createPublicCheckoutSession(input: {
   const stripe = getStripe();
   const emailHash = hashEmail(normalizedEmail);
 
-  const session = await stripe.checkout.sessions.create({
+  const sessionParams: any = {
     mode: 'subscription',
     customer_email: normalizedEmail,
     line_items: [{ price: resolved.priceId, quantity: 1 }],
@@ -505,7 +545,11 @@ export async function createPublicCheckoutSession(input: {
         source: 'website',
       },
     },
-  });
+  };
+  if (config.stripe.managedPaymentsSandboxEnabled) {
+    sessionParams.managed_payments = { ...STRIPE_MANAGED_PAYMENTS_CHECKOUT_OPTIONS };
+  }
+  const session = await stripe.checkout.sessions.create(sessionParams);
   if (!session.url) throw new Error('Stripe returned no checkout URL');
 
   const db = getDb();
@@ -572,6 +616,20 @@ export function handleCheckoutCompleted(session: any): void {
   const customerId = typeof session.customer === 'string'
     ? session.customer
     : session.customer?.id;
+  const metadataEmail = typeof session.metadata?.email === 'string'
+    ? session.metadata.email.toLowerCase()
+    : typeof session.customer_email === 'string'
+      ? session.customer_email.toLowerCase()
+      : null;
+
+  if (!['paid', 'no_payment_required'].includes(String(session.payment_status || ''))) {
+    updatePublicCheckoutStatus(session.id, 'pending', customerId, subscriptionId);
+    logger.info({
+      sessionId: session.id,
+      paymentStatus: session.payment_status,
+    }, 'Stripe subscription checkout awaiting settled payment');
+    return;
+  }
 
   if (!subscriptionId) {
     logger.warn({ sessionId: session.id }, 'checkout.session.completed with no subscription');
@@ -579,31 +637,20 @@ export function handleCheckoutCompleted(session: any): void {
   }
 
   const db = getDb();
-  const metadataEmail = typeof session.metadata?.email === 'string'
-    ? session.metadata.email.toLowerCase()
-    : typeof session.customer_email === 'string'
-      ? session.customer_email.toLowerCase()
-      : null;
   const resolvedUserId = userId || null;
 
-  if (metadataEmail) {
-    db.prepare(`
-      UPDATE stripe_web_checkouts
-         SET status = 'completed',
-             stripe_customer_id = ?,
-             stripe_subscription_id = ?,
-             updated_at = datetime('now')
-       WHERE stripe_checkout_session_id = ?
-          OR email_hash = ?
-    `).run(customerId || null, subscriptionId, session.id, hashEmail(metadataEmail));
-  }
+  updatePublicCheckoutStatus(session.id, 'completed', customerId, subscriptionId);
 
   if (!resolvedUserId) {
     logger.info({ sessionId: session.id, emailHash: metadataEmail ? hashEmail(metadataEmail, 16) : null }, 'Stripe checkout completed before Nexus user exists');
     return;
   }
 
-  const plan = typeof session.metadata?.plan === 'string' ? session.metadata.plan : 'pro';
+  const plan = String(session.metadata?.plan || '').toLowerCase();
+  if (!['pro', 'max'].includes(plan)) {
+    logger.warn({ sessionId: session.id, userId: resolvedUserId }, 'Stripe subscription checkout missing valid plan metadata; awaiting subscription update');
+    return;
+  }
   upsertStripeSubscription({
     userId: resolvedUserId,
     plan,
@@ -627,6 +674,132 @@ export function handleCheckoutCompleted(session: any): void {
   logger.info({ userId: resolvedUserId, subscriptionId, customerId }, 'Stripe checkout completed — subscription activated');
 }
 
+function updatePublicCheckoutStatus(
+  sessionId: string,
+  status: string,
+  customerId?: string | null,
+  subscriptionId?: string | null,
+): void {
+  getDb().prepare(`
+    UPDATE stripe_web_checkouts
+       SET status = ?,
+           stripe_customer_id = COALESCE(?, stripe_customer_id),
+           stripe_subscription_id = COALESCE(?, stripe_subscription_id),
+           updated_at = datetime('now')
+     WHERE stripe_checkout_session_id = ?
+  `).run(
+    status,
+    customerId || null,
+    subscriptionId || null,
+    sessionId,
+  );
+}
+
+function updatePublicCheckoutForSubscription(input: {
+  subscriptionId: string;
+  customerId: string | null;
+  emailHash: string | null;
+  status: string;
+  userId?: number;
+}): void {
+  const db = getDb();
+  const customerId = input.customerId || '';
+  const emailHash = input.emailHash || '';
+  const row = db.prepare(`
+    SELECT id, status
+      FROM stripe_web_checkouts
+     WHERE stripe_subscription_id = ?
+        OR (
+          stripe_subscription_id IS NULL
+          AND (
+            (? != '' AND stripe_customer_id = ?)
+            OR (? != '' AND email_hash = ?)
+          )
+        )
+     ORDER BY CASE WHEN stripe_subscription_id = ? THEN 0 ELSE 1 END,
+              updated_at DESC,
+              id DESC
+     LIMIT 1
+  `).get(
+    input.subscriptionId,
+    customerId,
+    customerId,
+    emailHash,
+    emailHash,
+    input.subscriptionId,
+  ) as { id: number; status: string } | undefined;
+  if (!row) return;
+
+  if (
+    row.status === 'payment_failed'
+    && ['created', 'pending', 'incomplete'].includes(input.status)
+  ) {
+    return;
+  }
+
+  db.prepare(`
+    UPDATE stripe_web_checkouts
+       SET status = ?,
+           stripe_customer_id = COALESCE(?, stripe_customer_id),
+           stripe_subscription_id = ?,
+           user_id = COALESCE(?, user_id),
+           updated_at = datetime('now')
+     WHERE id = ?
+  `).run(
+    input.status,
+    input.customerId,
+    input.subscriptionId,
+    input.userId ?? null,
+    row.id,
+  );
+}
+
+function settlementSafeSubscriptionStatus(subscriptionId: string, incomingStatus: string): string {
+  const db = getDb();
+  const stored = db.prepare(`
+    SELECT status
+      FROM subscriptions
+     WHERE provider = 'stripe'
+       AND provider_subscription_id = ?
+     LIMIT 1
+  `).get(subscriptionId) as { status: string } | undefined;
+  if (stored?.status === 'incomplete_expired' && incomingStatus === 'incomplete') {
+    return 'incomplete_expired';
+  }
+  if (!['active', 'trialing'].includes(incomingStatus)) return incomingStatus;
+  if (stored && ['active', 'trialing'].includes(stored.status)) return incomingStatus;
+
+  const settledCheckout = db.prepare(`
+    SELECT 1
+      FROM stripe_web_checkouts
+     WHERE stripe_subscription_id = ?
+       AND status IN ('completed', 'active', 'trialing')
+     LIMIT 1
+  `).get(subscriptionId);
+  if (settledCheckout) return incomingStatus;
+  return stored?.status === 'incomplete_expired' ? 'incomplete_expired' : 'incomplete';
+}
+
+export function handleCheckoutPaymentFailed(session: any): void {
+  const subscriptionId = typeof session.subscription === 'string'
+    ? session.subscription
+    : session.subscription?.id;
+  const customerId = typeof session.customer === 'string'
+    ? session.customer
+    : session.customer?.id;
+
+  updatePublicCheckoutStatus(session.id, 'payment_failed', customerId, subscriptionId);
+  if (subscriptionId) {
+    getDb().prepare(`
+      UPDATE subscriptions
+         SET status = 'incomplete_expired', updated_at = datetime('now')
+       WHERE provider = 'stripe'
+         AND provider_subscription_id = ?
+    `).run(subscriptionId);
+  }
+  logger.warn({ sessionId: session.id }, 'Stripe delayed subscription checkout payment failed');
+}
+
 export function handleSubscriptionUpdated(subscription: any): void {
   const metadataEmail = typeof subscription.metadata?.email === 'string'
     ? subscription.metadata.email.toLowerCase()
@@ -642,7 +815,7 @@ export function handleSubscriptionUpdated(subscription: any): void {
   }
   const { plan, period } = resolvedPlan;
 
-  const status = subscription.status; // 'active', 'past_due', 'canceled', 'trialing', etc.
+  const status = settlementSafeSubscriptionStatus(subscription.id, String(subscription.status || 'incomplete'));
   const primaryItem = primarySubscriptionItem(subscription);
   const periodStart = stripeTimestampToIso(primaryItem?.current_period_start ?? subscription.current_period_start);
   const periodEnd = stripeTimestampToIso(primaryItem?.current_period_end ?? subscription.current_period_end);
@@ -656,26 +829,39 @@ export function handleSubscriptionUpdated(subscription: any): void {
   if (!userId) {
     const claimed = db.prepare(`
       SELECT user_id FROM stripe_web_checkouts
-      WHERE (stripe_subscription_id = ? OR stripe_customer_id = ?)
+      WHERE stripe_subscription_id = ?
         AND user_id IS NOT NULL
       ORDER BY updated_at DESC, id DESC
       LIMIT 1
-    `).get(subscription.id, customerId || '') as { user_id: number | null } | undefined;
+    `).get(subscription.id) as { user_id: number | null } | undefined;
     userId = claimed?.user_id ?? 0;
   }
 
   if (!userId) {
-    db.prepare(`
-      UPDATE stripe_web_checkouts
-         SET status = ?,
-             stripe_customer_id = COALESCE(?, stripe_customer_id),
-             stripe_subscription_id = ?,
-             updated_at = datetime('now')
-       WHERE stripe_subscription_id = ?
-          OR stripe_customer_id = ?
-          OR email_hash = ?
-    `).run(status, customerId, subscription.id, subscription.id, customerId, metadataEmail ? hashEmail(metadataEmail) : '__missing__');
+    updatePublicCheckoutForSubscription({
+      subscriptionId: subscription.id,
+      customerId,
+      emailHash: metadataEmail ? hashEmail(metadataEmail) : null,
+      status,
+    });
     logger.info({ subId: subscription.id, emailHash: metadataEmail ? hashEmail(metadataEmail, 16) : null }, 'Stripe subscription updated before Nexus user exists');
+    return;
+  }
+
+  if (
+    ['active', 'trialing'].includes(String(subscription.status || ''))
+    && status === 'incomplete'
+  ) {
+    if (metadataEmail) {
+      updatePublicCheckoutForSubscription({
+        subscriptionId: subscription.id,
+        customerId,
+        emailHash: hashEmail(metadataEmail),
+        status,
+        userId,
+      });
+    }
+    logger.info({ userId, subId: subscription.id }, 'Stripe subscription activation deferred until payment settlement');
     return;
   }
 
@@ -692,17 +878,13 @@ export function handleSubscriptionUpdated(subscription: any): void {
   });
 
   if (metadataEmail) {
-    db.prepare(`
-      UPDATE stripe_web_checkouts
-         SET status = ?,
-             stripe_customer_id = COALESCE(?, stripe_customer_id),
-             stripe_subscription_id = ?,
-             user_id = ?,
-             updated_at = datetime('now')
-       WHERE stripe_subscription_id = ?
-          OR stripe_customer_id = ?
-          OR email_hash = ?
-    `).run(status, customerId, subscription.id, userId, subscription.id, customerId, hashEmail(metadataEmail));
+    updatePublicCheckoutForSubscription({
+      subscriptionId: subscription.id,
+      customerId,
+      emailHash: hashEmail(metadataEmail),
+      status,
+      userId,
+    });
   }
 
   logger.info({ userId, plan, period, status, subId: subscription.id }, 'Stripe subscription updated');
@@ -759,14 +941,23 @@ export function handleSubscriptionDeleted(subscription: any): void {
 
 export function handleInvoicePaymentFailed(invoice: any): void {
   const customerId = typeof invoice.customer === 'string' ? invoice.customer : invoice.customer?.id;
-  if (!customerId) return;
+  const subscriptionId = invoiceSubscriptionId(invoice);
+  if (!subscriptionId) {
+    logger.info({ customerId, invoiceId: invoice.id }, 'Stripe non-subscription invoice payment failure ignored');
+    return;
+  }
 
   const db = getDb();
-  const billingEmail = getBillingEmailContextForCustomer(customerId);
-  db.prepare(`
+  const billingEmail = getBillingEmailContextForSubscription(subscriptionId);
+  const result = db.prepare(`
     UPDATE subscriptions SET status = 'past_due', updated_at = datetime('now')
-    WHERE provider_customer_id = ? AND provider = 'stripe'
-  `).run(customerId);
+    WHERE provider_subscription_id = ? AND provider = 'stripe'
+  `).run(subscriptionId);
+
+  if (result.changes === 0) {
+    logger.info({ customerId, subscriptionId, invoiceId: invoice.id }, 'Stripe invoice failure has no matching subscription');
+    return;
+  }
 
   if (billingEmail?.email) {
     queuePaymentEmail('payment_failed', billingEmail.email, sendPaymentFailed({
@@ -779,7 +970,25 @@ export function handleInvoicePaymentFailed(invoice: any): void {
     }));
   }
 
-  logger.warn({ customerId, invoiceId: invoice.id }, 'Stripe invoice payment failed — subscription past_due');
+  logger.warn({ customerId, subscriptionId, invoiceId: invoice.id }, 'Stripe invoice payment failed — subscription past_due');
+}
+
+export function handleInvoicePaid(invoice: any): void {
+  const customerId = typeof invoice.customer === 'string' ? invoice.customer : invoice.customer?.id;
+  const subscriptionId = invoiceSubscriptionId(invoice);
+  if (!subscriptionId) {
+    logger.info({ customerId, invoiceId: invoice.id }, 'Stripe non-subscription invoice payment ignored');
+    return;
+  }
+
+  const result = getDb().prepare(`
+    UPDATE subscriptions
+       SET status = 'active', updated_at = datetime('now')
+     WHERE provider_subscription_id = ?
+       AND provider = 'stripe'
+       AND status IN ('past_due', 'unpaid', 'incomplete')
+  `).run(subscriptionId);
+  logger.info({ customerId, subscriptionId, invoiceId: invoice.id, restored: result.changes }, 'Stripe invoice paid — subscription reconciled');
 }
 
 export function hasProcessedStripeWebhookEvent(eventId: string): boolean {

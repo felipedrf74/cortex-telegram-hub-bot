@@ -460,7 +460,7 @@ describe('customer-facing quota payloads', () => {
     expect(JSON.stringify(usagePayload)).not.toMatch(/usd|allowance|limitUsd|usedUsd|remainingUsd/i);
     expect(JSON.stringify(exceededPayload)).not.toMatch(/usd|allowance|limitUsd|usedUsd|remainingUsd/i);
     expect(usagePayload.nexusPointPackages).toEqual(expect.arrayContaining([
-      expect.objectContaining({ productId: 'me.nexushub.points.small', points: 300 }),
+      expect.objectContaining({ productId: 'me.nexushub.points.small', points: 100 }),
     ]));
     expect(JSON.stringify(usagePayload.nexusPointPackages)).not.toMatch(/priceUsd|usdAllowance|margin/i);
   });

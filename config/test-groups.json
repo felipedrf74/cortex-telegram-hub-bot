@@ -13,6 +13,18 @@
   },
   "retirementMappings": [
     {
+      "baseSha": "fb78be73e9880a4a9f77f193c6477d7a0203d4df",
+      "test": "__tests__/billing/pricing-display-contract.test.ts",
+      "requiredChangedPaths": [
+        ".env.example",
+        "src/portal/landing.html"
+      ],
+      "replacementTests": [
+        "__tests__/billing/pricing-display-contract.test.ts"
+      ],
+      "reason": "Owner-approved hybrid plan-3 repricing: the pre-confirmation Pro $14.99 / Max $19.99 pins and hardcoded BRL display assertions are replaced by the Pro $9.99 / Max $14.99 Adaptive Pricing contract in the same retained suite, which now also pins the credit-pack price points."
+    },
+    {
       "baseSha": "65a87ae2a0514e0fe2ad117412d23ca3f0da8d39",
       "tests": [
         "__tests__/scripts/quality-sonar-local.test.ts",

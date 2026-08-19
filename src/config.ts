@@ -766,6 +766,9 @@ export const config = {
   stripe: {
     secretKey: process.env.STRIPE_SECRET_KEY || '',
     webhookSecret: process.env.STRIPE_WEBHOOK_SECRET || '',
+    // Public-preview behavior is sandbox-only until the live account setup is
+    // reviewed and explicitly approved. Validation below requires sk_test_*.
+    managedPaymentsSandboxEnabled: (process.env.STRIPE_MANAGED_PAYMENTS_SANDBOX_ENABLED || 'false') === 'true',
     // USD prices
     priceProMonthly: process.env.STRIPE_PRICE_PRO_MONTHLY || '',
     priceProYearly: process.env.STRIPE_PRICE_PRO_YEARLY || '',
@@ -1088,6 +1091,15 @@ if (
 ) {
   throw new Error(
     `PORTAL_BIND=${config.portal.bind} exposes the portal on every interface. Use 127.0.0.1 behind a tunnel/reverse proxy or set PORTAL_PUBLIC_BIND_ACK=${PORTAL_PUBLIC_BIND_ACK_VALUE}.`,
+  );
+}
+
+if (
+  config.stripe.managedPaymentsSandboxEnabled
+  && !/^sk_test_/.test(config.stripe.secretKey)
+) {
+  throw new Error(
+    'STRIPE_MANAGED_PAYMENTS_SANDBOX_ENABLED=true requires STRIPE_SECRET_KEY to be a Stripe test key (sk_test_*).',
   );
 }
 

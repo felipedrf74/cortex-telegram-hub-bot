@@ -314,6 +314,23 @@ describe('runtime config validation', () => {
     expect(config.stripe.nexusPoints.priceIds.small).toBe('');
   });
 
+  it('keeps Managed Payments preview mode disabled by default', async () => {
+    vi.stubEnv('STRIPE_MANAGED_PAYMENTS_SANDBOX_ENABLED', '');
+
+    const { config } = await loadConfigFresh();
+
+    expect(config.stripe.managedPaymentsSandboxEnabled).toBe(false);
+  });
+
+  it('requires a Stripe test key when Managed Payments sandbox mode is enabled', async () => {
+    vi.stubEnv('STRIPE_MANAGED_PAYMENTS_SANDBOX_ENABLED', 'true');
+    vi.stubEnv('STRIPE_SECRET_KEY', 'sk_live_accidental');
+
+    await expect(loadConfigFresh()).rejects.toThrow(
+      'STRIPE_MANAGED_PAYMENTS_SANDBOX_ENABLED=true requires STRIPE_SECRET_KEY to be a Stripe test key (sk_test_*).',
+    );
+  });
+
   it('fails fast when Stripe Nexus Points are enabled without required env vars', async () => {
     vi.stubEnv('STRIPE_NEXUS_POINTS_ENABLED', 'true');
     vi.stubEnv('STRIPE_SECRET_KEY', 'sk_test');

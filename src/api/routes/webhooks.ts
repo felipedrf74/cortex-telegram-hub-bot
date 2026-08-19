@@ -36,6 +36,8 @@ import {
   handleCheckoutCompleted,
   fulfillStripeCreditPackCheckout,
   handleStripeCreditPackReversal,
+  handleCheckoutPaymentFailed,
+  handleInvoicePaid,
   handleInvoicePaymentFailed,
   handleSubscriptionDeleted,
   handleSubscriptionUpdated,
@@ -140,8 +142,8 @@ export function createWebhookRouter(options: WebhookRouterOptions = {}): Router 
   });
 
   // ── POST /webhooks/stripe ──────────────────────────────────────
-  // Stripe sends checkout.session.completed, customer.subscription.*,
-  // and invoice.payment_failed events here. Must verify the webhook
+  // Stripe sends Checkout, customer.subscription.*, invoice, refund,
+  // and dispute events here. Must verify the webhook
   // signature against STRIPE_WEBHOOK_SECRET before processing.
   //
   // L-1 (2026-04-21, pass 2): wrapped in webhookRateLimitMiddleware.
@@ -181,13 +183,19 @@ export function createWebhookRouter(options: WebhookRouterOptions = {}): Router 
     try {
       switch (event.type) {
         case 'checkout.session.completed':
+          // Credit-pack sessions (metadata.catalogItemId) settle here on the
+          // common synchronous card path; the fulfillment helper refuses
+          // non-pack and unpaid sessions itself.
+          fulfillStripeCreditPackCheckout(event.data.object);
           if (!(await handleStripeNexusPointsEvent(event)) && event.data.object?.mode === 'subscription') {
             handleCheckoutCompleted(event.data.object);
           }
           break;
         case 'checkout.session.async_payment_succeeded':
           fulfillStripeCreditPackCheckout(event.data.object);
-          await handleStripeNexusPointsEvent(event);
+          if (!(await handleStripeNexusPointsEvent(event)) && event.data.object?.mode === 'subscription') {
+            handleCheckoutCompleted(event.data.object);
+          }
           break;
         case 'checkout.session.async_payment_failed':
           // A delayed payment that ultimately failed must not leave credits
@@ -196,6 +204,10 @@ export function createWebhookRouter(options: WebhookRouterOptions = {}): Router 
             { payment_intent: (event.data.object as any)?.payment_intent, refunded: true },
             'refund',
           );
+          await handleStripeNexusPointsEvent(event);
+          if (event.data.object?.mode === 'subscription') {
+            handleCheckoutPaymentFailed(event.data.object);
+          }
           break;
         case 'charge.refunded':
           handleStripeCreditPackReversal(event.data.object, 'refund');
@@ -213,6 +225,9 @@ export function createWebhookRouter(options: WebhookRouterOptions = {}): Router 
           break;
         case 'invoice.payment_failed':
           handleInvoicePaymentFailed(event.data.object);
+          break;
+        case 'invoice.paid':
+          handleInvoicePaid(event.data.object);
           break;
         default:
           logger.debug({ type: event.type }, 'Stripe webhook event not handled');

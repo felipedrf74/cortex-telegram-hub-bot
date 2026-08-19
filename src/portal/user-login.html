@@ -212,7 +212,7 @@
     }
     function renderPackage(pkg) {
       const priceLabel = Number.isFinite(Number(pkg.priceUsd))
-        ? '$' + Number(pkg.priceUsd).toFixed(0)
+        ? '$' + Number(pkg.priceUsd).toFixed(2)
         : String(pkg.label || 'Boost');
       return '<div class="point-card">' +
         '<div class="point-meta">' +

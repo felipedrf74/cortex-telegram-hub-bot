@@ -2,10 +2,10 @@ import fs from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 const CANONICAL = {
-  proUsd: '$14.99',
-  proBrl: 'R$74.99',
-  maxUsd: '$19.99',
-  maxBrl: 'R$99.99',
+  proUsd: '$9.99',
+  maxUsd: '$14.99',
+  proPriceId: 'price_1U55BS3kbWVFdS6025onefOr',
+  maxPriceId: 'price_1U55Cl3kbWVFdS60VAeMzEyf',
 };
 
 function read(path: string): string {
@@ -16,28 +16,33 @@ describe('owner-confirmed subscription price display contract', () => {
   it('keeps env price comments aligned with the owner-confirmed Stripe amounts', () => {
     const env = read('.env.example');
 
-    expect(env).toContain(`STRIPE_PRICE_PRO_MONTHLY=price_1TYUtmEnGIEp1Q5vqsfLN9Ml       # Pro ${CANONICAL.proUsd}/mo`);
-    expect(env).toContain(`STRIPE_PRICE_PRO_MONTHLY_BRL=price_1TYUtnEnGIEp1Q5vMfu5XXt1   # Pro ${CANONICAL.proBrl}/mo`);
-    expect(env).toContain(`STRIPE_PRICE_MAX_MONTHLY=price_1TYUtoEnGIEp1Q5vievUfmeu       # Max ${CANONICAL.maxUsd}/mo`);
-    expect(env).toContain(`STRIPE_PRICE_MAX_MONTHLY_BRL=price_1TYUtpEnGIEp1Q5vtuAejLdn   # Max ${CANONICAL.maxBrl}/mo`);
+    expect(env).toContain(`STRIPE_PRICE_PRO_MONTHLY=${CANONICAL.proPriceId}  # Pro ${CANONICAL.proUsd}/mo USD reference price`);
+    expect(env).toContain(`STRIPE_PRICE_MAX_MONTHLY=${CANONICAL.maxPriceId}  # Max ${CANONICAL.maxUsd}/mo USD reference price`);
+    expect(env).toContain('STRIPE_PRICE_ID_POINTS_SMALL=price_1U55D63kbWVFdS609PBBp7ek   # 100 credits · $4.99');
+    expect(env).toContain('STRIPE_PRICE_ID_POINTS_MEDIUM=price_1U55DN3kbWVFdS60vjYzf3Ij  # 250 credits · $9.99');
+    expect(env).toContain('STRIPE_PRICE_ID_POINTS_LARGE=price_1U55Dd3kbWVFdS601IUwkSe3   # 600 credits · $19.99');
   });
 
   it('keeps the portal landing price matrix and alt copy aligned', () => {
     const landing = read('src/portal/landing.html');
 
-    expect(landing).toContain('USD monthly: Pro $14.99, Max $19.99');
-    expect(landing).toContain('BRL monthly: Pro R$74.99, Max R$99.99');
-    expect(landing).toContain("monthly: { pro: 14.99, max: 19.99");
-    expect(landing).toContain("monthly: { pro: 74.99, max: 99.99");
-    expect(landing).toContain('também em BRL por R$74,99/mês');
-    expect(landing).toContain('também em BRL por R$99,99/mês');
-    expect(landing).toContain('also available in BRL at R$74.99/mo');
-    expect(landing).toContain('also available in BRL at R$99.99/mo');
+    expect(landing).toContain('USD monthly: Pro $9.99, Max $14.99');
+    expect(landing).toContain("monthly: { pro: 9.99, max: 14.99");
+    expect(landing).toContain('Local currency and final tax are shown at secure checkout.');
+    expect(landing).not.toContain('data-currency="BRL"');
   });
 
-  it('keeps the canonical quota contract aligned', () => {
+  it('renders credit-pack prices with cents on user and operator surfaces', () => {
+    expect(read('src/portal/user-login.html')).toContain("Number(pkg.priceUsd).toFixed(2)");
+    expect(read('src/portal/portal.html')).toContain("Number(pkg.priceUsd || 0).toFixed(2)");
+  });
+
+  it('keeps the canonical quota contract aligned without rewriting release history', () => {
     expect(read('docs/TOKEN-QUOTA-CONTRACT.md')).toContain(
       `Pro at \`${CANONICAL.proUsd}\` and Max at \`${CANONICAL.maxUsd}\``,
+    );
+    expect(read('docs/TOKEN-QUOTA-CONTRACT.md')).toContain(
+      '| Small | `me.nexushub.points.small` | $4.99 | 100 | $0.10 | 30 days |',
     );
   });
 
@@ -48,7 +53,7 @@ describe('owner-confirmed subscription price display contract', () => {
       'docs/TOKEN-QUOTA-CONTRACT.md',
     ];
 
-    const staleAmounts = ['$24.99', 'R$69.99', 'R$69,99', 'R$119.99', 'R$119,99'];
+    const staleAmounts = ['$24.99', 'R$69.99', 'R$69,99', 'R$119.99', 'R$119,99', '$74.99', '$99.99'];
 
     for (const surface of activePricingSurfaces) {
       const contents = read(surface);

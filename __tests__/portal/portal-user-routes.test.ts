@@ -210,7 +210,7 @@ describe('portal user routes', () => {
     hoisted.requirePortalAdminToken.mockImplementation((_req: unknown, _res: unknown, next: () => void) => next());
     hoisted.listUsers.mockReturnValue([{ id: 4, email: 'user@example.com', tier: 'pro' }]);
     hoisted.listNexusPointPackages.mockReturnValue([
-      { productId: 'me.nexushub.points.small', label: 'small', priceUsd: 5, points: 300, usdAllowance: 0.30 },
+      { productId: 'me.nexushub.points.small', label: 'small', priceUsd: 4.99, points: 100, usdAllowance: 0.10 },
     ]);
     hoisted.createNexusPointsCheckoutSession.mockResolvedValue({
       sessionId: 'cs_portal_points',

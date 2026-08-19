@@ -4,28 +4,49 @@ import { hashEmail } from '../../src/utils/identity';
 
 let testDb: Database.Database;
 
-const hoisted = vi.hoisted(() => ({
-  loggerWarn: vi.fn(),
-  loggerInfo: vi.fn(),
-  sendPaymentReceipt: vi.fn(),
-  sendPaymentFailed: vi.fn(),
-  sendCancellationConfirmation: vi.fn(),
+const hoisted = vi.hoisted(() => {
+  const stripeConfig = {
+    secretKey: 'sk_test',
+    webhookSecret: 'whsec_test',
+    managedPaymentsSandboxEnabled: true,
+    priceProMonthly: 'price_pro_usd',
+    priceProYearly: '',
+    priceMaxMonthly: 'price_max_usd',
+    priceMaxYearly: '',
+    priceProMonthlyBrl: 'price_pro_brl',
+    priceProYearlyBrl: '',
+    priceMaxMonthlyBrl: 'price_max_brl',
+    priceMaxYearlyBrl: '',
+    priceProMonthlyEur: '',
+    priceProYearlyEur: '',
+    priceMaxMonthlyEur: '',
+    priceMaxYearlyEur: '',
+  };
+  return {
+    stripeConfig,
+    loggerWarn: vi.fn(),
+    loggerInfo: vi.fn(),
+    sendPaymentReceipt: vi.fn(),
+    sendPaymentFailed: vi.fn(),
+    sendCancellationConfirmation: vi.fn(),
+    stripeCheckoutCreate: vi.fn(),
+    stripePortalCreate: vi.fn(),
+    stripeCtor: vi.fn(function StripeMock() {
+      return {
+        checkout: { sessions: { create: hoisted.stripeCheckoutCreate } },
+        billingPortal: { sessions: { create: hoisted.stripePortalCreate } },
+      };
+    }),
+  };
+});
+
+vi.mock('stripe', () => ({
+  default: hoisted.stripeCtor,
 }));
 
 vi.mock('../../src/config', () => ({
   config: {
-    stripe: {
-      secretKey: 'sk_test',
-      webhookSecret: 'whsec_test',
-      priceProMonthly: 'price_pro_usd',
-      priceProYearly: '',
-      priceMaxMonthly: 'price_max_usd',
-      priceMaxYearly: '',
-      priceProMonthlyBrl: 'price_pro_brl',
-      priceProYearlyBrl: '',
-      priceMaxMonthlyBrl: 'price_max_brl',
-      priceMaxYearlyBrl: '',
-    },
+    stripe: hoisted.stripeConfig,
     ios: {
       jwtSecret: 'test-ios-jwt-secret-at-least-32-bytes-long',
     },
@@ -134,6 +155,8 @@ describe('stripe service billing reconciliation', () => {
   beforeEach(() => {
     testDb = new Database(':memory:');
     createSchema(testDb);
+    hoisted.stripeConfig.managedPaymentsSandboxEnabled = true;
+    hoisted.stripeCtor.mockClear();
     hoisted.loggerWarn.mockReset();
     hoisted.loggerInfo.mockReset();
     hoisted.sendPaymentReceipt.mockReset();
@@ -142,10 +165,295 @@ describe('stripe service billing reconciliation', () => {
     hoisted.sendPaymentFailed.mockResolvedValue(true);
     hoisted.sendCancellationConfirmation.mockReset();
     hoisted.sendCancellationConfirmation.mockResolvedValue(true);
+    hoisted.stripeCheckoutCreate.mockReset();
+    hoisted.stripeCheckoutCreate.mockResolvedValue({ id: 'cs_checkout', url: 'https://checkout.stripe.test/session' });
+    hoisted.stripePortalCreate.mockReset();
   });
 
   afterEach(() => {
     testDb.close();
+  });
+
+  it('creates Managed Payments Checkout with the selected plan metadata', async () => {
+    const {
+      _resetStripeClientForTests,
+      createCheckoutSessionForPlan,
+    } = await import('../../src/services/stripe-service');
+    _resetStripeClientForTests();
+
+    const url = await createCheckoutSessionForPlan(
+      42,
+      'max',
+      'usd',
+      'https://nexushub.me/user?checkout=success',
+      'https://nexushub.me/user?checkout=canceled',
+    );
+
+    expect(url).toBe('https://checkout.stripe.test/session');
+    expect(hoisted.stripeCtor).toHaveBeenCalledWith('sk_test', {
+      apiVersion: '2026-03-04.preview',
+    });
+    expect(hoisted.stripeCheckoutCreate).toHaveBeenCalledWith(expect.objectContaining({
+      mode: 'subscription',
+      line_items: [{ price: 'price_max_usd', quantity: 1 }],
+      managed_payments: { enabled: true },
+      metadata: expect.objectContaining({ userId: '42', plan: 'max', currency: 'usd' }),
+      subscription_data: {
+        metadata: expect.objectContaining({ userId: '42', plan: 'max', currency: 'usd' }),
+      },
+    }));
+    const [checkoutParams] = hoisted.stripeCheckoutCreate.mock.calls[0];
+    expect(checkoutParams).not.toHaveProperty('customer_creation');
+  });
+
+  it('keeps preview API and Managed Payments parameters off when the sandbox flag is disabled', async () => {
+    const {
+      _resetStripeClientForTests,
+      createCheckoutSessionForPlan,
+    } = await import('../../src/services/stripe-service');
+    hoisted.stripeConfig.managedPaymentsSandboxEnabled = false;
+    _resetStripeClientForTests();
+
+    await createCheckoutSessionForPlan(
+      42,
+      'pro',
+      'usd',
+      'https://nexushub.me/user?checkout=success',
+      'https://nexushub.me/user?checkout=canceled',
+    );
+
+    expect(hoisted.stripeCtor).toHaveBeenCalledWith('sk_test', {
+      apiVersion: '2026-03-25.dahlia',
+    });
+    const [checkoutParams] = hoisted.stripeCheckoutCreate.mock.calls[0];
+    expect(checkoutParams).not.toHaveProperty('managed_payments');
+  });
+
+  it('creates public Managed Payments Checkout and stores the unclaimed purchase', async () => {
+    const {
+      _resetStripeClientForTests,
+      createPublicCheckoutSession,
+    } = await import('../../src/services/stripe-service');
+    _resetStripeClientForTests();
+
+    await createPublicCheckoutSession({
+      email: 'buyer@example.com',
+      plan: 'pro',
+      currency: 'usd',
+      successUrl: 'https://nexushub.me/?checkout=success',
+      cancelUrl: 'https://nexushub.me/?checkout=canceled',
+    });
+
+    expect(hoisted.stripeCheckoutCreate).toHaveBeenCalledWith(expect.objectContaining({
+      mode: 'subscription',
+      managed_payments: { enabled: true },
+      line_items: [{ price: 'price_pro_usd', quantity: 1 }],
+      metadata: expect.objectContaining({ plan: 'pro', currency: 'usd', source: 'website' }),
+    }));
+    expect(testDb.prepare(`
+      SELECT plan, currency, price_id, status, user_id
+      FROM stripe_web_checkouts
+      WHERE stripe_checkout_session_id = 'cs_checkout'
+    `).get()).toEqual({
+      plan: 'pro',
+      currency: 'usd',
+      price_id: 'price_pro_usd',
+      status: 'created',
+      user_id: null,
+    });
+  });
+
+  it('routes retained BRL checkout requests through the USD Adaptive Pricing reference price', async () => {
+    const { resolveStripePriceId } = await import('../../src/services/stripe-service');
+
+    expect(resolveStripePriceId('pro', 'brl')).toBe('price_pro_usd');
+    expect(resolveStripePriceId('max', 'brl')).toBe('price_max_usd');
+  });
+
+  it('does not activate a subscription until Checkout reports a settled payment', async () => {
+    const { handleCheckoutCompleted } = await import('../../src/services/stripe-service');
+    const userId = Number(testDb.prepare(
+      'INSERT INTO users (email, email_verified) VALUES (?, 1)',
+    ).run('delayed@example.com').lastInsertRowid);
+
+    const session = {
+      id: 'sess_delayed',
+      mode: 'subscription',
+      payment_status: 'unpaid',
+      subscription: 'sub_delayed',
+      customer: 'cus_delayed',
+      metadata: { userId: String(userId), plan: 'max', currency: 'usd' },
+    };
+    handleCheckoutCompleted(session);
+    expect(testDb.prepare('SELECT COUNT(*) AS count FROM subscriptions').get()).toEqual({ count: 0 });
+
+    handleCheckoutCompleted({ ...session, payment_status: 'paid' });
+    expect(testDb.prepare('SELECT plan, status FROM subscriptions WHERE user_id = ?').get(userId)).toEqual({
+      plan: 'max',
+      status: 'active',
+    });
+  });
+
+  it('keeps an unpaid public checkout unclaimable and records delayed failure', async () => {
+    const {
+      handleCheckoutCompleted,
+      handleCheckoutPaymentFailed,
+      handleSubscriptionUpdated,
+    } = await import('../../src/services/stripe-service');
+    testDb.prepare(`
+      INSERT INTO stripe_web_checkouts (
+        email, email_hash, plan, currency, price_id, status, stripe_checkout_session_id
+      ) VALUES (?, ?, 'pro', 'usd', 'price_pro_usd', 'created', 'sess_public_delayed')
+    `).run('delayed-public@example.com', hashEmail('delayed-public@example.com'));
+    const session = {
+      id: 'sess_public_delayed',
+      mode: 'subscription',
+      payment_status: 'unpaid',
+      subscription: 'sub_public_delayed',
+      customer: 'cus_public_delayed',
+      metadata: { email: 'delayed-public@example.com', plan: 'pro', currency: 'usd' },
+    };
+
+    handleCheckoutCompleted(session);
+    expect(testDb.prepare('SELECT status FROM stripe_web_checkouts').get()).toEqual({ status: 'pending' });
+
+    handleSubscriptionUpdated({
+      id: 'sub_public_delayed',
+      customer: 'cus_public_delayed',
+      status: 'active',
+      metadata: { email: 'delayed-public@example.com', plan: 'pro', currency: 'usd' },
+      items: { data: [{ price: { id: 'price_pro_usd' } }] },
+      cancel_at_period_end: false,
+    });
+    expect(testDb.prepare('SELECT status FROM stripe_web_checkouts').get()).toEqual({ status: 'incomplete' });
+
+    handleCheckoutPaymentFailed(session);
+    expect(testDb.prepare('SELECT status FROM stripe_web_checkouts').get()).toEqual({ status: 'payment_failed' });
+
+    handleSubscriptionUpdated({
+      id: 'sub_public_delayed',
+      customer: 'cus_public_delayed',
+      status: 'active',
+      metadata: { email: 'delayed-public@example.com', plan: 'pro', currency: 'usd' },
+      items: { data: [{ price: { id: 'price_pro_usd' } }] },
+      cancel_at_period_end: false,
+    });
+    expect(testDb.prepare('SELECT status FROM stripe_web_checkouts').get()).toEqual({ status: 'payment_failed' });
+  });
+
+  it('does not grant access when Stripe reports a first subscription active before payment settles', async () => {
+    const {
+      getSubscriptionStatus,
+      handleCheckoutPaymentFailed,
+      handleSubscriptionUpdated,
+    } = await import('../../src/services/stripe-service');
+    const userId = Number(testDb.prepare(
+      'INSERT INTO users (email, email_verified) VALUES (?, 1)',
+    ).run('async-subscription@example.com').lastInsertRowid);
+    const subscription = {
+      id: 'sub_async',
+      customer: 'cus_async',
+      status: 'active',
+      metadata: { userId: String(userId) },
+      items: { data: [{ price: { id: 'price_max_usd' } }] },
+      cancel_at_period_end: false,
+    };
+
+    handleSubscriptionUpdated(subscription);
+    expect(testDb.prepare('SELECT COUNT(*) AS count FROM subscriptions').get()).toEqual({ count: 0 });
+    expect(getSubscriptionStatus(userId)).toMatchObject({ isActive: false, isPro: false });
+
+    handleSubscriptionUpdated({ ...subscription, status: 'incomplete' });
+    handleSubscriptionUpdated(subscription);
+    expect(testDb.prepare('SELECT status FROM subscriptions WHERE user_id = ?').get(userId)).toEqual({
+      status: 'incomplete',
+    });
+
+    handleCheckoutPaymentFailed({
+      id: 'sess_async',
+      mode: 'subscription',
+      payment_status: 'unpaid',
+      subscription: 'sub_async',
+      customer: 'cus_async',
+    });
+    expect(testDb.prepare('SELECT status FROM subscriptions WHERE user_id = ?').get(userId)).toEqual({
+      status: 'incomplete_expired',
+    });
+
+    handleSubscriptionUpdated(subscription);
+    handleSubscriptionUpdated({ ...subscription, status: 'incomplete' });
+    expect(testDb.prepare('SELECT status FROM subscriptions WHERE user_id = ?').get(userId)).toEqual({
+      status: 'incomplete_expired',
+    });
+    expect(getSubscriptionStatus(userId)).toMatchObject({ isActive: false, isPro: false });
+  });
+
+  it('updates only the matching public Checkout session when an email has multiple attempts', async () => {
+    const { handleCheckoutPaymentFailed } = await import('../../src/services/stripe-service');
+    const email = 'repeat@example.com';
+    const insert = testDb.prepare(`
+      INSERT INTO stripe_web_checkouts (
+        email, email_hash, plan, currency, price_id, status, stripe_checkout_session_id
+      ) VALUES (?, ?, 'pro', 'usd', 'price_pro_usd', ?, ?)
+    `);
+    insert.run(email, hashEmail(email), 'completed', 'sess_success');
+    insert.run(email, hashEmail(email), 'pending', 'sess_failed');
+
+    handleCheckoutPaymentFailed({
+      id: 'sess_failed',
+      subscription: 'sub_failed',
+      customer: 'cus_repeat',
+      metadata: { email },
+    });
+
+    expect(testDb.prepare(`
+      SELECT stripe_checkout_session_id AS sessionId, status
+      FROM stripe_web_checkouts
+      ORDER BY id
+    `).all()).toEqual([
+      { sessionId: 'sess_success', status: 'completed' },
+      { sessionId: 'sess_failed', status: 'payment_failed' },
+    ]);
+  });
+
+  it('restores a delinquent Stripe subscription when an invoice is paid', async () => {
+    const { handleInvoicePaid } = await import('../../src/services/stripe-service');
+    const userId = Number(testDb.prepare(
+      'INSERT INTO users (email, email_verified) VALUES (?, 1)',
+    ).run('recovered@example.com').lastInsertRowid);
+    testDb.prepare(`
+      INSERT INTO subscriptions (
+        user_id, plan, period, status, provider, provider_subscription_id, provider_customer_id
+      ) VALUES (?, 'pro', 'monthly', 'past_due', 'stripe', 'sub_recovered', 'cus_recovered')
+    `).run(userId);
+
+    handleInvoicePaid({
+      id: 'in_recovered',
+      customer: 'cus_recovered',
+      parent: { subscription_details: { subscription: 'sub_recovered' } },
+    });
+
+    expect(testDb.prepare('SELECT status FROM subscriptions WHERE user_id = ?').get(userId)).toEqual({
+      status: 'active',
+    });
+  });
+
+  it('does not restore a subscription from a paid one-time invoice for the same customer', async () => {
+    const { handleInvoicePaid } = await import('../../src/services/stripe-service');
+    const userId = Number(testDb.prepare(
+      'INSERT INTO users (email, email_verified) VALUES (?, 1)',
+    ).run('one-time@example.com').lastInsertRowid);
+    testDb.prepare(`
+      INSERT INTO subscriptions (
+        user_id, plan, period, status, provider, provider_subscription_id, provider_customer_id
+      ) VALUES (?, 'pro', 'monthly', 'past_due', 'stripe', 'sub_delinquent', 'cus_shared')
+    `).run(userId);
+
+    handleInvoicePaid({ id: 'in_one_time', customer: 'cus_shared', parent: null });
+
+    expect(testDb.prepare('SELECT status FROM subscriptions WHERE user_id = ?').get(userId)).toEqual({
+      status: 'past_due',
+    });
   });
 
   it('does not auto-attach a public checkout to an existing user by email alone', async () => {
@@ -159,6 +467,7 @@ describe('stripe service billing reconciliation', () => {
 
     handleCheckoutCompleted({
       id: 'sess_public',
+      payment_status: 'paid',
       subscription: 'sub_public',
       customer: 'cus_public',
       metadata: { email: 'victim@example.com', plan: 'max', source: 'website' },
@@ -404,9 +713,21 @@ describe('stripe service billing reconciliation', () => {
   });
 
   it('records Basil/Dahlia subscription periods from the first subscription item', async () => {
-    const { getSubscriptionStatus, handleSubscriptionUpdated } = await import('../../src/services/stripe-service');
+    const {
+      getSubscriptionStatus,
+      handleCheckoutCompleted,
+      handleSubscriptionUpdated,
+    } = await import('../../src/services/stripe-service');
     const userId = Number(testDb.prepare('INSERT INTO users (email, email_verified) VALUES (?, 1)').run('period@example.com').lastInsertRowid);
     const futurePeriodEnd = Math.floor((Date.now() + 7 * 86400000) / 1000);
+
+    handleCheckoutCompleted({
+      id: 'sess_period',
+      payment_status: 'paid',
+      subscription: 'sub_period',
+      customer: 'cus_period',
+      metadata: { userId: String(userId), plan: 'max', currency: 'usd' },
+    });
 
     handleSubscriptionUpdated({
       id: 'sub_period',
@@ -476,13 +797,14 @@ describe('stripe service billing reconciliation', () => {
     const userId = Number(testDb.prepare('INSERT INTO users (email, email_verified) VALUES (?, 1)').run('pastdue@example.com').lastInsertRowid);
     testDb.prepare(`
       INSERT INTO subscriptions (
-        user_id, plan, period, status, provider, provider_customer_id
-      ) VALUES (?, 'pro', 'monthly', 'active', 'stripe', 'cus_failed')
+        user_id, plan, period, status, provider, provider_subscription_id, provider_customer_id
+      ) VALUES (?, 'pro', 'monthly', 'active', 'stripe', 'sub_failed', 'cus_failed')
     `).run(userId);
 
     handleInvoicePaymentFailed({
       id: 'in_failed',
       customer: 'cus_failed',
+      parent: { subscription_details: { subscription: { id: 'sub_failed' } } },
       hosted_invoice_url: 'https://billing.stripe.test/invoices/in_failed',
     });
 
