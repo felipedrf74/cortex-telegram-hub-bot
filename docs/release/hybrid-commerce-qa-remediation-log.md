@@ -28,6 +28,11 @@ The deploy therefore takes two steps, and both are required:
 Observed twice: `3970fac7` → acked `d9ac4a92…` → deployed by `c5a7ae67`, and
 `a7fe09ce` → acked `84389eb5…` → deployed by its docs-only successor.
 
+Observed again on 2026-08-20: protected-main source `6bbabe0b` halted as
+release `8aeaf11bad6acfdeb9a8a670cd49eca7`; the owner acknowledged that exact
+release at `2026-08-20T23:23:18.705Z`. This docs-only successor is the
+CD-eligible carrier for the unchanged application bytes.
+
 Audit protocol: every round runs under a promotion freeze (no merges to
 protected main until the verdict lands), and the auditor reads the active
 receipt from `sudo -n /usr/local/sbin/nexus-release-state-view` at the start
