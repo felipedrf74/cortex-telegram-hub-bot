@@ -1,7 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 /**
- * Included monthly AI credit provisioning (plan §2, QA5 P1-2).
+ * Included monthly AI credit provisioning (plan §2, QA5 P1-2, QA6 P1).
  *
  * The ledger has always been able to MINT an included monthly lot
  * (`grantMonthlyAiCredits`), but nothing in the runtime ever called it. With
@@ -16,18 +16,25 @@
  * - No backfill job and no dependency on renewal webhooks: an existing
  *   subscriber, a user whose renewal notification was lost, and a brand-new
  *   subscriber all provision on their next operation.
- * - The grant is idempotent per (user, period) inside the ledger, so
- *   concurrent operations mint exactly one lot.
  *
- * Period anchoring:
- * - A paid subscription anchors to its own billing period, so included
- *   credits expire exactly when the paid period does.
- * - Without a usable subscription period end (Apple-only records, missing
- *   timestamps), the calendar month in UTC is the anchor.
- * - The period key deliberately does NOT include the plan: exactly one
- *   included lot exists per user per period. A mid-period upgrade keeps the
- *   lot it already has and receives the higher allowance at the next period,
- *   which makes plan cycling useless as a way to mint extra credit.
+ * Period identity is the whole safety story (QA6 P1). The first version keyed
+ * the lot on the period END and fell back to a calendar anchor whenever the
+ * subscription read failed, so the key moved underneath a user who had paid
+ * once — a transient read error, a late renewal webhook, or a mid-period plan
+ * change each minted a SECOND live lot. Three rules keep one paid period to
+ * one allowance:
+ *
+ * 1. Anchor on the period START. A mid-period upgrade re-prices the
+ *    subscription and moves `current_period_end`, but not the start, so the
+ *    key is unchanged and the grant is a no-op. Plan cycling mints nothing.
+ * 2. A subscription READ FAILURE denies provisioning instead of silently
+ *    switching anchors. Admission then denies this one operation and the next
+ *    call retries — a lost read never becomes a second lot.
+ * 3. When the period genuinely moves (renewal, or a stopgap calendar lot
+ *    replaced by a real billing period), the ledger SUPERSEDES: it revokes
+ *    every other live included lot inside the same transaction and grants
+ *    exactly the plan allowance. Live included credits can never exceed the
+ *    plan allowance, whatever the key says.
  */
 
 import { logger } from '../utils/logger';
@@ -46,6 +53,14 @@ export interface MonthlyProvisioningPeriod {
   periodEnd: Date;
 }
 
+/**
+ * `unavailable` is NOT the same as "no subscription": it means the record
+ * could not be read at all, and the only safe response is to grant nothing.
+ */
+export type MonthlyProvisioningPeriodResolution =
+  | { kind: 'resolved'; period: MonthlyProvisioningPeriod }
+  | { kind: 'unavailable' };
+
 /** End of the current UTC calendar month, used when no billing period exists. */
 function calendarMonthPeriod(now: Date): MonthlyProvisioningPeriod {
   const year = now.getUTCFullYear();
@@ -61,23 +76,46 @@ function calendarMonthPeriod(now: Date): MonthlyProvisioningPeriod {
  * Resolve the period the included lot belongs to. Exported for tests and for
  * operators reasoning about why a lot carries a given expiry.
  */
-export function resolveMonthlyProvisioningPeriod(userId: number, now: Date): MonthlyProvisioningPeriod {
-  let periodEndIso: string | null = null;
+export function resolveMonthlyProvisioningPeriod(
+  userId: number,
+  now: Date,
+): MonthlyProvisioningPeriodResolution {
+  let subscription: { currentPeriodStart: string | null; currentPeriodEnd: string | null };
   try {
-    periodEndIso = getSubscriptionStatus(userId).currentPeriodEnd;
+    subscription = getSubscriptionStatus(userId);
   } catch (err) {
-    // A subscription read failure must not deny AI: fall back to the calendar
-    // anchor rather than leaving the user without included credits.
-    logger.warn({ err, userId }, 'ai-credit-provisioning: subscription read failed; using calendar period');
+    // Deny rather than re-anchor. Falling back to the calendar month here is
+    // what let one transient SQLITE_BUSY mint a second lot for a period the
+    // user had already been granted (QA6 P1 path A).
+    logger.warn(
+      { err, userId },
+      'ai-credit-provisioning: subscription read failed; denying provisioning for this call',
+    );
+    return { kind: 'unavailable' };
   }
-  const periodEndMs = periodEndIso ? Date.parse(periodEndIso) : NaN;
-  if (Number.isFinite(periodEndMs) && periodEndMs > now.getTime()) {
-    return {
-      periodKey: `sub:${new Date(periodEndMs).toISOString()}`,
-      periodEnd: new Date(periodEndMs),
-    };
+
+  const periodEndMs = subscription.currentPeriodEnd ? Date.parse(subscription.currentPeriodEnd) : NaN;
+  const hasLivePeriod = Number.isFinite(periodEndMs) && periodEndMs > now.getTime();
+  if (!hasLivePeriod) {
+    // No usable billing period (Apple-only records, missing timestamps, or a
+    // lapsed period awaiting its renewal webhook): the calendar month is the
+    // stopgap anchor, and the real period supersedes it when it arrives.
+    return { kind: 'resolved', period: calendarMonthPeriod(now) };
   }
-  return calendarMonthPeriod(now);
+
+  const periodStartMs = subscription.currentPeriodStart
+    ? Date.parse(subscription.currentPeriodStart)
+    : NaN;
+  // Period START is the stable identity. Records written before the start was
+  // captured fall back to the end, which is still correct for them — they
+  // simply do not get the mid-period-change immunity.
+  const anchorIso = Number.isFinite(periodStartMs)
+    ? new Date(periodStartMs).toISOString()
+    : new Date(periodEndMs).toISOString();
+  return {
+    kind: 'resolved',
+    period: { periodKey: `sub:${anchorIso}`, periodEnd: new Date(periodEndMs) },
+  };
 }
 
 export type EnsureMonthlyAiCreditsOutcome =
@@ -105,7 +143,11 @@ export function ensureMonthlyAiCreditsForUser(input: {
     if (policy.monthlyCredits <= 0) {
       return { kind: 'not_applicable', reason: 'plan_grants_no_monthly_credits' };
     }
-    const period = resolveMonthlyProvisioningPeriod(input.userId, now);
+    const resolution = resolveMonthlyProvisioningPeriod(input.userId, now);
+    if (resolution.kind === 'unavailable') {
+      return { kind: 'failed', reason: 'subscription_period_unavailable' };
+    }
+    const period = resolution.period;
     const granted: GrantAiCreditsResult = grantMonthlyAiCredits({
       userId: input.userId,
       plan: input.plan,

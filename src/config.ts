@@ -1164,6 +1164,30 @@ if (
 // fast if it is ever set in live production, mirroring the live-key guard
 // above. isStripeSandboxCheckoutAllowed() also ignores the flag at runtime in
 // live production as defense in depth, but boot must refuse the misconfig.
+// QA6 P3: live-production identity was derived from STAGING alone, so setting
+// STAGING=true on the production container flipped IS_LIVE_PRODUCTION false and
+// in one move re-armed the sandbox checkout hatch, reverted the webhook
+// livemode gate to mode-equality, and allowed the paywall bypass. The release
+// registry supplies a SECOND, independent identity signal on every container
+// (NEXUS_RELEASE_ENVIRONMENT, from the signed release payload's target), so
+// disagreeing signals now refuse to boot. This does not defend against an
+// attacker who already controls the root-owned registry — nothing in the
+// process can — but it does mean no single env var flip silently downgrades
+// production's payment safety posture.
+const releaseEnvironmentSignal = (process.env.NEXUS_RELEASE_ENVIRONMENT || '').trim().toLowerCase();
+if (releaseEnvironmentSignal === 'production' && IS_STAGING) {
+  throw new Error(
+    'Environment identity conflict: NEXUS_RELEASE_ENVIRONMENT=production but STAGING=true. '
+    + 'Refusing to start: this combination would disable live-production payment guards.',
+  );
+}
+if (releaseEnvironmentSignal === 'staging' && IS_PRODUCTION && !IS_STAGING) {
+  throw new Error(
+    'Environment identity conflict: NEXUS_RELEASE_ENVIRONMENT=staging but STAGING is not set. '
+    + 'Refusing to start: a staging release must not run with live-production semantics.',
+  );
+}
+
 if (IS_LIVE_PRODUCTION && process.env.STRIPE_SANDBOX_CHECKOUT_ALLOWED === 'true') {
   throw new Error(
     'STRIPE_SANDBOX_CHECKOUT_ALLOWED=true is forbidden in live production: it would let anyone mint paid entitlements with a Stripe test card. Unset it and install a live key, or leave production checkout fail-closed.',

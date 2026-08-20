@@ -65,6 +65,8 @@ vi.mock('../../src/utils/logger', () => ({
 import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import { getAiCreditWallet } from '../../src/services/ai-credit-ledger';
 import {
+  backfillAppleReversalIndex,
+  hasRecordedAppleReversalForTransaction,
   ingestVerifiedAppleNotification,
   processPendingAppleNotifications,
   processStoredAppleNotification,
@@ -293,7 +295,7 @@ describe('apple-notification-inbox', () => {
       now: NOW,
     });
     const failed = processPendingAppleNotifications({ now: NOW });
-    expect(failed).toEqual({ processed: 0, failed: 1, exhausted: 0, deferred: 0 });
+    expect(failed).toEqual({ processed: 0, failed: 1, exhausted: 0, deferred: 0, stuckExhausted: 0 });
     const row = db.prepare("SELECT state, attempts, last_error FROM apple_notification_inbox WHERE notification_uuid = 'uuid-late'").get() as any;
     expect(row.state).toBe('failed');
     expect(row.attempts).toBe(1);
@@ -305,7 +307,7 @@ describe('apple-notification-inbox', () => {
       data: { signedTransactionInfo: 'inner-late', environment: 'Production' },
     });
     const recovered = processPendingAppleNotifications({ now: NOW });
-    expect(recovered).toEqual({ processed: 1, failed: 0, exhausted: 0, deferred: 0 });
+    expect(recovered).toEqual({ processed: 1, failed: 0, exhausted: 0, deferred: 0, stuckExhausted: 0 });
     expect(getAiCreditWallet(40, 'pro', NOW).purchasedRemaining).toBe(100);
   });
 
@@ -328,7 +330,7 @@ describe('apple-notification-inbox', () => {
 
     const pass = processPendingAppleNotifications({ now: NOW });
     // The legacy charge processed via the delegate; the pack stayed parked.
-    expect(pass).toEqual({ processed: 1, failed: 0, exhausted: 0, deferred: 0 });
+    expect(pass).toEqual({ processed: 1, failed: 0, exhausted: 0, deferred: 0, stuckExhausted: 0 });
     expect(db.prepare('SELECT state, attempts, product_id FROM apple_notification_inbox WHERE id = ?').get(pack.row.id))
       .toEqual({ state: 'pending', attempts: 0, product_id: 'nx.pack.100.v1' });
     expect(db.prepare('SELECT state FROM apple_notification_inbox WHERE id = ?').get(points.row.id))
@@ -355,13 +357,13 @@ describe('apple-notification-inbox', () => {
     // QA P1-4: deferred pack rows are excluded from the retry selection while
     // fulfillment is off, so they cannot park at the head of every pass and
     // starve retryable subscription notifications behind them.
-    expect(processPendingAppleNotifications({ now: NOW })).toEqual({ processed: 0, failed: 0, exhausted: 0, deferred: 0 });
+    expect(processPendingAppleNotifications({ now: NOW })).toEqual({ processed: 0, failed: 0, exhausted: 0, deferred: 0, stuckExhausted: 0 });
     const row = db.prepare('SELECT state, attempts FROM apple_notification_inbox WHERE id = ?').get(stored.row.id) as any;
     expect(row).toEqual({ state: 'pending', attempts: 0 });
     expect(db.prepare('SELECT COUNT(*) AS count FROM ai_credit_lots').get()).toEqual({ count: 0 });
 
     packFulfillmentEnabled = true;
-    expect(processPendingAppleNotifications({ now: NOW })).toEqual({ processed: 1, failed: 0, exhausted: 0, deferred: 0 });
+    expect(processPendingAppleNotifications({ now: NOW })).toEqual({ processed: 1, failed: 0, exhausted: 0, deferred: 0, stuckExhausted: 0 });
     expect(getAiCreditWallet(40, 'pro', NOW).purchasedRemaining).toBe(100);
   });
 
@@ -400,7 +402,7 @@ describe('apple-notification-inbox', () => {
     expect(processStoredAppleNotification(purchase.row.id, NOW).kind).toBe('processed');
     expect(getAiCreditWallet(40, 'pro', NOW).purchasedRemaining).toBe(100);
 
-    expect(processPendingAppleNotifications({ now: NOW })).toEqual({ processed: 1, failed: 0, exhausted: 0, deferred: 0 });
+    expect(processPendingAppleNotifications({ now: NOW })).toEqual({ processed: 1, failed: 0, exhausted: 0, deferred: 0, stuckExhausted: 0 });
     expect(getAiCreditWallet(40, 'pro', NOW).purchasedRemaining).toBe(0);
   });
 
@@ -414,7 +416,12 @@ describe('apple-notification-inbox', () => {
     db.prepare("UPDATE apple_notification_inbox SET attempts = 5, state = 'failed' WHERE id = ?").run(stored.row.id);
 
     const pass = processPendingAppleNotifications({ now: NOW });
-    expect(pass.exhausted).toBe(1);
+    // The selector can never pick an already-exhausted row, so this pass
+    // exhausted nothing new; the stuck row surfaces on the gauge instead
+    // (QA5 P2 keeps the alert, QA6 P3 stops the counter inflating).
+    expect(pass.exhausted).toBe(0);
+    expect(pass.stuckExhausted).toBe(1);
+    expect(processPendingAppleNotifications({ now: NOW }).stuckExhausted).toBe(1);
     expect(db.prepare(
       "SELECT COUNT(*) AS count FROM operator_alerts WHERE dedupe_key LIKE 'apple_inbox_exhausted:%'",
     ).get()).toEqual({ count: 1 });
@@ -459,5 +466,125 @@ describe('apple-notification-inbox', () => {
     expect(() =>
       db.prepare("UPDATE apple_notification_inbox SET signed_payload = 'tampered' WHERE id = ?").run(stored.row.id),
     ).toThrow(/processing-state updates/);
+  });
+});
+
+describe('reversal transaction index (QA6 P2)', () => {
+  beforeEach(() => {
+    db = createMigratedTestDatabase();
+    jwsFixtures.clear();
+    packFulfillmentEnabled = true;
+    mockHandleAppleNotification.mockClear();
+    mockHandleAppleNotification.mockReturnValue(true);
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  /**
+   * The lookup used to scan `ORDER BY id DESC LIMIT 2000` and decode each
+   * stored JWS, so once more than 2,000 reversals accumulated — and migration
+   * 286 forbids deleting them — every older refund silently returned CLEAN and
+   * became replayable through restore-packs.
+   */
+  it('finds a refund buried far beyond the old 2,000-row scan window', () => {
+    seedPackNotification({
+      outerKey: 'outer-victim-refund',
+      innerKey: 'inner-victim-refund',
+      notificationType: 'REFUND',
+      transactionId: 'txn-victim',
+    });
+    ingest('outer-victim-refund', 'REFUND');
+
+    // Bury it under far more reversals than the retired cap allowed.
+    for (let index = 0; index < 2_500; index += 1) {
+      seedPackNotification({
+        outerKey: `outer-noise-${index}`,
+        innerKey: `inner-noise-${index}`,
+        notificationType: 'REFUND',
+        transactionId: `txn-noise-${index}`,
+      });
+      ingest(`outer-noise-${index}`, 'REFUND');
+    }
+
+    expect(hasRecordedAppleReversalForTransaction('txn-victim')).toBe(true);
+    expect(hasRecordedAppleReversalForTransaction('txn-never-refunded')).toBe(false);
+  });
+
+  it('matches on the original transaction id as well as the transaction id', () => {
+    jwsFixtures.set('outer-original', {
+      notificationType: 'REVOKE',
+      notificationUUID: 'uuid-outer-original',
+      data: { signedTransactionInfo: 'inner-original', environment: 'Production' },
+    });
+    jwsFixtures.set('inner-original', {
+      bundleId: 'me.nexushub.app',
+      productId: 'nx.pack.100.v1',
+      transactionId: 'txn-child',
+      originalTransactionId: 'txn-parent',
+    });
+    ingest('outer-original', 'REVOKE');
+
+    expect(hasRecordedAppleReversalForTransaction('txn-parent')).toBe(true);
+    expect(hasRecordedAppleReversalForTransaction('txn-child')).toBe(true);
+  });
+
+  it('does not treat a non-reversal notification as a reversal', () => {
+    seedPackNotification({
+      outerKey: 'outer-charge',
+      innerKey: 'inner-charge',
+      notificationType: 'ONE_TIME_CHARGE',
+      transactionId: 'txn-charge',
+    });
+    ingest('outer-charge', 'ONE_TIME_CHARGE');
+    expect(hasRecordedAppleReversalForTransaction('txn-charge')).toBe(false);
+  });
+
+  it('fails CLOSED while a legacy row still has no extracted identity', () => {
+    seedPackNotification({
+      outerKey: 'outer-legacy',
+      innerKey: 'inner-legacy',
+      notificationType: 'REFUND',
+      transactionId: 'txn-legacy',
+    });
+    ingest('outer-legacy', 'REFUND');
+    // Simulate a row ingested before migration 292 added the columns.
+    db.prepare(
+      `UPDATE apple_notification_inbox
+          SET reversal_transaction_id = NULL,
+              reversal_original_transaction_id = NULL,
+              reversal_indexed_at = NULL`,
+    ).run();
+
+    // The lookup backfills what it can; here the payload IS decodable, so the
+    // backlog clears and the answer is the true one.
+    expect(hasRecordedAppleReversalForTransaction('txn-legacy')).toBe(true);
+    expect(hasRecordedAppleReversalForTransaction('txn-other')).toBe(false);
+
+    const pending = db
+      .prepare('SELECT COUNT(*) AS n FROM apple_notification_inbox WHERE reversal_indexed_at IS NULL')
+      .get() as { n: number };
+    expect(pending.n).toBe(0);
+  });
+
+  it('stamps an undecodable legacy row resolved instead of failing every restore forever', () => {
+    seedPackNotification({
+      outerKey: 'outer-broken',
+      innerKey: 'inner-broken',
+      notificationType: 'REFUND',
+      transactionId: 'txn-broken',
+    });
+    ingest('outer-broken', 'REFUND');
+    db.prepare(
+      `UPDATE apple_notification_inbox
+          SET signed_payload = signed_payload, reversal_indexed_at = NULL`,
+    ).run();
+    jwsFixtures.delete('outer-broken');
+
+    const result = backfillAppleReversalIndex();
+    expect(result.remaining).toBe(0);
+    // Undecodable evidence proves nothing either way; an unrelated id stays clean.
+    expect(hasRecordedAppleReversalForTransaction('txn-unrelated')).toBe(false);
   });
 });

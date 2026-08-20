@@ -1,7 +1,9 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 /**
- * DB-backed operator control for the four hybrid kill switches (NH-0040).
+ * DB-backed operator control for the six hybrid kill switches (plan §5:
+ * NH-0040 shipped four; migration 293 added subscription_checkout and
+ * storefront).
  *
  * Layering contract:
  * - Env activation flags (`*_ENABLED`) remain the only way to turn a surface
@@ -29,14 +31,42 @@ export type HybridKillSwitchKey =
   | 'hybrid_credits'
   | 'apple_pack_fulfillment'
   | 'stripe_pack_fulfillment'
-  | 'cloud_reasoning_fallback';
+  | 'cloud_reasoning_fallback'
+  | 'subscription_checkout'
+  | 'storefront';
 
 export const HYBRID_KILL_SWITCH_KEYS: readonly HybridKillSwitchKey[] = Object.freeze([
   'hybrid_credits',
   'apple_pack_fulfillment',
   'stripe_pack_fulfillment',
   'cloud_reasoning_fallback',
+  'subscription_checkout',
+  'storefront',
 ]);
+
+/**
+ * The plan's six switches live in two tables (migration 293). The original
+ * four carry a CHECK constraint enumerating only themselves, and SQLite cannot
+ * widen a CHECK without rebuilding the table — a CONTRACT migration that would
+ * halt unattended CD. The two later switches therefore live in an additive
+ * table, and every read below unions the pair. This is a storage detail: to
+ * callers there is one flat set of six keys.
+ */
+const EXT_CONTROL_KEYS: readonly HybridKillSwitchKey[] = Object.freeze([
+  'subscription_checkout',
+  'storefront',
+]);
+
+const CONTROL_TABLES: readonly string[] = Object.freeze([
+  'hybrid_commerce_runtime_control',
+  'hybrid_commerce_runtime_control_ext',
+]);
+
+function controlTableFor(key: HybridKillSwitchKey): string {
+  return EXT_CONTROL_KEYS.includes(key)
+    ? 'hybrid_commerce_runtime_control_ext'
+    : 'hybrid_commerce_runtime_control';
+}
 
 export interface HybridKillSwitchState {
   controlKey: HybridKillSwitchKey;
@@ -76,10 +106,13 @@ function readEngagedKeys(): Set<HybridKillSwitchKey> {
   if (cache && now - cache.at < CACHE_TTL_MS) return cache.engaged;
   const engaged = new Set<HybridKillSwitchKey>();
   try {
-    const rows = getDb()
-      .prepare('SELECT control_key FROM hybrid_commerce_runtime_control WHERE engaged = 1')
-      .all() as Array<{ control_key: HybridKillSwitchKey }>;
-    for (const row of rows) engaged.add(row.control_key);
+    const db = getDb();
+    for (const table of CONTROL_TABLES) {
+      const rows = db
+        .prepare(`SELECT control_key FROM ${table} WHERE engaged = 1`)
+        .all() as Array<{ control_key: HybridKillSwitchKey }>;
+      for (const row of rows) engaged.add(row.control_key);
+    }
     cache = { at: now, engaged };
   } catch (err) {
     // Fail open to env-only behavior; never cache a failed read. Escalate
@@ -125,10 +158,26 @@ export function isStripePackFulfillmentActive(): boolean {
     && !isHybridKillSwitchEngaged('stripe_pack_fulfillment');
 }
 
+/**
+ * Subscription checkout has no activation flag — subscriptions are the base
+ * product, sellable whenever a price id is configured. These switches are
+ * therefore pure stop controls: engaged means stop, disengaged means normal.
+ */
+export function isSubscriptionCheckoutActive(): boolean {
+  return !isHybridKillSwitchEngaged('subscription_checkout')
+    && !isHybridKillSwitchEngaged('storefront');
+}
+
+/** Master stop for every paid surface: catalog listing and all checkout. */
+export function isStorefrontActive(): boolean {
+  return !isHybridKillSwitchEngaged('storefront');
+}
+
 export function listHybridKillSwitches(): HybridKillSwitchState[] {
-  const rows = getDb()
-    .prepare('SELECT * FROM hybrid_commerce_runtime_control ORDER BY control_key')
-    .all() as ControlRow[];
+  const db = getDb();
+  const rows = CONTROL_TABLES.flatMap((table) => (
+    db.prepare(`SELECT * FROM ${table}`).all() as ControlRow[]
+  )).sort((a, b) => a.control_key.localeCompare(b.control_key));
   return rows.map((row) => ({
     controlKey: row.control_key,
     engaged: row.engaged === 1,
@@ -161,8 +210,9 @@ export function setHybridKillSwitch(input: {
   }
   const db = getDb();
   const tx = db.transaction((): SetHybridKillSwitchResult => {
+    const table = controlTableFor(input.controlKey);
     const current = db
-      .prepare('SELECT * FROM hybrid_commerce_runtime_control WHERE control_key = ?')
+      .prepare(`SELECT * FROM ${table} WHERE control_key = ?`)
       .get(input.controlKey) as ControlRow | undefined;
     if (!current) return { kind: 'rejected', reason: 'control row missing; run migrations' };
     const nextEngaged = input.engaged ? 1 : 0;
@@ -180,7 +230,7 @@ export function setHybridKillSwitch(input: {
     }
     const updatedAt = new Date().toISOString();
     db.prepare(
-      `UPDATE hybrid_commerce_runtime_control
+      `UPDATE ${table}
        SET engaged = ?, reason = ?, actor_user_id = ?, updated_at = ?
        WHERE control_key = ?`,
     ).run(nextEngaged, reason, input.actorUserId, updatedAt, input.controlKey);

@@ -301,6 +301,8 @@ describe('first-container bootstrap baseline', () => {
         expect.objectContaining({ file: '289_hybrid_runtime_hardening.sql' }),
         expect.objectContaining({ file: '290_plan_longform_script_allowance.sql' }),
         expect.objectContaining({ file: '291_ai_credit_lot_reconciliation_cursor.sql' }),
+        expect.objectContaining({ file: '292_apple_reversal_transaction_index.sql' }),
+        expect.objectContaining({ file: '293_commerce_storefront_kill_switches.sql' }),
       ]);
     expect(baseline.databases.production.sha256)
       .not.toBe(baseline.databases.staging.sha256);

@@ -217,17 +217,11 @@ export async function createNexusPointsCheckoutSession(
   return { sessionId: session.id, checkoutUrl: session.url };
 }
 
-export async function processStripeNexusPointsWebhookEvent(rawBody: Buffer, signatureHeader: string): Promise<void> {
-  if (!isStripeNexusPointsConfigured()) {
-    throw new Error('STRIPE_NEXUS_POINTS_NOT_CONFIGURED');
-  }
-  const stripe = initializeStripeClient();
-  if (!stripe) {
-    throw new Error('STRIPE_NEXUS_POINTS_NOT_CONFIGURED');
-  }
-  const event = stripe.webhooks.constructEvent(rawBody, signatureHeader, config.stripe.webhookSecret);
-  await handleStripeNexusPointsEvent(event);
-}
+// Removed (QA6 P3): a second webhook entry point verified the Stripe
+// signature and dispatched straight into handleStripeNexusPointsEvent without
+// the livemode gate — the exact shape of the QA5 P0, kept alive only by its
+// own test. The single routed entry point is POST /webhooks/stripe
+// (src/api/routes/webhooks.ts), which gates livemode before any handler runs.
 
 export async function handleStripeNexusPointsEvent(event: any): Promise<boolean> {
   if (!config.stripe.nexusPoints.enabled) return false;

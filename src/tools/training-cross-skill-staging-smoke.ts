@@ -908,6 +908,7 @@ function fixtureFinanceContext(): FinanceMeshContext {
       period: 'monthly',
       status: 'active',
       provider: 'stripe',
+      currentPeriodStart: '2026-04-20T00:00:00.000Z',
       currentPeriodEnd: '2026-05-20T00:00:00.000Z',
       cancelAtPeriodEnd: false,
       isActive: true,

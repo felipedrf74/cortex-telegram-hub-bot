@@ -265,13 +265,23 @@ describe('ai-credit-admission', () => {
   it('anchors the included lot to a paid billing period when one exists', async () => {
     const { resolveMonthlyProvisioningPeriod } = await import('../../src/services/ai-credit-provisioning');
     // No subscription row: the calendar month anchors the period.
-    expect(resolveMonthlyProvisioningPeriod(40, NOW).periodKey).toBe('cal:2026-08');
+    const unsubscribed = resolveMonthlyProvisioningPeriod(40, NOW);
+    expect(unsubscribed.kind).toBe('resolved');
+    if (unsubscribed.kind !== 'resolved') throw new Error('unreachable');
+    expect(unsubscribed.period.periodKey).toBe('cal:2026-08');
 
-    db.prepare(`INSERT INTO subscriptions (user_id, plan, period, status, provider, current_period_end)
-      VALUES (71, 'pro', 'monthly', 'active', 'stripe', ?)`).run(PERIOD_END.toISOString());
+    // Anchored on the period START, which a mid-period plan change does not
+    // move (QA6 P1). Anchor-transition coverage lives in
+    // __tests__/services/ai-credit-provisioning.test.ts.
+    const periodStart = new Date('2026-08-01T00:00:00.000Z');
+    db.prepare(`INSERT INTO subscriptions (user_id, plan, period, status, provider, current_period_start, current_period_end)
+      VALUES (71, 'pro', 'monthly', 'active', 'stripe', ?, ?)`)
+      .run(periodStart.toISOString(), PERIOD_END.toISOString());
     const anchored = resolveMonthlyProvisioningPeriod(71, NOW);
-    expect(anchored.periodKey).toBe(`sub:${PERIOD_END.toISOString()}`);
-    expect(anchored.periodEnd.toISOString()).toBe(PERIOD_END.toISOString());
+    expect(anchored.kind).toBe('resolved');
+    if (anchored.kind !== 'resolved') throw new Error('unreachable');
+    expect(anchored.period.periodKey).toBe(`sub:${periodStart.toISOString()}`);
+    expect(anchored.period.periodEnd.toISOString()).toBe(PERIOD_END.toISOString());
   });
 
   it('exposes typed denial classes for callers', async () => {

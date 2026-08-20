@@ -24,6 +24,8 @@ vi.mock('../../src/services/operator-alerts', async (importOriginal) => ({
 
 import {
   HYBRID_KILL_SWITCH_KEYS,
+  isStorefrontActive,
+  isSubscriptionCheckoutActive,
   _resetHybridKillSwitchCacheForTests,
   isApplePackFulfillmentActive,
   isHybridKillSwitchEngaged,
@@ -49,6 +51,16 @@ function recreateControlTables(): void {
     INSERT INTO hybrid_commerce_runtime_control (control_key, engaged) VALUES
       ('hybrid_credits', 0), ('apple_pack_fulfillment', 0),
       ('stripe_pack_fulfillment', 0), ('cloud_reasoning_fallback', 0);
+    DROP TABLE IF EXISTS hybrid_commerce_runtime_control_ext;
+    CREATE TABLE hybrid_commerce_runtime_control_ext (
+      control_key TEXT PRIMARY KEY CHECK (control_key IN ('subscription_checkout', 'storefront')),
+      engaged INTEGER NOT NULL DEFAULT 0 CHECK (engaged IN (0, 1)),
+      reason TEXT NOT NULL DEFAULT 'migration_default_disengaged',
+      actor_user_id INTEGER,
+      updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
+    INSERT INTO hybrid_commerce_runtime_control_ext (control_key, engaged) VALUES
+      ('subscription_checkout', 0), ('storefront', 0);
     CREATE TABLE hybrid_commerce_control_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       control_key TEXT NOT NULL,
@@ -73,7 +85,7 @@ beforeEach(() => {
 });
 
 describe('hybrid-runtime-kill-switches', () => {
-  it('starts with all four switches disengaged', () => {
+  it('starts with all six switches disengaged', () => {
     const states = listHybridKillSwitches();
     expect(states.map((s) => s.controlKey).sort()).toEqual([...HYBRID_KILL_SWITCH_KEYS].sort());
     expect(states.every((s) => !s.engaged)).toBe(true);
@@ -165,5 +177,56 @@ describe('hybrid-runtime-kill-switches', () => {
     // …but a service flip invalidates immediately.
     _resetHybridKillSwitchCacheForTests();
     expect(isHybridKillSwitchEngaged('cloud_reasoning_fallback')).toBe(true);
+  });
+
+  it('exposes the plan\u2019s two later switches across the additive table (QA6)', () => {
+    // Storage detail: these live in a second table because widening the first
+    // table\u2019s CHECK would be a contract migration. Callers see one flat set.
+    expect(isSubscriptionCheckoutActive()).toBe(true);
+    expect(isStorefrontActive()).toBe(true);
+    expect(listHybridKillSwitches().map((s) => s.controlKey).sort())
+      .toEqual([...HYBRID_KILL_SWITCH_KEYS].sort());
+
+    expect(setHybridKillSwitch({
+      controlKey: 'subscription_checkout',
+      engaged: true,
+      actorUserId: 9,
+      reason: 'incident: pausing subscription sales',
+    }).kind).toBe('updated');
+    _resetHybridKillSwitchCacheForTests();
+
+    expect(isSubscriptionCheckoutActive()).toBe(false);
+    // Subscriptions stop; the storefront as a whole does not.
+    expect(isStorefrontActive()).toBe(true);
+    expect(testDb.prepare('SELECT engaged FROM hybrid_commerce_runtime_control_ext WHERE control_key = ?')
+      .get('subscription_checkout')).toEqual({ engaged: 1 });
+  });
+
+  it('storefront is the master stop: it also stops subscription checkout', () => {
+    setHybridKillSwitch({
+      controlKey: 'storefront',
+      engaged: true,
+      actorUserId: 9,
+      reason: 'incident: full storefront stop',
+    });
+    _resetHybridKillSwitchCacheForTests();
+
+    expect(isStorefrontActive()).toBe(false);
+    expect(isSubscriptionCheckoutActive()).toBe(false);
+  });
+
+  it('writes an audited event row for a switch in the additive table', () => {
+    setHybridKillSwitch({
+      controlKey: 'storefront',
+      engaged: true,
+      actorUserId: 11,
+      reason: 'incident: audited stop',
+    });
+    const events = testDb
+      .prepare("SELECT * FROM hybrid_commerce_control_events WHERE control_key = 'storefront'")
+      .all() as any[];
+    expect(events).toHaveLength(1);
+    expect(events[0].actor_user_id).toBe(11);
+    expect(logAuditMock).toHaveBeenCalled();
   });
 });
