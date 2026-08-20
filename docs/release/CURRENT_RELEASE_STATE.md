@@ -12,30 +12,32 @@
   chain and the authority, never a frozen head: read the active receipt from
   `sudo -n /usr/local/sbin/nexus-release-state-view` at audit time. Backup and
   receipt evidence: `sudo -n /usr/local/sbin/nexus-release-audit-evidence`.
-  Lineage: `3970fac7` (governance-halted by design on its config.ts delta,
-  owner-acked `d9ac4a92…`) → `c5a7ae67` → `e1c33aa8` → `eb851b1b` (QA4
-  remediation) → `202f318a` (env posture) → `a7fe09ce` (QA5 remediation,
-  halted + acked `84389eb5…`) → this release.
+  Lineage: `3970fac7` (halted, acked `d9ac4a92…`) → `c5a7ae67` → `e1c33aa8`
+  → `eb851b1b` (QA4 fix) → `202f318a` (env posture) → `a7fe09ce` (QA5 fix,
+  halted + acked `84389eb5…`) → `6de40b13` → `03a360ad` (QA6 fix, halted +
+  acked `616d5b83…`) → this release.
 - A `src/config.ts` delta halts unattended CD, and the owner ack alone never
   deploys that candidate — a fresh CD-eligible payload must follow it. Why,
   and the exact two-step:
   [`hybrid-commerce-qa-remediation-log.md`](hybrid-commerce-qa-remediation-log.md).
-- Adversarial QA rounds 4 and 5 (NH-0037) both returned NO-GO; every P0/P1 and
-  applicable P2 is closed in this release. Full findings and resolutions:
+- Adversarial QA rounds 4, 5 and 6 (NH-0037) each returned NO-GO; every P0/P1
+  and applicable P2 is closed in this release. Full findings and resolutions:
   [`hybrid-commerce-qa-remediation-log.md`](hybrid-commerce-qa-remediation-log.md).
 - **Round 5 P0-1 was live in production**: `STRIPE_SANDBOX_CHECKOUT_ALLOWED=true`
   disarmed the guard that stops a test-mode key minting real entitlements, and
   anonymous checkout defaulted open, so an unauthenticated visitor could mint a
   permanent Pro/Max entitlement with a Stripe test card. The hatch is now scoped
   to non-live production, webhook livemode fails closed there, and the
-  anonymous sunset defaults CLOSED. **Owner action: unset
-  `STRIPE_SANDBOX_CHECKOUT_ALLOWED` in the production env — this release
-  refuses to boot while it is set.**
-- Credit admission is now safe to enable: included monthly lots are provisioned
-  lazily (nothing minted them before, so enabling credits denied every paid AI
-  operation), an audited admin grant route exists, and startup refuses
-  credits-on with no registered grant path. Migrations 290 (plan-locked
-  long-form allowance) and 291 (reconciliation cursor) are backfill/expand.
+  anonymous sunset defaults CLOSED. The flag is unset in production and boot
+  refuses it there; round 6 re-verified all three layers at the runtime.
+- Credit admission is now safe to enable: included lots are provisioned lazily
+  and anchored to the billing period START, a read failure denies rather than
+  re-anchors, and the ledger supersedes so live included credit can never
+  exceed the plan allowance (round 6 P1). An audited admin grant route exists
+  and startup refuses credits-on with no registered grant path.
+- All six plan §5 kill switches now exist: 293 adds `subscription_checkout`
+  and `storefront` in an additive table, enforced at the shared checkout choke
+  point. Migrations 290–293 are all backfill/expand, predecessor-compatible.
 
 ## Production
 
@@ -73,8 +75,7 @@
 - Phase 7 hit a genuine classifier gate on the predecessor; the staging
   observation failure was recovered as hash-bound `failure_acknowledged`
   without converting to a pass, and classifier rollback passed. All seven
-  capability flags remain OFF; routing-gate evidence does not transfer
-  releases, and `3ac5ebbe` has no gate yet.
+  capability flags remain OFF; routing-gate evidence does not transfer.
 
 ## iOS / TestFlight
 
@@ -90,11 +91,10 @@
 
 ## Release Process
 
-The current default is unattended recovery-first deployment: protected-main
-selected CI authorizes hosted publication of the signed OCI payload and image
-pair, then the VPS poller runs staging, exact backup, migration, production
-observation, and recovery while publishing immutable receipts. The checkpoint
-remainder and explicit owner-promotion procedure above are PM2-era history,
-available only as the owner-authorized first-cutover fallback during the
-initial 14 stable days. Historical staging-receipt polling defect
-`3b275a72…` is closed, but its evidence is not a container release receipt.
+Unattended recovery-first deployment: protected-main CI authorizes hosted
+publication of the signed OCI payload and image pair, then the VPS poller runs
+staging, exact backup, migration, production observation, and recovery while
+publishing immutable receipts. The checkpoint remainder and owner-promotion
+procedure above are PM2-era history, available only as the owner-authorized
+first-cutover fallback. Historical staging-receipt polling defect `3b275a72…`
+is closed, but its evidence is not a container release receipt.
