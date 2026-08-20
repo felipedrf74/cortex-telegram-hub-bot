@@ -42,7 +42,11 @@ vi.mock('../../src/services/apple-jws-verifier', () => ({
     if (!payload) throw new Error(`unverifiable JWS: ${jws}`);
     return { header: { alg: 'ES256', x5c: ['stub'] }, payload };
   },
-  decodeAppleJwsPayload: (jws: string) => jwsFixtures.get(jws) ?? {},
+  decodeAppleJwsPayload: (jws: string) => {
+    const payload = jwsFixtures.get(jws);
+    if (!payload) throw new Error(`undecodable JWS: ${jws}`);
+    return payload;
+  },
 }));
 
 vi.mock('../../src/services/stripe-service', async (importOriginal) => {
@@ -66,8 +70,8 @@ import { createMigratedTestDatabase } from '../../src/testing/migrated-test-data
 import { getAiCreditWallet } from '../../src/services/ai-credit-ledger';
 import {
   backfillAppleReversalIndex,
-  hasRecordedAppleReversalForTransaction,
   ingestVerifiedAppleNotification,
+  lookupAppleReversalForTransaction,
   processPendingAppleNotifications,
   processStoredAppleNotification,
 } from '../../src/services/apple-notification-inbox';
@@ -106,6 +110,12 @@ function ingest(outerKey: string, notificationType = 'ONE_TIME_CHARGE') {
     environment: 'Production',
     signedPayload: outerKey,
     now: NOW,
+  });
+}
+
+function lookupWithOneBackfillPass(transactionId: string) {
+  return lookupAppleReversalForTransaction(transactionId, {
+    backfillBudget: { remainingPasses: 1 },
   });
 }
 
@@ -508,8 +518,39 @@ describe('reversal transaction index (QA6 P2)', () => {
       ingest(`outer-noise-${index}`, 'REFUND');
     }
 
-    expect(hasRecordedAppleReversalForTransaction('txn-victim')).toBe(true);
-    expect(hasRecordedAppleReversalForTransaction('txn-never-refunded')).toBe(false);
+    expect(lookupWithOneBackfillPass('txn-victim')).toEqual({ kind: 'recorded' });
+    expect(lookupWithOneBackfillPass('txn-never-refunded')).toEqual({ kind: 'clear' });
+  });
+
+  it('re-probes a match indexed by the bounded pass before reporting the remaining backlog', () => {
+    seedPackNotification({
+      outerKey: 'outer-first-batch-match',
+      innerKey: 'inner-first-batch-match',
+      notificationType: 'REFUND',
+      transactionId: 'txn-first-batch-match',
+    });
+    ingest('outer-first-batch-match', 'REFUND');
+    for (let index = 0; index < 500; index += 1) {
+      seedPackNotification({
+        outerKey: `outer-legacy-backlog-${index}`,
+        innerKey: `inner-legacy-backlog-${index}`,
+        notificationType: 'REFUND',
+        transactionId: `txn-legacy-backlog-${index}`,
+      });
+      ingest(`outer-legacy-backlog-${index}`, 'REFUND');
+    }
+    db.prepare(
+      `UPDATE apple_notification_inbox
+          SET reversal_transaction_id = NULL,
+              reversal_original_transaction_id = NULL,
+              reversal_indexed_at = NULL`,
+    ).run();
+
+    expect(lookupWithOneBackfillPass('txn-first-batch-match')).toEqual({ kind: 'recorded' });
+    expect(db.prepare(
+      `SELECT COUNT(*) AS n FROM apple_notification_inbox
+        WHERE reversal_indexed_at IS NULL`,
+    ).get()).toEqual({ n: 1 });
   });
 
   it('matches on the original transaction id as well as the transaction id', () => {
@@ -526,8 +567,8 @@ describe('reversal transaction index (QA6 P2)', () => {
     });
     ingest('outer-original', 'REVOKE');
 
-    expect(hasRecordedAppleReversalForTransaction('txn-parent')).toBe(true);
-    expect(hasRecordedAppleReversalForTransaction('txn-child')).toBe(true);
+    expect(lookupWithOneBackfillPass('txn-parent')).toEqual({ kind: 'recorded' });
+    expect(lookupWithOneBackfillPass('txn-child')).toEqual({ kind: 'recorded' });
   });
 
   it('does not treat a non-reversal notification as a reversal', () => {
@@ -538,7 +579,7 @@ describe('reversal transaction index (QA6 P2)', () => {
       transactionId: 'txn-charge',
     });
     ingest('outer-charge', 'ONE_TIME_CHARGE');
-    expect(hasRecordedAppleReversalForTransaction('txn-charge')).toBe(false);
+    expect(lookupWithOneBackfillPass('txn-charge')).toEqual({ kind: 'clear' });
   });
 
   it('fails CLOSED while a legacy row still has no extracted identity', () => {
@@ -559,8 +600,8 @@ describe('reversal transaction index (QA6 P2)', () => {
 
     // The lookup backfills what it can; here the payload IS decodable, so the
     // backlog clears and the answer is the true one.
-    expect(hasRecordedAppleReversalForTransaction('txn-legacy')).toBe(true);
-    expect(hasRecordedAppleReversalForTransaction('txn-other')).toBe(false);
+    expect(lookupWithOneBackfillPass('txn-legacy')).toEqual({ kind: 'recorded' });
+    expect(lookupWithOneBackfillPass('txn-other')).toEqual({ kind: 'clear' });
 
     const pending = db
       .prepare('SELECT COUNT(*) AS n FROM apple_notification_inbox WHERE reversal_indexed_at IS NULL')
@@ -568,7 +609,7 @@ describe('reversal transaction index (QA6 P2)', () => {
     expect(pending.n).toBe(0);
   });
 
-  it('stamps an undecodable legacy row resolved instead of failing every restore forever', () => {
+  it('keeps an undecodable legacy reversal unresolved and fails restoration closed', () => {
     seedPackNotification({
       outerKey: 'outer-broken',
       innerKey: 'inner-broken',
@@ -583,8 +624,156 @@ describe('reversal transaction index (QA6 P2)', () => {
     jwsFixtures.delete('outer-broken');
 
     const result = backfillAppleReversalIndex();
-    expect(result.remaining).toBe(0);
-    // Undecodable evidence proves nothing either way; an unrelated id stays clean.
-    expect(hasRecordedAppleReversalForTransaction('txn-unrelated')).toBe(false);
+    expect(result.hasRemaining).toBe(true);
+    // A durable REFUND/REVOKE row whose transaction identity cannot be read
+    // may be the transaction under restoration. It must block every clean
+    // verdict until an operator repairs or reindexes the evidence.
+    expect(lookupWithOneBackfillPass('txn-unrelated')).toEqual({
+      kind: 'unavailable',
+      reason: 'index_incomplete',
+    });
+    expect(db.prepare(
+      `SELECT COUNT(*) AS n FROM operator_alerts
+        WHERE dedupe_key = 'apple_reversal_index_incomplete'`,
+    ).get()).toEqual({ n: 1 });
+  });
+
+  it('leaves a newly ingested reversal unresolved when identity extraction fails', () => {
+    jwsFixtures.set('outer-ingest-broken', {
+      notificationType: 'REFUND',
+      notificationUUID: 'uuid-outer-ingest-broken',
+      data: { signedTransactionInfo: 'inner-ingest-broken', environment: 'Production' },
+    });
+    // The durable inbox must still store the already-verified outer payload,
+    // but a missing inner decode cannot be represented as a clean NULL index.
+    const stored = ingest('outer-ingest-broken', 'REFUND');
+    if (stored.kind !== 'stored') throw new Error('unreachable');
+
+    expect(db.prepare(
+      `SELECT reversal_transaction_id AS transactionId,
+              reversal_original_transaction_id AS originalTransactionId,
+              reversal_indexed_at AS indexedAt
+         FROM apple_notification_inbox WHERE id = ?`,
+    ).get(stored.row.id)).toEqual({ transactionId: null, originalTransactionId: null, indexedAt: null });
+    expect(lookupWithOneBackfillPass('txn-unrelated')).toEqual({
+      kind: 'unavailable',
+      reason: 'index_incomplete',
+    });
+  });
+
+  it('does not spend the bounded window on legacy non-reversal rows', () => {
+    const insert = db.prepare(`INSERT INTO apple_notification_inbox
+      (notification_uuid, notification_type, signed_payload, state, attempts, received_at)
+      VALUES (?, 'ONE_TIME_CHARGE', ?, 'processed', 1, '2026-08-18T00:00:00.000Z')`);
+    db.transaction(() => {
+      for (let index = 0; index < 600; index += 1) {
+        insert.run(`uuid-legacy-charge-${index}`, `legacy-charge-${index}`);
+      }
+    })();
+    seedPackNotification({
+      outerKey: 'outer-refund-after-charges',
+      innerKey: 'inner-refund-after-charges',
+      notificationType: 'REFUND',
+      transactionId: 'txn-refund-after-charges',
+    });
+    const target = ingest('outer-refund-after-charges', 'REFUND');
+    if (target.kind !== 'stored') throw new Error('unreachable');
+    db.prepare(`UPDATE apple_notification_inbox
+      SET reversal_transaction_id = NULL,
+          reversal_original_transaction_id = NULL,
+          reversal_indexed_at = NULL
+      WHERE id = ?`).run(target.row.id);
+
+    expect(lookupWithOneBackfillPass('txn-refund-after-charges')).toEqual({ kind: 'recorded' });
+  });
+
+  it('advances past a permanently undecodable head batch on the next pass', () => {
+    const insert = db.prepare(`INSERT INTO apple_notification_inbox
+      (notification_uuid, notification_type, signed_payload, state, attempts, received_at)
+      VALUES (?, 'REFUND', ?, 'failed', 5, '2026-08-18T00:00:00.000Z')`);
+    db.transaction(() => {
+      for (let index = 0; index < 500; index += 1) {
+        insert.run(`uuid-corrupt-head-${index}`, `corrupt-head-${index}`);
+      }
+    })();
+    seedPackNotification({
+      outerKey: 'outer-refund-after-corrupt-head',
+      innerKey: 'inner-refund-after-corrupt-head',
+      notificationType: 'REFUND',
+      transactionId: 'txn-refund-after-corrupt-head',
+    });
+    const target = ingest('outer-refund-after-corrupt-head', 'REFUND');
+    if (target.kind !== 'stored') throw new Error('unreachable');
+    db.prepare(`UPDATE apple_notification_inbox
+      SET reversal_transaction_id = NULL,
+          reversal_original_transaction_id = NULL,
+          reversal_indexed_at = NULL
+      WHERE id = ?`).run(target.row.id);
+
+    expect(lookupWithOneBackfillPass('txn-refund-after-corrupt-head')).toEqual({
+      kind: 'unavailable',
+      reason: 'index_incomplete',
+    });
+    expect(lookupWithOneBackfillPass('txn-refund-after-corrupt-head')).toEqual({ kind: 'recorded' });
+  });
+
+  it('repairs a readable predecessor-stamped reversal with both identities null', () => {
+    seedPackNotification({
+      outerKey: 'outer-predecessor-stamped-null',
+      innerKey: 'inner-predecessor-stamped-null',
+      notificationType: 'REFUND',
+      transactionId: 'txn-predecessor-stamped-null',
+    });
+    db.prepare(`INSERT INTO apple_notification_inbox
+      (notification_uuid, notification_type, signed_payload, state, attempts, received_at,
+       reversal_transaction_id, reversal_original_transaction_id, reversal_indexed_at)
+      VALUES ('uuid-predecessor-stamped-null', 'REFUND', 'outer-predecessor-stamped-null',
+              'processed', 1, '2026-08-18T00:00:00.000Z', NULL, NULL,
+              '2026-08-18T00:01:00.000Z')`)
+      .run();
+
+    expect(lookupWithOneBackfillPass('txn-predecessor-stamped-null')).toEqual({ kind: 'recorded' });
+  });
+
+  it('fails closed without auto-retrying a manually nulled progress counter', () => {
+    db.prepare(`INSERT INTO apple_notification_inbox
+      (notification_uuid, notification_type, signed_payload, state, attempts, received_at,
+       reversal_index_attempts)
+      VALUES ('uuid-null-progress', 'REVOKE', 'corrupt-null-progress', 'failed', 5,
+              '2026-08-18T00:00:00.000Z', NULL)`)
+      .run();
+
+    expect(lookupWithOneBackfillPass('txn-null-progress')).toEqual({
+      kind: 'unavailable',
+      reason: 'index_incomplete',
+    });
+    expect(db.prepare(`SELECT reversal_index_attempts AS attempts
+                         FROM apple_notification_inbox
+                        WHERE notification_uuid = 'uuid-null-progress'`).get())
+      .toEqual({ attempts: null });
+  });
+
+  it('drains readable reversal-index backlog from scheduled inbox maintenance', () => {
+    seedPackNotification({
+      outerKey: 'outer-scheduled-backfill',
+      innerKey: 'inner-scheduled-backfill',
+      notificationType: 'REFUND',
+      transactionId: 'txn-scheduled-backfill',
+    });
+    const target = ingest('outer-scheduled-backfill', 'REFUND');
+    if (target.kind !== 'stored') throw new Error('unreachable');
+    db.prepare(`UPDATE apple_notification_inbox
+      SET state = 'processed',
+          reversal_transaction_id = NULL,
+          reversal_original_transaction_id = NULL,
+          reversal_indexed_at = NULL
+      WHERE id = ?`).run(target.row.id);
+
+    processPendingAppleNotifications({ now: NOW });
+
+    expect(db.prepare(`SELECT reversal_transaction_id AS transactionId,
+                              reversal_indexed_at AS indexedAt
+                         FROM apple_notification_inbox WHERE id = ?`).get(target.row.id))
+      .toEqual({ transactionId: 'txn-scheduled-backfill', indexedAt: NOW.toISOString() });
   });
 });

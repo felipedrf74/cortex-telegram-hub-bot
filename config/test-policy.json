@@ -1336,6 +1336,26 @@
           }
         ],
         "reason": "QA6 P3: processStripeNexusPointsWebhookEvent was deleted because it verified the signature and dispatched WITHOUT the livemode gate — the shape of the QA5 P0, routed nowhere and kept alive only by this test. The idempotent-grant guarantee it covered now runs through the routed handler instead."
+      },
+      {
+        "test": "__tests__/services/apple-notification-inbox.test.ts",
+        "replacementTests": [
+          "__tests__/services/apple-notification-inbox.test.ts"
+        ],
+        "sources": [
+          "src/services/apple-notification-inbox.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/apple-notification-inbox.ts:202-207",
+            "anchor": "if (!resolved) {",
+            "behavior": "An undecodable Apple refund or revoke remains unresolved, increments only its bounded index-attempt counter, and never receives a clean timestamp or transaction identity.",
+            "replacementTest": "__tests__/services/apple-notification-inbox.test.ts",
+            "ownerTestNamePattern": "keeps an undecodable legacy reversal unresolved and fails restoration closed$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained inbox suite deliberately replaces the unsafe predecessor assertion that undecodable reversal evidence becomes clean with a stronger fail-closed, bounded-retry, operator-alerted contract."
       }
     ],
     "ownerTestMappings": [],
