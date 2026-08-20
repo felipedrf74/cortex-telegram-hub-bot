@@ -28,9 +28,11 @@ import { verifyAppleJws } from './apple-jws-verifier';
 import { resolveBillingCatalogItemByAppleProductId } from './billing-catalog';
 import { grantPurchasedAiCredits } from './ai-credit-ledger';
 import {
-  hasRecordedAppleReversalForTransaction,
+  lookupAppleReversalForTransaction,
   isSandboxGrantAllowed,
   MAX_CONSUMABLE_QUANTITY,
+  type AppleReversalBackfillBudget,
+  type AppleReversalLookupResult,
 } from './apple-notification-inbox';
 import { isApplePackFulfillmentActive } from './hybrid-runtime-kill-switches';
 import { resolveUserIdFromAppleAppAccountToken } from './stripe-service';
@@ -48,6 +50,7 @@ export type ApplePackRestorationOutcome =
   | 'wrong_account'
   | 'environment_refused'
   | 'revoked'
+  | 'reversal_check_unavailable'
   | 'invalid_transaction'
   | 'grant_rejected';
 
@@ -81,13 +84,25 @@ export function restoreApplePackTransactions(input: {
   }
 
   const results: ApplePackRestorationItemResult[] = [];
+  // A request may contain up to eight transactions. Legacy compatibility
+  // backfill is bounded but non-trivial, so allow exactly one pass for the
+  // whole request; every later item uses the indexed snapshot and fails
+  // closed if a backlog remains.
+  const backfillBudget: AppleReversalBackfillBudget = { remainingPasses: 1 };
+  const lookupReversal = (transactionId: string): AppleReversalLookupResult => {
+    return lookupAppleReversalForTransaction(transactionId, { backfillBudget });
+  };
   for (const jws of raw as string[]) {
-    results.push(restoreOne(input.userId, jws));
+    results.push(restoreOne(input.userId, jws, lookupReversal));
   }
   return { kind: 'processed', results };
 }
 
-function restoreOne(userId: number, jws: string): ApplePackRestorationItemResult {
+function restoreOne(
+  userId: number,
+  jws: string,
+  lookupReversal: (transactionId: string) => AppleReversalLookupResult,
+): ApplePackRestorationItemResult {
   let inner: Record<string, any>;
   try {
     inner = verifyAppleJws(jws, { requireX5c: true }).payload as Record<string, any>;
@@ -140,12 +155,24 @@ function restoreOne(userId: number, jws: string): ApplePackRestorationItemResult
   // cached it. Apple's own refund notice may have arrived since — including
   // one that failed processing and revoked nothing — so consult the durable
   // inbox before minting.
-  if (hasRecordedAppleReversalForTransaction(transactionId)) {
+  const reversal = lookupReversal(transactionId);
+  if (reversal.kind === 'recorded') {
     logger.warn(
       { userId, catalogItemId: packItem.id },
       'apple-pack-restoration: refusing a transaction with a recorded reversal',
     );
     return { outcome: 'revoked', catalogItemId: packItem.id, transactionId };
+  }
+  if (reversal.kind === 'unavailable') {
+    logger.error(
+      { userId, catalogItemId: packItem.id, reason: reversal.reason },
+      'apple-pack-restoration: reversal evidence unavailable; refusing to grant',
+    );
+    return {
+      outcome: 'reversal_check_unavailable',
+      catalogItemId: packItem.id,
+      transactionId,
+    };
   }
 
   const granted = grantPurchasedAiCredits({

@@ -35,6 +35,7 @@ import {
 } from './ai-credit-ledger';
 
 const MAX_PROCESS_ATTEMPTS = 5;
+const MAX_REVERSAL_INDEX_ATTEMPTS = 3;
 const LAST_ERROR_MAX_LENGTH = 300;
 export const MAX_CONSUMABLE_QUANTITY = 100;
 
@@ -74,51 +75,202 @@ export function readReversalTransactionIds(inner: unknown): ReversalTransactionI
 /**
  * Resolve the reversal identity of rows ingested before migration 292 added
  * the indexed columns. Bounded per call so a scheduled pass stays cheap;
- * returns how many rows are still unresolved afterwards.
+ * reports whether unresolved/retryable evidence remains afterwards.
  *
- * Rows whose payload cannot be decoded are stamped with NULL ids rather than
- * retried forever: they are unusable as reversal evidence either way, and
- * leaving them unstamped would fail every restore closed permanently.
+ * Reversal rows whose payload cannot be decoded remain unresolved. They may
+ * be the only durable evidence that a transaction was refunded, so stamping
+ * them with NULL ids would turn an unknown into a false clean verdict. The
+ * restore path fails closed until an operator repairs or reindexes the row.
  */
-export function backfillAppleReversalIndex(limit = 500): { processed: number; remaining: number } {
-  const db = getDb();
-  const rows = db
-    .prepare(
-      `SELECT id, signed_payload AS signedPayload, notification_type AS notificationType
-         FROM apple_notification_inbox
-        WHERE reversal_indexed_at IS NULL
-        ORDER BY id
-        LIMIT ?`,
-    )
-    .all(Math.max(1, limit)) as Array<{ id: number; signedPayload: string; notificationType: string }>;
-  const stamp = db.prepare(
-    `UPDATE apple_notification_inbox
-        SET reversal_transaction_id = ?, reversal_original_transaction_id = ?, reversal_indexed_at = ?
-      WHERE id = ?`,
-  );
-  const nowIso = new Date().toISOString();
-  for (const row of rows) {
-    let ids: ReversalTransactionIds = { transactionId: null, originalTransactionId: null };
-    if ((REVERSAL_NOTIFICATION_TYPES as readonly string[]).includes(row.notificationType)) {
-      try {
-        const outer = decodeAppleJwsPayload<any>(String(row.signedPayload ?? ''));
-        const innerJws = outer?.data?.signedTransactionInfo;
-        if (typeof innerJws === 'string') ids = readReversalTransactionIds(decodeAppleJwsPayload<any>(innerJws));
-      } catch {
-        // Undecodable row: stamp it resolved with null ids (see docblock).
-      }
+export interface AppleReversalBackfillResult {
+  scanned: number;
+  processed: number;
+  failed: number;
+  hasRemaining: boolean;
+  hasRetryableRemaining: boolean;
+}
+
+interface AppleReversalBackfillRow {
+  id: number;
+  signedPayload: string;
+  indexAttempts: number;
+}
+
+const UNRESOLVED_REVERSAL_BUCKET_PREDICATES = [
+  'reversal_indexed_at IS NULL',
+  '(reversal_transaction_id IS NULL AND reversal_original_transaction_id IS NULL)',
+] as const;
+
+/**
+ * Existence-only probe across four indexed buckets (REFUND/REVOKE × timestamp
+ * missing/identity missing). It never counts or sorts the retained corpus.
+ */
+function hasUnresolvedAppleReversalEvidence(
+  db: ReturnType<typeof getDb>,
+  retryableOnly = false,
+): boolean {
+  for (const notificationType of REVERSAL_NOTIFICATION_TYPES) {
+    for (const predicate of UNRESOLVED_REVERSAL_BUCKET_PREDICATES) {
+      const retryPredicate = retryableOnly
+        ? 'AND reversal_index_attempts < ?'
+        : '';
+      const statement = db.prepare(
+        `SELECT 1 FROM apple_notification_inbox
+          WHERE notification_type = ?
+            AND ${predicate}
+            ${retryPredicate}
+          LIMIT 1`,
+      );
+      const hit = retryableOnly
+        ? statement.get(notificationType, MAX_REVERSAL_INDEX_ATTEMPTS)
+        : statement.get(notificationType);
+      if (hit) return true;
     }
-    stamp.run(ids.transactionId, ids.originalTransactionId, nowIso, row.id);
   }
-  const remaining = (db
-    .prepare('SELECT COUNT(*) AS n FROM apple_notification_inbox WHERE reversal_indexed_at IS NULL')
-    .get() as { n: number }).n;
-  return { processed: rows.length, remaining };
+  return false;
 }
 
 /**
- * True when the durable inbox already holds an Apple-signed REFUND/REVOKE for
- * this transaction, in ANY state (QA5 P2 restore-refund-window-open).
+ * Read at most four fixed-size index windows, deduplicate their overlap, then
+ * decode no more than `limit` rows. Separate exact-type queries let SQLite use
+ * the attempt-order suffix of migration 294's plain indexes without a temp
+ * sort across the full retained corpus.
+ */
+function selectDueAppleReversalBackfillRows(
+  db: ReturnType<typeof getDb>,
+  limit: number,
+): AppleReversalBackfillRow[] {
+  const safeLimit = Math.max(1, Math.min(limit, 500));
+  const candidates = new Map<number, AppleReversalBackfillRow>();
+  for (const notificationType of REVERSAL_NOTIFICATION_TYPES) {
+    for (const predicate of UNRESOLVED_REVERSAL_BUCKET_PREDICATES) {
+      const rows = db.prepare(
+        `SELECT id,
+                signed_payload AS signedPayload,
+                reversal_index_attempts AS indexAttempts
+           FROM apple_notification_inbox
+          WHERE notification_type = ?
+            AND ${predicate}
+            AND reversal_index_attempts < ?
+          ORDER BY reversal_index_attempts ASC, id ASC
+          LIMIT ?`,
+      ).all(notificationType, MAX_REVERSAL_INDEX_ATTEMPTS, safeLimit) as AppleReversalBackfillRow[];
+      for (const row of rows) candidates.set(row.id, row);
+    }
+  }
+  return [...candidates.values()]
+    .sort((left, right) => left.indexAttempts - right.indexAttempts || left.id - right.id)
+    .slice(0, safeLimit);
+}
+
+export function backfillAppleReversalIndex(
+  limit = 500,
+  now = new Date(),
+): AppleReversalBackfillResult {
+  const db = getDb();
+  const rows = selectDueAppleReversalBackfillRows(db, limit);
+  const stamp = db.prepare(
+    `UPDATE apple_notification_inbox
+        SET reversal_transaction_id = ?,
+            reversal_original_transaction_id = ?,
+            reversal_indexed_at = ?,
+            reversal_index_attempts = reversal_index_attempts + 1
+      WHERE id = ?`,
+  );
+  const recordFailure = db.prepare(
+    `UPDATE apple_notification_inbox
+        SET reversal_index_attempts = reversal_index_attempts + 1
+      WHERE id = ?`,
+  );
+  const nowIso = now.toISOString();
+  let processed = 0;
+  const failedInboxIds: number[] = [];
+  for (const row of rows) {
+    let ids: ReversalTransactionIds = { transactionId: null, originalTransactionId: null };
+    let resolved = false;
+    try {
+      const outer = decodeAppleJwsPayload<any>(String(row.signedPayload ?? ''));
+      const innerJws = outer?.data?.signedTransactionInfo;
+      if (typeof innerJws === 'string') {
+        ids = readReversalTransactionIds(decodeAppleJwsPayload<any>(innerJws));
+        resolved = ids.transactionId !== null || ids.originalTransactionId !== null;
+      }
+    } catch {
+      // Aggregate below. Logging every corrupt row let one restore request
+      // emit hundreds of errors while still returning one bounded outcome.
+    }
+    if (!resolved) {
+      recordFailure.run(row.id);
+      failedInboxIds.push(row.id);
+      continue;
+    }
+    stamp.run(ids.transactionId, ids.originalTransactionId, nowIso, row.id);
+    processed += 1;
+  }
+  const hasRemaining = hasUnresolvedAppleReversalEvidence(db);
+  const hasRetryableRemaining = hasUnresolvedAppleReversalEvidence(db, true);
+  const backfillSummary = {
+    scanned: rows.length,
+    processed,
+    failed: failedInboxIds.length,
+    hasRemaining,
+    hasRetryableRemaining,
+    firstFailedInboxId: failedInboxIds[0] ?? null,
+  };
+  if (failedInboxIds.length > 0) {
+    logger.error(
+      backfillSummary,
+      'apple-notification-inbox: reversal index remains incomplete; restoration stays fail-closed',
+    );
+    recordOperatorAlert({
+      source: 'apple_notifications',
+      severity: 'critical',
+      dedupeKey: 'apple_reversal_index_incomplete',
+      title: 'Apple reversal index is incomplete',
+      detail: 'Pack restoration is fail-closed until legacy reversal identities are fully indexed or repaired.',
+      suspectedArea: 'billing',
+      userImpact: 'apple_pack_restoration_blocked',
+      metadata: backfillSummary,
+    });
+  } else if (hasRetryableRemaining) {
+    logger.warn(
+      backfillSummary,
+      'apple-notification-inbox: bounded reversal-index pass left a backlog; restoration stays fail-closed',
+    );
+  }
+  return {
+    scanned: rows.length,
+    processed,
+    failed: failedInboxIds.length,
+    hasRemaining,
+    hasRetryableRemaining,
+  };
+}
+
+/**
+ * Result of checking the durable inbox for an Apple-signed REFUND/REVOKE.
+ * `unavailable` is deliberately distinct from `recorded`: both stop a grant,
+ * but only signed evidence matching this transaction may be reported as a
+ * refund/revocation to the caller.
+ */
+export type AppleReversalLookupResult =
+  | { kind: 'recorded' }
+  | { kind: 'clear' }
+  | { kind: 'unavailable'; reason: 'invalid_transaction_id' | 'index_incomplete' | 'lookup_failed' };
+
+export interface AppleReversalBackfillBudget {
+  remainingPasses: number;
+}
+
+export interface AppleReversalLookupOptions {
+  /** Shared mutable budget; decremented only when unresolved work runs. */
+  backfillBudget: AppleReversalBackfillBudget;
+}
+
+/**
+ * Check whether the durable inbox already holds an Apple-signed
+ * REFUND/REVOKE for this transaction, in ANY state (QA5 P2
+ * restore-refund-window-open).
  *
  * The restoration endpoint verifies only the JWS the client submits, so a user
  * who cached a transaction JWS before refunding could replay it and mint
@@ -131,9 +283,12 @@ export function backfillAppleReversalIndex(limit = 500): { processed: number; re
  * became silently replayable. This version answers from the columns extracted
  * at ingest, and refuses to answer "clean" while ANY row is still unresolved.
  */
-export function hasRecordedAppleReversalForTransaction(transactionId: string): boolean {
+export function lookupAppleReversalForTransaction(
+  transactionId: string,
+  options: AppleReversalLookupOptions,
+): AppleReversalLookupResult {
   const id = String(transactionId || '').trim();
-  if (!id) return false;
+  if (!id) return { kind: 'unavailable', reason: 'invalid_transaction_id' };
   try {
     const db = getDb();
     const hit = db
@@ -144,35 +299,20 @@ export function hasRecordedAppleReversalForTransaction(transactionId: string): b
           LIMIT 1`,
       )
       .get(id, id);
-    if (hit) return true;
+    if (hit) return { kind: 'recorded' };
 
     // A clean verdict is only trustworthy once every reversal row has an
     // extracted identity. Resolve what is left, then fail CLOSED if the
     // backlog outlives this call rather than reporting a false clean.
-    const unresolved = (db
-      .prepare(
-        `SELECT COUNT(*) AS n FROM apple_notification_inbox
-          WHERE reversal_indexed_at IS NULL
-            AND notification_type IN ('REFUND', 'REVOKE')`,
-      )
-      .get() as { n: number }).n;
-    if (unresolved === 0) return false;
+    if (!hasUnresolvedAppleReversalEvidence(db)) return { kind: 'clear' };
 
-    backfillAppleReversalIndex();
-    const stillUnresolved = (db
-      .prepare(
-        `SELECT COUNT(*) AS n FROM apple_notification_inbox
-          WHERE reversal_indexed_at IS NULL
-            AND notification_type IN ('REFUND', 'REVOKE')`,
-      )
-      .get() as { n: number }).n;
-    if (stillUnresolved > 0) {
-      logger.error(
-        { transactionId: id, unresolved: stillUnresolved },
-        'apple-notification-inbox: reversal index incomplete; refusing to treat as clean',
-      );
-      return true;
+    const mayBackfill = options.backfillBudget.remainingPasses > 0;
+    if (mayBackfill) {
+      options.backfillBudget.remainingPasses -= 1;
+      backfillAppleReversalIndex();
     }
+    // Re-probe BEFORE inspecting the remaining backlog. The bounded pass may
+    // have indexed this exact transaction even when row 501+ is still pending.
     const retry = db
       .prepare(
         `SELECT 1 FROM apple_notification_inbox
@@ -181,12 +321,15 @@ export function hasRecordedAppleReversalForTransaction(transactionId: string): b
           LIMIT 1`,
       )
       .get(id, id);
-    return !!retry;
+    if (retry) return { kind: 'recorded' };
+    return hasUnresolvedAppleReversalEvidence(db)
+      ? { kind: 'unavailable', reason: 'index_incomplete' }
+      : { kind: 'clear' };
   } catch (err) {
     // Fail CLOSED: if the reversal record cannot be read, do not mint credit
     // on a transaction that may already be refunded.
     logger.error({ err, transactionId: id }, 'apple-notification-inbox: reversal lookup failed; refusing to treat as clean');
-    return true;
+    return { kind: 'unavailable', reason: 'lookup_failed' };
   }
 }
 
@@ -281,6 +424,7 @@ export function ingestVerifiedAppleNotification(input: {
 }): IngestAppleNotificationResult {
   const db = getDb();
   const now = input.now ?? new Date();
+  const isReversal = (REVERSAL_NOTIFICATION_TYPES as readonly string[]).includes(input.notificationType);
   // Best-effort product identity at ingest (QA3 P2-11): the retry selector
   // needs it in SQL. A malformed inner payload stores NULL and never blocks
   // durable ingestion — full verification still happens at processing time.
@@ -289,6 +433,7 @@ export function ingestVerifiedAppleNotification(input: {
   // their transaction ids in indexed columns so the restore path can probe
   // them directly instead of decoding a capped window of stored JWS.
   let reversalIds: ReversalTransactionIds = { transactionId: null, originalTransactionId: null };
+  let reversalIndexResolved = !isReversal;
   try {
     const outer = verifyAppleJws(input.signedPayload, { requireX5c: false }).payload as Record<string, any>;
     const innerJws = outer?.data?.signedTransactionInfo;
@@ -296,11 +441,13 @@ export function ingestVerifiedAppleNotification(input: {
       const inner = verifyAppleJws(innerJws, { requireX5c: false }).payload as Record<string, any>;
       ingestProductId = typeof inner.productId === 'string' && inner.productId ? inner.productId : null;
       reversalIds = readReversalTransactionIds(inner);
+      reversalIndexResolved = !isReversal
+        || reversalIds.transactionId !== null
+        || reversalIds.originalTransactionId !== null;
     }
   } catch {
     ingestProductId = null;
   }
-  const isReversal = (REVERSAL_NOTIFICATION_TYPES as readonly string[]).includes(input.notificationType);
   const tx = db.transaction((): IngestAppleNotificationResult => {
     const existing = db
       .prepare('SELECT * FROM apple_notification_inbox WHERE notification_uuid = ?')
@@ -324,9 +471,10 @@ export function ingestVerifiedAppleNotification(input: {
         ingestProductId,
         isReversal ? reversalIds.transactionId : null,
         isReversal ? reversalIds.originalTransactionId : null,
-        // Stamped for every row: a non-reversal row needs no extraction, so
-        // marking it resolved keeps the backfill sweep bounded to real work.
-        now.toISOString(),
+        // A non-reversal needs no extraction. A reversal is resolved only
+        // when at least one transaction identity was decoded; otherwise it
+        // must remain in the fail-closed backlog.
+        reversalIndexResolved ? now.toISOString() : null,
       );
     const row = getRawRow(Number(inserted.lastInsertRowid));
     if (!row) throw new Error('apple-notification-inbox: insert readback failed');
@@ -557,6 +705,14 @@ export function processPendingAppleNotifications(input: { limit?: number; now?: 
 } {
   const db = getDb();
   const now = input.now ?? new Date();
+  // The existing 15-minute Apple inbox reconciliation is also the durable
+  // drain for migration-292 reversal identities. A request can still repair
+  // one batch immediately, but correctness and eventual availability do not
+  // depend on users repeatedly restoring the same transaction.
+  const reversalBackfill = backfillAppleReversalIndex(500, now);
+  if (reversalBackfill.processed > 0) {
+    logger.info(reversalBackfill, 'Apple reversal index backfill pass');
+  }
   // Deferred pack rows keep attempts at 0 forever while their kill switch is
   // off. Selecting them by received_at would park them permanently at the head
   // of every pass and starve retryable subscription notifications behind them,
