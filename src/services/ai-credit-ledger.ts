@@ -591,10 +591,26 @@ function insertLot(input: {
   return mapLot(lot);
 }
 
+/** Marker written to `revoke_reason` when a period change supersedes a lot. */
+export const SUPERSEDED_BY_PERIOD_CHANGE = 'superseded_by_period_change' as const;
+
 /**
  * Grant the plan's included monthly credits for one billing period, exactly
  * once per (user, period). Included credits expire at period end and never
  * roll over.
+ *
+ * Ledger invariant (QA6 P1): a user has AT MOST ONE live included lot, and it
+ * carries exactly the plan allowance. When a grant arrives under a different
+ * period key while an included lot is still live — a renewal, or a stopgap
+ * calendar lot being replaced by the real billing period — the old lot is
+ * SUPERSEDED inside this same transaction rather than stacked beside the new
+ * one. Callers keep period keys stable (see `ai-credit-provisioning`); this
+ * is the structural backstop that holds even if a key is wrong, so no key bug
+ * can ever put more than one allowance of included credit in a wallet.
+ *
+ * Superseding revokes rather than deletes: the lot row, its grant, and every
+ * capture taken against it stay on the append-only ledger, carrying
+ * `revoke_reason = 'superseded_by_period_change'` for the operator.
  */
 export function grantMonthlyAiCredits(input: {
   userId: number;
@@ -617,15 +633,43 @@ export function grantMonthlyAiCredits(input: {
     if (policy.monthlyCredits <= 0) {
       return { kind: 'rejected', reason: `plan ${input.plan} grants no monthly AI credits` };
     }
+    // Supersede every OTHER live included lot before minting this period's.
+    // Plural on purpose: it also self-heals a wallet that a previous defect
+    // left holding more than one.
+    const nowIso = toIso(now);
+    const superseded = db
+      .prepare(
+        `SELECT id FROM ai_credit_lots
+          WHERE user_id = ? AND source_kind = 'subscription_period'
+            AND source_ref <> ? AND status = 'active'
+            AND (expires_at IS NULL OR expires_at > ?)`,
+      )
+      .all(input.userId, input.periodKey, nowIso) as Array<{ id: number }>;
+    for (const row of superseded) {
+      db.prepare(
+        `UPDATE ai_credit_lots SET status = 'revoked', revoked_at = ?, revoke_reason = ? WHERE id = ?`,
+      ).run(nowIso, SUPERSEDED_BY_PERIOD_CHANGE, row.id);
+    }
     const lot = insertLot({
       userId: input.userId,
       lotType: 'monthly',
       credits: policy.monthlyCredits,
-      grantedAt: toIso(now),
+      grantedAt: nowIso,
       expiresAt: toIso(input.periodEnd),
       sourceKind: 'subscription_period',
       sourceRef: input.periodKey,
     });
+    if (superseded.length > 0) {
+      logger.info(
+        {
+          userId: input.userId,
+          plan: input.plan,
+          periodKey: input.periodKey,
+          supersededLotIds: superseded.map((row) => row.id),
+        },
+        'ai-credit-ledger: superseded prior included lot(s) on period change',
+      );
+    }
     return { kind: 'granted', lot };
   });
   return tx.immediate();

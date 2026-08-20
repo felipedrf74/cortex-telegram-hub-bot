@@ -82,7 +82,6 @@ import {
   createNexusPointsCheckoutSession,
   handleStripeNexusPointsEvent,
   isStripeNexusPointsIdempotencyConflictError,
-  processStripeNexusPointsWebhookEvent,
   resolvePackageIdForStripePriceId,
 } from '../../src/services/stripe-nexus-points-service';
 
@@ -341,11 +340,15 @@ describe('stripe-nexus-points-service', () => {
     expect(resolvePackageIdForStripePriceId('price_unknown')).toBeNull();
   });
 
-  it('processes signed paid checkout webhooks and grants points idempotently', async () => {
-    await processStripeNexusPointsWebhookEvent(Buffer.from('{}'), 'sig_ok');
-    await processStripeNexusPointsWebhookEvent(Buffer.from('{}'), 'sig_ok');
+  it('processes paid checkout webhooks and grants points idempotently', async () => {
+    // Driven through the routed handler: the standalone
+    // processStripeNexusPointsWebhookEvent wrapper was removed in QA6 P3
+    // because it dispatched without the livemode gate that
+    // POST /webhooks/stripe applies before calling this handler.
+    const event = { type: 'checkout.session.completed', data: { object: paidSession() } };
+    await handleStripeNexusPointsEvent(event);
+    await handleStripeNexusPointsEvent(event);
 
-    expect(hoisted.stripeConstructEvent).toHaveBeenCalledWith(Buffer.from('{}'), 'sig_ok', 'whsec_points');
     const rows = testDb.prepare('SELECT provider, provider_transaction_id, product_id, metadata_json FROM nexus_point_credits').all() as any[];
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({

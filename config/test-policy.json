@@ -20,7 +20,9 @@
     },
     "evaluate": {
       "description": "Subjective evaluation files excluded from deterministic correctness.",
-      "dispositions": ["eval"]
+      "dispositions": [
+        "eval"
+      ]
     }
   },
   "timingExceptions": [],
@@ -82,42 +84,60 @@
         "owner": "test-infrastructure",
         "reason": "Legacy database facade baseline is ratcheted while extracted migration behavior remains independently governed.",
         "expires": "2026-08-31",
-        "minimum": { "lines": 25.28, "branches": 26.08 }
+        "minimum": {
+          "lines": 25.28,
+          "branches": 26.08
+        }
       },
       {
         "file": "src/services/gemini-provider.ts",
         "owner": "provider-platform",
         "reason": "Preserve the observed provider fallback baseline while focused provider contracts close remaining branches.",
         "expires": "2026-09-30",
-        "minimum": { "lines": 88.42, "branches": 67.5 }
+        "minimum": {
+          "lines": 88.42,
+          "branches": 67.5
+        }
       },
       {
         "file": "src/services/training-exercise-media-manifest.ts",
         "owner": "training-platform",
         "reason": "Preserve the generated catalog compatibility baseline while malformed cases move into the focused catalog corpus.",
         "expires": "2026-09-30",
-        "minimum": { "lines": 83.88, "branches": 72.06 }
+        "minimum": {
+          "lines": 83.88,
+          "branches": 72.06
+        }
       },
       {
         "file": "src/services/scheduler.ts",
         "owner": "agent-runtime",
         "reason": "Ratcheted legacy scheduler coverage remains while jobs migrate to manifest adapters.",
         "expires": "2026-09-30",
-        "minimum": { "lines": 53.64, "branches": 38.79 }
+        "minimum": {
+          "lines": 53.64,
+          "branches": 38.79
+        }
       },
       {
         "file": "src/services/cross-agent-learning/content-mesh-context.ts",
         "owner": "agent-runtime",
         "reason": "Preserve the inherited content adapter baseline while focused scheduling and fallback contracts replace duplicates.",
         "expires": "2026-09-30",
-        "minimum": { "lines": 80, "branches": 22.72 }
+        "minimum": {
+          "lines": 80,
+          "branches": 22.72
+        }
       },
       {
         "file": "src/services/cross-agent-learning/signal-learning.ts",
         "owner": "agent-runtime",
         "reason": "Preserve the signal adapter baseline while focused tenant and provenance contracts close remaining branches.",
         "expires": "2026-09-30",
-        "minimum": { "lines": 88.23, "branches": 63.96 }
+        "minimum": {
+          "lines": 88.23,
+          "branches": 63.96
+        }
       }
     ]
   },
@@ -1050,7 +1070,7 @@
         ],
         "mutationTargets": [
           {
-          "pattern": "scripts/lib/static-test-dependency-map.mjs:220-223",
+            "pattern": "scripts/lib/static-test-dependency-map.mjs:220-223",
             "anchor": "nonLiteralImporters.has(seed)",
             "behavior": "The retained static selector reports unresolved or non-literal production topology for fail-closed group classification.",
             "replacementTest": "__tests__/scripts/static-test-dependency-map.test.ts",
@@ -1230,7 +1250,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/stripe-service.ts:555-555",
+            "pattern": "src/services/stripe-service.ts:591-591",
             "anchor": "reason === 'refund' && charge?.refunded !== true",
             "behavior": "A refund reversal revokes the originating credit lot only when the charge is fully refunded; a partial refund must not delete credits the user still paid for.",
             "replacementTest": "__tests__/services/stripe-pack-fulfillment.test.ts",
@@ -1238,7 +1258,7 @@
             "minimumMutants": 1
           },
           {
-            "pattern": "src/services/stripe-service.ts:560-560",
+            "pattern": "src/services/stripe-service.ts:596-596",
             "anchor": "return false",
             "behavior": "A partial refund exits without revoking, leaving the lot intact for reconciliation rather than reporting a successful reversal.",
             "replacementTest": "__tests__/services/stripe-pack-fulfillment.test.ts",
@@ -1247,6 +1267,75 @@
           }
         ],
         "reason": "Hostile QA P2-10 tightened reversal semantics: the bare revokes-on-refund assertions were replaced by full-refund-only revocation plus a partial-refund-intact guarantee owned by the retained suite."
+      },
+      {
+        "test": "__tests__/services/ai-credit-admission.test.ts",
+        "replacementTests": [
+          "__tests__/services/ai-credit-admission.test.ts",
+          "__tests__/services/ai-credit-provisioning.test.ts"
+        ],
+        "sources": [
+          "src/services/ai-credit-provisioning.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/ai-credit-provisioning.ts:94-94",
+            "anchor": "return { kind: 'unavailable' };",
+            "behavior": "A subscription read failure denies provisioning instead of re-anchoring to the calendar month, so one transient read error cannot mint a second included lot for a period the user was already granted.",
+            "replacementTest": "__tests__/services/ai-credit-provisioning.test.ts",
+            "ownerTestNamePattern": "transient subscription read failure grants nothing instead of re-anchoring$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "QA6 P1: the admission suite's inline anchor-selection assertions were replaced by a dedicated provisioning suite covering anchor TRANSITIONS — the read-failure, late-renewal and mid-period-upgrade paths where the double-grant actually lived."
+      },
+      {
+        "test": "__tests__/services/apple-jws-leaf-policy.test.ts",
+        "replacementTests": [
+          "__tests__/services/apple-jws-leaf-policy.test.ts"
+        ],
+        "sources": [
+          "src/services/apple-jws-verifier.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/apple-jws-verifier.ts:129-134",
+            "anchor": "const certificate = readDerNode(raw, 0);",
+            "behavior": "The App Store marker OID is located by walking the certificate's parsed DER structure, and any malformed or non-certificate input reports no marker rather than passing the check.",
+            "replacementTest": "__tests__/services/apple-jws-leaf-policy.test.ts",
+            "ownerTestNamePattern": "refuses a buffer that is not a certificate, even if it contains the OID$",
+            "minimumMutants": 1
+          },
+          {
+            "pattern": "src/services/apple-jws-verifier.ts:180-182",
+            "anchor": "if (!certificateHasExtension(",
+            "behavior": "A leaf that chains to Apple Root CA G3 but carries no App Store marker extension is refused, so root trust alone never admits another developer's certificate.",
+            "replacementTest": "__tests__/services/apple-jws-leaf-policy.test.ts",
+            "ownerTestNamePattern": "refuses a sibling Apple-rooted certificate that is not an App Store signer$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "QA6 P2: the old fixtures were filler bytes with the OID glued on, which only ever exercised the byte search. They were rebuilt as structurally valid DER certificates, and the removed assertions are replaced by stronger ones including the smuggled-bytes case the byte search accepted."
+      },
+      {
+        "test": "__tests__/services/stripe-nexus-points-service.test.ts",
+        "replacementTests": [
+          "__tests__/services/stripe-nexus-points-service.test.ts"
+        ],
+        "sources": [
+          "src/services/stripe-nexus-points-service.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/stripe-nexus-points-service.ts:228-236",
+            "anchor": "switch (event.type) {",
+            "behavior": "Paid Nexus Points checkout events dispatch to the grant path, which credits exactly once per provider transaction; the routed webhook gates livemode before reaching this dispatch.",
+            "replacementTest": "__tests__/services/stripe-nexus-points-service.test.ts",
+            "ownerTestNamePattern": "processes paid checkout webhooks and grants points idempotently$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "QA6 P3: processStripeNexusPointsWebhookEvent was deleted because it verified the signature and dispatched WITHOUT the livemode gate — the shape of the QA5 P0, routed nowhere and kept alive only by this test. The idempotent-grant guarantee it covered now runs through the routed handler instead."
       }
     ],
     "ownerTestMappings": [],

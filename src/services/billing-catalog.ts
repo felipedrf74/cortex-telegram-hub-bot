@@ -10,7 +10,12 @@
  */
 
 import { config } from '../config';
-import { isApplePackFulfillmentActive, isStripePackFulfillmentActive } from './hybrid-runtime-kill-switches';
+import {
+  isApplePackFulfillmentActive,
+  isStorefrontActive,
+  isStripePackFulfillmentActive,
+  isSubscriptionCheckoutActive,
+} from './hybrid-runtime-kill-switches';
 
 export const BILLING_CATALOG_VERSION = '2026-08-18.1';
 
@@ -73,10 +78,14 @@ function catalogDefinitions(): ResolvedBillingCatalogItem[] {
     requiresActivePaidPlan: false,
     stripePriceId: stripePriceId || null,
     appleProductId: null,
-    purchasable: Boolean(stripePriceId),
+    // Subscriptions have no activation flag — they are the base product — so
+    // the kill switches are the only stop control in this path (plan §5,
+    // migration 293). Without them a configured price id alone made a
+    // subscription sellable with nothing an operator could flip.
+    purchasable: Boolean(stripePriceId) && isSubscriptionCheckoutActive(),
     // Subscriptions sell on the web through Stripe; iOS uses its own
     // StoreKit subscription products, which this catalog does not price.
-    stripePurchasable: Boolean(stripePriceId),
+    stripePurchasable: Boolean(stripePriceId) && isSubscriptionCheckoutActive(),
     applePurchasable: false,
     ...(stripePriceId ? {} : { unavailableReason: 'provider_price_missing' as const }),
   });
@@ -92,8 +101,8 @@ function catalogDefinitions(): ResolvedBillingCatalogItem[] {
     // Channels are independent: iOS buys packs through StoreKit while the web
     // buys through Stripe, so one channel being unconfigured must not report
     // the item unavailable on the other.
-    const stripePurchasable = Boolean(stripePriceId) && isStripePackSalesEnabled();
-    const applePurchasable = Boolean(appleProductId) && isApplePackFulfillmentActive();
+    const stripePurchasable = Boolean(stripePriceId) && isStripePackSalesEnabled() && isStorefrontActive();
+    const applePurchasable = Boolean(appleProductId) && isApplePackFulfillmentActive() && isStorefrontActive();
     const purchasable = stripePurchasable || applePurchasable;
     return {
       id,

@@ -277,6 +277,11 @@ describe('Apple App Store Server Notifications JWS verification', () => {
       resolve(__dirname, '../../migrations/288_apple_inbox_product_id.sql'),
       'utf8',
     ));
+    // 292 adds the indexed reversal identity columns the ingest path writes.
+    testDb.exec(readFileSync(
+      resolve(__dirname, '../../migrations/292_apple_reversal_transaction_index.sql'),
+      'utf8',
+    ));
     mockCaptureMessage.mockReset();
     mockRecordOperatorAlert.mockReset();
   });

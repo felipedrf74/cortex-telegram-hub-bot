@@ -66,14 +66,100 @@ function assertCertificateIsTimeValid(cert: crypto.X509Certificate): void {
 }
 
 /**
- * Apple's App Store Server Notification / transaction leaf carries the
- * marker extension OID 1.2.840.113635.100.6.11.1 (the same OID Apple's own
- * server library requires). DER encoding of that OID, used as a byte probe:
- * every X.509 extension identifier appears verbatim in the certificate DER.
+ * Apple's App Store Server Notification / transaction leaf carries the marker
+ * extension OID 1.2.840.113635.100.6.11.1 (the same OID Apple's own server
+ * library requires). These are the OID's DER *content* bytes, without the
+ * 0x06 tag and length — they are compared against a parsed extension
+ * identifier, never searched for in the raw certificate.
  */
-const APP_STORE_NOTIFICATION_OID_DER = Buffer.from([
-  0x06, 0x0a, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x63, 0x64, 0x06, 0x0b, 0x01,
+const APP_STORE_NOTIFICATION_OID_CONTENT = Buffer.from([
+  0x2a, 0x86, 0x48, 0x86, 0xf7, 0x63, 0x64, 0x06, 0x0b, 0x01,
 ]);
+
+const DER_SEQUENCE_TAG = 0x30;
+const DER_OID_TAG = 0x06;
+/** [3] EXPLICIT — the context tag wrapping TBSCertificate.extensions. */
+const DER_EXTENSIONS_TAG = 0xa3;
+
+interface DerNode {
+  tag: number;
+  contentStart: number;
+  contentEnd: number;
+}
+
+/** Read one DER tag-length-value header at `offset`. Definite lengths only. */
+function readDerNode(buf: Buffer, offset: number): DerNode | null {
+  if (offset + 2 > buf.length) return null;
+  const tag = buf[offset];
+  let cursor = offset + 1;
+  let length = buf[cursor];
+  cursor += 1;
+  if (length & 0x80) {
+    const byteCount = length & 0x7f;
+    // 0 is the indefinite form (not legal in DER); >4 exceeds any real
+    // certificate field and would overflow the arithmetic below.
+    if (byteCount === 0 || byteCount > 4) return null;
+    if (cursor + byteCount > buf.length) return null;
+    length = 0;
+    for (let index = 0; index < byteCount; index += 1) {
+      length = length * 256 + buf[cursor];
+      cursor += 1;
+    }
+  }
+  const contentEnd = cursor + length;
+  if (contentEnd > buf.length) return null;
+  return { tag, contentStart: cursor, contentEnd };
+}
+
+/**
+ * Walk Certificate -> TBSCertificate -> [3] extensions and report whether the
+ * given OID appears as an actual extension identifier.
+ *
+ * QA6 P2: the previous check was `raw.includes(oidDer)`, a byte search over
+ * the whole certificate. It could not distinguish the marker extension from
+ * the same twelve bytes occurring anywhere else — a serial number, a public
+ * key, any opaque extension value — and it accepted buffers that were not
+ * certificates at all.
+ */
+function certificateHasExtension(raw: Buffer, oidContent: Buffer): boolean {
+  // Exception-free by design: every malformed shape returns false on its own
+  // branch. A try/catch wrapper here produced equivalent mutants — emptying
+  // it left the same observable behavior — which hid whether the parse
+  // decisions were actually tested.
+  const certificate = readDerNode(raw, 0);
+  if (!certificate || certificate.tag !== DER_SEQUENCE_TAG) return false;
+  const tbs = readDerNode(raw, certificate.contentStart);
+  if (!tbs || tbs.tag !== DER_SEQUENCE_TAG) return false;
+
+  let cursor = tbs.contentStart;
+  let extensions: DerNode | null = null;
+  while (cursor < tbs.contentEnd) {
+    const field = readDerNode(raw, cursor);
+    if (!field) return false;
+    if (field.tag === DER_EXTENSIONS_TAG) {
+      extensions = readDerNode(raw, field.contentStart);
+      break;
+    }
+    cursor = field.contentEnd;
+  }
+  if (!extensions || extensions.tag !== DER_SEQUENCE_TAG) return false;
+
+  let extCursor = extensions.contentStart;
+  while (extCursor < extensions.contentEnd) {
+    const extension = readDerNode(raw, extCursor);
+    if (!extension || extension.tag !== DER_SEQUENCE_TAG) return false;
+    const extnId = readDerNode(raw, extension.contentStart);
+    if (!extnId) return false;
+    if (
+      extnId.tag === DER_OID_TAG
+      && raw.subarray(extnId.contentStart, extnId.contentEnd).equals(oidContent)
+    ) {
+      return true;
+    }
+    extCursor = extension.contentEnd;
+  }
+  return false;
+}
 
 export interface AppleLeafCertificateFacts {
   ca: boolean;
@@ -85,13 +171,13 @@ export interface AppleLeafCertificateFacts {
  * sufficient — that root signs every App Store developer's certificates, and
  * the chain walk alone accepted both a sibling end-entity certificate and an
  * intermediate CA signing directly. The leaf must be an end entity AND carry
- * the App Store marker OID.
+ * the App Store marker OID as a parsed extension (QA6 P2).
  */
 export function assertAppleAppStoreLeaf(leaf: AppleLeafCertificateFacts): void {
   if (leaf.ca) {
     throw new Error('APPLE_JWS_LEAF_NOT_END_ENTITY');
   }
-  if (!Buffer.from(leaf.raw).includes(APP_STORE_NOTIFICATION_OID_DER)) {
+  if (!certificateHasExtension(Buffer.from(leaf.raw), APP_STORE_NOTIFICATION_OID_CONTENT)) {
     throw new Error('APPLE_JWS_LEAF_NOT_APP_STORE');
   }
 }

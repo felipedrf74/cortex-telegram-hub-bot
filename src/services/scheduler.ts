@@ -1514,7 +1514,10 @@ export function startScheduler(): void {
   cron.schedule('*/15 * * * *', wrapJob('apple_inbox_retry', async () => {
     const { processPendingAppleNotifications } = require('./apple-notification-inbox');
     const counts = processPendingAppleNotifications();
-    if (counts.processed + counts.failed + counts.exhausted + counts.deferred === 0) return 'skipped';
+    // stuckExhausted is a gauge of rows parked at the retry ceiling: a pass
+    // with nothing else to do still deserves a log line while money is stuck.
+    if (counts.processed + counts.failed + counts.exhausted
+      + counts.deferred + counts.stuckExhausted === 0) return 'skipped';
     logger.info(counts, 'Apple notification inbox reconciliation pass');
   }));
 

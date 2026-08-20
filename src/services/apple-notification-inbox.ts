@@ -49,8 +49,72 @@ export function isSandboxGrantAllowed(): boolean {
   return process.env.APPLE_ALLOW_SANDBOX_GRANTS === 'true';
 }
 
-/** Bounded scan: reversals are rare, and this runs only on the restore path. */
-const REVERSAL_LOOKUP_SCAN_CAP = 2_000;
+/** Notification types that reverse a purchase and must block restoration. */
+export const REVERSAL_NOTIFICATION_TYPES = ['REFUND', 'REVOKE'] as const;
+
+export interface ReversalTransactionIds {
+  transactionId: string | null;
+  originalTransactionId: string | null;
+}
+
+/** Pull the transaction identity out of a decoded inner transaction payload. */
+export function readReversalTransactionIds(inner: unknown): ReversalTransactionIds {
+  const payload = (inner ?? {}) as Record<string, unknown>;
+  const pick = (value: unknown): string | null => {
+    if (typeof value === 'string' && value.trim()) return value.trim();
+    if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+    return null;
+  };
+  return {
+    transactionId: pick(payload.transactionId),
+    originalTransactionId: pick(payload.originalTransactionId),
+  };
+}
+
+/**
+ * Resolve the reversal identity of rows ingested before migration 292 added
+ * the indexed columns. Bounded per call so a scheduled pass stays cheap;
+ * returns how many rows are still unresolved afterwards.
+ *
+ * Rows whose payload cannot be decoded are stamped with NULL ids rather than
+ * retried forever: they are unusable as reversal evidence either way, and
+ * leaving them unstamped would fail every restore closed permanently.
+ */
+export function backfillAppleReversalIndex(limit = 500): { processed: number; remaining: number } {
+  const db = getDb();
+  const rows = db
+    .prepare(
+      `SELECT id, signed_payload AS signedPayload, notification_type AS notificationType
+         FROM apple_notification_inbox
+        WHERE reversal_indexed_at IS NULL
+        ORDER BY id
+        LIMIT ?`,
+    )
+    .all(Math.max(1, limit)) as Array<{ id: number; signedPayload: string; notificationType: string }>;
+  const stamp = db.prepare(
+    `UPDATE apple_notification_inbox
+        SET reversal_transaction_id = ?, reversal_original_transaction_id = ?, reversal_indexed_at = ?
+      WHERE id = ?`,
+  );
+  const nowIso = new Date().toISOString();
+  for (const row of rows) {
+    let ids: ReversalTransactionIds = { transactionId: null, originalTransactionId: null };
+    if ((REVERSAL_NOTIFICATION_TYPES as readonly string[]).includes(row.notificationType)) {
+      try {
+        const outer = decodeAppleJwsPayload<any>(String(row.signedPayload ?? ''));
+        const innerJws = outer?.data?.signedTransactionInfo;
+        if (typeof innerJws === 'string') ids = readReversalTransactionIds(decodeAppleJwsPayload<any>(innerJws));
+      } catch {
+        // Undecodable row: stamp it resolved with null ids (see docblock).
+      }
+    }
+    stamp.run(ids.transactionId, ids.originalTransactionId, nowIso, row.id);
+  }
+  const remaining = (db
+    .prepare('SELECT COUNT(*) AS n FROM apple_notification_inbox WHERE reversal_indexed_at IS NULL')
+    .get() as { n: number }).n;
+  return { processed: rows.length, remaining };
+}
 
 /**
  * True when the durable inbox already holds an Apple-signed REFUND/REVOKE for
@@ -60,29 +124,64 @@ const REVERSAL_LOOKUP_SCAN_CAP = 2_000;
  * who cached a transaction JWS before refunding could replay it and mint
  * credits while the server held Apple's own refund notice on disk — including
  * when that notice failed processing and never revoked anything.
+ *
+ * Indexed equality probe with no window (QA6 P2). The previous version scanned
+ * the newest 2,000 reversals and decoded each payload in JS, so once the table
+ * grew past the cap — and migration 286 forbids deletes — every older refund
+ * became silently replayable. This version answers from the columns extracted
+ * at ingest, and refuses to answer "clean" while ANY row is still unresolved.
  */
 export function hasRecordedAppleReversalForTransaction(transactionId: string): boolean {
   const id = String(transactionId || '').trim();
   if (!id) return false;
   try {
-    const rows = getDb()
-      .prepare(`SELECT signed_payload AS signedPayload
-                  FROM apple_notification_inbox
-                 WHERE notification_type IN ('REFUND', 'REVOKE')
-                 ORDER BY id DESC LIMIT ${REVERSAL_LOOKUP_SCAN_CAP}`)
-      .all() as Array<{ signedPayload: string }>;
-    for (const row of rows) {
-      try {
-        const outer = decodeAppleJwsPayload<any>(String(row.signedPayload ?? ''));
-        const innerJws = outer?.data?.signedTransactionInfo;
-        if (typeof innerJws !== 'string') continue;
-        const inner = decodeAppleJwsPayload<any>(innerJws);
-        if (inner?.transactionId === id || inner?.originalTransactionId === id) return true;
-      } catch {
-        // An undecodable stored row cannot prove a reversal; keep scanning.
-      }
+    const db = getDb();
+    const hit = db
+      .prepare(
+        `SELECT 1 FROM apple_notification_inbox
+          WHERE notification_type IN ('REFUND', 'REVOKE')
+            AND (reversal_transaction_id = ? OR reversal_original_transaction_id = ?)
+          LIMIT 1`,
+      )
+      .get(id, id);
+    if (hit) return true;
+
+    // A clean verdict is only trustworthy once every reversal row has an
+    // extracted identity. Resolve what is left, then fail CLOSED if the
+    // backlog outlives this call rather than reporting a false clean.
+    const unresolved = (db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM apple_notification_inbox
+          WHERE reversal_indexed_at IS NULL
+            AND notification_type IN ('REFUND', 'REVOKE')`,
+      )
+      .get() as { n: number }).n;
+    if (unresolved === 0) return false;
+
+    backfillAppleReversalIndex();
+    const stillUnresolved = (db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM apple_notification_inbox
+          WHERE reversal_indexed_at IS NULL
+            AND notification_type IN ('REFUND', 'REVOKE')`,
+      )
+      .get() as { n: number }).n;
+    if (stillUnresolved > 0) {
+      logger.error(
+        { transactionId: id, unresolved: stillUnresolved },
+        'apple-notification-inbox: reversal index incomplete; refusing to treat as clean',
+      );
+      return true;
     }
-    return false;
+    const retry = db
+      .prepare(
+        `SELECT 1 FROM apple_notification_inbox
+          WHERE notification_type IN ('REFUND', 'REVOKE')
+            AND (reversal_transaction_id = ? OR reversal_original_transaction_id = ?)
+          LIMIT 1`,
+      )
+      .get(id, id);
+    return !!retry;
   } catch (err) {
     // Fail CLOSED: if the reversal record cannot be read, do not mint credit
     // on a transaction that may already be refunded.
@@ -186,16 +285,22 @@ export function ingestVerifiedAppleNotification(input: {
   // needs it in SQL. A malformed inner payload stores NULL and never blocks
   // durable ingestion — full verification still happens at processing time.
   let ingestProductId: string | null = null;
+  // Reversal transaction identity at ingest (QA6 P2): REFUND/REVOKE rows get
+  // their transaction ids in indexed columns so the restore path can probe
+  // them directly instead of decoding a capped window of stored JWS.
+  let reversalIds: ReversalTransactionIds = { transactionId: null, originalTransactionId: null };
   try {
     const outer = verifyAppleJws(input.signedPayload, { requireX5c: false }).payload as Record<string, any>;
     const innerJws = outer?.data?.signedTransactionInfo;
     if (typeof innerJws === 'string' && innerJws) {
       const inner = verifyAppleJws(innerJws, { requireX5c: false }).payload as Record<string, any>;
       ingestProductId = typeof inner.productId === 'string' && inner.productId ? inner.productId : null;
+      reversalIds = readReversalTransactionIds(inner);
     }
   } catch {
     ingestProductId = null;
   }
+  const isReversal = (REVERSAL_NOTIFICATION_TYPES as readonly string[]).includes(input.notificationType);
   const tx = db.transaction((): IngestAppleNotificationResult => {
     const existing = db
       .prepare('SELECT * FROM apple_notification_inbox WHERE notification_uuid = ?')
@@ -205,8 +310,9 @@ export function ingestVerifiedAppleNotification(input: {
       .prepare(
         `INSERT INTO apple_notification_inbox (
            notification_uuid, notification_type, subtype, environment,
-           signed_payload, received_at, product_id
-         ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+           signed_payload, received_at, product_id,
+           reversal_transaction_id, reversal_original_transaction_id, reversal_indexed_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         input.notificationUuid,
@@ -216,6 +322,11 @@ export function ingestVerifiedAppleNotification(input: {
         input.signedPayload,
         now.toISOString(),
         ingestProductId,
+        isReversal ? reversalIds.transactionId : null,
+        isReversal ? reversalIds.originalTransactionId : null,
+        // Stamped for every row: a non-reversal row needs no extraction, so
+        // marking it resolved keeps the backfill sweep bounded to real work.
+        now.toISOString(),
       );
     const row = getRawRow(Number(inserted.lastInsertRowid));
     if (!row) throw new Error('apple-notification-inbox: insert readback failed');
@@ -436,6 +547,13 @@ export function processPendingAppleNotifications(input: { limit?: number; now?: 
   failed: number;
   exhausted: number;
   deferred: number;
+  /**
+   * GAUGE, not a counter (QA6 P3): how many rows are stuck at the retry
+   * ceiling right now, across all time. `exhausted` counts only the rows this
+   * pass exhausted. The two were previously summed into `exhausted`, so the
+   * number climbed on every scheduled pass even with no new failures.
+   */
+  stuckExhausted: number;
 } {
   const db = getDb();
   const now = input.now ?? new Date();
@@ -469,7 +587,7 @@ export function processPendingAppleNotifications(input: { limit?: number; now?: 
       ...packProductIds.length > 0 ? packProductIds : [],
       Math.max(1, Math.min(input.limit ?? 25, 100)),
     ) as Array<{ id: number }>;
-  const counts = { processed: 0, failed: 0, exhausted: 0, deferred: 0 };
+  const counts = { processed: 0, failed: 0, exhausted: 0, deferred: 0, stuckExhausted: 0 };
   for (const { id } of rows) {
     const result = processStoredAppleNotification(id, now);
     if (result.kind === 'processed') counts.processed += 1;
@@ -483,21 +601,33 @@ export function processPendingAppleNotifications(input: { limit?: number; now?: 
   // (QA5 P2 exhausted-inbox-rows-never-alert). Money Apple already collected
   // would sit ungrantable with zero signal. Surface them explicitly; the alert
   // dedupe key keeps repeated passes to one open alert per notification.
-  counts.exhausted += alertOnExhaustedAppleNotifications();
+  // Reported separately from counts.exhausted (see the gauge docs above): the
+  // sweep re-reports every historically stuck row, so summing the two inflated
+  // the metric on every pass with no new failures (QA6 P3). The alert itself
+  // stays — it is the only signal for rows the selector can never pick up
+  // (QA5 P2 exhausted-inbox-rows-never-alert).
+  counts.stuckExhausted = alertOnExhaustedAppleNotifications();
   return counts;
 }
 
-/** Raise one operator alert per stuck, retry-exhausted inbox row. */
-function alertOnExhaustedAppleNotifications(limit = 50): number {
+/**
+ * Raise one operator alert per stuck, retry-exhausted inbox row.
+ *
+ * Every exhausted row alerts, with no page cap (QA6 P3): the previous limit of
+ * 50 ordered oldest-first, so past 50 stuck rows the newest — the ones an
+ * operator most needs to see — never alerted at all. Alerts dedupe per
+ * notification uuid, so a large backlog produces one open alert per row rather
+ * than repeated noise.
+ */
+function alertOnExhaustedAppleNotifications(): number {
   const rows = getDb()
     .prepare(
       `SELECT notification_uuid, notification_type, attempts
          FROM apple_notification_inbox
         WHERE state != 'processed' AND attempts >= ?
-        ORDER BY received_at ASC
-        LIMIT ?`,
+        ORDER BY received_at ASC`,
     )
-    .all(MAX_PROCESS_ATTEMPTS, limit) as Array<{
+    .all(MAX_PROCESS_ATTEMPTS) as Array<{
       notification_uuid: string;
       notification_type: string;
       attempts: number;

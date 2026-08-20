@@ -72,6 +72,7 @@ export function createEmptyFinanceMeshContext(opts: { userId: number; tenantId?:
       period: 'monthly',
       status: 'inactive',
       provider: 'none',
+      currentPeriodStart: null,
       currentPeriodEnd: null,
       cancelAtPeriodEnd: false,
       isActive: false,
@@ -141,6 +142,7 @@ export async function readFinanceMeshContext(opts: {
   const subscription = safely(() => getSubscriptionStatus(opts.userId), {
     plan: 'free',
     period: 'monthly',
+    currentPeriodStart: null,
     status: 'inactive',
     provider: 'none',
     currentPeriodEnd: null,

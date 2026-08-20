@@ -72,11 +72,8 @@ this release refuses to boot while it is set.**
 | P2 reconciliation window was shorter than Apple's refund horizon and re-checked the same head | 90-day window plus a progress cursor (migration 291) |
 | P2 DSAR export omitted `subscriptions` and `stripe_web_checkouts` | Both included in the Article 15 bundle |
 
-**Deferred:** plan §5 names six kill switches and four exist; adding the
-subscription and storefront switches requires rebuilding the control table's
-CHECK constraint, which classifies as a contract migration and would halt
-unattended CD. It ships as its own owner-acked change before activation.
-Subscription checkout remains stoppable through the environment meanwhile.
+**Deferred at the time:** plan §5 names six kill switches and four existed.
+Round 6 closed this — see below.
 
 **Accepted P3s (not re-blocking):** deep-class enforcement is a repo-grep pin
 rather than a runtime guard; the apple-verify subscription path's bundleId
@@ -89,3 +86,67 @@ server library enforces, but it has not been exercised against a real Apple
 notification because pack fulfillment is off and no App Store products exist
 yet. Validate it against a live sandbox notification as part of Apple
 activation, before enabling `APPLE_PACK_FULFILLMENT_ENABLED`.
+
+## Round 6 — NO-GO (2026-08-20), closed
+
+Round 6 confirmed the round-5 P0 dead at the runtime (all three layers, plus a
+`410` at the public edge where round 5 measured an open `400`) and confirmed
+twelve of the round-5 items closed. It found that the P1-2 remediation had
+introduced a new money bug, plus two P2s and four P3s.
+
+**P1 — included credits double-granted through an unstable period key.** The
+lot's idempotency key was `sub:<period END>`, and any subscription read failure
+fell back to a `cal:<month>` anchor. The key therefore moved underneath a user
+who had paid once, and the ledger's one-lot-per-key rule stopped protecting
+anything. Three reproduced paths: a single transient read error (grant under a
+second anchor), a late renewal webhook (calendar stopgap plus the real period),
+and a mid-period upgrade (the plan change moves `current_period_end`, so the
+key moved with it — falsifying the module's own docstring claim that excluding
+the plan from the key made cycling useless). Up to 142% over-grant on a Max
+upgrade, reachable through ordinary webhook lag rather than only by attack.
+
+Closed with three changes, defence in depth rather than one fix:
+
+1. **Anchor on the period START** (`stripe-service` now exposes
+   `currentPeriodStart`). A mid-period re-price moves the end, never the start,
+   so an upgrade is a no-op and cycling mints nothing.
+2. **A subscription read failure denies provisioning** instead of switching
+   anchors. Admission denies that one operation and the next call retries; a
+   lost read can no longer become a second lot.
+3. **The ledger supersedes rather than stacks.** `grantMonthlyAiCredits`
+   revokes every other live included lot inside the same immediate transaction
+   (`revoke_reason = 'superseded_by_period_change'`, preserving the
+   append-only history) before minting. The invariant is now structural: a user
+   has at most one live included lot, carrying exactly the plan allowance,
+   whatever the key says. It also self-heals a wallet a previous defect left
+   holding more than one.
+
+`ai-credit-provisioning.ts` now has its own suite covering anchor
+TRANSITIONS — the gap the auditor identified, since the prior tests asserted
+anchor selection in isolation.
+
+| Finding | Resolution |
+|---|---|
+| P2 the reversal lookup scanned only the newest 2,000 refunds and returned a CLEAN verdict past the cap — permanent, since migration 286 forbids deletes | Transaction ids are extracted at ingest into indexed columns (migration 292) and probed by equality with no window; legacy rows are backfilled, and the lookup fails CLOSED while any reversal row is still unresolved |
+| P2 the App Store leaf marker was `raw.includes(oidDer)` — a byte search that could not tell the marker extension from those bytes anywhere else, and accepted non-certificates | Real DER walk: Certificate → TBSCertificate → `[3]` extensions → each Extension's `extnID`, compared as a parsed extension identifier. Malformed DER fails closed |
+| P3 a second Stripe webhook entry point dispatched without the livemode gate | Deleted. It was routed nowhere and kept alive only by its own test; the single routed entry point (`POST /webhooks/stripe`) gates livemode before any handler |
+| P3 `STAGING=true` on the production container silently disabled every live-production payment guard | Boot refuses a runtime whose two independent identity signals disagree (`NEXUS_RELEASE_ENVIRONMENT` vs `STAGING`), so no single env var flip downgrades production |
+| P3 exhausted-row alerting capped at 50 oldest-first and inflated its own counter | No cap — every stuck row alerts, deduped per uuid — and the sweep reports a separate `stuckExhausted` gauge instead of being summed into the `exhausted` counter |
+
+**Kill switches: no longer deferred.** Round 6 sharpened why this mattered —
+subscription catalog items compute `purchasable` from the price id alone, so
+*before* a live Stripe key exists there is no way to stop subscription sales
+without an env edit and a restart. Migration 293 adds `subscription_checkout`
+and `storefront` in an **additive table**: widening the original table's CHECK
+constraint would rebuild it and classify as a contract migration, while a new
+table is expand-only and predecessor-compatible. Reads union both tables, so
+callers see one flat set of six keys. `storefront` is enforced at
+`assertStripeCheckoutKeyMode()` — the one choke point every session-minting
+path already calls — deliberately not per route, since per-route gating is how
+the round-5 P1-3 pack-switch gap happened.
+
+**Still open, and honestly so:** the App Store leaf policy has never seen a
+real Apple notification. Validate it against a live sandbox notification before
+enabling Apple pack fulfillment. The ten-script acceptance cycle and the §4
+economics simulation remain sequenced after activation — and the round-6 P1
+changed an input the economics simulation consumes.

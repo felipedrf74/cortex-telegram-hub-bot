@@ -20,6 +20,7 @@ import { hashEmail } from '../utils/identity';
 import { logger } from '../utils/logger';
 import { isNexusPointProductId, revokeNexusPointsCredit } from './nexus-points';
 import { resolveBillingCatalogItem } from './billing-catalog';
+import { isStorefrontActive, isSubscriptionCheckoutActive } from './hybrid-runtime-kill-switches';
 import {
   findAiCreditLotByProviderTransaction,
   grantPurchasedAiCredits,
@@ -48,6 +49,12 @@ export interface SubscriptionStatus {
   period: string;
   status: string;
   provider: string;
+  /**
+   * Start of the current billing period. Unlike `currentPeriodEnd`, this does
+   * not move when a mid-period plan change re-prices the subscription, which
+   * makes it the stable identity for "which paid period is this" (QA6 P1).
+   */
+  currentPeriodStart: string | null;
   currentPeriodEnd: string | null;
   cancelAtPeriodEnd: boolean;
   isActive: boolean;
@@ -279,7 +286,7 @@ export function getSubscriptionStatus(userId: number): SubscriptionStatus {
   if (!row || row.status === 'inactive' || row.status === 'expired') {
     return {
       plan: 'free', period: 'monthly', status: 'inactive', provider: 'none',
-      currentPeriodEnd: null, cancelAtPeriodEnd: false,
+      currentPeriodStart: null, currentPeriodEnd: null, cancelAtPeriodEnd: false,
       isActive: false, isPro: false,
     };
   }
@@ -290,6 +297,7 @@ export function getSubscriptionStatus(userId: number): SubscriptionStatus {
   if (['active', 'trialing'].includes(row.status) && periodExpired) {
     return {
       plan: 'free', period: 'monthly', status: 'expired', provider: row.provider,
+      currentPeriodStart: normalizeStoredBillingTimestamp(row.current_period_start),
       currentPeriodEnd: normalizedPeriodEnd, cancelAtPeriodEnd: !!row.cancel_at_period_end,
       isActive: false, isPro: false,
     };
@@ -301,6 +309,7 @@ export function getSubscriptionStatus(userId: number): SubscriptionStatus {
     period: row.period,
     status: row.status,
     provider: row.provider,
+    currentPeriodStart: normalizeStoredBillingTimestamp(row.current_period_start),
     currentPeriodEnd: normalizedPeriodEnd,
     cancelAtPeriodEnd: !!row.cancel_at_period_end,
     isActive,
@@ -332,6 +341,14 @@ export function isStripeSandboxCheckoutAllowed(): boolean {
   return process.env.STRIPE_SANDBOX_CHECKOUT_ALLOWED === 'true';
 }
 
+export class StripeStorefrontDisabledError extends Error {
+  readonly code = 'STRIPE_STOREFRONT_DISABLED';
+  constructor(surface: string) {
+    super(`Refusing to create a checkout session: the ${surface} kill switch is engaged`);
+    this.name = 'StripeStorefrontDisabledError';
+  }
+}
+
 export class StripeTestModeCheckoutError extends Error {
   readonly code = 'STRIPE_TEST_MODE_CHECKOUT_DISABLED';
   constructor() {
@@ -341,8 +358,26 @@ export class StripeTestModeCheckoutError extends Error {
 }
 
 export function assertStripeCheckoutKeyMode(): void {
+  // Storefront is the master stop for every paid surface. It lives here, at
+  // the one choke point every session-minting path already calls, rather than
+  // per route: gating route-by-route is exactly how the Stripe pack switch
+  // ended up inert while Apple was live (QA5 P1-3).
+  if (!isStorefrontActive()) {
+    throw new StripeStorefrontDisabledError('storefront');
+  }
   if (stripeKeyMode() !== 'live' && !isStripeSandboxCheckoutAllowed()) {
     throw new StripeTestModeCheckoutError();
+  }
+}
+
+/**
+ * Subscription-minting paths additionally honour the subscription_checkout
+ * switch, so subscriptions can be stopped without stopping pack or points
+ * sales (plan §5).
+ */
+export function assertSubscriptionCheckoutAllowed(): void {
+  if (!isSubscriptionCheckoutActive()) {
+    throw new StripeStorefrontDisabledError('subscription_checkout');
   }
 }
 
@@ -375,6 +410,7 @@ export async function createCheckoutSession(
   billingContext?: { plan: StripeBillingPlan; currency: StripeBillingCurrency },
 ): Promise<string> {
   assertStripeCheckoutKeyMode();
+  assertSubscriptionCheckoutAllowed();
   const stripe = getStripe();
 
   // Look up existing Stripe customer for this user
@@ -594,6 +630,7 @@ export async function createPublicCheckoutSession(input: {
 
   const resolved = assertCheckoutPlanCurrency(input.plan, input.currency);
   assertStripeCheckoutKeyMode();
+  assertSubscriptionCheckoutAllowed();
   const stripe = getStripe();
   const emailHash = hashEmail(normalizedEmail);
 
