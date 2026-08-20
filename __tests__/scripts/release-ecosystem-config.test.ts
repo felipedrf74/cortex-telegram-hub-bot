@@ -45,6 +45,15 @@ const POLICY_ENVIRONMENT = {
   CLOUD_REASONING_PROVIDER: 'gemini',
   CLOUD_REASONING_MODEL: 'gemini-2.5-pro',
   APPROVED_REASONING_MODELS: 'gemini-2.5-pro,claude-sonnet-4-6',
+  CLOUD_SCRIPT_STANDARD_PROVIDER: 'openai',
+  CLOUD_SCRIPT_STANDARD_MODEL: 'gpt-5.6-luna',
+  CLOUD_SCRIPT_STANDARD_SERVICE_TIER: 'flex',
+  CLOUD_SCRIPT_SCHEDULED_PROVIDER: 'openai',
+  CLOUD_SCRIPT_SCHEDULED_MODEL: 'gpt-5.6-luna',
+  CLOUD_SCRIPT_SCHEDULED_SERVICE_TIER: 'batch',
+  CLOUD_SCRIPT_PRIORITY_PROVIDER: 'openai',
+  CLOUD_SCRIPT_PRIORITY_MODEL: 'gpt-5.6-luna',
+  CLOUD_SCRIPT_PRIORITY_SERVICE_TIER: 'priority',
   OLLAMA_MODEL: 'qwen2.5:3b-instruct-q4_K_M',
   OLLAMA_CLASSIFIER_MODEL: 'qwen2.5:3b-instruct-q4_K_M',
   CHAT_CORE_V2_LOCAL_CHAT_MODEL: 'qwen2.5:3b-instruct-q4_K_M',
@@ -167,6 +176,23 @@ describe('release ecosystem config release identity', () => {
       expect(app.env?.NEXUS_RELEASE_SHA).toBe('unknown');
       expect(app.env?.NEXUS_RELEASE_ARTIFACT_SHA256).toBe('unknown');
       expect(readDeployedReleaseIdentity(app.env ?? {})).toBeNull();
+    }
+  });
+
+  it('forwards absent per-class bindings as explicitly unbound for legacy fallback', () => {
+    const classBindingPrefix = /^CLOUD_SCRIPT_/u;
+    writeFileSync(
+      path.join(baseDir, '.env'),
+      `${Object.entries(POLICY_ENVIRONMENT)
+        .filter(([name]) => !classBindingPrefix.test(name))
+        .map(([name, value]) => `${name}=${value}`)
+        .join('\n')}\n`,
+      { mode: 0o600 },
+    );
+
+    const backend = loadReleaseApps('production').find((app) => app.name === 'nexus-hub');
+    for (const name of Object.keys(POLICY_ENVIRONMENT).filter((key) => classBindingPrefix.test(key))) {
+      expect(backend?.env?.[name]).toBe('');
     }
   });
 

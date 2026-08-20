@@ -355,7 +355,12 @@ local-primary inference standard:
   decision (QA3 P1-6).
 - Per-class cloud provider bindings are configured at activation together
   with the cloud-fallback rate evidence; they are not hardcoded in the
-  runtime.
+  runtime. Provider model identity and processing tier are separate values:
+  use the real model id `gpt-5.6-luna` plus `default`, `flex`, `priority`, or
+  `batch` in the corresponding `CLOUD_SCRIPT_*_SERVICE_TIER` control. Invented
+  model ids such as `gpt-5.6-luna-flex` are invalid. Batch remains fail-closed
+  until the durable submit/poll/cancel/resume adapter is implemented and
+  verified; a synchronous completion must never masquerade as Batch.
 
 ### Addendum B — Interim pricing vs credit-ledger reconciliation (2026-08-18)
 

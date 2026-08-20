@@ -308,6 +308,12 @@ export interface StructuredGenerationRequest {
   responseFormat: 'text' | 'json';
   /** Optional schema sent to capable providers and always revalidated locally. */
   jsonSchema?: unknown;
+  /**
+   * Provider processing class selected by the governed script-delivery
+   * binding. `batch` is intentionally distinct from the synchronous tiers:
+   * adapters must use a durable Batch transport or reject it before dispatch.
+   */
+  serviceTier?: 'default' | 'flex' | 'priority' | 'batch';
   /** Caller-owned cancellation propagated through SDK calls and retry waits. */
   abortSignal?: AbortSignal;
 }
@@ -315,6 +321,8 @@ export interface StructuredGenerationRequest {
 export interface StructuredGenerationResult {
   text: string;
   stopReason: string;
+  /** Provider-reported processing class when one was requested. */
+  serviceTier?: 'default' | 'flex' | 'priority' | 'batch';
 }
 
 /**

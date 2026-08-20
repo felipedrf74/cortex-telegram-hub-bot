@@ -150,3 +150,43 @@ real Apple notification. Validate it against a live sandbox notification before
 enabling Apple pack fulfillment. The ten-script acceptance cycle and the §4
 economics simulation remain sequenced after activation — and the round-6 P1
 changed an input the economics simulation consumes.
+
+## Production activation audit — blocked (2026-08-20)
+
+The protected-main application release is healthy, but the plan is not active
+for users. A live container/database inspection found production runtime mode
+`off`, every hybrid/local-primary activation flag unset, no gateway socket,
+the signed local-model manifest still `control_only`, and no live Stripe pack,
+plan, Apple product, or App Store Server API identifiers. This is the intended
+fail-closed state, not proof of activation.
+
+The audit also found that the per-class ScriptGen binding stopped before the
+provider boundary: `approveCloudScriptGeneration()` did not pass
+`scriptDeliveryMode`, the OpenAI adapter did not send `service_tier`, and tests
+used nonexistent suffix ids such as `gpt-5.6-luna-batch`. The OpenAI account
+probe returned 200 for `gpt-5.6-luna` and 404 for the Flex/Batch/Standard/Fast
+suffix variants. The remediation separates model identity from processing
+tier, binds the tier into the one-use permit and SDK request, verifies the
+provider-reported tier, prices Luna, and rejects partial or Batch bindings.
+Batch remains blocked until a durable adapter exists.
+
+Fresh independent QA then found that the SkillInference fallback boundary still
+dropped the selected tier before the provider call and that the Luna registry
+held its pre-2026-07-30 price. The boundary now forwards the tier, explicit-tier
+calls reserve the Priority ceiling until the response tier is verified, and the
+central Luna rates match the current direct-API short-context price.
+
+The next review found three more end-to-end gaps: OpenAI cache-write tokens
+were recorded as zero, GPT-5.6 long-context rates were not applied above
+272,000 input tokens, and the retained PM2 fallback omitted the nine class
+binding variables. Chat Completions and Responses usage now validate and meter
+both cache counters, actual long-context usage applies the 2x input/1.5x output
+schedule while preflight reserves the conservative ceiling, and PM2 forwards
+all class bindings (explicitly empty when the still-unactivated protected env
+does not define them).
+
+Do not enable public controls until the VPS bakeoff, actual-account rate card
+and economics simulation, consent/privacy decision for private script cloud
+fallback, ten-script acceptance cycle, and applicable Stripe/Apple gates have
+passed. Local-primary rollout must then follow the governed staged progression;
+deployment alone does not authorize an all-user flip.

@@ -91,6 +91,29 @@ type OpenAINonStreamingParams = OpenAI.ChatCompletionCreateParamsNonStreaming & 
   max_completion_tokens?: number;
 };
 
+type OpenAIDirectServiceTier = 'default' | 'flex' | 'priority';
+
+function openAIServiceTierCostMultiplier(serviceTier: unknown): number {
+  if (serviceTier === 'flex') return 0.5;
+  if (serviceTier === 'priority') return 2;
+  return 1;
+}
+
+const GPT_56_LONG_CONTEXT_INPUT_TOKENS = 272_000;
+
+function isGpt56Model(model: unknown): boolean {
+  return /^gpt-5\.6(?:[-.:]|$)/i.test(String(model || '').trim());
+}
+
+function openAIContextRateMultipliers(model: string, inputTokens: number): {
+  inputRateMultiplier: number;
+  outputRateMultiplier: number;
+} {
+  return isGpt56Model(model) && inputTokens > GPT_56_LONG_CONTEXT_INPUT_TOKENS
+    ? { inputRateMultiplier: 2, outputRateMultiplier: 1.5 }
+    : { inputRateMultiplier: 1, outputRateMultiplier: 1 };
+}
+
 type OneShotOptions = {
   model?: string;
   maxTokens?: number;
@@ -157,7 +180,7 @@ async function trackedCompletion(
 ): Promise<OpenAI.ChatCompletion> {
   const AI_CALL_TIMEOUT_MS = timeoutMs ?? getAICallTimeoutMs();
 
-  const maxCostUsd = computeProviderCallCostUpperBoundUsd({
+  const baseMaxCostUsd = computeProviderCallCostUpperBoundUsd({
     provider: 'openai',
     model: params.model,
     payload: params,
@@ -167,6 +190,16 @@ async function trackedCompletion(
       ?? Number.POSITIVE_INFINITY,
     ),
   });
+  // An explicit tier is verified only after the billable provider response.
+  // Reserve the most expensive direct tier so an unexpected tier cannot make
+  // an already-incurred call exceed the caller's budget boundary.
+  // GPT-5.6 switches to a 2x input / 1.5x output schedule above 272K input.
+  // The exact provider token count is unavailable before dispatch, so reserve
+  // the 2x ceiling for every GPT-5.6 request.
+  const contextCeilingMultiplier = isGpt56Model(params.model) ? 2 : 1;
+  const maxCostUsd = baseMaxCostUsd
+    * contextCeilingMultiplier
+    * (params.service_tier ? 2 : 1);
   assertAiBudgetReservationForProvider({
     userId,
     category,
@@ -201,14 +234,23 @@ async function trackedCompletion(
   const durationMs = Date.now() - start;
 
   const usage = response.usage;
+  const promptTokenDetails = usage?.prompt_tokens_details as ({
+    cached_tokens?: number | null;
+    cache_write_tokens?: number | null;
+  } | undefined);
+  const cacheReadTokens = promptTokenDetails?.cached_tokens ?? 0;
+  const cacheWriteTokens = promptTokenDetails?.cache_write_tokens ?? 0;
   if (
     !usage
     || !Number.isFinite(usage.prompt_tokens)
     || usage.prompt_tokens < 0
     || !Number.isFinite(usage.completion_tokens)
     || usage.completion_tokens < 0
-    || (usage.prompt_tokens_details?.cached_tokens != null
-      && (!Number.isFinite(usage.prompt_tokens_details.cached_tokens) || usage.prompt_tokens_details.cached_tokens < 0))
+    || !Number.isFinite(cacheReadTokens)
+    || cacheReadTokens < 0
+    || !Number.isFinite(cacheWriteTokens)
+    || cacheWriteTokens < 0
+    || cacheReadTokens + cacheWriteTokens > usage.prompt_tokens
   ) {
     const persistenceError = tripApiUsagePersistenceFailure('openai', category);
     logger.error({ code: persistenceError.code, category, model: response.model || params.model }, 'OpenAI response omitted valid usage metadata; AI usage persistence degraded');
@@ -216,16 +258,19 @@ async function trackedCompletion(
   }
   if (usage) {
     const model = response.model || params.model;
-    const cacheReadTokens = usage.prompt_tokens_details?.cached_tokens ?? 0;
+    const contextRates = openAIContextRateMultipliers(model, usage.prompt_tokens);
     const priced = computeModelUsageCostUsd(model, {
       inputTokens: usage.prompt_tokens,
       outputTokens: usage.completion_tokens,
       cacheReadTokens,
+      cacheWriteTokens,
+      ...contextRates,
     }, 'openai');
     if (!priced.pricingResolved) {
       warnUnresolvedOpenAiPricing(model, category, userId);
     }
-    const costUsd = priced.costUsd;
+    const costUsd = priced.costUsd
+      * openAIServiceTierCostMultiplier(response.service_tier ?? params.service_tier);
     const pricingStatus = priced.pricingResolved ? 'resolved' : 'unresolved';
     const attribution = resolveApiUsageAttribution(category, userId);
     let apiUsageId: number | null = null;
@@ -234,8 +279,8 @@ async function trackedCompletion(
       const db = getDb();
       const result = db.prepare(`
         INSERT INTO api_usage (category, model, tenant_id, user_id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, duration_ms, provider, pricing_status, pricing_model_key, request_source, job_name, base_category, run_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 'openai', ?, ?, ?, ?, ?, ?)
-      `).run(category, model, tenantId, userId, usage.prompt_tokens, usage.completion_tokens, cacheReadTokens, costUsd, durationMs, pricingStatus, priced.pricingModelKey, attribution.requestSource, attribution.jobName, attribution.baseCategory, attribution.runId);
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'openai', ?, ?, ?, ?, ?, ?)
+      `).run(category, model, tenantId, userId, usage.prompt_tokens, usage.completion_tokens, cacheReadTokens, cacheWriteTokens, costUsd, durationMs, pricingStatus, priced.pricingModelKey, attribution.requestSource, attribution.jobName, attribution.baseCategory, attribution.runId);
       apiUsageId = Number((result as { lastInsertRowid?: number | bigint } | undefined)?.lastInsertRowid ?? 0);
     } catch (e) {
       try {
@@ -249,7 +294,7 @@ async function trackedCompletion(
           inputTokens: usage.prompt_tokens,
           outputTokens: usage.completion_tokens,
           cacheReadTokens,
-          cacheWriteTokens: 0,
+          cacheWriteTokens,
           costUsd,
           durationMs,
           pricingStatus: 'legacy',
@@ -384,7 +429,7 @@ export async function completeOneShotWithWebSearch(
     max_output_tokens: maxOutputTokens,
     max_tool_calls: maxToolCalls,
   } as any;
-  const maxCostUsd = computeProviderCallCostUpperBoundUsd({
+  const baseMaxCostUsd = computeProviderCallCostUpperBoundUsd({
     provider: 'openai',
     model,
     payload: request,
@@ -392,6 +437,7 @@ export async function completeOneShotWithWebSearch(
     nonTokenCostUpperBoundUsd:
       maxToolCalls * getProviderToolFeeUsd('openai_web_search'),
   });
+  const maxCostUsd = baseMaxCostUsd * (isGpt56Model(model) ? 2 : 1);
   const startedAt = Date.now();
   const timeoutMs = options?.timeoutMs ?? getAICallTimeoutMs();
   const response = await withRetry(() => {
@@ -551,11 +597,27 @@ async function recordOpenAIResponseUsage(input: {
     logger.error({ code: persistenceError.code, category: input.category, model: input.model }, 'OpenAI Responses API returned invalid usage metadata; AI usage persistence degraded');
     throw persistenceError;
   }
-  const cacheReadTokens = numberFromUnknown(usage.input_tokens_details?.cached_tokens) ?? 0;
+  const rawCacheReadTokens = usage.input_tokens_details?.cached_tokens;
+  const rawCacheWriteTokens = usage.input_tokens_details?.cache_write_tokens;
+  const parsedCacheReadTokens = numberFromUnknown(rawCacheReadTokens);
+  const parsedCacheWriteTokens = numberFromUnknown(rawCacheWriteTokens);
+  const cacheReadTokens = parsedCacheReadTokens ?? 0;
+  const cacheWriteTokens = parsedCacheWriteTokens ?? 0;
+  if ((rawCacheReadTokens != null && parsedCacheReadTokens === null)
+      || (rawCacheWriteTokens != null && parsedCacheWriteTokens === null)
+      || cacheReadTokens < 0 || cacheWriteTokens < 0
+      || cacheReadTokens + cacheWriteTokens > inputTokens) {
+    const persistenceError = tripApiUsagePersistenceFailure('openai', input.category);
+    logger.error({ code: persistenceError.code, category: input.category, model: input.model }, 'OpenAI Responses API returned invalid cache usage metadata; AI usage persistence degraded');
+    throw persistenceError;
+  }
+  const contextRates = openAIContextRateMultipliers(input.model, inputTokens);
   const priced = computeModelUsageCostUsd(input.model, {
     inputTokens,
     outputTokens,
     cacheReadTokens,
+    cacheWriteTokens,
+    ...contextRates,
     nonTokenCostUsd: input.nonTokenCostUsd ?? 0,
   }, 'openai');
   if (!priced.pricingResolved) {
@@ -567,7 +629,7 @@ async function recordOpenAIResponseUsage(input: {
     const db = getDb();
     const result = db.prepare(`
       INSERT INTO api_usage (category, model, tenant_id, user_id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, duration_ms, provider, pricing_status, pricing_model_key, request_source, job_name, base_category, run_id, provider_tool_cost_usd, web_search_requests, grounded_search_prompts)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 'openai', ?, ?, ?, ?, ?, ?, ?, ?, 0)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'openai', ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
     `).run(
       input.category,
       input.model,
@@ -576,6 +638,7 @@ async function recordOpenAIResponseUsage(input: {
       inputTokens,
       outputTokens,
       cacheReadTokens,
+      cacheWriteTokens,
       priced.costUsd,
       input.durationMs,
       priced.pricingResolved ? 'resolved' : 'unresolved',
@@ -600,7 +663,7 @@ async function recordOpenAIResponseUsage(input: {
         inputTokens,
         outputTokens,
         cacheReadTokens,
-        cacheWriteTokens: 0,
+        cacheWriteTokens,
         costUsd: priced.costUsd,
         durationMs: input.durationMs,
         pricingStatus: 'legacy',
@@ -864,6 +927,10 @@ export class OpenAIProvider implements AIProvider {
     if (!/^(?:gpt|chatgpt|o[1-9])(?:[-.:]|$)/i.test(request.model)) {
       throw new Error('OpenAI structured generation requires an OpenAI model');
     }
+    if (request.serviceTier === 'batch') {
+      throw new Error('OpenAI Batch structured generation requires the durable batch adapter');
+    }
+    const serviceTier = request.serviceTier as OpenAIDirectServiceTier | undefined;
     const responseFormat = request.responseFormat === 'json'
       ? (request.jsonSchema !== undefined
         && request.jsonSchema !== null
@@ -888,6 +955,7 @@ export class OpenAIProvider implements AIProvider {
           { role: 'user', content: request.userPrompt },
         ],
         ...(responseFormat ? { response_format: responseFormat } : {}),
+        ...(serviceTier ? { service_tier: serviceTier } : {}),
       }, request.maxTokens),
       request.category,
       request.userId,
@@ -895,10 +963,15 @@ export class OpenAIProvider implements AIProvider {
       undefined,
       request.abortSignal,
     ), 3, request.abortSignal);
+    const observedServiceTier = response.service_tier;
+    if (serviceTier && observedServiceTier !== serviceTier) {
+      throw new Error('OpenAI structured generation service tier mismatch');
+    }
     const choice = response.choices[0];
     return {
       text: choice?.message?.content ?? '',
       stopReason: choice?.finish_reason ?? 'stop',
+      ...(serviceTier ? { serviceTier } : {}),
     };
   }
 

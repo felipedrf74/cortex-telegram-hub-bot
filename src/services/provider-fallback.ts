@@ -2004,6 +2004,7 @@ export class TaskRoutingProvider implements AIProvider {
           systemPrompt,
           userPrompt: prompt,
           model: selection.model,
+          ...(selection.serviceTier ? { serviceTier: selection.serviceTier } : {}),
           maxTokens,
           userId,
           tenantId,

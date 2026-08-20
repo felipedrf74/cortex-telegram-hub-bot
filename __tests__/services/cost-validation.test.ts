@@ -364,6 +364,7 @@ describe('Cost Validation — api_usage fallback writes', () => {
 
 describe('Cost Validation — OpenAI model pricing parity', () => {
   it('uses current OpenAI rates for nano and mini variants', () => {
+    expect(OPENAI_COST_PER_MTK['gpt-5.6-luna']).toEqual({ in: 0.20, out: 1.20 });
     expect(OPENAI_COST_PER_MTK['gpt-5.4-nano']).toEqual({ in: 0.20, out: 1.25 });
     expect(OPENAI_COST_PER_MTK['gpt-5.4-mini']).toEqual({ in: 0.75, out: 4.50 });
     expect(OPENAI_COST_PER_MTK['gpt-5-nano']).toEqual({ in: 0.05, out: 0.40 });

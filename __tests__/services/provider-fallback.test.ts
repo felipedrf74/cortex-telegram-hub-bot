@@ -455,6 +455,29 @@ describe('TaskRoutingProvider', () => {
       null,
     );
 
+    optionalCloudMocks.selectApprovedCloudReasoningProvider.mockResolvedValueOnce({
+      rejected: false as const,
+      provider: optionalCloudMocks.provider,
+      model: 'gpt-5.6-luna',
+      serviceTier: 'flex' as const,
+      privacyAction: 'sent_raw' as const,
+    });
+    await expect(localPrimary.dispatchLocalReasoning({
+      workloadRole: 'skill_inference',
+      prompt: 'scheduled script section with a bound provider tier',
+      containsPrivateData: false,
+      allowCloudEscalation: true,
+      scriptDeliveryMode: 'scheduled',
+      localAdmission: 'eligible',
+      cloudFallbackBoundary: boundary,
+    })).resolves.toMatchObject({ text: expect.any(String) });
+    expect(optionalCloudMocks.provider.callStructuredGeneration).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        model: 'gpt-5.6-luna',
+        serviceTier: 'flex',
+      }),
+    );
+
     const secondDispatch = new TaskRoutingProvider(buildConfig({
       localReasoning: { primary: failingOllama(), fallback: 'approved_cloud_reasoning' },
     }));
