@@ -33,9 +33,9 @@ const { mockConfig } = vi.hoisted(() => {
         onUnapproved: 'return_local_result_with_warning' as string,
         privacy: { mode: 'redacted_only' as string, allowRawPrivateData: false },
         scriptDeliveryBindings: {
-          standard: { provider: '', model: '' },
-          scheduled: { provider: '', model: '' },
-          priority: { provider: '', model: '' },
+          standard: { provider: '', model: '', serviceTier: '' },
+          scheduled: { provider: '', model: '', serviceTier: '' },
+          priority: { provider: '', model: '', serviceTier: '' },
         },
       },
     },
@@ -113,9 +113,9 @@ beforeEach(() => {
     onUnapproved: 'return_local_result_with_warning',
     privacy: { mode: 'redacted_only', allowRawPrivateData: false },
     scriptDeliveryBindings: {
-      standard: { provider: '', model: '' },
-      scheduled: { provider: '', model: '' },
-      priority: { provider: '', model: '' },
+      standard: { provider: '', model: '', serviceTier: '' },
+      scheduled: { provider: '', model: '', serviceTier: '' },
+      priority: { provider: '', model: '', serviceTier: '' },
     },
   };
 });
@@ -477,9 +477,9 @@ describe('Quality gate — provider unavailability', () => {
 describe('per-class script delivery bindings (§1 / Addendum C)', () => {
   const bindings = () => mockConfig.cloudReasoningFallback.scriptDeliveryBindings;
   const resetBindings = () => {
-    bindings().standard = { provider: '', model: '' };
-    bindings().scheduled = { provider: '', model: '' };
-    bindings().priority = { provider: '', model: '' };
+    bindings().standard = { provider: '', model: '', serviceTier: '' };
+    bindings().scheduled = { provider: '', model: '', serviceTier: '' };
+    bindings().priority = { provider: '', model: '', serviceTier: '' };
     mockConfig.cloudReasoningFallback.approvedReasoningModels = ['gemini-2.5-pro', 'claude-sonnet-4-6'];
   };
   const providers: Record<string, unknown> = {
@@ -489,15 +489,15 @@ describe('per-class script delivery bindings (§1 / Addendum C)', () => {
   const getProvider = (name: string) => (providers[name] as never) ?? null;
 
   it('routes a bound class through its tier and unbound classes through the global pair', async () => {
-    bindings().scheduled = { provider: 'openai', model: 'gpt-5.6-luna-batch' };
-    mockConfig.cloudReasoningFallback.approvedReasoningModels = ['gemini-2.5-pro', 'gpt-5.6-luna-batch'];
+    bindings().scheduled = { provider: 'openai', model: 'gpt-5.6-luna', serviceTier: 'flex' };
+    mockConfig.cloudReasoningFallback.approvedReasoningModels = ['gemini-2.5-pro', 'gpt-5.6-luna'];
     try {
       const scheduled = await selectApprovedCloudReasoningProvider(
         { prompt: 'p', containsPrivateData: false, scriptDeliveryMode: 'scheduled' },
         getProvider,
         null,
       );
-      expect(scheduled).toMatchObject({ model: 'gpt-5.6-luna-batch' });
+      expect(scheduled).toMatchObject({ model: 'gpt-5.6-luna', serviceTier: 'flex' });
       const standard = await selectApprovedCloudReasoningProvider(
         { prompt: 'p', containsPrivateData: false, scriptDeliveryMode: 'standard' },
         getProvider,
@@ -515,20 +515,18 @@ describe('per-class script delivery bindings (§1 / Addendum C)', () => {
     }
   });
 
-  it('class bindings cannot bypass the quality gate: a disallowed tier rejects', async () => {
-    bindings().priority = { provider: 'openai', model: 'gpt-5.6-luna-fast' };
+  it('class bindings cannot bypass the quality gate or invent model suffixes for service tiers', async () => {
+    bindings().priority = { provider: 'openai', model: 'gpt-5.6-luna', serviceTier: 'fast' };
     try {
-      // 'fast' matches the default disallow list — binding rejected even if
-      // an operator also lists it as approved.
-      mockConfig.cloudReasoningFallback.approvedReasoningModels = ['gemini-2.5-pro', 'gpt-5.6-luna-fast'];
+      mockConfig.cloudReasoningFallback.approvedReasoningModels = ['gemini-2.5-pro', 'gpt-5.6-luna'];
       const fast = await selectApprovedCloudReasoningProvider(
         { prompt: 'p', containsPrivateData: false, scriptDeliveryMode: 'priority' },
         getProvider,
         null,
       );
-      expect(fast).toMatchObject({ rejected: true, reason: 'disallowed_substring' });
+      expect(fast).toMatchObject({ rejected: true, reason: 'script_delivery_service_tier_invalid' });
       // An unapproved (but not disallowed) tier also rejects.
-      bindings().priority = { provider: 'openai', model: 'gpt-5.6-luna-standard' };
+      bindings().priority = { provider: 'openai', model: 'gpt-5.6-luna', serviceTier: 'priority' };
       mockConfig.cloudReasoningFallback.approvedReasoningModels = ['gemini-2.5-pro'];
       const unapproved = await selectApprovedCloudReasoningProvider(
         { prompt: 'p', containsPrivateData: false, scriptDeliveryMode: 'priority' },
@@ -541,15 +539,66 @@ describe('per-class script delivery bindings (§1 / Addendum C)', () => {
     }
   });
 
-  it('a half-configured binding falls back to the global pair instead of mixing', async () => {
-    bindings().standard = { provider: '', model: 'gpt-5.6-luna-flex' };
+  it('a partial binding fails closed instead of silently using the global pair', async () => {
+    bindings().standard = { provider: '', model: 'gpt-5.6-luna', serviceTier: 'flex' };
     try {
       const result = await selectApprovedCloudReasoningProvider(
         { prompt: 'p', containsPrivateData: false, scriptDeliveryMode: 'standard' },
         getProvider,
         null,
       );
-      expect(result).toMatchObject({ model: 'gemini-2.5-pro' });
+      expect(result).toMatchObject({
+        rejected: true,
+        reason: 'script_delivery_binding_incomplete',
+      });
+    } finally {
+      resetBindings();
+    }
+  });
+
+  it('fails a scheduled Batch binding closed until a durable Batch adapter exists', async () => {
+    bindings().scheduled = { provider: 'openai', model: 'gpt-5.6-luna', serviceTier: 'batch' };
+    mockConfig.cloudReasoningFallback.approvedReasoningModels = ['gemini-2.5-pro', 'gpt-5.6-luna'];
+    try {
+      await expect(selectApprovedCloudReasoningProvider(
+        { prompt: 'p', containsPrivateData: false, scriptDeliveryMode: 'scheduled' },
+        getProvider,
+        null,
+      )).resolves.toMatchObject({
+        rejected: true,
+        reason: 'batch_transport_unavailable',
+      });
+    } finally {
+      resetBindings();
+    }
+  });
+
+  it('carries the selected delivery mode and service tier into the one-use ScriptGen permit', async () => {
+    bindings().standard = { provider: 'openai', model: 'gpt-5.6-luna', serviceTier: 'flex' };
+    mockConfig.cloudReasoningFallback.approvedReasoningModels = ['gemini-2.5-pro', 'gpt-5.6-luna'];
+    const provider = fakeProvider('openai');
+    provider.callStructuredGeneration = vi.fn();
+    const payload = {
+      description: 'Generate a public launch script',
+      containsPrivateData: false,
+      scriptDeliveryMode: 'standard' as const,
+    };
+    try {
+      const approval = await approveCloudScriptGeneration(
+        payload,
+        (name) => (name === 'openai' ? provider : null),
+      );
+      expect(approval).toMatchObject({
+        rejected: false,
+        model: 'gpt-5.6-luna',
+        serviceTier: 'flex',
+      });
+      if ('permit' in approval) {
+        expect(consumeCloudScriptGenerationApproval(approval.permit, payload)).toMatchObject({
+          model: 'gpt-5.6-luna',
+          serviceTier: 'flex',
+        });
+      }
     } finally {
       resetBindings();
     }

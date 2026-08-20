@@ -302,29 +302,31 @@ export const config = {
 
   // ── Quality + privacy gate for complex cloud reasoning fallback ──
   cloudReasoningFallback: {
-    // §1 activation bindings (Addendum C): the cloud delivery tier PER script
-    // class — e.g. standard→Flex, scheduled→Batch, priority→Standard — is
-    // bound at activation with rate evidence (NH-0036), never hardcoded.
-    // Unset classes fall back to the single global provider/model pair below,
-    // and EVERY binding still passes the same disallow/approved/preview
-    // checks: class bindings cannot bypass the quality gate.
+    // §1 activation bindings (Addendum C): provider, model, AND provider-native
+    // processing tier are separate values. `gpt-5.6-luna-flex` and similar
+    // suffixes are not OpenAI model IDs. Unset classes fall back to the single
+    // global provider/model pair below, and EVERY binding still passes the
+    // same disallow/approved/preview checks.
     scriptDeliveryBindings: {
-      get standard(): { provider: string; model: string } {
+      get standard(): { provider: string; model: string; serviceTier: string } {
         return {
           provider: process.env.CLOUD_SCRIPT_STANDARD_PROVIDER || '',
           model: process.env.CLOUD_SCRIPT_STANDARD_MODEL || '',
+          serviceTier: process.env.CLOUD_SCRIPT_STANDARD_SERVICE_TIER || '',
         };
       },
-      get scheduled(): { provider: string; model: string } {
+      get scheduled(): { provider: string; model: string; serviceTier: string } {
         return {
           provider: process.env.CLOUD_SCRIPT_SCHEDULED_PROVIDER || '',
           model: process.env.CLOUD_SCRIPT_SCHEDULED_MODEL || '',
+          serviceTier: process.env.CLOUD_SCRIPT_SCHEDULED_SERVICE_TIER || '',
         };
       },
-      get priority(): { provider: string; model: string } {
+      get priority(): { provider: string; model: string; serviceTier: string } {
         return {
           provider: process.env.CLOUD_SCRIPT_PRIORITY_PROVIDER || '',
           model: process.env.CLOUD_SCRIPT_PRIORITY_MODEL || '',
+          serviceTier: process.env.CLOUD_SCRIPT_PRIORITY_SERVICE_TIER || '',
         };
       },
     },

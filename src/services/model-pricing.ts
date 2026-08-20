@@ -42,6 +42,10 @@ export interface ModelUsageForCost {
   outputTokens: number;
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
+  /** Provider long-context multiplier applied to every input/cache rate. */
+  inputRateMultiplier?: number;
+  /** Provider long-context multiplier applied to the output rate. */
+  outputRateMultiplier?: number;
   /** Provider-billed search/grounding/tool fees not represented by tokens. */
   nonTokenCostUsd?: number;
 }
@@ -131,6 +135,12 @@ const MODEL_PRICING: ModelPricing[] = [
   { provider: 'gemini', model: 'gemini-1.5-pro', inputUsdPerMillion: 1.25, outputUsdPerMillion: 5.00 },
 
   // OpenAI API
+  // Official direct-API short-context standard rates verified 2026-08-20,
+  // including the 2026-07-30 Luna price reduction.
+  // Flex and Batch are billed at 0.5x; Priority is billed at 2x. The OpenAI
+  // adapter applies that provider-reported processing multiplier at metering
+  // time. An explicit tier reserves the Priority ceiling before dispatch.
+  { provider: 'openai', model: 'gpt-5.6-luna', inputUsdPerMillion: 0.20, outputUsdPerMillion: 1.20, cacheReadUsdPerMillion: 0.02, cacheWriteUsdPerMillion: 0.25, batchDiscount: 0.5, acceptVariantSuffix: true },
   { provider: 'openai', model: 'gpt-5.4-nano', inputUsdPerMillion: 0.20, outputUsdPerMillion: 1.25, cacheReadUsdPerMillion: 0.02, batchDiscount: 0.5, acceptVariantSuffix: true },
   { provider: 'openai', model: 'gpt-5.4-mini', inputUsdPerMillion: 0.75, outputUsdPerMillion: 4.50, cacheReadUsdPerMillion: 0.075, batchDiscount: 0.5, acceptVariantSuffix: true },
   { provider: 'openai', model: 'gpt-5.4', inputUsdPerMillion: 2.50, outputUsdPerMillion: 15.00, cacheReadUsdPerMillion: 0.25, batchDiscount: 0.5, acceptVariantSuffix: true },
@@ -311,6 +321,14 @@ export function computeModelUsageCostUsd(
   const safeNonTokenCostUsd = Number.isFinite(nonTokenCostUsd) && nonTokenCostUsd >= 0
     ? nonTokenCostUsd
     : 0;
+  const inputRateMultiplier = Number.isFinite(usage.inputRateMultiplier)
+    && Number(usage.inputRateMultiplier) > 0
+    ? Number(usage.inputRateMultiplier)
+    : 1;
+  const outputRateMultiplier = Number.isFinite(usage.outputRateMultiplier)
+    && Number(usage.outputRateMultiplier) > 0
+    ? Number(usage.outputRateMultiplier)
+    : 1;
   const pricing = resolveModelPricing(model, provider);
   if (!pricing) {
     const inputTokens = Math.max(0, usage.inputTokens || 0);
@@ -319,8 +337,8 @@ export function computeModelUsageCostUsd(
     const cacheWriteTokens = Math.max(0, usage.cacheWriteTokens || 0);
     const regularInputTokens = Math.max(0, inputTokens - cacheReadTokens - cacheWriteTokens);
     const costUsd =
-      ((regularInputTokens + cacheReadTokens + cacheWriteTokens) / 1_000_000) * UNRESOLVED_MODEL_SENTINEL_PRICING.inputUsdPerMillion +
-      (outputTokens / 1_000_000) * UNRESOLVED_MODEL_SENTINEL_PRICING.outputUsdPerMillion +
+      ((regularInputTokens + cacheReadTokens + cacheWriteTokens) / 1_000_000) * UNRESOLVED_MODEL_SENTINEL_PRICING.inputUsdPerMillion * inputRateMultiplier +
+      (outputTokens / 1_000_000) * UNRESOLVED_MODEL_SENTINEL_PRICING.outputUsdPerMillion * outputRateMultiplier +
       safeNonTokenCostUsd;
     return {
       costUsd,
@@ -336,10 +354,10 @@ export function computeModelUsageCostUsd(
   const cacheWriteTokens = Math.max(0, usage.cacheWriteTokens || 0);
   const regularInputTokens = Math.max(0, inputTokens - cacheReadTokens - cacheWriteTokens);
   const costUsd =
-    (regularInputTokens / 1_000_000) * pricing.inputUsdPerMillion +
-    (outputTokens / 1_000_000) * pricing.outputUsdPerMillion +
-    (cacheReadTokens / 1_000_000) * (pricing.cacheReadUsdPerMillion ?? pricing.inputUsdPerMillion) +
-    (cacheWriteTokens / 1_000_000) * (pricing.cacheWriteUsdPerMillion ?? pricing.inputUsdPerMillion) +
+    (regularInputTokens / 1_000_000) * pricing.inputUsdPerMillion * inputRateMultiplier +
+    (outputTokens / 1_000_000) * pricing.outputUsdPerMillion * outputRateMultiplier +
+    (cacheReadTokens / 1_000_000) * (pricing.cacheReadUsdPerMillion ?? pricing.inputUsdPerMillion) * inputRateMultiplier +
+    (cacheWriteTokens / 1_000_000) * (pricing.cacheWriteUsdPerMillion ?? pricing.inputUsdPerMillion) * inputRateMultiplier +
     safeNonTokenCostUsd;
 
   return {

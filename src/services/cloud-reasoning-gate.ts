@@ -96,6 +96,7 @@ export interface CloudReasoningSelection {
   rejected: false;
   provider: AIProvider;
   model: string;
+  serviceTier?: 'default' | 'flex' | 'priority' | 'batch';
   /**
    * v3.1: the only valid value is `'sent_raw'`. The `'sent_redacted'`
    * action has been removed because no redactor in v1.0-v3.0 survived
@@ -118,6 +119,9 @@ export interface CloudReasoningRejection {
     | 'provider_identity_mismatch'
     | 'provider_unavailable'
     | 'structured_generation_unsupported'
+    | 'script_delivery_binding_incomplete'
+    | 'script_delivery_service_tier_invalid'
+    | 'batch_transport_unavailable'
     | 'privacy_never'
     | 'request_disallows_cloud'
     | 'redaction_unsupported'  // v3.1: replaces v3.0's 'redaction_failed'
@@ -138,6 +142,7 @@ export interface CloudScriptGenerationApprovalPayload {
   containsPrivateData: boolean;
   allowCloudEscalation?: boolean;
   redactionRequired?: boolean;
+  scriptDeliveryMode?: 'standard' | 'scheduled' | 'priority';
 }
 
 /**
@@ -154,6 +159,7 @@ export interface CloudScriptGenerationApproval {
   permit: ApprovedCloudScriptGenerationPermit;
   providerName: string;
   model: string;
+  serviceTier?: 'default' | 'flex' | 'priority' | 'batch';
   privacyAction: 'sent_raw';
 }
 
@@ -165,6 +171,7 @@ export interface ConsumedCloudScriptGenerationApproval {
   payloadDigest: string;
   provider: AIProvider;
   model: string;
+  serviceTier?: 'default' | 'flex' | 'priority' | 'batch';
   privacyAction: 'sent_raw';
 }
 
@@ -257,14 +264,45 @@ export async function selectApprovedCloudReasoningProvider(
   const binding = request.scriptDeliveryMode
     ? cfg.scriptDeliveryBindings?.[request.scriptDeliveryMode] ?? null
     : null;
-  const effectiveProvider = binding && binding.provider && binding.model
-    ? binding.provider
-    : cfg.provider;
-  const effectiveModel = binding && binding.provider && binding.model
-    ? binding.model
-    : cfg.model;
+  const bindingValues = binding
+    ? [binding.provider, binding.model, binding.serviceTier].map((value) => String(value || '').trim())
+    : [];
+  const bindingConfigured = bindingValues.some(Boolean);
+  const bindingComplete = bindingValues.length === 3 && bindingValues.every(Boolean);
+  if (bindingConfigured && !bindingComplete) {
+    return {
+      rejected: true,
+      reason: 'script_delivery_binding_incomplete',
+      warning: 'script_delivery_binding_requires_provider_model_and_service_tier',
+    };
+  }
+  const effectiveProvider = bindingComplete ? bindingValues[0]! : cfg.provider;
+  const effectiveModel = bindingComplete ? bindingValues[1]! : cfg.model;
+  const effectiveServiceTier = bindingComplete ? bindingValues[2]!.toLowerCase() : undefined;
   if (!effectiveProvider || !effectiveModel) {
     return { rejected: true, reason: 'unconfigured', warning: 'no_approved_cloud_reasoning_model_configured' };
+  }
+  if (effectiveServiceTier !== undefined
+      && !['default', 'flex', 'priority', 'batch'].includes(effectiveServiceTier)) {
+    return {
+      rejected: true,
+      reason: 'script_delivery_service_tier_invalid',
+      warning: 'script_delivery_service_tier_is_not_supported',
+    };
+  }
+  if (effectiveServiceTier !== undefined && effectiveProvider.trim().toLowerCase() !== 'openai') {
+    return {
+      rejected: true,
+      reason: 'script_delivery_service_tier_invalid',
+      warning: 'script_delivery_service_tier_requires_openai',
+    };
+  }
+  if (effectiveServiceTier === 'batch') {
+    return {
+      rejected: true,
+      reason: 'batch_transport_unavailable',
+      warning: 'scheduled_batch_transport_is_not_durable_yet',
+    };
   }
 
   const modelLower = effectiveModel.toLowerCase();
@@ -403,6 +441,9 @@ export async function selectApprovedCloudReasoningProvider(
     rejected: false,
     provider,
     model: effectiveModel,
+    ...(effectiveServiceTier ? {
+      serviceTier: effectiveServiceTier as 'default' | 'flex' | 'priority',
+    } : {}),
     privacyAction: 'sent_raw',
   };
 }
@@ -433,6 +474,7 @@ export async function approveCloudScriptGeneration(
       containsPrivateData: payload.containsPrivateData,
       allowCloudEscalation: payload.allowCloudEscalation,
       redactionRequired: payload.redactionRequired,
+      scriptDeliveryMode: payload.scriptDeliveryMode,
     },
     getProvider,
     null,
@@ -459,6 +501,7 @@ export async function approveCloudScriptGeneration(
     payloadDigest: cloudScriptGenerationPayloadDigest(payload),
     provider: selection.provider,
     model: selection.model,
+    ...(selection.serviceTier ? { serviceTier: selection.serviceTier } : {}),
     privacyAction: selection.privacyAction,
   });
   return {
@@ -466,6 +509,7 @@ export async function approveCloudScriptGeneration(
     permit,
     providerName: selection.provider.name,
     model: selection.model,
+    ...(selection.serviceTier ? { serviceTier: selection.serviceTier } : {}),
     privacyAction: selection.privacyAction,
   };
 }

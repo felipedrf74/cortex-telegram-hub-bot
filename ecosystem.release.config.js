@@ -36,16 +36,38 @@ const policyEnvironmentNames = Object.freeze([
   'CLOUD_REASONING_PROVIDER',
   'CLOUD_REASONING_MODEL',
   'APPROVED_REASONING_MODELS',
+  'CLOUD_SCRIPT_STANDARD_PROVIDER',
+  'CLOUD_SCRIPT_STANDARD_MODEL',
+  'CLOUD_SCRIPT_STANDARD_SERVICE_TIER',
+  'CLOUD_SCRIPT_SCHEDULED_PROVIDER',
+  'CLOUD_SCRIPT_SCHEDULED_MODEL',
+  'CLOUD_SCRIPT_SCHEDULED_SERVICE_TIER',
+  'CLOUD_SCRIPT_PRIORITY_PROVIDER',
+  'CLOUD_SCRIPT_PRIORITY_MODEL',
+  'CLOUD_SCRIPT_PRIORITY_SERVICE_TIER',
   'OLLAMA_MODEL',
   'OLLAMA_CLASSIFIER_MODEL',
   'CHAT_CORE_V2_LOCAL_CHAT_MODEL',
   'CHAT_CORE_V2_LOCAL_CHAT_RECIPE_MODEL',
   'CHAT_CORE_V2_LOCAL_CHAT_FAST_MODEL',
 ]);
+const optionalPolicyEnvironmentNames = new Set([
+  'CLOUD_SCRIPT_STANDARD_PROVIDER',
+  'CLOUD_SCRIPT_STANDARD_MODEL',
+  'CLOUD_SCRIPT_STANDARD_SERVICE_TIER',
+  'CLOUD_SCRIPT_SCHEDULED_PROVIDER',
+  'CLOUD_SCRIPT_SCHEDULED_MODEL',
+  'CLOUD_SCRIPT_SCHEDULED_SERVICE_TIER',
+  'CLOUD_SCRIPT_PRIORITY_PROVIDER',
+  'CLOUD_SCRIPT_PRIORITY_MODEL',
+  'CLOUD_SCRIPT_PRIORITY_SERVICE_TIER',
+]);
 const protectedEnvironmentPath = path.join(baseDir, '.env');
 const protectedEnvironment = parseDotenv(fs.readFileSync(protectedEnvironmentPath));
 const policyEnvironment = Object.fromEntries(policyEnvironmentNames.map((name) => {
-  const value = protectedEnvironment[name];
+  const value = protectedEnvironment[name]
+    ?? (optionalPolicyEnvironmentNames.has(name) ? '' : undefined);
+  if (optionalPolicyEnvironmentNames.has(name) && value === '') return [name, value];
   if (typeof value !== 'string' || value.length < 1 || value.length > 512
       || /[\u0000-\u001f\u007f]/u.test(value)) {
     throw new Error(`protected release environment has an invalid or missing ${name}`);

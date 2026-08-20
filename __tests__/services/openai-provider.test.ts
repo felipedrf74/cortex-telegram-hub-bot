@@ -269,6 +269,7 @@ describe('OpenAIProvider', () => {
       expect.any(Number),
       expect.any(Number),
       expect.any(Number),
+      expect.any(Number),
       'resolved',
       'gpt-4o',
       'interactive',
@@ -311,6 +312,77 @@ describe('OpenAIProvider', () => {
         model: 'gpt-4o',
       }),
     );
+  });
+
+  it('sends the real Luna model separately from the OpenAI Flex service tier', async () => {
+    mockCreate.mockResolvedValueOnce({
+      choices: [{ message: { content: '{"plan":[]}', tool_calls: null }, finish_reason: 'stop' }],
+      usage: { prompt_tokens: 100, completion_tokens: 50 },
+      model: 'gpt-5.6-luna',
+      service_tier: 'flex',
+    });
+
+    const result = await provider.callStructuredGeneration({
+      systemPrompt: 'SCRIPTGEN_SYSTEM_SCHEMA',
+      userPrompt: '{"description":"create a helper"}',
+      model: 'gpt-5.6-luna',
+      serviceTier: 'flex',
+      maxTokens: 3000,
+      userId: 7,
+      tenantId: 8,
+      category: 'cloud_script_generation_plan',
+      responseFormat: 'json',
+    });
+
+    expect(result).toEqual({ text: '{"plan":[]}', stopReason: 'stop', serviceTier: 'flex' });
+    expect(mockCreate.mock.calls[0][0]).toMatchObject({
+      model: 'gpt-5.6-luna',
+      service_tier: 'flex',
+    });
+    expect(mockAssertAiBudgetReservationForProvider).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: 'openai',
+        model: 'gpt-5.6-luna',
+        maxCostUsd: expect.any(Number),
+      }),
+    );
+    // The tier is verified only after the billable response, so the preflight
+    // must cover the 2x Priority ceiling even when Flex was requested.
+    expect(mockAssertAiBudgetReservationForProvider.mock.lastCall?.[0].maxCostUsd)
+      .toBeGreaterThan(0.007);
+  });
+
+  it('rejects an unavailable Batch transport and a provider service-tier mismatch', async () => {
+    await expect(provider.callStructuredGeneration({
+      systemPrompt: 'SCRIPTGEN_SYSTEM_SCHEMA',
+      userPrompt: '{}',
+      model: 'gpt-5.6-luna',
+      serviceTier: 'batch',
+      maxTokens: 3000,
+      userId: 7,
+      tenantId: 8,
+      category: 'cloud_script_generation_plan',
+      responseFormat: 'json',
+    })).rejects.toThrow('durable batch adapter');
+    expect(mockCreate).not.toHaveBeenCalled();
+
+    mockCreate.mockResolvedValueOnce({
+      choices: [{ message: { content: '{}', tool_calls: null }, finish_reason: 'stop' }],
+      usage: { prompt_tokens: 10, completion_tokens: 5 },
+      model: 'gpt-5.6-luna',
+      service_tier: 'default',
+    });
+    await expect(provider.callStructuredGeneration({
+      systemPrompt: 'SCRIPTGEN_SYSTEM_SCHEMA',
+      userPrompt: '{}',
+      model: 'gpt-5.6-luna',
+      serviceTier: 'priority',
+      maxTokens: 3000,
+      userId: 7,
+      tenantId: 8,
+      category: 'cloud_script_generation_plan',
+      responseFormat: 'json',
+    })).rejects.toThrow('service tier mismatch');
   });
 
   it('rejects a non-OpenAI structured-generation model before SDK dispatch', async () => {
@@ -780,6 +852,7 @@ describe('OpenAIProvider', () => {
         150,
         50,
         expect.any(Number), // cache_read_tokens
+        expect.any(Number), // cache_write_tokens
         expect.any(Number),
         expect.any(Number),
         'resolved',
@@ -814,6 +887,7 @@ describe('OpenAIProvider', () => {
         40,
         expect.any(Number),
         expect.any(Number),
+        expect.any(Number),
         'resolved',
         'gpt-4o',
         'system',
@@ -821,6 +895,81 @@ describe('OpenAIProvider', () => {
         'openai_domain_content',
         null,
       );
+    });
+
+    it('meters GPT-5.6 cache writes at the registered write rate', async () => {
+      mockCreate.mockResolvedValueOnce({
+        choices: [{ message: { content: 'Cached Luna ok' }, finish_reason: 'stop' }],
+        model: 'gpt-5.6-luna',
+        usage: {
+          prompt_tokens: 150,
+          completion_tokens: 50,
+          prompt_tokens_details: { cached_tokens: 40, cache_write_tokens: 25 },
+        },
+      });
+
+      await provider.callStructuredGeneration({
+        systemPrompt: 'SYSTEM',
+        userPrompt: 'USER',
+        model: 'gpt-5.6-luna',
+        maxTokens: 100,
+        userId: 7,
+        tenantId: 8,
+        category: 'cloud_local_reasoning',
+        responseFormat: 'text',
+      });
+
+      const call = mockDbRun.mock.calls[0]!;
+      expect(call[6]).toBe(40);
+      expect(call[7]).toBe(25);
+      expect(call[8]).toBeCloseTo(0.00008405, 10);
+    });
+
+    it('applies GPT-5.6 long-context rates from actual provider token usage', async () => {
+      mockCreate.mockResolvedValueOnce({
+        choices: [{ message: { content: 'Long Luna ok' }, finish_reason: 'stop' }],
+        model: 'gpt-5.6-luna',
+        usage: { prompt_tokens: 272_001, completion_tokens: 1_000 },
+      });
+
+      await provider.callStructuredGeneration({
+        systemPrompt: 'SYSTEM',
+        userPrompt: 'USER',
+        model: 'gpt-5.6-luna',
+        maxTokens: 1_000,
+        userId: 7,
+        tenantId: 8,
+        category: 'cloud_local_reasoning',
+        responseFormat: 'text',
+      });
+
+      expect(mockDbRun.mock.calls[0]?.[8]).toBeCloseTo(0.1106004, 8);
+      expect(mockAssertAiBudgetReservationForProvider.mock.lastCall?.[0].maxCostUsd)
+        .toBeGreaterThan(0.0024);
+    });
+
+    it('fails usage persistence closed on invalid GPT-5.6 cache-write metadata', async () => {
+      mockCreate.mockResolvedValueOnce({
+        choices: [{ message: { content: 'Invalid usage' }, finish_reason: 'stop' }],
+        model: 'gpt-5.6-luna',
+        usage: {
+          prompt_tokens: 150,
+          completion_tokens: 50,
+          prompt_tokens_details: { cached_tokens: 0, cache_write_tokens: -1 },
+        },
+      });
+
+      await expect(provider.callStructuredGeneration({
+        systemPrompt: 'SYSTEM',
+        userPrompt: 'USER',
+        model: 'gpt-5.6-luna',
+        maxTokens: 100,
+        userId: 7,
+        tenantId: 8,
+        category: 'cloud_local_reasoning',
+        responseFormat: 'text',
+      })).rejects.toMatchObject({ code: 'AI_USAGE_PERSISTENCE_FAILED' });
+      expect(mockDbRun).not.toHaveBeenCalled();
     });
 
     it('pushes telemetry event after successful call', async () => {
@@ -851,8 +1000,8 @@ describe('OpenAIProvider', () => {
 
       // gpt-4o-mini: 1M input tokens × $0.15/MTK = $0.15.
       // 0=category, 1=model, 2=tenant_id, 3=user_id, 4=input, 5=output,
-      // 6=cache_read_tokens, 7=cost, 8=duration.
-      const costArg = mockDbRun.mock.calls[0]?.[7];
+      // 6=cache_read_tokens, 7=cache_write_tokens, 8=cost, 9=duration.
+      const costArg = mockDbRun.mock.calls[0]?.[8];
       expect(costArg).toBeCloseTo(0.15, 2);
     });
 
@@ -866,8 +1015,8 @@ describe('OpenAIProvider', () => {
       await provider.callDomain('secretary', [], 'test', '');
 
       // gpt-4o: 1M in × $2.50 + 1M out × $10.00 = $12.50.
-      // Cost moved to position 7 after tenant_id, user_id, and cache_read_tokens were inserted.
-      const costArg = mockDbRun.mock.calls[0]?.[7];
+      // Cost follows tenant/user and both cache token counters.
+      const costArg = mockDbRun.mock.calls[0]?.[8];
       expect(costArg).toBeCloseTo(12.50, 2);
     });
 
@@ -884,6 +1033,7 @@ describe('OpenAIProvider', () => {
         expect.any(String),
         expect.any(Number), // tenant_id
         expect.any(Number), // user_id (added April 9 2026)
+        expect.any(Number),
         expect.any(Number),
         expect.any(Number),
         expect.any(Number),
@@ -911,6 +1061,7 @@ describe('OpenAIProvider', () => {
         expect.any(String),
         42,
         25,
+        expect.any(Number),
         expect.any(Number),
         expect.any(Number),
         expect.any(Number),
@@ -958,6 +1109,7 @@ describe('OpenAIProvider', () => {
         expect.any(String),
         expect.any(Number), // tenant_id
         expect.any(Number), // user_id (added April 9 2026)
+        expect.any(Number),
         expect.any(Number),
         expect.any(Number),
         expect.any(Number),
@@ -1189,6 +1341,7 @@ describe('OpenAIProvider', () => {
           42,
           100,
           50,
+          0,
           0,
           expect.closeTo(0.012045, 8),
           expect.any(Number),

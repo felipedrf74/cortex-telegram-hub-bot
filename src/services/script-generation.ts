@@ -811,6 +811,7 @@ function throwIfScriptGenerationCancelled(
 async function runApprovedCloudStructuredCall<T>(args: {
   provider: AIProvider;
   model: string;
+  serviceTier?: 'default' | 'flex' | 'priority' | 'batch';
   task: ApprovedCloudScriptGenerationTask;
   systemPrompt: string;
   userPrompt: string;
@@ -838,6 +839,7 @@ async function runApprovedCloudStructuredCall<T>(args: {
         ? 'cloud_script_generation_plan'
         : 'cloud_script_generation_artifacts',
       responseFormat: 'json',
+      ...(args.serviceTier ? { serviceTier: args.serviceTier } : {}),
       abortSignal: args.abortSignal,
     });
     throwIfScriptGenerationCancelled(args.abortSignal);
@@ -898,6 +900,7 @@ export async function runApprovedCloudScriptGenerationPipeline(
   const plan = await runApprovedCloudStructuredCall<ScriptGenPlan>({
     provider: selection.provider,
     model: selection.model,
+    serviceTier: selection.serviceTier,
     task,
     systemPrompt: PLAN_SYSTEM_PROMPT,
     userPrompt: canonicalUserPrompt,
@@ -916,6 +919,7 @@ export async function runApprovedCloudScriptGenerationPipeline(
   const full = await runApprovedCloudStructuredCall<ScriptGenResult>({
     provider: selection.provider,
     model: selection.model,
+    serviceTier: selection.serviceTier,
     task,
     systemPrompt: RESULT_SYSTEM_PROMPT_HEADER,
     userPrompt: `${canonicalUserPrompt}\n\n[Prior plan JSON]\n${JSON.stringify(plan)}`,
@@ -946,6 +950,7 @@ export async function runApprovedCloudScriptGenerationPipeline(
       metaJson: {
         transport: 'approved_cloud_reasoning',
         privacyAction: selection.privacyAction,
+        serviceTier: selection.serviceTier ?? 'provider_default',
       },
       requireDurableAudit: true,
     },
