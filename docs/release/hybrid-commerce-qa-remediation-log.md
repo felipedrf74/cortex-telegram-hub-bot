@@ -5,6 +5,29 @@ hybrid AI, pricing, and commerce plan. Current release truth stays in
 [`CURRENT_RELEASE_STATE.md`](CURRENT_RELEASE_STATE.md); this file records what
 each round found and how it was closed.
 
+## Deploying a release whose delta touches `src/config.ts`
+
+Any change to `src/config.ts` sets `cdEligibility.eligible=false` on the
+published payload, and the poller halts that candidate as
+`migration_not_cd_eligible`. The owner ack (`npm run release:cd:ack --
+--confirm <candidateId>`) clears the *incident*, but it does not deploy that
+candidate: the release id now carries a settled `blocked` receipt, so every
+later poller pass refuses it with `already_settled_blocked`
+(`release-deployment.mjs`, settled-receipt guard). The eligibility verdict is
+also baked into the payload at publish time, so re-evaluating it cannot change
+the answer.
+
+The deploy therefore takes two steps, and both are required:
+
+1. Owner acks the halted candidate — this authorizes the policy exception.
+2. Push a follow-up commit whose own delta is CD-eligible (docs-only is the
+   usual choice). CI computes eligibility against the check-suite base, i.e.
+   the previous commit on main, so that payload is eligible and it carries the
+   preceding release's application code unchanged.
+
+Observed twice: `3970fac7` → acked `d9ac4a92…` → deployed by `c5a7ae67`, and
+`a7fe09ce` → acked `84389eb5…` → deployed by its docs-only successor.
+
 Audit protocol: every round runs under a promotion freeze (no merges to
 protected main until the verdict lands), and the auditor reads the active
 receipt from `sudo -n /usr/local/sbin/nexus-release-state-view` at the start
