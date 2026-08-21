@@ -229,7 +229,7 @@ rollout must begin again from OFF.
 
 Enabling the script-job worker without the Content proxy and a valid current
 encryption key is a startup error. Recovery never opens or mutates queued
-private jobs under a partially configured deployment.
+user-scoped jobs under a partially configured deployment.
 
 Production advancement is code-governed as `off -> shadow -> canary/1% ->
 canary/5% -> canary/25% -> canary/50% -> active/100%`. `off -> shadow` may start
@@ -347,11 +347,20 @@ Chat fallback uses the existing bounded cloud-allowlist packet and acquires the
 existing cloud reservation at that exact boundary. Once a private request is
 admitted to local-primary, it remains local-only unless a durable authenticated
 redaction, destination, and escalation claim explicitly authorizes export.
-This applies to long-form script stages, Content rewrite/expand, Chat Content
-refinement, and Content specialist groups: invalid output or local failure is
-withheld and reported or resumed instead of silently sending the private
-payload to a cloud provider. When routing is OFF or the user is not enrolled,
-the existing independently authorized cloud path remains unchanged.
+Content rewrite/expand, Chat Content refinement, and Content specialist groups
+remain private and local-only: invalid output or local failure is withheld and
+reported instead of silently sending those payloads to a cloud provider.
+Resumable script-job stages, including short Reel jobs, are the narrow
+owner-approved exception. The 2026-08-21 data-classification decision declares
+their generation packet
+(topic, niche, creator-voice snapshot, supplied sources, outline, and prior
+section ending) non-sensitive and permits raw transfer to the approved OpenAI
+destination. The authenticated job sets `containsPrivateData=false` and
+`allowCloudEscalation=true`; local remains primary, and every cloud attempt
+must still pass the exact delivery-class provider/model/service-tier gate and
+the serialized user/plan/run budget reservation. When routing is OFF or the
+user is not enrolled, the existing independently authorized cloud path remains
+unchanged.
 Queue pressure alone never authorizes cloud spend. A queue-selected cloud path
 must still carry an accepted allowlist packet and execute inside the owning
 request's cloud-budget boundary; a missing or denied boundary returns the typed
@@ -497,8 +506,10 @@ structured specialist contract into unvalidated text.
 including the creator-voice and supplied-source snapshots. Generation is
 outline, sequential validated sections, deterministic assembly, and final
 language/word-count/safety validation. Each section is encrypted and
-checkpointed; retry resumes after the last valid checkpoint and cancellation
-never falls back. An inference run is successful evidence only after its
+checkpointed with `local` or `cloud` provenance; retry resumes after the last
+valid checkpoint and cancellation never falls back. The completed job reports
+`local`, `cloud`, or `mixed`, and exposes a model digest only for an all-local
+result. An inference run is successful evidence only after its
 lease-fenced encrypted checkpoint commits. If cancellation or lease loss wins
 after generation but before that commit, every run contributing to the
 discarded outline or section is marked as an application rejection and is
@@ -818,13 +829,15 @@ An owner-approved historical-retention schedule and its reviewed pruning
 transaction are also required before public activation; this repository does
 not infer authorization to irreversibly delete completed customer artifacts.
 
-Raw private Content cloud fallback is intentionally unavailable. It cannot be
-added safely until Nexus has an authenticated, payload-specific contract that
-proves the outbound text was redacted, names the approved destination, and
-records the user's cloud-escalation authority before any provider call. Until
-then, script jobs, Content refinement, and specialist groups fail visibly or
-resume locally; routing OFF still preserves the independently authorized
-legacy cloud path.
+Raw private Content cloud fallback remains intentionally unavailable. Content
+refinement and specialist groups cannot add it until Nexus has an
+authenticated, payload-specific contract that proves the outbound text was
+redacted, names the approved destination, and records the user's escalation
+authority before any provider call. Resumable script-job generation, including
+short Reel jobs, is not
+classified as private under the owner-approved 2026-08-21 policy and may use
+only its delivery-bound, budgeted OpenAI fallback described in §4; routing OFF
+still preserves the independently authorized legacy cloud path.
 
 The actual candidate download, VPS bakeoff, benchmark/socket receipts,
 production Compose gateway addition, iOS release, rollout observations, and

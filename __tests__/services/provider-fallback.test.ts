@@ -455,6 +455,25 @@ describe('TaskRoutingProvider', () => {
       null,
     );
 
+    await expect(localPrimary.dispatchLocalReasoning({
+      workloadRole: 'skill_inference',
+      prompt: 'scheduled OpenAI-only script section',
+      containsPrivateData: false,
+      allowCloudEscalation: true,
+      scriptDeliveryMode: 'scheduled',
+      requiredCloudProvider: 'openai',
+      localAdmission: 'eligible',
+      cloudFallbackBoundary: boundary,
+    })).resolves.toMatchObject({ text: expect.any(String) });
+    expect(optionalCloudMocks.selectApprovedCloudReasoningProvider).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        scriptDeliveryMode: 'scheduled',
+        requiredCloudProvider: 'openai',
+      }),
+      expect.anything(),
+      null,
+    );
+
     optionalCloudMocks.selectApprovedCloudReasoningProvider.mockResolvedValueOnce({
       rejected: false as const,
       provider: optionalCloudMocks.provider,

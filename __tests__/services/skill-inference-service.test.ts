@@ -252,6 +252,61 @@ describe('skill inference service', () => {
     db.close();
   });
 
+  it('marks a completed cloud result invalid when the application rejects it', async () => {
+    const db = database();
+    dispatchMock.mockResolvedValueOnce({
+      text: 'cloud output later rejected by the application',
+      providerMetadata: {
+        providerUsed: 'openai',
+        modelUsed: 'gpt-5.6-luna',
+        inputTokens: 20,
+        outputTokens: 10,
+      },
+    });
+    const {
+      executeSkillInference,
+      rejectSkillInferenceApplicationResult,
+    } = await import('../../src/services/skill-inference-service');
+
+    await expect(executeSkillInference({
+      tenantId: 42,
+      userId: 42,
+      skillId: 'content',
+      taskType: 'script_section',
+      riskClass: 'low',
+      executionClass: 'background',
+      operationId: 'cloud-application-rejection',
+      runId: 'cloud-application-rejection-run',
+      prompt: 'Write one non-sensitive script section.',
+      schemaId: 'text',
+      containsPrivateData: false,
+      allowCloudEscalation: true,
+      requestSource: 'automation',
+      budgetRequest: {
+        userId: 42,
+        requestSource: 'automation',
+        baseCategory: 'content_script_job_script_section',
+      },
+      cloudBudgetBoundary: async <T>(_request: unknown, call: () => Promise<T>) => call(),
+    }, db)).resolves.toMatchObject({ route: 'cloud', provider: 'openai' });
+
+    rejectSkillInferenceApplicationResult({
+      runId: 'cloud-application-rejection-run',
+      tenantId: 42,
+      userId: 42,
+      reason: 'content_script_section_semantic_invalid',
+    }, db);
+
+    expect(db.prepare(`SELECT status, final_route, validation_status, fallback_reason
+      FROM skill_inference_runs WHERE run_id = ?`).get('cloud-application-rejection-run')).toEqual({
+      status: 'failed',
+      final_route: 'none',
+      validation_status: 'invalid',
+      fallback_reason: 'content_script_section_semantic_invalid',
+    });
+    db.close();
+  });
+
   it('repairs invalid local schema once without entering the cloud budget boundary', async () => {
     const db = database();
     db.prepare(`UPDATE local_inference_runtime_control

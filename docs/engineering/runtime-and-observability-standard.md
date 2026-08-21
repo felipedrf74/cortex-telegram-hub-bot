@@ -327,16 +327,19 @@ When production is degraded:
    host memory; 24 GiB is benchmark-only. Cloud budget is acquired lazily only
    around an actual approved cloud attempt, with ordinary daily/monthly limits
    plus plan-owned hard local-fallback run/day ceilings and durable per-provider
-   attempt reservations. Private Content payloads are
-   local-only after local-primary admission, including script stages,
-   rewrite/expand, Chat Content refinement, and specialist groups. With local
-   routing OFF or outside the cohort, independently authorized legacy cloud
-   paths remain available. Async script jobs generate a validated outline and
-   then one bounded section at a time, renewing the lease and encrypting each
-   validated checkpoint before starting the next section. They fail visibly
-   without cloud until an authenticated redaction and cloud-escalation contract
-   is implemented; the legacy attribution token is not sufficient authority
-   for job fallback.
+   attempt reservations. Private Content rewrite/expand, Chat Content
+   refinement, and specialist payloads remain local-only after local-primary
+   admission. With local routing OFF or outside the cohort, independently
+   authorized legacy cloud paths remain available. Resumable script jobs,
+   including short Reel jobs, generate
+   a validated outline and then one bounded section at a time, renewing the
+   lease and encrypting each validated checkpoint before starting the next
+   section. Under the owner-approved 2026-08-21 classification, these script-
+   generation packets are non-sensitive and may use the approved OpenAI
+   delivery binding after a local failure or unavailable local route. Every
+   such attempt still passes the provider/model/service-tier gate and
+   serialized user/plan/run budget; the completed job records `local`, `cloud`,
+   or `mixed` provenance.
 
    The additive Content job API is `POST /api/v1/content/script-jobs`, tenant-
    scoped `GET`, `POST .../cancel`, and `POST .../retry`. It exposes the six

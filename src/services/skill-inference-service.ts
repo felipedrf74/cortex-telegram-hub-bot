@@ -81,6 +81,8 @@ export interface SkillInferenceRequest {
   /** Addendum C: delivery class for script-job stages — selects the bound
    * cloud tier at the reasoning gate when escalation is permitted. */
   scriptDeliveryMode?: 'standard' | 'scheduled' | 'priority';
+  /** Server-owned destination constraint for owner-approved cloud exports. */
+  requiredCloudProvider?: 'openai';
   requestSource: AiRequestSource;
   budgetRequest: AiBudgetRequest;
   cloudBudgetBoundary: <T>(request: AiBudgetRequest, providerCall: () => Promise<T>) => Promise<T>;
@@ -667,7 +669,7 @@ export function rejectSkillInferenceApplicationResult(input: {
     SET status = 'failed', final_route = 'none', validation_status = 'invalid',
         fallback_reason = ?, completed_at = ?, updated_at = ?
     WHERE run_id = ? AND tenant_id = ? AND user_id = ? AND status = 'completed'
-      AND final_route = 'local'`)
+      AND final_route IN ('local', 'cloud')`)
     .run(
       input.reason.trim().slice(0, 160) || 'application_validation_failed',
       timestamp,
@@ -682,7 +684,7 @@ export function rejectSkillInferenceApplicationResult(input: {
  * Reject every completed local stage that contributed to one user-visible
  * operation. Chat may perform a bounded repair under a second run id; if the
  * final composed answer fails an application validator, neither stage is a
- * successful local outcome for quality or pricing evidence.
+ * successful delivered outcome for quality or pricing evidence.
  */
 export function rejectSkillInferenceApplicationOperationResults(input: {
   operationId: string;
@@ -695,7 +697,7 @@ export function rejectSkillInferenceApplicationOperationResults(input: {
     SET status = 'failed', final_route = 'none', validation_status = 'invalid',
         fallback_reason = ?, completed_at = ?, updated_at = ?
     WHERE operation_id = ? AND tenant_id = ? AND user_id = ? AND status = 'completed'
-      AND final_route = 'local'`)
+      AND final_route IN ('local', 'cloud')`)
     .run(
       input.reason.trim().slice(0, 160) || 'application_validation_failed',
       timestamp,
@@ -1026,6 +1028,9 @@ async function executeSkillInferenceInternal(
       redactionRequired: request.redactionRequired,
       ...(request.scriptDeliveryMode !== undefined
         ? { scriptDeliveryMode: request.scriptDeliveryMode }
+        : {}),
+      ...(request.requiredCloudProvider !== undefined
+        ? { requiredCloudProvider: request.requiredCloudProvider }
         : {}),
       outputSchema: request.outputSchema,
       numCtx: contextTokens,

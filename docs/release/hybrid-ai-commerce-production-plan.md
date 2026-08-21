@@ -156,6 +156,14 @@ A 15-minute script targets 1,900–2,400 spoken words and uses a durable backgro
 
 Per-section output ceilings are 5,120 tokens for Pro and 6,144 for Max. Reaching the ceiling triggers continuation from the last validated boundary, never silent truncation.
 
+Owner privacy decision (2026-08-21): packets from the resumable script-job
+path, including short Reel jobs, are classified as non-sensitive and may be
+sent to an approved OpenAI route when
+local-primary inference needs an authorized cloud delivery or fallback path.
+This narrow exception does not cover private Content history, rewrites,
+refinements, specialist work, or Finance, Training, Triathlon, and Secretary
+data; those retain their existing minimization and cloud-authority controls.
+
 The seven Content roles execute in four dependency groups while preserving separate role outputs, provenance, summaries, and validation:
 
 | Group | Roles |
@@ -196,6 +204,13 @@ iOS prices come dynamically from StoreKit. In-app digital purchases use StoreKit
 
 Migrate purchased credit lots to nonexpiring. Restore identifiable unspent expired Apple lots unless refunded or revoked. Replace best-effort Apple notification acknowledgement with verified JWS processing, a durable inbox, error responses that permit retries, and scheduled App Store reconciliation.
 
+The required real sandbox proof runs against the isolated staging backend with
+`APPLE_ALLOW_SANDBOX_GRANTS=true`, the exact production bundle and product IDs,
+and an Apple-signed StoreKit JWS. Production keeps that switch false. The test
+must prove one credit grant, exact transaction/account binding, idempotent
+replay, and a retained retry for every unrecognized or refused outcome before
+the production fulfillment switch is enabled.
+
 The website App Store CTA has `unavailable`, `approved`, and `public` states. The official badge and allowlisted `apps.apple.com` URL activate only after the listing is independently verified. Apple review latency does not block backend and web production launch, but the iOS public-release item remains externally pending until Apple approves it.
 
 ## 4. Security and margin controls
@@ -207,7 +222,7 @@ The website App Store CTA has `unavailable`, `approved`, and `public` states. Th
 | Identity and tenancy | Derive ownership from authenticated context; bind Apple transactions with `appAccountToken`; reject client-supplied ownership |
 | Money and credits | Append-only lots, atomic reserve/capture/release, unique provider events, durable webhook inboxes, idempotency, and daily reconciliation |
 | Model safety | Model output never executes tools directly; deterministic capability checks, confirmations, execution, and read-back remain authoritative |
-| Privacy | Sensitive Finance, Training, Triathlon, Secretary, and private Content data require minimization and explicit cloud-routing authority |
+| Privacy | Sensitive Finance, Training, Triathlon, Secretary, and private Content data require minimization and explicit cloud-routing authority; the owner-classified non-sensitive resumable script-job packet follows the narrow §2 exception |
 | Infrastructure | Signed OCI/model digests, SBOM and secret scanning, encrypted storage/backups, CSP/HSTS/CSRF, strict redirect allowlists, rate limits, and independent kill switches |
 
 Do not log private prompts, scripts, financial values, calendar contents, receipts, tokens, provider payloads, or secrets. Push notifications use generic messages such as “Your script is ready.”

@@ -1626,6 +1626,7 @@ export class TaskRoutingProvider implements AIProvider {
       localAdmission?: unknown;
       cloudFallbackBoundary?: unknown;
       scriptDeliveryMode?: unknown;
+      requiredCloudProvider?: unknown;
     };
     throwIfOptionalTaskCancelled(taskRecord.abortSignal);
 
@@ -1763,6 +1764,7 @@ export class TaskRoutingProvider implements AIProvider {
       localAdmission?: unknown;
       cloudFallbackBoundary?: unknown;
       scriptDeliveryMode?: unknown;
+      requiredCloudProvider?: unknown;
     },
     primaryError: unknown,
   ): Promise<unknown> {
@@ -1948,6 +1950,15 @@ export class TaskRoutingProvider implements AIProvider {
         ...(taskRecord.outputSchema !== undefined ? { outputSchema: taskRecord.outputSchema } : {}),
       });
 
+      if (taskRecord.requiredCloudProvider !== undefined
+          && (typeof taskRecord.requiredCloudProvider !== 'string'
+            || !taskRecord.requiredCloudProvider.trim())) {
+        applyCloudGateRejection({
+          reason: 'provider_not_authorized_for_request',
+          warning: 'required_cloud_provider_constraint_invalid',
+        });
+      }
+
       const selection = typeof taskRecord.containsPrivateData === 'boolean'
         ? await selectApprovedCloudReasoningProvider(
           {
@@ -1961,6 +1972,9 @@ export class TaskRoutingProvider implements AIProvider {
               || taskRecord.scriptDeliveryMode === 'scheduled'
               || taskRecord.scriptDeliveryMode === 'priority'
               ? { scriptDeliveryMode: taskRecord.scriptDeliveryMode }
+              : {}),
+            ...(typeof taskRecord.requiredCloudProvider === 'string'
+              ? { requiredCloudProvider: taskRecord.requiredCloudProvider }
               : {}),
           },
           (name: string) => getProvider(name),

@@ -515,6 +515,51 @@ describe('per-class script delivery bindings (§1 / Addendum C)', () => {
     }
   });
 
+  it('fails closed before dispatch when payload authority requires OpenAI', async () => {
+    const unbound = await selectApprovedCloudReasoningProvider(
+      {
+        prompt: 'p',
+        containsPrivateData: false,
+        scriptDeliveryMode: 'standard',
+        requiredCloudProvider: 'openai',
+      },
+      getProvider,
+      null,
+    );
+    expect(unbound).toMatchObject({
+      rejected: true,
+      reason: 'provider_not_authorized_for_request',
+    });
+
+    bindings().standard = {
+      provider: 'openai',
+      model: 'gpt-5.6-luna',
+      serviceTier: 'default',
+    };
+    mockConfig.cloudReasoningFallback.approvedReasoningModels = [
+      'gemini-2.5-pro',
+      'gpt-5.6-luna',
+    ];
+    try {
+      await expect(selectApprovedCloudReasoningProvider(
+        {
+          prompt: 'p',
+          containsPrivateData: false,
+          scriptDeliveryMode: 'standard',
+          requiredCloudProvider: 'openai',
+        },
+        getProvider,
+        null,
+      )).resolves.toMatchObject({
+        rejected: false,
+        model: 'gpt-5.6-luna',
+        serviceTier: 'default',
+      });
+    } finally {
+      resetBindings();
+    }
+  });
+
   it('class bindings cannot bypass the quality gate or invent model suffixes for service tiers', async () => {
     bindings().priority = { provider: 'openai', model: 'gpt-5.6-luna', serviceTier: 'fast' };
     try {

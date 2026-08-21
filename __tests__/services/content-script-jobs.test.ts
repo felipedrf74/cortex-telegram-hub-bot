@@ -6,6 +6,9 @@ import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const inferenceMock = vi.hoisted(() => vi.fn());
+const budgetReservationMock = vi.hoisted(() => vi.fn(
+  async (_request: unknown, providerCall: () => Promise<unknown>) => providerCall(),
+));
 const contentJobMocks = vi.hoisted(() => ({
   scriptSafetyBlocked: false,
   userLanguage: 'en',
@@ -98,6 +101,12 @@ vi.mock('../../src/services/skill-inference-service', async () => {
     SkillInferencePolicyError: MockSkillInferencePolicyError,
   };
 });
+vi.mock('../../src/services/cost-guardrail', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/cost-guardrail')>(
+    '../../src/services/cost-guardrail',
+  )),
+  withAiBudgetReservation: (...args: unknown[]) => budgetReservationMock(...args),
+}));
 vi.mock('../../src/api/routes/content-script-route-utils', async () => ({
   ...(await vi.importActual<typeof import('../../src/api/routes/content-script-route-utils')>(
     '../../src/api/routes/content-script-route-utils',
@@ -201,6 +210,35 @@ function outlineLocalResult(count: number): Record<string, unknown> {
   });
 }
 
+function cloudResult(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    text: 'ok',
+    provider: 'openai',
+    route: 'cloud',
+    model: 'gpt-5.6-luna',
+    runId: `run-${Math.random()}`,
+    operationId: 'operation',
+    validationStatus: 'valid',
+    queueWaitMs: 0,
+    durationMs: 10,
+    ...overrides,
+  };
+}
+
+function outlineCloudResult(count: number): Record<string, unknown> {
+  return cloudResult({
+    parsed: {
+      hook: 'Start with a concrete promise.',
+      titleOptions: ['Title one', 'Title two', 'Title three'],
+      sections: Array.from({ length: count }, (_, index) => ({
+        key: `draft_${index + 1}`,
+        title: `Section ${index + 1}`,
+        instructions: `Develop section ${index + 1} clearly.`,
+      })),
+    },
+  });
+}
+
 function parsedPrompt(raw: string): Record<string, unknown> {
   return JSON.parse(raw.split('\n')[0]) as Record<string, unknown>;
 }
@@ -211,6 +249,7 @@ describe('durable Content script jobs', () => {
     const { resetContentScriptJobShutdownForTests } = await import('../../src/services/content-script-jobs');
     resetContentScriptJobShutdownForTests();
     inferenceMock.mockReset();
+    budgetReservationMock.mockClear();
     contentJobMocks.scriptSafetyBlocked = false;
     contentJobMocks.userLanguage = 'en';
     contentJobMocks.rejectApplicationResult.mockReset();
@@ -413,17 +452,119 @@ describe('durable Content script jobs', () => {
     expect(inferenceMock).toHaveBeenCalledTimes(7);
     for (const [request] of inferenceMock.mock.calls) {
       expect(request).toMatchObject({
-        containsPrivateData: true,
-        allowCloudEscalation: false,
+        containsPrivateData: false,
+        allowCloudEscalation: true,
+        redactionRequired: false,
         executionClass: 'background',
+        scriptDeliveryMode: 'standard',
+        requiredCloudProvider: 'openai',
       });
+      await expect(request.cloudBudgetBoundary(
+        request.budgetRequest,
+        async () => 'budgeted-cloud-call',
+      )).resolves.toBe('budgeted-cloud-call');
     }
+    expect(budgetReservationMock).toHaveBeenCalledTimes(7);
     const checkpoints = db.prepare(`SELECT section_key, output_json, route
       FROM content_script_job_checkpoints ORDER BY section_index`).all() as Array<Record<string, string>>;
     expect(checkpoints).toHaveLength(7);
     expect(checkpoints[0]).toMatchObject({ section_key: 'outline', route: 'local' });
     expect(checkpoints[1]).toMatchObject({ section_key: 'section_1', route: 'local' });
     expect(checkpoints[1].output_json).not.toContain('word1');
+    db.close();
+  });
+
+  it('accepts an approved cloud-only script and records cloud provenance', async () => {
+    const db = database();
+    const service = await import('../../src/services/content-script-jobs');
+    const created = service.createContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      idempotencyKey: 'cloud-success',
+      request: {
+        topic: 'Cloud script',
+        format: 'YouTube',
+        maxDurationMinutes: 8,
+        language: 'en',
+        deliveryMode: 'priority',
+      },
+    }, db);
+    inferenceMock.mockImplementation(async (input: { taskType: string; prompt: string }) => {
+      const prompt = parsedPrompt(input.prompt);
+      if (input.taskType.startsWith('script_outline')) {
+        return outlineCloudResult(Number(prompt.exactSectionCount));
+      }
+      const words = Number(prompt.targetWords);
+      const tokens = Array.from({ length: words }, (_, index) => `cloud${index + 1}`);
+      tokens[tokens.length - 1] += '.';
+      return cloudResult({ text: tokens.join(' ') });
+    });
+
+    const completed = await service.runContentScriptJob(created.job.jobId, db);
+
+    expect(completed).toMatchObject({ status: 'completed', route: 'cloud', modelDigest: null });
+    expect(inferenceMock.mock.calls.every(([request]) => (
+      request.scriptDeliveryMode === 'priority'
+      && request.requiredCloudProvider === 'openai'
+      && request.containsPrivateData === false
+      && request.allowCloudEscalation === true
+    ))).toBe(true);
+    expect(db.prepare(`SELECT DISTINCT route FROM content_script_job_checkpoints
+      WHERE job_id = ? ORDER BY route`).all(created.job.jobId)).toEqual([{ route: 'cloud' }]);
+    db.close();
+  });
+
+  it('records mixed provenance when a local outline is followed by cloud sections', async () => {
+    const db = database();
+    const service = await import('../../src/services/content-script-jobs');
+    const created = service.createContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      idempotencyKey: 'mixed-success',
+      request: { topic: 'Mixed script', format: 'YouTube', maxDurationMinutes: 8, language: 'en' },
+    }, db);
+    inferenceMock.mockImplementation(async (input: { taskType: string; prompt: string }) => {
+      const prompt = parsedPrompt(input.prompt);
+      if (input.taskType.startsWith('script_outline')) {
+        return outlineLocalResult(Number(prompt.exactSectionCount));
+      }
+      const words = Number(prompt.targetWords);
+      const tokens = Array.from({ length: words }, (_, index) => `mixed${index + 1}`);
+      tokens[tokens.length - 1] += '.';
+      return cloudResult({ text: tokens.join(' ') });
+    });
+
+    const completed = await service.runContentScriptJob(created.job.jobId, db);
+
+    expect(completed).toMatchObject({ status: 'completed', route: 'mixed', modelDigest: null });
+    expect(db.prepare(`SELECT DISTINCT route FROM content_script_job_checkpoints
+      WHERE job_id = ? ORDER BY route`).all(created.job.jobId)).toEqual([
+      { route: 'cloud' },
+      { route: 'local' },
+    ]);
+    db.close();
+  });
+
+  it('fails cloud stages that omit the approved provider/model identity', async () => {
+    const db = database();
+    const service = await import('../../src/services/content-script-jobs');
+    const created = service.createContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      idempotencyKey: 'cloud-identity-missing',
+      request: { topic: 'Missing identity', format: 'YouTube', maxDurationMinutes: 8, language: 'en' },
+    }, db);
+    inferenceMock.mockResolvedValueOnce(outlineCloudResult(6));
+    inferenceMock.mockResolvedValueOnce(cloudResult({ model: '   ' }));
+
+    await expect(service.runContentScriptJob(created.job.jobId, db))
+      .rejects.toMatchObject({ code: 'CONTENT_SCRIPT_CLOUD_IDENTITY_MISSING' });
+    expect(service.getContentScriptJob(42, 42, created.job.jobId, db))
+      .toMatchObject({ status: 'failed', errorCode: 'CONTENT_SCRIPT_CLOUD_IDENTITY_MISSING' });
+    expect(contentJobMocks.rejectApplicationResult).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: 'content_script_cloud_identity_missing' }),
+      db,
+    );
     db.close();
   });
 
@@ -1436,6 +1577,9 @@ describe('durable Content script jobs', () => {
       text: Array.from({ length: 187 }, (_, index) => `saved${index + 1}`).join(' '),
       wordBudget: 187,
       modelDigest: ACTIVE_MODEL_DIGEST,
+      // Legacy/corrupt route arrays must fall back to the validated checkpoint
+      // column instead of erasing provenance during resume.
+      routes: ['unsupported-route'],
     };
     const insert = db.prepare(`INSERT INTO content_script_job_checkpoints (
       job_id, section_index, section_key, state, word_budget, output_json, validation_json, route
