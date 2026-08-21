@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: release owner (Felipe)
-Last verified: 2026-08-09
+Last verified: 2026-08-21
 Update policy: update when the App Store review outcome, subscription product
 identity, reviewer entitlement mechanism, or reviewer demo-account contract
 changes.
@@ -13,10 +13,9 @@ submitted, so the paywall never leaves its loading state — and Guideline
 5.1.1(v) — the app supports account creation with no in-app account-deletion
 path.
 
-Code remediation is in flight on the `claude/appstore-review-fixes-20260727`
-branch of both the backend and the iOS repository. This runbook covers only the
-half that no code change can satisfy: App Store Connect configuration, reviewer
-account provisioning, and production posture during the review window.
+The code remediation has advanced since that rejection. This runbook covers
+the App Store Connect configuration, reviewer account provisioning, and
+production posture that source changes alone cannot satisfy.
 
 This file is a sequence and evidence definition. It is not authorization to
 mutate production, Cloudflare, App Store Connect, or the App ID, and it does not
@@ -39,21 +38,26 @@ Work these in order. Item 1 gates every other item on this list.
    Apple ID `6762022696`, team `B6885R8NWM`. These are the values pinned in the
    iOS repository's `ci_scripts/distribution-policy.json`. Products created
    under a sibling app record are invisible to this binary.
-3. Create or confirm the subscription group that holds every product, with a
-   group display name and an explicit rank per product.
-4. Verify each product identifier character-for-character against
-   `Nexus Hub/Core/SubscriptionManager.swift`: `me.nexushub.pro.monthly`,
-   `me.nexushub.pro.yearly`, `me.nexushub.max.monthly`,
-   `me.nexushub.max.yearly`. They are deliberately not namespaced beneath the
-   bundle id, so a typo and a not-yet-approved product are indistinguishable
-   from the client: both yield an empty product array.
-5. Per product, confirm at least one localization with display name and
-   description, a price schedule covering every storefront the app ships to, and
-   an attached review screenshot. The screenshot is mandatory and is the field
-   most often left blank. Each product must read **Ready to Submit**.
-6. **Attach every product to the 1.5.0 version submission.** This is literally
-   what the 2.1(b) rejection text says was missing; products can be Ready to
-   Submit and still not be part of the version submission.
+3. Confirm the subscription group and ranks: Max monthly/yearly are level 1;
+   Pro monthly/yearly are level 2. Only `me.nexushub.pro.monthly` ($9.99) and
+   `me.nexushub.max.monthly` ($14.99) are offered for new sale. Keep
+   `me.nexushub.pro.yearly` and `me.nexushub.max.yearly` in the group solely so
+   historical receipts and renewals restore, but remove both annual products
+   from sale and do not advertise or attach them as new-sale products.
+4. Verify the three consumables character-for-character against the backend
+   and `Configuration.storekit`: `me.nexushub.credits.pack100` ($4.99),
+   `me.nexushub.credits.pack250` ($9.99), and
+   `me.nexushub.credits.pack600` ($19.99). Consumables are in-app purchases,
+   not members of the auto-renewable subscription group.
+5. For the two monthly subscriptions and three consumables, confirm at least
+   one localization with display name and description, a price schedule
+   covering every storefront the app ships to, and an attached review
+   screenshot. The screenshot is mandatory and is the field most often left
+   blank. Each new-sale product must read **Ready to Submit**.
+6. **Attach exactly the two monthly subscriptions and three consumables to the
+   next 1.5.0 version submission.** Products can be Ready to Submit and still
+   not be part of the version submission. Do not attach the annual
+   restore/renewal-only products.
 7. App Information → License Agreement: either file the custom EULA that the
    paywall already links (`https://nexushub.me/termos`, with the English variant
    at `?lang=en`) or switch the app to Apple's standard EULA. Confirm the

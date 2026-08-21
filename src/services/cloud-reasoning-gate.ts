@@ -83,6 +83,8 @@ export interface CloudReasoningRequest {
    * passes the identical disallow/approved/preview checks below.
    */
   scriptDeliveryMode?: 'standard' | 'scheduled' | 'priority';
+  /** Server-owned exact provider constraint for payload-specific authority. */
+  requiredCloudProvider?: string;
   /**
    * v3.1: kept in the type for backwards-compat with existing callers,
    * but no longer changes gate behavior. Setting this on a private-data
@@ -117,6 +119,7 @@ export interface CloudReasoningRejection {
     | 'preview_blocked'
     | 'provider_model_mismatch'
     | 'provider_identity_mismatch'
+    | 'provider_not_authorized_for_request'
     | 'provider_unavailable'
     | 'structured_generation_unsupported'
     | 'script_delivery_binding_incomplete'
@@ -281,6 +284,14 @@ export async function selectApprovedCloudReasoningProvider(
   const effectiveServiceTier = bindingComplete ? bindingValues[2]!.toLowerCase() : undefined;
   if (!effectiveProvider || !effectiveModel) {
     return { rejected: true, reason: 'unconfigured', warning: 'no_approved_cloud_reasoning_model_configured' };
+  }
+  const requiredCloudProvider = request.requiredCloudProvider?.trim().toLowerCase();
+  if (requiredCloudProvider && effectiveProvider.trim().toLowerCase() !== requiredCloudProvider) {
+    return {
+      rejected: true,
+      reason: 'provider_not_authorized_for_request',
+      warning: 'configured_cloud_provider_not_authorized_for_request',
+    };
   }
   if (effectiveServiceTier !== undefined
       && !['default', 'flex', 'priority', 'batch'].includes(effectiveServiceTier)) {

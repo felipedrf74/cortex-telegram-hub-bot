@@ -42,9 +42,9 @@ import {
   isSkillInferenceAccountDeletionFenced,
   isLocalInferenceUserEnrolled,
   rejectSkillInferenceApplicationResult,
-  SkillInferencePolicyError,
   type SkillInferenceResult,
 } from './skill-inference-service';
+import { withAiBudgetReservation } from './cost-guardrail';
 import {
   createContentScriptInfrastructureAbort,
   isLocalFairUseExemptFailureReason,
@@ -181,6 +181,8 @@ interface ScriptOutline {
   inferenceRunIds: string[];
 }
 
+type ContentScriptInferenceRoute = 'local' | 'cloud';
+
 interface ValidatedSection {
   index: number;
   key: string;
@@ -188,6 +190,7 @@ interface ValidatedSection {
   text: string;
   wordBudget: number;
   modelDigest: string | null;
+  routes: ContentScriptInferenceRoute[];
   inferenceRunIds: string[];
 }
 
@@ -202,7 +205,7 @@ class ContentScriptFinalValidationError extends ContentScriptJobError {
   constructor(readonly warningCodes: string[]) {
     super(
       'LOCAL_SCRIPT_FINAL_VALIDATION_FAILED',
-      'The assembled local script requires review before publication.',
+      'The assembled script requires review before publication.',
       422,
     );
     this.name = 'ContentScriptFinalValidationError';
@@ -1027,7 +1030,7 @@ function outlineSchema(sectionCount: number): Record<string, unknown> {
   };
 }
 
-async function runLocalStage(
+async function runScriptStage(
   db: Database.Database,
   row: JobRow,
   request: ContentScriptJobRequest,
@@ -1050,37 +1053,35 @@ async function runLocalStage(
     executionClass: 'background',
     operationId: row.operation_id,
     prompt: input.prompt,
-    applicationGuidance: `Write in ${request.language}. This is one private, local-only stage of a resumable Content script job.`,
+    applicationGuidance: `Write in ${request.language}. This is one output-only stage of a resumable Content script job. Use no tools or external state.`,
     schemaId: input.schemaId,
     ...(input.outputSchema ? { outputSchema: input.outputSchema } : {}),
     requestedOutputTokens: input.requestedOutputTokens,
     temperature: input.schemaId === 'generic_json' ? 0.2 : 0.65,
-    containsPrivateData: true,
-    allowCloudEscalation: false,
-    redactionRequired: true,
-    // Addendum C: carried so an activation-time escalation policy selects
-    // this job's bound cloud tier; inert while escalation stays false.
+    // Owner policy (2026-08-21): script-generation inputs are non-sensitive
+    // and may cross the approved OpenAI boundary. Local remains primary; the
+    // provider gate, delivery binding, and serialized budget remain mandatory.
+    containsPrivateData: false,
+    allowCloudEscalation: true,
+    redactionRequired: false,
     scriptDeliveryMode: resolveScriptDeliveryMode(row.delivery_mode ?? 'standard'),
+    requiredCloudProvider: 'openai',
     requestSource: 'automation',
     budgetRequest: {
       userId: row.owner_user_id,
       requestSource: 'automation',
       baseCategory: `content_script_job_${input.taskType}`,
-      jobName: 'content_script_job_local_stage',
+      jobName: 'content_script_job_stage',
       runId: row.operation_id,
     },
-    cloudBudgetBoundary: async () => {
-      throw new SkillInferencePolicyError(
-        'CONTENT_SCRIPT_JOB_CLOUD_ESCALATION_NOT_AUTHORIZED',
-        'Private script jobs require explicit cloud-escalation authority.',
-        403,
-      );
-    },
+    cloudBudgetBoundary: (budgetRequest, providerCall) => (
+      withAiBudgetReservation(budgetRequest, providerCall)
+    ),
     abortSignal: signal,
     deadlineMs: 5 * 60 * 1000,
   }, db);
-  if (result.model !== request.pinnedModelTag
-      || result.modelDigest !== request.pinnedModelDigest) {
+  if (result.route === 'local' && (result.model !== request.pinnedModelTag
+      || result.modelDigest !== request.pinnedModelDigest)) {
     rejectSkillInferenceApplicationResult({
       runId: result.runId,
       tenantId: row.tenant_id,
@@ -1090,6 +1091,21 @@ async function runLocalStage(
     throw new ContentScriptJobError(
       'CONTENT_SCRIPT_PINNED_MODEL_MISMATCH',
       'A script stage did not execute on the model digest pinned to the job.',
+      502,
+    );
+  }
+  if (result.route === 'cloud'
+      && (typeof result.provider !== 'string' || !result.provider.trim()
+        || typeof result.model !== 'string' || !result.model.trim())) {
+    rejectSkillInferenceApplicationResult({
+      runId: result.runId,
+      tenantId: row.tenant_id,
+      userId: row.owner_user_id,
+      reason: 'content_script_cloud_identity_missing',
+    }, db);
+    throw new ContentScriptJobError(
+      'CONTENT_SCRIPT_CLOUD_IDENTITY_MISSING',
+      'A cloud script stage did not report its approved provider and model identity.',
       502,
     );
   }
@@ -1118,6 +1134,7 @@ function persistCheckpoint(
     wordBudget: number;
     output: unknown;
     validation: Record<string, unknown>;
+    route: ContentScriptInferenceRoute;
     modelDigest: string | null;
   },
 ): void {
@@ -1126,7 +1143,7 @@ function persistCheckpoint(
     db.prepare(`INSERT INTO content_script_job_checkpoints (
     job_id, section_index, section_key, state, word_budget,
     output_json, validation_json, route, model_digest
-    ) VALUES (?, ?, ?, 'validated', ?, ?, ?, 'local', ?)
+    ) VALUES (?, ?, ?, 'validated', ?, ?, ?, ?, ?)
     ON CONFLICT(job_id, section_index) DO UPDATE SET
       section_key = excluded.section_key, state = excluded.state,
       word_budget = excluded.word_budget, output_json = excluded.output_json,
@@ -1139,6 +1156,7 @@ function persistCheckpoint(
       checkpoint.wordBudget,
       encryptContentScriptJobJson(checkpoint.output, row.owner_user_id),
       JSON.stringify(checkpoint.validation),
+      checkpoint.route,
       checkpoint.modelDigest,
     );
     db.prepare(`UPDATE content_script_jobs
@@ -1158,6 +1176,7 @@ function persistGeneratedCheckpoint(
     wordBudget: number;
     output: unknown;
     validation: Record<string, unknown>;
+    route: ContentScriptInferenceRoute;
     modelDigest: string | null;
   },
   inferenceRunIds: readonly string[],
@@ -1260,7 +1279,7 @@ function distributeWordBudgets(total: number, count: number): number[] {
 
 function parseOutline(value: unknown, request: ContentScriptJobRequest): ScriptOutline {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new ContentScriptJobError('CONTENT_SCRIPT_OUTLINE_INVALID', 'The local outline was invalid.', 422);
+    throw new ContentScriptJobError('CONTENT_SCRIPT_OUTLINE_INVALID', 'The generated outline was invalid.', 422);
   }
   const record = value as Record<string, unknown>;
   const expectedCount = targetSectionCount(request);
@@ -1268,16 +1287,16 @@ function parseOutline(value: unknown, request: ContentScriptJobRequest): ScriptO
       || !Array.isArray(record.titleOptions) || record.titleOptions.length < 3
       || record.titleOptions.some((item) => typeof item !== 'string' || !item.trim())
       || !Array.isArray(record.sections) || record.sections.length !== expectedCount) {
-    throw new ContentScriptJobError('CONTENT_SCRIPT_OUTLINE_INVALID', 'The local outline was invalid.', 422);
+    throw new ContentScriptJobError('CONTENT_SCRIPT_OUTLINE_INVALID', 'The generated outline was invalid.', 422);
   }
   const normalizedSections = record.sections.map((item) => {
     if (!item || typeof item !== 'object' || Array.isArray(item)) {
-      throw new ContentScriptJobError('CONTENT_SCRIPT_OUTLINE_INVALID', 'The local outline was invalid.', 422);
+      throw new ContentScriptJobError('CONTENT_SCRIPT_OUTLINE_INVALID', 'The generated outline was invalid.', 422);
     }
     const section = item as Record<string, unknown>;
     if (typeof section.title !== 'string' || !section.title.trim()
         || typeof section.instructions !== 'string' || !section.instructions.trim()) {
-      throw new ContentScriptJobError('CONTENT_SCRIPT_OUTLINE_INVALID', 'The local outline was invalid.', 422);
+      throw new ContentScriptJobError('CONTENT_SCRIPT_OUTLINE_INVALID', 'The generated outline was invalid.', 422);
     }
     return {
       title: section.title.trim().slice(0, 200),
@@ -1310,7 +1329,8 @@ function readOutlineCheckpoint(
   const checkpoint = db.prepare(`SELECT output_json
     FROM content_script_job_checkpoints
     WHERE job_id = ? AND section_index = 0
-      AND section_key = 'outline' AND state = 'validated' AND route = 'local'`)
+      AND section_key = 'outline' AND state = 'validated'
+      AND route IN ('local', 'cloud')`)
     .get(row.job_id) as { output_json: string } | undefined;
   if (!checkpoint) return null;
   const outline = decryptContentScriptJobJson<ScriptOutline>(checkpoint.output_json, row.owner_user_id);
@@ -1323,14 +1343,25 @@ function readOutlineCheckpoint(
 }
 
 function readValidatedSections(db: Database.Database, row: JobRow): Map<number, ValidatedSection> {
-  const checkpoints = db.prepare(`SELECT section_index, output_json
+  const checkpoints = db.prepare(`SELECT section_index, output_json, route
     FROM content_script_job_checkpoints
-    WHERE job_id = ? AND section_index > 0 AND state = 'validated' AND route = 'local'
-    ORDER BY section_index`).all(row.job_id) as Array<{ section_index: number; output_json: string }>;
+    WHERE job_id = ? AND section_index > 0 AND state = 'validated'
+      AND route IN ('local', 'cloud')
+    ORDER BY section_index`).all(row.job_id) as Array<{
+      section_index: number;
+      output_json: string;
+      route: ContentScriptInferenceRoute;
+  }>;
   return new Map(checkpoints.map((checkpoint) => {
     const section = decryptContentScriptJobJson<ValidatedSection>(checkpoint.output_json, row.owner_user_id);
+    const storedRoutes = Array.isArray(section.routes)
+      ? section.routes.filter((value): value is ContentScriptInferenceRoute => (
+        value === 'local' || value === 'cloud'
+      ))
+      : [];
     return [checkpoint.section_index, {
       ...section,
+      routes: storedRoutes.length > 0 ? storedRoutes : [checkpoint.route],
       inferenceRunIds: Array.isArray(section.inferenceRunIds)
         ? section.inferenceRunIds.filter((value): value is string => typeof value === 'string')
         : [],
@@ -1338,12 +1369,35 @@ function readValidatedSections(db: Database.Database, row: JobRow): Map<number, 
   }));
 }
 
+function checkpointRouteForRoutes(
+  routes: readonly ContentScriptInferenceRoute[],
+): ContentScriptInferenceRoute {
+  return routes.includes('cloud') ? 'cloud' : 'local';
+}
+
+function completedJobRoute(
+  db: Database.Database,
+  row: JobRow,
+): 'local' | 'cloud' | 'mixed' {
+  const routes = new Set<ContentScriptInferenceRoute>();
+  const outline = db.prepare(`SELECT route FROM content_script_job_checkpoints
+    WHERE job_id = ? AND section_index = 0 AND state = 'validated'
+      AND route IN ('local', 'cloud')`).get(row.job_id) as {
+    route: ContentScriptInferenceRoute;
+  } | undefined;
+  if (outline) routes.add(outline.route);
+  for (const section of readValidatedSections(db, row).values()) {
+    section.routes.forEach((route) => routes.add(route));
+  }
+  return routes.size > 1 ? 'mixed' : routes.has('cloud') ? 'cloud' : 'local';
+}
+
 function parsedJson(result: SkillInferenceResult): unknown {
   if (result.parsed !== undefined) return result.parsed;
   try {
     return JSON.parse(result.text);
   } catch {
-    throw new ContentScriptJobError('CONTENT_SCRIPT_OUTLINE_INVALID', 'The local outline was invalid.', 422);
+    throw new ContentScriptJobError('CONTENT_SCRIPT_OUTLINE_INVALID', 'The generated outline was invalid.', 422);
   }
 }
 
@@ -1375,7 +1429,11 @@ async function generateOutline(
   row: JobRow,
   request: ContentScriptJobRequest,
   signal: AbortSignal,
-): Promise<{ outline: ScriptOutline; modelDigest: string | null }> {
+): Promise<{
+  outline: ScriptOutline;
+  route: ContentScriptInferenceRoute;
+  modelDigest: string | null;
+}> {
   const finalRepairWarnings = checkpointFinalRepairWarnings(db, row.job_id, 0);
   const sectionCount = targetSectionCount(request);
   const totalWords = targetScriptWords(request);
@@ -1414,7 +1472,7 @@ async function generateOutline(
   });
   let lastInvalid: unknown;
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const result = await runLocalStage(db, row, request, signal, {
+    const result = await runScriptStage(db, row, request, signal, {
       taskType: attempt === 0
         ? finalRepairWarnings.length > 0 ? 'script_outline_final_repair' : 'script_outline'
         : 'script_outline_repair',
@@ -1425,13 +1483,14 @@ async function generateOutline(
     });
     try {
       if (stageWasTruncated(result)) {
-        throw new ContentScriptJobError('CONTENT_SCRIPT_OUTLINE_TRUNCATED', 'The local outline reached its output boundary.', 422);
+        throw new ContentScriptJobError('CONTENT_SCRIPT_OUTLINE_TRUNCATED', 'The generated outline reached its output boundary.', 422);
       }
       return {
         outline: {
           ...parseOutline(parsedJson(result), request),
           inferenceRunIds: [result.runId],
         },
+        route: result.route,
         modelDigest: result.modelDigest ?? null,
       };
     } catch (error) {
@@ -1519,7 +1578,7 @@ async function generateSection(
     ],
   });
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const result = await runLocalStage(db, row, request, signal, {
+    const result = await runScriptStage(db, row, request, signal, {
       taskType: attempt === 0
         ? finalRepairWarnings.length > 0 ? 'script_section_final_repair' : 'script_section'
         : 'script_section_repair',
@@ -1539,7 +1598,7 @@ async function generateSection(
       const maximumWords = Math.ceil(section.wordBudget * 1.08);
       if (prefixWords >= 20 && prefixWords < maximumWords) {
         const remainingWords = Math.max(20, section.wordBudget - prefixWords);
-        const continuation = await runLocalStage(db, row, request, signal, {
+        const continuation = await runScriptStage(db, row, request, signal, {
           taskType: 'script_section_continuation',
           prompt: JSON.stringify({
             task: 'Continue one truncated script section from its last complete sentence.',
@@ -1579,6 +1638,7 @@ async function generateSection(
         text,
         wordBudget: section.wordBudget,
         modelDigest,
+        routes: [...new Set(stageResults.map((stageResult) => stageResult.route))],
         inferenceRunIds: stageResults.map((stageResult) => stageResult.runId),
       };
     }
@@ -1593,7 +1653,7 @@ async function generateSection(
   }
   throw new ContentScriptJobError(
     'CONTENT_SCRIPT_SECTION_INVALID',
-    `Section ${index + 1} failed bounded local validation.`,
+    `Section ${index + 1} failed bounded validation.`,
     422,
   );
 }
@@ -1627,7 +1687,11 @@ async function regenerateEntireDraftForFinalRepair(
   warningCodes: string[],
   signal: AbortSignal,
   rejectionReason = 'content_script_final_validation_failed',
-): Promise<{ outline: ScriptOutline; modelDigest: string | null }> {
+): Promise<{
+  outline: ScriptOutline;
+  route: ContentScriptInferenceRoute;
+  modelDigest: string | null;
+}> {
   invalidateSectionsForFinalRepair(
     db,
     row,
@@ -1657,6 +1721,7 @@ async function regenerateEntireDraftForFinalRepair(
     wordBudget: targetScriptWords(request),
     output: regenerated.outline,
     validation: { valid: true, sectionCount: regenerated.outline.sections.length },
+    route: regenerated.route,
     modelDigest: regenerated.modelDigest,
   }, regenerated.outline.inferenceRunIds);
   planSectionCheckpoints(db, row, leaseToken, regenerated.outline);
@@ -1759,6 +1824,7 @@ export async function runContentScriptJob(
         wordBudget: targetScriptWords(request),
         output: outline,
         validation: { valid: true, sectionCount: outline.sections.length },
+        route: generated.route,
         modelDigest,
       }, outline.inferenceRunIds);
       updateProgress(db, jobId, token, 'outline_validation', 18);
@@ -1807,6 +1873,7 @@ export async function runContentScriptJob(
           wordBudget: generated.wordBudget,
           output: generated,
           validation: { valid: true, wordCount: wordCount(generated.text) },
+          route: checkpointRouteForRoutes(generated.routes),
           modelDigest: generated.modelDigest,
         }, generated.inferenceRunIds);
         updateProgress(db, jobId, token, `section_${index + 1}_validation`, progressStart + 5);
@@ -2008,6 +2075,8 @@ export async function runContentScriptJob(
       break;
     }
     updateProgress(db, jobId, token, 'final_validation', 95);
+    const finalRoute = completedJobRoute(db, row);
+    const finalModelDigest = finalRoute === 'local' ? request.pinnedModelDigest : null;
     const completedAt = new Date().toISOString();
     const completed = db.prepare(`UPDATE content_script_jobs
       SET status = 'completed', stage = 'completed', progress_percent = 100,
@@ -2020,8 +2089,8 @@ export async function runContentScriptJob(
       .run(
         JSON.stringify(warnings),
         encryptContentScriptJobJson(publicResult, row.owner_user_id),
-        'local',
-        modelDigest,
+        finalRoute,
+        finalModelDigest,
         completedAt,
         completedAt,
         jobId,
