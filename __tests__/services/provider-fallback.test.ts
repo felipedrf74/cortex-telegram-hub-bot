@@ -451,6 +451,11 @@ describe('TaskRoutingProvider', () => {
       cloudFallbackBoundary: boundary,
     })).resolves.toMatchObject({ text: expect.any(String) });
     expect(optionalCloudMocks.selectApprovedCloudReasoningProvider).toHaveBeenLastCalledWith(
+      expect.objectContaining({ scriptDeliveryMode: 'scheduled' }),
+      expect.anything(),
+      null,
+    );
+    expect(optionalCloudMocks.selectApprovedCloudReasoningProvider).toHaveBeenLastCalledWith(
       expect.objectContaining({
         scriptDeliveryMode: 'scheduled',
         requiredCloudProvider: 'openai',
