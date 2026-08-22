@@ -239,10 +239,27 @@ describe('local-model compact first-pass runner', () => {
       },
       failure: null,
     };
+    const profilePolicySha256 = digestText(
+      readFileSync('src/services/skill-inference-profile-policy.json'),
+    );
 
     expect(() => rescoreFirstPassArtifact({
       ...baseArtifact,
       schemaVersion: 'nexus.local-model-first-pass-artifact.v1',
+    }, casesDocument, manifest)).toThrow('source artifact policy is not attested');
+    expect(() => rescoreFirstPassArtifact({
+      ...baseArtifact,
+      schemaVersion: 'nexus.local-model-first-pass-artifact.v2',
+      profileVersion: 'nexus-skill-inference-v2',
+      profilePolicySha256,
+      candidate: { ...baseArtifact.candidate, thinkMode: false },
+    }, casesDocument, manifest)).toThrow('source artifact policy is not attested');
+    expect(() => rescoreFirstPassArtifact({
+      ...baseArtifact,
+      schemaVersion: 'nexus.local-model-first-pass-artifact.v3',
+      profileVersion: 'nexus-skill-inference-v1',
+      profilePolicySha256,
+      candidate: { ...baseArtifact.candidate, thinkMode: false },
     }, casesDocument, manifest)).toThrow('source artifact policy is not attested');
     expect(() => rescoreFirstPassArtifact({
       ...baseArtifact,
@@ -256,7 +273,7 @@ describe('local-model compact first-pass runner', () => {
       ...baseArtifact,
       schemaVersion: 'nexus.local-model-first-pass-artifact.v3',
       profileVersion: 'nexus-skill-inference-v2',
-      profilePolicySha256: digestText(readFileSync('src/services/skill-inference-profile-policy.json')),
+      profilePolicySha256,
       candidate: { ...baseArtifact.candidate, thinkMode: false },
     }, casesDocument, manifest);
     expect(current).toMatchObject({ sourceThinkMode: false, thinkModeAttested: true });
@@ -265,7 +282,7 @@ describe('local-model compact first-pass runner', () => {
       ...baseArtifact,
       schemaVersion: 'nexus.local-model-first-pass-artifact.v3',
       profileVersion: 'nexus-skill-inference-v2',
-      profilePolicySha256: digestText(readFileSync('src/services/skill-inference-profile-policy.json')),
+      profilePolicySha256,
       candidate: { ...baseArtifact.candidate, thinkMode: 'low' },
     }, casesDocument, manifest)).toThrow('think mode is not attested');
     expect(() => rescoreFirstPassArtifact({
@@ -273,7 +290,7 @@ describe('local-model compact first-pass runner', () => {
       observations: [{ ...observation, responseSha256: `sha256:${'f'.repeat(64)}` }],
       schemaVersion: 'nexus.local-model-first-pass-artifact.v3',
       profileVersion: 'nexus-skill-inference-v2',
-      profilePolicySha256: digestText(readFileSync('src/services/skill-inference-profile-policy.json')),
+      profilePolicySha256,
       candidate: { ...baseArtifact.candidate, thinkMode: false },
     }, casesDocument, manifest)).toThrow('source observation integrity failed');
     expect(() => rescoreFirstPassArtifact({
@@ -281,7 +298,7 @@ describe('local-model compact first-pass runner', () => {
       observations: [{ ...observation, runtime: runtime({ totalDurationMs: Number.NaN }) }],
       schemaVersion: 'nexus.local-model-first-pass-artifact.v3',
       profileVersion: 'nexus-skill-inference-v2',
-      profilePolicySha256: digestText(readFileSync('src/services/skill-inference-profile-policy.json')),
+      profilePolicySha256,
       candidate: { ...baseArtifact.candidate, thinkMode: false },
     }, casesDocument, manifest)).toThrow('source observation integrity failed');
   });

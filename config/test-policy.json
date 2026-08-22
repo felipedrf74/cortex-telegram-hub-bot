@@ -168,6 +168,26 @@
     ],
     "cleanupMappings": [
       {
+        "test": "__tests__/scripts/local-model-first-pass.test.ts",
+        "replacementTests": [
+          "__tests__/scripts/local-model-first-pass.test.ts"
+        ],
+        "sources": [
+          "scripts/local-model-first-pass.mjs"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "scripts/local-model-first-pass.mjs:574-577",
+            "anchor": "if (sourceSchema !== 'nexus.local-model-first-pass-artifact.v3'",
+            "behavior": "Legacy or policy-drifted first-pass evidence cannot be rescored as current governed qualification evidence.",
+            "replacementTest": "__tests__/scripts/local-model-first-pass.test.ts",
+            "ownerTestNamePattern": "rescoring requires current policy evidence and preserves integrity checks$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The stricter retained rescore test replaces permissive legacy-artifact assertions with exact v3 profile-version and policy-digest attestation guarantees."
+      },
+      {
         "test": "__tests__/services/local-model-manifest.test.ts",
         "replacementTests": [
           "__tests__/services/local-model-manifest.test.ts"
