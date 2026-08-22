@@ -196,8 +196,45 @@ schedule while preflight reserves the conservative ceiling, and PM2 forwards
 all class bindings (explicitly empty when the still-unactivated protected env
 does not define them).
 
-Do not enable public controls until the VPS bakeoff, actual-account rate card
-and economics simulation, consent/privacy decision for private script cloud
-fallback, ten-script acceptance cycle, and applicable Stripe/Apple gates have
-passed. Local-primary rollout must then follow the governed staged progression;
-deployment alone does not authorize an all-user flip.
+## VPS local-model first-pass rerun — no eligible winner (2026-08-22)
+
+Release `b564531c37b023b938378d9c2e6749c7` at protected-main source
+`fdcebe8e6b8723da50735f24e44cff7ee5d95b48` exercised every model in signed
+manifest `2026-08-12.1` through the attended benchmark-envelope transaction.
+Each installed tag matched its pinned model digest before generation. Raw
+responses remain root-only under
+`/var/lib/nexus-release/private-model-artifacts/2026-08-22/`; the repository
+records only aggregate evidence and immutable artifact digests.
+
+| Model | Cases | Score | Schema | Tokens/s | Screening result | Raw v2 artifact SHA-256 |
+|---|---:|---:|---:|---:|---|---|
+| `qwen2.5-3b-control` | 24 | 82.73 | 100% | 12.13 | refused: structured action plus safety/tenant failures | `55f4a6f551da1ad333fbdf3b5c3a70038a96dff31055b885fd86b391381db181` |
+| `qwen3.5-9b-candidate` | 24 | 74.02 | 66.67% | 3.49 | refused: schema, safety/tenant, and throughput | `26645b73f90414bb3f4004b91d991839152454374939f7cab44909acfb2475cf` |
+| `gpt-oss-20b-candidate` | 24 | 77.55 | 100% | 5.90 | refused: safety/tenant failures | `f6f919cbd0ee1def8cbbf4c9b436feee2ca3762588978424e77b58891b25c3e0` |
+| `gemma-3-12b-candidate` | 24 | 79.36 | 100% | 3.19 | refused: safety/tenant and throughput | `63ea5d232257bbb57401066cf93175a858ebcd9af851a0c41d0299a6639b059b` |
+| `ministral-3-14b-candidate` | 4 | n/a | 100% | 3.34 | refused: request timeout and incomplete run | `8d3a020cd74247160ffe7e489800e30a4bc7986a0c6c33c583c617417fe8cee3` |
+
+Every transaction restored the permanent 18GB/20GB, 8-CPU, zero-swap
+envelope. The rollback-receipt digests, in table order, are
+`sha256:59d5c6808a0f1795e15563eac2a9f4c5baae951b56ed3910adac66787db2c63b`,
+`sha256:5f9c6d677ee633173107c6a392e7f6eebc4991b16dde0e13bf272a511fce4b54`,
+`sha256:b1c2353c4dcc2f36ada0042f3103d1217349abf902aa8d50b110640ab879571f`,
+`sha256:3127103338dd1e70b6fe36c8efd3dc376dcc13634cd6556e84208f42fd0cf7a3`,
+and
+`sha256:ef3d55f6f1bcdec8a9ae3cf27ab5331acdde9bd4ab8fd2002d48f82e2d84f8c0`.
+Rejected challenger models were removed from the host; only the signed Qwen
+control remains installed. Because no candidate passed screening, the manifest
+correctly remains `control_only`, the gateway/socket transaction must not run,
+and local-primary activation remains OFF. The next attempt requires a new
+candidate or a reviewed prompt/profile-policy change followed by a fresh
+complete first pass; failed evidence cannot be promoted or rescored into a
+winner.
+
+Do not enable public controls until an eligible signed local-model winner
+completes the full VPS bakeoff, the actual-account rate card and economics
+simulation pass, the ten-script acceptance cycle completes, and applicable
+Stripe/Apple gates pass. The owner approved the narrow non-sensitive,
+resumable script-job OpenAI fallback on 2026-08-21; raw private Content
+fallback remains outside that decision and stays unavailable. Local-primary
+rollout must then follow the governed staged progression; deployment alone
+does not authorize an all-user flip.
