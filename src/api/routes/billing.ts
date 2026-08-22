@@ -26,6 +26,7 @@ import {
   deriveAppleAppAccountToken,
   isAppleTransactionAlreadyClaimedError,
   isUnknownAppleProductError,
+  isStripeCheckoutUnavailableError,
   APPLE_SUBSCRIPTION_PRODUCT_IDS,
 } from '../../services/stripe-service';
 import { verifyAppleJws } from '../../services/apple-jws-verifier';
@@ -242,15 +243,23 @@ export function billingRoutes(): Router {
       acceptedLegal as LegalAcceptanceInput,
       legalConsentContextFromRequest(req, 'billing_credits_checkout'),
     );
-    const url = item.kind === 'credit_pack'
-      ? await createCreditPackCheckoutSession(
-        userId,
-        { catalogItemId: item.id, priceId: item.stripePriceId },
-        successUrl,
-        cancelUrl,
-      )
-      : await createCheckoutSession(userId, item.stripePriceId, successUrl, cancelUrl);
-    sendSuccess(res, { url, catalogVersion: BILLING_CATALOG_VERSION, catalogItemId: item.id });
+    try {
+      const url = item.kind === 'credit_pack'
+        ? await createCreditPackCheckoutSession(
+          userId,
+          { catalogItemId: item.id, priceId: item.stripePriceId },
+          successUrl,
+          cancelUrl,
+        )
+        : await createCheckoutSession(userId, item.stripePriceId, successUrl, cancelUrl);
+      sendSuccess(res, { url, catalogVersion: BILLING_CATALOG_VERSION, catalogItemId: item.id });
+    } catch (err: any) {
+      if (isStripeCheckoutUnavailableError(err)) {
+        sendError(res, 'CHECKOUT_UNAVAILABLE', 'Stripe checkout is temporarily unavailable', 503);
+        return;
+      }
+      throw err;
+    }
   }));
 
   /**
@@ -299,6 +308,10 @@ export function billingRoutes(): Router {
     } catch (err: any) {
       if (err?.message === 'PRICE_NOT_CONFIGURED') {
         sendError(res, 'NOT_CONFIGURED', 'Requested Stripe price is not configured', 503);
+        return;
+      }
+      if (isStripeCheckoutUnavailableError(err)) {
+        sendError(res, 'CHECKOUT_UNAVAILABLE', 'Stripe checkout is temporarily unavailable', 503);
         return;
       }
       throw err;
@@ -407,6 +420,10 @@ export function billingRoutes(): Router {
     } catch (err) {
       if (isStripeNexusPointsIdempotencyConflictError(err)) {
         sendError(res, 'IDEMPOTENCY_CONFLICT', err.message, 409);
+        return;
+      }
+      if (isStripeCheckoutUnavailableError(err)) {
+        sendError(res, 'CHECKOUT_UNAVAILABLE', 'Stripe checkout is temporarily unavailable', 503);
         return;
       }
       throw err;

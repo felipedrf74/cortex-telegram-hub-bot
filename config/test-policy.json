@@ -1250,7 +1250,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/stripe-service.ts:591-591",
+            "pattern": "src/services/stripe-service.ts:726-726",
             "anchor": "reason === 'refund' && charge?.refunded !== true",
             "behavior": "A refund reversal revokes the originating credit lot only when the charge is fully refunded; a partial refund must not delete credits the user still paid for.",
             "replacementTest": "__tests__/services/stripe-pack-fulfillment.test.ts",
@@ -1258,7 +1258,7 @@
             "minimumMutants": 1
           },
           {
-            "pattern": "src/services/stripe-service.ts:596-596",
+            "pattern": "src/services/stripe-service.ts:731-731",
             "anchor": "return false",
             "behavior": "A partial refund exits without revoking, leaving the lot intact for reconciliation rather than reporting a successful reversal.",
             "replacementTest": "__tests__/services/stripe-pack-fulfillment.test.ts",
@@ -1327,7 +1327,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/stripe-nexus-points-service.ts:228-236",
+            "pattern": "src/services/stripe-nexus-points-service.ts:248-253",
             "anchor": "switch (event.type) {",
             "behavior": "Paid Nexus Points checkout events dispatch to the grant path, which credits exactly once per provider transaction; the routed webhook gates livemode before reaching this dispatch.",
             "replacementTest": "__tests__/services/stripe-nexus-points-service.test.ts",

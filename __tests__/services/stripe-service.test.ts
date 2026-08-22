@@ -8,10 +8,11 @@ const hoisted = vi.hoisted(() => {
   const stripeConfig = {
     secretKey: 'sk_test',
     webhookSecret: 'whsec_test',
+    expectedAccountId: 'acct_expectedtest',
     managedPaymentsSandboxEnabled: true,
-    priceProMonthly: 'price_pro_usd',
+    historicalPriceProMonthly: 'price_historical_pro_operator',
+    historicalPriceMaxMonthly: 'price_historical_max_operator',
     priceProYearly: '',
-    priceMaxMonthly: 'price_max_usd',
     priceMaxYearly: '',
     priceProMonthlyBrl: 'price_pro_brl',
     priceProYearlyBrl: '',
@@ -26,13 +27,16 @@ const hoisted = vi.hoisted(() => {
     stripeConfig,
     loggerWarn: vi.fn(),
     loggerInfo: vi.fn(),
+    loggerError: vi.fn(),
     sendPaymentReceipt: vi.fn(),
     sendPaymentFailed: vi.fn(),
     sendCancellationConfirmation: vi.fn(),
     stripeCheckoutCreate: vi.fn(),
     stripePortalCreate: vi.fn(),
+    stripeAccountRetrieve: vi.fn(async () => ({ id: 'acct_expectedtest' })),
     stripeCtor: vi.fn(function StripeMock() {
       return {
+        accounts: { retrieve: hoisted.stripeAccountRetrieve },
         checkout: { sessions: { create: hoisted.stripeCheckoutCreate } },
         billingPortal: { sessions: { create: hoisted.stripePortalCreate } },
       };
@@ -47,6 +51,16 @@ vi.mock('stripe', () => ({
 vi.mock('../../src/config', () => ({
   config: {
     stripe: hoisted.stripeConfig,
+    hybridCommerce: {
+      subscriptionCheckoutEnabled: true,
+      stripePriceIds: {
+        planProMonthly: 'price_pro_usd',
+        planMaxMonthly: 'price_max_usd',
+        pack100: '',
+        pack250: '',
+        pack600: '',
+      },
+    },
     ios: {
       jwtSecret: 'test-ios-jwt-secret-at-least-32-bytes-long',
     },
@@ -66,7 +80,7 @@ vi.mock('../../src/utils/logger', () => ({
   logger: {
     info: (...args: unknown[]) => hoisted.loggerInfo(...args),
     warn: (...args: unknown[]) => hoisted.loggerWarn(...args),
-    error: vi.fn(),
+    error: (...args: unknown[]) => hoisted.loggerError(...args),
     debug: vi.fn(),
     trace: vi.fn(),
     child: vi.fn().mockReturnThis(),
@@ -159,9 +173,13 @@ describe('stripe service billing reconciliation', () => {
     testDb = new Database(':memory:');
     createSchema(testDb);
     hoisted.stripeConfig.managedPaymentsSandboxEnabled = true;
+    hoisted.stripeConfig.expectedAccountId = 'acct_expectedtest';
+    hoisted.stripeConfig.historicalPriceProMonthly = 'price_historical_pro_operator';
+    hoisted.stripeConfig.historicalPriceMaxMonthly = 'price_historical_max_operator';
     hoisted.stripeCtor.mockClear();
     hoisted.loggerWarn.mockReset();
     hoisted.loggerInfo.mockReset();
+    hoisted.loggerError.mockReset();
     hoisted.sendPaymentReceipt.mockReset();
     hoisted.sendPaymentReceipt.mockResolvedValue(true);
     hoisted.sendPaymentFailed.mockReset();
@@ -171,6 +189,8 @@ describe('stripe service billing reconciliation', () => {
     hoisted.stripeCheckoutCreate.mockReset();
     hoisted.stripeCheckoutCreate.mockResolvedValue({ id: 'cs_checkout', url: 'https://checkout.stripe.test/session' });
     hoisted.stripePortalCreate.mockReset();
+    hoisted.stripeAccountRetrieve.mockReset();
+    hoisted.stripeAccountRetrieve.mockResolvedValue({ id: 'acct_expectedtest' });
   });
 
   afterEach(() => {
@@ -198,6 +218,7 @@ describe('stripe service billing reconciliation', () => {
     });
     expect(hoisted.stripeCheckoutCreate).toHaveBeenCalledWith(expect.objectContaining({
       mode: 'subscription',
+      automatic_tax: { enabled: true },
       line_items: [{ price: 'price_max_usd', quantity: 1 }],
       managed_payments: { enabled: true },
       metadata: expect.objectContaining({ userId: '42', plan: 'max', currency: 'usd' }),
@@ -232,6 +253,124 @@ describe('stripe service billing reconciliation', () => {
     expect(checkoutParams).not.toHaveProperty('managed_payments');
   });
 
+  it('refuses checkout when the secret key belongs to a different Stripe account', async () => {
+    const {
+      _resetStripeClientForTests,
+      createCheckoutSessionForPlan,
+      StripeAccountBindingError,
+    } = await import('../../src/services/stripe-service');
+    hoisted.stripeAccountRetrieve.mockResolvedValue({ id: 'acct_wrong' });
+    _resetStripeClientForTests();
+
+    await expect(createCheckoutSessionForPlan(
+      42,
+      'pro',
+      'usd',
+      'https://nexushub.me/user?checkout=success',
+      'https://nexushub.me/user?checkout=canceled',
+    )).rejects.toBeInstanceOf(StripeAccountBindingError);
+    expect(hoisted.stripeCheckoutCreate).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when Stripe cannot prove the configured account binding', async () => {
+    const {
+      _resetStripeClientForTests,
+      createCheckoutSessionForPlan,
+      StripeAccountBindingError,
+    } = await import('../../src/services/stripe-service');
+    hoisted.stripeAccountRetrieve.mockRejectedValue(new Error('provider unavailable'));
+    _resetStripeClientForTests();
+
+    await expect(createCheckoutSessionForPlan(
+      42,
+      'pro',
+      'usd',
+      'https://nexushub.me/user?checkout=success',
+      'https://nexushub.me/user?checkout=canceled',
+    )).rejects.toBeInstanceOf(StripeAccountBindingError);
+    expect(hoisted.stripeCheckoutCreate).not.toHaveBeenCalled();
+  });
+
+  it('maps Checkout provider failures to a controlled unavailable error', async () => {
+    const {
+      _resetStripeClientForTests,
+      createCheckoutSessionForPlan,
+      StripeCheckoutProviderError,
+    } = await import('../../src/services/stripe-service');
+    hoisted.stripeCheckoutCreate.mockRejectedValueOnce({
+      type: 'StripeInvalidRequestError',
+      code: 'tax_settings_incomplete',
+      statusCode: 400,
+      requestId: 'req_safe123',
+      message: 'provider detail must remain private',
+      raw: { sensitive: 'provider response' },
+    });
+    _resetStripeClientForTests();
+
+    await expect(createCheckoutSessionForPlan(
+      42,
+      'pro',
+      'usd',
+      'https://nexushub.me/user?checkout=success',
+      'https://nexushub.me/user?checkout=canceled',
+    )).rejects.toBeInstanceOf(StripeCheckoutProviderError);
+    const diagnosticPayload = hoisted.loggerError.mock.calls.find(
+      ([, message]) => message === 'Stripe Checkout failed closed',
+    )?.[0] as Record<string, unknown>;
+    expect(diagnosticPayload).toMatchObject({
+      stripeErrorType: 'StripeInvalidRequestError',
+      stripeErrorCode: 'tax_settings_incomplete',
+      stripeStatusCode: 400,
+      stripeRequestId: 'req_safe123',
+    });
+    expect(diagnosticPayload).not.toHaveProperty('message');
+    expect(diagnosticPayload).not.toHaveProperty('raw');
+  });
+
+  it('refuses credit-pack checkout when the secret key belongs to a different Stripe account', async () => {
+    const {
+      _resetStripeClientForTests,
+      createCreditPackCheckoutSession,
+      StripeAccountBindingError,
+    } = await import('../../src/services/stripe-service');
+    hoisted.stripeAccountRetrieve.mockResolvedValue({ id: 'acct_wrong' });
+    _resetStripeClientForTests();
+
+    await expect(createCreditPackCheckoutSession(
+      42,
+      { catalogItemId: 'pack.credits.100', priceId: 'price_pack_100' },
+      'https://nexushub.me/user?checkout=success',
+      'https://nexushub.me/user?checkout=canceled',
+    )).rejects.toBeInstanceOf(StripeAccountBindingError);
+    expect(hoisted.stripeCheckoutCreate).not.toHaveBeenCalled();
+  });
+
+  it('enables automatic tax and refreshes the address of a reused credit-pack customer', async () => {
+    const {
+      _resetStripeClientForTests,
+      createCreditPackCheckoutSession,
+    } = await import('../../src/services/stripe-service');
+    testDb.prepare(`
+      INSERT INTO subscriptions (user_id, plan, status, provider, provider_customer_id)
+      VALUES (42, 'pro', 'active', 'stripe', 'cus_existing')
+    `).run();
+    _resetStripeClientForTests();
+
+    await createCreditPackCheckoutSession(
+      42,
+      { catalogItemId: 'pack.credits.100', priceId: 'price_pack_100' },
+      'https://nexushub.me/user?checkout=success',
+      'https://nexushub.me/user?checkout=canceled',
+    );
+
+    expect(hoisted.stripeCheckoutCreate).toHaveBeenCalledWith(expect.objectContaining({
+      mode: 'payment',
+      automatic_tax: { enabled: true },
+      customer: 'cus_existing',
+      customer_update: { address: 'auto' },
+    }));
+  });
+
   it('creates public Managed Payments Checkout and stores the unclaimed purchase', async () => {
     const {
       _resetStripeClientForTests,
@@ -249,6 +388,7 @@ describe('stripe service billing reconciliation', () => {
 
     expect(hoisted.stripeCheckoutCreate).toHaveBeenCalledWith(expect.objectContaining({
       mode: 'subscription',
+      automatic_tax: { enabled: true },
       managed_payments: { enabled: true },
       line_items: [{ price: 'price_pro_usd', quantity: 1 }],
       metadata: expect.objectContaining({ plan: 'pro', currency: 'usd', source: 'website' }),
@@ -684,6 +824,43 @@ describe('stripe service billing reconciliation', () => {
 
     expect((testDb.prepare('SELECT COUNT(*) AS count FROM subscriptions').get() as any).count).toBe(0);
     expect(JSON.stringify(hoisted.loggerWarn.mock.calls)).toContain('unknown price id');
+  });
+
+  it.each([
+    ['price_1U55BS3kbWVFdS6025onefOr', 'pro'],
+    ['price_1U55Cl3kbWVFdS60VAeMzEyf', 'max'],
+    ['price_historical_pro_operator', 'pro'],
+    ['price_historical_max_operator', 'max'],
+  ])('retains historical monthly price %s for webhook entitlement reconciliation', async (priceId, plan) => {
+    const { handleSubscriptionUpdated } = await import('../../src/services/stripe-service');
+    const userId = Number(testDb.prepare(
+      'INSERT INTO users (email, email_verified) VALUES (?, 1)',
+    ).run(`${plan}-historical@example.com`).lastInsertRowid);
+    testDb.prepare(`
+      INSERT INTO subscriptions (
+        user_id, plan, period, status, provider, provider_subscription_id
+      ) VALUES (?, 'free', 'monthly', 'active', 'stripe', ?)
+    `).run(userId, `sub_historical_${plan}`);
+
+    handleSubscriptionUpdated({
+      id: `sub_historical_${plan}`,
+      customer: `cus_historical_${plan}`,
+      status: 'active',
+      metadata: { userId: String(userId) },
+      items: {
+        data: [{
+          price: { id: priceId },
+          current_period_start: 1_700_000_000,
+          current_period_end: 1_700_086_400,
+        }],
+      },
+      cancel_at_period_end: false,
+    });
+
+    expect(testDb.prepare(
+      'SELECT plan, period, provider FROM subscriptions WHERE user_id = ?',
+    ).get(userId)).toMatchObject({ plan, period: 'monthly', provider: 'stripe' });
+    expect(JSON.stringify(hoisted.loggerWarn.mock.calls)).not.toContain('unknown price id');
   });
 
   it('applies subscription updates after a website checkout has been explicitly claimed', async () => {

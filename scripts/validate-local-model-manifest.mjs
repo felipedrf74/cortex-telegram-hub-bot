@@ -34,6 +34,7 @@ export function validateLocalModelManifest(
     if (typeof model.license !== 'string' || !model.license.trim()) errors.push(`${prefix}.license missing`);
     if (typeof model.quantization !== 'string' || !model.quantization.trim()) errors.push(`${prefix}.quantization missing`);
     if (typeof model.promptTemplate !== 'string' || !model.promptTemplate.trim()) errors.push(`${prefix}.promptTemplate missing`);
+    if (![false, 'low'].includes(model.thinkMode)) errors.push(`${prefix}.thinkMode invalid`);
     if (typeof model.runtimeVersion !== 'string' || !model.runtimeVersion.trim()) errors.push(`${prefix}.runtimeVersion missing`);
     if (!['candidate_unverified', 'verified'].includes(model.evidenceStatus)) errors.push(`${prefix}.evidenceStatus invalid`);
     if (model.digest !== null && (typeof model.digest !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(model.digest))) {

@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: backend architecture and inference operations leads
-Last verified: 2026-08-14
+Last verified: 2026-08-22
 Update policy: update when the local model manifest, specialist profiles,
 runtime admission, fallback, job persistence, host envelope, or pricing proof
 changes.
@@ -756,6 +756,48 @@ normal response boundary. Durable script work is checkpointed and returned to
 active Ollama response while still draining the local queue deterministically.
 
 ## 7. Model and pricing gates
+
+`npm run local:model-first-pass -- --candidate-id <signed-manifest-id>
+--output <private-artifact.json>` is the bounded screening runner from the
+approved production plan. It runs exactly 24 synthetic cases: four for each of
+the six internal specialist profiles (supporting five user-facing skills,
+because Training owns the Triathlon profile) and eight for each of English,
+PT-BR, and PT-PT. The
+corpus includes compact structured extraction, safety refusal, and
+cross-tenant refusal cases. Run it only through the attended candidate
+benchmark envelope and keep its raw-response artifact in an owner-only ignored
+operator directory. The runner resolves the installed model's exact Ollama
+digest, streams the local API to measure user-visible first-token latency,
+samples Ollama cgroup memory plus host headroom/swap, and emits deterministic
+screening scores. Every manifest entry must pin the exact installed SHA-256
+digest before a run; conditional/null digest binding is invalid. Per-candidate
+reasoning mode is required signed-manifest data: the validator and runtime
+parser accept exactly `false` or `"low"`, preserve it on the parsed candidate,
+and copy it into the artifact. Strict JSON
+rejects duplicate keys at every object depth. Structured action mismatch is
+reported separately from semantic safety/tenant refusal failures, and refusal
+cases use positive refusal-language checks plus explicit prohibited-leakage
+phrases across both answer prose and structured data. An
+incomplete or duplicate corpus has a null score, never a partial numeric score;
+empty runtime samples report headroom and swap as unavailable rather than zero.
+The temporary 24GB benchmark ceiling prevents an attended
+evaluation from failing before memory can be measured; it never relaxes the
+20GB production-eligibility ceiling. A screening result is not final qualification, winner
+selection, license approval, or production activation; it only selects the
+challengers that may proceed to the full blind-paired corpus below.
+
+When only deterministic evaluator logic or corpus acceptance terms change,
+preserve the immutable raw artifact and run
+`npm run local:model-first-pass -- --rescore-artifact <raw-artifact.json>
+--output <new-private-artifact.json>`. The derived artifact revalidates every
+prompt/response digest, pins the source artifact and source runner digest,
+recomputes every evaluation with the current runner/corpus/manifest, and never
+claims that generation was repeated. A rescore may reject legacy evidence; it
+cannot qualify a model whose raw run was incomplete or whose digest is not
+pinned by the current manifest. Both v1 legacy and v2 current raw artifacts are
+accepted. Only v2 source artifacts attest the generation-time reasoning mode;
+a v1 rescore records that mode as unavailable and reports the current manifest
+mode separately instead of inferring historical execution state.
 
 `npm run local:model-bakeoff -- --observations <sanitized.jsonl>` applies the
 locked 35/30/15/10/10 score and all disqualification gates to the manifest

@@ -20,6 +20,7 @@ export interface LocalModelManifestEntry {
   license: string;
   quantization: string;
   promptTemplate: string;
+  thinkMode: false | 'low';
   runtimeVersion: string;
   evidenceStatus: 'candidate_unverified' | 'verified';
   digest: string | null;
@@ -224,6 +225,9 @@ function validateManifest(value: unknown): LocalModelManifest {
     if (row.evidenceStatus !== 'candidate_unverified' && row.evidenceStatus !== 'verified') {
       throw new Error(`Invalid local-model manifest models[${index}].evidenceStatus`);
     }
+    if (row.thinkMode !== false && row.thinkMode !== 'low') {
+      throw new Error(`Invalid local-model manifest models[${index}].thinkMode`);
+    }
     seenIds.add(id);
     seenTags.add(ollamaTag);
     return {
@@ -233,6 +237,7 @@ function validateManifest(value: unknown): LocalModelManifest {
       license,
       quantization,
       promptTemplate,
+      thinkMode: row.thinkMode,
       runtimeVersion,
       evidenceStatus: row.evidenceStatus,
       digest,

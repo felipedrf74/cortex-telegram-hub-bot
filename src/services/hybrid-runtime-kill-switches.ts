@@ -26,6 +26,7 @@ import { getDb } from './database';
 import { logger } from '../utils/logger';
 import { logAudit } from './audit-trail';
 import { recordOperatorAlert } from './operator-alerts';
+import { isHistoricalStripeMonthlyPriceId } from './stripe-price-identity';
 
 export type HybridKillSwitchKey =
   | 'hybrid_credits'
@@ -159,12 +160,25 @@ export function isStripePackFulfillmentActive(): boolean {
 }
 
 /**
- * Subscription checkout has no activation flag — subscriptions are the base
- * product, sellable whenever a price id is configured. These switches are
- * therefore pure stop controls: engaged means stop, disengaged means normal.
+ * Subscription checkout requires an explicit positive activation flag in
+ * addition to configured prices. Kill switches remain stop controls.
  */
 export function isSubscriptionCheckoutActive(): boolean {
-  return !isHybridKillSwitchEngaged('subscription_checkout')
+  const canonicalPriceIds = [
+    config.hybridCommerce.stripePriceIds.planProMonthly,
+    config.hybridCommerce.stripePriceIds.planMaxMonthly,
+  ];
+  const configuredHistoricalPriceIds = new Set([
+    config.stripe.historicalPriceProMonthly,
+    config.stripe.historicalPriceMaxMonthly,
+  ].filter(Boolean));
+  return config.hybridCommerce.subscriptionCheckoutEnabled
+    && /^acct_[A-Za-z0-9]+$/u.test(config.stripe.expectedAccountId)
+    && canonicalPriceIds.every((priceId) => (
+      !priceId
+      || (!isHistoricalStripeMonthlyPriceId(priceId) && !configuredHistoricalPriceIds.has(priceId))
+    ))
+    && !isHybridKillSwitchEngaged('subscription_checkout')
     && !isHybridKillSwitchEngaged('storefront');
 }
 

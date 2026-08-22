@@ -34,6 +34,7 @@ import {
   setHybridKillSwitch,
 } from '../../src/services/hybrid-runtime-kill-switches';
 import { isAiCreditAdmissionEnabled } from '../../src/services/ai-credit-admission';
+import { config } from '../../src/config';
 
 function recreateControlTables(): void {
   testDb.exec(`
@@ -82,6 +83,12 @@ beforeEach(() => {
   delete process.env.HYBRID_AI_CREDITS_KILL_SWITCH;
   delete process.env.APPLE_PACK_FULFILLMENT_ENABLED;
   delete process.env.STRIPE_PACK_FULFILLMENT_ENABLED;
+  delete process.env.SUBSCRIPTION_CHECKOUT_ENABLED;
+  config.stripe.expectedAccountId = 'acct_runtimetest';
+  config.stripe.historicalPriceProMonthly = '';
+  config.stripe.historicalPriceMaxMonthly = '';
+  config.hybridCommerce.stripePriceIds.planProMonthly = 'price_pro_usd';
+  config.hybridCommerce.stripePriceIds.planMaxMonthly = 'price_max_usd';
 });
 
 describe('hybrid-runtime-kill-switches', () => {
@@ -182,6 +189,8 @@ describe('hybrid-runtime-kill-switches', () => {
   it('exposes the plan\u2019s two later switches across the additive table (QA6)', () => {
     // Storage detail: these live in a second table because widening the first
     // table\u2019s CHECK would be a contract migration. Callers see one flat set.
+    expect(isSubscriptionCheckoutActive()).toBe(false);
+    process.env.SUBSCRIPTION_CHECKOUT_ENABLED = 'true';
     expect(isSubscriptionCheckoutActive()).toBe(true);
     expect(isStorefrontActive()).toBe(true);
     expect(listHybridKillSwitches().map((s) => s.controlKey).sort())
@@ -202,7 +211,27 @@ describe('hybrid-runtime-kill-switches', () => {
       .get('subscription_checkout')).toEqual({ engaged: 1 });
   });
 
+  it('keeps subscription checkout closed without an expected Stripe account binding', () => {
+    process.env.SUBSCRIPTION_CHECKOUT_ENABLED = 'true';
+    config.stripe.expectedAccountId = '';
+    expect(isSubscriptionCheckoutActive()).toBe(false);
+  });
+
+  it('keeps subscription checkout closed when a canonical slot uses a historical webhook-only Price', () => {
+    process.env.SUBSCRIPTION_CHECKOUT_ENABLED = 'true';
+    config.hybridCommerce.stripePriceIds.planProMonthly = 'price_1U55BS3kbWVFdS6025onefOr';
+    expect(isSubscriptionCheckoutActive()).toBe(false);
+  });
+
+  it('keeps subscription checkout closed when a canonical slot uses an operator-bound historical Price', () => {
+    process.env.SUBSCRIPTION_CHECKOUT_ENABLED = 'true';
+    config.stripe.historicalPriceProMonthly = 'price_operator_legacy';
+    config.hybridCommerce.stripePriceIds.planProMonthly = 'price_operator_legacy';
+    expect(isSubscriptionCheckoutActive()).toBe(false);
+  });
+
   it('storefront is the master stop: it also stops subscription checkout', () => {
+    process.env.SUBSCRIPTION_CHECKOUT_ENABLED = 'true';
     setHybridKillSwitch({
       controlKey: 'storefront',
       engaged: true,

@@ -4,8 +4,6 @@ import { describe, expect, it } from 'vitest';
 const CANONICAL = {
   proUsd: '$9.99',
   maxUsd: '$14.99',
-  proPriceId: 'price_1U55BS3kbWVFdS6025onefOr',
-  maxPriceId: 'price_1U55Cl3kbWVFdS60VAeMzEyf',
 };
 
 function read(path: string): string {
@@ -16,8 +14,17 @@ describe('owner-confirmed subscription price display contract', () => {
   it('keeps env price comments aligned with the owner-confirmed Stripe amounts', () => {
     const env = read('.env.example');
 
-    expect(env).toContain(`STRIPE_PRICE_PRO_MONTHLY=${CANONICAL.proPriceId}  # Pro ${CANONICAL.proUsd}/mo USD reference price`);
-    expect(env).toContain(`STRIPE_PRICE_MAX_MONTHLY=${CANONICAL.maxPriceId}  # Max ${CANONICAL.maxUsd}/mo USD reference price`);
+    expect(env).toContain(`STRIPE_PRICE_ID_PLAN_PRO_MONTHLY=  # Pro ${CANONICAL.proUsd}/mo USD; bind only a tax_behavior=exclusive Price`);
+    expect(env).toContain(`STRIPE_PRICE_ID_PLAN_MAX_MONTHLY=  # Max ${CANONICAL.maxUsd}/mo USD; bind only a tax_behavior=exclusive Price`);
+    expect(env).toContain('STRIPE_PRICE_PRO_MONTHLY=');
+    expect(env).toContain('STRIPE_PRICE_MAX_MONTHLY=');
+    expect(env).toContain('Existing live monthly subscription Prices remain webhook-only');
+    const stripeService = read('src/services/stripe-service.ts');
+    const stripePriceIdentity = read('src/services/stripe-price-identity.ts');
+    expect(stripePriceIdentity).toContain("'price_1U55BS3kbWVFdS6025onefOr'");
+    expect(stripePriceIdentity).toContain("'price_1U55Cl3kbWVFdS60VAeMzEyf'");
+    expect(stripeService).toContain('STRIPE_HISTORICAL_MONTHLY_PRICE_IDS[0]');
+    expect(stripeService).toContain('STRIPE_HISTORICAL_MONTHLY_PRICE_IDS[1]');
     // Legacy points products keep their ORIGINAL economics (plan §3, QA3
     // P0-1): the $x.99 price points belong to the NEW credit packs only.
     expect(env).toContain('STRIPE_PRICE_ID_POINTS_SMALL=   # 300 points · $5');
@@ -34,11 +41,15 @@ describe('owner-confirmed subscription price display contract', () => {
     expect(landing).not.toContain('data-currency="BRL"');
   });
 
-  it('displays the plan section 3 catalog: six skills, shared credits, delivery modes, three packs', () => {
+  it('displays the plan section 3 catalog: five user-facing skills, shared credits, delivery modes, three packs', () => {
     const landing = read('src/portal/landing.html');
 
-    // Six skills, credit-based plans — no unlimited claims, no Power Packs.
-    expect(landing).toContain('Six skills. One brain.');
+    // Training includes triathlon; it is not duplicated as a sixth skill.
+    expect(landing).toContain('Five skills. One brain.');
+    expect(landing).toContain('strength, running, cycling, swimming, and triathlon');
+    expect(landing).toContain('All 5 skills unlocked');
+    expect(landing).toContain('Todas as 5 skills desbloqueadas');
+    expect(landing).not.toMatch(/(?:All|Todas as) 6 skills/u);
     expect(landing).toContain('500 AI credits per month, shared across skills');
     expect(landing).toContain('1,200 AI credits per month, shared');
     expect(landing).toContain('15-minute scripts: standard, scheduled, or priority');

@@ -13,7 +13,7 @@ import {
 } from '../../src/services/ollama-model-policy';
 
 describe('signed-image local-model manifest', () => {
-  it('keeps the current control active and candidates ineligible until bakeoff evidence pins a winner', () => {
+  it('keeps the current control active and digest-pinned candidates ineligible until bakeoff evidence selects a winner', () => {
     const manifest = getLocalModelManifest({ fresh: true });
     expect(manifest.selectionStatus).toBe('control_only');
     expect(manifest.selectionEvidence).toBeNull();
@@ -29,9 +29,26 @@ describe('signed-image local-model manifest', () => {
     expect(manifest.models.filter((model) => model.role === 'candidate')
       .every((model) => (
         model.productionEligible === false
-        && model.digest === null
+        && /^sha256:[0-9a-f]{64}$/u.test(model.digest || '')
+        && [false, 'low'].includes(model.thinkMode)
         && model.evidenceStatus === 'candidate_unverified'
       ))).toBe(true);
+  });
+
+  it('rejects a missing or unsupported governed think mode', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'nexus-local-model-think-mode-'));
+    try {
+      const path = join(directory, 'manifest.json');
+      const manifest = JSON.parse(readFileSync('config/local-model-manifest.json', 'utf8'));
+      delete manifest.models[1].thinkMode;
+      writeFileSync(path, JSON.stringify(manifest));
+      expect(() => validateLocalModelManifest(path)).toThrow('models[1].thinkMode invalid');
+      manifest.models[1].thinkMode = true;
+      writeFileSync(path, JSON.stringify(manifest));
+      expect(() => validateLocalModelManifest(path)).toThrow('models[1].thinkMode invalid');
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it('enforces the 20GB/8-CPU production envelope and zero swap', () => {

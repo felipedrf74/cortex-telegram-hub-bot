@@ -24,9 +24,7 @@ vi.mock('../../src/config', () => ({
     stripe: {
       secretKey: 'sk_test',
       webhookSecret: 'whsec_test',
-      priceProMonthly: 'price_pro_usd',
       priceProYearly: '',
-      priceMaxMonthly: 'price_max_usd',
       priceMaxYearly: '',
       priceProMonthlyBrl: 'price_pro_brl',
       priceProYearlyBrl: '',

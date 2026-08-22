@@ -166,6 +166,36 @@ describe('runtime config validation', () => {
     expect(explicitlyOpen.hybridCommerce.anonymousCheckoutEnabled).toBe(true);
   });
 
+  it('keeps subscription checkout closed until explicitly activated', async () => {
+    applyMinimalConfigEnv();
+    vi.stubEnv('SUBSCRIPTION_CHECKOUT_ENABLED', '');
+    const { config: closedByDefault } = await loadConfigFresh();
+    expect(closedByDefault.hybridCommerce.subscriptionCheckoutEnabled).toBe(false);
+
+    vi.stubEnv('STRIPE_EXPECTED_ACCOUNT_ID', 'acct_expectedtest');
+    vi.stubEnv('SUBSCRIPTION_CHECKOUT_ENABLED', 'true');
+    const { config: explicitlyOpen } = await loadConfigFresh();
+    expect(explicitlyOpen.hybridCommerce.subscriptionCheckoutEnabled).toBe(true);
+  });
+
+  it('rejects historical webhook-only Prices as canonical checkout configuration', async () => {
+    applyMinimalConfigEnv();
+    vi.stubEnv('STRIPE_EXPECTED_ACCOUNT_ID', 'acct_expectedtest');
+    vi.stubEnv('SUBSCRIPTION_CHECKOUT_ENABLED', 'true');
+    vi.stubEnv('STRIPE_PRICE_ID_PLAN_PRO_MONTHLY', 'price_1U55BS3kbWVFdS6025onefOr');
+    vi.stubEnv('STRIPE_PRICE_ID_PLAN_MAX_MONTHLY', 'price_current_max');
+
+    await expect(loadConfigFresh()).rejects.toThrow(
+      'SUBSCRIPTION_CHECKOUT_ENABLED=true forbids historical webhook-only Stripe Price IDs',
+    );
+
+    vi.stubEnv('STRIPE_PRICE_ID_PLAN_PRO_MONTHLY', 'price_operator_legacy');
+    vi.stubEnv('STRIPE_PRICE_PRO_MONTHLY', 'price_operator_legacy');
+    await expect(loadConfigFresh()).rejects.toThrow(
+      'SUBSCRIPTION_CHECKOUT_ENABLED=true forbids historical webhook-only Stripe Price IDs',
+    );
+  });
+
   it('fails fast when production tries to boot with PAYWALL_ENABLED=false', async () => {
     applySafeProductionEnv();
     vi.stubEnv('PAYWALL_ENABLED', 'false');
@@ -636,6 +666,11 @@ describe('hybrid flag live getters (QA P2-13)', () => {
 
     // Stripe pack sales: same shape.
     expect(config.hybridCommerce.stripePackFulfillmentEnabled).toBe(false);
+
+    // Subscription checkout is also a live positive activation flag.
+    expect(config.hybridCommerce.subscriptionCheckoutEnabled).toBe(false);
+    vi.stubEnv('SUBSCRIPTION_CHECKOUT_ENABLED', 'true');
+    expect(config.hybridCommerce.subscriptionCheckoutEnabled).toBe(true);
     vi.stubEnv('STRIPE_PACK_FULFILLMENT_ENABLED', 'true');
     expect(config.hybridCommerce.stripePackFulfillmentEnabled).toBe(true);
     vi.stubEnv('STRIPE_PACK_FULFILLMENT_KILL_SWITCH', 'true');
