@@ -108,6 +108,13 @@ vi.mock('garmin-connect', () => ({
 }));
 
 describe('garmin passive auth safety', () => {
+  it('does not intercept process-wide console errors with provider-derived arguments', async () => {
+    const { readFileSync } = await vi.importActual<typeof import('node:fs')>('node:fs');
+    const source = readFileSync('src/services/garmin.ts', 'utf8');
+    expect(source).not.toContain('console.error = function');
+    expect(source).not.toContain('_origConsoleError.apply');
+  });
+
   beforeEach(() => {
     vi.resetModules();
     mockGetGarminSession.mockReset();

@@ -213,7 +213,7 @@ async function main() {
     }
     const account = await stripe.accounts.retrieve();
     if (account.id !== expectedAccountId) {
-      console.error(`Refusing --apply: Stripe key belongs to ${account.id}, expected ${expectedAccountId}.`);
+      console.error('Refusing --apply: Stripe account binding check failed.');
       process.exit(2);
     }
   }

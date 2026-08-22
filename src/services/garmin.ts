@@ -33,31 +33,10 @@ import {
 } from './garmin-session-store';
 import { getCurrentContext, runWithContext } from '../utils/request-context';
 
-// ─── Suppress garmin-connect SDK 404 noise ───────────────────────────
-// The garmin-connect SDK (HttpClient.js:236-237) calls `console.error(msg)`
-// for EVERY 4xx response BEFORE throwing. We handle these correctly in
-// `safeGet` (data-endpoint 404s → log debug + return null) but the SDK
-// already polluted stderr by the time we caught the throw. Production logs
-// showed 211 "ERROR: (404), Not Found, ..." lines per week from this — see
-// audit P0-1.
-//
-// This installs a `console.error` interceptor that suppresses ONLY the
-// exact 404 noise pattern from the SDK. 403s remain visible (they may
-// indicate real auth issues that don't go through safeGet, e.g. SSO).
-// All other console.error calls in the process are unaffected.
-{
-  const _origConsoleError = console.error;
-  console.error = function (...args: unknown[]): void {
-    if (
-      args.length === 1 &&
-      typeof args[0] === 'string' &&
-      /^ERROR: \(404\), Not Found, \{/.test(args[0] as string)
-    ) {
-      return; // SDK noise — safeGet has already handled the throw
-    }
-    return _origConsoleError.apply(console, args as []);
-  };
-}
+// Do not intercept the process-wide `console.error`: the garmin-connect SDK
+// can include request or environment-derived details in its arguments. The
+// bounded `safeGet` path below converts expected data-endpoint 404s to an
+// empty result and emits only the sanitized URL path through the app logger.
 
 // ─── Garmin Connect API base URLs ────────────────────────────────────
 const API = 'https://connectapi.garmin.com';

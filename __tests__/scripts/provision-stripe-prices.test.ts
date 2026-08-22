@@ -56,7 +56,9 @@ describe('NH-0036 Stripe provisioning', () => {
     expect(source).toContain("secretKey.startsWith('sk_live_') && apply && !process.argv.includes('--live-ok')");
     expect(source).toContain('Refusing --apply with a LIVE key');
     expect(source).toContain('STRIPE_EXPECTED_ACCOUNT_ID=acct_... is required with --apply.');
-    expect(source).toContain('Stripe key belongs to ${account.id}, expected ${expectedAccountId}');
+    expect(source).toContain('Refusing --apply: Stripe account binding check failed.');
+    expect(source).not.toContain('Stripe key belongs to ${account.id}');
+    expect(source).not.toContain('expected ${expectedAccountId}');
   });
 
   it('covers exactly the five §3 catalog objects at the §2 price points', () => {
