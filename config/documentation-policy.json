@@ -1,7 +1,7 @@
 {
   "$schema": "./documentation-policy.schema.json",
   "schema": "nexus.documentation-policy.v1",
-  "version": "2026-08-12.1",
+  "version": "2026-08-22.1",
   "statusDefinitions": {
     "canonical": { "active": true },
     "current": { "active": true },
@@ -158,7 +158,14 @@
     "CHANGELOG.md": {
       "status": "generated",
       "owner": "release automation",
+      "reviewedOn": "2026-08-22",
       "reviewIntervalDays": 30
+    },
+    "docs/legal/privacy-policy-draft.md": {
+      "reviewedOn": "2026-08-22"
+    },
+    "docs/legal/terms-of-service-draft.md": {
+      "reviewedOn": "2026-08-22"
     },
     "docs/legal/data-retention.md": {
       "status": "canonical",
@@ -172,10 +179,12 @@
     },
     "docs/release/CURRENT_RELEASE_STATE.md": {
       "status": "current",
+      "reviewedOn": "2026-08-22",
       "reviewIntervalDays": 30
     },
     "docs/security/security-hardening-implementation-status.md": {
       "status": "current",
+      "reviewedOn": "2026-08-22",
       "reviewIntervalDays": 30
     }
   }

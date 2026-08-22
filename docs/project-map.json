@@ -5,9 +5,9 @@
     "generatorVersion": 4,
     "authoritativeFreshness": "sourceDigest",
     "sourceDigestAlgorithm": "sha256-path-git-mode-content-v2",
-    "sourceDigest": "7120f238ebff7cff6e1446645f032b552fb9337c044a66e4ef178f0cf149b32a",
-    "baseCommit": "f618fae765571d1e64f30f15bca58cab335bdea3",
-    "baseCommitTimestamp": "2026-08-21T23:02:27+01:00",
+    "sourceDigest": "33d3ce2b5cff7cd37264a3671243eb40488d47fbb30d64088cb8906317496abd",
+    "baseCommit": "8ade19b44556ec941b92a576432d47339d30f5f9",
+    "baseCommitTimestamp": "2026-08-21T23:21:08+01:00",
     "trackedFiles": 3366,
     "sourceFiles": 1178
   },
@@ -5085,7 +5085,7 @@
   "documentation": {
     "policy": "config/documentation-policy.json",
     "policySchema": "nexus.documentation-policy.v1",
-    "policyVersion": "2026-08-12.1",
+    "policyVersion": "2026-08-22.1",
     "count": 78,
     "active": 78,
     "statusCounts": {
@@ -5184,8 +5184,8 @@
         "status": "generated",
         "active": true,
         "owner": "release automation",
-        "reviewedOn": "2026-07-22",
-        "reviewDueOn": "2026-08-21",
+        "reviewedOn": "2026-08-22",
+        "reviewDueOn": "2026-09-21",
         "canonicalPath": "CHANGELOG.md"
       },
       {
@@ -5364,8 +5364,8 @@
         "status": "draft",
         "active": true,
         "owner": "legal and privacy owner",
-        "reviewedOn": "2026-07-22",
-        "reviewDueOn": "2026-08-21",
+        "reviewedOn": "2026-08-22",
+        "reviewDueOn": "2026-09-21",
         "canonicalPath": "docs/legal/privacy-policy-draft.md"
       },
       {
@@ -5373,8 +5373,8 @@
         "status": "draft",
         "active": true,
         "owner": "legal and privacy owner",
-        "reviewedOn": "2026-07-22",
-        "reviewDueOn": "2026-08-21",
+        "reviewedOn": "2026-08-22",
+        "reviewDueOn": "2026-09-21",
         "canonicalPath": "docs/legal/terms-of-service-draft.md"
       },
       {
@@ -5409,8 +5409,8 @@
         "status": "current",
         "active": true,
         "owner": "release owner",
-        "reviewedOn": "2026-07-22",
-        "reviewDueOn": "2026-08-21",
+        "reviewedOn": "2026-08-22",
+        "reviewDueOn": "2026-09-21",
         "canonicalPath": "docs/release/CURRENT_RELEASE_STATE.md"
       },
       {
@@ -5517,8 +5517,8 @@
         "status": "current",
         "active": true,
         "owner": "backend security lead",
-        "reviewedOn": "2026-07-22",
-        "reviewDueOn": "2026-08-21",
+        "reviewedOn": "2026-08-22",
+        "reviewDueOn": "2026-09-21",
         "canonicalPath": "docs/security/security-hardening-implementation-status.md"
       },
       {
