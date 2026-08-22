@@ -168,6 +168,26 @@
     ],
     "cleanupMappings": [
       {
+        "test": "__tests__/services/local-model-manifest.test.ts",
+        "replacementTests": [
+          "__tests__/services/local-model-manifest.test.ts"
+        ],
+        "sources": [
+          "scripts/validate-local-model-manifest.mjs"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "scripts/validate-local-model-manifest.mjs:37-37",
+            "anchor": "if (![false, 'low'].includes(model.thinkMode))",
+            "behavior": "The governed local-model manifest rejects missing or unsupported reasoning modes before a candidate can enter screening.",
+            "replacementTest": "__tests__/services/local-model-manifest.test.ts",
+            "ownerTestNamePattern": "rejects a missing or unsupported governed think mode$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained manifest suite replaces the null-digest candidate assumption with exact digest pinning and a governed reasoning-mode rejection contract."
+      },
+      {
         "test": "__tests__/api/cooking-routes.test.ts",
         "replacementTests": [
           "__tests__/api/cooking-routes.test.ts"
