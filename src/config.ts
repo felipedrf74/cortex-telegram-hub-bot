@@ -3,6 +3,7 @@
 import dotenv from 'dotenv';
 import { contentLiveEvalDotenvOptions } from './services/content-live-evaluation-runtime';
 import { resolveOllamaSmallOnlyRuntimeConfig } from './services/ollama-model-policy';
+import { isHistoricalStripeMonthlyPriceId } from './services/stripe-price-identity';
 dotenv.config(contentLiveEvalDotenvOptions());
 
 // Invalid model overrides still fail startup when the signed manifest is
@@ -795,13 +796,17 @@ export const config = {
   stripe: {
     secretKey: process.env.STRIPE_SECRET_KEY || '',
     webhookSecret: process.env.STRIPE_WEBHOOK_SECRET || '',
+    expectedAccountId: process.env.STRIPE_EXPECTED_ACCOUNT_ID || '',
     // Public-preview behavior is sandbox-only until the live account setup is
     // reviewed and explicitly approved. Validation below requires sk_test_*.
     managedPaymentsSandboxEnabled: (process.env.STRIPE_MANAGED_PAYMENTS_SANDBOX_ENABLED || 'false') === 'true',
-    // USD prices
-    priceProMonthly: process.env.STRIPE_PRICE_PRO_MONTHLY || '',
+    // Historical monthly, yearly, and explicit-currency prices remain
+    // webhook-only. Keep the monthly env bindings operator-configurable so a
+    // live account can preserve existing renewals without changing source.
+    // New monthly checkout uses hybridCommerce.stripePriceIds exclusively.
+    historicalPriceProMonthly: process.env.STRIPE_PRICE_PRO_MONTHLY || '',
+    historicalPriceMaxMonthly: process.env.STRIPE_PRICE_MAX_MONTHLY || '',
     priceProYearly: process.env.STRIPE_PRICE_PRO_YEARLY || '',
-    priceMaxMonthly: process.env.STRIPE_PRICE_MAX_MONTHLY || '',
     priceMaxYearly: process.env.STRIPE_PRICE_MAX_YEARLY || '',
     // BRL prices
     priceProMonthlyBrl: process.env.STRIPE_PRICE_PRO_MONTHLY_BRL || '',
@@ -901,6 +906,9 @@ export const config = {
       return (process.env.STRIPE_PACK_FULFILLMENT_ENABLED || 'false') === 'true'
         && (process.env.STRIPE_PACK_FULFILLMENT_KILL_SWITCH || 'false') !== 'true';
     },
+    get subscriptionCheckoutEnabled(): boolean {
+      return (process.env.SUBSCRIPTION_CHECKOUT_ENABLED || 'false') === 'true';
+    },
     // Plan §3: anonymous email checkout stops accepting NEW sessions at
     // launch. The sunset defaults CLOSED — an unset var must not silently
     // leave the unauthenticated, consent-less checkout path open in
@@ -921,6 +929,27 @@ export const config = {
 if (!config.billing.paywallEnabled && !config.billing.allowUnsafePaywallBypass) {
   throw new Error(
     'PAYWALL_ENABLED=false is only allowed in test, development, or staging environments. Refusing unsafe startup.',
+  );
+}
+
+if (config.hybridCommerce.subscriptionCheckoutEnabled
+    && !/^acct_[A-Za-z0-9]+$/u.test(config.stripe.expectedAccountId)) {
+  throw new Error(
+    'SUBSCRIPTION_CHECKOUT_ENABLED=true requires STRIPE_EXPECTED_ACCOUNT_ID=acct_... for account binding.',
+  );
+}
+
+if (config.hybridCommerce.subscriptionCheckoutEnabled
+    && [
+      config.hybridCommerce.stripePriceIds.planProMonthly,
+      config.hybridCommerce.stripePriceIds.planMaxMonthly,
+    ].some((priceId) => !!priceId && (
+      isHistoricalStripeMonthlyPriceId(priceId)
+      || priceId === config.stripe.historicalPriceProMonthly
+      || priceId === config.stripe.historicalPriceMaxMonthly
+    ))) {
+  throw new Error(
+    'SUBSCRIPTION_CHECKOUT_ENABLED=true forbids historical webhook-only Stripe Price IDs in STRIPE_PRICE_ID_PLAN_*.',
   );
 }
 

@@ -5,11 +5,15 @@ let testDb: Database.Database;
 
 const hoisted = vi.hoisted(() => {
   const stripeCreate = vi.fn();
+  const stripePriceRetrieve = vi.fn();
+  const stripeAccountRetrieve = vi.fn(async () => ({ id: 'acct_expectedpoints' }));
   const stripeRetrieveCharge = vi.fn();
   const stripeConstructEvent = vi.fn();
   const stripeCtor = vi.fn(function StripeMock() {
     return {
+      accounts: { retrieve: stripeAccountRetrieve },
       checkout: { sessions: { create: stripeCreate } },
+      prices: { retrieve: stripePriceRetrieve },
       charges: { retrieve: stripeRetrieveCharge },
       webhooks: { constructEvent: stripeConstructEvent },
     };
@@ -18,6 +22,7 @@ const hoisted = vi.hoisted(() => {
     stripe: {
       secretKey: 'sk_test_points',
       webhookSecret: 'whsec_points',
+      expectedAccountId: 'acct_expectedpoints',
       managedPaymentsSandboxEnabled: true,
       nexusPoints: {
         enabled: true,
@@ -34,11 +39,14 @@ const hoisted = vi.hoisted(() => {
   };
   return {
     stripeCreate,
+    stripePriceRetrieve,
+    stripeAccountRetrieve,
     stripeRetrieveCharge,
     stripeConstructEvent,
     stripeCtor,
     config,
     recordOperatorAlert: vi.fn(),
+    loggerWarn: vi.fn(),
   };
 });
 
@@ -73,7 +81,7 @@ vi.mock('../../src/services/operator-alerts', () => ({
 }));
 
 vi.mock('../../src/utils/logger', () => ({
-  logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), trace: vi.fn(), child: vi.fn().mockReturnThis() },
+  logger: { info: vi.fn(), warn: (...args: unknown[]) => hoisted.loggerWarn(...args), error: vi.fn(), debug: vi.fn(), trace: vi.fn(), child: vi.fn().mockReturnThis() },
   LOGGER_REDACTION_PATHS: [],
 }));
 
@@ -148,6 +156,13 @@ describe('stripe-nexus-points-service', () => {
     hoisted.config.stripe.managedPaymentsSandboxEnabled = true;
     hoisted.config.stripe.nexusPoints.enabled = true;
     hoisted.stripeCreate.mockResolvedValue({ id: 'cs_new', url: 'https://checkout.stripe.test/session' });
+    hoisted.stripePriceRetrieve.mockResolvedValue({
+      id: 'price_points',
+      active: true,
+      tax_behavior: 'exclusive',
+      product: { id: 'prod_points', tax_code: 'txcd_10103000' },
+    });
+    hoisted.stripeAccountRetrieve.mockResolvedValue({ id: 'acct_expectedpoints' });
     hoisted.stripeRetrieveCharge.mockResolvedValue({ payment_intent: null });
     hoisted.stripeConstructEvent.mockReturnValue({
       type: 'checkout.session.completed',
@@ -200,6 +215,7 @@ describe('stripe-nexus-points-service', () => {
       });
       expect(hoisted.stripeCreate).toHaveBeenCalledWith(expect.objectContaining({
         mode: 'payment',
+        automatic_tax: { enabled: true },
         line_items: [{ price: 'price_points_medium', quantity: 1 }],
         managed_payments: { enabled: true },
         success_url: 'https://nexushub.me/user?nexusPointsCheckout=success',
@@ -222,6 +238,55 @@ describe('stripe-nexus-points-service', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('refreshes a reused customer address for automatic tax calculation', async () => {
+    testDb.prepare('INSERT INTO users (id, email) VALUES (?, ?)').run(42, 'buyer@example.com');
+    testDb.prepare(`
+      INSERT INTO subscriptions (user_id, provider, provider_customer_id)
+      VALUES (?, 'stripe', 'cus_existing_points')
+    `).run(42);
+
+    await createNexusPointsCheckoutSession({
+      userId: 42,
+      tenantId: 42,
+      packageId: 'me.nexushub.points.small',
+      source: 'web',
+    });
+
+    const [checkoutParams] = hoisted.stripeCreate.mock.calls[0];
+    expect(checkoutParams).toMatchObject({
+      automatic_tax: { enabled: true },
+      customer: 'cus_existing_points',
+      customer_update: { address: 'auto' },
+    });
+  });
+
+  it('refuses Nexus Points checkout when the Stripe key belongs to another account', async () => {
+    hoisted.stripeAccountRetrieve.mockResolvedValueOnce({ id: 'acct_wrong' });
+    await expect(createNexusPointsCheckoutSession({
+      userId: 42,
+      tenantId: 42,
+      packageId: 'me.nexushub.points.small',
+      source: 'web',
+    })).rejects.toMatchObject({ name: 'StripeAccountBindingError' });
+    expect(hoisted.stripeCreate).not.toHaveBeenCalled();
+  });
+
+  it('fails closed before Checkout when a Nexus Points Price is not tax-ready', async () => {
+    hoisted.stripePriceRetrieve.mockResolvedValueOnce({
+      id: 'price_points_small',
+      active: true,
+      tax_behavior: 'unspecified',
+      product: { id: 'prod_points', tax_code: 'txcd_99999999' },
+    });
+    await expect(createNexusPointsCheckoutSession({
+      userId: 42,
+      tenantId: 42,
+      packageId: 'me.nexushub.points.small',
+      source: 'web',
+    })).rejects.toMatchObject({ name: 'StripeCheckoutProviderError' });
+    expect(hoisted.stripeCreate).not.toHaveBeenCalled();
   });
 
   it('uses the stable API without Managed Payments when the sandbox flag is disabled', async () => {
@@ -296,6 +361,13 @@ describe('stripe-nexus-points-service', () => {
       code: 'IDEMPOTENCY_CONFLICT',
       statusCode: 409,
     });
+    const warning = hoisted.loggerWarn.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(warning).toMatchObject({
+      stripeErrorType: 'StripeIdempotencyError',
+      stripeStatusCode: 400,
+    });
+    expect(warning).not.toHaveProperty('stripeRawType');
+    expect(warning).not.toHaveProperty('message');
   });
 
   it('reuses an existing Stripe customer and otherwise sends user email without logging it', async () => {
@@ -466,6 +538,34 @@ describe('stripe-nexus-points-service', () => {
     });
 
     expect(hoisted.recordOperatorAlert).not.toHaveBeenCalled();
+  });
+
+  it('logs only allowlisted Stripe diagnostics when dispute charge lookup fails', async () => {
+    hoisted.stripeRetrieveCharge.mockRejectedValueOnce({
+      type: 'StripeAPIError',
+      code: 'api_connection_error',
+      statusCode: 503,
+      requestId: 'req_dispute123',
+      message: 'private provider detail',
+      raw: { sensitive: 'provider response' },
+    });
+
+    await handleStripeNexusPointsEvent({
+      type: 'charge.dispute.created',
+      data: { object: { id: 'du_lookup_failed', charge: 'ch_lookup_failed', amount: 500, currency: 'usd' } },
+    });
+
+    const warning = hoisted.loggerWarn.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(warning).toMatchObject({
+      chargeId: 'ch_lookup_failed',
+      stripeErrorType: 'StripeAPIError',
+      stripeErrorCode: 'api_connection_error',
+      stripeStatusCode: 503,
+      stripeRequestId: 'req_dispute123',
+    });
+    expect(warning).not.toHaveProperty('message');
+    expect(warning).not.toHaveProperty('raw');
+    expect(warning).not.toHaveProperty('err');
   });
 
   it('sanitizes portal metadata before sending it to Stripe and storing it in credits', async () => {

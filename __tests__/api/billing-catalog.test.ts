@@ -12,6 +12,7 @@ let stripePriceIds = {
 };
 let appleProductIds = { pack100: '', pack250: '', pack600: '' };
 let anonymousCheckoutEnabled = true;
+let subscriptionCheckoutEnabled = true;
 let stripePackSalesEnabled = false;
 let applePackSalesEnabled = false;
 let stripeConfigured = true;
@@ -28,12 +29,17 @@ vi.mock('../../src/config', async (importOriginal) => {
     ...actual,
     config: {
       ...actual.config,
+      stripe: {
+        ...actual.config.stripe,
+        expectedAccountId: 'acct_catalogtest',
+      },
       get hybridCommerce() {
         return {
           stripePriceIds,
           appleProductIds,
           applePackFulfillmentEnabled: applePackSalesEnabled,
           stripePackFulfillmentEnabled: stripePackSalesEnabled,
+          subscriptionCheckoutEnabled,
           anonymousCheckoutEnabled,
         };
       },
@@ -137,7 +143,7 @@ function mockRes(): MockRes {
   const r: MockRes = {
     statusCode: 200,
     body: null,
-    headers: {},
+    headers: { 'x-forwarded-for': '203.0.113.42' },
     status(code: number) { r.statusCode = code; return r; },
     json(body: any) { r.body = body; return r; },
     setHeader(name: string, value: string) { r.headers[name] = value; return r; },
@@ -155,7 +161,7 @@ function mockReq(method: string, path: string, body?: any, userId = 22): Request
     path,
     query: {},
     params: {},
-    headers: {},
+    headers: { 'x-forwarded-for': '203.0.113.42' },
     body,
     userId,
   } as any;
@@ -181,6 +187,7 @@ describe('billing catalog, wallet, and credits checkout', () => {
     stripePriceIds = { planProMonthly: '', planMaxMonthly: '', pack100: '', pack250: '', pack600: '' };
     appleProductIds = { pack100: '', pack250: '', pack600: '' };
     anonymousCheckoutEnabled = true;
+    subscriptionCheckoutEnabled = true;
     stripePackSalesEnabled = false;
     applePackSalesEnabled = false;
     stripeConfigured = true;
@@ -329,6 +336,18 @@ describe('billing catalog, wallet, and credits checkout', () => {
     expect(successUrl).not.toContain('evil.example');
   });
 
+  it('maps Stripe account-binding failures to a fail-closed 503 response', async () => {
+    stripePriceIds.planProMonthly = 'price_pro_test';
+    const bindingError = Object.assign(new Error('wrong account'), { name: 'StripeAccountBindingError' });
+    mockCreateCheckoutSession.mockRejectedValueOnce(bindingError);
+    const res = await dispatch(billingRoutes(), 'POST', '/credits-checkout', {
+      catalogItemId: 'plan.pro.monthly',
+      acceptedLegal: LEGAL,
+    });
+    expect(res.statusCode).toBe(503);
+    expect(res.body.error.code).toBe('CHECKOUT_UNAVAILABLE');
+  });
+
   it('fails closed when the subscription price object is not provisioned', async () => {
     const res = await dispatch(billingRoutes(), 'POST', '/credits-checkout', {
       catalogItemId: 'plan.pro.monthly',
@@ -336,6 +355,18 @@ describe('billing catalog, wallet, and credits checkout', () => {
     });
     expect(res.statusCode).toBe(503);
     expect(res.body.error.code).toBe('CATALOG_ITEM_UNAVAILABLE');
+  });
+
+  it('keeps configured subscription prices unavailable until positive activation', async () => {
+    stripePriceIds.planProMonthly = 'price_pro_test';
+    subscriptionCheckoutEnabled = false;
+    const res = await dispatch(billingRoutes(), 'GET', '/catalog');
+    const pro = res.body.data.items.find((item: any) => item.id === 'plan.pro.monthly');
+    expect(pro).toMatchObject({
+      purchasable: false,
+      stripePurchasable: false,
+      unavailableReason: 'fulfillment_pending',
+    });
   });
 });
 
@@ -354,5 +385,14 @@ describe('anonymous checkout sunset', () => {
   it('keeps the path reachable while the flag is on', async () => {
     const res = await dispatch(createPublicBillingRouter(), 'POST', '/checkout', { email: 'a@b.co', plan: 'pro' });
     expect(res.statusCode).toBe(503);
+  });
+
+  it('maps public Stripe account-binding failures to 503 without treating them as bad input', async () => {
+    stripeConfigured = true;
+    const bindingError = Object.assign(new Error('wrong account'), { name: 'StripeAccountBindingError' });
+    mockCreatePublicCheckoutSession.mockRejectedValueOnce(bindingError);
+    const res = await dispatch(createPublicBillingRouter(), 'POST', '/checkout', { email: 'a@b.co', plan: 'pro' });
+    expect(res.statusCode).toBe(503);
+    expect(res.body.error).toBe('Checkout is temporarily unavailable.');
   });
 });

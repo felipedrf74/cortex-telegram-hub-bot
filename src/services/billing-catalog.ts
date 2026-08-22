@@ -67,28 +67,32 @@ function catalogDefinitions(): ResolvedBillingCatalogItem[] {
     monthlyCredits: number,
     dailyCreditCap: number,
     stripePriceId: string,
-  ): ResolvedBillingCatalogItem => ({
-    id,
-    kind: 'subscription',
-    title,
-    displayPriceUsd,
-    plan,
-    monthlyCredits,
-    dailyCreditCap,
-    requiresActivePaidPlan: false,
-    stripePriceId: stripePriceId || null,
-    appleProductId: null,
-    // Subscriptions have no activation flag — they are the base product — so
-    // the kill switches are the only stop control in this path (plan §5,
-    // migration 293). Without them a configured price id alone made a
-    // subscription sellable with nothing an operator could flip.
-    purchasable: Boolean(stripePriceId) && isSubscriptionCheckoutActive(),
-    // Subscriptions sell on the web through Stripe; iOS uses its own
-    // StoreKit subscription products, which this catalog does not price.
-    stripePurchasable: Boolean(stripePriceId) && isSubscriptionCheckoutActive(),
-    applePurchasable: false,
-    ...(stripePriceId ? {} : { unavailableReason: 'provider_price_missing' as const }),
-  });
+  ): ResolvedBillingCatalogItem => {
+    const checkoutActive = isSubscriptionCheckoutActive();
+    return {
+      id,
+      kind: 'subscription',
+      title,
+      displayPriceUsd,
+      plan,
+      monthlyCredits,
+      dailyCreditCap,
+      requiresActivePaidPlan: false,
+      stripePriceId: stripePriceId || null,
+      appleProductId: null,
+      // Subscription sales require the positive env activation flag, an
+      // account binding, and both runtime stop controls. A configured provider
+      // id alone never opens sales.
+      purchasable: Boolean(stripePriceId) && checkoutActive,
+      // Subscriptions sell on the web through Stripe; iOS uses its own
+      // StoreKit subscription products, which this catalog does not price.
+      stripePurchasable: Boolean(stripePriceId) && checkoutActive,
+      applePurchasable: false,
+      ...(!stripePriceId
+        ? { unavailableReason: 'provider_price_missing' as const }
+        : !checkoutActive ? { unavailableReason: 'fulfillment_pending' as const } : {}),
+    };
+  };
 
   const pack = (
     id: string,

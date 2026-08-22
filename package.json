@@ -44,6 +44,7 @@
     "chat:test-phase": "npx tsx scripts/chat-test-phase.ts",
     "chat:model-bakeoff": "node dist/tools/chat-model-bakeoff.js",
     "local:model-bakeoff": "node dist/tools/local-model-bakeoff.js",
+    "local:model-first-pass": "node scripts/local-model-first-pass.mjs",
     "fiscal:vendors:audit": "node dist/tools/invoice-vendor-cleanup.js",
     "fiscal:vendors:repair": "node dist/tools/invoice-vendor-cleanup.js --apply",
     "fiscal:storage:backfill": "node dist/tools/invoice-object-storage-backfill.js",

@@ -13,9 +13,11 @@ function stripeMock(overrides: {
 } = {}) {
   const created: unknown[] = [];
   const updated: Array<[string, unknown]> = [];
+  const productsUpdated: Array<[string, unknown]> = [];
   return {
     created,
     updated,
+    productsUpdated,
     products: {
       search: vi.fn(async ({ query }: { query: string }) => {
         const id = /nexusCatalogItemId'\]:'([^']+)'/.exec(query)?.[1] ?? '';
@@ -23,6 +25,11 @@ function stripeMock(overrides: {
         return { data: hit ? [hit] : [] };
       }),
       create: vi.fn(async (params: Record<string, unknown>) => ({ id: `prod_${params.name}`, ...params })),
+      retrieve: vi.fn(async (id: string) => ({ id, tax_code: 'txcd_10103000' })),
+      update: vi.fn(async (id: string, params: unknown) => {
+        productsUpdated.push([id, params]);
+        return { id, ...(params as object) };
+      }),
     },
     prices: {
       list: vi.fn(async ({ lookup_keys }: { lookup_keys: string[] }) => {
@@ -48,6 +55,10 @@ describe('NH-0036 Stripe provisioning', () => {
     const source = readFileSync('scripts/provision-stripe-prices.mjs', 'utf8');
     expect(source).toContain("secretKey.startsWith('sk_live_') && apply && !process.argv.includes('--live-ok')");
     expect(source).toContain('Refusing --apply with a LIVE key');
+    expect(source).toContain('STRIPE_EXPECTED_ACCOUNT_ID=acct_... is required with --apply.');
+    expect(source).toContain('Refusing --apply: Stripe account binding check failed.');
+    expect(source).not.toContain('Stripe key belongs to ${account.id}');
+    expect(source).not.toContain('expected ${expectedAccountId}');
   });
 
   it('covers exactly the five §3 catalog objects at the §2 price points', () => {
@@ -60,6 +71,8 @@ describe('NH-0036 Stripe provisioning', () => {
     ]);
     for (const spec of CATALOG_STRIPE_OBJECTS) {
       expect(spec.currency).toBe('usd');
+      expect(spec.taxBehavior).toBe('exclusive');
+      expect(spec.taxCode).toBe('txcd_10103000');
       if (spec.envVar.includes('PLAN')) expect(spec.recurring).toEqual({ interval: 'month' });
       else expect(spec.recurring).toBeNull();
     }
@@ -81,6 +94,8 @@ describe('NH-0036 Stripe provisioning', () => {
           id: 'price_pro_existing',
           unit_amount: 999,
           currency: 'usd',
+          tax_behavior: 'exclusive',
+          product: { id: 'prod_pro', tax_code: 'txcd_10103000' },
           active: true,
           recurring: { interval: 'month' },
         },
@@ -95,6 +110,53 @@ describe('NH-0036 Stripe provisioning', () => {
     });
     // The other four are created fresh.
     expect(stripe.created).toHaveLength(4);
+  });
+
+  it('updates an existing Product to the personal-use SaaS tax code before reusing its Price', async () => {
+    const stripe = stripeMock({
+      pricesByLookupKey: {
+        'nexus.plan.pro.monthly': {
+          id: 'price_pro_existing',
+          product: { id: 'prod_pro', tax_code: 'txcd_99999999' },
+          unit_amount: 999,
+          currency: 'usd',
+          tax_behavior: 'exclusive',
+          active: true,
+          recurring: { interval: 'month' },
+        },
+      },
+    });
+
+    const { actions } = await provisionCatalogObjects(stripe as never, { apply: true });
+
+    expect(stripe.productsUpdated).toContainEqual([
+      'prod_pro',
+      { tax_code: 'txcd_10103000' },
+    ]);
+    expect(actions.find((action) => action.envVar === 'STRIPE_PRICE_ID_PLAN_PRO_MONTHLY'))
+      .toMatchObject({ priceId: 'price_pro_existing', outcome: 'reused' });
+  });
+
+  it('replaces an otherwise matching price whose tax behavior is unspecified', async () => {
+    const stripe = stripeMock({
+      pricesByLookupKey: {
+        'nexus.plan.pro.monthly': {
+          id: 'price_pro_unspecified_tax',
+          unit_amount: 999,
+          currency: 'usd',
+          tax_behavior: 'unspecified',
+          active: true,
+          recurring: { interval: 'month' },
+        },
+      },
+    });
+    const { actions } = await provisionCatalogObjects(stripe as never, { apply: true });
+    const pro = actions.find((action) => action.envVar === 'STRIPE_PRICE_ID_PLAN_PRO_MONTHLY');
+    expect(pro?.outcome).toBe('replaced');
+    const created = (stripe.created as Array<Record<string, unknown>>)
+      .find((price) => price.lookup_key === 'nexus.plan.pro.monthly');
+    expect(created?.tax_behavior).toBe('exclusive');
+    expect(created?.transfer_lookup_key).toBe(true);
   });
 
   it('replaces a mismatched price and transfers the lookup key', async () => {

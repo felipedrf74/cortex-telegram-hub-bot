@@ -30,7 +30,13 @@ import {
   revokeNexusPointsCredit,
 } from './nexus-points';
 import { recordOperatorAlert } from './operator-alerts';
-import { assertStripeCheckoutKeyMode } from './stripe-service';
+import {
+  assertStripeAccountBinding,
+  assertStripeCheckoutKeyMode,
+  safeStripeErrorDiagnostics,
+  stripeCheckoutProviderError,
+} from './stripe-service';
+import { STRIPE_PERSONAL_SAAS_TAX_CODE } from './stripe-price-identity';
 import { getDb } from './database';
 import {
   STRIPE_MANAGED_PAYMENTS_API_VERSION,
@@ -147,6 +153,21 @@ export async function createNexusPointsCheckoutSession(
   if (!stripe) {
     throw new Error('STRIPE_NEXUS_POINTS_NOT_CONFIGURED');
   }
+  await assertStripeAccountBinding(stripe);
+  let taxReadyPrice: any;
+  try {
+    taxReadyPrice = await stripe.prices.retrieve(priceId, { expand: ['product'] });
+  } catch (error) {
+    throw stripeCheckoutProviderError('nexus_points_price_tax_validation', error);
+  }
+  const taxProduct = taxReadyPrice?.product;
+  if (taxReadyPrice?.active !== true
+      || taxReadyPrice?.tax_behavior !== 'exclusive'
+      || !taxProduct
+      || typeof taxProduct !== 'object'
+      || taxProduct.tax_code !== STRIPE_PERSONAL_SAAS_TAX_CODE) {
+    throw stripeCheckoutProviderError('nexus_points_price_tax_validation');
+  }
   const pkg = getNexusPointPackage(input.packageId);
   const metadata = normalizeStripeMetadata({
     userId: String(input.userId),
@@ -161,6 +182,7 @@ export async function createNexusPointsCheckoutSession(
 
   const sessionParams: any = {
     mode: 'payment',
+    automatic_tax: { enabled: true },
     line_items: [{ price: priceId, quantity: 1 }],
     success_url: config.stripe.nexusPoints.webSuccessUrl,
     cancel_url: config.stripe.nexusPoints.webCancelUrl,
@@ -174,6 +196,7 @@ export async function createNexusPointsCheckoutSession(
   const customer = lookupStripeCustomerForNexusPoints(input.userId);
   if (customer.providerCustomerId) {
     sessionParams.customer = customer.providerCustomerId;
+    sessionParams.customer_update = { address: 'auto' };
   } else if (customer.email) {
     sessionParams.customer_email = customer.email;
   } else {
@@ -192,13 +215,11 @@ export async function createNexusPointsCheckoutSession(
         tenantId: input.tenantId,
         packageId: input.packageId,
         source: input.source,
-        stripeErrorType: (err as any)?.type,
-        stripeRawType: (err as any)?.rawType,
-        stripeStatusCode: (err as any)?.statusCode,
+        ...safeStripeErrorDiagnostics(err),
       }, 'Stripe Nexus Points Checkout idempotency conflict');
       throw new StripeNexusPointsIdempotencyConflictError();
     }
-    throw err;
+    throw stripeCheckoutProviderError('nexus_points', err);
   }
 
   if (!session.url) {
@@ -427,8 +448,11 @@ async function lookupPaymentIntentIdForCharge(chargeId: string | null): Promise<
     if (!stripe) return null;
     const charge = await (stripe as any).charges.retrieve(chargeId);
     return getStripeId(charge?.payment_intent);
-  } catch (err) {
-    logger.warn({ err, chargeId }, 'Failed to resolve Stripe charge PaymentIntent for Nexus Points dispute');
+  } catch (error) {
+    logger.warn({
+      chargeId,
+      ...safeStripeErrorDiagnostics(error),
+    }, 'Failed to resolve Stripe charge PaymentIntent for Nexus Points dispute');
     return null;
   }
 }

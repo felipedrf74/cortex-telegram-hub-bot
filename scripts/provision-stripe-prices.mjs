@@ -16,8 +16,12 @@
 //   and transfers the lookup key (the old price keeps selling history).
 // - Never prints or stores the secret key. Prints the exact .env lines to
 //   paste for the catalog (STRIPE_PRICE_ID_*).
+// - --apply requires STRIPE_EXPECTED_ACCOUNT_ID and verifies the key's account
+//   before the first mutation.
 // - --archive only sets active=false on the listed price ids: existing
 //   subscriptions and webhooks are untouched; the prices stop NEW sale.
+
+export const STRIPE_CATALOG_TAX_CODE = 'txcd_10103000';
 
 export const CATALOG_STRIPE_OBJECTS = [
   {
@@ -27,6 +31,8 @@ export const CATALOG_STRIPE_OBJECTS = [
     catalogItemId: 'plan.pro.monthly',
     unitAmount: 999,
     currency: 'usd',
+    taxBehavior: 'exclusive',
+    taxCode: STRIPE_CATALOG_TAX_CODE,
     recurring: { interval: 'month' },
   },
   {
@@ -36,6 +42,8 @@ export const CATALOG_STRIPE_OBJECTS = [
     catalogItemId: 'plan.max.monthly',
     unitAmount: 1499,
     currency: 'usd',
+    taxBehavior: 'exclusive',
+    taxCode: STRIPE_CATALOG_TAX_CODE,
     recurring: { interval: 'month' },
   },
   {
@@ -45,6 +53,8 @@ export const CATALOG_STRIPE_OBJECTS = [
     catalogItemId: 'pack.credits.100',
     unitAmount: 499,
     currency: 'usd',
+    taxBehavior: 'exclusive',
+    taxCode: STRIPE_CATALOG_TAX_CODE,
     recurring: null,
   },
   {
@@ -54,6 +64,8 @@ export const CATALOG_STRIPE_OBJECTS = [
     catalogItemId: 'pack.credits.250',
     unitAmount: 999,
     currency: 'usd',
+    taxBehavior: 'exclusive',
+    taxCode: STRIPE_CATALOG_TAX_CODE,
     recurring: null,
   },
   {
@@ -63,6 +75,8 @@ export const CATALOG_STRIPE_OBJECTS = [
     catalogItemId: 'pack.credits.600',
     unitAmount: 1999,
     currency: 'usd',
+    taxBehavior: 'exclusive',
+    taxCode: STRIPE_CATALOG_TAX_CODE,
     recurring: null,
   },
 ];
@@ -86,6 +100,7 @@ function priceMatches(price, spec) {
     : !price.recurring;
   return price.unit_amount === spec.unitAmount
     && price.currency === spec.currency
+    && price.tax_behavior === spec.taxBehavior
     && recurringMatches
     && price.active === true;
 }
@@ -98,7 +113,16 @@ export async function provisionCatalogObjects(stripe, { apply = false } = {}) {
   const actions = [];
   for (const spec of CATALOG_STRIPE_OBJECTS) {
     const existing = await findPriceByLookupKey(stripe, spec.lookupKey);
-    if (existing && priceMatches(existing, spec)) {
+    let product = null;
+    if (existing?.product && typeof existing.product === 'object') {
+      product = existing.product;
+    } else if (typeof existing?.product === 'string') {
+      product = await stripe.products.retrieve(existing.product);
+    } else {
+      product = await findProductByCatalogItemId(stripe, spec.catalogItemId);
+    }
+    const productTaxReady = product?.tax_code === spec.taxCode;
+    if (existing && priceMatches(existing, spec) && productTaxReady) {
       actions.push({ envVar: spec.envVar, priceId: existing.id, outcome: 'reused' });
       continue;
     }
@@ -110,17 +134,24 @@ export async function provisionCatalogObjects(stripe, { apply = false } = {}) {
       });
       continue;
     }
-    let product = await findProductByCatalogItemId(stripe, spec.catalogItemId);
     if (!product) {
       product = await stripe.products.create({
         name: spec.productName,
+        tax_code: spec.taxCode,
         metadata: { nexusCatalogItemId: spec.catalogItemId },
       });
+    } else if (!productTaxReady) {
+      product = await stripe.products.update(product.id, { tax_code: spec.taxCode });
+    }
+    if (existing && priceMatches(existing, spec)) {
+      actions.push({ envVar: spec.envVar, priceId: existing.id, outcome: 'reused' });
+      continue;
     }
     const created = await stripe.prices.create({
       product: product.id,
       unit_amount: spec.unitAmount,
       currency: spec.currency,
+      tax_behavior: spec.taxBehavior,
       ...(spec.recurring ? { recurring: spec.recurring } : {}),
       lookup_key: spec.lookupKey,
       // A mismatched existing price keeps its history; the lookup key moves.
@@ -174,6 +205,18 @@ async function main() {
   }
   const { default: Stripe } = await import('stripe');
   const stripe = new Stripe(secretKey);
+  if (apply) {
+    const expectedAccountId = process.env.STRIPE_EXPECTED_ACCOUNT_ID;
+    if (!/^acct_[A-Za-z0-9]+$/.test(expectedAccountId || '')) {
+      console.error('STRIPE_EXPECTED_ACCOUNT_ID=acct_... is required with --apply.');
+      process.exit(2);
+    }
+    const account = await stripe.accounts.retrieve();
+    if (account.id !== expectedAccountId) {
+      console.error('Refusing --apply: Stripe account binding check failed.');
+      process.exit(2);
+    }
+  }
 
   const { actions, envLines } = await provisionCatalogObjects(stripe, { apply });
   for (const action of actions) {

@@ -15,11 +15,14 @@ const skills: SkillInferenceSkill[] = [
   'secretary', 'content', 'training', 'triathlon', 'cooking', 'finance',
 ];
 const languages: LocalModelBakeoffObservation['language'][] = ['pt-BR', 'pt-PT', 'en', 'mixed'];
+const manifest = JSON.parse(readFileSync('config/local-model-manifest.json', 'utf8'));
 
 function eligibleCorpus(candidateId: string): LocalModelBakeoffObservation[] {
+  const modelDigest = manifest.models.find((model: any) => model.id === candidateId)?.digest;
+  if (!modelDigest) throw new Error(`candidate digest missing for ${candidateId}`);
   return Array.from({ length: 600 }, (_, index) => ({
     candidateId,
-    modelDigest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    modelDigest,
     profileVersion: SKILL_INFERENCE_PROFILE_VERSION,
     caseId: `case-${index}`,
     skillId: skills[index % skills.length]!,

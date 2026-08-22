@@ -53,7 +53,7 @@ Kimi K3 C remains offline research only.
 
 The bakeoff will minimize unnecessary generation:
 
-- First pass: 24 compact representative cases per candidate covering all six skills, three supported language patterns, schemas, and runtime.
+- First pass: 24 compact representative cases per candidate covering all six internal inference profiles behind the five user-facing skills, three supported language patterns, schemas, and runtime.
 - Final pass: the top two candidates plus Qwen on a focused set of medium tasks, Content outlines/sections, tool plans, and 100 compact JSON-schema checks.
 - Reuse approved historical fixtures and cloud outputs. Do not regenerate a cloud baseline when valid evidence already exists.
 - Do not generate complete 15-minute scripts separately for every local candidate.
@@ -189,16 +189,19 @@ Add an authenticated server-owned billing catalog, subscription/pack checkout co
 ### Stripe and website
 
 - Require authentication before subscription or credit-pack checkout.
-- Display Pro $9.99, Max $14.99, six skills, shared credits, script delivery modes, and the three packs.
-- Remove stale $14.99/$19.99 pricing, “unlimited” claims, five-skill descriptions, Power Packs, and hardcoded regional prices.
-- Use new Stripe Price objects; archive old prices from new sale while preserving historical billing and webhook compatibility.
+- Display Pro $9.99, Max $14.99, five user-facing skills (Training includes the Triathlon profile), shared credits, script delivery modes, and the three packs.
+- Remove stale $14.99/$19.99 pricing, “unlimited” claims, duplicate sixth-skill descriptions, Power Packs, and hardcoded regional prices.
+- Use new Stripe Price objects with explicit `tax_behavior=exclusive` and Products classified as personal-use SaaS (`txcd_10103000`). Provisioning repairs the Product tax code before it reuses an existing Price. Every subscription, AI-credit pack, and retained Nexus Points Checkout Session enables Stripe automatic tax, and reused customers update their stored address from Checkout. Retained externally provisioned Nexus Points Prices must also be active, exclusive, and attached to a Product with that tax code. Archive old prices from new sale while preserving historical billing and webhook compatibility.
+- Keep new subscription checkout closed unless `SUBSCRIPTION_CHECKOUT_ENABLED=true`, both runtime stop controls are disengaged, `STRIPE_EXPECTED_ACCOUNT_ID` is valid, and canonical plan slots do not contain webhook-only historical Price IDs. Before creating any Checkout Session, retrieve the key's own Stripe account and require an exact match. A configured Price ID alone never opens sales.
+- Keep built-in historical monthly subscription Price IDs and operator-configured `STRIPE_PRICE_PRO_MONTHLY`/`STRIPE_PRICE_MAX_MONTHLY` bindings for signed-webhook renewal recognition only. Reject them from canonical checkout slots, and emit a critical operator alert for any other unknown signed subscription Price.
+- Convert Stripe account-binding, Price/tax-readiness, and Checkout-provider failures into a controlled `503` response and a safe operator alert; never expose the provider response to the client.
 - Keep checkout success in `processing` until the signed webhook fulfills it; provide Stripe Customer Portal for web-managed subscriptions.
 
 Anonymous email checkout stops accepting new sessions at launch. Existing in-flight claim sessions remain behind a compatibility flag for 30 days, after which the path is disabled. Previously verified subscriptions remain valid.
 
 ### Apple
 
-Retain existing monthly subscription identifiers and historical yearly receipt support. Put Pro and Max in the same subscription group with Max ranked above Pro. Create new versioned consumable IDs for the three AI-credit packs rather than changing the economics of old points products.
+Retain existing monthly subscription identifiers for webhook/renewal recognition only, plus historical yearly receipt support; never route a new checkout through those identifiers. Put Pro and Max in the same subscription group with Max ranked above Pro. Create new versioned consumable IDs for the three AI-credit packs rather than changing the economics of old points products.
 
 iOS prices come dynamically from StoreKit. In-app digital purchases use StoreKit and never redirect to Stripe. Web-bought entitlements remain usable in iOS, while equivalent products remain available through IAP.
 

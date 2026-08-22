@@ -2,7 +2,11 @@
 
 import { Router, Request, Response } from 'express';
 import express from 'express';
-import { createPublicCheckoutSession, isStripeConfigured } from '../../services/stripe-service';
+import {
+  createPublicCheckoutSession,
+  isStripeCheckoutUnavailableError,
+  isStripeConfigured,
+} from '../../services/stripe-service';
 import { config } from '../../config';
 import { hashWaitlistIpAddress } from '../../services/waitlist-ip-hash';
 import { hashEmail } from '../../utils/identity';
@@ -130,6 +134,10 @@ export function createPublicBillingRouter(): Router {
     } catch (err: any) {
       if (['INVALID_EMAIL', 'INVALID_PLAN', 'INVALID_CURRENCY', 'PRICE_NOT_CONFIGURED'].includes(err?.message)) {
         res.status(400).json({ ok: false, error: 'Invalid checkout request.' });
+        return;
+      }
+      if (isStripeCheckoutUnavailableError(err)) {
+        res.status(503).json({ ok: false, error: 'Checkout is temporarily unavailable.' });
         return;
       }
       logger.error({ err, emailHash: email ? hashEmail(email, 16) : null }, 'Public checkout failed');

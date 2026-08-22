@@ -36,11 +36,18 @@ import {
   STRIPE_MANAGED_PAYMENTS_API_VERSION,
   STRIPE_MANAGED_PAYMENTS_CHECKOUT_OPTIONS,
 } from './stripe-managed-payments';
+import { STRIPE_HISTORICAL_MONTHLY_PRICE_IDS } from './stripe-price-identity';
 
 // Stripe v17+ uses a different export shape. The namespace for types
 // is accessed via the default export's type definitions.
 type StripeInstance = InstanceType<typeof StripeLib>;
 const STRIPE_API_VERSION = '2026-03-25.dahlia' as const;
+const HISTORICAL_MONTHLY_SUBSCRIPTION_PRICES = new Map<string, { plan: string; period: string }>([
+  // Retained only so existing subscriptions and delayed webhooks keep their
+  // entitlement mapping. New checkout never routes through these Price IDs.
+  [STRIPE_HISTORICAL_MONTHLY_PRICE_IDS[0], { plan: 'pro', period: 'monthly' }],
+  [STRIPE_HISTORICAL_MONTHLY_PRICE_IDS[1], { plan: 'max', period: 'monthly' }],
+]);
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -64,15 +71,127 @@ export interface SubscriptionStatus {
 export type StripeBillingPlan = 'pro' | 'max';
 export type StripeBillingCurrency = 'usd' | 'brl';
 
+export class StripeAccountBindingError extends Error {
+  readonly reason: 'account_id_missing' | 'account_retrieval_failed' | 'account_mismatch';
+  constructor(reason: StripeAccountBindingError['reason'] = 'account_mismatch') {
+    super('Configured Stripe key does not match STRIPE_EXPECTED_ACCOUNT_ID');
+    this.name = 'StripeAccountBindingError';
+    this.reason = reason;
+  }
+}
+
+export class StripeCheckoutProviderError extends Error {
+  constructor() {
+    super('Stripe could not create the Checkout Session');
+    this.name = 'StripeCheckoutProviderError';
+  }
+}
+
+const STRIPE_CHECKOUT_UNAVAILABLE_ERROR_NAMES = new Set([
+  'StripeAccountBindingError',
+  'StripeCheckoutProviderError',
+  'StripeStorefrontDisabledError',
+  'StripeTestModeCheckoutError',
+]);
+
+export function isStripeCheckoutUnavailableError(error: unknown): boolean {
+  return error instanceof Error && STRIPE_CHECKOUT_UNAVAILABLE_ERROR_NAMES.has(error.name);
+}
+
+function recordStripeCheckoutAlert(input: {
+  reason: string;
+  surface: string;
+  severity: 'warning' | 'critical';
+  diagnostics?: Record<string, string | number>;
+}): void {
+  logger.error({
+    reason: input.reason,
+    surface: input.surface,
+    severity: input.severity,
+    ...input.diagnostics,
+  }, 'Stripe Checkout failed closed');
+  try {
+    recordOperatorAlert({
+      severity: input.severity,
+      source: 'stripe-checkout',
+      dedupeKey: `stripe_checkout:${input.reason}:${input.surface}`,
+      title: 'Stripe Checkout failed closed',
+      detail: `Stripe Checkout could not prove ${input.reason} for ${input.surface}.`,
+      suspectedArea: 'billing',
+      userImpact: 'stripe_checkout_temporarily_unavailable',
+      metadata: { reason: input.reason, surface: input.surface, ...input.diagnostics },
+    });
+  } catch {
+    // The logger line remains the signal if the alert store is unavailable.
+  }
+}
+
+export function safeStripeErrorDiagnostics(error: unknown): Record<string, string | number> {
+  if (!error || typeof error !== 'object') return {};
+  const candidate = error as Record<string, unknown>;
+  const diagnostics: Record<string, string | number> = {};
+  const addSafeString = (key: string, value: unknown): void => {
+    if (typeof value === 'string' && /^[A-Za-z0-9_.:-]{1,128}$/u.test(value)) diagnostics[key] = value;
+  };
+  addSafeString('stripeErrorType', candidate.type);
+  addSafeString('stripeErrorCode', candidate.code);
+  addSafeString('stripeRequestId', candidate.requestId ?? candidate.request_id);
+  if (Number.isInteger(candidate.statusCode) && Number(candidate.statusCode) >= 100 && Number(candidate.statusCode) <= 599) {
+    diagnostics.stripeStatusCode = Number(candidate.statusCode);
+  }
+  return diagnostics;
+}
+
+export function stripeCheckoutProviderError(surface: string, cause?: unknown): StripeCheckoutProviderError {
+  recordStripeCheckoutAlert({
+    reason: 'provider_request_failed',
+    surface,
+    severity: 'warning',
+    diagnostics: safeStripeErrorDiagnostics(cause),
+  });
+  return new StripeCheckoutProviderError();
+}
+
+export async function assertStripeAccountBinding(stripe: StripeInstance): Promise<void> {
+  const expected = config.stripe.expectedAccountId;
+  if (!/^acct_[A-Za-z0-9]+$/u.test(expected)) {
+    recordStripeCheckoutAlert({ reason: 'account_id_missing', surface: 'account_binding', severity: 'critical' });
+    throw new StripeAccountBindingError('account_id_missing');
+  }
+  let account: { id: string };
+  try {
+    const retrieveOwnAccount = stripe.accounts.retrieve as unknown as () => Promise<{ id: string }>;
+    account = await retrieveOwnAccount.call(stripe.accounts);
+  } catch (error) {
+    recordStripeCheckoutAlert({
+      reason: 'account_retrieval_failed',
+      surface: 'account_binding',
+      severity: 'critical',
+      diagnostics: safeStripeErrorDiagnostics(error),
+    });
+    throw new StripeAccountBindingError('account_retrieval_failed');
+  }
+  if (account.id !== expected) {
+    recordStripeCheckoutAlert({ reason: 'account_mismatch', surface: 'account_binding', severity: 'critical' });
+    throw new StripeAccountBindingError('account_mismatch');
+  }
+}
+
 // Price ID → plan mapping. The env vars hold Stripe price_xxx IDs;
 // this map resolves them to our internal plan names on webhooks.
 function resolvePlan(priceId: string): { plan: string; period: string } | null {
   const { stripe: s } = config;
+  const catalogPrices = config.hybridCommerce.stripePriceIds;
   const matches = (configuredPriceId: string | undefined): boolean => !!configuredPriceId && priceId === configuredPriceId;
-  // USD prices
-  if (matches(s.priceProMonthly)) return { plan: 'pro', period: 'monthly' };
+  // Canonical monthly catalog.
+  if (matches(catalogPrices.planProMonthly)) return { plan: 'pro', period: 'monthly' };
+  if (matches(catalogPrices.planMaxMonthly)) return { plan: 'max', period: 'monthly' };
+  if (matches(s.historicalPriceProMonthly)) return { plan: 'pro', period: 'monthly' };
+  if (matches(s.historicalPriceMaxMonthly)) return { plan: 'max', period: 'monthly' };
+  // Historical prices remain resolvable for retained subscriptions/webhooks.
+  const historicalMonthly = HISTORICAL_MONTHLY_SUBSCRIPTION_PRICES.get(priceId);
+  if (historicalMonthly) return historicalMonthly;
   if (matches(s.priceProYearly))  return { plan: 'pro', period: 'yearly' };
-  if (matches(s.priceMaxMonthly)) return { plan: 'max', period: 'monthly' };
   if (matches(s.priceMaxYearly))  return { plan: 'max', period: 'yearly' };
   // BRL prices
   if (matches(s.priceProMonthlyBrl)) return { plan: 'pro', period: 'monthly' };
@@ -90,13 +209,13 @@ function resolvePlan(priceId: string): { plan: string; period: string } | null {
 export function resolveStripePriceId(plan: string, currency: string): string | null {
   const normalizedPlan = String(plan || '').toLowerCase();
   const normalizedCurrency = String(currency || '').toLowerCase();
-  const { stripe: s } = config;
+  const prices = config.hybridCommerce.stripePriceIds;
 
   // New Checkout sessions always use the USD reference prices. A retained
   // client may still request "brl"; Stripe Adaptive Pricing localizes the
   // presented amount without routing that buyer onto an old explicit BRL Price.
-  if (normalizedPlan === 'pro' && ['usd', 'brl'].includes(normalizedCurrency)) return s.priceProMonthly || null;
-  if (normalizedPlan === 'max' && ['usd', 'brl'].includes(normalizedCurrency)) return s.priceMaxMonthly || null;
+  if (normalizedPlan === 'pro' && ['usd', 'brl'].includes(normalizedCurrency)) return prices.planProMonthly || null;
+  if (normalizedPlan === 'max' && ['usd', 'brl'].includes(normalizedCurrency)) return prices.planMaxMonthly || null;
   return null;
 }
 
@@ -412,6 +531,7 @@ export async function createCheckoutSession(
   assertStripeCheckoutKeyMode();
   assertSubscriptionCheckoutAllowed();
   const stripe = getStripe();
+  await assertStripeAccountBinding(stripe);
 
   // Look up existing Stripe customer for this user
   const db = getDb();
@@ -428,6 +548,7 @@ export async function createCheckoutSession(
   };
   const sessionParams: any = {
     mode: 'subscription',
+    automatic_tax: { enabled: true },
     line_items: [{ price: priceId, quantity: 1 }],
     success_url: successUrl,
     cancel_url: cancelUrl,
@@ -443,9 +564,15 @@ export async function createCheckoutSession(
   // creates one automatically; customer_creation is not valid in this mode.
   if (existing?.provider_customer_id) {
     sessionParams.customer = existing.provider_customer_id;
+    sessionParams.customer_update = { address: 'auto' };
   }
 
-  const session = await stripe.checkout.sessions.create(sessionParams);
+  let session: any;
+  try {
+    session = await stripe.checkout.sessions.create(sessionParams);
+  } catch (error) {
+    throw stripeCheckoutProviderError('authenticated_subscription', error);
+  }
   if (!session.url) throw new Error('Stripe returned no checkout URL');
 
   logger.info({ userId, priceId, sessionId: session.id }, 'Stripe checkout session created');
@@ -465,6 +592,7 @@ export async function createCreditPackCheckoutSession(
 ): Promise<string> {
   assertStripeCheckoutKeyMode();
   const stripe = getStripe();
+  await assertStripeAccountBinding(stripe);
   const db = getDb();
   const existing = db.prepare(
     "SELECT provider_customer_id FROM subscriptions WHERE user_id = ? AND provider = 'stripe'"
@@ -472,6 +600,7 @@ export async function createCreditPackCheckoutSession(
 
   const sessionParams: any = {
     mode: 'payment',
+    automatic_tax: { enabled: true },
     line_items: [{ price: input.priceId, quantity: 1 }],
     success_url: successUrl,
     cancel_url: cancelUrl,
@@ -479,11 +608,17 @@ export async function createCreditPackCheckoutSession(
   };
   if (existing?.provider_customer_id) {
     sessionParams.customer = existing.provider_customer_id;
+    sessionParams.customer_update = { address: 'auto' };
   } else {
     sessionParams.customer_creation = 'always';
   }
 
-  const session = await stripe.checkout.sessions.create(sessionParams);
+  let session: any;
+  try {
+    session = await stripe.checkout.sessions.create(sessionParams);
+  } catch (error) {
+    throw stripeCheckoutProviderError('authenticated_credit_pack', error);
+  }
   if (!session.url) throw new Error('Stripe returned no checkout URL');
   logger.info({ userId, catalogItemId: input.catalogItemId, sessionId: session.id }, 'Stripe credit-pack checkout session created');
   return session.url;
@@ -632,10 +767,12 @@ export async function createPublicCheckoutSession(input: {
   assertStripeCheckoutKeyMode();
   assertSubscriptionCheckoutAllowed();
   const stripe = getStripe();
+  await assertStripeAccountBinding(stripe);
   const emailHash = hashEmail(normalizedEmail);
 
   const sessionParams: any = {
     mode: 'subscription',
+    automatic_tax: { enabled: true },
     customer_email: normalizedEmail,
     line_items: [{ price: resolved.priceId, quantity: 1 }],
     success_url: input.successUrl,
@@ -660,7 +797,12 @@ export async function createPublicCheckoutSession(input: {
   if (config.stripe.managedPaymentsSandboxEnabled) {
     sessionParams.managed_payments = { ...STRIPE_MANAGED_PAYMENTS_CHECKOUT_OPTIONS };
   }
-  const session = await stripe.checkout.sessions.create(sessionParams);
+  let session: any;
+  try {
+    session = await stripe.checkout.sessions.create(sessionParams);
+  } catch (error) {
+    throw stripeCheckoutProviderError('public_subscription', error);
+  }
   if (!session.url) throw new Error('Stripe returned no checkout URL');
 
   const db = getDb();
@@ -922,6 +1064,20 @@ export function handleSubscriptionUpdated(subscription: any): void {
   const resolvedPlan = resolvePlan(priceId);
   if (!resolvedPlan) {
     logger.warn({ subId: subscription.id, priceId }, 'Stripe subscription update skipped: unknown price id');
+    try {
+      recordOperatorAlert({
+        severity: 'critical',
+        source: 'stripe-webhook',
+        dedupeKey: `stripe_subscription_unknown_price:${priceId || 'missing'}`,
+        title: 'Stripe subscription webhook uses an unknown Price',
+        detail: 'A signed Stripe subscription update could not be mapped to a Nexus plan.',
+        suspectedArea: 'billing',
+        userImpact: 'subscription_entitlement_update_deferred',
+        metadata: { subscriptionId: subscription.id, priceId },
+      });
+    } catch {
+      // Keep webhook processing fail-closed even if alert persistence is down.
+    }
     return;
   }
   const { plan, period } = resolvedPlan;
