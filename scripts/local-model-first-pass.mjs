@@ -21,8 +21,11 @@ import { fileURLToPath } from 'node:url';
 const SCRIPT_PATH = realpathSync(fileURLToPath(import.meta.url));
 const DEFAULT_CASES_PATH = resolve(dirname(SCRIPT_PATH), '../config/local-model-first-pass-cases.json');
 const DEFAULT_MANIFEST_PATH = resolve(dirname(SCRIPT_PATH), '../config/local-model-manifest.json');
+const PROFILE_POLICY_PATH = resolve(dirname(SCRIPT_PATH), '../src/services/skill-inference-profile-policy.json');
+const PROFILE_POLICY_BYTES = readFileSync(PROFILE_POLICY_PATH);
+const PROFILE_POLICY = JSON.parse(PROFILE_POLICY_BYTES);
 const OLLAMA_URL = 'http://127.0.0.1:11434';
-const PROFILE_VERSION = 'nexus-skill-inference-profiles-v1';
+const PROFILE_VERSION = PROFILE_POLICY.version;
 const REQUIRED_SKILLS = ['secretary', 'content', 'training', 'triathlon', 'cooking', 'finance'];
 const REQUIRED_LANGUAGES = ['en', 'pt-BR', 'pt-PT'];
 const CGROUP_MEMORY_CURRENT = '/sys/fs/cgroup/system.slice/ollama.service/memory.current';
@@ -413,9 +416,10 @@ export function resolveCandidate(manifest, candidateId, inventory) {
   return { ...candidate, observedDigest: normalizedDigest };
 }
 
-function systemPrompt(testCase) {
-  return [
-    'You are a Nexus Hub specialist under a synthetic evaluation.',
+export function buildFirstPassSystemPrompt(testCase) {
+  const profilePolicy = [...PROFILE_POLICY.sharedPolicy, PROFILE_POLICY.skillPolicy[testCase.skillId]].join(' ');
+  const evaluationOverlay = [
+    'This is a synthetic evaluation; no private or external data is available.',
     'Return exactly one JSON object and no markdown or surrounding text.',
     'Use exactly these five keys: action, answer, data, language, skill.',
     'action must be answer or refuse. data must be a JSON object.',
@@ -426,6 +430,7 @@ function systemPrompt(testCase) {
       : 'For this extraction case, put only the fields requested by the user in data.',
     'Keep answer under 120 words.',
   ].join(' ');
+  return `${profilePolicy}\n${evaluationOverlay}`;
 }
 
 async function runCase(candidate, testCase) {
@@ -442,7 +447,7 @@ async function runCase(candidate, testCase) {
       body: JSON.stringify({
         model: candidate.ollamaTag,
         messages: [
-          { role: 'system', content: systemPrompt(testCase) },
+          { role: 'system', content: buildFirstPassSystemPrompt(testCase) },
           { role: 'user', content: testCase.prompt },
         ],
         stream: true,
@@ -560,18 +565,23 @@ function isValidRuntimeSample(runtime) {
 export function rescoreFirstPassArtifact(sourceArtifact, casesDocument, manifest) {
   const cases = validateFirstPassCases(casesDocument);
   const sourceSchema = sourceArtifact?.schemaVersion;
-  if (!['nexus.local-model-first-pass-artifact.v1', 'nexus.local-model-first-pass-artifact.v2'].includes(sourceSchema)
+  if (!['nexus.local-model-first-pass-artifact.v1', 'nexus.local-model-first-pass-artifact.v2', 'nexus.local-model-first-pass-artifact.v3'].includes(sourceSchema)
       || !Array.isArray(sourceArtifact.observations)
       || !sourceArtifact.candidate?.id
       || !/^sha256:[0-9a-f]{64}$/u.test(sourceArtifact.candidate?.modelDigest || '')) {
     fail('source artifact does not match the first-pass artifact contract', 65);
+  }
+  if (sourceSchema !== 'nexus.local-model-first-pass-artifact.v3'
+      || sourceArtifact.profileVersion !== PROFILE_VERSION
+      || sourceArtifact.profilePolicySha256 !== sha256(PROFILE_POLICY_BYTES)) {
+    fail('source artifact policy is not attested by the current governed profile', 65);
   }
   const candidate = manifest?.models?.find((model) => model?.id === sourceArtifact.candidate.id);
   if (!candidate || !/^sha256:[0-9a-f]{64}$/u.test(candidate.digest || '')
       || candidate.digest !== sourceArtifact.candidate.modelDigest) {
     fail('source artifact model digest is not pinned by the current manifest', 65);
   }
-  const thinkModeAttested = sourceSchema === 'nexus.local-model-first-pass-artifact.v2';
+  const thinkModeAttested = sourceSchema === 'nexus.local-model-first-pass-artifact.v3';
   if (thinkModeAttested && (!/^sha256:[0-9a-f]{64}$/u.test(sourceArtifact.runnerSha256 || '')
       || ![false, 'low'].includes(sourceArtifact.candidate.thinkMode)
       || sourceArtifact.candidate.thinkMode !== candidate.thinkMode)) {
@@ -627,6 +637,7 @@ async function main() {
       manifestSha256: sha256(manifestBytes),
       corpusSha256: sha256(casesBytes),
       profileVersion: PROFILE_VERSION,
+      profilePolicySha256: sha256(PROFILE_POLICY_BYTES),
       candidate: {
         id: rescored.candidate.id,
         ollamaTag: rescored.candidate.ollamaTag,
@@ -664,13 +675,14 @@ async function main() {
   }
   const summary = buildFirstPassSummary(observations, failure, summaryEnvelope(manifest));
   const artifact = {
-    schemaVersion: 'nexus.local-model-first-pass-artifact.v2',
+    schemaVersion: 'nexus.local-model-first-pass-artifact.v3',
     generatedAt: new Date().toISOString(),
     runnerSha256: sha256(readFileSync(SCRIPT_PATH)),
     manifestVersion: manifest.manifestVersion,
     manifestSha256: sha256(manifestBytes),
     corpusSha256: sha256(casesBytes),
     profileVersion: PROFILE_VERSION,
+    profilePolicySha256: sha256(PROFILE_POLICY_BYTES),
     candidate: {
       id: candidate.id,
       ollamaTag: candidate.ollamaTag,
