@@ -33,6 +33,12 @@ release `8aeaf11bad6acfdeb9a8a670cd49eca7`; the owner acknowledged that exact
 release at `2026-08-20T23:23:18.705Z`. This docs-only successor is the
 CD-eligible carrier for the unchanged application bytes.
 
+Observed again on 2026-08-22: protected-main source
+`ba8bb47c955883b749a156a1d73f7cbaa4c3f7ec` halted as release
+`829caa4346f8532b884814132870118a`; the owner acknowledged that exact release
+at `2026-08-22T20:44:58.930Z`. The following docs-only successor carries the
+same reviewed application bytes through the CD-eligible path.
+
 Audit protocol: every round runs under a promotion freeze (no merges to
 protected main until the verdict lands), and the auditor reads the active
 receipt from `sudo -n /usr/local/sbin/nexus-release-state-view` at the start
