@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: backend architecture lead
-Last verified: 2026-08-05
+Last verified: 2026-08-23
 Update policy: update BEFORE any behaviour change to the fields documented
 here. This document exists because both fields below had multiple live,
 undocumented meanings; changing behaviour without updating this contract
@@ -34,7 +34,7 @@ Contract rules derived from the above:
    (`requestedTrainingDays`, `distinctScheduledDays`, ...) instead of
    overloading `sessionsPerWeek`.
 3. Renaming or merging any of the four meanings is a client-visible contract
-   change: update this document, `ios-specs/02-API-SPECIFICATION.md`, and the
+   change: update this document, `docs/contracts/openapi-v1.yaml`, and the
    pinning tests in the same change.
 4. Within the existing volume-enforcement meaning,
    `twoADayPreference: 'never'` forbids treating explicit endurance and

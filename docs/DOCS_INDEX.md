@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: backend architecture lead
-Last verified: 2026-08-12
+Last verified: 2026-08-23
 Update policy: update only when a canonical path changes
 
 Start with `docs/project-map.json`; it provides structured module, route,
@@ -24,6 +24,7 @@ review cadence through compact path rules plus explicit exceptions.
 | Engineering standards | `docs/engineering/ENGINEERING_STANDARDS_INDEX.md` |
 | Security controls and operations | `docs/security/security-control-matrix.md`, `docs/security/security-operations-runbook.md` |
 | Threat model | `docs/security/nexus-security-threat-model.md` |
+| iOS `/api/v1` app contract (OpenAPI) | `docs/contracts/openapi-v1.yaml` |
 | Paid-AI and quota contract | `docs/TOKEN-QUOTA-CONTRACT.md` |
 | Hybrid AI, pricing, commerce, and production plan | `docs/release/hybrid-ai-commerce-production-plan.md` |
 | Local-primary inference architecture and rollout | `docs/engineering/local-primary-inference-standard.md` |

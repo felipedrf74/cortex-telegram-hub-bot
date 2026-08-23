@@ -13,7 +13,8 @@ npm run test:fast
 ```
 
 Use `docs/project-map.json` for machine-readable navigation and
-`docs/DOCS_INDEX.md` for the small set of canonical documents. Current release
+`docs/DOCS_INDEX.md` for the small set of canonical documents. The iOS
+`/api/v1` app-JWT contract is `docs/contracts/openapi-v1.yaml`. Current release
 truth is the root-host receipt and state evidence defined in
 `docs/release/continuous-deployment.md`; the checked-in
 `docs/release/release-state.json` is a non-authoritative projection. Operator
