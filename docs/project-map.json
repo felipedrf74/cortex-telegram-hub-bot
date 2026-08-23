@@ -5,10 +5,10 @@
     "generatorVersion": 4,
     "authoritativeFreshness": "sourceDigest",
     "sourceDigestAlgorithm": "sha256-path-git-mode-content-v2",
-    "sourceDigest": "0e9be031496cfa7893193fa74c2f06e4f868b8ff153c505894e1b98abca9b36d",
-    "baseCommit": "e28b101c617e067156189375a4a76658058f037d",
-    "baseCommitTimestamp": "2026-08-23T22:29:35+01:00",
-    "trackedFiles": 3385,
+    "sourceDigest": "2fa69ec1f34cc18129ad9c0a69b97085f5ff752050ebd787001bb381a0222558",
+    "baseCommit": "a82ce5d685653d8fcc33e5d9b2972a031c1f313a",
+    "baseCommitTimestamp": "2026-08-23T22:31:54+01:00",
+    "trackedFiles": 3386,
     "sourceFiles": 1182
   },
   "navigation": {
@@ -5120,10 +5120,10 @@
     "policy": "config/documentation-policy.json",
     "policySchema": "nexus.documentation-policy.v1",
     "policyVersion": "2026-08-22.1",
-    "count": 78,
-    "active": 78,
+    "count": 79,
+    "active": 79,
     "statusCounts": {
-      "canonical": 38,
+      "canonical": 39,
       "current": 2,
       "draft": 2,
       "generated": 1,
@@ -5266,6 +5266,15 @@
         "reviewedOn": "2026-07-22",
         "reviewDueOn": "2027-01-18",
         "canonicalPath": "docs/DOCS_INDEX.md"
+      },
+      {
+        "path": "docs/NEXUS_HUB_PRODUCT_BRIEF.md",
+        "status": "canonical",
+        "active": true,
+        "owner": "backend architecture lead",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
+        "canonicalPath": "docs/NEXUS_HUB_PRODUCT_BRIEF.md"
       },
       {
         "path": "docs/TOKEN-QUOTA-CONTRACT.md",

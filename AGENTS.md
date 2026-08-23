@@ -13,6 +13,11 @@ coding agents. Load detail only when the task needs it.
    inspection/recovery or the explicitly owner-authorized PM2 first-cutover
    fallback; checked-in release projections are never runtime truth.
 
+## Product brief (required)
+
+Before non-trivial work, read `docs/NEXUS_HUB_PRODUCT_BRIEF.md`. Keep
+AGENTS.md as the process bootloader; the brief is product truth.
+
 ## Safety
 
 - Preserve unrelated and user-owned changes. Do not clean, reset, discard,
