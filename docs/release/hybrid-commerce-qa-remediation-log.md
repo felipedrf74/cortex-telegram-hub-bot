@@ -283,13 +283,21 @@ Payments eligibility. The active `nexus-hub-api` destination targets
 subscription, invoice, refund, and dispute event families, and showed no
 delivery errors at inspection time.
 
-The canonical account and five live Price IDs are staged in the root-owned
-production environment with subscription checkout, Stripe pack fulfillment,
-Apple pack fulfillment, hybrid credits, and anonymous checkout still OFF. Do
-not enable public commerce: Stripe paused payments and payouts on 2026-08-16
-because the account representative's identity could not be verified. The
-existing live API key and endpoint signing secret also remain pending a secure,
-no-rotation operator handoff to replace the wrong-account production secrets.
+Stripe now reports no active account tasks; Payments, Payouts, Transfers, and
+the required payment methods are active. A direct live API probe confirmed the
+expected account, `charges_enabled`, `payouts_enabled`, submitted account
+details, all five active Price IDs, and the active target destination.
+
+The existing target-account live API key and existing destination signing
+secret were installed in the root-owned production environment without
+creating or rotating credentials. The expected account and five live Price
+IDs are complete there. Subscription checkout, Stripe pack fulfillment, Apple
+pack fulfillment, hybrid credits, and anonymous checkout remain OFF: loading
+correct credentials is necessary release readiness, not authorization to skip
+the remaining acceptance, economics, Apple, or local-model gates. The owner
+later disclosed the live API key in an operator chat; rotation is therefore a
+security prerequisite before public commerce, but remains explicitly deferred
+under the owner's no-rotation instruction.
 
 Do not enable public controls until an eligible signed local-model winner
 completes the full VPS bakeoff, the actual-account rate card and economics
