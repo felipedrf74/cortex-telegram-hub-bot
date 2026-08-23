@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: backend architecture lead
-Last verified: 2026-08-09
+Last verified: 2026-08-23
 Update policy: update when REST contract conventions, route shape, or
 migration discipline changes. `docs/release/continuous-deployment.md` and
 `docs/release/release-evidence-contract.md` are the runtime and evidence
@@ -649,17 +649,23 @@ tenant membership into owner identity, or discarding historical bytes.
 
 ## 11. OpenAPI/contract documentation (should)
 
-Every app-facing route should be documented in
-`ios-specs/02-API-SPECIFICATION.md` with:
+The canonical contract home for the app-facing surface is
+`docs/contracts/openapi-v1.yaml` — an OpenAPI 3.1 index of the `/api/v1`
+app-JWT surface, derived from `src/api/router.ts`. Every app-facing route
+is documented there with:
 
 - HTTP method + path
-- Request shape (TS interface or zod schema)
-- Response shape (TS interface)
-- Error codes the route can produce
-- Auth requirement (auth middleware vs portal token vs anonymous)
+- Auth requirement (app JWT vs anonymous; portal/internal surfaces are out
+  of scope for the app contract)
+- Deterministic (token-zero) vs model-backed classification
+- Stable error codes the route can produce
 
-A future improvement is to generate the spec from the code. Until then, the
-markdown spec is the contract; iOS reads it and writes decoders against it.
+The former home, `ios-specs/02-API-SPECIFICATION.md` in the iOS repo, is
+historical and no longer the documented contract home. A future improvement
+is to generate the spec from the code. Until then, the checked-in OpenAPI
+artifact is the contract index; route code and the domain contract documents
+(`docs/TOKEN-QUOTA-CONTRACT.md`, this standard) remain the authority on
+request/response bodies.
 
 ## 12. Local fixture mode (should)
 
@@ -719,5 +725,5 @@ immutable host receipt is **rejected** by the release evidence contract.
 - [ ] Migration test asserts post-state.
 - [ ] No direct provider SDK call (route through registry).
 - [ ] No PII in logs.
-- [ ] OpenAPI spec updated under `ios-specs/02-API-SPECIFICATION.md` when
-      contract changed.
+- [ ] Contract artifact updated under `docs/contracts/openapi-v1.yaml` when
+      the app-facing contract changed.

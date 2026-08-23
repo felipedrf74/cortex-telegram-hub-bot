@@ -5,10 +5,10 @@
     "generatorVersion": 4,
     "authoritativeFreshness": "sourceDigest",
     "sourceDigestAlgorithm": "sha256-path-git-mode-content-v2",
-    "sourceDigest": "a0693eeec8ef64ce86fda93d5fba3ae2c2086826dbd365545accc9bb7e7c70c5",
-    "baseCommit": "2b089f4985959aa9b700d8b64c0f03ab7893e006",
-    "baseCommitTimestamp": "2026-08-23T21:10:45+01:00",
-    "trackedFiles": 3381,
+    "sourceDigest": "dbb8b1178e62b7531ec2d54d2d8a3174055d6d7dc1451633a3024a6265c8a8af",
+    "baseCommit": "72ed7175b1c7577f18293a698cf8cefa52af7e65",
+    "baseCommitTimestamp": "2026-08-23T21:21:50+01:00",
+    "trackedFiles": 3382,
     "sourceFiles": 1182
   },
   "navigation": {
@@ -5861,6 +5861,11 @@
       "path": "catalog/training/exercise-media/v1/instruction-scaffolds.draft.json",
       "bytes": 667549,
       "generated": true
+    },
+    {
+      "path": "docs/contracts/openapi-v1.yaml",
+      "bytes": 613806,
+      "generated": false
     },
     {
       "path": "catalog/training/exercise-media/v1/instructions.json",
