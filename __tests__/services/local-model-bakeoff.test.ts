@@ -20,14 +20,14 @@ const manifest = JSON.parse(readFileSync('config/local-model-manifest.json', 'ut
 function eligibleCorpus(candidateId: string): LocalModelBakeoffObservation[] {
   const modelDigest = manifest.models.find((model: any) => model.id === candidateId)?.digest;
   if (!modelDigest) throw new Error(`candidate digest missing for ${candidateId}`);
-  return Array.from({ length: 600 }, (_, index) => ({
+  return Array.from({ length: 112 }, (_, index) => ({
     candidateId,
     modelDigest,
     profileVersion: SKILL_INFERENCE_PROFILE_VERSION,
     caseId: `case-${index}`,
     skillId: skills[index % skills.length]!,
-    workload: index < 30 ? 'content_script' : index % 5 === 0 ? 'structured_tool_plan' : 'ordinary',
-    language: index < 15 ? 'pt-BR' : index < 30 ? 'en' : languages[index % languages.length]!,
+    workload: index < 6 ? 'content_sample' : index < 12 ? 'ordinary' : 'structured_tool_plan',
+    language: languages[index % languages.length]!,
     skillAccuracy: 0.9,
     contentQuality: 0.9,
     structuredCorrectness: 1,
@@ -43,9 +43,8 @@ function eligibleCorpus(candidateId: string): LocalModelBakeoffObservation[] {
     peakInferenceMemoryBytes: 18 * 1024 ** 3,
     minimumHostAvailableBytes: 7 * 1024 ** 3,
     swapBytes: 0,
-    ...(index < 30 ? {
-      scriptWordCount: 2_100,
-      scriptComplete: true,
+    ...(index < 6 ? {
+      contentSampleComplete: true,
       sourceConsistent: true,
     } : {}),
   }));
@@ -64,20 +63,20 @@ describe('local model bakeoff scorer', () => {
     const report = buildLocalModelBakeoff(eligibleCorpus('qwen3.5-9b-candidate'));
     expect(report[0]).toMatchObject({
       candidateId: 'qwen3.5-9b-candidate',
-      observationCount: 600,
-      uniqueCaseCount: 600,
-      scriptCount: 30,
+      observationCount: 112,
+      uniqueCaseCount: 112,
+      contentSampleCount: 6,
       eligible: true,
       disqualifiers: [],
     });
     expect(report[0]!.score).toBe(90.5);
     expect(report[0]!.metrics).toMatchObject({
-      structuredSchemaCount: 114,
+      structuredSchemaCount: 100,
       schemaValidityPercent: 100,
-      scriptOutputContractPassPercent: 100,
+      contentSampleContractPassPercent: 100,
       ordinaryChatP95FirstTokenMs: 2_000,
       ordinaryChatP95TotalDurationMs: 20_000,
-      scriptP95TotalDurationMs: 20_000,
+      contentSampleP95TotalDurationMs: 20_000,
     });
   });
 
@@ -90,45 +89,39 @@ describe('local model bakeoff scorer', () => {
     const candidate = buildLocalModelBakeoff(corpus)
       .find((row) => row.candidateId === 'qwen3.5-9b-candidate')!;
 
-    expect(candidate.metrics.structuredSchemaCount).toBe(114);
+    expect(candidate.metrics.structuredSchemaCount).toBe(100);
     expect(candidate.metrics.schemaValidityPercent).toBeLessThan(99);
     expect(candidate.disqualifiers).toContain('schema_validity_below_99_percent');
   });
 
   it('disqualifies duplicate cases, a safety failure, swap, and sub-four-token script throughput', () => {
     const corpus = eligibleCorpus('qwen3.5-9b-candidate');
-    corpus[599] = {
-      ...corpus[599]!,
+    corpus[111] = {
+      ...corpus[111]!,
       caseId: corpus[0]!.caseId,
       safetyFailure: true,
       swapBytes: 1,
     };
-    for (let index = 0; index < 30; index += 1) corpus[index]!.generatedTokensPerSecond = 3.9;
+    for (let index = 0; index < 6; index += 1) corpus[index]!.generatedTokensPerSecond = 3.9;
     const candidate = buildLocalModelBakeoff(corpus)
       .find((row) => row.candidateId === 'qwen3.5-9b-candidate')!;
 
     expect(candidate.eligible).toBe(false);
     expect(candidate.disqualifiers).toEqual(expect.arrayContaining([
-      'fewer_than_600_unique_nexus_cases',
+      'final_pass_case_inventory_incomplete',
       'duplicate_case_observations',
       'safety_or_tenant_isolation_failure',
       'swap_detected',
-      'script_throughput_below_4_tokens_per_second',
+      'content_sample_throughput_below_4_tokens_per_second',
     ]));
   });
 
-  it('disqualifies incomplete or out-of-length scripts and latency outside the public envelope', () => {
+  it('disqualifies incomplete samples and ordinary latency outside the public envelope', () => {
     const corpus = eligibleCorpus('qwen3.5-9b-candidate');
     corpus[0] = {
       ...corpus[0]!,
-      scriptWordCount: 1_500,
-      scriptComplete: false,
+      contentSampleComplete: false,
       sourceConsistent: false,
-      totalDurationMs: 12 * 60 * 1_000 + 1,
-    };
-    corpus[1] = {
-      ...corpus[1]!,
-      totalDurationMs: 12 * 60 * 1_000 + 1,
     };
     for (const row of corpus.filter((entry) => entry.workload === 'ordinary')) {
       row.firstTokenMs = 12_001;
@@ -139,17 +132,16 @@ describe('local model bakeoff scorer', () => {
       .find((row) => row.candidateId === 'qwen3.5-9b-candidate')!;
 
     expect(candidate.disqualifiers).toEqual(expect.arrayContaining([
-      'long_form_script_output_contract_failed',
+      'content_sample_output_contract_failed',
       'ordinary_chat_first_token_p95_above_12_seconds',
       'ordinary_chat_total_p95_above_45_seconds',
-      'long_form_script_p95_above_12_minutes',
     ]));
   });
 
   it('fails candidate identity when a digest or specialist profile changes mid-bakeoff', () => {
     const corpus = eligibleCorpus('qwen3.5-9b-candidate');
     corpus[100]!.modelDigest = 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
-    corpus[200]!.profileVersion = 'nexus-skill-inference-profiles-v0';
+    corpus[101]!.profileVersion = 'nexus-skill-inference-profiles-v0';
 
     const candidate = buildLocalModelBakeoff(corpus)
       .find((row) => row.candidateId === 'qwen3.5-9b-candidate')!;

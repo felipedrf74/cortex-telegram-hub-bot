@@ -318,7 +318,7 @@ describe('local inference runtime control', () => {
     db.close();
   });
 
-  it('enforces the governed production stage order and seven-day stability windows', async () => {
+  it('allows direct evidence-bound production activation and rejects percentage canaries', async () => {
     const db = database();
     const control = await import('../../src/services/local-inference-runtime-control');
     const originalNodeEnv = process.env.NODE_ENV;
@@ -327,54 +327,31 @@ describe('local inference runtime control', () => {
 
     try {
       expect(control.setLocalInferenceRuntimeControl({
-        mode: 'shadow', rolloutPercent: 0, reason: 'begin shadow evidence', updatedBy: 42,
+        mode: 'active', rolloutPercent: 100, reason: 'release acceptance passed', updatedBy: 42,
+        evidenceReference: 'release:sha256:acceptance-and-economics',
         nonAiP95BaselineMs: 120,
         nonAiBaselineSampleCount: 25,
         nonAiBaselineCapturedAt: '2026-08-12T12:00:00.000Z',
         endUserErrorRateBaselinePercent: 0.4,
         endUserErrorBaselineSampleCount: 25,
-      }, db)).toMatchObject({ environment: 'production', mode: 'shadow', rolloutPercent: 0 });
+      }, db)).toMatchObject({ environment: 'production', mode: 'active', rolloutPercent: 100 });
 
       expect(() => control.setLocalInferenceRuntimeControl({
-        mode: 'canary', rolloutPercent: 1, reason: 'shadow not stable', updatedBy: 42,
-      }, db)).toThrowError(expect.objectContaining({ code: 'LOCAL_CONTROL_STAGE_NOT_STABLE' }));
-
-      db.prepare(`UPDATE local_inference_runtime_control
-        SET updated_at = datetime('now', '-8 days')
-        WHERE environment = 'production'`).run();
-      expect(control.setLocalInferenceRuntimeControl({
-        mode: 'canary', rolloutPercent: 1, reason: 'staff canary', updatedBy: 42,
-      }, db)).toMatchObject({
-        mode: 'canary',
-        rolloutPercent: 1,
-        nonAiP95BaselineMs: 120,
-        nonAiBaselineSampleCount: 25,
-        endUserErrorRateBaselinePercent: 0.4,
-        endUserErrorBaselineSampleCount: 25,
-      });
+        mode: 'canary', rolloutPercent: 1, reason: 'percentage cohort', updatedBy: 42,
+      }, db)).toThrowError(expect.objectContaining({ code: 'LOCAL_CONTROL_PRODUCTION_STAGE_INVALID' }));
 
       expect(() => control.setLocalInferenceRuntimeControl({
-        mode: 'canary',
-        rolloutPercent: 1,
+        mode: 'active',
+        rolloutPercent: 100,
         reason: 'attempt to replace baseline',
         updatedBy: 42,
+        evidenceReference: 'release:sha256:acceptance-and-economics',
         nonAiP95BaselineMs: 1,
         nonAiBaselineSampleCount: 25,
         nonAiBaselineCapturedAt: '2026-08-12T13:00:00.000Z',
         endUserErrorRateBaselinePercent: 0,
         endUserErrorBaselineSampleCount: 25,
       }, db)).toThrowError(expect.objectContaining({ code: 'LOCAL_CONTROL_BASELINE_STAGE_INVALID' }));
-
-      expect(() => control.setLocalInferenceRuntimeControl({
-        mode: 'canary', rolloutPercent: 25, reason: 'skip five percent', updatedBy: 42,
-      }, db)).toThrowError(expect.objectContaining({ code: 'LOCAL_CONTROL_PRODUCTION_STAGE_SKIP' }));
-
-      db.prepare(`UPDATE local_inference_runtime_control
-        SET updated_at = datetime('now', '-8 days')
-        WHERE environment = 'production'`).run();
-      expect(control.setLocalInferenceRuntimeControl({
-        mode: 'canary', rolloutPercent: 5, reason: 'five percent', updatedBy: 42,
-      }, db)).toMatchObject({ mode: 'canary', rolloutPercent: 5 });
 
       expect(control.setLocalInferenceRuntimeControl({
         mode: 'off', rolloutPercent: 0, reason: 'immediate rollback', updatedBy: 42,
@@ -387,7 +364,7 @@ describe('local inference runtime control', () => {
     }
   });
 
-  it('requires production auto-rollback and a configured staff cohort before canary', async () => {
+  it('requires production auto-rollback and acceptance evidence before active/100%', async () => {
     const db = database();
     const control = await import('../../src/services/local-inference-runtime-control');
     const originalNodeEnv = process.env.NODE_ENV;
@@ -395,32 +372,33 @@ describe('local inference runtime control', () => {
     process.env.NODE_ENV = 'production';
 
     try {
-      control.setLocalInferenceRuntimeControl({
-        mode: 'shadow', rolloutPercent: 0, reason: 'begin shadow evidence', updatedBy: 42,
+      const activeInput = {
+        mode: 'active' as const,
+        rolloutPercent: 100,
+        reason: 'release acceptance passed',
+        updatedBy: 42,
+        evidenceReference: 'release:sha256:acceptance-and-economics',
         nonAiP95BaselineMs: 120,
         nonAiBaselineSampleCount: 25,
         nonAiBaselineCapturedAt: '2026-08-12T12:00:00.000Z',
         endUserErrorRateBaselinePercent: 0.4,
         endUserErrorBaselineSampleCount: 25,
-      }, db);
-      db.prepare(`UPDATE local_inference_runtime_control
-        SET updated_at = datetime('now', '-8 days')
-        WHERE environment = 'production'`).run();
-      const canaryInput = {
-        mode: 'canary' as const,
-        rolloutPercent: 1,
-        reason: 'staff canary',
-        updatedBy: 42,
       };
 
       localPrimaryConfigMock.autoRollbackEnabled = false;
-      expect(() => control.setLocalInferenceRuntimeControl(canaryInput, db))
+      expect(() => control.setLocalInferenceRuntimeControl(activeInput, db))
         .toThrowError(expect.objectContaining({ code: 'LOCAL_CONTROL_AUTO_ROLLBACK_REQUIRED' }));
 
       localPrimaryConfigMock.autoRollbackEnabled = true;
+      expect(() => control.setLocalInferenceRuntimeControl({
+        ...activeInput,
+        evidenceReference: '',
+      }, db)).toThrowError(expect.objectContaining({ code: 'LOCAL_CONTROL_ACCEPTANCE_EVIDENCE_REQUIRED' }));
+
       localPrimaryConfigMock.staffUserIds = [];
-      expect(() => control.setLocalInferenceRuntimeControl(canaryInput, db))
-        .toThrowError(expect.objectContaining({ code: 'LOCAL_CONTROL_STAFF_COHORT_REQUIRED' }));
+      expect(control.setLocalInferenceRuntimeControl(activeInput, db)).toMatchObject({
+        mode: 'active', rolloutPercent: 100,
+      });
     } finally {
       localPrimaryConfigMock.autoRollbackEnabled = true;
       localPrimaryConfigMock.staffUserIds = [42];
@@ -454,7 +432,7 @@ describe('local inference runtime control', () => {
     }
   });
 
-  it('makes an already-persisted production canary effectively OFF after protection env drift', async () => {
+  it('makes an already-persisted production active state effectively OFF after protection env drift', async () => {
     const db = database();
     const control = await import('../../src/services/local-inference-runtime-control');
     const originalNodeEnv = process.env.NODE_ENV;
@@ -463,8 +441,10 @@ describe('local inference runtime control', () => {
 
     try {
       db.prepare(`UPDATE local_inference_runtime_control
-        SET mode = 'canary', rollout_percent = 1,
-            model_manifest_version = '2026-08-12.1', updated_by = 42
+        SET mode = 'active', rollout_percent = 100,
+            model_manifest_version = '2026-08-12.1',
+            active_model_digest = 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            skill_profile_version = 'nexus-skill-inference-v3', updated_by = 42
         WHERE environment = 'production'`).run();
 
       localPrimaryConfigMock.autoRollbackEnabled = false;
@@ -475,12 +455,8 @@ describe('local inference runtime control', () => {
 
       localPrimaryConfigMock.autoRollbackEnabled = true;
       localPrimaryConfigMock.staffUserIds = [];
-      expect(control.getLocalInferenceRuntimeControl(db)).toMatchObject({
-        mode: 'off', rolloutPercent: 0,
-        reason: 'staff_cohort_missing_requires_reactivation',
-      });
+      expect(control.getLocalInferenceRuntimeControl(db)).toMatchObject({ mode: 'active', rolloutPercent: 100 });
 
-      localPrimaryConfigMock.staffUserIds = [42];
       localPrimaryConfigMock.gatewaySocketPath = '';
       expect(control.getLocalInferenceRuntimeControl(db)).toMatchObject({
         mode: 'off', rolloutPercent: 0,
