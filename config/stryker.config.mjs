@@ -41,7 +41,10 @@ export default {
   // `.local` contains ignored evidence, operator state, and may temporarily
   // contain credentials. Mutation sandboxes must never copy any of it into
   // candidate-controlled test execution.
-  ignorePatterns: ['/.local', '/.local/**'],
+  ignorePatterns: [
+    '/.local', '/.local/**',
+    '/content-engine/.venv', '/content-engine/.venv/**',
+  ],
   tempDirName: '.local/stryker-tmp',
   cleanTempDir: true,
   // The weekly lane is advisory and intentionally sequential. The gate runs

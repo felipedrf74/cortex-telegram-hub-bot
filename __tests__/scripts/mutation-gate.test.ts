@@ -1792,7 +1792,10 @@ describe('changed-critical mutation gate', () => {
         configFile: 'config/vitest.stryker.config.ts',
       });
       expect(cleanup.concurrency).toBe(1);
-      expect(cleanup.ignorePatterns).toEqual(['/.local', '/.local/**']);
+      expect(cleanup.ignorePatterns).toEqual([
+        '/.local', '/.local/**',
+        '/content-engine/.venv', '/content-engine/.venv/**',
+      ]);
       expect(cleanup.dryRunTimeoutMinutes).toBe(10);
     } finally {
       for (const [key, value] of Object.entries({

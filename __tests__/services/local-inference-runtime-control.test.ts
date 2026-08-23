@@ -394,6 +394,10 @@ describe('local inference runtime control', () => {
         ...activeInput,
         evidenceReference: '',
       }, db)).toThrowError(expect.objectContaining({ code: 'LOCAL_CONTROL_ACCEPTANCE_EVIDENCE_REQUIRED' }));
+      expect(() => control.setLocalInferenceRuntimeControl({
+        ...activeInput,
+        evidenceReference: '   ',
+      }, db)).toThrowError(expect.objectContaining({ code: 'LOCAL_CONTROL_ACCEPTANCE_EVIDENCE_REQUIRED' }));
 
       localPrimaryConfigMock.staffUserIds = [];
       expect(control.setLocalInferenceRuntimeControl(activeInput, db)).toMatchObject({
@@ -407,6 +411,17 @@ describe('local inference runtime control', () => {
       else process.env.NODE_ENV = originalNodeEnv;
       db.close();
     }
+  });
+
+  it('keeps staging active admission independent from production evidence', async () => {
+    const db = database();
+    const control = await import('../../src/services/local-inference-runtime-control');
+    runtimeConfigMock.isStaging = true;
+
+    expect(control.setLocalInferenceRuntimeControl({
+      mode: 'active', rolloutPercent: 100, reason: 'staging verification', updatedBy: 42,
+    }, db)).toMatchObject({ environment: 'staging', mode: 'active', rolloutPercent: 100 });
+    db.close();
   });
 
   it('rejects an outage-poisoned production OFF-to-shadow baseline', async () => {
