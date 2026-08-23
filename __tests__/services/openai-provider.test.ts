@@ -12,6 +12,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockCreate = vi.fn();
 const mockResponsesCreate = vi.fn();
+const mockFileCreate = vi.fn();
+const mockFileContent = vi.fn();
+const mockFileDelete = vi.fn();
+const mockBatchCreate = vi.fn();
+const mockBatchRetrieve = vi.fn();
+const mockBatchCancel = vi.fn();
 const mockSettleNexusPointOverageForUser = vi.fn().mockResolvedValue(undefined);
 const mockAssertAiBudgetReservationForProvider = vi.fn();
 const mockRecordUsage = vi.fn();
@@ -21,7 +27,10 @@ vi.mock('openai', () => {
     default: class OpenAI {
       chat = { completions: { create: mockCreate } };
       responses = { create: mockResponsesCreate };
+      files = { create: mockFileCreate, content: mockFileContent, delete: mockFileDelete };
+      batches = { create: mockBatchCreate, retrieve: mockBatchRetrieve, cancel: mockBatchCancel };
     },
+    toFile: vi.fn(async (value: unknown, name: string) => ({ value, name })),
   };
 });
 
@@ -76,6 +85,7 @@ vi.mock('../../src/services/database', () => ({
       }
       return { run: mockDbRun };
     },
+    transaction: (fn: () => void) => ({ immediate: fn }),
   }),
   initDatabase: vi.fn(),
   closeDatabase: vi.fn(),
@@ -143,7 +153,7 @@ vi.mock('../../src/services/cost-guardrail', async () => {
 
 // ─── Imports ─────────────────────────────────────────────────────────
 
-import { OpenAIProvider, _sleep, completeOneShot, completeOneShotWithWebSearch } from '../../src/services/openai-provider';
+import { OpenAIProvider, _openAIBatchSleep, _sleep, completeOneShot, completeOneShotWithWebSearch } from '../../src/services/openai-provider';
 import { pushEvent } from '../../src/portal/telemetry';
 import { config } from '../../src/config';
 import { _resetOverrides, setDomainModel } from '../../src/services/model-config';
@@ -352,7 +362,7 @@ describe('OpenAIProvider', () => {
       .toBeGreaterThan(0.007);
   });
 
-  it('rejects an unavailable Batch transport and a provider service-tier mismatch', async () => {
+  it('requires durable Batch state and rejects a provider service-tier mismatch', async () => {
     await expect(provider.callStructuredGeneration({
       systemPrompt: 'SCRIPTGEN_SYSTEM_SCHEMA',
       userPrompt: '{}',
@@ -363,7 +373,7 @@ describe('OpenAIProvider', () => {
       tenantId: 8,
       category: 'cloud_script_generation_plan',
       responseFormat: 'json',
-    })).rejects.toThrow('durable batch adapter');
+    })).rejects.toThrow('durable stage binding');
     expect(mockCreate).not.toHaveBeenCalled();
 
     mockCreate.mockResolvedValueOnce({
@@ -383,6 +393,134 @@ describe('OpenAIProvider', () => {
       category: 'cloud_script_generation_plan',
       responseFormat: 'json',
     })).rejects.toThrow('service tier mismatch');
+  });
+
+  it('submits, polls, resumes, and accounts for an exact durable Batch result', async () => {
+    const states: Array<Record<string, unknown>> = [];
+    let durableState: any = null;
+    mockFileCreate.mockResolvedValueOnce({ id: 'file-input-1' });
+    mockBatchCreate.mockResolvedValueOnce({ id: 'batch-1', status: 'validating' });
+    mockBatchRetrieve.mockResolvedValueOnce({
+      id: 'batch-1',
+      status: 'completed',
+      output_file_id: 'file-output-1',
+    });
+    mockFileContent.mockResolvedValue({
+      text: async () => `${JSON.stringify({
+        custom_id: 'a'.repeat(64),
+        response: {
+          status_code: 200,
+          body: {
+            choices: [{ message: { content: '{"answer":"batched"}' }, finish_reason: 'stop' }],
+            usage: { prompt_tokens: 20, completion_tokens: 8 },
+            model: 'gpt-5.6-luna',
+          },
+        },
+        error: null,
+      })}\n`,
+    });
+    const request = {
+      systemPrompt: 'SYSTEM',
+      userPrompt: 'USER',
+      model: 'gpt-5.6-luna',
+      serviceTier: 'batch' as const,
+      maxTokens: 512,
+      userId: 7,
+      tenantId: 7,
+      category: 'cloud_local_reasoning' as const,
+      responseFormat: 'json' as const,
+      durableBatch: {
+        stageKey: 'a'.repeat(64),
+        load: () => durableState,
+        persist: (state: unknown) => {
+          durableState = structuredClone(state);
+          states.push(durableState);
+        },
+      },
+    };
+
+    await expect(provider.callStructuredGeneration(request)).resolves.toEqual({
+      text: '{"answer":"batched"}',
+      stopReason: 'stop',
+      serviceTier: 'batch',
+    });
+    expect(mockFileCreate).toHaveBeenCalledTimes(1);
+    expect(mockBatchCreate).toHaveBeenCalledWith(expect.objectContaining({
+      input_file_id: 'file-input-1',
+      endpoint: '/v1/chat/completions',
+      completion_window: '24h',
+    }), expect.objectContaining({ idempotencyKey: `nexus-batch-${'a'.repeat(64)}` }));
+    expect(states.at(-1)).toMatchObject({
+      providerBatchId: 'batch-1',
+      outputFileId: 'file-output-1',
+      status: 'completed',
+    });
+
+    mockBatchRetrieve.mockClear();
+    await expect(provider.callStructuredGeneration(request)).resolves.toMatchObject({ serviceTier: 'batch' });
+    expect(mockFileCreate).toHaveBeenCalledTimes(1);
+    expect(mockBatchCreate).toHaveBeenCalledTimes(1);
+    expect(mockBatchRetrieve).not.toHaveBeenCalled();
+  });
+
+  it('persists cancellation before cancelling an in-flight Batch', async () => {
+    const originalBatchSleep = _openAIBatchSleep.fn;
+    const controller = new AbortController();
+    let durableState: any = null;
+    mockFileCreate.mockResolvedValueOnce({ id: 'file-input-cancel' });
+    mockBatchCreate.mockResolvedValueOnce({ id: 'batch-cancel', status: 'validating' });
+    mockBatchRetrieve.mockResolvedValueOnce({ id: 'batch-cancel', status: 'in_progress' });
+    mockBatchCancel.mockResolvedValueOnce({ id: 'batch-cancel', status: 'cancelling' });
+    _openAIBatchSleep.fn = async () => {
+      controller.abort(Object.assign(new Error('cancelled'), { name: 'AbortError' }));
+      throw controller.signal.reason;
+    };
+    try {
+      await expect(provider.callStructuredGeneration({
+        systemPrompt: 'SYSTEM', userPrompt: 'USER', model: 'gpt-5.6-luna',
+        serviceTier: 'batch', maxTokens: 512, userId: 7, tenantId: 7,
+        category: 'cloud_local_reasoning', responseFormat: 'text',
+        abortSignal: controller.signal,
+        durableBatch: {
+          stageKey: 'b'.repeat(64),
+          load: () => durableState,
+          persist: (state) => { durableState = structuredClone(state); },
+        },
+      })).rejects.toThrow('cancelled');
+      expect(mockBatchCancel).toHaveBeenCalledWith('batch-cancel', { maxRetries: 0 });
+      expect(durableState).toMatchObject({ status: 'cancelling', providerBatchId: 'batch-cancel' });
+    } finally {
+      _openAIBatchSleep.fn = originalBatchSleep;
+    }
+  });
+
+  it('reconciles a durable cancellation after the original worker is gone', async () => {
+    mockBatchRetrieve.mockResolvedValueOnce({ id: 'batch-reconcile', status: 'in_progress' });
+    mockBatchCancel.mockResolvedValueOnce({ id: 'batch-reconcile', status: 'cancelling' });
+
+    await expect(provider.cancelStructuredGenerationBatch({
+      providerBatchId: 'batch-reconcile',
+      customId: 'd'.repeat(64),
+      userId: 7,
+      tenantId: 7,
+      category: 'cloud_local_reasoning',
+    })).resolves.toEqual({ status: 'cancelling' });
+    expect(mockBatchCancel).toHaveBeenCalledWith('batch-reconcile', { maxRetries: 0 });
+  });
+
+  it('deletes each retained Batch file exactly once and treats an absent file as already removed', async () => {
+    mockFileDelete
+      .mockResolvedValueOnce({ id: 'file-input', deleted: true })
+      .mockRejectedValueOnce(Object.assign(new Error('missing'), { status: 404 }));
+
+    await expect(provider.deleteStructuredGenerationBatchFiles({
+      providerBatchId: 'batch-retained',
+      fileIds: ['file-input', 'file-input', 'file-output'],
+    })).resolves.toBeUndefined();
+    expect(mockFileDelete.mock.calls).toEqual([
+      ['file-input', { maxRetries: 0 }],
+      ['file-output', { maxRetries: 0 }],
+    ]);
   });
 
   it('rejects a non-OpenAI structured-generation model before SDK dispatch', async () => {

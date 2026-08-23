@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const AGENT_JOB_MANIFEST_SCHEMA = 'nexus.agent-job-manifest.v3';
-export const AGENT_JOB_MANIFEST_VERSION = '2026-08-02.6';
+export const AGENT_JOB_MANIFEST_VERSION = '2026-08-23.1';
 
 const GEMINI_ONE_SHOT_PROVIDER_ROUTE = 'gemini-primary-openai-fallback-anthropic-gated-last-resort';
 
@@ -217,6 +217,12 @@ export const JOB_POLICIES = Object.freeze({
   apple_inbox_retry: noProvider('billing', 'durable-apple-notification-inbox'),
   apple_transaction_reconciliation: noProvider('billing', 'ledger-apple-lot-scan', { overlapPolicy: 'single-daily-run' }),
   ai_credit_sweeper: noProvider('billing', 'platform-tenant-scoped-ledger'),
+  device_inference_admission_sweeper: noProvider('billing', 'platform-tenant-scoped-ledger', {
+    outputPolicy: 'expired-device-admission-reservations-released-exactly-once',
+  }),
+  content_script_batch_file_cleanup: noProvider('content', 'platform-tenant-scoped-provider-files', {
+    outputPolicy: 'terminal-provider-files-deleted-after-private-recovery-window',
+  }),
   nexus_points_expiry: noProvider('billing', 'platform-tenant-scoped-ledger'),
   notification_release: noProvider('notifications', 'durable-notification-tenant-user', { retryPolicy: 'delivery-policy-retry-and-dead-letter' }),
   operator_alert_delivery: noProvider('operations', 'durable-operator-alert-queue', { retryPolicy: 'delivery-retry-and-dead-letter' }),

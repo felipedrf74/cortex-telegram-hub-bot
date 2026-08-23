@@ -55,6 +55,12 @@ import {
   LONG_FORM_SCRIPT_THRESHOLD_SECONDS,
 } from './local-inference-vocabulary';
 import { activeContentScriptJobLeases as controllers } from './content-script-job-account-lifecycle';
+import {
+  contentScriptBatchStageKey,
+  createContentScriptBatchControl,
+  markContentScriptBatchesCancellationRequested,
+  requestContentScriptBatchCancellationReconciliation,
+} from './content-script-provider-batches';
 export { cancelContentScriptJobsForAccountDeletion } from './content-script-job-account-lifecycle';
 
 export const CONTENT_SCRIPT_JOB_SCHEMA_VERSION = 'nexus-content-script-job-v1';
@@ -1033,6 +1039,7 @@ function outlineSchema(sectionCount: number): Record<string, unknown> {
 async function runScriptStage(
   db: Database.Database,
   row: JobRow,
+  leaseToken: string,
   request: ContentScriptJobRequest,
   signal: AbortSignal,
   input: {
@@ -1066,6 +1073,22 @@ async function runScriptStage(
     redactionRequired: false,
     scriptDeliveryMode: resolveScriptDeliveryMode(row.delivery_mode ?? 'standard'),
     requiredCloudProvider: 'openai',
+    durableBatch: createContentScriptBatchControl({
+      db,
+      jobId: row.job_id,
+      tenantId: row.tenant_id,
+      userId: row.owner_user_id,
+      leaseToken,
+      stageKey: contentScriptBatchStageKey({
+        jobId: row.job_id,
+        tenantId: row.tenant_id,
+        userId: row.owner_user_id,
+        taskType: input.taskType,
+        prompt: input.prompt,
+        schemaId: input.schemaId,
+        outputSchema: input.outputSchema,
+      }),
+    }),
     requestSource: 'automation',
     budgetRequest: {
       userId: row.owner_user_id,
@@ -1427,6 +1450,7 @@ function completeSectionPrefix(value: string, style: 'detailed' | 'bullets'): st
 async function generateOutline(
   db: Database.Database,
   row: JobRow,
+  leaseToken: string,
   request: ContentScriptJobRequest,
   signal: AbortSignal,
 ): Promise<{
@@ -1472,7 +1496,7 @@ async function generateOutline(
   });
   let lastInvalid: unknown;
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const result = await runScriptStage(db, row, request, signal, {
+    const result = await runScriptStage(db, row, leaseToken, request, signal, {
       taskType: attempt === 0
         ? finalRepairWarnings.length > 0 ? 'script_outline_final_repair' : 'script_outline'
         : 'script_outline_repair',
@@ -1522,6 +1546,7 @@ function validSectionText(
 async function generateSection(
   db: Database.Database,
   row: JobRow,
+  leaseToken: string,
   request: ContentScriptJobRequest,
   outline: ScriptOutline,
   section: ScriptOutlineSection,
@@ -1578,7 +1603,7 @@ async function generateSection(
     ],
   });
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const result = await runScriptStage(db, row, request, signal, {
+    const result = await runScriptStage(db, row, leaseToken, request, signal, {
       taskType: attempt === 0
         ? finalRepairWarnings.length > 0 ? 'script_section_final_repair' : 'script_section'
         : 'script_section_repair',
@@ -1598,7 +1623,7 @@ async function generateSection(
       const maximumWords = Math.ceil(section.wordBudget * 1.08);
       if (prefixWords >= 20 && prefixWords < maximumWords) {
         const remainingWords = Math.max(20, section.wordBudget - prefixWords);
-        const continuation = await runScriptStage(db, row, request, signal, {
+        const continuation = await runScriptStage(db, row, leaseToken, request, signal, {
           taskType: 'script_section_continuation',
           prompt: JSON.stringify({
             task: 'Continue one truncated script section from its last complete sentence.',
@@ -1714,7 +1739,7 @@ async function regenerateEntireDraftForFinalRepair(
     sectionKey: 'outline',
     wordBudget: targetScriptWords(request),
   });
-  const regenerated = await generateOutline(db, row, request, signal);
+  const regenerated = await generateOutline(db, row, leaseToken, request, signal);
   persistGeneratedCheckpoint(db, row, leaseToken, {
     sectionIndex: 0,
     sectionKey: 'outline',
@@ -1815,7 +1840,7 @@ export async function runContentScriptJob(
         sectionKey: 'outline',
         wordBudget: targetScriptWords(request),
       });
-      const generated = await generateOutline(db, row, request, controller.signal);
+      const generated = await generateOutline(db, row, token, request, controller.signal);
       outline = generated.outline;
       modelDigest = generated.modelDigest;
       persistGeneratedCheckpoint(db, row, token, {
@@ -1865,7 +1890,7 @@ export async function runContentScriptJob(
           wordBudget: outline.sections[index].wordBudget,
         });
         const generated = await generateSection(
-          db, row, request, outline, outline.sections[index], index, sections, controller.signal,
+          db, row, token, request, outline, outline.sections[index], index, sections, controller.signal,
         );
         persistGeneratedCheckpoint(db, row, token, {
           sectionIndex: index + 1,
@@ -2235,6 +2260,12 @@ export function cancelContentScriptJob(input: {
             WHERE job_id = ? AND status = 'running' AND lease_token = ?
           )`).run(timestamp, input.jobId, input.jobId, row.lease_token);
     }
+    markContentScriptBatchesCancellationRequested(db, {
+      jobId: input.jobId,
+      tenantId: input.tenantId,
+      userId: input.userId,
+      timestamp,
+    });
     return db.prepare(`UPDATE content_script_jobs
       SET status = 'cancelled', stage = 'cancelled',
           cancellation_requested_at = COALESCE(cancellation_requested_at, ?),
@@ -2264,6 +2295,7 @@ export function cancelContentScriptJob(input: {
       name: 'AbortError',
       code: 'SCRIPT_JOB_CANCELLED',
     }));
+    requestContentScriptBatchCancellationReconciliation(db);
   }
   return mapJob(readRow(db, input.tenantId, input.userId, input.jobId)!);
 }
@@ -2383,6 +2415,7 @@ export function recoverContentScriptJobs(
 ): number {
   if (contentScriptJobShutdownStarted) return 0;
   if (!localPrimaryInferenceConfig.scriptJobsEnabled || !localPrimaryInferenceConfig.contentProxyEnabled) return 0;
+  requestContentScriptBatchCancellationReconciliation(db);
   const nowDate = new Date();
   const now = nowDate.toISOString();
   const staleHeartbeatCutoff = new Date(nowDate.getTime() - STALE_HEARTBEAT_MS).toISOString();

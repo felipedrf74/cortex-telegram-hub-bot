@@ -48,6 +48,7 @@ import { productLearningAdminRoutes } from './routes/product-learning-admin';
 import { localInferenceAdminRoutes } from './routes/local-inference-admin';
 import { hybridKillSwitchesAdminRoutes } from './routes/hybrid-kill-switches-admin';
 import { aiCreditGrantsAdminRoutes } from './routes/ai-credit-grants-admin';
+import { deviceInferenceRoutes } from './routes/device-inference';
 import { verifyAppleJws } from '../services/apple-jws-verifier';
 import { handleAppleNotification } from '../services/stripe-service';
 import {
@@ -137,6 +138,7 @@ export function createApiRouter(): Router {
         sync: 'GET /api/v1/sync/changes?since=cursor — RAMEN-lite delta sync',
         productLearningAdmin: 'GET /api/v1/admin/product-learning/summary, POST /api/v1/admin/product-learning/physical-device-observations (portal admin only)',
         localInferenceAdmin: 'GET/POST /api/v1/admin/local-inference/runtime-control, GET /api/v1/admin/local-inference/summary (portal admin only)',
+        deviceInference: 'GET /api/v1/device-inference/policy, POST /api/v1/device-inference/{admissions|evidence}',
       },
       auth_note: 'POST /auth/register/email, /auth/register/apple, or /auth/register/google/finish to get a JWT. Invite codes are optional and grant reviewer/early-access entitlements when supplied.',
     });
@@ -329,6 +331,7 @@ export function createApiRouter(): Router {
   // the AI pipeline. Operational skill flows below stay token-zero.
   router.use('/chat', chatRoutes());
   router.use('/attachments', attachmentRoutes());
+  router.use('/device-inference', deviceInferenceRoutes());
 
   // Aggregated home screen
   router.use('/dashboard', dashboardRoutes());

@@ -428,6 +428,55 @@ describe('exportAllUserData', () => {
     expect(other.billing.appleNotifications).toHaveLength(1);
   });
 
+  it('exports and erases scoped device-inference metadata without prompt or output fields', () => {
+    seedUser(testDb, 1);
+    seedUser(testDb, 2);
+    const reservation = testDb.prepare(`
+      INSERT INTO ai_credit_reservations (
+        user_id, operation_class, credits, state, tenant_scope,
+        workload, request_hash, client_operation_id, reserved_at, reserved_day
+      ) VALUES (?, 'standard', 1, 'reserved', ?, 'device_standard_response', ?, ?,
+                '2026-08-23T12:00:00.000Z', '2026-08-23')
+    `);
+    const mineReservation = Number(reservation.run(1, '1', 'a'.repeat(64), 'device-op-1').lastInsertRowid);
+    const otherReservation = Number(reservation.run(2, '2', 'b'.repeat(64), 'device-op-2').lastInsertRowid);
+    const admission = testDb.prepare(`
+      INSERT INTO device_inference_admissions (
+        id, tenant_scope, user_id, device_id, operation_key, request_digest,
+        client_operation_id, policy_version, reservation_id, state, issued_at, expires_at
+      ) VALUES (?, ?, ?, ?, 'standard_response', ?, ?, 'apple-foundation-models.v1', ?,
+                'issued', '2026-08-23T12:00:00.000Z', '2026-08-23T12:10:00.000Z')
+    `);
+    admission.run('admission-mine', '1', 1, 'device-mine', 'a'.repeat(64), 'device-op-1', mineReservation);
+    admission.run('admission-other', '2', 2, 'device-other', 'b'.repeat(64), 'device-op-2', otherReservation);
+    const evidence = testDb.prepare(`
+      INSERT INTO device_inference_evidence (
+        admission_id, tenant_scope, user_id, device_id, operation_key, policy_version,
+        outcome, os_version, os_build, device_model, locale, framework_available,
+        availability_reason, duration_ms
+      ) VALUES (?, ?, ?, ?, 'standard_response', 'apple-foundation-models.v1',
+                'completed', 'iOS 27.0', '24A1', ?, 'pt-BR', 1, 'available', 321)
+    `);
+    evidence.run('admission-mine', '1', 1, 'device-mine', 'iPad14,3');
+    evidence.run('admission-other', '2', 2, 'device-other', 'iPhone18,1');
+
+    const exported = exportAllUserData(1);
+    expect(exported.deviceInference.admissions).toEqual([
+      expect.objectContaining({ id: 'admission-mine', deviceId: 'device-mine' }),
+    ]);
+    expect(exported.deviceInference.evidence).toEqual([
+      expect.objectContaining({ admissionId: 'admission-mine', deviceModel: 'iPad14,3' }),
+    ]);
+    expect(JSON.stringify(exported.deviceInference)).not.toMatch(/\b(prompt|output)\b/i);
+
+    const counts = deleteAllUserData(1);
+    expect(counts.device_inference_evidence).toBe(1);
+    expect(counts.device_inference_admissions).toBe(1);
+    expect(exportAllUserData(1).deviceInference).toEqual({ admissions: [], evidence: [] });
+    expect(exportAllUserData(2).deviceInference.admissions).toHaveLength(1);
+    expect(exportAllUserData(2).deviceInference.evidence).toHaveLength(1);
+  });
+
   it('exports only safe, scoped OAuth connection-health metadata', () => {
     seedUser(testDb, 1);
     seedUser(testDb, 2);

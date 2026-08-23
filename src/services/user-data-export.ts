@@ -364,6 +364,10 @@ export interface FullUserExport {
     subscriptions: Array<Record<string, unknown>>;
     webCheckouts: Array<Record<string, unknown>>;
   };
+  deviceInference: {
+    admissions: Array<Record<string, unknown>>;
+    evidence: Array<Record<string, unknown>>;
+  };
   garminSessions: Array<{ lastRefreshedAt: string | null; createdAt: string; updatedAt: string }>;
   agentSignals: Array<{ sourceAgent: string; signalType: string; status: string; createdAt: string }>;
   encryptionMeta: Array<{ keyVersion: number; encryptedAt: string; updatedAt: string }>;
@@ -838,6 +842,33 @@ export function exportAllUserData(userId: number): FullUserExport {
             stripe_subscription_id as stripeSubscriptionId,
             created_at as createdAt, updated_at as updatedAt
        FROM stripe_web_checkouts WHERE user_id = ? ORDER BY id`, userId);
+  // Device execution stores no prompt or output. Subject access still
+  // discloses the user's routing/admission metadata and device-runtime
+  // evidence, including the one-way request digest and device identifier.
+  const deviceInferenceAdmissions = safeAll(db, `
+    SELECT id, tenant_scope AS tenantScope, device_id AS deviceId,
+           operation_key AS operationKey, request_digest AS requestDigest,
+           client_operation_id AS clientOperationId,
+           policy_version AS policyVersion, reservation_id AS reservationId,
+           state, issued_at AS issuedAt, expires_at AS expiresAt,
+           settled_at AS settledAt
+      FROM device_inference_admissions
+     WHERE user_id = ?
+     ORDER BY issued_at, id
+  `, userId);
+  const deviceInferenceEvidence = safeAll(db, `
+    SELECT admission_id AS admissionId, tenant_scope AS tenantScope,
+           device_id AS deviceId, operation_key AS operationKey,
+           policy_version AS policyVersion, outcome,
+           os_version AS osVersion, os_build AS osBuild,
+           device_model AS deviceModel, locale,
+           framework_available AS frameworkAvailable,
+           availability_reason AS availabilityReason,
+           duration_ms AS durationMs, created_at AS createdAt
+      FROM device_inference_evidence
+     WHERE user_id = ?
+     ORDER BY created_at, id
+  `, userId);
   const agentSignals = safeAll(db,
     'SELECT source_agent as sourceAgent, signal_type as signalType, status, created_at as createdAt FROM agent_signals WHERE user_id = ? ORDER BY created_at', userId);
   const encryptionMeta = safeAll(db,
@@ -1200,6 +1231,10 @@ export function exportAllUserData(userId: number): FullUserExport {
       subscriptions,
       webCheckouts,
     },
+    deviceInference: {
+      admissions: deviceInferenceAdmissions,
+      evidence: deviceInferenceEvidence,
+    },
     garminSessions,
     agentSignals,
     encryptionMeta,
@@ -1303,6 +1338,10 @@ export const ACCOUNT_DELETION_TABLES: Array<{ table: string; column: string }> =
   { table: 'book_library', column: 'user_id' },
   { table: 'subscriptions', column: 'user_id' },
   { table: 'stripe_web_checkouts', column: 'user_id' },
+  // Delete evidence before its admission parent. The evidence table is
+  // immutable to UPDATE but intentionally deletable for Article 17/retention.
+  { table: 'device_inference_evidence', column: 'user_id' },
+  { table: 'device_inference_admissions', column: 'user_id' },
 ];
 
 const ACCOUNT_DELETION_RETAINED_TABLES = new Set([

@@ -314,8 +314,49 @@ export interface StructuredGenerationRequest {
    * adapters must use a durable Batch transport or reject it before dispatch.
    */
   serviceTier?: 'default' | 'flex' | 'priority' | 'batch';
+  /**
+   * Required for Batch. The caller owns durable, tenant-scoped persistence;
+   * the provider owns only the OpenAI transport and never receives a database.
+   */
+  durableBatch?: StructuredGenerationBatchControl;
   /** Caller-owned cancellation propagated through SDK calls and retry waits. */
   abortSignal?: AbortSignal;
+}
+
+export type StructuredGenerationBatchStatus =
+  | 'preparing' | 'submitted' | 'validating' | 'in_progress' | 'finalizing'
+  | 'completed' | 'cancellation_requested' | 'cancelling' | 'cancelled'
+  | 'failed' | 'expired';
+
+export interface StructuredGenerationBatchState {
+  requestDigest: string;
+  customId: string;
+  status: StructuredGenerationBatchStatus;
+  inputFileId?: string;
+  providerBatchId?: string;
+  outputFileId?: string;
+  errorFileId?: string;
+  errorCode?: string;
+}
+
+export interface StructuredGenerationBatchControl {
+  /** Stable SHA-256 key for one exact resumable script stage. */
+  stageKey: string;
+  load(): StructuredGenerationBatchState | null;
+  persist(state: StructuredGenerationBatchState): void;
+}
+
+export interface StructuredGenerationBatchCancellationRequest {
+  providerBatchId: string;
+  customId: string;
+  userId: number;
+  tenantId: number;
+  category: StructuredGenerationRequest['category'];
+}
+
+export interface StructuredGenerationBatchFileCleanupRequest {
+  providerBatchId: string;
+  fileIds: string[];
 }
 
 export interface StructuredGenerationResult {
@@ -452,6 +493,17 @@ export interface AIProvider {
   callStructuredGeneration?(
     request: StructuredGenerationRequest,
   ): Promise<StructuredGenerationResult>;
+
+  /** Reconcile a durably requested cancellation after worker/process loss. */
+  cancelStructuredGenerationBatch?(
+    request: StructuredGenerationBatchCancellationRequest,
+  ): Promise<Pick<StructuredGenerationBatchState,
+    'status' | 'outputFileId' | 'errorFileId' | 'errorCode'>>;
+
+  /** Delete terminal provider files after the caller's durable retention window. */
+  deleteStructuredGenerationBatchFiles?(
+    request: StructuredGenerationBatchFileCleanupRequest,
+  ): Promise<void>;
 
   /**
    * Single-shot reasoning with optional structured-output schema. Used

@@ -304,6 +304,8 @@ describe('first-container bootstrap baseline', () => {
         expect.objectContaining({ file: '292_apple_reversal_transaction_index.sql' }),
         expect.objectContaining({ file: '293_commerce_storefront_kill_switches.sql' }),
         expect.objectContaining({ file: '294_apple_reversal_index_backfill_progress.sql' }),
+        expect.objectContaining({ file: '295_content_script_openai_batches.sql' }),
+        expect.objectContaining({ file: '296_apple_foundation_models_device_lane.sql' }),
       ]);
     expect(baseline.databases.production.sha256)
       .not.toBe(baseline.databases.staging.sha256);

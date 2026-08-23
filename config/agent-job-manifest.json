@@ -1,6 +1,6 @@
 {
   "schema": "nexus.agent-job-manifest.v3",
-  "version": "2026-08-02.6",
+  "version": "2026-08-23.1",
   "jobs": [
     {
       "id": "ai_credit_sweeper",
@@ -472,6 +472,30 @@
       }
     },
     {
+      "id": "content_script_batch_file_cleanup",
+      "name": "Content Script Batch File Cleanup",
+      "schedule": "20 2 * * *",
+      "domain": "system",
+      "lifecycle": "active",
+      "policyOwner": "content",
+      "jobVersion": "1.0.0",
+      "tenantScope": "platform-tenant-scoped-provider-files",
+      "overlapPolicy": "durable-database-lease",
+      "retryPolicy": "next-scheduled-run",
+      "providerUsage": "none",
+      "providerRouting": "not-applicable-no-model-provider",
+      "costPolicy": "no-model-provider-cost",
+      "latencyPolicy": "callback-owned-no-model-budget",
+      "outputPolicy": "terminal-provider-files-deleted-after-private-recovery-window",
+      "notificationPolicy": "job-specific",
+      "inputFingerprint": {
+        "enforcement": "not-applicable-no-provider",
+        "unchangedInputProviderCalls": 0,
+        "evidence": "source-audit:no-model-provider-boundary",
+        "tests": []
+      }
+    },
+    {
       "id": "daily_briefing",
       "name": "Morning Briefing",
       "schedule": "*/5 * * * *",
@@ -728,6 +752,30 @@
       "costPolicy": "no-model-provider-cost",
       "latencyPolicy": "callback-owned-no-model-budget",
       "outputPolicy": "job-specific-validated-write",
+      "notificationPolicy": "job-specific",
+      "inputFingerprint": {
+        "enforcement": "not-applicable-no-provider",
+        "unchangedInputProviderCalls": 0,
+        "evidence": "source-audit:no-model-provider-boundary",
+        "tests": []
+      }
+    },
+    {
+      "id": "device_inference_admission_sweeper",
+      "name": "Device Inference Admission Sweep",
+      "schedule": "*/5 * * * *",
+      "domain": "system",
+      "lifecycle": "active",
+      "policyOwner": "billing",
+      "jobVersion": "1.0.0",
+      "tenantScope": "platform-tenant-scoped-ledger",
+      "overlapPolicy": "durable-database-lease",
+      "retryPolicy": "next-scheduled-run",
+      "providerUsage": "none",
+      "providerRouting": "not-applicable-no-model-provider",
+      "costPolicy": "no-model-provider-cost",
+      "latencyPolicy": "callback-owned-no-model-budget",
+      "outputPolicy": "expired-device-admission-reservations-released-exactly-once",
       "notificationPolicy": "job-specific",
       "inputFingerprint": {
         "enforcement": "not-applicable-no-provider",

@@ -307,3 +307,90 @@ resumable script-job OpenAI fallback on 2026-08-21; raw private Content
 fallback remains outside that decision and stays unavailable. Local-primary
 rollout must then follow the governed staged progression; deployment alone
 does not authorize an all-user flip.
+
+## Production completion audit (2026-08-23)
+
+The root-owned observer proved release
+`fa747e0968de874015ee5fb8754c3fcf` at protected-main source
+`438a99d730bd1e875843c160f6810e59840043d2` completed with a bound v3
+receipt and no active release block. This proves the reviewed backend bytes are
+running; it does not prove the plan's still-disabled user behavior.
+
+The root-owned production environment keeps hybrid credits, subscription
+checkout, Stripe pack fulfillment, Apple pack fulfillment, and free-tier
+local-only routing OFF. `OLLAMA_ENABLED` is on for the retained Qwen control,
+but no `LOCAL_PRIMARY_*` rollout value is present. Standard scripts bind to
+OpenAI Flex, Scheduled scripts also bind to Flex, and Priority binds to the
+Priority service tier. Scheduled Batch therefore remains unimplemented: the
+provider boundary deliberately refuses `batch` until a durable
+submit/poll/cancel/resume adapter exists.
+
+App Store Connect now reports the W-8BEN, U.S. Certificate of Foreign Status
+of Beneficial Owner, Paid Apps Agreement, and bank account as `Active`. iOS
+1.5.0 and its three first consumable IAPs remain `Waiting for Review`. Apple
+approval and a real
+transaction-bearing TestFlight sandbox purchase are external prerequisites;
+the signed TEST notification is not fulfillment evidence.
+
+The corrected website source at `5553f9e2335aa1d80061316d6b7c1f40548e7cbb`
+was promoted to the Cloudflare Pages production branch. A cache-busted read of
+`https://nexushub.me/` returned the five-skill contract and `5→1`, with
+Triathlon contained inside Training; the previous six-skill production drift
+is closed.
+
+The plan is not complete. The durable Batch adapter and owner-approved Apple
+Foundation Models device lane are implemented locally, but their final
+post-hardening verification and signed delivery remain open. The other
+acceptance gates are: complete the ten-script acceptance inventory and
+production script smoke; use those measured p95 values with actual account
+rates to pass the economics simulation; complete the real Apple sandbox
+fulfillment/replay/retry proof after the products become available; and rotate
+the live Stripe credential disclosed in chat. The owner currently forbids
+credential rotation and, for this audit, forbids running tests, so these gates
+cannot be closed in this session and public activation remains OFF.
+
+## Batch and Apple device-lane local closeout (2026-08-23)
+
+The durable OpenAI Scheduled Batch adapter and the Apple Foundation Models
+device lane are now implemented in isolated local worktrees. Batch binds every
+provider job to one tenant, owner, Content job, stage, and request digest,
+resumes and cancels durably, and records provider usage exactly once. Provider
+idempotency keys include that complete scope, so byte-identical stages from two
+tenants cannot alias the same OpenAI file or Batch. A daily reconciler deletes
+terminal Batch input, output, and error files after the 30-day private-job
+recovery window while retaining content-free accounting identity. The device lane adds
+server-owned default-OFF policy, credit-first admission/settlement, a seventh
+independent kill switch, content-free runtime evidence, iOS fallback routing,
+and a physical-hardware acceptance test bound byte-for-byte to the canonical
+24-case corpus. Completed admissions remain replayable after a lost settlement
+reply, the iOS client persists only a scoped SHA-256 retry fingerprint and
+operation id across restart, abandoned reservations expire on the admission's
+short TTL, and the midnight sweep deletes device admission/evidence metadata
+after 90 days.
+
+Earlier local verification passed backend type checking, the 161 focused Batch
+tests, 20 focused device policy/kill-switch tests, an iOS simulator build, six
+device-lane unit tests, and the canonical-corpus bundle test. Those results
+predate the final predecessor-compatible migration and tenant-scoped Batch-key
+hardening and are not claimed as final-release verification; the owner has
+instructed this session not to launch another test run. The physical Apple test
+is intentionally unavailable on the simulator. During privacy review, migration
+296 was corrected so device evidence remains immutable to update while Article
+17 and the 90-day telemetry-retention path can delete it; subject access now
+exports only scoped metadata and no prompt/output.
+
+This is implementation evidence, not delivery evidence. Neither worktree is
+committed, pushed, signed, or deployed. The production receipt remains
+`fa747e0968de874015ee5fb8754c3fcf` at source
+`438a99d730bd1e875843c160f6810e59840043d2`, so production still uses Scheduled
+Flex and has no Apple device policy endpoint. The iPad Pro available to this
+Mac has Developer Mode disabled, preventing the required physical 24-case run.
+
+Remaining gates are unchanged where implementation cannot create external
+evidence: an eligible signed VPS local-model winner/full bakeoff; nine
+pre-release scripts plus one post-deploy smoke and their p95 economics; Apple
+catalog approval plus a real sandbox signed-JWS fulfillment/replay/retry; a
+signed backend/iOS release; and public activation only after those pass. The
+owner's no-rotation decision leaves the disclosed Stripe live key as an
+explicit security exception to the canonical plan rather than a completed
+gate.

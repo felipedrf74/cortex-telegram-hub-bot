@@ -515,6 +515,82 @@ describe('TaskRoutingProvider', () => {
     expect('scriptDeliveryMode' in lastRequest).toBe(false);
   });
 
+  it('admits Batch transport only for a complete durable control and forwards that exact control', async () => {
+    const failingOllama = () => ({
+      ...createMockProvider('ollama'),
+      localReason: vi.fn().mockRejectedValue(Object.assign(new Error('local timeout'), { code: 'ETIMEDOUT' })),
+    });
+    const boundary = async (providerCall: () => Promise<unknown>) => providerCall();
+    optionalCloudMocks.selectApprovedCloudReasoningProvider.mockResolvedValue({
+      rejected: false as const,
+      provider: optionalCloudMocks.provider,
+      model: 'gpt-5.6-luna',
+      serviceTier: 'batch' as const,
+      privacyAction: 'sent_raw' as const,
+    });
+
+    const invalidControls: unknown[] = [
+      undefined,
+      'not-an-object',
+      {},
+      { stageKey: 7 },
+      { stageKey: 'not-a-digest' },
+      { stageKey: 'a'.repeat(64) },
+      { stageKey: 'a'.repeat(64), load: vi.fn() },
+      { stageKey: 'a'.repeat(64), load: vi.fn(), persist: 'not-a-function' },
+    ];
+    for (const durableBatch of invalidControls) {
+      const routed = new TaskRoutingProvider(buildConfig({
+        localReasoning: { primary: failingOllama(), fallback: 'approved_cloud_reasoning' },
+      }));
+      await expect(routed.dispatchLocalReasoning({
+        workloadRole: 'skill_inference',
+        prompt: 'scheduled batch script section',
+        containsPrivateData: false,
+        allowCloudEscalation: true,
+        scriptDeliveryMode: 'scheduled',
+        localAdmission: 'eligible',
+        cloudFallbackBoundary: boundary,
+        durableBatch: durableBatch as never,
+      })).resolves.toMatchObject({ text: expect.any(String) });
+      expect(optionalCloudMocks.selectApprovedCloudReasoningProvider).toHaveBeenLastCalledWith(
+        expect.objectContaining({ batchTransportAvailable: false }),
+        expect.anything(),
+        null,
+      );
+      const providerRequest = optionalCloudMocks.provider.callStructuredGeneration.mock.lastCall?.[0] as Record<string, unknown>;
+      expect(providerRequest).toBeDefined();
+      expect('durableBatch' in providerRequest).toBe(false);
+    }
+
+    const durableBatch = {
+      stageKey: 'b'.repeat(64),
+      load: vi.fn(() => null),
+      persist: vi.fn(),
+    };
+    const routed = new TaskRoutingProvider(buildConfig({
+      localReasoning: { primary: failingOllama(), fallback: 'approved_cloud_reasoning' },
+    }));
+    await expect(routed.dispatchLocalReasoning({
+      workloadRole: 'skill_inference',
+      prompt: 'durable scheduled batch script section',
+      containsPrivateData: false,
+      allowCloudEscalation: true,
+      scriptDeliveryMode: 'scheduled',
+      localAdmission: 'eligible',
+      cloudFallbackBoundary: boundary,
+      durableBatch,
+    })).resolves.toMatchObject({ text: expect.any(String) });
+    expect(optionalCloudMocks.selectApprovedCloudReasoningProvider).toHaveBeenLastCalledWith(
+      expect.objectContaining({ batchTransportAvailable: true }),
+      expect.anything(),
+      null,
+    );
+    expect(optionalCloudMocks.provider.callStructuredGeneration).toHaveBeenLastCalledWith(
+      expect.objectContaining({ serviceTier: 'batch', durableBatch }),
+    );
+  });
+
   describe('free-tier local-only dispatch guard (NH-0040)', () => {
     class BindingBlocked extends Error {
       readonly code = 'FREE_TIER_LOCAL_ONLY';

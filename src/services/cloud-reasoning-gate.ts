@@ -85,6 +85,8 @@ export interface CloudReasoningRequest {
   scriptDeliveryMode?: 'standard' | 'scheduled' | 'priority';
   /** Server-owned exact provider constraint for payload-specific authority. */
   requiredCloudProvider?: string;
+  /** True only when the caller supplied a tenant-scoped durable Batch store. */
+  batchTransportAvailable?: boolean;
   /**
    * v3.1: kept in the type for backwards-compat with existing callers,
    * but no longer changes gate behavior. Setting this on a private-data
@@ -309,11 +311,13 @@ export async function selectApprovedCloudReasoningProvider(
     };
   }
   if (effectiveServiceTier === 'batch') {
-    return {
-      rejected: true,
-      reason: 'batch_transport_unavailable',
-      warning: 'scheduled_batch_transport_is_not_durable_yet',
-    };
+    if (request.batchTransportAvailable !== true) {
+      return {
+        rejected: true,
+        reason: 'batch_transport_unavailable',
+        warning: 'scheduled_batch_transport_requires_durable_state',
+      };
+    }
   }
 
   const modelLower = effectiveModel.toLowerCase();
@@ -453,7 +457,7 @@ export async function selectApprovedCloudReasoningProvider(
     provider,
     model: effectiveModel,
     ...(effectiveServiceTier ? {
-      serviceTier: effectiveServiceTier as 'default' | 'flex' | 'priority',
+      serviceTier: effectiveServiceTier as 'default' | 'flex' | 'priority' | 'batch',
     } : {}),
     privacyAction: 'sent_raw',
   };
