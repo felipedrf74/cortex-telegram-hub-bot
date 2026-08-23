@@ -6,8 +6,7 @@
  * that the cron body wraps the canonical `syncSecretaryAgendaItemsToProvider`
  * primitive (not a re-implementation).
  *
- * Plan reference: `/Users/felipedominguez/.claude/plans/graceful-stirring-scone.md`
- * Wave 1 workstream M2.
+ * Historical plan reference: Wave 1 workstream M2.
  */
 
 import { describe, expect, it } from 'vitest';

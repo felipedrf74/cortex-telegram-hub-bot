@@ -1687,12 +1687,12 @@ describe('same-host Nexus backups', () => {
     expect(retryLauncher).not.toContain('--foreground');
     const prePromotionWritablePaths =
       'ReadWritePaths=/srv/nexus-backups/application '
-      + '-/home/dominguez/telegram-hub-bot/data '
+      + '-/var/lib/nexus-hub/legacy/telegram-hub-bot/data '
       + '-/var/lib/nexus-hub/production/data';
     const hourlyWritablePaths =
       'ReadWritePaths=/srv/nexus-backups/application '
       + '/var/lib/nexus-release/operational-alerts '
-      + '-/home/dominguez/telegram-hub-bot/data '
+      + '-/var/lib/nexus-hub/legacy/telegram-hub-bot/data '
       + '-/var/lib/nexus-hub/production/data';
     expect(prePromotion).toContain(prePromotionWritablePaths);
     expect(hourly).toContain(hourlyWritablePaths);

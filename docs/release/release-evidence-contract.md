@@ -337,7 +337,7 @@ protected by exact high-priority persistent control guards. A defined fallback
 must match the capture-bound installed legacy
 runtime tree, artifact digest and marker plus every restarted PM2 app, database
 path, and health endpoint before it is accepted. The restore caller changes to
-`/home/dominguez` before invoking the allowed `sudo -u dominguez pm2 ...`
+the deploy user's home before invoking the allowed `sudo -u dominguez pm2 ...`
 command, and all four health endpoints must pass in the same bounded retry
 iteration within 120 seconds. If forced container removal leaves WAL/SHM
 pathnames, fallback may remove them only after no-handle, exact zero-WAL

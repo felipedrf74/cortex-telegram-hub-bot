@@ -29,8 +29,8 @@
 # ─────────────────────────────────────────────────────
 set -euo pipefail
 
-SERVER="${DEPLOY_SERVER:-dominguez@serverdominguez}"
-STAGING_ROOT="${STAGING_PATH:-/home/dominguez/telegram-hub-bot-staging}"
+SERVER="${DEPLOY_SERVER:?DEPLOY_SERVER must be set (SSH host for the release server)}"
+STAGING_ROOT="${STAGING_PATH:?STAGING_PATH must be set (staging root on the release server)}"
 STAGING_RELEASE=""
 VERBOSE=false
 LOCAL_SERVER_MODE="${NEXUS_STAGING_SMOKE_LOCAL_SERVER:-0}"
@@ -571,7 +571,7 @@ test_ios_chat_route_mounted
 
 echo ""
 echo "🏃 5/6 — Process state via PM2"
-PM2_STATUS=$(smoke_ssh "$SERVER" "/home/dominguez/.npm-global/bin/pm2 jlist 2>/dev/null | /usr/bin/node -e \"
+PM2_STATUS=$(smoke_ssh "$SERVER" "\$HOME/.npm-global/bin/pm2 jlist 2>/dev/null | /usr/bin/node -e \"
   let body = '';
   process.stdin.on('data', c => body += c);
   process.stdin.on('end', () => {
@@ -1594,7 +1594,7 @@ exec env \
   OLLAMA_INVENTORY_PHASE=release \
   NEXUS_HUB_BASE_URL=http://127.0.0.1:8201 \
   PM2_APP_NAME=nexus-hub-staging \
-  PM2_BIN=/home/dominguez/.npm-global/bin/pm2 \
+  PM2_BIN="$HOME/.npm-global/bin/pm2" \
   /usr/bin/bash "$smoke_script"
 REMOTE_OLLAMA_SMOKE
 }

@@ -19,6 +19,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
+import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -71,9 +72,10 @@ RestartSec=10
 `;
 
 const INSTALLED_EXECUTABLE = '/usr/local/sbin/nexus-ollama-lean-finalize.mjs';
-const USER_RELEASE_LOCK = '/home/dominguez/.local/state/nexus-release/.release.lock';
+const DEPLOY_HOME = process.env.NEXUS_RELEASE_DEPLOY_HOME ?? homedir();
+const USER_RELEASE_LOCK = join(DEPLOY_HOME, '.local/state/nexus-release/.release.lock');
 const ROOT_SONAR_LOCK = '/run/lock/nexus-release-sonar.lock';
-const STATE_ROOT = '/home/dominguez/.local/state/nexus-release';
+const STATE_ROOT = join(DEPLOY_HOME, '.local/state/nexus-release');
 const RECEIPT_ROOT = '/var/lib/nexus-release/ollama-finalize';
 const DROP_IN_PATH = '/etc/systemd/system/ollama.service.d/override.conf';
 const LEGACY_ZERO_SWAP_PATH = '/etc/systemd/system/ollama.service.d/zz-nexus-zero-swap.conf';
@@ -85,13 +87,13 @@ const DIGEST_PATTERN = /^[0-9a-f]{64}$/u;
 const ACK_PATTERN = /^sha256:[0-9a-f]{64}$/u;
 const RELEASES = Object.freeze({
   staging: Object.freeze({
-    base: '/home/dominguez/telegram-hub-bot-staging',
+    base: join(DEPLOY_HOME, 'telegram-hub-bot-staging'),
     state: `${STATE_ROOT}/staging.json`,
     names: Object.freeze(['nexus-hub-staging', 'content-engine-staging']),
     minimumSoakSeconds: 1,
   }),
   production: Object.freeze({
-    base: '/home/dominguez/telegram-hub-bot',
+    base: join(DEPLOY_HOME, 'telegram-hub-bot'),
     state: `${STATE_ROOT}/production.json`,
     names: Object.freeze(['nexus-hub', 'content-engine']),
     minimumSoakSeconds: 60,
@@ -619,11 +621,11 @@ function readPm2Snapshot() {
     '--',
     '/usr/bin/env',
     '-i',
-    'HOME=/home/dominguez',
+    `HOME=${DEPLOY_HOME}`,
     'USER=dominguez',
     'LOGNAME=dominguez',
     'PATH=/usr/local/bin:/usr/bin:/bin',
-    'PM2_HOME=/home/dominguez/.pm2',
+    `PM2_HOME=${join(DEPLOY_HOME, '.pm2')}`,
     '/usr/local/bin/pm2',
     'jlist',
   ], 'PM2 identity query', { timeout: 15_000, maxBuffer: 4 * MAX_BYTES });
@@ -957,6 +959,7 @@ async function main() {
       '-i',
       'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
       'NEXUS_OLLAMA_FINALIZE_LOCKED=1',
+      `NEXUS_RELEASE_DEPLOY_HOME=${DEPLOY_HOME}`,
       '/usr/bin/node',
       INSTALLED_EXECUTABLE,
       ...process.argv.slice(2),

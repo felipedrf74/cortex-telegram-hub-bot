@@ -3,7 +3,7 @@
 set -euo pipefail
 umask 077
 
-readonly SERVER='ServerDominguez'
+readonly SERVER="${DEPLOY_SERVER:?DEPLOY_SERVER must be set (SSH host for the release server)}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REMOTE_TOOL="$ROOT/scripts/remote-chat-shadow-hook-legacy-claim-repair.sh"
 

@@ -240,9 +240,9 @@ process.stdout.write(`${x.runtimeSha}:${x.artifactDigest}`);
 ' "$RELEASE_STATE"
 )"
 
-ssh "${DEPLOY_SERVER:-dominguez@serverdominguez}" bash -s <<'REMOTE_STAGING_MEDIA'
+ssh "${DEPLOY_SERVER:?DEPLOY_SERVER must be set}" bash -s <<'REMOTE_STAGING_MEDIA'
   set -euo pipefail
-  BASE=/home/dominguez/telegram-hub-bot-staging
+  BASE="$HOME/telegram-hub-bot-staging"
   RUNTIME="$(realpath -e "$BASE/current")"
   case "$RUNTIME" in "$BASE"/releases/*) ;; *) exit 1 ;; esac
   SELECTOR="$RUNTIME"
@@ -306,9 +306,9 @@ values below are the owner-reviewed subjects; changing any one requires another
 code/review cycle and a new approval:
 
 ```bash
-ssh "${DEPLOY_SERVER:-dominguez@serverdominguez}" bash -s <<'REMOTE_PRODUCTION_MEDIA'
+ssh "${DEPLOY_SERVER:?DEPLOY_SERVER must be set}" bash -s <<'REMOTE_PRODUCTION_MEDIA'
   set -euo pipefail
-  BASE=/home/dominguez/telegram-hub-bot
+  BASE="$HOME/telegram-hub-bot"
   RUNTIME="$(realpath -e "$BASE/current")"
   case "$RUNTIME" in "$BASE"/releases/*) ;; *) exit 1 ;; esac
   SELECTOR="$RUNTIME"

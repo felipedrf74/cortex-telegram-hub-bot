@@ -18,7 +18,7 @@ export PATH
 DEPLOY_USER=dominguez
 DEPLOY_GROUP="$(id -gn "$DEPLOY_USER")"
 DEPLOY_HOME="$(getent passwd "$DEPLOY_USER" | cut -d: -f6)"
-[ "$DEPLOY_HOME" = /home/dominguez ] || {
+[ "$DEPLOY_HOME" = "${NEXUS_RELEASE_DEPLOY_HOME:?NEXUS_RELEASE_DEPLOY_HOME must be set (expected home of the deploy user)}" ] || {
   echo "dominguez account home is not the governed live path" >&2
   exit 1
 }
@@ -72,16 +72,16 @@ validate_and_normalize_base() {
   runuser -u "$DEPLOY_USER" -- test -w "$base/logs"
 }
 
-validate_and_normalize_base /home/dominguez/telegram-hub-bot
-validate_and_normalize_base /home/dominguez/telegram-hub-bot-staging
+validate_and_normalize_base "$DEPLOY_HOME/telegram-hub-bot"
+validate_and_normalize_base "$DEPLOY_HOME/telegram-hub-bot-staging"
 
 install -d -o "$DEPLOY_USER" -g "$DEPLOY_GROUP" -m 0700 \
-  /home/dominguez/.local \
-  /home/dominguez/.local/share \
-  /home/dominguez/.local/share/nexus-release \
-  /home/dominguez/.local/share/nexus-release/incoming \
-  /home/dominguez/.local/state \
-  /home/dominguez/.local/state/nexus-release
+  "$DEPLOY_HOME/.local" \
+  "$DEPLOY_HOME/.local/share" \
+  "$DEPLOY_HOME/.local/share/nexus-release" \
+  "$DEPLOY_HOME/.local/share/nexus-release/incoming" \
+  "$DEPLOY_HOME/.local/state" \
+  "$DEPLOY_HOME/.local/state/nexus-release"
 
 command -v loginctl >/dev/null || {
   echo "loginctl is required to make user transactions SSH-independent" >&2

@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 const read = (path: string) => readFileSync(path, 'utf8');
 
 describe('canonical staging gate Ollama integration', () => {
-  it('can run the exact canonical smoke inside ServerDominguez without recursive SSH', () => {
+  it('can run the exact canonical smoke on the release host without recursive SSH', () => {
     const canonical = read('scripts/staging-smoke.sh');
     const manifest = read('scripts/lib/release-artifact-manifest.mjs');
 
@@ -76,7 +76,7 @@ describe('canonical staging gate Ollama integration', () => {
     expect(canonical).toContain('DB_CHECK="FAILED (staging DB integrity transport status $DB_CHECK_RC)"');
     expect(canonical).not.toContain('DB_CHECK="${DB_CHECK:-FAILED}"');
     expect(canonical).toContain('"$STAGING_ROOT" "$STAGING_RELEASE"');
-    expect(canonical).not.toContain('cd /home/dominguez/telegram-hub-bot-staging');
+    expect(canonical).not.toContain('cd "$STAGING_ROOT"');
   });
 
   it('binds retained diagnostics and server sync to one immutable current release', () => {
@@ -85,7 +85,7 @@ describe('canonical staging gate Ollama integration', () => {
     const sync = read('scripts/sync-from-server.sh');
 
     expect(canonical).toContain(
-      'STAGING_ROOT="${STAGING_PATH:-/home/dominguez/telegram-hub-bot-staging}"',
+      'STAGING_ROOT="${STAGING_PATH:?STAGING_PATH must be set',
     );
     expect(canonical).toContain('STAGING_RELEASE="$(resolve_staging_release)"');
     expect(canonical).toContain('case "$staging_release" in');
@@ -323,7 +323,7 @@ describe('canonical staging gate Ollama integration', () => {
     expect(canonical).toContain('OLLAMA_INVENTORY_PHASE=release');
     expect(canonical).toContain('NEXUS_HUB_BASE_URL=http://127.0.0.1:8201');
     expect(canonical).toContain('PM2_APP_NAME=nexus-hub-staging');
-    expect(canonical).toContain('PM2_BIN=/home/dominguez/.npm-global/bin/pm2');
+    expect(canonical).toContain('PM2_BIN="$HOME/.npm-global/bin/pm2"');
     expect(canonical).toContain('evidence_record "Ollama release policy"');
     expect(ollama).toContain('final|release');
     expect(ollama).toContain('PM2_BIN must name an absolute executable PM2 launcher');

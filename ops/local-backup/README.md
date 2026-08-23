@@ -3,7 +3,7 @@
 This is the deliberately small, same-host recovery system for the current
 single-server deployment. It protects against a bad release, accidental
 database mutation, and local corruption. It does not protect against loss of
-ServerDominguez or its NVMe device.
+the release host or its NVMe device.
 
 The hourly timer uses SQLite's online backup API, checks database integrity and
 foreign keys, encrypts the result with `age`, and keeps 24 hourly, 30 daily,
@@ -99,7 +99,11 @@ an older already-activating oneshot is never mistaken for a fresh backup.
    `/etc/nexus-local-backup/backup.env`, root-owned mode 0600, with the live
    SQLite path confirmed. After container cutover the production source must be
    `/var/lib/nexus-hub/production/data/bot.db`; the old PM2 path is valid only
-   during the owner-authorized first-cutover fallback.
+   during the owner-authorized first-cutover fallback. The shipped unit files
+   allow the legacy PM2 data directory only through a neutral optional
+   `ReadWritePaths` entry (`-/var/lib/nexus-hub/legacy/telegram-hub-bot/data`);
+   deployments using the legacy home layout must override that path with a
+   systemd drop-in.
 4. Provision the dedicated release Telegram bot/chat in
    `/etc/nexus-release/poller.env`. The hourly and restore-verification units
    use that channel only for immediate failure alerts. They start the Python

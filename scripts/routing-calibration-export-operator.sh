@@ -3,7 +3,7 @@
 set -euo pipefail
 umask 077
 
-readonly SERVER='ServerDominguez'
+readonly SERVER="${DEPLOY_SERVER:?DEPLOY_SERVER must be set (SSH host for the release server)}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HELPER="$ROOT/scripts/lib/routing-calibration-export.mjs"
 PRIVATE_DIR_TOOL="$ROOT/scripts/lib/ensure-private-directory.py"
@@ -93,8 +93,8 @@ git -C "$ROOT" fetch --quiet --no-tags origin main
   || die 'operator requires the exact protected origin/main checkout'
 
 RELEASE_NAME="$RUNTIME_SHA-${ARTIFACT_DIGEST:0:12}"
-REMOTE_SCRIPT="/home/dominguez/telegram-hub-bot/releases/$RELEASE_NAME/scripts/remote-routing-calibration-export-transaction.sh"
-REMOTE_STATE_ROOT='/home/dominguez/.local/state/nexus-release/routing-calibration-export'
+REMOTE_SCRIPT="\$HOME/telegram-hub-bot/releases/$RELEASE_NAME/scripts/remote-routing-calibration-export-transaction.sh"
+REMOTE_STATE_ROOT='$HOME/.local/state/nexus-release/routing-calibration-export'
 LOCAL_ROOT="$ROOT/.local/release/routing-calibration-export/$RELEASE_NAME"
 PLAN_ROOT="$LOCAL_ROOT/plans"
 EVIDENCE_ROOT="$LOCAL_ROOT/evidence"

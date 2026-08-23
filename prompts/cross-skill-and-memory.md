@@ -249,7 +249,7 @@ Update the help text in `bot.ts` to include a new section:
    - `npm run build`
    - Test `/remember`, `/memory`, `/forget` locally
    - Test `/content-from-work` with some conversation history
-   - Deploy to ServerDominguez: `rsync → ssh: npm install && npm run build && pm2 restart`
+   - Deploy to the release host: `rsync → ssh: npm install && npm run build && pm2 restart`
 
 4. **Update CHANGELOG.md** with version 1.1.0
 

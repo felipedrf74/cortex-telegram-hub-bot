@@ -18,8 +18,7 @@
  * exceed, the duration suffix is dropped first, then the day-of-week label,
  * then truncation with a single `…` at the end — time anchor always survives.
  *
- * Plan reference: Wave 1 workstream M5 in
- * /Users/felipedominguez/.claude/plans/graceful-stirring-scone.md
+ * Plan reference: Wave 1 workstream M5 in graceful-stirring-scone
  */
 
 import type { Lang } from '../utils/i18n';

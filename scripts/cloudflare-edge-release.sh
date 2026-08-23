@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LANDING_DIR="${NEXUS_LANDING_DEPLOY_DIR:-/Users/felipedominguez/Desktop/nexushub-landing-deploy}"
+LANDING_DIR="${NEXUS_LANDING_DEPLOY_DIR:?NEXUS_LANDING_DEPLOY_DIR must be set (local landing deploy directory)}"
 PAGES_PROJECT="${NEXUS_CLOUDFLARE_PAGES_PROJECT:-nexushub-landing}"
 PAGES_BRANCH="${NEXUS_CLOUDFLARE_PAGES_BRANCH:-main}"
 PROPAGATION_SECONDS="${NEXUS_EDGE_PROPAGATION_SECONDS:-90}"

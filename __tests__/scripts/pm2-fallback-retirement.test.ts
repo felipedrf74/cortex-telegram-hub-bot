@@ -3,7 +3,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+vi.hoisted(() => {
+  delete process.env.NEXUS_RELEASE_DEPLOY_HOME;
+});
 
 import { canonicalJson, sha256 } from '../../scripts/lib/release-canonical.mjs';
 import {
@@ -771,9 +775,10 @@ describe('container-era PM2 fallback retirement', () => {
   });
 
   it('binds the correct root PM2 attestation path and preservation boundary', () => {
+    expect(process.env.NEXUS_RELEASE_DEPLOY_HOME).toBeUndefined();
     expect(DEFAULT_PM2_FALLBACK_RETIREMENT_PATHS.pm2Attestation)
       .toBe('/var/lib/nexus-release-promotion/pm2-root-install.v1.json');
-    expect(PM2_FALLBACK_PRESERVED_PATHS).toContain('/home/dominguez/.pm2');
+    expect(PM2_FALLBACK_PRESERVED_PATHS).toContain(path.join(os.homedir(), '.pm2'));
     expect(PM2_FALLBACK_PRESERVED_PATHS).toContain('/etc/nexus-release');
   });
 

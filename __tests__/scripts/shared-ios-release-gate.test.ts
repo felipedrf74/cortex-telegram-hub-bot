@@ -2,7 +2,7 @@ import { generateKeyPairSync, sign } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   IOS_CONTRACT_TEST_SELECTORS,
   validateIosContractAttestation,
@@ -21,9 +21,17 @@ import {
 } from '../../scripts/shared-ios-release-gate.mjs';
 
 const roots: string[] = [];
+const RELEASE_BASE_FIXTURE = '/tmp/nexus-release-fixture/telegram-hub-bot';
+const originalReleaseBase = process.env.NEXUS_RELEASE_BASE_DIR;
+
+beforeEach(() => {
+  process.env.NEXUS_RELEASE_BASE_DIR = RELEASE_BASE_FIXTURE;
+});
 
 afterEach(() => {
   while (roots.length) fs.rmSync(roots.pop()!, { recursive: true, force: true });
+  if (originalReleaseBase === undefined) delete process.env.NEXUS_RELEASE_BASE_DIR;
+  else process.env.NEXUS_RELEASE_BASE_DIR = originalReleaseBase;
 });
 
 function signedContractAttestation() {
@@ -146,8 +154,8 @@ function sharedReleaseEvidence() {
     transactionId: `20260806T115800Z-${'4'.repeat(12)}`,
     runtimeSha,
     artifactDigest,
-    releaseDir: `/home/dominguez/telegram-hub-bot/releases/${runtimeSha}-${artifactDigest.slice(0, 12)}`,
-    predecessor: '/home/dominguez/telegram-hub-bot/releases/previous',
+    releaseDir: `${RELEASE_BASE_FIXTURE}/releases/${runtimeSha}-${artifactDigest.slice(0, 12)}`,
+    predecessor: `${RELEASE_BASE_FIXTURE}/releases/previous`,
     predecessorSha: manifest.releaseImpact.deployedSha,
     predecessorDigest: '5'.repeat(64),
     phase: 'completed',
@@ -266,7 +274,7 @@ function sharedReleaseEvidence() {
     },
     ci: {
       provider: 'xcode-cloud', buildId: '12345678-1234-1234-1234-123456789abc', buildNumber: '901',
-      buildUrl: 'https://appstoreconnect.apple.com/teams/502b7720-ce21-4a3a-bced-bf176ed4a127/apps/6762022696/ci/builds/12345678-1234-1234-1234-123456789abc',
+      buildUrl: 'https://appstoreconnect.apple.com/teams/00000000-0000-4000-8000-000000000001/apps/6762022696/ci/builds/12345678-1234-1234-1234-123456789abc',
       workflow: 'App Store Release', workflowId: '20e0adf7-2854-4207-98eb-8f3b5afcac60',
       startCondition: 'manual', action: 'archive',
     },

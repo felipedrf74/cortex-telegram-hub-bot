@@ -9,8 +9,7 @@
  * that contract at the producer (W-E privacy test pins it), so this
  * formatter inherits the guarantee.
  *
- * Plan reference: Wave 1 workstream C2 in
- * /Users/felipedominguez/.claude/plans/graceful-stirring-scone.md
+ * Plan reference: Wave 1 workstream C2 in graceful-stirring-scone
  */
 
 import type { Lang } from '../utils/i18n';

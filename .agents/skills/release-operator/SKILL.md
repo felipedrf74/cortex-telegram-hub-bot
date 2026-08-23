@@ -26,10 +26,12 @@ Authoritative state is
 ## Inspect
 
 From a backend checkout, the default read is the argument-free root-owned VPS
-observer; it is the only passwordless remote release command:
+observer; it is the only passwordless remote release command. `DEPLOY_SERVER`
+must be set to the release host's SSH destination before running any remote
+command below:
 
 ```bash
-/usr/bin/ssh ServerDominguez \
+/usr/bin/ssh "$DEPLOY_SERVER" \
   sudo -n /usr/local/sbin/nexus-release-state-view
 ```
 
@@ -38,13 +40,13 @@ inspection on the installed VPS; enter the sudo password locally and never in a
 prompt, transcript, or environment:
 
 ```bash
-/usr/bin/ssh -t ServerDominguez \
+/usr/bin/ssh -t "$DEPLOY_SERVER" \
   'sudo /usr/bin/env -i PATH=/usr/bin:/bin HOME=/var/lib/nexus-release/home \
     /usr/bin/npm --prefix /opt/nexus-release/checkout \
     run release:cd:ack -- --show'
-/usr/bin/ssh -t ServerDominguez \
+/usr/bin/ssh -t "$DEPLOY_SERVER" \
   'sudo /usr/bin/systemctl status nexus-release-poller.service --no-pager'
-/usr/bin/ssh -t ServerDominguez \
+/usr/bin/ssh -t "$DEPLOY_SERVER" \
   "sudo /usr/bin/journalctl -u nexus-release-poller.service --since '2 hours ago' --no-pager"
 ```
 

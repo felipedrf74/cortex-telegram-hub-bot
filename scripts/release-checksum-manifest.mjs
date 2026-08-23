@@ -385,9 +385,11 @@ function validateTransaction(value, manifest, expectedRole = '') {
       || Date.parse(value.completedAt) > Date.parse(value.updatedAt)) {
     fail('lean release transaction is not completed for the exact manifest');
   }
+  const deployHome = process.env.NEXUS_RELEASE_DEPLOY_HOME;
+  if (!deployHome) fail('NEXUS_RELEASE_DEPLOY_HOME is required');
   const releasePrefix = value.role === 'staging'
-    ? '/home/dominguez/telegram-hub-bot-staging/releases/'
-    : '/home/dominguez/telegram-hub-bot/releases/';
+    ? `${deployHome}/telegram-hub-bot-staging/releases/`
+    : `${deployHome}/telegram-hub-bot/releases/`;
   if (typeof value.releaseDir !== 'string'
       || !value.releaseDir.startsWith(releasePrefix)
       || typeof value.predecessor !== 'string'

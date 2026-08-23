@@ -18,7 +18,7 @@ UNIT="nexus-release-production-${RUNTIME_SHA:0:12}"
 REMOTE_SCRIPT="$SOURCE_BUNDLE/scripts/remote-user-release-transaction.sh"
 
 [[ "$SERVER" =~ ^[A-Za-z0-9._@-]+$ ]] || { echo "invalid deploy server" >&2; exit 64; }
-[[ "$SOURCE_BUNDLE" == /home/dominguez/.local/share/nexus-release/incoming/* ]] \
+[[ "$SOURCE_BUNDLE" == "~/.local/share/nexus-release/incoming/"* ]] \
   || { echo "invalid remote source bundle" >&2; exit 64; }
 [[ "$RUNTIME_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "invalid runtime SHA" >&2; exit 64; }
 [[ "$ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]] || { echo "invalid artifact digest" >&2; exit 64; }
@@ -62,13 +62,13 @@ ssh "$SERVER" systemd-run --user --quiet --collect \
   --unit "$UNIT" \
   --property Type=oneshot \
   --property TimeoutStartSec=8min \
-  /bin/bash "$REMOTE_SCRIPT" promote /home/dominguez/telegram-hub-bot \
+  /bin/bash "$REMOTE_SCRIPT" promote "~/telegram-hub-bot" \
   "$SOURCE_BUNDLE" "$RUNTIME_SHA" "$ARTIFACT_DIGEST" "$TRANSACTION_ID" \
   "$STABILITY_SECONDS" "$EXPECTED_PREDECESSOR_SHA" "$EXPECTED_PREDECESSOR_DIGEST"
 
 deadline=$((SECONDS + 600))
 while [ "$SECONDS" -lt "$deadline" ]; do
-  state="$(ssh "$SERVER" cat /home/dominguez/.local/state/nexus-release/production.json 2>/dev/null || true)"
+  state="$(ssh "$SERVER" cat "~/.local/state/nexus-release/production.json" 2>/dev/null || true)"
   if [ -n "$state" ]; then
     set +e
     printf '%s' "$state" | node -e '

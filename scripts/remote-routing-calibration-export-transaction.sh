@@ -3,10 +3,10 @@
 set -euo pipefail
 umask 077
 
-readonly BASE_DIR='/home/dominguez/telegram-hub-bot'
-readonly DEPLOY_HOME='/home/dominguez'
-readonly STATE_ROOT='/home/dominguez/.local/state/nexus-release/routing-calibration-export'
-readonly USER_RELEASE_LOCK='/home/dominguez/.local/state/nexus-release/.release.lock'
+readonly BASE_DIR="$HOME/telegram-hub-bot"
+readonly DEPLOY_HOME="$HOME"
+readonly STATE_ROOT="$HOME/.local/state/nexus-release/routing-calibration-export"
+readonly USER_RELEASE_LOCK="$HOME/.local/state/nexus-release/.release.lock"
 readonly ROOT_SONAR_LOCK='/run/lock/nexus-release-sonar.lock'
 readonly NODE_BIN='/usr/bin/node'
 readonly PYTHON_BIN='/usr/bin/python3'

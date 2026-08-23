@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# TODO: Rename server directory /home/dominguez/telegram-hub-bot → /home/dominguez/nexus-hub
+# TODO: Rename server directory ~/telegram-hub-bot → ~/nexus-hub
 # ─────────────────────────────────────────────────────
 # sync-from-server.sh — Safely pull production changes
 #                       into a git branch for review
@@ -15,8 +15,8 @@
 #       Only creates a new branch with server state.
 #
 # Environment:
-#   DEPLOY_SERVER   — SSH connection string (default: dominguez@serverdominguez)
-#   DEPLOY_PATH     — Remote release root (default: /home/dominguez/telegram-hub-bot)
+#   DEPLOY_SERVER   — SSH connection string (required)
+#   DEPLOY_PATH     — Remote release root on the server (required, absolute)
 #
 # Usage:
 #   ./scripts/sync-from-server.sh           # Full sync
@@ -24,8 +24,8 @@
 # ─────────────────────────────────────────────────────
 set -euo pipefail
 
-SERVER="${DEPLOY_SERVER:-dominguez@serverdominguez}"
-REMOTE_ROOT="${DEPLOY_PATH:-/home/dominguez/telegram-hub-bot}"
+SERVER="${DEPLOY_SERVER:?DEPLOY_SERVER must be set (SSH host for the release server)}"
+REMOTE_ROOT="${DEPLOY_PATH:?DEPLOY_PATH must be set (absolute release root on the release server)}"
 REMOTE_RELEASE=""
 LOCAL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 DRY_RUN="${1:-}"

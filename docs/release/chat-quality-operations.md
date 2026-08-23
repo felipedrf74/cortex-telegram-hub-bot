@@ -347,7 +347,7 @@ npm run release:chat-flags -- \
    apply-shadow-hook|inspect-observation|apply-observation> ...
 ```
 
-The command is hardcoded to `ServerDominguez`; it has no server override and
+The command targets `"$DEPLOY_SERVER"` (required env, no default host) and
 must never be pointed at AWS or another host. Run it from a clean checkout of
 the exact deployed runtime SHA. It executes the remote helper from the exact
 installed release directory, verifies the completion marker and artifact
@@ -356,9 +356,9 @@ as release (the lock path retains a historical `-sonar` filename; SonarQube
 itself was decommissioned on 2026-08-07)
 operations. Local plans and receipts remain under ignored
 `.local/release/chat-capability-flags/`; private durable state remains under
-`/home/dominguez/.local/state/nexus-release/chat-capability-flags/`.
+`~/.local/state/nexus-release/chat-capability-flags/`.
 
-`inspect` collects its evidence natively on ServerDominguez from the exact
+`inspect` collects its evidence natively on the release host from the exact
 staging release and database. It accepts no operator-supplied evidence JSON
 and performs no provider calls. `apply` accepts only the exact redacted
 `sha256:<plan-digest>` produced by that inspect, requires
@@ -504,11 +504,11 @@ remove the exact backup and permit. The command is expected to exit nonzero
 after successful startup recovery if the subsequent inspect refuses the
 already-OFF requested state; that exit is not the recovery verdict. Verify
 instead that
-`/home/dominguez/.local/state/nexus-release/chat-capability-flags/staging.json`
+`~/.local/state/nexus-release/chat-capability-flags/staging.json`
 is `rolled_back` for the exact transaction and release, that
-`/home/dominguez/telegram-hub-bot-staging/.env.before-chat-capability-20260802T143331Z-8ce452d0143b`
+`~/telegram-hub-bot-staging/.env.before-chat-capability-20260802T143331Z-8ce452d0143b`
 and
-`/home/dominguez/.local/state/nexus-release/chat-capability-flags/staging.runtime-permit.json`
+`~/.local/state/nexus-release/chat-capability-flags/staging.runtime-permit.json`
 are absent, and that authenticated `/health/detailed` reports the exact PM2
 release identity, a clear runtime guard, and every capability, dedicated
 route-hook, and planner assignment OFF. Only then may a new artifact enter
@@ -841,16 +841,16 @@ credential for authenticated `/health/detailed`, not the short-lived iOS JWT
 the runner creates for chat requests:
 
 ```text
-cd /home/dominguez/telegram-hub-bot-staging/current
+cd "$HOME/telegram-hub-bot-staging/current"
 env -i \
-  HOME=/home/dominguez USER=dominguez LOGNAME=dominguez \
+  HOME="$HOME" USER="$USER" LOGNAME="$LOGNAME" \
   PATH=/usr/local/bin:/usr/bin:/bin \
   NEXUS_RELEASE_ROLE=staging \
   NEXUS_RELEASE_SHA=<deployed-full-40-hex-sha> \
   NEXUS_RELEASE_ARTIFACT_SHA256=<deployed-full-64-hex-sha256> \
-  DATABASE_PATH=/home/dominguez/telegram-hub-bot-staging/data/bot.db \
+  DATABASE_PATH="$HOME/telegram-hub-bot-staging/data/bot.db" \
   /usr/bin/node \
-    --env-file=/home/dominguez/telegram-hub-bot-staging/.env \
+    --env-file="$HOME/telegram-hub-bot-staging/.env" \
     scripts/run-routing-synthetic-qa.mjs \
     --manifest <owner-only-canonical-manifest.json> \
     --manifest-sha256 <sha256:exact-manifest-digest>
@@ -897,7 +897,7 @@ zero row and cost delta. Any non-200, malformed response, recorder failure,
 provider ledger change, duplicate evidence path, or release/identity mismatch
 fails without a passed receipt. The successful private manifest and receipt
 are stored under
-`/home/dominguez/.local/state/nexus-release/routing-synthetic-qa/` with mode
+`~/.local/state/nexus-release/routing-synthetic-qa/` with mode
 `0600`. Use the receipt's exact `startedAt` and `completedAt` as the immutable
 gate window.
 

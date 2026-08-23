@@ -18,7 +18,7 @@ PROMOTION_RUN_ID="${11:?promotion run id is required}"
 REHEARSAL_PHASE="${12:?rehearsal phase is required}"
 DATABASE_OWNER_STATE="${13:?database owner state is required}"
 
-[[ "$PRODUCTION_BASE" == /home/dominguez/* ]] || { echo "unsafe production base" >&2; exit 64; }
+[[ "$PRODUCTION_BASE" == "$HOME"/* ]] || { echo "unsafe production base" >&2; exit 64; }
 [[ "$RELEASE_DIR" == "$PRODUCTION_BASE"/releases/* ]] || { echo "unsafe release directory" >&2; exit 64; }
 case "$CURRENT_RUNTIME" in "$PRODUCTION_BASE"|"$PRODUCTION_BASE"/releases/*) ;; *) echo "unsafe predecessor runtime" >&2; exit 64 ;; esac
 for governed_directory in "$PRODUCTION_BASE" "$PRODUCTION_BASE/releases" "$RELEASE_DIR" "$CURRENT_RUNTIME"; do

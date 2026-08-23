@@ -3,8 +3,8 @@
 set -euo pipefail
 umask 077
 
-readonly SERVER='ServerDominguez'
-readonly BASE_DIR='/home/dominguez/telegram-hub-bot-staging'
+readonly SERVER="${DEPLOY_SERVER:?DEPLOY_SERVER must be set (SSH host for the release server)}"
+readonly BASE_DIR='$HOME/telegram-hub-bot-staging'
 readonly RUNTIME_SHA='39965e357d19a1a44ecb167d213c6ffcf361a21b'
 readonly ARTIFACT_DIGEST='e368f1e15c3b2a84cfb798ad12621932a61fd766db6161259a7bd364cbac1535'
 readonly PLAN_SCHEMA='nexus.chat-shadow-route-hook-plan.v1'
@@ -120,7 +120,7 @@ ssh "$SERVER" systemd-run --user --quiet --collect --remain-after-exit \
   /bin/bash "$REMOTE_SCRIPT" apply-shadow-hook staging "$BASE_DIR" \
   "$RUNTIME_SHA" "$ARTIFACT_DIGEST" "$TRANSACTION_ID" "$ACK_PLAN"
 
-REMOTE_RECEIPT="/home/dominguez/.local/state/nexus-release/chat-capability-flags/claims/staging-$TRANSACTION_ID.shadow-hook-receipt.json"
+REMOTE_RECEIPT="\$HOME/.local/state/nexus-release/chat-capability-flags/claims/staging-$TRANSACTION_ID.shadow-hook-receipt.json"
 TEMP_RECEIPT="$(mktemp "$RECEIPT_ROOT/.apply.XXXXXX")"
 trap 'rm -f -- "${TEMP_RECEIPT:-}"' EXIT
 deadline=$((SECONDS + 300))

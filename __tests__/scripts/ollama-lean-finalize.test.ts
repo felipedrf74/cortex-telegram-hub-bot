@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -17,14 +19,15 @@ import { parseAndValidateOllamaEnvelope } from '../../scripts/lib/ollama-service
 const sha256 = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
 const runtimeSha = 'a'.repeat(40);
 const artifactDigest = 'b'.repeat(64);
+const DEPLOY_HOME = process.env.NEXUS_RELEASE_DEPLOY_HOME ?? homedir();
 
 function release(role: 'staging' | 'production') {
   const base = role === 'staging'
-    ? '/home/dominguez/telegram-hub-bot-staging'
-    : '/home/dominguez/telegram-hub-bot';
+    ? join(DEPLOY_HOME, 'telegram-hub-bot-staging')
+    : join(DEPLOY_HOME, 'telegram-hub-bot');
   const releaseDir = `${base}/releases/${runtimeSha}-${artifactDigest.slice(0, 12)}`;
   return {
-    statePath: `/home/dominguez/.local/state/nexus-release/${role}.json`,
+    statePath: join(DEPLOY_HOME, `.local/state/nexus-release/${role}.json`),
     stateSha256: (role === 'staging' ? 'c' : 'd').repeat(64),
     currentTarget: releaseDir,
     state: {

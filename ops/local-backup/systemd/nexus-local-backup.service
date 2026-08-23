@@ -23,7 +23,9 @@ PrivateTmp=true
 # SQLite may create WAL coordination sidecars even for a read-only source. The
 # producer inode-binds them and normalizes only safe root-created sidecars to
 # the database owner before copying; confine that write capability here.
-ReadWritePaths=/srv/nexus-backups/application /var/lib/nexus-release/operational-alerts -/home/dominguez/telegram-hub-bot/data -/var/lib/nexus-hub/production/data
+# The optional (-) legacy entry is a neutral default; deployments using the
+# legacy home layout must override that path with a systemd drop-in.
+ReadWritePaths=/srv/nexus-backups/application /var/lib/nexus-release/operational-alerts -/var/lib/nexus-hub/legacy/telegram-hub-bot/data -/var/lib/nexus-hub/production/data
 TimeoutStartSec=67min
 TimeoutStopSec=3min
 Restart=no

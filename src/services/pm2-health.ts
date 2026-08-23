@@ -1,6 +1,8 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { execFile } from 'child_process';
+import { homedir } from 'os';
+import { join } from 'path';
 import { captureError } from './error-monitor';
 
 type ExecFileLike = (
@@ -39,7 +41,7 @@ interface RawPm2Process {
   };
 }
 
-const DEFAULT_PM2_BIN = process.env.PM2_BIN || '/home/dominguez/.npm-global/bin/pm2';
+const DEFAULT_PM2_BIN = process.env.PM2_BIN || join(homedir(), '.npm-global/bin/pm2');
 const PM2_PROBE_TIMEOUT_MS = 2_000;
 const CRASH_LOOP_RESTART_THRESHOLD = 10;
 const ALERT_COOLDOWN_MS = 15 * 60_000;

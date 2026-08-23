@@ -51,7 +51,7 @@ cutover fallback for 14 stable days.
   bound only to loopback.
 - The application containers and one-shot migrator to host-mounted SQLite data.
 - The production database to root-owned encrypted backup storage on the same
-  ServerDominguez disk. This is an isolation and corruption boundary, not a
+  release-host disk. This is an isolation and corruption boundary, not a
   host-loss boundary.
 - The first-cutover container database to the recorded PM2 database and runtime
   fallback. That boundary exists only during the 14-stable-day fallback window.
@@ -118,7 +118,7 @@ cutover fallback for 14 stable days.
 - No AWS or off-host backup service is a runtime or release dependency.
   Same-disk recovery is explicitly accepted for the current project size: it
   protects against bad releases, operator error, and database corruption, but
-  total NVMe or ServerDominguez loss can destroy both primary data and backups.
+  total NVMe or release-host loss can destroy both primary data and backups.
 
 ## Priority Failure Modes
 

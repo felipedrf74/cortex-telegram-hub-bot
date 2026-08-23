@@ -80,10 +80,9 @@ const STAGE_B_ENV_SURFACES = [
 
 /**
  * Allowed matches inside gated files. Each entry needs a justification:
- * - ecosystem.staging.config.js: `/home/dominguez/telegram-hub-bot*` is the
- *   HISTORICAL deploy directory name on the VPS. Renaming the server
- *   directory is a deploy-infrastructure change outside the code purge;
- *   the path string is not live Telegram behavior.
+ * - ecosystem.staging.config.js: `telegram-hub-bot*` is the historical deploy
+ *   directory name. Its deployment-specific parent is injected through
+ *   NEXUS_RELEASE_BASE_DIR; the directory name is not live Telegram behavior.
  */
 const ALLOWLIST: { file: string; pattern: RegExp }[] = [
   { file: 'ecosystem.staging.config.js', pattern: /telegram-hub-bot/ },

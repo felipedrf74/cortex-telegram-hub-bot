@@ -26,7 +26,7 @@ or release gates change.
 | VPS/Cloudflare | CIS, Cloudflare Tunnel firewall, UFW/fail2ban | Origin ports loopback/firewalled; staging/admin Access; SSH key-only; SMB/RDP restricted/closed; WAF/security headers. | Infra checklist and approved ops window evidence. |
 | Incident/privacy | NIST 800-61, OWASP IR, GDPR/ICO | Incident runbooks; breach evidence checklist; provider revocation; DSR export/delete audit rows; tabletop and restore drills. | Incident runbook, privacy map, quarterly drill record. |
 
-The current recovery boundary is intentionally local to ServerDominguez. It
+The current recovery boundary is intentionally local to the release host. It
 covers release mistakes and database corruption but not complete NVMe or host
 loss. A USB SSD, NAS, or another non-AWS host can be added later without making
 AWS part of CI, release, or production operation. SonarQube was

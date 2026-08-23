@@ -3,9 +3,9 @@
 set -euo pipefail
 umask 077
 
-readonly BASE_DIR='/home/dominguez/telegram-hub-bot-staging'
-readonly STATE_ROOT='/home/dominguez/.local/state/nexus-release/chat-capability-flags'
-readonly USER_RELEASE_LOCK='/home/dominguez/.local/state/nexus-release/.release.lock'
+readonly BASE_DIR="$HOME/telegram-hub-bot-staging"
+readonly STATE_ROOT="$HOME/.local/state/nexus-release/chat-capability-flags"
+readonly USER_RELEASE_LOCK="$HOME/.local/state/nexus-release/.release.lock"
 readonly ROOT_SONAR_LOCK='/run/lock/nexus-release-sonar.lock'
 readonly NODE_BIN='/usr/bin/node'
 readonly PLAN_SCHEMA='nexus.chat-shadow-route-hook-legacy-claim-repair-plan.v1'

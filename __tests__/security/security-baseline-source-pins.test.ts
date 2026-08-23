@@ -119,9 +119,7 @@ describe('Nexus security baseline source pins', () => {
     expect(implementationStatus.match(/BLOCKED_WITH_EXACT_REASON/g)?.length).toBeGreaterThanOrEqual(14);
     expect(implementationStatus).toContain('ACCEPTED_RESIDUAL_RISK');
     expect(implementationStatus).toContain('No AWS or off-host service is required');
-    expect(threatModel).not.toContain(
-      'ServerDominguez to encrypted S3-compatible application and Sonar backup storage',
-    );
+    expect(threatModel).toContain('total NVMe or release-host loss');
     expect(index).toContain('docs/security/nexus-security-threat-model.md');
     expect(index).toContain('docs/security/security-control-matrix.md');
     expect(engineeringIndex).toContain('../security/security-control-matrix.md');

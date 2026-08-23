@@ -97,7 +97,7 @@ function createShellFixture() {
   mkdirSync(path.dirname(rootSonarLock), { recursive: true });
   mkdirSync(fakeBin, { recursive: true });
   writeFileSync(helper, readFileSync(HELPER_SOURCE, 'utf8').replace(
-    "'/home/dominguez/telegram-hub-bot-staging/releases/'",
+    "`${join(homedir(), 'telegram-hub-bot-staging')}/releases/`",
     `${JSON.stringify(`${path.join(base, 'releases')}/`)}`,
   ));
   writeFileSync(path.join(scripts, 'release-artifact-manifest.mjs'), '// fixture\n');
@@ -258,7 +258,7 @@ exec /usr/bin/readlink "$@"
   let remoteBody = readFileSync(REMOTE_SOURCE, 'utf8');
   remoteBody = replaceRequired(
     remoteBody,
-    "readonly USER_RELEASE_LOCK='/home/dominguez/.local/state/nexus-release/.release.lock'",
+    'readonly USER_RELEASE_LOCK="$HOME/.local/state/nexus-release/.release.lock"',
     `readonly USER_RELEASE_LOCK=${shellSingleQuote(userReleaseLock)}`,
   );
   remoteBody = replaceRequired(
@@ -268,22 +268,22 @@ exec /usr/bin/readlink "$@"
   );
   remoteBody = replaceRequired(
     remoteBody,
-    "readonly STATE_ROOT='/home/dominguez/.local/state/nexus-release/chat-capability-flags'",
+    'readonly STATE_ROOT="$HOME/.local/state/nexus-release/chat-capability-flags"',
     `readonly STATE_ROOT=${shellSingleQuote(stateRoot)}`,
   );
   remoteBody = replaceRequired(
     remoteBody,
-    "readonly ROUTING_SYNTHETIC_QA_STATE_ROOT='/home/dominguez/.local/state/nexus-release/routing-synthetic-qa'",
+    'readonly ROUTING_SYNTHETIC_QA_STATE_ROOT="$HOME/.local/state/nexus-release/routing-synthetic-qa"',
     `readonly ROUTING_SYNTHETIC_QA_STATE_ROOT=${shellSingleQuote(routingSyntheticQaStateRoot)}`,
   );
   remoteBody = replaceRequired(
     remoteBody,
-    "readonly STAGING_BASE_DIR='/home/dominguez/telegram-hub-bot-staging'",
+    'readonly STAGING_BASE_DIR="$HOME/telegram-hub-bot-staging"',
     `readonly STAGING_BASE_DIR=${shellSingleQuote(base)}`,
   );
   remoteBody = replaceRequired(
     remoteBody,
-    "readonly PRODUCTION_BASE_DIR='/home/dominguez/telegram-hub-bot'",
+    'readonly PRODUCTION_BASE_DIR="$HOME/telegram-hub-bot"',
     `readonly PRODUCTION_BASE_DIR=${shellSingleQuote(productionBase)}`,
   );
   remoteBody = replaceRequired(
@@ -323,7 +323,7 @@ exec /usr/bin/readlink "$@"
   );
   remoteBody = replaceRequired(
     remoteBody,
-    "[ \"$BASE_DIR\" = '/home/dominguez/telegram-hub-bot-staging' ]",
+    '[ "$BASE_DIR" = "$HOME/telegram-hub-bot-staging" ]',
     `[ "$BASE_DIR" = ${shellSingleQuote(base)} ]`,
   );
   writeFileSync(remote, remoteBody, { mode: 0o755 });

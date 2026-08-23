@@ -15,7 +15,7 @@ cd "$ROOT"
 source "$ROOT/scripts/training-e2e-env.sh"
 training_e2e_load_latest_env
 
-IOS_ROOT="${NEXUS_TRAINING_E2E_IOS_ROOT:-/Users/felipedominguez/Desktop/Nexus Hub/ios}"
+IOS_ROOT="${NEXUS_TRAINING_E2E_IOS_ROOT:?NEXUS_TRAINING_E2E_IOS_ROOT must be set (path to the Nexus Hub iOS checkout)}"
 STATE_DIR="$NEXUS_TRAINING_E2E_ROOT/ios"
 IOS_SEED_RUNNER="$ROOT/scripts/training-e2e-run-ios-seed.sh"
 mkdir -p "$STATE_DIR"

@@ -13,7 +13,7 @@ function env(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
     TRAINING_CROSS_SKILL_STAGING_SMOKE: '1',
     TRAINING_CROSS_SKILL_STAGING_USER_ID: '42',
     TRAINING_CROSS_SKILL_STAGING_FIXTURE_WRITE: '1',
-    DATABASE_PATH: '/home/dominguez/telegram-hub-bot-staging/data/bot.db',
+    DATABASE_PATH: '/tmp/nexus-release-fixture/staging/data/bot.db',
     ...overrides,
   };
 }
@@ -48,7 +48,7 @@ describe('training cross-skill staging fixture guardrails', () => {
     }))).toThrow('TRAINING_CROSS_SKILL_STAGING_SMOKE=1 is required.');
 
     expect(() => assertStagingFixtureGate('seed', env({
-      DATABASE_PATH: '/home/dominguez/telegram-hub-bot/data/bot.db',
+      DATABASE_PATH: '/tmp/nexus-release-fixture/production/data/bot.db',
     }))).toThrow('DATABASE_PATH must look like a staging/test database.');
   });
 

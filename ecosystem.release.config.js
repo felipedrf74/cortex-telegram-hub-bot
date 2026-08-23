@@ -13,10 +13,10 @@ if (role !== 'staging' && role !== 'production') {
   throw new Error(`NEXUS_RELEASE_ROLE must be staging or production, received ${role}`);
 }
 const staging = role === 'staging';
-const baseDir = process.env.NEXUS_RELEASE_BASE_DIR
-  || (staging
-    ? '/home/dominguez/telegram-hub-bot-staging'
-    : '/home/dominguez/telegram-hub-bot');
+// No machine-specific fallback: the install base is deployment-specific, so
+// starting without it must fail loudly rather than target a guessed tree.
+const baseDir = process.env.NEXUS_RELEASE_BASE_DIR;
+if (!baseDir) throw new Error('NEXUS_RELEASE_BASE_DIR is required');
 const backendPort = staging ? '8201' : '8200';
 const contentPort = staging ? '8101' : '8100';
 const policyEnvironmentNames = Object.freeze([

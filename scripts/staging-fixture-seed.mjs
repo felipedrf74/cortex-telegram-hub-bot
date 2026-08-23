@@ -89,8 +89,8 @@ export function buildRemoteNodeCommand(stagingPath, {
 }
 
 export function runRemoteNode(script, {
-  server = process.env.DEPLOY_SERVER || 'dominguez@serverdominguez',
-  stagingPath = process.env.STAGING_PATH || '/home/dominguez/telegram-hub-bot-staging',
+  server = process.env.DEPLOY_SERVER || (() => { throw new Error('DEPLOY_SERVER must be set (SSH host for the release server)'); })(),
+  stagingPath = process.env.STAGING_PATH || (() => { throw new Error('STAGING_PATH must be set (staging root on the release server)'); })(),
 } = {}) {
   const command = buildRemoteNodeCommand(stagingPath);
 

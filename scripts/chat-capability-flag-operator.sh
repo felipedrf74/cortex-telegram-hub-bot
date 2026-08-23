@@ -12,7 +12,7 @@ readonly OBSERVATION_PLAN_SCHEMA='nexus.chat-capability-observation-plan.v1'
 readonly OBSERVATION_RECEIPT_SCHEMA='nexus.chat-capability-observation-receipt.v1'
 readonly SHADOW_HOOK_PLAN_SCHEMA='nexus.chat-shadow-route-hook-plan.v1'
 readonly SHADOW_HOOK_RECEIPT_SCHEMA='nexus.chat-shadow-route-hook-transaction.v1'
-readonly SERVER='ServerDominguez'
+readonly SERVER="${DEPLOY_SERVER:?DEPLOY_SERVER must be set (SSH host for the release server)}"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 COMMAND="${1:---help}"
@@ -118,8 +118,8 @@ case "$COMMAND" in
 esac
 
 case "$ROLE" in
-  staging) BASE_DIR='/home/dominguez/telegram-hub-bot-staging' ;;
-  production) BASE_DIR='/home/dominguez/telegram-hub-bot' ;;
+  staging) BASE_DIR='$HOME/telegram-hub-bot-staging' ;;
+  production) BASE_DIR='$HOME/telegram-hub-bot' ;;
   *) die '--role must be staging or production' ;;
 esac
 [[ "$RUNTIME_SHA" =~ ^[0-9a-f]{40}$ ]] || die '--runtime-sha must be full lowercase 40-hex'
@@ -214,7 +214,7 @@ poll_receipt() {
   local transaction_id="$1"
   local unit="$2"
   local expected_schema="$3"
-  local remote_state="/home/dominguez/.local/state/nexus-release/chat-capability-flags/$ROLE.json"
+  local remote_state="\$HOME/.local/state/nexus-release/chat-capability-flags/$ROLE.json"
   local next="$RECEIPT_ROOT/$transaction_id.json.next"
   local final="$RECEIPT_ROOT/$transaction_id.json"
   local deadline=$((SECONDS + 300))
@@ -327,7 +327,7 @@ NODE
 poll_observation_receipt() {
   local transaction_id="$1"
   local unit="$2"
-  local remote_state="/home/dominguez/.local/state/nexus-release/chat-capability-flags/observations/staging-$transaction_id.observation-receipt.json"
+  local remote_state="\$HOME/.local/state/nexus-release/chat-capability-flags/observations/staging-$transaction_id.observation-receipt.json"
   local next="$RECEIPT_ROOT/observation-$transaction_id.json.next"
   local final="$RECEIPT_ROOT/observation-$transaction_id.json"
   local deadline=$((SECONDS + 900))

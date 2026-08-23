@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import { homedir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 
@@ -67,15 +68,17 @@ const REQUIRED_SUCCESSFUL_SERVICES = Object.freeze([
   'nexus-release-poller.service',
   ...RESUMABLE_SUCCESSFUL_SERVICES,
 ]);
+const DEPLOY_HOME = process.env.NEXUS_RELEASE_DEPLOY_HOME ?? homedir();
+
 const LEGACY_DATABASE_PATHS = Object.freeze([
-  '/home/dominguez/telegram-hub-bot/data/bot.db',
-  '/home/dominguez/telegram-hub-bot-staging/data/bot.db',
+  path.join(DEPLOY_HOME, 'telegram-hub-bot/data/bot.db'),
+  path.join(DEPLOY_HOME, 'telegram-hub-bot-staging/data/bot.db'),
 ]);
 
 export const PM2_FALLBACK_PRESERVED_PATHS = Object.freeze([
-  '/home/dominguez/telegram-hub-bot',
-  '/home/dominguez/telegram-hub-bot-staging',
-  '/home/dominguez/.pm2',
+  path.join(DEPLOY_HOME, 'telegram-hub-bot'),
+  path.join(DEPLOY_HOME, 'telegram-hub-bot-staging'),
+  path.join(DEPLOY_HOME, '.pm2'),
   '/var/lib/nexus-hub',
   '/etc/nexus-release',
   '/var/lib/nexus-release',
@@ -84,7 +87,7 @@ export const PM2_FALLBACK_PRESERVED_PATHS = Object.freeze([
 
 export const DEFAULT_PM2_FALLBACK_RETIREMENT_PATHS = Object.freeze({
   controlPlaneLock: '/var/lib/nexus-release/locks/control-plane.lock',
-  userReleaseLock: '/home/dominguez/.local/state/nexus-release/.release.lock',
+  userReleaseLock: path.join(DEPLOY_HOME, '.local/state/nexus-release/.release.lock'),
   maintenanceLock: '/run/lock/nexus-release-sonar.lock',
   baseline: '/var/lib/nexus-release/state/bootstrap-baseline.json',
   state: '/var/lib/nexus-release/state/release-state.json',

@@ -1,8 +1,9 @@
 # Release host installation
 
-Root-owned installation for the continuous-deployment poller on
-`dominguez@serverdominguez`. The behaviour it installs is documented in
-`docs/release/continuous-deployment.md`.
+Root-owned installation for the continuous-deployment poller on the release
+host, addressed as `"$DEPLOY_SERVER"` (set the `DEPLOY_SERVER` environment
+variable to the release host's SSH destination). The behaviour it installs is
+documented in `docs/release/continuous-deployment.md`.
 
 Everything here is **manual verification required**: it needs root on the host
 and credentials only the owner holds. Nothing in CI performs these steps.
@@ -3636,8 +3637,8 @@ printf 'deferred retained-old poller restart completed; enabled=%s\n' "$POLLER_E
 ## 1b. Quiesced transition of the existing production and staging databases
 
 **Manual verification required.** The existing production and staging databases
-live at `/home/dominguez/telegram-hub-bot/data/bot.db` and
-`/home/dominguez/telegram-hub-bot-staging/data/bot.db` under PM2. Both must be
+live at `~/telegram-hub-bot/data/bot.db` and
+`~/telegram-hub-bot-staging/data/bot.db` (deploy user home) under PM2. Both must be
 copied, not recreated. In particular, an empty staging database has every
 historical migration pending; the signed plan correctly refuses its contract
 migrations, so the first container rehearsal cannot use an empty mount.
@@ -3678,7 +3679,7 @@ set -euo pipefail
 die() { printf 'CUTOVER REFUSED: %s\n' "$*" >&2; exit 1; }
 
 run_pm2_as_dominguez() {
-  local pm2_cwd=/home/dominguez
+  local pm2_cwd="$HOME"
   (cd "$pm2_cwd" && sudo -u dominguez pm2 "$@")
 }
 
@@ -3955,13 +3956,13 @@ require_pm2_guard() {
   done
 }
 
-OLD_PRODUCTION=/home/dominguez/telegram-hub-bot/data/bot.db
-OLD_STAGING=/home/dominguez/telegram-hub-bot-staging/data/bot.db
-PM2_PRODUCTION_BASE=/home/dominguez/telegram-hub-bot
-PM2_STAGING_BASE=/home/dominguez/telegram-hub-bot-staging
+OLD_PRODUCTION="$HOME/telegram-hub-bot/data/bot.db"
+OLD_STAGING="$HOME/telegram-hub-bot-staging/data/bot.db"
+PM2_PRODUCTION_BASE="$HOME/telegram-hub-bot"
+PM2_STAGING_BASE="$HOME/telegram-hub-bot-staging"
 NEW_PRODUCTION=/var/lib/nexus-hub/production/data
 NEW_STAGING=/var/lib/nexus-hub/staging/data
-USER_RELEASE_LOCK=/home/dominguez/.local/state/nexus-release/.release.lock
+USER_RELEASE_LOCK="$HOME/.local/state/nexus-release/.release.lock"
 MAINTENANCE_LOCK=/run/lock/nexus-release-sonar.lock
 RUNTIME_EVIDENCE=/var/lib/nexus-release/state/bootstrap-legacy-runtime.json
 TRANSITION_EVIDENCE=/var/lib/nexus-release/state/bootstrap-database-transition.json
@@ -4410,9 +4411,9 @@ jq -cn --arg createdAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   --arg targetStagingLogicalDigest "$STAGING_TARGET_LOGICAL_SHA" \
   '{schema:"nexus.bootstrap-database-transition.v1",createdAt:$createdAt,
     runtimeCaptureSha256:$runtimeCaptureSha256,
-    legacy:{production:{path:"/home/dominguez/telegram-hub-bot/data/bot.db",
+    legacy:{production:{path:(env.HOME + "/telegram-hub-bot/data/bot.db"),
       identity:$legacyProductionIdentity,logicalDigest:$legacyProductionLogicalDigest},
-      staging:{path:"/home/dominguez/telegram-hub-bot-staging/data/bot.db",
+      staging:{path:(env.HOME + "/telegram-hub-bot-staging/data/bot.db"),
       identity:$legacyStagingIdentity,logicalDigest:$legacyStagingLogicalDigest}},
     target:{production:{path:"/var/lib/nexus-hub/production/data/bot.db",
       identity:$targetProductionIdentity,logicalDigest:$targetProductionLogicalDigest},
@@ -4483,7 +4484,7 @@ done
 unset PM2_RETIREMENT_GATE
 
 run_pm2_as_dominguez() {
-  local pm2_cwd=/home/dominguez
+  local pm2_cwd="$HOME"
   (cd "$pm2_cwd" && sudo -u dominguez pm2 "$@")
 }
 
@@ -4866,9 +4867,9 @@ pm2_fail_closed_is_exact() {
     test "$lsof_status" -eq 1 && test -z "$listeners" || return 1
   done
   for database in \
-    /home/dominguez/telegram-hub-bot/data/bot.db \
-    /home/dominguez/telegram-hub-bot-staging/data/bot.db \
-    /home/dominguez/telegram-hub-bot/data/bot.db.next-bootstrap-recovery \
+    "$HOME/telegram-hub-bot/data/bot.db" \
+    "$HOME/telegram-hub-bot-staging/data/bot.db" \
+    "$HOME/telegram-hub-bot/data/bot.db.next-bootstrap-recovery" \
     /var/lib/nexus-hub/production/data/bot.db \
     /var/lib/nexus-hub/production/data/bot.db.next \
     /var/lib/nexus-hub/staging/data/bot.db \
@@ -4943,16 +4944,16 @@ retire_canonical_pm2_guard() {
     && test "$can_start" = yes && test "$active" = inactive
 }
 
-OLD_PRODUCTION=/home/dominguez/telegram-hub-bot/data/bot.db
-OLD_STAGING=/home/dominguez/telegram-hub-bot-staging/data/bot.db
-PM2_PRODUCTION_BASE=/home/dominguez/telegram-hub-bot
-PM2_STAGING_BASE=/home/dominguez/telegram-hub-bot-staging
+OLD_PRODUCTION="$HOME/telegram-hub-bot/data/bot.db"
+OLD_STAGING="$HOME/telegram-hub-bot-staging/data/bot.db"
+PM2_PRODUCTION_BASE="$HOME/telegram-hub-bot"
+PM2_STAGING_BASE="$HOME/telegram-hub-bot-staging"
 LIVE_PRODUCTION=/var/lib/nexus-hub/production/data/bot.db
 LIVE_STAGING=/var/lib/nexus-hub/staging/data/bot.db
 BASELINE_FILE=/var/lib/nexus-release/state/bootstrap-baseline.json
 RUNTIME_EVIDENCE=/var/lib/nexus-release/state/bootstrap-legacy-runtime.json
 TRANSITION_EVIDENCE=/var/lib/nexus-release/state/bootstrap-database-transition.json
-USER_RELEASE_LOCK=/home/dominguez/.local/state/nexus-release/.release.lock
+USER_RELEASE_LOCK="$HOME/.local/state/nexus-release/.release.lock"
 MAINTENANCE_LOCK=/run/lock/nexus-release-sonar.lock
 BACKUP_ENV=/etc/nexus-local-backup/backup.env
 : "${PRE_BASELINE_ACTION:?set recover-pm2, resume-baseline, or reset-cutover explicitly}"
@@ -4966,7 +4967,7 @@ sudo test ! -e "$BASELINE_FILE" && sudo test ! -L "$BASELINE_FILE" \
 test "$(sudo stat -Lc '%U:%G:%a:%h' -- "$RUNTIME_EVIDENCE")" \
   = 'root:root:600:1' || die 'legacy runtime capture owner, mode, or links are unsafe'
 sudo test ! -L "$RUNTIME_EVIDENCE" || die 'legacy runtime capture is symbolic'
-sudo jq -e \
+sudo jq -e --arg home "$HOME" \
   '.schema == "nexus.bootstrap-legacy-runtime-capture.v2"
    and (.createdAt | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
    and (.productionSourceSha | test("^[0-9a-f]{40}$"))
@@ -4976,9 +4977,9 @@ sudo jq -e \
    and (.productionMarkerSha256 | test("^[0-9a-f]{64}$"))
    and (.stagingMarkerSha256 | test("^[0-9a-f]{64}$"))
    and (.productionRuntimePath
-       | startswith("/home/dominguez/telegram-hub-bot/releases/"))
+       | startswith($home + "/telegram-hub-bot/releases/"))
    and (.stagingRuntimePath
-       | startswith("/home/dominguez/telegram-hub-bot-staging/releases/"))
+       | startswith($home + "/telegram-hub-bot-staging/releases/"))
    and (.productionDatabaseIdentity | test("^[0-9]+:[0-9]+$"))
    and (.stagingDatabaseIdentity | test("^[0-9]+:[0-9]+$"))
    and (keys | sort == ["createdAt","productionArtifactDigest",
@@ -5215,17 +5216,17 @@ if sudo test -e "$TRANSITION_EVIDENCE" || sudo test -L "$TRANSITION_EVIDENCE"; t
   test "$(sudo stat -Lc '%U:%G:%a:%h' -- "$TRANSITION_EVIDENCE")" \
     = 'root:root:600:1' || die 'database transition evidence is unsafe'
   RUNTIME_CAPTURE_SHA256="$(sudo sha256sum "$RUNTIME_EVIDENCE" | awk '{print $1}')"
-  sudo jq -e --arg capture "$RUNTIME_CAPTURE_SHA256" \
+  sudo jq -e --arg capture "$RUNTIME_CAPTURE_SHA256" --arg home "$HOME" \
     --arg productionIdentity "$PRODUCTION_DATABASE_IDENTITY" \
     --arg productionDigest "$PRODUCTION_LOGICAL_SHA" \
     --arg stagingIdentity "$STAGING_DATABASE_IDENTITY" \
     --arg stagingDigest "$STAGING_LOGICAL_SHA" \
     '.schema == "nexus.bootstrap-database-transition.v1"
      and .runtimeCaptureSha256 == $capture
-     and .legacy.production.path == "/home/dominguez/telegram-hub-bot/data/bot.db"
+     and .legacy.production.path == ($home + "/telegram-hub-bot/data/bot.db")
      and .legacy.production.identity == $productionIdentity
      and .legacy.production.logicalDigest == $productionDigest
-     and .legacy.staging.path == "/home/dominguez/telegram-hub-bot-staging/data/bot.db"
+     and .legacy.staging.path == ($home + "/telegram-hub-bot-staging/data/bot.db")
      and .legacy.staging.identity == $stagingIdentity
      and .legacy.staging.logicalDigest == $stagingDigest
      and .target.production.path == "/var/lib/nexus-hub/production/data/bot.db"
@@ -5698,7 +5699,7 @@ controller identity locally on the server; this command prints no secret:
 
 ```bash
 INSTALLED_CONTROL_PLANE_DIGEST="$(
-  ssh -t ServerDominguez \
+  ssh -t "$DEPLOY_SERVER" \
     "sudo /usr/bin/env -i PATH=/usr/bin:/bin /usr/bin/node --input-type=module -" <<'NODE'
 import { pathToFileURL } from 'node:url';
 const root = '/opt/nexus-release/checkout';
@@ -5848,7 +5849,7 @@ die() { printf 'BASELINE REFUSED: %s\n' "$*" >&2; exit 1; }
 BASELINE_FILE=/var/lib/nexus-release/state/bootstrap-baseline.json
 RUNTIME_EVIDENCE=/var/lib/nexus-release/state/bootstrap-legacy-runtime.json
 TRANSITION_EVIDENCE=/var/lib/nexus-release/state/bootstrap-database-transition.json
-USER_RELEASE_LOCK=/home/dominguez/.local/state/nexus-release/.release.lock
+USER_RELEASE_LOCK="$HOME/.local/state/nexus-release/.release.lock"
 MAINTENANCE_LOCK=/run/lock/nexus-release-sonar.lock
 : "${EXPECTED_RELEASE_ID:?export the owner-reviewed 32-hex release ID}"
 : "${EXPECTED_RELEASE_PAYLOAD_DIGEST:?export the owner-reviewed sha256 OCI payload digest}"
@@ -5859,7 +5860,7 @@ MAINTENANCE_LOCK=/run/lock/nexus-release-sonar.lock
 test "$(sudo stat -Lc '%U:%G:%a:%h' -- "$RUNTIME_EVIDENCE")" \
   = 'root:root:600:1' || die 'legacy runtime capture owner, mode, or links are unsafe'
 sudo test ! -L "$RUNTIME_EVIDENCE" || die 'legacy runtime capture is symbolic'
-sudo jq -e \
+sudo jq -e --arg home "$HOME" \
   '.schema == "nexus.bootstrap-legacy-runtime-capture.v2"
    and (.createdAt | type == "string"
         and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
@@ -5870,9 +5871,9 @@ sudo jq -e \
    and (.productionMarkerSha256 | test("^[0-9a-f]{64}$"))
    and (.stagingMarkerSha256 | test("^[0-9a-f]{64}$"))
    and (.productionRuntimePath
-        | startswith("/home/dominguez/telegram-hub-bot/releases/"))
+        | startswith($home + "/telegram-hub-bot/releases/"))
    and (.stagingRuntimePath
-        | startswith("/home/dominguez/telegram-hub-bot-staging/releases/"))
+        | startswith($home + "/telegram-hub-bot-staging/releases/"))
    and (.productionDatabaseIdentity | test("^[0-9]+:[0-9]+$"))
    and (.stagingDatabaseIdentity | test("^[0-9]+:[0-9]+$"))
    and (keys | sort == ["createdAt","productionArtifactDigest",
@@ -5922,11 +5923,11 @@ test "$(sudo stat -Lc '%U:%G:%a:%h' -- "$TRANSITION_EVIDENCE")" \
 sudo test ! -L "$TRANSITION_EVIDENCE" \
   || die 'database transition checkpoint is symbolic'
 RUNTIME_CAPTURE_SHA256="$(sudo sha256sum "$RUNTIME_EVIDENCE" | awk '{print $1}')"
-sudo jq -e --arg capture "$RUNTIME_CAPTURE_SHA256" \
+sudo jq -e --arg capture "$RUNTIME_CAPTURE_SHA256" --arg home "$HOME" \
   '.schema == "nexus.bootstrap-database-transition.v1"
    and .runtimeCaptureSha256 == $capture
-   and .legacy.production.path == "/home/dominguez/telegram-hub-bot/data/bot.db"
-   and .legacy.staging.path == "/home/dominguez/telegram-hub-bot-staging/data/bot.db"
+   and .legacy.production.path == ($home + "/telegram-hub-bot/data/bot.db")
+   and .legacy.staging.path == ($home + "/telegram-hub-bot-staging/data/bot.db")
    and .target.production.path == "/var/lib/nexus-hub/production/data/bot.db"
    and .target.staging.path == "/var/lib/nexus-hub/staging/data/bot.db"
    and .backupDatabasePath == "/var/lib/nexus-hub/production/data/bot.db"
@@ -6044,8 +6045,10 @@ export PATH
 die() { printf 'ENVIRONMENT SPLIT REFUSED: %s\n' "$*" >&2; exit 1; }
 test "$EUID" -eq 0 || die 'run the complete transaction from one root shell (sudo -i)'
 
-LEGACY_PRODUCTION_ENV=/home/dominguez/telegram-hub-bot/.env
-LEGACY_STAGING_ENV=/home/dominguez/telegram-hub-bot-staging/.env
+# This block runs as root, so ~dominguez (the deploy user's home) is expanded
+# explicitly instead of "$HOME".
+LEGACY_PRODUCTION_ENV=~dominguez/telegram-hub-bot/.env
+LEGACY_STAGING_ENV=~dominguez/telegram-hub-bot-staging/.env
 PRODUCTION_BACKEND=/etc/nexus-release/production-backend.env
 PRODUCTION_ENGINE=/etc/nexus-release/production-content-engine.env
 STAGING_BACKEND=/etc/nexus-release/staging-backend.env
@@ -6344,7 +6347,7 @@ sudo systemctl start "$HEARTBEAT_TIMER" \
 ```
 
 The workspace read is exactly
-`ssh ServerDominguez sudo -n /usr/local/sbin/nexus-release-state-view` with no
+`ssh "$DEPLOY_SERVER" sudo -n /usr/local/sbin/nexus-release-state-view` with no
 arguments. The wrapper resets the environment with `/usr/bin/env -i` and then
 executes only the active root-owned `scripts/release-state-view.mjs`; a caller
 argument is rejected with exit 64 before Node starts. The JSON is generated and
@@ -6402,7 +6405,7 @@ done
 unset PM2_RETIREMENT_GATE
 
 run_pm2_as_dominguez() {
-  local pm2_cwd=/home/dominguez
+  local pm2_cwd="$HOME"
   (cd "$pm2_cwd" && sudo -u dominguez pm2 "$@")
 }
 
@@ -6748,9 +6751,9 @@ pm2_fail_closed_is_exact() {
     test "$lsof_status" -eq 1 && test -z "$listeners" || return 1
   done
   for database in \
-    /home/dominguez/telegram-hub-bot/data/bot.db \
-    /home/dominguez/telegram-hub-bot-staging/data/bot.db \
-    /home/dominguez/telegram-hub-bot/data/bot.db.next-bootstrap-recovery \
+    "$HOME/telegram-hub-bot/data/bot.db" \
+    "$HOME/telegram-hub-bot-staging/data/bot.db" \
+    "$HOME/telegram-hub-bot/data/bot.db.next-bootstrap-recovery" \
     /var/lib/nexus-hub/production/data/bot.db \
     /var/lib/nexus-hub/production/data/bot.db.next \
     /var/lib/nexus-hub/staging/data/bot.db \
@@ -7034,13 +7037,13 @@ publish_interrupted_restart_archive() {
 
 LIVE_PRODUCTION=/var/lib/nexus-hub/production/data/bot.db
 LIVE_STAGING=/var/lib/nexus-hub/staging/data/bot.db
-PM2_PRODUCTION=/home/dominguez/telegram-hub-bot/data/bot.db
-PM2_STAGING=/home/dominguez/telegram-hub-bot-staging/data/bot.db
-PM2_PRODUCTION_BASE=/home/dominguez/telegram-hub-bot
-PM2_STAGING_BASE=/home/dominguez/telegram-hub-bot-staging
+PM2_PRODUCTION="$HOME/telegram-hub-bot/data/bot.db"
+PM2_STAGING="$HOME/telegram-hub-bot-staging/data/bot.db"
+PM2_PRODUCTION_BASE="$HOME/telegram-hub-bot"
+PM2_STAGING_BASE="$HOME/telegram-hub-bot-staging"
 BASELINE_FILE=/var/lib/nexus-release/state/bootstrap-baseline.json
 RUNTIME_EVIDENCE=/var/lib/nexus-release/state/bootstrap-legacy-runtime.json
-USER_RELEASE_LOCK=/home/dominguez/.local/state/nexus-release/.release.lock
+USER_RELEASE_LOCK="$HOME/.local/state/nexus-release/.release.lock"
 MAINTENANCE_LOCK=/run/lock/nexus-release-sonar.lock
 BACKUP_ENV=/etc/nexus-local-backup/backup.env
 RECOVERY_STATE=/var/lib/nexus-release/state/bootstrap-first-cutover-recovery.json
@@ -7183,9 +7186,9 @@ prove_durable_running_pm2() {
 publish_early_pm2_restored() {
   local state_stage state_temp
   state_temp="$(mktemp)"; state_stage="$RECOVERY_STATE.next-$BASHPID"
-  sudo jq --arg updatedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  sudo jq --arg updatedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg home "$HOME" \
     '.phase = "pm2_restored" | .backupDatabasePath =
-       "/home/dominguez/telegram-hub-bot/data/bot.db"
+       ($home + "/telegram-hub-bot/data/bot.db")
      | .updatedAt = $updatedAt' "$RECOVERY_STATE" >"$state_temp"
   sudo test ! -e "$state_stage" && sudo test ! -L "$state_stage" || return 1
   sudo install -o root -g root -m 600 "$state_temp" "$state_stage"
@@ -7458,10 +7461,10 @@ else
         identity:$liveProductionIdentity,logicalDigest:$liveProductionDigest},
       liveStaging:{path:"/var/lib/nexus-hub/staging/data/bot.db",
         identity:$liveStagingIdentity,logicalDigest:$liveStagingDigest},
-      observedPm2Production:{path:"/home/dominguez/telegram-hub-bot/data/bot.db",
+      observedPm2Production:{path:(env.HOME + "/telegram-hub-bot/data/bot.db"),
         identity:$observedProductionIdentity,logicalDigest:$observedProductionDigest},
       capturedPm2ProductionIdentity:$capturedProductionIdentity,
-      pm2Staging:{path:"/home/dominguez/telegram-hub-bot-staging/data/bot.db",
+      pm2Staging:{path:(env.HOME + "/telegram-hub-bot-staging/data/bot.db"),
         identity:$stagingIdentity,logicalDigest:$stagingDigest},
       swappedPm2ProductionIdentity:
         (if $swappedIdentity == "" then null else $swappedIdentity end)}' \
@@ -7803,7 +7806,7 @@ done
 unset PM2_RETIREMENT_GATE
 
 run_pm2_as_dominguez() {
-  local pm2_cwd=/home/dominguez
+  local pm2_cwd="$HOME"
   (cd "$pm2_cwd" && sudo -u dominguez pm2 "$@")
 }
 
@@ -8071,9 +8074,9 @@ pm2_fail_closed_is_exact() {
     test "$lsof_status" -eq 1 && test -z "$listeners" || return 1
   done
   for database in \
-    /home/dominguez/telegram-hub-bot/data/bot.db \
-    /home/dominguez/telegram-hub-bot-staging/data/bot.db \
-    /home/dominguez/telegram-hub-bot/data/bot.db.next-bootstrap-recovery \
+    "$HOME/telegram-hub-bot/data/bot.db" \
+    "$HOME/telegram-hub-bot-staging/data/bot.db" \
+    "$HOME/telegram-hub-bot/data/bot.db.next-bootstrap-recovery" \
     /var/lib/nexus-hub/production/data/bot.db \
     /var/lib/nexus-hub/production/data/bot.db.next \
     /var/lib/nexus-hub/staging/data/bot.db \
@@ -8336,10 +8339,10 @@ require_baseline_shape() {
     ' "$baseline" >/dev/null || die "bootstrap baseline shape is invalid: $baseline"
 }
 
-OLD_PRODUCTION=/home/dominguez/telegram-hub-bot/data/bot.db
-OLD_STAGING=/home/dominguez/telegram-hub-bot-staging/data/bot.db
-PM2_PRODUCTION_BASE=/home/dominguez/telegram-hub-bot
-PM2_STAGING_BASE=/home/dominguez/telegram-hub-bot-staging
+OLD_PRODUCTION="$HOME/telegram-hub-bot/data/bot.db"
+OLD_STAGING="$HOME/telegram-hub-bot-staging/data/bot.db"
+PM2_PRODUCTION_BASE="$HOME/telegram-hub-bot"
+PM2_STAGING_BASE="$HOME/telegram-hub-bot-staging"
 NEW_PRODUCTION=/var/lib/nexus-hub/production/data
 NEW_STAGING=/var/lib/nexus-hub/staging/data
 LIVE_PRODUCTION="$NEW_PRODUCTION/bot.db"
@@ -8351,7 +8354,7 @@ RUNTIME_EVIDENCE=/var/lib/nexus-release/state/bootstrap-legacy-runtime.json
 TRANSITION_EVIDENCE=/var/lib/nexus-release/state/bootstrap-database-transition.json
 FIRST_RECOVERY_STATE=/var/lib/nexus-release/state/bootstrap-first-cutover-recovery.json
 RELEASE_IMAGE=ghcr.io/felipedrf74/nexus-hub-release
-USER_RELEASE_LOCK=/home/dominguez/.local/state/nexus-release/.release.lock
+USER_RELEASE_LOCK="$HOME/.local/state/nexus-release/.release.lock"
 MAINTENANCE_LOCK=/run/lock/nexus-release-sonar.lock
 : "${EXPECTED_RELEASE_ID:?export the owner-reviewed new 32-hex release ID}"
 : "${EXPECTED_RELEASE_PAYLOAD_DIGEST:?export the owner-reviewed new sha256 OCI payload digest}"
@@ -8964,9 +8967,9 @@ if test "$REBASELINE_PHASE" = backup_repointed; then
     --arg targetStagingLogicalDigest "$STAGING_LOGICAL_SHA" \
     '{schema:"nexus.bootstrap-database-transition.v1",createdAt:$createdAt,
       runtimeCaptureSha256:$runtimeCaptureSha256,
-      legacy:{production:{path:"/home/dominguez/telegram-hub-bot/data/bot.db",
+      legacy:{production:{path:(env.HOME + "/telegram-hub-bot/data/bot.db"),
         identity:$legacyProductionIdentity,logicalDigest:$legacyProductionLogicalDigest},
-        staging:{path:"/home/dominguez/telegram-hub-bot-staging/data/bot.db",
+        staging:{path:(env.HOME + "/telegram-hub-bot-staging/data/bot.db"),
         identity:$legacyStagingIdentity,logicalDigest:$legacyStagingLogicalDigest}},
       target:{production:{path:"/var/lib/nexus-hub/production/data/bot.db",
         identity:$targetProductionIdentity,logicalDigest:$targetProductionLogicalDigest},
@@ -9424,7 +9427,7 @@ paths:
 | Lock | Holder | Purpose |
 | --- | --- | --- |
 | `/var/lib/nexus-release/locks/release.lock` | poller (`scripts/release-poll.sh`) | serializes container releases |
-| `/home/dominguez/.local/state/nexus-release/.release.lock` | legacy PM2 transaction and user capability operations | serializes user-owned PM2 mutations |
+| `~/.local/state/nexus-release/.release.lock` (deploy user home) | legacy PM2 transaction and user capability operations | serializes user-owned PM2 mutations |
 | `/run/lock/nexus-release-sonar.lock` | poller (second lock), legacy PM2 transaction (second lock), data-key rotation, Ollama finalize | shared root maintenance mutex, retained under its historical filename only |
 
 **Lock order is release lock first, maintenance mutex second — never the
@@ -9669,7 +9672,7 @@ new quarantine paths refuse instead of being deleted. The quarantine must be
 absent when the terminal receipt is published.
 
 The two `system.control` guards remain forever. Preserve both legacy checkout/config
-trees, `/home/dominguez/.pm2`, `/etc/nexus-release`, `/var/lib/nexus-release`,
+trees, `~/.pm2` (deploy user home), `/etc/nexus-release`, `/var/lib/nexus-release`,
 `/var/lib/nexus-hub`, and `/srv/nexus-backups/application`; the transaction has
 no allowlisted mutation for unrelated content in them. Its only
 `/var/lib/nexus-release` mutations are the exact journal, tombstone, terminal
