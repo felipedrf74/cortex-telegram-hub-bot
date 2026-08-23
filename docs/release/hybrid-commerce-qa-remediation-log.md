@@ -339,15 +339,15 @@ Triathlon contained inside Training; the previous six-skill production drift
 is closed.
 
 The plan is not complete. The durable Batch adapter and owner-approved Apple
-Foundation Models device lane are implemented locally, but their final
-post-hardening verification and signed delivery remain open. The other
-acceptance gates are: complete the ten-script acceptance inventory and
-production script smoke; use those measured p95 values with actual account
-rates to pass the economics simulation; complete the real Apple sandbox
-fulfillment/replay/retry proof after the products become available; and rotate
-the live Stripe credential disclosed in chat. The owner currently forbids
-credential rotation and, for this audit, forbids running tests, so these gates
-cannot be closed in this session and public activation remains OFF.
+Foundation Models device lane have completed final post-hardening verification
+and signed publication as recorded below. The remaining acceptance gates are:
+complete the ten-script acceptance inventory and production script smoke; use
+those measured p95 values with actual account rates to pass the economics
+simulation; complete the real Apple sandbox fulfillment/replay/retry proof
+after the products become available; and rotate the live Stripe credential
+disclosed in chat. The owner has now authorized final tests and releases but
+continues to forbid credential rotation, so the security exception remains and
+public activation remains OFF.
 
 ## Batch and Apple device-lane local closeout (2026-08-23)
 
@@ -368,29 +368,45 @@ operation id across restart, abandoned reservations expire on the admission's
 short TTL, and the midnight sweep deletes device admission/evidence metadata
 after 90 days.
 
-Earlier local verification passed backend type checking, the 161 focused Batch
-tests, 20 focused device policy/kill-switch tests, an iOS simulator build, six
-device-lane unit tests, and the canonical-corpus bundle test. Those results
-predate the final predecessor-compatible migration and tenant-scoped Batch-key
-hardening and are not claimed as final-release verification; the owner has
-instructed this session not to launch another test run. The physical Apple test
-is intentionally unavailable on the simulator. During privacy review, migration
+Final backend verification passed the governed changed-area suite, TypeScript
+gate, changed-branch threshold, and 100% coverage for the critical changed
+files. Protected-main CI run `32655435458` then passed at source
+`5035a61e9246961345b27320e1873c6e4af47aee`; its exact focused gate completed
+in 18m59s. Final iOS verification passed the simulator build, six device-lane
+unit tests, the canonical-corpus bundle test, and Xcode Cloud archive run
+`38be20ad-edd0-48f4-bdd8-d4122ad76088` for build 279 at source
+`bb26ef7ee849833442e855c69033ff1c63194427`. The physical Apple test is
+intentionally unavailable on the simulator. During privacy review, migration
 296 was corrected so device evidence remains immutable to update while Article
 17 and the 90-day telemetry-retention path can delete it; subject access now
 exports only scoped metadata and no prompt/output.
 
-This is implementation evidence, not delivery evidence. Neither worktree is
-committed, pushed, signed, or deployed. The production receipt remains
+Signed backend release workflow `32656475261` published source
+`5035a61e9246961345b27320e1873c6e4af47aee`, backend digest
+`sha256:ce38af676bf203c48075dd3b63847f439a2c3aefed629d2fff6604448b7089a0`,
+content-engine digest
+`sha256:db72646164a1888096e26fdb5a760688d4c312dfa047e31eb498e8cd958586e5`,
+and signed payload
+`sha256:58c9a60af26aa25b2f32f4eb1dc8c4a2cca6d2955154009fe6912248a3e51c80`.
+The pointer decision was `move_main`; as required for the `src/config.ts`
+delta, `cdEligibility.eligible=false`. One attended poll recorded signed
+release `06386bb225dd1e700cd6fd3cf58bdae6` as
+`migration_not_cd_eligible`, and the owner-authorized exact acknowledgement
+completed at `2026-08-23T18:01:06.917Z`. This docs-only successor is the
+CD-eligible carrier for those unchanged reviewed application images.
+
+Until that carrier completes signed deployment, the production receipt remains
 `fa747e0968de874015ee5fb8754c3fcf` at source
 `438a99d730bd1e875843c160f6810e59840043d2`, so production still uses Scheduled
-Flex and has no Apple device policy endpoint. The iPad Pro available to this
-Mac has Developer Mode disabled, preventing the required physical 24-case run.
+Flex and has no Apple device policy endpoint. The paired physical iPad Pro is
+available but reports Developer Mode disabled, preventing the required physical
+24-case run until the owner enables it on-device.
 
 Remaining gates are unchanged where implementation cannot create external
-evidence: an eligible signed VPS local-model winner/full bakeoff; nine
-pre-release scripts plus one post-deploy smoke and their p95 economics; Apple
-catalog approval plus a real sandbox signed-JWS fulfillment/replay/retry; a
-signed backend/iOS release; and public activation only after those pass. The
-owner's no-rotation decision leaves the disclosed Stripe live key as an
-explicit security exception to the canonical plan rather than a completed
-gate.
+evidence: an eligible signed VPS local-model winner/full bakeoff; the physical
+Apple 24-case run; nine pre-release scripts plus one post-deploy smoke and their
+p95 economics; Apple catalog approval plus a real sandbox signed-JWS
+fulfillment/replay/retry; and public activation only after those pass. The
+backend and iOS signed-release gate is closed. The owner's no-rotation decision
+leaves the disclosed Stripe live key as an explicit security exception to the
+canonical plan rather than a completed gate.
