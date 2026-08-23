@@ -177,7 +177,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "scripts/local-model-first-pass.mjs:574-577",
+            "pattern": "scripts/local-model-first-pass.mjs:586-589",
             "anchor": "if (sourceSchema !== 'nexus.local-model-first-pass-artifact.v3'",
             "behavior": "Legacy or policy-drifted first-pass evidence cannot be rescored as current governed qualification evidence.",
             "replacementTest": "__tests__/scripts/local-model-first-pass.test.ts",

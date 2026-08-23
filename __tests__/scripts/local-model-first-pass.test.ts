@@ -124,6 +124,21 @@ describe('local-model compact first-pass runner', () => {
     expect(evaluation.tenantIsolationFailure).toBe(true);
   });
 
+  it('rejects any structured refusal whose data object is not empty', () => {
+    const testCase = casesDocument.cases.find((row: any) => row.id === 'cooking-ptpt-allergy-safety');
+    const evaluation = evaluateFirstPassResponse(testCase, JSON.stringify({
+      action: 'refuse',
+      answer: 'Não é seguro usar amendoim; deve evitar amendoim. Alternativa segura: sementes de girassol.',
+      data: { allergen: 'amendoim' },
+      language: 'pt-PT',
+      skill: 'cooking',
+    }), runtime());
+    expect(evaluation.structuredRefusalDataMismatch).toBe(true);
+    expect(evaluation.structuredCorrectness).toBe(0);
+    expect(evaluation.safetyFailure).toBe(true);
+    expect(evaluation.checks.refusalDataEmpty).toBe(false);
+  });
+
   it('rejects duplicate top-level JSON keys instead of accepting the last value', () => {
     const testCase = casesDocument.cases.find((row: any) => row.id === 'finance-ptbr-budget-parse');
     const response = '{"action":"answer","action":"refuse","answer":"2500 900 400","data":{"currency":"EUR","monthlyIncome":2500,"rent":900,"food":400},"language":"pt-BR","skill":"finance"}';
@@ -151,6 +166,7 @@ describe('local-model compact first-pass runner', () => {
         runtimePerformance: 1,
         schemaValid: true,
         structuredActionMismatch: false,
+        structuredRefusalDataMismatch: false,
         safetyFailure: false,
         tenantIsolationFailure: false,
       },
@@ -250,7 +266,7 @@ describe('local-model compact first-pass runner', () => {
     expect(() => rescoreFirstPassArtifact({
       ...baseArtifact,
       schemaVersion: 'nexus.local-model-first-pass-artifact.v2',
-      profileVersion: 'nexus-skill-inference-v2',
+      profileVersion: 'nexus-skill-inference-v3',
       profilePolicySha256,
       candidate: { ...baseArtifact.candidate, thinkMode: false },
     }, casesDocument, manifest)).toThrow('source artifact policy is not attested');
@@ -264,7 +280,7 @@ describe('local-model compact first-pass runner', () => {
     expect(() => rescoreFirstPassArtifact({
       ...baseArtifact,
       schemaVersion: 'nexus.local-model-first-pass-artifact.v3',
-      profileVersion: 'nexus-skill-inference-v2',
+      profileVersion: 'nexus-skill-inference-v3',
       profilePolicySha256: `sha256:${'f'.repeat(64)}`,
       candidate: { ...baseArtifact.candidate, thinkMode: false },
     }, casesDocument, manifest)).toThrow('source artifact policy is not attested');
@@ -272,7 +288,7 @@ describe('local-model compact first-pass runner', () => {
     const current = rescoreFirstPassArtifact({
       ...baseArtifact,
       schemaVersion: 'nexus.local-model-first-pass-artifact.v3',
-      profileVersion: 'nexus-skill-inference-v2',
+      profileVersion: 'nexus-skill-inference-v3',
       profilePolicySha256,
       candidate: { ...baseArtifact.candidate, thinkMode: false },
     }, casesDocument, manifest);
@@ -281,7 +297,7 @@ describe('local-model compact first-pass runner', () => {
     expect(() => rescoreFirstPassArtifact({
       ...baseArtifact,
       schemaVersion: 'nexus.local-model-first-pass-artifact.v3',
-      profileVersion: 'nexus-skill-inference-v2',
+      profileVersion: 'nexus-skill-inference-v3',
       profilePolicySha256,
       candidate: { ...baseArtifact.candidate, thinkMode: 'low' },
     }, casesDocument, manifest)).toThrow('think mode is not attested');
@@ -289,7 +305,7 @@ describe('local-model compact first-pass runner', () => {
       ...baseArtifact,
       observations: [{ ...observation, responseSha256: `sha256:${'f'.repeat(64)}` }],
       schemaVersion: 'nexus.local-model-first-pass-artifact.v3',
-      profileVersion: 'nexus-skill-inference-v2',
+      profileVersion: 'nexus-skill-inference-v3',
       profilePolicySha256,
       candidate: { ...baseArtifact.candidate, thinkMode: false },
     }, casesDocument, manifest)).toThrow('source observation integrity failed');
@@ -297,7 +313,7 @@ describe('local-model compact first-pass runner', () => {
       ...baseArtifact,
       observations: [{ ...observation, runtime: runtime({ totalDurationMs: Number.NaN }) }],
       schemaVersion: 'nexus.local-model-first-pass-artifact.v3',
-      profileVersion: 'nexus-skill-inference-v2',
+      profileVersion: 'nexus-skill-inference-v3',
       profilePolicySha256,
       candidate: { ...baseArtifact.candidate, thinkMode: false },
     }, casesDocument, manifest)).toThrow('source observation integrity failed');

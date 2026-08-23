@@ -90,10 +90,21 @@ if (canonicalJson(stateAfter) !== canonicalJson(state)) {
 }
 
 const projected = buildReleaseStateView({ state, receipts });
+const projectedBackendDigest = projected.active?.images?.backend?.digest;
 const view = {
   ...projected,
   schema: 'nexus.release-state-view.v2',
   capturedAt: new Date().toISOString(),
+  // The checked-in projection is non-authoritative, but the predecessor PM2
+  // release tooling still consumes this bounded pair. Keep it derived from
+  // the same active signed state so regenerating the view cannot silently
+  // break an emergency exact-artifact fallback.
+  backend: state.active && /^sha256:[0-9a-f]{64}$/u.test(projectedBackendDigest ?? '')
+    ? {
+      runtimeSha: state.active.sourceSha,
+      artifactDigest: projectedBackendDigest.slice('sha256:'.length),
+    }
+    : null,
   sourceSchemas: {
     state: RELEASE_STATE_SCHEMA,
     receipt: RELEASE_RECEIPT_SCHEMA,

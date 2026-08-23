@@ -123,7 +123,7 @@ function database(): Database.Database {
   db.exec(migrationSql);
   db.prepare(`UPDATE local_inference_runtime_control
     SET mode = 'shadow', rollout_percent = 0, model_manifest_version = 'test-v1',
-        active_model_digest = 'sha256:test', skill_profile_version = 'nexus-skill-inference-v2'
+        active_model_digest = 'sha256:test', skill_profile_version = 'nexus-skill-inference-v3'
     WHERE environment = 'staging'`).run();
   return db;
 }
@@ -311,7 +311,7 @@ describe('skill inference service', () => {
     const db = database();
     db.prepare(`UPDATE local_inference_runtime_control
       SET mode = 'active', rollout_percent = 100, model_manifest_version = 'test-v1',
-          active_model_digest = 'sha256:test', skill_profile_version = 'nexus-skill-inference-v2'
+          active_model_digest = 'sha256:test', skill_profile_version = 'nexus-skill-inference-v3'
       WHERE environment = 'staging'`).run();
     dispatchMock
       .mockRejectedValueOnce(Object.assign(new Error('bad json'), { kind: 'invalid_json' }))
@@ -374,7 +374,7 @@ describe('skill inference service', () => {
     const db = database();
     db.prepare(`UPDATE local_inference_runtime_control
       SET mode = 'active', rollout_percent = 100, model_manifest_version = 'test-v1',
-          active_model_digest = 'sha256:test', skill_profile_version = 'nexus-skill-inference-v2'
+          active_model_digest = 'sha256:test', skill_profile_version = 'nexus-skill-inference-v3'
       WHERE environment = 'staging'`).run();
     dispatchMock.mockResolvedValueOnce({
       text: 'local answer',
@@ -408,7 +408,7 @@ describe('skill inference service', () => {
     const db = database();
     db.prepare(`UPDATE local_inference_runtime_control
       SET mode = 'active', rollout_percent = 100, model_manifest_version = 'test-v1',
-          active_model_digest = 'sha256:test', skill_profile_version = 'nexus-skill-inference-v2'
+          active_model_digest = 'sha256:test', skill_profile_version = 'nexus-skill-inference-v3'
       WHERE environment = 'staging'`).run();
     dispatchMock.mockResolvedValueOnce({
       text: 'local answer',
@@ -444,7 +444,7 @@ describe('skill inference service', () => {
     const db = database();
     db.prepare(`UPDATE local_inference_runtime_control
       SET mode = 'active', rollout_percent = 100, model_manifest_version = 'test-v1',
-          active_model_digest = 'sha256:test', skill_profile_version = 'nexus-skill-inference-v2'
+          active_model_digest = 'sha256:test', skill_profile_version = 'nexus-skill-inference-v3'
       WHERE environment = 'staging'`).run();
     let markProviderStarted!: () => void;
     const providerStarted = new Promise<void>((resolve) => { markProviderStarted = resolve; });
@@ -605,7 +605,7 @@ describe('skill inference service', () => {
     const db = database();
     db.prepare(`UPDATE local_inference_runtime_control
       SET mode = 'active', rollout_percent = 100, model_manifest_version = 'test-v1',
-          active_model_digest = 'sha256:test', skill_profile_version = 'nexus-skill-inference-v2'
+          active_model_digest = 'sha256:test', skill_profile_version = 'nexus-skill-inference-v3'
       WHERE environment = 'staging'`).run();
     const controller = new AbortController();
     dispatchMock.mockImplementationOnce(async () => {
@@ -673,7 +673,7 @@ describe('skill inference service', () => {
     const db = database();
     db.prepare(`UPDATE local_inference_runtime_control
       SET mode = 'active', rollout_percent = 100, model_manifest_version = 'test-v1',
-          active_model_digest = 'sha256:test', skill_profile_version = 'nexus-skill-inference-v2'
+          active_model_digest = 'sha256:test', skill_profile_version = 'nexus-skill-inference-v3'
       WHERE environment = 'staging'`).run();
     dispatchMock.mockImplementationOnce(async () => {
       db.prepare(`UPDATE local_inference_runtime_control
@@ -879,7 +879,7 @@ describe('skill inference service', () => {
     const db = database();
     db.prepare(`UPDATE local_inference_runtime_control
       SET mode = 'active', rollout_percent = 100, model_manifest_version = 'test-v1',
-          active_model_digest = 'sha256:test', skill_profile_version = 'nexus-skill-inference-v2'
+          active_model_digest = 'sha256:test', skill_profile_version = 'nexus-skill-inference-v3'
       WHERE environment = 'staging'`).run();
     const insert = db.prepare(`INSERT INTO skill_inference_runs (
       run_id, operation_id, tenant_id, user_id, plan_id, skill_id, task_type,
@@ -929,7 +929,7 @@ describe('skill inference service', () => {
     const db = database();
     db.prepare(`UPDATE local_inference_runtime_control
       SET mode = 'active', rollout_percent = 100, model_manifest_version = 'test-v1',
-          active_model_digest = 'sha256:test', skill_profile_version = 'nexus-skill-inference-v2'
+          active_model_digest = 'sha256:test', skill_profile_version = 'nexus-skill-inference-v3'
       WHERE environment = 'staging'`).run();
     db.prepare(`UPDATE plan_configs
       SET local_operations_hourly = 1, local_operations_daily = 1
@@ -984,7 +984,7 @@ describe('skill inference service', () => {
     const db = database();
     db.prepare(`UPDATE local_inference_runtime_control
       SET mode = 'active', rollout_percent = 100, model_manifest_version = 'test-v1',
-          active_model_digest = 'sha256:test', skill_profile_version = 'nexus-skill-inference-v2'
+          active_model_digest = 'sha256:test', skill_profile_version = 'nexus-skill-inference-v3'
       WHERE environment = 'staging'`).run();
     db.prepare(`UPDATE plan_configs
       SET local_operations_hourly = 1, local_operations_daily = 1
@@ -1045,7 +1045,7 @@ describe('skill inference service', () => {
     const db = database();
     db.prepare(`UPDATE local_inference_runtime_control
       SET mode = 'active', rollout_percent = 100, model_manifest_version = 'test-v1',
-          active_model_digest = 'sha256:test', skill_profile_version = 'nexus-skill-inference-v2'
+          active_model_digest = 'sha256:test', skill_profile_version = 'nexus-skill-inference-v3'
       WHERE environment = 'staging'`).run();
     const { LocalLLMError } = await import('../../src/services/local-llm-error');
     dispatchMock.mockRejectedValueOnce(new LocalLLMError('provider_unhealthy', { reason: 'daemon_down' }));
@@ -1092,7 +1092,7 @@ describe('skill inference service', () => {
     const db = database();
     db.prepare(`UPDATE local_inference_runtime_control
       SET mode = 'active', rollout_percent = 100, model_manifest_version = 'test-v1',
-          active_model_digest = 'sha256:test', skill_profile_version = 'nexus-skill-inference-v2'
+          active_model_digest = 'sha256:test', skill_profile_version = 'nexus-skill-inference-v3'
       WHERE environment = 'staging'`).run();
     const controller = new AbortController();
     const { createContentScriptInfrastructureAbort } = await import(
@@ -1140,7 +1140,7 @@ describe('skill inference service', () => {
     const db = database();
     db.prepare(`UPDATE local_inference_runtime_control
       SET mode = 'active', rollout_percent = 100, model_manifest_version = 'test-v1',
-          active_model_digest = 'sha256:test', skill_profile_version = 'nexus-skill-inference-v2'
+          active_model_digest = 'sha256:test', skill_profile_version = 'nexus-skill-inference-v3'
       WHERE environment = 'staging'`).run();
     dispatchMock.mockImplementation(async (task: { localAdmission: string }) => {
       if (task.localAdmission === 'local_only') throw Object.assign(new Error('timeout'), { kind: 'timeout' });
@@ -1199,7 +1199,7 @@ describe('skill inference service', () => {
     const db = database();
     db.prepare(`UPDATE local_inference_runtime_control
       SET mode = 'active', rollout_percent = 100, model_manifest_version = 'test-v1',
-          active_model_digest = 'sha256:test', skill_profile_version = 'nexus-skill-inference-v2'
+          active_model_digest = 'sha256:test', skill_profile_version = 'nexus-skill-inference-v3'
       WHERE environment = 'staging'`).run();
     const controller = new AbortController();
     dispatchMock.mockImplementationOnce(async () => {
@@ -1269,7 +1269,7 @@ describe('skill inference service', () => {
     const db = database();
     db.prepare(`UPDATE local_inference_runtime_control
       SET mode = 'active', rollout_percent = 100, model_manifest_version = 'test-v1',
-          active_model_digest = 'sha256:test', skill_profile_version = 'nexus-skill-inference-v2'
+          active_model_digest = 'sha256:test', skill_profile_version = 'nexus-skill-inference-v3'
       WHERE environment = 'staging'`).run();
     dispatchMock.mockResolvedValue({
       text: 'local stage',
@@ -1328,7 +1328,7 @@ describe('skill inference service', () => {
     const db = database();
     db.prepare(`UPDATE local_inference_runtime_control
       SET mode = 'active', rollout_percent = 100, model_manifest_version = 'test-v1',
-          active_model_digest = 'sha256:test', skill_profile_version = 'nexus-skill-inference-v2'
+          active_model_digest = 'sha256:test', skill_profile_version = 'nexus-skill-inference-v3'
       WHERE environment = 'staging'`).run();
     dispatchMock.mockResolvedValue({
       text: 'local stage',
@@ -1416,7 +1416,7 @@ describe('skill inference service', () => {
     const db = database();
     db.prepare(`UPDATE local_inference_runtime_control
       SET mode = 'active', rollout_percent = 100, model_manifest_version = 'test-v1',
-          active_model_digest = 'sha256:test', skill_profile_version = 'nexus-skill-inference-v2'
+          active_model_digest = 'sha256:test', skill_profile_version = 'nexus-skill-inference-v3'
       WHERE environment = 'staging'`).run();
     dispatchMock.mockRejectedValueOnce(Object.assign(new Error('local timeout'), { kind: 'timeout' }));
     const {
@@ -1471,7 +1471,7 @@ describe('skill inference service', () => {
     const db = database();
     db.prepare(`UPDATE local_inference_runtime_control
       SET mode = 'active', rollout_percent = 100, model_manifest_version = 'test-v1',
-          active_model_digest = 'sha256:test', skill_profile_version = 'nexus-skill-inference-v2',
+          active_model_digest = 'sha256:test', skill_profile_version = 'nexus-skill-inference-v3',
           updated_by = 42
       WHERE environment = 'staging'`).run();
     dispatchMock.mockResolvedValue({
@@ -1536,7 +1536,7 @@ describe('skill inference service', () => {
       profile_version, status, final_route, schema_id, context_limit_tokens,
       output_limit_tokens
     ) VALUES (?, ?, 42, 42, 'pro', 'content', 'chat_read_only_generation',
-      'low', 'interactive', 'production', 1, 'nexus-skill-inference-v2', ?, ?,
+      'low', 'interactive', 'production', 1, 'nexus-skill-inference-v3', ?, ?,
       'text', 8192, 4096)`);
     insertRun.run('running-run', 'running-operation', 'running', 'none');
     insertRun.run('cloud-delivered-run', 'cloud-delivered-operation', 'completed', 'cloud');
@@ -1568,7 +1568,7 @@ describe('skill inference service', () => {
     const db = database();
     db.prepare(`UPDATE local_inference_runtime_control
       SET mode = 'active', rollout_percent = 100, model_manifest_version = 'test-v1',
-          active_model_digest = 'sha256:test', skill_profile_version = 'nexus-skill-inference-v2',
+          active_model_digest = 'sha256:test', skill_profile_version = 'nexus-skill-inference-v3',
           updated_by = 42
       WHERE environment = 'staging'`).run();
     dispatchMock.mockResolvedValue({
@@ -1619,7 +1619,7 @@ describe('skill inference service', () => {
     const db = database();
     db.prepare(`UPDATE local_inference_runtime_control
       SET mode = 'active', rollout_percent = 100, model_manifest_version = 'test-v1',
-          active_model_digest = 'sha256:test', skill_profile_version = 'nexus-skill-inference-v2',
+          active_model_digest = 'sha256:test', skill_profile_version = 'nexus-skill-inference-v3',
           updated_by = 42
       WHERE environment = 'staging'`).run();
     dispatchMock.mockResolvedValue({
@@ -1675,7 +1675,7 @@ describe('skill inference service', () => {
     const db = database();
     db.prepare(`UPDATE local_inference_runtime_control
       SET mode = 'active', rollout_percent = 100, model_manifest_version = 'test-v1',
-          active_model_digest = 'sha256:test', skill_profile_version = 'nexus-skill-inference-v2',
+          active_model_digest = 'sha256:test', skill_profile_version = 'nexus-skill-inference-v3',
           updated_by = 42
       WHERE environment = 'staging'`).run();
     db.exec(`CREATE TEMP TRIGGER reject_safety_mode_off
@@ -1742,7 +1742,7 @@ describe('skill inference service', () => {
     const db = database();
     db.prepare(`UPDATE local_inference_runtime_control
       SET mode = 'active', rollout_percent = 100, model_manifest_version = 'superseded-manifest',
-          active_model_digest = 'sha256:test', skill_profile_version = 'nexus-skill-inference-v2',
+          active_model_digest = 'sha256:test', skill_profile_version = 'nexus-skill-inference-v3',
           updated_by = 42
       WHERE environment = 'staging'`).run();
     const {
@@ -1771,7 +1771,7 @@ describe('skill inference service', () => {
     const db = database();
     db.prepare(`UPDATE local_inference_runtime_control
       SET mode = 'shadow', rollout_percent = 0, model_manifest_version = 'test-v1',
-          active_model_digest = 'sha256:test', skill_profile_version = 'nexus-skill-inference-v2',
+          active_model_digest = 'sha256:test', skill_profile_version = 'nexus-skill-inference-v3',
           updated_by = 42
       WHERE environment = 'staging'`).run();
     const { recordCriticalLocalInferenceSafetyIncident } = await import(
@@ -1845,7 +1845,7 @@ describe('skill inference service', () => {
       const db = database();
       db.prepare(`UPDATE local_inference_runtime_control
         SET mode = 'active', rollout_percent = 100, model_manifest_version = 'test-v1',
-            active_model_digest = 'sha256:test', skill_profile_version = 'nexus-skill-inference-v2'
+            active_model_digest = 'sha256:test', skill_profile_version = 'nexus-skill-inference-v3'
         WHERE environment = 'staging'`).run();
       dispatchMock.mockResolvedValueOnce({
         text: 'local answer',
@@ -1888,7 +1888,7 @@ describe('skill inference service', () => {
       const db = database();
       db.prepare(`UPDATE local_inference_runtime_control
         SET mode = 'active', rollout_percent = 100, model_manifest_version = 'test-v1',
-            active_model_digest = 'sha256:test', skill_profile_version = 'nexus-skill-inference-v2'
+            active_model_digest = 'sha256:test', skill_profile_version = 'nexus-skill-inference-v3'
         WHERE environment = 'staging'`).run();
       const localFailure = Object.assign(new Error('local timeout'), { code: 'ETIMEDOUT' });
       dispatchMock.mockRejectedValueOnce(localFailure);

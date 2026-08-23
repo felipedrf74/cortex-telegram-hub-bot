@@ -148,7 +148,7 @@ function grantLocalMaxAccess(db, userId) {
       user_id, plan, period, status, provider,
       current_period_start, current_period_end, updated_at
     )
-    VALUES (?, 'max', 'monthly', 'trialing', 'beta', ?, ?, datetime('now'))
+    VALUES (?, 'max', 'monthly', 'active', 'founder', ?, ?, datetime('now'))
     ON CONFLICT(user_id) DO UPDATE SET
       plan = excluded.plan,
       period = excluded.period,
@@ -158,6 +158,21 @@ function grantLocalMaxAccess(db, userId) {
       current_period_end = excluded.current_period_end,
       updated_at = datetime('now')
   `).run(userId, periodStart, periodEnd);
+}
+
+function ensureLocalMaxAccess(userId) {
+  const dbPath = resolveHostDbPath();
+  assertLocalDbPath(dbPath);
+  if (!fs.existsSync(dbPath)) {
+    throw new Error(`local database not found at ${dbPath}`);
+  }
+  const db = new Database(dbPath);
+  try {
+    db.pragma('busy_timeout = 5000');
+    grantLocalMaxAccess(db, userId);
+  } finally {
+    db.close();
+  }
 }
 
 async function resetLocalPassword(email, password, firstName) {
@@ -239,6 +254,11 @@ async function main() {
   }
 
   const payload = normalizeAuthPayload(result.json);
+  // The production entitlement resolver intentionally denies historical beta
+  // grants provider spend. This local-only importer must therefore provision
+  // its synthetic account through the explicit founder test entitlement before
+  // any governed real-provider evaluation is attempted.
+  ensureLocalMaxAccess(payload.user.id);
   writeAuthFile(authFile, payload);
   console.log(JSON.stringify({
     ok: true,

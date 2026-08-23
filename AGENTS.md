@@ -37,6 +37,16 @@ coding agents. Load detail only when the task needs it.
 - Use `.agents/skills` as the canonical project skill source. Claude skill
   entries are symlinks to the same bodies.
 
+## Execution Continuity
+
+- Continue every safe, authorized, in-scope implementation, verification, and
+  release step without stopping merely to report intermediate status.
+- Resolve discoverable blockers and use governed alternatives before asking
+  the owner. Keep progress updates non-blocking.
+- Pause only when completion requires an unavailable identity, physical-device,
+  legal declaration, external approval, or materially new authorization. First
+  exhaust all independent work, then request one exact owner action.
+
 ## Verification
 
 - Use `scripts/changed-area-classifier.sh --json` and `scripts/risk-gate.sh`.
