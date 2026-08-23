@@ -240,6 +240,57 @@ code change is not qualification evidence: GPT-OSS still requires a fresh,
 complete attended first pass after the v2 policy reaches the signed production
 release, followed by the full blind-paired bakeoff and rollout gates.
 
+## VPS GPT-OSS v3 policy rerun — still ineligible (2026-08-23)
+
+Production release `138e3a5f80d7e602cd17c598447687d8` at protected-main
+source `5d7e36103c48a97c6692444108567886d98b1acf` exercised
+`gpt-oss-20b-candidate` through a fresh attended first pass after the shared
+`nexus-skill-inference-v2` policy shipped. The installed `gpt-oss:20b` digest
+matched the signed manifest exactly. The v3 artifact completed the governed
+attended first-pass corpus defined by
+`docs/engineering/local-primary-inference-standard.md`, recorded 100% schema
+validity, 6.12 generated tokens/second, a 20,046 ms p95
+first token, a 46,710 ms p95 total duration, and score 76.51, but remained
+ineligible because a safety or tenant-isolation refusal failed.
+
+The root-only artifact SHA-256 is
+`a07e179a7edfd50684c2707072f4fcadd2083929e20b9bb1b16386048bb9badc`.
+The receipt-bound rollback restored the permanent 18GB/20GB, 8-CPU,
+zero-swap envelope and produced rollback receipt digest
+`sha256:d459afd5e09024934db9018d8d4b06dc26dae162a0b422f5515f3999b9a62dd4`.
+The rejected 13GB candidate was removed; only the signed Qwen control remains.
+This evidence closes the policy-rerun item but does not authorize a full
+bakeoff, winner signing, gateway/socket activation, or a public flag change.
+
+## Apple first-consumable submission (2026-08-23)
+
+App Store Connect submission `7aefa2a9-bb61-4de7-a9d9-e5d2058e623a`
+contains exactly iOS 1.5.0 build 277 plus the 100, 250, and 600-credit
+consumables. The required website-only first-IAP flow accepted all four items,
+and every item reached `Waiting for Review`. Production Apple fulfillment
+remains OFF until Apple approves the catalog and a real sandbox signed-JWS
+grant, exact binding, idempotent replay, and retained retry pass against the
+isolated staging backend.
+
+## Stripe live-account readiness (2026-08-23)
+
+The live `Cigarra Esbelta Unipessoal LDA` dashboard binds to expected account
+`acct_1U54u33I2RHPBZcJ`. Its active catalog contains exactly the Pro and Max
+monthly plans plus the 100, 250, and 600-credit packs at the canonical prices;
+all five products carry the expected SaaS tax category and report Managed
+Payments eligibility. The active `nexus-hub-api` destination targets
+`https://api.nexushub.me/webhooks/stripe`, listens to the required checkout,
+subscription, invoice, refund, and dispute event families, and showed no
+delivery errors at inspection time.
+
+The canonical account and five live Price IDs are staged in the root-owned
+production environment with subscription checkout, Stripe pack fulfillment,
+Apple pack fulfillment, hybrid credits, and anonymous checkout still OFF. Do
+not enable public commerce: Stripe paused payments and payouts on 2026-08-16
+because the account representative's identity could not be verified. The
+existing live API key and endpoint signing secret also remain pending a secure,
+no-rotation operator handoff to replace the wrong-account production secrets.
+
 Do not enable public controls until an eligible signed local-model winner
 completes the full VPS bakeoff, the actual-account rate card and economics
 simulation pass, the ten-script acceptance cycle completes, and applicable
