@@ -24,6 +24,7 @@ const localPrimaryConfigMock = vi.hoisted(() => ({
   contentProxyEnabled: true,
   scriptJobEncryptionKey: 'test-content-script-job-key-000000000000000000000000',
   scriptJobPreviousEncryptionKeys: [] as string[],
+  staffUserIds: [] as number[],
 }));
 const MockSkillInferencePolicyError = vi.hoisted(() => class extends Error {
   constructor(readonly code: string, message: string, readonly status = 400) {
@@ -267,6 +268,7 @@ describe('durable Content script jobs', () => {
     localPrimaryConfigMock.contentProxyEnabled = true;
     localPrimaryConfigMock.scriptJobEncryptionKey = 'test-content-script-job-key-000000000000000000000000';
     localPrimaryConfigMock.scriptJobPreviousEncryptionKeys = [];
+    localPrimaryConfigMock.staffUserIds = [];
     inferenceMock.mockImplementation(async (input: { taskType: string; prompt: string }) => {
       const prompt = parsedPrompt(input.prompt);
       if (input.taskType.startsWith('script_outline')) {
@@ -1976,6 +1978,33 @@ describe('durable Content script jobs', () => {
     }, db)).toThrow(expect.objectContaining({ code: 'LOCAL_INFERENCE_NOT_ADMITTING' }));
     expect((db.prepare('SELECT COUNT(*) AS count FROM content_script_jobs').get() as { count: number }).count).toBe(0);
     expect(inferenceMock).not.toHaveBeenCalled();
+    db.close();
+  });
+
+  it('admits only configured staff for release-bound jobs in shadow mode', async () => {
+    const db = database();
+    db.prepare(`UPDATE local_inference_runtime_control
+      SET mode = 'shadow', rollout_percent = 0 WHERE environment = 'staging'`).run();
+    localPrimaryConfigMock.staffUserIds = [42];
+    const service = await import('../../src/services/content-script-jobs');
+
+    const created = service.createContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      idempotencyKey: 'shadow-staff-acceptance',
+      request: { topic: 'Verify safely', format: 'YouTube', maxDurationMinutes: 8, language: 'en' },
+    }, db);
+    expect(created.job).toMatchObject({ status: 'queued' });
+    expect(() => service.createContentScriptJob({
+      tenantId: 43,
+      userId: 43,
+      idempotencyKey: 'shadow-public-refused',
+      request: { topic: 'Must stay closed', format: 'YouTube', maxDurationMinutes: 8, language: 'en' },
+    }, db)).toThrow(expect.objectContaining({ code: 'LOCAL_INFERENCE_NOT_ADMITTING' }));
+
+    const schedule = vi.fn();
+    expect(service.recoverContentScriptJobs(db, { schedule })).toBe(0);
+    expect(schedule).toHaveBeenCalledWith(created.job.jobId);
     db.close();
   });
 

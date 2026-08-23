@@ -233,6 +233,9 @@ user-scoped jobs under a partially configured deployment.
 
 Production advancement is code-governed as `off -> active/100%`, with
 verification-only `shadow/0%` available as an optional intermediate state.
+In shadow, resumable Content script jobs admit only the authenticated user IDs
+listed in `LOCAL_PRIMARY_STAFF_USER_IDS`; this is the release-bound lane for
+the nine pre-activation acceptance scripts and never admits normal users.
 The owner may move directly from OFF to active/100% only with the signed
 ten-script acceptance/economics evidence reference, healthy pre-activation
 latency/error baselines, a production-selected manifest, the verified gateway,

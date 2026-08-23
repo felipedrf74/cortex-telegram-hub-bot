@@ -430,12 +430,25 @@ function assertJobsEnabled(): void {
   encryptContentScriptJobJson({ preflight: true }, 1);
 }
 
+function runtimeAdmitsContentScriptUser(
+  control: ReturnType<typeof getLocalInferenceRuntimeControl>,
+  userId: number,
+): boolean {
+  if (control.mode === 'active') return true;
+  if (control.mode === 'canary') {
+    return isLocalInferenceUserEnrolled(userId, control.rolloutPercent);
+  }
+  // Production shadow is a zero-public-user verification state. Admit only
+  // explicitly configured owner/staff principals so the release-bound
+  // pre-activation script inventory can be generated without opening the
+  // feature to normal users or weakening the active/100% evidence gate.
+  return control.mode === 'shadow'
+    && localPrimaryInferenceConfig.staffUserIds.includes(userId);
+}
+
 function assertRuntimeAdmitsJob(db: Database.Database, userId: number): void {
   const control = getLocalInferenceRuntimeControl(db);
-  const admitted = control.mode === 'active'
-    || (control.mode === 'canary'
-      && isLocalInferenceUserEnrolled(userId, control.rolloutPercent));
-  if (!admitted) {
+  if (!runtimeAdmitsContentScriptUser(control, userId)) {
     throw new ContentScriptJobError(
       'LOCAL_INFERENCE_NOT_ADMITTING',
       'Local Content generation is not currently admitting new jobs.',
@@ -1761,10 +1774,8 @@ export async function runContentScriptJob(
   const runtimeControl = getLocalInferenceRuntimeControl(db);
   const queuedOwner = db.prepare(`SELECT owner_user_id FROM content_script_jobs WHERE job_id = ?`)
     .get(jobId) as { owner_user_id: number } | undefined;
-  const runtimeAdmitted = runtimeControl.mode === 'active'
-    || (runtimeControl.mode === 'canary'
-      && queuedOwner !== undefined
-      && isLocalInferenceUserEnrolled(queuedOwner.owner_user_id, runtimeControl.rolloutPercent));
+  const runtimeAdmitted = queuedOwner !== undefined
+    && runtimeAdmitsContentScriptUser(runtimeControl, queuedOwner.owner_user_id);
   if (!runtimeAdmitted) {
     const durableProgress = checkpointDerivedProgress(db, jobId);
     db.prepare(`UPDATE content_script_jobs
@@ -2453,7 +2464,9 @@ export function recoverContentScriptJobs(
     activeLease.controller.abort(createContentScriptInfrastructureAbort('CONTENT_SCRIPT_JOB_LEASE_LOST'));
   }
   const control = getLocalInferenceRuntimeControl(db);
-  if (control.mode !== 'active' && control.mode !== 'canary') return recovered;
+  if (control.mode !== 'active'
+      && control.mode !== 'canary'
+      && control.mode !== 'shadow') return recovered;
   // Single-flight by design: one active generation, no preemption. Priority
   // buys the next slot via the ORDER BY below, never an interrupt — Addendum
   // C states this constraint explicitly (QA3 P1-6).
@@ -2482,8 +2495,7 @@ export function recoverContentScriptJobs(
     }>;
   const eligibleRows: Array<{ job_id: string; owner_user_id: number; queue_weight: number }> = [];
   for (const row of rows) {
-    if (control.mode === 'active'
-        || isLocalInferenceUserEnrolled(row.owner_user_id, control.rolloutPercent)) {
+    if (runtimeAdmitsContentScriptUser(control, row.owner_user_id)) {
       eligibleRows.push({
         job_id: row.job_id,
         owner_user_id: row.owner_user_id,
