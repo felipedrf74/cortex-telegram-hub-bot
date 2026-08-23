@@ -102,6 +102,7 @@ vi.mock('../../src/services/anthropic-provider', () => ({
 vi.mock('../../src/services/openai-provider', () => ({
   OPENAI_COST_PER_MTK: {},
   OpenAIProvider: MockOpenAIProvider,
+  _openAIBatchSleep: { fn: vi.fn() },
   _sleep: vi.fn(),
   completeOneShot: vi.fn(),
   completeOneShotWithWebSearch: vi.fn(),

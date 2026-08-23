@@ -8,7 +8,8 @@ const mocks = vi.hoisted(() => ({
   evidence: vi.fn(),
 }));
 
-vi.mock('../../src/services/device-inference-policy', () => ({
+vi.mock('../../src/services/device-inference-policy', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/device-inference-policy')>()),
   DEVICE_INFERENCE_POLICY_VERSION: 'apple-foundation-models.v1',
   getDeviceInferencePolicy: mocks.getPolicy,
   reserveDeviceInferenceAdmission: mocks.reserve,

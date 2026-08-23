@@ -17,12 +17,12 @@ vi.mock('../../src/services/plan-quotas', async (importOriginal) => ({
   resolveBillingPlanForUser: vi.fn(() => 'pro'),
 }));
 
-vi.mock('../../src/utils/logger', () => ({
+vi.mock('../../src/utils/logger', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/utils/logger')>()),
   logger: {
     info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), trace: vi.fn(),
     child: vi.fn().mockReturnThis(),
   },
-  LOGGER_REDACTION_PATHS: [],
 }));
 
 import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
