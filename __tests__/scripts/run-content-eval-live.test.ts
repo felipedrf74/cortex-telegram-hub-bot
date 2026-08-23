@@ -48,6 +48,8 @@ describe('Content live-evaluation runner policy', () => {
     expect(source).toContain('src scripts content-engine migrations package.json package-lock.json tsconfig.json');
     expect(source).toContain('--attestation-key-file');
     expect(source).toContain('NEXUS_BACKGROUND_JOBS_ENABLED=0');
+    expect(source).toContain('export IOS_API_JWT_SECRET=');
+    expect(source).toContain('randomBytes(48)');
     expect(source).toContain('CONTENT_EVAL_TRUSTED_ATTESTATION_KEY_SHA256');
     expect(source).toContain('trap cleanup EXIT INT TERM');
     expect(source).toContain('runtime-*');

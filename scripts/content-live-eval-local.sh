@@ -117,6 +117,9 @@ export BACKUP_ENABLED=false
 export NODE_ENV=development
 export ENV=development
 export STAGING=false
+# Never inherit a weak developer placeholder into this disposable runtime.
+# The value exists only in the evaluator process tree and dies with cleanup.
+export IOS_API_JWT_SECRET="$(node -e 'process.stdout.write(require("node:crypto").randomBytes(48).toString("base64url"))')"
 
 cleanup() {
   "$ROOT/scripts/full-nexus-local-engine.sh" cleanup >/dev/null 2>&1 || true
