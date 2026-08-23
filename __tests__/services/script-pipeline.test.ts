@@ -351,8 +351,16 @@ describe('script-pipeline: iOS API route', () => {
     const scriptRouteStart = lines.findIndex((l: string) => l.includes("'/script'") || l.includes('"/script"'));
     expect(scriptRouteStart).toBeGreaterThan(-1);
 
-    // Check the next 80 lines after the route definition
-    const routeSection = lines.slice(scriptRouteStart, scriptRouteStart + 80).join('\n');
+    // Check the complete handler rather than a fixed line window. The route
+    // contains validation and safety gates before its provider call, so line
+    // counts are not a stable contract.
+    const nextRouteOffset = lines
+      .slice(scriptRouteStart + 1)
+      .findIndex((line: string) => /\brouter\.(?:get|post|patch|delete)\(/.test(line));
+    const scriptRouteEnd = nextRouteOffset === -1
+      ? lines.length
+      : scriptRouteStart + 1 + nextRouteOffset;
+    const routeSection = lines.slice(scriptRouteStart, scriptRouteEnd).join('\n');
 
     // Should use getScript
     expect(routeSection).toContain('getScript');

@@ -34,7 +34,7 @@ import { makeContentLiveEvalTestResponse } from '../fixtures/content-live-evalua
 const RUBRIC_DIGEST = contentEvalSha256(CONTENT_QUALITY_RUBRIC);
 const ATTESTATION_KEY = Buffer.alloc(32, 0x4a);
 const TRUSTED_FINGERPRINT = contentLiveEvalAttestationKeyFingerprint(ATTESTATION_KEY);
-const VALIDATION_NOW = new Date('2026-07-19T10:05:00.000Z');
+const VALIDATION_NOW = new Date('2026-08-23T10:05:00.000Z');
 const SOURCE_IDENTITY: ContentLiveEvalSourceIdentity = {
   gitCommit: 'a'.repeat(40),
   trackedTreeClean: true,
@@ -80,8 +80,8 @@ function validArtifact(input: {
   }
   return createContentLiveEvaluationArtifact({
     runId: 'content-live-eval-unit-20260719',
-    startedAt: '2026-07-19T09:59:00.000Z',
-    generatedAt: '2026-07-19T10:00:00.000Z',
+    startedAt: '2026-08-23T09:59:00.000Z',
+    generatedAt: '2026-08-23T10:00:00.000Z',
     rubricDigest: RUBRIC_DIGEST,
     budgetLimitUsd: 1,
     sourceIdentity: input.sourceIdentity ?? SOURCE_IDENTITY,
@@ -100,7 +100,7 @@ function validArtifact(input: {
         category: 'content_day_to_day_eval',
         providerCategory: 'content_engine_script_standard',
         status: 'succeeded',
-        capturedAt: `2026-07-19T09:59:1${index}.000Z`,
+        capturedAt: `2026-08-23T09:59:1${index}.000Z`,
         routingPath: CONTENT_LIVE_EVAL_ROUTING_PATH,
         inputTokens: 500,
         outputTokens: 300,
@@ -192,11 +192,11 @@ describe('Content live-evaluation artifact', () => {
     rebindArtifact(sourceDrift);
     expect(validateContentLiveEvaluationArtifact(sourceDrift, validationOptions()).reason).toBe('source_identity_mismatch');
 
-    expect(validateContentLiveEvaluationArtifact(validArtifact(), validationOptions({ now: new Date('2026-07-20T10:00:00.000Z') })).reason)
+    expect(validateContentLiveEvaluationArtifact(validArtifact(), validationOptions({ now: new Date('2026-08-24T10:00:00.000Z') })).reason)
       .toBe('stale_or_future_artifact');
 
     const futureInvocation = validArtifact();
-    futureInvocation.invocations[0].capturedAt = '2026-07-19T10:10:00.000Z';
+    futureInvocation.invocations[0].capturedAt = '2026-08-23T10:10:00.000Z';
     rebindArtifact(futureInvocation);
     expect(validateContentLiveEvaluationArtifact(futureInvocation, validationOptions()).reason).toBe('invalid_invocation_time');
 

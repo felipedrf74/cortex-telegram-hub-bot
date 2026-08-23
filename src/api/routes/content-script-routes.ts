@@ -228,11 +228,21 @@ export function registerContentScriptRoutes(
       return;
     }
 
-    const durationPreset = resolveScriptDurationPreset(
-      normalizedFormat,
-      maxDurationMinutes,
-      targetDurationSeconds,
-    );
+    // The fixed synthetic live-evaluation corpus deliberately includes
+    // two-minute YouTube samples to bound provider spend. Its request has
+    // already been matched exactly and restricted to a disposable loopback
+    // runtime above, so preserve that governed duration without widening the
+    // public 8/10/15-minute YouTube contract.
+    const durationPreset = liveEvalContext
+      ? {
+        maxDurationMinutes: Math.max(1, Math.ceil(liveEvalContext.scenario.targetDurationSeconds / 60)),
+        targetDurationSeconds: liveEvalContext.scenario.targetDurationSeconds,
+      }
+      : resolveScriptDurationPreset(
+        normalizedFormat,
+        maxDurationMinutes,
+        targetDurationSeconds,
+      );
     if ('error' in durationPreset) {
       generationObservation.complete('blocked', 'validation_rejected');
       sendError(res, 'VALIDATION', durationPreset.error, 400);

@@ -174,8 +174,8 @@ export function makeContentLiveEvalTestResponse(scenario: ContentLiveEvalScenari
 export function makeReleaseQualifiedContentLiveEvalArtifact(lowQuality = false): ContentLiveEvaluationArtifact {
   const artifact = createContentLiveEvaluationArtifact({
     runId: `content-live-eval-test-${lowQuality ? 'low' : 'pass'}-20260719`,
-    startedAt: '2026-07-19T09:59:00.000Z',
-    generatedAt: '2026-07-19T10:00:00.000Z',
+    startedAt: '2026-08-23T09:59:00.000Z',
+    generatedAt: '2026-08-23T10:00:00.000Z',
     rubricDigest: contentEvalSha256(CONTENT_QUALITY_RUBRIC),
     budgetLimitUsd: 1,
     sourceIdentity: CONTENT_LIVE_EVAL_TEST_SOURCE,
@@ -194,7 +194,7 @@ export function makeReleaseQualifiedContentLiveEvalArtifact(lowQuality = false):
         category: 'content_day_to_day_eval',
         providerCategory: 'content_engine_script_standard',
         status: 'succeeded',
-        capturedAt: `2026-07-19T09:59:1${index}.000Z`,
+        capturedAt: `2026-08-23T09:59:1${index}.000Z`,
         routingPath: CONTENT_LIVE_EVAL_ROUTING_PATH,
         inputTokens: 500,
         outputTokens: 300,
@@ -212,7 +212,7 @@ export function makeReleaseQualifiedContentLiveEvalArtifact(lowQuality = false):
     attestationKey: CONTENT_LIVE_EVAL_TEST_KEY,
     trustedAttestationKeyFingerprint: CONTENT_LIVE_EVAL_TEST_FINGERPRINT,
     expectedSourceIdentity: CONTENT_LIVE_EVAL_TEST_SOURCE,
-    now: new Date('2026-07-19T10:05:00.000Z'),
+    now: new Date('2026-08-23T10:05:00.000Z'),
   });
   if (!validation.valid || (!lowQuality && !validation.releaseQualified)) {
     throw new Error(`Invalid test live-eval artifact: ${validation.reason}`);
