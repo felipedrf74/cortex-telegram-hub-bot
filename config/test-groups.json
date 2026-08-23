@@ -1,5 +1,5 @@
 {
-  "version": "2026-08-15.1",
+  "version": "2026-08-23.1",
   "core": {
     "targetSeconds": 30,
     "tests": [
@@ -1159,6 +1159,7 @@
         "src/services/build-llm-safe-prompt-slice.ts",
         "src/services/cloud-reasoning-gate.ts",
         "src/services/cost-guardrail.ts",
+        "src/services/device-inference-*.ts",
         "src/services/email-sender.ts",
         "src/services/*provider*.ts",
         "src/services/anthropic*.ts",
@@ -1197,6 +1198,7 @@
         "__tests__/services/autoresearch-*.test.ts",
         "__tests__/services/api-usage-*.test.ts",
         "__tests__/services/cost-*.test.ts",
+        "__tests__/services/device-inference-*.test.ts",
         "__tests__/services/local-llm-*.test.ts",
         "__tests__/services/local-inference-*.test.ts",
         "__tests__/services/local-model-bakeoff.test.ts",

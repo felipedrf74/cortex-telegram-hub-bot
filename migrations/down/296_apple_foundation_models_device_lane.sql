@@ -1,0 +1,10 @@
+DROP TRIGGER IF EXISTS device_inference_evidence_no_update;
+DROP INDEX IF EXISTS idx_device_inference_evidence_policy;
+DROP INDEX IF EXISTS idx_device_inference_evidence_admission;
+DROP TABLE IF EXISTS device_inference_evidence;
+DROP INDEX IF EXISTS idx_device_inference_admissions_open;
+DROP INDEX IF EXISTS idx_device_inference_admissions_replay;
+DROP TABLE IF EXISTS device_inference_admissions;
+DROP INDEX IF EXISTS idx_hybrid_runtime_control_events_ext_key;
+DROP TABLE IF EXISTS hybrid_runtime_control_events_ext;
+DROP TABLE IF EXISTS hybrid_device_runtime_control;

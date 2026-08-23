@@ -1435,6 +1435,8 @@ export function startScheduler(): void {
   registerJob('apple_inbox_retry',  'Apple Inbox Reconciliation', '*/15 * * * *', 'system');
   registerJob('apple_transaction_reconciliation', 'App Store Transaction Reconciliation', '45 6 * * *', 'system');
   registerJob('ai_credit_sweeper',  'Stale AI-Credit Reservation Sweep', '30 * * * *', 'system');
+  registerJob('device_inference_admission_sweeper', 'Device Inference Admission Sweep', '*/5 * * * *', 'system');
+  registerJob('content_script_batch_file_cleanup', 'Content Script Batch File Cleanup', '20 2 * * *', 'system');
   // content_discovery removed — replaced by content-workflow (tue/thu/fri topic candidates)
   registerJob('invoice_collection', 'Invoice Collection',    '0 9 1 * *',       'invoices');
   registerJob('fiscal_bundle',      'Fiscal Bundle Delivery','10 8 * * *',      'invoices');
@@ -1540,6 +1542,21 @@ export function startScheduler(): void {
     });
     if (expired === 0) return 'skipped';
     logger.warn({ expired }, 'Expired stale AI-credit reservations');
+  }));
+
+  cron.schedule('*/5 * * * *', wrapJob('device_inference_admission_sweeper', async () => {
+    const { expireStaleDeviceInferenceAdmissions } = require('./device-inference-policy');
+    const expired = expireStaleDeviceInferenceAdmissions();
+    if (expired === 0) return 'skipped';
+    logger.info({ expired }, 'Expired stale device-inference admissions');
+  }));
+
+  cron.schedule('20 2 * * *', wrapJob('content_script_batch_file_cleanup', async () => {
+    const { getDb } = require('./database');
+    const { pruneExpiredContentScriptBatchFiles } = require('./content-script-provider-batches');
+    const result = await pruneExpiredContentScriptBatchFiles(getDb());
+    if (result.deleted + result.failed === 0) return 'skipped';
+    logger.info(result, 'Content Script Batch provider-file retention cleanup completed');
   }));
 
   cron.schedule('* * * * *', wrapJob('reminders', async () => {
@@ -1757,6 +1774,10 @@ export function startScheduler(): void {
       { table: 'client_errors',     days: 90, tsCol: 'ts' },
       { table: 'api_usage',         days: 180, tsCol: 'ts' },
       { table: 'email_log',         days: 60, tsCol: 'ts' },
+      // Plan §4: content-free inference telemetry has a 90-day ceiling.
+      // Evidence must be removed first because it references the admission.
+      { table: 'device_inference_evidence', days: 90, tsCol: 'created_at' },
+      { table: 'device_inference_admissions', days: 90, tsCol: 'issued_at' },
     ];
     for (const { table, days, tsCol } of retentionTargets) {
       try {

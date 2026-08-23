@@ -16,6 +16,7 @@ import {
   AIToolResultMessage,
   CallDomainOptions,
   ClassifyOptions,
+  StructuredGenerationBatchControl,
   isProviderRequestCancellation,
 } from './ai-provider';
 import { DomainName, DomainMessage, ClassificationResult } from '../domains/types';
@@ -70,6 +71,15 @@ function throwIfOptionalTaskCancelled(abortSignal?: AbortSignal, error?: unknown
     name: 'AbortError',
     code: 'INFERENCE_CANCELLED',
   });
+}
+
+function isDurableStructuredBatchControl(value: unknown): value is StructuredGenerationBatchControl {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Partial<StructuredGenerationBatchControl>;
+  return typeof candidate.stageKey === 'string'
+    && /^[0-9a-f]{64}$/u.test(candidate.stageKey)
+    && typeof candidate.load === 'function'
+    && typeof candidate.persist === 'function';
 }
 
 function isTruncatedDomainResult(result: unknown): boolean {
@@ -1627,6 +1637,7 @@ export class TaskRoutingProvider implements AIProvider {
       cloudFallbackBoundary?: unknown;
       scriptDeliveryMode?: unknown;
       requiredCloudProvider?: unknown;
+      durableBatch?: unknown;
     };
     throwIfOptionalTaskCancelled(taskRecord.abortSignal);
 
@@ -1765,6 +1776,7 @@ export class TaskRoutingProvider implements AIProvider {
       cloudFallbackBoundary?: unknown;
       scriptDeliveryMode?: unknown;
       requiredCloudProvider?: unknown;
+      durableBatch?: unknown;
     },
     primaryError: unknown,
   ): Promise<unknown> {
@@ -1976,6 +1988,7 @@ export class TaskRoutingProvider implements AIProvider {
             ...(typeof taskRecord.requiredCloudProvider === 'string'
               ? { requiredCloudProvider: taskRecord.requiredCloudProvider }
               : {}),
+            batchTransportAvailable: isDurableStructuredBatchControl(taskRecord.durableBatch),
           },
           (name: string) => getProvider(name),
           null,
@@ -2019,6 +2032,9 @@ export class TaskRoutingProvider implements AIProvider {
           userPrompt: prompt,
           model: selection.model,
           ...(selection.serviceTier ? { serviceTier: selection.serviceTier } : {}),
+          ...(selection.serviceTier === 'batch' && isDurableStructuredBatchControl(taskRecord.durableBatch)
+            ? { durableBatch: taskRecord.durableBatch }
+            : {}),
           maxTokens,
           userId,
           tenantId,

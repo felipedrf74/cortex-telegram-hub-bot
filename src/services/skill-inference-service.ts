@@ -42,6 +42,7 @@ import {
   runWithSkillInferenceAccountAdmission,
   SkillInferencePolicyError,
 } from './skill-inference-account-lifecycle';
+import type { StructuredGenerationBatchControl } from './ai-provider';
 export {
   beginSkillInferenceAccountDeletionFence,
   clearSkillInferenceAccountDeletionFence,
@@ -83,6 +84,8 @@ export interface SkillInferenceRequest {
   scriptDeliveryMode?: 'standard' | 'scheduled' | 'priority';
   /** Server-owned destination constraint for owner-approved cloud exports. */
   requiredCloudProvider?: 'openai';
+  /** Durable caller-owned state required when the selected transport is Batch. */
+  durableBatch?: StructuredGenerationBatchControl;
   requestSource: AiRequestSource;
   budgetRequest: AiBudgetRequest;
   cloudBudgetBoundary: <T>(request: AiBudgetRequest, providerCall: () => Promise<T>) => Promise<T>;
@@ -1031,6 +1034,9 @@ async function executeSkillInferenceInternal(
         : {}),
       ...(request.requiredCloudProvider !== undefined
         ? { requiredCloudProvider: request.requiredCloudProvider }
+        : {}),
+      ...(request.durableBatch !== undefined
+        ? { durableBatch: request.durableBatch }
         : {}),
       outputSchema: request.outputSchema,
       numCtx: contextTokens,

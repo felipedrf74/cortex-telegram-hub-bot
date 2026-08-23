@@ -601,7 +601,7 @@ describe('per-class script delivery bindings (§1 / Addendum C)', () => {
     }
   });
 
-  it('fails a scheduled Batch binding closed until a durable Batch adapter exists', async () => {
+  it('fails a scheduled Batch binding closed without durable state and admits it with durable state', async () => {
     bindings().scheduled = { provider: 'openai', model: 'gpt-5.6-luna', serviceTier: 'batch' };
     mockConfig.cloudReasoningFallback.approvedReasoningModels = ['gemini-2.5-pro', 'gpt-5.6-luna'];
     try {
@@ -612,6 +612,20 @@ describe('per-class script delivery bindings (§1 / Addendum C)', () => {
       )).resolves.toMatchObject({
         rejected: true,
         reason: 'batch_transport_unavailable',
+      });
+      await expect(selectApprovedCloudReasoningProvider(
+        {
+          prompt: 'p',
+          containsPrivateData: false,
+          scriptDeliveryMode: 'scheduled',
+          batchTransportAvailable: true,
+        },
+        getProvider,
+        null,
+      )).resolves.toMatchObject({
+        rejected: false,
+        model: 'gpt-5.6-luna',
+        serviceTier: 'batch',
       });
     } finally {
       resetBindings();

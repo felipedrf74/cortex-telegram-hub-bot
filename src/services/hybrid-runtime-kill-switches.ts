@@ -1,9 +1,9 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 /**
- * DB-backed operator control for the six hybrid kill switches (plan §5:
- * NH-0040 shipped four; migration 293 added subscription_checkout and
- * storefront).
+ * DB-backed operator control for the hybrid kill switches (plan §5 and
+ * Addendum A: NH-0040 shipped four; migration 293 added commerce controls;
+ * migration 296 adds the Apple Foundation Models device lane).
  *
  * Layering contract:
  * - Env activation flags (`*_ENABLED`) remain the only way to turn a surface
@@ -34,7 +34,8 @@ export type HybridKillSwitchKey =
   | 'stripe_pack_fulfillment'
   | 'cloud_reasoning_fallback'
   | 'subscription_checkout'
-  | 'storefront';
+  | 'storefront'
+  | 'apple_foundation_models';
 
 export const HYBRID_KILL_SWITCH_KEYS: readonly HybridKillSwitchKey[] = Object.freeze([
   'hybrid_credits',
@@ -43,6 +44,7 @@ export const HYBRID_KILL_SWITCH_KEYS: readonly HybridKillSwitchKey[] = Object.fr
   'cloud_reasoning_fallback',
   'subscription_checkout',
   'storefront',
+  'apple_foundation_models',
 ]);
 
 /**
@@ -61,12 +63,20 @@ const EXT_CONTROL_KEYS: readonly HybridKillSwitchKey[] = Object.freeze([
 const CONTROL_TABLES: readonly string[] = Object.freeze([
   'hybrid_commerce_runtime_control',
   'hybrid_commerce_runtime_control_ext',
+  'hybrid_device_runtime_control',
 ]);
 
 function controlTableFor(key: HybridKillSwitchKey): string {
+  if (key === 'apple_foundation_models') return 'hybrid_device_runtime_control';
   return EXT_CONTROL_KEYS.includes(key)
     ? 'hybrid_commerce_runtime_control_ext'
     : 'hybrid_commerce_runtime_control';
+}
+
+function controlEventTableFor(key: HybridKillSwitchKey): string {
+  return EXT_CONTROL_KEYS.includes(key) || key === 'apple_foundation_models'
+    ? 'hybrid_runtime_control_events_ext'
+    : 'hybrid_commerce_control_events';
 }
 
 export interface HybridKillSwitchState {
@@ -187,6 +197,12 @@ export function isStorefrontActive(): boolean {
   return !isHybridKillSwitchEngaged('storefront');
 }
 
+/** Default-off Apple Foundation Models lane plus its independent stop. */
+export function isAppleFoundationModelsActive(): boolean {
+  return config.deviceInference.enabled
+    && !isHybridKillSwitchEngaged('apple_foundation_models');
+}
+
 export function listHybridKillSwitches(): HybridKillSwitchState[] {
   const db = getDb();
   const rows = CONTROL_TABLES.flatMap((table) => (
@@ -248,8 +264,9 @@ export function setHybridKillSwitch(input: {
        SET engaged = ?, reason = ?, actor_user_id = ?, updated_at = ?
        WHERE control_key = ?`,
     ).run(nextEngaged, reason, input.actorUserId, updatedAt, input.controlKey);
+    const eventTable = controlEventTableFor(input.controlKey);
     db.prepare(
-      `INSERT INTO hybrid_commerce_control_events (control_key, previous_engaged, engaged, actor_user_id, reason)
+      `INSERT INTO ${eventTable} (control_key, previous_engaged, engaged, actor_user_id, reason)
        VALUES (?, ?, ?, ?, ?)`,
     ).run(input.controlKey, current.engaged, nextEngaged, input.actorUserId, reason);
     return {

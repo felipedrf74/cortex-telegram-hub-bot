@@ -148,6 +148,9 @@ const migrationSql = readFileSync(
 ) + readFileSync(
   resolve(__dirname, '../../migrations/287_content_script_delivery_modes.sql'),
   'utf8',
+) + readFileSync(
+  resolve(__dirname, '../../migrations/295_content_script_openai_batches.sql'),
+  'utf8',
 );
 
 function database(): Database.Database {
@@ -167,7 +170,8 @@ function database(): Database.Database {
     CREATE TABLE api_usage (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       ts TEXT NOT NULL DEFAULT (datetime('now')),
-      user_id INTEGER NOT NULL DEFAULT 0
+      user_id INTEGER NOT NULL DEFAULT 0,
+      provider TEXT
     );
     INSERT INTO plan_configs (plan_id, display_name) VALUES ('pro', 'Pro');
   `);
@@ -2249,5 +2253,102 @@ describe('delivery modes (Addendum C)', () => {
     expect(scheduledBatchWindowStart(new Date('2026-08-18T12:00:00.000Z'))).toBe('2026-08-19T03:00:00.000Z');
     expect(scheduledBatchWindowStart(new Date('2026-08-18T02:59:59.000Z'))).toBe('2026-08-18T03:00:00.000Z');
     expect(scheduledBatchWindowStart(new Date('2026-08-18T03:00:00.000Z'))).toBe('2026-08-19T03:00:00.000Z');
+  });
+
+  it('persists one immutable tenant-scoped Batch identity and durable cancellation request', async () => {
+    const db = database();
+    const service = await import('../../src/services/content-script-jobs');
+    const batches = await import('../../src/services/content-script-provider-batches');
+    const created = service.createContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      idempotencyKey: 'durable-batch-stage',
+      request: {
+        topic: 'Durable Batch stage',
+        format: 'YouTube',
+        maxDurationMinutes: 8,
+        language: 'en',
+        deliveryMode: 'scheduled',
+      },
+    }, db);
+    db.prepare(`UPDATE content_script_jobs
+      SET status = 'running', lease_token = 'lease-1',
+          lease_expires_at = '2099-01-01T00:00:00.000Z'
+      WHERE job_id = ?`).run(created.job.jobId);
+    const control = batches.createContentScriptBatchControl({
+      db,
+      jobId: created.job.jobId,
+      tenantId: 42,
+      userId: 42,
+      leaseToken: 'lease-1',
+      stageKey: 'c'.repeat(64),
+    });
+    control.persist({
+      requestDigest: 'd'.repeat(64),
+      customId: 'c'.repeat(64),
+      status: 'preparing',
+    });
+    control.persist({
+      requestDigest: 'd'.repeat(64),
+      customId: 'c'.repeat(64),
+      status: 'in_progress',
+      inputFileId: 'file-1',
+      providerBatchId: 'batch-1',
+    });
+    expect(control.load()).toMatchObject({
+      status: 'in_progress',
+      inputFileId: 'file-1',
+      providerBatchId: 'batch-1',
+    });
+    expect(() => control.persist({
+      requestDigest: 'e'.repeat(64),
+      customId: 'c'.repeat(64),
+      status: 'in_progress',
+      inputFileId: 'file-1',
+      providerBatchId: 'batch-1',
+    })).toThrow('request_identity_mismatch');
+
+    const timestamp = '2026-08-23T13:00:00.000Z';
+    db.prepare(`UPDATE content_script_jobs
+      SET status = 'cancelled', cancellation_requested_at = ?,
+          lease_token = NULL, lease_expires_at = NULL
+      WHERE job_id = ?`).run(timestamp, created.job.jobId);
+    expect(batches.markContentScriptBatchesCancellationRequested(db, {
+      jobId: created.job.jobId,
+      tenantId: 42,
+      userId: 42,
+      timestamp,
+    })).toBe(1);
+    expect(control.load()).toMatchObject({ status: 'cancellation_requested' });
+    db.close();
+  });
+
+  it('binds Batch provider idempotency to the tenant, owner, and job', async () => {
+    const { contentScriptBatchStageKey } = await import('../../src/services/content-script-provider-batches');
+    const stage = {
+      taskType: 'script_outline',
+      prompt: '{"topic":"same provider payload"}',
+      schemaId: 'content-script-outline-v1',
+      outputSchema: { type: 'object' },
+    };
+    const first = contentScriptBatchStageKey({
+      ...stage,
+      jobId: 'job-a',
+      tenantId: 41,
+      userId: 91,
+    });
+
+    expect(contentScriptBatchStageKey({
+      ...stage,
+      jobId: 'job-a',
+      tenantId: 41,
+      userId: 91,
+    })).toBe(first);
+    expect(new Set([
+      first,
+      contentScriptBatchStageKey({ ...stage, jobId: 'job-b', tenantId: 41, userId: 91 }),
+      contentScriptBatchStageKey({ ...stage, jobId: 'job-a', tenantId: 42, userId: 91 }),
+      contentScriptBatchStageKey({ ...stage, jobId: 'job-a', tenantId: 41, userId: 92 }),
+    ]).size).toBe(4);
   });
 });

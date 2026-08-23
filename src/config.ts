@@ -876,6 +876,22 @@ export const config = {
     },
   },
 
+  // ── Apple Foundation Models device lane (plan Addendum A) ────────
+  // The server policy remains the routing authority. This activation flag
+  // defaults OFF and the dedicated env/DB kill switches can only narrow it.
+  // Eligibility is a closed server-owned list; unknown values are ignored by
+  // the policy service rather than becoming client-selectable capabilities.
+  deviceInference: {
+    get enabled(): boolean {
+      return (process.env.APPLE_FOUNDATION_MODELS_ENABLED || 'false') === 'true'
+        && (process.env.APPLE_FOUNDATION_MODELS_KILL_SWITCH || 'false') !== 'true';
+    },
+    get eligibleOperations(): string {
+      return process.env.APPLE_FOUNDATION_MODELS_ELIGIBLE_OPERATIONS
+        || 'local_content_parse,local_content_summarize';
+    },
+  },
+
   // ── Hybrid AI commerce catalog (plan §3) ──────────────────────────
   // Provider objects are provisioned externally (NH-0036); an absent id keeps
   // the matching catalog item fail-closed as not purchasable. Anonymous email

@@ -26,6 +26,7 @@ import {
   HYBRID_KILL_SWITCH_KEYS,
   isStorefrontActive,
   isSubscriptionCheckoutActive,
+  isAppleFoundationModelsActive,
   _resetHybridKillSwitchCacheForTests,
   isApplePackFulfillmentActive,
   isHybridKillSwitchEngaged,
@@ -62,12 +63,34 @@ function recreateControlTables(): void {
     );
     INSERT INTO hybrid_commerce_runtime_control_ext (control_key, engaged) VALUES
       ('subscription_checkout', 0), ('storefront', 0);
+    DROP TABLE IF EXISTS hybrid_device_runtime_control;
+    CREATE TABLE hybrid_device_runtime_control (
+      control_key TEXT PRIMARY KEY CHECK (control_key = 'apple_foundation_models'),
+      engaged INTEGER NOT NULL DEFAULT 0 CHECK (engaged IN (0, 1)),
+      reason TEXT NOT NULL DEFAULT 'migration_default_disengaged',
+      actor_user_id INTEGER,
+      updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
+    INSERT INTO hybrid_device_runtime_control (control_key, engaged)
+      VALUES ('apple_foundation_models', 0);
     CREATE TABLE hybrid_commerce_control_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       control_key TEXT NOT NULL,
       previous_engaged INTEGER NOT NULL,
       engaged INTEGER NOT NULL,
       actor_user_id INTEGER NOT NULL,
+      reason TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
+    DROP TABLE IF EXISTS hybrid_runtime_control_events_ext;
+    CREATE TABLE hybrid_runtime_control_events_ext (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      control_key TEXT NOT NULL CHECK (control_key IN (
+        'subscription_checkout', 'storefront', 'apple_foundation_models'
+      )),
+      previous_engaged INTEGER NOT NULL CHECK (previous_engaged IN (0, 1)),
+      engaged INTEGER NOT NULL CHECK (engaged IN (0, 1)),
+      actor_user_id INTEGER NOT NULL CHECK (actor_user_id > 0),
       reason TEXT NOT NULL,
       created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
     );
@@ -84,6 +107,8 @@ beforeEach(() => {
   delete process.env.APPLE_PACK_FULFILLMENT_ENABLED;
   delete process.env.STRIPE_PACK_FULFILLMENT_ENABLED;
   delete process.env.SUBSCRIPTION_CHECKOUT_ENABLED;
+  delete process.env.APPLE_FOUNDATION_MODELS_ENABLED;
+  delete process.env.APPLE_FOUNDATION_MODELS_KILL_SWITCH;
   config.stripe.expectedAccountId = 'acct_runtimetest';
   config.stripe.historicalPriceProMonthly = '';
   config.stripe.historicalPriceMaxMonthly = '';
@@ -92,7 +117,7 @@ beforeEach(() => {
 });
 
 describe('hybrid-runtime-kill-switches', () => {
-  it('starts with all six switches disengaged', () => {
+  it('starts with all switches disengaged', () => {
     const states = listHybridKillSwitches();
     expect(states.map((s) => s.controlKey).sort()).toEqual([...HYBRID_KILL_SWITCH_KEYS].sort());
     expect(states.every((s) => !s.engaged)).toBe(true);
@@ -157,6 +182,19 @@ describe('hybrid-runtime-kill-switches', () => {
     setHybridKillSwitch({ controlKey: 'stripe_pack_fulfillment', engaged: true, actorUserId: 7, reason: 'stop stripe' });
     expect(isApplePackFulfillmentActive()).toBe(false);
     expect(isStripePackFulfillmentActive()).toBe(false);
+  });
+
+  it('keeps the Apple Foundation Models lane default off and independently stoppable', () => {
+    expect(isAppleFoundationModelsActive()).toBe(false);
+    process.env.APPLE_FOUNDATION_MODELS_ENABLED = 'true';
+    expect(isAppleFoundationModelsActive()).toBe(true);
+    setHybridKillSwitch({
+      controlKey: 'apple_foundation_models',
+      engaged: true,
+      actorUserId: 7,
+      reason: 'device-lane incident stop',
+    });
+    expect(isAppleFoundationModelsActive()).toBe(false);
   });
 
   it('fails open to env-only behavior when the control table is unreadable', () => {
@@ -252,7 +290,7 @@ describe('hybrid-runtime-kill-switches', () => {
       reason: 'incident: audited stop',
     });
     const events = testDb
-      .prepare("SELECT * FROM hybrid_commerce_control_events WHERE control_key = 'storefront'")
+      .prepare("SELECT * FROM hybrid_runtime_control_events_ext WHERE control_key = 'storefront'")
       .all() as any[];
     expect(events).toHaveLength(1);
     expect(events[0].actor_user_id).toBe(11);

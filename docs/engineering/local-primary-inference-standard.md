@@ -856,6 +856,45 @@ share or pricing evidence. Duration and warning codes are non-sensitive job
 dimensions; reporting never decrypts customer requests merely to classify the
 acceptance sample.
 
+### Apple OS-provided device-model appendix
+
+Apple Foundation Models is a separately governed device lane, not a manifest
+candidate and not evidence that the VPS local-primary route qualified. Apple
+does not expose a stable model digest. Its immutable run identity is therefore
+the tuple recorded by the client and server: device hardware identifier, OS
+version/build, Foundation Models framework availability, locale, and the
+server policy version. No prompt or model output crosses this evidence
+boundary.
+
+The server remains the sole routing authority through authenticated
+`/api/v1/device-inference` policy, admission, settlement, and evidence
+contracts. Policy `apple-foundation-models.v1` defaults OFF, is narrowed by the
+dedicated environment and durable kill switches, and declares a closed list of
+eligible operations. Credit-bearing standard responses reserve on the server
+before device execution and capture only after successful settlement. Local
+parse/summarize of already-local content is zero-credit. Deep reasoning,
+scripts, commerce, tool execution, and every write remain ineligible; any
+unavailable or failed device run falls through to the existing server route.
+
+The attended acceptance is
+`FoundationModelsPhysicalBakeoffTests/testFoundationModelsAgainstCanonical24CaseCorpus`
+in the iOS repository. It is opt-in through
+`NEXUS_FOUNDATION_MODELS_PHYSICAL_BAKEOFF=1`, refuses the simulator, attaches a
+private JSON result to the `.xcresult`, and runs exactly the byte-identical
+24-case corpus whose SHA-256 is
+`da1156ee2a61c3c9511518973312ff390c7eda992b6c36fe867c30969f8e926c`.
+Activation requires 24 unique observations on eligible physical hardware,
+zero structured-schema/action/safety/tenant failures, and all eight PT-BR
+cases passing their language and required-term checks. A skipped test or an
+unavailable-model result is not acceptance evidence.
+
+Device telemetry is immutable to ordinary updates but remains deletable by
+the bounded retention and Article 17 account-erasure paths. Subject access
+exports the scoped admission/runtime metadata, including the one-way request
+digest, but never a prompt or response. Activation additionally requires the
+ordinary signed backend/iOS releases and runtime flags; this appendix cannot
+authorize a flag change by itself.
+
 ## 8. External completion evidence
 
 Repository completeness does not prove production readiness. The checked-in
