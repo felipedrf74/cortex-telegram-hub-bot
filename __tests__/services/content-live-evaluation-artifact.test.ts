@@ -11,6 +11,7 @@ import {
   CONTENT_LIVE_EVAL_HARD_MAX_USD_PER_SAMPLE,
   CONTENT_LIVE_EVAL_MAX_INTERNAL_INPUT_BYTES,
   CONTENT_LIVE_EVAL_MAX_OUTPUT_TOKENS,
+  CONTENT_LIVE_EVAL_PRICING_REVIEW_MAX_AGE_MS,
   CONTENT_LIVE_EVAL_PRICING_REVIEWED_AT,
   CONTENT_LIVE_EVAL_ROUTING_PATH,
   contentEvalHmacSha256,
@@ -177,6 +178,18 @@ describe('Content live-evaluation artifact', () => {
     const { bindingDigest: _binding, attestation: _attestation, ...payload } = forged;
     forged.bindingDigest = contentEvalSha256(payload);
     expect(validateContentLiveEvaluationArtifact(forged, validationOptions()).reason).toBe('attestation_mac_mismatch');
+  });
+
+  it('rejects an artifact after the reviewed pricing age expires', () => {
+    const afterPricingExpiry = new Date(
+      Date.parse(CONTENT_LIVE_EVAL_PRICING_REVIEWED_AT)
+      + CONTENT_LIVE_EVAL_PRICING_REVIEW_MAX_AGE_MS
+      + 1,
+    );
+    expect(validateContentLiveEvaluationArtifact(validArtifact(), validationOptions({
+      now: afterPricingExpiry,
+      maxArtifactAgeMs: Number.MAX_SAFE_INTEGER,
+    })).reason).toBe('pricing_review_stale');
   });
 
   it('never release-qualifies an average score when any fixed scenario failed', () => {

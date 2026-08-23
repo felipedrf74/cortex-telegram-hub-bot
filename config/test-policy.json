@@ -188,6 +188,26 @@
         "reason": "The stricter retained rescore test replaces permissive legacy-artifact assertions with exact v3 profile-version and policy-digest attestation guarantees."
       },
       {
+        "test": "__tests__/services/content-live-evaluation-artifact.test.ts",
+        "replacementTests": [
+          "__tests__/services/content-live-evaluation-artifact.test.ts"
+        ],
+        "sources": [
+          "src/services/content-live-evaluation-artifact.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/content-live-evaluation-artifact.ts:1169-1170",
+            "anchor": "nowMs - pricingReviewedAtMs > CONTENT_LIVE_EVAL_PRICING_REVIEW_MAX_AGE_MS",
+            "behavior": "A live Content evaluation artifact cannot remain release-valid after its reviewed provider-pricing snapshot expires.",
+            "replacementTest": "__tests__/services/content-live-evaluation-artifact.test.ts",
+            "ownerTestNamePattern": "rejects an artifact after the reviewed pricing age expires$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained artifact suite refreshes time-bound pricing fixtures while preserving an explicit fail-closed stale-pricing mutation owner."
+      },
+      {
         "test": "__tests__/services/local-model-manifest.test.ts",
         "replacementTests": [
           "__tests__/services/local-model-manifest.test.ts"
