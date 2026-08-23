@@ -3838,6 +3838,8 @@ describe('compose status parsing is strict', () => {
       NEXUS_CONTENT_ENGINE_ENV_FILE:
         policy.environments.production.contentEngineEnvFile,
       NEXUS_APP_STAGING: 'false',
+      NEXUS_OLLAMA_GATEWAY_SOCKET_DIR: '/run/nexus-inference/production',
+      NEXUS_OLLAMA_GATEWAY_SOCKET_PATH: '/run/nexus-inference/production/ollama.sock',
     });
     expect(registry.composeEnv({
       environment: 'staging',
@@ -3848,6 +3850,8 @@ describe('compose status parsing is strict', () => {
       NEXUS_BACKEND_ENV_FILE: policy.environments.staging.backendEnvFile,
       NEXUS_CONTENT_ENGINE_ENV_FILE: policy.environments.staging.contentEngineEnvFile,
       NEXUS_APP_STAGING: 'true',
+      NEXUS_OLLAMA_GATEWAY_SOCKET_DIR: '/run/nexus-inference/staging',
+      NEXUS_OLLAMA_GATEWAY_SOCKET_PATH: '/run/nexus-inference/staging/ollama.sock',
     });
     expect(() => registry.composeEnv({
       environment: 'production',

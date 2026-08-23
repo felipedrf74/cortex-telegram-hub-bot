@@ -489,7 +489,10 @@ describe('TaskRoutingProvider', () => {
       scriptDeliveryMode: 'scheduled',
       localAdmission: 'eligible',
       cloudFallbackBoundary: boundary,
-    })).resolves.toMatchObject({ text: expect.any(String) });
+    })).resolves.toMatchObject({
+      text: expect.any(String),
+      providerMetadata: { serviceTierUsed: 'flex' },
+    });
     expect(optionalCloudMocks.provider.callStructuredGeneration).toHaveBeenLastCalledWith(
       expect.objectContaining({
         model: 'gpt-5.6-luna',

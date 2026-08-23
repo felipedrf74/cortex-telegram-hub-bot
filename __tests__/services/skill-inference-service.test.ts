@@ -795,6 +795,66 @@ describe('skill inference service', () => {
     db.close();
   });
 
+  it('owns delivery-bound cloud-primary routing without attempting the local lane', async () => {
+    const db = database();
+    dispatchMock.mockResolvedValue({
+      text: 'cloud-primary answer',
+      providerMetadata: {
+        providerUsed: 'openai',
+        modelUsed: 'gpt-5.6-luna',
+        serviceTierUsed: 'flex',
+      },
+    });
+    const cloudBoundary = vi.fn(async (_request: unknown, call: () => Promise<unknown>) => call());
+    const { executeSkillInference } = await import('../../src/services/skill-inference-service');
+    const request = {
+      tenantId: 42,
+      userId: 42,
+      skillId: 'content' as const,
+      taskType: 'cloud_primary_standard_script',
+      riskClass: 'low' as const,
+      executionClass: 'background' as const,
+      operationId: 'cloud-primary-standard-operation',
+      prompt: 'Generate the approved public script section.',
+      schemaId: 'text' as const,
+      containsPrivateData: false,
+      allowCloudEscalation: true,
+      redactionRequired: false,
+      scriptDeliveryMode: 'standard' as const,
+      requiredCloudProvider: 'openai' as const,
+      routingPreference: 'cloud_primary' as const,
+      requestSource: 'automation' as const,
+      budgetRequest: {
+        userId: 42,
+        requestSource: 'automation' as const,
+        baseCategory: 'cloud_primary_standard_script',
+      },
+      cloudBudgetBoundary: cloudBoundary,
+    };
+
+    await expect(executeSkillInference(request, db)).resolves.toMatchObject({
+      route: 'cloud',
+      provider: 'openai',
+      model: 'gpt-5.6-luna',
+      serviceTier: 'flex',
+    });
+    expect(dispatchMock).toHaveBeenCalledTimes(1);
+    expect(dispatchMock).toHaveBeenCalledWith(expect.objectContaining({
+      localAdmission: 'force_cloud',
+      routingPreference: 'cloud_primary',
+      scriptDeliveryMode: 'standard',
+      requiredCloudProvider: 'openai',
+    }));
+
+    await expect(executeSkillInference({
+      ...request,
+      operationId: 'invalid-private-cloud-primary-operation',
+      containsPrivateData: true,
+    }, db)).rejects.toMatchObject({ code: 'PRIVATE_CLOUD_ESCALATION_CLAIM_REQUIRED' });
+    expect(dispatchMock).toHaveBeenCalledTimes(1);
+    db.close();
+  });
+
   it('stays cloud-capable and ledgered when the signed local manifest is unavailable', async () => {
     const db = database();
     modelPolicyMock.unavailable = true;

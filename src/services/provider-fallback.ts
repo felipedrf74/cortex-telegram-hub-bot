@@ -2072,6 +2072,7 @@ export class TaskRoutingProvider implements AIProvider {
           providerMetadata: {
             providerUsed: selection.provider.name,
             modelUsed: selection.model,
+            ...(selection.serviceTier ? { serviceTierUsed: selection.serviceTier } : {}),
             fallbackUsed: true,
             fallbackReason: 'primary_failure',
             privacyAction: selection.privacyAction,

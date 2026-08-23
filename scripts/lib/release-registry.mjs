@@ -221,6 +221,7 @@ export function createReleaseRegistry({
       fail('release environment gate is not configured');
     }
     environmentGate.verify(environment);
+    const ollamaGatewaySocketDir = `/run/nexus-inference/${environment}`;
     return {
       ...composeProcessBaseEnvironment(),
       // Read-only mount holding the signed migration plan the migrator enforces.
@@ -239,6 +240,12 @@ export function createReleaseRegistry({
       NEXUS_DATA_DIR: target.dataDir,
       NEXUS_BACKEND_PORT: String(target.backendPort),
       NEXUS_CONTENT_ENGINE_PORT: String(target.contentEnginePort),
+      // The root-owned socket transaction creates these exact per-environment
+      // directories before a topology containing the gateway may be released.
+      // Derive both values from the closed environment selector rather than a
+      // mutable env file so staging and production can never share a socket.
+      NEXUS_OLLAMA_GATEWAY_SOCKET_DIR: ollamaGatewaySocketDir,
+      NEXUS_OLLAMA_GATEWAY_SOCKET_PATH: `${ollamaGatewaySocketDir}/ollama.sock`,
     };
   }
 

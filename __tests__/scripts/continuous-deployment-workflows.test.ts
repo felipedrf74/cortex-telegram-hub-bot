@@ -762,6 +762,32 @@ describe('release topology', () => {
     expect(compose).toContain('CONTENT_ENGINE_BASE_URL: "http://content-engine:8100"');
   });
 
+  it('runs the signed Ollama gateway over isolated Unix sockets with no application secrets', () => {
+    const compose = readFileSync(join(root, 'docker-compose.release.yml'), 'utf8');
+    const gateway = compose.slice(
+      compose.indexOf('  ollama-gateway:'),
+      compose.indexOf('  content-engine:'),
+    );
+    const backend = compose.slice(compose.indexOf('  backend:'), compose.indexOf('  migrator:'));
+
+    expect(gateway).toContain('image: ${NEXUS_BACKEND_IMAGE:?');
+    expect(gateway).toContain('network_mode: host');
+    expect(gateway).toContain('command: ["node", "dist/tools/ollama-unix-gateway.js"]');
+    expect(gateway).toContain('curl --unix-socket');
+    expect(gateway).toContain('user: "10001:10001"');
+    expect(gateway).toContain('cap_drop:\n      - ALL');
+    expect(gateway).toContain('read_only: true');
+    expect(gateway).not.toContain('env_file:');
+    expect(gateway).not.toContain('ports:');
+    expect(gateway).not.toContain('DATABASE_PATH');
+    expect(backend).toContain('ollama-gateway:\n        condition: service_healthy');
+    expect(backend).toContain(
+      'OLLAMA_GATEWAY_SOCKET_PATH: ${NEXUS_OLLAMA_GATEWAY_SOCKET_PATH:?exact Ollama gateway socket path is required}',
+    );
+    expect(compose.split('${NEXUS_OLLAMA_GATEWAY_SOCKET_DIR:?root-created Ollama gateway socket directory is required}'))
+      .toHaveLength(5);
+  });
+
   it('uses separate host-mounted databases and least-privilege env files per service', () => {
     expect(policy.environments.production.dataDir)
       .not.toBe(policy.environments.staging.dataDir);

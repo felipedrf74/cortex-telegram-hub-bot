@@ -2,6 +2,7 @@
 
 import crypto from 'node:crypto';
 import type Database from 'better-sqlite3';
+import { config } from '../config';
 import { logger } from '../utils/logger';
 import { getDb } from './database';
 import { getEffectiveEntitlement } from './entitlement';
@@ -114,10 +115,14 @@ export interface ContentScriptJobRequest {
   maxDurationMinutes: number;
   targetDurationSeconds: number;
   forceRefresh: boolean;
-  pinnedManifestVersion: string;
-  pinnedModelId: string;
-  pinnedModelTag: string;
-  pinnedModelDigest: string;
+  pinnedManifestVersion?: string;
+  pinnedModelId?: string;
+  pinnedModelTag?: string;
+  pinnedModelDigest?: string;
+  pinnedScriptRoute?: 'cloud_primary';
+  pinnedCloudProvider?: 'openai';
+  pinnedCloudModel?: string;
+  pinnedCloudServiceTier?: 'flex' | 'batch' | 'priority';
   /** Encrypted immutable snapshots captured when the authenticated job is created. */
   pinnedCreatorVoice: string | null;
   pinnedSources: Array<{
@@ -231,6 +236,10 @@ type ContentScriptPublicRequest = Omit<
   | 'pinnedModelId'
   | 'pinnedModelTag'
   | 'pinnedModelDigest'
+  | 'pinnedScriptRoute'
+  | 'pinnedCloudProvider'
+  | 'pinnedCloudModel'
+  | 'pinnedCloudServiceTier'
   | 'pinnedCreatorVoice'
   | 'pinnedSources'
 >;
@@ -419,11 +428,20 @@ function assertJobsEnabled(): void {
   if (!localPrimaryInferenceConfig.scriptJobsEnabled) {
     throw new ContentScriptJobError('CONTENT_SCRIPT_JOBS_DISABLED', 'Background script jobs are not enabled.', 409);
   }
-  if (!localPrimaryInferenceConfig.contentProxyEnabled) {
+  if (!localPrimaryInferenceConfig.scriptJobsCloudPrimaryEnabled
+      && !localPrimaryInferenceConfig.contentProxyEnabled) {
     throw new ContentScriptJobError(
       'LOCAL_PRIMARY_CONTENT_PROXY_REQUIRED',
       'Background script jobs require the local-only Content proxy boundary.',
       409,
+    );
+  }
+  if (localPrimaryInferenceConfig.scriptJobsPublicEnabled
+      && !localPrimaryInferenceConfig.scriptJobsCloudPrimaryEnabled) {
+    throw new ContentScriptJobError(
+      'CONTENT_SCRIPT_PUBLIC_ROUTE_INVALID',
+      'Public script jobs require the delivery-bound cloud-primary route.',
+      503,
     );
   }
   // Fail before any durable write or provider call if encryption is absent.
@@ -434,6 +452,10 @@ function runtimeAdmitsContentScriptUser(
   control: ReturnType<typeof getLocalInferenceRuntimeControl>,
   userId: number,
 ): boolean {
+  if (localPrimaryInferenceConfig.scriptJobsCloudPrimaryEnabled) {
+    return localPrimaryInferenceConfig.scriptJobsPublicEnabled
+      || localPrimaryInferenceConfig.staffUserIds.includes(userId);
+  }
   if (control.mode === 'active') return true;
   if (control.mode === 'canary') {
     return isLocalInferenceUserEnrolled(userId, control.rolloutPercent);
@@ -444,6 +466,32 @@ function runtimeAdmitsContentScriptUser(
   // feature to normal users or weakening the active/100% evidence gate.
   return control.mode === 'shadow'
     && localPrimaryInferenceConfig.staffUserIds.includes(userId);
+}
+
+function pinnedCloudBinding(deliveryMode: 'standard' | 'scheduled' | 'priority'): {
+  provider: 'openai';
+  model: string;
+  serviceTier: 'flex' | 'batch' | 'priority';
+} {
+  const binding = config.cloudReasoningFallback.scriptDeliveryBindings[deliveryMode];
+  const provider = String(binding.provider || '').trim().toLowerCase();
+  const model = String(binding.model || '').trim();
+  const serviceTier = String(binding.serviceTier || '').trim().toLowerCase();
+  const expectedTier = deliveryMode === 'standard'
+    ? 'flex'
+    : deliveryMode === 'scheduled' ? 'batch' : 'priority';
+  if (provider !== 'openai' || !model || serviceTier !== expectedTier) {
+    throw new ContentScriptJobError(
+      'CONTENT_SCRIPT_CLOUD_BINDING_INVALID',
+      'The selected script delivery class is not bound to its approved OpenAI processing tier.',
+      503,
+    );
+  }
+  return {
+    provider: 'openai',
+    model,
+    serviceTier: expectedTier,
+  };
 }
 
 function assertRuntimeAdmitsJob(db: Database.Database, userId: number): void {
@@ -494,21 +542,34 @@ export function createContentScriptJob(input: {
   // an operation accepted before the control changed.
   assertJobsEnabled();
   assertRuntimeAdmitsJob(db, input.userId);
-  const manifest = getLocalModelManifest({ fresh: true });
-  const activeModel = manifest.models.find((model) => model.id === manifest.activeModelId)!;
-  if (!activeModel.digest || activeModel.evidenceStatus !== 'verified') {
+  const cloudBinding = localPrimaryInferenceConfig.scriptJobsCloudPrimaryEnabled
+    ? pinnedCloudBinding(publicRequest.deliveryMode)
+    : null;
+  const manifest = cloudBinding ? null : getLocalModelManifest({ fresh: true });
+  const activeModel = manifest
+    ? manifest.models.find((model) => model.id === manifest.activeModelId)
+    : null;
+  if (!cloudBinding && (!activeModel?.digest || activeModel.evidenceStatus !== 'verified')) {
     throw new ContentScriptJobError(
       'CONTENT_SCRIPT_MODEL_NOT_PINNED',
-      'Long-form jobs require a verified digest-pinned active local model.',
+      'Long-form local jobs require a verified digest-pinned active model.',
       503,
     );
   }
   const request: ContentScriptJobRequest = {
     ...publicRequest,
-    pinnedManifestVersion: manifest.manifestVersion,
-    pinnedModelId: activeModel.id,
-    pinnedModelTag: activeModel.ollamaTag,
-    pinnedModelDigest: activeModel.digest,
+    ...(!cloudBinding && manifest && activeModel ? {
+      pinnedManifestVersion: manifest.manifestVersion,
+      pinnedModelId: activeModel.id,
+      pinnedModelTag: activeModel.ollamaTag,
+      pinnedModelDigest: activeModel.digest!,
+    } : {}),
+    ...(cloudBinding ? {
+      pinnedScriptRoute: 'cloud_primary' as const,
+      pinnedCloudProvider: cloudBinding.provider,
+      pinnedCloudModel: cloudBinding.model,
+      pinnedCloudServiceTier: cloudBinding.serviceTier,
+    } : {}),
     pinnedCreatorVoice: (buildUserVoiceMemory(input.userId, getAllKnowledge) ?? '').slice(0, 8_000) || null,
     pinnedSources: sourceSnapshot,
   };
@@ -565,7 +626,7 @@ export function createContentScriptJob(input: {
         `content-script:${jobId}`,
         encryptContentScriptJobJson(request, input.userId),
         request.targetDurationSeconds,
-        activeModel.digest,
+        activeModel?.digest ?? null,
         request.deliveryMode,
         deferredStart,
       );
@@ -1007,7 +1068,30 @@ function targetSectionCount(request: ContentScriptJobRequest): number {
   return 8;
 }
 
-function assertPinnedModelIsActive(request: ContentScriptJobRequest): void {
+function assertPinnedRoutingIsActive(request: ContentScriptJobRequest): void {
+  if (request.pinnedScriptRoute === 'cloud_primary') {
+    const binding = pinnedCloudBinding(request.deliveryMode);
+    if (request.pinnedCloudProvider !== binding.provider
+        || request.pinnedCloudModel !== binding.model
+        || request.pinnedCloudServiceTier !== binding.serviceTier) {
+      throw new ContentScriptJobError(
+        'CONTENT_SCRIPT_PINNED_CLOUD_ROUTE_UNAVAILABLE',
+        'The cloud route pinned to this script job is no longer active.',
+        409,
+      );
+    }
+    return;
+  }
+  if (!request.pinnedManifestVersion
+      || !request.pinnedModelId
+      || !request.pinnedModelTag
+      || !request.pinnedModelDigest) {
+    throw new ContentScriptJobError(
+      'CONTENT_SCRIPT_MODEL_NOT_PINNED',
+      'The local model route for this script job is incomplete.',
+      409,
+    );
+  }
   const manifest = getLocalModelManifest({ fresh: true });
   const active = manifest.models.find((model) => model.id === manifest.activeModelId)!;
   if (manifest.manifestVersion !== request.pinnedManifestVersion
@@ -1063,7 +1147,8 @@ async function runScriptStage(
     requestedOutputTokens: number;
   },
 ): Promise<SkillInferenceResult> {
-  assertPinnedModelIsActive(request);
+  assertPinnedRoutingIsActive(request);
+  const cloudPrimary = request.pinnedScriptRoute === 'cloud_primary';
   const result = await executeSkillInference({
     tenantId: row.tenant_id,
     userId: row.owner_user_id,
@@ -1086,6 +1171,7 @@ async function runScriptStage(
     redactionRequired: false,
     scriptDeliveryMode: resolveScriptDeliveryMode(row.delivery_mode ?? 'standard'),
     requiredCloudProvider: 'openai',
+    ...(cloudPrimary ? { routingPreference: 'cloud_primary' as const } : {}),
     durableBatch: createContentScriptBatchControl({
       db,
       jobId: row.job_id,
@@ -1116,6 +1202,22 @@ async function runScriptStage(
     abortSignal: signal,
     deadlineMs: 5 * 60 * 1000,
   }, db);
+  if (cloudPrimary && (result.route !== 'cloud'
+      || result.provider.trim().toLowerCase() !== request.pinnedCloudProvider
+      || result.model !== request.pinnedCloudModel
+      || result.serviceTier !== request.pinnedCloudServiceTier)) {
+    rejectSkillInferenceApplicationResult({
+      runId: result.runId,
+      tenantId: row.tenant_id,
+      userId: row.owner_user_id,
+      reason: 'content_script_pinned_cloud_route_mismatch',
+    }, db);
+    throw new ContentScriptJobError(
+      'CONTENT_SCRIPT_PINNED_CLOUD_ROUTE_MISMATCH',
+      'A script stage did not execute on its pinned cloud provider, model, and processing tier.',
+      502,
+    );
+  }
   if (result.route === 'local' && (result.model !== request.pinnedModelTag
       || result.modelDigest !== request.pinnedModelDigest)) {
     rejectSkillInferenceApplicationResult({
@@ -1841,9 +1943,9 @@ export async function runContentScriptJob(
         : null,
       pinnedSources: Array.isArray(storedRequest.pinnedSources) ? storedRequest.pinnedSources : [],
     };
-    assertPinnedModelIsActive(request);
+    assertPinnedRoutingIsActive(request);
     let outline = readOutlineCheckpoint(db, row);
-    let modelDigest: string | null = request.pinnedModelDigest;
+    let modelDigest: string | null = request.pinnedModelDigest ?? null;
     if (!outline) {
       updateProgress(db, jobId, token, 'outline', 0);
       beginCheckpoint(db, row, token, {
@@ -2112,7 +2214,7 @@ export async function runContentScriptJob(
     }
     updateProgress(db, jobId, token, 'final_validation', 95);
     const finalRoute = completedJobRoute(db, row);
-    const finalModelDigest = finalRoute === 'local' ? request.pinnedModelDigest : null;
+    const finalModelDigest = finalRoute === 'local' ? request.pinnedModelDigest ?? null : null;
     const completedAt = new Date().toISOString();
     const completed = db.prepare(`UPDATE content_script_jobs
       SET status = 'completed', stage = 'completed', progress_percent = 100,
@@ -2425,7 +2527,9 @@ export function recoverContentScriptJobs(
   options: { schedule?: (jobId: string) => void } = {},
 ): number {
   if (contentScriptJobShutdownStarted) return 0;
-  if (!localPrimaryInferenceConfig.scriptJobsEnabled || !localPrimaryInferenceConfig.contentProxyEnabled) return 0;
+  if (!localPrimaryInferenceConfig.scriptJobsEnabled
+      || (!localPrimaryInferenceConfig.scriptJobsCloudPrimaryEnabled
+        && !localPrimaryInferenceConfig.contentProxyEnabled)) return 0;
   requestContentScriptBatchCancellationReconciliation(db);
   const nowDate = new Date();
   const now = nowDate.toISOString();
@@ -2464,15 +2568,18 @@ export function recoverContentScriptJobs(
     activeLease.controller.abort(createContentScriptInfrastructureAbort('CONTENT_SCRIPT_JOB_LEASE_LOST'));
   }
   const control = getLocalInferenceRuntimeControl(db);
-  if (control.mode !== 'active'
+  if (!localPrimaryInferenceConfig.scriptJobsCloudPrimaryEnabled
+      && control.mode !== 'active'
       && control.mode !== 'canary'
       && control.mode !== 'shadow') return recovered;
   // Single-flight by design: one active generation, no preemption. Priority
   // buys the next slot via the ORDER BY below, never an interrupt — Addendum
   // C states this constraint explicitly (QA3 P1-6).
   if (controllers.size > 0) return recovered;
-  const capacity = localInferenceScheduler.snapshot();
-  if (capacity.activeCount > 0 || capacity.queuedCount > 0) return recovered;
+  if (!localPrimaryInferenceConfig.scriptJobsCloudPrimaryEnabled) {
+    const capacity = localInferenceScheduler.snapshot();
+    if (capacity.activeCount > 0 || capacity.queuedCount > 0) return recovered;
+  }
   const rows = db.prepare(`SELECT j.job_id, j.owner_user_id, j.plan_id,
       p.local_queue_weight AS persisted_queue_weight
     FROM content_script_jobs j
@@ -2551,6 +2658,7 @@ export function startContentScriptJobRecoveryLoop(
   const runtimeDb = db ?? getDb();
   recoverContentScriptJobs(runtimeDb, options);
   stopSchedulerIdleListener = localInferenceScheduler.onIdle(() => {
+    if (localPrimaryInferenceConfig.scriptJobsCloudPrimaryEnabled) return;
     try {
       recoverContentScriptJobs(runtimeDb, options);
     } catch (error) {

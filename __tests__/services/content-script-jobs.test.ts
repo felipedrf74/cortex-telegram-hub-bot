@@ -21,6 +21,8 @@ const contentJobMocks = vi.hoisted(() => ({
 }));
 const localPrimaryConfigMock = vi.hoisted(() => ({
   scriptJobsEnabled: true,
+  scriptJobsCloudPrimaryEnabled: false,
+  scriptJobsPublicEnabled: false,
   contentProxyEnabled: true,
   scriptJobEncryptionKey: 'test-content-script-job-key-000000000000000000000000',
   scriptJobPreviousEncryptionKeys: [] as string[],
@@ -221,6 +223,7 @@ function cloudResult(overrides: Record<string, unknown> = {}): Record<string, un
     provider: 'openai',
     route: 'cloud',
     model: 'gpt-5.6-luna',
+    serviceTier: 'flex',
     runId: `run-${Math.random()}`,
     operationId: 'operation',
     validationStatus: 'valid',
@@ -265,6 +268,8 @@ describe('durable Content script jobs', () => {
     contentJobMocks.outputLanguageMismatchesRemaining = 0;
     contentJobMocks.publicOutputLanguageMismatchesRemaining = 0;
     localPrimaryConfigMock.scriptJobsEnabled = true;
+    localPrimaryConfigMock.scriptJobsCloudPrimaryEnabled = false;
+    localPrimaryConfigMock.scriptJobsPublicEnabled = false;
     localPrimaryConfigMock.contentProxyEnabled = true;
     localPrimaryConfigMock.scriptJobEncryptionKey = 'test-content-script-job-key-000000000000000000000000';
     localPrimaryConfigMock.scriptJobPreviousEncryptionKeys = [];
@@ -297,6 +302,110 @@ describe('durable Content script jobs', () => {
 
     expect(() => service.startContentScriptJobRecoveryLoop())
       .toThrow(expect.objectContaining({ code: 'LOCAL_PRIMARY_CONTENT_PROXY_REQUIRED' }));
+  });
+
+  it('runs owner/staff acceptance cloud-primary while local runtime is off and keeps public admission closed', async () => {
+    vi.stubEnv('CLOUD_SCRIPT_STANDARD_PROVIDER', 'openai');
+    vi.stubEnv('CLOUD_SCRIPT_STANDARD_MODEL', 'gpt-5.6-luna');
+    vi.stubEnv('CLOUD_SCRIPT_STANDARD_SERVICE_TIER', 'flex');
+    localPrimaryConfigMock.scriptJobsCloudPrimaryEnabled = true;
+    localPrimaryConfigMock.scriptJobsPublicEnabled = false;
+    localPrimaryConfigMock.contentProxyEnabled = false;
+    localPrimaryConfigMock.staffUserIds = [42];
+    inferenceMock.mockImplementation(async (input: { taskType: string; prompt: string }) => {
+      const prompt = parsedPrompt(input.prompt);
+      if (input.taskType.startsWith('script_outline')) {
+        return outlineCloudResult(Number(prompt.exactSectionCount));
+      }
+      const words = Number(prompt.targetWords);
+      return cloudResult({
+        text: Array.from({ length: words }, (_, index) => `word${index + 1}`).join(' ') + '.',
+      });
+    });
+
+    const db = database();
+    db.prepare(`UPDATE local_inference_runtime_control
+      SET mode = 'off', rollout_percent = 0 WHERE environment = 'staging'`).run();
+    const service = await import('../../src/services/content-script-jobs');
+    const created = service.createContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      idempotencyKey: 'cloud-primary-staff-acceptance',
+      request: {
+        topic: 'Delivery-bound cloud script',
+        format: 'YouTube',
+        maxDurationMinutes: 8,
+        language: 'en',
+        deliveryMode: 'standard',
+      },
+    }, db);
+    const stored = db.prepare('SELECT request_json, model_digest FROM content_script_jobs WHERE job_id = ?')
+      .get(created.job.jobId) as { request_json: string; model_digest: string | null };
+    const { decryptContentScriptJobJson } = await import('../../src/services/content-script-job-encryption');
+    expect(decryptContentScriptJobJson(stored.request_json, 42)).toMatchObject({
+      pinnedScriptRoute: 'cloud_primary',
+      pinnedCloudProvider: 'openai',
+      pinnedCloudModel: 'gpt-5.6-luna',
+      pinnedCloudServiceTier: 'flex',
+    });
+    expect(stored.model_digest).toBeNull();
+
+    const completed = await service.runContentScriptJob(created.job.jobId, db);
+    expect(completed).toMatchObject({ status: 'completed', route: 'cloud', modelDigest: null });
+    expect(inferenceMock.mock.calls.every(([request]) => (
+      request.routingPreference === 'cloud_primary'
+      && request.requiredCloudProvider === 'openai'
+      && request.scriptDeliveryMode === 'standard'
+    ))).toBe(true);
+
+    expect(() => service.createContentScriptJob({
+      tenantId: 84,
+      userId: 84,
+      idempotencyKey: 'cloud-primary-public-closed',
+      request: { topic: 'Public must remain closed', format: 'YouTube', maxDurationMinutes: 8 },
+    }, db)).toThrow(expect.objectContaining({ code: 'LOCAL_INFERENCE_NOT_ADMITTING' }));
+    db.close();
+  });
+
+  it.each([
+    ['scheduled', 'CLOUD_SCRIPT_SCHEDULED', 'batch'],
+    ['priority', 'CLOUD_SCRIPT_PRIORITY', 'priority'],
+  ] as const)('pins the %s OpenAI delivery class independently of the local manifest', async (
+    deliveryMode,
+    envPrefix,
+    serviceTier,
+  ) => {
+    vi.stubEnv(`${envPrefix}_PROVIDER`, 'openai');
+    vi.stubEnv(`${envPrefix}_MODEL`, 'gpt-5.6-luna');
+    vi.stubEnv(`${envPrefix}_SERVICE_TIER`, serviceTier);
+    localPrimaryConfigMock.scriptJobsCloudPrimaryEnabled = true;
+    localPrimaryConfigMock.staffUserIds = [42];
+
+    const db = database();
+    const service = await import('../../src/services/content-script-jobs');
+    const created = service.createContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      idempotencyKey: `cloud-primary-${deliveryMode}`,
+      request: {
+        topic: `${deliveryMode} delivery`,
+        format: 'YouTube',
+        maxDurationMinutes: 8,
+        language: 'en',
+        deliveryMode,
+      },
+    }, db);
+    const stored = db.prepare('SELECT request_json, model_digest FROM content_script_jobs WHERE job_id = ?')
+      .get(created.job.jobId) as { request_json: string; model_digest: string | null };
+    const { decryptContentScriptJobJson } = await import('../../src/services/content-script-job-encryption');
+    expect(decryptContentScriptJobJson(stored.request_json, 42)).toMatchObject({
+      pinnedScriptRoute: 'cloud_primary',
+      pinnedCloudProvider: 'openai',
+      pinnedCloudModel: 'gpt-5.6-luna',
+      pinnedCloudServiceTier: serviceTier,
+    });
+    expect(stored.model_digest).toBeNull();
+    db.close();
   });
 
   it('encrypts tenant-owned requests and enforces idempotency', async () => {
