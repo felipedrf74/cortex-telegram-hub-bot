@@ -773,7 +773,10 @@ screening scores. Every manifest entry must pin the exact installed SHA-256
 digest before a run; conditional/null digest binding is invalid. Per-candidate
 reasoning mode is required signed-manifest data: the validator and runtime
 parser accept exactly `false` or `"low"`, preserve it on the parsed candidate,
-and copy it into the artifact. Strict JSON
+and copy it into the artifact. The screening runner must build its system
+prompt from the same governed skill-profile policy artifact used by production
+inference and must record that artifact's SHA-256 digest. A benchmark-only
+refusal prompt or evaluator relaxation cannot qualify a model. Strict JSON
 rejects duplicate keys at every object depth. Structured action mismatch is
 reported separately from semantic safety/tenant refusal failures, and refusal
 cases use positive refusal-language checks plus explicit prohibited-leakage
@@ -790,14 +793,15 @@ When only deterministic evaluator logic or corpus acceptance terms change,
 preserve the immutable raw artifact and run
 `npm run local:model-first-pass -- --rescore-artifact <raw-artifact.json>
 --output <new-private-artifact.json>`. The derived artifact revalidates every
-prompt/response digest, pins the source artifact and source runner digest,
-recomputes every evaluation with the current runner/corpus/manifest, and never
-claims that generation was repeated. A rescore may reject legacy evidence; it
-cannot qualify a model whose raw run was incomplete or whose digest is not
-pinned by the current manifest. Both v1 legacy and v2 current raw artifacts are
-accepted. Only v2 source artifacts attest the generation-time reasoning mode;
-a v1 rescore records that mode as unavailable and reports the current manifest
-mode separately instead of inferring historical execution state.
+prompt/response digest, requires the raw artifact's governed profile version
+and policy SHA-256 to match the current runner, pins the source artifact and
+source runner digest, recomputes every evaluation with the current
+runner/corpus/manifest, and never claims that generation was repeated. A
+profile or prompt-policy change always requires a fresh attended run and cannot
+use the rescore path. Raw v3 artifacts attest the generation-time policy and
+reasoning mode; legacy v1/v2 artifacts remain historical evidence but cannot be
+rescored by the current runner. A rescore cannot qualify a model whose raw run
+was incomplete or whose digest is not pinned by the current manifest.
 
 `npm run local:model-bakeoff -- --observations <sanitized.jsonl>` applies the
 locked 35/30/15/10/10 score and all disqualification gates to the manifest

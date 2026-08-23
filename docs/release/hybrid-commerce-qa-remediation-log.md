@@ -230,6 +230,16 @@ candidate or a reviewed prompt/profile-policy change followed by a fresh
 complete first pass; failed evidence cannot be promoted or rescored into a
 winner.
 
+The reviewed remediation moves production and screening to the shared
+`nexus-skill-inference-v2` policy artifact. It adds reason-bearing refusal
+instructions for tenant privacy, unprovided copyrighted material, acute medical
+symptoms, and declared severe allergies; the runner records the exact policy
+SHA-256 in every new artifact. The immutable corpus, positive refusal-language
+checks, prohibited-leakage checks, and all thresholds remain unchanged. This
+code change is not qualification evidence: GPT-OSS still requires a fresh,
+complete attended first pass after the v2 policy reaches the signed production
+release, followed by the full blind-paired bakeoff and rollout gates.
+
 Do not enable public controls until an eligible signed local-model winner
 completes the full VPS bakeoff, the actual-account rate card and economics
 simulation pass, the ten-script acceptance cycle completes, and applicable
