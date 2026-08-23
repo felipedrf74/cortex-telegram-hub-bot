@@ -84,6 +84,9 @@ export interface SkillInferenceRequest {
   scriptDeliveryMode?: 'standard' | 'scheduled' | 'priority';
   /** Server-owned destination constraint for owner-approved cloud exports. */
   requiredCloudProvider?: 'openai';
+  /** Server-owned route ownership. Cloud-primary is accepted only for the
+   * non-private, delivery-bound OpenAI script lane. */
+  routingPreference?: 'local_primary' | 'cloud_primary';
   /** Durable caller-owned state required when the selected transport is Batch. */
   durableBatch?: StructuredGenerationBatchControl;
   requestSource: AiRequestSource;
@@ -100,6 +103,7 @@ export interface SkillInferenceResult {
   route: 'local' | 'cloud';
   model?: string;
   modelDigest?: string;
+  serviceTier?: 'default' | 'flex' | 'priority' | 'batch';
   fallbackReason?: string;
   runId: string;
   operationId: string;
@@ -792,6 +796,18 @@ async function executeSkillInferenceInternal(
       403,
     );
   }
+  const cloudPrimary = request.routingPreference === 'cloud_primary';
+  if (cloudPrimary && (evaluationMode !== 'production'
+      || request.containsPrivateData
+      || request.allowCloudEscalation !== true
+      || request.requiredCloudProvider !== 'openai'
+      || !['standard', 'scheduled', 'priority'].includes(String(request.scriptDeliveryMode)))) {
+    throw new SkillInferencePolicyError(
+      'CLOUD_PRIMARY_SCRIPT_CONTRACT_INVALID',
+      'Cloud-primary inference requires the non-private, delivery-bound OpenAI script contract.',
+      403,
+    );
+  }
   const profile = getSkillInferenceProfile(request.skillId);
   if (profile.memoryScope !== 'server_compiled_tenant_request'
       || profile.toolPolicy !== 'none'
@@ -843,7 +859,7 @@ async function executeSkillInferenceInternal(
     && request.executionClass !== 'action_proposal';
   const enrolled = control.mode === 'active'
     || (control.mode === 'canary' && isLocalInferenceUserEnrolled(request.userId, control.rolloutPercent));
-  const routingRequestsLocal = localEligible && (
+  const routingRequestsLocal = !cloudPrimary && localEligible && (
     evaluationMode === 'shadow' ? control.mode === 'shadow' : enrolled
   );
   let activeModelContextTokens: number | null = null;
@@ -1035,6 +1051,9 @@ async function executeSkillInferenceInternal(
       ...(request.requiredCloudProvider !== undefined
         ? { requiredCloudProvider: request.requiredCloudProvider }
         : {}),
+      ...(request.routingPreference !== undefined
+        ? { routingPreference: request.routingPreference }
+        : {}),
       ...(request.durableBatch !== undefined
         ? { durableBatch: request.durableBatch }
         : {}),
@@ -1132,6 +1151,10 @@ async function executeSkillInferenceInternal(
         route,
         ...(typeof metadata.modelUsed === 'string' ? { model: metadata.modelUsed } : {}),
         ...(typeof metadata.modelDigest === 'string' ? { modelDigest: metadata.modelDigest } : {}),
+        ...(typeof metadata.serviceTierUsed === 'string'
+          && ['default', 'flex', 'priority', 'batch'].includes(metadata.serviceTierUsed)
+          ? { serviceTier: metadata.serviceTierUsed as 'default' | 'flex' | 'priority' | 'batch' }
+          : {}),
         ...(input.fallbackReason ? { fallbackReason: input.fallbackReason } : {}),
         runId,
         operationId,

@@ -16,6 +16,12 @@ export const localPrimaryInferenceConfig = Object.freeze({
   contentSpecialistsEnabled: process.env.LOCAL_PRIMARY_CONTENT_SPECIALISTS_ENABLED === 'true',
   autoRollbackEnabled: process.env.LOCAL_PRIMARY_AUTO_ROLLBACK_ENABLED === 'true',
   scriptJobsEnabled: process.env.LOCAL_PRIMARY_SCRIPT_JOBS_ENABLED === 'true',
+  scriptJobsCloudPrimaryEnabled:
+    process.env.CONTENT_SCRIPT_JOBS_CLOUD_PRIMARY_ENABLED === 'true',
+  // Script jobs are OpenAI-primary under the locked delivery contract. Keep
+  // owner/staff acceptance independently available before this public gate is
+  // opened; local-model rollout state must not decide cloud-script admission.
+  scriptJobsPublicEnabled: process.env.CONTENT_SCRIPT_JOBS_PUBLIC_ENABLED === 'true',
   // The attended kill switch accepts conventional affirmative spellings so
   // an operator cannot accidentally leave inference active with `TRUE` or `1`.
   hardKill: emergencyBoolean(process.env.LOCAL_PRIMARY_LLM_HARD_KILL),

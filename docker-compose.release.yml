@@ -18,6 +18,8 @@
 #   NEXUS_DATA_DIR              host-mounted database directory, per environment
 #   NEXUS_BACKEND_PORT          8200 production / 8201 staging
 #   NEXUS_CONTENT_ENGINE_PORT   8100 production / 8101 staging
+#   NEXUS_OLLAMA_GATEWAY_SOCKET_DIR root-created environment socket directory
+#   NEXUS_OLLAMA_GATEWAY_SOCKET_PATH exact environment Unix socket leaf
 #
 # The `migrator` service sits behind a Compose profile so `up` can never start
 # it. The poller runs it as an explicit one-shot after the pre-migration backup.
@@ -40,6 +42,39 @@ x-release-security: &release-security
   - no-new-privileges:true
 
 services:
+  # Least-privilege bridge from the containers to host Ollama. Host networking
+  # is intentional: the gateway implementation has a fixed 127.0.0.1:11434
+  # upstream and exposes no TCP listener. Its only published surface is the
+  # mode-0600 Unix socket in the root-created environment-specific directory.
+  ollama-gateway:
+    image: ${NEXUS_BACKEND_IMAGE:?release backend image digest is required}
+    network_mode: host
+    environment:
+      NODE_ENV: production
+      OLLAMA_GATEWAY_SOCKET_PATH: ${NEXUS_OLLAMA_GATEWAY_SOCKET_PATH:?exact Ollama gateway socket path is required}
+    volumes:
+      - ${NEXUS_OLLAMA_GATEWAY_SOCKET_DIR:?root-created Ollama gateway socket directory is required}:${NEXUS_OLLAMA_GATEWAY_SOCKET_DIR:?root-created Ollama gateway socket directory is required}
+    command: ["node", "dist/tools/ollama-unix-gateway.js"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl --unix-socket \"$${OLLAMA_GATEWAY_SOCKET_PATH}\" -fsS http://localhost/health"]
+      interval: 10s
+      timeout: 5s
+      start_period: 20s
+      retries: 12
+    read_only: true
+    tmpfs:
+      - /tmp
+    user: "10001:10001"
+    cap_drop:
+      - ALL
+    security_opt: *release-security
+    cpus: 0.5
+    mem_limit: 256m
+    pids_limit: 256
+    logging: *release-logging
+    stop_grace_period: 20s
+    restart: unless-stopped
+
   content-engine:
     image: ${NEXUS_CONTENT_ENGINE_IMAGE:?release content-engine image digest is required}
     env_file:
@@ -75,6 +110,8 @@ services:
     depends_on:
       content-engine:
         condition: service_healthy
+      ollama-gateway:
+        condition: service_healthy
     env_file:
       - path: ${NEXUS_BACKEND_ENV_FILE:?root-owned backend env file is required}
         required: true
@@ -104,11 +141,15 @@ services:
       CONTENT_ENGINE_PORT: "8100"
       DATABASE_PATH: /app/data/bot.db
       BACKUP_DIR: /app/data/backups
+      # Compose owns this release authority; a mutable backend env file cannot
+      # redirect the application to staging's socket or an arbitrary path.
+      OLLAMA_GATEWAY_SOCKET_PATH: ${NEXUS_OLLAMA_GATEWAY_SOCKET_PATH:?exact Ollama gateway socket path is required}
     ports:
       - "127.0.0.1:${NEXUS_BACKEND_PORT:?backend host port is required}:8200"
     volumes:
       - ${NEXUS_DATA_DIR:?release data directory is required}:/app/data
       - ${NEXUS_RELEASE_PLAN_DIR:?release plan directory is required}:/release:ro
+      - ${NEXUS_OLLAMA_GATEWAY_SOCKET_DIR:?root-created Ollama gateway socket directory is required}:${NEXUS_OLLAMA_GATEWAY_SOCKET_DIR:?root-created Ollama gateway socket directory is required}
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8200/health"]
       interval: 10s
