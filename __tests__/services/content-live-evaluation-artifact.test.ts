@@ -11,6 +11,7 @@ import {
   CONTENT_LIVE_EVAL_HARD_MAX_USD_PER_SAMPLE,
   CONTENT_LIVE_EVAL_MAX_INTERNAL_INPUT_BYTES,
   CONTENT_LIVE_EVAL_MAX_OUTPUT_TOKENS,
+  CONTENT_LIVE_EVAL_PRICING_REVIEW_MAX_AGE_MS,
   CONTENT_LIVE_EVAL_PRICING_REVIEWED_AT,
   CONTENT_LIVE_EVAL_ROUTING_PATH,
   contentEvalHmacSha256,
@@ -34,7 +35,7 @@ import { makeContentLiveEvalTestResponse } from '../fixtures/content-live-evalua
 const RUBRIC_DIGEST = contentEvalSha256(CONTENT_QUALITY_RUBRIC);
 const ATTESTATION_KEY = Buffer.alloc(32, 0x4a);
 const TRUSTED_FINGERPRINT = contentLiveEvalAttestationKeyFingerprint(ATTESTATION_KEY);
-const VALIDATION_NOW = new Date('2026-07-19T10:05:00.000Z');
+const VALIDATION_NOW = new Date('2026-08-23T10:05:00.000Z');
 const SOURCE_IDENTITY: ContentLiveEvalSourceIdentity = {
   gitCommit: 'a'.repeat(40),
   trackedTreeClean: true,
@@ -80,8 +81,8 @@ function validArtifact(input: {
   }
   return createContentLiveEvaluationArtifact({
     runId: 'content-live-eval-unit-20260719',
-    startedAt: '2026-07-19T09:59:00.000Z',
-    generatedAt: '2026-07-19T10:00:00.000Z',
+    startedAt: '2026-08-23T09:59:00.000Z',
+    generatedAt: '2026-08-23T10:00:00.000Z',
     rubricDigest: RUBRIC_DIGEST,
     budgetLimitUsd: 1,
     sourceIdentity: input.sourceIdentity ?? SOURCE_IDENTITY,
@@ -100,7 +101,7 @@ function validArtifact(input: {
         category: 'content_day_to_day_eval',
         providerCategory: 'content_engine_script_standard',
         status: 'succeeded',
-        capturedAt: `2026-07-19T09:59:1${index}.000Z`,
+        capturedAt: `2026-08-23T09:59:1${index}.000Z`,
         routingPath: CONTENT_LIVE_EVAL_ROUTING_PATH,
         inputTokens: 500,
         outputTokens: 300,
@@ -179,6 +180,18 @@ describe('Content live-evaluation artifact', () => {
     expect(validateContentLiveEvaluationArtifact(forged, validationOptions()).reason).toBe('attestation_mac_mismatch');
   });
 
+  it('rejects an artifact after the reviewed pricing age expires', () => {
+    const afterPricingExpiry = new Date(
+      Date.parse(CONTENT_LIVE_EVAL_PRICING_REVIEWED_AT)
+      + CONTENT_LIVE_EVAL_PRICING_REVIEW_MAX_AGE_MS
+      + 1,
+    );
+    expect(validateContentLiveEvaluationArtifact(validArtifact(), validationOptions({
+      now: afterPricingExpiry,
+      maxArtifactAgeMs: Number.MAX_SAFE_INTEGER,
+    })).reason).toBe('pricing_review_stale');
+  });
+
   it('never release-qualifies an average score when any fixed scenario failed', () => {
     const artifact = validArtifact({ failedScenarioIndex: 0 });
     expect(artifact.summary).toMatchObject({ score: 96, passCount: 4, failCount: 1 });
@@ -192,11 +205,11 @@ describe('Content live-evaluation artifact', () => {
     rebindArtifact(sourceDrift);
     expect(validateContentLiveEvaluationArtifact(sourceDrift, validationOptions()).reason).toBe('source_identity_mismatch');
 
-    expect(validateContentLiveEvaluationArtifact(validArtifact(), validationOptions({ now: new Date('2026-07-20T10:00:00.000Z') })).reason)
+    expect(validateContentLiveEvaluationArtifact(validArtifact(), validationOptions({ now: new Date('2026-08-24T10:00:00.000Z') })).reason)
       .toBe('stale_or_future_artifact');
 
     const futureInvocation = validArtifact();
-    futureInvocation.invocations[0].capturedAt = '2026-07-19T10:10:00.000Z';
+    futureInvocation.invocations[0].capturedAt = '2026-08-23T10:10:00.000Z';
     rebindArtifact(futureInvocation);
     expect(validateContentLiveEvaluationArtifact(futureInvocation, validationOptions()).reason).toBe('invalid_invocation_time');
 

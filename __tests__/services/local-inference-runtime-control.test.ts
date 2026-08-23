@@ -105,7 +105,7 @@ describe('local inference runtime control', () => {
       updated_by: 42,
       model_manifest_version: '2026-08-12.1',
       active_model_digest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-      skill_profile_version: 'nexus-skill-inference-v2',
+      skill_profile_version: 'nexus-skill-inference-v3',
     });
     expect(db.prepare(`SELECT previous_mode, mode, rollout_percent, actor_type,
       actor_user_id, reason FROM local_inference_control_events`).get()).toEqual({

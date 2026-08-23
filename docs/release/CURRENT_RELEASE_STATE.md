@@ -1,12 +1,32 @@
 # Current Release State
 
 > **Process changed 2026-08-07** — see [`continuous-deployment.md`](continuous-deployment.md).
-> Figures below are the last recorded, historical, non-authoritative *PM2* snapshot;
-> this repository projection proves no completed container receipt. Authority is VPS state at
+> The signed summary below was observed on 2026-08-23. Superseded PM2 and iOS
+> snapshots remain in Git history, not in this current-state document. Authority is VPS state at
 > `/var/lib/nexus-release/state/release-state.json` plus `/var/lib/nexus-release/receipts/`.
 > Machine-readable projection: `docs/release/release-state.json` (generated, non-authoritative).
 
-## Container release — 2026-08-19 (hybrid commerce QA remediation lineage)
+## Current signed state — 2026-08-23
+
+- The active completed backend receipt is `a6ef7c948da5999d0762475f80527855`
+  at protected-main source `8f75dfa2b2a9f387cf6a9a2999e8c37041605bce`.
+  It runs backend digest
+  `sha256:ce38af676bf203c48075dd3b63847f439a2c3aefed629d2fff6604448b7089a0`
+  and Content Engine digest
+  `sha256:db72646164a1888096e26fdb5a760688d4c312dfa047e31eb498e8cd958586e5`.
+- iOS 1.5.0 build 279 from source
+  `bb26ef7ee849833442e855c69033ff1c63194427` is distributed through
+  TestFlight. App Store review submission
+  `8fbed07b-db86-4679-9f2c-be8fbcda3c42` contains that build plus all three
+  consumable credit packs and was submitted through the required website flow.
+- The production website authority is [`https://nexushub.me/`](https://nexushub.me/).
+  Prototype or preview deployments are not design or production references.
+- Hybrid credits, subscription checkout, Stripe pack fulfillment, Apple pack
+  fulfillment, and local-primary rollout remain OFF pending the acceptance,
+  economics, model, and real Apple sandbox evidence recorded in the canonical
+  hybrid plan/remediation log. Correct deployment is not activation evidence.
+
+## Historical container lineage — 2026-08-19
 
 - Every merge to protected main mints a new receipt, so this file records the
   chain and the authority, never a frozen head: read the active receipt from
@@ -38,56 +58,6 @@
 - All six plan §5 kill switches now exist: 293 adds `subscription_checkout`
   and `storefront` in an additive table, enforced at the shared checkout choke
   point. Migrations 290–293 are all backfill/expand, predecessor-compatible.
-
-## Production
-
-- Backend version: `4.14.232`
-- Runtime commit: `3ac5ebbe4709a1e568ee9838c70ae3984e857de6`
-- Artifact digest: `769f0f46e22d98c3ab5b4397555000434ffb3b56bbbb677dfae721a8167c8467`
-- Installed-tree digest: `00d8c5d9f779a5b0c8bf025239f188848c2227adb1512d20cda62bc148a80ee6`
-- Training catalog package: `51c1089cceb8a916abf200b5cb3688b19f5f7553990467ee0f8ef01c7c4f74bb`
-- Training release subject: `27b97ebc96e1b3bb1ee3612e63c5609b5572c9d4b58e59b8ea3e77642fb1cea3`
-- Transaction `20260805T214413Z-61d0c9b8e521` completed 2026-08-05 in 74.134s;
-  all health/parity/smoke/migration/integrity/backup/rollback checks passed;
-  backup `nexus-db-20260805T214421Z.sqlite.age` (rollback armed, unused).
-
-## Artifact-Bound Evidence
-
-- Protected-main/checkpoint runs: `31047443271` / `31048263279`; compact
-  manifest SHA-256 `d3dba958fe9b…`; staging/production transactions
-  `20260805T214301Z-16818898b3f6` / `20260805T214413Z-61d0c9b8e521`;
-  encrypted backup SHA-256 `83911e31b212…`.
-- Fault drill `20260802T133139Z-1d33c71562f6` restored predecessor in 2.696s/120s;
-  staging-smoke 24/24; exact-SHA `local_engine` eval 7/7 at $0.
-- Evidence: ignored `.local/release/`, server state, restricted CI artifacts.
-
-## Lean-Release Measurement
-
-- Ten of ten measured releases passed; median improvement 3m19s (16.86%);
-  test partitions disjoint and complete; protected-main artifact reused unchanged.
-
-## Chat Quality Rollout
-
-- Phases 1–4 deployed; corpus exported with zero provider calls; calibration in `53164d51`.
-- Phase 5 staging baseline `chat-eval-2026-07-31T17-19-58-073Z` frozen with
-  immutable hashes (`operator_checkout_only` provenance, not production
-  evidence). Phase 6 routing gate unmet (report SHA-256 `f8a00055…`).
-- Phase 7 hit a genuine classifier gate on the predecessor; the staging
-  observation failure was recovered as hash-bound `failure_acknowledged`
-  without converting to a pass, and classifier rollback passed. All seven
-  capability flags remain OFF; routing-gate evidence does not transfer.
-
-## iOS / TestFlight
-
-- iOS version/distributed build: `1.5.0` (259), from source build 59.
-- Archived binary source: `f3d868783a52f549c235b11dc0a378fa7adfc43b`;
-  archive-signing PR head: `213e40d08edc84732079c08b1515312b9e9efb30`;
-  iOS `main`: `e6f374bdd77bdd5f47afcb82e546bdaa15b69985`.
-- Build 259 remains in the `Nexus Hub Betinha` group; physical-device smoke is open.
-- Review was rejected on 2026-07-24 under 2.1(b)/5.1.1(v); no resubmission,
-  signed notification build, or TestFlight submission occurred in this release.
-  Notification PR #35 is merged; signed-build and authorization-upgrade proof
-  remain owner-gated.
 
 ## Release Process
 

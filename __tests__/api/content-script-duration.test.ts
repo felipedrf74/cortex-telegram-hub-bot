@@ -373,14 +373,14 @@ describe('Content API — script duration presets', () => {
   it('keeps the governed live-eval route synthetic, non-persistent, and cache-bypassed', async () => {
     vi.stubEnv('CONTENT_LIVE_EVAL_ENABLED', '1');
     vi.stubEnv('NEXUS_CONTENT_LIVE_EVAL_RUNTIME', '1');
-    const scenario = CONTENT_LIVE_EVAL_CORPUS[0];
+    const scenario = CONTENT_LIVE_EVAL_CORPUS.find((entry) => entry.targetDurationSeconds === 120)!;
     mockGetScript.mockResolvedValueOnce({
       topic: scenario.topic,
       script: 'A practical creator workflow with three useful steps and one clear next action.',
       hook: 'Turn rough notes into a useful plan.',
       title_options: ['A useful weekly plan', 'Three practical creator steps'],
       sources_used: [{ title: 'Synthetic source', url: 'https://example.invalid/source', source_type: 'test', relevance_note: 'Synthetic only' }],
-      estimated_duration: '45 seconds',
+      estimated_duration: '2 minutes',
       duration_ms: 1200,
       hashtags: [],
       caption: 'Synthetic evaluation caption.',
@@ -433,6 +433,8 @@ describe('Content API — script duration presets', () => {
       hardRunCostLimitUsd: 1,
       hardJobCostLimitUsd: 0.2,
     });
+    expect(mockGetScript.mock.calls[0]?.[2]).toBe(2);
+    expect(mockGetScript.mock.calls[0]?.[9]).toBe(120);
   });
 
   it('rejects unsupported short durations', async () => {

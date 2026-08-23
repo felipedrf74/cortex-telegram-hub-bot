@@ -264,10 +264,11 @@ bakeoff, winner signing, gateway/socket activation, or a public flag change.
 
 ## Apple first-consumable submission (2026-08-23)
 
-App Store Connect submission `7aefa2a9-bb61-4de7-a9d9-e5d2058e623a`
-contains exactly iOS 1.5.0 build 277 plus the 100, 250, and 600-credit
-consumables. The required website-only first-IAP flow accepted all four items,
-and every item reached `Waiting for Review`. Production Apple fulfillment
+App Store Connect submission `8fbed07b-db86-4679-9f2c-be8fbcda3c42`
+contains exactly iOS 1.5.0 build 279 plus the 100, 250, and 600-credit
+consumables. The required website-only first-IAP flow submitted all four items
+for App Review; the duplicate one-pack draft was removed before submission.
+Production Apple fulfillment
 remains OFF until Apple approves the catalog and a real sandbox signed-JWS
 grant, exact binding, idempotent replay, and retained retry pass against the
 isolated staging backend.
@@ -395,12 +396,12 @@ release `06386bb225dd1e700cd6fd3cf58bdae6` as
 completed at `2026-08-23T18:01:06.917Z`. This docs-only successor is the
 CD-eligible carrier for those unchanged reviewed application images.
 
-Until that carrier completes signed deployment, the production receipt remains
-`fa747e0968de874015ee5fb8754c3fcf` at source
-`438a99d730bd1e875843c160f6810e59840043d2`, so production still uses Scheduled
-Flex and has no Apple device policy endpoint. The paired physical iPad Pro is
-available but reports Developer Mode disabled, preventing the required physical
-24-case run until the owner enables it on-device.
+The CD-eligible carrier subsequently completed signed deployment as release
+`a6ef7c948da5999d0762475f80527855` at source
+`8f75dfa2b2a9f387cf6a9a2999e8c37041605bce`. Production therefore contains the
+reviewed Batch and Apple device-policy implementation. The paired physical iPad
+Pro is available but reports Developer Mode disabled, preventing the required
+physical 24-case run until the owner enables it on-device.
 
 Remaining gates are unchanged where implementation cannot create external
 evidence: an eligible signed VPS local-model winner/full bakeoff; the physical

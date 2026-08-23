@@ -74,7 +74,7 @@ export type ProviderToolFeeKind =
   | 'gemini_grounded_prompt';
 
 const PROVIDER_TOOL_FEE_DEFAULTS_USD: Record<ProviderToolFeeKind, number> = {
-  // Official list prices verified 2026-07-09. Gemini includes a project-wide
+  // Official list prices verified 2026-08-23. Gemini includes a project-wide
   // free allowance, but this process cannot observe calls made outside Nexus.
   // Defaulting to the billable price is therefore the only safe hard ceiling.
   anthropic_web_search: 0.01,

@@ -9,7 +9,7 @@ import {
 
 describe('skill inference profiles', () => {
   it('defines one output-only profile for every Nexus skill', () => {
-    expect(SKILL_INFERENCE_PROFILE_VERSION).toBe('nexus-skill-inference-v2');
+    expect(SKILL_INFERENCE_PROFILE_VERSION).toBe('nexus-skill-inference-v3');
     expect(listSkillInferenceProfiles().map((profile) => profile.skillId).sort()).toEqual([
       'content', 'cooking', 'finance', 'secretary', 'training', 'triathlon',
     ]);

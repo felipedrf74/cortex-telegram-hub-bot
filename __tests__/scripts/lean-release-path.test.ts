@@ -1230,6 +1230,8 @@ db.close();
   it('reads protected release identity under macOS Bash errexit semantics', () => {
     const gate = path.resolve('scripts/lib/release-gates.sh');
     const state = path.resolve('docs/release/release-state.json');
+    const stateViewSource = fs.readFileSync('scripts/release-state-view.mjs', 'utf8');
+    expect(stateViewSource).toContain('artifactDigest: projectedBackendDigest.slice');
     const result = spawnSync('/bin/bash', [
       '-s',
       '--',
