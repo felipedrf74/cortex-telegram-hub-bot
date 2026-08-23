@@ -22,6 +22,8 @@ import { deviceInferenceRoutes } from '../../src/api/routes/device-inference';
 interface MockRes {
   statusCode: number;
   body: any;
+  responseHeaders: Record<string, unknown>;
+  setHeader(name: string, value: unknown): void;
   status(code: number): MockRes;
   json(body: unknown): MockRes;
 }
@@ -30,6 +32,8 @@ function mockRes(onSend: () => void): MockRes {
   const res: MockRes = {
     statusCode: 200,
     body: null,
+    responseHeaders: {},
+    setHeader(name, value) { res.responseHeaders[name] = value; },
     status(code) { res.statusCode = code; return res; },
     json(body) { res.body = body; onSend(); return res; },
   };
@@ -54,11 +58,14 @@ function request(method: string, path: string, deviceId = 'device-1'): Request {
   } as any;
 }
 
-async function dispatch(req: Request): Promise<MockRes> {
+async function dispatch(
+  req: Request,
+  router: ReturnType<typeof deviceInferenceRoutes> = deviceInferenceRoutes(),
+): Promise<MockRes> {
   let done!: () => void;
   const completed = new Promise<void>((resolve) => { done = resolve; });
   const res = mockRes(done);
-  deviceInferenceRoutes().handle(req, res, done);
+  router.handle(req, res, done);
   await completed;
   return res;
 }
@@ -93,5 +100,19 @@ describe('device inference routes', () => {
       enabled: false,
     });
     expect(mocks.getPolicy).toHaveBeenCalledOnce();
+  });
+
+  it('rate-limits repeated authorization requests without rejecting an ordinary request', async () => {
+    const router = deviceInferenceRoutes();
+    const ordinary = await dispatch(request('POST', '/evidence'), router);
+    expect(ordinary.statusCode).toBe(400);
+    expect(ordinary.body.error.code).toBe('DEVICE_EVIDENCE_INVALID');
+
+    let throttled: MockRes | null = null;
+    for (let attempt = 1; attempt <= 60; attempt += 1) {
+      throttled = await dispatch(request('POST', '/evidence'), router);
+    }
+    expect(throttled?.statusCode).toBe(429);
+    expect(throttled?.body.error.code).toBe('RATE_LIMITED');
   });
 });

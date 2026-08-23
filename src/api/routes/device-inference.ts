@@ -3,8 +3,10 @@
 /** Authenticated Apple Foundation Models policy/admission/evidence contract. */
 
 import { Router, type Request, type Response } from 'express';
+import { ipKeyGenerator, rateLimit } from 'express-rate-limit';
 import type { AuthenticatedRequest } from '../auth-middleware';
 import { sendError, sendSuccess } from '../response-helpers';
+import { config } from '../../config';
 import {
   DEVICE_INFERENCE_POLICY_VERSION,
   getDeviceInferencePolicy,
@@ -91,13 +93,38 @@ function requireDeviceScope(
 
 export function deviceInferenceRoutes(): Router {
   const router = Router();
+  const deviceInferenceRateLimitMiddleware = rateLimit({
+    windowMs: 60 * 1000,
+    limit: (req: Request) => {
+      const readLimit = config.ios?.readRateLimit ?? Math.max(config.ios?.rateLimit ?? 60, 300);
+      const writeLimit = config.ios?.rateLimit ?? 60;
+      return req.method === 'GET' || req.method === 'HEAD' ? readLimit : writeLimit;
+    },
+    keyGenerator: (req: Request) => {
+      const userId = (req as AuthenticatedRequest).userId;
+      if (Number.isSafeInteger(userId) && userId > 0) return `user:${userId}`;
+      return `ip:${ipKeyGenerator(req.ip || req.socket?.remoteAddress || '0.0.0.0')}`;
+    },
+    // The parent API router remains authoritative for normal rate-limit
+    // headers. This route-local limiter keeps every exported authorization
+    // handler independently bounded and visible to static analysis.
+    legacyHeaders: false,
+    standardHeaders: false,
+    handler: (_req, res, _next, options) => {
+      const retryAfter = Math.ceil(options.windowMs / 1000);
+      res.setHeader('Retry-After', retryAfter);
+      res.status(options.statusCode).json({
+        error: { code: 'RATE_LIMITED', message: 'Too many requests. Slow down.', retryAfter },
+      });
+    },
+  });
 
-  router.get('/policy', (req: Request, res: Response) => {
+  router.get('/policy', deviceInferenceRateLimitMiddleware, (req: Request, res: Response) => {
     if (!requireDeviceScope(req, res)) return;
     sendSuccess(res, getDeviceInferencePolicy());
   });
 
-  router.post('/admissions', (req: Request, res: Response) => {
+  router.post('/admissions', deviceInferenceRateLimitMiddleware, (req: Request, res: Response) => {
     const scope = requireDeviceScope(req, res);
     if (!scope) return;
     const raw = req.body;
@@ -121,7 +148,7 @@ export function deviceInferenceRoutes(): Router {
     sendSuccess(res, { admission: result.admission, replay: result.kind === 'replay' }, { status: 201 });
   });
 
-  router.post('/admissions/:admissionId/settle', (req: Request, res: Response) => {
+  router.post('/admissions/:admissionId/settle', deviceInferenceRateLimitMiddleware, (req: Request, res: Response) => {
     const scope = requireDeviceScope(req, res);
     if (!scope) return;
     const admissionId = String(req.params.admissionId || '');
@@ -152,7 +179,7 @@ export function deviceInferenceRoutes(): Router {
     sendSuccess(res, { state: result.state, replay: result.kind === 'replay' });
   });
 
-  router.post('/evidence', (req: Request, res: Response) => {
+  router.post('/evidence', deviceInferenceRateLimitMiddleware, (req: Request, res: Response) => {
     const scope = requireDeviceScope(req, res);
     if (!scope) return;
     const raw = req.body;
