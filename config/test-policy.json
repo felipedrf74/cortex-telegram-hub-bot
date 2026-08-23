@@ -168,6 +168,26 @@
     ],
     "cleanupMappings": [
       {
+        "test": "__tests__/services/local-inference-runtime-control.test.ts",
+        "replacementTests": [
+          "__tests__/services/local-inference-runtime-control.test.ts"
+        ],
+        "sources": [
+          "src/services/local-inference-runtime-control.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/local-inference-runtime-control.ts:418-425",
+            "anchor": "&& !input.evidenceReference?.trim())",
+            "behavior": "Production active routing cannot open without an immutable reference to the signed ten-script acceptance and economics evidence.",
+            "replacementTest": "__tests__/services/local-inference-runtime-control.test.ts",
+            "ownerTestNamePattern": "requires production auto-rollback and acceptance evidence before active/100%$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained runtime-control suite removes obsolete timed percentage-cohort assertions and replaces them with the owner-approved direct activation evidence gate."
+      },
+      {
         "test": "__tests__/scripts/local-model-first-pass.test.ts",
         "replacementTests": [
           "__tests__/scripts/local-model-first-pass.test.ts"

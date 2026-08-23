@@ -206,7 +206,7 @@ binding; operational assets must never be copied around that contract.
 | `LOCAL_PRIMARY_SCRIPT_JOBS_ENABLED` | Enables resumable long-form script jobs. |
 | `LOCAL_PRIMARY_AUTO_ROLLBACK_ENABLED` | Enables the five-minute application threshold monitor. |
 | `LOCAL_PRIMARY_LLM_HARD_KILL` | Attended emergency environment kill. |
-| `LOCAL_PRIMARY_STAFF_USER_IDS` | Authenticated owner/staff IDs admitted at every canary percentage. |
+| `LOCAL_PRIMARY_STAFF_USER_IDS` | Optional authenticated owner/staff IDs for verification-only shadow diagnostics; never a percentage-cohort launch gate. |
 | `OLLAMA_GATEWAY_SOCKET_PATH` | Selects the environment-specific gateway socket. |
 | `CONTENT_SCRIPT_JOB_ENCRYPTION_KEY` | Current script-job encryption key, minimum 32 bytes. |
 | `CONTENT_SCRIPT_JOB_PREVIOUS_ENCRYPTION_KEYS` | Comma-separated decrypt-only key ring for rotation. |
@@ -217,7 +217,7 @@ version, active-model digest, or specialist-profile version change makes any
 existing shadow/canary/active row effectively OFF until an owner explicitly
 sets OFF and starts again. Runtime-control rows and mutation events bind all
 three identities, preventing a changed inference contract from inheriting the
-previous contract's rollout or economics window.
+previous contract's acceptance evidence.
 
 Before background workers start, the application reconciles any effective
 protective OFF decision into the durable control row. This covers manifest or
@@ -225,23 +225,20 @@ configuration drift—including a disabled Ollama provider, missing gateway
 socket path, or disabled Content proxy—invalid persisted stage relationships,
 and an emergency latch. Reconciliation writes a `system_monitor` audit event, so a previous
 shadow/canary/active row cannot silently reopen after restart; owner-controlled
-rollout must begin again from OFF.
+activation must begin again from OFF.
 
 Enabling the script-job worker without the Content proxy and a valid current
 encryption key is a startup error. Recovery never opens or mutates queued
 user-scoped jobs under a partially configured deployment.
 
-Production advancement is code-governed as `off -> shadow -> canary/1% ->
-canary/5% -> canary/25% -> canary/50% -> active/100%`. `off -> shadow` may start
-immediately; every later increase requires seven stable days on the exact
-current stage and stages cannot be skipped. Reductions and mode OFF remain
-immediate. The owner must configure the authenticated staff allowlist before
-canary/1%; staff remain enrolled at later percentages while all other users use
-the deterministic per-user cohort hash. Staging may use arbitrary explicit
-canary percentages for evaluation without weakening production progression.
-Production canary/active admission also fails closed unless the automatic
-rollback monitor is enabled; shadow mode remains available while the staff
-cohort and rollback controls are being prepared.
+Production advancement is code-governed as `off -> active/100%`, with
+verification-only `shadow/0%` available as an optional intermediate state.
+The owner may move directly from OFF to active/100% only with the signed
+ten-script acceptance/economics evidence reference, healthy pre-activation
+latency/error baselines, a production-selected manifest, the verified gateway,
+and automatic rollback enabled. Production percentage canaries are rejected;
+staging may retain arbitrary explicit canary percentages for isolated
+evaluation. Reductions and mode OFF remain immediate.
 
 ## 4. Admission and fallback
 
@@ -804,17 +801,22 @@ rescored by the current runner. A rescore cannot qualify a model whose raw run
 was incomplete or whose digest is not pinned by the current manifest.
 
 `npm run local:model-bakeoff -- --observations <sanitized.jsonl>` applies the
-locked 35/30/15/10/10 score and all disqualification gates to the manifest
-candidates. The version-3 observation contract binds every case to the exact
-normalized model digest and specialist-profile version, rejects mixed identity
-inside a candidate run, and reports empty percentile sets as unavailable rather
-than zero. It requires completion,
-source-consistency, and 1,900-2,400-word evidence for Content script cases and
-enforces the ordinary-Chat and 12-minute script latency gates. Schema validity
-is calculated only from at least 100 structured cases, so ordinary prose cannot
-dilute structured-output failures. The tool does not select or pull a model.
-Selection requires the production VPS observations, license review, full Nexus
-corpus, signed digest, and owner-reviewed manifest change. The
+locked 35/30/15/10/10 score and all disqualification gates to the finalists
+that survived the bounded screening pass. The version-3 observation contract
+binds every case to the exact normalized model digest and specialist-profile
+version, rejects mixed identity inside a candidate run, and reports empty
+percentile sets as unavailable rather than zero. The focused final pass uses
+medium skill tasks, Content outlines/sections, tool plans, and at least 100
+compact structured-schema cases. It does not generate a separate complete
+15-minute script for each local candidate. Complete-script evidence belongs to
+the single ten-script product acceptance inventory below and is shared by
+quality, delivery, and economics checks. The tool does not select or pull a
+model. Selection requires the production VPS observations, license review,
+signed digest, applicable blind-paired evidence, and an owner-reviewed manifest
+change. A challenger that fails a critical screening gate cannot enter the
+final pass. When every challenger is screening-disqualified, the reviewed
+retention report may keep the digest-pinned Qwen control for only the
+quality-approved lightweight workloads defined by the canonical plan. The
 production-selected manifest structurally requires the winning
 candidate ID, a digest of the bakeoff report, and host rollback-receipt digest, corpus,
 legal-review, and owner-approval references;
@@ -824,37 +826,33 @@ only repeat the active
 manifest tag; stale overrides are rejected instead of superseding the signed
 manifest.
 
-Target Pro `$9.99` and Max `$14.99` prices remain inactive until the stable
-30-day window has at least 500 eligible completions, 100 long-form scripts, 30
-active tester-days per tier, the local/fallback/quality/performance gates, the
-65%/70% contribution margins, and independently verified Stripe/App Store
-products. The repository gate also requires active/100% routing to have remained
-unchanged for the entire requested window, at least 100 structured local
-outputs at 99% validity, one current specialist-profile version, and one local
-model digest matching the signed active manifest. A rollout, profile, model,
-envelope, or material tier change therefore resets or excludes the proof
-window. The 500-completion sample counts completed profile-eligible operations
-whether they ultimately used local or an authorized cloud route; local share
-is calculated separately. Plan reporting uses the inference run's immutable plan when present
-and otherwise the user's current subscription for legacy usage. Billing
-mutation is a separate owner transaction. Any owner update to an active Pro or
-Max `plan_configs` row resets the repository pricing-proof window; the owner
-plan API exposes and bounds every local-operation, context, script, active-job,
-queue-weight, and local-to-cloud per-run/per-day cost-cap field rather than
-relying on scattered environment values. Partial owner updates are merged
-with the durable plan before validation: hourly operations and long-form jobs
-cannot exceed the daily operation ceiling, ordinary context cannot exceed
-Content context, segment output cannot exceed Content context, and a fallback
-attempt cap cannot exceed its daily fallback cap.
+Target Pro `$9.99` and Max `$14.99` prices use the canonical pre-release gate:
+actual provider-account rates, the ten measured complete scripts, existing
+usage data, conservative simulations, at least 80% blended contribution margin,
+and at least 80% web-subscription contribution margin. Apple is reported
+separately under the canonical 70-75% initial floor. The former 30-day,
+500-completion, 100-script, tester-day, and percentage-cohort launch gates are
+retired and must not block activation.
 
-The repository pricing report counts a completed job toward the 100-script
-long-form threshold only when its normalized target duration is greater than
-three minutes and its final warning ledger is empty. A reviewable completion
-that remains outside the 1,900-2,400-word contract or carries another final
-quality warning stays available to the user but cannot inflate local script
-share or pricing evidence. Duration and warning codes are non-sensitive job
-dimensions; reporting never decrypts customer requests merely to classify the
-acceptance sample.
+The ten complete scripts are a global acceptance budget, not a per-model or
+per-provider allowance: four Standard, three Scheduled, and three Priority,
+split five PT-BR and five English. Nine may be generated in the release-bound
+pre-activation verification state and one after signed deployment as the
+production smoke. Every script must be complete, source-consistent, carry no
+critical warning, and contain 1,900-2,400 words. The same immutable inventory
+supplies p95 tokens, quality, continuation, notification, final-artifact, and
+economics evidence. Compact structured tests own the 99% schema gate without
+spending the long-form budget. Reporting never decrypts customer requests merely
+to classify acceptance evidence.
+
+Production activation is one audited owner transition from OFF (or optional
+zero-user shadow) to active/100% after the signed release, model/gateway checks,
+ten-script/economics evidence, and safety baselines pass. Percentage canaries
+and timed stability windows are not launch prerequisites. Independent kill
+switches and automatic rollback remain mandatory. The owner plan API continues
+to bound every local-operation, context, script, active-job, queue-weight, and
+local-to-cloud cost-cap field; partial owner updates are merged with the durable
+plan before validation.
 
 ### Apple OS-provided device-model appendix
 
@@ -907,8 +905,8 @@ verifies the environment-specific socket directories and the
 change add the signed Compose topology.
 
 Public activation additionally requires iOS async-job adoption, live billing
-verification, staged rollout observations, and the full stable 30-day
-economics window. Public Chat routes and `legacy-tail` responsibilities remain
+verification, the global ten-script acceptance inventory, and the canonical
+pre-release economics simulation. Public Chat routes and `legacy-tail` responsibilities remain
 supported because their independent retirement evidence does not yet exist.
 An owner-approved historical-retention schedule and its reviewed pruning
 transaction are also required before public activation; this repository does

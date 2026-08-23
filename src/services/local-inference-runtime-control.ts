@@ -55,13 +55,8 @@ const PRODUCTION_ROLLOUT_STAGES: ReadonlyArray<{
 }> = [
   { mode: 'off', rolloutPercent: 0 },
   { mode: 'shadow', rolloutPercent: 0 },
-  { mode: 'canary', rolloutPercent: 1 },
-  { mode: 'canary', rolloutPercent: 5 },
-  { mode: 'canary', rolloutPercent: 25 },
-  { mode: 'canary', rolloutPercent: 50 },
   { mode: 'active', rolloutPercent: 100 },
 ];
-const PRODUCTION_STAGE_STABILITY_MS = 7 * 24 * 60 * 60 * 1_000;
 
 function productionStageIndex(mode: LocalInferenceMode, rolloutPercent: number): number {
   return PRODUCTION_ROLLOUT_STAGES.findIndex((stage) => (
@@ -78,7 +73,7 @@ function assertProductionRolloutProgression(
   if (targetIndex < 0) {
     throw new LocalInferenceRuntimeControlError(
       'LOCAL_CONTROL_PRODUCTION_STAGE_INVALID',
-      'Production rollout stages are shadow, staff/1%, 5%, 25%, 50%, and active/100%.',
+      'Production local inference supports OFF, optional verification-only shadow, and active/100%.',
       409,
     );
   }
@@ -90,25 +85,12 @@ function assertProductionRolloutProgression(
       409,
     );
   }
+  // The canonical release plan removed percentage cohorts and the 30-day
+  // observation gate. Once the signed pre-release acceptance/economics
+  // evidence is supplied, an owner may move directly from OFF to active/100%.
+  // Shadow remains an optional zero-user verification state, never a timed
+  // prerequisite. Backward movement (including emergency OFF) stays valid.
   if (targetIndex <= beforeIndex) return;
-  if (targetIndex !== beforeIndex + 1) {
-    throw new LocalInferenceRuntimeControlError(
-      'LOCAL_CONTROL_PRODUCTION_STAGE_SKIP',
-      'Production rollout cannot skip a governed stage.',
-      409,
-    );
-  }
-  // OFF -> shadow starts the proof sequence immediately. Every later increase
-  // requires a full stable window on the exact current stage.
-  if (beforeIndex === 0) return;
-  const stableSince = before.updatedAt ? Date.parse(before.updatedAt) : Number.NaN;
-  if (!Number.isFinite(stableSince) || Date.now() - stableSince < PRODUCTION_STAGE_STABILITY_MS) {
-    throw new LocalInferenceRuntimeControlError(
-      'LOCAL_CONTROL_STAGE_NOT_STABLE',
-      'The current production rollout stage has not completed seven stable days.',
-      409,
-    );
-  }
 }
 
 function runtimeEnvironment(): 'staging' | 'production' {
@@ -279,26 +261,6 @@ export function getLocalInferenceRuntimeControl(
         updatedAt: row.updated_at,
       };
     }
-    if (row && environment === 'production'
-        && (row.mode === 'canary' || row.mode === 'active')
-        && localPrimaryInferenceConfig.staffUserIds.length === 0) {
-      return {
-        mode: 'off',
-        rolloutPercent: 0,
-        environment,
-        manifestVersion: manifest.manifestVersion,
-        activeModelId: manifest.activeModelId,
-        activeModelDigest,
-        profileVersion: SKILL_INFERENCE_PROFILE_VERSION,
-        nonAiP95BaselineMs: row.non_ai_p95_baseline_ms ?? null,
-        nonAiBaselineSampleCount: row.non_ai_baseline_sample_count ?? 0,
-        nonAiBaselineCapturedAt: row.non_ai_baseline_captured_at ?? null,
-        endUserErrorRateBaselinePercent: row.end_user_error_rate_baseline_percent ?? null,
-        endUserErrorBaselineSampleCount: row.end_user_error_baseline_sample_count ?? 0,
-        reason: 'staff_cohort_missing_requires_reactivation',
-        updatedAt: row.updated_at,
-      };
-    }
     const contractDriftReason = !row || row.mode === 'off'
       ? null
       : row.model_manifest_version !== manifest.manifestVersion
@@ -445,20 +407,20 @@ export function setLocalInferenceRuntimeControl(input: {
       );
     }
     if (environment === 'production'
-        && (input.mode === 'canary' || input.mode === 'active')
+        && input.mode === 'active'
         && !localPrimaryInferenceConfig.autoRollbackEnabled) {
       throw new LocalInferenceRuntimeControlError(
         'LOCAL_CONTROL_AUTO_ROLLBACK_REQUIRED',
-        'Production canary or active routing requires the automatic rollback monitor.',
+        'Production active routing requires the automatic rollback monitor.',
         409,
       );
     }
     if (environment === 'production'
-        && (input.mode === 'canary' || input.mode === 'active')
-        && localPrimaryInferenceConfig.staffUserIds.length === 0) {
+        && input.mode === 'active'
+        && !input.evidenceReference?.trim()) {
       throw new LocalInferenceRuntimeControlError(
-        'LOCAL_CONTROL_STAFF_COHORT_REQUIRED',
-        'Production canary or active routing requires an authenticated owner/staff cohort.',
+        'LOCAL_CONTROL_ACCEPTANCE_EVIDENCE_REQUIRED',
+        'Production active routing requires the signed ten-script acceptance and pre-release economics evidence reference.',
         409,
       );
     }
@@ -512,35 +474,35 @@ export function setLocalInferenceRuntimeControl(input: {
       400,
     );
   }
-  const enteringProductionShadow = environment === 'production'
+  const enteringProductionVerification = environment === 'production'
     && before.mode === 'off'
-    && input.mode === 'shadow';
+    && (input.mode === 'shadow' || input.mode === 'active');
   if (environment === 'production'
       && (baselineSupplied || errorBaselineSupplied)
-      && !enteringProductionShadow) {
+      && !enteringProductionVerification) {
     throw new LocalInferenceRuntimeControlError(
       'LOCAL_CONTROL_BASELINE_STAGE_INVALID',
-      'Production baselines are captured once at the OFF-to-shadow boundary and remain immutable until rollback.',
+      'Production baselines are captured once when leaving OFF and remain immutable until rollback.',
       409,
     );
   }
-  if (enteringProductionShadow && (!baselineSupplied || !errorBaselineSupplied)) {
+  if (enteringProductionVerification && (!baselineSupplied || !errorBaselineSupplied)) {
     throw new LocalInferenceRuntimeControlError(
       'LOCAL_CONTROL_BASELINES_REQUIRED',
-      'Production shadow rollout requires at least 20 pre-shadow non-AI latency and end-user error samples.',
+      'Production activation requires at least 20 pre-activation non-AI latency and end-user error samples.',
       409,
     );
   }
-  if (enteringProductionShadow
+  if (enteringProductionVerification
       && (Number(suppliedBaseline) > 2_000 || Number(suppliedErrorRate) > 2)) {
     throw new LocalInferenceRuntimeControlError(
       'LOCAL_CONTROL_BASELINE_UNHEALTHY',
-      'Production shadow cannot start from an outage-poisoned baseline (non-AI p95 must be at most 2s and public 5xx at most 2%).',
+      'Production activation cannot start from an outage-poisoned baseline (non-AI p95 must be at most 2s and public 5xx at most 2%).',
       409,
     );
   }
   if (environment === 'production'
-      && (input.mode === 'canary' || input.mode === 'active')
+      && input.mode === 'active'
       && ((before.nonAiP95BaselineMs === null && !baselineSupplied)
         || (before.endUserErrorRateBaselinePercent === null && !errorBaselineSupplied))) {
     throw new LocalInferenceRuntimeControlError(

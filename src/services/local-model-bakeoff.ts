@@ -8,6 +8,9 @@ const REQUIRED_SKILLS: readonly SkillInferenceSkill[] = [
   'secretary', 'content', 'training', 'triathlon', 'cooking', 'finance',
 ];
 const REQUIRED_LANGUAGES = ['pt-BR', 'pt-PT', 'en', 'mixed'] as const;
+const MINIMUM_FINAL_PASS_ORDINARY_CASES = 6;
+const MINIMUM_FINAL_PASS_CONTENT_SAMPLES = 6;
+const MINIMUM_FINAL_PASS_STRUCTURED_CASES = 100;
 
 export interface LocalModelBakeoffObservation {
   candidateId: string;
@@ -15,7 +18,7 @@ export interface LocalModelBakeoffObservation {
   profileVersion: string;
   caseId: string;
   skillId: SkillInferenceSkill;
-  workload: 'ordinary' | 'content_script' | 'structured_tool_plan';
+  workload: 'ordinary' | 'content_sample' | 'structured_tool_plan';
   language: 'pt-BR' | 'pt-PT' | 'en' | 'mixed';
   skillAccuracy: number;
   contentQuality: number;
@@ -32,8 +35,7 @@ export interface LocalModelBakeoffObservation {
   peakInferenceMemoryBytes: number;
   minimumHostAvailableBytes: number;
   swapBytes: number;
-  scriptWordCount?: number;
-  scriptComplete?: boolean;
+  contentSampleComplete?: boolean;
   sourceConsistent?: boolean;
 }
 
@@ -44,7 +46,7 @@ export interface LocalModelBakeoffResult {
   profileVersion: string | null;
   observationCount: number;
   uniqueCaseCount: number;
-  scriptCount: number;
+  contentSampleCount: number;
   languageCoverage: string[];
   score: number;
   eligible: boolean;
@@ -57,13 +59,13 @@ export interface LocalModelBakeoffResult {
     runtimePerformancePercent: number;
     structuredSchemaCount: number;
     schemaValidityPercent: number;
-    averageScriptTokensPerSecond: number | null;
-    scriptOutputContractPassPercent: number | null;
+    averageContentSampleTokensPerSecond: number | null;
+    contentSampleContractPassPercent: number | null;
     p95FirstTokenMs: number | null;
     p95TotalDurationMs: number | null;
     ordinaryChatP95FirstTokenMs: number | null;
     ordinaryChatP95TotalDurationMs: number | null;
-    scriptP95TotalDurationMs: number | null;
+    contentSampleP95TotalDurationMs: number | null;
     peakInferenceMemoryBytes: number;
     minimumHostAvailableBytes: number;
     maximumSwapBytes: number;
@@ -121,7 +123,7 @@ export function buildLocalModelBakeoff(
     if (typeof observation.caseId !== 'string' || !observation.caseId.trim()) {
       throw new Error('Bakeoff observation caseId is required');
     }
-    if (!['ordinary', 'content_script', 'structured_tool_plan'].includes(observation.workload)) {
+    if (!['ordinary', 'content_sample', 'structured_tool_plan'].includes(observation.workload)) {
       throw new Error(`Bakeoff observation has unsupported workload ${String(observation.workload)}`);
     }
     if (!REQUIRED_LANGUAGES.includes(observation.language)) {
@@ -149,12 +151,10 @@ export function buildLocalModelBakeoff(
         throw new Error(`${field} must be finite${field === 'cloudCriticalQualityDeltaPercent' ? '' : ' and non-negative'}`);
       }
     }
-    if (observation.workload === 'content_script') {
-      if (!Number.isSafeInteger(observation.scriptWordCount)
-          || Number(observation.scriptWordCount) < 0
-          || typeof observation.scriptComplete !== 'boolean'
+    if (observation.workload === 'content_sample') {
+      if (typeof observation.contentSampleComplete !== 'boolean'
           || typeof observation.sourceConsistent !== 'boolean') {
-        throw new Error('Long-form script observations require word count, completeness, and source consistency');
+        throw new Error('Content sample observations require completeness and source consistency');
       }
     }
     byCandidate.set(observation.candidateId, [
@@ -165,11 +165,10 @@ export function buildLocalModelBakeoff(
 
   return manifest.models.map((candidate): LocalModelBakeoffResult => {
     const rows = byCandidate.get(candidate.id) ?? [];
-    const scripts = rows.filter((row) => row.workload === 'content_script');
+    const contentSamples = rows.filter((row) => row.workload === 'content_sample');
     const ordinaryChat = rows.filter((row) => row.workload === 'ordinary');
     const structuredSchemaRows = rows.filter((row) => row.workload === 'structured_tool_plan');
     const uniqueCases = new Set(rows.map((row) => row.caseId));
-    const uniqueScripts = new Set(scripts.map((row) => row.caseId));
     const observedModelDigests = new Set(rows.map((row) => row.modelDigest));
     const observedProfileVersions = new Set(rows.map((row) => row.profileVersion));
     const skill = mean(rows.map((row) => row.skillAccuracy));
@@ -180,14 +179,12 @@ export function buildLocalModelBakeoff(
     const schemaValidity = structuredSchemaRows.length > 0
       ? structuredSchemaRows.filter((row) => row.schemaValid).length / structuredSchemaRows.length
       : 0;
-    const scriptTps = scripts.length > 0
-      ? mean(scripts.map((row) => row.generatedTokensPerSecond))
+    const contentSampleTps = contentSamples.length > 0
+      ? mean(contentSamples.map((row) => row.generatedTokensPerSecond))
       : null;
-    const scriptContractPasses = scripts.filter((row) => (
-      row.scriptComplete === true
+    const contentSampleContractPasses = contentSamples.filter((row) => (
+      row.contentSampleComplete === true
       && row.sourceConsistent === true
-      && Number(row.scriptWordCount) >= 1_900
-      && Number(row.scriptWordCount) <= 2_400
     ));
     const ordinaryChatP95FirstTokenMs = ordinaryChat.length > 0
       ? p95(ordinaryChat.map((row) => row.firstTokenMs))
@@ -195,8 +192,8 @@ export function buildLocalModelBakeoff(
     const ordinaryChatP95TotalDurationMs = ordinaryChat.length > 0
       ? p95(ordinaryChat.map((row) => row.totalDurationMs))
       : null;
-    const scriptP95TotalDurationMs = scripts.length > 0
-      ? p95(scripts.map((row) => row.totalDurationMs))
+    const contentSampleP95TotalDurationMs = contentSamples.length > 0
+      ? p95(contentSamples.map((row) => row.totalDurationMs))
       : null;
     const peakMemory = Math.max(0, ...rows.map((row) => row.peakInferenceMemoryBytes));
     const minimumHostAvailable = rows.length > 0
@@ -215,12 +212,17 @@ export function buildLocalModelBakeoff(
         || !observedProfileVersions.has(SKILL_INFERENCE_PROFILE_VERSION)) {
       disqualifiers.push('skill_profile_version_missing_or_changed_during_bakeoff');
     }
-    if (uniqueCases.size < 600) disqualifiers.push('fewer_than_600_unique_nexus_cases');
+    if (uniqueCases.size < (
+      MINIMUM_FINAL_PASS_ORDINARY_CASES
+      + MINIMUM_FINAL_PASS_CONTENT_SAMPLES
+      + MINIMUM_FINAL_PASS_STRUCTURED_CASES
+    )) disqualifiers.push('final_pass_case_inventory_incomplete');
     if (uniqueCases.size !== rows.length) disqualifiers.push('duplicate_case_observations');
-    if (uniqueScripts.size < 30) disqualifiers.push('fewer_than_30_unique_long_form_scripts');
-    if (scripts.filter((row) => row.language === 'pt-BR').length < 15
-        || scripts.filter((row) => row.language === 'en').length < 15) {
-      disqualifiers.push('long_form_language_split_missing');
+    if (ordinaryChat.length < MINIMUM_FINAL_PASS_ORDINARY_CASES) {
+      disqualifiers.push('fewer_than_6_focused_ordinary_cases');
+    }
+    if (contentSamples.length < MINIMUM_FINAL_PASS_CONTENT_SAMPLES) {
+      disqualifiers.push('fewer_than_6_content_outline_or_section_samples');
     }
     if (REQUIRED_SKILLS.some((skillId) => !rows.some((row) => row.skillId === skillId))) {
       disqualifiers.push('six_skill_coverage_missing');
@@ -228,24 +230,26 @@ export function buildLocalModelBakeoff(
     if (REQUIRED_LANGUAGES.some((languageId) => !rows.some((row) => row.language === languageId))) {
       disqualifiers.push('required_language_coverage_missing');
     }
-    if (structuredSchemaRows.length < 100) disqualifiers.push('fewer_than_100_structured_schema_cases');
+    if (structuredSchemaRows.length < MINIMUM_FINAL_PASS_STRUCTURED_CASES) {
+      disqualifiers.push('fewer_than_100_structured_schema_cases');
+    }
     if (schemaValidity < 0.99) disqualifiers.push('schema_validity_below_99_percent');
     if (worstCloudDelta < -5) disqualifiers.push('critical_quality_more_than_5_percent_below_cloud');
     if (rows.some((row) => row.safetyFailure || row.tenantIsolationFailure)) {
       disqualifiers.push('safety_or_tenant_isolation_failure');
     }
-    if (scriptTps == null || scriptTps < 4) disqualifiers.push('script_throughput_below_4_tokens_per_second');
-    if (scripts.length === 0 || scriptContractPasses.length !== scripts.length) {
-      disqualifiers.push('long_form_script_output_contract_failed');
+    if (contentSampleTps == null || contentSampleTps < 4) {
+      disqualifiers.push('content_sample_throughput_below_4_tokens_per_second');
+    }
+    if (contentSamples.length === 0
+        || contentSampleContractPasses.length !== contentSamples.length) {
+      disqualifiers.push('content_sample_output_contract_failed');
     }
     if (ordinaryChatP95FirstTokenMs == null || ordinaryChatP95FirstTokenMs > 12_000) {
       disqualifiers.push('ordinary_chat_first_token_p95_above_12_seconds');
     }
     if (ordinaryChatP95TotalDurationMs == null || ordinaryChatP95TotalDurationMs > 45_000) {
       disqualifiers.push('ordinary_chat_total_p95_above_45_seconds');
-    }
-    if (scriptP95TotalDurationMs == null || scriptP95TotalDurationMs > 12 * 60 * 1_000) {
-      disqualifiers.push('long_form_script_p95_above_12_minutes');
     }
     if (peakMemory > manifest.productionEnvelope.memoryMaxBytes) disqualifiers.push('production_memory_max_exceeded');
     if (minimumHostAvailable < (manifest.productionEnvelope.minimumHostAvailableBytes ?? 0)) {
@@ -266,7 +270,7 @@ export function buildLocalModelBakeoff(
       profileVersion: observedProfileVersions.size === 1 ? [...observedProfileVersions][0]! : null,
       observationCount: rows.length,
       uniqueCaseCount: uniqueCases.size,
-      scriptCount: scripts.length,
+      contentSampleCount: contentSamples.length,
       languageCoverage: [...new Set(rows.map((row) => row.language))].sort(),
       score,
       eligible: disqualifiers.length === 0,
@@ -279,15 +283,16 @@ export function buildLocalModelBakeoff(
         runtimePerformancePercent: percent(runtime),
         structuredSchemaCount: structuredSchemaRows.length,
         schemaValidityPercent: percent(schemaValidity),
-        averageScriptTokensPerSecond: scriptTps == null ? null : Number(scriptTps.toFixed(2)),
-        scriptOutputContractPassPercent: scripts.length === 0
+        averageContentSampleTokensPerSecond: contentSampleTps == null
+          ? null : Number(contentSampleTps.toFixed(2)),
+        contentSampleContractPassPercent: contentSamples.length === 0
           ? null
-          : percent(scriptContractPasses.length / scripts.length),
+          : percent(contentSampleContractPasses.length / contentSamples.length),
         p95FirstTokenMs: p95(rows.map((row) => row.firstTokenMs)),
         p95TotalDurationMs: p95(rows.map((row) => row.totalDurationMs)),
         ordinaryChatP95FirstTokenMs,
         ordinaryChatP95TotalDurationMs,
-        scriptP95TotalDurationMs,
+        contentSampleP95TotalDurationMs,
         peakInferenceMemoryBytes: peakMemory,
         minimumHostAvailableBytes: minimumHostAvailable,
         maximumSwapBytes: maximumSwap,
