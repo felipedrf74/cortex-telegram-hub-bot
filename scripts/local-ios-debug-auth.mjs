@@ -158,6 +158,21 @@ function grantLocalMaxAccess(db, userId) {
       current_period_end = excluded.current_period_end,
       updated_at = datetime('now')
   `).run(userId, periodStart, periodEnd);
+  db.prepare(`
+    INSERT INTO user_ai_budget_overrides (
+      user_id, daily_cost_usd, monthly_cost_usd, reason,
+      expires_at, active, updated_by, updated_at
+    )
+    VALUES (?, 5, 150, 'local_debug_max_access', ?, 1, ?, datetime('now'))
+    ON CONFLICT(user_id) DO UPDATE SET
+      daily_cost_usd = excluded.daily_cost_usd,
+      monthly_cost_usd = excluded.monthly_cost_usd,
+      reason = excluded.reason,
+      expires_at = excluded.expires_at,
+      active = 1,
+      updated_by = excluded.updated_by,
+      updated_at = datetime('now')
+  `).run(userId, periodEnd, userId);
 }
 
 function ensureLocalMaxAccess(userId) {

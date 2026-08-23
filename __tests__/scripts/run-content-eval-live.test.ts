@@ -41,6 +41,7 @@ describe('Content live-evaluation runner policy', () => {
   it('launches through a private clean environment with stale-runtime and trap hygiene', () => {
     const source = readFileSync(path.resolve(process.cwd(), 'scripts/content-live-eval-local.sh'), 'utf8');
     const engineSource = readFileSync(path.resolve(process.cwd(), 'scripts/full-nexus-local-engine.sh'), 'utf8');
+    const debugAuthSource = readFileSync(path.resolve(process.cwd(), 'scripts/local-ios-debug-auth.mjs'), 'utf8');
     expect(source).toContain('umask 077');
     expect(source.match(/env -i/g)?.length).toBeGreaterThanOrEqual(2);
     expect(source).toContain('--untracked-files=all');
@@ -56,6 +57,8 @@ describe('Content live-evaluation runner policy', () => {
     expect(engineSource).toContain('CONTENT_ENGINE_FIXTURE_MODE=0');
     expect(engineSource).toContain('CONTENT_ENGINE_RESEARCH_NETWORK_DISABLED=1');
     expect(engineSource).not.toContain('CONTENT_ENGINE_FIXTURE_MODE=1');
+    expect(debugAuthSource).toContain('user_ai_budget_overrides');
+    expect(debugAuthSource).toContain("'local_debug_max_access'");
   });
 
   it('refuses Node outside the exact supported release range before startup or provider work', () => {
