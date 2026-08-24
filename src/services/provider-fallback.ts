@@ -1875,7 +1875,16 @@ export class TaskRoutingProvider implements AIProvider {
           'cloud-reasoning-gate rejected escalation — applying onUnapproved policy',
         );
         if (policy === 'fail_visibly') {
-          throw new Error(`cloud_reasoning_gate_rejected:${rejection.reason}:${rejection.warning}`);
+          const error = new Error(
+            `cloud_reasoning_gate_rejected:${rejection.reason}:${rejection.warning}`,
+          );
+          if (taskRecord.workloadRole === 'skill_inference'
+              && ['standard', 'scheduled', 'priority'].includes(
+                String(taskRecord.scriptDeliveryMode || ''),
+              )) {
+            Object.assign(error, { code: 'CONTENT_SCRIPT_CLOUD_GATE_UNAVAILABLE' });
+          }
+          throw error;
         }
         throw Object.assign(primaryError as Error, {
           providerMetadata: {
@@ -2046,7 +2055,12 @@ export class TaskRoutingProvider implements AIProvider {
         if (typeof cloudResult?.text !== 'string') {
           throw cloudLocalReasoningContractError('missing_text');
         }
-        if (TRUNCATED_STOP_REASONS.has(cloudResult.stopReason)) {
+        const scriptStageOwnsContinuation = taskRecord.workloadRole === 'skill_inference'
+          && ['standard', 'scheduled', 'priority'].includes(
+            String(taskRecord.scriptDeliveryMode || ''),
+          );
+        if (TRUNCATED_STOP_REASONS.has(cloudResult.stopReason)
+            && !scriptStageOwnsContinuation) {
           throw cloudLocalReasoningContractError('truncated_output');
         }
         let parsed: unknown;

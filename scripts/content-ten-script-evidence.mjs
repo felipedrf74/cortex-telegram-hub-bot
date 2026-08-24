@@ -5,7 +5,11 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
-import { TEN_SCRIPT_ACCEPTANCE_SCENARIOS } from './content-ten-script-acceptance.mjs';
+import {
+  TEN_SCRIPT_ACCEPTANCE_REVISION,
+  TEN_SCRIPT_ACCEPTANCE_SCENARIOS,
+  TEN_SCRIPT_ACCEPTANCE_SCHEMA,
+} from './content-ten-script-acceptance.mjs';
 
 function fail(message, code = 1) {
   console.error(`content acceptance evidence refused: ${message}`);
@@ -53,7 +57,8 @@ if (!/^[0-9a-f]{40}$/u.test(sourceSha)) fail('--source-sha must be an exact 40-c
 assertPrivateRegularFile(statePath, 'acceptance state');
 const stateBytes = fs.readFileSync(statePath);
 const state = JSON.parse(stateBytes.toString('utf8'));
-if (state?.schemaVersion !== 'nexus.content-ten-script-acceptance.v1'
+if (state?.schemaVersion !== TEN_SCRIPT_ACCEPTANCE_SCHEMA
+    || state.acceptanceRevision !== TEN_SCRIPT_ACCEPTANCE_REVISION
     || !Array.isArray(state.scenarios) || state.scenarios.length !== 10) {
   fail('acceptance state schema or inventory is invalid', 65);
 }
@@ -140,6 +145,7 @@ if (!acceptancePass) fail('ten-script delivery/language/word-count contract fail
 
 const artifact = {
   schemaVersion: 'nexus.content-ten-script-evidence.v1',
+  acceptanceRevision: TEN_SCRIPT_ACCEPTANCE_REVISION,
   generatedAt: new Date().toISOString(),
   sourceSha,
   stateSha256: sha256(stateBytes),

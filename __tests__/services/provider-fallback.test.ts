@@ -518,6 +518,62 @@ describe('TaskRoutingProvider', () => {
     expect('scriptDeliveryMode' in lastRequest).toBe(false);
   });
 
+  it('types a script-only cloud-gate rejection as bounded infrastructure failure', async () => {
+    const ollama = {
+      ...createMockProvider('ollama'),
+      localReason: vi.fn().mockRejectedValue(
+        Object.assign(new Error('local timeout'), { code: 'ETIMEDOUT' }),
+      ),
+    };
+    optionalCloudMocks.selectApprovedCloudReasoningProvider.mockResolvedValueOnce({
+      rejected: true as const,
+      reason: 'disabled' as const,
+      warning: 'cloud_reasoning_fallback_disabled',
+    });
+    const routed = new TaskRoutingProvider(buildConfig({
+      localReasoning: { primary: ollama, fallback: 'approved_cloud_reasoning' },
+    }));
+
+    await expect(routed.dispatchLocalReasoning({
+      workloadRole: 'skill_inference',
+      prompt: 'standard script section',
+      containsPrivateData: false,
+      allowCloudEscalation: true,
+      scriptDeliveryMode: 'standard',
+      localAdmission: 'force_cloud',
+      cloudFallbackBoundary: async (providerCall) => providerCall(),
+    })).rejects.toMatchObject({ code: 'CONTENT_SCRIPT_CLOUD_GATE_UNAVAILABLE' });
+  });
+
+  it('returns a truncated cloud script stage to its bounded continuation owner', async () => {
+    const ollama = {
+      ...createMockProvider('ollama'),
+      localReason: vi.fn().mockRejectedValue(
+        Object.assign(new Error('local timeout'), { code: 'ETIMEDOUT' }),
+      ),
+    };
+    optionalCloudMocks.provider.callStructuredGeneration.mockResolvedValueOnce({
+      text: 'One complete prefix sentence.',
+      stopReason: 'length',
+    });
+    const routed = new TaskRoutingProvider(buildConfig({
+      localReasoning: { primary: ollama, fallback: 'approved_cloud_reasoning' },
+    }));
+
+    await expect(routed.dispatchLocalReasoning({
+      workloadRole: 'skill_inference',
+      prompt: 'standard script section',
+      containsPrivateData: false,
+      allowCloudEscalation: true,
+      scriptDeliveryMode: 'standard',
+      localAdmission: 'force_cloud',
+      cloudFallbackBoundary: async (providerCall) => providerCall(),
+    })).resolves.toMatchObject({
+      text: 'One complete prefix sentence.',
+      stopReason: 'length',
+    });
+  });
+
   it('admits Batch transport only for a complete durable control and forwards that exact control', async () => {
     const failingOllama = () => ({
       ...createMockProvider('ollama'),
