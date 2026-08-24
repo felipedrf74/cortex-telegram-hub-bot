@@ -175,9 +175,10 @@ dependency, and native-module command runs in a transient systemd service whose
 entire control group is terminated and collected when its main command ends.
 Before ownership changes or activation, the installer requires no process under
 the dedicated build UID and no open handle anywhere below the candidate. It
-narrowly exempts only identity-verified `portal fuse.portal` desktop mounts at
-canonical `/run/user/<uid>/doc` paths from `lsof`'s unrelated mount-stat scan;
-candidate overlap, an unexpected mount identity/path, an unexpected probe
+narrowly exempts only identity-verified desktop mounts from `lsof`'s unrelated
+mount-stat scan: `portal fuse.portal` at canonical `/run/user/<uid>/doc` paths
+and `gvfsd-fuse fuse.gvfsd-fuse` at canonical `/run/user/<uid>/gvfs` paths.
+Candidate overlap, an unexpected mount identity/path, an unexpected probe
 status, or any remaining diagnostic is a hard refusal. The resulting
 root-owned, non-writable version and its readiness marker therefore have no
 surviving lifecycle process or descriptor that can mutate their bytes.

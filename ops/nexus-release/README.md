@@ -1187,7 +1187,8 @@ require_root_readonly_candidate_tree() {
 }
 
 require_builder_quiescent() {
-  local candidate error_file handles handle_status portal_identity portal_mount
+  local candidate error_file gvfs_identity gvfs_inventory_status gvfs_mount
+  local gvfs_mount_file handles handle_status portal_identity portal_mount
   local portal_inventory_status portal_mount_file
   local -a lsof_args
   candidate="$1"
@@ -1237,6 +1238,50 @@ require_builder_quiescent() {
     lsof_args+=(+e "$portal_mount")
   done <"$portal_mount_file"
   rm -f -- "$portal_mount_file"
+  gvfs_mount_file="$(mktemp)"
+  if /usr/bin/findmnt -rn -t fuse.gvfsd-fuse -o TARGET >"$gvfs_mount_file"; then
+    gvfs_inventory_status=0
+  else
+    gvfs_inventory_status=$?
+  fi
+  case "$gvfs_inventory_status" in
+    0|1) ;;
+    *)
+      rm -f -- "$gvfs_mount_file"
+      die 'GVFS-mount inventory failed before open-handle proof'
+      ;;
+  esac
+  while IFS= read -r gvfs_mount; do
+    test -n "$gvfs_mount" || {
+      rm -f -- "$gvfs_mount_file"
+      die 'GVFS-mount inventory contains an empty path'
+    }
+    [[ "$gvfs_mount" =~ ^/run/user/[0-9]+/gvfs$ ]] || {
+      rm -f -- "$gvfs_mount_file"
+      die 'GVFS-mount inventory contains an unexpected path'
+    }
+    if ! gvfs_identity="$(
+      /usr/bin/findmnt -rn -M "$gvfs_mount" -o SOURCE,FSTYPE
+    )"; then
+      rm -f -- "$gvfs_mount_file"
+      die 'GVFS-mount identity proof failed'
+    fi
+    test "$gvfs_identity" = "gvfsd-fuse fuse.gvfsd-fuse" || {
+      rm -f -- "$gvfs_mount_file"
+      die 'GVFS-mount identity changed during open-handle proof'
+    }
+    case "$candidate" in
+      "$gvfs_mount"|"$gvfs_mount"/*)
+        rm -f -- "$gvfs_mount_file"
+        die 'candidate overlaps an exempt GVFS mount'
+        ;;
+    esac
+    # Like the document portal, root cannot stat the canonical desktop GVFS
+    # mount. Exempt only its independently verified mountpoint; candidate
+    # handles and every other diagnostic remain fail-closed.
+    lsof_args+=(+e "$gvfs_mount")
+  done <"$gvfs_mount_file"
+  rm -f -- "$gvfs_mount_file"
   lsof_args+=(+D "$candidate")
   error_file="$(mktemp)"
   if handles="$(/usr/bin/lsof "${lsof_args[@]}" 2>"$error_file")"; then

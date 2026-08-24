@@ -1410,6 +1410,16 @@ fi
     );
     expect(provision).toContain('test "$portal_identity" = "portal fuse.portal"');
     expect(provision).toContain('lsof_args+=(+e "$portal_mount")');
+    expect(provision).toContain('/usr/bin/findmnt -rn -t fuse.gvfsd-fuse -o TARGET');
+    expect(provision).toContain("die 'GVFS-mount inventory failed before open-handle proof'");
+    expect(provision).toContain('[[ "$gvfs_mount" =~ ^/run/user/[0-9]+/gvfs$ ]]');
+    expect(provision).toContain(
+      '/usr/bin/findmnt -rn -M "$gvfs_mount" -o SOURCE,FSTYPE',
+    );
+    expect(provision).toContain(
+      'test "$gvfs_identity" = "gvfsd-fuse fuse.gvfsd-fuse"',
+    );
+    expect(provision).toContain('lsof_args+=(+e "$gvfs_mount")');
     expect(provision).toContain('lsof_args+=(+D "$candidate")');
     expect(provision).toContain('/usr/bin/lsof "${lsof_args[@]}"');
     expect(provision).not.toContain('/usr/bin/lsof -nP -F pfn +D "$candidate"');
