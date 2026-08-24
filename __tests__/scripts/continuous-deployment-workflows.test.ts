@@ -48,6 +48,7 @@ const signingHandoff = readFileSync(join(root, 'scripts/release-signing-handoff.
 const policy = JSON.parse(readFileSync(join(root, 'config/continuous-deployment.json'), 'utf8'));
 const iosContractClassifier = readFileSync(join(root, 'scripts/ios-contract-change-check.mjs'), 'utf8');
 const continuousDeploymentDoc = readFileSync(join(root, 'docs/release/continuous-deployment.md'), 'utf8');
+const releaseOperatorRunbook = readFileSync(join(root, 'ops/nexus-release/README.md'), 'utf8');
 
 const iosContractOwners = [
   'src/release/backend-ios-contract-fixture.ts',
@@ -651,8 +652,10 @@ describe('release publication routing', () => {
   });
 
   it('does not claim an unavailable destructive-migration executor exists', () => {
-    expect(release).toContain('container maintenance path is not implemented');
-    expect(release).toContain('authorization, traffic drain, and database restore');
+    expect(release).toContain(
+      'destructive SQL still requires the unimplemented maintenance path',
+    );
+    expect(release).toContain('every live-ledger-pending inventory entry');
     expect(release).not.toContain('maintenance release handles the migration');
     expect(ci).toContain('maintenance executor is not implemented; owner policy is required');
     expect(ci).not.toContain('owner-authorized maintenance release;');
@@ -1188,6 +1191,37 @@ fi
         'NEXUS_RELEASE_TELEGRAM_BOT_TOKEN',
         'NEXUS_RELEASE_TELEGRAM_CHAT_ID',
       ]);
+  });
+
+  it('documents governance-only authorization with the poller clean environment and pinned dependencies', () => {
+    const requiredAssignments = [
+      'PATH=/usr/bin:/bin',
+      'HOME=/var/lib/nexus-release/home',
+      'DOCKER_CONFIG=/etc/nexus-release/docker',
+      'NEXUS_RELEASE_OWNER_AUTHORIZED=1',
+      'NEXUS_RELEASE_NODE_BIN=/usr/bin/node',
+      'NEXUS_RELEASE_GIT_BIN=/usr/bin/git',
+      'NEXUS_RELEASE_FLOCK_BIN=/usr/bin/flock',
+      'NEXUS_RELEASE_SYSTEMCTL_BIN=/usr/bin/systemctl',
+      'NEXUS_RELEASE_DOCKER_BIN=/usr/bin/docker',
+      'NEXUS_RELEASE_SQLITE_BIN=/usr/bin/sqlite3',
+      'NEXUS_RELEASE_LSOF_BIN=/usr/bin/lsof',
+      'NEXUS_RELEASE_SCP_BIN=/usr/bin/scp',
+      'NEXUS_RELEASE_SSH_BIN=/usr/bin/ssh',
+    ];
+    for (const document of [continuousDeploymentDoc, releaseOperatorRunbook]) {
+      const command = bashBlockContaining(document, '--authorize-governance-only');
+      expect(command).toMatch(/^sudo \/usr\/bin\/env -i /);
+      for (const assignment of requiredAssignments) {
+        expect(command).toContain(assignment);
+      }
+      expect(command).toContain(
+        '/opt/nexus-release/checkout/scripts/release-poll.sh',
+      );
+      expect(command).toContain(
+        '--authorize-governance-only <exact-32-hex-releaseId>',
+      );
+    }
   });
 
   it('pins one first-install order and installs trust only from the immutable checkout', () => {

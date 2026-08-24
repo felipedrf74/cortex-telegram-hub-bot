@@ -5641,9 +5641,39 @@ owner activation workflow for that case: activation deliberately refuses equal
 generations.
 
 A moved pointer does not override the signed continuous-deployment verdict.
-After a governance-only schema publication, do not acknowledge an existing
-release block or start the poller when `cdEligibility.eligible` is false and the
-candidate image pair differs from the active completed receipt. The
+After a publication that is ineligible only because the signed manifest names
+reviewed deployment-governance paths, run one attended owner authorization from
+the installed exact controller checkout. The command must use the same clean
+runtime environment, private registry configuration, and pinned executables as
+the poller unit:
+
+```bash
+sudo /usr/bin/env -i PATH=/usr/bin:/bin \
+  HOME=/var/lib/nexus-release/home \
+  DOCKER_CONFIG=/etc/nexus-release/docker \
+  NEXUS_RELEASE_OWNER_AUTHORIZED=1 \
+  NEXUS_RELEASE_NODE_BIN=/usr/bin/node \
+  NEXUS_RELEASE_GIT_BIN=/usr/bin/git \
+  NEXUS_RELEASE_FLOCK_BIN=/usr/bin/flock \
+  NEXUS_RELEASE_SYSTEMCTL_BIN=/usr/bin/systemctl \
+  NEXUS_RELEASE_DOCKER_BIN=/usr/bin/docker \
+  NEXUS_RELEASE_SQLITE_BIN=/usr/bin/sqlite3 \
+  NEXUS_RELEASE_LSOF_BIN=/usr/bin/lsof \
+  NEXUS_RELEASE_SCP_BIN=/usr/bin/scp \
+  NEXUS_RELEASE_SSH_BIN=/usr/bin/ssh \
+  /opt/nexus-release/checkout/scripts/release-poll.sh \
+  --authorize-governance-only <exact-32-hex-releaseId>
+```
+
+The command is accepted only for the exact signed governance-only release with
+an entirely predecessor-compatible live pending migration suffix. It records an
+immutable, digest-bound authorization before staging. Exit 75 means the kernel
+release mutex is already held; wait for that invocation to settle and rerun the
+exact command. The attended path deliberately omits optional audit-mirror and
+Telegram credentials. The timer retries durable audit-mirror obligations from
+its configured environment; Telegram delivery for the attended result is
+best-effort and is skipped. Never acknowledge a governance-only release merely
+to bypass its signed ineligibility. The
 controller-only bridge also requires exact image, Compose, migration inventory,
 reconciliation, and migration up/down count equality. Publish a later non-governance,
 non-control-plane successor, require `cdEligibility.eligible == true`,

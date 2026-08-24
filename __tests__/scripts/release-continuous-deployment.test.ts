@@ -55,6 +55,10 @@ import {
   runReleaseDeployment,
 } from '../../scripts/lib/release-deployment.mjs';
 import {
+  ReleaseDeployArgumentError,
+  parseReleaseDeployArguments,
+} from '../../scripts/lib/release-deploy-arguments.mjs';
+import {
   LOCK_CONTENDED_EXIT_CODE,
   LOCK_HELD_ENV,
   assertLockHeld,
@@ -1198,6 +1202,8 @@ async function deploy(options: {
     };
   };
   allowFirstContainerBootstrap?: boolean;
+  governanceOnlyReleaseId?: string | null;
+  ownerAuthorized?: boolean;
   protectedHead?: {
     verify: (input: { expectedSha: string }) => {
       result: string;
@@ -1275,6 +1281,8 @@ async function deploy(options: {
     protectedHead: protectedHead as never,
     bootstrap: options.bootstrap ?? defaultBootstrap,
     allowFirstContainerBootstrap: options.allowFirstContainerBootstrap ?? false,
+    governanceOnlyReleaseId: options.governanceOnlyReleaseId ?? null,
+    ownerAuthorized: options.ownerAuthorized ?? false,
     clock,
     log: () => {},
     env: { [LOCK_HELD_ENV]: '1' },
@@ -1291,6 +1299,66 @@ async function deploy(options: {
 // ═══════════════════════════════════════════════ AREA: state and locking
 
 describe('release state and locking', () => {
+  it('parses only the exact one-shot release authorization argument contract', () => {
+    const releaseId = 'a'.repeat(32);
+    expect(parseReleaseDeployArguments({ argv: [], env: {} })).toEqual({
+      allowFirstContainerBootstrap: false,
+      governanceOnlyReleaseId: null,
+      ownerAuthorized: false,
+    });
+    expect(parseReleaseDeployArguments({
+      argv: ['--authorize-governance-only', releaseId],
+      env: { NEXUS_RELEASE_OWNER_AUTHORIZED: '1' },
+    })).toEqual({
+      allowFirstContainerBootstrap: false,
+      governanceOnlyReleaseId: releaseId,
+      ownerAuthorized: true,
+    });
+    for (const argv of [
+      ['--authorize-governance-only'],
+      ['--authorize-governance-only', 'not-a-release'],
+      ['--authorize-governance-only', releaseId, '--authorize-governance-only', releaseId],
+      ['--allow-first-container-bootstrap', '--authorize-governance-only', releaseId],
+      ['--unknown'],
+    ]) {
+      expect(() => parseReleaseDeployArguments({
+        argv,
+        env: { NEXUS_RELEASE_OWNER_AUTHORIZED: '1' },
+      })).toThrow(ReleaseDeployArgumentError);
+    }
+    expect(() => parseReleaseDeployArguments({
+      argv: ['--authorize-governance-only', releaseId],
+      env: {},
+    })).toThrowError(expect.objectContaining({ exitCode: 77 }));
+  });
+
+  it('persists governance-only authorization immutably and rejects tampering', () => {
+    const store = makeStore();
+    const core = {
+      releaseId: 'a'.repeat(32),
+      predecessorReleaseId: 'b'.repeat(32),
+      releasePayloadDigest: `sha256:${'c'.repeat(64)}`,
+      manifestDigest: 'd'.repeat(64),
+      migrationDigest: 'e'.repeat(64),
+      reasons: ['docker-compose.release.yml:irreversible:POLICY_RELEASE_MIGRATION_ORCHESTRATION_CHANGED'],
+      productionLedgerDigest: 'f'.repeat(64),
+      pendingFiles: ['287_governance_fixture.sql'],
+    };
+    const first = store.writeGovernanceOnlyAuthorization(core);
+    expect(store.writeGovernanceOnlyAuthorization(core)).toEqual(first);
+    expect(() => store.writeGovernanceOnlyAuthorization({
+      ...core,
+      pendingFiles: [],
+    })).toThrow(/different evidence/);
+
+    const file = store.governanceAuthorizationPath(core.releaseId);
+    const tampered = JSON.parse(readFileSync(file, 'utf8'));
+    tampered.pendingFiles = [];
+    writeFileSync(file, `${JSON.stringify(tampered)}\n`);
+    expect(() => store.readGovernanceOnlyAuthorization(core.releaseId))
+      .toThrow(/digest does not match/);
+  });
+
   it('refuses to deploy unless the flock wrapper is holding the lock', async () => {
     await expect(runReleaseDeployment({
       policy,
@@ -3142,6 +3210,274 @@ describe('release failure handling', () => {
       ACTIVE_PAYLOAD_DIGEST.replace('sha256:', ''),
       PREDECESSOR_PAYLOAD_DIGEST.replace('sha256:', ''),
     ]);
+  });
+
+  it('admits an exact owner-authorized governance-only release after bootstrap', async () => {
+    const payload = payloadFor({
+      inventory: [
+        {
+          file: '001_historical_contract.sql',
+          sha256: 'a'.repeat(64),
+          kind: 'contract',
+          predecessorCompatible: false,
+        },
+        {
+          file: '002_pending_expand.sql',
+          sha256: 'b'.repeat(64),
+          kind: 'expand',
+          predecessorCompatible: true,
+        },
+      ],
+      migrations: {
+        cdEligibility: {
+          eligible: false,
+          predecessorCompatible: false,
+          reasons: [
+            'docker-compose.release.yml:irreversible:'
+            + 'POLICY_RELEASE_MIGRATION_ORCHESTRATION_CHANGED',
+          ],
+        },
+      },
+    });
+    const releaseId = releaseIdFor(payload);
+    const { result, registryHarness } = await deploy({
+      envelope: signed(payload),
+      governanceOnlyReleaseId: releaseId,
+      ownerAuthorized: true,
+      databaseProbe: fakeDatabaseProbe('passed', {
+        applied: ['001_historical_contract.sql'],
+      }),
+    });
+
+    expect(result.outcome).toBe(DEPLOYMENT_OUTCOMES.COMPLETED);
+    expect(registryHarness.calls.some((call) => (
+      call.kind === 'composeRunMigrator' && call.environment === 'production'
+    ))).toBe(true);
+    expect(readFileSync(result.receiptPath!, 'utf8')).not.toContain('undefined');
+    expect(JSON.parse(readFileSync(result.receiptPath!, 'utf8')).staging.checks)
+      .toContainEqual(expect.objectContaining({
+        name: 'owner_governance_only_authorization',
+        result: 'passed',
+        detail: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+      }));
+  });
+
+  it('leaves a governance-only candidate unsettled until exact owner authorization', async () => {
+    const store = makeStore();
+    const payload = payloadFor({
+      migrations: {
+        cdEligibility: {
+          eligible: false,
+          predecessorCompatible: false,
+          reasons: [
+            'docker-compose.release.yml:irreversible:'
+            + 'POLICY_RELEASE_MIGRATION_ORCHESTRATION_CHANGED',
+          ],
+        },
+      },
+    });
+    const releaseId = releaseIdFor(payload);
+    const ordinary = await deploy({ store, envelope: signed(payload) });
+
+    expect(ordinary.result).toMatchObject({
+      outcome: DEPLOYMENT_OUTCOMES.HALTED,
+      reason: 'governance_only_authorization_required',
+      releaseId,
+    });
+    expect(store.readState().blocked).toBeNull();
+    expect(store.readReceipt(releaseId)).toBeNull();
+    expect(ordinary.registryHarness.calls.some((call) => (
+      ['composeRunMigrator', 'composeUp', 'composeDown'].includes(call.kind)
+    ))).toBe(false);
+
+    const authorized = await deploy({
+      store,
+      envelope: signed(payload),
+      governanceOnlyReleaseId: releaseId,
+      ownerAuthorized: true,
+    });
+    expect(authorized.result.outcome).toBe(DEPLOYMENT_OUTCOMES.COMPLETED);
+  });
+
+  it('resumes from durable governance authorization after a post-staging defer', async () => {
+    const store = makeStore();
+    const payload = payloadFor({
+      migrations: {
+        cdEligibility: {
+          eligible: false,
+          predecessorCompatible: false,
+          reasons: [
+            'docker-compose.release.yml:irreversible:'
+            + 'POLICY_RELEASE_MIGRATION_ORCHESTRATION_CHANGED',
+          ],
+        },
+      },
+    });
+    const releaseId = releaseIdFor(payload);
+    let checks = 0;
+    const deferred = await deploy({
+      store,
+      envelope: signed(payload),
+      governanceOnlyReleaseId: releaseId,
+      ownerAuthorized: true,
+      protectedHead: {
+        verify: ({ expectedSha }) => {
+          checks += 1;
+          return checks === 1
+            ? { result: PROTECTED_HEAD_RESULTS.CURRENT, expectedSha, headSha: expectedSha }
+            : { result: PROTECTED_HEAD_RESULTS.UNAVAILABLE, expectedSha, headSha: null };
+        },
+      },
+    });
+    expect(deferred.result).toMatchObject({
+      outcome: DEPLOYMENT_OUTCOMES.DEFERRED,
+      reason: 'protected_head_unavailable',
+    });
+    const authorization = store.readGovernanceOnlyAuthorization(releaseId);
+    expect(authorization?.authorizationDigest).toMatch(/^[0-9a-f]{64}$/);
+
+    const resumed = await deploy({ store, envelope: signed(payload) });
+    expect(resumed.result.outcome).toBe(DEPLOYMENT_OUTCOMES.COMPLETED);
+    expect(store.readReceipt(releaseId)?.staging.checks).toContainEqual(
+      expect.objectContaining({
+        name: 'owner_governance_only_authorization',
+        detail: `sha256:${authorization?.authorizationDigest}`,
+      }),
+    );
+  });
+
+  it('blocks before production mutation when the live ledger changes after authorization', async () => {
+    const payload = payloadFor({
+      inventory: [
+        {
+          file: '001_historical_contract.sql',
+          sha256: 'a'.repeat(64),
+          kind: 'contract',
+          predecessorCompatible: false,
+        },
+        {
+          file: '002_pending_expand.sql',
+          sha256: 'b'.repeat(64),
+          kind: 'expand',
+          predecessorCompatible: true,
+        },
+      ],
+      migrations: {
+        cdEligibility: {
+          eligible: false,
+          predecessorCompatible: false,
+          reasons: [
+            'docker-compose.release.yml:irreversible:'
+            + 'POLICY_RELEASE_MIGRATION_ORCHESTRATION_CHANGED',
+          ],
+        },
+      },
+    });
+    const databaseProbe = fakeDatabaseProbe('passed', {
+      applied: ['001_historical_contract.sql'],
+    });
+    let productionLedgerReads = 0;
+    databaseProbe.probe.readAppliedMigrations = ({ environment }: { environment: string }) => {
+      databaseProbe.ledgerCalls.push(environment);
+      productionLedgerReads += 1;
+      return {
+        ok: true,
+        applied: productionLedgerReads === 1
+          ? ['001_historical_contract.sql']
+          : ['001_historical_contract.sql', '002_pending_expand.sql'],
+        ledgerPresent: true,
+        detail: null,
+      };
+    };
+
+    const { result, registryHarness, store, notifier } = await deploy({
+      envelope: signed(payload),
+      governanceOnlyReleaseId: releaseIdFor(payload),
+      ownerAuthorized: true,
+      databaseProbe,
+    });
+
+    expect(productionLedgerReads).toBe(2);
+    expect(result.outcome).toBe(DEPLOYMENT_OUTCOMES.BLOCKED);
+    expect(notifier.sent[0].release.failureCode).toBe(
+      FAILURE_CODES.GOVERNANCE_AUTHORIZATION_CHANGED,
+    );
+    const receipt = store.readReceipt(releaseIdFor(payload));
+    expect(receipt?.failureCode).toBe(FAILURE_CODES.GOVERNANCE_AUTHORIZATION_CHANGED);
+    expect(receipt?.production.checks).toContainEqual(expect.objectContaining({
+      name: 'governance_only_authorization_revalidation',
+      result: 'failed',
+      detail: FAILURE_CODES.GOVERNANCE_AUTHORIZATION_CHANGED,
+    }));
+    expect(store.readState().blocked?.reason).toBe(
+      BLOCK_REASONS.MIGRATION_NOT_CD_ELIGIBLE,
+    );
+    expect(registryHarness.calls.some((call) => (
+      call.kind === 'composeRunMigrator' && call.environment === 'production'
+    ))).toBe(false);
+    expect(registryHarness.calls.some((call) => (
+      call.kind === 'composeUp' && call.environment === 'production'
+    ))).toBe(false);
+  });
+
+  it('halts a governance-only command that does not name the exact signed release', async () => {
+    const payload = payloadFor({
+      migrations: {
+        cdEligibility: {
+          eligible: false,
+          predecessorCompatible: false,
+          reasons: [
+            'docker-compose.release.yml:irreversible:'
+            + 'POLICY_RELEASE_MIGRATION_ORCHESTRATION_CHANGED',
+          ],
+        },
+      },
+    });
+    const { result, registryHarness } = await deploy({
+      envelope: signed(payload),
+      governanceOnlyReleaseId: '0'.repeat(32),
+      ownerAuthorized: true,
+    });
+
+    expect(result).toMatchObject({
+      outcome: DEPLOYMENT_OUTCOMES.HALTED,
+      reason: 'governance_only_authorization_release_mismatch',
+    });
+    expect(registryHarness.calls.some((call) => (
+      ['composeRunMigrator', 'composeUp', 'composeDown'].includes(call.kind)
+    ))).toBe(false);
+  });
+
+  it('never lets governance-only authorization admit a contract migration', async () => {
+    const payload = payloadFor({
+      inventory: [
+        { file: '001_a.sql', sha256: 'a'.repeat(64), kind: 'expand', predecessorCompatible: true },
+        { file: '002_drop.sql', sha256: 'b'.repeat(64), kind: 'contract', predecessorCompatible: false },
+      ],
+      migrations: {
+        cdEligibility: {
+          eligible: false,
+          predecessorCompatible: false,
+          reasons: [
+            'docker-compose.release.yml:irreversible:'
+            + 'POLICY_RELEASE_MIGRATION_ORCHESTRATION_CHANGED',
+          ],
+        },
+      },
+    });
+    const { result, registryHarness } = await deploy({
+      envelope: signed(payload),
+      governanceOnlyReleaseId: releaseIdFor(payload),
+      ownerAuthorized: true,
+    });
+
+    expect(result).toMatchObject({
+      outcome: DEPLOYMENT_OUTCOMES.HALTED,
+      reason: 'governance_only_authorization_pending_inventory_not_compatible',
+    });
+    expect(registryHarness.calls.some((call) => (
+      ['composeRunMigrator', 'composeUp', 'composeDown'].includes(call.kind)
+    ))).toBe(false);
   });
 });
 
@@ -5148,6 +5484,88 @@ describe('write-ahead state precedes the database mutation', () => {
     expect(store.readReceipt(releaseId)?.outcome).toBe('rolled_back');
     expect(store.readState().blocked?.reason).toBe(BLOCK_REASONS.ROLLBACK_FIRED);
     expect(notificationAttempts).toBe(3);
+  });
+
+  it('retains exact governance-only authorization in a crash-recovery receipt', async () => {
+    const store = makeStore();
+    seedPredecessor(store);
+    const payload = payloadFor({
+      migrations: {
+        cdEligibility: {
+          eligible: false,
+          predecessorCompatible: false,
+          reasons: [
+            'docker-compose.release.yml:irreversible:'
+            + 'POLICY_RELEASE_MIGRATION_ORCHESTRATION_CHANGED',
+          ],
+        },
+      },
+    });
+    const releaseId = releaseIdFor(payload);
+    const evidence = stateEvidenceFor(payload);
+    const authorization = store.writeGovernanceOnlyAuthorization({
+      releaseId,
+      predecessorReleaseId: store.readState().predecessor!.releaseId,
+      releasePayloadDigest: PAYLOAD_DIGEST,
+      manifestDigest: evidence.manifestDigest,
+      migrationDigest: payload.migrations.digest,
+      reasons: payload.migrations.cdEligibility.reasons,
+      productionLedgerDigest: 'f'.repeat(64),
+      pendingFiles: [],
+    });
+    store.recordStatus({
+      manifestPayload: payload,
+      releaseId,
+      status: RELEASE_STATUSES.PRODUCTION_OBSERVING,
+      payloadDigest: PAYLOAD_DIGEST,
+      ...evidence,
+      backupEvidence: fakeBackupEvidence(),
+    });
+
+    const recovered = await deploy({ store, envelope: signed(payload) });
+
+    expect(recovered.result.outcome).toBe(DEPLOYMENT_OUTCOMES.ROLLED_BACK);
+    expect(store.readReceipt(releaseId)?.staging.checks).toContainEqual(
+      expect.objectContaining({
+        name: 'owner_governance_only_authorization',
+        detail: `sha256:${authorization.authorizationDigest}`,
+      }),
+    );
+  });
+
+  it('refuses crash recovery when governance-only authorization evidence is absent', async () => {
+    const store = makeStore();
+    seedPredecessor(store);
+    const payload = payloadFor({
+      migrations: {
+        cdEligibility: {
+          eligible: false,
+          predecessorCompatible: false,
+          reasons: [
+            'docker-compose.release.yml:irreversible:'
+            + 'POLICY_RELEASE_MIGRATION_ORCHESTRATION_CHANGED',
+          ],
+        },
+      },
+    });
+    const releaseId = releaseIdFor(payload);
+    store.recordStatus({
+      manifestPayload: payload,
+      releaseId,
+      status: RELEASE_STATUSES.PRODUCTION_OBSERVING,
+      payloadDigest: PAYLOAD_DIGEST,
+      ...stateEvidenceFor(payload),
+      backupEvidence: fakeBackupEvidence(),
+    });
+
+    const recovered = await deploy({ store, envelope: signed(payload) });
+
+    expect(recovered.result).toMatchObject({
+      outcome: DEPLOYMENT_OUTCOMES.BLOCKED,
+      reason: 'unprovable_active_release',
+    });
+    expect(store.readReceipt(releaseId)).toBeNull();
+    expect(store.readState().blocked?.reason).toBe(BLOCK_REASONS.UNPROVABLE_ACTIVE_RELEASE);
   });
 
   it('hard-stops crash recovery without restoring images when database integrity is unproven', async () => {

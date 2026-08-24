@@ -369,13 +369,17 @@ Contract migrations are deliberately blocked by the unattended poller. The
 repository defines the required review, rehearsal, quiescence, snapshot, and
 database-plus-runtime recovery contract in
 `docs/release/migration-irreversible.md`, but it does **not** yet provide a
-post-bootstrap container maintenance executor. The current approval artifact
-does not bind an exact release/payload/predecessor or single-use authorization,
-and no governed container traffic-drain and exact database-restore transaction
-exists. Choosing those authority and recovery primitives is owner-gated. Until
-Felipe approves that design and the one-shot path is implemented and proven,
-the poller alerts, preserves `unresolvedContractMigrations`, and remains blocked;
-the first-bootstrap exception must never be reused as a maintenance bypass.
+post-bootstrap executor for contract/destructive SQL. The narrower attended
+governance-only command binds an immutable root-owned authorization to the exact
+signed release id, payload, manifest, predecessor, migration digest, governed
+reason set, live-ledger digest, and pending inventory. It refuses unless every
+pending entry is predecessor-compatible, then retains the authorization digest
+across defer/restart and in normal or crash-recovery receipts while the ordinary
+backup, ledger reconciliation, protected-head, health, identity, observation,
+and rollback gates remain mandatory. It cannot authorize SQL contract work.
+Choosing the traffic-drain and database-restore primitives for that broader
+executor remains owner-gated; the first-bootstrap exception and ordinary block
+acknowledgement must never be reused as a bypass.
 
 The legacy PM2 ledger stores filenames rather than executed-byte hashes. In the
 secretless hosted builder, ordinary lineage rows are read from their exact full
@@ -811,6 +815,43 @@ Continuous deployment stops and waits for acknowledgement when:
 npm run release:cd:ack -- --show                    # what is blocked, and why
 npm run release:cd:ack -- --confirm <releaseId>     # resume deployments
 ```
+
+A release that is ineligible **only** because reviewed deployment-governance
+paths changed may instead be run once by the owner from the installed exact
+controller checkout:
+
+```bash
+sudo /usr/bin/env -i PATH=/usr/bin:/bin \
+  HOME=/var/lib/nexus-release/home \
+  DOCKER_CONFIG=/etc/nexus-release/docker \
+  NEXUS_RELEASE_OWNER_AUTHORIZED=1 \
+  NEXUS_RELEASE_NODE_BIN=/usr/bin/node \
+  NEXUS_RELEASE_GIT_BIN=/usr/bin/git \
+  NEXUS_RELEASE_FLOCK_BIN=/usr/bin/flock \
+  NEXUS_RELEASE_SYSTEMCTL_BIN=/usr/bin/systemctl \
+  NEXUS_RELEASE_DOCKER_BIN=/usr/bin/docker \
+  NEXUS_RELEASE_SQLITE_BIN=/usr/bin/sqlite3 \
+  NEXUS_RELEASE_LSOF_BIN=/usr/bin/lsof \
+  NEXUS_RELEASE_SCP_BIN=/usr/bin/scp \
+  NEXUS_RELEASE_SSH_BIN=/usr/bin/ssh \
+  /opt/nexus-release/checkout/scripts/release-poll.sh \
+  --authorize-governance-only <exact-32-hex-releaseId>
+```
+
+The command creates one immutable authorization record, not a persistent toggle.
+It deliberately starts from the poller's clean runtime environment and private
+Docker configuration. The attended path omits optional audit-mirror and Telegram
+credentials. The timer retries durable audit-mirror obligations from its
+configured environment; Telegram delivery for the attended result is
+best-effort and is skipped. Exit 75 means the kernel release mutex is already
+held; wait for that invocation to settle and rerun the exact command.
+An ordinary poll leaves a matching governance-only candidate unsettled until
+that record exists. A different release id, a first container cutover, an
+unknown or mismatched governance reason, a changed live ledger, or any pending
+non-predecessor-compatible entry halts before production mutation. The record
+survives a safe defer/restart and its digest is included in normal and crash-
+recovery receipts. Contract/destructive SQL continues to require the
+unimplemented maintenance executor above.
 
 Acknowledgement names the exact blocked release id, so clearing one incident
 cannot silently clear a different one that arrived meanwhile. A release identity

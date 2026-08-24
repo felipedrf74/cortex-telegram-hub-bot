@@ -36,6 +36,8 @@ import { assertReleaseControlPlaneShape } from './release-control-plane.mjs';
 export const RELEASE_STATE_SCHEMA = 'nexus.release-host-state.v1';
 export const LEGACY_RELEASE_RECEIPT_SCHEMA = 'nexus.release-receipt.v2';
 export const RELEASE_RECEIPT_SCHEMA = 'nexus.release-receipt.v3';
+export const RELEASE_GOVERNANCE_AUTHORIZATION_SCHEMA =
+  'nexus.release-governance-only-authorization.v1';
 
 export const RELEASE_STATUSES = Object.freeze({
   ELIGIBLE: 'eligible',
@@ -175,6 +177,7 @@ const GOVERNED_DETAIL_TOKENS = new Set([
   'first_container_bootstrap_baseline_changed',
   'first_container_bootstrap_baseline_invalid',
   'foreign_key_check',
+  'governance_evidence_changed',
   'host_not_configured',
   'heartbeat_failed',
   'inspect_backup_evidence',
@@ -404,6 +407,61 @@ function assertBoundedIdentifier(value, label, options = {}) {
   assertBoundedText(value, label, options);
   if (/\s/.test(value)) fail(`${label} must not contain whitespace`);
   return value;
+}
+
+export function assertReleaseGovernanceAuthorizationShape(
+  value,
+  label = 'release governance-only authorization',
+) {
+  const authorization = exactKeys(value, [
+    'schema',
+    'releaseId',
+    'predecessorReleaseId',
+    'releasePayloadDigest',
+    'manifestDigest',
+    'migrationDigest',
+    'reasons',
+    'productionLedgerDigest',
+    'pendingFiles',
+    'authorizedAt',
+    'authorizationDigest',
+  ], label);
+  if (authorization.schema !== RELEASE_GOVERNANCE_AUTHORIZATION_SCHEMA) {
+    fail(`${label} schema is invalid`);
+  }
+  assertReleaseId(authorization.releaseId, `${label} releaseId`);
+  assertReleaseId(authorization.predecessorReleaseId, `${label} predecessorReleaseId`);
+  assertOciDigest(authorization.releasePayloadDigest, `${label} releasePayloadDigest`);
+  assertHexSha256(authorization.manifestDigest, `${label} manifestDigest`);
+  assertHexSha256(authorization.migrationDigest, `${label} migrationDigest`);
+  assertHexSha256(authorization.productionLedgerDigest, `${label} productionLedgerDigest`);
+  assertCanonicalTimestamp(authorization.authorizedAt, `${label} authorizedAt`);
+  assertHexSha256(authorization.authorizationDigest, `${label} authorizationDigest`);
+  for (const [key, values] of [
+    ['reasons', authorization.reasons],
+    ['pendingFiles', authorization.pendingFiles],
+  ]) {
+    if (!Array.isArray(values) || values.length > 512
+        || values.some((entry) => {
+          try {
+            assertBoundedIdentifier(entry, `${label} ${key} entry`, { max: 512 });
+            return false;
+          } catch {
+            return true;
+          }
+        })
+        || new Set(values).size !== values.length) {
+      fail(`${label} ${key} must be a bounded unique identifier list`);
+    }
+  }
+  if (authorization.reasons.length === 0) {
+    fail(`${label} reasons must not be empty`);
+  }
+  const { authorizationDigest, ...unsigned } = authorization;
+  if (authorizationDigest !== sha256(canonicalJson(unsigned))) {
+    fail(`${label} digest does not match its canonical fields`);
+  }
+  return authorization;
 }
 
 function assertPositiveIntegerText(value, label) {
@@ -792,6 +850,10 @@ export function assertReleaseStateShape(state) {
 export function createReleaseStateStore({ stateDir, receiptDir, now = () => new Date() }) {
   if (!stateDir || !receiptDir) fail('release state store requires stateDir and receiptDir');
   const stateFile = path.join(stateDir, 'release-state.json');
+  const governanceAuthorizationDir = path.join(
+    stateDir,
+    'governance-only-authorizations',
+  );
 
   function timestamp() {
     return new Date(now()).toISOString();
@@ -801,6 +863,64 @@ export function createReleaseStateStore({ stateDir, receiptDir, now = () => new 
     const raw = readJsonFailClosed(stateFile, 'release host state');
     if (raw === null) return emptyReleaseState();
     return assertReleaseStateShape(raw);
+  }
+
+  function governanceAuthorizationPath(releaseId) {
+    assertReleaseId(releaseId, 'governance authorization releaseId');
+    return path.join(governanceAuthorizationDir, `${releaseId}.json`);
+  }
+
+  function readGovernanceOnlyAuthorization(releaseId) {
+    const raw = readJsonFailClosed(
+      governanceAuthorizationPath(releaseId),
+      `release governance-only authorization ${releaseId}`,
+    );
+    if (raw === null) return null;
+    if (raw?.releaseId !== releaseId) {
+      fail('release governance-only authorization embedded id does not match its path');
+    }
+    return assertReleaseGovernanceAuthorizationShape(raw);
+  }
+
+  function writeGovernanceOnlyAuthorization(input) {
+    const core = exactKeys(input, [
+      'releaseId',
+      'predecessorReleaseId',
+      'releasePayloadDigest',
+      'manifestDigest',
+      'migrationDigest',
+      'reasons',
+      'productionLedgerDigest',
+      'pendingFiles',
+    ], 'release governance-only authorization input');
+    const existing = readGovernanceOnlyAuthorization(core.releaseId);
+    if (existing) {
+      const {
+        schema: _schema,
+        authorizedAt: _authorizedAt,
+        authorizationDigest: _authorizationDigest,
+        ...existingCore
+      } = existing;
+      if (canonicalJson(existingCore) !== canonicalJson(core)) {
+        fail('refusing to replace a governance-only authorization with different evidence');
+      }
+      return existing;
+    }
+    const unsigned = {
+      schema: RELEASE_GOVERNANCE_AUTHORIZATION_SCHEMA,
+      ...core,
+      authorizedAt: timestamp(),
+    };
+    const authorization = assertReleaseGovernanceAuthorizationShape({
+      ...unsigned,
+      authorizationDigest: sha256(canonicalJson(unsigned)),
+    });
+    atomicWriteJson(
+      governanceAuthorizationPath(core.releaseId),
+      authorization,
+      { exclusive: true },
+    );
+    return authorization;
   }
 
   function writeState(next) {
@@ -1155,6 +1275,9 @@ export function createReleaseStateStore({ stateDir, receiptDir, now = () => new 
     writeReceipt,
     readReceipt,
     listReceiptIds,
+    governanceAuthorizationPath,
+    readGovernanceOnlyAuthorization,
+    writeGovernanceOnlyAuthorization,
   };
 }
 

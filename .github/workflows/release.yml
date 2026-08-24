@@ -643,10 +643,11 @@ jobs:
               echo 'An attended owner activation is required after the installed'
               echo 'controller digest is observed to match the signed candidate.'
             elif [ "$CD_ELIGIBLE" != "true" ]; then
-              echo 'This release carries a contract or destructive migration. The VPS'
-              echo 'poller will refuse it and halt deployment. The post-bootstrap'
-              echo 'container maintenance path is not implemented; an owner decision'
-              echo 'on authorization, traffic drain, and database restore is required.'
+              echo 'This release is not eligible for unattended deployment. The VPS'
+              echo 'poller will refuse it. If every live-ledger-pending inventory entry'
+              echo 'is predecessor-compatible and every reason is governance-only, the'
+              echo 'owner may use the exact one-shot authorization command. Contract or'
+              echo 'destructive SQL still requires the unimplemented maintenance path.'
             else
               echo 'The VPS poller will pick this up within 30 seconds: staging first,'
               echo 'then production with a 60-second observation window.'

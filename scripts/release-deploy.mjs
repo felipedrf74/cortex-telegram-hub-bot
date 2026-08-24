@@ -31,6 +31,10 @@ import {
 import { createReleaseRegistry } from './lib/release-registry.mjs';
 import { createProtectedHeadVerifier } from './lib/release-protected-head.mjs';
 import { createReleaseStateStore } from './lib/release-state-store.mjs';
+import {
+  ReleaseDeployArgumentError,
+  parseReleaseDeployArguments,
+} from './lib/release-deploy-arguments.mjs';
 
 /**
  * One unattended release attempt, wired to the real host.
@@ -41,13 +45,19 @@ import { createReleaseStateStore } from './lib/release-state-store.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const cliArgs = process.argv.slice(2);
-const bootstrapFlag = '--allow-first-container-bootstrap';
-if (cliArgs.some((argument) => argument !== bootstrapFlag)
-    || cliArgs.filter((argument) => argument === bootstrapFlag).length > 1) {
-  process.stderr.write(`the only supported release-deploy argument is ${bootstrapFlag}\n`);
-  process.exit(64);
+let deployArguments;
+try {
+  deployArguments = parseReleaseDeployArguments({ argv: cliArgs, env: process.env });
+} catch (error) {
+  if (!(error instanceof ReleaseDeployArgumentError)) throw error;
+  process.stderr.write(`${error.message}\n`);
+  process.exit(error.exitCode);
 }
-const allowFirstContainerBootstrap = cliArgs.includes(bootstrapFlag);
+const {
+  allowFirstContainerBootstrap,
+  governanceOnlyReleaseId,
+  ownerAuthorized,
+} = deployArguments;
 const retirementJournal = '/var/lib/nexus-release/state/pm2-fallback-retirement.json';
 const retiredTombstone = '/var/lib/nexus-release/state/pm2-fallback-retired.json';
 function retirementGatePresent(file) {
@@ -115,6 +125,8 @@ try {
       verifyProduction: (input) => verifyReleaseBootstrapProductionBaseline({ ...input, root }),
     },
     allowFirstContainerBootstrap,
+    governanceOnlyReleaseId,
+    ownerAuthorized,
   });
   if (releaseDeploymentResultProvesDiscovery(result)) {
     await resolveReleaseDeploymentAbort({

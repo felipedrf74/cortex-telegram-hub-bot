@@ -5,13 +5,18 @@ Owner: Felipe
 Last verified: 2026-08-09
 
 Execution status: the existing producer/promotion transaction is bound to the
-legacy PM2 release path. The container control plane intentionally blocks these
-migrations and has no post-bootstrap maintenance executor. Implementing one
-requires Felipe to choose an exact release authorization channel, the
-production traffic/write-drain primitive, and the automatic database-restore
-cutoff. After PM2 retirement this contract remains the safety specification, not
-an executable release path; do not use the first-container bootstrap override
-or ordinary acknowledgement to bypass the block.
+legacy PM2 release path. The container control plane intentionally blocks
+contract/destructive migrations and still has no post-bootstrap executor for
+them. The distinct governance-only path may admit an exact signed release only
+when live-ledger reconciliation proves every **pending** inventory entry is
+predecessor-compatible and every ineligibility reason exactly matches the
+governed path/reason registry. Historical applied contract rows remain bound by
+the signed inventory but do not become pending work. The path does not authorize
+SQL contract work. Implementing that broader executor still
+requires Felipe to choose the production traffic/write-drain primitive and the
+automatic database-restore cutoff. Do not use the first-container bootstrap
+override, governance-only authorization, or ordinary acknowledgement to bypass
+this contract.
 
 This file is an implementation and release contract. It does not claim that a
 migration has run in staging or production. Current deployed truth remains in
