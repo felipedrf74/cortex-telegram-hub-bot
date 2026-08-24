@@ -153,6 +153,7 @@ describe('remote chat capability flag safety helpers', () => {
     expect(operator).not.toContain('--gate-evidence');
     expect(operator).not.toContain('GATE_EVIDENCE');
     expect(operator).not.toContain('--server');
+    expect(operator).not.toContain("readonly SERVER='");
     expect(operator).toContain('DEPLOY_SERVER must be set');
     expect(operator).toContain('readonly SERVER="${DEPLOY_SERVER:');
     expect(operator).toContain('--since');

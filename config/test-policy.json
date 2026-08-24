@@ -1438,26 +1438,6 @@
         "reason": "The retained inbox suite deliberately replaces the unsafe predecessor assertion that undecodable reversal evidence becomes clean with a stronger fail-closed, bounded-retry, operator-alerted contract."
       },
       {
-        "test": "__tests__/scripts/chat-capability-flag-remote-safety.test.ts",
-        "replacementTests": [
-          "__tests__/scripts/chat-capability-flag-remote-safety.test.ts"
-        ],
-        "sources": [
-          "scripts/chat-capability-flag-operator.sh"
-        ],
-        "mutationTargets": [
-          {
-            "pattern": "scripts/chat-capability-flag-operator.sh:15-15",
-            "anchor": "DEPLOY_SERVER must be set",
-            "behavior": "The chat capability operator refuses to run without DEPLOY_SERVER and never hardcodes a release SSH host.",
-            "replacementTest": "__tests__/scripts/chat-capability-flag-remote-safety.test.ts",
-            "ownerTestNamePattern": "collects immutable gate evidence on the server instead of accepting an operator file$",
-            "minimumMutants": 1
-          }
-        ],
-        "reason": "The retained remote-safety suite replaces a hardcoded SSH host pin with a required DEPLOY_SERVER gate."
-      },
-      {
         "test": "__tests__/scripts/pm2-memory-policy.test.ts",
         "replacementTests": [
           "__tests__/scripts/pm2-memory-policy.test.ts"
