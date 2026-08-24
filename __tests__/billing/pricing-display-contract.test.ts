@@ -105,4 +105,24 @@ describe('owner-confirmed subscription price display contract', () => {
       }
     }
   });
+
+  it('marks owner-locked Pro and Max as current new-sale in canonical docs', () => {
+    expect(read('docs/TOKEN-QUOTA-CONTRACT.md')).not.toContain('not active pricing');
+    expect(read('docs/TOKEN-QUOTA-CONTRACT.md')).toContain('The 600-credit pack remains `$19.99`.');
+    expect(read('docs/NEXUS_HUB_PRODUCT_BRIEF.md')).toContain('**RESOLVED — pricing (owner lock 2026-08-24).**');
+    expect(read('docs/NEXUS_HUB_PRODUCT_BRIEF.md')).not.toContain('**UNRESOLVED — pricing.**');
+  });
+
+  it('does not present the stale Pro/Max subscription pair on extra pricing surfaces', () => {
+    const extraSurfaces = [
+      'docs/NEXUS_HUB_PRODUCT_BRIEF.md',
+      'docs/engineering/local-primary-inference-standard.md',
+      'docs/TOKEN-QUOTA-CONTRACT.md',
+    ];
+    const staleSubscriptionPair = /Pro[^\n]{0,80}\$14\.99[^\n]{0,80}Max[^\n]{0,80}\$19\.99/u;
+    for (const surface of extraSurfaces) {
+      expect(read(surface), `${surface} still presents the stale Pro/Max subscription pair`).not.toMatch(staleSubscriptionPair);
+    }
+  });
+
 });
