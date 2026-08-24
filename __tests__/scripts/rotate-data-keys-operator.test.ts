@@ -260,7 +260,7 @@ describe('data-key rotation operators', () => {
     const postcheck = await import(pathToFileURL(POSTCHECK).href);
     const now = Date.parse('2026-07-13T20:00:00.000Z');
     const backupDir =
-      '/home/dominguez/telegram-hub-bot/.local/rotation-backups/'
+      '/tmp/nexus-release-fixture/telegram-hub-bot/.local/rotation-backups/'
       + 'production-data-keys-20260713T195900Z-ABCDEFGH';
     const config = {
       version: 1,
@@ -284,7 +284,7 @@ describe('data-key rotation operators', () => {
       version: 1,
       phase: 'runtime_healthy',
       backupDir,
-      databasePath: '/home/dominguez/telegram-hub-bot/data/telegram_hub.db',
+      databasePath: '/tmp/nexus-release-fixture/telegram-hub-bot/data/telegram_hub.db',
       expectedRotatorSha256: EXPECTED_SHA256,
       updatedAt: '2026-07-13T19:59:00.000Z',
     };

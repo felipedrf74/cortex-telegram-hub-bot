@@ -1,5 +1,6 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -27,6 +28,8 @@ type Pm2App = {
 };
 
 const releaseBase = mkdtempSync(join(tmpdir(), 'nexus-release-pm2-policy-'));
+const productionBaseDir = join(releaseBase, 'telegram-hub-bot');
+const stagingBaseDir = join(releaseBase, 'telegram-hub-bot-staging');
 const expectedPolicy = {
   OLLAMA_ENABLED: 'true',
   AI_CLASSIFY_PRIMARY: 'gemini',
@@ -59,23 +62,23 @@ const expectedPolicy = {
   CHAT_CORE_V2_LOCAL_CHAT_RECIPE_MODEL: 'qwen2.5:3b-instruct-q4_K_M',
   CHAT_CORE_V2_LOCAL_CHAT_FAST_MODEL: 'off',
 };
-writeFileSync(
-  join(releaseBase, '.env'),
-  `${Object.entries(expectedPolicy).map(([name, value]) => `${name}=${value}`).join('\n')}\nFAKE_SECRET=must-not-reach-pm2\n`,
-  { mode: 0o600 },
-);
+const protectedEnv = `${Object.entries(expectedPolicy).map(([name, value]) => `${name}=${value}`).join('\n')}\nFAKE_SECRET=must-not-reach-pm2\n`;
+mkdirSync(productionBaseDir, { recursive: true });
+mkdirSync(stagingBaseDir, { recursive: true });
+writeFileSync(join(productionBaseDir, '.env'), protectedEnv, { mode: 0o600 });
+writeFileSync(join(stagingBaseDir, '.env'), protectedEnv, { mode: 0o600 });
 afterAll(() => rmSync(releaseBase, { recursive: true, force: true }));
 
 function releaseEnvironment(role: 'production' | 'staging'): NodeJS.ProcessEnv {
   return {
     ...process.env,
     NEXUS_RELEASE_DIR: ROOT,
-    NEXUS_RELEASE_BASE_DIR: releaseBase,
+    NEXUS_RELEASE_BASE_DIR: role === 'staging' ? stagingBaseDir : productionBaseDir,
     NEXUS_RELEASE_ROLE: role,
   };
 }
 
-function loadConfig(file: string, env: NodeJS.ProcessEnv = process.env): Pm2App[] {
+function loadConfig(file: string, env: NodeJS.ProcessEnv = releaseEnvironment('staging')): Pm2App[] {
   const configPath = join(ROOT, file);
   const output = execFileSync(process.execPath, [
     '-e',
@@ -85,36 +88,22 @@ function loadConfig(file: string, env: NodeJS.ProcessEnv = process.env): Pm2App[
   return JSON.parse(output) as Pm2App[];
 }
 
-function loadReleaseConfigWithDefaultBase(role: 'production' | 'staging'): Pm2App[] {
-  const configPath = join(ROOT, 'ecosystem.release.config.js');
-  const baseDir = role === 'staging'
-    ? '/home/dominguez/telegram-hub-bot-staging'
-    : '/home/dominguez/telegram-hub-bot';
+function loadConfigWithoutBase(
+  file: string,
+  role: 'production' | 'staging' = 'staging',
+) {
+  const configPath = join(ROOT, file);
   const env = {
     ...process.env,
     NEXUS_RELEASE_DIR: ROOT,
     NEXUS_RELEASE_ROLE: role,
   };
   delete env.NEXUS_RELEASE_BASE_DIR;
-  const output = execFileSync(process.execPath, [
+  return spawnSync(process.execPath, [
     '-e',
-    [
-      "const fs = require('node:fs');",
-      'const originalRead = fs.readFileSync;',
-      'const protectedPath = process.argv[2];',
-      "const protectedBytes = Buffer.from(process.argv[3], 'base64');",
-      'fs.readFileSync = (file, ...args) => String(file) === protectedPath',
-      '  ? protectedBytes',
-      '  : originalRead.call(fs, file, ...args);',
-      'process.stdout.write(JSON.stringify(require(process.argv[1]).apps));',
-    ].join('\n'),
+    'require(process.argv[1]);',
     configPath,
-    join(baseDir, '.env'),
-    Buffer.from(
-      Object.entries(expectedPolicy).map(([name, value]) => `${name}=${value}`).join('\n'),
-    ).toString('base64'),
   ], { encoding: 'utf8', env });
-  return JSON.parse(output) as Pm2App[];
 }
 
 function mebibytes(value: string): number {
@@ -130,12 +119,12 @@ function oldSpaceMebibytes(args: string | undefined): number {
 }
 
 describe('PM2 backend memory policy', () => {
-  it('defaults exact-release state to the live production and staging bases', () => {
+  it('requires an explicit release base instead of guessing a machine-specific path', () => {
     for (const role of ['production', 'staging'] as const) {
       const baseDir = role === 'staging'
-        ? '/home/dominguez/telegram-hub-bot-staging'
-        : '/home/dominguez/telegram-hub-bot';
-      const apps = loadReleaseConfigWithDefaultBase(role);
+        ? stagingBaseDir
+        : productionBaseDir;
+      const apps = loadConfig('ecosystem.release.config.js', releaseEnvironment(role));
       const backend = apps.find((app) => app.name.startsWith('nexus-hub'));
       const content = apps.find((app) => app.name.startsWith('content-engine'));
 
@@ -146,6 +135,16 @@ describe('PM2 backend memory policy', () => {
       expect(content?.out_file).toBe(`${baseDir}/logs/content-engine-out.log`);
       expect(content?.script).toBe('/usr/bin/python3.12');
       expect(content?.env?.PYTHONPATH).toBe(`${ROOT}/content-engine/vendor`);
+    }
+
+    for (const [file, role] of [
+      ['ecosystem.release.config.js', 'production'],
+      ['ecosystem.release.config.js', 'staging'],
+      ['ecosystem.staging.config.js', 'staging'],
+    ] as const) {
+      const result = loadConfigWithoutBase(file, role);
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain('NEXUS_RELEASE_BASE_DIR is required');
     }
   });
 

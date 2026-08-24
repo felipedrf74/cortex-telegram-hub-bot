@@ -126,7 +126,7 @@ default it prefers an already-booted iPhone, then the newest available
 | --- | --- | --- |
 | `NEXUS_SIM_DEVICE` | auto | Preferred simulator device name, e.g. `iPhone 17 Pro`. |
 | `NEXUS_SIM_UDID` | unset | Exact simulator UDID override. |
-| `NEXUS_IOS_PROJECT_PATH` | `/Users/felipedominguez/.../Nexus Hub.xcodeproj` | Path to the `.xcodeproj`. |
+| `NEXUS_IOS_PROJECT_PATH` | `/path/to/Nexus Hub.xcodeproj` | Path to the `.xcodeproj`. |
 | `NEXUS_IOS_SCHEME` | `Nexus Hub` | Scheme to build. |
 | `NEXUS_IOS_BUNDLE_ID` | `me.nexushub.app` | Bundle ID to launch. |
 | `NEXUS_LOCAL_PORT_TS` | `8200` | Host port the app should hit. |

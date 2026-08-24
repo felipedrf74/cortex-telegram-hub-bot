@@ -6,6 +6,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 const retirementScript = path.resolve('scripts/retire-legacy-release-machinery.sh');
+const DEPLOY_HOME_FIXTURE = '/tmp/nexus-release-fixture';
 const temporaryRoots: string[] = [];
 const retiredKvmResidualPaths = [
   '/etc/systemd/system/nexus-release-layout-fault-drill-recovery.service.d',
@@ -43,6 +44,7 @@ ${body}
       encoding: 'utf8',
       env: {
         ...process.env,
+        NEXUS_RELEASE_DEPLOY_HOME: DEPLOY_HOME_FIXTURE,
         ...environment,
         RETIREMENT_SCRIPT: retirementScript,
       },
@@ -91,6 +93,7 @@ assert_allowlisted_path "$CANDIDATE"
           encoding: 'utf8',
           env: {
             ...process.env,
+          NEXUS_RELEASE_DEPLOY_HOME: DEPLOY_HOME_FIXTURE,
             RETIREMENT_SCRIPT: retirementScript,
             CANDIDATE: candidate,
           },
@@ -116,6 +119,7 @@ assert_allowlisted_path "$CANDIDATE.unrelated"
           encoding: 'utf8',
           env: {
             ...process.env,
+          NEXUS_RELEASE_DEPLOY_HOME: DEPLOY_HOME_FIXTURE,
             RETIREMENT_SCRIPT: retirementScript,
             CANDIDATE: candidate,
           },
@@ -142,6 +146,7 @@ remove_allowlisted_path "$UNRELATED"
         encoding: 'utf8',
         env: {
           ...process.env,
+          NEXUS_RELEASE_DEPLOY_HOME: DEPLOY_HOME_FIXTURE,
           RETIREMENT_SCRIPT: retirementScript,
           UNRELATED: unrelated,
         },
@@ -250,6 +255,7 @@ detect_pm2_authority
         encoding: 'utf8',
         env: {
           ...process.env,
+          NEXUS_RELEASE_DEPLOY_HOME: DEPLOY_HOME_FIXTURE,
           RETIREMENT_SCRIPT: retirementScript,
           FIXTURE_ROOT: root,
           CANONICAL_ACTIVE: canonical,
@@ -329,6 +335,7 @@ acquire_retirement_locks
         encoding: 'utf8',
         env: {
           ...process.env,
+          NEXUS_RELEASE_DEPLOY_HOME: DEPLOY_HOME_FIXTURE,
           RETIREMENT_SCRIPT: retirementScript,
           USER_LOCK: userLock,
           ROOT_LOCK: rootLock,
@@ -373,6 +380,7 @@ assert_safe_lock_file "$LOCK_PATH" dominguez:dominguez:600
           encoding: 'utf8',
           env: {
             ...process.env,
+          NEXUS_RELEASE_DEPLOY_HOME: DEPLOY_HOME_FIXTURE,
             RETIREMENT_SCRIPT: retirementScript,
             LOCK_KIND: kind,
             LOCK_PATH: candidate,
@@ -442,6 +450,7 @@ assert_detached_systemd_transaction
         encoding: 'utf8',
         env: {
           ...process.env,
+          NEXUS_RELEASE_DEPLOY_HOME: DEPLOY_HOME_FIXTURE,
           RETIREMENT_SCRIPT: retirementScript,
         },
       },
@@ -526,6 +535,7 @@ validate_retired_kvm_identity
         encoding: 'utf8',
         env: {
           ...process.env,
+          NEXUS_RELEASE_DEPLOY_HOME: DEPLOY_HOME_FIXTURE,
           RETIREMENT_SCRIPT: retirementScript,
         },
       },
@@ -736,6 +746,7 @@ retire_kvm_identity
         encoding: 'utf8',
         env: {
           ...process.env,
+          NEXUS_RELEASE_DEPLOY_HOME: DEPLOY_HOME_FIXTURE,
           RETIREMENT_SCRIPT: retirementScript,
           TRACE_FILE: trace,
         },
@@ -777,6 +788,7 @@ retire_kvm_identity
         encoding: 'utf8',
         env: {
           ...process.env,
+          NEXUS_RELEASE_DEPLOY_HOME: DEPLOY_HOME_FIXTURE,
           RETIREMENT_SCRIPT: retirementScript,
           TRACE_FILE: trace,
         },
@@ -831,6 +843,7 @@ assert_no_active_legacy_transaction
         encoding: 'utf8',
         env: {
           ...process.env,
+          NEXUS_RELEASE_DEPLOY_HOME: DEPLOY_HOME_FIXTURE,
           RETIREMENT_SCRIPT: retirementScript,
         },
       },
@@ -857,6 +870,7 @@ disable_legacy_unit nexus-release-layout-recovery.service
         encoding: 'utf8',
         env: {
           ...process.env,
+          NEXUS_RELEASE_DEPLOY_HOME: DEPLOY_HOME_FIXTURE,
           RETIREMENT_SCRIPT: retirementScript,
         },
       },
@@ -966,6 +980,7 @@ assert_no_legacy_pm2_ordering
           encoding: 'utf8',
           env: {
             ...process.env,
+          NEXUS_RELEASE_DEPLOY_HOME: DEPLOY_HOME_FIXTURE,
             RETIREMENT_SCRIPT: retirementScript,
             RESIDUE_PROPERTY: residueProperty,
           },
@@ -1017,6 +1032,7 @@ assert_canonical_pm2_unit_ready
         encoding: 'utf8',
         env: {
           ...process.env,
+          NEXUS_RELEASE_DEPLOY_HOME: DEPLOY_HOME_FIXTURE,
           RETIREMENT_SCRIPT: retirementScript,
           UNIT_FILE: unitFile,
         },
@@ -1100,6 +1116,7 @@ run_retirement
         encoding: 'utf8',
         env: {
           ...process.env,
+          NEXUS_RELEASE_DEPLOY_HOME: DEPLOY_HOME_FIXTURE,
           RETIREMENT_SCRIPT: retirementScript,
         },
       },
@@ -1247,6 +1264,7 @@ exit 91
         encoding: 'utf8',
         env: {
           ...process.env,
+          NEXUS_RELEASE_DEPLOY_HOME: DEPLOY_HOME_FIXTURE,
           RETIREMENT_SCRIPT: retirementScript,
           BLOCKER_ROOT: blockerRoot,
           FIRST_BLOCKER: first,
@@ -1306,6 +1324,7 @@ handoff_pm2_authority
         encoding: 'utf8',
         env: {
           ...process.env,
+          NEXUS_RELEASE_DEPLOY_HOME: DEPLOY_HOME_FIXTURE,
           RETIREMENT_SCRIPT: retirementScript,
           TRACE_FILE: trace,
           REFRESH_STATUS: refreshStatus,
@@ -1585,6 +1604,7 @@ recover_temporary_pm2_authority
         encoding: 'utf8',
         env: {
           ...process.env,
+          NEXUS_RELEASE_DEPLOY_HOME: DEPLOY_HOME_FIXTURE,
           RETIREMENT_SCRIPT: retirementScript,
           TRACE_FILE: trace,
         },
@@ -1632,6 +1652,7 @@ recover_temporary_pm2_authority
         encoding: 'utf8',
         env: {
           ...process.env,
+          NEXUS_RELEASE_DEPLOY_HOME: DEPLOY_HOME_FIXTURE,
           RETIREMENT_SCRIPT: retirementScript,
           TRACE_FILE: trace,
         },
@@ -1688,6 +1709,7 @@ assert_runtime_health "$CANONICAL_PM2_UNIT" 5
         encoding: 'utf8',
         env: {
           ...process.env,
+          NEXUS_RELEASE_DEPLOY_HOME: DEPLOY_HOME_FIXTURE,
           RETIREMENT_SCRIPT: retirementScript,
           TRACE_FILE: trace,
         },
@@ -1810,6 +1832,7 @@ validate_pm2_inventory "$INVENTORY" dump \
         encoding: 'utf8',
         env: {
           ...process.env,
+          NEXUS_RELEASE_DEPLOY_HOME: DEPLOY_HOME_FIXTURE,
           RETIREMENT_SCRIPT: retirementScript,
           INVENTORY: inventory,
           PRODUCTION_RELEASE: production,

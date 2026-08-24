@@ -1,6 +1,7 @@
 {
   "name": "@nexushub/core",
   "version": "4.14.233",
+  "private": true,
   "description": "Nexus Hub — AI-powered creator operating system with multi-domain routing",
   "main": "dist/index.js",
   "scripts": {

@@ -578,7 +578,7 @@ Recovery verifies each complete
 installed runtime tree and dependencies, release marker, artifact digest,
 current selector, restarted PM2 environment, database path, and health endpoint
 against immutable capture before accepting the fallback. PM2 commands run from
-`/home/dominguez` before entering the existing `sudo -u dominguez pm2 ...`
+the deploy user's home before entering the existing `sudo -u dominguez pm2 ...`
 policy, and restart acceptance waits at most 120 seconds for all four health
 endpoints to pass in one bounded iteration. After forced container removal,
 the fallback may delete a leftover WAL/SHM pair only after proving no handles,

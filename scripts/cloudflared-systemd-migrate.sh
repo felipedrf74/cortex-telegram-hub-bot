@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Two-phase, token-free migration from the legacy ServerDominguez cron child to
+# Two-phase, token-free migration from the legacy release-host cron child to
 # a root-owned systemd connector. The old connector is never stopped until the
 # new replica has active HA connections and serves the confirmed public route.
 set -euo pipefail

@@ -112,7 +112,7 @@ async function main() {
 
   console.log('');
   console.log('📤 Next step — upload to server:');
-  console.log(`   scp ${SESSION_PATH} dominguez@ServerDominguez:~/telegram-hub-bot/${SESSION_PATH}`);
+  console.log(`   scp ${SESSION_PATH} "$DEPLOY_SERVER":~/telegram-hub-bot/${SESSION_PATH}`);
   console.log('');
   console.log('Done! 🎉');
 }

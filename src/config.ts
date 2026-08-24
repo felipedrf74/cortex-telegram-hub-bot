@@ -773,7 +773,7 @@ export const config = {
   // APNS_AUTH_KEY_P8 can be either:
   //   (a) the full raw contents of the .p8 file (including BEGIN/END lines),
   //       with newlines preserved as \n when set via a single-line .env
-  //   (b) the file path to the .p8 (e.g. "/home/dominguez/secrets/AuthKey_AB.p8")
+  //   (b) the file path to the .p8 (e.g. "/path/to/secrets/AuthKey_AB.p8")
   // The sender auto-detects which one was passed (file path = exists on disk).
   apns: {
     enabled: (process.env.APNS_ENABLED || 'false') === 'true',

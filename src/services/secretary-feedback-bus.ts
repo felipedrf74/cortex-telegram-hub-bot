@@ -37,8 +37,7 @@ import type {
  * feedback shape. Training keeps one monotonic row per scoped source intent;
  * legacy Wave 2 consumers still dedupe per agenda item + source intent.
  *
- * Plan reference: Wave 1 workstream W-B in
- * /Users/felipedominguez/.claude/plans/graceful-stirring-scone.md
+ * Plan reference: Wave 1 workstream W-B in graceful-stirring-scone
  */
 
 export type SecretaryFeedbackHandler = (

@@ -7,8 +7,7 @@
  * skills are unaffected; Finance's deadline boost (+18) dominates phase
  * boost so tax-deadline intents still outrank Training in race week.
  *
- * Plan reference: Wave 1 workstream C3 in
- * /Users/felipedominguez/.claude/plans/graceful-stirring-scone.md
+ * Historical plan reference: Wave 1 workstream C3.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';

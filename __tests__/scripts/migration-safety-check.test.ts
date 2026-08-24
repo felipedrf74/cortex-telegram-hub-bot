@@ -564,7 +564,7 @@ describe('migration-safety-check', () => {
           },
         },
         backup: {
-          remotePath: '/home/dominguez/backups/nexushub/v4.14.223_before-v4.14.224_20260718_225500.tar.gz',
+          remotePath: '/tmp/nexus-release-fixture/backups/nexushub/v4.14.223_before-v4.14.224_20260718_225500.tar.gz',
           sha256: 'a'.repeat(64), sizeBytes: 1024, archivedVersion: '4.14.223',
           targetVersion: '4.14.224', createdAt, databaseSha256: stoppedDatabaseSha256,
         },

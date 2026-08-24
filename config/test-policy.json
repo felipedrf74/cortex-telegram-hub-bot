@@ -1089,7 +1089,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "scripts/mutation-gate.mjs:385-390",
+            "pattern": "scripts/mutation-gate.mjs:439-444",
             "anchor": "hasRemovedEvidence(previousEvidence.assertions, currentEvidence.assertions)",
             "behavior": "The retained mutation contract distinguishes removed assertions and structure from corrected expectations and expanded cases.",
             "replacementTest": "__tests__/scripts/mutation-gate.test.ts",

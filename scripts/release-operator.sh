@@ -14,7 +14,7 @@ source "$ROOT/scripts/lib/release-gates.sh"
 
 COMMAND="${1:-status}"
 [ $# -eq 0 ] || shift
-SERVER="${DEPLOY_SERVER:-ServerDominguez}"
+SERVER="${DEPLOY_SERVER:?DEPLOY_SERVER must be set (SSH host for the release server)}"
 SERVER_EXPLICIT=false
 MANIFEST=""
 MANIFEST_SHA256=""
@@ -379,8 +379,8 @@ poll_remote_transaction() {
   local output="$3"
   local deadline=$((SECONDS + 600))
   while [ "$SECONDS" -lt "$deadline" ]; do
-    if ssh "$SERVER" test -f "/home/dominguez/.local/state/nexus-release/$role.json"; then
-      ssh "$SERVER" cat "/home/dominguez/.local/state/nexus-release/$role.json" > "$output.next"
+    if ssh "$SERVER" test -f "~/.local/state/nexus-release/$role.json"; then
+      ssh "$SERVER" cat "~/.local/state/nexus-release/$role.json" > "$output.next"
       if node - "$output.next" "$role" "$id" "$RUNTIME_SHA" "$ARTIFACT_DIGEST" <<'NODE'
 const fs=require('node:fs');
 const x=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));
@@ -424,10 +424,10 @@ case "$COMMAND" in
       printf '{"schema":"nexus.lean-release-state.v1","phase":"not_prepared"}\n'
     fi
     if ssh -o BatchMode=yes -o ConnectTimeout=5 "$SERVER" \
-      test -d /home/dominguez/.local/state/nexus-release 2>/dev/null; then
+      test -d "~/.local/state/nexus-release" 2>/dev/null; then
       for role in staging production; do
-        ssh "$SERVER" test -f "/home/dominguez/.local/state/nexus-release/$role.json" \
-          && ssh "$SERVER" cat "/home/dominguez/.local/state/nexus-release/$role.json" || true
+        ssh "$SERVER" test -f "~/.local/state/nexus-release/$role.json" \
+          && ssh "$SERVER" cat "~/.local/state/nexus-release/$role.json" || true
       done
     fi
     ;;
@@ -455,14 +455,14 @@ case "$COMMAND" in
     release_acquire_local_lock "$ROOT" release
 
     RELEASE_NAME="${RUNTIME_SHA}-${ARTIFACT_DIGEST:0:12}"
-    REMOTE_BUNDLE="/home/dominguez/.local/share/nexus-release/incoming/$RELEASE_NAME"
+    REMOTE_BUNDLE="~/.local/share/nexus-release/incoming/$RELEASE_NAME"
     UPLOAD_ID="$(node -e 'process.stdout.write(require("crypto").randomBytes(6).toString("hex"))')"
-    REMOTE_TEMP="/home/dominguez/.local/share/nexus-release/incoming/.${RELEASE_NAME}.uploading-$UPLOAD_ID"
-    REMOTE_QUARANTINE="/home/dominguez/.local/share/nexus-release/incoming/.${RELEASE_NAME}.corrupt-$UPLOAD_ID"
+    REMOTE_TEMP="~/.local/share/nexus-release/incoming/.${RELEASE_NAME}.uploading-$UPLOAD_ID"
+    REMOTE_QUARANTINE="~/.local/share/nexus-release/incoming/.${RELEASE_NAME}.corrupt-$UPLOAD_ID"
     ssh "$SERVER" bash -s -- "$REMOTE_BUNDLE" "$REMOTE_TEMP" <<'REMOTE_PREPARE'
 set -euo pipefail
 bundle="$1"; temporary="$2"
-install -d -m 700 /home/dominguez/.local/share/nexus-release/incoming
+install -d -m 700 "$HOME/.local/share/nexus-release/incoming"
 if [ -d "$bundle" ] && [ ! -L "$bundle" ]; then exit 0; fi
 [ ! -e "$bundle" ] && [ ! -L "$bundle" ] || exit 1
 [ ! -e "$temporary" ] && [ ! -L "$temporary" ] || exit 1
@@ -482,7 +482,7 @@ REMOTE_PREPARE
           "$REMOTE_BUNDLE" "$REMOTE_TEMP" "$REMOTE_QUARANTINE" <<'REMOTE_QUARANTINE_BUNDLE'
 set -euo pipefail
 bundle="$1"; temporary="$2"; quarantine="$3"
-incoming=/home/dominguez/.local/share/nexus-release/incoming
+incoming="$HOME/.local/share/nexus-release/incoming"
 case "$bundle" in "$incoming"/*) ;; *) exit 1 ;; esac
 case "$temporary" in "$incoming"/.*.uploading-*) ;; *) exit 1 ;; esac
 case "$quarantine" in "$incoming"/.*.corrupt-*) ;; *) exit 1 ;; esac
@@ -518,7 +518,7 @@ REMOTE_PUBLISH
 set -euo pipefail
 quarantine="$1"
 case "$quarantine" in
-  /home/dominguez/.local/share/nexus-release/incoming/.*.corrupt-*) ;;
+  "$HOME"/.local/share/nexus-release/incoming/.*.corrupt-*) ;;
   *) exit 1 ;;
 esac
 [ -d "$quarantine" ] && [ ! -L "$quarantine" ] || exit 1
@@ -529,7 +529,7 @@ REMOTE_REMOVE_QUARANTINE
     STAGING_STATE="$TRANSACTION_ROOT/staging-$RUNTIME_SHA-$ARTIFACT_DIGEST.json"
     rm -f -- "$STAGING_STATE" "$STAGING_STATE.next"
     REMOTE_STAGING_STATE="$(ssh "$SERVER" \
-      cat /home/dominguez/.local/state/nexus-release/staging.json 2>/dev/null || true)"
+      cat "~/.local/state/nexus-release/staging.json" 2>/dev/null || true)"
     EXPECTED_STAGING_PREDECESSOR_SHA="$CANONICAL_DEPLOYED_SHA"
     EXPECTED_STAGING_PREDECESSOR_DIGEST="$CANONICAL_DEPLOYED_DIGEST"
     if [ -n "$REMOTE_STAGING_STATE" ]; then
@@ -617,7 +617,7 @@ let body="";process.stdin.on("data",chunk=>body+=chunk);process.stdin.on("end",(
           --property TimeoutStartSec=8min \
           --setenv=NEXUS_RELEASE_FAULT_AFTER_SWITCH=staging-health \
           /bin/bash "$REMOTE_BUNDLE/scripts/remote-user-release-transaction.sh" \
-          stage /home/dominguez/telegram-hub-bot-staging "$REMOTE_BUNDLE" "$RUNTIME_SHA" \
+          stage "~/telegram-hub-bot-staging" "$REMOTE_BUNDLE" "$RUNTIME_SHA" \
           "$ARTIFACT_DIGEST" "$TRANSACTION_ID" \
           "${NEXUS_RELEASE_STAGING_STABILITY_SECONDS:-15}" \
           "$EXPECTED_STAGING_PREDECESSOR_SHA" "$EXPECTED_STAGING_PREDECESSOR_DIGEST"
@@ -655,7 +655,7 @@ NODE
         --property Type=oneshot \
         --property TimeoutStartSec=8min \
         /bin/bash "$REMOTE_BUNDLE/scripts/remote-user-release-transaction.sh" \
-        stage /home/dominguez/telegram-hub-bot-staging "$REMOTE_BUNDLE" "$RUNTIME_SHA" \
+        stage "~/telegram-hub-bot-staging" "$REMOTE_BUNDLE" "$RUNTIME_SHA" \
         "$ARTIFACT_DIGEST" "$TRANSACTION_ID" \
         "${NEXUS_RELEASE_STAGING_STABILITY_SECONDS:-15}" \
         "$EXPECTED_STAGING_PREDECESSOR_SHA" "$EXPECTED_STAGING_PREDECESSOR_DIGEST"
@@ -759,11 +759,11 @@ process.stdout.write(sha);' "$CHAT_PREFLIGHT"
     trap release_cleanup_all_locks EXIT
     release_acquire_local_lock "$ROOT" release
     RELEASE_NAME="${RUNTIME_SHA}-${ARTIFACT_DIGEST:0:12}"
-    REMOTE_BUNDLE="/home/dominguez/.local/share/nexus-release/incoming/$RELEASE_NAME"
+    REMOTE_BUNDLE="~/.local/share/nexus-release/incoming/$RELEASE_NAME"
     PRODUCTION_STATE="$TRANSACTION_ROOT/production-$RUNTIME_SHA-$ARTIFACT_DIGEST.json"
     rm -f -- "$PRODUCTION_STATE" "$PRODUCTION_STATE.next"
     REMOTE_PRODUCTION_STATE="$(ssh "$SERVER" \
-      cat /home/dominguez/.local/state/nexus-release/production.json 2>/dev/null || true)"
+      cat "~/.local/state/nexus-release/production.json" 2>/dev/null || true)"
     RESUME_TRANSACTION_ID=""
     if [ -n "$REMOTE_PRODUCTION_STATE" ]; then
       set +e

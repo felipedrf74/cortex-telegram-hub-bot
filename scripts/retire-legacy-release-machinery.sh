@@ -52,12 +52,17 @@ if [ "$SCRIPT_SOURCED" = false ]; then
   fi
 fi
 
-PRODUCTION_BASE=/home/dominguez/telegram-hub-bot
+DEPLOY_HOME="${NEXUS_RELEASE_DEPLOY_HOME:-}"
+[ -n "$DEPLOY_HOME" ] || {
+  echo "retire legacy release machinery: NEXUS_RELEASE_DEPLOY_HOME is required" >&2
+  exit 1
+}
+PRODUCTION_BASE="$DEPLOY_HOME/telegram-hub-bot"
 CURRENT_LINK="$PRODUCTION_BASE/current"
-STAGING_BASE=/home/dominguez/telegram-hub-bot-staging
+STAGING_BASE="$DEPLOY_HOME/telegram-hub-bot-staging"
 STAGING_CURRENT_LINK="$STAGING_BASE/current"
-STATE_FILE=/home/dominguez/.local/state/nexus-release/production.json
-PM2_HOME=/home/dominguez/.pm2
+STATE_FILE="$DEPLOY_HOME/.local/state/nexus-release/production.json"
+PM2_HOME="$DEPLOY_HOME/.pm2"
 PM2_DUMP="$PM2_HOME/dump.pm2"
 PM2_BIN=/usr/local/bin/pm2
 NODE_BIN=/usr/bin/node
@@ -77,9 +82,9 @@ USERDEL_BIN=/usr/sbin/userdel
 GROUPDEL_BIN=/usr/sbin/groupdel
 TEMPORARY_PM2_UNIT=nexus-release-pm2-recovery-daemon.service
 CANONICAL_PM2_UNIT=pm2-dominguez.service
-CANONICAL_PM2_EXEC=/home/dominguez/.npm-global/lib/node_modules/pm2/bin/pm2
+CANONICAL_PM2_EXEC="$DEPLOY_HOME/.npm-global/lib/node_modules/pm2/bin/pm2"
 CANONICAL_PM2_UNIT_FILE=/etc/systemd/system/pm2-dominguez.service
-USER_RELEASE_LOCK=/home/dominguez/.local/state/nexus-release/.release.lock
+USER_RELEASE_LOCK="$DEPLOY_HOME/.local/state/nexus-release/.release.lock"
 ROOT_SONAR_LOCK=/run/lock/nexus-release-sonar.lock
 SELF_CGROUP_FILE=/proc/self/cgroup
 PM2_AUTHORITY_UNIT=
@@ -697,9 +702,9 @@ validate_production_gate() {
 
   identity="$(
     "$NODE_BIN" - "$STATE_FILE" "$current_target/.complete.json" \
-      "$current_target" "$CONFIRMATION" <<'NODE'
+      "$current_target" "$CONFIRMATION" "$PRODUCTION_BASE" <<'NODE'
 const fs=require('node:fs');
-const [statePath,markerPath,currentTarget,confirmation]=process.argv.slice(2);
+const [statePath,markerPath,currentTarget,confirmation,productionBase]=process.argv.slice(2);
 const state=JSON.parse(fs.readFileSync(statePath,'utf8'));
 const marker=JSON.parse(fs.readFileSync(markerPath,'utf8'));
 const checks={
@@ -730,7 +735,7 @@ if(state?.schema!=='nexus.lean-release-transaction.v1'
   ||state.candidateRemoved!==false
   ||state.releaseDir!==currentTarget
   ||typeof state.predecessor!=='string'
-  ||!state.predecessor.startsWith('/home/dominguez/telegram-hub-bot/releases/')
+  ||!state.predecessor.startsWith(`${productionBase}/releases/`)
   ||state.predecessor===currentTarget
   ||!/^[0-9a-f]{40}$/.test(state.runtimeSha??'')
   ||!/^[0-9a-f]{64}$/.test(state.artifactDigest??'')
@@ -752,7 +757,7 @@ if(state?.schema!=='nexus.lean-release-transaction.v1'
   ||typeof marker.packageVersion!=='string'
   ||marker.packageVersion.length===0
   ||currentTarget
-    !==`/home/dominguez/telegram-hub-bot/releases/${state.runtimeSha}-${state.artifactDigest.slice(0,12)}`
+    !==`${productionBase}/releases/${state.runtimeSha}-${state.artifactDigest.slice(0,12)}`
   ||(confirmation&&confirmation!==`${state.runtimeSha}:${state.artifactDigest}`)){
   process.exit(1);
 }
@@ -873,7 +878,7 @@ capture_and_validate_live_pm2() {
   chmod 0600 "$snapshot"
   if ! "$TIMEOUT_BIN" --foreground "${snapshot_timeout_seconds}s" \
       "$RUNUSER_BIN" -u dominguez -- env \
-      HOME=/home/dominguez \
+      HOME="$DEPLOY_HOME" \
       USER=dominguez \
       LOGNAME=dominguez \
       PATH=/usr/local/bin:/usr/bin:/bin \
@@ -1103,7 +1108,7 @@ resurrect_temporary_pm2() {
     || return 1
   "$TIMEOUT_BIN" --foreground "${PM2_RESURRECT_TIMEOUT_SECONDS}s" \
     "$RUNUSER_BIN" -u dominguez -- env \
-    HOME=/home/dominguez \
+    HOME="$DEPLOY_HOME" \
     USER=dominguez \
     LOGNAME=dominguez \
     PATH=/usr/local/bin:/usr/bin:/bin \

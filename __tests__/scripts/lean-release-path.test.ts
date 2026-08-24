@@ -14,6 +14,7 @@ import {
 
 const roots: string[] = [];
 const manifestScript = path.resolve('scripts/release-checksum-manifest.mjs');
+const DEPLOY_HOME_FIXTURE = '/tmp/nexus-release-fixture';
 
 function sha256(body: Buffer | string) {
   return createHash('sha256').update(body).digest('hex');
@@ -276,8 +277,14 @@ describe('lean exact-artifact release path', () => {
       transactionId: `20260727T120000Z-${'b'.repeat(12)}`,
       runtimeSha: value.runtimeSha,
       artifactDigest: value.digest,
-      releaseDir: `/home/dominguez/telegram-hub-bot-staging/releases/${value.runtimeSha}-${value.digest.slice(0, 12)}`,
-      predecessor: '/home/dominguez/telegram-hub-bot-staging/releases/previous',
+      releaseDir: path.join(
+        DEPLOY_HOME_FIXTURE,
+        `telegram-hub-bot-staging/releases/${value.runtimeSha}-${value.digest.slice(0, 12)}`,
+      ),
+      predecessor: path.join(
+        DEPLOY_HOME_FIXTURE,
+        'telegram-hub-bot-staging/releases/previous',
+      ),
       predecessorSha: value.deployedSha,
       predecessorDigest: 'c'.repeat(64),
       phase: 'completed',
@@ -311,15 +318,28 @@ describe('lean exact-artifact release path', () => {
       '--manifest', value.output,
       '--state', stagingState,
       '--role', 'staging',
-    ]);
+    ], { env: { ...process.env, NEXUS_RELEASE_DEPLOY_HOME: DEPLOY_HOME_FIXTURE } });
+    const missingDeployHomeEnv = { ...process.env };
+    delete missingDeployHomeEnv.NEXUS_RELEASE_DEPLOY_HOME;
+    const missingDeployHome = spawnSync(process.execPath, [
+      manifestScript, 'validate-state',
+      '--manifest', value.output,
+      '--state', stagingState,
+      '--role', 'staging',
+    ], { encoding: 'utf8', env: missingDeployHomeEnv });
+    expect(missingDeployHome.status).toBe(1);
+    expect(missingDeployHome.stderr).toContain('NEXUS_RELEASE_DEPLOY_HOME is required');
 
     const productionState = path.join(value.root, 'production-state.json');
     const staging = JSON.parse(fs.readFileSync(stagingState, 'utf8'));
     fs.writeFileSync(productionState, JSON.stringify({
       ...staging,
       role: 'production',
-      releaseDir: `/home/dominguez/telegram-hub-bot/releases/${value.runtimeSha}-${value.digest.slice(0, 12)}`,
-      predecessor: '/home/dominguez/telegram-hub-bot/releases/previous',
+      releaseDir: path.join(
+        DEPLOY_HOME_FIXTURE,
+        `telegram-hub-bot/releases/${value.runtimeSha}-${value.digest.slice(0, 12)}`,
+      ),
+      predecessor: path.join(DEPLOY_HOME_FIXTURE, 'telegram-hub-bot/releases/previous'),
       predecessorSha: value.deployedSha,
       predecessorDigest: 'c'.repeat(64),
       stabilitySeconds: 60,
@@ -332,7 +352,7 @@ describe('lean exact-artifact release path', () => {
       '--manifest', value.output,
       '--state', productionState,
       '--role', 'production',
-    ]);
+    ], { env: { ...process.env, NEXUS_RELEASE_DEPLOY_HOME: DEPLOY_HOME_FIXTURE } });
 
     const wrongPredecessor = JSON.parse(fs.readFileSync(productionState, 'utf8'));
     wrongPredecessor.predecessorSha = 'd'.repeat(40);
@@ -342,7 +362,10 @@ describe('lean exact-artifact release path', () => {
       '--manifest', value.output,
       '--state', productionState,
       '--role', 'production',
-    ], { encoding: 'utf8' });
+    ], {
+      encoding: 'utf8',
+      env: { ...process.env, NEXUS_RELEASE_DEPLOY_HOME: DEPLOY_HOME_FIXTURE },
+    });
     expect(predecessorMismatch.status).toBe(1);
     expect(predecessorMismatch.stderr).toContain(
       'not completed for the exact manifest',
@@ -359,7 +382,10 @@ describe('lean exact-artifact release path', () => {
       '--manifest', value.output,
       '--state', productionState,
       '--role', 'production',
-    ], { encoding: 'utf8' });
+    ], {
+      encoding: 'utf8',
+      env: { ...process.env, NEXUS_RELEASE_DEPLOY_HOME: DEPLOY_HOME_FIXTURE },
+    });
     expect(skippedProductionSmoke.status).toBe(1);
     expect(skippedProductionSmoke.stderr).toContain(
       'lean release transaction checks are incomplete',
@@ -522,15 +548,15 @@ esac
     fs.writeFileSync(path.join(fakeBin, 'ssh'), `#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "${sshCalls}"
 case "$*" in
-  *"cat /home/dominguez/.local/state/nexus-release/production.json"*)
+  *"cat ~/.local/state/nexus-release/production.json"*)
     printf '%s\\n' '${transaction}'
     ;;
 esac
 `, { mode: 0o755 });
     const promoteArgs = [
       'scripts/promote-exact-release.sh',
-      'ServerDominguez',
-      '/home/dominguez/.local/share/nexus-release/incoming/release-fixture',
+      'deploy.example.invalid',
+      '~/.local/share/nexus-release/incoming/release-fixture',
       value.runtimeSha,
       value.digest,
       transactionId,
@@ -704,9 +730,9 @@ db.close();
     const promote = fs.readFileSync('scripts/promote-exact-release.sh', 'utf8');
     const manifestTool = fs.readFileSync('scripts/release-checksum-manifest.mjs', 'utf8');
 
-    expect(operator).toContain('SERVER="${DEPLOY_SERVER:-ServerDominguez}"');
+    expect(operator).toContain('SERVER="${DEPLOY_SERVER:?DEPLOY_SERVER must be set');
     expect(operator.match(
-      /ssh "\$SERVER" cat "\/home\/dominguez\/\.local\/state\/nexus-release\/\$role\.json" > "\$output\.next"/g,
+      /ssh "\$SERVER" cat "~\/\.local\/state\/nexus-release\/\$role\.json" > "\$output\.next"/g,
     )).toHaveLength(1);
     expect(operator).toContain(
       "const fs=require('node:fs');\n"
@@ -718,7 +744,7 @@ db.close();
       '--verify-bundle "$REMOTE_BUNDLE"',
     );
     expect(operator).toContain(
-      'REMOTE_QUARANTINE="/home/dominguez/.local/share/nexus-release/incoming/.${RELEASE_NAME}.corrupt-$UPLOAD_ID"',
+      'REMOTE_QUARANTINE="~/.local/share/nexus-release/incoming/.${RELEASE_NAME}.corrupt-$UPLOAD_ID"',
     );
     expect(operator).toContain('mv -T "$bundle" "$quarantine"');
     expect(operator).toContain('[ "$REMOTE_BUNDLE_REUSED" != true ]');
@@ -758,7 +784,14 @@ db.close();
       'prepare',
       '--manifest',
       '/tmp/untrusted-release-manifest.json',
-    ], { cwd: path.resolve('.'), encoding: 'utf8' });
+    ], {
+      cwd: path.resolve('.'),
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        DEPLOY_SERVER: 'release-host',
+      },
+    });
     expect(arbitraryManifest.status).toBe(64);
     expect(arbitraryManifest.stderr).toContain('unknown release argument: --manifest');
     expect(remote).toContain(
@@ -927,6 +960,7 @@ db.close();
       env: {
         PATH: process.env.PATH ?? '',
         HOME: process.env.HOME ?? '',
+        DEPLOY_SERVER: 'release-host',
         NEXUS_RELEASE_OWNER_AUTHORIZED: '1',
       },
     });
@@ -1002,7 +1036,7 @@ db.close();
     );
     const firstDeploymentWork = remote.indexOf('\nverify_pristine_bundle\n');
     const productionBoundary = remote.indexOf(
-      'assert_no_unresolved_chat_capability_transaction /home/dominguez/telegram-hub-bot-staging',
+      'assert_no_unresolved_chat_capability_transaction "$HOME/telegram-hub-bot-staging"',
     );
 
     expect(remote).toContain('local capability_base="$1"');
@@ -1010,7 +1044,7 @@ db.close();
     expect(remote).toContain('assert_no_unresolved_chat_capability_transaction "$BASE_DIR"');
     expect(remote).toContain('assert_no_unpublished_chat_capability_receipt "$ROLE"');
     expect(remote).toContain(
-      'assert_no_unresolved_chat_capability_transaction /home/dominguez/telegram-hub-bot-staging',
+      'assert_no_unresolved_chat_capability_transaction "$HOME/telegram-hub-bot-staging"',
     );
     expect(remote).toContain('assert_no_unpublished_chat_capability_receipt staging');
     expect(remote).toContain('*.observation-plan.json');
@@ -1105,7 +1139,7 @@ db.close();
     expect(guardCall).toBeLessThan(remote.indexOf('switch_current "$RELEASE_DIR"'));
     expect(remote).toContain(
       'assert_release_candidate_chat_capabilities_off '
-      + '/home/dominguez/telegram-hub-bot-staging/.env',
+      + '"$HOME/telegram-hub-bot-staging/.env"',
     );
     expect(remote).not.toMatch(/assert_release_candidate_chat_capabilities_off[\s\S]*?\$ROLE\s*=/u);
   });
@@ -1352,17 +1386,17 @@ db.close();
     expect(remote).toContain("marker?.schema!=='nexus.release-bundle.v1'");
   });
 
-  it('prepares only the live ServerDominguez layouts and backup database path', () => {
+  it('prepares only the configured deploy-home layouts and backup database path', () => {
     const installer = fs.readFileSync('scripts/lean-release-server-install.sh', 'utf8');
     const backup = fs.readFileSync('ops/local-backup/backup.env.example', 'utf8');
 
     expect(() => execFileSync('bash', ['-n', 'scripts/lean-release-server-install.sh']))
       .not.toThrow();
     expect(installer).toContain(
-      'validate_and_normalize_base /home/dominguez/telegram-hub-bot',
+      'validate_and_normalize_base "$DEPLOY_HOME/telegram-hub-bot"',
     );
     expect(installer).toContain(
-      'validate_and_normalize_base /home/dominguez/telegram-hub-bot-staging',
+      'validate_and_normalize_base "$DEPLOY_HOME/telegram-hub-bot-staging"',
     );
     expect(installer).toContain('loginctl enable-linger "$DEPLOY_USER"');
     expect(installer).toContain(
@@ -1388,7 +1422,7 @@ db.close();
     expect(retirement).toContain('NEXUS_RELEASE_OWNER_AUTHORIZED');
     expect(retirement).toContain('--apply --confirm <sha>:<digest>');
     expect(retirement).toContain(
-      'STATE_FILE=/home/dominguez/.local/state/nexus-release/production.json',
+      'STATE_FILE="$DEPLOY_HOME/.local/state/nexus-release/production.json"',
     );
     expect(retirement).toContain("prePromotionBackup:'passed'");
     expect(retirement).toContain('state.releaseDir!==currentTarget');
@@ -1399,7 +1433,7 @@ db.close();
       '"$SYSTEMCTL_BIN" is-active --quiet "$TEMPORARY_PM2_UNIT"',
     );
     expect(retirement).toContain(
-      'USER_RELEASE_LOCK=/home/dominguez/.local/state/nexus-release/.release.lock',
+      'USER_RELEASE_LOCK="$DEPLOY_HOME/.local/state/nexus-release/.release.lock"',
     );
     expect(retirement).toContain(
       'ROOT_SONAR_LOCK=/run/lock/nexus-release-sonar.lock',

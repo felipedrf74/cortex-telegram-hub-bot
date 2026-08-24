@@ -12,7 +12,7 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -1846,12 +1846,12 @@ fi
       'sudo -u dominguez sudo -n /usr/local/sbin/nexus-release-state-view >/dev/null',
     );
     expect(runbook).toContain(
-      '`ssh ServerDominguez sudo -n /usr/local/sbin/nexus-release-state-view`',
+      '`ssh "$DEPLOY_SERVER" sudo -n /usr/local/sbin/nexus-release-state-view`',
     );
     expect(operatorSkill).toContain(
-      '/usr/bin/ssh ServerDominguez \\\n  sudo -n /usr/local/sbin/nexus-release-state-view',
+      '/usr/bin/ssh "$DEPLOY_SERVER" \\\n  sudo -n /usr/local/sbin/nexus-release-state-view',
     );
-    expect(operatorSkill).toContain('/usr/bin/ssh -t ServerDominguez');
+    expect(operatorSkill).toContain('/usr/bin/ssh -t "$DEPLOY_SERVER"');
     expect(operatorSkill).toContain('sudo /usr/bin/env -i PATH=/usr/bin:/bin');
     expect(operatorSkill).not.toContain('sudo env PATH=');
   });
@@ -2468,12 +2468,12 @@ done
         runtimeCaptureSha256: transitionValues.runtimeCaptureSha256,
         legacy: {
           production: {
-            path: '/home/dominguez/telegram-hub-bot/data/bot.db',
+            path: join(homedir(), 'telegram-hub-bot/data/bot.db'),
             identity: transitionValues.legacyProductionIdentity,
             logicalDigest: transitionValues.legacyProductionLogicalDigest,
           },
           staging: {
-            path: '/home/dominguez/telegram-hub-bot-staging/data/bot.db',
+            path: join(homedir(), 'telegram-hub-bot-staging/data/bot.db'),
             identity: transitionValues.legacyStagingIdentity,
             logicalDigest: transitionValues.legacyStagingLogicalDigest,
           },
@@ -2537,13 +2537,13 @@ done
         logicalDigest: recoveryValues.liveStagingDigest,
       },
       observedPm2Production: {
-        path: '/home/dominguez/telegram-hub-bot/data/bot.db',
+        path: join(homedir(), 'telegram-hub-bot/data/bot.db'),
         identity: recoveryValues.observedProductionIdentity,
         logicalDigest: recoveryValues.observedProductionDigest,
       },
       capturedPm2ProductionIdentity: recoveryValues.capturedProductionIdentity,
       pm2Staging: {
-        path: '/home/dominguez/telegram-hub-bot-staging/data/bot.db',
+        path: join(homedir(), 'telegram-hub-bot-staging/data/bot.db'),
         identity: recoveryValues.stagingIdentity,
         logicalDigest: recoveryValues.stagingDigest,
       },
@@ -2680,7 +2680,7 @@ done
       expect(block).toContain('run_pm2_as_dominguez kill || action_failed=1');
       expect(block).toContain("pgrep -u dominguez -f 'PM2.*God Daemon'");
       expect(block).toContain('-sTCP:LISTEN 2>&1');
-      expect(block).toContain('/home/dominguez/telegram-hub-bot/data/bot.db.next-bootstrap-recovery');
+      expect(block).toContain('"$HOME/telegram-hub-bot/data/bot.db.next-bootstrap-recovery"');
       expect(block).toContain('/var/lib/nexus-hub/production/data/bot.db.next');
       expect(block).toContain("for suffix in '' -wal -shm -journal");
       expect(block).toContain('sudo lsof -nP -t -- "$path" 2>&1');
@@ -2864,7 +2864,7 @@ test "$(resolve_fragment)" = "$canonical"
       expect(block.match(/sudo -u dominguez pm2/g)).toHaveLength(1);
       expect(block.match(/run_pm2_as_dominguez (?:jlist|start|stop|kill)/g)?.length)
         .toBeGreaterThan(0);
-      expect(block).not.toContain('--chdir=/home/dominguez');
+      expect(block).not.toContain('--chdir="$HOME"');
       expect(block).not.toMatch(/sudo -u dominguez (?:-D|--chdir)/);
     }
     expect(new Set(helpers).size).toBe(1);
@@ -2872,7 +2872,7 @@ test "$(resolve_fragment)" = "$canonical"
     const fixtureRoot = mkdtempSync(join(tmpdir(), 'nexus-pm2-cwd-'));
     try {
       const helper = helpers[0].replace(
-        'local pm2_cwd=/home/dominguez',
+        'local pm2_cwd="$HOME"',
         `local pm2_cwd='${fixtureRoot}'`,
       );
       const result = spawnSync('bash', ['-s'], {
@@ -3364,9 +3364,13 @@ exit 99
     for (const openHandle of [0, 1]) {
       const result = spawnSync('bash', ['-s'], {
         encoding: 'utf8',
-        env: { ...process.env, OPEN_HANDLE: String(openHandle) },
+        env: {
+          ...process.env,
+          HOME: '/tmp/nexus-release-fixture',
+          OPEN_HANDLE: String(openHandle),
+        },
         input: `set -euo pipefail
-OPEN_PATH=/home/dominguez/telegram-hub-bot/data/bot.db
+OPEN_PATH=/tmp/nexus-release-fixture/telegram-hub-bot/data/bot.db
 pm2_guard_is_exact() { return 0; }
 sudo() {
   case "$1" in

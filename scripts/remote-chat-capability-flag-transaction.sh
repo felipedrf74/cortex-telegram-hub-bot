@@ -9,12 +9,12 @@ readonly OBSERVATION_PLAN_SCHEMA='nexus.chat-capability-observation-plan.v1'
 readonly OBSERVATION_RECEIPT_SCHEMA='nexus.chat-capability-observation-receipt.v1'
 readonly SHADOW_HOOK_PLAN_SCHEMA='nexus.chat-shadow-route-hook-plan.v1'
 readonly SHADOW_HOOK_RECEIPT_SCHEMA='nexus.chat-shadow-route-hook-transaction.v1'
-readonly USER_RELEASE_LOCK='/home/dominguez/.local/state/nexus-release/.release.lock'
+readonly USER_RELEASE_LOCK="$HOME/.local/state/nexus-release/.release.lock"
 readonly ROOT_SONAR_LOCK='/run/lock/nexus-release-sonar.lock'
-readonly STATE_ROOT='/home/dominguez/.local/state/nexus-release/chat-capability-flags'
-readonly ROUTING_SYNTHETIC_QA_STATE_ROOT='/home/dominguez/.local/state/nexus-release/routing-synthetic-qa'
-readonly STAGING_BASE_DIR='/home/dominguez/telegram-hub-bot-staging'
-readonly PRODUCTION_BASE_DIR='/home/dominguez/telegram-hub-bot'
+readonly STATE_ROOT="$HOME/.local/state/nexus-release/chat-capability-flags"
+readonly ROUTING_SYNTHETIC_QA_STATE_ROOT="$HOME/.local/state/nexus-release/routing-synthetic-qa"
+readonly STAGING_BASE_DIR="$HOME/telegram-hub-bot-staging"
+readonly PRODUCTION_BASE_DIR="$HOME/telegram-hub-bot"
 readonly STAGING_BACKEND_PORT=8201
 readonly PM2_BIN='/usr/local/bin/pm2'
 readonly NODE_BIN='/usr/bin/node'
@@ -86,7 +86,7 @@ die() {
 
 case "$ROLE" in
   staging)
-    [ "$BASE_DIR" = '/home/dominguez/telegram-hub-bot-staging' ] \
+    [ "$BASE_DIR" = "$HOME/telegram-hub-bot-staging" ] \
       || die 'unexpected staging base'
     BACKEND_APP='nexus-hub-staging'
     CONTENT_APP='content-engine-staging'
@@ -94,7 +94,7 @@ case "$ROLE" in
     CONTENT_PORT=8101
     ;;
   production)
-    [ "$BASE_DIR" = '/home/dominguez/telegram-hub-bot' ] \
+    [ "$BASE_DIR" = "$HOME/telegram-hub-bot" ] \
       || die 'unexpected production base'
     BACKEND_APP='nexus-hub'
     CONTENT_APP='content-engine'

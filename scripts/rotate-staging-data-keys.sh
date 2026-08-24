@@ -67,8 +67,8 @@ usage() {
   cat <<'USAGE'
 Usage:
   rotate-staging-data-keys.sh \
-    --staging-root=/home/dominguez/telegram-hub-bot-staging \
-    --production-root=/home/dominguez/telegram-hub-bot
+    --staging-root="$HOME/telegram-hub-bot-staging" \
+    --production-root="$HOME/telegram-hub-bot"
 
 The two absolute roots are mandatory. The script never accepts key material
 on the command line and never prints key material or decrypted data.

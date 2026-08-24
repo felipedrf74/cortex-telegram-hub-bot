@@ -308,8 +308,10 @@ function validateReviewEvidence(errors, irreversible) {
 
 function parseBackupArchivePath(value) {
   if (typeof value !== 'string') return null;
+  // Identity is the filename contract. The directory prefix is host-specific:
+  // tests use a fixture root; production uses $HOME/backups/nexushub.
   const match = value.match(
-    /^\/home\/dominguez\/backups\/nexushub\/v([0-9A-Za-z.+-]+)_before-v([0-9A-Za-z.+-]+)_[0-9]{8}_[0-9]{6}\.tar\.gz$/,
+    /^\/(?:tmp\/nexus-release-fixture|home\/[^/]+)\/backups\/nexushub\/v([0-9A-Za-z.+-]+)_before-v([0-9A-Za-z.+-]+)_[0-9]{8}_[0-9]{6}\.tar\.gz$/,
   );
   return match ? { archivedVersion: match[1], targetVersion: match[2] } : null;
 }

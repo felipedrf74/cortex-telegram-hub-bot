@@ -18,6 +18,7 @@ import {
   readdirSync,
   realpathSync,
 } from 'node:fs';
+import { homedir } from 'node:os';
 import path from 'node:path';
 
 const CAPABILITY_FLAGS = [
@@ -57,10 +58,10 @@ export interface ChatCapabilityRuntimeGuardIo {
 }
 
 const DEFAULT_BASE_DIRS: Record<ReleaseRole, string> = {
-  staging: '/home/dominguez/telegram-hub-bot-staging',
-  production: '/home/dominguez/telegram-hub-bot',
+  staging: path.join(homedir(), 'telegram-hub-bot-staging'),
+  production: path.join(homedir(), 'telegram-hub-bot'),
 };
-const DEFAULT_STATE_ROOT = '/home/dominguez/.local/state/nexus-release/chat-capability-flags';
+const DEFAULT_STATE_ROOT = path.join(homedir(), '.local/state/nexus-release/chat-capability-flags');
 const MARKER_PREFIX = '.env.before-chat-capability-';
 const TRANSACTION_ID = /^\d{8}T\d{6}Z-[0-9a-f]{12}$/u;
 const RUNTIME_SHA = /^[0-9a-f]{40}$/u;

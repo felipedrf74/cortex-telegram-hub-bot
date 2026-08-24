@@ -26,14 +26,18 @@ if [ "${NEXUS_PRECOMMIT_SKIP_IDENTITY_REFRESH:-0}" != "1" ] && \
   echo "📝 refreshing release-identity artifact"
   if [ -x "$ROOT/scripts/release-identity.sh" ]; then
     "$ROOT/scripts/release-identity.sh" --persist --quiet || echo "⚠️ release-identity refresh failed (non-fatal)"
-    WORKSPACE_DOCS_ROOT="${NEXUS_WORKSPACE_DOCS_ROOT:-/Users/felipedominguez/Desktop/Nexus Hub}"
-    for ART in \
-      "$WORKSPACE_DOCS_ROOT/docs/release/release-identity.json" \
-      "$WORKSPACE_DOCS_ROOT/docs/release/release-identity.md"; do
-      if [ -f "$ART" ] && git -C "$ROOT" ls-files --error-unmatch "$ART" >/dev/null 2>&1; then
-        git -C "$ROOT" add "$ART" 2>/dev/null || true
-      fi
-    done
+    # No default: the workspace docs checkout is machine-specific, so the
+    # artifact refresh only runs when NEXUS_WORKSPACE_DOCS_ROOT is set.
+    WORKSPACE_DOCS_ROOT="${NEXUS_WORKSPACE_DOCS_ROOT:-}"
+    if [ -n "$WORKSPACE_DOCS_ROOT" ]; then
+      for ART in \
+        "$WORKSPACE_DOCS_ROOT/docs/release/release-identity.json" \
+        "$WORKSPACE_DOCS_ROOT/docs/release/release-identity.md"; do
+        if [ -f "$ART" ] && git -C "$ROOT" ls-files --error-unmatch "$ART" >/dev/null 2>&1; then
+          git -C "$ROOT" add "$ART" 2>/dev/null || true
+        fi
+      done
+    fi
   fi
 fi
 

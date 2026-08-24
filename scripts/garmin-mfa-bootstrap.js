@@ -5,7 +5,7 @@
  * Handles the initial login with MFA, saves OAuth tokens for
  * garmin-connect package to reuse via refreshOauth2Token().
  *
- * Usage: cd /home/dominguez/telegram-hub-bot && NODE_PATH=./node_modules node scripts/garmin-mfa-bootstrap.js
+ * Usage: cd ~/telegram-hub-bot && NODE_PATH=./node_modules node scripts/garmin-mfa-bootstrap.js
  */
 require('dotenv').config();
 const axios = require('axios');

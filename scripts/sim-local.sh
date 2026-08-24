@@ -39,7 +39,7 @@ if [ -f "$ROOT/.env.local" ]; then
   set +a
 fi
 
-IOS_PROJECT_PATH="${NEXUS_IOS_PROJECT_PATH:-/Users/felipedominguez/Desktop/Nexus Hub IOS/Nexus Hub/Nexus Hub.xcodeproj}"
+IOS_PROJECT_PATH="${NEXUS_IOS_PROJECT_PATH:?NEXUS_IOS_PROJECT_PATH must be set (path to the Nexus Hub iOS .xcodeproj)}"
 IOS_SCHEME="${NEXUS_IOS_SCHEME:-Nexus Hub}"
 IOS_BUNDLE_ID="${NEXUS_IOS_BUNDLE_ID:-me.nexushub.app}"
 SIM_DEVICE="${NEXUS_SIM_DEVICE:-}"

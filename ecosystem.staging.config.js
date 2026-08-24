@@ -3,9 +3,9 @@
 // Quarter audit item: Staging environment + Blue-green deploy.
 //
 // Design:
-//   - Single VPS, two parallel installs:
-//       /home/dominguez/telegram-hub-bot/          (production — port 8200)
-//       /home/dominguez/telegram-hub-bot-staging/  (staging    — port 8201)
+//   - Single VPS, two parallel installs under the deploy user's home:
+//       ~/telegram-hub-bot/          (production — port 8200)
+//       ~/telegram-hub-bot-staging/  (staging    — port 8201)
 //   - Each install has its OWN dist/, data/, .env, and node_modules.
 //     They share NOTHING at runtime, so a staging migration can't corrupt
 //     prod and a staging crash can't take prod down.
@@ -18,20 +18,28 @@
 //     promotion then copies the already prepared immutable release to prod.
 //
 // Usage:
-//   pm2 start ecosystem.staging.config.js   # First-time start
+//   NEXUS_RELEASE_BASE_DIR=<staging install root> \
+//     pm2 start ecosystem.staging.config.js       # First-time start
 //   npm run release:prepare                       # Governed staging switch
-//   pm2 logs nexus-hub-staging              # Tail staging logs
+//   pm2 logs nexus-hub-staging                    # Tail staging logs
+
+const path = require('path');
+
+// The staging install root is deployment-specific. No fallback: starting
+// without it must fail loudly rather than point PM2 at a guessed tree.
+const baseDir = process.env.NEXUS_RELEASE_BASE_DIR;
+if (!baseDir) throw new Error('NEXUS_RELEASE_BASE_DIR is required');
 
 module.exports = {
   apps: [
     {
       name: 'nexus-hub-staging',
       script: 'dist/index.js',
-      // CWD points at the staging install — keep this as a string (not
-      // __dirname) because this file gets copied alongside the staging
-      // release tree, and we want it to ALWAYS resolve
+      // CWD points at the staging install — resolved from
+      // NEXUS_RELEASE_BASE_DIR (not __dirname) because this file gets copied
+      // alongside the staging release tree, and we want it to ALWAYS resolve
       // the staging path regardless of where pm2 was invoked from.
-      cwd: '/home/dominguez/telegram-hub-bot-staging',
+      cwd: baseDir,
       exec_mode: 'fork',
       instances: 1,
       autorestart: true,
@@ -54,16 +62,16 @@ module.exports = {
         NEXUS_BACKEND_PORT: '8201',
         AI_CALL_TIMEOUT_MS: '180000',
         // Staging DB lives inside the staging install — fully isolated
-        DATABASE_PATH: '/home/dominguez/telegram-hub-bot-staging/data/bot.db',
+        DATABASE_PATH: path.join(baseDir, 'data/bot.db'),
         // The rest of the env (ANTHROPIC_API_KEY, OAuth secrets, etc.)
-        // comes from /home/dominguez/telegram-hub-bot-staging/.env which
-        // dotenv loads automatically at startup. KEEP staging credentials
-        // separate from prod credentials so a leaked staging .env can't
-        // touch production connectors or ship invoices.
+        // comes from the staging install's .env which dotenv loads
+        // automatically at startup. KEEP staging credentials separate from
+        // prod credentials so a leaked staging .env can't touch production
+        // connectors or ship invoices.
       },
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
-      error_file: '/home/dominguez/telegram-hub-bot-staging/logs/error.log',
-      out_file: '/home/dominguez/telegram-hub-bot-staging/logs/out.log',
+      error_file: path.join(baseDir, 'logs/error.log'),
+      out_file: path.join(baseDir, 'logs/out.log'),
       merge_logs: true,
       // Restart policy — slightly more aggressive than prod because we'd
       // rather have staging restart-loop visibly than mask a problem.
@@ -76,9 +84,9 @@ module.exports = {
     },
     {
       name: 'content-engine-staging',
-      script: '/home/dominguez/telegram-hub-bot-staging/content-engine/.venv/bin/python3.12',
+      script: path.join(baseDir, 'content-engine/.venv/bin/python3.12'),
       args: 'main.py',
-      cwd: '/home/dominguez/telegram-hub-bot-staging/content-engine',
+      cwd: path.join(baseDir, 'content-engine'),
       interpreter: 'none', // Don't run via Node — args is the python entry
       exec_mode: 'fork',
       instances: 1,
@@ -94,8 +102,8 @@ module.exports = {
         ENV: 'staging',
       },
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
-      error_file: '/home/dominguez/telegram-hub-bot-staging/logs/content-engine-error.log',
-      out_file: '/home/dominguez/telegram-hub-bot-staging/logs/content-engine-out.log',
+      error_file: path.join(baseDir, 'logs/content-engine-error.log'),
+      out_file: path.join(baseDir, 'logs/content-engine-out.log'),
       merge_logs: true,
       restart_delay: 5000,
       kill_timeout: 5000,

@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import fs from 'node:fs';
+import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -21,10 +22,10 @@ export const ROUTING_SYNTHETIC_QA_RECEIPT_SCHEMA =
 const MANIFEST_SHA256 = /^[0-9a-f]{64}$/u;
 const PREFIXED_MANIFEST_SHA256 = /^sha256:([0-9a-f]{64})$/u;
 const CANONICAL_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
-const STAGING_BASE_DIR = '/home/dominguez/telegram-hub-bot-staging';
+const STAGING_BASE_DIR = path.join(homedir(), 'telegram-hub-bot-staging');
 const STAGING_BACKEND_URL = 'http://127.0.0.1:8201';
-const STAGING_HOME = '/home/dominguez';
-const RELEASE_LOCK_PATH = '/home/dominguez/.local/state/nexus-release/.release.lock';
+const STAGING_HOME = homedir();
+const RELEASE_LOCK_PATH = path.join(homedir(), '.local/state/nexus-release/.release.lock');
 const PLANNED_TURNS = 200;
 const REQUEST_TIMEOUT_MS = 10_000;
 const SURFACE_FLAG = Object.freeze({

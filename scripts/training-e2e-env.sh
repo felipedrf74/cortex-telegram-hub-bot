@@ -18,7 +18,11 @@ training_e2e_git_dir() {
     git -C "$root" rev-parse --absolute-git-dir 2>/dev/null
     return 0
   fi
-  local canonical_git_dir="/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot/.git"
+  local canonical_git_dir="${NEXUS_TRAINING_E2E_CANONICAL_GIT_DIR:-}"
+  if [[ -z "$canonical_git_dir" ]]; then
+    echo "training-e2e: no .git at repo root — set NEXUS_TRAINING_E2E_GIT_DIR or NEXUS_TRAINING_E2E_CANONICAL_GIT_DIR" >&2
+    return 1
+  fi
   if [[ -d "$canonical_git_dir" ]]; then
     printf '%s\n' "$canonical_git_dir"
     return 0

@@ -3,8 +3,7 @@
 Status: owner-approved (canonical implementation plan)
 Owner: Felipe Dominguez
 Canonicalized: 2026-08-18
-Original attachment:
-`/Users/felipedominguez/.codex/attachments/79c27f9e-60a7-4177-be0b-4ed3922a25b8/pasted-text.txt`
+Original attachment: owner-provided plan attachment (local archive)
 Scope: backend, iOS, website, providers, billing, local inference, release
 Activation status: default OFF pending same-release verification evidence
 Update policy: locked decisions change only with explicit owner approval; the

@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -11,7 +12,12 @@ const OPERATOR = path.join(ROOT, 'scripts/chat-capability-flag-operator.sh');
 
 const RUNTIME_SHA = 'a'.repeat(40);
 const ARTIFACT_DIGEST = 'b'.repeat(64);
-const RELEASE_DIR = `/home/dominguez/telegram-hub-bot-staging/releases/${RUNTIME_SHA}-${ARTIFACT_DIGEST.slice(0, 12)}`;
+const RELEASE_DIR = path.join(
+  homedir(),
+  'telegram-hub-bot-staging',
+  'releases',
+  `${RUNTIME_SHA}-${ARTIFACT_DIGEST.slice(0, 12)}`,
+);
 const PLAN_DIGEST = `sha256:${'c'.repeat(64)}`;
 const NEXT_PLAN_DIGEST = `sha256:${'d'.repeat(64)}`;
 const TRANSACTION_ID = '20260802T010203Z-abcdef123456';
@@ -147,8 +153,9 @@ describe('remote chat capability flag safety helpers', () => {
     expect(operator).not.toContain('--gate-evidence');
     expect(operator).not.toContain('GATE_EVIDENCE');
     expect(operator).not.toContain('--server');
-    expect(operator).not.toContain('DEPLOY_SERVER');
-    expect(operator).toContain("readonly SERVER='ServerDominguez'");
+    expect(operator).not.toContain("readonly SERVER='");
+    expect(operator).toContain('DEPLOY_SERVER must be set');
+    expect(operator).toContain('readonly SERVER="${DEPLOY_SERVER:');
     expect(operator).toContain('--since');
     expect(operator).toContain('--until');
 

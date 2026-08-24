@@ -1678,7 +1678,10 @@ describe('chat capability flag transaction', () => {
     const help = spawnSync('bash', [OPERATOR, '--help'], {
       cwd: ROOT,
       encoding: 'utf8',
-      env: { PATH: process.env.PATH ?? '/usr/bin:/bin' },
+      env: {
+        PATH: process.env.PATH ?? '/usr/bin:/bin',
+        DEPLOY_SERVER: 'release-host',
+      },
     });
     expect(help.status, `${help.stdout}\n${help.stderr}`).toBe(0);
     for (const mode of ['inspect', 'apply', 'inspect-secrets', 'apply-secrets']) {
@@ -1702,7 +1705,7 @@ describe('chat capability flag transaction', () => {
     expect(operator).toContain('remote-chat-capability-flag-transaction.sh');
 
     expect(remote).toContain(RECEIPT_SCHEMA);
-    expect(remote).toContain('/home/dominguez/.local/state/nexus-release/.release.lock');
+    expect(remote).toContain('USER_RELEASE_LOCK="$HOME/.local/state/nexus-release/.release.lock"');
     expect(remote).toContain('/run/lock/nexus-release-sonar.lock');
     expect(remote).toContain('flock -n');
     expect(remote).toContain('.complete.json');

@@ -46,8 +46,10 @@ NoNewPrivileges=yes
 # Hide every home directory, then expose only the two stopped legacy SQLite
 # directories read-only. Bootstrap re-hashes those exact source snapshots and
 # runs lsof against them; ordinary release code never needs home visibility.
+# The optional (-) entries below are neutral defaults; deployments using the
+# legacy home layout must override these paths with a systemd drop-in.
 ProtectHome=tmpfs
-BindReadOnlyPaths=/home/dominguez/telegram-hub-bot/data /home/dominguez/telegram-hub-bot-staging/data
+BindReadOnlyPaths=-/var/lib/nexus-hub/legacy/telegram-hub-bot/data -/var/lib/nexus-hub/legacy/telegram-hub-bot-staging/data
 ProtectSystem=full
 ReadOnlyPaths=/opt/nexus-release
 ReadWritePaths=/var/lib/nexus-release /var/lib/nexus-hub /srv/nexus-backups

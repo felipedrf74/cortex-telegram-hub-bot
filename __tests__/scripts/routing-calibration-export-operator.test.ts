@@ -423,7 +423,7 @@ describe('governed routing-calibration export operator', () => {
     expect(operator).toContain('publish_private "$receipt_temp" "$LOCAL_RECEIPT"');
     expect(fs.statSync(OPERATOR).mode & 0o111).not.toBe(0);
     expect(fs.statSync(REMOTE).mode & 0o111).not.toBe(0);
-    expect(remote).toContain("USER_RELEASE_LOCK='/home/dominguez/.local/state/nexus-release/.release.lock'");
+    expect(remote).toContain('USER_RELEASE_LOCK="$HOME/.local/state/nexus-release/.release.lock"');
     expect(remote).toContain("ROOT_SONAR_LOCK='/run/lock/nexus-release-sonar.lock'");
     expect(remote.indexOf('flock -n 9')).toBeLessThan(remote.indexOf('flock -n 8'));
     expect(remote).toContain('assert_lock_fd_matches_path 9');

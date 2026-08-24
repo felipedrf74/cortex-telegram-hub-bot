@@ -30,7 +30,7 @@ not authorization for any other live mutation.
 
 ### Durable cloudflared connector
 
-ServerDominguez must run the production connector as
+The release host must run the production connector as
 `nexus-cloudflared.service`, not as a user cron child. The reviewed unit uses a
 dynamic service identity, root-owned mode-0600 configuration and credential
 inputs delivered with systemd `LoadCredential`, a fixed loopback metrics
@@ -84,7 +84,7 @@ logs, command output, chat, or release evidence.
   verifier decrypts the newest hourly point into a private temporary path,
   verifies SQLite integrity and foreign keys, writes a root-only receipt, and
   removes plaintext.
-- The `age` private identity is stored on ServerDominguez root-owned mode 0600
+- The `age` private identity is stored on the release host root-owned mode 0600
   because this is intentionally same-host recovery. That protects at-rest
   database bytes from non-root accounts, but does not protect against complete
   server or NVMe loss.

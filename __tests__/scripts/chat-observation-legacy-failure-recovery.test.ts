@@ -133,17 +133,17 @@ esac
   let source = readFileSync(REMOTE, 'utf8');
   source = replaceRequired(
     source,
-    "readonly BASE_DIR='/home/dominguez/telegram-hub-bot-staging'",
+    'readonly BASE_DIR="$HOME/telegram-hub-bot-staging"',
     `readonly BASE_DIR=${shellQuote(base)}`,
   );
   source = replaceRequired(
     source,
-    "readonly STATE_ROOT='/home/dominguez/.local/state/nexus-release/chat-capability-flags'",
+    'readonly STATE_ROOT="$HOME/.local/state/nexus-release/chat-capability-flags"',
     `readonly STATE_ROOT=${shellQuote(stateRoot)}`,
   );
   source = replaceRequired(
     source,
-    "readonly USER_RELEASE_LOCK='/home/dominguez/.local/state/nexus-release/.release.lock'",
+    'readonly USER_RELEASE_LOCK="$HOME/.local/state/nexus-release/.release.lock"',
     `readonly USER_RELEASE_LOCK=${shellQuote(userLock)}`,
   );
   source = replaceRequired(

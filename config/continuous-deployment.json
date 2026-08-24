@@ -27,8 +27,8 @@
     "migratorService": "migrator"
   },
   "bootstrap": {
-    "legacyProductionDatabase": "/home/dominguez/telegram-hub-bot/data/bot.db",
-    "legacyStagingDatabase": "/home/dominguez/telegram-hub-bot-staging/data/bot.db",
+    "legacyProductionDatabase": "/var/lib/nexus-hub/legacy/telegram-hub-bot/data/bot.db",
+    "legacyStagingDatabase": "/var/lib/nexus-hub/legacy/telegram-hub-bot-staging/data/bot.db",
     "maxBaselineAgeSeconds": 86400,
     "maxDatabaseBytes": 1073741824
   },

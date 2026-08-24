@@ -10,7 +10,8 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname } from 'node:path';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
 
 export const CHAT_CAPABILITY_FLAG_PLAN_SCHEMA = 'nexus.chat-capability-flag-plan.v1';
 export const CHAT_CAPABILITY_FLAG_EVIDENCE_SCHEMA = 'nexus.chat-capability-flag-evidence.v1';
@@ -3490,8 +3491,8 @@ function validatePrivatePreconditions(value, plan) {
   const envSha256 = assertSha256(value.envSha256, 'privatePreconditions.envSha256');
   const releaseDir = assertString(value.releaseDir, 'privatePreconditions.releaseDir');
   const expectedBase = plan.role === 'staging'
-    ? '/home/dominguez/telegram-hub-bot-staging/releases/'
-    : '/home/dominguez/telegram-hub-bot/releases/';
+    ? `${join(homedir(), 'telegram-hub-bot-staging')}/releases/`
+    : `${join(homedir(), 'telegram-hub-bot')}/releases/`;
   const expectedName = `${plan.runtimeSha}-${plan.artifactDigest.slice(0, 12)}`;
   if (releaseDir !== `${expectedBase}${expectedName}`) {
     fail('privatePreconditions.releaseDir does not match the exact release identity');

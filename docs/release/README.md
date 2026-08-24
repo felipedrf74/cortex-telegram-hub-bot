@@ -147,7 +147,7 @@ a reviewed root-owned checkout:
 sudo scripts/lean-release-server-install.sh
 ```
 
-It validates the two existing `/home/dominguez/telegram-hub-bot*` layouts,
+It validates the two existing deploy-user `~/telegram-hub-bot*` layouts,
 normalizes their top-level ownership and the `releases/`, `data/`, and `logs/`
 directory modes to `0700`, preserves their contents, prepares the private
 transfer/state directories, and enables user systemd lingering. It does not
@@ -168,7 +168,7 @@ npm run release:prepare -- --checkpoint-run <run-id>
 `release:prepare` downloads the compact manifest and the exact bundle from the
 same successful checkpoint run. It verifies both locally, stores the manifest
 SHA-256, and uploads the artifact once to
-`/home/dominguez/.local/share/nexus-release/incoming/`, and submits a
+`~/.local/share/nexus-release/incoming/`, and submits a
 `systemd-run --user` staging transaction. Immediately before each submission
 (including both transactions in the optional fault drill), it requires a clean
 unchanged checkout, refetches `origin/main`, and fails if protected main no
@@ -177,7 +177,7 @@ longer equals the prepared SHA.
 The transaction copies the pristine bundle into the existing immutable layout:
 
 ```text
-/home/dominguez/telegram-hub-bot-staging/
+~/telegram-hub-bot-staging/
   .env
   current -> releases/<sha>-<digest-prefix>
   data/
@@ -197,7 +197,7 @@ read-only SQLite integrity and foreign-key integrity, and predecessor rollback
 readiness, then records:
 
 ```text
-/home/dominguez/.local/state/nexus-release/staging.json
+~/.local/state/nexus-release/staging.json
 ```
 
 The local operator stops with `ownerApprovalRequired: true`.
@@ -270,7 +270,7 @@ The production transaction:
 Production keeps the existing layout:
 
 ```text
-/home/dominguez/telegram-hub-bot/
+~/telegram-hub-bot/
   .env
   current -> releases/<sha>-<digest-prefix>
   data/
@@ -279,7 +279,7 @@ Production keeps the existing layout:
 ```
 
 Remote transaction state is
-`/home/dominguez/.local/state/nexus-release/production.json`; local evidence is
+`~/.local/state/nexus-release/production.json`; local evidence is
 under ignored `.local/release/`.
 
 The transaction journal records the configured stability interval and exact
@@ -353,7 +353,7 @@ NEXUS_RELEASE_OWNER_AUTHORIZED=1 \
   npm run release:chat-flags -- apply-observation ...
 ```
 
-The command is hardcoded to `ServerDominguez` and has no host override. AWS is
+The command targets `"$DEPLOY_SERVER"` (required env, no default host). AWS is
 not a release or flag target. Run from a clean checkout of the exact installed
 runtime SHA and pass the full runtime SHA and artifact digest. Inspect creates
 one redacted, exact-release-bound, sequence-bound plan; apply accepts and
@@ -379,7 +379,7 @@ acknowledgement of the exact hash-bound plan, then publication of a distinct
 the incomplete attempt for release serialization only; it is never passing
 flag evidence and cannot authorize a production flag enable.
 
-Gate evidence is collected natively on ServerDominguez from the installed
+Gate evidence is collected natively on the release host from the installed
 artifact, isolated staging `.env` and SQLite database, authenticated health,
 and `/chat-quality`; the operator accepts no evidence file and makes no
 provider call. Routing enables require an explicit immutable canonical UTC
@@ -539,7 +539,7 @@ sudo scripts/retire-legacy-release-machinery.sh
 ```
 
 Then apply it with the exact passing production identity and explicit owner
-authorization. Run this from the reviewed checkout on ServerDominguez. The
+authorization. Run this from the reviewed checkout on the release host. The
 named root transaction is detached from SSH; do not add `--wait` or `--pipe`:
 
 ```bash

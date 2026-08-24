@@ -6036,7 +6036,7 @@ describe('release security and operations', () => {
       '/srv/nexus-backups/application/pre-promotion',
       '/etc/nexus-release/docker',
       '/var/lib/nexus-release-audit/receipts',
-      '/home/dominguez/telegram-hub-bot-staging/data',
+      '/var/lib/nexus-hub/staging/data',
     ]) {
       expect(sanitizeDetail(safe)).toBe(safe);
     }
@@ -7244,7 +7244,7 @@ describe('release security and operations', () => {
       // The retained unit historically pointed at the pre-container path, so this
       // is the realistic misconfiguration, not a hypothetical one.
       const result = run(receiptFixture(workspace, {
-        database: '/home/dominguez/telegram-hub-bot/data/bot.db',
+        database: '/var/lib/nexus-hub/legacy/data/bot.db',
       }));
       expect(result.result).toBe('failed');
       expect(result.detail).toMatch(/different database/);

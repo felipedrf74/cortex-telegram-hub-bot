@@ -14,8 +14,8 @@ STABILITY_SECONDS="${7:-60}"
 EXPECTED_PREDECESSOR_SHA="${8:-}"
 EXPECTED_PREDECESSOR_DIGEST="${9:-}"
 
-TRANSFER_ROOT=/home/dominguez/.local/share/nexus-release
-STATE_ROOT=/home/dominguez/.local/state/nexus-release
+TRANSFER_ROOT="$HOME/.local/share/nexus-release"
+STATE_ROOT="$HOME/.local/state/nexus-release"
 LOCK_FILE="$STATE_ROOT/.release.lock"
 MAINTENANCE_LOCK=/run/lock/nexus-release-sonar.lock
 PM2_BIN="${NEXUS_RELEASE_PM2_BIN:-/usr/local/bin/pm2}"
@@ -228,7 +228,7 @@ assert_no_unpublished_staging_chat_capability_observation() {
   local capability_root="$STATE_ROOT/chat-capability-flags"
   local observations_root="$capability_root/observations"
   local sequence_file="$capability_root/staging.observation.sequence"
-  local smoke_root=/home/dominguez/telegram-hub-bot-staging/.local/release/smoke-evidence
+  local smoke_root="$HOME/telegram-hub-bot-staging/.local/release/smoke-evidence"
 
   if [ ! -e "$observations_root" ] && [ ! -L "$observations_root" ]; then
     if [ -e "$sequence_file" ] || [ -L "$sequence_file" ]; then
@@ -589,7 +589,7 @@ esac
 case "$COMMAND" in
   stage)
     ROLE=staging
-    EXPECTED_BASE=/home/dominguez/telegram-hub-bot-staging
+    EXPECTED_BASE="$HOME/telegram-hub-bot-staging"
     APP_NAMES=(nexus-hub-staging content-engine-staging)
     BACKEND_PORT=8201
     CONTENT_PORT=8101
@@ -597,7 +597,7 @@ case "$COMMAND" in
     ;;
   promote)
     ROLE=production
-    EXPECTED_BASE=/home/dominguez/telegram-hub-bot
+    EXPECTED_BASE="$HOME/telegram-hub-bot"
     APP_NAMES=(nexus-hub content-engine)
     BACKEND_PORT=8200
     CONTENT_PORT=8100
@@ -694,10 +694,10 @@ if [ "$ROLE" = staging ]; then
 fi
 assert_release_candidate_chat_capabilities_off "$BASE_DIR/.env"
 if [ "$ROLE" = production ]; then
-  assert_no_unresolved_chat_capability_transaction /home/dominguez/telegram-hub-bot-staging
+  assert_no_unresolved_chat_capability_transaction "$HOME/telegram-hub-bot-staging"
   assert_no_unpublished_chat_capability_receipt staging
   assert_no_unpublished_staging_chat_capability_observation
-  assert_release_candidate_chat_capabilities_off /home/dominguez/telegram-hub-bot-staging/.env
+  assert_release_candidate_chat_capabilities_off "$HOME/telegram-hub-bot-staging/.env"
 fi
 
 write_state() {

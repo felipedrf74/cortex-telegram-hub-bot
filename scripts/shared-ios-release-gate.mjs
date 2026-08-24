@@ -60,6 +60,8 @@ function validateProductionState(state, manifest, nowMs) {
   const soakCompletedAtMs = parseTimestamp(state.soakCompletedAt, 'production soakCompletedAt');
   const completedAtMs = parseTimestamp(state.completedAt, 'production completedAt');
   const updatedAtMs = parseTimestamp(state.updatedAt, 'production updatedAt');
+  const productionBase = process.env.NEXUS_RELEASE_BASE_DIR;
+  if (!productionBase) fail('NEXUS_RELEASE_BASE_DIR is required');
   if (state.schema !== 'nexus.lean-release-transaction.v1'
       || state.role !== 'production'
       || !/^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}$/.test(state.transactionId ?? '')
@@ -84,9 +86,9 @@ function validateProductionState(state, manifest, nowMs) {
       || completedAtMs > updatedAtMs
       || completedAtMs > nowMs + 5 * 60_000
       || typeof state.releaseDir !== 'string'
-      || !state.releaseDir.startsWith('/home/dominguez/telegram-hub-bot/releases/')
+      || !state.releaseDir.startsWith(`${productionBase}/releases/`)
       || typeof state.predecessor !== 'string'
-      || !state.predecessor.startsWith('/home/dominguez/telegram-hub-bot/releases/')
+      || !state.predecessor.startsWith(`${productionBase}/releases/`)
       || state.predecessor === state.releaseDir
       || canonicalJson(checks) !== canonicalJson(EXPECTED_PRODUCTION_CHECKS)) {
     fail('production release transaction is not a passing exact-manifest promotion');
