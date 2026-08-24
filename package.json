@@ -45,6 +45,7 @@
     "chat:model-bakeoff": "node dist/tools/chat-model-bakeoff.js",
     "local:model-bakeoff": "node dist/tools/local-model-bakeoff.js",
     "local:model-first-pass": "node scripts/local-model-first-pass.mjs",
+    "local:model-final-pass": "node scripts/local-model-final-pass.mjs",
     "content:acceptance:ten-script": "node scripts/content-ten-script-acceptance.mjs",
     "content:acceptance:evidence": "node scripts/content-ten-script-evidence.mjs",
     "fiscal:vendors:audit": "node dist/tools/invoice-vendor-cleanup.js",

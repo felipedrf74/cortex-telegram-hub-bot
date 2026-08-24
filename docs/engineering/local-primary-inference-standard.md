@@ -803,11 +803,11 @@ reasoning mode; legacy v1/v2 artifacts remain historical evidence but cannot be
 rescored by the current runner. A rescore cannot qualify a model whose raw run
 was incomplete or whose digest is not pinned by the current manifest.
 
-`npm run local:model-bakeoff -- --observations <sanitized.jsonl>` applies the
+`npm run local:model-bakeoff -- --observations <sanitized.json>` applies the
 locked 35/30/15/10/10 score and all disqualification gates to the finalists
-that survived the bounded screening pass. The version-3 observation contract
-binds every case to the exact normalized model digest and specialist-profile
-version, rejects mixed identity inside a candidate run, and reports empty
+that survived the bounded screening pass. The sanitized-v1 evidence contract
+and v4 report bind every case to the exact normalized model digest and
+specialist-profile version, reject mixed identity inside a candidate run, and report empty
 percentile sets as unavailable rather than zero. The focused final pass uses
 medium skill tasks, Content outlines/sections, tool plans, and at least 100
 compact structured-schema cases. It does not generate a separate complete
@@ -828,6 +828,48 @@ that omits those bindings. Runtime/evaluation model environment values may
 only repeat the active
 manifest tag; stale overrides are rejected instead of superseding the signed
 manifest.
+
+The executable final-pass producer is:
+
+```bash
+npm run local:model-final-pass -- \
+  --candidate-id <signed-manifest-id> \
+  --output <owner-only-raw-artifact.json>
+
+npm run local:model-final-pass -- --sanitize-pair \
+  --challenger-artifact <owner-only-challenger.json> \
+  --control-artifact <owner-only-qwen-control.json> \
+  --output <owner-only-sanitized.json>
+
+npm run local:model-bakeoff -- \
+  --observations <owner-only-sanitized.json> \
+  --challenger-artifact <owner-only-challenger.json> \
+  --control-artifact <owner-only-qwen-control.json>
+```
+
+It expands the reviewed corpus reference into exactly six ordinary cases, six
+Content outline/section samples, and 100 compact structured cases. Both raw
+runs must bind the same manifest, corpus, governed profile policy, runner, and
+112 unique case IDs. Sanitization re-hashes every prompt and response and
+recomputes the rubric; raw model text is never copied into the sanitized artifact
+or report. The scorer requires both raw files, invokes the current producer to
+re-sanitize them in an owner-only temporary directory, and rejects any byte-level
+claim difference after canonical JSON normalization. A hand-edited sanitized file
+therefore cannot qualify a model. The scorer accepts this strict digest-locked
+evidence chain, not free-form observation JSONL.
+The identity-blind focused comparison covers the 12 ordinary/Content pairs;
+compact structured cases separately own the schema gate. A challenger must
+score at least 75, win at least 60% of those focused pairs, and either beat
+Qwen by eight points or remain within 5% of independently approved cloud
+evidence. It must also preserve every critical skill within 5% of Qwen. Missing
+Qwen pairs or missing cloud evidence cannot satisfy the corresponding branch.
+The cloud branch additionally requires `--approved-cloud-evidence`, its exact
+independently reviewed `--approved-cloud-evidence-digest`, and a separate
+`--approved-cloud-approval-evidence-digest`. The strict cloud artifact is joined
+against all 112 canonical case IDs and binds provider, model, corpus, profile,
+approval reference, approval status, the exact challenger ID/model/raw artifact,
+the exact local sanitized artifact, and per-case quality deltas. Partial,
+duplicate, alternate-corpus, digest-only, or unapproved cloud claims fail closed.
 
 Target Pro `$9.99` and Max `$14.99` prices use the canonical pre-release gate:
 actual provider-account rates, the ten measured complete scripts, existing
