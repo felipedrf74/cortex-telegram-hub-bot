@@ -23,6 +23,10 @@
   App Store review submission `9f222cb7-fec9-47c9-988a-5f58cbe9184b`
   contains exactly that build plus the 100-, 250-, and 600-credit consumables;
   all four items are `Waiting for Review` after the required website flow.
+  iOS pull request 54 subsequently merged as
+  `e2f8e65537fbfa804f292bcf832653d1cfcf3d24`; protected `main` now carries
+  build 290 as the next source carrier. Build 290 is not uploaded or submitted
+  and does not change the exact build-289 App Review identity above.
 - The production website authority is [`https://nexushub.me/`](https://nexushub.me/).
   Prototype or preview deployments are not design or production references.
 - Hybrid credits, subscription checkout, Stripe pack fulfillment, Apple pack

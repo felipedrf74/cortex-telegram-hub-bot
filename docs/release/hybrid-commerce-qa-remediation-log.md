@@ -624,6 +624,12 @@ build `20599cf5-141d-4198-9e7d-7aadeaf839cf` succeeded from exact iOS source
 `9b385e92-0e6d-418b-aa53-a852150199e7` is complete and assigned to the
 internal `Nexus Hub Betinha` TestFlight group.
 
+The attended StoreKit harness and exact release evidence were merged through
+iOS pull request 54 as `e2f8e65537fbfa804f292bcf832653d1cfcf3d24`.
+Protected iOS `main` now carries build 290 as the next monotonic source build;
+it has not been uploaded or submitted and does not replace the build-289 App
+Review binary.
+
 On the connected iPhone 17 Pro Max, the attended StoreKit harness authenticated
 the ordinary isolated staging identity at user ID `1100000`, loaded its
 server-backed wallet at zero, resolved the real
