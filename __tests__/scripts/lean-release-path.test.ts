@@ -319,6 +319,16 @@ describe('lean exact-artifact release path', () => {
       '--state', stagingState,
       '--role', 'staging',
     ], { env: { ...process.env, NEXUS_RELEASE_DEPLOY_HOME: DEPLOY_HOME_FIXTURE } });
+    const missingDeployHomeEnv = { ...process.env };
+    delete missingDeployHomeEnv.NEXUS_RELEASE_DEPLOY_HOME;
+    const missingDeployHome = spawnSync(process.execPath, [
+      manifestScript, 'validate-state',
+      '--manifest', value.output,
+      '--state', stagingState,
+      '--role', 'staging',
+    ], { encoding: 'utf8', env: missingDeployHomeEnv });
+    expect(missingDeployHome.status).toBe(1);
+    expect(missingDeployHome.stderr).toContain('NEXUS_RELEASE_DEPLOY_HOME is required');
 
     const productionState = path.join(value.root, 'production-state.json');
     const staging = JSON.parse(fs.readFileSync(stagingState, 'utf8'));
@@ -721,9 +731,9 @@ db.close();
     const manifestTool = fs.readFileSync('scripts/release-checksum-manifest.mjs', 'utf8');
 
     expect(operator).toContain('SERVER="${DEPLOY_SERVER:?DEPLOY_SERVER must be set');
-    expect(operator).toContain(
-      'ssh "$SERVER" cat "~/.local/state/nexus-release/$role.json" > "$output.next"',
-    );
+    expect(operator.match(
+      /ssh "\$SERVER" cat "~\/\.local\/state\/nexus-release\/\$role\.json" > "\$output\.next"/g,
+    )).toHaveLength(1);
     expect(operator).toContain(
       "const fs=require('node:fs');\n"
       + "const x=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));\n"

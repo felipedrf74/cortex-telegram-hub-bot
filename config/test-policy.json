@@ -1089,7 +1089,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "scripts/mutation-gate.mjs:385-390",
+            "pattern": "scripts/mutation-gate.mjs:439-444",
             "anchor": "hasRemovedEvidence(previousEvidence.assertions, currentEvidence.assertions)",
             "behavior": "The retained mutation contract distinguishes removed assertions and structure from corrected expectations and expanded cases.",
             "replacementTest": "__tests__/scripts/mutation-gate.test.ts",
@@ -1436,75 +1436,6 @@
           }
         ],
         "reason": "The retained inbox suite deliberately replaces the unsafe predecessor assertion that undecodable reversal evidence becomes clean with a stronger fail-closed, bounded-retry, operator-alerted contract."
-      },
-      {
-        "test": "__tests__/scripts/pm2-memory-policy.test.ts",
-        "replacementTests": [
-          "__tests__/scripts/pm2-memory-policy.test.ts"
-        ],
-        "sources": [
-          "ecosystem.release.config.js",
-          "ecosystem.staging.config.js"
-        ],
-        "mutationTargets": [
-          {
-            "pattern": "ecosystem.release.config.js:18-19",
-            "anchor": "NEXUS_RELEASE_BASE_DIR is required",
-            "behavior": "Exact-release PM2 config refuses to start without an explicit NEXUS_RELEASE_BASE_DIR instead of guessing a machine-specific install path.",
-            "replacementTest": "__tests__/scripts/pm2-memory-policy.test.ts",
-            "ownerTestNamePattern": "requires an explicit release base instead of guessing a machine-specific path$",
-            "minimumMutants": 1
-          },
-          {
-            "pattern": "ecosystem.staging.config.js:30-31",
-            "anchor": "NEXUS_RELEASE_BASE_DIR is required",
-            "behavior": "Staging PM2 config refuses to start without an explicit NEXUS_RELEASE_BASE_DIR instead of guessing a machine-specific install path.",
-            "replacementTest": "__tests__/scripts/pm2-memory-policy.test.ts",
-            "ownerTestNamePattern": "requires an explicit release base instead of guessing a machine-specific path$",
-            "minimumMutants": 1
-          }
-        ],
-        "reason": "The retained PM2 memory suite replaces guessed production and staging install paths with an explicit required base-dir contract."
-      },
-      {
-        "test": "__tests__/scripts/lean-release-path.test.ts",
-        "replacementTests": [
-          "__tests__/scripts/lean-release-path.test.ts"
-        ],
-        "sources": [
-          "scripts/release-checksum-manifest.mjs"
-        ],
-        "mutationTargets": [
-          {
-            "pattern": "scripts/release-checksum-manifest.mjs:388-389",
-            "anchor": "NEXUS_RELEASE_DEPLOY_HOME is required",
-            "behavior": "Lean checksum-manifest state validation requires NEXUS_RELEASE_DEPLOY_HOME and never assumes a machine-specific deploy home.",
-            "replacementTest": "__tests__/scripts/lean-release-path.test.ts",
-            "ownerTestNamePattern": "writes a compact manifest bound to four complete shards and the original bundle$",
-            "minimumMutants": 1
-          }
-        ],
-        "reason": "The retained lean-release suite replaces hardcoded deploy-home fixtures with a required NEXUS_RELEASE_DEPLOY_HOME gate."
-      },
-      {
-        "test": "__tests__/tools/training-cross-skill-staging-fixtures.test.ts",
-        "replacementTests": [
-          "__tests__/tools/training-cross-skill-staging-fixtures.test.ts"
-        ],
-        "sources": [
-          "src/tools/training-cross-skill-staging-fixtures.ts"
-        ],
-        "mutationTargets": [
-          {
-            "pattern": "src/tools/training-cross-skill-staging-fixtures.ts:58-59",
-            "anchor": "DATABASE_PATH must look like a staging/test database.",
-            "behavior": "Staging fixture writes fail closed unless DATABASE_PATH looks like a staging or test database.",
-            "replacementTest": "__tests__/tools/training-cross-skill-staging-fixtures.test.ts",
-            "ownerTestNamePattern": "requires smoke mode and a staging-looking database path$",
-            "minimumMutants": 1
-          }
-        ],
-        "reason": "The retained staging-fixture suite replaces a machine-specific database path pin with a host-free staging/test path gate."
       }
     ],
     "ownerTestMappings": [],

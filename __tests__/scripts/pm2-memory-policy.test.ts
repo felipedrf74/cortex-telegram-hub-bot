@@ -1,5 +1,6 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -27,6 +28,8 @@ type Pm2App = {
 };
 
 const releaseBase = mkdtempSync(join(tmpdir(), 'nexus-release-pm2-policy-'));
+const productionBaseDir = join(releaseBase, 'telegram-hub-bot');
+const stagingBaseDir = join(releaseBase, 'telegram-hub-bot-staging');
 const expectedPolicy = {
   OLLAMA_ENABLED: 'true',
   AI_CLASSIFY_PRIMARY: 'gemini',
@@ -59,23 +62,23 @@ const expectedPolicy = {
   CHAT_CORE_V2_LOCAL_CHAT_RECIPE_MODEL: 'qwen2.5:3b-instruct-q4_K_M',
   CHAT_CORE_V2_LOCAL_CHAT_FAST_MODEL: 'off',
 };
-writeFileSync(
-  join(releaseBase, '.env'),
-  `${Object.entries(expectedPolicy).map(([name, value]) => `${name}=${value}`).join('\n')}\nFAKE_SECRET=must-not-reach-pm2\n`,
-  { mode: 0o600 },
-);
+const protectedEnv = `${Object.entries(expectedPolicy).map(([name, value]) => `${name}=${value}`).join('\n')}\nFAKE_SECRET=must-not-reach-pm2\n`;
+mkdirSync(productionBaseDir, { recursive: true });
+mkdirSync(stagingBaseDir, { recursive: true });
+writeFileSync(join(productionBaseDir, '.env'), protectedEnv, { mode: 0o600 });
+writeFileSync(join(stagingBaseDir, '.env'), protectedEnv, { mode: 0o600 });
 afterAll(() => rmSync(releaseBase, { recursive: true, force: true }));
 
 function releaseEnvironment(role: 'production' | 'staging'): NodeJS.ProcessEnv {
   return {
     ...process.env,
     NEXUS_RELEASE_DIR: ROOT,
-    NEXUS_RELEASE_BASE_DIR: releaseBase,
+    NEXUS_RELEASE_BASE_DIR: role === 'staging' ? stagingBaseDir : productionBaseDir,
     NEXUS_RELEASE_ROLE: role,
   };
 }
 
-function loadConfig(file: string, env: NodeJS.ProcessEnv = process.env): Pm2App[] {
+function loadConfig(file: string, env: NodeJS.ProcessEnv = releaseEnvironment('staging')): Pm2App[] {
   const configPath = join(ROOT, file);
   const output = execFileSync(process.execPath, [
     '-e',
@@ -117,6 +120,23 @@ function oldSpaceMebibytes(args: string | undefined): number {
 
 describe('PM2 backend memory policy', () => {
   it('requires an explicit release base instead of guessing a machine-specific path', () => {
+    for (const role of ['production', 'staging'] as const) {
+      const baseDir = role === 'staging'
+        ? stagingBaseDir
+        : productionBaseDir;
+      const apps = loadConfig('ecosystem.release.config.js', releaseEnvironment(role));
+      const backend = apps.find((app) => app.name.startsWith('nexus-hub'));
+      const content = apps.find((app) => app.name.startsWith('content-engine'));
+
+      expect(backend?.env?.DATABASE_PATH).toBe(`${baseDir}/data/bot.db`);
+      expect(backend?.error_file).toBe(`${baseDir}/logs/error.log`);
+      expect(backend?.out_file).toBe(`${baseDir}/logs/out.log`);
+      expect(content?.error_file).toBe(`${baseDir}/logs/content-engine-error.log`);
+      expect(content?.out_file).toBe(`${baseDir}/logs/content-engine-out.log`);
+      expect(content?.script).toBe('/usr/bin/python3.12');
+      expect(content?.env?.PYTHONPATH).toBe(`${ROOT}/content-engine/vendor`);
+    }
+
     for (const [file, role] of [
       ['ecosystem.release.config.js', 'production'],
       ['ecosystem.release.config.js', 'staging'],
@@ -131,7 +151,7 @@ describe('PM2 backend memory policy', () => {
   it('keeps total RSS at least 256 MiB above V8 old space in every runtime config', () => {
     const variants = [
       loadConfig('ecosystem.config.js'),
-      loadConfig('ecosystem.staging.config.js', releaseEnvironment('staging')),
+      loadConfig('ecosystem.staging.config.js'),
       loadConfig('ecosystem.release.config.js', releaseEnvironment('production')),
       loadConfig('ecosystem.release.config.js', releaseEnvironment('staging')),
     ];
@@ -146,10 +166,7 @@ describe('PM2 backend memory policy', () => {
 
   it('does not expand Content Engine memory limits', () => {
     expect(loadConfig('ecosystem.config.js').find((app) => app.name === 'content-engine')?.max_memory_restart).toBe('500M');
-    expect(loadConfig(
-      'ecosystem.staging.config.js',
-      releaseEnvironment('staging'),
-    ).find((app) => app.name === 'content-engine-staging')?.max_memory_restart).toBe('300M');
+    expect(loadConfig('ecosystem.staging.config.js').find((app) => app.name === 'content-engine-staging')?.max_memory_restart).toBe('300M');
 
     const releaseProduction = loadConfig(
       'ecosystem.release.config.js',

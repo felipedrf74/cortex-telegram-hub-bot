@@ -179,7 +179,55 @@ function assertionRootCall(expression) {
   return null;
 }
 
-function assertionFingerprint(expression, sourceFile) {
+function isValueIdentifier(node) {
+  if (!ts.isIdentifier(node)) return false;
+  const parent = node.parent;
+  if (ts.isPropertyAccessExpression(parent) && parent.name === node) return false;
+  if (ts.isPropertyAssignment(parent) && parent.name === node) return false;
+  return true;
+}
+
+function substituteLiteralIdentifiers(text, argument, sourceFile, variableInitializers) {
+  const replacements = [];
+  const seen = new Set();
+  const visit = (node) => {
+    if (isValueIdentifier(node) && !seen.has(node.text)) {
+      const initializer = initializerFor(node, variableInitializers);
+      if (initializer) {
+        const current = unwrapExpression(initializer);
+        if (
+          ts.isStringLiteral(current)
+          || ts.isNoSubstitutionTemplateLiteral(current)
+          || ts.isNumericLiteral(current)
+          || ts.isRegularExpressionLiteral(current)
+        ) {
+          seen.add(node.text);
+          replacements.push({ name: node.text, value: canonicalNode(current, sourceFile) });
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(argument);
+  if (replacements.length === 0) return text;
+  const strings = [];
+  let next = text.replace(
+    /'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"|`(?:\\.|[^`\\])*`|\/(?:\\.|[^/\\])+\/[gimsuy]*/g,
+    (match) => {
+      strings.push(match);
+      return `\0${strings.length - 1}\0`;
+    },
+  );
+  for (const { name, value } of replacements.sort((left, right) => right.name.length - left.name.length)) {
+    next = next.replace(
+      new RegExp(`(?<![A-Za-z0-9_$])${name}(?![A-Za-z0-9_$])`, 'g'),
+      () => value,
+    );
+  }
+  return next.replace(/\0(\d+)\0/g, (_, index) => strings[Number(index)]);
+}
+
+function assertionFingerprint(expression, sourceFile, variableInitializers = new Map()) {
   let current = expression;
   while (
     ts.isAwaitExpression(current)
@@ -192,8 +240,14 @@ function assertionFingerprint(expression, sourceFile) {
   const rootCall = assertionRootCall(current);
   const root = identity?.root ?? '<assertion>';
   const subjectArguments = rootCall?.arguments.slice(0, 1) ?? current.arguments.slice(0, 1);
-  const subject = subjectArguments.map((argument) => canonicalNode(argument, sourceFile)
-    .replace(/^[A-Za-z_$][\w$]*(?=\.|\[|$)/, '<subject>')).join(',');
+  const subject = subjectArguments.map((argument) => normalizeEvidenceLiterals(
+    substituteLiteralIdentifiers(
+      canonicalNode(argument, sourceFile),
+      argument,
+      sourceFile,
+      variableInitializers,
+    ).replace(/^[A-Za-z_$][\w$]*(?=\.|\[|$)/, '<subject>'),
+  )).join(',');
   return `${root}(${subject})::${identity?.modifiers.join('.') ?? ''}`;
 }
 
@@ -351,7 +405,7 @@ export function extractTestEvidence(source, fileName = 'mutation-gate-input.test
           ? node.body
         : null;
     if (assertionExpression && isAssertionExpression(assertionExpression)) {
-      assertions.push(assertionFingerprint(assertionExpression, sourceFile));
+      assertions.push(assertionFingerprint(assertionExpression, sourceFile, variableInitializers));
       return;
     }
     const flowFingerprint = insideTest ? controlFlowFingerprint(node, sourceFile) : null;

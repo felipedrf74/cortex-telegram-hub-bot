@@ -602,6 +602,21 @@ describe('changed-critical mutation gate', () => {
       "const fixture = { id: 1, unusedName: 'boilerplate', unusedRole: 'admin' }; it('same behavior', () => { expect(fixture.id).toBe(1); });",
     )).toBe(false);
     expect(isTestCleanupChange({ status: 'A' }, "test('new', () => {});", '')).toBe(false);
+    expect(isTestCleanupChange(
+      { status: 'M' },
+      "const productionDatabasePath = '/tmp/fixture/production/data/bot.db'; it('requires a staging-looking path', () => { expect(() => gate({ DATABASE_PATH: productionDatabasePath })).toThrow(); });",
+      "it('requires a staging-looking path', () => { expect(() => gate({ DATABASE_PATH: '/tmp/previous/production/data/bot.db' })).toThrow(); });",
+    )).toBe(false);
+    expect(isTestCleanupChange(
+      { status: 'M' },
+      String.raw`it('pins the remote state cat', () => { expect(operator.match(/ssh "\$SERVER" cat "~\/\.local\/state\/nexus-release\/\$role\.json" > "\$output\.next"/g)).toHaveLength(1); });`,
+      String.raw`it('pins the remote state cat', () => { expect(operator.match(/ssh "\$SERVER" cat "\/var\/nexus\/\.local\/state\/nexus-release\/\$role\.json" > "\$output\.next"/g)).toHaveLength(1); });`,
+    )).toBe(false);
+    expect(isTestCleanupChange(
+      { status: 'M' },
+      "it('pins the remote state cat', () => { expect(operator).toContain('ssh'); });",
+      "it('pins the remote state cat', () => { expect(operator.match(/ssh/g)).toHaveLength(1); });",
+    )).toBe(true);
   });
 
   it('detects removed it.each rows even when the declaration and assertion counts are unchanged', () => {
