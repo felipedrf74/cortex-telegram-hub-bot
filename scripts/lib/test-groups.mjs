@@ -311,16 +311,54 @@ export function contractTestsForGroups(groupNames, policy, allTests) {
   return [...new Set(candidates)].filter((file) => allTests.includes(file)).sort();
 }
 
-export function isDocsOnly(files) {
-  return files.length > 0 && files.every((file) => (
-    !isProductionMigrationArchivePath(file) && (
-      file.startsWith('docs/')
-    || file.includes('/docs/')
-    || file.startsWith('.agents/')
-    || file.startsWith('.claude/')
-    || ['AGENTS.md', 'CHANGELOG.md', 'CLAUDE.md', 'README.md'].includes(file)
-    )
+const DOCS_ONLY_FORCE_FALSE_PREFIXES = [
+  'docs/contracts/',
+  'docs/project-map.json',
+  'docs/engineering/backend-api-contract-standard.md',
+  'docs/TOKEN-QUOTA-CONTRACT.md',
+  'docs/release/continuous-deployment.md',
+  'docs/release/release-evidence-contract.md',
+  'docs/release/evidence/release-manifest-public-key.pem',
+  'src/',
+  'migrations/',
+  '.github/workflows/',
+  'config/continuous-deployment.json',
+  'ops/local-backup/',
+  'ops/nexus-release/',
+  'scripts/',
+  '__tests__/',
+  'package-lock.json',
+  'ops/pm2/package-lock.json',
+  'content-engine/requirements-lock-tool.txt',
+];
+
+function matchesRepositoryPrefix(file, prefix) {
+  return prefix.endsWith('/')
+    ? file.startsWith(prefix)
+    : file === prefix || file.startsWith(`${prefix}/`);
+}
+
+function isTokenQuotaContractPath(file) {
+  if (!file.startsWith('docs/')) return false;
+  return file.slice('docs/'.length).split('/').some((segment) => (
+    segment.startsWith('TOKEN-QUOTA')
   ));
+}
+
+export function isDocsOnly(files) {
+  return files.length > 0 && files.every((file) => {
+    const forceFalse = isProductionMigrationArchivePath(file)
+      || DOCS_ONLY_FORCE_FALSE_PREFIXES.some((prefix) => (
+        matchesRepositoryPrefix(file, prefix)
+      ))
+      || file.startsWith('Dockerfile')
+      || isTokenQuotaContractPath(file);
+    if (forceFalse) return false;
+    return file.startsWith('docs/')
+      || file.startsWith('.agents/')
+      || file.startsWith('.claude/')
+      || ['AGENTS.md', 'CHANGELOG.md', 'CLAUDE.md', 'README.md'].includes(file);
+  });
 }
 
 export function isRelevantPath(file) {

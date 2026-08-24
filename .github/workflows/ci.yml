@@ -320,7 +320,7 @@ jobs:
     name: 🔍 Lint & Type Check
     runs-on: ${{ fromJSON(needs.runner.outputs.labels) }}
     needs: [runner, runner_guardrails, classify]
-    if: ${{ needs.classify.outputs.docs_only != 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
+    if: ${{ !(github.event_name == 'pull_request' && needs.classify.outputs.docs_only == 'true') }}
     steps:
       - name: Assert this allocated runner is test-only
         if: needs.runner.outputs.is_self_hosted == 'true'
@@ -448,7 +448,7 @@ jobs:
     # keep enough headroom for Vitest to emit its governed result artifact.
     timeout-minutes: 45
     needs: [runner, runner_guardrails, classify]
-    if: ${{ needs.classify.outputs.vitest_mode == 'focused' || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
+    if: ${{ !(github.event_name == 'pull_request' && needs.classify.outputs.docs_only == 'true') }}
     steps:
       - name: Assert this allocated runner is test-only
         if: needs.runner.outputs.is_self_hosted == 'true'
@@ -620,15 +620,11 @@ jobs:
           TELEGRAM_ALLOWED_USER_IDS: '123456789'
         run: npx vitest run __tests__/scripts/backend-ios-contract-fixture.test.ts
 
-  test:
-    # Keep this aggregate check-run name stable because the main-branch
-    # ruleset requires the exact `🧪 Tests` context. Pull requests bind the
-    # single selected-test run and any applicable test-cleanup mutation gate
-    # into this required context.
-    name: 🧪 Tests
+  docs_pr_gate:
+    name: 📚 Docs PR gate
     runs-on: ${{ fromJSON(needs.runner.outputs.labels) }}
     needs: [runner, runner_guardrails, classify, lint, build, docs_and_secrets, mutation_cleanup, test_focused, python-test, migrations, science_policy, ios_contract]
-    if: ${{ always() }}
+    if: ${{ always() && github.event_name == 'pull_request' && needs.classify.outputs.docs_only == 'true' }}
     steps:
       - name: Assert this allocated runner is test-only
         if: needs.runner.outputs.is_self_hosted == 'true'
@@ -651,7 +647,60 @@ jobs:
           done
           "$GUARD" --json
 
-      - name: Verify selected test lane
+      - name: Verify docs-only pull request lane
+        env:
+          CLASSIFY_RESULT: ${{ needs.classify.result }}
+          GUARDRAILS_RESULT: ${{ needs.runner_guardrails.result }}
+          DOCS_RESULT: ${{ needs.docs_and_secrets.result }}
+          LINT_RESULT: ${{ needs.lint.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          MUTATION_RESULT: ${{ needs.mutation_cleanup.result }}
+          FOCUSED_RESULT: ${{ needs.test_focused.result }}
+          PYTHON_RESULT: ${{ needs.python-test.result }}
+          MIGRATIONS_RESULT: ${{ needs.migrations.result }}
+          SCIENCE_POLICY_RESULT: ${{ needs.science_policy.result }}
+          IOS_CONTRACT_RESULT: ${{ needs.ios_contract.result }}
+        run: |
+          test "$CLASSIFY_RESULT" = "success"
+          test "$GUARDRAILS_RESULT" = "success"
+          test "$DOCS_RESULT" = "success"
+          test "$LINT_RESULT" = "skipped"
+          test "$BUILD_RESULT" = "skipped"
+          test "$MUTATION_RESULT" = "skipped"
+          test "$FOCUSED_RESULT" = "skipped"
+          test "$PYTHON_RESULT" = "skipped"
+          test "$MIGRATIONS_RESULT" = "skipped"
+          test "$SCIENCE_POLICY_RESULT" = "skipped"
+          test "$IOS_CONTRACT_RESULT" = "skipped"
+
+  code_gate:
+    name: 🧱 Code gate
+    runs-on: ${{ fromJSON(needs.runner.outputs.labels) }}
+    needs: [runner, runner_guardrails, classify, lint, build, docs_and_secrets, mutation_cleanup, test_focused, python-test, migrations, science_policy, ios_contract]
+    if: ${{ always() && !(github.event_name == 'pull_request' && needs.classify.outputs.docs_only == 'true') }}
+    steps:
+      - name: Assert this allocated runner is test-only
+        if: needs.runner.outputs.is_self_hosted == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          GUARD=/usr/local/sbin/nexus-pi-guardrails
+          test -x "$GUARD"
+          test ! -L "$GUARD"
+          test "$(stat -c '%u:%g:%a' "$GUARD")" = "0:0:755"
+          test "$(stat -c '%u:%g:%a' "$(dirname "$GUARD")")" = "0:0:755"
+          test ! -L "$(dirname "$GUARD")"
+          test -f "$GUARD"
+          test "$(stat -c '%h' "$GUARD")" = "1"
+          for ancestor in /usr/local /usr /; do
+            test ! -L "$ancestor"
+            test "$(stat -c '%u' "$ancestor")" = "0"
+            mode="$(stat -c '%a' "$ancestor")"
+            test "$(( 8#$mode & 8#022 ))" -eq 0
+          done
+          "$GUARD" --json
+
+      - name: Verify code lane
         env:
           EVENT_NAME: ${{ github.event_name }}
           PROTECTED_MAIN: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
@@ -659,7 +708,6 @@ jobs:
           LINT_RESULT: ${{ needs.lint.result }}
           BUILD_RESULT: ${{ needs.build.result }}
           VITEST_MODE: ${{ needs.classify.outputs.vitest_mode }}
-          DOCS_ONLY: ${{ needs.classify.outputs.docs_only }}
           TEST_CLEANUP: ${{ needs.classify.outputs.test_cleanup }}
           MUTATION_RESULT: ${{ needs.mutation_cleanup.result }}
           DOCS_RESULT: ${{ needs.docs_and_secrets.result }}
@@ -678,16 +726,10 @@ jobs:
 
           test "$DOCS_RESULT" = "success"
 
-          # These jobs skip only on docs-only pull requests. Protected-main
-          # pushes always compile and typecheck, even when the delta is docs-only,
-          # because this aggregate is the exact required ruleset context.
-          if [ "$DOCS_ONLY" = "true" ] && [ "$PROTECTED_MAIN" != "true" ]; then
-            test "$LINT_RESULT" = "skipped"
-            test "$BUILD_RESULT" = "skipped"
-          else
-            test "$LINT_RESULT" = "success"
-            test "$BUILD_RESULT" = "success"
-          fi
+          # Only docs-only pull requests take the other lane. Every code-gate
+          # run, including every push, compiles and typechecks.
+          test "$LINT_RESULT" = "success"
+          test "$BUILD_RESULT" = "success"
 
           if [ "$EVENT_NAME" = "pull_request" ] && [ "$TEST_CLEANUP" = "true" ]; then
             test "$MUTATION_RESULT" = "success"
@@ -727,21 +769,10 @@ jobs:
             test "$IOS_CONTRACT_RESULT" = "skipped"
           fi
 
-          if [ "$DOCS_ONLY" = "true" ]; then
-            test "$SCIENCE_POLICY_RESULT" = "skipped"
-          else
-            test "$SCIENCE_POLICY_RESULT" = "success"
-          fi
+          test "$SCIENCE_POLICY_RESULT" = "success"
 
           case "$VITEST_MODE" in
-            skip)
-              if [ "$PROTECTED_MAIN" = "true" ]; then
-                test "$FOCUSED_RESULT" = "success"
-              else
-                test "$FOCUSED_RESULT" = "skipped"
-              fi
-              ;;
-            focused)
+            skip|focused)
               test "$FOCUSED_RESULT" = "success"
               ;;
             *)
@@ -749,6 +780,57 @@ jobs:
               exit 1
               ;;
           esac
+
+  test:
+    # Keep this sole aggregate check-run name stable because the main-branch
+    # ruleset requires the exact `🧪 Tests` context. Exactly one internal gate
+    # must succeed: docs-only pull requests take docs_pr_gate; every other run,
+    # including every protected-main push, takes code_gate. A skipped expected
+    # gate is a failure, never a pass.
+    name: 🧪 Tests
+    runs-on: ${{ fromJSON(needs.runner.outputs.labels) }}
+    needs: [runner, runner_guardrails, classify, docs_pr_gate, code_gate]
+    if: ${{ always() }}
+    steps:
+      - name: Assert this allocated runner is test-only
+        if: needs.runner.outputs.is_self_hosted == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          GUARD=/usr/local/sbin/nexus-pi-guardrails
+          test -x "$GUARD"
+          test ! -L "$GUARD"
+          test "$(stat -c '%u:%g:%a' "$GUARD")" = "0:0:755"
+          test "$(stat -c '%u:%g:%a' "$(dirname "$GUARD")")" = "0:0:755"
+          test ! -L "$(dirname "$GUARD")"
+          test -f "$GUARD"
+          test "$(stat -c '%h' "$GUARD")" = "1"
+          for ancestor in /usr/local /usr /; do
+            test ! -L "$ancestor"
+            test "$(stat -c '%u' "$ancestor")" = "0"
+            mode="$(stat -c '%a' "$ancestor")"
+            test "$(( 8#$mode & 8#022 ))" -eq 0
+          done
+          "$GUARD" --json
+
+      - name: Verify exactly one expected gate succeeded
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DOCS_ONLY: ${{ needs.classify.outputs.docs_only }}
+          CLASSIFY_RESULT: ${{ needs.classify.result }}
+          GUARDRAILS_RESULT: ${{ needs.runner_guardrails.result }}
+          DOCS_PR_GATE_RESULT: ${{ needs.docs_pr_gate.result }}
+          CODE_GATE_RESULT: ${{ needs.code_gate.result }}
+        run: |
+          test "$CLASSIFY_RESULT" = "success"
+          test "$GUARDRAILS_RESULT" = "success"
+          if [ "$EVENT_NAME" = "pull_request" ] && [ "$DOCS_ONLY" = "true" ]; then
+            test "$DOCS_PR_GATE_RESULT" = "success"
+            test "$CODE_GATE_RESULT" = "skipped"
+          else
+            test "$DOCS_PR_GATE_RESULT" = "skipped"
+            test "$CODE_GATE_RESULT" = "success"
+          fi
 
   # ═══════════════════════════════════════════════════
   # BUILD VERIFICATION (parallel; no `needs: test`)
@@ -762,7 +844,7 @@ jobs:
     name: 🔨 Build
     runs-on: ${{ fromJSON(needs.runner.outputs.labels) }}
     needs: [runner, runner_guardrails, classify]
-    if: ${{ needs.classify.outputs.docs_only != 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
+    if: ${{ !(github.event_name == 'pull_request' && needs.classify.outputs.docs_only == 'true') }}
     steps:
       - name: Assert this allocated runner is test-only
         if: needs.runner.outputs.is_self_hosted == 'true'
@@ -890,7 +972,7 @@ jobs:
     name: 🧪 Science-policy version
     runs-on: ${{ fromJSON(needs.runner.outputs.labels) }}
     needs: [runner, runner_guardrails, classify]
-    if: needs.classify.outputs.docs_only != 'true'
+    if: ${{ !(github.event_name == 'pull_request' && needs.classify.outputs.docs_only == 'true') }}
     steps:
       - name: Assert this allocated runner is test-only
         if: needs.runner.outputs.is_self_hosted == 'true'

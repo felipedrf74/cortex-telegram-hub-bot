@@ -13,6 +13,7 @@ import {
 } from '../../scripts/lib/release-control-plane.mjs';
 import {
   classifyTestGroups,
+  isDocsOnly,
   loadTestGroups,
   resolveRetirementMapping,
   validateRetirementMapping,
@@ -218,6 +219,48 @@ describe('lean changed-area classification', () => {
       groups: [],
       skipReason: 'docs-only diff',
     });
+  });
+
+  it.each([
+    'docs/contracts/openapi-v1.yaml',
+    'docs/project-map.json',
+    'docs/engineering/backend-api-contract-standard.md',
+    'docs/TOKEN-QUOTA-CONTRACT.md',
+    'docs/architecture/TOKEN-QUOTA-OVERVIEW.md',
+    'docs/release/continuous-deployment.md',
+    'docs/release/release-evidence-contract.md',
+    'src/README.md',
+    'migrations/README.md',
+    '.github/workflows/release.yml',
+    '.github/workflows/ci.yml',
+    'ops/nexus-release/README.md',
+    'scripts/release-signing-handoff.mjs',
+    'scripts/release-manifest-build.mjs',
+    'Dockerfile.release.node',
+    'package-lock.json',
+    'ops/pm2/package-lock.json',
+    '__tests__/scripts/README.md',
+    'scripts/README.md',
+  ])('forces %s out of docs-only classification by repository prefix', (file) => {
+    expect(isDocsOnly([file])).toBe(false);
+    expect(classifyChangedFiles({
+      files: [file],
+      root: process.cwd(),
+      generatedAt: '2026-08-24T00:00:00Z',
+    }).flags.docsOnly).toBe(false);
+  });
+
+  it('does not force-false matching contract filenames outside their locked docs prefixes', () => {
+    const files = [
+      '.agents/backend-api-contract-standard.md',
+      '.agents/TOKEN-QUOTA-CONTRACT.md',
+    ];
+    expect(isDocsOnly(files)).toBe(true);
+    expect(classifyChangedFiles({
+      files,
+      root: process.cwd(),
+      generatedAt: '2026-08-24T00:00:00Z',
+    }).flags.docsOnly).toBe(true);
   });
 
   it('treats a retired-migration archive as migration governance, not docs-only', () => {

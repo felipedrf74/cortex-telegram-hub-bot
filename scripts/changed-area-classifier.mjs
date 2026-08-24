@@ -17,7 +17,6 @@ import {
 } from './lib/git-changed-paths.mjs';
 import {
   classifyTestGroups,
-  isDocsOnly,
   loadTestGroups,
 } from './lib/test-groups.mjs';
 
@@ -183,7 +182,7 @@ try {
       + 'Add an explicit path mapping in config/test-groups.json.',
     );
   }
-  const docsOnly = isDocsOnly(legacyResult.changedFiles);
+  const docsOnly = legacyResult.flags.docsOnly;
   const groupedVitestMode = docsOnly || grouped.groups.length === 0 ? 'skip' : 'focused';
   const result = {
     ...legacyResult,
